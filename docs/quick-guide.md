@@ -764,6 +764,8 @@ a released binary; its section in [`stdlib.md`](stdlib.md) says so.
 
 **StateMachine** — StateMachine.new(desc: Object, *, name: String = "", guards: Object = {}, actions: Object = {}, context = nil); StateMachine.parse(text: String, *, guards: Object = {}, actions: Object = {}, context = nil, path: String = "") -> StateMachine; m.state() -> String; m.in_state(name: String) -> Bool; m.fire(event: String, payload = nil) -> Bool; m.can_fire(event: String, payload = nil) -> Bool; m.reset() -> Nil; to_string(m) -> String
 
+**FST** — FST.compile_set(keys: [String], sorted: Bool = false); FST.compile_map(entries: Object, sorted: Bool = false); FST.compile_index_map(entries: Object, sorted: Bool = false); FST.compile_auto_index(keys: [String], sorted: Bool = false); FST.Set.new(bytes) -> Set; FST.Map.new(bytes) -> Map; FST.IndexMap.new(bytes) -> IndexMap; contains(key); get(key); common_prefix_search(text) -> [Long]; longest_common_prefix_search(text); predictive_search(prefix) -> [String]; edit_distance_search(word, max_edits, insert_cost = 1, delete_cost = 1, replace_cost = 1); suggest(word)
+
 <!-- END GENERATED -->
 
 ## 5. Templates

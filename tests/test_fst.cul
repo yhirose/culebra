@@ -1,0 +1,141 @@
+// Conformance: stdlib FST (compiled read-only dictionaries). See docs/stdlib.md §39.
+// Engine: vendor/cpp-fstlib (finite state transducer).
+//
+// A dictionary is built once into a byte code String, then opened for
+// querying. Lengths and offsets are byte counts, like Regex's.
+
+// --- Set: build, open, membership ---
+let words = ["hello", "hell", "help", "world", "word"]
+let set_bytes = FST.compile_set(words)
+let s = FST.Set.new(set_bytes)
+assert_true(s.contains("hell"))
+assert_true(s.contains("world"))
+assert_false(s.contains("hel"))     // a prefix is not a member
+assert_false(s.contains("HELLO"))   // exact bytes, no case folding
+
+// --- Set: common prefixes of the subject, shortest first ---
+// Only "help" is a prefix of "helpless"; "hell" diverges at the 4th byte.
+assert_eq(s.common_prefix_search("helpless"), [4])
+// "word" is not a prefix of "worldwide" (4th byte 'd' vs 'l'); "world" is.
+assert_eq(s.common_prefix_search("worldwide"), [5])
+assert_eq(s.common_prefix_search("zebra"), [])
+
+// --- Set: longest common prefix, nil when nothing matches ---
+assert_eq(s.longest_common_prefix_search("helpless"), 4)
+assert_eq(s.longest_common_prefix_search("zebra"), nil)
+
+// --- Set: predictive search (every key under a prefix), sorted ---
+assert_eq(s.predictive_search("hel"), ["hell", "hello", "help"])
+assert_eq(s.predictive_search("wor"), ["word", "world"])
+assert_eq(s.predictive_search("zzz"), [])
+assert_eq(s.predictive_search("").size(), 5)  // the whole dictionary
+
+// --- Set: edit distance search ---
+assert_eq(s.edit_distance_search("helo", 1), ["hell", "hello", "help"])
+assert_eq(s.edit_distance_search("hello", 0), ["hello"])  // exact only
+assert_eq(s.edit_distance_search("zzzz", 1), [])
+
+// The three costs price the edit kinds separately, and they are named from
+// the search word's side: `delete_cost` charges a byte the key has and the
+// word lacks, `insert_cost` a byte the word has and the key lacks.
+//
+// "helo" reaches "hello" by dropping the key's second "l" -- a delete, so
+// charging 2 for deletes puts "hello" out of a budget of 1 while the
+// same-length neighbours stay in reach.
+assert_eq(s.edit_distance_search("helo", 1, 1, 2), ["hell", "help"])
+// The mirror: "hellox" reaches "hello" by inserting the word's extra "x".
+assert_eq(s.edit_distance_search("hellox", 1), ["hello"])
+assert_eq(s.edit_distance_search("hellox", 1, 2), [])
+// A replace prices a changed byte, which only the same-length keys pay.
+assert_eq(s.edit_distance_search("helo", 1, 1, 1, 2), ["hello"])
+
+// --- Set: suggest, best first (the ratio itself is the engine's, not pinned) ---
+let sug = s.suggest("helo")
+assert_eq(sug[0].key, "hello")
+assert_true(sug[0].ratio > sug[1].ratio)
+assert_true(sug[0].ratio <= 1.0)
+
+// --- Map: string values ---
+let m = FST.Map.new(FST.compile_map({hello: "こんにちは", world: "世界"}))
+assert_eq(m.get("hello"), "こんにちは")
+assert_eq(m.get("missing"), nil)   // a miss is nil, not an error
+assert_eq(m.predictive_search("w"), [{key: "world", value: "世界"}])
+assert_eq(m.common_prefix_search("worldly"), [{length: 5, value: "世界"}])
+assert_eq(m.longest_common_prefix_search("worldly"), {length: 5, value: "世界"})
+assert_eq(m.longest_common_prefix_search("zebra"), nil)
+assert_eq(m.edit_distance_search("wrld", 1), [{key: "world", value: "世界"}])
+assert_eq(m.suggest("wrold")[0].key, "world")
+
+// --- IndexMap: explicit numeric values ---
+let im = FST.IndexMap.new(FST.compile_index_map({apple: 10, apricot: 20}))
+assert_eq(im.get("apple"), 10)
+assert_eq(im.get("apricot"), 20)
+assert_eq(im.get("avocado"), nil)
+assert_eq(im.predictive_search("ap"),
+  [{key: "apple", value: 10}, {key: "apricot", value: 20}])
+assert_eq(im.longest_common_prefix_search("applesauce"), {length: 5, value: 10})
+
+// --- compile_auto_index: the value is the key's rank in sorted order ---
+// Sorted, `words` is hell, hello, help, word, world -- so the ranks follow
+// the keys, not the order they were passed in.
+let auto = FST.IndexMap.new(FST.compile_auto_index(words))
+assert_eq(auto.get("hell"), 0)
+assert_eq(auto.get("hello"), 1)
+assert_eq(auto.get("help"), 2)
+assert_eq(auto.get("word"), 3)
+assert_eq(auto.get("world"), 4)
+// A key that is a prefix of another still carries its own rank.
+let pre_ranks = FST.IndexMap.new(FST.compile_auto_index(["ab", "a", "abc"]))
+assert_eq(pre_ranks.get("a"), 0)
+assert_eq(pre_ranks.get("ab"), 1)
+assert_eq(pre_ranks.get("abc"), 2)
+
+// --- sorted: true skips the internal sort (input must already be sorted) ---
+let sorted_keys = ["alpha", "beta", "gamma"]
+let pre = FST.Set.new(FST.compile_set(sorted_keys, sorted: true))
+assert_true(pre.contains("beta"))
+assert_eq(pre.predictive_search(""), sorted_keys)
+// Claiming sorted order for unsorted input is an error, not a wrong answer.
+assert_eq(try { FST.compile_set(["b", "a"], sorted: true) } catch e { e.kind },
+  "FSTError")
+
+// --- The byte code is a plain String: binary-safe and round-trippable ---
+assert_true(set_bytes.size() > 0)
+let path = "{FS.temp_dir()}/culebra_test_fst_{UUID.v4()}.fst"
+FS.write(path, set_bytes)
+assert_true(FST.Set.new(FS.read(path)).contains("world"))
+FS.remove(path)
+
+// --- Opening byte code as the wrong class is caught, not silently wrong ---
+let map_bytes = FST.compile_map({a: "1"})
+assert_eq(try { FST.Map.new(set_bytes) } catch e { e.kind }, "FSTError")
+assert_eq(try { FST.Set.new(map_bytes) } catch e { e.kind }, "FSTError")
+assert_eq(try { FST.IndexMap.new(map_bytes) } catch e { e.kind }, "FSTError")
+assert_eq(try { FST.Set.new("not a dictionary") } catch e { e.kind }, "FSTError")
+
+// --- Build-time key errors name the offending index ---
+assert_eq(try { FST.compile_set(["dup", "dup"]) } catch e { e.message },
+  "FST: duplicate key at index 1")
+assert_eq(try { FST.compile_set([""]) } catch e { e.kind }, "FSTError")
+
+// --- IndexMap values are bounded; out of range is refused at build ---
+assert_eq(try { FST.compile_index_map({a: -1}) } catch e { e.kind }, "ValueError")
+assert_eq(try { FST.compile_index_map({a: 4294967296}) } catch e { e.kind },
+  "ValueError")
+assert_eq(FST.IndexMap.new(FST.compile_index_map({a: 4294967295})).get("a"),
+  4294967295)
+
+// --- Argument types are checked ---
+assert_eq(try { FST.compile_set([1, 2]) } catch e { e.kind }, "TypeError")
+assert_eq(try { FST.compile_map({a: 1}) } catch e { e.kind }, "TypeError")
+assert_eq(try { FST.compile_index_map({a: "x"}) } catch e { e.kind }, "TypeError")
+
+// --- Edit budget and costs are validated ---
+assert_eq(try { s.edit_distance_search("x", -1) } catch e { e.kind }, "ValueError")
+assert_eq(try { s.edit_distance_search("x", 1, 0) } catch e { e.kind }, "ValueError")
+
+// --- Unicode keys work by bytes; lengths are byte counts ---
+let jp = FST.Set.new(FST.compile_set(["日本", "日本語"]))
+assert_true(jp.contains("日本語"))
+assert_eq(jp.predictive_search("日本"), ["日本", "日本語"])
+assert_eq(jp.longest_common_prefix_search("日本語版"), 9)  // 3 bytes per char

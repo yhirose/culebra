@@ -76,8 +76,9 @@ Conventions used below:
 34. [`Peg`](#34-peg) — PEG parser generator: write a grammar, get a syntax tree
 35. [`CodeGen`](#35-codegen) — build a small language's IR by hand and run it
 36. [`StateMachine`](#36-statemachine) — hierarchical state machine, with a text DSL
-37. [Design notes](#37-design-notes)
-38. [Not included (yet)](#38-not-included-yet)
+37. [`FST`](#37-fst) — compiled read-only dictionary: prefix, predictive and fuzzy search
+38. [Design notes](#38-design-notes)
+39. [Not included (yet)](#39-not-included-yet)
 
 **Where to find what**
 
@@ -126,6 +127,8 @@ Conventions used below:
 | Priority scheduling, event simulation, shortest-path search | [§33 `PriorityQueue`](#33-priorityqueue) — `PriorityQueue.new()` — `push`/`pop` |
 | Parse a language / config format of your own | [§34 Peg](#34-peg) — write a PEG grammar, `Peg.parse(grammar, text)` → a tree `match` takes apart |
 | Model a workflow, protocol or UI mode as states and events | [§36 `StateMachine`](#36-statemachine) — `StateMachine.parse(text)`, or a description `Object` |
+| Autocomplete / prefix lookup over a large fixed word list | [§37 FST](#37-fst) — `FST.Set.new(FST.compile_set(words))` → `.predictive_search("hel")` |
+| Spelling correction, fuzzy lookup | [§37 FST](#37-fst) — `.edit_distance_search(word, 1)` / `.suggest(word)` |
 | String / Array / Object methods | [language spec §18](language.md) |
 | Integer sequences (`range`, `iota`) | [language spec §19](language.md) |
 | Fill an `Array` with `n` copies of a value | [language spec §19](language.md) — `repeat(n, value)` |
@@ -6763,7 +6766,159 @@ initial state, a composite state without one, and two initial siblings.
 Not modelled: parallel regions and history states (SCXML's `<parallel>` and
 `<history>`). A machine is in exactly one leaf state at a time.
 
-## 37. Design notes
+## 37. `FST`
+
+A **compiled read-only dictionary** — a set of keys, or a map from keys to
+values, built once into a compact byte string and then queried (engine: the
+vendored [cpp-fstlib](https://github.com/yhirose/cpp-fstlib), a finite state
+transducer). The structure shares both prefixes and suffixes between keys, so
+a large word list compresses well and stays queryable in place; the price is
+that it cannot be modified after it is built.
+
+Reach for it when you have many keys and want more than membership:
+autocomplete (`predictive_search`), longest-match tokenizing
+(`longest_common_prefix_search`), or spelling correction
+(`edit_distance_search`, `suggest`). For plain membership of a set that
+changes at runtime, use a language `Set` or `Object` instead.
+
+Building and querying are separate steps, because the point of the structure
+is to build once and query many times — often in another run, or another
+process:
+
+```culebra
+let words = ["hello", "hell", "help", "world"]
+let bytes = FST.compile_set(words)     # a String, safe to write to a file
+let dict = FST.Set.new(bytes)          # open it for querying
+inspect(dict.contains("hell"))         # => true
+inspect(dict.predictive_search("hel"))  # => ['hell', 'hello', 'help']
+```
+
+The byte code is an ordinary `String` (binary-safe, like `Compress` output),
+so it needs no special file API:
+
+```culebra
+# doctest: skip
+FS.write("words.fst", FST.compile_set(words))
+let dict = FST.Set.new(FS.read("words.fst"))
+```
+
+### Building
+
+Every builder returns the byte code as a `String`. `sorted: true` promises the
+input is already in sorted order and skips the internal sort — cheaper on a
+large pre-sorted list, and an `FSTError` if the promise does not hold.
+
+| Builder | Result |
+| --- | --- |
+| `FST.compile_set(keys: [String], sorted: Bool = false)` | keys only → open with `FST.Set` |
+| `FST.compile_map(entries: Object, sorted: Bool = false)` | `{key: String}` → open with `FST.Map` |
+| `FST.compile_index_map(entries: Object, sorted: Bool = false)` | `{key: Long}` → open with `FST.IndexMap` |
+| `FST.compile_auto_index(keys: [String], sorted: Bool = false)` | keys only, each valued by its rank in sorted order → open with `FST.IndexMap` |
+
+`compile_index_map` values are whole numbers in `0..4294967295`; anything
+outside that raises `ValueError` at the call. An empty key, a duplicate key,
+or input that breaks a `sorted: true` promise raises `FSTError` naming the
+offending index.
+
+`compile_auto_index` is the compact way to map a word list onto positions:
+the value of each key is its 0-based rank once the keys are sorted, so it
+numbers the dictionary itself rather than any array you keep alongside it.
+
+```culebra
+let ranked = FST.IndexMap.new(FST.compile_auto_index(["cherry", "apple", "fig"]))
+inspect(ranked.get("apple"))   # => 0
+inspect(ranked.get("cherry"))  # => 1
+inspect(ranked.get("fig"))     # => 2
+```
+
+### Querying
+
+Three classes, one per kind of compiled dictionary. Each takes the byte code
+and raises `FSTError` if it is corrupt — or if it was built for a different
+one of the three, so opening a `Set`'s bytes as a `Map` is caught rather than
+silently answering nonsense.
+
+| Constructor | Result |
+| --- | --- |
+| `FST.Set.new(bytes)` | `Set` — keys only |
+| `FST.Map.new(bytes)` | `Map` — each key carries a `String` |
+| `FST.IndexMap.new(bytes)` | `IndexMap` — each key carries a `Long` |
+
+The three share a method surface; only what a result carries differs. `Set`
+answers with bare keys and lengths, while `Map` / `IndexMap` add the stored
+`value` to each:
+
+| Method | `Set` | `Map` / `IndexMap` |
+| --- | --- | --- |
+| `contains(key)` | `Bool` | — |
+| `get(key)` | — | the value, or `nil` if the key is absent |
+| `common_prefix_search(text)` | `[Long]` — the length of every key that prefixes `text` | `[{length, value}]` |
+| `longest_common_prefix_search(text)` | `Long` or `nil` | `{length, value}` or `nil` |
+| `predictive_search(prefix)` | `[String]` — every key starting with `prefix` | `[{key, value}]` |
+| `edit_distance_search(word, max_edits, insert_cost = 1, delete_cost = 1, replace_cost = 1)` | `[String]` | `[{key, value}]` |
+| `suggest(word)` | `[{ratio, key}]` | `[{ratio, key, value}]` |
+
+Lengths are **byte** counts, like `Regex`'s offsets. A miss reads as `nil`
+(`get`, `longest_common_prefix_search`) or an empty array, so results compose
+with `??` and `?.`.
+
+`common_prefix_search` walks the keys that are prefixes of the subject —
+the tokenizer's question, "what does the dictionary match here" — while
+`predictive_search` walks the keys the subject is a prefix *of*, which is the
+autocomplete question.
+
+```culebra
+let d = FST.Set.new(FST.compile_set(["hell", "hello", "help", "world"]))
+inspect(d.common_prefix_search("helpless"))         # => [4]
+inspect(d.longest_common_prefix_search("helpless"))  # => 4
+inspect(d.longest_common_prefix_search("zebra"))     # => nil
+inspect(d.predictive_search("hel"))  # => ['hell', 'hello', 'help']
+```
+
+A `Map` answers the same shapes with the stored value attached:
+
+```culebra
+let m = FST.Map.new(FST.compile_map({hello: "こんにちは", world: "世界"}))
+inspect(m.get("hello"))    # => 'こんにちは'
+inspect(m.get("missing"))  # => nil
+inspect(m.predictive_search("w"))  # => [{key: 'world', value: '世界'}]
+inspect(m.longest_common_prefix_search("worldly"))  # => {length: 5, value: '世界'}
+```
+
+### Fuzzy search
+
+`edit_distance_search` returns every key reachable within `max_edits`, and
+the three costs price the edit kinds separately. They are named **from the
+search word's side**: a `delete` drops a byte the key has and the word lacks,
+an `insert` adds a byte the word has and the key lacks, and a `replace`
+changes one. Raising a cost pushes that kind of neighbour out of a given
+budget:
+
+```culebra
+let d = FST.Set.new(FST.compile_set(["hell", "hello", "help"]))
+inspect(d.edit_distance_search("helo", 1))  # => ['hell', 'hello', 'help']
+# Reaching "hello" from "helo" means dropping the key's second "l":
+inspect(d.edit_distance_search("helo", 1, 1, 2))  # => ['hell', 'help']
+# Only the same-length keys pay a replace:
+inspect(d.edit_distance_search("helo", 1, 1, 1, 2))  # => ['hello']
+```
+
+`suggest` is the spellchecker's form: it ranks candidates by similarity and
+returns them best first, so a caller can take the top few rather than pick a
+distance up front. The `ratio` is the engine's similarity score in `0..1`.
+
+```culebra
+let d = FST.Set.new(FST.compile_set(["their", "there", "third", "tier"]))
+inspect(d.suggest("thier")[0].key)  # => 'their'
+```
+
+Keys are compared as **bytes**, so matching is exact about case and about
+Unicode normalization, and an edit distance counts bytes rather than
+characters — a one-character change to a multi-byte character costs more than
+one edit. Normalize (`.lower()`, and NFC via `String`) before building and
+before querying when that matters.
+
+## 38. Design notes
 
 ### Namespace-first, with three global shortcuts
 
@@ -6819,15 +6974,15 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 38. Not included (yet)
+## 39. Not included (yet)
 
 ### Heavier data structures
 
 `Set` and `Tuple` are language built-ins (see
 [`docs/language.md`](language.md)); `Deque` (§32) and `PriorityQueue`
-(§33) cover the queue/heap shapes. No sorted map/tree; reach for
-`Object` plus `.sort()`/`.sorted()` (language spec §18) when order
-matters.
+(§33) cover the queue/heap shapes, and `FST` (§37) the compiled
+dictionary. No sorted map/tree; reach for `Object` plus
+`.sort()`/`.sorted()` (language spec §18) when order matters.
 
 ### OS extras
 

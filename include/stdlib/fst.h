@@ -21,6 +21,7 @@
 // nothing but the byte code String — copyable, sendable across isolates, and
 // with no drop contract or handle registry to leak.
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <sstream>
@@ -109,15 +110,23 @@ inline std::string compile_set(const std::vector<std::string>& keys,
   return os.str();
 }
 
-// Keys only, each key's value its 0-based position in `keys`: loads as
-// `FST.IndexMap`. cpp-fstlib feeds the *input* index, not the sorted rank
-// (measured), so the value indexes the caller's own array whether or not it
-// was sorted. This is cpp-fstlib's own "auto index" mode, which is why
+// Keys only, each key's value its 0-based rank in sorted order: loads as
+// `FST.IndexMap`. This is cpp-fstlib's own "auto index" mode, which is why
 // index_t is uint32_t.
-inline std::string compile_auto_index(const std::vector<std::string>& keys,
+//
+// The sort is ours even when `sorted` is false, rather than the library's.
+// cpp-fstlib's key-only builder feeds each key its *input* position while
+// asking the writer for no state outputs, and a prefix key's value can only
+// ride the arcs when the values ascend with the keys — so an unsorted input
+// whose longer key comes first reads back wrong (["hello", "hell"] gives both
+// 0). Sorting first makes the value the sorted rank the library documents and
+// keeps that case out of reach.
+inline std::string compile_auto_index(std::vector<std::string> keys,
                                       bool sorted) {
+  if (!sorted) std::sort(keys.begin(), keys.end());
   std::ostringstream os;
-  _check_compile(::fst::compile(keys, os, /*need_output=*/true, sorted));
+  _check_compile(
+      ::fst::compile(keys, os, /*need_output=*/true, /*sorted=*/true));
   return os.str();
 }
 

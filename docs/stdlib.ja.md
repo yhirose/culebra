@@ -74,8 +74,9 @@
 34. [`Peg`](#34-peg) — PEGパーサジェネレータ。文法を書くと構文木が返る
 35. [`CodeGen`](#35-codegen) — 小さな言語のIRを手で組み立てて実行する
 36. [`StateMachine`](#36-statemachine) — 入れ子にできる状態機械。テキストでも書ける
-37. [設計上の注記](#37-設計上の注記)
-38. [未収録（将来検討）](#38-未収録将来検討)
+37. [`FST`](#37-fst) — 書き換えない辞書を圧縮して持つ。前方一致・補完・あいまい検索
+38. [設計上の注記](#38-設計上の注記)
+39. [未収録（将来検討）](#39-未収録将来検討)
 
 **目的別索引**
 
@@ -123,6 +124,8 @@
 | 優先度スケジューリング、イベントシミュレーション、最短経路探索 | [§33 `PriorityQueue`](#33-priorityqueue) — `PriorityQueue.new()` — `push`/`pop` |
 | 自前の言語・設定フォーマットをパースする | [§34 Peg](#34-peg) — PEG文法を書いて`Peg.parse(grammar, text)`。返る木は`match`で分解できる |
 | 手順・通信手順・画面のモードを状態とイベントで表す | [§36 `StateMachine`](#36-statemachine) — `StateMachine.parse(text)`、または記述用の`Object` |
+| 変わらない大きな語彙から前方一致で補完する | [§37 FST](#37-fst) — `FST.Set.new(FST.compile_set(words))` → `.predictive_search("hel")` |
+| 綴りの直し・あいまい検索 | [§37 FST](#37-fst) — `.edit_distance_search(word, 1)`／`.suggest(word)` |
 | 行列・テンソル演算（BLAS対応） | [§8 Tensor](#8-tensor) |
 | String / Array / Objectのメソッド | [言語仕様 §18](language.ja.md) |
 | 整数列（`range`, `iota`） | [言語仕様 §19](language.ja.md) |
@@ -6570,7 +6573,119 @@ guardとactionは`fn (ctx, ev)`。`ctx`は渡した`context:`、`ev`は
 扱わないもの: 並行領域と履歴状態（SCXMLの`<parallel>`と`<history>`）。
 機械が同時に居る葉の状態は常に1つ。
 
-## 37. 設計上の注記
+## 37. `FST`
+
+**書き換えない辞書を圧縮して持つ**ための名前空間。鍵の集合、または鍵から値への対応を、一度だけ小さなバイト列に組み上げ、あとは引くだけにする（エンジンは同梱の[cpp-fstlib](https://github.com/yhirose/cpp-fstlib)。有限状態トランスデューサ）。鍵どうしで前も後ろも共有するので大きな語彙がよく縮み、しかも展開せずそのまま引ける。引き換えに、組み上げたあとは足すことも消すこともできない。
+
+鍵が多く、かつ「あるかどうか」以上のことを訊きたいときに向く。入力補完（`predictive_search`）、最長一致での切り出し（`longest_common_prefix_search`）、綴りの直し（`edit_distance_search`、`suggest`）。実行中に中身が変わる集合の在不在を見るだけなら、言語側の`Set`や`Object`のほうがよい。
+
+組み上げと問い合わせが別の手順なのは、この構造が「一度組んで何度も引く」ためのものだから。多くの場合、引くのは別の実行、別のプロセスになる。
+
+```culebra
+let words = ["hello", "hell", "help", "world"]
+let bytes = FST.compile_set(words)     # String。そのままファイルに書ける
+let dict = FST.Set.new(bytes)          # 引くために開く
+inspect(dict.contains("hell"))         # => true
+inspect(dict.predictive_search("hel"))  # => ['hell', 'hello', 'help']
+```
+
+バイト列は普通の`String`で（`Compress`の出力と同じくバイト列をそのまま持てる）、専用のファイル API は要らない。
+
+```culebra
+# doctest: skip
+FS.write("words.fst", FST.compile_set(words))
+let dict = FST.Set.new(FS.read("words.fst"))
+```
+
+### 組み上げる
+
+どれもバイト列を`String`で返す。`sorted: true`は「渡す鍵はもう並べ替えてある」という申告で、内部の並べ替えを省く。大きな整列済みの一覧では速くなる。申告が嘘だった場合は`FSTError`になる。
+
+| 組み上げ | 結果 |
+| --- | --- |
+| `FST.compile_set(keys: [String], sorted: Bool = false)` | 鍵だけ → `FST.Set`で開く |
+| `FST.compile_map(entries: Object, sorted: Bool = false)` | `{鍵: String}` → `FST.Map`で開く |
+| `FST.compile_index_map(entries: Object, sorted: Bool = false)` | `{鍵: Long}` → `FST.IndexMap`で開く |
+| `FST.compile_auto_index(keys: [String], sorted: Bool = false)` | 鍵だけ。値は並べ替えた順の位置 → `FST.IndexMap`で開く |
+
+`compile_index_map`の値は`0..4294967295`の整数。外れた値はその場で`ValueError`になる。空の鍵、重なった鍵、`sorted: true`の申告に反する並びは、何番目かを添えて`FSTError`になる。
+
+`compile_auto_index`は語彙に番号を振る小さな形。各鍵の値は「鍵を並べ替えたときの0始まりの位置」なので、別に配列を持たなくても辞書自身が番号表になる。
+
+```culebra
+let ranked = FST.IndexMap.new(FST.compile_auto_index(["cherry", "apple", "fig"]))
+inspect(ranked.get("apple"))   # => 0
+inspect(ranked.get("cherry"))  # => 1
+inspect(ranked.get("fig"))     # => 2
+```
+
+### 引く
+
+組み上げ方に応じて3つのクラスがある。どれもバイト列を受け取り、壊れていれば`FSTError`にする。**3種のうち別の種類として組まれたバイト列も弾く**ので、`Set`のバイト列を`Map`として開いてしまい、意味のない答えが返る、ということは起きない。
+
+| 開き方 | 結果 |
+| --- | --- |
+| `FST.Set.new(bytes)` | `Set` — 鍵だけ |
+| `FST.Map.new(bytes)` | `Map` — 鍵ごとに`String`を持つ |
+| `FST.IndexMap.new(bytes)` | `IndexMap` — 鍵ごとに`Long`を持つ |
+
+メソッドの顔ぶれは3つで共通で、違うのは結果が値を連れてくるかどうかだけ。`Set`は鍵と長さだけを返し、`Map`／`IndexMap`はそれぞれに`value`が付く。
+
+| メソッド | `Set` | `Map`／`IndexMap` |
+| --- | --- | --- |
+| `contains(key)` | `Bool` | — |
+| `get(key)` | — | 値。鍵が無ければ`nil` |
+| `common_prefix_search(text)` | `[Long]` — `text`の先頭に一致した鍵それぞれの長さ | `[{length, value}]` |
+| `longest_common_prefix_search(text)` | `Long`または`nil` | `{length, value}`または`nil` |
+| `predictive_search(prefix)` | `[String]` — `prefix`で始まる鍵すべて | `[{key, value}]` |
+| `edit_distance_search(word, max_edits, insert_cost = 1, delete_cost = 1, replace_cost = 1)` | `[String]` | `[{key, value}]` |
+| `suggest(word)` | `[{ratio, key}]` | `[{ratio, key, value}]` |
+
+長さは`Regex`の位置と同じく**バイト**単位。見つからなければ`nil`（`get`、`longest_common_prefix_search`）か空の配列なので、`??`や`?.`とそのままつながる。
+
+`common_prefix_search`は「与えた文字列の先頭部分になっている鍵」をたどる。文章を辞書で切り出すときの「ここで何に一致するか」という問いがこれ。`predictive_search`は逆に「与えた文字列で始まる鍵」をたどる。こちらが入力補完の問い。
+
+```culebra
+let d = FST.Set.new(FST.compile_set(["hell", "hello", "help", "world"]))
+inspect(d.common_prefix_search("helpless"))         # => [4]
+inspect(d.longest_common_prefix_search("helpless"))  # => 4
+inspect(d.longest_common_prefix_search("zebra"))     # => nil
+inspect(d.predictive_search("hel"))  # => ['hell', 'hello', 'help']
+```
+
+`Map`は同じ形の答えに、しまってある値を添えて返す。
+
+```culebra
+let m = FST.Map.new(FST.compile_map({hello: "こんにちは", world: "世界"}))
+inspect(m.get("hello"))    # => 'こんにちは'
+inspect(m.get("missing"))  # => nil
+inspect(m.predictive_search("w"))  # => [{key: 'world', value: '世界'}]
+inspect(m.longest_common_prefix_search("worldly"))  # => {length: 5, value: '世界'}
+```
+
+### あいまいに引く
+
+`edit_distance_search`は`max_edits`の範囲で届く鍵をすべて返す。3つの代価は直し方ごとの重みで、名前は**探す語の側から**付いている。`delete`は鍵にあって探す語に無いバイトを落とすこと、`insert`は探す語にあって鍵に無いバイトを足すこと、`replace`は1バイトを別のバイトに変えること。代価を上げると、その直し方で届く鍵が同じ予算から外れる。
+
+```culebra
+let d = FST.Set.new(FST.compile_set(["hell", "hello", "help"]))
+inspect(d.edit_distance_search("helo", 1))  # => ['hell', 'hello', 'help']
+# "helo"から"hello"へは、鍵側の2つめの"l"を落として届く:
+inspect(d.edit_distance_search("helo", 1, 1, 2))  # => ['hell', 'help']
+# 置き換えの代価を払うのは同じ長さの鍵だけ:
+inspect(d.edit_distance_search("helo", 1, 1, 1, 2))  # => ['hello']
+```
+
+`suggest`は綴りを直すときの形。近さの順に並べて返すので、呼ぶ側は距離をあらかじめ決めずに上位いくつかを取れる。`ratio`はエンジンが出す`0..1`の近さ。
+
+```culebra
+let d = FST.Set.new(FST.compile_set(["their", "there", "third", "tier"]))
+inspect(d.suggest("thier")[0].key)  # => 'their'
+```
+
+鍵は**バイト列として**比べる。大文字小文字も Unicode の正規化形も区別するし、編集距離が数えるのは文字ではなくバイトなので、複数バイトの文字を1文字書き換えると2つ以上の直しとして数えられる。そこが問題になる場面では、組み上げる前と引く前に`.lower()`や NFC への正規化をかけておく。
+
+## 38. 設計上の注記
 
 ### 名前空間ファースト、グローバルは出力の3つだけ
 
@@ -6627,14 +6742,15 @@ run_with(IO, "via parameter")
 
 ---
 
-## 38. 未収録（将来検討）
+## 39. 未収録（将来検討）
 
 ### 重量級データ構造
 
 `Set`と`Tuple`は言語組込みです（[`docs/language.ja.md`](language.ja.md)
 参照）。`Deque`（§32）と`PriorityQueue`（§33）でキュー・ヒープの形は
-カバーしています。ソート済みmap/treeはありません。順序が必要なら
-`Object`に`.sort()`/`.sorted()`（言語仕様§18）を組み合わせてください。
+カバーし、書き換えない辞書は`FST`（§37）が受け持ちます。ソート済み
+map/treeはありません。順序が必要なら`Object`に`.sort()`/`.sorted()`
+（言語仕様§18）を組み合わせてください。
 
 ### OS 拡張
 
