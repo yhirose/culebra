@@ -252,6 +252,56 @@ println("2d frame drew: {Canvas.get_pixel(160, 120) != Canvas.get_pixel(315, 235
 println("clip cut: {Canvas.get_pixel(45, 45) != Canvas.get_pixel(60, 60)}")
 EOF
 
+# Transparency and draw order, judged by pixels: a red opaque plate behind two
+# half-transparent plates (blue, green) that overlap each other. Three frames:
+# the plates hidden, shown, and with the green one's order pulled ahead.
+cat > scene_alpha.cul <<'EOF'
+let view = Scene.View.new(200, 150, "scene alpha")
+view.background(20, 24, 30)
+view.sun(0.0, -1.0, -0.3, 1.0, 255, 255, 255)
+view.ambient(0.6, 255, 255, 255)
+let red = view.add_material().rgb(255, 0, 0).unlit()
+let blue = view.add_material().rgb(0, 0, 255).unlit().opacity(128)
+let green = view.add_material().rgb(0, 255, 0).unlit().opacity(128)
+# every other knob, on a plate off to the side, so each binding runs
+let odd = view.add_material().rgb(255, 255, 0).blend("add").depth_write(false).depth_test(true).double_sided()
+odd.cutout(0.5).emissive(255, 128, 0, 0.5).fog(false).casts_shadow(false).uv(2.0, 2.0, 0.25, 0.0).blend("nosuch")
+let back = view.add_box(6.0, 6.0, 0.2).material(red)
+let plate_b = view.add_box(2.0, 2.0, 0.2).move(0.0, 0.0, 2.0).material(blue)
+let plate_g = view.add_box(2.0, 2.0, 0.2).move(0.5, 0.0, 2.0).material(green)
+view.add_box(1.0, 1.0, 0.2).move(-4.5, 0.0, 2.0).material(odd).opacity(200)
+view.camera(0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 50.0)
+fn shot(path) {
+  view.render_3d()
+  view.screenshot(path)
+  view.present()
+}
+plate_b.hide()
+plate_g.hide()
+shot("alpha_opaque.png")
+plate_b.show()
+plate_g.show()
+shot("alpha_blend.png")
+plate_g.order(-1)
+shot("alpha_order.png")
+view.drop()
+
+Canvas.init(200, 150)
+fn px(path, x, y) {
+  Canvas.clear(Canvas.rgba(0, 0, 0))
+  Canvas.Sprite.from_png(FS.read(path)).draw(0, 0)
+  Canvas.get_pixel(x, y)
+}
+fn red_of(v) { v & 255 }
+fn blue_of(v) { (v >> 16) & 255 }
+let o = px("alpha_opaque.png", 100, 75)
+let bl = px("alpha_blend.png", 100, 75)
+println("blended: {red_of(bl) < red_of(o) && blue_of(bl) > blue_of(o)}")
+println("depth kept: {px("alpha_opaque.png", 140, 75) == px("alpha_blend.png", 140, 75)}")
+println("order matters: {px("alpha_blend.png", 105, 75) != px("alpha_order.png", 105, 75)}")
+println("background untouched: {px("alpha_opaque.png", 5, 5) == px("alpha_order.png", 5, 5)}")
+EOF
+
 # Scene.Image needs no window, so this program opens none: the one part of Scene
 # that runs with no display at all, and the one whose answers are exact pixels.
 cat > scene_image.cul <<'EOF'
@@ -337,6 +387,29 @@ if grep -q "INFO:\|WARNING:" "img--vm.txt"; then
 fi
 [ $fail -eq 0 ] || exit 1
 echo "OK: Scene.Image agrees on both engines, with no display ($(wc -l < img--vm.txt | tr -d ' ') lines)"
+
+for engine in "--vm" "--jit"; do
+  if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" scene_alpha.cul > "alpha${engine}.txt" 2>&1; then
+    echo "${prefix}scene_api_test: transparency program $engine exited non-zero:" >&2
+    cat "alpha${engine}.txt" >&2
+    fail=1
+  fi
+done
+[ $fail -eq 0 ] || exit 1
+if ! diff "alpha--vm.txt" "alpha--jit.txt" > diff.txt; then
+  echo "${prefix}scene_api_test: the VM and the JIT disagree on transparency:" >&2
+  cat diff.txt >&2
+  exit 1
+fi
+for want in "blended: true" "depth kept: true" "order matters: true" "background untouched: true"; do
+  if ! grep -qxF "$want" "alpha--vm.txt"; then
+    echo "${prefix}scene_api_test: transparency line missing: $want" >&2
+    cat "alpha--vm.txt" >&2
+    fail=1
+  fi
+done
+[ $fail -eq 0 ] || exit 1
+echo "OK: transparency blends, leaves the depth channel alone, and honours order"
 
 for engine in "--vm" "--jit"; do
   if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" scene_api.cul "$TTF" > "out${engine}.txt" 2>&1; then

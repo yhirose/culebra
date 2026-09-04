@@ -5527,6 +5527,8 @@ persistent geometry once and move it each frame.
 | `node.scale(s)` / `scale3(x, y, z)` | uniform / per-axis scale |
 | `node.tint(r, g, b)` | per-node color |
 | `node.material(m)` | assign a `Material` (below); `nil` goes back to the tint alone |
+| `node.order(n)` | draw order: lower draws first (default 0; a HUD plate in the world sits at a high one) |
+| `node.opacity(a)` | 0–255, multiplied into the material's |
 | `node.hide()` / `show()` / `name(n)` | visibility / label |
 | `node.x()` / `y()` / `z() -> Float` | read back position |
 
@@ -5548,12 +5550,35 @@ setters, so one reads as a single expression:
 | `mat.rgb(r, g, b) -> Material` | base colour |
 | `mat.pbr(metallic, roughness) -> Material` | PBR response, both 0–1 (the defaults are 0 and 0.85) |
 | `mat.texture(tex) -> Material` | a `Texture` to sample, or `nil` for none |
+| `mat.uv(us, vs, uo = 0.0, vo = 0.0) -> Material` | scale and offset the texture coordinates (tiling a road; `-1.0` in `us` mirrors) |
+| `mat.opacity(a) -> Material` | 0–255; below 255 the surface is transparent |
+| `mat.cutout(threshold) -> Material` | discard where coverage (opacity × texture alpha) is below it (a leaf card); 0 turns it off |
+| `mat.blend(name) -> Material` | how a transparent surface meets what is behind it: `"over"` (default), `"add"` (lamps, glows), `"multiply"`, `"screen"` |
+| `mat.emissive(r, g, b, k = 1.0) -> Material` | light the surface gives off, added after lighting (it feeds the bloom) |
+| `mat.unlit(on = true) -> Material` | the base colour as is — no light, shadow or reflection (a mirror image, a decal) |
+| `mat.double_sided(on = true) -> Material` | draw both faces (a flag, a fence) |
+| `mat.depth_write(on)` / `mat.depth_test(on) -> Material` | the depth buffer: whether the surface writes it / is hidden by it (both default on) |
+| `mat.casts_shadow(on) -> Material` | in the shadow passes (default on; off for a blob shadow or a mirror plate) |
+| `mat.fog(on) -> Material` | whether distance fog reaches it (default on; off for a sky dome) |
 
 ```culebra
 # doctest: skip
 let gold = view.add_material().rgb(230, 180, 60).pbr(0.9, 0.3)
 view.add_box(2.0, 2.0, 2.0).material(gold)
+let glass = view.add_material().rgb(200, 220, 255).opacity(90).depth_write(false).casts_shadow(false)
+let shadow = view.add_material().rgb(0, 0, 0).opacity(110).unlit().depth_write(false).casts_shadow(false)
 ```
+
+A surface is transparent when its opacity (node × material) is below 255 or
+its blend is not `"over"`. The lit pass draws every opaque surface first,
+front to back, then the transparent ones back to front; `node.order()` sorts
+ahead of both, so a plate that must sit on top of everything (a rear-view
+mirror's frame and image, its LED strip) takes a high order and draws last
+whatever its distance. Transparent surfaces blend their colour but leave the
+frame's depth as the opaque pass wrote it, so ambient occlusion and depth of
+field see through glass to the solid geometry behind — the same reading a
+blob shadow or a windscreen wants. A transparent surface casts no shadow
+unless it is a cutout, whose shape is real.
 
 A texture is a handle too. The two handle types are the contract: a texture
 where a material is expected (or the reverse) is a `TypeError` at the call, and

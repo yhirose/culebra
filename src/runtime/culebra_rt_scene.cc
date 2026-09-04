@@ -30,6 +30,7 @@
 
 #include <interop/wrap.h>
 
+#include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -108,6 +109,7 @@ in vec4 vertexColor;
 uniform mat4 mvp;
 uniform mat4 matModel;
 uniform mat4 matNormal;
+uniform vec4 uvXform;     // per-material UV scale.xy + offset.zw (tiling, flips)
 out vec3 fragNormal;
 out vec3 fragWorld;
 out vec2 fragUV;
@@ -115,7 +117,7 @@ out vec4 fragColor;
 void main() {
   fragNormal = normalize((matNormal * vec4(vertexNormal, 0.0)).xyz);
   fragWorld = (matModel * vec4(vertexPosition, 1.0)).xyz;
-  fragUV = vertexTexCoord;
+  fragUV = vertexTexCoord * uvXform.xy + uvXform.zw;
   fragColor = vertexColor;
   gl_Position = mvp * vec4(vertexPosition, 1.0);
 }
@@ -146,6 +148,16 @@ uniform float metallic;   // 0 dielectric .. 1 metal
 uniform float roughness;  // 0 glossy .. 1 matte
 uniform vec3 skyTop;      // zenith colour (also drives reflections)
 uniform vec3 skyBot;      // horizon colour
+// Per-material (see Material): coverage, and what a surface opts out of.
+uniform float opacity;    // 0..1, multiplies the texture's alpha
+uniform float cutoff;     // > 0: discard where coverage is below it (leaf cards)
+uniform vec3 emissive;    // added after lighting, before fog
+uniform float unlit;      // 1: the base colour as is, no light or reflection
+uniform float fogOn;      // 0: fog does not reach this surface
+// Which pass: 0 = opaque, alpha carries depth for the post stack; 1 = the
+// transparent pass, alpha is coverage and the blend leaves the destination's
+// alpha (the depth) alone.
+uniform float alphaMode;
 out vec4 finalColor;
 
 // Analytic environment for image-based reflections: the same gradient sky we
@@ -179,6 +191,8 @@ void main() {
   // texture0 defaults to a 1x1 white texture, so untextured shapes are
   // unaffected (white * colour). A material can swap in a real texture.
   vec4 tex = texture(texture0, fragUV);
+  float cover = opacity * tex.a;
+  if (cutoff > 0.0 && cover < cutoff) discard;
   vec3 N = normalize(fragNormal);
   vec3 L = -normalize(lightDir);
   float d = max(dot(N, L), 0.0);
@@ -222,15 +236,18 @@ void main() {
   float ct = max(dot(N, V), 0.0);
   vec3 F = F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(1.0 - ct, 5.0);
   col += env * F * mix(1.0, 0.35, roughness);
+  col = mix(col, base, unlit) + emissive;
 
   // Distance fog toward fogColor (off when fogStart is set very large).
   float dist = length(fragWorld - viewPos);
   float fogF = clamp((dist - fogStart) / max(fogEnd - fogStart, 1.0), 0.0, 1.0);
-  col = mix(col, fogColor, fogF);
+  col = mix(col, fogColor, fogF * fogOn);
 
-  // Alpha carries linear camera depth (0=near .. 1=far) for the post pass's
-  // SSAO + depth-of-field — packing it here avoids a second sampler on macOS.
-  finalColor = vec4(col, clamp(dist / 3000.0, 0.0, 1.0));
+  // Opaque pass: alpha carries linear camera depth (0=near .. 1=far) for the
+  // post pass's SSAO + depth-of-field — packing it here avoids a second
+  // sampler on macOS. Transparent pass: alpha is the coverage the blend uses.
+  finalColor = alphaMode < 0.5 ? vec4(col, clamp(dist / 3000.0, 0.0, 1.0))
+                               : vec4(col, cover);
 }
 )";
 
@@ -387,8 +404,17 @@ class Texture : public std::enable_shared_from_this<Texture> {
   }
 };
 
+// How a transparent surface's colour meets what is already there. Each is a
+// pair of RGB blend factors; the alpha factors are always (ZERO, ONE) so the
+// destination's alpha — the depth the post stack reads — is left as the
+// opaque pass wrote it. That is also the right answer: glass, a mirror plate
+// or a blob shadow contributes no depth, so SSAO and DoF key off the solid
+// geometry behind it.
+enum class Blend { Over, Add, Multiply, Screen };
+
 // A reusable material: tint + optional texture + PBR-ish response (metallic
-// 0..1, roughness 0..1). Defaults are a matte dielectric. The setters are
+// 0..1, roughness 0..1), plus what the surface opts out of. Defaults are a
+// matte, opaque dielectric that casts a shadow and takes fog. The setters are
 // fluent, so a material is one expression: view.add_material().rgb(…).pbr(…).
 // Arguments are const: a material only reads the texture it is given, so the
 // call must not stale the caller's other borrows of that texture.
@@ -398,10 +424,42 @@ class Material : public std::enable_shared_from_this<Material> {
   std::shared_ptr<const Texture> tex;
   float metallic = 0.0f;
   float roughness = 0.85f;
+  int64_t opacity_ = 255;
+  float cutoff = 0.0f;
+  Vector3 emissive_{0, 0, 0};
+  bool unlit_ = false, double_sided_ = false, depth_write_ = true, depth_test_ = true;
+  bool casts_shadow_ = true, fog_ = true;
+  Blend blend_ = Blend::Over;
+  Vector4 uv_{1, 1, 0, 0};   // scale.xy, offset.zw
 
   Material& rgb(int64_t r, int64_t g, int64_t b) { color = col(r, g, b); return *this; }
   Material& pbr(double m, double r) { metallic = (float)m; roughness = (float)r; return *this; }
   Material& texture(const Texture* t) { tex = t ? t->shared_from_this() : nullptr; return *this; }
+  Material& opacity(int64_t a) { opacity_ = chan(a); return *this; }
+  Material& cutout(double t) { cutoff = (float)t; return *this; }
+  Material& emissive(int64_t r, int64_t g, int64_t b, double k) { emissive_ = rgb01(r, g, b, k); return *this; }
+  Material& unlit(bool on) { unlit_ = on; return *this; }
+  Material& double_sided(bool on) { double_sided_ = on; return *this; }
+  Material& depth_write(bool on) { depth_write_ = on; return *this; }
+  Material& depth_test(bool on) { depth_test_ = on; return *this; }
+  Material& casts_shadow(bool on) { casts_shadow_ = on; return *this; }
+  Material& fog(bool on) { fog_ = on; return *this; }
+  Material& uv(double us, double vs, double uo, double vo) {
+    uv_ = Vector4{(float)us, (float)vs, (float)uo, (float)vo}; return *this;
+  }
+  Material& blend(std::string name) {
+    if (name == "over") blend_ = Blend::Over;
+    else if (name == "add") blend_ = Blend::Add;
+    else if (name == "multiply") blend_ = Blend::Multiply;
+    else if (name == "screen") blend_ = Blend::Screen;
+    else TraceLog(LOG_ERROR, "Scene: blend('%s') names no mode (over / add / multiply / screen) — unchanged.", name.c_str());
+    return *this;
+  }
+  // A blend other than plain "over" is transparent even at full opacity: it
+  // reads what is behind it.
+  bool transparent(int64_t node_opacity) const {
+    return opacity_ * node_opacity < 255 * 255 || blend_ != Blend::Over;
+  }
 };
 
 // A TTF/OTF rasterized at one pixel size into a glyph atlas (raylib's rtext,
@@ -586,21 +644,33 @@ class Image {
   }
 };
 
-// Everything Node::render needs from the View that doesn't vary within a pass:
-// raylib's shared material, the cached primitive meshes and the lit shader's
-// per-node PBR uniform locations. `lit` is the one per-pass bit — the depth
-// pass's shader reads only vertex positions, so resolving a node's
-// colour/texture there is wasted work.
+// What the depth pass needs from the View: raylib's depth material and the
+// cached primitive meshes. The lit pass does not draw through this — it
+// collects DrawItems and emits them sorted (View::emit).
 struct RenderCtx {
   ::Material& mat;   // raylib's, not gfx::Material
   const Mesh& cube;
   const Mesh& sphere;
   const Mesh& cyl;
   const Mesh& plane;
-  Texture2D white;
-  int loc_metallic;
-  int loc_rough;
-  bool lit;
+};
+
+class Node;
+
+// One draw of the lit pass, gathered from the scene graph and sorted before
+// anything is emitted: by order, opaque before transparent, then front-to-back
+// (early depth rejection) for opaque and back-to-front (correct blending) for
+// transparent. A scene that sets no order and no opacity draws exactly as
+// insertion order would — stable_sort keeps that as the tiebreak.
+struct DrawItem {
+  const Node* node;
+  Matrix world;     // children inherit this
+  Matrix draw;      // own mesh, shape dimensions folded in
+  const Material* mat;   // may be null: the inline tint alone
+  int64_t order;
+  float depth;      // distance to the eye
+  bool transparent;
+  unsigned char opacity;   // node x material, 0..255
 };
 
 class Node {
@@ -613,6 +683,8 @@ class Node {
   double scx = 1, scy = 1, scz = 1;
   Color color = WHITE;
   std::shared_ptr<const Material> mat;   // null = the inline tint alone
+  int64_t order = 0;          // draw order: lower first (SceneKit's renderingOrder)
+  int64_t opacity_ = 255;     // multiplies the material's
   bool visible = true;
   std::string name;
   std::vector<std::shared_ptr<Node>> children;
@@ -651,6 +723,8 @@ class Node {
   Node& scale3(double x, double y, double z) { scx = x; scy = y; scz = z; local_dirty_ = true; return *this; }
   Node& tint(int64_t r, int64_t g, int64_t b) { color = col(r, g, b); return *this; }
   Node& material(const Material* m) { mat = m ? m->shared_from_this() : nullptr; return *this; }
+  Node& set_order(int64_t n) { order = n; return *this; }
+  Node& opacity(int64_t a) { opacity_ = chan(a); return *this; }
   Node& set_name(std::string n) { name = std::move(n); return *this; }
   Node& hide() { visible = false; return *this; }
   Node& show() { visible = true; return *this; }
@@ -774,40 +848,53 @@ class Node {
     }
   }
 
-  // Draw with the shared lit material (colour + texture set per node from the
-  // material registry) and the cached primitive meshes the View passes in.
+  // The mesh this node draws with, or null for a group / a mesh that has no
+  // GL side (never built, or built under a View that is gone).
+  const Mesh* mesh_for(const RenderCtx& ctx) const {
+    switch (shape) {
+      case Shape::Box: return &ctx.cube;
+      case Shape::Sphere: return &ctx.sphere;
+      case Shape::Cylinder: return &ctx.cyl;
+      case Shape::Plane: return &ctx.plane;
+      case Shape::Mesh: return mesh_live() ? &mesh_ : nullptr;
+      case Shape::Group: return nullptr;
+    }
+    return nullptr;
+  }
+
+  // The depth pass: draw the shadow casters, recursively, in the cheap order.
+  // A material can opt out (a blob shadow, a mirror plate); a transparent one
+  // casts nothing unless it is a cutout, whose shape is real.
   void render(const Matrix& parent, const RenderCtx& ctx) const {
     if (!visible) return;
     Matrix world = MatrixMultiply(local(), parent);          // children inherit this
-    Matrix draw = MatrixMultiply(shape_scale(), world);      // own mesh only
-    if (ctx.lit) {
-      Color c = color;
-      Texture2D tex = ctx.white;
-      float metallic = 0.0f, roughness = 0.85f;
-      if (mat) {   // a material wins over the inline tint
-        c = mat->color;
-        metallic = mat->metallic;
-        roughness = mat->roughness;
-        // A texture from a closed View samples as white, the way a stale
-        // mesh draws nothing (see Texture).
-        if (mat->tex && mat->tex->live()) tex = mat->tex->tex;
-      }
-      ctx.mat.maps[MATERIAL_MAP_DIFFUSE].color = c;
-      ctx.mat.maps[MATERIAL_MAP_DIFFUSE].texture = tex;
-      SetShaderValue(ctx.mat.shader, ctx.loc_metallic, &metallic, SHADER_UNIFORM_FLOAT);
-      SetShaderValue(ctx.mat.shader, ctx.loc_rough, &roughness, SHADER_UNIFORM_FLOAT);
-    }
-    switch (shape) {
-      case Shape::Box: DrawMesh(ctx.cube, ctx.mat, draw); break;
-      case Shape::Sphere: DrawMesh(ctx.sphere, ctx.mat, draw); break;
-      case Shape::Cylinder: DrawMesh(ctx.cyl, ctx.mat, draw); break;
-      case Shape::Plane: DrawMesh(ctx.plane, ctx.mat, draw); break;
-      case Shape::Mesh:
-        if (mesh_live()) DrawMesh(mesh_, ctx.mat, world);
-        break;
-      case Shape::Group: break;
-    }
+    bool casts = !mat || (mat->casts_shadow_ &&
+                          (!mat->transparent(opacity_) || mat->cutoff > 0.0f));
+    if (casts)
+      if (const Mesh* m = mesh_for(ctx))
+        DrawMesh(*m, ctx.mat, shape == Shape::Mesh ? world : MatrixMultiply(shape_scale(), world));
     for (const auto& ch : children) ch->render(world, ctx);
+  }
+
+  // The lit pass, first half: one DrawItem per drawable node, depth-first, so
+  // View::emit can sort them (see DrawItem).
+  void collect(const Matrix& parent, const RenderCtx& ctx, Vector3 eye,
+               std::vector<DrawItem>& out) const {
+    if (!visible) return;
+    Matrix world = MatrixMultiply(local(), parent);
+    if (mesh_for(ctx)) {
+      int64_t op = mat ? opacity_ * mat->opacity_ / 255 : opacity_;
+      out.push_back(DrawItem{
+          .node = this,
+          .world = world,
+          .draw = shape == Shape::Mesh ? world : MatrixMultiply(shape_scale(), world),
+          .mat = mat.get(),
+          .order = order,
+          .depth = Vector3Distance(Vector3{world.m12, world.m13, world.m14}, eye),
+          .transparent = mat ? mat->transparent(opacity_) : op < 255,
+          .opacity = (unsigned char)op});
+    }
+    for (const auto& ch : children) ch->collect(world, ctx, eye, out);
   }
 
  private:
@@ -876,6 +963,13 @@ class View {
     loc_rough_ = GetShaderLocation(lit_, "roughness");
     loc_skytop_ = GetShaderLocation(lit_, "skyTop");
     loc_skybot_ = GetShaderLocation(lit_, "skyBot");
+    loc_opacity_ = GetShaderLocation(lit_, "opacity");
+    loc_cutoff_ = GetShaderLocation(lit_, "cutoff");
+    loc_emissive_ = GetShaderLocation(lit_, "emissive");
+    loc_unlit_ = GetShaderLocation(lit_, "unlit");
+    loc_fogon_ = GetShaderLocation(lit_, "fogOn");
+    loc_alphamode_ = GetShaderLocation(lit_, "alphaMode");
+    loc_uv_ = GetShaderLocation(lit_, "uvXform");
     sky_top_ = Color{135, 165, 205, 255};   // default reflected sky until sky() is called
     sky_bot_ = Color{182, 202, 224, 255};
     set_sky_uniform();
@@ -1231,11 +1325,84 @@ class View {
     BeginMode3D(light_);
     Matrix lv = rlGetMatrixModelview();
     Matrix lp = rlGetMatrixProjection();
-    auto ctx = pass_ctx(depth_mat_, false);
+    auto ctx = pass_ctx(depth_mat_);
     for (const auto& n : roots_) n->render(id, ctx);
     EndMode3D();
     EndTextureMode();
     return MatrixMultiply(lv, lp);
+  }
+
+  // The lit pass, second half: sort the collected items (see DrawItem) and
+  // draw them, setting only the GL state and uniforms that change between one
+  // item and the next. DrawMesh is unbatched on GL 3.3, so a state change
+  // between two draws lands exactly between them.
+  void emit(std::vector<DrawItem>& items) {
+    std::stable_sort(items.begin(), items.end(), [](const DrawItem& a, const DrawItem& b) {
+      if (a.order != b.order) return a.order < b.order;
+      if (a.transparent != b.transparent) return !a.transparent;
+      return a.transparent ? a.depth > b.depth : a.depth < b.depth;
+    });
+    auto ctx = pass_ctx(mat_);
+    // The state the pass starts in (BeginMode3D's defaults + our blend-off).
+    bool blending = false, depth_write = true, depth_test = true, culling = true;
+    Blend blend = Blend::Over;
+    for (const DrawItem& it : items) {
+      const Material* m = it.mat;
+      bool want_dw = m ? m->depth_write_ : true;
+      bool want_dt = m ? m->depth_test_ : true;
+      bool want_cull = !(m && m->double_sided_);
+      Blend want_blend = m ? m->blend_ : Blend::Over;
+      if (it.transparent != blending) {
+        if (it.transparent) rlEnableColorBlend(); else rlDisableColorBlend();
+        blending = it.transparent;
+      }
+      if (blending && (want_blend != blend || !blend_set_)) set_blend(want_blend), blend = want_blend;
+      if (want_dw != depth_write) { if (want_dw) rlEnableDepthMask(); else rlDisableDepthMask(); depth_write = want_dw; }
+      if (want_dt != depth_test) { if (want_dt) rlEnableDepthTest(); else rlDisableDepthTest(); depth_test = want_dt; }
+      if (want_cull != culling) { if (want_cull) rlEnableBackfaceCulling(); else rlDisableBackfaceCulling(); culling = want_cull; }
+
+      // Per-item uniforms and the diffuse map. A texture from a closed View
+      // samples as white, the way a stale mesh draws nothing (see Texture).
+      Color c = m ? m->color : it.node->color;
+      Texture2D tex = white_;
+      if (m && m->tex && m->tex->live()) tex = m->tex->tex;
+      float metallic = m ? m->metallic : 0.0f, roughness = m ? m->roughness : 0.85f;
+      float opacity = it.opacity / 255.0f, cutoff = m ? m->cutoff : 0.0f;
+      float unlit = m && m->unlit_ ? 1.0f : 0.0f, fogon = m && !m->fog_ ? 0.0f : 1.0f;
+      float alpha_mode = it.transparent ? 1.0f : 0.0f;
+      Vector3 emissive = m ? m->emissive_ : Vector3{0, 0, 0};
+      Vector4 uv = m ? m->uv_ : Vector4{1, 1, 0, 0};
+      mat_.maps[MATERIAL_MAP_DIFFUSE].color = c;
+      mat_.maps[MATERIAL_MAP_DIFFUSE].texture = tex;
+      SetShaderValue(lit_, loc_metallic_, &metallic, SHADER_UNIFORM_FLOAT);
+      SetShaderValue(lit_, loc_rough_, &roughness, SHADER_UNIFORM_FLOAT);
+      SetShaderValue(lit_, loc_opacity_, &opacity, SHADER_UNIFORM_FLOAT);
+      SetShaderValue(lit_, loc_cutoff_, &cutoff, SHADER_UNIFORM_FLOAT);
+      SetShaderValue(lit_, loc_emissive_, &emissive, SHADER_UNIFORM_VEC3);
+      SetShaderValue(lit_, loc_unlit_, &unlit, SHADER_UNIFORM_FLOAT);
+      SetShaderValue(lit_, loc_fogon_, &fogon, SHADER_UNIFORM_FLOAT);
+      SetShaderValue(lit_, loc_alphamode_, &alpha_mode, SHADER_UNIFORM_FLOAT);
+      SetShaderValue(lit_, loc_uv_, &uv, SHADER_UNIFORM_VEC4);
+      DrawMesh(*it.node->mesh_for(ctx), mat_, it.draw);
+    }
+    // Leave the state as the pass found it, for the 2D overlay and the next pass.
+    if (!depth_write) rlEnableDepthMask();
+    if (!depth_test) rlEnableDepthTest();
+    if (!culling) rlEnableBackfaceCulling();
+    if (blending) { rlSetBlendMode(RL_BLEND_ALPHA); rlDisableColorBlend(); }
+  }
+  // RGB blend factors for a mode; alpha always (ZERO, ONE) — see Blend.
+  void set_blend(Blend b) {
+    int src = RL_SRC_ALPHA, dst = RL_ONE_MINUS_SRC_ALPHA;
+    switch (b) {
+      case Blend::Over: break;
+      case Blend::Add: src = RL_SRC_ALPHA; dst = RL_ONE; break;
+      case Blend::Multiply: src = RL_DST_COLOR; dst = RL_ONE_MINUS_SRC_ALPHA; break;
+      case Blend::Screen: src = RL_ONE; dst = RL_ONE_MINUS_SRC_COLOR; break;
+    }
+    rlSetBlendFactorsSeparate(src, dst, RL_ZERO, RL_ONE, RL_FUNC_ADD, RL_FUNC_ADD);
+    rlSetBlendMode(RL_BLEND_CUSTOM_SEPARATE);
+    blend_set_ = true;
   }
 
   void render_3d() {
@@ -1268,12 +1435,16 @@ class View {
       DrawRectangleGradientV(0, 0, scene_rt_.texture.width, scene_rt_.texture.height,
                              sky_top_, sky_bot_);
     // The lit shader writes linear depth into alpha; with alpha blending on,
-    // near (low-alpha) fragments would blend away. Opaque 3D needs no blend.
+    // near (low-alpha) fragments would blend away. Opaque items draw with no
+    // blend; the transparent ones re-enable it with factors that leave the
+    // destination's alpha alone (emit / set_blend).
     rlDisableColorBlend();
     BeginMode3D(cam_);
     // cascades are bound automatically via mat_.maps[SPECULAR/NORMAL]
-    auto ctx = pass_ctx(mat_, true);
-    for (const auto& n : roots_) n->render(id, ctx);
+    items_.clear();
+    auto ctx = pass_ctx(mat_);
+    for (const auto& n : roots_) n->collect(id, ctx, cam_.position, items_);
+    emit(items_);
     EndMode3D();
     rlEnableColorBlend();
     EndTextureMode();
@@ -1516,11 +1687,8 @@ class View {
     SetShaderValue(post_, loc_aascale_, &aa, SHADER_UNIFORM_FLOAT);
   }
   // Bind one pass's invariants. `m` is the pass's material (lit or depth).
-  RenderCtx pass_ctx(::Material& m, bool lit) {
-    return RenderCtx{.mat = m, .cube = cube_, .sphere = sphere_, .cyl = cyl_,
-                     .plane = plane_, .white = white_,
-                     .loc_metallic = loc_metallic_, .loc_rough = loc_rough_,
-                     .lit = lit};
+  RenderCtx pass_ctx(::Material& m) {
+    return RenderCtx{.mat = m, .cube = cube_, .sphere = sphere_, .cyl = cyl_, .plane = plane_};
   }
   void set_sun_uniform() {
     SetShaderValue(lit_, loc_dir_, &dir_, SHADER_UNIFORM_VEC3);
@@ -1563,6 +1731,10 @@ class View {
   int loc_viewpos_ = 0, loc_fogcol_ = 0, loc_fogstart_ = 0, loc_fogend_ = 0;
   int loc_skytop_ = 0, loc_skybot_ = 0;
   int loc_metallic_ = 0, loc_rough_ = 0;
+  int loc_opacity_ = 0, loc_cutoff_ = 0, loc_emissive_ = 0, loc_unlit_ = 0, loc_fogon_ = 0;
+  int loc_alphamode_ = 0, loc_uv_ = 0;
+  std::vector<DrawItem> items_;   // the lit pass's draw list, reused each frame
+  bool blend_set_ = false;        // set_blend has programmed the custom factors once
   Vector3 dir_ = Vector3{0.5f, -1.0f, -0.6f};
   Vector3 lcol_ = Vector3{1.0f, 0.98f, 0.94f};
   Vector3 amb_ = Vector3{0.35f, 0.38f, 0.42f};
@@ -1674,7 +1846,18 @@ const bool registered = [] {
   culebra::wrap<gfx::Material>("Scene", "Material")
       .borrowed_method<&gfx::Material::rgb>("rgb", {"r", "g", "b"})
       .borrowed_method<&gfx::Material::pbr>("pbr", {"metallic", "roughness"})
-      .borrowed_method<&gfx::Material::texture>("texture", {"tex"});
+      .borrowed_method<&gfx::Material::texture>("texture", {"tex"})
+      .borrowed_method<&gfx::Material::opacity>("opacity", {"a"})
+      .borrowed_method<&gfx::Material::cutout>("cutout", {"threshold"})
+      .borrowed_method<&gfx::Material::emissive>("emissive", {"r", "g", "b", {"k", 1.0}})
+      .borrowed_method<&gfx::Material::unlit>("unlit", {{"on", true}})
+      .borrowed_method<&gfx::Material::double_sided>("double_sided", {{"on", true}})
+      .borrowed_method<&gfx::Material::depth_write>("depth_write", {"on"})
+      .borrowed_method<&gfx::Material::depth_test>("depth_test", {"on"})
+      .borrowed_method<&gfx::Material::casts_shadow>("casts_shadow", {"on"})
+      .borrowed_method<&gfx::Material::fog>("fog", {"on"})
+      .borrowed_method<&gfx::Material::blend>("blend", {"name"})
+      .borrowed_method<&gfx::Material::uv>("uv", {"us", "vs", {"uo", 0.0}, {"vo", 0.0}});
 
   culebra::wrap<gfx::Node>("Scene", "Node")
       .borrowed_method<&gfx::Node::move>("move", {"x", "y", "z"})
@@ -1687,6 +1870,8 @@ const bool registered = [] {
       .borrowed_method<&gfx::Node::scale3>("scale3", {"x", "y", "z"})
       .borrowed_method<&gfx::Node::tint>("tint", {"r", "g", "b"})
       .borrowed_method<&gfx::Node::material>("material", {"m"})
+      .borrowed_method<&gfx::Node::set_order>("order", {"n"})
+      .borrowed_method<&gfx::Node::opacity>("opacity", {"a"})
       .borrowed_method<&gfx::Node::set_name>("name", {"n"})
       .borrowed_method<&gfx::Node::hide>("hide")
       .borrowed_method<&gfx::Node::show>("show")

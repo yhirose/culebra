@@ -5361,6 +5361,8 @@ GPUを必要とするため）。位置とサイズは`Float`
 | `node.scale(s)` / `scale3(x, y, z)` | 一様 / 軸別スケール |
 | `node.tint(r, g, b)` | ノード単位の色 |
 | `node.material(m)` | `Material`を割り当て（下記）。`nil`でtintだけに戻る |
+| `node.order(n)` | 描画順: 小さいほど先（既定0。ワールド内のHUD板は大きな値に） |
+| `node.opacity(a)` | 0–255。マテリアルの値に掛かる |
 | `node.hide()` / `show()` / `name(n)` | 可視性 / ラベル |
 | `node.x()` / `y()` / `z() -> Float` | 位置を読み戻す |
 
@@ -5381,12 +5383,33 @@ ny, nz)`（または`vertex_uv(…, u, v)`）が頂点、`m.tri(a, b, c)`が頂�
 | `mat.rgb(r, g, b) -> Material` | 基本色 |
 | `mat.pbr(metallic, roughness) -> Material` | PBR応答。どちらも0–1（既定は0と0.85） |
 | `mat.texture(tex) -> Material` | サンプルする`Texture`。`nil`で無し |
+| `mat.uv(us, vs, uo = 0.0, vo = 0.0) -> Material` | テクスチャ座標の拡縮とオフセット（路面のタイル。`us`に`-1.0`で左右反転） |
+| `mat.opacity(a) -> Material` | 0–255。255未満で透過面になる |
+| `mat.cutout(threshold) -> Material` | 被覆（opacity × テクスチャalpha）がこれ未満のピクセルを捨てる（葉のカード）。0でoff |
+| `mat.blend(name) -> Material` | 透過面が背後と混ざる方法: `"over"`（既定）、`"add"`（ランプ、光）、`"multiply"`、`"screen"` |
+| `mat.emissive(r, g, b, k = 1.0) -> Material` | 面が発する光。ライティングの後に加算される（bloomに乗る） |
+| `mat.unlit(on = true) -> Material` | 基本色をそのまま — 光も影も反射も無し（ミラー像、デカール） |
+| `mat.double_sided(on = true) -> Material` | 両面を描く（旗、フェンス） |
+| `mat.depth_write(on)` / `mat.depth_test(on) -> Material` | デプスバッファに書くか / それに隠されるか（既定は両方on） |
+| `mat.casts_shadow(on) -> Material` | 影パスに参加するか（既定on。ブロブシャドウやミラー板はoff） |
+| `mat.fog(on) -> Material` | 距離フォグが届くか（既定on。スカイドームはoff） |
 
 ```culebra
 # doctest: skip
 let gold = view.add_material().rgb(230, 180, 60).pbr(0.9, 0.3)
 view.add_box(2.0, 2.0, 2.0).material(gold)
+let glass = view.add_material().rgb(200, 220, 255).opacity(90).depth_write(false).casts_shadow(false)
+let shadow = view.add_material().rgb(0, 0, 0).opacity(110).unlit().depth_write(false).casts_shadow(false)
 ```
+
+面は、不透明度（node × material）が255未満か、blendが`"over"`以外なら透過面。
+litパスは不透明な面を手前から奥へ先に描き、次に透過面を奥から手前へ描く。
+`node.order()`はその両方より優先されるので、何より上に載る板（リアビューミラーの
+枠と像、そのLED帯）は大きなorderを持てば距離に関わらず最後に描かれる。透過面は
+色だけを混ぜ、フレームの深度は不透明パスが書いたまま残すので、アンビエント
+オクルージョンと被写界深度はガラスを透かして背後の実体を見る — ブロブシャドウや
+ウィンドスクリーンが望む読み方そのもの。透過面は影を落とさないが、cutoutは形が
+実体なので落とす。
 
 テクスチャもハンドル。2つのハンドル型が契約そのもの: マテリアルの位置に
 テクスチャ（やその逆）を渡せば呼び出し時点で`TypeError`、drop済みのハンドルは
