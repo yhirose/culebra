@@ -5546,8 +5546,11 @@ A custom mesh is built from vertices and triangles, then finalised:
 `m.vertex(x, y, z, nx, ny, nz)` (or `vertex_uv(…, u, v)`) adds a vertex,
 `m.tri(a, b, c)` a triangle by vertex index, and `m.build()` uploads it. (raylib
 uses a 16-bit index buffer, so a mesh caps at 65535 vertices; `build()` rejects
-more.) An uploaded mesh belongs to the view that uploaded it: a node kept past
-`view.drop()` stays usable as a transform, but draws nothing in a later view.
+more.) Texture coordinates put `(0, 0)` at an image's top-left, as in 2D; the
+primitives show an image upright, its top toward `+y` (a plane's toward `-z`,
+the far edge from a camera on `+z`). An uploaded mesh belongs to the view that
+uploaded it: a node kept past `view.drop()` stays usable as a transform, but
+draws nothing in a later view.
 
 ### Materials, lighting, textures
 

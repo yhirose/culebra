@@ -344,7 +344,8 @@ EOF
 # A second camera into a texture, and the one flip model behind render targets
 # and canvases: a beacon only camera B sees lands in the top half of the target
 # when drawn as a sprite (upright), a canvas painted red-over-blue reads red on
-# top as a sprite, and uv(-1, …) on a plate mirrors what the plain plate shows.
+# top as a sprite, uv(-1, …) on a plate mirrors what the plain plate shows, and
+# an image reads red-over-blue on a box, a sphere and a cylinder alike.
 cat > scene_mirror.cul <<'EOF'
 let view = Scene.View.new(320, 240, "scene mirror")
 view.background(20, 24, 30)
@@ -374,6 +375,15 @@ view.begin_2d()
 view.sprite(target, 0.0, 0.0, 64.0, 32.0)
 view.sprite(painted, 100.0, 0.0, 32.0, 32.0)
 view.screenshot("mirror_sprites.png")
+view.present()
+# the same red-over-blue as an image on each primitive, above the plates
+let split_img = Scene.Image.new(32, 32).rect(0, 0, 32, 16, 255, 0, 0).rect(0, 16, 32, 16, 0, 0, 255)
+let on_shape = view.add_material().texture(view.texture(split_img)).unlit()
+view.add_box(1.6, 1.6, 0.2).move(-3.0, 2.6, 0.0).material(on_shape)
+view.add_sphere(0.8).move(0.0, 2.6, 0.0).material(on_shape)
+view.add_cylinder(0.6, 1.6).move(3.0, 2.6, 0.0).material(on_shape)
+view.render_3d()
+view.screenshot("mirror_shapes.png")
 view.present()
 view.drop()
 
@@ -407,6 +417,9 @@ let b_left = Canvas.get_pixel(190, 120)
 let b_right = Canvas.get_pixel(260, 120)
 println("plain plate split: {is_red(a_left) != is_red(a_right)}")
 println("mirrored plate swaps: {is_red(a_left) == is_red(b_right) && is_red(a_right) == is_red(b_left)}")
+load("mirror_shapes.png")
+fn red_over_blue(x) { is_red(Canvas.get_pixel(x, 43)) && is_blue(Canvas.get_pixel(x, 63)) }
+println("image upright on a box: {red_over_blue(83)} sphere: {red_over_blue(160)} cylinder: {red_over_blue(237)}")
 EOF
 
 # Colour grading and the post knobs: the same red box through no LUT, an
@@ -528,6 +541,9 @@ let gh = Scene.Image.new(4, 4).gradient(255, 0, 0, 0, 0, 255, 90)
 println("gradient h: left-red {gh.get(0, 0) >> 24 == 255} right-blue {(gh.get(3, 0) >> 8) & 255 >= 250}")
 let n = Scene.Image.new(4, 4).fill(128, 128, 128).to_normal(1.0)
 println("flat normal {n.get(2, 2)}")
+# height rising down the image: the normal leans up (Y follows +V), X untouched
+let slope = Scene.Image.new(4, 4).gradient(0, 0, 0, 255, 255, 255).to_normal(1.0)
+println("downhill normal leans up {((slope.get(1, 1) >> 16) & 255) < 128} x flat {Math.abs((slope.get(1, 1) >> 24) - 128) <= 1}")
 let c = img.copy().flip_h().flip_v()
 println("copy flipped {c.get(7, 7)} {c.get(0, 0)}")
 let big = Scene.Image.new(2, 2).fill(10, 20, 30).resize(6, 6).crop(1, 1, 3, 3)
@@ -573,6 +589,7 @@ for want in "px 4278190335 255 16711935 size 8.0x8.0" \
             "gradient v: top-red true bottom-blue true" \
             "gradient h: left-red true right-blue true" \
             "flat normal 2155937791" \
+            "downhill normal leans up true x flat true" \
             "copy flipped 4278190335 16711935" \
             "resize+crop 3.0x3.0 169090815" \
             "radial centre brighter true" \
@@ -635,7 +652,8 @@ fi
 for want in "beacon in the target: true upright: true" \
             "canvas upright as a sprite: true" \
             "plain plate split: true" \
-            "mirrored plate swaps: true"; do
+            "mirrored plate swaps: true" \
+            "image upright on a box: true sphere: true cylinder: true"; do
   if ! grep -qxF "$want" "mirror--vm.txt"; then
     echo "${prefix}scene_api_test: mirror line missing: $want" >&2
     cat "mirror--vm.txt" >&2

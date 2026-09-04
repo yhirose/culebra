@@ -682,7 +682,8 @@ class Image {
       for (int x = 0; x < w; x++) {
         double dx = (height_at(x + 1, y) - height_at(x - 1, y)) * strength;
         double dy = (height_at(x, y + 1) - height_at(x, y - 1)) * strength;
-        Vector3 n = Vector3Normalize(Vector3{(float)-dx, (float)dy, 1.0f});
+        // Y follows +V (down the image), the axis the shader's bitangent runs along
+        Vector3 n = Vector3Normalize(Vector3{(float)-dx, (float)-dy, 1.0f});
         auto* o = &out[((size_t)y * w + x) * 4];
         o[0] = (unsigned char)((n.x * 0.5 + 0.5) * 255.0 + 0.5);
         o[1] = (unsigned char)((n.y * 0.5 + 0.5) * 255.0 + 0.5);
@@ -1124,6 +1125,39 @@ class Node : public std::enable_shared_from_this<Node> {
   }
 };
 
+// One texture contract for every surface: (0, 0) is an image's top-left, as
+// in 2D, and a primitive shows the image upright with its top toward +Y.
+// raylib's cube puts V = 0 at the geometric bottom (an image came out upside
+// down); its par_shapes sphere and cylinder write (pole-to-pole, around) where
+// a texture expects (around, top-down), the sphere also keeping its poles on
+// Z; a plane already reads upright from +Z. GenMesh* has uploaded, so the
+// changed buffers go back to the GPU (slot 0 vertices, 1 texcoords, 2 normals).
+static Mesh push_buffer(Mesh m, int slot, float* data, int comps) {
+  UpdateMeshBuffer(m, slot, data, m.vertexCount * comps * (int)sizeof(float), 0);
+  return m;
+}
+
+static Mesh remap_uv(Mesh m, bool swap, bool flip_u, bool flip_v) {
+  for (int i = 0; i < m.vertexCount; i++) {
+    float* uv = &m.texcoords[i * 2];
+    if (swap) std::swap(uv[0], uv[1]);
+    if (flip_u) uv[0] = 1.0f - uv[0];
+    if (flip_v) uv[1] = 1.0f - uv[1];
+  }
+  return push_buffer(m, 1, m.texcoords, 2);
+}
+
+static Mesh poles_to_y(Mesh m) {   // -90 degrees about X: (x, y, z) -> (x, z, -y)
+  for (float* p : {m.vertices, m.normals})
+    for (int i = 0; i < m.vertexCount; i++) {
+      float y = p[i * 3 + 1];
+      p[i * 3 + 1] = p[i * 3 + 2];
+      p[i * 3 + 2] = -y;
+    }
+  push_buffer(m, 0, m.vertices, 3);
+  return push_buffer(m, 2, m.normals, 3);
+}
+
 class View {
  public:
   View(int64_t w, int64_t h, std::string title) {
@@ -1200,9 +1234,9 @@ class View {
     depth_mat_.shader = depth_;
     light_.up = Vector3{0, 1, 0};
     light_.projection = CAMERA_ORTHOGRAPHIC;
-    cube_ = GenMeshCube(1, 1, 1);
-    sphere_ = GenMeshSphere(1, 16, 16);
-    cyl_ = GenMeshCylinder(1, 1, 16);
+    cube_ = remap_uv(GenMeshCube(1, 1, 1), false, false, true);
+    sphere_ = remap_uv(poles_to_y(GenMeshSphere(1, 16, 16)), true, false, false);
+    cyl_ = remap_uv(GenMeshCylinder(1, 1, 16), true, true, true);
     plane_ = GenMeshPlane(1, 1, 1, 1);
     set_sun_uniform();
   }
