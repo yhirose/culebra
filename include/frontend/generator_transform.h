@@ -919,9 +919,7 @@ inline std::optional<std::string> rewrite_yielding_fors_to_while(
           std::string(" ") + std::string(ast_source_slice(*nc, src));
     }
     // A label belongs to the loop, not to the iterator binding: it moves onto
-    // the desugared `while` so `break outer` inside the body still names it.
-    std::string label_prefix;
-    if (fv.label) label_prefix = std::string(fv.label->token) + ": ";
+    // the desugared `while`, after the `let` that opens the iterator.
     auto replacement = std::format(
         "let {0} = ({1}).iter(){4}\n"
         "{6}while {0}.has_next() {{{4}\n"
@@ -930,7 +928,7 @@ inline std::optional<std::string> rewrite_yielding_fors_to_while(
         "}}{5}",
         iter_var, std::string(expr_sv),
         std::string(var_node.token), body_text, line_marker(orig),
-        nobreak_suffix, label_prefix);
+        nobreak_suffix, loop_label_prefix(fv.label));
     out.replace(f->position - base, f->length, replacement);
   }
   return out;
@@ -1148,32 +1146,36 @@ inline bool has_escaping_loop_ctrl(const peg::Ast& node) {
   return escaping_loop_ctrl(node, open);
 }
 
+// One enclosing CPS-managed loop: its header and exit states, plus the label
+// it carries (empty when unlabelled). Shared by both state-machine lowerings
+// — the generator's CpsBuilder below and the effects transform's CpsState,
+// which are separate lowerings over the same loop bookkeeping.
+struct CpsLoop {
+  int header;
+  int exit;
+  std::string label;
+};
+
+// The enclosing loop a break/continue targets, innermost last, or nullptr
+// when its label names none (which `has_escaping_loop_ctrl` should already
+// have kept out of a CPS-managed body — failing closed rather than
+// mis-jumping).
+inline const CpsLoop* target_loop(const std::vector<CpsLoop>& stack,
+                                  const peg::Ast& node) {
+  if (stack.empty()) return nullptr;
+  auto label = culebra::break_label_of(node);
+  if (label.empty()) return &stack.back();
+  for (auto it = stack.rbegin(); it != stack.rend(); ++it)
+    if (it->label == label) return &*it;
+  return nullptr;
+}
+
 struct CpsBuilder {
   const std::string& src;
   const PromotedLocals& rewrite_set;
   std::vector<std::string> states;
   int terminal = -1;  // state that sets drained + returns false
-  // Each enclosing CPS-managed loop, innermost last: its header and exit
-  // states, plus the label it carries (empty when unlabelled) so a labelled
-  // break/continue jumps to that loop's states rather than the innermost.
-  struct CpsLoop {
-    int header;
-    int exit;
-    std::string label;
-  };
   std::vector<CpsLoop> loop_stack;
-
-  // The enclosing loop a break/continue targets, or nullptr when its label
-  // names none (which `has_escaping_loop_ctrl` should already have kept out
-  // of a CPS-managed body — failing closed here rather than mis-jumping).
-  const CpsLoop* target_loop(const peg::Ast& node) const {
-    if (loop_stack.empty()) return nullptr;
-    auto label = culebra::break_label_of(node);
-    if (label.empty()) return &loop_stack.back();
-    for (auto it = loop_stack.rbegin(); it != loop_stack.rend(); ++it)
-      if (it->label == label) return &*it;
-    return nullptr;
-  }
   // `defer { B }` bodies, in source order. Each is registered (a
   // `_g_defer_K` flag set true) when its state is reached and run at
   // dispose in reverse (LIFO).
@@ -1259,7 +1261,7 @@ struct CpsBuilder {
       return e;
     }
     if (u->tag == "BREAK"_ || u->tag == "CONTINUE"_) {
-      const CpsLoop* target = target_loop(*u);
+      const CpsLoop* target = culebra::target_loop(loop_stack, *u);
       if (!target) { failed = true; return -1; }
       return jump_state(u->tag == "BREAK"_ ? target->exit : target->header);
     }
@@ -1292,8 +1294,7 @@ struct CpsBuilder {
         normal_exit = compile_seq(body_stmts(*wv.nobreak), cont);
         if (failed) return -1;
       }
-      loop_stack.push_back(
-          {h, cont, wv.label ? std::string(wv.label->token) : std::string()});
+      loop_stack.push_back({h, cont, loop_label_name(wv.label)});
       int body_entry = compile_seq(body_stmts(*wv.body), h);
       loop_stack.pop_back();
       if (failed) return -1;

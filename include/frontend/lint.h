@@ -109,14 +109,17 @@ class ScopeWalker {
   // by its label (empty for an unlabelled loop). Its depth is what the
   // outside-a-loop check reads; its names are what a labelled `break outer`
   // resolves against.
-  std::vector<std::string> loop_labels_;
+  // Views of the AST tokens, which outlive the walk — the same shape
+  // `escaping_loop_ctrl` keeps its open labels in.
+  using LabelStack = std::vector<std::string_view>;
+  LabelStack loop_labels_;
 
   // RAII entry into a loop body: the loop is a break/continue target for the
   // span of the walk.
   struct LoopScope {
-    std::vector<std::string>& stack;
-    LoopScope(std::vector<std::string>& s, const peg::Ast* label) : stack(s) {
-      stack.emplace_back(label ? std::string(label->token) : std::string());
+    LabelStack& stack;
+    LoopScope(LabelStack& s, const peg::Ast* label) : stack(s) {
+      stack.push_back(label ? label->token : std::string_view{});
     }
     ~LoopScope() { stack.pop_back(); }
   };
@@ -126,10 +129,9 @@ class ScopeWalker {
   // cannot cross a call, matching the compiled backend's per-chunk loop
   // scoping and every mainstream language.
   struct LoopBoundary {
-    std::vector<std::string>& stack;
-    std::vector<std::string> saved;
-    explicit LoopBoundary(std::vector<std::string>& s)
-        : stack(s), saved(std::move(s)) {
+    LabelStack& stack;
+    LabelStack saved;
+    explicit LoopBoundary(LabelStack& s) : stack(s), saved(std::move(s)) {
       stack.clear();
     }
     ~LoopBoundary() { stack = std::move(saved); }
@@ -143,10 +145,10 @@ class ScopeWalker {
     if (std::find(loop_labels_.begin(), loop_labels_.end(), label->token) ==
         loop_labels_.end())
       return;
-    diags_.push_back(Diagnostic{
-        "SyntaxError", std::format("duplicate loop label '{}'", label->token),
-        static_cast<long>(label->line), static_cast<long>(label->column),
-        Severity::Error});
+    diags_.push_back(
+        Diagnostic{"SyntaxError", culebra::duplicate_loop_label_msg(label->token),
+                   static_cast<long>(label->line),
+                   static_cast<long>(label->column), Severity::Error});
   }
 
   // Nesting depth inside function-like bodies (function / lambda / method /
@@ -834,11 +836,11 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       if (auto label = culebra::break_label_of(node); !label.empty() &&
           std::find(loop_labels_.begin(), loop_labels_.end(), label) ==
               loop_labels_.end()) {
-        diags_.push_back(Diagnostic{
-            "SyntaxError",
-            std::format("no enclosing loop labelled '{}'", label),
-            static_cast<long>(node.nodes[0]->line),
-            static_cast<long>(node.nodes[0]->column), Severity::Error});
+        diags_.push_back(
+            Diagnostic{"SyntaxError", culebra::no_such_loop_label_msg(label),
+                       static_cast<long>(node.nodes[0]->line),
+                       static_cast<long>(node.nodes[0]->column),
+                       Severity::Error});
       }
       return;
     case "RETURN"_:

@@ -171,14 +171,8 @@ same: for x in xs {
 }
 assert_eq(n13, 1)
 
-// --- (12) a label is not a variable: the name stays free ---
-let outer = 'a name'
-outer: for x in xs {
-  break outer
-}
-assert_eq(outer, 'a name')
-
-// --- (13) a label crosses no function boundary, so a fn may reuse the name ---
+// --- (12) a label crosses no function boundary, so a fn may reuse the name ---
+// (that a label binds no variable at all is pinned in test_contextual_keywords)
 outer14: for x in xs {
   let f = fn () {
     outer14: for y in ys {
@@ -190,7 +184,7 @@ outer14: for x in xs {
   break outer14
 }
 
-// --- (14) the label must sit on the keyword's own line ---
+// --- (13) the label must sit on the keyword's own line ---
 // Without that rule `break` + a following identifier statement would parse as
 // one labelled break.
 mut hit15 = 0
@@ -200,7 +194,7 @@ for x in xs {
 }
 assert_eq(hit15, 0)
 
-// --- (15) statement modifiers still bind after a label ---
+// --- (14) statement modifiers still bind after a label ---
 mut seen16 = []
 outer16: for x in xs {
   for y in ys {
@@ -211,7 +205,7 @@ outer16: for x in xs {
 }
 assert_eq(seen16, [])
 
-// --- (16) a labelled break inside a generator's yielding nest ---
+// --- (15) a labelled break inside a generator's yielding nest ---
 fn gen17() {
   outer: for x in xs {
     for y in ys {
@@ -232,7 +226,7 @@ fn gen18() {
 }
 assert_eq(gen18().collect(), [(1, 10), (2, 10), (3, 10)])
 
-// --- (17) and inside a suspending (effectful) nest ---
+// --- (16) and inside a suspending (effectful) nest ---
 effect fn ask19()
 
 effect fn scan19() {

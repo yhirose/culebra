@@ -531,21 +531,45 @@ inline const peg::Ast* nobreak_block_of(const peg::Ast& loop) {
   return clause ? clause->nodes[0].get() : nullptr;
 }
 
-// A loop's optional leading LOOP_LABEL node, or nullptr when unlabelled.
-// LOOP_LABEL is a token rule, so it is a leaf the AstOptimizer keeps and a
-// labelled loop is exactly one whose first child carries that tag.
-inline const peg::Ast* loop_label_of(const peg::Ast& loop) {
+// The LOOP_LABEL node a loop or a break/continue carries, or nullptr when it
+// has none. LOOP_LABEL is a token rule, so it is a leaf the AstOptimizer
+// keeps, and it is always the node's first child — a loop's label precedes
+// `while` / `for`, and a break/continue has no other child.
+inline const peg::Ast* loop_label_of(const peg::Ast& a) {
   using namespace peg::udl;
-  if (loop.nodes.empty()) return nullptr;
-  const auto& first = *loop.nodes[0];
+  if (a.nodes.empty()) return nullptr;
+  const auto& first = *a.nodes[0];
   return first.tag == "LOOP_LABEL"_ ? &first : nullptr;
 }
 
 // The label a BREAK / CONTINUE names, or an empty view when it has none.
 inline std::string_view break_label_of(const peg::Ast& a) {
-  using namespace peg::udl;
-  if (a.nodes.empty() || a.nodes[0]->tag != "LOOP_LABEL"_) return {};
-  return a.nodes[0]->token;
+  const peg::Ast* label = loop_label_of(a);
+  return label ? label->token : std::string_view{};
+}
+
+// A loop's label as an owned name, empty when unlabelled.
+inline std::string loop_label_name(const peg::Ast* label) {
+  return label ? std::string(label->token) : std::string();
+}
+
+// The `label: ` prefix a desugared loop carries over from the `for` it
+// replaces, or nothing. Both FOR→WHILE rewrites emit it ahead of the `while`
+// they synthesize, so a `break outer` in the body still names the loop.
+inline std::string loop_label_prefix(const peg::Ast* label) {
+  return label ? loop_label_name(label) + ": " : std::string();
+}
+
+// The two loop-label rejections, worded once. `culebra lint` hoists the check
+// so it lands before the program runs, and the bytecode compiler makes it
+// again as the backstop — the pair drifted apart the last time this was
+// written out twice (`break outside loop` vs `break outside a loop`).
+inline std::string no_such_loop_label_msg(std::string_view label) {
+  return std::format("no enclosing loop labelled '{}'", label);
+}
+
+inline std::string duplicate_loop_label_msg(std::string_view label) {
+  return std::format("duplicate loop label '{}'", label);
 }
 
 // View of a WHILE AST node — see grammar:
@@ -568,9 +592,9 @@ inline WhileView view_while(const peg::Ast& a) {
   using namespace peg::udl;
   const peg::Ast* label = loop_label_of(a);
   size_t off = label ? 1 : 0;
-  bool has_init = off < a.nodes.size() && a.nodes[off]->tag == "INIT_CLAUSE"_;
-  const peg::Ast* init = has_init ? a.nodes[off].get() : nullptr;
-  if (has_init) off++;
+  const peg::Ast* init =
+      a.nodes[off]->tag == "INIT_CLAUSE"_ ? a.nodes[off].get() : nullptr;
+  if (init) off++;
   return WhileView{
       label,
       init,

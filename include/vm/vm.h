@@ -3710,12 +3710,13 @@ class Compiler {
     // mark is the lowest of the scopes a break or continue abandons, so
     // resolving from it covers them all.
     size_t body_scope_index = 0;
-    // The loop's label (`outer: for …`), empty when unlabelled. A labelled
-    // `break` / `continue` names one of these instead of taking the
-    // innermost loop; the search is over this compiler's stack alone, so a
-    // label never reaches into an enclosing function's loops (each chunk
-    // compiles with its own Compiler).
-    std::string label;
+    // The loop's label (`outer: for …`), empty when unlabelled — a view of
+    // the AST token, which outlives the compile. A labelled `break` /
+    // `continue` names one of these instead of taking the innermost loop;
+    // the search is over this compiler's stack alone, so a label never
+    // reaches into an enclosing function's loops (each chunk compiles with
+    // its own Compiler).
+    std::string_view label;
   };
   struct ExprResult {
     int32_t slot;
@@ -7707,7 +7708,7 @@ class Compiler {
     emit(Op::ForOpen, base);
 
     loops_.push_back({next_slot_, defer_scopes_.size(), {}, {}, broke,
-                      scopes_.size(), loop_label(fv.label)});
+                      scopes_.size(), enter_loop_label(fv.label)});
     size_t head_ix = chunk_.code.size();
     // A step's positionless throws report at the statement, not at the
     // iterable expression the open reports at. The position rides in c/d as
@@ -7841,7 +7842,7 @@ class Compiler {
 
     if (!sink) push_binding({std::string(id.token), bind, false, cell});
     loops_.push_back({next_slot_, defer_scopes_.size(), {}, {}, broke,
-                      scopes_.size(), loop_label(fv.label)});
+                      scopes_.size(), enter_loop_label(fv.label)});
     size_t body_ix = chunk_.code.size();
     if (cell) emit(Op::CellNew, bind, var);
     compile_block(*fv.body);
@@ -7879,22 +7880,19 @@ class Compiler {
     if (label.empty()) return &loops_.back();
     for (auto it = loops_.rbegin(); it != loops_.rend(); ++it)
       if (it->label == label) return &*it;
-    reject(*ast.nodes[0],
-           culebra::format("no enclosing loop labelled '{}'", label));
-    return &loops_.back();  // unreachable: reject throws
+    reject(*ast.nodes[0], culebra::no_such_loop_label_msg(label));
   }
 
   // The label a loop introduces, rejecting one that shadows an enclosing
   // loop's — `outer` would then mean two loops in the same nest, and picking
   // the innermost silently is the kind of ambiguity culebra refuses at parse
   // time rather than resolving by rule.
-  std::string loop_label(const peg::Ast* label) {
+  std::string_view enter_loop_label(const peg::Ast* label) {
     if (!label) return {};
-    std::string name(label->token);
     for (auto& lc : loops_)
-      if (lc.label == name)
-        reject(*label, culebra::format("duplicate loop label '{}'", name));
-    return name;
+      if (lc.label == label->token)
+        reject(*label, culebra::duplicate_loop_label_msg(label->token));
+    return label->token;
   }
 
   // The flag slot a loop with a `nobreak` clause needs, cleared before the
@@ -7929,7 +7927,7 @@ class Compiler {
     size_t exit_jump = emit(Op::JumpIfFalse, cond_slot);
 
     loops_.push_back({next_slot_, defer_scopes_.size(), {}, {}, broke,
-                      scopes_.size(), loop_label(wv.label)});
+                      scopes_.size(), enter_loop_label(wv.label)});
     compile_block(*wv.body);
     emit(Op::Jump, static_cast<int32_t>(top_ix));
     size_t exit_ix = chunk_.code.size();

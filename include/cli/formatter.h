@@ -1534,16 +1534,6 @@ class Printer {
                        print_block(*nobreak, node_end(after), false)});
   }
 
-  // `break outer` / `continue outer`: the run of spaces the grammar allows
-  // between the keyword and its label normalizes to one. A node the optimizer
-  // widened over enclosing braces keeps the generic tail's span shedding.
-  DocP print_break(const peg::Ast& node, std::string_view kw) {
-    if (is_wrapper_collapsed(node))
-      return doc_text(std::string(tight_span(node)));
-    return doc_text(std::string(kw) + " " +
-                    std::string(culebra::break_label_of(node)));
-  }
-
   // Render a loop's optional leading `label: `, or nothing.
   DocP print_loop_label(const peg::Ast* label) {
     if (!label) return doc_text("");
@@ -1796,12 +1786,16 @@ class Printer {
     if (n == "IF") return print_if(node);
     if (n == "WHILE") return print_while(node);
     if (n == "FOR") return print_for(node);
-    // Only a labelled break/continue needs a printer of its own; the bare
-    // keyword is a leaf the generic tail below already prints.
-    if (n == "BREAK" && !culebra::break_label_of(node).empty())
-      return print_break(node, "break");
-    if (n == "CONTINUE" && !culebra::break_label_of(node).empty())
-      return print_break(node, "continue");
+    // Only `break outer` / `continue outer` needs printing of its own — to
+    // normalize the run of spaces the grammar allows before the label. The
+    // bare keyword has nothing to normalize, so it stays with the generic
+    // span-slicing tail below rather than being reconstructed here.
+    if (n == "BREAK" || n == "CONTINUE") {
+      auto label = culebra::break_label_of(node);
+      if (!label.empty())
+        return doc_text(std::string(n == "BREAK" ? "break " : "continue ") +
+                        std::string(label));
+    }
     if (n == "DEFER") return print_defer(node);
     if (n == "TRY") return print_try(node);
     if (n == "MATCH") return print_match(node);

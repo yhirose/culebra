@@ -27,16 +27,18 @@ expect_accept() {
   fi
 }
 
-# break/continue outside a loop: a sound before-eval abort means "RAN"
-# never prints and the diagnostic is "SyntaxError: ... outside loop"
-# (matching what the JIT already raises at compile time).
-expect_loop_reject() {
-  printf 'inspect("RAN")\n%s\n' "$2" > "$TMP/t.cul"
+# A SyntaxError hoisted before eval: a sound abort means "RAN" never prints and
+# the diagnostic carries the expected substring. The wrappers below pin one
+# message each — break/continue outside a loop (what the compiler also raises
+# at compile time), and `return` outside a function.
+expect_syntax_reject() {
+  printf 'inspect("RAN")\n%s\n' "$3" > "$TMP/t.cul"
   out=$("$CULEBRA" --vm "$TMP/t.cul" 2>&1)
-  if [[ "$out" == *RAN* || "$out" != *SyntaxError* || "$out" != *"outside loop"* ]]; then
-    echo "FAIL loop-reject [$1]: $out"; fail=1
+  if [[ "$out" == *RAN* || "$out" != *SyntaxError* || "$out" != *"$2"* ]]; then
+    echo "FAIL syntax-reject [$1]: $out"; fail=1
   fi
 }
+expect_loop_reject() { expect_syntax_reject "$1" "outside loop" "$2"; }
 
 # Rejected: reassigning a `let` binding (hoisted ImmutableError).
 expect_reject "top-level let reassign"  'let a = 1
@@ -93,28 +95,21 @@ expect_accept "nested loop in fn"       'for i in [1] {
 # Rejected: a loop label that names no enclosing loop, and one that shadows an
 # enclosing loop's. Both abort before eval, with the same message the bytecode
 # compiler rejects with (`no enclosing loop labelled` / `duplicate loop label`).
-expect_label_reject() {
-  printf 'inspect("RAN")\n%s\n' "$3" > "$TMP/t.cul"
-  out=$("$CULEBRA" --vm "$TMP/t.cul" 2>&1)
-  if [[ "$out" == *RAN* || "$out" != *SyntaxError* || "$out" != *"$2"* ]]; then
-    echo "FAIL label-reject [$1]: $out"; fail=1
-  fi
-}
-expect_label_reject "unknown label" "no enclosing loop labelled 'nope'" \
+expect_syntax_reject "unknown label" "no enclosing loop labelled 'nope'" \
   'for i in [1] { break nope }'
-expect_label_reject "unknown label on continue" \
+expect_syntax_reject "unknown label on continue" \
   "no enclosing loop labelled 'nope'" 'for i in [1] { continue nope }'
-expect_label_reject "label names an inner loop from outside" \
+expect_syntax_reject "label names an inner loop from outside" \
   "no enclosing loop labelled 'inner'" 'for i in [1] {
   inner: for j in [1] { }
   break inner
 }'
-expect_label_reject "label is not a variable" \
+expect_syntax_reject "label is not a variable" \
   "no enclosing loop labelled 'v'" 'let v = 1
 for i in [1] { break v }'
-expect_label_reject "duplicate label" "duplicate loop label 'dup'" \
+expect_syntax_reject "duplicate label" "duplicate loop label 'dup'" \
   'dup: for i in [1] { dup: for j in [1] { break dup } }'
-expect_label_reject "duplicate label across loop forms" \
+expect_syntax_reject "duplicate label across loop forms" \
   "duplicate loop label 'dup'" 'dup: while true { dup: for j in [1] { break } }'
 # A label reaches no further than the enclosing function, so this is the plain
 # no-loop-here rejection rather than an unknown label.
@@ -194,17 +189,13 @@ expect_accept "this param"              'fn f(this) { this }'
 # `return` outside any function is a SyntaxError (docs §return; `Sys.exit`
 # is the early-exit mechanism, and the module interface is `export`, so a
 # top-level return value goes nowhere).
-expect_syntax_reject() {
-  printf 'inspect("RAN")\n%s\n' "$2" > "$TMP/t.cul"
-  out=$("$CULEBRA" --vm "$TMP/t.cul" 2>&1)
-  if [[ "$out" == *RAN* || "$out" != *"return outside function"* ]]; then
-    echo "FAIL return-reject [$1]: $out"; fail=1
-  fi
+expect_return_reject() {
+  expect_syntax_reject "$1" "return outside function" "$2"
 }
-expect_syntax_reject "top-level return value" 'return 5'
-expect_syntax_reject "top-level bare return"  'return'
-expect_syntax_reject "return in top if"       'if true { return 1 }'
-expect_syntax_reject "return in top for"      'for i in [1] { return }'
+expect_return_reject "top-level return value" 'return 5'
+expect_return_reject "top-level bare return"  'return'
+expect_return_reject "return in top if"       'if true { return 1 }'
+expect_return_reject "return in top for"      'for i in [1] { return }'
 
 # Accepted: `return` inside a function / lambda / method, or a defer closure
 # (a defer body is its own closure, so its `return` exits the defer).
