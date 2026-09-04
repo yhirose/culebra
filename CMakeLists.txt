@@ -128,6 +128,7 @@ include_directories(./vendor/cpp-vmlib)
 include_directories(./vendor/cpp-linenoise)
 include_directories(./vendor/cpp-unicodelib)
 include_directories(./vendor/cpp-regexlib)
+include_directories(./vendor/cpp-fstlib)
 include_directories(./vendor/cpp-httplib)
 # stb_image (vendor/stb/stb_image.h, public domain) — the PNG decoder behind
 # Canvas.Sprite.from_png. Header-only with its own inflate, so it adds no link
