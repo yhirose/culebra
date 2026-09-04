@@ -445,6 +445,32 @@ println("knobs change the frame: {knobs != none}")
 println("post off still draws: {red_of(nopost) > 150 && green_of(nopost) < 60}")
 EOF
 
+# PCM audio: the stream is fed from the script on the main thread, never from
+# the audio thread, so this runs the same whether the machine has an audio
+# device (locally) or none (CI): every answer below holds either way.
+cat > scene_audio.cul <<'EOF'
+let a = Scene.Audio.new(44100, 1, 1024)
+println("latency ok {a.latency() > 0.046 && a.latency() < 0.047} ready is a bool {a.ready() == true || a.ready() == false}")
+for i in 0..100 { a.push(Math.sin(i * 0.1) * 0.5) }
+println("pending 100: {a.pending() == 100}")
+let n = a.submit()
+println("submit hands over: {n == 100 || n == 0} pending after {a.pending() <= 100}")
+a.play()
+a.volume(0.5)
+a.pitch(1.0)
+a.pan(0.5)
+a.pause()
+a.resume()
+a.stop()
+println("playing after stop: {a.playing()}")
+let st = Scene.Audio.new(22050, 2, 512)
+for i in 0..10 { st.push2(0.1, -0.1) }
+println("stereo pending {st.pending()}")
+for i in 0..3000 { a.push(0.0) }
+println("surplus dropped: {a.dropped() > 0} pending capped: {a.pending() <= 1024}")
+println("needed is a count: {a.needed() >= 0}")
+EOF
+
 # Scene.Image needs no window, so this program opens none: the one part of Scene
 # that runs with no display at all, and the one whose answers are exact pixels.
 cat > scene_image.cul <<'EOF'
@@ -603,6 +629,35 @@ for want in "identity lut matches: true" "swap lut swaps: true" \
 done
 [ $fail -eq 0 ] || exit 1
 echo "OK: the LUT grades the frame and the post knobs bind"
+
+for engine in "--vm" "--jit"; do
+  if ! "$CULEBRA" "$engine" scene_audio.cul > "audio${engine}.txt" 2> "audio${engine}.err"; then
+    echo "${prefix}scene_api_test: audio program $engine exited non-zero:" >&2
+    cat "audio${engine}.txt" "audio${engine}.err" >&2
+    fail=1
+  fi
+done
+[ $fail -eq 0 ] || exit 1
+if ! diff "audio--vm.txt" "audio--jit.txt" > diff.txt; then
+  echo "${prefix}scene_api_test: the VM and the JIT disagree on audio:" >&2
+  cat diff.txt >&2
+  exit 1
+fi
+for want in "latency ok true ready is a bool true" \
+            "pending 100: true" \
+            "submit hands over: true pending after true" \
+            "playing after stop: false" \
+            "stereo pending 10" \
+            "surplus dropped: true pending capped: true" \
+            "needed is a count: true"; do
+  if ! grep -qxF "$want" "audio--vm.txt"; then
+    echo "${prefix}scene_api_test: audio line missing: $want" >&2
+    cat "audio--vm.txt" >&2
+    fail=1
+  fi
+done
+[ $fail -eq 0 ] || exit 1
+echo "OK: Scene.Audio binds and behaves with or without a device"
 
 for engine in "--vm" "--jit"; do
   if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" scene_api.cul "$TTF" > "out${engine}.txt" 2>&1; then

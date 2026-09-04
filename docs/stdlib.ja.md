@@ -5620,6 +5620,47 @@ ASCII）: 数字と数語のHUDはそれだけ列挙して小さなアトラス�
 `resume` / `looping(on)`を加え、バッファを供給し続けるため毎フレーム
 `update()`を呼ぶ必要がある。
 
+`Scene.Audio.new(rate, channels, buffer)`はスクリプト自身がサンプル単位で合成する
+ストリーム — 回転数に追従するエンジン音、ブレーキノイズ、ビープ — 音声ファイルを
+持たないゲームが音を作る方法。サンプルはメインスレッドで作ってブロック単位で
+渡す。スクリプトの一部がオーディオスレッドで走ることは無い: そこでのGC停止は
+可聴のドロップアウトになる。
+
+| メソッド | 効果 |
+| --- | --- |
+| `Scene.Audio.new(rate, channels, buffer) -> Audio` | `rate` Hz、1または2チャンネル、`buffer`フレームずつ供給するストリーム（1024が妥当な既定。〜512未満は非対応） |
+| `audio.ready() -> Bool` | オーディオデバイスの無いマシンではfalse。以下はすべて何もしなくなる |
+| `audio.needed() -> Long` | 今受け取れるフレーム数: 1ブロック消費されたら`buffer`、両方満杯なら0 |
+| `audio.push(s)` / `audio.push2(l, r)` | モノラル1サンプル / ステレオ1フレーム（−1..1）を保留ブロックへ |
+| `audio.pending() -> Long` | pushしたがまだ渡していないフレーム数 |
+| `audio.submit() -> Long` | 保留ブロックをストリームに渡す。書き込んだフレーム数 |
+| `audio.dropped() -> Long` | 満杯のブロックを越えてpushされ捨てられたサンプル数（作りすぎ） |
+| `audio.latency() -> Float` | `submit()`からスピーカーまでの秒数: 2ブロック分 |
+| `audio.play()` / `stop()` / `pause()` / `resume()` / `playing() -> Bool` | 再生制御 |
+| `audio.volume(v)` / `pitch(p)` / `pan(p)` | `Sound`と同じ |
+
+```culebra
+# doctest: skip
+let engine = Scene.Audio.new(44100, 1, 1024)
+engine.play()
+mut phase = 0.0
+while !view.closing() {
+  while engine.needed() > 0 {
+    for i in 0..engine.needed() {
+      phase += (48.0 + 165.0 * rpm_frac) / 44100.0
+      if phase >= 1.0 { phase -= 1.0 }
+      engine.push((phase * 2.0 - 1.0) * (0.03 + 0.13 * rpm_frac))
+    }
+    engine.submit()
+  }
+  # … 描画 …
+}
+```
+
+60 fpsなら44.1 kHzのストリームは1フレームに735フレームを求める。合成は算術で、
+JITなら余裕。`needed()`がフレームをまたいで高いままなら、スクリプトが追いついて
+いない — ストリームは1ブロックを繰り返すか無音にする。
+
 ### 最小のシーン
 
 ```culebra

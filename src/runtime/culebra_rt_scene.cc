@@ -1958,6 +1958,81 @@ class MusicTrack {
   Music mus_{};
 };
 
+// A PCM stream the script synthesises itself: an engine note that follows
+// the revs, brake noise, a beep — the sound of a game with no sound files.
+//
+// The script produces samples on the main thread and hands them over a
+// block at a time (push / submit); the audio thread only ever copies a
+// finished block. A script callback on that thread was never an option:
+// wrap.h marshals no callables, the runtime is not reentrant from a foreign
+// thread, and — had both been solved — a collector's pause inside a ~10 ms
+// audio period is an audible dropout. raylib's own double-buffered stream
+// is the right shape for this: needed() says when a block has drained.
+//
+// A machine with no audio device (CI) constructs one all the same: ready()
+// is false and every call is a no-op, so a game runs silent rather than not.
+class Audio {
+ public:
+  Audio(int64_t rate, int64_t channels, int64_t buffer)
+      : rate_((int)(rate < 1 ? 1 : rate)),
+        channels_(channels == 2 ? 2 : 1),
+        buffer_((int)(buffer < 1 ? 1 : buffer)) {
+    ensure_audio();
+    if (!IsAudioDeviceReady()) return;
+    // The device period (~10 ms) is the floor raylib clamps a sub-buffer up
+    // to; below it, needed() would understate what a block holds and the
+    // remainder would play as silence — hence the documented ~512 minimum.
+    SetAudioStreamBufferSizeDefault(buffer_);
+    stream_ = LoadAudioStream((unsigned)rate_, 32, (unsigned)channels_);   // 32-bit float
+    ready_ = IsAudioStreamValid(stream_);
+  }
+  ~Audio() { if (ready_ && IsAudioDeviceReady()) UnloadAudioStream(stream_); }
+  Audio(const Audio&) = delete;
+  Audio& operator=(const Audio&) = delete;
+
+  bool ready() const { return ready_; }
+  // Frames the stream can take now: a whole block once one has drained.
+  int64_t needed() const { return ready_ && IsAudioStreamProcessed(stream_) ? buffer_ : 0; }
+  void push(double s) { add(s); }
+  void push2(double l, double r) { add(l); if (channels_ == 2) add(r); }
+  int64_t pending() const { return (int64_t)pend_.size() / channels_; }
+  // Hand the pending block over. Nothing to hand, or nowhere to put it yet
+  // (both blocks still full): 0, and the samples wait for the next call.
+  int64_t submit() {
+    int frames = (int)(pend_.size() / channels_);
+    if (frames == 0) return 0;
+    if (!ready_) { pend_.clear(); return 0; }
+    if (!IsAudioStreamProcessed(stream_)) return 0;
+    UpdateAudioStream(stream_, pend_.data(), frames);
+    pend_.clear();
+    return frames;
+  }
+  int64_t dropped() const { return dropped_; }
+  double latency() const { return 2.0 * buffer_ / rate_; }
+
+  void play() { if (ready_) PlayAudioStream(stream_); }
+  void stop() { if (ready_) StopAudioStream(stream_); }
+  void pause() { if (ready_) PauseAudioStream(stream_); }
+  void resume() { if (ready_) ResumeAudioStream(stream_); }
+  bool playing() const { return ready_ && IsAudioStreamPlaying(stream_); }
+  void volume(double v) { if (ready_) SetAudioStreamVolume(stream_, (float)v); }
+  void pitch(double p) { if (ready_) SetAudioStreamPitch(stream_, (float)p); }
+  void pan(double p) { if (ready_) SetAudioStreamPan(stream_, (float)p); }
+
+ private:
+  // The pending block is capped at one block: a script that produces more
+  // than the stream can take loses the surplus and can see that it did.
+  void add(double s) {
+    if ((int64_t)pend_.size() >= (int64_t)buffer_ * channels_) { dropped_++; return; }
+    pend_.push_back((float)(s < -1.0 ? -1.0 : s > 1.0 ? 1.0 : s));
+  }
+  int rate_, channels_, buffer_;
+  AudioStream stream_{};
+  bool ready_ = false;
+  std::vector<float> pend_;
+  int64_t dropped_ = 0;
+};
+
 }  // namespace gfx
 
 namespace {
@@ -2194,6 +2269,25 @@ const bool registered = [] {
       .method<&gfx::MusicTrack::volume>("volume", {"v"})
       .method<&gfx::MusicTrack::pitch>("pitch", {"p"})
       .method<&gfx::MusicTrack::pan>("pan", {"p"});
+
+  culebra::wrap<gfx::Audio>("Scene", "Audio")
+      .ctor<long, long, long>({"rate", "channels", "buffer"})
+      .method<&gfx::Audio::ready>("ready")
+      .method<&gfx::Audio::needed>("needed")
+      .method<&gfx::Audio::push>("push", {"s"})
+      .method<&gfx::Audio::push2>("push2", {"l", "r"})
+      .method<&gfx::Audio::pending>("pending")
+      .method<&gfx::Audio::submit>("submit")
+      .method<&gfx::Audio::dropped>("dropped")
+      .method<&gfx::Audio::latency>("latency")
+      .method<&gfx::Audio::play>("play")
+      .method<&gfx::Audio::stop>("stop")
+      .method<&gfx::Audio::pause>("pause")
+      .method<&gfx::Audio::resume>("resume")
+      .method<&gfx::Audio::playing>("playing")
+      .method<&gfx::Audio::volume>("volume", {"v"})
+      .method<&gfx::Audio::pitch>("pitch", {"p"})
+      .method<&gfx::Audio::pan>("pan", {"p"});
   return true;
 }();
 }  // namespace

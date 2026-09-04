@@ -5797,6 +5797,48 @@ streamed track. Both take a file path and support `volume(v)`, `pitch(p)`, and
 `resume` / `looping(on)` and needs `update()` called each frame to keep its
 buffer fed.
 
+`Scene.Audio.new(rate, channels, buffer)` is a stream the script synthesises
+itself, sample by sample — an engine note following the revs, brake noise,
+a beep — the way a game with no sound files makes its sound. The samples are
+produced on the main thread and handed over in blocks; nothing of the script
+runs on the audio thread, where a garbage collector's pause would be an
+audible dropout.
+
+| Method | Effect |
+| --- | --- |
+| `Scene.Audio.new(rate, channels, buffer) -> Audio` | a stream at `rate` Hz, 1 or 2 channels, fed `buffer` frames at a time (1024 is a sound default; below ~512 is not supported) |
+| `audio.ready() -> Bool` | false on a machine with no audio device — every call below is then a no-op |
+| `audio.needed() -> Long` | frames the stream can take now: `buffer` when a block has drained, 0 while both are full |
+| `audio.push(s)` / `audio.push2(l, r)` | one mono sample / one stereo frame, in −1..1, into the pending block |
+| `audio.pending() -> Long` | frames pushed and not yet handed over |
+| `audio.submit() -> Long` | hand the pending block to the stream; the frames written |
+| `audio.dropped() -> Long` | samples pushed beyond a full block and lost (the script produced too much) |
+| `audio.latency() -> Float` | seconds from `submit()` to the speaker: two blocks |
+| `audio.play()` / `stop()` / `pause()` / `resume()` / `playing() -> Bool` | transport |
+| `audio.volume(v)` / `pitch(p)` / `pan(p)` | as `Sound` |
+
+```culebra
+# doctest: skip
+let engine = Scene.Audio.new(44100, 1, 1024)
+engine.play()
+mut phase = 0.0
+while !view.closing() {
+  while engine.needed() > 0 {
+    for i in 0..engine.needed() {
+      phase += (48.0 + 165.0 * rpm_frac) / 44100.0
+      if phase >= 1.0 { phase -= 1.0 }
+      engine.push((phase * 2.0 - 1.0) * (0.03 + 0.13 * rpm_frac))
+    }
+    engine.submit()
+  }
+  # … render …
+}
+```
+
+At 60 fps a 44.1 kHz stream wants 735 frames a frame; the synthesis is
+arithmetic the JIT does comfortably. If `needed()` stays high across frames,
+the script is not keeping up — the stream then repeats or silences a block.
+
 ### A minimal scene
 
 ```culebra
