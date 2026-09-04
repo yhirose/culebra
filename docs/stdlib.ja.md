@@ -5292,9 +5292,9 @@ Canvas.run(160, 160, fn () {
 の指向性sun、sky / fog、SSAA・アンビエントオクルージョン・bloom・被写界深度の
 post stack）なので、出力はフラットシェーディングのプリミティブ以上になる。
 
-`Scene`は **ゲームエンジンではない**。物理・当たり判定なし、モデル / テクスチャ
-のimportなし（ジオメトリは手続き生成か頂点単位の組み立て、テクスチャはプロセス
-内生成）、スケルタルアニメーションなし。狙いは*組み立てる*
+`Scene`は **ゲームエンジンではない**。物理・当たり判定なし、モデルのimportなし
+（ジオメトリは手続き生成か頂点単位の組み立て。テクスチャはプロセス内で描くか
+PNGのバイト列から読む）、スケルタルアニメーションなし。狙いは*組み立てる*
 3D — 可視化、手続き的シーン、チェイスカメラ付きの車両 / フライトデモ — であって、
 アセット駆動のゲームではない。サーキットのメッシュ、チェイスカメラ、
 ゲームパッド操作といったレーシングデモの形が、設計の基準になっている。
@@ -5388,19 +5388,71 @@ let gold = view.add_material().rgb(230, 180, 60).pbr(0.9, 0.3)
 view.add_box(2.0, 2.0, 2.0).material(gold)
 ```
 
-テクスチャもハンドルで、`tex.width()` / `tex.height() -> Float`を持つ。2つの
-ハンドル型が契約そのもの: マテリアルの位置にテクスチャ（やその逆）を渡せば
-呼び出し時点で`TypeError`、drop済みのハンドルは`ClosedError`になる。
-テクスチャはプロセス内生成（画像ファイルローダは無い）:
-`view.checker(px, checks, r1,g1,b1, r2,g2,b2) -> Texture`は市松、
-`view.grain(px, r, g, b, amt) -> Texture`はノイズ、`view.canvas(w, h) -> Texture`は
-2D呼び出し（`rect` / `text` …）で塗るrender-to-textureを開き、
-`view.canvas_end()`で閉じる — レーシングデモがリバリーや看板を描く方法。
-canvasは同時に1枚だけ: 閉じる前の2枚目の`canvas()`は`RuntimeError`、開いたまま
-フレームを開くと先に閉じられる。テクスチャはUVの向きに関わらずメッシュ上で
-正しい向きになる。テクスチャやマテリアルは作ったviewより長生きしてよいが、
-その後のviewでは不活性なハンドルになる: 白としてサンプルされ、nodeのメッシュが
-何も描かないのと同じ扱い。
+テクスチャもハンドル。2つのハンドル型が契約そのもの: マテリアルの位置に
+テクスチャ（やその逆）を渡せば呼び出し時点で`TypeError`、drop済みのハンドルは
+`ClosedError`になる。
+
+| メソッド | 結果 |
+| --- | --- |
+| `view.texture(img, mipmaps = true, repeat = true) -> Texture` | `Scene.Image`（下記）をアップロード。タイル用マテリアルならミップマップ＋リピート、スプライトやLUTなら両方off |
+| `view.texture_png(bytes) -> Texture` | PNGのバイト列（`FS.read`や`Embed.dir`の資産）を直接テクスチャに |
+| `view.checker(px, checks, r1,g1,b1, r2,g2,b2) -> Texture` | 市松 |
+| `view.grain(px, r, g, b, amt) -> Texture` | 単色＋ノイズの粒 |
+| `view.canvas(w, h) -> Texture` / `view.canvas_end()` | 2D呼び出しで塗るrender-to-textureを開く / 閉じる |
+| `tex.width()` / `tex.height() -> Float` | ピクセル寸法 |
+| `tex.filter(name) -> Texture` | サンプリング: `"point"`（ピクセルアート、LUTのセルそのまま）、`"bilinear"`、`"trilinear"` |
+| `tex.wrap(name) -> Texture` | 端の外側: `"repeat"`、`"clamp"`、`"mirror"` |
+
+canvasはGPUでテクスチャを描く方法（`canvas()`と`canvas_end()`の間の
+`rect` / `text` …）で、レーシングデモがリバリーや看板を塗るやり方。同時に1枚だけ:
+閉じる前の2枚目の`canvas()`は`RuntimeError`、開いたままフレームを開くと先に
+閉じられる。テクスチャはUVの向きに関わらずメッシュ上で正しい向きになる。
+テクスチャやマテリアルは作ったviewより長生きしてよいが、その後のviewでは
+不活性なハンドルになる: 白としてサンプルされ、nodeのメッシュが何も描かないのと
+同じ扱い。
+
+### 画像
+
+`Scene.Image`はCPU上の画像 — シーンを飾る手続きテクスチャ（リバリー、路面の粒、
+ランプの光、カラーグレーディングのLUT）のベイカーであり、PNGのピクセルの入り口。
+ウィンドウを必要としない: `View`が1つも無い段階で画像を組み、ピクセル単位で
+読み戻し、書き出せる。`Scene`のうちディスプレイ無しでテストが回る唯一の部分で
+ある理由がこれ。常にRGBA、座標はピクセル、色はそれぞれ自分のalpha（既定255）を持つ。
+
+| メソッド | 結果 |
+| --- | --- |
+| `Scene.Image.new(w, h) -> Image` | 透明な画像 |
+| `Scene.Image.from_png(bytes) -> Image` | PNGをデコード（PNGでなければ`RuntimeError`） |
+| `img.width()` / `img.height() -> Float` | 寸法 |
+| `img.get(x, y) -> Long` | 1ピクセル。`0xRRGGBBAA`に詰めた値 |
+| `img.copy() -> Image` / `img.save_png(path) -> Bool` / `img.to_png() -> String` | コピー / PNGに書く / PNGのバイト列 |
+| `img.fill(r, g, b, a = 255)` | 全ピクセル |
+| `img.pixel(x, y, r, g, b, a = 255)` | 1ピクセル |
+| `img.rect(x, y, w, h, r, g, b, a = 255)` / `img.rect_line(x, y, w, h, r, g, b, a = 255)` | 塗り / 枝線の矩形 |
+| `img.circle(x, y, radius, r, g, b, a = 255)` / `img.circle_line(x, y, radius, r, g, b, a = 255)` | 塗り / 枝線の円 |
+| `img.line(x0, y0, x1, y1, thick, r, g, b, a = 255)` | 線 |
+| `img.triangle(x0, y0, x1, y1, x2, y2, r, g, b, a = 255)` | 塗り三角形 |
+| `img.text(s, x, y, size, r, g, b, a = 255, font = nil, spacing = 0.0)` | `Font`でテキスト。組み込みフォント（`nil`）はウィンドウがあってはじめて存在する |
+| `img.gradient(r1,g1,b1, r2,g2,b2, direction = 0)` | 画像全体の線形グラデーション。`direction`は度で、0が上 → 下、90が左 → 右 |
+| `img.gradient_radial(density, r1,g1,b1, r2,g2,b2)` | 中心 → 外周。`density`（0–1）は内側の色が届く距離 |
+| `img.noise(seed, scale, amount = 255)` | Perlinノイズを`amount`（0–255）で混ぜる。`scale`は模様の大きさ |
+| `img.cellular(tile, amount = 255)` | `tile`ピクセルのWorleyセルを混ぜる（砂利、石） |
+| `img.blit(src, x, y, r = 255, g = 255, b = 255, a = 255)` | 別の画像を色を掛けて重ねる |
+| `img.blit_rot(src, x, y, rot = 0.0, scale = 1.0)` | 同じく、中心を`(x, y)`に置いて回転・拡縮 |
+| `img.blur(radius)` / `img.tint(r, g, b)` / `img.invert()` / `img.grayscale()` / `img.brightness(k)` | 画像全体のパス |
+| `img.flip_v()` / `img.flip_h()` / `img.rotate(degrees)` / `img.resize(w, h)` / `img.crop(x, y, w, h)` | 幾何 |
+| `img.to_normal(strength = 1.0)` | 高さ（赤チャンネル）をタンジェント空間の法線マップに。+Yが上、端はラップするのでタイルの法線もタイルする |
+
+描画呼び出しはfluentなので、テクスチャ1枚が1式になる:
+
+```culebra
+# doctest: skip
+let asphalt = Scene.Image.new(256, 256).fill(60, 60, 64).noise(3, 4.0, 90).cellular(24, 40)
+let road = view.add_material().texture(view.texture(asphalt)).pbr(0.0, 0.9)
+```
+
+`img.get`は厳密 — CPUラスタはどのプラットフォームでも同じバイト列 — なので、
+描画フレームはゆるく比較するしかないところを、テストはピクセルを断言できる。
 
 ライティングはview上で設定する:
 

@@ -32,6 +32,7 @@
 
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <stdexcept>
@@ -331,7 +332,7 @@ static uint64_t& gl_epoch() {
 
 // GPU-upload an Image as a repeat-wrapped texture, consuming it. Mipmapped
 // trilinear for tiled materials; plain bilinear for baked canvas drawings.
-static Texture2D upload(Image im, bool mipmaps) {
+static Texture2D upload(::Image im, bool mipmaps) {
   Texture2D t = LoadTextureFromImage(im);
   if (mipmaps) GenTextureMipmaps(&t);
   SetTextureFilter(t, mipmaps ? TEXTURE_FILTER_TRILINEAR
@@ -366,6 +367,24 @@ class Texture : public std::enable_shared_from_this<Texture> {
   bool live() const { return epoch == gl_epoch(); }
   double width() const { return tex.width; }
   double height() const { return tex.height; }
+  // Sampling: "point" for pixel art and a LUT's exact cells, "bilinear",
+  // "trilinear" (mipmapped — built here if the upload skipped them).
+  Texture& filter(std::string name) {
+    if (!live()) return *this;
+    if (name == "point") SetTextureFilter(tex, TEXTURE_FILTER_POINT);
+    else if (name == "trilinear") { GenTextureMipmaps(&tex); SetTextureFilter(tex, TEXTURE_FILTER_TRILINEAR); }
+    else SetTextureFilter(tex, TEXTURE_FILTER_BILINEAR);
+    return *this;
+  }
+  // Past the edge: "repeat" (a tiled road), "clamp" (a LUT, a sprite),
+  // "mirror".
+  Texture& wrap(std::string name) {
+    if (!live()) return *this;
+    SetTextureWrap(tex, name == "clamp" ? TEXTURE_WRAP_CLAMP
+                        : name == "mirror" ? TEXTURE_WRAP_MIRROR_REPEAT
+                                           : TEXTURE_WRAP_REPEAT);
+    return *this;
+  }
 };
 
 // A reusable material: tint + optional texture + PBR-ish response (metallic
@@ -403,6 +422,168 @@ class Font {
   bool live() const { return epoch == gl_epoch(); }
   double size() const { return font.baseSize; }
   int64_t glyphs() const { return font.glyphCount; }
+};
+
+// A CPU image: the baker for the procedural textures a scene is dressed with
+// (liveries, signage, road grain, lamp glows, a colour-grading LUT) and the
+// way a PNG's pixels come in. rtextures is plain CPU code, so none of this
+// needs a window: an image can be built, read back pixel by pixel, or written
+// out before any View exists, and it is the one part of Scene a test can run
+// without a display. view.texture(img) is the upload. Always RGBA8, so get()
+// and to_normal() read one layout.
+class Image {
+ public:
+  ::Image im{};   // raylib's
+
+  Image(int64_t w, int64_t h) : im(GenImageColor((int)w, (int)h, BLANK)) {}
+  explicit Image(::Image i) : im(i) { ImageFormat(&im, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8); }
+  Image(const Image&) = delete;
+  Image& operator=(const Image&) = delete;
+  ~Image() { UnloadImage(im); }
+
+  static std::shared_ptr<Image> from_png(std::string bytes) {
+    ::Image i = LoadImageFromMemory(".png", reinterpret_cast<const unsigned char*>(bytes.data()),
+                                    (int)bytes.size());
+    if (i.data == nullptr) throw std::runtime_error("Scene.Image.from_png: not a PNG");
+    return std::make_shared<Image>(i);
+  }
+
+  double width() const { return im.width; }
+  double height() const { return im.height; }
+  // One pixel, packed 0xRRGGBBAA — for a test's exact answer, or a lookup.
+  int64_t get(int64_t x, int64_t y) const {
+    Color c = GetImageColor(im, (int)x, (int)y);
+    return ((int64_t)c.r << 24) | ((int64_t)c.g << 16) | ((int64_t)c.b << 8) | c.a;
+  }
+  std::shared_ptr<Image> copy() const { return std::make_shared<Image>(ImageCopy(im)); }
+  bool save_png(std::string path) const {
+    return ExportImage(im, std::filesystem::absolute(path).string().c_str());
+  }
+  std::string to_png() const {
+    int n = 0;
+    unsigned char* p = ExportImageToMemory(im, ".png", &n);
+    std::string out(reinterpret_cast<const char*>(p), (size_t)n);
+    MemFree(p);
+    return out;
+  }
+
+  // --- drawing (all fluent; alpha per call, the image having no shared one) ---
+  Image& fill(int64_t r, int64_t g, int64_t b, int64_t a) { ImageClearBackground(&im, col(r, g, b, a)); return *this; }
+  Image& pixel(int64_t x, int64_t y, int64_t r, int64_t g, int64_t b, int64_t a) {
+    ImageDrawPixel(&im, (int)x, (int)y, col(r, g, b, a)); return *this;
+  }
+  Image& rect(int64_t x, int64_t y, int64_t w, int64_t h, int64_t r, int64_t g, int64_t b, int64_t a) {
+    ImageDrawRectangle(&im, (int)x, (int)y, (int)w, (int)h, col(r, g, b, a)); return *this;
+  }
+  Image& rect_line(int64_t x, int64_t y, int64_t w, int64_t h, int64_t r, int64_t g, int64_t b, int64_t a) {
+    ImageDrawRectangleLines(&im, (int)x, (int)y, (int)w, (int)h, col(r, g, b, a)); return *this;
+  }
+  Image& circle(int64_t x, int64_t y, int64_t radius, int64_t r, int64_t g, int64_t b, int64_t a) {
+    ImageDrawCircle(&im, (int)x, (int)y, (int)radius, col(r, g, b, a)); return *this;
+  }
+  Image& circle_line(int64_t x, int64_t y, int64_t radius, int64_t r, int64_t g, int64_t b, int64_t a) {
+    ImageDrawCircleLines(&im, (int)x, (int)y, (int)radius, col(r, g, b, a)); return *this;
+  }
+  Image& line(double x0, double y0, double x1, double y1, int64_t thick, int64_t r, int64_t g, int64_t b, int64_t a) {
+    ImageDrawLineEx(&im, Vector2{(float)x0, (float)y0}, Vector2{(float)x1, (float)y1}, (int)thick,
+                    col(r, g, b, a));
+    return *this;
+  }
+  Image& triangle(double x0, double y0, double x1, double y1, double x2, double y2,
+                  int64_t r, int64_t g, int64_t b, int64_t a) {
+    ImageDrawTriangle(&im, Vector2{(float)x0, (float)y0}, Vector2{(float)x1, (float)y1},
+                      Vector2{(float)x2, (float)y2}, col(r, g, b, a));
+    return *this;
+  }
+  // Text: in a Font, or raylib's built-in font — which exists only once a
+  // window does, so a nil font before any View draws nothing and says so.
+  Image& text(std::string s, int64_t x, int64_t y, int64_t size, int64_t r, int64_t g, int64_t b, int64_t a,
+              const Font* font, double spacing) {
+    Color c = col(r, g, b, a);
+    if (font && font->live()) {
+      ImageDrawTextEx(&im, font->font, s.c_str(), Vector2{(float)x, (float)y}, (float)size,
+                      (float)spacing, c);
+    } else if (IsWindowReady()) {
+      ImageDrawText(&im, s.c_str(), (int)x, (int)y, (int)size, c);
+    } else {
+      TraceLog(LOG_ERROR, "Scene.Image.text: the built-in font needs a window; pass a Font");
+    }
+    return *this;
+  }
+  // Generators, blended over the whole image. `direction` is degrees: 0 is
+  // top to bottom, 90 left to right.
+  Image& gradient(int64_t r1, int64_t g1, int64_t b1, int64_t r2, int64_t g2, int64_t b2, int64_t direction) {
+    return over(GenImageGradientLinear(im.width, im.height, (int)direction, col(r1, g1, b1), col(r2, g2, b2)), 255);
+  }
+  // centre -> rim; `density` (0..1) is how far out the inner colour holds.
+  Image& gradient_radial(double density, int64_t r1, int64_t g1, int64_t b1, int64_t r2, int64_t g2, int64_t b2) {
+    return over(GenImageGradientRadial(im.width, im.height, (float)density, col(r1, g1, b1), col(r2, g2, b2)), 255);
+  }
+  // Perlin noise (`scale` = feature size, larger is smoother) mixed in at
+  // `amount` (0..255) — the grain asphalt and grass are made of.
+  Image& noise(int64_t seed, double scale, int64_t amount) {
+    return over(GenImagePerlinNoise(im.width, im.height, (int)seed, (int)seed, (float)scale), amount);
+  }
+  // Worley cells of `tile` pixels, mixed in at `amount` — gravel, stone.
+  Image& cellular(int64_t tile, int64_t amount) {
+    return over(GenImageCellular(im.width, im.height, (int)(tile < 1 ? 1 : tile)), amount);
+  }
+  Image& blit(const Image& src, int64_t x, int64_t y, int64_t r, int64_t g, int64_t b, int64_t a) {
+    ImageDrawImage(&im, src.im, (int)x, (int)y, col(r, g, b, a)); return *this;
+  }
+  // `src` turned `rot` degrees and scaled, its centre at (x, y).
+  Image& blit_rot(const Image& src, double x, double y, double rot, double scale) {
+    ImageDrawImageEx(&im, src.im, Vector2{(float)x, (float)y}, (float)rot, (float)scale, WHITE);
+    return *this;
+  }
+
+  // --- whole-image passes ---
+  Image& blur(int64_t radius) { ImageBlurGaussian(&im, (int)radius); return *this; }
+  Image& tint(int64_t r, int64_t g, int64_t b) { ImageColorTint(&im, col(r, g, b)); return *this; }
+  Image& invert() { ImageColorInvert(&im); return *this; }
+  Image& grayscale() { ImageColorGrayscale(&im); return *this; }
+  Image& brightness(int64_t k) { ImageColorBrightness(&im, (int)k); return *this; }
+  Image& flip_v() { ImageFlipVertical(&im); return *this; }
+  Image& flip_h() { ImageFlipHorizontal(&im); return *this; }
+  Image& rotate(int64_t degrees) { ImageRotate(&im, (int)degrees); return *this; }
+  Image& resize(int64_t w, int64_t h) { ImageResize(&im, (int)w, (int)h); return *this; }
+  Image& crop(int64_t x, int64_t y, int64_t w, int64_t h) {
+    ImageCrop(&im, Rectangle{(float)x, (float)y, (float)w, (float)h}); return *this;
+  }
+  // Height (the red channel) -> a tangent-space normal map, OpenGL convention
+  // (+Y up), edges wrapping so a tiled texture tiles its normals too.
+  Image& to_normal(double strength) {
+    const int w = im.width, h = im.height;
+    auto* px = static_cast<unsigned char*>(im.data);
+    std::vector<unsigned char> out((size_t)w * h * 4);
+    auto height_at = [&](int x, int y) {
+      x = (x + w) % w;
+      y = (y + h) % h;
+      return px[((size_t)y * w + x) * 4] / 255.0;
+    };
+    for (int y = 0; y < h; y++) {
+      for (int x = 0; x < w; x++) {
+        double dx = (height_at(x + 1, y) - height_at(x - 1, y)) * strength;
+        double dy = (height_at(x, y + 1) - height_at(x, y - 1)) * strength;
+        Vector3 n = Vector3Normalize(Vector3{(float)-dx, (float)dy, 1.0f});
+        auto* o = &out[((size_t)y * w + x) * 4];
+        o[0] = (unsigned char)((n.x * 0.5 + 0.5) * 255.0 + 0.5);
+        o[1] = (unsigned char)((n.y * 0.5 + 0.5) * 255.0 + 0.5);
+        o[2] = (unsigned char)((n.z * 0.5 + 0.5) * 255.0 + 0.5);
+        o[3] = 255;
+      }
+    }
+    std::memcpy(px, out.data(), out.size());
+    return *this;
+  }
+
+ private:
+  // Composite a generated image over this one at `amount` alpha, consuming it.
+  Image& over(::Image gen, int64_t amount) {
+    ImageDrawImage(&im, gen, 0, 0, col(255, 255, 255, amount));
+    UnloadImage(gen);
+    return *this;
+  }
 };
 
 // Everything Node::render needs from the View that doesn't vary within a pass:
@@ -919,10 +1100,24 @@ class View {
   // Upload a CPU image as a mipmapped, repeat-wrapped texture. Mipmaps +
   // trilinear keep tiled high-frequency textures (e.g. the checker) from
   // crawling/shimmering when minified under motion. Consumes `im`.
-  std::shared_ptr<Texture> register_texture(Image im) {
+  std::shared_ptr<Texture> register_texture(::Image im) {
     auto t = std::make_shared<Texture>();
     t->tex = upload(std::move(im), true);
     return t;
+  }
+  // Upload a CPU image the script drew (Scene.Image). Mipmapped + repeating by
+  // default, for a tiled material; a sprite or a LUT turns both off.
+  std::shared_ptr<Texture> texture(const Image& img, bool mipmaps, bool repeat) {
+    auto t = std::make_shared<Texture>();
+    t->tex = LoadTextureFromImage(img.im);
+    if (mipmaps) GenTextureMipmaps(&t->tex);
+    SetTextureFilter(t->tex, mipmaps ? TEXTURE_FILTER_TRILINEAR : TEXTURE_FILTER_BILINEAR);
+    SetTextureWrap(t->tex, repeat ? TEXTURE_WRAP_REPEAT : TEXTURE_WRAP_CLAMP);
+    return t;
+  }
+  // A PNG's bytes (FS.read, or an Embed.dir asset) straight to a texture.
+  std::shared_ptr<Texture> texture_png(std::string bytes) {
+    return texture(*Image::from_png(std::move(bytes)), true, true);
   }
   // a checkerboard texture (px square, `checks` cells per side)
   std::shared_ptr<Texture> checker(int64_t px, int64_t checks, int64_t r1, int64_t g1, int64_t b1,
@@ -935,8 +1130,8 @@ class View {
   }
   // a flat colour with white-noise grain mixed in (asphalt / grass grain)
   std::shared_ptr<Texture> grain(int64_t px, int64_t r, int64_t g, int64_t b, int64_t amt) {
-    Image im = GenImageColor((int)px, (int)px, col(r, g, b));
-    Image noise = GenImageWhiteNoise((int)px, (int)px, 0.5f);
+    ::Image im = GenImageColor((int)px, (int)px, col(r, g, b));
+    ::Image noise = GenImageWhiteNoise((int)px, (int)px, 0.5f);
     ImageColorTint(&noise, col(amt, amt, amt));
     ImageDrawImage(&im, noise, 0, 0, Color{255, 255, 255, 60});
     UnloadImage(noise);
@@ -975,7 +1170,7 @@ class View {
     // material samples it as-is. Bake the flip into a plain texture here —
     // which also frees the render target (and its depth buffer) early.
     Texture& t = *open_canvas_;
-    Image im = LoadImageFromTexture(t.rt.texture);
+    ::Image im = LoadImageFromTexture(t.rt.texture);
     ImageFlipVertical(&im);
     UnloadRenderTexture(t.rt);
     t.rt = RenderTexture2D{};
@@ -1421,9 +1616,56 @@ class MusicTrack {
 
 namespace {
 const bool registered = [] {
+  // raylib logs to stdout by default, and Scene.Image runs before any View has
+  // had the chance to redirect it — an INFO line from a PNG decode would land
+  // in a script's output. Route it from the start: errors only, to stderr.
+  SetTraceLogLevel(LOG_ERROR);
+  SetTraceLogCallback(gfx::trace_log);
+
   culebra::wrap<gfx::Texture>("Scene", "Texture")
       .method<&gfx::Texture::width>("width")
-      .method<&gfx::Texture::height>("height");
+      .method<&gfx::Texture::height>("height")
+      .borrowed_method<&gfx::Texture::filter>("filter", {"name"})
+      .borrowed_method<&gfx::Texture::wrap>("wrap", {"name"});
+
+  culebra::wrap<gfx::Image>("Scene", "Image")
+      .ctor<long, long>({"w", "h"})
+      .static_method<&gfx::Image::from_png>("from_png", {"bytes"})
+      .method<&gfx::Image::width>("width")
+      .method<&gfx::Image::height>("height")
+      .method<&gfx::Image::get>("get", {"x", "y"})
+      .method<&gfx::Image::copy>("copy")
+      .method<&gfx::Image::save_png>("save_png", {"path"})
+      .method<&gfx::Image::to_png>("to_png")
+      .borrowed_method<&gfx::Image::fill>("fill", {"r", "g", "b", {"a", 255}})
+      .borrowed_method<&gfx::Image::pixel>("pixel", {"x", "y", "r", "g", "b", {"a", 255}})
+      .borrowed_method<&gfx::Image::rect>("rect", {"x", "y", "w", "h", "r", "g", "b", {"a", 255}})
+      .borrowed_method<&gfx::Image::rect_line>("rect_line", {"x", "y", "w", "h", "r", "g", "b", {"a", 255}})
+      .borrowed_method<&gfx::Image::circle>("circle", {"x", "y", "radius", "r", "g", "b", {"a", 255}})
+      .borrowed_method<&gfx::Image::circle_line>("circle_line", {"x", "y", "radius", "r", "g", "b", {"a", 255}})
+      .borrowed_method<&gfx::Image::line>("line", {"x0", "y0", "x1", "y1", "thick", "r", "g", "b", {"a", 255}})
+      .borrowed_method<&gfx::Image::triangle>("triangle",
+                                              {"x0", "y0", "x1", "y1", "x2", "y2", "r", "g", "b", {"a", 255}})
+      .borrowed_method<&gfx::Image::text>("text", {"s", "x", "y", "size", "r", "g", "b", {"a", 255},
+                                                   {"font", nullptr}, {"spacing", 0.0}})
+      .borrowed_method<&gfx::Image::gradient>("gradient", {"r1", "g1", "b1", "r2", "g2", "b2", {"direction", 0}})
+      .borrowed_method<&gfx::Image::gradient_radial>("gradient_radial",
+                                                     {"density", "r1", "g1", "b1", "r2", "g2", "b2"})
+      .borrowed_method<&gfx::Image::noise>("noise", {"seed", "scale", {"amount", 255}})
+      .borrowed_method<&gfx::Image::cellular>("cellular", {"tile", {"amount", 255}})
+      .borrowed_method<&gfx::Image::blit>("blit", {"src", "x", "y", {"r", 255}, {"g", 255}, {"b", 255}, {"a", 255}})
+      .borrowed_method<&gfx::Image::blit_rot>("blit_rot", {"src", "x", "y", {"rot", 0.0}, {"scale", 1.0}})
+      .borrowed_method<&gfx::Image::blur>("blur", {"radius"})
+      .borrowed_method<&gfx::Image::tint>("tint", {"r", "g", "b"})
+      .borrowed_method<&gfx::Image::invert>("invert")
+      .borrowed_method<&gfx::Image::grayscale>("grayscale")
+      .borrowed_method<&gfx::Image::brightness>("brightness", {"k"})
+      .borrowed_method<&gfx::Image::flip_v>("flip_v")
+      .borrowed_method<&gfx::Image::flip_h>("flip_h")
+      .borrowed_method<&gfx::Image::rotate>("rotate", {"degrees"})
+      .borrowed_method<&gfx::Image::resize>("resize", {"w", "h"})
+      .borrowed_method<&gfx::Image::crop>("crop", {"x", "y", "w", "h"})
+      .borrowed_method<&gfx::Image::to_normal>("to_normal", {{"strength", 1.0}});
 
   culebra::wrap<gfx::Font>("Scene", "Font")
       .method<&gfx::Font::size>("size")
@@ -1509,6 +1751,8 @@ const bool registered = [] {
       .method<&gfx::View::sun>("sun", {"dx", "dy", "dz", "intensity", "r", "g", "b"})
       .method<&gfx::View::ambient>("ambient", {"intensity", "r", "g", "b"})
       .method<&gfx::View::add_material>("add_material")
+      .method<&gfx::View::texture>("texture", {"img", {"mipmaps", true}, {"repeat", true}})
+      .method<&gfx::View::texture_png>("texture_png", {"bytes"})
       .method<&gfx::View::checker>("checker", {"px", "checks", "r1", "g1", "b1", "r2", "g2", "b2"})
       .method<&gfx::View::grain>("grain", {"px", "r", "g", "b", "amt"})
       .method<&gfx::View::canvas>("canvas", {"w", "h"})

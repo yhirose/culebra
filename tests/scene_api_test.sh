@@ -98,6 +98,8 @@ let ttf = Sys.argv[0]
 let digits = view.font(ttf, 24, "0123456789:.")
 let same = view.font_bytes(FS.read(ttf), 24, "0123456789:.")
 println("font {digits.size()} glyphs {digits.glyphs()} bytes-form {same.size()} {same.glyphs()}")
+let stamped = Scene.Image.new(16, 16).fill(0, 0, 0).text("7", 4, 2, 12, 255, 255, 255, 255, digits)
+println("image text with a font drew: {stamped.get(8, 8) != stamped.get(0, 0) || stamped.get(7, 6) != stamped.get(0, 0) || stamped.get(9, 9) != stamped.get(0, 0)}")
 let w20 = view.text_width("01:23.456", 20, digits)
 let w40 = view.text_width("01:23.456", 40, digits)
 let wdef = view.text_width("01:23.456", 20)
@@ -121,6 +123,11 @@ view.text("plain", 200.0, 200.0, 10, 0, 0, 0)
 view.sprite(checks, 240.0, 100.0, 40.0, 40.0)
 view.sprite(checks, 280.0, 150.0, 30.0, 30.0, 45.0, 15.0, 15.0, 255, 128, 128)
 view.sprite_rec(painted, 0.0, 0.0, 16.0, 16.0, 200.0, 110.0, 32.0, 32.0)
+let baked = Scene.Image.new(16, 16).fill(0, 200, 0).text("7", 4, 2, 12, 0, 0, 0, 255, digits)
+let up = view.texture(baked, false, false).filter("point").wrap("clamp")
+view.sprite(up, 300.0, 200.0, 16.0, 16.0)
+let frompng = view.texture_png(baked.to_png())
+view.sprite(frompng, 300.0, 220.0, 16.0, 16.0)
 view.clip(0.0, 0.0, 50.0, 50.0)
 view.rect(0.0, 0.0, 320.0, 240.0, 255, 0, 255)   # only the clipped corner shows
 view.clip_end()
@@ -245,8 +252,92 @@ println("2d frame drew: {Canvas.get_pixel(160, 120) != Canvas.get_pixel(315, 235
 println("clip cut: {Canvas.get_pixel(45, 45) != Canvas.get_pixel(60, 60)}")
 EOF
 
+# Scene.Image needs no window, so this program opens none: the one part of Scene
+# that runs with no display at all, and the one whose answers are exact pixels.
+cat > scene_image.cul <<'EOF'
+let img = Scene.Image.new(8, 8)
+img.fill(0, 0, 0)
+img.rect(0, 0, 4, 4, 255, 0, 0)
+img.pixel(7, 7, 0, 255, 0)
+println("px {img.get(1, 1)} {img.get(6, 6)} {img.get(7, 7)} size {img.width()}x{img.height()}")
+let png = img.to_png()
+let back = Scene.Image.from_png(png)
+println("roundtrip {png.size() > 0} {back.get(1, 1) == img.get(1, 1)} {back.get(7, 7) == img.get(7, 7)} {back.width()}")
+# channel rounding at a gradient's far end is libm's business; the direction is ours
+let g = Scene.Image.new(4, 4).gradient(255, 0, 0, 0, 0, 255)
+println("gradient v: top-red {g.get(0, 0) >> 24 == 255} bottom-blue {(g.get(0, 3) >> 8) & 255 >= 250}")
+let gh = Scene.Image.new(4, 4).gradient(255, 0, 0, 0, 0, 255, 90)
+println("gradient h: left-red {gh.get(0, 0) >> 24 == 255} right-blue {(gh.get(3, 0) >> 8) & 255 >= 250}")
+let n = Scene.Image.new(4, 4).fill(128, 128, 128).to_normal(1.0)
+println("flat normal {n.get(2, 2)}")
+let c = img.copy().flip_h().flip_v()
+println("copy flipped {c.get(7, 7)} {c.get(0, 0)}")
+let big = Scene.Image.new(2, 2).fill(10, 20, 30).resize(6, 6).crop(1, 1, 3, 3)
+println("resize+crop {big.width()}x{big.height()} {big.get(0, 0)}")
+let rad = Scene.Image.new(9, 9).gradient_radial(0.0, 255, 255, 255, 0, 0, 0)
+println("radial centre brighter {rad.get(4, 4) >> 24 > rad.get(0, 0) >> 24}")
+let nz = Scene.Image.new(8, 8).fill(100, 100, 100).noise(7, 2.0, 128).cellular(4, 64).blur(1).tint(255, 200, 200).brightness(10).grayscale().invert().rotate(90)
+println("passes ran {nz.width()}x{nz.height()}")
+let l = Scene.Image.new(8, 8).line(0.0, 0.0, 7.0, 7.0, 1, 255, 255, 255).triangle(0.0, 7.0, 7.0, 7.0, 7.0, 0.0, 0, 0, 255).circle(4, 4, 1, 0, 255, 0).circle_line(4, 4, 3, 255, 0, 0).rect_line(0, 0, 8, 8, 9, 9, 9)
+println("shapes {l.get(0, 0)} {l.get(4, 4)}")
+let stamp = Scene.Image.new(4, 4).fill(0, 0, 255)
+let onto = Scene.Image.new(8, 8).fill(0, 0, 0).blit(stamp, 2, 2).blit_rot(stamp, 6.0, 6.0, 45.0, 0.5)
+println("blit {onto.get(3, 3)} {onto.get(0, 0)}")
+let t = Scene.Image.new(16, 8).text("hi", 0, 0, 8, 255, 255, 255)
+println("text without a window: {t.get(1, 1)}")
+let bad = try {
+  Scene.Image.from_png("not a png")
+  "accepted"
+} catch e {
+  e.kind
+}
+println("bad png: {bad}")
+EOF
+
 [ -n "${GITHUB_ACTIONS:-}" ] && prefix="::error::" || prefix="ERROR: "
 fail=0
+for engine in "--vm" "--jit"; do
+  if ! "$CULEBRA" "$engine" scene_image.cul > "img${engine}.txt" 2> "img${engine}.err"; then
+    echo "${prefix}scene_api_test: Image program $engine exited non-zero:" >&2
+    cat "img${engine}.txt" "img${engine}.err" >&2
+    fail=1
+  fi
+done
+[ $fail -eq 0 ] || exit 1
+if ! diff "img--vm.txt" "img--jit.txt" > diff.txt; then
+  echo "${prefix}scene_api_test: the VM and the JIT disagree on Scene.Image:" >&2
+  cat diff.txt >&2
+  exit 1
+fi
+# Exact pixels: the CPU raster is the same bytes on every platform.
+for want in "px 4278190335 255 16711935 size 8.0x8.0" \
+            "roundtrip true true true 8.0" \
+            "gradient v: top-red true bottom-blue true" \
+            "gradient h: left-red true right-blue true" \
+            "flat normal 2155937791" \
+            "copy flipped 4278190335 16711935" \
+            "resize+crop 3.0x3.0 169090815" \
+            "radial centre brighter true" \
+            "passes ran 8.0x8.0" \
+            "shapes 151587327 16711935" \
+            "blit 65535 255" \
+            "text without a window: 0" \
+            "bad png: RuntimeError"; do
+  if ! grep -qxF "$want" "img--vm.txt"; then
+    echo "${prefix}scene_api_test: Image line missing: $want" >&2
+    cat "img--vm.txt" >&2
+    fail=1
+  fi
+done
+# raylib's own log lines must not reach a script's stdout (they go to stderr).
+if grep -q "INFO:\|WARNING:" "img--vm.txt"; then
+  echo "${prefix}scene_api_test: raylib logged into stdout:" >&2
+  cat "img--vm.txt" >&2
+  fail=1
+fi
+[ $fail -eq 0 ] || exit 1
+echo "OK: Scene.Image agrees on both engines, with no display ($(wc -l < img--vm.txt | tr -d ' ') lines)"
+
 for engine in "--vm" "--jit"; do
   if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" scene_api.cul "$TTF" > "out${engine}.txt" 2>&1; then
     echo "${prefix}scene_api_test: $engine exited non-zero:" >&2
@@ -281,6 +372,7 @@ expect "mouse true dx 0.0 wheel 0.0 false false false"
 expect "resized frame drew: true"
 expect "font 24.0 glyphs 12 bytes-form 24.0 12"
 expect "text_width grows true default true height true"
+expect "image text with a font drew: true"
 expect "missing font: RuntimeError"
 expect "2d frame drew: true"
 expect "clip cut: true"

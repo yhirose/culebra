@@ -5457,9 +5457,9 @@ directional sun with two-cascade shadows, sky/fog, and a post stack of SSAA,
 ambient occlusion, bloom, and depth of field), so the output is more than
 flat-shaded primitives.
 
-`Scene` is **not a game engine**. It has no physics or collision, no
-model/texture import (geometry is procedural or built vertex-by-vertex, and
-textures are generated in-process), and no skeletal animation.
+`Scene` is **not a game engine**. It has no physics or collision, no model
+import (geometry is procedural or built vertex-by-vertex; textures are drawn
+in-process or decoded from PNG bytes), and no skeletal animation.
 It targets 3D you *construct* — visualisations, procedural scenes, vehicle or
 flight demos with a chase camera — rather than asset-driven games. A
 racing demo — circuit mesh, chase camera, gamepad steering — is the
@@ -5555,19 +5555,72 @@ let gold = view.add_material().rgb(230, 180, 60).pbr(0.9, 0.3)
 view.add_box(2.0, 2.0, 2.0).material(gold)
 ```
 
-A texture is a handle too, with `tex.width()` / `tex.height() -> Float`. The
-two handle types are the contract: a texture where a material is expected (or
-the reverse) is a `TypeError` at the call, and a dropped handle a `ClosedError`.
-Textures are generated in-process (there is no image-file loader):
-`view.checker(px, checks, r1,g1,b1, r2,g2,b2) -> Texture` makes a checkerboard,
-`view.grain(px, r, g, b, amt) -> Texture` a noise texture, and
-`view.canvas(w, h) -> Texture` opens a render-to-texture you paint with the 2D
-calls (`rect`/`text`/…) and close with `view.canvas_end()` — how a racing demo
-draws liveries and signage. One canvas is open at a time: a second `canvas()`
-before the close is a `RuntimeError`, and a frame opened with one still open
-ends it first. The texture is upright on the mesh whichever way its UVs run. A
-texture or material outlives the view that made it as an inert handle: in a
-later view it samples as white, the way a node's mesh draws nothing there.
+A texture is a handle too. The two handle types are the contract: a texture
+where a material is expected (or the reverse) is a `TypeError` at the call, and
+a dropped handle a `ClosedError`.
+
+| Method | Result |
+| --- | --- |
+| `view.texture(img, mipmaps = true, repeat = true) -> Texture` | upload a `Scene.Image` (below); mipmapped and repeating for a tiled material, neither for a sprite or a LUT |
+| `view.texture_png(bytes) -> Texture` | a PNG's bytes (`FS.read`, or an `Embed.dir` asset) straight to a texture |
+| `view.checker(px, checks, r1,g1,b1, r2,g2,b2) -> Texture` | a checkerboard |
+| `view.grain(px, r, g, b, amt) -> Texture` | a flat colour with noise grain |
+| `view.canvas(w, h) -> Texture` / `view.canvas_end()` | open a render-to-texture the 2D calls paint into, and close it |
+| `tex.width()` / `tex.height() -> Float` | size in pixels |
+| `tex.filter(name) -> Texture` | sampling: `"point"` (pixel art, a LUT's exact cells), `"bilinear"`, `"trilinear"` |
+| `tex.wrap(name) -> Texture` | past the edge: `"repeat"`, `"clamp"`, `"mirror"` |
+
+A canvas is how a texture gets drawn with the GPU (`rect`/`text`/… between
+`canvas()` and `canvas_end()`), the way a racing demo paints liveries and
+signage. One is open at a time: a second `canvas()` before the close is a
+`RuntimeError`, and a frame opened with one still open ends it first. The
+texture is upright on the mesh whichever way its UVs run. A texture or material
+outlives the view that made it as an inert handle: in a later view it samples
+as white, the way a node's mesh draws nothing there.
+
+### Images
+
+`Scene.Image` is a CPU image — the baker for the procedural textures a scene is
+dressed with (a livery, a road's grain, a lamp's glow, a colour-grading LUT)
+and the way a PNG's pixels come in. It needs no window: an image can be built,
+read back pixel by pixel, or written out before any `View` exists, which is
+what makes it the one part of `Scene` a test runs without a display. Always
+RGBA, coordinates in pixels, every colour with its own alpha (default 255).
+
+| Method | Result |
+| --- | --- |
+| `Scene.Image.new(w, h) -> Image` | a transparent image |
+| `Scene.Image.from_png(bytes) -> Image` | decode a PNG (`RuntimeError` when it is not one) |
+| `img.width()` / `img.height() -> Float` | size |
+| `img.get(x, y) -> Long` | one pixel, packed `0xRRGGBBAA` |
+| `img.copy() -> Image` / `img.save_png(path) -> Bool` / `img.to_png() -> String` | a copy / write a PNG / the PNG's bytes |
+| `img.fill(r, g, b, a = 255)` | every pixel |
+| `img.pixel(x, y, r, g, b, a = 255)` | one pixel |
+| `img.rect(x, y, w, h, r, g, b, a = 255)` / `img.rect_line(x, y, w, h, r, g, b, a = 255)` | filled / outlined rectangle |
+| `img.circle(x, y, radius, r, g, b, a = 255)` / `img.circle_line(x, y, radius, r, g, b, a = 255)` | filled / outlined circle |
+| `img.line(x0, y0, x1, y1, thick, r, g, b, a = 255)` | line |
+| `img.triangle(x0, y0, x1, y1, x2, y2, r, g, b, a = 255)` | filled triangle |
+| `img.text(s, x, y, size, r, g, b, a = 255, font = nil, spacing = 0.0)` | text in a `Font`; the built-in font (`nil`) exists only once a window does |
+| `img.gradient(r1,g1,b1, r2,g2,b2, direction = 0)` | a linear gradient over the whole image; `direction` in degrees, 0 top → bottom, 90 left → right |
+| `img.gradient_radial(density, r1,g1,b1, r2,g2,b2)` | centre → rim, `density` (0–1) how far out the inner colour holds |
+| `img.noise(seed, scale, amount = 255)` | Perlin noise mixed in at `amount` (0–255); `scale` is the feature size |
+| `img.cellular(tile, amount = 255)` | Worley cells of `tile` pixels mixed in (gravel, stone) |
+| `img.blit(src, x, y, r = 255, g = 255, b = 255, a = 255)` | another image onto this one, tinted |
+| `img.blit_rot(src, x, y, rot = 0.0, scale = 1.0)` | the same, turned and scaled about its centre at `(x, y)` |
+| `img.blur(radius)` / `img.tint(r, g, b)` / `img.invert()` / `img.grayscale()` / `img.brightness(k)` | whole-image passes |
+| `img.flip_v()` / `img.flip_h()` / `img.rotate(degrees)` / `img.resize(w, h)` / `img.crop(x, y, w, h)` | geometry |
+| `img.to_normal(strength = 1.0)` | height (the red channel) to a tangent-space normal map, +Y up, edges wrapping so a tile's normals tile |
+
+The drawing calls are fluent, so a texture is one expression:
+
+```culebra
+# doctest: skip
+let asphalt = Scene.Image.new(256, 256).fill(60, 60, 64).noise(3, 4.0, 90).cellular(24, 40)
+let road = view.add_material().texture(view.texture(asphalt)).pbr(0.0, 0.9)
+```
+
+`img.get` is exact — the CPU raster is the same bytes on every platform — so a
+test can assert a pixel, where a rendered frame can only be compared loosely.
 
 Lighting is set on the view:
 
