@@ -311,11 +311,13 @@ class Emitter {
   make_defer(value, at) {
     self.m.make_defer(value: value, line: at.line, col: at.column)
   }
-  make_break(at) {
-    self.m.make_break(line: at.line, col: at.column)
+  # `depth`: how many enclosing loops to skip -- 0 (the default) leaves the
+  # innermost, matching every existing call site's meaning unchanged.
+  make_break(at, depth = 0) {
+    self.m.make_break(line: at.line, col: at.column, depth: depth)
   }
-  make_continue(at) {
-    self.m.make_continue(line: at.line, col: at.column)
+  make_continue(at, depth = 0) {
+    self.m.make_continue(line: at.line, col: at.column, depth: depth)
   }
   make_try(caught_local, body, handler, at) {
     self.m.make_try(

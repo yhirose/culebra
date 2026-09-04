@@ -31,7 +31,11 @@
 # functions and methods on the VM's generators (yield, yield*, next /
 # return / throw, and the iteration protocol over them). J5 -- Promise on
 # the VM's job queue, and async functions as generators driven by one
-# (await is a yield the driver resumes with the settled value).
+# (await is a yield the driver resumes with the settled value). J6 --
+# labeled break/continue, naming any enclosing loop or switch (not an
+# arbitrary labeled block, which real JS allows but this subset does not)
+# -- built on Core-IR's own Break/Continue depth, a front-end capability
+# this file is the first of the three CodeGen examples to use.
 #
 # Known differences: string length/indexing by byte; no TDZ for a captured
 # let (read before its declaration it is undefined); arrays have no holes
@@ -51,9 +55,13 @@ let q = String.from_code_point(39)
 
 let grammar = `
   program    <- stmt*                                          { no_ast_opt }
-  stmt       <- var_decl / gen_decl / async_decl / fn_decl / class_d / if_s / while_s / do_s / for_of / for_in /
+  stmt       <- var_decl / gen_decl / async_decl / fn_decl / class_d / label_s / if_s / while_s / do_s / for_of / for_in /
                 for_s / switch_s / return_s / break_s / continue_s / throw_s /
                 try_s / block / empty_s / expr_s
+  # A label names only an enclosing iteration statement or switch (not an
+  # arbitrary block, which real JS allows but this subset does not) --
+  # break_s/continue_s read it back as the depth to unwind to.
+  label_s    <- ident ':' (label_s / while_s / do_s / for_of / for_in / for_s / switch_s) { no_ast_opt }
   var_decl   <- decl_kw declr (',' declr)* ';'?                  { no_ast_opt }
   decl_kw    <- < 'var' / 'let' / 'const' >
   declr      <- binding ('=' !'=' expr)?                         { no_ast_opt }
@@ -77,8 +85,10 @@ let grammar = `
   for_step   <- seq_e?                                           { no_ast_opt }
   return_s   <- 'return' ret_val ';'?                            { no_ast_opt }
   ret_val    <- expr?                                            { no_ast_opt }
-  break_s    <- 'break' ';'?                                     { no_ast_opt }
-  continue_s <- 'continue' ';'?                                  { no_ast_opt }
+  # The no-line-terminator-before-label restriction real JS has isn't
+  # enforced here (this grammar treats every ';' as optional already).
+  break_s    <- 'break' ident? ';'?                              { no_ast_opt }
+  continue_s <- 'continue' ident? ';'?                           { no_ast_opt }
   throw_s    <- 'throw' expr ';'?                                { no_ast_opt }
   try_s      <- 'try' block catch_c? finally_c?                  { no_ast_opt }
   catch_c    <- 'catch' catch_p block                            { no_ast_opt }
@@ -2538,8 +2548,10 @@ mut prelude_nslots = []  # nslots for funcs[0..prelude_end) as pass A left them
 mut g_slot = 0           # main's slot holding __G
 mut this_slot = 0        # main's `this`
 mut loop_ctx = []        # per func (emit time): [{step: fn(m) -> [ids]}...]
-mut classes = {}         # pkey of a class node -> {home, derived, name, ctor, fields, members}
-mut for_close = {}       # pkey of a for-of -> {func: the closer, slot: its iterator binding}
+mut pending_labels = []  # per func (emit time): label names seen, not yet
+# attached to the loop/switch they wrap
+mut classes = {}    # pkey of a class node -> {home, derived, name, ctor, fields, members}
+mut for_close = {}  # pkey of a for-of -> {func: the closer, slot: its iterator binding}
 
 # per func, what it captures and which of its slots are cells (front.cul);
 # the Emitter is over the program being compiled
@@ -2597,6 +2609,7 @@ fn new_func(parent, name, stmts, body_expr, is_arrow) {
   nslots.push(0)
   scope_stack.push([])
   loop_ctx.push([])
+  pending_labels.push([])
   # every function reaches the global table through main's cell
   if f != 0 {
     frames.use(f, 0, g_slot)
@@ -2993,6 +3006,7 @@ fn scan_stmt(node, f) {
         scan_sub(node.nodes[2].nodes[0], f)
       }
     },
+    {name: 'label_s'} => scan_sub(node.nodes[1], f),
     {name: 'while_s'} => {
       scan_expr(node.nodes[0], f)
       scan_sub(node.nodes[1], f)
@@ -5129,6 +5143,49 @@ fn for_step_ids(m, f, slots, step_node, at) {
   ids
 }
 
+# The label(s) (if any) immediately wrapping the loop/switch about to push
+# its own loop_ctx entry -- taken and cleared here, since a label always
+# names the very next loop/switch the grammar lets it wrap (see label_s).
+fn take_pending_labels(f) {
+  let labels = pending_labels[f]
+  pending_labels[f] = []
+  labels
+}
+
+fn has_label(labels, name) {
+  mut i = 0
+  while i < labels.size() {
+    if labels[i] == name {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+# Depth (loop_ctx frames to skip) from the innermost loop/switch out to the
+# one `name` labels. `want_loop` rejects a switch target (JS: continue may
+# only name an enclosing iteration statement, never a switch).
+fn find_label_depth(f, name, want_loop, node) {
+  let ctx = loop_ctx[f]
+  mut i = ctx.size() - 1
+  while i >= 0 {
+    if ctx[i].labels != nil && has_label(ctx[i].labels, name) {
+      if want_loop && ctx[i].cont != nil {
+        fail(
+          node,
+          "Illegal continue statement: '" +
+            name +
+            "' does not denote an iteration statement",
+        )
+      }
+      return ctx.size() - 1 - i
+    }
+    i = i - 1
+  }
+  fail(node, "Undefined label '" + name + "'")
+}
+
 fn emit_stmt(m, node, f) {
   match node {
     {name: 'var_decl'} | {name: 'var_decl_ns'} => emit_decl(m, node, f),
@@ -5153,7 +5210,7 @@ fn emit_stmt(m, node, f) {
       }
     },
     {name: 'while_s'} => {
-      loop_ctx[f].push({step: nil})
+      loop_ctx[f].push({step: nil, labels: take_pending_labels(f)})
       let body = emit_sub(m, node.nodes[1], f)
       loop_ctx[f].pop()
       ir.make_while(
@@ -5165,7 +5222,7 @@ fn emit_stmt(m, node, f) {
     {name: 'do_s'} => {
       # first = true; while (first || cond) { first = false; body }
       let flag = new_scratch(f)
-      loop_ctx[f].push({step: nil})
+      loop_ctx[f].push({step: nil, labels: take_pending_labels(f)})
       let body = emit_sub(m, node.nodes[0], f)
       loop_ctx[f].pop()
       let test = ir.make_if_else(
@@ -5203,7 +5260,7 @@ fn emit_stmt(m, node, f) {
       }
       loop_ctx[f].push({step: fn (m2) {
         for_step_ids(m2, f, slots, step_node, node)
-      }})
+      }, labels: take_pending_labels(f)})
       let b = emit_sub(m, body, f)
       loop_ctx[f].pop()
       mut body_ids = [b]
@@ -5229,31 +5286,60 @@ fn emit_stmt(m, node, f) {
       }
       ir.make_return(v, node)
     },
-    {name: 'break_s'} => ir.make_break(node),
+    {name: 'break_s'} => cond {
+      node.nodes.size() == 0 => ir.make_break(node),
+      _ => {
+        let depth = find_label_depth(f, node.nodes[0].token, false, node)
+        ir.make_break(node, depth)
+      },
+    },
     {name: 'continue_s'} => {
       let ctx = loop_ctx[f]
       if ctx.size() == 0 {
         fail(node, 'Illegal continue statement')
       }
-      let top = ctx[ctx.size() - 1]
       cond {
-        # inside a switch: leave it with the flag set; the enclosing loop
-        # continues after the switch
-        top.cont !=
-          nil => ir.block(
-          [
-            ir.store_local(top.cont, ir.bool_literal(true, node), node),
-            ir.make_break(node),
-          ],
-          node,
-        ),
-        top.step == nil => ir.make_continue(node),
-        _ => {
-          mut ids = top.step(m)
-          ids.push(ir.make_continue(node))
+        # A labeled continue already names its exact target (must be a real
+        # loop, checked by find_label_depth): jump straight there, running
+        # that loop's own step first -- no need for the switch-forwarding
+        # dance below, since the depth crosses any switch in between as a
+        # plain loop_ctx frame, not a construct we have to unwind by hand.
+        node.nodes.size() > 0 => {
+          let depth = find_label_depth(f, node.nodes[0].token, true, node)
+          let target = ctx[ctx.size() - 1 - depth]
+          mut ids = cond {
+            target.step != nil => target.step(m),
+            _ => [],
+          }
+          ids.push(ir.make_continue(node, depth))
           ir.block(ids, node)
         },
+        _ => {
+          let top = ctx[ctx.size() - 1]
+          cond {
+            # inside a switch: leave it with the flag set; the enclosing
+            # loop continues after the switch
+            top.cont !=
+              nil => ir.block(
+              [
+                ir.store_local(top.cont, ir.bool_literal(true, node), node),
+                ir.make_break(node),
+              ],
+              node,
+            ),
+            top.step == nil => ir.make_continue(node),
+            _ => {
+              mut ids = top.step(m)
+              ids.push(ir.make_continue(node))
+              ir.block(ids, node)
+            },
+          }
+        },
       }
+    },
+    {name: 'label_s'} => {
+      pending_labels[f].push(node.nodes[0].token)
+      emit_sub(m, node.nodes[1], f)
     },
     {name: 'throw_s'} => ir.make_throw(emit_expr(m, node.nodes[0], f), node),
     {name: 'try_s'} => emit_try(m, node, f),
@@ -5307,7 +5393,7 @@ fn emit_for_each(m, node, f, iter_fn) {
     )]
   }
   ids.push(advance(m)[0])
-  loop_ctx[f].push({step: advance})
+  loop_ctx[f].push({step: advance, labels: take_pending_labels(f)})
   let b = emit_sub(m, body, f)
   loop_ctx[f].pop()
   mut body_ids = fresh_slots(m, f, slots, node)
@@ -5377,7 +5463,7 @@ fn emit_switch(m, node, f) {
       node,
     ))
   }
-  loop_ctx[f].push({step: nil, cont: cont})
+  loop_ctx[f].push({step: nil, cont: cont, labels: take_pending_labels(f)})
   mut body_ids = []
   for k2 in range(cases.size()) {
     let c = cases[k2]
@@ -5766,6 +5852,7 @@ fn reset_main(stmts) {
     nslots.pop()
     scope_stack.pop()
     loop_ctx.pop()
+    pending_labels.pop()
   }
   # emit hands itself scratch slots as it walks, so the prelude's slot counts
   # go back to what its binding pass left
@@ -5786,6 +5873,7 @@ fn reset_main(stmts) {
   frames.reset(0, nil)
   scope_stack[0] = []
   loop_ctx[0] = []
+  pending_labels[0] = []
   nslots[0] = 0
   enter_scope(0)
   g_slot = declare_var(0, '__G', nil)
