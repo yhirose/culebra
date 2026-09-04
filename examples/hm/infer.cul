@@ -1,0 +1,30 @@
+# CLI driver for hm.cul — see that file for the inference algorithm itself.
+#
+# Run it:  culebra examples/hm/infer.cul examples/hm/samples/poly_id.hm
+#          culebra examples/hm/infer.cul --ast examples/hm/samples/poly_id.hm
+
+import hm from './hm.cul'
+
+let want_ast = Sys.argv.contains('--ast')
+let args = Sys.argv.filter(|a| a != '--ast')
+if args.empty() {
+  println("usage: culebra infer.cul [--ast] PROGRAM.hm")
+  Sys.exit(1)
+}
+
+try {
+  let tree = Peg.parse(hm.grammar, FS.read(args[0]), path: args[0])
+  if want_ast {
+    print(Peg.str(tree))
+  } else {
+    let (t, _) = hm.infer(tree, {})
+    println(hm.type_to_s(t))
+  }
+} catch e {
+  match e {
+    {kind: 'HmError'} => println("{args[0]}:{e.line}:{e.col}: {e.message}"),
+    {kind: 'PegError'} => println(e.message),
+    _ => throw e,
+  }
+  Sys.exit(1)
+}

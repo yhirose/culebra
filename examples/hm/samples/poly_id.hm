@@ -1,0 +1,2 @@
+let id = fn x { x };
+if (id true) { (id 1) } else { (id 2) }

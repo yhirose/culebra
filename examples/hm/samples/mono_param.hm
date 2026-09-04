@@ -1,0 +1,3 @@
+# Unlike poly_id.hm's `let`, a fn parameter is not generalized -- using it
+# at two different types inside the same body is a type error.
+(fn id { if (id true) { (id 1) } else { (id 2) } } fn x { x })

@@ -1,0 +1,58 @@
+# Regression tests for hm.cul, against the sample programs in
+# examples/hm/samples/*.hm.
+
+import hm from './hm.cul'
+
+fn infer_type(name) {
+  let path = "{FS.dirname(Sys.script)}/samples/{name}.hm"
+  let tree = Peg.parse(hm.grammar, FS.read(path), path: path)
+  let (t, _) = hm.infer(tree, {})
+  hm.type_to_s(t)
+}
+
+fn rejected(name) {
+  try {
+    infer_type(name)
+    nil
+  } catch e {
+    e
+  }
+}
+
+@test
+fn poly_id_is_used_at_bool_then_int_in_one_program() {
+  assert_eq(infer_type('poly_id'), 'Int')
+}
+
+@test
+fn const_fn_is_curried_and_ignores_its_second_argument() {
+  assert_eq(infer_type('const_fn'), 'Int')
+}
+
+@test
+fn self_app_is_an_infinite_type() {
+  let e = rejected('self_app')
+  assert_eq(e.kind, 'HmError')
+  assert_true(e.message.contains('infinite type'))
+}
+
+@test
+fn if_branches_must_unify() {
+  let e = rejected('branch_mismatch')
+  assert_eq(e.kind, 'HmError')
+  assert_true(e.message.contains("can't unify"))
+}
+
+@test
+fn an_undefined_variable_is_reported() {
+  let e = rejected('undefined_var')
+  assert_eq(e.kind, 'HmError')
+  assert_true(e.message.contains('undefined variable "y"'))
+}
+
+@test
+fn a_fn_parameter_does_not_generalize_like_let_does() {
+  let e = rejected('mono_param')
+  assert_eq(e.kind, 'HmError')
+  assert_true(e.message.contains("can't unify"))
+}

@@ -1,0 +1,257 @@
+# Algorithm W: Hindley-Milner type inference for a tiny lambda calculus
+# (Int, Bool, if, fn, application, let). No type annotations anywhere in the
+# source — `infer` reconstructs every type, and `let` generalizes so one
+# definition can be used at more than one type in the same program:
+#
+#   let id = fn x { x }; if (id true) { (id 1) } else { (id 2) }
+#
+# `id` unifies with `Bool -> Bool` at its first use and `Int -> Int` at its
+# second — that's only sound because `let` re-generalizes `id`'s inferred
+# type into a fresh scheme (`{vars: [...], type}`) before each use
+# *instantiates* its own copy. A `fn`-bound parameter gets no such scheme
+# (see LAMBDA below), which is exactly why the classic `(fn x { (x x) })`
+# self-application is rejected as an infinite type rather than silently
+# generalized away.
+#
+# Companion to examples/linz/lin.cul, written to answer the same question a
+# different way: linz *checks* a type an author already wrote down; this
+# *reconstructs* one from nothing. See that file's "Why an immutable
+# environment" for the parts that carry over (env threaded as a return
+# value, not mutated) and README.md in this directory for what didn't.
+#
+# Run it:  culebra examples/hm/hm.cul examples/hm/samples/poly_id.hm
+#          culebra examples/hm/hm.cul --ast examples/hm/samples/poly_id.hm
+
+let grammar = `
+  PROGRAM <- EXPR
+
+  EXPR    <- LET / IF / LAMBDA / APP / BOOL / INT / VAR
+
+  LET     <- 'let' IDENT '=' EXPR ';' EXPR
+  IF      <- 'if' EXPR '{' EXPR '}' 'else' '{' EXPR '}'
+  LAMBDA  <- 'fn' IDENT '{' EXPR '}'
+  APP     <- '(' EXPR EXPR ')'
+  VAR     <- IDENT
+
+  BOOL    <- < 'true' / 'false' >
+  INT     <- < [0-9]+ >
+
+  RESERVED <- 'let' / 'if' / 'else' / 'fn' / 'true' / 'false'
+  IDENT    <- !RESERVED < [a-zA-Z]+ >
+
+  %whitespace <- ([ \t\r\n] / '#' [^\n]*)*
+  %word       <- [a-zA-Z]
+`
+
+# --- Types -------------------------------------------------------------
+#
+# `{kind: 'var', id}` / `{kind: 'con', name}` / `{kind: 'fun', arg, ret}`.
+# A scheme is `{vars, type}`: `vars` names the type variables `type` is
+# universally quantified over (`let`'s generalization); a `fn` parameter's
+# scheme always has `vars: []` — that's the whole difference between
+# let-bound and lambda-bound names (see LAMBDA / LET below).
+
+fn tvar(id) {
+  {kind: 'var', id}
+}
+fn con(name) {
+  {kind: 'con', name}
+}
+fn fun_ty(arg, ret) {
+  {kind: 'fun', arg: arg, ret: ret}
+}
+fn mono(t) {
+  {vars: [], type: t}
+}
+
+# Object literals have no computed-key form (`{...env, [k]: v}` isn't
+# syntax), so binding a name whose value is itself a variable — every
+# binding here — goes through a copy-then-subscript helper instead.
+fn bound(env, name, scheme) {
+  mut e = {...env}
+  e[name] = scheme
+  e
+}
+
+mut next_id = 0
+fn fresh() {
+  next_id += 1
+  tvar(next_id)
+}
+
+fn type_to_s(t) {
+  match t.kind {
+    'var' => "t{t.id}",
+    'con' => t.name,
+    'fun' => "({type_to_s(t.arg)} -> {type_to_s(t.ret)})",
+  }
+}
+
+# --- Substitution --------------------------------------------------------
+#
+# A substitution is `{"<id>": type}`. `apply` is a single-level lookup, not
+# a recursive chase — that's only sound because every substitution this
+# module hands to `apply` came from `compose`, which resolves through the
+# outer substitution as it merges rather than leaving that for `apply` to
+# redo later.
+
+fn apply(s, t) {
+  match t.kind {
+    'var' => s.get(to_string(t.id), t),
+    'con' => t,
+    'fun' => fun_ty(apply(s, t.arg), apply(s, t.ret)),
+  }
+}
+
+fn apply_env(s, env) {
+  env
+    .iter()
+    .map(|kv| (kv[0], {vars: kv[1].vars, type: apply(s, kv[1].type)}))
+    .to_object()
+}
+
+# s1 after s2: s2's own targets get s1 applied (so chained unifications
+# resolve through both steps), and s1's entries are laid on top since s1 is
+# the newer information.
+fn compose(s1, s2) {
+  mut r = {}
+  for [k, v] in s2.iter() {
+    r[k] = apply(s1, v)
+  }
+  for [k, v] in s1.iter() {
+    r[k] = v
+  }
+  r
+}
+
+fn free_vars(t) {
+  match t.kind {
+    'var' => {t.id,},
+    'con' => [].to_set(),
+    'fun' => free_vars(t.arg).union(free_vars(t.ret)),
+  }
+}
+
+fn free_vars_env(env) {
+  mut fv = [].to_set()
+  for [_, scheme] in env.iter() {
+    fv = fv.union(free_vars(scheme.type).diff(scheme.vars.to_set()))
+  }
+  fv
+}
+
+fn fail(node, msg) {
+  throw {kind: 'HmError', message: msg, line: node.line, col: node.column}
+}
+
+fn bind(node, id, t) {
+  if t.kind == 'var' && t.id == id {
+    {}
+  } else if free_vars(t).contains(id) {
+    fail(node, "infinite type: t{id} occurs in {type_to_s(t)}")
+  } else {
+    mut s = {}
+    s[to_string(id)] = t
+    s
+  }
+}
+
+fn unify(node, t1, t2) {
+  match [t1.kind, t2.kind] {
+    ['var', _] => bind(node, t1.id, t2),
+    [_, 'var'] => bind(node, t2.id, t1),
+    ['con', 'con'] if t1.name == t2.name => {},
+    ['fun', 'fun'] => {
+      let s1 = unify(node, t1.arg, t2.arg)
+      let s2 = unify(node, apply(s1, t1.ret), apply(s1, t2.ret))
+      compose(s2, s1)
+    },
+    _ => fail(node, "can't unify {type_to_s(t1)} with {type_to_s(t2)}"),
+  }
+}
+
+# `let`'s generalization: quantify over every variable free in `t` but not
+# already free in the surrounding `env` (a variable env still depends on
+# isn't `let`'s to generalize away).
+fn generalize(env, t) {
+  {vars: free_vars(t).diff(free_vars_env(env)).to_array(), type: t}
+}
+
+fn instantiate(scheme) {
+  let s = scheme.vars.iter().map(|id| (to_string(id), fresh())).to_object()
+  apply(s, scheme.type)
+}
+
+# --- Inference -------------------------------------------------------------
+#
+# `infer(node, env) -> (type, subst)`. Every case reasons about what it
+# already knows before asking about what it doesn't: IF checks its
+# condition against Bool *before* comparing the branches, APP solves its
+# operand against a fresh return-type variable rather than guessing a
+# function's result ahead of time. Read a case's substitution composition
+# right to left — s1 first, then s2 written against s1's view of things,
+# and so on — the same order Algorithm W applies them in.
+
+fn infer(node, env) {
+  match node {
+    {name: 'INT'} => (con('Int'), {}),
+    {name: 'BOOL'} => (con('Bool'), {}),
+    {name: 'IDENT', token} => {
+      if !env.has(token) {
+        fail(node, "undefined variable \"{token}\"")
+      }
+      (instantiate(env[token]), {})
+    },
+    {name: 'IF', nodes: [c, t, e]} => infer_if(node, c, t, e, env),
+    {
+      name: 'LAMBDA',
+      nodes: [param, body],
+    } => infer_lambda(param.token, body, env),
+    {name: 'APP', nodes: [f, a]} => infer_app(node, f, a, env),
+    {name: 'LET', nodes: [v, e1, e2]} => infer_let(v.token, e1, e2, env),
+  }
+}
+
+fn infer_if(at, c, t, e, env) {
+  let (tc, s1) = infer(c, env)
+  let s2 = unify(c, tc, con('Bool'))
+  let s12 = compose(s2, s1)
+  let (tt, s3) = infer(t, apply_env(s12, env))
+  let s123 = compose(s3, s12)
+  let (te, s4) = infer(e, apply_env(s123, env))
+  let s1234 = compose(s4, s123)
+  let s5 = unify(at, apply(s1234, tt), apply(s1234, te))
+  let sf = compose(s5, s1234)
+  (apply(sf, tt), sf)
+}
+
+# A lambda parameter's scheme is `mono` (no generalized variables), unlike
+# `let`'s — the difference is deliberate, not an oversight. Generalizing a
+# parameter would let one call's argument type leak into another: `fn f {
+# (f 1) }` applied to `fn x { x }` and to `fn x { (x true) }` should be two
+# different (and incompatible) instantiations of `f`, not one shared type.
+fn infer_lambda(param, body, env) {
+  let tv = fresh()
+  let (tbody, s) = infer(body, bound(env, param, mono(tv)))
+  (fun_ty(apply(s, tv), tbody), s)
+}
+
+fn infer_app(at, f, a, env) {
+  let (tf, s1) = infer(f, env)
+  let (ta, s2) = infer(a, apply_env(s1, env))
+  let s12 = compose(s2, s1)
+  let tv = fresh()
+  let s3 = unify(at, apply(s12, tf), fun_ty(ta, tv))
+  let sf = compose(s3, s12)
+  (apply(sf, tv), sf)
+}
+
+fn infer_let(v, e1, e2, env) {
+  let (t1, s1) = infer(e1, env)
+  let env1 = apply_env(s1, env)
+  let scheme = generalize(env1, t1)
+  let (t2, s2) = infer(e2, bound(env1, v, scheme))
+  (t2, compose(s2, s1))
+}
+
+export {grammar, infer, type_to_s}
