@@ -66,7 +66,7 @@ Conventions used below:
 24. [`TOML`](#24-toml) — parse / stringify TOML configuration
 25. [`SQLite`](#25-sqlite) — embedded SQL database (query / execute / prepared statements / transactions)
 26. [`Canvas`](#26-canvas) — immediate-mode 2D framebuffer for games (shapes, sprites, offscreen targets, text, keys/mouse/gamepad, window controls, tone, sound, music)
-27. [`Scene`](#27-scene) — retained-mode 3D renderer for procedural geometry (experimental, opt-in build)
+27. [`Scene`](#27-scene) — retained-mode 3D renderer for procedural geometry (experimental)
 28. [`Net`](#28-net) — raw TCP / UDP sockets and name resolution (the layer under `Http`)
 29. [`Desktop` / `Webview`](#29-desktop--webview) — native WebView desktop app: local HTTP server + window, one call
 30. [`Vector2`](#30-vector2) — minimal 2D float vector for graphics/game code (also stands in for a "Point")
@@ -5465,15 +5465,14 @@ flight demos with a chase camera — rather than asset-driven games. A
 racing demo — circuit mesh, chase camera, gamepad steering — is the
 shape it is designed around.
 
-`Scene` is **experimental**: its API can change without notice, and it is the
-one namespace the released binaries do not carry. It is not in the default
-build; enable it with `-DCULEBRA_ENABLE_SCENE=ON`, which builds the vendored
-static SDL3 + raylib backend — the same one `Canvas` opens a window with.
-`Scene` builds on macOS, Linux and Windows; Linux is where a frame is drawn on
-every push (under Xvfb) and macOS is where it is run by hand, while the Windows
-build is linked but has yet to open a window. It has no headless mode either,
-so — unlike `Canvas` — `Scene` programs run neither headless nor in the
-Playground.
+`Scene` is **experimental**: its API is still settling and can change between
+releases. It is in every build that has the `Canvas` window backend — the
+default on macOS, Linux and Windows, so the released binaries carry it — on
+the same vendored static SDL3 + raylib; `-DCULEBRA_ENABLE_SCENE=OFF` leaves it
+out. Linux is where a frame is drawn on every push (under Xvfb) and macOS is
+where it is run by hand, while the Windows build is linked but has yet to open
+a window. It has no headless mode, so — unlike `Canvas` — `Scene` programs run
+neither headless nor in the Playground.
 
 ### The view and the frame loop
 
@@ -5484,17 +5483,18 @@ sizes are `Float`
 world units; colors are three or four `0–255` integer channels, and a channel
 outside that range clamps to it. A frame is
 either a 3D pass with a 2D overlay (`render_3d()` → overlay draws → `present()`)
-or pure 2D (`begin2d()` → draws → `present()`).
+or pure 2D (`begin_2d()` → draws → `present()`).
 
 | Method | Effect |
 | --- | --- |
 | `view.target_fps(fps)` | cap the frame rate |
-| `view.closing() -> Bool` | window close requested (loop until true) |
+| `view.closing() -> Bool` | the close box was clicked, or `quit()` was called (loop until true) |
+| `view.quit()` | end the loop from the script: `closing()` is true from now on |
 | `view.dt() -> Float` | seconds since the previous frame |
 | `view.width()` / `view.height() -> Float` | window size |
 | `view.camera(px,py,pz, tx,ty,tz, ux,uy,uz, fov)` | eye position, look-at target, up vector, vertical FOV |
 | `view.render_3d()` | render the scene graph, then open the frame for a 2D overlay |
-| `view.begin2d()` | open a pure-2D frame (no 3D pass) |
+| `view.begin_2d()` | open a pure-2D frame (no 3D pass) |
 | `view.present()` | finish and show the frame |
 
 ### Scene graph
@@ -5513,7 +5513,7 @@ persistent geometry once and move it each frame.
 | `node.spin(x, y, z, a)` / `euler(x, y, z)` | axis-angle / Euler rotation |
 | `node.scale(s)` / `scale3(x, y, z)` | uniform / per-axis scale |
 | `node.tint(r, g, b)` | per-node color |
-| `node.material(id)` | assign a material (below) |
+| `node.material(m)` | assign a `Material` (below); `nil` goes back to the tint alone |
 | `node.hide()` / `show()` / `name(n)` | visibility / label |
 | `node.x()` / `y()` / `z() -> Float` | read back position |
 
@@ -5526,22 +5526,35 @@ more.) An uploaded mesh belongs to the view that uploaded it: a node kept past
 
 ### Materials, lighting, textures
 
-Materials are created on the view and referenced by id:
+A material is a handle the view creates and the script configures with fluent
+setters, so one reads as a single expression:
 
 | Method | Result |
 | --- | --- |
-| `view.material(r, g, b) -> id` | flat-color material |
-| `view.material_pbr(r, g, b, metallic, roughness) -> id` | PBR material (`metallic`/`roughness` are 0–1) |
-| `view.material_tex(tex, r, g, b) -> id` / `material_tex_pbr(tex, r, g, b, metallic, roughness) -> id` | textured material |
+| `view.add_material() -> Material` | a new material: white, matte, untextured |
+| `mat.rgb(r, g, b) -> Material` | base colour |
+| `mat.pbr(metallic, roughness) -> Material` | PBR response, both 0–1 (the defaults are 0 and 0.85) |
+| `mat.texture(tex) -> Material` | a `Texture` to sample, or `nil` for none |
 
+```culebra
+# doctest: skip
+let gold = view.add_material().rgb(230, 180, 60).pbr(0.9, 0.3)
+view.add_box(2.0, 2.0, 2.0).material(gold)
+```
+
+A texture is a handle too, with `tex.width()` / `tex.height() -> Float`. The
+two handle types are the contract: a texture where a material is expected (or
+the reverse) is a `TypeError` at the call, and a dropped handle a `ClosedError`.
 Textures are generated in-process (there is no image-file loader):
-`view.checker(px, checks, r1,g1,b1, r2,g2,b2) -> tex` makes a checkerboard,
-`view.grain(px, r, g, b, amt) -> tex` a noise texture, and `view.canvas(w, h) ->
-tex` opens a render-to-texture you paint with the 2D calls (`rect`/`text`/…) and
-close with `view.canvas_end()` — how the demo draws liveries and signage. One
-canvas is open at a time: a second `canvas()` before the close is refused, and a
-frame opened with one still open ends it first. The texture is upright on the
-mesh whichever way its UVs run.
+`view.checker(px, checks, r1,g1,b1, r2,g2,b2) -> Texture` makes a checkerboard,
+`view.grain(px, r, g, b, amt) -> Texture` a noise texture, and
+`view.canvas(w, h) -> Texture` opens a render-to-texture you paint with the 2D
+calls (`rect`/`text`/…) and close with `view.canvas_end()` — how a racing demo
+draws liveries and signage. One canvas is open at a time: a second `canvas()`
+before the close is a `RuntimeError`, and a frame opened with one still open
+ends it first. The texture is upright on the mesh whichever way its UVs run. A
+texture or material outlives the view that made it as an inert handle: in a
+later view it samples as white, the way a node's mesh draws nothing there.
 
 Lighting is set on the view:
 
@@ -5556,7 +5569,7 @@ Lighting is set on the view:
 
 ### 2D overlay
 
-After `render_3d()` (or `begin2d()`) these draw on top, for a HUD:
+After `render_3d()` (or `begin_2d()`) these draw on top, for a HUD:
 
 | Method | Effect |
 | --- | --- |
@@ -5568,19 +5581,31 @@ After `render_3d()` (or `begin2d()`) these draw on top, for a HUD:
 
 ### Input
 
-Input is polled from the view each frame. Keyboard keys and gamepad
-axes/buttons are raw integer codes (raylib key codes; SDL game-controller
-indices) — there are no named constants:
+Input is polled from the view each frame. Keys are named — **the same
+vocabulary `Canvas.key` and `Term.read_key` use**: a printable character
+(`"a"`, `" "`, `"-"`) or a special-key name (`"up"` / `"down"` / `"left"` /
+`"right"`, `"enter"`, `"escape"`, `"tab"`, `"backspace"`, `"insert"`,
+`"delete"`, `"home"`, `"end"`, `"pageup"`, `"pagedown"`, `"f1"`…`"f12"`;
+`"space"` is a readable alias for `" "`). An unknown name is a key that is
+never pressed. Esc is an ordinary key here, not a way out of the window: the
+loop ends at the close box or at `view.quit()`.
+
+Gamepad buttons and axes are named too, by the layout SDL's mapping DB
+normalizes every pad to: face buttons `"a"` `"b"` `"x"` `"y"` (the Xbox letters
+— `"a"` is Cross on a PlayStation pad), d-pad `"up"` `"down"` `"left"`
+`"right"`, shoulders `"lb"` `"rb"`, triggers `"lt"` `"rt"`, `"select"`
+`"guide"` `"start"`, stick clicks `"l3"` `"r3"`; axes `"lx"` `"ly"` `"rx"`
+`"ry"` `"lt"` `"rt"`. `index` picks the pad (0–3) and defaults to the first.
 
 | Method | Result |
 | --- | --- |
-| `view.held(key) -> Bool` | key is down (e.g. `262`–`265` = arrows, `32` = space) |
-| `view.pressed(key) -> Bool` | key went down this frame |
-| `view.pad_available() -> Bool` | a gamepad is connected |
-| `view.pad_axis(n) -> Float` | axis value (sticks, triggers) |
-| `view.pad_button(n) -> Bool` / `pad_pressed(n) -> Bool` | button held / just pressed |
-| `view.rumble(left, right, sec)` | haptics (Sony pads and XInput; Xbox-on-macOS is silent) |
-| `view.pad_name() -> String` / `view.gamepad_mappings(db)` | pad identity / load an SDL mapping DB |
+| `view.key(name) -> Bool` | key is held now |
+| `view.key_pressed(name) -> Bool` / `key_released(name) -> Bool` | key went down / came up this frame |
+| `view.pad_available(index = 0) -> Bool` | a gamepad is connected |
+| `view.pad_axis(name, index = 0) -> Float` | axis value (sticks, triggers) |
+| `view.pad(name, index = 0) -> Bool` / `pad_pressed(name, index = 0) -> Bool` | button held / just pressed |
+| `view.rumble(left, right, sec, index = 0)` | haptics (Sony pads and XInput; Xbox-on-macOS is silent) |
+| `view.pad_name(index = 0) -> String` / `view.gamepad_mappings(db)` | pad identity / load an SDL mapping DB |
 
 ### Audio
 
@@ -5600,7 +5625,7 @@ view.background(30, 34, 42)
 view.sun(0.5, -0.8, -0.3, 1.2, 255, 245, 230)
 view.ambient(0.4, 180, 200, 220)
 
-let gold = view.material_pbr(230, 180, 60, 0.9, 0.3)
+let gold = view.add_material().rgb(230, 180, 60).pbr(0.9, 0.3)
 let box = view.add_box(2.0, 2.0, 2.0).material(gold)
 
 mut a = 0.0
@@ -5611,6 +5636,7 @@ while !view.closing() {
   view.render_3d()
   view.text("culebra scene", 20.0, 20.0, 28, 235, 235, 240)
   view.present()
+  if view.key_pressed("escape") { view.quit() }
 }
 view.drop()
 ```

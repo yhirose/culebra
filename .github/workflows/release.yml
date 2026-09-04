@@ -34,7 +34,8 @@ env:
   # Note there is deliberately no CULEBRA_CANVAS_WINDOW_DEFAULT here, unlike
   # ci.yml which pins it OFF for the jobs that do not want it. Each platform
   # gets CMake's own default, which is ON everywhere now — so every download
-  # opens a real window for a Canvas game, matching what a local `just build`
+  # opens a real window for a Canvas game, and carries the Scene namespace,
+  # which follows the window's default — matching what a local `just build`
   # produces. The Linux job therefore has to install SDL3's build dependencies
   # (it does, in its toolchain step); without them SDL3's configure fails and
   # takes the whole build with it. Windows needs no such packages, and its link
@@ -110,6 +111,8 @@ jobs:
       - run: ccache -s || true
       - name: Verify the Canvas window backend is in this build
         run: misc/aot_axes/verify_canvas_window.sh build
+      - name: Verify Scene is in this build too (it follows the window)
+        run: misc/aot_axes/verify_scene_axis.sh build
       - name: Package and upload
         env:
           GH_TOKEN: ${{ github.token }}
@@ -158,6 +161,8 @@ jobs:
       - run: ccache -s || true
       - name: Verify the Canvas window backend is in this build
         run: misc/aot_axes/verify_canvas_window.sh build
+      - name: Verify Scene is in this build too (it follows the window)
+        run: misc/aot_axes/verify_scene_axis.sh build
       # A download that ships Webview must actually have it, for the same reason
       # the Canvas window is checked above: a missing dev package turns the axis
       # off and the build succeeds anyway.
@@ -282,6 +287,8 @@ jobs:
       # without first paying the ~40 min LTO link.
       - name: Verify the Canvas window backend is in this build
         run: misc/aot_axes/verify_canvas_window.sh build
+      - name: Verify Scene is in this build too (it follows the window)
+        run: misc/aot_axes/verify_scene_axis.sh build
       # Only `culebra` (+ its embedded runtime archives): the default `all`
       # pulls in POSIX-only test targets.
       - name: Build

@@ -606,6 +606,8 @@ jobs:
       # the two cannot end up asserting different cache entries.
       - name: Verify the window backend is actually in this build
         run: misc/aot_axes/verify_canvas_window.sh build
+      - name: Verify Scene is in this build too (it follows the window)
+        run: misc/aot_axes/verify_scene_axis.sh build
 
       # The coexistence requirement: a window-enabled binary must still take the
       # headless path on demand, byte-identically, on every engine — the
@@ -730,6 +732,8 @@ jobs:
 
       - name: Verify the window backend is actually in this build
         run: misc/aot_axes/verify_canvas_window.sh build
+      - name: Verify Scene is in this build too (it follows the window)
+        run: misc/aot_axes/verify_scene_axis.sh build
 
       # A window-enabled binary must still take the headless path on demand,
       # byte-identically, on every engine. Set explicitly — the binary is
@@ -765,18 +769,14 @@ jobs:
           [ -n "$v" ] || { echo "no CULEBRA_VERSION in include/culebra.h" >&2; exit 1; }
           misc/package_release.sh ./build/culebra "v$v" macos arm64
 
-  # Scene is the one namespace no released binary carries: CMake defaults it
-  # OFF, so until this job nothing built it anywhere — the wrap binding, the
-  # culebra_rt_scene archive and the CULEBRA_SCENE_LINK fragment compiled in no
-  # lane, and the axis was as verified as the last time someone ran it by hand.
-  # It is also the only place tools/checks/check_rt_archive_tls.sh ever sees that
-  # archive, which is the ratchet standing behind the Windows twin below.
-  #
-  # Rendering is checked here and nowhere else. Scene has no headless mode —
-  # View.new opens a window or raises — so a frame is drawn under Xvfb and read
-  # back through Canvas's headless framebuffer. Everything else about the axis
-  # (the build, the archive, the AOT link) passes on a binary whose raylib
-  # bodies are never entered.
+  # Scene builds wherever the Canvas window does (CMake ties the two defaults),
+  # so the release lanes carry it and assert it with verify_scene_axis.sh. What
+  # only this job does is run it: Scene has no headless mode — View.new opens a
+  # window or raises — so a frame is drawn under Xvfb and read back through
+  # Canvas's headless framebuffer, and the whole API surface is exercised on
+  # both engines under the same X server. Everything else about the axis (the
+  # build, the archive, the AOT link) passes on a binary whose raylib bodies
+  # are never entered.
   linux-scene:
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -823,9 +823,9 @@ jobs:
             linux-scene-ccache-
 
       # `just build-scene` is where this lane's configuration lives, so a
-      # contributor gets the same build with one word. LTO off (Scene is not a
-      # shipped configuration, so it would only cost the link) and the AOT
-      # runtime archives kept, which the ratchet and the AOT probe both need.
+      # contributor gets the same build with one word. LTO off (the render
+      # probe does not need the release link) and the AOT runtime archives
+      # kept, which the ratchet and the AOT probe both need.
       - name: Build (Scene ON)
         run: just build-scene -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold
 
@@ -844,6 +844,14 @@ jobs:
         run: |
           LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a \
             misc/aot_axes/probe_scene_window.sh ./build-scene/culebra
+
+      # Every method once, on both engines: the binding surface — argument
+      # marshalling, the handle types' TypeErrors, the display-less input
+      # answers — not the picture, which is the probe above.
+      - name: Scene API surface (Xvfb, vm / JIT)
+        run: |
+          LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a \
+            tests/scene_api_test.sh ./build-scene/culebra
 
       # Display-free by construction (the Scene call sits under `if false`), so
       # what it reports is the link: the force-load of libculebra_rt_scene.a
@@ -1580,6 +1588,8 @@ jobs:
 
       - name: Verify the Canvas window backend is in this build
         run: misc/aot_axes/verify_canvas_window.sh build-win-aot
+      - name: Verify Scene is in this build too (it follows the window)
+        run: misc/aot_axes/verify_scene_axis.sh build-win-aot
       - name: Build (culebra driver + runtime archives)
         env:
           CCACHE_DIR: ${{ github.workspace }}/.ccache

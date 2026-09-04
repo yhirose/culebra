@@ -293,14 +293,16 @@ build-assert *extra:
     cd build-assert && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF -DCULEBRA_DEV_NO_RT=ON -DCMAKE_CXX_FLAGS_RELEASE="-O1" {{extra}} .. > /dev/null
     cd build-assert && {{nice_cmd}} make -j${CULEBRA_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)} culebra
 
-# The Scene axis, which no other lane builds: CMake defaults it OFF and no
-# release turns it on, so its binding, its feature archive and its AOT link
-# fragment compile nowhere else. Its own build dir for build-assert's reason —
-# CULEBRA_ENABLE_SCENE is a target-wide define, so every TU's command line
-# differs and sharing a dir would evict the other lanes' ccache. Keeps the AOT
-# archives (no DEV_NO_RT): misc/aot_axes/probe_scene_aot_link.sh needs the force-load.
-# The `culebra` target alone — this lane runs the probes, never ctest.
-[doc("Build with the opt-in Scene namespace ON (the only lane that does)")]
+# The Scene render lane's build. Scene follows the Canvas window's default, so
+# a plain `just build` carries it too; this spells it ON so a
+# CULEBRA_CANVAS_WINDOW_DEFAULT=OFF in the environment cannot silently take it
+# away, keeps LTO off (the render probe does not need the release link) and
+# the AOT archives (no DEV_NO_RT): misc/aot_axes/probe_scene_aot_link.sh needs
+# the force-load. Its own build dir for build-assert's reason — the option is a
+# target-wide define, so every TU's command line differs and sharing a dir
+# would evict the other lanes' ccache. The `culebra` target alone — this lane
+# runs the probes, never ctest.
+[doc("Build for the Scene render lane: Scene ON, LTO off, AOT archives kept")]
 [group("build")]
 build-scene *extra:
     mkdir -p build-scene

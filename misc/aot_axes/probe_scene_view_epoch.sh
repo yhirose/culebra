@@ -3,12 +3,9 @@
 #
 # Usage: misc/aot_axes/probe_scene_view_epoch.sh <culebra binary>
 #
-# No gate runs this: CULEBRA_ENABLE_SCENE is OFF in every CMake and CI lane, so
-# the Scene TU is not even compiled there. Build a driver that has it with
-#
-#   just dev -DCULEBRA_ENABLE_SCENE=ON
-#
-# then run this against build-dev/culebra. Needs xvfb-run (a window is opened).
+# No gate runs this. Scene is in any build with the Canvas window (a plain
+# `just dev` on a desktop), so run it by hand against build-dev/culebra. Needs
+# xvfb-run (a window is opened).
 #
 # The program builds a mesh under one View, keeps the node past that View's
 # death, and drops it inside the NEXT View's context. Both Views build their

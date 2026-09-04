@@ -64,7 +64,7 @@
 24. [`TOML`](#24-toml) — TOML設定をparse / stringify
 25. [`SQLite`](#25-sqlite) — 組み込みSQLデータベース（query / execute / プリペアド文 / トランザクション）
 26. [`Canvas`](#26-canvas) — ゲーム向けイミディエイトモード2Dフレームバッファ（図形 / スプライト / オフスクリーン描画先 / テキスト / キー・マウス・ゲームパッド / ウィンドウ制御 / tone / 効果音 / music）
-27. [`Scene`](#27-scene) — 手続きジオメトリ向けのretained-mode 3Dレンダラ（experimental、opt-inビルド）
+27. [`Scene`](#27-scene) — 手続きジオメトリ向けのretained-mode 3Dレンダラ（experimental）
 28. [`Net`](#28-net) — 生のTCP / UDPソケットと名前解決（`Http`の下位レイヤ）
 29. [`Desktop` / `Webview`](#29-desktop--webview) — ネイティブWebViewのデスクトップアプリ: ローカルHTTPサーバ + ウィンドウを1呼び出しで
 30. [`Vector2`](#30-vector2) — グラフィックス/ゲーム向けの最小限の2D floatベクトル（「Point」の代わりも兼ねる）
@@ -5299,14 +5299,13 @@ post stack）なので、出力はフラットシェーディングのプリミ�
 アセット駆動のゲームではない。サーキットのメッシュ、チェイスカメラ、
 ゲームパッド操作といったレーシングデモの形が、設計の基準になっている。
 
-`Scene`は **experimental**でAPIは予告なく変わりうる。リリースバイナリが
-持たない唯一のnamespaceでもある。デフォルトビルドには入らない。
-`-DCULEBRA_ENABLE_SCENE=ON`で有効化すると、vendoredな静的SDL3 + raylib
-バックエンドをビルドする。これは`Canvas`がウィンドウを開くのに使うものと同じ
-バックエンドで、`Scene`はmacOS・Linux・Windowsでビルドできる。フレームを実際に
+`Scene`は **experimental**でAPIはまだ固まりきっておらず、リリース間で変わりうる。
+`Canvas`のウィンドウバックエンドを持つビルドには必ず入る — macOS・Linux・Windows
+の既定で、リリースバイナリもこれを持つ — vendoredな静的SDL3 + raylibを`Canvas`と
+共用し、`-DCULEBRA_ENABLE_SCENE=OFF`で外せる。フレームを実際に
 描いて確認しているのはLinux（毎pushのCIがXvfb下で描く）とmacOS（手動）で、
 Windowsビルドはリンクまでは通るがまだウィンドウを開いたことがない。ヘッドレス
-モードも無いので、`Canvas`と違い`Scene`プログラムはヘッドレスでもPlaygroundでも
+モードは無いので、`Canvas`と違い`Scene`プログラムはヘッドレスでもPlaygroundでも
 動かない。
 
 ### View とフレームループ
@@ -5318,17 +5317,18 @@ GPUを必要とするため）。位置とサイズは`Float`
 （ワールド単位）、色は`0–255`の3または4チャンネル整数で、範囲外の
 チャンネルは端に丸められる。1フレームは、
 2Dオーバーレイ付きの3Dパス（`render_3d()` → オーバーレイ描画 → `present()`）
-か、純2D（`begin2d()` → 描画 → `present()`）のいずれか。
+か、純2D（`begin_2d()` → 描画 → `present()`）のいずれか。
 
 | メソッド | 効果 |
 | --- | --- |
 | `view.target_fps(fps)` | フレームレート上限 |
-| `view.closing() -> Bool` | ウィンドウ閉じ要求（trueまでループ） |
+| `view.closing() -> Bool` | 閉じるボタンが押された、または`quit()`が呼ばれた（trueまでループ） |
+| `view.quit()` | スクリプトからループを終える。以降`closing()`はtrue |
 | `view.dt() -> Float` | 前フレームからの秒数 |
 | `view.width()` / `view.height() -> Float` | ウィンドウ寸法 |
 | `view.camera(px,py,pz, tx,ty,tz, ux,uy,uz, fov)` | 視点位置・注視点・upベクトル・垂直FOV |
 | `view.render_3d()` | シーングラフを描画し、2Dオーバーレイ用にフレームを開く |
-| `view.begin2d()` | 純2Dフレームを開く（3Dパスなし） |
+| `view.begin_2d()` | 純2Dフレームを開く（3Dパスなし） |
 | `view.present()` | フレームを確定して提示 |
 
 ### シーングラフ
@@ -5347,7 +5347,7 @@ GPUを必要とするため）。位置とサイズは`Float`
 | `node.spin(x, y, z, a)` / `euler(x, y, z)` | 軸角 / オイラー回転 |
 | `node.scale(s)` / `scale3(x, y, z)` | 一様 / 軸別スケール |
 | `node.tint(r, g, b)` | ノード単位の色 |
-| `node.material(id)` | マテリアルを割り当て（下記） |
+| `node.material(m)` | `Material`を割り当て（下記）。`nil`でtintだけに戻る |
 | `node.hide()` / `show()` / `name(n)` | 可視性 / ラベル |
 | `node.x()` / `y()` / `z() -> Float` | 位置を読み戻す |
 
@@ -5360,22 +5360,34 @@ ny, nz)`（または`vertex_uv(…, u, v)`）が頂点、`m.tri(a, b, c)`が頂�
 
 ### マテリアル・ライティング・テクスチャ
 
-マテリアルはview上で作り、idで参照する:
+マテリアルはviewが作るハンドルで、fluentなsetterで設定するので1式で書ける:
 
 | メソッド | 結果 |
 | --- | --- |
-| `view.material(r, g, b) -> id` | フラット色マテリアル |
-| `view.material_pbr(r, g, b, metallic, roughness) -> id` | PBRマテリアル（`metallic` / `roughness`は0–1） |
-| `view.material_tex(tex, r, g, b) -> id` / `material_tex_pbr(tex, r, g, b, metallic, roughness) -> id` | テクスチャ付きマテリアル |
+| `view.add_material() -> Material` | 新しいマテリアル: 白・マット・テクスチャなし |
+| `mat.rgb(r, g, b) -> Material` | 基本色 |
+| `mat.pbr(metallic, roughness) -> Material` | PBR応答。どちらも0–1（既定は0と0.85） |
+| `mat.texture(tex) -> Material` | サンプルする`Texture`。`nil`で無し |
 
+```culebra
+# doctest: skip
+let gold = view.add_material().rgb(230, 180, 60).pbr(0.9, 0.3)
+view.add_box(2.0, 2.0, 2.0).material(gold)
+```
+
+テクスチャもハンドルで、`tex.width()` / `tex.height() -> Float`を持つ。2つの
+ハンドル型が契約そのもの: マテリアルの位置にテクスチャ（やその逆）を渡せば
+呼び出し時点で`TypeError`、drop済みのハンドルは`ClosedError`になる。
 テクスチャはプロセス内生成（画像ファイルローダは無い）:
-`view.checker(px, checks, r1,g1,b1, r2,g2,b2) -> tex`は市松、
-`view.grain(px, r, g, b, amt) -> tex`はノイズ、`view.canvas(w, h) -> tex`は
+`view.checker(px, checks, r1,g1,b1, r2,g2,b2) -> Texture`は市松、
+`view.grain(px, r, g, b, amt) -> Texture`はノイズ、`view.canvas(w, h) -> Texture`は
 2D呼び出し（`rect` / `text` …）で塗るrender-to-textureを開き、
-`view.canvas_end()`で閉じる — デモがリバリーや看板を描くのに使っている方法。
-canvasは同時に1枚だけ: 閉じる前の2枚目の`canvas()`は拒否され、開いたまま
+`view.canvas_end()`で閉じる — レーシングデモがリバリーや看板を描く方法。
+canvasは同時に1枚だけ: 閉じる前の2枚目の`canvas()`は`RuntimeError`、開いたまま
 フレームを開くと先に閉じられる。テクスチャはUVの向きに関わらずメッシュ上で
-正しい向きになる。
+正しい向きになる。テクスチャやマテリアルは作ったviewより長生きしてよいが、
+その後のviewでは不活性なハンドルになる: 白としてサンプルされ、nodeのメッシュが
+何も描かないのと同じ扱い。
 
 ライティングはview上で設定する:
 
@@ -5390,7 +5402,7 @@ canvasは同時に1枚だけ: 閉じる前の2枚目の`canvas()`は拒否され
 
 ### 2D オーバーレイ
 
-`render_3d()`（または`begin2d()`）の後、これらが上に描かれる（HUD用）:
+`render_3d()`（または`begin_2d()`）の後、これらが上に描かれる（HUD用）:
 
 | メソッド | 効果 |
 | --- | --- |
@@ -5402,19 +5414,30 @@ canvasは同時に1枚だけ: 閉じる前の2枚目の`canvas()`は拒否され
 
 ### 入力
 
-入力は毎フレームviewからポーリングする。キーボードのキーやゲームパッドの
-軸 / ボタンは生の整数コード（raylibキーコード、SDLゲームコントローラの
-インデックス）で、名前付き定数は無い:
+入力は毎フレームviewからポーリングする。キーは名前で指す — **`Canvas.key`と
+`Term.read_key`と同じ語彙**: 印字可能な1文字（`"a"`、`" "`、`"-"`）か特殊キー名
+（`"up"` / `"down"` / `"left"` / `"right"`、`"enter"`、`"escape"`、`"tab"`、
+`"backspace"`、`"insert"`、`"delete"`、`"home"`、`"end"`、`"pageup"`、
+`"pagedown"`、`"f1"`…`"f12"`。`"space"`は`" "`の読みやすい別名）。未知の名前は
+押されることのないキーになる。Escはここでは普通のキーで、ウィンドウを閉じる
+手段ではない: ループは閉じるボタンか`view.quit()`で終わる。
+
+ゲームパッドのボタンと軸も名前で指す。SDLのマッピングDBがどのパッドも
+正規化するレイアウトに従い、フェイスボタンは`"a"` `"b"` `"x"` `"y"`
+（Xboxの文字 — PlayStationパッドでは`"a"`が×）、十字キーは`"up"` `"down"`
+`"left"` `"right"`、ショルダーは`"lb"` `"rb"`、トリガーは`"lt"` `"rt"`、
+`"select"` `"guide"` `"start"`、スティック押し込みは`"l3"` `"r3"`。軸は`"lx"`
+`"ly"` `"rx"` `"ry"` `"lt"` `"rt"`。`index`でパッド（0–3）を選び、既定は最初の1台。
 
 | メソッド | 結果 |
 | --- | --- |
-| `view.held(key) -> Bool` | キーが押下中（例: `262`–`265` = 矢印、`32` = space） |
-| `view.pressed(key) -> Bool` | このフレームで押された |
-| `view.pad_available() -> Bool` | ゲームパッド接続あり |
-| `view.pad_axis(n) -> Float` | 軸の値（スティック、トリガー） |
-| `view.pad_button(n) -> Bool` / `pad_pressed(n) -> Bool` | ボタン押下中 / 今押された |
-| `view.rumble(left, right, sec)` | ハプティクス（SonyパッドとXInput。Xbox × macOSは無音） |
-| `view.pad_name() -> String` / `view.gamepad_mappings(db)` | パッド識別 / SDLマッピングDB読込 |
+| `view.key(name) -> Bool` | キーが押下中 |
+| `view.key_pressed(name) -> Bool` / `key_released(name) -> Bool` | このフレームで押された / 離された |
+| `view.pad_available(index = 0) -> Bool` | ゲームパッド接続あり |
+| `view.pad_axis(name, index = 0) -> Float` | 軸の値（スティック、トリガー） |
+| `view.pad(name, index = 0) -> Bool` / `pad_pressed(name, index = 0) -> Bool` | ボタン押下中 / 今押された |
+| `view.rumble(left, right, sec, index = 0)` | ハプティクス（SonyパッドとXInput。Xbox × macOSは無音） |
+| `view.pad_name(index = 0) -> String` / `view.gamepad_mappings(db)` | パッド識別 / SDLマッピングDB読込 |
 
 ### 音声
 
@@ -5434,7 +5457,7 @@ view.background(30, 34, 42)
 view.sun(0.5, -0.8, -0.3, 1.2, 255, 245, 230)
 view.ambient(0.4, 180, 200, 220)
 
-let gold = view.material_pbr(230, 180, 60, 0.9, 0.3)
+let gold = view.add_material().rgb(230, 180, 60).pbr(0.9, 0.3)
 let box = view.add_box(2.0, 2.0, 2.0).material(gold)
 
 mut a = 0.0
@@ -5445,6 +5468,7 @@ while !view.closing() {
   view.render_3d()
   view.text("culebra scene", 20.0, 20.0, 28, 235, 235, 240)
   view.present()
+  if view.key_pressed("escape") { view.quit() }
 }
 view.drop()
 ```

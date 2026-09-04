@@ -19,7 +19,7 @@ set -eu
 
 exe=${1:?usage: probe_scene_window.sh <culebra binary> [work dir]}
 [ "${exe#/}" = "$exe" ] && exe="$PWD/$exe"
-work=${2:-$(mktemp -d)}
+work=${2:-$(mktemp -d "${TMPDIR:-/tmp}/scene-window.XXXXXX")}
 cd "$work"
 
 cat > scene_window.cul <<'EOF'
@@ -28,7 +28,7 @@ view.background(20, 24, 30)
 view.sun(0.5, -0.8, -0.3, 1.2, 255, 245, 230)
 view.ambient(0.4, 180, 200, 220)
 
-let gold = view.material_pbr(230, 180, 60, 0.9, 0.3)
+let gold = view.add_material().rgb(230, 180, 60).pbr(0.9, 0.3)
 view.add_box(2.0, 2.0, 2.0).material(gold)
 
 for i in 0..10 {
@@ -36,15 +36,12 @@ for i in 0..10 {
   view.render_3d()
   view.present()
 }
-# Absolute: raylib resolves a relative screenshot path against its own base
-# path, not the working directory, and the file lands beside the binary.
-let shot_path = Sys.getcwd() + "/scene_smoke.png"
-view.screenshot(shot_path)
+view.screenshot("scene_smoke.png")   # relative to the working directory
 view.drop()
 
 # Back through Canvas (headless framebuffer) to read the pixels.
 Canvas.init(160, 120)
-let shot = Canvas.Sprite.from_png(FS.read(shot_path))
+let shot = Canvas.Sprite.from_png(FS.read("scene_smoke.png"))
 shot.draw(0, 0)
 println(Canvas.get_pixel(80, 60) != Canvas.get_pixel(2, 2) ? "scene drew" : "scene blank")
 EOF

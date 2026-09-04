@@ -12,6 +12,7 @@
 // build between the two knobs.
 
 #include "stdlib/canvas.h"
+#include "stdlib/keynames.h"
 
 #include <algorithm>
 #include <chrono>
@@ -278,49 +279,10 @@ void ensure_window() {
 int64_t held_button(int key, int64_t bit) { return IsKeyDown(key) ? bit : 0; }
 
 // --- arbitrary keys: Term's key vocabulary over raylib key codes ------------
-//
-// A name is a printable character ("a", " ", "-") or a special-key name
-// ("left", "enter", "f1", …) — the same vocabulary Term.read_key reports, so
-// key handling code moves between the two namespaces unchanged. raylib's
-// printable key codes are upper-case ASCII, so single characters map by
-// arithmetic and only the specials need a table.
-const std::unordered_map<std::string_view, int>& special_keys() {
-  static const std::unordered_map<std::string_view, int> m = {
-      {"up", KEY_UP},           {"down", KEY_DOWN},
-      {"left", KEY_LEFT},       {"right", KEY_RIGHT},
-      {"enter", KEY_ENTER},     {"escape", KEY_ESCAPE},
-      {"tab", KEY_TAB},         {"backspace", KEY_BACKSPACE},
-      {"insert", KEY_INSERT},   {"delete", KEY_DELETE},
-      {"home", KEY_HOME},       {"end", KEY_END},
-      {"pageup", KEY_PAGE_UP},  {"pagedown", KEY_PAGE_DOWN},
-      {"f1", KEY_F1},  {"f2", KEY_F2},   {"f3", KEY_F3},  {"f4", KEY_F4},
-      {"f5", KEY_F5},  {"f6", KEY_F6},   {"f7", KEY_F7},  {"f8", KEY_F8},
-      {"f9", KEY_F9},  {"f10", KEY_F10}, {"f11", KEY_F11}, {"f12", KEY_F12},
-  };
-  return m;
-}
-
-int key_code_of(std::string_view name) {
-  if (name.size() == 1) {
-    unsigned char c = static_cast<unsigned char>(name[0]);
-    if (c >= 'a' && c <= 'z') return c - 32;
-    if (c >= ' ' && c <= '~') return c;
-    return 0;
-  }
-  auto it = special_keys().find(name);
-  return it == special_keys().end() ? 0 : it->second;
-}
-
-// The queue direction: a pressed key code back to its name. Unmapped codes
-// (modifiers, keypad) produce "" and are dropped from the queue, the same
-// keys Term's parser has no name for.
-std::string key_name_of(int code) {
-  if (code >= 'A' && code <= 'Z') return std::string(1, static_cast<char>(code + 32));
-  if (code >= ' ' && code <= '~') return std::string(1, static_cast<char>(code));
-  for (const auto& [name, c] : special_keys())
-    if (c == code) return std::string(name);
-  return "";
-}
+// The name table itself lives in stdlib/keynames.h, shared with the Scene
+// backend so the two namespaces cannot drift apart on what a key is called.
+using keynames::key_code_of;
+using keynames::key_name_of;
 
 // A unicode code point as UTF-8, for the typed-characters queue. A negative
 // or non-scalar value (raylib hands over whatever the platform reported)

@@ -32,6 +32,7 @@
 
 #include <cstdarg>
 #include <cstdio>
+#include <filesystem>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -40,6 +41,7 @@
 #include "raylib.h"     // vendored: vendor/raylib/src (added to include path by CMake)
 #include "raymath.h"
 #include "rlgl.h"       // FBO / shader / matrix stack for shadows
+#include "stdlib/keynames.h"   // key / pad names, shared with the Canvas backend
 
 namespace gfx {
 
@@ -306,20 +308,6 @@ void main() {
 }
 )";
 
-// A reusable material: tint + optional texture + PBR-ish response (metallic 0..1,
-// roughness 0..1). Defaults are a matte dielectric.
-struct MatDesc { Color color; int tex = -1; float metallic = 0.0f; float roughness = 0.85f; };
-
-// A registry texture: either a plain Texture2D (checker/grain) or a render
-// target the script drew into (canvas) — tracked so it's freed the right way.
-struct TexEntry { Texture2D tex; RenderTexture2D rt{}; bool is_rt = false; };
-
-// Texture ids are offset into a disjoint range from material ids, so that
-// accidentally passing a texture id to node.material() (or vice versa) lands
-// out of range and degrades to "untextured" instead of silently picking the
-// wrong material/texture.
-static constexpr int64_t TEX_BASE = 1000000;
-
 // Shadow map = a normal colour render target (RGBA8 colour + depth buffer).
 // The depth pass writes packed depth into the colour texture, which we then
 // sample reliably as a plain sampler2D in the lit pass.
@@ -341,19 +329,73 @@ static uint64_t& gl_epoch() {
   return epoch;
 }
 
+// GPU-upload an Image as a repeat-wrapped texture, consuming it. Mipmapped
+// trilinear for tiled materials; plain bilinear for baked canvas drawings.
+static Texture2D upload(Image im, bool mipmaps) {
+  Texture2D t = LoadTextureFromImage(im);
+  if (mipmaps) GenTextureMipmaps(&t);
+  SetTextureFilter(t, mipmaps ? TEXTURE_FILTER_TRILINEAR
+                              : TEXTURE_FILTER_BILINEAR);
+  SetTextureWrap(t, TEXTURE_WRAP_REPEAT);
+  UnloadImage(im);
+  return t;
+}
+
+// A texture the script holds by handle: a plain upload (checker / grain / a
+// baked canvas) or, while a canvas is open, the render target being drawn
+// into. Its GL names belong to the View's context (gl_epoch), so a handle kept
+// past view.drop() is inert — it samples as the 1x1 white, and its destructor
+// frees nothing the next context could have reused. The typed handle is what
+// keeps a texture out of node.material() and a material out of
+// material.texture(): each is a TypeError at the call, where an integer id
+// could only degrade to "untextured" and stay silent.
+class Texture : public std::enable_shared_from_this<Texture> {
+ public:
+  Texture2D tex{};
+  RenderTexture2D rt{};   // the open canvas's target; freed when it closes
+  bool is_rt = false;
+  uint64_t epoch = gl_epoch();
+
+  Texture() = default;
+  Texture(const Texture&) = delete;
+  Texture& operator=(const Texture&) = delete;
+  ~Texture() {
+    if (!live() || !IsWindowReady()) return;
+    if (is_rt) UnloadRenderTexture(rt); else UnloadTexture(tex);
+  }
+  bool live() const { return epoch == gl_epoch(); }
+  double width() const { return tex.width; }
+  double height() const { return tex.height; }
+};
+
+// A reusable material: tint + optional texture + PBR-ish response (metallic
+// 0..1, roughness 0..1). Defaults are a matte dielectric. The setters are
+// fluent, so a material is one expression: view.add_material().rgb(…).pbr(…).
+// Arguments are const: a material only reads the texture it is given, so the
+// call must not stale the caller's other borrows of that texture.
+class Material : public std::enable_shared_from_this<Material> {
+ public:
+  Color color = WHITE;
+  std::shared_ptr<const Texture> tex;
+  float metallic = 0.0f;
+  float roughness = 0.85f;
+
+  Material& rgb(int64_t r, int64_t g, int64_t b) { color = col(r, g, b); return *this; }
+  Material& pbr(double m, double r) { metallic = (float)m; roughness = (float)r; return *this; }
+  Material& texture(const Texture* t) { tex = t ? t->shared_from_this() : nullptr; return *this; }
+};
+
 // Everything Node::render needs from the View that doesn't vary within a pass:
-// the shared material, the cached primitive meshes, the material / texture
-// registries and the lit shader's per-node PBR uniform locations. `lit` is the
-// one per-pass bit — the depth pass's shader reads only vertex positions, so
-// resolving a node's colour/texture there is wasted work.
+// raylib's shared material, the cached primitive meshes and the lit shader's
+// per-node PBR uniform locations. `lit` is the one per-pass bit — the depth
+// pass's shader reads only vertex positions, so resolving a node's
+// colour/texture there is wasted work.
 struct RenderCtx {
-  Material& mat;
+  ::Material& mat;   // raylib's, not gfx::Material
   const Mesh& cube;
   const Mesh& sphere;
   const Mesh& cyl;
   const Mesh& plane;
-  const std::vector<MatDesc>& mats;
-  const std::vector<TexEntry>& texs;
   Texture2D white;
   int loc_metallic;
   int loc_rough;
@@ -369,7 +411,7 @@ class Node {
   double ax = 0, ay = 1, az = 0, ang = 0;   // axis-angle spin (radians)
   double scx = 1, scy = 1, scz = 1;
   Color color = WHITE;
-  int64_t mat_id = -1;        // index into the View's material registry (-1 = inline color)
+  std::shared_ptr<const Material> mat;   // null = the inline tint alone
   bool visible = true;
   std::string name;
   std::vector<std::shared_ptr<Node>> children;
@@ -407,7 +449,7 @@ class Node {
   Node& scale(double s) { scx = scy = scz = s; local_dirty_ = true; return *this; }
   Node& scale3(double x, double y, double z) { scx = x; scy = y; scz = z; local_dirty_ = true; return *this; }
   Node& tint(int64_t r, int64_t g, int64_t b) { color = col(r, g, b); return *this; }
-  Node& material(int64_t id) { mat_id = id; return *this; }
+  Node& material(const Material* m) { mat = m ? m->shared_from_this() : nullptr; return *this; }
   Node& set_name(std::string n) { name = std::move(n); return *this; }
   Node& hide() { visible = false; return *this; }
   Node& show() { visible = true; return *this; }
@@ -541,13 +583,13 @@ class Node {
       Color c = color;
       Texture2D tex = ctx.white;
       float metallic = 0.0f, roughness = 0.85f;
-      if (mat_id >= 0 && (size_t)mat_id < ctx.mats.size()) {  // reusable material wins
-        const MatDesc& md = ctx.mats[mat_id];
-        c = md.color;
-        metallic = md.metallic;
-        roughness = md.roughness;
-        if (md.tex >= 0 && (size_t)md.tex < ctx.texs.size())
-          tex = ctx.texs[md.tex].tex;
+      if (mat) {   // a material wins over the inline tint
+        c = mat->color;
+        metallic = mat->metallic;
+        roughness = mat->roughness;
+        // A texture from a closed View samples as white, the way a stale
+        // mesh draws nothing (see Texture).
+        if (mat->tex && mat->tex->live()) tex = mat->tex->tex;
       }
       ctx.mat.maps[MATERIAL_MAP_DIFFUSE].color = c;
       ctx.mat.maps[MATERIAL_MAP_DIFFUSE].texture = tex;
@@ -611,6 +653,10 @@ class View {
       throw std::runtime_error(
           "Scene: cannot open a window (no usable display/GL)");
     ++gl_epoch();   // a fresh context: nothing an earlier View uploaded survives
+    // raylib's own default: Esc alone force-closes the window, one frame too
+    // late for a script to ask "are you sure?" — a pause menu cannot exist.
+    // Esc is an ordinary key here (view.key("escape")); quit() is the exit.
+    SetExitKey(KEY_NULL);
     ensure_audio();
     cam_.up = Vector3{0, 1, 0};
     cam_.fovy = 55;
@@ -664,13 +710,17 @@ class View {
   }
   ~View() {
     if (IsWindowReady()) {
-      if (canvas_index_ >= 0) EndTextureMode();  // no frame to finish, just unbind
-      roots_.clear();                       // drop scene → ~Node unloads each mesh (window still up)
+      if (open_canvas_) EndTextureMode();  // no frame to finish, just unbind
+      open_canvas_.reset();
+      // Drop the scene while the window is up: ~Node frees each mesh, and a
+      // material's texture with it when nothing else holds the handle. One the
+      // script still holds outlives this View, and its destructor then sees the
+      // epoch change and frees nothing.
+      roots_.clear();
       UnloadRenderTexture(shadowmap0_);
       UnloadRenderTexture(shadowmap1_);
       UnloadRenderTexture(scene_rt_);
       UnloadRenderTexture(post_rt_);
-      for (auto& e : texs_) { if (e.is_rt) UnloadRenderTexture(e.rt); else UnloadTexture(e.tex); }
       UnloadMesh(cube_); UnloadMesh(sphere_); UnloadMesh(cyl_); UnloadMesh(plane_);
       UnloadShader(lit_);
       UnloadShader(depth_);
@@ -691,18 +741,46 @@ class View {
   }
 
   void target_fps(int64_t fps) { SetTargetFPS((int)fps); }
-  bool closing() const { return WindowShouldClose(); }
+  // The close box, or the script's own quit() — Esc is no longer a third way.
+  bool closing() const { return quit_ || WindowShouldClose(); }
+  void quit() { quit_ = true; }
   double dt() const { return GetFrameTime(); }
   double width() const { return GetScreenWidth(); }
   double height() const { return GetScreenHeight(); }
-  bool held(int64_t key) const { return IsKeyDown((int)key); }
-  bool pressed(int64_t key) const { return IsKeyPressed((int)key); }
-  // Gamepad 0 (Xbox / DualSense, mapped by SDL_GameControllerDB).
-  bool pad_available() const { return IsGamepadAvailable(0); }
-  double pad_axis(int64_t axis) const { return (double)GetGamepadAxisMovement(0, (int)axis); }
-  bool pad_button(int64_t b) const { return IsGamepadButtonDown(0, (int)b); }
-  bool pad_pressed(int64_t b) const { return IsGamepadButtonPressed(0, (int)b); }
-  std::string pad_name() const { const char* n = GetGamepadName(0); return n ? n : ""; }
+
+  // Keys by name (stdlib/keynames.h — the vocabulary Canvas.key and
+  // Term.read_key share); an unknown name is a key that is never pressed.
+  bool key(std::string name) const {
+    int c = culebra::keynames::key_code_of(name);
+    return c != 0 && IsKeyDown(c);
+  }
+  bool key_pressed(std::string name) const {
+    int c = culebra::keynames::key_code_of(name);
+    return c != 0 && IsKeyPressed(c);
+  }
+  bool key_released(std::string name) const {
+    int c = culebra::keynames::key_code_of(name);
+    return c != 0 && IsKeyReleased(c);
+  }
+  // Gamepads by slot (0-3), buttons and axes by name (keynames.h); SDL's
+  // mapping DB normalizes Xbox / DualSense / others to one layout.
+  bool pad_available(int64_t index) const { return IsGamepadAvailable((int)index); }
+  double pad_axis(std::string name, int64_t index) const {
+    int a = culebra::keynames::pad_axis_of(name);
+    return a < 0 ? 0.0 : (double)GetGamepadAxisMovement((int)index, a);
+  }
+  bool pad(std::string name, int64_t index) const {
+    int b = culebra::keynames::pad_button_of(name);
+    return b != GAMEPAD_BUTTON_UNKNOWN && IsGamepadButtonDown((int)index, b);
+  }
+  bool pad_pressed(std::string name, int64_t index) const {
+    int b = culebra::keynames::pad_button_of(name);
+    return b != GAMEPAD_BUTTON_UNKNOWN && IsGamepadButtonPressed((int)index, b);
+  }
+  std::string pad_name(int64_t index) const {
+    const char* n = GetGamepadName((int)index);
+    return n ? n : "";
+  }
   // Load SDL_GameControllerDB mapping lines for pads the bundled DB lacks
   // (newer controllers). Returns 1 on success.
   int64_t gamepad_mappings(std::string db) { return SetGamepadMappings(db.c_str()); }
@@ -710,8 +788,8 @@ class View {
   // gamepad backend drives haptics (Windows/Linux XInput, Sony pads on macOS).
   // NOTE: Xbox controllers on macOS cannot rumble — no macOS API (SDL or Apple's
   // own GameController/CoreHaptics) drives their motors, so this is a no-op there.
-  void rumble(double left, double right, double sec) {
-    SetGamepadVibration(0, (float)left, (float)right, (float)sec);
+  void rumble(double left, double right, double sec, int64_t index) {
+    SetGamepadVibration((int)index, (float)left, (float)right, (float)sec);
   }
   void background(int64_t r, int64_t g, int64_t b) { bg_ = col(r, g, b); }
   // Vertical sky gradient (top -> horizon), drawn behind the 3D scene.
@@ -728,7 +806,11 @@ class View {
     fogend_ = (float)end;
     set_fog_uniform();
   }
-  void screenshot(std::string path) { TakeScreenshot(path.c_str()); }
+  // raylib resolves a relative path against its own base directory (beside
+  // the binary); a script means the working directory, as FS does.
+  void screenshot(std::string path) {
+    TakeScreenshot(std::filesystem::absolute(path).string().c_str());
+  }
 
   // lighting
   void sun(double dx, double dy, double dz, double intensity, int64_t r, int64_t g, int64_t b) {
@@ -751,31 +833,22 @@ class View {
     set_sun_uniform();
   }
 
-  // --- materials (reusable) + procedural textures -------------------------
-  // The four script-facing entries differ only in which of tex / metallic /
-  // roughness they expose; MatDesc's defaults cover the rest (matte dielectric,
-  // untextured).
-  int64_t material(int64_t r, int64_t g, int64_t b) { return add_material({col(r, g, b), -1}); }
-  int64_t material_tex(int64_t tex, int64_t r, int64_t g, int64_t b) {
-    return add_material({col(r, g, b), tex_index(tex)});
-  }
-  // PBR variants: metallic 0..1, roughness 0..1 (glossy paint, matte rubber, metal).
-  int64_t material_pbr(int64_t r, int64_t g, int64_t b, double metallic, double roughness) {
-    return add_material({col(r, g, b), -1, (float)metallic, (float)roughness});
-  }
-  int64_t material_tex_pbr(int64_t tex, int64_t r, int64_t g, int64_t b, double metallic, double roughness) {
-    return add_material(
-        {col(r, g, b), tex_index(tex), (float)metallic, (float)roughness});
-  }
-  // Upload a CPU image as a mipmapped, repeat-wrapped texture; register + return
-  // its id. Mipmaps + trilinear keep tiled high-frequency textures (e.g. the
-  // checker) from crawling/shimmering when minified under motion. Consumes `im`.
-  int64_t register_texture(Image im) {
-    texs_.push_back({upload(std::move(im), true)});
-    return (long)texs_.size() - 1 + TEX_BASE;
+  // --- materials + procedural textures --------------------------------------
+  // Both are handles the script owns (see Texture / Material): a View hands
+  // them out and never keeps them, so nothing here has to be looked up by id.
+  std::shared_ptr<Material> add_material() { return std::make_shared<Material>(); }
+
+  // Upload a CPU image as a mipmapped, repeat-wrapped texture. Mipmaps +
+  // trilinear keep tiled high-frequency textures (e.g. the checker) from
+  // crawling/shimmering when minified under motion. Consumes `im`.
+  std::shared_ptr<Texture> register_texture(Image im) {
+    auto t = std::make_shared<Texture>();
+    t->tex = upload(std::move(im), true);
+    return t;
   }
   // a checkerboard texture (px square, `checks` cells per side)
-  int64_t checker(int64_t px, int64_t checks, int64_t r1, int64_t g1, int64_t b1, int64_t r2, int64_t g2, int64_t b2) {
+  std::shared_ptr<Texture> checker(int64_t px, int64_t checks, int64_t r1, int64_t g1, int64_t b1,
+                                   int64_t r2, int64_t g2, int64_t b2) {
     int64_t n = checks > 0 ? checks : 1;          // guard: avoid div-by-zero / 0-size cells
     int cell = (int)(px / n);
     if (cell < 1) cell = 1;
@@ -783,7 +856,7 @@ class View {
                                             col(r1, g1, b1), col(r2, g2, b2)));
   }
   // a flat colour with white-noise grain mixed in (asphalt / grass grain)
-  int64_t grain(int64_t px, int64_t r, int64_t g, int64_t b, int64_t amt) {
+  std::shared_ptr<Texture> grain(int64_t px, int64_t r, int64_t g, int64_t b, int64_t amt) {
     Image im = GenImageColor((int)px, (int)px, col(r, g, b));
     Image noise = GenImageWhiteNoise((int)px, (int)px, 0.5f);
     ImageColorTint(&noise, col(amt, amt, amt));
@@ -793,28 +866,29 @@ class View {
   }
 
   // Arbitrary texture drawn by the script with the 2D primitives: canvas(w,h)
-  // opens an off-screen target (returns its texture id); the following text/
+  // opens an off-screen target (returns its texture); the following text/
   // rect/circle/line calls draw INTO it; canvas_end() finalises it. This is the
   // "generate a texture procedurally" path (liveries, signage) — like SceneKit
-  // drawing textures with Core Graphics.
-  int64_t canvas(int64_t w, int64_t h) {
-    if (canvas_index_ >= 0) {
-      TraceLog(LOG_ERROR,
-               "Scene: canvas() while a canvas is still open — end that one "
-               "first. Ignored.");
-      return -1;   // below the texture id range: draws untextured (see TEX_BASE)
-    }
-    RenderTexture2D rt = LoadRenderTexture((int)w, (int)h);
-    SetTextureFilter(rt.texture, TEXTURE_FILTER_BILINEAR);
-    SetTextureWrap(rt.texture, TEXTURE_WRAP_REPEAT);
-    texs_.push_back({rt.texture, rt, true});
-    canvas_index_ = (int)texs_.size() - 1;
-    BeginTextureMode(rt);
+  // drawing textures with Core Graphics. One canvas at a time: a second one
+  // would nest render targets, and there is no valid texture to hand back for
+  // it, so it is the error the id era only logged.
+  std::shared_ptr<Texture> canvas(int64_t w, int64_t h) {
+    if (open_canvas_)
+      throw std::runtime_error(
+          "Scene: canvas() while a canvas is still open — call canvas_end() first");
+    auto t = std::make_shared<Texture>();
+    t->rt = LoadRenderTexture((int)w, (int)h);
+    t->tex = t->rt.texture;
+    t->is_rt = true;
+    SetTextureFilter(t->tex, TEXTURE_FILTER_BILINEAR);
+    SetTextureWrap(t->tex, TEXTURE_WRAP_REPEAT);
+    open_canvas_ = t;
+    BeginTextureMode(t->rt);
     ClearBackground(WHITE);
-    return (long)texs_.size() - 1 + TEX_BASE;
+    return t;
   }
   void canvas_end() {
-    if (canvas_index_ < 0) {
+    if (!open_canvas_) {
       TraceLog(LOG_ERROR, "Scene: canvas_end() with no canvas open. Ignored.");
       return;
     }
@@ -822,12 +896,14 @@ class View {
     // A render target is stored bottom-up; the present path flips it, but a
     // material samples it as-is. Bake the flip into a plain texture here —
     // which also frees the render target (and its depth buffer) early.
-    TexEntry& e = texs_[canvas_index_];
-    Image im = LoadImageFromTexture(e.rt.texture);
+    Texture& t = *open_canvas_;
+    Image im = LoadImageFromTexture(t.rt.texture);
     ImageFlipVertical(&im);
-    UnloadRenderTexture(e.rt);
-    e = TexEntry{upload(std::move(im), false)};
-    canvas_index_ = -1;
+    UnloadRenderTexture(t.rt);
+    t.rt = RenderTexture2D{};
+    t.is_rt = false;
+    t.tex = upload(std::move(im), false);
+    open_canvas_.reset();
   }
 
   std::shared_ptr<Node> add_node() { return push(std::make_shared<Node>()); }
@@ -930,8 +1006,8 @@ class View {
   }
   // Open a frame for 2D-only screens (menus / pause), with no 3D or shadow
   // passes — pair with present(). (render_3d() opens the frame for 3D scenes.)
-  void begin2d() {
-    close_stray_canvas("begin2d");
+  void begin_2d() {
+    close_stray_canvas("begin_2d");
     BeginDrawing();
     ClearBackground(bg_);
   }
@@ -960,36 +1036,19 @@ class View {
   // into the canvas instead of the screen, with nothing said about it. Finish
   // the canvas — it is the frame the caller is asking for that must proceed.
   void close_stray_canvas(const char* opener) {
-    if (canvas_index_ < 0) return;
+    if (!open_canvas_) return;
     TraceLog(LOG_ERROR,
              "Scene: %s() with a canvas still open — ending the canvas first. "
              "Call canvas_end() when the texture is drawn.", opener);
     canvas_end();
   }
   std::shared_ptr<Node> push(std::shared_ptr<Node> n) { roots_.push_back(n); return n; }
-  int64_t add_material(MatDesc m) {
-    mats_.push_back(m);
-    return (long)mats_.size() - 1;   // the id IS the index into mats_
-  }
-  // Texture ids are offset by TEX_BASE (see there); undo it to index texs_.
-  static int tex_index(int64_t tex) { return (int)(tex - TEX_BASE); }
-  // GPU-upload an Image as a repeat-wrapped texture, consuming it. Mipmapped
-  // trilinear for tiled materials; plain bilinear for baked canvas drawings.
-  static Texture2D upload(Image im, bool mipmaps) {
-    Texture2D t = LoadTextureFromImage(im);
-    if (mipmaps) GenTextureMipmaps(&t);
-    SetTextureFilter(t, mipmaps ? TEXTURE_FILTER_TRILINEAR
-                                : TEXTURE_FILTER_BILINEAR);
-    SetTextureWrap(t, TEXTURE_WRAP_REPEAT);
-    UnloadImage(im);
-    return t;
-  }
   // Bind one pass's invariants. `m` is the pass's material (lit or depth).
-  RenderCtx pass_ctx(Material& m, bool lit) {
+  RenderCtx pass_ctx(::Material& m, bool lit) {
     return RenderCtx{.mat = m, .cube = cube_, .sphere = sphere_, .cyl = cyl_,
-                     .plane = plane_, .mats = mats_, .texs = texs_,
-                     .white = white_, .loc_metallic = loc_metallic_,
-                     .loc_rough = loc_rough_, .lit = lit};
+                     .plane = plane_, .white = white_,
+                     .loc_metallic = loc_metallic_, .loc_rough = loc_rough_,
+                     .lit = lit};
   }
   void set_sun_uniform() {
     SetShaderValue(lit_, loc_dir_, &dir_, SHADER_UNIFORM_VEC3);
@@ -1014,12 +1073,11 @@ class View {
   bool has_sky_ = false;
   int64_t alpha_ = 255;        // shared alpha for 2D draws
   std::vector<std::shared_ptr<Node>> roots_;
-  std::vector<MatDesc> mats_;
-  std::vector<TexEntry> texs_;
-  int canvas_index_ = -1;  // texs_ slot of the open canvas; -1 when none
+  std::shared_ptr<Texture> open_canvas_;   // the canvas being drawn into, while open
+  bool quit_ = false;
   Texture2D white_{};
   Shader lit_{}, depth_{}, post_{};
-  Material mat_{}, depth_mat_{};
+  ::Material mat_{}, depth_mat_{};   // raylib's (gfx::Material is the script's)
   RenderTexture2D shadowmap0_{}, shadowmap1_{}, scene_rt_{}, post_rt_{};
   int ss_ = 2;              // supersample factor for antialiasing
   int loc_aascale_ = 0;
@@ -1083,6 +1141,15 @@ class MusicTrack {
 
 namespace {
 const bool registered = [] {
+  culebra::wrap<gfx::Texture>("Scene", "Texture")
+      .method<&gfx::Texture::width>("width")
+      .method<&gfx::Texture::height>("height");
+
+  culebra::wrap<gfx::Material>("Scene", "Material")
+      .borrowed_method<&gfx::Material::rgb>("rgb", {"r", "g", "b"})
+      .borrowed_method<&gfx::Material::pbr>("pbr", {"metallic", "roughness"})
+      .borrowed_method<&gfx::Material::texture>("texture", {"tex"});
+
   culebra::wrap<gfx::Node>("Scene", "Node")
       .borrowed_method<&gfx::Node::move>("move", {"x", "y", "z"})
       .borrowed_method<&gfx::Node::euler>("euler", {"x", "y", "z"})
@@ -1093,7 +1160,7 @@ const bool registered = [] {
       .borrowed_method<&gfx::Node::scale>("scale", {"s"})
       .borrowed_method<&gfx::Node::scale3>("scale3", {"x", "y", "z"})
       .borrowed_method<&gfx::Node::tint>("tint", {"r", "g", "b"})
-      .borrowed_method<&gfx::Node::material>("material", {"id"})
+      .borrowed_method<&gfx::Node::material>("material", {"m"})
       .borrowed_method<&gfx::Node::set_name>("name", {"n"})
       .borrowed_method<&gfx::Node::hide>("hide")
       .borrowed_method<&gfx::Node::show>("show")
@@ -1118,25 +1185,24 @@ const bool registered = [] {
       .method<&gfx::View::dt>("dt")
       .method<&gfx::View::width>("width")
       .method<&gfx::View::height>("height")
-      .method<&gfx::View::held>("held", {"key"})
-      .method<&gfx::View::pressed>("pressed", {"key"})
-      .method<&gfx::View::pad_available>("pad_available")
-      .method<&gfx::View::pad_axis>("pad_axis", {"axis"})
-      .method<&gfx::View::pad_button>("pad_button", {"button"})
-      .method<&gfx::View::pad_pressed>("pad_pressed", {"button"})
-      .method<&gfx::View::pad_name>("pad_name")
+      .method<&gfx::View::quit>("quit")
+      .method<&gfx::View::key>("key", {"name"})
+      .method<&gfx::View::key_pressed>("key_pressed", {"name"})
+      .method<&gfx::View::key_released>("key_released", {"name"})
+      .method<&gfx::View::pad_available>("pad_available", {{"index", 0}})
+      .method<&gfx::View::pad_axis>("pad_axis", {"name", {"index", 0}})
+      .method<&gfx::View::pad>("pad", {"name", {"index", 0}})
+      .method<&gfx::View::pad_pressed>("pad_pressed", {"name", {"index", 0}})
+      .method<&gfx::View::pad_name>("pad_name", {{"index", 0}})
       .method<&gfx::View::gamepad_mappings>("gamepad_mappings", {"db"})
-      .method<&gfx::View::rumble>("rumble", {"left", "right", "sec"})
+      .method<&gfx::View::rumble>("rumble", {"left", "right", "sec", {"index", 0}})
       .method<&gfx::View::background>("background", {"r", "g", "b"})
       .method<&gfx::View::sky>("sky", {"tr", "tg", "tb", "br", "bg", "bb"})
       .method<&gfx::View::fog>("fog", {"start", "end", "r", "g", "b"})
       .method<&gfx::View::screenshot>("screenshot", {"path"})
       .method<&gfx::View::sun>("sun", {"dx", "dy", "dz", "intensity", "r", "g", "b"})
       .method<&gfx::View::ambient>("ambient", {"intensity", "r", "g", "b"})
-      .method<&gfx::View::material>("material", {"r", "g", "b"})
-      .method<&gfx::View::material_tex>("material_tex", {"tex", "r", "g", "b"})
-      .method<&gfx::View::material_pbr>("material_pbr", {"r", "g", "b", "metallic", "roughness"})
-      .method<&gfx::View::material_tex_pbr>("material_tex_pbr", {"tex", "r", "g", "b", "metallic", "roughness"})
+      .method<&gfx::View::add_material>("add_material")
       .method<&gfx::View::checker>("checker", {"px", "checks", "r1", "g1", "b1", "r2", "g2", "b2"})
       .method<&gfx::View::grain>("grain", {"px", "r", "g", "b", "amt"})
       .method<&gfx::View::canvas>("canvas", {"w", "h"})
@@ -1150,7 +1216,7 @@ const bool registered = [] {
       .method<&gfx::View::camera>(
           "camera", {"px", "py", "pz", "tx", "ty", "tz", "ux", "uy", "uz", "fov"})
       .method<&gfx::View::render_3d>("render_3d")
-      .method<&gfx::View::begin2d>("begin2d")
+      .method<&gfx::View::begin_2d>("begin_2d")
       .method<&gfx::View::present>("present")
       .method<&gfx::View::alpha>("alpha", {"a"})
       .method<&gfx::View::text>("text", {"s", "x", "y", "size", "r", "g", "b"})

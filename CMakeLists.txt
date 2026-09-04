@@ -650,7 +650,6 @@ endfunction()
 # resolve paths + flags. Static SDL3 = fully self-contained binaries (no external
 # dylib path baked in) and keeps gamepad rumble across platforms — vs GLFW, whose
 # macOS gamepad subsystem is broken and which has no haptics API at all.
-option(CULEBRA_ENABLE_SCENE "Enable builtin Scene namespace (raylib + SDL)" OFF)
 # The native Canvas desktop window (2D framebuffer) rides on the same vendored
 # raylib + SDL3 statics as the 3D Scene namespace. ON wherever a window is known
 # to work — macOS, Linux and Windows — so a plain `just build` runs a Canvas
@@ -700,6 +699,12 @@ if(DEFINED ENV{CULEBRA_CANVAS_WINDOW_DEFAULT})
 endif()
 option(CULEBRA_ENABLE_CANVAS_WINDOW
   "Enable a native desktop window for the Canvas namespace (raylib + SDL)"
+  ${_canvas_window_default})
+# Scene rides the same statics, so it is on exactly where the window is: a
+# build that opens a Canvas window also carries the 3D namespace, and the
+# CULEBRA_CANVAS_WINDOW_DEFAULT=OFF the display-less CI lanes set turns both
+# off together. -DCULEBRA_ENABLE_SCENE=ON/OFF still decides on its own.
+option(CULEBRA_ENABLE_SCENE "Enable builtin Scene namespace (raylib + SDL)"
   ${_canvas_window_default})
 set(_scene_link "")
 set(_canvas_link "")
