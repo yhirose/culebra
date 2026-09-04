@@ -122,6 +122,19 @@ fn print_stmt(m, value) {
   assert_throws('IrError', || m.verify())
 }
 
+# --- A func whose params do not fit inside its locals is refused too. The
+# params ARE the first num_locals slots, so this shape used to reach the
+# executor and write past the frame's locals -- a segfault, from a module a
+# script could build. Caught in verify(), like every other malformed shape.
+{
+  let m = CodeGen.Module.new()
+  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 1,
+             body: m.nil_literal(line: 1, col: 1))
+  let err = try { m.verify() } catch e { e }
+  assert_eq("{err.kind}: {err.message}",
+            'IrError: func declares more params than locals')
+}
+
 # --- Runtime errors: divide by zero and an uninitialized read both surface
 # as IrError with the failing operation's own position, not the caller's. ---
 {
