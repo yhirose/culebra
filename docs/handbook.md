@@ -579,6 +579,26 @@ inspect('a👨‍👩‍👧b'.graphemes().collect().size())  # => 3
 inspect('café'.graphemes().collect().size())                 # => 4
 ```
 
+`.words()` and `.sentences()` walk the same lazy way, but split on
+UAX #29 word/sentence boundaries instead of grapheme clusters.
+`.words()` yields `(text, is_word)` pairs — every run between two
+boundaries is its own segment, including whitespace and punctuation,
+so filter on `is_word` to keep only the real words:
+
+```culebra
+inspect('Hello, world!'.words().collect())
+# => [('Hello', true), (',', false), (' ', false), ('world', true), ('!', false)]
+inspect('Hello, world!'.words().filter(|(_, w)| w).map(|(t, _)| t).collect())
+# => ['Hello', 'world']
+```
+
+`.sentences()` yields one sentence per step, with trailing whitespace
+staying attached to the sentence before it:
+
+```culebra
+inspect('Hello. World.'.sentences().collect())  # => ['Hello. ', 'World.']
+```
+
 Full `StringView`/grapheme API: [language.md §18.1](language.md).
 
 ### Why byte indexing?

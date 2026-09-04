@@ -563,6 +563,26 @@ inspect('a👨‍👩‍👧b'.graphemes().collect().size())  # => 3
 inspect('café'.graphemes().collect().size())                 # => 4
 ```
 
+`.words()`と`.sentences()`も同じようにlazyに走査するが、書記素
+クラスタでなくUAX #29の単語境界・文境界で区切る。`.words()`は
+`(text, is_word)`のペアをyieldする — 境界と境界の間は全部1
+セグメントになるので、空白や句読点もセグメントとして出てくる。
+本当の単語だけ欲しければ`is_word`でfilterする:
+
+```culebra
+inspect('Hello, world!'.words().collect())
+# => [('Hello', true), (',', false), (' ', false), ('world', true), ('!', false)]
+inspect('Hello, world!'.words().filter(|(_, w)| w).map(|(t, _)| t).collect())
+# => ['Hello', 'world']
+```
+
+`.sentences()`は1ステップが1文になる。末尾の空白は直前の文に
+そのままくっつく:
+
+```culebra
+inspect('Hello. World.'.sentences().collect())  # => ['Hello. ', 'World.']
+```
+
 `StringView`/graphemeの完全なAPIは [language.ja.md §18.1](language.ja.md)。
 
 ### なぜバイトインデックスなのか
