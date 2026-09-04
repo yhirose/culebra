@@ -5582,15 +5582,47 @@ Lighting is set on the view:
 
 ### 2D overlay
 
-After `render_3d()` (or `begin_2d()`) these draw on top, for a HUD:
+After `render_3d()` (or `begin_2d()`) these draw on top, for a HUD — and into
+an open `canvas()`, which is how a texture gets drawn. Coordinates are window
+points, angles are degrees, and every call takes the shared `alpha()`.
 
 | Method | Effect |
 | --- | --- |
-| `view.text(s, x, y, size, r, g, b)` | draw text |
-| `view.rect(x, y, w, h, r, g, b)` | filled rectangle |
-| `view.circle(x, y, radius, r, g, b)` | filled circle |
+| `view.alpha(a)` | opacity (0–255) for the 2D draws that follow |
+| `view.text(s, x, y, size, r, g, b, font = nil, spacing = 0.0, rot = 0.0)` | draw text in a `Font`, or in the built-in bitmap font when `font` is `nil`; `rot` turns it about `(x, y)` |
+| `view.text_width(s, size, font = nil, spacing = 0.0) -> Float` / `view.text_height(s, size, font = nil, spacing = 0.0) -> Float` | the box `text` would cover, for aligning |
+| `view.rect(x, y, w, h, r, g, b)` / `view.rect_line(x, y, w, h, thick, r, g, b)` | filled / outlined rectangle |
+| `view.rect_round(x, y, w, h, roundness, r, g, b)` / `view.rect_round_line(x, y, w, h, roundness, thick, r, g, b)` | rounded corners (`roundness` 0–1) |
+| `view.rect_gradient(x, y, w, h, r1,g1,b1, r2,g2,b2, horizontal = false)` | top → bottom (or left → right) gradient |
+| `view.circle(x, y, radius, r, g, b)` / `view.circle_line(x, y, radius, r, g, b)` | filled / outlined circle |
+| `view.circle_gradient(x, y, radius, r1,g1,b1, r2,g2,b2)` | centre → rim gradient (a lamp) |
+| `view.ring(x, y, r_in, r_out, a0, a1, r, g, b)` | an arc band between two radii, from `a0` to `a1` (a gauge) |
 | `view.line(x0, y0, x1, y1, thick, r, g, b)` | line |
-| `view.alpha(a)` | opacity (0–255) for subsequent overlay draws |
+| `view.triangle(x0, y0, x1, y1, x2, y2, r, g, b)` | filled triangle, either winding |
+| `view.poly(x, y, sides, radius, rot, r, g, b)` | regular polygon |
+| `view.sprite(tex, x, y, w, h, rot = 0.0, ox = 0.0, oy = 0.0, r = 255, g = 255, b = 255)` | a `Texture` into the `w`×`h` box at `(x, y)`, turned about `(ox, oy)` within it, tinted (white = as is) |
+| `view.sprite_rec(tex, sx, sy, sw, sh, x, y, w, h, rot = 0.0, ox = 0.0, oy = 0.0)` | a sub-rectangle of a texture (an atlas) |
+| `view.clip(x, y, w, h)` / `view.clip_end()` | clip the draws between them to a rectangle |
+
+A path is built by scalar push — `view.path_begin()`, then `view.path_to(x, y)`
+per vertex, `view.path_close()` to return to the first — and drawn by one of
+`view.path_fill(r, g, b)` (a fan from the first vertex, so convex shapes),
+`view.path_strip(r, g, b)` (a ribbon of left/right pairs: a minimap's track),
+`view.path_stroke(thick, r, g, b)` (the outline) or `view.path_spline(thick, r,
+g, b)` (a Catmull-Rom curve through four or more points). The points stay until
+the next `path_begin()`, so a shape can be filled and then outlined.
+
+### Fonts
+
+`view.font(path, size, chars = "") -> Font` rasterizes a TTF/OTF at one pixel
+size into a glyph atlas, and `view.font_bytes(data, size, chars = "") -> Font`
+does the same from the file's bytes — an `Embed.dir` asset, so a one-binary
+game ships its font inside itself. `chars` names the glyphs to include (`""`
+is printable ASCII): a HUD lists its digits and words and gets a small atlas,
+one with Japanese lists the characters it uses. A font that cannot be loaded
+is a `RuntimeError`, not a silent fall back to the built-in font with the
+wrong metrics. `font.size() -> Float` and `font.glyphs() -> Long` read back
+what was made. Like a texture, a font belongs to the view that made it.
 
 ### Input
 

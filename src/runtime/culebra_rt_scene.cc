@@ -385,6 +385,26 @@ class Material : public std::enable_shared_from_this<Material> {
   Material& texture(const Texture* t) { tex = t ? t->shared_from_this() : nullptr; return *this; }
 };
 
+// A TTF/OTF rasterized at one pixel size into a glyph atlas (raylib's rtext,
+// which is already linked — the same stb_truetype Canvas.Font builds on, one
+// atlas per (font, size) instead of a glyph cache). Same context rule as a
+// Texture: a handle kept past the View is inert and frees nothing.
+class Font {
+ public:
+  ::Font font{};   // raylib's
+  uint64_t epoch = gl_epoch();
+
+  Font() = default;
+  Font(const Font&) = delete;
+  Font& operator=(const Font&) = delete;
+  ~Font() {
+    if (live() && IsWindowReady()) UnloadFont(font);
+  }
+  bool live() const { return epoch == gl_epoch(); }
+  double size() const { return font.baseSize; }
+  int64_t glyphs() const { return font.glyphCount; }
+};
+
 // Everything Node::render needs from the View that doesn't vary within a pass:
 // raylib's shared material, the cached primitive meshes and the lit shader's
 // per-node PBR uniform locations. `lit` is the one per-pass bit — the depth
@@ -964,6 +984,24 @@ class View {
     open_canvas_.reset();
   }
 
+  // --- fonts ------------------------------------------------------------------
+  // A TTF/OTF at one pixel size. `chars` names the glyphs to rasterize ("" =
+  // printable ASCII): a HUD that draws digits and a few words lists them and
+  // gets a small atlas; one with Japanese lists the characters it uses. The
+  // bytes form is for an embedded asset (Embed.dir), so a one-binary game
+  // ships its font inside itself.
+  std::shared_ptr<Font> font(std::string path, int64_t size, std::string chars) {
+    return adopt_font([&](int* cps, int n) {
+      return LoadFontEx(path.c_str(), (int)size, cps, n);
+    }, chars, "font '" + path + "'");
+  }
+  std::shared_ptr<Font> font_bytes(std::string data, int64_t size, std::string chars) {
+    return adopt_font([&](int* cps, int n) {
+      return LoadFontFromMemory(".ttf", reinterpret_cast<const unsigned char*>(data.data()),
+                                (int)data.size(), (int)size, cps, n);
+    }, chars, "font from bytes");
+  }
+
   std::shared_ptr<Node> add_node() { return push(std::make_shared<Node>()); }
   std::shared_ptr<Node> add_box(double w, double h, double d) { return push(Node::make_box(w, h, d)); }
   std::shared_ptr<Node> add_sphere(double r) { return push(Node::make_sphere(r)); }
@@ -1077,22 +1115,135 @@ class View {
     frame_open_ = false;
   }
 
+  // --- 2D: the overlay after render_3d(), a whole frame after begin_2d(), or
+  // a canvas() texture ---------------------------------------------------------
   // Alpha for subsequent 2D draws (0..255). The RGBA contract: 2D colours take
   // r,g,b and this shared alpha, so HUD fades / translucent panels are possible
   // without a 4-arg variant of every draw call. Reset to 255 when done.
   void alpha(int64_t a) { alpha_ = chan(a); }
 
-  void text(std::string s, double x, double y, int64_t size, int64_t r, int64_t g, int64_t b) {
-    DrawText(s.c_str(), (int)x, (int)y, (int)size, col(r, g, b, alpha_));
+  // Text in a Font, or raylib's built-in bitmap font when `font` is nil. The
+  // no-font, no-spacing, no-rotation call is DrawText itself, so what a script
+  // drew before fonts existed still lands on the same pixels.
+  void text(std::string s, double x, double y, int64_t size, int64_t r, int64_t g, int64_t b,
+            const Font* font, double spacing, double rot) {
+    Color c = col(r, g, b, alpha_);
+    if (!font_live(font) && spacing == 0.0 && rot == 0.0) {
+      DrawText(s.c_str(), (int)x, (int)y, (int)size, c);
+      return;
+    }
+    DrawTextPro(font_of(font), s.c_str(), Vector2{(float)x, (float)y}, Vector2{0, 0},
+                (float)rot, (float)size, (float)spacing, c);
   }
+  // The box `text` would cover — for right-aligning and centring a HUD. The
+  // built-in font measures with the spacing DrawText applies (size / 10).
+  double text_width(std::string s, int64_t size, const Font* font, double spacing) const {
+    return measure(s, size, font, spacing).x;
+  }
+  double text_height(std::string s, int64_t size, const Font* font, double spacing) const {
+    return measure(s, size, font, spacing).y;
+  }
+
   void rect(double x, double y, double w, double h, int64_t r, int64_t g, int64_t b) {
     DrawRectangle((int)x, (int)y, (int)w, (int)h, col(r, g, b, alpha_));
+  }
+  void rect_line(double x, double y, double w, double h, double thick, int64_t r, int64_t g, int64_t b) {
+    DrawRectangleLinesEx(rec(x, y, w, h), (float)thick, col(r, g, b, alpha_));
+  }
+  // `roundness` is 0 (square) .. 1 (the short side fully rounded).
+  void rect_round(double x, double y, double w, double h, double roundness, int64_t r, int64_t g, int64_t b) {
+    DrawRectangleRounded(rec(x, y, w, h), (float)roundness, 8, col(r, g, b, alpha_));
+  }
+  void rect_round_line(double x, double y, double w, double h, double roundness, double thick,
+                       int64_t r, int64_t g, int64_t b) {
+    DrawRectangleRoundedLinesEx(rec(x, y, w, h), (float)roundness, 8, (float)thick, col(r, g, b, alpha_));
+  }
+  // top -> bottom, or left -> right with `horizontal`.
+  void rect_gradient(double x, double y, double w, double h, int64_t r1, int64_t g1, int64_t b1,
+                     int64_t r2, int64_t g2, int64_t b2, bool horizontal) {
+    Color a = col(r1, g1, b1, alpha_), z = col(r2, g2, b2, alpha_);
+    if (horizontal) DrawRectangleGradientH((int)x, (int)y, (int)w, (int)h, a, z);
+    else DrawRectangleGradientV((int)x, (int)y, (int)w, (int)h, a, z);
   }
   void circle(double x, double y, double radius, int64_t r, int64_t g, int64_t b) {
     DrawCircle((int)x, (int)y, (float)radius, col(r, g, b, alpha_));
   }
+  void circle_line(double x, double y, double radius, int64_t r, int64_t g, int64_t b) {
+    DrawCircleLines((int)x, (int)y, (float)radius, col(r, g, b, alpha_));
+  }
+  // centre -> rim: the radial gradient a lamp or a bulb texture is made of.
+  void circle_gradient(double x, double y, double radius, int64_t r1, int64_t g1, int64_t b1,
+                       int64_t r2, int64_t g2, int64_t b2) {
+    DrawCircleGradient(Vector2{(float)x, (float)y}, (float)radius, col(r1, g1, b1, alpha_),
+                       col(r2, g2, b2, alpha_));
+  }
+  // An arc band between two radii, from angle a0 to a1 in degrees (0 = +x,
+  // clockwise on screen) — a tachometer sweep, a lap-progress dial.
+  void ring(double x, double y, double r_in, double r_out, double a0, double a1,
+            int64_t r, int64_t g, int64_t b) {
+    DrawRing(Vector2{(float)x, (float)y}, (float)r_in, (float)r_out, (float)a0, (float)a1, 36,
+             col(r, g, b, alpha_));
+  }
   void line(double x0, double y0, double x1, double y1, double thick, int64_t r, int64_t g, int64_t b) {
     DrawLineEx(Vector2{(float)x0, (float)y0}, Vector2{(float)x1, (float)y1}, (float)thick, col(r, g, b, alpha_));
+  }
+  // Either winding: a HUD's flag triangle should not vanish for being spelled
+  // clockwise, which is what the 3D pass's back-face culling would do to it.
+  void triangle(double x0, double y0, double x1, double y1, double x2, double y2,
+                int64_t r, int64_t g, int64_t b) {
+    Vector2 pts[3] = {{(float)x0, (float)y0}, {(float)x1, (float)y1}, {(float)x2, (float)y2}};
+    both_windings([&] { DrawTriangle(pts[0], pts[1], pts[2], col(r, g, b, alpha_)); });
+  }
+  // A regular polygon: `sides` around (x, y), `rot` in degrees.
+  void poly(double x, double y, int64_t sides, double radius, double rot, int64_t r, int64_t g, int64_t b) {
+    DrawPoly(Vector2{(float)x, (float)y}, (int)sides, (float)radius, (float)rot, col(r, g, b, alpha_));
+  }
+
+  // A texture as a 2D image: the whole of it into the w x h box at (x, y),
+  // turned `rot` degrees about (ox, oy) inside that box, tinted (white = as
+  // is); or a sub-rectangle of it, for an atlas. Both take the shared alpha.
+  void sprite(const Texture& tex, double x, double y, double w, double h, double rot,
+              double ox, double oy, int64_t r, int64_t g, int64_t b) {
+    if (!tex.live()) return;
+    DrawTexturePro(tex.tex, rec(0, 0, tex.tex.width, tex.tex.height), rec(x, y, w, h),
+                   Vector2{(float)ox, (float)oy}, (float)rot, col(r, g, b, alpha_));
+  }
+  void sprite_rec(const Texture& tex, double sx, double sy, double sw, double sh,
+                  double x, double y, double w, double h, double rot, double ox, double oy) {
+    if (!tex.live()) return;
+    DrawTexturePro(tex.tex, rec(sx, sy, sw, sh), rec(x, y, w, h), Vector2{(float)ox, (float)oy},
+                   (float)rot, col(255, 255, 255, alpha_));
+  }
+
+  // Clip subsequent 2D draws to a rectangle (a scrolling list, a minimap
+  // window) until clip_end().
+  void clip(double x, double y, double w, double h) { BeginScissorMode((int)x, (int)y, (int)w, (int)h); }
+  void clip_end() { EndScissorMode(); }
+
+  // Paths by scalar push (wrap marshals no arrays): path_begin(), then path_to
+  // per vertex, then one terminal call that draws and keeps the points for
+  // another. path_fill is a fan from the first vertex, so it fills convex
+  // shapes; a ribbon (a minimap's track, laid out as left/right pairs) is
+  // path_strip; an outline is path_stroke; a smooth curve through the points is
+  // path_spline.
+  void path_begin() { path_.clear(); }
+  void path_to(double x, double y) { path_.push_back(Vector2{(float)x, (float)y}); }
+  void path_close() { if (!path_.empty()) path_.push_back(path_.front()); }
+  void path_fill(int64_t r, int64_t g, int64_t b) {
+    if (path_.size() < 3) return;
+    both_windings([&] { DrawTriangleFan(path_.data(), (int)path_.size(), col(r, g, b, alpha_)); });
+  }
+  void path_strip(int64_t r, int64_t g, int64_t b) {
+    if (path_.size() < 3) return;
+    both_windings([&] { DrawTriangleStrip(path_.data(), (int)path_.size(), col(r, g, b, alpha_)); });
+  }
+  void path_stroke(double thick, int64_t r, int64_t g, int64_t b) {
+    Color c = col(r, g, b, alpha_);
+    for (size_t i = 1; i < path_.size(); i++) DrawLineEx(path_[i - 1], path_[i], (float)thick, c);
+  }
+  void path_spline(double thick, int64_t r, int64_t g, int64_t b) {
+    if (path_.size() < 4) return;   // Catmull-Rom needs a point past each end
+    DrawSplineCatmullRom(path_.data(), (int)path_.size(), (float)thick, col(r, g, b, alpha_));
   }
 
  private:
@@ -1107,6 +1258,48 @@ class View {
     canvas_end();
   }
   std::shared_ptr<Node> push(std::shared_ptr<Node> n) { roots_.push_back(n); return n; }
+
+  static Rectangle rec(double x, double y, double w, double h) {
+    return Rectangle{(float)x, (float)y, (float)w, (float)h};
+  }
+  // A 2D fill drawn with back-face culling off, so its vertex order does not
+  // matter. The batch is flushed around the toggle: rlgl queues geometry and
+  // applies the GL state at the flush, so a toggle without one would take
+  // effect on whatever was queued before it.
+  template <class F>
+  static void both_windings(F draw) {
+    rlDrawRenderBatchActive();
+    rlDisableBackfaceCulling();
+    draw();
+    rlDrawRenderBatchActive();
+    rlEnableBackfaceCulling();
+  }
+  static bool font_live(const Font* f) { return f && f->live(); }
+  static ::Font font_of(const Font* f) { return font_live(f) ? f->font : GetFontDefault(); }
+  static Vector2 measure(const std::string& s, int64_t size, const Font* font, double spacing) {
+    // DrawText's own spacing rule for the built-in font, so the box matches.
+    if (!font_live(font) && spacing == 0.0) spacing = (double)size / 10.0;
+    return MeasureTextEx(font_of(font), s.c_str(), (float)size, (float)spacing);
+  }
+  // Load a font through `load(codepoints, count)`: `chars` empty = raylib's
+  // printable-ASCII default. A failed load in raylib is not an error but a
+  // font that is not the one asked for — the built-in one, or an empty
+  // struct — which would silently give a HUD the wrong metrics. So both
+  // shapes of "not ours" are the error here.
+  template <class L>
+  std::shared_ptr<Font> adopt_font(L load, const std::string& chars, const std::string& what) {
+    int n = 0;
+    int* cps = chars.empty() ? nullptr : LoadCodepoints(chars.c_str(), &n);
+    auto f = std::make_shared<Font>();
+    f->font = load(cps, n);
+    if (cps) UnloadCodepoints(cps);
+    if (f->font.texture.id == 0 || f->font.glyphCount == 0 ||
+        f->font.texture.id == GetFontDefault().texture.id) {
+      f->font = ::Font{};   // not ours to unload
+      throw std::runtime_error("Scene: cannot load " + what);
+    }
+    return f;
+  }
   // Supersampled targets: the scene + post render at ss_x the window, then
   // box-downsample to it for cheap, high-quality antialiasing.
   void alloc_targets(int w, int h) {
@@ -1160,6 +1353,7 @@ class View {
   std::shared_ptr<Texture> open_canvas_;   // the canvas being drawn into, while open
   bool frame_open_ = false;   // between render_3d()/begin_2d() and present()
   bool quit_ = false;
+  std::vector<Vector2> path_;   // the 2D path being built (path_begin / path_to)
   Texture2D white_{};
   Shader lit_{}, depth_{}, post_{};
   ::Material mat_{}, depth_mat_{};   // raylib's (gfx::Material is the script's)
@@ -1230,6 +1424,10 @@ const bool registered = [] {
   culebra::wrap<gfx::Texture>("Scene", "Texture")
       .method<&gfx::Texture::width>("width")
       .method<&gfx::Texture::height>("height");
+
+  culebra::wrap<gfx::Font>("Scene", "Font")
+      .method<&gfx::Font::size>("size")
+      .method<&gfx::Font::glyphs>("glyphs");
 
   culebra::wrap<gfx::Material>("Scene", "Material")
       .borrowed_method<&gfx::Material::rgb>("rgb", {"r", "g", "b"})
@@ -1315,6 +1513,8 @@ const bool registered = [] {
       .method<&gfx::View::grain>("grain", {"px", "r", "g", "b", "amt"})
       .method<&gfx::View::canvas>("canvas", {"w", "h"})
       .method<&gfx::View::canvas_end>("canvas_end")
+      .method<&gfx::View::font>("font", {"path", "size", {"chars", ""}})
+      .method<&gfx::View::font_bytes>("font_bytes", {"data", "size", {"chars", ""}})
       .method<&gfx::View::add_node>("add_node")
       .method<&gfx::View::add_box>("add_box", {"w", "h", "d"})
       .method<&gfx::View::add_sphere>("add_sphere", {"r"})
@@ -1327,10 +1527,37 @@ const bool registered = [] {
       .method<&gfx::View::begin_2d>("begin_2d")
       .method<&gfx::View::present>("present")
       .method<&gfx::View::alpha>("alpha", {"a"})
-      .method<&gfx::View::text>("text", {"s", "x", "y", "size", "r", "g", "b"})
+      .method<&gfx::View::text>("text", {"s", "x", "y", "size", "r", "g", "b", {"font", nullptr},
+                                         {"spacing", 0.0}, {"rot", 0.0}})
+      .method<&gfx::View::text_width>("text_width", {"s", "size", {"font", nullptr}, {"spacing", 0.0}})
+      .method<&gfx::View::text_height>("text_height", {"s", "size", {"font", nullptr}, {"spacing", 0.0}})
       .method<&gfx::View::rect>("rect", {"x", "y", "w", "h", "r", "g", "b"})
+      .method<&gfx::View::rect_line>("rect_line", {"x", "y", "w", "h", "thick", "r", "g", "b"})
+      .method<&gfx::View::rect_round>("rect_round", {"x", "y", "w", "h", "roundness", "r", "g", "b"})
+      .method<&gfx::View::rect_round_line>("rect_round_line",
+                                           {"x", "y", "w", "h", "roundness", "thick", "r", "g", "b"})
+      .method<&gfx::View::rect_gradient>("rect_gradient", {"x", "y", "w", "h", "r1", "g1", "b1", "r2", "g2", "b2",
+                                                           {"horizontal", false}})
       .method<&gfx::View::circle>("circle", {"x", "y", "radius", "r", "g", "b"})
-      .method<&gfx::View::line>("line", {"x0", "y0", "x1", "y1", "thick", "r", "g", "b"});
+      .method<&gfx::View::circle_line>("circle_line", {"x", "y", "radius", "r", "g", "b"})
+      .method<&gfx::View::circle_gradient>("circle_gradient", {"x", "y", "radius", "r1", "g1", "b1", "r2", "g2", "b2"})
+      .method<&gfx::View::ring>("ring", {"x", "y", "r_in", "r_out", "a0", "a1", "r", "g", "b"})
+      .method<&gfx::View::line>("line", {"x0", "y0", "x1", "y1", "thick", "r", "g", "b"})
+      .method<&gfx::View::triangle>("triangle", {"x0", "y0", "x1", "y1", "x2", "y2", "r", "g", "b"})
+      .method<&gfx::View::poly>("poly", {"x", "y", "sides", "radius", "rot", "r", "g", "b"})
+      .method<&gfx::View::sprite>("sprite", {"tex", "x", "y", "w", "h", {"rot", 0.0}, {"ox", 0.0}, {"oy", 0.0},
+                                             {"r", 255}, {"g", 255}, {"b", 255}})
+      .method<&gfx::View::sprite_rec>("sprite_rec", {"tex", "sx", "sy", "sw", "sh", "x", "y", "w", "h",
+                                                     {"rot", 0.0}, {"ox", 0.0}, {"oy", 0.0}})
+      .method<&gfx::View::clip>("clip", {"x", "y", "w", "h"})
+      .method<&gfx::View::clip_end>("clip_end")
+      .method<&gfx::View::path_begin>("path_begin")
+      .method<&gfx::View::path_to>("path_to", {"x", "y"})
+      .method<&gfx::View::path_close>("path_close")
+      .method<&gfx::View::path_fill>("path_fill", {"r", "g", "b"})
+      .method<&gfx::View::path_strip>("path_strip", {"r", "g", "b"})
+      .method<&gfx::View::path_stroke>("path_stroke", {"thick", "r", "g", "b"})
+      .method<&gfx::View::path_spline>("path_spline", {"thick", "r", "g", "b"});
 
   culebra::wrap<gfx::SoundFx>("Scene", "Sound")
       .ctor<std::string>({"path"})

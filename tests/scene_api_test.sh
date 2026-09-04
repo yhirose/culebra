@@ -13,6 +13,9 @@
 set -u
 CULEBRA="${1:?usage: scene_api_test.sh <culebra binary>}"
 [ "${CULEBRA#/}" = "$CULEBRA" ] && CULEBRA="$PWD/$CULEBRA"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# A TTF the tree already carries (the MNIST demo's UI font), for the font path.
+TTF="$ROOT/examples/tensor/mnist/assets/Inter-SemiBold-subset.ttf"
 # Under TMPDIR: macOS's mktemp otherwise picks /var/folders, which a sandbox
 # may not let us write.
 OUT=$(mktemp -d "${TMPDIR:-/tmp}/scene-api.XXXXXX")
@@ -89,6 +92,65 @@ let r1 = view.resized()   # the edge is per frame; a Bool either way
 view.set_clipboard("scene")
 let clip = view.clipboard()
 println("window {view.width()}x{view.height()} fps>=0 {view.fps() >= 0} time>0 {view.time() > 0.0} resized {r1 == true || r1 == false} clipboard '{clip}'")
+
+# --- the 2D layer: a font, shapes, sprites, a clip, paths ---
+let ttf = Sys.argv[0]
+let digits = view.font(ttf, 24, "0123456789:.")
+let same = view.font_bytes(FS.read(ttf), 24, "0123456789:.")
+println("font {digits.size()} glyphs {digits.glyphs()} bytes-form {same.size()} {same.glyphs()}")
+let w20 = view.text_width("01:23.456", 20, digits)
+let w40 = view.text_width("01:23.456", 40, digits)
+let wdef = view.text_width("01:23.456", 20)
+let h20 = view.text_height("01:23.456", 20, digits)
+println("text_width grows {w40 > w20 && w20 > 0.0} default {wdef > 0.0} height {h20 > 0.0}")
+view.begin_2d()
+view.rect_round(20.0, 20.0, 280.0, 200.0, 0.3, 200, 200, 210)
+view.rect_line(20.0, 20.0, 280.0, 200.0, 2.0, 0, 0, 0)
+view.rect_round_line(30.0, 30.0, 100.0, 40.0, 0.5, 2.0, 255, 0, 0)
+view.rect_gradient(140.0, 30.0, 100.0, 40.0, 255, 0, 0, 0, 0, 255)
+view.rect_gradient(140.0, 80.0, 100.0, 40.0, 255, 0, 0, 0, 0, 255, true)
+view.circle_line(60.0, 120.0, 20.0, 0, 0, 0)
+view.circle_gradient(60.0, 120.0, 15.0, 255, 255, 0, 255, 0, 0)
+view.ring(200.0, 150.0, 20.0, 30.0, 0.0, 270.0, 0, 120, 0)
+view.triangle(30.0, 200.0, 60.0, 160.0, 90.0, 200.0, 0, 0, 255)     # one winding
+view.triangle(100.0, 160.0, 130.0, 200.0, 160.0, 160.0, 0, 0, 255)  # the other
+view.poly(250.0, 60.0, 6, 20.0, 30.0, 120, 0, 120)
+view.text("01:23.456", 30.0, 90.0, 24, 0, 0, 0, digits)
+view.text("01:23.456", 30.0, 120.0, 24, 0, 0, 0, digits, 2.0, 15.0)
+view.text("plain", 200.0, 200.0, 10, 0, 0, 0)
+view.sprite(checks, 240.0, 100.0, 40.0, 40.0)
+view.sprite(checks, 280.0, 150.0, 30.0, 30.0, 45.0, 15.0, 15.0, 255, 128, 128)
+view.sprite_rec(painted, 0.0, 0.0, 16.0, 16.0, 200.0, 110.0, 32.0, 32.0)
+view.clip(0.0, 0.0, 50.0, 50.0)
+view.rect(0.0, 0.0, 320.0, 240.0, 255, 0, 255)   # only the clipped corner shows
+view.clip_end()
+view.path_begin()
+view.path_to(160.0, 210.0)
+view.path_to(180.0, 230.0)
+view.path_to(200.0, 210.0)
+view.path_to(180.0, 190.0)
+view.path_close()
+view.path_fill(0, 200, 200)
+view.path_stroke(1.0, 0, 0, 0)
+view.path_begin()
+for i in 0..6 {
+  view.path_to(20.0 + i * 50.0, 230.0 - (i % 2) * 6.0)
+  view.path_to(20.0 + i * 50.0, 236.0 - (i % 2) * 6.0)
+}
+view.path_strip(200, 120, 0)
+view.path_begin()
+for i in 0..6 { view.path_to(20.0 + i * 50.0, 5.0 + (i % 2) * 10.0) }
+view.path_spline(2.0, 0, 0, 0)
+view.screenshot("scene_api_2d.png")
+view.present()
+let nofont = try {
+  view.font("no/such/font.ttf", 12)
+  "accepted"
+} catch e {
+  e.kind
+}
+println("missing font: {nofont}")
+
 view.supersample(1)
 view.clip_planes(0.5, 500.0)
 view.render_3d()
@@ -176,12 +238,17 @@ Canvas.init(320, 240)
 let shot = Canvas.Sprite.from_png(FS.read("scene_api_resized.png"))
 shot.draw(0, 0)
 println("resized frame drew: {Canvas.get_pixel(160, 120) != Canvas.get_pixel(2, 2)}")
+Canvas.clear(Canvas.rgba(0, 0, 0))
+let flat = Canvas.Sprite.from_png(FS.read("scene_api_2d.png"))
+flat.draw(0, 0)
+println("2d frame drew: {Canvas.get_pixel(160, 120) != Canvas.get_pixel(315, 235)}")
+println("clip cut: {Canvas.get_pixel(45, 45) != Canvas.get_pixel(60, 60)}")
 EOF
 
 [ -n "${GITHUB_ACTIONS:-}" ] && prefix="::error::" || prefix="ERROR: "
 fail=0
 for engine in "--vm" "--jit"; do
-  if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" scene_api.cul > "out${engine}.txt" 2>&1; then
+  if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" scene_api.cul "$TTF" > "out${engine}.txt" 2>&1; then
     echo "${prefix}scene_api_test: $engine exited non-zero:" >&2
     cat "out${engine}.txt" >&2
     fail=1
@@ -212,6 +279,11 @@ expect "window 320.0x240.0 fps>=0 true time>0 true resized true clipboard 'scene
 expect "fullscreen-was true"
 expect "mouse true dx 0.0 wheel 0.0 false false false"
 expect "resized frame drew: true"
+expect "font 24.0 glyphs 12 bytes-form 24.0 12"
+expect "text_width grows true default true height true"
+expect "missing font: RuntimeError"
+expect "2d frame drew: true"
+expect "clip cut: true"
 expect "texture(material): TypeError"
 expect "material(texture): TypeError"
 expect "texture(dropped): ClosedError"

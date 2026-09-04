@@ -5415,15 +5415,46 @@ canvasは同時に1枚だけ: 閉じる前の2枚目の`canvas()`は`RuntimeErro
 
 ### 2D オーバーレイ
 
-`render_3d()`（または`begin_2d()`）の後、これらが上に描かれる（HUD用）:
+`render_3d()`（または`begin_2d()`）の後、これらが上に描かれる（HUD用）。開いた
+`canvas()`の中にも描け、それがテクスチャを描く方法。座標はウィンドウ座標、
+角度は度、すべての呼び出しは共有の`alpha()`を使う。
 
 | メソッド | 効果 |
 | --- | --- |
-| `view.text(s, x, y, size, r, g, b)` | テキスト描画 |
-| `view.rect(x, y, w, h, r, g, b)` | 塗り矩形 |
-| `view.circle(x, y, radius, r, g, b)` | 塗り円 |
+| `view.alpha(a)` | 以降の2D描画の不透明度（0–255） |
+| `view.text(s, x, y, size, r, g, b, font = nil, spacing = 0.0, rot = 0.0)` | `Font`で、`font`が`nil`なら組み込みビットマップフォントでテキスト描画。`rot`は`(x, y)`まわりの回転 |
+| `view.text_width(s, size, font = nil, spacing = 0.0) -> Float` / `view.text_height(s, size, font = nil, spacing = 0.0) -> Float` | `text`が占める矩形（右寄せ・中央寄せ用） |
+| `view.rect(x, y, w, h, r, g, b)` / `view.rect_line(x, y, w, h, thick, r, g, b)` | 塗り / 枝線の矩形 |
+| `view.rect_round(x, y, w, h, roundness, r, g, b)` / `view.rect_round_line(x, y, w, h, roundness, thick, r, g, b)` | 丸角（`roundness`は0–1） |
+| `view.rect_gradient(x, y, w, h, r1,g1,b1, r2,g2,b2, horizontal = false)` | 上 → 下（または左 → 右）のグラデーション |
+| `view.circle(x, y, radius, r, g, b)` / `view.circle_line(x, y, radius, r, g, b)` | 塗り / 枝線の円 |
+| `view.circle_gradient(x, y, radius, r1,g1,b1, r2,g2,b2)` | 中心 → 外周のグラデーション（ランプ） |
+| `view.ring(x, y, r_in, r_out, a0, a1, r, g, b)` | 2つの半径の間の弧帯、`a0`から`a1`まで（ゲージ） |
 | `view.line(x0, y0, x1, y1, thick, r, g, b)` | 線 |
-| `view.alpha(a)` | 以降のオーバーレイ描画の不透明度（0–255） |
+| `view.triangle(x0, y0, x1, y1, x2, y2, r, g, b)` | 塗り三角形。巻き方向は問わない |
+| `view.poly(x, y, sides, radius, rot, r, g, b)` | 正多角形 |
+| `view.sprite(tex, x, y, w, h, rot = 0.0, ox = 0.0, oy = 0.0, r = 255, g = 255, b = 255)` | `Texture`を`(x, y)`の`w`×`h`の箱に、箱内の`(ox, oy)`まわりに回して、色を掛けて描く（白 = そのまま） |
+| `view.sprite_rec(tex, sx, sy, sw, sh, x, y, w, h, rot = 0.0, ox = 0.0, oy = 0.0)` | テクスチャの部分矩形（アトラス） |
+| `view.clip(x, y, w, h)` / `view.clip_end()` | 間の描画を矩形にクリップ |
+
+パスはスカラpushで組む — `view.path_begin()`、頂点ごとに`view.path_to(x, y)`、
+`view.path_close()`で始点に戻る — そして`view.path_fill(r, g, b)`（始点からの
+ファン。凸形状向け）、`view.path_strip(r, g, b)`（左右ペアのリボン。ミニマップの
+コース）、`view.path_stroke(thick, r, g, b)`（輪郭）、`view.path_spline(thick, r,
+g, b)`（4点以上を通るCatmull-Rom曲線）のいずれかで描く。点は次の`path_begin()`
+まで残るので、塗ってから輪郭を引ける。
+
+### フォント
+
+`view.font(path, size, chars = "") -> Font`はTTF/OTFを1つのピクセルサイズで
+グリフアトラスに焼く。`view.font_bytes(data, size, chars = "") -> Font`は
+ファイルのバイト列から同じことをする — `Embed.dir`の資産に使え、One Binaryの
+ゲームがフォントを自分の中に持てる。`chars`は含めるグリフ（`""`は印字可能
+ASCII）: 数字と数語のHUDはそれだけ列挙して小さなアトラスを得、日本語を使うなら
+使う文字を列挙する。読めないフォントは`RuntimeError`で、組み込みフォントへ
+黙って落ちて計測がずれることはない。`font.size() -> Float`と
+`font.glyphs() -> Long`で作った内容を読み戻せる。テクスチャと同じく、フォントは
+作ったviewのもの。
 
 ### 入力
 
