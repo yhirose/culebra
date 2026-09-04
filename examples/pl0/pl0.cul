@@ -38,41 +38,46 @@
 #     `const` and `procedure` are safe only by construction (both match in
 #     pairs, so neither ever has exactly one child); `var` needs the annotation.
 let grammar = `
-  program    <- _ block '.' _
+  program    <- block '.'
 
   block      <- const var procedure statement
-  const      <- ('CONST' __ ident '=' _ number (',' _ ident '=' _ number)* ';' _)?
-  var        <- ('VAR' __ ident (',' _ ident)* ';' _)?      { no_ast_opt }
-  procedure  <- ('PROCEDURE' __ ident ';' _ block ';' _)*
+  const      <- ('CONST' ident '=' number (',' ident '=' number)* ';')?
+  var        <- ('VAR' ident (',' ident)* ';')?      { no_ast_opt }
+  procedure  <- ('PROCEDURE' ident ';' block ';')*
 
   statement  <- (assignment / call / statements / if / while / out / in)?
-  assignment <- ident ':=' _ expression
-  call       <- 'CALL' __ ident                             { no_ast_opt }
-  statements <- 'BEGIN' __ statement (';' _ statement )* 'END' __
-  if         <- 'IF' __ condition 'THEN' __ statement
-  while      <- 'WHILE' __ condition 'DO' __ statement
-  out        <- ('out' __ / 'write' __ / '!' _) expression  { no_ast_opt }
-  in         <- ('in' __ / 'read' __ / '?' _) ident         { no_ast_opt }
+  assignment <- ident ':=' expression
+  call       <- 'CALL' ident                         { no_ast_opt }
+  statements <- 'BEGIN' statement (';' statement )* 'END'
+  if         <- 'IF' condition 'THEN' statement
+  while      <- 'WHILE' condition 'DO' statement
+  out        <- ('out' / 'write' / '!') expression   { no_ast_opt }
+  in         <- ('in' / 'read' / '?') ident           { no_ast_opt }
 
   condition  <- odd / compare
-  odd        <- 'ODD' __ expression                         { no_ast_opt }
+  odd        <- 'ODD' expression                     { no_ast_opt }
   compare    <- expression compare_op expression
-  compare_op <- < '=' / '#' / '<=' / '<' / '>=' / '>' > _
+  compare_op <- < '=' / '#' / '<=' / '<' / '>=' / '>' >
 
   expression <- sign? term (term_op term)*
-  sign       <- < [-+] > _
-  term_op    <- < [-+] > _
+  sign       <- < [-+] >
+  term_op    <- < [-+] >
 
   term       <- factor (factor_op factor)*
-  factor_op  <- < [*/] > _
+  factor_op  <- < [*/] >
 
-  factor     <- ident / number / '(' _ expression ')' _
+  factor     <- ident / number / '(' expression ')'
 
-  ident      <- < [a-z] [a-z0-9]* > _
-  number     <- < [0-9]+ > _
+  ident      <- < [a-z] [a-z0-9]* >
+  number     <- < [0-9]+ >
 
-  ~_         <- [ \t\r\n]*
-  ~__        <- ![a-z0-9_] _
+  # %word makes 'CALL' etc. self-boundary-checking (it won't match a
+  # prefix of a longer word), so the grammar doesn't need to hand-roll a
+  # _/__ whitespace/boundary pair. See examples/linz/lin.cul for the same
+  # simplification and the %whitespace-defeats-a-manual-lookahead pitfall
+  # it sidesteps.
+  %whitespace <- [ \t\r\n]*
+  %word       <- [a-z0-9_]
 `
 
 # --- Scopes ------------------------------------------------------------------
