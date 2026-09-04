@@ -5580,6 +5580,33 @@ field see through glass to the solid geometry behind — the same reading a
 blob shadow or a windscreen wants. A transparent surface casts no shadow
 unless it is a cutout, whose shape is real.
 
+### A second camera
+
+`view.render_to(tex, px,py,pz, tx,ty,tz, ux,uy,uz, fov)` renders the scene
+from another camera into a `render_target` texture — the same lit pass as
+`render_3d()`, without the post stack — so a rear-view mirror is a plate
+textured with the target, its material given `uv(-1.0, 1.0, 1.0, 0.0)` to
+mirror the image. Call it before `render_3d()` each frame: the plate that
+samples the texture is drawn during `render_3d()`, so a later call would show
+the previous frame. The shadows in it are the ones the last `render_3d()`
+fitted around the main camera, which a mirror looking back along the same
+road shares; the first frame's mirror is unshadowed. A render target, like a
+canvas, is upright wherever it is sampled — on a mesh, as a `sprite`, through
+`uv()`.
+
+```culebra
+# doctest: skip
+let mirror = view.render_target(512, 256)
+let mirror_mat = view.add_material().texture(mirror).unlit().uv(-1.0, 1.0, 1.0, 0.0)
+view.add_box(1.2, 0.4, 0.02).move(0.0, 1.6, 2.0).material(mirror_mat).order(10000)
+while !view.closing() {
+  view.camera(0.0, 1.5, 6.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 55.0)
+  view.render_to(mirror, 0.0, 1.5, 1.0, 0.0, 1.5, 20.0, 0.0, 1.0, 0.0, 120.0)
+  view.render_3d()
+  view.present()
+}
+```
+
 A texture is a handle too. The two handle types are the contract: a texture
 where a material is expected (or the reverse) is a `TypeError` at the call, and
 a dropped handle a `ClosedError`.
@@ -5591,6 +5618,7 @@ a dropped handle a `ClosedError`.
 | `view.checker(px, checks, r1,g1,b1, r2,g2,b2) -> Texture` | a checkerboard |
 | `view.grain(px, r, g, b, amt) -> Texture` | a flat colour with noise grain |
 | `view.canvas(w, h) -> Texture` / `view.canvas_end()` | open a render-to-texture the 2D calls paint into, and close it |
+| `view.render_target(w, h) -> Texture` | a texture the scene renders into from a second camera (below) |
 | `tex.width()` / `tex.height() -> Float` | size in pixels |
 | `tex.filter(name) -> Texture` | sampling: `"point"` (pixel art, a LUT's exact cells), `"bilinear"`, `"trilinear"` |
 | `tex.wrap(name) -> Texture` | past the edge: `"repeat"`, `"clamp"`, `"mirror"` |

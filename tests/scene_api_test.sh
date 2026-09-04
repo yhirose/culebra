@@ -302,6 +302,74 @@ println("order matters: {px("alpha_blend.png", 105, 75) != px("alpha_order.png",
 println("background untouched: {px("alpha_opaque.png", 5, 5) == px("alpha_order.png", 5, 5)}")
 EOF
 
+# A second camera into a texture, and the one flip model behind render targets
+# and canvases: a beacon only camera B sees lands in the top half of the target
+# when drawn as a sprite (upright), a canvas painted red-over-blue reads red on
+# top as a sprite, and uv(-1, …) on a plate mirrors what the plain plate shows.
+cat > scene_mirror.cul <<'EOF'
+let view = Scene.View.new(320, 240, "scene mirror")
+view.background(20, 24, 30)
+view.ambient(1.0, 255, 255, 255)
+let magenta = view.add_material().rgb(255, 0, 255).unlit()
+# behind camera A (which looks down -z from z = 10), above camera B's aim
+view.add_box(1.0, 1.0, 1.0).move(0.0, 3.0, 20.0).material(magenta)
+let target = view.render_target(64, 32)
+view.render_to(target, 0.0, 1.0, 10.0, 0.0, 1.0, 20.0, 0.0, 1.0, 0.0, 60.0)
+let painted = view.canvas(32, 32)
+view.rect(0.0, 0.0, 32.0, 16.0, 255, 0, 0)
+view.rect(0.0, 16.0, 32.0, 16.0, 0, 0, 255)
+view.canvas_end()
+let split = view.canvas(32, 32)
+view.rect(0.0, 0.0, 16.0, 32.0, 255, 0, 0)
+view.rect(16.0, 0.0, 16.0, 32.0, 0, 0, 255)
+view.canvas_end()
+let plain = view.add_material().texture(split).unlit()
+let mirrored = view.add_material().texture(split).unlit().uv(-1.0, 1.0, 1.0, 0.0)
+view.add_box(4.0, 2.0, 0.1).move(-2.5, 0.0, 0.0).material(plain)
+view.add_box(4.0, 2.0, 0.1).move(2.5, 0.0, 0.0).material(mirrored)
+view.camera(0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 50.0)
+view.render_3d()
+view.screenshot("mirror_plates.png")
+view.present()
+view.begin_2d()
+view.sprite(target, 0.0, 0.0, 64.0, 32.0)
+view.sprite(painted, 100.0, 0.0, 32.0, 32.0)
+view.screenshot("mirror_sprites.png")
+view.present()
+view.drop()
+
+Canvas.init(320, 240)
+fn load(path) {
+  Canvas.clear(Canvas.rgba(0, 0, 0))
+  Canvas.Sprite.from_png(FS.read(path)).draw(0, 0)
+}
+fn red_of(v) { v & 255 }
+fn green_of(v) { (v >> 8) & 255 }
+fn blue_of(v) { (v >> 16) & 255 }
+fn is_magenta(v) { red_of(v) > 150 && blue_of(v) > 150 && green_of(v) < 100 }
+fn is_red(v) { red_of(v) > 150 && blue_of(v) < 100 }
+fn is_blue(v) { blue_of(v) > 150 && red_of(v) < 100 }
+load("mirror_sprites.png")
+mut top = 0
+mut bottom = 0
+for y in 0..32 {
+  for x in 0..64 {
+    if is_magenta(Canvas.get_pixel(x, y)) {
+      if y < 16 { top += 1 } else { bottom += 1 }
+    }
+  }
+}
+println("beacon in the target: {top > 0} upright: {bottom == 0}")
+println("canvas upright as a sprite: {is_red(Canvas.get_pixel(116, 4)) && is_blue(Canvas.get_pixel(116, 28))}")
+load("mirror_plates.png")
+let a_left = Canvas.get_pixel(60, 120)
+let a_right = Canvas.get_pixel(130, 120)
+let b_left = Canvas.get_pixel(190, 120)
+let b_right = Canvas.get_pixel(260, 120)
+println("plain plate split: {is_red(a_left) != is_red(a_right)}")
+println("mirrored plate swaps: {is_red(a_left) == is_red(b_right) && is_red(a_right) == is_red(b_left)}")
+EOF
+
 # Scene.Image needs no window, so this program opens none: the one part of Scene
 # that runs with no display at all, and the one whose answers are exact pixels.
 cat > scene_image.cul <<'EOF'
@@ -410,6 +478,32 @@ for want in "blended: true" "depth kept: true" "order matters: true" "background
 done
 [ $fail -eq 0 ] || exit 1
 echo "OK: transparency blends, leaves the depth channel alone, and honours order"
+
+for engine in "--vm" "--jit"; do
+  if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" scene_mirror.cul > "mirror${engine}.txt" 2>&1; then
+    echo "${prefix}scene_api_test: mirror program $engine exited non-zero:" >&2
+    cat "mirror${engine}.txt" >&2
+    fail=1
+  fi
+done
+[ $fail -eq 0 ] || exit 1
+if ! diff "mirror--vm.txt" "mirror--jit.txt" > diff.txt; then
+  echo "${prefix}scene_api_test: the VM and the JIT disagree on the mirror:" >&2
+  cat diff.txt >&2
+  exit 1
+fi
+for want in "beacon in the target: true upright: true" \
+            "canvas upright as a sprite: true" \
+            "plain plate split: true" \
+            "mirrored plate swaps: true"; do
+  if ! grep -qxF "$want" "mirror--vm.txt"; then
+    echo "${prefix}scene_api_test: mirror line missing: $want" >&2
+    cat "mirror--vm.txt" >&2
+    fail=1
+  fi
+done
+[ $fail -eq 0 ] || exit 1
+echo "OK: a second camera renders into a texture, upright, and uv(-1) mirrors it"
 
 for engine in "--vm" "--jit"; do
   if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" scene_api.cul "$TTF" > "out${engine}.txt" 2>&1; then

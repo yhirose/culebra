@@ -370,8 +370,13 @@ static Texture2D upload(::Image im, bool mipmaps) {
 class Texture : public std::enable_shared_from_this<Texture> {
  public:
   Texture2D tex{};
-  RenderTexture2D rt{};   // the open canvas's target; freed when it closes
+  RenderTexture2D rt{};   // a canvas or render target: tex is rt.texture
   bool is_rt = false;
+  // A render target is stored bottom-up. Rather than bake an upright copy
+  // (a GPU -> CPU -> GPU round trip, unthinkable per frame for a mirror), the
+  // flip is folded into wherever the texture is read: the material's UV
+  // transform (emit) and a sprite's source rectangle. One flag, every reader.
+  bool flip_v = false;
   uint64_t epoch = gl_epoch();
 
   Texture() = default;
@@ -1232,6 +1237,16 @@ class View {
     return register_texture(im);
   }
 
+  // A texture the scene is rendered into (render_to): the same GL object a
+  // canvas is, kept for as long as the handle lives, so a mirror redraws into
+  // it every frame. Clamped, not repeating — a target's edge pixels have no
+  // business wrapping round.
+  std::shared_ptr<Texture> render_target(int64_t w, int64_t h) {
+    auto t = make_target(w, h);
+    SetTextureWrap(t->tex, TEXTURE_WRAP_CLAMP);
+    return t;
+  }
+
   // Arbitrary texture drawn by the script with the 2D primitives: canvas(w,h)
   // opens an off-screen target (returns its texture); the following text/
   // rect/circle/line calls draw INTO it; canvas_end() finalises it. This is the
@@ -1243,11 +1258,7 @@ class View {
     if (open_canvas_)
       throw std::runtime_error(
           "Scene: canvas() while a canvas is still open — call canvas_end() first");
-    auto t = std::make_shared<Texture>();
-    t->rt = LoadRenderTexture((int)w, (int)h);
-    t->tex = t->rt.texture;
-    t->is_rt = true;
-    SetTextureFilter(t->tex, TEXTURE_FILTER_BILINEAR);
+    auto t = make_target(w, h);
     SetTextureWrap(t->tex, TEXTURE_WRAP_REPEAT);
     open_canvas_ = t;
     BeginTextureMode(t->rt);
@@ -1260,17 +1271,51 @@ class View {
       return;
     }
     EndTextureMode();
-    // A render target is stored bottom-up; the present path flips it, but a
-    // material samples it as-is. Bake the flip into a plain texture here —
-    // which also frees the render target (and its depth buffer) early.
-    Texture& t = *open_canvas_;
-    ::Image im = LoadImageFromTexture(t.rt.texture);
-    ImageFlipVertical(&im);
-    UnloadRenderTexture(t.rt);
-    t.rt = RenderTexture2D{};
-    t.is_rt = false;
-    t.tex = upload(std::move(im), false);
-    open_canvas_.reset();
+    open_canvas_.reset();   // the texture stays a target; its readers flip it (Texture::flip_v)
+  }
+
+  // Render the scene from another camera into a render_target — the lit pass
+  // of render_3d() without the post stack, into `tex`. A rear-view mirror:
+  // call it before render_3d() each frame, since the plate that samples the
+  // texture is drawn there. Shadows are the cascades the last render_3d()
+  // fitted around the main camera, which a mirror looking back down the same
+  // road shares — its own two depth passes per frame would cost more than the
+  // mirror is worth. `tex` is const: rendering into it changes GL state, not
+  // the handle, and a mutable parameter would stale the caller's borrows.
+  void render_to(const Texture& tex, double px, double py, double pz, double tx, double ty, double tz,
+                 double ux, double uy, double uz, double fov) {
+    if (!tex.is_rt || !tex.live()) {
+      TraceLog(LOG_ERROR, "Scene: render_to() needs a render_target() of this view. Ignored.");
+      return;
+    }
+    close_stray_canvas("render_to");
+    if (frame_open_)
+      TraceLog(LOG_ERROR,
+               "Scene: render_to() inside a frame shows in the next one — call it before render_3d().");
+    Camera3D cam{};
+    cam.position = Vector3{(float)px, (float)py, (float)pz};
+    cam.target = Vector3{(float)tx, (float)ty, (float)tz};
+    cam.up = Vector3{(float)ux, (float)uy, (float)uz};
+    cam.fovy = (float)fov;
+    cam.projection = CAMERA_PERSPECTIVE;
+    // The eye drives specular and fog in the lit shader; set for this pass,
+    // put back for the main one (render_3d sets it too, belt and braces).
+    SetShaderValue(lit_, loc_viewpos_, &cam.position, SHADER_UNIFORM_VEC3);
+    rlSetClipPlanes(near_, far_);
+    BeginTextureMode(tex.rt);
+    ClearBackground(bg_);
+    if (has_sky_)
+      DrawRectangleGradientV(0, 0, tex.rt.texture.width, tex.rt.texture.height, sky_top_, sky_bot_);
+    rlDisableColorBlend();
+    BeginMode3D(cam);
+    // Alpha is coverage here, not depth: no post pass reads this target, and a
+    // sprite() of it (or anything else blending by alpha) must see the image
+    // as opaque, not as 0.4% of itself.
+    lit_pass(cam.position, /*depth_in_alpha=*/false);
+    EndMode3D();
+    rlEnableColorBlend();
+    EndTextureMode();
+    SetShaderValue(lit_, loc_viewpos_, &cam_.position, SHADER_UNIFORM_VEC3);
   }
 
   // --- fonts ------------------------------------------------------------------
@@ -1332,11 +1377,23 @@ class View {
     return MatrixMultiply(lv, lp);
   }
 
+  // The lit pass, inside a BeginMode3D: collect from the eye's point of view,
+  // then emit. Shared by render_3d() (whose target the post pass reads, so
+  // opaque alpha carries depth) and render_to() (whose target is an image, so
+  // alpha is coverage).
+  void lit_pass(Vector3 eye, bool depth_in_alpha) {
+    items_.clear();
+    auto ctx = pass_ctx(mat_);
+    Matrix id = MatrixIdentity();
+    for (const auto& n : roots_) n->collect(id, ctx, eye, items_);
+    emit(items_, depth_in_alpha);
+  }
+
   // The lit pass, second half: sort the collected items (see DrawItem) and
   // draw them, setting only the GL state and uniforms that change between one
   // item and the next. DrawMesh is unbatched on GL 3.3, so a state change
   // between two draws lands exactly between them.
-  void emit(std::vector<DrawItem>& items) {
+  void emit(std::vector<DrawItem>& items, bool depth_in_alpha) {
     std::stable_sort(items.begin(), items.end(), [](const DrawItem& a, const DrawItem& b) {
       if (a.order != b.order) return a.order < b.order;
       if (a.transparent != b.transparent) return !a.transparent;
@@ -1369,9 +1426,13 @@ class View {
       float metallic = m ? m->metallic : 0.0f, roughness = m ? m->roughness : 0.85f;
       float opacity = it.opacity / 255.0f, cutoff = m ? m->cutoff : 0.0f;
       float unlit = m && m->unlit_ ? 1.0f : 0.0f, fogon = m && !m->fog_ ? 0.0f : 1.0f;
-      float alpha_mode = it.transparent ? 1.0f : 0.0f;
+      float alpha_mode = (it.transparent || !depth_in_alpha) ? 1.0f : 0.0f;
       Vector3 emissive = m ? m->emissive_ : Vector3{0, 0, 0};
       Vector4 uv = m ? m->uv_ : Vector4{1, 1, 0, 0};
+      // A bottom-up texture (a canvas, a render target) reads upright through
+      // v' = 1 - (v * vs + vo) = v * -vs + (1 - vo): the flip composes with the
+      // material's own transform, so a mirror's uv(-1, 1, 1, 0) still mirrors.
+      if (m && m->tex && m->tex->live() && m->tex->flip_v) { uv.y = -uv.y; uv.w = 1.0f - uv.w; }
       mat_.maps[MATERIAL_MAP_DIFFUSE].color = c;
       mat_.maps[MATERIAL_MAP_DIFFUSE].texture = tex;
       SetShaderValue(lit_, loc_metallic_, &metallic, SHADER_UNIFORM_FLOAT);
@@ -1441,10 +1502,7 @@ class View {
     rlDisableColorBlend();
     BeginMode3D(cam_);
     // cascades are bound automatically via mat_.maps[SPECULAR/NORMAL]
-    items_.clear();
-    auto ctx = pass_ctx(mat_);
-    for (const auto& n : roots_) n->collect(id, ctx, cam_.position, items_);
-    emit(items_);
+    lit_pass(cam_.position, /*depth_in_alpha=*/true);
     EndMode3D();
     rlEnableColorBlend();
     EndTextureMode();
@@ -1571,14 +1629,14 @@ class View {
   void sprite(const Texture& tex, double x, double y, double w, double h, double rot,
               double ox, double oy, int64_t r, int64_t g, int64_t b) {
     if (!tex.live()) return;
-    DrawTexturePro(tex.tex, rec(0, 0, tex.tex.width, tex.tex.height), rec(x, y, w, h),
+    DrawTexturePro(tex.tex, source_rec(tex, 0, 0, tex.tex.width, tex.tex.height), rec(x, y, w, h),
                    Vector2{(float)ox, (float)oy}, (float)rot, col(r, g, b, alpha_));
   }
   void sprite_rec(const Texture& tex, double sx, double sy, double sw, double sh,
                   double x, double y, double w, double h, double rot, double ox, double oy) {
     if (!tex.live()) return;
-    DrawTexturePro(tex.tex, rec(sx, sy, sw, sh), rec(x, y, w, h), Vector2{(float)ox, (float)oy},
-                   (float)rot, col(255, 255, 255, alpha_));
+    DrawTexturePro(tex.tex, source_rec(tex, sx, sy, sw, sh), rec(x, y, w, h),
+                   Vector2{(float)ox, (float)oy}, (float)rot, col(255, 255, 255, alpha_));
   }
 
   // Clip subsequent 2D draws to a rectangle (a scrolling list, a minimap
@@ -1627,6 +1685,23 @@ class View {
 
   static Rectangle rec(double x, double y, double w, double h) {
     return Rectangle{(float)x, (float)y, (float)w, (float)h};
+  }
+  // A sprite's source rectangle in the texture's own storage: for a bottom-up
+  // one, the region the caller means from the top sits at height - y - h
+  // from the bottom, and a negative height tells DrawTexturePro to flip it.
+  static Rectangle source_rec(const Texture& tex, double x, double y, double w, double h) {
+    if (!tex.flip_v) return rec(x, y, w, h);
+    return rec(x, tex.tex.height - y - h, w, -h);
+  }
+  // A render target sized w x h: colour + depth, bilinear, bottom-up (flip_v).
+  static std::shared_ptr<Texture> make_target(int64_t w, int64_t h) {
+    auto t = std::make_shared<Texture>();
+    t->rt = LoadRenderTexture((int)w, (int)h);
+    t->tex = t->rt.texture;
+    t->is_rt = true;
+    t->flip_v = true;
+    SetTextureFilter(t->tex, TEXTURE_FILTER_BILINEAR);
+    return t;
   }
   // A 2D fill drawn with back-face culling off, so its vertex order does not
   // matter. The batch is flushed around the toggle: rlgl queues geometry and
@@ -1942,6 +2017,9 @@ const bool registered = [] {
       .method<&gfx::View::grain>("grain", {"px", "r", "g", "b", "amt"})
       .method<&gfx::View::canvas>("canvas", {"w", "h"})
       .method<&gfx::View::canvas_end>("canvas_end")
+      .method<&gfx::View::render_target>("render_target", {"w", "h"})
+      .method<&gfx::View::render_to>(
+          "render_to", {"tex", "px", "py", "pz", "tx", "ty", "tz", "ux", "uy", "uz", "fov"})
       .method<&gfx::View::font>("font", {"path", "size", {"chars", ""}})
       .method<&gfx::View::font_bytes>("font_bytes", {"data", "size", {"chars", ""}})
       .method<&gfx::View::add_node>("add_node")

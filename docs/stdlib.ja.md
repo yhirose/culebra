@@ -5411,6 +5411,30 @@ litパスは不透明な面を手前から奥へ先に描き、次に透過面�
 ウィンドスクリーンが望む読み方そのもの。透過面は影を落とさないが、cutoutは形が
 実体なので落とす。
 
+### 第2カメラ
+
+`view.render_to(tex, px,py,pz, tx,ty,tz, ux,uy,uz, fov)`は別のカメラからシーンを
+`render_target`テクスチャに描く — `render_3d()`と同じlitパスで、post stackは無し。
+リアビューミラーは、そのターゲットを貼った板に`uv(-1.0, 1.0, 1.0, 0.0)`で像を
+左右反転したもの。毎フレーム`render_3d()`の前に呼ぶ: テクスチャをサンプルする板は
+`render_3d()`の中で描かれるので、後に呼べば前のフレームの像が出る。影は直前の
+`render_3d()`がメインカメラに合わせて張ったものをそのまま使う — 同じ道を振り返る
+ミラーなら共有できる — ので、最初のフレームのミラーには影が無い。render targetは
+canvasと同じく、メッシュ上でも`sprite`でも`uv()`越しでも正しい向きになる。
+
+```culebra
+# doctest: skip
+let mirror = view.render_target(512, 256)
+let mirror_mat = view.add_material().texture(mirror).unlit().uv(-1.0, 1.0, 1.0, 0.0)
+view.add_box(1.2, 0.4, 0.02).move(0.0, 1.6, 2.0).material(mirror_mat).order(10000)
+while !view.closing() {
+  view.camera(0.0, 1.5, 6.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 55.0)
+  view.render_to(mirror, 0.0, 1.5, 1.0, 0.0, 1.5, 20.0, 0.0, 1.0, 0.0, 120.0)
+  view.render_3d()
+  view.present()
+}
+```
+
 テクスチャもハンドル。2つのハンドル型が契約そのもの: マテリアルの位置に
 テクスチャ（やその逆）を渡せば呼び出し時点で`TypeError`、drop済みのハンドルは
 `ClosedError`になる。
@@ -5422,6 +5446,7 @@ litパスは不透明な面を手前から奥へ先に描き、次に透過面�
 | `view.checker(px, checks, r1,g1,b1, r2,g2,b2) -> Texture` | 市松 |
 | `view.grain(px, r, g, b, amt) -> Texture` | 単色＋ノイズの粒 |
 | `view.canvas(w, h) -> Texture` / `view.canvas_end()` | 2D呼び出しで塗るrender-to-textureを開く / 閉じる |
+| `view.render_target(w, h) -> Texture` | 第2カメラからシーンを描き込むテクスチャ（下記） |
 | `tex.width()` / `tex.height() -> Float` | ピクセル寸法 |
 | `tex.filter(name) -> Texture` | サンプリング: `"point"`（ピクセルアート、LUTのセルそのまま）、`"bilinear"`、`"trilinear"` |
 | `tex.wrap(name) -> Texture` | 端の外側: `"repeat"`、`"clamp"`、`"mirror"` |
