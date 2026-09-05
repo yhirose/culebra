@@ -46,7 +46,7 @@
 # as `this`, as Node's CommonJS modules do; the program's own `this` is an
 # empty object, like module.exports).
 
-import front from '../codegen-front/front.cul'
+import front from '../front.cul'
 
 # A backtick would end the raw string the grammar is written in, so the
 # template rules spell it @BQ@ and it is substituted in.

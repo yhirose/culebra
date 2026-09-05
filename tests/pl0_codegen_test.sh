@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# examples/pl0/pl0_codegen.cul against examples/pl0/pl0.cul: two independent
+# examples/languages/pl0/pl0_codegen.cul against examples/languages/pl0/pl0.cul: two independent
 # implementations of the same language (one interprets the AST directly, the
 # other compiles it to Core-IR and runs cpp-vmlib's bytecode executor), each
-# the other's oracle. Every examples/pl0/samples/*.pas must produce identical
+# the other's oracle. Every examples/languages/pl0/samples/*.pas must produce identical
 # stdout from both, across the executor, --jit and an AOT-built binary.
 #
 # Can't be a plain tests/*.cul sweep test: it has to invoke two whole
@@ -15,9 +15,9 @@ set -u
 
 CULEBRA="${1:?usage: pl0_codegen_test.sh <culebra>}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PL0="$ROOT/examples/pl0/pl0.cul"
-PL0_CODEGEN="$ROOT/examples/pl0/pl0_codegen.cul"
-SAMPLES="$ROOT/examples/pl0/samples"
+PL0="$ROOT/examples/languages/pl0/pl0.cul"
+PL0_CODEGEN="$ROOT/examples/languages/pl0/pl0_codegen.cul"
+SAMPLES="$ROOT/examples/languages/pl0/samples"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -93,7 +93,7 @@ else
 fi
 
 # --- Diagnostics: pl0_codegen.cul's own binder, sanity-checked directly
-# (not compared against pl0.cul -- see examples/pl0/pl0_codegen.cul's own
+# (not compared against pl0.cul -- see examples/languages/pl0/pl0_codegen.cul's own
 # header: bind-time vs run-time diagnostics are a deliberate difference). ---
 check_err() {
   local desc="$1" sample_src="$2" want_substr="$3"

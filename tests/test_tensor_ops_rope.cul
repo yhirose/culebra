@@ -58,7 +58,7 @@ assert_throws('ValueError', fn () {
 })
 
 # --- tanh/sin/cos/clamp ------------------------------------------------------
-# Differentiable (native VJP) as well as forward-only: examples/dezero's own
+# Differentiable (native VJP) as well as forward-only: examples/deep-learning/dezero's own
 # Tanh/Sin/Cos/Clip classes still write their own backward on top of these,
 # but .backward() through the raw Tensor node works too — both are supported.
 

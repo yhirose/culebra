@@ -7,7 +7,7 @@
 # capture_map_new/capture_map_push) rather than being passed directly.
 #
 # This exercises the builder API directly, by hand, without a front end --
-# examples/pl0/pl0_codegen.cul is the front end that actually uses this to
+# examples/languages/pl0/pl0_codegen.cul is the front end that actually uses this to
 # build something worth running.
 
 fn stmt_block(m, stmts) {
@@ -104,7 +104,7 @@ fn print_stmt(m, value) {
 }
 
 # --- A capture forwarded through a self-recursive call unchanged -- the
-# exact shape examples/pl0/README.md documents for fib.pas. `countdown`
+# exact shape examples/languages/pl0/README.md documents for fib.pas. `countdown`
 # doesn't own `n`; it captures main's, and each recursive call forwards
 # `countdown`'s own capture[0] straight through (a per-call-site forwarding
 # table, not a per-function one -- see cpp-vmlib's README for why that

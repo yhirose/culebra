@@ -17,14 +17,14 @@
 # same four phases (collect declarations, scan free variables, solve captures
 # by fixpoint, emit), same PL/0, different host language. The two phases that
 # are the same for every language -- the capture solver and the IR shapes a
-# lowering builds over and over -- live in ../codegen-front/front.cul, shared
+# lowering builds over and over -- live in ../front.cul, shared
 # with mini_culebra.cul and mini_js.cul.
 #
 # Run it:  culebra examples/pl0/pl0_codegen.cul examples/pl0/samples/square.pas
 #          culebra examples/pl0/pl0_codegen.cul --ir examples/pl0/samples/square.pas
 #          culebra examples/pl0/pl0_codegen.cul --bc examples/pl0/samples/square.pas
 
-import front from '../codegen-front/front.cul'
+import front from '../front.cul'
 
 let grammar = `
   program    <- block '.'

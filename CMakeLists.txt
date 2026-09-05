@@ -2072,7 +2072,7 @@ add_test(NAME io_stdin_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/io_stdin_test.sh
                  $<TARGET_FILE:culebra>)
 
-# examples/pl0/pl0_codegen.cul against examples/pl0/pl0.cul — two independent
+# examples/languages/pl0/pl0_codegen.cul against examples/languages/pl0/pl0.cul — two independent
 # implementations of PL/0, each the other's oracle — across interp / JIT / AOT
 # (needs `culebra build` for the AOT leg, and a stdin pipe for read.pas, so a
 # plain .cul sweep test can't drive this).
@@ -2084,7 +2084,7 @@ add_test(NAME pl0_codegen_test
 # container batch.
 set_tests_properties(pl0_codegen_test PROPERTIES TIMEOUT 900)
 
-# examples/mini-culebra/mini_culebra.cul against the culebra binary itself —
+# examples/languages/mini-culebra/mini_culebra.cul against the culebra binary itself —
 # the samples are written in the subset both implement, so the real
 # implementation is the compiler's oracle — under interp and JIT (it has to
 # run two whole top-level scripts as subprocesses, like pl0_codegen_test).
@@ -2096,7 +2096,7 @@ add_test(NAME mini_culebra_test
 # lane's blanket --timeout 300 as the sample set grows.
 set_tests_properties(mini_culebra_test PROPERTIES TIMEOUT 900)
 
-# examples/mini-js/mini_js.cul against Node (the oracle; skipped where node is
+# examples/languages/mini-js/mini_js.cul against Node (the oracle; skipped where node is
 # not installed): the samples are ES6 programs both run, printing through the
 # shared fmt.js, under the executor and JIT -- two whole top-level scripts as
 # subprocesses again.

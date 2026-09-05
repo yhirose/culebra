@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# examples/mini-culebra/mini_culebra.cul against the real culebra binary:
+# examples/languages/mini-culebra/mini_culebra.cul against the real culebra binary:
 # every samples/*.cul is written in the subset both implement, so the real
 # implementation is the compiler's oracle. Each sample must produce
 # identical stdout from both, under the executor and --jit.
@@ -15,8 +15,8 @@ set -u
 
 CULEBRA="${1:?usage: mini_culebra_test.sh <culebra>}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MINI="$ROOT/examples/mini-culebra/mini_culebra.cul"
-SAMPLES="$ROOT/examples/mini-culebra/samples"
+MINI="$ROOT/examples/languages/mini-culebra/mini_culebra.cul"
+SAMPLES="$ROOT/examples/languages/mini-culebra/samples"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 

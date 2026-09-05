@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# examples/mini-js/mini_js.cul against Node: every samples/*.js is an ES6
+# examples/languages/mini-js/mini_js.cul against Node: every samples/*.js is an ES6
 # program both run, so Node is the compiler's oracle. Each sample prints
-# through examples/mini-js/fmt.js (prepended on both sides), and its stdout
+# through examples/languages/mini-js/fmt.js (prepended on both sides), and its stdout
 # must be identical under the executor and --jit.
 #
 # As in mini_culebra_test.sh, all samples go through one mini invocation per
@@ -15,9 +15,9 @@ set -u
 
 CULEBRA="${1:?usage: mini_js_test.sh <culebra>}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MINI="$ROOT/examples/mini-js/mini_js.cul"
-FMT="$ROOT/examples/mini-js/fmt.js"
-SAMPLES="$ROOT/examples/mini-js/samples"
+MINI="$ROOT/examples/languages/mini-js/mini_js.cul"
+FMT="$ROOT/examples/languages/mini-js/fmt.js"
+SAMPLES="$ROOT/examples/languages/mini-js/samples"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 

@@ -106,7 +106,7 @@ enum class Op {
             // also no backward yet (the inverse needs the axes back, which
             // nothing stores today — see the VJP switch).
   // im2col's own ops: both materialize a new buffer (never a view). No VJP
-  // yet either — dezero's own conv layer (examples/dezero) runs its own
+  // yet either — dezero's own conv layer (examples/deep-learning/dezero) runs its own
   // autograd around these rather than native .backward().
   Pad, Fold,
   // Elementwise select: y = cond != 0 ? a : b. Has a real VJP (da = g*cond,
@@ -872,7 +872,7 @@ inline TensorPtr tensor_narrow(TensorPtr t, int64_t axis, int64_t start,
 // Sliding-window view along `axis`: shape gains a trailing size-`win` axis,
 // the `axis` dim becomes the window count. Zero-copy (shares storage with
 // `t`) when `t` is contiguous, same as tensorlib's own array::unfold.
-// im2col's own building block — see examples/dezero/dezero/functions_conv.cul.
+// im2col's own building block — see examples/deep-learning/dezero/dezero/functions_conv.cul.
 inline TensorPtr tensor_unfold(TensorPtr t, int64_t axis, int64_t win,
                                int64_t step) {
   auto v = _tl_guard([&] { return t->value.unfold(axis, win, step); });
@@ -1120,7 +1120,7 @@ inline TensorPtr tensor_softmax_cross_entropy(TensorPtr logits,
 // otherwise. Used to reject the non-contiguous case outright ("Phase 1 only
 // allows contiguous inputs... tensorlib can already do it — loosen when a
 // workload needs it") — loosened now that one does (`.permute()` feeding a
-// `.reshape()`, e.g. examples/dezero's col2im): tensorlib's own
+// `.reshape()`, e.g. examples/deep-learning/dezero's col2im): tensorlib's own
 // array::reshape already clones-then-reshapes internally when the source
 // isn't contiguous, so this wrapper no longer needs to forbid it, just
 // report it honestly via `is_view` below.
@@ -1473,7 +1473,7 @@ inline void _tensor_vjp(const TensorPtr& n) {
           "Tensor.backward: comparisons are not differentiable.");
     case Op::Tanh: {
       // y = tanh(x); dx = g * (1 - y*y). y is this node's value. dezero's
-      // own Tanh class (examples/dezero) still writes this same rule by
+      // own Tanh class (examples/deep-learning/dezero) still writes this same rule by
       // hand — both paths are supported, this one just lets a caller who
       // isn't building a dezero-style graph call .backward() directly.
       auto y2 = tensor_binop(Op::Mul, n, n);
@@ -1508,7 +1508,7 @@ inline void _tensor_vjp(const TensorPtr& n) {
     case Op::Pad:
     case Op::Fold:
       // unfold's VJP is fold with the same params (and vice versa); pad's is
-      // a crop. Not yet wired up: examples/dezero's own conv layer runs its
+      // a crop. Not yet wired up: examples/deep-learning/dezero's own conv layer runs its
       // own autograd around these rather than native .backward(), so this
       // arm is unreached today — thrown rather than silently wrong once
       // something does reach it.

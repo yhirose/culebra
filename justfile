@@ -1480,12 +1480,12 @@ fetch-mnist:
 # The book's own train splits (TinyStories 2.2 GB, OpenWebText 11.9 GB) are
 # deliberately not fetched -- see that package's README for why they cannot
 # run here.
-# Download the ~325 MB of corpora examples/deep-learning-from-scratch-6 uses.
+# Download the ~325 MB of corpora examples/deep-learning/deep-learning-from-scratch-6 uses.
 [group("bench")]
 fetch-llm-data:
     #!/usr/bin/env bash
     set -euo pipefail
-    out=examples/deep-learning-from-scratch-6/data
+    out=examples/deep-learning/deep-learning-from-scratch-6/data
     mkdir -p "$out"
     upstream='https://raw.githubusercontent.com/oreilly-japan/deep-learning-from-scratch-6/main'
     hub='https://huggingface.co/datasets/koki0702/zero-llm-data/resolve/main'

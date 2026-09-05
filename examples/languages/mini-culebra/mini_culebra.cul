@@ -157,7 +157,7 @@
 #          culebra examples/mini-culebra/mini_culebra.cul --ir prog.cul
 #          culebra examples/mini-culebra/mini_culebra.cul --bc prog.cul
 
-import front from '../codegen-front/front.cul'
+import front from '../front.cul'
 
 let grammar = `
   program    <- nl (stmt nl)*                               { no_ast_opt }
