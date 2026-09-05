@@ -399,13 +399,16 @@ c++ -std=c++23 \
     -I culebra/vendor/cpp-regexlib \
     -I culebra/vendor/cpp-fstlib \
     -I culebra/vendor/cpp-searchlib/include \
+    -isystem culebra/vendor/cpp-searchlib/third_party \
     host.cpp -lz -o host
 ```
 
 Every entry is load-bearing: the build stops in `font_ttf.h` without
 `vendor/stb`, in `regex.h` without `vendor/cpp-regexlib`, in `fst.h`
-without `vendor/cpp-fstlib`, and in `search.h` without
-`vendor/cpp-searchlib/include`, because the stdlib reaches all four
+without `vendor/cpp-fstlib`, in `search.h` without
+`vendor/cpp-searchlib/include`, and in `searchlib_segment.h` (the Japanese
+segmenter behind `Search.segmenter`) without
+`vendor/cpp-searchlib/third_party`, because the stdlib reaches all five
 unconditionally. `-lz` is the zlib an AOT link needs
 for the same reason ([§1](#host-requirements)) — `Compress` and the PNG
 writer refer to it whether or not the script does.

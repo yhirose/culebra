@@ -209,6 +209,7 @@ expect_absent none "$foreign_choke" "no __Foreign use"
 expect_absent none "$codegen_choke" "no CodeGen use"
 expect_absent none ' reg::' "regexlib"
 expect_absent none 'searchlib::InMemoryInvertedIndexBase' "cpp-searchlib"
+expect_absent none 'segmentlib::' "cpp-segmentlib"
 # peglib's typeinfo/vtables, and a couple of unreachable std::function comdat
 # thunks, survive here by design (see the PEG note above) -- culebra's own
 # front-end parser (parser.h) already needs a working peg::parser regardless
@@ -259,6 +260,18 @@ expect_class search "$peg_choke" "" "expected absent" "Search only"
 expect_class search "$proc_choke" "" "expected absent" "Search only"
 expect_absent search "$fmt_machinery" "libstdc++'s formatter, Search"
 expect_output search "a"
+
+# Search.segmenter: the Japanese model splitter rides the Search archive, so a
+# program that names Search carries it whether or not it loads a model (the
+# namespace's dispatch rows reach it); this probe shows the body is there and
+# works when a model is loaded, and the `none` probe above that a program
+# never naming Search carries none of it.
+build segmenter "let seg = Search.segmenter(\"$PWD/vendor/cpp-searchlib/test/models/ja-ud-gsd.mod\")
+let idx = Search.Index.new(analyzer: { splitter: seg })
+idx.add(\"a\", \"私は東京タワーに行った\")
+IO.print(idx.search(\"東京タワー\").size())"
+expect_present segmenter 'segmentlib::' "cpp-segmentlib, a model loaded"
+expect_output segmenter "1"
 
 build peg 'IO.print(PEG.parse(`N <- < [0-9]+ >`, "42").token)'
 expect_class peg "$peg_choke" ".+" "expected defined" "PEG named"

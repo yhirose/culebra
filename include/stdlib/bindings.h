@@ -8133,6 +8133,14 @@ inline int64_t id(JitValue self) {
   return _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
 }
 
+// A Search.segmenter handle, told apart from an index handle (and from any
+// other Object in the analyzer's `splitter` slot) by its marker field.
+inline bool is_segmenter(JitValue v) {
+  return v.tag == TAG_OBJECT &&
+         reinterpret_cast<JitObject*>(v.data)->find_slot("_segmenter") !=
+             static_cast<size_t>(-1);
+}
+
 inline void set_field(JitObject* o, const char* name, JitValue v) {
   culebra_runtime_object_set(o, name, false, v.tag, v.data, 0, 0);
 }
@@ -8179,18 +8187,23 @@ inline culebra::search::Analyzer make_analyzer(JitValue v) {
   }
   auto* obj = reinterpret_cast<JitObject*>(v.data);
 
-  auto hook = [&](const char* name) -> JitClosure* {
+  auto field = [&](const char* name) -> JitValue {
     int8_t tag = TAG_NIL;
     int64_t data = 0;
     culebra_runtime_object_get(obj, name, &tag, &data);
-    if (tag == TAG_NIL) return nullptr;
-    if (tag != TAG_FUNC) {
+    return {tag, data};
+  };
+  auto hook = [&](const char* name,
+                  const char* expected = "a Function") -> JitClosure* {
+    auto v = field(name);
+    if (v.tag == TAG_NIL) return nullptr;
+    if (v.tag != TAG_FUNC) {
       throw culebra::CulebraError(
           "TypeError",
-          culebra::format("Search: analyzer {} must be a Function", name),
+          culebra::format("Search: analyzer {} must be {}", name, expected),
           _jit_thread.call_line, _jit_thread.call_col);
     }
-    return reinterpret_cast<JitClosure*>(data);
+    return reinterpret_cast<JitClosure*>(v.data);
   };
   auto called = [](JitClosure* cb, std::string_view arg) {
     JitOwnedVal in{_ns_adapt::v_string(_culebra_heap_str(arg))};
@@ -8214,7 +8227,12 @@ inline culebra::search::Analyzer make_analyzer(JitValue v) {
     };
   }
 
-  if (auto* cb = hook("splitter")) {
+  // The splitter slot takes a closure or a Search.segmenter handle. The handle
+  // stays reachable the same way the closures do: through the analyzer object
+  // the index handle holds (see _culebra_search_build_index_handle).
+  if (auto seg = field("splitter"); is_segmenter(seg)) {
+    analyzer.segmenter = id(seg);
+  } else if (auto* cb = hook("splitter", "a Function or a Search.segmenter")) {
     analyzer.splitter =
         [cb, called, type_error](
             std::string_view text,
@@ -8377,6 +8395,42 @@ inline void _jit_search_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int6
   // drop runs from the destructor's drop protocol — must NOT release self.
   culebra::search::index_drop(_search_adapt::id(self));
   { *__ret = {TAG_NIL, 0}; return; }
+}
+
+inline void _jit_search_segmenter_close(JitValue* __ret, JitClosure*,
+                                        int8_t self_tag, int64_t self_data,
+                                        int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  culebra::search::segmenter_drop(_search_adapt::id(self));
+  { *__ret = {TAG_NIL, 0}; return; }
+}
+
+inline void _jit_search_segmenter_drop(JitValue* __ret, JitClosure*,
+                                       int8_t self_tag, int64_t self_data,
+                                       int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
+  // drop runs from the destructor's drop protocol — must NOT release self.
+  culebra::search::segmenter_drop(_search_adapt::id(self));
+  { *__ret = {TAG_NIL, 0}; return; }
+}
+
+// `Search.segmenter(model)`: a loaded segmentation model as a handle the
+// analyzer's `splitter` slot accepts. An index copies the splitter (which
+// shares the model) when it is built, so closing the handle afterwards only
+// stops new indexes from being built with it.
+inline JitValue _ns_search_segmenter(JitValue* a, int64_t) {
+  auto id = culebra::search::segmenter_load(
+      _ns_adapt::require_sv(a[0], "model"));
+  auto* h = culebra_runtime_object_new();
+  h->set_or_append("_id", JitValue{TAG_LONG, id}, false);
+  h->set_or_append("_segmenter", JitValue{TAG_BOOL, 1}, false);
+  // Its registry is per-thread, like an index's, so it stays on this thread.
+  h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
+  _jit_handle_bind_method(h, "close", _jit_search_segmenter_close, 0);
+  _jit_handle_bind_method(h, "drop", _jit_search_segmenter_drop, 0);
+  _jit_owned_bind_drop(h);
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
 
 inline JitValue _culebra_search_build_index_handle(int64_t id,
@@ -8858,6 +8912,7 @@ inline const NsMethod kNsRows_FST_native[] = {
 inline const NsMethod kNsRows_Search[] = {
   {"Search", "new",  1, &_ns_search_index_new,  "Index"},
   {"Search", "load", 2, &_ns_search_index_load, "Index", "String", "path"},
+  {"Search", "segmenter", 1, &_ns_search_segmenter, nullptr, "String", "model"},
 };
 inline const NsMethod kNsRows_Net[] = {
   {"Net",    "connect", 2, &_ns_net_connect},

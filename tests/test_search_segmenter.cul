@@ -1,0 +1,86 @@
+// Conformance: Search.segmenter -- a model-based Japanese splitter handed to
+// the analyzer as its `splitter`. It runs natively (no call back into the
+// program per document) and composes with the closure hooks. See docs/stdlib.md.
+
+// cpp-segmentlib's reference model, as vendored with cpp-searchlib for its
+// own tests (CC BY-SA 4.0, see the NOTICE beside it).
+let model = "vendor/cpp-searchlib/test/models/ja-ud-gsd.mod"
+
+let found = fn (hits) {
+  hits.map(fn (h) {
+    h.key
+  }).sorted()
+}
+
+let seg = Search.segmenter(model)
+let idx = Search.Index.new(analyzer: { splitter: seg })
+idx.add("tokyo", "私は東京タワーに行った")
+idx.add("kyoto", "京都タワーは京都駅の前にある")
+idx.add("mixed", "iPhone 15を買った")
+
+// The model cuts words, on both sides: 東京 is one term, so 京 alone is none.
+assert_eq(found(idx.search("東京")), ["tokyo"])
+assert_eq(found(idx.search("東京タワー")), ["tokyo"])
+assert_eq(found(idx.search("タワー")), ["kyoto", "tokyo"])
+assert_eq(found(idx.search("京都駅")), ["kyoto"])
+assert_eq(idx.search("京"), [])
+
+// Everything that is not Japanese script is cut by the built-in rules.
+assert_eq(found(idx.search("iphone")), ["mixed"])
+assert_eq(found(idx.search("15")), ["mixed"])
+assert_eq(found(idx.search("買っ")), ["mixed"])
+
+// Ranges point at the surface text of the words the model cut: one range
+// per hit, spanning the whole phrase when the query token was cut into one.
+let text = "私は東京タワーに行った"
+let surface = fn (query) {
+  let hit = idx.search(query).filter(fn (h) {
+    h.key == "tokyo"
+  })[0]
+  hit.ranges.map(fn (r) {
+    text.slice(r.position, r.position + r.length)
+  })
+}
+assert_eq(surface("東京"), ["東京"])
+assert_eq(surface("タワー"), ["タワー"])
+assert_eq(surface("東京タワー"), ["東京タワー"])
+
+// Composes with the other hooks: a stop word dropped on both sides, and the
+// phrase closes over the gap.
+let stop = fn (t) {
+  if ["は", "に", "た"].contains(t) {
+    nil
+  } else {
+    t
+  }
+}
+let filtered = Search.Index.new(analyzer: { splitter: seg, filters: [stop] })
+filtered.add("tokyo", "私は東京タワーに行った")
+assert_eq(filtered.search("は"), [])
+assert_eq(found(filtered.search("\"私 東京\"")), ["tokyo"])
+filtered.close()
+
+// An index keeps the model it was built with after the handle is closed;
+// only building a new index with the closed handle fails.
+seg.close()
+seg.close()  // idempotent
+assert_eq(found(idx.search("東京")), ["tokyo"])
+assert_throws("SearchError", fn () {
+  Search.Index.new(analyzer: { splitter: seg })
+})
+idx.close()
+
+// --- errors -----------------------------------------------------------------
+
+assert_throws("SearchError", fn () {
+  Search.segmenter("{FS.temp_dir()}/no-such-model.mod")
+})
+assert_throws("TypeError", fn () {
+  Search.segmenter(1)
+})
+assert_throws("TypeError", fn () {
+  Search.Index.new(analyzer: { splitter: 42 })
+})
+assert_throws("TypeError", fn () {
+  Search.Index.new(analyzer: { splitter: {} })
+})

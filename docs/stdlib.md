@@ -7034,6 +7034,35 @@ crossings back into the program.
 nothing about the analyzer it was built with, so loading with a different one
 gives quietly wrong results and nothing can catch it. Pass the same one.
 
+### Japanese: a model-based splitter
+
+The built-in splitting leaves Han and Hiragana one character at a time
+(above). `Search.segmenter(model)` loads a word-segmentation model (engine:
+[cpp-segmentlib](https://github.com/yhirose/cpp-segmentlib), bundled with
+cpp-searchlib) and returns a splitter that cuts runs of Japanese script into
+words and leaves everything else to the built-in rules — `iPhone 15を買った`
+indexes as `iphone` `15` `を` `買っ` `た`, and `東京タワー` as `東京` `タワー`.
+Hand it to the analyzer as its `splitter`. It runs natively, with no call
+back into the program per document.
+
+```culebra
+# doctest: skip
+let seg = Search.segmenter("ja-ud-gsd.mod")
+let idx = Search.Index.new(analyzer: { splitter: seg })
+idx.add("doc-1", "私は東京タワーに行った")
+inspect(idx.search("東京タワー").size())  # => 1
+inspect(idx.search("京"))                # => []   東京 is one term now
+```
+
+`model` is the path of a model file in a format cpp-segmentlib loads; its
+reference model `ja-ud-gsd` (trained on UD Japanese-GSD, CC BY-SA 4.0) is
+the one this documentation and the tests use. A file that cannot be loaded
+raises `SearchError`. The segmenter is a handle like an index: closed at
+scope exit or with `close()`. An index copies the splitter when it is built,
+so closing the handle afterwards does not affect the index — it only stops
+new indexes from being built with it. The model is part of the analyzer in
+the sense above: the same one on both sides, and a re-index when it changes.
+
 ### Hits
 
 `search(query, limit = 10)` returns an Array of Objects, best score first:
@@ -7078,6 +7107,8 @@ releases while this namespace is experimental.
 | `idx.search(query: String, limit: Long = 10) -> Array` | ranked hits |
 | `idx.save(path: String) -> Nil` | write the index |
 | `idx.close() -> Nil` | release it; idempotent |
+| `Search.segmenter(model: String) -> Segmenter` | a model-based Japanese splitter for `analyzer.splitter` |
+| `seg.close() -> Nil` | release it; indexes built with it keep working |
 
 An index is not `Sendable`: results alias it, so it stays on the thread that
 built it. Give each isolate its own.

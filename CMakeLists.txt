@@ -134,6 +134,12 @@ include_directories(./vendor/cpp-httplib)
 # by the bare names above, so it compiles against the copies already listed
 # here rather than the ones it vendors — one definition of each in the binary.
 include_directories(./vendor/cpp-searchlib/include)
+# Its Japanese word segmenter (searchlib_segment.h, behind Search.segmenter)
+# compiles cpp-segmentlib out of cpp-searchlib's third_party. Those headers
+# refer to each other as `segmentlib/...`, so the include root is third_party
+# itself; SYSTEM because the automaton is not warning-clean under -Wall
+# -Wextra. Its fstlib include resolves through <fstlib.h> to the copy above.
+include_directories(SYSTEM ./vendor/cpp-searchlib/third_party)
 # stb_image (vendor/stb/stb_image.h, public domain) — the PNG decoder behind
 # Canvas.Sprite.from_png. Header-only with its own inflate, so it adds no link
 # dependency; see include/stdlib/image.h for how it is compiled in. stb_truetype

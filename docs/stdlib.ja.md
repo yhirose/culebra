@@ -6795,6 +6795,32 @@ inspect(idx.search("the"))           # => []
 作られたかを一切記録しない。違うものを渡して開くと、誰にも気づけないまま壊れた結果が
 返る。同じものを渡すこと。
 
+### 日本語: モデルによる分かち書き
+
+組み込みの切り方では漢字とひらがなは1文字ずつになる（上）。`Search.segmenter(model)`は
+分かち書きのモデル（エンジンは cpp-searchlib に同梱の
+[cpp-segmentlib](https://github.com/yhirose/cpp-segmentlib)）を読み込み、日本語の
+文字が続く区間を語に切り、それ以外は組み込みの規則に任せる splitter を返す。
+`iPhone 15を買った`は`iphone` `15` `を` `買っ` `た`、`東京タワー`は`東京` `タワー`として
+索引に入る。解析器の`splitter`に渡して使う。ネイティブに走るので、文書ごとに
+プログラムへ戻ることはない。
+
+```culebra
+# doctest: skip
+let seg = Search.segmenter("ja-ud-gsd.mod")
+let idx = Search.Index.new(analyzer: { splitter: seg })
+idx.add("doc-1", "私は東京タワーに行った")
+inspect(idx.search("東京タワー").size())  # => 1
+inspect(idx.search("京"))                # => []   東京 が1語になった
+```
+
+`model`はモデルファイルのパスで、形式は cpp-segmentlib が読めるもの。参照モデル
+`ja-ud-gsd`（UD Japanese-GSD で訓練、CC BY-SA 4.0）がこの文書とテストで使っているもの。
+読み込めないファイルは`SearchError`になる。segmenter は索引と同じくハンドルで、
+スコープを抜けるか`close()`で解放する。索引は作られるときに splitter を写し取るので、
+あとでハンドルを閉じても索引には影響せず、そのハンドルで新しい索引を作れなくなるだけ。
+モデルは上に書いた意味で解析器の一部——両側で同じものを使い、変えたら索引を作り直す。
+
 ### 検索結果
 
 `search(query, limit = 10)`はObjectのArrayを、スコアの高い順に返す。
@@ -6839,6 +6865,8 @@ let reopened = Search.Index.load("notes.idx")
 | `idx.search(query: String, limit: Long = 10) -> Array` | 順位つきの結果 |
 | `idx.save(path: String) -> Nil` | 索引を書き出す |
 | `idx.close() -> Nil` | 解放する。何度呼んでもよい |
+| `Search.segmenter(model: String) -> Segmenter` | `analyzer.splitter`に渡す、モデルによる日本語の splitter |
+| `seg.close() -> Nil` | 解放する。それで作った索引はそのまま使える |
 
 索引は`Sendable`ではない。結果が索引を参照しているので、作ったスレッドから出せない。
 isolateごとに別の索引を持たせる。

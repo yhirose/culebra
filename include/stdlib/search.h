@@ -30,6 +30,7 @@
 
 #if !defined(CULEBRA_RT_SEARCH_WEAK)
 #include <searchlib.h>
+#include <searchlib_segment.h>
 #include <unicodelib.h>
 
 #include <memory>
@@ -86,6 +87,12 @@ struct Analyzer {
   using Emit = SplitEmit;
   std::function<void(std::string_view text, const Emit &emit)> splitter;
 
+  // Or a native one: a handle from segmenter_load, whose splitter is copied
+  // into the index when it is built (so closing the handle later does not
+  // affect the index). Negative is none -- ids start at 0. The binding layer
+  // sets one of the two.
+  int64_t segmenter = -1;
+
   // Applied in order after the normalizer. A filter rewrites its term in
   // place and returns true to keep it, or returns false to drop it (a stop
   // word). Turning one term into several is deliberately not expressible:
@@ -115,6 +122,14 @@ CULEBRA_RT_SEARCH_LINKAGE void index_save(int64_t id, std::string_view path);
 // Frees the handle. Idempotent; a stale/forged id is ignored.
 CULEBRA_RT_SEARCH_LINKAGE void index_drop(int64_t id);
 
+// A word-segmentation model (cpp-segmentlib, any format it loads) as a
+// splitter handle for Analyzer::segmenter: runs of Japanese script go to the
+// model, everything else is cut by the built-in rules. Throws SearchError when
+// the file cannot be loaded.
+CULEBRA_RT_SEARCH_LINKAGE int64_t segmenter_load(std::string_view model_path);
+// Frees the handle. Idempotent; a stale/forged id is ignored.
+CULEBRA_RT_SEARCH_LINKAGE void segmenter_drop(int64_t id);
+
 #if defined(CULEBRA_RT_SEARCH_WEAK)
 
 [[noreturn]] inline void _not_linked() {
@@ -141,6 +156,10 @@ CULEBRA_RT_SEARCH_LINKAGE void index_save(int64_t, std::string_view) {
   _not_linked();
 }
 CULEBRA_RT_SEARCH_LINKAGE void index_drop(int64_t) {}
+CULEBRA_RT_SEARCH_LINKAGE int64_t segmenter_load(std::string_view) {
+  _not_linked();
+}
+CULEBRA_RT_SEARCH_LINKAGE void segmenter_drop(int64_t) {}
 
 #else  // the real bodies
 
@@ -151,6 +170,16 @@ using Indexer = searchlib::InMemoryIndexer<searchlib::TextRange, std::string>;
 
 inline std::u32string lowercase(const std::u32string& s) {
   return unicode::to_lowercase(s);
+}
+
+// Loaded segmenters, by handle. Per-thread like g_indexes below, and for the
+// same reason (see there).
+inline thread_local IdRegistry<searchlib::TextSplitter> g_segmenters;
+
+inline const searchlib::TextSplitter& segmenter_get(int64_t id) {
+  auto* p = g_segmenters.get(id);
+  if (!p) throw CulebraError("SearchError", "Search: segmenter was closed", 0, 0);
+  return *p;
 }
 
 // The analyzer as searchlib's own three shapes. Built once per index, because
@@ -170,7 +199,9 @@ struct Pipeline {
                            })
                      : searchlib::Normalizer(lowercase);
 
-    if (analyzer.splitter) {
+    if (analyzer.segmenter >= 0) {
+      splitter = segmenter_get(analyzer.segmenter);  // a copy: shares the model
+    } else if (analyzer.splitter) {
       splitter = [fn = analyzer.splitter](
                      std::string_view text,
                      const std::function<void(const std::u32string &,
@@ -352,6 +383,22 @@ CULEBRA_RT_SEARCH_LINKAGE void index_drop(int64_t id) {
   if (!index) return;
   detail::g_indexes.invalidate(id);
   delete index;
+}
+
+CULEBRA_RT_SEARCH_LINKAGE int64_t segmenter_load(std::string_view model_path) {
+  try {
+    return detail::g_segmenters.add(new searchlib::TextSplitter(
+        searchlib::load_segmenting_splitter(std::string(model_path))));
+  } catch (const std::exception& e) {
+    detail::rethrow(e);
+  }
+}
+
+CULEBRA_RT_SEARCH_LINKAGE void segmenter_drop(int64_t id) {
+  auto* splitter = detail::g_segmenters.get(id);
+  if (!splitter) return;
+  detail::g_segmenters.invalidate(id);
+  delete splitter;
 }
 
 #endif  // CULEBRA_RT_SEARCH_WEAK

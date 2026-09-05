@@ -392,13 +392,16 @@ c++ -std=c++23 \
     -I culebra/vendor/cpp-regexlib \
     -I culebra/vendor/cpp-fstlib \
     -I culebra/vendor/cpp-searchlib/include \
+    -isystem culebra/vendor/cpp-searchlib/third_party \
     host.cpp -lz -o host
 ```
 
 どれも省けません。`vendor/stb`が無いと`font_ttf.h`で、
 `vendor/cpp-regexlib`が無いと`regex.h`で、`vendor/cpp-fstlib`が無いと
-`fst.h`で、`vendor/cpp-searchlib/include`が無いと`search.h`で
-ビルドが止まります — stdlibがどれも無条件に参照するためです。`-lz`はAOTのリンクが
+`fst.h`で、`vendor/cpp-searchlib/include`が無いと`search.h`で、
+`vendor/cpp-searchlib/third_party`が無いと`searchlib_segment.h`
+（`Search.segmenter`の日本語分かち書き）でビルドが止まります —
+stdlibがどれも無条件に参照するためです。`-lz`はAOTのリンクが
 必要とするzlibと同じもので（[§1](#ホスト側に必要なもの)）、
 `Compress`とPNGライタが参照するため、スクリプトが使うかどうかに
 関わらずホスト側でリンクします。
