@@ -993,7 +993,8 @@ CMakeは`-DCULEBRA_ENABLE_JIT=ON`で、base archive＋ 重い機能ごとに
 | `libculebra_rt_compress.a` | 強いcompress choke（zlibを引く。`to_png`もこれに乗る） |
 | `libculebra_rt_sqlite.a` | 強いsqlite choke＋sqlite3 amalgamation |
 | `libculebra_rt_regex.a` | 強いregex choke（cpp-regexlibエンジン、約320 KB） |
-| `libculebra_rt_search.a` | 強いsearch choke（cpp-searchlibエンジン。転置索引・簡潔データ構造・問い合わせ文法） |
+| `libculebra_rt_search.a` | 強いsearch choke（cpp-searchlibエンジン。転置索引・簡潔データ構造・問い合わせ文法）。下のモデル読み込みは、ここでは弱いスタブ |
+| `libculebra_rt_search_segmenter.a` | 強いsegmenter choke（`Search.segmenter`の背後にあるcpp-segmentlibのモデルバックエンド、約140 KB）。プログラムが`segmenter`を名指したときだけforce-loadされるので、モデルを読まない検索プログラムはこれを運ばない |
 | `libculebra_rt_foreign.a` | foreign objectのテストが書かれている`__Foreign` wrapフィクスチャ（静的な`wrap<T>`レジストラなので専用archiveが要る） |
 | `libculebra_rt_canvas.a` | raylibのwindowバックエンド（windowビルドのみ。baseはheadlessスタブを持つ） |
 | `libculebra_rt_scene.a` | Sceneのwrap registrar（raylibを引く。baseには一切入っていない） |

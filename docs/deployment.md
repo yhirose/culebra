@@ -1021,7 +1021,8 @@ emits it as a base archive plus one small archive per heavy feature
 | `libculebra_rt_compress.a` | strong compress choke (pulls zlib; `to_png` rides it too) |
 | `libculebra_rt_sqlite.a` | strong sqlite choke plus the sqlite3 amalgamation |
 | `libculebra_rt_regex.a` | strong regex choke (the cpp-regexlib engine, ~320 KB) |
-| `libculebra_rt_search.a` | strong search choke (the cpp-searchlib engine: inverted index, succinct structures, query grammar) |
+| `libculebra_rt_search.a` | strong search choke (the cpp-searchlib engine: inverted index, succinct structures, query grammar), with a weak stub of its own for the model loader below |
+| `libculebra_rt_search_segmenter.a` | strong segmenter choke (cpp-segmentlib, the model backends behind `Search.segmenter`, ~140 KB); force-loaded when the program names `segmenter`, so a program that searches without a model carries none of it |
 | `libculebra_rt_foreign.a` | the `__Foreign` wrap fixture the foreign-object tests are written against (a static `wrap<T>` registrar, so it needs its own archive) |
 | `libculebra_rt_canvas.a` | the raylib window backend (window builds only; the base carries headless stubs) |
 | `libculebra_rt_scene.a` | Scene's wrap registrar (pulls raylib; not in the base at all) |

@@ -148,6 +148,10 @@ regex_choke='^culebra::regex::compile[(]'
 # the binary still runs, it just carries the whole engine (postings, the
 # succinct structures, the FST term dictionary and a PEG query grammar).
 search_choke='^culebra::search::index_new[(]'
+# The loader returns a std::function over std::string, so libstdc++ tags
+# it [abi:cxx11]; libc++ does not. Bracket expressions, because awk -v
+# unescapes the pattern before it is a regex.
+segmenter_choke='^culebra::search::segmenter_open([[]abi:cxx11[]])?[(]'
 # PEG / Proc / Canvas assets: no weak stub — plain inline code reached only
 # through the namespace's dispatch group, so these are either linked (as
 # ordinary — usually weak/COMDAT — symbols) or gone entirely. The first three
@@ -258,19 +262,24 @@ expect_class search "$regex_choke" "W?" "expected 'W' or absent" "Search only"
 # reaching peglib does not drag culebra's own PEG namespace in with it.
 expect_class search "$peg_choke" "" "expected absent" "Search only"
 expect_class search "$proc_choke" "" "expected absent" "Search only"
+# The model loader is the Search archive's own weak stub: Search's dispatch
+# rows reach it, so without this second axis every Search binary carried
+# cpp-segmentlib (~140 KB) whether or not it loaded a model.
+expect_class search "$segmenter_choke" "W" "expected 'W'" "Search without segmenter, the stub"
+expect_absent search 'segmentlib::' "cpp-segmentlib, no model loaded"
 expect_absent search "$fmt_machinery" "libstdc++'s formatter, Search"
 expect_output search "a"
 
-# Search.segmenter: the Japanese model splitter rides the Search archive, so a
-# program that names Search carries it whether or not it loads a model (the
-# namespace's dispatch rows reach it); this probe shows the body is there and
-# works when a model is loaded, and the `none` probe above that a program
-# never naming Search carries none of it.
+# Search.segmenter: naming the method force-loads the loader's archive over
+# the Search one, and the printed hit count is what proves the model ran.
 build segmenter "let seg = Search.segmenter(\"$PWD/vendor/cpp-searchlib/test/models/ja-ud-gsd.mod\")
 let idx = Search.Index.new(analyzer: { splitter: seg })
 idx.add(\"a\", \"私は東京タワーに行った\")
 IO.print(idx.search(\"東京タワー\").size())"
+expect_class segmenter "$search_choke" "T" "expected 'T'" "segmenter named, Search's strong body too"
+expect_class segmenter "$segmenter_choke" "T" "expected 'T'" "segmenter named, the strong loader must override"
 expect_present segmenter 'segmentlib::' "cpp-segmentlib, a model loaded"
+expect_absent segmenter "$fmt_machinery" "libstdc++'s formatter, segmenter"
 expect_output segmenter "1"
 
 build peg 'IO.print(PEG.parse(`N <- < [0-9]+ >`, "42").token)'
@@ -404,7 +413,9 @@ if (( fail )); then
   Search 'W' (or nothing) where 'T' was expected, or a `searchlib::` symbol
   in `none`: the same two causes as Regex, one file over — the kFeatureAxes
   row and _rt_embed_files, or something bypassing CULEBRA_RT_SEARCH_WEAK (see
-  include/stdlib/search.h).
+  include/stdlib/search.h). A `segmentlib::` symbol in `search`, or the
+  segmenter choke 'W' where 'T' was expected: the same again for the
+  `segmenter` row and CULEBRA_RT_SEGMENTER_WEAK (include/stdlib/search_segmenter.h).
   Proc / Canvas / PEG: a choke present in `none`, or absent where it was
   named: something outside the choke reaches the engine unconditionally, or
   the adapter isn't reachable only through its kNsRows_* table.

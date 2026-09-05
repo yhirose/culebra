@@ -13,6 +13,9 @@
 //   - search archive (CULEBRA_RT_SEARCH_STRONG): strong real bodies, force-loaded
 //     only when the AST scan reports Search use.
 //   - header-only / in-process JIT (neither): the normal inline body.
+// The segmenter's model loader is partitioned once more, out of the search
+// archive into its own (search_segmenter.h), so a program that searches
+// without loading a model carries no cpp-segmentlib either.
 //
 // An index is a handle in a per-thread IdRegistry, like sqlite.h's tables, so
 // a dropped or forged id fails safely; the binding layer keeps the handle
@@ -30,8 +33,9 @@
 
 #if !defined(CULEBRA_RT_SEARCH_WEAK)
 #include <searchlib.h>
-#include <searchlib_segment.h>
 #include <unicodelib.h>
+
+#include <stdlib/search_segmenter.h>
 
 #include <memory>
 #include <optional>
@@ -407,8 +411,8 @@ CULEBRA_RT_SEARCH_LINKAGE void index_drop(int64_t id) {
 
 CULEBRA_RT_SEARCH_LINKAGE int64_t segmenter_load(std::string_view model_path) {
   try {
-    return detail::g_segmenters.add(new searchlib::TextSplitter(
-        searchlib::load_segmenting_splitter(std::string(model_path))));
+    return detail::g_segmenters.add(
+        new searchlib::TextSplitter(segmenter_open(model_path)));
   } catch (const std::exception& e) {
     detail::rethrow(e);
   }

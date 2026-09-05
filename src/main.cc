@@ -591,6 +591,12 @@ static constexpr FeatureAxis kFeatureAxes[] = {
     // its postings, succinct structures, FST term dictionary and query
     // grammar are code only a program that searches should carry.
     {{"Search"}, "libculebra_rt_search.a", "", true},
+    // search_segmenter.h: the model loader behind `Search.segmenter`, one
+    // archive in from Search's. The trigger is the method name, the same
+    // way `to_png` triggers Compress: a program that names Search but never
+    // `segmenter` links the Search archive's weak stub and carries none of
+    // cpp-segmentlib's model backends.
+    {{"segmenter"}, "libculebra_rt_search_segmenter.a", "", true},
     // The __Foreign test fixture, for the same reason one step removed: its
     // `wrap<T>` registrar is a static initializer, which .init_array pins
     // against the link (see src/runtime/culebra_rt_foreign.cc). The flags are

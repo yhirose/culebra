@@ -1261,9 +1261,25 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   target_compile_features(culebra_rt_search PRIVATE cxx_std_23)
   target_compile_options(culebra_rt_search PRIVATE
     -ffunction-sections -fdata-sections)
+  # The model loader behind Search.segmenter is a weak stub in this archive
+  # too: cpp-segmentlib is the one part of Search a program can name and
+  # still not use, so it rides an archive of its own (next).
+  target_compile_definitions(culebra_rt_search PRIVATE
+    CULEBRA_RT_SEGMENTER_WEAK=1)
   list(APPEND _rt_embed_files
     "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_search${CMAKE_STATIC_LIBRARY_SUFFIX}")
   list(APPEND _rt_embed_deps culebra_rt_search)
+  # Search.segmenter feature object: the strong model loader over
+  # cpp-segmentlib (vendor/cpp-searchlib/third_party), force-loaded when the
+  # program names `segmenter`. No link flags; embedded like the ones above.
+  add_library(culebra_rt_search_segmenter STATIC
+    ./src/runtime/culebra_rt_search_segmenter.cc)
+  target_compile_features(culebra_rt_search_segmenter PRIVATE cxx_std_23)
+  target_compile_options(culebra_rt_search_segmenter PRIVATE
+    -ffunction-sections -fdata-sections)
+  list(APPEND _rt_embed_files
+    "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_search_segmenter${CMAKE_STATIC_LIBRARY_SUFFIX}")
+  list(APPEND _rt_embed_deps culebra_rt_search_segmenter)
   # The __Foreign wrap fixture: a static registrar, so the link can never drop
   # it from the core archive (see src/runtime/culebra_rt_foreign.cc). Its own
   # archive, force-loaded only when the program names __Foreign.
@@ -1395,7 +1411,8 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   # must still define.
   foreach(_rt_feature culebra_rt_tensor culebra_rt_http culebra_rt_http_notls
                       culebra_rt_compress
-                      culebra_rt_regex culebra_rt_search culebra_rt_foreign
+                      culebra_rt_regex culebra_rt_search
+                      culebra_rt_search_segmenter culebra_rt_foreign
                       culebra_rt_codegen
                       culebra_rt_sqlite culebra_rt_scene culebra_rt_canvas
                       culebra_rt_webview culebra_rt_wrap)
