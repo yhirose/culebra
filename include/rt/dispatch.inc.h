@@ -1318,33 +1318,40 @@ inline void _jit_multifn_dispatcher_thunk(JitValue* __ret, JitClosure* cls,
 // Record the call-site position read by `_jit_multifn_dispatcher_thunk` on
 // the DispatchError path. Emitted by compile_function_call_raw just before
 // an indirect closure call. Kept trivial so it inlines to two stores.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_call_site(
-    int64_t line, int64_t col) {
-  _jit_thread.call_line = line;
-  _jit_thread.call_col = col;
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_call_site_at(
+    JitThreadState* ts, int64_t line, int64_t col) {
+  ts->call_line = line;
+  ts->call_col = col;
   // The boundary position defaults to the call site (they coincide for
   // every non-UFCS call shape); a pending override published just before
   // this call (set_call_boundary — the UFCS chain head) wins and is
   // consumed, so it can never leak into a later call.
-  if (_jit_thread.pending_boundary_line || _jit_thread.pending_boundary_col) {
-    _jit_thread.boundary_line = _jit_thread.pending_boundary_line;
-    _jit_thread.boundary_col = _jit_thread.pending_boundary_col;
-    _jit_thread.pending_boundary_line = 0;
-    _jit_thread.pending_boundary_col = 0;
+  if (ts->pending_boundary_line || ts->pending_boundary_col) {
+    ts->boundary_line = ts->pending_boundary_line;
+    ts->boundary_col = ts->pending_boundary_col;
+    ts->pending_boundary_line = 0;
+    ts->pending_boundary_col = 0;
   } else {
-    _jit_thread.boundary_line = line;
-    _jit_thread.boundary_col = col;
+    ts->boundary_line = line;
+    ts->boundary_col = col;
   }
   // Default the arg0 position to the call site: it is read only on the
   // (callback) body-coercion arg0 type-error path, where the call site is the
   // right position. The as-value path instead threads per-arg positions below.
-  _jit_thread.arg0_line = line;
-  _jit_thread.arg0_col = col;
+  ts->arg0_line = line;
+  ts->arg0_col = col;
   // Reset the per-arg position count: only the indirect (as-value) call path
   // repopulates it (via set_arg_pos) right after this. A HOF callback reaches
   // its per-element call with the count still 0, marking it as the callback
   // path so the dispatch uses body-coercion wording.
-  _jit_thread.argpos_n = 0;
+  ts->argpos_n = 0;
+}
+// The same over this thread's state, for a caller that has not fetched it
+// (the executor, and the runtime's own callbacks into user code). A compiled
+// frame publishes through the `_at` form on the pointer its prologue holds.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_call_site(
+    int64_t line, int64_t col) {
+  culebra_runtime_set_call_site_at(&_jit_thread, line, col);
 }
 
 // Publish the boundary position of the NEXT call (see _jit_thread.boundary_*):
@@ -1421,16 +1428,21 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_param_pos(
 // so the emitter puts it in rodata. The resulting thread-local state is
 // identical to the per-arg calls, including `_jit_thread.argpos_n`, whose
 // "0 = HOF body-coercion path" meaning downstream readers rely on.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_call_positions(
-    int64_t line, int64_t col, int64_t n, const int64_t* packed) {
-  culebra_runtime_set_call_site(line, col);
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_call_positions_at(
+    JitThreadState* ts, int64_t line, int64_t col, int64_t n,
+    const int64_t* packed) {
+  culebra_runtime_set_call_site_at(ts, line, col);
   int64_t k = n < _JIT_ARGPOS_MAX ? n : _JIT_ARGPOS_MAX;
   for (int64_t i = 0; i < k; i++) {
     auto pos = _jit_unpack_pos(packed[i]);
-    _jit_thread.argpos_line[i] = pos.line;
-    _jit_thread.argpos_col[i] = pos.col;
+    ts->argpos_line[i] = pos.line;
+    ts->argpos_col[i] = pos.col;
   }
-  _jit_thread.argpos_n = static_cast<int>(k);
+  ts->argpos_n = static_cast<int>(k);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_call_positions(
+    int64_t line, int64_t col, int64_t n, const int64_t* packed) {
+  culebra_runtime_set_call_positions_at(&_jit_thread, line, col, n, packed);
 }
 
 // Record the position of a HOF's callback argument (see _jit_thread.callback_*),

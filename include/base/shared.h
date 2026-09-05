@@ -2256,6 +2256,11 @@ struct Runtime;
 struct RuntimeTls {
   Runtime* current = nullptr;
   Runtime* fallback = nullptr;
+  // Told whenever `current` changes on this thread. The compiled-code
+  // runtime caches what it reads off the current Runtime in its own
+  // per-thread state (rt_runtime.inc.h, JitThreadState) and installs this to
+  // drop that cache; null until it has something to drop.
+  void (*on_switch)() = nullptr;
 };
 inline constinit thread_local RuntimeTls _culebra_rt;
 
@@ -2266,8 +2271,12 @@ struct RuntimeScope {
   Runtime* prev_;
   explicit RuntimeScope(Runtime& rt) : prev_(_culebra_rt.current) {
     _culebra_rt.current = &rt;
+    if (_culebra_rt.on_switch) _culebra_rt.on_switch();
   }
-  ~RuntimeScope() { _culebra_rt.current = prev_; }
+  ~RuntimeScope() {
+    _culebra_rt.current = prev_;
+    if (_culebra_rt.on_switch) _culebra_rt.on_switch();
+  }
   RuntimeScope(const RuntimeScope&) = delete;
   RuntimeScope& operator=(const RuntimeScope&) = delete;
 };
@@ -2709,15 +2718,20 @@ inline std::mutex& stdio_mutex() {
   return m;
 }
 
-// Lazy-init a default-constructible T into a Runtime slot.
+// Lazy-init a default-constructible T into a Runtime slot. The two-argument
+// form is for a caller that already resolved the current Runtime — one
+// thread-local lookup serving several substates instead of one apiece.
 template <class T>
-inline T& runtime_substate(RuntimeSlot slot) {
-  auto& rt = current_runtime();
+inline T& runtime_substate(Runtime& rt, RuntimeSlot slot) {
   if (!rt.substate[slot]) {
     rt.substate[slot] = new T();
     rt.substate_deleter[slot] = [](void* p) { delete static_cast<T*>(p); };
   }
   return *static_cast<T*>(rt.substate[slot]);
+}
+template <class T>
+inline T& runtime_substate(RuntimeSlot slot) {
+  return runtime_substate<T>(current_runtime(), slot);
 }
 
 // --- Shared PRNG (interpreter and JIT) ---

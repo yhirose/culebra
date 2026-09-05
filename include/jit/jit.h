@@ -1284,9 +1284,19 @@ struct JIT {
   // exception boundaries (see _jit_thread.op_line). Two i64 stores; emit only before
   // calls whose helper can throw without a position (e.g. Tensor ops).
   void emit_set_op_pos() {
-    emit_call(module_->getFunction(rt::set_op_pos),
-              {builder_.getInt64(static_cast<int64_t>(current_line_)),
-               builder_.getInt64(static_cast<int64_t>(current_column_))});
+    // Two stores on the frame's thread state (culebra_runtime_set_op_pos's
+    // body), through the pointer the prologue holds.
+    auto i8Ty = builder_.getInt8Ty();
+    auto i64Ty = builder_.getInt64Ty();
+    auto ts = thread_state_ptr();
+    builder_.CreateStore(
+        builder_.getInt64(static_cast<int64_t>(current_line_)),
+        builder_.CreateConstInBoundsGEP1_64(
+            i8Ty, ts, offsetof(JitThreadState, op_line), "op.line.p"));
+    builder_.CreateStore(
+        builder_.getInt64(static_cast<int64_t>(current_column_)),
+        builder_.CreateConstInBoundsGEP1_64(
+            i8Ty, ts, offsetof(JitThreadState, op_col), "op.col.p"));
   }
 
   // Publish the current node (the postfix chain, per PosGuard) as the NEXT
@@ -1398,9 +1408,12 @@ struct JIT {
   // lowers `defer_run_to(this mark)` before emitting `ret` so the
   // function's own defers run regardless of where the return sits.
   llvm::Value* current_fn_defer_mark_ = nullptr;
-  // Per-LLVM-function cache of culebra_runtime_owned_hot()'s result
-  // (see owned_hot_ptr). Reset wherever current_fn_defer_mark_ is —
-  // an SSA value must never leak into a different function.
+  // Per-LLVM-function cache of the thread state pointer
+  // (culebra_runtime_thread_state, fetched once in the entry block — see
+  // thread_state_ptr) and of the owned stack's hot pointer read through it
+  // (owned_hot_ptr). Reset wherever current_fn_defer_mark_ is — an SSA value
+  // must never leak into a different function.
+  llvm::Value* current_thread_state_ = nullptr;
   llvm::Value* current_owned_hot_ = nullptr;
 
   // Recursion-guard state for the function being compiled: an entry-block
@@ -1457,13 +1470,75 @@ struct JIT {
   // next_id / top_stamp with plain loads instead of runtime calls:
   // tight loop bodies (whose per-iteration scope is almost always an
   // empty region) pay ~3 inline instructions, not two calls.
+  // The frame's JitThreadState*, fetched once at the top of the entry block
+  // — so it dominates every use, a first use inside a try region included —
+  // and read through for the recursion counter, the owned stack's hot fields
+  // and the call-site publishers. One thread-local lookup per frame, where
+  // each of those used to make its own.
+  llvm::Value* thread_state_ptr() {
+    if (!current_thread_state_) {
+      auto* fn = builder_.GetInsertBlock()->getParent();
+      auto& entry = fn->getEntryBlock();
+      llvm::IRBuilder<> eb(&entry, entry.begin());
+      auto ptrTy = llvm::PointerType::get(ctx_, 0);
+      current_thread_state_ = eb.CreateCall(
+          module_->getOrInsertFunction(rt::thread_state, ptrTy), {},
+          "thread.state");
+    }
+    return current_thread_state_;
+  }
+
+  // `JitThreadState::owned` as an i64 (the address the two hot fields sit
+  // at), loaded right after the state pointer in the entry block.
   llvm::Value* owned_hot_ptr() {
     if (!current_owned_hot_) {
-      current_owned_hot_ = emit_call(
-          module_->getOrInsertFunction(rt::owned_hot, builder_.getInt64Ty()),
-          {}, "owned.hot");
+      auto ts = thread_state_ptr();
+      auto* call = llvm::cast<llvm::Instruction>(ts);
+      llvm::IRBuilder<> eb(call->getParent(), std::next(call->getIterator()));
+      auto ptrTy = llvm::PointerType::get(ctx_, 0);
+      auto ownedP = eb.CreateConstInBoundsGEP1_64(
+          eb.getInt8Ty(), ts, offsetof(JitThreadState, owned), "owned.p");
+      current_owned_hot_ = eb.CreatePtrToInt(
+          eb.CreateLoad(ptrTy, ownedP, "owned.hot.ptr"), eb.getInt64Ty(),
+          "owned.hot");
     }
     return current_owned_hot_;
+  }
+
+  // The recursion guard's two halves as loads and stores on the thread state:
+  // enter tests the counter against the limit — the helper is kept for the
+  // throw, so the RecursionError is the executor's to the byte — and bumps
+  // it; leave decrements. Enter returns the new depth for the cleanup pads.
+  llvm::Value* emit_recursion_enter() {
+    auto i64Ty = builder_.getInt64Ty();
+    auto ts = thread_state_ptr();
+    auto depthP = builder_.CreateConstInBoundsGEP1_64(
+        builder_.getInt8Ty(), ts, offsetof(JitThreadState, depth), "rec.p");
+    auto depth = builder_.CreateLoad(i64Ty, depthP, "rec.cur");
+    auto over = builder_.CreateICmpSGE(
+        depth, builder_.getInt64(culebra::kCulebraRecursionLimit), "rec.over");
+    auto* fn = builder_.GetInsertBlock()->getParent();
+    auto overBB = llvm::BasicBlock::Create(ctx_, "rec.limit", fn);
+    auto okBB = llvm::BasicBlock::Create(ctx_, "rec.ok", fn);
+    llvm::MDBuilder mdb(ctx_);
+    builder_.CreateCondBr(over, overBB, okBB,
+                          mdb.createBranchWeights(1, 1u << 20));
+    builder_.SetInsertPoint(overBB);
+    emit_call(module_->getOrInsertFunction(rt::recursion_enter, i64Ty), {});
+    close_block_unreachable();
+    builder_.SetInsertPoint(okBB);
+    auto next = builder_.CreateAdd(depth, builder_.getInt64(1), "rec.depth");
+    builder_.CreateStore(next, depthP);
+    return next;
+  }
+  void emit_recursion_leave() {
+    auto i64Ty = builder_.getInt64Ty();
+    auto depthP = builder_.CreateConstInBoundsGEP1_64(
+        builder_.getInt8Ty(), thread_state_ptr(),
+        offsetof(JitThreadState, depth), "rec.p");
+    auto depth = builder_.CreateLoad(i64Ty, depthP, "rec.cur");
+    builder_.CreateStore(builder_.CreateSub(depth, builder_.getInt64(1)),
+                         depthP);
   }
 
   // Inline empty-region fast path: only when an entry with id >= mark
@@ -2026,7 +2101,22 @@ struct JIT {
 
   // Emit IR to retain a Value (no-op for non-refcounted tags; done in runtime).
   void emit_value_retain(llvm::Value* val) {
-    emit_refcount_call(rt::value_retain, extract_tag(val), extract_data(val));
+    auto tag = extract_tag(val);
+    auto data = extract_data(val);
+    if (llvm::isa<llvm::ConstantInt>(tag)) {
+      emit_refcount_call(rt::value_retain, tag, data);
+      return;
+    }
+    // The same hoisted tag test emit_value_release makes, for the same
+    // reason: most of what a call site retains is a Long or a Float.
+    auto* fn = builder_.GetInsertBlock()->getParent();
+    auto ownedBB = llvm::BasicBlock::Create(ctx_, "rc.retain", fn);
+    auto contBB = llvm::BasicBlock::Create(ctx_, "rc.cont", fn);
+    builder_.CreateCondBr(emit_tag_is_refcounted(tag), ownedBB, contBB);
+    builder_.SetInsertPoint(ownedBB);
+    emit_refcount_call(rt::value_retain, tag, data);
+    close_block(contBB);
+    builder_.SetInsertPoint(contBB);
   }
 
   // Borrow → +1. The caller passes a value it does not own (an element read
@@ -4405,13 +4495,43 @@ struct JIT {
     // Both helpers return a 16-byte JitValue by value; route through
     // emit_value_call so the Win64 sret ABI matches the C++ side (no-op on
     // SysV). See the emit_value_call rationale at its definition.
-    return emit_value_call(
-        module_->getOrInsertFunction(
-            intro ? rt::getter_or_value : rt::bind_method_value, valueType_,
-            i8Ty, i64Ty, i8Ty, i64Ty, ptrTy),
-        {extract_tag(receiver), extract_data(receiver), extract_tag(view),
-         extract_data(view), keyPtr},
-        intro ? "getter.or.value" : "bind.method");
+    auto call_helper = [&] {
+      return emit_value_call(
+          module_->getOrInsertFunction(
+              intro ? rt::getter_or_value : rt::bind_method_value, valueType_,
+              i8Ty, i64Ty, i8Ty, i64Ty, ptrTy),
+          {extract_tag(receiver), extract_data(receiver), extract_tag(view),
+           extract_data(view), keyPtr},
+          intro ? "getter.or.value" : "bind.method");
+    };
+    if (intro) return call_helper();
+    // bind_method_value has something to do only for a Function read off an
+    // Object (a getter to fire, a method to bind). Everything else — which
+    // is every data field a program reads — it hands back with one retain,
+    // so that arm is emitted here and the helper is reached only for the
+    // Function case. Same answer, without a call per field read.
+    auto viewTag = extract_tag(view);
+    auto isFn = builder_.CreateAnd(
+        builder_.CreateICmpEQ(viewTag, builder_.getInt8(TAG_FUNC)),
+        builder_.CreateICmpEQ(extract_tag(receiver),
+                              builder_.getInt8(TAG_OBJECT)),
+        "bind.is_method");
+    auto* fn = builder_.GetInsertBlock()->getParent();
+    auto bindBB = llvm::BasicBlock::Create(ctx_, "bind.method", fn);
+    auto plainBB = llvm::BasicBlock::Create(ctx_, "bind.plain", fn);
+    auto joinBB = llvm::BasicBlock::Create(ctx_, "bind.join", fn);
+    OwnedPhi merge(this, "bind.value");
+    builder_.CreateCondBr(isFn, bindBB, plainBB);
+    builder_.SetInsertPoint(bindBB);
+    merge.add_incoming(call_helper());
+    builder_.CreateBr(joinBB);
+    builder_.SetInsertPoint(plainBB);
+    emit_value_retain(view);
+    // The retain just made this arm's copy of the borrowed view a +1.
+    merge.add_incoming(own(view));
+    builder_.CreateBr(joinBB);
+    builder_.SetInsertPoint(joinBB);
+    return merge.finish(joinBB).consume();
   }
 
 
@@ -4729,10 +4849,29 @@ struct JIT {
   llvm::Value* emit_is_range(llvm::Value* key) {
     auto i8Ty = builder_.getInt8Ty();
     auto i64Ty = builder_.getInt64Ty();
+    // The helper's own first test is the tag; asking it here keeps a Long
+    // subscript — nearly every subscript — from paying a call to learn it is
+    // not a Range.
+    auto tag = extract_tag(key);
+    auto isObj = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT),
+                                       "range.is_obj");
+    auto* fn = builder_.GetInsertBlock()->getParent();
+    auto* fromBB = builder_.GetInsertBlock();
+    auto askBB = llvm::BasicBlock::Create(ctx_, "range.ask", fn);
+    auto joinBB = llvm::BasicBlock::Create(ctx_, "range.join", fn);
+    builder_.CreateCondBr(isObj, askBB, joinBB);
+    builder_.SetInsertPoint(askBB);
     auto r = emit_call(
         module_->getOrInsertFunction(rt::is_range, i8Ty, i8Ty, i64Ty),
-        {extract_tag(key), extract_data(key)});
-    return builder_.CreateICmpNE(r, builder_.getInt8(0));
+        {tag, extract_data(key)});
+    auto asked = builder_.CreateICmpNE(r, builder_.getInt8(0));
+    auto* askEnd = builder_.GetInsertBlock();
+    close_block(joinBB);
+    builder_.SetInsertPoint(joinBB);
+    auto* phi = builder_.CreatePHI(builder_.getInt1Ty(), 2, "is.range");
+    phi->addIncoming(builder_.getFalse(), fromBB);
+    phi->addIncoming(asked, askEnd);
+    return phi;
   }
 
 
@@ -4889,8 +5028,11 @@ struct JIT {
   // positions are published by the lowering's own emitter, which has the
   // bytecode's argument positions to hand (Lowering::emit_call_positions).
   void emit_call_position_publish() {
-    emit_call(module_->getFunction(rt::set_call_site),
-              {current_line_val(), current_column_val()});
+    auto i64Ty = builder_.getInt64Ty();
+    emit_call(module_->getOrInsertFunction(
+                  rt::set_call_site_at, builder_.getVoidTy(),
+                  llvm::PointerType::get(ctx_, 0), i64Ty, i64Ty),
+              {thread_state_ptr(), current_line_val(), current_column_val()});
   }
 
   Owned compile_function_call_raw(

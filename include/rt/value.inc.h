@@ -121,9 +121,12 @@ inline ShapeRegistry& shape_registry() { return ShapeRegistry::instance(); }
 // JitObject/JitClosure back through operator delete. Mirrors _gc_heap();
 // defined here, before the struct definitions, so each struct's operator
 // new/delete body can see it.
-inline culebra::SlabAllocator& _slab() {
+inline culebra::SlabAllocator& _slab(culebra::Runtime& rt) {
   return culebra::runtime_substate<culebra::SlabAllocator>(
-      culebra::kSlotJitSlab);
+      rt, culebra::kSlotJitSlab);
+}
+inline culebra::SlabAllocator& _slab() {
+  return _slab(culebra::current_runtime());
 }
 
 // The same slab behind a std::vector's buffer — an object's slot array is
@@ -600,6 +603,15 @@ struct JitObject {
 
   static void* operator new(size_t n) { return _slab().alloc(n); }
   static void operator delete(void* p, size_t n) { _slab().free(p, n); }
+  // The same slab, handed in by a caller that resolved the Runtime once
+  // (culebra_runtime_object_new). The matching placement delete only runs
+  // if the constructor throws, which a JitObject's cannot.
+  static void* operator new(size_t n, culebra::SlabAllocator& slab) {
+    return slab.alloc(n);
+  }
+  static void operator delete(void* p, culebra::SlabAllocator& slab) {
+    slab.free(p, sizeof(JitObject));
+  }
 };
 static_assert(sizeof(JitObject) <= 128 && !std::is_polymorphic_v<JitObject>);
 
@@ -1077,8 +1089,8 @@ inline bool _jit_gc_is_traced_only(uint8_t type_tag) {
   return type_tag == GC_TAG_STRING || type_tag == GC_TAG_STRINGVIEW;
 }
 
-inline culebra::gc::Heap& _gc_heap() {
-  auto& h = culebra::runtime_substate<culebra::gc::Heap>(culebra::kSlotJitGc);
+inline culebra::gc::Heap& _gc_heap(culebra::Runtime& rt) {
+  auto& h = culebra::runtime_substate<culebra::gc::Heap>(rt, culebra::kSlotJitGc);
   if (!h.callbacks_wired()) {
     h.set_children_fn(&_jit_gc_enumerate_children);
     h.set_extra_roots_fn(&_jit_gc_enumerate_roots);
@@ -1088,4 +1100,7 @@ inline culebra::gc::Heap& _gc_heap() {
     h.mark_callbacks_wired();  // arms threshold/stress collects (must be last)
   }
   return h;
+}
+inline culebra::gc::Heap& _gc_heap() {
+  return _gc_heap(culebra::current_runtime());
 }

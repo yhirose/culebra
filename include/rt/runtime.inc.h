@@ -277,12 +277,19 @@ inline constexpr int _JIT_ARGPOS_MAX = 64;
 // constinit is load-bearing, not decoration: a thread_local with dynamic
 // initialization emits a "TLS init function" in every TU that declares it,
 // which is the duplicate-symbol hazard rt_shared_tls.h exists to manage.
+struct JitOwnedStack;
 struct JitThreadState {
   // Culebra frames open on this thread — the recursion guard's counter
   // (shared.h's kCulebraRecursionLimit is the bound). Here rather than beside
   // the limit because the prologue that increments it has just published the
   // call site above, and one object is one lookup.
   int64_t depth = 0;
+  // The current Runtime's owned-resource stack (rt_owned.inc.h), cached so a
+  // frame's scope entry and exit read it through this object rather than
+  // through the Runtime's own thread-local. Null until the first frame on
+  // this thread asks, and again after every Runtime switch
+  // (culebra_runtime_thread_state below re-resolves it).
+  JitOwnedStack* owned = nullptr;
 
   // The operation currently executing, published by the JIT right before a
   // fallible runtime call whose helper raises a *positionless* CulebraError
@@ -341,6 +348,27 @@ struct JitThreadState {
   int64_t argpos_col[_JIT_ARGPOS_MAX] = {};
 };
 inline constinit thread_local JitThreadState _jit_thread;
+static_assert(offsetof(JitThreadState, depth) == 0 &&
+                  offsetof(JitThreadState, owned) == 8,
+              "compiled code GEPs these two fields directly");
+
+extern "C" {
+// The frame's one thread-local lookup. A compiled function fetches this
+// pointer in its prologue and reaches the recursion counter, the owned
+// stack's hot fields and the call-site publishers through it, where each of
+// those used to be its own runtime call and its own _tlv_get_addr. The
+// owned-stack cache is dropped on every Runtime switch (RuntimeTls::on_switch)
+// and re-resolved here, on the next frame's entry.
+inline void _jit_thread_forget_runtime() { _jit_thread.owned = nullptr; }
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitThreadState* culebra_runtime_thread_state() {
+  auto& ts = _jit_thread;
+  if (!ts.owned) {
+    ts.owned = &_jit_owned_stack();
+    culebra::_culebra_rt.on_switch = &_jit_thread_forget_runtime;
+  }
+  return &ts;
+}
+}  // extern "C"
 
 // Stamp the published op position onto a positionless runtime error. Shared by
 // the three exception boundaries above.
@@ -1637,6 +1665,11 @@ inline bool _extract_bool_and_release(JitValue v) {
 // touches the operands' refs (the bytecode VM's contract).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_value_equal_borrow(
     int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
+  // Two values neither of which is refcounted (scalars, nil, strings) can
+  // reach no user method below, so they need none of the site bookkeeping —
+  // which is thread-local state, and this is the `x == nil` of every guard.
+  if (!_is_refcounted_value_tag(t1) && !_is_refcounted_value_tag(t2))
+    return _culebra_value_equal(t1, d1, t2, d2);
   // The dispatches below are calls with no codegen call site; both backends
   // publish the operator's position here before entering (the same hook the
   // positionless backfill reads), so lend it to them.
@@ -2773,9 +2806,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_narrow(
 // --- Object runtime ---
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_new() {
-  auto* o = new JitObject();
+  // The slab and the collector's registry are both substates of the current
+  // Runtime: resolve it once for the two, not once apiece.
+  auto& rt = culebra::current_runtime();
+  auto* o = new (_slab(rt)) JitObject();
   o->refcount = 1;
-  _gc_register(o, GC_TAG_OBJECT);
+  _gc_heap(rt).adopt(o, sizeof(JitObject), GC_TAG_OBJECT);
   return o;
 }
 

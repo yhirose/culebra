@@ -299,17 +299,14 @@ struct Lowering {
     // for-in head's calls among them) spill through it.
     j.unwind_temp_slots_.clear();
     j.unwind_covered_.clear();
-    // Same reason: the owned stack's hot pointer is cached as an SSA value
-    // fetched in the function's prologue, so it cannot cross a chunk. Fetch
-    // it here rather than at first use — a first use inside a try region
-    // would be an invoke, whose result does not dominate the other blocks
-    // that go on to read the cache.
+    // Same reason: the thread state pointer and the owned stack's hot
+    // pointer read through it are cached as SSA values the entry block
+    // produces (thread_state_ptr / owned_hot_ptr), so they cannot cross a
+    // chunk.
+    j.current_thread_state_ = nullptr;
     j.current_owned_hot_ = nullptr;
     llvm::Value* markArr = nullptr;
     if (c.owned_depths > 0) {
-      j.current_owned_hot_ = b.CreateCall(
-          j.module_->getOrInsertFunction(rt::owned_hot, b.getInt64Ty()), {},
-          "owned.hot");
       // The frame's mark array, the executor's `marks` — entry-block, so a
       // loop body's scope entry does not grow the stack every turn.
       markArr = b.CreateAlloca(i64Ty, b.getInt64(c.owned_depths), "owned.marks");
@@ -641,16 +638,16 @@ struct Lowering {
             llvm::GlobalValue::PrivateLinkage,
             llvm::ConstantArray::get(arrTy, packed), ".vm.argpos");
         b.CreateCall(
-            j.module_->getOrInsertFunction(rt::set_call_positions,
-                                           b.getVoidTy(), i64Ty, i64Ty,
-                                           i64Ty, ptrTy),
-            {b.getInt64(line), b.getInt64(col),
+            j.module_->getOrInsertFunction(rt::set_call_positions_at,
+                                           b.getVoidTy(), ptrTy, i64Ty,
+                                           i64Ty, i64Ty, ptrTy),
+            {j.thread_state_ptr(), b.getInt64(line), b.getInt64(col),
              b.getInt64(static_cast<int64_t>(n)), posG});
       } else {
         b.CreateCall(
-            j.module_->getOrInsertFunction(rt::set_call_site, b.getVoidTy(),
-                                           i64Ty, i64Ty),
-            {b.getInt64(line), b.getInt64(col)});
+            j.module_->getOrInsertFunction(rt::set_call_site_at, b.getVoidTy(),
+                                           ptrTy, i64Ty, i64Ty),
+            {j.thread_state_ptr(), b.getInt64(line), b.getInt64(col)});
       }
     };
     // The tail every hand-off shares: the arg slab, the pre-call nil of the
@@ -4020,10 +4017,7 @@ struct Lowering {
           break;
         }
         case Op::Ret: {
-          if (c.counts_frame) {
-            b.CreateCall(j.module_->getOrInsertFunction(rt::recursion_leave,
-                                                        b.getVoidTy()));
-          }
+          if (c.counts_frame) j.emit_recursion_leave();
           b.CreateStore(load_slot(in.a), retPtr);
           b.CreateRetVoid();
           break;
@@ -4480,15 +4474,12 @@ struct Lowering {
           break;
         }
         case Op::RecEnter: {
-          auto d = j.emit_call(
-              j.module_->getOrInsertFunction(rt::recursion_enter, i64Ty), {},
-              "rec.depth");
+          auto d = j.emit_recursion_enter();
           if (in.a && depthSlot) b.CreateStore(d, depthSlot);
           break;
         }
         case Op::RecLeave:
-          b.CreateCall(j.module_->getOrInsertFunction(rt::recursion_leave,
-                                                      b.getVoidTy()));
+          j.emit_recursion_leave();
           break;
         case Op::NsGet: {
           // The JIT's own bare-builtin slow path; nothrow for allowlisted

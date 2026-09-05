@@ -245,6 +245,21 @@ consume-on-every-exit、transfer）に従う。`memory.md` §4.3が一覧に
 2つのオブジェクトにまとめる（どちらの持つ値も変えない）ことで、
 culebraの呼び出しコストは半分になった。
 
+その後に残っていたのはヘルパーごとの`_tlv_get_addr`1回で、呼び出し1つは
+なおそれを4つ踏んでいた: 呼び出し側の位置発行、呼ばれた側の再帰ガードの
+enterとleave、owned stackのホットポインタである。コンパイルされたフレームは
+いま、エントリブロックで`_jit_thread`のアドレスを1度だけ取り
+（`culebra_runtime_thread_state`、JIT側は`thread_state_ptr`）、残りは
+そのポインタ経由で済ませる: 再帰ガードはload・上限との比較・storeで、
+ヘルパーはthrowのためだけに残す（`RecursionError`はexecutorとバイト単位で
+同じ）。位置発行はポインタを受け取る形（`culebra_runtime_set_call_site_at`、
+`..._positions_at`）になり、`JitThreadState::owned`が現在の`Runtime`の
+owned stackをキャッシュして、`RuntimeScope`の切り替えごとに捨てられ
+（`RuntimeTls::on_switch`）、次のフレームの取得で解決し直される。
+executorとランタイム自身からユーザーコードへの呼び戻しはポインタ無しの
+形のままで、同じオブジェクトを自分で解決する。フレームあたりの参照は
+4回から1回になり、上の1行関数の呼び出しは14.7nsから約11nsになった。
+
 ### 3.3 標準ライブラリ
 
 `stdlib_rt.h`が標準ライブラリを束縛する: ネイティブ名前空間

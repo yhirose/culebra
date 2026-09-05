@@ -682,6 +682,10 @@ inline constexpr auto proc_spawn_kw       = "culebra_runtime_proc_spawn_kw";
 inline constexpr auto proc_race           = "culebra_runtime_proc_race";
 inline constexpr auto proc_race_kw        = "culebra_runtime_proc_race_kw";
 inline constexpr auto set_call_site       = "culebra_runtime_set_call_site";
+inline constexpr auto set_call_site_at    = "culebra_runtime_set_call_site_at";
+inline constexpr auto set_call_positions_at
+    = "culebra_runtime_set_call_positions_at";
+inline constexpr auto thread_state        = "culebra_runtime_thread_state";
 inline constexpr auto set_call_boundary   = "culebra_runtime_set_call_boundary";
 inline constexpr auto set_op_pos          = "culebra_runtime_set_op_pos";
 inline constexpr auto set_callback_arg_site = "culebra_runtime_set_callback_arg_site";

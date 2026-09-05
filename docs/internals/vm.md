@@ -244,6 +244,23 @@ one-line function called in a loop, three quarters of the time went
 there; collecting the variables into these two objects, changing no
 value either holds, halved what a culebra call costs.
 
+What remained after that was one `_tlv_get_addr` per helper — and a
+call still reached four of them: the caller's position publisher, the
+callee's recursion enter and leave, and the owned stack's hot pointer.
+A compiled frame now fetches `_jit_thread`'s address once, in its entry
+block (`culebra_runtime_thread_state`, the JIT's `thread_state_ptr`), and
+does the rest through it: the recursion guard is a load, a compare
+against the limit and a store, with the helper kept only for the throw
+so the `RecursionError` is the executor's to the byte; the publishers
+take the pointer (`culebra_runtime_set_call_site_at`,
+`..._positions_at`); and `JitThreadState::owned` caches the current
+`Runtime`'s owned stack, dropped on every `RuntimeScope` switch
+(`RuntimeTls::on_switch`) and re-resolved by the next frame's fetch. The
+executor and the runtime's own callbacks into user code keep the
+pointer-free forms, which resolve the same object themselves. One lookup
+per frame instead of four, and the one-line call above went from 14.7 to
+about 11 ns.
+
 ### 3.3 The standard library
 
 `stdlib_rt.h` binds the standard library: native namespaces (`Math`,
