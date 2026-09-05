@@ -2015,8 +2015,30 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
   size_t n_extras = (n_pos > static_cast<int64_t>(regular_end))
                         ? static_cast<size_t>(n_pos) - regular_end
                         : 0;
-  std::vector<JitValue> slab(arity + n_extras);
-  std::vector<bool> filled(arity, false);
+  // The resolved slab and its filled marks, on the stack for the arities a
+  // call actually has. Two heap allocations per keyword call were most of
+  // what one cost: the port makes 8.3k of them a substep, at ~200 ns each.
+  size_t slab_n = arity + n_extras;
+  // Eight, not more: this function recurses (a bound method, a dispatcher)
+  // and the frames below it are culebra's own, whose depth limit is
+  // calibrated against the C stack. At 24 the deep-recursion case in
+  // tools/bench/vm_cases/kwargs.cul ran out of stack under GC_STRESS.
+  constexpr size_t kInlineParams = 8;
+  // Zeroed whole, not just the used prefix: the conservative stack scan
+  // reads every word of this frame, and a stale one that happens to name a
+  // live object would keep it (or, mid-construction, walk it).
+  JitValue slab_inline[kInlineParams] = {};
+  bool filled_inline[kInlineParams] = {};
+  std::vector<JitValue> slab_heap;
+  std::vector<uint8_t> filled_heap;
+  JitValue* slab = slab_inline;
+  bool* filled = filled_inline;
+  if (slab_n > kInlineParams) {
+    slab_heap.assign(slab_n, JitValue{TAG_NIL, 0});
+    filled_heap.assign(arity, 0);
+    slab = slab_heap.data();
+    filled = reinterpret_cast<bool*>(filled_heap.data());
+  }
 
   for (size_t i = 0; i < regular_end && i < static_cast<size_t>(n_pos); i++) {
     auto it = merged.find(meta->names[i]);
@@ -2113,7 +2135,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
     for (auto& [_, v] : merged) {
       _culebra_value_release_impl(v.tag, v.data);
     }
-    for (size_t i = 0; i < slab.size(); i++) {
+    for (size_t i = 0; i < slab_n; i++) {
       if (i < arity && !filled[i]) continue;
       _culebra_value_release_impl(slab[i].tag, slab[i].data);
     }
@@ -2139,8 +2161,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
     _culebra_value_release_impl(splat_objs[i].tag, splat_objs[i].data);
   }
 
-  return _jit_invoke(cls, self_val, static_cast<int64_t>(slab.size()),
-                     slab.data());
+  return _jit_invoke(cls, self_val, static_cast<int64_t>(slab_n), slab);
 }
 
 }  // extern "C" (block continues in rt_iter.inc.h)
