@@ -75,8 +75,9 @@
 35. [`CodeGen`](#35-codegen) — 小さな言語のIRを手で組み立てて実行する
 36. [`StateMachine`](#36-statemachine) — 入れ子にできる状態機械。テキストでも書ける
 37. [`FST`](#37-fst) — 書き換えない辞書を圧縮して持つ。前方一致・補完・あいまい検索
-38. [設計上の注記](#38-設計上の注記)
-39. [未収録（将来検討）](#39-未収録将来検討)
+38. [`Search`](#38-search) — 自分の文書を全文検索して順位をつける（実験的）
+39. [設計上の注記](#39-設計上の注記)
+40. [未収録（将来検討）](#40-未収録将来検討)
 
 **目的別索引**
 
@@ -126,6 +127,7 @@
 | 手順・通信手順・画面のモードを状態とイベントで表す | [§36 `StateMachine`](#36-statemachine) — `StateMachine.parse(text)`、または記述用の`Object` |
 | 変わらない大きな語彙から前方一致で補完する | [§37 FST](#37-fst) — `FST.Set.new(FST.compile_set(words))` → `.predictive_search("hel")` |
 | 綴りの直し・あいまい検索 | [§37 FST](#37-fst) — `.edit_distance_search(word, 1)`／`.suggest(word)` |
+| たくさんの文書を語で検索して順位をつける | [§38 Search](#38-search) — `Search.Index.new()` → `.add(key, text)` → `.search("quick -dog")` |
 | 行列・テンソル演算（BLAS対応） | [§8 Tensor](#8-tensor) |
 | String / Array / Objectのメソッド | [言語仕様 §18](language.ja.md) |
 | 整数列（`range`, `iota`） | [言語仕様 §19](language.ja.md) |
@@ -6685,7 +6687,119 @@ inspect(d.suggest("thier")[0].key)  # => 'their'
 
 鍵は**バイト列として**比べる。大文字小文字も Unicode の正規化形も区別するし、編集距離が数えるのは文字ではなくバイトなので、複数バイトの文字を1文字書き換えると2つ以上の直しとして数えられる。そこが問題になる場面では、組み上げる前と引く前に`.lower()`や NFC への正規化をかけておく。
 
-## 38. 設計上の注記
+## 38. `Search`
+
+**実験的。** 自分で決めた鍵のもとに文書を登録しておき、問い合わせ言語で検索して、
+順位のついた結果を受け取る**全文検索**（エンジンは同梱の
+[cpp-searchlib](https://github.com/yhirose/cpp-searchlib)。転置索引とBM25の
+順位付け）。ここに出しているのはエンジンができることのごく一部で、今後増える。
+リリースをまたいでAPIが変わりうるものとして扱ってほしい。
+
+部分一致の走査では足りないとき——文書が多い、複数の語を組み合わせて絞りたい、
+結果に順位が要る——に使う。1つの文字列から1つのパターンを探すなら`Regex`、
+変わらない語彙への前方一致なら`FST`のほうが向いている。
+
+```culebra
+let idx = Search.Index.new()
+idx.add("doc-1", "The quick brown fox jumps over the lazy dog.")
+idx.add("doc-2", "A quick brown dog outpaces a lazy fox.")
+
+for hit in idx.search("quick -dog") {
+  inspect(hit.key)
+}
+```
+
+索引は文書をメモリに持つ生きたハンドルで、ファイルと同じくスコープを抜けるときに
+閉じられる。`close()`で明示的に閉じてもよい。
+
+### 鍵は呼び出す側のもの
+
+`add`には文書を呼ぶための鍵を渡し、`search`はその鍵をそのまま返す。鍵は
+`String`で、`Long`は文字列化せずに拒否する——出てくる鍵が入れた鍵と同じもので
+あるようにするため。すでにある鍵で`add`すると、その文書を置き換える。
+
+```culebra
+let idx = Search.Index.new()
+idx.add("a", "first")
+idx.add("a", "second")            # 置き換わる
+inspect(idx.search("first"))      # => []
+inspect(idx.search("second").size())  # => 1
+```
+
+`remove(key)`は文書を消す。知らない鍵なら何もしない。削除は論理削除で、領域は
+索引を作り直すまで戻らない。
+
+### 問い合わせ言語
+
+| 書き方 | 意味 |
+|---|---|
+| `apple banana` | AND。すべての語を含む文書 |
+| `apple \| banana` | OR |
+| `apple -banana` | NOT。その語を含む文書を除く |
+| `"apple tree"` | フレーズ。語が隣り合っていること |
+| `apple ~ tree` | NEAR。4語の範囲内 |
+| `app*` | 前方一致。`app`で始まる索引済みの語すべて |
+| `a*e`、`*ana` | ワイルドカード。`*`は語のどこにでも置ける |
+| `apple~2` | あいまい一致。2編集までの語 |
+| `( ... )` | まとめる |
+
+`NOT`には肯定の語が1つ以上要る。索引は全文書を列挙できないため。壊れた問い合わせは
+何にも一致しないのではなく`SearchError`になる。
+
+文書も問い合わせも同じ規則で語に切る。Unicodeの文字が連続する最長の並びを1語とし、
+小文字に揃える。したがって句読点は語を分け、大文字と小文字は区別されず、分かち書き
+しない言語（日本語・中国語）は文がまるごと1語になる。分かち書きはこの範囲にはまだ
+入っていない。
+
+### 検索結果
+
+`search(query, limit = 10)`はObjectのArrayを、スコアの高い順に返す。
+
+| 欄 | |
+|---|---|
+| `key` | 登録したときの鍵 |
+| `score` | BM25の関連度。1回の結果の中では比べられるが、別の検索とは比べられない |
+| `ranges` | 一致した語の位置。登録した文字列へのバイト単位の`{position, length}` |
+
+`ranges`は該当箇所を目立たせるためのもの。
+
+```culebra
+let text = "A quick brown dog outpaces a lazy fox."
+let idx = Search.Index.new()
+idx.add("doc", text)
+let r = idx.search("outpaces")[0].ranges[0]
+inspect(text.slice(r.position, r.position + r.length))  # => 'outpaces'
+```
+
+### 保存と読み込み
+
+```culebra
+# doctest: skip
+idx.save("notes.idx")
+let reopened = Search.Index.load("notes.idx")
+```
+
+保存されるのは索引であって文書そのものではない。`search`が返すのは変わらず鍵と
+バイト位置なので、それを解決するための元の文字列は呼び出す側が持っておく。ファイル
+形式はエンジン自身のもので、このnamespaceが実験的なあいだはリリースをまたいで
+安定しない。
+
+### 一覧
+
+| | |
+|---|---|
+| `Search.Index.new() -> Index` | 空の索引 |
+| `Search.Index.load(path: String) -> Index` | 保存した索引を開く |
+| `idx.add(key: String, text: String) -> Nil` | 文書を登録する。同じ鍵があれば置き換える |
+| `idx.remove(key: String) -> Nil` | 文書を消す。知らない鍵は無視する |
+| `idx.search(query: String, limit: Long = 10) -> Array` | 順位つきの結果 |
+| `idx.save(path: String) -> Nil` | 索引を書き出す |
+| `idx.close() -> Nil` | 解放する。何度呼んでもよい |
+
+索引は`Sendable`ではない。結果が索引を参照しているので、作ったスレッドから出せない。
+isolateごとに別の索引を持たせる。
+
+## 39. 設計上の注記
 
 ### 名前空間ファースト、グローバルは出力の3つだけ
 
@@ -6742,7 +6856,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 39. 未収録（将来検討）
+## 40. 未収録（将来検討）
 
 ### 重量級データ構造
 

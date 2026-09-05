@@ -194,7 +194,7 @@
         { "match": "\\b(Isolate|Channel|Parallel|Signal|SharedBuffer|Shared|GC|Regex|Http)\\b", "name": "support.class.culebra" },
         { "match": "\\b(Encoding|Compress|Hash|CSV|Env|UUID|Term|Log|TOML|SQLite)\\b", "name": "support.class.culebra" },
         { "match": "\\b(Canvas|Scene|Net|Desktop|Webview|Vector2|Vector3|Deque|PriorityQueue|StateMachine)\\b", "name": "support.class.culebra" },
-        { "match": "\\b(PEG|FST)\\b", "name": "support.class.culebra" },
+        { "match": "\\b(PEG|FST|Search)\\b", "name": "support.class.culebra" },
         { "match": "\\b\\B", "name": "meta.marker.auto-keywords-end.culebra" }
       ]
     },

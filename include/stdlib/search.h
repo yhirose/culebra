@@ -132,9 +132,13 @@ inline Index& index_get(int64_t id) {
   return *p;
 }
 
+// searchlib prefixes its own messages with "searchlib: "; drop it so a
+// surfaced error reads with one prefix, the namespace's own.
 [[noreturn]] inline void rethrow(const std::exception& e) {
-  throw CulebraError("SearchError", culebra::format("Search: {}", e.what()), 0,
-                     0);
+  std::string_view what = e.what();
+  constexpr std::string_view kPrefix = "searchlib: ";
+  if (what.substr(0, kPrefix.size()) == kPrefix) what.remove_prefix(kPrefix.size());
+  throw CulebraError("SearchError", culebra::format("Search: {}", what), 0, 0);
 }
 
 }  // namespace detail

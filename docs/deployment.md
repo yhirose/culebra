@@ -398,12 +398,14 @@ c++ -std=c++23 \
     -I culebra/vendor/stb \
     -I culebra/vendor/cpp-regexlib \
     -I culebra/vendor/cpp-fstlib \
+    -I culebra/vendor/cpp-searchlib/include \
     host.cpp -lz -o host
 ```
 
 Every entry is load-bearing: the build stops in `font_ttf.h` without
-`vendor/stb`, in `regex.h` without `vendor/cpp-regexlib`, and in `fst.h`
-without `vendor/cpp-fstlib`, because the stdlib reaches all three
+`vendor/stb`, in `regex.h` without `vendor/cpp-regexlib`, in `fst.h`
+without `vendor/cpp-fstlib`, and in `search.h` without
+`vendor/cpp-searchlib/include`, because the stdlib reaches all four
 unconditionally. `-lz` is the zlib an AOT link needs
 for the same reason ([§1](#host-requirements)) — `Compress` and the PNG
 writer refer to it whether or not the script does.
@@ -963,6 +965,7 @@ emits it as a base archive plus one small archive per heavy feature
 | `libculebra_rt_compress.a` | strong compress choke (pulls zlib; `to_png` rides it too) |
 | `libculebra_rt_sqlite.a` | strong sqlite choke plus the sqlite3 amalgamation |
 | `libculebra_rt_regex.a` | strong regex choke (the cpp-regexlib engine, ~320 KB) |
+| `libculebra_rt_search.a` | strong search choke (the cpp-searchlib engine: inverted index, succinct structures, query grammar) |
 | `libculebra_rt_foreign.a` | the `__Foreign` wrap fixture the foreign-object tests are written against (a static `wrap<T>` registrar, so it needs its own archive) |
 | `libculebra_rt_canvas.a` | the raylib window backend (window builds only; the base carries headless stubs) |
 | `libculebra_rt_scene.a` | Scene's wrap registrar (pulls raylib; not in the base at all) |

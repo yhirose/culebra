@@ -35,7 +35,8 @@ SOURCES=(docs/*.md README.md README.ja.md)
 # The include path a host build needs, exactly as documented. Every entry
 # is load-bearing: without vendor/stb the build stops in font_ttf.h,
 # without vendor/cpp-regexlib in regex.h, without vendor/cpp-fstlib in
-# fst.h — stdlib_rt.h reaches all three unconditionally.
+# fst.h, without vendor/cpp-searchlib/include in search.h — the stdlib
+# bindings reach all four unconditionally.
 INC=(-I include
      -I vendor/cpp-peglib
      -I vendor/cpp-vmlib
@@ -43,7 +44,8 @@ INC=(-I include
      -I vendor/cpp-tensorlib/include
      -I vendor/stb
      -I vendor/cpp-regexlib
-     -I vendor/cpp-fstlib)
+     -I vendor/cpp-fstlib
+     -I vendor/cpp-searchlib/include)
 
 fail=0
 TMP=$(mktemp -d)

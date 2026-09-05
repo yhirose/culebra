@@ -77,8 +77,9 @@ Conventions used below:
 35. [`CodeGen`](#35-codegen) — build a small language's IR by hand and run it
 36. [`StateMachine`](#36-statemachine) — hierarchical state machine, with a text DSL
 37. [`FST`](#37-fst) — compiled read-only dictionary: prefix, predictive and fuzzy search
-38. [Design notes](#38-design-notes)
-39. [Not included (yet)](#39-not-included-yet)
+38. [`Search`](#38-search) — full-text index over your own documents, ranked (experimental)
+39. [Design notes](#39-design-notes)
+40. [Not included (yet)](#40-not-included-yet)
 
 **Where to find what**
 
@@ -129,6 +130,7 @@ Conventions used below:
 | Model a workflow, protocol or UI mode as states and events | [§36 `StateMachine`](#36-statemachine) — `StateMachine.parse(text)`, or a description `Object` |
 | Autocomplete / prefix lookup over a large fixed word list | [§37 FST](#37-fst) — `FST.Set.new(FST.compile_set(words))` → `.predictive_search("hel")` |
 | Spelling correction, fuzzy lookup | [§37 FST](#37-fst) — `.edit_distance_search(word, 1)` / `.suggest(word)` |
+| Search many documents by keyword, ranked | [§38 Search](#38-search) — `Search.Index.new()` → `.add(key, text)` → `.search("quick -dog")` |
 | String / Array / Object methods | [language spec §18](language.md) |
 | Integer sequences (`range`, `iota`) | [language spec §19](language.md) |
 | Fill an `Array` with `n` copies of a value | [language spec §19](language.md) — `repeat(n, value)` |
@@ -6918,7 +6920,120 @@ characters — a one-character change to a multi-byte character costs more than
 one edit. Normalize (`.lower()`, and NFC via `String`) before building and
 before querying when that matters.
 
-## 38. Design notes
+## 38. `Search`
+
+**Experimental.** A **full-text index**: add documents under keys you choose,
+then search them with a query language and get ranked hits back (engine: the
+vendored [cpp-searchlib](https://github.com/yhirose/cpp-searchlib), an
+inverted index with BM25 ranking). The surface here is a narrow subset of what
+the engine does, and it will grow — treat the API as unstable across releases.
+
+Reach for it when a substring scan is not enough: many documents, queries that
+combine terms, and results that need an order. For finding one pattern in one
+string, use `Regex`; for prefix lookup over a fixed word list, use `FST`.
+
+```culebra
+let idx = Search.Index.new()
+idx.add("doc-1", "The quick brown fox jumps over the lazy dog.")
+idx.add("doc-2", "A quick brown dog outpaces a lazy fox.")
+
+for hit in idx.search("quick -dog") {
+  inspect(hit.key)
+}
+```
+
+An index is a live handle holding its documents in memory. It is closed at
+scope exit like a file, or explicitly with `close()`.
+
+### Keys are yours
+
+`add` takes the key you name the document by, and `search` hands that same key
+back. Keys are `String`s: a `Long` is refused rather than stringified, so the
+key that comes out is the key that went in. Adding under a key that already
+exists replaces that document.
+
+```culebra
+let idx = Search.Index.new()
+idx.add("a", "first")
+idx.add("a", "second")            # replaces it
+inspect(idx.search("first"))      # => []
+inspect(idx.search("second").size())  # => 1
+```
+
+`remove(key)` deletes a document; an unknown key is a no-op. Deletion is
+logical — the space is not reclaimed until the index is rebuilt.
+
+### The query language
+
+| Syntax | Meaning |
+|---|---|
+| `apple banana` | AND — documents with every term |
+| `apple \| banana` | OR |
+| `apple -banana` | NOT — excludes documents with the term |
+| `"apple tree"` | phrase — adjacent terms |
+| `apple ~ tree` | NEAR — within 4 term positions |
+| `app*` | prefix — every indexed term starting with `app` |
+| `a*e`, `*ana` | wildcard — `*` anywhere in the term |
+| `apple~2` | fuzzy — terms within 2 edits |
+| `( ... )` | grouping |
+
+`NOT` needs at least one positive term, since the index cannot enumerate every
+document. A malformed query raises `SearchError` rather than matching nothing.
+
+Documents and queries are cut into terms the same way: maximal runs of Unicode
+letters, lowercased. So punctuation separates terms, case does not matter, and
+a language written without spaces (Japanese, Chinese) indexes a whole sentence
+as one term — segmenting those is not in this subset yet.
+
+### Hits
+
+`search(query, limit = 10)` returns an Array of Objects, best score first:
+
+| Field | |
+|---|---|
+| `key` | the document key you added it under |
+| `score` | BM25 relevance; comparable within one result, not across searches |
+| `ranges` | where the matched terms are, as `{position, length}` byte offsets into the text you added |
+
+The ranges are what highlighting needs:
+
+```culebra
+let text = "A quick brown dog outpaces a lazy fox."
+let idx = Search.Index.new()
+idx.add("doc", text)
+let r = idx.search("outpaces")[0].ranges[0]
+inspect(text.slice(r.position, r.position + r.length))  # => 'outpaces'
+```
+
+### Saving and loading
+
+```culebra
+# doctest: skip
+idx.save("notes.idx")
+let reopened = Search.Index.load("notes.idx")
+```
+
+The file holds the index, not the documents: `search` still answers with keys
+and byte ranges, and it is on the caller to keep the original text around to
+resolve them against. The format is the engine's own and is not stable across
+releases while this namespace is experimental.
+
+### Signatures
+
+| | |
+|---|---|
+| `Search.Index.new() -> Index` | an empty index |
+| `Search.Index.load(path: String) -> Index` | reopen a saved one |
+| `idx.add(key: String, text: String) -> Nil` | index a document, replacing any with the same key |
+| `idx.remove(key: String) -> Nil` | delete one; unknown keys are ignored |
+| `idx.search(query: String, limit: Long = 10) -> Array` | ranked hits |
+| `idx.save(path: String) -> Nil` | write the index |
+| `idx.close() -> Nil` | release it; idempotent |
+
+An index is not `Sendable`: results alias it, so it stays on the thread that
+built it. Give each isolate its own.
+
+## 39. Design notes
 
 ### Namespace-first, with three global shortcuts
 
@@ -6974,7 +7089,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 39. Not included (yet)
+## 40. Not included (yet)
 
 ### Heavier data structures
 

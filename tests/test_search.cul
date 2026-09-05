@@ -1,0 +1,150 @@
+// Conformance: stdlib Search (full-text index). See docs/stdlib.md.
+// Engine: vendor/cpp-searchlib (inverted index, BM25 ranking).
+//
+// An index is a live handle: it holds its documents in memory, and results
+// are materialized before they come back, so nothing here aliases it.
+
+// Ranked order where it is the point; `found` sorts it away where the
+// question is only which documents matched, so a BM25 tweak upstream cannot
+// turn a membership check into a ranking check.
+let keys = fn (hits) {
+  hits.map(fn (h) {
+    h.key
+  })
+}
+let found = fn (hits) {
+  keys(hits).sorted()
+}
+
+let idx = Search.Index.new()
+idx.add("doc-1", "The quick brown fox jumps over the lazy dog.")
+idx.add("doc-2", "A quick brown dog outpaces a lazy fox.")
+idx.add("doc-3", "Nothing to see here.")
+
+// --- A term matches the documents that carry it ---
+assert_eq(found(idx.search("quick")), ["doc-1", "doc-2"])
+assert_eq(found(idx.search("outpaces")), ["doc-2"])
+assert_eq(idx.search("zebra"), [])
+
+// --- The query grammar is searchlib's: space is AND, `-` excludes ---
+assert_eq(found(idx.search("quick fox")), ["doc-1", "doc-2"])
+assert_eq(found(idx.search("jumps -dog")), [])  // doc-1 has both
+assert_eq(found(idx.search("fox -jumps")), ["doc-2"])
+assert_eq(found(idx.search("outpaces | jumps")), ["doc-1", "doc-2"])
+assert_eq(found(idx.search("\"brown dog\"")), ["doc-2"])  // phrase
+assert_eq(found(idx.search("out*")), ["doc-2"])           // prefix
+assert_eq(found(idx.search("outpases~1")), ["doc-2"])     // fuzzy
+
+// --- Matching is case-insensitive on both sides ---
+assert_eq(found(idx.search("QUICK")), ["doc-1", "doc-2"])
+assert_eq(found(idx.search("nothing")), ["doc-3"])
+
+// --- Hits come back ranked, best score first ---
+let ranked = idx.search("fox lazy")
+assert_eq(ranked.size(), 2)
+assert_true(ranked[0].score >= ranked[1].score)
+
+// --- A hit carries the byte ranges its terms came from, for highlighting ---
+let hit = idx.search("outpaces")[0]
+assert_eq(hit.ranges.size(), 1)
+let text = "A quick brown dog outpaces a lazy fox."
+assert_eq(
+  text.slice(
+    hit.ranges[0].position,
+    hit.ranges[0].position + hit.ranges[0].length,
+  ),
+  "outpaces",
+)
+
+// --- limit caps the hits; 0 asks for none ---
+assert_eq(idx.search("quick", 1).size(), 1)
+assert_eq(idx.search("quick", 0), [])
+
+// --- Adding under a key that exists replaces that document ---
+idx.add("doc-3", "A third document about foxes.")
+assert_eq(found(idx.search("nothing")), [])
+assert_eq(found(idx.search("third")), ["doc-3"])
+
+// --- remove is a logical delete; an unknown key is a no-op ---
+idx.remove("doc-1")
+assert_eq(found(idx.search("quick")), ["doc-2"])
+idx.remove("no-such-key")
+assert_eq(found(idx.search("quick")), ["doc-2"])
+
+// --- Unicode text indexes by Unicode letter runs ---
+let uni = Search.Index.new()
+uni.add("es", "el zorro rápido")
+assert_eq(found(uni.search("rápido")), ["es"])
+assert_eq(found(uni.search("RÁPIDO")), ["es"])
+uni.close()
+
+// --- save/load round-trips the whole index ---
+let path = FS.temp_dir() +
+  "/culebra-test-search-" +
+  to_string(Sys.time()) +
+  ".idx"
+idx.save(path)
+let loaded = Search.Index.load(path)
+assert_eq(found(loaded.search("quick")), ["doc-2"])
+assert_eq(found(loaded.search("third")), ["doc-3"])
+loaded.close()
+FS.remove(path)
+
+// --- Keys are Strings. A Long is refused rather than stringified, since the
+// key comes back out of search() and would change type between the two ---
+assert_eq(try {
+  idx.add(1, "x")
+} catch e {
+  e.kind
+}, "TypeError")
+assert_eq(try {
+  idx.remove(1)
+} catch e {
+  e.kind
+}, "TypeError")
+assert_eq(try {
+  idx.add("only-a-key")
+} catch e {
+  e.kind
+}, "ArityError")
+assert_eq(try {
+  idx.search("x", "3")
+} catch e {
+  e.kind
+}, "TypeError")
+assert_eq(try {
+  idx.search("x", -1)
+} catch e {
+  e.kind
+}, "ValueError")
+
+// --- A malformed query is an error, not an empty result ---
+assert_eq(try {
+  idx.search("(")
+} catch e {
+  e.kind
+}, "SearchError")
+
+// --- Unreadable/unwritable paths surface as SearchError ---
+assert_eq(try {
+  Search.Index.load(path)
+} catch e {
+  e.kind
+}, "SearchError")
+
+// --- close is explicit and idempotent; using a closed index is an error ---
+idx.close()
+idx.close()
+assert_eq(try {
+  idx.search("quick")
+} catch e {
+  e.kind
+}, "SearchError")
+
+// --- An index left open is closed by the drop protocol at scope exit ---
+fn scoped() {
+  let tmp = Search.Index.new()
+  tmp.add("k", "value")
+  keys(tmp.search("value"))
+}
+assert_eq(scoped(), ["k"])

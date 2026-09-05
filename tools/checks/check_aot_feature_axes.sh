@@ -144,6 +144,10 @@ fmt_machinery='std::__format::__do_vformat_to|std::vformat|__format::__formatter
 
 # Regex: the weak/strong choke (kFeatureAxes still force-loads this one).
 regex_choke='^culebra::regex::compile[(]'
+# Search: the same shape over cpp-searchlib. Losing this axis is silent too —
+# the binary still runs, it just carries the whole engine (postings, the
+# succinct structures, the FST term dictionary and a PEG query grammar).
+search_choke='^culebra::search::index_new[(]'
 # PEG / Proc / Canvas assets: no weak stub — plain inline code reached only
 # through the namespace's dispatch group, so these are either linked (as
 # ordinary — usually weak/COMDAT — symbols) or gone entirely. The first three
@@ -196,6 +200,7 @@ openssl_syms='SSL_CTX_new|ecp_sm2p256_precomputed'
 # 1. Names none of them: Regex stubbed, Proc/Canvas/PEG engines entirely absent.
 build none 'IO.print("none")'
 expect_class none "$regex_choke" "W?" "expected 'W' or absent" "no Regex use"
+expect_class none "$search_choke" "W?" "expected 'W' or absent" "no Search use"
 expect_class none "$peg_choke" "" "expected absent" "no PEG use"
 expect_class none "$proc_choke" "" "expected absent" "no Proc use"
 expect_class none "$png_choke" "" "expected absent" "no Canvas use"
@@ -203,6 +208,7 @@ expect_class none "$ttf_choke" "" "expected absent" "no Canvas use"
 expect_absent none "$foreign_choke" "no __Foreign use"
 expect_absent none "$codegen_choke" "no CodeGen use"
 expect_absent none ' reg::' "regexlib"
+expect_absent none 'searchlib::InMemoryInvertedIndexBase' "cpp-searchlib"
 # peglib's typeinfo/vtables, and a couple of unreachable std::function comdat
 # thunks, survive here by design (see the PEG note above) -- culebra's own
 # front-end parser (parser.h) already needs a working peg::parser regardless
@@ -239,9 +245,21 @@ expect_class regex "$peg_choke" "" "expected absent" "Regex only"
 expect_absent regex "$fmt_machinery" "libstdc++'s formatter, Regex"
 expect_output regex "34"
 
+# Search: the strong body has to override, and the printed key is what proves
+# the engine actually ran — the core archive's stub throws.
+build search 'let idx = Search.Index.new()
+idx.add("a", "the quick brown fox")
+idx.add("b", "a lazy dog")
+IO.print(idx.search("quick")[0].key)'
+expect_class search "$search_choke" "T" "expected 'T'" "Search named, the strong body must override"
+expect_class search "$regex_choke" "W?" "expected 'W' or absent" "Search only"
+expect_absent search "$fmt_machinery" "libstdc++'s formatter, Search"
+expect_output search "a"
+
 build peg 'IO.print(PEG.parse(`N <- < [0-9]+ >`, "42").token)'
 expect_class peg "$peg_choke" ".+" "expected defined" "PEG named"
 expect_class peg "$regex_choke" "W?" "expected 'W' or absent" "PEG only"
+expect_class peg "$search_choke" "W?" "expected 'W' or absent" "PEG only"
 expect_absent peg "$fmt_machinery" "libstdc++'s formatter, PEG"
 expect_output peg "42"
 
@@ -256,6 +274,7 @@ expect_output math "4"
 build proc 'IO.print(Proc.run(["echo", "spawned"]).stdout)'
 expect_class proc "$proc_choke" ".+" "expected defined" "Proc named"
 expect_class proc "$regex_choke" "W?" "expected 'W' or absent" "Proc only"
+expect_class proc "$search_choke" "W?" "expected 'W' or absent" "Proc only"
 expect_class proc "$peg_choke" "" "expected absent" "Proc only"
 expect_absent proc "$fmt_machinery" "libstdc++'s formatter, Proc"
 expect_output proc "spawned"
@@ -267,6 +286,7 @@ IO.print(back.width() * 10 + back.height())'
 expect_class canvas "$png_choke" ".+" "expected defined" "Canvas named"
 expect_class canvas "$ttf_choke" ".+" "expected defined" "Canvas named"
 expect_class canvas "$regex_choke" "W?" "expected 'W' or absent" "Canvas only"
+expect_class canvas "$search_choke" "W?" "expected 'W' or absent" "Canvas only"
 expect_absent canvas "$fmt_machinery" "libstdc++'s formatter, Canvas"
 expect_output canvas "32"
 
@@ -277,6 +297,7 @@ c.add(5)
 IO.print(c.value())'
 expect_present foreign "$foreign_choke" "__Foreign named"
 expect_class foreign "$regex_choke" "W?" "expected 'W' or absent" "__Foreign only"
+expect_class foreign "$search_choke" "W?" "expected 'W' or absent" "__Foreign only"
 expect_absent foreign "$fmt_machinery" "libstdc++'s formatter, __Foreign"
 expect_output foreign "15"
 
@@ -295,6 +316,7 @@ m.verify()
 m.run()'
 expect_present codegen "$codegen_choke" "CodeGen named"
 expect_class codegen "$regex_choke" "W?" "expected 'W' or absent" "CodeGen only"
+expect_class codegen "$search_choke" "W?" "expected 'W' or absent" "CodeGen only"
 expect_class codegen "$peg_choke" "" "expected absent" "CodeGen only"
 expect_absent codegen "$fmt_machinery" "libstdc++'s formatter, CodeGen"
 expect_output codegen "42"
@@ -329,6 +351,7 @@ let b = a + Tensor.from([[100.0, 200.0]])
 IO.print(b.to_array()[0][1])'
 expect_present tensor "$tensor_kernels" "Tensor named, the kernels must link"
 expect_class tensor "$regex_choke" "W?" "expected 'W' or absent" "Tensor only"
+expect_class tensor "$search_choke" "W?" "expected 'W' or absent" "Tensor only"
 expect_class tensor "$peg_choke" "" "expected absent" "Tensor only"
 expect_absent tensor "$fmt_machinery" "libstdc++'s formatter, Tensor"
 expect_output tensor "222.0"
@@ -340,6 +363,7 @@ IO.print(s.a + s.xs[1])'
 expect_present shared 'culebra::_jit_shared_val_prop_impl[(]' "Shared named"
 expect_present shared 'culebra::jit_serialize[(]' "Shared named"
 expect_class shared "$regex_choke" "W?" "expected 'W' or absent" "Shared only"
+expect_class shared "$search_choke" "W?" "expected 'W' or absent" "Shared only"
 expect_absent shared "$fmt_machinery" "libstdc++'s formatter, Shared"
 expect_output shared "21"
 
@@ -360,6 +384,10 @@ if (( fail )); then
   expected, or a `reg::` symbol in `none`: something bypasses the
   CULEBRA_RT_REGEX_WEAK gate, or regexlib.h leaked into an always-linked
   translation unit (see the comment in include/stdlib/regex.h).
+  Search 'W' (or nothing) where 'T' was expected, or a `searchlib::` symbol
+  in `none`: the same two causes as Regex, one file over — the kFeatureAxes
+  row and _rt_embed_files, or something bypassing CULEBRA_RT_SEARCH_WEAK (see
+  include/stdlib/search.h).
   Proc / Canvas / PEG: a choke present in `none`, or absent where it was
   named: something outside the choke reaches the engine unconditionally, or
   the adapter isn't reachable only through its kNsRows_* table.
@@ -374,4 +402,4 @@ if (( fail )); then
 EOF
   exit 1
 fi
-echo "aot-feature-axes OK (Regex / Tensor / Http+TLS / __Foreign / CodeGen by axis; Proc/Canvas/PEG/Shared by namespace group; PEG's fixed RTTI residue accepted; groups linked only when named; no libstdc++ formatter)"
+echo "aot-feature-axes OK (Regex / Search / Tensor / Http+TLS / __Foreign / CodeGen by axis; Proc/Canvas/PEG/Shared by namespace group; PEG's fixed RTTI residue accepted; groups linked only when named; no libstdc++ formatter)"
