@@ -32,3 +32,6 @@
 [submodule "vendor/cpp-fstlib"]
 	path = vendor/cpp-fstlib
 	url = https://github.com/yhirose/cpp-fstlib
+[submodule "vendor/cpp-searchlib"]
+	path = vendor/cpp-searchlib
+	url = https://github.com/yhirose/cpp-searchlib

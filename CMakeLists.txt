@@ -130,6 +130,10 @@ include_directories(./vendor/cpp-unicodelib)
 include_directories(./vendor/cpp-regexlib)
 include_directories(./vendor/cpp-fstlib)
 include_directories(./vendor/cpp-httplib)
+# cpp-searchlib is a single header that reaches peglib, unicodelib and fstlib
+# by the bare names above, so it compiles against the copies already listed
+# here rather than the ones it vendors — one definition of each in the binary.
+include_directories(./vendor/cpp-searchlib/include)
 # stb_image (vendor/stb/stb_image.h, public domain) — the PNG decoder behind
 # Canvas.Sprite.from_png. Header-only with its own inflate, so it adds no link
 # dependency; see include/stdlib/image.h for how it is compiled in. stb_truetype
@@ -1123,7 +1127,8 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
     CULEBRA_RT_HTTP_REQUEST_WEAK=1
     CULEBRA_RT_COMPRESS_WEAK=1
     CULEBRA_RT_SQLITE_WEAK=1
-    CULEBRA_RT_REGEX_WEAK=1)
+    CULEBRA_RT_REGEX_WEAK=1
+    CULEBRA_RT_SEARCH_WEAK=1)
   # In a window build the Canvas backend is the raylib one: the base archive
   # carries weak headless present/input stubs (no raylib), overridden by the
   # strong bodies force-loaded from culebra_rt_canvas on Canvas use. In a
@@ -1236,6 +1241,18 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   list(APPEND _rt_embed_files
     "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_regex${CMAKE_STATIC_LIBRARY_SUFFIX}")
   list(APPEND _rt_embed_deps culebra_rt_regex)
+  # Search feature object: the same weak choke again, over cpp-searchlib
+  # (vendor/cpp-searchlib, single header). It links nothing external, but the
+  # engine — postings, the succinct structures, the FST term dictionary and a
+  # PEG query grammar — is code every binary would otherwise carry. No link
+  # flags; embedded like the ones above.
+  add_library(culebra_rt_search STATIC ./src/runtime/culebra_rt_search.cc)
+  target_compile_features(culebra_rt_search PRIVATE cxx_std_23)
+  target_compile_options(culebra_rt_search PRIVATE
+    -ffunction-sections -fdata-sections)
+  list(APPEND _rt_embed_files
+    "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_search${CMAKE_STATIC_LIBRARY_SUFFIX}")
+  list(APPEND _rt_embed_deps culebra_rt_search)
   # The __Foreign wrap fixture: a static registrar, so the link can never drop
   # it from the core archive (see src/runtime/culebra_rt_foreign.cc). Its own
   # archive, force-loaded only when the program names __Foreign.
@@ -1367,7 +1384,8 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   # must still define.
   foreach(_rt_feature culebra_rt_tensor culebra_rt_http culebra_rt_http_notls
                       culebra_rt_compress
-                      culebra_rt_regex culebra_rt_foreign culebra_rt_codegen
+                      culebra_rt_regex culebra_rt_search culebra_rt_foreign
+                      culebra_rt_codegen
                       culebra_rt_sqlite culebra_rt_scene culebra_rt_canvas
                       culebra_rt_webview culebra_rt_wrap)
     if(TARGET ${_rt_feature})

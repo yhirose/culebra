@@ -606,6 +606,10 @@ static constexpr FeatureAxis kFeatureAxes[] = {
     // its own code and, via __builtin_cpu_supports, a start-up constructor
     // that would otherwise land in every binary (see regex.h).
     {{"Regex"}, "libculebra_rt_regex.a", "", true},
+    // search.h, on the same terms as Regex: cpp-searchlib links nothing, but
+    // its postings, succinct structures, FST term dictionary and query
+    // grammar are code only a program that searches should carry.
+    {{"Search"}, "libculebra_rt_search.a", "", true},
     // The __Foreign test fixture, for the same reason one step removed: its
     // `wrap<T>` registrar is a static initializer, which .init_array pins
     // against the link (see src/runtime/culebra_rt_foreign.cc). The flags are
