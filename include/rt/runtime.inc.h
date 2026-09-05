@@ -933,8 +933,15 @@ struct _PendingSnapshot {
   std::string kind, msg;
   int64_t line, col;
 };
-CULEBRA_RT_CORE_OWNED thread_local std::vector<_PendingSnapshot>
-    _pending_save_stack;
+// A Runtime substate (not an independent thread_local): a drop() body can
+// still push here while ~Runtime itself is tearing down the module table,
+// so this must share ~Runtime's null-after-delete + revival protocol rather
+// than risk being destroyed ahead of it by unrelated thread_local teardown
+// order (see kSlotPendingSaveStack).
+inline std::vector<_PendingSnapshot>& _pending_save_stack() {
+  return culebra::runtime_substate<std::vector<_PendingSnapshot>>(
+      culebra::kSlotPendingSaveStack);
+}
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_save_thrown(
     int8_t* out_flag, int8_t* out_tag, int64_t* out_data) {
@@ -943,9 +950,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_save_thrown(
   *out_tag = rt.thrown_tag;
   *out_data = rt.thrown_data;
   if (rt.is_throw) culebra_runtime_value_retain(rt.thrown_tag, rt.thrown_data);
-  _pending_save_stack.push_back({rt.pending_error, rt.pending_kind,
-                                 rt.pending_msg, rt.pending_line,
-                                 rt.pending_col});
+  _pending_save_stack().push_back({rt.pending_error, rt.pending_kind,
+                                   rt.pending_msg, rt.pending_line,
+                                   rt.pending_col});
   // The guarded call runs over an *empty* carrier. A stale is_throw makes
   // try_translate hand a handler inside the callee the in-flight payload
   // instead of the callee's own trap; a stale pending_error leaks the outer
@@ -973,14 +980,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_restore_thrown(
   rt.is_throw = flag;
   // Restore the pending carrier the swallowed cleanup may have overwritten
   // (paired push in save above; LIFO across nested disposes).
-  if (!_pending_save_stack.empty()) {
-    auto& s = _pending_save_stack.back();
+  auto& pending_stack = _pending_save_stack();
+  if (!pending_stack.empty()) {
+    auto& s = pending_stack.back();
     rt.pending_error = s.error;
     rt.pending_kind = std::move(s.kind);
     rt.pending_msg = std::move(s.msg);
     rt.pending_line = s.line;
     rt.pending_col = s.col;
-    _pending_save_stack.pop_back();
+    pending_stack.pop_back();
   }
 }
 
@@ -1066,7 +1074,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_defer_run_to(int64_t mark
       // snapshot (drop its retain, pop its pending frame) rather than
       // restoring it over the replacement.
       if (sflag) _culebra_value_release_impl(stag, sdata);
-      _pending_save_stack.pop_back();
+      _pending_save_stack().pop_back();
       throw;
     }
     _culebra_value_release_impl(v.tag, v.data);

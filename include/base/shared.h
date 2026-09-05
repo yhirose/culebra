@@ -2180,6 +2180,18 @@ enum RuntimeSlot : size_t {
                        // process-global singleton (see jit.h ShapeRegistry) —
                        // Shapes are shared immutable metadata, not isolated heap
   kSlotDeferStack,
+  // LIFO stack of pending-error snapshots (runtime.inc.h's save/restore
+  // around a drop() body). Holds plain strings/ints, not JitValues, so its
+  // own teardown never re-enters value release — but it must be a Runtime
+  // substate rather than an independent thread_local: it used to be one,
+  // constructed on first use (lazily, mid-script) rather than at
+  // default_runtime()'s construction, so C++'s reverse-construction-order
+  // teardown destroyed it *before* ~Runtime ran — and a drop() firing during
+  // ~Runtime's own module-table teardown then wrote into the already-freed
+  // vector (heap-use-after-free, issue #16). As a substate it shares
+  // ~Runtime's null-after-delete + revival protocol like the owned stacks
+  // above: a late touch just revives it empty for the next pass to collect.
+  kSlotPendingSaveStack,
   kSlotJitHooks,
   kSlotJitModuleTable,
   kSlotJitNamespaceTable,
