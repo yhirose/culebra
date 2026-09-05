@@ -617,8 +617,11 @@ struct JitObject {
     new_slots.reserve(slots.size() - 1);
     for (size_t i = 0; i < shape->names.size(); i++) {
       if (i == idx) continue;
+      // Each survivor keeps its declared type: the rebuild walks a fresh
+      // chain from the root, and a transition that forgot the type would
+      // leave the object's remaining scalar fields unchecked from here on.
       new_shape = culebra::shape_registry().transition_add(
-          new_shape, shape->names[i]);
+          new_shape, shape->names[i], shape->type_at(i));
       new_slots.push_back(std::move(slots[i]));
     }
     shape = new_shape;

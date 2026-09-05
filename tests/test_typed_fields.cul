@@ -139,6 +139,29 @@ let opt = Optional()
 opt.n = 'not a Long'
 assert_eq(opt.n, 'not a Long')
 
+# removing one of them rebuilds the shape, and the survivors keep the types
+# they were declared with — otherwise a `remove` anywhere on an instance
+# would turn the write check off for the whole object
+class Mixed {
+  keep: Float
+  gone: String
+  new() {
+    self.extra = 1
+  }
+}
+
+let m = Mixed()
+m.remove('gone')
+assert_throws('TypeError', fn () {
+  m.keep = 'no'
+})
+m.remove('extra')
+assert_throws('TypeError', fn () {
+  m.keep = 'no'
+})
+m.keep = 2.5
+assert_eq(m.keep, 2.5)
+
 # --- an unannotated field takes anything, as it always has ---
 
 v.untyped = 'a string'
