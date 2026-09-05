@@ -7706,7 +7706,8 @@ class Compiler {
         store_into(recv.slot + ix, rhs, /*dst_is_fresh=*/false);
         return rhs;
       }
-      emit_prop_set(fin, recv.slot, rhs.slot, /*ns_check=*/true);
+      emit_prop_set(fin, recv.slot, rhs.slot,
+                    /*ns_check=*/!write_recv_is_instance(ast, av.lvaloff, end));
       return rhs;
     }
     if (fin.original_tag != "INDEX"_) reject(fin, "property assignment");
@@ -7767,6 +7768,21 @@ class Compiler {
         reject(post, "call chain");
     }
     return recv;
+  }
+
+  // Whether a plain `<head>.<name> = v` needs the namespace-typo check at
+  // all. The check exists for `Math.foo = 1` — a write to a stdlib namespace
+  // object — and a receiver the compiler can name as an instance is not one:
+  // `self` inside a member, or a name whose declared class says what it
+  // holds. The port writes through both on every substep.
+  bool write_recv_is_instance(const peg::Ast& place, size_t off, size_t end) {
+    using namespace peg::udl;
+    if (end != off + 1) return false;
+    const peg::Ast& head = *place.nodes[off];
+    if (head.tag != "IDENTIFIER"_) return false;
+    if (head.token == "self") return true;
+    const Binding* b = lookup(head.token);
+    return b && b->decl_fields;
   }
 
   // The final `.name = value` store, shared by the three DOT assignment
@@ -7850,7 +7866,8 @@ class Compiler {
     }
     auto recv = compile_lvalue_prefix(place, 0, end);
     if (fin.original_tag == "DOT"_) {
-      emit_prop_set(fin, recv.slot, val, /*ns_check=*/true);
+      emit_prop_set(fin, recv.slot, val,
+                    /*ns_check=*/!write_recv_is_instance(place, 0, end));
       return;
     }
     if (fin.original_tag != "INDEX"_) reject(fin, "property assignment");
