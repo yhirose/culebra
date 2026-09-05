@@ -1,8 +1,9 @@
-# A declared field's type is a contract the write checks (docs/language.md
-# §10). The annotation was documentation before; it now decides what the
-# field may hold, in the same words `let x: Float = 3` has always used, and
-# through every write surface: a literal name, a computed key, a method's
-# own `self.x`, and the constructor's prologue.
+# A *scalar* declared field's type — `Float`, `Long`, `Bool` — is a contract
+# the write checks (docs/language.md §10), in the same words
+# `let x: Float = 3` has always used, and through every write surface: a
+# literal name, a computed key, a method's own `self.x`, and the
+# constructor's prologue. Every other annotation, `String` included, stays
+# unchecked: it picks the field's zero value and nothing more.
 #
 # Run: ./build/culebra tests/test_typed_fields.cul
 #      ./build/culebra --jit tests/test_typed_fields.cul
@@ -109,6 +110,34 @@ class Order {
 
 assert_eq(Order().a, 1)
 assert_eq(Order().b, 2)
+
+# --- a non-scalar annotation picks the zero value and checks nothing ---
+#
+# `String` is the one that reads as if it should: it names a type the
+# annotation vocabulary knows, and the field starts as `''`. It is still
+# unchecked, because `StringView` is a second spelling of the same thing
+# and `slice` / `split` / `lines` / `for` over a string all produce it.
+
+assert_eq(v.s, '')
+v.s = 42
+assert_eq(v.s, 42)
+v.s = 'hello world'.slice(0, 5)
+assert_eq(v.s, 'hello')
+assert_eq(type_of(v.s), 'StringView')
+v.s = 'plain'
+assert_eq(v.s, 'plain')
+
+# an optional names no scalar either, so it is not a narrower `Long`
+class Optional {
+  n: Long?
+
+  new() {
+  }
+}
+
+let opt = Optional()
+opt.n = 'not a Long'
+assert_eq(opt.n, 'not a Long')
 
 # --- an unannotated field takes anything, as it always has ---
 
@@ -247,7 +276,8 @@ assert_throws('TypeError', fn () {
   read_f(copy)
 })
 
-# a declared field cannot be removed: a field that can vanish is no contract
+# a scalar-declared field cannot be removed: a field that can vanish is no
+# contract. One declared anything else carries no promise, so it can go.
 assert_throws('ImmutableError', fn () {
   r.remove('f')
 })

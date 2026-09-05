@@ -1017,8 +1017,10 @@ diagnostics.
 
 #### A declared field's type, and what a read does with it
 
-A class's declared field types are checked on every write
-(`docs/language.md` §10), so the type is an answer rather than a guess.
+A class's *scalar* declared field types — `Float`, `Long`, `Bool` — are
+checked on every write (`docs/language.md` §10), so the type is an answer
+rather than a guess. Every other annotation is `FieldType::Any` and
+answers nothing.
 `Op::PropVal` carries it in `d`: the compiler fills it when the receiver
 is a name whose declared class declares that field with a scalar type —
 a parameter or a local whose annotation names the class, `self` inside
@@ -1039,8 +1041,8 @@ the one it got and calls a cold `[[noreturn]]` reject when they differ —
 one predictable branch, 0.08 ns of the 2.0. The executor asks the same
 question of the same instruction, so a forged receiver raises the same
 `TypeError` on both lanes; `tests/test_typed_fields.cul` pins that,
-along with `remove` refusing a declared field (a field that can vanish
-would be no contract at all).
+along with `remove` refusing a scalar-declared field (a field that can
+vanish would be no contract at all).
 
 ### 5.5 Exceptions, `defer`, and unwinding
 

@@ -1002,8 +1002,9 @@ namespace closureのadapterが届いたであろうhelperへ1つのdispatch
 
 #### 宣言fieldの型と、読みがそれをどう使うか
 
-クラスの宣言fieldの型は書き込みのたびに検査される（`docs/language.md`
-§10）ので、型は推測ではなく答えである。`Op::PropVal`はそれを`d`で運ぶ:
+クラスの*スカラ*宣言field（`Float`・`Long`・`Bool`）の型は書き込みの
+たびに検査される（`docs/language.md` §10）ので、型は推測ではなく答えで
+ある。それ以外の注釈は`FieldType::Any`で、何も答えない。`Op::PropVal`はそれを`d`で運ぶ:
 受け手が「宣言クラスがそのfieldをスカラ型で宣言している名前」のとき、
 コンパイラがこれを埋める — クラスを名指す注釈を持つパラメータかローカル、
 そのクラス自身のメンバ内の`self`、あるいはクラス型fieldを辿った次の段で
@@ -1021,8 +1022,8 @@ emit時に畳まれる: 読みが行うはずだったretain、statement末尾�
 違えば冷たい`[[noreturn]]`のrejectを呼ぶ — 予測可能な分岐1つで、
 2.0 nsのうち0.08 nsである。実行器は同じ命令に同じ問いを立てるので、
 偽装された受け手は両レーンで同じ`TypeError`になる。
-`tests/test_typed_fields.cul`がこれを固定し、`remove`が宣言fieldを
-拒否すること（消えうるfieldは契約にならない）も併せて固定する。
+`tests/test_typed_fields.cul`がこれを固定し、`remove`がスカラ宣言field
+を拒否すること（消えうるfieldは契約にならない）も併せて固定する。
 
 ### 5.5 例外、`defer`、unwind
 

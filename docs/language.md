@@ -1587,18 +1587,32 @@ Semantics:
     created via `self.x = y` in the constructor. A `@value` class (§21)
     is the exception: its instances freeze when `new` returns.
 
-  The declared type is **checked on every write**, the same runtime-check
-  model parameters and `let x: T` follow (§14): `Float`, `Long` and `Bool`
-  admit only their own values, and anything else — a class, a union, a
-  field with no annotation at all — takes what it always did. The check
-  covers every way a value reaches the field: a literal name, a computed
-  key, the constructor's own `self.x`, a native builder. That is what
-  makes a declared field's type worth reading: a `Float` field holds a
-  `Float`, so code that knows the class knows the field's type without
-  asking. `@packable` classes (§21) additionally read it to compute their
-  fixed byte layout, and `@value` classes to check that every field is a
-  scalar, so both require typed fields (`x = 7` in either is a
-  SyntaxError).
+  A **scalar** declared type — `Float`, `Long`, `Bool`, and the
+  fixed-width spellings of §21 (`Float32`, `Int32`, `Byte`, ...), each
+  of which stands for one of those three — is **checked on every
+  write**, the same runtime-check model parameters and `let x: T` follow
+  (§14): the field admits only its own values. The check covers every
+  way a value reaches the field: a literal name, a computed key, the
+  constructor's own `self.x`, a native builder. That is what makes such
+  a field's type worth reading: a `Float` field holds a `Float`, so code
+  that knows the class knows the field's type without asking.
+
+  **Every other annotation is unchecked.** It still chooses the field's
+  zero value above and still records what the code means, but the field
+  accepts whatever it is given: `String`, a class, a union, an optional
+  (`T?`), and a field with no annotation at all. The reasoning is the
+  one `@value` uses to narrow its own field types (§21) — a scalar is a
+  value a tag alone decides, with no heap body behind it and no second
+  spelling of the same thing. `String` has a second spelling:
+  `StringView` (§18.1) is also a string value, and it is what `slice`,
+  `split`, `lines` and `for` over a string hand back. A `name: String`
+  field therefore accepts a `StringView`, and a read of it asks the
+  value what it is, exactly as before.
+
+  `@packable` classes (§21) additionally read a field's declared type to
+  compute their fixed byte layout, and `@value` classes to check that
+  every field is a scalar or another `@value` class, so both require
+  typed fields (`x = 7` in either is a SyntaxError).
 * `get NAME () { ... }` declares a **getter** — a no-parameter method
   that is invoked on a bare property read, with no call parentheses:
 
@@ -3207,8 +3221,10 @@ method — `self._data ??= load()` works directly (`??=` supports
   annotations on local intermediates do not add extra coverage.
 * Object property values have no annotation slot — a property an
   object grows outside a class declaration is unconstrained. A class's
-  *declared* field is the exception: its annotation is checked on every
-  write (§10).
+  field declared with a *scalar* type (`Float`, `Long`, `Bool`, or a
+  fixed-width spelling of one) is the exception: that annotation is
+  checked on every write (§10). Every other field annotation, `String`
+  included, is not checked.
 * Array element types are not tracked.
 * `mut x: T` on a local, or a `mut` parameter, does not re-check on
   later reassignment — the check happens once at the annotated
@@ -3222,20 +3238,24 @@ feature, not a type system.
 A name whose declared class is known — a parameter or a `let` whose
 annotation names it, `self` inside that class's own members, or the next
 step of a chain through a class-typed field — is checked where it is
-bound, and that class's declared fields are checked on every write (§10),
-so a read of one of those fields through that name knows what it will
-find. The compiler uses that: `p.x` where `p: Point` and `Point` declares
-`x: Float` compiles as the read of a `Float`, with no question asked of
-the value. A `mut` binding takes no such promise: its reassignment is not
-re-checked, so there is nothing to read the declaration off.
+bound, and that class's scalar-declared fields are checked on every write
+(§10), so a read of one of *those* fields through that name knows what it
+will find. The compiler uses that: `p.x` where `p: Point` and `Point`
+declares `x: Float` compiles as the read of a `Float`, with no question
+asked of the value. A field declared anything else is read the ordinary
+way, since nothing checked what went into it. A `mut` binding takes no
+such promise either: its reassignment is not re-checked, so there is
+nothing to read the declaration off.
 
 The entry check tests the class a value names, and an ordinary Object can
 name any class it likes (`{class: 'Point', x: 'no'}`), so the assumption
 is verified where it is used: reading such a field off a receiver whose
 property never went through the write check is a `TypeError` naming the
 field and the type, rather than a value of the wrong kind. A real
-instance never meets it. For the same reason `remove` refuses a declared
-field: a field that can vanish is no contract.
+instance never meets it. For the same reason `remove` refuses a
+scalar-declared field: a field that can vanish is no contract. A field
+declared anything else is removable, since nothing was promised about
+it.
 
 ```culebra
 class Point {
