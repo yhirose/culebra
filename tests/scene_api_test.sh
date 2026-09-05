@@ -552,6 +552,13 @@ let rad = Scene.Image.new(9, 9).gradient_radial(0.0, 255, 255, 255, 0, 0, 0)
 println("radial centre brighter {rad.get(4, 4) >> 24 > rad.get(0, 0) >> 24}")
 let nz = Scene.Image.new(8, 8).fill(100, 100, 100).noise(7, 2.0, 128).cellular(4, 64).blur(1).tint(255, 200, 200).brightness(10).grayscale().invert().rotate(90)
 println("passes ran {nz.width()}x{nz.height()}")
+# grayscale is the one whole-image pass raylib implements as a reformat, and
+# everything here reads RGBA8: the channels must come back equal with alpha
+# intact, and to_normal() (which indexes by 4) must not walk off the buffer.
+let gs = Scene.Image.new(8, 8).fill(20, 90, 200).grayscale()
+let gp = gs.get(1, 1)
+println("grayscale stays rgba8 {(gp >> 24) == ((gp >> 16) & 255)} {((gp >> 16) & 255) == ((gp >> 8) & 255)} alpha {gp & 255}")
+println("grayscale then normal {gs.to_normal(1.0).get(1, 1)}")
 let l = Scene.Image.new(8, 8).line(0.0, 0.0, 7.0, 7.0, 1, 255, 255, 255).triangle(0.0, 7.0, 7.0, 7.0, 7.0, 0.0, 0, 0, 255).circle(4, 4, 1, 0, 255, 0).circle_line(4, 4, 3, 255, 0, 0).rect_line(0, 0, 8, 8, 9, 9, 9)
 println("shapes {l.get(0, 0)} {l.get(4, 4)}")
 let stamp = Scene.Image.new(4, 4).fill(0, 0, 255)
@@ -594,6 +601,8 @@ for want in "px 4278190335 255 16711935 size 8.0x8.0" \
             "resize+crop 3.0x3.0 169090815" \
             "radial centre brighter true" \
             "passes ran 8.0x8.0" \
+            "grayscale stays rgba8 true true alpha 255" \
+            "grayscale then normal 2155937791" \
             "shapes 151587327 16711935" \
             "blit 65535 255" \
             "text without a window: 0" \

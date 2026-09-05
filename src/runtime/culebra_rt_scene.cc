@@ -395,12 +395,19 @@ static uint64_t& gl_epoch() {
 
 // GPU-upload an Image as a repeat-wrapped texture, consuming it. Mipmapped
 // trilinear for tiled materials; plain bilinear for baked canvas drawings.
-static Texture2D upload(::Image im, bool mipmaps) {
-  Texture2D t = LoadTextureFromImage(im);
+// Mipmaps, filter and wrap for a freshly loaded texture. The filter follows
+// the mipmaps in one place, so two textures born of the same request cannot
+// end up sampling differently.
+static Texture2D configure(Texture2D t, bool mipmaps, bool repeat) {
   if (mipmaps) GenTextureMipmaps(&t);
   SetTextureFilter(t, mipmaps ? TEXTURE_FILTER_TRILINEAR
                               : TEXTURE_FILTER_BILINEAR);
-  SetTextureWrap(t, TEXTURE_WRAP_REPEAT);
+  SetTextureWrap(t, repeat ? TEXTURE_WRAP_REPEAT : TEXTURE_WRAP_CLAMP);
+  return t;
+}
+
+static Texture2D upload(::Image im, bool mipmaps) {
+  Texture2D t = configure(LoadTextureFromImage(im), mipmaps, /*repeat=*/true);
   UnloadImage(im);
   return t;
 }
@@ -429,10 +436,14 @@ class Texture : public std::enable_shared_from_this<Texture> {
   Texture(const Texture&) = delete;
   Texture& operator=(const Texture&) = delete;
   ~Texture() {
-    if (!live() || !IsWindowReady()) return;
+    if (!live()) return;
     if (is_rt) UnloadRenderTexture(rt); else UnloadTexture(tex);
   }
-  bool live() const { return epoch == gl_epoch(); }
+  // The context that made these ids has to still be current. The epoch alone
+  // does not say so: ~View closes the window without opening the next one, so
+  // between two Views every handle would still match. Both halves, in one
+  // place, so a reader cannot be inert here and live one line down.
+  bool live() const { return epoch == gl_epoch() && IsWindowReady(); }
   double width() const { return tex.width; }
   double height() const { return tex.height; }
   // Sampling: "point" for pixel art and a LUT's exact cells, "bilinear",
@@ -440,17 +451,19 @@ class Texture : public std::enable_shared_from_this<Texture> {
   Texture& filter(std::string name) {
     if (!live()) return *this;
     if (name == "point") SetTextureFilter(tex, TEXTURE_FILTER_POINT);
+    else if (name == "bilinear") SetTextureFilter(tex, TEXTURE_FILTER_BILINEAR);
     else if (name == "trilinear") { GenTextureMipmaps(&tex); SetTextureFilter(tex, TEXTURE_FILTER_TRILINEAR); }
-    else SetTextureFilter(tex, TEXTURE_FILTER_BILINEAR);
+    else TraceLog(LOG_ERROR, "Scene: filter('%s') names no mode (point / bilinear / trilinear) — unchanged.", name.c_str());
     return *this;
   }
   // Past the edge: "repeat" (a tiled road), "clamp" (a LUT, a sprite),
   // "mirror".
   Texture& wrap(std::string name) {
     if (!live()) return *this;
-    SetTextureWrap(tex, name == "clamp" ? TEXTURE_WRAP_CLAMP
-                        : name == "mirror" ? TEXTURE_WRAP_MIRROR_REPEAT
-                                           : TEXTURE_WRAP_REPEAT);
+    if (name == "repeat") SetTextureWrap(tex, TEXTURE_WRAP_REPEAT);
+    else if (name == "clamp") SetTextureWrap(tex, TEXTURE_WRAP_CLAMP);
+    else if (name == "mirror") SetTextureWrap(tex, TEXTURE_WRAP_MIRROR_REPEAT);
+    else TraceLog(LOG_ERROR, "Scene: wrap('%s') names no mode (repeat / clamp / mirror) — unchanged.", name.c_str());
     return *this;
   }
 };
@@ -534,8 +547,16 @@ class Font {
   Font(const Font&) = delete;
   Font& operator=(const Font&) = delete;
   ~Font() {
-    if (live() && IsWindowReady()) UnloadFont(font);
+    if (live() && IsWindowReady()) { UnloadFont(font); return; }
+    // The atlas texture went with the context, but the glyph images and the
+    // rectangles are plain heap — the same split unload_mesh() makes. Both
+    // calls take a null (adopt_font leaves ::Font{} behind on failure).
+    UnloadFontData(font.glyphs, font.glyphCount);
+    MemFree(font.recs);
   }
+  // Deliberately not IsWindowReady(): a Font's glyph images are CPU data, and
+  // Image::text draws with them after the View is gone (that is what makes
+  // Scene.Image usable with no display).
   bool live() const { return epoch == gl_epoch(); }
   double size() const { return font.baseSize; }
   int64_t glyphs() const { return font.glyphCount; }
@@ -658,7 +679,14 @@ class Image {
   Image& blur(int64_t radius) { ImageBlurGaussian(&im, (int)radius); return *this; }
   Image& tint(int64_t r, int64_t g, int64_t b) { ImageColorTint(&im, col(r, g, b)); return *this; }
   Image& invert() { ImageColorInvert(&im); return *this; }
-  Image& grayscale() { ImageColorGrayscale(&im); return *this; }
+  // raylib's grayscale pass is a reformat to 8bpp, the one whole-image call
+  // that changes the layout. Everything here reads RGBA8 (get(), to_normal(),
+  // the upload), so convert straight back.
+  Image& grayscale() {
+    ImageColorGrayscale(&im);
+    ImageFormat(&im, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+    return *this;
+  }
   Image& brightness(int64_t k) { ImageColorBrightness(&im, (int)k); return *this; }
   Image& flip_v() { ImageFlipVertical(&im); return *this; }
   Image& flip_h() { ImageFlipHorizontal(&im); return *this; }
@@ -906,6 +934,10 @@ class Node : public std::enable_shared_from_this<Node> {
   }
   Node& build() {
     if (mv.empty() || mi.empty()) return *this;   // nothing pushed → no-op (no GL upload)
+    if (!IsWindowReady()) {   // no context to upload into; the vectors keep
+      TraceLog(LOG_ERROR, "Scene: build() needs an open View — mesh not built.");
+      return *this;
+    }
     if (mv.size() / 3 > 65535) {                   // raylib mesh indices are 16-bit
       TraceLog(LOG_ERROR,
                "Scene: mesh has %zu vertices; raylib's 16-bit index buffer "
@@ -973,13 +1005,16 @@ class Node : public std::enable_shared_from_this<Node> {
   static std::shared_ptr<Node> make_plane(double w, double d) {
     auto n = std::make_shared<Node>(); n->shape = Shape::Plane; n->w = w; n->d = d; return n;
   }
+  static std::shared_ptr<Node> make_mesh() {
+    auto n = std::make_shared<Node>(); n->shape = Shape::Mesh; return n;
+  }
 
   std::shared_ptr<Node> child() { return push(std::make_shared<Node>()); }
   std::shared_ptr<Node> add_box(double w, double h, double d) { return push(make_box(w, h, d)); }
   std::shared_ptr<Node> add_sphere(double r) { return push(make_sphere(r)); }
   std::shared_ptr<Node> add_cylinder(double r, double h) { return push(make_cylinder(r, h)); }
   std::shared_ptr<Node> add_plane(double w, double d) { return push(make_plane(w, d)); }
-  std::shared_ptr<Node> add_mesh() { auto n = std::make_shared<Node>(); n->shape = Shape::Mesh; return push(n); }
+  std::shared_ptr<Node> add_mesh() { return push(make_mesh()); }
 
   double x() const { return px; }
   double y() const { return py; }
@@ -1471,10 +1506,7 @@ class View {
   // default, for a tiled material; a sprite or a LUT turns both off.
   std::shared_ptr<Texture> texture(const Image& img, bool mipmaps, bool repeat) {
     auto t = std::make_shared<Texture>();
-    t->tex = LoadTextureFromImage(img.im);
-    if (mipmaps) GenTextureMipmaps(&t->tex);
-    SetTextureFilter(t->tex, mipmaps ? TEXTURE_FILTER_TRILINEAR : TEXTURE_FILTER_BILINEAR);
-    SetTextureWrap(t->tex, repeat ? TEXTURE_WRAP_REPEAT : TEXTURE_WRAP_CLAMP);
+    t->tex = configure(LoadTextureFromImage(img.im), mipmaps, repeat);
     return t;
   }
   // A PNG's bytes (FS.read, or an Embed.dir asset) straight to a texture.
@@ -1564,20 +1596,10 @@ class View {
     // The eye drives specular and fog in the lit shader; set for this pass,
     // put back for the main one (render_3d sets it too, belt and braces).
     SetShaderValue(lit_, loc_viewpos_, &cam.position, SHADER_UNIFORM_VEC3);
-    rlSetClipPlanes(near_, far_);
-    BeginTextureMode(tex.rt);
-    ClearBackground(bg_);
-    if (has_sky_)
-      DrawRectangleGradientV(0, 0, tex.rt.texture.width, tex.rt.texture.height, sky_top_, sky_bot_);
-    rlDisableColorBlend();
-    BeginMode3D(cam);
     // Alpha is coverage here, not depth: no post pass reads this target, and a
     // sprite() of it (or anything else blending by alpha) must see the image
     // as opaque, not as 0.4% of itself.
-    lit_pass(cam, /*depth_in_alpha=*/false);
-    EndMode3D();
-    rlEnableColorBlend();
-    EndTextureMode();
+    lit_target(tex.rt, cam, /*depth_in_alpha=*/false);
     SetShaderValue(lit_, loc_viewpos_, &cam_.position, SHADER_UNIFORM_VEC3);
   }
 
@@ -1608,18 +1630,21 @@ class View {
     if (auto p = n.parent_.lock()) { p->remove_child(&n); return; }
     TraceLog(LOG_ERROR, "Scene: view.remove(): the node is not in this scene. Ignored.");
   }
-  std::shared_ptr<Node> find(std::string name) const {
+  // The forest's version of Node::search, and the same three steps built on
+  // it: one walk order, so has() and find() cannot answer about different
+  // nodes.
+  std::shared_ptr<Node> search(const std::string& name) const {
     for (const auto& r : roots_) {
       if (r->name == name) return r;
       if (auto f = r->search(name)) return f;
     }
+    return nullptr;
+  }
+  std::shared_ptr<Node> find(std::string name) const {
+    if (auto f = search(name)) return f;
     throw std::runtime_error("Scene: no node named '" + name + "'");
   }
-  bool has(std::string name) const {
-    for (const auto& r : roots_)
-      if (r->name == name || r->search(name)) return true;
-    return false;
-  }
+  bool has(std::string name) const { return search(name) != nullptr; }
   // Frustum culling of nodes whose bounding sphere is off screen (default
   // on). Off is for measuring what it saves, or a shape whose bound is wrong.
   void culling(bool on) { culling_ = on; }
@@ -1627,9 +1652,7 @@ class View {
   std::shared_ptr<Node> add_sphere(double r) { return push(Node::make_sphere(r)); }
   std::shared_ptr<Node> add_cylinder(double r, double h) { return push(Node::make_cylinder(r, h)); }
   std::shared_ptr<Node> add_plane(double w, double d) { return push(Node::make_plane(w, d)); }
-  std::shared_ptr<Node> add_mesh() {
-    auto n = std::make_shared<Node>(); n->shape = Shape::Mesh; return push(n);
-  }
+  std::shared_ptr<Node> add_mesh() { return push(Node::make_mesh()); }
 
   void camera(double px, double py, double pz, double tx, double ty, double tz,
               double ux, double uy, double uz, double fov) {
@@ -1695,6 +1718,12 @@ class View {
     auto ctx = pass_ctx(mat_);
     // The state the pass starts in (BeginMode3D's defaults + our blend-off).
     bool blending = false, depth_write = true, depth_test = true, culling = true;
+    // Which mode the custom factors currently hold, and whether they hold any.
+    // Both are the pass's, not the View's: the restore below puts GL back to
+    // RL_BLEND_ALPHA, which blends destination alpha too, so a later pass that
+    // trusted a View-wide "already programmed" flag would draw its first
+    // `over` surface through it and eat the depth the post stack reads.
+    bool blend_set = false;
     Blend blend = Blend::Over;
     for (const DrawItem& it : items) {
       const Material* m = it.mat;
@@ -1706,7 +1735,11 @@ class View {
         if (it.transparent) rlEnableColorBlend(); else rlDisableColorBlend();
         blending = it.transparent;
       }
-      if (blending && (want_blend != blend || !blend_set_)) set_blend(want_blend), blend = want_blend;
+      if (blending && (!blend_set || want_blend != blend)) {
+        set_blend(want_blend);
+        blend = want_blend;
+        blend_set = true;
+      }
       if (want_dw != depth_write) { if (want_dw) rlEnableDepthMask(); else rlDisableDepthMask(); depth_write = want_dw; }
       if (want_dt != depth_test) { if (want_dt) rlEnableDepthTest(); else rlDisableDepthTest(); depth_test = want_dt; }
       if (want_cull != culling) { if (want_cull) rlEnableBackfaceCulling(); else rlDisableBackfaceCulling(); culling = want_cull; }
@@ -1760,7 +1793,34 @@ class View {
     }
     rlSetBlendFactorsSeparate(src, dst, RL_ZERO, RL_ONE, RL_FUNC_ADD, RL_FUNC_ADD);
     rlSetBlendMode(RL_BLEND_CUSTOM_SEPARATE);
-    blend_set_ = true;
+  }
+
+  // One lit pass into `rt` from `cam`. Both callers (the frame's own target and
+  // render_to's) need the whole run in this order, so it lives once: a sky
+  // drawn in one and not the other is a picture bug nothing else would catch.
+  //
+  // The near plane sits far out by default (see clip_planes): raylib's 0.01
+  // crushes depth precision so coplanar layers (road / white lines / kerbs /
+  // gravel) z-fight and flicker at range.
+  //
+  // The lit shader writes linear depth into alpha; with alpha blending on,
+  // near (low-alpha) fragments would blend away. Opaque items draw with no
+  // blend; the transparent ones re-enable it with factors that leave the
+  // destination's alpha alone (emit / set_blend).
+  void lit_target(const RenderTexture2D& rt, const Camera3D& cam,
+                  bool depth_in_alpha) {
+    rlSetClipPlanes(near_, far_);
+    BeginTextureMode(rt);
+    ClearBackground(bg_);
+    if (has_sky_)   // gradient sky behind the scene (3D draws over it via depth)
+      DrawRectangleGradientV(0, 0, rt.texture.width, rt.texture.height,
+                             sky_top_, sky_bot_);
+    rlDisableColorBlend();
+    BeginMode3D(cam);
+    lit_pass(cam, depth_in_alpha);
+    EndMode3D();
+    rlEnableColorBlend();
+    EndTextureMode();
   }
 
   void render_3d() {
@@ -1783,26 +1843,8 @@ class View {
     SetShaderValue(lit_, loc_viewpos_, &vp, SHADER_UNIFORM_VEC3);
 
     // --- lit pass: render the scene into an off-screen target -------------
-    // The near plane sits far out by default (see clip_planes): raylib's 0.01
-    // crushes depth precision so coplanar layers (road / white lines / kerbs /
-    // gravel) z-fight and flicker at range.
-    rlSetClipPlanes(near_, far_);
-    BeginTextureMode(scene_rt_);
-    ClearBackground(bg_);
-    if (has_sky_)   // gradient sky behind the scene (3D draws over it via depth)
-      DrawRectangleGradientV(0, 0, scene_rt_.texture.width, scene_rt_.texture.height,
-                             sky_top_, sky_bot_);
-    // The lit shader writes linear depth into alpha; with alpha blending on,
-    // near (low-alpha) fragments would blend away. Opaque items draw with no
-    // blend; the transparent ones re-enable it with factors that leave the
-    // destination's alpha alone (emit / set_blend).
-    rlDisableColorBlend();
-    BeginMode3D(cam_);
     // cascades are bound automatically via mat_.maps[SPECULAR/NORMAL]
-    lit_pass(cam_, /*depth_in_alpha=*/true);
-    EndMode3D();
-    rlEnableColorBlend();
-    EndTextureMode();
+    lit_target(scene_rt_, cam_, /*depth_in_alpha=*/true);
 
     // --- post pass at supersample resolution (SSAO/DoF/bloom/tonemap/LUT) ---
     int sw = scene_rt_.texture.width, sh = scene_rt_.texture.height;
@@ -2147,7 +2189,6 @@ class View {
   int loc_alphamode_ = 0, loc_uv_ = 0, loc_nstrength_ = 0;
   bool culling_ = true;
   std::vector<DrawItem> items_;   // the lit pass's draw list, reused each frame
-  bool blend_set_ = false;        // set_blend has programmed the custom factors once
   Vector3 dir_ = Vector3{0.5f, -1.0f, -0.6f};
   Vector3 lcol_ = Vector3{1.0f, 0.98f, 0.94f};
   Vector3 amb_ = Vector3{0.35f, 0.38f, 0.42f};
