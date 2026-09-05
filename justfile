@@ -1154,6 +1154,13 @@ _run-tests BACKEND:
     # CULEBRA_JIT_CACHE + objdump; skips out loud on a non-AArch64 host.
     run_early_ifcvt() { bash tools/checks/check_early_ifcvt.sh "$BIN"; }
 
+    # Parameter-tag gate: a declared primitive parameter type reaches the
+    # emitted code, so a built-in call on that name resolves to one receiver
+    # arm instead of the switch its method name shares across types
+    # (tools/checks/check_param_tag_fold.sh). Reads emitted IR, and carries
+    # its own unannotated control so it cannot pass by measuring nothing.
+    run_param_tag() { bash tools/checks/check_param_tag_fold.sh "$BIN"; }
+
     # Webview dynamic-load gate (Linux): the engine is dlopen'd at window
     # creation, so neither the driver nor an AOT binary may carry it in
     # DT_NEEDED or export the forwarders (tools/checks/check_webview_dynload.sh).
@@ -1189,6 +1196,7 @@ _run-tests BACKEND:
         phase "eh balance (every begin_catch is closed)"; run_eh_balance
         phase "alloca discipline (scratch slots stay entry-block)"; run_alloca_discipline
         phase "float carry (loop-carried Floats stay double phis)"; run_float_carry
+        phase "param tag (a declared parameter type reaches the code)"; run_param_tag
         phase "early ifcvt (a carried Float's if arm stays a branch)"; run_early_ifcvt
         phase "rt-archive TLS ownership (core vs force-loaded features)"; run_rt_archive_tls
         phase "webview dynload (engine stays behind dlopen)"; run_webview_dynload
@@ -1223,6 +1231,7 @@ _run-tests BACKEND:
         phase "eh balance (every begin_catch is closed)"; run_eh_balance
         phase "alloca discipline (scratch slots stay entry-block)"; run_alloca_discipline
         phase "float carry (loop-carried Floats stay double phis)"; run_float_carry
+        phase "param tag (a declared parameter type reaches the code)"; run_param_tag
         phase "early ifcvt (a carried Float's if arm stays a branch)"; run_early_ifcvt
         phase "vm/jit symmetry (real test files)"; run_diff_vm_jit
         phase "vm_cases (frozen expected outputs)"; run_vm_cases
@@ -1260,6 +1269,7 @@ _run-tests BACKEND:
         phase "eh balance (every begin_catch is closed)"; run_eh_balance
         phase "alloca discipline (scratch slots stay entry-block)"; run_alloca_discipline
         phase "float carry (loop-carried Floats stay double phis)"; run_float_carry
+        phase "param tag (a declared parameter type reaches the code)"; run_param_tag
         phase "early ifcvt (a carried Float's if arm stays a branch)"; run_early_ifcvt
         phase "vm/jit symmetry (real test files)"; run_diff_vm_jit
         phase "vm_cases (frozen expected outputs)"; run_vm_cases

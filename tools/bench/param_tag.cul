@@ -1,0 +1,94 @@
+# What a parameter's own annotation is worth to the code below it.
+#
+# `fn f(s: String)` is checked on entry (§14), so every read of `s` in the
+# body is a String. Without that fact in hand, each built-in method call on
+# `s` carries the receiver switch its name shares across types -- `size` is
+# String/Array/Object/Set/Tuple, and a call site that cannot name the
+# receiver emits all of them plus the join that merges them.
+#
+# Each pair runs identical code; only the annotation differs.
+#
+# Run on the -O3 + LTO binary (`just build`); build-dev is -O1.
+#
+#   culebra tools/bench/param_tag.cul [iters]
+#   culebra --jit tools/bench/param_tag.cul [iters]
+
+let N = !Sys.argv.empty() ? to_long(Sys.argv[0]) : 3000000
+
+let report = fn (name, dt, acc) {
+  println("  {name:<24}{dt / N * 1e9:>8.2f}  ns/iter   {acc:>14}")
+}
+
+let bench = fn (name, f, arg) {
+  let t0 = Time.monotonic()
+  let acc = f(arg)
+  report(name, Time.monotonic() - t0, acc)
+}
+
+# --- one built-in call on the parameter -----------------------------------
+
+let one_plain = fn (s) {
+  mut k = 0
+  for _ in 0..N {
+    k += s.size()
+  }
+  k
+}
+
+let one_typed = fn (s: String) {
+  mut k = 0
+  for _ in 0..N {
+    k += s.size()
+  }
+  k
+}
+
+# --- a chain: the first call's result feeds the second ---------------------
+
+let chain_plain = fn (s) {
+  mut k = 0
+  for _ in 0..N {
+    k += s.trim().size()
+  }
+  k
+}
+
+let chain_typed = fn (s: String) {
+  mut k = 0
+  for _ in 0..N {
+    k += s.trim().size()
+  }
+  k
+}
+
+# --- a Long parameter feeding arithmetic -----------------------------------
+
+let num_plain = fn (n) {
+  mut k = 0
+  for _ in 0..N {
+    k += n * 2 + 1
+  }
+  k
+}
+
+let num_typed = fn (n: Long) {
+  mut k = 0
+  for _ in 0..N {
+    k += n * 2 + 1
+  }
+  k
+}
+
+let s = ' hello '
+
+println('one built-in call on the parameter')
+bench('  no annotation', one_plain, s)
+bench('  s: String', one_typed, s)
+
+println('a chain of two')
+bench('  no annotation', chain_plain, s)
+bench('  s: String', chain_typed, s)
+
+println('arithmetic on a Long parameter')
+bench('  no annotation', num_plain, 3)
+bench('  n: Long', num_typed, 3)

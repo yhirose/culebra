@@ -1,0 +1,124 @@
+# A parameter's annotation is checked on entry (docs/language.md §14), so
+# every read of that name in the body already satisfies it. When the
+# annotation names one primitive type, that settles the tag, and Op::ArgTag
+# hands the fact to the compiled lanes -- a built-in call on the parameter
+# then resolves to one receiver arm instead of the switch its method name
+# shares across types, and arithmetic drops its operand tests.
+#
+# What this file pins is that the shortcut never changes an answer. Every
+# case below is one the promise does NOT hold for, or one where it does and
+# the value must come back unchanged.
+#
+# Run: ./build/culebra tests/test_param_tag.cul
+#      ./build/culebra --jit tests/test_param_tag.cul
+
+# Function is structural: a class with __call__ satisfies it
+class Callable {
+  new() {
+  }
+
+  __call__(x) {
+    x * 2
+  }
+}
+
+fn apply(f: Function, x) {
+  f(x)
+}
+
+# `Function` is structural, so it names no single tag: no shortcut.
+assert_eq(apply(Callable(), 21), 42)
+assert_eq(apply(fn (x) { type_of(x) }, 'v'), 'String')
+
+# a defaulted parameter takes the same route
+fn defaulted(s: String = 'fallback') {
+  s.size()
+}
+
+# a defaulted parameter reaches the check by the other route
+assert_eq(defaulted(), 8)
+assert_eq(defaulted('abcd'), 4)
+
+# a mut parameter carries no promise
+fn rebound(mut s: String) {
+  s = 42
+  type_of(s)
+}
+
+# a `mut` parameter's reassignment is not re-checked, so it promises nothing
+assert_eq(rebound('x'), 'Long')
+
+# an optional and a union name no single tag
+fn opt(s: String?) {
+  type_of(s)
+}
+
+fn uni(x: Long | Float) {
+  type_of(x)
+}
+
+assert_eq(opt(nil), 'Nil')
+assert_eq(uni(1.5), 'Float')
+
+# a captured parameter moves into a cell
+fn captured(s: String) {
+  let f = fn () {
+    s.size()
+  }
+  f()
+}
+
+# a captured parameter moves into a cell; the answer is the same either way
+assert_eq(captured('abcde'), 5)
+
+
+
+# --- and the cases the promise does hold for: the value is unchanged ---
+
+fn s_len(s: String) {
+  s.size()
+}
+
+fn s_chain(s: String) {
+  s.trim().upper().size()
+}
+
+fn n_math(n: Long) {
+  n * 2 + 1
+}
+
+fn f_math(f: Float) {
+  f * 2.0
+}
+
+fn b_not(b: Bool) {
+  !b
+}
+
+fn a_len(a: Array) {
+  a.size()
+}
+
+assert_eq(s_len('hello'), 5)
+assert_eq(s_chain('  ab  '), 2)
+assert_eq(n_math(20), 41)
+assert_eq(f_math(1.5), 3.0)
+assert_eq(b_not(true), false)
+assert_eq(a_len([1, 2, 3]), 3)
+
+# the entry check still refuses what the annotation does not name -- the
+# shortcut rides on that check, it does not replace it. A typed parameter
+# is an overload signature, so the refusal arrives as a DispatchError.
+assert_throws('DispatchError', fn () {
+  s_len(42)
+})
+assert_throws('DispatchError', fn () {
+  n_math('no')
+})
+
+# `String` names TAG_STRING alone, so a StringView is refused at the door
+assert_throws('DispatchError', fn () {
+  s_len('hello world'.slice(0, 5))
+})
+
+println('param tag OK')

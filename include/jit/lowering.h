@@ -4449,6 +4449,18 @@ struct Lowering {
                b.getInt64(line), b.getInt64(col)});
           break;
         }
+        case Op::ArgTag: {
+          // What the entry check just accepted, written back as a constant:
+          // every read below the prologue then sees a settled tag, which is
+          // what lets a chain of built-in calls on the parameter fold (the
+          // receiver switch in emit_size_probe and friends collapses to one
+          // arm). The payload is untouched, so this is free at run time.
+          auto v = load_slot(in.a);
+          b.CreateStore(
+              j.make_value(static_cast<uint8_t>(in.b), j.extract_data(v)),
+              slots[in.a]);
+          break;
+        }
         case Op::JumpIfFilled: {
           auto unf = b.CreateICmpEQ(j.extract_tag(load_slot(in.a)),
                                     b.getInt8(TAG_UNFILLED), "arg.unf");

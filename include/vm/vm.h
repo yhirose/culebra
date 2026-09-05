@@ -571,6 +571,13 @@ enum class Op : uint8_t {
                // expression, or the call site for a default-filled slot).
                // The eager form above is what a param after the first
                // default takes instead — user code has run by then.
+  ArgTag,      // regs[a]'s tag is settled: b is the tag the entry check just
+               // accepted for this parameter (§14), so every read below may
+               // take it as given. Emitted past the check AND past the gate
+               // that skips it, so both routes reach it. The executor reads
+               // tags off values and has nothing to do; the JIT substitutes
+               // the constant, which is what folds a chain of built-in calls
+               // on the parameter (`s.trim().size()`).
   JumpIfFilled,  // jump to b when regs[a] is a supplied argument; falls
                // through to the default expression when the prologue left
                // the slot TAG_UNFILLED.
@@ -7156,6 +7163,15 @@ class Compiler {
         else
           fc.emit(Op::ChkArg, pl.slot, ty, ctx, pl.abi_index);
         for (size_t ix : skip) fc.patch_to_here(ix);
+        // Past the check and past the gate that skips it: whichever route
+        // got here, the value satisfies the annotation. When the annotation
+        // names one primitive, that settles the tag for every read below.
+        // Two names are refused: a `mut` parameter, whose reassignment is
+        // not re-checked (§14), and `Function`, which a class instance with
+        // a `__call__` satisfies structurally — so it does not name one tag.
+        if (!pl.is_mut && pl.type != "Function")
+          if (auto tag = _culebra_primitive_type_tag(pl.type))
+            fc.emit(Op::ArgTag, pl.slot, *tag);
       }
       if (pl.sink) {
         // `fn (_, x)`: the argument's +1 is dropped rather than bound, so a
@@ -12372,7 +12388,8 @@ inline std::string dump(const Chunk& c) {
       "ClassObj",  "BindStatic",
       "MakeInst",  "ValueBox",  "FieldsInit", "FieldInit", "SelfMerge",
       "TraitReset", "TraitDefault", "TraitReg", "PosSnap", "ChkTypeAt",
-      "ChkArg",    "JumpIfFilled", "ArgsRest",   "KwRest",     "RecEnter",
+      "ChkArg",    "ArgTag",    "JumpIfFilled", "ArgsRest",   "KwRest",
+      "RecEnter",
       "RecLeave",
       "NsGet",
       "SetOpPos",  "BoundPos",  "Disp",       "Fmt",          "StrCat",
@@ -14708,6 +14725,16 @@ struct Exec {
           ++pc;
           break;
         }
+        case Op::ArgTag:
+          // The value already carries this tag — the check the emitter put
+          // above it is what says so. Only the JIT has something to gain
+          // (the constant it substitutes); here the assert is the whole
+          // instruction, and it is compiled out of a release build.
+          assert(static_cast<int8_t>(regs[in.a].tag) ==
+                     static_cast<int8_t>(in.b) &&
+                 "ArgTag past a check that did not settle the tag");
+          ++pc;
+          break;
         case Op::JumpIfFilled:
           pc = regs[in.a].tag == TAG_UNFILLED ? pc + 1
                                               : static_cast<size_t>(in.b);
