@@ -1,14 +1,15 @@
 # The part of a Core-IR front end that is the same for every language:
 # which function captures which variable (and how -- a local, a cell the
-# closure reaches through, or a capture of its own), and the handful of
-# IR shapes every lowering builds over and over. pl0_codegen.cul,
-# mini_culebra.cul and mini_js.cul each `import` this; what stays in each
-# is its grammar, its scoping rules and its emit rules.
+# closure reaches through, or a capture of its own), the scope stack a
+# name is looked up through, and the handful of IR shapes every lowering
+# builds over and over. pl0_codegen.cul, mini_culebra.cul and mini_js.cul
+# each `import` this; what stays in each is its grammar, its scoping rules
+# and its emit rules.
 #
 # Functions are numbered by the front end in the order it registers them
 # with `Frames.add`; the front end keeps its own per-function record beside
-# (parameters, body, whatever the language needs) and only the capture
-# tables live here.
+# (parameters, body, whatever the language needs) and only the capture and
+# scope tables live here.
 
 # --- Frames: free variables -> captures and cells -------------------------
 #
@@ -171,6 +172,102 @@ class Frames {
   # (owner, slot) of every variable `f` captures, in capture-index order
   captures(f) {
     self.free[f].values()
+  }
+}
+
+# --- Scopes: names -> what a function bound them to -------------------------
+#
+# The scope stack every lexically nested front end keeps beside Frames: per
+# function, the blocks currently open, each mapping a name to whatever the
+# front end bound it to -- a slot, or a slot with what else the language
+# records about the binding. Indices are Frames' (one `add` here for every
+# `Frames.add`), and the chain `lookup` climbs is Frames' parent. What a
+# second declaration of a name in one block means -- an error, a fresh
+# binding hiding the first, the same binding again -- is the language's:
+# `here` answers whether there is one, and the front end decides.
+
+class Scopes {
+  new(frames) {
+    self.frames = frames
+    self.stack = []  # per func: [{map: {name: value}, bound: [value...]}], innermost last
+  }
+
+  add() {
+    self.stack.push([])
+    self.stack.size() - 1
+  }
+  truncate(n) {
+    while self.stack.size() > n {
+      self.stack.pop()
+    }
+  }
+  reset(f) {
+    self.stack[f] = []
+  }
+
+  push(f) {
+    self.stack[f].push({map: {}, bound: []})
+  }
+  pop(f) {
+    self.stack[f].pop()
+  }
+  depth(f) {
+    self.stack[f].size()
+  }
+
+  # binds `name` in f's innermost scope, or the one at depth `i`
+  bind(f, name, value) {
+    self.bind_at(f, self.depth(f) - 1, name, value)
+  }
+  bind_at(f, i, name, value) {
+    let sc = self.stack[f][i]
+    if !sc.map.has(name) {
+      sc.bound.push(value)
+    }
+    sc.map[name] = value
+  }
+
+  # what f's innermost scope binds `name` to, or nil
+  here(f, name) {
+    self.at(f, self.depth(f) - 1, name)
+  }
+  at(f, i, name) {
+    let sc = self.stack[f][i]
+    cond {
+      sc.map.has(name) => sc.map[name],
+      _ => nil,
+    }
+  }
+  # what any of f's own open scopes binds `name` to, innermost first, or nil
+  own(f, name) {
+    mut i = self.depth(f) - 1
+    while i >= 0 {
+      let v = self.at(f, i, name)
+      if v != nil {
+        return v
+      }
+      i -= 1
+    }
+    nil
+  }
+  # (owner, value) of `name` as seen from f: f's own scopes, then each
+  # enclosing function's; nil when no function binds it
+  lookup(f, name) {
+    mut h = f
+    while h != nil {
+      let v = self.own(h, name)
+      if v != nil {
+        return (h, v)
+      }
+      h = self.frames.parent[h]
+    }
+    nil
+  }
+  # what f's innermost scope bound, one entry per name in declaration order
+  # (a rebinding of a name keeps its first entry)
+  bound(f) {
+    let sc = self.stack[f][self.depth(f) - 1]
+    sc.bound
   }
 }
 
@@ -450,4 +547,4 @@ class Emitter {
   }
 }
 
-export {Frames, Emitter, ORIGIN, pos}
+export {Frames, Scopes, Emitter, ORIGIN, pos}

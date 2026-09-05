@@ -5646,9 +5646,10 @@ mut bare_init = {}      # "f/slot" bare bindings still awaiting their first writ
 mut uncaught_slot = 0   # main's local for the value an uncaught throw carries
 mut pat_mut = false     # whether a `let mut <pattern>` is being scanned
 mut in_prelude = false
-mut ret_specs = {}    # func -> parsed return annotation
-mut scope_stack = []  # per func: [{map: {name: (slot, is_mut)}}...]
-mut loop_depth = {}   # func -> depth (scan-time)
+mut ret_specs = {}   # func -> parsed return annotation
+mut scopes = nil     # Scopes: per func, its open blocks, name -> (slot, is_mut)
+mut cursors = []     # per func, per open block: [stmts being walked, index]
+mut loop_depth = {}  # func -> depth (scan-time)
 
 # The culebra type-annotation names, as the typeof vocabulary the emitted
 # checks compare against. Tuple is special-cased (a marked object).
@@ -5847,9 +5848,10 @@ fn new_func(parent, name, stmts, body_key) {
     is_named: name != 'main' && !name.contains('.') && !name.contains('@'),
   })
   frames.add(parent)
+  scopes.add()
+  cursors.push([])
   nslots.push(0)
   nscratch.push(0)
-  scope_stack.push([])
   loop_depth[f] = 0
   f
 }
@@ -6044,10 +6046,9 @@ fn forward_declare(g, name) {
 # The later declaration of `name` in one of h's open scopes, if any,
 # given its slot now.
 fn forward_declare_in(h, name) {
-  let scopes = scope_stack[h]
-  mut i = scopes.size() - 1
+  mut i = scopes.depth(h) - 1
   while i >= 0 {
-    let cur = scopes[i].cur
+    let cur = cursors[h][i]
     if cur[0] != nil {
       # the statement being walked counts: a closure inside a let's own
       # initializer names the binding that let declares
@@ -6057,7 +6058,7 @@ fn forward_declare_in(h, name) {
         if d != nil {
           let slot = nslots[h]
           nslots[h] = slot + 1
-          scopes[i].map[name] = (slot, d.is_mut)
+          scopes.bind_at(h, i, name, (slot, d.is_mut))
           predeclared["{h}/{i}/{name}"] = true
           # until the declaration runs the binding holds the unbound mark,
           # which a read through the capture reports as culebra's NameError
@@ -6073,10 +6074,9 @@ fn forward_declare_in(h, name) {
 }
 
 fn declare_var(f, name, is_mut, at) {
-  let scopes = scope_stack[f]
-  let top = scopes[scopes.size() - 1]
-  if top.map.has(name) {
-    let pk = "{f}/{scopes.size() - 1}/{name}"
+  let before = scopes.here(f, name)
+  if before != nil {
+    let pk = "{f}/{scopes.depth(f) - 1}/{name}"
     if predeclared.has(pk) {
       # a forward reference already took the slot
       predeclared.remove(pk)
@@ -6084,8 +6084,8 @@ fn declare_var(f, name, is_mut, at) {
     # declared again in the same list: culebra rebinds the same binding
     # (a closure built before the redeclaration follows it), so the slot
     # is reused and only the mutability is updated
-    let (slot, _) = top.map[name]
-    top.map[name] = (slot, is_mut)
+    let (slot, _) = before
+    scopes.bind(f, name, (slot, is_mut))
     resolved[pkey(at)] = {kind: 'var', owner: f, slot: slot, is_mut: is_mut}
     return slot
   }
@@ -6114,7 +6114,7 @@ fn declare_var(f, name, is_mut, at) {
   }
   let slot = nslots[f]
   nslots[f] = slot + 1
-  top.map[name] = (slot, is_mut)
+  scopes.bind(f, name, (slot, is_mut))
   resolved[pkey(at)] = {kind: 'var', owner: f, slot: slot, is_mut: is_mut}
   slot
 }
@@ -6225,36 +6225,15 @@ fn new_scratch(f, at) {
 fn resolve(f, name) {
   mut h = f
   while h != nil {
-    if classes.has("{h}/{name}") {
-      # the class binding is also a plain variable (the class object); the
-      # kind lets a call site construct directly
-      let scopes2 = scope_stack[h]
-      mut j = scopes2.size() - 1
-      mut slot = nil
-      mut going = true
-      while going {
-        cond {
-          j < 0 => going = false,
-          scopes2[j].map.has(name) => {
-            let (sl, _) = scopes2[j].map[name]
-            slot = sl
-            going = false
-          },
-          _ => j = j - 1,
-        }
-      }
-      if slot != nil {
+    let bound = scopes.own(h, name)
+    if bound != nil {
+      let (slot, is_mut) = bound
+      if classes.has("{h}/{name}") {
+        # the class binding is also a plain variable (the class object); the
+        # kind lets a call site construct directly
         return {kind: 'class', owner: h, slot: slot, cls: "{h}/{name}"}
       }
-    }
-    let scopes = scope_stack[h]
-    mut i = scopes.size() - 1
-    while i >= 0 {
-      if scopes[i].map.has(name) {
-        let (slot, is_mut) = scopes[i].map[name]
-        return {kind: 'var', owner: h, slot: slot, is_mut: is_mut}
-      }
-      i = i - 1
+      return {kind: 'var', owner: h, slot: slot, is_mut: is_mut}
     }
     if funcs[h].named.has(name) {
       return {kind: 'fn', funcs: funcs[h].named[name]}
@@ -6290,18 +6269,19 @@ fn note_use(node, f, r) {
 # recursion resolves; everything else binds in textual order.
 
 fn enter_scope(f) {
-  scope_stack[f].push({map: {}, cur: [nil, 0]})
+  scopes.push(f)
+  cursors[f].push([nil, 0])
 }
 
 # The statement list a scope is walking, and how far it got: what lets a
 # nested function's free name find a declaration that comes later in an
 # enclosing scope (culebra binds those at call time).
 fn scope_cursor(f) {
-  let scopes = scope_stack[f]
-  scopes[scopes.size() - 1].cur
+  cursors[f][cursors[f].size() - 1]
 }
 fn leave_scope(f) {
-  scope_stack[f].pop()
+  scopes.pop(f)
+  cursors[f].pop()
 }
 
 # A fn_decl's pieces: [deco..., ident, fparams, block]. Decorated functions
@@ -6645,7 +6625,7 @@ fn scan_body_stmts(f, stmts, blk_key) {
       if d.decos.size() > 0 {
         # a decorated fn is a value binding; handled in order below
       } else {
-        if scope_stack[f][scope_stack[f].size() - 1].map.has(d.id.token) {
+        if scopes.here(f, d.id.token) != nil {
           fail(d.id, "'{d.id.token}' is already defined")
         }
         let is_gen = has_yield_stmts(d.blk)
@@ -6905,8 +6885,7 @@ fn walk_method(g, param_nodes) {
 }
 
 fn declare_self(g) {
-  let scopes = scope_stack[g]
-  scopes[scopes.size() - 1].map['self'] = (nslots[g], false)
+  scopes.bind(g, 'self', (nslots[g], false))
   resolved["self/{g}"] = {kind: 'var', owner: g, slot: nslots[g], is_mut: false}
   nslots[g] = nslots[g] + 1
   funcs[g].params.push('self')
@@ -7278,8 +7257,7 @@ fn hoist_bare(f, stmts) {
           later = true
         }
       }
-      let scopes = scope_stack[f]
-      if !later && !scopes[scopes.size() - 1].map.has(lhs.token) {
+      if !later && scopes.here(f, lhs.token) == nil {
         let slot = declare_var(f, lhs.token, false, synth('ident', [], lhs))
         bare_init["{f}/{slot}"] = true
       }
@@ -11407,6 +11385,8 @@ for path in cli {
   # no per-function table -- may survive from one compile into the next.
   funcs = []
   frames = front.Frames.new()
+  scopes = front.Scopes.new(frames)
+  cursors = []
   nslots = []
   nscratch = []
   closure_of = {}
@@ -11431,7 +11411,6 @@ for path in cli {
   uncaught_slot = 0
   pat_mut = false
   in_prelude = false
-  scope_stack = []
   loop_depth = {}
   walk_cursor = {}
   classes = {}

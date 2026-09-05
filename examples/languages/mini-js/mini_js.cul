@@ -2536,7 +2536,6 @@ fn synth(name, nodes, at) {
 
 mut funcs = []           # {parent, name, params, stmts, body_expr, is_prelude, is_arrow, ...}
 mut nslots = []          # per func: named local slots
-mut scope_stack = []     # per func: [{map: {name: slot}, slots: [slot...]}]
 mut closure_of = {}      # pkey of a function node -> func index
 mut resolved = {}        # pkey of an ident -> {kind: 'var', owner, slot} | {kind: 'global', name}
 mut block_slots = {}     # pkey of a block -> the slots it declares
@@ -2553,9 +2552,11 @@ mut pending_labels = []  # per func (emit time): label names seen, not yet
 mut classes = {}    # pkey of a class node -> {home, derived, name, ctor, fields, members}
 mut for_close = {}  # pkey of a for-of -> {func: the closer, slot: its iterator binding}
 
-# per func, what it captures and which of its slots are cells (front.cul);
-# the Emitter is over the program being compiled
+# per func, what it captures and which of its slots are cells, and the
+# scopes its names bind in (front.cul); the Emitter is over the program
+# being compiled
 let frames = front.Frames.new()
+let scopes = front.Scopes.new(frames)
 mut ir = nil
 
 # Prelude names that are VM intrinsics, with their arities.
@@ -2606,8 +2607,8 @@ fn new_func(parent, name, stmts, body_expr, is_arrow) {
     var_names: [],
   })
   frames.add(parent)
+  scopes.add()
   nslots.push(0)
-  scope_stack.push([])
   loop_ctx.push([])
   pending_labels.push([])
   # every function reaches the global table through main's cell
@@ -2620,34 +2621,27 @@ fn new_func(parent, name, stmts, body_expr, is_arrow) {
 # --- Pass A: bind ---------------------------------------------------------------
 
 fn enter_scope(f) {
-  scope_stack[f].push({map: {}, slots: []})
+  scopes.push(f)
 }
 # Leave the scope, recording the slots it declared under the node that owns
 # it -- what the emitter refreshes per entry.
 fn close_scope(f, node) {
-  let scopes = scope_stack[f]
-  block_slots[pkey(node)] = scopes[scopes.size() - 1].slots
+  block_slots[pkey(node)] = scopes.bound(f)
   leave_scope(f)
 }
 
 fn leave_scope(f) {
-  scope_stack[f].pop()
+  scopes.pop(f)
 }
 
+# declared again in the same block: the same binding, its slot reused
 fn declare_var(f, name, at) {
-  let scopes = scope_stack[f]
-  let top = scopes[scopes.size() - 1]
-  if top.map.has(name) {
-    let slot = top.map[name]
-    if at != nil {
-      resolved[pkey(at)] = {kind: 'var', owner: f, slot: slot}
-    }
-    return slot
+  mut slot = scopes.here(f, name)
+  if slot == nil {
+    slot = nslots[f]
+    nslots[f] = slot + 1
+    scopes.bind(f, name, slot)
   }
-  let slot = nslots[f]
-  nslots[f] = slot + 1
-  top.map[name] = slot
-  top.slots.push(slot)
   if at != nil {
     resolved[pkey(at)] = {kind: 'var', owner: f, slot: slot}
   }
@@ -2656,24 +2650,14 @@ fn declare_var(f, name, at) {
 
 # `var` binds at the function's outermost scope wherever it appears
 fn declare_fn_var(f, name, at) {
-  let scopes = scope_stack[f]
   # already visible (a parameter, or declared before)? keep that slot
-  mut i = scopes.size() - 1
-  while i >= 0 {
-    if scopes[i].map.has(name) {
-      let slot = scopes[i].map[name]
-      if at != nil {
-        resolved[pkey(at)] = {kind: 'var', owner: f, slot: slot}
-      }
-      return slot
-    }
-    i = i - 1
+  mut slot = scopes.own(f, name)
+  if slot == nil {
+    slot = nslots[f]
+    nslots[f] = slot + 1
+    scopes.bind_at(f, 0, name, slot)
+    funcs[f].var_names.push(slot)
   }
-  let slot = nslots[f]
-  nslots[f] = slot + 1
-  scopes[0].map[name] = slot
-  scopes[0].slots.push(slot)
-  funcs[f].var_names.push(slot)
   if at != nil {
     resolved[pkey(at)] = {kind: 'var', owner: f, slot: slot}
   }
@@ -2684,17 +2668,10 @@ fn resolve(f, name) {
   if name == '__G' {
     return {kind: 'var', owner: 0, slot: g_slot}
   }
-  mut h = f
-  while h != nil {
-    let scopes = scope_stack[h]
-    mut i = scopes.size() - 1
-    while i >= 0 {
-      if scopes[i].map.has(name) {
-        return {kind: 'var', owner: h, slot: scopes[i].map[name]}
-      }
-      i = i - 1
-    }
-    h = funcs[h].parent
+  let found = scopes.lookup(f, name)
+  if found != nil {
+    let (h, slot) = found
+    return {kind: 'var', owner: h, slot: slot}
   }
   if in_prelude && prelude_bound.has(name) {
     return {kind: 'preconst', key: prelude_bound[name]}
@@ -5847,10 +5824,10 @@ fn build_prelude(prelude_tree) {
 fn reset_main(stmts) {
   in_prelude = false
   frames.truncate(prelude_end)
+  scopes.truncate(prelude_end)
   while funcs.size() > prelude_end {
     funcs.pop()
     nslots.pop()
-    scope_stack.pop()
     loop_ctx.pop()
     pending_labels.pop()
   }
@@ -5871,7 +5848,7 @@ fn reset_main(stmts) {
     var_names: [],
   }
   frames.reset(0, nil)
-  scope_stack[0] = []
+  scopes.reset(0)
   loop_ctx[0] = []
   pending_labels[0] = []
   nslots[0] = 0
