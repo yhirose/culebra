@@ -4634,6 +4634,38 @@ struct JIT {
     return merge.finish(joinBB).consume();
   }
 
+  // The tag the compiler promised a declared field's read, verified on the
+  // borrowed view before anything is made of it. The contract holds for an
+  // instance of the declared class, so the compare is never taken; what it
+  // buys is that a receiver wearing the class's name without its writes
+  // cannot make the payload be read as the wrong kind of value. Inline
+  // compare, cold `[[noreturn]]` reject, so the fast path is one predictable
+  // branch — and the view comes back with a *constant* tag, which is the
+  // whole point: the retain the read would owe, the Function arm it would
+  // branch on, the release after it, and the tag tests in whatever consumes
+  // it all fold away at emission.
+  llvm::Value* emit_field_type_guard(llvm::Value* view, int8_t want,
+                                     const std::string& key) {
+    auto i64Ty = builder_.getInt64Ty();
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto* fn = builder_.GetInsertBlock()->getParent();
+    auto badBB = llvm::BasicBlock::Create(ctx_, "field.type.bad", fn);
+    auto okBB = llvm::BasicBlock::Create(ctx_, "field.type.ok", fn);
+    llvm::MDBuilder mdb(ctx_);
+    builder_.CreateCondBr(
+        builder_.CreateICmpEQ(extract_tag(view), builder_.getInt8(want)), okBB,
+        badBB, mdb.createBranchWeights(1u << 20, 1));
+    builder_.SetInsertPoint(badBB);
+    emit_call(
+        module_->getOrInsertFunction(rt::field_type_reject,
+                                     builder_.getVoidTy(),
+                                     builder_.getInt8Ty(), ptrTy, i64Ty, i64Ty),
+        {builder_.getInt8(want), get_or_create_global_str(key, ".vm.propname"),
+         current_line_val(), current_column_val()});
+    builder_.CreateUnreachable();
+    builder_.SetInsertPoint(okBB);
+    return make_value(static_cast<uint8_t>(want), extract_data(view));
+  }
 
   // Get a property from an object (TAG_OBJECT required).
   //

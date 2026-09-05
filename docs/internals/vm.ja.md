@@ -1003,11 +1003,12 @@ namespace closureのadapterが届いたであろうhelperへ1つのdispatch
 #### 宣言fieldの型と、読みがそれをどう使うか
 
 クラスの宣言fieldの型は書き込みのたびに検査される（`docs/language.md`
-§13）ので、型は推測ではなく答えである。`Op::PropVal`はそれを`d`で運ぶ:
+§10）ので、型は推測ではなく答えである。`Op::PropVal`はそれを`d`で運ぶ:
 受け手が「宣言クラスがそのfieldをスカラ型で宣言している名前」のとき、
-コンパイラがこれを埋める — 現在はパラメータで、そのクラスは入口の検査が
-既に確かめている（`Compiler::declared_read_tag`、
-`culebra::class_field_types`）。
+コンパイラがこれを埋める — クラスを名指す注釈を持つパラメータかローカル、
+そのクラス自身のメンバ内の`self`、あるいはクラス型fieldを辿った次の段で
+ある（`Compiler::declared_read_tag`、`culebra::class_field_types`、
+`culebra::class_field_classes`）。
 
 loweringがそれで何をするかが要点である。読みはslotのペイロードを
 **定数**のtagとともに作るので、tag付きの値が負っていたものが全て

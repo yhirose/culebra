@@ -1018,36 +1018,13 @@ diagnostics.
 #### A declared field's type, and what a read does with it
 
 A class's declared field types are checked on every write
-(`docs/language.md` §13), so the type is an answer rather than a guess.
+(`docs/language.md` §10), so the type is an answer rather than a guess.
 `Op::PropVal` carries it in `d`: the compiler fills it when the receiver
 is a name whose declared class declares that field with a scalar type —
-today a parameter, whose class the entry check has already verified
-(`Compiler::declared_read_tag`, `culebra::class_field_types`).
-
-What the lowering does with it is the whole point. The read produces the
-slot's payload with the tag as a *constant*, so everything a tagged value
-would have owed folds away at emission: the retain the read would have
-made, the release at the end of the statement, and the tag tests in
-whatever consumes it — `acc += p.x` becomes an `fadd` on a double phi.
-Two reads and a multiply go from 8.2 to 3.6 ns, one read from 5.8 to 2.0.
-
-The entry check tests the class a value *names*, and an Object may name
-any class, so the emitted read compares the tag it was promised against
-the one it got and calls a cold `[[noreturn]]` reject when they differ —
-one predictable branch, 0.08 ns of the 2.0. The executor asks the same
-question of the same instruction, so a forged receiver raises the same
-`TypeError` on both lanes; `tests/test_typed_fields.cul` pins that,
-along with `remove` refusing a declared field (a field that can vanish
-would be no contract at all).
-
-#### A declared field's type, and what a read does with it
-
-A class's declared field types are checked on every write
-(`docs/language.md` §13), so the type is an answer rather than a guess.
-`Op::PropVal` carries it in `d`: the compiler fills it when the receiver
-is a name whose declared class declares that field with a scalar type —
-today a parameter, whose class the entry check has already verified
-(`Compiler::declared_read_tag`, `culebra::class_field_types`).
+a parameter or a local whose annotation names the class, `self` inside
+that class's own members, or the next step of a chain through a
+class-typed field (`Compiler::declared_read_tag`,
+`culebra::class_field_types`, `culebra::class_field_classes`).
 
 What the lowering does with it is the whole point. The read produces the
 slot's payload with the tag as a *constant*, so everything a tagged value
