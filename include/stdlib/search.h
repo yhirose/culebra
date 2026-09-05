@@ -26,6 +26,7 @@
 #include <vector>
 
 #include <base/shared.h>  // CulebraError
+#include <stdlib/search_splitter.h>  // ISplitter / SplitEmit, the third-party contract
 
 #if !defined(CULEBRA_RT_SEARCH_WEAK)
 #include <searchlib.h>
@@ -77,12 +78,11 @@ struct Analyzer {
   // so making the default anything else would charge every program for it.
   std::function<std::string(std::string_view)> normalizer;
 
-  // Cuts text into terms, each with the byte range it came from. Ranges must
-  // not overlap and must increase; the emitted term need not be the bytes it
-  // points at (a lemma is fine). Empty keeps the built-in splitting into runs
-  // of Unicode letters.
-  using Emit = std::function<void(std::string_view term, size_t position,
-                                  size_t length)>;
+  // Cuts text into terms, each with the byte range it came from — the same
+  // contract ISplitter states, which is what lets a native splitter be handed
+  // in where a closure goes. Empty keeps the built-in splitting into runs of
+  // Unicode letters.
+  using Emit = SplitEmit;
   std::function<void(std::string_view text, const Emit &emit)> splitter;
 
   // Applied in order after the normalizer. A filter rewrites its term in

@@ -181,6 +181,15 @@ check-pe-exports-gen:
 check-header-naming:
     tools/checks/check_header_naming.sh
 
+# stdlib/search_splitter.h is what a library outside this repo includes to
+# implement a splitter for Search, so its value is that it needs nothing else.
+# Every ordinary build has the rest of the tree on the include path and would
+# never notice that stopping being true — this compiles it alone.
+[group("test")]
+[doc("Verify stdlib/search_splitter.h compiles and runs on its own")]
+check-search-splitter:
+    tools/checks/check_search_splitter_standalone.sh
+
 # include/ is ten directories and the directory is the layer, so an include
 # either goes down the stack or is one of the three recorded inversions. This
 # is the check the directories were for: while the tree was flat, which layer
@@ -211,7 +220,7 @@ check-docs-cpp:
 # the workflow-coverage ratchet. Cheap enough to gate both test recipes:
 # well under a second once the grammar-blob tool is ccache-warm.
 [private]
-check-generated: check-grammar-sync check-preambles check-blob check-site-version check-difftest-coverage check-release-coverage check-spec-examples check-api-coverage check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-docs-cpp-includes check-header-naming check-layering check-codegen-enums
+check-generated: check-grammar-sync check-preambles check-blob check-site-version check-difftest-coverage check-release-coverage check-spec-examples check-api-coverage check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-docs-cpp-includes check-header-naming check-search-splitter check-layering check-codegen-enums
 
 # Such a build still runs programs — everything below the LLVM lowering
 # (rt.h, vm.h) is LLVM-free, so the bytecode VM's executor is intact; what it
