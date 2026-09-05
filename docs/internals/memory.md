@@ -117,6 +117,18 @@ object was a measurable share of a field-heavy loop. Every refcounted
 type keeps its count at offset 0, the same invariant the collector reads
 through, so the question needs no dispatch on the tag.
 
+The lowering makes the first of those answers in IR
+(`emit_value_retain`): behind the tag test it already hoisted, a retain
+is a load and a store on that offset-0 count rather than a call whose
+whole body would be that load and that store, and a tag the emitter
+knows folds it away entirely. A release keeps its call. Inlining its
+fast path too — decrement while the count is above one, the helper only
+at zero — needs a third block at every release site, and release sites
+are dense: one test file's JIT compile time grew by two thirds, which
+every `--jit` start pays, and what it bought was 5 ns on a boxed
+operator. The retain's arm needs no extra block and does pay for
+itself; two field reads and an add went from 22.2 to 19.2 ns.
+
 ## 3. The value model
 
 A value is 16 bytes, `JitValue { int64_t tag; int64_t data; }`.

@@ -200,7 +200,12 @@ VMが必要とするヒープオブジェクトはランタイムの既存のも
 - `Shape`付き`JitObject` — V8スタイルのhidden classと固定slot、
   プロパティサイトのインラインキャッシュ（`JitPropIC`）、非String
   キー用のany-keyサイドマップ。インスタンスは自分のクラスオブジェクト
-  への`+1`を持つ（`JitObject::cls`）。
+  への`+1`を持つ（`JitObject::cls`）。読みサイトのICはヒットの2つの形を
+  インラインで答える: 自分のslotと、クラスインスタンスでのメソッド読み
+  （データは自分のslot、メソッドは`proto`の先の共有metaにある）で使う
+  protoのslot。後者は（受け手のshape、protoのshape）の対としてランタイム
+  helperのmiss経路が埋めていたが、IRにこの腕が入るまでは`obj.f()`が毎回
+  helperに達していた。
 - `JitArray`、`JitSet`、タプル、`JitTensor`。
 
 オブジェクトはper-`Runtime`のスラブアロケータ（`rt_slab.h`）から
@@ -987,8 +992,13 @@ namespace closureのadapterが届いたであろうhelperへ1つのdispatch
 ある。loweringはFloat系（`sqrt`、`sin`、`exp`、…、`abs`、`atan2`）を
 数値タグの検査の背後にinlineする — LLVM intrinsicがあればそれを使い、
 これはhelperが呼ぶlibmの当の呼び出しに落ちる — ので、タグが既知なら
-呼び出しは1命令に畳まれる。それ以外の綴り（`Math?.f`、`let m = Math`、
-値としての`Math.f`、keyword）は汎用経路とその診断のままである。
+呼び出しは1命令に畳まれる。`min`、`max`、`clamp`、`f32`にも腕がある
+（両方Longと、いずれかFloat）: helperの規則（`reduce_min_max`、`clamp`、
+`_culebra_f32_round`）を比較とselectで綴ったもので、
+`tests/test_math_inline_arms.cul`が、emitterにタグの見えないオペランドを
+通してhelperとビット単位で一致することを固定する。それ以外の綴り
+（`Math?.f`、`let m = Math`、値としての`Math.f`、keyword）は汎用経路と
+その診断のままである。
 
 ### 5.5 例外、`defer`、unwind
 

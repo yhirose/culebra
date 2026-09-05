@@ -2099,22 +2099,35 @@ struct JIT {
               {tag, data});
   }
 
-  // Emit IR to retain a Value (no-op for non-refcounted tags; done in runtime).
+  // Emit IR to retain a Value: a no-op for a non-refcounted tag, and one
+  // increment for every other. Every refcounted payload keeps its count at
+  // offset 0 (the invariant the collector reads through too), so behind the
+  // hoisted tag test the increment is a load and a store rather than a call
+  // into the runtime whose whole body would be that load and store. The
+  // test stays a branch: a branchless form (select the payload or a sink
+  // word, then read-modify-write unconditionally) was measured, and every
+  // scalar retain then serialised on the sink through the store-forwarding
+  // chain — a one-line call went from 10 to 28 ns. A constant tag settles
+  // the whole thing at emission.
   void emit_value_retain(llvm::Value* val) {
     auto tag = extract_tag(val);
     auto data = extract_data(val);
-    if (llvm::isa<llvm::ConstantInt>(tag)) {
-      emit_refcount_call(rt::value_retain, tag, data);
-      return;
-    }
-    // The same hoisted tag test emit_value_release makes, for the same
-    // reason: most of what a call site retains is a Long or a Float.
+    if (auto* k = llvm::dyn_cast<llvm::ConstantInt>(tag))
+      if (!_is_refcounted_value_tag(static_cast<int8_t>(k->getZExtValue())))
+        return;
+    auto i64Ty = builder_.getInt64Ty();
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto live = builder_.CreateAnd(
+        emit_tag_is_refcounted(tag),
+        builder_.CreateICmpNE(data, builder_.getInt64(0)), "rc.live");
     auto* fn = builder_.GetInsertBlock()->getParent();
     auto ownedBB = llvm::BasicBlock::Create(ctx_, "rc.retain", fn);
     auto contBB = llvm::BasicBlock::Create(ctx_, "rc.cont", fn);
-    builder_.CreateCondBr(emit_tag_is_refcounted(tag), ownedBB, contBB);
+    builder_.CreateCondBr(live, ownedBB, contBB);
     builder_.SetInsertPoint(ownedBB);
-    emit_refcount_call(rt::value_retain, tag, data);
+    auto p = builder_.CreateIntToPtr(data, ptrTy, "rc.p");
+    auto count = builder_.CreateLoad(i64Ty, p, "rc.count");
+    builder_.CreateStore(builder_.CreateAdd(count, builder_.getInt64(1)), p);
     close_block(contBB);
     builder_.SetInsertPoint(contBB);
   }
@@ -3513,6 +3526,80 @@ struct JIT {
             llvm::Intrinsic::fabs, builder_.CreateBitCast(data[0], doubleTy))));
         break;
       }
+      case NsFn::MathMin:
+      case NsFn::MathMax: {
+        // reduce_min_max's rule for two operands: both Long stays Long, any
+        // Float widens both; the second wins only by a strict compare, so an
+        // unordered (NaN) second keeps the first, as the helper's does.
+        if (args.size() != 2) {
+          builder_.CreateBr(slowBB);
+          break;
+        }
+        bool less = id == NsFn::MathMin;
+        auto intBB = llvm::BasicBlock::Create(ctx_, "ns.int", fn);
+        auto checkBB = llvm::BasicBlock::Create(ctx_, "ns.check", fn);
+        auto floatBB = llvm::BasicBlock::Create(ctx_, "ns.float", fn);
+        builder_.CreateCondBr(builder_.CreateAnd(is_long(0), is_long(1)),
+                              intBB, checkBB);
+        builder_.SetInsertPoint(intBB);
+        auto pickL = less ? builder_.CreateICmpSLT(data[1], data[0])
+                          : builder_.CreateICmpSGT(data[1], data[0]);
+        done(make_long(builder_.CreateSelect(pickL, data[1], data[0])));
+        builder_.SetInsertPoint(checkBB);
+        builder_.CreateCondBr(builder_.CreateAnd(is_num(0), is_num(1)),
+                              floatBB, slowBB);
+        builder_.SetInsertPoint(floatBB);
+        auto a = as_double(0);
+        auto b = as_double(1);
+        auto pickF = less ? builder_.CreateFCmpOLT(b, a)
+                          : builder_.CreateFCmpOGT(b, a);
+        done(make_float(builder_.CreateSelect(pickF, b, a)));
+        break;
+      }
+      case NsFn::MathClamp: {
+        // math::clamp: all Long stays Long, any Float widens all three;
+        // `x < lo ? lo : (x > hi ? hi : x)` in either domain.
+        auto intBB = llvm::BasicBlock::Create(ctx_, "ns.int", fn);
+        auto checkBB = llvm::BasicBlock::Create(ctx_, "ns.check", fn);
+        auto floatBB = llvm::BasicBlock::Create(ctx_, "ns.float", fn);
+        builder_.CreateCondBr(
+            builder_.CreateAnd(builder_.CreateAnd(is_long(0), is_long(1)),
+                               is_long(2)),
+            intBB, checkBB);
+        builder_.SetInsertPoint(intBB);
+        done(make_long(builder_.CreateSelect(
+            builder_.CreateICmpSLT(data[0], data[1]), data[1],
+            builder_.CreateSelect(builder_.CreateICmpSGT(data[0], data[2]),
+                                  data[2], data[0]))));
+        builder_.SetInsertPoint(checkBB);
+        builder_.CreateCondBr(
+            builder_.CreateAnd(builder_.CreateAnd(is_num(0), is_num(1)),
+                               is_num(2)),
+            floatBB, slowBB);
+        builder_.SetInsertPoint(floatBB);
+        auto x = as_double(0);
+        auto lo = as_double(1);
+        auto hi = as_double(2);
+        done(make_float(builder_.CreateSelect(
+            builder_.CreateFCmpOLT(x, lo), lo,
+            builder_.CreateSelect(builder_.CreateFCmpOGT(x, hi), hi, x))));
+        break;
+      }
+      case NsFn::MathF32: {
+        // A Float rounds through IEEE single: fptrunc's round-to-nearest is
+        // the very rule _culebra_f32_round spells out by hand (up to the
+        // rounding midpoint float's max, beyond it infinity, NaN unchanged).
+        // A Long takes the helper.
+        auto floatBB = llvm::BasicBlock::Create(ctx_, "ns.float", fn);
+        builder_.CreateCondBr(
+            builder_.CreateICmpEQ(tag[0], builder_.getInt8(TAG_FLOAT)), floatBB,
+            slowBB);
+        builder_.SetInsertPoint(floatBB);
+        auto d = builder_.CreateBitCast(data[0], doubleTy);
+        done(make_float(builder_.CreateFPExt(
+            builder_.CreateFPTrunc(d, builder_.getFloatTy()), doubleTy)));
+        break;
+      }
       default:
         builder_.CreateBr(slowBB);
         break;
@@ -4627,6 +4714,8 @@ struct JIT {
 
     auto objBB = llvm::BasicBlock::Create(ctx_, "prop.obj", fn);
     auto fastBB = llvm::BasicBlock::Create(ctx_, "prop.fast", fn);
+    auto protoBB = llvm::BasicBlock::Create(ctx_, "prop.proto", fn);
+    auto protoFastBB = llvm::BasicBlock::Create(ctx_, "prop.proto.fast", fn);
     auto slowBB = llvm::BasicBlock::Create(ctx_, "prop.slow", fn);
     auto mergeBB = llvm::BasicBlock::Create(ctx_, "prop.merge", fn);
 
@@ -4646,29 +4735,90 @@ struct JIT {
     auto icShape = builder_.CreateLoad(ptrTy, icShapePtr, "ic.shape");
     auto shapeMatch =
         builder_.CreateICmpEQ(objShape, icShape, "shape.match");
-    builder_.CreateCondBr(shapeMatch, fastBB, slowBB);
+    builder_.CreateCondBr(shapeMatch, fastBB, protoBB);
+
+    // `slots[offset].value` of `holder`, the tagged pair the merge takes.
+    auto load_entry = [&](llvm::Value* holder, llvm::Value* offset,
+                          const char* what) {
+      auto slotsFieldPtr = builder_.CreateConstInBoundsGEP1_64(
+          i8Ty, holder, offsetof(JitObject, slots), "slots.vec.p");
+      auto slotsData =
+          builder_.CreateLoad(ptrTy, slotsFieldPtr, "slots.data");
+      auto byteOffset = builder_.CreateMul(
+          offset, llvm::ConstantInt::get(i64Ty, sizeof(JitObjectEntry)),
+          "entry.byte.off");
+      auto entryPtr =
+          builder_.CreateInBoundsGEP(i8Ty, slotsData, byteOffset, "entry.p");
+      auto t = builder_.CreateLoad(i8Ty, entryPtr, std::string(what) + ".tag");
+      auto entryDataPtr = builder_.CreateConstInBoundsGEP1_64(
+          i8Ty, entryPtr, offsetof(JitValue, data), "entry.data.p");
+      auto d = builder_.CreateLoad(i64Ty, entryDataPtr,
+                                   std::string(what) + ".data");
+      return std::pair{t, d};
+    };
 
     builder_.SetInsertPoint(fastBB);
     auto icOffsetPtr =
         builder_.CreateStructGEP(icTy, icGlobal, 1, "ic.off.p");
     auto icOffset = builder_.CreateLoad(i64Ty, icOffsetPtr, "ic.off");
-
-    auto slotsFieldPtr = builder_.CreateConstInBoundsGEP1_64(
-        i8Ty, objPtr, offsetof(JitObject, slots), "slots.vec.p");
-    auto slotsData = builder_.CreateLoad(ptrTy, slotsFieldPtr, "slots.data");
-
-    auto byteOffset = builder_.CreateMul(
-        icOffset, llvm::ConstantInt::get(i64Ty, sizeof(JitObjectEntry)),
-        "entry.byte.off");
-    auto entryPtr = builder_.CreateInBoundsGEP(
-        i8Ty, slotsData, byteOffset, "entry.p");
-
-    auto fastTag = builder_.CreateLoad(i8Ty, entryPtr, "fast.tag");
-    auto entryDataPtr = builder_.CreateConstInBoundsGEP1_64(
-        i8Ty, entryPtr, offsetof(JitValue, data), "entry.data.p");
-    auto fastData = builder_.CreateLoad(i64Ty, entryDataPtr, "fast.data");
+    auto [fastTag, fastData] = load_entry(objPtr, icOffset, "fast");
     builder_.CreateBr(mergeBB);
     auto fastEnd = builder_.GetInsertBlock();
+
+    // The cached proto hit — the runtime helper's own second question,
+    // asked here so a method read (`obj.f()`, data in own slots and the
+    // method on the shared meta behind `proto`) costs no call either: the
+    // receiver's shape is the one whose own scan missed, it has a proto (a
+    // dictionary keeps its index in that word, so its flag is checked
+    // first), and that proto's shape is the one the answer was cached for.
+    builder_.SetInsertPoint(protoBB);
+    auto icOwnerShape = builder_.CreateLoad(
+        ptrTy, builder_.CreateStructGEP(icTy, icGlobal, 2, "ic.owner.p"),
+        "ic.owner");
+    auto ownerMatch =
+        builder_.CreateICmpEQ(objShape, icOwnerShape, "owner.match");
+    auto isDict = builder_.CreateICmpNE(
+        builder_.CreateLoad(i8Ty,
+                            builder_.CreateConstInBoundsGEP1_64(
+                                i8Ty, objPtr, offsetof(JitObject, is_dict),
+                                "is_dict.p"),
+                            "is_dict"),
+        builder_.getInt8(0));
+    auto protoPtr = builder_.CreateLoad(
+        ptrTy,
+        builder_.CreateConstInBoundsGEP1_64(
+            i8Ty, objPtr, offsetof(JitObject, proto_), "proto.p"),
+        "proto");
+    auto hasProto = builder_.CreateAnd(
+        builder_.CreateNot(isDict),
+        builder_.CreateICmpNE(protoPtr,
+                              llvm::ConstantPointerNull::get(ptrTy)),
+        "has.proto");
+    // One block, not two: the proto's shape is read through a pointer that
+    // is the receiver's own when there is no proto to read (a JitObject
+    // either way), so the three tests fold into one condition.
+    auto shapeHolder = builder_.CreateSelect(hasProto, protoPtr, objPtr,
+                                             "proto.or.self");
+    auto protoShape = builder_.CreateLoad(
+        ptrTy,
+        builder_.CreateConstInBoundsGEP1_64(
+            i8Ty, shapeHolder, offsetof(JitObject, shape), "proto.shape.p"),
+        "proto.shape");
+    auto icProtoShape = builder_.CreateLoad(
+        ptrTy, builder_.CreateStructGEP(icTy, icGlobal, 3, "ic.pshape.p"),
+        "ic.pshape");
+    auto protoMatch = builder_.CreateAnd(
+        builder_.CreateAnd(ownerMatch, hasProto),
+        builder_.CreateICmpEQ(protoShape, icProtoShape), "proto.match");
+    builder_.CreateCondBr(protoMatch, protoFastBB, slowBB);
+
+    builder_.SetInsertPoint(protoFastBB);
+    auto icProtoOffset = builder_.CreateLoad(
+        i64Ty, builder_.CreateStructGEP(icTy, icGlobal, 4, "ic.poff.p"),
+        "ic.poff");
+    auto [protoTag, protoData] = load_entry(protoPtr, icProtoOffset, "proto");
+    builder_.CreateBr(mergeBB);
+    auto protoEnd = builder_.GetInsertBlock();
 
     // Cold path: non-object, IC miss, or scalar error — one runtime call.
     // Returns the value in registers (no out-param allocas: those would
@@ -4689,11 +4839,13 @@ struct JIT {
     auto slowEnd = builder_.GetInsertBlock();
 
     builder_.SetInsertPoint(mergeBB);
-    auto tagPhi = builder_.CreatePHI(i8Ty, 2, "prop.tag");
+    auto tagPhi = builder_.CreatePHI(i8Ty, 3, "prop.tag");
     tagPhi->addIncoming(fastTag, fastEnd);
+    tagPhi->addIncoming(protoTag, protoEnd);
     tagPhi->addIncoming(slowTag, slowEnd);
-    auto dataPhi = builder_.CreatePHI(i64Ty, 2, "prop.data");
+    auto dataPhi = builder_.CreatePHI(i64Ty, 3, "prop.data");
     dataPhi->addIncoming(fastData, fastEnd);
+    dataPhi->addIncoming(protoData, protoEnd);
     dataPhi->addIncoming(slowData, slowEnd);
 
     llvm::Value* result = make_value(tagPhi, dataPhi);

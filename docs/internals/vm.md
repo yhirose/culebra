@@ -199,7 +199,12 @@ The heap objects a VM needs are the runtime's existing ones:
 - `JitObject` with `Shape` — a V8-style hidden class plus fixed slots,
   inline caches (`JitPropIC`) at property sites, and an any-key side map
   for non-String keys. An instance holds a `+1` on its class object
-  (`JitObject::cls`).
+  (`JitObject::cls`). A read site's IC answers two shapes of hit inline:
+  the own slot, and — for a method read on a class instance, whose data
+  is in own slots and whose methods sit on the shared meta behind
+  `proto` — the proto slot, cached as the pair (receiver shape, proto
+  shape) the runtime helper's miss path fills; before the second arm
+  was in the IR every `obj.f()` reached the helper.
 - `JitArray`, `JitSet`, tuples, `JitTensor`.
 
 Objects are allocated from a per-`Runtime` slab allocator
@@ -1002,8 +1007,13 @@ list ran, which is the closure trampoline's order. The lowering inlines
 the Float family (`sqrt`, `sin`, `exp`, …, `abs`, `atan2`) behind a
 numeric tag test — the LLVM intrinsic where one exists, which is the
 very libm call the helper makes — so a known tag folds the call to one
-instruction. Every other spelling (`Math?.f`, `let m = Math`, `Math.f`
-as a value, a keyword) keeps the generic route and its diagnostics.
+instruction. `min`, `max`, `clamp` and `f32` have arms too, both-Long and
+any-Float, spelling out the helper's rule (`reduce_min_max`, `clamp`,
+`_culebra_f32_round`) as compares and selects; `tests/test_math_inline_arms.cul`
+pins them to the helper bit for bit through operands whose tags the
+emitter cannot see. Every other spelling (`Math?.f`, `let m = Math`,
+`Math.f` as a value, a keyword) keeps the generic route and its
+diagnostics.
 
 ### 5.5 Exceptions, `defer`, and unwinding
 

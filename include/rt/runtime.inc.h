@@ -1356,15 +1356,22 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_div_zero(int64_t line,
 struct JitUnwindRelease {
   JitValue v[3];
   int n = 0;
-  int exc = std::uncaught_exceptions();
+  int exc = 0;
+  // Only a refcounted value is worth guarding; a guard holding none (the
+  // borrowed-receiver form of a helper, say) asks nothing of the exception
+  // state — uncaught_exceptions() is a thread-local read, and the helpers
+  // that construct one of these sit on the property-read and call paths.
   JitUnwindRelease(std::initializer_list<JitValue> vals) {
     assert(vals.size() <= 3);
-    for (auto& x : vals) v[n++] = x;
+    for (auto& x : vals)
+      if (x.data != 0 && _is_refcounted_value_tag(static_cast<int8_t>(x.tag)))
+        v[n++] = x;
+    if (n) exc = std::uncaught_exceptions();
   }
   JitUnwindRelease(const JitUnwindRelease&) = delete;
   JitUnwindRelease& operator=(const JitUnwindRelease&) = delete;
   ~JitUnwindRelease() {
-    if (std::uncaught_exceptions() <= exc) return;
+    if (n == 0 || std::uncaught_exceptions() <= exc) return;
     for (int i = 0; i < n; i++)
       culebra_runtime_value_release(v[i].tag, v[i].data);
   }

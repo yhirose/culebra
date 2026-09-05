@@ -1,0 +1,96 @@
+# `Math.min` / `Math.max` / `Math.clamp` / `Math.f32` reach an inline arm in
+# the lowering when their operands carry a numeric tag at run time
+# (JIT::emit_ns_call), so the values here arrive through fields, array
+# elements and function returns — tags the emitter cannot know — and the
+# result must be the helper's to the bit on every backend: Long stays Long
+# when every operand is one, any Float widens, a NaN second operand keeps
+# the first, and f32 rounds through IEEE single with the helper's overflow
+# rule (up to the midpoint float's max, beyond it infinity).
+#
+# Run: ./build/culebra tests/test_math_inline_arms.cul
+#      ./build/culebra --jit tests/test_math_inline_arms.cul
+
+let box = {a: 3, b: 7, x: 2.5, y: -1.25, inf: Math.inf}
+fn same(u, v) {
+  assert_eq(type_of(u), type_of(v))
+  assert_eq(u, v)
+}
+
+# both Long stay Long; the pick follows the strict compare
+same(Math.min(box.a, box.b), 3)
+same(Math.max(box.a, box.b), 7)
+same(Math.min(box.b, box.a), 3)
+same(Math.max(box.b, box.a), 7)
+same(Math.min(box.a, box.a), 3)
+
+# any Float widens the other
+same(Math.min(box.a, box.x), 2.5)
+same(Math.max(box.a, box.x), 3.0)
+same(Math.min(box.x, box.y), -1.25)
+same(Math.max(box.y, box.x), 2.5)
+same(Math.min(box.x, box.b), 2.5)
+same(Math.max(box.b, box.y), 7.0)
+
+# signed zero and infinities
+let zs = [0.0, -0.0]
+same(Math.min(zs[0], zs[1]), 0.0)
+same(Math.max(zs[1], zs[0]), -0.0)
+same(Math.min(box.inf, box.x), 2.5)
+same(Math.max(-box.inf, box.y), -1.25)
+
+# clamp: all Long stays Long, any Float widens all three
+same(Math.clamp(box.a, 0, 2), 2)
+same(Math.clamp(box.a, 5, 9), 5)
+same(Math.clamp(box.a, 0, 9), 3)
+same(Math.clamp(box.x, 0, 2), 2.0)
+same(Math.clamp(box.a, 0.5, 2.5), 2.5)
+same(Math.clamp(box.y, -1, 1), -1.0)
+same(Math.clamp(box.x, box.y, box.inf), 2.5)
+
+# f32: round through single, the helper's overflow rule at the edges
+let fmax = 3.4028234663852886e38
+let vals = [
+  1.0,
+  0.1,
+  1.0 / 3.0,
+  -2.5e-40,
+  1e-46,
+  fmax,
+  3.40282350e38,
+  3.4028235677973366e38,
+  3.5e38,
+  -3.5e38,
+  box.inf,
+  -box.inf,
+]
+let want = [
+  1.0,
+  0.10000000149011612,
+  0.3333333432674408,
+  -2.500000538263333e-40,
+  0.0,
+  fmax,
+  fmax,
+  Math.inf,
+  Math.inf,
+  -Math.inf,
+  Math.inf,
+  -Math.inf,
+]
+for i in 0..vals.size() {
+  same(Math.f32(vals[i]), want[i])
+}
+same(Math.f32(box.a), 3.0)
+
+# errors keep their route: a non-numeric operand is the helper's TypeError
+assert_throws('TypeError', fn () {
+  Math.min(box.a, 'x')
+})
+assert_throws('TypeError', fn () {
+  Math.clamp('x', 0, 1)
+})
+assert_throws('TypeError', fn () {
+  Math.f32('x')
+})
+
+println('ok')
