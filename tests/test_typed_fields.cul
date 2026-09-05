@@ -211,4 +211,37 @@ assert_eq(read_opt(nil), nil)
 let forged2 = {class: 'Read', f: 'still a string'}
 assert_eq(read_opt(forged2), 'still a string')
 
+
+# --- a member's own `self.x` carries the same promise ---
+#
+# The receiver is not proven to be an instance of the class (a method value
+# can be moved onto a foreign object), so the read verifies the tag the
+# declaration promised, exactly as it does through a parameter.
+
+class Own {
+  f: Float
+  new(f) {
+    self.f = f
+  }
+  doubled() {
+    self.f * 2.0
+  }
+  sum(n) {
+    mut acc = 0.0
+    for _ in 0..n {
+      acc += self.f
+    }
+    acc
+  }
+}
+
+let own = Own(1.5)
+assert_eq(own.doubled(), 3.0)
+assert_eq(own.sum(4), 6.0)
+
+# a method value read off an instance stays bound to it, so moving one onto
+# another object does not give the body a foreign `self`
+let borrowed = {class: 'Own', f: 'not a float', doubled: own.doubled}
+assert_eq(borrowed.doubled(), 3.0)
+
 println('typed fields OK')

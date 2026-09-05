@@ -3306,6 +3306,12 @@ struct MemberOpts {
   // dispatcher lives. The body's own recursive calls stand on that: `name`
   // inside reads the dispatcher, and this says which chunk it reaches.
   bool sole_multifn = false;
+  // What the enclosing class declares about its fields, for a member's own
+  // `self.x` reads. The receiver is not proven to be an instance of the
+  // class — a method value moved onto a foreign object is the reason
+  // Chunk::Reach::Guarded exists — so the read verifies the tag it was
+  // promised, exactly as it does for a class-typed parameter.
+  const culebra::ClassFieldTypes* owner_fields = nullptr;
 };
 
 // What a call in a postfix chain reaches, when the compiler can name it: the
@@ -6000,6 +6006,10 @@ class Compiler {
             static_cast<long>(writes.front().col));
     }
     register_declared_field_types(class_name, fields);
+    // What this class's own members may assume about `self` (verified at
+    // each read, since a method value can be moved onto a foreign object).
+    const culebra::ClassFieldTypes* own_fields =
+        culebra::class_field_types_of(class_name);
     // The class joins the registry only once its own members have passed, and
     // after the scan above rather than before it, so a field naming the class
     // being declared is still refused — a value cannot contain itself.
@@ -6109,7 +6119,8 @@ class Compiler {
           compile_fn_chunk(*m, mv.params, **mv.body,
                            {.receiver = true,
                             .owner_ctor_chunk = ctor_chunk_idx,
-                            .type_params = &type_params}));
+                            .type_params = &type_params,
+                            .owner_fields = own_fields}));
       auto& ch = prog_.chunks[method_chunks.back()];
       ch.multifn_name = std::string(mv.name);
       if (mv.is_getter) ch.is_getter = true;
@@ -6164,7 +6175,8 @@ class Compiler {
            .prologue_fields =
                (!fields.empty() && !fields_need_a_thunk) ? &fields : nullptr,
            .owner_ctor_chunk = ctor_chunk_idx,
-           .type_params = &type_params}));
+           .type_params = &type_params,
+           .owner_fields = own_fields}));
     }
 
     // The shared meta: one closure per member name in a contiguous run —
@@ -6669,6 +6681,7 @@ class Compiler {
     int32_t idx = static_cast<int32_t>(prog_.chunks.size());
     prog_.chunks.emplace_back();  // reserve the index; nested fns append
     Compiler fc(prog_, analysis_, /*in_function=*/true, &info, idx);
+    fc.self_fields_ = mo.owner_fields;
     fc.repl_ = repl_;
     fc.debug_ = debug_;
     fc.stamp(ast);
@@ -10142,6 +10155,9 @@ class Compiler {
   // One `.name` postfix with no call after it: the property value read,
   // followed by the bare built-in method reject when the name could be one
   // (the JIT emits that cold check under the same compile-time filter).
+  // What the enclosing class declares about its fields (MemberOpts).
+  const culebra::ClassFieldTypes* self_fields_ = nullptr;
+
   // The tag a `<name>.<field>` read yields when `<name>`'s declared class
   // declares `<field>` with a scalar type — 0 when it does not, which is
   // every other read. The write check (docs/language.md §13) is what makes
@@ -10149,10 +10165,15 @@ class Compiler {
   int32_t declared_read_tag(const peg::Ast& head, std::string_view field) {
     using namespace peg::udl;
     if (head.tag != "IDENTIFIER"_) return 0;
-    const Binding* b = lookup(head.token);
-    if (!b || !b->decl_fields) return 0;
-    auto it = b->decl_fields->find(field);
-    if (it == b->decl_fields->end()) return 0;
+    const culebra::ClassFieldTypes* fields = nullptr;
+    if (head.token == "self") {
+      fields = self_fields_;
+    } else if (const Binding* b = lookup(head.token)) {
+      fields = b->decl_fields;
+    }
+    if (!fields) return 0;
+    auto it = fields->find(field);
+    if (it == fields->end()) return 0;
     switch (static_cast<culebra::FieldType>(it->second)) {
       case culebra::FieldType::Float: return TAG_FLOAT;
       case culebra::FieldType::Long: return TAG_LONG;
