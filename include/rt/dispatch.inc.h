@@ -1134,6 +1134,7 @@ inline void _jit_gc_sweep_object(void* obj, uint8_t tag) {
       delete o->key_order;
       delete o->non_string_props;
       if (o->is_dict) delete o->dict_;
+      if (o->is_class_meta) delete o->specials;
       delete o;
       break;
     }

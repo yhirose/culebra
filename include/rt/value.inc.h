@@ -34,6 +34,17 @@ namespace culebra {
 struct Shape {
   std::vector<std::string> names;          // insertion order
   std::map<std::string_view, Shape*> add_transitions;
+  // Whether any name is one the runtime dispatches specially (a `__x__`
+  // dunder, or the `hash`/`cmp` protocol names): the one question a
+  // special-method lookup has to ask of an instance's own slots before it
+  // may trust its class's table (see _lookup_special). Fixed once per Shape.
+  bool any_special = false;
+
+  static bool is_special_name(std::string_view name) {
+    return (name.size() > 4 && name.substr(0, 2) == "__" &&
+            name.substr(name.size() - 2) == "__") ||
+           name == "hash" || name == "cmp";
+  }
 
   bool has(std::string_view name) const {
     return offset(name) != static_cast<size_t>(-1);
@@ -81,6 +92,7 @@ struct ShapeRegistry {
     auto next = std::make_unique<Shape>();
     next->names = current->names;
     next->names.push_back(std::string(name));
+    next->any_special = current->any_special || Shape::is_special_name(name);
     auto& stored_name = next->names.back();
     auto* raw = next.get();
     owned_.push_back(std::move(next));
@@ -113,6 +125,29 @@ inline culebra::SlabAllocator& _slab() {
   return culebra::runtime_substate<culebra::SlabAllocator>(
       culebra::kSlotJitSlab);
 }
+
+// The same slab behind a std::vector's buffer — an object's slot array is
+// born and dies with the object, on the same Runtime, so it can take the
+// object's own allocator instead of a malloc/free pair per instance. Empty
+// (stateless), so the vector keeps its three-pointer layout and everything
+// that GEPs `slots` from IR is undisturbed.
+namespace culebra {
+template <class T>
+struct SlabVecAlloc {
+  using value_type = T;
+  SlabVecAlloc() = default;
+  template <class U>
+  SlabVecAlloc(const SlabVecAlloc<U>&) noexcept {}
+  T* allocate(size_t n) {
+    return static_cast<T*>(_slab().alloc(n * sizeof(T)));
+  }
+  void deallocate(T* p, size_t n) noexcept { _slab().free(p, n * sizeof(T)); }
+  template <class U>
+  bool operator==(const SlabVecAlloc<U>&) const noexcept { return true; }
+  template <class U>
+  bool operator!=(const SlabVecAlloc<U>&) const noexcept { return false; }
+};
+}  // namespace culebra
 
 // ---------------------------------------------------------------------------
 // Runtime types and functions callable from JIT'd code
@@ -190,6 +225,27 @@ using JitIterFastFn = void (*)(JitClosure* /*next_cls*/, JitValue /*iter*/,
 struct JitObjectEntry {
   JitValue value;
   bool mut;
+};
+
+// The special methods the runtime itself dispatches by name — an operator's
+// dunder, the protocol names `hash`/`cmp`, and `__call__`/`__str__`. A class
+// meta resolves each of them once, at declaration (JitSpecialTable), so an
+// operator on an instance reads one pointer instead of walking two shapes'
+// name lists on every evaluation: Python's type slots, keyed the same way.
+enum class Special : uint8_t {
+  Add, Sub, Mul, Div, Mod, Pow, Matmul, Neg, Eq, Lt, Le, Cmp, Hash, Str,
+  Call, Index, SetIndex, Count
+};
+inline constexpr const char* kSpecialNames[] = {
+    "__add__", "__sub__", "__mul__", "__div__", "__mod__", "__pow__",
+    "__matmul__", "__neg__", "__eq__", "__lt__", "__le__", "cmp", "hash",
+    "__str__", "__call__", "__index__", "__setindex__"};
+static_assert(std::size(kSpecialNames) == static_cast<size_t>(Special::Count));
+inline const char* special_name(Special s) {
+  return kSpecialNames[static_cast<size_t>(s)];
+}
+struct JitSpecialTable {
+  JitClosure* fn[static_cast<size_t>(Special::Count)] = {};
 };
 
 // All refcounted heap types share the same first field: i64 refcount.
@@ -272,7 +328,7 @@ struct JitObject {
   // Shape via `ShapeRegistry::transition_add` (cached, so identical
   // transitions always resolve to the same target Shape).
   culebra::Shape* shape = nullptr;
-  std::vector<JitObjectEntry> slots;
+  std::vector<JitObjectEntry, culebra::SlabVecAlloc<JitObjectEntry>> slots;
   // Sidecar for non-String literal keys (Phase 7-C). Lazy-allocated;
   // small objects pay nothing. Values live here; insertion order is
   // tracked in the unified `key_order` below.
@@ -309,6 +365,14 @@ struct JitObject {
   // hash rather than through the shape. Sits in the padding these flags
   // already carry, so JitObject stays inside its 128-byte slab class.
   bool is_dict = false;
+  // Set on a CLASS META that binds a `drop`: every instance built from it
+  // registers on the owned stack. Answered once at declaration so a
+  // construction does not walk the method names for it. Never GEP'd.
+  bool methods_drop = false;
+  // Set on a CLASS META, and only there: the object `build_class_meta`
+  // returns, which every instance of the class reaches through `proto`. It
+  // is what makes the trailing union's third role readable. Never GEP'd.
+  bool is_class_meta = false;
   // Index into the owned-resource stack (deterministic drop), -1 when
   // unregistered. Set when `drop` is bound; the
   // release/sweep paths tombstone the entry through it. Trailing field —
@@ -353,15 +417,18 @@ struct JitObject {
   // could be added — including the two the declaration cannot see, a
   // computed key and a write through an alias. Never GEP'd.
   bool fields_closed = false;
-  // One trailing pointer, two exclusive roles: a builtin namespace's name,
-  // or the class object a class-sugar instance (the only kind with a
-  // `proto`) was built by. The instance holds a +1 on its class, released
-  // with it, so a method can name the class through its receiver after the
-  // declaring scope is gone (culebra_runtime_class_self); sharing the slot
-  // is what keeps JitObject inside its 128-byte slab class. Never GEP'd.
+  // One trailing pointer, three exclusive roles: a builtin namespace's name
+  // (`is_namespace`), the class object a class-sugar instance (the only kind
+  // with a `proto`) was built by, or a class meta's special-method table
+  // (`is_class_meta`, see Special) — owned by the meta and freed with it. The
+  // instance holds a +1 on its class, released with it, so a method can name
+  // the class through its receiver after the declaring scope is gone
+  // (culebra_runtime_class_self); sharing the slot is what keeps JitObject
+  // inside its 128-byte slab class. Never GEP'd.
   union {
     const char* ns_name = nullptr;
     JitObject* cls;
+    JitSpecialTable* specials;
   };
 
   // --- Shape-based property access helpers ---
@@ -503,7 +570,7 @@ struct JitObject {
       auto* d = new DictIndex();
       d->index.reserve(slots.size() * 2);
       d->names.reserve(slots.size() - 1);
-      std::vector<JitObjectEntry> new_slots;
+      decltype(slots) new_slots;
       new_slots.reserve(slots.size() - 1);
       for (size_t i = 0; i < slots.size(); i++) {
         if (i == idx) continue;
@@ -518,7 +585,7 @@ struct JitObject {
       return;
     }
     auto* new_shape = culebra::shape_registry().root();
-    std::vector<JitObjectEntry> new_slots;
+    decltype(slots) new_slots;
     new_slots.reserve(slots.size() - 1);
     for (size_t i = 0; i < shape->names.size(); i++) {
       if (i == idx) continue;

@@ -373,6 +373,16 @@ inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
   // Non-refcounted tags are a no-op in the release switch, so they skip
   // the trashcan bookkeeping entirely (this is the hottest release path).
   if (data == 0 || !_is_refcounted_value_tag(tag)) return;
+  // So does a value still shared after this release — by far the common
+  // case, and the one the trashcan has nothing to say about: its bookkeeping
+  // is for a teardown, and a teardown is what happens only at zero. Every
+  // refcounted type keeps its count at offset 0 (the collector relies on it
+  // too), so the answer needs no dispatch on the tag.
+  auto* refcount = reinterpret_cast<int64_t*>(data);
+  if (*refcount > 1) {
+    --*refcount;
+    return;
+  }
   JitReleaseTrashcan::release(JitValue{tag, data});
 }
 
@@ -457,6 +467,7 @@ inline void _culebra_value_release_node(int8_t tag, int64_t data) {
           o->is_dict = false;
         }
         _gc_note_free(o, GC_TAG_OBJECT);
+        if (o->is_class_meta) delete o->specials;
         delete o;
       }
       break;
@@ -887,6 +898,8 @@ inline constexpr auto object_keys         = "culebra_runtime_object_keys";
 inline constexpr auto object_values       = "culebra_runtime_object_values";
 inline constexpr auto object_new          = "culebra_runtime_object_new";
 inline constexpr auto object_new_shaped   = "culebra_runtime_object_new_shaped";
+inline constexpr auto object_slot_init    = "culebra_runtime_object_slot_init";
+inline constexpr auto object_fields_init  = "culebra_runtime_object_fields_init";
 inline constexpr auto object_remove       = "culebra_runtime_object_remove";
 inline constexpr auto is_shared_val       = "culebra_runtime_is_shared_val";
 inline constexpr auto nc_receiver_kind    = "culebra_runtime_nc_receiver_kind";

@@ -403,18 +403,18 @@ new closure's captures from the callee chunk's `capture_src_slots`.
 
 ### 5.3 The opcode families
 
-143 opcodes, grouped:
+148 opcodes, grouped:
 
 | family | ops | notes |
 |---|---|---|
 | values | `LoadConst` `Move` `Take` `Retain` `Release` | §5.2 |
 | arithmetic, bitwise, comparison | `Neg` `Not` `Add` … `Pow` `MatMul` `BitAnd` … `Shr` `BitNot` `Eq` … `Ge` `JumpIfSame` | each is one runtime dispatch, with the arithmetic and comparison ops deciding both-Long and both-numeric inline first (`Neg` its Long and Float arms); `d=1` on an arithmetic op marks a compound assignment's in-place Tensor step |
-| containers | `ArrayNew/Append/Push/Extend/Resize` `TupleNew/Push` `SetNew/Add` `ObjectNew/Set/SetAny/Merge` `RangeNew` `ChkLong` | the container absorbs the element's `+1` |
+| containers | `ArrayNew/Append/Push/Extend/Resize` `TupleNew/Push` `SetNew/Add` `ObjectNew/NewShaped/Set/SetAny/Merge` `SlotInit` `RangeNew` `ChkLong` | the container absorbs the element's `+1`; `SlotInit` is `ObjectSet` by slot index for a literal whose Shape was pre-built (§5.3.5) |
 | access | `Index` `IndexWr` `IndexCo` `IndexSet` `PropSet` `PropWr` `PropCo` `PropVal` `PropRaw` `HasProp` `NsWrChk` `NilChk` | read / write / coalescing-write forms of subscript and property access; `PropVal` is a plain property read that may invoke a getter |
 | calls | `Call` `CallM` `CallKw` `CallRecv` `Ret` `RecEnter` `RecLeave` `ArgsRest` `KwRest` `JumpIfFilled` `ChkArg` `ChkTypeAt` `PosSnap` `BoundPos` | the JitFn ABI; `CallM` resolves a method (user or built-in) on its receiver; `RecEnter` counts the frame against the recursion limit after the parameters are bound |
 | built-in methods | `MethGate` `ChkParam` `BMeth` `BArity` `CbType` `ArityChk` `BareMethChk` | §5.4 |
 | closures and names | `MakeClosure` `CellNew` `CellGet` `CellSet` `CellRelease` `BindCapture` `ImmutErr` `UnboundErr` `NsGet` `LazyNsReg` `FnHandle` `ModReg` `ModGet` | §4.1, §4.2; `ModReg`/`ModGet` publish and read a module's export object |
-| functions and classes | `MultifnReg` `MfSelf` `ClsSelf` `ClassMeta` `ClassObj` `MakeInst` `FieldInit` `BindStatic` `SelfMerge` `DeriveFn` `RegPack` `EnumVariant` `TraitReg` `TraitDefault` `TraitReset` `ClsParamsChk` `ClsParamsWalk` `WkErr` | `MultifnReg` registers a body into the runtime's arity-dispatch registry; class declarations build a meta and register members |
+| functions and classes | `MultifnReg` `MfSelf` `ClsSelf` `ClassMeta` `ClassObj` `MakeInst` `FieldsInit` `FieldInit` `BindStatic` `SelfMerge` `DeriveFn` `RegPack` `EnumVariant` `TraitReg` `TraitDefault` `TraitReset` `ClsParamsChk` `ClsParamsWalk` `WkErr` | `MultifnReg` registers a body into the runtime's arity-dispatch registry; class declarations build a meta and register members |
 | patterns | `TypeMatch` `SeqChk` `SeqGet` `SeqRest` `ObjGet` `DestrErr` `JumpIfTag` | `match` arms and destructuring; a failed test jumps to the next arm with nothing live |
 | control flow | `Jump` `JumpIfFalse` `JumpIfTrue` `JumpIfNil` `JumpIfNotNil` `Halt` | `JumpIfFalse` carries the shared truthiness coercion (a non-Bool condition is a TypeError) |
 | loops | `ForPrep` `ForLoop` `ForOpen` `ForNext` `ForDispose` `Safepoint` | a counted `for` over a Long range is the fused pair, a sink (`for _ in 0..n`) included; anything else walks a 12-slot cursor (`ForSlot`) through the protocol |
@@ -897,6 +897,63 @@ declared at this file's own top level, locally inside the function using
 it, and in an *outer* function read from one and two levels of nested
 `fn` — all materialize at every boundary shape above, confirmed on the
 bytecode (`--vm-dump` showing `ValueBox`, not just matching output).
+
+### 5.3.5 Construction settles its layout before it runs
+
+Everything above unboxes; this is about the boxed path being no slower
+than it has to be, because most objects a program builds — a literal, a
+class instance whose fields it keeps in an array — never qualify for a
+run. Three things about such an object are known at the declaration and
+used to be re-derived, by name, on every construction.
+
+**A literal's slots are indices.** `{class: 'V', x: a, y: b}` already
+allocated its final Shape in one step (`ObjectNewShaped`), but then
+stored each property through `object_set`, which found the slot by
+scanning the Shape's names and re-derived the two name-keyed contract
+checks (the well-known names, `drop`) from the key string. The key list
+that built the Shape is the one that gives each key its index, so a
+literal whose keys are all identifiers stores by index instead:
+`SlotInit` carries the slot, the property's mutability and the two
+answers (`culebra::prop_key_kind`) in one operand, and the runtime half
+(`culebra_runtime_object_slot_init`) is the overwrite `object_set`'s
+is_init path was, minus the lookup — a duplicate key still resolves to
+its first occurrence and still overwrites last-wins.
+
+**A class's declared fields are one layout.** `class C { x: Float; y:
+Float }` used to open with one `ObjectSet` per field, each a shape
+transition under the registry's lock, on every `new`. A maximal run of
+initializer-less fields is now one `FieldsInit` over a
+`Chunk::FieldLayoutSpec` — the names, each type's zero value, and a pair
+of Shapes the site caches on its first execution (the class-only shape
+every fresh instance arrives with, and the one the run transitions it
+to). A field with an initializer stays its own store, in place, so
+declaration order and what an initializer sees of the fields below it
+(`nil`, docs/language.md §10) are unchanged; an instance arriving in any
+other state takes the per-field stores the runtime keeps for it.
+
+**A class meta answers its special methods from a table.** An operator
+on an instance (`v + w`, `a == b`, `str(x)`) reaches the class's dunder
+through `_lookup_special`, which walked the instance's own names and then
+the meta's on every evaluation. `build_class_meta` now resolves the whole
+`Special` set once — the operator dunders, `hash`/`cmp`, `__str__`,
+`__call__`, `__index__`/`__setindex__` — into a `JitSpecialTable` the meta
+owns, and whether the class binds a `drop` (`methods_drop`), which every
+construction used to ask by scanning the method names. The instance side
+keeps its precedence: a Shape records whether any of its names is a
+special (`Shape::any_special`), and only an instance whose own Shape
+carries one, or a dictionary-mode object, takes the name walk — so
+`c.__add__ = f` on one instance still shadows the class's, as it always
+did. The same reasoning gives a member's own class name a plain slot
+instead of a cell (`ClsSelf` into the frame, guarded by `UnboundErr` as
+any lazy slot is) whenever no closure in the body captures it: a
+`Name.new(...)` inside an operator body no longer allocates a cell per
+call.
+
+All three are decide-once, no-fallback shapes on the compile side, in the
+sense §5.3.1 uses: the runtime never has to re-derive from the name what
+the instruction already says, and both engines call the same helpers.
+`tests/test_object_layout.cul` pins the observables each replaced lookup
+decided.
 
 ### 5.4 Built-in methods are a table
 

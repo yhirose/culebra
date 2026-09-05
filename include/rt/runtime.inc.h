@@ -399,7 +399,7 @@ inline std::optional<std::string> _try_str_special(int8_t type, int64_t data);
 // `_jit_object_user_*` helpers (defined alongside the other special-
 // method helpers further down).
 inline std::optional<JitValue> _try_special_unary(int8_t t, int64_t d,
-                                                  const char* name);
+                                                  Special s);
 inline const JitObjectEntry* _find_property(JitObject* obj,
                                             const char* key);
 
@@ -553,7 +553,7 @@ inline std::optional<std::string_view> _jit_enum_name(JitObject* obj) {
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_hash_any(
     int8_t type, int64_t data, int64_t line, int64_t col) {
   if (type == TAG_OBJECT) {
-    auto r = _try_special_unary(type, data, "hash");
+    auto r = _try_special_unary(type, data, Special::Hash);
     if (!r) {
       if (auto h = _jit_enum_variant_hash(reinterpret_cast<JitObject*>(data)))
         return *h;
@@ -1426,10 +1426,19 @@ inline const JitObjectEntry* _find_property(JitObject* obj,
   return nullptr;
 }
 
-inline JitClosure* _lookup_special(int8_t tag, int64_t data, const char* name) {
+// The special method `s` an operator or protocol reaches on `tag:data`, or
+// null. A class instance answers from its meta's table (one load) unless its
+// own shape carries a special name, which is the only way an own slot could
+// shadow the class's method — then, as for a plain object, the name lookup
+// runs (own slots first, the proto after: _find_property's rule).
+inline JitClosure* _lookup_special(int8_t tag, int64_t data, Special s) {
   if (tag != TAG_OBJECT) return nullptr;
   auto* obj = reinterpret_cast<JitObject*>(data);
-  auto* entry = _find_property(obj, name);
+  if (auto* meta = obj->proto();
+      meta && meta->is_class_meta && !obj->is_dict &&
+      !(obj->shape && obj->shape->any_special))
+    return meta->specials->fn[static_cast<size_t>(s)];
+  auto* entry = _find_property(obj, special_name(s));
   if (!entry || entry->value.tag != TAG_FUNC) return nullptr;
   return reinterpret_cast<JitClosure*>(entry->value.data);
 }
@@ -1438,15 +1447,15 @@ inline JitClosure* _lookup_special(int8_t tag, int64_t data, const char* name) {
 // or std::nullopt.
 inline std::optional<JitValue> _try_special_binop(int8_t rt, int64_t rd,
                                                  int8_t at, int64_t ad,
-                                                 const char* name) {
-  auto* cls = _lookup_special(rt, rd, name);
+                                                 Special s) {
+  auto* cls = _lookup_special(rt, rd, s);
   if (!cls) return std::nullopt;
   return _culebra_invoke_method1(cls, {rt, rd}, {at, ad});
 }
 
 inline std::optional<JitValue> _try_special_unary(int8_t t, int64_t d,
-                                                 const char* name) {
-  auto* cls = _lookup_special(t, d, name);
+                                                 Special s) {
+  auto* cls = _lookup_special(t, d, s);
   if (!cls) return std::nullopt;
   return _culebra_invoke_method0(cls, {t, d});
 }
@@ -1456,7 +1465,7 @@ inline std::optional<JitValue> _try_special_unary(int8_t t, int64_t d,
 // nullopt for non-Objects or Objects without `__str__`; throws on
 // non-String returns so a buggy method fails loudly.
 inline std::optional<std::string> _try_str_special(int8_t type, int64_t data) {
-  auto r = _try_special_unary(type, data, "__str__");
+  auto r = _try_special_unary(type, data, Special::Str);
   if (!r) return std::nullopt;
   if (r->tag != TAG_STRING && r->tag != TAG_STRINGVIEW) {
     _culebra_value_release_impl(r->tag, r->data);
@@ -1473,11 +1482,10 @@ inline std::optional<std::string> _try_str_special(int8_t type, int64_t data) {
 // for `+` and `*`). Callers fall back to the numeric path otherwise.
 inline std::optional<JitValue> _dispatch_arith_special(int8_t lt, int64_t ld,
                                                      int8_t rt, int64_t rd,
-                                                     const char* name,
-                                                     bool reflect) {
-  if (auto r = _try_special_binop(lt, ld, rt, rd, name)) return r;
+                                                     Special s, bool reflect) {
+  if (auto r = _try_special_binop(lt, ld, rt, rd, s)) return r;
   if (reflect) {
-    if (auto r = _try_special_binop(rt, rd, lt, ld, name)) return r;
+    if (auto r = _try_special_binop(rt, rd, lt, ld, s)) return r;
   }
   return std::nullopt;
 }
@@ -1527,8 +1535,8 @@ inline std::optional<JitValue> _try_tensor_binop(
     auto b = _culebra_coerce_num(rt, rd);                               \
     return {TAG_FLOAT, _culebra_double_to_bits(expr)};                  \
   }
-CUL_NUM_BINOP(sub, "-", "__sub__", a - b, false, static_cast<int>(culebra::Op::Sub))
-CUL_NUM_BINOP(mul, "*", "__mul__", a * b, true,  static_cast<int>(culebra::Op::Mul))
+CUL_NUM_BINOP(sub, "-", Special::Sub, a - b, false, static_cast<int>(culebra::Op::Sub))
+CUL_NUM_BINOP(mul, "*", Special::Mul, a * b, true,  static_cast<int>(culebra::Op::Mul))
 #undef CUL_NUM_BINOP
 
 // Forward decl — body is further down with the other Array runtime entries.
@@ -1546,7 +1554,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_add_borrow(
                                   static_cast<int>(culebra::Op::Add), "+",
                                   line, col))
     return *r;
-  if (auto r = _dispatch_arith_special(lt, ld, rt, rd, "__add__", true))
+  if (auto r = _dispatch_arith_special(lt, ld, rt, rd, Special::Add, true))
     return *r;
   bool ls = (lt == TAG_STRING || lt == TAG_STRINGVIEW);
   bool rs = (rt == TAG_STRING || rt == TAG_STRINGVIEW);
@@ -1574,7 +1582,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_div_borrow(
                                   static_cast<int>(culebra::Op::Div), "/",
                                   line, col))
     return *r;
-  if (auto r = _dispatch_arith_special(lt, ld, rt, rd, "__div__", false))
+  if (auto r = _dispatch_arith_special(lt, ld, rt, rd, Special::Div, false))
     return *r;
   _arith_guard_numeric("/", lt, rt, line, col);
   auto a = _culebra_coerce_num(lt, ld);
@@ -1585,7 +1593,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_div_borrow(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_mod_borrow(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
-  if (auto r = _dispatch_arith_special(lt, ld, rt, rd, "__mod__", false))
+  if (auto r = _dispatch_arith_special(lt, ld, rt, rd, Special::Mod, false))
     return *r;
   _arith_guard_numeric("%", lt, rt, line, col);
   auto a = _culebra_coerce_num(lt, ld);
@@ -1598,7 +1606,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_mod_borrow(
 // `__matmul__`. Non-commutative, so no reflection.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_matmul_borrow(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
-  if (auto r = _try_special_binop(lt, ld, rt, rd, "__matmul__")) return *r;
+  if (auto r = _try_special_binop(lt, ld, rt, rd, Special::Matmul)) return *r;
   culebra::throw_arith_type_error("@", _culebra_tag_name(lt),
                                   _culebra_tag_name(rt), line, col);
 }
@@ -1634,9 +1642,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_value_equal_borrow(
   // positionless backfill reads), so lend it to them.
   JitBorrowedCallSite site{_jit_thread.op_line, _jit_thread.op_col};
   // `==` is commutative, so try either side's `__eq__`.
-  if (auto r = _try_special_binop(t1, d1, t2, d2, "__eq__"))
+  if (auto r = _try_special_binop(t1, d1, t2, d2, Special::Eq))
     return _extract_bool_and_release(*r);
-  if (auto r = _try_special_binop(t2, d2, t1, d1, "__eq__"))
+  if (auto r = _try_special_binop(t2, d2, t1, d1, Special::Eq))
     return _extract_bool_and_release(*r);
   // Eq-trait fallback: route through a user/derived `eq(other)` so the
   // operator agrees with key equality (JitValueEq dispatches `eq` too).
@@ -1653,7 +1661,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_value_equal_borrow(
 // interpreter's `try_cmp` in compare_values.
 inline std::optional<int64_t> _special_cmp(int8_t t1, int64_t d1,
                                           int8_t t2, int64_t d2) {
-  if (auto r = _try_special_binop(t1, d1, t2, d2, "cmp")) {
+  if (auto r = _try_special_binop(t1, d1, t2, d2, Special::Cmp)) {
     if (r->tag == TAG_LONG) return r->data;
     _culebra_value_release_impl(r->tag, r->data);
   }
@@ -1664,7 +1672,7 @@ inline std::optional<int64_t> _special_cmp(int8_t t1, int64_t d1,
 // the interpreter's derivation when a class only defines `__lt__`.
 inline std::optional<bool> _special_le(int8_t t1, int64_t d1,
                                       int8_t t2, int64_t d2) {
-  if (auto r = _try_special_binop(t1, d1, t2, d2, "__le__"))
+  if (auto r = _try_special_binop(t1, d1, t2, d2, Special::Le))
     return _extract_bool_and_release(*r);
   // Both dunders run before either return is coerced (interp's le_as_bool does
   // the same, so the side-effect order matches). That leaves one `+1` result
@@ -1672,11 +1680,11 @@ inline std::optional<bool> _special_le(int8_t t1, int64_t d1,
   // consumes one — so each waiting result gets a guard until its own coercion
   // takes it over. A dunder returning a non-Bool heap value strands it
   // otherwise.
-  auto lt = _try_special_binop(t1, d1, t2, d2, "__lt__");
+  auto lt = _try_special_binop(t1, d1, t2, d2, Special::Lt);
   std::optional<JitValue> eq;
   {
     JitUnwindRelease g{lt ? *lt : JitValue{TAG_NIL, 0}};
-    eq = _try_special_binop(t1, d1, t2, d2, "__eq__");
+    eq = _try_special_binop(t1, d1, t2, d2, Special::Eq);
   }
   if (!lt && !eq) return std::nullopt;
   bool l;
@@ -1718,7 +1726,7 @@ inline std::optional<bool> _special_le(int8_t t1, int64_t d1,
     return _value_##name##_borrow(t1, d1, t2, d2, line, col);           \
   }
 CUL_DEF_ORD_OP(less, <,
-  if (auto r = _try_special_binop(t1, d1, t2, d2, "__lt__"))
+  if (auto r = _try_special_binop(t1, d1, t2, d2, Special::Lt))
     return _extract_bool_and_release(*r);
   if (auto c = _special_cmp(t1, d1, t2, d2)) return *c < 0;
 )
@@ -1733,7 +1741,7 @@ CUL_DEF_ORD_OP(greater, >,
 )
 // a >= b ≡ !(a < b)
 CUL_DEF_ORD_OP(geq, >=,
-  if (auto r = _try_special_binop(t1, d1, t2, d2, "__lt__"))
+  if (auto r = _try_special_binop(t1, d1, t2, d2, Special::Lt))
     return !_extract_bool_and_release(*r);
   if (auto c = _special_cmp(t1, d1, t2, d2)) return *c >= 0;
 )
@@ -1793,7 +1801,7 @@ CUL_NUM_INPLACE(div, Op::Div)
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_pow_borrow(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
-  if (auto r = _try_special_binop(lt, ld, rt, rd, "__pow__")) return *r;
+  if (auto r = _try_special_binop(lt, ld, rt, rd, Special::Pow)) return *r;
   if (lt == TAG_LONG && rt == TAG_LONG) {
     int64_t a = ld, e = rd;
     if (e >= 0) return {TAG_LONG, culebra::ipow_nonneg(a, e)};
@@ -1818,7 +1826,7 @@ CUL_NUM_INPLACE(pow, Op::Pow)
 // raises type error. Called only from the unary-minus slow path.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_neg_borrow(
     int8_t t, int64_t d, int64_t line, int64_t col) {
-  if (auto r = _try_special_unary(t, d, "__neg__")) return *r;
+  if (auto r = _try_special_unary(t, d, Special::Neg)) return *r;
   if (t == TAG_LONG) return {TAG_LONG, -d};
   if (t == TAG_FLOAT) {
     auto v = _culebra_float_to_double(d);

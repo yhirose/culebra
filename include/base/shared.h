@@ -2748,6 +2748,14 @@ inline bool is_well_known_prop(std::string_view name) {
          name == "next";
 }
 
+// The two name-keyed answers a property store owes, packed for a site whose
+// key is a compile-time literal: bit 0 — the well-known contract applies;
+// bit 1 — the name is `drop`, so the store registers the object for it.
+inline int8_t prop_key_kind(std::string_view name) {
+  return static_cast<int8_t>((is_well_known_prop(name) ? 1 : 0) |
+                             (name == "drop" ? 2 : 0));
+}
+
 // Two lowerings rewrite a body into a synthesized class and promote every
 // body local to a field on the instance — the generator CPS transform
 // (generator_transform.h) and the effects transform (effects_transform.h),

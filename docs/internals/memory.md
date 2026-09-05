@@ -106,6 +106,17 @@ its C++ uses two RAII forms: `JitOwnedVal` (an owned local released on
 every exit unless consumed) and `JitUnwindRelease` (a release that runs
 only if the helper throws).
 
+The release itself (`_culebra_value_release_impl`) answers the common
+case before it does anything else: a value still shared after this
+release is one decrement, and nothing more. Only a count reaching zero
+enters the teardown, and with it the trashcan (`culebra::Trashcan`, the
+CPython-style deferral that keeps a deep container chain's teardown off
+the C stack), whose depth bookkeeping is thread-local state — a
+`_tlv_get_addr` call on macOS. Paying that on every release of a live
+object was a measurable share of a field-heavy loop. Every refcounted
+type keeps its count at offset 0, the same invariant the collector reads
+through, so the question needs no dispatch on the tag.
+
 ## 3. The value model
 
 A value is 16 bytes, `JitValue { int64_t tag; int64_t data; }`.

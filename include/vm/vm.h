@@ -151,6 +151,12 @@ enum class Op : uint8_t {
                // contract and throws positionless; compile_object emits
                // SetOpPos with the literal's own position right before,
                // only for those four names (emit_object_set's condition).
+  SlotInit,    // ObjectSet for a literal built by ObjectNewShaped: the
+               // slot for consts[c] already exists at the index the same key
+               // list gives, so regs[a].slots[index] = regs[b] (absorbed)
+               // with the identical is_init semantics and no name lookup.
+               // d packs index, mutability and the name-keyed checks
+               // (Chunk::encode_slot_init).
   ObjectSetAny,// a non-IDENTIFIER literal key (String/Float/Number/Nil/Bool/
                // Tuple): regs[a][regs[b]] = regs[c] (both absorbed), mutable
                // iff d — object_set_any with is_init=true. Hashing an
@@ -517,6 +523,11 @@ enum class Op : uint8_t {
                // ordinary call's argument, a container-literal element, a
                // container store) but could still keep unboxed everywhere
                // else — spec §15.8 "reboxing at boundaries".
+  FieldsInit,  // the declared, initializer-less fields of regs[a]'s class
+               // (chunk.field_layout_specs[b]) appended in one step, each
+               // holding its type's zero — the run of `self.x = zero` stores
+               // a `new` body's prologue used to make one at a time. See
+               // culebra_runtime_object_fields_init.
   FieldInit,   // run the field-init closure regs[a] on receiver regs[b]
                // (run_field_init; both borrowed). Emitted at the top of a
                // `new` body, after parameter binding — interp's timing, so
@@ -2529,6 +2540,31 @@ struct Chunk {
     const char* class_name = nullptr;
   };
   std::vector<ValueBoxSpec> value_box_specs;
+  // One entry per Op::FieldsInit site (emit_declared_field_layout): the
+  // declared field names in declaration order, each one's zero value
+  // (a scalar, or the borrowed `''` literal out of `consts`), and the pair
+  // of Shapes the site moves an instance between — resolved lazily on the
+  // first execution, like ObjectShapeSpec's, and for the same reason.
+  struct FieldLayoutSpec {
+    mutable void* shape[2] = {nullptr, nullptr};
+    std::vector<const char*> keys;
+    std::vector<JitValue> zeros;
+  };
+  std::vector<FieldLayoutSpec> field_layout_specs;
+  // Op::SlotInit's `d`: the slot index, whether the property is mutable,
+  // and the name-keyed checks (culebra::prop_key_kind) — everything the
+  // store needs that the compiler already knows.
+  struct SlotInitOperand {
+    int32_t index;
+    bool mut;
+    int8_t key_kind;
+  };
+  static int32_t encode_slot_init(SlotInitOperand so) {
+    return (so.index << 3) | (so.key_kind << 1) | (so.mut ? 1 : 0);
+  }
+  static SlotInitOperand decode_slot_init(int32_t d) {
+    return {d >> 3, (d & 1) != 0, static_cast<int8_t>((d >> 1) & 3)};
+  }
   int32_t num_slots = 0;
   // Cell slots in creation order: a slot's rank, against a cleanup step's
   // `cells_before`, says whether it already owned a cell at that point in the
@@ -4520,34 +4556,71 @@ class Compiler {
   // through a method call is overwritten regardless of its mut flag. Emitted
   // either as the synthetic thunk's body or straight into a `new` body's
   // prologue (see fields_need_a_thunk); one function so the two cannot drift.
+  //
+  // A maximal run of initializer-less fields is one Op::FieldsInit (their
+  // layout is static: names, order, zero values); a field with an
+  // initializer is its own store, in place, so declaration order — and what
+  // an initializer sees of the fields declared below it — is unchanged.
   void emit_declared_field_stores(const std::vector<const peg::Ast*>& fields) {
+    std::vector<const peg::Ast*> run;
+    auto flush = [&] {
+      if (run.empty()) return;
+      emit_declared_field_layout(run);
+      run.clear();
+    };
     for (const auto* f : fields) {
-      TempScope fts(*this);
       auto mv = culebra::view_method(*f);
-      ExprResult v = mv.value
-                         ? compile_expr(*mv.value)
-                         : ExprResult{emit_zero_value(*f, mv.type_annotation),
-                                      true};
+      if (!mv.value) {
+        run.push_back(f);
+        continue;
+      }
+      flush();
+      TempScope fts(*this);
+      ExprResult v = compile_expr(*mv.value);
       emit(Op::ObjectSet, chunk_.self_slot, owned_src(*f, v),
            kconst_str(std::string(mv.name)), /*mut=*/1);
     }
+    flush();
+  }
+
+  // The stores for a run of initializer-less fields as one Op::FieldsInit:
+  // the instance takes the whole layout in one step instead of one appended
+  // slot per field. Semantics are the per-field stores' to the letter; the
+  // runtime falls back to those very stores where its fast path does not
+  // apply.
+  void emit_declared_field_layout(const std::vector<const peg::Ast*>& fields) {
+    Chunk::FieldLayoutSpec spec;
+    for (const auto* f : fields) {
+      auto mv = culebra::view_method(*f);
+      assert(!mv.value && "a prologue field carries no initializer");
+      spec.keys.push_back(reinterpret_cast<const char*>(
+          chunk_.consts[kconst_str(std::string(mv.name))].data));
+      spec.zeros.push_back(chunk_.consts[zero_const(mv.type_annotation)]);
+    }
+    auto idx = static_cast<int32_t>(chunk_.field_layout_specs.size());
+    chunk_.field_layout_specs.push_back(std::move(spec));
+    emit(Op::FieldsInit, chunk_.self_slot, idx);
+  }
+
+  // The constant a typed field with no initializer starts as (the shared
+  // zero_kind_for_type table).
+  int32_t zero_const(std::string_view type) {
+    switch (culebra::zero_kind_for_type(type)) {
+      case culebra::ZeroKind::Float:
+        return kconst({TAG_FLOAT, _culebra_double_to_bits(0.0)});
+      case culebra::ZeroKind::Bool: return kconst({TAG_BOOL, 0});
+      case culebra::ZeroKind::String: return kconst_str("");
+      case culebra::ZeroKind::Long: return kconst_long(0);
+      case culebra::ZeroKind::Nil: break;
+    }
+    return kconst({TAG_NIL, 0});
   }
 
   // A typed field with no initializer takes its type's zero (the JIT's
   // emit_zero_value over the shared zero_kind_for_type table).
   int32_t emit_zero_value(const peg::Ast& at, std::string_view type) {
     int32_t t = alloc_temp(at);
-    int32_t k = 0;
-    switch (culebra::zero_kind_for_type(type)) {
-      case culebra::ZeroKind::Float:
-        k = kconst({TAG_FLOAT, _culebra_double_to_bits(0.0)});
-        break;
-      case culebra::ZeroKind::Bool: k = kconst({TAG_BOOL, 0}); break;
-      case culebra::ZeroKind::String: k = kconst_str(""); break;
-      case culebra::ZeroKind::Long: k = kconst_long(0); break;
-      case culebra::ZeroKind::Nil: k = kconst({TAG_NIL, 0}); break;
-    }
-    emit(Op::LoadConst, t, k);
+    emit(Op::LoadConst, t, zero_const(type));
     return t;
   }
 
@@ -6793,6 +6866,23 @@ class Compiler {
       if (info.own_name_source == Src::Closure && !captured) {
         fc.grant_known_chunk(
             fc.push_binding({info.own_name, fc.chunk_.fn_slot, false}), idx);
+      } else if (!captured) {
+        // A member's or a dispatch's own name, read off the receiver into a
+        // plain slot of this frame: nothing captures it, so it needs no
+        // cell — a construction inside an operator pays no cell per call.
+        // Lazy, as below: the slot may hold the unbound sentinel.
+        int32_t slot = fc.alloc_slot(ast, info.own_name);
+        if (info.own_name_source == Src::Dispatch)
+          fc.emit(Op::MfSelf, slot);
+        else
+          fc.emit(Op::ClsSelf, slot, fc.chunk_.self_slot);
+        Binding& ob = fc.push_binding(
+            {info.own_name, slot, /*is_mut=*/false, /*is_cell=*/false,
+             /*lazy=*/true});
+        if (info.own_name_source == Src::Receiver && mo.owner_ctor_chunk >= 0)
+          ob.known.ctor = mo.owner_ctor_chunk;
+        else if (info.own_name_source == Src::Dispatch && mo.sole_multifn)
+          fc.grant_mono_chunk(ob, idx);
       } else {
         int32_t cslot = fc.alloc_cell_slot(ast, info.own_name);
         {
@@ -11758,6 +11848,7 @@ class Compiler {
             break;
           }
         }
+        int32_t spec_idx = -1;
         if (all_static_keys) {
           Chunk::ObjectShapeSpec spec;
           for (const auto& prop : ast.nodes) {
@@ -11772,8 +11863,7 @@ class Compiler {
                 spec.keys.end())
               spec.keys.push_back(data);
           }
-          int32_t spec_idx =
-              static_cast<int32_t>(chunk_.object_shape_specs.size());
+          spec_idx = static_cast<int32_t>(chunk_.object_shape_specs.size());
           chunk_.object_shape_specs.push_back(std::move(spec));
           emit(Op::ObjectNewShaped, t, spec_idx);
         } else {
@@ -11819,6 +11909,23 @@ class Compiler {
             // four protocol names, a plain property pays nothing).
             StampGuard pos(*this, ast);
             emit(Op::SetOpPos);
+          }
+          if (spec_idx >= 0) {
+            // The slot is already there (ObjectNewShaped), at the index the
+            // spec's key list gives — a duplicate key resolves to its first
+            // occurrence, the slot the sequential form's find_slot hit.
+            // Looked up by index each time: a nested literal in a value
+            // expression may have grown `object_shape_specs` since.
+            const auto& keys = chunk_.object_shape_specs[spec_idx].keys;
+            auto it = std::find_if(keys.begin(), keys.end(), [&](const char* k) {
+              return pv.key->token == k;
+            });
+            emit(Op::SlotInit, t, owned_src(*pv.value, val),
+                 kconst_str(pv.key->token),
+                 Chunk::encode_slot_init(
+                     {static_cast<int32_t>(it - keys.begin()), pv.is_mut,
+                      culebra::prop_key_kind(pv.key->token)}));
+            continue;
           }
           emit(Op::ObjectSet, t, owned_src(*pv.value, val),
                kconst_str(pv.key->token), pv.is_mut ? 1 : 0);
@@ -12057,7 +12164,7 @@ inline std::string dump(const Chunk& c) {
       "Le",        "Gt",        "Ge",         "ArrayNew",     "ArrayAppend",
       "ArrayPush", "ArrayExtend", "ArrayResize",
       "TupleNew",  "TuplePush", "SetNew",     "SetAdd",
-      "ObjectNew", "ObjectNewShaped", "ObjectSet", "ObjectSetAny", "ObjectMerge",
+      "ObjectNew", "ObjectNewShaped", "ObjectSet", "SlotInit", "ObjectSetAny", "ObjectMerge",
       "ModReg",    "ModGet",
       "RangeNew",  "ChkLong",   "NilChk",
       "Index",     "IndexWr",   "IndexCo",    "IndexSet",
@@ -12075,7 +12182,7 @@ inline std::string dump(const Chunk& c) {
       "ImmutErr",  "UnboundErr", "MultifnReg", "MfSelf",       "ClsSelf",      "WkErr",
       "ClassMeta", "DeriveFn",  "RegPack",    "EnumVariant",  "TypeMatch",
       "ClassObj",  "BindStatic",
-      "MakeInst",  "ValueBox",  "FieldInit", "SelfMerge",
+      "MakeInst",  "ValueBox",  "FieldsInit", "FieldInit", "SelfMerge",
       "TraitReset", "TraitDefault", "TraitReg", "PosSnap", "ChkTypeAt",
       "ChkArg",    "JumpIfFilled", "ArgsRest",   "KwRest",     "RecEnter",
       "RecLeave",
@@ -13164,6 +13271,19 @@ struct Exec {
               reinterpret_cast<JitObject*>(regs[in.a].data),
               reinterpret_cast<const char*>(c.consts[in.c].data), in.d != 0,
               vt, vd, line, col, /*is_init=*/true);
+          ++pc;
+          break;
+        }
+        case Op::SlotInit: {
+          // ObjectSet's static-key form; the same nil-before-call rule.
+          int8_t vt = static_cast<int8_t>(regs[in.b].tag);
+          int64_t vd = regs[in.b].data;
+          regs[in.b] = JitValue{TAG_NIL, 0};
+          auto so = Chunk::decode_slot_init(in.d);
+          culebra_runtime_object_slot_init(
+              reinterpret_cast<JitObject*>(regs[in.a].data), so.index,
+              reinterpret_cast<const char*>(c.consts[in.c].data), so.mut, vt,
+              vd, so.key_kind);
           ++pc;
           break;
         }
@@ -14303,6 +14423,15 @@ struct Exec {
               static_cast<int64_t>(spec.keys.size()),
               reinterpret_cast<JitObject*>(regs[in.d].data), spec.class_name,
               &regs[in.b]);
+          ++pc;
+          break;
+        }
+        case Op::FieldsInit: {
+          auto& spec = c.field_layout_specs[in.b];
+          culebra_runtime_object_fields_init(
+              reinterpret_cast<JitObject*>(regs[in.a].data), spec.shape,
+              spec.keys.data(), static_cast<int64_t>(spec.keys.size()),
+              spec.zeros.data());
           ++pc;
           break;
         }

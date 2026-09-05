@@ -405,18 +405,18 @@ captureされた変数は6つのop — `CellNew`、`CellGet`、`CellSet`、
 
 ### 5.3 opcodeのファミリー
 
-143個のopcodeを分類すると:
+148個のopcodeを分類すると:
 
 | ファミリー | op | 備考 |
 |---|---|---|
 | 値 | `LoadConst` `Move` `Take` `Retain` `Release` | §5.2 |
 | 算術・ビット演算・比較 | `Neg` `Not` `Add` … `Pow` `MatMul` `BitAnd` … `Shr` `BitNot` `Eq` … `Ge` `JumpIfSame` | それぞれ1回のランタイムdispatch。算術と比較のopは両Long・両数値の腕をまずinlineで決める（`Neg`はLongとFloatの腕）。算術opの`d=1`は複合代入のin-place Tensorステップを示す |
-| コンテナ | `ArrayNew/Append/Push/Extend/Resize` `TupleNew/Push` `SetNew/Add` `ObjectNew/Set/SetAny/Merge` `RangeNew` `ChkLong` | コンテナは要素の`+1`を吸収する |
+| コンテナ | `ArrayNew/Append/Push/Extend/Resize` `TupleNew/Push` `SetNew/Add` `ObjectNew/NewShaped/Set/SetAny/Merge` `SlotInit` `RangeNew` `ChkLong` | コンテナは要素の`+1`を吸収する。`SlotInit`はShapeを事前構築したリテラル向けの、スロット番号による`ObjectSet`（§5.3.5） |
 | アクセス | `Index` `IndexWr` `IndexCo` `IndexSet` `PropSet` `PropWr` `PropCo` `PropVal` `PropRaw` `HasProp` `NsWrChk` `NilChk` | 添字とプロパティアクセスの読み/書き/coalescing-write形。`PropVal`はgetterを呼ぶこともある素のプロパティ読み取り |
 | 呼び出し | `Call` `CallM` `CallKw` `CallRecv` `Ret` `RecEnter` `RecLeave` `ArgsRest` `KwRest` `JumpIfFilled` `ChkArg` `ChkTypeAt` `PosSnap` `BoundPos` | JitFn ABI。`CallM`はreceiver上のメソッド（ユーザー定義または組み込み）を解決する。`RecEnter`はパラメータが束縛された後、フレームを再帰上限に対してカウントする |
 | 組み込みメソッド | `MethGate` `ChkParam` `BMeth` `BArity` `CbType` `ArityChk` `BareMethChk` | §5.4 |
 | クロージャと名前 | `MakeClosure` `CellNew` `CellGet` `CellSet` `CellRelease` `BindCapture` `ImmutErr` `UnboundErr` `NsGet` `LazyNsReg` `FnHandle` `ModReg` `ModGet` | §4.1、§4.2。`ModReg`/`ModGet`はモジュールのexportオブジェクトを公開/読み取る |
-| 関数とクラス | `MultifnReg` `MfSelf` `ClsSelf` `ClassMeta` `ClassObj` `MakeInst` `FieldInit` `BindStatic` `SelfMerge` `DeriveFn` `RegPack` `EnumVariant` `TraitReg` `TraitDefault` `TraitReset` `ClsParamsChk` `ClsParamsWalk` `WkErr` | `MultifnReg`はランタイムのarity-dispatchレジストリに本体を登録する。クラス宣言はmetaを構築しメンバを登録する |
+| 関数とクラス | `MultifnReg` `MfSelf` `ClsSelf` `ClassMeta` `ClassObj` `MakeInst` `FieldsInit` `FieldInit` `BindStatic` `SelfMerge` `DeriveFn` `RegPack` `EnumVariant` `TraitReg` `TraitDefault` `TraitReset` `ClsParamsChk` `ClsParamsWalk` `WkErr` | `MultifnReg`はランタイムのarity-dispatchレジストリに本体を登録する。クラス宣言はmetaを構築しメンバを登録する |
 | パターン | `TypeMatch` `SeqChk` `SeqGet` `SeqRest` `ObjGet` `DestrErr` `JumpIfTag` | `match`の腕とdestructuring。テストが失敗すると次の腕へジャンプし、その時点で何も生きていない |
 | 制御フロー | `Jump` `JumpIfFalse` `JumpIfTrue` `JumpIfNil` `JumpIfNotNil` `Halt` | `JumpIfFalse`は共有のtruthiness変換を運ぶ（非Bool条件はTypeError） |
 | ループ | `ForPrep` `ForLoop` `ForOpen` `ForNext` `ForDispose` `Safepoint` | Long範囲の数え上げ`for`は融合されたペア（sinkの`for _ in 0..n`も含む）。それ以外は12個のslotからなるカーソル（`ForSlot`）でプロトコルを歩く |
@@ -891,6 +891,58 @@ under-captureは決して起こさない。呼び出され側自身の`value_met
 ——どれも上記の境界の形すべてでmaterializeし、`--vm-dump`で
 `ValueBox`が出ることを出力の一致だけでなくバイトコード上でも
 裏付けている。
+
+### 5.3.5 構築はレイアウトを実行前に確定する
+
+ここまでは値をunboxする話だった。この節はboxed経路そのものを、必要以上に
+遅くしないための話である。プログラムが作るオブジェクトの大半（リテラル、
+配列に保持されるクラスインスタンス）はrunの資格を満たさない。そうした
+オブジェクトについて、宣言時点で分かっているのに構築のたびに名前から
+導き直していたことが3つあった。
+
+**リテラルのスロットは番号である。** `{class: 'V', x: a, y: b}`は最終
+Shapeを一度に確保していた（`ObjectNewShaped`）が、各プロパティの格納は
+`object_set`経由で、Shapeの名前列を走査してスロットを探し、名前に依存する
+2つの契約検査（well-known名、`drop`）をキー文字列から導き直していた。
+Shapeを構築したキー列そのものが各キーの番号を与えるので、キーが全て
+識別子のリテラルは番号で格納する: `SlotInit`はスロット番号・プロパティの
+可変性・2つの答え（`culebra::prop_key_kind`）を1オペランドに載せ、ランタイム
+側（`culebra_runtime_object_slot_init`）は`object_set`のis_init経路が
+していた上書きから検索だけを除いたものである。重複キーは今も最初の出現に
+解決され、後勝ちで上書きされる。
+
+**クラスの宣言フィールドは1つのレイアウトである。** `class C { x: Float;
+y: Float }`は`new`のたびに、フィールドごとに1つの`ObjectSet`、すなわち
+レジストリのロック下でのshape遷移を1回ずつ払っていた。初期化子を持たない
+フィールドの極大な連続区間は、いま1つの`FieldsInit`である
+（`Chunk::FieldLayoutSpec`: 名前、各型のゼロ値、そしてサイトが初回実行時に
+キャッシュするShapeの対、すなわち新しいインスタンスが必ず持ってくる
+class-onlyのShapeと、その区間が遷移させる先のShape）。初期化子を持つ
+フィールドはその場で独立した格納のままなので、宣言順と、初期化子から
+見える下のフィールド（`nil`、docs/language.md §10）は変わらない。それ以外の
+状態で到着したインスタンスは、ランタイムが保持するフィールドごとの格納に
+落ちる。
+
+**クラスのmetaは特殊メソッドを表で答える。** インスタンスへの演算子
+（`v + w`、`a == b`、`str(x)`）は`_lookup_special`を通ってクラスのdunderに
+達するが、これは評価のたびにインスタンス自身の名前列とmetaの名前列を
+歩いていた。`build_class_meta`はいま`Special`の全集合（演算子dunder、
+`hash`/`cmp`、`__str__`、`__call__`、`__index__`/`__setindex__`）をmetaが
+所有する`JitSpecialTable`に一度だけ解決し、クラスが`drop`を束縛しているか
+（`methods_drop`）も同時に答える。後者は構築のたびにメソッド名を走査して
+訊いていた。インスタンス側の優先順位は保たれる: Shapeは自分の名前列に
+特殊名が含まれるかを記録し（`Shape::any_special`）、自分のShapeがそれを
+含むインスタンスか辞書モードのオブジェクトだけが名前の走査を取るので、
+あるインスタンスへの`c.__add__ = f`は従来どおりクラス側を隠す。同じ理屈で、
+メンバが自分のクラス名を読む束縛は、本体内のclosureがそれを捕獲しない限り
+cellでなくフレームの素のslotになる（`ClsSelf`でフレームに読み、lazyなslot
+同様`UnboundErr`で守る）: 演算子本体の中の`Name.new(...)`は呼び出しごとの
+cell確保を払わなくなった。
+
+3つとも、§5.3.1の意味でコンパイル側の「一度決めたら戻らない」形である:
+命令が既に言っていることをランタイムが名前から導き直すことはなく、両
+エンジンは同じヘルパを呼ぶ。`tests/test_object_layout.cul`が、置き換えた
+検索それぞれが決めていた観測可能な振る舞いを固定する。
 
 ### 5.4 組み込みメソッドはテーブルである
 

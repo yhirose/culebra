@@ -1214,6 +1214,26 @@ struct Lowering {
                b.getInt1(true)});
           break;
         }
+        case Op::SlotInit: {
+          // ObjectSet's static-key form: the slot index and the name-keyed
+          // checks are both in `d` (Chunk::slot_init_operand). The value is
+          // consumed on every exit, so the slot is nil'd first, as above.
+          auto obj = b.CreateIntToPtr(j.extract_data(load_slot(in.a)), ptrTy);
+          auto v = load_slot(in.b);
+          auto vt = j.extract_tag(v);
+          auto vd = j.extract_data(v);
+          b.CreateStore(j.make_nil(), slots[in.b]);
+          auto* nm = reinterpret_cast<const char*>(c.consts[in.c].data);
+          auto keyPtr = j.get_or_create_global_str(nm, ".vm.objkey");
+          auto so = Chunk::decode_slot_init(in.d);
+          j.emit_call(
+              j.module_->getOrInsertFunction(
+                  rt::object_slot_init, b.getVoidTy(), ptrTy, i64Ty, ptrTy,
+                  b.getInt1Ty(), b.getInt8Ty(), i64Ty, b.getInt8Ty()),
+              {obj, b.getInt64(so.index), keyPtr, b.getInt1(so.mut), vt, vd,
+               b.getInt8(so.key_kind)});
+          break;
+        }
         case Op::ObjectSetAny: {
           // object_set_any consumes both the key and the value on every
           // exit (including the positionless unhashable/well-known throw)
@@ -3644,11 +3664,8 @@ struct Lowering {
 
           b.SetInsertPoint(fastBB);
           // The two name-keyed contract checks object_set_fast owes, answered
-          // here where the name is a literal (bit 0: well-known, bit 1: drop).
-          std::string_view keysv(nm);
-          int8_t key_kind =
-              static_cast<int8_t>((culebra::is_well_known_prop(keysv) ? 1 : 0) |
-                                  (keysv == "drop" ? 2 : 0));
+          // here where the name is a literal.
+          int8_t key_kind = culebra::prop_key_kind(nm);
           j.emit_call(
               j.module_->getOrInsertFunction(
                   rt::object_set_fast, b.getVoidTy(), ptrTy, ptrTy, ptrTy,
@@ -4289,6 +4306,41 @@ struct Lowering {
                j.emit_str_literal(_str_sv(spec.class_name)), fieldsPtr},
               "vm.value.box");
           b.CreateStore(inst, slots[in.a]);
+          break;
+        }
+        case Op::FieldsInit: {
+          // The site's two-shape cache is a private global pair, filled on
+          // first execution the same lazy way ObjectNewShaped's is (a Shape*
+          // is a per-process pointer); the zero values are an immutable
+          // `[2n x i64]` of (tag, data) pairs, the C-side JitValue layout.
+          const auto& spec = c.field_layout_specs[in.b];
+          auto n = static_cast<int64_t>(spec.keys.size());
+          auto cacheTy = ArrayType::get(ptrTy, 2);
+          auto* cacheGlobal = new llvm::GlobalVariable(
+              *j.module_, cacheTy, /*isConstant=*/false,
+              llvm::GlobalValue::PrivateLinkage,
+              llvm::ConstantAggregateZero::get(cacheTy),
+              ".fields.init.cache." + std::to_string(j.fields_init_counter_++));
+          std::vector<Constant*> keyPtrs;
+          for (const char* k : spec.keys)
+            keyPtrs.push_back(j.get_or_create_global_str(k, ".fields.init.key"));
+          auto keysArray = j.build_str_ptr_array(keyPtrs, ".fields.init.keys");
+          std::vector<Constant*> words;
+          for (const auto& z : spec.zeros) {
+            words.push_back(b.getInt64(z.tag));
+            words.push_back(b.getInt64(z.data));
+          }
+          auto zerosTy = ArrayType::get(i64Ty, words.size());
+          auto* zerosGlobal = new llvm::GlobalVariable(
+              *j.module_, zerosTy, /*isConstant=*/true,
+              llvm::GlobalValue::PrivateLinkage,
+              llvm::ConstantArray::get(zerosTy, words), ".fields.init.zeros");
+          j.emit_call(
+              j.module_->getOrInsertFunction(rt::object_fields_init,
+                                             b.getVoidTy(), ptrTy, ptrTy,
+                                             ptrTy, i64Ty, ptrTy),
+              {b.CreateIntToPtr(j.extract_data(load_slot(in.a)), ptrTy),
+               cacheGlobal, keysArray, b.getInt64(n), zerosGlobal});
           break;
         }
         case Op::FieldInit: {

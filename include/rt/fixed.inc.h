@@ -773,7 +773,7 @@ inline bool _jit_try_object_setindex(JitObject* obj, int8_t key_tag,
   // skip the slot probe for plain dicts; this keeps the helper self-safe).
   if (!obj->proto()) return false;
   auto* cls = _lookup_special(TAG_OBJECT, reinterpret_cast<int64_t>(obj),
-                              "__setindex__");
+                              Special::SetIndex);
   if (!cls) return false;
   // Borrows the key and value: the caller consumes them on the normal path and
   // guards them over this call for the throw path.
@@ -932,7 +932,7 @@ inline bool _jit_try_object_index(JitObject* obj, int8_t key_tag,
   // class_tag gate); a plain dict never routes to __index__.
   if (!obj->proto()) return false;
   auto r = _try_special_binop(TAG_OBJECT, reinterpret_cast<int64_t>(obj),
-                              key_tag, key_data, "__index__");
+                              key_tag, key_data, Special::Index);
   if (!r) return false;
   *out_tag = r->tag;
   *out_data = r->data;
@@ -1177,6 +1177,62 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_fast(
     }
   }
   if (key_kind & 2) _jit_owned_bind_drop(obj);
+}
+
+// One property of an object literal whose whole key set is static
+// (ObjectNewShaped): the slot is already there, at an index the compiler
+// resolved from the same key list, so the store is an indexed overwrite with
+// object_set's is_init semantics — last-wins on a duplicate key, the
+// well-known contract on the four protocol names, `drop` registration —
+// without the name lookup. `key_kind` carries the two name-keyed answers
+// (culebra::prop_key_kind), as object_set_fast's does. Consumes the value's
+// +1 on every exit, the contract throw included.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_slot_init(
+    JitObject* obj, int64_t idx, const char* key, bool mut, int8_t tag,
+    int64_t data, int8_t key_kind) {
+  if (key_kind & 1) _culebra_check_well_known_prop(key, tag, data);
+  auto& e = obj->slots[static_cast<size_t>(idx)];
+  _culebra_value_release_impl(e.value.tag, e.value.data);
+  e.value = {tag, data};
+  e.mut = mut;
+  if (key_kind & 2) _jit_owned_bind_drop(obj);
+}
+
+// The declared fields of a class whose declarations carry no initializer,
+// put on a fresh instance in one step — each holding its type's zero,
+// mutable, in declaration order, exactly what the run of per-field
+// `self.x = zero` stores in `new`'s prologue produced, one locked shape
+// transition at a time. The site caches the two shapes it moves between (a
+// fresh instance's, with its `class` slot alone, and the one the field list
+// transitions it to); an instance arriving with any other shape, or with
+// any state the fast path does not reproduce, takes the per-field stores.
+// `zeros[i]` is `keys[i]`'s value: a scalar, or the borrowed `''` literal.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_fields_init(
+    JitObject* obj, void** shape_cache, const char* const* keys,
+    int64_t n_keys, const JitValue* zeros) {
+  auto* from = static_cast<culebra::Shape*>(shape_cache[0]);
+  if (from && obj->shape == from && !obj->key_order && !obj->frozen) {
+    obj->slots.reserve(obj->slots.size() + static_cast<size_t>(n_keys));
+    for (int64_t i = 0; i < n_keys; i++)
+      obj->slots.push_back({zeros[i], /*mut=*/true});
+    obj->shape = static_cast<culebra::Shape*>(shape_cache[1]);
+    obj->mut_count += n_keys;
+    return;
+  }
+  auto* before = obj->shape;
+  size_t n_before = obj->slots.size();
+  for (int64_t i = 0; i < n_keys; i++)
+    culebra_runtime_object_set(obj, keys[i], /*mut=*/true,
+                               static_cast<int8_t>(zeros[i].tag),
+                               zeros[i].data, 0, 0, /*is_init=*/true);
+  // Prime the cache only from a run the fast path reproduces exactly: every
+  // key appended (none existed, so no overwrite), still shaped, and no
+  // insertion-order sidecar to keep in step.
+  if (!obj->is_dict && !obj->key_order && before &&
+      obj->slots.size() == n_before + static_cast<size_t>(n_keys)) {
+    shape_cache[0] = before;
+    shape_cache[1] = obj->shape;
+  }
 }
 
 // The two receivers a property write never stores a slot on. `view.field = v`
@@ -1660,6 +1716,16 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_build_class_meta(
   // owned-stack registration) that `culebra_runtime_object_set` applied
   // when binding the "drop" method.
   _jit_owned_unbind_drop(meta);
+  // The method set is fixed from here on, so the two questions every
+  // construction and every operator ask of it are answered once.
+  meta->is_class_meta = true;
+  meta->methods_drop = _find_property(meta, "drop") != nullptr;
+  meta->specials = new JitSpecialTable();
+  for (size_t s = 0; s < static_cast<size_t>(Special::Count); s++) {
+    auto* e = _find_property(meta, kSpecialNames[s]);
+    if (e && e->value.tag == TAG_FUNC)
+      meta->specials->fn[s] = reinterpret_cast<JitClosure*>(e->value.data);
+  }
   return meta;
 }
 
@@ -1725,7 +1791,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
   }
   // Mirror inherited `drop` so the destructor's `has_drop` gate fires,
   // and register the instance on the owned stack (deterministic drop).
-  if (class_meta && _find_property(class_meta, "drop"))
+  if (class_meta && class_meta->methods_drop)
     _jit_owned_bind_drop(inst);
 
   // `class_name` is a process-lifetime LLVM module global; TAG_STRING
@@ -1747,38 +1813,40 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
 
   JitValue self_val = {TAG_OBJECT, reinterpret_cast<int64_t>(inst)};
   // Each _jit_invoke consumes one retained `self` ref (the callee's slot
-  // release); the single unwind guard covers the instance's original +1
-  // across both calls.
-  JitUnwindRelease g{self_val};
-
+  // release); the instance's original +1 is released on the unwind edge of
+  // either call. A catch, not an uncaught_exceptions() probe: the probe
+  // reads thread-local state on every construction, the catch costs the
+  // normal path nothing.
   if (finit_tag == TAG_FUNC) {
     auto* finit_cls = reinterpret_cast<JitClosure*>(finit_data);
     culebra_runtime_value_retain(self_val.tag, self_val.data);
-    // A field-init throw unwinds before anything has consumed the
-    // caller-transferred arg +1s (the `new` body normally absorbs them,
-    // but it never runs) — release them on that edge only.
-    struct ArgsRelease {
-      int64_t n;
-      JitValue* a;
-      int exc = std::uncaught_exceptions();
-      ~ArgsRelease() {
-        if (std::uncaught_exceptions() <= exc) return;
-        for (int64_t i = 0; i < n; i++)
-          culebra_runtime_value_release(a[i].tag, a[i].data);
-      }
-    } args_guard{n_args, args};
-    auto r = _jit_invoke(finit_cls, self_val, 0, nullptr);
-    _culebra_value_release_impl(r.tag, r.data);
+    try {
+      auto r = _jit_invoke(finit_cls, self_val, 0, nullptr);
+      _culebra_value_release_impl(r.tag, r.data);
+    } catch (...) {
+      // A field-init throw unwinds before anything has consumed the
+      // caller-transferred arg +1s (the `new` body normally absorbs them,
+      // but it never runs) — release them on this edge only.
+      for (int64_t i = 0; i < n_args; i++)
+        culebra_runtime_value_release(args[i].tag, args[i].data);
+      culebra_runtime_value_release(self_val.tag, self_val.data);
+      throw;
+    }
   }
 
   if (body_tag == TAG_FUNC) {
     auto* body_cls = reinterpret_cast<JitClosure*>(body_data);
     // Body consumes `self` via the slot +1 on function exit, so retain
     // before handing it off. If the body throws, the instance's +1 is
-    // otherwise stranded — the guard releases it on the unwind edge.
+    // otherwise stranded — released on the unwind edge.
     culebra_runtime_value_retain(self_val.tag, self_val.data);
-    auto result = _jit_invoke(body_cls, self_val, n_args, args);
-    _culebra_value_release_impl(result.tag, result.data);
+    try {
+      auto result = _jit_invoke(body_cls, self_val, n_args, args);
+      _culebra_value_release_impl(result.tag, result.data);
+    } catch (...) {
+      culebra_runtime_value_release(self_val.tag, self_val.data);
+      throw;
+    }
   } else {
     // Default constructor: release any args the caller transferred.
     for (int64_t i = 0; i < n_args; i++) {
@@ -1836,7 +1904,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_materialize_value(
     inst->slots.push_back(JitObjectEntry{field_values[i - 1], /*mut=*/false});
   inst->set_proto(class_meta);
   if (class_meta) class_meta->refcount++;
-  if (class_meta && _find_property(class_meta, "drop"))
+  if (class_meta && class_meta->methods_drop)
     _jit_owned_bind_drop(inst);
   inst->fields_closed = true;
   inst->frozen = true;
