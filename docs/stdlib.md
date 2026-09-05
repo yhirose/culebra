@@ -7012,7 +7012,7 @@ inspect(idx.search("the"))           # => []
 
 | Field | | |
 |---|---|---|
-| `splitter` | `fn (text: String) -> Array` | cuts text into terms. Each element is `{term, position, length}` — the term string plus the byte range it came from. Omit it for the built-in splitting described above. |
+| `splitter` | `fn (text: String) -> Array` | cuts text into terms. Each element is `{term, position, length}` — the term string plus the byte range it came from. Omit it for the built-in splitting described above. Also takes a `Search.segmenter` (below) or a splitter written in C++ (next paragraph). |
 | `normalizer` | `fn (term: String) -> String` | runs on every term, before the filters. Omit it for the built-in lowercasing. |
 | `filters` | `Array` of `fn (term: String) -> String \| Nil` | applied in order after the normalizer. Return a replacement term, or `nil` to drop it. |
 
@@ -7029,6 +7029,11 @@ runs on every token of every document, which is why the default is native; a
 `splitter` costs one call per document and per query token. They are the
 convenient path, not the fast one — a thousand-word document means a thousand
 crossings back into the program.
+
+A splitter written in C++ runs natively instead: a class deriving from
+`ISplitter` and declared with `wrap<T>` gives a handle the `splitter` slot
+accepts as it is. The contract and the handle's lifetime are in [Plugging a
+splitter into Search](deployment.md#plugging-a-splitter-into-search).
 
 `Search.Index.load(path, analyzer)` takes one too. The saved file records
 nothing about the analyzer it was built with, so loading with a different one

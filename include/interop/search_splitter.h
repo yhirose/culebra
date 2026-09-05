@@ -5,6 +5,12 @@
 // all stay out; <functional> and <string_view> are the whole dependency, and
 // tools/checks/check_search_splitter_standalone.sh holds them there.
 //
+// A class that derives from ISplitter and is declared with wrap<T> (wrap.h)
+// is a splitter Search accepts as it is: its handle goes in the analyzer's
+// `splitter` slot, and the index calls `split` natively (docs/deployment.md
+// §3, "Plugging a splitter into Search"). Nothing else is declared — deriving
+// from this class is the declaration.
+//
 // A splitter cuts text into the terms an index holds, each with the byte range
 // it came from. The same one runs when a document is added and when a query is
 // parsed — an index built with one set of term boundaries and searched with

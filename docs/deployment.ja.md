@@ -930,6 +930,53 @@ optional引数は末尾に連続していなければならず、この2つの�
 
 このワークフローのend-to-end検証は`tests/wrap_test.sh`が行います。
 
+### Searchにsplitterを挿す
+
+`Search`は解析器からsplitterを受け取りますが（[stdlib.ja.md §38](stdlib.ja.md#38-search)）、
+そのsplitterは自分のクラスでもかまいません。`culebra::search::ISplitter`——
+`<interop/search_splitter.h>`、culebraの他のヘッダを何もincludeしないヘッダ——を継承し、
+上と同じように`wrap<T>`で宣言します。それ以外に宣言するものはありません。契約を
+継承していることが、そのハンドルを解析器の`splitter`に渡せるものにし、索引は`split`を
+ネイティブに呼びます。文書ごとにプログラムへ戻ることはありません。
+
+```cpp
+// stemmer_binding.cpp
+#include <interop/search_splitter.h>
+#include <interop/wrap.h>
+
+class Stemmer : public culebra::search::ISplitter {
+ public:
+  // `text`を`offset`から末尾まで切る: 語ごとに emit(term, position, length) を
+  // 位置の昇順で呼び、消費したバイト数を返す。
+  size_t split(std::string_view text, size_t offset,
+               const culebra::search::SplitEmit& emit) const override {
+    // ... 解析器のループ ...
+    return text.size() - offset;
+  }
+};
+
+namespace {
+const bool registered = [] {
+  culebra::wrap<Stemmer>("Text", "Stemmer").ctor();
+  return true;
+}();
+}
+```
+
+```culebra
+# doctest: skip
+let idx = Search.Index.new(analyzer: { splitter: Text.Stemmer.new() })
+```
+
+契約はヘッダのコメントにあります。同じsplitterが文書を足すときと問い合わせを解析する
+ときの両方で走るので、決定的で、複数スレッドから呼べる必要があります。範囲は`text`への
+UTF-8バイトオフセットで、UTF-16で話す解析器は出口で変換します。語は範囲が指すバイト列と
+同じでなくてかまいません——形態素解析器は原形を索引に入れ、範囲は表層のままにするので、
+原形で検索すると書かれたとおりの文字列がハイライトされます——が、範囲は昇順で重ならない
+こと。エンジンはそれを信用しません。直前の語と重なる・順序が戻る・書記素クラスタの境界で
+切れていない語は索引に入れず捨て、両側で同じように扱います。実体はあなたのものです。
+ハンドルをdropすると、それで作った索引の次の`add`か`search`は`ClosedError`になります。
+
 ## 4. 共有 runtime archive レイアウト
 
 上記3つのワークフローはすべて、生成バイナリや埋め込みバイナリが

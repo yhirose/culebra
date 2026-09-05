@@ -1,0 +1,87 @@
+// Conformance: a wrapped C++ splitter in the analyzer's `splitter` slot.
+// `__Foreign.Splitter` (include/interop/foreign_fixture.h) derives from
+// ISplitter and is declared with wrap<T> like any user's class; that alone
+// makes its handle something Search.Index.new(analyzer:) accepts, and the
+// index calls it natively -- no call back into the program per document.
+// See docs/deployment.md §3 and docs/stdlib.md.
+
+let found = fn (hits) {
+  hits.map(fn (h) {
+    h.key
+  }).sorted()
+}
+
+// The fixture cuts on whitespace and emits a crude stem while each range stays
+// on the surface word: the contract's "the term need not be the bytes its
+// range points at".
+let splitter = __Foreign.Splitter.new(false)
+let idx = Search.Index.new(analyzer: { splitter: splitter })
+idx.add("a", "The fox jumps over lazy dogs")
+idx.add("b", "A dog was walking home")
+
+// Both sides go through the same splitter: a query is stemmed too.
+assert_eq(found(idx.search("jump")), ["a"])
+assert_eq(found(idx.search("jumps")), ["a"])
+assert_eq(found(idx.search("dog")), ["a", "b"])
+assert_eq(found(idx.search("walk")), ["b"])
+assert_eq(idx.search("jum"), [])
+
+// Ranges point at the surface text, so a search for the stem highlights the
+// word as written.
+let text = "The fox jumps over lazy dogs"
+let r = idx.search("jump")[0].ranges[0]
+assert_eq(text.slice(r.position, r.position + r.length), "jumps")
+
+// A phrase closes over consecutive words.
+assert_eq(found(idx.search("\"fox jump\"")), ["a"])
+assert_eq(idx.search("\"jump fox\""), [])
+
+// --- the engine does not trust the answer ---------------------------------
+// With `overlap` the fixture also emits a term over each word's first byte,
+// overlapping the word: the engine drops it, so it is neither found nor a
+// range, and the good terms are unaffected.
+let sloppy = __Foreign.Splitter.new(true)
+let checked = Search.Index.new(analyzer: { splitter: sloppy })
+checked.add("a", "The fox jumps over lazy dogs")
+assert_eq(checked.search("overlap"), [])
+assert_eq(found(checked.search("jump")), ["a"])
+assert_eq(checked.search("jump")[0].ranges.size(), 1)
+checked.close()
+sloppy.drop()
+
+// --- lifetime ----------------------------------------------------------------
+// The instance is the wrapper's: dropping the handle does not leave the index
+// a copy, so the next use of the index reports it, as any use of a dropped
+// instance does.
+splitter.drop()
+assert_throws("ClosedError", fn () {
+  idx.search("jump")
+})
+assert_throws("ClosedError", fn () {
+  idx.add("c", "more text")
+})
+idx.close()
+
+// A handle made inside the analyzer literal is kept by it, so the index it
+// built stays usable.
+let later = Search.Index.new(analyzer: {
+  splitter: __Foreign.Splitter.new(false)
+})
+later.add("a", "some words")
+assert_eq(found(later.search("word")), ["a"])
+later.close()
+
+// --- errors ------------------------------------------------------------------
+// A wrapped class that is not a splitter is not accepted.
+assert_throws("TypeError", fn () {
+  Search.Index.new(analyzer: { splitter: __Foreign.Counter.new(1) })
+})
+// An already-dropped one is accepted at build time (nothing is resolved
+// there) and reported at the first use.
+let closed = __Foreign.Splitter.new(false)
+closed.drop()
+let built = Search.Index.new(analyzer: { splitter: closed })
+assert_throws("ClosedError", fn () {
+  built.add("a", "x")
+})
+built.close()

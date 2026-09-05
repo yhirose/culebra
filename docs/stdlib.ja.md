@@ -6775,7 +6775,7 @@ inspect(idx.search("the"))           # => []
 
 | 欄 | | |
 |---|---|---|
-| `splitter` | `fn (text: String) -> Array` | 文章を語に切る。要素は`{term, position, length}`で、語の文字列と、それが切り出されたバイト範囲。省くと上に書いた組み込みの切り方になる |
+| `splitter` | `fn (text: String) -> Array` | 文章を語に切る。要素は`{term, position, length}`で、語の文字列と、それが切り出されたバイト範囲。省くと上に書いた組み込みの切り方になる。`Search.segmenter`（下）や、C++で書いたsplitter（次の段落）も渡せる |
 | `normalizer` | `fn (term: String) -> String` | 語ごとに、filtersより先に走る。省くと組み込みの小文字化 |
 | `filters` | `fn (term: String) -> String \| Nil`のArray | normalizerのあとに順に適用する。置き換えた語を返すか、`nil`を返して捨てる |
 
@@ -6790,6 +6790,10 @@ inspect(idx.search("the"))           # => []
 走る。既定がネイティブなのはそのため。`splitter`は1文書につき1回、問い合わせの
 1語につき1回。手軽な経路であって速い経路ではない——千語の文書は千回プログラムへ
 戻ってくる。
+
+C++で書いたsplitterはネイティブに走る。`ISplitter`を継承して`wrap<T>`で宣言した
+クラスのハンドルは、そのまま`splitter`に渡せる。契約とハンドルの寿命は
+[Searchにsplitterを挿す](deployment.ja.md#searchにsplitterを挿す)にある。
 
 `Search.Index.load(path, analyzer)`も解析器を取る。保存したファイルは、どの解析器で
 作られたかを一切記録しない。違うものを渡して開くと、誰にも気づけないまま壊れた結果が

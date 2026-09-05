@@ -23,6 +23,7 @@ namespace culebra {
 inline bool register_foreign_fixture() {
   using foreign_fixture::Box;
   using foreign_fixture::Counter;
+  using foreign_fixture::Splitter;
   wrap<Counter>("__Foreign", "Counter")
       .ctor<long>({"start"})
       .method<&Counter::value>("value")
@@ -48,6 +49,8 @@ inline bool register_foreign_fixture() {
       .borrowed_method<&Box::inner>("inner")
       .borrowed_method<&Box::read_inner>("read_inner")
       .borrowed_method<&Box::slot>("slot", {"i"});
+  // A Search splitter (interop/search_splitter.h): no method of its own.
+  wrap<Splitter>("__Foreign", "Splitter").ctor<bool>({"overlap"});
   return true;
 }
 

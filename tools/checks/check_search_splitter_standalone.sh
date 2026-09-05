@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# include/stdlib/search_splitter.h is what a library outside this repo includes
+# include/interop/search_splitter.h is what a library outside this repo includes
 # to implement a splitter for Search. Its whole value is that it needs nothing
 # else -- not searchlib, not the runtime, not the value representation -- and
 # nothing else would notice the day it stops being true: search.h includes it,

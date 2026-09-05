@@ -952,6 +952,59 @@ deduced ones get for free:
 `tests/wrap_test.sh` runs the end-to-end pipeline check for this
 workflow.
 
+### Plugging a splitter into Search
+
+`Search` takes its text splitter from the analyzer ([stdlib.md
+§38](stdlib.md#38-search)), and that splitter can be a class of yours: derive
+from `culebra::search::ISplitter` — `<interop/search_splitter.h>`, a header
+that includes nothing else of culebra's — and declare the class with
+`wrap<T>` as above. Nothing else is declared. Deriving from the contract is
+what makes the handle one the analyzer's `splitter` slot accepts, and the
+index then calls `split` natively, with no call back into the program per
+document.
+
+```cpp
+// stemmer_binding.cpp
+#include <interop/search_splitter.h>
+#include <interop/wrap.h>
+
+class Stemmer : public culebra::search::ISplitter {
+ public:
+  // Cuts `text` from `offset` to its end: emit(term, position, length) once
+  // per term, in increasing order, then return how many bytes were taken.
+  size_t split(std::string_view text, size_t offset,
+               const culebra::search::SplitEmit& emit) const override {
+    // ... your analyzer's loop ...
+    return text.size() - offset;
+  }
+};
+
+namespace {
+const bool registered = [] {
+  culebra::wrap<Stemmer>("Text", "Stemmer").ctor();
+  return true;
+}();
+}
+```
+
+```culebra
+# doctest: skip
+let idx = Search.Index.new(analyzer: { splitter: Text.Stemmer.new() })
+```
+
+The contract is the header's comment. The same splitter runs when a document
+is added and when a query is parsed, so it has to be deterministic and safe
+to call from several threads. Ranges are UTF-8 byte offsets into `text`; an
+analyzer that speaks UTF-16 converts on the way out. The term need not be the
+bytes its range points at — a morphological analyzer indexes a base form
+while the range keeps the surface, so a search for the base form highlights
+the text as written — but ranges must increase and not overlap. The engine
+does not take that on trust: a term that overlaps or precedes the one before
+it, or is not cut on grapheme cluster boundaries, is dropped rather than
+indexed, on both sides alike. The instance stays yours: dropping the handle
+makes the next `add` or `search` of an index built with it raise
+`ClosedError`.
+
 ## 4. Shared runtime archive layout
 
 All three workflows above ship a static **runtime archive** so that

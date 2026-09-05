@@ -26,7 +26,7 @@
 #include <vector>
 
 #include <base/shared.h>  // CulebraError
-#include <stdlib/search_splitter.h>  // ISplitter / SplitEmit, the third-party contract
+#include <interop/search_splitter.h>  // ISplitter / SplitEmit, the third-party contract
 
 #if !defined(CULEBRA_RT_SEARCH_WEAK)
 #include <searchlib.h>
@@ -81,17 +81,25 @@ struct Analyzer {
 
   // Cuts the whole text into terms, each with the byte range it came from —
   // ISplitter's contract in its whole-text role (offset 0, everything
-  // consumed), so a native splitter can stand where a closure goes once the
-  // binding that lifts one exists. Empty keeps the built-in splitting: UAX #29
-  // word segments that contain a letter or a number (searchlib's default).
+  // consumed). Empty keeps the built-in splitting: UAX #29 word segments that
+  // contain a letter or a number (searchlib's default).
   using Emit = SplitEmit;
   std::function<void(std::string_view text, const Emit &emit)> splitter;
 
   // Or a native one: a handle from segmenter_load, whose splitter is copied
   // into the index when it is built (so closing the handle later does not
   // affect the index). Negative is none -- ids start at 0. The binding layer
-  // sets one of the two.
+  // sets one of the three.
   int64_t segmenter = -1;
+
+  // Or ISplitter::split itself, for a splitter implemented outside this repo
+  // (interop/search_splitter.h; the binding decides how the instance behind
+  // it is reached). Runs in the whole-text role on searchlib's delegation
+  // path, which checks what it emits (searchlib's Segmenter contract) -- a
+  // closure in `splitter` is not held to that.
+  using NativeSplitter = std::function<size_t(std::string_view text,
+                                              size_t offset, const Emit &emit)>;
+  NativeSplitter native_splitter;
 
   // Applied in order after the normalizer. A filter rewrites its term in
   // place and returns true to keep it, or returns false to drop it (a stop
@@ -182,6 +190,14 @@ inline const searchlib::TextSplitter& segmenter_get(int64_t id) {
   return *p;
 }
 
+// A splitter's emit in searchlib's terms. One conversion for every splitter
+// shape, so the index side and the query side cannot disagree on it.
+inline SplitEmit to_searchlib(const searchlib::SplitEmit &emit) {
+  return [&emit](std::string_view term, size_t position, size_t length) {
+    emit(searchlib::u32(term), searchlib::TextRange{position, length});
+  };
+}
+
 // The analyzer as searchlib's own three shapes. Built once per index, because
 // index-time and query-time have to be the same objects for the two sides to
 // agree on term boundaries.
@@ -201,14 +217,18 @@ struct Pipeline {
 
     if (analyzer.segmenter >= 0) {
       splitter = segmenter_get(analyzer.segmenter);  // a copy: shares the model
+    } else if (analyzer.native_splitter) {
+      // Claiming every scalar hands the whole text over at its first one.
+      splitter = searchlib::utf8_plain_text_splitter(
+          [fn = analyzer.native_splitter](std::string_view text, size_t offset,
+                                          const searchlib::SplitEmit &emit) {
+            return fn(text, offset, to_searchlib(emit));
+          },
+          [](char32_t) { return true; });
     } else if (analyzer.splitter) {
-      splitter = [fn = analyzer.splitter](
-                     std::string_view text,
-                     const std::function<void(const std::u32string &,
-                                              searchlib::TextRange)> &emit) {
-        fn(text, [&](std::string_view term, size_t position, size_t length) {
-          emit(searchlib::u32(term), searchlib::TextRange{position, length});
-        });
+      splitter = [fn = analyzer.splitter](std::string_view text,
+                                          const searchlib::SplitEmit &emit) {
+        fn(text, to_searchlib(emit));
       };
     }
 

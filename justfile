@@ -181,12 +181,12 @@ check-pe-exports-gen:
 check-header-naming:
     tools/checks/check_header_naming.sh
 
-# stdlib/search_splitter.h is what a library outside this repo includes to
+# interop/search_splitter.h is what a library outside this repo includes to
 # implement a splitter for Search, so its value is that it needs nothing else.
 # Every ordinary build has the rest of the tree on the include path and would
 # never notice that stopping being true — this compiles it alone.
 [group("test")]
-[doc("Verify stdlib/search_splitter.h compiles and runs on its own")]
+[doc("Verify interop/search_splitter.h compiles and runs on its own")]
 check-search-splitter:
     tools/checks/check_search_splitter_standalone.sh
 

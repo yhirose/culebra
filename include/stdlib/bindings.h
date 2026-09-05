@@ -8167,6 +8167,22 @@ inline bool is_segmenter(JitValue v) {
              static_cast<size_t>(-1);
 }
 
+// A wrapped C++ splitter in the analyzer's `splitter` slot: a handle of a
+// class deriving from ISplitter (wrap.h). Resolved at every call, so a handle
+// dropped after the index was built raises ClosedError at the next add or
+// search, as any use of a dropped instance does -- the instance is the
+// wrapper's, unlike a Search.segmenter's model, which the index shares. `v`
+// stays reachable through the analyzer object the index handle holds, the
+// same way the closure hooks do (see make_analyzer).
+inline culebra::search::Analyzer::NativeSplitter foreign_splitter(JitValue v) {
+  auto of = culebra::wrapped_implementer<culebra::search::ISplitter>(v);
+  if (!of) return nullptr;
+  return [v, of](std::string_view text, size_t offset,
+                 const culebra::search::SplitEmit& emit) {
+    return of(v)->split(text, offset, emit);
+  };
+}
+
 inline void set_field(JitObject* o, const char* name, JitValue v) {
   culebra_runtime_object_set(o, name, false, v.tag, v.data, 0, 0);
 }
@@ -8253,12 +8269,17 @@ inline culebra::search::Analyzer make_analyzer(JitValue v) {
     };
   }
 
-  // The splitter slot takes a closure or a Search.segmenter handle. The handle
-  // stays reachable the same way the closures do: through the analyzer object
-  // the index handle holds (see _culebra_search_build_index_handle).
+  // The splitter slot takes a closure, a Search.segmenter handle or a wrapped
+  // C++ splitter's handle. A handle stays reachable the same way the closures
+  // do: through the analyzer object the index handle holds (see
+  // _culebra_search_build_index_handle).
   if (auto seg = field("splitter"); is_segmenter(seg)) {
     analyzer.segmenter = id(seg);
-  } else if (auto* cb = hook("splitter", "a Function or a Search.segmenter")) {
+  } else if (auto native = foreign_splitter(seg)) {
+    analyzer.native_splitter = std::move(native);
+  } else if (auto* cb = hook("splitter",
+                             "a Function, a Search.segmenter or a wrapped "
+                             "splitter")) {
     analyzer.splitter =
         [cb, called, type_error](
             std::string_view text,

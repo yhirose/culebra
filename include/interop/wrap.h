@@ -37,6 +37,7 @@
 
 #include <base/fn_traits.h>
 #include <interop/foreign.h>
+#include <interop/search_splitter.h>  // ISplitter, auto-detected by wrap<T>
 #include <interop/wrap_registry.h>
 // wrap.h can be reached before culebra.h pulls the runtime layer, so
 // include it here.
@@ -762,6 +763,19 @@ template <class R, class C, class... A>
 struct is_const_member<R (C::*)(A...) const> : std::true_type {};
 }  // namespace wrap_detail
 
+// A T deriving from interface I is reachable as an I through its handle
+// (wrapped_implementers, wrap_registry.h). Deriving is the whole declaration:
+// pybind11 has bases named because it cannot see them; here the compiler can.
+template <class T, class I>
+void register_implementer() {
+  if constexpr (std::is_base_of_v<I, T>) {
+    wrapped_implementers<I>()[foreign::state_fn_id<T>()] =
+        [](JitValue h) -> const I* {
+      return wrap_detail::jit_handle_self<T>(h);
+    };
+  }
+}
+
 // Builder. Destruction finalizes: the class registers under (ns, name)
 // (wrap_registry.h), and its ctor / statics land in the shared ns-row
 // registry stdlib_rt.h merges with its static table.
@@ -774,6 +788,7 @@ class ClassBinder {
     wrap_detail::jit_class_info<T>::name = name;
     wrap_detail::jit_class_info<T>::opt_name = name + "?";
     name_ = std::move(name);
+    register_implementer<T, search::ISplitter>();
   }
 
   // Constructor: `Ns.Name.new(args...)` → owning handle. The ns adapter

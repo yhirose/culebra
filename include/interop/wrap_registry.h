@@ -9,6 +9,7 @@
 #include <rt/rt.h>  // JitValue (the adapter signature)
 
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace culebra {
@@ -56,6 +57,31 @@ struct WrappedClassName {
 inline std::vector<WrappedClassName>& wrapped_class_names() {
   static std::vector<WrappedClassName> v;
   return v;
+}
+
+// The wrapped classes that implement an interface culebra accepts by handle
+// (search::ISplitter is the one today), by the per-T state-fn id their
+// handles carry (foreign.h): a binding has a handle and no T, and this is how
+// it reaches the instance as the interface. The accessor is wrap.h's
+// jit_handle_self<T>, so a dropped handle raises the same ClosedError there
+// as a method call would. Filled by register_implementer (wrap.h).
+template <class I>
+using WrappedImplementerOf = const I* (*)(JitValue handle);
+template <class I>
+inline std::unordered_map<int64_t, WrappedImplementerOf<I>>&
+wrapped_implementers() {
+  static std::unordered_map<int64_t, WrappedImplementerOf<I>> v;
+  return v;
+}
+// The accessor for `v`, or null when it is not a handle of a wrapped class
+// implementing I (a missing `_state_fn` slot reads as -1, which no class has).
+template <class I>
+inline WrappedImplementerOf<I> wrapped_implementer(JitValue v) {
+  if (v.tag != TAG_OBJECT) return nullptr;
+  auto& registry = wrapped_implementers<I>();
+  auto it = registry.find(
+      _jit_handle_long(reinterpret_cast<JitObject*>(v.data), "_state_fn"));
+  return it == registry.end() ? nullptr : it->second;
 }
 
 }  // namespace culebra

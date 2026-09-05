@@ -13,10 +13,15 @@
 // oracle. Thread-local: isolates each get their own count, and the
 // difftest harness can compare it across backends byte-for-byte.
 
+#include <algorithm>  // std::min
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+
+#include <interop/search_splitter.h>
 
 namespace culebra::foreign_fixture {
 
@@ -95,6 +100,46 @@ class Box {
 
  private:
   Counter inner_;
+};
+
+// A splitter for Search (interop/search_splitter.h): cuts on ASCII whitespace
+// and emits a crude stem -- lowercase, a trailing -ing or -s removed -- while
+// every range stays on the surface word. With `overlap`, each word is emitted
+// a second time over its first byte as well: a contract violation the engine
+// has to drop rather than index. Deliberately nothing of culebra's beyond the
+// contract header, since that is what a user's class includes.
+class Splitter : public search::ISplitter {
+ public:
+  explicit Splitter(bool overlap) : overlap_(overlap) {}
+
+  size_t split(std::string_view text, size_t offset,
+               const search::SplitEmit& emit) const override {
+    constexpr std::string_view ws = " \n\t\r";
+    for (size_t i = text.find_first_not_of(ws, offset);
+         i != std::string_view::npos; i = text.find_first_not_of(ws, i)) {
+      size_t end = std::min(text.find_first_of(ws, i), text.size());
+      emit(stem(text.substr(i, end - i)), i, end - i);
+      if (overlap_) emit("overlap", i, 1);
+      i = end;
+    }
+    return text.size() - offset;
+  }
+
+ private:
+  static std::string stem(std::string_view word) {
+    std::string s(word);
+    for (auto& c : s) {
+      if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    if (s.size() > 5 && s.ends_with("ing")) {
+      s.resize(s.size() - 3);
+    } else if (s.size() > 3 && s.ends_with("s")) {
+      s.pop_back();
+    }
+    return s;
+  }
+
+  bool overlap_;
 };
 
 }  // namespace culebra::foreign_fixture

@@ -2,7 +2,7 @@
 // and nothing else on the include path.
 //
 // Two claims, and the reason each is checked by compiling rather than by
-// reading. First, stdlib/search_splitter.h is the whole contract a splitter
+// reading. First, interop/search_splitter.h is the whole contract a splitter
 // implements: a library outside this repo has to be able to include it and
 // nothing else, which is a property no other gate would notice losing the day
 // search.h starts pulling searchlib or the runtime in behind it. Second, the
@@ -19,10 +19,10 @@
 //     part-of-speech filter makes the ranges disjoint
 //
 // No Kiwi here: the analyses replayed below were produced by it, and the point
-// is only that the interface has room for the adapter, not that the adapter
-// exists yet.
+// is only that the interface has room for the adapter. (The adapter culebra
+// itself ships is __Foreign.Splitter, interop/foreign_fixture.h.)
 
-#include <stdlib/search_splitter.h>
+#include <interop/search_splitter.h>
 
 #include <cassert>
 #include <cstdint>
