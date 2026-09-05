@@ -130,4 +130,85 @@ assert_throws('TypeError', fn () {
   Vec(1, 2.0)
 })
 
+
+# --- the read side: what a declared type lets a reader assume ---
+#
+# A parameter's class annotation is checked on entry, so inside the function
+# the field's declared type is settled and the read needs no tag question.
+# What the checks below pin is that the assumption cannot be turned into a
+# wrong answer: a receiver that wears the class's name without having gone
+# through the write check is refused at the read, in the write check's own
+# words, on both lanes.
+
+class Read {
+  f: Float
+  n: Long
+  b: Bool
+  s: String
+  new(f) {
+    self.f = f
+  }
+}
+
+fn read_f(r: Read) {
+  r.f
+}
+
+fn read_n(r: Read) {
+  r.n
+}
+
+fn read_b(r: Read) {
+  r.b
+}
+
+fn read_s(r: Read) {
+  r.s
+}
+
+let r = Read(1.5)
+assert_eq(read_f(r), 1.5)
+assert_eq(read_n(r), 0)
+assert_eq(read_b(r), false)
+assert_eq(read_s(r), '')
+
+# arithmetic over a declared field is the same arithmetic
+fn scaled(r: Read) {
+  r.f * 2.0 + r.f
+}
+
+assert_eq(scaled(r), 4.5)
+
+# an object wearing the class's name is not an instance of it: its property
+# never met the write check, so the read refuses rather than reading the
+# payload as the declared kind
+let forged = {class: 'Read', f: 'not a float'}
+assert_throws('TypeError', fn () {
+  read_f(forged)
+})
+
+# a spread copy of a real instance is the same shape of forgery
+let copy = {...r, f: 'not a float'}
+assert_throws('TypeError', fn () {
+  read_f(copy)
+})
+
+# a declared field cannot be removed: a field that can vanish is no contract
+assert_throws('ImmutableError', fn () {
+  r.remove('f')
+})
+assert_eq(read_f(r), 1.5)
+
+# an optional or union annotation names no single class, so nothing is
+# assumed and the read behaves as it always has
+fn read_opt(r: Read?) {
+  r?.f
+}
+
+assert_eq(read_opt(r), 1.5)
+assert_eq(read_opt(nil), nil)
+
+let forged2 = {class: 'Read', f: 'still a string'}
+assert_eq(read_opt(forged2), 'still a string')
+
 println('typed fields OK')

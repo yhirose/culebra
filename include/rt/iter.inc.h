@@ -3785,6 +3785,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_remove(
                         key));
   auto idx = obj->find_slot(key);
   if (idx == static_cast<size_t>(-1)) return;
+  // A declared field's type is a contract a reader may trust
+  // (docs/language.md §13), and a field that can vanish is no contract at
+  // all — the same reason the frozen check above refuses one.
+  if (obj->shape && obj->shape->type_at(idx) != culebra::FieldType::Any)
+    throw culebra::CulebraError(
+        "ImmutableError",
+        culebra::format("cannot remove declared field '{}'", key));
   _culebra_value_release_impl(obj->slots[idx].value.tag,
                               obj->slots[idx].value.data);
   obj->erase(key);

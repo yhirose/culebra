@@ -1000,6 +1000,29 @@ namespace closureのadapterが届いたであろうhelperへ1つのdispatch
 （`Math?.f`、`let m = Math`、値としての`Math.f`、keyword）は汎用経路と
 その診断のままである。
 
+#### 宣言fieldの型と、読みがそれをどう使うか
+
+クラスの宣言fieldの型は書き込みのたびに検査される（`docs/language.md`
+§13）ので、型は推測ではなく答えである。`Op::PropVal`はそれを`d`で運ぶ:
+受け手が「宣言クラスがそのfieldをスカラ型で宣言している名前」のとき、
+コンパイラがこれを埋める — 現在はパラメータで、そのクラスは入口の検査が
+既に確かめている（`Compiler::declared_read_tag`、
+`culebra::class_field_types`）。
+
+loweringがそれで何をするかが要点である。読みはslotのペイロードを
+**定数**のtagとともに作るので、tag付きの値が負っていたものが全て
+emit時に畳まれる: 読みが行うはずだったretain、statement末尾のrelease、
+そして消費側のtag検査。`acc += p.x`はdouble phi上の`fadd`になる。
+読み2回と乗算は8.2 nsから3.6 nsへ、読み1回は5.8 nsから2.0 nsへ。
+
+入口の検査は値が*名乗る*クラスを見るが、Objectはどんなクラス名でも
+名乗れる。そこでemitされる読みは、約束されたtagと実際のtagを比較し、
+違えば冷たい`[[noreturn]]`のrejectを呼ぶ — 予測可能な分岐1つで、
+2.0 nsのうち0.08 nsである。実行器は同じ命令に同じ問いを立てるので、
+偽装された受け手は両レーンで同じ`TypeError`になる。
+`tests/test_typed_fields.cul`がこれを固定し、`remove`が宣言fieldを
+拒否すること（消えうるfieldは契約にならない）も併せて固定する。
+
 ### 5.5 例外、`defer`、unwind
 
 `try`領域は静的である: `Chunk::cleanups`内のスコープエントリが

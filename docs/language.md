@@ -3216,6 +3216,42 @@ method — `self._data ??= load()` works directly (`??=` supports
 Annotations are primarily a **documentation and boundary check**
 feature, not a type system.
 
+### What a class-typed name lets a reader assume
+
+A parameter annotated with a class is checked on entry, and that class's
+declared fields are checked on every write (§13), so a read of one of
+those fields through that name knows what it will find. The compiler uses
+that: `p.x` where `p: Point` and `Point` declares `x: Float` compiles as
+the read of a `Float`, with no question asked of the value.
+
+The entry check tests the class a value names, and an ordinary Object can
+name any class it likes (`{class: 'Point', x: 'no'}`), so the assumption
+is verified where it is used: reading such a field off a receiver whose
+property never went through the write check is a `TypeError` naming the
+field and the type, rather than a value of the wrong kind. A real
+instance never meets it. For the same reason `remove` refuses a declared
+field: a field that can vanish is no contract.
+
+```culebra
+class Point {
+  x: Float
+  new(x) {
+    self.x = x
+  }
+}
+
+fn scaled(p: Point) {
+  p.x * 2.0
+}
+
+inspect(scaled(Point(1.5)))            # => 3.0
+
+# An Object may name any class, but its property never met the write
+# check, so the read refuses it rather than answering with the wrong kind.
+# !! TypeError
+scaled({class: 'Point', x: 'not a float'})
+```
+
 ### Sum types (`enum`)
 
 An `enum` declares a sum type — a fixed set of variants, each

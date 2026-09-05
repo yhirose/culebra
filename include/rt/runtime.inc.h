@@ -3101,6 +3101,16 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_bind_static(
 // One check here covers every String-keyed write (codegen, dynamic subscript
 // keys through object_set_any, native builders), which is what lets a read of
 // a slot whose declared type is known trust the tag without asking.
+inline culebra::FieldType _jit_field_type_of_tag(int8_t tag) {
+  switch (tag) {
+    case TAG_FLOAT: return culebra::FieldType::Float;
+    case TAG_LONG: return culebra::FieldType::Long;
+    case TAG_BOOL: return culebra::FieldType::Bool;
+    default: break;
+  }
+  return culebra::FieldType::Any;
+}
+
 inline bool _jit_tag_fits_field_type(int8_t tag, culebra::FieldType t) {
   switch (t) {
     case culebra::FieldType::Float: return tag == TAG_FLOAT;
@@ -3158,6 +3168,28 @@ inline void _jit_object_set_declared(
                         col, /*check_wk=*/true);
   }
   if (std::string_view(key) == "drop") _jit_owned_bind_drop(obj);
+}
+
+// A read that trusted a declared type found something else: the receiver
+// passed a class-typed check by wearing the class's name, but its property
+// never went through the write check that makes the declaration good (a
+// literal `{class: 'C', x: 'no'}` is the whole shape of it). Reported where
+// the read is, in the write check's words.
+// The reject on its own, for a caller that made the compare itself.
+[[noreturn]] CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
+culebra_runtime_field_type_reject(int8_t want, const char* key, int64_t line,
+                                  int64_t col) {
+  throw culebra::CulebraError(
+      "TypeError",
+      culebra::format("type error: field '{}' expects {}", key,
+                      culebra::field_type_name(_jit_field_type_of_tag(want))),
+      line, col);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_field_type_check(
+    int8_t tag, int8_t want, const char* key, int64_t line, int64_t col) {
+  if (tag == want) return;
+  culebra_runtime_field_type_reject(want, key, line, col);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set(

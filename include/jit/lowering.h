@@ -1521,8 +1521,45 @@ struct Lowering {
             if (!fn_introspection_name(key)) j.emit_value_retain(view);
             b.CreateStore(view, slots[in.a]);
           } else {
-            b.CreateStore(j.emit_property_value_read(recv, view, key),
-                          slots[in.a]);
+            auto value = j.emit_property_value_read(recv, view, key);
+            // The compiler answered this read's tag from the receiver's
+            // declared class (Compiler::declared_read_tag): the field is
+            // declared, its type is checked on every write, and the frame
+            // only reached here because the entry check accepted an instance
+            // of that class. Substituting the constant is what the whole
+            // contract is for — the tag tests in whatever consumes this, and
+            // the retain and release around it, fold away.
+            if (in.d != 0) {
+              // The contract holds for an instance of the declared class, so
+              // this compare is never taken; what it buys is that a receiver
+              // wearing the class's name without its writes cannot make the
+              // payload be read as the wrong kind of value. The compare is
+              // inline and the reject is a cold call that does not return,
+              // so the fast path is one predictable branch.
+              auto* fn = b.GetInsertBlock()->getParent();
+              auto badBB = llvm::BasicBlock::Create(j.ctx_, "field.type.bad",
+                                                    fn);
+              auto okBB = llvm::BasicBlock::Create(j.ctx_, "field.type.ok",
+                                                   fn);
+              llvm::MDBuilder mdb(j.ctx_);
+              b.CreateCondBr(
+                  b.CreateICmpEQ(j.extract_tag(value),
+                                 b.getInt8(static_cast<int8_t>(in.d))),
+                  okBB, badBB, mdb.createBranchWeights(1u << 20, 1));
+              b.SetInsertPoint(badBB);
+              j.emit_call(
+                  j.module_->getOrInsertFunction(
+                      rt::field_type_reject, b.getVoidTy(), b.getInt8Ty(),
+                      ptrTy, i64Ty, i64Ty),
+                  {b.getInt8(static_cast<int8_t>(in.d)),
+                   j.get_or_create_global_str(key.c_str(), ".vm.propname"),
+                   j.current_line_val(), j.current_column_val()});
+              b.CreateUnreachable();
+              b.SetInsertPoint(okBB);
+              value = j.make_value(static_cast<uint8_t>(in.d),
+                                   j.extract_data(value));
+            }
+            b.CreateStore(value, slots[in.a]);
           }
           break;
         }

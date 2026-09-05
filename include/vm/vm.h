@@ -3635,6 +3635,12 @@ class Compiler {
     // Where the name became visible, for Chunk::SlotDebug. Set by
     // push_binding, the one door into a scope.
     uint32_t debug_start = 0;
+    // What this name's declared class promises about its fields, when the
+    // annotation names a class that declares typed ones. Only a binding the
+    // language already checks carries it — a parameter, whose type is
+    // verified on entry (§14), so a read of one of those fields inside this
+    // frame knows its type without asking. Null everywhere else.
+    const culebra::ClassFieldTypes* decl_fields = nullptr;
     // What reading this name tells the compiler, and the cell that answer
     // is anchored to. One record because the parts are granted together
     // (settle_callee), carried together through a capture list, and struck
@@ -5811,6 +5817,25 @@ class Compiler {
   // thunk, which is a culebra frame, and a frame is what unboxing is here
   // to remove. Absent from the registry simply means "compile the ordinary
   // way", so every refusal here is safe by construction.
+  // What a class's declarations promise about its fields, recorded for every
+  // class: the type is checked on every write (docs/language.md §13), so a
+  // read through a name whose declared class is this one knows the tag
+  // without asking. A class with no typed field records nothing, which reads
+  // as "ask at run time".
+  static void register_declared_field_types(
+      const std::string& class_name,
+      const std::vector<const peg::Ast*>& fields) {
+    culebra::ClassFieldTypes declared;
+    for (const auto* f : fields) {
+      auto mv = culebra::view_method(*f);
+      auto t = culebra::field_type_for_annotation(mv.type_annotation);
+      if (t != culebra::FieldType::Any)
+        declared.emplace(std::string(mv.name), static_cast<uint8_t>(t));
+    }
+    if (!declared.empty())
+      culebra::register_class_field_types(class_name, std::move(declared));
+  }
+
   static void register_value_class_layout(
       const peg::Ast& ast, const std::string& class_name,
       const std::vector<const peg::Ast*>& fields, FnAnalysis& analysis) {
@@ -5974,6 +5999,7 @@ class Compiler {
             static_cast<long>(writes.front().line),
             static_cast<long>(writes.front().col));
     }
+    register_declared_field_types(class_name, fields);
     // The class joins the registry only once its own members have passed, and
     // after the scan above rather than before it, so a field naming the class
     // being declared is still refused — a value cannot contain itself.
@@ -7044,7 +7070,12 @@ class Compiler {
         fc.emit(Op::CellNew, cslot, pl.slot);
         fc.push_binding({pl.name, cslot, pl.is_mut, true});
       } else {
-        fc.push_binding({pl.name, pl.slot, pl.is_mut});
+        auto& b = fc.push_binding({pl.name, pl.slot, pl.is_mut});
+        // The entry check has already refused anything but an instance of
+        // this class (a same-shaped different class included), so what the
+        // class declares about its fields holds for every read below.
+        if (!pl.type.empty())
+          b.decl_fields = culebra::class_field_types_of(pl.type);
       }
     }
     // The overflow arguments, as one Array: `__ARGS__` and a named `*args`
@@ -10092,7 +10123,9 @@ class Compiler {
           res = compile_method_call(ast, post, *ast.nodes[i + 1], res);
           ++i;  // consume ARGUMENTS
         } else {
-          res = compile_property_read(ast, post, res);
+          res = compile_property_read(
+              ast, post, res,
+              i == 1 ? declared_read_tag(*ast.nodes[0], post.token) : 0);
         }
       } else if (post.original_tag == "NONNULL"_) {
         StampGuard pos(*this, post);
@@ -10109,8 +10142,29 @@ class Compiler {
   // One `.name` postfix with no call after it: the property value read,
   // followed by the bare built-in method reject when the name could be one
   // (the JIT emits that cold check under the same compile-time filter).
+  // The tag a `<name>.<field>` read yields when `<name>`'s declared class
+  // declares `<field>` with a scalar type — 0 when it does not, which is
+  // every other read. The write check (docs/language.md §13) is what makes
+  // this an answer rather than a guess.
+  int32_t declared_read_tag(const peg::Ast& head, std::string_view field) {
+    using namespace peg::udl;
+    if (head.tag != "IDENTIFIER"_) return 0;
+    const Binding* b = lookup(head.token);
+    if (!b || !b->decl_fields) return 0;
+    auto it = b->decl_fields->find(field);
+    if (it == b->decl_fields->end()) return 0;
+    switch (static_cast<culebra::FieldType>(it->second)) {
+      case culebra::FieldType::Float: return TAG_FLOAT;
+      case culebra::FieldType::Long: return TAG_LONG;
+      case culebra::FieldType::Bool: return TAG_BOOL;
+      case culebra::FieldType::Any:
+      case culebra::FieldType::Count: break;
+    }
+    return 0;
+  }
+
   ExprResult compile_property_read(const peg::Ast& at, const peg::Ast& post,
-                                   ExprResult recv) {
+                                   ExprResult recv, int32_t known_tag = 0) {
     // An unboxed instance's field IS a slot of the run — no object to read
     // it out of, so no instruction at all. A name that is not one of the
     // declared fields cannot reach here: the chain only carries the marker
@@ -10121,7 +10175,7 @@ class Compiler {
     {
       StampGuard pos(*this, at);
       t = alloc_temp(at);
-      emit(Op::PropVal, t, recv.slot, kconst_str(post.token));
+      emit(Op::PropVal, t, recv.slot, kconst_str(post.token), known_tag);
     }
     if (culebra::is_builtin_method_name(post.token)) {
       StampGuard pos(*this, post);  // the method name's own position
@@ -13449,6 +13503,16 @@ struct Exec {
             culebra_runtime_value_retain(static_cast<int8_t>(view.tag),
                                          view.data);
             regs[in.a] = view;
+          } else if (in.d != 0 &&
+                     static_cast<int8_t>(view.tag) !=
+                         static_cast<int8_t>(in.d)) {
+            // The compiler read this field's type off the receiver's declared
+            // class; the value disagrees, so the receiver is not the instance
+            // it claimed to be. The JIT asks the same question of the same
+            // read (Op::PropVal's `d`).
+            culebra_runtime_field_type_check(static_cast<int8_t>(view.tag),
+                                             static_cast<int8_t>(in.d), key,
+                                             line, col);
           } else {
             regs[in.a] = culebra_runtime_bind_method_value(
                 static_cast<int8_t>(recv.tag), recv.data,

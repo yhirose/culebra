@@ -1102,6 +1102,30 @@ inline const std::vector<std::string>* value_flat_layout(
   return it == value_flat_layouts().end() ? nullptr : &it->second;
 }
 
+// The declared type of each field of a class (culebra::FieldType as a byte),
+// by class name then field name. Every class registers its own, `@value` or
+// not: a field's declared type is checked on every write (docs/language.md
+// §13), so a reader that knows the receiver's class knows the field's type.
+// Absent means "ask at run time", which is always a safe answer.
+using ClassFieldTypes = std::map<std::string, uint8_t, std::less<>>;
+inline std::map<std::string, ClassFieldTypes, std::less<>>&
+class_field_types() {
+  static std::map<std::string, ClassFieldTypes, std::less<>> reg;
+  return reg;
+}
+inline void register_class_field_types(std::string name,
+                                       ClassFieldTypes fields) {
+  std::lock_guard<std::mutex> lk(value_class_mutex());
+  class_field_types().insert_or_assign(std::move(name), std::move(fields));
+}
+// The table by class name, or nullptr when the class declared no typed
+// field. The registry only ever grows, so the caller may hold the pointer.
+inline const ClassFieldTypes* class_field_types_of(std::string_view name) {
+  std::lock_guard<std::mutex> lk(value_class_mutex());
+  auto it = class_field_types().find(name);
+  return it == class_field_types().end() ? nullptr : &it->second;
+}
+
 // A `@value` field holds a machine scalar or another `@value`. Everything
 // else — String, Array, Object, a closure, `T?`, an ordinary class — carries
 // a heap body or an identity of its own, so admitting it would give the
