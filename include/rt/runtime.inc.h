@@ -3122,16 +3122,25 @@ inline bool _jit_tag_fits_field_type(int8_t tag, culebra::FieldType t) {
   return true;
 }
 
-[[noreturn]] inline void _jit_field_type_error(const char* key,
-                                               culebra::FieldType t, int8_t tag,
-                                               int64_t data, int64_t line,
-                                               int64_t col) {
-  _culebra_value_release_impl(tag, data);
+// The one wording, so the write check and the read's reject cannot drift
+// apart — `tests/test_typed_fields.cul` pins the sentence.
+[[noreturn]] inline void _jit_throw_field_type(const char* key,
+                                               culebra::FieldType t,
+                                               int64_t line, int64_t col) {
   throw culebra::CulebraError(
       "TypeError",
       culebra::format("type error: field '{}' expects {}", key,
                       culebra::field_type_name(t)),
       line, col);
+}
+
+// The refused write, which owns the value it was handed on every exit.
+[[noreturn]] inline void _jit_field_type_error(const char* key,
+                                               culebra::FieldType t, int8_t tag,
+                                               int64_t data, int64_t line,
+                                               int64_t col) {
+  _culebra_value_release_impl(tag, data);
+  _jit_throw_field_type(key, t, line, col);
 }
 
 // The write with the field's declared type in hand. Only a class's own
@@ -3174,22 +3183,12 @@ inline void _jit_object_set_declared(
 // passed a class-typed check by wearing the class's name, but its property
 // never went through the write check that makes the declaration good (a
 // literal `{class: 'C', x: 'no'}` is the whole shape of it). Reported where
-// the read is, in the write check's words.
-// The reject on its own, for a caller that made the compare itself.
+// the read is, in the write check's words. Both lanes compare the tag
+// themselves and call this only on the arm that fails, so it never returns.
 [[noreturn]] CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
-culebra_runtime_field_type_reject(int8_t want, const char* key, int64_t line,
-                                  int64_t col) {
-  throw culebra::CulebraError(
-      "TypeError",
-      culebra::format("type error: field '{}' expects {}", key,
-                      culebra::field_type_name(_jit_field_type_of_tag(want))),
-      line, col);
-}
-
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_field_type_check(
-    int8_t tag, int8_t want, const char* key, int64_t line, int64_t col) {
-  if (tag == want) return;
-  culebra_runtime_field_type_reject(want, key, line, col);
+culebra_runtime_field_type_reject(int8_t want_tag, const char* key,
+                                  int64_t line, int64_t col) {
+  _jit_throw_field_type(key, _jit_field_type_of_tag(want_tag), line, col);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set(

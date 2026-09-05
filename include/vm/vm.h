@@ -3861,6 +3861,10 @@ class Compiler {
   // How much debug instrumentation this unit carries, inherited by every
   // nested chunk's Compiler (a breakpoint has to reach a function body).
   Debug debug_ = Debug::Off;
+  // What the enclosing class declares about its fields, for a member's own
+  // `self.x` reads (MemberOpts::owner_fields).
+  const culebra::ClassFieldTypes* self_fields_ = nullptr;
+  const culebra::ClassFieldClasses* self_field_classes_ = nullptr;
   const FuncInfo* info_;  // this chunk's analysis (captured_locals gate)
   Chunk chunk_;
   // Where `chunk_` will land in prog_.chunks — reserved before the body
@@ -4120,10 +4124,6 @@ class Compiler {
            !b.awaits_implicit && b.mut_slot < 0;
   }
 
-  // `b` reads as a closure over `chunk` for as long as it is in scope: its
-  // declaration is the only write, and it is the `fn` literal just
-  // compiled. A lazy forward reference declines too — its sentinel is a
-  // value a read still has to test.
   // `let car = self.car`: the field's annotation names a class, so this name
   // means an instance of it from here on — the same promise a parameter's
   // annotation carries, arriving through the field's instead. Only a name
@@ -4151,30 +4151,36 @@ class Compiler {
     const peg::Ast& head = *node->nodes[0];
     const peg::Ast& step = *node->nodes[1];
     if (step.original_tag != "DOT"_) return;
-    if (const auto* fields = field_class_fields(head, step.token)) {
+    auto cls = field_class_name(head, step.token);
+    if (const auto* fields = culebra::class_field_types_of(cls)) {
       b.decl_fields = fields;
-      if (const auto* named = name_field_classes(head, step.token))
+      if (const auto* named = culebra::class_field_classes_of(cls))
         b.decl_field_classes = named;
     }
   }
 
-  // The class-typed fields of the class `field_class_fields` resolved to.
-  const culebra::ClassFieldClasses* name_field_classes(const peg::Ast& head,
-                                                      std::string_view field) {
+  // The class `<head>.<field>`'s annotation names — the step that lets
+  // `self.car.speed` know what `speed` is. Empty where the field is scalar,
+  // absent, or reached through a name that promises nothing.
+  std::string_view field_class_name(const peg::Ast& head,
+                                    std::string_view field) {
     using namespace peg::udl;
-    if (head.tag != "IDENTIFIER"_) return nullptr;
+    if (head.tag != "IDENTIFIER"_) return {};
     const culebra::ClassFieldClasses* named = nullptr;
     if (head.token == "self") {
       named = self_field_classes_;
     } else if (const Binding* b = lookup(head.token)) {
       named = b->decl_field_classes;
     }
-    if (!named) return nullptr;
+    if (!named) return {};
     auto it = named->find(field);
-    return it == named->end() ? nullptr
-                              : culebra::class_field_classes_of(it->second);
+    return it == named->end() ? std::string_view{} : it->second;
   }
 
+  // `b` reads as a closure over `chunk` for as long as it is in scope: its
+  // declaration is the only write, and it is the `fn` literal just
+  // compiled. A lazy forward reference declines too — its sentinel is a
+  // value a read still has to test.
   void grant_known_chunk(Binding& b, int32_t chunk) {
     if (chunk < 0 || b.lazy || !binding_writes_once(b)) return;
     settle_callee(b, chunk, /*via_mono=*/false);
@@ -4630,7 +4636,9 @@ class Compiler {
   // A maximal run of initializer-less fields is one Op::FieldsInit (their
   // layout is static: names, order, zero values); a field with an
   // initializer is its own store, in place, so declaration order — and what
-  // an initializer sees of the fields declared below it — is unchanged.
+  // an initializer sees of the fields declared below it — is unchanged. A
+  // typed one takes a one-field Op::FieldsInit of its own just before that
+  // store, which is how its declared type reaches the slot.
   void emit_declared_field_stores(const std::vector<const peg::Ast*>& fields) {
     std::vector<const peg::Ast*> run;
     auto flush = [&] {
@@ -4647,22 +4655,29 @@ class Compiler {
       flush();
       TempScope fts(*this);
       ExprResult v = compile_expr(*mv.value);
+      // A slot learns its declared type from the layout op, so a field with
+      // an initializer takes its typed zero first and its own store is the
+      // overwrite every later write is — checked by the same rule. Emitted
+      // after the initializer, which must not see the field it defines.
+      if (culebra::field_type_for_annotation(mv.type_annotation) !=
+          culebra::FieldType::Any)
+        emit_declared_field_layout({f});
       emit(Op::ObjectSet, chunk_.self_slot, owned_src(*f, v),
            kconst_str(std::string(mv.name)), /*mut=*/1);
     }
     flush();
   }
 
-  // The stores for a run of initializer-less fields as one Op::FieldsInit:
-  // the instance takes the whole layout in one step instead of one appended
-  // slot per field. Semantics are the per-field stores' to the letter; the
-  // runtime falls back to those very stores where its fast path does not
-  // apply.
+  // The slots for a run of fields as one Op::FieldsInit: the instance takes
+  // the whole layout in one step instead of one appended slot per field,
+  // each holding its type's zero and carrying its declared type. Semantics
+  // are the per-field stores' to the letter; the runtime falls back to those
+  // very stores where its fast path does not apply. A field's initializer,
+  // if it has one, is the store that follows.
   void emit_declared_field_layout(const std::vector<const peg::Ast*>& fields) {
     Chunk::FieldLayoutSpec spec;
     for (const auto* f : fields) {
       auto mv = culebra::view_method(*f);
-      assert(!mv.value && "a prologue field carries no initializer");
       spec.keys.push_back(reinterpret_cast<const char*>(
           chunk_.consts[kconst_str(std::string(mv.name))].data));
       spec.zeros.push_back(chunk_.consts[zero_const(mv.type_annotation)]);
@@ -5879,34 +5894,30 @@ class Compiler {
   // to remove. Absent from the registry simply means "compile the ordinary
   // way", so every refusal here is safe by construction.
   // What a class's declarations promise about its fields, recorded for every
-  // class: the type is checked on every write (docs/language.md §13), so a
+  // class: the type is checked on every write (docs/language.md §10), so a
   // read through a name whose declared class is this one knows the tag
   // without asking. A class with no typed field records nothing, which reads
   // as "ask at run time".
   static void register_declared_field_types(
       const std::string& class_name,
       const std::vector<const peg::Ast*>& fields) {
+    // An annotation is one or the other: a scalar the tag decides, or a name
+    // — a class, most usefully, which the chain walk follows to the next
+    // step. The second is recorded as written and resolved where it is used,
+    // so a forward reference works.
     culebra::ClassFieldTypes declared;
-    for (const auto* f : fields) {
-      auto mv = culebra::view_method(*f);
-      auto t = culebra::field_type_for_annotation(mv.type_annotation);
-      if (t != culebra::FieldType::Any)
-        declared.emplace(std::string(mv.name), static_cast<uint8_t>(t));
-    }
-    if (!declared.empty())
-      culebra::register_class_field_types(class_name, std::move(declared));
-    // And the fields whose annotation names something else: a class, most
-    // usefully, which the chain walk follows to the next step. Recorded as
-    // written and resolved where it is used, so a forward reference works.
     culebra::ClassFieldClasses named;
     for (const auto* f : fields) {
       auto mv = culebra::view_method(*f);
       if (mv.type_annotation.empty()) continue;
-      if (culebra::field_type_for_annotation(mv.type_annotation) !=
-          culebra::FieldType::Any)
-        continue;
-      named.emplace(std::string(mv.name), std::string(mv.type_annotation));
+      auto t = culebra::field_type_for_annotation(mv.type_annotation);
+      if (t != culebra::FieldType::Any)
+        declared.emplace(std::string(mv.name), static_cast<uint8_t>(t));
+      else
+        named.emplace(std::string(mv.name), std::string(mv.type_annotation));
     }
+    if (!declared.empty())
+      culebra::register_class_field_types(class_name, std::move(declared));
     if (!named.empty())
       culebra::register_class_field_classes(class_name, std::move(named));
   }
@@ -7160,8 +7171,10 @@ class Compiler {
         auto& b = fc.push_binding({pl.name, pl.slot, pl.is_mut});
         // The entry check has already refused anything but an instance of
         // this class (a same-shaped different class included), so what the
-        // class declares about its fields holds for every read below.
-        if (!pl.type.empty()) {
+        // class declares about its fields holds for every read below. Not a
+        // `mut` one: the check is the entry's alone, and a reassignment is
+        // not re-checked (§14), so the promise would outlive what earns it.
+        if (!pl.is_mut && !pl.type.empty()) {
           b.decl_fields = culebra::class_field_types_of(pl.type);
           b.decl_field_classes = culebra::class_field_classes_of(pl.type);
         }
@@ -10247,13 +10260,6 @@ class Compiler {
     return {out, true};
   }
 
-  // One `.name` postfix with no call after it: the property value read,
-  // followed by the bare built-in method reject when the name could be one
-  // (the JIT emits that cold check under the same compile-time filter).
-  // What the enclosing class declares about its fields (MemberOpts).
-  const culebra::ClassFieldTypes* self_fields_ = nullptr;
-  const culebra::ClassFieldClasses* self_field_classes_ = nullptr;
-
   // What a name promises about its fields: the enclosing class for `self`,
   // and a binding's own declared class for everything else.
   const culebra::ClassFieldTypes* name_fields(const peg::Ast& head) {
@@ -10264,29 +10270,9 @@ class Compiler {
     return b ? b->decl_fields : nullptr;
   }
 
-  // The class a name's declared class gives `<field>`, when that field's
-  // annotation names one — the step that lets `self.car.speed` know what
-  // `speed` is. Null where the field is scalar, absent, or names nothing
-  // the compiler has seen.
-  const culebra::ClassFieldTypes* field_class_fields(
-      const peg::Ast& head, std::string_view field) {
-    using namespace peg::udl;
-    if (head.tag != "IDENTIFIER"_) return nullptr;
-    const culebra::ClassFieldClasses* named = nullptr;
-    if (head.token == "self") {
-      named = self_field_classes_;
-    } else if (const Binding* b = lookup(head.token)) {
-      named = b->decl_field_classes;
-    }
-    if (!named) return nullptr;
-    auto it = named->find(field);
-    return it == named->end() ? nullptr
-                              : culebra::class_field_types_of(it->second);
-  }
-
   // The tag a `<name>.<field>` read yields when `<name>`'s declared class
   // declares `<field>` with a scalar type — 0 when it does not, which is
-  // every other read. The write check (docs/language.md §13) is what makes
+  // every other read. The write check (docs/language.md §10) is what makes
   // this an answer rather than a guess.
   int32_t declared_read_tag(const peg::Ast& head, std::string_view field) {
     const culebra::ClassFieldTypes* fields = name_fields(head);
@@ -10303,6 +10289,9 @@ class Compiler {
     return 0;
   }
 
+  // One `.name` postfix with no call after it: the property value read,
+  // followed by the bare built-in method reject when the name could be one
+  // (the JIT emits that cold check under the same compile-time filter).
   ExprResult compile_property_read(const peg::Ast& at, const peg::Ast& post,
                                    ExprResult recv, int32_t known_tag = 0) {
     // An unboxed instance's field IS a slot of the run — no object to read
@@ -13643,16 +13632,16 @@ struct Exec {
             culebra_runtime_value_retain(static_cast<int8_t>(view.tag),
                                          view.data);
             regs[in.a] = view;
-          } else if (in.d != 0 &&
-                     static_cast<int8_t>(view.tag) !=
-                         static_cast<int8_t>(in.d)) {
+          } else if (in.d != 0) {
             // The compiler read this field's type off the receiver's declared
-            // class; the value disagrees, so the receiver is not the instance
-            // it claimed to be. The JIT asks the same question of the same
-            // read (Op::PropVal's `d`).
-            culebra_runtime_field_type_check(static_cast<int8_t>(view.tag),
-                                             static_cast<int8_t>(in.d), key,
-                                             line, col);
+            // class; a value that disagrees means the receiver is not the
+            // instance it claimed to be. The JIT asks the same question at
+            // the same point of the same read (Op::PropVal's `d`). What
+            // agrees is a scalar: nothing to bind, and nothing to retain.
+            if (static_cast<int8_t>(view.tag) != static_cast<int8_t>(in.d))
+              culebra_runtime_field_type_reject(static_cast<int8_t>(in.d), key,
+                                                line, col);
+            regs[in.a] = view;
           } else {
             regs[in.a] = culebra_runtime_bind_method_value(
                 static_cast<int8_t>(recv.tag), recv.data,

@@ -3208,21 +3208,26 @@ method — `self._data ??= load()` works directly (`??=` supports
 * Object property values have no annotation slot — a property an
   object grows outside a class declaration is unconstrained. A class's
   *declared* field is the exception: its annotation is checked on every
-  write (§13).
+  write (§10).
 * Array element types are not tracked.
-* `mut x: T` on a local does not re-check on later reassignment —
-  the check happens once at the annotated declaration.
+* `mut x: T` on a local, or a `mut` parameter, does not re-check on
+  later reassignment — the check happens once at the annotated
+  declaration, or at the call.
 
 Annotations are primarily a **documentation and boundary check**
 feature, not a type system.
 
 ### What a class-typed name lets a reader assume
 
-A parameter annotated with a class is checked on entry, and that class's
-declared fields are checked on every write (§13), so a read of one of
-those fields through that name knows what it will find. The compiler uses
-that: `p.x` where `p: Point` and `Point` declares `x: Float` compiles as
-the read of a `Float`, with no question asked of the value.
+A name whose declared class is known — a parameter or a `let` whose
+annotation names it, `self` inside that class's own members, or the next
+step of a chain through a class-typed field — is checked where it is
+bound, and that class's declared fields are checked on every write (§10),
+so a read of one of those fields through that name knows what it will
+find. The compiler uses that: `p.x` where `p: Point` and `Point` declares
+`x: Float` compiles as the read of a `Float`, with no question asked of
+the value. A `mut` binding takes no such promise: its reassignment is not
+re-checked, so there is nothing to read the declaration off.
 
 The entry check tests the class a value names, and an ordinary Object can
 name any class it likes (`{class: 'Point', x: 'no'}`), so the assumption

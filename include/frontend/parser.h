@@ -1105,7 +1105,7 @@ inline const std::vector<std::string>* value_flat_layout(
 // The declared type of each field of a class (culebra::FieldType as a byte),
 // by class name then field name. Every class registers its own, `@value` or
 // not: a field's declared type is checked on every write (docs/language.md
-// §13), so a reader that knows the receiver's class knows the field's type.
+// §10), so a reader that knows the receiver's class knows the field's type.
 // Absent means "ask at run time", which is always a safe answer.
 using ClassFieldTypes = std::map<std::string, uint8_t, std::less<>>;
 inline std::map<std::string, ClassFieldTypes, std::less<>>&

@@ -1,5 +1,5 @@
 # A declared field's type is a contract the write checks (docs/language.md
-# §14). The annotation was documentation before; it now decides what the
+# §10). The annotation was documentation before; it now decides what the
 # field may hold, in the same words `let x: Float = 3` has always used, and
 # through every write surface: a literal name, a computed key, a method's
 # own `self.x`, and the constructor's prologue.
@@ -55,6 +55,60 @@ assert_throws('TypeError', fn () {
 assert_eq(v.f, 2.5)
 assert_eq(v.n, 7)
 assert_eq(v.b, true)
+
+# --- an initializer does not exempt the field from its own declaration ---
+#
+# A field with an initializer is stored by its own instruction rather than
+# the shared layout op, and the declared type has to reach the slot either
+# way, or the write check would have a hole the read side still trusts.
+
+class Preset {
+  f: Float = 1.5
+  n: Long = 7
+  b: Bool = true
+  untyped = 'anything'
+  new() {
+  }
+}
+
+let pre = Preset()
+assert_eq(pre.f, 1.5)
+assert_eq(pre.n, 7)
+assert_eq(pre.b, true)
+
+assert_throws('TypeError', fn () {
+  pre.f = 'no'
+})
+assert_throws('TypeError', fn () {
+  pre.n = 1.5
+})
+assert_throws('TypeError', fn () {
+  pre.b = 1
+})
+assert_eq(pre.f, 1.5)
+
+# and the initializer itself is checked, as any other write is
+class BadPreset {
+  f: Float = 'not a float'
+  new() {
+  }
+}
+
+assert_throws('TypeError', fn () {
+  BadPreset()
+})
+
+# an initializer still cannot see the field it defines, nor the ones below
+class Order {
+  a: Long = 1
+  b: Long = 2
+
+  new() {
+  }
+}
+
+assert_eq(Order().a, 1)
+assert_eq(Order().b, 2)
 
 # --- an unannotated field takes anything, as it always has ---
 
@@ -198,6 +252,30 @@ assert_throws('ImmutableError', fn () {
   r.remove('f')
 })
 assert_eq(read_f(r), 1.5)
+
+# a `mut` binding's annotation is checked once and not again (§14), so it
+# promises nothing about what its reads will find — the same answer whether
+# the name is a local or a parameter
+class Other {
+  f: String
+  new(f) {
+    self.f = f
+  }
+}
+
+fn rebound_param(mut r: Read) {
+  r = Other('a string')
+  r.f
+}
+
+fn rebound_local() {
+  mut r: Read = Read(1.5)
+  r = Other('a string')
+  r.f
+}
+
+assert_eq(rebound_param(r), 'a string')
+assert_eq(rebound_local(), 'a string')
 
 # an optional or union annotation names no single class, so nothing is
 # assumed and the read behaves as it always has

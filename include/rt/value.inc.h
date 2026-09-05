@@ -42,7 +42,7 @@ struct Shape {
   // One entry per (name, declared type) pair: adding the same name with a
   // different declared type is a different Shape.
   std::map<std::string_view,
-           std::array<Shape*, static_cast<size_t>(culebra::FieldType::Count)>>
+           std::array<Shape*, static_cast<size_t>(FieldType::Count)>>
       add_transitions;
   // Whether any name is one the runtime dispatches specially (a `__x__`
   // dunder, or the `hash`/`cmp` protocol names): the one question a
@@ -61,9 +61,9 @@ struct Shape {
   }
   // The declared type of slot `i` (Any when the shape predates types, which
   // every non-class shape does).
-  culebra::FieldType type_at(size_t i) const {
-    return i < types.size() ? static_cast<culebra::FieldType>(types[i])
-                            : culebra::FieldType::Any;
+  FieldType type_at(size_t i) const {
+    return i < types.size() ? static_cast<FieldType>(types[i])
+                            : FieldType::Any;
   }
   // Position of `name` in `slots`, or static_cast<size_t>(-1) if absent.
   size_t offset(std::string_view name) const {
@@ -102,7 +102,7 @@ struct ShapeRegistry {
   // hit on inline-cache miss (rare after warm-up), so the global mutex
   // costs nothing on the steady-state fast path.
   Shape* transition_add(Shape* current, std::string_view name,
-                        culebra::FieldType type = culebra::FieldType::Any) {
+                        FieldType type = FieldType::Any) {
     std::lock_guard<std::mutex> lk(mu_);
     auto slot = static_cast<size_t>(type);
     auto it = current->add_transitions.find(name);
@@ -113,7 +113,7 @@ struct ShapeRegistry {
     next->names.push_back(std::string(name));
     next->types = current->types;
     next->types.resize(next->names.size() - 1,
-                       static_cast<uint8_t>(culebra::FieldType::Any));
+                       static_cast<uint8_t>(FieldType::Any));
     next->types.push_back(static_cast<uint8_t>(type));
     next->any_special = current->any_special || Shape::is_special_name(name);
     auto& stored_name = next->names.back();
