@@ -2460,19 +2460,6 @@ inline constexpr const char* FST_MODULE_SOURCE = R"=culpre=(let _fst_module = fn
 let FST = _fst_module()
 )=culpre=";
 
-inline constexpr const char* SEARCH_MODULE_SOURCE = R"=culpre=(let _search_module = fn () {
-  {Index: {
-    new: fn () {
-      _Search.index_new()
-    },
-    load: fn (path) {
-      _Search.index_load(path)
-    },
-  }}
-}
-let Search = _search_module()
-)=culpre=";
-
 inline constexpr const char* STRING_FNS_MODULE_SOURCE = R"=culpre=(let replace = fn (s, pat, repl) {
   if type_of(pat) == "String" || type_of(pat) == "StringView" {
     s.split(pat).join(repl)

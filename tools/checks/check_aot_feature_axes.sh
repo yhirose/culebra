@@ -253,6 +253,10 @@ idx.add("b", "a lazy dog")
 IO.print(idx.search("quick")[0].key)'
 expect_class search "$search_choke" "T" "expected 'T'" "Search named, the strong body must override"
 expect_class search "$regex_choke" "W?" "expected 'W' or absent" "Search only"
+# The engine parses queries with peglib, so `peg_choke` is the check that
+# reaching peglib does not drag culebra's own PEG namespace in with it.
+expect_class search "$peg_choke" "" "expected absent" "Search only"
+expect_class search "$proc_choke" "" "expected absent" "Search only"
 expect_absent search "$fmt_machinery" "libstdc++'s formatter, Search"
 expect_output search "a"
 

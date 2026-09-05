@@ -4,16 +4,13 @@
 // An index is a live handle: it holds its documents in memory, and results
 // are materialized before they come back, so nothing here aliases it.
 
-// Ranked order where it is the point; `found` sorts it away where the
-// question is only which documents matched, so a BM25 tweak upstream cannot
-// turn a membership check into a ranking check.
-let keys = fn (hits) {
+// `found` sorts the ranking away, so a BM25 tweak upstream cannot turn a
+// membership check into a ranking check. Order is asserted on its own below,
+// where it is the point.
+let found = fn (hits) {
   hits.map(fn (h) {
     h.key
-  })
-}
-let found = fn (hits) {
-  keys(hits).sorted()
+  }).sorted()
 }
 
 let idx = Search.Index.new()
@@ -79,10 +76,7 @@ assert_eq(found(uni.search("RÁPIDO")), ["es"])
 uni.close()
 
 // --- save/load round-trips the whole index ---
-let path = FS.temp_dir() +
-  "/culebra-test-search-" +
-  to_string(Sys.time()) +
-  ".idx"
+let path = "{FS.temp_dir()}/culebra_test_search_{UUID.v4()}.idx"
 idx.save(path)
 let loaded = Search.Index.load(path)
 assert_eq(found(loaded.search("quick")), ["doc-2"])
@@ -92,59 +86,43 @@ FS.remove(path)
 
 // --- Keys are Strings. A Long is refused rather than stringified, since the
 // key comes back out of search() and would change type between the two ---
-assert_eq(try {
+assert_throws("TypeError", fn () {
   idx.add(1, "x")
-} catch e {
-  e.kind
-}, "TypeError")
-assert_eq(try {
+})
+assert_throws("TypeError", fn () {
   idx.remove(1)
-} catch e {
-  e.kind
-}, "TypeError")
-assert_eq(try {
+})
+assert_throws("ArityError", fn () {
   idx.add("only-a-key")
-} catch e {
-  e.kind
-}, "ArityError")
-assert_eq(try {
+})
+assert_throws("TypeError", fn () {
   idx.search("x", "3")
-} catch e {
-  e.kind
-}, "TypeError")
-assert_eq(try {
+})
+assert_throws("ValueError", fn () {
   idx.search("x", -1)
-} catch e {
-  e.kind
-}, "ValueError")
+})
 
 // --- A malformed query is an error, not an empty result ---
-assert_eq(try {
+assert_throws("SearchError", fn () {
   idx.search("(")
-} catch e {
-  e.kind
-}, "SearchError")
+})
 
 // --- Unreadable/unwritable paths surface as SearchError ---
-assert_eq(try {
+assert_throws("SearchError", fn () {
   Search.Index.load(path)
-} catch e {
-  e.kind
-}, "SearchError")
+})
 
 // --- close is explicit and idempotent; using a closed index is an error ---
 idx.close()
 idx.close()
-assert_eq(try {
+assert_throws("SearchError", fn () {
   idx.search("quick")
-} catch e {
-  e.kind
-}, "SearchError")
+})
 
 // --- An index left open is closed by the drop protocol at scope exit ---
 fn scoped() {
   let tmp = Search.Index.new()
   tmp.add("k", "value")
-  keys(tmp.search("value"))
+  found(tmp.search("value"))
 }
 assert_eq(scoped(), ["k"])

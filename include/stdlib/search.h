@@ -1,14 +1,13 @@
 #pragma once
 
-// Value-neutral full-text search core for the Search namespace (the `_Search`
+// Value-neutral full-text search core for the Search namespace (the `Search`
 // native rows in stdlib_rt.h). Mirrors regex.h / sqlite.h: no Value / JitValue
 // here — the binding layer adapts the handle ids and Hit records below into
 // its own objects.
 //
-// Linkage partitioning, the regex.h choke applied to cpp-searchlib: the six
-// engine sources are compiled once (CMake's culebra_searchlib objects) and
-// bundled into the Search feature archive, so a binary that never names
-// Search carries none of them.
+// Linkage partitioning, the regex.h choke applied to cpp-searchlib: the engine
+// is one header, compiled once into the Search feature archive, so a binary
+// that never names Search carries none of it.
 //   - core archive   (CULEBRA_RT_SEARCH_WEAK):   weak throwing stubs; searchlib.h
 //     is never even included, so the archive references no searchlib:: symbol.
 //   - search archive (CULEBRA_RT_SEARCH_STRONG): strong real bodies, force-loaded
@@ -22,6 +21,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <base/shared.h>  // CulebraError
@@ -30,8 +30,8 @@
 #include <searchlib.h>
 #include <unicodelib.h>
 
-#include <algorithm>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 
 #include <base/id_registry.h>
@@ -66,15 +66,17 @@ struct Hit {
 // position (the binding layer stamps one). Keys are caller-owned strings:
 // adding under an existing key replaces that document.
 
+// Views throughout, as regex.h and fst.h do: the engine tokenizes out of the
+// caller's bytes, so a document need not be copied to be indexed.
 CULEBRA_RT_SEARCH_LINKAGE int64_t index_new();
-CULEBRA_RT_SEARCH_LINKAGE int64_t index_load(const std::string& path);
-CULEBRA_RT_SEARCH_LINKAGE void index_add(int64_t id, const std::string& key,
-                                         const std::string& text);
-CULEBRA_RT_SEARCH_LINKAGE void index_remove(int64_t id, const std::string& key);
+CULEBRA_RT_SEARCH_LINKAGE int64_t index_load(std::string_view path);
+CULEBRA_RT_SEARCH_LINKAGE void index_add(int64_t id, std::string_view key,
+                                         std::string_view text);
+CULEBRA_RT_SEARCH_LINKAGE void index_remove(int64_t id, std::string_view key);
 CULEBRA_RT_SEARCH_LINKAGE std::vector<Hit> index_search(int64_t id,
-                                                        const std::string& query,
+                                                        std::string_view query,
                                                         size_t limit);
-CULEBRA_RT_SEARCH_LINKAGE void index_save(int64_t id, const std::string& path);
+CULEBRA_RT_SEARCH_LINKAGE void index_save(int64_t id, std::string_view path);
 // Frees the handle. Idempotent; a stale/forged id is ignored.
 CULEBRA_RT_SEARCH_LINKAGE void index_drop(int64_t id);
 
@@ -85,22 +87,22 @@ CULEBRA_RT_SEARCH_LINKAGE void index_drop(int64_t id);
                      "Search runtime entered in a no-Search binary", 0, 0);
 }
 CULEBRA_RT_SEARCH_LINKAGE int64_t index_new() { _not_linked(); }
-CULEBRA_RT_SEARCH_LINKAGE int64_t index_load(const std::string&) {
+CULEBRA_RT_SEARCH_LINKAGE int64_t index_load(std::string_view) {
   _not_linked();
 }
-CULEBRA_RT_SEARCH_LINKAGE void index_add(int64_t, const std::string&,
-                                         const std::string&) {
+CULEBRA_RT_SEARCH_LINKAGE void index_add(int64_t, std::string_view,
+                                         std::string_view) {
   _not_linked();
 }
-CULEBRA_RT_SEARCH_LINKAGE void index_remove(int64_t, const std::string&) {
+CULEBRA_RT_SEARCH_LINKAGE void index_remove(int64_t, std::string_view) {
   _not_linked();
 }
 CULEBRA_RT_SEARCH_LINKAGE std::vector<Hit> index_search(int64_t,
-                                                        const std::string&,
+                                                        std::string_view,
                                                         size_t) {
   _not_linked();
 }
-CULEBRA_RT_SEARCH_LINKAGE void index_save(int64_t, const std::string&) {
+CULEBRA_RT_SEARCH_LINKAGE void index_save(int64_t, std::string_view) {
   _not_linked();
 }
 CULEBRA_RT_SEARCH_LINKAGE void index_drop(int64_t) {}
@@ -147,82 +149,81 @@ CULEBRA_RT_SEARCH_LINKAGE int64_t index_new() {
   return detail::g_indexes.add(new detail::Index());
 }
 
-CULEBRA_RT_SEARCH_LINKAGE int64_t index_load(const std::string& path) {
+CULEBRA_RT_SEARCH_LINKAGE int64_t index_load(std::string_view path) {
   auto index = std::make_unique<detail::Index>();
   try {
-    index->invidx.load(path);
+    index->invidx.load(std::string(path));
   } catch (const std::exception& e) {
     detail::rethrow(e);
   }
   return detail::g_indexes.add(index.release());
 }
 
-CULEBRA_RT_SEARCH_LINKAGE void index_add(int64_t id, const std::string& key,
-                                         const std::string& text) {
+CULEBRA_RT_SEARCH_LINKAGE void index_add(int64_t id, std::string_view key,
+                                         std::string_view text) {
   auto& index = detail::index_get(id);
   try {
-    index.indexer.index_document(key,
+    // The key is copied because the index owns it from here on; the text is
+    // not, since the tokenizer only reads it.
+    index.indexer.index_document(std::string(key),
                                  searchlib::UTF8PlainTextTokenizer(text));
   } catch (const std::exception& e) {
     detail::rethrow(e);
   }
 }
 
-CULEBRA_RT_SEARCH_LINKAGE void index_remove(int64_t id,
-                                            const std::string& key) {
-  detail::index_get(id).invidx.remove_document(key);
+CULEBRA_RT_SEARCH_LINKAGE void index_remove(int64_t id, std::string_view key) {
+  detail::index_get(id).invidx.remove_document(std::string(key));
 }
 
 CULEBRA_RT_SEARCH_LINKAGE std::vector<Hit> index_search(int64_t id,
-                                                        const std::string& query,
+                                                        std::string_view query,
                                                         size_t limit) {
   auto& invidx = detail::index_get(id).invidx;
+  // Parsed on its own so that the malformed-query error below is raised
+  // outside the catch that wraps engine failures — it is already a
+  // CulebraError and must not be re-wrapped.
+  std::optional<searchlib::Expression> expr;
+  try {
+    expr = searchlib::parse_query(detail::lowercase, query);
+  } catch (const std::exception& e) {
+    detail::rethrow(e);
+  }
+  if (!expr) {
+    throw CulebraError("SearchError",
+                       culebra::format("Search: invalid query: {}", query), 0,
+                       0);
+  }
   std::vector<Hit> hits;
   try {
-    auto expr = searchlib::parse_query(detail::lowercase, query);
-    if (!expr) {
-      throw CulebraError("SearchError",
-                         culebra::format("Search: invalid query: {}", query), 0,
-                         0);
-    }
     auto result = searchlib::perform_search(invidx, *expr);
     searchlib::BM25Scorer scorer(invidx, *expr);
-
-    // Rank by score; a tie keeps index order, so results are deterministic.
-    std::vector<std::pair<double, size_t>> order;
-    order.reserve(result->size());
-    for (size_t i = 0; i < result->size(); i++) {
-      order.emplace_back(scorer(*result, i), i);
-    }
-    std::stable_sort(order.begin(), order.end(),
-                     [](const auto& a, const auto& b) {
-                       return a.first > b.first;
-                     });
-    if (order.size() > limit) order.resize(limit);
-
-    hits.reserve(order.size());
-    for (const auto& [score, i] : order) {
-      Hit hit;
-      hit.key = invidx.document_key(result->document_ordinal(i));
-      hit.score = score;
-      for (size_t h = 0; h < result->search_hit_count(i); h++) {
-        auto r = invidx.text_range(*result, i, h);
+    // top_k scores each entry once and keeps only `limit` of them, rather than
+    // sorting a whole postings list to throw most of it away.
+    auto ranked = searchlib::top_k(*result, limit,
+                                   [&](size_t i) { return scorer(*result, i); });
+    hits.reserve(ranked.size());
+    for (const auto& scored : ranked) {
+      Hit& hit = hits.emplace_back();
+      hit.key = invidx.document_key(result->document_ordinal(scored.index));
+      hit.score = scored.score;
+      size_t range_count = result->search_hit_count(scored.index);
+      hit.ranges.reserve(range_count);
+      for (size_t h = 0; h < range_count; h++) {
+        auto r = invidx.text_range(*result, scored.index, h);
         hit.ranges.push_back({r.position, r.length});
       }
-      hits.push_back(std::move(hit));
     }
-  } catch (const CulebraError&) {
-    throw;
   } catch (const std::exception& e) {
     detail::rethrow(e);
   }
   return hits;
 }
 
-CULEBRA_RT_SEARCH_LINKAGE void index_save(int64_t id, const std::string& path) {
+CULEBRA_RT_SEARCH_LINKAGE void index_save(int64_t id, std::string_view path) {
   auto& invidx = detail::index_get(id).invidx;
   try {
-    invidx.save(path, {}, searchlib::IndexFormat::Compressed);
+    invidx.save(std::string(path), {}, searchlib::IndexFormat::Compressed);
   } catch (const std::exception& e) {
     detail::rethrow(e);
   }

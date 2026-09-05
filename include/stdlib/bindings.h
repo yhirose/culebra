@@ -2740,6 +2740,18 @@ inline bool _jit_file_arg_present(int64_t n, JitValue* args,
       culebra::format("type error: parameter '{}' expects {}", pname, expected),
       pos.line, pos.col);
 }
+// A required String positional, read as a view into the caller's own bytes.
+// Arity first, then type, so a handle method reports the two the same way
+// every other one does. Only valid for the duration of the call: `args` is
+// the caller's frame.
+inline std::string_view _jit_handle_req_string(JitValue self, int64_t n,
+                                               JitValue* args, size_t i,
+                                               const char* pname) {
+  if (!_jit_file_arg_present(n, args, i)) _jit_file_missing_arg(self, pname);
+  if (args[i].tag != TAG_STRING)
+    _jit_file_param_type_error(self, pname, "String", i);
+  return _culebra_str_view(args[i].tag, args[i].data);
+}
 // Untyped-param body check ("expected X, got Y" at the call site), the
 // shape the interp's to_long()/to_string() conversions produce.
 [[noreturn]] inline void _jit_file_body_type_error(
@@ -8121,38 +8133,27 @@ inline int64_t id(JitValue self) {
   return _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
 }
 
-// A document key. Strings only, deliberately: the key comes back out of
-// `search`, so accepting a Long and answering with "1" would change its type
-// between the two calls (Elasticsearch's `_id` is a string for the same
-// reason).
-inline std::string key(JitValue self, int64_t n, JitValue* args, int i,
-                       const char* name) {
-  if (!_jit_file_arg_present(n, args, i)) _jit_file_missing_arg(self, name);
-  if (args[i].tag != TAG_STRING)
-    _jit_file_param_type_error(self, name, "String", i);
-  return std::string(_culebra_str_view(args[i].tag, args[i].data));
+inline void set_field(JitObject* o, const char* name, JitValue v) {
+  culebra_runtime_object_set(o, name, false, v.tag, v.data, 0, 0);
 }
 
 inline JitValue hits(const std::vector<culebra::search::Hit>& list) {
   auto* arr = culebra_runtime_array_new_reserved(list.size());
   for (const auto& h : list) {
     auto* o = culebra_runtime_object_new();
-    auto set = [&](const char* k, JitValue v) {
-      culebra_runtime_object_set(o, k, false, v.tag, v.data, 0, 0);
-    };
-    set("key", _ns_adapt::v_string(_culebra_heap_str(h.key)));
-    set("score", _ns_adapt::v_float(h.score));
+    set_field(o, "key", _ns_adapt::v_string(_culebra_heap_str(h.key)));
+    set_field(o, "score", _ns_adapt::v_float(h.score));
     auto* ranges = culebra_runtime_array_new_reserved(h.ranges.size());
     for (const auto& r : h.ranges) {
       auto* ro = culebra_runtime_object_new();
-      culebra_runtime_object_set(ro, "position", false, TAG_LONG,
-                                 static_cast<int64_t>(r.position), 0, 0);
-      culebra_runtime_object_set(ro, "length", false, TAG_LONG,
-                                 static_cast<int64_t>(r.length), 0, 0);
+      set_field(ro, "position",
+                _ns_adapt::v_long(static_cast<int64_t>(r.position)));
+      set_field(ro, "length",
+                _ns_adapt::v_long(static_cast<int64_t>(r.length)));
       culebra_runtime_array_push(ranges, TAG_OBJECT,
                                  reinterpret_cast<int64_t>(ro));
     }
-    set("ranges", _ns_adapt::v_array(ranges));
+    set_field(o, "ranges", _ns_adapt::v_array(ranges));
     culebra_runtime_array_push(arr, TAG_OBJECT, reinterpret_cast<int64_t>(o));
   }
   return _ns_adapt::v_array(arr);
@@ -8164,13 +8165,13 @@ inline void _jit_search_add(JitValue* __ret, JitClosure*, int8_t self_tag, int64
                                             int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   int64_t ix = _search_adapt::id(self);
-  std::string k = _search_adapt::key(self, n, args, 0, "key");
-  if (!_jit_file_arg_present(n, args, 1)) _jit_file_missing_arg(self, "text");
-  if (args[1].tag != TAG_STRING)
-    _jit_file_param_type_error(self, "text", "String", 1);
-  std::string text(_culebra_str_view(args[1].tag, args[1].data));
+  // Strings only, deliberately: the key comes back out of `search`, so
+  // accepting a Long and answering with "1" would change its type between the
+  // two calls (Elasticsearch's `_id` is a string for the same reason).
+  auto key = _jit_handle_req_string(self, n, args, 0, "key");
+  auto text = _jit_handle_req_string(self, n, args, 1, "text");
   _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
-  culebra::search::index_add(ix, k, text);
+  culebra::search::index_add(ix, key, text);
   { *__ret = {TAG_NIL, 0}; return; }
 }
 
@@ -8178,9 +8179,9 @@ inline void _jit_search_remove(JitValue* __ret, JitClosure*, int8_t self_tag, in
                                                int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   int64_t ix = _search_adapt::id(self);
-  std::string k = _search_adapt::key(self, n, args, 0, "key");
+  auto key = _jit_handle_req_string(self, n, args, 0, "key");
   _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
-  culebra::search::index_remove(ix, k);
+  culebra::search::index_remove(ix, key);
   { *__ret = {TAG_NIL, 0}; return; }
 }
 
@@ -8188,10 +8189,7 @@ inline void _jit_search_search(JitValue* __ret, JitClosure*, int8_t self_tag, in
                                                int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   int64_t ix = _search_adapt::id(self);
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "query");
-  if (args[0].tag != TAG_STRING)
-    _jit_file_param_type_error(self, "query", "String", 0);
-  std::string query(_culebra_str_view(args[0].tag, args[0].data));
+  auto query = _jit_handle_req_string(self, n, args, 0, "query");
   int64_t limit = 10;
   if (_jit_file_arg_present(n, args, 1)) {
     if (args[1].tag != TAG_LONG)
@@ -8207,10 +8205,6 @@ inline void _jit_search_search(JitValue* __ret, JitClosure*, int8_t self_tag, in
   // view over the index, so nothing of it may outlive the native frame.
   auto found = culebra::search::index_search(ix, query,
                                              static_cast<size_t>(limit));
-  // Every hit object and its range objects are GC values held only in C++
-  // until the array is handed back, so pause the collector across the build
-  // (the same unrooted window PEG's tree builder had).
-  culebra::gc::Heap::CollectPause pause(_gc_heap());
   { *__ret = _search_adapt::hits(found); return; }
 }
 
@@ -8218,10 +8212,7 @@ inline void _jit_search_save(JitValue* __ret, JitClosure*, int8_t self_tag, int6
                                              int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   int64_t ix = _search_adapt::id(self);
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "path");
-  if (args[0].tag != TAG_STRING)
-    _jit_file_param_type_error(self, "path", "String", 0);
-  std::string path(_culebra_str_view(args[0].tag, args[0].data));
+  auto path = _jit_handle_req_string(self, n, args, 0, "path");
   _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
   culebra::search::index_save(ix, path);
   { *__ret = {TAG_NIL, 0}; return; }
@@ -8274,8 +8265,8 @@ inline JitValue _ns_search_index_new(JitValue*, int64_t) {
 }
 
 inline JitValue _ns_search_index_load(JitValue* a, int64_t) {
-  return _culebra_search_build_index_handle(culebra::search::index_load(
-      std::string(_ns_adapt::require_sv(a[0], "path", "StringLike"))));
+  return _culebra_search_build_index_handle(
+      culebra::search::index_load(_ns_adapt::require_sv(a[0], "path")));
 }
 
 // NsParamMeta — the per-parameter view for stdlib methods that accept
@@ -8693,9 +8684,12 @@ inline const NsMethod kNsRows_FST_native[] = {
   {"_FST",   "index_edit_distance_search",         6, &_ns_fst_map_edit_distance_search<culebra::fstdict::index_t>},
   {"_FST",   "index_suggest",                      2, &_ns_fst_map_suggest<culebra::fstdict::index_t>},
 };
-inline const NsMethod kNsRows_Search_native[] = {
-  {"_Search", "index_new",  0, &_ns_search_index_new},
-  {"_Search", "index_load", 1, &_ns_search_index_load, nullptr, "String", "path"},
+// `Search.Index.new()` is the nested-sub-namespace shape (like
+// `Encoding.html.escape`), so the namespace needs no preamble module to spell
+// the extra level: `sub` puts both rows on an `Index` object.
+inline const NsMethod kNsRows_Search[] = {
+  {"Search", "new",  0, &_ns_search_index_new,  "Index"},
+  {"Search", "load", 1, &_ns_search_index_load, "Index", "String", "path"},
 };
 inline const NsMethod kNsRows_Net[] = {
   {"Net",    "connect", 2, &_ns_net_connect},
@@ -8980,8 +8974,8 @@ CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_PEG_native{
     kNsRows_PEG_native, kCanonSigs_PEG_native};
 CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_FST_native{
     kNsRows_FST_native, kCanonSigs_FST_native};
-CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Search_native{
-    kNsRows_Search_native, kCanonSigs_Search_native};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Search{
+    kNsRows_Search, kCanonSigs_Search};
 CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Net{
     kNsRows_Net, kCanonSigs_Net};
 CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Proc{
@@ -9051,7 +9045,7 @@ inline const NsGroupRef kNsGroups[] = {
   {"_Regex", &culebra_ns_group_Regex_native},
   {"_PEG", &culebra_ns_group_PEG_native},
   {"_FST", &culebra_ns_group_FST_native},
-  {"_Search", &culebra_ns_group_Search_native},
+  {"Search", &culebra_ns_group_Search},
   {"Net", &culebra_ns_group_Net},
   {"Proc", &culebra_ns_group_Proc},
 #if defined(CULEBRA_HTTP_ENABLED)
@@ -10783,7 +10777,7 @@ inline const std::unordered_set<std::string_view>& builtin_var_names() {
       "__eff_abort", "__eff_catch_abort",
       "Math",    "IO",        "FS",        "File",     "Embed",   "_Time",
       "Random",  "Sys",       "JSON",      "Tensor",   "GC",
-      "_Regex",  "_PEG",      "_FST",      "_Search",   "Proc",     "Net",
+      "_Regex",  "_PEG",      "_FST",      "Search",    "Proc",     "Net",
       "Isolate",
       "Channel",
       "Parallel",
@@ -10797,8 +10791,8 @@ inline const std::unordered_set<std::string_view>& builtin_var_names() {
       // the lazy-ns builder registry). Listed here so closures capture-skip
       // them and bare references compile to namespace_get — mirroring the
       // interp's builtin_names skip. See _jit_namespace_get_or_build.
-      "Time",    "Args",      "Regex",     "PEG",       "FST",      "Search",
-      "Term",    "Log",
+      "Time",    "Args",      "Regex",     "PEG",       "FST",      "Term",
+      "Log",
       "Path",    "Canvas",    "__Eff",     "Vector2",   "Vector3",  "Deque",
       "PriorityQueue", "StateMachine",
       // The bare function globals from those same source modules (assert_*,
