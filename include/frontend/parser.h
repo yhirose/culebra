@@ -1126,6 +1126,27 @@ inline const ClassFieldTypes* class_field_types_of(std::string_view name) {
   return it == class_field_types().end() ? nullptr : &it->second;
 }
 
+// The class a field's annotation names, by class name then field name —
+// the same registration as above for a field whose declared type is not a
+// scalar. `self.car.speed` needs it: the first step says the second step's
+// receiver is a Car, and Car says what `speed` is.
+using ClassFieldClasses = std::map<std::string, std::string, std::less<>>;
+inline std::map<std::string, ClassFieldClasses, std::less<>>&
+class_field_classes() {
+  static std::map<std::string, ClassFieldClasses, std::less<>> reg;
+  return reg;
+}
+inline void register_class_field_classes(std::string name,
+                                         ClassFieldClasses fields) {
+  std::lock_guard<std::mutex> lk(value_class_mutex());
+  class_field_classes().insert_or_assign(std::move(name), std::move(fields));
+}
+inline const ClassFieldClasses* class_field_classes_of(std::string_view name) {
+  std::lock_guard<std::mutex> lk(value_class_mutex());
+  auto it = class_field_classes().find(name);
+  return it == class_field_classes().end() ? nullptr : &it->second;
+}
+
 // A `@value` field holds a machine scalar or another `@value`. Everything
 // else — String, Array, Object, a closure, `T?`, an ordinary class — carries
 // a heap body or an identity of its own, so admitting it would give the

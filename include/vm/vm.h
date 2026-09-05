@@ -3312,6 +3312,7 @@ struct MemberOpts {
   // Chunk::Reach::Guarded exists — so the read verifies the tag it was
   // promised, exactly as it does for a class-typed parameter.
   const culebra::ClassFieldTypes* owner_fields = nullptr;
+  const culebra::ClassFieldClasses* owner_field_classes = nullptr;
 };
 
 // What a call in a postfix chain reaches, when the compiler can name it: the
@@ -3647,6 +3648,9 @@ class Compiler {
     // verified on entry (§14), so a read of one of those fields inside this
     // frame knows its type without asking. Null everywhere else.
     const culebra::ClassFieldTypes* decl_fields = nullptr;
+    // The same, for the fields whose annotation names another class: what
+    // `let car = self.car` hands `car`, so `car.speed` knows its type.
+    const culebra::ClassFieldClasses* decl_field_classes = nullptr;
     // What reading this name tells the compiler, and the cell that answer
     // is anchored to. One record because the parts are granted together
     // (settle_callee), carried together through a capture list, and struck
@@ -4120,6 +4124,46 @@ class Compiler {
   // declaration is the only write, and it is the `fn` literal just
   // compiled. A lazy forward reference declines too — its sentinel is a
   // value a read still has to test.
+  // `let car = self.car`: the field's annotation names a class, so this name
+  // means an instance of it from here on — the same promise a parameter's
+  // annotation carries, arriving through the field's instead. Only a name
+  // bound once takes it: a `mut` rebound from somewhere else would carry an
+  // answer its later reads no longer earn (the read verifies the tag it was
+  // promised either way, so a stale answer costs a TypeError, not a wrong
+  // value — but the binding should not claim what it cannot keep).
+  void grant_declared_class(Binding& b, const peg::Ast& rhs) {
+    using namespace peg::udl;
+    if (b.is_mut) return;
+    const peg::Ast* node = &rhs;
+    while (!node->is_token && node->nodes.size() == 1) node = node->nodes[0].get();
+    if (node->is_token || node->nodes.size() != 2) return;
+    const peg::Ast& head = *node->nodes[0];
+    const peg::Ast& step = *node->nodes[1];
+    if (step.original_tag != "DOT"_) return;
+    if (const auto* fields = field_class_fields(head, step.token)) {
+      b.decl_fields = fields;
+      if (const auto* named = name_field_classes(head, step.token))
+        b.decl_field_classes = named;
+    }
+  }
+
+  // The class-typed fields of the class `field_class_fields` resolved to.
+  const culebra::ClassFieldClasses* name_field_classes(const peg::Ast& head,
+                                                      std::string_view field) {
+    using namespace peg::udl;
+    if (head.tag != "IDENTIFIER"_) return nullptr;
+    const culebra::ClassFieldClasses* named = nullptr;
+    if (head.token == "self") {
+      named = self_field_classes_;
+    } else if (const Binding* b = lookup(head.token)) {
+      named = b->decl_field_classes;
+    }
+    if (!named) return nullptr;
+    auto it = named->find(field);
+    return it == named->end() ? nullptr
+                              : culebra::class_field_classes_of(it->second);
+  }
+
   void grant_known_chunk(Binding& b, int32_t chunk) {
     if (chunk < 0 || b.lazy || !binding_writes_once(b)) return;
     settle_callee(b, chunk, /*via_mono=*/false);
@@ -5840,6 +5884,20 @@ class Compiler {
     }
     if (!declared.empty())
       culebra::register_class_field_types(class_name, std::move(declared));
+    // And the fields whose annotation names something else: a class, most
+    // usefully, which the chain walk follows to the next step. Recorded as
+    // written and resolved where it is used, so a forward reference works.
+    culebra::ClassFieldClasses named;
+    for (const auto* f : fields) {
+      auto mv = culebra::view_method(*f);
+      if (mv.type_annotation.empty()) continue;
+      if (culebra::field_type_for_annotation(mv.type_annotation) !=
+          culebra::FieldType::Any)
+        continue;
+      named.emplace(std::string(mv.name), std::string(mv.type_annotation));
+    }
+    if (!named.empty())
+      culebra::register_class_field_classes(class_name, std::move(named));
   }
 
   static void register_value_class_layout(
@@ -6010,6 +6068,8 @@ class Compiler {
     // each read, since a method value can be moved onto a foreign object).
     const culebra::ClassFieldTypes* own_fields =
         culebra::class_field_types_of(class_name);
+    const culebra::ClassFieldClasses* own_field_classes =
+        culebra::class_field_classes_of(class_name);
     // The class joins the registry only once its own members have passed, and
     // after the scan above rather than before it, so a field naming the class
     // being declared is still refused — a value cannot contain itself.
@@ -6120,7 +6180,8 @@ class Compiler {
                            {.receiver = true,
                             .owner_ctor_chunk = ctor_chunk_idx,
                             .type_params = &type_params,
-                            .owner_fields = own_fields}));
+                            .owner_fields = own_fields,
+                            .owner_field_classes = own_field_classes}));
       auto& ch = prog_.chunks[method_chunks.back()];
       ch.multifn_name = std::string(mv.name);
       if (mv.is_getter) ch.is_getter = true;
@@ -6176,7 +6237,8 @@ class Compiler {
                (!fields.empty() && !fields_need_a_thunk) ? &fields : nullptr,
            .owner_ctor_chunk = ctor_chunk_idx,
            .type_params = &type_params,
-           .owner_fields = own_fields}));
+           .owner_fields = own_fields,
+           .owner_field_classes = own_field_classes}));
     }
 
     // The shared meta: one closure per member name in a contiguous run —
@@ -6682,6 +6744,7 @@ class Compiler {
     prog_.chunks.emplace_back();  // reserve the index; nested fns append
     Compiler fc(prog_, analysis_, /*in_function=*/true, &info, idx);
     fc.self_fields_ = mo.owner_fields;
+    fc.self_field_classes_ = mo.owner_field_classes;
     fc.repl_ = repl_;
     fc.debug_ = debug_;
     fc.stamp(ast);
@@ -7087,8 +7150,10 @@ class Compiler {
         // The entry check has already refused anything but an instance of
         // this class (a same-shaped different class included), so what the
         // class declares about its fields holds for every read below.
-        if (!pl.type.empty())
+        if (!pl.type.empty()) {
           b.decl_fields = culebra::class_field_types_of(pl.type);
+          b.decl_field_classes = culebra::class_field_classes_of(pl.type);
+        }
       }
     }
     // The overflow arguments, as one Array: `__ARGS__` and a named `*args`
@@ -7394,6 +7459,7 @@ class Compiler {
       push_binding({name, slot, decl_mut, cell});
       grant_known_chunk(scopes_.back().bindings.back(), rhs.chunk);
       grant_known_const(scopes_.back().bindings.back(), *av.rhs);
+      grant_declared_class(scopes_.back().bindings.back(), *av.rhs);
       return read_binding(*tgt, scopes_.back().bindings.back());
     }
     const Binding* b = lookup_or_session(*tgt, name);
@@ -10157,20 +10223,44 @@ class Compiler {
   // (the JIT emits that cold check under the same compile-time filter).
   // What the enclosing class declares about its fields (MemberOpts).
   const culebra::ClassFieldTypes* self_fields_ = nullptr;
+  const culebra::ClassFieldClasses* self_field_classes_ = nullptr;
+
+  // What a name promises about its fields: the enclosing class for `self`,
+  // and a binding's own declared class for everything else.
+  const culebra::ClassFieldTypes* name_fields(const peg::Ast& head) {
+    using namespace peg::udl;
+    if (head.tag != "IDENTIFIER"_) return nullptr;
+    if (head.token == "self") return self_fields_;
+    const Binding* b = lookup(head.token);
+    return b ? b->decl_fields : nullptr;
+  }
+
+  // The class a name's declared class gives `<field>`, when that field's
+  // annotation names one — the step that lets `self.car.speed` know what
+  // `speed` is. Null where the field is scalar, absent, or names nothing
+  // the compiler has seen.
+  const culebra::ClassFieldTypes* field_class_fields(
+      const peg::Ast& head, std::string_view field) {
+    using namespace peg::udl;
+    if (head.tag != "IDENTIFIER"_) return nullptr;
+    const culebra::ClassFieldClasses* named = nullptr;
+    if (head.token == "self") {
+      named = self_field_classes_;
+    } else if (const Binding* b = lookup(head.token)) {
+      named = b->decl_field_classes;
+    }
+    if (!named) return nullptr;
+    auto it = named->find(field);
+    return it == named->end() ? nullptr
+                              : culebra::class_field_types_of(it->second);
+  }
 
   // The tag a `<name>.<field>` read yields when `<name>`'s declared class
   // declares `<field>` with a scalar type — 0 when it does not, which is
   // every other read. The write check (docs/language.md §13) is what makes
   // this an answer rather than a guess.
   int32_t declared_read_tag(const peg::Ast& head, std::string_view field) {
-    using namespace peg::udl;
-    if (head.tag != "IDENTIFIER"_) return 0;
-    const culebra::ClassFieldTypes* fields = nullptr;
-    if (head.token == "self") {
-      fields = self_fields_;
-    } else if (const Binding* b = lookup(head.token)) {
-      fields = b->decl_fields;
-    }
+    const culebra::ClassFieldTypes* fields = name_fields(head);
     if (!fields) return 0;
     auto it = fields->find(field);
     if (it == fields->end()) return 0;

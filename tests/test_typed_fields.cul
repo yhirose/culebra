@@ -244,4 +244,46 @@ assert_eq(own.sum(4), 6.0)
 let borrowed = {class: 'Own', f: 'not a float', doubled: own.doubled}
 assert_eq(borrowed.doubled(), 3.0)
 
+
+# --- a class-typed field carries the class to the next step ---
+#
+# `self.engine.rpm` and `let e = self.engine; e.rpm` are the same question
+# asked twice: the first step's declared type names a class, and that class
+# says what `rpm` is.
+
+class Engine {
+  rpm: Float
+  gear: Long
+  new() {
+  }
+}
+
+class Vehicle {
+  engine: Engine
+  speed: Float
+  new() {
+    self.engine = Engine()
+  }
+  chained() {
+    self.engine.rpm + self.speed
+  }
+  through_local() {
+    let e = self.engine
+    e.rpm + e.gear
+  }
+}
+
+let v = Vehicle()
+assert_eq(v.chained(), 0.0)
+assert_eq(v.through_local(), 0.0)
+
+v.engine.rpm = 12.5
+v.speed = 2.5
+assert_eq(v.chained(), 15.0)
+
+# the same contract at the far end of the chain
+assert_throws('TypeError', fn () {
+  v.engine.rpm = 'no'
+})
+
 println('typed fields OK')
