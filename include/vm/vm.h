@@ -2549,6 +2549,9 @@ struct Chunk {
     mutable void* shape[2] = {nullptr, nullptr};
     std::vector<const char*> keys;
     std::vector<JitValue> zeros;
+    // Each field's declared type (culebra::FieldType), which the slot the
+    // site creates carries from then on.
+    std::vector<uint8_t> types;
   };
   std::vector<FieldLayoutSpec> field_layout_specs;
   // Op::SlotInit's `d`: the slot index, whether the property is mutable,
@@ -4596,6 +4599,8 @@ class Compiler {
       spec.keys.push_back(reinterpret_cast<const char*>(
           chunk_.consts[kconst_str(std::string(mv.name))].data));
       spec.zeros.push_back(chunk_.consts[zero_const(mv.type_annotation)]);
+      spec.types.push_back(static_cast<uint8_t>(
+          culebra::field_type_for_annotation(mv.type_annotation)));
     }
     auto idx = static_cast<int32_t>(chunk_.field_layout_specs.size());
     chunk_.field_layout_specs.push_back(std::move(spec));
@@ -14431,7 +14436,7 @@ struct Exec {
           culebra_runtime_object_fields_init(
               reinterpret_cast<JitObject*>(regs[in.a].data), spec.shape,
               spec.keys.data(), static_cast<int64_t>(spec.keys.size()),
-              spec.zeros.data());
+              spec.zeros.data(), spec.types.data());
           ++pc;
           break;
         }

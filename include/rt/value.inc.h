@@ -33,7 +33,17 @@ namespace culebra {
 // flips to a per-object hash index instead (see `DictIndex` below).
 struct Shape {
   std::vector<std::string> names;          // insertion order
-  std::map<std::string_view, Shape*> add_transitions;
+  // The declared type of each slot, parallel to `names`. A class's fields
+  // carry their annotation here (culebra::FieldType); every other slot is
+  // `Any`. Shapes are interned by the pair, so a slot's declared type is
+  // settled by the Shape a site guards on — which is what lets a write check
+  // it with one compare and a read of a known class trust it outright.
+  std::vector<uint8_t> types;
+  // One entry per (name, declared type) pair: adding the same name with a
+  // different declared type is a different Shape.
+  std::map<std::string_view,
+           std::array<Shape*, static_cast<size_t>(culebra::FieldType::Count)>>
+      add_transitions;
   // Whether any name is one the runtime dispatches specially (a `__x__`
   // dunder, or the `hash`/`cmp` protocol names): the one question a
   // special-method lookup has to ask of an instance's own slots before it
@@ -48,6 +58,12 @@ struct Shape {
 
   bool has(std::string_view name) const {
     return offset(name) != static_cast<size_t>(-1);
+  }
+  // The declared type of slot `i` (Any when the shape predates types, which
+  // every non-class shape does).
+  culebra::FieldType type_at(size_t i) const {
+    return i < types.size() ? static_cast<culebra::FieldType>(types[i])
+                            : culebra::FieldType::Any;
   }
   // Position of `name` in `slots`, or static_cast<size_t>(-1) if absent.
   size_t offset(std::string_view name) const {
@@ -85,20 +101,27 @@ struct ShapeRegistry {
   // transitions collide on the same Shape pointer. Locked: only ever
   // hit on inline-cache miss (rare after warm-up), so the global mutex
   // costs nothing on the steady-state fast path.
-  Shape* transition_add(Shape* current, std::string_view name) {
+  Shape* transition_add(Shape* current, std::string_view name,
+                        culebra::FieldType type = culebra::FieldType::Any) {
     std::lock_guard<std::mutex> lk(mu_);
+    auto slot = static_cast<size_t>(type);
     auto it = current->add_transitions.find(name);
-    if (it != current->add_transitions.end()) return it->second;
+    if (it != current->add_transitions.end() && it->second[slot])
+      return it->second[slot];
     auto next = std::make_unique<Shape>();
     next->names = current->names;
     next->names.push_back(std::string(name));
+    next->types = current->types;
+    next->types.resize(next->names.size() - 1,
+                       static_cast<uint8_t>(culebra::FieldType::Any));
+    next->types.push_back(static_cast<uint8_t>(type));
     next->any_special = current->any_special || Shape::is_special_name(name);
     auto& stored_name = next->names.back();
     auto* raw = next.get();
     owned_.push_back(std::move(next));
     // Key the cache by the new shape's stored name view so the
     // string_view stays live for the lifetime of the Shape.
-    current->add_transitions[std::string_view(stored_name)] = raw;
+    current->add_transitions[std::string_view(stored_name)][slot] = raw;
     return raw;
   }
 
@@ -470,7 +493,8 @@ struct JitObject {
   // has 6, plain Object literals 2–5, iterator wrappers 2). The
   // reserve avoids the std::vector doubling chain (cap 1→2→4→8),
   // turning 4 small heap allocations into one.
-  size_t append_slot(std::string_view key, JitValue value, bool mut) {
+  size_t append_slot(std::string_view key, JitValue value, bool mut,
+                     culebra::FieldType type = culebra::FieldType::Any) {
     if (is_dict) return append_dict(key, value, mut);
     if (!shape) shape = culebra::shape_registry().root();
     // A class instance keeps its proto in the shared storage, so it stays
@@ -480,7 +504,8 @@ struct JitObject {
       return append_dict(key, value, mut);
     }
     return append_slot_shaped(
-        culebra::shape_registry().transition_add(shape, key), value, mut);
+        culebra::shape_registry().transition_add(shape, key, type), value,
+        mut);
   }
 
   // Past this many properties the shape tree costs more than it saves: each
@@ -663,6 +688,10 @@ struct JitPropSetIC {
   uint64_t offset;       // slot to write (slots[offset] for update;
                          // equals expected->names.size() for transition)
   uint8_t prop_mut;      // `mut` flag for the new entry (transition only)
+  // The slot's declared type (culebra::FieldType), carried here so the write
+  // checks it without reading the Shape again. Settled with the rest of the
+  // entry: the shape the site guards on decides it.
+  uint8_t declared;
 };
 
 

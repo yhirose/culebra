@@ -1,0 +1,133 @@
+# A declared field's type is a contract the write checks (docs/language.md
+# §14). The annotation was documentation before; it now decides what the
+# field may hold, in the same words `let x: Float = 3` has always used, and
+# through every write surface: a literal name, a computed key, a method's
+# own `self.x`, and the constructor's prologue.
+#
+# Run: ./build/culebra tests/test_typed_fields.cul
+#      ./build/culebra --jit tests/test_typed_fields.cul
+
+class Fields {
+  f: Float
+  n: Long
+  b: Bool
+  s: String
+  untyped = nil
+  new() {
+  }
+}
+
+# --- the declared zero is what the type says, and it satisfies the type ---
+
+let v = Fields()
+assert_eq(v.f, 0.0)
+assert_eq(v.n, 0)
+assert_eq(v.b, false)
+assert_eq(v.s, '')
+assert_eq(v.untyped, nil)
+
+v.f = 2.5
+v.n = 7
+v.b = true
+assert_eq(v.f, 2.5)
+assert_eq(v.n, 7)
+assert_eq(v.b, true)
+
+# --- a write that does not satisfy the declaration is a TypeError ---
+
+assert_throws('TypeError', fn () {
+  v.f = 'not a float'
+})
+assert_throws('TypeError', fn () {
+  v.f = 3
+})
+assert_throws('TypeError', fn () {
+  v.f = nil
+})
+assert_throws('TypeError', fn () {
+  v.n = 1.5
+})
+assert_throws('TypeError', fn () {
+  v.b = 1
+})
+
+# the value the field already held survives a rejected write
+assert_eq(v.f, 2.5)
+assert_eq(v.n, 7)
+assert_eq(v.b, true)
+
+# --- an unannotated field takes anything, as it always has ---
+
+v.untyped = 'a string'
+assert_eq(v.untyped, 'a string')
+v.untyped = 42
+assert_eq(v.untyped, 42)
+
+# a field the constructor adds carries no declaration either
+class Grows {
+  new() {
+    self.added = 1
+  }
+}
+
+let g = Grows()
+g.added = 'now a string'
+assert_eq(g.added, 'now a string')
+
+# --- every write surface answers the same ---
+
+class Writes {
+  f: Float
+  new() {
+  }
+  set_via_self(x) {
+    self.f = x
+  }
+}
+
+let w = Writes()
+w.set_via_self(1.5)
+assert_eq(w.f, 1.5)
+assert_throws('TypeError', fn () {
+  w.set_via_self('no')
+})
+
+# a computed key reaches the same check
+assert_throws('TypeError', fn () {
+  w['f'] = 'no'
+})
+w['f'] = 3.5
+assert_eq(w.f, 3.5)
+
+# --- the message names the field and the type it wants ---
+
+mut msg = ''
+try {
+  w.f = 'no'
+} catch e {
+  msg = e.message
+}
+assert_eq(msg, "type error: field 'f' expects Float")
+
+# --- a @value class's fields are declared, so they are checked too ---
+
+@value
+class Vec {
+  x: Float
+  y: Float
+  new(x, y) {
+    self.x = x
+    self.y = y
+  }
+}
+
+let p = Vec(1.0, 2.0)
+assert_eq(p.x, 1.0)
+assert_throws('TypeError', fn () {
+  Vec('a', 2.0)
+})
+assert_throws('TypeError', fn () {
+  Vec(1, 2.0)
+})
+
+println('typed fields OK')

@@ -2817,6 +2817,35 @@ inline ZeroKind zero_kind_for_type(std::string_view type) {
   return ZeroKind::Nil;  // reference types default to nil
 }
 
+// The declared type of an instance field, in the form a Shape stores per slot
+// and the emitter reads back. Only the scalars a tag alone decides are named
+// here; every other annotation (a class, a union, none at all) is `Any` and
+// the field behaves exactly as it always has.
+enum class FieldType : uint8_t { Any = 0, Float, Long, Bool, Count };
+
+inline FieldType field_type_for_annotation(std::string_view type) {
+  if (type.empty()) return FieldType::Any;
+  switch (zero_kind_for_type(type)) {
+    case ZeroKind::Float: return FieldType::Float;
+    case ZeroKind::Long: return FieldType::Long;
+    case ZeroKind::Bool: return FieldType::Bool;
+    case ZeroKind::String:
+    case ZeroKind::Nil: break;
+  }
+  return FieldType::Any;
+}
+
+inline const char* field_type_name(FieldType t) {
+  switch (t) {
+    case FieldType::Float: return "Float";
+    case FieldType::Long: return "Long";
+    case FieldType::Bool: return "Bool";
+    case FieldType::Any:
+    case FieldType::Count: break;
+  }
+  return "Any";
+}
+
 [[noreturn]] inline void throw_well_known_prop_contract_error(
     std::string_view name) {
   throw CulebraError(

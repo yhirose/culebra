@@ -3633,13 +3633,14 @@ struct Lowering {
           // shape fields — never null, never a real heap Shape* — so a
           // cold cache can't spuriously match a freshly-allocated
           // instance's shape == nullptr (JitPropIC's own convention).
-          auto icTy =
-              llvm::StructType::get(j.ctx_, {ptrTy, ptrTy, i64Ty, i8Ty});
+          auto icTy = llvm::StructType::get(
+              j.ctx_, {ptrTy, ptrTy, i64Ty, i8Ty, i8Ty});
           auto* sentinelPtr = llvm::ConstantExpr::getIntToPtr(
               llvm::ConstantInt::get(i64Ty, 1), ptrTy);
           auto* icInit = llvm::ConstantStruct::get(
               icTy, {sentinelPtr, sentinelPtr,
-                     llvm::ConstantInt::get(i64Ty, 0), b.getInt8(0)});
+                     llvm::ConstantInt::get(i64Ty, 0), b.getInt8(0),
+                     b.getInt8(0)});
           auto* icGlobal = new llvm::GlobalVariable(
               *j.module_, icTy, /*isConstant=*/false,
               llvm::GlobalValue::PrivateLinkage, icInit,
@@ -4329,12 +4330,21 @@ struct Lowering {
               *j.module_, zerosTy, /*isConstant=*/true,
               llvm::GlobalValue::PrivateLinkage,
               llvm::ConstantArray::get(zerosTy, words), ".fields.init.zeros");
+          std::vector<Constant*> typeBytes;
+          for (uint8_t t : spec.types) typeBytes.push_back(b.getInt8(t));
+          auto typesTy = ArrayType::get(b.getInt8Ty(), typeBytes.size());
+          auto* typesGlobal = new llvm::GlobalVariable(
+              *j.module_, typesTy, /*isConstant=*/true,
+              llvm::GlobalValue::PrivateLinkage,
+              llvm::ConstantArray::get(typesTy, typeBytes),
+              ".fields.init.types");
           j.emit_call(
               j.module_->getOrInsertFunction(rt::object_fields_init,
                                              b.getVoidTy(), ptrTy, ptrTy,
-                                             ptrTy, i64Ty, ptrTy),
+                                             ptrTy, i64Ty, ptrTy, ptrTy),
               {b.CreateIntToPtr(j.extract_data(load_slot(in.a)), ptrTy),
-               cacheGlobal, keysArray, b.getInt64(n), zerosGlobal});
+               cacheGlobal, keysArray, b.getInt64(n), zerosGlobal,
+               typesGlobal});
           break;
         }
         case Op::FieldInit: {

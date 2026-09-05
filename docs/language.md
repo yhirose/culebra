@@ -1587,11 +1587,18 @@ Semantics:
     created via `self.x = y` in the constructor. A `@value` class (§21)
     is the exception: its instances freeze when `new` returns.
 
-  The declared type is documentation (like parameter annotations on the
-  runtime-check model, §14); `@packable` classes (§21) additionally read
-  it to compute their fixed byte layout, and `@value` classes to check
-  that every field is a scalar, so both require typed fields (`x = 7` in
-  either is a SyntaxError).
+  The declared type is **checked on every write**, the same runtime-check
+  model parameters and `let x: T` follow (§14): `Float`, `Long` and `Bool`
+  admit only their own values, and anything else — a class, a union, a
+  field with no annotation at all — takes what it always did. The check
+  covers every way a value reaches the field: a literal name, a computed
+  key, the constructor's own `self.x`, a native builder. That is what
+  makes a declared field's type worth reading: a `Float` field holds a
+  `Float`, so code that knows the class knows the field's type without
+  asking. `@packable` classes (§21) additionally read it to compute their
+  fixed byte layout, and `@value` classes to check that every field is a
+  scalar, so both require typed fields (`x = 7` in either is a
+  SyntaxError).
 * `get NAME () { ... }` declares a **getter** — a no-parameter method
   that is invoked on a bare property read, with no call parentheses:
 
@@ -3198,7 +3205,10 @@ method — `self._data ??= load()` works directly (`??=` supports
 
 * Arithmetic / boolean operators check their own operand types;
   annotations on local intermediates do not add extra coverage.
-* Object property values have no annotation slot.
+* Object property values have no annotation slot — a property an
+  object grows outside a class declaration is unconstrained. A class's
+  *declared* field is the exception: its annotation is checked on every
+  write (§13).
 * Array element types are not tracked.
 * `mut x: T` on a local does not re-check on later reassignment —
   the check happens once at the annotated declaration.

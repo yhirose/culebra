@@ -1162,6 +1162,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_fast(
     int64_t data, int64_t line, int64_t col, bool mut, bool is_init,
     int8_t key_kind) {
   if (ic->expected_shape == ic->result_shape) {
+    if (!_jit_tag_fits_field_type(
+            tag, static_cast<culebra::FieldType>(ic->declared)))
+      _jit_field_type_error(key, static_cast<culebra::FieldType>(ic->declared),
+                            tag, data, line, col);
     _jit_overwrite_slot(obj->slots[ic->offset], key, tag, data, mut, is_init,
                         line, col, /*check_wk=*/(key_kind & 1) != 0);
   } else {
@@ -1209,7 +1213,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_slot_init(
 // `zeros[i]` is `keys[i]`'s value: a scalar, or the borrowed `''` literal.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_fields_init(
     JitObject* obj, void** shape_cache, const char* const* keys,
-    int64_t n_keys, const JitValue* zeros) {
+    int64_t n_keys, const JitValue* zeros, const uint8_t* types) {
   auto* from = static_cast<culebra::Shape*>(shape_cache[0]);
   if (from && obj->shape == from && !obj->key_order && !obj->frozen) {
     obj->slots.reserve(obj->slots.size() + static_cast<size_t>(n_keys));
@@ -1222,9 +1226,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_fields_init(
   auto* before = obj->shape;
   size_t n_before = obj->slots.size();
   for (int64_t i = 0; i < n_keys; i++)
-    culebra_runtime_object_set(obj, keys[i], /*mut=*/true,
-                               static_cast<int8_t>(zeros[i].tag),
-                               zeros[i].data, 0, 0, /*is_init=*/true);
+    _jit_object_set_declared(obj, keys[i], /*mut=*/true,
+                             static_cast<int8_t>(zeros[i].tag), zeros[i].data,
+                             0, 0, /*is_init=*/true,
+                             static_cast<culebra::FieldType>(types[i]));
   // Prime the cache only from a run the fast path reproduces exactly: every
   // key appended (none existed, so no overwrite), still shaped, and no
   // insertion-order sidecar to keep in step.
@@ -1305,8 +1310,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_ic(
       ic->result_shape = obj->shape;
       ic->offset = idx;
       ic->prop_mut = mut ? 1 : 0;
+      ic->declared = static_cast<uint8_t>(culebra::FieldType::Any);
     }
   } else {
+    auto declared = before ? before->type_at(idx) : culebra::FieldType::Any;
+    if (!_jit_tag_fits_field_type(tag, declared))
+      _jit_field_type_error(key, declared, tag, data, line, col);
     _jit_overwrite_slot(obj->slots[idx], key, tag, data, mut, is_init, line,
                         col, /*check_wk=*/true);
     if (!obj->is_dict) {
@@ -1314,6 +1323,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_ic(
       ic->result_shape = before;
       ic->offset = idx;
       ic->prop_mut = obj->slots[idx].mut ? 1 : 0;
+      ic->declared = static_cast<uint8_t>(declared);
     }
   }
   if (std::string_view(key) == "drop") _jit_owned_bind_drop(obj);

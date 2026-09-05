@@ -3096,9 +3096,41 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_bind_static(
   obj->set_or_append(key, JitValue{tag, data}, /*mut=*/false);
 }
 
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set(
+// A declared field's type is a contract the Shape carries: a write that does
+// not satisfy it is a TypeError, in the same words `let x: Float = 3` gives.
+// One check here covers every String-keyed write (codegen, dynamic subscript
+// keys through object_set_any, native builders), which is what lets a read of
+// a slot whose declared type is known trust the tag without asking.
+inline bool _jit_tag_fits_field_type(int8_t tag, culebra::FieldType t) {
+  switch (t) {
+    case culebra::FieldType::Float: return tag == TAG_FLOAT;
+    case culebra::FieldType::Long: return tag == TAG_LONG;
+    case culebra::FieldType::Bool: return tag == TAG_BOOL;
+    case culebra::FieldType::Any:
+    case culebra::FieldType::Count: break;
+  }
+  return true;
+}
+
+[[noreturn]] inline void _jit_field_type_error(const char* key,
+                                               culebra::FieldType t, int8_t tag,
+                                               int64_t data, int64_t line,
+                                               int64_t col) {
+  _culebra_value_release_impl(tag, data);
+  throw culebra::CulebraError(
+      "TypeError",
+      culebra::format("type error: field '{}' expects {}", key,
+                      culebra::field_type_name(t)),
+      line, col);
+}
+
+// The write with the field's declared type in hand. Only a class's own
+// declaration has one, and it reaches here from C++ (object_fields_init);
+// culebra_runtime_object_set below is the ABI codegen names, and its
+// parameter list must stay as codegen declares it.
+inline void _jit_object_set_declared(
     JitObject* obj, const char* key, bool mut, int8_t tag, int64_t data,
-    int64_t line, int64_t col, bool is_init = false) {
+    int64_t line, int64_t col, bool is_init, culebra::FieldType declared) {
   // Shared.new views are immutable (handle construction writes its own
   // marker/method slots via set_or_append, not through here).
   if (obj->is_shared_val) {
@@ -3114,12 +3146,25 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set(
   if (idx == static_cast<size_t>(-1)) {
     _jit_reject_value_add(obj, key, tag, data, line, col, is_init);
     _culebra_check_well_known_prop(key, tag, data);
-    obj->append_slot(key, JitValue{tag, data}, mut);
+    if (!_jit_tag_fits_field_type(tag, declared))
+      _jit_field_type_error(key, declared, tag, data, line, col);
+    obj->append_slot(key, JitValue{tag, data}, mut, declared);
   } else {
+    auto slot_type = obj->shape ? obj->shape->type_at(idx)
+                                : culebra::FieldType::Any;
+    if (!_jit_tag_fits_field_type(tag, slot_type))
+      _jit_field_type_error(key, slot_type, tag, data, line, col);
     _jit_overwrite_slot(obj->slots[idx], key, tag, data, mut, is_init, line,
                         col, /*check_wk=*/true);
   }
   if (std::string_view(key) == "drop") _jit_owned_bind_drop(obj);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set(
+    JitObject* obj, const char* key, bool mut, int8_t tag, int64_t data,
+    int64_t line, int64_t col, bool is_init = false) {
+  _jit_object_set_declared(obj, key, mut, tag, data, line, col, is_init,
+                           culebra::FieldType::Any);
 }
 
 // --- @packable SharedBuffer: handle objects + raw bytes <-> JitValue -----
