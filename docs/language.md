@@ -4678,8 +4678,8 @@ wrong-typed element raises a `TypeError`:
 | `o.keys() -> Array`              | `Array` of keys in insertion order (matches display order — §8). |
 | `o.values() -> Iterator`        | Lazy iterator of values in insertion order — the value-only view of `o.iter()` (which yields `(key, value)` pairs). Chains / `collect`s like any iterator. |
 | `o.has(key: String) -> Bool`     | Whether `o` has an own property named `key`, or (for a class instance) a method of that name. Ignores built-in method names. |
-| `o.get(key, fallback) -> value`  | The value for `key`, or `fallback` if absent. Read-only — never inserts. |
-| `o.get_or_put(key, init) -> value` *(mutating)* | The value for `key`; on a miss, store `init` and return it (sharing storage, so `o.get_or_put(k, [] ).push(x)` grows the stored array). When `init` is a function it is called lazily — only a miss pays for it: `o.get_or_put(k, || [])`. |
+| `o.get(key, fallback) -> Any`  | The value for `key`, or `fallback` if absent. Read-only — never inserts. |
+| `o.get_or_put(key, init) -> Any` *(mutating)* | The value for `key`; on a miss, store `init` and return it (sharing storage, so `o.get_or_put(k, [] ).push(x)` grows the stored array). When `init` is a function it is called lazily — only a miss pays for it: `o.get_or_put(k, || [])`. |
 | `o.remove(key: String) -> Nil` *(mutating)* | Delete the property named `key` if present. |
 
 A `String` and a byte-equal `StringView` (e.g. `s[0..2]`) are the **same key** — they hit the same slot across every operation above and `o[key] = v`.

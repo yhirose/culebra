@@ -137,6 +137,14 @@ check-spec-examples:
 check-api-coverage:
     tools/checks/check_api_coverage.sh
 
+# What a value-type built-in method returns is recorded twice: in the
+# reference docs and in CanonSig::return_type, which the compiled lanes read.
+# The table stopped being generated, so nothing held the two together.
+[group("test")]
+[doc("Verify CanonSig::return_type agrees with the reference docs")]
+check-canon-return-types:
+    tools/checks/check_canon_return_types.sh
+
 # An interrupt is never a program error. A handler that catches CulebraError —
 # or std::exception, or `...`, which catch it too — and reports it turns Ctrl+C
 # into a failed file/block and runs on, one-shot flag consumed. Written three
@@ -220,7 +228,7 @@ check-docs-cpp:
 # the workflow-coverage ratchet. Cheap enough to gate both test recipes:
 # well under a second once the grammar-blob tool is ccache-warm.
 [private]
-check-generated: check-grammar-sync check-preambles check-blob check-site-version check-difftest-coverage check-release-coverage check-spec-examples check-api-coverage check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-docs-cpp-includes check-header-naming check-search-splitter check-layering check-codegen-enums
+check-generated: check-grammar-sync check-preambles check-blob check-site-version check-difftest-coverage check-release-coverage check-spec-examples check-api-coverage check-canon-return-types check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-docs-cpp-includes check-header-naming check-search-splitter check-layering check-codegen-enums
 
 # Such a build still runs programs — everything below the LLVM lowering
 # (rt.h, vm.h) is LLVM-free, so the bytecode VM's executor is intact; what it

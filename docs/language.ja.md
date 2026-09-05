@@ -4441,8 +4441,8 @@ inspect([1, 2, 3].reduce(0, fn (a, *xs) {
 | `o.keys() -> Array`              | キーの配列を挿入順で返す（表示順と同じ — §8） |
 | `o.values() -> Iterator`        | 値を挿入順で返す遅延イテレータ。`o.iter()`（`(key, value)`ペアをyield）の値だけのビュー。他のイテレータ同様に連鎖／`collect`できる |
 | `o.has(key: String) -> Bool`     | `key`を自身のプロパティ、または（クラスインスタンスなら）その名のメソッドとして持つか。ビルトインメソッド名は含まない |
-| `o.get(key, fallback) -> value`  | `key`に対応する値、無ければ`fallback`。読み取り専用で、決して挿入しない |
-| `o.get_or_put(key, init) -> value` *(破壊的)* | `key`に対応する値。ミス時は`init`を格納してそれを返す（ストレージを共有するので`o.get_or_put(k, []).push(x)`は格納済みの配列を伸ばす）。`init`が関数なら遅延呼び出しされ、ミスしたときだけコストを払う: `o.get_or_put(k, || [])` |
+| `o.get(key, fallback) -> Any`  | `key`に対応する値、無ければ`fallback`。読み取り専用で、決して挿入しない |
+| `o.get_or_put(key, init) -> Any` *(破壊的)* | `key`に対応する値。ミス時は`init`を格納してそれを返す（ストレージを共有するので`o.get_or_put(k, []).push(x)`は格納済みの配列を伸ばす）。`init`が関数なら遅延呼び出しされ、ミスしたときだけコストを払う: `o.get_or_put(k, || [])` |
 | `o.remove(key: String) -> Nil` *(破壊的)* | `key`が存在すれば削除              |
 
 `String`とバイト列が等しい`StringView`（例: `s[0..2]`）は**同じキー**扱いです — 上記のどの操作でも`o[key] = v`でも同じスロットに到達します。
