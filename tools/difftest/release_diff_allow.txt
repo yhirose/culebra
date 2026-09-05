@@ -51,3 +51,18 @@ m|*|words|*
 m|*|sentences|*
 bareread|*|words
 bareread|*|sentences
+
+# `Math.f32` joined the namespace after v0.4.0, so `Math` has one more member
+# than the baseline binary's: every case that asks a namespace object for its
+# size reads 25 where the baseline read 24. The shadowing these cases are
+# about is unchanged — the built-in `size()` wins in both, and only the
+# number it answers with moved.
+ufcsshadow|size|*|Math
+ufcsshadownest|size|*|Math
+ufcsshadowform|size|*|Math
+
+# A class's scalar declared field type is checked on every write now
+# (docs/language.md §10); it was documentation in v0.4.0. A case that writes
+# the wrong kind into a declared `Long` gets the TypeError the annotation
+# promises where the baseline took the value.
+field-forward-read
