@@ -40,6 +40,7 @@
 #include <base/stdout_capture.h>  // program_out() / ProgramOutCapture (IO.capture)
 #include <stdlib/fst.h>    // the value-neutral FST choke
 #include <stdlib/search.h>  // the value-neutral Search choke (the Search AOT axis)
+#include <stdlib/search_model.h>  // the models Search.segmenter knows by name
 #include <stdlib/peg.h>    // the value-neutral PEG choke
 #include <stdlib/regex.h>  // the value-neutral Regex choke (the Regex AOT axis)
 #include <conc/sendable.h>  // JIT isolate transfer (jit_serialize, spawn, handle)
@@ -60,6 +61,7 @@
 #include <limits>
 #include <numbers>  // std::numbers::pi / ::e (Math.pi / Math.e; portable vs M_PI)
 #include <set>      // builtin_global_names (the lint's name universe)
+#include <base/confirm.h>    // confirm_on_tty (Search.segmenter asks before a fetch)
 #include <base/os_compat.h>  // os_setenv / os_strptime (setenv / strptime shims)
 #include <system_error>
 #include <unistd.h>  // isatty (IO.*_is_terminal)
@@ -8133,6 +8135,30 @@ inline int64_t id(JitValue self) {
   return _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
 }
 
+// Where Search.segmenter keeps the models it fetches: `Sys.data_dir("culebra")
+// /models`, asked about on the terminal, fetched through the Http namespace's
+// client. `CULEBRA_OFFLINE` set to anything but `0` turns a miss into the hint
+// without asking (a build box with no network, or one that must not use it).
+inline culebra::search::ModelStore default_model_store() {
+  culebra::search::ModelStore store;
+  store.dir =
+      std::filesystem::path(culebra::_sys_data_dir("culebra", 0, 0)) / "models";
+  const char* offline = std::getenv("CULEBRA_OFFLINE");
+  store.offline = offline && *offline && std::string_view(offline) != "0";
+  store.confirm = [](std::string_view q) { return culebra::confirm_on_tty(q); };
+  store.fetch = [](const std::string& url, std::string& body,
+                   std::string& err) {
+#if defined(CULEBRA_HTTP_ENABLED)
+    return culebra::http::download(url, body, err);
+#else
+    (void)url, (void)body;
+    err = "this build has no HTTP support";
+    return false;
+#endif
+  };
+  return store;
+}
+
 // A Search.segmenter handle, told apart from an index handle (and from any
 // other Object in the analyzer's `splitter` slot) by its marker field.
 inline bool is_segmenter(JitValue v) {
@@ -8416,12 +8442,14 @@ inline void _jit_search_segmenter_drop(JitValue* __ret, JitClosure*,
 }
 
 // `Search.segmenter(model)`: a loaded segmentation model as a handle the
-// analyzer's `splitter` slot accepts. An index copies the splitter (which
+// analyzer's `splitter` slot accepts. `model` is a catalog name (resolved to
+// the cached copy, fetched on consent -- search_model.h) or a file path. An index copies the splitter (which
 // shares the model) when it is built, so closing the handle afterwards only
 // stops new indexes from being built with it.
 inline JitValue _ns_search_segmenter(JitValue* a, int64_t) {
-  auto id = culebra::search::segmenter_load(
-      _ns_adapt::require_sv(a[0], "model"));
+  auto id = culebra::search::segmenter_load(culebra::search::resolve_model(
+      _ns_adapt::require_sv(a[0], "model"),
+      _search_adapt::default_model_store()));
   auto* h = culebra_runtime_object_new();
   h->set_or_append("_id", JitValue{TAG_LONG, id}, false);
   h->set_or_append("_segmenter", JitValue{TAG_BOOL, 1}, false);

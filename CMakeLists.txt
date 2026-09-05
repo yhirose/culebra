@@ -2008,6 +2008,17 @@ target_compile_features(format_test PRIVATE cxx_std_23)
 target_include_directories(format_test PRIVATE include)
 add_test(NAME format_test COMMAND format_test)
 
+# Search.segmenter's model store (include/stdlib/search_model.h): a name
+# resolves to a cached, digest-checked file, fetched on consent. Confirm and
+# fetch are injected, so the whole discipline runs offline; the argument is
+# the reference model whose digest the catalog pins.
+add_executable(search_model_test test/search_model_test.cc)
+target_compile_features(search_model_test PRIVATE cxx_std_23)
+target_include_directories(search_model_test PRIVATE include)
+add_test(NAME search_model_test
+         COMMAND search_model_test
+                 ${CMAKE_SOURCE_DIR}/vendor/cpp-searchlib/test/models/ja-ud-gsd.mod)
+
 # The parse funnel's newline normalization (include/frontend/parser.h): a CRLF file
 # parses to the same tree as the LF one, and a bare \r is rejected. The
 # end-to-end half runs on Windows CI, whose checkout has CRLF endings.

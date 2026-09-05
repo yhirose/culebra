@@ -1,0 +1,67 @@
+// Conformance: Search.segmenter by model name. A catalog name resolves to a
+// cached copy under Sys.data_dir("culebra")/models, fetched only after asking
+// on a terminal -- which a test never is, so this covers every path but the
+// fetch itself (test/search_model_test.cc drives that with a fake transport).
+// See docs/stdlib.md.
+
+// cpp-segmentlib's reference model, as vendored with cpp-searchlib.
+let model = "vendor/cpp-searchlib/test/models/ja-ud-gsd.mod"
+
+// Point the per-user data directory at a scratch one, whichever variable
+// this platform's Sys.data_dir reads, and let the API say where that is.
+let scratch = FS.mkdtemp("culebra_search_model_")
+Sys.set_env("XDG_DATA_HOME", scratch)
+Sys.set_env("HOME", scratch)
+Sys.set_env("APPDATA", scratch)
+let cached = FS.join(Sys.data_dir("culebra"), "models", "ja-ud-gsd-v0.1.1.mod")
+let url = "https://raw.githubusercontent.com/yhirose/cpp-segmentlib/v0.1.1/models/mlp/ja-ud-gsd.mod"
+
+let miss = fn () {
+  try {
+    Search.segmenter("ja-ud-gsd")
+    ""
+  } catch e {
+    assert_eq(e.kind, "SearchError")
+    e.message
+  }
+}
+
+// Not cached, not on a terminal: nothing is fetched, and the message says
+// where the model comes from and where this machine looks for it.
+let m = miss()
+assert_true(m.contains("not confirmed, or not on a terminal"))
+assert_true(m.contains(url))
+assert_true(m.contains(cached))
+assert_true(!FS.exists(cached))
+
+// CULEBRA_OFFLINE: the same hint, with the reason; `0` means unset.
+Sys.set_env("CULEBRA_OFFLINE", "1")
+assert_true(miss().contains("CULEBRA_OFFLINE is set"))
+Sys.set_env("CULEBRA_OFFLINE", "0")
+assert_true(miss().contains("not confirmed"))
+
+// A name that is not in the catalog is a path, even one that looks like a
+// name: the error is the loader's, not the hint.
+let not_a_name = try {
+  Search.segmenter("ja-ud-gsd.mod")
+  ""
+} catch e {
+  e.message
+}
+assert_true(not_a_name.contains("cannot load segmentation model"))
+assert_true(!not_a_name.contains("not cached"))
+
+// Cached (here by hand, as the hint suggests): found without asking, and
+// without a network -- offline or not.
+FS.mkdir(FS.dirname(cached))
+FS.copy(model, cached)
+Sys.set_env("CULEBRA_OFFLINE", "1")
+let seg = Search.segmenter("ja-ud-gsd")
+let idx = Search.Index.new(analyzer: { splitter: seg })
+idx.add("tokyo", "私は東京タワーに行った")
+assert_eq(idx.search("東京タワー").map(fn (h) { h.key }), ["tokyo"])
+assert_eq(idx.search("京"), [])
+idx.close()
+seg.close()
+
+FS.remove(scratch, true)

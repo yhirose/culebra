@@ -63,27 +63,8 @@ void install_undefined_var_lint() {
 #if defined(CULEBRA_HTTP_ENABLED)
 namespace culebra::toolchain {
 // Defined here, not beside its caller — see the declaration in toolchain_cmd.h.
-bool fetch_url(const std::string& url, const FetchOptions& opts,
-               std::string& body, std::string& err) {
-  http::HttpRequest req;
-  req.url = url;
-  req.follow_redirects = true;  // GitHub answers an asset with a CDN redirect.
-  req.timeout_sec = opts.timeout_sec;
-  req.connect_timeout_sec = opts.connect_timeout_sec;
-  req.proxy_host = opts.proxy_host;
-  req.proxy_port = opts.proxy_port;
-  auto res = http::http_request(req);
-  if (!res.ok) {
-    err = std::format("could not reach {} ({})", url,
-                      res.error.empty() ? "no response" : res.error);
-    return false;
-  }
-  if (res.status != 200) {
-    err = std::format("{} answered {}", url, res.status);
-    return false;
-  }
-  body = std::move(res.body);
-  return true;
+bool fetch_url(const std::string& url, std::string& body, std::string& err) {
+  return http::download(url, body, err);
 }
 }  // namespace culebra::toolchain
 #endif  // CULEBRA_HTTP_ENABLED

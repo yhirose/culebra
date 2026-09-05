@@ -719,6 +719,60 @@ CULEBRA_RT_HTTP_LINKAGE HttpResult http_request(const HttpRequest& req) {
 #endif  // CULEBRA_RT_HTTP_REQUEST_WEAK
 }
 
+// `$HTTPS_PROXY` as a host and port, or an empty host. Read only by
+// `download` below: a program's own request to 127.0.0.1 must never be routed
+// through a proxy it did not ask for, so HttpRequest takes one per request.
+struct ProxyFromEnv {
+  std::string host;
+  int port = 0;
+};
+inline ProxyFromEnv https_proxy_from_env() {
+  ProxyFromEnv out;
+  const char* p = std::getenv("HTTPS_PROXY");
+  if (!p || !*p) return out;
+  std::string s(p);
+  if (auto at = s.rfind("://"); at != std::string::npos) s = s.substr(at + 3);
+  if (!s.empty() && s.back() == '/') s.pop_back();
+  auto colon = s.rfind(':');
+  if (colon == std::string::npos) return out;  // no port: not a proxy we can use
+  out.host = s.substr(0, colon);
+  out.port = std::atoi(s.c_str() + colon + 1);
+  return out;
+}
+
+// GET `url` into `body` for a download culebra makes on its own behalf (the
+// Windows toolchain kit, a segmentation model): redirects followed (GitHub
+// answers an asset with a CDN redirect), `$HTTPS_PROXY` honoured (httplib
+// does not read the environment, and a corporate network is where a download
+// is most likely the blocked step), a long read timeout for a multi-megabyte
+// body and a short connect timeout so a dead proxy does not cost the same two
+// minutes. False with `err` set on any transport failure or a status that is
+// not 200 -- including, in an AOT binary that never named Http, the core
+// archive's "not linked" stub, which the caller's hint then explains.
+inline bool download(const std::string& url, std::string& body,
+                     std::string& err) {
+  HttpRequest req;
+  req.url = url;
+  req.follow_redirects = true;
+  req.timeout_sec = 120;
+  req.connect_timeout_sec = 30;
+  auto proxy = https_proxy_from_env();
+  req.proxy_host = proxy.host;
+  req.proxy_port = proxy.port;
+  auto res = http_request(req);
+  if (!res.ok) {
+    err = "could not reach " + url + " (" +
+          (res.error.empty() ? std::string("no response") : res.error) + ")";
+    return false;
+  }
+  if (res.status != 200) {
+    err = url + " answered " + std::to_string(res.status);
+    return false;
+  }
+  body = std::move(res.body);
+  return true;
+}
+
 // Open a persistent client bound to `base_url`'s origin, reusing one keep-alive
 // connection. `default_headers` layer under each request; `timeout_sec` /
 // `follow_redirects` are connection-level defaults. Returns a handle id (>= 0),

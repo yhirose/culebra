@@ -4,7 +4,6 @@
 #include <cstdlib>
 #include <format>
 #include <fstream>
-#include <iostream>
 #include <print>
 #include <string>
 #include <string_view>
@@ -17,7 +16,7 @@
 #include <cli/editor_assets_embedded.h>
 #include <base/exe_path.h>  // find_on_path
 #include <stdlib/hash.h>      // culebra::hashing::sha256
-#include <base/os_compat.h>  // os_isatty
+#include <base/confirm.h>    // confirm_on_tty
 #include <stdlib/proc.h>       // run_command (spawn tar by argv, not through a shell)
 
 #ifdef CULEBRA_INPROCESS_LLD
@@ -306,37 +305,6 @@ bool link_in_process(const std::vector<std::string>& driver_args,
 
 namespace {
 
-// Only the Windows install fetches anything, but none of this needs a Windows
-// API, so it stays outside that guard where every platform's build type-checks
-// it (this file has shipped one Windows-only compile error to CI already).
-#if defined(CULEBRA_HTTP_ENABLED)
-
-// $HTTPS_PROXY into `opts`: httplib does not read the environment, and a
-// corporate network is where a download is most likely the blocked step.
-void proxy_from_env(FetchOptions& opts) {
-  const char* p = std::getenv("HTTPS_PROXY");
-  if (!p || !*p) return;
-  std::string s(p);
-  if (auto at = s.rfind("://"); at != std::string::npos) s = s.substr(at + 3);
-  if (!s.empty() && s.back() == '/') s.pop_back();
-  auto colon = s.rfind(':');
-  if (colon == std::string::npos) return;  // no port: not a proxy we can use
-  opts.proxy_host = s.substr(0, colon);
-  opts.proxy_port = std::atoi(s.c_str() + colon + 1);
-}
-
-// The kit download's shape: a long read timeout for an 8 MB body, and a short
-// connect timeout so a dead proxy does not cost that same two minutes.
-bool fetch(const std::string& url, std::string& body, std::string& err) {
-  FetchOptions opts;
-  opts.timeout_sec = 120;
-  opts.connect_timeout_sec = 30;
-  proxy_from_env(opts);
-  return fetch_url(url, opts, body, err);
-}
-
-#endif  // CULEBRA_HTTP_ENABLED
-
 #ifdef _WIN32
 
 // Extract with the bsdtar Windows has shipped as tar.exe since 10 1803; it
@@ -486,8 +454,8 @@ bool install_windows(const std::string& from, std::string& err) {
     std::println("culebra toolchain: fetching the Windows kit for culebra {}…",
                  kVersion);
     std::string body, want;
-    if (!fetch(url, body, err)) return false;
-    if (!fetch(url + ".sha256", want, err)) return false;
+    if (!fetch_url(url, body, err)) return false;
+    if (!fetch_url(url + ".sha256", want, err)) return false;
     // Verified before it is written, so a kit that failed its digest never
     // exists as a file anyone could reach for.
     if (!verify_digest(body, want, name, err)) return false;
@@ -532,18 +500,6 @@ void start_xcode_install() {
                        "re-run `culebra build` once it finishes.");
 }
 #endif
-
-// Ask, on a terminal, before doing something the user did not type. Both
-// streams have to be a terminal: stdin so an answer can arrive, stderr so the
-// question is seen (stdout may be a pipe the build is feeding).
-bool confirm(std::string_view question) {
-  if (!os_isatty(0) || !os_isatty(2)) return false;
-  std::print(stderr, "{} [y/N] ", question);
-  std::fflush(stderr);
-  std::string answer;
-  if (!std::getline(std::cin, answer)) return false;
-  return answer == "y" || answer == "Y" || answer == "yes";
-}
 
 int status() {
   std::println("culebra {}", kVersion);
@@ -607,7 +563,8 @@ bool offer_install_interactively(bool host_link) {
   // stop rather than offering a download that would not have helped.
 #if defined(_WIN32) || defined(__APPLE__)
   if (host_link) {
-    if (!confirm("culebra build: no AOT build environment found. Install it?")) {
+    if (!confirm_on_tty(
+            "culebra build: no AOT build environment found. Install it?")) {
       std::println(stderr, "culebra build: {}",
                    missing_toolchain_hint(host_link));
       return false;

@@ -9,7 +9,6 @@
 // shipping a linker beside it, is docs/deployment.md §"Why Windows needs no
 // compiler". The rest of this command is private to src/toolchain_cmd.cc.
 
-#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -30,24 +29,15 @@ bool use_inprocess_link();
 bool link_in_process(const std::vector<std::string>& driver_args,
                      const std::string& output, bool verbose, std::string& err);
 
-// What a download asks of the transport.
-struct FetchOptions {
-  int64_t timeout_sec = 0;          // read/write; 0 => the library's default
-  int64_t connect_timeout_sec = 0;  // connect only; 0 => timeout_sec
-  std::string proxy_host;           // empty => connect directly
-  int proxy_port = 0;
-};
-
-// GET `url` into `body`, following redirects, with `false` and `err` on any
-// transport failure or a status that is not 200. Only in a build with HTTP.
+// http::download (http.h) -- GET `url` into `body`, with `false` and `err` on
+// any failure. Only in a build with HTTP.
 //
 // Defined in src/main.cc rather than beside its caller: http.h carries `inline
 // thread_local` handle registries that exactly one driver TU may instantiate
 // (mingw's ld fails the link on a second — tools/checks/check_rt_archive_tls.sh), and
 // main.cc is that TU. Declaring it across this seam is what lets the toolchain
 // installer share the Http namespace's client instead of building a second one.
-bool fetch_url(const std::string& url, const FetchOptions& opts,
-               std::string& body, std::string& err);
+bool fetch_url(const std::string& url, std::string& body, std::string& err);
 
 // Offer to install, then install, when `culebra build` finds nothing to link
 // with. Only asks on a terminal — a script gets the hint and a failure instead

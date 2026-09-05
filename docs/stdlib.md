@@ -7047,21 +7047,53 @@ back into the program per document.
 
 ```culebra
 # doctest: skip
-let seg = Search.segmenter("ja-ud-gsd.mod")
+let seg = Search.segmenter("ja-ud-gsd")
 let idx = Search.Index.new(analyzer: { splitter: seg })
 idx.add("doc-1", "私は東京タワーに行った")
 inspect(idx.search("東京タワー").size())  # => 1
 inspect(idx.search("京"))                # => []   東京 is one term now
 ```
 
-`model` is the path of a model file in a format cpp-segmentlib loads; its
-reference model `ja-ud-gsd` (trained on UD Japanese-GSD, CC BY-SA 4.0) is
-the one this documentation and the tests use. A file that cannot be loaded
-raises `SearchError`. The segmenter is a handle like an index: closed at
-scope exit or with `close()`. An index copies the splitter when it is built,
-so closing the handle afterwards does not affect the index — it only stops
-new indexes from being built with it. The model is part of the analyzer in
-the sense above: the same one on both sides, and a re-index when it changes.
+`model` is a name from the table below, or the path of a model file in a
+format cpp-segmentlib loads. A file that cannot be loaded raises
+`SearchError`. The segmenter is a handle like an index: closed at scope exit
+or with `close()`. An index copies the splitter when it is built, so closing
+the handle afterwards does not affect the index — it only stops new indexes
+from being built with it. The model is part of the analyzer in the sense
+above: the same one on both sides, and a re-index when it changes.
+
+| Name | Model | Size | License |
+|---|---|---|---|
+| `ja-ud-gsd` | cpp-segmentlib's reference model v0.1.1, trained on UD Japanese-GSD | 2.1 MB | CC BY-SA 4.0 |
+
+A name resolves to a copy cached under `Sys.data_dir("culebra")/models`.
+The first time, culebra asks on the terminal before fetching it; a program
+whose stdin or stderr is not a terminal — a script, a CI job, a pipe — is not
+asked and raises `SearchError` instead, with the URL, the path the copy is
+expected at, and the two ways around the fetch (put the file there yourself,
+or pass a path). The download is checked against a digest pinned in this
+release before it is written, and the model's NOTICE goes beside it. With
+`CULEBRA_OFFLINE` set to anything but `0`, nothing is fetched. An AOT binary
+that never names `Http` cannot fetch either; the cache is shared, so one
+`culebra` run on the same machine fills it for both.
+
+The version is part of the cached file's name (`ja-ud-gsd-v0.1.1.mod`), so
+an upstream update never replaces the model an index was built with: word
+boundaries that change mean a re-index, and it is a release of culebra, not
+the network, that decides when.
+
+### The language is the index's
+
+Which model an index uses, if any, is the analyzer's setting, so it is the
+index's: every document and every query go through the same one. There is no
+per-document language and no guessing from the text. A query is a few
+characters where a document is a page, so a guess made from each side would
+disagree: `東京都庁` inside a document with kana around it cuts as `東京`
+`都庁`, but alone as a query it has no kana to guess from and would stay
+whole, matching nothing. Mixed scripts are handled by script, not by
+language: a model claims the runs of Japanese script and the built-in rules
+take the rest, on both sides alike. A corpus in several languages that need
+different models is several indexes.
 
 ### Hits
 
@@ -7107,7 +7139,7 @@ releases while this namespace is experimental.
 | `idx.search(query: String, limit: Long = 10) -> Array` | ranked hits |
 | `idx.save(path: String) -> Nil` | write the index |
 | `idx.close() -> Nil` | release it; idempotent |
-| `Search.segmenter(model: String) -> Segmenter` | a model-based Japanese splitter for `analyzer.splitter` |
+| `Search.segmenter(model: String) -> Segmenter` | a model-based Japanese splitter for `analyzer.splitter`; `model` is a catalog name or a file path |
 | `seg.close() -> Nil` | release it; indexes built with it keep working |
 
 An index is not `Sendable`: results alias it, so it stays on the thread that

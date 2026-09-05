@@ -6807,19 +6807,44 @@ inspect(idx.search("the"))           # => []
 
 ```culebra
 # doctest: skip
-let seg = Search.segmenter("ja-ud-gsd.mod")
+let seg = Search.segmenter("ja-ud-gsd")
 let idx = Search.Index.new(analyzer: { splitter: seg })
 idx.add("doc-1", "私は東京タワーに行った")
 inspect(idx.search("東京タワー").size())  # => 1
 inspect(idx.search("京"))                # => []   東京 が1語になった
 ```
 
-`model`はモデルファイルのパスで、形式は cpp-segmentlib が読めるもの。参照モデル
-`ja-ud-gsd`（UD Japanese-GSD で訓練、CC BY-SA 4.0）がこの文書とテストで使っているもの。
-読み込めないファイルは`SearchError`になる。segmenter は索引と同じくハンドルで、
-スコープを抜けるか`close()`で解放する。索引は作られるときに splitter を写し取るので、
+`model`は下の表にある名前か、cpp-segmentlibが読める形式のモデルファイルのパス。
+読み込めないファイルは`SearchError`になる。segmenterは索引と同じくハンドルで、
+スコープを抜けるか`close()`で解放する。索引は作られるときにsplitterを写し取るので、
 あとでハンドルを閉じても索引には影響せず、そのハンドルで新しい索引を作れなくなるだけ。
 モデルは上に書いた意味で解析器の一部——両側で同じものを使い、変えたら索引を作り直す。
+
+| 名前 | モデル | 大きさ | ライセンス |
+|---|---|---|---|
+| `ja-ud-gsd` | cpp-segmentlibの参照モデルv0.1.1。UD Japanese-GSDで訓練 | 2.1 MB | CC BY-SA 4.0 |
+
+名前は`Sys.data_dir("culebra")/models`に置かれた写しに解決される。初回はculebraが
+端末で確認してから取得する。stdinかstderrが端末でないプログラム——スクリプト、CI、
+パイプ——には聞かず、URLと写しを置くべきパスと、取得を避ける2つの方法（自分でその
+パスに置く、パスを渡す）を添えた`SearchError`になる。ダウンロードはこのリリースに
+固定されたダイジェストと照合してから書き、モデルのNOTICEを隣に置く。`CULEBRA_OFFLINE`が
+`0`以外に設定されていれば何も取得しない。`Http`を名指さないAOTバイナリも取得できないが、
+キャッシュは共有なので、同じマシンで`culebra`を一度走らせれば両方がそれを使う。
+
+写しのファイル名にはバージョンが入る（`ja-ud-gsd-v0.1.1.mod`）ので、上流がモデルを
+更新しても、索引を作ったときのモデルが差し替わることはない。語の境界が変われば索引は
+作り直しで、いつ変えるかを決めるのはネットワークではなくculebraのリリースである。
+
+### 言語は索引のもの
+
+索引がどのモデルを使うか（使わないか）は解析器の設定で、つまり索引のもの。すべての
+文書とすべてのクエリが同じものを通る。文書ごとの言語指定も、テキストからの推測もない。
+クエリは数文字で文書は1ページなので、それぞれから推測すると両側で食い違う。`東京都庁`は
+仮名に囲まれた文書の中では`東京` `都庁`に切れるが、クエリとして単独では推測の手がかりに
+なる仮名がなく丸ごと1語のまま、何にも一致しない。文字体系の混在は言語ではなく文字体系で
+扱う。モデルが日本語の文字が続く区間を引き受け、残りは組み込みの規則が切る——両側とも
+同じように。別々のモデルが要る複数の言語のコーパスは、複数の索引にする。
 
 ### 検索結果
 
@@ -6865,7 +6890,7 @@ let reopened = Search.Index.load("notes.idx")
 | `idx.search(query: String, limit: Long = 10) -> Array` | 順位つきの結果 |
 | `idx.save(path: String) -> Nil` | 索引を書き出す |
 | `idx.close() -> Nil` | 解放する。何度呼んでもよい |
-| `Search.segmenter(model: String) -> Segmenter` | `analyzer.splitter`に渡す、モデルによる日本語の splitter |
+| `Search.segmenter(model: String) -> Segmenter` | `analyzer.splitter`に渡す、モデルによる日本語のsplitter。`model`は目録の名前かファイルのパス |
 | `seg.close() -> Nil` | 解放する。それで作った索引はそのまま使える |
 
 索引は`Sendable`ではない。結果が索引を参照しているので、作ったスレッドから出せない。
