@@ -421,3 +421,69 @@ assert_eq(
 } with sf_ask(resume) { resume(nil) },
   "NameError",
 )
+
+// --- effect-internal break/continue over the CPS lowering ---
+//
+// `break` / `continue` / `nobreak` inside a suspending function run through
+// the same `loop_stack` the generator transform uses, so each shape is
+// pinned on both.
+
+// nobreak does not run when the loop exits via break
+effect fn ef_tick()
+effect fn ef_nobreak_break(n) {
+  mut i = 0
+  mut out = []
+  while i < n {
+    i = i + 1
+    let v = perform ef_tick()
+    out.push(v)
+    if i >= 2 { break }
+  } nobreak {
+    out.push(999)
+  }
+  out
+}
+assert_eq(
+  handle { ef_nobreak_break(5) } with ef_tick(resume) { resume(1) },
+  [1, 1],
+)
+
+// ...but does run on natural completion
+effect fn ef_nobreak_natural(n) {
+  mut i = 0
+  mut out = []
+  while i < n {
+    i = i + 1
+    let v = perform ef_tick()
+    out.push(v)
+  } nobreak {
+    out.push(999)
+  }
+  out
+}
+assert_eq(
+  handle { ef_nobreak_natural(2) } with ef_tick(resume) { resume(1) },
+  [1, 1, 999],
+)
+
+// two CPS-managed loops: an inner break exits only the inner loop
+effect fn ef_double() {
+  mut outs = []
+  while true {
+    mut j = 0
+    while true {
+      j = j + 1
+      if j >= 2 { break }
+      outs.push(j)
+    }
+    outs.push(100)
+    let v = perform ef_tick()
+    outs.push(v)
+    break
+  }
+  outs
+}
+assert_eq(
+  handle { ef_double() } with ef_tick(resume) { resume(7) },
+  [1, 100, 7],
+)

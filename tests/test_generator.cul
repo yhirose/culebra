@@ -317,4 +317,118 @@ fn cl_later(n) {
 }
 assert_eq(cl_later(4).collect(), [8, 9])
 
+// --- generator-internal break/continue: baseline (unlabeled), ahead of
+// labeled break/continue landing on the CPS `loop_stack` these share ---
+
+// break/continue inside a plain while, driving what's yielded
+fn g_while_ctl(n) {
+  mut i = 0
+  while i < n {
+    i = i + 1
+    continue if i == 2
+    yield i
+    break if i >= 4
+  }
+}
+assert_eq(g_while_ctl(10).collect(), [1, 3, 4])
+
+// nobreak does not run when the loop exits via break
+fn g_nobreak_break(n) {
+  mut i = 0
+  while i < n {
+    i = i + 1
+    yield i
+    break if i >= 2
+  } nobreak {
+    yield 999
+  }
+}
+assert_eq(g_nobreak_break(5).collect(), [1, 2])
+
+// ...but does run on natural completion
+fn g_nobreak_natural(n) {
+  mut i = 0
+  while i < n {
+    i = i + 1
+    yield i
+  } nobreak {
+    yield 999
+  }
+}
+assert_eq(g_nobreak_natural(2).collect(), [1, 2, 999])
+
+// break/continue inside a for-in the transform desugars to while + iterator
+fn g_forin_ctl(xs) {
+  for x in xs {
+    continue if x == 2
+    yield x
+    break if x >= 4
+  }
+}
+assert_eq(g_forin_ctl([1, 2, 3, 4, 5]).collect(), [1, 3, 4])
+
+// two CPS-managed loops: an inner break exits only the inner loop
+fn g_double_ctl() {
+  mut outs = []
+  while true {
+    mut j = 0
+    while true {
+      j = j + 1
+      break if j >= 2
+      outs.push(j)
+    }
+    outs.push(100)
+    yield outs
+    break
+  }
+}
+assert_eq(g_double_ctl().collect(), [[1, 100]])
+
+// return inside a yielding loop ends the whole generator, not just the loop
+fn g_return_in_loop(n) {
+  mut i = 0
+  while i < n {
+    i = i + 1
+    return if i == 3
+    yield i
+  }
+}
+assert_eq(g_return_in_loop(10).collect(), [1, 2])
+
+// --- labeled break/continue inside a generator body ---
+//
+// The CPS transform keeps its own loop_stack (generator_transform.h), so a
+// label has to resolve past any number of CPS-managed loops. The break and
+// continue shapes are pinned in tests/test_labeled_loops.cul (15); these are
+// the two that file does not reach — a `while` nest, and a label on the
+// outer loop of a nobreak pair.
+
+fn g_label_while_ctl(n) {
+  mut i = 0
+  outer: while i < n {
+    i = i + 1
+    mut j = 0
+    while j < 3 {
+      j = j + 1
+      continue outer if j == 2
+      yield i * 100 + j
+    }
+  }
+}
+assert_eq(g_label_while_ctl(2).collect(), [101, 201])
+
+// nobreak belongs to the labelled loop, and an inner loop's break does not
+// reach it
+fn g_label_nobreak(xs) {
+  outer: for x in xs {
+    for y in [1, 2] {
+      break if y == 2
+      yield x * 10 + y
+    }
+  } nobreak {
+    yield 999
+  }
+}
+assert_eq(g_label_nobreak([1, 2]).collect(), [11, 21, 999])
+
 IO.inspect('test_generator OK')
