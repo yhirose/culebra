@@ -42,3 +42,12 @@ m|*|sin|*
 m|*|softmax_cross_entropy|*
 m|*|tanh|*
 m|*|unfold|*
+
+# `s.words()` and `s.sentences()` (UAX #29 segmentation) are new since
+# v0.4.0: the baseline answers each case as an unknown member where this
+# build answers as a built-in, and a bare read of either name is now the
+# built-in-method diagnostic where the baseline read nil.
+m|*|words|*
+m|*|sentences|*
+bareread|*|words
+bareread|*|sentences

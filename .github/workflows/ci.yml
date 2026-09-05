@@ -223,8 +223,16 @@ jobs:
         with:
           # Only wrap's cmake rebuild reads vendor/; every other lane runs the
           # downloaded binary against tests/ + tools/, which reference nothing
-          # under vendor/.
+          # under vendor/ but the one file the step below fetches.
           submodules: ${{ matrix.lane == 'wrap' && 'recursive' || 'false' }}
+
+      # The segmenter tests (tests/test_search_segmenter.cul,
+      # test_search_model.cul) and the AOT axis probe load cpp-segmentlib's
+      # reference model out of cpp-searchlib's test tree, the one thing under
+      # vendor/ a binary-only lane reads. That submodule alone, shallow.
+      - name: Fetch cpp-searchlib (the segmentation model its tests carry)
+        if: ${{ matrix.lane != 'wrap' }}
+        run: git submodule update --init --depth 1 vendor/cpp-searchlib
 
       - name: Install toolchain
         if: matrix.toolchain
