@@ -1044,6 +1044,40 @@ question of the same instruction, so a forged receiver raises the same
 along with `remove` refusing a scalar-declared field (a field that can
 vanish would be no contract at all).
 
+#### A parameter's declared type, kept rather than discarded
+
+The same shape, one step earlier. A parameter's annotation is checked on
+entry (`docs/language.md` §14) and the check then threw its answer away,
+so the body went on asking. `Op::ArgTag` keeps it: the emitter places it
+past the check *and* past the `JumpIfTag` gate that skips a check the tag
+already satisfies, so both routes reach it, and the lowering stores the
+tag back as a constant with the payload untouched. The executor reads
+tags off values and has nothing to do — its arm is the assert that the
+placement is right, which `just test-assert` runs the sweep against.
+
+What the constant buys is one arm instead of a switch. A built-in method
+name is shared across receiver types — `size` resolves on String, Array,
+Object, Set and Tuple, so `emit_size_probe` emits five arms plus the join
+they merge into, and every value live across that join stays live.
+Substituting the tag collapses it to the arm the type names. Measured on
+the `-O3` build, 3M iterations: `s.size()` on the parameter 4.28 → 1.31
+ns, `n * 2 + 1` on a `Long` parameter 2.99 → 0.49 ns.
+
+`Function` is excluded (a class with `__call__` satisfies it
+structurally, so it names no single tag) and so is a `mut` parameter
+(reassignment is not re-checked). `tools/checks/check_param_tag_fold.sh`
+pins the fold in emitted IR and carries its own unannotated control, so
+it cannot pass by measuring nothing.
+
+Its own limit is worth recording, since the obvious next step does not
+work: a *chain* folds only when its head's tag is known. `trim` already
+builds its result with `make_string`, so every built-in method's return
+tag is in the lowering already, more precisely than `CanonSig` could say
+it. When the head is unknown the first call carries a miss arm and its
+result is a phi, and a phi of a constant and a non-constant is not a
+constant — which is why filling `CanonSig::return_type` buys nothing
+here, and why the head is the only place worth attacking.
+
 ### 5.5 Exceptions, `defer`, and unwinding
 
 A `try` region is static: a scope entry in `Chunk::cleanups` with a

@@ -3233,6 +3233,48 @@ method — `self._data ??= load()` works directly (`??=` supports
 Annotations are primarily a **documentation and boundary check**
 feature, not a type system.
 
+### What a primitive-typed parameter settles
+
+A parameter annotated with one of the primitive type names — `Long`,
+`Float`, `Bool`, `String`, `Array`, `Object`, `Set`, `Tuple` — is checked
+on entry, so every read of that name in the body already satisfies it.
+The compiler takes that as given: a built-in method call on such a
+parameter resolves to the one receiver its type names instead of testing
+which of the several types sharing that method name it holds, and
+arithmetic on a `Long` or `Float` parameter drops its operand tests. The
+answer is identical either way; the annotation only saves asking.
+
+Two annotations settle nothing. A `mut` parameter can be reassigned, and
+that is not re-checked (above). `Function` is satisfied structurally — a
+class instance with a `__call__` passes it — so it does not name one kind
+of value. A class name settles the class, not the representation; §10
+covers what that gives a reader.
+
+```culebra
+fn width(s: String) {
+  s.size()
+}
+
+inspect(width('hello'))          # => 5
+
+# the entry check is what settles it, and it still refuses the rest. A
+# typed parameter is an overload signature, so the refusal is a
+# DispatchError.
+# !! DispatchError
+width(42)
+```
+
+```culebra
+# a `mut` parameter promises nothing about later reads: the reassignment
+# is not re-checked, so the body sees whatever it was given
+fn swapped(mut s: String) {
+  s = 42
+  type_of(s)
+}
+
+inspect(swapped('x'))            # => 'Long'
+```
+
 ### What a class-typed name lets a reader assume
 
 A name whose declared class is known — a parameter or a `let` whose
