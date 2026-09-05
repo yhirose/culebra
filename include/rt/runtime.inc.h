@@ -2861,12 +2861,15 @@ inline culebra::Shape* _jit_resolve_cached_shape(void** shape_cache,
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_new_shaped(
     void** shape_cache, const char* const* keys, int64_t n_keys) {
   auto* shape = _jit_resolve_cached_shape(shape_cache, keys, n_keys);
-  auto* o = new JitObject();
+  // One Runtime lookup for the slab and the collector's registry, as
+  // culebra_runtime_object_new does: every object literal runs this.
+  auto& rt = culebra::current_runtime();
+  auto* o = new (_slab(rt)) JitObject();
   o->refcount = 1;
   o->shape = shape;
   o->slots.assign(shape->names.size(),
                   JitObjectEntry{JitValue{TAG_NIL, 0}, /*mut=*/false});
-  _gc_register(o, GC_TAG_OBJECT);
+  _gc_heap(rt).adopt(o, sizeof(JitObject), GC_TAG_OBJECT);
   return o;
 }
 
