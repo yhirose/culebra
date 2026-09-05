@@ -5374,7 +5374,8 @@ GPUを必要とするため）。位置とサイズは`Float`
 | `node.find(name) -> Node` / `node.has(name) -> Bool` | 名前付きの子孫（無い名前の`find`は`RuntimeError`。`has`が判定） |
 | `node.remove()` | 親から外す — ハンドルは有効なまま、再追加までどこにも描かれない |
 | `node.vertex_count() -> Long` | カスタムメッシュの頂点数（push済みまたはアップロード済み）。上限の前に次のノードへ移るため |
-| `node.cull_radius(r)` | カリングに使う境界球（0 = 形状から。負なら決してカリングしない） |
+| `node.cull_radius(r)` | カリングに使う境界球（0 = 形状から） |
+| `node.culling(on)` | このノードをフラスタムカリングの対象から外す（境界が合わない形状向け） |
 | `view.remove(node)` / `view.find(name) -> Node` / `view.has(name) -> Bool` | 同じことをシーン全体（ルート含む）に |
 | `view.culling(on)` | 境界球が画面外のノードを飛ばす（既定on。絵は決して変わらない） |
 
@@ -5434,7 +5435,7 @@ bloom、トーンマップ、彩度、そして求めればvignetteとカラー�
 
 | メソッド | 効果 |
 | --- | --- |
-| `view.post(on)` | パス全体（offなら、litフレームをそのまま。アンチエイリアスは残る） |
+| `view.post_process(on)` | パス全体（offなら、litフレームをそのまま。アンチエイリアスは残る） |
 | `view.exposure(k)` | トーンマップの露出（既定1.35） |
 | `view.saturation(k)` | 1でlitのまま（既定1.1） |
 | `view.bloom(threshold, strength)` | `threshold`より明るい部分から滲む光（既定0.7、1.5） |

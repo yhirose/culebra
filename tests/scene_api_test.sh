@@ -195,7 +195,7 @@ let oob = try {
   e.kind
 }
 println("find/child_at errors: {missing} {oob}")
-leaf.quat(0.0, 0.7071, 0.0, 0.7071).billboard().billboard(false).cull_radius(-1.0)
+leaf.quat(0.0, 0.7071, 0.0, 0.7071).billboard().billboard(false).cull_radius(2.0).culling(false).culling(true)
 leaf.remove()
 println("removed {tree.child_count()} {view.has("fruit")}")
 view.remove(tree)
@@ -472,7 +472,7 @@ view.dof(0.5, 2.0)
 view.ssao(0.3, 2.0)
 view.vignette(0.5)
 shot("lut_knobs.png")
-view.post(false)
+view.post_process(false)
 shot("lut_nopost.png")
 view.drop()
 

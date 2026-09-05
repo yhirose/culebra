@@ -5541,7 +5541,8 @@ persistent geometry once and move it each frame.
 | `node.find(name) -> Node` / `node.has(name) -> Bool` | a named descendant (`find` of a name nothing carries is a `RuntimeError`; `has` is the test) |
 | `node.remove()` | detach from the parent — the handle stays valid, the node draws nowhere until re-added |
 | `node.vertex_count() -> Long` | a custom mesh's vertices, pushed or uploaded — to start a new node before the cap |
-| `node.cull_radius(r)` | the bounding sphere culling uses (0 = from the shape; negative = never culled) |
+| `node.cull_radius(r)` | the bounding sphere culling uses (0 = from the shape) |
+| `node.culling(on)` | take this node out of frustum culling, for a shape whose bound is wrong |
 | `view.remove(node)` / `view.find(name) -> Node` / `view.has(name) -> Bool` | the same over the whole scene, roots included |
 | `view.culling(on)` | skip nodes whose bounding sphere is off screen (default on; it never changes the picture) |
 
@@ -5606,7 +5607,7 @@ and `0` turns a pass off.
 
 | Method | Effect |
 | --- | --- |
-| `view.post(on)` | the whole pass (off: the lit frame as is, antialiasing included) |
+| `view.post_process(on)` | the whole pass (off: the lit frame as is, antialiasing included) |
 | `view.exposure(k)` | tonemap exposure (default 1.35) |
 | `view.saturation(k)` | 1 = as lit (default 1.1) |
 | `view.bloom(threshold, strength)` | glow bleeding from what is brighter than `threshold` (defaults 0.7, 1.5) |

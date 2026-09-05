@@ -805,7 +805,8 @@ class Node : public std::enable_shared_from_this<Node> {
   Quaternion quat_{0, 0, 0, 1};             // replaces the euler when set (quat())
   bool use_quat_ = false;
   bool billboard_ = false;                  // face the camera (collect)
-  double cull_radius_ = 0;                  // 0 = from the shape, < 0 = never culled
+  double cull_radius_ = 0;                  // 0 = from the shape
+  bool cullable_ = true;                    // node.culling(false) opts out
   double scx = 1, scy = 1, scz = 1;
   std::weak_ptr<Node> parent_;              // set by push(); a root has none
   Color color = WHITE;
@@ -866,7 +867,12 @@ class Node : public std::enable_shared_from_this<Node> {
     return *this;
   }
   Node& billboard(bool on) { billboard_ = on; return *this; }
-  Node& cull_radius(double r) { cull_radius_ = r; return *this; }
+  Node& cull_radius(double r) { cull_radius_ = r < 0 ? 0 : r; return *this; }
+  // Out of frustum culling, for a shape whose bound is wrong (a vertex
+  // shader that moves geometry, a node drawn in camera space). Spelled as
+  // the View's own switch, not as a radius that means something else when
+  // it is negative.
+  Node& culling(bool on) { cullable_ = on; return *this; }
 
   // --- the graph as data: parents, children, names, size --------------------
   // Detach from the parent (a root is removed through view.remove()). The
@@ -1079,7 +1085,7 @@ class Node : public std::enable_shared_from_this<Node> {
   // The bounding sphere's radius in local units, for culling: the shape's own
   // (a mesh's farthest vertex), unless cull_radius() says otherwise.
   double bound_radius() const {
-    if (cull_radius_ != 0) return cull_radius_;
+    if (cull_radius_ > 0) return cull_radius_;
     switch (shape) {
       case Shape::Box: return 0.5 * std::sqrt(w * w + h * h + d * d);
       case Shape::Sphere: return radius;
@@ -1106,7 +1112,7 @@ class Node : public std::enable_shared_from_this<Node> {
     if (mesh_for(ctx)) {
       Vector3 pos{world.m12, world.m13, world.m14};
       bool culled = false;
-      if (fr && cull_radius_ >= 0) {
+      if (fr && cullable_) {
         // The world matrix's largest axis scale, so a scaled node's sphere grows.
         float sx = Vector3Length(Vector3{world.m0, world.m1, world.m2});
         float sy = Vector3Length(Vector3{world.m4, world.m5, world.m6});
@@ -1341,7 +1347,7 @@ class View {
 
   // --- the post stack: each pass's strength, and a colour-grading LUT ------
   // The defaults are the look the shader was tuned with; 0 turns a pass off.
-  void post(bool on) { post_on_ = on; }
+  void post_process(bool on) { post_on_ = on; }
   void exposure(double k) { look_.exposure = (float)k; set_post_uniforms(); }
   void saturation(double k) { look_.saturation = (float)k; set_post_uniforms(); }
   void bloom(double threshold, double strength) {
@@ -2405,6 +2411,7 @@ const bool registered = [] {
       .borrowed_method<&gfx::Node::quat>("quat", {"x", "y", "z", "w"})
       .borrowed_method<&gfx::Node::billboard>("billboard", {{"on", true}})
       .borrowed_method<&gfx::Node::cull_radius>("cull_radius", {"r"})
+      .borrowed_method<&gfx::Node::culling>("culling", {"on"})
       .borrowed_method<&gfx::Node::remove>("remove")
       .method<&gfx::Node::child_count>("child_count")
       .method<&gfx::Node::child_at>("child_at", {"i"})
@@ -2451,7 +2458,7 @@ const bool registered = [] {
       .method<&gfx::View::mouse_capture>("mouse_capture", {"on"})
       .method<&gfx::View::clipboard>("clipboard")
       .method<&gfx::View::set_clipboard>("set_clipboard", {"s"})
-      .method<&gfx::View::post>("post", {"on"})
+      .method<&gfx::View::post_process>("post_process", {"on"})
       .method<&gfx::View::exposure>("exposure", {"k"})
       .method<&gfx::View::saturation>("saturation", {"k"})
       .method<&gfx::View::bloom>("bloom", {"threshold", "strength"})
