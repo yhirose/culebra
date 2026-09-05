@@ -8,7 +8,9 @@
 
 fn stmt_block(m, stmts) {
   let list = m.list_new()
-  for s in stmts { m.list_push(list, s) }
+  for s in stmts {
+    m.list_push(list, s)
+  }
   m.block(stmts_list: list, line: 1, col: 1)
 }
 
@@ -20,26 +22,57 @@ fn stmt_block(m, stmts) {
   let un = m.unary(op: 'neg', operand: lit, line: 1, col: 1)
   let bin = m.binary(op: 'add', lhs: lit, rhs: lit, line: 1, col: 1)
   let asn = m.assign(kind: 'local', index: 0, value: lit, line: 1, col: 1)
-  let iff = m.make_if(cond: lit, then_branch: stmt_block(m, []), line: 1, col: 1)
-  let ifelse = m.make_if_else(cond: lit, then_branch: stmt_block(m, []),
-                              else_branch: stmt_block(m, []), line: 1, col: 1)
+  let iff = m.make_if(
+    cond: lit,
+    then_branch: stmt_block(m, []),
+    line: 1,
+    col: 1,
+  )
+  let ifelse = m.make_if_else(
+    cond: lit,
+    then_branch: stmt_block(m, []),
+    else_branch: stmt_block(m, []),
+    line: 1,
+    col: 1,
+  )
   let whl = m.make_while(cond: lit, body: stmt_block(m, []), line: 1, col: 1)
   let blk = stmt_block(m, [])
-  let intr = m.intrinsic(name: 'tostr', args_list: m.list_new(), line: 1, col: 1)
+  let intr = m.intrinsic(
+    name: 'tostr',
+    args_list: m.list_new(),
+    line: 1,
+    col: 1,
+  )
   let cmap = m.add_capture_map(m.capture_map_new())
   let clos = m.make_closure(func: 0, cmap: cmap, line: 1, col: 1)
-  let callv = m.call_value(callee: clos, args_list: m.list_new(), line: 1, col: 1)
+  let callv = m.call_value(
+    callee: clos,
+    args_list: m.list_new(),
+    line: 1,
+    col: 1,
+  )
   let arrlit = m.array_lit(items_list: m.list_new(), line: 1, col: 1)
   let objlit = m.object_lit(kv_list: m.list_new(), line: 1, col: 1)
   let idx = m.index(recv: arrlit, key: lit, line: 1, col: 1)
   let setidx = m.set_index(recv: arrlit, key: lit, value: lit, line: 1, col: 1)
-  let scp = m.scope(first_local: 0, end_local: 1, body: stmt_block(m, []), line: 1, col: 1)
+  let scp = m.scope(
+    first_local: 0,
+    end_local: 1,
+    body: stmt_block(m, []),
+    line: 1,
+    col: 1,
+  )
   let ret = m.make_return(value: lit, line: 1, col: 1)
   let brk = m.make_break(line: 1, col: 1)
   let cont = m.make_continue(line: 1, col: 1)
   let thr = m.make_throw(value: lit, line: 1, col: 1)
-  let trycatch = m.make_try(caught_local: 0, body: stmt_block(m, []),
-                            handler: stmt_block(m, []), line: 1, col: 1)
+  let trycatch = m.make_try(
+    caught_local: 0,
+    body: stmt_block(m, []),
+    handler: stmt_block(m, []),
+    line: 1,
+    col: 1,
+  )
   let deferred = m.make_defer(value: clos, line: 1, col: 1)
   let cellf = m.cell_fresh(cell: 0, line: 1, col: 1)
   let yld = m.make_yield(value: lit, line: 1, col: 1)
@@ -90,8 +123,13 @@ fn stmt_block(m, stmts) {
   let then_b = stmt_block(m, [])
   let else_b = stmt_block(m, [])
   let iff = m.make_if(cond: cond, then_branch: then_b, line: 1, col: 1)
-  let ifelse = m.make_if_else(cond: cond, then_branch: then_b,
-                              else_branch: else_b, line: 1, col: 1)
+  let ifelse = m.make_if_else(
+    cond: cond,
+    then_branch: then_b,
+    else_branch: else_b,
+    line: 1,
+    col: 1,
+  )
   assert_eq(m.num_children(node: iff), 2)
   assert_eq(m.num_children(node: ifelse), 3)
 
@@ -99,12 +137,21 @@ fn stmt_block(m, stmts) {
   let scp = m.scope(first_local: 0, end_local: 1, body: body, line: 1, col: 1)
   let release_list = m.list_new()
   m.list_push(release_list, m.var_ref(kind: 'local', index: 0, line: 1, col: 1))
-  let scpr = m.scope_release(first_local: 0, end_local: 1, body: body,
-                             release_list: release_list, line: 1, col: 1)
+  let scpr = m.scope_release(
+    first_local: 0,
+    end_local: 1,
+    body: body,
+    release_list: release_list,
+    line: 1,
+    col: 1,
+  )
   assert_eq(m.num_children(node: scp), 1)
   assert_eq(m.num_children(node: scpr), 2)
 
-  assert_eq(m.num_children(node: m.make_return(value: cond, line: 1, col: 1)), 1)
+  assert_eq(
+    m.num_children(node: m.make_return(value: cond, line: 1, col: 1)),
+    1,
+  )
 }
 
 # --- Position is the node's own, not its parent's or a child's. ---
@@ -142,7 +189,11 @@ fn stmt_block(m, stmts) {
   assert_eq(m.str_const(node: s), 'hi')
 
   mut caught = nil
-  try { m.int_const(node: s) } catch e { caught = e }
+  try {
+    m.int_const(node: s)
+  } catch e {
+    caught = e
+  }
   assert_eq(caught.kind, 'IrError')
   assert_eq(caught.message, 'literal #4 is a str, not an int (int_const)')
 }
@@ -154,8 +205,7 @@ fn stmt_block(m, stmts) {
   let m = CodeGen.Module.new()
   let lit = m.literal(v: 1, line: 1, col: 1)
 
-  for op in ['add', 'sub', 'mul', 'div', 'mod', 'eq', 'ne', 'lt', 'le', 'gt',
-             'ge', 'bitand', 'bitor', 'bitxor', 'shl', 'shr'] {
+  for op in ['add', 'sub', 'mul', 'div', 'mod', 'eq', 'ne', 'lt', 'le', 'gt', 'ge', 'bitand', 'bitor', 'bitxor', 'shl', 'shr'] {
     let n = m.binary(op: op, lhs: lit, rhs: lit, line: 1, col: 1)
     let read_back = m.node_op(node: n)
     assert_eq(read_back, op)
@@ -169,11 +219,7 @@ fn stmt_block(m, stmts) {
     m.unary(op: read_back, operand: lit, line: 1, col: 1)
   }
 
-  for name in ['print', 'readint', 'len', 'tostr', 'typeof', 'toint',
-               'todouble', 'fmod', 'pow', 'printraw', 'arraypush',
-               'arraypop', 'objecthas', 'objectkeys', 'objectremove',
-               'genresume', 'genreturn', 'genthrow', 'argcount', 'same',
-               'fnarity', 'collect', 'heapstats', 'enqueue'] {
+  for name in ['print', 'readint', 'len', 'tostr', 'typeof', 'toint', 'todouble', 'fmod', 'pow', 'printraw', 'arraypush', 'arraypop', 'objecthas', 'objectkeys', 'objectremove', 'genresume', 'genreturn', 'genthrow', 'argcount', 'same', 'fnarity', 'collect', 'heapstats', 'enqueue'] {
     let n = m.intrinsic(name: name, args_list: m.list_new(), line: 1, col: 1)
     let read_back = m.node_op(node: n)
     assert_eq(read_back, name)
@@ -210,8 +256,13 @@ fn stmt_block(m, stmts) {
 # --- scope's local range: first != end, so a swap would be caught. ---
 {
   let m = CodeGen.Module.new()
-  let scp = m.scope(first_local: 2, end_local: 5, body: stmt_block(m, []),
-                    line: 1, col: 1)
+  let scp = m.scope(
+    first_local: 2,
+    end_local: 5,
+    body: stmt_block(m, []),
+    line: 1,
+    col: 1,
+  )
   assert_eq(m.scope_first_local(node: scp), 2)
   assert_eq(m.scope_end_local(node: scp), 5)
 }
@@ -219,8 +270,13 @@ fn stmt_block(m, stmts) {
 # --- try's caught local slot. ---
 {
   let m = CodeGen.Module.new()
-  let trycatch = m.make_try(caught_local: 4, body: stmt_block(m, []),
-                            handler: stmt_block(m, []), line: 1, col: 1)
+  let trycatch = m.make_try(
+    caught_local: 4,
+    body: stmt_block(m, []),
+    handler: stmt_block(m, []),
+    line: 1,
+    col: 1,
+  )
   assert_eq(m.try_caught_local(node: trycatch), 4)
 }
 
@@ -239,16 +295,29 @@ fn stmt_block(m, stmts) {
 {
   let m = CodeGen.Module.new()
   let body0 = stmt_block(m, [])
-  let f0 = m.add_func(name: 'main', num_locals: 3, num_captures: 1,
-                      num_cells: 2, num_params: 1, body: body0)
+  let f0 = m.add_func(
+    name: 'main',
+    num_locals: 3,
+    num_captures: 1,
+    num_cells: 2,
+    num_params: 1,
+    body: body0,
+  )
   m.set_local_name(func: f0, index: 0, name: 'x')
   m.set_capture_name(func: f0, index: 0, name: 'y')
 
   let body1 = stmt_block(m, [])
-  let f1 = m.add_func(name: 'gen', num_locals: 4, num_captures: 2,
-                      num_cells: 1, num_params: 2, body: body1)
+  let f1 = m.add_func(
+    name: 'gen',
+    num_locals: 4,
+    num_captures: 2,
+    num_cells: 1,
+    num_params: 2,
+    body: body1,
+  )
   m.set_generator(func: f1)
   m.set_lenient_arity(func: f1)
+  m.set_singleton(func: f1)
 
   assert_eq(m.num_funcs(), 2)
   assert_eq(m.func_name(func: f0), 'main')
@@ -259,6 +328,7 @@ fn stmt_block(m, stmts) {
   assert_eq(m.func_body(func: f0), body0)
   assert_eq(m.func_is_generator(func: f0), false)
   assert_eq(m.func_lenient_arity(func: f0), false)
+  assert_eq(m.func_singleton(func: f0), false)
   assert_eq(m.func_local_name(func: f0, index: 0), 'x')
   assert_eq(m.func_capture_name(func: f0, index: 0), 'y')
 
@@ -270,6 +340,7 @@ fn stmt_block(m, stmts) {
   assert_eq(m.func_body(func: f1), body1)
   assert_eq(m.func_is_generator(func: f1), true)
   assert_eq(m.func_lenient_arity(func: f1), true)
+  assert_eq(m.func_singleton(func: f1), true)
 }
 
 # --- Capture maps, two of different length with mixed kinds, so an
@@ -303,23 +374,39 @@ fn stmt_block(m, stmts) {
   let lit = m.literal(v: 1, line: 1, col: 1)
 
   mut caught = nil
-  try { m.node_tag(node: 9999) } catch e { caught = e }
+  try {
+    m.node_tag(node: 9999)
+  } catch e {
+    caught = e
+  }
   assert_eq(caught.kind, 'IrError')
   assert_eq(caught.message, 'no node #9999')
 
   caught = nil
-  try { m.child(node: lit, index: 0) } catch e { caught = e }
+  try {
+    m.child(node: lit, index: 0)
+  } catch e {
+    caught = e
+  }
   assert_eq(caught.kind, 'IrError')
   assert_eq(caught.message, 'node #0 has 0 children, no #0')
 
   caught = nil
-  try { m.func_name(func: 7) } catch e { caught = e }
+  try {
+    m.func_name(func: 7)
+  } catch e {
+    caught = e
+  }
   assert_eq(caught.kind, 'IrError')
   assert_eq(caught.message, 'no func #7')
 
   let cm = m.add_capture_map(m.capture_map_new())
   caught = nil
-  try { m.capture_kind(cmap: cm, index: 3) } catch e { caught = e }
+  try {
+    m.capture_kind(cmap: cm, index: 3)
+  } catch e {
+    caught = e
+  }
   assert_eq(caught.kind, 'IrError')
   assert_eq(caught.message, 'capture map #0 has 0 entries, no #3')
 }
@@ -330,9 +417,16 @@ fn stmt_block(m, stmts) {
   let m = CodeGen.Module.new()
   let vr = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
   mut caught = nil
-  try { m.node_op(node: vr) } catch e { caught = e }
+  try {
+    m.node_op(node: vr)
+  } catch e {
+    caught = e
+  }
   assert_eq(caught.kind, 'IrError')
-  assert_eq(caught.message, "node #0 is a varref; use var_kind() for its var kind")
+  assert_eq(
+    caught.message,
+    "node #0 is a varref; use var_kind() for its var kind",
+  )
 }
 
 # --- A native the module names but does not carry: declare_native interns
@@ -359,11 +453,19 @@ fn stmt_block(m, stmts) {
 
   # A tag that is not a nativeref, and an index nothing handed out.
   mut caught = nil
-  try { m.native_index(node: m.nil_literal(line: 1, col: 1)) } catch e { caught = e }
+  try {
+    m.native_index(node: m.nil_literal(line: 1, col: 1))
+  } catch e {
+    caught = e
+  }
   assert_eq(caught.kind, 'IrError')
 
   caught = nil
-  try { m.native_name(index: 2) } catch e { caught = e }
+  try {
+    m.native_name(index: 2)
+  } catch e {
+    caught = e
+  }
   assert_eq(caught.kind, 'IrError')
 }
 {
@@ -371,9 +473,19 @@ fn stmt_block(m, stmts) {
   # takes it, the module is malformed, and compile() refuses it.
   let m = CodeGen.Module.new()
   m.declare_native(name: 'only')
-  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0,
-             body: m.native_ref(index: 9, line: 1, col: 1))
-  let err = try { m.verify() } catch e { e }
+  m.add_func(
+    name: 'main',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: m.native_ref(index: 9, line: 1, col: 1),
+  )
+  let err = try {
+    m.verify()
+  } catch e {
+    e
+  }
   assert_eq("{err.kind}: {err.message}", 'IrError: native index out of range')
 }
 

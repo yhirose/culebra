@@ -6515,6 +6515,7 @@ let sum = m.binary(op: 'add', lhs: a, rhs: b, line: 1, col: 1)  # sumはLong
 | coroutineのintrinsic | coroutineは専用のノード形ではなく、6つのintrinsicで駆動する通常の関数。generator(上の`set_generator`)が1つのフレームを`yield`で止めるのに対し、coroutineは呼び出しスタック全体を止めるので、`'coroyield'`は何段深い呼び出しの中にあってもよい。`'corocreate'`(引数1個、関数値)が1つ包み、`'cororesume'`(引数2個: coroutineと送る値)はyieldか終了まで走らせて`{value, done}`を答える。`'coroyield'`(引数1個)は実行中のcoroutineを中断して値を外に渡し、次のresumeが送ってきた値を答える。`'coroclose'`(引数1個)は中断中のものを早期に終わらせ、止まっていたフレームのdeferを走らせる。`'corostatus'`(引数1個)は`'start'`/`'suspended'`/`'running'`/`'done'`を答え、`'corocurrent'`(引数0個)は実行中のコードが入っているcoroutine(最上位ならnil)を答える。すでに走っているもののresumeや、nativeのコールバックの中からのyield(止められるC++フレームが無い)は、おかしな動作をせず失敗する。`'enqueue'`はclosureと同じようにcoroutineも受け取り、これがjob queueをスケジューラにしている —— yieldしたcoroutineはparkされ、キューが後で戻ってくる |
 | `m.set_lenient_arity(func:)` | `func`の呼び出しが引数の個数を問わなくなる。余分は捨て、届かなかった仮引数は`nil`で始まり、本体は実際に渡された個数を`'argcount'`で読める —— フロントエンドはそれで自前の「引数が足りない」診断を出すか既定値を埋める。指定しなければ個数の不一致は実行器のトラップ |
 | `m.set_tail_calls(func:)` | `func`の中の末尾位置の呼び出し —— `make_return`のオペランド、またはblock・`if`・`switch`・scopeを通した本体の最後の値 —— が`func`自身のフレームを積まずに置き換える。呼び出しの連鎖として書いたループがどれだけ長くても1フレームで走り、深さ制限が問題にならなくなる。変わるのはフレームを出る**タイミング**だけ: 呼び先が走る前に出るので、ローカルのdropフックが呼び先の出力より先に来る(通常の呼び出しでは後)。`make_try`の本体の中や、deferまたは独自のrelease順を宣言したscopeを跨ぐ呼び出しは通常の呼び出しのまま —— どれもフレームがまだ在ることを必要とするため |
+| `m.set_singleton(func:)` | `func`の`make_closure`が毎回**同じ**closureオブジェクトを返す。最初に走った箇所で作り、以後の実行中はそれを使い回すので、`make_closure`+`call_value`で呼ぶヘルパー群が呼び出し箇所ごとの割り当てを払わなくなる。captureを持たない関数すべてに自動で効かせず明示的に立てるのは、共有が観測できるため: `'same'`はclosureを同一性で比べるので、同じ関数リテラルを2回評価した結果が別物から同一物に変わる。closureに固有の同一性がない関数(ランタイムのヘルパー、トップレベルの手続き)に立て、ソースが捕まえて比較できるlambdaには立てない。captureを持つ関数に立てると`verify`が拒否する。generatorは可(activationはclosureでなく呼び出しが作るため) |
 | `m.set_entry_frame_drops(on:)` | プログラム終了時に、入口関数自身の束縛のdrop hookを走らせるかどうか(既定は走らせる)。トップレベルのスコープをデストラクタなしで解放する言語のフロントエンドは切る。入口関数のdeferは変わらず走り、内側のスコープも通常どおりdropする |
 | `m.list_new()` | ステージング用list。`stmts_list:`/`args_list:`に渡す |
 | `m.list_push(list:, value:)` | ステージング用listにノードidを追加する |
@@ -6585,6 +6586,7 @@ Dumperと同じ経路で木を辿れる。不正なnode/func/cmap id、あるい
 | `m.func_body(func:)` | その本体。ノードidで返る |
 | `m.func_is_generator(func:)` | `set_generator`が呼ばれたかどうか |
 | `m.func_lenient_arity(func:)` | `set_lenient_arity`が呼ばれたかどうか |
+| `m.func_singleton(func:)` | `set_singleton`が呼ばれたかどうか |
 | `m.func_local_name(func:, index:)` | `set_local_name`がそのlocalに付けた名前 |
 | `m.func_capture_name(func:, index:)` | `set_capture_name`がそのcaptureに付けた名前 |
 | `m.num_capture_maps()` | 存在するcapture mapの数 |

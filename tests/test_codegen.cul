@@ -12,7 +12,9 @@
 
 fn stmt_block(m, stmts) {
   let list = m.list_new()
-  for s in stmts { m.list_push(list, s) }
+  for s in stmts {
+    m.list_push(list, s)
+  }
   m.block(stmts_list: list, line: 1, col: 1)
 }
 
@@ -29,9 +31,18 @@ fn print_stmt(m, value) {
   let two = m.literal(v: 2, line: 1, col: 1)
   let sum = m.binary(op: 'add', lhs: forty, rhs: two, line: 1, col: 1)
   let body = stmt_block(m, [print_stmt(m, sum)])
-  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0, body: body)
+  m.add_func(
+    name: 'main',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: body,
+  )
   m.verify()
-  assert_eq(IO.capture(fn () { m.run() }), "42\n")
+  assert_eq(IO.capture(fn () {
+    m.run()
+  }), "42\n")
 }
 
 # --- A local variable: assign then read. ---
@@ -40,13 +51,27 @@ fn print_stmt(m, value) {
   let ten = m.literal(v: 10, line: 1, col: 1)
   let assign = m.assign(kind: 'local', index: 0, value: ten, line: 1, col: 1)
   let x = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
-  let doubled = m.binary(op: 'mul', lhs: x, rhs: m.literal(v: 2, line: 1, col: 1),
-                         line: 1, col: 1)
+  let doubled = m.binary(
+    op: 'mul',
+    lhs: x,
+    rhs: m.literal(v: 2, line: 1, col: 1),
+    line: 1,
+    col: 1,
+  )
   let body = stmt_block(m, [assign, print_stmt(m, doubled)])
-  m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 0, body: body)
+  m.add_func(
+    name: 'main',
+    num_locals: 1,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: body,
+  )
   m.set_local_name(func: 0, index: 0, name: 'x')
   m.verify()
-  assert_eq(IO.capture(fn () { m.run() }), "20\n")
+  assert_eq(IO.capture(fn () {
+    m.run()
+  }), "20\n")
 }
 
 # --- Control flow: a while loop counting down. ---
@@ -54,20 +79,38 @@ fn print_stmt(m, value) {
   let m = CodeGen.Module.new()
   let zero = m.literal(v: 0, line: 1, col: 1)
   let one = m.literal(v: 1, line: 1, col: 1)
-  let init = m.assign(kind: 'local', index: 0, value: m.literal(v: 3, line: 1, col: 1),
-                      line: 1, col: 1)
+  let init = m.assign(
+    kind: 'local',
+    index: 0,
+    value: m.literal(v: 3, line: 1, col: 1),
+    line: 1,
+    col: 1,
+  )
   let x = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
   let cond = m.binary(op: 'gt', lhs: x, rhs: zero, line: 1, col: 1)
-  let dec = m.assign(kind: 'local', index: 0,
-                     value: m.binary(op: 'sub', lhs: x, rhs: one, line: 1, col: 1),
-                     line: 1, col: 1)
+  let dec = m.assign(
+    kind: 'local',
+    index: 0,
+    value: m.binary(op: 'sub', lhs: x, rhs: one, line: 1, col: 1),
+    line: 1,
+    col: 1,
+  )
   let body_stmts = stmt_block(m, [print_stmt(m, x), dec])
   let loop = m.make_while(cond: cond, body: body_stmts, line: 1, col: 1)
   let body = stmt_block(m, [init, loop])
-  m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 0, body: body)
+  m.add_func(
+    name: 'main',
+    num_locals: 1,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: body,
+  )
   m.set_local_name(func: 0, index: 0, name: 'x')
   m.verify()
-  assert_eq(IO.capture(fn () { m.run() }), "3\n2\n1\n")
+  assert_eq(IO.capture(fn () {
+    m.run()
+  }), "3\n2\n1\n")
 }
 
 # switch: case a, b: sharing one body between two keys, a default arm, and
@@ -75,10 +118,16 @@ fn print_stmt(m, value) {
 # no else taken). Read-back exercises every switch_* accessor once.
 {
   let m = CodeGen.Module.new()
-  fn lit(m, v) { m.literal(v: v, line: 1, col: 1) }
+  fn lit(m, v) {
+    m.literal(v: v, line: 1, col: 1)
+  }
   fn arms(m, pairs) {
     let list = m.list_new()
-    for pair in pairs { for n in pair { m.list_push(list, n) } }
+    for pair in pairs {
+      for n in pair {
+        m.list_push(list, n)
+      }
+    }
     list
   }
   let shared = lit(m, 100)
@@ -86,12 +135,28 @@ fn print_stmt(m, value) {
     subject: lit(m, 2),
     arms_list: arms(m, [[lit(m, 1), shared], [lit(m, 2), shared],
                         [lit(m, 3), lit(m, 300)]]),
-    default_body: lit(m, -1), line: 1, col: 1)
-  let no_default = m.make_switch(subject: lit(m, 99),
-                                 arms_list: arms(m, [[lit(m, 1), lit(m, 1)]]),
-                                 line: 1, col: 1)
-  let body = stmt_block(m, [print_stmt(m, with_default), print_stmt(m, no_default)])
-  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0, body: body)
+    default_body: lit(m, -1),
+    line: 1,
+    col: 1,
+  )
+  let no_default = m.make_switch(
+    subject: lit(m, 99),
+    arms_list: arms(m, [[lit(m, 1), lit(m, 1)]]),
+    line: 1,
+    col: 1,
+  )
+  let body = stmt_block(
+    m,
+    [print_stmt(m, with_default), print_stmt(m, no_default)],
+  )
+  m.add_func(
+    name: 'main',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: body,
+  )
   m.verify()
   assert_eq(m.switch_arm_count(with_default), 3)
   assert_true(m.switch_has_default(with_default))
@@ -100,7 +165,9 @@ fn print_stmt(m, value) {
   assert_eq(m.int_const(m.switch_default_body(with_default)), -1)
   assert_false(m.switch_has_default(no_default))
   assert_throws('IrError', || m.switch_default_body(no_default))
-  assert_eq(IO.capture(fn () { m.run() }), "100\nnil\n")
+  assert_eq(IO.capture(fn () {
+    m.run()
+  }), "100\nnil\n")
 }
 
 # --- A capture forwarded through a self-recursive call unchanged -- the
@@ -118,32 +185,76 @@ fn print_stmt(m, value) {
   # die with this frame while the closure it's captured into may not)
   let main_cmap = m.capture_map_new()
   m.capture_map_push(main_cmap, kind: 'cell', index: 0)
-  let main_call = m.call(func: 1, cmap: m.add_capture_map(main_cmap), line: 1, col: 1)
-  let init = m.assign(kind: 'cell', index: 0, value: m.literal(v: 3, line: 1, col: 1),
-                      line: 1, col: 1)
-  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 1, num_params: 0, body:
-             stmt_block(m, [init, main_call]))
+  let main_call = m.call(
+    func: 1,
+    cmap: m.add_capture_map(main_cmap),
+    line: 1,
+    col: 1,
+  )
+  let init = m.assign(
+    kind: 'cell',
+    index: 0,
+    value: m.literal(v: 3, line: 1, col: 1),
+    line: 1,
+    col: 1,
+  )
+  m.add_func(
+    name: 'main',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 1,
+    num_params: 0,
+    body:
+             stmt_block(m, [init, main_call]),
+  )
 
   # countdown: capture[0] is n. if n <= 0 {} else { print(n); n -= 1; CALL countdown }
   let n = m.var_ref(kind: 'capture', index: 0, line: 1, col: 1)
-  let base_cond = m.binary(op: 'le', lhs: n, rhs: m.literal(v: 0, line: 1, col: 1),
-                           line: 1, col: 1)
-  let dec = m.assign(kind: 'capture', index: 0,
-                     value: m.binary(op: 'sub', lhs: n, rhs: m.literal(v: 1, line: 1, col: 1),
+  let base_cond = m.binary(
+    op: 'le',
+    lhs: n,
+    rhs: m.literal(v: 0, line: 1, col: 1),
+    line: 1,
+    col: 1,
+  )
+  let dec = m.assign(
+    kind: 'capture',
+    index: 0,
+    value: m.binary(op: 'sub', lhs: n, rhs: m.literal(v: 1, line: 1, col: 1),
                                      line: 1, col: 1),
-                     line: 1, col: 1)
+    line: 1,
+    col: 1,
+  )
   let self_cmap = m.capture_map_new()
   m.capture_map_push(self_cmap, kind: 'capture', index: 0)
-  let rec_call = m.call(func: 1, cmap: m.add_capture_map(self_cmap), line: 1, col: 1)
+  let rec_call = m.call(
+    func: 1,
+    cmap: m.add_capture_map(self_cmap),
+    line: 1,
+    col: 1,
+  )
   let else_body = stmt_block(m, [print_stmt(m, n), dec, rec_call])
-  let countdown_body = m.make_if_else(cond: base_cond, then_branch: m.block(stmts_list: m.list_new(), line: 1, col: 1),
-                                      else_branch: else_body, line: 1, col: 1)
-  m.add_func(name: 'countdown', num_locals: 0, num_captures: 1, num_cells: 0, num_params: 0,
-             body: stmt_block(m, [countdown_body]))
+  let countdown_body = m.make_if_else(
+    cond: base_cond,
+    then_branch: m.block(stmts_list: m.list_new(), line: 1, col: 1),
+    else_branch: else_body,
+    line: 1,
+    col: 1,
+  )
+  m.add_func(
+    name: 'countdown',
+    num_locals: 0,
+    num_captures: 1,
+    num_cells: 0,
+    num_params: 0,
+    body: stmt_block(m, [countdown_body]),
+  )
   m.set_capture_name(func: 1, index: 0, name: 'n')
 
   m.verify()
-  assert_eq(IO.capture(fn () { m.run() }), "3\n2\n1\n")
+  assert_eq(IO.capture(fn () {
+    m.run()
+  }), "3\n2\n1\n")
 }
 
 # --- Errors: verify() rejects a malformed module before run() ever starts.
@@ -151,7 +262,14 @@ fn print_stmt(m, value) {
 # simplest way to construct a module that fails structurally.
 {
   let m = CodeGen.Module.new()
-  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0, body: 9999)
+  m.add_func(
+    name: 'main',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: 9999,
+  )
   assert_throws('IrError', || m.verify())
 }
 
@@ -161,11 +279,23 @@ fn print_stmt(m, value) {
 # script could build. Caught in verify(), like every other malformed shape.
 {
   let m = CodeGen.Module.new()
-  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 1,
-             body: m.nil_literal(line: 1, col: 1))
-  let err = try { m.verify() } catch e { e }
-  assert_eq("{err.kind}: {err.message}",
-            'IrError: func declares more params than locals')
+  m.add_func(
+    name: 'main',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 1,
+    body: m.nil_literal(line: 1, col: 1),
+  )
+  let err = try {
+    m.verify()
+  } catch e {
+    e
+  }
+  assert_eq(
+    "{err.kind}: {err.message}",
+    'IrError: func declares more params than locals',
+  )
 }
 
 # --- Runtime errors: divide by zero and an uninitialized read both surface
@@ -176,7 +306,14 @@ fn print_stmt(m, value) {
   let zero = m.literal(v: 0, line: 5, col: 7)
   let div = m.binary(op: 'div', lhs: one, rhs: zero, line: 5, col: 3)
   let body = stmt_block(m, [print_stmt(m, div)])
-  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0, body: body)
+  m.add_func(
+    name: 'main',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: body,
+  )
   m.verify()
   mut caught = nil
   try {
@@ -194,7 +331,14 @@ fn print_stmt(m, value) {
   let m = CodeGen.Module.new()
   let x = m.var_ref(kind: 'local', index: 0, line: 8, col: 4)
   let body = stmt_block(m, [print_stmt(m, x)])
-  m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 0, body: body)
+  m.add_func(
+    name: 'main',
+    num_locals: 1,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: body,
+  )
   m.set_local_name(func: 0, index: 0, name: 'x')
   m.verify()
   mut caught = nil
@@ -212,9 +356,23 @@ fn print_stmt(m, value) {
   let m = CodeGen.Module.new()
   let cmap = m.add_capture_map(m.capture_map_new())
   let loop_call = m.call(func: 1, cmap: cmap, line: 2, col: 3)
-  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0, body:
-             m.call(func: 1, cmap: cmap, line: 1, col: 1))
-  m.add_func(name: 'loop', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0, body: loop_call)
+  m.add_func(
+    name: 'main',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body:
+             m.call(func: 1, cmap: cmap, line: 1, col: 1),
+  )
+  m.add_func(
+    name: 'loop',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: loop_call,
+  )
   m.verify()
   mut caught = nil
   try {
@@ -241,7 +399,13 @@ fn tostr_node(m, v) {
 {
   let m = CodeGen.Module.new()
   let hello = m.str_literal(s: 'hi ', line: 1, col: 1)
-  let cat = m.binary(op: 'add', lhs: hello, rhs: tostr_node(m, m.literal(v: 42, line: 1, col: 1)), line: 1, col: 1)
+  let cat = m.binary(
+    op: 'add',
+    lhs: hello,
+    rhs: tostr_node(m, m.literal(v: 42, line: 1, col: 1)),
+    line: 1,
+    col: 1,
+  )
   let ta = m.list_new()
   m.list_push(ta, m.double_literal(v: 1.5, line: 1, col: 1))
   let type_node = m.intrinsic(name: 'typeof', args_list: ta, line: 1, col: 1)
@@ -252,74 +416,137 @@ fn tostr_node(m, v) {
   m.list_push(tc, m.double_literal(v: 5.5, line: 1, col: 1))
   m.list_push(tc, m.literal(v: 2, line: 1, col: 1))
   let fmod_node = m.intrinsic(name: 'fmod', args_list: tc, line: 1, col: 1)
-  let byte_node = m.index(recv: m.str_literal(s: 'abc', line: 1, col: 1),
-                          key: m.literal(v: 1, line: 1, col: 1),
-                          line: 1, col: 1)
+  let byte_node = m.index(
+    recv: m.str_literal(s: 'abc', line: 1, col: 1),
+    key: m.literal(v: 1, line: 1, col: 1),
+    line: 1,
+    col: 1,
+  )
   let td = m.list_new()
   m.list_push(td, m.str_literal(s: 'no newline->', line: 1, col: 1))
   let raw_node = m.intrinsic(name: 'printraw', args_list: td, line: 1, col: 1)
-  let body = stmt_block(m, [
-    print_stmt(m, cat),
-    print_stmt(m, tostr_node(m, m.double_literal(v: 4.0, line: 1, col: 1))),
-    print_stmt(m, m.bool_literal(v: true, line: 1, col: 1)),
-    print_stmt(m, m.nil_literal(line: 1, col: 1)),
-    print_stmt(m, type_node),
-    print_stmt(m, toint_node),
-    print_stmt(m, fmod_node),
-    raw_node,
-    print_stmt(m, byte_node),
-  ])
-  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0, body: body)
+  let body = stmt_block(
+    m,
+    [
+      print_stmt(m, cat),
+      print_stmt(m, tostr_node(m, m.double_literal(v: 4.0, line: 1, col: 1))),
+      print_stmt(m, m.bool_literal(v: true, line: 1, col: 1)),
+      print_stmt(m, m.nil_literal(line: 1, col: 1)),
+      print_stmt(m, type_node),
+      print_stmt(m, toint_node),
+      print_stmt(m, fmod_node),
+      raw_node,
+      print_stmt(m, byte_node),
+    ],
+  )
+  m.add_func(
+    name: 'main',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: body,
+  )
   m.verify()
-  assert_eq(IO.capture(fn () { m.run() }), "hi 42\n4\ntrue\nnil\ndouble\n-2\n1.5\nno newline->b\n")
+  assert_eq(IO.capture(fn () {
+    m.run()
+  }), "hi 42\n4\ntrue\nnil\ndouble\n-2\n1.5\nno newline->b\n")
 }
 
 # Bitwise operators, masked shifts included.
 {
   let m = CodeGen.Module.new()
-  fn lit(m, v) { m.literal(v: v, line: 1, col: 1) }
-  fn bop(m, op, l, r) { m.binary(op: op, lhs: l, rhs: r, line: 1, col: 1) }
-  let body = stmt_block(m, [
-    print_stmt(m, bop(m, 'bitand', lit(m, 6), lit(m, 3))),
-    print_stmt(m, bop(m, 'bitor', lit(m, 6), lit(m, 3))),
-    print_stmt(m, bop(m, 'bitxor', lit(m, 6), lit(m, 3))),
-    print_stmt(m, m.unary(op: 'bitnot', operand: lit(m, 7), line: 1, col: 1)),
-    print_stmt(m, bop(m, 'shl', lit(m, 1), lit(m, 64))),
-    print_stmt(m, bop(m, 'shr', lit(m, -5), lit(m, 1))),
-  ])
-  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0, body: body)
+  fn lit(m, v) {
+    m.literal(v: v, line: 1, col: 1)
+  }
+  fn bop(m, op, l, r) {
+    m.binary(op: op, lhs: l, rhs: r, line: 1, col: 1)
+  }
+  let body = stmt_block(
+    m,
+    [
+      print_stmt(m, bop(m, 'bitand', lit(m, 6), lit(m, 3))),
+      print_stmt(m, bop(m, 'bitor', lit(m, 6), lit(m, 3))),
+      print_stmt(m, bop(m, 'bitxor', lit(m, 6), lit(m, 3))),
+      print_stmt(m, m.unary(op: 'bitnot', operand: lit(m, 7), line: 1, col: 1)),
+      print_stmt(m, bop(m, 'shl', lit(m, 1), lit(m, 64))),
+      print_stmt(m, bop(m, 'shr', lit(m, -5), lit(m, 1))),
+    ],
+  )
+  m.add_func(
+    name: 'main',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: body,
+  )
   m.verify()
-  assert_eq(IO.capture(fn () { m.run() }), "2\n7\n5\n-8\n1\n-3\n")
+  assert_eq(IO.capture(fn () {
+    m.run()
+  }), "2\n7\n5\n-8\n1\n-3\n")
 }
 
 # Containers: array and object literals, index, set_index, len.
 {
   let m = CodeGen.Module.new()
-  fn lit(m, v) { m.literal(v: v, line: 1, col: 1) }
-  fn strl(m, v) { m.str_literal(s: v, line: 1, col: 1) }
+  fn lit(m, v) {
+    m.literal(v: v, line: 1, col: 1)
+  }
+  fn strl(m, v) {
+    m.str_literal(s: v, line: 1, col: 1)
+  }
   let items = m.list_new()
   m.list_push(items, lit(m, 10))
   m.list_push(items, lit(m, 20))
   let arr = m.array_lit(items_list: items, line: 1, col: 1)
   let store_arr = m.assign(kind: 'local', index: 0, value: arr, line: 1, col: 1)
-  let put = m.set_index(recv: m.var_ref(kind: 'local', index: 0, line: 1, col: 1),
-                        key: lit(m, 1), value: lit(m, 99), line: 1, col: 1)
+  let put = m.set_index(
+    recv: m.var_ref(kind: 'local', index: 0, line: 1, col: 1),
+    key: lit(m, 1),
+    value: lit(m, 99),
+    line: 1,
+    col: 1,
+  )
   let len_args = m.list_new()
   m.list_push(len_args, m.var_ref(kind: 'local', index: 0, line: 1, col: 1))
   let kvs = m.list_new()
   m.list_push(kvs, strl(m, 'k'))
   m.list_push(kvs, lit(m, 7))
   let obj = m.object_lit(kv_list: kvs, line: 1, col: 1)
-  let body = stmt_block(m, [
-    store_arr,
-    put,
-    print_stmt(m, m.index(recv: m.var_ref(kind: 'local', index: 0, line: 1, col: 1), key: lit(m, 1), line: 1, col: 1)),
-    print_stmt(m, m.intrinsic(name: 'len', args_list: len_args, line: 1, col: 1)),
-    print_stmt(m, m.index(recv: obj, key: strl(m, 'k'), line: 1, col: 1)),
-  ])
-  m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 0, body: body)
+  let body = stmt_block(
+    m,
+    [
+      store_arr,
+      put,
+      print_stmt(
+        m,
+        m.index(
+          recv: m.var_ref(kind: 'local', index: 0, line: 1, col: 1),
+          key: lit(m, 1),
+          line: 1,
+          col: 1,
+        ),
+      ),
+      print_stmt(
+        m,
+        m.intrinsic(name: 'len', args_list: len_args, line: 1, col: 1),
+      ),
+      print_stmt(m, m.index(recv: obj, key: strl(m, 'k'), line: 1, col: 1)),
+    ],
+  )
+  m.add_func(
+    name: 'main',
+    num_locals: 1,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: body,
+  )
   m.verify()
-  assert_eq(IO.capture(fn () { m.run() }), "99\n2\n7\n")
+  assert_eq(IO.capture(fn () {
+    m.run()
+  }), "99\n2\n7\n")
 }
 
 # field_get/field_set: a struct-shaped object (object_lit, so props already
@@ -327,23 +554,46 @@ fn tostr_node(m, v) {
 # comparison.
 {
   let m = CodeGen.Module.new()
-  fn lit(m, v) { m.literal(v: v, line: 1, col: 1) }
-  fn strl(m, v) { m.str_literal(s: v, line: 1, col: 1) }
+  fn lit(m, v) {
+    m.literal(v: v, line: 1, col: 1)
+  }
+  fn strl(m, v) {
+    m.str_literal(s: v, line: 1, col: 1)
+  }
   let kvs = m.list_new()
-  m.list_push(kvs, strl(m, 'x')); m.list_push(kvs, lit(m, 10))
-  m.list_push(kvs, strl(m, 'y')); m.list_push(kvs, lit(m, 20))
+  m.list_push(kvs, strl(m, 'x'))
+  m.list_push(kvs, lit(m, 10))
+  m.list_push(kvs, strl(m, 'y'))
+  m.list_push(kvs, lit(m, 20))
   let obj = m.object_lit(kv_list: kvs, line: 1, col: 1)
   let o = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
   let getx = m.field_get(recv: o, slot: 0, name: 'x', line: 1, col: 1)
-  let sety = m.field_set(recv: o, slot: 1, name: 'y', value: lit(m, 99), line: 1, col: 1)
+  let sety = m.field_set(
+    recv: o,
+    slot: 1,
+    name: 'y',
+    value: lit(m, 99),
+    line: 1,
+    col: 1,
+  )
   let gety = m.field_get(recv: o, slot: 1, name: 'y', line: 1, col: 1)
-  let body = stmt_block(m, [
-    m.assign(kind: 'local', index: 0, value: obj, line: 1, col: 1),
-    print_stmt(m, getx),
-    sety,
-    print_stmt(m, gety),
-  ])
-  m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 0, body: body)
+  let body = stmt_block(
+    m,
+    [
+      m.assign(kind: 'local', index: 0, value: obj, line: 1, col: 1),
+      print_stmt(m, getx),
+      sety,
+      print_stmt(m, gety),
+    ],
+  )
+  m.add_func(
+    name: 'main',
+    num_locals: 1,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: body,
+  )
   m.verify()
   assert_eq(m.field_slot(getx), 0)
   assert_eq(m.field_name(getx), 'x')
@@ -351,7 +601,9 @@ fn tostr_node(m, v) {
   assert_eq(m.field_name(sety), 'y')
   assert_eq(m.int_const(m.field_set_value(sety)), 99)
   assert_throws('IrError', || m.field_set_value(getx))
-  assert_eq(IO.capture(fn () { m.run() }), "10\n99\n")
+  assert_eq(IO.capture(fn () {
+    m.run()
+  }), "10\n99\n")
 }
 
 # Scope + defer + break: the defer fires when the loop-body scope exits
@@ -360,40 +612,106 @@ fn tostr_node(m, v) {
   let m = CodeGen.Module.new()
   let cmap = m.add_capture_map(m.capture_map_new())
   let dbody = print_stmt(m, m.str_literal(s: 'deferred', line: 2, col: 1))
-  let inner = stmt_block(m, [
-    m.make_defer(value: m.make_closure(func: 1, cmap: cmap, line: 2, col: 1), line: 2, col: 1),
-    m.make_break(line: 3, col: 1),
-  ])
-  let loop = m.make_while(cond: m.bool_literal(v: true, line: 1, col: 1),
-                          body: m.scope(first_local: 0, end_local: 0, body: inner, line: 1, col: 1),
-                          line: 1, col: 1)
-  let body = stmt_block(m, [loop, print_stmt(m, m.str_literal(s: 'after', line: 4, col: 1))])
-  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0, body: body)
-  m.add_func(name: 'dfn', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0, body: dbody)
+  let inner = stmt_block(
+    m,
+    [
+      m.make_defer(
+        value: m.make_closure(func: 1, cmap: cmap, line: 2, col: 1),
+        line: 2,
+        col: 1,
+      ),
+      m.make_break(line: 3, col: 1),
+    ],
+  )
+  let loop = m.make_while(
+    cond: m.bool_literal(v: true, line: 1, col: 1),
+    body: m.scope(first_local: 0, end_local: 0, body: inner, line: 1, col: 1),
+    line: 1,
+    col: 1,
+  )
+  let body = stmt_block(
+    m,
+    [loop, print_stmt(m, m.str_literal(s: 'after', line: 4, col: 1))],
+  )
+  m.add_func(
+    name: 'main',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: body,
+  )
+  m.add_func(
+    name: 'dfn',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: dbody,
+  )
   m.verify()
-  assert_eq(IO.capture(fn () { m.run() }), "deferred\nafter\n")
+  assert_eq(IO.capture(fn () {
+    m.run()
+  }), "deferred\nafter\n")
 }
 
 # throw / try_catch: a handler resumes execution; a VM trap is catchable and
 # carries {message, line, col}.
 {
   let m = CodeGen.Module.new()
-  fn strl(m, v) { m.str_literal(s: v, line: 1, col: 1) }
+  fn strl(m, v) {
+    m.str_literal(s: v, line: 1, col: 1)
+  }
   let thr = m.make_throw(value: strl(m, 'boom'), line: 1, col: 1)
   let handler = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
-  let caught = m.make_try(caught_local: 0, body: thr, handler: handler, line: 1, col: 1)
-  let trap = m.binary(op: 'div', lhs: m.literal(v: 1, line: 5, col: 1), rhs: m.literal(v: 0, line: 5, col: 9), line: 5, col: 1)
-  let trap_handler = m.index(recv: m.var_ref(kind: 'local', index: 0, line: 6, col: 1), key: strl(m, 'message'), line: 6, col: 1)
-  let caught2 = m.make_try(caught_local: 0, body: trap, handler: trap_handler, line: 5, col: 1)
-  let body = stmt_block(m, [
-    print_stmt(m, caught),
-    print_stmt(m, caught2),
-    print_stmt(m, strl(m, 'alive')),
-  ])
-  m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 0, body: body)
+  let caught = m.make_try(
+    caught_local: 0,
+    body: thr,
+    handler: handler,
+    line: 1,
+    col: 1,
+  )
+  let trap = m.binary(
+    op: 'div',
+    lhs: m.literal(v: 1, line: 5, col: 1),
+    rhs: m.literal(v: 0, line: 5, col: 9),
+    line: 5,
+    col: 1,
+  )
+  let trap_handler = m.index(
+    recv: m.var_ref(kind: 'local', index: 0, line: 6, col: 1),
+    key: strl(m, 'message'),
+    line: 6,
+    col: 1,
+  )
+  let caught2 = m.make_try(
+    caught_local: 0,
+    body: trap,
+    handler: trap_handler,
+    line: 5,
+    col: 1,
+  )
+  let body = stmt_block(
+    m,
+    [
+      print_stmt(m, caught),
+      print_stmt(m, caught2),
+      print_stmt(m, strl(m, 'alive')),
+    ],
+  )
+  m.add_func(
+    name: 'main',
+    num_locals: 1,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: body,
+  )
   m.set_local_name(func: 0, index: 0, name: 'e')
   m.verify()
-  assert_eq(IO.capture(fn () { m.run() }), "boom\ndivide by zero\nalive\n")
+  assert_eq(IO.capture(fn () {
+    m.run()
+  }), "boom\ndivide by zero\nalive\n")
 }
 
 # cell_fresh: each loop entry gets its own box; the closure built before
@@ -405,32 +723,101 @@ fn tostr_node(m, v) {
   let cmap = m.add_capture_map(c)
   # funcs[1]: () -> captured x
   let stmts = m.list_new()
-  m.list_push(stmts, m.assign(kind: 'cell', index: 0, value: m.literal(v: 1, line: 1, col: 1), line: 1, col: 1))
-  m.list_push(stmts, m.assign(kind: 'local', index: 0, value: m.make_closure(func: 1, cmap: cmap, line: 2, col: 1), line: 2, col: 1))
+  m.list_push(
+    stmts,
+    m.assign(
+      kind: 'cell',
+      index: 0,
+      value: m.literal(v: 1, line: 1, col: 1),
+      line: 1,
+      col: 1,
+    ),
+  )
+  m.list_push(
+    stmts,
+    m.assign(
+      kind: 'local',
+      index: 0,
+      value: m.make_closure(func: 1, cmap: cmap, line: 2, col: 1),
+      line: 2,
+      col: 1,
+    ),
+  )
   m.list_push(stmts, m.cell_fresh(cell: 0, line: 3, col: 1))
-  m.list_push(stmts, m.assign(kind: 'cell', index: 0, value: m.literal(v: 2, line: 3, col: 2), line: 3, col: 2))
+  m.list_push(
+    stmts,
+    m.assign(
+      kind: 'cell',
+      index: 0,
+      value: m.literal(v: 2, line: 3, col: 2),
+      line: 3,
+      col: 2,
+    ),
+  )
   let call_args = m.list_new()
-  let read_old = m.call_value(callee: m.var_ref(kind: 'local', index: 0, line: 4, col: 1), args_list: call_args, line: 4, col: 1)
+  let read_old = m.call_value(
+    callee: m.var_ref(kind: 'local', index: 0, line: 4, col: 1),
+    args_list: call_args,
+    line: 4,
+    col: 1,
+  )
   m.list_push(stmts, print_stmt(m, read_old))
-  m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 1, num_params: 0,
-             body: m.block(stmts_list: stmts, line: 1, col: 1))
-  m.add_func(name: 'get', num_locals: 0, num_captures: 1, num_cells: 0, num_params: 0,
-             body: m.var_ref(kind: 'capture', index: 0, line: 1, col: 1))
+  m.add_func(
+    name: 'main',
+    num_locals: 1,
+    num_captures: 0,
+    num_cells: 1,
+    num_params: 0,
+    body: m.block(stmts_list: stmts, line: 1, col: 1),
+  )
+  m.add_func(
+    name: 'get',
+    num_locals: 0,
+    num_captures: 1,
+    num_cells: 0,
+    num_params: 0,
+    body: m.var_ref(kind: 'capture', index: 0, line: 1, col: 1),
+  )
   m.verify()
-  assert_eq(IO.capture(fn () { m.run() }), "1\n")
+  assert_eq(IO.capture(fn () {
+    m.run()
+  }), "1\n")
 }
 
 # return: the value comes back, the rest of the body does not run.
 {
   let m = CodeGen.Module.new()
   let cmap = m.add_capture_map(m.capture_map_new())
-  let ret = m.make_return(value: m.literal(v: 42, line: 2, col: 3), line: 2, col: 3)
-  let fbody = stmt_block(m, [ret, print_stmt(m, m.literal(v: 7, line: 3, col: 3))])
+  let ret = m.make_return(
+    value: m.literal(v: 42, line: 2, col: 3),
+    line: 2,
+    col: 3,
+  )
+  let fbody = stmt_block(
+    m,
+    [ret, print_stmt(m, m.literal(v: 7, line: 3, col: 3))],
+  )
   let call = m.call(func: 1, cmap: cmap, line: 1, col: 1)
-  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0, body: print_stmt(m, call))
-  m.add_func(name: 'f', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0, body: fbody)
+  m.add_func(
+    name: 'main',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: print_stmt(m, call),
+  )
+  m.add_func(
+    name: 'f',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: fbody,
+  )
   m.verify()
-  assert_eq(IO.capture(fn () { m.run() }), "42\n")
+  assert_eq(IO.capture(fn () {
+    m.run()
+  }), "42\n")
 }
 
 # --- compile() + Program.run(): the same compiled program, run twice on
@@ -442,13 +829,24 @@ fn tostr_node(m, v) {
   let two = m.literal(v: 2, line: 1, col: 1)
   let sum = m.binary(op: 'add', lhs: forty, rhs: two, line: 1, col: 1)
   let body = stmt_block(m, [print_stmt(m, sum)])
-  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0, body: body)
+  m.add_func(
+    name: 'main',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: body,
+  )
   m.verify()
 
   let p = m.compile()
   let rt = CodeGen.Runtime.new()
-  assert_eq(IO.capture(fn () { p.run(rt: rt) }), "42\n")
-  assert_eq(IO.capture(fn () { p.run(rt: rt) }), "42\n")
+  assert_eq(IO.capture(fn () {
+    p.run(rt: rt)
+  }), "42\n")
+  assert_eq(IO.capture(fn () {
+    p.run(rt: rt)
+  }), "42\n")
   assert_eq(p.dump_bc(), m.dump_bc())
 }
 
@@ -473,7 +871,14 @@ fn tostr_node(m, v) {
   let assign = m.assign(kind: 'local', index: 0, value: obj, line: 1, col: 1)
   let cycle = m.set_index(recv: loc, key: key, value: loc, line: 1, col: 1)
   let body = stmt_block(m, [assign, cycle])
-  m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 0, body: body)
+  m.add_func(
+    name: 'main',
+    num_locals: 1,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: body,
+  )
   m.verify()
 
   let p = m.compile()
@@ -504,7 +909,14 @@ fn tostr_node(m, v) {
     let assign = m.assign(kind: 'local', index: 0, value: obj, line: 1, col: 1)
     let cycle = m.set_index(recv: loc, key: key, value: loc, line: 1, col: 1)
     let body = stmt_block(m, [assign, cycle])
-    m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 0, body: body)
+    m.add_func(
+      name: 'main',
+      num_locals: 1,
+      num_captures: 0,
+      num_cells: 0,
+      num_params: 0,
+      body: body,
+    )
     m.verify()
     m
   }
@@ -515,12 +927,18 @@ fn tostr_node(m, v) {
   pa.run(rt: rt)
   assert_true(rt.live_objects() > 0)
 
-  let guard = try { pb.run(rt: rt) } catch e { e }
-  assert_eq("{guard.kind}: {guard.message}",
-            'IrError: runtime still holds objects from another program')
+  let guard = try {
+    pb.run(rt: rt)
+  } catch e {
+    e
+  }
+  assert_eq(
+    "{guard.kind}: {guard.message}",
+    'IrError: runtime still holds objects from another program',
+  )
 
   rt.collect()
-  pb.run(rt: rt)  # safe now that the heap is empty
+  pb.run(rt: rt)                      # safe now that the heap is empty
   assert_true(rt.live_objects() > 0)  # pb ran, and left its own cycle behind
 }
 
@@ -532,12 +950,23 @@ fn tostr_node(m, v) {
     let m = CodeGen.Module.new()
     let cmap = m.add_capture_map(m.capture_map_new())
     let call = m.call(func: 0, cmap: cmap, line: 1, col: 1)
-    m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0, body: call)
+    m.add_func(
+      name: 'main',
+      num_locals: 0,
+      num_captures: 0,
+      num_cells: 0,
+      num_params: 0,
+      body: call,
+    )
     m.verify()
     m
   }
   let p = make_self_call_module().compile()
-  let deep = try { p.run(rt: nil, max_call_depth: 5) } catch e { e }
+  let deep = try {
+    p.run(rt: nil, max_call_depth: 5)
+  } catch e {
+    e
+  }
   assert_eq("{deep.kind}: {deep.message}", 'IrError: recursion limit exceeded')
 }
 
@@ -548,34 +977,67 @@ fn tostr_node(m, v) {
   fn make_drop_module(m) {
     let obj = m.object_lit(kv_list: m.list_new(), line: 1, col: 1)
     let key = m.str_literal(s: "\x01drop", line: 1, col: 1)
-    let dropfn_body = print_stmt(m, m.str_literal(s: 'dropped', line: 1, col: 1))
+    let dropfn_body = print_stmt(
+      m,
+      m.str_literal(s: 'dropped', line: 1, col: 1),
+    )
     let cmap = m.add_capture_map(m.capture_map_new())
     let dropfn = m.make_closure(func: 1, cmap: cmap, line: 1, col: 1)
     let loc = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
     let assign = m.assign(kind: 'local', index: 0, value: obj, line: 1, col: 1)
-    let setdrop = m.set_index(recv: loc, key: key, value: dropfn, line: 1, col: 1)
+    let setdrop = m.set_index(
+      recv: loc,
+      key: key,
+      value: dropfn,
+      line: 1,
+      col: 1,
+    )
     let body = stmt_block(m, [assign, setdrop])
-    m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 0, body: body)
-    m.add_func(name: 'ondrop', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 1, body: dropfn_body)
+    m.add_func(
+      name: 'main',
+      num_locals: 1,
+      num_captures: 0,
+      num_cells: 0,
+      num_params: 0,
+      body: body,
+    )
+    m.add_func(
+      name: 'ondrop',
+      num_locals: 1,
+      num_captures: 0,
+      num_cells: 0,
+      num_params: 1,
+      body: dropfn_body,
+    )
     m.verify()
   }
 
   let m_on = CodeGen.Module.new()
   make_drop_module(m_on)
-  assert_eq(IO.capture(fn () { m_on.compile().run(rt: nil) }), "dropped\n")
+  assert_eq(IO.capture(fn () {
+    m_on.compile().run(rt: nil)
+  }), "dropped\n")
 
   let m_off = CodeGen.Module.new()
   make_drop_module(m_off)
   m_off.set_entry_frame_drops(on: false)
-  assert_eq(IO.capture(fn () { m_off.compile().run(rt: nil) }), "")
+  assert_eq(IO.capture(fn () {
+    m_off.compile().run(rt: nil)
+  }), "")
 }
 
 # --- Program/Runtime are wrap.h handles like any other: drop() is
 # idempotent, and use-after-drop is ClosedError, not a crash. ---
 {
   let m = CodeGen.Module.new()
-  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0,
-             body: m.nil_literal(line: 1, col: 1))
+  m.add_func(
+    name: 'main',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: m.nil_literal(line: 1, col: 1),
+  )
   m.verify()
   let p = m.compile()
   let rt = CodeGen.Runtime.new()
@@ -594,7 +1056,9 @@ fn tostr_node(m, v) {
 
 fn call_intr(m, name, args) {
   let list = m.list_new()
-  for a in args { m.list_push(list, a) }
+  for a in args {
+    m.list_push(list, a)
+  }
   m.intrinsic(name: name, args_list: list, line: 1, col: 1)
 }
 
@@ -603,62 +1067,157 @@ fn call_intr(m, name, args) {
 {
   let m = CodeGen.Module.new()
   let map = call_intr(m, 'mapnew', [])
-  let body = stmt_block(m, [
-    m.assign(kind: 'local', index: 0, value: map, line: 1, col: 1),
-    m.set_index(recv: m.var_ref(kind: 'local', index: 0, line: 1, col: 1),
-                key: m.literal(v: 7, line: 1, col: 1),
-                value: m.str_literal(s: 'seven', line: 1, col: 1), line: 1, col: 1),
-    print_stmt(m, m.index(recv: m.var_ref(kind: 'local', index: 0, line: 1, col: 1),
-                          key: m.literal(v: 7, line: 1, col: 1), line: 1, col: 1)),
-    print_stmt(m, call_intr(m, 'len',
-                            [m.var_ref(kind: 'local', index: 0, line: 1, col: 1)])),
-  ])
-  m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 0,
-             body: body)
+  let body = stmt_block(
+    m,
+    [
+      m.assign(kind: 'local', index: 0, value: map, line: 1, col: 1),
+      m.set_index(
+        recv: m.var_ref(kind: 'local', index: 0, line: 1, col: 1),
+        key: m.literal(v: 7, line: 1, col: 1),
+        value: m.str_literal(s: 'seven', line: 1, col: 1),
+        line: 1,
+        col: 1,
+      ),
+      print_stmt(
+        m,
+        m.index(
+          recv: m.var_ref(kind: 'local', index: 0, line: 1, col: 1),
+          key: m.literal(v: 7, line: 1, col: 1),
+          line: 1,
+          col: 1,
+        ),
+      ),
+      print_stmt(
+        m,
+        call_intr(
+          m,
+          'len',
+          [m.var_ref(kind: 'local', index: 0, line: 1, col: 1)],
+        ),
+      ),
+    ],
+  )
+  m.add_func(
+    name: 'main',
+    num_locals: 1,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: body,
+  )
   m.verify()
-  assert_eq(IO.capture(fn () { m.run() }), "seven\n1\n")
+  assert_eq(IO.capture(fn () {
+    m.run()
+  }), "seven\n1\n")
 }
 
 # Slices and bytes.
 {
   let m = CodeGen.Module.new()
   let hello = m.str_literal(s: 'hello', line: 1, col: 1)
-  let body = stmt_block(m, [
-    print_stmt(m, call_intr(m, 'strslice', [hello, m.literal(v: 1, line: 1, col: 1),
-                                            m.literal(v: 4, line: 1, col: 1)])),
-    print_stmt(m, call_intr(m, 'strbyte', [hello, m.literal(v: 0, line: 1, col: 1)])),
-    print_stmt(m, call_intr(m, 'strfrombyte', [m.literal(v: 65, line: 1, col: 1)])),
-  ])
-  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0,
-             body: body)
+  let body = stmt_block(
+    m,
+    [
+      print_stmt(
+        m,
+        call_intr(
+          m,
+          'strslice',
+          [
+            hello,
+            m.literal(v: 1, line: 1, col: 1),
+            m.literal(v: 4, line: 1, col: 1),
+          ],
+        ),
+      ),
+      print_stmt(
+        m,
+        call_intr(m, 'strbyte', [hello, m.literal(v: 0, line: 1, col: 1)]),
+      ),
+      print_stmt(
+        m,
+        call_intr(m, 'strfrombyte', [m.literal(v: 65, line: 1, col: 1)]),
+      ),
+    ],
+  )
+  m.add_func(
+    name: 'main',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: body,
+  )
   m.verify()
-  assert_eq(IO.capture(fn () { m.run() }), "ell\n104\nA\n")
+  assert_eq(IO.capture(fn () {
+    m.run()
+  }), "ell\n104\nA\n")
 }
 {
   # arrayslice copies -- writing the slice leaves the source alone.
   let m = CodeGen.Module.new()
   let items = m.list_new()
-  for v in [10, 20, 30] { m.list_push(items, m.literal(v: v, line: 1, col: 1)) }
-  let body = stmt_block(m, [
-    m.assign(kind: 'local', index: 0,
-             value: m.array_lit(items_list: items, line: 1, col: 1), line: 1, col: 1),
-    m.assign(kind: 'local', index: 1,
-             value: call_intr(m, 'arrayslice',
+  for v in [10, 20, 30] {
+    m.list_push(items, m.literal(v: v, line: 1, col: 1))
+  }
+  let body = stmt_block(
+    m,
+    [
+      m.assign(
+        kind: 'local',
+        index: 0,
+        value: m.array_lit(items_list: items, line: 1, col: 1),
+        line: 1,
+        col: 1,
+      ),
+      m.assign(
+        kind: 'local',
+        index: 1,
+        value: call_intr(m, 'arrayslice',
                               [m.var_ref(kind: 'local', index: 0, line: 1, col: 1),
                                m.literal(v: 0, line: 1, col: 1),
-                               m.literal(v: 2, line: 1, col: 1)]), line: 1, col: 1),
-    m.set_index(recv: m.var_ref(kind: 'local', index: 1, line: 1, col: 1),
-                key: m.literal(v: 0, line: 1, col: 1),
-                value: m.literal(v: 99, line: 1, col: 1), line: 1, col: 1),
-    print_stmt(m, call_intr(m, 'len',
-                            [m.var_ref(kind: 'local', index: 1, line: 1, col: 1)])),
-    print_stmt(m, m.index(recv: m.var_ref(kind: 'local', index: 0, line: 1, col: 1),
-                          key: m.literal(v: 0, line: 1, col: 1), line: 1, col: 1)),
-  ])
-  m.add_func(name: 'main', num_locals: 2, num_captures: 0, num_cells: 0, num_params: 0,
-             body: body)
+                               m.literal(v: 2, line: 1, col: 1)]),
+        line: 1,
+        col: 1,
+      ),
+      m.set_index(
+        recv: m.var_ref(kind: 'local', index: 1, line: 1, col: 1),
+        key: m.literal(v: 0, line: 1, col: 1),
+        value: m.literal(v: 99, line: 1, col: 1),
+        line: 1,
+        col: 1,
+      ),
+      print_stmt(
+        m,
+        call_intr(
+          m,
+          'len',
+          [m.var_ref(kind: 'local', index: 1, line: 1, col: 1)],
+        ),
+      ),
+      print_stmt(
+        m,
+        m.index(
+          recv: m.var_ref(kind: 'local', index: 0, line: 1, col: 1),
+          key: m.literal(v: 0, line: 1, col: 1),
+          line: 1,
+          col: 1,
+        ),
+      ),
+    ],
+  )
+  m.add_func(
+    name: 'main',
+    num_locals: 2,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: body,
+  )
   m.verify()
-  assert_eq(IO.capture(fn () { m.run() }), "2\n10\n")
+  assert_eq(IO.capture(fn () {
+    m.run()
+  }), "2\n10\n")
 }
 
 # Coroutines: an ordinary function driven by the six intrinsics. The yield
@@ -670,17 +1229,25 @@ fn call_intr(m, name, args) {
 
   # inner() yields 1 then 2; outer() calls it, so the yields sit a frame
   # deeper than the coroutine.
-  let inner_body = stmt_block(m, [
-    call_intr(m, 'coroyield', [m.literal(v: 1, line: 1, col: 1)]),
-    call_intr(m, 'coroyield', [m.literal(v: 2, line: 1, col: 1)]),
-  ])
-  let outer_body = stmt_block(m, [
-    m.call(func: 1, cmap: empty, line: 1, col: 1),
-    m.str_literal(s: 'done', line: 1, col: 1),
-  ])
+  let inner_body = stmt_block(
+    m,
+    [
+      call_intr(m, 'coroyield', [m.literal(v: 1, line: 1, col: 1)]),
+      call_intr(m, 'coroyield', [m.literal(v: 2, line: 1, col: 1)]),
+    ],
+  )
+  let outer_body = stmt_block(
+    m,
+    [
+      m.call(func: 1, cmap: empty, line: 1, col: 1),
+      m.str_literal(s: 'done', line: 1, col: 1),
+    ],
+  )
 
   let co = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
-  fn resumed(mm, co) { call_intr(mm, 'cororesume', [co, mm.nil_literal(line: 1, col: 1)]) }
+  fn resumed(mm, co) {
+    call_intr(mm, 'cororesume', [co, mm.nil_literal(line: 1, col: 1)])
+  }
   let main_body = stmt_block(m, [
     m.assign(kind: 'local', index: 0,
              value: call_intr(m, 'corocreate',
@@ -703,16 +1270,35 @@ fn call_intr(m, name, args) {
   ])
   # funcs[0] is the entry point, so main goes in first: inner lands at 1 and
   # outer at 2, which is what the nodes above already name.
-  m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 0,
-             body: main_body)
-  m.add_func(name: 'inner', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0,
-             body: inner_body)
+  m.add_func(
+    name: 'main',
+    num_locals: 1,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: main_body,
+  )
+  m.add_func(
+    name: 'inner',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: inner_body,
+  )
   # The first resume calls it as f(sent), so it takes the one parameter.
-  m.add_func(name: 'outer', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 1,
-             body: outer_body)
+  m.add_func(
+    name: 'outer',
+    num_locals: 1,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 1,
+    body: outer_body,
+  )
   m.verify()
-  assert_eq(IO.capture(fn () { m.run() }),
-            "start\n1\nsuspended\n2\ntrue\ndone\nnil\n")
+  assert_eq(IO.capture(fn () {
+    m.run()
+  }), "start\n1\nsuspended\n2\ntrue\ndone\nnil\n")
 }
 {
   # enqueue takes a coroutine as readily as a closure -- which is what makes
@@ -722,8 +1308,13 @@ fn call_intr(m, name, args) {
   let empty = m.add_capture_map(m.capture_map_new())
   let job_body = print_stmt(m, m.str_literal(s: 'ran', line: 1, col: 1))
   let co = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
-  m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 0,
-             body: stmt_block(m, [
+  m.add_func(
+    name: 'main',
+    num_locals: 1,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: stmt_block(m, [
                m.assign(kind: 'local', index: 0,
                         value: call_intr(m, 'corocreate',
                                          [m.make_closure(func: 1, cmap: empty,
@@ -731,11 +1322,20 @@ fn call_intr(m, name, args) {
                         line: 1, col: 1),
                call_intr(m, 'enqueue', [co]),
                print_stmt(m, m.str_literal(s: 'queued', line: 1, col: 1)),
-             ]))
-  m.add_func(name: 'job', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 1,
-             body: job_body)
+             ]),
+  )
+  m.add_func(
+    name: 'job',
+    num_locals: 1,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 1,
+    body: job_body,
+  )
   m.verify()
-  assert_eq(IO.capture(fn () { m.run() }), "queued\nran\n")
+  assert_eq(IO.capture(fn () {
+    m.run()
+  }), "queued\nran\n")
 }
 {
   # A scheduled coroutine that parks with nothing left to wake it is the
@@ -744,8 +1344,13 @@ fn call_intr(m, name, args) {
   let m = CodeGen.Module.new()
   let empty = m.add_capture_map(m.capture_map_new())
   let job_body = call_intr(m, 'coroyield', [m.nil_literal(line: 1, col: 1)])
-  m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 0,
-             body: stmt_block(m, [
+  m.add_func(
+    name: 'main',
+    num_locals: 1,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: stmt_block(m, [
                m.assign(kind: 'local', index: 0,
                         value: call_intr(m, 'corocreate',
                                          [m.make_closure(func: 1, cmap: empty,
@@ -753,11 +1358,22 @@ fn call_intr(m, name, args) {
                         line: 1, col: 1),
                call_intr(m, 'enqueue',
                          [m.var_ref(kind: 'local', index: 0, line: 1, col: 1)]),
-             ]))
-  m.add_func(name: 'job', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 1,
-             body: job_body)
+             ]),
+  )
+  m.add_func(
+    name: 'job',
+    num_locals: 1,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 1,
+    body: job_body,
+  )
   m.verify()
-  let err = try { m.run() } catch e { e }
+  let err = try {
+    m.run()
+  } catch e {
+    e
+  }
   assert_eq(err.kind, 'IrError')
   assert_true(err.message.contains('deadlock'))
 }
@@ -766,14 +1382,22 @@ fn call_intr(m, name, args) {
   # runs, and its status settles at done.
   let m = CodeGen.Module.new()
   let empty = m.add_capture_map(m.capture_map_new())
-  let body = stmt_block(m, [
-    print_stmt(m, m.str_literal(s: 'ran', line: 1, col: 1)),
-    call_intr(m, 'coroyield', [m.nil_literal(line: 1, col: 1)]),
-    print_stmt(m, m.str_literal(s: 'unreachable', line: 1, col: 1)),
-  ])
+  let body = stmt_block(
+    m,
+    [
+      print_stmt(m, m.str_literal(s: 'ran', line: 1, col: 1)),
+      call_intr(m, 'coroyield', [m.nil_literal(line: 1, col: 1)]),
+      print_stmt(m, m.str_literal(s: 'unreachable', line: 1, col: 1)),
+    ],
+  )
   let co = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
-  m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 0,
-             body: stmt_block(m, [
+  m.add_func(
+    name: 'main',
+    num_locals: 1,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: stmt_block(m, [
                m.assign(kind: 'local', index: 0,
                         value: call_intr(m, 'corocreate',
                                          [m.make_closure(func: 1, cmap: empty,
@@ -782,11 +1406,20 @@ fn call_intr(m, name, args) {
                call_intr(m, 'cororesume', [co, m.nil_literal(line: 1, col: 1)]),
                call_intr(m, 'coroclose', [co]),
                print_stmt(m, call_intr(m, 'corostatus', [co])),
-             ]))
-  m.add_func(name: 'job', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 1,
-             body: body)
+             ]),
+  )
+  m.add_func(
+    name: 'job',
+    num_locals: 1,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 1,
+    body: body,
+  )
   m.verify()
-  assert_eq(IO.capture(fn () { m.run() }), "ran\ndone\n")
+  assert_eq(IO.capture(fn () {
+    m.run()
+  }), "ran\ndone\n")
 }
 
 # --- A break may name the loop it leaves. Two nested loops: depth 0 leaves
@@ -797,16 +1430,31 @@ fn counting_loops(m, depth) {
   # print('after')
   let i = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
   let j = m.var_ref(kind: 'local', index: 1, line: 1, col: 1)
-  fn lt3(mm, v) { mm.binary(op: 'lt', lhs: v, rhs: mm.literal(v: 3, line: 1, col: 1), line: 1, col: 1) }
+  fn lt3(mm, v) {
+    mm.binary(
+      op: 'lt',
+      lhs: v,
+      rhs: mm.literal(v: 3, line: 1, col: 1),
+      line: 1,
+      col: 1,
+    )
+  }
   fn bump(mm, slot, v) {
-    mm.assign(kind: 'local', index: slot,
-              value: mm.binary(op: 'add', lhs: v, rhs: mm.literal(v: 1, line: 1, col: 1),
-                               line: 1, col: 1), line: 1, col: 1)
+    mm.assign(
+      kind: 'local',
+      index: slot,
+      value: mm.binary(op: 'add', lhs: v, rhs: mm.literal(v: 1, line: 1, col: 1),
+                               line: 1, col: 1),
+      line: 1,
+      col: 1,
+    )
   }
   let inner = m.make_while(
     cond: lt3(m, j),
     body: stmt_block(m, [bump(m, 1, j), m.make_break(line: 1, col: 1, depth: depth)]),
-    line: 1, col: 1)
+    line: 1,
+    col: 1,
+  )
   let outer = m.make_while(
     cond: lt3(m, i),
     body: stmt_block(m, [bump(m, 0, i),
@@ -814,27 +1462,37 @@ fn counting_loops(m, depth) {
                                   value: m.literal(v: 0, line: 1, col: 1), line: 1, col: 1),
                          inner,
                          print_stmt(m, i)]),
-    line: 1, col: 1)
-  m.add_func(name: 'main', num_locals: 2, num_captures: 0, num_cells: 0, num_params: 0,
-             body: stmt_block(m, [
+    line: 1,
+    col: 1,
+  )
+  m.add_func(
+    name: 'main',
+    num_locals: 2,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: stmt_block(m, [
                m.assign(kind: 'local', index: 0, value: m.literal(v: 0, line: 1, col: 1),
                         line: 1, col: 1),
                outer,
                print_stmt(m, m.str_literal(s: 'after', line: 1, col: 1)),
-             ]))
+             ]),
+  )
   m.verify()
   m
 }
 {
   # depth 0: only the inner loop ends, so the outer one runs all three times.
-  assert_eq(IO.capture(fn () { counting_loops(CodeGen.Module.new(), 0).run() }),
-            "1\n2\n3\nafter\n")
+  assert_eq(IO.capture(fn () {
+    counting_loops(CodeGen.Module.new(), 0).run()
+  }), "1\n2\n3\nafter\n")
 }
 {
   # depth 1: the first pass through the inner loop leaves the OUTER one, so
   # the print after the inner loop never runs at all.
-  assert_eq(IO.capture(fn () { counting_loops(CodeGen.Module.new(), 1).run() }),
-            "after\n")
+  assert_eq(IO.capture(fn () {
+    counting_loops(CodeGen.Module.new(), 1).run()
+  }), "after\n")
 }
 {
   # Read back, and refused when it names a loop that is not open.
@@ -845,12 +1503,24 @@ fn counting_loops(m, depth) {
   assert_eq(m.continue_depth(node: cont), 0)  # the default
   assert_throws('IrError', || m.break_depth(node: cont))
 
-  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0,
-             body: m.make_while(cond: m.bool_literal(v: true, line: 1, col: 1),
-                                body: brk, line: 1, col: 1))
-  let err = try { m.verify() } catch e { e }
-  assert_eq("{err.kind}: {err.message}",
-            'IrError: Break names a loop that is not open')
+  m.add_func(
+    name: 'main',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: m.make_while(cond: m.bool_literal(v: true, line: 1, col: 1),
+                                body: brk, line: 1, col: 1),
+  )
+  let err = try {
+    m.verify()
+  } catch e {
+    e
+  }
+  assert_eq(
+    "{err.kind}: {err.message}",
+    'IrError: Break names a loop that is not open',
+  )
 }
 
 # --- A function may opt into tail calls: a call chain deeper than the frame
@@ -863,8 +1533,16 @@ fn counting_chain(m) {
   let n = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
   let self_ref = m.make_closure(func: 1, cmap: empty, line: 1, col: 1)
   let args = m.list_new()
-  m.list_push(args, m.binary(op: 'sub', lhs: n, rhs: m.literal(v: 1, line: 1, col: 1),
-                             line: 1, col: 1))
+  m.list_push(
+    args,
+    m.binary(
+      op: 'sub',
+      lhs: n,
+      rhs: m.literal(v: 1, line: 1, col: 1),
+      line: 1,
+      col: 1,
+    ),
+  )
   let down_body = m.make_if_else(
     cond: m.binary(op: 'eq', lhs: n, rhs: m.literal(v: 0, line: 1, col: 1),
                    line: 1, col: 1),
@@ -873,16 +1551,30 @@ fn counting_chain(m) {
     else_branch: m.make_return(
       value: m.call_value(callee: self_ref, args_list: args, line: 1, col: 1),
       line: 1, col: 1),
-    line: 1, col: 1)
+    line: 1,
+    col: 1,
+  )
 
   let call_args = m.list_new()
   m.list_push(call_args, m.literal(v: 50000, line: 1, col: 1))  # 5x the limit
-  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0,
-             body: print_stmt(m, m.call_value(
+  m.add_func(
+    name: 'main',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: print_stmt(m, m.call_value(
                callee: m.make_closure(func: 1, cmap: empty, line: 1, col: 1),
-               args_list: call_args, line: 1, col: 1)))
-  m.add_func(name: 'down', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 1,
-             body: down_body)
+               args_list: call_args, line: 1, col: 1)),
+  )
+  m.add_func(
+    name: 'down',
+    num_locals: 1,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 1,
+    body: down_body,
+  )
   m
 }
 {
@@ -891,15 +1583,101 @@ fn counting_chain(m) {
   m.set_tail_calls(func: 1)
   assert_true(m.func_tail_calls(func: 1))
   m.verify()
-  assert_eq(IO.capture(fn () { m.run() }), "bottom\n")
+  assert_eq(IO.capture(fn () {
+    m.run()
+  }), "bottom\n")
 }
 {
   # The control: the same chain without the flag really does run out of
   # frames, so the case above is testing the optimization, not the arithmetic.
   let m = counting_chain(CodeGen.Module.new())
   m.verify()
-  let err = try { m.run() } catch e { e }
+  let err = try {
+    m.run()
+  } catch e {
+    e
+  }
   assert_eq("{err.kind}: {err.message}", 'IrError: recursion limit exceeded')
+}
+
+# --- Singletons: one closure per function, shared by every make_closure. ---
+
+# main prints whether two closures of func 1 are the same object.
+fn twin_closures(m) {
+  let empty = m.add_capture_map(m.capture_map_new())
+  m.add_func(
+    name: 'main',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: print_stmt(m, call_intr(m, 'same', [
+               m.make_closure(func: 1, cmap: empty, line: 1, col: 1),
+               m.make_closure(func: 1, cmap: empty, line: 1, col: 1),
+             ])),
+  )
+  m.add_func(
+    name: 'helper',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: m.make_return(value: m.literal(v: 1, line: 1, col: 1), line: 1, col: 1),
+  )
+  m
+}
+{
+  let m = twin_closures(CodeGen.Module.new())
+  assert_false(m.func_singleton(func: 1))
+  m.set_singleton(func: 1)
+  assert_true(m.func_singleton(func: 1))
+  m.verify()
+  assert_eq(IO.capture(fn () {
+    m.run()
+  }), "true\n")
+}
+{
+  # The control: without the flag each make_closure builds its own object.
+  let m = twin_closures(CodeGen.Module.new())
+  m.verify()
+  assert_eq(IO.capture(fn () {
+    m.run()
+  }), "false\n")
+}
+{
+  # A function with captures cannot be a singleton: its closure is built
+  # from the frame that makes it, so there is no one object to share.
+  let m = CodeGen.Module.new()
+  let cm = m.capture_map_new()
+  m.capture_map_push(cmap: cm, kind: 'cell', index: 0)
+  let with_cell = m.add_capture_map(cm)
+  m.add_func(
+    name: 'main',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 1,
+    num_params: 0,
+    body: m.make_closure(func: 1, cmap: with_cell, line: 1, col: 1),
+  )
+  m.add_func(
+    name: 'f',
+    num_locals: 0,
+    num_captures: 1,
+    num_cells: 0,
+    num_params: 0,
+    body: m.var_ref(kind: 'capture', index: 0, line: 1, col: 1),
+  )
+  m.verify()
+  m.set_singleton(func: 1)
+  let err = try {
+    m.verify()
+  } catch e {
+    e
+  }
+  assert_eq(
+    "{err.kind}: {err.message}",
+    'IrError: singleton func cannot take captures',
+  )
 }
 
 # --- Host functions: a module names them, run() says what they do. ----------
@@ -908,15 +1686,27 @@ fn counting_chain(m) {
 fn native_call(m, name, args) {
   let idx = m.declare_native(name: name)
   let list = m.list_new()
-  for a in args { m.list_push(list, a) }
-  m.call_value(callee: m.native_ref(index: idx, line: 1, col: 1),
-               args_list: list, line: 1, col: 1)
+  for a in args {
+    m.list_push(list, a)
+  }
+  m.call_value(
+    callee: m.native_ref(index: idx, line: 1, col: 1),
+    args_list: list,
+    line: 1,
+    col: 1,
+  )
 }
 
 # main = print(name(args...))
 fn native_call_module(m, name, args) {
-  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0,
-             body: print_stmt(m, native_call(m, name, args)))
+  m.add_func(
+    name: 'main',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: print_stmt(m, native_call(m, name, args)),
+  )
   m.verify()
   m
 }
@@ -925,13 +1715,19 @@ fn native_call_module(m, name, args) {
 # "the program catches what the bridge reports" case below wants.
 fn native_catch_module(m, name, args, key) {
   let caught = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
-  m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 0,
-             body: m.make_try(
+  m.add_func(
+    name: 'main',
+    num_locals: 1,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: m.make_try(
                caught_local: 0, body: native_call(m, name, args),
                handler: print_stmt(m, m.index(recv: caught,
                                               key: m.str_literal(s: key, line: 1, col: 1),
                                               line: 1, col: 1)),
-               line: 1, col: 1))
+               line: 1, col: 1),
+  )
   m.verify()
   m
 }
@@ -943,41 +1739,73 @@ fn native_catch_module(m, name, args, key) {
   let args = m.list_new()
   m.list_push(args, m.literal(v: 2, line: 1, col: 1))
   m.list_push(args, m.literal(v: 3, line: 1, col: 1))
-  let called = m.call_value(callee: m.native_ref(index: idx, line: 1, col: 1),
-                            args_list: args, line: 1, col: 1)
-  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0,
-             body: print_stmt(m, m.binary(op: 'mul', lhs: called,
+  let called = m.call_value(
+    callee: m.native_ref(index: idx, line: 1, col: 1),
+    args_list: args,
+    line: 1,
+    col: 1,
+  )
+  m.add_func(
+    name: 'main',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: print_stmt(m, m.binary(op: 'mul', lhs: called,
                                           rhs: m.literal(v: 10, line: 1, col: 1),
-                                          line: 1, col: 1)))
+                                          line: 1, col: 1)),
+  )
   m.verify()
-  let out = IO.capture(fn () { m.compile().run(natives: {add: |a, b| a + b}) })
+  let out = IO.capture(fn () {
+    m.compile().run(natives: {add: |a, b| a + b})
+  })
   assert_eq(out, "50\n")
 }
 {
   # Strings cross as copies, both ways.
   let m = CodeGen.Module.new()
-  let mm = native_call_module(m, 'shout', [m.str_literal(s: 'hi', line: 1, col: 1)])
-  assert_eq(IO.capture(fn () { mm.compile().run(natives: {shout: |s| s + '!'}) }),
-            "hi!\n")
+  let mm = native_call_module(
+    m,
+    'shout',
+    [m.str_literal(s: 'hi', line: 1, col: 1)],
+  )
+  assert_eq(IO.capture(fn () {
+    mm.compile().run(natives: {shout: |s| s + '!'})
+  }), "hi!\n")
 }
 {
   # Float and Bool round-trip through the boundary.
   let m = CodeGen.Module.new()
-  let mm = native_call_module(m, 'half', [m.double_literal(v: 5.0, line: 1, col: 1)])
-  assert_eq(IO.capture(fn () { mm.compile().run(natives: {half: |x| x / 2.0}) }),
-            "2.5\n")
+  let mm = native_call_module(
+    m,
+    'half',
+    [m.double_literal(v: 5.0, line: 1, col: 1)],
+  )
+  assert_eq(IO.capture(fn () {
+    mm.compile().run(natives: {half: |x| x / 2.0})
+  }), "2.5\n")
 }
 {
   # A native's throw is the program's to catch: a scalar arrives as itself.
   let m = CodeGen.Module.new()
   let idx = m.declare_native(name: 'boom')
-  let call = m.call_value(callee: m.native_ref(index: idx, line: 1, col: 1),
-                          args_list: m.list_new(), line: 1, col: 1)
-  m.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0, num_params: 0,
-             body: m.make_try(caught_local: 0, body: call,
+  let call = m.call_value(
+    callee: m.native_ref(index: idx, line: 1, col: 1),
+    args_list: m.list_new(),
+    line: 1,
+    col: 1,
+  )
+  m.add_func(
+    name: 'main',
+    num_locals: 1,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: m.make_try(caught_local: 0, body: call,
                               handler: print_stmt(
                                 m, m.var_ref(kind: 'local', index: 0, line: 1, col: 1)),
-                              line: 1, col: 1))
+                              line: 1, col: 1),
+  )
   m.verify()
   let out = IO.capture(fn () {
     m.compile().run(natives: {boom: fn () { throw 'kaboom' }})
@@ -989,7 +1817,9 @@ fn native_catch_module(m, name, args, key) {
   # {kind, message, line, col} object a culebra error would have shown.
   let m = native_catch_module(CodeGen.Module.new(), 'boom', [], 'message')
   let out = IO.capture(fn () {
-    m.compile().run(natives: {boom: || throw {kind: 'MyError', message: 'nope'}})
+    m
+      .compile()
+      .run(natives: {boom: || throw {kind: 'MyError', message: 'nope'}})
   })
   assert_eq(out, "nope\n")
 }
@@ -998,7 +1828,11 @@ fn native_catch_module(m, name, args, key) {
   let m = CodeGen.Module.new()
   let mm = native_call_module(m, 'bad', [m.literal(v: 1, line: 1, col: 1)])
   let p = mm.compile()
-  let err = try { p.run(natives: {bad: |n| n.no_such_method()}) } catch e { e }
+  let err = try {
+    p.run(natives: {bad: |n| n.no_such_method()})
+  } catch e {
+    e
+  }
   assert_true(err != nil)
 }
 {
@@ -1008,33 +1842,60 @@ fn native_catch_module(m, name, args, key) {
   # it must fail for its own reason, not be handed the previous throw.
   let thrower = CodeGen.Module.new()
   let ti = thrower.declare_native(name: 'boom')
-  let tcall = thrower.call_value(callee: thrower.native_ref(index: ti, line: 1, col: 1),
-                                 args_list: thrower.list_new(), line: 1, col: 1)
-  thrower.add_func(name: 'main', num_locals: 1, num_captures: 0, num_cells: 0,
-                   num_params: 0,
-                   body: thrower.make_try(caught_local: 0, body: tcall,
+  let tcall = thrower.call_value(
+    callee: thrower.native_ref(index: ti, line: 1, col: 1),
+    args_list: thrower.list_new(),
+    line: 1,
+    col: 1,
+  )
+  thrower.add_func(
+    name: 'main',
+    num_locals: 1,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: thrower.make_try(caught_local: 0, body: tcall,
                                           handler: thrower.nil_literal(line: 1, col: 1),
-                                          line: 1, col: 1))
+                                          line: 1, col: 1),
+  )
   thrower.verify()
   thrower.compile().run(natives: {boom: fn () { throw 'kaboom' }})
 
   let m = CodeGen.Module.new()
   let idx = m.declare_native(name: 'unsupplied')
-  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0,
-             body: m.native_ref(index: idx, line: 1, col: 1))
+  m.add_func(
+    name: 'main',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: m.native_ref(index: idx, line: 1, col: 1),
+  )
   m.verify()
-  let err = try { m.compile().run() } catch e { e }
-  assert_eq("{err.kind}: {err.message}",
-            "IrError: native 'unsupplied' is declared but not supplied")
+  let err = try {
+    m.compile().run()
+  } catch e {
+    e
+  }
+  assert_eq(
+    "{err.kind}: {err.message}",
+    "IrError: native 'unsupplied' is declared but not supplied",
+  )
 }
 {
   # Declared but not supplied -- named, and refused before the run starts.
   let m = CodeGen.Module.new()
   let mm = native_call_module(m, 'missing', [])
   let p = mm.compile()
-  let err = try { p.run() } catch e { e }
-  assert_eq("{err.kind}: {err.message}",
-            "IrError: native 'missing' is declared but not supplied")
+  let err = try {
+    p.run()
+  } catch e {
+    e
+  }
+  assert_eq(
+    "{err.kind}: {err.message}",
+    "IrError: native 'missing' is declared but not supplied",
+  )
   # The error is positioned at the call, like every other wrapped method's:
   # run's own thunk is hand-written, so it owes that guard itself.
   assert_true(err.line > 0)
@@ -1044,17 +1905,29 @@ fn native_catch_module(m, name, args, key) {
   let m = CodeGen.Module.new()
   let mm = native_call_module(m, 'nope', [])
   let p = mm.compile()
-  let err = try { p.run(natives: {nope: 5}) } catch e { e }
-  assert_eq("{err.kind}: {err.message}",
-            "TypeError: native 'nope' must be a Function, got Long")
+  let err = try {
+    p.run(natives: {nope: 5})
+  } catch e {
+    e
+  }
+  assert_eq(
+    "{err.kind}: {err.message}",
+    "TypeError: native 'nope' must be a Function, got Long",
+  )
 }
 {
   # run's thunk is hand-written, so the argument type check the deduced ones
   # get from wrap.h is its own to do. Without it jit_handle_self would
   # reinterpret_cast a Long into a handle -- a wild pointer, not an error.
   let m = CodeGen.Module.new()
-  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0,
-             body: m.nil_literal(line: 1, col: 1))
+  m.add_func(
+    name: 'main',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: m.nil_literal(line: 1, col: 1),
+  )
   m.verify()
   let p = m.compile()
   assert_throws('TypeError', || p.run(rt: 5))
@@ -1067,16 +1940,31 @@ fn native_catch_module(m, name, args, key) {
   # A name the module never declared is fine: one table can serve several
   # programs, and this one declares nothing at all.
   let m = CodeGen.Module.new()
-  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0,
-             body: print_stmt(m, m.literal(v: 1, line: 1, col: 1)))
+  m.add_func(
+    name: 'main',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: print_stmt(m, m.literal(v: 1, line: 1, col: 1)),
+  )
   m.verify()
-  assert_eq(IO.capture(fn () { m.compile().run(natives: {unused: || 0}) }), "1\n")
+  assert_eq(IO.capture(fn () {
+    m.compile().run(natives: {unused: || 0})
+  }), "1\n")
 }
 {
   # Arity is checked against the culebra closure, and the guest can catch it.
   let m = CodeGen.Module.new()
-  let mm = native_catch_module(m, 'add', [m.literal(v: 1, line: 1, col: 1)], 'kind')
-  let out = IO.capture(fn () { mm.compile().run(natives: {add: |a, b| a + b}) })
+  let mm = native_catch_module(
+    m,
+    'add',
+    [m.literal(v: 1, line: 1, col: 1)],
+    'kind',
+  )
+  let out = IO.capture(fn () {
+    mm.compile().run(natives: {add: |a, b| a + b})
+  })
   assert_eq(out, "ArityError\n")
 }
 {
@@ -1085,16 +1973,22 @@ fn native_catch_module(m, name, args, key) {
   let m = CodeGen.Module.new()
   let items = m.list_new()
   m.list_push(items, m.literal(v: 1, line: 1, col: 1))
-  let mm = native_catch_module(m, 'take',
-                               [m.array_lit(items_list: items, line: 1, col: 1)], 'kind')
-  assert_eq(IO.capture(fn () { mm.compile().run(natives: {take: |x| 0}) }),
-            "TypeError\n")
+  let mm = native_catch_module(
+    m,
+    'take',
+    [m.array_lit(items_list: items, line: 1, col: 1)],
+    'kind',
+  )
+  assert_eq(IO.capture(fn () {
+    mm.compile().run(natives: {take: |x| 0})
+  }), "TypeError\n")
 }
 {
   # And back: the native returns an array.
   let m = native_catch_module(CodeGen.Module.new(), 'give', [], 'kind')
-  assert_eq(IO.capture(fn () { m.compile().run(natives: {give: || [1, 2]}) }),
-            "TypeError\n")
+  assert_eq(IO.capture(fn () {
+    m.compile().run(natives: {give: || [1, 2]})
+  }), "TypeError\n")
 }
 {
   # Two declared names may share one closure, and the same Program may run
@@ -1103,17 +1997,31 @@ fn native_catch_module(m, name, args, key) {
   let a = m.declare_native(name: 'a')
   let b = m.declare_native(name: 'b')
   fn call0(mm, i) {
-    mm.call_value(callee: mm.native_ref(index: i, line: 1, col: 1),
-                  args_list: mm.list_new(), line: 1, col: 1)
+    mm.call_value(
+      callee: mm.native_ref(index: i, line: 1, col: 1),
+      args_list: mm.list_new(),
+      line: 1,
+      col: 1,
+    )
   }
-  m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0,
-             body: stmt_block(m, [print_stmt(m, call0(m, a)),
-                                  print_stmt(m, call0(m, b))]))
+  m.add_func(
+    name: 'main',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: stmt_block(m, [print_stmt(m, call0(m, a)),
+                                  print_stmt(m, call0(m, b))]),
+  )
   m.verify()
   let p = m.compile()
   let same = || 7
-  assert_eq(IO.capture(fn () { p.run(natives: {a: same, b: same}) }), "7\n7\n")
-  assert_eq(IO.capture(fn () { p.run(natives: {a: || 1, b: || 2}) }), "1\n2\n")
+  assert_eq(IO.capture(fn () {
+    p.run(natives: {a: same, b: same})
+  }), "7\n7\n")
+  assert_eq(IO.capture(fn () {
+    p.run(natives: {a: || 1, b: || 2})
+  }), "1\n2\n")
 }
 
 println('test_codegen OK')

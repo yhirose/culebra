@@ -663,6 +663,14 @@ class Module {
   void set_tail_calls(int64_t func) {
     m_.funcs.at(static_cast<size_t>(func)).tail_calls = true;
   }
+  // Every make_closure of this function yields the same closure object,
+  // built at the first one to run and kept for the rest of the run. Opt-in
+  // because the sharing is observable through `same`; a front end sets it
+  // on a helper whose closure has no identity of its own. verify() refuses
+  // it on a function with captures.
+  void set_singleton(int64_t func) {
+    m_.funcs.at(static_cast<size_t>(func)).singleton = true;
+  }
   // Whether the entry frame's own bindings run their drop hooks when the
   // program ends (on by default). A front end whose top-level scope is
   // released without destructors, as culebra's is, turns it off.
@@ -931,6 +939,9 @@ class Module {
   }
   bool func_tail_calls(int64_t func) const {
     return m_.funcs[checked_func(func)].tail_calls;
+  }
+  bool func_singleton(int64_t func) const {
+    return m_.funcs[checked_func(func)].singleton;
   }
   std::string func_local_name(int64_t func, int64_t index) const {
     const auto& f = m_.funcs[checked_func(func)];
