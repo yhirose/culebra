@@ -6748,8 +6748,46 @@ inspect(idx.search("second").size())  # => 1
 
 文書も問い合わせも同じ規則で語に切る。Unicodeの文字が連続する最長の並びを1語とし、
 小文字に揃える。したがって句読点は語を分け、大文字と小文字は区別されず、分かち書き
-しない言語（日本語・中国語）は文がまるごと1語になる。分かち書きはこの範囲にはまだ
-入っていない。
+しない言語（日本語・中国語）は、下の splitter を渡さないかぎり文がまるごと1語になる。
+
+### 解析器
+
+索引には、文章を語に切る手順を自分で持たせられる。`add`のときと`search`のときで
+同じものが走る。索引を作ったときと違う切り方で問い合わせると何も見つからないため、
+2つを別々に設定することはできない。
+
+```culebra
+let stop_words = fn (t) {
+  if ["the", "a", "of"].contains(t) { nil } else { t }
+}
+
+let idx = Search.Index.new(analyzer: { filters: [stop_words] })
+idx.add("doc-1", "The quick brown fox")
+inspect(idx.search("quick").size())  # => 1
+inspect(idx.search("the"))           # => []
+```
+
+| 欄 | | |
+|---|---|---|
+| `splitter` | `fn (text: String) -> Array` | 文章を語に切る。要素は`{term, position, length}`で、語の文字列と、それが切り出されたバイト範囲。省くと組み込みの「文字の連なり」で切る |
+| `normalizer` | `fn (term: String) -> String` | 語ごとに、filtersより先に走る。省くと組み込みの小文字化 |
+| `filters` | `fn (term: String) -> String \| Nil`のArray | normalizerのあとに順に適用する。置き換えた語を返すか、`nil`を返して捨てる |
+
+出す語は、範囲が指すバイト列と一致していなくてよい。形態素解析器が原形を索引に入れ
+つつ、ハイライトは書かれたとおりの文字列に当たる、という形にできるのはこのため。
+範囲は重なってはならず、昇順でなければならない。
+
+1つの語を複数に増やす filter は書けない。複数の出力は「どれか」を意味するので
+問い合わせ側の仕事であり、語を**並び**に割るのは splitter の仕事だから。
+
+**これらは語ごとに呼ばれる。** Culebraで書いた`normalizer`は全文書の全語に対して
+走る。既定がネイティブなのはそのため。`splitter`は1文書につき1回、問い合わせの
+1語につき1回。手軽な経路であって速い経路ではない——千語の文書は千回プログラムへ
+戻ってくる。
+
+`Search.Index.load(path, analyzer)`も解析器を取る。保存したファイルは、どの解析器で
+作られたかを一切記録しない。違うものを渡して開くと、誰にも気づけないまま壊れた結果が
+返る。同じものを渡すこと。
 
 ### 検索結果
 
@@ -6788,8 +6826,8 @@ let reopened = Search.Index.load("notes.idx")
 
 | | |
 |---|---|
-| `Search.Index.new() -> Index` | 空の索引 |
-| `Search.Index.load(path: String) -> Index` | 保存した索引を開く |
+| `Search.Index.new(analyzer: Object = nil) -> Index` | 空の索引 |
+| `Search.Index.load(path: String, analyzer: Object = nil) -> Index` | 保存した索引を開く |
 | `idx.add(key: String, text: String) -> Nil` | 文書を登録する。同じ鍵があれば置き換える |
 | `idx.remove(key: String) -> Nil` | 文書を消す。知らない鍵は無視する |
 | `idx.search(query: String, limit: Long = 10) -> Array` | 順位つきの結果 |

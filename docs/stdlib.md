@@ -6983,7 +6983,49 @@ document. A malformed query raises `SearchError` rather than matching nothing.
 Documents and queries are cut into terms the same way: maximal runs of Unicode
 letters, lowercased. So punctuation separates terms, case does not matter, and
 a language written without spaces (Japanese, Chinese) indexes a whole sentence
-as one term — segmenting those is not in this subset yet.
+as one term unless you supply a splitter (below).
+
+### The analyzer
+
+An index can be given its own way of turning text into terms. The same one
+runs on both sides — when you `add` a document and when you `search` — because
+an index built with one set of term boundaries and queried with another finds
+nothing.
+
+```culebra
+let stop_words = fn (t) {
+  if ["the", "a", "of"].contains(t) { nil } else { t }
+}
+
+let idx = Search.Index.new(analyzer: { filters: [stop_words] })
+idx.add("doc-1", "The quick brown fox")
+inspect(idx.search("quick").size())  # => 1
+inspect(idx.search("the"))           # => []
+```
+
+| Field | | |
+|---|---|---|
+| `splitter` | `fn (text: String) -> Array` | cuts text into terms. Each element is `{term, position, length}` — the term string plus the byte range it came from. Omit it for the built-in letter-run splitting. |
+| `normalizer` | `fn (term: String) -> String` | runs on every term, before the filters. Omit it for the built-in lowercasing. |
+| `filters` | `Array` of `fn (term: String) -> String \| Nil` | applied in order after the normalizer. Return a replacement term, or `nil` to drop it. |
+
+The emitted term need not be the bytes its range points at, which is what lets
+a morphological analyzer index a base form while highlighting still lands on
+the text as written. Ranges must not overlap and must increase.
+
+A filter turning one term into several is deliberately not expressible: several
+outputs mean alternatives, which belong on the query side, and a *sequence* of
+pieces is the splitter's job.
+
+**These hooks are called once per term.** A `normalizer` written in Culebra
+runs on every token of every document, which is why the default is native; a
+`splitter` costs one call per document and per query token. They are the
+convenient path, not the fast one — a thousand-word document means a thousand
+crossings back into the program.
+
+`Search.Index.load(path, analyzer)` takes one too. The saved file records
+nothing about the analyzer it was built with, so loading with a different one
+gives quietly wrong results and nothing can catch it. Pass the same one.
 
 ### Hits
 
@@ -7022,8 +7064,8 @@ releases while this namespace is experimental.
 
 | | |
 |---|---|
-| `Search.Index.new() -> Index` | an empty index |
-| `Search.Index.load(path: String) -> Index` | reopen a saved one |
+| `Search.Index.new(analyzer: Object = nil) -> Index` | an empty index |
+| `Search.Index.load(path: String, analyzer: Object = nil) -> Index` | reopen a saved one |
 | `idx.add(key: String, text: String) -> Nil` | index a document, replacing any with the same key |
 | `idx.remove(key: String) -> Nil` | delete one; unknown keys are ignored |
 | `idx.search(query: String, limit: Long = 10) -> Array` | ranked hits |

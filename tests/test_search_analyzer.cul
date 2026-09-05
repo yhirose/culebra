@@ -1,0 +1,126 @@
+// Conformance: stdlib Search analyzer pipeline (splitter / normalizer /
+// filters supplied as culebra closures). See docs/stdlib.md.
+//
+// An index holds one analyzer and applies it to both sides: indexing with one
+// set of term boundaries and querying with another finds nothing, so the two
+// can never be configured apart.
+
+let found = fn (hits) {
+  hits.map(fn (h) {
+    h.key
+  }).sorted()
+}
+
+// --- filters: `term -> term | nil`, nil drops the term -----------------------
+
+let stop_words = fn (t) {
+  if ["the", "a", "of"].contains(t) {
+    nil
+  } else {
+    t
+  }
+}
+
+let idx = Search.Index.new(analyzer: { filters: [stop_words] })
+idx.add("doc-1", "The quick brown fox")
+idx.add("doc-2", "A quick brown dog")
+
+// A dropped term is not in the index, and a query for it finds nothing --
+// both sides run the same filter, which is what keeps them symmetric.
+assert_eq(found(idx.search("quick")), ["doc-1", "doc-2"])
+assert_eq(found(idx.search("fox")), ["doc-1"])
+assert_eq(idx.search("the"), [])
+
+// The gap closes behind a dropped term, so the phrase is still adjacent.
+assert_eq(found(idx.search("\"quick brown\"")), ["doc-1", "doc-2"])
+
+// --- normalizer: runs on every term, on both sides ---------------------------
+
+let strip_accents = fn (s) {
+  s.lower().replace("é", "e")
+}
+
+let accented = Search.Index.new(analyzer: { normalizer: strip_accents })
+accented.add("doc-1", "Café CAFÉ cafe")
+assert_eq(found(accented.search("cafe")), ["doc-1"])
+assert_eq(found(accented.search("CAFÉ")), ["doc-1"])
+
+// --- splitter: `text -> [{term, position, length}]` ---------------------------
+//
+// Comma-separated, so the term boundaries are nothing the built-in splitting
+// would produce -- which is how the test knows the splitter ran on both sides.
+
+let commas = fn (text) {
+  mut out = []
+  mut at = 0
+  for piece in text.split(",") {
+    if piece.size() > 0 {
+      out.push({ term: piece, position: at, length: piece.size() })
+    }
+    at = at + piece.size() + 1
+  }
+  out
+}
+
+let tags = Search.Index.new(analyzer: { splitter: commas })
+tags.add("doc-1", "red,green-leaf")
+tags.add("doc-2", "green-leaf,blue")
+
+// The whole comma-delimited piece is one term: `green-leaf` is one term here,
+// where the built-in splitting would have made it two.
+assert_eq(found(tags.search("green-leaf")), ["doc-1", "doc-2"])
+assert_eq(found(tags.search("red")), ["doc-1"])
+// A word inside a piece is not a term of its own.
+assert_eq(tags.search("green"), [])
+
+// A query token is split by the same splitter, but whitespace is still the
+// grammar's AND -- a term containing a space cannot be typed as one token.
+assert_eq(tags.search("red blue"), [])
+
+// The range points at the bytes the term was cut from.
+let hit = tags.search("green-leaf")[0]
+assert_eq(hit.ranges[0].position, 4)
+assert_eq(hit.ranges[0].length, 10)
+
+// --- all three at once, and the analyzer survives close ----------------------
+
+let full = Search.Index.new(analyzer: {
+  splitter: commas,
+  normalizer: fn (s) { s.lower() },
+  filters: [fn (t) { if t == "skip" { nil } else { t } }],
+})
+full.add("doc-1", "Alpha,SKIP,Beta")
+assert_eq(found(full.search("alpha")), ["doc-1"])
+assert_eq(full.search("skip"), [])
+full.close()
+
+// --- errors -----------------------------------------------------------------
+
+let bad_normalizer = Search.Index.new(analyzer: { normalizer: fn (s) { 1 } })
+assert_throws("TypeError", fn () {
+  bad_normalizer.add("doc-1", "text")
+})
+
+let bad_filter = Search.Index.new(analyzer: { filters: [fn (t) { 1 }] })
+assert_throws("TypeError", fn () {
+  bad_filter.add("doc-1", "text")
+})
+
+let bad_splitter = Search.Index.new(analyzer: { splitter: fn (t) { "nope" } })
+assert_throws("TypeError", fn () {
+  bad_splitter.add("doc-1", "text")
+})
+
+assert_throws("TypeError", fn () {
+  Search.Index.new(analyzer: { normalizer: 1 })
+})
+
+assert_throws("TypeError", fn () {
+  Search.Index.new(analyzer: 1)
+})
+
+// --- no analyzer is the built-in behaviour ----------------------------------
+
+let plain = Search.Index.new()
+plain.add("doc-1", "The quick brown fox")
+assert_eq(found(plain.search("the")), ["doc-1"])

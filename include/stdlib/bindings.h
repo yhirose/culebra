@@ -8159,6 +8159,151 @@ inline JitValue hits(const std::vector<culebra::search::Hit>& list) {
   return _ns_adapt::v_array(arr);
 }
 
+// A culebra analyzer object as the value-neutral hooks search.h asks for.
+//
+// The closures are called through _culebra_invoke1. What keeps them reachable
+// for the collector is the analyzer object stored on the index handle below,
+// not these captures: a std::function's captures live in a malloc'd block the
+// collector does not scan, so the handle field is the root and the index must
+// not outlive it (it cannot -- every call that runs a hook goes through the
+// handle).
+inline culebra::search::Analyzer make_analyzer(JitValue v) {
+  culebra::search::Analyzer analyzer;
+  if (v.tag == TAG_NIL) {
+    return analyzer;
+  }
+  if (v.tag != TAG_OBJECT) {
+    throw culebra::CulebraError(
+        "TypeError", "Search: analyzer must be a Search.Analyzer or nil",
+        _jit_thread.call_line, _jit_thread.call_col);
+  }
+  auto* obj = reinterpret_cast<JitObject*>(v.data);
+
+  auto hook = [&](const char* name) -> JitClosure* {
+    int8_t tag = TAG_NIL;
+    int64_t data = 0;
+    culebra_runtime_object_get(obj, name, &tag, &data);
+    if (tag == TAG_NIL) return nullptr;
+    if (tag != TAG_FUNC) {
+      throw culebra::CulebraError(
+          "TypeError",
+          culebra::format("Search: analyzer {} must be a Function", name),
+          _jit_thread.call_line, _jit_thread.call_col);
+    }
+    return reinterpret_cast<JitClosure*>(data);
+  };
+  auto called = [](JitClosure* cb, std::string_view arg) {
+    JitOwnedVal in{_ns_adapt::v_string(_culebra_heap_str(arg))};
+    return JitOwnedVal{_culebra_invoke1(cb, in.consume())};
+  };
+  auto type_error = [](const char* what) -> std::string {
+    return culebra::format("Search: {}", what);
+  };
+
+  if (auto* cb = hook("normalizer")) {
+    analyzer.normalizer = [cb, called,
+                           type_error](std::string_view s) -> std::string {
+      auto ret = called(cb, s);
+      auto rv = ret.borrow();
+      if (rv.tag != TAG_STRING && rv.tag != TAG_STRINGVIEW) {
+        throw culebra::CulebraError(
+            "TypeError", type_error("a normalizer must return a String"),
+            _jit_thread.call_line, _jit_thread.call_col);
+      }
+      return std::string(_culebra_str_view(rv.tag, rv.data));
+    };
+  }
+
+  if (auto* cb = hook("splitter")) {
+    analyzer.splitter =
+        [cb, called, type_error](
+            std::string_view text,
+            const culebra::search::Analyzer::Emit& emit) {
+          auto ret = called(cb, text);
+          auto rv = ret.borrow();
+          if (rv.tag != TAG_ARRAY) {
+            throw culebra::CulebraError(
+                "TypeError",
+                type_error("a splitter must return an Array of "
+                           "{term, position, length}"),
+                _jit_thread.call_line, _jit_thread.call_col);
+          }
+          auto* arr = reinterpret_cast<JitArray*>(rv.data);
+          for (int64_t i = 0; i < arr->size; i++) {
+            auto item = arr->items[i];
+            if (item.tag != TAG_OBJECT) {
+              throw culebra::CulebraError(
+                  "TypeError",
+                  type_error("a splitter must return an Array of "
+                             "{term, position, length}"),
+                  _jit_thread.call_line, _jit_thread.call_col);
+            }
+            auto* o = reinterpret_cast<JitObject*>(item.data);
+            int8_t tag = TAG_NIL;
+            int64_t data = 0;
+            culebra_runtime_object_get(o, "term", &tag, &data);
+            if (tag != TAG_STRING && tag != TAG_STRINGVIEW) {
+              throw culebra::CulebraError(
+                  "TypeError", type_error("a split piece needs a String term"),
+                  _jit_thread.call_line, _jit_thread.call_col);
+            }
+            auto term = _culebra_str_view(tag, data);
+            auto span = [&](const char* name) -> size_t {
+              int8_t t = TAG_NIL;
+              int64_t d = 0;
+              culebra_runtime_object_get(o, name, &t, &d);
+              if (t != TAG_LONG || d < 0) {
+                throw culebra::CulebraError(
+                    "TypeError",
+                    culebra::format(
+                        "Search: a split piece needs a Long {} >= 0", name),
+                    _jit_thread.call_line, _jit_thread.call_col);
+              }
+              return static_cast<size_t>(d);
+            };
+            emit(term, span("position"), span("length"));
+          }
+        };
+  }
+
+  int8_t tag = TAG_NIL;
+  int64_t data = 0;
+  culebra_runtime_object_get(obj, "filters", &tag, &data);
+  if (tag == TAG_ARRAY) {
+    auto* arr = reinterpret_cast<JitArray*>(data);
+    for (int64_t i = 0; i < arr->size; i++) {
+      if (arr->items[i].tag != TAG_FUNC) {
+        throw culebra::CulebraError(
+            "TypeError", type_error("filters must be an Array of Functions"),
+            _jit_thread.call_line, _jit_thread.call_col);
+      }
+      auto* cb = reinterpret_cast<JitClosure*>(arr->items[i].data);
+      analyzer.filters.push_back(
+          [cb, called, type_error](std::string& term) -> bool {
+            auto ret = called(cb, term);
+            auto rv = ret.borrow();
+            if (rv.tag == TAG_NIL) {
+              return false;  // dropped, and the position gap closes behind it
+            }
+            if (rv.tag != TAG_STRING && rv.tag != TAG_STRINGVIEW) {
+              throw culebra::CulebraError(
+                  "TypeError",
+                  type_error("a filter must return a String or nil"),
+                  _jit_thread.call_line, _jit_thread.call_col);
+            }
+            term.assign(_culebra_str_view(rv.tag, rv.data));
+            return true;
+          });
+    }
+  } else if (tag != TAG_NIL) {
+    throw culebra::CulebraError(
+        "TypeError", type_error("filters must be an Array of Functions"),
+        _jit_thread.call_line, _jit_thread.call_col);
+  }
+
+  return analyzer;
+}
+
 }  // namespace _search_adapt
 
 inline void _jit_search_add(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
@@ -8234,9 +8379,19 @@ inline void _jit_search_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int6
   { *__ret = {TAG_NIL, 0}; return; }
 }
 
-inline JitValue _culebra_search_build_index_handle(int64_t id) {
+inline JitValue _culebra_search_build_index_handle(int64_t id,
+                                                  JitValue analyzer) {
   auto* h = culebra_runtime_object_new();
   h->set_or_append("_id", JitValue{TAG_LONG, id}, false);
+  // The analyzer's closures are reachable only through here: the native side
+  // holds them in std::function captures, which the collector cannot scan.
+  // object_set adopts a +1 and the analyzer arrived borrowed, so the slot
+  // needs its own reference -- without it the object is freed while the
+  // native hooks still hold pointers into it.
+  if (analyzer.tag != TAG_NIL) {
+    culebra_runtime_value_retain(analyzer.tag, analyzer.data);
+    _search_adapt::set_field(h, "_analyzer", analyzer);
+  }
   // A live index is not Sendable: its results alias it, and its registry is
   // per-thread, so it must not cross to an isolate (jit_serialize checks this).
   h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
@@ -8260,13 +8415,25 @@ inline JitValue _culebra_search_build_index_handle(int64_t id) {
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
 
-inline JitValue _ns_search_index_new(JitValue*, int64_t) {
-  return _culebra_search_build_index_handle(culebra::search::index_new());
+inline JitValue _ns_search_index_new(JitValue* a, int64_t n) {
+  // Nested sub-namespaces are slow-path only, so the slab holds exactly the
+  // arguments that were passed -- an omitted optional is not a Nil slot to
+  // read, it is not there.
+  JitValue analyzer = n > 0 ? a[0] : JitValue{TAG_NIL, 0};
+  return _culebra_search_build_index_handle(
+      culebra::search::index_new(_search_adapt::make_analyzer(analyzer)),
+      analyzer);
 }
 
-inline JitValue _ns_search_index_load(JitValue* a, int64_t) {
+inline JitValue _ns_search_index_load(JitValue* a, int64_t n) {
+  // Loading with an analyzer other than the one the index was built with
+  // gives quietly wrong results; the saved form records nothing that could
+  // catch it (see docs/stdlib.md).
+  JitValue analyzer = n > 1 ? a[1] : JitValue{TAG_NIL, 0};
   return _culebra_search_build_index_handle(
-      culebra::search::index_load(_ns_adapt::require_sv(a[0], "path")));
+      culebra::search::index_load(_ns_adapt::require_sv(a[0], "path"),
+                                  _search_adapt::make_analyzer(analyzer)),
+      analyzer);
 }
 
 // NsParamMeta — the per-parameter view for stdlib methods that accept
@@ -8408,6 +8575,7 @@ inline bool _ns_method_uses_kwarg_slab(const NsMethod* m) {
                                 nm == "map_settled" || nm == "race";
   if (ns == "Http")     return true;  // all Http methods take kwargs
   if (ns == "Net")      return true;  // host/timeout/backlog all bind by name
+  if (ns == "Search")   return true;  // `analyzer` binds by name on both
   if (ns == "JSON")     return nm == "stringify" || nm == "parse";
   if (ns == "CSV")      return nm == "parse" || nm == "stringify";
   if (ns == "TOML")     return nm == "stringify";  // sort_keys default
@@ -8688,8 +8856,8 @@ inline const NsMethod kNsRows_FST_native[] = {
 // `Encoding.html.escape`), so the namespace needs no preamble module to spell
 // the extra level: `sub` puts both rows on an `Index` object.
 inline const NsMethod kNsRows_Search[] = {
-  {"Search", "new",  0, &_ns_search_index_new,  "Index"},
-  {"Search", "load", 1, &_ns_search_index_load, "Index", "String", "path"},
+  {"Search", "new",  1, &_ns_search_index_new,  "Index"},
+  {"Search", "load", 2, &_ns_search_index_load, "Index", "String", "path"},
 };
 inline const NsMethod kNsRows_Net[] = {
   {"Net",    "connect", 2, &_ns_net_connect},

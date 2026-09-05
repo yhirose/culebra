@@ -19,6 +19,7 @@
 // non-sendable so it never crosses to an isolate's registry.
 
 #include <cstddef>
+#include <functional>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -60,6 +61,38 @@ struct Hit {
   std::vector<Range> ranges;
 };
 
+// ---- Analyzer --------------------------------------------------------------
+//
+// How text is cut into terms and how each term is normalized. The index side
+// and the query side have to agree or a search quietly finds nothing, so an
+// index holds one analyzer and applies it to both.
+//
+// Value-neutral like the rest of this header: plain callables over UTF-8
+// bytes, with the binding layer supplying whatever trampolines into a culebra
+// closure. Every hook left empty keeps the built-in behaviour, which is also
+// the fast one -- a closure here is a VM round trip per token.
+struct Analyzer {
+  // Called once per term, before the filters. Empty keeps the native
+  // lowercase default: a normalizer runs on every token of every document,
+  // so making the default anything else would charge every program for it.
+  std::function<std::string(std::string_view)> normalizer;
+
+  // Cuts text into terms, each with the byte range it came from. Ranges must
+  // not overlap and must increase; the emitted term need not be the bytes it
+  // points at (a lemma is fine). Empty keeps the built-in splitting into runs
+  // of Unicode letters.
+  using Emit = std::function<void(std::string_view term, size_t position,
+                                  size_t length)>;
+  std::function<void(std::string_view text, const Emit &emit)> splitter;
+
+  // Applied in order after the normalizer. A filter rewrites its term in
+  // place and returns true to keep it, or returns false to drop it (a stop
+  // word). Turning one term into several is deliberately not expressible:
+  // alternatives belong on the query side, and a *sequence* of pieces is the
+  // splitter's job.
+  std::vector<std::function<bool(std::string &)>> filters;
+};
+
 // ---- Index handles ---------------------------------------------------------
 //
 // Every function throws CulebraError("SearchError") on failure, with no
@@ -68,8 +101,9 @@ struct Hit {
 
 // Views throughout, as regex.h and fst.h do: the engine tokenizes out of the
 // caller's bytes, so a document need not be copied to be indexed.
-CULEBRA_RT_SEARCH_LINKAGE int64_t index_new();
-CULEBRA_RT_SEARCH_LINKAGE int64_t index_load(std::string_view path);
+CULEBRA_RT_SEARCH_LINKAGE int64_t index_new(Analyzer analyzer = {});
+CULEBRA_RT_SEARCH_LINKAGE int64_t index_load(std::string_view path,
+                                             Analyzer analyzer = {});
 CULEBRA_RT_SEARCH_LINKAGE void index_add(int64_t id, std::string_view key,
                                          std::string_view text);
 CULEBRA_RT_SEARCH_LINKAGE void index_remove(int64_t id, std::string_view key);
@@ -86,8 +120,8 @@ CULEBRA_RT_SEARCH_LINKAGE void index_drop(int64_t id);
   throw CulebraError("InternalError",
                      "Search runtime entered in a no-Search binary", 0, 0);
 }
-CULEBRA_RT_SEARCH_LINKAGE int64_t index_new() { _not_linked(); }
-CULEBRA_RT_SEARCH_LINKAGE int64_t index_load(std::string_view) {
+CULEBRA_RT_SEARCH_LINKAGE int64_t index_new(Analyzer) { _not_linked(); }
+CULEBRA_RT_SEARCH_LINKAGE int64_t index_load(std::string_view, Analyzer) {
   _not_linked();
 }
 CULEBRA_RT_SEARCH_LINKAGE void index_add(int64_t, std::string_view,
@@ -118,9 +152,68 @@ inline std::u32string lowercase(const std::u32string& s) {
   return unicode::to_lowercase(s);
 }
 
+// The analyzer as searchlib's own three shapes. Built once per index, because
+// index-time and query-time have to be the same objects for the two sides to
+// agree on term boundaries.
+struct Pipeline {
+  searchlib::Normalizer normalizer;
+  searchlib::TextSplitter splitter;  // null means the built-in splitting
+  searchlib::TermFilter filter;      // null means no filtering
+  searchlib::TermFilter query_filter;
+
+  explicit Pipeline(const Analyzer &analyzer) {
+    normalizer = analyzer.normalizer
+                     ? searchlib::Normalizer(
+                           [fn = analyzer.normalizer](const std::u32string &s) {
+                             return searchlib::u32(fn(searchlib::u8(s)));
+                           })
+                     : searchlib::Normalizer(lowercase);
+
+    if (analyzer.splitter) {
+      splitter = [fn = analyzer.splitter](
+                     std::string_view text,
+                     const std::function<void(const std::u32string &,
+                                              searchlib::TextRange)> &emit) {
+        fn(text, [&](std::string_view term, size_t position, size_t length) {
+          emit(searchlib::u32(term), searchlib::TextRange{position, length});
+        });
+      };
+    }
+
+    if (!analyzer.filters.empty()) {
+      filter = [fns = analyzer.filters](
+                   const std::u32string &s,
+                   std::function<void(std::u32string)> emit) {
+        auto term = searchlib::u8(s);
+        for (const auto &fn : fns) {
+          if (!fn(term)) {
+            return;  // a stop word, and the position gap closes behind it
+          }
+        }
+        emit(searchlib::u32(term));
+      };
+    }
+
+    // The index side gets its normalizer through the indexer (searchlib
+    // applies it as stage 0) and its filters through Analyzer<T>. parse_query
+    // has no normalizer parameter, so the query side gets the same two as one
+    // chain, in the same order.
+    query_filter = filter
+                       ? searchlib::compose({
+                             searchlib::to_term_filter(normalizer),
+                             filter,
+                         })
+                       : searchlib::to_term_filter(normalizer);
+  }
+};
+
 struct Index {
   Invidx invidx;
-  Indexer indexer{invidx, lowercase};
+  Pipeline pipeline;
+  Indexer indexer;
+
+  explicit Index(const Analyzer &analyzer)
+      : pipeline(analyzer), indexer(invidx, pipeline.normalizer) {}
 };
 
 // The registry belongs to the implementation, so the weak-stub branch leaves it
@@ -145,14 +238,20 @@ inline Index& index_get(int64_t id) {
 
 }  // namespace detail
 
-CULEBRA_RT_SEARCH_LINKAGE int64_t index_new() {
-  return detail::g_indexes.add(new detail::Index());
+CULEBRA_RT_SEARCH_LINKAGE int64_t index_new(Analyzer analyzer) {
+  return detail::g_indexes.add(new detail::Index(analyzer));
 }
 
-CULEBRA_RT_SEARCH_LINKAGE int64_t index_load(std::string_view path) {
-  auto index = std::make_unique<detail::Index>();
+CULEBRA_RT_SEARCH_LINKAGE int64_t index_load(std::string_view path,
+                                             Analyzer analyzer) {
+  // The saved form records nothing about the analyzer, so loading with one
+  // that differs from the index's own gives quietly wrong results. Nothing
+  // here can check that; the docs say so instead.
+  auto index = std::make_unique<detail::Index>(analyzer);
   try {
     index->invidx.load(std::string(path));
+  } catch (const CulebraError&) {
+    throw;  // an analyzer hook's own error, already shaped
   } catch (const std::exception& e) {
     detail::rethrow(e);
   }
@@ -165,8 +264,18 @@ CULEBRA_RT_SEARCH_LINKAGE void index_add(int64_t id, std::string_view key,
   try {
     // The key is copied because the index owns it from here on; the text is
     // not, since the tokenizer only reads it.
-    index.indexer.index_document(std::string(key),
-                                 searchlib::UTF8PlainTextTokenizer(text));
+    const auto &pipeline = index.pipeline;
+    searchlib::Tokenizer<searchlib::TextRange> tokenizer =
+        pipeline.splitter
+            ? searchlib::Tokenizer<searchlib::TextRange>(
+                  searchlib::SplitterTokenizer(pipeline.splitter, text))
+            : searchlib::Tokenizer<searchlib::TextRange>(
+                  searchlib::UTF8PlainTextTokenizer(text));
+    index.indexer.index_document(
+        std::string(key), searchlib::Analyzer<searchlib::TextRange>(
+                              std::move(tokenizer), pipeline.filter));
+  } catch (const CulebraError&) {
+    throw;  // an analyzer hook's own error, already shaped
   } catch (const std::exception& e) {
     detail::rethrow(e);
   }
@@ -179,13 +288,17 @@ CULEBRA_RT_SEARCH_LINKAGE void index_remove(int64_t id, std::string_view key) {
 CULEBRA_RT_SEARCH_LINKAGE std::vector<Hit> index_search(int64_t id,
                                                         std::string_view query,
                                                         size_t limit) {
-  auto& invidx = detail::index_get(id).invidx;
+  auto& index = detail::index_get(id);
+  auto& invidx = index.invidx;
   // Parsed on its own so that the malformed-query error below is raised
   // outside the catch that wraps engine failures — it is already a
   // CulebraError and must not be re-wrapped.
   std::optional<searchlib::Expression> expr;
   try {
-    expr = searchlib::parse_query(detail::lowercase, query);
+    expr = searchlib::parse_query(index.pipeline.splitter,
+                                 index.pipeline.query_filter, query);
+  } catch (const CulebraError&) {
+    throw;  // an analyzer hook's own error, already shaped
   } catch (const std::exception& e) {
     detail::rethrow(e);
   }
@@ -214,6 +327,8 @@ CULEBRA_RT_SEARCH_LINKAGE std::vector<Hit> index_search(int64_t id,
         hit.ranges.push_back({r.position, r.length});
       }
     }
+  } catch (const CulebraError&) {
+    throw;  // an analyzer hook's own error, already shaped
   } catch (const std::exception& e) {
     detail::rethrow(e);
   }
@@ -224,6 +339,8 @@ CULEBRA_RT_SEARCH_LINKAGE void index_save(int64_t id, std::string_view path) {
   auto& invidx = detail::index_get(id).invidx;
   try {
     invidx.save(std::string(path), {}, searchlib::IndexFormat::Compressed);
+  } catch (const CulebraError&) {
+    throw;  // an analyzer hook's own error, already shaped
   } catch (const std::exception& e) {
     detail::rethrow(e);
   }

@@ -502,13 +502,16 @@ inline constexpr CanonSig kCanonSigs_FST_native[] = {
 };
 
 inline constexpr CanonParam kCanonParams_Search[] = {
-  // 0: Search.Index.load
+  // 0: Search.Index.new
+  {"analyzer", true, false, false, false, false, "Object", CanonDefault::Nil, 0, {}},
+  // 1: Search.Index.load
   {"path", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
+  {"analyzer", true, false, false, false, false, "Object", CanonDefault::Nil, 0, {}},
 };
 
 inline constexpr CanonSig kCanonSigs_Search[] = {
-  {"Search", "Index", "new", nullptr, 0, "Object", 0, 0, false, -1, -1, -1},
-  {"Search", "Index", "load", kCanonParams_Search + 0, 1, "Object", 1, 1, false, -1, -1, -1},
+  {"Search", "Index", "new", kCanonParams_Search + 0, 1, "Object", 0, 1, false, -1, -1, -1},
+  {"Search", "Index", "load", kCanonParams_Search + 1, 2, "Object", 1, 2, false, -1, -1, -1},
 };
 
 inline constexpr CanonParam kCanonParams_Net[] = {

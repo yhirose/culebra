@@ -778,7 +778,7 @@ a released binary; its section in [`stdlib.md`](stdlib.md) says so.
 
 **FST** — FST.compile_set(keys: [String], sorted: Bool = false); FST.compile_map(entries: Object, sorted: Bool = false); FST.compile_index_map(entries: Object, sorted: Bool = false); FST.compile_auto_index(keys: [String], sorted: Bool = false); FST.Set.new(bytes) -> Set; FST.Map.new(bytes) -> Map; FST.IndexMap.new(bytes) -> IndexMap; contains(key); get(key); common_prefix_search(text) -> [Long]; longest_common_prefix_search(text); predictive_search(prefix) -> [String]; edit_distance_search(word, max_edits, insert_cost = 1, delete_cost = 1, replace_cost = 1); suggest(word)
 
-**Search** — Search.Index.new() -> Index; Search.Index.load(path: String) -> Index; idx.add(key: String, text: String) -> Nil; idx.remove(key: String) -> Nil; idx.search(query: String, limit: Long = 10) -> Array; idx.save(path: String) -> Nil; idx.close() -> Nil
+**Search** — Search.Index.new(analyzer: Object = nil) -> Index; Search.Index.load(path: String, analyzer: Object = nil) -> Index; idx.add(key: String, text: String) -> Nil; idx.remove(key: String) -> Nil; idx.search(query: String, limit: Long = 10) -> Array; idx.save(path: String) -> Nil; idx.close() -> Nil
 
 <!-- END GENERATED -->
 
