@@ -184,20 +184,20 @@ arithmetic at all. `culebra::tensor_binop` and
 paths) therefore take the same weak/strong split, which is worth
 ~115 KB — a quarter of a hello. `Proc`'s
 fork/exec layer, the PNG/TTF decoders behind
-`Canvas.Sprite.from_png` / `Canvas.Font`, and `Peg` (cpp-peglib) link
+`Canvas.Sprite.from_png` / `Canvas.Font`, and `PEG` (cpp-peglib) link
 nothing external either but need no choke of their own: they compile
 as plain code reached only through their namespace's dispatch table,
 so a program that never names them never links them (mechanism:
-[§4](#4-shared-runtime-archive-layout)). `Peg` is the one namespace
+[§4](#4-shared-runtime-archive-layout)). `PEG` is the one namespace
 where that dead-stripping doesn't quite reach every byte: `culebra::
 pegparser::compile()` itself is confirmed absent from a binary that
-never names `Peg` (verified with `nm -C --defined-only` on a
+never names `PEG` (verified with `nm -C --defined-only` on a
 `--keep-symbols` build), but peglib's `Ope` class hierarchy still
 leaves vtables and typeinfo behind that `--gc-sections` keeps
 regardless of use, plus a handful of `std::function`-wrapped local
 lambdas whose comdat template instantiation survives after the
 function that would have called it is pruned (a linker limitation, not
-a reachable call path). Both are inert — nothing in an unused-Peg
+a reachable call path). Both are inert — nothing in an unused-PEG
 binary ever executes either — fixed at a measured ~53 KB total that
 every binary carries rather than force-loading a second archive over
 it.
@@ -956,7 +956,7 @@ emits it as a base archive plus one small archive per heavy feature
 
 | Archive | Contents |
 |---|---|
-| `libculebra_rt.a` | base — everything, but with **weak stubs** for each feature's choke (so nothing it can call reaches BLAS, OpenSSL, zlib, sqlite3 or the regex engine); the subprocess layer, the image decoders (stb_image / stb_truetype), and the cpp-peglib parser generator (`Peg`) link nothing external, so they compile straight into this archive and rely on the namespace-group dead-stripping below rather than a choke of their own — `Peg` is the one of the three that still leaves a fixed ~53 KB of peglib RTTI/vtable metadata behind even unused (see [§1](#tensor-free-and-http-free-binaries)) |
+| `libculebra_rt.a` | base — everything, but with **weak stubs** for each feature's choke (so nothing it can call reaches BLAS, OpenSSL, zlib, sqlite3 or the regex engine); the subprocess layer, the image decoders (stb_image / stb_truetype), and the cpp-peglib parser generator (`PEG`) link nothing external, so they compile straight into this archive and rely on the namespace-group dead-stripping below rather than a choke of their own — `PEG` is the one of the three that still leaves a fixed ~53 KB of peglib RTTI/vtable metadata behind even unused (see [§1](#tensor-free-and-http-free-binaries)) |
 | `libculebra_rt_tensor.a` | strong tensor chokes: the backend one (pulls BLAS / Accelerate) and the elementwise kernels the generic arithmetic path would otherwise reach (see [§1](#tensor-free-and-http-free-binaries)) |
 | `libculebra_rt_http.a` | strong http choke (pulls OpenSSL + zlib) |
 | `libculebra_rt_http_notls.a` | the same choke with cpp-httplib's TLS off, force-loaded in its place under `--no-tls` (see [§1](#building-http-without-tls)). The one axis with two archives; a link takes exactly one, and the base carries neither |

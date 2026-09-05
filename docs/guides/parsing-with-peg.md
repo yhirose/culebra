@@ -1,6 +1,6 @@
 # Parsing with PEG
 
-A guide to the `Peg` namespace: reaching for a grammar where a regex runs
+A guide to the `PEG` namespace: reaching for a grammar where a regex runs
 out, and going from there to a language of your own with an interpreter
 to run it. Every code block here runs — they are executed as doctests on
 both engines.
@@ -15,7 +15,7 @@ A PEG — a *parsing expression grammar* — is a grammar you write to get a
 parser, the job you would once have handed to YACC. Three differences
 matter in practice. There is no separate lexer: a PEG describes characters
 as readily as tokens, so the tokenizer is just more rules. There is no
-build step: `Peg.compile` loads a grammar at run time, and the grammar is
+build step: `PEG.compile` loads a grammar at run time, and the grammar is
 an ordinary string in your program. And choice is **ordered** — `a / b`
 commits to `a` the moment `a` matches, rather than reporting a
 shift/reduce conflict for you to resolve — which means a PEG is
@@ -94,7 +94,7 @@ let g = `
   Word  <- < [^ ,}\]]+ >
   %whitespace <- [ ]*
 `
-let p = Peg.compile(g)
+let p = PEG.compile(g)
 
 fn depth(n) {
   match n {
@@ -161,7 +161,7 @@ let g = `
   Args <- Type (',' Type)*      { no_ast_opt }
   %whitespace <- [ ]*
 `
-let p = Peg.compile(g)
+let p = PEG.compile(g)
 
 let lines = 'Map<String, List<Pair<Int, String>>>
 Result<Vec<u8>, Error>
@@ -220,7 +220,7 @@ let g = `
   Part  <- '(' Part* ')' / !')' .
   Other <- < . >
 `
-let p = Peg.compile(g)
+let p = PEG.compile(g)
 
 let lines = 'See [the [inner] guide](https://x/a(b).md) now.
 Also [plain](https://y/z) and [a] alone.'
@@ -287,9 +287,9 @@ fn eval(n) {
   }
 }
 
-inspect(eval(Peg.parse(calc, '1 + 2 * 3')))    # => 7
-inspect(eval(Peg.parse(calc, '(1 + 2) * 3')))  # => 9
-inspect(eval(Peg.parse(calc, '1 - 2 - 3')))    # => -4
+inspect(eval(PEG.parse(calc, '1 + 2 * 3')))    # => 7
+inspect(eval(PEG.parse(calc, '(1 + 2) * 3')))  # => 9
+inspect(eval(PEG.parse(calc, '1 - 2 - 3')))    # => -4
 ```
 
 `Expr <- Expr AddOp Term / Term` says what it means: an expression is an
@@ -343,8 +343,8 @@ let actions = {
   Term: apply,
 }
 
-inspect(Peg.parse(calc, '1 + 2 * 3 - 4', actions: actions))  # => 3
-inspect(Peg.parse(calc, '8 / 4 / 2', actions: actions))      # => 1
+inspect(PEG.parse(calc, '1 + 2 * 3 - 4', actions: actions))  # => 3
+inspect(PEG.parse(calc, '8 / 4 / 2', actions: actions))      # => 1
 ```
 
 Use the tree when you want to inspect, transform, or walk the input more
@@ -403,7 +403,7 @@ let grammar = `
   %whitespace       <- [ \t\r\n]*
   %word             <- [a-zA-Z]
 `
-let fiblang = Peg.compile(grammar)
+let fiblang = PEG.compile(grammar)
 
 fn run(src) {
   mut fns = {}
@@ -513,7 +513,7 @@ To grow it, add rules. A second parameter is `Identifier (',' Identifier)*`
 in `DEFINITION` and a list in `frame`; more operators are entries in
 `InfixOperator` and `ConditionOperator` plus a precedence level each, the
 way §2 lays them out. If you want to see the shape the tree actually
-takes before writing an arm for it, `Peg.str` prints it (§4).
+takes before writing an arm for it, `PEG.str` prints it (§4).
 
 ## 4. Pitfalls
 
@@ -533,7 +533,7 @@ Put longer alternatives, and longer literals, first.
 lookahead: `(!'x' [a-z])* 'x'`.
 
 **Check what AST optimization did before debugging your walker.**
-`Peg.str(node)` prints the tree the way `peglint --ast` does, and it is
+`PEG.str(node)` prints the tree the way `peglint --ast` does, and it is
 usually faster than reasoning about which nodes folded:
 
 ```culebra
@@ -542,7 +542,7 @@ let g = `
   Inner <- < [0-9]+ >
 `
 
-print(Peg.str(Peg.parse(g, '1')))
+print(PEG.str(PEG.parse(g, '1')))
 # => |
 # - Inner (1)
 ```
@@ -553,8 +553,8 @@ grammar usually has — re-parses that prefix once per alternative and goes
 exponential without memoization. The reference measures ten levels of
 nesting at 0.04 ms memoized against 2.0 s not.
 
-**Compile once, parse many.** `Peg.compile` is the expensive half. The
-one-shot `Peg.parse(grammar, text)` caches loaded grammars per thread so
+**Compile once, parse many.** `PEG.compile` is the expensive half. The
+one-shot `PEG.parse(grammar, text)` caches loaded grammars per thread so
 it is not a trap, but a loop over many subjects reads better with the
 grammar hoisted out of it.
 

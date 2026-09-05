@@ -360,12 +360,12 @@ inline constexpr CanonSig kCanonSigs_Regex_native[] = {
   {"_Regex", "", "split", kCanonParams_Regex_native + 24, 2, "", 2, 2, false, -1, -1, -1},
 };
 
-inline constexpr CanonParam kCanonParams_Peg_native[] = {
-  // 0: _Peg.check
+inline constexpr CanonParam kCanonParams_PEG_native[] = {
+  // 0: _PEG.check
   {"grammar", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
   {"start", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
   {"packrat", false, false, false, false, false, "Bool", CanonDefault::None, 0, {}},
-  // 3: _Peg.parse
+  // 3: _PEG.parse
   {"grammar", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
   {"text", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
   {"start", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
@@ -373,17 +373,17 @@ inline constexpr CanonParam kCanonParams_Peg_native[] = {
   {"packrat", false, false, false, false, false, "Bool", CanonDefault::None, 0, {}},
   {"path", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
   {"actions", false, false, false, false, false, "", CanonDefault::None, 0, {}},
-  // 10: _Peg.test
+  // 10: _PEG.test
   {"grammar", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
   {"text", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
   {"start", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
   {"packrat", false, false, false, false, false, "Bool", CanonDefault::None, 0, {}},
 };
 
-inline constexpr CanonSig kCanonSigs_Peg_native[] = {
-  {"_Peg", "", "check", kCanonParams_Peg_native + 0, 3, "", 3, 3, false, -1, -1, -1},
-  {"_Peg", "", "parse", kCanonParams_Peg_native + 3, 7, "", 7, 7, false, -1, -1, -1},
-  {"_Peg", "", "test", kCanonParams_Peg_native + 10, 4, "Bool", 4, 4, false, -1, -1, -1},
+inline constexpr CanonSig kCanonSigs_PEG_native[] = {
+  {"_PEG", "", "check", kCanonParams_PEG_native + 0, 3, "", 3, 3, false, -1, -1, -1},
+  {"_PEG", "", "parse", kCanonParams_PEG_native + 3, 7, "", 7, 7, false, -1, -1, -1},
+  {"_PEG", "", "test", kCanonParams_PEG_native + 10, 4, "Bool", 4, 4, false, -1, -1, -1},
 };
 
 inline constexpr CanonParam kCanonParams_FST_native[] = {

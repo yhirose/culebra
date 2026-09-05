@@ -42,4 +42,4 @@ let actions = {
 }
 
 let formula = Sys.argv.empty() ? "(1 + 2) * 3" : Sys.argv[0]
-inspect(Peg.parse(grammar, formula, actions: actions))
+inspect(PEG.parse(grammar, formula, actions: actions))

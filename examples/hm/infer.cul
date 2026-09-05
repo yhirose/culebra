@@ -13,9 +13,9 @@ if args.empty() {
 }
 
 try {
-  let tree = Peg.parse(hm.grammar, FS.read(args[0]), path: args[0])
+  let tree = PEG.parse(hm.grammar, FS.read(args[0]), path: args[0])
   if want_ast {
-    print(Peg.str(tree))
+    print(PEG.str(tree))
   } else {
     let (t, _) = hm.infer(tree, {})
     println(hm.type_to_s(t))
@@ -23,7 +23,7 @@ try {
 } catch e {
   match e {
     {kind: 'HmError'} => println("{args[0]}:{e.line}:{e.col}: {e.message}"),
-    {kind: 'PegError'} => println(e.message),
+    {kind: 'PEGError'} => println(e.message),
     _ => throw e,
   }
   Sys.exit(1)

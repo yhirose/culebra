@@ -76,8 +76,8 @@ if "$CULEBRA" build "$PL0_CODEGEN" -o "$TMP/pl0_codegen_aot" >/dev/null 2>&1; th
   fi
 
   # AOT binary size: a sanity ceiling, not a tight budget. Measured ~2 MiB
-  # (Peg's own force-loaded archive is ~1.1 MiB of that on its own; CodeGen
-  # alone, without Peg, is under 1 MiB). The number that would actually be
+  # (PEG's own force-loaded archive is ~1.1 MiB of that on its own; CodeGen
+  # alone, without PEG, is under 1 MiB). The number that would actually be
   # alarming is LLVM accidentally getting linked in (50-80 MiB) -- cpp-vmlib's
   # LLVM lane is not compiled into culebra at all, so that can't happen here,
   # but the ceiling stays as a tripwire against a future regression.

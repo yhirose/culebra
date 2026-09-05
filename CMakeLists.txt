@@ -2166,7 +2166,7 @@ if(CULEBRA_ENABLE_JIT AND NOT CULEBRA_DEV_NO_RT)
     add_dependencies(culebra_preamble_cc ${_v})
   endif()
 
-  set(_baked_names Time Term Canvas Args Regex Peg FST Log Path Vector2 Vector3
+  set(_baked_names Time Term Canvas Args Regex PEG FST Log Path Vector2 Vector3
                    Deque PriorityQueue StateMachine __Eff __Matchers
                    __StringFns)
   if(CULEBRA_ENABLE_WEBVIEW)

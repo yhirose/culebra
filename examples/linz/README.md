@@ -25,9 +25,9 @@ ported checker against all of them.
 ## What changed from the Rust original
 
 - **PEG instead of a hand-rolled parser.** The BNF in the original
-  `parser.rs`'s doc comment translates almost directly into a `Peg`
+  `parser.rs`'s doc comment translates almost directly into a `PEG`
   grammar — see `docs/stdlib.md` §34. The one real difference is keyword
-  boundaries: `%word` (a `Peg`/cpp-peglib directive — see
+  boundaries: `%word` (a `PEG`/cpp-peglib directive — see
   `examples/pl0/pl0.cul`'s grammar for the same technique) makes every
   quoted literal in the grammar reject a longer identifier sharing its
   prefix, which the original's read-a-word-then-compare-strings dispatch
@@ -52,7 +52,7 @@ ported checker against all of them.
   position."
 - **More precise errors.** The original discards source positions
   entirely (`main.rs` prints `AST:\n{ast:#?}` and a bare message);
-  `lin.cul` carries `line`/`column` from the `Peg` node throughout (see
+  `lin.cul` carries `line`/`column` from the `PEG` node throughout (see
   `pl0.cul`'s `fail(node, msg)` convention, reused here). It also splits
   one error the original conflates: `err5.lin` is an `if` whose branches
   agree on their *type* but disagree on which `lin` variables they

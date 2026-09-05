@@ -6,7 +6,7 @@ import lin from './lin.cul'
 
 fn check(name) {
   let path = "{FS.dirname(Sys.script)}/samples/{name}.lin"
-  let tree = Peg.parse(lin.grammar, FS.read(path), path: path)
+  let tree = PEG.parse(lin.grammar, FS.read(path), path: path)
   let (t, _) = lin.typing(tree, {})
   lin.type_to_s(t)
 }
@@ -112,5 +112,5 @@ fn err7_a_top_level_lin_let_must_be_consumed() {
 @test
 fn parse_err_a_typo_keyword_is_a_syntax_error() {
   let e = rejected('parse_err')
-  assert_eq(e.kind, 'PegError')
+  assert_eq(e.kind, 'PEGError')
 }

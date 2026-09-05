@@ -1,4 +1,4 @@
-// Conformance: stdlib Peg — errors, the two depth bounds, and packrat.
+// Conformance: stdlib PEG — errors, the two depth bounds, and packrat.
 // Grammar and subject positions live in the message (they are offsets into
 // user data, not into this source), so the assertions read the text.
 
@@ -12,66 +12,66 @@ let calc = `
 
 // --- a syntax error in the subject ---
 let e = try {
-  Peg.parse(calc, "1 +")
+  PEG.parse(calc, "1 +")
 } catch err {
   err
 }
-assert_eq(e.kind, "PegError")
-assert_true(e.message.starts_with("Peg: 1:4:"))
+assert_eq(e.kind, "PEGError")
+assert_true(e.message.starts_with("PEG: 1:4:"))
 assert_true(e.message.contains("syntax error"))
 
 // --- a malformed grammar reports a position inside the grammar ---
 let g = try {
-  Peg.compile("Bad <- ***")
+  PEG.compile("Bad <- ***")
 } catch err {
   err
 }
-assert_eq(g.kind, "PegError")
-assert_true(g.message.starts_with("Peg: grammar:"))
+assert_eq(g.kind, "PEGError")
+assert_true(g.message.starts_with("PEG: grammar:"))
 
 // --- an undefined start rule ---
 let s = try {
-  Peg.compile(calc, "Nope")
+  PEG.compile(calc, "Nope")
 } catch err {
   err
 }
-assert_eq(s.kind, "PegError")
+assert_eq(s.kind, "PEGError")
 assert_true(s.message.contains("start rule 'Nope' is undefined"))
 
 // --- compile-time validation happens at compile, not at first parse ---
-assert_eq(try { Peg.check("Bad <- ***") } catch err { err.kind }, "PegError")
-assert_eq(Peg.check(calc), nil)
+assert_eq(try { PEG.check("Bad <- ***") } catch err { err.kind }, "PEGError")
+assert_eq(PEG.check(calc), nil)
 
 // --- errors are catchable, not a crash: machine-written nesting hits the
 // rule-entry guard the front end uses for culebra's own grammar ---
 let deep = try {
-  Peg.parse(calc, "(".repeat(20000) + "1" + ")".repeat(20000))
+  PEG.parse(calc, "(".repeat(20000) + "1" + ")".repeat(20000))
 } catch err {
   err
 }
-assert_eq(deep.kind, "PegError")
+assert_eq(deep.kind, "PEGError")
 assert_true(deep.message.contains("nesting too deep"))
 
 // The guard's counter is per parse, so the same grammar still parses after
 // one input blew through it.
-assert_eq(Peg.parse(calc, "1 + 2").name, "Additive")
+assert_eq(PEG.parse(calc, "1 + 2").name, "Additive")
 
 // --- a tree deeper than the value-nesting bound is a ValueError, the same
 // bound (and message) JSON.parse applies to its own trees ---
 let tall = try {
-  Peg.parse(calc, "(".repeat(1100) + "1" + ")".repeat(1100), "", false)
+  PEG.parse(calc, "(".repeat(1100) + "1" + ")".repeat(1100), "", false)
 } catch err {
   err
 }
 assert_eq(tall.kind, "ValueError")
 assert_true(tall.message.contains("nesting too deep (limit 1000)"))
 
-// --- naming the subject (Peg.parse's / p.parse's `path`) replaces the
-// generic "Peg: " prefix with the name, the way any other compiler
+// --- naming the subject (PEG.parse's / p.parse's `path`) replaces the
+// generic "PEG: " prefix with the name, the way any other compiler
 // diagnostic reads -- one parser, many files, so it is a per-parse
 // argument rather than something set once at compile time ---
 let named = try {
-  Peg.parse(calc, "1 +", path: "prog.pas")
+  PEG.parse(calc, "1 +", path: "prog.pas")
 } catch err {
   err
 }
@@ -79,14 +79,14 @@ assert_true(named.message.starts_with("prog.pas:1:4:"))
 assert_true(named.message.contains("syntax error"))
 
 // A grammar-compile error is about the grammar text, not a subject document,
-// so it keeps the "Peg: grammar:" form regardless of `path` -- there is no
+// so it keeps the "PEG: grammar:" form regardless of `path` -- there is no
 // `path` parameter on `check`/`compile` to name one.
-assert_true(g.message.starts_with("Peg: grammar:"))
+assert_true(g.message.starts_with("PEG: grammar:"))
 
 // The rule-entry guard's message honors `path` too -- it is a subject
 // position like any other.
 let deep_named = try {
-  Peg.parse(calc, "(".repeat(20000) + "1" + ")".repeat(20000), path: "deep.pas")
+  PEG.parse(calc, "(".repeat(20000) + "1" + ")".repeat(20000), path: "deep.pas")
 } catch err {
   err
 }
@@ -95,24 +95,24 @@ assert_true(deep_named.message.contains("nesting too deep"))
 
 // `path` does not leak from one parse() call to the next, or into test():
 // each call reflects only its own argument.
-let p = Peg.compile(calc)
+let p = PEG.compile(calc)
 let first = try { p.parse("1 +", "first.pas") } catch err { err }
 assert_true(first.message.starts_with("first.pas:1:4:"))
 let unnamed = try { p.parse("1 +") } catch err { err }
-assert_true(unnamed.message.starts_with("Peg: 1:4:"))
+assert_true(unnamed.message.starts_with("PEG: 1:4:"))
 
 // --- packrat: on by default, and the default is what keeps a grammar whose
 // alternatives share a prefix from backtracking exponentially. Off is
 // available for inputs where the memo table costs more than the search.
-assert_true(Peg.test(calc, "((((((((((1))))))))))"))
-assert_true(Peg.test(calc, "1 + 1", "", false))
-assert_eq(Peg.parse(calc, "1 + 1", "", true, false).name, "Additive")
-assert_eq(Peg.compile(calc, "", true, false).parse("2").token, "2")
+assert_true(PEG.test(calc, "((((((((((1))))))))))"))
+assert_true(PEG.test(calc, "1 + 1", "", false))
+assert_eq(PEG.parse(calc, "1 + 1", "", true, false).name, "Additive")
+assert_eq(PEG.compile(calc, "", true, false).parse("2").token, "2")
 
 // --- argument types are checked like any other native row ---
-assert_eq(try { Peg.parse(calc, 42) } catch err { err.kind }, "TypeError")
-assert_eq(try { Peg.compile(42) } catch err { err.kind }, "TypeError")
+assert_eq(try { PEG.parse(calc, 42) } catch err { err.kind }, "TypeError")
+assert_eq(try { PEG.compile(42) } catch err { err.kind }, "TypeError")
 
 // --- the namespace is closed: an unknown member raises rather than reading
 // as nil (docs/language.md, "Namespaces are closed") ---
-assert_eq(try { Peg.zzz } catch err { err.kind }, "AttributeError")
+assert_eq(try { PEG.zzz } catch err { err.kind }, "AttributeError")

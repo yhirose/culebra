@@ -1,6 +1,6 @@
 #pragma once
 
-// Value-neutral PEG core for the `Peg` namespace (the `_Peg` native rows in
+// Value-neutral PEG core for the `PEG` namespace (the `_PEG` native rows in
 // stdlib_rt.h). Mirrors regex.h / http.h: no Value / JitValue here — the
 // binding layer turns the flat node table below into its own Objects.
 //
@@ -13,12 +13,12 @@
 // it hands back (json.h).
 //
 // Unlike regex.h, this header carries no linkage split: it is always compiled
-// into the core archive, whether or not a program ever names `Peg` (see
+// into the core archive, whether or not a program ever names `PEG` (see
 // docs/deployment.md §1 for the size trade-off and why Regex/Tensor can't
 // make the same call). The namespace-group mechanism (stdlib_rt.h's dispatch
 // rows) does dead-strip the actual parsing entry points --
 // culebra::pegparser::compile() itself is absent from a binary that never
-// names Peg, verified with `nm -C --defined-only` on a `--keep-symbols` build
+// names PEG, verified with `nm -C --defined-only` on a `--keep-symbols` build
 // (plain `nm` on a stripped binary proves nothing either way). What survives
 // regardless is inert, not reachable code: peglib's own `Ope` class hierarchy
 // leaves vtables and typeinfo behind that `--gc-sections` keeps no matter
@@ -53,11 +53,11 @@ namespace culebra::pegparser {
 
 // The value-nesting bound (language.md), applied to the tree we hand back the
 // same way json.h applies it to a parsed document.
-inline constexpr int64_t kPegTreeDepthLimit = kCulebraRecursionLimit;
+inline constexpr int64_t kPEGTreeDepthLimit = kCulebraRecursionLimit;
 
 // Rule entries, not tree levels — the unit parser.h counts for culebra's own
 // grammar, at the same limit and for the same reason.
-inline constexpr int64_t kPegParseDepthLimit = 4000;
+inline constexpr int64_t kPEGParseDepthLimit = 4000;
 
 // What identifies a loaded grammar — and so what the compile cache keys on.
 // AST optimization is not here: it is applied to a finished tree, per parse.
@@ -165,19 +165,19 @@ inline thread_local int64_t _peg_parse_depth = 0;
   // No position: these are offsets into the grammar or the subject, not into
   // the culebra source, so they go in the text and the binding layer stamps
   // the call site (regex.h does the same).
-  throw CulebraError("PegError", msg, 0, 0);
+  throw CulebraError("PEGError", msg, 0, 0);
 }
 
-// A caller who named the subject (Peg.parse's `path`) gets a message that
+// A caller who named the subject (PEG.parse's `path`) gets a message that
 // reads like any other compiler diagnostic; one who didn't gets the
 // engine-prefixed form regex.h's own errors use.
 inline std::string _fmt_err(std::string_view path, size_t ln, size_t col,
                             std::string_view msg) {
-  return path.empty() ? culebra::format("Peg: {}:{}: {}", ln, col, msg)
+  return path.empty() ? culebra::format("PEG: {}:{}: {}", ln, col, msg)
                       : culebra::format("{}:{}:{}: {}", path, ln, col, msg);
 }
 
-// Load (or cache-hit) `grammar`. Throws CulebraError("PegError") for a
+// Load (or cache-hit) `grammar`. Throws CulebraError("PEGError") for a
 // malformed grammar, with the position inside the grammar text in the message.
 inline Handle compile(std::string_view grammar,
                       const Options& opt) {
@@ -201,7 +201,7 @@ inline Handle compile(std::string_view grammar,
     }
   });
   if (!h->parser.load_grammar(grammar, opt.start)) {
-    _fail(culebra::format("Peg: grammar:{}:{}: {}", c->err_line, c->err_col,
+    _fail(culebra::format("PEG: grammar:{}:{}: {}", c->err_line, c->err_col,
                           c->err.empty() ? "invalid grammar" : c->err));
   }
   h->parser.enable_ast();
@@ -212,10 +212,10 @@ inline Handle compile(std::string_view grammar,
   // hooking a hand-picked subset is a losing game. peglib runs `leave` from a
   // scope_exit, so backtracking keeps the count balanced.
   auto enter = [c](const ::peg::Context& ctx, const char* s, size_t, std::any&) {
-    if (++_peg_parse_depth > kPegParseDepthLimit) {
+    if (++_peg_parse_depth > kPEGParseDepthLimit) {
       auto [ln, col] = ctx.line_info(s);
       _fail(_fmt_err(c->path, ln, col,
-                     nesting_too_deep_message(kPegParseDepthLimit)));
+                     nesting_too_deep_message(kPEGParseDepthLimit)));
     }
   };
   auto leave = [](const ::peg::Context&, const char*, size_t, size_t, std::any&,
@@ -231,11 +231,11 @@ inline Handle compile(std::string_view grammar,
 }
 
 inline void _flatten(const ::peg::Ast& a, Tree& t, int64_t depth) {
-  if (depth >= kPegTreeDepthLimit) {
+  if (depth >= kPEGTreeDepthLimit) {
     throw CulebraError(
         "ValueError",
-        culebra::format("Peg.parse: {}",
-                        nesting_too_deep_message(kPegTreeDepthLimit)),
+        culebra::format("PEG.parse: {}",
+                        nesting_too_deep_message(kPEGTreeDepthLimit)),
         0, 0);
   }
   size_t self = t.nodes.size();
@@ -253,9 +253,9 @@ inline void _flatten(const ::peg::Ast& a, Tree& t, int64_t depth) {
   t.children.insert(t.children.end(), kids.begin(), kids.end());
 }
 
-// Parse `text`. Throws CulebraError("PegError") on a syntax error, with the
+// Parse `text`. Throws CulebraError("PEGError") on a syntax error, with the
 // position inside `text` in the message -- prefixed by `path` when the caller
-// named the subject (Peg.parse(..., path: "prog.pas")), the way cpp-peglib's
+// named the subject (PEG.parse(..., path: "prog.pas")), the way cpp-peglib's
 // own parse_n() takes a path per call: one parser, many files.
 inline Tree parse(Compiled& c, std::string_view text,
                   bool optimize, std::string_view path) {
@@ -387,7 +387,7 @@ struct ActionScope {
 // Parse `text` against `actions` (rule name -> a culebra closure wrapped as
 // `std::any(const Sv&)`), interpreting it directly rather than building a
 // Tree: the root rule's own reduction (its registered action, or the
-// default) is the whole result. Throws CulebraError("PegError") on a syntax
+// default) is the whole result. Throws CulebraError("PEGError") on a syntax
 // error or an `actions` key naming no rule in the grammar, with `path`
 // honored the same way plain parse() honors it. Whatever exception a
 // registered action itself throws (a culebra throw, a native TypeError, …)
@@ -399,7 +399,7 @@ inline std::any parse_with_actions(Compiled& c,
                                    const ActionMap& actions) {
   for (const auto& [name, fn] : actions) {
     if (!c.parser.get_grammar().count(name)) {
-      _fail(culebra::format("Peg: no such rule '{}'", name));
+      _fail(culebra::format("PEG: no such rule '{}'", name));
     }
   }
   // A registered action recursively parsing the same Compiled (this grammar

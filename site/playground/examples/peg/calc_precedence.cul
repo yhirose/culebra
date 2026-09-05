@@ -42,4 +42,4 @@ let actions = {
 }
 
 let formula = Sys.argv.empty() ? "-1 + (1 + 2) * 3 - -1" : Sys.argv[0]
-println("{formula} = {Peg.parse(grammar, formula, actions: actions)}")
+println("{formula} = {PEG.parse(grammar, formula, actions: actions)}")

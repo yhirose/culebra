@@ -63,7 +63,7 @@ syn keyword culBuiltin     Math IO FS File Embed Time Random Sys Tensor JSON Arg
 syn keyword culBuiltin     Isolate Channel Parallel Signal SharedBuffer Shared GC Regex Http
 syn keyword culBuiltin     Encoding Compress Hash CSV Env UUID Term Log TOML SQLite
 syn keyword culBuiltin     Canvas Scene Net Desktop Webview Vector2 Vector3 Deque PriorityQueue StateMachine
-syn keyword culBuiltin     Peg FST
+syn keyword culBuiltin     PEG FST
 " === END AUTO-KEYWORDS ===
 
 " Conventional identifiers that aren't grammar keywords.

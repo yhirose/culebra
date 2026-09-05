@@ -39,7 +39,7 @@
 #include <base/shared.h>
 #include <base/stdout_capture.h>  // program_out() / ProgramOutCapture (IO.capture)
 #include <stdlib/fst.h>    // the value-neutral FST choke
-#include <stdlib/peg.h>    // the value-neutral Peg choke
+#include <stdlib/peg.h>    // the value-neutral PEG choke
 #include <stdlib/regex.h>  // the value-neutral Regex choke (the Regex AOT axis)
 #include <conc/sendable.h>  // JIT isolate transfer (jit_serialize, spawn, handle)
 #include <stdlib/math.h>   // Math kernels shared with the interp
@@ -7623,7 +7623,7 @@ inline JitValue _ns_regex_split(JitValue* a, int64_t) {
   return _ns_adapt::v_array(arr);
 }
 
-//===-- Peg: the `Peg` namespace functions. Like Regex, slow-path adapters
+//===-- PEG: the `PEG` namespace functions. Like Regex, slow-path adapters
 // with no fast-path branch: they do the work and build the result objects
 // directly. The engine sits behind peg.h's value-neutral choke. A node is a
 // data object { name, token, nodes, line, column, position, length, is_token,
@@ -7697,7 +7697,7 @@ inline JitValue _ns_peg_test(JitValue* a, int64_t) {
       *h, _ns_adapt::require_sv(a[1], "text", "StringLike")));
 }
 
-//===-- Peg semantic actions: `actions` is a rule-name -> Function Object.
+//===-- PEG semantic actions: `actions` is a rule-name -> Function Object.
 // peg.h's own `std::any` payload is opaque to it by design (no JitValue
 // there — see peg.h's own comment on why), so this JitAny is where a JitValue
 // actually rides inside one: a copyable handle safe to sit inside a
@@ -7832,7 +7832,7 @@ inline JitValue _ns_peg_parse(JitValue* a, int64_t) {
   return _jit_peg_tree(culebra::pegparser::parse(*h, text, optimize, path));
 }
 
-//===-- FST: the `FST` namespace functions. Like Regex and Peg, slow-path
+//===-- FST: the `FST` namespace functions. Like Regex and PEG, slow-path
 // adapters that build the JitArray / JitObject results directly. Every one
 // takes the dictionary's byte code String as a[0] and rebuilds the matcher
 // from it (fst.h measures why that beats holding a handle open), so the
@@ -8488,10 +8488,10 @@ inline const NsMethod kNsRows_Regex_native[] = {
   {"_Regex", "replace_first",3, &_ns_regex_replace_first},
   {"_Regex", "split",       2, &_ns_regex_split},
 };
-inline const NsMethod kNsRows_Peg_native[] = {
-  {"_Peg",   "check", 3, &_ns_peg_check},
-  {"_Peg",   "parse", 7, &_ns_peg_parse},
-  {"_Peg",   "test",  4, &_ns_peg_test},
+inline const NsMethod kNsRows_PEG_native[] = {
+  {"_PEG",   "check", 3, &_ns_peg_check},
+  {"_PEG",   "parse", 7, &_ns_peg_parse},
+  {"_PEG",   "test",  4, &_ns_peg_test},
 };
 // Every query takes the byte code String first; the three class prefixes pick
 // the matcher's output type. Defaults (`sorted`, the edit costs) live in the
@@ -8802,8 +8802,8 @@ CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_GC{
     kNsRows_GC, kCanonSigs_GC};
 CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Regex_native{
     kNsRows_Regex_native, kCanonSigs_Regex_native};
-CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Peg_native{
-    kNsRows_Peg_native, kCanonSigs_Peg_native};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_PEG_native{
+    kNsRows_PEG_native, kCanonSigs_PEG_native};
 CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_FST_native{
     kNsRows_FST_native, kCanonSigs_FST_native};
 CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Net{
@@ -8873,7 +8873,7 @@ inline const NsGroupRef kNsGroups[] = {
   {"Sys", &culebra_ns_group_Sys},
   {"GC", &culebra_ns_group_GC},
   {"_Regex", &culebra_ns_group_Regex_native},
-  {"_Peg", &culebra_ns_group_Peg_native},
+  {"_PEG", &culebra_ns_group_PEG_native},
   {"_FST", &culebra_ns_group_FST_native},
   {"Net", &culebra_ns_group_Net},
   {"Proc", &culebra_ns_group_Proc},
@@ -10606,7 +10606,7 @@ inline const std::unordered_set<std::string_view>& builtin_var_names() {
       "__eff_abort", "__eff_catch_abort",
       "Math",    "IO",        "FS",        "File",     "Embed",   "_Time",
       "Random",  "Sys",       "JSON",      "Tensor",   "GC",
-      "_Regex",  "_Peg",      "_FST",      "Proc",      "Net",      "Isolate",
+      "_Regex",  "_PEG",      "_FST",      "Proc",      "Net",      "Isolate",
       "Channel",
       "Parallel",
       "Signal",  "Encoding", "Compress",  "SharedBuffer", "Shared",
@@ -10619,7 +10619,7 @@ inline const std::unordered_set<std::string_view>& builtin_var_names() {
       // the lazy-ns builder registry). Listed here so closures capture-skip
       // them and bare references compile to namespace_get — mirroring the
       // interp's builtin_names skip. See _jit_namespace_get_or_build.
-      "Time",    "Args",      "Regex",     "Peg",       "FST",      "Term",
+      "Time",    "Args",      "Regex",     "PEG",       "FST",      "Term",
       "Log",
       "Path",    "Canvas",    "__Eff",     "Vector2",   "Vector3",  "Deque",
       "PriorityQueue", "StateMachine",

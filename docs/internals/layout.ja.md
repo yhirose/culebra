@@ -120,7 +120,7 @@ Rubyの`.inc`が、インタプリタがテキストとしてincludeするファ
 
 C++で実装された利用者向けnamespaceには、`stdlib/`にその名前を小文字に
 したヘッダが1つ対応します。`Http`は`stdlib/http.h`、`SQLite`は
-`stdlib/sqlite.h`、`Peg`は`stdlib/peg.h`です。これはツリーの中で唯一
+`stdlib/sqlite.h`、`PEG`は`stdlib/peg.h`です。これはツリーの中で唯一
 ドリフトしなかった命名軸で、新しいnamespaceもこれに従います。
 
 同じディレクトリにありながらnamespaceそのものではないものが3種あります:

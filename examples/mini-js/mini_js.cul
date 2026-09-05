@@ -5917,7 +5917,7 @@ if cli.empty() {
   Sys.exit(1)
 }
 
-let prelude_tree = Peg.parse(grammar, prelude_src, path: '<prelude>')
+let prelude_tree = PEG.parse(grammar, prelude_src, path: '<prelude>')
 # main's shell first: every other function reaches the global table through
 # main's cell, so its slots have to exist before the prelude is bound
 let main_shell = new_func(nil, 'main', [], nil, false)
@@ -5935,7 +5935,7 @@ for path in cli {
   prog_gen = prog_gen + 1
   try {
     cur_src = lib_src + FS.read(path)
-    let tree = Peg.parse(grammar, cur_src, path: path)
+    let tree = PEG.parse(grammar, cur_src, path: path)
     if want_ast {
       inspect(tree)
       continue
@@ -5950,7 +5950,7 @@ for path in cli {
         IO.eprintln("{path}:{e.line}:{e.col}: SyntaxError: {e.message}")
         had_err = true
       },
-      {kind: 'PegError'} => {
+      {kind: 'PEGError'} => {
         IO.eprintln(e.message)
         had_err = true
       },

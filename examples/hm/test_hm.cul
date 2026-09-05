@@ -5,7 +5,7 @@ import hm from './hm.cul'
 
 fn infer_type(name) {
   let path = "{FS.dirname(Sys.script)}/samples/{name}.hm"
-  let tree = Peg.parse(hm.grammar, FS.read(path), path: path)
+  let tree = PEG.parse(hm.grammar, FS.read(path), path: path)
   let (t, _) = hm.infer(tree, {})
   hm.type_to_s(t)
 }

@@ -71,7 +71,7 @@
 31. [`Vector3`](#31-vector3) — `Vector2`の3D版
 32. [`Deque`](#32-deque) — 両端キュー、両端のpush/popが償却O(1)
 33. [`PriorityQueue`](#33-priorityqueue) — 二分ヒープ、push/popがO(log n)
-34. [`Peg`](#34-peg) — PEGパーサジェネレータ。文法を書くと構文木が返る
+34. [`PEG`](#34-peg) — PEGパーサジェネレータ。文法を書くと構文木が返る
 35. [`CodeGen`](#35-codegen) — 小さな言語のIRを手で組み立てて実行する
 36. [`StateMachine`](#36-statemachine) — 入れ子にできる状態機械。テキストでも書ける
 37. [`FST`](#37-fst) — 書き換えない辞書を圧縮して持つ。前方一致・補完・あいまい検索
@@ -122,7 +122,7 @@
 | 2D/3Dベクトル演算（dot、length、normalize、distance） | [§30 `Vector2`](#30-vector2) / [§31 `Vector3`](#31-vector3) |
 | FIFOキュー、スライディングウィンドウ、前後両端のスタック | [§32 `Deque`](#32-deque) — `Deque.new()` — `push_back`/`pop_front` |
 | 優先度スケジューリング、イベントシミュレーション、最短経路探索 | [§33 `PriorityQueue`](#33-priorityqueue) — `PriorityQueue.new()` — `push`/`pop` |
-| 自前の言語・設定フォーマットをパースする | [§34 Peg](#34-peg) — PEG文法を書いて`Peg.parse(grammar, text)`。返る木は`match`で分解できる |
+| 自前の言語・設定フォーマットをパースする | [§34 PEG](#34-peg) — PEG文法を書いて`PEG.parse(grammar, text)`。返る木は`match`で分解できる |
 | 手順・通信手順・画面のモードを状態とイベントで表す | [§36 `StateMachine`](#36-statemachine) — `StateMachine.parse(text)`、または記述用の`Object` |
 | 変わらない大きな語彙から前方一致で補完する | [§37 FST](#37-fst) — `FST.Set.new(FST.compile_set(words))` → `.predictive_search("hel")` |
 | 綴りの直し・あいまい検索 | [§37 FST](#37-fst) — `.edit_distance_search(word, 1)`／`.suggest(word)` |
@@ -5891,13 +5891,13 @@ inspect(jobs.pop())  # => (1, 'ping')
 `Array.pop()`や`Deque`と同様、`pop`/`peek`は空のキューに対して
 例外を投げず`nil`を返します。
 
-## 34. `Peg`
+## 34. `PEG`
 
 パーサジェネレータ。**PEG**（parsing expression grammar）を書くと構文木が返る。
 エンジンは同梱の[cpp-peglib](https://github.com/yhirose/cpp-peglib)で、culebra自身の
 フロントエンドが載っているものと同じ。`peglint`が受理する文法はここでも同じ振る舞いをする。
 
-文法は**一度コンパイルして使い回す**（`Peg.compile` — 文法のロードが重い部分）。
+文法は**一度コンパイルして使い回す**（`PEG.compile` — 文法のロードが重い部分）。
 コンパイル済みの文法はいくつの入力にも適用できる:
 
 ```culebra
@@ -5908,7 +5908,7 @@ let calc = `
   Number         <- < [0-9]+ >
   %whitespace    <- [ \t\r\n]*
 `
-let p = Peg.compile(calc)
+let p = PEG.compile(calc)
 inspect(p.parse("1 + 2").name)  # => 'Additive'
 inspect(p.test("1 +"))          # => false
 ```
@@ -5962,7 +5962,7 @@ fn eval(n) {
     _ => throw "unexpected {n.name}",
   }
 }
-inspect(eval(Peg.parse(calc, "(1 + 2) * 3")))  # => 9
+inspect(eval(PEG.parse(calc, "(1 + 2) * 3")))  # => 9
 ```
 
 | フィールド | 意味 |
@@ -5982,37 +5982,37 @@ inspect(eval(Peg.parse(calc, "(1 + 2) * 3")))  # => 9
 
 | コンストラクタ / static | 結果 |
 | --- | --- |
-| `Peg.compile(grammar)` | `Peg` — ロード（使い回される）。不正な文法は`PegError` |
-| `Peg.compile(grammar, start)` | 文法の最初の規則ではなく`start`から始める |
-| `Peg.compile(grammar, start, optimize)` | `optimize`が`false`なら子1つのノードも残す |
-| `Peg.compile(grammar, start, optimize, packrat)` | `packrat`が`false`ならメモ化を切る |
-| `Peg.check(grammar)` | `Nil` — ロードして捨てる。不正な文法なら送出 |
-| `Peg.check(grammar, start)` | 同じ。start規則つき |
+| `PEG.compile(grammar)` | `PEG` — ロード（使い回される）。不正な文法は`PEGError` |
+| `PEG.compile(grammar, start)` | 文法の最初の規則ではなく`start`から始める |
+| `PEG.compile(grammar, start, optimize)` | `optimize`が`false`なら子1つのノードも残す |
+| `PEG.compile(grammar, start, optimize, packrat)` | `packrat`が`false`ならメモ化を切る |
+| `PEG.check(grammar)` | `Nil` — ロードして捨てる。不正な文法なら送出 |
+| `PEG.check(grammar, start)` | 同じ。start規則つき |
 
 | メソッド | 結果 |
 | --- | --- |
-| `p.parse(text)` | ルートノード。構文エラーは`PegError` |
+| `p.parse(text)` | ルートノード。構文エラーは`PEGError` |
 | `p.parse(text, path)` | 同じ。エラーメッセージに載る対象名を指定 |
 | `p.parse(text, path, actions)` | 代わりに`actions`で`text`を直接解釈する — 下記 |
 | `p.test(text)` | `Bool` — `text`がパースできるか。木は返らない |
 
 | ワンショット | 等価な式 |
 | --- | --- |
-| `Peg.parse(grammar, text)` | `Peg.compile(grammar).parse(text)` |
-| `Peg.parse(grammar, text, start, optimize, packrat, path, actions)` | 同じ。`compile`のオプション・対象名・セマンティックアクションつき |
-| `Peg.test(grammar, text)` | `Bool` |
-| `Peg.test(grammar, text, start, packrat)` | 同じ。`compile`のオプションつき |
+| `PEG.parse(grammar, text)` | `PEG.compile(grammar).parse(text)` |
+| `PEG.parse(grammar, text, start, optimize, packrat, path, actions)` | 同じ。`compile`のオプション・対象名・セマンティックアクションつき |
+| `PEG.test(grammar, text)` | `Bool` |
+| `PEG.test(grammar, text, start, packrat)` | 同じ。`compile`のオプションつき |
 
 ワンショット形は`compile`の手順を隠す。エンジンがロード済み文法をスレッドごとに
 キャッシュするので再ロードのコストは払わない。1つの文法を多くの入力に使うなら
-`Peg.compile(...)`と書いたほうが意図が読める。
+`PEG.compile(...)`と書いたほうが意図が読める。
 
 | 木のヘルパー | 結果 |
 | --- | --- |
-| `Peg.walk(node)` | `Iterator` — そのノードと子孫を深さ優先・ソース順で |
-| `Peg.find(node, name)` | 名前が`name`の最初のノード、なければ`nil` |
-| `Peg.find_all(node, name)` | `[Node]` — 名前が`name`のノード全部 |
-| `Peg.str(node)` | `String` — インデント付きのダンプ。`peglint --ast`と同じ形 |
+| `PEG.walk(node)` | `Iterator` — そのノードと子孫を深さ優先・ソース順で |
+| `PEG.find(node, name)` | 名前が`name`の最初のノード、なければ`nil` |
+| `PEG.find_all(node, name)` | `[Node]` — 名前が`name`のノード全部 |
+| `PEG.str(node)` | `String` — インデント付きのダンプ。`peglint --ast`と同じ形 |
 
 ```culebra
 let g = `
@@ -6020,10 +6020,10 @@ let g = `
   Item <- < [a-z]+ > _
   _    <- [ ]*
 `
-let doc = Peg.parse(g, "ab cd")
-inspect(Peg.find_all(doc, "Item").map(|n| n.token))  # => ['ab', 'cd']
-inspect(Peg.find(doc, "Nothing"))                    # => nil
-inspect(Peg.str(doc))
+let doc = PEG.parse(g, "ab cd")
+inspect(PEG.find_all(doc, "Item").map(|n| n.token))  # => ['ab', 'cd']
+inspect(PEG.find(doc, "Nothing"))                    # => nil
+inspect(PEG.str(doc))
 # => |
 # '+ Doc
 #   - Item (ab)
@@ -6038,16 +6038,16 @@ inspect(Peg.str(doc))
 
 * 規則ごとに文法側で — `{ no_ast_opt }`でその規則のノードを残し、`{ ast_name: Tag }`で
   改名して2つの生成規則を1つのタグに合流させる
-* 文法全体をculebra側で — `Peg.compile(grammar, "", false)`で全ノードを残す
+* 文法全体をculebra側で — `PEG.compile(grammar, "", false)`で全ノードを残す
 
 ```culebra
 let g = `
   Wrap  <- Inner
   Inner <- < [0-9]+ >
 `
-inspect(Peg.walk(Peg.parse(g, "1")).map(|n| n.name).collect())
+inspect(PEG.walk(PEG.parse(g, "1")).map(|n| n.name).collect())
 # => ['Inner']
-inspect(Peg.walk(Peg.parse(g, "1", "", false)).map(|n| n.name).collect())
+inspect(PEG.walk(PEG.parse(g, "1", "", false)).map(|n| n.name).collect())
 # => ['Wrap', 'Inner']
 ```
 
@@ -6059,31 +6059,31 @@ inspect(Peg.walk(Peg.parse(g, "1", "", false)).map(|n| n.name).collect())
 メモ化ありで0.04ms、なしで2.0s。
 
 代償は入力長×規則数に比例するテーブル（入力1バイトあたり概ね1KB）。
-`Peg.compile(grammar, "", true, false)`で切れるが、切る価値があるのは接頭辞を共有しない
+`PEG.compile(grammar, "", true, false)`で切れるが、切る価値があるのは接頭辞を共有しない
 書き方をした文法（左因子化済み、あるいは素朴な文法が再帰するところを`*`/`+`で書いたもの）を
 テーブルが効いてくるほど大きな入力に適用する場合だけ。
 
 ### エラーと境界
 
-不正な文法も、パースできない入力も`PegError`を送出する。文法内・入力内の位置は
+不正な文法も、パースできない入力も`PEGError`を送出する。文法内・入力内の位置は
 **メッセージの中**にあり、エラーの`line`/`col`には入らない。そちらは他と同じく
 culebra側の呼び出し位置を指す:
 
 ```culebra
 inspect(try {
-  Peg.parse(`N <- < [0-9]+ >`, "x")
+  PEG.parse(`N <- < [0-9]+ >`, "x")
 } catch e {
   e.kind
-})  # => 'PegError'
+})  # => 'PEGError'
 ```
 
-`path`は対象を名指す引数で、メッセージの汎用的な「Peg: 」プレフィクスの代わりに
+`path`は対象を名指す引数で、メッセージの汎用的な「PEG: 」プレフィクスの代わりに
 その名前が入り、他のコンパイラの診断メッセージと同じ読み方になる。`compile`ではなく
 `parse`側の引数なのは、1つの文法を多くのファイルに使うからで、cpp-peglib自身の
 `parse_n()`が呼び出しごとにpathを取るのと同じ理由:
 
 ```culebra
-let n = Peg.compile(`N <- < [0-9]+ >`)
+let n = PEG.compile(`N <- < [0-9]+ >`)
 inspect(try {
   n.parse("x", "input.txt")
 } catch e {
@@ -6093,33 +6093,33 @@ inspect(try {
   n.parse("x")
 } catch e {
   e.message
-})  # => 'Peg: 1:1: syntax error, unexpected 'x', expecting <N>.'
+})  # => 'PEG: 1:1: syntax error, unexpected 'x', expecting <N>.'
 ```
 
-不正な*文法*のエラーはpathに関わらず「Peg: grammar:」の形のまま
+不正な*文法*のエラーはpathに関わらず「PEG: grammar:」の形のまま
 — pathが名指すのは対象のドキュメントで、文法テキストはそれではない。
 
 敵対的な入力を致命的な失敗でなく捕捉可能なエラーに留めるため、境界が2つある:
 
-* **規則の入場回数** — 4000回を超えて降りるパースは`PegError`（`nesting too deep`）。
+* **規則の入場回数** — 4000回を超えて降りるパースは`PEGError`（`nesting too deep`）。
   そうしないと機械生成のネストがパーサ内部でCスタックを溢れさせる。culebraが自分の文法に
   かけているのと同じ限界値の同じガード。
 * **木の深さ** — 1000段を超える木は`ValueError`（`nesting too deep (limit 1000)`）。
   `JSON`や`TOML`が自分の木に適用しているのと同じ
   [値ネストの上限](language.ja.md#値ネストの上限)。
 
-文法はスレッドごとの状態なので、`Peg`の値がisolate境界を越えるときは文法テキストが渡って
+文法はスレッドごとの状態なので、`PEG`の値がisolate境界を越えるときは文法テキストが渡って
 向こう側でロードし直される。共有されるものは何もない。
 
 ### セマンティックアクション
 
-`Peg.parse`/`p.parse`は`actions`も受け取る: 規則名から`Function`への写像で、木を
+`PEG.parse`/`p.parse`は`actions`も受け取る: 規則名から`Function`への写像で、木を
 一切作らずに対象を直接解釈する。登録した各`Function`は引数を1つ受け取る
 — その規則自身の還元結果である`sv` Object — そして親の`sv.values`に渡す値を返す。
 C++版が呼ぶ名前で言えば
 [semantic action](https://github.com/yhirose/cpp-peglib#semantic-actions)
 （cpp-peglibの`parser["Rule"] = [](const SemanticValues &sv) { ... }`）にあたる。
-`Peg`側は文法に据える可変状態ではなく`parse`に渡す値にした
+`PEG`側は文法に据える可変状態ではなく`parse`に渡す値にした
 — 同じ文法を異なるactionsで使い回せるように:
 
 ```culebra
@@ -6135,7 +6135,7 @@ let actions = {
   Additive: |sv| sv.values.size() < 2 ? sv.values[0] : sv.values[0] + sv.values[1],
   Multiplicative: |sv| sv.values.size() < 2 ? sv.values[0] : sv.values[0] * sv.values[1],
 }
-inspect(Peg.parse(calc, "1 + 2 * 3", actions: actions))  # => 7
+inspect(PEG.parse(calc, "1 + 2 * 3", actions: actions))  # => 7
 ```
 
 `sv`は木の`Node`とフィールド名を共有し、`nodes`だけ`values`に変わる:
@@ -6148,14 +6148,14 @@ inspect(Peg.parse(calc, "1 + 2 * 3", actions: actions))  # => 7
 1つの文法で評価器・整形器・独自の木構造のいずれも、各actionが何を返すか次第で駆動できる。
 
 `actions`のキーが文法内のどの規則の名前でもない場合、パース開始前に検出される
-— 未定義start規則と同じ`PegError`で、typoが黙って無視されることはない:
+— 未定義start規則と同じ`PEGError`で、typoが黙って無視されることはない:
 
 ```culebra
 inspect(try {
-  Peg.parse(`N <- < [0-9]+ >`, "1", actions: {Nope: |sv| sv})
+  PEG.parse(`N <- < [0-9]+ >`, "1", actions: {Nope: |sv| sv})
 } catch e {
   e.message
-})  # => 'Peg: no such rule 'Nope''
+})  # => 'PEG: no such rule 'Nope''
 ```
 
 actionが投げたものは何であれ — culebraの`throw`、`sv`の誤用による`TypeError`、
@@ -6167,9 +6167,9 @@ actionが投げたものは何であれ — culebraの`throw`、`sv`の誤用に
 ## 35. `CodeGen`
 
 閉じた中間表現(IR)と、それを実行するレジスタ方式のbytecodeコンパイラ・実行器 ——
-[cpp-vmlib](https://github.com/yhirose/cpp-vmlib)。`Peg`がcpp-peglibを取り込むのと
-同じ形でvendorしている。`Peg`が構文木を返すのに対して、`CodeGen`はその構文木で
-何をするかを置く場所を提供する: `Peg.parse`が返した木を`match`で辿りながら、
+[cpp-vmlib](https://github.com/yhirose/cpp-vmlib)。`PEG`がcpp-peglibを取り込むのと
+同じ形でvendorしている。`PEG`が構文木を返すのに対して、`CodeGen`はその構文木で
+何をするかを置く場所を提供する: `PEG.parse`が返した木を`match`で辿りながら、
 小さな言語のIRを手で組み立てて実行する。
 
 ```culebra
@@ -6552,7 +6552,7 @@ inspect((m.state(), m.context.n))  # => ('off', 1)
 | メンバ | 返り値 |
 |---|---|
 | `StateMachine.new(desc: Object, *, name: String = "", guards: Object = {}, actions: Object = {}, context = nil)` | `StateMachine` |
-| `StateMachine.parse(text: String, *, guards: Object = {}, actions: Object = {}, context = nil, path: String = "")` | `StateMachine` — テキストから作る。`path`は`PegError`に出す対象名 |
+| `StateMachine.parse(text: String, *, guards: Object = {}, actions: Object = {}, context = nil, path: String = "")` | `StateMachine` — テキストから作る。`path`は`PEGError`に出す対象名 |
 | `m.context` | 渡した`context:`そのもの。guardとactionが受け取る |
 | `m.state()` | `String` — いま居る葉の状態 |
 | `m.in_state(name: String)` | `Bool` — いま居る葉と、それを含むすべての状態について真 |

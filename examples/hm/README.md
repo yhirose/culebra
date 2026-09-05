@@ -14,11 +14,11 @@ just environment bookkeeping.
 
 - **The grammar recipe.** `%whitespace` + `%word` + a `RESERVED` exclusion
   in `IDENT` is the same three pieces in both files, changed only in which
-  keywords are listed. This is a `Peg` lesson, not a type-system one — it
+  keywords are listed. This is a `PEG` lesson, not a type-system one — it
   would transfer to any keyword-based DSL, typed or not.
 - **`fail(node, msg)` → `throw {kind, message, line, column}`.** Third
   project to use this shape (after `pl0.cul`). Worth knowing as the house
-  style for a `Peg`-driven tool's errors; not worth extracting into a
+  style for a `PEG`-driven tool's errors; not worth extracting into a
   function shared across files, since the `kind` string is what makes each
   language's errors distinguishable to its own driver.
 - **`bound(env, name, value)`.** A 3-line copy-then-subscript helper,
@@ -27,7 +27,7 @@ just environment bookkeeping.
   compile-time-unknown key. This is real, recurring friction (see the
   `%word` / computed-keys conversation this example grew out of), but the
   helper is 3 lines; a stdlib function would save less than writing it.
-- **The driver.** `import`, strip `--ast` out of `Sys.argv`, `Peg.parse`
+- **The driver.** `import`, strip `--ast` out of `Sys.argv`, `PEG.parse`
   with `path:`, catch by `kind`. ~15 lines, identical shape to `pl0.cul`
   and `lin.cul`. Not worth factoring — the two lines that differ (which
   module to import, which error `kind` to match) are the only ones that
@@ -76,7 +76,7 @@ A "PEG + type inference + VM → easy DSLs" stdlib addition doesn't hold up:
 the reusable ~20% (grammar shape, error shape, the `bound` idiom, the
 driver skeleton) is either already established convention or too small to
 be worth a library function: the ~80% that's actual type-system logic is
-irreducibly specific to which type system you're building. `Peg` (grammar
+irreducibly specific to which type system you're building. `PEG` (grammar
 → tree) and `CodeGen` (IR → VM/AOT) already are the reusable, stdlib-level
 pieces of "write your own language" — see `examples/pl0/pl0_codegen.cul`.
 The type system in between is the part every language author has always

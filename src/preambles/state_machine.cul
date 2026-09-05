@@ -14,8 +14,8 @@
 # the path entered afterwards are settled once, in `_link`, rather than
 # recomputed per event.
 #
-# The DSL is parsed with the native `_Peg` primitives rather than the `Peg`
-# module: a preamble that named `Peg` would need that module registered too,
+# The DSL is parsed with the native `_PEG` primitives rather than the `PEG`
+# module: a preamble that named `PEG` would need that module registered too,
 # and only the program's own tokens decide what gets registered.
 let _state_machine_module = fn () {
   # The machine itself is a composite state holding the top-level states, so
@@ -285,11 +285,11 @@ let _state_machine_module = fn () {
       self.reset()
     }
 
-    # Build from the text DSL. A malformed machine raises `PegError`, whose
+    # Build from the text DSL. A malformed machine raises `PEGError`, whose
     # message carries `path` when one is given.
     static parse(text, *, guards = {}, actions = {}, context = nil, path = "") {
-      # _Peg.parse(grammar, text, start, optimize, packrat, path, actions)
-      let m = _Peg.parse(GRAMMAR, text, "", true, true, path, ACTIONS)
+      # _PEG.parse(grammar, text, start, optimize, packrat, path, actions)
+      let m = _PEG.parse(GRAMMAR, text, "", true, true, path, ACTIONS)
       StateMachine.new(
         m.states,
         name: m.name,

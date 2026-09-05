@@ -119,7 +119,7 @@ may include one.
 
 A user-visible namespace implemented in C++ gets one header in `stdlib/`
 named after it in lowercase: `Http` is `stdlib/http.h`, `SQLite` is
-`stdlib/sqlite.h`, `Peg` is `stdlib/peg.h`. This is the one naming axis
+`stdlib/sqlite.h`, `PEG` is `stdlib/peg.h`. This is the one naming axis
 in the tree that never drifted, and it is the pattern a new namespace
 follows.
 

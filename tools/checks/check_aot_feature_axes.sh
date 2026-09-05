@@ -29,24 +29,24 @@
 #     probe below is checked for it, since the leak follows whatever the
 #     program touches (a @packable class, Proc, a wrapped class), and the
 #     `spec` probe is the control that proves the check still bites.
-#   - Proc, the Canvas PNG/TTF decoders, and Peg are NOT an axis: they compile
+#   - Proc, the Canvas PNG/TTF decoders, and PEG are NOT an axis: they compile
 #     as plain `inline` code, reached only through their `_ns_*` adapters. Once
 #     a namespace's dispatch group (stdlib_rt.h ns_groups()) is unreferenced,
 #     `--gc-sections` drops the group, its adapters, and everything only they
 #     reached — the same mechanism §4 of docs/deployment.md describes for
 #     Math/IO. This script checks that these choke functions are present when
 #     the namespace is used and gone (not merely stubbed) when it is not.
-#     Peg is the one exception `--gc-sections` only partly reaches: peglib's
+#     PEG is the one exception `--gc-sections` only partly reaches: peglib's
 #     Ope class hierarchy leaves typeinfo/vtables behind (see peg.h), and a
 #     couple of `std::function`-wrapped local lambdas leave an inert
 #     `_Function_handler<...>::_M_manager` comdat behind even after their only
 #     caller is pruned (a linker limitation, not a reachable call path). Both
 #     are accepted rather than chased with a second archive: they're fixed at
 #     a measured ~53 KB total and never executed in a binary that never names
-#     Peg (see peg.h). What this script's `none` probe checks instead is the
+#     PEG (see peg.h). What this script's `none` probe checks instead is the
 #     thing that DOES matter -- that `culebra::pegparser::compile` itself
 #     (the actual entry point, not a nested lambda's enclosing-scope name) is
-#     gone, not merely stubbed, when the program never names Peg.
+#     gone, not merely stubbed, when the program never names PEG.
 #
 # The choke names below are this script's own copy of what the source
 # actually reaches; renaming one means updating it.
@@ -144,13 +144,13 @@ fmt_machinery='std::__format::__do_vformat_to|std::vformat|__format::__formatter
 
 # Regex: the weak/strong choke (kFeatureAxes still force-loads this one).
 regex_choke='^culebra::regex::compile[(]'
-# Peg / Proc / Canvas assets: no weak stub — plain inline code reached only
+# PEG / Proc / Canvas assets: no weak stub — plain inline code reached only
 # through the namespace's dispatch group, so these are either linked (as
 # ordinary — usually weak/COMDAT — symbols) or gone entirely. The first three
 # are each one fully-qualified function, checked with expect_class (sym_class's
 # field-3-start anchor): a whole-line grep -E would also match a nested
 # lambda's mangled enclosing-scope name containing the same text as a
-# substring (see the Peg note above, which is where this was first caught) --
+# substring (see the PEG note above, which is where this was first caught) --
 # any future choke of this exact shape (one function, `name[(]`) should use
 # expect_class too, not expect_absent/expect_present.
 peg_choke='^culebra::pegparser::compile[(]'
@@ -193,10 +193,10 @@ tensor_kernels='tl::detail::map_binary'
 # else would report.
 openssl_syms='SSL_CTX_new|ecp_sm2p256_precomputed'
 
-# 1. Names none of them: Regex stubbed, Proc/Canvas/Peg engines entirely absent.
+# 1. Names none of them: Regex stubbed, Proc/Canvas/PEG engines entirely absent.
 build none 'IO.print("none")'
 expect_class none "$regex_choke" "W?" "expected 'W' or absent" "no Regex use"
-expect_class none "$peg_choke" "" "expected absent" "no Peg use"
+expect_class none "$peg_choke" "" "expected absent" "no PEG use"
 expect_class none "$proc_choke" "" "expected absent" "no Proc use"
 expect_class none "$png_choke" "" "expected absent" "no Canvas use"
 expect_class none "$ttf_choke" "" "expected absent" "no Canvas use"
@@ -204,7 +204,7 @@ expect_absent none "$foreign_choke" "no __Foreign use"
 expect_absent none "$codegen_choke" "no CodeGen use"
 expect_absent none ' reg::' "regexlib"
 # peglib's typeinfo/vtables, and a couple of unreachable std::function comdat
-# thunks, survive here by design (see the Peg note above) -- culebra's own
+# thunks, survive here by design (see the PEG note above) -- culebra's own
 # front-end parser (parser.h) already needs a working peg::parser regardless
 # of this program, so raw `peg::` symbols are not checked for absence here.
 expect_absent none 'culebra::proc::_detail::' "the fork/exec layer"
@@ -239,10 +239,10 @@ expect_class regex "$peg_choke" "" "expected absent" "Regex only"
 expect_absent regex "$fmt_machinery" "libstdc++'s formatter, Regex"
 expect_output regex "34"
 
-build peg 'IO.print(Peg.parse(`N <- < [0-9]+ >`, "42").token)'
-expect_class peg "$peg_choke" ".+" "expected defined" "Peg named"
-expect_class peg "$regex_choke" "W?" "expected 'W' or absent" "Peg only"
-expect_absent peg "$fmt_machinery" "libstdc++'s formatter, Peg"
+build peg 'IO.print(PEG.parse(`N <- < [0-9]+ >`, "42").token)'
+expect_class peg "$peg_choke" ".+" "expected defined" "PEG named"
+expect_class peg "$regex_choke" "W?" "expected 'W' or absent" "PEG only"
+expect_absent peg "$fmt_machinery" "libstdc++'s formatter, PEG"
 expect_output peg "42"
 
 build math 'let m = Math
@@ -360,7 +360,7 @@ if (( fail )); then
   expected, or a `reg::` symbol in `none`: something bypasses the
   CULEBRA_RT_REGEX_WEAK gate, or regexlib.h leaked into an always-linked
   translation unit (see the comment in include/stdlib/regex.h).
-  Proc / Canvas / Peg: a choke present in `none`, or absent where it was
+  Proc / Canvas / PEG: a choke present in `none`, or absent where it was
   named: something outside the choke reaches the engine unconditionally, or
   the adapter isn't reachable only through its kNsRows_* table.
   libstdc++'s formatter in a probe: a header the runtime archive compiles
@@ -374,4 +374,4 @@ if (( fail )); then
 EOF
   exit 1
 fi
-echo "aot-feature-axes OK (Regex / Tensor / Http+TLS / __Foreign / CodeGen by axis; Proc/Canvas/Peg/Shared by namespace group; Peg's fixed RTTI residue accepted; groups linked only when named; no libstdc++ formatter)"
+echo "aot-feature-axes OK (Regex / Tensor / Http+TLS / __Foreign / CodeGen by axis; Proc/Canvas/PEG/Shared by namespace group; PEG's fixed RTTI residue accepted; groups linked only when named; no libstdc++ formatter)"

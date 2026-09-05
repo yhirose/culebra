@@ -1,5 +1,5 @@
 # The same precedence-climbing grammar as calc_precedence.cul, consumed the
-# calc_tree.cul way instead: parse to a tree, then walk it. `Peg.str` shows
+# calc_tree.cul way instead: parse to a tree, then walk it. `PEG.str` shows
 # that the climbing already left the tree correctly nested by precedence and
 # associativity — `eval` only ever has to unwrap one binary application per
 # node, the same shape calc_precedence.cul's actions read directly.
@@ -37,6 +37,6 @@ fn eval(node) {
 }
 
 let formula = Sys.argv.empty() ? "-1 + (1 + 2) * 3 - -1" : Sys.argv[0]
-let tree = Peg.parse(grammar, formula)
-print(Peg.str(tree))
+let tree = PEG.parse(grammar, formula)
+print(PEG.str(tree))
 println("{formula} = {eval(tree)}")

@@ -177,19 +177,19 @@ MSYS2ツールチェーンを必要とします。[`CONTRIBUTING.md`](../CONTRIB
 `culebra::tensor_inplace_binop`（遅延の`+`とin-placeの`+=`の経路）に
 同じ弱/強分岐を掛けている。効果は約115 KBで、helloの4分の1に当たる。
 `Proc`のfork/exec層、`Canvas.Sprite.from_png` / `Canvas.Font`の背後の
-PNG/TTFデコーダ、そして`Peg`（cpp-peglib）も外部ライブラリを引かない
+PNG/TTFデコーダ、そして`PEG`（cpp-peglib）も外部ライブラリを引かない
 が、それぞれ専用のchokeは不要——自身のnamespaceのdispatch tableを
 通じてのみ到達するプレーンなコードとしてコンパイルされるので、
 名指ししないプログラムはリンクされない（仕組みは
-[§4](#4-共有-runtime-archive-レイアウト) 参照）。ただし`Peg`は
+[§4](#4-共有-runtime-archive-レイアウト) 参照）。ただし`PEG`は
 このdead-strippingが全バイトには届かない唯一のnamespaceで、`culebra::
-pegparser::compile()`自体はPegを名指ししないバイナリから消えている
+pegparser::compile()`自体はPEGを名指ししないバイナリから消えている
 ことを`--keep-symbols`ビルドの`nm -C --defined-only`で確認済みだが、
 peglibの`Ope`クラス階層はvtableとtypeinfoを残し、それを
 `--gc-sections`が使用の有無に関わらず保持する。加えて、`std::function`
 に包んだローカルラムダのcomdatテンプレート実体化が、それを呼ぶはずの
 関数が消えたあとも孤立して生き残る（リンカの既知の制限で、到達可能な
-呼び出し経路ではない）。どちらも不活性で、Peg未使用バイナリで実行され
+呼び出し経路ではない）。どちらも不活性で、PEG未使用バイナリで実行され
 ることは無く、実測で固定約53 KB——2本目のarchiveをforce-loadして
 避けるのではなく、これは受け入れる。
 
@@ -934,7 +934,7 @@ CMakeは`-DCULEBRA_ENABLE_JIT=ON`で、base archive＋ 重い機能ごとに
 
 | Archive | 内容 |
 |---|---|
-| `libculebra_rt.a` | base — 全部入りだが各機能のchokeは**弱シンボルのスタブ**（ここから呼べるコードはBLAS・OpenSSL・zlib・sqlite3・正規表現エンジンに到達しない）。サブプロセス層、画像デコーダ（stb_image / stb_truetype）、cpp-peglibパーサジェネレータ（`Peg`）は外部ライブラリを引かないのでこのarchiveに直接コンパイルされ、chokeでなく下のnamespace-group単位のdead-strippingに委ねる——3つのうち`Peg`だけは未使用でも固定約53 KBのpeglib RTTI/vtableメタデータを残す（§1参照） |
+| `libculebra_rt.a` | base — 全部入りだが各機能のchokeは**弱シンボルのスタブ**（ここから呼べるコードはBLAS・OpenSSL・zlib・sqlite3・正規表現エンジンに到達しない）。サブプロセス層、画像デコーダ（stb_image / stb_truetype）、cpp-peglibパーサジェネレータ（`PEG`）は外部ライブラリを引かないのでこのarchiveに直接コンパイルされ、chokeでなく下のnamespace-group単位のdead-strippingに委ねる——3つのうち`PEG`だけは未使用でも固定約53 KBのpeglib RTTI/vtableメタデータを残す（§1参照） |
 | `libculebra_rt_tensor.a` | 強いtensor choke 2種: バックエンド側（BLAS / Accelerateを引く）と、汎用の算術経路が到達してしまうelementwiseカーネル（[§1](#tensor-free--http-free-バイナリ)参照） |
 | `libculebra_rt_http.a` | 強いhttp choke（OpenSSL + zlibを引く） |
 | `libculebra_rt_http_notls.a` | 同じchokeをcpp-httplibのTLS無しでビルドしたもの。`--no-tls`のときこちらが代わりにforce-loadされる（[§1](#tls抜きでhttpをビルドする)参照）。アーカイブが2本ある唯一の軸で、1回のリンクは必ず片方だけを取り、baseはどちらも持たない |

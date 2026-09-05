@@ -25,9 +25,9 @@ culebra examples/linz/linz.cul --ast examples/linz/samples/ex1.lin
 ## Rust版から変えたところ
 
 - **手書きパーサの代わりにPEGを使った。** 元の`parser.rs`のdocコメントに
-  書かれたBNFは、ほぼそのまま`Peg`の文法に写せる（`docs/stdlib.md`の
+  書かれたBNFは、ほぼそのまま`PEG`の文法に写せる（`docs/stdlib.md`の
   §34参照）。本当の違いはキーワードの語境界の扱いだけ——`%word`
-  （`Peg`／cpp-peglibのディレクティブ。同じ手法は`examples/pl0/pl0.cul`
+  （`PEG`／cpp-peglibのディレクティブ。同じ手法は`examples/pl0/pl0.cul`
   の文法にもある）を使うと、文法中の引用リテラルはすべて、自分を接頭辞
   に持つ長い識別子にはマッチしなくなる。元のRust版は「1語読んでから
   文字列比較する」という組み方でこれを自然に得ていた。
@@ -55,7 +55,7 @@ culebra examples/linz/linz.cul --ast examples/linz/samples/ex1.lin
 
 - **エラーがより正確になった。** 元のRust版はソース上の位置情報を
   完全に捨てている（`main.rs`は`AST:\n{ast:#?}`と素のメッセージを
-  出すだけ）。`lin.cul`は`Peg`ノードの`line`/`column`を最後まで持ち
+  出すだけ）。`lin.cul`は`PEG`ノードの`line`/`column`を最後まで持ち
   歩く（`pl0.cul`の`fail(node, msg)`という書き方をそのまま流用した）。
   さらに、元のRust版が1つに混ぜてしまっていたエラーを分けている——
   `err5.lin`はifの両分岐の**型は一致している**が、消費した`lin`変数が

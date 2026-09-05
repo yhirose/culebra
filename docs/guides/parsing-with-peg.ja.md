@@ -1,6 +1,6 @@
 # PEGで解析する
 
-`Peg`名前空間の使い方を、順を追って紹介します。正規表現では手が届かない
+`PEG`名前空間の使い方を、順を追って紹介します。正規表現では手が届かない
 ところで文法を書くところから始めて、最後は自分用の小さな言語と、それを
 動かすインタプリタまで作ります。
 
@@ -17,7 +17,7 @@ PEG（parsing expression grammar）は、構文解析器を得るために書く
 です。かつてYACCに渡していた仕事だと思ってください。実務で効いてくる
 違いは3つあります。字句解析器を別に用意しなくてよいこと（PEGは
 トークンと同じように文字も記述できるので、字句解析も規則として書けます）。
-ビルド手順が要らないこと（`Peg.compile`が実行時に文法を読み込むので、
+ビルド手順が要らないこと（`PEG.compile`が実行時に文法を読み込むので、
 文法はプログラムの中のただの文字列です）。そして選択に**順序がある**
 こと — `a / b`は`a`が一致した時点で`a`に決めるので、shift/reduce
 conflictが報告されて解決を迫られる、ということが起きません。つまりPEGは
@@ -102,7 +102,7 @@ let g = `
   Word  <- < [^ ,}\]]+ >
   %whitespace <- [ ]*
 `
-let p = Peg.compile(g)
+let p = PEG.compile(g)
 
 fn depth(n) {
   match n {
@@ -171,7 +171,7 @@ let g = `
   Args <- Type (',' Type)*      { no_ast_opt }
   %whitespace <- [ ]*
 `
-let p = Peg.compile(g)
+let p = PEG.compile(g)
 
 let lines = 'Map<String, List<Pair<Int, String>>>
 Result<Vec<u8>, Error>
@@ -231,7 +231,7 @@ let g = `
   Part  <- '(' Part* ')' / !')' .
   Other <- < . >
 `
-let p = Peg.compile(g)
+let p = PEG.compile(g)
 
 let lines = 'See [the [inner] guide](https://x/a(b).md) now.
 Also [plain](https://y/z) and [a] alone.'
@@ -299,9 +299,9 @@ fn eval(n) {
   }
 }
 
-inspect(eval(Peg.parse(calc, '1 + 2 * 3')))    # => 7
-inspect(eval(Peg.parse(calc, '(1 + 2) * 3')))  # => 9
-inspect(eval(Peg.parse(calc, '1 - 2 - 3')))    # => -4
+inspect(eval(PEG.parse(calc, '1 + 2 * 3')))    # => 7
+inspect(eval(PEG.parse(calc, '(1 + 2) * 3')))  # => 9
+inspect(eval(PEG.parse(calc, '1 - 2 - 3')))    # => -4
 ```
 
 `Expr <- Expr AddOp Term / Term`は、そのまま読める形をしています。式とは、
@@ -355,8 +355,8 @@ let actions = {
   Term: apply,
 }
 
-inspect(Peg.parse(calc, '1 + 2 * 3 - 4', actions: actions))  # => 3
-inspect(Peg.parse(calc, '8 / 4 / 2', actions: actions))      # => 1
+inspect(PEG.parse(calc, '1 + 2 * 3 - 4', actions: actions))  # => 3
+inspect(PEG.parse(calc, '8 / 4 / 2', actions: actions))      # => 1
 ```
 
 使い分けの目安はこうです。入力を調べたい、変換したい、何度も走査したい
@@ -415,7 +415,7 @@ let grammar = `
   %whitespace       <- [ \t\r\n]*
   %word             <- [a-zA-Z]
 `
-let fiblang = Peg.compile(grammar)
+let fiblang = PEG.compile(grammar)
 
 fn run(src) {
   mut fns = {}
@@ -524,7 +524,7 @@ for n from 1 to 10
 するなら`DEFINITION`の中を`Identifier (',' Identifier)*`にして、`frame`を
 リストで埋めます。演算子を増やすなら`InfixOperator`や`ConditionOperator`に
 足したうえで、§2のやり方で優先順位の段を1つ用意します。分岐を書く前に
-木の形を見たくなったら、`Peg.str`が表示してくれます（§4）。
+木の形を見たくなったら、`PEG.str`が表示してくれます（§4）。
 
 ## 4. 落とし穴
 
@@ -547,7 +547,7 @@ Term / Term`は問題なく動きますし、別の規則を経由した間接�
 書いてください。
 
 **ASTを走査するコードを疑う前に、ASTそのものを見てください。**
-`Peg.str(node)`が`peglint --ast`と同じ形でASTを表示します。AST最適化で
+`PEG.str(node)`が`peglint --ast`と同じ形でASTを表示します。AST最適化で
 どのノードが畳まれたかを頭の中で考えるより、たいていこちらが速く済みます。
 
 ```culebra
@@ -556,7 +556,7 @@ let g = `
   Inner <- < [0-9]+ >
 `
 
-print(Peg.str(Peg.parse(g, '1')))
+print(PEG.str(PEG.parse(g, '1')))
 # => |
 # - Inner (1)
 ```
@@ -567,8 +567,8 @@ print(Peg.str(Peg.parse(g, '1')))
 指数時間です。リファレンスの実測では、10段の入れ子がメモ化ありで0.04ms、
 なしで2.0秒でした。
 
-**1度コンパイルして、何度も解析しましょう。** 高いのは`Peg.compile`の
-ほうです。文法を毎回渡す`Peg.parse(grammar, text)`も、読み込み済みの文法を
+**1度コンパイルして、何度も解析しましょう。** 高いのは`PEG.compile`の
+ほうです。文法を毎回渡す`PEG.parse(grammar, text)`も、読み込み済みの文法を
 スレッドごとにキャッシュしてくれるので罠ではありませんが、多数の入力を
 回すループなら、文法を外に出したほうが読みやすくなります。
 

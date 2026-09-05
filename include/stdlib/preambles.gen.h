@@ -2289,42 +2289,42 @@ fn _peg_str(node) {
   _peg_str_at(node, 0)
 }
 let _peg_module = fn () {
-  class Peg {
+  class PEG {
     new(grammar, start = "", optimize = true, packrat = true) {
       self._src = grammar
       self._start = start
       self._optimize = optimize
       self._packrat = packrat
-      _Peg.check(grammar, start, packrat)
+      _PEG.check(grammar, start, packrat)
     }
     parse(text, path = "", actions = nil) {
-      _Peg.parse(self._src, text, self._start, self._optimize, self._packrat, path, actions)
+      _PEG.parse(self._src, text, self._start, self._optimize, self._packrat, path, actions)
     }
     test(text) {
-      _Peg.test(self._src, text, self._start, self._packrat)
+      _PEG.test(self._src, text, self._start, self._packrat)
     }
   }
   {
     compile: fn (grammar, start = "", optimize = true, packrat = true) {
-      Peg.new(grammar, start, optimize, packrat)
+      PEG.new(grammar, start, optimize, packrat)
     },
     check: fn (grammar, start = "") {
-      _Peg.check(grammar, start, true)
+      _PEG.check(grammar, start, true)
     },
     parse: fn (grammar, text, start = "", optimize = true, packrat = true, path = "", actions = nil) {
-      _Peg.parse(grammar, text, start, optimize, packrat, path, actions)
+      _PEG.parse(grammar, text, start, optimize, packrat, path, actions)
     },
     test: fn (grammar, text, start = "", packrat = true) {
-      _Peg.test(grammar, text, start, packrat)
+      _PEG.test(grammar, text, start, packrat)
     },
     walk: _peg_walk,
     find: _peg_find,
     find_all: _peg_find_all,
     str: _peg_str,
-    Peg: Peg,
+    PEG: PEG,
   }
 }
-let Peg = _peg_module()
+let PEG = _peg_module()
 )=culpre=";
 
 inline constexpr const char* FST_MODULE_SOURCE = R"=culpre=(let _fst_module = fn () {
@@ -3158,8 +3158,8 @@ inline constexpr const char* STATE_MACHINE_MODULE_SOURCE = R"=culpre=(# StateMac
 # the path entered afterwards are settled once, in `_link`, rather than
 # recomputed per event.
 #
-# The DSL is parsed with the native `_Peg` primitives rather than the `Peg`
-# module: a preamble that named `Peg` would need that module registered too,
+# The DSL is parsed with the native `_PEG` primitives rather than the `PEG`
+# module: a preamble that named `PEG` would need that module registered too,
 # and only the program's own tokens decide what gets registered.
 let _state_machine_module = fn () {
   # The machine itself is a composite state holding the top-level states, so
@@ -3429,11 +3429,11 @@ let _state_machine_module = fn () {
       self.reset()
     }
 
-    # Build from the text DSL. A malformed machine raises `PegError`, whose
+    # Build from the text DSL. A malformed machine raises `PEGError`, whose
     # message carries `path` when one is given.
     static parse(text, *, guards = {}, actions = {}, context = nil, path = "") {
-      # _Peg.parse(grammar, text, start, optimize, packrat, path, actions)
-      let m = _Peg.parse(GRAMMAR, text, "", true, true, path, ACTIONS)
+      # _PEG.parse(grammar, text, start, optimize, packrat, path, actions)
+      let m = _PEG.parse(GRAMMAR, text, "", true, true, path, ACTIONS)
       StateMachine.new(
         m.states,
         name: m.name,

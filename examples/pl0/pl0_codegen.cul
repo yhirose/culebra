@@ -1,6 +1,6 @@
 # PL/0, compiled instead of interpreted.
 #
-# `pl0.cul` (next to this file) evaluates the AST `Peg.parse` returns
+# `pl0.cul` (next to this file) evaluates the AST `PEG.parse` returns
 # directly: a `match` arm reads a node's shape and computes its value on the
 # spot. This file does the same parse, but instead of computing anything it
 # builds a `CodeGen.Module` -- Core-IR, from vendor/cpp-vmlib -- and hands the
@@ -465,12 +465,12 @@ if args.empty() {
 try {
   # `program <- _ block '.' _` folds to a single child, so the root that
   # arrives is the block itself -- same fact pl0.cul's own driver leans on.
-  let tree = Peg.parse(grammar, FS.read(args[0]), path: args[0])
+  let tree = PEG.parse(grammar, FS.read(args[0]), path: args[0])
   Binder.new().build(CodeGen.Module.new(), tree).finish(want_ir, want_bc)
 } catch e {
   match e {
     {kind: 'Pl0Error'} => println("{args[0]}:{e.line}:{e.col}: {e.message}"),
-    {kind: 'PegError'} => println(e.message),
+    {kind: 'PEGError'} => println(e.message),
     {kind: 'IrError'} => println("{args[0]}:{e.line}:{e.col}: {e.message}"),
     _ => throw e,
   }

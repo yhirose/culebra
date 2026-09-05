@@ -5,7 +5,7 @@
 # Small enough to read in a sitting, complete enough that the pieces of a real
 # implementation are all here — a grammar, a scope chain, and an evaluator.
 #
-# The grammar below is a PEG handed to `Peg`, and what comes back from `parse`
+# The grammar below is a PEG handed to `PEG`, and what comes back from `parse`
 # is a tree of plain Objects. That is the point of the example: the interpreter
 # never calls a tree API. Every node arrives at a `match` arm that names the
 # rule and takes its children apart in the same pattern —
@@ -302,23 +302,23 @@ if args.empty() {
 try {
   # `program <- _ block '.' _` has a single child, so optimization folds it
   # away and the root that arrives is the block itself. `path:` names the
-  # subject for Peg's own error message, so a syntax error already reads
+  # subject for PEG's own error message, so a syntax error already reads
   # "square.pas:3:8: ..." with no assembly required on this end.
-  let tree = Peg.parse(grammar, FS.read(args[0]), path: args[0])
+  let tree = PEG.parse(grammar, FS.read(args[0]), path: args[0])
   if want_ast {
-    print(Peg.str(tree))
+    print(PEG.str(tree))
   } else {
     let (scope, body) = enter(tree, nil)
     exec(body, scope)
   }
 } catch e {
   # A PL/0 error carries its own position but not the file, since `fail()`
-  # never saw a path; a PegError's message is already fully formed. Anything
+  # never saw a path; a PEGError's message is already fully formed. Anything
   # else is a bug in this interpreter, and rethrowing says so rather than
   # dressing it up as an error in the program being run.
   match e {
     {kind: 'Pl0Error'} => println("{args[0]}:{e.line}:{e.col}: {e.message}"),
-    {kind: 'PegError'} => println(e.message),
+    {kind: 'PEGError'} => println(e.message),
     _ => throw e,
   }
   Sys.exit(1)

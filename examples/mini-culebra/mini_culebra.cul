@@ -10213,7 +10213,7 @@ if cli.empty() {
 
 # The grammar and the prelude parse once; every program after the first
 # reuses both, which is what makes a many-program batch cheap.
-let prelude_tree = Peg.parse(grammar, prelude_src, path: '<prelude>')
+let prelude_tree = PEG.parse(grammar, prelude_src, path: '<prelude>')
 
 mut had_err = false
 for path in cli {
@@ -10256,7 +10256,7 @@ for path in cli {
   classes = {}
   traits = {}
   try {
-    let tree = Peg.parse(grammar, FS.read(path), path: path)
+    let tree = PEG.parse(grammar, FS.read(path), path: path)
     let m = CodeGen.Module.new()
     ir = front.Emitter.new(m, frames)
     build(m, prelude_tree, tree)
@@ -10273,7 +10273,7 @@ for path in cli {
   } catch e {
     match e {
       {kind: 'MiniError'} => println("{path}:{e.line}:{e.col}: {e.message}"),
-      {kind: 'PegError'} => println(e.message),
+      {kind: 'PEGError'} => println(e.message),
       {kind: 'IrError'} => {
         # the program's own uncaught report already printed; only the
         # exit status is left to mirror
