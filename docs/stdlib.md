@@ -5554,7 +5554,8 @@ more.) Texture coordinates put `(0, 0)` at an image's top-left, as in 2D; the
 primitives show an image upright, its top toward `+y` (a plane's toward `-z`,
 the far edge from a camera on `+z`). An uploaded mesh belongs to the view that
 uploaded it: a node kept past `view.drop()` stays usable as a transform, but
-draws nothing in a later view.
+draws nothing in a later view. `build()` needs an open view to upload into,
+so it refuses with no view at all and the vertices stay for a later one.
 
 ### Materials, lighting, textures
 
