@@ -1225,7 +1225,13 @@ constants and poison allowed on the way in, and pays a bitcast back at
 any use that is not itself a bitcast to double — the boundary LLVM's own
 fold leaves behind, which in these shapes sits on the unwind path. It
 runs last, after the loop passes have settled the phis, and only where
-at least as many bitcasts go as come. What makes it sound is the
+at least as many bitcasts go as come — weighed by where each one sits,
+since the block frequencies say a loop body's bitcast is paid every
+iteration and an unwind path's may never be paid at all. Counting them
+one apiece declined on the plainest shape there is: a `while` in a
+function carrying a single Float, whose two cold uses (the return store
+and an unwind release) outvoted the loop's own, leaving that loop four
+times slower than the same loop written with `for`. What makes it sound is the
 incoming test alone: every edge already carries a double, or a constant
 reinterpreted bit for bit as one, so the phis change type and no value
 does — a payload read as an integer or a pointer anywhere keeps its

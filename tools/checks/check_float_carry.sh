@@ -107,17 +107,37 @@ let vec_operators = fn (n) {
 println(vec_operators(1000))
 CUL
 
-# Both rows carry four Floats (px/py/vx/vy; the x and y of `p` and `v`).
+# A third row for the plainest shape there is: a `while` in a function
+# carrying one Float. Its two cold uses (the return store and an unwind
+# release) once outvoted the loop's own bitcast in the pass's own cost model,
+# and this loop ran four times slower than the same loop written with `for`.
+cat > "$TMP/while_one.cul" <<'CUL'
+fn drift(n) {
+  mut acc = 0.0
+  mut i = 0
+  while i < n {
+    acc += 1.5
+    i += 1
+  }
+  acc
+}
+
+println(drift(1000))
+CUL
+
+# The first two rows carry four Floats (px/py/vx/vy; the x and y of `p` and
+# `v`); while_one carries the one its name says.
 MIN_ROW_PHIS=4
 
-scan() {  # $1 = probe basename
+scan() {  # $1 = probe basename, $2 = double phis its busiest function needs
+  local min_row_phis="${2:-$MIN_ROW_PHIS}"
   local ir="$TMP/$1.ll"
   if ! "$BIN" --jit --emit-llvm "$TMP/$1.cul" > "$ir" 2>"$TMP/$1.err"; then
     echo "  $1: could not emit IR" >&2
     sed 's/^/    /' "$TMP/$1.err" >&2
     return 1
   fi
-  awk -v probe="$1" -v min_row_phis="$MIN_ROW_PHIS" '
+  awk -v probe="$1" -v min_row_phis="$min_row_phis" '
     # The phis the pass owes a double: every edge into one already carries
     # a double, counting the phis that meet the same test. Start with all of
     # them and drop those an edge disqualifies until the set holds still.
@@ -189,6 +209,7 @@ scan() {  # $1 = probe basename
 fail=0
 scan scalars || fail=1
 scan vector2 || fail=1
+scan while_one 1 || fail=1
 if (( fail )); then
   echo "float-carry FAIL (see above)." >&2
   echo "  A phi every edge feeds a double should be a double phi, and each row" >&2

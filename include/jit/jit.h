@@ -16,6 +16,7 @@
 #include "llvm/ExecutionEngine/Orc/CompileUtils.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
+#include "llvm/Analysis/BlockFrequencyInfo.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/MDBuilder.h"
@@ -1110,18 +1111,29 @@ struct JIT {
 
     // Bitcasts the rewrite would remove against the ones it would add. A use
     // that already reads the payload as a double loses its bitcast; an
-    // incoming one goes only when this web was its whole audience.
+    // incoming one goes only when this web was its whole audience. Each side
+    // counts what it costs where it sits: the bitcast a loop body runs every
+    // iteration against the one an unwind path may never run at all. Counting
+    // them one apiece declined on the plainest shape there is — a `while` in
+    // a function carrying a single Float, whose two cold uses (the return
+    // store, an unwind release) outvoted the loop's own — and the loop then
+    // paid a register move each way, every iteration.
     static bool worth_it(const llvm::SmallVectorImpl<llvm::PHINode*>& web,
-                         const llvm::SmallPtrSetImpl<llvm::PHINode*>& in_web) {
-      unsigned gain = 0, cost = 0;
+                         const llvm::SmallPtrSetImpl<llvm::PHINode*>& in_web,
+                         llvm::BlockFrequencyInfo& bfi) {
+      uint64_t gain = 0, cost = 0;
+      auto freq = [&](const llvm::Value* v) {
+        return bfi.getBlockFreq(llvm::cast<llvm::Instruction>(v)->getParent())
+            .getFrequency();
+      };
       llvm::SmallPtrSet<llvm::Value*, 8> edges;
       for (auto* phi : web) {
         for (llvm::Value* in : phi->incoming_values())
           if (edge_double(in)) edges.insert(in);
         for (const llvm::User* u : phi->users()) {
           if (carrier(u)) continue;
-          if (reads_as_double(u)) ++gain;
-          else ++cost;
+          if (reads_as_double(u)) gain += freq(u);
+          else cost += freq(u);
         }
       }
       for (auto* e : edges) {
@@ -1129,7 +1141,7 @@ struct JIT {
         for (const llvm::User* u : e->users())
           if (!carrier(u) || !in_web.contains(llvm::cast<llvm::PHINode>(u)))
             only_web = false;
-        if (only_web) ++gain;
+        if (only_web) gain += freq(e);
       }
       return gain > 0 && gain >= cost;
     }
@@ -1188,7 +1200,8 @@ struct JIT {
     }
 
     llvm::PreservedAnalyses run(llvm::Function& f,
-                                llvm::FunctionAnalysisManager&) {
+                                llvm::FunctionAnalysisManager& fam) {
+      auto& bfi = fam.getResult<llvm::BlockFrequencyAnalysis>(f);
       llvm::SmallVector<llvm::PHINode*, 16> seeds;
       for (auto& bb : f)
         for (auto& phi : bb.phis())
@@ -1205,7 +1218,7 @@ struct JIT {
           continue;
         }
         seen.insert(in_web.begin(), in_web.end());
-        if (!worth_it(web, in_web)) continue;
+        if (!worth_it(web, in_web, bfi)) continue;
         rewrite(web);
         changed = true;
       }
