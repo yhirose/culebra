@@ -4131,9 +4131,20 @@ class Compiler {
   // answer its later reads no longer earn (the read verifies the tag it was
   // promised either way, so a stale answer costs a TypeError, not a wrong
   // value — but the binding should not claim what it cannot keep).
-  void grant_declared_class(Binding& b, const peg::Ast& rhs) {
+  void grant_declared_class(Binding& b, const peg::Ast& rhs,
+                            std::string_view annotation = {}) {
     using namespace peg::udl;
     if (b.is_mut) return;
+    // `let a: Vector2 = <anything>` is checked at the declaration (§14), so
+    // the name means an instance of that class from here on — the one route
+    // that reaches an array element, which carries no type of its own.
+    if (!annotation.empty()) {
+      if (const auto* fields = culebra::class_field_types_of(annotation)) {
+        b.decl_fields = fields;
+        b.decl_field_classes = culebra::class_field_classes_of(annotation);
+        return;
+      }
+    }
     const peg::Ast* node = &rhs;
     while (!node->is_token && node->nodes.size() == 1) node = node->nodes[0].get();
     if (node->is_token || node->nodes.size() != 2) return;
@@ -7459,7 +7470,8 @@ class Compiler {
       push_binding({name, slot, decl_mut, cell});
       grant_known_chunk(scopes_.back().bindings.back(), rhs.chunk);
       grant_known_const(scopes_.back().bindings.back(), *av.rhs);
-      grant_declared_class(scopes_.back().bindings.back(), *av.rhs);
+      grant_declared_class(scopes_.back().bindings.back(), *av.rhs,
+                           av.type_annotation);
       return read_binding(*tgt, scopes_.back().bindings.back());
     }
     const Binding* b = lookup_or_session(*tgt, name);

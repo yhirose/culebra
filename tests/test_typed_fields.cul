@@ -286,4 +286,43 @@ assert_throws('TypeError', fn () {
   v.engine.rpm = 'no'
 })
 
+
+# --- a local's own annotation carries the same promise ---
+#
+# `let a: Vec = <anything>` is checked at the declaration (§14), so the name
+# means an instance of that class from here on. This is the one route that
+# reaches an array element, which carries no type of its own.
+
+class Pt {
+  x: Float
+  y: Float
+  new(x, y) {
+    self.x = x
+    self.y = y
+  }
+}
+
+let pts = [Pt(1.0, 2.0), Pt(3.0, 4.0)]
+
+fn sum_first(list) {
+  let a: Pt = list[0]
+  a.x + a.y
+}
+
+assert_eq(sum_first(pts), 3.0)
+
+# the declaration's own check refuses anything else, so the reads below it
+# never meet a value the annotation did not promise
+assert_throws('TypeError', fn () {
+  let bad: Pt = 42
+  bad.x
+})
+
+# an object wearing the class's name passes the declaration check (it names
+# the class) but its property never met the write check, so the read refuses
+assert_throws('TypeError', fn () {
+  let forged: Pt = {class: 'Pt', x: 'no', y: 0.0}
+  forged.x
+})
+
 println('typed fields OK')
