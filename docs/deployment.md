@@ -971,7 +971,7 @@ document.
 class Stemmer : public culebra::search::ISplitter {
  public:
   // Cuts `text` from `offset` to its end: emit(term, position, length) once
-  // per term, in increasing order, then return how many bytes were taken.
+  // per term, starts never decreasing, then return how many bytes were taken.
   size_t split(std::string_view text, size_t offset,
                const culebra::search::SplitEmit& emit) const override {
     // ... your analyzer's loop ...
@@ -998,10 +998,13 @@ to call from several threads. Ranges are UTF-8 byte offsets into `text`; an
 analyzer that speaks UTF-16 converts on the way out. The term need not be the
 bytes its range points at — a morphological analyzer indexes a base form
 while the range keeps the surface, so a search for the base form highlights
-the text as written — but ranges must increase and not overlap. The engine
-does not take that on trust: a term that overlaps or precedes the one before
-it, or is not cut on grapheme cluster boundaries, is dropped rather than
-indexed, on both sides alike. The instance stays yours: dropping the handle
+the text as written — but range starts must never decrease. A term starting
+where the previous one started is an alternative at the same term position
+(a compound beside its parts; Lucene's `positionIncrement == 0`), and a term
+starting later takes the next position even when the ranges overlap. The
+engine does not take the rest on trust: a term that starts before the one
+before it, or is not cut on grapheme cluster boundaries, is dropped rather
+than indexed, on both sides alike. The instance stays yours: dropping the handle
 makes the next `add` or `search` of an index built with it raise
 `ClosedError`.
 

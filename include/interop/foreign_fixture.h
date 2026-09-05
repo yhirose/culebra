@@ -104,10 +104,13 @@ class Box {
 
 // A splitter for Search (interop/search_splitter.h): cuts on ASCII whitespace
 // and emits a crude stem -- lowercase, a trailing -ing or -s removed -- while
-// every range stays on the surface word. With `overlap`, each word is emitted
-// a second time over its first byte as well: a contract violation the engine
-// has to drop rather than index. Deliberately nothing of culebra's beyond the
-// contract header, since that is what a user's class includes.
+// every range stays on the surface word. With `overlap`, each word is followed
+// by two more terms: "stacked" over its first byte, which starts where the
+// word started and so is an alternative at the word's position, and "behind"
+// over the byte before it, which starts before the word -- a contract
+// violation the engine has to drop rather than index. Deliberately nothing of
+// culebra's beyond the contract header, since that is what a user's class
+// includes.
 class Splitter : public search::ISplitter {
  public:
   explicit Splitter(bool overlap) : overlap_(overlap) {}
@@ -119,7 +122,10 @@ class Splitter : public search::ISplitter {
          i != std::string_view::npos; i = text.find_first_not_of(ws, i)) {
       size_t end = std::min(text.find_first_of(ws, i), text.size());
       emit(stem(text.substr(i, end - i)), i, end - i);
-      if (overlap_) emit("overlap", i, 1);
+      if (overlap_) {
+        emit("stacked", i, 1);
+        if (i > 0) emit("behind", i - 1, 1);
+      }
       i = end;
     }
     return text.size() - offset;

@@ -21,9 +21,13 @@
 //
 // Two rules the index depends on and cannot check:
 //
-//   - Ranges must not overlap and must increase. One term position carries one
-//     text range, so two terms over the same bytes make highlighting answer
-//     with a neighbour's range.
+//   - Range starts must never decrease. A term whose range starts where the
+//     previous term's started is an alternative at the same term position (a
+//     compound beside its parts; Lucene's positionIncrement == 0), and the
+//     first term's range is the position's. A term starting later takes the
+//     next position, whether or not the two ranges overlap. One term position
+//     carries one text range, so a start that went back would make
+//     highlighting answer with a neighbour's range.
 //
 //   - The emitted term need not be the bytes its range points at, and only the
 //     range has to be true. A morphological analyzer indexes a base form while
@@ -32,11 +36,10 @@
 //
 // Offsets are UTF-8 byte offsets into the `text` handed in. An analyzer that
 // works in UTF-16 converts on the way out; that is its adapter's job, not this
-// interface's, and the two rules above are usually what the adapter has to
-// work for — a morphological analyzer's grammatical morphemes routinely share
-// a syllable with the one before them, and are also the ones an index does not
-// want, so the part-of-speech filter such an index needs anyway is what makes
-// the ranges disjoint.
+// interface's. A morphological analyzer's grammatical morphemes routinely
+// share a syllable with the one before them: that is a later start, which the
+// first rule allows, so the part-of-speech filter such an index wants anyway
+// is a question of what to index, not of the contract.
 //
 // `split` is handed the whole text and an offset into it, and returns how many
 // bytes from that offset it took. One shape serves two roles: a splitter that
@@ -53,7 +56,7 @@
 // not end on an extended grapheme cluster boundary is dropped whole — its terms
 // too — and splitting resumes one grapheme cluster on. Within a valid span, a
 // term is dropped on its own when its range lies outside the span, is empty,
-// overlaps or precedes the term before it, or is not cut on grapheme cluster
+// starts before the term before it, or is not cut on grapheme cluster
 // boundaries. Nothing is reported: the same code runs while a query is parsed,
 // and both sides degrading identically is what keeps their term boundaries in
 // agreement.

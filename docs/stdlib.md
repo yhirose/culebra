@@ -7300,7 +7300,13 @@ inspect(idx.search("the"))           # => []
 
 The emitted term need not be the bytes its range points at, which is what lets
 a morphological analyzer index a base form while highlighting still lands on
-the text as written. Ranges must not overlap and must increase.
+the text as written. Range starts must never decrease. Two terms whose ranges
+start at the same byte are alternatives at one term position — a compound
+beside its parts, so that a search for either finds the document and a phrase
+runs through either — and a hit on any of them highlights the first one's
+range. A term starting later takes the next position, whether or not the
+ranges overlap. The query side runs the same splitter, so a token it splits
+this way is searched as a phrase with an alternative at each position.
 
 A filter turning one term into several is deliberately not expressible: several
 outputs mean alternatives, which belong on the query side, and a *sequence* of

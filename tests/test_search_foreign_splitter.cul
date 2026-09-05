@@ -36,16 +36,33 @@ assert_eq(text.slice(r.position, r.position + r.length), "jumps")
 assert_eq(found(idx.search("\"fox jump\"")), ["a"])
 assert_eq(idx.search("\"jump fox\""), [])
 
-// --- the engine does not trust the answer ---------------------------------
-// With `overlap` the fixture also emits a term over each word's first byte,
-// overlapping the word: the engine drops it, so it is neither found nor a
-// range, and the good terms are unaffected.
+// --- stacking, and the engine not trusting the answer ---------------------
+// With `overlap` the fixture emits two more terms per word. "stacked" starts
+// where the word starts, so it is an alternative at the word's position:
+// found once per word, highlighted with the word's own range, and adjacent to
+// the next word just as the word is. "behind" starts before the word: the
+// engine drops it, so it is nowhere in the index, and the good terms keep
+// their own ranges.
 let sloppy = __Foreign.Splitter.new(true)
 let checked = Search.Index.new(analyzer: { splitter: sloppy })
-checked.add("a", "The fox jumps over lazy dogs")
-assert_eq(checked.search("overlap"), [])
-assert_eq(found(checked.search("jump")), ["a"])
-assert_eq(checked.search("jump")[0].ranges.size(), 1)
+checked.add("a", text)
+let stacked = checked.search("stacked")
+assert_eq(found(stacked), ["a"])
+assert_eq(stacked[0].ranges.size(), 6)
+let second = stacked[0].ranges[1]
+assert_eq(text.slice(second.position, second.position + second.length), "fox")
+assert_eq(found(checked.search("\"stacked jump\"")), ["a"])
+// The same splitter runs on the query, so "behind" parses as (or behind
+// stacked); its hit positions are exactly stacked's six, which is what
+// proves "behind" is in the index nowhere -- an Or lists both terms' hits,
+// so an indexed "behind" would show as twelve.
+assert_eq(checked.search("behind")[0].ranges.size(), 6)
+// A query for a real word carries "stacked" too, so its hits are the
+// word's own plus stacked's six; the word's own range is still the word.
+let jump = checked.search("jump")[0].ranges
+assert_eq(jump.size(), 7)
+let own = jump.filter(|r| r.length == 5)[0]
+assert_eq(text.slice(own.position, own.position + own.length), "jumps")
 checked.close()
 sloppy.drop()
 

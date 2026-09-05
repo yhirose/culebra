@@ -82,6 +82,34 @@ let hit = tags.search("green-leaf")[0]
 assert_eq(hit.ranges[0].position, 4)
 assert_eq(hit.ranges[0].length, 10)
 
+// --- stacking: two terms starting at the same byte share a position ---------
+//
+// A compound beside its parts, the way a decompounding analyzer answers: the
+// part starts where the compound starts, so it is an alternative at the same
+// position, and the next part takes the next position. A search for any of
+// them finds the document, a phrase runs through the parts, and a hit on a
+// part highlights the compound -- the first term at that position.
+
+let decompound = fn (text) {
+  if text == "schoolbus" {
+    [{ term: "schoolbus", position: 0, length: 9 },
+     { term: "school", position: 0, length: 6 },
+     { term: "bus", position: 6, length: 3 }]
+  } else {
+    [{ term: text, position: 0, length: text.size() }]
+  }
+}
+
+let compounds = Search.Index.new(analyzer: { splitter: decompound })
+compounds.add("doc-1", "schoolbus")
+assert_eq(found(compounds.search("schoolbus")), ["doc-1"])
+assert_eq(found(compounds.search("school")), ["doc-1"])
+assert_eq(found(compounds.search("\"school bus\"")), ["doc-1"])
+assert_eq(compounds.search("\"schoolbus school\""), [])
+let part = compounds.search("school")[0].ranges[0]
+assert_eq(part.position, 0)
+assert_eq(part.length, 9)
+
 // --- all three at once, and the analyzer survives close ----------------------
 
 let full = Search.Index.new(analyzer: {
