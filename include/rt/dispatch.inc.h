@@ -1975,6 +1975,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
   // name → JitValue map. Operands were already validated (Object +
   // String keys) at function entry, so no re-check here.
   culebra::MergedKwargs<JitValue> merged;
+  // The upper bound is known before either loop, and `set` only ever appends,
+  // so one allocation instead of the 1→2→4 doubling chain on the path this
+  // function exists to make cheap.
+  size_t n_merged = static_cast<size_t>(n_kw);
+  for (int64_t i = 0; i < n_splat; i++) {
+    auto* obj = reinterpret_cast<JitObject*>(splat_objs[i].data);
+    if (obj->shape) n_merged += obj->prop_size();
+  }
+  merged.items.reserve(n_merged);
   for (int64_t i = 0; i < n_splat; i++) {
     auto* obj = reinterpret_cast<JitObject*>(splat_objs[i].data);
     if (!obj->shape) continue;
@@ -2028,16 +2037,16 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
   // reads every word of this frame, and a stale one that happens to name a
   // live object would keep it (or, mid-construction, walk it).
   JitValue slab_inline[kInlineParams] = {};
-  bool filled_inline[kInlineParams] = {};
+  uint8_t filled_inline[kInlineParams] = {};
   std::vector<JitValue> slab_heap;
   std::vector<uint8_t> filled_heap;
   JitValue* slab = slab_inline;
-  bool* filled = filled_inline;
+  uint8_t* filled = filled_inline;
   if (slab_n > kInlineParams) {
     slab_heap.assign(slab_n, JitValue{TAG_NIL, 0});
     filled_heap.assign(arity, 0);
     slab = slab_heap.data();
-    filled = reinterpret_cast<bool*>(filled_heap.data());
+    filled = filled_heap.data();
   }
 
   for (size_t i = 0; i < regular_end && i < static_cast<size_t>(n_pos); i++) {
