@@ -31,6 +31,26 @@
 // a syllable with the one before them, and are also the ones an index does not
 // want, so the part-of-speech filter such an index needs anyway is what makes
 // the ranges disjoint.
+//
+// `split` is handed the whole text and an offset into it, and returns how many
+// bytes from that offset it took. One shape serves two roles: a splitter that
+// cuts the whole text consumes `text.size() - offset`, and a segmenter that
+// only handles the scripts the built-in splitting leaves one scalar at a time
+// (Han, Hiragana, Thai …) is called at each such span with the same
+// signature, reads as much of the surrounding text as it wants, emits the
+// words it found and returns the span it took; the built-in splitting resumes
+// after it. Seeing the whole text is what lets a statistical model use its
+// context, and it is why the offsets emitted are already in the caller's terms.
+//
+// The caller does not trust the answer, so a mistake degrades rather than
+// corrupts. A span whose consumed length is zero, runs past the text or does
+// not end on an extended grapheme cluster boundary is dropped whole — its terms
+// too — and splitting resumes one grapheme cluster on. Within a valid span, a
+// term is dropped on its own when its range lies outside the span, is empty,
+// overlaps or precedes the term before it, or is not cut on grapheme cluster
+// boundaries. Nothing is reported: the same code runs while a query is parsed,
+// and both sides degrading identically is what keeps their term boundaries in
+// agreement.
 
 #include <cstddef>
 #include <functional>
@@ -46,8 +66,10 @@ class ISplitter {
 public:
   virtual ~ISplitter() = default;
 
-  // Calls emit once per term, in increasing range order.
-  virtual void split(std::string_view text, const SplitEmit &emit) const = 0;
+  // Calls emit once per term found from `offset`, in increasing range order,
+  // and returns the number of bytes consumed from `offset`.
+  virtual size_t split(std::string_view text, size_t offset,
+                       const SplitEmit &emit) const = 0;
 };
 
 }  // namespace culebra::search

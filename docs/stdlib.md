@@ -6980,10 +6980,17 @@ logical — the space is not reclaimed until the index is rebuilt.
 `NOT` needs at least one positive term, since the index cannot enumerate every
 document. A malformed query raises `SearchError` rather than matching nothing.
 
-Documents and queries are cut into terms the same way: maximal runs of Unicode
-letters, lowercased. So punctuation separates terms, case does not matter, and
-a language written without spaces (Japanese, Chinese) indexes a whole sentence
-as one term unless you supply a splitter (below).
+Documents and queries are cut into terms the same way: Unicode word boundaries
+([UAX #29](https://unicode.org/reports/tr29/)), keeping the segments that
+contain a letter or a number, lowercased. So `version 2.0` is `version` and
+`2.0`, `don't` and `1,234.56` are one term each, spaces and punctuation between
+words are not terms, and case does not matter. Scripts written with spaces
+come out word by word; the ones written without them (Han, Hiragana, Thai …)
+come out one character at a time, a run of Katakana being one term — the
+unigram baseline, where UAX #29 itself defers to a dictionary. `東京タワー` is
+indexed as `東` `京` `タワー`, and a query for `東京` is the phrase `東` + `京`,
+so it is found; a dictionary-based splitter (below) is what makes `東京` one
+term.
 
 ### The analyzer
 
@@ -7005,7 +7012,7 @@ inspect(idx.search("the"))           # => []
 
 | Field | | |
 |---|---|---|
-| `splitter` | `fn (text: String) -> Array` | cuts text into terms. Each element is `{term, position, length}` — the term string plus the byte range it came from. Omit it for the built-in letter-run splitting. |
+| `splitter` | `fn (text: String) -> Array` | cuts text into terms. Each element is `{term, position, length}` — the term string plus the byte range it came from. Omit it for the built-in splitting described above. |
 | `normalizer` | `fn (term: String) -> String` | runs on every term, before the filters. Omit it for the built-in lowercasing. |
 | `filters` | `Array` of `fn (term: String) -> String \| Nil` | applied in order after the normalizer. Return a replacement term, or `nil` to drop it. |
 

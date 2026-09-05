@@ -80,8 +80,8 @@ struct Analyzer {
 
   // Cuts text into terms, each with the byte range it came from — the same
   // contract ISplitter states, which is what lets a native splitter be handed
-  // in where a closure goes. Empty keeps the built-in splitting into runs of
-  // Unicode letters.
+  // in where a closure goes. Empty keeps the built-in splitting: UAX #29 word
+  // segments that contain a letter or a number (searchlib's default).
   using Emit = SplitEmit;
   std::function<void(std::string_view text, const Emit &emit)> splitter;
 

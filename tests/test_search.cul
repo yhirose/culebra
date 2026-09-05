@@ -68,11 +68,28 @@ assert_eq(found(idx.search("quick")), ["doc-2"])
 idx.remove("no-such-key")
 assert_eq(found(idx.search("quick")), ["doc-2"])
 
-// --- Unicode text indexes by Unicode letter runs ---
+// --- terms are UAX #29 word segments with a letter or a number ---
 let uni = Search.Index.new()
 uni.add("es", "el zorro rápido")
+uni.add("num", "version 2.0 costs 1,234.56")
+uni.add("apos", "don't stop")
+uni.add("ja", "東京タワーに行った")
+uni.add("mixed", "iPhone 15を買った")
 assert_eq(found(uni.search("rápido")), ["es"])
 assert_eq(found(uni.search("RÁPIDO")), ["es"])
+// Numbers are terms, kept whole across their separators; their parts are not.
+assert_eq(found(uni.search("2.0")), ["num"])
+assert_eq(found(uni.search("1,234.56")), ["num"])
+assert_eq(uni.search("234"), [])
+assert_eq(found(uni.search("don't")), ["apos"])
+// Han comes out one character at a time and Katakana as a run, on both sides,
+// so a query token of several characters is the phrase of them.
+assert_eq(found(uni.search("東京")), ["ja"])
+assert_eq(found(uni.search("タワー")), ["ja"])
+assert_eq(found(uni.search("東京タワー")), ["ja"])
+assert_eq(uni.search("京タ"), [])  // 京 is followed by タワー, one term
+assert_eq(found(uni.search("15")), ["mixed"])
+assert_eq(found(uni.search("iphone 買っ")), ["mixed"])
 uni.close()
 
 // --- save/load round-trips the whole index ---

@@ -76,9 +76,11 @@ public:
   explicit MorphologicalSplitter(std::vector<Token> analysis)
       : analysis_(std::move(analysis)) {}
 
-  void split(std::string_view text,
-             const culebra::search::SplitEmit &emit) const override {
-    OffsetMap map(text);
+  // A whole-text splitter: analyzes from `offset` to the end and says so.
+  size_t split(std::string_view text, size_t offset,
+               const culebra::search::SplitEmit &emit) const override {
+    auto rest = text.substr(offset);
+    OffsetMap map(rest);
     size_t previous_end = 0;
     for (const auto &token : analysis_) {
       if (!token.content || token.length == 0) {
@@ -89,9 +91,10 @@ public:
       if (end <= begin || begin < previous_end) {
         continue;
       }
-      emit(token.form, begin, end - begin);
+      emit(token.form, offset + begin, end - begin);
       previous_end = end;
     }
+    return rest.size();
   }
 
 private:
@@ -105,12 +108,15 @@ struct Emitted {
 };
 
 std::vector<Emitted> run(const culebra::search::ISplitter &splitter,
-                         std::string_view text) {
+                         std::string_view text, size_t offset = 0) {
   std::vector<Emitted> out;
-  splitter.split(text, [&](std::string_view term, size_t position,
-                           size_t length) {
-    out.push_back({std::string(term), position, length});
-  });
+  auto consumed =
+      splitter.split(text, offset, [&](std::string_view term, size_t position,
+                                       size_t length) {
+        out.push_back({std::string(term), position, length});
+      });
+  assert(consumed == text.size() - offset);
+  (void)consumed;
   return out;
 }
 
@@ -169,6 +175,17 @@ int main() {
     auto terms = run(splitter, text);
     assert(terms.size() == 1);
     assert(text.substr(terms[0].position, terms[0].length) == "寿司");
+  }
+
+  // Called mid-text, as a segmenter is: the offsets come back in the whole
+  // text's terms and the consumed length is what was left.
+  {
+    std::string text = "Tokyo 도와요";
+    MorphologicalSplitter splitter({{0, 1, "돕", true}, {1, 2, "어요", true}});
+    auto terms = run(splitter, text, 6);
+    assert(terms.size() == 2);
+    assert(text.substr(terms[0].position, terms[0].length) == "도");
+    assert(text.substr(terms[1].position, terms[1].length) == "와요");
   }
 
   std::printf("search-splitter OK (standalone header, UTF-16 adapter shape)\n");

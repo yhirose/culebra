@@ -1864,7 +1864,7 @@ inline void _iter_words_fast_fn(JitClosure* cls, JitValue, bool* done,
   for (;;) {
     int64_t avail = win_count_cell->value.data;
     auto* win = reinterpret_cast<char32_t*>(win_buf_cell->value.data);
-    size_t len = culebra::word_segment_length(win, static_cast<size_t>(avail));
+    size_t len = unicode::word_length(win, static_cast<size_t>(avail));
     if (len == 0) len = 1;
     seg_len = static_cast<int64_t>(len);
     if (seg_len < avail || src_off_cell->value.data >= src_len) break;
@@ -1959,8 +1959,7 @@ inline void _iter_sentences_fast_fn(JitClosure* cls, JitValue, bool* done,
   for (;;) {
     int64_t avail = win_count_cell->value.data;
     auto* win = reinterpret_cast<char32_t*>(win_buf_cell->value.data);
-    size_t len =
-        culebra::sentence_segment_length(win, static_cast<size_t>(avail));
+    size_t len = unicode::sentence_length(win, static_cast<size_t>(avail));
     if (len == 0) len = 1;
     seg_len = static_cast<int64_t>(len);
     if (seg_len < avail || src_off_cell->value.data >= src_len) break;
