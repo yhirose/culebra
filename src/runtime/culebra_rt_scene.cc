@@ -1383,7 +1383,13 @@ class View {
   // by default: depth precision is what keeps coplanar road layers from
   // z-fighting at range, and a chase camera never sits within metres of
   // geometry. A cockpit camera does, and pulls it in here.
-  void clip_planes(double near, double far) { near_ = (float)near; far_ = (float)far; }
+  // `near` / `far` are macros in <windef.h> (the segmented-memory keywords),
+  // and NOGDI / NOUSER above do not cut them, so the parameters carry the
+  // member's spelling. The culebra-side keyword names stay `near` / `far`.
+  void clip_planes(double near_plane, double far_plane) {
+    near_ = (float)near_plane;
+    far_ = (float)far_plane;
+  }
 
   // --- the mouse: window points, buttons by name ----------------------------
   double mouse_x() const { return GetMousePosition().x; }
