@@ -37,6 +37,9 @@
 
 #include <stdlib/search_segmenter.h>
 
+#include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -111,6 +114,14 @@ struct Analyzer {
   // alternatives belong on the query side, and a *sequence* of pieces is the
   // splitter's job.
   std::vector<std::function<bool(std::string &)>> filters;
+
+  // How this analyzer is shaped, as the caller describes it: written into a
+  // saved index and compared when one is loaded, so that opening an index
+  // with an analyzer of a different shape fails instead of quietly answering
+  // from term boundaries nobody agrees on. The hooks themselves are
+  // std::functions with no identity to record, so this is what the layer
+  // above can say about them -- see the binding's analyzer_shape.
+  std::string shape;
 };
 
 // ---- Index handles ---------------------------------------------------------
@@ -145,6 +156,9 @@ CULEBRA_RT_SEARCH_LINKAGE void index_drop(int64_t id);
 // model, everything else is cut by the built-in rules. Throws SearchError when
 // the file cannot be loaded.
 CULEBRA_RT_SEARCH_LINKAGE int64_t segmenter_load(std::string_view model_path);
+// How a saved index names this segmenter's model (Analyzer::shape). Empty
+// once the handle is closed.
+CULEBRA_RT_SEARCH_LINKAGE std::string segmenter_model_tag(int64_t id);
 // Frees the handle. Idempotent; a stale/forged id is ignored.
 CULEBRA_RT_SEARCH_LINKAGE void segmenter_drop(int64_t id);
 
@@ -177,6 +191,9 @@ CULEBRA_RT_SEARCH_LINKAGE void index_drop(int64_t) {}
 CULEBRA_RT_SEARCH_LINKAGE int64_t segmenter_load(std::string_view) {
   _not_linked();
 }
+CULEBRA_RT_SEARCH_LINKAGE std::string segmenter_model_tag(int64_t) {
+  _not_linked();
+}
 CULEBRA_RT_SEARCH_LINKAGE void segmenter_drop(int64_t) {}
 
 #else  // the real bodies
@@ -192,12 +209,35 @@ inline std::u32string lowercase(const std::u32string& s) {
 
 // Loaded segmenters, by handle. Per-thread like g_indexes below, and for the
 // same reason (see there).
-inline thread_local IdRegistry<searchlib::TextSplitter> g_segmenters;
+// The splitter, plus how the model it holds is named in an index's shape: the
+// file's own name and byte count. Not a digest -- that would mean reading the
+// model again on every save -- so it tells two models apart by what a
+// directory listing shows, which is the altitude a shape check works at.
+struct Segmenter {
+  searchlib::TextSplitter splitter;
+  std::string model;
+};
 
-inline const searchlib::TextSplitter& segmenter_get(int64_t id) {
+inline thread_local IdRegistry<Segmenter> g_segmenters;
+
+inline const Segmenter& segmenter_entry(int64_t id) {
   auto* p = g_segmenters.get(id);
   if (!p) throw CulebraError("SearchError", "Search: segmenter was closed", 0, 0);
   return *p;
+}
+
+inline const searchlib::TextSplitter& segmenter_get(int64_t id) {
+  return segmenter_entry(id).splitter;
+}
+
+// `name(size)` of a model file. A model that cannot be stat'd still loads, so
+// an unknown size is a mark in the tag rather than an error.
+inline std::string model_tag(std::string_view path) {
+  std::error_code ec;
+  auto size = std::filesystem::file_size(std::filesystem::path(path), ec);
+  return culebra::format("{}({})",
+                         std::filesystem::path(path).filename().string(),
+                         ec ? std::string("?") : std::to_string(size));
 }
 
 // A splitter's emit in searchlib's terms. One conversion for every splitter
@@ -284,9 +324,11 @@ struct Index {
   const Reader *reader = nullptr;
   Pipeline pipeline;
   std::optional<Indexer> indexer;      // empty when read-only
+  std::string shape;                   // what a save records, see write_envelope
 
   explicit Index(const Analyzer &analyzer)
-      : invidx(std::make_unique<Invidx>()), pipeline(analyzer) {
+      : invidx(std::make_unique<Invidx>()), pipeline(analyzer),
+        shape(analyzer.shape) {
     reader = invidx.get();
     indexer.emplace(*invidx, pipeline.normalizer);
   }
@@ -295,7 +337,7 @@ struct Index {
   // failed load never leaves a half-built index behind.
   Index(const Analyzer &analyzer, std::shared_ptr<Reader> backend)
       : compressed(std::move(backend)), reader(compressed.get()),
-        pipeline(analyzer) {}
+        pipeline(analyzer), shape(analyzer.shape) {}
 
   bool writable() const { return invidx != nullptr; }
 };
@@ -322,6 +364,59 @@ inline Index& index_get(int64_t id) {
   return *p;
 }
 
+// A saved index is culebra's envelope around the engine's bytes: the analyzer
+// is culebra's idea, not searchlib's, and the file has to carry it or loading
+// with the wrong one stays undetectable. The engine's own save/load take a
+// stream, so the envelope is read off the front and the rest handed over
+// untouched.
+inline constexpr char kEnvelopeMagic[8] = {'c', 'u', 'l', 's', 'e', 'a', 'r', '\1'};
+
+inline void write_envelope(std::ostream &os, const std::string &shape) {
+  os.write(kEnvelopeMagic, sizeof(kEnvelopeMagic));
+  auto n = static_cast<uint32_t>(shape.size());
+  os.write(reinterpret_cast<const char *>(&n), sizeof(n));
+  os.write(shape.data(), std::streamsize(shape.size()));
+}
+
+// The shape the file was written with. Throws if this is not a culebra index.
+inline std::string read_envelope(std::istream &is, std::string_view path) {
+  char magic[sizeof(kEnvelopeMagic)];
+  is.read(magic, sizeof(magic));
+  if (!is || std::memcmp(magic, kEnvelopeMagic, sizeof(magic)) != 0) {
+    throw CulebraError(
+        "SearchError",
+        culebra::format("Search: {} is not a culebra index file", path), 0, 0);
+  }
+  uint32_t n = 0;
+  is.read(reinterpret_cast<char *>(&n), sizeof(n));
+  std::string shape(n, '\0');
+  if (n) is.read(shape.data(), std::streamsize(n));
+  if (!is) {
+    throw CulebraError(
+        "SearchError",
+        culebra::format("Search: {} ends mid-header", path), 0, 0);
+  }
+  return shape;
+}
+
+// What a splitter cut into terms is what a query has to be cut by, so an
+// index opened with an analyzer shaped differently from the one that built it
+// answers from boundaries the two sides do not share. The shapes are coarse
+// (a Culebra closure has no identity to record, so every closure reads the
+// same) -- this catches the mismatches that have one, not every one.
+inline void check_shape(std::string_view want, std::string_view got,
+                        std::string_view path) {
+  if (want == got) return;
+  throw CulebraError(
+      "SearchError",
+      culebra::format("Search: {} was built with a different analyzer "
+                      "(saved {}, opened with {}); an index has to be searched "
+                      "with the analyzer that built it",
+                      path, want.empty() ? "none" : want,
+                      got.empty() ? "none" : got),
+      0, 0);
+}
+
 // searchlib prefixes its own messages with "searchlib: "; drop it so a
 // surfaced error reads with one prefix, the namespace's own.
 [[noreturn]] inline void rethrow(const std::exception& e) {
@@ -344,13 +439,18 @@ CULEBRA_RT_SEARCH_LINKAGE int64_t index_load(std::string_view path,
   // here can check that; the docs say so instead.
   std::unique_ptr<detail::Index> index;
   try {
+    std::ifstream is(std::string(path), std::ios::binary);
+    if (!is) {
+      throw CulebraError("SearchError",
+                         culebra::format("Search: cannot read {}", path), 0, 0);
+    }
+    detail::check_shape(detail::read_envelope(is, path), analyzer.shape, path);
     if (readonly) {
       index = std::make_unique<detail::Index>(
-          analyzer, searchlib::load_compressed_index<std::string>(
-                        std::string(path)));
+          analyzer, searchlib::load_compressed_index<std::string>(is));
     } else {
       index = std::make_unique<detail::Index>(analyzer);
-      index->invidx->load(std::string(path));
+      index->invidx->load(is);
     }
   } catch (const CulebraError&) {
     throw;  // an analyzer hook's own error, already shaped
@@ -444,8 +544,20 @@ CULEBRA_RT_SEARCH_LINKAGE void index_save(int64_t id, std::string_view path) {
   auto& index = detail::index_get(id);
   if (!index.writable()) detail::throw_readonly("save");
   try {
-    index.invidx->save(std::string(path), {},
-                       searchlib::IndexFormat::Compressed);
+    std::ofstream os(std::string(path), std::ios::binary);
+    if (!os) {
+      throw CulebraError(
+          "SearchError",
+          culebra::format("Search: cannot write {}", path), 0, 0);
+    }
+    detail::write_envelope(os, index.shape);
+    index.invidx->save(os, {}, searchlib::IndexFormat::Compressed);
+    os.flush();
+    if (!os) {
+      throw CulebraError(
+          "SearchError",
+          culebra::format("Search: could not finish writing {}", path), 0, 0);
+    }
   } catch (const CulebraError&) {
     throw;  // an analyzer hook's own error, already shaped
   } catch (const std::exception& e) {
@@ -462,18 +574,26 @@ CULEBRA_RT_SEARCH_LINKAGE void index_drop(int64_t id) {
 
 CULEBRA_RT_SEARCH_LINKAGE int64_t segmenter_load(std::string_view model_path) {
   try {
-    return detail::g_segmenters.add(
-        new searchlib::TextSplitter(segmenter_open(model_path)));
+    return detail::g_segmenters.add(new detail::Segmenter{
+        segmenter_open(model_path), detail::model_tag(model_path)});
   } catch (const std::exception& e) {
     detail::rethrow(e);
   }
 }
 
+// How an index built with this segmenter names it in its shape (see
+// Analyzer::shape). Empty for a handle that is already closed: the analyzer
+// it would have described cannot be built either.
+CULEBRA_RT_SEARCH_LINKAGE std::string segmenter_model_tag(int64_t id) {
+  auto* p = detail::g_segmenters.get(id);
+  return p ? p->model : std::string();
+}
+
 CULEBRA_RT_SEARCH_LINKAGE void segmenter_drop(int64_t id) {
-  auto* splitter = detail::g_segmenters.get(id);
-  if (!splitter) return;
+  auto* entry = detail::g_segmenters.get(id);
+  if (!entry) return;
   detail::g_segmenters.invalidate(id);
-  delete splitter;
+  delete entry;
 }
 
 #endif  // CULEBRA_RT_SEARCH_WEAK

@@ -8186,6 +8186,18 @@ inline bool is_segmenter(JitValue v) {
              static_cast<size_t>(-1);
 }
 
+// The class name a wrapped handle shows (`__foreign__`), for an index's
+// shape. Empty when `v` is not such a handle.
+inline std::string foreign_class_name(JitValue v) {
+  if (v.tag != TAG_OBJECT) return {};
+  auto* h = reinterpret_cast<JitObject*>(v.data);
+  if (h->find_slot("__foreign__") == static_cast<size_t>(-1)) return {};
+  int8_t tag = TAG_NIL;
+  int64_t data = 0;
+  culebra_runtime_object_get(h, "__foreign__", &tag, &data);
+  return std::string(_culebra_str_view(tag, data));
+}
+
 // A wrapped C++ splitter in the analyzer's `splitter` slot: a handle of a
 // class deriving from ISplitter (wrap.h). Resolved at every call, so a handle
 // dropped after the index was built raises ClosedError at the next add or
@@ -8236,9 +8248,19 @@ inline JitValue hits(const std::vector<culebra::search::Hit>& list) {
 // collector does not scan, so the handle field is the root and the index must
 // not outlive it (it cannot -- every call that runs a hook goes through the
 // handle).
+// How an analyzer is described in a saved index. One place, so that an
+// omitted analyzer and an empty one cannot describe themselves differently
+// (they are the same analyzer).
+inline std::string analyzer_shape(std::string_view splitter,
+                                  bool custom_normalizer, size_t filters) {
+  return culebra::format("splitter={};normalizer={};filters={}", splitter,
+                         custom_normalizer ? "closure" : "builtin", filters);
+}
+
 inline culebra::search::Analyzer make_analyzer(JitValue v) {
   culebra::search::Analyzer analyzer;
   if (v.tag == TAG_NIL) {
+    analyzer.shape = analyzer_shape("builtin", false, 0);
     return analyzer;
   }
   if (v.tag != TAG_OBJECT) {
@@ -8292,13 +8314,24 @@ inline culebra::search::Analyzer make_analyzer(JitValue v) {
   // C++ splitter's handle. A handle stays reachable the same way the closures
   // do: through the analyzer object the index handle holds (see
   // _culebra_search_build_index_handle).
+  //
+  // Each branch also names itself in `analyzer.shape`, which a saved index
+  // records: the hooks are std::functions with no identity to compare, so
+  // what a file can say is which kind of splitter cut its terms, which model
+  // or which wrapped class it was, and how many filters ran. See
+  // Analyzer::shape.
+  std::string splitter_shape = "builtin";
   if (auto seg = field("splitter"); is_segmenter(seg)) {
     analyzer.segmenter = id(seg);
+    splitter_shape =
+        "model:" + culebra::search::segmenter_model_tag(analyzer.segmenter);
   } else if (auto native = foreign_splitter(seg)) {
     analyzer.native_splitter = std::move(native);
+    splitter_shape = "native:" + foreign_class_name(seg);
   } else if (auto* cb = hook("splitter",
                              "a Function, a Search.segmenter or a wrapped "
                              "splitter")) {
+    splitter_shape = "closure";
     analyzer.splitter =
         [cb, called, type_error](
             std::string_view text,
@@ -8385,6 +8418,8 @@ inline culebra::search::Analyzer make_analyzer(JitValue v) {
         _jit_thread.call_line, _jit_thread.call_col);
   }
 
+  analyzer.shape = analyzer_shape(splitter_shape, analyzer.normalizer != nullptr,
+                                  analyzer.filters.size());
   return analyzer;
 }
 

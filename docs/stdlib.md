@@ -7325,9 +7325,10 @@ A splitter written in C++ runs natively instead: a class deriving from
 accepts as it is. The contract and the handle's lifetime are in [Plugging a
 splitter into Search](deployment.md#plugging-a-splitter-into-search).
 
-`Search.Index.load(path, analyzer)` takes one too. The saved file records
-nothing about the analyzer it was built with, so loading with a different one
-gives quietly wrong results and nothing can catch it. Pass the same one.
+`Search.Index.load(path, analyzer)` takes one too, and it has to be shaped
+like the one that built the index — a splitter cuts the terms an index holds,
+and a query cut differently finds nothing. The file records that shape and
+`load` refuses a mismatch (see [Saving and loading](#saving-and-loading)).
 
 ### Japanese: a model-based splitter
 
@@ -7420,8 +7421,30 @@ let reopened = Search.Index.load("notes.idx")
 
 The file holds the index, not the documents: `search` still answers with keys
 and byte ranges, and it is on the caller to keep the original text around to
-resolve them against. The format is the engine's own and is not stable across
-releases while this namespace is experimental.
+resolve them against. The format is culebra's, wrapping the engine's, and is
+not stable across releases while this namespace is experimental.
+
+It records how the analyzer that built it was shaped, and `load` refuses an
+analyzer shaped differently:
+
+```culebra
+# doctest: skip
+let idx = Search.Index.new(analyzer: { splitter: Search.segmenter("ja-ud-gsd") })
+idx.add("doc-1", "東京タワーに行った")
+idx.save("notes.idx")
+
+Search.Index.load("notes.idx")  # !! SearchError: built with a different analyzer
+```
+
+The shape is coarse, because it is what a file can honestly record: which
+kind of splitter cut the terms (the built-in rules, a model — named by its
+file and size —, a wrapped C++ class, or a Culebra closure), whether the
+normalizer was the built-in one, and how many filters ran. A Culebra function
+has no identity that survives the process, so every closure reads the same:
+swapping one stop-word list for another of the same length is not caught. What
+is caught is the mismatch that has a name — an index built with a model opened
+without one, a filter that is no longer there — which is the shape most of
+these mistakes take.
 
 The file is written with Elias-Fano compressed postings, and `load` expands
 them back into the form `new` builds, so a loaded index searches at full speed

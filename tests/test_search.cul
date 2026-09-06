@@ -121,10 +121,60 @@ assert_throws("SearchError", fn () {
 })
 ro.close()
 
-// The analyzer is the caller's to supply either way.
+// An omitted analyzer and an empty one are the same analyzer, so an index
+// saved under one opens under the other.
 let ro_analyzed = Search.Index.load(path, {filters: []}, readonly: true)
 assert_eq(found(ro_analyzed.search("quick")), ["doc-2"])
 ro_analyzed.close()
+
+// --- the file records how its analyzer was shaped ---
+// Opening with a differently shaped one is refused rather than answered from
+// term boundaries the two sides do not share. The shapes are coarse: a
+// Culebra closure has no identity to record, so any closure matches any
+// other, but a filter that is not there, or a model instead of the built-in
+// splitting, is caught.
+let dropped = fn (t) {
+  if t == "the" {
+    nil
+  } else {
+    t
+  }
+}
+assert_throws("SearchError", fn () {
+  Search.Index.load(path, {filters: [dropped]})
+})
+assert_throws("SearchError", fn () {
+  Search.Index.load(path, {normalizer: fn (t) { t }})
+})
+assert_throws("SearchError", fn () {
+  Search.Index.load(path, {splitter: fn (t) { [] }})
+})
+// The same refusal on the read-only path, and it is the load that fails.
+assert_throws("SearchError", fn () {
+  Search.Index.load(path, {filters: [dropped]}, readonly: true)
+})
+
+// An index saved by a filtered analyzer needs one shaped the same way.
+let filtered_path = "{FS.temp_dir()}/culebra_test_search_shape_{UUID.v4()}.idx"
+let filtered = Search.Index.new(analyzer: {filters: [dropped]})
+filtered.add("doc-1", "the quick brown fox")
+filtered.save(filtered_path)
+filtered.close()
+let reopened = Search.Index.load(filtered_path, {filters: [dropped]})
+assert_eq(found(reopened.search("quick")), ["doc-1"])
+reopened.close()
+assert_throws("SearchError", fn () {
+  Search.Index.load(filtered_path)
+})
+FS.remove(filtered_path)
+
+// A file that is not a culebra index says so, rather than failing deeper in.
+let junk = "{FS.temp_dir()}/culebra_test_search_junk_{UUID.v4()}.idx"
+FS.write(junk, "not an index at all")
+assert_throws("SearchError", fn () {
+  Search.Index.load(junk)
+})
+FS.remove(junk)
 FS.remove(path)
 
 // --- Keys are Strings. A Long is refused rather than stringified, since the
