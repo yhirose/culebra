@@ -32,6 +32,9 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
+          # lua5.4 and guile-3.0 are `just bench-langs`' only apt-installable
+          # comparison runtimes; python3, ruby, node and go come with the
+          # image and dotnet comes from setup-dotnet below.
           sudo apt-get install -y \
             cmake \
             g++-14 \
@@ -39,7 +42,9 @@ jobs:
             wget \
             lsb-release \
             software-properties-common \
-            gnupg
+            gnupg \
+            lua5.4 \
+            guile-3.0
           # Ubuntu 24.04's apt-shipped `just` predates the [group(...)]
           # attribute (just 1.27.0+). Install from the official script.
           curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
@@ -60,7 +65,13 @@ jobs:
 
       - name: Install dependencies (macOS)
         if: matrix.os == 'macos-latest'
-        run: brew install llvm just
+        run: brew install llvm just lua guile
+
+      # `just bench-langs`' C# lane. Neither runner image is guaranteed to
+      # carry an SDK, and a missing one would quietly report "-".
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
 
       - name: Build (Release + JIT)
         run: just build
@@ -74,5 +85,17 @@ jobs:
             echo
             echo '```'
             cat bench.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run language comparison
+        run: |
+          set -o pipefail
+          just bench-langs | tee langs.txt
+          {
+            echo "## Language comparison — ${{ matrix.os }}"
+            echo
+            echo '```'
+            cat langs.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

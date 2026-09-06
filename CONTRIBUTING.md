@@ -61,10 +61,16 @@ just doctest            # run the `# =>` doctests in docs and tests/doctest
 just difftest           # differential corpus, every engine (tools/difftest)
 just release-diff path/to/culebra    # ... against a previous release's binary
 just perf               # microbench regression check (tests/perf/*.cul)
+just bench-langs        # five programs, both engines vs. other languages
 ```
 
 `just test` is the gate to run before every commit. `just perf` is not
 part of it — microbench runtimes are noisy and machine-dependent.
+
+`just bench-langs` is a report rather than a check: the same five programs
+under both engines and under python3, ruby, lua, guile, node, dotnet and go,
+in milliseconds. A runtime that is not installed is reported as "-", so it
+runs with whatever is on the machine.
 
 The `wrap` lane is not in the gate either: it rebuilds the whole source tree
 into its own cache dir, which roughly doubles the gate's wall time to guard a

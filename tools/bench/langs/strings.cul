@@ -1,0 +1,11 @@
+fn run(n) {
+  mut s = ""
+  mut i = 0
+  while i < n {
+    s = s + "x"
+    i = i + 1
+  }
+  s.size()
+}
+
+println(run(40000))

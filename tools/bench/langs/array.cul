@@ -1,0 +1,17 @@
+fn run(n) {
+  mut xs = []
+  mut i = 1
+  while i <= n {
+    xs.push(i * i)
+    i = i + 1
+  }
+  mut total = 0
+  mut j = 0
+  while j < xs.size() {
+    total = (total + xs[j]) % 1000000007
+    j = j + 1
+  }
+  total
+}
+
+println(run(500000))

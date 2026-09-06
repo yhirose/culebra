@@ -1,0 +1,11 @@
+fn run(n) {
+  mut total = 0
+  mut i = 1
+  while i <= n {
+    total = (total + i * i) % 1000000007
+    i = i + 1
+  }
+  total
+}
+
+println(run(1200000))

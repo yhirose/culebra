@@ -1451,6 +1451,16 @@ bench-vector-loop steps="1000000": build
     @echo "=== JIT ==="
     ./build/culebra --jit tools/bench/vector_loop.cul {{steps}}
 
+# The same five small programs on both engines and on seven other language
+# runtimes, in milliseconds. `just perf` measures the VM against the JIT,
+# which cannot say whether either is fast in absolute terms; this says it in
+# a unit a reader already has a feel for. A runtime that is not installed is
+# reported as "-". Report, not a gate.
+[doc("Five programs on both engines vs. other language runtimes (report, not a gate)")]
+[group("bench")]
+bench-langs reps="3": build
+    ./tools/bench/langs/run.sh --reps {{reps}}
+
 # Smoke: run microgpt 5 training steps (no inference) on both compiled
 # lanes to catch regressions in the value-ownership / special-method
 # dispatch paths that the unit tests don't exercise at scale.
