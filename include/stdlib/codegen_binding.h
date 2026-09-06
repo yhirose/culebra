@@ -259,6 +259,8 @@ inline bool register_codegen_binding() {
       .method<&codegen::Resolver::new_fn>("new_fn", {{"parent", -1L}})
       .method<&codegen::Resolver::num_fns>("num_fns")
       .method<&codegen::Resolver::parent_of>("parent_of", {"fn"})
+      .method<&codegen::Resolver::set_parent>("set_parent",
+                                              {"fn", "parent"})
       .method<&codegen::Resolver::set_func_index>("set_func_index",
                                                   {"fn", "index"})
       .method<&codegen::Resolver::func_index>("func_index", {"fn"})

@@ -1266,6 +1266,14 @@ class Resolver {
 
   // --- scopes --------------------------------------------------------------
 
+  // Which frame builds `fn`'s closure, decided after the fact -- a front end
+  // lowering one source function into two learns which is which only once
+  // both exist.
+  void set_parent(int64_t fn, int64_t parent) {
+    checked_fn(fn);
+    rs_.set_parent(static_cast<int32_t>(fn), static_cast<int32_t>(parent));
+  }
+
   void push_scope() { rs_.push_scope(); }
   void pop_scope() {
     if (rs_.depth() == 0) {

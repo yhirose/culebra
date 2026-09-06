@@ -46,8 +46,6 @@
 # as `this`, as Node's CommonJS modules do; the program's own `this` is an
 # empty object, like module.exports).
 
-import front from '../front.cul'
-
 # A backtick would end the raw string the grammar is written in, so the
 # template rules spell it @BQ@ and it is substituted in.
 let bt = String.from_code_point(96)
@@ -2544,6 +2542,7 @@ mut prelude_bound = {}   # prelude top-level binding name -> its key on __G
 mut prelude_inits = []   # [{key, init}], in prelude order
 mut prelude_end = 0      # funcs.size() once the prelude is bound
 mut prelude_nslots = []  # nslots for funcs[0..prelude_end) as pass A left them
+mut prelude_mark = 0     # the resolver as of the bound prelude, to roll back to
 mut g_slot = 0           # main's slot holding __G
 mut this_slot = 0        # main's `this`
 mut loop_ctx = []        # per func (emit time): [{step: fn(m) -> [ids]}...]
@@ -2552,11 +2551,23 @@ mut pending_labels = []  # per func (emit time): label names seen, not yet
 mut classes = {}    # pkey of a class node -> {home, derived, name, ctor, fields, members}
 mut for_close = {}  # pkey of a for-of -> {func: the closer, slot: its iterator binding}
 
-# per func, what it captures and which of its slots are cells, and the
-# scopes its names bind in (front.cul); the Emitter is over the program
-# being compiled
-let frames = front.Frames.new()
-let scopes = front.Scopes.new(frames)
+# What each function captures, which of its slots are cells, and the scopes
+# its names bind in: CodeGen.Resolver, from the standard library. A variable
+# is an id it hands out rather than a (function, slot) pair -- `var_slot`
+# answers the slot where a lowering needs the number itself.
+let rs = CodeGen.Resolver.new()
+# The Resolver keeps one scope stack for the whole walk; functions nest on it
+# because walk_fn enters a function's scope and leaves it around the body.
+# `scope_base[f]` is where f's own scopes start, which is what a `var` hoist
+# and "is this name f's own" need and a plain lookup does not.
+mut scope_base = []
+
+# a position for code no source line produced
+let ORIGIN = {line: 1, column: 1}
+
+fn pos(line, column) {
+  {line: line, column: column}
+}
 mut ir = nil
 
 # Prelude names that are VM intrinsics, with their arities.
@@ -2605,15 +2616,20 @@ fn new_func(parent, name, stmts, body_expr, is_arrow) {
     is_prelude: in_prelude,
     is_arrow: is_arrow,
     var_names: [],
+    param_vs: [],
   })
-  frames.add(parent)
-  scopes.add()
+  rs.new_fn(cond {
+    parent == nil => -1,
+    _ => parent,
+  })
+  rs.set_func_index(f, f)
+  scope_base.push(0)
   nslots.push(0)
   loop_ctx.push([])
   pending_labels.push([])
   # every function reaches the global table through main's cell
   if f != 0 {
-    frames.use(f, 0, g_slot)
+    rs.use(g_slot, f)
   }
   f
 }
@@ -2621,57 +2637,79 @@ fn new_func(parent, name, stmts, body_expr, is_arrow) {
 # --- Pass A: bind ---------------------------------------------------------------
 
 fn enter_scope(f) {
-  scopes.push(f)
+  rs.push_scope()
+  # the outermost scope f opens is the one a `var` hoists into
+  if scope_base[f] == 0 {
+    scope_base[f] = rs.depth() - 1
+  }
 }
 # Leave the scope, recording the slots it declared under the node that owns
 # it -- what the emitter refreshes per entry.
 fn close_scope(f, node) {
-  block_slots[pkey(node)] = scopes.bound(f)
+  let d = rs.depth() - 1
+  mut vs = []
+  for i in range(rs.declared_count(d)) {
+    vs.push(rs.declared_index(d, i))
+  }
+  block_slots[pkey(node)] = vs
   leave_scope(f)
 }
 
 fn leave_scope(f) {
-  scopes.pop(f)
+  rs.pop_scope()
 }
 
 # declared again in the same block: the same binding, its slot reused
 fn declare_var(f, name, at) {
-  mut slot = scopes.here(f, name)
-  if slot == nil {
-    slot = nslots[f]
-    nslots[f] = slot + 1
-    scopes.bind(f, name, slot)
+  mut v = rs.declared_here(name)
+  if v == -1 {
+    v = rs.declare(name, f)
+    rs.set_var_slot(v, nslots[f])
+    nslots[f] = nslots[f] + 1
   }
   if at != nil {
-    resolved[pkey(at)] = {kind: 'var', owner: f, slot: slot}
+    resolved[pkey(at)] = {kind: 'var', v: v}
   }
-  slot
+  v
+}
+
+# any of f's own open scopes, innermost first -- not the enclosing
+# functions', which a plain lookup would also find
+fn own_binding(f, name) {
+  mut i = rs.depth() - 1
+  while i >= scope_base[f] {
+    let v = rs.declared_at(i, name)
+    if v != -1 {
+      return v
+    }
+    i = i - 1
+  }
+  -1
 }
 
 # `var` binds at the function's outermost scope wherever it appears
 fn declare_fn_var(f, name, at) {
-  # already visible (a parameter, or declared before)? keep that slot
-  mut slot = scopes.own(f, name)
-  if slot == nil {
-    slot = nslots[f]
-    nslots[f] = slot + 1
-    scopes.bind_at(f, 0, name, slot)
-    funcs[f].var_names.push(slot)
+  # already visible (a parameter, or declared before)? keep that binding
+  mut v = own_binding(f, name)
+  if v == -1 {
+    v = rs.declare_in(scope_base[f], name, f)
+    rs.set_var_slot(v, nslots[f])
+    nslots[f] = nslots[f] + 1
+    funcs[f].var_names.push(v)
   }
   if at != nil {
-    resolved[pkey(at)] = {kind: 'var', owner: f, slot: slot}
+    resolved[pkey(at)] = {kind: 'var', v: v}
   }
-  slot
+  v
 }
 
 fn resolve(f, name) {
   if name == '__G' {
-    return {kind: 'var', owner: 0, slot: g_slot}
+    return {kind: 'var', v: g_slot}
   }
-  let found = scopes.lookup(f, name)
-  if found != nil {
-    let (h, slot) = found
-    return {kind: 'var', owner: h, slot: slot}
+  let found = rs.lookup(name)
+  if found != -1 {
+    return {kind: 'var', v: found}
   }
   if in_prelude && prelude_bound.has(name) {
     return {kind: 'preconst', key: prelude_bound[name]}
@@ -2695,7 +2733,7 @@ fn note_use(node, f) {
   let r = resolve(f, node.token)
   resolved[pkey(node)] = r
   if r.kind == 'var' {
-    frames.use(f, r.owner, r.slot)
+    rs.use(r.v, f)
   }
   r
 }
@@ -2864,11 +2902,11 @@ fn walk_fn(f, param_nodes, this_node) {
     # the prelude spells its receiver parameter itself (a helper has none)
     fi.is_prelude => nil,
     fi.is_arrow => {
-      declare_var(f, "\x01this", nil)
+      fi.param_vs.push(declare_var(f, "\x01this", nil))
       fi.params.push("\x01this")
     },
     _ => {
-      declare_var(f, 'this', nil)
+      fi.param_vs.push(declare_var(f, 'this', nil))
       fi.params.push('this')
     },
   }
@@ -2882,20 +2920,21 @@ fn walk_fn(f, param_nodes, this_node) {
         fi['rest'] = pp.id.token
         mut k = 0
         while k < 8 {
-          declare_var(f, "\x01r{k}", nil)
+          fi.param_vs.push(declare_var(f, "\x01r{k}", nil))
           fi.params.push("\x01r{k}")
           k = k + 1
         }
-        declare_var(f, pp.id.token, pp.id)
+        fi['rest_v'] = declare_var(f, pp.id.token, pp.id)
       },
       pp.id.name == 'ident' => {
-        declare_var(f, pp.id.token, pp.id)
+        fi.param_vs.push(declare_var(f, pp.id.token, pp.id))
         fi.params.push(pp.id.token)
         fi.dflts.push(pp.dflt)
       },
       _ => {
         let hn = "\x01p{fi.params.size()}"
         let slot = declare_var(f, hn, nil)
+        fi.param_vs.push(slot)
         fi.params.push(hn)
         fi.dflts.push(pp.dflt)
         pat_params.push((slot, pp.id))
@@ -3054,7 +3093,7 @@ fn scan_stmt(node, f) {
                 0 => declare_var(f, cp.nodes[0].token, cp.nodes[0]),
               _ => declare_var(f, "\x01caught", nil),
             }
-            resolved[pkey(c)] = {kind: 'var', owner: f, slot: slot}
+            resolved[pkey(c)] = {kind: 'var', v: slot}
             scan_block(c.nodes[1], f)
             leave_scope(f)
           },
@@ -3085,8 +3124,8 @@ fn scan_for_each(node, f) {
     # captures
     let slot = declare_var(f, "\x01it" + pkey(node), nil)
     let g = new_func(f, 'iterclose', [], nil, true)
-    funcs[g]['close_of'] = {owner: f, slot: slot}
-    frames.use(g, f, slot)
+    funcs[g]['close_of'] = slot
+    rs.use(slot, g)
     for_close[pkey(node)] = {func: g, slot: slot}
   }
   declare_pattern(f, pat, kw.token)
@@ -3207,10 +3246,10 @@ fn scan_class(node, f) {
         mk.token == 'constructor' => {
         let g = new_func(f, cname, mem.nodes[2].nodes, nil, false)
         closure_of[pkey(mem)] = g
-        funcs[g]['home'] = {owner: f, slot: home}
+        funcs[g]['home'] = home
         funcs[g]['is_ctor'] = true
         funcs[g]['derived'] = derived
-        frames.use(g, f, home)
+        rs.use(home, g)
         walk_fn(g, mem.nodes[1].nodes, nil)
         info.ctor = g
       },
@@ -3222,9 +3261,9 @@ fn scan_class(node, f) {
         let (params, blk) = member_params_body(mem)
         let g = new_func(f, mname, blk.nodes, nil, false)
         closure_of[pkey(mem)] = g
-        funcs[g]['home'] = {owner: f, slot: home}
+        funcs[g]['home'] = home
         funcs[g]['is_static'] = is_static
-        frames.use(g, f, home)
+        rs.use(home, g)
         walk_fn(g, params, nil)
         let fv = wrap_member(f, mem, g, mname)
         info.members.push({node: mem, is_static: is_static, key: mk, func: fv})
@@ -3243,11 +3282,11 @@ fn scan_class(node, f) {
   if info.fields.size() > 0 {
     # the initializers run as a method of their own, in order
     let g = new_func(f, cname + '.fields', [], nil, false)
-    funcs[g]['home'] = {owner: f, slot: home}
+    funcs[g]['home'] = home
     funcs[g]['field_inits'] = info.fields
-    frames.use(g, f, home)
+    rs.use(home, g)
     enter_scope(g)
-    declare_var(g, 'this', nil)
+    funcs[g].param_vs.push(declare_var(g, 'this', nil))
     funcs[g].params.push('this')
     for fld in info.fields {
       if fld.nodes.size() > 1 {
@@ -3272,7 +3311,7 @@ fn resolve_super(node, f) {
         is_static: funcs[h].is_static == true,
       }
       resolved[pkey(node)] = r
-      frames.use(f, r.home.owner, r.home.slot)
+      rs.use(r.home, f)
       return r
     }
     h = funcs[h].parent
@@ -3298,12 +3337,18 @@ fn wrap_body(f, node, g, name, is_async) {
   funcs[w]['is_async'] = is_async
   # the raw body's closure is built in the wrapper's frame, so the wrapper
   # is where it is lexically nested as far as capture propagation goes
-  frames.parent[g] = w
+  rs.set_parent(g, w)
+  # `use` propagates as it is called, so anything the body already read from
+  # further out was recorded against the parent it had a moment ago. The
+  # wrapper is the frame that builds its closure, so it has to carry them.
+  for i in range(rs.free_count(g)) {
+    rs.use(rs.free_at(g, i), w)
+  }
   enter_scope(w)
-  declare_var(w, 'this', nil)
+  funcs[w].param_vs.push(declare_var(w, 'this', nil))
   funcs[w].params.push('this')
   for k in range(8) {
-    declare_var(w, "\x01a{k}", nil)
+    funcs[w].param_vs.push(declare_var(w, "\x01a{k}", nil))
     funcs[w].params.push("\x01a{k}")
   }
   leave_scope(w)
@@ -3338,7 +3383,7 @@ fn scan_expr(node, f) {
       let r = resolve(f, 'this')
       resolved[pkey(node)] = r
       if r.kind == 'var' {
-        frames.use(f, r.owner, r.slot)
+        rs.use(r.v, f)
       }
     },
     {name: 'template'} => {
@@ -3471,7 +3516,7 @@ fn scan_expr(node, f) {
       let r = resolve(f, 'this')
       resolved["this@" + pkey(node)] = r
       if r.kind == 'var' {
-        frames.use(f, r.owner, r.slot)
+        rs.use(r.v, f)
       }
     },
     {name: 'super_mem'} => {
@@ -3479,7 +3524,7 @@ fn scan_expr(node, f) {
       let r = resolve(f, 'this')
       resolved["this@" + pkey(node)] = r
       if r.kind == 'var' {
-        frames.use(f, r.owner, r.slot)
+        rs.use(r.v, f)
       }
     },
     {name: 'ternary'} => {
@@ -3539,27 +3584,30 @@ fn scan_target(t, f) {
 
 # --- Pass B: captures -------------------------------------------------------------
 #
-# Frames.solve (front.cul). A call obliges the caller to hand the callee its
-# captures; a nested function obliges its parent the same way (a wrapper is
-# pushed onto its own calls list, so the two edges are not the same edge).
+# There is no pass. `use` records a read where it happens and propagates it
+# through every function between the reader and the owner, which closes the
+# free sets for a language whose closures are built where their functions
+# are written -- and JavaScript's are, once a generator's raw body is
+# nested in the wrapper that builds it (see wrap_body). `number_captures`
+# then numbers what the walk found.
 
 # --- Pass C: emit ------------------------------------------------------------------
 
-# The lowering keeps its line/col pairs; the Emitter takes a position
+# The lowering keeps its line/col pairs; the builder takes a position
 fn call_pre(m, f, name, arg_ids, at) {
-  ir.call(f, prelude_named[name], arg_ids, at)
+  call_fn(f, prelude_named[name], arg_ids, at)
 }
 
 fn var_read(m, f, r, at) {
-  ir.read(f, r.owner, r.slot, at)
+  rs.read(m, f, r.v, at)
 }
 
 fn var_write(m, f, r, v, at) {
-  ir.write(f, r.owner, r.slot, v, at)
+  rs.write(m, f, r.v, v, at)
 }
 
 fn gref(m, f, at) {
-  var_read(m, f, {owner: 0, slot: g_slot}, at)
+  rs.read(m, f, g_slot, at)
 }
 
 fn nil_l(m, at) {
@@ -3574,14 +3622,47 @@ fn dbl_l(m, v, at) {
 
 # A lowering temp: one more local, appended after the named ones (every
 # declaration is bound in pass A, so the count is settled before emit).
+# A temp the lowering hands itself. A variable like any other, because one
+# of them -- a for-of iterator, which the loop's closer captures -- can end
+# up in a cell, and `access` only answers for something it knows.
 fn new_scratch(f) {
-  let k = nslots[f]
-  nslots[f] = k + 1
-  k
+  let v = rs.declare_var('', f)
+  rs.set_var_slot(v, nslots[f])
+  nslots[f] = nslots[f] + 1
+  v
 }
 
-fn scratch_ref(m, slot, at) {
-  ir.local(slot, at)
+# A scratch is read only in the function that allocated it, so the owner is
+# the reading frame. `read` refuses any other, rather than mis-numbering it.
+fn scratch_ref(m, v, at) {
+  rs.read(m, rs.var_owner(v), v, at)
+}
+
+# A variable's own slot in the frame that owns it: what the Module wants
+# where a lowering names a local directly rather than through `access`.
+fn local_ref(v, at) {
+  ir.var_ref('local', rs.var_slot(v), at)
+}
+fn store_local(v, value, at) {
+  ir.assign('local', rs.var_slot(v), value, at)
+}
+
+# a closure of `g` built in `f`'s frame, and calling one
+fn closure_of_fn(f, g, at) {
+  ir.make_closure(rs.func_index(g), rs.capture_map(ir, f, g), at)
+}
+fn call_fn(f, g, args, at) {
+  ir.call_value(closure_of_fn(f, g, at), args, at)
+}
+
+# statements then a value, as one block
+fn seq_of(stmts, value, at) {
+  ir.block([...stmts, value], at)
+}
+
+# `!v` over a value the VM's own test understands
+fn lnot_of(v, at) {
+  ir.make_if_else(v, ir.bool_literal(false, at), ir.bool_literal(true, at), at)
 }
 
 # a user-mode value's truthiness, or the raw VM test inside the prelude
@@ -3723,7 +3804,7 @@ fn emit_binop(m, f, tok, l, r, at) {
 }
 
 fn ir_not(m, v, at) {
-  ir.lnot(v, at)
+  lnot_of(v, at)
 }
 
 # `typeof v == 'nil'` -- how the compiler asks "is this undefined?", since
@@ -3780,9 +3861,9 @@ fn emit_shortcircuit(m, node, f) {
   for [op, rn] in pairs.iter().chunks(2) {
     let tmp = new_scratch(f)
     let t = fn () {
-      ir.local(tmp, op)
+      local_ref(tmp, op)
     }
-    let store = ir.store_local(tmp, acc, op)
+    let store = store_local(tmp, acc, op)
     let rhs = emit_expr(m, rn, f)
     let test = cond {
       n == 'nullish' => cond {
@@ -3797,7 +3878,7 @@ fn emit_shortcircuit(m, node, f) {
       n == 'lor' => (t(), rhs),
       _ => (rhs, t()),
     }
-    acc = ir.seq([store], ir.make_if_else(test, then_b, else_b, op), op)
+    acc = seq_of([store], ir.make_if_else(test, then_b, else_b, op), op)
   }
   acc
 }
@@ -3867,7 +3948,7 @@ fn fn_length(g) {
 
 fn emit_fn_value(m, node, f, name, is_arrow) {
   let g = closure_of[pkey(node)]
-  let c = ir.closure(f, g, node)
+  let c = closure_of_fn(f, g, node)
   cond {
     # a prelude helper referenced as a value is the raw closure; a prelude
     # function expression is a JS function like any other
@@ -3890,7 +3971,7 @@ fn emit_arg_array(m, f, arg_nodes, at) {
     },
     _ => {
       let tmp = new_scratch(f)
-      mut ids = [ir.store_local(tmp, ir.array_lit([], at), at)]
+      mut ids = [store_local(tmp, ir.array_lit([], at), at)]
       for a in arg_nodes {
         cond {
           a.name ==
@@ -3991,7 +4072,7 @@ fn emit_postfix(m, node, f) {
 }
 
 fn home_ref(m, f, r, at) {
-  var_read(m, f, {owner: r.home.owner, slot: r.home.slot}, at)
+  rs.read(m, f, r.home, at)
 }
 
 # the `this` a super form runs with (resolved next to the node)
@@ -4014,7 +4095,7 @@ fn emit_class(m, node, f) {
     _ => nil_l(m, node),
   }
   let ctor = cond {
-    info.ctor != nil => ir.closure(f, info.ctor, node),
+    info.ctor != nil => closure_of_fn(f, info.ctor, node),
     _ => nil_l(m, node),
   }
   let fields = cond {
@@ -4022,7 +4103,7 @@ fn emit_class(m, node, f) {
       nil => mkfn_id(m, f, info.fields_func, 'fields', false, false, node),
     _ => nil_l(m, node),
   }
-  let home = {owner: f, slot: info.home}
+  let home = {v: info.home}
   mut ids = [var_write(
     m,
     f,
@@ -4046,14 +4127,14 @@ fn emit_class(m, node, f) {
       mem.node.name == 'field_c' => {
         let v = cond {
           mem.node.nodes.size() > 1 => emit_expr(m, mem.node.nodes[1], f),
-          _ => nil_l(m, front.pos(pl, pc)),
+          _ => nil_l(m, pos(pl, pc)),
         }
         ids.push(call_pre(
           m,
           f,
           '__set',
-          [var_read(m, f, home, front.pos(pl, pc)), key, v],
-          front.pos(pl, pc),
+          [var_read(m, f, home, pos(pl, pc)), key, v],
+          pos(pl, pc),
         ))
       },
       mem.node.name == 'method_c' ||
@@ -4066,14 +4147,14 @@ fn emit_class(m, node, f) {
           prop_key_text(mk),
           false,
           true,
-          front.pos(pl, pc),
+          pos(pl, pc),
         )
         ids.push(call_pre(
           m,
           f,
           '__def_method',
-          [var_read(m, f, home, front.pos(pl, pc)), is_static, key, fv],
-          front.pos(pl, pc),
+          [var_read(m, f, home, pos(pl, pc)), is_static, key, fv],
+          pos(pl, pc),
         ))
       },
       _ => {
@@ -4088,20 +4169,20 @@ fn emit_class(m, node, f) {
           prop_key_text(mk),
           false,
           false,
-          front.pos(pl, pc),
+          pos(pl, pc),
         )
         ids.push(call_pre(
           m,
           f,
           '__def_accessor',
           [
-            var_read(m, f, home, front.pos(pl, pc)),
+            var_read(m, f, home, pos(pl, pc)),
             is_static,
-            str_l(m, kind, front.pos(pl, pc)),
+            str_l(m, kind, pos(pl, pc)),
             key,
             fv,
           ],
-          front.pos(pl, pc),
+          pos(pl, pc),
         ))
       },
     }
@@ -4128,7 +4209,7 @@ fn emit_steps(m, f, value0, steps, start) {
     if step.name.starts_with('opt_') {
       # a?.b: the rest of the chain runs only when a is not nullish
       let tmp = new_scratch(f)
-      let store = ir.store_local(tmp, value, step)
+      let store = store_local(tmp, value, step)
       let rest = [plain_step(step)] + steps.slice(i + 1, steps.size())
       let rest_v = emit_steps(m, f, scratch_ref(m, tmp, step), rest, 0)
       let pick = ir.make_if_else(
@@ -4190,8 +4271,8 @@ fn emit_steps(m, f, value0, steps, start) {
             let cp = steps[i + 1]
             let recv = new_scratch(f)
             let fnv = new_scratch(f)
-            let store_r = ir.store_local(recv, value, step)
-            let store_f = ir.store_local(
+            let store_r = store_local(recv, value, step)
+            let store_f = store_local(
               fnv,
               emit_get(m, f, scratch_ref(m, recv, step), key, step),
               step,
@@ -4287,8 +4368,8 @@ fn emit_target(m, f, t) {
         _ => emit_expr(m, last.nodes[0], f),
       }
       let pre = [
-        ir.store_local(ot, emit_expr(m, base, f), last),
-        ir.store_local(kt, key, last),
+        store_local(ot, emit_expr(m, base, f), last),
+        store_local(kt, key, last),
       ]
       {kind: 'prop', ot: ot, kt: kt, pre: pre}
     },
@@ -4349,7 +4430,7 @@ fn emit_assign(m, node, f) {
   if lhs.name == 'arr_pat' || lhs.name == 'obj_pat' {
     # [a, b] = v: the value is the expression's own
     let tmp = new_scratch(f)
-    mut ids = [ir.store_local(tmp, emit_expr(m, rhs, f), op)]
+    mut ids = [store_local(tmp, emit_expr(m, rhs, f), op)]
     for x in emit_bind(m, f, lhs, scratch_ref(m, tmp, op), op) {
       ids.push(x)
     }
@@ -4368,7 +4449,7 @@ fn emit_assign(m, node, f) {
     op.token == '||=' || op.token == '&&=' || op.token == '??=' => {
       let cur = target_read(m, f, tg, op)
       let tmp = new_scratch(f)
-      let store = ir.store_local(tmp, cur, op)
+      let store = store_local(tmp, cur, op)
       let test = cond {
         op.token ==
           '??=' => call_pre(m, f, '__isnullish', [scratch_ref(m, tmp, op)], op),
@@ -4407,7 +4488,7 @@ fn emit_update(m, node, f, prefix) {
     in_prelude => target_read(m, f, tg, op),
     _ => call_pre(m, f, '__tonum', [target_read(m, f, tg, op)], op),
   }
-  let store = ir.store_local(tmp, old, op)
+  let store = store_local(tmp, old, op)
   let delta = cond {
     in_prelude => ir.literal(1, op),
     _ => dbl_l(m, 1.0, op),
@@ -4503,10 +4584,10 @@ fn emit_unary(m, node, f) {
 
 fn emit_object(m, node, f) {
   let tmp = new_scratch(f)
-  mut ids = [ir.store_local(tmp, ir.object_lit([], node), node)]
+  mut ids = [store_local(tmp, ir.object_lit([], node), node)]
   fn put(pk, pv, pl, pc) {
     ids.push(m.set_index(
-      recv: scratch_ref(m, tmp, front.pos(pl, pc)),
+      recv: scratch_ref(m, tmp, pos(pl, pc)),
       key: pk,
       value: pv,
       line: pl,
@@ -4524,14 +4605,10 @@ fn emit_object(m, node, f) {
         m,
         f,
         '__def_prop',
-        [
-          scratch_ref(m, tmp, front.pos(pl, pc)),
-          emit_expr(m, mk.nodes[0], f),
-          pv,
-        ],
-        front.pos(pl, pc),
+        [scratch_ref(m, tmp, pos(pl, pc)), emit_expr(m, mk.nodes[0], f), pv],
+        pos(pl, pc),
       )),
-      _ => put(emit_mkey(m, f, mk, front.pos(pl, pc)), pv, pl, pc),
+      _ => put(emit_mkey(m, f, mk, pos(pl, pc)), pv, pl, pc),
     }
   }
   for p in node.nodes {
@@ -4639,7 +4716,7 @@ fn emit_expr(m, node, f) {
       let r = resolved[pkey(node)]
       cond {
         r.kind == 'var' => var_read(m, f, r, node),
-        r.kind == 'fn' => ir.closure(f, r.func, node),
+        r.kind == 'fn' => closure_of_fn(f, r.func, node),
         r.kind ==
           'preconst' => ir.index(gref(m, f, node), str_l(m, r.key, node), node),
         r.kind == 'global' => cond {
@@ -4728,14 +4805,14 @@ fn emit_expr(m, node, f) {
       }
       let body = ir.block(
         [
-          ir.store_local(sent, ir.make_yield(field('value'), node), node),
-          ir.store_local(r, next_of(scratch_ref(m, sent, node)), node),
+          store_local(sent, ir.make_yield(field('value'), node), node),
+          store_local(r, next_of(scratch_ref(m, sent, node)), node),
         ],
         node,
       )
       ir.block(
         [
-          ir.store_local(
+          store_local(
             it,
             call_pre(
               m,
@@ -4746,7 +4823,7 @@ fn emit_expr(m, node, f) {
             ),
             node,
           ),
-          ir.store_local(r, next_of(nil_l(m, node)), node),
+          store_local(r, next_of(nil_l(m, node)), node),
           ir.make_while(
             ir_not(m, call_pre(m, f, '__truthy', [field('done')], node), node),
             body,
@@ -4860,11 +4937,11 @@ fn fresh_slots(m, f, slots, at) {
   mut ids = []
   for s in slots {
     cond {
-      frames.in_cell(f, s) => {
-        ids.push(ir.cell_fresh(frames.cell_of(f, s), at))
-        ids.push(ir.store_cell(frames.cell_of(f, s), nil_l(m, at), at))
+      rs.cell_of(f, s) != -1 => {
+        ids.push(ir.cell_fresh(rs.cell_of(f, s), at))
+        ids.push(ir.assign('cell', rs.cell_of(f, s), nil_l(m, at), at))
       },
-      _ => ids.push(ir.store_local(s, nil_l(m, at), at)),
+      _ => ids.push(store_local(s, nil_l(m, at), at)),
     }
   }
   ids
@@ -4932,7 +5009,7 @@ fn emit_bind(m, f, pat, v, at) {
       pat.nodes.size() > 1 => {
         # the default applies when the value is undefined
         let tmp = new_scratch(f)
-        let store = ir.store_local(tmp, v, at)
+        let store = store_local(tmp, v, at)
         let test = is_undef(m, scratch_ref(m, tmp, at), at)
         let picked = ir.make_if_else(
           test,
@@ -4950,11 +5027,7 @@ fn emit_bind(m, f, pat, v, at) {
     },
     pat.name == 'arr_pat' => {
       let tmp = new_scratch(f)
-      mut ids = [ir.store_local(
-        tmp,
-        call_pre(m, f, '__destr_arr', [v], at),
-        at,
-      )]
+      mut ids = [store_local(tmp, call_pre(m, f, '__destr_arr', [v], at), at)]
       mut i = 0
       for el in pat.nodes {
         cond {
@@ -4990,11 +5063,7 @@ fn emit_bind(m, f, pat, v, at) {
     },
     pat.name == 'obj_pat' => {
       let tmp = new_scratch(f)
-      mut ids = [ir.store_local(
-        tmp,
-        call_pre(m, f, '__destr_obj', [v], at),
-        at,
-      )]
+      mut ids = [store_local(tmp, call_pre(m, f, '__destr_obj', [v], at), at)]
       mut keys = []
       for el in pat.nodes {
         cond {
@@ -5100,12 +5169,12 @@ fn emit_decl(m, node, f) {
 fn for_step_ids(m, f, slots, step_node, at) {
   mut ids = []
   for s in slots {
-    if frames.in_cell(f, s) {
+    if rs.cell_of(f, s) != -1 {
       let tmp = new_scratch(f)
-      let ci = frames.cell_of(f, s)
-      ids.push(ir.store_local(tmp, ir.cell(ci, at), at))
+      let ci = rs.cell_of(f, s)
+      ids.push(store_local(tmp, ir.var_ref('cell', ci, at), at))
       ids.push(ir.cell_fresh(ci, at))
-      ids.push(ir.store_cell(ci, scratch_ref(m, tmp, at), at))
+      ids.push(ir.assign('cell', ci, scratch_ref(m, tmp, at), at))
     }
   }
   if step_node != nil {
@@ -5202,10 +5271,10 @@ fn emit_stmt(m, node, f) {
         emit_test(m, f, emit_expr(m, node.nodes[1], f), node),
         node,
       )
-      let clear = ir.store_local(flag, ir.bool_literal(false, node), node)
+      let clear = store_local(flag, ir.bool_literal(false, node), node)
       ir.block(
         [
-          ir.store_local(flag, ir.bool_literal(true, node), node),
+          store_local(flag, ir.bool_literal(true, node), node),
           ir.make_while(test, ir.block([clear, body], node), node),
         ],
         node,
@@ -5261,7 +5330,7 @@ fn emit_stmt(m, node, f) {
       node.nodes.size() == 0 => ir.make_break(node),
       _ => {
         let depth = find_label_depth(f, node.nodes[0].token, false, node)
-        ir.make_break(node, depth)
+        ir.make_break(node, depth: depth)
       },
     },
     {name: 'continue_s'} => {
@@ -5282,7 +5351,7 @@ fn emit_stmt(m, node, f) {
             target.step != nil => target.step(m),
             _ => [],
           }
-          ids.push(ir.make_continue(node, depth))
+          ids.push(ir.make_continue(node, depth: depth))
           ir.block(ids, node)
         },
         _ => {
@@ -5293,7 +5362,7 @@ fn emit_stmt(m, node, f) {
             top.cont !=
               nil => ir.block(
               [
-                ir.store_local(top.cont, ir.bool_literal(true, node), node),
+                store_local(top.cont, ir.bool_literal(true, node), node),
                 ir.make_break(node),
               ],
               node,
@@ -5338,7 +5407,10 @@ fn emit_for_each(m, node, f, iter_fn) {
   }
   # the loop's own bindings, refreshed per iteration -- not the iterator's
   let slots = block_slots[pkey(node)].filter(|sl| sl != it_slot)
-  let it_a = frames.access(f, f, it_slot)
+  let it_a = {
+    kind: rs.access_kind(f, it_slot),
+    index: rs.access_index(f, it_slot),
+  }
   fn it_ref(m2) {
     m2.var_ref(
       kind: it_a.kind,
@@ -5357,7 +5429,7 @@ fn emit_for_each(m, node, f, iter_fn) {
   fn advance(m2) {
     [m2.assign(
       kind: 'local',
-      index: cur,
+      index: rs.var_slot(cur),
       value: call_pre(m2, f, '__iter_step', [it_ref(m2)], node),
       line: node.line,
       col: node.column,
@@ -5379,7 +5451,7 @@ fn emit_for_each(m, node, f, iter_fn) {
   let loop = ir.block(ids, node)
   cond {
     closer != nil => {
-      let d = ir.make_defer(ir.closure(f, closer.func, node), node)
+      let d = ir.make_defer(closure_of_fn(f, closer.func, node), node)
       ir.scope(0, 0, ir.block([d, loop], node), node)
     },
     _ => loop,
@@ -5397,9 +5469,9 @@ fn emit_switch(m, node, f) {
   let cont = new_scratch(f)
   let none = 1000000
   mut ids = fresh_slots(m, f, slots, node)
-  ids.push(ir.store_local(subj, emit_expr(m, node.nodes[0], f), node))
-  ids.push(ir.store_local(idx, ir.literal(none, node), node))
-  ids.push(ir.store_local(cont, ir.bool_literal(false, node), node))
+  ids.push(store_local(subj, emit_expr(m, node.nodes[0], f), node))
+  ids.push(store_local(idx, ir.literal(none, node), node))
+  ids.push(store_local(cont, ir.bool_literal(false, node), node))
   # the tests, in order, each stopping the search
   mut default_i = nil
   mut chain = ir.block([], node)
@@ -5418,7 +5490,7 @@ fn emit_switch(m, node, f) {
         )
         chain = ir.make_if_else(
           test,
-          ir.store_local(idx, ir.literal(k, node), node),
+          store_local(idx, ir.literal(k, node), node),
           chain,
           c,
         )
@@ -5430,7 +5502,7 @@ fn emit_switch(m, node, f) {
   if default_i != nil {
     ids.push(ir.make_if(
       ir.binary('eq', scratch_ref(m, idx, node), ir.literal(none, node), node),
-      ir.store_local(idx, ir.literal(default_i, node), node),
+      store_local(idx, ir.literal(default_i, node), node),
       node,
     ))
   }
@@ -5466,7 +5538,7 @@ fn emit_switch(m, node, f) {
       top.cont !=
         nil => ir.block(
         [
-          ir.store_local(top.cont, ir.bool_literal(true, node), node),
+          store_local(top.cont, ir.bool_literal(true, node), node),
           ir.make_break(node),
         ],
         node,
@@ -5493,11 +5565,13 @@ fn emit_try(m, node, f) {
   }
   if catch_c != nil {
     let r = resolved[pkey(catch_c)]
-    let a = frames.access(f, f, r.slot)
+    let a = {kind: rs.access_kind(f, r.v), index: rs.access_index(f, r.v)}
     # the VM lands the value in a plain local; a captured binding is copied
     # into its cell after the trap-to-error fix
+    # the caught binding itself when it is a plain local; otherwise a temp
+    # the handler copies out of, since the VM only lands the value in a local
     let slot = cond {
-      a.kind == 'local' => a.index,
+      a.kind == 'local' => r.v,
       _ => new_scratch(f),
     }
     let fixed = cond {
@@ -5505,19 +5579,19 @@ fn emit_try(m, node, f) {
       _ => call_pre(m, f, '__catch_fix', [scratch_ref(m, slot, node)], node),
     }
     let bind = cond {
-      a.kind == 'local' => ir.store_local(slot, fixed, node),
+      a.kind == 'local' => store_local(slot, fixed, node),
       _ => ir.block(
-        [ir.cell_fresh(a.index, node), ir.store_cell(a.index, fixed, node)],
+        [ir.cell_fresh(a.index, node), ir.assign('cell', a.index, fixed, node)],
         node,
       ),
     }
     let handler = ir.block([bind, emit_block(m, catch_c.nodes[1], f)], node)
-    body = ir.make_try(slot, body, handler, node)
+    body = ir.make_try(rs.var_slot(slot), body, handler, node)
   }
   if finally_c != nil {
     # finally runs on every way out: as a defer in a scope around the try
     let g = closure_of[pkey(finally_c)]
-    let d = ir.make_defer(ir.closure(f, g, node), node)
+    let d = ir.make_defer(closure_of_fn(f, g, node), node)
     body = ir.scope(0, 0, ir.block([d, body], node), node)
   }
   body
@@ -5530,7 +5604,7 @@ fn emit_try(m, node, f) {
 # `fn.length` reports.
 fn mkfn_id(m, f, g, name, is_arrow, with_len, at) {
   mut args = [
-    ir.closure(f, g, at),
+    closure_of_fn(f, g, at),
     str_l(m, name, at),
     ir.bool_literal(is_arrow, at),
   ]
@@ -5542,10 +5616,13 @@ fn mkfn_id(m, f, g, name, is_arrow, with_len, at) {
 
 # The positionals that overflowed a function's declared parameters: the
 # eight hidden trailing slots, trimmed to the count the call supplied.
-fn rest_pack(m, f, first, at) {
+# The eight hidden slots a rest parameter arrives in, packed into an array
+# by however many arguments were actually supplied. `first` is the slot the
+# hidden run starts at, which is what `argcount` is measured against.
+fn rest_pack(m, f, hidden_vs, first, at) {
   mut hidden = []
-  for k in range(8) {
-    hidden.push(ir.local(first + k, at))
+  for v in hidden_vs {
+    hidden.push(local_ref(v, at))
   }
   let cnt = ir.binary(
     'sub',
@@ -5568,103 +5645,100 @@ fn emit_funcs(m) {
     for pi in range(fi.dflts.size()) {
       let d = fi.dflts[pi]
       if d != nil {
-        let slot = pi + cond {
+        let slot = fi.param_vs[pi + cond {
           fi.params.size() > fi.dflts.size() => 1,
           _ => 0,
-        }
-        let test = is_undef(m, ir.local(slot, front.ORIGIN), front.ORIGIN)
+        }]
+        let test = is_undef(m, local_ref(slot, ORIGIN), ORIGIN)
         ids.push(ir.make_if(
           test,
-          ir.store_local(slot, emit_expr(m, d, f), front.ORIGIN),
-          front.ORIGIN,
+          store_local(slot, emit_expr(m, d, f), ORIGIN),
+          ORIGIN,
         ))
       }
     }
     # a rest parameter: pack the hidden trailing slots by the supplied count
     if fi.rest != nil {
-      ids.push(ir.write(
+      ids.push(rs.write(
+        ir,
         f,
-        f,
-        fi.params.size(),
-        rest_pack(m, f, fi.params.size() - 8, front.ORIGIN),
-        front.ORIGIN,
+        fi.rest_v,
+        rest_pack(
+          m,
+          f,
+          fi.param_vs.slice(fi.param_vs.size() - 8, fi.param_vs.size()),
+          fi.params.size() - 8,
+          ORIGIN,
+        ),
+        ORIGIN,
       ))
     }
     # a base class's constructor runs the instance fields at entry
     if fi.is_ctor == true && fi.derived != true {
-      let hr = var_read(
-        m,
-        f,
-        {owner: fi.home.owner, slot: fi.home.slot},
-        front.ORIGIN,
-      )
+      let hr = var_read(m, f, {v: fi.home}, ORIGIN)
       ids.push(call_pre(
         m,
         f,
         '__run_fields',
-        [hr, ir.local(0, front.ORIGIN)],
-        front.ORIGIN,
+        [hr, local_ref(fi.param_vs[0], ORIGIN)],
+        ORIGIN,
       ))
     }
     # pattern parameters unpack from their hidden slots
     if fi.pat_params != nil {
       for pp in fi.pat_params {
         let (slot, pat) = pp
-        for x in emit_bind(m, f, pat, ir.local(slot, front.ORIGIN), front.ORIGIN) {
+        for x in emit_bind(m, f, pat, local_ref(slot, ORIGIN), ORIGIN) {
           ids.push(x)
         }
       }
     }
     # captured parameters move into their cells
-    for p in range(fi.params.size()) {
-      if frames.in_cell(f, p) {
-        ids.push(ir.store_cell(
-          frames.cell_of(f, p),
-          ir.local(p, front.ORIGIN),
-          front.ORIGIN,
+    for p in fi.param_vs {
+      if rs.cell_of(f, p) != -1 {
+        ids.push(ir.assign(
+          'cell',
+          rs.cell_of(f, p),
+          local_ref(p, ORIGIN),
+          ORIGIN,
         ))
       }
     }
     # a named function expression's own name
     if fi.self_slot != nil {
-      ids.push(ir.write(
-        f,
+      ids.push(rs.write(
+        ir,
         f,
         fi.self_slot,
-        mkfn_id(m, f, f, fi.name, false, false, front.ORIGIN),
-        front.ORIGIN,
+        mkfn_id(m, f, f, fi.name, false, false, ORIGIN),
+        ORIGIN,
       ))
     }
     # the function's vars start out undefined
     for s in fi.var_names {
-      ids.push(ir.write(f, f, s, nil_l(m, front.ORIGIN), front.ORIGIN))
+      ids.push(rs.write(ir, f, s, nil_l(m, ORIGIN), ORIGIN))
     }
     if f == 0 {
       # the global table exists before anything fills it, so the prelude's
       # own constants have a home that __init_globals can already reach
-      ids.push(ir.store_cell(
-        frames.cell_of(0, g_slot),
-        ir.object_lit([], front.ORIGIN),
-        front.ORIGIN,
+      ids.push(ir.assign(
+        'cell',
+        rs.cell_of(0, g_slot),
+        ir.object_lit([], ORIGIN),
+        ORIGIN,
       ))
       in_prelude = true
       for b in prelude_inits {
         ids.push(ir.set_index(
-          gref(m, 0, front.ORIGIN),
-          str_l(m, b.key, front.ORIGIN),
+          gref(m, 0, ORIGIN),
+          str_l(m, b.key, ORIGIN),
           emit_expr(m, b.init, 0),
-          front.ORIGIN,
+          ORIGIN,
         ))
       }
       in_prelude = false
-      ids.push(call_pre(m, 0, '__init_globals', [], front.ORIGIN))
-      ids.push(ir.write(
-        0,
-        0,
-        this_slot,
-        ir.object_lit([], front.ORIGIN),
-        front.ORIGIN,
-      ))
+      ids.push(call_pre(m, 0, '__init_globals', [], ORIGIN))
+      ids.push(rs.write(ir, 0, this_slot, ir.object_lit([], ORIGIN), ORIGIN))
     }
     cond {
       fi.close_of != nil => {
@@ -5672,24 +5746,25 @@ fn emit_funcs(m) {
           m,
           f,
           '__iter_close',
-          [ir.read(f, fi.close_of.owner, fi.close_of.slot, front.ORIGIN)],
-          front.ORIGIN,
+          [rs.read(m, f, fi.close_of, ORIGIN)],
+          ORIGIN,
         ))
-        ids.push(ir.make_return(nil_l(m, front.ORIGIN), front.ORIGIN))
+        ids.push(ir.make_return(nil_l(m, ORIGIN), ORIGIN))
       },
       fi.gen_raw != nil => {
         # the wrapper: the raw generator's activation, as a generator object
-        let args = rest_pack(m, f, 1, front.ORIGIN)
+        # the wrapper's own parameters: `this`, then the eight it forwards
+        let args = rest_pack(m, f, fi.param_vs.slice(1, 9), 1, ORIGIN)
         let act = call_pre(
           m,
           f,
           '__apply',
           [
-            ir.closure(f, fi.gen_raw, front.ORIGIN),
-            ir.local(0, front.ORIGIN),
+            closure_of_fn(f, fi.gen_raw, ORIGIN),
+            local_ref(fi.param_vs[0], ORIGIN),
             args,
           ],
-          front.ORIGIN,
+          ORIGIN,
         )
         ids.push(ir.make_return(call_pre(
           m,
@@ -5699,8 +5774,8 @@ fn emit_funcs(m) {
             _ => '__mkgen',
           },
           [act],
-          front.ORIGIN,
-        ), front.ORIGIN))
+          ORIGIN,
+        ), ORIGIN))
       },
       fi.field_inits != nil => {
         # this.key = init, in order; a computed key was evaluated at the
@@ -5716,38 +5791,43 @@ fn emit_funcs(m) {
             m,
             f,
             '__set',
-            [ir.local(0, front.ORIGIN), key, v],
+            [local_ref(fi.param_vs[0], ORIGIN), key, v],
             fld,
           ))
         }
-        ids.push(ir.make_return(nil_l(m, front.ORIGIN), front.ORIGIN))
+        ids.push(ir.make_return(nil_l(m, ORIGIN), ORIGIN))
       },
       fi.body_expr !=
-        nil => ids.push(ir.make_return(
-        emit_expr(m, fi.body_expr, f),
-        front.ORIGIN,
-      )),
+        nil => ids.push(ir.make_return(emit_expr(m, fi.body_expr, f), ORIGIN)),
       _ => {
         emit_stmts_into(m, fi.stmts, f, ids)
-        ids.push(ir.make_return(nil_l(m, front.ORIGIN), front.ORIGIN))
+        ids.push(ir.make_return(nil_l(m, ORIGIN), ORIGIN))
       },
     }
-    mut body = ir.block(ids, front.ORIGIN)
+    mut body = ir.block(ids, ORIGIN)
     if f == 0 {
       # whatever escapes the program is reported the way Node reports it
       let slot = new_scratch(0)
-      let caught = ir.local(slot, front.ORIGIN)
+      let caught = local_ref(slot, ORIGIN)
       body = ir.make_try(
-        slot,
+        rs.var_slot(slot),
         body,
         ir.make_throw(
-          call_pre(m, 0, '__uncaught_text', [caught], front.ORIGIN),
-          front.ORIGIN,
+          call_pre(m, 0, '__uncaught_text', [caught], ORIGIN),
+          ORIGIN,
         ),
-        front.ORIGIN,
+        ORIGIN,
       )
     }
-    let func = ir.add_func(fi.name, f, nslots[f], fi.params.size(), body)
+    let func = m.add_func(
+      name: fi.name,
+      num_locals: nslots[f],
+      num_captures: rs.num_captures(f),
+      num_cells: rs.num_cells(f),
+      num_params: fi.params.size(),
+      body: body,
+    )
+    rs.name_captures(m, func, f)
     m.set_lenient_arity(func: func)
     if fi.is_gen == true {
       m.set_generator(func: func)
@@ -5813,12 +5893,12 @@ fn build_prelude(prelude_tree) {
   for f in range(prelude_end) {
     prelude_nslots.push(nslots[f])
   }
+  prelude_mark = rs.mark()
 }
 
 fn reset_main(stmts) {
   in_prelude = false
-  frames.truncate(prelude_end)
-  scopes.truncate(prelude_end)
+  rs.rollback(prelude_mark)
   while funcs.size() > prelude_end {
     funcs.pop()
     nslots.pop()
@@ -5840,15 +5920,20 @@ fn reset_main(stmts) {
     is_prelude: false,
     is_arrow: false,
     var_names: [],
+    param_vs: [],
   }
-  frames.reset(0, nil)
-  scopes.reset(0)
+  rs.reset_fn(0)
+  scope_base[0] = 0
   loop_ctx[0] = []
   pending_labels[0] = []
-  nslots[0] = 0
   enter_scope(0)
-  g_slot = declare_var(0, '__G', nil)
-  this_slot = declare_var(0, 'this', nil)
+  # `__G` and `this` are the prelude's own bindings and survive the rollback,
+  # so main names them again rather than declaring new ones -- every prelude
+  # function captures the pair by id, and a fresh id would leave them all
+  # pointing at a variable main no longer owns.
+  rs.alias('__G', g_slot)
+  rs.alias('this', this_slot)
+  nslots[0] = 2
 }
 
 fn build(m, root) {
@@ -5860,7 +5945,7 @@ fn build(m, root) {
   scan_stmts(root.nodes, 0)
   leave_scope(0)
 
-  frames.solve()
+  rs.number_captures()
   emit_funcs(m)
 }
 
@@ -5912,9 +5997,14 @@ for path in cli {
       continue
     }
     let m = CodeGen.Module.new()
-    ir = front.Emitter.new(m, frames)
+    ir = m
     build(m, tree)
-    ir.finish(want_ir, want_bc)
+    m.verify()
+    cond {
+      want_ir => print(m.dump_ir()),
+      want_bc => print(m.dump_bc()),
+      _ => m.run(),
+    }
   } catch e {
     match e {
       {kind: 'MiniError'} => {
