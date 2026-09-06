@@ -195,3 +195,48 @@ assert_eq(pr.cell_of(entry, gvar), 0)
 assert_throws('IndexError', fn () {
   pr.rollback(99)
 })
+
+# --- read/write and the call-edge closure -----------------------------------
+
+let em = CodeGen.Module.new()
+let er = CodeGen.Resolver.new()
+let top = er.new_fn()
+er.set_func_index(top, 0)
+er.push_scope()
+let ev = er.declare('n', top)
+er.set_var_slot(ev, 0)
+let nested = er.new_fn(top)
+er.set_func_index(nested, 1)
+er.use(ev, nested)
+er.number_captures()
+
+# read/write build the node access_kind/access_index describe
+let at = {line: 4, column: 2}
+let got = er.read(em, nested, ev, at)
+assert_eq(em.var_kind(got), er.access_kind(nested, ev))
+assert_eq(em.var_index(got), er.access_index(nested, ev))
+assert_eq(em.node_line(got), 4)
+let put = er.write(em, top, ev, em.literal(1, at), at)
+assert_eq(em.var_kind(put), 'cell')
+
+# a frame that cannot name it is refused, not silently mis-numbered
+let sibling = er.new_fn(top)
+assert_throws('IrError', fn () {
+  er.read(em, sibling, ev, at)
+})
+
+# call edges: the caller takes the callee's free set, and only when asked
+let cr = CodeGen.Resolver.new()
+let cmain = cr.new_fn()
+cr.push_scope()
+let cx = cr.declare('x', cmain)
+let couter = cr.new_fn(-1)  # PL/0 shape: closures built at the reference
+let cinner = cr.new_fn(-1)
+cr.use(cx, cinner)
+cr.note_call(couter, cinner)
+cr.note_call(cinner, cinner)  # self-recursion, the case one pass misses
+assert_eq(cr.free_count(couter), 0)
+cr.close_over_calls()
+assert_eq(cr.free_count(couter), 1)
+assert_eq(cr.free_at(couter, 0), cx)
+assert_eq(cr.free_count(cmain), 0)  # the owner does not capture its own

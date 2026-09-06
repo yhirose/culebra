@@ -1478,6 +1478,48 @@ class Resolver {
     return rs_.reaches(static_cast<int32_t>(fn), static_cast<int32_t>(v));
   }
 
+  // Reading `v` from `fn`, and writing it: `access` turned into the var_ref
+  // or assign it is for. Every front end writes these two the same way --
+  // seven of cpp-vmlib's eight binders had them to the character -- so they
+  // are here rather than in each of them.
+  int64_t read(Module& m, int64_t fn, int64_t v, JitObjectArg at,
+               int64_t line, int64_t col) {
+    checked_access(fn, v);
+    return Module::id(rs_.read(m.m_, static_cast<int32_t>(fn),
+                               static_cast<int32_t>(v),
+                               Module::pos(line, col, at)));
+  }
+  int64_t write(Module& m, int64_t fn, int64_t v, int64_t value,
+                JitObjectArg at, int64_t line, int64_t col) {
+    checked_access(fn, v);
+    return Module::id(rs_.write(m.m_, static_cast<int32_t>(fn),
+                                static_cast<int32_t>(v), Module::node(value),
+                                Module::pos(line, col, at)));
+  }
+
+  // Names `func`'s captures in index order -- the loop over
+  // set_capture_name that every front end would otherwise write.
+  void name_captures(Module& m, int64_t func, int64_t fn) {
+    const auto& free = checked_fn(fn).free;
+    int64_t i = 0;
+    for (const int32_t v : free) {
+      m.set_capture_name(func, i++, rs_.vars[static_cast<size_t>(v)].name);
+    }
+  }
+
+  // `f` names `g`, and builds g's closure to do it. Only a language where a
+  // function is a static entity rather than a value has these.
+  void note_call(int64_t f, int64_t g) {
+    checked_fn(f);
+    checked_fn(g);
+    rs_.note_call(static_cast<int32_t>(f), static_cast<int32_t>(g));
+  }
+
+  // Everything a callee needs from outside itself, its callers must supply.
+  // After the reads are in, before number_captures. A front end that
+  // declares no call edges never calls this and pays nothing for it.
+  void close_over_calls() { rs_.close_over_calls(); }
+
   // How `fn` reaches `v`: 'local' (its own slot), 'cell' (its own slot, made
   // a cell because something nested captures it) or 'capture' (an index into
   // its own capture list). The pair is what CodeGen.Module.var_ref wants.
@@ -1505,6 +1547,19 @@ class Resolver {
   }
 
  private:
+  void checked_access(int64_t fn, int64_t v) const {
+    checked_fn(fn);
+    checked_var(v);
+    if (!rs_.reaches(static_cast<int32_t>(fn), static_cast<int32_t>(v))) {
+      throw culebra::CulebraError(
+          "IrError",
+          culebra::format(
+              "func {} cannot name '{}' -- it neither owns it nor captures it",
+              fn, rs_.vars[static_cast<size_t>(v)].name),
+          0, 0);
+    }
+  }
+
   std::pair<coreir::VarKind, int32_t> access(int64_t fn, int64_t v) const {
     checked_fn(fn);
     checked_var(v);

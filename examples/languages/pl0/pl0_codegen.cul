@@ -100,7 +100,6 @@ fn cmp_name(tok) {
 class Binder {
   blocks = []                  # {parent, name, consts, var_slot, var_names, procs, children, body}
   rs = CodeGen.Resolver.new()  # blocks and its funcs share indices: collect registers both
-  calls = []                   # per block: the blocks its CALLs name
   m = nil                      # the Module, once build has one
 
   # --- Phase 1: collect declarations -----------------------------------------
@@ -151,7 +150,6 @@ class Binder {
     # edges alone say what a procedure has to capture (Phase 2)
     self.rs.new_fn(-1)
     self.rs.set_func_index(index, index)
-    self.calls.push([])
 
     let [cst, vr, prc, _] = node.nodes
     for [cname, cvalue] in cst.nodes.iter().chunks(2) {
@@ -244,19 +242,7 @@ class Binder {
   }
 
   solve_captures() {
-    mut changed = true
-    while changed {
-      changed = false
-      for f in range(self.rs.num_fns()) {
-        for g in self.calls[f] {
-          for i in range(self.rs.free_count(g)) {
-            if self.rs.add_free(f, self.rs.free_at(g, i)) {
-              changed = true
-            }
-          }
-        }
-      }
-    }
+    self.rs.close_over_calls()
     self.rs.number_captures()
   }
 
@@ -312,7 +298,7 @@ class Binder {
         if g < 0 {
           fail(name, "undefined procedure '{name.token}'")
         }
-        self.calls[block].push(g)
+        self.rs.note_call(block, g)
       },
       {name: 'if', nodes: [cond, body]} => {
         self.scan_cond(cond, block)
@@ -372,19 +358,6 @@ class Binder {
     value
   }
 
-  # How `f` reaches a variable, as the two arguments var_ref and assign want.
-  read(f, v, at) {
-    self.m.var_ref(self.rs.access_kind(f, v), self.rs.access_index(f, v), at)
-  }
-  write(f, v, value, at) {
-    self.m.assign(
-      self.rs.access_kind(f, v),
-      self.rs.access_index(f, v),
-      value,
-      at,
-    )
-  }
-
   emit_expr(node, f) {
     match node {
       {name: 'number'} => self.m.literal(to_long(node.token), node),
@@ -393,7 +366,7 @@ class Binder {
         if r.is_const {
           self.m.literal(r.cval, node)
         } else {
-          self.read(f, r.var, node)
+          self.rs.read(self.m, f, r.var, node)
         }
       },
       {name: 'expression', nodes} => self.emit_chain(nodes, f),
@@ -430,7 +403,7 @@ class Binder {
       {name: 'assignment', nodes: [name, value]} => {
         let target = self.lookup_assign(f, name.token, name)
         let v = self.emit_expr(value, f)
-        self.write(f, target, v, node)
+        self.rs.write(self.m, f, target, v, node)
       },
       # The closure is built here, per call site, because a self-recursive
       # call (g == f) forwards `f`'s own captures straight through -- see
@@ -460,7 +433,7 @@ class Binder {
       {name: 'in', nodes: [name]} => {
         let target = self.lookup_assign(f, name.token, name)
         let got = self.m.intrinsic('readint', [], node)
-        self.write(f, target, got, node)
+        self.rs.write(self.m, f, target, got, node)
       },
       {name: 'statement'} => self.m.block([], node),
       _ => fail(node, "cannot execute {node.name}"),
@@ -491,13 +464,7 @@ class Binder {
       for i, name in self.blocks[f].var_names.enumerate() {
         m.set_local_name(func: func, index: i, name: name)
       }
-      for i in range(self.rs.num_captures(f)) {
-        m.set_capture_name(
-          func: func,
-          index: i,
-          name: self.rs.capture_name(f, i),
-        )
-      }
+      self.rs.name_captures(m, func, f)
     }
     m
   }

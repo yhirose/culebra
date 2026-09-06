@@ -6784,7 +6784,9 @@ closureの転送表を書く。closureがcaptureするものを供給できな�
 | `rs.var_name(v:)` / `rs.var_owner(v:)` / `rs.var_slot(v:)` / `rs.set_var_slot(v:, slot:)` | 変数idが指すもの |
 | `rs.number_captures()` | captureとcellの番号を割り当てる。読みを入れ終えてから1度だけ |
 | `rs.capture_name(fn:, i:)` | そのcapture番号の名前。`m.set_capture_name`に渡す |
-| `rs.access_kind(fn:, v:)` / `rs.access_index(fn:, v:)` | `fn`が`v`に届く経路——`'local'`／`'cell'`／`'capture'`——とその番号 |
+| `rs.read(m:, fn:, v:, at:)` / `rs.write(m:, fn:, v:, value:, at:)` | その読み書きをIRノードとして。これが無ければどのフロントエンドも手で組む2つ |
+| `rs.name_captures(m:, func:, fn:)` | `func`のcaptureに番号順で名前を付ける |
+| `rs.access_kind(fn:, v:)` / `rs.access_index(fn:, v:)` | `fn`が`v`に届く経路——`'local'`／`'cell'`／`'capture'`——とその番号。上の2つで足りない読み書き用 |
 | `rs.num_captures(fn:)` / `rs.num_cells(fn:)` / `rs.cell_of(fn:, v:)` | `add_func`が要る数と、どのcellがその変数を持つか(無ければ`-1`) |
 | `rs.capture_map(m:, builder:, target:)` | 転送表。`make_closure`が取るcapture map idとして |
 | `rs.reaches(fn:, v:)` | `fn`がそもそも`v`を名指せるか |
@@ -6813,27 +6815,24 @@ closureの転送表を書く。closureがcaptureするものを供給できな�
 参照する側すべてが、参照される側のcaptureを運ばなければならず、再帰がある
 ので走査ではなく不動点になる。
 
-ライブラリはこの不動点をやらない。やれば誤った降ろし方が動いてしまい、その
-代金として参照側と持ち主の間のフレーム全部が、使いもしないcaptureを抱える
-ことになる。代わりに自由変数の集合を露出させるので、必要なフロントエンドは
-`number_captures`を呼ぶ前に自分で閉じる(`calls[f]`は`f`が名指す関数)。
+その立場のフロントエンドは、呼び出しの辺を申告して閉包を頼む。読みを入れ
+終えてから`number_captures`の前だ:
 
 ```culebra
 # doctest: skip
-mut changed = true
-while changed {
-  changed = false
-  for f in range(rs.num_fns()) {
-    for g in calls[f] {
-      for i in range(rs.free_count(g)) {
-        if rs.add_free(f, rs.free_at(g, i)) {
-          changed = true
-        }
-      }
-    }
-  }
-}
+rs.note_call(caller, callee)   # 束縛中、参照するたびに
+rs.close_over_calls()          # そのあと、number_capturesの前に
 ```
+
+`use`がやるのでなく頼む形にしてあり、違いはそこに尽きる。`use`が既にやる
+伝播は代金が要らない。closureはそれが書かれた場所で組まれるので、入れ子を
+たどるだけで済むからだ。呼び出しの辺で持ち上げるほうは、参照側と持ち主の間の
+フレーム全部に使いもしないcaptureを抱えさせ、そして肝心なのはこちらだが、
+**closureを間違ったフレームで組む降ろし方まで動かしてしまう**。辺を申告しない
+フロントエンドはその代金を1つも払わない。
+
+`free_count`/`free_at`/`add_free`は同じ自由変数の集合を手で扱う口だ。
+この2つのどちらでもない規則を持つ言語のために置いてある。
 
 ### localスロット: `CodeGen.FrameLayout`
 

@@ -6989,7 +6989,9 @@ captures there first.
 | `rs.var_name(v:)` / `rs.var_owner(v:)` / `rs.var_slot(v:)` / `rs.set_var_slot(v:, slot:)` | what a variable id stands for |
 | `rs.number_captures()` | assigns the capture and cell indices. Once, after the reads are in |
 | `rs.capture_name(fn:, i:)` | the name at that capture index, for `m.set_capture_name` |
-| `rs.access_kind(fn:, v:)` / `rs.access_index(fn:, v:)` | how `fn` reaches `v`: `'local'`, `'cell'` or `'capture'`, and the index |
+| `rs.read(m:, fn:, v:, at:)` / `rs.write(m:, fn:, v:, value:, at:)` | that read or write as an IR node. The pair every front end builds by hand otherwise |
+| `rs.name_captures(m:, func:, fn:)` | names `func`'s captures in index order |
+| `rs.access_kind(fn:, v:)` / `rs.access_index(fn:, v:)` | how `fn` reaches `v`: `'local'`, `'cell'` or `'capture'`, and the index, for a read this pair does not cover |
 | `rs.num_captures(fn:)` / `rs.num_cells(fn:)` / `rs.cell_of(fn:, v:)` | what `add_func` wants, and which cell holds a variable (`-1` for none) |
 | `rs.capture_map(m:, builder:, target:)` | the forwarding table, as a capture-map id `make_closure` takes |
 | `rs.reaches(fn:, v:)` | whether `fn` can name `v` at all |
@@ -7020,28 +7022,25 @@ where a function is a *static entity* built afresh at every reference to it
 a different obligation: every referrer must carry what the referee captures,
 and recursion makes that a fixpoint rather than a walk.
 
-The library does not do that fixpoint — it would make a wrong lowering work,
-at the price of every frame between a referrer and an owner carrying
-captures it has no use for. It exposes the free sets instead, so a front end
-that needs it closes its own before calling `number_captures`, with
-`calls[f]` the functions `f` names:
+A front end in that position declares its call edges and asks for the
+closure, between the reads and `number_captures`:
 
 ```culebra
 # doctest: skip
-mut changed = true
-while changed {
-  changed = false
-  for f in range(rs.num_fns()) {
-    for g in calls[f] {
-      for i in range(rs.free_count(g)) {
-        if rs.add_free(f, rs.free_at(g, i)) {
-          changed = true
-        }
-      }
-    }
-  }
-}
+rs.note_call(caller, callee)   # once per reference, while binding
+rs.close_over_calls()          # then, before number_captures
 ```
+
+It is a method to ask for rather than something `use` does, and that is the
+whole difference. The propagation `use` already does costs nothing: a
+closure built where its function is written rides the nesting. Lifting
+along call edges instead makes every frame between a referrer and an owner
+carry a capture it has no use for, and — the part that matters — makes a
+lowering that builds closures in the wrong frame work anyway. A front end
+that declares no call edges pays for none of it.
+
+`free_count`/`free_at`/`add_free` are the same free sets by hand, for a
+language whose rule is neither of these two.
 
 ### Local slots: `CodeGen.FrameLayout`
 

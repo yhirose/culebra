@@ -301,6 +301,16 @@ inline bool register_codegen_binding() {
       .method<&codegen::Resolver::capture_map>("capture_map",
                                                {"m", "builder", "target"})
       .method<&codegen::Resolver::reaches>("reaches", {"fn", "v"})
+      .method<&codegen::Resolver::read>(
+          "read", {"m", "fn", "v", {"at", nullptr}, {"line", 1L},
+                   {"col", 1L}})
+      .method<&codegen::Resolver::write>(
+          "write", {"m", "fn", "v", "value", {"at", nullptr},
+                    {"line", 1L}, {"col", 1L}})
+      .method<&codegen::Resolver::name_captures>("name_captures",
+                                                 {"m", "func", "fn"})
+      .method<&codegen::Resolver::note_call>("note_call", {"f", "g"})
+      .method<&codegen::Resolver::close_over_calls>("close_over_calls")
       .method<&codegen::Resolver::access_kind>("access_kind", {"fn", "v"})
       .method<&codegen::Resolver::access_index>("access_index", {"fn", "v"})
       .method<&codegen::Resolver::num_captures>("num_captures", {"fn"})
