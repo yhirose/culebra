@@ -1276,6 +1276,14 @@ class Resolver {
   }
   int64_t depth() const { return static_cast<int64_t>(rs_.depth()); }
 
+  // A binding no scope names. A front end resolving names its own way --
+  // out of its own block table, say -- still wants the id space and the
+  // capture analysis over it, and has no use for the scope stack.
+  int64_t declare_var(const std::string& name, int64_t owner) {
+    checked_fn(owner);
+    return rs_.declare_var(name, static_cast<int32_t>(owner));
+  }
+
   // A new binding in the innermost scope, owned by `owner`. Overwrites a name
   // the scope already had, so a language that shadows within a block gets
   // that by default and one that refuses it checks declared_here first.

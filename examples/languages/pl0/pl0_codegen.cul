@@ -10,21 +10,20 @@
 # tests/test_pl0_codegen.cul (or run both by hand and diff).
 #
 # The interesting difference is a binder, not an evaluator: a variable
-# reference has to resolve to a (block, slot) or "which enclosing block's
-# variable is this" at bind time, because `CodeGen` cannot go back and ask the
-# AST again once a program is running. See "Name resolution" below, and
+# reference has to resolve to "which block's variable is this" at bind time,
+# because `CodeGen` cannot go back and ask the AST again once a program is
+# running. See "Name resolution" below, and
 # cpp-vmlib's own examples/pl0/binder.cc for the C++ twin of this file --
 # same four phases (collect declarations, scan free variables, solve captures
-# by fixpoint, emit), same PL/0, different host language. The two phases that
-# are the same for every language -- the capture solver and the IR shapes a
-# lowering builds over and over -- live in ../front.cul, shared
-# with mini_culebra.cul and mini_js.cul.
+# by fixpoint, emit), same PL/0, different host language.
+#
+# Nothing here is shared with the other front ends: `CodeGen.Resolver` is the
+# capture analysis and `CodeGen.Module` is the IR, both from the standard
+# library. What PL/0 adds is the fixpoint -- see Phase 2.
 #
 # Run it:  culebra examples/pl0/pl0_codegen.cul examples/pl0/samples/square.pas
 #          culebra examples/pl0/pl0_codegen.cul --ir examples/pl0/samples/square.pas
 #          culebra examples/pl0/pl0_codegen.cul --bc examples/pl0/samples/square.pas
-
-import front from '../front.cul'
 
 let grammar = `
   program    <- block '.'
@@ -100,15 +99,18 @@ fn cmp_name(tok) {
 # starts from nothing rather than inheriting another compile's leftovers.
 class Binder {
   blocks = []                  # {parent, name, consts, var_slot, var_names, procs, children, body}
-  frames = front.Frames.new()  # blocks and Frames share indices: collect registers both
-  ir = nil                     # the Emitter, once build has the Module
+  rs = CodeGen.Resolver.new()  # blocks and its funcs share indices: collect registers both
+  calls = []                   # per block: the blocks its CALLs name
+  m = nil                      # the Module, once build has one
 
   # --- Phase 1: collect declarations -----------------------------------------
   #
   # One entry per PL/0 block (the outermost program counts as block 0), holding
   # only the *static* structure: which names this block declares and where its
-  # nested procedures live. No values -- `CodeGen`'s variables are (block, slot)
-  # pairs resolved once here, not names looked up while running.
+  # nested procedures live. No values -- each PL/0 variable becomes one
+  # `Resolver` id here, resolved once, not a name looked up while running.
+  # `var_slot` maps a name to that id and `var_names` keeps the frame's slot
+  # order, which is what set_local_name wants.
   #
   # Every sibling procedure is registered before the first of them is walked
   # (two passes over `procedure`'s nodes below), so a call to a later sibling
@@ -145,9 +147,11 @@ class Binder {
       children: [],
       body: node.nodes[3],
     })
-    # no parent edge: a PL/0 closure exists only at its call site, so the
-    # call edges alone say what a procedure has to capture
-    self.frames.add(nil)
+    # no parent: a PL/0 closure exists only at its call site, so the call
+    # edges alone say what a procedure has to capture (Phase 2)
+    self.rs.new_fn(-1)
+    self.rs.set_func_index(index, index)
+    self.calls.push([])
 
     let [cst, vr, prc, _] = node.nodes
     for [cname, cvalue] in cst.nodes.iter().chunks(2) {
@@ -157,7 +161,9 @@ class Binder {
     for vname in vr.nodes {
       self.check_fresh(index, vname.token, vname)
       let slot = self.blocks[index].var_names.size()
-      self.blocks[index].var_slot[vname.token] = slot
+      let v = self.rs.declare_var(vname.token, index)
+      self.rs.set_var_slot(v, slot)
+      self.blocks[index].var_slot[vname.token] = v
       self.blocks[index].var_names.push(vname.token)
     }
     for [pname, _] in prc.nodes.iter().chunks(2) {
@@ -187,7 +193,7 @@ class Binder {
         return {found: true, is_const: true, cval: bi.consts[name]}
       }
       if bi.var_slot.has(name) {
-        return {found: true, is_const: false, var: (b, bi.var_slot[name])}
+        return {found: true, is_const: false, var: bi.var_slot[name]}
       }
       b = bi.parent
     }
@@ -202,7 +208,7 @@ class Binder {
         fail(at, "cannot assign to constant '{name}'")
       }
       if bi.var_slot.has(name) {
-        return (b, bi.var_slot[name])
+        return bi.var_slot[name]
       }
       b = bi.parent
     }
@@ -224,14 +230,34 @@ class Binder {
   # --- Phase 2: free variables -------------------------------------------------
   #
   # A reference block doesn't declare is free, and has to be captured from
-  # whichever ancestor does declare it. `Frames.solve` closes this over the
-  # call graph: if f calls g, everything g captures that f doesn't own
-  # itself must be captured by f too (recursion makes this a fixpoint, not a
-  # single pass -- self-recursion is the case a single pass misses).
+  # whichever ancestor does declare it. `Resolver.use` records that much.
+  #
+  # Closing it is PL/0's own job, and the reason this front end has a phase
+  # the others don't: a procedure's closure is built at every CALL of it
+  # rather than where it is written, so every caller must carry what the
+  # callee captures. Recursion makes that a fixpoint rather than a walk --
+  # self-recursion is exactly the case one pass misses -- which is why the
+  # library exposes the free sets instead of closing them itself.
 
-  note_ref(block, var) {
-    let (vb, vs) = var
-    self.frames.use(block, vb, vs)
+  note_ref(block, v) {
+    self.rs.use(v, block)
+  }
+
+  solve_captures() {
+    mut changed = true
+    while changed {
+      changed = false
+      for f in range(self.rs.num_fns()) {
+        for g in self.calls[f] {
+          for i in range(self.rs.free_count(g)) {
+            if self.rs.add_free(f, self.rs.free_at(g, i)) {
+              changed = true
+            }
+          }
+        }
+      }
+    }
+    self.rs.number_captures()
   }
 
   scan_chain(nodes, block) {
@@ -286,7 +312,7 @@ class Binder {
         if g < 0 {
           fail(name, "undefined procedure '{name.token}'")
         }
-        self.frames.note_call(block, g)
+        self.calls[block].push(g)
       },
       {name: 'if', nodes: [cond, body]} => {
         self.scan_cond(cond, block)
@@ -329,7 +355,7 @@ class Binder {
       let [first, ...pairs] = rest
       mut acc = self.emit_expr(first, f)
       if head.token == '-' {
-        acc = self.ir.unary('neg', acc, head)
+        acc = self.m.unary('neg', acc, head)
       }
       self.emit_fold(pairs, acc, f)
     } else {
@@ -341,21 +367,33 @@ class Binder {
     mut value = acc
     for [op, operand] in pairs.iter().chunks(2) {
       let rhs = self.emit_expr(operand, f)
-      value = self.ir.binary(binop_name(op.token), value, rhs, op)
+      value = self.m.binary(binop_name(op.token), value, rhs, op)
     }
     value
   }
 
+  # How `f` reaches a variable, as the two arguments var_ref and assign want.
+  read(f, v, at) {
+    self.m.var_ref(self.rs.access_kind(f, v), self.rs.access_index(f, v), at)
+  }
+  write(f, v, value, at) {
+    self.m.assign(
+      self.rs.access_kind(f, v),
+      self.rs.access_index(f, v),
+      value,
+      at,
+    )
+  }
+
   emit_expr(node, f) {
     match node {
-      {name: 'number'} => self.ir.literal(to_long(node.token), node),
+      {name: 'number'} => self.m.literal(to_long(node.token), node),
       {name: 'ident', token} => {
         let r = self.lookup_value(f, token)
         if r.is_const {
-          self.ir.literal(r.cval, node)
+          self.m.literal(r.cval, node)
         } else {
-          let (vb, vs) = r.var
-          self.ir.read(f, vb, vs, node)
+          self.read(f, r.var, node)
         }
       },
       {name: 'expression', nodes} => self.emit_chain(nodes, f),
@@ -371,13 +409,13 @@ class Binder {
     match node {
       {name: 'odd', nodes: [value]} => {
         let e = self.emit_expr(value, f)
-        let rem = self.ir.binary('mod', e, self.ir.literal(2, node), node)
-        self.ir.binary('ne', rem, self.ir.literal(0, node), node)
+        let rem = self.m.binary('mod', e, self.m.literal(2, node), node)
+        self.m.binary('ne', rem, self.m.literal(0, node), node)
       },
       {name: 'compare', nodes: [l, op, r]} => {
         let lhs = self.emit_expr(l, f)
         let rhs = self.emit_expr(r, f)
-        self.ir.binary(cmp_name(op.token), lhs, rhs, op)
+        self.m.binary(cmp_name(op.token), lhs, rhs, op)
       },
       _ => fail(node, "cannot evaluate {node.name} as a condition"),
     }
@@ -388,39 +426,43 @@ class Binder {
       {
         name: 'statements',
         nodes,
-      } => self.ir.block(nodes.map(|n| self.emit_stmt(n, f)), node),
+      } => self.m.block(nodes.map(|n| self.emit_stmt(n, f)), node),
       {name: 'assignment', nodes: [name, value]} => {
-        let (vb, vs) = self.lookup_assign(f, name.token, name)
+        let target = self.lookup_assign(f, name.token, name)
         let v = self.emit_expr(value, f)
-        self.ir.write(f, vb, vs, v, node)
+        self.write(f, target, v, node)
       },
       # The closure is built here, per call site, because a self-recursive
       # call (g == f) forwards `f`'s own captures straight through -- see
       # cpp-vmlib's README for fib.pas's version of that table.
       {name: 'call', nodes: [name]} => {
         let g = self.lookup_proc(f, name.token)
-        self.ir.call(f, g, [], node)
+        self.m.call(
+          self.rs.func_index(g),
+          self.rs.capture_map(self.m, f, g),
+          node,
+        )
       },
       {name: 'if', nodes: [cond, body]} => {
         let c = self.emit_cond(cond, f)
         let t = self.emit_stmt(body, f)
-        self.ir.make_if(c, t, node)
+        self.m.make_if(c, t, node)
       },
       {name: 'while', nodes: [cond, body]} => {
         let c = self.emit_cond(cond, f)
         let b = self.emit_stmt(body, f)
-        self.ir.make_while(c, b, node)
+        self.m.make_while(c, b, node)
       },
       {name: 'out', nodes: [value]} => {
         let v = self.emit_expr(value, f)
-        self.ir.intrinsic('print', [v], node)
+        self.m.intrinsic('print', [v], node)
       },
       {name: 'in', nodes: [name]} => {
-        let (vb, vs) = self.lookup_assign(f, name.token, name)
-        let read = self.ir.intrinsic('readint', [], node)
-        self.ir.write(f, vb, vs, read, node)
+        let target = self.lookup_assign(f, name.token, name)
+        let got = self.m.intrinsic('readint', [], node)
+        self.write(f, target, got, node)
       },
-      {name: 'statement'} => self.ir.block([], node),
+      {name: 'statement'} => self.m.block([], node),
       _ => fail(node, "cannot execute {node.name}"),
     }
   }
@@ -428,29 +470,36 @@ class Binder {
   # --- Driver ------------------------------------------------------------------
 
   build(m, root) {
-    self.ir = front.Emitter.new(m, self.frames)
+    self.m = m
     self.collect(root, nil, 'main')
     self.scan_block(0)
-    self.frames.solve()
+    self.solve_captures()
 
     # Blocks and funcs share indices by construction: block 0 (the program's
     # own outermost scope) is emitted first, so it becomes func #0, the entry
     # point CodeGen requires.
     for f in range(self.blocks.size()) {
       let body = self.emit_stmt(self.blocks[f].body, f)
-      let func = self.ir.add_func(
-        self.blocks[f].name,
-        f,
-        self.blocks[f].var_names.size(),
-        0,
-        body,
+      let func = m.add_func(
+        name: self.blocks[f].name,
+        num_locals: self.blocks[f].var_names.size(),
+        num_captures: self.rs.num_captures(f),
+        num_cells: self.rs.num_cells(f),
+        num_params: 0,
+        body: body,
       )
       for i, name in self.blocks[f].var_names.enumerate() {
         m.set_local_name(func: func, index: i, name: name)
       }
-      self.ir.name_captures(func, f, |_, vb, vs| self.blocks[vb].var_names[vs])
+      for i in range(self.rs.num_captures(f)) {
+        m.set_capture_name(
+          func: func,
+          index: i,
+          name: self.rs.capture_name(f, i),
+        )
+      }
     }
-    self.ir
+    m
   }
 }
 
@@ -466,7 +515,13 @@ try {
   # `program <- _ block '.' _` folds to a single child, so the root that
   # arrives is the block itself -- same fact pl0.cul's own driver leans on.
   let tree = PEG.parse(grammar, FS.read(args[0]), path: args[0])
-  Binder.new().build(CodeGen.Module.new(), tree).finish(want_ir, want_bc)
+  let m = Binder.new().build(CodeGen.Module.new(), tree)
+  m.verify()
+  cond {
+    want_ir => print(m.dump_ir()),
+    want_bc => print(m.dump_bc()),
+    _ => m.run(),
+  }
 } catch e {
   match e {
     {kind: 'Pl0Error'} => println("{args[0]}:{e.line}:{e.col}: {e.message}"),

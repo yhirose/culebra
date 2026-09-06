@@ -265,6 +265,8 @@ inline bool register_codegen_binding() {
       .method<&codegen::Resolver::push_scope>("push_scope")
       .method<&codegen::Resolver::pop_scope>("pop_scope")
       .method<&codegen::Resolver::depth>("depth")
+      .method<&codegen::Resolver::declare_var>("declare_var",
+                                               {"name", "owner"})
       .method<&codegen::Resolver::declare>("declare", {"name", "owner"})
       .method<&codegen::Resolver::declare_in>("declare_in",
                                               {"scope", "name", "owner"})
