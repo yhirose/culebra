@@ -16,26 +16,25 @@ CULEBRA=${CULEBRA:-./build-dev/culebra}
 # Which engine to run the front end -- and its culebra-side oracle -- on.
 ENGINE=${ENGINE:---vm}
 JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)}
-LIB=examples/languages/mini-js/fmt.js
-export CULEBRA ENGINE LIB
+export CULEBRA ENGINE
 
 case "${1:-}" in
   pl0)
-    GLOB='examples/languages/pl0/samples/*.pas'
-    got() {
-      # PL/0 reads from stdin, so a sample may bring its own
+    set -- examples/languages/pl0/samples/*.pas
+    # PL/0 reads from stdin, so a sample may bring its own
+    pl0_run() {
       local in=${1%.pas}.stdin
       [ -e "$in" ] || in=/dev/null
-      "$CULEBRA" "$ENGINE" examples/languages/pl0/pl0_codegen.cul "$1" <"$in"
+      "$CULEBRA" "$ENGINE" "$2" "$1" <"$in"
     }
-    want() {
-      local in=${1%.pas}.stdin
-      [ -e "$in" ] || in=/dev/null
-      "$CULEBRA" "$ENGINE" examples/languages/pl0/pl0.cul "$1" <"$in"
-    }
+    got() { pl0_run "$1" examples/languages/pl0/pl0_codegen.cul; }
+    want() { pl0_run "$1" examples/languages/pl0/pl0.cul; }
+    export -f pl0_run
     ;;
   mini-js)
-    GLOB='examples/languages/mini-js/samples/*.js'
+    set -- examples/languages/mini-js/samples/*.js
+    LIB=${LIB:-examples/languages/mini-js/fmt.js}
+    export LIB
     got() {
       "$CULEBRA" "$ENGINE" examples/languages/mini-js/mini_js.cul \
         --lib "$LIB" "$1"
@@ -43,7 +42,7 @@ case "${1:-}" in
     want() { node -e "$(cat "$LIB"; cat "$1")"; }
     ;;
   mini-culebra)
-    GLOB='examples/languages/mini-culebra/samples/*.cul'
+    set -- examples/languages/mini-culebra/samples/*.cul
     got() {
       "$CULEBRA" "$ENGINE" \
         examples/languages/mini-culebra/mini_culebra.cul "$1"
@@ -55,8 +54,13 @@ case "${1:-}" in
     exit 2
     ;;
 esac
-export GLOB
-export -f got want
+
+# An empty glob leaves the pattern itself in $1, and a comparison of two
+# identical "no such file" errors would pass. Say so instead.
+if [ ! -e "$1" ]; then
+  echo "$0: $1 matched no samples" >&2
+  exit 2
+fi
 
 one() {
   local f=$1 g w
@@ -70,7 +74,7 @@ one() {
     return 1
   fi
 }
-export -f one
+export -f got want one
 
 # xargs answers 123 when any child failed; normalize it to a plain 1.
-printf '%s\n' $GLOB | xargs -P "$JOBS" -I{} bash -c 'one "$@"' _ {} || exit 1
+printf '%s\n' "$@" | xargs -P "$JOBS" -I{} bash -c 'one "$@"' _ {} || exit 1

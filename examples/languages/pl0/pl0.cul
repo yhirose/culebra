@@ -19,9 +19,11 @@
 #          culebra examples/pl0/pl0.cul examples/pl0/samples/fib.pas
 #          culebra examples/pl0/pl0.cul --ast examples/pl0/samples/square.pas
 #
-# square and gcd finish immediately. fib.pas computes fib(0..24) by naive
-# recursion — several hundred thousand PL/0 procedure calls through this
-# interpreter — so it runs for tens of seconds.
+# square and gcd finish immediately. fib.pas computes fib(0..19) by naive
+# recursion — tens of thousands of PL/0 procedure calls through this
+# interpreter — so it takes a second or so where the compiled side is
+# instant. The bound is 20 rather than 25 because this side is what the
+# sample gate waits on.
 
 # AST optimization (on by default) replaces a node that has exactly one child
 # with that child. Writing the grammar so that the folding lands where you want

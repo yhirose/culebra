@@ -410,7 +410,7 @@ class Binder {
       # cpp-vmlib's README for fib.pas's version of that table.
       {name: 'call', nodes: [name]} => {
         let g = self.lookup_proc(f, name.token)
-        self.m.call_value(self.rs.closure(self.m, f, g, node), [], node)
+        self.rs.call(self.m, f, g, [], node)
       },
       {name: 'if', nodes: [cond, body]} => {
         let c = self.emit_cond(cond, f)

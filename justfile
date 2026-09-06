@@ -841,13 +841,23 @@ _run-tests BACKEND:
     # the only CodeGen consumers at the size a real front end uses it.
     # mini-js is skipped where `node` is absent rather than failing the lane.
     run_languages() {
-        CULEBRA="$BIN" JOBS="$JOBS" misc/check_language_samples.sh pl0
-        CULEBRA="$BIN" JOBS="$JOBS" misc/check_language_samples.sh mini-culebra
+        # The three arms in parallel, not one after another: each alone
+        # under-fills the box (pl0's eight samples cannot use twenty cores),
+        # and the whole phase then costs about what its longest arm does.
+        local arms=(pl0 mini-culebra)
         if command -v node >/dev/null 2>&1; then
-            CULEBRA="$BIN" JOBS="$JOBS" misc/check_language_samples.sh mini-js
+            arms+=(mini-js)
         else
             echo "SKIP mini-js (no node)"
         fi
+        local per=$(( JOBS / ${#arms[@]} )); (( per > 0 )) || per=1
+        local pids=() a rc=0
+        for a in "${arms[@]}"; do
+            CULEBRA="$BIN" JOBS="$per" misc/check_language_samples.sh "$a" &
+            pids+=($!)
+        done
+        for p in "${pids[@]}"; do wait "$p" || rc=1; done
+        return $rc
     }
 
     # Exercises `culebra test`-only ambient bindings (matchers, DI,

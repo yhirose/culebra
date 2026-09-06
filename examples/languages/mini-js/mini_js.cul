@@ -3335,8 +3335,6 @@ fn wrap_body(f, node, g, name, is_async) {
   let w = new_func(f, name, [], nil, false)
   funcs[w]['gen_raw'] = g
   funcs[w]['is_async'] = is_async
-  # the raw body's closure is built in the wrapper's frame, so the wrapper
-  # is where it is lexically nested as far as capture propagation goes
   # the raw body's closure is built in the wrapper's frame, so the wrapper is
   # where it is nested as far as capture propagation goes -- set_parent moves
   # what the body already reads along with it
@@ -3592,7 +3590,7 @@ fn scan_target(t, f) {
 
 # The lowering keeps its line/col pairs; the builder takes a position
 fn call_pre(m, f, name, arg_ids, at) {
-  ir.call_value(rs.closure(ir, f, prelude_named[name], at), arg_ids, at)
+  rs.call(ir, f, prelude_named[name], arg_ids, at)
 }
 
 fn var_read(m, f, r, at) {
@@ -3647,11 +3645,6 @@ fn store_local(v, value, at) {
 # statements then a value, as one block
 fn seq_of(stmts, value, at) {
   ir.block([...stmts, value], at)
-}
-
-# `!v` over a value the VM's own test understands
-fn lnot_of(v, at) {
-  ir.make_if_else(v, ir.bool_literal(false, at), ir.bool_literal(true, at), at)
 }
 
 # a user-mode value's truthiness, or the raw VM test inside the prelude
@@ -3792,8 +3785,9 @@ fn emit_binop(m, f, tok, l, r, at) {
   }
 }
 
+# `!v` over a value the VM's own test understands
 fn ir_not(m, v, at) {
-  lnot_of(v, at)
+  ir.make_if_else(v, ir.bool_literal(false, at), ir.bool_literal(true, at), at)
 }
 
 # `typeof v == 'nil'` -- how the compiler asks "is this undefined?", since

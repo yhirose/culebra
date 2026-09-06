@@ -1218,12 +1218,11 @@ class Module {
 
 // --- Closure conversion, script-visible ------------------------------------
 //
-// CodeGen.Resolver and CodeGen.FrameLayout are coreir::Resolver and
-// coreir::FrameLayout, the two things a front end needs beside Module and
-// which every front end that skipped them wrote itself. A variable is an id
+// CodeGen.Resolver is coreir::Resolver: the analysis a front end needs
+// beside Module, and which every front end that skipped it wrote itself. A variable is an id
 // here, not a (function, slot) pair: `declare` hands one out, the front end
-// keeps whatever else its language records beside it, and `use`/`resolve`
-// record a read. What that buys is the propagation -- a name read two levels
+// keeps whatever else its language records beside it, and `use` records a
+// read. What that buys is the propagation -- a name read two levels
 // in is recorded free in *every* function between the reader and the owner,
 // because a closure's capture map is written in the frame that builds it and
 // a frame two levels down cannot name a cell it does not own.
@@ -1235,9 +1234,9 @@ class Module {
 // answers need different work: nesting closes in one walk, which is what
 // `use` does, while a language that builds a closure at every *reference* to
 // a function -- PL/0's procedures, a static `fn` -- has to close its own free
-// sets over the call graph. `free_at`/`add_free` are there for that, and
-// `capture_map` refuses a frame that cannot supply what it is asked for
-// rather than emitting a capture map of nothing.
+// sets over the call graph, which is what `note_call`/`close_over_calls` are
+// for. Either way `capture_map` refuses a frame that cannot supply what it
+// is asked for rather than emitting a capture map of nothing.
 //
 // A lookup that finds nothing answers -1, not nil: every id here is a
 // non-negative index, and the alternative is an Any-typed return on the
@@ -1354,8 +1353,8 @@ class Resolver {
   int64_t num_vars() const { return static_cast<int64_t>(rs_.vars.size()); }
   std::string var_name(int64_t v) const { return checked_var(v).name; }
   int64_t var_owner(int64_t v) const { return checked_var(v).owner; }
-  // The owner's local index. The front end assigns it (see FrameLayout);
-  // access() reports it for a variable that stayed a plain local.
+  // The owner's local index, assigned by the front end; access() reports it
+  // for a variable that stayed a plain local.
   int64_t var_slot(int64_t v) const { return checked_var(v).slot; }
   void set_var_slot(int64_t v, int64_t slot) {
     checked_var(v).slot = static_cast<int32_t>(slot);
@@ -1398,7 +1397,6 @@ class Resolver {
     rs_.reset_fn(static_cast<int32_t>(fn), static_cast<int32_t>(parent));
   }
 
-
   // --- numbering and capture maps ------------------------------------------
 
   // Assigns every function's capture indices and every owner's cell indices.
@@ -1412,7 +1410,6 @@ class Resolver {
   // builds in anyway -- a body cannot be emitted until the capture indices
   // it reads through exist.
   void number_captures() { rs_.number_captures(); }
-
 
   // The forwarding table for a closure of `target` built in `builder`'s
   // frame. Throws when `builder` cannot supply what `target` captures --
@@ -1428,8 +1425,20 @@ class Resolver {
   // and the forwarding table, as the one node they are always used to make.
   int64_t closure(Module& m, int64_t builder, int64_t target,
                   JitObjectArg at, int64_t line, int64_t col) {
-    const int64_t cmap = capture_map(m, builder, target);
-    return m.make_closure(func_index(target), cmap, at, line, col);
+    checked_fn(builder);
+    checked_fn(target);
+    return Module::id(rs_.closure(m.m_, static_cast<int32_t>(builder),
+                                  static_cast<int32_t>(target),
+                                  Module::pos(line, col, at)));
+  }
+
+  // Calling one. A language whose functions are static entities builds the
+  // closure at the call and calls it in the same breath, which is the only
+  // thing Core-IR has -- there is no separate "call this index" node.
+  int64_t call(Module& m, int64_t builder, int64_t target, JitListArg args,
+               JitObjectArg at, int64_t line, int64_t col) {
+    const int64_t c = closure(m, builder, target, at, line, col);
+    return m.call_value(c, args, at, line, col);
   }
 
   bool reaches(int64_t fn, int64_t v) const {
@@ -1444,16 +1453,19 @@ class Resolver {
   // are here rather than in each of them.
   int64_t read(Module& m, int64_t fn, int64_t v, JitObjectArg at,
                int64_t line, int64_t col) {
-    const auto [k, i] = access(fn, v);
-    coreir::Builder b(m.m_);
-    return Module::id(b.at(Module::pos(line, col, at)).varref(k, i));
+    checked_fn(fn);
+    checked_var(v);
+    return Module::id(rs_.read(m.m_, static_cast<int32_t>(fn),
+                               static_cast<int32_t>(v),
+                               Module::pos(line, col, at)));
   }
   int64_t write(Module& m, int64_t fn, int64_t v, int64_t value,
                 JitObjectArg at, int64_t line, int64_t col) {
-    const auto [k, i] = access(fn, v);
-    coreir::Builder b(m.m_);
-    return Module::id(
-        b.at(Module::pos(line, col, at)).assign(k, i, Module::node(value)));
+    checked_fn(fn);
+    checked_var(v);
+    return Module::id(rs_.write(m.m_, static_cast<int32_t>(fn),
+                                static_cast<int32_t>(v), Module::node(value),
+                                Module::pos(line, col, at)));
   }
 
   // Names `func`'s captures in index order -- the loop over
@@ -1506,21 +1518,12 @@ class Resolver {
   }
 
  private:
-
-  // How `fn` reaches `v`, refusing a pair it cannot. The one place that
-  // question is asked, so read/write and access_kind/access_index all walk
-  // the tables once rather than each repeating the reach test.
+  // How `fn` reaches `v`, behind this class's bounds checks. The reach test
+  // itself is coreir's -- `access` there names the function and the variable
+  // when a frame was never given the capture.
   std::pair<coreir::VarKind, int32_t> access(int64_t fn, int64_t v) const {
     checked_fn(fn);
     checked_var(v);
-    if (!rs_.reaches(static_cast<int32_t>(fn), static_cast<int32_t>(v))) {
-      throw culebra::CulebraError(
-          "IrError",
-          culebra::format(
-              "func {} cannot name '{}' -- it neither owns it nor captures it",
-              fn, rs_.vars[static_cast<size_t>(v)].name),
-          0, 0);
-    }
     return rs_.access(static_cast<int32_t>(fn), static_cast<int32_t>(v));
   }
 
@@ -1574,6 +1577,5 @@ class Resolver {
   // struct, and the ids stay valid across the rollbacks that use them.
   std::vector<coreir::Resolver::Mark> marks_;
 };
-
 
 }  // namespace culebra::codegen

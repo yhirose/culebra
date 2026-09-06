@@ -296,6 +296,9 @@ inline bool register_codegen_binding() {
       .method<&codegen::Resolver::closure>(
           "closure", {"m", "builder", "target", {"at", nullptr},
                       {"line", 1L}, {"col", 1L}})
+      .method<&codegen::Resolver::call>(
+          "call", {"m", "builder", "target", "args", {"at", nullptr},
+                   {"line", 1L}, {"col", 1L}})
       .method<&codegen::Resolver::capture_map>("capture_map",
                                                {"m", "builder", "target"})
       .method<&codegen::Resolver::reaches>("reaches", {"fn", "v"})

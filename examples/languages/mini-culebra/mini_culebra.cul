@@ -157,7 +157,6 @@
 #          culebra examples/mini-culebra/mini_culebra.cul --ir prog.cul
 #          culebra examples/mini-culebra/mini_culebra.cul --bc prog.cul
 
-
 let grammar = `
   program    <- nl (stmt nl)*                               { no_ast_opt }
   stmt       <- mod_stmt / core_stmt
@@ -8104,7 +8103,7 @@ fn ir_and(m, a, b, at) {
 # discovers prelude calls the scan didn't see (they come from the lowering
 # itself); the prelude captures nothing, so no fixpoint re-run is needed.
 fn call_pre(m, f, name, arg_ids, at) {
-  ir.call_value(rs.closure(ir, f, prelude_named[name], at), arg_ids, at)
+  rs.call(ir, f, prelude_named[name], arg_ids, at)
 }
 
 # The prelude-only marks give the prelude bytes the surface language cannot
@@ -9095,13 +9094,7 @@ fn emit_decorated(m, f, decos, v0) {
       _ => {
         # a decorator held in a variable may be a closure marker
         let (pl, pc) = pos_args(m, dn)
-        call_pre(
-          m,
-          f,
-          '__callee_check',
-          [rs.read(ir, f, r.v, dn), pl, pc],
-          dn,
-        )
+        call_pre(m, f, '__callee_check', [rs.read(ir, f, r.v, dn), pl, pc], dn)
       },
     }
     if decos[i].nodes.size() == 2 {
@@ -9233,7 +9226,7 @@ fn emit_dispatch(m, f, name, fns, arg_nodes, recv_extra, at) {
         },
       })
     }
-    mut callv = ir.call_value(rs.closure(ir, f, g, at), call_args, at)
+    mut callv = rs.call(ir, f, g, call_args, at)
     # the chosen overload still refuses a keyword of the wrong type, or a
     # non-callable where Function was declared
     mut si = plan.strict.size() - 1
@@ -10788,11 +10781,7 @@ fn emit_stmt(m, node, f) {
             ir,
             f,
             r0.v,
-            ir.index(
-              rs.read(ir, f, r0.v, first),
-              ir.literal(0, first),
-              first,
-            ),
+            ir.index(rs.read(ir, f, r0.v, first), ir.literal(0, first), first),
             first,
           ))
         },
@@ -10949,7 +10938,8 @@ fn fresh_cells(m, f, base, high, at) {
     if slot_cell(f, s) != -1 {
       ids.push(ir.cell_fresh(slot_cell(f, s), at))
       if fwd_slots.has("{f}/{s}") {
-        ids.push(ir.assign('cell', 
+        ids.push(ir.assign(
+          'cell',
           slot_cell(f, s),
           ir.str_literal(unbound_marker, at),
           at,
@@ -11038,11 +11028,7 @@ fn emit_funcs(m) {
             ),
             _ => is_marker,
           }
-          let fill0 = store_local(
-            pi,
-            emit_expr(m, rec.dflt, f),
-            ORIGIN,
-          )
+          let fill0 = store_local(pi, emit_expr(m, rec.dflt, f), ORIGIN)
           # a typed parameter's default is checked too; the caller places
           # the error at the call
           let fill = cond {
@@ -11056,10 +11042,7 @@ fn emit_funcs(m) {
                       m,
                       f,
                       '__ty_ok',
-                      [
-                        pref(),
-                        ir.str_literal(ty_check_of(rec.ty), ORIGIN),
-                      ],
+                      [pref(), ir.str_literal(ty_check_of(rec.ty), ORIGIN)],
                       ORIGIN,
                     ),
                     ir_bool(m, false, ORIGIN),
@@ -11141,11 +11124,7 @@ fn emit_funcs(m) {
             ir,
             f,
             r.v,
-            ir.index(
-              local_ref(pi, ORIGIN),
-              ir.literal(k, ORIGIN),
-              ORIGIN,
-            ),
+            ir.index(local_ref(pi, ORIGIN), ir.literal(k, ORIGIN), ORIGIN),
             ORIGIN,
           ))
         }
@@ -11160,7 +11139,8 @@ fn emit_funcs(m) {
     # a binding some closure named before its declaration starts unbound
     for s in range(nslots[f]) {
       if fwd_slots.has("{f}/{s}") && slot_cell(f, s) != -1 {
-        ids.push(ir.assign('cell', 
+        ids.push(ir.assign(
+          'cell',
           slot_cell(f, s),
           ir.str_literal(unbound_marker, ORIGIN),
           ORIGIN,
@@ -11238,11 +11218,7 @@ fn emit_funcs(m) {
       for pi2 in range(fi.params.size()) {
         cargs.push(local_ref(pi2, ORIGIN))
       }
-      let rc = ir.call_value(
-        rs.closure(ir, f, rw, ORIGIN),
-        cargs,
-        ORIGIN,
-      )
+      let rc = ir.call_value(rs.closure(ir, f, rw, ORIGIN), cargs, ORIGIN)
       ids.push(ir.make_return(
         call_pre(m, f, '__gen_wrap', [rc], ORIGIN),
         ORIGIN,
@@ -11287,10 +11263,7 @@ fn emit_funcs(m) {
       # instead of returning, keeping the frame's defers pending for a
       # dispose. It sits inside the body's own Scope, so nothing has run
       # its exit yet.
-      ids.push(ir.make_yield(
-        ir.str_literal(gen_end_marker, ORIGIN),
-        ORIGIN,
-      ))
+      ids.push(ir.make_yield(ir.str_literal(gen_end_marker, ORIGIN), ORIGIN))
     }
     mut body = ir.block(ids, ORIGIN)
     let info = block_info[fi.body_key]
