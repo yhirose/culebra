@@ -4662,13 +4662,13 @@ class Compiler {
       flush();
       TempScope fts(*this);
       ExprResult v = compile_expr(*mv.value);
-      // NOTE: a field with an initializer does NOT get its declared type on
-      // the slot, so its writes go unchecked (docs/language.md §10 says they
-      // are checked). Giving it a one-field Op::FieldsInit ahead of the store
-      // closed that, and crashed the AOT lane on Linux inside class
-      // construction — tests/test_class.cul and test_class_field_init.cul
-      // both dumped core, neither on macOS. Reverted under time pressure with
-      // the cause not yet found; the hole is the lesser of the two.
+      // A slot learns its declared type from the layout op, so a field with
+      // an initializer takes its typed zero first and its own store is the
+      // overwrite every later write is — checked by the same rule. Emitted
+      // after the initializer, which must not see the field it defines.
+      if (culebra::field_type_for_annotation(mv.type_annotation) !=
+          culebra::FieldType::Any)
+        emit_declared_field_layout({f});
       emit(Op::ObjectSet, chunk_.self_slot, owned_src(*f, v),
            kconst_str(std::string(mv.name)), /*mut=*/1);
     }

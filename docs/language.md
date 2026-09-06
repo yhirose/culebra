@@ -1592,10 +1592,11 @@ Semantics:
   of which stands for one of those three — is **checked on every
   write**, the same runtime-check model parameters and `let x: T` follow
   (§14): the field admits only its own values. The check covers every
-  way a value reaches the field: a literal name, a computed key, the
-  constructor's own `self.x`, a native builder. That is what makes such
-  a field's type worth reading: a `Float` field holds a `Float`, so code
-  that knows the class knows the field's type without asking.
+  way a value reaches the field: the declaration's own initializer, a
+  literal name, a computed key, the constructor's own `self.x`, a native
+  builder. That is what makes such a field's type worth reading: a
+  `Float` field holds a `Float`, so code that knows the class knows the
+  field's type without asking.
 
   **Every other annotation is unchecked.** It still chooses the field's
   zero value above and still records what the code means, but the field
