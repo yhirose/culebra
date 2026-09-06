@@ -6662,9 +6662,147 @@ inspect(rt.live_objects())  # => 0
 ——フレームとそれを捕まえたすべての呼び出しが共有するbox化スロットだ——
 `capture_map_push`がそれを名指す前に。`verify()`は`kind: 'local'`の
 capture map要素を、後で解放済みメモリを読みに行かせる代わりに拒否する。
-どのスロットを昇格させるかはフロントエンド自身が解析すること——captureされる
-変数の集合を歩き、そこに名前が出るスロットを昇格させる。昇格したスロットの
-読み書きはcapture地点だけでなく全て`kind: 'cell'`に切り替わる。
+どのスロットを昇格させるかは手で解析するものではなく`CodeGen.Resolver`
+(後述)の仕事だ。昇格したスロットの読み書きはcapture地点だけでなく全て
+`kind: 'cell'`に切り替わる。
+
+### closure変換: `CodeGen.Resolver`
+
+どのスロットをcellに昇格させるか、どの関数が何をcaptureするか——この解析は
+どの言語でも同じ形になる。`CodeGen.Resolver`がそれを引き受ける。変数は
+(関数, スロット)の組ではなく1つのidで、`declare`がそれを配り、その言語が
+記録したい残りはフロントエンドが横に持つ。読みは`use`で記録する。
+
+```culebra
+let rs = CodeGen.Resolver.new()
+let main = rs.new_fn()          # 親なし: mainのclosureを組む者はいない
+rs.push_scope()
+let x = rs.declare('x', main)
+let outer = rs.new_fn(main)     # outerのclosureはmainのフレームで組まれる
+let inner = rs.new_fn(outer)
+rs.use(x, inner)                # innerがmainの持つ変数を読む
+
+inspect(rs.free_count(outer))   # => 1
+```
+
+最後の行が要点だ。`outer`は`x`を一度も名指さない。それでも1になるのは、
+closureのcapture mapがそれを組むフレームで書かれ、2段下のフレームは自分の
+持たないcellを名指せないからだ。だから`use`は、読み手と持ち主の間にある
+すべての関数に、その読みを記録する。ここを手で間違えると、実行時に別の変数を
+読むプログラムができあがる。
+
+読みを入れ終えたら`number_captures()`が各関数のcaptureの番号と各持ち主の
+cellの番号を割り当て、`access_kind`/`access_index`が`var_ref`に渡す引数を
+答える。
+
+```culebra
+let rs = CodeGen.Resolver.new()
+let main = rs.new_fn()
+rs.push_scope()
+let x = rs.declare('x', main)
+let outer = rs.new_fn(main)
+rs.use(x, outer)
+
+rs.set_func_index(main, 0)
+rs.set_func_index(outer, 1)
+rs.set_var_slot(x, 0)
+rs.number_captures()
+
+inspect(rs.access_kind(main, x))   # => 'cell'
+inspect(rs.access_kind(outer, x))  # => 'capture'
+inspect(rs.num_cells(main))        # => 1
+```
+
+個数は`add_func`へ、名前は`set_capture_name`へ渡す形にしてあり、ここで
+モジュールに書き込みはしない。関数の本体は、そこで読むcaptureの番号が
+決まるまで組めない。つまり番号付けは、それが説明する当の関数より先に
+来るしかない。
+
+`capture_map(m, builder, target)`は、`builder`のフレームで組む`target`の
+closureの転送表を書く。closureがcaptureするものを供給できないフレームを
+渡された場合、空の表を書く代わりに拒否する——closureはその関数が書かれた
+フレームで組むか、そのフレームに先にcaptureを記録すること。
+
+| 呼び出し | 答えるもの |
+| --- | --- |
+| `CodeGen.Resolver.new()` | 空のresolver |
+| `rs.new_fn(parent:)` | 関数id。`parent`はそのclosureを組むフレーム。参照地点でしかclosureを組まない言語では`-1` |
+| `rs.set_func_index(fn:, index:)` / `rs.func_index(fn:)` | この関数の本体がモジュールのfuncsのどこに入るか |
+| `rs.push_scope()` / `rs.pop_scope()` / `rs.depth()` | 開いているブロック |
+| `rs.declare(name:, owner:)` | 最内スコープの新しい束縛。持ち主は`owner` |
+| `rs.declare_in(scope:, name:, owner:)` | 同じものを最内でないスコープへ——`global`や、関数の最外ブロックへの巻き上げ |
+| `rs.alias(name:, v:)` | すでにある束縛への2つ目の名前。宣言ではないので宣言順の表には入らない |
+| `rs.declared_here(name:)` / `rs.declared_at(scope:, name:)` | そのスコープ1つがその名前を何に束縛しているか。なければ`-1` |
+| `rs.declared_count(scope:)` / `rs.declared_index(scope:, i:)` | そのスコープが宣言したものを宣言順に。`declare`1回につき1件 |
+| `rs.lookup(name:)` / `rs.lookup_from(name:, from_scope:)` | それを束縛する最内のスコープ。なければ`-1` |
+| `rs.use(v:, fn:)` | `fn`が`v`を読むことを記録する |
+| `rs.resolve(name:, fn:)` | `lookup`と`use`をまとめて |
+| `rs.force_cell(v:)` | captureしている者が見当たらなくてもcellにする束縛 |
+| `rs.var_name(v:)` / `rs.var_owner(v:)` / `rs.var_slot(v:)` / `rs.set_var_slot(v:, slot:)` | 変数idが指すもの |
+| `rs.number_captures()` | captureとcellの番号を割り当てる。読みを入れ終えてから1度だけ |
+| `rs.capture_name(fn:, i:)` | そのcapture番号の名前。`m.set_capture_name`に渡す |
+| `rs.access_kind(fn:, v:)` / `rs.access_index(fn:, v:)` | `fn`が`v`に届く経路——`'local'`／`'cell'`／`'capture'`——とその番号 |
+| `rs.num_captures(fn:)` / `rs.num_cells(fn:)` / `rs.cell_of(fn:, v:)` | `add_func`が要る数と、どのcellがその変数を持つか(無ければ`-1`) |
+| `rs.capture_map(m:, builder:, target:)` | 転送表。`make_closure`が取るcapture map idとして |
+| `rs.reaches(fn:, v:)` | `fn`がそもそも`v`を名指せるか |
+
+見つからなかった検索は`nil`ではなく`-1`を答える。ここのidはすべて非負の
+添字だからだ。
+
+#### 1回歩くだけでは足りないとき
+
+`use`は1回の走査で自由変数の集合を閉じる。関数値が式から生まれる言語では
+これが正しい——closureはその関数が書かれた場所で組まれるので、伝播は入れ子を
+たどる。関数が**静的な実体**で、参照するたびにそのclosureを組み直す言語
+(PL/0のprocedure、多重定義の族になりうる巻き上げられた`fn`)では義務が違う。
+参照する側すべてが、参照される側のcaptureを運ばなければならず、再帰がある
+ので走査ではなく不動点になる。
+
+ライブラリはこの不動点をやらない。やれば誤った降ろし方が動いてしまい、その
+代金として参照側と持ち主の間のフレーム全部が、使いもしないcaptureを抱える
+ことになる。代わりに自由変数の集合を露出させるので、必要なフロントエンドは
+`number_captures`を呼ぶ前に自分で閉じる(`calls[f]`は`f`が名指す関数)。
+
+```culebra
+# doctest: skip
+mut changed = true
+while changed {
+  changed = false
+  for f in range(rs.num_fns()) {
+    for g in calls[f] {
+      for i in range(rs.free_count(g)) {
+        if rs.add_free(f, rs.free_at(g, i)) {
+          changed = true
+        }
+      }
+    }
+  }
+}
+```
+
+### localスロット: `CodeGen.FrameLayout`
+
+フレームのもう半分。スロットを順に配り、ブロックの終わりでそれを返させて、
+隣のブロックが同じスロットを使い回せるようにする。`release`はそのブロックが
+確保した範囲の終端を答える——`m.scope`が欲しがるのがまさにそれだ。
+
+```culebra
+let fl = CodeGen.FrameLayout.new()
+let a = fl.alloc_local('a')      # 0
+let lo = fl.mark()
+let t = fl.alloc_local('t')      # 1
+let hi = fl.release(lo)          # 2 -- tのスロットが空く
+inspect([a, lo, t, hi, fl.num_locals()])  # => [0, 1, 1, 2, 2]
+```
+
+| 呼び出し | 答えるもの |
+| --- | --- |
+| `CodeGen.FrameLayout.new()` | 空のフレーム |
+| `fl.alloc_local(name:)` | 次のスロット。名前つきで |
+| `fl.mark()` | ブロックが始まるスロット |
+| `fl.release(mark:)` | `mark`以降に確保した分をすべて返し、範囲の終端を答える |
+| `fl.num_locals()` | 同時に手元にあった最大数——`add_func`の`num_locals`が欲しがる値 |
+| `fl.local_name(slot:)` | そのスロットを確保したときの名前。`set_local_name`用 |
 
 ### エラー・割り込み・再帰
 

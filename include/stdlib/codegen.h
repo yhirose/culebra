@@ -32,6 +32,7 @@
 namespace culebra::codegen {
 
 class Program;
+class Resolver;
 
 // The compile-time-checked heap CodeGen.Program.run() actually runs on.
 // Exposes only what a host may safely watch from outside: live_objects()/
@@ -1151,10 +1152,377 @@ class Module {
     return entries[static_cast<size_t>(index)];
   }
 
+  friend class Resolver;
+
   coreir::Module m_;
   std::vector<std::vector<int64_t>> lists_;
   std::vector<std::vector<coreir::CaptureSrc>> cmaps_;
   bool entry_frame_drops_ = true;
+};
+
+// --- Closure conversion, script-visible ------------------------------------
+//
+// CodeGen.Resolver and CodeGen.FrameLayout are coreir::Resolver and
+// coreir::FrameLayout, the two things a front end needs beside Module and
+// which every front end that skipped them wrote itself. A variable is an id
+// here, not a (function, slot) pair: `declare` hands one out, the front end
+// keeps whatever else its language records beside it, and `use`/`resolve`
+// record a read. What that buys is the propagation -- a name read two levels
+// in is recorded free in *every* function between the reader and the owner,
+// because a closure's capture map is written in the frame that builds it and
+// a frame two levels down cannot name a cell it does not own.
+//
+// Nothing here decides policy. What a second declaration of a name in one
+// block means (an error, a fresh binding, the same binding) is the
+// language's, so `declared_here` answers whether there is one and the front
+// end chooses. Where a closure gets built is the language's too, and the two
+// answers need different work: nesting closes in one walk, which is what
+// `use` does, while a language that builds a closure at every *reference* to
+// a function -- PL/0's procedures, a static `fn` -- has to close its own free
+// sets over the call graph. `free_at`/`add_free` are there for that, and
+// `capture_map` refuses a frame that cannot supply what it is asked for
+// rather than emitting a capture map of nothing.
+//
+// A lookup that finds nothing answers -1, not nil: every id here is a
+// non-negative index, and the alternative is an Any-typed return on the
+// half-dozen methods a bind pass calls most.
+class Resolver {
+ public:
+  Resolver() = default;
+
+  // --- functions -----------------------------------------------------------
+
+  // Registers a function whose closure is built in `parent`'s frame -- the
+  // function it is written in. -1 when closures are only ever built at
+  // reference sites, in which case the front end closes its own free sets.
+  int64_t new_fn(int64_t parent) {
+    return rs_.new_fn(static_cast<int32_t>(parent));
+  }
+  int64_t num_fns() const { return static_cast<int64_t>(rs_.fns.size()); }
+  int64_t parent_of(int64_t fn) const { return checked_fn(fn).parent; }
+
+  // Where in Module::funcs this function's body will land. The front end
+  // assigns it; capture_map reads it.
+  void set_func_index(int64_t fn, int64_t index) {
+    checked_fn(fn).index = static_cast<int32_t>(index);
+  }
+  int64_t func_index(int64_t fn) const { return checked_fn(fn).index; }
+
+  // --- scopes --------------------------------------------------------------
+
+  void push_scope() { rs_.push_scope(); }
+  void pop_scope() {
+    if (rs_.depth() == 0) {
+      throw culebra::CulebraError("IrError", "pop_scope with no open scope", 0,
+                                  0);
+    }
+    rs_.pop_scope();
+  }
+  int64_t depth() const { return static_cast<int64_t>(rs_.depth()); }
+
+  // A new binding in the innermost scope, owned by `owner`. Overwrites a name
+  // the scope already had, so a language that shadows within a block gets
+  // that by default and one that refuses it checks declared_here first.
+  int64_t declare(const std::string& name, int64_t owner) {
+    checked_fn(owner);
+    checked_depth();
+    return rs_.declare(name, static_cast<int32_t>(owner));
+  }
+  // The same, into a scope that is not the innermost -- what Python's
+  // `global` needs, and a hoist into a function's own outermost scope.
+  int64_t declare_in(int64_t scope, const std::string& name, int64_t owner) {
+    checked_fn(owner);
+    return rs_.declare_in(checked_scope(scope), name,
+                          static_cast<int32_t>(owner));
+  }
+  // A second name for a binding that already exists. Not a declaration:
+  // Ruby's `&blk` and a constructor re-entering its own parameters are both
+  // naming something already declared, so neither joins the order table.
+  void alias(const std::string& name, int64_t v) {
+    checked_var(v);
+    checked_depth();
+    rs_.alias(name, static_cast<int32_t>(v));
+  }
+
+  int64_t declared_here(const std::string& name) const {
+    checked_depth();
+    return opt(rs_.declared_here(name));
+  }
+  int64_t declared_at(int64_t scope, const std::string& name) const {
+    return opt(rs_.declared_at(checked_scope(scope), name));
+  }
+  // Everything the scope declared, in order, one entry per declare() --
+  // including a name declared twice, which the name map cannot answer.
+  int64_t declared_count(int64_t scope) const {
+    return static_cast<int64_t>(rs_.declared_order(checked_scope(scope)).size());
+  }
+  int64_t declared_index(int64_t scope, int64_t i) const {
+    const auto& order = rs_.declared_order(checked_scope(scope));
+    if (i < 0 || static_cast<size_t>(i) >= order.size()) {
+      throw culebra::CulebraError(
+          "IndexError",
+          culebra::format("scope {} declared {} bindings, no #{}", scope,
+                          order.size(), i),
+          0, 0);
+    }
+    return order[static_cast<size_t>(i)];
+  }
+
+  // The innermost scope that binds `name`, searching outward from the
+  // innermost, or from `from_scope`.
+  int64_t lookup(const std::string& name) const {
+    return opt(rs_.lookup(name));
+  }
+  int64_t lookup_from(const std::string& name, int64_t from_scope) const {
+    return opt(rs_.lookup(name, checked_scope(from_scope)));
+  }
+
+  // --- variables -----------------------------------------------------------
+
+  int64_t num_vars() const { return static_cast<int64_t>(rs_.vars.size()); }
+  std::string var_name(int64_t v) const { return checked_var(v).name; }
+  int64_t var_owner(int64_t v) const { return checked_var(v).owner; }
+  // The owner's local index. The front end assigns it (see FrameLayout);
+  // access() reports it for a variable that stayed a plain local.
+  int64_t var_slot(int64_t v) const { return checked_var(v).slot; }
+  void set_var_slot(int64_t v, int64_t slot) {
+    checked_var(v).slot = static_cast<int32_t>(slot);
+  }
+
+  // Records that `fn` reads `v`, marking it free in every function between
+  // the two. The whole propagation, in one call per read.
+  void use(int64_t v, int64_t fn) {
+    checked_var(v);
+    checked_fn(fn);
+    rs_.use(static_cast<int32_t>(v), static_cast<int32_t>(fn));
+  }
+  // lookup + use in one: the shape a bind pass reads a name with.
+  int64_t resolve(const std::string& name, int64_t fn) {
+    checked_fn(fn);
+    return opt(rs_.resolve(name, static_cast<int32_t>(fn)));
+  }
+  // A binding that must be a cell whether or not anything was seen capturing
+  // it -- one a closure built by hand reaches. Applied by number_captures.
+  void force_cell(int64_t v) {
+    checked_var(v);
+    rs_.force_cell(static_cast<int32_t>(v));
+  }
+
+  // --- free sets, for a front end that closes its own ----------------------
+
+  // What `fn` needs from outside itself, after every `use`. A language whose
+  // closures are built at reference sites reads these, lifts them along its
+  // own call graph with add_free, and iterates to a fixpoint before calling
+  // number_captures -- which is what PL/0 does and what nesting makes
+  // unnecessary everywhere else.
+  int64_t free_count(int64_t fn) const {
+    return static_cast<int64_t>(checked_fn(fn).free.size());
+  }
+  int64_t free_at(int64_t fn, int64_t i) const {
+    const auto& free = checked_fn(fn).free;
+    if (i < 0 || static_cast<size_t>(i) >= free.size()) {
+      throw culebra::CulebraError(
+          "IndexError",
+          culebra::format("func {} has {} free variables, no #{}", fn,
+                          free.size(), i),
+          0, 0);
+    }
+    auto it = free.begin();
+    std::advance(it, static_cast<std::ptrdiff_t>(i));
+    return *it;
+  }
+  // Adds `v` to fn's free set, answering whether it was not already there.
+  // Refuses a variable fn owns: that is a local, not a capture.
+  bool add_free(int64_t fn, int64_t v) {
+    const auto& var = checked_var(v);
+    checked_fn(fn);
+    if (var.owner == static_cast<int32_t>(fn)) return false;
+    return rs_.fns[static_cast<size_t>(fn)]
+        .free.insert(static_cast<int32_t>(v))
+        .second;
+  }
+
+  // --- numbering and capture maps ------------------------------------------
+
+  // Assigns every function's capture indices and every owner's cell indices.
+  // Call once, after the free sets are closed and before any capture_map.
+  //
+  // Deliberately not coreir's Module overload: that one writes the counts
+  // and names straight into Module::funcs, which needs the table already
+  // sized, and CodeGen.Module only ever appends a finished func. So the
+  // numbering stays here and the front end passes num_captures / num_cells
+  // to add_func and the names to set_capture_name, which is the order it
+  // builds in anyway -- a body cannot be emitted until the capture indices
+  // it reads through exist.
+  void number_captures() { rs_.number_captures(); }
+
+  // The name at capture index `i` of `fn`, for set_capture_name.
+  std::string capture_name(int64_t fn, int64_t i) const {
+    const auto& free = checked_fn(fn).free;
+    if (i < 0 || static_cast<size_t>(i) >= free.size()) {
+      throw culebra::CulebraError(
+          "IndexError",
+          culebra::format("func {} has {} captures, no #{}", fn, free.size(),
+                          i),
+          0, 0);
+    }
+    return rs_.capture_name(static_cast<int32_t>(fn), static_cast<int32_t>(i));
+  }
+
+  // The forwarding table for a closure of `target` built in `builder`'s
+  // frame. Throws when `builder` cannot supply what `target` captures --
+  // build the closure in the frame its function is written in, or record the
+  // captures there first.
+  int64_t capture_map(Module& m, int64_t builder, int64_t target) {
+    checked_fn(builder);
+    checked_fn(target);
+    return rs_.capture_map(m.m_, static_cast<int32_t>(builder),
+                           static_cast<int32_t>(target));
+  }
+  bool reaches(int64_t fn, int64_t v) const {
+    checked_fn(fn);
+    checked_var(v);
+    return rs_.reaches(static_cast<int32_t>(fn), static_cast<int32_t>(v));
+  }
+
+  // How `fn` reaches `v`: 'local' (its own slot), 'cell' (its own slot, made
+  // a cell because something nested captures it) or 'capture' (an index into
+  // its own capture list). The pair is what CodeGen.Module.var_ref wants.
+  std::string access_kind(int64_t fn, int64_t v) const {
+    return kind_name(access(fn, v).first);
+  }
+  int64_t access_index(int64_t fn, int64_t v) const {
+    return access(fn, v).second;
+  }
+
+  int64_t num_captures(int64_t fn) const {
+    return static_cast<int64_t>(checked_fn(fn).free.size());
+  }
+  int64_t num_cells(int64_t fn) const {
+    checked_fn(fn);
+    return rs_.num_cells(static_cast<int32_t>(fn));
+  }
+  // Which of `fn`'s cells holds `v`, or -1 when `v` did not become one.
+  int64_t cell_of(int64_t fn, int64_t v) const {
+    checked_fn(fn);
+    checked_var(v);
+    const auto& idx = rs_.fns[static_cast<size_t>(fn)].cell_index;
+    const auto it = idx.find(static_cast<int32_t>(v));
+    return it == idx.end() ? -1 : it->second;
+  }
+
+ private:
+  std::pair<coreir::VarKind, int32_t> access(int64_t fn, int64_t v) const {
+    checked_fn(fn);
+    checked_var(v);
+    if (!rs_.reaches(static_cast<int32_t>(fn), static_cast<int32_t>(v))) {
+      throw culebra::CulebraError(
+          "IrError",
+          culebra::format(
+              "func {} cannot name '{}' -- it neither owns it nor captures it",
+              fn, rs_.vars[static_cast<size_t>(v)].name),
+          0, 0);
+    }
+    return rs_.access(static_cast<int32_t>(fn), static_cast<int32_t>(v));
+  }
+
+  static std::string kind_name(coreir::VarKind k) {
+    switch (k) {
+      case coreir::VarKind::Local:
+        return "local";
+      case coreir::VarKind::Cell:
+        return "cell";
+      case coreir::VarKind::Capture:
+        return "capture";
+    }
+    return "local";
+  }
+
+  static int64_t opt(const std::optional<int32_t>& v) {
+    return v ? *v : -1;
+  }
+
+  void checked_depth() const {
+    if (rs_.depth() == 0) {
+      throw culebra::CulebraError("IrError", "no scope is open", 0, 0);
+    }
+  }
+  size_t checked_scope(int64_t scope) const {
+    if (scope < 0 || static_cast<size_t>(scope) >= rs_.depth()) {
+      throw culebra::CulebraError(
+          "IndexError",
+          culebra::format("{} scopes are open, no #{}", rs_.depth(), scope), 0,
+          0);
+    }
+    return static_cast<size_t>(scope);
+  }
+  const coreir::Resolver::Fn& checked_fn(int64_t fn) const {
+    if (fn < 0 || static_cast<size_t>(fn) >= rs_.fns.size()) {
+      throw culebra::CulebraError(
+          "IndexError",
+          culebra::format("no func #{} ({} registered)", fn, rs_.fns.size()), 0,
+          0);
+    }
+    return rs_.fns[static_cast<size_t>(fn)];
+  }
+  coreir::Resolver::Fn& checked_fn(int64_t fn) {
+    return const_cast<coreir::Resolver::Fn&>(
+        static_cast<const Resolver*>(this)->checked_fn(fn));
+  }
+  const coreir::Resolver::Var& checked_var(int64_t v) const {
+    if (v < 0 || static_cast<size_t>(v) >= rs_.vars.size()) {
+      throw culebra::CulebraError(
+          "IndexError",
+          culebra::format("no variable #{} ({} declared)", v, rs_.vars.size()),
+          0, 0);
+    }
+    return rs_.vars[static_cast<size_t>(v)];
+  }
+  coreir::Resolver::Var& checked_var(int64_t v) {
+    return const_cast<coreir::Resolver::Var&>(
+        static_cast<const Resolver*>(this)->checked_var(v));
+  }
+
+  coreir::Resolver rs_;
+};
+
+// The local slots of one function: hand them out in order, and give a block's
+// back at its end so a sibling block reuses them. `release` answers the end
+// of the range the block claimed, which is what CodeGen.Module.scope wants.
+class FrameLayout {
+ public:
+  FrameLayout() = default;
+
+  int64_t alloc_local(const std::string& name) {
+    return fl_.alloc_local(name);
+  }
+  int64_t mark() const { return fl_.mark(); }
+  int64_t release(int64_t mark) {
+    if (mark < 0 || mark > fl_.next_local) {
+      throw culebra::CulebraError(
+          "IrError",
+          culebra::format("release({}) outside the {} slots in hand", mark,
+                          fl_.next_local),
+          0, 0);
+    }
+    return fl_.release(static_cast<int32_t>(mark));
+  }
+  // The most slots ever in hand at once -- what Func::num_locals wants.
+  int64_t num_locals() const { return fl_.high_local; }
+  // The name table, exactly num_locals long: what set_local_name wants, in
+  // slot order, empty where a slot was never named.
+  std::string local_name(int64_t slot) const {
+    const auto names = fl_.names();
+    if (slot < 0 || static_cast<size_t>(slot) >= names.size()) {
+      throw culebra::CulebraError(
+          "IndexError",
+          culebra::format("{} locals, no slot #{}", names.size(), slot), 0, 0);
+    }
+    return names[static_cast<size_t>(slot)];
+  }
+
+ private:
+  coreir::FrameLayout fl_;
 };
 
 }  // namespace culebra::codegen

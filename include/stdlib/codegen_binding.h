@@ -254,6 +254,59 @@ inline bool register_codegen_binding() {
       .method<&codegen::Runtime::live_objects>("live_objects")
       .method<&codegen::Runtime::heap_bytes>("heap_bytes")
       .method<&codegen::Runtime::collect>("collect");
+  wrap<codegen::Resolver>("CodeGen", "Resolver")
+      .ctor<>()
+      .method<&codegen::Resolver::new_fn>("new_fn", {{"parent", -1L}})
+      .method<&codegen::Resolver::num_fns>("num_fns")
+      .method<&codegen::Resolver::parent_of>("parent_of", {"fn"})
+      .method<&codegen::Resolver::set_func_index>("set_func_index",
+                                                  {"fn", "index"})
+      .method<&codegen::Resolver::func_index>("func_index", {"fn"})
+      .method<&codegen::Resolver::push_scope>("push_scope")
+      .method<&codegen::Resolver::pop_scope>("pop_scope")
+      .method<&codegen::Resolver::depth>("depth")
+      .method<&codegen::Resolver::declare>("declare", {"name", "owner"})
+      .method<&codegen::Resolver::declare_in>("declare_in",
+                                              {"scope", "name", "owner"})
+      .method<&codegen::Resolver::alias>("alias", {"name", "v"})
+      .method<&codegen::Resolver::declared_here>("declared_here", {"name"})
+      .method<&codegen::Resolver::declared_at>("declared_at",
+                                               {"scope", "name"})
+      .method<&codegen::Resolver::declared_count>("declared_count", {"scope"})
+      .method<&codegen::Resolver::declared_index>("declared_index",
+                                                  {"scope", "i"})
+      .method<&codegen::Resolver::lookup>("lookup", {"name"})
+      .method<&codegen::Resolver::lookup_from>("lookup_from",
+                                               {"name", "from_scope"})
+      .method<&codegen::Resolver::num_vars>("num_vars")
+      .method<&codegen::Resolver::var_name>("var_name", {"v"})
+      .method<&codegen::Resolver::var_owner>("var_owner", {"v"})
+      .method<&codegen::Resolver::var_slot>("var_slot", {"v"})
+      .method<&codegen::Resolver::set_var_slot>("set_var_slot", {"v", "slot"})
+      .method<&codegen::Resolver::use>("use", {"v", "fn"})
+      .method<&codegen::Resolver::resolve>("resolve", {"name", "fn"})
+      .method<&codegen::Resolver::force_cell>("force_cell", {"v"})
+      .method<&codegen::Resolver::free_count>("free_count", {"fn"})
+      .method<&codegen::Resolver::free_at>("free_at", {"fn", "i"})
+      .method<&codegen::Resolver::add_free>("add_free", {"fn", "v"})
+      .method<&codegen::Resolver::number_captures>("number_captures")
+      .method<&codegen::Resolver::capture_name>("capture_name",
+                                                {"fn", "i"})
+      .method<&codegen::Resolver::capture_map>("capture_map",
+                                               {"m", "builder", "target"})
+      .method<&codegen::Resolver::reaches>("reaches", {"fn", "v"})
+      .method<&codegen::Resolver::access_kind>("access_kind", {"fn", "v"})
+      .method<&codegen::Resolver::access_index>("access_index", {"fn", "v"})
+      .method<&codegen::Resolver::num_captures>("num_captures", {"fn"})
+      .method<&codegen::Resolver::num_cells>("num_cells", {"fn"})
+      .method<&codegen::Resolver::cell_of>("cell_of", {"fn", "v"});
+  wrap<codegen::FrameLayout>("CodeGen", "FrameLayout")
+      .ctor<>()
+      .method<&codegen::FrameLayout::alloc_local>("alloc_local", {"name"})
+      .method<&codegen::FrameLayout::mark>("mark")
+      .method<&codegen::FrameLayout::release>("release", {"mark"})
+      .method<&codegen::FrameLayout::num_locals>("num_locals")
+      .method<&codegen::FrameLayout::local_name>("local_name", {"slot"});
   return true;
 }
 
