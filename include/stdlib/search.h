@@ -369,16 +369,23 @@ inline Index& index_get(int64_t id) {
 // with the wrong one stays undetectable. The engine's own save/load take a
 // stream, so the envelope is read off the front and the rest handed over
 // untouched.
-inline constexpr char kEnvelopeMagic[8] = {'c', 'u', 'l', 's', 'e', 'a', 'r', '\1'};
+inline constexpr char kEnvelopeMagic[8] = {'c', 'u', 'l', 's', 'e', 'a', 'r', '\0'};
+// The envelope's own version, apart from the magic so that a file this build
+// cannot read is told apart from a file that is not an index at all -- the
+// two need different answers, and only one of them is the user's mistake.
+inline constexpr uint32_t kEnvelopeVersion = 1;
 
 inline void write_envelope(std::ostream &os, const std::string &shape) {
   os.write(kEnvelopeMagic, sizeof(kEnvelopeMagic));
+  auto version = kEnvelopeVersion;
+  os.write(reinterpret_cast<const char *>(&version), sizeof(version));
   auto n = static_cast<uint32_t>(shape.size());
   os.write(reinterpret_cast<const char *>(&n), sizeof(n));
   os.write(shape.data(), std::streamsize(shape.size()));
 }
 
-// The shape the file was written with. Throws if this is not a culebra index.
+// The shape the file was written with. Throws if this is not an index file
+// this build reads.
 inline std::string read_envelope(std::istream &is, std::string_view path) {
   char magic[sizeof(kEnvelopeMagic)];
   is.read(magic, sizeof(magic));
@@ -386,6 +393,16 @@ inline std::string read_envelope(std::istream &is, std::string_view path) {
     throw CulebraError(
         "SearchError",
         culebra::format("Search: {} is not a culebra index file", path), 0, 0);
+  }
+  uint32_t version = 0;
+  is.read(reinterpret_cast<char *>(&version), sizeof(version));
+  if (!is || version != kEnvelopeVersion) {
+    throw CulebraError(
+        "SearchError",
+        culebra::format("Search: {} is a version {} index and this culebra "
+                        "writes version {}; rebuild it",
+                        path, version, kEnvelopeVersion),
+        0, 0);
   }
   uint32_t n = 0;
   is.read(reinterpret_cast<char *>(&n), sizeof(n));

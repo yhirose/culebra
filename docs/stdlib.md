@@ -77,7 +77,7 @@ Conventions used below:
 35. [`CodeGen`](#35-codegen) — build a small language's IR by hand and run it
 36. [`StateMachine`](#36-statemachine) — hierarchical state machine, with a text DSL
 37. [`FST`](#37-fst) — compiled read-only dictionary: prefix, predictive and fuzzy search
-38. [`Search`](#38-search) — full-text index over your own documents, ranked (experimental)
+38. [`Search`](#38-search) — full-text index over your own documents, ranked
 39. [Design notes](#39-design-notes)
 40. [Not included (yet)](#40-not-included-yet)
 
@@ -7206,11 +7206,11 @@ before querying when that matters.
 
 ## 38. `Search`
 
-**Experimental.** A **full-text index**: add documents under keys you choose,
-then search them with a query language and get ranked hits back (engine: the
-vendored [cpp-searchlib](https://github.com/yhirose/cpp-searchlib), an
-inverted index with BM25 ranking). The surface here is a narrow subset of what
-the engine does, and it will grow — treat the API as unstable across releases.
+A **full-text index**: add documents under keys you choose, then search them
+with a query language and get ranked hits back (engine: the vendored
+[cpp-searchlib](https://github.com/yhirose/cpp-searchlib), an inverted index
+with BM25 ranking). The surface here is a narrow subset of what the engine
+does, and it will grow.
 
 Reach for it when a substring scan is not enough: many documents, queries that
 combine terms, and results that need an order. For finding one pattern in one
@@ -7421,8 +7421,10 @@ let reopened = Search.Index.load("notes.idx")
 
 The file holds the index, not the documents: `search` still answers with keys
 and byte ranges, and it is on the caller to keep the original text around to
-resolve them against. The format is culebra's, wrapping the engine's, and is
-not stable across releases while this namespace is experimental.
+resolve them against. The format is culebra's, wrapping the engine's. It
+carries a version, so an index written by a culebra that wrote a different one
+is reported as such rather than misread — rebuild it from the documents, which
+the index does not keep.
 
 It records how the analyzer that built it was shaped, and `load` refuses an
 analyzer shaped differently:

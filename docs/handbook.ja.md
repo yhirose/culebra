@@ -1762,7 +1762,7 @@ inspect(JSON.stringify({a: 1}))     # => '{"a":1}'
 | データ形式 | `JSON`、`CSV`、`TOML`、`Encoding`、`Compress`、`Hash`、`UUID`、`PEG`（自前の文法） |
 | ネットワーク | `Http`、`Net` |
 | 並行 | `Isolate`、`Channel`、`Parallel`、`Shared`、`SharedBuffer` |
-| ストレージ | `SQLite`、`Search`（全文検索。実験的） |
+| ストレージ | `SQLite`、`Search`（全文検索） |
 | 時刻・CLI・ログ | `Time`、`Args`、`Log` |
 | 端末・グラフィクス | `Term`、`Canvas`、`Scene`、`Desktop` |
 

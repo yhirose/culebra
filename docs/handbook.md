@@ -1791,7 +1791,7 @@ inspect(JSON.stringify({a: 1}))     # => '{"a":1}'
 | Data formats | `JSON`, `CSV`, `TOML`, `Encoding`, `Compress`, `Hash`, `UUID`, `PEG` (a grammar of your own) |
 | Network | `Http`, `Net` |
 | Concurrency | `Isolate`, `Channel`, `Parallel`, `Shared`, `SharedBuffer` |
-| Storage | `SQLite`, `Search` (a full-text index, experimental) |
+| Storage | `SQLite`, `Search` (a full-text index) |
 | Time, CLI, logging | `Time`, `Args`, `Log` |
 | Terminal and graphics | `Term`, `Canvas`, `Scene`, `Desktop` |
 
