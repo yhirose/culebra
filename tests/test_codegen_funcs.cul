@@ -8,6 +8,8 @@
 # Run with:  ./build/culebra tests/test_codegen_funcs.cul
 #            ./build/culebra --jit tests/test_codegen_funcs.cul
 
+let ORIGIN_F = {line: 1, column: 1}
+
 fn stmt_block(m, stmts) {
   let list = m.list_new()
   for s in stmts {
@@ -106,6 +108,204 @@ fn counting_chain(m) {
   }
   assert_eq("{err.kind}: {err.message}", 'IrError: recursion limit exceeded')
 }
+
+# --- The shapes the IR has to see *through* to find a call still in tail
+# position. `set_tail_calls`' own documentation names four containers -- a
+# make_return's operand, or a body's final value through a block, an if, a
+# switch or a scope -- and the case above covers only the first two. Each
+# chain below is 50000 deep, five times the frame limit, so a call the IR
+# failed to recognize does not merely run slower: it does not finish. ---
+
+# down(n), reached through main, with the recursive call placed by `body_of`.
+# `n` is local 0; `again` is the call that has to stay in tail position.
+fn tail_chain(m, body_of, nlocals = 1) {
+  let empty = m.add_capture_map(m.capture_map_new())
+  let n = m.var_ref('local', 0, ORIGIN_F)
+  let again = m.call_value(
+    m.make_closure(1, empty, ORIGIN_F),
+    [m.binary('sub', n, m.literal(1, ORIGIN_F), ORIGIN_F)],
+    ORIGIN_F,
+  )
+  let done = m.str_literal('bottom', ORIGIN_F)
+  let at_zero = m.binary('eq', n, m.literal(0, ORIGIN_F), ORIGIN_F)
+
+  m.add_func(
+    name: 'main',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: print_stmt(m, m.call_value(
+               m.make_closure(1, empty, ORIGIN_F),
+               [m.literal(50000, ORIGIN_F)],
+               ORIGIN_F,
+             )),
+  )
+  m.add_func(
+    name: 'down',
+    num_locals: nlocals,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 1,
+    body: body_of(m, at_zero, again, done),
+  )
+  m.set_tail_calls(func: 1)
+  m
+}
+
+fn runs_to_bottom(m) {
+  m.verify()
+  assert_eq(IO.capture(fn () {
+    m.run()
+  }), "bottom\n")
+}
+
+# the *then* arm, where the case above used the else
+runs_to_bottom(tail_chain(CodeGen.Module.new(), fn (m, at_zero, again, done) {
+  m.make_if_else(
+    m.make_if_else(
+      at_zero,
+      m.bool_literal(false, ORIGIN_F),
+      m.bool_literal(true, ORIGIN_F),
+      ORIGIN_F,
+    ),
+    m.make_return(again, ORIGIN_F),
+    m.make_return(done, ORIGIN_F),
+    ORIGIN_F,
+  )
+}))
+
+# a block's final value, with no make_return around it
+runs_to_bottom(tail_chain(CodeGen.Module.new(), fn (m, at_zero, again, done) {
+  m.block(
+    [m.make_if(at_zero, m.make_return(done, ORIGIN_F), ORIGIN_F), again],
+    ORIGIN_F,
+  )
+}))
+
+# a switch arm, and its default
+runs_to_bottom(tail_chain(CodeGen.Module.new(), fn (m, at_zero, again, done) {
+  m.make_switch_default(
+    m.var_ref('local', 0, ORIGIN_F),
+    [m.literal(0, ORIGIN_F), m.make_return(done, ORIGIN_F)],
+    again,
+    ORIGIN_F,
+  )
+}))
+
+# a scope's final value
+runs_to_bottom(tail_chain(CodeGen.Module.new(), fn (m, at_zero, again, done) {
+  m.scope(
+    1,
+    1,
+    m.block(
+      [m.make_if(at_zero, m.make_return(done, ORIGIN_F), ORIGIN_F), again],
+      ORIGIN_F,
+    ),
+    ORIGIN_F,
+  )
+}))
+
+# --- Mutual recursion: neither function's frame may survive its own call,
+# so a chain alternating between the two only completes if both are flagged.
+{
+  let m = CodeGen.Module.new()
+  let empty = m.add_capture_map(m.capture_map_new())
+  let n = m.var_ref('local', 0, ORIGIN_F)
+  let dec = m.binary('sub', n, m.literal(1, ORIGIN_F), ORIGIN_F)
+  m.add_func(
+    name: 'main',
+    num_locals: 0,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: print_stmt(m, m.call_value(
+               m.make_closure(1, empty, ORIGIN_F),
+               [m.literal(50000, ORIGIN_F)],
+               ORIGIN_F,
+             )),
+  )
+  # ping(n) = n == 0 ? 'bottom' : pong(n - 1);  pong(n) = ping(n)
+  for f in [1, 2] {
+    let callee = cond {
+      f == 1 => 2,
+      _ => 1,
+    }
+    let arg = cond {
+      f == 1 => dec,
+      _ => n,
+    }
+    m.add_func(
+      name: cond {
+        f == 1 => 'ping',
+        _ => 'pong',
+      },
+      num_locals: 1,
+      num_captures: 0,
+      num_cells: 0,
+      num_params: 1,
+      body: m.make_if_else(
+        m.binary('eq', n, m.literal(0, ORIGIN_F), ORIGIN_F),
+        m.make_return(m.str_literal('bottom', ORIGIN_F), ORIGIN_F),
+        m.make_return(
+          m.call_value(m.make_closure(callee, empty, ORIGIN_F), [arg], ORIGIN_F),
+          ORIGIN_F,
+        ),
+        ORIGIN_F,
+      ),
+    )
+    m.set_tail_calls(func: f)
+  }
+  runs_to_bottom(m)
+}
+
+# --- Where a tail call is refused, on purpose: the frame has to still be
+# there. A call inside a try region needs its handler, and a scope that
+# releases its own locals needs to run those releases after the callee
+# returns -- so both stay ordinary calls and both run out of frames. ---
+fn exhausts(m) {
+  m.verify()
+  let err = try {
+    m.run()
+  } catch e {
+    e
+  }
+  assert_eq("{err.kind}: {err.message}", 'IrError: recursion limit exceeded')
+}
+
+# The try's own handler is what proves it: the chain runs out of frames and
+# the handler is still there to catch it, which is the whole reason the call
+# could not have replaced the frame.
+{
+  let m = tail_chain(CodeGen.Module.new(), fn (m2, at_zero, again, done) {
+    m2.make_try(
+      1,
+      m2.block(
+        [m2.make_if(at_zero, m2.make_return(done, ORIGIN_F), ORIGIN_F), again],
+        ORIGIN_F,
+      ),
+      m2.make_return(m2.str_literal('caught', ORIGIN_F), ORIGIN_F),
+      ORIGIN_F,
+    )
+  }, 2)
+  m.verify()
+  assert_eq(IO.capture(fn () {
+    m.run()
+  }), "caught\n")
+}
+
+exhausts(tail_chain(CodeGen.Module.new(), fn (m, at_zero, again, done) {
+  m.scope_release(
+    0,
+    1,
+    m.block(
+      [m.make_if(at_zero, m.make_return(done, ORIGIN_F), ORIGIN_F), again],
+      ORIGIN_F,
+    ),
+    [m.var_ref('local', 0, ORIGIN_F)],
+    ORIGIN_F,
+  )
+}))
 
 # --- Singletons: one closure per function, shared by every make_closure. ---
 
