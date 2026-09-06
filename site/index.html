@@ -220,7 +220,7 @@
 
     <section class="section">
       <h2>Try culebra on your machine</h2>
-      <p>Paste this into a terminal on macOS (Apple Silicon) — it downloads
+      <p>Paste this into a terminal on macOS (Apple Silicon + Homebrew) — it downloads
         culebra and writes a one-line program to <code>hello.cul</code>, then
         runs that same source file three ways: as a script, JIT-compiled, and
         built into a standalone binary — all three print the same line.</p>
@@ -229,8 +229,7 @@
           <span class="name">quickstart.sh</span>
           <button id="copy-quickstart" class="btn" type="button">Copy</button>
         </div>
-        <pre class="sample" id="quickstart">curl -fsSL https://github.com/yhirose/culebra/releases/latest/download/culebra-macos-arm64.tar.gz | tar xz
-export PATH="$PWD/culebra-macos-arm64:$PATH"
+        <pre class="sample" id="quickstart">brew install yhirose/culebra/culebra
 culebra --version
 
 cat &gt; hello.cul &lt;&lt;'EOF'
@@ -241,11 +240,7 @@ culebra hello.cul                            # the bytecode VM (default)
 culebra --jit hello.cul                      # JIT
 culebra build hello.cul -o hello &amp;&amp; ./hello  # AOT: compile once, ship the binary</pre>
       </div>
-      <p class="fine-print">macOS also installs through a package
-        manager: <code>brew install yhirose/culebra/culebra</code>.</p>
-      <p class="fine-print">Linux (x86-64): swap the first line for
-        <code>culebra-linux-x64.tar.gz</code>. Windows and a permanent
-        install are in the
+      <p class="fine-print">Linux, Windows and a permanent install are in the
         <a href="https://github.com/yhirose/culebra#quickstart">README</a>.</p>
     </section>
 
