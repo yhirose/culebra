@@ -836,14 +836,15 @@ _run-tests BACKEND:
     # The three Core-IR front ends in examples/languages/, each against the
     # oracle for its language: PL/0 against the tree-walking interpreter
     # beside it, mini-js against `node`, mini-culebra against culebra
-    # itself. Nothing else here runs them, and they are the only thing that
-    # exercises CodeGen at the size a real front end uses it. mini-js is
-    # skipped where `node` is absent rather than failing the lane.
+    # itself. In every lane including `fast`, which is what `just land` runs:
+    # 27s, and they are the largest culebra programs in the tree as well as
+    # the only CodeGen consumers at the size a real front end uses it.
+    # mini-js is skipped where `node` is absent rather than failing the lane.
     run_languages() {
-        CULEBRA="$BIN" JOBS="$JOBS" misc/check_pl0_samples.sh
-        CULEBRA="$BIN" JOBS="$JOBS" misc/check_miniculebra_samples.sh
+        CULEBRA="$BIN" JOBS="$JOBS" misc/check_language_samples.sh pl0
+        CULEBRA="$BIN" JOBS="$JOBS" misc/check_language_samples.sh mini-culebra
         if command -v node >/dev/null 2>&1; then
-            CULEBRA="$BIN" JOBS="$JOBS" misc/check_minijs_samples.sh
+            CULEBRA="$BIN" JOBS="$JOBS" misc/check_language_samples.sh mini-js
         else
             echo "SKIP mini-js (no node)"
         fi
@@ -1254,6 +1255,7 @@ _run-tests BACKEND:
         phase "early ifcvt (a carried Float's if arm stays a branch)"; run_early_ifcvt
         phase "vm/jit symmetry (real test files)"; run_diff_vm_jit
         phase "vm_cases (frozen expected outputs)"; run_vm_cases
+        phase "languages (front ends vs their oracles)"; run_languages
         phase "culebra-test self"; run_culebra_test_self
         phase "culebra-test sweep (tests/*.cul as session units)"; run_unit_runner_sweep
         phase "isolate (jit + VM)"; run_isolate
@@ -1648,7 +1650,7 @@ sync-site-version:
 
 # The three Core-IR front ends in examples/languages/ against their oracles
 # (PL/0's own interpreter, `node`, culebra itself). Part of `just test` and
-# of CI's ci-light lane; this recipe is the standalone way in, against the
+# of every other lane; this recipe is the standalone way in, against the
 # build-dev/ binary. mini-js is skipped where `node` is absent.
 [group("test")]
 [doc("Run the examples/languages front ends against their oracles")]

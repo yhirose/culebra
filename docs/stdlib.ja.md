@@ -6725,7 +6725,7 @@ let outer = rs.new_fn(main)     # outerのclosureはmainのフレームで組ま
 let inner = rs.new_fn(outer)
 rs.use(x, inner)                # innerがmainの持つ変数を読む
 
-inspect(rs.free_count(outer))   # => 1
+inspect(rs.num_captures(outer))  # => 1
 ```
 
 最後の行が要点だ。`outer`は`x`を一度も名指さない。それでも1になるのは、
@@ -6779,16 +6779,14 @@ closureの転送表を書く。closureがcaptureするものを供給できな�
 | `rs.declared_count(scope:)` / `rs.declared_index(scope:, i:)` | そのスコープが宣言したものを宣言順に。`declare`1回につき1件 |
 | `rs.lookup(name:)` / `rs.lookup_from(name:, from_scope:)` | それを束縛する最内のスコープ。なければ`-1` |
 | `rs.use(v:, fn:)` | `fn`が`v`を読むことを記録する |
-| `rs.resolve(name:, fn:)` | `lookup`と`use`をまとめて |
-| `rs.force_cell(v:)` | captureしている者が見当たらなくてもcellにする束縛 |
 | `rs.var_name(v:)` / `rs.var_owner(v:)` / `rs.var_slot(v:)` / `rs.set_var_slot(v:, slot:)` | 変数idが指すもの |
 | `rs.number_captures()` | captureとcellの番号を割り当てる。読みを入れ終えてから1度だけ |
-| `rs.capture_name(fn:, i:)` | そのcapture番号の名前。`m.set_capture_name`に渡す |
 | `rs.read(m:, fn:, v:, at:)` / `rs.write(m:, fn:, v:, value:, at:)` | その読み書きをIRノードとして。これが無ければどのフロントエンドも手で組む2つ |
 | `rs.name_captures(m:, func:, fn:)` | `func`のcaptureに番号順で名前を付ける |
 | `rs.access_kind(fn:, v:)` / `rs.access_index(fn:, v:)` | `fn`が`v`に届く経路——`'local'`／`'cell'`／`'capture'`——とその番号。上の2つで足りない読み書き用 |
 | `rs.num_captures(fn:)` / `rs.num_cells(fn:)` / `rs.cell_of(fn:, v:)` | `add_func`が要る数と、どのcellがその変数を持つか(無ければ`-1`) |
-| `rs.capture_map(m:, builder:, target:)` | 転送表。`make_closure`が取るcapture map idとして |
+| `rs.closure(m:, builder:, target:, at:)` | `builder`のフレームで組む`target`のclosureを1ノードとして |
+| `rs.capture_map(m:, builder:, target:)` | その転送表だけ。ノードを自分で組み立てるフロントエンド用 |
 | `rs.reaches(fn:, v:)` | `fn`がそもそも`v`を名指せるか |
 | `rs.mark()` | 今この時点でresolverが持っている全てを1つのトークンとして |
 | `rs.rollback(mark:)` | それ以降に増えた関数・変数・自由変数の項を戻す |
@@ -6830,33 +6828,6 @@ rs.close_over_calls()          # そのあと、number_capturesの前に
 フレーム全部に使いもしないcaptureを抱えさせ、そして肝心なのはこちらだが、
 **closureを間違ったフレームで組む降ろし方まで動かしてしまう**。辺を申告しない
 フロントエンドはその代金を1つも払わない。
-
-`free_count`/`free_at`/`add_free`は同じ自由変数の集合を手で扱う口だ。
-この2つのどちらでもない規則を持つ言語のために置いてある。
-
-### localスロット: `CodeGen.FrameLayout`
-
-フレームのもう半分。スロットを順に配り、ブロックの終わりでそれを返させて、
-隣のブロックが同じスロットを使い回せるようにする。`release`はそのブロックが
-確保した範囲の終端を答える——`m.scope`が欲しがるのがまさにそれだ。
-
-```culebra
-let fl = CodeGen.FrameLayout.new()
-let a = fl.alloc_local('a')      # 0
-let lo = fl.mark()
-let t = fl.alloc_local('t')      # 1
-let hi = fl.release(lo)          # 2 -- tのスロットが空く
-inspect([a, lo, t, hi, fl.num_locals()])  # => [0, 1, 1, 2, 2]
-```
-
-| 呼び出し | 答えるもの |
-| --- | --- |
-| `CodeGen.FrameLayout.new()` | 空のフレーム |
-| `fl.alloc_local(name:)` | 次のスロット。名前つきで |
-| `fl.mark()` | ブロックが始まるスロット |
-| `fl.release(mark:)` | `mark`以降に確保した分をすべて返し、範囲の終端を答える |
-| `fl.num_locals()` | 同時に手元にあった最大数——`add_func`の`num_locals`が欲しがる値 |
-| `fl.local_name(slot:)` | そのスロットを確保したときの名前。`set_local_name`用 |
 
 ### エラー・割り込み・再帰
 

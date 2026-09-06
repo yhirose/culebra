@@ -8074,30 +8074,13 @@ fn store_local(slot, value, at) {
   ir.assign('local', slot, value, at)
 }
 
-# a closure of `g` built in `f`'s frame, and calling one
-fn closure_of_fn(f, g, at) {
-  ir.make_closure(rs.func_index(g), rs.capture_map(ir, f, g), at)
-}
-fn call_fn(f, g, args, at) {
-  ir.call_value(closure_of_fn(f, g, at), args, at)
-}
-
 # statements then a value, as one block
 fn seq_of(stmts, value, at) {
   ir.block([...stmts, value], at)
 }
 
-# `a && b` over values the VM's own test understands
-fn land_of(a, b, at) {
-  ir.make_if_else(a, b, ir.bool_literal(false, at), at)
-}
-
 # a position for code no source line produced
 let ORIGIN = {line: 1, column: 1}
-
-fn pos(line, column) {
-  {line: line, column: column}
-}
 
 # --- Pass C: emit -------------------------------------------------------------
 
@@ -8112,15 +8095,16 @@ fn ir_bool(m, v, at) {
   ir.bool_literal(v, at)
 }
 
+# `a && b` over values the VM's own test understands
 fn ir_and(m, a, b, at) {
-  land_of(a, b, at)
+  ir.make_if_else(a, b, ir.bool_literal(false, at), at)
 }
 
 # A call to a prelude helper, with the user-site position threaded in. Pass C
 # discovers prelude calls the scan didn't see (they come from the lowering
 # itself); the prelude captures nothing, so no fixpoint re-run is needed.
 fn call_pre(m, f, name, arg_ids, at) {
-  call_fn(f, prelude_named[name], arg_ids, at)
+  ir.call_value(rs.closure(ir, f, prelude_named[name], at), arg_ids, at)
 }
 
 # The prelude-only marks give the prelude bytes the surface language cannot
@@ -8890,7 +8874,7 @@ fn emit_call(m, node, f) {
         arg_ids.push(emit_expr(m, a, f))
       }
       let g = r.funcs[0]
-      let callee = closure_of_fn(f, g, node)
+      let callee = rs.closure(ir, f, g, node)
       return ir.call_value(callee, arg_ids, node)
     }
     return emit_dispatch(m, f, id.token, r.funcs, args.nodes, nil, node)
@@ -9082,7 +9066,7 @@ fn emit_family(m, f, name, gs, skip, at) {
   mut ovs = []
   for g in order_most_typed(gs) {
     ovs.push(ir.array_lit(
-      [closure_of_fn(f, g, at), emit_spec(m, g, skip, at)],
+      [rs.closure(ir, f, g, at), emit_spec(m, g, skip, at)],
       at,
     ))
   }
@@ -9107,7 +9091,7 @@ fn emit_decorated(m, f, decos, v0) {
     let dn = decos[i].nodes[0]
     let r = resolved[pkey(dn)]
     mut callee = cond {
-      r.kind == 'fn' => closure_of_fn(f, r.funcs[0], dn),
+      r.kind == 'fn' => rs.closure(ir, f, r.funcs[0], dn),
       _ => {
         # a decorator held in a variable may be a closure marker
         let (pl, pc) = pos_args(m, dn)
@@ -9249,7 +9233,7 @@ fn emit_dispatch(m, f, name, fns, arg_nodes, recv_extra, at) {
         },
       })
     }
-    mut callv = ir.call_value(closure_of_fn(f, g, at), call_args, at)
+    mut callv = ir.call_value(rs.closure(ir, f, g, at), call_args, at)
     # the chosen overload still refuses a keyword of the wrong type, or a
     # non-callable where Function was declared
     mut si = plan.strict.size() - 1
@@ -9408,7 +9392,7 @@ fn ty_check_of(ty) {
 # its declared arity, so a method call or dot read can supply the receiver.
 fn emit_closure_value(m, node, f) {
   let g = closure_of[pkey(node)]
-  let c = closure_of_fn(f, g, node)
+  let c = rs.closure(ir, f, g, node)
   # a closure with parameters travels with its parameter list, so any
   # call site -- a property call, a callback slot, a keyword call --
   # binds by name and type the way culebra does; one that mentions self
@@ -9815,7 +9799,7 @@ fn emit_expr(m, node, f) {
         r.kind == 'gcns' => call_pre(m, f, '__gc_ns', [], node),
         r.kind == 'bval' => call_pre(m, f, '__fnval_' + r.name, [], node),
         r.kind == 'fn' &&
-          r.funcs.size() == 1 => closure_of_fn(f, r.funcs[0], node),
+          r.funcs.size() == 1 => rs.closure(ir, f, r.funcs[0], node),
         r.kind == 'fn' => emit_family(m, f, token, r.funcs, 0, node),
         _ => {
           let ref = rs.read(ir, f, r.v, node)
@@ -9940,7 +9924,7 @@ fn emit_expr(m, node, f) {
         r.kind == 'var' => {
           rs.read(ir, f, r.v, node)
         },
-        _ => closure_of_fn(f, f, node),
+        _ => rs.closure(ir, f, f, node),
       }
     },
     {name: 'tuple'} => {
@@ -10629,7 +10613,7 @@ fn emit_class(m, node, f) {
     let g = ci.finits[fd.id.token]
     let init = cond {
       g == nil => ir.nil_literal(node),
-      _ => closure_of_fn(f, g, node),
+      _ => rs.closure(ir, f, g, node),
     }
     fl.push(ir.array_lit([ir.str_literal(fd.id.token, node), init], node))
   }
@@ -10645,7 +10629,7 @@ fn emit_class(m, node, f) {
   for sname in ci.smeths.keys() {
     let g = ci.smeths[sname]
     kv.push(ir.str_literal(sname, node))
-    kv.push(closure_of_fn(f, g, node))
+    kv.push(rs.closure(ir, f, g, node))
   }
   for sf in ci.sfields {
     kv.push(ir.str_literal(sf.nodes[0].token, node))
@@ -10670,7 +10654,7 @@ fn emit_stmt(m, node, f) {
         return nil
       }
       let g = closure_of[pkey(node)]
-      let v = emit_decorated(m, f, d.decos, closure_of_fn(f, g, node))
+      let v = emit_decorated(m, f, d.decos, rs.closure(ir, f, g, node))
       let rb = resolved[pkey(d.id)]
       rs.write(ir, f, rb.v, v, node)
     },
@@ -10932,7 +10916,7 @@ fn emit_stmt(m, node, f) {
     },
     {name: 'defer_s'} => {
       let g = closure_of[pkey(node)]
-      let c = closure_of_fn(f, g, node)
+      let c = rs.closure(ir, f, g, node)
       ir.make_defer(c, node)
     },
     {name: 'bare_block', nodes: [blk]} => emit_block(m, blk, f),
@@ -11255,7 +11239,7 @@ fn emit_funcs(m) {
         cargs.push(local_ref(pi2, ORIGIN))
       }
       let rc = ir.call_value(
-        closure_of_fn(f, rw, ORIGIN),
+        rs.closure(ir, f, rw, ORIGIN),
         cargs,
         ORIGIN,
       )
@@ -11346,9 +11330,7 @@ fn emit_funcs(m) {
     if fi.is_prelude && rs.num_captures(f) == 0 {
       m.set_singleton(func: func)
     }
-    for i in range(rs.num_captures(f)) {
-      m.set_capture_name(func: func, index: i, name: "cap{i}")
-    }
+    rs.name_captures(m, func, f)
   }
   in_prelude = false
 }

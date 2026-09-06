@@ -288,18 +288,14 @@ inline bool register_codegen_binding() {
       .method<&codegen::Resolver::var_slot>("var_slot", {"v"})
       .method<&codegen::Resolver::set_var_slot>("set_var_slot", {"v", "slot"})
       .method<&codegen::Resolver::use>("use", {"v", "fn"})
-      .method<&codegen::Resolver::resolve>("resolve", {"name", "fn"})
-      .method<&codegen::Resolver::force_cell>("force_cell", {"v"})
       .method<&codegen::Resolver::mark>("mark")
       .method<&codegen::Resolver::rollback>("rollback", {"mark"})
       .method<&codegen::Resolver::reset_fn>("reset_fn",
                                             {"fn", {"parent", -1L}})
-      .method<&codegen::Resolver::free_count>("free_count", {"fn"})
-      .method<&codegen::Resolver::free_at>("free_at", {"fn", "i"})
-      .method<&codegen::Resolver::add_free>("add_free", {"fn", "v"})
       .method<&codegen::Resolver::number_captures>("number_captures")
-      .method<&codegen::Resolver::capture_name>("capture_name",
-                                                {"fn", "i"})
+      .method<&codegen::Resolver::closure>(
+          "closure", {"m", "builder", "target", {"at", nullptr},
+                      {"line", 1L}, {"col", 1L}})
       .method<&codegen::Resolver::capture_map>("capture_map",
                                                {"m", "builder", "target"})
       .method<&codegen::Resolver::reaches>("reaches", {"fn", "v"})
@@ -318,13 +314,6 @@ inline bool register_codegen_binding() {
       .method<&codegen::Resolver::num_captures>("num_captures", {"fn"})
       .method<&codegen::Resolver::num_cells>("num_cells", {"fn"})
       .method<&codegen::Resolver::cell_of>("cell_of", {"fn", "v"});
-  wrap<codegen::FrameLayout>("CodeGen", "FrameLayout")
-      .ctor<>()
-      .method<&codegen::FrameLayout::alloc_local>("alloc_local", {"name"})
-      .method<&codegen::FrameLayout::mark>("mark")
-      .method<&codegen::FrameLayout::release>("release", {"mark"})
-      .method<&codegen::FrameLayout::num_locals>("num_locals")
-      .method<&codegen::FrameLayout::local_name>("local_name", {"slot"});
   return true;
 }
 

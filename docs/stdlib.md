@@ -6929,7 +6929,7 @@ let outer = rs.new_fn(main)     # outer's closure is built in main's frame
 let inner = rs.new_fn(outer)
 rs.use(x, inner)                # inner reads a variable main owns
 
-inspect(rs.free_count(outer))   # => 1
+inspect(rs.num_captures(outer))  # => 1
 ```
 
 That last line is the whole point. `outer` never names `x`, but a closure's
@@ -6984,16 +6984,14 @@ captures there first.
 | `rs.declared_count(scope:)` / `rs.declared_index(scope:, i:)` | what the scope declared, in order, one entry per `declare` |
 | `rs.lookup(name:)` / `rs.lookup_from(name:, from_scope:)` | the innermost scope that binds it, or `-1` |
 | `rs.use(v:, fn:)` | records that `fn` reads `v` |
-| `rs.resolve(name:, fn:)` | `lookup` and `use` in one |
-| `rs.force_cell(v:)` | a binding that must be a cell whether or not anything was seen capturing it |
 | `rs.var_name(v:)` / `rs.var_owner(v:)` / `rs.var_slot(v:)` / `rs.set_var_slot(v:, slot:)` | what a variable id stands for |
 | `rs.number_captures()` | assigns the capture and cell indices. Once, after the reads are in |
-| `rs.capture_name(fn:, i:)` | the name at that capture index, for `m.set_capture_name` |
 | `rs.read(m:, fn:, v:, at:)` / `rs.write(m:, fn:, v:, value:, at:)` | that read or write as an IR node. The pair every front end builds by hand otherwise |
 | `rs.name_captures(m:, func:, fn:)` | names `func`'s captures in index order |
 | `rs.access_kind(fn:, v:)` / `rs.access_index(fn:, v:)` | how `fn` reaches `v`: `'local'`, `'cell'` or `'capture'`, and the index, for a read this pair does not cover |
 | `rs.num_captures(fn:)` / `rs.num_cells(fn:)` / `rs.cell_of(fn:, v:)` | what `add_func` wants, and which cell holds a variable (`-1` for none) |
-| `rs.capture_map(m:, builder:, target:)` | the forwarding table, as a capture-map id `make_closure` takes |
+| `rs.closure(m:, builder:, target:, at:)` | a closure of `target` built in `builder`'s frame, as one node |
+| `rs.capture_map(m:, builder:, target:)` | that closure's forwarding table alone, for a front end assembling the node itself |
 | `rs.reaches(fn:, v:)` | whether `fn` can name `v` at all |
 | `rs.mark()` | everything the resolver holds right now, as a token |
 | `rs.rollback(mark:)` | gives back the functions, variables and free entries added since |
@@ -7038,33 +7036,6 @@ along call edges instead makes every frame between a referrer and an owner
 carry a capture it has no use for, and — the part that matters — makes a
 lowering that builds closures in the wrong frame work anyway. A front end
 that declares no call edges pays for none of it.
-
-`free_count`/`free_at`/`add_free` are the same free sets by hand, for a
-language whose rule is neither of these two.
-
-### Local slots: `CodeGen.FrameLayout`
-
-The other half of a frame: hand slots out in order, and give a block's back
-at its end so a sibling block reuses them. `release` answers the end of the
-range the block claimed, which is exactly what `m.scope` wants.
-
-```culebra
-let fl = CodeGen.FrameLayout.new()
-let a = fl.alloc_local('a')      # 0
-let lo = fl.mark()
-let t = fl.alloc_local('t')      # 1
-let hi = fl.release(lo)          # 2 -- t's slot is free again
-inspect([a, lo, t, hi, fl.num_locals()])  # => [0, 1, 1, 2, 2]
-```
-
-| Call | Answers |
-| --- | --- |
-| `CodeGen.FrameLayout.new()` | an empty frame |
-| `fl.alloc_local(name:)` | the next slot, named |
-| `fl.mark()` | the slot a block starts at |
-| `fl.release(mark:)` | gives back everything claimed since `mark`, answering the end of the range |
-| `fl.num_locals()` | the most slots ever in hand at once — what `add_func`'s `num_locals` wants |
-| `fl.local_name(slot:)` | the name a slot was allocated under, for `set_local_name` |
 
 ### Errors, interruption, and recursion
 

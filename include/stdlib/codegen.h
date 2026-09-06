@@ -1368,17 +1368,6 @@ class Resolver {
     checked_fn(fn);
     rs_.use(static_cast<int32_t>(v), static_cast<int32_t>(fn));
   }
-  // lookup + use in one: the shape a bind pass reads a name with.
-  int64_t resolve(const std::string& name, int64_t fn) {
-    checked_fn(fn);
-    return opt(rs_.resolve(name, static_cast<int32_t>(fn)));
-  }
-  // A binding that must be a cell whether or not anything was seen capturing
-  // it -- one a closure built by hand reaches. Applied by number_captures.
-  void force_cell(int64_t v) {
-    checked_var(v);
-    rs_.force_cell(static_cast<int32_t>(v));
-  }
 
   // --- a prelude bound once, programs built on it --------------------------
 
@@ -1409,39 +1398,6 @@ class Resolver {
     rs_.reset_fn(static_cast<int32_t>(fn), static_cast<int32_t>(parent));
   }
 
-  // --- free sets, for a front end that closes its own ----------------------
-
-  // What `fn` needs from outside itself, after every `use`. A language whose
-  // closures are built at reference sites reads these, lifts them along its
-  // own call graph with add_free, and iterates to a fixpoint before calling
-  // number_captures -- which is what PL/0 does and what nesting makes
-  // unnecessary everywhere else.
-  int64_t free_count(int64_t fn) const {
-    return static_cast<int64_t>(checked_fn(fn).free.size());
-  }
-  int64_t free_at(int64_t fn, int64_t i) const {
-    const auto& free = checked_fn(fn).free;
-    if (i < 0 || static_cast<size_t>(i) >= free.size()) {
-      throw culebra::CulebraError(
-          "IndexError",
-          culebra::format("func {} has {} free variables, no #{}", fn,
-                          free.size(), i),
-          0, 0);
-    }
-    auto it = free.begin();
-    std::advance(it, static_cast<std::ptrdiff_t>(i));
-    return *it;
-  }
-  // Adds `v` to fn's free set, answering whether it was not already there.
-  // Refuses a variable fn owns: that is a local, not a capture.
-  bool add_free(int64_t fn, int64_t v) {
-    const auto& var = checked_var(v);
-    checked_fn(fn);
-    if (var.owner == static_cast<int32_t>(fn)) return false;
-    return rs_.fns[static_cast<size_t>(fn)]
-        .free.insert(static_cast<int32_t>(v))
-        .second;
-  }
 
   // --- numbering and capture maps ------------------------------------------
 
@@ -1457,18 +1413,6 @@ class Resolver {
   // it reads through exist.
   void number_captures() { rs_.number_captures(); }
 
-  // The name at capture index `i` of `fn`, for set_capture_name.
-  std::string capture_name(int64_t fn, int64_t i) const {
-    const auto& free = checked_fn(fn).free;
-    if (i < 0 || static_cast<size_t>(i) >= free.size()) {
-      throw culebra::CulebraError(
-          "IndexError",
-          culebra::format("func {} has {} captures, no #{}", fn, free.size(),
-                          i),
-          0, 0);
-    }
-    return rs_.capture_name(static_cast<int32_t>(fn), static_cast<int32_t>(i));
-  }
 
   // The forwarding table for a closure of `target` built in `builder`'s
   // frame. Throws when `builder` cannot supply what `target` captures --
@@ -1480,6 +1424,14 @@ class Resolver {
     return rs_.capture_map(m.m_, static_cast<int32_t>(builder),
                            static_cast<int32_t>(target));
   }
+  // A closure of `target` built in `builder`'s frame: the function index
+  // and the forwarding table, as the one node they are always used to make.
+  int64_t closure(Module& m, int64_t builder, int64_t target,
+                  JitObjectArg at, int64_t line, int64_t col) {
+    const int64_t cmap = capture_map(m, builder, target);
+    return m.make_closure(func_index(target), cmap, at, line, col);
+  }
+
   bool reaches(int64_t fn, int64_t v) const {
     checked_fn(fn);
     checked_var(v);
@@ -1492,17 +1444,16 @@ class Resolver {
   // are here rather than in each of them.
   int64_t read(Module& m, int64_t fn, int64_t v, JitObjectArg at,
                int64_t line, int64_t col) {
-    checked_access(fn, v);
-    return Module::id(rs_.read(m.m_, static_cast<int32_t>(fn),
-                               static_cast<int32_t>(v),
-                               Module::pos(line, col, at)));
+    const auto [k, i] = access(fn, v);
+    coreir::Builder b(m.m_);
+    return Module::id(b.at(Module::pos(line, col, at)).varref(k, i));
   }
   int64_t write(Module& m, int64_t fn, int64_t v, int64_t value,
                 JitObjectArg at, int64_t line, int64_t col) {
-    checked_access(fn, v);
-    return Module::id(rs_.write(m.m_, static_cast<int32_t>(fn),
-                                static_cast<int32_t>(v), Module::node(value),
-                                Module::pos(line, col, at)));
+    const auto [k, i] = access(fn, v);
+    coreir::Builder b(m.m_);
+    return Module::id(
+        b.at(Module::pos(line, col, at)).assign(k, i, Module::node(value)));
   }
 
   // Names `func`'s captures in index order -- the loop over
@@ -1532,7 +1483,7 @@ class Resolver {
   // a cell because something nested captures it) or 'capture' (an index into
   // its own capture list). The pair is what CodeGen.Module.var_ref wants.
   std::string access_kind(int64_t fn, int64_t v) const {
-    return kind_name(access(fn, v).first);
+    return std::string(coreir::name_of(access(fn, v).first));
   }
   int64_t access_index(int64_t fn, int64_t v) const {
     return access(fn, v).second;
@@ -1555,19 +1506,10 @@ class Resolver {
   }
 
  private:
-  void checked_access(int64_t fn, int64_t v) const {
-    checked_fn(fn);
-    checked_var(v);
-    if (!rs_.reaches(static_cast<int32_t>(fn), static_cast<int32_t>(v))) {
-      throw culebra::CulebraError(
-          "IrError",
-          culebra::format(
-              "func {} cannot name '{}' -- it neither owns it nor captures it",
-              fn, rs_.vars[static_cast<size_t>(v)].name),
-          0, 0);
-    }
-  }
 
+  // How `fn` reaches `v`, refusing a pair it cannot. The one place that
+  // question is asked, so read/write and access_kind/access_index all walk
+  // the tables once rather than each repeating the reach test.
   std::pair<coreir::VarKind, int32_t> access(int64_t fn, int64_t v) const {
     checked_fn(fn);
     checked_var(v);
@@ -1580,18 +1522,6 @@ class Resolver {
           0, 0);
     }
     return rs_.access(static_cast<int32_t>(fn), static_cast<int32_t>(v));
-  }
-
-  static std::string kind_name(coreir::VarKind k) {
-    switch (k) {
-      case coreir::VarKind::Local:
-        return "local";
-      case coreir::VarKind::Cell:
-        return "cell";
-      case coreir::VarKind::Capture:
-        return "capture";
-    }
-    return "local";
   }
 
   static int64_t opt(const std::optional<int32_t>& v) {
@@ -1645,43 +1575,5 @@ class Resolver {
   std::vector<coreir::Resolver::Mark> marks_;
 };
 
-// The local slots of one function: hand them out in order, and give a block's
-// back at its end so a sibling block reuses them. `release` answers the end
-// of the range the block claimed, which is what CodeGen.Module.scope wants.
-class FrameLayout {
- public:
-  FrameLayout() = default;
-
-  int64_t alloc_local(const std::string& name) {
-    return fl_.alloc_local(name);
-  }
-  int64_t mark() const { return fl_.mark(); }
-  int64_t release(int64_t mark) {
-    if (mark < 0 || mark > fl_.next_local) {
-      throw culebra::CulebraError(
-          "IrError",
-          culebra::format("release({}) outside the {} slots in hand", mark,
-                          fl_.next_local),
-          0, 0);
-    }
-    return fl_.release(static_cast<int32_t>(mark));
-  }
-  // The most slots ever in hand at once -- what Func::num_locals wants.
-  int64_t num_locals() const { return fl_.high_local; }
-  // The name table, exactly num_locals long: what set_local_name wants, in
-  // slot order, empty where a slot was never named.
-  std::string local_name(int64_t slot) const {
-    const auto names = fl_.names();
-    if (slot < 0 || static_cast<size_t>(slot) >= names.size()) {
-      throw culebra::CulebraError(
-          "IndexError",
-          culebra::format("{} locals, no slot #{}", names.size(), slot), 0, 0);
-    }
-    return names[static_cast<size_t>(slot)];
-  }
-
- private:
-  coreir::FrameLayout fl_;
-};
 
 }  // namespace culebra::codegen

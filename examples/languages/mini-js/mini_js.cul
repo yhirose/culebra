@@ -3337,13 +3337,10 @@ fn wrap_body(f, node, g, name, is_async) {
   funcs[w]['is_async'] = is_async
   # the raw body's closure is built in the wrapper's frame, so the wrapper
   # is where it is lexically nested as far as capture propagation goes
+  # the raw body's closure is built in the wrapper's frame, so the wrapper is
+  # where it is nested as far as capture propagation goes -- set_parent moves
+  # what the body already reads along with it
   rs.set_parent(g, w)
-  # `use` propagates as it is called, so anything the body already read from
-  # further out was recorded against the parent it had a moment ago. The
-  # wrapper is the frame that builds its closure, so it has to carry them.
-  for i in range(rs.free_count(g)) {
-    rs.use(rs.free_at(g, i), w)
-  }
   enter_scope(w)
   funcs[w].param_vs.push(declare_var(w, 'this', nil))
   funcs[w].params.push('this')
@@ -3595,7 +3592,7 @@ fn scan_target(t, f) {
 
 # The lowering keeps its line/col pairs; the builder takes a position
 fn call_pre(m, f, name, arg_ids, at) {
-  call_fn(f, prelude_named[name], arg_ids, at)
+  ir.call_value(rs.closure(ir, f, prelude_named[name], at), arg_ids, at)
 }
 
 fn var_read(m, f, r, at) {
@@ -3645,14 +3642,6 @@ fn local_ref(v, at) {
 }
 fn store_local(v, value, at) {
   ir.assign('local', rs.var_slot(v), value, at)
-}
-
-# a closure of `g` built in `f`'s frame, and calling one
-fn closure_of_fn(f, g, at) {
-  ir.make_closure(rs.func_index(g), rs.capture_map(ir, f, g), at)
-}
-fn call_fn(f, g, args, at) {
-  ir.call_value(closure_of_fn(f, g, at), args, at)
 }
 
 # statements then a value, as one block
@@ -3948,7 +3937,7 @@ fn fn_length(g) {
 
 fn emit_fn_value(m, node, f, name, is_arrow) {
   let g = closure_of[pkey(node)]
-  let c = closure_of_fn(f, g, node)
+  let c = rs.closure(ir, f, g, node)
   cond {
     # a prelude helper referenced as a value is the raw closure; a prelude
     # function expression is a JS function like any other
@@ -4095,7 +4084,7 @@ fn emit_class(m, node, f) {
     _ => nil_l(m, node),
   }
   let ctor = cond {
-    info.ctor != nil => closure_of_fn(f, info.ctor, node),
+    info.ctor != nil => rs.closure(ir, f, info.ctor, node),
     _ => nil_l(m, node),
   }
   let fields = cond {
@@ -4716,7 +4705,7 @@ fn emit_expr(m, node, f) {
       let r = resolved[pkey(node)]
       cond {
         r.kind == 'var' => var_read(m, f, r, node),
-        r.kind == 'fn' => closure_of_fn(f, r.func, node),
+        r.kind == 'fn' => rs.closure(ir, f, r.func, node),
         r.kind ==
           'preconst' => ir.index(gref(m, f, node), str_l(m, r.key, node), node),
         r.kind == 'global' => cond {
@@ -5451,7 +5440,7 @@ fn emit_for_each(m, node, f, iter_fn) {
   let loop = ir.block(ids, node)
   cond {
     closer != nil => {
-      let d = ir.make_defer(closure_of_fn(f, closer.func, node), node)
+      let d = ir.make_defer(rs.closure(ir, f, closer.func, node), node)
       ir.scope(0, 0, ir.block([d, loop], node), node)
     },
     _ => loop,
@@ -5591,7 +5580,7 @@ fn emit_try(m, node, f) {
   if finally_c != nil {
     # finally runs on every way out: as a defer in a scope around the try
     let g = closure_of[pkey(finally_c)]
-    let d = ir.make_defer(closure_of_fn(f, g, node), node)
+    let d = ir.make_defer(rs.closure(ir, f, g, node), node)
     body = ir.scope(0, 0, ir.block([d, body], node), node)
   }
   body
@@ -5604,7 +5593,7 @@ fn emit_try(m, node, f) {
 # `fn.length` reports.
 fn mkfn_id(m, f, g, name, is_arrow, with_len, at) {
   mut args = [
-    closure_of_fn(f, g, at),
+    rs.closure(ir, f, g, at),
     str_l(m, name, at),
     ir.bool_literal(is_arrow, at),
   ]
@@ -5760,7 +5749,7 @@ fn emit_funcs(m) {
           f,
           '__apply',
           [
-            closure_of_fn(f, fi.gen_raw, ORIGIN),
+            rs.closure(ir, f, fi.gen_raw, ORIGIN),
             local_ref(fi.param_vs[0], ORIGIN),
             args,
           ],
