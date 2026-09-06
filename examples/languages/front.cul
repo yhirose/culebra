@@ -15,14 +15,32 @@
 #
 # A variable is a (owner, slot) pair: the function that declares it and its
 # local index there. A function that reads a variable it does not own has
-# it free. Two obligations close the free sets over the program: a call
-# from f to g builds g's closure in f's frame, so f must capture whatever g
-# captures; and a function nested in p has its closure built in p's frame,
-# the same way. Iterated to a fixpoint (recursion is why one pass is not
-# enough), then numbered: capture_index says where a function's own capture
-# list holds a free variable, cell_index says which of the owner's slots
-# have to be cells rather than plain locals (a closure cannot capture a
-# local -- it would die with the frame; see coreir/ir.h's verifier).
+# it free, and whichever frame builds its closure must be able to supply
+# that -- so the free sets have to be closed over the program before any
+# capture map can be written.
+#
+# Two edges close them, and which of the two a front end needs follows from
+# what a function reference *is* in its language.
+#
+# `parent`: g's closure is built in the frame g is written in. A language
+# where a function value comes from an expression -- mini-js, and culebra's
+# own `let f = fn ...` -- needs only this, and one walk of the tree closes
+# it: a name read two levels in is recorded free in every function between
+# the reader and the owner. mini-js declares no call edges at all.
+#
+# `calls`: g's closure is built wherever g is named. A language where a
+# function is a static entity rather than a variable builds one per
+# reference, so every referrer must carry g's captures -- PL/0's procedures
+# and mini-culebra's `fn` (which is late-bound and can be a multimethod
+# family, so it cannot be a slot holding one closure). Recursion is why
+# these need a fixpoint rather than a walk, and the price is that every
+# frame between a referrer and the owner carries the capture too: measured
+# on mini-culebra's samples, 29 of 249 free entries are there for this.
+#
+# Then numbered: capture_index says where a function's own capture list
+# holds a free variable, cell_index says which of the owner's slots have to
+# be cells rather than plain locals (a closure cannot capture a local -- it
+# would die with the frame; see coreir/ir.h's verifier).
 
 class Frames {
   new() {
@@ -33,8 +51,9 @@ class Frames {
     self.cell_index = []     # per func (the owner): {slot: cell index}
   }
 
-  # Registers the next function. `parent` is the function whose frame its
-  # closure is built in; nil when closures are only ever built at call
+  # Registers the next function. `parent` is the frame its closure is built
+  # in -- the function it is written in, whether or not the front end also
+  # names it elsewhere. nil when closures are only ever built at reference
   # sites (PL/0), in which case the call edges alone carry the captures.
   add(parent) {
     self.parent.push(parent)
@@ -144,12 +163,29 @@ class Frames {
     }
   }
 
+  # Whether `f` can name (owner, slot) at all: it owns it, or its own
+  # capture list holds it.
+  reaches(f, owner, slot) {
+    owner == f || self.capture_index[f].has("{owner}:{slot}")
+  }
+
   # The forwarding table for a closure of `g` built in `f`'s frame: each
   # variable `g` captures, resolved in `f`.
+  #
+  # `f` has to be a frame solve() gave those captures to -- g's parent, or
+  # a caller that declared the edge. Anywhere else, access() would read a
+  # capture index that was never assigned and hand the verifier a nil.
   cmap(m, f, g) {
     let cmap = m.capture_map_new()
     for v in self.free[g].values() {
       let (o, s) = v
+      if !self.reaches(f, o, s) {
+        throw {
+          kind: 'FrontError',
+          message: "func {f} cannot supply {o}:{s} to the closure of " +
+            "func {g} -- build it in g's parent frame, or note the call edge",
+        }
+      }
       let a = self.access(f, o, s)
       m.capture_map_push(cmap, kind: a.kind, index: a.index)
     }
@@ -219,6 +255,9 @@ class Scopes {
   bind(f, name, value) {
     self.bind_at(f, self.depth(f) - 1, name, value)
   }
+  # `bound` keeps one entry per name, not per bind: a language where two
+  # declarations of a name in one block are two bindings would lose the
+  # hidden one here, and needs an entry per call instead.
   bind_at(f, i, name, value) {
     let sc = self.stack[f][i]
     if !sc.map.has(name) {
