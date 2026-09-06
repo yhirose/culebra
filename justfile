@@ -836,8 +836,8 @@ _run-tests BACKEND:
     # The three Core-IR front ends in examples/languages/, each against the
     # oracle for its language: PL/0 against the tree-walking interpreter
     # beside it, mini-js against `node`, mini-culebra against culebra
-    # itself. They share examples/languages/front.cul, so one edit there is
-    # an edit to all three, and nothing else here runs them. mini-js is
+    # itself. Nothing else here runs them, and they are the only thing that
+    # exercises CodeGen at the size a real front end uses it. mini-js is
     # skipped where `node` is absent rather than failing the lane.
     run_languages() {
         CULEBRA="$BIN" JOBS="$JOBS" misc/check_pl0_samples.sh

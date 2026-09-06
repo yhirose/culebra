@@ -3,16 +3,14 @@
 let m = CodeGen.Module.new()
 let node = {line: 7, column: 3}
 
-# 1. front.cul's Emitter, for reference:
-#      ir.binary('add', a, b, node)
-
-# 2. the new form, positionally -- `at` sits ahead of line/col
+# positionally -- `at` sits ahead of line/col, so a front end holding a
+# parse node spells the position with it
 let a = m.literal(1, node)
 let b = m.literal(2, node)
 let sum = m.binary('add', a, b, node)
 let body = m.block([m.intrinsic('print', [sum], node)], node)
 
-# 3. the same, by keyword
+# the same, by keyword
 let sum2 = m.binary(op: 'add', lhs: a, rhs: b, at: node)
 
 m.add_func(
