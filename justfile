@@ -1626,3 +1626,25 @@ sync-site-version:
     grep -q "<span class=\"ver\">v$want</span>" site/index.html ||
       { echo "site/index.html has no <span class=\"ver\"> to stamp" >&2; exit 1; }
     echo "site/index.html names v$want"
+
+# The three Core-IR front ends in examples/languages/, each against the
+# oracle for its language: PL/0 against the tree-walking interpreter beside
+# it, mini-js against `node`, mini-culebra against culebra itself. They
+# share examples/languages/front.cul, so a change there has to keep all
+# three printing what their oracle prints. Not part of `just test` -- the
+# mini-js half needs `node`, which is skipped when it is absent.
+[group("test")]
+[doc("Run the examples/languages front ends against their oracles")]
+check-languages: dev
+    #!/usr/bin/env bash
+    set -uo pipefail
+    export CULEBRA=./build-dev/culebra
+    rc=0
+    misc/check_pl0_samples.sh || rc=1
+    misc/check_miniculebra_samples.sh || rc=1
+    if command -v node >/dev/null 2>&1; then
+      misc/check_minijs_samples.sh || rc=1
+    else
+      echo "SKIP mini-js (no node)"
+    fi
+    exit $rc
