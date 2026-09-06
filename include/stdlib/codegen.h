@@ -338,65 +338,65 @@ class Program {
 
 class Module {
  public:
-  int64_t literal(int64_t v, int64_t line, int64_t col, JitObjectArg at) {
+  int64_t literal(int64_t v, JitObjectArg at, int64_t line, int64_t col) {
     coreir::Builder b(m_);
     return id(b.literal(v, pos(line, col, at)));
   }
 
-  int64_t bool_literal(bool v, int64_t line, int64_t col, JitObjectArg at) {
+  int64_t bool_literal(bool v, JitObjectArg at, int64_t line, int64_t col) {
     coreir::Builder b(m_);
     return id(b.bool_literal(v, pos(line, col, at)));
   }
 
-  int64_t double_literal(double v, int64_t line, int64_t col, JitObjectArg at) {
+  int64_t double_literal(double v, JitObjectArg at, int64_t line, int64_t col) {
     coreir::Builder b(m_);
     return id(b.double_literal(v, pos(line, col, at)));
   }
 
-  int64_t nil_literal(int64_t line, int64_t col, JitObjectArg at) {
+  int64_t nil_literal(JitObjectArg at, int64_t line, int64_t col) {
     coreir::Builder b(m_);
     return id(b.nil_literal(pos(line, col, at)));
   }
 
-  int64_t str_literal(std::string_view s, int64_t line, int64_t col, JitObjectArg at) {
+  int64_t str_literal(std::string_view s, JitObjectArg at, int64_t line, int64_t col) {
     coreir::Builder b(m_);
     return id(b.str_literal(std::string(s), pos(line, col, at)));
   }
 
-  int64_t var_ref(std::string_view kind, int64_t index, int64_t line,
-                  int64_t col, JitObjectArg at) {
+  int64_t var_ref(std::string_view kind, int64_t index, JitObjectArg at, int64_t line,
+                  int64_t col) {
     coreir::Builder b(m_);
     return id(b.varref(to_kind(kind), idx32(index), pos(line, col, at)));
   }
 
-  int64_t unary(std::string_view op, int64_t operand, int64_t line,
-               int64_t col, JitObjectArg at) {
+  int64_t unary(std::string_view op, int64_t operand, JitObjectArg at, int64_t line,
+               int64_t col) {
     coreir::Builder b(m_);
     return id(b.unary(to_unop(op), node(operand), pos(line, col, at)));
   }
 
-  int64_t binary(std::string_view op, int64_t lhs, int64_t rhs, int64_t line,
-                int64_t col, JitObjectArg at) {
+  int64_t binary(std::string_view op, int64_t lhs, int64_t rhs, JitObjectArg at, int64_t line,
+                int64_t col) {
     coreir::Builder b(m_);
     return id(b.binary(to_binop(op), node(lhs), node(rhs), pos(line, col, at)));
   }
 
   int64_t assign(std::string_view kind, int64_t index, int64_t value,
-                int64_t line, int64_t col, JitObjectArg at) {
+                JitObjectArg at, int64_t line, int64_t col) {
     coreir::Builder b(m_);
     return id(b.assign(to_kind(kind), idx32(index), node(value),
                        pos(line, col, at)));
   }
 
-  int64_t make_if(int64_t cond, int64_t then_branch, int64_t line,
-                  int64_t col, JitObjectArg at) {
+  int64_t make_if(int64_t cond, int64_t then_branch, JitObjectArg at, int64_t line,
+                  int64_t col) {
     coreir::Builder b(m_);
     return id(b.make_if(node(cond), node(then_branch), coreir::NodeId{},
                         pos(line, col, at)));
   }
 
   int64_t make_if_else(int64_t cond, int64_t then_branch, int64_t else_branch,
-                       int64_t line, int64_t col, JitObjectArg at) {
+                       JitObjectArg at, int64_t line, int64_t col) {
     coreir::Builder b(m_);
     return id(b.make_if(node(cond), node(then_branch), node(else_branch),
                         pos(line, col, at)));
@@ -408,23 +408,23 @@ class Module {
   // verify() enforces both); Break passes through a switch the same way it
   // passes through an if, so a switch-scoped break is a front end's own
   // lowering, not something this builds in.
-  int64_t make_switch(int64_t subject, JitListArg arms, int64_t line,
-                      int64_t col, JitObjectArg at) {
-    return make_switch_impl(subject, arms, coreir::NodeId{}, line, col, at);
+  int64_t make_switch(int64_t subject, JitListArg arms, JitObjectArg at, int64_t line,
+                      int64_t col) {
+    return make_switch_impl(subject, arms, coreir::NodeId{}, at, line, col);
   }
   int64_t make_switch_default(int64_t subject, JitListArg arms,
-                              int64_t default_body, int64_t line,
-                              int64_t col, JitObjectArg at) {
-    return make_switch_impl(subject, arms, node(default_body), line, col,
-                            at);
+                              int64_t default_body, JitObjectArg at, int64_t line,
+                              int64_t col) {
+    return make_switch_impl(subject, arms, node(default_body), at, line,
+                            col);
   }
 
-  int64_t make_while(int64_t cond, int64_t body, int64_t line, int64_t col, JitObjectArg at) {
+  int64_t make_while(int64_t cond, int64_t body, JitObjectArg at, int64_t line, int64_t col) {
     coreir::Builder b(m_);
     return id(b.make_while(node(cond), node(body), pos(line, col, at)));
   }
 
-  int64_t block(JitListArg stmts, int64_t line, int64_t col, JitObjectArg at) {
+  int64_t block(JitListArg stmts, JitObjectArg at, int64_t line, int64_t col) {
     coreir::Builder b(m_);
     return id(b.block(take_list(stmts), pos(line, col, at)));
   }
@@ -435,7 +435,7 @@ class Module {
   // alongside it). PL/0 procedures take no arguments, so the immediately-built
   // closure is called with an empty argument list; a front end wanting real
   // first-class functions calls make_closure/call_value below instead.
-  int64_t call(int64_t func, int64_t cmap, int64_t line, int64_t col, JitObjectArg at) {
+  int64_t call(int64_t func, int64_t cmap, JitObjectArg at, int64_t line, int64_t col) {
     coreir::Builder b(m_);
     const coreir::SrcPos p = pos(line, col, at);
     const coreir::NodeId closure = b.make_closure(idx32(func), idx32(cmap), p);
@@ -445,24 +445,24 @@ class Module {
   // The two primitives themselves, for a front end whose functions are
   // values: a closure built here can be stored in a variable, passed as an
   // argument, or returned, and called later wherever it ends up.
-  int64_t make_closure(int64_t func, int64_t cmap, int64_t line, int64_t col, JitObjectArg at) {
+  int64_t make_closure(int64_t func, int64_t cmap, JitObjectArg at, int64_t line, int64_t col) {
     coreir::Builder b(m_);
     return id(b.make_closure(idx32(func), idx32(cmap), pos(line, col, at)));
   }
-  int64_t call_value(int64_t callee, JitListArg args, int64_t line,
-                     int64_t col, JitObjectArg at) {
+  int64_t call_value(int64_t callee, JitListArg args, JitObjectArg at, int64_t line,
+                     int64_t col) {
     coreir::Builder b(m_);
     return id(b.call_value(node(callee), take_list(args), pos(line, col, at)));
   }
 
-  int64_t array_lit(JitListArg items, int64_t line, int64_t col, JitObjectArg at) {
+  int64_t array_lit(JitListArg items, JitObjectArg at, int64_t line, int64_t col) {
     coreir::Builder b(m_);
     return id(b.array_lit(take_list(items), pos(line, col, at)));
   }
 
   // kv holds key, value, key, value, ... -- the flat shape ObjectLit
   // itself stores; the builder wants pairs, so this re-pairs them.
-  int64_t object_lit(JitListArg kv, int64_t line, int64_t col, JitObjectArg at) {
+  int64_t object_lit(JitListArg kv, JitObjectArg at, int64_t line, int64_t col) {
     const std::vector<coreir::NodeId> flat = take_list(kv);
     std::vector<std::pair<coreir::NodeId, coreir::NodeId>> kvs;
     kvs.reserve(flat.size() / 2);
@@ -473,13 +473,13 @@ class Module {
     return id(b.object_lit(kvs, pos(line, col, at)));
   }
 
-  int64_t index(int64_t recv, int64_t key, int64_t line, int64_t col, JitObjectArg at) {
+  int64_t index(int64_t recv, int64_t key, JitObjectArg at, int64_t line, int64_t col) {
     coreir::Builder b(m_);
     return id(b.index(node(recv), node(key), pos(line, col, at)));
   }
 
-  int64_t set_index(int64_t recv, int64_t key, int64_t value, int64_t line,
-                    int64_t col, JitObjectArg at) {
+  int64_t set_index(int64_t recv, int64_t key, int64_t value, JitObjectArg at, int64_t line,
+                    int64_t col) {
     coreir::Builder b(m_);
     return id(b.set_index(node(recv), node(key), node(value),
                           pos(line, col, at)));
@@ -492,13 +492,13 @@ class Module {
   // field present (props in key order); set_index's own key comparison
   // never has that requirement, which is the whole difference in cost.
   int64_t field_get(int64_t recv, int64_t slot, std::string_view name,
-                    int64_t line, int64_t col, JitObjectArg at) {
+                    JitObjectArg at, int64_t line, int64_t col) {
     coreir::Builder b(m_);
     return id(b.field_get(node(recv), idx32(slot), std::string(name),
                           pos(line, col, at)));
   }
   int64_t field_set(int64_t recv, int64_t slot, std::string_view name,
-                    int64_t value, int64_t line, int64_t col, JitObjectArg at) {
+                    int64_t value, JitObjectArg at, int64_t line, int64_t col) {
     coreir::Builder b(m_);
     return id(b.field_set(node(recv), idx32(slot), std::string(name),
                           node(value), pos(line, col, at)));
@@ -507,7 +507,7 @@ class Module {
   // Scopes, non-local exits, exceptions, defers -- the Core-IR surface the
   // exception phase added; each is a thin forward to the builder.
   int64_t scope(int64_t first_local, int64_t end_local, int64_t body,
-                int64_t line, int64_t col, JitObjectArg at) {
+                JitObjectArg at, int64_t line, int64_t col) {
     coreir::Builder b(m_);
     return id(b.scope(idx32(first_local), idx32(end_local), node(body),
                       pos(line, col, at)));
@@ -516,7 +516,7 @@ class Module {
   // var_ref nodes (local or cell), released in that order at every exit --
   // a front end lists reverse declaration order, captured slots included.
   int64_t scope_release(int64_t first_local, int64_t end_local, int64_t body,
-                        JitListArg release, int64_t line, int64_t col, JitObjectArg at) {
+                        JitListArg release, JitObjectArg at, int64_t line, int64_t col) {
     coreir::Builder b(m_);
     return id(b.scope(idx32(first_local), idx32(end_local), node(body),
                       take_list(release), pos(line, col, at)));
@@ -525,7 +525,7 @@ class Module {
   // A bare `return` is spelled with an explicit nil_literal argument; the
   // wrap layer has no optional parameters, and the front end lowering a
   // return statement holds a position for the nil anyway.
-  int64_t make_return(int64_t value, int64_t line, int64_t col, JitObjectArg at) {
+  int64_t make_return(int64_t value, JitObjectArg at, int64_t line, int64_t col) {
     coreir::Builder b(m_);
     return id(b.make_return(node(value), pos(line, col, at)));
   }
@@ -533,46 +533,44 @@ class Module {
   // `depth` is how many enclosing loops to skip -- 0, the default, leaves
   // the innermost. A front end that resolves its own labels answers with a
   // depth, so the IR needs no label table of its own.
-  int64_t make_break(int64_t line, int64_t col, int64_t depth,
-                     JitObjectArg at) {
+  int64_t make_break(JitObjectArg at, int64_t line, int64_t col, int64_t depth) {
     coreir::Builder b(m_);
     return id(b.make_break(pos(line, col, at), idx32(depth)));
   }
 
-  int64_t make_continue(int64_t line, int64_t col, int64_t depth,
-                     JitObjectArg at) {
+  int64_t make_continue(JitObjectArg at, int64_t line, int64_t col, int64_t depth) {
     coreir::Builder b(m_);
     return id(b.make_continue(pos(line, col, at), idx32(depth)));
   }
 
-  int64_t make_throw(int64_t value, int64_t line, int64_t col, JitObjectArg at) {
+  int64_t make_throw(int64_t value, JitObjectArg at, int64_t line, int64_t col) {
     coreir::Builder b(m_);
     return id(b.make_throw(node(value), pos(line, col, at)));
   }
 
   int64_t make_try(int64_t caught_local, int64_t body, int64_t handler,
-                   int64_t line, int64_t col, JitObjectArg at) {
+                   JitObjectArg at, int64_t line, int64_t col) {
     coreir::Builder b(m_);
     return id(b.make_try(idx32(caught_local), node(body), node(handler),
                          pos(line, col, at)));
   }
 
-  int64_t make_defer(int64_t value, int64_t line, int64_t col, JitObjectArg at) {
+  int64_t make_defer(int64_t value, JitObjectArg at, int64_t line, int64_t col) {
     coreir::Builder b(m_);
     return id(b.make_defer(node(value), pos(line, col, at)));
   }
 
-  int64_t make_yield(int64_t value, int64_t line, int64_t col, JitObjectArg at) {
+  int64_t make_yield(int64_t value, JitObjectArg at, int64_t line, int64_t col) {
     coreir::Builder b(m_);
     return id(b.make_yield(node(value), pos(line, col, at)));
   }
-  int64_t cell_fresh(int64_t cell, int64_t line, int64_t col, JitObjectArg at) {
+  int64_t cell_fresh(int64_t cell, JitObjectArg at, int64_t line, int64_t col) {
     coreir::Builder b(m_);
     return id(b.cell_fresh(idx32(cell), pos(line, col, at)));
   }
 
-  int64_t intrinsic(std::string_view name, JitListArg args, int64_t line,
-                    int64_t col, JitObjectArg at) {
+  int64_t intrinsic(std::string_view name, JitListArg args, JitObjectArg at, int64_t line,
+                    int64_t col) {
     coreir::Builder b(m_);
     return id(
         b.intrinsic(to_intrinsic(name), take_list(args), pos(line, col, at)));
@@ -587,7 +585,7 @@ class Module {
     coreir::Builder b(m_);
     return b.declare_native(std::string(name));
   }
-  int64_t native_ref(int64_t index, int64_t line, int64_t col, JitObjectArg at) {
+  int64_t native_ref(int64_t index, JitObjectArg at, int64_t line, int64_t col) {
     coreir::Builder b(m_);
     return id(b.native_ref(idx32(index), pos(line, col, at)));
   }
@@ -1061,8 +1059,8 @@ class Module {
   // way object_lit re-pairs its keys and values, then builds with whichever default
   // (possibly invalid, meaning none) the caller already resolved.
   int64_t make_switch_impl(int64_t subject, JitListArg arms,
-                           coreir::NodeId default_body, int64_t line,
-                           int64_t col, JitObjectArg at) {
+                           coreir::NodeId default_body, JitObjectArg at, int64_t line,
+                           int64_t col) {
     const std::vector<coreir::NodeId> flat = take_list(arms);
     std::vector<std::pair<coreir::NodeId, coreir::NodeId>> pairs;
     pairs.reserve(flat.size() / 2);

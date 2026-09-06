@@ -1,0 +1,34 @@
+# The three spellings of the same emit code, side by side. `node` is what a
+# front end holds at nearly every builder call.
+let m = CodeGen.Module.new()
+let node = {line: 7, column: 3}
+
+# 1. front.cul's Emitter, for reference:
+#      ir.binary('add', a, b, node)
+
+# 2. the new form, positionally -- `at` sits ahead of line/col
+let a = m.literal(1, node)
+let b = m.literal(2, node)
+let sum = m.binary('add', a, b, node)
+let body = m.block([m.intrinsic('print', [sum], node)], node)
+
+# 3. the same, by keyword
+let sum2 = m.binary(op: 'add', lhs: a, rhs: b, at: node)
+
+m.add_func(
+  name: 'main',
+  num_locals: 0,
+  num_captures: 0,
+  num_cells: 0,
+  num_params: 0,
+  body: body,
+)
+m.verify()
+m.run()
+
+assert_eq(m.node_line(sum), 7)
+assert_eq(m.node_col(sum), 3)
+assert_eq(m.node_line(sum2), 7)
+
+# the older spellings still work
+assert_eq(m.node_line(m.literal(v: 1, line: 5, col: 9)), 5)

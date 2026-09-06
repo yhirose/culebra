@@ -6702,14 +6702,25 @@ let sum = m.binary(op: 'add', lhs: m.literal(v: 40, at: node),
 inspect([m.node_line(sum), m.node_col(sum)])  # => [7, 3]
 ```
 
-`line:`/`col:` still work, and `at:` wins if both are given. Prefer `at:`:
-a front end holds a node at nearly every builder call, and the two numbers
-are then noise on every line. It is also the faster of the two, since one
+`at` sits ahead of `line`/`col`, right after the arguments saying what the
+node is, so a front end holding a node writes it positionally:
+
+```culebra
+let m = CodeGen.Module.new()
+let node = {line: 7, column: 3}
+let a = m.literal(1, node)
+let sum = m.binary('add', a, m.literal(2, node), node)
+inspect(m.node_col(sum))  # => 3
+```
+
+`line:`/`col:` still work, and `at:` wins if both are given. Prefer `at`: a
+front end holds a node at nearly every builder call, and the two numbers
+are then noise on every line. It is the faster spelling too, since one
 argument crosses the boundary instead of two and the fields are read on the
 other side.
 
-Both are optional. A node built with neither is at 1:1, which is what a
-front end wants for code no source line produced.
+All three are optional. A node built with none of them is at 1:1, which is
+what a front end wants for code no source line produced.
 
 ### Building a program
 

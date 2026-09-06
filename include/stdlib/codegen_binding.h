@@ -77,77 +77,77 @@ inline void codegen_program_run_thunk(JitValue* __ret, JitClosure*,
 inline bool register_codegen_binding() {
   wrap<codegen::Module>("CodeGen", "Module")
       .ctor<>()
-      .method<&codegen::Module::literal>("literal", {"v", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
+      .method<&codegen::Module::literal>("literal", {"v", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::bool_literal>("bool_literal",
-                                              {"v", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
+                                              {"v", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::double_literal>("double_literal",
-                                                {"v", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
-      .method<&codegen::Module::nil_literal>("nil_literal", {{"line", 1L}, {"col", 1L}, {"at", nullptr}})
+                                                {"v", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
+      .method<&codegen::Module::nil_literal>("nil_literal", {{"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::str_literal>("str_literal",
-                                             {"s", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
+                                             {"s", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::var_ref>("var_ref",
-                                         {"kind", "index", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
-      .method<&codegen::Module::unary>("unary", {"op", "operand", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
+                                         {"kind", "index", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
+      .method<&codegen::Module::unary>("unary", {"op", "operand", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::binary>("binary",
-                                        {"op", "lhs", "rhs", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
+                                        {"op", "lhs", "rhs", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::assign>(
-          "assign", {"kind", "index", "value", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
+          "assign", {"kind", "index", "value", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::make_if>(
-          "make_if", {"cond", "then_branch", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
+          "make_if", {"cond", "then_branch", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::make_if_else>(
           "make_if_else",
-          {"cond", "then_branch", "else_branch", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
+          {"cond", "then_branch", "else_branch", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::make_switch>(
-          "make_switch", {"subject", "arms", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
+          "make_switch", {"subject", "arms", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::make_switch_default>(
           "make_switch_default",
-          {"subject", "arms", "default_body", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
+          {"subject", "arms", "default_body", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::make_while>(
-          "make_while", {"cond", "body", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
-      .method<&codegen::Module::block>("block", {"stmts", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
-      .method<&codegen::Module::call>("call", {"func", "cmap", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
+          "make_while", {"cond", "body", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
+      .method<&codegen::Module::block>("block", {"stmts", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
+      .method<&codegen::Module::call>("call", {"func", "cmap", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::make_closure>(
-          "make_closure", {"func", "cmap", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
+          "make_closure", {"func", "cmap", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::call_value>(
-          "call_value", {"callee", "args", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
+          "call_value", {"callee", "args", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::intrinsic>(
-          "intrinsic", {"name", "args", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
+          "intrinsic", {"name", "args", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::declare_native>("declare_native", {"name"})
       .method<&codegen::Module::native_ref>("native_ref",
-                                            {"index", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
+                                            {"index", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::array_lit>("array_lit",
-                                           {"items", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
+                                           {"items", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::object_lit>("object_lit",
-                                            {"kv", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
+                                            {"kv", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::index>("index",
-                                       {"recv", "key", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
+                                       {"recv", "key", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::set_index>(
-          "set_index", {"recv", "key", "value", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
+          "set_index", {"recv", "key", "value", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::field_get>(
-          "field_get", {"recv", "slot", "name", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
+          "field_get", {"recv", "slot", "name", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::field_set>(
-          "field_set", {"recv", "slot", "name", "value", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
+          "field_set", {"recv", "slot", "name", "value", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::scope>(
-          "scope", {"first_local", "end_local", "body", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
+          "scope", {"first_local", "end_local", "body", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::scope_release>(
           "scope_release",
-          {"first_local", "end_local", "body", "release", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
+          {"first_local", "end_local", "body", "release", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::make_return>("make_return",
-                                             {"value", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
+                                             {"value", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::make_break>("make_break",
-                                            {{"line", 1L}, {"col", 1L}, {"depth", 0L}, {"at", nullptr}})
+                                            {{"at", nullptr}, {"line", 1L}, {"col", 1L}, {"depth", 0L}})
       .method<&codegen::Module::make_continue>(
-          "make_continue", {{"line", 1L}, {"col", 1L}, {"depth", 0L}, {"at", nullptr}})
+          "make_continue", {{"at", nullptr}, {"line", 1L}, {"col", 1L}, {"depth", 0L}})
       .method<&codegen::Module::make_throw>("make_throw",
-                                            {"value", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
+                                            {"value", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::make_try>(
-          "make_try", {"caught_local", "body", "handler", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
+          "make_try", {"caught_local", "body", "handler", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::make_defer>("make_defer",
-                                            {"value", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
+                                            {"value", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::cell_fresh>("cell_fresh",
-                                            {"cell", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
+                                            {"cell", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::make_yield>("make_yield",
-                                            {"value", {"line", 1L}, {"col", 1L}, {"at", nullptr}})
+                                            {"value", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::list_new>("list_new")
       .method<&codegen::Module::list_push>("list_push", {"list", "value"})
       .method<&codegen::Module::capture_map_new>("capture_map_new")
