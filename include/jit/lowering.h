@@ -14,6 +14,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace culebra::vm {
@@ -90,11 +91,81 @@ struct Lowering {
     }
   }
 
+  // The one address a lowering can reach is the compiling process's own: a
+  // string constant's bytes live in the chunk's `str_arena`, and everything
+  // else a value points at (a Shape, a heap object) exists only once the
+  // built binary runs, which is why those are resolved lazily instead. An
+  // object file outlives this process, so none of them may appear in it as a
+  // literal — a string constant is re-emitted as module .rodata
+  // (JIT::emit_str_literal) and referenced from there.
+  //
+  // Proven here, at the one exit both object emitters share, rather than
+  // trusted at each site that turns a compile-time value into module bytes:
+  // what a missed site produces is not a build error but a binary that reads
+  // a dead address (Op::FieldsInit baked a `String` field's `''` zero as a
+  // raw pointer — Linux segfaulted, macOS found the page mapped and zeroed
+  // and read it as an empty string, so only one lane of one OS ever said so).
+  // `found` reports the offending value for the diagnostic.
+  static bool bakes_a_compile_time_address(const VmProgram& p,
+                                           const llvm::Module& mod,
+                                           uint64_t& found) {
+    std::unordered_set<uint64_t> live;
+    for (const auto& c : p.chunks)
+      for (const auto& k : c.consts)
+        if (k.tag == TAG_STRING) live.insert(static_cast<uint64_t>(k.data));
+    if (live.empty()) return false;
+    llvm::SmallPtrSet<const llvm::Constant*, 32> seen;
+    auto scan = [&](const llvm::Value* v, auto&& self) -> bool {
+      const auto* c = llvm::dyn_cast_or_null<llvm::Constant>(v);
+      if (!c || !seen.insert(c).second) return false;
+      if (const auto* ci = llvm::dyn_cast<llvm::ConstantInt>(c)) {
+        if (ci->getBitWidth() > 64 || !live.count(ci->getZExtValue()))
+          return false;
+        found = ci->getZExtValue();
+        return true;
+      }
+      // An array of plain integers is folded into raw bytes, which are not
+      // operands — walking operands alone reads a baked pointer as an empty
+      // aggregate. This is the form the zeros array takes.
+      if (const auto* cds = llvm::dyn_cast<llvm::ConstantDataSequential>(c)) {
+        auto* el = cds->getElementType();
+        if (!el->isIntegerTy() || el->getIntegerBitWidth() > 64) return false;
+        for (unsigned i = 0, n = cds->getNumElements(); i < n; i++) {
+          if (!live.count(cds->getElementAsInteger(i))) continue;
+          found = cds->getElementAsInteger(i);
+          return true;
+        }
+        return false;
+      }
+      for (const auto& op : c->operands())
+        if (self(op.get(), self)) return true;
+      return false;
+    };
+    for (const auto& g : mod.globals())
+      if (g.hasInitializer() && scan(g.getInitializer(), scan)) return true;
+    for (const auto& f : mod)
+      for (const auto& bb : f)
+        for (const auto& in : bb)
+          for (const auto& op : in.operands())
+            if (scan(op.get(), scan)) return true;
+    return false;
+  }
+
   // Write `mod` to `out_path` as an object file. The tail both object
   // emitters share; `who` names the failing command in a diagnostic.
-  static int emit_object_file(llvm::TargetMachine& tm, llvm::Module& mod,
-                              const std::string& out_path, const char* who) {
+  static int emit_object_file(const VmProgram& p, llvm::TargetMachine& tm,
+                              llvm::Module& mod, const std::string& out_path,
+                              const char* who) {
     using namespace llvm;
+    uint64_t addr = 0;
+    if (bakes_a_compile_time_address(p, mod, addr)) {
+      std::fprintf(stderr,
+                   "%s: internal error: this process's own address %#llx "
+                   "reached the object file — a string constant has to be "
+                   "re-emitted into the module (JIT::emit_str_literal)\n",
+                   who, static_cast<unsigned long long>(addr));
+      return 1;
+    }
     std::error_code EC;
     raw_fd_ostream OS(out_path, EC, sys::fs::OF_None);
     if (EC) {
@@ -137,7 +208,7 @@ struct Lowering {
     JIT jit(ctx.get(), mod.get(), builder);
     lower_program(jit, p, entry.c_str());
     if (opt_level > 0) JIT::optimize_module(*mod, opt_level);
-    return emit_object_file(*tm, *mod, out_path, "culebra build-preamble");
+    return emit_object_file(p, *tm, *mod, out_path, "culebra build-preamble");
   }
 
   // AOT: the same lowering, to a TargetMachine object file instead of ORC,
@@ -224,7 +295,7 @@ struct Lowering {
     if (opt_level > 0) JIT::optimize_module(*mod, opt_level);
     if (emit_llvm) mod->print(outs(), nullptr);
 
-    return emit_object_file(*tm, *mod, out_path, "culebra build");
+    return emit_object_file(p, *tm, *mod, out_path, "culebra build");
   }
 
   // Lower the whole program into `j`'s module and return its top-level
