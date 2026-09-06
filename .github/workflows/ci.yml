@@ -1588,8 +1588,6 @@ jobs:
 
       - name: Verify the Canvas window backend is in this build
         run: misc/aot_axes/verify_canvas_window.sh build-win-aot
-      - name: Verify Scene is in this build too (it follows the window)
-        run: misc/aot_axes/verify_scene_axis.sh build-win-aot
       - name: Build (culebra driver + runtime archives)
         env:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -1599,6 +1597,11 @@ jobs:
         # `-k 0` as in the `windows` job: this is the one clang lane, so a run
         # should list every TU it rejects, not the first.
         run: cmake --build build-win-aot --target culebra -j -- -k 0
+      # After the build, not before it: the check looks for the Scene runtime
+      # archive, which is a build product. Ahead of the build it fails on every
+      # run that has Scene on — it only passed while Windows had it off.
+      - name: Verify Scene is in this build too (it follows the window)
+        run: misc/aot_axes/verify_scene_axis.sh build-win-aot
       - name: Report ccache stats
         run: ccache -s || true
       # The widest build there is — Canvas window, Webview and Http all on — so
