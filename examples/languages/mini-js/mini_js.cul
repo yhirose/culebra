@@ -2937,7 +2937,6 @@ fn scan_stmts(stmts, f) {
     let id = s.nodes[0]
     let g = new_func(f, id.token, s.nodes[2].nodes, nil, false)
     closure_of[pkey(s)] = g
-    frames.note_call(f, g)
     walk_fn(g, s.nodes[1].nodes, nil)
     if s.name == 'gen_decl' {
       wrap_generator(f, s, g, id.token)
@@ -3062,7 +3061,6 @@ fn scan_stmt(node, f) {
           _ => {
             let g = new_func(f, 'finally', c.nodes[0].nodes, nil, true)
             closure_of[pkey(c)] = g
-            frames.note_call(f, g)
             walk_fn(g, [], nil)
           },
         }
@@ -3089,7 +3087,6 @@ fn scan_for_each(node, f) {
     let g = new_func(f, 'iterclose', [], nil, true)
     funcs[g]['close_of'] = {owner: f, slot: slot}
     frames.use(g, f, slot)
-    frames.note_call(f, g)
     for_close[pkey(node)] = {func: g, slot: slot}
   }
   declare_pattern(f, pat, kw.token)
@@ -3210,7 +3207,6 @@ fn scan_class(node, f) {
         mk.token == 'constructor' => {
         let g = new_func(f, cname, mem.nodes[2].nodes, nil, false)
         closure_of[pkey(mem)] = g
-        frames.note_call(f, g)
         funcs[g]['home'] = {owner: f, slot: home}
         funcs[g]['is_ctor'] = true
         funcs[g]['derived'] = derived
@@ -3226,7 +3222,6 @@ fn scan_class(node, f) {
         let (params, blk) = member_params_body(mem)
         let g = new_func(f, mname, blk.nodes, nil, false)
         closure_of[pkey(mem)] = g
-        frames.note_call(f, g)
         funcs[g]['home'] = {owner: f, slot: home}
         funcs[g]['is_static'] = is_static
         frames.use(g, f, home)
@@ -3248,7 +3243,6 @@ fn scan_class(node, f) {
   if info.fields.size() > 0 {
     # the initializers run as a method of their own, in order
     let g = new_func(f, cname + '.fields', [], nil, false)
-    frames.note_call(f, g)
     funcs[g]['home'] = {owner: f, slot: home}
     funcs[g]['field_inits'] = info.fields
     frames.use(g, f, home)
@@ -3302,7 +3296,9 @@ fn wrap_body(f, node, g, name, is_async) {
   let w = new_func(f, name, [], nil, false)
   funcs[w]['gen_raw'] = g
   funcs[w]['is_async'] = is_async
-  frames.note_call(w, g)
+  # the raw body's closure is built in the wrapper's frame, so the wrapper
+  # is where it is lexically nested as far as capture propagation goes
+  frames.parent[g] = w
   enter_scope(w)
   declare_var(w, 'this', nil)
   funcs[w].params.push('this')
@@ -3326,7 +3322,6 @@ fn scan_fn_value(node, f, param_nodes, body, is_arrow, name) {
   }
   let g = new_func(f, name, stmts, body_expr, is_arrow)
   closure_of[pkey(node)] = g
-  frames.note_call(f, g)
   walk_fn(g, param_nodes, nil)
   g
 }
@@ -3372,7 +3367,6 @@ fn scan_expr(node, f) {
           # a named function expression sees its own name inside
           let g = new_func(f, name, blk.nodes, nil, false)
           closure_of[pkey(node)] = g
-          frames.note_call(f, g)
           funcs[g]['self_name'] = name
           funcs[g]['self_node'] = fname.nodes[0]
           walk_fn(g, prms.nodes, nil)
