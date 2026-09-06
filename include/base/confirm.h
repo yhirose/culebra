@@ -13,6 +13,19 @@
 
 namespace culebra {
 
+// The controlling terminal for reading, or nullptr where there is none.
+inline std::FILE* open_controlling_tty() {
+#if defined(__EMSCRIPTEN__)
+  // The Playground reports itself interactive (see os_isatty) but has no
+  // terminal to open, and nothing there to install or fetch.
+  return nullptr;
+#elif defined(_WIN32)
+  return std::fopen("CONIN$", "r");
+#else
+  return std::fopen("/dev/tty", "r");
+#endif
+}
+
 // Ask `question`, answering false unless a person types yes. Both streams
 // have to be a terminal: stdin so an answer can arrive, stderr so the
 // question is seen (stdout may be a pipe the program is feeding). A script,
@@ -25,15 +38,7 @@ namespace culebra {
 // opens the controlling terminal the way `sudo` and `ssh` read a passphrase.
 inline bool confirm_on_tty(std::string_view question) {
   if (!os_isatty(0) || !os_isatty(2)) return false;
-#if defined(__EMSCRIPTEN__)
-  // The Playground reports itself interactive (see os_isatty) but has no
-  // terminal to open, and nothing there to install or fetch.
-  return false;
-#elif defined(_WIN32)
-  std::FILE* tty = std::fopen("CONIN$", "r");
-#else
-  std::FILE* tty = std::fopen("/dev/tty", "r");
-#endif
+  std::FILE* tty = open_controlling_tty();
   if (!tty) return false;
   std::fprintf(stderr, "%.*s [y/N] ", int(question.size()), question.data());
   std::fflush(stderr);

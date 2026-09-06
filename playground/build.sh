@@ -75,6 +75,11 @@ COMMON=(
   -Iinclude
   -Ivendor/cpp-peglib -Ivendor/cpp-unicodelib -Ivendor/cpp-regexlib
   -Ivendor/cpp-tensorlib/include -Ivendor/cpp-tensorlib/kernels
+  # The same roots CMakeLists.txt gives the Search stack: cpp-searchlib reaches
+  # peglib, unicodelib and fstlib by bare name (one copy of each), and its
+  # segmenter's third_party root is -isystem for the same warning reason.
+  -Ivendor/cpp-fstlib -Ivendor/cpp-searchlib/include
+  -isystem vendor/cpp-searchlib/third_party
   -Ivendor/stb
 )
 
