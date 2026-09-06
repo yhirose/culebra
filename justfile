@@ -833,6 +833,22 @@ _run-tests BACKEND:
         (cd "$(dirname "$BIN")" && {{nice_cmd}} ctest --output-on-failure --timeout 300 -j "$JOBS")
     }
 
+    # The three Core-IR front ends in examples/languages/, each against the
+    # oracle for its language: PL/0 against the tree-walking interpreter
+    # beside it, mini-js against `node`, mini-culebra against culebra
+    # itself. They share examples/languages/front.cul, so one edit there is
+    # an edit to all three, and nothing else here runs them. mini-js is
+    # skipped where `node` is absent rather than failing the lane.
+    run_languages() {
+        CULEBRA="$BIN" JOBS="$JOBS" misc/check_pl0_samples.sh
+        CULEBRA="$BIN" JOBS="$JOBS" misc/check_miniculebra_samples.sh
+        if command -v node >/dev/null 2>&1; then
+            CULEBRA="$BIN" JOBS="$JOBS" misc/check_minijs_samples.sh
+        else
+            echo "SKIP mini-js (no node)"
+        fi
+    }
+
     # Exercises `culebra test`-only ambient bindings (matchers, DI,
     # @parametrize). The subdir layout keeps these out of the
     # `tests/*.cul` glob that the vm/jit sweep uses.
@@ -1212,6 +1228,7 @@ _run-tests BACKEND:
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "jit gc-stress (collect every alloc)"; run_gc_stress; }
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "rc-leak battery (gc_refs vs conservative)"; run_leak_battery; }
         phase "ctest (embedding smokes)"; run_embed
+        phase "languages (front ends vs their oracles)"; run_languages
         phase "culebra-test self"; run_culebra_test_self
         phase "culebra-test sweep (tests/*.cul as session units)"; run_unit_runner_sweep
         phase "isolate (jit + VM)"; run_isolate
@@ -1246,6 +1263,7 @@ _run-tests BACKEND:
       aot)    run_aot ;;
       embed)  run_embed ;;
       isolate) run_isolate ;;
+      languages) run_languages ;;
       wrap)   run_wrap_test ;;
       # CI shards: ci.yml splits `all` across parallel Ubuntu jobs — the build
       # job runs ci-buildtree against its build tree, and the lane matrix runs
@@ -1277,6 +1295,7 @@ _run-tests BACKEND:
         phase "vm_cases (frozen expected outputs)"; run_vm_cases
         phase "codegen backends (-O0, fast vs --vm)"; run_codegen_backends
         phase "leak-abort (GAP5 loud detector smoke)"; run_leak_abort
+        phase "languages (front ends vs their oracles)"; run_languages
         phase "culebra-test self"; run_culebra_test_self
         phase "culebra-test sweep (tests/*.cul as session units)"; run_unit_runner_sweep
         phase "isolate (jit + VM)"; run_isolate
@@ -1293,7 +1312,7 @@ _run-tests BACKEND:
         phase "rc-leak battery (gc_refs vs conservative)"; run_leak_battery
         phase "done"; echo "test OK (ci-leak)"
         ;;
-      *) echo "test: unknown backend '{{BACKEND}}' (expected: all|fast|jit|aot|embed|isolate|wrap|ci-buildtree|ci-light|ci-diff|ci-leak)" >&2; exit 2 ;;
+      *) echo "test: unknown backend '{{BACKEND}}' (expected: all|fast|jit|aot|embed|isolate|languages|wrap|ci-buildtree|ci-light|ci-diff|ci-leak)" >&2; exit 2 ;;
     esac
 
 # Run the doctest examples in the public docs on both engines. Both en
@@ -1627,24 +1646,11 @@ sync-site-version:
       { echo "site/index.html has no <span class=\"ver\"> to stamp" >&2; exit 1; }
     echo "site/index.html names v$want"
 
-# The three Core-IR front ends in examples/languages/, each against the
-# oracle for its language: PL/0 against the tree-walking interpreter beside
-# it, mini-js against `node`, mini-culebra against culebra itself. They
-# share examples/languages/front.cul, so a change there has to keep all
-# three printing what their oracle prints. Not part of `just test` -- the
-# mini-js half needs `node`, which is skipped when it is absent.
+# The three Core-IR front ends in examples/languages/ against their oracles
+# (PL/0's own interpreter, `node`, culebra itself). Part of `just test` and
+# of CI's ci-light lane; this recipe is the standalone way in, against the
+# build-dev/ binary. mini-js is skipped where `node` is absent.
 [group("test")]
 [doc("Run the examples/languages front ends against their oracles")]
 check-languages: dev
-    #!/usr/bin/env bash
-    set -uo pipefail
-    export CULEBRA=./build-dev/culebra
-    rc=0
-    misc/check_pl0_samples.sh || rc=1
-    misc/check_miniculebra_samples.sh || rc=1
-    if command -v node >/dev/null 2>&1; then
-      misc/check_minijs_samples.sh || rc=1
-    else
-      echo "SKIP mini-js (no node)"
-    fi
-    exit $rc
+    @BIN=./build-dev/culebra just _run-tests languages
