@@ -8552,9 +8552,11 @@ inline JitValue _ns_search_index_load(JitValue* a, int64_t n) {
   // gives quietly wrong results; the saved form records nothing that could
   // catch it (see docs/stdlib.md).
   JitValue analyzer = n > 1 ? a[1] : JitValue{TAG_NIL, 0};
+  bool readonly = n > 2 && a[2].tag == TAG_BOOL && a[2].data != 0;
   return _culebra_search_build_index_handle(
       culebra::search::index_load(_ns_adapt::require_sv(a[0], "path"),
-                                  _search_adapt::make_analyzer(analyzer)),
+                                  _search_adapt::make_analyzer(analyzer),
+                                  readonly),
       analyzer);
 }
 
@@ -8980,7 +8982,7 @@ inline const NsMethod kNsRows_FST_native[] = {
 // the extra level: `sub` puts both rows on an `Index` object.
 inline const NsMethod kNsRows_Search[] = {
   {"Search", "new",  1, &_ns_search_index_new,  "Index"},
-  {"Search", "load", 2, &_ns_search_index_load, "Index", "String", "path"},
+  {"Search", "load", 3, &_ns_search_index_load, "Index", "String", "path"},
   {"Search", "segmenter", 1, &_ns_search_segmenter, nullptr, "String", "model"},
 };
 inline const NsMethod kNsRows_Net[] = {

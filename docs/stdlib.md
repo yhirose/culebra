@@ -7423,12 +7423,37 @@ and byte ranges, and it is on the caller to keep the original text around to
 resolve them against. The format is the engine's own and is not stable across
 releases while this namespace is experimental.
 
+The file is written with Elias-Fano compressed postings, and `load` expands
+them back into the form `new` builds, so a loaded index searches at full speed
+and can still be added to. `readonly: true` skips the expansion and searches
+the compressed structures where they lie:
+
+```culebra
+# doctest: skip
+let idx = Search.Index.load("notes.idx", readonly: true)
+```
+
+Such an index opens in a fraction of the time and holds a fraction of the
+memory, and `add`, `remove` and `save` raise `SearchError` on it. Searching is
+slower, most of all for phrases. Measured on 311,030 documents (the KJV, ten
+copies; a 36 MB index), best of five:
+
+| | `load` | memory | one common word | two words | phrase |
+|---|---|---|---|---|---|
+| default | 1,592 ms | 376 MB | 35 µs | 23 µs | 205 µs |
+| `readonly: true` | 83 ms | 102 MB | 122 µs | 83 µs | 1,346 µs |
+
+So it suits an index that is built once and searched by short-lived processes
+— a CLI that opens the file per invocation pays 83 ms rather than 1.6 s — and
+the default suits a long-lived process that searches the same index many
+times, or one that keeps adding to it.
+
 ### Signatures
 
 | | |
 |---|---|
 | `Search.Index.new(analyzer: Object = nil) -> Index` | an empty index |
-| `Search.Index.load(path: String, analyzer: Object = nil) -> Index` | reopen a saved one |
+| `Search.Index.load(path: String, analyzer: Object = nil, readonly: Bool = false) -> Index` | reopen a saved one; `readonly` searches it compressed (above) |
 | `idx.add(key: String, text: String) -> Nil` | index a document, replacing any with the same key |
 | `idx.remove(key: String) -> Nil` | delete one; unknown keys are ignored |
 | `idx.search(query: String, limit: Long = 10) -> Array` | ranked hits |

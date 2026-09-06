@@ -98,7 +98,33 @@ idx.save(path)
 let loaded = Search.Index.load(path)
 assert_eq(found(loaded.search("quick")), ["doc-2"])
 assert_eq(found(loaded.search("third")), ["doc-3"])
+// A loaded index is writable: what it holds is the expanded form.
+loaded.add("doc-9", "a quick addition")
+assert_eq(found(loaded.search("quick")), ["doc-2", "doc-9"])
 loaded.close()
+
+// `readonly: true` keeps the file's compressed form in memory instead of
+// expanding it: the same answers, including the byte ranges, and no writes.
+let ro = Search.Index.load(path, readonly: true)
+assert_eq(found(ro.search("quick")), ["doc-2"])
+assert_eq(found(ro.search("third")), ["doc-3"])
+assert_eq(ro.search("quick")[0].ranges.size(), 1)
+assert_eq(ro.search("nothing-here"), [])
+assert_throws("SearchError", fn () {
+  ro.add("x", "y")
+})
+assert_throws("SearchError", fn () {
+  ro.remove("doc-2")
+})
+assert_throws("SearchError", fn () {
+  ro.save("{path}.2")
+})
+ro.close()
+
+// The analyzer is the caller's to supply either way.
+let ro_analyzed = Search.Index.load(path, {filters: []}, readonly: true)
+assert_eq(found(ro_analyzed.search("quick")), ["doc-2"])
+ro_analyzed.close()
 FS.remove(path)
 
 // --- Keys are Strings. A Long is refused rather than stringified, since the

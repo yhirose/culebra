@@ -122,8 +122,14 @@ struct Analyzer {
 // Views throughout, as regex.h and fst.h do: the engine tokenizes out of the
 // caller's bytes, so a document need not be copied to be indexed.
 CULEBRA_RT_SEARCH_LINKAGE int64_t index_new(Analyzer analyzer = {});
+// `readonly` keeps the saved file's Elias-Fano postings and text ranges
+// compressed in memory instead of expanding them into the mutable
+// representation: opening is much cheaper and the index is much smaller,
+// searching is somewhat slower, and add/remove/save are refused (see the
+// numbers in docs/stdlib.md).
 CULEBRA_RT_SEARCH_LINKAGE int64_t index_load(std::string_view path,
-                                             Analyzer analyzer = {});
+                                             Analyzer analyzer = {},
+                                             bool readonly = false);
 CULEBRA_RT_SEARCH_LINKAGE void index_add(int64_t id, std::string_view key,
                                          std::string_view text);
 CULEBRA_RT_SEARCH_LINKAGE void index_remove(int64_t id, std::string_view key);
@@ -149,7 +155,7 @@ CULEBRA_RT_SEARCH_LINKAGE void segmenter_drop(int64_t id);
                      "Search runtime entered in a no-Search binary", 0, 0);
 }
 CULEBRA_RT_SEARCH_LINKAGE int64_t index_new(Analyzer) { _not_linked(); }
-CULEBRA_RT_SEARCH_LINKAGE int64_t index_load(std::string_view, Analyzer) {
+CULEBRA_RT_SEARCH_LINKAGE int64_t index_load(std::string_view, Analyzer, bool) {
   _not_linked();
 }
 CULEBRA_RT_SEARCH_LINKAGE void index_add(int64_t, std::string_view,
@@ -263,14 +269,47 @@ struct Pipeline {
   }
 };
 
+// What every read goes through. Both backends implement it, so searching is
+// one code path: the mutable InMemoryInvertedIndex, and the read-only one
+// load_compressed_index returns.
+using Reader = searchlib::IInvertedIndexWithTextRange<searchlib::TextRange,
+                                                      std::string>;
+
+// An index is either writable (it owns an Invidx, and an Indexer over it) or
+// read-only (it holds the compressed backend, and no Indexer). `reader` points
+// at whichever one it has, so index_search never asks which.
 struct Index {
-  Invidx invidx;
+  std::unique_ptr<Invidx> invidx;      // null when read-only
+  std::shared_ptr<Reader> compressed;  // null when writable
+  const Reader *reader = nullptr;
   Pipeline pipeline;
-  Indexer indexer;
+  std::optional<Indexer> indexer;      // empty when read-only
 
   explicit Index(const Analyzer &analyzer)
-      : pipeline(analyzer), indexer(invidx, pipeline.normalizer) {}
+      : invidx(std::make_unique<Invidx>()), pipeline(analyzer) {
+    reader = invidx.get();
+    indexer.emplace(*invidx, pipeline.normalizer);
+  }
+
+  // The read-only shape: the backend is loaded before the handle exists, so a
+  // failed load never leaves a half-built index behind.
+  Index(const Analyzer &analyzer, std::shared_ptr<Reader> backend)
+      : compressed(std::move(backend)), reader(compressed.get()),
+        pipeline(analyzer) {}
+
+  bool writable() const { return invidx != nullptr; }
 };
+
+// The one refusal a read-only index gives, worded once so add, remove and
+// save cannot drift apart.
+[[noreturn]] inline void throw_readonly(const char *what) {
+  throw CulebraError(
+      "SearchError",
+      culebra::format("Search: {} needs a writable index, and this one was "
+                      "loaded with readonly: true",
+                      what),
+      0, 0);
+}
 
 // The registry belongs to the implementation, so the weak-stub branch leaves it
 // out (see sqlite.h on why the same `inline thread_local` must not land in both
@@ -299,13 +338,20 @@ CULEBRA_RT_SEARCH_LINKAGE int64_t index_new(Analyzer analyzer) {
 }
 
 CULEBRA_RT_SEARCH_LINKAGE int64_t index_load(std::string_view path,
-                                             Analyzer analyzer) {
+                                             Analyzer analyzer, bool readonly) {
   // The saved form records nothing about the analyzer, so loading with one
   // that differs from the index's own gives quietly wrong results. Nothing
   // here can check that; the docs say so instead.
-  auto index = std::make_unique<detail::Index>(analyzer);
+  std::unique_ptr<detail::Index> index;
   try {
-    index->invidx.load(std::string(path));
+    if (readonly) {
+      index = std::make_unique<detail::Index>(
+          analyzer, searchlib::load_compressed_index<std::string>(
+                        std::string(path)));
+    } else {
+      index = std::make_unique<detail::Index>(analyzer);
+      index->invidx->load(std::string(path));
+    }
   } catch (const CulebraError&) {
     throw;  // an analyzer hook's own error, already shaped
   } catch (const std::exception& e) {
@@ -317,6 +363,7 @@ CULEBRA_RT_SEARCH_LINKAGE int64_t index_load(std::string_view path,
 CULEBRA_RT_SEARCH_LINKAGE void index_add(int64_t id, std::string_view key,
                                          std::string_view text) {
   auto& index = detail::index_get(id);
+  if (!index.writable()) detail::throw_readonly("add");
   try {
     // The key is copied because the index owns it from here on; the text is
     // not, since the tokenizer only reads it.
@@ -327,7 +374,7 @@ CULEBRA_RT_SEARCH_LINKAGE void index_add(int64_t id, std::string_view key,
                   searchlib::SplitterTokenizer(pipeline.splitter, text))
             : searchlib::Tokenizer<searchlib::TextRange>(
                   searchlib::UTF8PlainTextTokenizer(text));
-    index.indexer.index_document(
+    index.indexer->index_document(
         std::string(key), searchlib::Analyzer<searchlib::TextRange>(
                               std::move(tokenizer), pipeline.filter));
   } catch (const CulebraError&) {
@@ -338,14 +385,16 @@ CULEBRA_RT_SEARCH_LINKAGE void index_add(int64_t id, std::string_view key,
 }
 
 CULEBRA_RT_SEARCH_LINKAGE void index_remove(int64_t id, std::string_view key) {
-  detail::index_get(id).invidx.remove_document(std::string(key));
+  auto& index = detail::index_get(id);
+  if (!index.writable()) detail::throw_readonly("remove");
+  index.invidx->remove_document(std::string(key));
 }
 
 CULEBRA_RT_SEARCH_LINKAGE std::vector<Hit> index_search(int64_t id,
                                                         std::string_view query,
                                                         size_t limit) {
   auto& index = detail::index_get(id);
-  auto& invidx = index.invidx;
+  const auto& invidx = *index.reader;
   // Parsed on its own so that the malformed-query error below is raised
   // outside the catch that wraps engine failures — it is already a
   // CulebraError and must not be re-wrapped.
@@ -392,9 +441,11 @@ CULEBRA_RT_SEARCH_LINKAGE std::vector<Hit> index_search(int64_t id,
 }
 
 CULEBRA_RT_SEARCH_LINKAGE void index_save(int64_t id, std::string_view path) {
-  auto& invidx = detail::index_get(id).invidx;
+  auto& index = detail::index_get(id);
+  if (!index.writable()) detail::throw_readonly("save");
   try {
-    invidx.save(std::string(path), {}, searchlib::IndexFormat::Compressed);
+    index.invidx->save(std::string(path), {},
+                       searchlib::IndexFormat::Compressed);
   } catch (const CulebraError&) {
     throw;  // an analyzer hook's own error, already shaped
   } catch (const std::exception& e) {

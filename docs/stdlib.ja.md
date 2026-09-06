@@ -7156,12 +7156,34 @@ let reopened = Search.Index.load("notes.idx")
 形式はエンジン自身のもので、このnamespaceが実験的なあいだはリリースをまたいで
 安定しない。
 
+ファイルはElias-Fanoで圧縮された転置リストとして書かれる。`load`はそれを`new`が
+作るのと同じ形に展開し直すので、開いた索引は全速で引けるうえ、そのまま文書を足せる。
+`readonly: true`は展開を省き、圧縮された構造のまま引く。
+
+```culebra
+# doctest: skip
+let idx = Search.Index.load("notes.idx", readonly: true)
+```
+
+こうして開いた索引は、開くのが桁違いに速く、メモリも大幅に少ない。かわりに`add`・
+`remove`・`save`は`SearchError`になり、検索は遅くなる。とくに句が遅い。311,030文書
+（KJVを10部、索引は36 MB）での実測、5回の最良値:
+
+| | `load` | メモリ | 頻出語1語 | 2語 | 句 |
+|---|---|---|---|---|---|
+| 既定 | 1,592 ms | 376 MB | 35 µs | 23 µs | 205 µs |
+| `readonly: true` | 83 ms | 102 MB | 122 µs | 83 µs | 1,346 µs |
+
+一度作って短命なプロセスから何度も引く索引に向く。呼ばれるたびにファイルを開くCLIなら
+1.6秒ではなく83ミリ秒で済む。逆に、長く生きるプロセスが同じ索引を何度も引く場合や、
+文書を足し続ける場合は既定のほうがよい。
+
 ### 一覧
 
 | | |
 |---|---|
 | `Search.Index.new(analyzer: Object = nil) -> Index` | 空の索引 |
-| `Search.Index.load(path: String, analyzer: Object = nil) -> Index` | 保存した索引を開く |
+| `Search.Index.load(path: String, analyzer: Object = nil, readonly: Bool = false) -> Index` | 保存した索引を開く。`readonly`は圧縮したまま引く（上） |
 | `idx.add(key: String, text: String) -> Nil` | 文書を登録する。同じ鍵があれば置き換える |
 | `idx.remove(key: String) -> Nil` | 文書を消す。知らない鍵は無視する |
 | `idx.search(query: String, limit: Long = 10) -> Array` | 順位つきの結果 |
