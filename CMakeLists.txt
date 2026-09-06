@@ -2050,6 +2050,19 @@ target_include_directories(source_newlines_test PRIVATE include
                            vendor/cpp-peglib)
 add_test(NAME source_newlines_test COMMAND source_newlines_test)
 
+# The control for the object file's no-live-address rule
+# (include/jit/baked_address.h): a module built by hand for each shape a
+# baked address can take, so the walk that refuses `culebra build` output
+# cannot quietly stop looking. LLVM's IR libraries only — the rule is split
+# out of lowering.h precisely so this stays a small translation unit.
+if(CULEBRA_ENABLE_JIT)
+  add_executable(aot_baked_address_test tests/aot_baked_address_test.cc)
+  target_compile_features(aot_baked_address_test PRIVATE cxx_std_23)
+  target_include_directories(aot_baked_address_test PRIVATE include)
+  target_link_libraries(aot_baked_address_test ${llvm_libs})
+  add_test(NAME aot_baked_address_test COMMAND aot_baked_address_test)
+endif()
+
 # GC unit tests — the standalone collector (include/rt/gc.h) validated in
 # isolation (pointer-validation, conservative root scanning, mark-sweep), no
 # JIT/LLVM link, independent of the in-tree jit.h wiring.

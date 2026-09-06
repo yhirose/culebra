@@ -65,7 +65,14 @@ hits=$(grep -rIln "${SKIP[@]}" \
 
 # Files allowed to name LLVM. Shrink this as the layering tightens; adding to
 # it means a new part of the tree stopped building without LLVM.
-LLVM_OK=(include/jit/jit.h include/jit/lowering.h include/stdlib/bindings.h)
+#
+# baked_address.h is the one entry that did not: it is lowering.h's own rule
+# about what an object file may contain, split into a header of its own so a
+# test can reach it without the compiler lowering.h pulls in. Included from
+# lowering.h alone, inside its CULEBRA_JIT_ENABLED guard, so a no-JIT build
+# never sees it.
+LLVM_OK=(include/jit/jit.h include/jit/lowering.h include/jit/baked_address.h
+         include/stdlib/bindings.h)
 mapfile -t llvm_users < <(
   grep -rIl --exclude-dir=vendor -E '(#include *<llvm/)|llvm::' include/ 2>/dev/null | sort)
 for f in "${llvm_users[@]}"; do

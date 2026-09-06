@@ -9,6 +9,7 @@
 
 #include <jit/jit.h>
 #include <aot/scan.h>  // aot_collect_names — which namespaces to link
+#include <jit/baked_address.h>  // the object file's no-live-address rule
 #include <stdlib/preamble.h>    // resolve_baked_preamble — which not to lower
 #include <vm/vm.h>
 
@@ -94,18 +95,13 @@ struct Lowering {
   // The one address a lowering can reach is the compiling process's own: a
   // string constant's bytes live in the chunk's `str_arena`, and everything
   // else a value points at (a Shape, a heap object) exists only once the
-  // built binary runs, which is why those are resolved lazily instead. An
-  // object file outlives this process, so none of them may appear in it as a
-  // literal — a string constant is re-emitted as module .rodata
-  // (JIT::emit_str_literal) and referenced from there.
+  // built binary runs, which is why those are resolved lazily instead. So the
+  // program's own string constants are the whole set an object file must not
+  // carry — a string constant is re-emitted as module .rodata
+  // (JIT::emit_str_literal) and referenced from there instead.
   //
-  // Proven here, at the one exit both object emitters share, rather than
-  // trusted at each site that turns a compile-time value into module bytes:
-  // what a missed site produces is not a build error but a binary that reads
-  // a dead address (Op::FieldsInit baked a `String` field's `''` zero as a
-  // raw pointer — Linux segfaulted, macOS found the page mapped and zeroed
-  // and read it as an empty string, so only one lane of one OS ever said so).
-  // `found` reports the offending value for the diagnostic.
+  // The rule and its walk are in jit/baked_address.h; this is where a program
+  // says which addresses it holds. `found` reports the offending value.
   static bool bakes_a_compile_time_address(const VmProgram& p,
                                            const llvm::Module& mod,
                                            uint64_t& found) {
@@ -113,42 +109,7 @@ struct Lowering {
     for (const auto& c : p.chunks)
       for (const auto& k : c.consts)
         if (k.tag == TAG_STRING) live.insert(static_cast<uint64_t>(k.data));
-    if (live.empty()) return false;
-    llvm::SmallPtrSet<const llvm::Constant*, 32> seen;
-    auto scan = [&](const llvm::Value* v, auto&& self) -> bool {
-      const auto* c = llvm::dyn_cast_or_null<llvm::Constant>(v);
-      if (!c || !seen.insert(c).second) return false;
-      if (const auto* ci = llvm::dyn_cast<llvm::ConstantInt>(c)) {
-        if (ci->getBitWidth() > 64 || !live.count(ci->getZExtValue()))
-          return false;
-        found = ci->getZExtValue();
-        return true;
-      }
-      // An array of plain integers is folded into raw bytes, which are not
-      // operands — walking operands alone reads a baked pointer as an empty
-      // aggregate. This is the form the zeros array takes.
-      if (const auto* cds = llvm::dyn_cast<llvm::ConstantDataSequential>(c)) {
-        auto* el = cds->getElementType();
-        if (!el->isIntegerTy() || el->getIntegerBitWidth() > 64) return false;
-        for (unsigned i = 0, n = cds->getNumElements(); i < n; i++) {
-          if (!live.count(cds->getElementAsInteger(i))) continue;
-          found = cds->getElementAsInteger(i);
-          return true;
-        }
-        return false;
-      }
-      for (const auto& op : c->operands())
-        if (self(op.get(), self)) return true;
-      return false;
-    };
-    for (const auto& g : mod.globals())
-      if (g.hasInitializer() && scan(g.getInitializer(), scan)) return true;
-    for (const auto& f : mod)
-      for (const auto& bb : f)
-        for (const auto& in : bb)
-          for (const auto& op : in.operands())
-            if (scan(op.get(), scan)) return true;
-    return false;
+    return module_bakes_address(mod, live, found);
   }
 
   // Write `mod` to `out_path` as an object file. The tail both object
