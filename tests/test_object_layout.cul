@@ -61,6 +61,16 @@ let z = Zeros()
 assert_eq(z.f, 0.0)
 assert_eq(z.n, 0)
 assert_eq(z.s, '')
+# The String zero is the one field zero that is not a scalar, so the layout op
+# carries an address rather than a bit pattern. `culebra build` has to re-emit
+# it into the module the way every other string constant is: baking the
+# compiling process's own pointer left the built binary reading a dead address
+# (a segfault on Linux; on macOS the page happened to be mapped and zeroed, so
+# the length read back as 0 and the comparison above passed anyway). Reading
+# the bytes is what catches it.
+assert_eq(z.s.size(), 0)
+assert_eq(z.s + 'x', 'x')
+assert_eq(type_of(z.s), 'String')
 assert_eq(z.b, false)
 assert_eq(z.o, nil)
 assert_eq(z.keys(), ['class', 'f', 'n', 's', 'b', 'o'])

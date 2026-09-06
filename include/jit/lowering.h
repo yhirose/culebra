@@ -4332,7 +4332,17 @@ struct Lowering {
           std::vector<Constant*> words;
           for (const auto& z : spec.zeros) {
             words.push_back(b.getInt64(z.tag));
-            words.push_back(b.getInt64(z.data));
+            // A `String` field's zero is the chunk's own `''`, whose data is
+            // an address in the compiling process — re-emit it as module
+            // .rodata, exactly as LoadConst does, or the built binary reads
+            // a pointer into a heap that no longer exists.
+            words.push_back(
+                z.tag == TAG_STRING
+                    ? ConstantExpr::getPtrToInt(
+                          j.emit_str_literal(_str_sv(
+                              reinterpret_cast<const char*>(z.data))),
+                          i64Ty)
+                    : b.getInt64(z.data));
           }
           auto zerosTy = ArrayType::get(i64Ty, words.size());
           auto* zerosGlobal = new llvm::GlobalVariable(

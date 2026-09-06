@@ -951,7 +951,11 @@ every fresh instance arrives with, and the one the run transitions it
 to). A field with an initializer stays its own store, in place, so
 declaration order and what an initializer sees of the fields below it
 (`nil`, docs/language.md §10) are unchanged; an instance arriving in any
-other state takes the per-field stores the runtime keeps for it.
+other state takes the per-field stores the runtime keeps for it. A
+`String` zero is the one entry in a spec that is an address rather than a
+bit pattern, so `culebra build` re-emits it into the module it writes: a
+pointer into the compiling process is a dead address in the built
+binary's own run.
 
 **A class meta answers its special methods from a table.** An operator
 on an instance (`v + w`, `a == b`, `str(x)`) reaches the class's dunder

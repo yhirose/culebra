@@ -3082,12 +3082,14 @@ struct JIT {
     if (h.declare_runtime) h.declare_runtime(*this);
   }
 
-  // Emit a String literal as a .rodata length-prefixed buffer matching the
-  // runtime _str_alloc layout: { i64 len, [N+1 x i8] bytes-with-nul }. The
-  // returned pointer targets the bytes field, so TAG_STRING data points at
-  // the bytes (len at data[-8]) exactly like a heap string. StringRef
-  // carries the length, so embedded NUL bytes survive into .rodata.
-  llvm::Value* emit_str_literal(std::string_view bytes) {
+  // A String literal as a .rodata length-prefixed buffer matching the runtime
+  // _str_alloc layout: { i64 len, [N+1 x i8] bytes-with-nul }. The returned
+  // pointer targets the bytes field, so TAG_STRING data points at the bytes
+  // (len at data[-8]) exactly like a heap string. StringRef carries the
+  // length, so embedded NUL bytes survive into .rodata. A Constant rather
+  // than an instruction, so it also serves where a baked JitValue's data
+  // field needs one (Op::FieldsInit's zeros array).
+  llvm::Constant* emit_str_literal(std::string_view bytes) {
     auto i64Ty = builder_.getInt64Ty();
     llvm::StringRef raw(bytes.data(), bytes.size());
     auto* bytesConst =
@@ -3100,9 +3102,9 @@ struct JIT {
                                        ".str");
     g->setAlignment(llvm::Align(8));
     g->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
-    llvm::Value* idx[] = {builder_.getInt32(0), builder_.getInt32(1),
-                          builder_.getInt32(0)};
-    return builder_.CreateInBoundsGEP(structTy, g, idx, ".str.data");
+    llvm::Constant* idx[] = {builder_.getInt32(0), builder_.getInt32(1),
+                             builder_.getInt32(0)};
+    return llvm::ConstantExpr::getInBoundsGetElementPtr(structTy, g, idx);
   }
 
 
