@@ -6993,9 +6993,22 @@ captures there first.
 | `rs.num_captures(fn:)` / `rs.num_cells(fn:)` / `rs.cell_of(fn:, v:)` | what `add_func` wants, and which cell holds a variable (`-1` for none) |
 | `rs.capture_map(m:, builder:, target:)` | the forwarding table, as a capture-map id `make_closure` takes |
 | `rs.reaches(fn:, v:)` | whether `fn` can name `v` at all |
+| `rs.mark()` | everything the resolver holds right now, as a token |
+| `rs.rollback(mark:)` | gives back the functions, variables and free entries added since |
+| `rs.reset_fn(fn:, parent:)` | starts one kept function over |
 
 A lookup that finds nothing answers `-1`, not `nil`: every id here is a
 non-negative index.
+
+#### A prelude bound once
+
+A front end that writes part of its runtime in its own language binds that
+prelude and then compiles program after program against it. `mark()` after
+the prelude and `rollback(mark)` before each program give back what the
+last one added -- its functions, its variables, and any free-set entry
+naming one of them -- while what the prelude captured stays. `reset_fn` is
+for the entry function, which a rollback keeps and the next program rebuilds
+anyway.
 
 #### When one walk is not enough
 

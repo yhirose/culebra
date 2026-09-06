@@ -6788,9 +6788,21 @@ closureの転送表を書く。closureがcaptureするものを供給できな�
 | `rs.num_captures(fn:)` / `rs.num_cells(fn:)` / `rs.cell_of(fn:, v:)` | `add_func`が要る数と、どのcellがその変数を持つか(無ければ`-1`) |
 | `rs.capture_map(m:, builder:, target:)` | 転送表。`make_closure`が取るcapture map idとして |
 | `rs.reaches(fn:, v:)` | `fn`がそもそも`v`を名指せるか |
+| `rs.mark()` | 今この時点でresolverが持っている全てを1つのトークンとして |
+| `rs.rollback(mark:)` | それ以降に増えた関数・変数・自由変数の項を戻す |
+| `rs.reset_fn(fn:, parent:)` | 残した関数を1つ、最初からやり直す |
 
 見つからなかった検索は`nil`ではなく`-1`を答える。ここのidはすべて非負の
 添字だからだ。
+
+#### preludeを1度だけ束縛する
+
+ランタイムの一部を自分の言語で書くフロントエンドは、それを1度束縛してから、
+プログラムを次々とその上でコンパイルする。preludeの後に`mark()`を取り、各
+プログラムの前に`rollback(mark)`すると、直前のプログラムが増やしたもの
+——関数・変数・それらを名指す自由変数の項——が戻り、preludeがcaptureした分は
+残る。`reset_fn`はエントリ関数用だ。rollbackはこれを残すが、次のプログラムが
+どのみち作り直す。
 
 #### 1回歩くだけでは足りないとき
 

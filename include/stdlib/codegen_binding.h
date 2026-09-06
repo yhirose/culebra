@@ -288,6 +288,10 @@ inline bool register_codegen_binding() {
       .method<&codegen::Resolver::use>("use", {"v", "fn"})
       .method<&codegen::Resolver::resolve>("resolve", {"name", "fn"})
       .method<&codegen::Resolver::force_cell>("force_cell", {"v"})
+      .method<&codegen::Resolver::mark>("mark")
+      .method<&codegen::Resolver::rollback>("rollback", {"mark"})
+      .method<&codegen::Resolver::reset_fn>("reset_fn",
+                                            {"fn", {"parent", -1L}})
       .method<&codegen::Resolver::free_count>("free_count", {"fn"})
       .method<&codegen::Resolver::free_at>("free_at", {"fn", "i"})
       .method<&codegen::Resolver::add_free>("add_free", {"fn", "v"})

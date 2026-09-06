@@ -1372,6 +1372,35 @@ class Resolver {
     rs_.force_cell(static_cast<int32_t>(v));
   }
 
+  // --- a prelude bound once, programs built on it --------------------------
+
+  // Everything this resolver holds, as of now, as one opaque Long. A front
+  // end that writes part of its runtime in its own language takes this
+  // after binding that prelude, and gives back each program's additions
+  // afterwards rather than binding the prelude again.
+  int64_t mark() {
+    marks_.push_back(rs_.mark());
+    return static_cast<int64_t>(marks_.size() - 1);
+  }
+
+  // Back to `mark`: the functions and variables declared since are gone,
+  // along with any free-set entry naming one of them. What the functions
+  // before them captured stays.
+  void rollback(int64_t mark) {
+    if (mark < 0 || static_cast<size_t>(mark) >= marks_.size()) {
+      throw culebra::CulebraError(
+          "IndexError", culebra::format("no mark #{}", mark), 0, 0);
+    }
+    rs_.rollback(marks_[static_cast<size_t>(mark)]);
+  }
+
+  // Start one kept function over -- the entry function, which a rollback
+  // keeps and the next program rebuilds anyway.
+  void reset_fn(int64_t fn, int64_t parent) {
+    checked_fn(fn);
+    rs_.reset_fn(static_cast<int32_t>(fn), static_cast<int32_t>(parent));
+  }
+
   // --- free sets, for a front end that closes its own ----------------------
 
   // What `fn` needs from outside itself, after every `use`. A language whose
@@ -1548,6 +1577,9 @@ class Resolver {
   }
 
   coreir::Resolver rs_;
+  // Marks handed out by mark(), by index: a script holds a Long, not a
+  // struct, and the ids stay valid across the rollbacks that use them.
+  std::vector<coreir::Resolver::Mark> marks_;
 };
 
 // The local slots of one function: hand them out in order, and give a block's

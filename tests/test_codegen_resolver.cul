@@ -154,3 +154,44 @@ assert_throws('IndexError', fn () {
 assert_throws('IrError', fn () {
   fl.release(99)
 })
+
+# --- a prelude bound once, programs built on top of it ----------------------
+#
+# What a front end writing part of its runtime in its own language does: bind
+# that once, then give back each program's additions instead of binding it
+# again.
+
+let pr = CodeGen.Resolver.new()
+let entry = pr.new_fn()
+pr.set_func_index(entry, 0)
+pr.push_scope()
+let gvar = pr.declare('$global', entry)
+let helper = pr.new_fn(entry)
+pr.set_func_index(helper, 1)
+pr.use(gvar, helper)
+let after_prelude = pr.mark()
+
+# a program on top: one more function, one more variable
+let pfn = pr.new_fn(entry)
+pr.set_func_index(pfn, 2)
+let px = pr.declare('x', entry)
+pr.use(px, pfn)
+pr.number_captures()
+assert_eq(pr.num_cells(entry), 2)
+
+pr.rollback(after_prelude)
+assert_eq(pr.num_fns(), 2)
+assert_eq(pr.num_vars(), 1)
+# the prelude's own analysis survived
+assert_eq(pr.free_count(helper), 1)
+assert_eq(pr.free_at(helper, 0), gvar)
+
+# the entry function is rebuilt per program, so it starts over
+pr.reset_fn(entry)
+pr.number_captures()
+assert_eq(pr.num_cells(entry), 1)
+assert_eq(pr.cell_of(entry, gvar), 0)
+
+assert_throws('IndexError', fn () {
+  pr.rollback(99)
+})
