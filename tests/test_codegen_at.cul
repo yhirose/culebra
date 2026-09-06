@@ -1,0 +1,87 @@
+# CodeGen positions and variadic shapes: `at:` in place of `line:`/`col:`,
+# and an array in place of a staging list. Both older spellings still
+# work, so this pins the pair as well as each on its own.
+
+let m = CodeGen.Module.new()
+let node = {line: 7, column: 3}
+
+# the concise form: position from a node, statements from an array
+let sum = m.binary(
+  op: 'add',
+  lhs: m.literal(v: 40, at: node),
+  rhs: m.literal(v: 2, at: node),
+  at: node,
+)
+let body = m.intrinsic(name: 'print', args: [sum], at: node)
+m.add_func(
+  name: 'main',
+  num_locals: 0,
+  num_captures: 0,
+  num_cells: 0,
+  num_params: 0,
+  body: m.block(stmts: [body], at: node),
+)
+m.verify()
+m.run()
+
+# the position really came from the node
+assert_eq(m.node_line(sum), 7)
+assert_eq(m.node_col(sum), 3)
+
+# the old spelling still works, both for position and for lists
+let m2 = CodeGen.Module.new()
+let v = m2.literal(v: 1, line: 5, col: 9)
+let ids = m2.list_new()
+m2.list_push(ids, m2.intrinsic(name: 'print', args: [v], line: 5, col: 9))
+m2.add_func(
+  name: 'main',
+  num_locals: 0,
+  num_captures: 0,
+  num_cells: 0,
+  num_params: 0,
+  body: m2.block(stmts: ids, line: 5, col: 9),
+)
+m2.verify()
+m2.run()
+assert_eq(m2.node_line(v), 5)
+
+# at wins over line/col when both are given
+let m3 = CodeGen.Module.new()
+let w = m3.literal(v: 1, line: 1, col: 1, at: node)
+assert_eq(m3.node_line(w), 7)
+
+# the errors
+assert_throws('TypeError', fn () {
+  m3.literal(v: 1, at: {line: 1})
+})
+assert_throws('TypeError', fn () {
+  m3.literal(v: 1, at: {line: 'x', column: 1})
+})
+assert_throws('TypeError', fn () {
+  m3.block(stmts: ['not a node'], at: node)
+})
+assert_throws('TypeError', fn () {
+  m3.literal(v: 1, at: 5)
+})
+
+# omitting the position entirely puts the node at 1:1 -- what a front end
+# wants for code no source line produced
+let origin = m3.literal(v: 1)
+assert_eq(m3.node_line(origin), 1)
+assert_eq(m3.node_col(origin), 1)
+
+# an array and a staging list build the same node
+let m4 = CodeGen.Module.new()
+let x = m4.literal(v: 1, at: node)
+let ids2 = m4.list_new()
+m4.list_push(ids2, x)
+let from_list = m4.block(stmts: ids2, at: node)
+let from_array = m4.block(stmts: [x], at: node)
+assert_eq(m4.num_children(from_list), m4.num_children(from_array))
+assert_eq(m4.child(from_list, 0), m4.child(from_array, 0))
+
+# every shape that takes one accepts an array
+let k = m4.str_literal(s: 'k', at: node)
+assert_true(m4.array_lit(items: [x, x], at: node) > 0)
+assert_true(m4.object_lit(kv: [k, x], at: node) > 0)
+assert_true(m4.call_value(callee: x, args: [], at: node) > 0)

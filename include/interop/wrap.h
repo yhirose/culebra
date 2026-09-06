@@ -37,6 +37,7 @@
 
 #include <base/fn_traits.h>
 #include <interop/foreign.h>
+#include <interop/value_args.h>
 #include <interop/search_splitter.h>  // ISplitter, auto-detected by wrap<T>
 #include <interop/wrap_registry.h>
 // wrap.h can be reached before culebra.h pulls the runtime layer, so
@@ -70,6 +71,8 @@ template <> constexpr std::string_view type_annotation_for<bool>()              
 template <> constexpr std::string_view type_annotation_for<std::string>()       { return "String"; }
 template <> constexpr std::string_view type_annotation_for<std::string_view>()  { return "String"; }
 template <> constexpr std::string_view type_annotation_for<const std::string&>(){ return "String"; }
+template <> constexpr std::string_view type_annotation_for<JitObjectArg>()      { return "Object"; }
+template <> constexpr std::string_view type_annotation_for<JitListArg>()        { return "Array | Long"; }
 
 }  // namespace _detail
 
@@ -506,10 +509,22 @@ inline bool jit_arg_matches(const JitValue& v) {
   return _culebra_value_matches_type(v.tag, v.data, param_type_name<A>());
 }
 
+// The two pass-through parameter types, ahead of every other branch: both
+// are class types, so handle_target would otherwise read them as a wrapped
+// class and try to resolve a handle out of them.
+template <class T>
+struct is_value_arg : std::false_type {};
+template <>
+struct is_value_arg<JitObjectArg> : std::true_type {};
+template <>
+struct is_value_arg<JitListArg> : std::true_type {};
+
 template <class A>
 inline decltype(auto) jit_arg_get(const JitValue& v) {
-  using Target = typename handle_target<A>::type;
-  if constexpr (!std::is_void_v<Target>) {
+  if constexpr (is_value_arg<std::decay_t<A>>::value) {
+    return std::decay_t<A>{v};
+  } else if constexpr (!std::is_void_v<typename handle_target<A>::type>) {
+    using Target = typename handle_target<A>::type;
     if constexpr (handle_target<A>::is_pointer) {
       return v.tag == TAG_NIL ? static_cast<Target*>(nullptr)
                               : jit_handle_self<Target>(v);

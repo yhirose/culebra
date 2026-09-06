@@ -24,6 +24,7 @@
 #include "vmlib.h"
 
 #include "base/shared.h"  // culebra::CulebraError
+#include <interop/value_args.h>  // JitObjectArg, JitListArg
 // The natives bridge below marshals culebra values and calls a culebra
 // closure, so this header needs the runtime layer -- the same reason
 // interop/wrap.h includes it rather than waiting for culebra.h.
@@ -337,95 +338,95 @@ class Program {
 
 class Module {
  public:
-  int64_t literal(int64_t v, int64_t line, int64_t col) {
+  int64_t literal(int64_t v, int64_t line, int64_t col, JitObjectArg at) {
     coreir::Builder b(m_);
-    return id(b.literal(v, pos(line, col)));
+    return id(b.literal(v, pos(line, col, at)));
   }
 
-  int64_t bool_literal(bool v, int64_t line, int64_t col) {
+  int64_t bool_literal(bool v, int64_t line, int64_t col, JitObjectArg at) {
     coreir::Builder b(m_);
-    return id(b.bool_literal(v, pos(line, col)));
+    return id(b.bool_literal(v, pos(line, col, at)));
   }
 
-  int64_t double_literal(double v, int64_t line, int64_t col) {
+  int64_t double_literal(double v, int64_t line, int64_t col, JitObjectArg at) {
     coreir::Builder b(m_);
-    return id(b.double_literal(v, pos(line, col)));
+    return id(b.double_literal(v, pos(line, col, at)));
   }
 
-  int64_t nil_literal(int64_t line, int64_t col) {
+  int64_t nil_literal(int64_t line, int64_t col, JitObjectArg at) {
     coreir::Builder b(m_);
-    return id(b.nil_literal(pos(line, col)));
+    return id(b.nil_literal(pos(line, col, at)));
   }
 
-  int64_t str_literal(std::string_view s, int64_t line, int64_t col) {
+  int64_t str_literal(std::string_view s, int64_t line, int64_t col, JitObjectArg at) {
     coreir::Builder b(m_);
-    return id(b.str_literal(std::string(s), pos(line, col)));
+    return id(b.str_literal(std::string(s), pos(line, col, at)));
   }
 
   int64_t var_ref(std::string_view kind, int64_t index, int64_t line,
-                  int64_t col) {
+                  int64_t col, JitObjectArg at) {
     coreir::Builder b(m_);
-    return id(b.varref(to_kind(kind), idx32(index), pos(line, col)));
+    return id(b.varref(to_kind(kind), idx32(index), pos(line, col, at)));
   }
 
   int64_t unary(std::string_view op, int64_t operand, int64_t line,
-               int64_t col) {
+               int64_t col, JitObjectArg at) {
     coreir::Builder b(m_);
-    return id(b.unary(to_unop(op), node(operand), pos(line, col)));
+    return id(b.unary(to_unop(op), node(operand), pos(line, col, at)));
   }
 
   int64_t binary(std::string_view op, int64_t lhs, int64_t rhs, int64_t line,
-                int64_t col) {
+                int64_t col, JitObjectArg at) {
     coreir::Builder b(m_);
-    return id(b.binary(to_binop(op), node(lhs), node(rhs), pos(line, col)));
+    return id(b.binary(to_binop(op), node(lhs), node(rhs), pos(line, col, at)));
   }
 
   int64_t assign(std::string_view kind, int64_t index, int64_t value,
-                int64_t line, int64_t col) {
+                int64_t line, int64_t col, JitObjectArg at) {
     coreir::Builder b(m_);
     return id(b.assign(to_kind(kind), idx32(index), node(value),
-                       pos(line, col)));
+                       pos(line, col, at)));
   }
 
   int64_t make_if(int64_t cond, int64_t then_branch, int64_t line,
-                  int64_t col) {
+                  int64_t col, JitObjectArg at) {
     coreir::Builder b(m_);
     return id(b.make_if(node(cond), node(then_branch), coreir::NodeId{},
-                        pos(line, col)));
+                        pos(line, col, at)));
   }
 
   int64_t make_if_else(int64_t cond, int64_t then_branch, int64_t else_branch,
-                       int64_t line, int64_t col) {
+                       int64_t line, int64_t col, JitObjectArg at) {
     coreir::Builder b(m_);
     return id(b.make_if(node(cond), node(then_branch), node(else_branch),
-                        pos(line, col)));
+                        pos(line, col, at)));
   }
 
-  // arms_list holds key, body, key, body, ... -- the flat shape object_lit's
-  // kv_list already uses, re-paired the same way. Each key must be a
+  // arms holds key, body, key, body, ... -- the flat shape object_lit's
+  // kv already uses, re-paired the same way. Each key must be a
   // literal node (int or str, all one ConstKind, pairwise distinct --
   // verify() enforces both); Break passes through a switch the same way it
   // passes through an if, so a switch-scoped break is a front end's own
   // lowering, not something this builds in.
-  int64_t make_switch(int64_t subject, int64_t arms_list, int64_t line,
-                      int64_t col) {
-    return make_switch_impl(subject, arms_list, coreir::NodeId{}, line, col);
+  int64_t make_switch(int64_t subject, JitListArg arms, int64_t line,
+                      int64_t col, JitObjectArg at) {
+    return make_switch_impl(subject, arms, coreir::NodeId{}, line, col, at);
   }
-  int64_t make_switch_default(int64_t subject, int64_t arms_list,
+  int64_t make_switch_default(int64_t subject, JitListArg arms,
                               int64_t default_body, int64_t line,
-                              int64_t col) {
-    return make_switch_impl(subject, arms_list, node(default_body), line,
-                            col);
+                              int64_t col, JitObjectArg at) {
+    return make_switch_impl(subject, arms, node(default_body), line, col,
+                            at);
   }
 
-  int64_t make_while(int64_t cond, int64_t body, int64_t line, int64_t col) {
+  int64_t make_while(int64_t cond, int64_t body, int64_t line, int64_t col, JitObjectArg at) {
     coreir::Builder b(m_);
-    return id(b.make_while(node(cond), node(body), pos(line, col)));
+    return id(b.make_while(node(cond), node(body), pos(line, col, at)));
   }
 
-  int64_t block(int64_t stmts_list, int64_t line, int64_t col) {
+  int64_t block(JitListArg stmts, int64_t line, int64_t col, JitObjectArg at) {
     coreir::Builder b(m_);
-    return id(b.block(take_list(stmts_list), pos(line, col)));
+    return id(b.block(take_list(stmts), pos(line, col, at)));
   }
 
   // Builder-side sugar over MakeClosure+CallValue (the one calling mechanism
@@ -434,9 +435,9 @@ class Module {
   // alongside it). PL/0 procedures take no arguments, so the immediately-built
   // closure is called with an empty argument list; a front end wanting real
   // first-class functions calls make_closure/call_value below instead.
-  int64_t call(int64_t func, int64_t cmap, int64_t line, int64_t col) {
+  int64_t call(int64_t func, int64_t cmap, int64_t line, int64_t col, JitObjectArg at) {
     coreir::Builder b(m_);
-    const coreir::SrcPos p = pos(line, col);
+    const coreir::SrcPos p = pos(line, col, at);
     const coreir::NodeId closure = b.make_closure(idx32(func), idx32(cmap), p);
     return id(b.call_value(closure, {}, p));
   }
@@ -444,44 +445,44 @@ class Module {
   // The two primitives themselves, for a front end whose functions are
   // values: a closure built here can be stored in a variable, passed as an
   // argument, or returned, and called later wherever it ends up.
-  int64_t make_closure(int64_t func, int64_t cmap, int64_t line, int64_t col) {
+  int64_t make_closure(int64_t func, int64_t cmap, int64_t line, int64_t col, JitObjectArg at) {
     coreir::Builder b(m_);
-    return id(b.make_closure(idx32(func), idx32(cmap), pos(line, col)));
+    return id(b.make_closure(idx32(func), idx32(cmap), pos(line, col, at)));
   }
-  int64_t call_value(int64_t callee, int64_t args_list, int64_t line,
-                     int64_t col) {
+  int64_t call_value(int64_t callee, JitListArg args, int64_t line,
+                     int64_t col, JitObjectArg at) {
     coreir::Builder b(m_);
-    return id(b.call_value(node(callee), take_list(args_list), pos(line, col)));
-  }
-
-  int64_t array_lit(int64_t items_list, int64_t line, int64_t col) {
-    coreir::Builder b(m_);
-    return id(b.array_lit(take_list(items_list), pos(line, col)));
+    return id(b.call_value(node(callee), take_list(args), pos(line, col, at)));
   }
 
-  // kv_list holds key, value, key, value, ... -- the flat shape ObjectLit
+  int64_t array_lit(JitListArg items, int64_t line, int64_t col, JitObjectArg at) {
+    coreir::Builder b(m_);
+    return id(b.array_lit(take_list(items), pos(line, col, at)));
+  }
+
+  // kv holds key, value, key, value, ... -- the flat shape ObjectLit
   // itself stores; the builder wants pairs, so this re-pairs them.
-  int64_t object_lit(int64_t kv_list, int64_t line, int64_t col) {
-    const std::vector<coreir::NodeId> flat = take_list(kv_list);
+  int64_t object_lit(JitListArg kv, int64_t line, int64_t col, JitObjectArg at) {
+    const std::vector<coreir::NodeId> flat = take_list(kv);
     std::vector<std::pair<coreir::NodeId, coreir::NodeId>> kvs;
     kvs.reserve(flat.size() / 2);
     for (size_t i = 0; i + 1 < flat.size(); i += 2) {
       kvs.push_back({flat[i], flat[i + 1]});
     }
     coreir::Builder b(m_);
-    return id(b.object_lit(kvs, pos(line, col)));
+    return id(b.object_lit(kvs, pos(line, col, at)));
   }
 
-  int64_t index(int64_t recv, int64_t key, int64_t line, int64_t col) {
+  int64_t index(int64_t recv, int64_t key, int64_t line, int64_t col, JitObjectArg at) {
     coreir::Builder b(m_);
-    return id(b.index(node(recv), node(key), pos(line, col)));
+    return id(b.index(node(recv), node(key), pos(line, col, at)));
   }
 
   int64_t set_index(int64_t recv, int64_t key, int64_t value, int64_t line,
-                    int64_t col) {
+                    int64_t col, JitObjectArg at) {
     coreir::Builder b(m_);
     return id(b.set_index(node(recv), node(key), node(value),
-                          pos(line, col)));
+                          pos(line, col, at)));
   }
 
   // A struct field at a slot the front end assigns, read/written in O(1)
@@ -491,88 +492,90 @@ class Module {
   // field present (props in key order); set_index's own key comparison
   // never has that requirement, which is the whole difference in cost.
   int64_t field_get(int64_t recv, int64_t slot, std::string_view name,
-                    int64_t line, int64_t col) {
+                    int64_t line, int64_t col, JitObjectArg at) {
     coreir::Builder b(m_);
     return id(b.field_get(node(recv), idx32(slot), std::string(name),
-                          pos(line, col)));
+                          pos(line, col, at)));
   }
   int64_t field_set(int64_t recv, int64_t slot, std::string_view name,
-                    int64_t value, int64_t line, int64_t col) {
+                    int64_t value, int64_t line, int64_t col, JitObjectArg at) {
     coreir::Builder b(m_);
     return id(b.field_set(node(recv), idx32(slot), std::string(name),
-                          node(value), pos(line, col)));
+                          node(value), pos(line, col, at)));
   }
 
   // Scopes, non-local exits, exceptions, defers -- the Core-IR surface the
   // exception phase added; each is a thin forward to the builder.
   int64_t scope(int64_t first_local, int64_t end_local, int64_t body,
-                int64_t line, int64_t col) {
+                int64_t line, int64_t col, JitObjectArg at) {
     coreir::Builder b(m_);
     return id(b.scope(idx32(first_local), idx32(end_local), node(body),
-                      pos(line, col)));
+                      pos(line, col, at)));
   }
-  // The same scope with its release order spelled out: `release_list` holds
+  // The same scope with its release order spelled out: `release` holds
   // var_ref nodes (local or cell), released in that order at every exit --
   // a front end lists reverse declaration order, captured slots included.
   int64_t scope_release(int64_t first_local, int64_t end_local, int64_t body,
-                        int64_t release_list, int64_t line, int64_t col) {
+                        JitListArg release, int64_t line, int64_t col, JitObjectArg at) {
     coreir::Builder b(m_);
     return id(b.scope(idx32(first_local), idx32(end_local), node(body),
-                      take_list(release_list), pos(line, col)));
+                      take_list(release), pos(line, col, at)));
   }
 
   // A bare `return` is spelled with an explicit nil_literal argument; the
   // wrap layer has no optional parameters, and the front end lowering a
   // return statement holds a position for the nil anyway.
-  int64_t make_return(int64_t value, int64_t line, int64_t col) {
+  int64_t make_return(int64_t value, int64_t line, int64_t col, JitObjectArg at) {
     coreir::Builder b(m_);
-    return id(b.make_return(node(value), pos(line, col)));
+    return id(b.make_return(node(value), pos(line, col, at)));
   }
 
   // `depth` is how many enclosing loops to skip -- 0, the default, leaves
   // the innermost. A front end that resolves its own labels answers with a
   // depth, so the IR needs no label table of its own.
-  int64_t make_break(int64_t line, int64_t col, int64_t depth) {
+  int64_t make_break(int64_t line, int64_t col, int64_t depth,
+                     JitObjectArg at) {
     coreir::Builder b(m_);
-    return id(b.make_break(pos(line, col), idx32(depth)));
+    return id(b.make_break(pos(line, col, at), idx32(depth)));
   }
 
-  int64_t make_continue(int64_t line, int64_t col, int64_t depth) {
+  int64_t make_continue(int64_t line, int64_t col, int64_t depth,
+                     JitObjectArg at) {
     coreir::Builder b(m_);
-    return id(b.make_continue(pos(line, col), idx32(depth)));
+    return id(b.make_continue(pos(line, col, at), idx32(depth)));
   }
 
-  int64_t make_throw(int64_t value, int64_t line, int64_t col) {
+  int64_t make_throw(int64_t value, int64_t line, int64_t col, JitObjectArg at) {
     coreir::Builder b(m_);
-    return id(b.make_throw(node(value), pos(line, col)));
+    return id(b.make_throw(node(value), pos(line, col, at)));
   }
 
   int64_t make_try(int64_t caught_local, int64_t body, int64_t handler,
-                   int64_t line, int64_t col) {
+                   int64_t line, int64_t col, JitObjectArg at) {
     coreir::Builder b(m_);
     return id(b.make_try(idx32(caught_local), node(body), node(handler),
-                         pos(line, col)));
+                         pos(line, col, at)));
   }
 
-  int64_t make_defer(int64_t value, int64_t line, int64_t col) {
+  int64_t make_defer(int64_t value, int64_t line, int64_t col, JitObjectArg at) {
     coreir::Builder b(m_);
-    return id(b.make_defer(node(value), pos(line, col)));
+    return id(b.make_defer(node(value), pos(line, col, at)));
   }
 
-  int64_t make_yield(int64_t value, int64_t line, int64_t col) {
+  int64_t make_yield(int64_t value, int64_t line, int64_t col, JitObjectArg at) {
     coreir::Builder b(m_);
-    return id(b.make_yield(node(value), pos(line, col)));
+    return id(b.make_yield(node(value), pos(line, col, at)));
   }
-  int64_t cell_fresh(int64_t cell, int64_t line, int64_t col) {
+  int64_t cell_fresh(int64_t cell, int64_t line, int64_t col, JitObjectArg at) {
     coreir::Builder b(m_);
-    return id(b.cell_fresh(idx32(cell), pos(line, col)));
+    return id(b.cell_fresh(idx32(cell), pos(line, col, at)));
   }
 
-  int64_t intrinsic(std::string_view name, int64_t args_list, int64_t line,
-                    int64_t col) {
+  int64_t intrinsic(std::string_view name, JitListArg args, int64_t line,
+                    int64_t col, JitObjectArg at) {
     coreir::Builder b(m_);
     return id(
-        b.intrinsic(to_intrinsic(name), take_list(args_list), pos(line, col)));
+        b.intrinsic(to_intrinsic(name), take_list(args), pos(line, col, at)));
   }
 
   // A host function the module calls but does not carry: declare_native
@@ -584,9 +587,9 @@ class Module {
     coreir::Builder b(m_);
     return b.declare_native(std::string(name));
   }
-  int64_t native_ref(int64_t index, int64_t line, int64_t col) {
+  int64_t native_ref(int64_t index, int64_t line, int64_t col, JitObjectArg at) {
     coreir::Builder b(m_);
-    return id(b.native_ref(idx32(index), pos(line, col)));
+    return id(b.native_ref(idx32(index), pos(line, col, at)));
   }
 
   // Generic staging for a node's variadic children -- consumed and gone once
@@ -991,29 +994,84 @@ class Module {
     return {static_cast<uint32_t>(line), static_cast<uint32_t>(col)};
   }
 
-  std::vector<coreir::NodeId> take_list(int64_t list) const {
-    const auto& raw = lists_.at(static_cast<size_t>(list));
+  // Where a node came from, given either way of saying it: `at`, any Object
+  // with `line` and `column` (a parse node, or one the front end made up),
+  // or the two numbers. `at` wins when both are there.
+  //
+  // It is a parameter rather than a builder that remembers a position,
+  // because a position-bound builder would have to be an object per node and
+  // allocating one costs about twice what the call it saves does.
+  static coreir::SrcPos pos(int64_t line, int64_t col, JitObjectArg at) {
+    if (at.v.tag != TAG_OBJECT) return pos(line, col);
+    auto* o = reinterpret_cast<JitObject*>(at.v.data);
+    return {static_cast<uint32_t>(field(o, "line")),
+            static_cast<uint32_t>(field(o, "column"))};
+  }
+
+  static int64_t field(JitObject* o, const char* name) {
+    const size_t slot = o->find_slot(name);
+    if (slot == static_cast<size_t>(-1)) {
+      throw culebra::CulebraError(
+          "TypeError",
+          culebra::format("'at' needs a '{}' -- an Object with 'line' and "
+                          "'column', such as a parse node",
+                          name),
+          0, 0);
+    }
+    const JitValue v = o->slots[slot].value;
+    if (v.tag != TAG_LONG) {
+      throw culebra::CulebraError(
+          "TypeError",
+          culebra::format("'at.{}' must be a Long, got {}", name,
+                          _culebra_tag_name(v.tag)),
+          0, 0);
+    }
+    return v.data;
+  }
+
+  // The nodes of a variadic shape, from an Array of them or from the id of a
+  // staging list built by list_new/list_push. The Array is the ordinary way;
+  // the id is the older two-call form, kept because a module already built
+  // that way still compiles.
+  std::vector<coreir::NodeId> take_list(JitListArg list) const {
     std::vector<coreir::NodeId> out;
+    if (list.v.tag == TAG_ARRAY) {
+      auto* a = reinterpret_cast<JitArray*>(list.v.data);
+      out.reserve(a->size);
+      for (size_t i = 0; i < a->size; i++) {
+        const JitValue e = a->items[i];
+        if (e.tag != TAG_LONG) {
+          throw culebra::CulebraError(
+              "TypeError",
+              culebra::format("element {} is {}, not a node id", i,
+                              _culebra_tag_name(e.tag)),
+              0, 0);
+        }
+        out.push_back(node(e.data));
+      }
+      return out;
+    }
+    const auto& raw = lists_.at(static_cast<size_t>(list.v.data));
     out.reserve(raw.size());
     for (int64_t v : raw) out.push_back(node(v));
     return out;
   }
 
-  // Shared by make_switch/make_switch_default: re-pairs arms_list the same
-  // way object_lit re-pairs kv_list, then builds with whichever default
+  // Shared by make_switch/make_switch_default: re-pairs the arms the same
+  // way object_lit re-pairs its keys and values, then builds with whichever default
   // (possibly invalid, meaning none) the caller already resolved.
-  int64_t make_switch_impl(int64_t subject, int64_t arms_list,
+  int64_t make_switch_impl(int64_t subject, JitListArg arms,
                            coreir::NodeId default_body, int64_t line,
-                           int64_t col) {
-    const std::vector<coreir::NodeId> flat = take_list(arms_list);
-    std::vector<std::pair<coreir::NodeId, coreir::NodeId>> arms;
-    arms.reserve(flat.size() / 2);
+                           int64_t col, JitObjectArg at) {
+    const std::vector<coreir::NodeId> flat = take_list(arms);
+    std::vector<std::pair<coreir::NodeId, coreir::NodeId>> pairs;
+    pairs.reserve(flat.size() / 2);
     for (size_t i = 0; i + 1 < flat.size(); i += 2) {
-      arms.push_back({flat[i], flat[i + 1]});
+      pairs.push_back({flat[i], flat[i + 1]});
     }
     coreir::Builder b(m_);
     return id(
-        b.make_switch(node(subject), arms, default_body, pos(line, col)));
+        b.make_switch(node(subject), pairs, default_body, pos(line, col, at)));
   }
 
   // vmlib.h owns each enum's vocabulary (name_of/from_name); a second, hand-

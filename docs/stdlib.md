@@ -6647,11 +6647,11 @@ let forty_two = m.binary(op: 'add', lhs: m.literal(v: 40, line: 1, col: 1),
 
 let args = m.list_new()
 m.list_push(args, forty_two)
-let print_stmt = m.intrinsic(name: 'print', args_list: args, line: 1, col: 1)
+let print_stmt = m.intrinsic(name: 'print', args: args, line: 1, col: 1)
 
 let stmts = m.list_new()
 m.list_push(stmts, print_stmt)
-let body = m.block(stmts_list: stmts, line: 1, col: 1)
+let body = m.block(stmts: stmts, line: 1, col: 1)
 
 m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0, body: body)
 m.verify()
@@ -6671,54 +6671,87 @@ let b = m.literal(v: 4, line: 1, col: 1)
 let sum = m.binary(op: 'add', lhs: a, rhs: b, line: 1, col: 1)  # sum is a Long
 ```
 
-A `Block`'s statements, a `Call`'s capture forwarding, and a set of `Object`
-methods can't be variadic arguments the way a normal culebra call's are — so
-they go through a small staging list instead: `list_new()` returns a list id,
-`list_push(list, value)` appends a node id to it, and the list is consumed
-(and gone) the moment it's handed to `block()` or `intrinsic()`. Reusing a
-list id afterward is undefined.
+A `Block`'s statements, a `Call`'s arguments and an `Object`'s keys and
+values arrive as an **array of node ids**:
+
+```culebra
+let m = CodeGen.Module.new()
+let a = m.literal(v: 3, line: 1, col: 1)
+let b = m.literal(v: 4, line: 1, col: 1)
+let args = [m.binary(op: 'add', lhs: a, rhs: b, line: 1, col: 1)]
+let body = m.block(stmts: [m.intrinsic(name: 'print', args: args, line: 1, col: 1)],
+                   line: 1, col: 1)
+```
+
+`list_new()` and `list_push(list, value)` build the same thing one element
+at a time, and every method taking an array takes such a list id too. That
+is the older form: it costs a call per element, and nothing needs it now
+that the array goes straight in.
+
+### Positions: `at:` instead of `line:` and `col:`
+
+Every builder call records where the node came from. Pass `at:` any Object
+with `line` and `column` — a `PEG.parse` node, or one a front end made up
+for code it invented — instead of picking the two numbers out yourself:
+
+```culebra
+let m = CodeGen.Module.new()
+let node = {line: 7, column: 3}
+let sum = m.binary(op: 'add', lhs: m.literal(v: 40, at: node),
+                   rhs: m.literal(v: 2, at: node), at: node)
+inspect([m.node_line(sum), m.node_col(sum)])  # => [7, 3]
+```
+
+`line:`/`col:` still work, and `at:` wins if both are given. Prefer `at:`:
+a front end holds a node at nearly every builder call, and the two numbers
+are then noise on every line. It is also the faster of the two, since one
+argument crosses the boundary instead of two and the fields are read on the
+other side.
+
+Both are optional. A node built with neither is at 1:1, which is what a
+front end wants for code no source line produced.
 
 ### Building a program
 
 | Call | Builds |
 | --- | --- |
 | `CodeGen.Module.new()` | an empty module |
-| `m.literal(v:, line:, col:)` | an integer constant |
-| `m.bool_literal(v:, line:, col:)` / `m.double_literal(v:, line:, col:)` / `m.nil_literal(line:, col:)` / `m.str_literal(s:, line:, col:)` | the other scalar constants |
-| `m.var_ref(kind:, index:, line:, col:)` | a read of local/capture slot `index` |
-| `m.unary(op:, operand:, line:, col:)` | `op` is `'neg'`/`'bitnot'`, or one of `wrapi8 wrapi16 wrapi32 wrapu8 wrapu16 wrapu32` — truncates a Long to that width and sign- (`wrapi*`) or zero-extends (`wrapu*`) it back, for a front end lowering a fixed-width `int`/`uint` (a C#/Java/Go subset, say): the operand must already be a Long, and every one of these keeps a slot's value in the normalized form `lt`/`le`/`gt`/`ge`/`div`/`mod`/`shr` already assume without a wrap of their own |
-| `m.binary(op:, lhs:, rhs:, line:, col:)` | `op` is one of `add sub mul div mod eq ne lt le gt ge bitand bitor bitxor shl shr` (bitwise ops are Long-only; shift counts are masked to the low six bits, and `shr` is arithmetic), or one of `udiv umod ushr ult ule ugt uge` — the unsigned forms a `uint64` needs, since its bit pattern does not sit in a signed Long's own ordering the way a normalized narrower unsigned width already does |
-| `m.assign(kind:, index:, value:, line:, col:)` | a write to local/capture slot `index` |
-| `m.make_if(cond:, then_branch:, line:, col:)` | `if` with no `else` |
-| `m.make_if_else(cond:, then_branch:, else_branch:, line:, col:)` | `if`/`else` |
-| `m.make_switch(subject:, arms_list:, line:, col:)` / `m.make_switch_default(subject:, arms_list:, default_body:, line:, col:)` | branches on `subject` against `arms_list` — key, body, key, body, … (each key a Long/String literal node, all one kind, pairwise distinct — `verify()` enforces both); `make_switch_default` adds the arm taken when nothing matches. No match and no default yields `nil`, the same as an `if` with no `else` taken; a subject whose type does not match the keys' fails. A `break` inside an arm still targets the enclosing `while` — a switch does not catch it, the same as `if` |
-| `m.make_while(cond:, body:, line:, col:)` | a loop |
-| `m.block(stmts_list:, line:, col:)` | a sequence, consuming a staging list |
-| `m.call(func:, cmap:, line:, col:)` | a call to function index `func`, forwarding captures via capture-map `cmap` |
-| `m.make_closure(func:, cmap:, line:, col:)` | a closure *value* over function `func` — storable, passable, callable later |
-| `m.call_value(callee:, args_list:, line:, col:)` | a call of whatever `callee` evaluates to, consuming a staging list of arguments |
+| `m.literal(v:, at:)` | an integer constant |
+| `m.bool_literal(v:, at:)` / `m.double_literal(v:, at:)` / `m.nil_literal(at:)` / `m.str_literal(s:, at:)` | the other scalar constants |
+| `m.var_ref(kind:, index:, at:)` | a read of local/capture slot `index` |
+| `m.unary(op:, operand:, at:)` | `op` is `'neg'`/`'bitnot'`, or one of `wrapi8 wrapi16 wrapi32 wrapu8 wrapu16 wrapu32` — truncates a Long to that width and sign- (`wrapi*`) or zero-extends (`wrapu*`) it back, for a front end lowering a fixed-width `int`/`uint` (a C#/Java/Go subset, say): the operand must already be a Long, and every one of these keeps a slot's value in the normalized form `lt`/`le`/`gt`/`ge`/`div`/`mod`/`shr` already assume without a wrap of their own |
+| `m.binary(op:, lhs:, rhs:, at:)` | `op` is one of `add sub mul div mod eq ne lt le gt ge bitand bitor bitxor shl shr` (bitwise ops are Long-only; shift counts are masked to the low six bits, and `shr` is arithmetic), or one of `udiv umod ushr ult ule ugt uge` — the unsigned forms a `uint64` needs, since its bit pattern does not sit in a signed Long's own ordering the way a normalized narrower unsigned width already does |
+| `m.assign(kind:, index:, value:, at:)` | a write to local/capture slot `index` |
+| `m.make_if(cond:, then_branch:, at:)` | `if` with no `else` |
+| `m.make_if_else(cond:, then_branch:, else_branch:, at:)` | `if`/`else` |
+| `m.make_switch(subject:, arms:, at:)` / `m.make_switch_default(subject:, arms:, default_body:, at:)` | branches on `subject` against `arms` — key, body, key, body, … (each key a Long/String literal node, all one kind, pairwise distinct — `verify()` enforces both); `make_switch_default` adds the arm taken when nothing matches. No match and no default yields `nil`, the same as an `if` with no `else` taken; a subject whose type does not match the keys' fails. A `break` inside an arm still targets the enclosing `while` — a switch does not catch it, the same as `if` |
+| `m.make_while(cond:, body:, at:)` | a loop |
+| `m.block(stmts:, at:)` | a sequence, consuming a staging list |
+| `m.call(func:, cmap:, at:)` | a call to function index `func`, forwarding captures via capture-map `cmap` |
+| `m.make_closure(func:, cmap:, at:)` | a closure *value* over function `func` — storable, passable, callable later |
+| `m.call_value(callee:, args:, at:)` | a call of whatever `callee` evaluates to, consuming a staging list of arguments |
 | `m.declare_native(name:)` | declares that the module calls a host function called `name`, and answers its index. The module carries the name alone — what it resolves to is supplied per run, by `Program.run`'s `natives:` — so the same module runs against whatever implementations the caller has that day, and against none at all only if it declares none |
-| `m.native_ref(index:, line:, col:)` | the value naming declared native `index`; call it with an ordinary `call_value`. `verify()` rejects an index no `declare_native` handed out |
-| `m.intrinsic(name:, args_list:, line:, col:)` | `name` is `'print'`/`'len'`/`'tostr'`/`'typeof'`/`'toint'`/`'todouble'`/`'tofloat32'` (1 arg each), `'readint'` (0 args), or `'fmod'`/`'pow'` (2 args); `'printraw'` is `'print'` without the trailing newline; the container primitives are `'arraypush'`/`'objecthas'`/`'objectremove'` (2 args) and `'arraypop'`/`'objectkeys'` (1 arg) — pop from empty fails, keys come back in insertion order; `'mapnew'` (0 args) makes a map, a second keyed container whose keys are whole values rather than names — nil, bools, ints, doubles and strings compared by value, everything else by identity — read and written with the same `index`/`set_index`, and answered by the same `'len'`/`'objecthas'`/`'objectkeys'`/`'objectremove'` an object takes; `'strslice'`/`'arrayslice'` (3 args: the string or array, then a start and an end index) copy out a half-open range, and `'strbyte'` (2 args) / `'strfrombyte'` (1 arg) read one byte out of a string and build a one-byte string back — bytes, not code points, so a front end with its own text model does the decoding itself; `'same'` (2 args) answers reference identity — the same heap object, or for scalars the same tag and payload — which `eq` refuses for two objects; `'argcount'` (0 args) is the count of arguments the running function was called with (see `set_lenient_arity`); `'genresume'`/`'genreturn'`/`'genthrow'` (2 args) drive a generator activation (see `set_generator`); `'enqueue'` (1 arg, a 0-argument closure) queues it on the run's job queue — drained in FIFO order once the entry function has returned, each job run to completion before the next, so a job's own enqueues land behind every job already waiting — and yields `nil`; `'fnarity'` (1 arg) is a closure's declared parameter count (a non-function fails); `'collect'` (0 args) runs a full tracing collection now and yields the number of objects freed, running the drop hook of every condemned object first, newest first; `'heapstats'` (0 args) yields `{live_objects, heap_bytes}` for the runtime's heap. `tostr` formats whole doubles bare — `4`, not `4.0` — so a front end with other display rules post-processes; `typeof` yields the tag as a string (`'int'`, `'double'`, `'string'`, …); `toint` truncates toward zero and fails on NaN/∞/out-of-range; `fmod` is IEEE fmod with the integer-mod zero-divisor failure; `pow` is over doubles; `tofloat32` rounds a Double (an int argument widens first, like `todouble`) to the nearest `float` and back to a Double holding exactly that value — the rounding a front end with both a `float` and a `double` type cannot produce itself — saturating to `float`'s own max/min rather than overflowing early, and going to +-infinity only past the true `float` overflow boundary; NaN passes through unchanged |
-| `m.array_lit(items_list:, line:, col:)` / `m.object_lit(kv_list:, line:, col:)` | an array from a staging list of items; an object from a staging list holding key, value, key, value, … |
-| `m.index(recv:, key:, line:, col:)` / `m.set_index(recv:, key:, value:, line:, col:)` | reads and writes, dispatching on what `recv` turns out to be: an array takes a Long index (out of range fails), an object a String key (a missing key reads as `nil`), and a string reads one byte out as a string (writes are refused) |
-| `m.field_get(recv:, slot:, name:, line:, col:)` / `m.field_set(recv:, slot:, name:, value:, line:, col:)` | a struct field at `slot`, a front end's own numbering (the same contract a local's slot index already is) — read/written directly rather than `index`/`set_index`'s key comparison, so `recv` must already have every field built through `object_lit`, in that same slot order, before either reaches it; `name` is carried only for a trap message ("field 'next' of …"), never read to execute anything |
-| `m.scope(first_local:, end_local:, body:, line:, col:)` | a lexical region owning local slots `[first_local, end_local)` — released when the region exits, however it exits; defers registered inside run then, LIFO |
-| `m.scope_release(first_local:, end_local:, body:, release_list:, line:, col:)` | the same region with its release order spelled out: `release_list` holds `var_ref` nodes (`'local'` within the range, or `'cell'`), released in that order at every exit — a front end lists reverse declaration order, captured slots included, so a captured binding is released in its own turn rather than with the frame. A released cell is re-created, so a closure that captured it keeps the old one with its value |
-| `m.make_return(value:, line:, col:)` | returns `value` from the running function (a bare `return` is spelled with an explicit `nil_literal`) |
+| `m.native_ref(index:, at:)` | the value naming declared native `index`; call it with an ordinary `call_value`. `verify()` rejects an index no `declare_native` handed out |
+| `m.intrinsic(name:, args:, at:)` | `name` is `'print'`/`'len'`/`'tostr'`/`'typeof'`/`'toint'`/`'todouble'`/`'tofloat32'` (1 arg each), `'readint'` (0 args), or `'fmod'`/`'pow'` (2 args); `'printraw'` is `'print'` without the trailing newline; the container primitives are `'arraypush'`/`'objecthas'`/`'objectremove'` (2 args) and `'arraypop'`/`'objectkeys'` (1 arg) — pop from empty fails, keys come back in insertion order; `'mapnew'` (0 args) makes a map, a second keyed container whose keys are whole values rather than names — nil, bools, ints, doubles and strings compared by value, everything else by identity — read and written with the same `index`/`set_index`, and answered by the same `'len'`/`'objecthas'`/`'objectkeys'`/`'objectremove'` an object takes; `'strslice'`/`'arrayslice'` (3 args: the string or array, then a start and an end index) copy out a half-open range, and `'strbyte'` (2 args) / `'strfrombyte'` (1 arg) read one byte out of a string and build a one-byte string back — bytes, not code points, so a front end with its own text model does the decoding itself; `'same'` (2 args) answers reference identity — the same heap object, or for scalars the same tag and payload — which `eq` refuses for two objects; `'argcount'` (0 args) is the count of arguments the running function was called with (see `set_lenient_arity`); `'genresume'`/`'genreturn'`/`'genthrow'` (2 args) drive a generator activation (see `set_generator`); `'enqueue'` (1 arg, a 0-argument closure) queues it on the run's job queue — drained in FIFO order once the entry function has returned, each job run to completion before the next, so a job's own enqueues land behind every job already waiting — and yields `nil`; `'fnarity'` (1 arg) is a closure's declared parameter count (a non-function fails); `'collect'` (0 args) runs a full tracing collection now and yields the number of objects freed, running the drop hook of every condemned object first, newest first; `'heapstats'` (0 args) yields `{live_objects, heap_bytes}` for the runtime's heap. `tostr` formats whole doubles bare — `4`, not `4.0` — so a front end with other display rules post-processes; `typeof` yields the tag as a string (`'int'`, `'double'`, `'string'`, …); `toint` truncates toward zero and fails on NaN/∞/out-of-range; `fmod` is IEEE fmod with the integer-mod zero-divisor failure; `pow` is over doubles; `tofloat32` rounds a Double (an int argument widens first, like `todouble`) to the nearest `float` and back to a Double holding exactly that value — the rounding a front end with both a `float` and a `double` type cannot produce itself — saturating to `float`'s own max/min rather than overflowing early, and going to +-infinity only past the true `float` overflow boundary; NaN passes through unchanged |
+| `m.array_lit(items:, at:)` / `m.object_lit(kv:, at:)` | an array from a staging list of items; an object from a staging list holding key, value, key, value, … |
+| `m.index(recv:, key:, at:)` / `m.set_index(recv:, key:, value:, at:)` | reads and writes, dispatching on what `recv` turns out to be: an array takes a Long index (out of range fails), an object a String key (a missing key reads as `nil`), and a string reads one byte out as a string (writes are refused) |
+| `m.field_get(recv:, slot:, name:, at:)` / `m.field_set(recv:, slot:, name:, value:, at:)` | a struct field at `slot`, a front end's own numbering (the same contract a local's slot index already is) — read/written directly rather than `index`/`set_index`'s key comparison, so `recv` must already have every field built through `object_lit`, in that same slot order, before either reaches it; `name` is carried only for a trap message ("field 'next' of …"), never read to execute anything |
+| `m.scope(first_local:, end_local:, body:, at:)` | a lexical region owning local slots `[first_local, end_local)` — released when the region exits, however it exits; defers registered inside run then, LIFO |
+| `m.scope_release(first_local:, end_local:, body:, release:, at:)` | the same region with its release order spelled out: `release` holds `var_ref` nodes (`'local'` within the range, or `'cell'`), released in that order at every exit — a front end lists reverse declaration order, captured slots included, so a captured binding is released in its own turn rather than with the frame. A released cell is re-created, so a closure that captured it keeps the old one with its value |
+| `m.make_return(value:, at:)` | returns `value` from the running function (a bare `return` is spelled with an explicit `nil_literal`) |
 | `m.make_break(line:, col:, depth: 0)` / `m.make_continue(line:, col:, depth: 0)` | leave / re-test a `while`: `depth` is how many enclosing loops to skip, `0` (the default) being the innermost. A front end that resolves its own labels answers with a depth, so the IR needs no label table — and the scopes between here and the target are left on the way out either way. `verify()` rejects either outside a loop body, or naming a loop deeper than the ones actually open |
-| `m.make_throw(value:, line:, col:)` | raises any value |
-| `m.make_try(caught_local:, body:, handler:, line:, col:)` | guards `body`; a throw (or an executor trap — divide by zero, a wrong-typed operand) lands what it carried in local slot `caught_local` and resumes in `handler`. A trap's value is an object `{message, line, col}`. Yields the value of whichever child finished |
-| `m.make_defer(value:, line:, col:)` | registers a 0-arity callable to run when the enclosing `scope()` exits — on fall-through, `break`, `continue`, `return`, and unwinding throws alike; `verify()` rejects a defer outside a scope |
-| `m.cell_fresh(cell:, line:, col:)` | replaces one frame cell with a fresh box — what a loop iteration's own binding means: closures from earlier iterations keep the old cell |
-| `m.make_yield(value:, line:, col:)` | suspends the running generator function, handing `value` to whoever resumed it; the node's own value is what the next resume sends in. `verify()` rejects it outside a generator |
+| `m.make_throw(value:, at:)` | raises any value |
+| `m.make_try(caught_local:, body:, handler:, at:)` | guards `body`; a throw (or an executor trap — divide by zero, a wrong-typed operand) lands what it carried in local slot `caught_local` and resumes in `handler`. A trap's value is an object `{message, line, col}`. Yields the value of whichever child finished |
+| `m.make_defer(value:, at:)` | registers a 0-arity callable to run when the enclosing `scope()` exits — on fall-through, `break`, `continue`, `return`, and unwinding throws alike; `verify()` rejects a defer outside a scope |
+| `m.cell_fresh(cell:, at:)` | replaces one frame cell with a fresh box — what a loop iteration's own binding means: closures from earlier iterations keep the old cell |
+| `m.make_yield(value:, at:)` | suspends the running generator function, handing `value` to whoever resumed it; the node's own value is what the next resume sends in. `verify()` rejects it outside a generator |
 | `m.set_generator(func:)` | marks function `func` as a generator: calling it packages a suspended activation instead of running the body. `'genresume'` (the activation and a value to send) runs it to its next yield and answers `{value, done}`; `'genreturn'` (the activation and a value) closes it early, running the parked body's pending defers innermost-first, and answers `{value, done: true}`; `'genthrow'` (the activation and a value) delivers the value at the parked yield as if the yield expression had thrown it — the body's own handlers get the first look, its defers run as the throw crosses them, and one the body does not catch comes out of the call with the generator done; a body that catches it and yields again answers `{value, done: false}` like any resume. A generator that never started or already finished has no frame for the value to land in, so it is thrown at the call itself |
 | coroutine intrinsics | a coroutine is an ordinary function driven through six intrinsics rather than a node shape of its own — where a generator (`set_generator` above) suspends its one frame at a `yield`, a coroutine suspends its whole call stack, so the `'coroyield'` may sit any number of calls deep inside it. `'corocreate'` (1 arg, a function value) packages one; `'cororesume'` (2 args: the coroutine and a value to send) runs it until it yields or finishes and answers `{value, done}`; `'coroyield'` (1 arg) suspends the running coroutine, handing the value out, and answers whatever the next resume sends in; `'coroclose'` (1 arg) ends a suspended one early, running its parked frames' defers; `'corostatus'` (1 arg) answers `'start'`/`'suspended'`/`'running'`/`'done'`; `'corocurrent'` (0 args) answers the coroutine the running code is inside, or nil at the top. Resuming one that is already running, or yielding from inside a native's callback (there is no C++ frame to park), fails rather than misbehaving. `'enqueue'` takes a coroutine as readily as a closure, which is what makes the job queue a scheduler: a coroutine that yields is parked, and the queue comes back to it |
 | `m.set_lenient_arity(func:)` | calls of `func` accept any argument count: extras are dropped, a parameter nothing arrived for starts as `nil`, and the body reads the count actually supplied with `'argcount'` — so a front end raises its own missing-argument diagnostic or fills a default. Without it, a count mismatch is an executor trap |
 | `m.set_tail_calls(func:)` | a call of `func`'s in tail position — a `make_return`'s operand, or a body's final value through a block, `if`, `switch` or scope — replaces `func`'s own frame instead of stacking on it, so a loop written as a call chain runs in one frame however long it goes and the depth bound stops mattering. The one thing this changes is *when* the frame exits: before the callee runs, so a local's drop hook precedes the callee's own output where an ordinary call has it follow. A call inside a `make_try` body, or crossing a scope that declares defers or its own release order, stays an ordinary call — each of those needs the frame to still be there |
 | `m.set_singleton(func:)` | every `make_closure` of `func` yields the *same* closure object, built at the first one to run and kept for the rest of the run — so a helper library called through `make_closure` + `call_value` stops paying an allocation per call site. Opt-in rather than automatic for every capture-free function because the sharing is observable: `'same'` compares closures by identity, so two evaluations of one function literal would go from distinct to identical. Set it on a function whose closure has no identity of its own — a runtime helper, a top-level procedure — and leave it off for a lambda the source can capture and compare. `verify` refuses it on a function with captures; a generator is fine, since its activation is built by the call, not by the closure |
 | `m.set_entry_frame_drops(on:)` | whether the entry function's own bindings run their drop hooks when the program ends (on by default). A front end whose top-level scope is released without destructors turns it off; the entry function's defers still run, and every nested scope still drops as usual |
-| `m.list_new()` | a staging list, for `stmts_list:`/`args_list:` above |
+| `m.list_new()` | a staging list, for `stmts:`/`args:` above |
 | `m.list_push(list:, value:)` | appends a node id to a staging list |
 | `m.add_func(name:, num_locals:, num_captures:, num_cells:, num_params:, body:)` | a function; returns its index (`funcs[0]` is the entry point) |
 | `m.set_local_name(func:, index:, name:)` | names a local, for diagnostics only |
@@ -6823,7 +6856,7 @@ let forty_two = m.binary(op: 'add', lhs: m.literal(v: 40, line: 1, col: 1),
 let args = m.list_new()
 m.list_push(args, forty_two)
 m.add_func(name: 'main', num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0,
-           body: m.intrinsic(name: 'print', args_list: args, line: 1, col: 1))
+           body: m.intrinsic(name: 'print', args: args, line: 1, col: 1))
 m.verify()
 
 let p = m.compile()

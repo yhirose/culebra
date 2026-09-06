@@ -15,13 +15,13 @@ fn stmt_block(m, stmts) {
   for s in stmts {
     m.list_push(list, s)
   }
-  m.block(stmts_list: list, line: 1, col: 1)
+  m.block(stmts: list, line: 1, col: 1)
 }
 
 fn print_stmt(m, value) {
   let args = m.list_new()
   m.list_push(args, value)
-  m.intrinsic(name: 'print', args_list: args, line: 1, col: 1)
+  m.intrinsic(name: 'print', args: args, line: 1, col: 1)
 }
 
 # --- Arithmetic, via print's captured stdout. ---
@@ -133,7 +133,7 @@ fn print_stmt(m, value) {
   let shared = lit(m, 100)
   let with_default = m.make_switch_default(
     subject: lit(m, 2),
-    arms_list: arms(m, [[lit(m, 1), shared], [lit(m, 2), shared],
+    arms: arms(m, [[lit(m, 1), shared], [lit(m, 2), shared],
                         [lit(m, 3), lit(m, 300)]]),
     default_body: lit(m, -1),
     line: 1,
@@ -141,7 +141,7 @@ fn print_stmt(m, value) {
   )
   let no_default = m.make_switch(
     subject: lit(m, 99),
-    arms_list: arms(m, [[lit(m, 1), lit(m, 1)]]),
+    arms: arms(m, [[lit(m, 1), lit(m, 1)]]),
     line: 1,
     col: 1,
   )
@@ -236,7 +236,7 @@ fn print_stmt(m, value) {
   let else_body = stmt_block(m, [print_stmt(m, n), dec, rec_call])
   let countdown_body = m.make_if_else(
     cond: base_cond,
-    then_branch: m.block(stmts_list: m.list_new(), line: 1, col: 1),
+    then_branch: m.block(stmts: m.list_new(), line: 1, col: 1),
     else_branch: else_body,
     line: 1,
     col: 1,
@@ -390,7 +390,7 @@ fn print_stmt(m, value) {
 fn tostr_node(m, v) {
   let args = m.list_new()
   m.list_push(args, v)
-  m.intrinsic(name: 'tostr', args_list: args, line: 1, col: 1)
+  m.intrinsic(name: 'tostr', args: args, line: 1, col: 1)
 }
 
 # Scalar literals and tostr (to_display's formatting: whole doubles print
@@ -408,14 +408,14 @@ fn tostr_node(m, v) {
   )
   let ta = m.list_new()
   m.list_push(ta, m.double_literal(v: 1.5, line: 1, col: 1))
-  let type_node = m.intrinsic(name: 'typeof', args_list: ta, line: 1, col: 1)
+  let type_node = m.intrinsic(name: 'typeof', args: ta, line: 1, col: 1)
   let tb = m.list_new()
   m.list_push(tb, m.double_literal(v: -2.9, line: 1, col: 1))
-  let toint_node = m.intrinsic(name: 'toint', args_list: tb, line: 1, col: 1)
+  let toint_node = m.intrinsic(name: 'toint', args: tb, line: 1, col: 1)
   let tc = m.list_new()
   m.list_push(tc, m.double_literal(v: 5.5, line: 1, col: 1))
   m.list_push(tc, m.literal(v: 2, line: 1, col: 1))
-  let fmod_node = m.intrinsic(name: 'fmod', args_list: tc, line: 1, col: 1)
+  let fmod_node = m.intrinsic(name: 'fmod', args: tc, line: 1, col: 1)
   let byte_node = m.index(
     recv: m.str_literal(s: 'abc', line: 1, col: 1),
     key: m.literal(v: 1, line: 1, col: 1),
@@ -424,7 +424,7 @@ fn tostr_node(m, v) {
   )
   let td = m.list_new()
   m.list_push(td, m.str_literal(s: 'no newline->', line: 1, col: 1))
-  let raw_node = m.intrinsic(name: 'printraw', args_list: td, line: 1, col: 1)
+  let raw_node = m.intrinsic(name: 'printraw', args: td, line: 1, col: 1)
   let body = stmt_block(
     m,
     [
@@ -499,7 +499,7 @@ fn tostr_node(m, v) {
   let items = m.list_new()
   m.list_push(items, lit(m, 10))
   m.list_push(items, lit(m, 20))
-  let arr = m.array_lit(items_list: items, line: 1, col: 1)
+  let arr = m.array_lit(items: items, line: 1, col: 1)
   let store_arr = m.assign(kind: 'local', index: 0, value: arr, line: 1, col: 1)
   let put = m.set_index(
     recv: m.var_ref(kind: 'local', index: 0, line: 1, col: 1),
@@ -513,7 +513,7 @@ fn tostr_node(m, v) {
   let kvs = m.list_new()
   m.list_push(kvs, strl(m, 'k'))
   m.list_push(kvs, lit(m, 7))
-  let obj = m.object_lit(kv_list: kvs, line: 1, col: 1)
+  let obj = m.object_lit(kv: kvs, line: 1, col: 1)
   let body = stmt_block(
     m,
     [
@@ -530,7 +530,7 @@ fn tostr_node(m, v) {
       ),
       print_stmt(
         m,
-        m.intrinsic(name: 'len', args_list: len_args, line: 1, col: 1),
+        m.intrinsic(name: 'len', args: len_args, line: 1, col: 1),
       ),
       print_stmt(m, m.index(recv: obj, key: strl(m, 'k'), line: 1, col: 1)),
     ],
@@ -565,7 +565,7 @@ fn tostr_node(m, v) {
   m.list_push(kvs, lit(m, 10))
   m.list_push(kvs, strl(m, 'y'))
   m.list_push(kvs, lit(m, 20))
-  let obj = m.object_lit(kv_list: kvs, line: 1, col: 1)
+  let obj = m.object_lit(kv: kvs, line: 1, col: 1)
   let o = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
   let getx = m.field_get(recv: o, slot: 0, name: 'x', line: 1, col: 1)
   let sety = m.field_set(
@@ -757,7 +757,7 @@ fn tostr_node(m, v) {
   let call_args = m.list_new()
   let read_old = m.call_value(
     callee: m.var_ref(kind: 'local', index: 0, line: 4, col: 1),
-    args_list: call_args,
+    args: call_args,
     line: 4,
     col: 1,
   )
@@ -768,7 +768,7 @@ fn tostr_node(m, v) {
     num_captures: 0,
     num_cells: 1,
     num_params: 0,
-    body: m.block(stmts_list: stmts, line: 1, col: 1),
+    body: m.block(stmts: stmts, line: 1, col: 1),
   )
   m.add_func(
     name: 'get',
@@ -865,7 +865,7 @@ fn tostr_node(m, v) {
 # runtime's OWN collect() from the in-program 'collect' intrinsic. ---
 {
   let m = CodeGen.Module.new()
-  let obj = m.object_lit(kv_list: m.list_new(), line: 1, col: 1)
+  let obj = m.object_lit(kv: m.list_new(), line: 1, col: 1)
   let key = m.str_literal(s: 'self', line: 1, col: 1)
   let loc = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
   let assign = m.assign(kind: 'local', index: 0, value: obj, line: 1, col: 1)
@@ -903,7 +903,7 @@ fn tostr_node(m, v) {
 {
   fn make_cycle_module() {
     let m = CodeGen.Module.new()
-    let obj = m.object_lit(kv_list: m.list_new(), line: 1, col: 1)
+    let obj = m.object_lit(kv: m.list_new(), line: 1, col: 1)
     let key = m.str_literal(s: 'self', line: 1, col: 1)
     let loc = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
     let assign = m.assign(kind: 'local', index: 0, value: obj, line: 1, col: 1)
@@ -975,7 +975,7 @@ fn tostr_node(m, v) {
 # compiled Program does, same as it changes what m.run() does. ---
 {
   fn make_drop_module(m) {
-    let obj = m.object_lit(kv_list: m.list_new(), line: 1, col: 1)
+    let obj = m.object_lit(kv: m.list_new(), line: 1, col: 1)
     let key = m.str_literal(s: "\x01drop", line: 1, col: 1)
     let dropfn_body = print_stmt(
       m,
@@ -1059,7 +1059,7 @@ fn call_intr(m, name, args) {
   for a in args {
     m.list_push(list, a)
   }
-  m.intrinsic(name: name, args_list: list, line: 1, col: 1)
+  m.intrinsic(name: name, args: list, line: 1, col: 1)
 }
 
 # Map: a keyed container whose keys are whole values, read and written with
@@ -1166,7 +1166,7 @@ fn call_intr(m, name, args) {
       m.assign(
         kind: 'local',
         index: 0,
-        value: m.array_lit(items_list: items, line: 1, col: 1),
+        value: m.array_lit(items: items, line: 1, col: 1),
         line: 1,
         col: 1,
       ),

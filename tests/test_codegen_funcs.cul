@@ -13,13 +13,13 @@ fn stmt_block(m, stmts) {
   for s in stmts {
     m.list_push(list, s)
   }
-  m.block(stmts_list: list, line: 1, col: 1)
+  m.block(stmts: list, line: 1, col: 1)
 }
 
 fn print_stmt(m, value) {
   let args = m.list_new()
   m.list_push(args, value)
-  m.intrinsic(name: 'print', args_list: args, line: 1, col: 1)
+  m.intrinsic(name: 'print', args: args, line: 1, col: 1)
 }
 
 fn call_intr(m, name, args) {
@@ -27,7 +27,7 @@ fn call_intr(m, name, args) {
   for a in args {
     m.list_push(list, a)
   }
-  m.intrinsic(name: name, args_list: list, line: 1, col: 1)
+  m.intrinsic(name: name, args: list, line: 1, col: 1)
 }
 
 # --- A function may opt into tail calls: a call chain deeper than the frame
@@ -56,7 +56,7 @@ fn counting_chain(m) {
     then_branch: m.make_return(value: m.str_literal(s: 'bottom', line: 1, col: 1),
                                line: 1, col: 1),
     else_branch: m.make_return(
-      value: m.call_value(callee: self_ref, args_list: args, line: 1, col: 1),
+      value: m.call_value(callee: self_ref, args: args, line: 1, col: 1),
       line: 1, col: 1),
     line: 1,
     col: 1,
@@ -72,7 +72,7 @@ fn counting_chain(m) {
     num_params: 0,
     body: print_stmt(m, m.call_value(
                callee: m.make_closure(func: 1, cmap: empty, line: 1, col: 1),
-               args_list: call_args, line: 1, col: 1)),
+               args: call_args, line: 1, col: 1)),
   )
   m.add_func(
     name: 'down',
@@ -198,7 +198,7 @@ fn native_call(m, name, args) {
   }
   m.call_value(
     callee: m.native_ref(index: idx, line: 1, col: 1),
-    args_list: list,
+    args: list,
     line: 1,
     col: 1,
   )
@@ -248,7 +248,7 @@ fn native_catch_module(m, name, args, key) {
   m.list_push(args, m.literal(v: 3, line: 1, col: 1))
   let called = m.call_value(
     callee: m.native_ref(index: idx, line: 1, col: 1),
-    args_list: args,
+    args: args,
     line: 1,
     col: 1,
   )
@@ -298,7 +298,7 @@ fn native_catch_module(m, name, args, key) {
   let idx = m.declare_native(name: 'boom')
   let call = m.call_value(
     callee: m.native_ref(index: idx, line: 1, col: 1),
-    args_list: m.list_new(),
+    args: m.list_new(),
     line: 1,
     col: 1,
   )
@@ -351,7 +351,7 @@ fn native_catch_module(m, name, args, key) {
   let ti = thrower.declare_native(name: 'boom')
   let tcall = thrower.call_value(
     callee: thrower.native_ref(index: ti, line: 1, col: 1),
-    args_list: thrower.list_new(),
+    args: thrower.list_new(),
     line: 1,
     col: 1,
   )
@@ -483,7 +483,7 @@ fn native_catch_module(m, name, args, key) {
   let mm = native_catch_module(
     m,
     'take',
-    [m.array_lit(items_list: items, line: 1, col: 1)],
+    [m.array_lit(items: items, line: 1, col: 1)],
     'kind',
   )
   assert_eq(IO.capture(fn () {
@@ -506,7 +506,7 @@ fn native_catch_module(m, name, args, key) {
   fn call0(mm, i) {
     mm.call_value(
       callee: mm.native_ref(index: i, line: 1, col: 1),
-      args_list: mm.list_new(),
+      args: mm.list_new(),
       line: 1,
       col: 1,
     )

@@ -11,7 +11,7 @@ fn stmt_block(m, stmts) {
   for s in stmts {
     m.list_push(list, s)
   }
-  m.block(stmts_list: list, line: 1, col: 1)
+  m.block(stmts: list, line: 1, col: 1)
 }
 
 # --- Every tag's node_tag, one of each in a single module. ---
@@ -39,7 +39,7 @@ fn stmt_block(m, stmts) {
   let blk = stmt_block(m, [])
   let intr = m.intrinsic(
     name: 'tostr',
-    args_list: m.list_new(),
+    args: m.list_new(),
     line: 1,
     col: 1,
   )
@@ -47,12 +47,12 @@ fn stmt_block(m, stmts) {
   let clos = m.make_closure(func: 0, cmap: cmap, line: 1, col: 1)
   let callv = m.call_value(
     callee: clos,
-    args_list: m.list_new(),
+    args: m.list_new(),
     line: 1,
     col: 1,
   )
-  let arrlit = m.array_lit(items_list: m.list_new(), line: 1, col: 1)
-  let objlit = m.object_lit(kv_list: m.list_new(), line: 1, col: 1)
+  let arrlit = m.array_lit(items: m.list_new(), line: 1, col: 1)
+  let objlit = m.object_lit(kv: m.list_new(), line: 1, col: 1)
   let idx = m.index(recv: arrlit, key: lit, line: 1, col: 1)
   let setidx = m.set_index(recv: arrlit, key: lit, value: lit, line: 1, col: 1)
   let scp = m.scope(
@@ -141,7 +141,7 @@ fn stmt_block(m, stmts) {
     first_local: 0,
     end_local: 1,
     body: body,
-    release_list: release_list,
+    release: release_list,
     line: 1,
     col: 1,
   )
@@ -220,10 +220,10 @@ fn stmt_block(m, stmts) {
   }
 
   for name in ['print', 'readint', 'len', 'tostr', 'typeof', 'toint', 'todouble', 'fmod', 'pow', 'printraw', 'arraypush', 'arraypop', 'objecthas', 'objectkeys', 'objectremove', 'genresume', 'genreturn', 'genthrow', 'argcount', 'same', 'fnarity', 'collect', 'heapstats', 'enqueue'] {
-    let n = m.intrinsic(name: name, args_list: m.list_new(), line: 1, col: 1)
+    let n = m.intrinsic(name: name, args: m.list_new(), line: 1, col: 1)
     let read_back = m.node_op(node: n)
     assert_eq(read_back, name)
-    m.intrinsic(name: read_back, args_list: m.list_new(), line: 1, col: 1)
+    m.intrinsic(name: read_back, args: m.list_new(), line: 1, col: 1)
   }
 
   for kind in ['local', 'capture', 'cell'] {

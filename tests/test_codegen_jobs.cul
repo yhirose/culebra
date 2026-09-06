@@ -7,13 +7,13 @@ fn stmt_block(m, stmts) {
   for s in stmts {
     m.list_push(list, s)
   }
-  m.block(stmts_list: list, line: 1, col: 1)
+  m.block(stmts: list, line: 1, col: 1)
 }
 
 fn print_stmt(m, value) {
   let args = m.list_new()
   m.list_push(args, value)
-  m.intrinsic(name: 'print', args_list: args, line: 1, col: 1)
+  m.intrinsic(name: 'print', args: args, line: 1, col: 1)
 }
 
 fn strl(m, v) {
@@ -31,14 +31,14 @@ fn field_of(m, i, key) {
 fn enqueue_stmt(m, closure) {
   let args = m.list_new()
   m.list_push(args, closure)
-  m.intrinsic(name: 'enqueue', args_list: args, line: 1, col: 1)
+  m.intrinsic(name: 'enqueue', args: args, line: 1, col: 1)
 }
 
 fn gen_call(m, name, gen, value) {
   let args = m.list_new()
   m.list_push(args, gen)
   m.list_push(args, value)
-  m.intrinsic(name: name, args_list: args, line: 1, col: 1)
+  m.intrinsic(name: name, args: args, line: 1, col: 1)
 }
 
 # --- enqueue: jobs run after the entry frame returns, FIFO, and a job's own

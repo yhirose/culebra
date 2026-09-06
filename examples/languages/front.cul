@@ -383,7 +383,7 @@ class Emitter {
     list
   }
   block(ids, at) {
-    self.m.block(stmts_list: self.list(ids), line: at.line, col: at.column)
+    self.m.block(stmts: self.list(ids), line: at.line, col: at.column)
   }
   # statements, then the value the block answers with
   seq(stmts, value, at) {
@@ -396,19 +396,19 @@ class Emitter {
   }
   array_lit(items, at) {
     self.m.array_lit(
-      items_list: self.list(items),
+      items: self.list(items),
       line: at.line,
       col: at.column,
     )
   }
   # kv is a flat [key, value, key, value...], the shape Module's list takes
   object_lit(kv, at) {
-    self.m.object_lit(kv_list: self.list(kv), line: at.line, col: at.column)
+    self.m.object_lit(kv: self.list(kv), line: at.line, col: at.column)
   }
   intrinsic(name, args, at) {
     self.m.intrinsic(
       name: name,
-      args_list: self.list(args),
+      args: self.list(args),
       line: at.line,
       col: at.column,
     )
@@ -416,7 +416,7 @@ class Emitter {
   call_value(callee, args, at) {
     self.m.call_value(
       callee: callee,
-      args_list: self.list(args),
+      args: self.list(args),
       line: at.line,
       col: at.column,
     )
@@ -482,7 +482,7 @@ class Emitter {
       first_local: first_local,
       end_local: end_local,
       body: body,
-      release_list: self.list(release),
+      release: self.list(release),
       line: at.line,
       col: at.column,
     )
