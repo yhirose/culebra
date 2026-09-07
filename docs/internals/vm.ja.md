@@ -109,10 +109,23 @@ includeし、他のどこからもincludeしない。
    持ち運ぶ）、loweringされたプログラムは各エントリの呼び出しで
    始まる — 差し込まれたソースが行うのと同じ`_lazy_ns_register`を
    実行する — ので、モジュールあたり約2万行のIRを抱え込まずに済む。
+   組み込みtrait（`Stringer`、`Eq`、`Comparable`、…）も`__Traits`と
+   いう名前で同じようにbakeされるが、エントリ一覧への入り方が違う。
+   どのプログラムも名指しせずに登録するものなので、そもそもspliceの
+   対象ではなく、コンパイルするレーンは自前のprologueとしてlowering
+   していた。このprologueが小さなプログラムのIRの大半を占めていた —
+   `let x = 1`がloweringする約6,200行のうち約4,800行が5つのデフォルト
+   本体（`Eq.neq`と`Comparable.lt/le/gt/ge`）で、プログラム自身の
+   コードからはどれも到達しない。`--jit`の起動82msのうち約75msが
+   これだった。`with_baked_traits`がこのエントリをstdlibのエントリ
+   より前に置き、同時にコンパイラへprologueを省くよう伝える
+   （`BakedLane::traits`）。呼び出しを出しつつソースも残すと二重に
+   登録してしまうので、この2つは必ず一緒に動かす。
    executorは差し込まれたソースをコンパイルし続けるので、対称性
    ゲートは毎回bakeされたコードをそれと比較する。
    `CULEBRA_PREAMBLE_SOURCE=1`でloweringレーンも再びソースを
-   差し込む。
+   差し込む。traitも同様で、`check_baked_preamble.sh`はこの
+   切り替えが生きていることをそこで読み取る。
    この差し替えのあとにも1つだけ、コンパイル時の情報が要る。bakeされた
    モジュールの`@value`クラス宣言である。`parse_baked_value_decls`
    がソースに`@value`を含む各bakedモジュールをparseし
@@ -1217,9 +1230,12 @@ loweringされたプログラムに対してホスト側に登録されるもの
 バックエンドは飛ぶが`JIT::optimize_module`は飛ばない — それは
 `run_program`がその手前で既に走らせている。つまり`-O2`は温まった
 cacheでもIRパイプラインを毎回まるごと払う。そしてどちらも`--jit`の
-起動が安い理由ではない: プログラムが名前で呼ぶstdlibモジュールは
-そもそもモジュールの中に無い（§2、焼き込みpreamble）ので、lowering
-されるのはユーザーのコードである。`Lowering::build_preamble_object`
+起動が安い理由ではない: プログラムが名前で呼ぶstdlibモジュールも、
+どのプログラムも登録する組み込みtraitも、そもそもモジュールの中に
+無い（§2、焼き込みpreamble）ので、loweringされるのはユーザーの
+コードである。距離のほとんどはこれで稼いでいる — `let x = 1`が
+loweringするIRは6,167行ではなく758行、起動は82msではなく7msになる。
+`Lowering::build_preamble_object`
 は同じloweringをモジュールごとのエントリ名で走らせたもので、ビルド時
 に`culebra_preamble_cc`が実行する。`lower_program`は`__culebra_main`を
 プログラムが名前で呼ぶ焼き込みエントリそれぞれへの呼び出しで開き、

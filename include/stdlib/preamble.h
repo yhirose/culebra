@@ -311,6 +311,40 @@ inline const BakedPreamble* baked_preamble(std::string_view name) {
   return nullptr;
 }
 
+// The built-in traits (shared.h's builtin_traits_preamble) as a baked entry.
+// They are not part of the splice — every program registers them, whatever
+// it names — so they never reach `baked` through resolve_baked_preamble, and
+// a compiled lane ran them as a prologue it lowered itself. That prologue is
+// the largest thing in a trivial program's IR: the five default bodies
+// (`Eq.neq`, `Comparable.lt/le/gt/ge`) are ~4.8k of the ~6.2k lines `let x =
+// 1` lowered, none of them reachable from the program's own code.
+inline constexpr const char* kBuiltinTraitsBakedName = "__Traits";
+
+// What a lane that calls baked entries runs first: the traits entry when
+// this binary carries one, then the stdlib modules the splice took out. One
+// helper so the JIT and AOT lanes cannot disagree about either half —
+// `traits` is also what tells the compiler to leave the prologue out, and
+// emitting the call without skipping the source would register twice.
+// `force_source` is the caller's own reason to compile everything (a cross
+// build links the user's archive); CULEBRA_PREAMBLE_SOURCE is the A/B flag
+// plan_stdlib_preamble reads, honoured here so one run means one thing.
+struct BakedEntries {
+  std::vector<const BakedPreamble*> all;
+  bool traits = false;
+};
+inline BakedEntries with_baked_traits(
+    std::span<const BakedPreamble* const> stdlib, bool force_source = false) {
+  BakedEntries e;
+  const auto* t = (force_source || std::getenv("CULEBRA_PREAMBLE_SOURCE"))
+                      ? nullptr
+                      : baked_preamble(kBuiltinTraitsBakedName);
+  e.traits = t != nullptr;
+  e.all.reserve(stdlib.size() + (t ? 1 : 0));
+  if (t) e.all.push_back(t);
+  e.all.insert(e.all.end(), stdlib.begin(), stdlib.end());
+  return e;
+}
+
 // The split a lane that can call the baked entries makes: the stdlib modules
 // `names` pulls in, as the entries this binary baked plus the source of the
 // rest — in the order stdlib_preamble_for emits, so the registrations still

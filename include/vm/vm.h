@@ -3344,6 +3344,22 @@ struct Unsupported {
   size_t line, col;
 };
 
+// What a lane that calls baked preamble entries (stdlib_preamble.h) leaves
+// out of the unit, and what it has to hand back so the compile still sees
+// everything the spliced source would have shown it.
+//
+// `value_decls` are the parsed-but-never-compiled stdlib modules
+// (parse_baked_value_decls): their `@value` class declarations register
+// before the unit compiles, so the unbox splice still fires on a class whose
+// source this lane never reads. `traits` says the built-in trait prologue is
+// a baked entry too, so the unit must not compile it as well — the entry
+// already registers them, and compiling both would register twice and put
+// the IR back that baking took out.
+struct BakedLane {
+  const std::vector<LoadedModule>* value_decls = nullptr;
+  bool traits = false;
+};
+
 // One Compiler instance per chunk; the program and the analysis are shared.
 // Everything outside the slice raises VmError — at compile time for the
 // module, at run time for the function literal that holds it.
@@ -3366,14 +3382,12 @@ class Compiler {
   // rather than a module of its own (compile_module_impl runs it as one), so
   // it comes off the front here; everything between it and the entry is a
   // real dependency, already topologically ordered.
-  // `value_decls`, when given, are the parsed-but-never-compiled stdlib
-  // modules of a baked lane (parse_baked_value_decls): their `@value` class
-  // declarations register before the unit compiles, so the unbox splice
-  // still sees them. Null (every source-spliced lane) reads as none.
+  // `baked` is what a lane that calls baked preamble entries hands over; a
+  // source-spliced lane passes none.
   static VmProgram compile_modules(
       const std::vector<LoadedModule>& modules, Debug debug = Debug::Off,
-      const std::vector<LoadedModule>* value_decls = nullptr) {
-    return compile_module_list(modules, /*repl=*/false, debug, value_decls);
+      BakedLane baked = {}) {
+    return compile_module_list(modules, /*repl=*/false, debug, baked);
   }
 
   // One REPL input. The line's top-level bindings land in the session's
@@ -3419,10 +3433,11 @@ class Compiler {
   // stdlib preamble up front, dependencies in topological order, the entry
   // module last. Both public module entries above are two-liners over this.
   // A session unit compiles without the built-in traits prologue — they are
-  // the session's one-time registration (Session::run_builtin_traits).
+  // the session's one-time registration (Session::run_builtin_traits) — and
+  // so does a baked lane, whose traits entry runs them instead.
   static VmProgram compile_module_list(
       const std::vector<LoadedModule>& modules, bool repl, Debug debug,
-      const std::vector<LoadedModule>* value_decls = nullptr) {
+      BakedLane baked = {}) {
     if (modules.empty()) return {};
     const peg::Ast* stdlib = nullptr;
     size_t first_dep = 0;
@@ -3434,9 +3449,10 @@ class Compiler {
     for (size_t i = first_dep; i + 1 < modules.size(); i++)
       deps.push_back(modules[i].ast.get());
     return compile_unit(*modules.back().ast,
-                        {.stdlib = stdlib, .builtin_traits = !repl,
+                        {.stdlib = stdlib,
+                         .builtin_traits = !repl && !baked.traits,
                          .repl = repl, .debug = debug, .deps = &deps,
-                         .value_decls = value_decls});
+                         .value_decls = baked.value_decls});
   }
 
   struct UnitOpts {

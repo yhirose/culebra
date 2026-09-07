@@ -20,19 +20,22 @@
 
 namespace {
 
-// Every name the splice can register: the namespace modules and the
+// Every name a compiled lane can call an entry for: the built-in traits,
+// which every program registers, plus the splice's namespace modules and
 // bare-function groups. What CMake bakes must be exactly this list.
 std::vector<std::string> bakeable_names() {
-  std::vector<std::string> out;
+  std::vector<std::string> out{culebra::kBuiltinTraitsBakedName};
   for (const auto& m : culebra::lazy_ns_modules()) out.emplace_back(m.name);
   for (const auto& g : culebra::lazy_fn_groups()) out.emplace_back(g.name);
   return out;
 }
 
-// The registration source for `name` alone — the same string the splice would
-// have contributed for it (stdlib_module_source), so the baked object is the
-// module the lane would otherwise have lowered.
+// The registration source for `name` alone — the same string the lane would
+// otherwise have lowered itself: the splice's contribution for a stdlib
+// module (stdlib_module_source), the traits prologue for the traits.
 std::string source_for(std::string_view name) {
+  if (name == culebra::kBuiltinTraitsBakedName)
+    return std::string(culebra::builtin_traits_preamble());
   for (const auto& m : culebra::lazy_ns_modules())
     if (name == m.name) return culebra::stdlib_module_source(m);
   for (const auto& g : culebra::lazy_fn_groups())

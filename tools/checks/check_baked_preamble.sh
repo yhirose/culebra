@@ -55,6 +55,22 @@ if ! grep -q 'culebra_runtime_lazy_ns_register' "$work/source.ll"; then
   fail=1
 fi
 
+# 1b. The built-in traits, whose entry every program calls: baked -> the call
+#     and none of the five default bodies (register_trait_default is what a
+#     `neq` / `lt` / … default lowers to); forced source -> them back.
+if grep -q 'culebra_runtime_register_trait_default' "$work/baked.ll"; then
+  echo "check_baked_preamble FAIL: --jit still lowers the built-in trait defaults (is __Traits in _baked_names?)" >&2
+  fail=1
+fi
+if ! grep -q 'call void @culebra_preamble___Traits()' "$work/baked.ll"; then
+  echo "check_baked_preamble FAIL: --jit does not call culebra_preamble___Traits" >&2
+  fail=1
+fi
+if ! grep -q 'culebra_runtime_register_trait_default' "$work/source.ll"; then
+  echo "check_baked_preamble FAIL: CULEBRA_PREAMBLE_SOURCE=1 did not splice the trait defaults" >&2
+  fail=1
+fi
+
 # 3. Executor / JIT / JIT-from-source agree.
 vm=$("$bin" --vm "$work/t.cul"); jit=$("$bin" --jit "$work/t.cul")
 src=$(CULEBRA_PREAMBLE_SOURCE=1 "$bin" --jit "$work/t.cul")
@@ -75,7 +91,13 @@ aot=$("$work/t")
 if [[ "$aot" != "$vm" ]]; then
   echo "check_baked_preamble FAIL: AOT printed [$aot], executor [$vm]" >&2; fail=1; fi
 "$bin" build --keep-symbols "$work/plain.cul" -o "$work/plain" > /dev/null 2>&1
-if nm "$work/plain" | grep -qE ' T _?culebra_preamble_'; then
+nm "$work/plain" > "$work/plain.nm"
+# __Traits is the exception the grep has to make: every program registers the
+# built-in traits, so its entry is linked even here. That it IS linked is the
+# assertion — a miss means the traits went back to being lowered per program.
+if ! grep -qE ' T _?culebra_preamble___Traits$' "$work/plain.nm"; then
+  echo "check_baked_preamble FAIL: the built binary lacks culebra_preamble___Traits" >&2; fail=1; fi
+if grep -E ' T _?culebra_preamble_' "$work/plain.nm" | grep -qv '___Traits$'; then
   echo "check_baked_preamble FAIL: a program naming no stdlib module links a baked preamble" >&2; fail=1; fi
 
 if (( fail )); then

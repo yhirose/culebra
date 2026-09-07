@@ -5000,14 +5000,19 @@ inline void run_modules_via_llvm(const std::vector<LoadedModule>& modules,
   // without them the unbox splice cannot fire on a stdlib class this lane
   // never compiles the source of (Vector2, ...).
   auto value_decls = parse_baked_value_decls(baked);
-  auto prog = Compiler::compile_modules(
-      modules, debug ? Debug::Break : Debug::Off, &value_decls);
+  // ...and the built-in traits ahead of them, which the splice never had a
+  // say in: every program registers them, so they reach the entry list here
+  // rather than through resolve_baked_preamble (stdlib_preamble.h).
+  auto entries = with_baked_traits(baked);
+  auto prog = Compiler::compile_modules(modules,
+                                        debug ? Debug::Break : Debug::Off,
+                                        {&value_decls, entries.traits});
   // Nothing host-side to prepare: a body's metadata is a global of the
   // lowered module, handed to each closure at its MakeClosure site (see
   // Lowering's param_meta_global).
   Lowering::run_program(prog, emit_llvm, opt_level, fast_codegen,
                         JIT::jit_module_name(modules, fast_codegen, opt_level),
-                        baked);
+                        entries.all);
 }
 
 // For a caller that spliced the whole preamble — the doctest runner, whose
@@ -5045,9 +5050,14 @@ inline int build_object_from_modules(
   // source, since its archive is the user's.
   auto res = resolve_baked_preamble(modules, preamble_from_source);
   // As the run lane above: the baked modules' `@value` declarations still
-  // reach the compiler, so both lanes emit the same spliced bytecode.
+  // reach the compiler, so both lanes emit the same spliced bytecode, and
+  // the built-in traits are an entry ahead of them. A cross build keeps the
+  // traits as source for the same reason it keeps the modules — its archive
+  // is the user's, and may carry no entry to call.
   auto value_decls = parse_baked_value_decls(res.baked);
-  auto prog = Compiler::compile_modules(res.modules, Debug::Off, &value_decls);
+  auto entries = with_baked_traits(res.baked, preamble_from_source);
+  auto prog = Compiler::compile_modules(res.modules, Debug::Off,
+                                        {&value_decls, entries.traits});
   // Over `modules`, NOT `res.modules`: a baked module's source is what names
   // the namespaces it needs (the Canvas preamble's `_Canvas`, ...), and the
   // resolver just took that source out of the list. Scanning the resolved
@@ -5057,7 +5067,7 @@ inline int build_object_from_modules(
   for (const auto& m : modules)
     if (m.ast) aot_collect_names(*m.ast, names);
   return Lowering::build_object(prog, out_path, opt_level, emit_llvm,
-                                target_triple, names, res.baked);
+                                target_triple, names, entries.all);
 }
 
 }  // namespace culebra::vm

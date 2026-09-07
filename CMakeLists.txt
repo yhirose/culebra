@@ -2236,7 +2236,11 @@ if(CULEBRA_ENABLE_JIT AND NOT CULEBRA_DEV_NO_RT)
     add_dependencies(culebra_preamble_cc ${_v})
   endif()
 
-  set(_baked_names Time Term Canvas Args Regex PEG FST Log Path Vector2 Vector3
+  # __Traits is the built-in trait prologue (Stringer / Eq / Comparable / …),
+  # which every program registers rather than naming — so unlike the rest it
+  # is linked into every built binary, not only the ones that use it.
+  set(_baked_names __Traits
+                   Time Term Canvas Args Regex PEG FST Log Path Vector2 Vector3
                    Deque PriorityQueue StateMachine __Eff __Matchers
                    __StringFns)
   if(CULEBRA_ENABLE_WEBVIEW)

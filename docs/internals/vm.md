@@ -110,9 +110,23 @@ includes them in a fixed order and nothing else includes them at all.
    program opens with a call to each entry — which performs the same
    `_lazy_ns_register` the spliced source would — instead of carrying
    ~20k lines of IR per module.
+   The built-in traits (`Stringer`, `Eq`, `Comparable`, …) are baked the
+   same way, under the name `__Traits`, but they reach the entry list by a
+   different route: every program registers them whatever it names, so they
+   are never part of the splice and a compiled lane used to lower them as a
+   prologue of its own. That prologue dominated a small program's IR — the
+   five default bodies (`Eq.neq`, `Comparable.lt/le/gt/ge`) were ~4.8k of
+   the ~6.2k lines `let x = 1` lowered, none of them reachable from the
+   program's own code, and a `--jit` start-up spent ~75 ms of its ~82 ms on
+   them. `with_baked_traits` puts the entry ahead of the stdlib ones and
+   tells the compiler to leave the prologue out (`BakedLane::traits`);
+   the two have to move together, since emitting the call without dropping
+   the source would register twice.
    The executor keeps compiling the spliced source, so the symmetry gate
    compares the baked code against it on every run;
-   `CULEBRA_PREAMBLE_SOURCE=1` makes the lowering lanes splice again.
+   `CULEBRA_PREAMBLE_SOURCE=1` makes the lowering lanes splice again — the
+   traits included, which is what `check_baked_preamble.sh` reads the
+   switch off.
    One compile-time fact survives the resolution: the `@value` class
    declarations of the baked modules. `parse_baked_value_decls` parses
    (never compiles) each baked module whose source mentions `@value`, and
@@ -1236,8 +1250,11 @@ interchangeable: the cache is installed on the IR→object compile layer,
 so a hit skips the backend but never `JIT::optimize_module`, which
 `run_program` has already run by then — a warm `-O2` launch still pays
 the whole IR pipeline. Neither is what makes a `--jit` start-up cheap:
-the stdlib modules a program names are not in the module at all (§2,
-the baked preamble), so what gets lowered is the user's code.
+the stdlib modules a program names, and the built-in traits every
+program registers, are not in the module at all (§2, the baked
+preamble), so what gets lowered is the user's code. That is most of the
+distance — `let x = 1` lowers 758 lines of IR rather than 6,167, and
+starts in 7 ms rather than 82.
 `Lowering::build_preamble_object` is the same lowering
 under a per-module entry name, run by `culebra_preamble_cc` at build;
 `lower_program` opens `__culebra_main` with a call to each baked entry
