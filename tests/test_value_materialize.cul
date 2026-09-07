@@ -91,12 +91,18 @@ assert_eq(takes_untyped(v).keys(), ['class', 'x', 'y'])
 # top-level statement (reproduced with a plain, non-`@value` class too —
 # not this feature's leak), so the only sound comparison is two points
 # already inside the steady state.
+# Both readings land in locals before a matcher is named: the first call of
+# one materializes it, and the callee is evaluated before the arguments.
+# A bound, not equality — the readings drift by a couple of objects with
+# where a collection falls (equality failed ~17% of optimized `--jit`
+# runs), while a per-iteration leak would show up 490 times over.
 mut live_at_10 = -1
 for i in 0..500 {
   takes_untyped(v)
   if i == 9 { live_at_10 = GC.stat().live_objects }
 }
-assert_eq(GC.stat().live_objects, live_at_10)
+let live_at_500 = GC.stat().live_objects
+assert_le(live_at_500 - live_at_10, 4)
 
 # --- a locally-declared class materializes too: the meta cell only needs
 # to be reachable from THIS chunk, which a local declaration always is ---
