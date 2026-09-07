@@ -192,6 +192,28 @@ fn str_method(f, key) {
   acc
 }
 
+# The metatable key: a string Lua source cannot write, because a Lua string
+# literal in this grammar never carries a NUL byte.
+fn mt_key() {
+  m.str_literal("\u0000mt", AT)
+}
+
+# The metamethod for a binary event, taken from the left operand and then
+# the right -- Lua's order.
+fn binary_mm(f, event) {
+  m.make_if_else(
+    is_type(call_rt(f, '__mm', [L(0), event], AT), 'nil'),
+    call_rt(f, '__mm', [L(1), event], AT),
+    call_rt(f, '__mm', [L(0), event], AT),
+    AT,
+  )
+}
+
+# There is no unary `not` in the IR; the shape it would have is this.
+fn negate(b) {
+  m.make_if_else(b, m.bool_literal(false, AT), m.bool_literal(true, AT), AT)
+}
+
 fn is_type(v, t) {
   m.binary('eq', m.intrinsic('typeof', [v], AT), S(t), AT)
 }
@@ -227,7 +249,7 @@ fn runtime() {
   # refuses the comparison; and two tables are equal only when they are the
   # same table, which is `same` rather than `eq` -- the VM refuses that one
   # too.
-  rt_func('__eq', 2, 2, fn (f) {
+  rt_func('__eq', 2, 3, fn (f) {
     m.block(
       [
         # Lua's two number types compare across the line -- 1 == 1.0 -- so
@@ -246,10 +268,31 @@ fn runtime() {
           m.make_if_else(
             is_type(L(0), 'map'),
             m.bool_literal(true, AT),
-            is_type(L(0), 'func'),
+            is_type(L(0), 'function'),
             AT,
           ),
-          ret(m.intrinsic('same', [L(0), L(1)], AT)),
+          m.block(
+            [
+              m.make_if(
+                m.intrinsic('same', [L(0), L(1)], AT),
+                ret(m.bool_literal(true, AT)),
+                AT,
+              ),
+              # two different tables are equal only if __eq says so
+              m.assign('local', 2, binary_mm(f, S('__eq')), AT),
+              m.make_if(
+                negate(is_type(L(2), 'nil')),
+                ret(call_rt(f, '__truthy', [one(
+                  f,
+                  m.call_value(L(2), [m.array_lit([L(0), L(1)], AT)], AT),
+                  AT,
+                )], AT)),
+                AT,
+              ),
+              ret(m.bool_literal(false, AT)),
+            ],
+            AT,
+          ),
           AT,
         ),
         ret(m.binary('eq', L(0), L(1), AT)),
@@ -269,9 +312,26 @@ fn runtime() {
       ret(m.binary(op, L(0), L(1), AT))
     })
   }
+  # `a + b` on a table is whichever operand carries the metamethod, which
+  # is Lua's rule for every binary event
   for (nm, op) in [('__add', 'add'), ('__sub', 'sub'), ('__mul', 'mul')] {
-    rt_func(nm, 2, 2, fn (f) {
-      ret(m.binary(op, L(0), L(1), AT))
+    rt_func(nm, 2, 3, fn (f) {
+      m.block(
+        [
+          m.assign('local', 2, binary_mm(f, S(nm)), AT),
+          m.make_if(
+            negate(is_type(L(2), 'nil')),
+            ret(one(
+              f,
+              m.call_value(L(2), [m.array_lit([L(0), L(1)], AT)], AT),
+              AT,
+            )),
+            AT,
+          ),
+          ret(m.binary(op, L(0), L(1), AT)),
+        ],
+        AT,
+      )
     })
   }
   # `/` is always a float in Lua
@@ -343,10 +403,21 @@ fn runtime() {
   # significant digits as a loop over digits would be a worse answer than
   # asking the host -- so the module declares a native and `run` supplies
   # it. That is the one thing here the IR deliberately does not have.
-  rt_func('__str', 1, 1, fn (f) {
+  rt_func('__str', 1, 2, fn (f) {
     m.block(
       [
         m.make_if(is_type(L(0), 'string'), ret(L(0)), AT),
+        m.assign(
+          'local',
+          1,
+          call_rt(f, '__mm', [L(0), S('__tostring')], AT),
+          AT,
+        ),
+        m.make_if(
+          negate(is_type(L(1), 'nil')),
+          ret(one(f, m.call_value(L(1), [m.array_lit([L(0)], AT)], AT), AT)),
+          AT,
+        ),
         m.make_if(
           is_type(L(0), 'double'),
           ret(m.call_value(m.native_ref(native_fmt, AT), [L(0)], AT)),
@@ -438,18 +509,40 @@ fn runtime() {
   # value, and the IR has no module-level storage to answer it the same way.
   # The library is a closed set here, so the lookup is written out: no
   # registry, and no binding for a helper to capture.
-  rt_func('__get', 2, 2, fn (f) {
+  # A table's metatable lives in the table, under a key Lua source cannot
+  # write: the Map is value-keyed and every Lua string key is a Lua string,
+  # so a key with a NUL byte in it is reachable from here and nowhere else.
+  # Real Lua keeps the metatable beside the table rather than in it; the
+  # difference shows only in `pairs`, which skips the key for that reason.
+  rt_func('__meta', 1, 1, fn (f) {
+    ret(m.make_if_else(
+      is_type(L(0), 'map'),
+      m.index(L(0), mt_key(), AT),
+      m.nil_literal(AT),
+      AT,
+    ))
+  })
+  # `h(mt, event)`: the metamethod a metatable carries, or nil
+  rt_func('__mm', 2, 3, fn (f) {
     m.block(
       [
-        m.make_if(is_type(L(0), 'string'), ret(str_method(f, L(1))), AT),
-        ret(m.index(L(0), call_rt(f, '__key', [L(1)], AT), AT)),
+        m.assign('local', 2, call_rt(f, '__meta', [L(0)], AT), AT),
+        ret(m.make_if_else(
+          is_type(L(2), 'map'),
+          m.index(L(2), L(1), AT),
+          m.nil_literal(AT),
+          AT,
+        )),
       ],
       AT,
     )
   })
-  # assigning nil removes the key, which is what makes `#t` and `pairs`
-  # agree with Lua after `t[2] = nil`
-  rt_func('__set', 3, 3, fn (f) {
+  # a raw read and a raw write, which `rawget` / `rawset` are and which
+  # __index / __newindex fall back to
+  rt_func('__rawget', 2, 2, fn (f) {
+    ret(m.index(L(0), call_rt(f, '__key', [L(1)], AT), AT))
+  })
+  rt_func('__rawset', 3, 3, fn (f) {
     m.block(
       [
         m.make_if(
@@ -462,6 +555,81 @@ fn runtime() {
           AT,
         ),
         ret(m.set_index(L(0), call_rt(f, '__key', [L(1)], AT), L(2), AT)),
+      ],
+      AT,
+    )
+  })
+  rt_func('__setmeta', 2, 2, fn (f) {
+    m.block([m.set_index(L(0), mt_key(), L(1), AT), ret(L(0))], AT)
+  })
+
+  rt_func('__get', 2, 3, fn (f) {
+    m.block(
+      [
+        m.make_if(is_type(L(0), 'string'), ret(str_method(f, L(1))), AT),
+        m.assign('local', 2, call_rt(f, '__rawget', [L(0), L(1)], AT), AT),
+        m.make_if(negate(is_type(L(2), 'nil')), ret(L(2)), AT),
+        # a miss consults __index: a function answers the read, a table is
+        # read in turn -- and that read consults its own __index
+        m.assign('local', 2, call_rt(f, '__mm', [L(0), S('__index')], AT), AT),
+        m.make_if(
+          is_type(L(2), 'function'),
+          ret(one(f, m.call_value(L(2), [m.array_lit([L(0), L(1)], AT)], AT),
+                  AT)),
+          AT,
+        ),
+        m.make_if(
+          is_type(L(2), 'map'),
+          ret(call_rt(f, '__get', [L(2), L(1)], AT)),
+          AT,
+        ),
+        ret(m.nil_literal(AT)),
+      ],
+      AT,
+    )
+  })
+  # __newindex sees only a key the table does not already have; assigning
+  # nil removes the key, which is what makes `#t` and `pairs` agree with Lua
+  # after `t[2] = nil`
+  rt_func('__set', 3, 4, fn (f) {
+    m.block(
+      [
+        m.assign(
+          'local',
+          3,
+          m.intrinsic('objecthas', [L(0), call_rt(f, '__key', [L(1)], AT)], AT),
+          AT,
+        ),
+        m.make_if(
+          negate(L(3)),
+          m.block(
+            [
+              m.assign(
+                'local',
+                3,
+                call_rt(f, '__mm', [L(0), S('__newindex')], AT),
+                AT,
+              ),
+              m.make_if(
+                is_type(L(3), 'function'),
+                ret(one(
+                  f,
+                  m.call_value(L(3), [m.array_lit([L(0), L(1), L(2)], AT)], AT),
+                  AT,
+                )),
+                AT,
+              ),
+              m.make_if(
+                is_type(L(3), 'map'),
+                ret(call_rt(f, '__set', [L(3), L(1), L(2)], AT)),
+                AT,
+              ),
+            ],
+            AT,
+          ),
+          AT,
+        ),
+        ret(call_rt(f, '__rawset', [L(0), L(1), L(2)], AT)),
       ],
       AT,
     )
@@ -504,7 +672,6 @@ fn runtime() {
       [
         m.assign('local', 1, m.intrinsic('typeof', [L(0)], AT), AT),
         m.make_if(m.binary('eq', L(1), S('bool'), AT), ret(S('boolean')), AT),
-        m.make_if(m.binary('eq', L(1), S('func'), AT), ret(S('function')), AT),
         m.make_if(m.binary('eq', L(1), S('map'), AT), ret(S('table')), AT),
         m.make_if(m.binary('eq', L(1), S('int'), AT), ret(S('number')), AT),
         m.make_if(m.binary('eq', L(1), S('double'), AT), ret(S('number')), AT),
@@ -513,6 +680,35 @@ fn runtime() {
       AT,
     )
   })
+  # A call on something that is not a function is `__call`, with the value
+  # itself as the first argument.
+  rt_func('__callv', 2, 3, fn (f) {
+    m.block(
+      [
+        m.make_if(
+          is_type(L(0), 'function'),
+          ret(m.call_value(L(0), [L(1)], AT)),
+          AT,
+        ),
+        m.assign('local', 2, call_rt(f, '__mm', [L(0), S('__call')], AT), AT),
+        m.make_if(
+          is_type(L(2), 'nil'),
+          m.make_throw(
+            m.str_literal('attempt to call a non-function value', AT),
+            AT,
+          ),
+          AT,
+        ),
+        ret(m.call_value(
+          L(2),
+          [call_rt(f, '__append', [m.array_lit([L(0)], AT), L(1)], AT)],
+          AT,
+        )),
+      ],
+      AT,
+    )
+  })
+
   # A Lua call hands over one list and gets one back, so building an
   # argument list is appending one list to another, and reading a value out
   # of either is a read that answers nil past the end -- Lua's rule for both
@@ -842,6 +1038,39 @@ fn luafn(gname, nlocals, build) {
 # with the walk's own position kept in the state rather than recovered from
 # the control -- which keeps a step O(1) instead of a search.
 fn register_iterators() {
+  # the keys a table has, minus the one the metatable hides under
+  rt_func('__keys', 1, 4, fn (f) {
+    m.block(
+      [
+        m.assign('local', 1, m.array_lit([], AT), AT),
+        m.assign('local', 2, m.intrinsic('objectkeys', [L(0)], AT), AT),
+        m.assign('local', 3, m.literal(0, AT), AT),
+        m.make_while(
+          m.binary('lt', L(3), m.intrinsic('len', [L(2)], AT), AT),
+          m.block(
+            [
+              m.make_if(
+                m.binary('ne', m.index(L(2), L(3), AT), mt_key(), AT),
+                m.intrinsic('arraypush', [L(1), m.index(L(2), L(3), AT)], AT),
+                AT,
+              ),
+              m.assign(
+                'local',
+                3,
+                m.binary('add', L(3), m.literal(1, AT), AT),
+                AT,
+              ),
+            ],
+            AT,
+          ),
+          AT,
+        ),
+        ret(L(1)),
+      ],
+      AT,
+    )
+  })
+
   luafn('$inext', 3, fn (f) {
     m.block(
       [
@@ -915,7 +1144,7 @@ fn register_iterators() {
         m.set_index(
           L(1),
           S('keys'),
-          m.intrinsic('objectkeys', [nth(f, L(0), 0, AT)], AT),
+          call_rt(f, '__keys', [nth(f, L(0), 0, AT)], AT),
           AT,
         ),
         m.make_return(
@@ -958,7 +1187,14 @@ let lib_tables = [
   ('table', [('insert', '__tabinsert', 2), ('concat', '__tabconcat', 2)]),
   ('math', [('type', '__mathtype', 1)]),
 ]
-let lib_globals = [('type', '__type', 1), ('tostring', '__str', 1)]
+let lib_globals = [
+  ('type', '__type', 1),
+  ('tostring', '__str', 1),
+  ('setmetatable', '__setmeta', 2),
+  ('getmetatable', '__meta', 1),
+  ('rawget', '__rawget', 2),
+  ('rawset', '__rawset', 3),
+]
 
 let lua_raw = ['ipairs', 'pairs']
 
@@ -1541,15 +1777,21 @@ fn emit_suffixed(f, nodes, at, all) {
       {
         name: 'callsfx',
         nodes,
-      } => trim(f, m.call_value(v, [emit_args(f, nodes, sfx)], sfx), keep, sfx),
+      } => trim(
+        f,
+        call_rt(f, '__callv', [v, emit_args(f, nodes, sfx)], sfx),
+        keep,
+        sfx,
+      ),
       {
         name: 'strargsfx',
         nodes: [lit],
       } => trim(
         f,
-        m.call_value(
-          v,
-          [m.array_lit([m.str_literal(unescape(lit.token), sfx)], sfx)],
+        call_rt(
+          f,
+          '__callv',
+          [v, m.array_lit([m.str_literal(unescape(lit.token), sfx)], sfx)],
           sfx,
         ),
         keep,
@@ -1576,7 +1818,7 @@ fn emit_suffixed(f, nodes, at, all) {
           sfx,
         )
         m.block(
-          [store, trim(f, m.call_value(fnv, [args], sfx), keep, sfx)],
+          [store, trim(f, call_rt(f, '__callv', [fnv, args], sfx), keep, sfx)],
           sfx,
         )
       },
@@ -1888,12 +2130,16 @@ fn emit_stmt(f, node) {
         m.assign(
           'local',
           vs,
-          m.call_value(
-            m.var_ref('local', it, node),
-            [m.array_lit(
-              [m.var_ref('local', st, node), m.var_ref('local', ct, node)],
-              node,
-            )],
+          call_rt(
+            f,
+            '__callv',
+            [
+              m.var_ref('local', it, node),
+              m.array_lit(
+                [m.var_ref('local', st, node), m.var_ref('local', ct, node)],
+                node,
+              ),
+            ],
             node,
           ),
           node,
