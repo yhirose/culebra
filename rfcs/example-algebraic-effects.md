@@ -11,7 +11,7 @@
 
 - Status: Accepted
 - Author: yhirose
-- Date: 2026-07-16 (thin slice) to 2026-07-23 (GC-root fix)
+- Date: 2026-07-16
 
 ## 1. What
 

@@ -11,7 +11,8 @@ When to write one
 
 Write an RFC for anything that changes what the language or its standard
 library *is*: new syntax, a new stdlib namespace or type, a change to
-existing semantics, a new backend capability.
+existing semantics, a new backend capability. This holds for a proposal
+from anyone, the maintainer included.
 
 Skip it for bug fixes, documentation, refactors, performance work that
 preserves behavior, and tests. Those are ordinary PRs. If you are not
@@ -21,10 +22,11 @@ than writing one that wasn't needed.
 How to propose
 --------------
 
-1. Copy `template.md` to `rfcs/0000-<slug>.md`. The `0000` is literal:
-   don't guess the next number and don't wait to be given one. The slug
-   is a short kebab-case name, so a proposal titled "Functional state
-   machines" becomes `0000-functional-state-machines.md`.
+1. Copy [`template.md`](template.md) to `0000-<slug>.md` in this
+   directory. The `0000` is literal: don't guess the next number and
+   don't wait to be given one. The slug is a short kebab-case name, so
+   a proposal titled "Functional state machines" becomes
+   `0000-functional-state-machines.md`.
 2. Replace every `[bracketed]` instruction with your answer.
 3. Open a PR containing that one file.
 4. Discussion happens as review comments on the PR.
@@ -57,8 +59,9 @@ Every proposal carries a `Status` of `Draft`, `Accepted`, `Rejected` or
 `Deferred`. A PR under discussion is `Draft`.
 
 On merge, in the same PR: rename the file from `0000-` to the next
-number actually free in this directory, change the `# RFC 0000:`
-heading to match it, and set `Status` to what was decided.
+number actually free in this directory (the first proposal to land
+becomes `0001-`), change the `# RFC 0000:` heading to match it, and set
+`Status` to what was decided.
 
 `Date` is when the proposal was written, and stays as it was; the rest
 of its timeline is in the git history and the PR.
@@ -98,8 +101,8 @@ Examples
 Two real features, written up after the fact, to show what a filled-in
 RFC looks like at both ends of question #7:
 
-- `example-state-machine.md` - a feature that stayed entirely in a
-  preamble, so #7 is yes and #8 is N/A.
-- `example-algebraic-effects.md` - a feature that needed new grammar, a
-  transform pass and JIT runtime changes, so #8 and #9 carry real
-  weight.
+- [`example-state-machine.md`](example-state-machine.md) - a feature
+  that stayed entirely in a preamble, so #7 is yes and #8 is N/A.
+- [`example-algebraic-effects.md`](example-algebraic-effects.md) - a
+  feature that needed new grammar, a transform pass and JIT runtime
+  changes, so #8 and #9 carry real weight.
