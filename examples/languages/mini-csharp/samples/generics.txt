@@ -1,0 +1,15 @@
+42
+hello
+Box(42)
+Box(hello)
+7
+(age, 40)
+age
+40
+(40, age)
+(1, one)
+Box(7)
+Box(hello)
+count: 3
+3
+Box(1) Box(x)

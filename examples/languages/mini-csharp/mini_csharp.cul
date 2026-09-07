@@ -97,7 +97,9 @@ let grammar = `
   negexp     <- '-' ![-] _ unary                             { no_ast_opt }
 
   suffixed   <- primary suffix*
-  suffix     <- callsfx / membersfx / indexsfx
+  suffix     <- callsfx / typeargsfx / membersfx / indexsfx
+  typeargsfx <- '<' _ typeref _ (',' _ typeref _)* '>' _ &'('
+                                                             { no_ast_opt }
   callsfx    <- '(' _ args ')' _                             { no_ast_opt }
   membersfx  <- '.' _ ident                                  { no_ast_opt }
   indexsfx   <- '[' _ expr ']' _                             { no_ast_opt }
@@ -418,6 +420,17 @@ fn runtime() {
     )
   })
 
+  # `Count` is the length of a list and the number of entries in a
+  # dictionary, which are two different questions of the same word.
+  rt_func('$count', 1, 1, fn (f) {
+    ret(m.make_if_else(
+      is_type(L(0), 'map'),
+      m.intrinsic('len', [m.intrinsic('objectkeys', [L(0)], AT)], AT),
+      m.intrinsic('len', [L(0)], AT),
+      AT,
+    ))
+  })
+
   # `new T[n]` is n slots that hold nothing yet; the IR builds an array by
   # pushing, so the length is a loop.
   rt_func('$newarr', 1, 3, fn (f) {
@@ -717,7 +730,11 @@ fn member_name(mem) {
   let ns = mem.nodes
   for i in range(ns.size()) {
     if ns[i].name == 'params' {
-      return ns[i - 1].token
+      # a generic method writes its type parameters between the two
+      return cond {
+        ns[i - 1].name == 'typarams' => ns[i - 2].token,
+        _ => ns[i - 1].token,
+      }
     }
   }
   for i in range(ns.size()) {
@@ -870,6 +887,13 @@ fn scan_stmt(f, node) {
       scan_stmt(f, body)
       leave_scope(f)
     },
+    {name: 'foreachstmt', nodes: [ty, id, subject, body]} => {
+      scan_expr(f, subject)
+      enter_scope(f)
+      scan_declare(f, id)
+      scan_stmt(f, body)
+      leave_scope(f)
+    },
     # the initialiser's binding is the loop's, so the whole `for` is a scope
     {name: 'forstmt', nodes: [ini, cnd, stp, body]} => {
       enter_scope(f)
@@ -909,9 +933,11 @@ fn scan_expr(f, node) {
     {name: 'interptext'} => nil,
     {name: 'ident'} => scan_name(f, node),
     {name: 'newobj', nodes} => {
-      rs.use(class_var[type_token(nodes[0])], f)
-      if ctor_of[type_token(nodes[0])] != -1 {
-        rs.note_call(f, ctor_of[type_token(nodes[0])])
+      if !BUILTIN_NEW.has(type_token(nodes[0])) {
+        rs.use(class_var[type_token(nodes[0])], f)
+        if ctor_of[type_token(nodes[0])] != -1 {
+          rs.note_call(f, ctor_of[type_token(nodes[0])])
+        }
       }
       for a in arg_nodes(nodes[nodes.size() - 1]) {
         scan_expr(f, a)
@@ -959,7 +985,14 @@ fn scan_call_edge(f, nodes) {
   }
 }
 
-fn scan_suffixed(f, nodes) {
+# Generics erase, so the type arguments a call site names are dropped here
+# and nothing below ever sees them.
+fn erase_typeargs(nodes) {
+  nodes.filter(|c| c.name != 'typeargsfx')
+}
+
+fn scan_suffixed(f, all_nodes) {
+  let nodes = erase_typeargs(all_nodes)
   scan_call_edge(f, nodes)
   scan_expr(f, nodes[0])
   for sfx in nodes.slice(1, nodes.size()) {
@@ -1056,8 +1089,19 @@ fn emit_new_array(f, nodes, at) {
 
 # `new C(a)` makes the Map, stamps its class on it, gives every field the
 # class declares a slot, and runs the constructor over it.
+# The two generic collections the samples use are the IR's own array and
+# map, so `new` answers one directly and their members are answered below
+# rather than found on a class.
+let BUILTIN_NEW = {'List': 'array', 'Dictionary': 'map'}
+
 fn emit_new(f, nodes, at) {
   let cname = type_token(nodes[0])
+  if BUILTIN_NEW.has(cname) {
+    return cond {
+      BUILTIN_NEW[cname] == 'array' => m.array_lit([], at),
+      _ => m.intrinsic('mapnew', [], at),
+    }
+  }
   if !class_names.has(cname) {
     fail(at, "no class '{cname}'")
   }
@@ -1205,7 +1249,8 @@ mut deferred_body = []
 # A suffixed expression is walked left to right. A member name is held back
 # one step, because `o.M` followed by a call is a method call and `o.M` on
 # its own is a field read -- the same two nodes meaning different things.
-fn emit_suffixed(f, nodes, at) {
+fn emit_suffixed(f, all_nodes, at) {
+  let nodes = erase_typeargs(all_nodes)
   let n = nodes.size()
   let head = static_head(f, nodes)
   mut v = head.value
@@ -1256,11 +1301,18 @@ fn emit_method_call(f, recv, name, sfx) {
 }
 
 fn emit_method_call_on(f, recv, name, args, sfx) {
-  if ['ToUpper', 'Substring', 'ToString'].contains(name) {
+  # the members that belong to a value rather than to a class
+  if ['ToUpper', 'Substring', 'ToString', 'Add', 'ContainsKey'].contains(name) {
     return match name {
       'ToUpper' => call_rt(f, '$upper', [recv], sfx),
       'Substring' => call_rt(f, '$substr', [recv, args[0], args[1]], sfx),
-      _ => call_rt(f, '$str', [recv], sfx),
+      'ToString' => call_rt(f, '$str', [recv], sfx),
+      'ContainsKey' => m.intrinsic('objecthas', [recv, args[0]], sfx),
+      # one Add for both: a list takes a value, a dictionary a pair
+      _ => cond {
+        args.size() == 1 => m.intrinsic('arraypush', [recv, args[0]], sfx),
+        _ => m.set_index(recv, args[0], args[1], sfx),
+      },
     }
   }
   let slot = new_scratch(f)
@@ -1281,6 +1333,7 @@ fn emit_method_call_on(f, recv, name, args, sfx) {
 fn emit_member(f, v, name, at) {
   cond {
     name == 'Length' => m.intrinsic('len', [v], at),
+    name == 'Count' => call_rt(f, '$count', [v], at),
     _ => m.index(v, m.str_literal(name, at), at),
   }
 }
@@ -1467,6 +1520,57 @@ fn emit_stmt(f, node) {
         node,
       )
       m.scope(first, nslots[f], inner, node)
+    },
+    # `foreach (T x in xs)` walks by index, which is what both an array and
+    # a List are underneath.
+    {name: 'foreachstmt', nodes: [ty, id, subject, body]} => {
+      let src = new_scratch(f)
+      let i = new_scratch(f)
+      let v = decl_v[pkey(id)]
+      m.block(
+        [
+          m.assign('local', src, emit_expr(f, subject), node),
+          m.assign('local', i, m.literal(0, node), node),
+          m.make_while(
+            m.binary(
+              'lt',
+              m.var_ref('local', i, node),
+              m.intrinsic('len', [m.var_ref('local', src, node)], node),
+              node,
+            ),
+            m.block(
+              [
+                rs.write(
+                  m,
+                  f,
+                  v,
+                  m.index(
+                    m.var_ref('local', src, node),
+                    m.var_ref('local', i, node),
+                    node,
+                  ),
+                  node,
+                ),
+                emit_stmt(f, body),
+                m.assign(
+                  'local',
+                  i,
+                  m.binary(
+                    'add',
+                    m.var_ref('local', i, node),
+                    m.literal(1, node),
+                    node,
+                  ),
+                  node,
+                ),
+              ],
+              node,
+            ),
+            node,
+          ),
+        ],
+        node,
+      )
     },
     {name: 'forstmt', nodes: [ini, cnd, stp, body]} => {
       mut ids = []
