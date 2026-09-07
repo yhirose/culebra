@@ -1373,6 +1373,7 @@ fn emit_multi(f, exprs, at) {
 mut name_v = {}  # a name -> the binding it means, -1 for a global
 mut decl_v = {}  # a declaring name -> the binding it makes
 mut fn_of = {}   # a function body -> the func it becomes
+mut self_v = {}  # a `function T:m()` -> the binding of its implicit self
 
 fn pkey(node) {
   "{node.line}:{node.column}"
@@ -1395,7 +1396,9 @@ fn scan_name(f, id) {
   }, f)
 }
 
-fn scan_closure(f, name, funcbody, at) {
+# `function T:m(a)` declares a parameter the source does not write, which
+# is the same implicit argument `t:m(a)` passes at the call.
+fn scan_closure(f, name, funcbody, at, has_self) {
   let g = new_func(
     cond {
       name == nil => 'anonymous',
@@ -1409,6 +1412,9 @@ fn scan_closure(f, name, funcbody, at) {
   # parameters are locals the prologue fills from it
   new_scratch(g)
   enter_scope(g)
+  if has_self {
+    self_v[g] = declare(g, 'self', at)
+  }
   for prm in funcbody.nodes[0].nodes {
     funcs[g].params.push(scan_declare(g, prm))
   }
@@ -1441,7 +1447,10 @@ fn scan_expr(f, node) {
     {name: 'string'} => nil,
     {name: 'literal'} => nil,
     {name: 'ident'} => scan_name(f, node),
-    {name: 'funcexpr', nodes: [body]} => scan_closure(f, nil, body, node),
+    {
+      name: 'funcexpr',
+      nodes: [body],
+    } => scan_closure(f, nil, body, node, false),
     {name: 'suffixedexp', nodes} => scan_suffixed(f, nodes),
     {name: 'tablector', nodes} => scan_table(f, nodes),
     _ => {
@@ -1512,11 +1521,17 @@ fn scan_stmt(f, node) {
     # the name is visible inside the body, so it is declared first
     {name: 'localfn', nodes: [id, fb]} => {
       scan_declare(f, id)
-      scan_closure(f, id.token, fb, node)
+      scan_closure(f, id.token, fb, node, false)
     },
     {name: 'fnstat', nodes: [fname, fb]} => {
       let parts = fname.nodes
-      scan_closure(f, parts[0].token, fb, node)
+      scan_closure(
+        f,
+        parts[0].token,
+        fb,
+        node,
+        parts[parts.size() - 1].name == 'colonname',
+      )
       scan_name(f, parts[0])
     },
     {name: 'assign', nodes: [targets, values]} => {
@@ -1911,12 +1926,17 @@ fn emit_closure(f, funcbody, at) {
 
 fn bind_funcbody(g, funcbody) {
   mut ids = []
+  mut base = 0
+  if self_v.has(g) {
+    ids.push(rs.write(m, g, self_v[g], nth(g, L(0), 0, AT), AT))
+    base = 1
+  }
   for i, prm in funcbody.nodes[0].nodes.enumerate() {
     ids.push(rs.write(
       m,
       g,
       decl_v[pkey(prm)],
-      nth(g, m.var_ref('local', 0, prm), i, prm),
+      nth(g, m.var_ref('local', 0, prm), i + base, prm),
       prm,
     ))
   }
