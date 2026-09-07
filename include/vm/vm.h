@@ -14004,6 +14004,15 @@ struct Exec {
       return (l.tag == TAG_LONG || l.tag == TAG_FLOAT) &&
              (r.tag == TAG_LONG || r.tag == TAG_FLOAT);
     };
+    // The guard the JIT's lowering emits inline ahead of every refcount call
+    // (emit_tag_is_refcounted). The out-of-line helper opens with the same
+    // test, but a call site cannot see it, so the executor paid a call on
+    // every Release of a Long or a Nil -- and Release alone is a sixth of the
+    // instructions a program runs.
+    auto is_refcounted = [](const JitValue& v) {
+      return v.data != 0 &&
+             _is_refcounted_value_tag(static_cast<int8_t>(v.tag));
+    };
     // Borrow-contract helpers throughout the dispatch (the `_borrow` twins):
     // operands stay owned by the frame's registers on every path, so a try
     // handler's release ladder is the one releaser after a throw.
@@ -14043,8 +14052,9 @@ struct Exec {
           break;
         case Op::MoveRetain:  // Move + Retain, fused by the elision pass
           regs[in.a] = regs[in.b];
-          culebra_runtime_value_retain(static_cast<int8_t>(regs[in.a].tag),
-                                       regs[in.a].data);
+          if (is_refcounted(regs[in.a]))
+            culebra_runtime_value_retain(static_cast<int8_t>(regs[in.a].tag),
+                                         regs[in.a].data);
           ++pc;
           break;
         case Op::Take:
@@ -14053,13 +14063,15 @@ struct Exec {
           ++pc;
           break;
         case Op::Retain:
-          culebra_runtime_value_retain(static_cast<int8_t>(regs[in.a].tag),
-                                       regs[in.a].data);
+          if (is_refcounted(regs[in.a]))
+            culebra_runtime_value_retain(static_cast<int8_t>(regs[in.a].tag),
+                                         regs[in.a].data);
           ++pc;
           break;
         case Op::Release:
-          culebra_runtime_value_release(static_cast<int8_t>(regs[in.a].tag),
-                                        regs[in.a].data);
+          if (is_refcounted(regs[in.a]))
+            culebra_runtime_value_release(static_cast<int8_t>(regs[in.a].tag),
+                                          regs[in.a].data);
           regs[in.a] = JitValue{TAG_NIL, 0};
           ++pc;
           break;
