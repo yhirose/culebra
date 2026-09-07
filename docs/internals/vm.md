@@ -437,6 +437,68 @@ Captured variables live in cells through six ops — `CellNew`, `CellGet`,
 shared mutable state stays visible in the stream. `MakeClosure` fills a
 new closure's captures from the callee chunk's `capture_src_slots`.
 
+### 5.2.1 Bookkeeping the compiler proves dead
+
+The bookkeeping above is emitted unconditionally — every scope's slots get
+a `Release` on the way out, every borrowed copy a `Retain`, every scope a
+mark/exit pair — because the compiler emits it in one forward pass, before
+it can know a given slot never holds anything but a `Long`, or a given
+scope never registers a droppable resource. `compile_unit` compiles once,
+then deletes what two static analyses prove unneeded, to a fixpoint:
+deleting one instruction can make another provably dead (a `Release`
+that turns out to hold the last read of a slot the analysis had to
+assume was live). Both analyses fail safe: an op or a branch neither one models forces the
+region to keep its bookkeeping rather than getting elided, so a missed
+case costs performance, never correctness.
+
+**Refcount elision** (`plan_rc_elision`) is a forward dataflow per chunk,
+two-point lattice (`NonRc < Unknown`), deciding whether the slot a
+`Release`/`Retain` names can hold a refcounted value there. A `LoadConst`
+of a non-refcounted constant, arithmetic on two non-refcounted operands,
+and similar — all read off the executor's own switch — lower the state to
+`NonRc`; anything unmodeled (a call, a container op, …) raises every
+slot to `Unknown`. Dropping a `Retain` needs only that; dropping a
+`Release` needs a second, backward liveness pass too, because `Release`
+is destructive (it nils the slot) and later code depends on the nil — an
+outer scope's ladder and the throw-path unwind release the same range
+without double-releasing because an inner step already emptied it, and a
+`for`-in cursor slot must not inherit a stale value the next generation
+reads as a live iterator (`ForSlot`, §5.5). The liveness pass pins
+exactly the slots where that matters (a cursor's whole 12-slot run, a
+scope's defer mark, a handler's caught slot) live everywhere; an
+ordinary slot owes the throw path nothing, since releasing a
+non-refcounted value there is already a no-op.
+
+**Owned-stack elision** (`owned_plan_for_chunk`) targets `OwnedMark`/
+`OwnedExit` pairs (§5.5, `memory.md` §"owned stack"): a nested scope's
+pair (never the frame's own, at depth 0 — the throw path reads
+`marks[owned_frame_depth]` directly, so removing its `OwnedMark` would
+leave that read looking at whatever the slot last held) is dead when the
+straight-line run from its `OwnedMark` to its matching `OwnedExit`
+contains no branch and nothing that can register a droppable object —
+instance construction, or a property write that binds `drop`
+(`fixed.inc.h`'s `_jit_owned_bind_drop` call sites). A `Call` needs no
+case in that check: whatever a callee registers, its own frame-level
+bracket drains before it returns control (the throw path resolves only
+the frame's mark, "nowhere else" — a nested bracket is a synchronous-path
+optimization the unwind path never sees), so nothing a call does can
+outlive the call instruction. The check is a plain sequential scan, not
+a CFG walk — a loop body with an `if` inside stays conservative on the
+first round, but fixpoint iteration recovers most of that anyway: once
+an inner bracket that WAS eligible is deleted, its formerly-nested body
+reads as flat code on the next round, and an outer bracket around it can
+become eligible too.
+
+Deleting an instruction is a pass over the finished `Chunk`, not a second
+emission: the seven pc-keyed tables (`code`'s jump operands, `positions`,
+`cleanups`, `slot_debug`, `temp_points`, `call_argpos`, the dense
+`call_targets`) move with it through one `pc → pc'` map, closed because
+bytecode is never serialized (§5.1) — a pc has no reader outside this
+compile. `while i < n { i = i + 1 }` drops from thirteen instructions a
+loop iteration to eight this way: three `Release`s (the loop carries only
+a `Long`) and the loop body's `OwnedMark`/`OwnedExit` pair (nothing in it
+constructs a droppable object).
+
 ### 5.3 The opcode families
 
 148 opcodes, grouped:

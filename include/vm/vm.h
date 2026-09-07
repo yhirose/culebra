@@ -3344,6 +3344,701 @@ struct Unsupported {
   size_t line, col;
 };
 
+// --- Refcount elision -------------------------------------------------------
+//
+// Which of a chunk's Release / Retain instructions do nothing.
+//
+// The compiler emits the bookkeeping unconditionally: every slot a scope owns
+// gets a Release on the way out, every borrowed copy a Retain, every
+// assignment a Release of what it overwrites. On a slot that only ever holds
+// a Long the runtime call is a no-op — but the executor still fetches and
+// dispatches the instruction, and that is most of what a hot loop runs.
+//
+// This is the analysis half: a forward dataflow over the chunk with a
+// two-point lattice (NonRc < Unknown), answering whether the slot a Release
+// names can hold a refcounted value there. The compiler consumes it on a
+// SECOND emission pass, which is why the answer is keyed by the ORDINAL of
+// the decision and not by pc — the second pass emits fewer instructions, so
+// its pcs do not line up, but it reaches the same decisions in the same
+// order. Emitting again rather than deleting from the finished chunk is what
+// keeps `positions`, the cleanup ranges, the slot-debug ranges and the jump
+// targets correct: they are built by the ordinary emitter at the pcs that
+// survive, so there is no remap to write and none to get wrong.
+//
+// Safety is in the default, not the coverage. An op `rc_apply` does not model
+// clobbers EVERY slot to Unknown, so a new op — or one whose write set is not
+// plain from Exec's switch — costs precision and never correctness. Only ops
+// whose write set was read off that switch are modeled. That default is the
+// whole safety argument, so there is exactly one `default:` in the transfer
+// and every modeled op is named once.
+//
+// What it does NOT cover: an edge. The default protects against an unknown
+// effect, not against a branch this file does not know about — a missing edge
+// leaves a state that is optimistic rather than conservative. `rc_successors`
+// is therefore the one part that must track Lowering::lower_chunk's block
+// leaders op for op (see the note there).
+struct RcPlan {
+  // Per chunk, one byte per instruction: 1 where the instruction is dead —
+  // provably a no-op — and may be deleted. Two analyses fill this in, over
+  // disjoint op sets (Release/Retain; OwnedMark/OwnedExit), so their answers
+  // just OR together into one plan (plan_dead_code below).
+  std::vector<std::vector<char>> dead;
+
+  bool any() const {
+    return std::any_of(dead.begin(), dead.end(), [](const std::vector<char>& d) {
+      return std::find(d.begin(), d.end(), 1) != d.end();
+    });
+  }
+};
+
+// The decisions the plan is about, spelled once: `emit` counts these on the
+// way out and plan_rc_elision counts the same ones on the way back in, so the
+// two ordinal spaces are the same set by construction.
+inline bool is_rc_op(Op op) {
+  return op == Op::Release || op == Op::Retain;
+}
+
+namespace rc_detail {
+
+// One bit per slot, `Unknown` set. The lattice is two points, so the state is
+// a bitmap and the join is `|=` — which keeps a big chunk's state in cache
+// (the worst chunk measured is 8898 instructions over 261 slots: 290 KB of
+// words against 2.3 MB of bytes) and makes ClobberAll a word-wise fill.
+using RcWords = std::vector<uint64_t>;
+inline size_t rc_words_for(size_t slots) { return (slots + 63) / 64; }
+inline bool rc_unknown(const RcWords& w, size_t base, size_t slot) {
+  return (w[base + slot / 64] >> (slot % 64)) & 1;
+}
+inline void rc_set(RcWords& w, size_t base, size_t slot, bool unknown) {
+  uint64_t bit = uint64_t{1} << (slot % 64);
+  if (unknown) w[base + slot / 64] |= bit;
+  else w[base + slot / 64] &= ~bit;
+}
+
+// Where control goes from an instruction. This mirrors the block leaders
+// Lowering::lower_chunk marks (its "Pass 1") op for op; the two are hand-kept
+// copies because lowering needs a third fact this encoding does not carry (it
+// opens a block after an unconditional terminator, for the dead code a
+// break/continue can leave, and does not after ForPrep). A branching op
+// missing HERE is the dangerous direction: the target's state stays
+// optimistic and a live refcount instruction can be dropped.
+struct Succ {
+  int32_t target = -1;
+  bool fall = true;
+};
+inline Succ rc_successors(const Insn& in) {
+  switch (in.op) {
+    case Op::Jump: return {in.a, false};
+    case Op::Ret:
+    case Op::ImmutErr:
+    case Op::WkErr:
+    case Op::DestrErr:
+    case Op::Throw:
+    case Op::Halt: return {-1, false};
+    case Op::JumpIfFalse:
+    case Op::JumpIfTrue:
+    case Op::JumpIfNotNil:
+    case Op::JumpIfNil:
+    case Op::JumpIfSame:
+    case Op::JumpIfTag:
+    case Op::JumpIfFilled:
+    case Op::SeqChk:
+    case Op::ObjGet:
+    case Op::TypeMatch:
+    case Op::ForNext:
+    case Op::ForLoop: return {in.b, true};
+    case Op::ForPrep: return {in.b, false};
+    default: return {-1, true};
+  }
+}
+
+// The transfer function: what one instruction does to the slot state. One
+// switch, one `default`, so the safety argument above has no second door.
+inline void rc_apply(const Chunk& c, const Insn& in, RcWords& out,
+                     size_t slots) {
+  auto set = [&](int32_t s, bool unknown) {
+    if (s >= 0 && static_cast<size_t>(s) < slots)
+      rc_set(out, 0, static_cast<size_t>(s), unknown);
+  };
+  auto unknown = [&](int32_t s) {
+    return !(s >= 0 && static_cast<size_t>(s) < slots) ||
+           rc_unknown(out, 0, static_cast<size_t>(s));
+  };
+  switch (in.op) {
+    // `a` takes a Bool, Long or Float whatever the inputs were — or nil,
+    // which Release leaves behind (it is destructive by contract).
+    case Op::Not:
+    case Op::Eq:
+    case Op::Ne:
+    case Op::Lt:
+    case Op::Le:
+    case Op::Gt:
+    case Op::Ge:
+    case Op::HasProp:
+    case Op::BitAnd:
+    case Op::BitOr:
+    case Op::BitXor:
+    case Op::Shl:
+    case Op::Shr:
+    case Op::BitNot:
+    case Op::ToFloat:
+    case Op::PosSnap:
+    case Op::DeferMark:
+    case Op::Release: set(in.a, false); break;
+    // Reads, checks, control flow, and side effects on state that is not a
+    // register — OwnedMark/OwnedExit write the mark array, not `regs`.
+    case Op::Jump:
+    case Op::JumpIfFalse:
+    case Op::JumpIfTrue:
+    case Op::JumpIfNotNil:
+    case Op::JumpIfNil:
+    case Op::JumpIfSame:
+    case Op::JumpIfTag:
+    case Op::JumpIfFilled:
+    case Op::Safepoint:
+    case Op::OwnedMark:
+    case Op::OwnedExit:
+    case Op::RecEnter:
+    case Op::RecLeave:
+    case Op::DropSuppress:
+    case Op::SetOpPos:
+    case Op::BoundPos:
+    case Op::DbgStmt:
+    case Op::Println:
+    case Op::UnboundErr:
+    case Op::ImmutErr:
+    case Op::WkErr:
+    case Op::DestrErr:
+    case Op::Throw:
+    case Op::Ret:
+    case Op::Halt:
+    case Op::Retain: break;
+    case Op::LoadConst:
+      set(in.a, _is_refcounted_value_tag(
+                    static_cast<int8_t>(c.consts[in.b].tag)));
+      break;
+    case Op::Move:
+    case Op::Neg: set(in.a, unknown(in.b)); break;
+    case Op::Take:
+      set(in.a, unknown(in.b));
+      set(in.b, false);  // left nil
+      break;
+    // Arithmetic whose operands are both never refcounted either produces a
+    // number or throws: the `__op__` dispatch and the in-place Tensor arm
+    // each need a refcounted receiver to reach.
+    case Op::Add:
+    case Op::Sub:
+    case Op::Mul:
+    case Op::Div:
+    case Op::Mod: set(in.a, unknown(in.b) || unknown(in.c)); break;
+    default: std::fill(out.begin(), out.end(), ~uint64_t{0}); break;
+  }
+}
+
+// What one instruction READS, for the liveness half. The mirror of rc_apply,
+// with the mirrored default: an op this does not model reads EVERY slot, so a
+// value it consumes is never mistaken for dead.
+//
+// Reads are where a register machine stops being one instruction one slot.
+// A for-in cursor is a run of eleven slots addressed off a base (ForSlot), and
+// ForDispose reads all of them from `regs + a` — which is exactly the slot a
+// stale value must not reach, since dispose interprets the run rather than
+// just releasing it. Every For* op therefore reads its whole run.
+template <class Read, class ReadAll>
+inline void rc_reads(const Insn& in, Read read, ReadAll read_all) {
+  auto run = [&](int32_t base) {
+    for (int32_t k = 0; k <= kForHasNext; ++k) read(base + k);
+  };
+  switch (in.op) {
+    case Op::LoadConst:
+    case Op::Jump:
+    case Op::Safepoint:
+    case Op::OwnedMark:      // writes the mark array, reads no register
+    case Op::RecEnter:
+    case Op::RecLeave:
+    case Op::DropSuppress:
+    case Op::SetOpPos:
+    case Op::BoundPos:
+    case Op::DbgStmt:
+    case Op::DeferMark:
+    case Op::Halt: break;
+    case Op::OwnedExit: break;  // marks[a], not regs[a]
+    case Op::Move:
+    case Op::Take:
+    case Op::Neg:
+    case Op::Not:
+    case Op::ToFloat:
+    case Op::BitNot: read(in.b); break;
+    case Op::Retain:
+    case Op::Release:
+    case Op::Println:
+    case Op::Ret:
+    case Op::UnboundErr:
+    case Op::JumpIfFalse:
+    case Op::JumpIfTrue:
+    case Op::JumpIfNotNil:
+    case Op::JumpIfNil:
+    case Op::JumpIfTag:
+    case Op::JumpIfFilled: read(in.a); break;
+    case Op::Eq:
+    case Op::Ne:
+    case Op::Lt:
+    case Op::Le:
+    case Op::Gt:
+    case Op::Ge:
+    case Op::Add:
+    case Op::Sub:
+    case Op::Mul:
+    case Op::Div:
+    case Op::Mod:
+    case Op::BitAnd:
+    case Op::BitOr:
+    case Op::BitXor:
+    case Op::Shl:
+    case Op::Shr: read(in.b), read(in.c); break;
+    case Op::HasProp: read(in.b); break;
+    case Op::JumpIfSame: read(in.a), read(in.c); break;
+    case Op::PosSnap: break;
+    case Op::ForOpen:
+    case Op::ForNext:
+    case Op::ForDispose:
+    case Op::ForPrep:
+    case Op::ForLoop: run(in.a); break;
+    default: read_all(); break;
+  }
+}
+
+// What one instruction WRITES, for the same walk: liveness has to know where
+// a value stops being live, and the only writes it may trust are the ones
+// rc_apply already models. Everything else is left live by rc_reads' default.
+inline int32_t rc_single_write(const Insn& in) {
+  switch (in.op) {
+    case Op::Not:
+    case Op::Eq:
+    case Op::Ne:
+    case Op::Lt:
+    case Op::Le:
+    case Op::Gt:
+    case Op::Ge:
+    case Op::HasProp:
+    case Op::BitAnd:
+    case Op::BitOr:
+    case Op::BitXor:
+    case Op::Shl:
+    case Op::Shr:
+    case Op::BitNot:
+    case Op::ToFloat:
+    case Op::PosSnap:
+    case Op::DeferMark:
+    case Op::LoadConst:
+    case Op::Move:
+    case Op::Neg:
+    case Op::Add:
+    case Op::Sub:
+    case Op::Mul:
+    case Op::Div:
+    case Op::Mod:
+    case Op::Release:  // nils it
+    case Op::Take: return in.a;
+    default: return -1;
+  }
+}
+
+// Scratch the chunk walk reuses across chunks, so a program of 147 chunks
+// does not make 700 allocations to say the same thing.
+struct RcScratch {
+  RcWords in;                  // per-pc entry state, `words` per instruction
+  RcWords out;                 // the instruction being transferred
+  std::vector<char> reached;   // per pc, not per slot: bottom is "no state"
+  std::vector<char> queued;
+  std::vector<size_t> work;
+  RcWords live;                // per-pc live-OUT, for the backward walk
+  RcWords lout;
+};
+
+// One chunk's decisions, in emission order.
+inline std::vector<char> rc_plan_for_chunk(const Chunk& c, RcScratch& s) {
+  const size_t n = c.code.size();
+  const size_t slots = static_cast<size_t>(c.num_slots);
+  std::vector<char> dead(n, 0);
+  if (n == 0 || slots == 0) return dead;
+  const size_t words = rc_words_for(slots);
+
+  s.in.assign(n * words, 0);
+  s.out.assign(words, 0);
+  s.reached.assign(n, 0);
+  s.queued.assign(n, 0);
+  s.work.clear();
+
+  auto seed = [&](size_t pc) {
+    if (pc >= n) return;
+    std::fill_n(s.in.begin() + static_cast<ptrdiff_t>(pc * words), words,
+                ~uint64_t{0});
+    s.reached[pc] = 1;
+    if (!s.queued[pc]) { s.queued[pc] = 1; s.work.push_back(pc); }
+  };
+  // The entry: a parameter slot holds whatever the caller passed. A handler
+  // is entered from anywhere in its scope's range, so it knows nothing
+  // either — which is also why the throw path needs nothing from this pass:
+  // it releases the cleanup's slot range directly (Exec::unwind), not
+  // through instructions this could remove.
+  seed(0);
+  for (const auto& cu : c.cleanups)
+    if (cu.handler != Chunk::kNoHandler) seed(cu.handler);
+
+  auto join_into = [&](size_t pc) {
+    if (pc >= n) return;
+    bool changed = !s.reached[pc];
+    s.reached[pc] = 1;
+    for (size_t w = 0; w < words; ++w) {
+      uint64_t& cur = s.in[pc * words + w];
+      uint64_t next = cur | s.out[w];
+      if (next != cur) { cur = next; changed = true; }
+    }
+    if (changed && !s.queued[pc]) { s.queued[pc] = 1; s.work.push_back(pc); }
+  };
+
+  while (!s.work.empty()) {
+    size_t pc = s.work.back();
+    s.work.pop_back();
+    s.queued[pc] = 0;
+    const Insn& insn = c.code[pc];
+    std::copy_n(s.in.begin() + static_cast<ptrdiff_t>(pc * words), words,
+                s.out.begin());
+    rc_apply(c, insn, s.out, slots);
+    auto sc = rc_successors(insn);
+    if (sc.fall) join_into(pc + 1);
+    if (sc.target >= 0) join_into(static_cast<size_t>(sc.target));
+  }
+
+  // Second walk, backward: which slots are live OUT of each instruction.
+  //
+  // Release is not merely a refcount call — it is destructive, and the nil it
+  // leaves is load-bearing. An outer ladder and the unwind walk release the
+  // same slot range without double-releasing because an inner step emptied
+  // it, and a for-in cursor slot must not inherit "a stale Long for whatever
+  // the slot index becomes next" (ForSlot above). So dropping a Release needs
+  // both halves: the value is not refcounted (forward), AND the nil store is
+  // dead (here). Retain writes nothing, so it needs only the first.
+  //
+  // Conservatism is in rc_reads' default (an unmodeled op reads every slot)
+  // and in the exit state: control leaving the chunk, and every throw edge,
+  // is treated as reading everything.
+  s.live.assign(n * words, 0);
+  s.lout.assign(words, 0);
+  s.queued.assign(n, 0);
+  s.work.clear();
+  auto live_join = [&](size_t pc, const RcWords& src) {
+    if (pc >= n) return;
+    bool changed = false;
+    for (size_t w = 0; w < words; ++w) {
+      uint64_t& cur = s.live[pc * words + w];
+      uint64_t next = cur | src[w];
+      if (next != cur) { cur = next; changed = true; }
+    }
+    if (changed && !s.queued[pc]) { s.queued[pc] = 1; s.work.push_back(pc); }
+  };
+  // Predecessors, from the same successor relation the forward walk uses.
+  std::vector<std::vector<uint32_t>> preds(n);
+  for (size_t pc = 0; pc < n; ++pc) {
+    auto sc = rc_successors(c.code[pc]);
+    if (sc.fall && pc + 1 < n) preds[pc + 1].push_back(static_cast<uint32_t>(pc));
+    if (sc.target >= 0 && static_cast<size_t>(sc.target) < n)
+      preds[static_cast<size_t>(sc.target)].push_back(static_cast<uint32_t>(pc));
+  }
+  // Control leaving the chunk reads nothing: the frame's registers are gone,
+  // and its teardown is instructions before the Ret, not something after it.
+  //
+  // The throw path is the part worth being exact about. Exec::unwind releases
+  // a cleanup's slot RANGE, and releasing a value that is not refcounted is a
+  // no-op — so an ordinary slot owes the throw path nothing, and a blanket
+  // "everything is live" here would leave nothing droppable at all. Three
+  // slot kinds are read as VALUES rather than released, and those stay live
+  // everywhere:
+  //   - a for-in cursor run, which the ladder's ForDispose interprets (a
+  //     stale value there is read as an iterator: "a stale Long for whatever
+  //     the slot index becomes next", ForSlot above);
+  //   - a scope's defer mark, whose "never entered" sentinel is what keeps a
+  //     restore a no-op — a stale mark would run a defer twice;
+  //   - a handler's caught slot.
+  std::fill(s.lout.begin(), s.lout.end(), 0);
+  bool pinned = false;
+  auto pin = [&](int32_t slot) {
+    if (slot >= 0 && static_cast<size_t>(slot) < slots) {
+      rc_set(s.lout, 0, static_cast<size_t>(slot), true);
+      pinned = true;
+    }
+  };
+  auto pin_run = [&](int32_t base) {
+    for (int32_t k = 0; k <= kForHasNext; ++k) pin(base + k);
+  };
+  for (const auto& cu : c.cleanups) {
+    if (cu.dispose_base >= 0) pin_run(cu.dispose_base);
+    pin(cu.defer_mark_slot);
+    pin(cu.caught_slot);
+  }
+  for (const auto& fi : c.code)
+    switch (fi.op) {
+      case Op::ForOpen:
+      case Op::ForNext:
+      case Op::ForDispose:
+      case Op::ForPrep:
+      case Op::ForLoop: pin_run(fi.a); break;
+      default: break;
+    }
+  if (pinned)
+    for (size_t pc = 0; pc < n; ++pc) live_join(pc, s.lout);
+  // Every instruction has to be transferred at least once, whatever its
+  // live-OUT starts as: the fixpoint is reached from below (live-out is empty
+  // where control leaves the chunk) and an unmodeled op's read_all is what
+  // pushes a slot back into liveness. Seeding only the pinned ones left the
+  // walk with nothing to do, and every slot then read as dead.
+  for (size_t pc = n; pc-- > 0;) {
+    if (!s.queued[pc]) { s.queued[pc] = 1; s.work.push_back(pc); }
+  }
+  while (!s.work.empty()) {
+    size_t pc = s.work.back();
+    s.work.pop_back();
+    s.queued[pc] = 0;
+    std::copy_n(s.live.begin() + static_cast<ptrdiff_t>(pc * words), words,
+                s.lout.begin());
+    const Insn& insn = c.code[pc];
+    int32_t w = rc_single_write(insn);
+    if (w >= 0 && static_cast<size_t>(w) < slots)
+      rc_set(s.lout, 0, static_cast<size_t>(w), false);
+    rc_reads(
+        insn,
+        [&](int32_t r) {
+          if (r >= 0 && static_cast<size_t>(r) < slots)
+            rc_set(s.lout, 0, static_cast<size_t>(r), true);
+        },
+        [&] { std::fill(s.lout.begin(), s.lout.end(), ~uint64_t{0}); });
+    for (uint32_t pr : preds[pc]) live_join(pr, s.lout);
+  }
+
+  // The decisions. An unreached instruction is kept: it costs nothing to run
+  // and the state there says nothing.
+  for (size_t pc = 0; pc < n; ++pc) {
+    const Insn& insn = c.code[pc];
+    if (!is_rc_op(insn.op)) continue;
+    if (!s.reached[pc] || insn.a < 0 || static_cast<size_t>(insn.a) >= slots)
+      continue;
+    auto slot = static_cast<size_t>(insn.a);
+    if (rc_unknown(s.in, pc * words, slot)) continue;  // may be refcounted
+    if (insn.op == Op::Release && rc_unknown(s.live, pc * words, slot))
+      continue;  // its nil is read before it is overwritten
+    dead[pc] = 1;
+  }
+  return dead;
+}
+
+}  // namespace rc_detail
+
+namespace owned_detail {
+
+// Which OwnedMark/OwnedExit pairs bracket a region that provably registers
+// nothing on the owned stack (rt/owned.inc.h §14.3 — deterministic drop for
+// what refcounting alone cannot reclaim). Registration happens the moment a
+// `drop` method is bound: instance construction, or a property write named
+// `drop` (fixed.inc.h's _jit_owned_bind_drop call sites). A Call is NOT on
+// that list and needs no case here — whatever a callee registers, its own
+// frame-level bracket (establish_frame_owned_mark) drains before it returns
+// control, so nothing a call does can outlive the call instruction. That is
+// also why the throw path resolves ONLY the frame's own mark (Exec::unwind:
+// "the JIT resolves at its frame cleanup pad and nowhere else on the throw
+// path") — a nested scope's bracket is a synchronous-path optimization only,
+// invisible to unwind, which is what makes eliding one safe independent of
+// exception handling.
+//
+// The frame's OWN bracket (depth 0, established once per chunk) is
+// deliberately never a candidate: the throw path reads `marks[owned_frame_
+// depth]` directly (rt/mem.inc.h), so removing its OwnedMark would leave
+// that read looking at whatever the mark slot last held.
+//
+// The check is a plain sequential scan, not a CFG walk: a nested bracket is
+// eligible only when NOTHING sits between its Mark and its Exit but a single
+// straight run of whitelisted instructions — no branch, no nested Mark, no
+// registering op. A loop body with an `if` inside stays conservative today;
+// eliding an outer bracket around an inner one that survives on its own
+// (branches inside it) is a precision loss, not a soundness one. Fixpoint
+// iteration in compile_unit recovers most of it anyway: once an inner
+// bracket that WAS eligible is deleted, its formerly-nested body reads as
+// flat code on the next round, and an outer bracket around it becomes
+// eligible too.
+inline bool owned_registers(Op op) {
+  switch (op) {
+    // Arithmetic, comparisons, control-testing, register shuffling, and
+    // reads: none of these binds `drop` on anything.
+    case Op::Not:
+    case Op::Eq:
+    case Op::Ne:
+    case Op::Lt:
+    case Op::Le:
+    case Op::Gt:
+    case Op::Ge:
+    case Op::HasProp:
+    case Op::BitAnd:
+    case Op::BitOr:
+    case Op::BitXor:
+    case Op::Shl:
+    case Op::Shr:
+    case Op::BitNot:
+    case Op::ToFloat:
+    case Op::PosSnap:
+    case Op::DeferMark:
+    case Op::LoadConst:
+    case Op::Move:
+    case Op::Take:
+    case Op::Retain:
+    case Op::Release:
+    case Op::Neg:
+    case Op::Add:
+    case Op::Sub:
+    case Op::Mul:
+    case Op::Div:
+    case Op::Mod:
+    case Op::Safepoint:
+    case Op::RecEnter:
+    case Op::RecLeave:
+    case Op::CellGet: return false;
+    default: return true;  // includes every jump/call/construction/write op
+  }
+}
+
+// The chunk's decisions: for each `OwnedMark d` (d > 0), whether it and its
+// straight-line-matched `OwnedExit d` are both dead.
+inline void owned_plan_for_chunk(const Chunk& c, std::vector<char>& dead) {
+  const size_t n = c.code.size();
+  for (size_t m = 0; m < n; ++m) {
+    if (c.code[m].op != Op::OwnedMark || c.code[m].a == 0) continue;
+    const int32_t d = c.code[m].a;
+    size_t k = m + 1;
+    bool clean = true;
+    for (; k < n; ++k) {
+      const Insn& in = c.code[k];
+      if (in.op == Op::OwnedExit && in.a == d) break;  // matched: stop here
+      // Anything else that can open or close a bracket, branch, or register
+      // ends the straight-line run right here — whether or not it is itself
+      // the thing that made the region dirty.
+      auto sc = rc_detail::rc_successors(in);
+      if (in.op == Op::OwnedMark || in.op == Op::OwnedExit || !sc.fall ||
+          sc.target >= 0 || owned_registers(in.op)) {
+        clean = false;
+        break;
+      }
+    }
+    if (clean && k < n) {
+      dead[m] = 1;
+      dead[k] = 1;
+    }
+  }
+}
+
+}  // namespace owned_detail
+
+// The plan for `p`: one forward dataflow per chunk.
+inline RcPlan plan_rc_elision(const VmProgram& p) {
+  RcPlan plan;
+  plan.dead.reserve(p.chunks.size());
+  rc_detail::RcScratch scratch;
+  for (const Chunk& c : p.chunks) {
+    auto dead = rc_detail::rc_plan_for_chunk(c, scratch);
+    owned_detail::owned_plan_for_chunk(c, dead);
+    plan.dead.push_back(std::move(dead));
+  }
+  return plan;
+}
+
+// Delete the marked instructions and close the gap, moving every pc-keyed
+// table with them. That set is closed and small — the jump operands, and six
+// side tables — because bytecode is internal to one compile: it is never
+// serialized, so a pc has no reader outside this program (docs §5.1).
+//
+//   code            a jump target, where patch_jump puts it
+//   positions       first_insn (the run-length position table)
+//   cleanups        start / end / handler
+//   slot_debug      start / end
+//   temp_points     pc (the delta-coded unwind temporaries)
+//   call_argpos     the key of each sorted (pc, positions) row
+//   call_targets    dense: indexed BY pc
+//
+// A jump into a deleted instruction lands on the next surviving one, which is
+// what `at_or_after` gives it: deleting a no-op cannot change where control
+// arrives. The map is monotonic, so `call_argpos` stays sorted and the
+// cleanup nesting finalize_chunk computed by range containment still holds.
+inline void apply_rc_elision(Chunk& c, const std::vector<char>& dead) {
+  const size_t n = c.code.size();
+  if (n == 0) return;
+  // at_or_after[pc] is where pc's instruction lands, or — for a deleted one —
+  // where its successor lands. One extra entry so an end-exclusive range at
+  // the very end maps too.
+  std::vector<uint32_t> at_or_after(n + 1);
+  uint32_t live = 0;
+  for (size_t pc = 0; pc < n; ++pc) {
+    at_or_after[pc] = live;
+    if (!dead[pc]) live++;
+  }
+  at_or_after[n] = live;
+  if (live == n) return;  // nothing marked
+  auto map_pc = [&](uint32_t pc) {
+    return pc <= n ? at_or_after[pc] : pc;
+  };
+
+  std::vector<Insn> code;
+  code.reserve(live);
+  for (size_t pc = 0; pc < n; ++pc) {
+    if (dead[pc]) continue;
+    Insn in = c.code[pc];
+    // The one place a pc rides an operand, spelled as patch_jump spells it.
+    if (rc_detail::rc_successors(in).target >= 0) {
+      int32_t& t = (in.op == Op::Jump ? in.a : in.b);
+      t = static_cast<int32_t>(map_pc(static_cast<uint32_t>(t)));
+    }
+    code.push_back(in);
+  }
+  c.code = std::move(code);
+
+  // A run-length table can end up with two rows on one pc when the
+  // instruction between them died; chunk_pos_at takes the last of them, so
+  // keeping the last is what preserves the answer. Same for temp_points.
+  for (auto& e : c.positions) e.first_insn = map_pc(e.first_insn);
+  auto keep_last_per_pc = [](auto& rows, auto key) {
+    size_t out = 0;
+    for (size_t i = 0; i < rows.size(); ++i) {
+      if (out > 0 && key(rows[out - 1]) == key(rows[i])) out--;
+      rows[out++] = std::move(rows[i]);
+    }
+    rows.resize(out);
+  };
+  keep_last_per_pc(c.positions, [](const PosEntry& e) { return e.first_insn; });
+
+  for (auto& cu : c.cleanups) {
+    cu.start = map_pc(cu.start);
+    cu.end = map_pc(cu.end);
+    if (cu.handler != Chunk::kNoHandler) cu.handler = map_pc(cu.handler);
+  }
+  for (auto& sd : c.slot_debug) {
+    sd.start = map_pc(sd.start);
+    sd.end = map_pc(sd.end);
+  }
+  for (auto& tp : c.temp_points) tp.pc = map_pc(tp.pc);
+  keep_last_per_pc(c.temp_points,
+                   [](const Chunk::TempPoint& t) { return t.pc; });
+  for (auto& ap : c.call_argpos) ap.first = map_pc(ap.first);
+
+  if (!c.call_targets.empty()) {
+    std::vector<int32_t> targets(live, kNoCallTarget);
+    for (size_t pc = 0; pc < c.call_targets.size() && pc < n; ++pc)
+      if (!dead[pc]) targets[at_or_after[pc]] = c.call_targets[pc];
+    c.call_targets = std::move(targets);
+  }
+}
+
+// Run the elision over a whole program.
+inline void apply_rc_elision(VmProgram& p, const RcPlan& plan) {
+  for (size_t ci = 0; ci < p.chunks.size() && ci < plan.dead.size(); ++ci)
+    apply_rc_elision(p.chunks[ci], plan.dead[ci]);
+}
 // What a lane that calls baked preamble entries (stdlib_preamble.h) leaves
 // out of the unit, and what it has to hand back so the compile still sees
 // everything the spliced source would have shown it.
@@ -3470,9 +4165,36 @@ class Compiler {
     const std::vector<LoadedModule>* value_decls = nullptr;
   };
 
+  // Compile, then delete the refcount instructions the program never needed
+  // (plan_rc_elision, apply_rc_elision). A pass over the finished chunk
+  // rather than a second emission: emitting again would have to assume that
+  // emission never influences emission, which is not true here — a scope
+  // segment holding only dropped instructions closes differently
+  // (split_cleanup_segments) and ensure_session_slot peepholes on the last
+  // instruction emitted — so the second program would not be the first minus
+  // the plan, and the mapping between them would be silently wrong.
+  //
+  // Run to a fixpoint: deleting a Release removes a write of nil, which is
+  // itself what made some other slot's state Unknown, so a round can uncover
+  // the next one. Each round is a sweep over the finished chunks rather than
+  // another compile — which is the whole reason this is a deletion pass and
+  // not a second emission — and it terminates because every round deletes at
+  // least one instruction.
+  //
+  // The postcondition is total rather than a comparison of two compiles: the
+  // analysis over what SHIPPED must find nothing left to drop. That says the
+  // answer is right about the program that runs, which is the claim worth
+  // holding; it rides the assert lane (`just test-assert`, CI's linux-assert),
+  // so a release build pays nothing for it.
   static VmProgram compile_unit(const peg::Ast& ast, UnitOpts opts) {
     try {
-      return compile_module_impl(ast, opts);
+      VmProgram prog = compile_module_impl(ast, opts);
+      for (;;) {
+        RcPlan plan = plan_rc_elision(prog);
+        if (!plan.any()) break;
+        apply_rc_elision(prog, plan);
+      }
+      return prog;
     } catch (const Unsupported& u) {
       throw CulebraError("VmError", "--vm: unsupported: " + u.what,
                          static_cast<int64_t>(u.line),
@@ -3621,6 +4343,13 @@ class Compiler {
         info_(info),
         chunk_idx_(chunk_idx) {}
 
+
+  // One refcount decision, counted whether or not it emits. Every Release /
+  // Retain the compiler would emit goes through here, so the two passes reach
+  // the same decisions in the same order and the ordinal the plan is keyed by
+  // means the same thing in both (see plan_rc_elision). Without a plan — the
+  // first pass, and any lane that skips the analysis — this emits every one,
+  // which is what the compiler always did.
   struct Binding {
     std::string name;
     int32_t slot;
@@ -4529,8 +5258,10 @@ class Compiler {
       // ladders a `break` walks cannot double-close it.
       for (int32_t base : for_bases_)
         if (s == base + kForIter) emit(Op::ForDispose, base);
-      if (slot_named_[s])
-        emit(slot_cell_[s] ? Op::CellRelease : Op::Release, s);
+      if (slot_named_[s]) {
+        if (slot_cell_[s]) emit(Op::CellRelease, s);
+        else emit(Op::Release, s);
+      }
     }
   }
 
@@ -4613,8 +5344,11 @@ class Compiler {
   // A Take'n temp is dropped from the statement's sweep list — its +1 moved,
   // so the end-of-statement Release would be a provable no-op.
   //
-  // `no_refcount` is the same provable-no-op fact for a whole slot's whole
-  // lifetime, not just this one write: a flat `@value` run's own field slot
+  // `no_refcount` is the same provable-no-op fact plan_rc_elision computes,
+  // and neither subsumes the other: this one is a declaration-time proof over
+  // a slot's whole lifetime, where the dataflow drops the slot to Unknown at
+  // the first op it does not model. It is the same fact for a whole slot's
+  // whole lifetime, not just this one write: a flat `@value` run's own field slot
   // never holds anything but Long/Float/Bool/nil (the decorator's own
   // declaration-time checks forbid a refcounted field, transitively through
   // a nested `@value` field too), so retain/release on it are unconditional
