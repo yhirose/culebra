@@ -14,6 +14,8 @@
 #                 the oracle is Go itself, recorded rather than re-run.
 #   mini-lua      `lua` itself, which is installed here -- the real
 #                 implementation rather than a transcript of it.
+#   mini-csharp   the output `dotnet run` gives, frozen beside each sample.
+#                 A run costs several seconds, which is why it is recorded.
 set -u
 cd "$(dirname "$0")/.."
 CULEBRA=${CULEBRA:-./build-dev/culebra}
@@ -67,8 +69,15 @@ case "${1:-}" in
     }
     want() { "$LUA" "$1"; }
     ;;
+  mini-csharp)
+    set -- examples/languages/mini-csharp/samples/*.cs
+    got() {
+      "$CULEBRA" "$ENGINE" examples/languages/mini-csharp/mini_csharp.cul "$1"
+    }
+    want() { cat "${1%.cs}.txt"; }
+    ;;
   *)
-    echo "usage: $0 pl0|mini-js|mini-culebra|mini-go|mini-lua" >&2
+    echo "usage: $0 pl0|mini-js|mini-culebra|mini-go|mini-lua|mini-csharp" >&2
     exit 2
     ;;
 esac

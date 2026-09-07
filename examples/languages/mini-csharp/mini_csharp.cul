@@ -1,0 +1,1071 @@
+# A slice of C#, compiled to Core-IR.
+#
+# `PEG` for the syntax and `CodeGen` for everything after it -- the same two
+# libraries the other front ends here use, and nothing else.
+#
+# C# is the front end for the parts of the IR the others do not reach:
+#
+#   * **Deterministic disposal.** `using` and `finally` are what the IR's
+#     Defer node is for: a callable registered at a scope, run when the
+#     scope leaves however it leaves. No other front end here emits one.
+#   * **Dispatch through a class chain.** A `virtual` method is found on the
+#     object's own class or on one above it, so the call site names a slot
+#     rather than a function -- the opposite of mini-go, where a func is a
+#     static entity and every call is direct.
+#   * **Generics**, which erase: the type argument is checked by the C#
+#     compiler and means nothing at run time, so `Box<int>` and `Box<string>`
+#     are one class here. That is what the IR sees too.
+#
+# Samples are checked against `dotnet run` on the same file, frozen beside
+# each one (samples/*.txt) because a run costs several seconds.
+#
+# Run it:  culebra examples/languages/mini-csharp/mini_csharp.cul FILE.cs
+#          culebra examples/languages/mini-csharp/mini_csharp.cul --ir FILE.cs
+
+let grammar = `
+  program    <- _ usingdir* typedecl+ !.                     { no_ast_opt }
+  usingdir   <- 'using' __ qname ';' _                       { no_ast_opt }
+  qname      <- ident ('.' _ ident)*                         { no_ast_opt }
+
+  typedecl   <- classdecl
+  classdecl  <- modifier* 'class' __ ident typarams? baselist? '{' _
+                member* '}' _                                { no_ast_opt }
+  typarams   <- '<' _ ident (',' _ ident)* '>' _             { no_ast_opt }
+  baselist   <- ':' _ typeref _ (',' _ typeref _)*               { no_ast_opt }
+  modifier   <- < 'public' / 'private' / 'static' / 'abstract' / 'virtual'
+               / 'override' / 'sealed' / 'readonly' > __
+
+  member     <- ctordecl / methoddecl / fielddecl
+  ctordecl   <- modifier* ident '(' _ params ')' _ block   { no_ast_opt }
+  methoddecl <- modifier* typeref _ ident typarams? '(' _ params ')' _ block   { no_ast_opt }
+  fielddecl  <- modifier* typeref _ ident ('=' ![=] _ expr)? ';' _   { no_ast_opt }
+  params     <- (param (',' _ param)*)? _                    { no_ast_opt }
+  param      <- typeref _ ident   { no_ast_opt }
+
+  # A type never consumes the space after it, because what follows is an
+  # ident and the two would run together. int and intAdd do not collide even
+  # so: the ident inside is greedy, so intAdd is one name.
+  typename   <- < ident ('.' ident)* > typeargs?              { no_ast_opt }
+  typeref    <- typename arraysfx*                            { no_ast_opt }
+  typeargs   <- '<' _ typeref (',' _ typeref)* '>'            { no_ast_opt }
+  arraysfx   <- '[' _ ']'                                     { no_ast_opt }
+
+  block      <- '{' _ stmt* '}' _                            { no_ast_opt }
+  stmt       <- block / localdecl / ifstmt / whilestmt / forstmt / foreachstmt
+              / trystmt / usingstmt / returnstmt / throwstmt / breakstmt
+              / continuestmt / emptystmt / exprstmt
+  localdecl  <- typeref _ ident ('=' ![=] _ expr)? ';' _   { no_ast_opt }
+  ifstmt     <- 'if' _ '(' _ expr ')' _ stmt elsepart?   { no_ast_opt }
+  elsepart   <- 'else' __ stmt                               { no_ast_opt }
+  whilestmt  <- 'while' _ '(' _ expr ')' _ stmt   { no_ast_opt }
+  forstmt    <- 'for' _ '(' _ forinit ';' _ forcond ';' _ forstep ')' _ stmt   { no_ast_opt }
+  forinit    <- (localdecl_h / exprnosemi)?                  { no_ast_opt }
+  localdecl_h <- typeref _ ident '=' ![=] _ expr            { no_ast_opt }
+  forcond    <- expr?                                        { no_ast_opt }
+  forstep    <- exprnosemi?                                  { no_ast_opt }
+  exprnosemi <- expr                                         { no_ast_opt }
+  foreachstmt <- 'foreach' _ '(' _ typeref _ ident 'in' __ expr ')' _ stmt   { no_ast_opt }
+  trystmt    <- 'try' __ block catchpart* finallypart?   { no_ast_opt }
+  catchpart  <- 'catch' _ ('(' _ typeref _ ident ')' _)? block   { no_ast_opt }
+  finallypart <- 'finally' __ block                          { no_ast_opt }
+  usingstmt  <- 'using' _ '(' _ typeref _ ident '=' ![=] _ expr ')' _ stmt   { no_ast_opt }
+  returnstmt <- 'return' __ expr? ';' _   { no_ast_opt }
+  throwstmt  <- 'throw' __ expr? ';' _   { no_ast_opt }
+  breakstmt  <- 'break' __ ';' _                             { no_ast_opt }
+  continuestmt <- 'continue' __ ';' _                        { no_ast_opt }
+  emptystmt  <- ';' _                                        { no_ast_opt }
+  exprstmt   <- expr ';' _                                   { no_ast_opt }
+
+  expr       <- assign / ternary
+  assign     <- suffixed assignop expr                       { no_ast_opt }
+  assignop   <- < '=' ![=] / '+=' / '-=' / '*=' / '/=' > _
+  ternary    <- orexp ('?' _ expr ':' _ expr)?
+  orexp      <- andexp ('||' _ andexp)*
+  andexp     <- eqexp ('&&' _ eqexp)*
+  eqexp      <- relexp (eqop relexp)*
+  eqop       <- < '==' / '!=' > _
+  relexp     <- addexp (relop addexp)*
+  relop      <- < '<=' / '>=' / '<' / '>' > _
+  addexp     <- mulexp (addop mulexp)*
+  addop      <- < '+' ![+=] / '-' ![-=] > _
+  mulexp     <- unary (mulop unary)*
+  mulop      <- < '*' ![=] / '/' ![=] / '%' > _
+  unary      <- notexp / negexp / suffixed
+  notexp     <- '!' ![=] _ unary                             { no_ast_opt }
+  negexp     <- '-' ![-] _ unary                             { no_ast_opt }
+
+  suffixed   <- primary suffix*
+  suffix     <- callsfx / membersfx / indexsfx
+  callsfx    <- '(' _ args ')' _                             { no_ast_opt }
+  membersfx  <- '.' _ ident                                  { no_ast_opt }
+  indexsfx   <- '[' _ expr ']' _                             { no_ast_opt }
+  args       <- (expr (',' _ expr)*)? _                      { no_ast_opt }
+
+  primary    <- newarray / newobj / interp / real / integer / str / charlit
+              / boollit / nulllit / thisref / paren / ident
+  newarray   <- 'new' __ typename '[' _ expr? ']' _ arrayinit?   { no_ast_opt }
+  arrayinit  <- '{' _ (expr (',' _ expr)*)? ','? _ '}' _     { no_ast_opt }
+  newobj     <- 'new' __ typename _ '(' _ args ')' _   { no_ast_opt }
+  paren      <- '(' _ expr ')' _                             { no_ast_opt }
+  thisref    <- < 'this' > ![a-zA-Z0-9_] _
+
+  interp     <- '$"' interppart* '"' _                       { no_ast_opt }
+  interppart <- '{' _ expr '}' / interptext
+  interptext <- < ('\\\\' . / !["{] .)+ >                       { no_ast_opt }
+
+  real       <- < [0-9]+ '.' [0-9]+ ([eE] [-+]? [0-9]+)? > _
+  integer    <- < [0-9]+ > _
+  str        <- ["] < ('\\\\' . / !["\\\\] .)* > ["] _
+  charlit    <- ['] < ('\\\\' . / !['\\\\] .) > ['] _
+  boollit    <- < ('true' / 'false') ![a-zA-Z0-9_] > _
+  nulllit    <- < 'null' ![a-zA-Z0-9_] > _
+  ident      <- !keyword < [a-zA-Z_] [a-zA-Z0-9_]* > _
+  ~keyword   <- ('abstract' / 'base' / 'break' / 'catch' / 'class'
+               / 'continue' / 'else' / 'false' / 'finally' / 'foreach'
+               / 'for' / 'if' / 'in' / 'new' / 'null' / 'override'
+               / 'private' / 'public' / 'readonly' / 'return' / 'sealed'
+               / 'static' / 'this' / 'throw' / 'true' / 'try' / 'using'
+               / 'virtual' / 'while') ![a-zA-Z0-9_]
+
+  ~_         <- ([ \t\r\n] / '//' [^\n]* / '/*' (!'*/' .)* '*/')*
+  ~__        <- ![a-zA-Z0-9_] _
+`
+
+fn fail(node, msg) {
+  throw {kind: 'CsError', message: msg, line: node.line, col: node.column}
+}
+
+let AT = {line: 1, column: 1}
+
+# --- module state -----------------------------------------------------------
+
+mut m = nil
+mut rs = nil
+mut funcs = []
+mut nslots = []
+mut root_fn = -1
+mut rt_body = {}
+mut rt_params = {}
+mut rt_locals = {}
+mut globals_fn = {}  # runtime helper name -> its func id
+mut rt_pending = []
+
+fn new_func(name, node, parent) {
+  let f = funcs.size()
+  funcs.push({name: name, mut nparams: 0, mut node: node})
+  rs.new_fn(cond {
+    parent == nil => -1,
+    _ => parent,
+  })
+  rs.set_func_index(f, f)
+  nslots.push(0)
+  f
+}
+
+fn rt_func(name, nparams, nlocals, build) {
+  let f = new_func(name, nil, root_fn)
+  globals_fn[name] = f
+  rt_params[f] = nparams
+  rt_locals[f] = nlocals
+  rt_pending.push((f, build))
+  f
+}
+
+fn rt_finish() {
+  for (f, build) in rt_pending {
+    rt_body[f] = build(f)
+  }
+}
+
+fn L(i) {
+  m.var_ref('local', i, AT)
+}
+
+fn S(v) {
+  m.str_literal(v, AT)
+}
+
+fn ret(v) {
+  m.make_return(v, AT)
+}
+
+fn is_type(v, t) {
+  m.binary('eq', m.intrinsic('typeof', [v], AT), S(t), AT)
+}
+
+# There is no unary `not` in the IR; the shape it would have is this.
+fn negate(b) {
+  m.make_if_else(b, m.bool_literal(false, AT), m.bool_literal(true, AT), AT)
+}
+
+fn call_rt(f, name, args, at) {
+  rs.call(m, f, globals_fn[name], args, at)
+}
+
+fn new_scratch(f) {
+  let k = nslots[f]
+  nslots[f] = k + 1
+  k
+}
+
+# --- the runtime this front end writes in its own IR ------------------------
+#
+# Three things C# does that the VM's own operators do not: `/` on two ints
+# truncates while `/` on anything else does not, `+` with a string on either
+# side concatenates, and every value has a ToString whose rendering is C#'s
+# rather than the VM's.
+
+mut native_fmt = -1  # the host function that renders a double C#'s way
+
+fn runtime() {
+  rt_func('$div', 2, 2, fn (f) {
+    ret(m.make_if_else(
+      m.make_if_else(
+        is_type(L(0), 'int'),
+        is_type(L(1), 'int'),
+        m.bool_literal(false, AT),
+        AT,
+      ),
+      m.binary('div', L(0), L(1), AT),
+      m.binary(
+        'div',
+        m.intrinsic('todouble', [L(0)], AT),
+        m.intrinsic('todouble', [L(1)], AT),
+        AT,
+      ),
+      AT,
+    ))
+  })
+  rt_func('$add', 2, 2, fn (f) {
+    ret(m.make_if_else(
+      m.make_if_else(
+        is_type(L(0), 'string'),
+        m.bool_literal(true, AT),
+        is_type(L(1), 'string'),
+        AT,
+      ),
+      m.binary(
+        'add',
+        call_rt(f, '$str', [L(0)], AT),
+        call_rt(f, '$str', [L(1)], AT),
+        AT,
+      ),
+      m.binary('add', L(0), L(1), AT),
+      AT,
+    ))
+  })
+  # C# prints a bool capitalised, a null as nothing at all, and a double
+  # with the shortest text that reads back as the same value -- which is not
+  # an IR node, so the host answers it.
+  rt_func('$str', 1, 1, fn (f) {
+    m.block(
+      [
+        m.make_if(is_type(L(0), 'string'), ret(L(0)), AT),
+        m.make_if(is_type(L(0), 'nil'), ret(S('')), AT),
+        m.make_if(
+          is_type(L(0), 'bool'),
+          ret(m.make_if_else(L(0), S('True'), S('False'), AT)),
+          AT,
+        ),
+        m.make_if(
+          is_type(L(0), 'double'),
+          ret(m.call_value(m.native_ref(native_fmt, AT), [L(0)], AT)),
+          AT,
+        ),
+        ret(m.intrinsic('tostr', [L(0)], AT)),
+      ],
+      AT,
+    )
+  })
+  rt_func('$writeline', 1, 1, fn (f) {
+    m.block(
+      [
+        m.intrinsic('printraw', [call_rt(f, '$str', [L(0)], AT)], AT),
+        m.intrinsic('printraw', [S("\n")], AT),
+        ret(m.nil_literal(AT)),
+      ],
+      AT,
+    )
+  })
+  # 'a'..'z' is 97..122; subtracting 32 is the same letter in upper case.
+  rt_func('$upper', 1, 4, fn (f) {
+    m.block(
+      [
+        m.assign('local', 1, S(''), AT),
+        m.assign('local', 2, m.literal(0, AT), AT),
+        m.assign('local', 3, m.intrinsic('len', [L(0)], AT), AT),
+        m.make_while(
+          m.binary('lt', L(2), L(3), AT),
+          m.block(
+            [
+              m.assign(
+                'local',
+                1,
+                m.binary(
+                  'add',
+                  L(1),
+                  m.intrinsic(
+                    'strfrombyte',
+                    [upper_byte(m.intrinsic('strbyte', [L(0), L(2)], AT))],
+                    AT,
+                  ),
+                  AT,
+                ),
+                AT,
+              ),
+              m.assign(
+                'local',
+                2,
+                m.binary('add', L(2), m.literal(1, AT), AT),
+                AT,
+              ),
+            ],
+            AT,
+          ),
+          AT,
+        ),
+        ret(L(1)),
+      ],
+      AT,
+    )
+  })
+  # Substring(start, length), where the IR's slice takes an end
+  rt_func('$substr', 3, 3, fn (f) {
+    ret(m.intrinsic(
+      'strslice',
+      [L(0), L(1), m.binary('add', L(1), L(2), AT)],
+      AT,
+    ))
+  })
+}
+
+fn upper_byte(b) {
+  m.make_if_else(
+    m.make_if_else(
+      m.binary('ge', b, m.literal(97, AT), AT),
+      m.binary('le', b, m.literal(122, AT), AT),
+      m.bool_literal(false, AT),
+      AT,
+    ),
+    m.binary('sub', b, m.literal(32, AT), AT),
+    b,
+    AT,
+  )
+}
+
+# --- Pass A: scopes and names -----------------------------------------------
+#
+# The same two-pass shape mini-lua and mini-js have, and for the same reason:
+# a capture's index must stop moving before any read of it is built. This
+# pass opens the scopes and records what every name means; the emit pass
+# below reads that back and never touches a scope.
+
+mut name_v = {}       # a name -> the binding it means, -1 for anything else
+mut decl_v = {}       # a declaring name -> the binding it makes
+mut methods = {}      # "Class.Method" -> its func id
+mut method_of = {}    # a method body -> its func id
+mut class_names = {}  # every declared class name
+
+fn pkey(node) {
+  "{node.line}:{node.column}"
+}
+
+fn enter_scope(f) {
+  rs.push_scope()
+}
+
+fn leave_scope(f) {
+  rs.pop_scope()
+}
+
+fn declare(f, name, node) {
+  let v = rs.declare(name, f)
+  rs.set_var_slot(v, nslots[f])
+  nslots[f] = nslots[f] + 1
+  v
+}
+
+fn scan_declare(f, id) {
+  let v = declare(f, id.token, id)
+  decl_v[pkey(id)] = v
+  v
+}
+
+fn scan_name(f, id) {
+  let v = rs.lookup(id.token)
+  name_v[pkey(id)] = v
+  if v != -1 {
+    rs.use(v, f)
+  }
+}
+
+# --- the type walk ----------------------------------------------------------
+#
+# The declarations first, so a call can name a method declared later in the
+# file -- which C# allows and the walk below would not.
+
+fn collect(root) {
+  for cls in class_decls(root) {
+    let cname = class_name(cls)
+    class_names[cname] = true
+    for mem in members(cls) {
+      if mem.name == 'methoddecl' {
+        let mname = method_name(mem)
+        let g = new_func("{cname}.{mname}", mem, root_fn)
+        methods["{cname}.{mname}"] = g
+        method_of[pkey(mem)] = g
+        funcs[g].nparams = params_of(mem).size()
+      }
+    }
+  }
+}
+
+# The `using System;` lines the grammar keeps are not declarations.
+fn class_decls(root) {
+  root.nodes.filter(|c| c.name == 'classdecl')
+}
+
+fn class_name(cls) {
+  for c in cls.nodes {
+    if c.name == 'ident' {
+      return c.token
+    }
+  }
+  fail(cls, 'class with no name')
+}
+
+fn members(cls) {
+  mut out = []
+  for c in cls.nodes {
+    if ['methoddecl', 'fielddecl', 'ctordecl'].contains(c.name) {
+      out.push(c)
+    }
+  }
+  out
+}
+
+# A member's own name is the ident just before its parameter list; the
+# modifiers and the return type are idents too, so position is what tells
+# them apart.
+fn method_name(mem) {
+  let ns = mem.nodes
+  for i in range(ns.size()) {
+    if ns[i].name == 'params' {
+      return ns[i - 1].token
+    }
+  }
+  fail(mem, 'method with no parameter list')
+}
+
+fn params_of(mem) {
+  for c in mem.nodes {
+    if c.name == 'params' {
+      return c.nodes
+    }
+  }
+  []
+}
+
+fn body_of(mem) {
+  mem.nodes[mem.nodes.size() - 1]
+}
+
+fn scan_program(root) {
+  for cls in class_decls(root) {
+    for mem in members(cls) {
+      if mem.name == 'methoddecl' {
+        let g = method_of[pkey(mem)]
+        enter_scope(g)
+        for prm in params_of(mem) {
+          scan_declare(g, prm.nodes[prm.nodes.size() - 1])
+        }
+        scan_block(g, body_of(mem))
+        leave_scope(g)
+      }
+    }
+  }
+}
+
+fn scan_block(f, blk) {
+  enter_scope(f)
+  for st in blk.nodes {
+    scan_stmt(f, st)
+  }
+  leave_scope(f)
+}
+
+fn scan_stmt(f, node) {
+  match node {
+    {name: 'block'} => scan_block(f, node),
+    {name: 'emptystmt'} => nil,
+    {name: 'breakstmt'} => nil,
+    {name: 'continuestmt'} => nil,
+    {name: 'exprstmt', nodes: [e]} => scan_expr(f, e),
+    {name: 'localdecl', nodes} => {
+      if nodes.size() > 2 {
+        scan_expr(f, nodes[2])
+      }
+      scan_declare(f, nodes[1])
+    },
+    {name: 'returnstmt', nodes} => {
+      if !nodes.empty() {
+        scan_expr(f, nodes[0])
+      }
+    },
+    {name: 'throwstmt', nodes} => {
+      if !nodes.empty() {
+        scan_expr(f, nodes[0])
+      }
+    },
+    {name: 'ifstmt', nodes} => {
+      scan_expr(f, nodes[0])
+      scan_stmt(f, nodes[1])
+      if nodes.size() > 2 {
+        scan_stmt(f, nodes[2].nodes[0])
+      }
+    },
+    {name: 'whilestmt', nodes: [c, b]} => {
+      scan_expr(f, c)
+      scan_stmt(f, b)
+    },
+    # the initialiser's binding is the loop's, so the whole `for` is a scope
+    {name: 'forstmt', nodes: [ini, cnd, stp, body]} => {
+      enter_scope(f)
+      if !ini.nodes.empty() {
+        let h = ini.nodes[0]
+        cond {
+          h.name == 'localdecl_h' => {
+            scan_expr(f, h.nodes[2])
+            scan_declare(f, h.nodes[1])
+          },
+          _ => scan_expr(f, h.nodes[0]),
+        }
+      }
+      if !cnd.nodes.empty() {
+        scan_expr(f, cnd.nodes[0])
+      }
+      if !stp.nodes.empty() {
+        scan_expr(f, stp.nodes[0].nodes[0])
+      }
+      scan_stmt(f, body)
+      leave_scope(f)
+    },
+    _ => fail(node, "cannot execute {node.name}"),
+  }
+}
+
+fn scan_expr(f, node) {
+  match node {
+    {name: 'integer'} => nil,
+    {name: 'real'} => nil,
+    {name: 'str'} => nil,
+    {name: 'charlit'} => nil,
+    {name: 'boollit'} => nil,
+    {name: 'nulllit'} => nil,
+    {name: 'thisref'} => nil,
+    {name: 'interptext'} => nil,
+    {name: 'ident'} => scan_name(f, node),
+    {name: 'suffixed', nodes} => scan_suffixed(f, nodes),
+    _ => {
+      if node.nodes != nil {
+        for c in node.nodes {
+          scan_expr(f, c)
+        }
+      }
+    },
+  }
+}
+
+fn scan_suffixed(f, nodes) {
+  scan_expr(f, nodes[0])
+  for sfx in nodes.slice(1, nodes.size()) {
+    match sfx {
+      # a member's name is a name in the receiver, not in a scope
+      {name: 'membersfx'} => nil,
+      {name: 'indexsfx', nodes: [ix]} => scan_expr(f, ix),
+      {name: 'callsfx', nodes} => {
+        for a in nodes {
+          if a.name == 'args' {
+            for e in a.nodes {
+              scan_expr(f, e)
+            }
+          }
+        }
+      },
+      _ => nil,
+    }
+  }
+}
+
+# --- Pass B: emit -----------------------------------------------------------
+
+let binop_rt = {'+': '$add', '/': '$div'}
+let binop_ir = {
+  '-': 'sub',
+  '*': 'mul',
+  '%': 'mod',
+  '==': 'eq',
+  '!=': 'ne',
+  '<': 'lt',
+  '<=': 'le',
+  '>': 'gt',
+  '>=': 'ge',
+}
+
+fn emit_expr(f, node) {
+  match node {
+    {name: 'integer', token} => m.literal(to_long(token), node),
+    {name: 'real', token} => m.double_literal(to_float(token), node),
+    {name: 'str', token} => m.str_literal(unescape(token), node),
+    {name: 'charlit', token} => m.str_literal(unescape(token), node),
+    {name: 'boollit', token} => m.bool_literal(token == 'true', node),
+    {name: 'nulllit'} => m.nil_literal(node),
+    {name: 'ident'} => emit_name(f, node, node),
+    {name: 'paren', nodes: [inner]} => emit_expr(f, inner),
+    {name: 'notexp', nodes: [inner]} => negate_at(emit_expr(f, inner), node),
+    {
+      name: 'negexp',
+      nodes: [inner],
+    } => m.unary('neg', emit_expr(f, inner), node),
+    {name: 'interp', nodes} => emit_interp(f, nodes, node),
+    {name: 'suffixed', nodes} => emit_suffixed(f, nodes, node),
+    {
+      name: 'assign',
+      nodes: [target, op, value],
+    } => emit_assign(f, target, op, value, node),
+    {
+      name: 'ternary',
+      nodes: [c, a, b],
+    } => m.make_if_else(
+      emit_expr(f, c),
+      emit_expr(f, a),
+      emit_expr(f, b),
+      node,
+    ),
+    {name: 'orexp', nodes} => emit_shortcut(f, nodes, true, node),
+    {name: 'andexp', nodes} => emit_shortcut(f, nodes, false, node),
+    {name: 'eqexp', nodes} => emit_chain(f, nodes),
+    {name: 'relexp', nodes} => emit_chain(f, nodes),
+    {name: 'addexp', nodes} => emit_chain(f, nodes),
+    {name: 'mulexp', nodes} => emit_chain(f, nodes),
+    _ => fail(node, "cannot evaluate {node.name}"),
+  }
+}
+
+fn negate_at(v, node) {
+  m.make_if_else(
+    v,
+    m.bool_literal(false, node),
+    m.bool_literal(true, node),
+    node,
+  )
+}
+
+fn emit_chain(f, nodes) {
+  let [head, ...rest] = nodes
+  mut acc = emit_expr(f, head)
+  for [op, operand] in rest.iter().chunks(2) {
+    let rhs = emit_expr(f, operand)
+    acc = cond {
+      binop_rt.has(op.token) => call_rt(f, binop_rt[op.token], [acc, rhs], op),
+      _ => m.binary(binop_ir[op.token], acc, rhs, op),
+    }
+  }
+  acc
+}
+
+# `&&` and `||` answer a bool and do not evaluate the second operand when
+# the first already decides.
+fn emit_shortcut(f, nodes, is_or, at) {
+  cond {
+    nodes.size() == 1 => emit_expr(f, nodes[0]),
+    _ => {
+      let [head, ...rest] = nodes
+      mut acc = emit_expr(f, head)
+      for r in rest {
+        acc = cond {
+          is_or => m.make_if_else(
+            acc,
+            m.bool_literal(true, at),
+            emit_expr(f, r),
+            at,
+          ),
+          _ => m.make_if_else(
+            acc,
+            emit_expr(f, r),
+            m.bool_literal(false, at),
+            at,
+          ),
+        }
+      }
+      acc
+    },
+  }
+}
+
+fn emit_interp(f, nodes, at) {
+  mut acc = m.str_literal('', at)
+  for part in nodes {
+    acc = m.binary('add', acc, cond {
+      part.name == 'interptext' => m.str_literal(unescape(part.token), part),
+      _ => call_rt(f, '$str', [emit_expr(f, part)], part),
+    }, at)
+  }
+  acc
+}
+
+fn emit_name(f, id, at) {
+  let v = name_v[pkey(id)]
+  cond {
+    v != -1 => rs.read(m, f, v, at),
+    _ => fail(id, "undefined name '{id.token}'"),
+  }
+}
+
+# --- calls and member access ------------------------------------------------
+#
+# Every call in this slice names a static method, so the callee is known at
+# the call site and the closure is built there. `Console.WriteLine` and the
+# String members are the ones the runtime answers instead.
+
+fn emit_suffixed(f, nodes, at) {
+  # a static call, written either bare inside its own class or qualified
+  if nodes.size() >= 2 && nodes[nodes.size() - 1].name == 'callsfx' {
+    let target = static_target(f, nodes)
+    if target != nil {
+      return target
+    }
+  }
+  mut v = emit_expr(f, nodes[0])
+  for sfx in nodes.slice(1, nodes.size()) {
+    v = match sfx {
+      {name: 'membersfx', nodes: [id]} => emit_member(f, v, id.token, sfx),
+      {name: 'indexsfx', nodes: [ix]} => m.index(v, emit_expr(f, ix), sfx),
+      {name: 'callsfx'} => fail(sfx, 'cannot call this'),
+      _ => fail(sfx, "cannot apply {sfx.name}"),
+    }
+  }
+  v
+}
+
+# `Console.WriteLine(x)` and the members of a string, which have no class
+# behind them here.
+fn emit_member(f, v, name, at) {
+  cond {
+    name == 'Length' => m.intrinsic('len', [v], at),
+    _ => fail(at, "no member '{name}'"),
+  }
+}
+
+fn arg_nodes(sfx) {
+  for a in sfx.nodes {
+    if a.name == 'args' {
+      return a.nodes
+    }
+  }
+  []
+}
+
+fn emit_args(f, sfx) {
+  mut out = []
+  for a in arg_nodes(sfx) {
+    out.push(emit_expr(f, a))
+  }
+  out
+}
+
+# The call shapes this slice has: `Console.WriteLine(x)`, a string method,
+# `C.M(...)` and a bare `M(...)`. Anything else is not a call yet.
+fn static_target(f, nodes) {
+  let sfx = nodes[nodes.size() - 1]
+  let n = nodes.size()
+  if n == 3 && nodes[0].name == 'ident' && nodes[1].name == 'membersfx' {
+    let recv = nodes[0].token
+    let mem = nodes[1].nodes[0].token
+    if recv == 'Console' && (mem == 'WriteLine' || mem == 'Write') {
+      let args = emit_args(f, sfx)
+      return cond {
+        mem ==
+          'Write' => m.intrinsic(
+          'printraw',
+          [call_rt(f, '$str', [args[0]], sfx)],
+          sfx,
+        ),
+        args.empty() => call_rt(f, '$writeline', [m.str_literal('', sfx)], sfx),
+        _ => call_rt(f, '$writeline', [args[0]], sfx),
+      }
+    }
+    if methods.has("{recv}.{mem}") {
+      return rs.call(m, f, methods["{recv}.{mem}"], emit_args(f, sfx), sfx)
+    }
+  }
+  # a method on a value: the receiver is everything before the member
+  if n >= 3 && nodes[n - 2].name == 'membersfx' {
+    mut recv = emit_expr(f, nodes[0])
+    for i in range(1, n - 2) {
+      recv = emit_member(f, recv, nodes[i].nodes[0].token, nodes[i])
+    }
+    let mem = nodes[n - 2].nodes[0].token
+    let args = emit_args(f, sfx)
+    return match mem {
+      'ToUpper' => call_rt(f, '$upper', [recv], sfx),
+      'Substring' => call_rt(f, '$substr', [recv, args[0], args[1]], sfx),
+      'ToString' => call_rt(f, '$str', [recv], sfx),
+      _ => fail(sfx, "no method '{mem}'"),
+    }
+  }
+  if n == 2 && nodes[0].name == 'ident' {
+    let key = "{current_class}.{nodes[0].token}"
+    if methods.has(key) {
+      return rs.call(m, f, methods[key], emit_args(f, sfx), sfx)
+    }
+  }
+  nil
+}
+
+mut current_class = ''
+
+fn unescape(s) {
+  mut out = ''
+  mut i = 0
+  while i < s.size() {
+    let c = s.slice(i, i + 1).to_string()
+    if c == "\\" && i + 1 < s.size() {
+      let n = s.slice(i + 1, i + 2).to_string()
+      out += cond {
+        n == 'n' => "\n",
+        n == 't' => "\t",
+        _ => n,
+      }
+      i += 2
+    } else {
+      out += c
+      i += 1
+    }
+  }
+  out
+}
+
+# --- statements -------------------------------------------------------------
+
+fn emit_block(f, blk) {
+  mut ids = []
+  for st in blk.nodes {
+    let e = emit_stmt(f, st)
+    if e != nil {
+      ids.push(e)
+    }
+  }
+  m.block(ids, blk)
+}
+
+fn emit_stmt(f, node) {
+  match node {
+    {name: 'block'} => emit_block(f, node),
+    {name: 'emptystmt'} => nil,
+    {name: 'breakstmt'} => m.make_break(node),
+    {name: 'continuestmt'} => m.make_continue(node),
+    {name: 'exprstmt', nodes: [e]} => emit_expr(f, e),
+    {name: 'localdecl', nodes} => rs.write(m, f, decl_v[pkey(nodes[1])], cond {
+      nodes.size() > 2 => emit_expr(f, nodes[2]),
+      _ => m.nil_literal(node),
+    }, node),
+    {name: 'returnstmt', nodes} => m.make_return(cond {
+      !nodes.empty() => emit_expr(f, nodes[0]),
+      _ => m.nil_literal(node),
+    }, node),
+    {name: 'ifstmt', nodes} => cond {
+      nodes.size() >
+        2 => m.make_if_else(
+        emit_expr(f, nodes[0]),
+        emit_stmt(f, nodes[1]),
+        emit_stmt(f, nodes[2].nodes[0]),
+        node,
+      ),
+      _ => m.make_if(emit_expr(f, nodes[0]), emit_stmt(f, nodes[1]), node),
+    },
+    {
+      name: 'whilestmt',
+      nodes: [c, b],
+    } => m.make_while(emit_expr(f, c), emit_stmt(f, b), node),
+    {name: 'forstmt', nodes: [ini, cnd, stp, body]} => {
+      mut ids = []
+      if !ini.nodes.empty() {
+        let h = ini.nodes[0]
+        ids.push(cond {
+          h.name ==
+            'localdecl_h' => rs.write(
+            m,
+            f,
+            decl_v[pkey(h.nodes[1])],
+            emit_expr(f, h.nodes[2]),
+            h,
+          ),
+          _ => emit_expr(f, h.nodes[0]),
+        })
+      }
+      mut inner = [emit_stmt(f, body)]
+      if !stp.nodes.empty() {
+        inner.push(emit_expr(f, stp.nodes[0].nodes[0]))
+      }
+      ids.push(m.make_while(
+        cond {
+          !cnd.nodes.empty() => emit_expr(f, cnd.nodes[0]),
+          _ => m.bool_literal(true, node),
+        },
+        m.block(inner, node),
+        node,
+      ))
+      m.block(ids, node)
+    },
+    _ => fail(node, "cannot execute {node.name}"),
+  }
+}
+
+# `x = v`, and the compound forms, which read the target first.
+fn emit_assign(f, target, op, value, at) {
+  # a `suffixed` with no suffix is the name itself
+  if target.name != 'ident' {
+    fail(at, 'can only assign to a name')
+  }
+  let id = target
+  let v = name_v[pkey(id)]
+  if v == -1 {
+    fail(id, "undefined name '{id.token}'")
+  }
+  let rhs = emit_expr(f, value)
+  rs.write(m, f, v, cond {
+    op.token == '=' => rhs,
+    _ => {
+      let cur = rs.read(m, f, v, at)
+      let o = op.token.slice(0, 1).to_string()
+      cond {
+        binop_rt.has(o) => call_rt(f, binop_rt[o], [cur, rhs], at),
+        _ => m.binary(binop_ir[o], cur, rhs, at),
+      }
+    },
+  }, at)
+}
+
+# --- build ------------------------------------------------------------------
+
+fn build(mm, root) {
+  m = mm
+  rs = CodeGen.Resolver.new()
+  root_fn = new_func('$entry', root, nil)
+  native_fmt = m.declare_native('csfmt')
+  runtime()
+  collect(root)
+
+  scan_program(root)
+  rs.number_captures()
+
+  rt_finish()
+  for cls in class_decls(root) {
+    current_class = class_name(cls)
+    for mem in members(cls) {
+      if mem.name == 'methoddecl' {
+        let g = method_of[pkey(mem)]
+        mut ids = []
+        for i, prm in params_of(mem).enumerate() {
+          let id = prm.nodes[prm.nodes.size() - 1]
+          ids.push(rs.write(
+            m,
+            g,
+            decl_v[pkey(id)],
+            m.var_ref('local', i, id),
+            id,
+          ))
+        }
+        ids.push(emit_block(g, body_of(mem)))
+        ids.push(m.make_return(m.nil_literal(AT), AT))
+        rt_body[g] = m.block(ids, AT)
+      }
+    }
+  }
+
+  # The entry: whatever class declares Main.
+  mut main_fn = -1
+  for key in methods.keys() {
+    if key.ends_with('.Main') {
+      main_fn = methods[key]
+    }
+  }
+  if main_fn == -1 {
+    fail(root, 'no Main')
+  }
+  rt_body[root_fn] = m.block(
+    [
+      rs.call(m, root_fn, main_fn, [], AT),
+      m.make_return(m.nil_literal(AT), AT),
+    ],
+    AT,
+  )
+  rt_locals[root_fn] = nslots[root_fn]
+  rt_params[root_fn] = 0
+
+  for f in range(funcs.size()) {
+    let is_rt = rt_params.has(f)
+    m.add_func(
+      name: funcs[f].name,
+      num_locals: cond {
+        is_rt => rt_locals[f],
+        _ => nslots[f],
+      },
+      num_captures: rs.num_captures(f),
+      num_cells: rs.num_cells(f),
+      num_params: cond {
+        is_rt => rt_params[f],
+        _ => funcs[f].nparams,
+      },
+      body: rt_body[f],
+    )
+    rs.name_captures(m, f, f)
+    if rs.num_captures(f) == 0 {
+      m.set_singleton(func: f)
+    }
+  }
+  m
+}
+
+let want_ir = Sys.argv.contains('--ir')
+let want_ast = Sys.argv.contains('--ast')
+let args = Sys.argv.filter(|a| a != '--ir' && a != '--ast')
+if args.empty() {
+  println('usage: culebra mini_csharp.cul [--ir] PROGRAM.cs')
+  Sys.exit(1)
+}
+
+try {
+  let tree = PEG.parse(grammar, FS.read(args[0]), path: args[0])
+  if want_ast {
+    inspect(tree)
+    Sys.exit(0)
+  }
+  let mod = build(CodeGen.Module.new(), tree)
+  mod.verify()
+  cond {
+    want_ir => print(mod.dump_ir()),
+    _ => mod
+      .compile()
+      .run(natives: {
+      # C# renders a double as the shortest text that reads back as the
+      # same value, which is what culebra's own rendering is -- except that
+      # C# writes a whole number with no `.0` after it.
+      csfmt: fn (v) {
+        let t = "{v}"
+        cond {
+          t.ends_with('.0') => t.slice(0, t.size() - 2).to_string(),
+          _ => t,
+        }
+      },
+    }),
+  }
+} catch e {
+  match e {
+    {kind: 'CsError'} => IO.eprintln("{args[0]}:{e.line}:{e.col}: {e.message}"),
+    {kind: 'PEGError'} => IO.eprintln(e.message),
+    _ => throw e,
+  }
+  Sys.exit(1)
+}

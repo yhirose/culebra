@@ -1,0 +1,21 @@
+12
+2
+35
+1
+2
+3.5
+0.3333333333333333
+negative
+zero
+positive
+True
+False
+False
+abcd
+4
+ABCD
+bc
+7 and 5 make 12
+55
+243
+120
