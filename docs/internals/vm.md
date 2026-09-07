@@ -507,23 +507,44 @@ an inner bracket that WAS eligible is deleted, its formerly-nested body
 reads as flat code on the next round, and an outer bracket around it can
 become eligible too.
 
-Deleting an instruction is a pass over the finished `Chunk`, not a second
-emission: the seven pc-keyed tables (`code`'s jump operands, `positions`,
-`cleanups`, `slot_debug`, `temp_points`, `call_argpos`, the dense
-`call_targets`) move with it through one `pc → pc'` map, closed because
-bytecode is never serialized (§5.1) — a pc has no reader outside this
-compile. `while i < n { i = i + 1 }` drops from thirteen instructions a
-loop iteration to eight this way: three `Release`s (the loop carries only
-a `Long`) and the loop body's `OwnedMark`/`OwnedExit` pair (nothing in it
-constructs a droppable object).
+**Destination coalescing** is the third, and it is not about refcounts at
+all: two thirds of every `Take` is the second half of `<producer> X ;
+Take Y, X` — an expression computes into the temp the compiler minted for
+it, and the very next instruction moves that temp where the value
+belongs. The producer can write `Y` itself. What changes is what `X`
+holds afterwards: the `Take` used to leave it nil, and now the producer
+never touches it, so it keeps what it had. Both halves of that are
+covered — the liveness pass says nothing reads it, and nothing releases a
+stale value out of it either, since the producer overwrote `X` without
+releasing it and a live value there would have leaked in the original
+code. A jump landing on the `Take` would reach it without the producer,
+so a jump target is never a candidate.
+
+**Fusing the borrow** is the fourth. `Move X, Y ; Retain X` is the only
+shape a `Retain` is ever emitted in (`store_into`'s not-owned arm writes
+both), so the pair becomes one `MoveRetain`, saving a dispatch on each.
+That opcode exists for the pass to emit; the compiler still writes the
+pair, which keeps the source it comes from readable.
+
+Deleting or rewriting an instruction is a pass over the finished `Chunk`,
+not a second emission: the seven pc-keyed tables (`code`'s jump operands,
+`positions`, `cleanups`, `slot_debug`, `temp_points`, `call_argpos`, the
+dense `call_targets`) move with it through one `pc → pc'` map, closed
+because bytecode is never serialized (§5.1) — a pc has no reader outside
+this compile. `while i < n { i = i + 1 }` drops from thirteen
+instructions a loop iteration to eight this way: three `Release`s (the
+loop carries only a `Long`) and the loop body's `OwnedMark`/`OwnedExit`
+pair (nothing in it constructs a droppable object). Over the tests and
+the language front ends together, the four passes take 736,777
+instructions to 701,179.
 
 ### 5.3 The opcode families
 
-148 opcodes, grouped:
+149 opcodes, grouped:
 
 | family | ops | notes |
 |---|---|---|
-| values | `LoadConst` `Move` `Take` `Retain` `Release` | §5.2 |
+| values | `LoadConst` `Move` `Take` `Retain` `Release` `MoveRetain` | §5.2; `MoveRetain` is the fused borrow the elision pass emits (§5.2.1) |
 | arithmetic, bitwise, comparison | `Neg` `Not` `Add` … `Pow` `MatMul` `BitAnd` … `Shr` `BitNot` `Eq` … `Ge` `JumpIfSame` | each is one runtime dispatch, with the arithmetic and comparison ops deciding both-Long and both-numeric inline first (`Neg` its Long and Float arms); `d=1` on an arithmetic op marks a compound assignment's in-place Tensor step |
 | containers | `ArrayNew/Append/Push/Extend/Resize` `TupleNew/Push` `SetNew/Add` `ObjectNew/NewShaped/Set/SetAny/Merge` `SlotInit` `RangeNew` `ChkLong` | the container absorbs the element's `+1`; `SlotInit` is `ObjectSet` by slot index for a literal whose Shape was pre-built (§5.3.5) |
 | access | `Index` `IndexWr` `IndexCo` `IndexSet` `PropSet` `PropWr` `PropCo` `PropVal` `PropRaw` `HasProp` `NsWrChk` `NilChk` | read / write / coalescing-write forms of subscript and property access; `PropVal` is a plain property read that may invoke a getter |

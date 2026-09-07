@@ -734,6 +734,13 @@ enum class Op : uint8_t {
                  // forced one drops into the same minimal break the JIT's
                  // `debugger` compiles to.
   Halt,
+  MoveRetain,    // regs[a] = regs[b]; retain it. The borrow idiom `Move`
+                 // + `Retain` in one instruction: every Retain the compiler
+                 // emits is the second half of that pair (store_into's
+                 // not-owned arm), so fusing them costs one opcode and saves
+                 // a dispatch on each. Emitted by the elision pass, never by
+                 // the compiler itself, which keeps the pair readable in the
+                 // source it comes from.
 };
 
 struct Insn {
@@ -3377,17 +3384,36 @@ struct Unsupported {
 // leaves a state that is optimistic rather than conservative. `rc_successors`
 // is therefore the one part that must track Lowering::lower_chunk's block
 // leaders op for op (see the note there).
+// One producer whose result can go straight where the `Take` after it was
+// going to put it: `code[at].a = dest`, and the Take itself is marked dead.
+struct Coalesce {
+  uint32_t at;
+  int32_t dest;
+};
+
 struct RcPlan {
   // Per chunk, one byte per instruction: 1 where the instruction is dead —
-  // provably a no-op — and may be deleted. Two analyses fill this in, over
-  // disjoint op sets (Release/Retain; OwnedMark/OwnedExit), so their answers
-  // just OR together into one plan (plan_dead_code below).
+  // provably a no-op — and may be deleted. Three analyses fill this in, over
+  // disjoint op sets (Release/Retain; OwnedMark/OwnedExit; the `Take` a
+  // producer can absorb), so their answers just OR together into one plan.
   std::vector<std::vector<char>> dead;
+  // Per chunk, the destination rewrites the third one asks for. A rewrite,
+  // not a delete, so it rides beside `dead` rather than in it.
+  std::vector<std::vector<Coalesce>> coalesce;
+  // Per chunk, the `Move` pcs that become `MoveRetain`, absorbing the
+  // `Retain` after them (which `dead` carries).
+  std::vector<std::vector<uint32_t>> fuse;
 
   bool any() const {
-    return std::any_of(dead.begin(), dead.end(), [](const std::vector<char>& d) {
-      return std::find(d.begin(), d.end(), 1) != d.end();
-    });
+    bool rewrites =
+        std::any_of(coalesce.begin(), coalesce.end(),
+                    [](const std::vector<Coalesce>& v) { return !v.empty(); }) ||
+        std::any_of(fuse.begin(), fuse.end(),
+                    [](const std::vector<uint32_t>& v) { return !v.empty(); });
+    return rewrites ||
+           std::any_of(dead.begin(), dead.end(), [](const std::vector<char>& d) {
+             return std::find(d.begin(), d.end(), 1) != d.end();
+           });
   }
 };
 
@@ -3518,6 +3544,7 @@ inline void rc_apply(const Chunk& c, const Insn& in, RcWords& out,
                     static_cast<int8_t>(c.consts[in.b].tag)));
       break;
     case Op::Move:
+    case Op::MoveRetain:  // the retain changes a refcount, not a slot's class
     case Op::Neg: set(in.a, unknown(in.b)); break;
     case Op::Take:
       set(in.a, unknown(in.b));
@@ -3581,13 +3608,16 @@ inline void rc_reads(const Insn& in, Read read, ReadAll read_all) {
     case Op::BoundPos:
     case Op::DbgStmt:
     case Op::DeferMark:
+    case Op::NsGet:    // the name is a constant, the +1 lands in `a`
     case Op::Halt: break;
     case Op::OwnedExit: break;  // marks[a], not regs[a]
     case Op::Move:
+    case Op::MoveRetain:
     case Op::Take:
     case Op::Neg:
     case Op::Not:
     case Op::ToFloat:
+    case Op::CellGet:  // the cell pointer; the value inside is not a slot
     case Op::BitNot: read(in.b); break;
     case Op::Retain:
     case Op::Release:
@@ -3624,6 +3654,18 @@ inline void rc_reads(const Insn& in, Read read, ReadAll read_all) {
     case Op::ForDispose:
     case Op::ForPrep:
     case Op::ForLoop: run(in.a); break;
+    // A call reads the callee and the run it hands over — the same two
+    // things rc_apply writes back (the result, and the run it leaves nil).
+    // `CallM`'s receiver sits at `c`, one ahead of its arguments, so its run
+    // is one wider. Nothing else of this frame reaches the callee: it runs
+    // on registers of its own.
+    case Op::Call:
+    case Op::CallM: {
+      read(in.b);
+      const int32_t last = in.c + in.d - (in.op == Op::Call ? 1 : 0);
+      for (int32_t r = in.c; r <= last; ++r) read(r);
+      break;
+    }
     default: read_all(); break;
   }
 }
@@ -3658,9 +3700,53 @@ inline int32_t rc_single_write(const Insn& in) {
     case Op::Mul:
     case Op::Div:
     case Op::Mod:
+    case Op::CellGet:
+    case Op::NsGet:
+    case Op::MoveRetain:
     case Op::Release:  // nils it
     case Op::Take: return in.a;
     default: return -1;
+  }
+}
+
+// Is `.a` a pure destination for this op — a slot it only writes, never also
+// reads, and never a base some other slot is addressed off? Then handing it a
+// different destination is the whole of what redirecting the result means.
+//
+// Safety is in the default again: an op not named here is never coalesced.
+// Each of these was read off Exec's own switch. `Call`/`CallM` also nil their
+// argument run, which is why their case carries one extra condition at the
+// use site — everything else here writes `.a` and nothing more.
+inline bool coalesce_dest_is_a(Op op) {
+  switch (op) {
+    case Op::LoadConst:
+    case Op::Move:
+    case Op::Neg:
+    case Op::Not:
+    case Op::ToFloat:
+    case Op::BitNot:
+    case Op::Add:
+    case Op::Sub:
+    case Op::Mul:
+    case Op::Div:
+    case Op::Mod:
+    case Op::Eq:
+    case Op::Ne:
+    case Op::Lt:
+    case Op::Le:
+    case Op::Gt:
+    case Op::Ge:
+    case Op::BitAnd:
+    case Op::BitOr:
+    case Op::BitXor:
+    case Op::Shl:
+    case Op::Shr:
+    case Op::HasProp:
+    case Op::CellGet:
+    case Op::NsGet:
+    case Op::Call:
+    case Op::CallM: return true;
+    default: return false;
   }
 }
 
@@ -3677,7 +3763,9 @@ struct RcScratch {
 };
 
 // One chunk's decisions, in emission order.
-inline std::vector<char> rc_plan_for_chunk(const Chunk& c, RcScratch& s) {
+inline std::vector<char> rc_plan_for_chunk(const Chunk& c, RcScratch& s,
+                                          std::vector<Coalesce>& out_coalesce,
+                                          std::vector<uint32_t>& out_fuse) {
   const size_t n = c.code.size();
   const size_t slots = static_cast<size_t>(c.num_slots);
   std::vector<char> dead(n, 0);
@@ -3849,6 +3937,72 @@ inline std::vector<char> rc_plan_for_chunk(const Chunk& c, RcScratch& s) {
       continue;  // its nil is read before it is overwritten
     dead[pc] = 1;
   }
+
+  // Destination coalescing: `<producer> X ; Take Y, X` is the shape two
+  // thirds of every Take is in — an expression computes into the temp the
+  // compiler minted for it, and the very next instruction moves that temp
+  // where the value actually belongs. The producer can write Y itself.
+  //
+  // What changes is what X holds afterwards: the Take used to leave it nil,
+  // and now the producer never touches it, so it keeps whatever it had
+  // before. That is safe on both counts. Nothing READS it — the liveness
+  // pass above says so, and that is the condition checked here. And nothing
+  // RELEASES a stale value out of it either: the producer overwrote X
+  // without releasing it, so whatever was there was already dead by the
+  // compiler's own reckoning (a live value there would have leaked in the
+  // original code, before any of this).
+  //
+  // A jump landing on the Take would reach it without the producer having
+  // run, and then the move is the whole point of the instruction — so a
+  // target is never a candidate.
+  {
+    std::vector<char> is_target(n, 0);
+    for (size_t pc = 0; pc < n; ++pc) {
+      auto sc = rc_successors(c.code[pc]);
+      if (sc.target >= 0 && static_cast<size_t>(sc.target) < n)
+        is_target[static_cast<size_t>(sc.target)] = 1;
+    }
+    for (size_t pc = 0; pc + 1 < n; ++pc) {
+      const Insn& prod = c.code[pc];
+      const Insn& take = c.code[pc + 1];
+      if (take.op != Op::Take || !coalesce_dest_is_a(prod.op)) continue;
+      if (dead[pc] || dead[pc + 1]) continue;  // already going away
+      if (is_target[pc + 1] || !s.reached[pc]) continue;
+      const int32_t x = prod.a, y = take.a;
+      if (take.b != x || x == y) continue;
+      if (x < 0 || static_cast<size_t>(x) >= slots) continue;
+      if (y < 0 || static_cast<size_t>(y) >= slots) continue;
+      // X must be dead after the Take: nothing may observe that it now
+      // keeps its old value instead of the nil the Take left.
+      if (rc_unknown(s.live, (pc + 1) * words, static_cast<size_t>(x)))
+        continue;
+      // A call nils its argument run on the way out, before storing the
+      // result; keep the new destination clear of that run rather than
+      // reason about the order.
+      if ((prod.op == Op::Call || prod.op == Op::CallM) &&
+          y >= prod.c && y <= prod.c + prod.d)
+        continue;
+      out_coalesce.push_back({static_cast<uint32_t>(pc), y});
+      dead[pc + 1] = 1;
+    }
+
+    // `Move X, Y ; Retain X` is the borrow idiom, and it is the ONLY shape a
+    // Retain is emitted in (store_into's not-owned arm writes both). Fusing
+    // the pair into one instruction saves a dispatch on each; the fused op
+    // does exactly what the two did, in the same order.
+    //
+    // A jump landing on the Retain would reach it without the Move — the
+    // retain would then apply to whatever X already held — so a target is
+    // never a candidate, the same condition the coalescing above checks.
+    for (size_t pc = 0; pc + 1 < n; ++pc) {
+      if (c.code[pc].op != Op::Move || c.code[pc + 1].op != Op::Retain)
+        continue;
+      if (c.code[pc + 1].a != c.code[pc].a) continue;
+      if (dead[pc] || dead[pc + 1] || is_target[pc + 1]) continue;
+      out_fuse.push_back(static_cast<uint32_t>(pc));
+      dead[pc + 1] = 1;
+    }
+  }
   return dead;
 }
 
@@ -3908,6 +4062,7 @@ inline bool owned_registers(Op op) {
     case Op::DeferMark:
     case Op::LoadConst:
     case Op::Move:
+    case Op::MoveRetain:
     case Op::Take:
     case Op::Retain:
     case Op::Release:
@@ -3960,11 +4115,17 @@ inline void owned_plan_for_chunk(const Chunk& c, std::vector<char>& dead) {
 inline RcPlan plan_rc_elision(const VmProgram& p) {
   RcPlan plan;
   plan.dead.reserve(p.chunks.size());
+  plan.coalesce.reserve(p.chunks.size());
+  plan.fuse.reserve(p.chunks.size());
   rc_detail::RcScratch scratch;
   for (const Chunk& c : p.chunks) {
-    auto dead = rc_detail::rc_plan_for_chunk(c, scratch);
+    std::vector<Coalesce> co;
+    std::vector<uint32_t> fz;
+    auto dead = rc_detail::rc_plan_for_chunk(c, scratch, co, fz);
     owned_detail::owned_plan_for_chunk(c, dead);
     plan.dead.push_back(std::move(dead));
+    plan.coalesce.push_back(std::move(co));
+    plan.fuse.push_back(std::move(fz));
   }
   return plan;
 }
@@ -3986,9 +4147,18 @@ inline RcPlan plan_rc_elision(const VmProgram& p) {
 // what `at_or_after` gives it: deleting a no-op cannot change where control
 // arrives. The map is monotonic, so `call_argpos` stays sorted and the
 // cleanup nesting finalize_chunk computed by range containment still holds.
-inline void apply_rc_elision(Chunk& c, const std::vector<char>& dead) {
+inline void apply_rc_elision(Chunk& c, const std::vector<char>& dead,
+                             const std::vector<Coalesce>& coalesce,
+                             const std::vector<uint32_t>& fuse) {
   const size_t n = c.code.size();
   if (n == 0) return;
+  // The rewrites first, in the old numbering: each just redirects a
+  // producer's destination, or turns a Move into the fused MoveRetain, and
+  // the instruction it absorbs is in `dead`.
+  for (const auto& co : coalesce)
+    if (co.at < n) c.code[co.at].a = co.dest;
+  for (uint32_t at : fuse)
+    if (at < n) c.code[at].op = Op::MoveRetain;
   // at_or_after[pc] is where pc's instruction lands, or — for a deleted one —
   // where its successor lands. One extra entry so an end-exclusive range at
   // the very end maps too.
@@ -4056,8 +4226,11 @@ inline void apply_rc_elision(Chunk& c, const std::vector<char>& dead) {
 
 // Run the elision over a whole program.
 inline void apply_rc_elision(VmProgram& p, const RcPlan& plan) {
-  for (size_t ci = 0; ci < p.chunks.size() && ci < plan.dead.size(); ++ci)
-    apply_rc_elision(p.chunks[ci], plan.dead[ci]);
+  size_t n = std::min({p.chunks.size(), plan.dead.size(),
+                       plan.coalesce.size(), plan.fuse.size()});
+  for (size_t ci = 0; ci < n; ++ci)
+    apply_rc_elision(p.chunks[ci], plan.dead[ci], plan.coalesce[ci],
+                     plan.fuse[ci]);
 }
 // What a lane that calls baked preamble entries (stdlib_preamble.h) leaves
 // out of the unit, and what it has to hand back so the compile still sees
@@ -13169,8 +13342,8 @@ inline std::string dump(const Chunk& c) {
       "Safepoint", "DropSuppress",
       "BArity",    "LazyNsReg", "FnHandle",  "OwnedMark", "OwnedExit",
       "ReplCell",  "ReplBind",  "DbgStmt",
-      "Halt"};
-  static_assert(std::size(kNames) == static_cast<size_t>(Op::Halt) + 1);
+      "Halt",      "MoveRetain"};
+  static_assert(std::size(kNames) == static_cast<size_t>(Op::MoveRetain) + 1);
   std::string out;
   out += culebra::format("; slots: {}\n", c.num_slots);
   if (!c.capture_src_slots.empty()) {
@@ -13866,6 +14039,12 @@ struct Exec {
           break;
         case Op::Move:
           regs[in.a] = regs[in.b];
+          ++pc;
+          break;
+        case Op::MoveRetain:  // Move + Retain, fused by the elision pass
+          regs[in.a] = regs[in.b];
+          culebra_runtime_value_retain(static_cast<int8_t>(regs[in.a].tag),
+                                       regs[in.a].data);
           ++pc;
           break;
         case Op::Take:

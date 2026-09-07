@@ -505,8 +505,25 @@ unwindパスからは決して見えない）ので、呼び出し命令を越�
 かつてネストしていた本体は次のラウンドではフラットなコードとして
 読まれ、それを囲む外側の対も削除可能になり得る。
 
-命令の削除は完成した`Chunk`への1回のpassであって、2回目の発行では
-ない: pcを持つ7つの表（`code`のjumpオペランド、`positions`、
+**行き先の合体**が3つ目で、これは参照カウントの話ではない: `Take`の
+3分の2は`<producer> X ; Take Y, X`の後半である — 式がコンパイラの
+用意した一時スロットへ計算し、その次の命令がそれを値の本来の居場所へ
+移すだけ、という形だ。producerが直接`Y`へ書けばよい。変わるのは以降
+`X`が何を持つかで、`Take`はそこをnilにしていたが、今やproducerが触ら
+ないので以前の値を持ったままになる。その両面とも押さえてある —
+liveness解析が「誰も読まない」と言い、かつ古い値が解放されることも
+ない（producerは`X`を解放せずに上書きしていたのだから、そこに生きた
+値があれば元のコードの時点で漏れていた）。`Take`に飛び込むjumpは
+producerを経ずに到達するので、jump先は決して候補にしない。
+
+**借用の融合**が4つ目。`Move X, Y ; Retain X`は`Retain`が発行される
+唯一の形（`store_into`の非所有の腕が両方を書く）なので、この対を1つの
+`MoveRetain`にしてディスパッチを1回ずつ節約する。このopcodeはpassが
+発行するために在り、コンパイラは今も対を書く — その方が元のソースとの
+対応が読める。
+
+命令の削除や書き換えは完成した`Chunk`への1回のpassであって、2回目の
+発行ではない: pcを持つ7つの表（`code`のjumpオペランド、`positions`、
 `cleanups`、`slot_debug`、`temp_points`、`call_argpos`、密な
 `call_targets`）は1つの`pc → pc'`写像とともに移動する。これが閉じて
 いるのは、bytecodeが一切シリアライズされない（§5.1）からで、pcには
@@ -514,14 +531,16 @@ unwindパスからは決して見えない）ので、呼び出し命令を越�
 これによってループ1反復あたり13命令から8命令へ減る: 3本の`Release`
 （このループはLongしか運ばない）と、ループ本体の`OwnedMark`/
 `OwnedExit`の対（中でdrop可能なオブジェクトを何も構築しない）である。
+testsと言語front endを合わせたコーパス全体では、4つのpassが
+736,777命令を701,179命令にする。
 
 ### 5.3 opcodeのファミリー
 
-148個のopcodeを分類すると:
+149個のopcodeを分類すると:
 
 | ファミリー | op | 備考 |
 |---|---|---|
-| 値 | `LoadConst` `Move` `Take` `Retain` `Release` | §5.2 |
+| 値 | `LoadConst` `Move` `Take` `Retain` `Release` `MoveRetain` | §5.2。`MoveRetain`はelision passが発行する融合された借用（§5.2.1） |
 | 算術・ビット演算・比較 | `Neg` `Not` `Add` … `Pow` `MatMul` `BitAnd` … `Shr` `BitNot` `Eq` … `Ge` `JumpIfSame` | それぞれ1回のランタイムdispatch。算術と比較のopは両Long・両数値の腕をまずinlineで決める（`Neg`はLongとFloatの腕）。算術opの`d=1`は複合代入のin-place Tensorステップを示す |
 | コンテナ | `ArrayNew/Append/Push/Extend/Resize` `TupleNew/Push` `SetNew/Add` `ObjectNew/NewShaped/Set/SetAny/Merge` `SlotInit` `RangeNew` `ChkLong` | コンテナは要素の`+1`を吸収する。`SlotInit`はShapeを事前構築したリテラル向けの、スロット番号による`ObjectSet`（§5.3.5） |
 | アクセス | `Index` `IndexWr` `IndexCo` `IndexSet` `PropSet` `PropWr` `PropCo` `PropVal` `PropRaw` `HasProp` `NsWrChk` `NilChk` | 添字とプロパティアクセスの読み/書き/coalescing-write形。`PropVal`はgetterを呼ぶこともある素のプロパティ読み取り |
