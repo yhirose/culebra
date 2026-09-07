@@ -1,6 +1,18 @@
 Contributing to Culebra
 =======================
 
+Proposing a feature
+-------------------
+
+New syntax, a new standard-library namespace or type, or a change to
+existing semantics goes through an RFC first: a short document answering
+a fixed set of questions, reviewed as its own PR before any
+implementation. Bug fixes, docs, refactors and tests don't need one.
+
+Copy [`rfcs/template.md`](rfcs/template.md) to `rfcs/0000-<slug>.md`,
+fill it in, and open a PR with that one file.
+[`rfcs/README.md`](rfcs/README.md) explains the rest.
+
 Building from source
 --------------------
 

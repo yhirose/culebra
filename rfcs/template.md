@@ -1,28 +1,11 @@
 <!--
-How to use this file
+Copy this file to rfcs/0000-<slug>.md (a literal "0000") and replace
+every [bracketed] instruction with your answer. Open a PR containing
+that one file and nothing else.
 
-Copy it to rfcs/0000-<slug>.md (a literal "0000" — don't try to guess
-the real number, and don't wait for one) and replace every [bracketed]
-instruction with your answer. Open a PR with that file against rfcs/,
-not docs/ — see the note at the end of this comment. Discussion happens
-as review comments on the PR.
-
-On merge, in the same PR: rename the file to the next number actually
-free in rfcs/ and set Status to whatever was decided. Rejected and
-Deferred proposals get merged too, with that Status, so the reasoning
-stays on record rather than vanishing with a closed PR. If two RFC PRs
-are open at once and both land on "0000", whichever merges second just
-renumbers past the other.
-
-For what a finished one looks like, see example-state-machine.md (a
-feature that stayed entirely in a preamble) and
-example-algebraic-effects.md (a feature that needed core changes).
-
-Why rfcs/ and not docs/: `just doctest` walks docs/ recursively and
-runs every fenced `culebra` block with a `# =>` marker against the
-current build. A syntax proposal's examples are usually for syntax that
-doesn't exist yet, so putting them under docs/ would break that gate
-for as long as the PR is open.
+README.md in this directory has the rest: when a proposal needs an RFC,
+how numbering and Status work, where prototype code and supplementary
+material go, and two filled-in examples.
 -->
 
 # RFC 0000: [title]
