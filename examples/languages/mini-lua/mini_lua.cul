@@ -196,12 +196,31 @@ fn mt_key() {
 }
 
 # The metamethod for a binary event, taken from the left operand and then
-# the right -- Lua's order.
-fn binary_mm(f, event) {
+# the right -- Lua's order. `slot` holds the left one so the walk that found
+# it does not run again to answer with it.
+fn binary_mm(f, slot, event) {
+  m.block(
+    [
+      m.assign('local', slot, call_rt(f, '__mm', [L(0), event], AT), AT),
+      m.make_if_else(
+        is_type(L(slot), 'nil'),
+        call_rt(f, '__mm', [L(1), event], AT),
+        L(slot),
+        AT,
+      ),
+    ],
+    AT,
+  )
+}
+
+# Only a table carries a metamethod, so the probe above is worth making only
+# when one of the operands is one. Two numbers take neither branch and pay
+# one test rather than a pair of walks.
+fn either_is_table(f) {
   m.make_if_else(
-    is_type(call_rt(f, '__mm', [L(0), event], AT), 'nil'),
-    call_rt(f, '__mm', [L(1), event], AT),
-    call_rt(f, '__mm', [L(0), event], AT),
+    is_type(L(0), 'map'),
+    m.bool_literal(true, AT),
+    is_type(L(1), 'map'),
     AT,
   )
 }
@@ -245,7 +264,7 @@ fn runtime() {
   # refuses the comparison; and two tables are equal only when they are the
   # same table, which is `same` rather than `eq` -- the VM refuses that one
   # too.
-  rt_func('__eq', 2, 3, fn (f) {
+  rt_func('__eq', 2, 4, fn (f) {
     m.block(
       [
         # Lua's two number types compare across the line -- 1 == 1.0 -- so
@@ -275,7 +294,7 @@ fn runtime() {
                 AT,
               ),
               # two different tables are equal only if __eq says so
-              m.assign('local', 2, binary_mm(f, S('__eq')), AT),
+              m.assign('local', 2, binary_mm(f, 3, S('__eq')), AT),
               m.make_if(
                 not_of(is_type(L(2), 'nil')),
                 ret(call_rt(f, '__truthy', [one(
@@ -311,17 +330,26 @@ fn runtime() {
   # `a + b` on a table is whichever operand carries the metamethod, which
   # is Lua's rule for every binary event
   for (nm, op) in [('__add', 'add'), ('__sub', 'sub'), ('__mul', 'mul')] {
-    rt_func(nm, 2, 3, fn (f) {
+    rt_func(nm, 2, 4, fn (f) {
       m.block(
         [
-          m.assign('local', 2, binary_mm(f, S(nm)), AT),
           m.make_if(
-            not_of(is_type(L(2), 'nil')),
-            ret(one(
-              f,
-              m.call_value(L(2), [m.array_lit([L(0), L(1)], AT)], AT),
+            either_is_table(f),
+            m.block(
+              [
+                m.assign('local', 2, binary_mm(f, 3, S(nm)), AT),
+                m.make_if(
+                  not_of(is_type(L(2), 'nil')),
+                  ret(one(
+                    f,
+                    m.call_value(L(2), [m.array_lit([L(0), L(1)], AT)], AT),
+                    AT,
+                  )),
+                  AT,
+                ),
+              ],
               AT,
-            )),
+            ),
             AT,
           ),
           ret(m.binary(op, L(0), L(1), AT)),
@@ -429,52 +457,6 @@ fn runtime() {
   # are different keys in Lua, so a number is stored under "n1" and a string
   # under "s1". Nothing else in the front end has to know that.
   # whether a rendered number already shows it is a float
-  rt_func('__hasfrac', 1, 3, fn (f) {
-    m.block(
-      [
-        m.assign('local', 1, m.literal(0, AT), AT),
-        m.assign('local', 2, m.intrinsic('len', [L(0)], AT), AT),
-        m.make_while(
-          m.binary('lt', L(1), L(2), AT),
-          m.block(
-            [
-              m.make_if(
-                m.make_if_else(
-                  m.binary(
-                    'eq',
-                    m.intrinsic('strbyte', [L(0), L(1)], AT),
-                    m.literal(46, AT),
-                    AT,
-                  ),
-                  m.bool_literal(true, AT),
-                  m.binary(
-                    'eq',
-                    m.intrinsic('strbyte', [L(0), L(1)], AT),
-                    m.literal(101, AT),
-                    AT,
-                  ),
-                  AT,
-                ),
-                ret(m.bool_literal(true, AT)),
-                AT,
-              ),
-              m.assign(
-                'local',
-                1,
-                m.binary('add', L(1), m.literal(1, AT), AT),
-                AT,
-              ),
-            ],
-            AT,
-          ),
-          AT,
-        ),
-        ret(m.bool_literal(false, AT)),
-      ],
-      AT,
-    )
-  })
-
   rt_func('__newtable', 0, 0, fn (f) {
     ret(m.intrinsic('mapnew', [], AT))
   })
@@ -727,7 +709,9 @@ fn runtime() {
       AT,
     ))
   })
-  # `{f()}` puts every value f answered into the table, from `start` on
+  # `{f()}` puts every value f answered into the table, from `start` on.
+  # Raw, like the constructor that calls it: a table this new has no
+  # metatable for __newindex to be found on.
   rt_func('__spread', 3, 4, fn (f) {
     m.block(
       [
@@ -738,7 +722,7 @@ fn runtime() {
             [
               call_rt(
                 f,
-                '__set',
+                '__rawset',
                 [
                   L(0),
                   m.binary('add', L(1), L(3), AT),
@@ -900,9 +884,8 @@ fn runtime() {
 
 mut m = nil
 mut rs = nil
-mut funcs = []       # per func: {name, params, body, node}
-mut nslots = []      # per func: locals handed out
-mut scope_base = []  # per func: where its own scopes start on the one stack
+mut funcs = []   # per func: {name, params, body, node}
+mut nslots = []  # per func: locals handed out
 mut root_fn = -1
 mut g_var = -1       # the root frame's binding for the globals table
 mut globals_fn = {}  # prelude func name -> its func id
@@ -915,24 +898,22 @@ mut chunk = ''       # the program's name, as `error` reports it
 
 let AT = {line: 1, column: 1}
 
+# Only the name outlives the walk; a func's body and node are held by the
+# tables beside it, keyed by func id.
 fn new_func(name, node, parent) {
   let f = funcs.size()
-  funcs.push({name: name, params: [], mut body: nil, mut node: node})
+  funcs.push({name: name})
   rs.new_fn(cond {
     parent == nil => -1,
     _ => parent,
   })
   rs.set_func_index(f, f)
   nslots.push(0)
-  scope_base.push(-1)
   f
 }
 
 fn enter_scope(f) {
   rs.push_scope()
-  if scope_base[f] == -1 {
-    scope_base[f] = rs.depth() - 1
-  }
 }
 
 fn leave_scope(f) {
@@ -983,29 +964,18 @@ fn luafn(gname, nlocals, build) {
 # the control -- which keeps a step O(1) instead of a search.
 fn register_iterators() {
   # everything after the first value: what pcall and the coroutine calls
-  # hand on to the function they are given
-  rt_func('__rest', 1, 3, fn (f) {
+  # hand on to the function they are given. An empty list has no tail, and
+  # the slice would refuse [1, 0), so that case answers directly.
+  rt_func('__rest', 1, 2, fn (f) {
     m.block(
       [
-        m.assign('local', 1, m.array_lit([], AT), AT),
-        m.assign('local', 2, m.literal(1, AT), AT),
-        m.make_while(
-          m.binary('lt', L(2), m.intrinsic('len', [L(0)], AT), AT),
-          m.block(
-            [
-              m.intrinsic('arraypush', [L(1), m.index(L(0), L(2), AT)], AT),
-              m.assign(
-                'local',
-                2,
-                m.binary('add', L(2), m.literal(1, AT), AT),
-                AT,
-              ),
-            ],
-            AT,
-          ),
+        m.assign('local', 1, m.intrinsic('len', [L(0)], AT), AT),
+        ret(m.make_if_else(
+          m.binary('gt', L(1), m.literal(0, AT), AT),
+          m.intrinsic('arrayslice', [L(0), m.literal(1, AT), L(1)], AT),
+          m.array_lit([], AT),
           AT,
-        ),
-        ret(L(1)),
+        )),
       ],
       AT,
     )
@@ -1369,9 +1339,6 @@ let lua_raw_tables = [(
 
 fn register_library() {
   register_iterators()
-  # `error` is reachable as a value, and the prefix a direct call passes is
-  # simply missing there -- the one place this differs from Lua
-  globals_fn['lua:error'] = globals_fn['lua:$error']
   for (gname, helper, arity) in lib_globals {
     adapter(gname, helper, arity)
   }
@@ -1616,7 +1583,7 @@ fn scan_closure(f, name, funcbody, at, has_self) {
     self_v[g] = declare(g, 'self', at)
   }
   for prm in funcbody.nodes[0].nodes {
-    funcs[g].params.push(scan_declare(g, prm))
+    scan_declare(g, prm)
   }
   scan_block(g, funcbody.nodes[1])
   leave_scope(g)
@@ -1642,10 +1609,6 @@ fn scan_exprs(f, list) {
 
 fn scan_expr(f, node) {
   match node {
-    {name: 'number'} => nil,
-    {name: 'float'} => nil,
-    {name: 'string'} => nil,
-    {name: 'literal'} => nil,
     {name: 'ident'} => scan_name(f, node),
     {
       name: 'funcexpr',
@@ -1680,13 +1643,22 @@ fn scan_table(f, nodes) {
 }
 
 fn scan_args(f, nodes) {
+  for a in arg_nodes(nodes) {
+    scan_expr(f, a)
+  }
+}
+
+# The expressions inside a call's argument list, which both passes walk.
+fn arg_nodes(nodes) {
+  mut out = []
   for n in nodes {
     if n.name == 'args' {
       for a in n.nodes {
-        scan_expr(f, a)
+        out.push(a)
       }
     }
   }
+  out
 }
 
 fn scan_suffixed(f, nodes) {
@@ -1707,7 +1679,6 @@ fn scan_stmt(f, node) {
     {name: 'emptystmt'} => nil,
     {name: 'breakstat'} => nil,
     {name: 'callstmt', nodes: [inner]} => scan_expr(f, inner),
-    {name: 'suffixedexp', nodes} => scan_suffixed(f, nodes),
     {name: 'localdecl', nodes} => {
       # the values are read before the names exist, so `local x = x` reads
       # the outer x
@@ -1798,22 +1769,18 @@ fn scan_if(f, nodes, i) {
   }
 }
 
+# A suffixedexp with no suffix collapses in the AST, so a bare name arrives
+# as the ident itself and never as a one-child chain.
 fn scan_target(f, t) {
   if t.name == 'ident' {
     return scan_name(f, t)
   }
-  let parts = t.nodes
-  cond {
-    parts.size() == 1 && parts[0].name == 'ident' => scan_name(f, parts[0]),
-    _ => {
-      scan_expr(f, parts[0])
-      for i in range(1, parts.size()) {
-        let sfx = parts[i]
-        if sfx.name == 'indexsfx' {
-          scan_expr(f, sfx.nodes[0])
-        }
-      }
-    },
+  scan_expr(f, t.nodes[0])
+  for i in range(1, t.nodes.size()) {
+    let sfx = t.nodes[i]
+    if sfx.name == 'indexsfx' {
+      scan_expr(f, sfx.nodes[0])
+    }
   }
 }
 
@@ -1872,10 +1839,10 @@ fn emit_expr(f, node) {
     # the second when the first does not already decide
     {name: 'orexp', nodes} => emit_shortcut(f, nodes, true, node),
     {name: 'andexp', nodes} => emit_shortcut(f, nodes, false, node),
-    {name: 'cmpexp', nodes} => emit_binchain(f, nodes),
-    {name: 'concatexp', nodes} => emit_concat(f, nodes, node),
-    {name: 'addexp', nodes} => emit_binchain(f, nodes),
-    {name: 'mulexp', nodes} => emit_binchain(f, nodes),
+    {name: 'cmpexp', nodes} => emit_binchain(f, nodes, nil),
+    {name: 'concatexp', nodes} => emit_binchain(f, nodes, '__cat'),
+    {name: 'addexp', nodes} => emit_binchain(f, nodes, nil),
+    {name: 'mulexp', nodes} => emit_binchain(f, nodes, nil),
     {name: 'suffixedexp', nodes} => emit_suffixed(f, nodes, node, false),
     {name: 'tablector', nodes} => emit_table(f, nodes, node),
     {name: 'funcexpr', nodes: [body]} => emit_closure(f, body, node),
@@ -1883,20 +1850,30 @@ fn emit_expr(f, node) {
   }
 }
 
-fn emit_binchain(f, nodes) {
+# `a + b + c` and `a .. b .. c` are the same fold; `..` is not captured as a
+# token node, so its helper is passed in rather than read off the operator.
+fn emit_binchain(f, nodes, fixed) {
   let [head, ...rest] = nodes
   mut acc = emit_expr(f, head)
-  for [op, operand] in rest.iter().chunks(2) {
-    acc = call_rt(f, binop_rt[op.token], [acc, emit_expr(f, operand)], op)
+  let step = cond {
+    fixed == nil => 2,
+    _ => 1,
   }
-  acc
-}
-
-fn emit_concat(f, nodes, at) {
-  let [head, ...rest] = nodes
-  mut acc = emit_expr(f, head)
-  for r in rest {
-    acc = call_rt(f, '__cat', [acc, emit_expr(f, r)], at)
+  for chunk in rest.iter().chunks(step) {
+    let operand = chunk[step - 1]
+    let at = cond {
+      fixed == nil => chunk[0],
+      _ => operand,
+    }
+    acc = call_rt(
+      f,
+      cond {
+        fixed == nil => binop_rt[chunk[0].token],
+        _ => fixed,
+      },
+      [acc, emit_expr(f, operand)],
+      at,
+    )
   }
   acc
 }
@@ -1978,7 +1955,7 @@ fn genv(f, node) {
 # takes off the stack and this front end takes off the source. The prefix is
 # an extra argument the binder appends at a direct call to the global name;
 # `error` reached any other way raises the value unchanged.
-fn is_error_call(f, nodes) {
+fn is_error_call(nodes) {
   nodes.size() == 2 &&
     nodes[0].name == 'ident' &&
     nodes[0].token == 'error' &&
@@ -1987,7 +1964,7 @@ fn is_error_call(f, nodes) {
 }
 
 fn emit_suffixed(f, nodes, at, all) {
-  if is_error_call(f, nodes) {
+  if is_error_call(nodes) {
     return call_rt(
       f,
       '__callv',
@@ -2082,19 +2059,13 @@ fn trim(f, call, keep, at) {
 }
 
 fn emit_args(f, nodes, at) {
-  mut out = []
-  for n in nodes {
-    if n.name == 'args' {
-      for a in n.nodes {
-        out.push(a)
-      }
-    }
-  }
-  emit_multi(f, out, at)
+  emit_multi(f, arg_nodes(nodes), at)
 }
 
 # --- Tables -----------------------------------------------------------------
 
+# Every field of a constructor is written raw: the table was made one
+# statement ago, so there is no metatable for __newindex to live on.
 fn emit_table(f, nodes, at) {
   let slot = new_scratch(f)
   mut ids = [m.assign('local', slot, call_rt(f, '__newtable', [], at), at)]
@@ -2108,7 +2079,7 @@ fn emit_table(f, nodes, at) {
         nodes: [k, v],
       } => ids.push(call_rt(
         f,
-        '__set',
+        '__rawset',
         [t, emit_expr(f, k), emit_expr(f, v)],
         fld,
       )),
@@ -2117,7 +2088,7 @@ fn emit_table(f, nodes, at) {
         nodes: [k, v],
       } => ids.push(call_rt(
         f,
-        '__set',
+        '__rawset',
         [t, m.str_literal(k.token, fld), emit_expr(f, v)],
         fld,
       )),
@@ -2134,7 +2105,7 @@ fn emit_table(f, nodes, at) {
         _ => {
           ids.push(call_rt(
             f,
-            '__set',
+            '__rawset',
             [t, m.literal(idx, fld), emit_expr(f, fld)],
             fld,
           ))
@@ -2194,7 +2165,6 @@ fn emit_stmt(f, node) {
   match node {
     {name: 'emptystmt'} => nil,
     {name: 'callstmt', nodes: [inner]} => emit_expr(f, inner),
-    {name: 'suffixedexp'} => emit_expr(f, node),
     {name: 'localdecl', nodes} => {
       let names = nodes[0].nodes
       mut ids = []

@@ -1651,18 +1651,8 @@ function __init_string(G) {
     if (x > y) { var z = x; x = y; y = z; }
     return __substr(t, x, y);
   });
-  __def(P, 'toUpperCase', function (t) {
-    var out = '';
-    var i = 0;
-    while (i < __len(t)) { var c = t[i]; out = out + (c >= 'a' && c <= 'z' ? __G.chars[__G.codes[c] - 32] : c); i = i + 1; }
-    return out;
-  });
-  __def(P, 'toLowerCase', function (t) {
-    var out = '';
-    var i = 0;
-    while (i < __len(t)) { var c = t[i]; out = out + (c >= 'A' && c <= 'Z' ? __G.chars[__G.codes[c] + 32] : c); i = i + 1; }
-    return out;
-  });
+  __def(P, 'toUpperCase', function (t) { return __strupper(t); });
+  __def(P, 'toLowerCase', function (t) { return __strlower(t); });
   __def(P, 'trim', function (t) { return __trim(t); });
   __def(P, 'repeat', function (t, n) { return __repeat(t, __toint_safe(__tonum(n))); });
   __def(P, 'split', function (t, sep) {
@@ -2583,6 +2573,8 @@ let intrinsics = {
   __arraypop: 'arraypop',
   __objecthas: 'objecthas',
   __objectkeys: 'objectkeys',
+  __strupper: 'strupper',
+  __strlower: 'strlower',
   __objectremove: 'objectremove',
   __same: 'same',
   __argcount: 'argcount',
@@ -3787,7 +3779,7 @@ fn emit_binop(m, f, tok, l, r, at) {
 
 # `!v` over a value the VM's own test understands
 fn ir_not(m, v, at) {
-  ir.make_if_else(v, ir.bool_literal(false, at), ir.bool_literal(true, at), at)
+  ir.unary('not', v, at)
 }
 
 # `typeof v == 'nil'` -- how the compiler asks "is this undefined?", since

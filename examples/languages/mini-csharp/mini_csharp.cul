@@ -195,8 +195,10 @@ fn ret(v) {
   m.make_return(v, AT)
 }
 
-fn not_of(v) {
-  m.unary('not', v, AT)
+# The position defaults because most of the runtime has none to give; the
+# emitter passes the node it is lowering.
+fn not_of(v, at = AT) {
+  m.unary('not', v, at)
 }
 
 fn is_type(v, t) {
@@ -293,12 +295,8 @@ fn runtime() {
     )
   })
   # 'a'..'z' is 97..122; subtracting 32 is the same letter in upper case.
-  # ASCII case, which the IR answers directly
-  rt_func('$upper', 1, 1, fn (f) {
-    ret(m.intrinsic('strupper', [L(0)], AT))
-  })
 
-  rt_func('$find', 2, 3, fn (f) {
+  rt_func('$find', 2, 4, fn (f) {
     m.block(
       [
         m.assign('local', 2, m.index(L(0), cls_key(), AT), AT),
@@ -306,15 +304,12 @@ fn runtime() {
           not_of(is_type(L(2), 'nil')),
           m.block(
             [
-              m.make_if(
-                m.intrinsic(
-                  'objecthas',
-                  [m.index(L(2), S('methods'), AT), L(1)],
-                  AT,
-                ),
-                ret(m.index(m.index(L(2), S('methods'), AT), L(1), AT)),
-                AT,
-              ),
+              # a methods table only ever holds closures, so reading nil is
+              # the miss test and objecthas would be a second hash of the
+              # same name
+              m.assign('local', 3,
+                       m.index(m.index(L(2), S('methods'), AT), L(1), AT), AT),
+              m.make_if(not_of(is_type(L(3), 'nil')), ret(L(3)), AT),
               m.assign('local', 2, m.index(L(2), S('base'), AT), AT),
             ],
             AT,
@@ -403,13 +398,11 @@ mut name_v = {}         # a name -> the binding it means, -1 for anything else
 mut decl_v = {}         # a declaring name -> the binding it makes
 mut methods = {}        # "Class.Method" -> its func id
 mut method_of = {}      # a method body -> its func id
-mut class_names = {}    # every declared class name
 mut ctor_of = {}        # a class -> the func its `new` calls, or -1
 mut fields_of = {}      # a class -> the instance field names it declares
 mut statics_of = {}     # a class -> the static field names it declares
 mut base_of = {}        # a class -> the class it extends, or nil
 mut this_v = {}         # an instance method -> the binding of its `this`
-mut method_class = {}   # a func -> the class whose member it is
 mut static_method = {}  # a func -> whether it takes no `this`
 
 # A class is a Map the entry builds: its name, the class above it, and its
@@ -422,14 +415,6 @@ fn cls_key() {
 
 fn pkey(node) {
   "{node.line}:{node.column}"
-}
-
-fn enter_scope(f) {
-  rs.push_scope()
-}
-
-fn leave_scope(f) {
-  rs.pop_scope()
 }
 
 fn declare(f, name, node) {
@@ -478,7 +463,6 @@ let BUILTIN_CLASS = 'Exception'
 
 fn collect(root) {
   # every name first, so a class may extend one declared later in the file
-  class_names[BUILTIN_CLASS] = true
   fields_of[BUILTIN_CLASS] = ['Message']
   statics_of[BUILTIN_CLASS] = []
   field_decls_of[BUILTIN_CLASS] = []
@@ -501,7 +485,7 @@ fn collect(root) {
   )
   class_var[BUILTIN_CLASS] = declare(root_fn, BUILTIN_CLASS, root)
   for cls in class_decls(root) {
-    class_names[class_name(cls)] = true
+    class_var[class_name(cls)] = declare(root_fn, class_name(cls), cls)
   }
   for cls in class_decls(root) {
     let cname = class_name(cls)
@@ -510,7 +494,6 @@ fn collect(root) {
     field_decls_of[cname] = []
     ctor_of[cname] = -1
     base_of[cname] = base_name(cls)
-    class_var[cname] = declare(root_fn, cname, cls)
     for mem in members(cls) {
       match mem.name {
         'fielddecl' => {
@@ -525,7 +508,6 @@ fn collect(root) {
           let g = new_func("{cname}.{mname}", mem, root_fn)
           methods["{cname}.{mname}"] = g
           method_of[pkey(mem)] = g
-          method_class[g] = cname
           static_method[g] = is_static(mem)
           # an instance method takes `this` ahead of what it declares
           funcs[g].nparams = params_of(mem).size() + cond {
@@ -537,7 +519,6 @@ fn collect(root) {
           let g = new_func("{cname}..ctor", mem, root_fn)
           ctor_of[cname] = g
           method_of[pkey(mem)] = g
-          method_class[g] = cname
           funcs[g].nparams = params_of(mem).size() + 1
         },
       }
@@ -562,7 +543,7 @@ fn base_name(cls) {
     if c.name == 'baselist' {
       let n = type_token(c.nodes[0].nodes[0])
       return cond {
-        class_names.has(n) => n,
+        class_var.has(n) => n,
         _ => nil,
       }
     }
@@ -698,7 +679,7 @@ fn scan_program(root) {
         continue
       }
       let g = method_of[pkey(mem)]
-      enter_scope(g)
+      rs.push_scope()
       # an instance method's `this` is a parameter the source never writes
       if mem.name == 'ctordecl' || !is_static(mem) {
         this_v[g] = declare(g, 'this', mem)
@@ -713,17 +694,17 @@ fn scan_program(root) {
         }
       }
       scan_block(g, body_of(mem))
-      leave_scope(g)
+      rs.pop_scope()
     }
   }
 }
 
 fn scan_block(f, blk) {
-  enter_scope(f)
+  rs.push_scope()
   for st in blk.nodes {
     scan_stmt(f, st)
   }
-  leave_scope(f)
+  rs.pop_scope()
 }
 
 fn scan_stmt(f, node) {
@@ -767,12 +748,12 @@ fn scan_stmt(f, node) {
       for c in nodes {
         match c.name {
           'catchpart' => {
-            enter_scope(f)
+            rs.push_scope()
             if c.nodes.size() > 1 {
               scan_declare(f, c.nodes[1])
             }
             scan_stmt(f, c.nodes[c.nodes.size() - 1])
-            leave_scope(f)
+            rs.pop_scope()
           },
           'finallypart' => {
             let g = new_func('$finally', c, f)
@@ -787,24 +768,24 @@ fn scan_stmt(f, node) {
     # therefore captures it.
     {name: 'usingstmt', nodes: [ty, id, init, body]} => {
       scan_expr(f, init)
-      enter_scope(f)
+      rs.push_scope()
       let v = scan_declare(f, id)
       let g = new_func('$dispose', node, f)
       deferred_fn[pkey(node)] = g
       rs.use(v, g)
       scan_stmt(f, body)
-      leave_scope(f)
+      rs.pop_scope()
     },
     {name: 'foreachstmt', nodes: [ty, id, subject, body]} => {
       scan_expr(f, subject)
-      enter_scope(f)
+      rs.push_scope()
       scan_declare(f, id)
       scan_stmt(f, body)
-      leave_scope(f)
+      rs.pop_scope()
     },
     # the initialiser's binding is the loop's, so the whole `for` is a scope
     {name: 'forstmt', nodes: [ini, cnd, stp, body]} => {
-      enter_scope(f)
+      rs.push_scope()
       if !ini.nodes.empty() {
         let h = ini.nodes[0]
         cond {
@@ -822,7 +803,7 @@ fn scan_stmt(f, node) {
         scan_expr(f, stp.nodes[0].nodes[0])
       }
       scan_stmt(f, body)
-      leave_scope(f)
+      rs.pop_scope()
     },
     _ => fail(node, "cannot execute {node.name}"),
   }
@@ -830,15 +811,6 @@ fn scan_stmt(f, node) {
 
 fn scan_expr(f, node) {
   match node {
-    {name: 'integer'} => nil,
-    {name: 'real'} => nil,
-    {name: 'str'} => nil,
-    {name: 'charlit'} => nil,
-    {name: 'boollit'} => nil,
-    {name: 'nulllit'} => nil,
-    {name: 'thisref'} => nil,
-    {name: 'baseref'} => nil,
-    {name: 'interptext'} => nil,
     {name: 'ident'} => scan_name(f, node),
     {name: 'newobj', nodes} => {
       if !BUILTIN_NEW.has(type_token(nodes[0])) {
@@ -877,7 +849,7 @@ fn scan_call_edge(f, nodes) {
       }
       return nil
     }
-    if nodes[0].name == 'ident' && class_names.has(nodes[0].token) {
+    if nodes[0].name == 'ident' && class_var.has(nodes[0].token) {
       let g = find_method(nodes[0].token, mem)
       if g != -1 {
         rs.note_call(f, g)
@@ -948,7 +920,7 @@ fn emit_expr(f, node) {
     {name: 'newarray', nodes} => emit_new_array(f, nodes, node),
     {name: 'ident'} => emit_name(f, node, node),
     {name: 'paren', nodes: [inner]} => emit_expr(f, inner),
-    {name: 'notexp', nodes: [inner]} => negate_at(emit_expr(f, inner), node),
+    {name: 'notexp', nodes: [inner]} => not_of(emit_expr(f, inner), node),
     {
       name: 'negexp',
       nodes: [inner],
@@ -1015,7 +987,7 @@ fn emit_new(f, nodes, at) {
       _ => m.intrinsic('mapnew', [], at),
     }
   }
-  if !class_names.has(cname) {
+  if !class_var.has(cname) {
     fail(at, "no class '{cname}'")
   }
   let slot = new_scratch(f)
@@ -1052,17 +1024,13 @@ fn emit_new(f, nodes, at) {
   m.block(ids, at)
 }
 
-fn negate_at(v, node) {
-  m.unary('not', v, node)
-}
-
 fn emit_chain(f, nodes) {
   let [head, ...rest] = nodes
   mut acc = emit_expr(f, head)
   for [op, operand] in rest.iter().chunks(2) {
     let rhs = emit_expr(f, operand)
     acc = cond {
-      op.token == '!=' => negate_at(call_rt(f, '$eq', [acc, rhs], op), op),
+      op.token == '!=' => not_of(call_rt(f, '$eq', [acc, rhs], op), op),
       binop_rt.has(op.token) => call_rt(f, binop_rt[op.token], [acc, rhs], op),
       _ => m.binary(binop_ir[op.token], acc, rhs, op),
     }
@@ -1134,8 +1102,9 @@ fn this_ref(f, at) {
   }
 }
 
-# The class values are slots of the entry frame, so a method reaching one
-# reads it the way it reaches any binding the entry declared.
+# The class values are bindings of the entry frame, so a method reaching one
+# reads it the way it reaches any other -- and the set of names that are
+# classes is exactly the set of keys here.
 fn class_ref(f, cname, at) {
   rs.read(m, f, class_var[cname], at)
 }
@@ -1209,19 +1178,23 @@ fn emit_method_call(f, recv, name, sfx) {
 }
 
 fn emit_method_call_on(f, recv, name, args, sfx) {
-  # the members that belong to a value rather than to a class
-  if ['ToUpper', 'Substring', 'ToString', 'Add', 'ContainsKey'].contains(name) {
-    return match name {
-      'ToUpper' => call_rt(f, '$upper', [recv], sfx),
-      'Substring' => call_rt(f, '$substr', [recv, args[0], args[1]], sfx),
-      'ToString' => call_rt(f, '$str', [recv], sfx),
-      'ContainsKey' => m.intrinsic('objecthas', [recv, args[0]], sfx),
-      # one Add for both: a list takes a value, a dictionary a pair
-      _ => cond {
-        args.size() == 1 => m.intrinsic('arraypush', [recv, args[0]], sfx),
-        _ => m.set_index(recv, args[0], args[1], sfx),
-      },
-    }
+  # The members that belong to a value rather than to a class. One match,
+  # with nil as "not one of these", so the names cannot fall out of step
+  # with a list of themselves.
+  let builtin = match name {
+    'ToUpper' => m.intrinsic('strupper', [recv], sfx),
+    'Substring' => call_rt(f, '$substr', [recv, args[0], args[1]], sfx),
+    'ToString' => call_rt(f, '$str', [recv], sfx),
+    'ContainsKey' => m.intrinsic('objecthas', [recv, args[0]], sfx),
+    # one Add for both: a list takes a value, a dictionary a pair
+    'Add' => cond {
+      args.size() == 1 => m.intrinsic('arraypush', [recv, args[0]], sfx),
+      _ => m.set_index(recv, args[0], args[1], sfx),
+    },
+    _ => nil,
+  }
+  if builtin != nil {
+    return builtin
   }
   let slot = new_scratch(f)
   let r = m.var_ref('local', slot, sfx)
@@ -1314,7 +1287,7 @@ fn static_head(f, nodes) {
         _ => call_rt(f, '$writeline', [args[0]], sfx),
       }}
     }
-    if class_names.has(recv) && find_method(recv, mem) != -1 {
+    if class_var.has(recv) && find_method(recv, mem) != -1 {
       return {
         taken: 3,
         value: rs.call(m, f, find_method(recv, mem), emit_args(f, sfx), sfx),
@@ -1690,13 +1663,13 @@ fn build(mm, root) {
   m = mm
   rs = CodeGen.Resolver.new()
   root_fn = new_func('$entry', root, nil)
-  enter_scope(root_fn)
+  rs.push_scope()
   native_fmt = m.declare_native('csfmt')
   runtime()
   collect(root)
 
   scan_program(root)
-  leave_scope(root_fn)
+  rs.pop_scope()
   rs.close_over_calls()
   rs.number_captures()
 
@@ -1742,7 +1715,6 @@ fn build(mm, root) {
 
   # the funcs a `finally` or a `using` became
   for (g, body) in deferred_body {
-    funcs[g].nparams = 0
     rt_body[g] = m.block([body, m.make_return(m.nil_literal(AT), AT)], AT)
   }
 

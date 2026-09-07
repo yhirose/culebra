@@ -846,21 +846,32 @@ _run-tests BACKEND:
         # under-fills the box (pl0's eight samples cannot use twenty cores),
         # and the whole phase then costs about what its longest arm does.
         local arms=(pl0 mini-culebra mini-go mini-csharp)
-        if command -v node >/dev/null 2>&1; then
-            arms+=(mini-js)
-        else
-            echo "SKIP mini-js (no node)"
-        fi
-        if command -v lua >/dev/null 2>&1; then
-            arms+=(mini-lua)
-        else
-            echo "SKIP mini-lua (no lua)"
-        fi
-        local per=$(( JOBS / ${#arms[@]} )); (( per > 0 )) || per=1
-        local pids=() a rc=0
+        # An arm whose oracle is a separate program is skipped where that
+        # program is absent, rather than failing the lane.
+        local need a oracle
+        for need in mini-js:node mini-lua:lua; do
+            a=${need%:*}; oracle=${need#*:}
+            if command -v "$oracle" >/dev/null 2>&1; then
+                arms+=("$a")
+            else
+                echo "SKIP $a (no $oracle)"
+            fi
+        done
+        # The budget goes by sample count, not by arm: mini-culebra has 49
+        # samples and pl0 has 8, so an equal split leaves the long arm short
+        # of cores while the short ones finish and idle. Splitting it this
+        # way is what keeps the phase at the cost of its longest arm rather
+        # than growing every time a front end is added.
+        local total=0 n counts=()
         for a in "${arms[@]}"; do
+            n=$(misc/check_language_samples.sh "$a" --count)
+            counts+=("$n"); total=$(( total + n ))
+        done
+        local pids=() i=0 per rc=0
+        for a in "${arms[@]}"; do
+            per=$(( JOBS * counts[i] / total )); (( per > 0 )) || per=1
             CULEBRA="$BIN" JOBS="$per" misc/check_language_samples.sh "$a" &
-            pids+=($!)
+            pids+=($!); i=$(( i + 1 ))
         done
         for p in "${pids[@]}"; do wait "$p" || rc=1; done
         return $rc

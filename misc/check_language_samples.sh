@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run one of examples/languages' front ends over its samples, and compare each
-# against the oracle for that language. The three differ only in what to run
+# against the oracle for that language. The arms differ only in what to run
 # and what to believe, so they are one script with one arm each:
 #
 #   pl0           the tree-walking interpreter in pl0.cul beside it, which is
@@ -16,6 +16,9 @@
 #                 implementation rather than a transcript of it.
 #   mini-csharp   the output `dotnet run` gives, frozen beside each sample.
 #                 A run costs several seconds, which is why it is recorded.
+#
+# `--count` answers how many samples the arm has and exits, which is how the
+# caller divides a job budget between arms of very different sizes.
 set -u
 cd "$(dirname "$0")/.."
 CULEBRA=${CULEBRA:-./build-dev/culebra}
@@ -24,7 +27,20 @@ ENGINE=${ENGINE:---vm}
 JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)}
 export CULEBRA ENGINE
 
-case "${1:-}" in
+# Four of the six arms run their front end this one way; pl0 and mini-js
+# each need something of their own and say so below.
+got() { "$CULEBRA" "$ENGINE" "$FRONT_END" "$1"; }
+# And two of them believe a recorded transcript rather than re-running an
+# oracle that costs seconds a sample.
+frozen() { cat "${1%.*}.txt"; }
+
+arm=${1:-}
+# read before the arm replaces the positional parameters with its samples
+count_only=${2:-}
+FRONT_END=examples/languages/$arm/${arm//-/_}.cul
+export FRONT_END
+
+case "$arm" in
   pl0)
     set -- examples/languages/pl0/samples/*.pas
     # PL/0 reads from stdin, so a sample may bring its own
@@ -41,40 +57,26 @@ case "${1:-}" in
     set -- examples/languages/mini-js/samples/*.js
     LIB=${LIB:-examples/languages/mini-js/fmt.js}
     export LIB
-    got() {
-      "$CULEBRA" "$ENGINE" examples/languages/mini-js/mini_js.cul \
-        --lib "$LIB" "$1"
-    }
+    got() { "$CULEBRA" "$ENGINE" "$FRONT_END" --lib "$LIB" "$1"; }
     want() { node -e "$(cat "$LIB"; cat "$1")"; }
     ;;
   mini-culebra)
     set -- examples/languages/mini-culebra/samples/*.cul
-    got() {
-      "$CULEBRA" "$ENGINE" \
-        examples/languages/mini-culebra/mini_culebra.cul "$1"
-    }
     want() { "$CULEBRA" "$ENGINE" "$1"; }
     ;;
   mini-go)
     set -- examples/languages/mini-go/samples/*.go
-    got() { "$CULEBRA" "$ENGINE" examples/languages/mini-go/mini_go.cul "$1"; }
-    want() { cat "${1%.go}.txt"; }
+    want() { frozen "$1"; }
     ;;
   mini-lua)
     set -- examples/languages/mini-lua/samples/*.lua
     LUA=${LUA:-lua}
     export LUA
-    got() {
-      "$CULEBRA" "$ENGINE" examples/languages/mini-lua/mini_lua.cul "$1"
-    }
     want() { "$LUA" "$1"; }
     ;;
   mini-csharp)
     set -- examples/languages/mini-csharp/samples/*.cs
-    got() {
-      "$CULEBRA" "$ENGINE" examples/languages/mini-csharp/mini_csharp.cul "$1"
-    }
-    want() { cat "${1%.cs}.txt"; }
+    want() { frozen "$1"; }
     ;;
   *)
     echo "usage: $0 pl0|mini-js|mini-culebra|mini-go|mini-lua|mini-csharp" >&2
@@ -89,6 +91,11 @@ if [ ! -e "$1" ]; then
   exit 2
 fi
 
+if [ "$count_only" = --count ]; then
+  echo "$#"
+  exit 0
+fi
+
 one() {
   local f=$1 g w
   g=$(got "$f" 2>&1)
@@ -101,7 +108,7 @@ one() {
     return 1
   fi
 }
-export -f got want one
+export -f got want frozen one
 
 # xargs answers 123 when any child failed; normalize it to a plain 1.
 printf '%s\n' "$@" | xargs -P "$JOBS" -I{} bash -c 'one "$@"' _ {} || exit 1

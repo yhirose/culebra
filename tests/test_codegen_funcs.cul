@@ -24,14 +24,6 @@ fn print_stmt(m, value) {
   m.intrinsic(name: 'print', args: args, line: 1, col: 1)
 }
 
-fn to_list(m, items) {
-  let list = m.list_new()
-  for it in items {
-    m.list_push(list, it)
-  }
-  list
-}
-
 fn call_intr(m, name, args) {
   let list = m.list_new()
   for a in args {
@@ -779,7 +771,7 @@ fn native_catch_module(m, name, args, key) {
         m.literal(v: 7, line: 1, col: 1),
       ]), line: 1, col: 1),
       call_intr(m, 'arrayconcat', [xs, m.array_lit(
-        items: to_list(m, [m.literal(v: 9, line: 1, col: 1)]),
+        items: [m.literal(v: 9, line: 1, col: 1)],
         line: 1,
         col: 1,
       )]),
