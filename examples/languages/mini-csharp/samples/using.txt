@@ -1,0 +1,20 @@
+open a
+use a
+close a
+after simple
+open outer
+open inner
+use inner
+use outer
+close inner
+inner is closed here
+close outer
+open doomed
+use doomed
+close doomed
+caught stop
+open returned
+use returned
+close returned
+value
+done

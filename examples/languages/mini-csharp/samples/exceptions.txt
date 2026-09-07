@@ -1,0 +1,16 @@
+ok 10
+missing: not found: zero
+app: negative
+body
+finally after body
+caught boom
+finally after catch
+leaving 0
+leaving 1
+leaving 2
+leaving 3
+deep threw bottom
+inner caught inner
+outer continued
+re: first
+right clause: passes NotFound

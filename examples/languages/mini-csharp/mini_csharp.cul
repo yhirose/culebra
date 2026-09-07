@@ -380,6 +380,44 @@ fn runtime() {
     ))
   })
 
+  # Is this value an instance of the class named here, or of one below it?
+  # A catch clause asks it, and `Exception` answers yes for anything raised
+  # -- a failure the executor raised itself is not an object at all.
+  rt_func('$isa', 2, 3, fn (f) {
+    m.block(
+      [
+        m.make_if(
+          m.binary('eq', L(1), S('Exception'), AT),
+          ret(m.bool_literal(true, AT)),
+          AT,
+        ),
+        m.make_if(
+          negate(is_type(L(0), 'map')),
+          ret(m.bool_literal(false, AT)),
+          AT,
+        ),
+        m.assign('local', 2, m.index(L(0), cls_key(), AT), AT),
+        m.make_while(
+          negate(is_type(L(2), 'nil')),
+          m.block(
+            [
+              m.make_if(
+                m.binary('eq', m.index(L(2), S('name'), AT), L(1), AT),
+                ret(m.bool_literal(true, AT)),
+                AT,
+              ),
+              m.assign('local', 2, m.index(L(2), S('base'), AT), AT),
+            ],
+            AT,
+          ),
+          AT,
+        ),
+        ret(m.bool_literal(false, AT)),
+      ],
+      AT,
+    )
+  })
+
   # `new T[n]` is n slots that hold nothing yet; the IR builds an array by
   # pushing, so the length is a loop.
   rt_func('$newarr', 1, 3, fn (f) {
@@ -512,8 +550,35 @@ fn scan_name(f, id) {
 # The declarations first, so a call can name a method declared later in the
 # file -- which C# allows and the walk below would not.
 
+# `Exception` is not declared in the source and every exception class
+# extends it, so the walk starts with it already there: one field for the
+# message, and a constructor that sets it.
+let BUILTIN_CLASS = 'Exception'
+
 fn collect(root) {
   # every name first, so a class may extend one declared later in the file
+  class_names[BUILTIN_CLASS] = true
+  fields_of[BUILTIN_CLASS] = ['Message']
+  statics_of[BUILTIN_CLASS] = []
+  field_decls_of[BUILTIN_CLASS] = []
+  base_of[BUILTIN_CLASS] = nil
+  let ex = new_func('Exception..ctor', nil, root_fn)
+  ctor_of[BUILTIN_CLASS] = ex
+  rt_params[ex] = 2
+  rt_locals[ex] = 2
+  rt_body[ex] = m.block(
+    [
+      m.set_index(
+        m.var_ref('local', 0, AT),
+        S('Message'),
+        m.var_ref('local', 1, AT),
+        AT,
+      ),
+      m.make_return(m.nil_literal(AT), AT),
+    ],
+    AT,
+  )
+  class_var[BUILTIN_CLASS] = declare(root_fn, BUILTIN_CLASS, root)
   for cls in class_decls(root) {
     class_names[class_name(cls)] = true
   }
@@ -770,6 +835,41 @@ fn scan_stmt(f, node) {
       scan_expr(f, c)
       scan_stmt(f, b)
     },
+    # A `finally` becomes a func of its own, because the IR's Defer takes a
+    # callable. Its body is walked inside that func with this one's scopes
+    # still open, so a name it reads from around it becomes a capture.
+    {name: 'trystmt', nodes} => {
+      for c in nodes {
+        match c.name {
+          'catchpart' => {
+            enter_scope(f)
+            if c.nodes.size() > 1 {
+              scan_declare(f, c.nodes[1])
+            }
+            scan_stmt(f, c.nodes[c.nodes.size() - 1])
+            leave_scope(f)
+          },
+          'finallypart' => {
+            let g = new_func('$finally', c, f)
+            deferred_fn[pkey(c)] = g
+            scan_stmt(g, c.nodes[0])
+          },
+          _ => scan_stmt(f, c),
+        }
+      }
+    },
+    # `using` is the same shape: a func that disposes the binding, which
+    # therefore captures it.
+    {name: 'usingstmt', nodes: [ty, id, init, body]} => {
+      scan_expr(f, init)
+      enter_scope(f)
+      let v = scan_declare(f, id)
+      let g = new_func('$dispose', node, f)
+      deferred_fn[pkey(node)] = g
+      rs.use(v, g)
+      scan_stmt(f, body)
+      leave_scope(f)
+    },
     # the initialiser's binding is the loop's, so the whole `for` is a scope
     {name: 'forstmt', nodes: [ini, cnd, stp, body]} => {
       enter_scope(f)
@@ -810,6 +910,9 @@ fn scan_expr(f, node) {
     {name: 'ident'} => scan_name(f, node),
     {name: 'newobj', nodes} => {
       rs.use(class_var[type_token(nodes[0])], f)
+      if ctor_of[type_token(nodes[0])] != -1 {
+        rs.note_call(f, ctor_of[type_token(nodes[0])])
+      }
       for a in arg_nodes(nodes[nodes.size() - 1]) {
         scan_expr(f, a)
       }
@@ -825,7 +928,39 @@ fn scan_expr(f, node) {
   }
 }
 
+# A method is a static entity built afresh at every reference to it, so a
+# frame that names one has to carry what that one captures. The edges are
+# recorded here and `close_over_calls` closes them; without it a method that
+# throws a class the caller never mentions cannot have its closure built.
+fn scan_call_edge(f, nodes) {
+  let n = nodes.size()
+  if n >= 3 && nodes[1].name == 'membersfx' && nodes[2].name == 'callsfx' {
+    let mem = nodes[1].nodes[0].token
+    if nodes[0].name == 'baseref' && base_of[current_class] != nil {
+      let g = find_method(base_of[current_class], mem)
+      if g != -1 {
+        rs.note_call(f, g)
+      }
+      return nil
+    }
+    if nodes[0].name == 'ident' && class_names.has(nodes[0].token) {
+      let g = find_method(nodes[0].token, mem)
+      if g != -1 {
+        rs.note_call(f, g)
+      }
+    }
+    return nil
+  }
+  if n >= 2 && nodes[0].name == 'ident' && nodes[1].name == 'callsfx' {
+    let g = find_method(current_class, nodes[0].token)
+    if g != -1 {
+      rs.note_call(f, g)
+    }
+  }
+}
+
 fn scan_suffixed(f, nodes) {
+  scan_call_edge(f, nodes)
   scan_expr(f, nodes[0])
   for sfx in nodes.slice(1, nodes.size()) {
     match sfx {
@@ -1055,6 +1190,12 @@ fn class_ref(f, cname, at) {
 
 mut class_var = {}
 
+# The funcs a `finally` and a `using` became. Each is created in the scan
+# pass, so what it reads from around it is a capture like any other; the
+# bodies are built after the numbering, with the rest.
+mut deferred_fn = {}
+mut deferred_body = []
+
 # --- calls and member access ------------------------------------------------
 #
 # Every call in this slice names a static method, so the callee is known at
@@ -1111,7 +1252,10 @@ fn emit_suffixed(f, nodes, at) {
 # otherwise a virtual call -- the receiver evaluated once, and the method
 # whatever the object's class chain answers for that name.
 fn emit_method_call(f, recv, name, sfx) {
-  let args = emit_args(f, sfx)
+  emit_method_call_on(f, recv, name, emit_args(f, sfx), sfx)
+}
+
+fn emit_method_call_on(f, recv, name, args, sfx) {
   if ['ToUpper', 'Substring', 'ToString'].contains(name) {
     return match name {
       'ToUpper' => call_rt(f, '$upper', [recv], sfx),
@@ -1301,6 +1445,29 @@ fn emit_stmt(f, node) {
       name: 'whilestmt',
       nodes: [c, b],
     } => m.make_while(emit_expr(f, c), emit_stmt(f, b), node),
+    {name: 'throwstmt', nodes} => m.make_throw(emit_expr(f, nodes[0]), node),
+    {name: 'trystmt', nodes} => emit_try(f, nodes, node),
+    # `using (T x = e) body`: the binding, and a Dispose registered at the
+    # scope so it runs whichever way the block leaves. That is deterministic
+    # disposal, and it is the IR's Defer with nothing else on top.
+    {name: 'usingstmt', nodes: [ty, id, init, body]} => {
+      let v = decl_v[pkey(id)]
+      let g = deferred_fn[pkey(node)]
+      deferred_body.push((
+        g,
+        emit_method_call_on(g, rs.read(m, g, v, node), 'Dispose', [], node),
+      ))
+      let first = nslots[f]
+      let inner = m.block(
+        [
+          rs.write(m, f, v, emit_expr(f, init), node),
+          m.make_defer(rs.closure(m, f, g, node), node),
+          emit_stmt(f, body),
+        ],
+        node,
+      )
+      m.scope(first, nslots[f], inner, node)
+    },
     {name: 'forstmt', nodes: [ini, cnd, stp, body]} => {
       mut ids = []
       if !ini.nodes.empty() {
@@ -1336,6 +1503,85 @@ fn emit_stmt(f, node) {
 }
 
 # `x = v`, and the compound forms, which read the target first.
+# A `try` is the IR's, with the catch clauses folded into one handler that
+# asks which of them the thrown value is for. `finally` is a Defer around
+# the whole thing, registered before the try, so it runs on the way out
+# whether the body ended, returned or threw.
+fn emit_try(f, nodes, at) {
+  mut body = nil
+  mut catches = []
+  mut fin = nil
+  for c in nodes {
+    match c.name {
+      'catchpart' => catches.push(c),
+      'finallypart' => fin = c,
+      _ => body = c,
+    }
+  }
+  mut out = emit_stmt(f, body)
+  if !catches.empty() {
+    let caught = new_scratch(f)
+    # the clauses are folded from the last back, so the first written is the
+    # first asked
+    mut handler = m.make_throw(m.var_ref('local', caught, at), at)
+    mut i = catches.size()
+    while i > 0 {
+      i -= 1
+      let c = catches[i]
+      let clause = emit_stmt(f, c.nodes[c.nodes.size() - 1])
+      let bound = cond {
+        c.nodes.size() >
+          1 => m.block(
+          [
+            rs.write(
+              m,
+              f,
+              decl_v[pkey(c.nodes[1])],
+              m.var_ref('local', caught, at),
+              at,
+            ),
+            clause,
+          ],
+          at,
+        ),
+        _ => clause,
+      }
+      handler = cond {
+        c.nodes.size() <= 1 => bound,
+        _ => m.make_if_else(
+          call_rt(
+            f,
+            '$isa',
+            [
+              m.var_ref('local', caught, at),
+              S(type_token(c.nodes[0].nodes[0])),
+            ],
+            at,
+          ),
+          bound,
+          handler,
+          at,
+        ),
+      }
+    }
+    out = m.make_try(caught, out, handler, at)
+  }
+  cond {
+    fin == nil => out,
+    _ => {
+      let g = deferred_fn[pkey(fin)]
+      deferred_body.push((g, emit_stmt(g, fin.nodes[0])))
+      let first = nslots[f]
+      m.scope(
+        first,
+        nslots[f],
+        m.block([m.make_defer(rs.closure(m, f, g, at), at), out], at),
+        at,
+      )
+    },
+  }
+}
+
 # `x = v`, `o.f = v` and the compound forms. A target is one of three
 # things, and each is read and written the same way, so the shape is chosen
 # once and both halves follow from it.
@@ -1439,6 +1685,7 @@ fn build(mm, root) {
 
   scan_program(root)
   leave_scope(root_fn)
+  rs.close_over_calls()
   rs.number_captures()
 
   rt_finish()
@@ -1481,6 +1728,12 @@ fn build(mm, root) {
     }
   }
 
+  # the funcs a `finally` or a `using` became
+  for (g, body) in deferred_body {
+    funcs[g].nparams = 0
+    rt_body[g] = m.block([body, m.make_return(m.nil_literal(AT), AT)], AT)
+  }
+
   # The entry: whatever class declares Main.
   mut main_fn = -1
   for key in methods.keys() {
@@ -1495,8 +1748,7 @@ fn build(mm, root) {
   # class above it and its methods by name, and the whole of dispatch is a
   # walk up that chain.
   mut ids = []
-  for cls in class_decls(root) {
-    let cname = class_name(cls)
+  for cname in [BUILTIN_CLASS, ...class_decls(root).map(|c| class_name(c))] {
     let v = class_var[cname]
     ids.push(rs.write(m, root_fn, v, m.intrinsic('mapnew', [], AT), AT))
     let cv = rs.read(m, root_fn, v, AT)
