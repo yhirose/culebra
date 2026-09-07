@@ -191,19 +191,39 @@ fn runtime() {
       AT,
     ))
   })
-  # __eq(a, b): two different types are never equal
+  # Two values of different types are never equal in Lua, where the VM
+  # refuses the comparison; and two tables are equal only when they are the
+  # same table, which is `same` rather than `eq` -- the VM refuses that one
+  # too.
   rt_func('__eq', 2, 2, fn (f) {
-    ret(m.make_if_else(
-      m.binary(
-        'eq',
-        m.intrinsic('typeof', [L(0)], AT),
-        m.intrinsic('typeof', [L(1)], AT),
-        AT,
-      ),
-      m.binary('eq', L(0), L(1), AT),
-      m.bool_literal(false, AT),
+    m.block(
+      [
+        # Lua's two number types compare across the line -- 1 == 1.0 -- so
+        # the type test is on Lua's names rather than the VM's
+        m.make_if(
+          m.binary(
+            'ne',
+            call_rt(f, '__type', [L(0)], AT),
+            call_rt(f, '__type', [L(1)], AT),
+            AT,
+          ),
+          ret(m.bool_literal(false, AT)),
+          AT,
+        ),
+        m.make_if(
+          m.make_if_else(
+            is_type(L(0), 'map'),
+            m.bool_literal(true, AT),
+            is_type(L(0), 'func'),
+            AT,
+          ),
+          ret(m.intrinsic('same', [L(0), L(1)], AT)),
+          AT,
+        ),
+        ret(m.binary('eq', L(0), L(1), AT)),
+      ],
       AT,
-    ))
+    )
   })
   rt_func('__ne', 2, 2, fn (f) {
     ret(call_rt(f, '__not', [call_rt(f, '__eq', [L(0), L(1)], AT)], AT))
@@ -231,8 +251,9 @@ fn runtime() {
       AT,
     ))
   })
+  # `^` is always a float in Lua, so 2^10 is 1024.0 rather than 1024
   rt_func('__pow', 2, 2, fn (f) {
-    ret(m.intrinsic('pow', [L(0), L(1)], AT))
+    ret(m.intrinsic('todouble', [m.intrinsic('pow', [L(0), L(1)], AT)], AT))
   })
   # `//` floors where the VM truncates: a negative quotient that did not
   # divide exactly is one too high
@@ -285,13 +306,151 @@ fn runtime() {
       AT,
     ))
   })
+  # Lua renders a float with "%.14g" and then keeps a `.0` on one that came
+  # out looking like an integer. Neither is an IR node, and writing 14
+  # significant digits as a loop over digits would be a worse answer than
+  # asking the host -- so the module declares a native and `run` supplies
+  # it. That is the one thing here the IR deliberately does not have.
   rt_func('__str', 1, 1, fn (f) {
+    m.block(
+      [
+        m.make_if(is_type(L(0), 'string'), ret(L(0)), AT),
+        m.make_if(
+          is_type(L(0), 'double'),
+          ret(m.call_value(m.native_ref(native_fmt, AT), [L(0)], AT)),
+          AT,
+        ),
+        ret(m.intrinsic('tostr', [L(0)], AT)),
+      ],
+      AT,
+    )
+  })
+
+  # A table is an Object, and a key carries its own type: `t[1]` and `t["1"]`
+  # are different keys in Lua, so a number is stored under "n1" and a string
+  # under "s1". Nothing else in the front end has to know that.
+  # whether a rendered number already shows it is a float
+  rt_func('__hasfrac', 1, 3, fn (f) {
+    m.block(
+      [
+        m.assign('local', 1, m.literal(0, AT), AT),
+        m.assign('local', 2, m.intrinsic('len', [L(0)], AT), AT),
+        m.make_while(
+          m.binary('lt', L(1), L(2), AT),
+          m.block(
+            [
+              m.make_if(
+                m.make_if_else(
+                  m.binary(
+                    'eq',
+                    m.intrinsic('strbyte', [L(0), L(1)], AT),
+                    m.literal(46, AT),
+                    AT,
+                  ),
+                  m.bool_literal(true, AT),
+                  m.binary(
+                    'eq',
+                    m.intrinsic('strbyte', [L(0), L(1)], AT),
+                    m.literal(101, AT),
+                    AT,
+                  ),
+                  AT,
+                ),
+                ret(m.bool_literal(true, AT)),
+                AT,
+              ),
+              m.assign(
+                'local',
+                1,
+                m.binary('add', L(1), m.literal(1, AT), AT),
+                AT,
+              ),
+            ],
+            AT,
+          ),
+          AT,
+        ),
+        ret(m.bool_literal(false, AT)),
+      ],
+      AT,
+    )
+  })
+
+  rt_func('__newtable', 0, 0, fn (f) {
+    ret(m.intrinsic('mapnew', [], AT))
+  })
+  rt_func('__key', 1, 1, fn (f) {
     ret(m.make_if_else(
       is_type(L(0), 'string'),
-      L(0),
-      m.intrinsic('tostr', [L(0)], AT),
+      m.binary('add', S('s'), L(0), AT),
+      m.binary('add', S('n'), m.intrinsic('tostr', [L(0)], AT), AT),
       AT,
     ))
+  })
+  rt_func('__get', 2, 2, fn (f) {
+    ret(m.index(L(0), call_rt(f, '__key', [L(1)], AT), AT))
+  })
+  rt_func('__set', 3, 3, fn (f) {
+    ret(m.set_index(L(0), call_rt(f, '__key', [L(1)], AT), L(2), AT))
+  })
+  # `#t` counts from 1 until the first hole; `#s` is the string's length
+  rt_func('__len', 1, 2, fn (f) {
+    m.block(
+      [
+        m.make_if(
+          is_type(L(0), 'string'),
+          ret(m.intrinsic('len', [L(0)], AT)),
+          AT,
+        ),
+        m.assign('local', 1, m.literal(0, AT), AT),
+        m.make_while(
+          m.intrinsic(
+            'objecthas',
+            [
+              L(0),
+              call_rt(
+                f,
+                '__key',
+                [m.binary('add', L(1), m.literal(1, AT), AT)],
+                AT,
+              ),
+            ],
+            AT,
+          ),
+          m.assign('local', 1, m.binary('add', L(1), m.literal(1, AT), AT), AT),
+          AT,
+        ),
+        ret(L(1)),
+      ],
+      AT,
+    )
+  })
+  # `type(v)` answers Lua's name for a value's kind, not the VM's
+  rt_func('__type', 1, 2, fn (f) {
+    m.block(
+      [
+        m.assign('local', 1, m.intrinsic('typeof', [L(0)], AT), AT),
+        m.make_if(m.binary('eq', L(1), S('bool'), AT), ret(S('boolean')), AT),
+        m.make_if(m.binary('eq', L(1), S('func'), AT), ret(S('function')), AT),
+        m.make_if(m.binary('eq', L(1), S('map'), AT), ret(S('table')), AT),
+        m.make_if(m.binary('eq', L(1), S('int'), AT), ret(S('number')), AT),
+        m.make_if(m.binary('eq', L(1), S('double'), AT), ret(S('number')), AT),
+        ret(L(1)),
+      ],
+      AT,
+    )
+  })
+  # `math.type` separates the two Lua number types the VM already keeps apart
+  rt_func('__mathtype', 1, 2, fn (f) {
+    m.block(
+      [
+        m.assign('local', 1, m.intrinsic('typeof', [L(0)], AT), AT),
+        m.make_if(m.binary('eq', L(1), S('int'), AT), ret(S('integer')), AT),
+        m.make_if(m.binary('eq', L(1), S('double'), AT), ret(S('float')), AT),
+        ret(m.nil_literal(AT)),
+      ],
+      AT,
+    )
   })
 }
 
@@ -310,6 +469,7 @@ mut pending = []     # closures whose bodies are not written yet
 mut rt_body = {}     # runtime helper -> its body, built in IR here
 mut rt_params = {}
 mut rt_locals = {}
+mut native_fmt = -1  # the host function that renders a float Lua's way
 
 let AT = {line: 1, column: 1}
 
@@ -370,8 +530,10 @@ fn resolve(f, name) {
 # calls __get/__set.
 
 fn call_rt(f, name, args, at) {
-  let g = globals_fn[name]
-  rs.call(m, f, g, args, at)
+  if !globals_fn.has(name) {
+    fail(at, "no runtime helper {name}")
+  }
+  rs.call(m, f, globals_fn[name], args, at)
 }
 
 fn one(f, v, at) {
@@ -780,6 +942,93 @@ fn emit_stmt(f, node) {
       node,
     ),
     {name: 'dostat', nodes: [blk]} => scoped(f, blk),
+    # `repeat ... until c` runs the body first, and the condition can see the
+    # body's own locals -- Lua's one block that outlives its own end, so the
+    # two share a scope rather than nesting
+    {name: 'repeatstat', nodes: [blk, c]} => {
+      enter_scope(f)
+      let b = emit_block(f, blk)
+      let test = call_rt(f, '__truthy', [emit_expr(f, c)], node)
+      leave_scope(f)
+      m.make_while(
+        m.bool_literal(true, node),
+        m.block([b, m.make_if(test, m.make_break(node), node)], node),
+        node,
+      )
+    },
+    # `for i = a, b, step`: the bounds are evaluated once, the variable is
+    # the loop's own and a closure made inside gets that turn's value
+    {name: 'fornum', nodes} => {
+      let step_given = nodes.size() > 4
+      let lo = new_scratch(f)
+      let hi = new_scratch(f)
+      let st = new_scratch(f)
+      mut ids = [m.assign(
+        'local',
+        lo,
+        emit_expr(f, nodes[1]),
+        node,
+      ), m.assign(
+        'local',
+        hi,
+        emit_expr(f, nodes[2]),
+        node,
+      ), m.assign('local', st, cond {
+        step_given => emit_expr(f, nodes[3].nodes[0]),
+        _ => m.literal(1, node),
+      }, node)]
+      enter_scope(f)
+      let v = declare(f, nodes[0].token, nodes[0])
+      let body = emit_block(f, nodes[nodes.size() - 1])
+      leave_scope(f)
+      # a step may be negative, so the test is "still on the right side of
+      # the bound", not simply <=
+      let going_up = m.binary(
+        'ge',
+        m.var_ref('local', st, node),
+        m.literal(0, node),
+        node,
+      )
+      let test = m.make_if_else(
+        going_up,
+        m.binary(
+          'le',
+          m.var_ref('local', lo, node),
+          m.var_ref('local', hi, node),
+          node,
+        ),
+        m.binary(
+          'ge',
+          m.var_ref('local', lo, node),
+          m.var_ref('local', hi, node),
+          node,
+        ),
+        node,
+      )
+      ids.push(m.make_while(
+        test,
+        m.block(
+          [
+            rs.write(m, f, v, m.var_ref('local', lo, node), node),
+            body,
+            m.assign(
+              'local',
+              lo,
+              m.binary(
+                'add',
+                m.var_ref('local', lo, node),
+                m.var_ref('local', st, node),
+                node,
+              ),
+              node,
+            ),
+          ],
+          node,
+        ),
+        node,
+      ))
+      m.block(ids, node)
+    },
     {name: 'breakstat'} => m.make_break(node),
     _ => fail(node, "cannot execute {node.name}"),
   }
@@ -818,6 +1067,10 @@ fn emit_store(f, name, v, node) {
 }
 
 fn emit_target(f, t, v, node) {
+  # a suffixedexp with no suffix folds to the name itself
+  if t.name == 'ident' {
+    return emit_store(f, t.token, v, node)
+  }
   let parts = t.nodes
   cond {
     parts.size() == 1 &&
@@ -865,13 +1118,85 @@ fn build(mm, root) {
   enter_scope(root_fn)
   g_var = declare(root_fn, '_ENV', root)
   rs.force_cell(g_var)
+  native_fmt = m.declare_native('__luafmt')
   runtime()
   rt_finish()
 
   # `print(a, b, ...)` writes its arguments tab-separated -- the one library
   # function every sample uses, and the only one that takes any number of
   # them, so the binder answers it rather than a func doing.
-  let body = emit_block(root_fn, root.nodes[0])
+  # A Lua function returns a list of values, so a helper exposed under a Lua
+  # name needs an adapter that wraps its one result -- the helpers themselves
+  # answer plain values, because every other caller of them is the binder.
+  # `print` as a value: the binder answers a direct `print(...)` call, but
+  # `type(print)` and `local p = print` want something to name.
+  globals_fn['__print1'] = new_func('print', nil, nil)
+  rt_params[globals_fn['__print1']] = 1
+  rt_locals[globals_fn['__print1']] = 1
+  rt_body[globals_fn['__print1']] = m.block(
+    [
+      m.intrinsic(
+        'printraw',
+        [call_rt(
+          globals_fn['__print1'],
+          '__str',
+          [m.var_ref('local', 0, AT)],
+          AT,
+        )],
+        AT,
+      ),
+      m.intrinsic('printraw', [m.str_literal("\n", AT)], AT),
+      m.make_return(m.array_lit([], AT), AT),
+    ],
+    AT,
+  )
+  for (
+    gname,
+    helper,
+  ) in [('type', '__type'), ('tostring', '__str'), ('mathtype', '__mathtype')] {
+    let a = new_func("lua {gname}", nil, nil)
+    globals_fn["lua:{gname}"] = a
+    rt_params[a] = 1
+    rt_locals[a] = 1
+    rt_body[a] = m.make_return(
+      m.array_lit([call_rt(a, helper, [m.var_ref('local', 0, AT)], AT)], AT),
+      AT,
+    )
+  }
+  mut lib = [
+    ('type', 'lua:type'),
+    ('tostring', 'lua:tostring'),
+    ('print', '__print1'),
+  ]
+  mut lib_ids = []
+  for (gname, helper) in lib {
+    lib_ids.push(m.set_index(
+      genv(root_fn, root),
+      S(gname),
+      rs.closure(m, root_fn, globals_fn[helper], AT),
+      AT,
+    ))
+  }
+  # `math.type` is the one table-shaped name
+  let mt = new_scratch(root_fn)
+  lib_ids.push(m.assign('local', mt, m.intrinsic('mapnew', [], AT), AT))
+  lib_ids.push(call_rt(
+    root_fn,
+    '__set',
+    [
+      m.var_ref('local', mt, AT),
+      S('type'),
+      rs.closure(m, root_fn, globals_fn['lua:mathtype'], AT),
+    ],
+    AT,
+  ))
+  lib_ids.push(m.set_index(
+    genv(root_fn, root),
+    S('math'),
+    m.var_ref('local', mt, AT),
+    AT,
+  ))
+  let body = m.block([...lib_ids, emit_block(root_fn, root.nodes[0])], root)
   # bodies of the closures the walk created
   mut i = 0
   while i < pending.size() {
@@ -937,7 +1262,21 @@ try {
   mod.verify()
   cond {
     want_ir => print(mod.dump_ir()),
-    _ => mod.run(),
+    # a native is supplied per run, so the program goes through compile()
+    # and Program.run rather than Module.run
+    _ => mod
+      .compile()
+      .run(natives: {
+      # Lua's own float rendering: 14 significant digits, and a `.0` kept on
+      # one that would otherwise read as an integer.
+      __luafmt: fn (v) {
+        let t = "{v:.14g}"
+        cond {
+          t.contains('.') || t.contains('e') || t.contains('n') => t,
+          _ => t + '.0',
+        }
+      },
+    }),
   }
 } catch e {
   match e {
