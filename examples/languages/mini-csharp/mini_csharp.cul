@@ -329,6 +329,53 @@ fn runtime() {
       AT,
     )
   })
+  # A virtual call finds its method on the object's own class or on one
+  # above it, so the name is looked up rather than resolved -- the one thing
+  # here a static language's call site cannot answer for itself.
+  rt_func('$find', 2, 3, fn (f) {
+    m.block(
+      [
+        m.assign('local', 2, m.index(L(0), cls_key(), AT), AT),
+        m.make_while(
+          negate(is_type(L(2), 'nil')),
+          m.block(
+            [
+              m.make_if(
+                m.intrinsic(
+                  'objecthas',
+                  [m.index(L(2), S('methods'), AT), L(1)],
+                  AT,
+                ),
+                ret(m.index(m.index(L(2), S('methods'), AT), L(1), AT)),
+                AT,
+              ),
+              m.assign('local', 2, m.index(L(2), S('base'), AT), AT),
+            ],
+            AT,
+          ),
+          AT,
+        ),
+        ret(m.nil_literal(AT)),
+      ],
+      AT,
+    )
+  })
+  # Two objects are equal when they are the same object; everything else
+  # compares by value, which is what the IR's own == already does.
+  rt_func('$eq', 2, 2, fn (f) {
+    ret(m.make_if_else(
+      m.make_if_else(
+        is_type(L(0), 'map'),
+        m.bool_literal(true, AT),
+        is_type(L(1), 'map'),
+        AT,
+      ),
+      m.intrinsic('same', [L(0), L(1)], AT),
+      m.binary('eq', L(0), L(1), AT),
+      AT,
+    ))
+  })
+
   # Substring(start, length), where the IR's slice takes an end
   rt_func('$substr', 3, 3, fn (f) {
     ret(m.intrinsic(
@@ -360,11 +407,25 @@ fn upper_byte(b) {
 # pass opens the scopes and records what every name means; the emit pass
 # below reads that back and never touches a scope.
 
-mut name_v = {}       # a name -> the binding it means, -1 for anything else
-mut decl_v = {}       # a declaring name -> the binding it makes
-mut methods = {}      # "Class.Method" -> its func id
-mut method_of = {}    # a method body -> its func id
-mut class_names = {}  # every declared class name
+mut name_v = {}        # a name -> the binding it means, -1 for anything else
+mut decl_v = {}        # a declaring name -> the binding it makes
+mut methods = {}       # "Class.Method" -> its func id
+mut method_of = {}     # a method body -> its func id
+mut class_names = {}   # every declared class name
+mut ctor_of = {}       # a class -> the func its `new` calls, or -1
+mut fields_of = {}     # a class -> the instance field names it declares
+mut statics_of = {}    # a class -> the static field names it declares
+mut base_of = {}       # a class -> the class it extends, or nil
+mut this_v = {}        # an instance method -> the binding of its `this`
+mut method_class = {}  # a func -> the class whose member it is
+
+# A class is a Map the entry builds: its name, the class above it, and its
+# methods by name. An object is a Map of its fields with that class under a
+# key no C# source can write, and a virtual call walks from the object's own
+# class upward -- which is the whole of dispatch here.
+fn cls_key() {
+  m.str_literal("\u0000class", AT)
+}
 
 fn pkey(node) {
   "{node.line}:{node.column}"
@@ -391,11 +452,24 @@ fn scan_declare(f, id) {
   v
 }
 
+# A bare name is a local when a scope binds it, and otherwise a field of
+# the class this method belongs to -- which is `this.name`, so the method
+# reads its own `this` for it.
 fn scan_name(f, id) {
   let v = rs.lookup(id.token)
   name_v[pkey(id)] = v
-  if v != -1 {
-    rs.use(v, f)
+  cond {
+    v != -1 => rs.use(v, f),
+    field_owner(current_class, id.token) == nil => nil,
+    statics_of[field_owner(
+      current_class,
+      id.token,
+    )].contains(id.token) => rs.use(
+      class_var[field_owner(current_class, id.token)],
+      f,
+    ),
+    this_v.has(f) => rs.use(this_v[f], f),
+    _ => nil,
   }
 }
 
@@ -408,21 +482,104 @@ fn collect(root) {
   for cls in class_decls(root) {
     let cname = class_name(cls)
     class_names[cname] = true
+    fields_of[cname] = []
+    statics_of[cname] = []
+    field_decls_of[cname] = []
+    ctor_of[cname] = -1
+    base_of[cname] = base_name(cls)
+    class_var[cname] = declare(root_fn, cname, cls)
     for mem in members(cls) {
-      if mem.name == 'methoddecl' {
-        let mname = method_name(mem)
-        let g = new_func("{cname}.{mname}", mem, root_fn)
-        methods["{cname}.{mname}"] = g
-        method_of[pkey(mem)] = g
-        funcs[g].nparams = params_of(mem).size()
+      match mem.name {
+        'fielddecl' => {
+          field_decls_of[cname].push(mem)
+          cond {
+            is_static(mem) => statics_of[cname].push(member_name(mem)),
+            _ => fields_of[cname].push(member_name(mem)),
+          }
+        },
+        'methoddecl' => {
+          let mname = member_name(mem)
+          let g = new_func("{cname}.{mname}", mem, root_fn)
+          methods["{cname}.{mname}"] = g
+          method_of[pkey(mem)] = g
+          method_class[g] = cname
+          # an instance method takes `this` ahead of what it declares
+          funcs[g].nparams = params_of(mem).size() + cond {
+            is_static(mem) => 0,
+            _ => 1,
+          }
+        },
+        _ => {
+          let g = new_func("{cname}..ctor", mem, root_fn)
+          ctor_of[cname] = g
+          method_of[pkey(mem)] = g
+          method_class[g] = cname
+          funcs[g].nparams = params_of(mem).size() + 1
+        },
       }
     }
   }
 }
 
+fn is_static(mem) {
+  for c in mem.nodes {
+    if c.name == 'modifier' && c.token == 'static' {
+      return true
+    }
+  }
+  false
+}
+
+# The first name after the colon is the class this one extends, when it
+# names a class; anything else there is an interface, which is the C#
+# compiler's business and not this one's.
+fn base_name(cls) {
+  for c in cls.nodes {
+    if c.name == 'baselist' {
+      let n = c.nodes[0].nodes[0].token
+      return cond {
+        class_names.has(n) => n,
+        _ => nil,
+      }
+    }
+  }
+  nil
+}
+
+# Is `name` a field of this class or of one above it, and whose?
+fn field_owner(cname, name) {
+  mut c = cname
+  while c != nil {
+    if fields_of[c].contains(name) || statics_of[c].contains(name) {
+      return c
+    }
+    c = base_of[c]
+  }
+  nil
+}
+
+fn find_method(cname, name) {
+  mut c = cname
+  while c != nil {
+    if methods.has("{c}.{name}") {
+      return methods["{c}.{name}"]
+    }
+    c = base_of[c]
+  }
+  -1
+}
+
 # The `using System;` lines the grammar keeps are not declarations.
 fn class_decls(root) {
   root.nodes.filter(|c| c.name == 'classdecl')
+}
+
+# The field declarations of a class, by name -- kept from the walk so that
+# `new` and the entry can reach a class's own initialisers.
+mut field_decls_of = {}
+
+fn field_decls(cname) {
+  field_decls_of[cname]
 }
 
 fn class_name(cls) {
@@ -444,17 +601,35 @@ fn members(cls) {
   out
 }
 
-# A member's own name is the ident just before its parameter list; the
-# modifiers and the return type are idents too, so position is what tells
-# them apart.
-fn method_name(mem) {
+# A member's own name is the last ident before its parameter list, or the
+# last ident of all for a field. The modifiers and the type are idents too,
+# so position is what tells them apart.
+fn member_name(mem) {
   let ns = mem.nodes
   for i in range(ns.size()) {
     if ns[i].name == 'params' {
       return ns[i - 1].token
     }
   }
-  fail(mem, 'method with no parameter list')
+  for i in range(ns.size()) {
+    let j = ns.size() - 1 - i
+    if ns[j].name == 'ident' {
+      return ns[j].token
+    }
+  }
+  fail(mem, 'member with no name')
+}
+
+# A field is modifiers, a type, its name and possibly an initialiser. The
+# type is what tells the name apart from the modifiers, which are idents too.
+fn field_init(mem) {
+  let ns = mem.nodes
+  for i in range(ns.size()) {
+    if ns[i].name == 'typeref' && i + 2 < ns.size() {
+      return ns[i + 2]
+    }
+  }
+  nil
 }
 
 fn params_of(mem) {
@@ -472,16 +647,22 @@ fn body_of(mem) {
 
 fn scan_program(root) {
   for cls in class_decls(root) {
+    current_class = class_name(cls)
     for mem in members(cls) {
-      if mem.name == 'methoddecl' {
-        let g = method_of[pkey(mem)]
-        enter_scope(g)
-        for prm in params_of(mem) {
-          scan_declare(g, prm.nodes[prm.nodes.size() - 1])
-        }
-        scan_block(g, body_of(mem))
-        leave_scope(g)
+      if mem.name == 'fielddecl' {
+        continue
       }
+      let g = method_of[pkey(mem)]
+      enter_scope(g)
+      # an instance method's `this` is a parameter the source never writes
+      if mem.name == 'ctordecl' || !is_static(mem) {
+        this_v[g] = declare(g, 'this', mem)
+      }
+      for prm in params_of(mem) {
+        scan_declare(g, prm.nodes[prm.nodes.size() - 1])
+      }
+      scan_block(g, body_of(mem))
+      leave_scope(g)
     }
   }
 }
@@ -565,6 +746,12 @@ fn scan_expr(f, node) {
     {name: 'thisref'} => nil,
     {name: 'interptext'} => nil,
     {name: 'ident'} => scan_name(f, node),
+    {name: 'newobj', nodes} => {
+      rs.use(class_var[nodes[0].token], f)
+      for a in arg_nodes(nodes[nodes.size() - 1]) {
+        scan_expr(f, a)
+      }
+    },
     {name: 'suffixed', nodes} => scan_suffixed(f, nodes),
     _ => {
       if node.nodes != nil {
@@ -599,13 +786,11 @@ fn scan_suffixed(f, nodes) {
 
 # --- Pass B: emit -----------------------------------------------------------
 
-let binop_rt = {'+': '$add', '/': '$div'}
+let binop_rt = {'+': '$add', '/': '$div', '==': '$eq'}
 let binop_ir = {
   '-': 'sub',
   '*': 'mul',
   '%': 'mod',
-  '==': 'eq',
-  '!=': 'ne',
   '<': 'lt',
   '<=': 'le',
   '>': 'gt',
@@ -620,6 +805,8 @@ fn emit_expr(f, node) {
     {name: 'charlit', token} => m.str_literal(unescape(token), node),
     {name: 'boollit', token} => m.bool_literal(token == 'true', node),
     {name: 'nulllit'} => m.nil_literal(node),
+    {name: 'thisref'} => this_ref(f, node),
+    {name: 'newobj', nodes} => emit_new(f, nodes, node),
     {name: 'ident'} => emit_name(f, node, node),
     {name: 'paren', nodes: [inner]} => emit_expr(f, inner),
     {name: 'notexp', nodes: [inner]} => negate_at(emit_expr(f, inner), node),
@@ -652,6 +839,47 @@ fn emit_expr(f, node) {
   }
 }
 
+# `new C(a)` makes the Map, stamps its class on it, gives every field the
+# class declares a slot, and runs the constructor over it.
+fn emit_new(f, nodes, at) {
+  let cname = nodes[0].token
+  if !class_names.has(cname) {
+    fail(at, "no class '{cname}'")
+  }
+  let slot = new_scratch(f)
+  let o = m.var_ref('local', slot, at)
+  mut ids = [
+    m.assign('local', slot, m.intrinsic('mapnew', [], at), at),
+    m.set_index(o, cls_key(), class_ref(f, cname, at), at),
+  ]
+  let outer = current_class
+  mut c = cname
+  while c != nil {
+    current_class = c
+    for mem in field_decls(c) {
+      if !is_static(mem) {
+        let init = field_init(mem)
+        ids.push(m.set_index(o, m.str_literal(member_name(mem), at), cond {
+          init == nil => m.nil_literal(at),
+          _ => emit_expr(f, init),
+        }, at))
+      }
+    }
+    c = base_of[c]
+  }
+  current_class = outer
+  let ctor = ctor_of[cname]
+  if ctor != -1 {
+    mut args = [o]
+    for a in arg_nodes(nodes[nodes.size() - 1]) {
+      args.push(emit_expr(f, a))
+    }
+    ids.push(rs.call(m, f, ctor, args, at))
+  }
+  ids.push(o)
+  m.block(ids, at)
+}
+
 fn negate_at(v, node) {
   m.make_if_else(
     v,
@@ -667,6 +895,7 @@ fn emit_chain(f, nodes) {
   for [op, operand] in rest.iter().chunks(2) {
     let rhs = emit_expr(f, operand)
     acc = cond {
+      op.token == '!=' => negate_at(call_rt(f, '$eq', [acc, rhs], op), op),
       binop_rt.has(op.token) => call_rt(f, binop_rt[op.token], [acc, rhs], op),
       _ => m.binary(binop_ir[op.token], acc, rhs, op),
     }
@@ -716,11 +945,35 @@ fn emit_interp(f, nodes, at) {
 
 fn emit_name(f, id, at) {
   let v = name_v[pkey(id)]
+  if v != -1 {
+    return rs.read(m, f, v, at)
+  }
+  let owner = field_owner(current_class, id.token)
   cond {
-    v != -1 => rs.read(m, f, v, at),
-    _ => fail(id, "undefined name '{id.token}'"),
+    owner == nil => fail(id, "undefined name '{id.token}'"),
+    statics_of[owner].contains(id.token) => m.index(
+      class_ref(f, owner, at),
+      m.str_literal(id.token, at),
+      at,
+    ),
+    _ => m.index(this_ref(f, at), m.str_literal(id.token, at), at),
   }
 }
+
+fn this_ref(f, at) {
+  cond {
+    this_v.has(f) => rs.read(m, f, this_v[f], at),
+    _ => fail(at, 'no this here'),
+  }
+}
+
+# The class values are slots of the entry frame, so a method reaching one
+# reads it the way it reaches any binding the entry declared.
+fn class_ref(f, cname, at) {
+  rs.read(m, f, class_var[cname], at)
+}
+
+mut class_var = {}
 
 # --- calls and member access ------------------------------------------------
 #
@@ -728,37 +981,93 @@ fn emit_name(f, id, at) {
 # the call site and the closure is built there. `Console.WriteLine` and the
 # String members are the ones the runtime answers instead.
 
+# A suffixed expression is walked left to right. A member name is held back
+# one step, because `o.M` followed by a call is a method call and `o.M` on
+# its own is a field read -- the same two nodes meaning different things.
 fn emit_suffixed(f, nodes, at) {
-  # a static call, written either bare inside its own class or qualified
-  if nodes.size() >= 2 && nodes[nodes.size() - 1].name == 'callsfx' {
-    let target = static_target(f, nodes)
-    if target != nil {
-      return target
-    }
+  let n = nodes.size()
+  let head = static_head(f, nodes)
+  mut v = head.value
+  mut i = head.taken
+  mut pending = nil
+  if i == 0 {
+    v = emit_expr(f, nodes[0])
+    i = 1
   }
-  mut v = emit_expr(f, nodes[0])
-  for sfx in nodes.slice(1, nodes.size()) {
-    v = match sfx {
-      {name: 'membersfx', nodes: [id]} => emit_member(f, v, id.token, sfx),
-      {name: 'indexsfx', nodes: [ix]} => m.index(v, emit_expr(f, ix), sfx),
-      {name: 'callsfx'} => fail(sfx, 'cannot call this'),
+  while i < n {
+    let sfx = nodes[i]
+    match sfx.name {
+      'membersfx' => {
+        if pending != nil {
+          v = emit_member(f, v, pending, sfx)
+        }
+        pending = sfx.nodes[0].token
+      },
+      'callsfx' => {
+        if pending == nil {
+          fail(sfx, 'cannot call this')
+        }
+        v = emit_method_call(f, v, pending, sfx)
+        pending = nil
+      },
+      'indexsfx' => {
+        if pending != nil {
+          v = emit_member(f, v, pending, sfx)
+          pending = nil
+        }
+        v = m.index(v, emit_expr(f, sfx.nodes[0]), sfx)
+      },
       _ => fail(sfx, "cannot apply {sfx.name}"),
     }
+    i += 1
   }
-  v
+  cond {
+    pending == nil => v,
+    _ => emit_member(f, v, pending, at),
+  }
 }
 
-# `Console.WriteLine(x)` and the members of a string, which have no class
-# behind them here.
+# `o.M(a)`: the string methods, which have no class behind them, and
+# otherwise a virtual call -- the receiver evaluated once, and the method
+# whatever the object's class chain answers for that name.
+fn emit_method_call(f, recv, name, sfx) {
+  let args = emit_args(f, sfx)
+  if ['ToUpper', 'Substring', 'ToString'].contains(name) {
+    return match name {
+      'ToUpper' => call_rt(f, '$upper', [recv], sfx),
+      'Substring' => call_rt(f, '$substr', [recv, args[0], args[1]], sfx),
+      _ => call_rt(f, '$str', [recv], sfx),
+    }
+  }
+  let slot = new_scratch(f)
+  let r = m.var_ref('local', slot, sfx)
+  m.block(
+    [
+      m.assign('local', slot, recv, sfx),
+      m.call_value(
+        call_rt(f, '$find', [r, m.str_literal(name, sfx)], sfx),
+        [r, ...args],
+        sfx,
+      ),
+    ],
+    sfx,
+  )
+}
+
 fn emit_member(f, v, name, at) {
   cond {
     name == 'Length' => m.intrinsic('len', [v], at),
-    _ => fail(at, "no member '{name}'"),
+    _ => m.index(v, m.str_literal(name, at), at),
   }
 }
 
-fn arg_nodes(sfx) {
-  for a in sfx.nodes {
+# The argument list of a call or of a `new`, which reach here as the same
+# node one level apart.
+fn arg_nodes(node) {
+  if node.name == 'args' {
+    return node.nodes
+  }
+  for a in node.nodes {
     if a.name == 'args' {
       return a.nodes
     }
@@ -774,17 +1083,22 @@ fn emit_args(f, sfx) {
   out
 }
 
-# The call shapes this slice has: `Console.WriteLine(x)`, a string method,
-# `C.M(...)` and a bare `M(...)`. Anything else is not a call yet.
-fn static_target(f, nodes) {
-  let sfx = nodes[nodes.size() - 1]
+# The three call shapes whose callee is known at the call site rather than
+# found on a value: Console, a static method named through its class, and a
+# method of the class this code is written in. Each answers how many of the
+# leading nodes it consumed.
+fn static_head(f, nodes) {
   let n = nodes.size()
-  if n == 3 && nodes[0].name == 'ident' && nodes[1].name == 'membersfx' {
+  if n >= 3 &&
+      nodes[0].name == 'ident' &&
+      nodes[1].name == 'membersfx' &&
+      nodes[2].name == 'callsfx' {
     let recv = nodes[0].token
     let mem = nodes[1].nodes[0].token
+    let sfx = nodes[2]
     if recv == 'Console' && (mem == 'WriteLine' || mem == 'Write') {
       let args = emit_args(f, sfx)
-      return cond {
+      return {taken: 3, value: cond {
         mem ==
           'Write' => m.intrinsic(
           'printraw',
@@ -793,34 +1107,27 @@ fn static_target(f, nodes) {
         ),
         args.empty() => call_rt(f, '$writeline', [m.str_literal('', sfx)], sfx),
         _ => call_rt(f, '$writeline', [args[0]], sfx),
+      }}
+    }
+    if class_names.has(recv) && find_method(recv, mem) != -1 {
+      return {
+        taken: 3,
+        value: rs.call(m, f, find_method(recv, mem), emit_args(f, sfx), sfx),
       }
     }
-    if methods.has("{recv}.{mem}") {
-      return rs.call(m, f, methods["{recv}.{mem}"], emit_args(f, sfx), sfx)
+  }
+  if n >= 2 && nodes[0].name == 'ident' && nodes[1].name == 'callsfx' {
+    let g = find_method(current_class, nodes[0].token)
+    if g != -1 {
+      let args = emit_args(f, nodes[1])
+      return {taken: 2, value: rs.call(m, f, g, cond {
+        this_v.has(f) &&
+          funcs[g].nparams > args.size() => [this_ref(f, nodes[1]), ...args],
+        _ => args,
+      }, nodes[1])}
     }
   }
-  # a method on a value: the receiver is everything before the member
-  if n >= 3 && nodes[n - 2].name == 'membersfx' {
-    mut recv = emit_expr(f, nodes[0])
-    for i in range(1, n - 2) {
-      recv = emit_member(f, recv, nodes[i].nodes[0].token, nodes[i])
-    }
-    let mem = nodes[n - 2].nodes[0].token
-    let args = emit_args(f, sfx)
-    return match mem {
-      'ToUpper' => call_rt(f, '$upper', [recv], sfx),
-      'Substring' => call_rt(f, '$substr', [recv, args[0], args[1]], sfx),
-      'ToString' => call_rt(f, '$str', [recv], sfx),
-      _ => fail(sfx, "no method '{mem}'"),
-    }
-  }
-  if n == 2 && nodes[0].name == 'ident' {
-    let key = "{current_class}.{nodes[0].token}"
-    if methods.has(key) {
-      return rs.call(m, f, methods[key], emit_args(f, sfx), sfx)
-    }
-  }
-  nil
+  {taken: 0, value: nil}
 }
 
 mut current_class = ''
@@ -923,28 +1230,91 @@ fn emit_stmt(f, node) {
 }
 
 # `x = v`, and the compound forms, which read the target first.
+# `x = v`, `o.f = v` and the compound forms. A target is one of three
+# things, and each is read and written the same way, so the shape is chosen
+# once and both halves follow from it.
 fn emit_assign(f, target, op, value, at) {
-  # a `suffixed` with no suffix is the name itself
-  if target.name != 'ident' {
-    fail(at, 'can only assign to a name')
+  # a bare name: a local, a field of this, or a static of its class
+  if target.name == 'ident' {
+    let v = name_v[pkey(target)]
+    if v != -1 {
+      return rs.write(m, f, v, cond {
+        op.token == '=' => emit_expr(f, value),
+        _ => combine(f, op, rs.read(m, f, v, at), value, at),
+      }, at)
+    }
+    let owner = field_owner(current_class, target.token)
+    if owner == nil {
+      fail(target, "undefined name '{target.token}'")
+    }
+    let is_static_field = statics_of[owner].contains(target.token)
+    return m.set_index(own_recv(
+      f,
+      owner,
+      is_static_field,
+      at,
+    ), m.str_literal(target.token, at), cond {
+      op.token == '=' => emit_expr(f, value),
+      _ => combine(
+        f,
+        op,
+        m.index(
+          own_recv(f, owner, is_static_field, at),
+          m.str_literal(target.token, at),
+          at,
+        ),
+        value,
+        at,
+      ),
+    }, at)
   }
-  let id = target
-  let v = name_v[pkey(id)]
-  if v == -1 {
-    fail(id, "undefined name '{id.token}'")
+  # `expr.f = v`: the receiver is evaluated once, into a slot both halves
+  # read
+  let parts = target.nodes
+  let last = parts[parts.size() - 1]
+  if last.name != 'membersfx' {
+    fail(at, 'can only assign to a name or a field')
   }
+  let slot = new_scratch(f)
+  mut base = emit_expr(f, parts[0])
+  for i in range(1, parts.size() - 1) {
+    base = emit_member(f, base, parts[i].nodes[0].token, parts[i])
+  }
+  let name = last.nodes[0].token
+  m.block([m.assign(
+    'local',
+    slot,
+    base,
+    at,
+  ), m.set_index(m.var_ref('local', slot, at), m.str_literal(name, at), cond {
+    op.token == '=' => emit_expr(f, value),
+    _ => combine(
+      f,
+      op,
+      m.index(m.var_ref('local', slot, at), m.str_literal(name, at), at),
+      value,
+      at,
+    ),
+  }, at)], at)
+}
+
+# The receiver a bare field name is really written against.
+fn own_recv(f, owner, is_static_field, at) {
+  cond {
+    is_static_field => class_ref(f, owner, at),
+    _ => this_ref(f, at),
+  }
+}
+
+# `x += v` is `x = x + v`, with the operator taken off the front of the
+# compound one.
+fn combine(f, op, cur, value, at) {
+  let o = op.token.slice(0, 1).to_string()
   let rhs = emit_expr(f, value)
-  rs.write(m, f, v, cond {
-    op.token == '=' => rhs,
-    _ => {
-      let cur = rs.read(m, f, v, at)
-      let o = op.token.slice(0, 1).to_string()
-      cond {
-        binop_rt.has(o) => call_rt(f, binop_rt[o], [cur, rhs], at),
-        _ => m.binary(binop_ir[o], cur, rhs, at),
-      }
-    },
-  }, at)
+  cond {
+    binop_rt.has(o) => call_rt(f, binop_rt[o], [cur, rhs], at),
+    _ => m.binary(binop_ir[o], cur, rhs, at),
+  }
 }
 
 # --- build ------------------------------------------------------------------
@@ -953,27 +1323,34 @@ fn build(mm, root) {
   m = mm
   rs = CodeGen.Resolver.new()
   root_fn = new_func('$entry', root, nil)
+  enter_scope(root_fn)
   native_fmt = m.declare_native('csfmt')
   runtime()
   collect(root)
 
   scan_program(root)
+  leave_scope(root_fn)
   rs.number_captures()
 
   rt_finish()
   for cls in class_decls(root) {
     current_class = class_name(cls)
     for mem in members(cls) {
-      if mem.name == 'methoddecl' {
+      if mem.name != 'fielddecl' {
         let g = method_of[pkey(mem)]
         mut ids = []
+        mut base = 0
+        if this_v.has(g) {
+          ids.push(rs.write(m, g, this_v[g], m.var_ref('local', 0, AT), AT))
+          base = 1
+        }
         for i, prm in params_of(mem).enumerate() {
           let id = prm.nodes[prm.nodes.size() - 1]
           ids.push(rs.write(
             m,
             g,
             decl_v[pkey(id)],
-            m.var_ref('local', i, id),
+            m.var_ref('local', i + base, id),
             id,
           ))
         }
@@ -994,13 +1371,51 @@ fn build(mm, root) {
   if main_fn == -1 {
     fail(root, 'no Main')
   }
-  rt_body[root_fn] = m.block(
-    [
-      rs.call(m, root_fn, main_fn, [], AT),
-      m.make_return(m.nil_literal(AT), AT),
-    ],
-    AT,
-  )
+  # The class values, built before anything runs: each is its name, the
+  # class above it and its methods by name, and the whole of dispatch is a
+  # walk up that chain.
+  mut ids = []
+  for cls in class_decls(root) {
+    let cname = class_name(cls)
+    let v = class_var[cname]
+    ids.push(rs.write(m, root_fn, v, m.intrinsic('mapnew', [], AT), AT))
+    let cv = rs.read(m, root_fn, v, AT)
+    ids.push(m.set_index(cv, S('name'), S(cname), AT))
+    ids.push(m.set_index(cv, S('methods'), m.intrinsic('mapnew', [], AT), AT))
+    current_class = cname
+    for mem in field_decls(cname) {
+      if is_static(mem) {
+        let init = field_init(mem)
+        ids.push(m.set_index(cv, S(member_name(mem)), cond {
+          init == nil => m.nil_literal(AT),
+          _ => emit_expr(root_fn, init),
+        }, AT))
+      }
+    }
+  }
+  for cls in class_decls(root) {
+    let cname = class_name(cls)
+    let cv = rs.read(m, root_fn, class_var[cname], AT)
+    ids.push(m.set_index(cv, S('base'), cond {
+      base_of[cname] == nil => m.nil_literal(AT),
+      _ => rs.read(m, root_fn, class_var[base_of[cname]], AT),
+    }, AT))
+    for mem in members(cls) {
+      if mem.name == 'methoddecl' && !is_static(mem) {
+        ids.push(m.set_index(
+          m.index(cv, S('methods'), AT),
+          S(member_name(mem)),
+          rs.closure(m, root_fn, method_of[pkey(mem)], AT),
+          AT,
+        ))
+      }
+    }
+  }
+  # a static field with an initialiser, and the statics the entry sets up
+  current_class = ''
+  ids.push(rs.call(m, root_fn, main_fn, [], AT))
+  ids.push(m.make_return(m.nil_literal(AT), AT))
+  rt_body[root_fn] = m.block(ids, AT)
   rt_locals[root_fn] = nslots[root_fn]
   rt_params[root_fn] = 0
 
