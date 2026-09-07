@@ -335,9 +335,9 @@ let sum = m.binary(op: "add", lhs: a, rhs: b, line: 1, col: 1)
 let args = m.list_new()
 m.list_push(args, sum)
 let stmts = m.list_new()
-m.list_push(stmts, m.intrinsic(name: "print", args_list: args, line: 1, col: 1))
+m.list_push(stmts, m.intrinsic(name: "print", args: args, line: 1, col: 1))
 m.add_func(name: "main", num_locals: 0, num_captures: 0, num_cells: 0, num_params: 0,
-          body: m.block(stmts_list: stmts, line: 1, col: 1))
+          body: m.block(stmts: stmts, line: 1, col: 1))
 m.verify()
 m.run()'
 expect_present codegen "$codegen_choke" "CodeGen named"
