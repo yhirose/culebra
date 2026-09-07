@@ -1733,6 +1733,24 @@ inline GenericHead parse_generic_head(std::string_view name) {
   };
 }
 
+// Split an `Enum.Variant` name into its two halves — the one dot both
+// CTOR_PATH and TYPE_NAME allow, and the only meaning a dot carries in
+// either. `enum_name` is empty for an unqualified name, which names a
+// variant of any enum. The two grammar rules disagree on the alphabet
+// (a constructor path admits a lowercase head), so this splits on the
+// dot alone and leaves the spelling to whoever parsed it.
+//
+// LIFETIME: both halves alias bytes inside `name` (see parse_generic_head).
+struct QualifiedVariant {
+  std::string_view enum_name;  // empty when `name` carries no dot
+  std::string_view variant;
+};
+inline QualifiedVariant parse_qualified_variant(std::string_view name) {
+  auto dot = name.find('.');
+  if (dot == std::string_view::npos) return {{}, name};
+  return {name.substr(0, dot), name.substr(dot + 1)};
+}
+
 // Parse a type-parameter declaration like `T` or `T: Comparable` into
 // its name and (possibly empty) bound. Used by class / trait / fn
 // declarations to extract Generic params from CLASS_HEAD tokens.
@@ -3121,13 +3139,21 @@ inline bool is_primitive_type_label(std::string_view n) {
          n == "Function" || n == "Tensor" || n == "Tuple" || n == "Set";
 }
 
-// Specificity score for a (param_type, arg_type) pair. Higher = more
+// One argument as dispatch sees it: the dynamic type label plus, for an
+// enum variant, its parent enum. The enum rides on the argument because
+// two enums may declare the same variant name, so only the value knows
+// which one this is (docs/language.md §14, "Sum types").
+struct ArgType {
+  std::string_view name;
+  std::string_view enum_name;  // empty unless `name` is an enum variant
+};
+
+// Specificity score for a (param_type, arg) pair. Higher = more
 // specific. -1 means no match.
 //
-// Ordering: Any (0) < Object catch-all (1) < Union exact (2) <
-// concrete exact (3) < Generic full match (4). A concrete `Long`
-// param therefore wins over `Long | Float`; `Array<Long>` wins over
-// bare `Array` when both happen to match.
+// See the tier table below for the order. A concrete `Long` param wins
+// over `Long | Float`; `Array<Long>` wins over bare `Array` when both
+// happen to match.
 //
 // `Object` param is a catch-all for class instances ONLY (matches
 // type_matches: primitives stay -1 so pick doesn't claim a match
@@ -3136,15 +3162,16 @@ inline bool is_primitive_type_label(std::string_view n) {
 // Generic param (`Array<Long>`) matches an arg whose type label
 // equals the outer name (`Array`) — element info isn't on the arg
 // side in the MVP, so it tie-breaks only against bare `Array`.
-inline int multifn_specificity(std::string_view param_type,
-                                std::string_view arg_type) {
+inline int multifn_specificity(std::string_view param_type, ArgType arg) {
   // Tiers (×2 from the pre-trait era so trait can slot strictly
   // between Object and Union):
   //   0  Any
   //   2  Object catch-all (class instance via `Object` param)
   //   3  trait conformance
-  //   4  Union exact (downgrade from any concrete alt inside)
+  //   4  Union exact (downgrade from any alt above this tier)
+  //   5  the parent enum of a variant arg
   //   6  concrete exact / Generic outer-only / bare dict via Object param
+  //   7  `Enum.Variant` — the variant of that one enum
   //   8  Generic full match (param has args and outer matches concrete)
   if (param_type.empty() || param_type == "Any") return 0;
   // Union branch must use the depth-aware top-level check — a bare
@@ -3153,20 +3180,21 @@ inline int multifn_specificity(std::string_view param_type,
   if (has_toplevel_pipe(param_type)) {
     int best = -1;
     for (auto cand : split_union_types(param_type)) {
-      int s = multifn_specificity(cand, arg_type);
+      int s = multifn_specificity(cand, arg);
       if (s > best) best = s;
     }
     if (best < 0) return -1;
-    // A concrete alt inside a Union scored 6; downgrade to 4 so a
-    // bare concrete param outranks it. Lower-tier alts pass through.
-    return best >= 6 ? 4 : best;
+    // A concrete alt inside a Union scored 6 (a parent-enum alt 5);
+    // downgrade to 4 so the same name spelled bare outranks the Union.
+    // Lower-tier alts pass through.
+    return best >= 5 ? 4 : best;
   }
   // Composite bound (`A + B`): all-of. The arg must satisfy every
   // part; score is the best part's tier (parts are traits → 3).
   if (has_toplevel_plus(param_type)) {
     int best = -1;
     for (auto part : split_intersection_types(param_type)) {
-      int s = multifn_specificity(part, arg_type);
+      int s = multifn_specificity(part, arg);
       if (s < 0) return -1;
       if (s > best) best = s;
     }
@@ -3179,8 +3207,8 @@ inline int multifn_specificity(std::string_view param_type,
   // `__call__`. Checked before `?` so an `fn(A) -> B?` param isn't read as
   // optional. Mirrors the `Function` param branch below.
   if (is_fn_type(param_type)) {
-    if (arg_type == "Function") return 6;
-    if (!is_primitive_type_label(arg_type)) return 2;
+    if (arg.name == "Function") return 6;
+    if (!is_primitive_type_label(arg.name)) return 2;
     return -1;
   }
   // `T?` Optional sugar = `T | Nil`: score like a two-alt Union. A Nil
@@ -3188,48 +3216,58 @@ inline int multifn_specificity(std::string_view param_type,
   // downgraded (concrete-in-Union -> 4) so a bare `T` param outranks it.
   if (!param_type.empty() && param_type.back() == '?') {
     auto base = param_type.substr(0, param_type.size() - 1);
-    if (arg_type == "Nil") return 4;
-    int s = multifn_specificity(base, arg_type);
+    if (arg.name == "Nil") return 4;
+    int s = multifn_specificity(base, arg);
     if (s < 0) return -1;
-    return s >= 6 ? 4 : s;
+    return s >= 5 ? 4 : s;
   }
   // Generic: outer-match against arg label (arg side carries no
   // type args today, so the args part only tie-breaks against bare
   // outer-only annotations).
   if (param_type.find('<') != std::string_view::npos) {
     auto outer = parse_generic_head(param_type).outer;
-    int base = multifn_specificity(outer, arg_type);
+    int base = multifn_specificity(outer, arg);
     if (base < 0) return -1;
     return base == 6 ? 8 : base;
   }
   if (param_type == "Object") {
-    if (arg_type == "Object") return 6;        // bare dict — exact
-    if (is_primitive_type_label(arg_type)) return -1;
+    if (arg.name == "Object") return 6;        // bare dict — exact
+    if (is_primitive_type_label(arg.name)) return -1;
     return 2;                                  // class instance catch
   }
-  if (param_type == arg_type) return 6;
+  if (param_type == arg.name) return 6;
+  // The two enum spellings. `Result` takes any of its variants, so it
+  // ranks below the variant named outright; `Result.Ok` answers both
+  // halves, so it outranks the bare `Ok` any enum's variant satisfies.
+  if (!arg.enum_name.empty()) {
+    if (param_type == arg.enum_name) return 5;
+    auto q = parse_qualified_variant(param_type);
+    if (!q.enum_name.empty()) {
+      return q.enum_name == arg.enum_name && q.variant == arg.name ? 7 : -1;
+    }
+  }
   // A callable class instance satisfies `Function` (Option A: structural
   // callable). The arg side carries only a type label here, so score any
   // non-primitive (class instance / bare Object) at the Object-catch tier
   // and let the value-aware post-pick check_type confirm it actually has
   // `__call__` — a non-callable is rejected there, and an exact class
   // overload (6) still outranks this catch.
-  if (param_type == "Function" && !is_primitive_type_label(arg_type)) {
+  if (param_type == "Function" && !is_primitive_type_label(arg.name)) {
     return 2;
   }
   // Trait conformance: a registered trait scores below concrete and
   // below Union exact, but above the bare-Object catch.
   if (auto* trait = lookup_trait(param_type)) {
-    if (arg_type == "Object") {
+    if (arg.name == "Object") {
       // Bare Object literal — `ObjectValue::builtins()` provides
       // default methods (`iter`, etc.) so the built-in table is the
       // authority on which traits the literal conforms to.
-      return builtin_conforms_to_trait(arg_type, param_type) ? 3 : -1;
+      return builtin_conforms_to_trait(arg.name, param_type) ? 3 : -1;
     }
     // Primitive arg: consult the hard-coded built-in conformance
     // table directly (no instance methods to walk).
-    if (is_primitive_type_label(arg_type)) {
-      return builtin_conforms_to_trait(arg_type, param_type) ? 3 : -1;
+    if (is_primitive_type_label(arg.name)) {
+      return builtin_conforms_to_trait(arg.name, param_type) ? 3 : -1;
     }
     // Read-only path: `multifn_specificity` only reads the cache and
     // returns -1 on miss. Use `.find()` (not `operator[]`) so a miss
@@ -3237,7 +3275,7 @@ inline int multifn_specificity(std::string_view param_type,
     // lock so dispatchers don't serialize on this hot path.
     std::shared_lock lock(trait_mutex());
     auto& cache = trait_conformance_cache();
-    auto outer = cache.find(std::string(arg_type));
+    auto outer = cache.find(std::string(arg.name));
     if (outer == cache.end()) return -1;
     auto it = outer->second.find(std::string(param_type));
     if (it != outer->second.end()) return it->second ? 3 : -1;
@@ -3271,7 +3309,7 @@ inline int multifn_specificity(std::string_view param_type,
 template <class Entry, class ParamsOf, class IsVariadic, class MinArityOf,
           class NamesOf>
 inline int64_t multifn_pick(const std::vector<Entry>& methods,
-                             const std::vector<std::string_view>& arg_types,
+                             const std::vector<ArgType>& arg_types,
                              const std::vector<std::string_view>& kwarg_keys,
                              ParamsOf params_of, IsVariadic is_variadic_of,
                              MinArityOf min_arity_of, NamesOf names_of) {

@@ -401,7 +401,8 @@
   KWARGS_REST              <-  '**' _ < IdentInitChar IdentChar* >
   DEFAULT_VALUE            <-  ND_EXPRESSION
 
-  # TYPE_NAME = single type, optionally Generic, with an optional
+  # TYPE_NAME = single type, optionally `Enum.Variant`-qualified (the one
+  # dot names an enum's variant) and optionally Generic, with an optional
   # trailing `?` (the `T?` = `T | Nil` Optional sugar). TYPE_REF wraps
   # Union alternation around a TYPE_ATOM so `Array<Long | Float>` and the
   # outer `Long | Float` use one shared definition. A TYPE_ATOM is either a
@@ -413,7 +414,7 @@
   # canonicalize_type_annotation.
   FN_TYPE                  <-  fn _sp_ '(' _sp_ ( TYPE_REF ( _sp_ ',' _sp_ TYPE_REF )* )? _sp_ ')' _sp_ '->' _sp_ TYPE_ATOM
   TYPE_ATOM                <-  FN_TYPE / TYPE_NAME
-  TYPE_NAME                <-  [A-Z] [a-zA-Z_0-9]* ( _sp_ '<' _sp_ TYPE_ARG ( _sp_ ',' _sp_ TYPE_ARG )* _sp_ '>' )? '?'?
+  TYPE_NAME                <-  [A-Z] [a-zA-Z_0-9]* ( '.' [A-Z] [a-zA-Z_0-9]* )? ( _sp_ '<' _sp_ TYPE_ARG ( _sp_ ',' _sp_ TYPE_ARG )* _sp_ '>' )? '?'?
   TYPE_ARG                 <-  TYPE_REF / [0-9]+
   TYPE_REF                 <-  TYPE_ATOM ( _sp_ '|' _sp_ TYPE_ATOM )*
   TYPE_ANNOTATION          <-  ':' _ < TYPE_REF >

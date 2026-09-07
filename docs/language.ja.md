@@ -2680,7 +2680,7 @@ let width = "v" + match n {
 | `{k1: p1, k2: p2}` | `k1`が`p1`に、`k2`が`p2`に一致する`Object`。入れ子可（`{user: {name}}`）。省略形と混在可 |
 | `{}`             | 任意の`Object`（キー無視）                  |
 | `(p1, p2, ...)`  | 同じ要素数の`Tuple`。要素ごとに部分パターン |
-| `Ok(p1, ...)`    | enum constructor: variant `Ok`にマッチしpositional payloadを部分パターンに分解。修飾形`Result.Ok(p)`も可。「Sum type」参照 |
+| `Ok(p1, ...)`    | enum constructor: variant `Ok`にマッチしpositional payloadを部分パターンに分解。修飾形`Result.Ok(p)`は親enumが`Result`であることも要求する — 同名variantを持つ2つのenumはこれで区別する。「Sum type」参照 |
 
 ### セマンティクス
 
@@ -2773,7 +2773,10 @@ Culebraは動的型付けで、型注釈は任意です。注釈は以下3つの
 
 `Any`は常に一致します。未知の型名は検査失敗で`type error`と
 なります。`class C { ... }`で宣言したクラス名も有効な注釈で、
-そのインスタンスを受け入れます。
+そのインスタンスを受け入れます。enum名はそのenumの全variantを、
+variant名はどのenumのものでも同名variantを、修飾形
+`Enum.Variant`はそのenumのvariantだけを受け入れます —
+「Sum type」参照。
 
 ### Union 型
 
@@ -3133,6 +3136,13 @@ variant instanceはvariant名と親enum名の両方でタグ付けされ、
       _          => "other",
     }
 
+variant名だけを書くと、それはvariantの名前であってenumの名前では
+ない。2つのenumがどちらも`Ok`を宣言していれば、`Ok(p)`も`x: Ok`も
+両方を受ける。enumまで絞るには修飾する — パターンなら
+`Result.Ok(p)`、型なら`x: Result.Ok`で、どちらもvariantと親enumの
+両方を検査する。enum名だけ書けば (`x: Result`) そのenumの全variant
+を受ける。
+
 payloadはpositionalで`_0`, `_1`, … (`r._0`) で参照可能だが、
 constructor patternがidiomaticなアクセサ。
 
@@ -3153,9 +3163,11 @@ variantは別のkey。
 
 * canonicalなsum-typeスタイルは無型param + `match`:
   `fn area(s) { match s { Circle(r) => ..., ... } }`。
-* 多重dispatchは **variant** をキーにする (`fn f(x: Ok)`)。enum名
-  (`fn f(x: Result)`) はdispatchキーにならない — enumレベルの分岐は
-  `match`を使う。
+* 多重dispatchは3つの粒度のどれでもキーにできる。
+  `fn f(x: Result.Ok)`はそのenumの`Ok`だけ、`fn f(x: Ok)`はどのenum
+  のものでも`Ok`、`fn f(x: Result)`はそのenumの全variantを受ける。
+  宣言されているうちいちばん細かいものが選ばれ、enum名は同じvariant
+  を並べた`Ok | Err`のunionより優先される。
 * enum内メソッド (free fn + UFCSで代替) / named payload field /
   明示discriminant値 / 静的exhaustiveness検査は無し (非マッチ
   `match`は`nil`)。
@@ -5132,6 +5144,13 @@ MULTIFN_DECL <- 'fn' IDENTIFIER PARAMETERS RETURN_TYPE? BLOCK
 | `Object`           | クラスインスタンス（`Square`, `Circle`等） | 1 |
 | 厳密一致（`Long`, `Float`, ..., 具体クラス名） | 同じ型 | 2 |
 | それ以外           | —                  | 不一致 |
+
+`Object`と厳密一致の間にも段があり、粗いほうから順に、引数が
+conformするtrait、union (`Ok | Err`)、variant引数の親enum名
+(`Result`) の3つです。厳密一致より上は2つで、修飾したvariant
+(`Result.Ok`は素の`Ok`に勝つ)、それから型引数まで書いたgeneric
+(`Array<Long>`は素の`Array`に勝つ)。`T?`は`T`が本来取るスコアを
+unionの段まで下げるので、素の`T`が常に`T?`に勝ちます。
 
 引数ごとのスコアからなるタプルを比較し、すべての要素で **他方
 以上、少なくとも1要素で他方より大** の関係を満たすメソッドが

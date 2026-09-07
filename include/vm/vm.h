@@ -12632,19 +12632,19 @@ class Compiler {
   // `{k}` / `{k: p}`: an Object, then every named key present (extra keys are
   // ignored). The tag gate stands on its own so `{}` still rejects a
   // non-Object, which no entry would be left to catch.
-  // `Ok(x)` / `Result.Ok(x)`: an enum variant by its name (the part after
-  // any `.`), then its positional payload fields against the sub-patterns.
-  // The TAG_OBJECT gate comes first because type_matches answers true for a
-  // primitive whose name the variant collides with (`Long(x)`), and the
-  // field reads below would take that scalar for an object.
+  // `Ok(x)` / `Result.Ok(x)`: an enum variant, then its positional payload
+  // fields against the sub-patterns. The path goes to TypeMatch whole —
+  // type_matches reads a qualified name as the variant plus the enum it
+  // belongs to, which is what tells two enums that each declare an `Ok`
+  // apart. The TAG_OBJECT gate comes first because type_matches answers
+  // true for a primitive whose name an unqualified variant collides with
+  // (`Long(x)`), and the field reads below would take that scalar for an
+  // object.
   void compile_ctor_pattern_test(const peg::Ast& pat, int32_t subj,
                                  std::vector<size_t>& fail) {
-    auto path = pat.nodes[0]->token;
-    auto dot = path.rfind('.');
-    auto variant =
-        dot == std::string_view::npos ? path : path.substr(dot + 1);
     emit_tag_gate(subj, {TAG_OBJECT}, fail);
-    fail.push_back(emit(Op::TypeMatch, subj, 0, kconst_str(variant)));
+    fail.push_back(
+        emit(Op::TypeMatch, subj, 0, kconst_str(pat.nodes[0]->token)));
     for (size_t i = 1; i < pat.nodes.size(); i++) {
       int32_t t = alloc_temp(*pat.nodes[i]);
       fail.push_back(emit(Op::ObjGet, t, 0, subj,

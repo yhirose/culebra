@@ -2822,7 +2822,7 @@ fall-through, or an exception).
 | `{k1: p1, k2: p2}` | `Object` whose `k1` matches `p1` and `k2` matches `p2`. Nests freely (`{user: {name}}`). Mixes with shorthand. |
 | `{}`              | Any `Object` (keys ignored)              |
 | `(p1, p2, ...)`   | `Tuple` of exactly the same arity; element-wise sub-patterns |
-| `Ok(p1, ...)`     | Enum constructor: matches the variant `Ok` and destructures its positional payload against the sub-patterns. Qualified form `Result.Ok(p)` also works. See "Sum types". |
+| `Ok(p1, ...)`     | Enum constructor: matches the variant `Ok` and destructures its positional payload against the sub-patterns. The qualified form `Result.Ok(p)` also requires the value's enum to be `Result` — how two enums that each declare an `Ok` are told apart. See "Sum types". |
 
 ### Semantics
 
@@ -2921,7 +2921,10 @@ enforce their invariant at three specific runtime points:
 
 `Any` always matches. Unknown type names fail the check and raise
 `type error`. Class names declared with `class C { ... }` are also
-valid annotations and accept any instance of that class.
+valid annotations and accept any instance of that class. An enum name
+accepts any of its variants, a variant name accepts that variant of any
+enum, and the qualified `Enum.Variant` accepts only that enum's — see
+"Sum types".
 
 ### Union types
 
@@ -3357,6 +3360,12 @@ enum name, so type annotations / patterns match at either level:
       _          => "other",
     }
 
+A bare variant name names the variant, not the enum: where two enums
+each declare an `Ok`, `Ok(p)` and `x: Ok` take either. Qualify it to
+pin the enum — `Result.Ok(p)` as a pattern, `x: Result.Ok` as a type —
+and both halves are checked. Naming the enum alone (`x: Result`) takes
+any of its variants.
+
 Payload is positional and reachable as `_0`, `_1`, … (`r._0`), though
 constructor patterns are the idiomatic accessor.
 
@@ -3377,9 +3386,11 @@ enums are two keys.
 
 * The canonical sum-type style is an untyped parameter plus a `match`:
   `fn area(s) { match s { Circle(r) => ..., ... } }`.
-* Multimethod dispatch keys on the **variant** (`fn f(x: Ok)`), not on
-  the enum name (`fn f(x: Result)` is not yet a dispatch key) — use a
-  `match` for enum-level dispatch.
+* Multimethod dispatch keys at any of the three levels: `fn f(x:
+  Result.Ok)` takes only that enum's `Ok`, `fn f(x: Ok)` any enum's,
+  and `fn f(x: Result)` every variant of the enum. The most specific
+  one declared wins, and the enum name outranks an `Ok | Err` union of
+  the same variants.
 * No methods-in-enum block (use free functions + UFCS), no named
   payload fields, no explicit discriminant values, and no static
   exhaustiveness check (a non-matching `match` yields `nil`).
@@ -5388,6 +5399,14 @@ of the argument yield a specificity score:
 | `Object`                                                | class instance (e.g. `Square`, `Circle`) | 1        |
 | Exact match (`Long`, `Float`, ..., concrete class name) | same type                                | 2        |
 | otherwise                                               | —                                        | no match |
+
+Three more tiers sit between the `Object` row and an exact match,
+from least to most specific: a trait the argument conforms to, a union
+(`Ok | Err`), and the enum name of a variant argument (`Result`). Two
+sit above an exact match: a qualified variant (`Result.Ok` beats a bare
+`Ok`), then a generic that carries type arguments (`Array<Long>` beats
+a bare `Array`). `T?` scores at the union tier whatever `T` would score
+above it, so a bare `T` always wins over `T?`.
 
 The per-argument scores form a tuple. A method is selected when its
 score tuple is **at least as large as the other in every position and

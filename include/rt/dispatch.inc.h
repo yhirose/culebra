@@ -1170,44 +1170,40 @@ inline void _jit_gc_sweep_object(void* obj, uint8_t tag) {
 }
 }  // extern "C++"
 
-// Runtime type name for dispatch. For primitives this is the same as
-// `_culebra_tag_name`, but for class instances (TAG_OBJECT with a
-// `class:` String slot) we substitute the class name — that's why
-// this can't share `_culebra_tag_name`'s tag-only switch. Mirrors
-// `value_dyn_type` rule (one dynamic type name per tag).
-inline std::string_view _jit_value_dyn_type(JitValue v) {
+// What dispatch reads off an argument. The label is the `value_dyn_type`
+// rule (one dynamic type name per tag), which for primitives is
+// `_culebra_tag_name` but for a class instance or a variant is its own
+// `class` tag — that's why this can't share the tag-only switch. A
+// variant also carries the enum it belongs to, which its label alone
+// can't tell an `x: Result` param.
+inline culebra::ArgType _jit_value_arg_type(JitValue v) {
   switch (v.tag) {
-    case TAG_NIL:        return "Nil";
-    case TAG_BOOL:       return "Bool";
-    case TAG_LONG:       return "Long";
-    case TAG_FLOAT:      return "Float";
-    case TAG_STRING:     return "String";
-    case TAG_STRINGVIEW: return "StringView";
-    case TAG_ARRAY:      return "Array";
-    case TAG_TUPLE:      return "Tuple";
-    case TAG_SET:        return "Set";
-    case TAG_FUNC:       return "Function";
-    case TAG_TENSOR:     return "Tensor";
+    case TAG_NIL:        return {"Nil", {}};
+    case TAG_BOOL:       return {"Bool", {}};
+    case TAG_LONG:       return {"Long", {}};
+    case TAG_FLOAT:      return {"Float", {}};
+    case TAG_STRING:     return {"String", {}};
+    case TAG_STRINGVIEW: return {"StringView", {}};
+    case TAG_ARRAY:      return {"Array", {}};
+    case TAG_TUPLE:      return {"Tuple", {}};
+    case TAG_SET:        return {"Set", {}};
+    case TAG_FUNC:       return {"Function", {}};
+    case TAG_TENSOR:     return {"Tensor", {}};
     case TAG_OBJECT: {
       auto* obj = reinterpret_cast<JitObject*>(v.data);
-      if (auto idx = obj->find_slot("class");
-          idx != static_cast<size_t>(-1)) {
-        const auto& slot = obj->slots[idx].value;
-        if (slot.tag == TAG_STRING) {
-          return std::string_view(reinterpret_cast<const char*>(slot.data));
-        }
-      }
-      return "Object";
+      auto cls = _jit_string_slot(obj, "class");
+      return {cls.value_or(std::string_view("Object")),
+              _jit_enum_name(obj).value_or(std::string_view{})};
     }
   }
-  return "Object";
+  return {"Object", {}};
 }
 
 // Adapter: supplies the param-types accessor for the shared pick
 // algorithm both engines fixed on.
 inline int64_t _jit_multifn_pick(
     const std::vector<JitMultiMethodEntry>& methods,
-    const std::vector<std::string_view>& arg_types,
+    const std::vector<culebra::ArgType>& arg_types,
     const std::vector<std::string_view>& kwarg_keys = {}) {
   return culebra::multifn_pick(
       methods, arg_types, kwarg_keys,
@@ -1250,9 +1246,9 @@ inline MultifnPick _jit_multifn_resolve(
     throw culebra::CulebraError("DispatchError",
         fail("no matching method"), line, col);
   }
-  std::vector<std::string_view> arg_types(static_cast<size_t>(n_pos));
+  std::vector<culebra::ArgType> arg_types(static_cast<size_t>(n_pos));
   for (size_t i = 0; i < arg_types.size(); i++) {
-    arg_types[i] = _jit_value_dyn_type(positional[i]);
+    arg_types[i] = _jit_value_arg_type(positional[i]);
   }
   // Pre-populate trait conformance cache so multifn_specificity can
   // score `fn show(x: Stringer)` style trait params without holding

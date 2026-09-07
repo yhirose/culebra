@@ -1178,6 +1178,17 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
   }
   std::string_view actual = _culebra_tag_name(tag);
   if (actual == expected) return true;
+  // `Enum.Variant`: both halves, so nothing but that enum's variant
+  // satisfies it. Reached from an annotation and from a constructor
+  // pattern's TypeMatch alike — one reading for both.
+  if (auto q = culebra::parse_qualified_variant(expected);
+      !q.enum_name.empty()) {
+    if (tag != TAG_OBJECT) return false;
+    auto* obj = reinterpret_cast<JitObject*>(data);
+    auto en = _jit_enum_name(obj);
+    return en && *en == q.enum_name &&
+           _jit_derived_class_tag(obj) == q.variant;
+  }
   // Built-in trait conformance: primitives (non-Object tags) can
   // satisfy Stringer / Eq / Comparable via the hard-coded table.
   if (tag != TAG_OBJECT && culebra::lookup_trait(expected) &&

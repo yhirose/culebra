@@ -104,8 +104,6 @@ assert_eq(tag_of(Result.Err(1)), "err")
 assert_eq(tag_of(5), "long")
 
 // Canonical sum-type style: an untyped param + match over variants.
-// (Overloading on the ENUM name — `fn f(x: Color)` — is not yet a
-// dispatch key; dispatch on the variant or match instead.)
 fn area(s) {
   match s {
     Circle(r) => r,
@@ -155,6 +153,7 @@ assert_eq(hash(Color.Red), hash(Color.Red))
 // two keys.
 enum Left {
   Same,
+  L2,
 }
 enum Right {
   Same,
@@ -196,5 +195,181 @@ fn kind(x: Array) {
 }
 assert_eq(kind(Color.Red), "hashable")
 assert_eq(kind([1]), "array")
+
+// --- Multimethod dispatch on the enum name ---
+// The enum-parent match a type pattern already makes (`x: Result` above)
+// also keys dispatch: an annotation naming the enum accepts every variant
+// of it, ranking below the variant spelled out and above `Any`.
+fn arm(r: Ok) {
+  "variant"
+}
+fn arm(r: Result) {
+  "enum"
+}
+fn arm(x) {
+  "any"
+}
+assert_eq(arm(Result.Ok(1)), "variant")
+assert_eq(arm(Result.Err(1)), "enum")
+assert_eq(arm(Color.Red), "any")
+
+// The enum name outranks a Union that spells its variants out, and both
+// outrank the optional form of the same name.
+fn rank(r: Result) {
+  "enum"
+}
+fn rank(r: Ok | Err) {
+  "union"
+}
+assert_eq(rank(Result.Ok(1)), "enum")
+fn opt(r: Result) {
+  "plain"
+}
+fn opt(r: Result?) {
+  "optional"
+}
+assert_eq(opt(Result.Ok(1)), "plain")
+assert_eq(opt(nil), "optional")
+
+// The parent comes off the value, not off the variant name: the two
+// `Same` variants above dispatch to their own enum.
+fn side(x: Left) {
+  "left"
+}
+fn side(x: Right) {
+  "right"
+}
+assert_eq(side(Left.Same), "left")
+assert_eq(side(Right.Same), "right")
+
+// Instance methods key on it the same way.
+class Handler {
+  new() {}
+  on(r: Ok) {
+    "m-variant"
+  }
+  on(r: Result) {
+    "m-enum"
+  }
+}
+let h = Handler.new()
+assert_eq(h.on(Result.Ok(1)), "m-variant")
+assert_eq(h.on(Result.Err(1)), "m-enum")
+
+// A value of another enum still finds no arm.
+fn only_result(r: Result) {
+  "result"
+}
+let no_arm = try {
+  only_result(Color.Red)
+} catch e {
+  e
+}
+assert_eq(no_arm.kind, "DispatchError")
+
+// --- A qualified constructor pattern names its enum ---
+// `Left.Same()` takes Left's `Same`, not Right's: the two are two types
+// (they compare unequal and key separately, above), so an arm that spells
+// the enum out gets what it asked for.
+let side_of = fn (v) {
+  match v {
+    Left.Same() => "left",
+    Right.Same() => "right",
+    _ => "other",
+  }
+}
+assert_eq(side_of(Left.Same), "left")
+assert_eq(side_of(Right.Same), "right")
+
+// The bare form names a variant, not an enum, and still takes either.
+let bare_same = fn (v) {
+  match v {
+    Same() => "same",
+    _ => "other",
+  }
+}
+assert_eq(bare_same(Left.Same), "same")
+assert_eq(bare_same(Right.Same), "same")
+
+// Payload binding is unchanged under a qualifier.
+let unwrap = fn (v) {
+  match v {
+    Result.Ok(x) => x,
+    _ => -1,
+  }
+}
+assert_eq(unwrap(Result.Ok(7)), 7)
+assert_eq(unwrap(Result.Err(1)), -1)
+
+// A class instance that happens to share a variant's name carries no
+// enum, so the qualified pattern misses it (the bare one still matches
+// on the class tag).
+class Ok {
+  new() {}
+}
+assert_eq(unwrap(Ok.new()), -1)
+
+// --- The qualified name works in a type position too ---
+// `Result.Ok` in an annotation reads the way `Result.Ok(p)` reads as a
+// pattern: the variant, and the enum it belongs to.
+fn qual(x: Left.Same) {
+  "left"
+}
+assert_eq(qual(Left.Same), "left")
+let wrong_enum = try {
+  qual(Right.Same)
+} catch e {
+  e
+}
+assert_eq(wrong_enum.kind, "DispatchError")
+
+// The new tier sits above the bare variant name (`arm` above pins the
+// rest of the ladder): Right's `Same` falls past the qualified arm.
+fn grain(x: Left.Same) {
+  "qualified"
+}
+fn grain(x: Same) {
+  "variant"
+}
+assert_eq(grain(Left.Same), "qualified")
+assert_eq(grain(Right.Same), "variant")
+
+// Type patterns, unions and the optional form all take it.
+let which = fn (v) {
+  match v {
+    x: Left.Same => "left",
+    x: Right.Same => "right",
+    _ => "other",
+  }
+}
+assert_eq(which(Left.Same), "left")
+assert_eq(which(Right.Same), "right")
+assert_eq(which(Left.L2), "other")
+fn either(x: Left.Same | Right.Same) {
+  "either"
+}
+assert_eq(either(Left.Same), "either")
+assert_eq(either(Right.Same), "either")
+fn maybe(x: Left.Same?) {
+  "ok"
+}
+assert_eq(maybe(nil), "ok")
+assert_eq(maybe(Left.Same), "ok")
+
+// Annotated assignment and return type report the qualified name.
+let assign_err = try {
+  let v: Left.Same = Right.Same
+  nil
+} catch e {
+  e
+}
+assert_eq(assign_err.kind, "TypeError")
+assert_eq(assign_err.message, "type error: assignment expects Left.Same")
+
+// Introspection canonicalizes it like any other name.
+fn shown(x: Left.Same?) {
+  x
+}
+assert_eq(shown.params[0].type, "Left.Same | Nil")
 
 IO.inspect("test_enum OK")

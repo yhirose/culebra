@@ -2188,15 +2188,15 @@ struct MatchTally {
   // `name` is a variant, optionally `Enum.Variant`-qualified. A qualified
   // name trusts its own prefix over the file-wide registry when that prefix
   // really is a declared enum owning that variant — `Shape.Circle` means
-  // Shape's Circle even if some unrelated enum also has a Circle variant
-  // (this is also the runtime's own reading: try_pattern's CTOR_PATTERN case
-  // discards the qualifier and matches by variant name alone).
+  // Shape's Circle even if some unrelated enum also has a Circle variant.
+  // The compiler reads it the same way: compile_ctor_pattern_test tests the
+  // subject's `__enum` against the qualifier.
   void resolve(std::string_view name) {
-    auto dot = name.rfind('.');
-    std::string variant(dot == std::string_view::npos ? name : name.substr(dot + 1));
+    auto q = culebra::parse_qualified_variant(name);
+    std::string variant(q.variant);
     std::string owner;
-    if (dot != std::string_view::npos) {
-      std::string hint(name.substr(0, dot));
+    if (!q.enum_name.empty()) {
+      std::string hint(q.enum_name);
       auto it = reg.variants.find(hint);
       if (it != reg.variants.end() && it->second.count(variant)) owner = hint;
     }
