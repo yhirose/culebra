@@ -121,6 +121,804 @@ fn fail(node, msg) {
   throw {kind: 'LuaError', message: msg, line: node.line, col: node.column}
 }
 
+# --- The runtime this front end writes in its own IR ------------------------
+#
+# Lua's semantics differ from the VM's defaults in a handful of places, and
+# each difference is one func built here: what is true (only nil and false
+# are false, where the VM calls 0 false too), how `//` and `%` round (toward
+# negative infinity, where the VM truncates), what `==` means across two
+# types (false, where the VM refuses the comparison), and how a value prints.
+#
+# They are funcs rather than inlined shapes because every call site would
+# otherwise carry the whole test; each is capture-free, so `set_singleton`
+# makes every call name one closure.
+
+# Every helper is registered before any body is built, because one calls
+# another and a call names its callee's index as it builds the node.
+mut rt_pending = []
+
+fn rt_func(name, nparams, nlocals, build) {
+  let f = new_func(name, nil, nil)
+  globals_fn[name] = f
+  rt_params[f] = nparams
+  rt_locals[f] = nlocals
+  rt_pending.push((f, build))
+  f
+}
+
+fn rt_finish() {
+  for (f, build) in rt_pending {
+    rt_body[f] = build(f)
+  }
+}
+
+fn L(i) {
+  m.var_ref('local', i, AT)
+}
+
+fn S(v) {
+  m.str_literal(v, AT)
+}
+
+fn is_type(v, t) {
+  m.binary('eq', m.intrinsic('typeof', [v], AT), S(t), AT)
+}
+
+fn ret(v) {
+  m.make_return(v, AT)
+}
+
+fn runtime() {
+  # __truthy(v): only nil and false are false
+  rt_func('__truthy', 1, 1, fn (f) {
+    m.make_if_else(
+      is_type(L(0), 'nil'),
+      ret(m.bool_literal(false, AT)),
+      m.make_if_else(
+        is_type(L(0), 'bool'),
+        ret(L(0)),
+        ret(m.bool_literal(true, AT)),
+        AT,
+      ),
+      AT,
+    )
+  })
+  rt_func('__not', 1, 1, fn (f) {
+    ret(m.make_if_else(
+      call_rt(f, '__truthy', [L(0)], AT),
+      m.bool_literal(false, AT),
+      m.bool_literal(true, AT),
+      AT,
+    ))
+  })
+  # __eq(a, b): two different types are never equal
+  rt_func('__eq', 2, 2, fn (f) {
+    ret(m.make_if_else(
+      m.binary(
+        'eq',
+        m.intrinsic('typeof', [L(0)], AT),
+        m.intrinsic('typeof', [L(1)], AT),
+        AT,
+      ),
+      m.binary('eq', L(0), L(1), AT),
+      m.bool_literal(false, AT),
+      AT,
+    ))
+  })
+  rt_func('__ne', 2, 2, fn (f) {
+    ret(call_rt(f, '__not', [call_rt(f, '__eq', [L(0), L(1)], AT)], AT))
+  })
+  # the four orderings are the VM's, on operands of one type
+  for (
+    nm,
+    op,
+  ) in [('__lt', 'lt'), ('__le', 'le'), ('__gt', 'gt'), ('__ge', 'ge')] {
+    rt_func(nm, 2, 2, fn (f) {
+      ret(m.binary(op, L(0), L(1), AT))
+    })
+  }
+  for (nm, op) in [('__add', 'add'), ('__sub', 'sub'), ('__mul', 'mul')] {
+    rt_func(nm, 2, 2, fn (f) {
+      ret(m.binary(op, L(0), L(1), AT))
+    })
+  }
+  # `/` is always a float in Lua
+  rt_func('__div', 2, 2, fn (f) {
+    ret(m.binary(
+      'div',
+      m.intrinsic('todouble', [L(0)], AT),
+      m.intrinsic('todouble', [L(1)], AT),
+      AT,
+    ))
+  })
+  rt_func('__pow', 2, 2, fn (f) {
+    ret(m.intrinsic('pow', [L(0), L(1)], AT))
+  })
+  # `//` floors where the VM truncates: a negative quotient that did not
+  # divide exactly is one too high
+  rt_func('__idiv', 2, 3, fn (f) {
+    let q = L(2)
+    m.block(
+      [
+        m.assign('local', 2, m.binary('div', L(0), L(1), AT), AT),
+        m.make_if(
+          m.make_if_else(
+            m.binary('lt', q, m.literal(0, AT), AT),
+            m.binary('ne', m.binary('mul', q, L(1), AT), L(0), AT),
+            m.bool_literal(false, AT),
+            AT,
+          ),
+          ret(m.binary('sub', q, m.literal(1, AT), AT)),
+          AT,
+        ),
+        ret(q),
+      ],
+      AT,
+    )
+  })
+  # and `%` follows `//`, so it takes the divisor's sign
+  rt_func('__mod', 2, 3, fn (f) {
+    let r = L(2)
+    m.block(
+      [
+        m.assign('local', 2, m.binary('mod', L(0), L(1), AT), AT),
+        m.make_if(
+          m.make_if_else(
+            m.binary('ne', r, m.literal(0, AT), AT),
+            m.binary('lt', m.binary('mul', r, L(1), AT), m.literal(0, AT), AT),
+            m.bool_literal(false, AT),
+            AT,
+          ),
+          ret(m.binary('add', r, L(1), AT)),
+          AT,
+        ),
+        ret(r),
+      ],
+      AT,
+    )
+  })
+  rt_func('__cat', 2, 2, fn (f) {
+    ret(m.binary(
+      'add',
+      call_rt(f, '__str', [L(0)], AT),
+      call_rt(f, '__str', [L(1)], AT),
+      AT,
+    ))
+  })
+  rt_func('__str', 1, 1, fn (f) {
+    ret(m.make_if_else(
+      is_type(L(0), 'string'),
+      L(0),
+      m.intrinsic('tostr', [L(0)], AT),
+      AT,
+    ))
+  })
+}
+
+# --- the binder -------------------------------------------------------------
+
+mut m = nil
+mut rs = nil
+mut funcs = []       # per func: {name, params, body, node}
+mut nslots = []      # per func: locals handed out
+mut scope_base = []  # per func: where its own scopes start on the one stack
+mut globals = {}     # Lua global name -> the cell in the root frame
+mut root_fn = -1
+mut g_var = -1       # the root frame's binding for the globals table
+mut globals_fn = {}  # prelude func name -> its func id
+mut pending = []     # closures whose bodies are not written yet
+mut rt_body = {}     # runtime helper -> its body, built in IR here
+mut rt_params = {}
+mut rt_locals = {}
+
+let AT = {line: 1, column: 1}
+
+fn new_func(name, node, parent) {
+  let f = funcs.size()
+  funcs.push({name: name, params: [], mut body: nil, mut node: node})
+  rs.new_fn(cond {
+    parent == nil => -1,
+    _ => parent,
+  })
+  rs.set_func_index(f, f)
+  nslots.push(0)
+  scope_base.push(-1)
+  f
+}
+
+fn enter_scope(f) {
+  rs.push_scope()
+  if scope_base[f] == -1 {
+    scope_base[f] = rs.depth() - 1
+  }
+}
+
+fn leave_scope(f) {
+  rs.pop_scope()
+}
+
+# `local x` twice in one block is two bindings, and the second hides the
+# first from there on -- so this always declares rather than reusing what
+# the name already means. That is the rule no other front end here has.
+fn declare(f, name, node) {
+  let v = rs.declare(name, f)
+  rs.set_var_slot(v, nslots[f])
+  nslots[f] = nslots[f] + 1
+  v
+}
+
+# A name is local if any open scope binds it, and a global otherwise --
+# Lua's rule, and the reason there is no declaration for a global.
+fn resolve(f, name) {
+  let v = rs.lookup(name)
+  cond {
+    v != -1 => {kind: 'local', v: v},
+    _ => {kind: 'global', name: name},
+  }
+}
+
+# --- Values -----------------------------------------------------------------
+#
+# A Lua function returns a list of values, because Lua's calling convention
+# is not the IR's: `return 1, 2` is one Return of an array, and a call in
+# single-value position takes element 0. The cost is an array per call; the
+# alternative is a second return channel the IR does not have.
+#
+# A Lua table is an Object whose keys carry their own type -- `t[1]` and
+# `t["1"]` are different keys, so a number key is stored under "n:1" and a
+# string under "s:1". The prelude does that encoding; the binder only ever
+# calls __get/__set.
+
+fn call_rt(f, name, args, at) {
+  let g = globals_fn[name]
+  rs.call(m, f, g, args, at)
+}
+
+fn one(f, v, at) {
+  m.index(v, m.literal(0, at), at)
+}
+
+# --- Expressions ------------------------------------------------------------
+
+let binop_rt = {
+  '+': '__add',
+  '-': '__sub',
+  '*': '__mul',
+  '/': '__div',
+  '//': '__idiv',
+  '%': '__mod',
+  '..': '__cat',
+  '==': '__eq',
+  '~=': '__ne',
+  '<': '__lt',
+  '<=': '__le',
+  '>': '__gt',
+  '>=': '__ge',
+}
+
+fn emit_expr(f, node) {
+  match node {
+    {name: 'number', token} => m.literal(to_long(token), node),
+    {name: 'float', token} => m.double_literal(to_float(token), node),
+    {name: 'string', token} => m.str_literal(unescape(token), node),
+    {name: 'literal', token} => cond {
+      token == 'true' => m.bool_literal(true, node),
+      token == 'false' => m.bool_literal(false, node),
+      _ => m.nil_literal(node),
+    },
+    {name: 'ident', token} => emit_name(f, token, node),
+    {name: 'paren', nodes: [inner]} => emit_expr(f, inner),
+    {
+      name: 'notexp',
+      nodes: [inner],
+    } => call_rt(f, '__not', [emit_expr(f, inner)], node),
+    {
+      name: 'negexp',
+      nodes: [inner],
+    } => m.unary('neg', emit_expr(f, inner), node),
+    {
+      name: 'lenexp',
+      nodes: [inner],
+    } => call_rt(f, '__len', [emit_expr(f, inner)], node),
+    {name: 'powexp', nodes} => cond {
+      nodes.size() == 1 => emit_expr(f, nodes[0]),
+      _ => call_rt(
+        f,
+        '__pow',
+        [emit_expr(f, nodes[0]), emit_expr(f, nodes[1].nodes[0])],
+        node,
+      ),
+    },
+    # and/or answer one of their operands, not a boolean, and only evaluate
+    # the second when the first does not already decide
+    {name: 'orexp', nodes} => emit_shortcut(f, nodes, true, node),
+    {name: 'andexp', nodes} => emit_shortcut(f, nodes, false, node),
+    {name: 'cmpexp', nodes} => emit_binchain(f, nodes),
+    {name: 'concatexp', nodes} => emit_concat(f, nodes, node),
+    {name: 'addexp', nodes} => emit_binchain(f, nodes),
+    {name: 'mulexp', nodes} => emit_binchain(f, nodes),
+    {name: 'suffixedexp', nodes} => emit_suffixed(f, nodes, node),
+    {name: 'tablector', nodes} => emit_table(f, nodes, node),
+    {name: 'funcexpr', nodes: [body]} => emit_closure(f, nil, body, node),
+    _ => fail(node, "cannot evaluate {node.name}"),
+  }
+}
+
+fn emit_binchain(f, nodes) {
+  let [head, ...rest] = nodes
+  mut acc = emit_expr(f, head)
+  for [op, operand] in rest.iter().chunks(2) {
+    acc = call_rt(f, binop_rt[op.token], [acc, emit_expr(f, operand)], op)
+  }
+  acc
+}
+
+fn emit_concat(f, nodes, at) {
+  let [head, ...rest] = nodes
+  mut acc = emit_expr(f, head)
+  for r in rest {
+    acc = call_rt(f, '__cat', [acc, emit_expr(f, r)], at)
+  }
+  acc
+}
+
+# `a or b` is a if a is true, else b -- and a is evaluated once, so it lands
+# in a scratch slot the test and the result both read.
+fn emit_shortcut(f, nodes, is_or, at) {
+  cond {
+    nodes.size() == 1 => emit_expr(f, nodes[0]),
+    _ => {
+      let [head, ...rest] = nodes
+      mut acc = emit_expr(f, head)
+      for r in rest {
+        let slot = new_scratch(f)
+        let store = m.assign('local', slot, acc, at)
+        let test = call_rt(f, '__truthy', [m.var_ref('local', slot, at)], at)
+        let kept = m.var_ref('local', slot, at)
+        let other = emit_expr(f, r)
+        acc = m.block([store, cond {
+          is_or => m.make_if_else(test, kept, other, at),
+          _ => m.make_if_else(test, other, kept, at),
+        }], at)
+      }
+      acc
+    },
+  }
+}
+
+fn new_scratch(f) {
+  let k = nslots[f]
+  nslots[f] = k + 1
+  k
+}
+
+fn unescape(s) {
+  mut out = ''
+  mut i = 0
+  while i < s.size() {
+    let c = s.slice(i, i + 1).to_string()
+    if c == "\\" && i + 1 < s.size() {
+      let n = s.slice(i + 1, i + 2).to_string()
+      out += cond {
+        n == 'n' => "\n",
+        n == 't' => "\t",
+        _ => n,
+      }
+      i += 2
+    } else {
+      out += c
+      i += 1
+    }
+  }
+  out
+}
+
+# --- Names ------------------------------------------------------------------
+#
+# A global lives in a table the root frame holds in a cell, so a function
+# declared anywhere reaches it the same way -- Lua has no declaration for a
+# global, and the only alternative is capturing every one of them.
+
+fn emit_name(f, name, node) {
+  let r = resolve(f, name)
+  cond {
+    r.kind == 'local' => rs.read(m, f, r.v, node),
+    _ => m.index(genv(f, node), m.str_literal(name, node), node),
+  }
+}
+
+fn genv(f, node) {
+  rs.read(m, f, g_var, node)
+}
+
+# --- Suffixed expressions: calls, indexing, methods -------------------------
+
+fn emit_suffixed(f, nodes, at) {
+  # `print(a, b)` writes its arguments tab-separated and newline-terminated.
+  # It is the one library call that takes any number of them, so it is
+  # answered here rather than by a func with a fixed arity.
+  if nodes[0].name == 'ident' &&
+      nodes[0].token == 'print' &&
+      nodes.size() == 2 &&
+      nodes[1].name == 'callsfx' {
+    let args = emit_args(f, nodes[1].nodes)
+    mut ids = []
+    for i, a in args.enumerate() {
+      if i > 0 {
+        ids.push(m.intrinsic('printraw', [m.str_literal("\t", at)], at))
+      }
+      ids.push(m.intrinsic('printraw', [call_rt(f, '__str', [a], at)], at))
+    }
+    ids.push(m.intrinsic('printraw', [m.str_literal("\n", at)], at))
+    ids.push(m.nil_literal(at))
+    return m.block(ids, at)
+  }
+  mut v = emit_expr(f, nodes[0])
+  for sfx in nodes.slice(1, nodes.size()) {
+    v = match sfx {
+      {
+        name: 'dotsfx',
+        nodes: [id],
+      } => call_rt(f, '__get', [v, m.str_literal(id.token, sfx)], sfx),
+      {
+        name: 'indexsfx',
+        nodes: [ix],
+      } => call_rt(f, '__get', [v, emit_expr(f, ix)], sfx),
+      {
+        name: 'callsfx',
+        nodes,
+      } => one(f, m.call_value(v, emit_args(f, nodes), sfx), sfx),
+      {
+        name: 'strargsfx',
+        nodes: [lit],
+      } => one(
+        f,
+        m.call_value(v, [m.str_literal(unescape(lit.token), sfx)], sfx),
+        sfx,
+      ),
+      # `o:m(a)` is `o.m(o, a)` with o evaluated once
+      {name: 'methodsfx', nodes} => {
+        let slot = new_scratch(f)
+        let store = m.assign('local', slot, v, sfx)
+        let recv = m.var_ref('local', slot, sfx)
+        let fnv = call_rt(
+          f,
+          '__get',
+          [recv, m.str_literal(nodes[0].token, sfx)],
+          sfx,
+        )
+        let call = m.call_value(
+          fnv,
+          [
+            m.var_ref('local', slot, sfx),
+            ...emit_args(f, nodes.slice(1, nodes.size())),
+          ],
+          sfx,
+        )
+        m.block([store, one(f, call, sfx)], sfx)
+      },
+      _ => fail(sfx, "cannot apply {sfx.name}"),
+    }
+  }
+  v
+}
+
+fn emit_args(f, nodes) {
+  mut out = []
+  for n in nodes {
+    if n.name == 'args' {
+      for a in n.nodes {
+        out.push(emit_expr(f, a))
+      }
+    }
+  }
+  out
+}
+
+# --- Tables -----------------------------------------------------------------
+
+fn emit_table(f, nodes, at) {
+  let slot = new_scratch(f)
+  mut ids = [m.assign('local', slot, call_rt(f, '__newtable', [], at), at)]
+  mut idx = 1
+  for fld in nodes {
+    let t = m.var_ref('local', slot, at)
+    match fld {
+      {
+        name: 'keyedfield',
+        nodes: [k, v],
+      } => ids.push(call_rt(
+        f,
+        '__set',
+        [t, emit_expr(f, k), emit_expr(f, v)],
+        fld,
+      )),
+      {
+        name: 'namedfield',
+        nodes: [k, v],
+      } => ids.push(call_rt(
+        f,
+        '__set',
+        [t, m.str_literal(k.token, fld), emit_expr(f, v)],
+        fld,
+      )),
+      _ => {
+        ids.push(call_rt(
+          f,
+          '__set',
+          [t, m.literal(idx, fld), emit_expr(f, fld)],
+          fld,
+        ))
+        idx += 1
+      },
+    }
+  }
+  ids.push(m.var_ref('local', slot, at))
+  m.block(ids, at)
+}
+
+# --- Functions --------------------------------------------------------------
+
+fn emit_closure(f, name, funcbody, at) {
+  let g = new_func(
+    cond {
+      name == nil => 'anonymous',
+      _ => name,
+    },
+    at,
+    f,
+  )
+  pending.push({g: g, body: funcbody, at: at})
+  rs.closure(m, f, g, at)
+}
+
+fn bind_funcbody(g, funcbody) {
+  enter_scope(g)
+  for p in funcbody.nodes[0].nodes {
+    funcs[g].params.push(declare(g, p.token, p))
+  }
+  let ids = emit_block(g, funcbody.nodes[1])
+  leave_scope(g)
+  # a Lua function that runs off its end returns no values
+  m.block([ids, m.make_return(m.array_lit([], AT), AT)], AT)
+}
+
+# --- Statements -------------------------------------------------------------
+
+fn emit_block(f, blk) {
+  mut ids = []
+  for st in blk.nodes {
+    let e = emit_stmt(f, st)
+    if e != nil {
+      ids.push(e)
+    }
+  }
+  m.block(ids, blk)
+}
+
+fn emit_stmt(f, node) {
+  match node {
+    {name: 'emptystmt'} => nil,
+    {name: 'callstmt', nodes: [inner]} => emit_expr(f, inner),
+    {name: 'suffixedexp'} => emit_expr(f, node),
+    {name: 'localdecl', nodes} => {
+      let names = nodes[0].nodes
+      mut vals = []
+      if nodes.size() > 1 {
+        for e in nodes[1].nodes {
+          vals.push(emit_expr(f, e))
+        }
+      }
+      mut ids = []
+      # every `local` declares anew, so a second `local x` in one block is a
+      # second binding and the first keeps whatever closed over it
+      for i, id in names.enumerate() {
+        let v = declare(f, id.token, id)
+        ids.push(rs.write(m, f, v, cond {
+          i < vals.size() => vals[i],
+          _ => m.nil_literal(id),
+        }, id))
+      }
+      m.block(ids, node)
+    },
+    {name: 'localfn', nodes: [id, fb]} => {
+      # the name is visible inside the body, so it is declared first
+      let v = declare(f, id.token, id)
+      rs.write(m, f, v, emit_closure(f, id.token, fb, node), node)
+    },
+    {name: 'fnstat', nodes: [fname, fb]} => {
+      let parts = fname.nodes
+      let c = emit_closure(f, parts[0].token, fb, node)
+      cond {
+        parts.size() == 1 => emit_store(f, parts[0].token, c, node),
+        _ => {
+          mut t = emit_name(f, parts[0].token, node)
+          for i in range(1, parts.size() - 1) {
+            t = call_rt(
+              f,
+              '__get',
+              [t, m.str_literal(parts[i].nodes[0].token, node)],
+              node,
+            )
+          }
+          let last = parts[parts.size() - 1].nodes[0].token
+          call_rt(f, '__set', [t, m.str_literal(last, node), c], node)
+        },
+      }
+    },
+    {name: 'assign', nodes: [targets, values]} => {
+      mut vals = []
+      for e in values.nodes {
+        vals.push(emit_expr(f, e))
+      }
+      mut ids = []
+      for i, t in targets.nodes.enumerate() {
+        let v = cond {
+          i < vals.size() => vals[i],
+          _ => m.nil_literal(t),
+        }
+        ids.push(emit_target(f, t, v, node))
+      }
+      m.block(ids, node)
+    },
+    {name: 'retstat', nodes} => {
+      mut vals = []
+      for l in nodes {
+        for e in l.nodes {
+          vals.push(emit_expr(f, e))
+        }
+      }
+      m.make_return(m.array_lit(vals, node), node)
+    },
+    {name: 'ifstat', nodes} => emit_if(f, nodes, 0, node),
+    {
+      name: 'whilestat',
+      nodes: [c, blk],
+    } => m.make_while(
+      call_rt(f, '__truthy', [emit_expr(f, c)], node),
+      scoped(f, blk),
+      node,
+    ),
+    {name: 'dostat', nodes: [blk]} => scoped(f, blk),
+    {name: 'breakstat'} => m.make_break(node),
+    _ => fail(node, "cannot execute {node.name}"),
+  }
+}
+
+fn scoped(f, blk) {
+  enter_scope(f)
+  let b = emit_block(f, blk)
+  leave_scope(f)
+  b
+}
+
+fn emit_if(f, nodes, i, at) {
+  cond {
+    i + 1 < nodes.size() && nodes[i].name != 'elsepart' => {
+      let c = call_rt(f, '__truthy', [emit_expr(f, nodes[i])], at)
+      let then_b = scoped(f, nodes[i + 1])
+      let rest = i + 2
+      cond {
+        rest >= nodes.size() => m.make_if(c, then_b, at),
+        _ => m.make_if_else(c, then_b, emit_if(f, nodes, rest, at), at),
+      }
+    },
+    nodes[i].name == 'elseifpart' => emit_if(f, nodes[i].nodes, 0, at),
+    nodes[i].name == 'elsepart' => scoped(f, nodes[i].nodes[0]),
+    _ => scoped(f, nodes[i]),
+  }
+}
+
+fn emit_store(f, name, v, node) {
+  let r = resolve(f, name)
+  cond {
+    r.kind == 'local' => rs.write(m, f, r.v, v, node),
+    _ => m.set_index(genv(f, node), m.str_literal(name, node), v, node),
+  }
+}
+
+fn emit_target(f, t, v, node) {
+  let parts = t.nodes
+  cond {
+    parts.size() == 1 &&
+      parts[0].name == 'ident' => emit_store(f, parts[0].token, v, node),
+    _ => {
+      mut recv = emit_expr(f, parts[0])
+      for i in range(1, parts.size() - 1) {
+        recv = emit_one_suffix(f, recv, parts[i])
+      }
+      let last = parts[parts.size() - 1]
+      let key = match last {
+        {name: 'dotsfx', nodes: [id]} => m.str_literal(id.token, last),
+        {name: 'indexsfx', nodes: [ix]} => emit_expr(f, ix),
+        _ => fail(last, 'cannot assign here'),
+      }
+      call_rt(f, '__set', [recv, key, v], node)
+    },
+  }
+}
+
+fn emit_one_suffix(f, v, sfx) {
+  match sfx {
+    {
+      name: 'dotsfx',
+      nodes: [id],
+    } => call_rt(f, '__get', [v, m.str_literal(id.token, sfx)], sfx),
+    {
+      name: 'indexsfx',
+      nodes: [ix],
+    } => call_rt(f, '__get', [v, emit_expr(f, ix)], sfx),
+    _ => fail(sfx, "cannot apply {sfx.name} here"),
+  }
+}
+
+# --- Build ------------------------------------------------------------------
+#
+# The globals table lives in a cell of the root frame, so every function --
+# including one declared inside another -- reaches a global the same way.
+# Lua has no declaration for a global, so there is nothing else to capture.
+
+fn build(mm, root) {
+  m = mm
+  rs = CodeGen.Resolver.new()
+  root_fn = new_func('main', root, nil)
+  enter_scope(root_fn)
+  g_var = declare(root_fn, '_ENV', root)
+  rs.force_cell(g_var)
+  runtime()
+  rt_finish()
+
+  # `print(a, b, ...)` writes its arguments tab-separated -- the one library
+  # function every sample uses, and the only one that takes any number of
+  # them, so the binder answers it rather than a func doing.
+  let body = emit_block(root_fn, root.nodes[0])
+  # bodies of the closures the walk created
+  mut i = 0
+  while i < pending.size() {
+    let pd = pending[i]
+    rt_body[pd.g] = bind_funcbody(pd.g, pd.body)
+    i += 1
+  }
+  leave_scope(root_fn)
+
+  let root_body = m.block(
+    [
+      rs.write(m, root_fn, g_var, m.intrinsic('mapnew', [], AT), AT),
+      body,
+      m.make_return(m.nil_literal(AT), AT),
+    ],
+    AT,
+  )
+  rt_body[root_fn] = root_body
+  rt_locals[root_fn] = nslots[root_fn]
+  rt_params[root_fn] = 0
+
+  rs.number_captures()
+  for f in range(funcs.size()) {
+    let is_rt = rt_params.has(f)
+    m.add_func(
+      name: funcs[f].name,
+      num_locals: cond {
+        is_rt => rt_locals[f],
+        _ => nslots[f],
+      },
+      num_captures: rs.num_captures(f),
+      num_cells: rs.num_cells(f),
+      num_params: cond {
+        is_rt => rt_params[f],
+        _ => funcs[f].params.size(),
+      },
+      body: rt_body[f],
+    )
+    rs.name_captures(m, f, f)
+    if rs.num_captures(f) == 0 {
+      m.set_singleton(func: f)
+    }
+    m.set_lenient_arity(func: f)
+  }
+  m
+}
+
 let want_ir = Sys.argv.contains('--ir')
 let want_ast = Sys.argv.contains('--ast')
 let args = Sys.argv.filter(|a| a != '--ir' && a != '--ast')
@@ -135,7 +933,12 @@ try {
     inspect(tree)
     Sys.exit(0)
   }
-  println('parsed')
+  let mod = build(CodeGen.Module.new(), tree)
+  mod.verify()
+  cond {
+    want_ir => print(mod.dump_ir()),
+    _ => mod.run(),
+  }
 } catch e {
   match e {
     {kind: 'LuaError'} => IO.eprintln("{args[0]}:{e.line}:{e.col}: {e.message}"),

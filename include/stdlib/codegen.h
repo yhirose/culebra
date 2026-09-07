@@ -1360,6 +1360,15 @@ class Resolver {
     checked_var(v).slot = static_cast<int32_t>(slot);
   }
 
+  // A binding that must be a cell whether or not anything was seen
+  // capturing it -- one a closure built by hand reaches, or one a front end
+  // wants boxed because its own runtime writes through it. Applied by
+  // number_captures.
+  void force_cell(int64_t v) {
+    checked_var(v);
+    rs_.force_cell(static_cast<int32_t>(v));
+  }
+
   // Records that `fn` reads `v`, marking it free in every function between
   // the two. The whole propagation, in one call per read.
   void use(int64_t v, int64_t fn) {

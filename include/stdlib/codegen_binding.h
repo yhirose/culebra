@@ -287,6 +287,7 @@ inline bool register_codegen_binding() {
       .method<&codegen::Resolver::var_owner>("var_owner", {"v"})
       .method<&codegen::Resolver::var_slot>("var_slot", {"v"})
       .method<&codegen::Resolver::set_var_slot>("set_var_slot", {"v", "slot"})
+      .method<&codegen::Resolver::force_cell>("force_cell", {"v"})
       .method<&codegen::Resolver::use>("use", {"v", "fn"})
       .method<&codegen::Resolver::mark>("mark")
       .method<&codegen::Resolver::rollback>("rollback", {"mark"})
