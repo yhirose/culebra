@@ -24,6 +24,14 @@ fn print_stmt(m, value) {
   m.intrinsic(name: 'print', args: args, line: 1, col: 1)
 }
 
+fn to_list(m, items) {
+  let list = m.list_new()
+  for it in items {
+    m.list_push(list, it)
+  }
+  list
+}
+
 fn call_intr(m, name, args) {
   let list = m.list_new()
   for a in args {
@@ -729,6 +737,102 @@ fn native_catch_module(m, name, args, key) {
   assert_eq(IO.capture(fn () {
     p.run(natives: {a: || 1, b: || 2})
   }), "1\n2\n")
+}
+
+# --- The five shapes a front end would otherwise write for itself: the
+# unary not, joining and sizing an array, counting a map's entries, and
+# ASCII case. Each is here because two or more of examples/languages had
+# written its own before the IR had one. ---
+{
+  let m = CodeGen.Module.new()
+  let xs = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
+  let mp = m.var_ref(kind: 'local', index: 1, line: 1, col: 1)
+  m.add_func(
+    name: 'main',
+    num_locals: 2,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: stmt_block(m, [
+      # not answers for every value, over the truthiness a condition tests
+      print_stmt(m, m.unary(
+        op: 'not',
+        operand: m.bool_literal(v: true, line: 1, col: 1),
+        line: 1,
+        col: 1,
+      )),
+      print_stmt(m, m.unary(
+        op: 'not',
+        operand: m.nil_literal(line: 1, col: 1),
+        line: 1,
+        col: 1,
+      )),
+      print_stmt(m, m.unary(
+        op: 'not',
+        operand: m.literal(v: 0, line: 1, col: 1),
+        line: 1,
+        col: 1,
+      )),
+      # arrayfill starts an array at a length, arrayconcat joins one on
+      m.assign(kind: 'local', index: 0, value: call_intr(m, 'arrayfill', [
+        m.literal(v: 2, line: 1, col: 1),
+        m.literal(v: 7, line: 1, col: 1),
+      ]), line: 1, col: 1),
+      call_intr(m, 'arrayconcat', [xs, m.array_lit(
+        items: to_list(m, [m.literal(v: 9, line: 1, col: 1)]),
+        line: 1,
+        col: 1,
+      )]),
+      print_stmt(m, call_intr(m, 'len', [xs])),
+      print_stmt(m, m.index(
+        recv: xs,
+        key: m.literal(v: 2, line: 1, col: 1),
+        line: 1,
+        col: 1,
+      )),
+      # len answers a map's entry count as well as an array's length
+      m.assign(kind: 'local', index: 1, value: call_intr(m, 'mapnew', []),
+               line: 1, col: 1),
+      m.set_index(
+        recv: mp,
+        key: m.str_literal(s: 'a', line: 1, col: 1),
+        value: m.literal(v: 1, line: 1, col: 1),
+        line: 1,
+        col: 1,
+      ),
+      print_stmt(m, call_intr(m, 'len', [mp])),
+      # ASCII case, and only ASCII: the two-byte character is untouched
+      print_stmt(m, call_intr(m, 'strupper', [
+        m.str_literal(s: 'aB1é', line: 1, col: 1),
+      ])),
+      print_stmt(m, call_intr(m, 'strlower', [
+        m.str_literal(s: 'Ab1É', line: 1, col: 1),
+      ])),
+    ]),
+  )
+  m.verify()
+  assert_eq(IO.capture(fn () {
+    m.run()
+  }), "false\ntrue\ntrue\n3\n9\n1\nAB1é\nab1É\n")
+}
+
+# --- The message a read gets when the captures are not numbered yet. It
+# names the fix, because the other way to reach the same place -- a read
+# nothing recorded -- has a different one. ---
+{
+  let m = CodeGen.Module.new()
+  let rs = CodeGen.Resolver.new()
+  let outer = rs.new_fn(-1)
+  rs.set_func_index(outer, 0)
+  rs.push_scope()
+  let v = rs.declare('x', outer)
+  rs.set_var_slot(v, 0)
+  let inner = rs.new_fn(outer)
+  rs.set_func_index(inner, 1)
+  rs.use(v, inner)
+  assert_throws('IrError', fn () {
+    rs.read(m, inner, v, line: 1, col: 1)
+  })
 }
 
 println('test_codegen_funcs OK')

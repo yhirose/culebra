@@ -175,21 +175,6 @@ fn S(v) {
   m.str_literal(v, AT)
 }
 
-# 'a'..'z' is 97..122; subtracting 32 is the same letter in upper case.
-fn uppercase_byte(b) {
-  m.make_if_else(
-    m.make_if_else(
-      m.binary('ge', b, m.literal(97, AT), AT),
-      m.binary('le', b, m.literal(122, AT), AT),
-      m.bool_literal(false, AT),
-      AT,
-    ),
-    m.binary('sub', b, m.literal(32, AT), AT),
-    b,
-    AT,
-  )
-}
-
 # `s:upper()` and `("x"):rep(3)`, as a chain over the names string.* has.
 fn str_method(f, key) {
   mut acc = m.nil_literal(AT)
@@ -221,9 +206,8 @@ fn binary_mm(f, event) {
   )
 }
 
-# There is no unary `not` in the IR; the shape it would have is this.
-fn negate(b) {
-  m.make_if_else(b, m.bool_literal(false, AT), m.bool_literal(true, AT), AT)
+fn not_of(v) {
+  m.unary('not', v, AT)
 }
 
 fn is_type(v, t) {
@@ -293,7 +277,7 @@ fn runtime() {
               # two different tables are equal only if __eq says so
               m.assign('local', 2, binary_mm(f, S('__eq')), AT),
               m.make_if(
-                negate(is_type(L(2), 'nil')),
+                not_of(is_type(L(2), 'nil')),
                 ret(call_rt(f, '__truthy', [one(
                   f,
                   m.call_value(L(2), [m.array_lit([L(0), L(1)], AT)], AT),
@@ -332,7 +316,7 @@ fn runtime() {
         [
           m.assign('local', 2, binary_mm(f, S(nm)), AT),
           m.make_if(
-            negate(is_type(L(2), 'nil')),
+            not_of(is_type(L(2), 'nil')),
             ret(one(
               f,
               m.call_value(L(2), [m.array_lit([L(0), L(1)], AT)], AT),
@@ -426,7 +410,7 @@ fn runtime() {
           AT,
         ),
         m.make_if(
-          negate(is_type(L(1), 'nil')),
+          not_of(is_type(L(1), 'nil')),
           ret(one(f, m.call_value(L(1), [m.array_lit([L(0)], AT)], AT), AT)),
           AT,
         ),
@@ -580,7 +564,7 @@ fn runtime() {
       [
         m.make_if(is_type(L(0), 'string'), ret(str_method(f, L(1))), AT),
         m.assign('local', 2, call_rt(f, '__rawget', [L(0), L(1)], AT), AT),
-        m.make_if(negate(is_type(L(2), 'nil')), ret(L(2)), AT),
+        m.make_if(not_of(is_type(L(2), 'nil')), ret(L(2)), AT),
         # a miss consults __index: a function answers the read, a table is
         # read in turn -- and that read consults its own __index
         m.assign('local', 2, call_rt(f, '__mm', [L(0), S('__index')], AT), AT),
@@ -613,7 +597,7 @@ fn runtime() {
           AT,
         ),
         m.make_if(
-          negate(L(3)),
+          not_of(L(3)),
           m.block(
             [
               m.assign(
@@ -730,30 +714,10 @@ fn runtime() {
   # argument list is appending one list to another, and reading a value out
   # of either is a read that answers nil past the end -- Lua's rule for both
   # a missing argument and a value the callee did not return.
-  rt_func('__append', 2, 3, fn (f) {
-    m.block(
-      [
-        m.assign('local', 2, m.literal(0, AT), AT),
-        m.make_while(
-          m.binary('lt', L(2), m.intrinsic('len', [L(1)], AT), AT),
-          m.block(
-            [
-              m.intrinsic('arraypush', [L(0), m.index(L(1), L(2), AT)], AT),
-              m.assign(
-                'local',
-                2,
-                m.binary('add', L(2), m.literal(1, AT), AT),
-                AT,
-              ),
-            ],
-            AT,
-          ),
-          AT,
-        ),
-        ret(L(0)),
-      ],
-      AT,
-    )
+  # the IR joins the two in place and says nothing; every caller here wants
+  # the first one back
+  rt_func('__append', 2, 2, fn (f) {
+    m.block([m.intrinsic('arrayconcat', [L(0), L(1)], AT), ret(L(0))], AT)
   })
   rt_func('__nth', 2, 2, fn (f) {
     ret(m.make_if_else(
@@ -804,47 +768,9 @@ fn runtime() {
   # Each is a plain helper answering one value; the adapters below wrap them
   # into the return list a Lua call expects.
 
-  # string.upper / string.sub, over the VM's byte view of a string
-  rt_func('__strupper', 1, 4, fn (f) {
-    m.block(
-      [
-        m.assign('local', 1, S(''), AT),
-        m.assign('local', 2, m.literal(0, AT), AT),
-        m.assign('local', 3, m.intrinsic('len', [L(0)], AT), AT),
-        m.make_while(
-          m.binary('lt', L(2), L(3), AT),
-          m.block(
-            [
-              m.assign(
-                'local',
-                1,
-                m.binary(
-                  'add',
-                  L(1),
-                  m.intrinsic(
-                    'strfrombyte',
-                    [uppercase_byte(m.intrinsic('strbyte', [L(0), L(2)], AT))],
-                    AT,
-                  ),
-                  AT,
-                ),
-                AT,
-              ),
-              m.assign(
-                'local',
-                2,
-                m.binary('add', L(2), m.literal(1, AT), AT),
-                AT,
-              ),
-            ],
-            AT,
-          ),
-          AT,
-        ),
-        ret(L(1)),
-      ],
-      AT,
-    )
+  # string.upper, and the sub whose bounds are Lua's rather than the IR's
+  rt_func('__strupper', 1, 1, fn (f) {
+    ret(m.intrinsic('strupper', [L(0)], AT))
   })
   # Lua's string.sub is 1-based and inclusive at both ends. A missing end
   # runs to the string's, and a negative start counts back from it.

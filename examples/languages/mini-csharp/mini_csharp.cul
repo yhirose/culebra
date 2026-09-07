@@ -195,13 +195,12 @@ fn ret(v) {
   m.make_return(v, AT)
 }
 
-fn is_type(v, t) {
-  m.binary('eq', m.intrinsic('typeof', [v], AT), S(t), AT)
+fn not_of(v) {
+  m.unary('not', v, AT)
 }
 
-# There is no unary `not` in the IR; the shape it would have is this.
-fn negate(b) {
-  m.make_if_else(b, m.bool_literal(false, AT), m.bool_literal(true, AT), AT)
+fn is_type(v, t) {
+  m.binary('eq', m.intrinsic('typeof', [v], AT), S(t), AT)
 }
 
 fn call_rt(f, name, args, at) {
@@ -294,56 +293,17 @@ fn runtime() {
     )
   })
   # 'a'..'z' is 97..122; subtracting 32 is the same letter in upper case.
-  rt_func('$upper', 1, 4, fn (f) {
-    m.block(
-      [
-        m.assign('local', 1, S(''), AT),
-        m.assign('local', 2, m.literal(0, AT), AT),
-        m.assign('local', 3, m.intrinsic('len', [L(0)], AT), AT),
-        m.make_while(
-          m.binary('lt', L(2), L(3), AT),
-          m.block(
-            [
-              m.assign(
-                'local',
-                1,
-                m.binary(
-                  'add',
-                  L(1),
-                  m.intrinsic(
-                    'strfrombyte',
-                    [upper_byte(m.intrinsic('strbyte', [L(0), L(2)], AT))],
-                    AT,
-                  ),
-                  AT,
-                ),
-                AT,
-              ),
-              m.assign(
-                'local',
-                2,
-                m.binary('add', L(2), m.literal(1, AT), AT),
-                AT,
-              ),
-            ],
-            AT,
-          ),
-          AT,
-        ),
-        ret(L(1)),
-      ],
-      AT,
-    )
+  # ASCII case, which the IR answers directly
+  rt_func('$upper', 1, 1, fn (f) {
+    ret(m.intrinsic('strupper', [L(0)], AT))
   })
-  # A virtual call finds its method on the object's own class or on one
-  # above it, so the name is looked up rather than resolved -- the one thing
-  # here a static language's call site cannot answer for itself.
+
   rt_func('$find', 2, 3, fn (f) {
     m.block(
       [
         m.assign('local', 2, m.index(L(0), cls_key(), AT), AT),
         m.make_while(
-          negate(is_type(L(2), 'nil')),
+          not_of(is_type(L(2), 'nil')),
           m.block(
             [
               m.make_if(
@@ -394,13 +354,13 @@ fn runtime() {
           AT,
         ),
         m.make_if(
-          negate(is_type(L(0), 'map')),
+          not_of(is_type(L(0), 'map')),
           ret(m.bool_literal(false, AT)),
           AT,
         ),
         m.assign('local', 2, m.index(L(0), cls_key(), AT), AT),
         m.make_while(
-          negate(is_type(L(2), 'nil')),
+          not_of(is_type(L(2), 'nil')),
           m.block(
             [
               m.make_if(
@@ -420,47 +380,9 @@ fn runtime() {
     )
   })
 
-  # `Count` is the length of a list and the number of entries in a
-  # dictionary, which are two different questions of the same word.
-  rt_func('$count', 1, 1, fn (f) {
-    ret(m.make_if_else(
-      is_type(L(0), 'map'),
-      m.intrinsic('len', [m.intrinsic('objectkeys', [L(0)], AT)], AT),
-      m.intrinsic('len', [L(0)], AT),
-      AT,
-    ))
-  })
-
   # `new T[n]` is n slots that hold nothing yet; the IR builds an array by
   # pushing, so the length is a loop.
-  rt_func('$newarr', 1, 3, fn (f) {
-    m.block(
-      [
-        m.assign('local', 1, m.array_lit([], AT), AT),
-        m.assign('local', 2, m.literal(0, AT), AT),
-        m.make_while(
-          m.binary('lt', L(2), L(0), AT),
-          m.block(
-            [
-              m.intrinsic('arraypush', [L(1), m.nil_literal(AT)], AT),
-              m.assign(
-                'local',
-                2,
-                m.binary('add', L(2), m.literal(1, AT), AT),
-                AT,
-              ),
-            ],
-            AT,
-          ),
-          AT,
-        ),
-        ret(L(1)),
-      ],
-      AT,
-    )
-  })
 
-  # Substring(start, length), where the IR's slice takes an end
   rt_func('$substr', 3, 3, fn (f) {
     ret(m.intrinsic(
       'strslice',
@@ -468,20 +390,6 @@ fn runtime() {
       AT,
     ))
   })
-}
-
-fn upper_byte(b) {
-  m.make_if_else(
-    m.make_if_else(
-      m.binary('ge', b, m.literal(97, AT), AT),
-      m.binary('le', b, m.literal(122, AT), AT),
-      m.bool_literal(false, AT),
-      AT,
-    ),
-    m.binary('sub', b, m.literal(32, AT), AT),
-    b,
-    AT,
-  )
 }
 
 # --- Pass A: scopes and names -----------------------------------------------
@@ -1082,7 +990,12 @@ fn emit_new_array(f, nodes, at) {
     }
   }
   cond {
-    nodes.size() > 1 => call_rt(f, '$newarr', [emit_expr(f, nodes[1])], at),
+    nodes.size() >
+      1 => m.intrinsic(
+      'arrayfill',
+      [emit_expr(f, nodes[1]), m.nil_literal(at)],
+      at,
+    ),
     _ => m.array_lit([], at),
   }
 }
@@ -1140,12 +1053,7 @@ fn emit_new(f, nodes, at) {
 }
 
 fn negate_at(v, node) {
-  m.make_if_else(
-    v,
-    m.bool_literal(false, node),
-    m.bool_literal(true, node),
-    node,
-  )
+  m.unary('not', v, node)
 }
 
 fn emit_chain(f, nodes) {
@@ -1332,8 +1240,8 @@ fn emit_method_call_on(f, recv, name, args, sfx) {
 
 fn emit_member(f, v, name, at) {
   cond {
-    name == 'Length' => m.intrinsic('len', [v], at),
-    name == 'Count' => call_rt(f, '$count', [v], at),
+    # `len` is a list's length and a dictionary's entry count both
+    ['Length', 'Count'].contains(name) => m.intrinsic('len', [v], at),
     _ => m.index(v, m.str_literal(name, at), at),
   }
 }

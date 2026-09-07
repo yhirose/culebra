@@ -37,20 +37,10 @@ fn stmt_block(m, stmts) {
   )
   let whl = m.make_while(cond: lit, body: stmt_block(m, []), line: 1, col: 1)
   let blk = stmt_block(m, [])
-  let intr = m.intrinsic(
-    name: 'tostr',
-    args: m.list_new(),
-    line: 1,
-    col: 1,
-  )
+  let intr = m.intrinsic(name: 'tostr', args: m.list_new(), line: 1, col: 1)
   let cmap = m.add_capture_map(m.capture_map_new())
   let clos = m.make_closure(func: 0, cmap: cmap, line: 1, col: 1)
-  let callv = m.call_value(
-    callee: clos,
-    args: m.list_new(),
-    line: 1,
-    col: 1,
-  )
+  let callv = m.call_value(callee: clos, args: m.list_new(), line: 1, col: 1)
   let arrlit = m.array_lit(items: m.list_new(), line: 1, col: 1)
   let objlit = m.object_lit(kv: m.list_new(), line: 1, col: 1)
   let idx = m.index(recv: arrlit, key: lit, line: 1, col: 1)
@@ -212,14 +202,14 @@ fn stmt_block(m, stmts) {
     m.binary(op: read_back, lhs: lit, rhs: lit, line: 1, col: 1)
   }
 
-  for op in ['neg', 'bitnot'] {
+  for op in ['neg', 'bitnot', 'not'] {
     let n = m.unary(op: op, operand: lit, line: 1, col: 1)
     let read_back = m.node_op(node: n)
     assert_eq(read_back, op)
     m.unary(op: read_back, operand: lit, line: 1, col: 1)
   }
 
-  for name in ['print', 'readint', 'len', 'tostr', 'typeof', 'toint', 'todouble', 'fmod', 'pow', 'printraw', 'arraypush', 'arraypop', 'objecthas', 'objectkeys', 'objectremove', 'genresume', 'genreturn', 'genthrow', 'argcount', 'same', 'fnarity', 'collect', 'heapstats', 'enqueue'] {
+  for name in ['print', 'readint', 'len', 'tostr', 'typeof', 'toint', 'todouble', 'fmod', 'pow', 'printraw', 'arraypush', 'arraypop', 'objecthas', 'objectkeys', 'objectremove', 'arrayconcat', 'arrayfill', 'strupper', 'strlower', 'genresume', 'genreturn', 'genthrow', 'argcount', 'same', 'fnarity', 'collect', 'heapstats', 'enqueue'] {
     let n = m.intrinsic(name: name, args: m.list_new(), line: 1, col: 1)
     let read_back = m.node_op(node: n)
     assert_eq(read_back, name)
