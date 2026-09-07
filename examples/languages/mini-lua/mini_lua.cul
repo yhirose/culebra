@@ -1,0 +1,146 @@
+# A slice of Lua 5.4, compiled to Core-IR.
+#
+# `PEG` for the syntax and `CodeGen` for everything after it. What is here is
+# Lua's grammar, its scope rules and its lowering; `lua` itself is the oracle
+# the samples are checked against.
+#
+# Lua is the front end for the parts of the IR the others do not reach:
+#
+#   * **A block's own bindings.** `local x` twice in one block is two
+#     bindings, and the second hides the first from there on. Every other
+#     front end here reuses the slot; Lua is why `Resolver.declared_index`
+#     answers per declaration rather than per name.
+#   * **Coroutines in their user-facing form** -- `coroutine.create` /
+#     `resume` / `yield` / `status`, which is what CoroCreate and friends
+#     are made of.
+#   * **Tail calls**, which Lua is one of the few languages to *guarantee*,
+#     so `lua` is a real oracle for them and not just a faster path.
+#
+# Lua's own semantics differ from the VM's defaults in three places, and all
+# three are answered by funcs this front end writes in Lua and splices ahead
+# of the program: what is true (only nil and false are false, where the VM
+# calls 0 false too), how `%` and `//` round (toward negative infinity,
+# where the VM truncates), and what `==` means across two types.
+#
+# Run it:  culebra examples/languages/mini-lua/mini_lua.cul FILE.lua
+#          culebra examples/languages/mini-lua/mini_lua.cul --ir FILE.lua
+
+let grammar = `
+  program    <- _ block !.                                  { no_ast_opt }
+  block      <- stmt*                                       { no_ast_opt }
+
+  stmt       <- emptystmt / localfn / localdecl / fnstat / ifstat / whilestat
+              / repeatstat / fornum / forin / dostat / breakstat / retstat
+              / assign / callstmt
+
+  emptystmt  <- ';' _                                       { no_ast_opt }
+  localfn    <- 'local' __ 'function' __ ident funcbody
+  localdecl  <- 'local' __ namelist ('=' ![=] _ exprlist)?   { no_ast_opt }
+  namelist   <- ident (',' _ ident)*                         { no_ast_opt }
+  exprlist   <- expr (',' _ expr)*                           { no_ast_opt }
+
+  fnstat     <- 'function' __ funcname funcbody
+  funcname   <- ident (dotname / colonname)*                 { no_ast_opt }
+  dotname    <- '.' _ ident                                  { no_ast_opt }
+  colonname  <- ':' _ ident                                  { no_ast_opt }
+  funcbody   <- '(' _ params ')' _ block 'end' __
+  params     <- (ident (',' _ ident)*)? ','? _               { no_ast_opt }
+
+  ifstat     <- 'if' __ expr 'then' __ block elseifpart* elsepart? 'end' __
+  elseifpart <- 'elseif' __ expr 'then' __ block
+  elsepart   <- 'else' __ block                              { no_ast_opt }
+  whilestat  <- 'while' __ expr 'do' __ block 'end' __
+  repeatstat <- 'repeat' __ block 'until' __ expr
+  fornum     <- 'for' __ ident '=' ![=] _ expr ',' _ expr forstep? 'do' __
+                block 'end' __
+  forstep    <- ',' _ expr                                   { no_ast_opt }
+  forin      <- 'for' __ namelist 'in' __ exprlist 'do' __ block 'end' __
+  dostat     <- 'do' __ block 'end' __                       { no_ast_opt }
+  breakstat  <- 'break' __                                   { no_ast_opt }
+  retstat    <- 'return' __ exprlist? ';'? _                 { no_ast_opt }
+  assign     <- varlist '=' ![=] _ exprlist
+  varlist    <- suffixedexp (',' _ suffixedexp)*             { no_ast_opt }
+  callstmt   <- suffixedexp                                  { no_ast_opt }
+
+  expr       <- orexp
+  orexp      <- andexp ('or' __ andexp)*
+  andexp     <- cmpexp ('and' __ cmpexp)*
+  cmpexp     <- concatexp (cmpop concatexp)*
+  cmpop      <- < '==' / '~=' / '<=' / '>=' / '<' / '>' > _
+  concatexp  <- addexp ('..' ![.] _ addexp)*
+  addexp     <- mulexp (addop mulexp)*
+  addop      <- < '+' / '-' ![-] > _
+  mulexp     <- unaryexp (mulop unaryexp)*
+  mulop      <- < '//' / '*' / '/' / '%' > _
+
+  unaryexp   <- notexp / negexp / lenexp / powexp
+  notexp     <- 'not' __ unaryexp                            { no_ast_opt }
+  negexp     <- '-' ![-] _ unaryexp                          { no_ast_opt }
+  lenexp     <- '#' _ unaryexp                               { no_ast_opt }
+  powexp     <- suffixedexp powpart?
+  powpart    <- '^' _ unaryexp                               { no_ast_opt }
+
+  suffixedexp <- primaryexp suffix*
+  suffix     <- callsfx / methodsfx / dotsfx / indexsfx
+  callsfx    <- '(' _ args ')' _ / strargsfx                 { no_ast_opt }
+  strargsfx  <- string                                       { no_ast_opt }
+  args       <- (expr (',' _ expr)*)? ','? _                 { no_ast_opt }
+  methodsfx  <- ':' _ ident '(' _ args ')' _                 { no_ast_opt }
+  dotsfx     <- '.' _ ident                                  { no_ast_opt }
+  indexsfx   <- '[' _ expr ']' _                             { no_ast_opt }
+
+  primaryexp <- funcexpr / tablector / float / number / string / literal
+              / ident / paren
+  paren      <- '(' _ expr ')' _                             { no_ast_opt }
+  funcexpr   <- 'function' __ funcbody                       { no_ast_opt }
+
+  tablector  <- '{' _ (field (fieldsep field)*)? fieldsep? _ '}' _
+                                                             { no_ast_opt }
+  field      <- keyedfield / namedfield / expr
+  keyedfield <- '[' _ expr ']' _ '=' ![=] _ expr
+  namedfield <- ident '=' ![=] _ expr
+  ~fieldsep  <- (',' / ';') _
+
+  literal    <- < ('true' / 'false' / 'nil') ![a-zA-Z0-9_] > _
+  float      <- < [0-9]+ '.' [0-9]* ([eE] [-+]? [0-9]+)?
+                / [0-9]+ [eE] [-+]? [0-9]+ > _
+  number     <- < [0-9]+ > _
+  string     <- ['] < (!['\\] . / '\\' .)* > ['] _
+              / ["] < (!["\\] . / '\\' .)* > ["] _
+  ident      <- !keyword < [a-zA-Z_] [a-zA-Z0-9_]* > _
+  ~keyword   <- ('and' / 'break' / 'do' / 'elseif' / 'else' / 'end' / 'false'
+               / 'for' / 'function' / 'goto' / 'if' / 'in' / 'local' / 'nil'
+               / 'not' / 'or' / 'repeat' / 'return' / 'then' / 'true'
+               / 'until' / 'while') ![a-zA-Z0-9_]
+
+  ~_         <- ([ \t\r\n] / '--' [^\n]*)*
+  ~__        <- ![a-zA-Z0-9_] _
+`
+
+fn fail(node, msg) {
+  throw {kind: 'LuaError', message: msg, line: node.line, col: node.column}
+}
+
+let want_ir = Sys.argv.contains('--ir')
+let want_ast = Sys.argv.contains('--ast')
+let args = Sys.argv.filter(|a| a != '--ir' && a != '--ast')
+if args.empty() {
+  println('usage: culebra mini_lua.cul [--ir] PROGRAM.lua')
+  Sys.exit(1)
+}
+
+try {
+  let tree = PEG.parse(grammar, FS.read(args[0]), path: args[0])
+  if want_ast {
+    inspect(tree)
+    Sys.exit(0)
+  }
+  println('parsed')
+} catch e {
+  match e {
+    {kind: 'LuaError'} => IO.eprintln("{args[0]}:{e.line}:{e.col}: {e.message}"),
+    {kind: 'PEGError'} => IO.eprintln(e.message),
+    _ => throw e,
+  }
+  Sys.exit(1)
+}
