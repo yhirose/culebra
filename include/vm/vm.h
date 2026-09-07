@@ -3531,6 +3531,26 @@ inline void rc_apply(const Chunk& c, const Insn& in, RcWords& out,
     case Op::Mul:
     case Op::Div:
     case Op::Mod: set(in.a, unknown(in.b) || unknown(in.c)); break;
+    // A call writes the caller's frame in exactly two places, and the
+    // second one is the interesting half: the argument run is left NIL,
+    // because the callee took each argument's `+1` (Exec's `Call`, and the
+    // `Drain` run_resolved's fast path carries for the same reason — both
+    // arms, and the throw path of each, nil the same run). The result is
+    // whatever the callee returned, so it is the one slot that goes
+    // Unknown. Nothing else in this frame moves: a callee runs on its own
+    // registers, so what it does is not this frame's business.
+    //
+    // Order matters where the destination aliases an argument slot: the
+    // drain happens as the call returns and the result is stored after it,
+    // so the result wins. `CallM` runs one slot wider — the receiver sits
+    // at `c`, ahead of the `d` arguments.
+    case Op::Call:
+    case Op::CallM: {
+      const int32_t last = in.c + in.d - (in.op == Op::Call ? 1 : 0);
+      for (int32_t r = in.c; r <= last; ++r) set(r, false);  // nil
+      set(in.a, true);
+      break;
+    }
     default: std::fill(out.begin(), out.end(), ~uint64_t{0}); break;
   }
 }

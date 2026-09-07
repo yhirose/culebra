@@ -456,8 +456,26 @@ two-point lattice (`NonRc < Unknown`), deciding whether the slot a
 `Release`/`Retain` names can hold a refcounted value there. A `LoadConst`
 of a non-refcounted constant, arithmetic on two non-refcounted operands,
 and similar — all read off the executor's own switch — lower the state to
-`NonRc`; anything unmodeled (a call, a container op, …) raises every
-slot to `Unknown`. Dropping a `Retain` needs only that; dropping a
+`NonRc`; anything unmodeled (a container op, a property write, …) raises
+every slot to `Unknown`.
+
+A call is modeled rather than left unmodeled, and the interesting half is
+not its result. `Call a, b, c, d` writes the caller's frame in exactly
+two places: the result lands in `a` (whatever the callee returned, so
+`Unknown`), and the argument run `c … c+d-1` is left **nil** — the callee
+took each argument's `+1`, so the caller's slots are emptied on the way
+out. Both arms do it and so does each one's throw path (`Exec`'s own
+loop, and the `Drain` `run_resolved` carries for the resolved fast path);
+`CallM` runs one slot wider, its receiver sitting at `c` ahead of the
+arguments. Nothing else in the frame moves — a callee runs on its own
+registers — so a call no longer has to raise every slot. That is what
+makes the bookkeeping around a call droppable at all: the argument slots
+come out of it provably `NonRc`, and the constants either side of it keep
+the state they had. `fib`'s chunk goes from ten `Release`s to four, and
+the four left are the ones that have to stay (each call's result, the
+`MfSelf` handle, the parameter).
+
+Dropping a `Retain` needs only the forward pass; dropping a
 `Release` needs a second, backward liveness pass too, because `Release`
 is destructive (it nils the slot) and later code depends on the nil — an
 outer scope's ladder and the throw-path unwind release the same range
