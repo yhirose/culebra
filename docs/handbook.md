@@ -113,6 +113,15 @@ sudo mv culebra-*/culebra /usr/local/bin/
 culebra --version
 ```
 
+Or skip the manual steps — `install.sh` downloads the right archive for
+your OS/arch, verifies its checksum, and installs it to `/usr/local/bin`
+(macOS Apple Silicon and Linux x86-64 only; use `CULEBRA_INSTALL_DIR` to
+change the destination):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yhirose/culebra/master/install.sh | sh
+```
+
 macOS also installs through a package manager:
 
 ```bash

@@ -77,6 +77,23 @@ macOSが付ける検疫フラグ（バイナリは署名していません）を
 sudo mv culebra-*/culebra /usr/local/bin/
 ```
 
+または手順を飛ばして`install.sh`を使う。OS/archに合ったアーカイブを
+ダウンロードし、チェックサムを検証してから`/usr/local/bin`にインストール
+する（macOS Apple SiliconとLinux x86-64のみ対応、インストール先を変える
+には`CULEBRA_INSTALL_DIR`を使う）:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yhirose/culebra/master/install.sh | sh
+```
+
+macOSはパッケージマネージャからも入れられる:
+
+```bash
+brew install yhirose/culebra/culebra
+```
+
+WindowsとLinux向けのパッケージはまだ無いので、上のダウンロードを使う。
+
 チェックサムと各リリースのノートは
 [リリースページ](https://github.com/yhirose/culebra/releases)にあります。
 
