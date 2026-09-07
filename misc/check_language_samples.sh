@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run one of examples/languages' front ends over its samples, and compare each
 # against the oracle for that language. The three differ only in what to run
-# and what to believe, so they are one script with three arms:
+# and what to believe, so they are one script with one arm each:
 #
 #   pl0           the tree-walking interpreter in pl0.cul beside it, which is
 #                 an independent second implementation of the same language
@@ -12,6 +12,8 @@
 #   mini-culebra  culebra. The samples are plain culebra.
 #   mini-go       the output `go run` gives, frozen beside each sample --
 #                 the oracle is Go itself, recorded rather than re-run.
+#   mini-lua      `lua` itself, which is installed here -- the real
+#                 implementation rather than a transcript of it.
 set -u
 cd "$(dirname "$0")/.."
 CULEBRA=${CULEBRA:-./build-dev/culebra}
@@ -56,8 +58,17 @@ case "${1:-}" in
     got() { "$CULEBRA" "$ENGINE" examples/languages/mini-go/mini_go.cul "$1"; }
     want() { cat "${1%.go}.txt"; }
     ;;
+  mini-lua)
+    set -- examples/languages/mini-lua/samples/*.lua
+    LUA=${LUA:-lua}
+    export LUA
+    got() {
+      "$CULEBRA" "$ENGINE" examples/languages/mini-lua/mini_lua.cul "$1"
+    }
+    want() { "$LUA" "$1"; }
+    ;;
   *)
-    echo "usage: $0 pl0|mini-js|mini-culebra|mini-go" >&2
+    echo "usage: $0 pl0|mini-js|mini-culebra|mini-go|mini-lua" >&2
     exit 2
     ;;
 esac

@@ -16,11 +16,23 @@
 #   * **Tail calls**, which Lua is one of the few languages to *guarantee*,
 #     so `lua` is a real oracle for them and not just a faster path.
 #
-# Lua's own semantics differ from the VM's defaults in three places, and all
-# three are answered by funcs this front end writes in Lua and splices ahead
-# of the program: what is true (only nil and false are false, where the VM
-# calls 0 false too), how `%` and `//` round (toward negative infinity,
-# where the VM truncates), and what `==` means across two types.
+#   * **Metatables**, which are how one value answers for the events another
+#     language would put in the VM: what `a + b` means, what a missing key
+#     reads as, what a call on something that is not a function does.
+#
+# Two things shape everything below. A Lua call hands over one list and gets
+# one back, because a Lua function takes and answers any number of values
+# and the IR's does neither -- so a call is `f(args)` with one argument, and
+# the names on both sides read out of it. And the tree is walked twice: the
+# first pass opens the scopes and settles what every name means, because a
+# capture's index has to stop moving before any read of it is built.
+#
+# Where Lua's semantics differ from the VM's defaults, the answer is a func
+# written here in the IR and spliced ahead of the program: what is true
+# (only nil and false are false, where the VM calls 0 false too), how `%`
+# and `//` round (toward negative infinity, where the VM truncates), what
+# `==` means across two types, and how a float prints. The last of those is
+# the one thing asked of the host instead, because "%.14g" is not an IR node.
 #
 # Run it:  culebra examples/languages/mini-lua/mini_lua.cul FILE.lua
 #          culebra examples/languages/mini-lua/mini_lua.cul --ir FILE.lua
@@ -673,6 +685,11 @@ fn runtime() {
         m.assign('local', 1, m.intrinsic('typeof', [L(0)], AT), AT),
         m.make_if(m.binary('eq', L(1), S('bool'), AT), ret(S('boolean')), AT),
         m.make_if(m.binary('eq', L(1), S('map'), AT), ret(S('table')), AT),
+        m.make_if(
+          m.binary('eq', L(1), S('coroutine'), AT),
+          ret(S('thread')),
+          AT,
+        ),
         m.make_if(m.binary('eq', L(1), S('int'), AT), ret(S('number')), AT),
         m.make_if(m.binary('eq', L(1), S('double'), AT), ret(S('number')), AT),
         ret(L(1)),
@@ -968,6 +985,7 @@ mut rt_body = {}     # runtime helper -> its body, built in IR here
 mut rt_params = {}
 mut rt_locals = {}
 mut native_fmt = -1  # the host function that renders a float Lua's way
+mut chunk = ''       # the program's name, as `error` reports it
 
 let AT = {line: 1, column: 1}
 
@@ -1038,6 +1056,35 @@ fn luafn(gname, nlocals, build) {
 # with the walk's own position kept in the state rather than recovered from
 # the control -- which keeps a step O(1) instead of a search.
 fn register_iterators() {
+  # everything after the first value: what pcall and the coroutine calls
+  # hand on to the function they are given
+  rt_func('__rest', 1, 3, fn (f) {
+    m.block(
+      [
+        m.assign('local', 1, m.array_lit([], AT), AT),
+        m.assign('local', 2, m.literal(1, AT), AT),
+        m.make_while(
+          m.binary('lt', L(2), m.intrinsic('len', [L(0)], AT), AT),
+          m.block(
+            [
+              m.intrinsic('arraypush', [L(1), m.index(L(0), L(2), AT)], AT),
+              m.assign(
+                'local',
+                2,
+                m.binary('add', L(2), m.literal(1, AT), AT),
+                AT,
+              ),
+            ],
+            AT,
+          ),
+          AT,
+        ),
+        ret(L(1)),
+      ],
+      AT,
+    )
+  })
+
   # the keys a table has, minus the one the metatable hides under
   rt_func('__keys', 1, 4, fn (f) {
     m.block(
@@ -1066,6 +1113,196 @@ fn register_iterators() {
           AT,
         ),
         ret(L(1)),
+      ],
+      AT,
+    )
+  })
+
+  # `error(v)` raises v. A string is prefixed with where the call is, which
+  # is Lua's `level 1`: the position belongs to the caller of error, and the
+  # binder is the only thing here that knows it, so it passes it in.
+  luafn('$error', 2, fn (f) {
+    m.block(
+      [
+        m.assign('local', 1, nth(f, L(0), 0, AT), AT),
+        m.make_throw(
+          m.make_if_else(
+            is_type(L(1), 'string'),
+            m.binary('add', nth(f, L(0), 1, AT), L(1), AT),
+            L(1),
+            AT,
+          ),
+          AT,
+        ),
+      ],
+      AT,
+    )
+  })
+  # `pcall(f, ...)` is a try: true and everything f answered, or false and
+  # whatever was raised -- a value, not a class, so it comes back unchanged.
+  luafn('pcall', 3, fn (f) {
+    m.make_try(
+      2,
+      m.make_return(
+        call_rt(
+          f,
+          '__append',
+          [
+            m.array_lit([m.bool_literal(true, AT)], AT),
+            call_rt(
+              f,
+              '__callv',
+              [nth(f, L(0), 0, AT), call_rt(f, '__rest', [L(0)], AT)],
+              AT,
+            ),
+          ],
+          AT,
+        ),
+        AT,
+      ),
+      m.make_return(m.array_lit([m.bool_literal(false, AT), L(2)], AT), AT),
+      AT,
+    )
+  })
+
+  # Coroutines. A Lua function already takes one list and answers one, and
+  # CoroResume hands its argument to the body and answers what came back --
+  # so the two conventions meet with nothing in between. What is written
+  # here is the part that is Lua's rather than the intrinsic's: resuming a
+  # dead coroutine answers false instead of raising, the state names differ,
+  # and `wrap` strips the true off.
+  luafn('coroutine.create', 1, fn (f) {
+    m.make_return(
+      m.array_lit([m.intrinsic('corocreate', [nth(f, L(0), 0, AT)], AT)], AT),
+      AT,
+    )
+  })
+  luafn('coroutine.yield', 1, fn (f) {
+    m.make_return(m.intrinsic('coroyield', [L(0)], AT), AT)
+  })
+  luafn('coroutine.resume', 5, fn (f) {
+    m.block(
+      [
+        m.assign('local', 1, nth(f, L(0), 0, AT), AT),
+        m.make_if(
+          m.binary('eq', m.intrinsic('corostatus', [L(1)], AT), S('done'), AT),
+          m.make_return(
+            m.array_lit(
+              [m.bool_literal(false, AT), S('cannot resume dead coroutine')],
+              AT,
+            ),
+            AT,
+          ),
+          AT,
+        ),
+        m.make_try(
+          4,
+          m.block(
+            [
+              m.assign(
+                'local',
+                3,
+                m.intrinsic(
+                  'cororesume',
+                  [L(1), call_rt(f, '__rest', [L(0)], AT)],
+                  AT,
+                ),
+                AT,
+              ),
+              m.make_return(
+                call_rt(
+                  f,
+                  '__append',
+                  [
+                    m.array_lit([m.bool_literal(true, AT)], AT),
+                    m.index(L(3), S('value'), AT),
+                  ],
+                  AT,
+                ),
+                AT,
+              ),
+            ],
+            AT,
+          ),
+          m.make_return(m.array_lit([m.bool_literal(false, AT), L(4)], AT), AT),
+          AT,
+        ),
+      ],
+      AT,
+    )
+  })
+  luafn('coroutine.status', 2, fn (f) {
+    m.block(
+      [
+        m.assign(
+          'local',
+          1,
+          m.intrinsic('corostatus', [nth(f, L(0), 0, AT)], AT),
+          AT,
+        ),
+        m.make_return(
+          m.array_lit(
+            [m.make_if_else(
+              m.binary('eq', L(1), S('done'), AT),
+              S('dead'),
+              m.make_if_else(
+                m.binary('eq', L(1), S('start'), AT),
+                S('suspended'),
+                L(1),
+                AT,
+              ),
+              AT,
+            )],
+            AT,
+          ),
+          AT,
+        ),
+      ],
+      AT,
+    )
+  })
+  # `wrap` answers something callable that is not a func, which is what
+  # __call is for -- the coroutine rides in the table the metatable is on.
+  luafn('coroutine.wrap', 3, fn (f) {
+    m.block(
+      [
+        m.assign('local', 1, m.intrinsic('mapnew', [], AT), AT),
+        call_rt(
+          f,
+          '__rawset',
+          [L(1), S('co'), m.intrinsic('corocreate', [nth(f, L(0), 0, AT)], AT)],
+          AT,
+        ),
+        m.assign('local', 2, m.intrinsic('mapnew', [], AT), AT),
+        m.set_index(
+          L(2),
+          S('__call'),
+          rs.closure(m, f, globals_fn['lua:$wrapcall'], AT),
+          AT,
+        ),
+        call_rt(f, '__setmeta', [L(1), L(2)], AT),
+        m.make_return(m.array_lit([L(1)], AT), AT),
+      ],
+      AT,
+    )
+  })
+  luafn('$wrapcall', 2, fn (f) {
+    m.block(
+      [
+        m.assign(
+          'local',
+          1,
+          m.intrinsic(
+            'cororesume',
+            [
+              call_rt(f, '__rawget', [nth(f, L(0), 0, AT), S('co')], AT),
+              call_rt(f, '__rest', [L(0)], AT),
+            ],
+            AT,
+          ),
+          AT,
+        ),
+        m.make_return(m.index(L(1), S('value'), AT), AT),
       ],
       AT,
     )
@@ -1196,10 +1433,19 @@ let lib_globals = [
   ('rawset', '__rawset', 3),
 ]
 
-let lua_raw = ['ipairs', 'pairs']
+let lua_raw = ['ipairs', 'pairs', 'pcall']
+# tables whose entries answer more than one value, so they are luafns rather
+# than adapters over a helper
+let lua_raw_tables = [(
+  'coroutine',
+  ['create', 'resume', 'yield', 'status', 'wrap'],
+)]
 
 fn register_library() {
   register_iterators()
+  # `error` is reachable as a value, and the prefix a direct call passes is
+  # simply missing there -- the one place this differs from Lua
+  globals_fn['lua:error'] = globals_fn['lua:$error']
   for (gname, helper, arity) in lib_globals {
     adapter(gname, helper, arity)
   }
@@ -1279,6 +1525,12 @@ fn emit_library() {
     rs.closure(m, root_fn, pf, AT),
     AT,
   ))
+  ids.push(m.set_index(
+    genv(root_fn, AT),
+    S('error'),
+    rs.closure(m, root_fn, globals_fn['lua:$error'], AT),
+    AT,
+  ))
   for gname in lua_raw {
     ids.push(m.set_index(
       genv(root_fn, AT),
@@ -1296,6 +1548,28 @@ fn emit_library() {
         root_fn,
         '__set',
         [m.var_ref('local', t, AT), S(gname), rs.closure(m, root_fn, af, AT)],
+        AT,
+      ))
+    }
+    ids.push(m.set_index(
+      genv(root_fn, AT),
+      S(tname),
+      m.var_ref('local', t, AT),
+      AT,
+    ))
+  }
+  for (tname, names) in lua_raw_tables {
+    let t = new_scratch(root_fn)
+    ids.push(m.assign('local', t, m.intrinsic('mapnew', [], AT), AT))
+    for gname in names {
+      ids.push(call_rt(
+        root_fn,
+        '__set',
+        [
+          m.var_ref('local', t, AT),
+          S(gname),
+          rs.closure(m, root_fn, globals_fn["lua:{tname}.{gname}"], AT),
+        ],
         AT,
       ))
     }
@@ -1774,7 +2048,38 @@ fn genv(f, node) {
 
 # `all` asks for the list a trailing call answered rather than its first
 # value -- the one place the caller's context changes what a call means.
+# `error(msg)` prefixes a string with the position of the call, which Lua
+# takes off the stack and this front end takes off the source. The prefix is
+# an extra argument the binder appends at a direct call to the global name;
+# `error` reached any other way raises the value unchanged.
+fn is_error_call(f, nodes) {
+  nodes.size() == 2 &&
+    nodes[0].name == 'ident' &&
+    nodes[0].token == 'error' &&
+    name_v[pkey(nodes[0])] == -1 &&
+    nodes[1].name == 'callsfx'
+}
+
 fn emit_suffixed(f, nodes, at, all) {
+  if is_error_call(f, nodes) {
+    return call_rt(
+      f,
+      '__callv',
+      [
+        emit_expr(f, nodes[0]),
+        call_rt(
+          f,
+          '__append',
+          [
+            emit_args(f, nodes[1].nodes, at),
+            m.array_lit([S("{chunk}:{at.line}: ")], at),
+          ],
+          at,
+        ),
+      ],
+      at,
+    )
+  }
   mut v = emit_expr(f, nodes[0])
   let last = nodes.size() - 1
   for i in range(1, nodes.size()) {
@@ -2351,6 +2656,10 @@ fn build(mm, root) {
       m.set_singleton(func: f)
     }
     m.set_lenient_arity(func: f)
+    # Lua guarantees `return f(...)` reuses the frame. The call itself is
+    # made inside __callv, so the guarantee needs both frames to go: the
+    # caller tail-calls __callv, and __callv tail-calls the function.
+    m.set_tail_calls(func: f)
   }
   m
 }
@@ -2364,6 +2673,7 @@ if args.empty() {
 }
 
 try {
+  chunk = args[0]
   let tree = PEG.parse(grammar, FS.read(args[0]), path: args[0])
   if want_ast {
     inspect(tree)

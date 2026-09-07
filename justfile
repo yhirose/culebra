@@ -833,15 +833,16 @@ _run-tests BACKEND:
         (cd "$(dirname "$BIN")" && {{nice_cmd}} ctest --output-on-failure --timeout 300 -j "$JOBS")
     }
 
-    # The three Core-IR front ends in examples/languages/, each against the
-    # oracle for its language: PL/0 against the tree-walking interpreter
-    # beside it, mini-js against `node`, mini-culebra against culebra
-    # itself. In every lane including `fast`, which is what `just land` runs:
-    # 27s, and they are the largest culebra programs in the tree as well as
-    # the only CodeGen consumers at the size a real front end uses it.
-    # mini-js is skipped where `node` is absent rather than failing the lane.
+    # The Core-IR front ends in examples/languages/, each against the oracle
+    # for its language: PL/0 against the tree-walking interpreter beside it,
+    # mini-js against `node`, mini-culebra against culebra itself, mini-go
+    # against a frozen `go run`, mini-lua against `lua`. In every lane
+    # including `fast`, which is what `just land` runs: they are the largest
+    # culebra programs in the tree as well as the only CodeGen consumers at
+    # the size a real front end uses it. An arm whose oracle is not
+    # installed is skipped rather than failing the lane.
     run_languages() {
-        # The three arms in parallel, not one after another: each alone
+        # The arms in parallel, not one after another: each alone
         # under-fills the box (pl0's eight samples cannot use twenty cores),
         # and the whole phase then costs about what its longest arm does.
         local arms=(pl0 mini-culebra mini-go)
@@ -849,6 +850,11 @@ _run-tests BACKEND:
             arms+=(mini-js)
         else
             echo "SKIP mini-js (no node)"
+        fi
+        if command -v lua >/dev/null 2>&1; then
+            arms+=(mini-lua)
+        else
+            echo "SKIP mini-lua (no lua)"
         fi
         local per=$(( JOBS / ${#arms[@]} )); (( per > 0 )) || per=1
         local pids=() a rc=0
@@ -1658,10 +1664,11 @@ sync-site-version:
       { echo "site/index.html has no <span class=\"ver\"> to stamp" >&2; exit 1; }
     echo "site/index.html names v$want"
 
-# The three Core-IR front ends in examples/languages/ against their oracles
-# (PL/0's own interpreter, `node`, culebra itself). Part of `just test` and
-# of every other lane; this recipe is the standalone way in, against the
-# build-dev/ binary. mini-js is skipped where `node` is absent.
+# The Core-IR front ends in examples/languages/ against their oracles
+# (PL/0's own interpreter, `node`, culebra itself, a frozen `go run`, `lua`).
+# Part of `just test` and of every other lane; this recipe is the standalone
+# way in, against the build-dev/ binary. An arm whose oracle is not installed
+# is skipped.
 [group("test")]
 [doc("Run the examples/languages front ends against their oracles")]
 check-languages: dev
