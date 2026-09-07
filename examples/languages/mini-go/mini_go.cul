@@ -1,0 +1,1039 @@
+# A slice of Go, compiled to Core-IR.
+#
+# `PEG` for the syntax and `CodeGen` for everything after it -- the same two
+# libraries pl0_codegen.cul, mini_js.cul and mini_culebra.cul use, and
+# nothing else. What is here is this language's grammar, its type rules and
+# its lowering.
+#
+# Go is the front end for the parts of the IR the others do not reach:
+#
+#   * **Fixed-width integers.** int32/uint32/float32 are not what the VM
+#     holds -- it holds a Long and a Double -- so every arithmetic result at
+#     one of those widths gets a wrap (`wrapi32`, `wrapu32`) or a
+#     `tofloat32` put back on it. Comparisons need none: an operand that was
+#     normalized when it was produced already compares correctly.
+#   * **Static calls.** A `func` here is not a value. Its closure captures
+#     nothing, so every call site can share one -- `set_singleton` -- and
+#     the call is a plain MakeClosure + CallValue over that.
+#   * **Goroutines.** `go f(x)` is `enqueue(corocreate(wrapper))` and a
+#     channel is an object two coroutines hand values through, which is the
+#     scheduler recipe with nothing else on top.
+#
+# Samples are checked against the output `go run` gives for the same file
+# (examples/languages/mini-go/samples/*.txt), so the oracle is Go itself.
+#
+# Run it:  culebra examples/languages/mini-go/mini_go.cul FILE.go
+#          culebra examples/languages/mini-go/mini_go.cul --ir FILE.go
+
+let grammar = `
+  program    <- _ 'package' __ 'main' _ 'import' __ '"fmt"' _ topdecl* _   { no_ast_opt }
+  topdecl    <- structdecl / func
+
+  structdecl <- 'type' __ ident _ 'struct' _ '{' _ fields '}' _
+  fields     <- field*                                       { no_ast_opt }
+  field      <- ident type
+
+  func       <- 'func' __ ident '(' _ params ')' _ type? '{' _ stmts '}' _
+  params     <- (param (',' _ param)*)?                     { no_ast_opt }
+  param      <- ident type
+  type       <- < ('chan' __)? '[]'? ('int32' / 'int64' / 'uint32' / 'float32'
+                  / 'float64' / 'bool' / 'string' / [a-zA-Z_][a-zA-Z0-9_]*) > _
+
+  stmts      <- stmt*                                       { no_ast_opt }
+  stmt       <- vardecl / indexassign / assign / ret / print / switchstmt
+              / gostmt / sendstmt / recvstmt / forstmt / ifstmt
+
+  vardecl    <- 'var' __ ident type '=' _ expr
+  assign     <- ident ('.' ident)* '=' _ expr
+  indexassign <- ident '[' _ expr ']' _ '=' _ expr
+  ret        <- 'return' __ expr                             { no_ast_opt }
+  print      <- 'fmt.Println' _ '(' _ expr ')' _              { no_ast_opt }
+
+  gostmt     <- 'go' __ call                                  { no_ast_opt }
+  sendstmt   <- ident '<-' _ expr
+  recvstmt   <- '<-' _ ident                                  { no_ast_opt }
+  forstmt    <- 'for' __ expr '{' _ stmts '}' _
+  ifstmt     <- 'if' __ expr '{' _ stmts '}' _ ('else' _ '{' _ stmts '}' _)?
+
+  switchstmt <- 'switch' __ expr '{' _ case* defaultcase? '}' _   { no_ast_opt }
+  case       <- 'case' __ intlist ':' _ stmts
+  intlist    <- caseval (',' _ caseval)*                      { no_ast_opt }
+  caseval    <- < '-'? [0-9]+ > _
+  defaultcase <- 'default' _ ':' _ stmts                      { no_ast_opt }
+
+  expr       <- equality
+  equality   <- relational (eqop relational)*
+  eqop       <- < '==' / '!=' > _
+  relational <- additive (relop additive)*
+  relop      <- < '<=' / '>=' / '<' / '>' > _
+  additive   <- multiplicative (addop multiplicative)*
+  addop      <- < [-+] > _
+  multiplicative <- unary (mulop unary)*
+  mulop      <- < [*/%] > _
+  unary      <- neg / recv / makechan / structlit / slicelit / index
+              / fieldaccess / call / primary
+  neg        <- '-' _ unary                                   { no_ast_opt }
+  recv       <- '<-' _ ident                                  { no_ast_opt }
+  makechan   <- 'make' _ '(' _ type ')' _                      { no_ast_opt }
+  structlit  <- ident '{' _ fieldinits '}' _
+  slicelit   <- type '{' _ args '}' _
+  index      <- ident '[' _ expr ']' _
+  fieldinits <- (fieldinit (',' _ fieldinit)*)?                { no_ast_opt }
+  fieldinit  <- ident ':' _ expr
+  fieldaccess <- ident ('.' ident)+
+  call       <- ident '(' _ args ')' _
+  args       <- (expr (',' _ expr)*)?                         { no_ast_opt }
+  primary    <- number / strlit / ident / '(' _ expr ')' _
+
+  strlit     <- '"' < ('\\' . / [^"\\])* > '"' _
+  number     <- < [0-9]+ ('.' [0-9]+)? > _
+  ident      <- < [a-zA-Z_] [a-zA-Z0-9_]* > _
+
+  ~_         <- ([ \t\r\n] / '//' [^\n]*)*
+  ~__        <- ![a-zA-Z0-9_] _
+`
+
+fn fail(node, msg) {
+  throw {kind: 'GoError', message: msg, line: node.line, col: node.column}
+}
+
+# --- Types ------------------------------------------------------------------
+#
+# A Go type is a string here: the six scalars plus 'chan T', '[]T' and a
+# struct name. Only the numeric ones matter to the lowering, and only
+# because the VM has two numbers where Go has five.
+
+let numeric = {
+  int32: true,
+  uint32: true,
+  int64: true,
+  float32: true,
+  float64: true,
+}
+let floaty = {float32: true, float64: true}
+
+fn elem_of(t) {
+  cond {
+    t.starts_with('[]') => t.slice(2, t.size()).to_string(),
+    t.starts_with('chan ') => t.slice(5, t.size()).to_string(),
+    _ => nil,
+  }
+}
+
+# --- The binder -------------------------------------------------------------
+
+mut m = nil
+mut rs = nil
+mut funcs = []         # per func: {name, params, ret, body, node}
+mut fn_index = {}      # Go name -> func id
+mut nslots = []        # per func: locals handed out
+mut var_of = {}        # "f/name" -> the binding
+mut type_of = {}       # binding -> its Go type
+mut structs = {}       # struct name -> [field names], in declaration order
+mut field_ty = {}      # "Struct.field" -> its Go type
+mut runtime_body = {}  # the two channel funcs, built in IR rather than parsed
+mut runtime_params = {}
+mut runtime_locals = {}
+mut go_wrappers = []  # per `go`: the wrapper and how many cells it takes
+mut go_cells = []     # per func: cells handed to `go` argument holders
+mut wrap_caps = {}    # wrapper -> how many cells it captures
+mut nlocal_base = []
+
+let AT = {line: 1, column: 1}
+
+fn new_func(name, node) {
+  let f = funcs.size()
+  go_cells.push(0)
+  nlocal_base.push(0)
+  funcs.push({
+    name: name,
+    params: [],
+    mut ret: nil,
+    mut body: nil,
+    mut node: node,
+  })
+  rs.new_fn(-1)            # a Go func captures nothing; every call builds the same closure
+  rs.set_func_index(f, f)  # index == registration order, and so does add_func
+  nslots.push(0)
+  f
+}
+
+fn declare(f, name, ty, node) {
+  let v = rs.declare_var(name, f)
+  rs.set_var_slot(v, nslots[f])
+  nslots[f] += 1
+  var_of["{f}/{name}"] = v
+  type_of[v] = ty
+  v
+}
+
+fn lookup(f, name, node) {
+  let k = "{f}/{name}"
+  if !var_of.has(k) {
+    fail(node, "undefined: {name}")
+  }
+  var_of[k]
+}
+
+# --- Pass A: declarations ---------------------------------------------------
+
+fn collect(root) {
+  # `main` is registered before the file is walked so a call to it from a
+  # func declared earlier resolves; `$entry` already holds func 0.
+  fn_index['main'] = new_func('main', root)
+  for d in root.nodes {
+    match d {
+      {name: 'structdecl', nodes} => {
+        let sname = nodes[0].token
+        mut names = []
+        for fld in nodes[1].nodes {
+          names.push(fld.nodes[0].token)
+          field_ty["{sname}.{fld.nodes[0].token}"] = fld.nodes[1].token
+        }
+        structs[sname] = names
+      },
+      {name: 'func', nodes} => {
+        let gname = nodes[0].token
+        cond {
+          gname == 'main' => funcs[fn_index['main']].node = d,
+          fn_index.has(gname) => fail(d, "{gname} redeclared"),
+          _ => fn_index[gname] = new_func(gname, d),
+        }
+      },
+      _ => fail(d, "cannot declare {d.name}"),
+    }
+  }
+  # parameters and the return type, once every func is known
+  for d in root.nodes {
+    if d.name == 'func' {
+      let f = fn_index[d.nodes[0].token]
+      let fi = funcs[f]
+      for p in d.nodes[1].nodes {
+        let pname = p.nodes[0].token
+        fi.params.push(declare(f, pname, p.nodes[1].token, p))
+      }
+      # `type?` is present iff the node before the body is a type
+      let rest = d.nodes.slice(2, d.nodes.size())
+      if rest.size() > 1 && rest[0].name == 'type' {
+        fi.ret = rest[0].token
+      }
+      fi.body = d.nodes[d.nodes.size() - 1]
+    }
+  }
+  if funcs[fn_index['main']].body == nil {
+    fail(root, 'function main is undeclared')
+  }
+}
+
+# --- Pass B: emit -----------------------------------------------------------
+#
+# Every expression carries its Go type up with it, because the wrap a result
+# needs is decided by the type, not by the operator.
+
+# Only a scalar gives a literal something to take on; a struct, channel or
+# slice target leaves it alone so the assignment's own check reports it.
+# Where a field sits in its struct's object. Declaration order is the slot
+# contract FieldGet and FieldSet index by, so this is the whole of it.
+fn field_slot(sname, fname, node) {
+  if !structs.has(sname) {
+    fail(node, "{sname} is not a struct type")
+  }
+  let names = structs[sname]
+  for i, n in names.enumerate() {
+    if n == fname {
+      return i
+    }
+  }
+  fail(node, "{sname} has no field {fname}")
+}
+
+fn hint_for(t) {
+  cond {
+    numeric.has(t) => t,
+    _ => nil,
+  }
+}
+
+# Go structs are values: `var q = p`, `Line{To: p}` and `l.To = p` must not
+# leave two names on one object, the way carrying the read-out node across
+# would. This is that copy -- a fresh ObjectLit with one FieldGet per field,
+# recursing so a struct nested in a struct is copied too rather than the
+# inner object carried over by reference.
+#
+# A value a struct literal just built here is already fresh: nothing has had
+# the chance to alias it, so copying it again would only allocate.
+fn copy_struct(v, ty, node) {
+  cond {
+    !structs.has(ty) => v,
+    m.node_tag(v) == 'objectlit' => v,
+    _ => {
+      mut kv = []
+      for i, fname in structs[ty].enumerate() {
+        kv.push(m.str_literal(fname, node))
+        let fty = field_ty["{ty}.{fname}"]
+        kv.push(copy_struct(m.field_get(v, i, fname, node), fty, node))
+      }
+      m.object_lit(kv, node)
+    },
+  }
+}
+
+# Go zeroes a field the literal left out.
+fn zero_of(ty, node) {
+  cond {
+    floaty.has(ty) => m.double_literal(0.0, node),
+    numeric.has(ty) => m.literal(0, node),
+    ty == 'string' => m.str_literal('', node),
+    ty == 'bool' => m.bool_literal(false, node),
+    _ => m.nil_literal(node),
+  }
+}
+
+fn wrap_to(ty, raw, node) {
+  cond {
+    ty == 'int32' => m.unary('wrapi32', raw, node),
+    ty == 'uint32' => m.unary('wrapu32', raw, node),
+    ty == 'float32' => m.intrinsic('tofloat32', [raw], node),
+    ty == 'int64' || ty == 'float64' => raw,
+    _ => fail(node, "cannot do arithmetic on {ty}"),
+  }
+}
+
+# `hint`, when given, is the type a literal takes on at this position -- a
+# var's declared type, the other operand of an arithmetic op, a parameter's
+# type. That is Go's rule for an untyped constant, and it is the only reason
+# a literal has a type at all: every other node knows its own.
+fn emit_expr(f, node, hint = nil) {
+  match node {
+    {name: 'number', token} => cond {
+      token.contains('.') => cond {
+        hint ==
+          'float32' => (
+          m.intrinsic(
+            'tofloat32',
+            [m.double_literal(to_float(token), node)],
+            node,
+          ),
+          'float32',
+        ),
+        _ => (m.double_literal(to_float(token), node), 'float64'),
+      },
+      # an integer literal narrows into whatever width is asked of it; a
+      # float target takes it as a double
+      floaty.has(hint) => (
+        wrap_to(hint, m.double_literal(to_float(token), node), node),
+        hint,
+      ),
+      numeric.has(hint) => (
+        wrap_to(hint, m.literal(to_long(token), node), node),
+        hint,
+      ),
+      _ => (m.literal(to_long(token), node), 'int64'),
+    },
+    {name: 'strlit', token} => (m.str_literal(unescape(token), node), 'string'),
+    {name: 'ident', token} => {
+      let v = lookup(f, token, node)
+      (rs.read(m, f, v, node), type_of[v])
+    },
+    {name: 'neg', nodes: [inner]} => {
+      let (e, ty) = emit_expr(f, inner, hint)
+      (wrap_to(ty, m.unary('neg', e, node), node), ty)
+    },
+    {name: 'call', nodes} => emit_call(f, node, nodes),
+    {name: 'slicelit', nodes} => {
+      let ty = nodes[0].token
+      let el = elem_of(ty)
+      if el == nil {
+        fail(node, "{ty} is not a slice type")
+      }
+      mut items = []
+      for a in nodes[1].nodes {
+        let (v, _) = emit_expr(f, a, hint_for(el))
+        items.push(v)
+      }
+      (m.array_lit(items, node), ty)
+    },
+    {name: 'structlit', nodes: [id, inits]} => {
+      let sname = id.token
+      if !structs.has(sname) {
+        fail(node, "{sname} is not a struct type")
+      }
+      # ObjectLit takes key, value, key, value; the keys are the field names
+      # and their order is the slot order FieldGet indexes by
+      mut kv = []
+      let given = {}
+      for fi in inits.nodes {
+        given[fi.nodes[0].token] = fi.nodes[1]
+      }
+      for fname in structs[sname] {
+        kv.push(m.str_literal(fname, node))
+        let fty = field_ty["{sname}.{fname}"]
+        kv.push(cond {
+          given.has(fname) => {
+            let (v, _) = emit_expr(f, given[fname], hint_for(fty))
+            copy_struct(v, fty, node)
+          },
+          _ => zero_of(fty, node),
+        })
+      }
+      (m.object_lit(kv, node), sname)
+    },
+    {name: 'fieldaccess', nodes} => {
+      let b = lookup(f, nodes[0].token, nodes[0])
+      mut recv = rs.read(m, f, b, node)
+      mut ty = type_of[b]
+      for part in nodes.slice(1, nodes.size()) {
+        let fname = part.token
+        recv = m.field_get(recv, field_slot(ty, fname, part), fname, node)
+        ty = field_ty["{ty}.{fname}"]
+      }
+      (recv, ty)
+    },
+    {name: 'recv', nodes: [id]} => {
+      let b = lookup(f, id.token, id)
+      let el = elem_of(type_of[b])
+      if el == nil {
+        fail(node, "cannot receive from {type_of[b]}")
+      }
+      (
+        rs.call(m, f, fn_index['$chan_recv'], [rs.read(m, f, b, node)], node),
+        el,
+      )
+    },
+    {name: 'makechan', nodes: [ty]} => {
+      if elem_of(ty.token) == nil || !ty.token.starts_with('chan ') {
+        fail(node, "cannot make {ty.token}")
+      }
+      (
+        m.object_lit(
+          [
+            m.str_literal('recvq', node),
+            m.array_lit([], node),
+            m.str_literal('sendq', node),
+            m.array_lit([], node),
+          ],
+          node,
+        ),
+        ty.token,
+      )
+    },
+    {name: 'index', nodes: [id, ix]} => {
+      let b = lookup(f, id.token, id)
+      let el = elem_of(type_of[b])
+      if el == nil {
+        fail(node, "cannot index {type_of[b]}")
+      }
+      let (i, _) = emit_expr(f, ix, 'int64')
+      (m.index(rs.read(m, f, b, node), i, node), el)
+    },
+    {name: 'equality', nodes} => emit_chain(f, nodes, node, hint),
+    {name: 'relational', nodes} => emit_chain(f, nodes, node, hint),
+    {name: 'additive', nodes} => emit_chain(f, nodes, node, hint),
+    {name: 'multiplicative', nodes} => emit_chain(f, nodes, node, hint),
+    _ => fail(node, "cannot evaluate {node.name}"),
+  }
+}
+
+let binops = {
+  '+': 'add',
+  '-': 'sub',
+  '*': 'mul',
+  '/': 'div',
+  '%': 'mod',
+  '==': 'eq',
+  '!=': 'ne',
+  '<': 'lt',
+  '<=': 'le',
+  '>': 'gt',
+  '>=': 'ge',
+}
+let compares = {eq: true, ne: true, lt: true, le: true, gt: true, ge: true}
+
+# An operand that is a bare literal takes the other one's type, so the
+# chain is walked once to find a type and once to build it. `1.0/3.0` with
+# no side to learn from stays float64, which is Go's default.
+fn chain_type(f, nodes, hint) {
+  for n in nodes {
+    if n.name != 'addop' &&
+        n.name != 'mulop' &&
+        n.name != 'relop' &&
+        n.name != 'eqop' &&
+        n.name != 'number' {
+      let (_, t) = emit_expr(f, n, hint)
+      return t
+    }
+  }
+  mut t = hint
+  for n in nodes {
+    if n.name == 'number' && n.token.contains('.') && !floaty.has(t) {
+      t = 'float64'
+    }
+  }
+  cond {
+    t == nil => 'int64',
+    _ => t,
+  }
+}
+
+fn emit_chain(f, nodes, at, hint = nil) {
+  let ty0 = chain_type(f, nodes, hint)
+  let [head, ...rest] = nodes
+  mut (acc, ty) = emit_expr(f, head, ty0)
+  for [op, operand] in rest.iter().chunks(2) {
+    let (rhs, rty) = emit_expr(f, operand, ty0)
+    if ty != rty {
+      fail(op, "mismatched types {ty} and {rty}")
+    }
+    let o = binops[op.token]
+    acc = cond {
+      compares.has(o) => {
+        ty = 'bool'
+        m.binary(o, acc, rhs, op)
+      },
+      ty == 'string' && o == 'add' => m.binary('add', acc, rhs, op),
+      ty ==
+        'string' => fail(op, "operator {op.token} is not defined on string"),
+      # u32 division and remainder cannot leave the range: both operands are
+      # already non-negative, so the result is too
+      ty == 'uint32' && (o == 'div' || o == 'mod') => m.binary(o, acc, rhs, op),
+      _ => wrap_to(ty, m.binary(o, acc, rhs, op), op),
+    }
+  }
+  (acc, ty)
+}
+
+# A conversion (`int32(x)`) and a call share the `call` shape, so the name
+# decides which this is.
+fn emit_call(f, node, nodes) {
+  let name = nodes[0].token
+  let args = nodes[1].nodes
+  if numeric.has(name) {
+    if args.size() != 1 {
+      fail(node, "too many arguments to conversion to {name}")
+    }
+    let (v, from) = emit_expr(f, args[0])
+    if from == name {
+      return (v, name)
+    }
+    return (convert(from, name, v, node), name)
+  }
+  # `len` and `append` are Go builtins, not funcs: nothing declares them
+  if name == 'len' {
+    let (v, _) = emit_expr(f, args[0])
+    return (m.intrinsic('len', [v], node), 'int64')
+  }
+  if name == 'append' {
+    let (xs, xty) = emit_expr(f, args[0])
+    let el = elem_of(xty)
+    if el == nil {
+      fail(node, "first argument to append must be a slice, not {xty}")
+    }
+    let (v, _) = emit_expr(f, args[1], hint_for(el))
+    # arraypush answers nil, and `xs = append(xs, v)` wants the slice back
+    return (m.block([m.intrinsic('arraypush', [xs, v], node), xs], node), xty)
+  }
+  if !fn_index.has(name) {
+    fail(node, "undefined: {name}")
+  }
+  let g = fn_index[name]
+  mut ids = []
+  for i, a in args.enumerate() {
+    let want = cond {
+      i < funcs[g].params.size() => type_of[funcs[g].params[i]],
+      _ => nil,
+    }
+    let (v, _) = emit_expr(f, a, hint_for(want))
+    ids.push(v)
+  }
+  (rs.call(m, f, g, ids, node), funcs[g].ret)
+}
+
+fn convert(from, to, v, node) {
+  cond {
+    from == to => v,
+    !numeric.has(from) => fail(node, "cannot convert {from} to {to}"),
+    # to a float: the value widens, and float32 narrows again
+    floaty.has(to) &&
+      !floaty.has(from) => wrap_to(
+      to,
+      m.intrinsic('todouble', [v], node),
+      node,
+    ),
+    floaty.has(to) => wrap_to(to, v, node),
+    # to an integer: a float truncates toward zero first, then the width
+    # decides what is kept
+    floaty.has(from) => wrap_to(to, m.intrinsic('toint', [v], node), node),
+    _ => wrap_to(to, v, node),
+  }
+}
+
+# Go's four escapes. A single-quoted culebra string is raw, so the
+# backslash this looks for is written with double quotes.
+fn unescape(s) {
+  mut out = ''
+  mut i = 0
+  while i < s.size() {
+    let c = s.slice(i, i + 1).to_string()
+    if c == "\\" && i + 1 < s.size() {
+      let n = s.slice(i + 1, i + 2).to_string()
+      out += cond {
+        n == 'n' => "\n",
+        n == 't' => "\t",
+        _ => n,
+      }
+      i += 2
+    } else {
+      out += c
+      i += 1
+    }
+  }
+  out
+}
+
+fn emit_stmt(f, node) {
+  match node {
+    {name: 'vardecl', nodes: [id, ty, init]} => {
+      let declared = ty.token
+      let (v, vty) = emit_expr(f, init, hint_for(declared))
+      let b = declare(f, id.token, declared, id)
+      rs.write(
+        m,
+        f,
+        b,
+        copy_struct(convert(vty, declared, v, node), declared, node),
+        node,
+      )
+    },
+    # `x = v`, or `x.f = v` / `x.f.g = v`: the receiver is read, walked to
+    # the second-to-last field, and the last one is set in place.
+    {name: 'assign', nodes} => {
+      let b = lookup(f, nodes[0].token, nodes[0])
+      let path = nodes.slice(1, nodes.size() - 1)
+      let value = nodes[nodes.size() - 1]
+      cond {
+        path.empty() => {
+          let (v, vty) = emit_expr(f, value, hint_for(type_of[b]))
+          rs.write(
+            m,
+            f,
+            b,
+            copy_struct(convert(vty, type_of[b], v, node), type_of[b], node),
+            node,
+          )
+        },
+        _ => {
+          mut recv = rs.read(m, f, b, node)
+          mut ty = type_of[b]
+          for part in path.slice(0, path.size() - 1) {
+            recv = m.field_get(
+              recv,
+              field_slot(ty, part.token, part),
+              part.token,
+              node,
+            )
+            ty = field_ty["{ty}.{part.token}"]
+          }
+          let last = path[path.size() - 1]
+          let fty = field_ty["{ty}.{last.token}"]
+          let (v, vty) = emit_expr(f, value, hint_for(fty))
+          m.field_set(
+            recv,
+            field_slot(ty, last.token, last),
+            last.token,
+            copy_struct(convert(vty, fty, v, node), fty, node),
+            node,
+          )
+        },
+      }
+    },
+    {name: 'ret', nodes: [value]} => {
+      let (v, _) = emit_expr(f, value)
+      m.make_return(v, node)
+    },
+    {name: 'print', nodes: [value]} => {
+      let (v, ty) = emit_expr(f, value)
+      m.intrinsic('print', [go_str(v, ty, node)], node)
+    },
+    {name: 'ifstmt', nodes} => {
+      let (c, cty) = emit_expr(f, nodes[0])
+      if cty != 'bool' {
+        fail(nodes[0], 'non-bool used as if condition')
+      }
+      let then_b = emit_block(f, nodes[1])
+      cond {
+        nodes.size() >
+          2 => m.make_if_else(c, then_b, emit_block(f, nodes[2]), node),
+        _ => m.make_if(c, then_b, node),
+      }
+    },
+    # Go's only loop shape here is the condition-only `for`, which is while
+    {name: 'forstmt', nodes: [c, body]} => {
+      let (cv, cty) = emit_expr(f, c)
+      if cty != 'bool' {
+        fail(c, 'non-bool used as for condition')
+      }
+      m.make_while(cv, emit_block(f, body), node)
+    },
+    {name: 'switchstmt', nodes} => emit_switch(f, node, nodes),
+    # `go f(a, b)`: the arguments are evaluated here, at the go statement,
+    # and a wrapper carrying them is what the scheduler runs.
+    {name: 'gostmt', nodes: [callnode]} => emit_go(f, callnode, node),
+    {name: 'sendstmt', nodes: [id, value]} => {
+      let b = lookup(f, id.token, id)
+      let el = elem_of(type_of[b])
+      if el == nil {
+        fail(node, "cannot send to {type_of[b]}")
+      }
+      let (v, _) = emit_expr(f, value, hint_for(el))
+      rs.call(m, f, fn_index['$chan_send'], [rs.read(m, f, b, node), v], node)
+    },
+    {name: 'recvstmt', nodes: [id]} => {
+      let b = lookup(f, id.token, id)
+      rs.call(m, f, fn_index['$chan_recv'], [rs.read(m, f, b, node)], node)
+    },
+    {name: 'indexassign', nodes: [id, ix, value]} => {
+      let b = lookup(f, id.token, id)
+      let el = elem_of(type_of[b])
+      if el == nil {
+        fail(node, "cannot index {type_of[b]}")
+      }
+      let (i, _) = emit_expr(f, ix, 'int64')
+      let (v, _) = emit_expr(f, value, hint_for(el))
+      m.set_index(rs.read(m, f, b, node), i, v, node)
+    },
+    _ => fail(node, "cannot execute {node.name}"),
+  }
+}
+
+# `fmt.Println` on a float prints Go's %v, which is not what ToStr gives:
+# Go writes 2e+09 where the VM writes 2000000000. The prelude does the
+# formatting, so this hands it the value and the width.
+fn go_str(v, ty, node) {
+  v
+}
+
+fn emit_block(f, stmts_node) {
+  mut ids = []
+  for s in stmts_node.nodes {
+    let e = emit_stmt(f, s)
+    if e != nil {
+      ids.push(e)
+    }
+  }
+  m.block(ids, stmts_node)
+}
+
+# `case 1, 2:` shares one body between two keys, which the IR's Switch takes
+# directly: its arms are key/body pairs and two keys may name the same body.
+fn emit_switch(f, node, nodes) {
+  let (subj, sty) = emit_expr(f, nodes[0])
+  if !numeric.has(sty) {
+    fail(nodes[0], "cannot switch on {sty}")
+  }
+  mut arms = []
+  mut dflt = nil
+  for c in nodes.slice(1, nodes.size()) {
+    cond {
+      c.name == 'case' => {
+        let body = emit_block(f, c.nodes[1])
+        for v in c.nodes[0].nodes {
+          arms.push(m.literal(to_long(v.token), v))
+          arms.push(body)
+        }
+      },
+      _ => dflt = emit_block(f, c.nodes[0]),
+    }
+  }
+  cond {
+    dflt != nil => m.make_switch_default(subj, arms, dflt, node),
+    _ => m.make_switch(subj, arms, node),
+  }
+}
+
+fn emit_body(f) {
+  mut ids = []
+  for s in funcs[f].body.nodes {
+    let e = emit_stmt(f, s)
+    if e != nil {
+      ids.push(e)
+    }
+  }
+  # a func that runs off its end returns nil; one that always returns never
+  # reaches this
+  ids.push(m.make_return(m.nil_literal(AT), AT))
+  m.block(ids, funcs[f].node)
+}
+
+# --- The runtime this front end writes in its own IR ------------------------
+#
+# An unbuffered channel is an object {recvq, sendq} whose queues hold
+# waiters -- each a {co, value}: the coroutine parked on the channel and the
+# value it is sending, or the one it is about to receive. `$chan_send` and
+# `$chan_recv` are ordinary funcs built here, called the same way any Go
+# func is; the `$` keeps them out of the source language's reach.
+#
+# The library supplies three primitives -- `corocurrent`, `coroyield`,
+# `enqueue` -- and Go's rendezvous rule is written here rather than in the
+# VM, because it is Go's rule and not every language's: a sender that finds
+# a receiver waiting hands the value over and goes on; one that does not
+# parks until a receiver takes it; and the same the other way round.
+
+fn chan_runtime() {
+  let send = new_func('$chan_send', nil)
+  let recv = new_func('$chan_recv', nil)
+  fn_index['$chan_send'] = send
+  fn_index['$chan_recv'] = recv
+
+  fn local(i) {
+    m.var_ref('local', i, AT)
+  }
+  fn key(k) {
+    m.str_literal(k, AT)
+  }
+  fn queue_of(q) {
+    m.index(local(0), key(q), AT)
+  }
+  fn waiting(q) {
+    m.binary('gt', m.intrinsic('len', [queue_of(q)], AT), m.literal(0, AT), AT)
+  }
+  # w = queue[0]; queue = queue[1:]
+  fn take_first(q, w) {
+    [
+      m.assign('local', w, m.index(queue_of(q), m.literal(0, AT), AT), AT),
+      m.set_index(
+        local(0),
+        key(q),
+        m.intrinsic(
+          'arrayslice',
+          [
+            queue_of(q),
+            m.literal(1, AT),
+            m.intrinsic('len', [queue_of(q)], AT),
+          ],
+          AT,
+        ),
+        AT,
+      ),
+    ]
+  }
+  fn park(q, w, value) {
+    [
+      m.assign(
+        'local',
+        w,
+        m.object_lit(
+          [key('co'), m.intrinsic('corocurrent', [], AT), key('value'), value],
+          AT,
+        ),
+        AT,
+      ),
+      m.intrinsic('arraypush', [queue_of(q), local(w)], AT),
+      m.intrinsic('coroyield', [m.nil_literal(AT)], AT),
+    ]
+  }
+  fn wake(w) {
+    m.intrinsic('enqueue', [m.index(local(w), key('co'), AT)], AT)
+  }
+
+  # $chan_send(ch, v): locals ch, v, w
+  let handoff = [
+    ...take_first('recvq', 2),
+    m.set_index(local(2), key('value'), local(1), AT),
+    wake(2),
+  ]
+  let send_body = m.scope(
+    0,
+    3,
+    m.make_if_else(
+      waiting('recvq'),
+      m.block(handoff, AT),
+      m.block(park('sendq', 2, local(1)), AT),
+      AT,
+    ),
+    AT,
+  )
+  # $chan_recv(ch) -> value: locals ch, w
+  let take = [
+    ...take_first('sendq', 1),
+    wake(1),
+    m.make_return(m.index(local(1), key('value'), AT), AT),
+  ]
+  let wait = [
+    ...park('recvq', 1, m.nil_literal(AT)),
+    m.make_return(m.index(local(1), key('value'), AT), AT),
+  ]
+  let recv_body = m.scope(
+    0,
+    2,
+    m.make_if_else(waiting('sendq'), m.block(take, AT), m.block(wait, AT), AT),
+    AT,
+  )
+  runtime_body[send] = send_body
+  runtime_params[send] = 2
+  runtime_locals[send] = 3
+  runtime_body[recv] = recv_body
+  runtime_params[recv] = 1
+  runtime_locals[recv] = 2
+}
+
+# `go f(a, b)`. Go evaluates the arguments at the go statement, not when the
+# goroutine runs, so they are computed here into cells of this frame -- fresh
+# ones, so a `go` inside a loop gives each goroutine its own -- and a wrapper
+# capturing those cells is what the scheduler gets.
+#
+# The cells and the capture map are built by hand rather than through the
+# Resolver: these are not bindings any Go name reaches, and the wrapper is
+# not nested in the frame that fills them. The callee travels as nothing at
+# all, because a Go func is a singleton and the wrapper builds its closure.
+fn emit_go(f, callnode, at) {
+  let name = callnode.nodes[0].token
+  if !fn_index.has(name) {
+    fail(callnode, "undefined: {name}")
+  }
+  let g = fn_index[name]
+  mut stmts = []
+  mut cmap = m.capture_map_new()
+  mut ncap = 0
+  for i, a in callnode.nodes[1].nodes.enumerate() {
+    let want = cond {
+      i < funcs[g].params.size() => type_of[funcs[g].params[i]],
+      _ => nil,
+    }
+    let (v, _) = emit_expr(f, a, hint_for(want))
+    let c = go_cells[f]
+    go_cells[f] = c + 1
+    stmts.push(m.cell_fresh(c, at))
+    stmts.push(m.assign('cell', c, copy_struct(v, want, at), at))
+    m.capture_map_push(cmap, kind: 'cell', index: c)
+    ncap += 1
+  }
+  let w = new_func("go {name}", at)
+  go_wrappers.push({w: w, g: g, ncap: ncap, at: at})
+  wrap_caps[w] = ncap
+  stmts.push(m.intrinsic(
+    'enqueue',
+    [m.intrinsic(
+      'corocreate',
+      [m.make_closure(rs.func_index(w), m.add_capture_map(cmap), at)],
+      at,
+    )],
+    at,
+  ))
+  m.block(stmts, at)
+}
+
+# Enqueue(CoroCreate(MakeClosure(f))): a func handed to the scheduler as a
+# goroutine. `go` and the bootstrap both emit this and nothing else does.
+fn spawn(caller, g, at) {
+  m.intrinsic(
+    'enqueue',
+    [m.intrinsic('corocreate', [rs.closure(m, caller, g, at)], at)],
+    at,
+  )
+}
+
+# A func's index in the module is its index here, decided when it is
+# registered, so a call can name a callee whose body is not written yet --
+# including a goroutine wrapper, which is created while the statement that
+# spawns it is being emitted. `$entry` is registered first and so is func 0,
+# which is the one CodeGen runs.
+fn build(mm, root) {
+  m = mm
+  rs = CodeGen.Resolver.new()
+  let boot = new_func('$entry', root)
+  collect(root)
+  chan_runtime()
+
+  mut bodies = {}
+  # `go` appends wrappers as it goes, so this walks by index rather than
+  # over a snapshot
+  mut f = 0
+  while f < funcs.size() {
+    if f != boot && !runtime_body.has(f) && funcs[f].body != nil {
+      bodies[f] = emit_body(f)
+    }
+    f += 1
+  }
+  # a wrapper calls the callee with the cells its `go` filled, which arrive
+  # as its own captures
+  for gw in go_wrappers {
+    mut args = []
+    for i in range(gw.ncap) {
+      args.push(m.var_ref('capture', i, gw.at))
+    }
+    bodies[gw.w] = rs.call(m, gw.w, gw.g, args, gw.at)
+  }
+  # Go's main is a goroutine: it may block on a channel, and the entry frame
+  # is not one -- a yield there has no coroutine to suspend. So func 0 spawns
+  # main and returns, and the scheduler drains the queue from there. Its
+  # end-of-run deadlock check is Go's "all goroutines are asleep".
+  bodies[boot] = spawn(boot, fn_index['main'], root)
+
+  rs.close_over_calls()
+  rs.number_captures()
+
+  for g in range(funcs.size()) {
+    let is_rt = runtime_body.has(g)
+    let is_wrap = wrap_caps.has(g)
+    m.add_func(
+      name: funcs[g].name,
+      num_locals: cond {
+        is_rt => runtime_locals[g],
+        _ => nslots[g],
+      },
+      # a goroutine wrapper's captures are the cells its `go` built by hand,
+      # so the Resolver never saw them
+      num_captures: cond {
+        is_wrap => wrap_caps[g],
+        _ => rs.num_captures(g),
+      },
+      num_cells: cond {
+        is_rt || is_wrap => 0,
+        _ => go_cells[g],
+      },
+      num_params: cond {
+        is_rt => runtime_params[g],
+        is_wrap => 0,
+        _ => funcs[g].params.size(),
+      },
+      body: cond {
+        is_rt => runtime_body[g],
+        _ => bodies[g],
+      },
+    )
+    # a Go func's closure has no identity the program can see, so every call
+    # site shares one -- but a goroutine wrapper carries its own arguments as
+    # captures, so its closure is not the same object twice
+    if !is_wrap {
+      m.set_singleton(func: g)
+    }
+    # the scheduler hands a coroutine one argument that nothing declares
+    m.set_lenient_arity(func: g)
+  }
+  m
+}
+
+let want_ir = Sys.argv.contains('--ir')
+let args = Sys.argv.filter(|a| a != '--ir')
+if args.empty() {
+  println('usage: culebra mini_go.cul [--ir] PROGRAM.go')
+  Sys.exit(1)
+}
+
+try {
+  let tree = PEG.parse(grammar, FS.read(args[0]), path: args[0])
+  let m2 = build(CodeGen.Module.new(), tree)
+  m2.verify()
+  cond {
+    want_ir => print(m2.dump_ir()),
+    _ => m2.run(),
+  }
+} catch e {
+  match e {
+    {kind: 'GoError'} => IO.eprintln("{args[0]}:{e.line}:{e.col}: {e.message}"),
+    {kind: 'PEGError'} => IO.eprintln(e.message),
+    {kind: 'IrError'} => IO.eprintln("{args[0]}:{e.line}:{e.col}: {e.message}"),
+    _ => throw e,
+  }
+  Sys.exit(1)
+}

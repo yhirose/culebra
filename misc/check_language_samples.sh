@@ -10,6 +10,8 @@
 #                 comparison is the language rather than console.log's own
 #                 rendering
 #   mini-culebra  culebra. The samples are plain culebra.
+#   mini-go       the output `go run` gives, frozen beside each sample --
+#                 the oracle is Go itself, recorded rather than re-run.
 set -u
 cd "$(dirname "$0")/.."
 CULEBRA=${CULEBRA:-./build-dev/culebra}
@@ -49,8 +51,13 @@ case "${1:-}" in
     }
     want() { "$CULEBRA" "$ENGINE" "$1"; }
     ;;
+  mini-go)
+    set -- examples/languages/mini-go/samples/*.go
+    got() { "$CULEBRA" "$ENGINE" examples/languages/mini-go/mini_go.cul "$1"; }
+    want() { cat "${1%.go}.txt"; }
+    ;;
   *)
-    echo "usage: $0 pl0|mini-js|mini-culebra" >&2
+    echo "usage: $0 pl0|mini-js|mini-culebra|mini-go" >&2
     exit 2
     ;;
 esac

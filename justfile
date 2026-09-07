@@ -844,7 +844,7 @@ _run-tests BACKEND:
         # The three arms in parallel, not one after another: each alone
         # under-fills the box (pl0's eight samples cannot use twenty cores),
         # and the whole phase then costs about what its longest arm does.
-        local arms=(pl0 mini-culebra)
+        local arms=(pl0 mini-culebra mini-go)
         if command -v node >/dev/null 2>&1; then
             arms+=(mini-js)
         else

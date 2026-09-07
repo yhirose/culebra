@@ -1,0 +1,9 @@
+ababab
+6
+0
+true
+false
+true
+true
+tab:	newline-next:
+quote:"backslash:\
