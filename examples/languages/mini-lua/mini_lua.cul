@@ -411,11 +411,25 @@ fn runtime() {
   rt_func('__newtable', 0, 0, fn (f) {
     ret(m.intrinsic('mapnew', [], AT))
   })
+  # A table's keys are the values themselves -- the Map is value-keyed, so
+  # `t[1]` and `t["1"]` are already different slots. The one rule to apply
+  # is Lua's: a float with no fraction is the same key as the integer, so
+  # `t[1.0]` overwrites `t[1]`.
   rt_func('__key', 1, 1, fn (f) {
     ret(m.make_if_else(
-      is_type(L(0), 'string'),
-      m.binary('add', S('s'), L(0), AT),
-      m.binary('add', S('n'), m.intrinsic('tostr', [L(0)], AT), AT),
+      is_type(L(0), 'double'),
+      m.make_if_else(
+        m.binary(
+          'eq',
+          m.intrinsic('todouble', [m.intrinsic('toint', [L(0)], AT)], AT),
+          L(0),
+          AT,
+        ),
+        m.intrinsic('toint', [L(0)], AT),
+        L(0),
+        AT,
+      ),
+      L(0),
       AT,
     ))
   })
@@ -433,8 +447,24 @@ fn runtime() {
       AT,
     )
   })
+  # assigning nil removes the key, which is what makes `#t` and `pairs`
+  # agree with Lua after `t[2] = nil`
   rt_func('__set', 3, 3, fn (f) {
-    ret(m.set_index(L(0), call_rt(f, '__key', [L(1)], AT), L(2), AT))
+    m.block(
+      [
+        m.make_if(
+          is_type(L(2), 'nil'),
+          ret(m.intrinsic(
+            'objectremove',
+            [L(0), call_rt(f, '__key', [L(1)], AT)],
+            AT,
+          )),
+          AT,
+        ),
+        ret(m.set_index(L(0), call_rt(f, '__key', [L(1)], AT), L(2), AT)),
+      ],
+      AT,
+    )
   })
   # `#t` counts from 1 until the first hole; `#s` is the string's length
   rt_func('__len', 1, 2, fn (f) {
@@ -786,15 +816,124 @@ fn declare(f, name, node) {
 # single-value position takes element 0. The cost is an array per call; the
 # alternative is a second return channel the IR does not have.
 #
-# A Lua table is an Object whose keys carry their own type -- `t[1]` and
-# `t["1"]` are different keys, so a number key is stored under "n:1" and a
-# string under "s:1". The prelude does that encoding; the binder only ever
-# calls __get/__set.
+# A Lua table is a value-keyed Map, so `t[1]` and `t["1"]` are different
+# slots with no encoding to do. The binder only ever calls __get / __set,
+# which apply the one rule the Map does not: 1.0 is the key 1.
 
 # Every helper above answers one value; a Lua call answers a list. One
 # adapter per library name bridges the two, and the same adapter is what
 # both the library table and the string metatable hold.
 mut adapters = []
+
+# `pairs` and `ipairs` answer three values each, so they are written in the
+# Lua convention directly rather than through an adapter over a helper that
+# answers one. So are the two steppers they hand back.
+fn luafn(gname, nlocals, build) {
+  let fid = new_func("lua {gname}", nil, root_fn)
+  globals_fn["lua:{gname}"] = fid
+  rt_params[fid] = 1
+  rt_locals[fid] = nlocals
+  rt_pending.push((fid, build))
+  fid
+}
+
+# A generic `for` calls `it(state, control)` until the first value is nil.
+# ipairs walks 1, 2, 3 until a hole; pairs walks the keys the table has now,
+# with the walk's own position kept in the state rather than recovered from
+# the control -- which keeps a step O(1) instead of a search.
+fn register_iterators() {
+  luafn('$inext', 3, fn (f) {
+    m.block(
+      [
+        m.assign(
+          'local',
+          1,
+          m.binary('add', nth(f, L(0), 1, AT), m.literal(1, AT), AT),
+          AT,
+        ),
+        m.assign(
+          'local',
+          2,
+          call_rt(f, '__get', [nth(f, L(0), 0, AT), L(1)], AT),
+          AT,
+        ),
+        m.make_if(
+          is_type(L(2), 'nil'),
+          m.make_return(m.array_lit([], AT), AT),
+          AT,
+        ),
+        m.make_return(m.array_lit([L(1), L(2)], AT), AT),
+      ],
+      AT,
+    )
+  })
+  luafn('$knext', 5, fn (f) {
+    m.block(
+      [
+        m.assign('local', 1, nth(f, L(0), 0, AT), AT),
+        m.assign('local', 2, m.index(L(1), S('keys'), AT), AT),
+        m.assign('local', 3, m.index(L(1), S('i'), AT), AT),
+        m.make_if(
+          m.binary('ge', L(3), m.intrinsic('len', [L(2)], AT), AT),
+          m.make_return(m.array_lit([], AT), AT),
+          AT,
+        ),
+        m.assign('local', 4, m.index(L(2), L(3), AT), AT),
+        m.set_index(
+          L(1),
+          S('i'),
+          m.binary('add', L(3), m.literal(1, AT), AT),
+          AT,
+        ),
+        m.make_return(
+          m.array_lit([L(4), m.index(m.index(L(1), S('t'), AT), L(4), AT)], AT),
+          AT,
+        ),
+      ],
+      AT,
+    )
+  })
+  luafn('ipairs', 1, fn (f) {
+    m.make_return(
+      m.array_lit(
+        [
+          rs.closure(m, f, globals_fn['lua:$inext'], AT),
+          nth(f, L(0), 0, AT),
+          m.literal(0, AT),
+        ],
+        AT,
+      ),
+      AT,
+    )
+  })
+  luafn('pairs', 2, fn (f) {
+    m.block(
+      [
+        m.assign('local', 1, m.intrinsic('mapnew', [], AT), AT),
+        m.set_index(L(1), S('t'), nth(f, L(0), 0, AT), AT),
+        m.set_index(L(1), S('i'), m.literal(0, AT), AT),
+        m.set_index(
+          L(1),
+          S('keys'),
+          m.intrinsic('objectkeys', [nth(f, L(0), 0, AT)], AT),
+          AT,
+        ),
+        m.make_return(
+          m.array_lit(
+            [
+              rs.closure(m, f, globals_fn['lua:$knext'], AT),
+              L(1),
+              m.nil_literal(AT),
+            ],
+            AT,
+          ),
+          AT,
+        ),
+      ],
+      AT,
+    )
+  })
+}
 
 fn adapter(gname, helper, arity) {
   let fid = new_func("lua {gname}", nil, root_fn)
@@ -821,7 +960,10 @@ let lib_tables = [
 ]
 let lib_globals = [('type', '__type', 1), ('tostring', '__str', 1)]
 
+let lua_raw = ['ipairs', 'pairs']
+
 fn register_library() {
+  register_iterators()
   for (gname, helper, arity) in lib_globals {
     adapter(gname, helper, arity)
   }
@@ -901,6 +1043,14 @@ fn emit_library() {
     rs.closure(m, root_fn, pf, AT),
     AT,
   ))
+  for gname in lua_raw {
+    ids.push(m.set_index(
+      genv(root_fn, AT),
+      S(gname),
+      rs.closure(m, root_fn, globals_fn["lua:{gname}"], AT),
+      AT,
+    ))
+  }
   for (tname, entries) in lib_tables {
     let t = new_scratch(root_fn)
     ids.push(m.assign('local', t, m.intrinsic('mapnew', [], AT), AT))
@@ -1156,6 +1306,15 @@ fn scan_stmt(f, node) {
       enter_scope(f)
       scan_block(f, blk)
       scan_expr(f, c)
+      leave_scope(f)
+    },
+    {name: 'forin', nodes: [namelist, exprlist, blk]} => {
+      scan_exprs(f, exprlist)
+      enter_scope(f)
+      for id in namelist.nodes {
+        scan_declare(f, id)
+      }
+      scan_block(f, blk)
       leave_scope(f)
     },
     {name: 'fornum', nodes} => {
@@ -1692,6 +1851,83 @@ fn emit_stmt(f, node) {
           ],
           node,
         ),
+        node,
+      ))
+      m.block(ids, node)
+    },
+    # `for k, v in explist`: the list answers an iterator, a state and a
+    # control, and each turn calls the iterator with the last two. The loop
+    # ends the moment the first value back is nil.
+    {name: 'forin', nodes: [namelist, exprlist, blk]} => {
+      let vs = new_scratch(f)
+      let it = new_scratch(f)
+      let st = new_scratch(f)
+      let ct = new_scratch(f)
+      mut ids = [
+        m.assign('local', vs, emit_multi(f, exprlist.nodes, node), node),
+        m.assign(
+          'local',
+          it,
+          nth(f, m.var_ref('local', vs, node), 0, node),
+          node,
+        ),
+        m.assign(
+          'local',
+          st,
+          nth(f, m.var_ref('local', vs, node), 1, node),
+          node,
+        ),
+        m.assign(
+          'local',
+          ct,
+          nth(f, m.var_ref('local', vs, node), 2, node),
+          node,
+        ),
+      ]
+      mut step = [
+        m.assign(
+          'local',
+          vs,
+          m.call_value(
+            m.var_ref('local', it, node),
+            [m.array_lit(
+              [m.var_ref('local', st, node), m.var_ref('local', ct, node)],
+              node,
+            )],
+            node,
+          ),
+          node,
+        ),
+        m.assign(
+          'local',
+          ct,
+          nth(f, m.var_ref('local', vs, node), 0, node),
+          node,
+        ),
+        m.make_if(
+          is_type(m.var_ref('local', ct, node), 'nil'),
+          m.make_break(node),
+          node,
+        ),
+      ]
+      for i, id in namelist.nodes.enumerate() {
+        let v = decl_v[pkey(id)]
+        # a closure made in the body keeps that turn's binding
+        if rs.access_kind(f, v) == 'cell' {
+          step.push(m.cell_fresh(rs.cell_of(f, v), id))
+        }
+        step.push(rs.write(
+          m,
+          f,
+          v,
+          nth(f, m.var_ref('local', vs, node), i, node),
+          id,
+        ))
+      }
+      step.push(emit_block(f, blk))
+      ids.push(m.make_while(
+        m.bool_literal(true, node),
+        m.block(step, node),
         node,
       ))
       m.block(ids, node)
