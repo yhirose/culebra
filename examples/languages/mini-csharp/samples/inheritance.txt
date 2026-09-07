@@ -1,0 +1,9 @@
+6
+12
+16
+rect with area 6
+circle of radius 2
+square: rect with area 16
+rect
+rect
+34

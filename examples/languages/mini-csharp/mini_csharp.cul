@@ -32,11 +32,13 @@ let grammar = `
                 member* '}' _                                { no_ast_opt }
   typarams   <- '<' _ ident (',' _ ident)* '>' _             { no_ast_opt }
   baselist   <- ':' _ typeref _ (',' _ typeref _)*               { no_ast_opt }
-  modifier   <- < 'public' / 'private' / 'static' / 'abstract' / 'virtual'
-               / 'override' / 'sealed' / 'readonly' > __
+  modifier   <- < 'public' / 'private' / 'protected' / 'static' / 'abstract'
+               / 'virtual' / 'override' / 'sealed' / 'readonly' > __
 
   member     <- ctordecl / methoddecl / fielddecl
-  ctordecl   <- modifier* ident '(' _ params ')' _ block   { no_ast_opt }
+  ctordecl   <- modifier* ident '(' _ params ')' _ ctorinit? block
+                                                             { no_ast_opt }
+  ctorinit   <- ':' _ 'base' _ '(' _ args ')' _              { no_ast_opt }
   methoddecl <- modifier* typeref _ ident typarams? '(' _ params ')' _ block   { no_ast_opt }
   fielddecl  <- modifier* typeref _ ident ('=' ![=] _ expr)? ';' _   { no_ast_opt }
   params     <- (param (',' _ param)*)? _                    { no_ast_opt }
@@ -102,12 +104,13 @@ let grammar = `
   args       <- (expr (',' _ expr)*)? _                      { no_ast_opt }
 
   primary    <- newarray / newobj / interp / real / integer / str / charlit
-              / boollit / nulllit / thisref / paren / ident
+              / boollit / nulllit / thisref / baseref / paren / ident
   newarray   <- 'new' __ typename '[' _ expr? ']' _ arrayinit?   { no_ast_opt }
   arrayinit  <- '{' _ (expr (',' _ expr)*)? ','? _ '}' _     { no_ast_opt }
   newobj     <- 'new' __ typename _ '(' _ args ')' _   { no_ast_opt }
   paren      <- '(' _ expr ')' _                             { no_ast_opt }
   thisref    <- < 'this' > ![a-zA-Z0-9_] _
+  baseref    <- < 'base' > ![a-zA-Z0-9_] _
 
   interp     <- '$"' interppart* '"' _                       { no_ast_opt }
   interppart <- '{' _ expr '}' / interptext
@@ -123,7 +126,8 @@ let grammar = `
   ~keyword   <- ('abstract' / 'base' / 'break' / 'catch' / 'class'
                / 'continue' / 'else' / 'false' / 'finally' / 'foreach'
                / 'for' / 'if' / 'in' / 'new' / 'null' / 'override'
-               / 'private' / 'public' / 'readonly' / 'return' / 'sealed'
+               / 'private' / 'protected' / 'public' / 'readonly' / 'return'
+               / 'sealed'
                / 'static' / 'this' / 'throw' / 'true' / 'try' / 'using'
                / 'virtual' / 'while') ![a-zA-Z0-9_]
 
@@ -376,6 +380,35 @@ fn runtime() {
     ))
   })
 
+  # `new T[n]` is n slots that hold nothing yet; the IR builds an array by
+  # pushing, so the length is a loop.
+  rt_func('$newarr', 1, 3, fn (f) {
+    m.block(
+      [
+        m.assign('local', 1, m.array_lit([], AT), AT),
+        m.assign('local', 2, m.literal(0, AT), AT),
+        m.make_while(
+          m.binary('lt', L(2), L(0), AT),
+          m.block(
+            [
+              m.intrinsic('arraypush', [L(1), m.nil_literal(AT)], AT),
+              m.assign(
+                'local',
+                2,
+                m.binary('add', L(2), m.literal(1, AT), AT),
+                AT,
+              ),
+            ],
+            AT,
+          ),
+          AT,
+        ),
+        ret(L(1)),
+      ],
+      AT,
+    )
+  })
+
   # Substring(start, length), where the IR's slice takes an end
   rt_func('$substr', 3, 3, fn (f) {
     ret(m.intrinsic(
@@ -407,17 +440,18 @@ fn upper_byte(b) {
 # pass opens the scopes and records what every name means; the emit pass
 # below reads that back and never touches a scope.
 
-mut name_v = {}        # a name -> the binding it means, -1 for anything else
-mut decl_v = {}        # a declaring name -> the binding it makes
-mut methods = {}       # "Class.Method" -> its func id
-mut method_of = {}     # a method body -> its func id
-mut class_names = {}   # every declared class name
-mut ctor_of = {}       # a class -> the func its `new` calls, or -1
-mut fields_of = {}     # a class -> the instance field names it declares
-mut statics_of = {}    # a class -> the static field names it declares
-mut base_of = {}       # a class -> the class it extends, or nil
-mut this_v = {}        # an instance method -> the binding of its `this`
-mut method_class = {}  # a func -> the class whose member it is
+mut name_v = {}         # a name -> the binding it means, -1 for anything else
+mut decl_v = {}         # a declaring name -> the binding it makes
+mut methods = {}        # "Class.Method" -> its func id
+mut method_of = {}      # a method body -> its func id
+mut class_names = {}    # every declared class name
+mut ctor_of = {}        # a class -> the func its `new` calls, or -1
+mut fields_of = {}      # a class -> the instance field names it declares
+mut statics_of = {}     # a class -> the static field names it declares
+mut base_of = {}        # a class -> the class it extends, or nil
+mut this_v = {}         # an instance method -> the binding of its `this`
+mut method_class = {}   # a func -> the class whose member it is
+mut static_method = {}  # a func -> whether it takes no `this`
 
 # A class is a Map the entry builds: its name, the class above it, and its
 # methods by name. An object is a Map of its fields with that class under a
@@ -479,9 +513,12 @@ fn scan_name(f, id) {
 # file -- which C# allows and the walk below would not.
 
 fn collect(root) {
+  # every name first, so a class may extend one declared later in the file
+  for cls in class_decls(root) {
+    class_names[class_name(cls)] = true
+  }
   for cls in class_decls(root) {
     let cname = class_name(cls)
-    class_names[cname] = true
     fields_of[cname] = []
     statics_of[cname] = []
     field_decls_of[cname] = []
@@ -503,6 +540,7 @@ fn collect(root) {
           methods["{cname}.{mname}"] = g
           method_of[pkey(mem)] = g
           method_class[g] = cname
+          static_method[g] = is_static(mem)
           # an instance method takes `this` ahead of what it declares
           funcs[g].nparams = params_of(mem).size() + cond {
             is_static(mem) => 0,
@@ -536,7 +574,7 @@ fn is_static(mem) {
 fn base_name(cls) {
   for c in cls.nodes {
     if c.name == 'baselist' {
-      let n = c.nodes[0].nodes[0].token
+      let n = type_token(c.nodes[0].nodes[0])
       return cond {
         class_names.has(n) => n,
         _ => nil,
@@ -582,6 +620,12 @@ fn field_decls(cname) {
   field_decls_of[cname]
 }
 
+# A type's capture takes in the space the ident inside it consumed, which
+# is the one place a token here is not the text it names.
+fn type_token(node) {
+  node.token.trim()
+}
+
 fn class_name(cls) {
   for c in cls.nodes {
     if c.name == 'ident' {
@@ -622,6 +666,17 @@ fn member_name(mem) {
 
 # A field is modifiers, a type, its name and possibly an initialiser. The
 # type is what tells the name apart from the modifiers, which are idents too.
+# `Ctor(...) : base(...)`, which runs the constructor above this one over
+# the same object before the body does anything.
+fn ctor_init(mem) {
+  for c in mem.nodes {
+    if c.name == 'ctorinit' {
+      return c
+    }
+  }
+  nil
+}
+
 fn field_init(mem) {
   let ns = mem.nodes
   for i in range(ns.size()) {
@@ -660,6 +715,12 @@ fn scan_program(root) {
       }
       for prm in params_of(mem) {
         scan_declare(g, prm.nodes[prm.nodes.size() - 1])
+      }
+      let ini = ctor_init(mem)
+      if ini != nil {
+        for a in arg_nodes(ini) {
+          scan_expr(g, a)
+        }
       }
       scan_block(g, body_of(mem))
       leave_scope(g)
@@ -744,10 +805,11 @@ fn scan_expr(f, node) {
     {name: 'boollit'} => nil,
     {name: 'nulllit'} => nil,
     {name: 'thisref'} => nil,
+    {name: 'baseref'} => nil,
     {name: 'interptext'} => nil,
     {name: 'ident'} => scan_name(f, node),
     {name: 'newobj', nodes} => {
-      rs.use(class_var[nodes[0].token], f)
+      rs.use(class_var[type_token(nodes[0])], f)
       for a in arg_nodes(nodes[nodes.size() - 1]) {
         scan_expr(f, a)
       }
@@ -807,6 +869,7 @@ fn emit_expr(f, node) {
     {name: 'nulllit'} => m.nil_literal(node),
     {name: 'thisref'} => this_ref(f, node),
     {name: 'newobj', nodes} => emit_new(f, nodes, node),
+    {name: 'newarray', nodes} => emit_new_array(f, nodes, node),
     {name: 'ident'} => emit_name(f, node, node),
     {name: 'paren', nodes: [inner]} => emit_expr(f, inner),
     {name: 'notexp', nodes: [inner]} => negate_at(emit_expr(f, inner), node),
@@ -839,10 +902,27 @@ fn emit_expr(f, node) {
   }
 }
 
+# `new T[n]`, and `new T[]{a, b}` which says what is in it instead.
+fn emit_new_array(f, nodes, at) {
+  for c in nodes {
+    if c.name == 'arrayinit' {
+      mut xs = []
+      for e in c.nodes {
+        xs.push(emit_expr(f, e))
+      }
+      return m.array_lit(xs, at)
+    }
+  }
+  cond {
+    nodes.size() > 1 => call_rt(f, '$newarr', [emit_expr(f, nodes[1])], at),
+    _ => m.array_lit([], at),
+  }
+}
+
 # `new C(a)` makes the Map, stamps its class on it, gives every field the
 # class declares a slot, and runs the constructor over it.
 fn emit_new(f, nodes, at) {
-  let cname = nodes[0].token
+  let cname = type_token(nodes[0])
   if !class_names.has(cname) {
     fail(at, "no class '{cname}'")
   }
@@ -1089,6 +1169,26 @@ fn emit_args(f, sfx) {
 # leading nodes it consumed.
 fn static_head(f, nodes) {
   let n = nodes.size()
+  # `base.M(a)`: the method above this one, named rather than found
+  if n >= 3 &&
+      nodes[0].name == 'baseref' &&
+      nodes[1].name == 'membersfx' &&
+      nodes[2].name == 'callsfx' {
+    let g = find_method(base_of[current_class], nodes[1].nodes[0].token)
+    if g == -1 {
+      fail(nodes[1], "no method '{nodes[1].nodes[0].token}' above here")
+    }
+    return {
+      taken: 3,
+      value: rs.call(
+        m,
+        f,
+        g,
+        [this_ref(f, nodes[2]), ...emit_args(f, nodes[2])],
+        nodes[2],
+      ),
+    }
+  }
   if n >= 3 &&
       nodes[0].name == 'ident' &&
       nodes[1].name == 'membersfx' &&
@@ -1119,12 +1219,18 @@ fn static_head(f, nodes) {
   if n >= 2 && nodes[0].name == 'ident' && nodes[1].name == 'callsfx' {
     let g = find_method(current_class, nodes[0].token)
     if g != -1 {
-      let args = emit_args(f, nodes[1])
-      return {taken: 2, value: rs.call(m, f, g, cond {
-        this_v.has(f) &&
-          funcs[g].nparams > args.size() => [this_ref(f, nodes[1]), ...args],
-        _ => args,
-      }, nodes[1])}
+      # An instance method reached without a receiver still runs against
+      # `this`, and still dispatches on it: `virtual` means the object
+      # decides, whether or not the call site wrote the object down.
+      return {taken: 2, value: cond {
+        static_method[g] => rs.call(m, f, g, emit_args(f, nodes[1]), nodes[1]),
+        _ => emit_method_call(
+          f,
+          this_ref(f, nodes[1]),
+          nodes[0].token,
+          nodes[1],
+        ),
+      }}
     }
   }
   {taken: 0, value: nil}
@@ -1272,26 +1378,29 @@ fn emit_assign(f, target, op, value, at) {
   # read
   let parts = target.nodes
   let last = parts[parts.size() - 1]
-  if last.name != 'membersfx' {
-    fail(at, 'can only assign to a name or a field')
+  if !['membersfx', 'indexsfx'].contains(last.name) {
+    fail(at, 'can only assign to a name, a field or an element')
   }
   let slot = new_scratch(f)
-  mut base = emit_expr(f, parts[0])
-  for i in range(1, parts.size() - 1) {
-    base = emit_member(f, base, parts[i].nodes[0].token, parts[i])
+  let ks = new_scratch(f)
+  let recv = emit_suffixed(f, parts.slice(0, parts.size() - 1), at)
+  let key = cond {
+    last.name == 'membersfx' => m.str_literal(last.nodes[0].token, at),
+    _ => emit_expr(f, last.nodes[0]),
   }
-  let name = last.nodes[0].token
+  let r = m.var_ref('local', slot, at)
+  let k = m.var_ref('local', ks, at)
   m.block([m.assign(
     'local',
     slot,
-    base,
+    recv,
     at,
-  ), m.set_index(m.var_ref('local', slot, at), m.str_literal(name, at), cond {
+  ), m.assign('local', ks, key, at), m.set_index(r, k, cond {
     op.token == '=' => emit_expr(f, value),
     _ => combine(
       f,
       op,
-      m.index(m.var_ref('local', slot, at), m.str_literal(name, at), at),
+      m.index(m.var_ref('local', slot, at), m.var_ref('local', ks, at), at),
       value,
       at,
     ),
@@ -1353,6 +1462,17 @@ fn build(mm, root) {
             m.var_ref('local', i + base, id),
             id,
           ))
+        }
+        let ini = ctor_init(mem)
+        if ini != nil && base_of[current_class] != nil {
+          let up = ctor_of[base_of[current_class]]
+          if up != -1 {
+            mut cargs = [this_ref(g, ini)]
+            for a in arg_nodes(ini) {
+              cargs.push(emit_expr(g, a))
+            }
+            ids.push(rs.call(m, g, up, cargs, ini))
+          }
         }
         ids.push(emit_block(g, body_of(mem)))
         ids.push(m.make_return(m.nil_literal(AT), AT))
