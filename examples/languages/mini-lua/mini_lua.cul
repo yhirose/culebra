@@ -137,8 +137,11 @@ fn fail(node, msg) {
 # another and a call names its callee's index as it builds the node.
 mut rt_pending = []
 
+# A helper's parent is the root frame, so the one that reads the string
+# metatable can capture it. Every other helper is capture-free and stays a
+# singleton -- `set_singleton` is gated on the capture count, not on this.
 fn rt_func(name, nparams, nlocals, build) {
-  let f = new_func(name, nil, nil)
+  let f = new_func(name, nil, root_fn)
   globals_fn[name] = f
   rt_params[f] = nparams
   rt_locals[f] = nlocals
@@ -158,6 +161,35 @@ fn L(i) {
 
 fn S(v) {
   m.str_literal(v, AT)
+}
+
+# 'a'..'z' is 97..122; subtracting 32 is the same letter in upper case.
+fn uppercase_byte(b) {
+  m.make_if_else(
+    m.make_if_else(
+      m.binary('ge', b, m.literal(97, AT), AT),
+      m.binary('le', b, m.literal(122, AT), AT),
+      m.bool_literal(false, AT),
+      AT,
+    ),
+    m.binary('sub', b, m.literal(32, AT), AT),
+    b,
+    AT,
+  )
+}
+
+# `s:upper()` and `("x"):rep(3)`, as a chain over the names string.* has.
+fn str_method(f, key) {
+  mut acc = m.nil_literal(AT)
+  for (gname, helper, arity) in string_lib {
+    acc = m.make_if_else(
+      m.binary('eq', key, S(gname), AT),
+      rs.closure(m, f, globals_fn["lua:string.{gname}"], AT),
+      acc,
+      AT,
+    )
+  }
+  acc
 }
 
 fn is_type(v, t) {
@@ -387,8 +419,19 @@ fn runtime() {
       AT,
     ))
   })
+  # Every string shares one metatable in Lua, whose __index is the string
+  # library. Lua keeps that metatable in the registry rather than on the
+  # value, and the IR has no module-level storage to answer it the same way.
+  # The library is a closed set here, so the lookup is written out: no
+  # registry, and no binding for a helper to capture.
   rt_func('__get', 2, 2, fn (f) {
-    ret(m.index(L(0), call_rt(f, '__key', [L(1)], AT), AT))
+    m.block(
+      [
+        m.make_if(is_type(L(0), 'string'), ret(str_method(f, L(1))), AT),
+        ret(m.index(L(0), call_rt(f, '__key', [L(1)], AT), AT)),
+      ],
+      AT,
+    )
   })
   rt_func('__set', 3, 3, fn (f) {
     ret(m.set_index(L(0), call_rt(f, '__key', [L(1)], AT), L(2), AT))
@@ -440,6 +483,236 @@ fn runtime() {
       AT,
     )
   })
+  # A Lua call hands over one list and gets one back, so building an
+  # argument list is appending one list to another, and reading a value out
+  # of either is a read that answers nil past the end -- Lua's rule for both
+  # a missing argument and a value the callee did not return.
+  rt_func('__append', 2, 3, fn (f) {
+    m.block(
+      [
+        m.assign('local', 2, m.literal(0, AT), AT),
+        m.make_while(
+          m.binary('lt', L(2), m.intrinsic('len', [L(1)], AT), AT),
+          m.block(
+            [
+              m.intrinsic('arraypush', [L(0), m.index(L(1), L(2), AT)], AT),
+              m.assign(
+                'local',
+                2,
+                m.binary('add', L(2), m.literal(1, AT), AT),
+                AT,
+              ),
+            ],
+            AT,
+          ),
+          AT,
+        ),
+        ret(L(0)),
+      ],
+      AT,
+    )
+  })
+  rt_func('__nth', 2, 2, fn (f) {
+    ret(m.make_if_else(
+      m.binary('lt', L(1), m.intrinsic('len', [L(0)], AT), AT),
+      m.index(L(0), L(1), AT),
+      m.nil_literal(AT),
+      AT,
+    ))
+  })
+  # `{f()}` puts every value f answered into the table, from `start` on
+  rt_func('__spread', 3, 4, fn (f) {
+    m.block(
+      [
+        m.assign('local', 3, m.literal(0, AT), AT),
+        m.make_while(
+          m.binary('lt', L(3), m.intrinsic('len', [L(2)], AT), AT),
+          m.block(
+            [
+              call_rt(
+                f,
+                '__set',
+                [
+                  L(0),
+                  m.binary('add', L(1), L(3), AT),
+                  m.index(L(2), L(3), AT),
+                ],
+                AT,
+              ),
+              m.assign(
+                'local',
+                3,
+                m.binary('add', L(3), m.literal(1, AT), AT),
+                AT,
+              ),
+            ],
+            AT,
+          ),
+          AT,
+        ),
+        ret(L(0)),
+      ],
+      AT,
+    )
+  })
+
+  # --- the standard-library slice the samples reach --------------------
+  #
+  # Each is a plain helper answering one value; the adapters below wrap them
+  # into the return list a Lua call expects.
+
+  # string.upper / string.sub, over the VM's byte view of a string
+  rt_func('__strupper', 1, 4, fn (f) {
+    m.block(
+      [
+        m.assign('local', 1, S(''), AT),
+        m.assign('local', 2, m.literal(0, AT), AT),
+        m.assign('local', 3, m.intrinsic('len', [L(0)], AT), AT),
+        m.make_while(
+          m.binary('lt', L(2), L(3), AT),
+          m.block(
+            [
+              m.assign(
+                'local',
+                1,
+                m.binary(
+                  'add',
+                  L(1),
+                  m.intrinsic(
+                    'strfrombyte',
+                    [uppercase_byte(m.intrinsic('strbyte', [L(0), L(2)], AT))],
+                    AT,
+                  ),
+                  AT,
+                ),
+                AT,
+              ),
+              m.assign(
+                'local',
+                2,
+                m.binary('add', L(2), m.literal(1, AT), AT),
+                AT,
+              ),
+            ],
+            AT,
+          ),
+          AT,
+        ),
+        ret(L(1)),
+      ],
+      AT,
+    )
+  })
+  # Lua's string.sub is 1-based and inclusive at both ends. A missing end
+  # runs to the string's, and a negative start counts back from it.
+  rt_func('__strsub', 3, 4, fn (f) {
+    m.block(
+      [
+        m.assign('local', 3, m.intrinsic('len', [L(0)], AT), AT),
+        ret(m.intrinsic(
+          'strslice',
+          [
+            L(0),
+            m.make_if_else(
+              m.binary('lt', L(1), m.literal(0, AT), AT),
+              m.binary('add', L(3), L(1), AT),
+              m.binary('sub', L(1), m.literal(1, AT), AT),
+              AT,
+            ),
+            m.make_if_else(is_type(L(2), 'nil'), L(3), L(2), AT),
+          ],
+          AT,
+        )),
+      ],
+      AT,
+    )
+  })
+  rt_func('__strrep', 2, 4, fn (f) {
+    m.block(
+      [
+        m.assign('local', 2, S(''), AT),
+        m.assign('local', 3, m.literal(0, AT), AT),
+        m.make_while(
+          m.binary('lt', L(3), L(1), AT),
+          m.block(
+            [
+              m.assign('local', 2, m.binary('add', L(2), L(0), AT), AT),
+              m.assign(
+                'local',
+                3,
+                m.binary('add', L(3), m.literal(1, AT), AT),
+                AT,
+              ),
+            ],
+            AT,
+          ),
+          AT,
+        ),
+        ret(L(2)),
+      ],
+      AT,
+    )
+  })
+  # table.insert(t, v) appends; table.concat(t, sep) joins 1..#t
+  rt_func('__tabinsert', 2, 2, fn (f) {
+    ret(call_rt(
+      f,
+      '__set',
+      [
+        L(0),
+        m.binary('add', call_rt(f, '__len', [L(0)], AT), m.literal(1, AT), AT),
+        L(1),
+      ],
+      AT,
+    ))
+  })
+  rt_func('__tabconcat', 2, 4, fn (f) {
+    m.block(
+      [
+        m.assign('local', 2, S(''), AT),
+        m.assign('local', 3, m.literal(1, AT), AT),
+        m.make_while(
+          m.binary('le', L(3), call_rt(f, '__len', [L(0)], AT), AT),
+          m.block(
+            [
+              m.make_if(
+                m.binary('gt', L(3), m.literal(1, AT), AT),
+                m.assign('local', 2, m.binary('add', L(2), L(1), AT), AT),
+                AT,
+              ),
+              m.assign(
+                'local',
+                2,
+                m.binary(
+                  'add',
+                  L(2),
+                  call_rt(
+                    f,
+                    '__str',
+                    [call_rt(f, '__get', [L(0), L(3)], AT)],
+                    AT,
+                  ),
+                  AT,
+                ),
+                AT,
+              ),
+              m.assign(
+                'local',
+                3,
+                m.binary('add', L(3), m.literal(1, AT), AT),
+                AT,
+              ),
+            ],
+            AT,
+          ),
+          AT,
+        ),
+        ret(L(2)),
+      ],
+      AT,
+    )
+  })
+
   # `math.type` separates the two Lua number types the VM already keeps apart
   rt_func('__mathtype', 1, 2, fn (f) {
     m.block(
@@ -461,7 +734,6 @@ mut rs = nil
 mut funcs = []       # per func: {name, params, body, node}
 mut nslots = []      # per func: locals handed out
 mut scope_base = []  # per func: where its own scopes start on the one stack
-mut globals = {}     # Lua global name -> the cell in the root frame
 mut root_fn = -1
 mut g_var = -1       # the root frame's binding for the globals table
 mut globals_fn = {}  # prelude func name -> its func id
@@ -507,16 +779,6 @@ fn declare(f, name, node) {
   v
 }
 
-# A name is local if any open scope binds it, and a global otherwise --
-# Lua's rule, and the reason there is no declaration for a global.
-fn resolve(f, name) {
-  let v = rs.lookup(name)
-  cond {
-    v != -1 => {kind: 'local', v: v},
-    _ => {kind: 'global', name: name},
-  }
-}
-
 # --- Values -----------------------------------------------------------------
 #
 # A Lua function returns a list of values, because Lua's calling convention
@@ -529,6 +791,138 @@ fn resolve(f, name) {
 # string under "s:1". The prelude does that encoding; the binder only ever
 # calls __get/__set.
 
+# Every helper above answers one value; a Lua call answers a list. One
+# adapter per library name bridges the two, and the same adapter is what
+# both the library table and the string metatable hold.
+mut adapters = []
+
+fn adapter(gname, helper, arity) {
+  let fid = new_func("lua {gname}", nil, root_fn)
+  globals_fn["lua:{gname}"] = fid
+  rt_params[fid] = 1
+  rt_locals[fid] = 1
+  adapters.push((fid, helper, arity))
+  fid
+}
+
+# --- the standard-library slice the samples reach ---------------------------
+#
+# (Lua name, helper, parameters). `set_lenient_arity` fills a call that
+# passes fewer, which is what makes `s:sub(2)` reach the same __sub.
+let string_lib = [
+  ('upper', '__strupper', 1),
+  ('sub', '__strsub', 3),
+  ('rep', '__strrep', 2),
+]
+let lib_tables = [
+  ('string', string_lib),
+  ('table', [('insert', '__tabinsert', 2), ('concat', '__tabconcat', 2)]),
+  ('math', [('type', '__mathtype', 1)]),
+]
+let lib_globals = [('type', '__type', 1), ('tostring', '__str', 1)]
+
+fn register_library() {
+  for (gname, helper, arity) in lib_globals {
+    adapter(gname, helper, arity)
+  }
+  for (tname, entries) in lib_tables {
+    for (gname, helper, arity) in entries {
+      adapter("{tname}.{gname}", helper, arity)
+    }
+  }
+  let pf = new_func('print', nil, root_fn)
+  globals_fn['__print1'] = pf
+  rt_params[pf] = 1
+  rt_locals[pf] = 2
+}
+
+# The bodies, and the statements that install the names -- all after the
+# capture numbering, because each one builds a closure.
+fn emit_library() {
+  for (fid, helper, arity) in adapters {
+    mut ps = []
+    for i in range(arity) {
+      ps.push(nth(fid, L(0), i, AT))
+    }
+    rt_body[fid] = m.make_return(
+      m.array_lit([call_rt(fid, helper, ps, AT)], AT),
+      AT,
+    )
+  }
+  # print takes any number of values, which under this convention is no
+  # different from taking one list
+  let pf = globals_fn['__print1']
+  rt_body[pf] = m.block(
+    [
+      m.assign('local', 1, m.literal(0, AT), AT),
+      m.make_while(
+        m.binary('lt', L(1), m.intrinsic('len', [L(0)], AT), AT),
+        m.block(
+          [
+            m.make_if(
+              m.binary('gt', L(1), m.literal(0, AT), AT),
+              m.intrinsic('printraw', [S("\t")], AT),
+              AT,
+            ),
+            m.intrinsic(
+              'printraw',
+              [call_rt(pf, '__str', [m.index(L(0), L(1), AT)], AT)],
+              AT,
+            ),
+            m.assign(
+              'local',
+              1,
+              m.binary('add', L(1), m.literal(1, AT), AT),
+              AT,
+            ),
+          ],
+          AT,
+        ),
+        AT,
+      ),
+      m.intrinsic('printraw', [S("\n")], AT),
+      m.make_return(m.array_lit([], AT), AT),
+    ],
+    AT,
+  )
+
+  mut ids = []
+  for (gname, helper, arity) in lib_globals {
+    ids.push(m.set_index(
+      genv(root_fn, AT),
+      S(gname),
+      rs.closure(m, root_fn, globals_fn["lua:{gname}"], AT),
+      AT,
+    ))
+  }
+  ids.push(m.set_index(
+    genv(root_fn, AT),
+    S('print'),
+    rs.closure(m, root_fn, pf, AT),
+    AT,
+  ))
+  for (tname, entries) in lib_tables {
+    let t = new_scratch(root_fn)
+    ids.push(m.assign('local', t, m.intrinsic('mapnew', [], AT), AT))
+    for (gname, helper, arity) in entries {
+      let af = globals_fn["lua:{tname}.{gname}"]
+      ids.push(call_rt(
+        root_fn,
+        '__set',
+        [m.var_ref('local', t, AT), S(gname), rs.closure(m, root_fn, af, AT)],
+        AT,
+      ))
+    }
+    ids.push(m.set_index(
+      genv(root_fn, AT),
+      S(tname),
+      m.var_ref('local', t, AT),
+      AT,
+    ))
+  }
+  ids
+}
+
 fn call_rt(f, name, args, at) {
   if !globals_fn.has(name) {
     fail(at, "no runtime helper {name}")
@@ -537,7 +931,280 @@ fn call_rt(f, name, args, at) {
 }
 
 fn one(f, v, at) {
-  m.index(v, m.literal(0, at), at)
+  call_rt(f, '__nth', [v, m.literal(0, at)], at)
+}
+
+fn nth(f, v, i, at) {
+  call_rt(f, '__nth', [v, m.literal(i, at)], at)
+}
+
+# A call at the end of an expression list contributes every value it
+# answered; anywhere else it contributes its first. That is the whole of
+# Lua's multiple-value rule, and it is why an expression list is emitted as
+# one list rather than as a value each.
+fn is_call_expr(node) {
+  node.name == 'suffixedexp' &&
+    [
+      'callsfx',
+      'strargsfx',
+      'methodsfx',
+    ].contains(node.nodes[node.nodes.size() - 1].name)
+}
+
+fn emit_multi(f, exprs, at) {
+  if exprs.empty() {
+    return m.array_lit([], at)
+  }
+  let last = exprs[exprs.size() - 1]
+  mut front = []
+  for e in exprs.slice(0, exprs.size() - 1) {
+    front.push(emit_expr(f, e))
+  }
+  cond {
+    !is_call_expr(last) => m.array_lit([...front, emit_expr(f, last)], at),
+    front.empty() => emit_suffixed(f, last.nodes, last, true),
+    _ => call_rt(
+      f,
+      '__append',
+      [m.array_lit(front, at), emit_suffixed(f, last.nodes, last, true)],
+      at,
+    ),
+  }
+}
+
+# --- Pass A: scopes and names -----------------------------------------------
+#
+# A Lua function reads what an enclosing one declared, and the IR wants every
+# such read as a capture whose index is settled before any read is built. So
+# the tree is walked twice. This pass opens the scopes, declares the
+# bindings, and records which binding each name means; the emit pass below
+# reads that back and never touches a scope. They walk the same shape, which
+# is the one thing keeping them honest.
+#
+# Recording is keyed by source position, because a name occurrence is the
+# only thing at its own line and column.
+
+mut name_v = {}  # a name -> the binding it means, -1 for a global
+mut decl_v = {}  # a declaring name -> the binding it makes
+mut fn_of = {}   # a function body -> the func it becomes
+
+fn pkey(node) {
+  "{node.line}:{node.column}"
+}
+
+fn scan_declare(f, id) {
+  let v = declare(f, id.token, id)
+  decl_v[pkey(id)] = v
+  v
+}
+
+# Lua has no declaration for a global, so a name no scope binds is a key in
+# the table the root frame holds -- and naming one means capturing that table.
+fn scan_name(f, id) {
+  let v = rs.lookup(id.token)
+  name_v[pkey(id)] = v
+  rs.use(cond {
+    v != -1 => v,
+    _ => g_var,
+  }, f)
+}
+
+fn scan_closure(f, name, funcbody, at) {
+  let g = new_func(
+    cond {
+      name == nil => 'anonymous',
+      _ => name,
+    },
+    at,
+    f,
+  )
+  fn_of[pkey(funcbody)] = g
+  # slot 0 is the argument list every Lua function takes; the declared
+  # parameters are locals the prologue fills from it
+  new_scratch(g)
+  enter_scope(g)
+  for prm in funcbody.nodes[0].nodes {
+    funcs[g].params.push(scan_declare(g, prm))
+  }
+  scan_block(g, funcbody.nodes[1])
+  leave_scope(g)
+}
+
+fn scan_block(f, blk) {
+  for st in blk.nodes {
+    scan_stmt(f, st)
+  }
+}
+
+fn scan_emit_block(f, blk) {
+  enter_scope(f)
+  scan_block(f, blk)
+  leave_scope(f)
+}
+
+fn scan_exprs(f, list) {
+  for e in list.nodes {
+    scan_expr(f, e)
+  }
+}
+
+fn scan_expr(f, node) {
+  match node {
+    {name: 'number'} => nil,
+    {name: 'float'} => nil,
+    {name: 'string'} => nil,
+    {name: 'literal'} => nil,
+    {name: 'ident'} => scan_name(f, node),
+    {name: 'funcexpr', nodes: [body]} => scan_closure(f, nil, body, node),
+    {name: 'suffixedexp', nodes} => scan_suffixed(f, nodes),
+    {name: 'tablector', nodes} => scan_table(f, nodes),
+    _ => {
+      # every other expression is operands and operator tokens, and an
+      # operator token has no children to reach
+      if node.nodes != nil {
+        for c in node.nodes {
+          scan_expr(f, c)
+        }
+      }
+    },
+  }
+}
+
+fn scan_table(f, nodes) {
+  for fld in nodes {
+    match fld {
+      {name: 'keyedfield', nodes: [k, v]} => {
+        scan_expr(f, k)
+        scan_expr(f, v)
+      },
+      # the key of `{x = 1}` is a literal name, not a read
+      {name: 'namedfield', nodes: [_, v]} => scan_expr(f, v),
+      _ => scan_expr(f, fld),
+    }
+  }
+}
+
+fn scan_args(f, nodes) {
+  for n in nodes {
+    if n.name == 'args' {
+      for a in n.nodes {
+        scan_expr(f, a)
+      }
+    }
+  }
+}
+
+fn scan_suffixed(f, nodes) {
+  scan_expr(f, nodes[0])
+  for sfx in nodes.slice(1, nodes.size()) {
+    match sfx {
+      {name: 'indexsfx', nodes: [ix]} => scan_expr(f, ix),
+      {name: 'callsfx', nodes} => scan_args(f, nodes),
+      # a dotted or method name is a key, and a string argument a literal
+      {name: 'methodsfx', nodes} => scan_args(f, nodes.slice(1, nodes.size())),
+      _ => nil,
+    }
+  }
+}
+
+fn scan_stmt(f, node) {
+  match node {
+    {name: 'emptystmt'} => nil,
+    {name: 'breakstat'} => nil,
+    {name: 'callstmt', nodes: [inner]} => scan_expr(f, inner),
+    {name: 'suffixedexp', nodes} => scan_suffixed(f, nodes),
+    {name: 'localdecl', nodes} => {
+      # the values are read before the names exist, so `local x = x` reads
+      # the outer x
+      if nodes.size() > 1 {
+        scan_exprs(f, nodes[1])
+      }
+      for id in nodes[0].nodes {
+        scan_declare(f, id)
+      }
+    },
+    # the name is visible inside the body, so it is declared first
+    {name: 'localfn', nodes: [id, fb]} => {
+      scan_declare(f, id)
+      scan_closure(f, id.token, fb, node)
+    },
+    {name: 'fnstat', nodes: [fname, fb]} => {
+      let parts = fname.nodes
+      scan_closure(f, parts[0].token, fb, node)
+      scan_name(f, parts[0])
+    },
+    {name: 'assign', nodes: [targets, values]} => {
+      scan_exprs(f, values)
+      for t in targets.nodes {
+        scan_target(f, t)
+      }
+    },
+    {name: 'retstat', nodes} => {
+      for l in nodes {
+        scan_exprs(f, l)
+      }
+    },
+    {name: 'ifstat', nodes} => scan_if(f, nodes, 0),
+    {name: 'whilestat', nodes: [c, blk]} => {
+      scan_expr(f, c)
+      scan_emit_block(f, blk)
+    },
+    {name: 'dostat', nodes: [blk]} => scan_emit_block(f, blk),
+    # the `until` condition can see the body's own locals, so the two share
+    # one scope rather than nesting
+    {name: 'repeatstat', nodes: [blk, c]} => {
+      enter_scope(f)
+      scan_block(f, blk)
+      scan_expr(f, c)
+      leave_scope(f)
+    },
+    {name: 'fornum', nodes} => {
+      scan_expr(f, nodes[1])
+      scan_expr(f, nodes[2])
+      if nodes.size() > 4 {
+        scan_expr(f, nodes[3].nodes[0])
+      }
+      enter_scope(f)
+      scan_declare(f, nodes[0])
+      scan_block(f, nodes[nodes.size() - 1])
+      leave_scope(f)
+    },
+    _ => fail(node, "cannot execute {node.name}"),
+  }
+}
+
+fn scan_if(f, nodes, i) {
+  cond {
+    i + 1 < nodes.size() && nodes[i].name != 'elsepart' => {
+      scan_expr(f, nodes[i])
+      scan_emit_block(f, nodes[i + 1])
+      if i + 2 < nodes.size() {
+        scan_if(f, nodes, i + 2)
+      }
+    },
+    nodes[i].name == 'elseifpart' => scan_if(f, nodes[i].nodes, 0),
+    nodes[i].name == 'elsepart' => scan_emit_block(f, nodes[i].nodes[0]),
+    _ => scan_emit_block(f, nodes[i]),
+  }
+}
+
+fn scan_target(f, t) {
+  if t.name == 'ident' {
+    return scan_name(f, t)
+  }
+  let parts = t.nodes
+  cond {
+    parts.size() == 1 && parts[0].name == 'ident' => scan_name(f, parts[0]),
+    _ => {
+      scan_expr(f, parts[0])
+      for i in range(1, parts.size()) {
+        let sfx = parts[i]
+        if sfx.name == 'indexsfx' {
+          scan_expr(f, sfx.nodes[0])
+        }
+      }
+    },
+  }
 }
 
 # --- Expressions ------------------------------------------------------------
@@ -568,7 +1235,7 @@ fn emit_expr(f, node) {
       token == 'false' => m.bool_literal(false, node),
       _ => m.nil_literal(node),
     },
-    {name: 'ident', token} => emit_name(f, token, node),
+    {name: 'ident'} => emit_name(f, node, node),
     {name: 'paren', nodes: [inner]} => emit_expr(f, inner),
     {
       name: 'notexp',
@@ -599,9 +1266,9 @@ fn emit_expr(f, node) {
     {name: 'concatexp', nodes} => emit_concat(f, nodes, node),
     {name: 'addexp', nodes} => emit_binchain(f, nodes),
     {name: 'mulexp', nodes} => emit_binchain(f, nodes),
-    {name: 'suffixedexp', nodes} => emit_suffixed(f, nodes, node),
+    {name: 'suffixedexp', nodes} => emit_suffixed(f, nodes, node, false),
     {name: 'tablector', nodes} => emit_table(f, nodes, node),
-    {name: 'funcexpr', nodes: [body]} => emit_closure(f, nil, body, node),
+    {name: 'funcexpr', nodes: [body]} => emit_closure(f, body, node),
     _ => fail(node, "cannot evaluate {node.name}"),
   }
 }
@@ -681,11 +1348,11 @@ fn unescape(s) {
 # declared anywhere reaches it the same way -- Lua has no declaration for a
 # global, and the only alternative is capturing every one of them.
 
-fn emit_name(f, name, node) {
-  let r = resolve(f, name)
+fn emit_name(f, id, at) {
+  let v = name_v[pkey(id)]
   cond {
-    r.kind == 'local' => rs.read(m, f, r.v, node),
-    _ => m.index(genv(f, node), m.str_literal(name, node), node),
+    v != -1 => rs.read(m, f, v, at),
+    _ => m.index(genv(f, at), m.str_literal(id.token, at), at),
   }
 }
 
@@ -695,28 +1362,14 @@ fn genv(f, node) {
 
 # --- Suffixed expressions: calls, indexing, methods -------------------------
 
-fn emit_suffixed(f, nodes, at) {
-  # `print(a, b)` writes its arguments tab-separated and newline-terminated.
-  # It is the one library call that takes any number of them, so it is
-  # answered here rather than by a func with a fixed arity.
-  if nodes[0].name == 'ident' &&
-      nodes[0].token == 'print' &&
-      nodes.size() == 2 &&
-      nodes[1].name == 'callsfx' {
-    let args = emit_args(f, nodes[1].nodes)
-    mut ids = []
-    for i, a in args.enumerate() {
-      if i > 0 {
-        ids.push(m.intrinsic('printraw', [m.str_literal("\t", at)], at))
-      }
-      ids.push(m.intrinsic('printraw', [call_rt(f, '__str', [a], at)], at))
-    }
-    ids.push(m.intrinsic('printraw', [m.str_literal("\n", at)], at))
-    ids.push(m.nil_literal(at))
-    return m.block(ids, at)
-  }
+# `all` asks for the list a trailing call answered rather than its first
+# value -- the one place the caller's context changes what a call means.
+fn emit_suffixed(f, nodes, at, all) {
   mut v = emit_expr(f, nodes[0])
-  for sfx in nodes.slice(1, nodes.size()) {
+  let last = nodes.size() - 1
+  for i in range(1, nodes.size()) {
+    let sfx = nodes[i]
+    let keep = all && i == last
     v = match sfx {
       {
         name: 'dotsfx',
@@ -729,13 +1382,18 @@ fn emit_suffixed(f, nodes, at) {
       {
         name: 'callsfx',
         nodes,
-      } => one(f, m.call_value(v, emit_args(f, nodes), sfx), sfx),
+      } => trim(f, m.call_value(v, [emit_args(f, nodes, sfx)], sfx), keep, sfx),
       {
         name: 'strargsfx',
         nodes: [lit],
-      } => one(
+      } => trim(
         f,
-        m.call_value(v, [m.str_literal(unescape(lit.token), sfx)], sfx),
+        m.call_value(
+          v,
+          [m.array_lit([m.str_literal(unescape(lit.token), sfx)], sfx)],
+          sfx,
+        ),
+        keep,
         sfx,
       ),
       # `o:m(a)` is `o.m(o, a)` with o evaluated once
@@ -749,15 +1407,19 @@ fn emit_suffixed(f, nodes, at) {
           [recv, m.str_literal(nodes[0].token, sfx)],
           sfx,
         )
-        let call = m.call_value(
-          fnv,
+        let args = call_rt(
+          f,
+          '__append',
           [
-            m.var_ref('local', slot, sfx),
-            ...emit_args(f, nodes.slice(1, nodes.size())),
+            m.array_lit([m.var_ref('local', slot, sfx)], sfx),
+            emit_args(f, nodes.slice(1, nodes.size()), sfx),
           ],
           sfx,
         )
-        m.block([store, one(f, call, sfx)], sfx)
+        m.block(
+          [store, trim(f, m.call_value(fnv, [args], sfx), keep, sfx)],
+          sfx,
+        )
       },
       _ => fail(sfx, "cannot apply {sfx.name}"),
     }
@@ -765,16 +1427,23 @@ fn emit_suffixed(f, nodes, at) {
   v
 }
 
-fn emit_args(f, nodes) {
+fn trim(f, call, keep, at) {
+  cond {
+    keep => call,
+    _ => one(f, call, at),
+  }
+}
+
+fn emit_args(f, nodes, at) {
   mut out = []
   for n in nodes {
     if n.name == 'args' {
       for a in n.nodes {
-        out.push(emit_expr(f, a))
+        out.push(a)
       }
     }
   }
-  out
+  emit_multi(f, out, at)
 }
 
 # --- Tables -----------------------------------------------------------------
@@ -783,7 +1452,8 @@ fn emit_table(f, nodes, at) {
   let slot = new_scratch(f)
   mut ids = [m.assign('local', slot, call_rt(f, '__newtable', [], at), at)]
   mut idx = 1
-  for fld in nodes {
+  let last = nodes.size() - 1
+  for k, fld in nodes.enumerate() {
     let t = m.var_ref('local', slot, at)
     match fld {
       {
@@ -804,14 +1474,25 @@ fn emit_table(f, nodes, at) {
         [t, m.str_literal(k.token, fld), emit_expr(f, v)],
         fld,
       )),
-      _ => {
-        ids.push(call_rt(
+      # a call in the last position contributes every value it answered
+      _ => cond {
+        is_call_expr(fld) &&
+          k ==
+            last => ids.push(call_rt(
           f,
-          '__set',
-          [t, m.literal(idx, fld), emit_expr(f, fld)],
+          '__spread',
+          [t, m.literal(idx, fld), emit_suffixed(f, fld.nodes, fld, true)],
           fld,
-        ))
-        idx += 1
+        )),
+        _ => {
+          ids.push(call_rt(
+            f,
+            '__set',
+            [t, m.literal(idx, fld), emit_expr(f, fld)],
+            fld,
+          ))
+          idx += 1
+        },
       },
     }
   }
@@ -821,28 +1502,27 @@ fn emit_table(f, nodes, at) {
 
 # --- Functions --------------------------------------------------------------
 
-fn emit_closure(f, name, funcbody, at) {
-  let g = new_func(
-    cond {
-      name == nil => 'anonymous',
-      _ => name,
-    },
-    at,
-    f,
-  )
-  pending.push({g: g, body: funcbody, at: at})
+fn emit_closure(f, funcbody, at) {
+  let g = fn_of[pkey(funcbody)]
+  pending.push({g: g, body: funcbody})
   rs.closure(m, f, g, at)
 }
 
 fn bind_funcbody(g, funcbody) {
-  enter_scope(g)
-  for p in funcbody.nodes[0].nodes {
-    funcs[g].params.push(declare(g, p.token, p))
+  mut ids = []
+  for i, prm in funcbody.nodes[0].nodes.enumerate() {
+    ids.push(rs.write(
+      m,
+      g,
+      decl_v[pkey(prm)],
+      nth(g, m.var_ref('local', 0, prm), i, prm),
+      prm,
+    ))
   }
-  let ids = emit_block(g, funcbody.nodes[1])
-  leave_scope(g)
+  ids.push(emit_block(g, funcbody.nodes[1]))
   # a Lua function that runs off its end returns no values
-  m.block([ids, m.make_return(m.array_lit([], AT), AT)], AT)
+  ids.push(m.make_return(m.array_lit([], AT), AT))
+  m.block(ids, AT)
 }
 
 # --- Statements -------------------------------------------------------------
@@ -865,36 +1545,26 @@ fn emit_stmt(f, node) {
     {name: 'suffixedexp'} => emit_expr(f, node),
     {name: 'localdecl', nodes} => {
       let names = nodes[0].nodes
-      mut vals = []
-      if nodes.size() > 1 {
-        for e in nodes[1].nodes {
-          vals.push(emit_expr(f, e))
-        }
-      }
       mut ids = []
+      let vals = values_slot(f, nodes, node, ids)
       # every `local` declares anew, so a second `local x` in one block is a
       # second binding and the first keeps whatever closed over it
       for i, id in names.enumerate() {
-        let v = declare(f, id.token, id)
-        ids.push(rs.write(m, f, v, cond {
-          i < vals.size() => vals[i],
-          _ => m.nil_literal(id),
-        }, id))
+        ids.push(rs.write(m, f, decl_v[pkey(id)], vals(i, id), id))
       }
       m.block(ids, node)
     },
     {name: 'localfn', nodes: [id, fb]} => {
-      # the name is visible inside the body, so it is declared first
-      let v = declare(f, id.token, id)
-      rs.write(m, f, v, emit_closure(f, id.token, fb, node), node)
+      let v = decl_v[pkey(id)]
+      rs.write(m, f, v, emit_closure(f, fb, node), node)
     },
     {name: 'fnstat', nodes: [fname, fb]} => {
       let parts = fname.nodes
-      let c = emit_closure(f, parts[0].token, fb, node)
+      let c = emit_closure(f, fb, node)
       cond {
-        parts.size() == 1 => emit_store(f, parts[0].token, c, node),
+        parts.size() == 1 => emit_store(f, parts[0], c, node),
         _ => {
-          mut t = emit_name(f, parts[0].token, node)
+          mut t = emit_name(f, parts[0], node)
           for i in range(1, parts.size() - 1) {
             t = call_rt(
               f,
@@ -909,28 +1579,21 @@ fn emit_stmt(f, node) {
       }
     },
     {name: 'assign', nodes: [targets, values]} => {
-      mut vals = []
-      for e in values.nodes {
-        vals.push(emit_expr(f, e))
-      }
       mut ids = []
+      let vals = values_slot(f, [nil, values], node, ids)
       for i, t in targets.nodes.enumerate() {
-        let v = cond {
-          i < vals.size() => vals[i],
-          _ => m.nil_literal(t),
-        }
-        ids.push(emit_target(f, t, v, node))
+        ids.push(emit_target(f, t, vals(i, t), node))
       }
       m.block(ids, node)
     },
     {name: 'retstat', nodes} => {
-      mut vals = []
+      mut exprs = []
       for l in nodes {
         for e in l.nodes {
-          vals.push(emit_expr(f, e))
+          exprs.push(e)
         }
       }
-      m.make_return(m.array_lit(vals, node), node)
+      m.make_return(emit_multi(f, exprs, node), node)
     },
     {name: 'ifstat', nodes} => emit_if(f, nodes, 0, node),
     {
@@ -938,18 +1601,16 @@ fn emit_stmt(f, node) {
       nodes: [c, blk],
     } => m.make_while(
       call_rt(f, '__truthy', [emit_expr(f, c)], node),
-      scoped(f, blk),
+      emit_block(f, blk),
       node,
     ),
-    {name: 'dostat', nodes: [blk]} => scoped(f, blk),
+    {name: 'dostat', nodes: [blk]} => emit_block(f, blk),
     # `repeat ... until c` runs the body first, and the condition can see the
     # body's own locals -- Lua's one block that outlives its own end, so the
     # two share a scope rather than nesting
     {name: 'repeatstat', nodes: [blk, c]} => {
-      enter_scope(f)
       let b = emit_block(f, blk)
       let test = call_rt(f, '__truthy', [emit_expr(f, c)], node)
-      leave_scope(f)
       m.make_while(
         m.bool_literal(true, node),
         m.block([b, m.make_if(test, m.make_break(node), node)], node),
@@ -977,10 +1638,8 @@ fn emit_stmt(f, node) {
         step_given => emit_expr(f, nodes[3].nodes[0]),
         _ => m.literal(1, node),
       }, node)]
-      enter_scope(f)
-      let v = declare(f, nodes[0].token, nodes[0])
+      let v = decl_v[pkey(nodes[0])]
       let body = emit_block(f, nodes[nodes.size() - 1])
-      leave_scope(f)
       # a step may be negative, so the test is "still on the right side of
       # the bound", not simply <=
       let going_up = m.binary(
@@ -1005,10 +1664,18 @@ fn emit_stmt(f, node) {
         ),
         node,
       )
+      # each turn of the loop is its own binding, so three closures made
+      # inside remember three numbers rather than sharing the last
+      let fresh = cond {
+        rs.access_kind(f, v) ==
+          'cell' => [m.cell_fresh(rs.cell_of(f, v), node)],
+        _ => [],
+      }
       ids.push(m.make_while(
         test,
         m.block(
           [
+            ...fresh,
             rs.write(m, f, v, m.var_ref('local', lo, node), node),
             body,
             m.assign(
@@ -1034,18 +1701,24 @@ fn emit_stmt(f, node) {
   }
 }
 
-fn scoped(f, blk) {
-  enter_scope(f)
-  let b = emit_block(f, blk)
-  leave_scope(f)
-  b
+# `local a, b = f()` and `a, b = f()` both bind from one list, which is
+# evaluated once into a slot the names then read positionally. The answer is
+# a reader rather than a list of nodes, because how many values there are is
+# not known until the call runs.
+fn values_slot(f, nodes, at, ids) {
+  if nodes.size() < 2 {
+    return |i, node| m.nil_literal(node)
+  }
+  let slot = new_scratch(f)
+  ids.push(m.assign('local', slot, emit_multi(f, nodes[1].nodes, at), at))
+  |i, node| nth(f, m.var_ref('local', slot, node), i, node)
 }
 
 fn emit_if(f, nodes, i, at) {
   cond {
     i + 1 < nodes.size() && nodes[i].name != 'elsepart' => {
       let c = call_rt(f, '__truthy', [emit_expr(f, nodes[i])], at)
-      let then_b = scoped(f, nodes[i + 1])
+      let then_b = emit_block(f, nodes[i + 1])
       let rest = i + 2
       cond {
         rest >= nodes.size() => m.make_if(c, then_b, at),
@@ -1053,28 +1726,28 @@ fn emit_if(f, nodes, i, at) {
       }
     },
     nodes[i].name == 'elseifpart' => emit_if(f, nodes[i].nodes, 0, at),
-    nodes[i].name == 'elsepart' => scoped(f, nodes[i].nodes[0]),
-    _ => scoped(f, nodes[i]),
+    nodes[i].name == 'elsepart' => emit_block(f, nodes[i].nodes[0]),
+    _ => emit_block(f, nodes[i]),
   }
 }
 
-fn emit_store(f, name, v, node) {
-  let r = resolve(f, name)
+fn emit_store(f, id, v, at) {
+  let b = name_v[pkey(id)]
   cond {
-    r.kind == 'local' => rs.write(m, f, r.v, v, node),
-    _ => m.set_index(genv(f, node), m.str_literal(name, node), v, node),
+    b != -1 => rs.write(m, f, b, v, at),
+    _ => m.set_index(genv(f, at), m.str_literal(id.token, at), v, at),
   }
 }
 
 fn emit_target(f, t, v, node) {
   # a suffixedexp with no suffix folds to the name itself
   if t.name == 'ident' {
-    return emit_store(f, t.token, v, node)
+    return emit_store(f, t, v, node)
   }
   let parts = t.nodes
   cond {
     parts.size() == 1 &&
-      parts[0].name == 'ident' => emit_store(f, parts[0].token, v, node),
+      parts[0].name == 'ident' => emit_store(f, parts[0], v, node),
     _ => {
       mut recv = emit_expr(f, parts[0])
       for i in range(1, parts.size() - 1) {
@@ -1120,83 +1793,19 @@ fn build(mm, root) {
   rs.force_cell(g_var)
   native_fmt = m.declare_native('__luafmt')
   runtime()
-  rt_finish()
+  register_library()
 
-  # `print(a, b, ...)` writes its arguments tab-separated -- the one library
-  # function every sample uses, and the only one that takes any number of
-  # them, so the binder answers it rather than a func doing.
-  # A Lua function returns a list of values, so a helper exposed under a Lua
-  # name needs an adapter that wraps its one result -- the helpers themselves
-  # answer plain values, because every other caller of them is the binder.
-  # `print` as a value: the binder answers a direct `print(...)` call, but
-  # `type(print)` and `local p = print` want something to name.
-  globals_fn['__print1'] = new_func('print', nil, nil)
-  rt_params[globals_fn['__print1']] = 1
-  rt_locals[globals_fn['__print1']] = 1
-  rt_body[globals_fn['__print1']] = m.block(
-    [
-      m.intrinsic(
-        'printraw',
-        [call_rt(
-          globals_fn['__print1'],
-          '__str',
-          [m.var_ref('local', 0, AT)],
-          AT,
-        )],
-        AT,
-      ),
-      m.intrinsic('printraw', [m.str_literal("\n", AT)], AT),
-      m.make_return(m.array_lit([], AT), AT),
-    ],
-    AT,
+  # Pass A settles every binding and every capture; nothing below opens a
+  # scope, and every read is built against a numbering that no longer moves.
+  scan_block(root_fn, root.nodes[0])
+  leave_scope(root_fn)
+  rs.number_captures()
+
+  rt_finish()
+  let body = m.block(
+    [...emit_library(), emit_block(root_fn, root.nodes[0])],
+    root,
   )
-  for (
-    gname,
-    helper,
-  ) in [('type', '__type'), ('tostring', '__str'), ('mathtype', '__mathtype')] {
-    let a = new_func("lua {gname}", nil, nil)
-    globals_fn["lua:{gname}"] = a
-    rt_params[a] = 1
-    rt_locals[a] = 1
-    rt_body[a] = m.make_return(
-      m.array_lit([call_rt(a, helper, [m.var_ref('local', 0, AT)], AT)], AT),
-      AT,
-    )
-  }
-  mut lib = [
-    ('type', 'lua:type'),
-    ('tostring', 'lua:tostring'),
-    ('print', '__print1'),
-  ]
-  mut lib_ids = []
-  for (gname, helper) in lib {
-    lib_ids.push(m.set_index(
-      genv(root_fn, root),
-      S(gname),
-      rs.closure(m, root_fn, globals_fn[helper], AT),
-      AT,
-    ))
-  }
-  # `math.type` is the one table-shaped name
-  let mt = new_scratch(root_fn)
-  lib_ids.push(m.assign('local', mt, m.intrinsic('mapnew', [], AT), AT))
-  lib_ids.push(call_rt(
-    root_fn,
-    '__set',
-    [
-      m.var_ref('local', mt, AT),
-      S('type'),
-      rs.closure(m, root_fn, globals_fn['lua:mathtype'], AT),
-    ],
-    AT,
-  ))
-  lib_ids.push(m.set_index(
-    genv(root_fn, root),
-    S('math'),
-    m.var_ref('local', mt, AT),
-    AT,
-  ))
-  let body = m.block([...lib_ids, emit_block(root_fn, root.nodes[0])], root)
   # bodies of the closures the walk created
   mut i = 0
   while i < pending.size() {
@@ -1204,7 +1813,6 @@ fn build(mm, root) {
     rt_body[pd.g] = bind_funcbody(pd.g, pd.body)
     i += 1
   }
-  leave_scope(root_fn)
 
   let root_body = m.block(
     [
@@ -1218,7 +1826,6 @@ fn build(mm, root) {
   rt_locals[root_fn] = nslots[root_fn]
   rt_params[root_fn] = 0
 
-  rs.number_captures()
   for f in range(funcs.size()) {
     let is_rt = rt_params.has(f)
     m.add_func(
@@ -1229,9 +1836,11 @@ fn build(mm, root) {
       },
       num_captures: rs.num_captures(f),
       num_cells: rs.num_cells(f),
+      # every Lua function takes the one list, however many names it
+      # declares
       num_params: cond {
         is_rt => rt_params[f],
-        _ => funcs[f].params.size(),
+        _ => 1,
       },
       body: rt_body[f],
     )
