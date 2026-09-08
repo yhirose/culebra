@@ -2584,10 +2584,14 @@ try {
     _ => mod
       .compile()
       .run(natives: {
-      # Lua's own float rendering: 14 significant digits, and a `.0` kept on
-      # one that would otherwise read as an integer.
+      # Lua's own float rendering (5.5): 14 significant digits, bumped to
+      # 17 when that loses precision (its round-trip check, not a search
+      # for the shortest digit count -- pi prints as ...897931, one digit
+      # past its actual 16-digit shortest form), and a `.0` kept on
+      # whichever one would otherwise read as an integer.
       __luafmt: fn (v) {
         let t = "{v:.14g}"
+        let t = cond { to_float(t) == v => t, _ => "{v:.17g}" }
         cond {
           t.contains('.') || t.contains('e') || t.contains('n') => t,
           _ => t + '.0',
