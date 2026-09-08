@@ -1684,9 +1684,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has_value(
 }
 
 // Build a "class meta" object that holds shared method closures for
-// proto delegation. Called once per class declaration (compile-time
-// emission, runtime allocation), captured in the constructor closure
-// so each instance can point its `proto` at the same meta.
+// proto delegation, plus the class's name. Called once per class
+// declaration (compile-time emission, runtime allocation), captured in the
+// constructor closure so each instance can point its `proto` at the same
+// meta — which is what makes the name reachable from any instance without
+// an own slot of its own.
 //
 // The caller hands each method value +1-owned and does not use it again, so
 // their references are *transferred* into the meta: object_set stores without
@@ -1698,8 +1700,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has_value(
 // unbound — see culebra_runtime_bind_method_value and the interp setting
 // OrderedSymbolMap::lowered_state on the same object.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_build_class_meta(
-    const char* const* method_names, const JitValue* method_vals,
-    int64_t n_methods, int64_t flags) {
+    const char* class_name, const char* const* method_names,
+    const JitValue* method_vals, int64_t n_methods, int64_t flags) {
   auto* meta = culebra_runtime_object_new();
   meta->is_lowered_state = (flags & kClassMetaLoweredState) != 0;
   meta->names_class = (flags & kClassMetaNamesClass) != 0;
@@ -1731,6 +1733,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_build_class_meta(
   meta->is_class_meta = true;
   meta->methods_drop = _find_property(meta, "drop") != nullptr;
   meta->specials = new JitSpecialTable();
+  // Interned, not borrowed: a meta outlives the chunk or module global the
+  // caller's `class_name` points into (a REPL session frees chunks while
+  // instances built from them are still bound).
+  meta->specials->name = _intern_str(std::string_view(class_name));
   for (size_t s = 0; s < static_cast<size_t>(Special::Count); s++) {
     auto* e = _find_property(meta, kSpecialNames[s]);
     if (e && e->value.tag == TAG_FUNC)

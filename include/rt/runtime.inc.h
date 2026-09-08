@@ -567,7 +567,9 @@ inline std::optional<std::string_view> _jit_string_slot(JitObject* obj,
 // (empty if absent, defensively) and `__enum` on a variant only — the
 // parent enum's name, nullopt for any other object.
 inline std::string_view _jit_derived_class_tag(JitObject* obj) {
-  return _jit_string_slot(obj, "class").value_or(std::string_view{});
+  auto slot = _jit_string_slot(obj, "class").value_or(std::string_view{});
+  _jit_migration_check("class", slot, _jit_meta_class_name(obj));
+  return slot;
 }
 inline std::optional<std::string_view> _jit_enum_name(JitObject* obj) {
   return _jit_string_slot(obj, "__enum");
@@ -1211,6 +1213,8 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
       if (cls_slot.tag == TAG_STRING) {
         class_tag_view = std::string_view(
             reinterpret_cast<const char*>(cls_slot.data));
+        _jit_migration_check("class@type_matches", class_tag_view,
+                             _jit_meta_class_name(obj));
         if (class_tag_view == expected) return true;
       }
     }

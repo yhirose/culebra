@@ -272,6 +272,10 @@ inline const char* special_name(Special s) {
 }
 struct JitSpecialTable {
   JitClosure* fn[static_cast<size_t>(Special::Count)] = {};
+  // The class this meta belongs to, interned. Every instance reaches it
+  // through `proto`, so the name lives here rather than on JitObject, which
+  // must stay inside its 128-byte slab class.
+  const char* name = nullptr;
 };
 
 // All refcounted heap types share the same first field: i64 refcount.
@@ -642,6 +646,31 @@ struct JitObject {
   }
 };
 static_assert(sizeof(JitObject) <= 128 && !std::is_polymorphic_v<JitObject>);
+
+// TEMPORARY (issue #18 migration scaffolding — remove before B5 lands).
+// The class name reached through the meta, and a cross-check against the
+// `class` own slot that is still the source of truth. One pass over the
+// corpus with CULEBRA_MIGRATION_CHECK=1 enumerates every object the meta
+// cannot yet speak for.
+inline const char* _jit_meta_class_name(JitObject* obj) {
+  auto* m = obj->proto();
+  return (m && m->is_class_meta && m->specials) ? m->specials->name : nullptr;
+}
+inline void _jit_migration_check(const char* where, std::string_view slot,
+                                 const char* meta) {
+  static const bool on = [] {
+    const char* e = std::getenv("CULEBRA_MIGRATION_CHECK");
+    return e && std::string_view(e) == "1";
+  }();
+  if (!on) return;
+  std::string_view mv = meta ? std::string_view(meta) : std::string_view{};
+  if (mv == slot) return;
+  static thread_local std::set<std::string> seen;
+  std::string key = std::string(where) + "|slot=" + std::string(slot) +
+                    "|meta=" + std::string(mv);
+  if (seen.insert(key).second)
+    std::fprintf(stderr, "MIGRATION-MISMATCH %s\n", key.c_str());
+}
 
 // culebra_runtime_build_class_meta's flag bits (Chunk::name_table_flags).
 inline constexpr int64_t kClassMetaLoweredState = 1;

@@ -4242,8 +4242,11 @@ struct Lowering {
           }
           auto meta = j.emit_call(
               j.module_->getOrInsertFunction(rt::build_class_meta, ptrTy,
-                                             ptrTy, ptrTy, i64Ty, i64Ty),
-              {namesPtr, slab, b.getInt64(in.c),
+                                             ptrTy, ptrTy, ptrTy, i64Ty,
+                                             i64Ty),
+              {j.get_or_create_global_str(c.name_table_class[in.d],
+                                          ".vm.cname"),
+               namesPtr, slab, b.getInt64(in.c),
                b.getInt64(c.name_table_flags[in.d])},
               "vm.class.meta");
           b.CreateStore(j.make_object(meta), slots[in.a]);

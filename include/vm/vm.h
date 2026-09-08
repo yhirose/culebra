@@ -2699,6 +2699,10 @@ struct Chunk {
   // whose own slots are promoted body locals rather than methods (the flag
   // build_class_meta stores on the meta, and the receiver rule reads back).
   std::vector<uint8_t> name_table_flags;
+  // Parallel to name_tables: the class's own name, which build_class_meta
+  // interns onto the meta. ClassMeta's four operands are already spoken for
+  // (dest, run, count, table), so it rides the table index like the flags.
+  std::vector<std::string> name_table_class;
   // Capture list: for each free var, the slot (in the CREATING frame's
   // numbering) holding its cell pointer. A fn literal has exactly one
   // creation site — its MakeClosure — so the list lives with the callee
@@ -7331,6 +7335,7 @@ class Compiler {
             (mi.own_name_used || mi.captured_locals.contains(mi.own_name)))
           names_class = true;
       }
+      chunk_.name_table_class.push_back(class_name);
       chunk_.name_table_flags.push_back(static_cast<uint8_t>(
           (culebra::is_lowered_state_class(class_name, ast.path)
                ? kClassMetaLoweredState
@@ -15941,8 +15946,8 @@ struct Exec {
           JitObject* meta;
           try {
             meta = culebra_runtime_build_class_meta(
-                names.data(), &regs[in.b], n_methods,
-                c.name_table_flags[in.d]);
+                c.name_table_class[in.d].c_str(), names.data(), &regs[in.b],
+                n_methods, c.name_table_flags[in.d]);
           } catch (...) {
             for (int32_t i = 0; i < in.c; ++i)
               regs[in.b + i] = JitValue{TAG_NIL, 0};
