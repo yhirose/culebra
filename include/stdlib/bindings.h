@@ -6213,12 +6213,7 @@ inline JitValue _jit_ws_result(int kind, JitValue* payload) {
   static const char* kEmpty = _intern_str("Empty");
   static const char* kClosed = _intern_str("Closed");
   const char* name = kind == 1 ? kMessage : (kind == -1 ? kEmpty : kClosed);
-  int64_t arity = payload ? 1 : 0;
-  // Natively produced: no declaration owns a meta for these, so they share
-  // one from the Runtime's table (see _jit_native_meta).
-  return culebra_runtime_build_variant(
-      _jit_native_meta(name, kEnum), name, kEnum, arity, payload,
-      arity, 0, 0);
+  return _jit_build_native_variant(name, kEnum, payload);
 }
 
 inline void _jit_ws_send(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,

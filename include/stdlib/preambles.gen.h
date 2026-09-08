@@ -3,18 +3,10 @@
 #pragma once
 
 inline constexpr const char* TIME_MODULE_SOURCE = R"=culpre=(let _time_module = fn () {
-  let _tname = fn (o) {
-    let t = type_of(o)
-    if t == "Object" && o.has("class") {
-      type_of(o)
-    } else {
-      t
-    }
-  }
   let _type_error = fn (want, got) {
     throw {
       kind: "TypeError",
-      message: "type error: expected {want}, got {_tname(got)}",
+      message: "type error: expected {want}, got {type_of(got)}",
     }
   }
   class Duration {

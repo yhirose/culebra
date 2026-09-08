@@ -1690,6 +1690,21 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has_value(
   return result;
 }
 
+// A meta's method set is fixed once its properties are set, so the special
+// table (an operator or protocol resolved once, not walked per call — see
+// JitSpecialTable) and the `drop` gate are cached here. Shared by a
+// freshly-declared meta (culebra_runtime_build_class_meta) and one rebuilt
+// from a deserialized Object (jit_deserialize, conc/sendable.h), whose
+// properties are already in place by the time this runs.
+inline void _jit_fill_specials(JitObject* meta) {
+  for (size_t s = 0; s < static_cast<size_t>(Special::Count); s++) {
+    auto* e = _find_property(meta, kSpecialNames[s]);
+    if (e && e->value.tag == TAG_FUNC)
+      meta->specials->fn[s] = reinterpret_cast<JitClosure*>(e->value.data);
+  }
+  meta->methods_drop = _find_property(meta, "drop") != nullptr;
+}
+
 // Build a "class meta" object that holds shared method closures for
 // proto delegation, plus the class's name. Called once per class
 // declaration (compile-time emission, runtime allocation), captured in the
@@ -1738,17 +1753,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_build_class_meta(
   // The method set is fixed from here on, so the two questions every
   // construction and every operator ask of it are answered once.
   meta->is_class_meta = true;
-  meta->methods_drop = _find_property(meta, "drop") != nullptr;
   meta->specials = new JitSpecialTable();
   // Interned, not borrowed: a meta outlives the chunk or module global the
   // caller's `class_name` points into (a REPL session frees chunks while
   // instances built from them are still bound).
   meta->specials->name = _intern_str(std::string_view(class_name));
-  for (size_t s = 0; s < static_cast<size_t>(Special::Count); s++) {
-    auto* e = _find_property(meta, kSpecialNames[s]);
-    if (e && e->value.tag == TAG_FUNC)
-      meta->specials->fn[s] = reinterpret_cast<JitClosure*>(e->value.data);
-  }
+  _jit_fill_specials(meta);
   return meta;
 }
 
@@ -1898,15 +1908,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
 // (rt_runtime.inc.h) for why the laziness is load-bearing for AOT.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_materialize_value(
     void** shape_cache, const char* const* keys, int64_t n_keys,
-    JitObject* class_meta, const char* class_name,
-    const JitValue* field_values) {
+    JitObject* class_meta, const JitValue* field_values) {
   auto* shape = _jit_resolve_cached_shape(shape_cache, keys, n_keys);
   auto* inst = culebra_runtime_object_new();
   inst->shape = shape;
   inst->slots.reserve(static_cast<size_t>(n_keys));
   for (int64_t i = 0; i < n_keys; i++)
     inst->slots.push_back(JitObjectEntry{field_values[i], /*mut=*/false});
-  (void)class_name;  // the meta names the class now
   inst->set_proto(class_meta);
   if (class_meta) class_meta->refcount++;
   if (class_meta && class_meta->methods_drop)

@@ -83,6 +83,18 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_variant(
   return {TAG_OBJECT, reinterpret_cast<int64_t>(inst)};
 }
 
+// A natively produced variant (ChannelResult, WsResult, ...): no declaration
+// owns a meta for these, so they share one from the Runtime's table (see
+// _jit_native_meta). `payload` null means the nullary arm.
+inline JitValue _jit_build_native_variant(const char* name,
+                                          const char* enum_name,
+                                          JitValue* payload) {
+  int64_t arity = payload ? 1 : 0;
+  return culebra_runtime_build_variant(_jit_native_meta(name, enum_name),
+                                       name, enum_name, arity, payload, arity,
+                                       0, 0);
+}
+
 // JitFn-ABI shared thunk installed as `fn_ptr` on every payload-variant
 // constructor closure. Recovers the variant's meta — and with it the two
 // names — from the closure's own capture, and builds the instance from the
@@ -98,7 +110,7 @@ inline void _jit_variant_ctor_thunk(JitValue* __ret, JitClosure* cls, int8_t sel
   // it must drop that +1 or the namespace strands one reference per call.
   // (An indirect `let f = E.V; f(x)` passes nil — a no-op release.)
   _culebra_value_release_impl(self_val.tag, self_val.data);
-  if (cls->n_captures < 1) { *__ret = {TAG_NIL, 0}; return; }
+  assert(cls->n_captures == 1 && cls->captures);
   auto* meta = reinterpret_cast<JitObject*>(cls->captures[0]->value.data);
   meta->refcount++;  // the instance's own reference; the capture keeps its
   *__ret = culebra_runtime_build_variant(
@@ -1539,7 +1551,7 @@ culebra_runtime_multifn_register_and_install(const char* name_cstr,
 // Auto-synthesized `class.parameters()` walker, mirroring the interp
 // parameters() walker. Walks `val`
 // recursively: Arrays are descended element-wise, plain Object dicts
-// (no `class:` tag) are descended into their property values, and
+// (no meta of their own) are descended into their property values, and
 // class instances are collected as leaves. Scalars are skipped.
 // Property keys starting with '_' are skipped (private/cache fields).
 // Each collected leaf is appended to `out` with its refcount bumped
@@ -1552,7 +1564,6 @@ inline void _jit_walk_collect_params_object(JitObject* obj, JitArray* out) {
   if (!obj->shape) return;
   for (size_t i = 0; i < obj->prop_size(); i++) {
     std::string_view key(obj->prop_name(i));
-    if (key == "class") continue;
     if (!key.empty() && key[0] == '_') continue;
     _jit_walk_collect_params(obj->slots[i].value, out);
   }

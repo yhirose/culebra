@@ -356,12 +356,7 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
         o->specials->name = _intern_str(all.substr(0, sep));
         if (sep != std::string::npos)
           o->specials->enum_name = _intern_str(all.substr(sep + 1));
-        for (size_t si = 0; si < static_cast<size_t>(Special::Count); si++) {
-          auto* e = _find_property(o, kSpecialNames[si]);
-          if (e && e->value.tag == TAG_FUNC)
-            o->specials->fn[si] = reinterpret_cast<JitClosure*>(e->value.data);
-        }
-        o->methods_drop = _find_property(o, "drop") != nullptr;
+        _jit_fill_specials(o);
       }
       // Class instance: relink the proto (elems[0] = the rebuilt class
       // meta), mirroring build_class_instance — the proto pointer holds
@@ -815,12 +810,7 @@ inline JitValue _jit_channel_result(ChanTryPopStatus status, JitValue* payload) 
     case ChanTryPopStatus::Empty: name = kEmpty; break;
     case ChanTryPopStatus::Closed: break;
   }
-  int64_t arity = payload ? 1 : 0;
-  // Natively produced: no declaration owns a meta for these, so they share
-  // one from the Runtime's table (see _jit_native_meta).
-  return culebra_runtime_build_variant(
-      _jit_native_meta(name, kEnum), name, kEnum, arity, payload,
-      arity, 0, 0);
+  return _jit_build_native_variant(name, kEnum, payload);
 }
 
 inline void _jit_chan_try_recv(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,

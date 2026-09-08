@@ -4354,13 +4354,10 @@ struct Lowering {
           auto inst = j.emit_value_call(
               j.module_->getOrInsertFunction(
                   rt::materialize_value, j.valueType_, ptrTy, ptrTy, i64Ty,
-                  ptrTy, ptrTy, ptrTy),
+                  ptrTy, ptrTy),
               {cacheGlobal, keysArray,
                b.getInt64(static_cast<int64_t>(spec.keys.size())),
-               b.CreateIntToPtr(j.extract_data(metaV), ptrTy),
-               // The class name, which the meta above already carries; still
-               // passed so the runtime entry keeps one signature.
-               j.emit_str_literal(_str_sv(spec.class_name)), fieldsPtr},
+               b.CreateIntToPtr(j.extract_data(metaV), ptrTy), fieldsPtr},
               "vm.value.box");
           b.CreateStore(inst, slots[in.a]);
           break;

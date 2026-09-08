@@ -2549,13 +2549,10 @@ struct Chunk {
   // declaration order, so resolving `shape` once (lazily, exactly like
   // ObjectShapeSpec — a Shape* is a per-process pointer, not a per-program
   // one) reproduces the identical Shape a boxed construction of the same
-  // class resolves to. `class_name` is the same interned bytes a `MakeInst`
-  // site's `consts[c]` would hold; the instance's name comes from its meta,
-  // so this is only what the runtime entry still takes.
+  // class resolves to.
   struct ValueBoxSpec {
     mutable void* shape = nullptr;
     std::vector<const char*> keys;
-    const char* class_name = nullptr;
   };
   std::vector<ValueBoxSpec> value_box_specs;
   // One entry per Op::FieldsInit site (emit_declared_field_layout): the
@@ -10130,8 +10127,6 @@ class Compiler {
     for (const auto& f : *run.unboxed)
       spec.keys.push_back(
           reinterpret_cast<const char*>(chunk_.consts[kconst_str(f)].data));
-    spec.class_name =
-        reinterpret_cast<const char*>(chunk_.consts[kconst_str(vc->name)].data);
     int32_t spec_idx = static_cast<int32_t>(chunk_.value_box_specs.size());
     chunk_.value_box_specs.push_back(std::move(spec));
     int32_t meta = alloc_temp(at);
@@ -16075,8 +16070,7 @@ struct Exec {
           regs[in.a] = culebra_runtime_materialize_value(
               &spec.shape, spec.keys.data(),
               static_cast<int64_t>(spec.keys.size()),
-              reinterpret_cast<JitObject*>(regs[in.d].data), spec.class_name,
-              &regs[in.b]);
+              reinterpret_cast<JitObject*>(regs[in.d].data), &regs[in.b]);
           ++pc;
           break;
         } while (0);
