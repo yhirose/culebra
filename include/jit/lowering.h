@@ -3834,7 +3834,6 @@ struct Lowering {
           break;
         }
         case Op::Jump:
-          if (jump_polls(in)) j.emit_safepoint();
           b.CreateBr(blocks.at(in.a));
           break;
         case Op::JumpIfFalse:
@@ -4695,18 +4694,16 @@ struct Lowering {
           break;
         }
         case Op::ForLoop: {
-          // RangeBounds::done()/take() spelled as IR; inclusive is a bit of
-          // the instruction's `d` immediate, so the compares are picked here.
-          if (for_loop_polls(in)) j.emit_safepoint();
+          // RangeBounds::done()/take() spelled as IR; inclusive is the
+          // instruction's `d` immediate, so the compares are picked here.
           auto cur = j.extract_data(load_slot(in.a));
           auto end = j.extract_data(load_slot(in.a + 1));
           auto step = j.extract_data(load_slot(in.a + 2));
           auto exhausted = b.CreateICmpNE(
               j.extract_data(load_slot(in.a + 3)), b.getInt64(0));
-          const bool incl = for_loop_inclusive(in);
-          auto up = incl ? b.CreateICmpSGT(cur, end)
+          auto up = in.d ? b.CreateICmpSGT(cur, end)
                          : b.CreateICmpSGE(cur, end);
-          auto down = incl ? b.CreateICmpSLT(cur, end)
+          auto down = in.d ? b.CreateICmpSLT(cur, end)
                            : b.CreateICmpSLE(cur, end);
           auto step_pos = b.CreateICmpSGT(step, b.getInt64(0));
           auto done =

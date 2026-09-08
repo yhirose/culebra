@@ -522,6 +522,23 @@ producerを経ずに到達するので、jump先は決して候補にしない�
 発行するために在り、コンパイラは今も対を書く — その方が元のソースとの
 対応が読める。
 
+**梯子の融合**が5つ目で、上の4つと違って何も証明しない — データフロー
+ではなくコードの形の話なので、他の4つが不動点に達した後に1度だけ走る。
+スコープを解放するのはコンパイラが既に一括で下した1つの判断であり、その
+段ごとに1命令を使うことが`Release`をbytecodeの30%に押し上げていた。
+連続する`Release`は、同じスロットを同じ順で並べた1つの`ReleaseMany`に
+なる。スロットは`Chunk::release_slots`に端から端まで並べる（サイトごとの
+配列ではなくchunkに1本: 梯子はたいてい2段か3段で、その長さでは2段目の
+間接参照が融合で浮いたディスパッチより高くつく）。梯子は途中から入れない
+ので、jumpの飛び先、およびcleanupのstart・end・handlerにあたるpcで連続を
+打ち切る — unwindが走らせる梯子を選ぶのがこの範囲だからである。参照
+カウントと所有スタックの解析にはこの新しいopcodeの腕が要らない: どちらも
+`default`が全クロバー・全読みという安全側なので、両者が主張する事後条件は
+より慎重になるだけである。
+
+`tests/`・`examples/`・ベンチマークを合わせると、このpass1本で
+1,956,262命令が1,500,611命令になる — 上の4つのpassが残したものの23%である。
+
 命令の削除や書き換えは完成した`Chunk`への1回のpassであって、2回目の
 発行ではない: pcを持つ7つの表（`code`のjumpオペランド、`positions`、
 `cleanups`、`slot_debug`、`temp_points`、`call_argpos`、密な
@@ -536,11 +553,11 @@ testsと言語front endを合わせたコーパス全体では、4つのpassが
 
 ### 5.3 opcodeのファミリー
 
-149個のopcodeを分類すると:
+151個のopcodeを分類すると:
 
 | ファミリー | op | 備考 |
 |---|---|---|
-| 値 | `LoadConst` `Move` `Take` `Retain` `Release` `MoveRetain` | §5.2。`MoveRetain`はelision passが発行する融合された借用（§5.2.1） |
+| 値 | `LoadConst` `Move` `Take` `Retain` `Release` `MoveRetain` `ReleaseMany` | §5.2。`MoveRetain`と`ReleaseMany`はelision passが発行する、融合された借用と融合された解放の梯子（§5.2.1） |
 | 算術・ビット演算・比較 | `Neg` `Not` `Add` … `Pow` `MatMul` `BitAnd` … `Shr` `BitNot` `Eq` … `Ge` `JumpIfSame` | それぞれ1回のランタイムdispatch。算術と比較のopは両Long・両数値の腕をまずinlineで決める（`Neg`はLongとFloatの腕）。算術opの`d=1`は複合代入のin-place Tensorステップを示す |
 | コンテナ | `ArrayNew/Append/Push/Extend/Resize` `TupleNew/Push` `SetNew/Add` `ObjectNew/NewShaped/Set/SetAny/Merge` `SlotInit` `RangeNew` `ChkLong` | コンテナは要素の`+1`を吸収する。`SlotInit`はShapeを事前構築したリテラル向けの、スロット番号による`ObjectSet`（§5.3.5） |
 | アクセス | `Index` `IndexWr` `IndexCo` `IndexSet` `PropSet` `PropWr` `PropCo` `PropVal` `PropRaw` `HasProp` `NsWrChk` `NilChk` | 添字とプロパティアクセスの読み/書き/coalescing-write形。`PropVal`はgetterを呼ぶこともある素のプロパティ読み取り |
@@ -1218,7 +1235,21 @@ or-patternの中のbinding alternative、制御フローの条件式の中の
 
 ## 6. executor
 
-`vm::Exec`はswitch-dispatch型のインタプリタである。`run_frame`は
+`vm::Exec`はラベルのアドレスを並べた表を引いてディスパッチする。各腕は
+`switch`が共有する1箇所へ戻るのではなく、腕ごとに自前の間接jumpで次の
+opcodeの腕へ飛ぶ。共有された1箇所はプログラムが実行する全opcodeを見るので
+どれも学習できないが、腕ごとの分岐点はそのopcodeの次に来るものだけを見る
+ので、たいてい行き先は1つに決まる。表は`Op`列挙の順に並べ、その順で
+static_assertしてあるので、行を足さずにopcodeを増やすとコンパイルが通らない。
+
+各腕は`do { … } while (0)`である。これが、書き換えではなく改名で済ませる
+仕掛けになっている: 腕がもともと持っていた`break`は今もその腕を出る意味の
+ままで、入れ子のループの`break`はそのループに掛かり、腕を出るのは通常の
+スコープ脱出のままなので、腕が作ったもののdestructorも走る。ラベルと
+gotoを裸で並べた形にはこの性質がない — 生きたスコープからcomputed gotoで
+飛び出すとdestructorが飛ばされ、switchには無かった漏れになる。
+
+`run_frame`は
 フレームのレジスタウィンドウを機械スタック上の可変長配列として確保
 し（chunkの`num_slots`からサイズを決めるので、小さな関数は小さな
 フレームしか払わない）、プロローグでパラメータ・receiver・`fn`

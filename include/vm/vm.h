@@ -754,14 +754,6 @@ struct Insn {
   int32_t a = 0, b = 0, c = 0, d = 0;
 };
 
-// A loop's interrupt poll rides on the back edge that closes an iteration
-// rather than on a Safepoint of its own (shape_elide_chunk). `Jump` has a
-// spare operand for the flag; `ForLoop` has none, so its poll is the second
-// bit of the `d` that already carries `inclusive`.
-inline bool jump_polls(const Insn& in) { return in.d != 0; }
-inline bool for_loop_polls(const Insn& in) { return (in.d & 2) != 0; }
-inline bool for_loop_inclusive(const Insn& in) { return (in.d & 1) != 0; }
-
 // A generic for-in's cursor: one contiguous slot run, allocated by
 // compile_for_generic and addressed by these offsets from its base. The
 // leading five hold Values the loop's scope owns, so the ordinary release
@@ -4249,52 +4241,26 @@ inline void apply_rc_elision(Chunk& c, const std::vector<char>& dead,
   delete_marked(c, dead);
 }
 
-// Bookkeeping the SHAPE of the code makes redundant, rather than anything
-// its dataflow proves. Two pieces:
+// Bookkeeping the SHAPE of the code makes redundant, rather than anything its
+// dataflow proves: releasing a scope's slots is one decision the compiler
+// already made as a unit, and one instruction per rung is what made `Release`
+// a sixth of everything a program executes. A run becomes one `ReleaseMany`
+// naming the same slots in the same order.
 //
-//   * A loop's interrupt poll. Every back edge is already an instruction, so
-//     the poll rides on it and the `Safepoint` the loop head carried goes —
-//     one poll per iteration either way. The entry that no back edge covers
-//     loses its poll, which costs nothing: `Interrupted` is positionless
-//     (base/shared.h), so no lane's diagnostics move, and a poll is a
-//     best-effort check that the next iteration repeats.
-//   * A release ladder. Releasing a scope's slots is one decision the
-//     compiler already made as a unit; one instruction per rung is what made
-//     `Release` a sixth of everything a program executes. A run becomes one
-//     `ReleaseMany` naming the same slots in the same order.
-//
-// Both are syntactic, so this runs once after the dataflow passes have
-// reached their fixpoint: nothing here can uncover work for them, and
-// nothing they leave behind changes the answer here. The refcount and
-// owned-stack analyses need no arm for `ReleaseMany` — their `default` is
-// clobber-all / read-all, which is the safe direction, and the postcondition
-// they assert only gets more conservative.
+// This is syntactic, so it runs once after the dataflow passes have reached
+// their fixpoint: nothing here can uncover work for them, and nothing they
+// leave behind changes the answer here. The refcount and owned-stack analyses
+// need no arm for `ReleaseMany` — their `default` is clobber-all / read-all,
+// which is the safe direction, and the postcondition they assert only gets
+// more conservative.
 inline void shape_elide_chunk(Chunk& c) {
   const size_t n = c.code.size();
   if (n == 0) return;
   std::vector<char> dead(n, 0);
 
-  // Pass 1: the poll onto the back edges, and out of the loop heads.
-  std::vector<char> in_loop(n, 0);
-  bool any_back_edge = false;
-  for (size_t pc = 0; pc < n; ++pc) {
-    Insn& in = c.code[pc];
-    int32_t t = -1;
-    if (in.op == Op::Jump) t = in.a;
-    else if (in.op == Op::ForLoop) t = in.b;
-    if (t < 0 || static_cast<size_t>(t) > pc) continue;
-    any_back_edge = true;
-    for (size_t k = static_cast<size_t>(t); k <= pc; ++k) in_loop[k] = 1;
-    if (in.op == Op::Jump) in.d = 1;
-    else in.d |= 2;
-  }
-  if (any_back_edge)
-    for (size_t pc = 0; pc < n; ++pc)
-      if (c.code[pc].op == Op::Safepoint && in_loop[pc]) dead[pc] = 1;
-
-  // Pass 2: the ladders. A run may not be entered in the middle, so its
-  // interior must be nothing's target — neither a jump's nor a cleanup's,
-  // whose ranges are how an unwind picks the ladder to run.
+  // A run may not be entered in the middle, so its interior must be nothing's
+  // target — neither a jump's nor a cleanup's, whose ranges are how an unwind
+  // picks the ladder to run.
   std::vector<char> anchored(n + 1, 0);
   for (const Insn& in : c.code) {
     int32_t t = rc_detail::rc_successors(in).target;
@@ -14139,13 +14105,6 @@ struct Exec {
                                             v.data, line, col);
     };
 
-    // The loop poll, on `Safepoint` and on every back edge the shape pass
-    // moved one onto.
-    auto poll = [] {
-      if (culebra_g_wake.load(std::memory_order_relaxed))
-        culebra::throw_if_interrupted();
-    };
-
     // The safepoint poll below runs per instruction, so resolve the heap
     // once: the Heap lives in the Runtime's substate for this frame's whole
     // execution (RuntimeScope restores any nested switch before control
@@ -14153,52 +14112,134 @@ struct Exec {
     // the opaque calls in the loop would otherwise force per iteration.
     [[maybe_unused]] gc::Heap* sp_heap = nullptr;
     if constexpr (gc::kDeferToSafepoint) sp_heap = &_gc_heap();
-    for (;;) {
-      // The wasm safepoint: the only place a deferred collect runs (rt_gc.h
-      // kDeferToSafepoint). Between instructions every live value of every
-      // frame sits in a register window on the linear-memory stack, which
-      // the conservative scan does see — unless a helper frame that may hold
-      // sole references is suspended below us, which safepoint_collect
-      // checks. Folds away on native builds.
-      if constexpr (gc::kDeferToSafepoint) {
-        if (sp_heap->safepoint_pending()) sp_heap->safepoint_collect();
-      }
-      const Insn& in = code[pc];
-      switch (in.op) {
-        case Op::LoadConst:
+    // Replicated dispatch: an indirect jump at the end of every arm,
+    // instead of the one site a switch shares. The shared site sees every
+    // opcode the program runs and learns none of them; a per-arm site sees
+    // what follows THAT opcode, which is often one thing. `kLabels` is
+    // ordered by the Op enum and asserted against it, so an opcode added
+    // without a row here does not compile.
+    //
+    // Each arm is a `do { } while (0)`, which is what keeps the conversion
+    // a rename: an arm's own `break` still leaves it, a nested loop's still
+    // binds to the loop, and leaving is an ordinary scope exit that runs
+    // the destructors of whatever the arm built. A computed goto out of a
+    // live scope skips those.
+    static void* const kLabels[] = {
+        &&L_LoadConst, &&L_Move, &&L_Take, &&L_Retain, &&L_Release, &&L_Neg,
+        &&L_Not, &&L_Add, &&L_Sub, &&L_Mul, &&L_Div, &&L_Mod, &&L_Pow,
+        &&L_JumpIfSame, &&L_MatMul, &&L_BitAnd, &&L_BitOr, &&L_BitXor,
+        &&L_Shl, &&L_Shr, &&L_BitNot, &&L_Eq, &&L_Ne, &&L_Lt, &&L_Le, &&L_Gt,
+        &&L_Ge, &&L_ArrayNew, &&L_ArrayAppend, &&L_ArrayPush, &&L_ArrayExtend,
+        &&L_ArrayResize, &&L_TupleNew, &&L_TuplePush, &&L_SetNew, &&L_SetAdd,
+        &&L_ObjectNew, &&L_ObjectNewShaped, &&L_ObjectSet, &&L_SlotInit,
+        &&L_ObjectSetAny, &&L_ObjectMerge, &&L_ModReg, &&L_ModGet,
+        &&L_RangeNew, &&L_ChkLong, &&L_NilChk, &&L_Index, &&L_IndexWr,
+        &&L_IndexCo, &&L_IndexSet, &&L_PropSet, &&L_PropWr, &&L_PropCo,
+        &&L_NsWrChk, &&L_PropVal, &&L_BareMethChk, &&L_MethGate, &&L_ChkParam,
+        &&L_CallRecv, &&L_CbType, &&L_ArityChk, &&L_BMeth, &&L_PropRaw,
+        &&L_HasProp, &&L_Drop, &&L_ClsParamsChk, &&L_ClsParamsWalk,
+        &&L_SeqChk, &&L_SeqGet, &&L_SeqRest, &&L_ObjGet, &&L_DestrErr,
+        &&L_Jump, &&L_JumpIfFalse, &&L_JumpIfTrue, &&L_JumpIfNotNil,
+        &&L_JumpIfNil, &&L_JumpIfTag, &&L_MakeClosure, &&L_Call, &&L_CallM,
+        &&L_CallKw, &&L_RaiseErr, &&L_Ret, &&L_CellNew, &&L_CellGet,
+        &&L_CellSet, &&L_CellRelease, &&L_BindCapture, &&L_ImmutErr,
+        &&L_UnboundErr, &&L_MultifnReg, &&L_MfSelf, &&L_ClsSelf, &&L_WkErr,
+        &&L_ClassMeta, &&L_DeriveFn, &&L_RegPack, &&L_EnumVariant,
+        &&L_TypeMatch, &&L_ClassObj, &&L_BindStatic, &&L_MakeInst,
+        &&L_ValueBox, &&L_FieldsInit, &&L_FieldInit, &&L_SelfMerge,
+        &&L_TraitReset, &&L_TraitDefault, &&L_TraitReg, &&L_PosSnap,
+        &&L_ChkTypeAt, &&L_ChkArg, &&L_ArgTag, &&L_JumpIfFilled, &&L_ArgsRest,
+        &&L_KwRest, &&L_RecEnter, &&L_RecLeave, &&L_NsGet, &&L_SetOpPos,
+        &&L_BoundPos, &&L_Disp, &&L_Fmt, &&L_StrCat, &&L_Throw, &&L_DeferMark,
+        &&L_DeferPush, &&L_DeferRunTo, &&L_ForOpen, &&L_ForNext,
+        &&L_ForDispose, &&L_ForPrep, &&L_ForLoop, &&L_Println, &&L_ToFloat,
+        &&L_NsCall, &&L_Safepoint, &&L_DropSuppress, &&L_BArity,
+        &&L_LazyNsReg, &&L_FnHandle, &&L_OwnedMark, &&L_OwnedExit,
+        &&L_ReplCell, &&L_ReplBind, &&L_DbgStmt, &&L_Halt, &&L_MoveRetain,
+        &&L_ReleaseMany,
+    };
+    static_assert(std::size(kLabels) ==
+                  static_cast<size_t>(Op::ReleaseMany) + 1);
+    // The wasm safepoint rides the dispatch, which is the only place a
+    // deferred collect runs (rt_gc.h kDeferToSafepoint). Between
+    // instructions every live value of every frame sits in a register
+    // window on the linear-memory stack, which the conservative scan does
+    // see -- unless a helper frame that may hold sole references is
+    // suspended below us, which safepoint_collect checks. Folds away on
+    // native builds.
+    // `pc` is a reference the unwinder reads, so it stays where it is; the
+    // instruction it names is cached here, or every arm would reload `pc`
+    // through the reference and redo the index a second time.
+    const Insn* ip = nullptr;
+#define VM_NEXT()                                                          \
+  do {                                                                     \
+    if constexpr (gc::kDeferToSafepoint) {                                 \
+      if (sp_heap->safepoint_pending()) sp_heap->safepoint_collect();      \
+    }                                                                      \
+    ip = &code[pc];                                                        \
+    goto* kLabels[static_cast<size_t>(ip->op)];                            \
+  } while (0)
+    VM_NEXT();
+      L_LoadConst:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           regs[in.a] = c.consts[in.b];
           ++pc;
           break;
-        case Op::Move:
+        } while (0);
+        VM_NEXT();
+      L_Move:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           regs[in.a] = regs[in.b];
           ++pc;
           break;
-        case Op::MoveRetain:  // Move + Retain, fused by the elision pass
+        } while (0);
+        VM_NEXT();
+      L_MoveRetain:  // Move + Retain, fused by the elision pass
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           regs[in.a] = regs[in.b];
           if (is_refcounted(regs[in.a]))
             culebra_runtime_value_retain(static_cast<int8_t>(regs[in.a].tag),
                                          regs[in.a].data);
           ++pc;
           break;
-        case Op::Take:
+        } while (0);
+        VM_NEXT();
+      L_Take:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           regs[in.a] = regs[in.b];
           regs[in.b] = JitValue{TAG_NIL, 0};
           ++pc;
           break;
-        case Op::Retain:
+        } while (0);
+        VM_NEXT();
+      L_Retain:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           if (is_refcounted(regs[in.a]))
             culebra_runtime_value_retain(static_cast<int8_t>(regs[in.a].tag),
                                          regs[in.a].data);
           ++pc;
           break;
-        case Op::Release:
+        } while (0);
+        VM_NEXT();
+      L_Release:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           if (is_refcounted(regs[in.a]))
             culebra_runtime_value_release(static_cast<int8_t>(regs[in.a].tag),
                                           regs[in.a].data);
           regs[in.a] = JitValue{TAG_NIL, 0};
           ++pc;
           break;
-        case Op::ReleaseMany: {  // a whole ladder, fused by the shape pass
+        } while (0);
+        VM_NEXT();
+      L_ReleaseMany:  // a whole ladder, fused by the shape pass
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const int32_t* run = c.release_slots.data() + in.a;
           for (int32_t k = 0; k < in.b; ++k) {
             JitValue& v = regs[run[k]];
@@ -14208,8 +14249,11 @@ struct Exec {
           }
           ++pc;
           break;
-        }
-        case Op::Neg: {
+        } while (0);
+        VM_NEXT();
+      L_Neg:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& v = regs[in.b];
           if (v.tag == TAG_LONG) {
             regs[in.a] = JitValue{
@@ -14222,16 +14266,23 @@ struct Exec {
           }
           ++pc;
           break;
-        }
-        case Op::Not:
+        } while (0);
+        VM_NEXT();
+      L_Not:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           regs[in.a] = JitValue{TAG_BOOL, !to_bool(regs[in.b], pc)};
           ++pc;
           break;
-        case Op::Add:
-        case Op::Sub:
-        case Op::Mul:
-        case Op::Div:
-        case Op::Mod: {
+        } while (0);
+        VM_NEXT();
+      L_Add:
+      L_Sub:
+      L_Mul:
+      L_Div:
+      L_Mod:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& l = regs[in.b];
           const JitValue& r = regs[in.c];
           JitValue out;
@@ -14321,8 +14372,11 @@ struct Exec {
           regs[in.a] = out;
           ++pc;
           break;
-        }
-        case Op::Pow: {
+        } while (0);
+        VM_NEXT();
+      L_Pow:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& l = regs[in.b];
           const JitValue& r = regs[in.c];
           auto [line, col] = chunk_pos_at(c, pc);
@@ -14335,16 +14389,22 @@ struct Exec {
                                                     line, col);
           ++pc;
           break;
-        }
-        case Op::JumpIfSame: {
+        } while (0);
+        VM_NEXT();
+      L_JumpIfSame:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& cur = regs[in.a];
           if (cur.tag == TAG_TENSOR && cur.data == regs[in.c].data)
             pc = static_cast<size_t>(in.b);
           else
             ++pc;
           break;
-        }
-        case Op::MatMul: {
+        } while (0);
+        VM_NEXT();
+      L_MatMul:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& l = regs[in.b];
           const JitValue& r = regs[in.c];
           auto [line, col] = chunk_pos_at(c, pc);
@@ -14353,12 +14413,15 @@ struct Exec {
               r.data, line, col);
           ++pc;
           break;
-        }
-        case Op::BitAnd:
-        case Op::BitOr:
-        case Op::BitXor:
-        case Op::Shl:
-        case Op::Shr: {
+        } while (0);
+        VM_NEXT();
+      L_BitAnd:
+      L_BitOr:
+      L_BitXor:
+      L_Shl:
+      L_Shr:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& l = regs[in.b];
           const JitValue& r = regs[in.c];
           if (l.tag != TAG_LONG || r.tag != TAG_LONG) {
@@ -14383,8 +14446,11 @@ struct Exec {
           regs[in.a] = JitValue{TAG_LONG, out};
           ++pc;
           break;
-        }
-        case Op::BitNot: {
+        } while (0);
+        VM_NEXT();
+      L_BitNot:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& v = regs[in.b];
           if (v.tag != TAG_LONG) {
             auto [line, col] = chunk_pos_at(c, pc);
@@ -14394,9 +14460,12 @@ struct Exec {
           regs[in.a] = JitValue{TAG_LONG, ~v.data};
           ++pc;
           break;
-        }
-        case Op::Eq:
-        case Op::Ne: {
+        } while (0);
+        VM_NEXT();
+      L_Eq:
+      L_Ne:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& l = regs[in.b];
           const JitValue& r = regs[in.c];
           bool eq;
@@ -14417,11 +14486,14 @@ struct Exec {
           regs[in.a] = JitValue{TAG_BOOL, in.op == Op::Eq ? eq : !eq};
           ++pc;
           break;
-        }
-        case Op::Lt:
-        case Op::Le:
-        case Op::Gt:
-        case Op::Ge: {
+        } while (0);
+        VM_NEXT();
+      L_Lt:
+      L_Le:
+      L_Gt:
+      L_Ge:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& l = regs[in.b];
           const JitValue& r = regs[in.c];
           bool res;
@@ -14467,28 +14539,43 @@ struct Exec {
           regs[in.a] = JitValue{TAG_BOOL, res};
           ++pc;
           break;
-        }
-        case Op::ArrayNew:
+        } while (0);
+        VM_NEXT();
+      L_ArrayNew:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           regs[in.a] = JitValue{
               TAG_ARRAY,
               reinterpret_cast<int64_t>(culebra_runtime_array_new())};
           ++pc;
           break;
-        case Op::ArrayAppend:
+        } while (0);
+        VM_NEXT();
+      L_ArrayAppend:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           culebra_runtime_array_set_or_push(
               reinterpret_cast<JitArray*>(regs[in.a].data), in.b,
               static_cast<int8_t>(regs[in.c].tag), regs[in.c].data);
           regs[in.c] = JitValue{TAG_NIL, 0};
           ++pc;
           break;
-        case Op::ArrayPush:
+        } while (0);
+        VM_NEXT();
+      L_ArrayPush:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           culebra_runtime_array_push(
               reinterpret_cast<JitArray*>(regs[in.a].data),
               static_cast<int8_t>(regs[in.b].tag), regs[in.b].data);
           regs[in.b] = JitValue{TAG_NIL, 0};
           ++pc;
           break;
-        case Op::ArrayExtend: {
+        } while (0);
+        VM_NEXT();
+      L_ArrayExtend:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           auto [line, col] = chunk_pos_at(c, pc);
           culebra_runtime_array_extend(
               reinterpret_cast<JitArray*>(regs[in.a].data),
@@ -14496,8 +14583,11 @@ struct Exec {
               col);
           ++pc;
           break;
-        }
-        case Op::ArrayResize: {
+        } while (0);
+        VM_NEXT();
+      L_ArrayResize:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& cnt = regs[in.b];
           auto [line, col] = chunk_pos_at(c, pc);
           if (cnt.tag != TAG_LONG)  // value_to_long's strict gate
@@ -14514,26 +14604,41 @@ struct Exec {
               line, col);
           ++pc;
           break;
-        }
-        case Op::TupleNew:
+        } while (0);
+        VM_NEXT();
+      L_TupleNew:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           regs[in.a] = JitValue{
               TAG_TUPLE,
               reinterpret_cast<int64_t>(culebra_runtime_tuple_new())};
           ++pc;
           break;
-        case Op::TuplePush:
+        } while (0);
+        VM_NEXT();
+      L_TuplePush:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           culebra_runtime_tuple_push(
               reinterpret_cast<JitArray*>(regs[in.a].data),
               static_cast<int8_t>(regs[in.b].tag), regs[in.b].data);
           regs[in.b] = JitValue{TAG_NIL, 0};
           ++pc;
           break;
-        case Op::SetNew:
+        } while (0);
+        VM_NEXT();
+      L_SetNew:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           regs[in.a] = JitValue{
               TAG_SET, reinterpret_cast<int64_t>(culebra_runtime_set_new())};
           ++pc;
           break;
-        case Op::SetAdd:
+        } while (0);
+        VM_NEXT();
+      L_SetAdd:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           // On the unhashable throw the register still owns the +1 (the
           // handler ladder frees it); the SetOpPos published just before
           // anchors the positionless error at the literal.
@@ -14543,13 +14648,21 @@ struct Exec {
           regs[in.b] = JitValue{TAG_NIL, 0};
           ++pc;
           break;
-        case Op::ObjectNew:
+        } while (0);
+        VM_NEXT();
+      L_ObjectNew:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           regs[in.a] = JitValue{
               TAG_OBJECT,
               reinterpret_cast<int64_t>(culebra_runtime_object_new())};
           ++pc;
           break;
-        case Op::ObjectNewShaped: {
+        } while (0);
+        VM_NEXT();
+      L_ObjectNewShaped:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           auto& spec = c.object_shape_specs[in.b];
           regs[in.a] = JitValue{
               TAG_OBJECT,
@@ -14558,8 +14671,11 @@ struct Exec {
                   static_cast<int64_t>(spec.keys.size())))};
           ++pc;
           break;
-        }
-        case Op::ObjectSet: {
+        } while (0);
+        VM_NEXT();
+      L_ObjectSet:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           // Unlike set_add, object_set consumes the value on EVERY exit,
           // including the positionless well-known-contract throw — nil the
           // register first so the handler ladder never double-releases.
@@ -14573,8 +14689,11 @@ struct Exec {
               vt, vd, line, col, /*is_init=*/true);
           ++pc;
           break;
-        }
-        case Op::SlotInit: {
+        } while (0);
+        VM_NEXT();
+      L_SlotInit:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           // ObjectSet's static-key form; the same nil-before-call rule.
           int8_t vt = static_cast<int8_t>(regs[in.b].tag);
           int64_t vd = regs[in.b].data;
@@ -14586,8 +14705,11 @@ struct Exec {
               vd, so.key_kind);
           ++pc;
           break;
-        }
-        case Op::ObjectSetAny: {
+        } while (0);
+        VM_NEXT();
+      L_ObjectSetAny:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           // object_set_any consumes both the key and the value on every
           // exit (including the positionless unhashable/well-known throw,
           // unlike set_add) — nil both registers first.
@@ -14603,8 +14725,11 @@ struct Exec {
               in.d != 0, vt, vd, line, col, /*is_init=*/true);
           ++pc;
           break;
-        }
-        case Op::ObjectMerge: {
+        } while (0);
+        VM_NEXT();
+      L_ObjectMerge:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           // object_merge borrows the source (retains each copied entry) —
           // the register keeps its +1, freed later by the statement sweep.
           auto [line, col] = chunk_pos_at(c, pc);
@@ -14614,8 +14739,11 @@ struct Exec {
               col);
           ++pc;
           break;
-        }
-        case Op::ModReg: {
+        } while (0);
+        VM_NEXT();
+      L_ModReg:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& v = regs[in.a];
           culebra_runtime_module_register(
               reinterpret_cast<const char*>(c.consts[in.b].data),
@@ -14623,8 +14751,11 @@ struct Exec {
           regs[in.a] = JitValue{TAG_NIL, 0};  // the table took the +1
           ++pc;
           break;
-        }
-        case Op::ModGet: {
+        } while (0);
+        VM_NEXT();
+      L_ModGet:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           auto [line, col] = chunk_pos_at(c, pc);
           int8_t tag = TAG_NIL;
           int64_t data = 0;
@@ -14634,8 +14765,11 @@ struct Exec {
           regs[in.a] = JitValue{tag, data};
           ++pc;
           break;
-        }
-        case Op::RangeNew: {
+        } while (0);
+        VM_NEXT();
+      L_RangeNew:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           bool hs = in.c & 1, he = in.c & 2;
           auto* o = culebra_runtime_make_range(
               hs ? 1 : 0, hs ? regs[in.b].data : 0, he ? 1 : 0,
@@ -14644,8 +14778,11 @@ struct Exec {
           regs[in.a] = JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(o)};
           ++pc;
           break;
-        }
-        case Op::ChkLong: {
+        } while (0);
+        VM_NEXT();
+      L_ChkLong:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           if (regs[in.a].tag != TAG_LONG) {
             auto [line, col] = chunk_pos_at(c, pc);
             culebra_runtime_type_error_typed(
@@ -14653,8 +14790,11 @@ struct Exec {
           }
           ++pc;
           break;
-        }
-        case Op::NilChk: {
+        } while (0);
+        VM_NEXT();
+      L_NilChk:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           if (regs[in.a].tag == TAG_NIL) {
             auto [line, col] = chunk_pos_at(c, pc);
             culebra_runtime_throw_error("NilError", "`!!` applied to nil",
@@ -14662,9 +14802,12 @@ struct Exec {
           }
           ++pc;
           break;
-        }
-        case Op::Index:
-        case Op::IndexWr: {
+        } while (0);
+        VM_NEXT();
+      L_Index:
+      L_IndexWr:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& recv = regs[in.b];
           const JitValue& key = regs[in.c];
           auto [line, col] = chunk_pos_at(c, pc);
@@ -14715,9 +14858,12 @@ struct Exec {
           }
           ++pc;
           break;
-        }
-        case Op::PropVal:
-        case Op::PropRaw: {
+        } while (0);
+        VM_NEXT();
+      L_PropVal:
+      L_PropRaw:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& recv = regs[in.b];
           const char* key = reinterpret_cast<const char*>(c.consts[in.c].data);
           auto [line, col] = chunk_pos_at(c, pc);
@@ -14761,23 +14907,32 @@ struct Exec {
           }
           ++pc;
           break;
-        }
-        case Op::HasProp: {
+        } while (0);
+        VM_NEXT();
+      L_HasProp:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const char* key = reinterpret_cast<const char*>(c.consts[in.c].data);
           regs[in.a] = JitValue{
               TAG_BOOL, has_prop_apply(in.d, regs[in.b], key) ? 1 : 0};
           ++pc;
           break;
-        }
-        case Op::Drop: {
+        } while (0);
+        VM_NEXT();
+      L_Drop:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& recv = regs[in.b];
           culebra_runtime_explicit_drop(static_cast<int8_t>(recv.tag),
                                         recv.data);
           regs[in.a] = JitValue{TAG_NIL, 0};
           ++pc;
           break;
-        }
-        case Op::ClsParamsChk: {
+        } while (0);
+        VM_NEXT();
+      L_ClsParamsChk:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& recv = regs[in.b];
           bool use_auto = false;
           if (recv.tag == TAG_OBJECT) {
@@ -14789,13 +14944,20 @@ struct Exec {
           regs[in.a] = JitValue{TAG_BOOL, use_auto ? 1 : 0};
           ++pc;
           break;
-        }
-        case Op::ClsParamsWalk:
+        } while (0);
+        VM_NEXT();
+      L_ClsParamsWalk:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           regs[in.a] = culebra_runtime_class_parameters_walk(
               reinterpret_cast<JitObject*>(regs[in.b].data));
           ++pc;
           break;
-        case Op::MethGate: {
+        } while (0);
+        VM_NEXT();
+      L_MethGate:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& recv = regs[in.b];
           const char* key = reinterpret_cast<const char*>(c.consts[in.c].data);
           auto [line, col] = chunk_pos_at(c, pc);
@@ -14844,14 +15006,21 @@ struct Exec {
           }
           ++pc;
           break;
-        }
-        case Op::CallRecv:
+        } while (0);
+        VM_NEXT();
+      L_CallRecv:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           regs[in.a] = culebra_runtime_call_receiver(
               static_cast<int8_t>(regs[in.a].tag), regs[in.a].data,
               reinterpret_cast<const char*>(c.consts[in.c].data));
           ++pc;
           break;
-        case Op::CbType: {
+        } while (0);
+        VM_NEXT();
+      L_CbType:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           if (regs[in.b].tag == TAG_NO_SELF &&
               regs[in.b].data == kBMethGateBuiltin) {
             // The helper reports at the callback's own argument, which it
@@ -14865,8 +15034,11 @@ struct Exec {
           }
           ++pc;
           break;
-        }
-        case Op::ArityChk: {
+        } while (0);
+        VM_NEXT();
+      L_ArityChk:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& gate = regs[in.a];
           if (gate.tag == TAG_NO_SELF && gate.data == kBMethGateMiss) {
             const JitValue& recv = regs[in.a + 1];
@@ -14883,8 +15055,11 @@ struct Exec {
           }
           ++pc;
           break;
-        }
-        case Op::ChkParam: {
+        } while (0);
+        VM_NEXT();
+      L_ChkParam:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           // A user method shadowing the built-in binds by its own signature,
           // and a miss binds nothing at all. regs[b+1] is the receiver, which
           // decides whether a per-arm check applies here (BMeth's own layout).
@@ -14902,8 +15077,11 @@ struct Exec {
           }
           ++pc;
           break;
-        }
-        case Op::BMeth: {
+        } while (0);
+        VM_NEXT();
+      L_BMeth:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& gate = regs[in.b];
           auto [line, col] = chunk_pos_at(c, pc);
           if (gate.tag == TAG_NO_SELF && gate.data == kBMethGateMiss)
@@ -14960,8 +15138,11 @@ struct Exec {
                                    col);
           ++pc;
           break;
-        }
-        case Op::BareMethChk: {
+        } while (0);
+        VM_NEXT();
+      L_BareMethChk:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& recv = regs[in.b];
           const char* key = reinterpret_cast<const char*>(c.consts[in.c].data);
           if (regs[in.a].tag == TAG_NIL &&
@@ -14973,8 +15154,11 @@ struct Exec {
           }
           ++pc;
           break;
-        }
-        case Op::IndexCo: {
+        } while (0);
+        VM_NEXT();
+      L_IndexCo:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& recv = regs[in.b];
           const JitValue& key = regs[in.c];
           auto [line, col] = chunk_pos_at(c, pc);
@@ -15033,8 +15217,11 @@ struct Exec {
           }
           ++pc;
           break;
-        }
-        case Op::IndexSet: {
+        } while (0);
+        VM_NEXT();
+      L_IndexSet:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& recv = regs[in.a];
           const JitValue& key = regs[in.b];
           const JitValue& val = regs[in.c];
@@ -15069,8 +15256,11 @@ struct Exec {
           }
           ++pc;
           break;
-        }
-        case Op::NsWrChk: {
+        } while (0);
+        VM_NEXT();
+      L_NsWrChk:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& recv = regs[in.a];
           if (recv.tag == TAG_OBJECT) {
             auto [line, col] = chunk_pos_at(c, pc);
@@ -15081,8 +15271,11 @@ struct Exec {
           }
           ++pc;
           break;
-        }
-        case Op::PropSet: {
+        } while (0);
+        VM_NEXT();
+      L_PropSet:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& recv = regs[in.a];
           const JitValue& val = regs[in.b];
           auto [line, col] = chunk_pos_at(c, pc);
@@ -15101,8 +15294,11 @@ struct Exec {
               /*is_init=*/false, dotpk >> 32, dotpk & 0xffffffff);
           ++pc;
           break;
-        }
-        case Op::PropWr: {
+        } while (0);
+        VM_NEXT();
+      L_PropWr:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& recv = regs[in.b];
           const auto* key = reinterpret_cast<const char*>(c.consts[in.c].data);
           auto [line, col] = chunk_pos_at(c, pc);
@@ -15132,8 +15328,11 @@ struct Exec {
           regs[in.a] = view;
           ++pc;
           break;
-        }
-        case Op::PropCo: {
+        } while (0);
+        VM_NEXT();
+      L_PropCo:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& recv = regs[in.b];
           const auto* key = reinterpret_cast<const char*>(c.consts[in.c].data);
           auto [line, col] = chunk_pos_at(c, pc);
@@ -15171,8 +15370,11 @@ struct Exec {
           regs[in.a] = view;
           ++pc;
           break;
-        }
-        case Op::SeqChk: {
+        } while (0);
+        VM_NEXT();
+      L_SeqChk:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& v = regs[in.a];
           bool ok = v.tag == TAG_ARRAY || v.tag == TAG_TUPLE;
           if (ok) {
@@ -15183,8 +15385,11 @@ struct Exec {
           if (ok) ++pc;
           else pc = static_cast<size_t>(in.b);
           break;
-        }
-        case Op::SeqGet: {
+        } while (0);
+        VM_NEXT();
+      L_SeqGet:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           auto* arr = reinterpret_cast<JitArray*>(regs[in.b].data);
           int64_t at = in.c >= 0 ? in.c : culebra_runtime_array_size(arr) + in.c;
           auto [line, col] = chunk_pos_at(c, pc);
@@ -15195,16 +15400,22 @@ struct Exec {
           regs[in.a] = JitValue{t, d};
           ++pc;
           break;
-        }
-        case Op::SeqRest: {
+        } while (0);
+        VM_NEXT();
+      L_SeqRest:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           auto* arr = reinterpret_cast<JitArray*>(regs[in.b].data);
           auto* out = culebra_runtime_array_slice(
               arr, in.c, culebra_runtime_array_size(arr) - in.d);
           regs[in.a] = JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(out)};
           ++pc;
           break;
-        }
-        case Op::ObjGet: {
+        } while (0);
+        VM_NEXT();
+      L_ObjGet:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& recv = regs[in.c];
           const auto* key = reinterpret_cast<const char*>(c.consts[in.d].data);
           if (recv.tag != TAG_OBJECT ||
@@ -15221,38 +15432,67 @@ struct Exec {
           regs[in.a] = JitValue{t, d};
           ++pc;
           break;
-        }
-        case Op::DestrErr: {
+        } while (0);
+        VM_NEXT();
+      L_DestrErr:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           auto [line, col] = chunk_pos_at(c, pc);
           culebra::throw_destructure_mismatch_at(line, col);
           break;
-        }
-        case Op::Jump:
-          if (jump_polls(in)) poll();
+        } while (0);
+        VM_NEXT();
+      L_Jump:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           pc = static_cast<size_t>(in.a);
           break;
-        case Op::JumpIfFalse:
+        } while (0);
+        VM_NEXT();
+      L_JumpIfFalse:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           if (!to_bool(regs[in.a], pc)) pc = static_cast<size_t>(in.b);
           else ++pc;
           break;
-        case Op::JumpIfTrue:
+        } while (0);
+        VM_NEXT();
+      L_JumpIfTrue:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           if (to_bool(regs[in.a], pc)) pc = static_cast<size_t>(in.b);
           else ++pc;
           break;
-        case Op::JumpIfNotNil:
+        } while (0);
+        VM_NEXT();
+      L_JumpIfNotNil:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           if (regs[in.a].tag != TAG_NIL) pc = static_cast<size_t>(in.b);
           else ++pc;
           break;
-        case Op::JumpIfNil:
+        } while (0);
+        VM_NEXT();
+      L_JumpIfNil:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           if (regs[in.a].tag == TAG_NIL) pc = static_cast<size_t>(in.b);
           else ++pc;
           break;
-        case Op::JumpIfTag:
+        } while (0);
+        VM_NEXT();
+      L_JumpIfTag:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           if (regs[in.a].tag == static_cast<int64_t>(in.c))
             pc = static_cast<size_t>(in.b);
           else ++pc;
           break;
-        case Op::MakeClosure: {
+        } while (0);
+        VM_NEXT();
+      L_MakeClosure:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const Chunk& f = p.chunks[in.b];
           auto n = f.capture_src_slots.size();
           auto* mc = culebra_runtime_closure_new(
@@ -15276,8 +15516,11 @@ struct Exec {
           regs[in.a] = JitValue{TAG_FUNC, reinterpret_cast<int64_t>(mc)};
           ++pc;
           break;
-        }
-        case Op::Call: {
+        } while (0);
+        VM_NEXT();
+      L_Call:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           auto tgt = chunk_call_target_at(c, pc);
           // A borrowed callee: the register holds the CELL and the value
           // inside it is what runs, with nothing minted for the call — the
@@ -15354,8 +15597,11 @@ struct Exec {
           regs[in.a] = r;
           ++pc;
           break;
-        }
-        case Op::CallM: {
+        } while (0);
+        VM_NEXT();
+      L_CallM:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& callee = regs[in.b];
           auto [line, col] = chunk_pos_at(c, pc);
           publish_call_site(c, pc, line, col);
@@ -15434,8 +15680,11 @@ struct Exec {
           regs[in.a] = r;
           ++pc;
           break;
-        }
-        case Op::CallKw: {
+        } while (0);
+        VM_NEXT();
+      L_CallKw:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const Chunk::KwCall& kc = c.kwcalls[in.d];
           auto [line, col] = chunk_pos_at(c, pc);
           // The positionals bind by index and report at their own expression;
@@ -15496,20 +15745,29 @@ struct Exec {
               pos_p + kc.n_pos + kc.n_kw, line, col);
           ++pc;
           break;
-        }
-        case Op::RaiseErr: {
+        } while (0);
+        VM_NEXT();
+      L_RaiseErr:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           auto [line, col] = chunk_pos_at(c, pc);
           culebra_runtime_throw_error(
               reinterpret_cast<const char*>(c.consts[in.b].data),
               reinterpret_cast<const char*>(c.consts[in.c].data), line, col);
           break;  // unreachable — the helper always throws
-        }
-        case Op::Ret: {
+        } while (0);
+        VM_NEXT();
+      L_Ret:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           JitValue rv = regs[in.a];
           if (c.counts_frame) culebra_runtime_recursion_leave();
           return rv;
-        }
-        case Op::CellNew: {
+        } while (0);
+        VM_NEXT();
+      L_CellNew:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           culebra_runtime_cell_release(
               reinterpret_cast<JitCell*>(regs[in.a].data));
           auto* cell = culebra_runtime_cell_new(
@@ -15518,16 +15776,22 @@ struct Exec {
           regs[in.a] = JitValue{TAG_LONG, reinterpret_cast<int64_t>(cell)};
           ++pc;
           break;
-        }
-        case Op::CellGet: {
+        } while (0);
+        VM_NEXT();
+      L_CellGet:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           auto* cell = reinterpret_cast<JitCell*>(regs[in.b].data);
           regs[in.a] = cell->value;
           culebra_runtime_value_retain(static_cast<int8_t>(regs[in.a].tag),
                                        regs[in.a].data);
           ++pc;
           break;
-        }
-        case Op::CellSet: {
+        } while (0);
+        VM_NEXT();
+      L_CellSet:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           auto* cell = reinterpret_cast<JitCell*>(regs[in.a].data);
           JitValue old = cell->value;
           cell->value = regs[in.b];
@@ -15536,27 +15800,41 @@ struct Exec {
                                         old.data);
           ++pc;
           break;
-        }
-        case Op::CellRelease:
+        } while (0);
+        VM_NEXT();
+      L_CellRelease:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           culebra_runtime_cell_release(
               reinterpret_cast<JitCell*>(regs[in.a].data));
           regs[in.a] = JitValue{TAG_NIL, 0};
           ++pc;
           break;
-        case Op::BindCapture:
+        } while (0);
+        VM_NEXT();
+      L_BindCapture:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           // captures[0] is the descriptor; user captures follow. Borrowed:
           // no retain, and the slot's frame-teardown Release is a no-op.
           regs[in.a] = JitValue{
               TAG_LONG, reinterpret_cast<int64_t>(cls->captures[1 + in.b])};
           ++pc;
           break;
-        case Op::ImmutErr: {
+        } while (0);
+        VM_NEXT();
+      L_ImmutErr:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           auto [line, col] = chunk_pos_at(c, pc);
           culebra_runtime_immutable_assign(
               reinterpret_cast<const char*>(c.consts[in.a].data), line, col);
           break;  // unreachable — the helper always throws
-        }
-        case Op::UnboundErr:
+        } while (0);
+        VM_NEXT();
+      L_UnboundErr:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           if ((in.c ? reinterpret_cast<JitCell*>(regs[in.a].data)->value
                     : regs[in.a])
                   .tag == TAG_NO_SELF) {
@@ -15569,7 +15847,11 @@ struct Exec {
           }
           ++pc;
           break;
-        case Op::MultifnReg: {
+        } while (0);
+        VM_NEXT();
+      L_MultifnReg:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const Chunk& f = p.chunks[in.d];
           // The overload's signature straight off the callee chunk: declared
           // types (null where untyped) drive type dispatch, `required` is the
@@ -15606,21 +15888,36 @@ struct Exec {
           regs[in.a] = JitValue{TAG_FUNC, reinterpret_cast<int64_t>(disp)};
           ++pc;
           break;
-        }
-        case Op::MfSelf:
+        } while (0);
+        VM_NEXT();
+      L_MfSelf:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           regs[in.a] = culebra_runtime_multifn_self(cls);
           ++pc;
           break;
-        case Op::ClsSelf:
+        } while (0);
+        VM_NEXT();
+      L_ClsSelf:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           regs[in.a] = culebra_runtime_class_self(
               static_cast<int8_t>(regs[in.b].tag), regs[in.b].data);
           ++pc;
           break;
-        case Op::WkErr:
+        } while (0);
+        VM_NEXT();
+      L_WkErr:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           culebra_runtime_wk_contract_error(
               reinterpret_cast<const char*>(c.consts[in.a].data));
           break;  // unreachable — the helper always throws
-        case Op::ClassMeta: {
+        } while (0);
+        VM_NEXT();
+      L_ClassMeta:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           // Cold path (once per declaration): the names table lives in the
           // chunk, so the array of c_str()s is built here.
           const auto& tbl = c.name_tables[in.d];
@@ -15650,14 +15947,20 @@ struct Exec {
           regs[in.a] = JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(meta)};
           ++pc;
           break;
-        }
-        case Op::DeriveFn: {
+        } while (0);
+        VM_NEXT();
+      L_DeriveFn:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           auto* cl = culebra_runtime_make_derived_method(in.b);
           regs[in.a] = JitValue{TAG_FUNC, reinterpret_cast<int64_t>(cl)};
           ++pc;
           break;
-        }
-        case Op::RegPack:
+        } while (0);
+        VM_NEXT();
+      L_RegPack:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           if (in.d)
             culebra_runtime_register_packable_enum(
                 reinterpret_cast<const char*>(c.consts[in.a].data),
@@ -15668,7 +15971,11 @@ struct Exec {
                 reinterpret_cast<const char*>(c.consts[in.b].data));
           ++pc;
           break;
-        case Op::EnumVariant: {
+        } while (0);
+        VM_NEXT();
+      L_EnumVariant:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const char* variant =
               reinterpret_cast<const char*>(c.consts[in.c].data);
           const char* en = reinterpret_cast<const char*>(c.consts[in.d].data);
@@ -15684,8 +15991,11 @@ struct Exec {
           }
           ++pc;
           break;
-        }
-        case Op::TypeMatch: {
+        } while (0);
+        VM_NEXT();
+      L_TypeMatch:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& v = regs[in.a];
           if (culebra_runtime_type_matches(
                   static_cast<int8_t>(v.tag), v.data,
@@ -15694,15 +16004,21 @@ struct Exec {
           else
             pc = static_cast<size_t>(in.b);
           break;
-        }
-        case Op::ClassObj: {
+        } while (0);
+        VM_NEXT();
+      L_ClassObj:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           auto* o = culebra_runtime_object_new();
           culebra_runtime_mark_class(o);
           regs[in.a] = JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(o)};
           ++pc;
           break;
-        }
-        case Op::BindStatic: {
+        } while (0);
+        VM_NEXT();
+      L_BindStatic:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           culebra_runtime_object_bind_static(
               reinterpret_cast<JitObject*>(regs[in.a].data),
               reinterpret_cast<const char*>(c.consts[in.b].data),
@@ -15710,8 +16026,11 @@ struct Exec {
           regs[in.c] = JitValue{TAG_NIL, 0};  // the slot absorbed the +1
           ++pc;
           break;
-        }
-        case Op::MakeInst: {
+        } while (0);
+        VM_NEXT();
+      L_MakeInst:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& meta = regs[in.b];
           const JitValue& finit = regs[in.b + 1];
           const JitValue& body = regs[in.b + 2];
@@ -15726,8 +16045,11 @@ struct Exec {
               static_cast<int8_t>(body.tag), body.data, n_args, args);
           ++pc;
           break;
-        }
-        case Op::ValueBox: {
+        } while (0);
+        VM_NEXT();
+      L_ValueBox:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           auto& spec = c.value_box_specs[in.c];
           regs[in.a] = culebra_runtime_materialize_value(
               &spec.shape, spec.keys.data(),
@@ -15736,8 +16058,11 @@ struct Exec {
               &regs[in.b]);
           ++pc;
           break;
-        }
-        case Op::FieldsInit: {
+        } while (0);
+        VM_NEXT();
+      L_FieldsInit:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           auto& spec = c.field_layout_specs[in.b];
           culebra_runtime_object_fields_init(
               reinterpret_cast<JitObject*>(regs[in.a].data), spec.shape,
@@ -15745,14 +16070,21 @@ struct Exec {
               spec.zeros.data(), spec.types.data());
           ++pc;
           break;
-        }
-        case Op::FieldInit:
+        } while (0);
+        VM_NEXT();
+      L_FieldInit:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           culebra_runtime_run_field_init(
               reinterpret_cast<JitClosure*>(regs[in.a].data),
               static_cast<int8_t>(regs[in.b].tag), regs[in.b].data);
           ++pc;
           break;
-        case Op::SelfMerge: {
+        } while (0);
+        VM_NEXT();
+      L_SelfMerge:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           // A receiver's +1 transfers straight through, so the raw slot is
           // emptied rather than released; with none it holds the sentinel.
           JitValue abi = regs[in.b];
@@ -15762,14 +16094,20 @@ struct Exec {
               reinterpret_cast<JitCell*>(regs[in.c].data));
           ++pc;
           break;
-        }
-        case Op::TraitReset: {
+        } while (0);
+        VM_NEXT();
+      L_TraitReset:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           culebra_runtime_trait_defaults_reset(
               reinterpret_cast<const char*>(c.consts[in.a].data));
           ++pc;
           break;
-        }
-        case Op::TraitDefault: {
+        } while (0);
+        VM_NEXT();
+      L_TraitDefault:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           JitValue fn = regs[in.c];
           regs[in.c] = JitValue{TAG_NIL, 0};  // the registry takes the +1
           culebra_runtime_register_trait_default(
@@ -15778,24 +16116,33 @@ struct Exec {
               reinterpret_cast<JitClosure*>(fn.data));
           ++pc;
           break;
-        }
-        case Op::TraitReg: {
+        } while (0);
+        VM_NEXT();
+      L_TraitReg:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           culebra_runtime_register_trait(
               reinterpret_cast<const char*>(c.consts[in.a].data),
               reinterpret_cast<const char*>(c.consts[in.b].data),
               reinterpret_cast<const char*>(c.consts[in.c].data));
           ++pc;
           break;
-        }
-        case Op::PosSnap: {
+        } while (0);
+        VM_NEXT();
+      L_PosSnap:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           int64_t def = c.consts[in.b].data;
           regs[in.a] = JitValue{
               TAG_LONG, culebra_runtime_param_pos(in.c, def >> 32,
                                                   def & 0xffffffff)};
           ++pc;
           break;
-        }
-        case Op::ChkTypeAt: {
+        } while (0);
+        VM_NEXT();
+      L_ChkTypeAt:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           auto [line, col] = chunk_pos_at(c, pc);
           if (in.d >= 0) {
             auto pos = _jit_unpack_pos(regs[in.d].data);
@@ -15809,8 +16156,11 @@ struct Exec {
               reinterpret_cast<const char*>(c.consts[in.c].data), line, col);
           ++pc;
           break;
-        }
-        case Op::ChkArg: {
+        } while (0);
+        VM_NEXT();
+      L_ChkArg:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           auto [line, col] = chunk_pos_at(c, pc);
           const JitValue& v = regs[in.a];
           culebra_runtime_type_check_param(
@@ -15820,8 +16170,11 @@ struct Exec {
               col);
           ++pc;
           break;
-        }
-        case Op::ArgTag:
+        } while (0);
+        VM_NEXT();
+      L_ArgTag:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           // The value already carries this tag — the check the emitter put
           // above it is what says so. Only the JIT has something to gain
           // (the constant it substitutes); here the assert is the whole
@@ -15831,11 +16184,19 @@ struct Exec {
                  "ArgTag past a check that did not settle the tag");
           ++pc;
           break;
-        case Op::JumpIfFilled:
+        } while (0);
+        VM_NEXT();
+      L_JumpIfFilled:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           pc = regs[in.a].tag == TAG_UNFILLED ? pc + 1
                                               : static_cast<size_t>(in.b);
           break;
-        case Op::ArgsRest: {
+        } while (0);
+        VM_NEXT();
+      L_ArgsRest:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           // The caller's `+1` on each overflow argument moves into the
           // Array; run_frame left them alone for this chunk.
           int64_t from = c.arity;
@@ -15850,8 +16211,11 @@ struct Exec {
                                  args, from, n_args))};
           ++pc;
           break;
-        }
-        case Op::KwRest:
+        } while (0);
+        VM_NEXT();
+      L_KwRest:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           // The marked Object arrives already owned by this slot; anything
           // else means no keyword content reached the call.
           regs[in.a] =
@@ -15861,17 +16225,28 @@ struct Exec {
                                              culebra_runtime_object_new())};
           ++pc;
           break;
-        case Op::RecEnter: {
+        } while (0);
+        VM_NEXT();
+      L_RecEnter:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           int64_t d = culebra_runtime_recursion_enter();
           if (in.a) frame_depth = d;
           ++pc;
           break;
-        }
-        case Op::RecLeave:
+        } while (0);
+        VM_NEXT();
+      L_RecLeave:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           culebra_runtime_recursion_leave();
           ++pc;
           break;
-        case Op::NsGet: {
+        } while (0);
+        VM_NEXT();
+      L_NsGet:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           int8_t tag;
           int64_t data;
           culebra_runtime_namespace_get(
@@ -15879,27 +16254,40 @@ struct Exec {
           regs[in.a] = JitValue{tag, data};  // the resolver's +1
           ++pc;
           break;
-        }
-        case Op::SetOpPos: {
+        } while (0);
+        VM_NEXT();
+      L_SetOpPos:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           auto [line, col] = chunk_pos_at(c, pc);
           culebra_runtime_set_op_pos(line, col);
           ++pc;
           break;
-        }
-        case Op::BoundPos: {
+        } while (0);
+        VM_NEXT();
+      L_BoundPos:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           auto [line, col] = chunk_pos_at(c, pc);
           culebra_runtime_set_call_boundary(line, col);
           ++pc;
           break;
-        }
-        case Op::Disp:
+        } while (0);
+        VM_NEXT();
+      L_Disp:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           regs[in.a] = JitValue{
               TAG_STRING,
               reinterpret_cast<int64_t>(culebra_runtime_value_to_display(
                   static_cast<int8_t>(regs[in.b].tag), regs[in.b].data))};
           ++pc;
           break;
-        case Op::Fmt: {
+        } while (0);
+        VM_NEXT();
+      L_Fmt:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           auto [line, col] = chunk_pos_at(c, pc);
           const char* spec = reinterpret_cast<const char*>(
               in.d ? regs[in.c].data : c.consts[in.c].data);
@@ -15910,8 +16298,11 @@ struct Exec {
                   line, col))};
           ++pc;
           break;
-        }
-        case Op::StrCat:
+        } while (0);
+        VM_NEXT();
+      L_StrCat:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           regs[in.a] = JitValue{
               TAG_STRING,
               reinterpret_cast<int64_t>(culebra_runtime_str_concat(
@@ -15919,35 +16310,57 @@ struct Exec {
                   reinterpret_cast<const char*>(regs[in.c].data)))};
           ++pc;
           break;
-        case Op::Throw: {
+        } while (0);
+        VM_NEXT();
+      L_Throw:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           JitValue v = regs[in.a];
           regs[in.a] = JitValue{TAG_NIL, 0};  // the +1 rides the carrier now
           auto [line, col] = chunk_pos_at(c, pc);
           culebra_runtime_throw(static_cast<int8_t>(v.tag), v.data, line, col);
           break;  // unreachable — throw never returns
-        }
-        case Op::DeferMark:
+        } while (0);
+        VM_NEXT();
+      L_DeferMark:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           regs[in.a] = JitValue{TAG_LONG, culebra_runtime_defer_mark()};
           ++pc;
           break;
-        case Op::DeferPush:
+        } while (0);
+        VM_NEXT();
+      L_DeferPush:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           // Borrow: the runtime retains, the frame keeps its +1 (the
           // statement temp's sweep drops it).
           culebra_runtime_defer_push(static_cast<int8_t>(regs[in.a].tag),
                                      regs[in.a].data);
           ++pc;
           break;
-        case Op::DeferRunTo:
+        } while (0);
+        VM_NEXT();
+      L_DeferRunTo:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           culebra_runtime_defer_run_to(regs[in.a].data);
           ++pc;
           break;
-        case Op::ForOpen: {
+        } while (0);
+        VM_NEXT();
+      L_ForOpen:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           auto [line, col] = chunk_pos_at(c, pc);
           for_open(regs + in.a, line, col);
           ++pc;
           break;
-        }
-        case Op::ForNext: {
+        } while (0);
+        VM_NEXT();
+      L_ForNext:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           // A step raises positionless (a `has_next()` answer with no
           // truthiness, a protocol lost mid-walk); the interpreter reports
           // those at the statement it was running — baked into c/d at
@@ -15956,12 +16369,19 @@ struct Exec {
           if (for_next(regs + in.a)) ++pc;
           else pc = static_cast<size_t>(in.b);
           break;
-        }
-        case Op::ForDispose:
+        } while (0);
+        VM_NEXT();
+      L_ForDispose:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           for_dispose(regs + in.a, in.d != 0);
           ++pc;
           break;
-        case Op::ForPrep: {
+        } while (0);
+        VM_NEXT();
+      L_ForPrep:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           int64_t step = regs[in.a + 2].data;
           if (step == 0) {
             // The runtime helper is the sole owner of this diagnostic
@@ -15972,11 +16392,13 @@ struct Exec {
           regs[in.a + 3] = JitValue{TAG_LONG, 0};
           pc = static_cast<size_t>(in.b);
           break;
-        }
-        case Op::ForLoop: {
-          if (for_loop_polls(in)) poll();
+        } while (0);
+        VM_NEXT();
+      L_ForLoop:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           RangeBounds rb{regs[in.a].data, regs[in.a + 1].data,
-                         regs[in.a + 2].data, for_loop_inclusive(in),
+                         regs[in.a + 2].data, in.d != 0,
                          regs[in.a + 3].data != 0};
           if (rb.done()) {
             ++pc;
@@ -15990,8 +16412,11 @@ struct Exec {
           regs[in.c] = JitValue{TAG_LONG, v};
           pc = static_cast<size_t>(in.b);
           break;
-        }
-        case Op::Println: {
+        } while (0);
+        VM_NEXT();
+      L_Println:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           // The str walker inside raises a positionless ValueError on a
           // too-deep value; publish this row's position so the boundary
           // backfill lands there (the JIT's emit_output_call order).
@@ -16001,8 +16426,11 @@ struct Exec {
                                   regs[in.a].data);
           ++pc;
           break;
-        }
-        case Op::ToFloat: {
+        } while (0);
+        VM_NEXT();
+      L_ToFloat:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& v = regs[in.b];
           if (v.tag == TAG_FLOAT) {
             regs[in.a] = v;
@@ -16016,8 +16444,11 @@ struct Exec {
           }
           ++pc;
           break;
-        }
-        case Op::NsCall: {
+        } while (0);
+        VM_NEXT();
+      L_NsCall:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           // The position only on the throw path: every error the dispatch
           // raises is positioned by the line/col it is handed, so a
           // positionless call plus the backfill reports the same thing
@@ -16032,16 +16463,28 @@ struct Exec {
           }
           ++pc;
           break;
-        }
-        case Op::Safepoint:
-          poll();
+        } while (0);
+        VM_NEXT();
+      L_Safepoint:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
+          if (culebra_g_wake.load(std::memory_order_relaxed))
+            culebra::throw_if_interrupted();
           ++pc;
           break;
-        case Op::DropSuppress:
+        } while (0);
+        VM_NEXT();
+      L_DropSuppress:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           culebra_runtime_set_drop_suppressed(static_cast<int8_t>(in.a));
           ++pc;
           break;
-        case Op::BArity: {
+        } while (0);
+        VM_NEXT();
+      L_BArity:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           const JitValue& r = regs[in.a];
           for (const auto& arm : c.arity_checks[in.b]) {
             bool hit;
@@ -16064,43 +16507,68 @@ struct Exec {
           }
           ++pc;
           break;
-        }
-        case Op::LazyNsReg:
+        } while (0);
+        VM_NEXT();
+      L_LazyNsReg:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           culebra_runtime_lazy_ns_register(
               reinterpret_cast<const char*>(c.consts[in.c].data),
               static_cast<int8_t>(regs[in.b].tag), regs[in.b].data);
           ++pc;
           break;
-        case Op::FnHandle:
+        } while (0);
+        VM_NEXT();
+      L_FnHandle:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           regs[in.a] = culebra_runtime_fn_handle(
               static_cast<int8_t>(regs[in.b].tag), regs[in.b].data,
               reinterpret_cast<JitClosure*>(regs[in.c].data), &regs[in.d]);
           ++pc;
           break;
-        case Op::OwnedMark:
+        } while (0);
+        VM_NEXT();
+      L_OwnedMark:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           marks[in.a] = owned_next_id();
           ++pc;
           break;
-        case Op::OwnedExit:
+        } while (0);
+        VM_NEXT();
+      L_OwnedExit:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           culebra_runtime_owned_scope_exit(marks[in.a]);
           ++pc;
           break;
-        case Op::ReplCell: {
+        } while (0);
+        VM_NEXT();
+      L_ReplCell:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           auto* nm = reinterpret_cast<const char*>(c.consts[in.b].data);
           regs[in.a] = JitValue{
               TAG_LONG,
               reinterpret_cast<int64_t>(repl_session().cell(nm))};
           ++pc;
           break;
-        }
-        case Op::ReplBind: {
+        } while (0);
+        VM_NEXT();
+      L_ReplBind:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           auto* nm = reinterpret_cast<const char*>(c.consts[in.b].data);
           repl_bind(nm, static_cast<ReplBindMode>(in.a), in.c != 0,
                     chunk_pos_at(c, pc));
           ++pc;
           break;
-        }
-        case Op::DbgStmt: {
+        } while (0);
+        VM_NEXT();
+      L_DbgStmt:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           auto [line, col] = chunk_pos_at(c, pc);
           auto& st = dbg_state();
           if (st.tracking && !st.frames.empty()) {
@@ -16118,11 +16586,15 @@ struct Exec {
             culebra_runtime_debugger_break(p.source_path.c_str(), line, col);
           }
           break;
-        }
-        case Op::Halt:
+        } while (0);
+        VM_NEXT();
+      L_Halt:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
           return JitValue{TAG_NIL, 0};
-      }
-    }
+        } while (0);
+        VM_NEXT();
+#undef VM_NEXT
   }
 };
 

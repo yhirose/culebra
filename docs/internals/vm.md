@@ -526,6 +526,26 @@ both), so the pair becomes one `MoveRetain`, saving a dispatch on each.
 That opcode exists for the pass to emit; the compiler still writes the
 pair, which keeps the source it comes from readable.
 
+**Fusing the ladder** is the fifth, and unlike the four above it proves
+nothing — it is about the SHAPE of the code rather than its dataflow, so
+it runs once after the others have reached their fixpoint. Releasing a
+scope is one decision the compiler already made as a unit, and spending
+an instruction per rung on it is what leaves `Release` at 30% of the
+bytecode a program holds. A run of them becomes one `ReleaseMany` naming
+the same slots in the same order, end to end in `Chunk::release_slots`
+(one array for the whole chunk, not one per site: a ladder is usually two
+or three rungs, and at that length a second indirection costs more than
+the dispatches the fusion saved). A ladder may not be entered in the
+middle, so a run stops at any pc that is a jump target or a cleanup's
+start, end or handler — the ranges an unwind picks a ladder by. The
+refcount and owned-stack analyses need no arm for the new opcode: their
+`default` is clobber-all / read-all, the safe direction, so the
+postcondition they assert only gets more careful.
+
+Over `tests/`, `examples/` and the benchmarks, this one pass takes
+1,956,262 instructions to 1,500,611 — 23% of everything the four passes
+above left behind.
+
 Deleting or rewriting an instruction is a pass over the finished `Chunk`,
 not a second emission: the seven pc-keyed tables (`code`'s jump operands,
 `positions`, `cleanups`, `slot_debug`, `temp_points`, `call_argpos`, the
@@ -540,11 +560,11 @@ instructions to 701,179.
 
 ### 5.3 The opcode families
 
-149 opcodes, grouped:
+151 opcodes, grouped:
 
 | family | ops | notes |
 |---|---|---|
-| values | `LoadConst` `Move` `Take` `Retain` `Release` `MoveRetain` | §5.2; `MoveRetain` is the fused borrow the elision pass emits (§5.2.1) |
+| values | `LoadConst` `Move` `Take` `Retain` `Release` `MoveRetain` `ReleaseMany` | §5.2; `MoveRetain` and `ReleaseMany` are the fused borrow and the fused release ladder the elision passes emit (§5.2.1) |
 | arithmetic, bitwise, comparison | `Neg` `Not` `Add` … `Pow` `MatMul` `BitAnd` … `Shr` `BitNot` `Eq` … `Ge` `JumpIfSame` | each is one runtime dispatch, with the arithmetic and comparison ops deciding both-Long and both-numeric inline first (`Neg` its Long and Float arms); `d=1` on an arithmetic op marks a compound assignment's in-place Tensor step |
 | containers | `ArrayNew/Append/Push/Extend/Resize` `TupleNew/Push` `SetNew/Add` `ObjectNew/NewShaped/Set/SetAny/Merge` `SlotInit` `RangeNew` `ChkLong` | the container absorbs the element's `+1`; `SlotInit` is `ObjectSet` by slot index for a literal whose Shape was pre-built (§5.3.5) |
 | access | `Index` `IndexWr` `IndexCo` `IndexSet` `PropSet` `PropWr` `PropCo` `PropVal` `PropRaw` `HasProp` `NsWrChk` `NilChk` | read / write / coalescing-write forms of subscript and property access; `PropVal` is a plain property read that may invoke a getter |
@@ -1246,7 +1266,22 @@ every lane.
 
 ## 6. The executor
 
-`vm::Exec` is a switch-dispatch interpreter. `run_frame` allocates the
+`vm::Exec` dispatches through a table of label addresses: every arm ends
+with its own indirect jump to the next opcode's arm rather than returning
+to one site a `switch` would share. A shared site sees every opcode the
+program runs and learns none of them; a per-arm site sees what follows
+THAT opcode, which is often one thing. The table is ordered by the `Op`
+enum and asserted against it, so an opcode added without a row does not
+compile.
+
+Each arm is a `do { … } while (0)`, which is what makes that a rename
+rather than a rewrite: an arm's own `break` still leaves it, a nested
+loop's still binds to the loop, and leaving an arm stays an ordinary
+scope exit, so the destructors of anything the arm built still run. A
+bare label-and-goto form does not have that property — a computed goto
+out of a live scope skips them, which is a leak the switch never had.
+
+`run_frame` allocates the
 frame's register window as a variable-length array on the machine stack
 (sized from the chunk's `num_slots`, so a small function pays for a
 small frame), binds the parameters, the receiver and the `fn` handle in
