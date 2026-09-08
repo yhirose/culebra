@@ -784,7 +784,11 @@ inline JitValue _jit_channel_result(ChanTryPopStatus status, JitValue* payload) 
     case ChanTryPopStatus::Closed: break;
   }
   int64_t arity = payload ? 1 : 0;
-  return culebra_runtime_build_variant(name, kEnum, arity, payload, arity, 0, 0);
+  // Natively produced: no declaration owns a meta for these, so they share
+  // one from the Runtime's table (see _jit_native_variant_meta).
+  return culebra_runtime_build_variant(
+      _jit_native_variant_meta(name, kEnum), name, kEnum, arity, payload,
+      arity, 0, 0);
 }
 
 inline void _jit_chan_try_recv(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,

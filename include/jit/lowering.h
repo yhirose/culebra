@@ -1440,11 +1440,17 @@ struct Lowering {
           auto variant = name(in.c);
           auto en = name(in.d);
           if (in.b == 0) {
+            // The singleton owns its meta, and the enum object owns the
+            // singleton — so the collector reaches it the ordinary way.
+            auto meta = j.emit_call(
+                j.module_->getOrInsertFunction(rt::make_variant_meta, ptrTy,
+                                               ptrTy, ptrTy),
+                {variant, en}, "vm.variant.meta");
             auto inst = j.emit_value_call(
                 j.module_->getOrInsertFunction(rt::build_variant, j.valueType_,
-                                               ptrTy, ptrTy, i64Ty, ptrTy,
-                                               i64Ty, i64Ty, i64Ty),
-                {variant, en, b.getInt64(0),
+                                               ptrTy, ptrTy, ptrTy, i64Ty,
+                                               ptrTy, i64Ty, i64Ty, i64Ty),
+                {meta, variant, en, b.getInt64(0),
                  llvm::ConstantPointerNull::get(ptrTy), b.getInt64(0),
                  b.getInt64(line), b.getInt64(col)},
                 "vm.variant");

@@ -42,7 +42,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitCell* culebra_runtime_cell_new(
 // so the single i64-pair store per call is the only cost on the hot path.
 // (Every position this file publishes lives in `_jit_thread`, rt_runtime.inc.h.)
 
-// Build a variant instance: tagged with `class` = variant name and
+// Build a variant instance: `meta` is TRANSFERRED (the instance's proto takes
+// the caller's +1), tagged with `class` = variant name and
 // `__enum` = parent enum name, with the `arity` declared payload fields
 // `_0.._{arity-1}` taking ownership of the caller's args (object_set
 // transfers the +1, mirroring the default-ctor path). `n_args` is what the
@@ -52,8 +53,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitCell* culebra_runtime_cell_new(
 // locate the arity error (the direct-call emit passes the call site; the
 // ctor-as-value thunk passes the recorded call site).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_variant(
-    const char* variant_name, const char* enum_name, int64_t n_args,
-    JitValue* args, int64_t arity, int64_t line, int64_t col) {
+    JitObject* meta, const char* variant_name, const char* enum_name,
+    int64_t n_args, JitValue* args, int64_t arity, int64_t line, int64_t col) {
   if (n_args < arity) {
     // Mirror interp: report the first unbound positional field, after
     // releasing the args we took ownership of but won't store.
@@ -61,11 +62,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_variant(
     for (int64_t i = 0; i < n_args; i++) {
       _culebra_value_release_impl(args[i].tag, args[i].data);
     }
+    _culebra_value_release_impl(TAG_OBJECT, reinterpret_cast<int64_t>(meta));
     throw culebra::CulebraError(
         "ArityError", culebra::missing_required_arg_message(missing),
         line, col);
   }
   auto* inst = culebra_runtime_object_new();
+  inst->set_proto(meta);  // transferred: no retain
   culebra_runtime_object_set(inst, "class", /*mut*/ false, TAG_STRING,
                              reinterpret_cast<int64_t>(variant_name), 0, 0);
   culebra_runtime_object_set(inst, "__enum", /*mut*/ false, TAG_STRING,
@@ -84,25 +87,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_variant(
   return {TAG_OBJECT, reinterpret_cast<int64_t>(inst)};
 }
 
-// Side table mapping a payload-variant constructor closure to its
-// (variant, enum) names — recovered by the shared thunk below. Mirrors
-// _jit_multifn_dispatchers, minus its capture-borne shortcut: a variant
-// ctor is built once per enum, never called in a loop.
-// thread_local: keyed by per-thread JIT-compiled closure pointers, so
-// there is nothing to share across host threads. Isolating per thread
-// removes the data race that a process-wide static would have (unlike
-// trait_registry, which is intentionally shared + mutex-guarded because
-// every isolate must see the same trait definitions).
-inline std::map<JitClosure*, std::pair<std::string, std::string>>&
-_jit_variant_ctor_info() {
-  static thread_local std::map<JitClosure*, std::pair<std::string, std::string>>
-      tbl;
-  return tbl;
-}
-
 // JitFn-ABI shared thunk installed as `fn_ptr` on every payload-variant
-// constructor closure. Recovers the variant/enum names from the side
-// table and builds the instance from the call args.
+// constructor closure. Recovers the variant's meta — and with it the two
+// names — from the closure's own capture, and builds the instance from the
+// call args. The capture is what keeps the meta alive and GC-reachable for
+// as long as any instance can still be built.
 inline void _jit_variant_ctor_thunk(JitValue* __ret, JitClosure* cls, int8_t self_tag,
                                          int64_t self_data, int64_t n_args,
                                          JitValue* args) {
@@ -113,26 +102,29 @@ inline void _jit_variant_ctor_thunk(JitValue* __ret, JitClosure* cls, int8_t sel
   // it must drop that +1 or the namespace strands one reference per call.
   // (An indirect `let f = E.V; f(x)` passes nil — a no-op release.)
   _culebra_value_release_impl(self_val.tag, self_val.data);
-  auto& info = _jit_variant_ctor_info();
-  auto it = info.find(cls);
-  if (it == info.end()) { *__ret = {TAG_NIL, 0}; return; }
-  { *__ret = culebra_runtime_build_variant(
-      _intern_str(it->second.first), _intern_str(it->second.second), n_args,
-      args, static_cast<int64_t>(cls->arity), _jit_thread.call_line,
-      _jit_thread.call_col); return; }
+  if (cls->n_captures < 1) { *__ret = {TAG_NIL, 0}; return; }
+  auto* meta = reinterpret_cast<JitObject*>(cls->captures[0]->value.data);
+  meta->refcount++;  // the instance's own reference; the capture keeps its
+  *__ret = culebra_runtime_build_variant(
+      meta, meta->specials->name, meta->specials->enum_name, n_args, args,
+      static_cast<int64_t>(cls->arity), _jit_thread.call_line,
+      _jit_thread.call_col);
 }
 
-// Create a payload-variant constructor closure (`Result.Ok`): a closure
-// over the shared thunk with the variant/enum names recorded in the
-// side table. Returns +1 (caller owns; the enum namespace slot takes it).
+// Create a payload-variant constructor closure (`Result.Ok`): a closure over
+// the shared thunk holding the variant's meta in its single capture. Returns
+// +1 (caller owns; the enum namespace slot takes it), and the meta rides
+// along — released with the closure, enumerated with its captures, so it is
+// reachable from the enum object like everything else the declaration built.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure*
 culebra_runtime_make_variant_ctor(const char* variant_name,
                                     const char* enum_name, int64_t arity) {
   auto* cls = culebra_runtime_closure_new(
-      reinterpret_cast<void*>(&_jit_variant_ctor_thunk), /*n_captures=*/0,
+      reinterpret_cast<void*>(&_jit_variant_ctor_thunk), /*n_captures=*/1,
       static_cast<size_t>(arity), JIT_CLOSURE_NATIVE, /*meta=*/nullptr);
-  _jit_variant_ctor_info()[cls] = {std::string(variant_name),
-                                    std::string(enum_name)};
+  auto* vmeta = culebra_runtime_make_variant_meta(variant_name, enum_name);
+  cls->captures[0] = culebra_runtime_cell_new(
+      TAG_OBJECT, reinterpret_cast<int64_t>(vmeta));  // transferred
   return cls;
 }
 

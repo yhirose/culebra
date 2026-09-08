@@ -276,6 +276,8 @@ struct JitSpecialTable {
   // through `proto`, so the name lives here rather than on JitObject, which
   // must stay inside its 128-byte slab class.
   const char* name = nullptr;
+  // The parent enum, on a variant's meta only (null on a class's). Interned.
+  const char* enum_name = nullptr;
 };
 
 // All refcounted heap types share the same first field: i64 refcount.

@@ -15992,8 +15992,11 @@ struct Exec {
           const char* en = reinterpret_cast<const char*>(c.consts[in.d].data);
           auto [line, col] = chunk_pos_at(c, pc);
           if (in.b == 0) {
-            regs[in.a] = culebra_runtime_build_variant(variant, en, 0, nullptr,
-                                                       0, line, col);
+            // The singleton owns its meta, and the enum object owns the
+            // singleton — so the collector reaches it the ordinary way.
+            regs[in.a] = culebra_runtime_build_variant(
+                culebra_runtime_make_variant_meta(variant, en), variant, en, 0,
+                nullptr, 0, line, col);
           } else {
             regs[in.a] = JitValue{
                 TAG_FUNC, reinterpret_cast<int64_t>(

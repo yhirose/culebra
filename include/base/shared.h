@@ -2194,6 +2194,13 @@ enum RuntimeSlot : size_t {
   // `drop` can still dispatch a trait default) while its own destructor's
   // release cascade still sees a live multifn registry, GC heap, and slab.
   kSlotJitTraitDefaults,
+  // Shared metas for natively produced enum variants (ChannelResult from
+  // `rx.try_recv()`, WsResult from `ws_receive`): those have no declaration
+  // to own one, and minting a meta per result cost ~20% of try_recv. Holds a
+  // +1 (and a pin) on each, so it needs the same placement as the registries
+  // above — torn down while the GC heap and slab are still alive. Per
+  // Runtime, not per process: a meta belongs to the heap that allocated it.
+  kSlotJitNativeVariantMetas,
   kSlotShapeRegistry,  // reserved/unused: the Shape intern table is now a
                        // process-global singleton (see jit.h ShapeRegistry) —
                        // Shapes are shared immutable metadata, not isolated heap

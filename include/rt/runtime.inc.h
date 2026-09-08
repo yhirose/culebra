@@ -2836,6 +2836,59 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_new() {
   return o;
 }
 
+// One meta per (variant, enum), the twin of a class's. It carries the two
+// names, and every variant instance reaches them through `proto` — the same
+// route a class instance reaches its own name by. Returns +1; every caller
+// hands that reference straight to the value that will own it (the singleton
+// for a nullary variant, the constructor closure's capture otherwise), so
+// the meta is reachable from an ordinary root and the cycle collector can
+// account for it. A side table would not be: it is invisible to the
+// trial-deletion pass, which then condemns the meta out from under live
+// instances.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject*
+culebra_runtime_make_variant_meta(const char* variant_name,
+                                  const char* enum_name) {
+  auto* meta = culebra_runtime_object_new();
+  meta->is_class_meta = true;
+  meta->specials = new JitSpecialTable();
+  meta->specials->name = _intern_str(std::string_view(variant_name));
+  meta->specials->enum_name = _intern_str(std::string_view(enum_name));
+  return meta;
+}
+
+// The shared meta a natively produced variant carries. ChannelResult and
+// WsResult have no declaration to own one, and minting a meta per result
+// cost ~20% of `try_recv` (488 -> 389 ns/op measured at -O1), so they come
+// from a table instead. Per Runtime, and pinned: a table is a root the
+// cycle collector cannot see, and the trial-deletion pass would otherwise
+// find the meta's count fully explained by the instances and condemn it out
+// from under them. Returns +1 (transferable, like make_variant_meta).
+struct _JitNativeVariantMetas {
+  std::map<std::pair<const char*, const char*>, JitObject*> tbl;
+  ~_JitNativeVariantMetas() {
+    for (auto& [_, meta] : tbl) {
+      _gc_heap().unpin(meta);
+      _culebra_value_release_impl(TAG_OBJECT,
+                                  reinterpret_cast<int64_t>(meta));
+    }
+  }
+};
+
+inline JitObject* _jit_native_variant_meta(const char* variant_name,
+                                           const char* enum_name) {
+  auto& t = culebra::runtime_substate<_JitNativeVariantMetas>(
+      culebra::kSlotJitNativeVariantMetas);
+  auto key = std::make_pair(variant_name, enum_name);
+  auto it = t.tbl.find(key);
+  if (it == t.tbl.end()) {
+    auto* meta = culebra_runtime_make_variant_meta(variant_name, enum_name);
+    _gc_heap().pin(meta);
+    it = t.tbl.emplace(key, meta).first;
+  }
+  it->second->refcount++;
+  return it->second;
+}
+
 // The per-callsite Shape cache every static-key-list construction site
 // shares (ObjectNewShaped's own runtime half below, and
 // culebra_runtime_materialize_value in rt_fixed.inc.h): `*shape_cache` starts
@@ -3303,6 +3356,8 @@ inline JitValue _jit_packable_read_field(const uint8_t* base,
       return {TAG_NIL, 0};
     const auto& var = el->variants[tag];
     auto* inst = culebra_runtime_object_new();
+    inst->set_proto(culebra_runtime_make_variant_meta(  // transferred
+        _intern_str(var.name), _intern_str(f.layout.elem_type)));
     culebra_runtime_object_set(inst, "class", false, TAG_STRING,
         reinterpret_cast<int64_t>(_intern_str(var.name)), 0, 0);
     culebra_runtime_object_set(inst, "__enum", false, TAG_STRING,
