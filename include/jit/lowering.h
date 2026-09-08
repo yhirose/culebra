@@ -1015,6 +1015,13 @@ struct Lowering {
           b.CreateStore(load_slot(in.b), slots[in.a]);
           j.emit_value_retain(load_slot(in.a));
           break;
+        case Op::ReleaseMany:  // a whole ladder, fused by the shape pass
+          for (int32_t k = 0; k < in.b; ++k) {
+            const int32_t s = c.release_slots[in.a + k];
+            j.emit_value_release(load_slot(s));
+            b.CreateStore(j.make_nil(), slots[s]);
+          }
+          break;
         case Op::Take:
           b.CreateStore(load_slot(in.b), slots[in.a]);
           b.CreateStore(j.make_nil(), slots[in.b]);
@@ -3827,6 +3834,7 @@ struct Lowering {
           break;
         }
         case Op::Jump:
+          if (jump_polls(in)) j.emit_safepoint();
           b.CreateBr(blocks.at(in.a));
           break;
         case Op::JumpIfFalse:
@@ -4687,16 +4695,18 @@ struct Lowering {
           break;
         }
         case Op::ForLoop: {
-          // RangeBounds::done()/take() spelled as IR; inclusive is the
-          // instruction's `d` immediate, so the compares are picked here.
+          // RangeBounds::done()/take() spelled as IR; inclusive is a bit of
+          // the instruction's `d` immediate, so the compares are picked here.
+          if (for_loop_polls(in)) j.emit_safepoint();
           auto cur = j.extract_data(load_slot(in.a));
           auto end = j.extract_data(load_slot(in.a + 1));
           auto step = j.extract_data(load_slot(in.a + 2));
           auto exhausted = b.CreateICmpNE(
               j.extract_data(load_slot(in.a + 3)), b.getInt64(0));
-          auto up = in.d ? b.CreateICmpSGT(cur, end)
+          const bool incl = for_loop_inclusive(in);
+          auto up = incl ? b.CreateICmpSGT(cur, end)
                          : b.CreateICmpSGE(cur, end);
-          auto down = in.d ? b.CreateICmpSLT(cur, end)
+          auto down = incl ? b.CreateICmpSLT(cur, end)
                            : b.CreateICmpSLE(cur, end);
           auto step_pos = b.CreateICmpSGT(step, b.getInt64(0));
           auto done =

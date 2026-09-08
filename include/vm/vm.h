@@ -741,12 +741,26 @@ enum class Op : uint8_t {
                  // a dispatch on each. Emitted by the elision pass, never by
                  // the compiler itself, which keeps the pair readable in the
                  // source it comes from.
+  ReleaseMany,   // release and nil release_slots[a .. a+b), in that order.
+                 // A scope's release ladder is one decision the compiler
+                 // already made as a unit, and spending an instruction per
+                 // rung on it made Release a sixth of everything a program
+                 // executes. Emitted by the shape pass, never by the
+                 // compiler, for the same reason MoveRetain is.
 };
 
 struct Insn {
   Op op;
   int32_t a = 0, b = 0, c = 0, d = 0;
 };
+
+// A loop's interrupt poll rides on the back edge that closes an iteration
+// rather than on a Safepoint of its own (shape_elide_chunk). `Jump` has a
+// spare operand for the flag; `ForLoop` has none, so its poll is the second
+// bit of the `d` that already carries `inclusive`.
+inline bool jump_polls(const Insn& in) { return in.d != 0; }
+inline bool for_loop_polls(const Insn& in) { return (in.d & 2) != 0; }
+inline bool for_loop_inclusive(const Insn& in) { return (in.d & 1) != 0; }
 
 // A generic for-in's cursor: one contiguous slot run, allocated by
 // compile_for_generic and addressed by these offsets from its base. The
@@ -2568,6 +2582,11 @@ struct Chunk {
     std::vector<uint8_t> types;
   };
   std::vector<FieldLayoutSpec> field_layout_specs;
+  // Every Op::ReleaseMany site's slots end to end, each site naming its own
+  // stretch by (first, count). One array rather than an array per site: a
+  // ladder is usually two or three rungs, and at that length a second
+  // indirection costs more than the dispatches the fusion saved.
+  std::vector<int32_t> release_slots;
   // Op::SlotInit's `d`: the slot index, whether the property is mutable,
   // and the name-keyed checks (culebra::prop_key_kind) — everything the
   // store needs that the compiler already knows.
@@ -4147,18 +4166,9 @@ inline RcPlan plan_rc_elision(const VmProgram& p) {
 // what `at_or_after` gives it: deleting a no-op cannot change where control
 // arrives. The map is monotonic, so `call_argpos` stays sorted and the
 // cleanup nesting finalize_chunk computed by range containment still holds.
-inline void apply_rc_elision(Chunk& c, const std::vector<char>& dead,
-                             const std::vector<Coalesce>& coalesce,
-                             const std::vector<uint32_t>& fuse) {
+inline void delete_marked(Chunk& c, const std::vector<char>& dead) {
   const size_t n = c.code.size();
   if (n == 0) return;
-  // The rewrites first, in the old numbering: each just redirects a
-  // producer's destination, or turns a Move into the fused MoveRetain, and
-  // the instruction it absorbs is in `dead`.
-  for (const auto& co : coalesce)
-    if (co.at < n) c.code[co.at].a = co.dest;
-  for (uint32_t at : fuse)
-    if (at < n) c.code[at].op = Op::MoveRetain;
   // at_or_after[pc] is where pc's instruction lands, or — for a deleted one —
   // where its successor lands. One extra entry so an end-exclusive range at
   // the very end maps too.
@@ -4222,6 +4232,105 @@ inline void apply_rc_elision(Chunk& c, const std::vector<char>& dead,
       if (!dead[pc]) targets[at_or_after[pc]] = c.call_targets[pc];
     c.call_targets = std::move(targets);
   }
+}
+
+inline void apply_rc_elision(Chunk& c, const std::vector<char>& dead,
+                             const std::vector<Coalesce>& coalesce,
+                             const std::vector<uint32_t>& fuse) {
+  const size_t n = c.code.size();
+  if (n == 0) return;
+  // The rewrites first, in the old numbering: each just redirects a
+  // producer's destination, or turns a Move into the fused MoveRetain, and
+  // the instruction it absorbs is in `dead`.
+  for (const auto& co : coalesce)
+    if (co.at < n) c.code[co.at].a = co.dest;
+  for (uint32_t at : fuse)
+    if (at < n) c.code[at].op = Op::MoveRetain;
+  delete_marked(c, dead);
+}
+
+// Bookkeeping the SHAPE of the code makes redundant, rather than anything
+// its dataflow proves. Two pieces:
+//
+//   * A loop's interrupt poll. Every back edge is already an instruction, so
+//     the poll rides on it and the `Safepoint` the loop head carried goes —
+//     one poll per iteration either way. The entry that no back edge covers
+//     loses its poll, which costs nothing: `Interrupted` is positionless
+//     (base/shared.h), so no lane's diagnostics move, and a poll is a
+//     best-effort check that the next iteration repeats.
+//   * A release ladder. Releasing a scope's slots is one decision the
+//     compiler already made as a unit; one instruction per rung is what made
+//     `Release` a sixth of everything a program executes. A run becomes one
+//     `ReleaseMany` naming the same slots in the same order.
+//
+// Both are syntactic, so this runs once after the dataflow passes have
+// reached their fixpoint: nothing here can uncover work for them, and
+// nothing they leave behind changes the answer here. The refcount and
+// owned-stack analyses need no arm for `ReleaseMany` — their `default` is
+// clobber-all / read-all, which is the safe direction, and the postcondition
+// they assert only gets more conservative.
+inline void shape_elide_chunk(Chunk& c) {
+  const size_t n = c.code.size();
+  if (n == 0) return;
+  std::vector<char> dead(n, 0);
+
+  // Pass 1: the poll onto the back edges, and out of the loop heads.
+  std::vector<char> in_loop(n, 0);
+  bool any_back_edge = false;
+  for (size_t pc = 0; pc < n; ++pc) {
+    Insn& in = c.code[pc];
+    int32_t t = -1;
+    if (in.op == Op::Jump) t = in.a;
+    else if (in.op == Op::ForLoop) t = in.b;
+    if (t < 0 || static_cast<size_t>(t) > pc) continue;
+    any_back_edge = true;
+    for (size_t k = static_cast<size_t>(t); k <= pc; ++k) in_loop[k] = 1;
+    if (in.op == Op::Jump) in.d = 1;
+    else in.d |= 2;
+  }
+  if (any_back_edge)
+    for (size_t pc = 0; pc < n; ++pc)
+      if (c.code[pc].op == Op::Safepoint && in_loop[pc]) dead[pc] = 1;
+
+  // Pass 2: the ladders. A run may not be entered in the middle, so its
+  // interior must be nothing's target — neither a jump's nor a cleanup's,
+  // whose ranges are how an unwind picks the ladder to run.
+  std::vector<char> anchored(n + 1, 0);
+  for (const Insn& in : c.code) {
+    int32_t t = rc_detail::rc_successors(in).target;
+    if (t >= 0 && static_cast<size_t>(t) < n) anchored[t] = 1;
+  }
+  auto anchor = [&](uint32_t pc) {
+    if (pc < n) anchored[pc] = 1;
+  };
+  for (const auto& cu : c.cleanups) {
+    anchor(cu.start);
+    anchor(cu.end);
+    if (cu.handler != Chunk::kNoHandler) anchor(cu.handler);
+  }
+  for (size_t pc = 0; pc < n;) {
+    if (c.code[pc].op != Op::Release || dead[pc]) { ++pc; continue; }
+    size_t end = pc + 1;
+    while (end < n && c.code[end].op == Op::Release && !dead[end] &&
+           !anchored[end])
+      ++end;
+    if (end - pc >= 2) {
+      const auto first = static_cast<int32_t>(c.release_slots.size());
+      for (size_t k = pc; k < end; ++k) {
+        c.release_slots.push_back(c.code[k].a);
+        if (k > pc) dead[k] = 1;
+      }
+      c.code[pc] = Insn{Op::ReleaseMany, first,
+                        static_cast<int32_t>(end - pc)};
+    }
+    pc = end;
+  }
+
+  delete_marked(c, dead);
+}
+
+inline void shape_elide(VmProgram& p) {
+  for (Chunk& c : p.chunks) shape_elide_chunk(c);
 }
 
 // Run the elision over a whole program.
@@ -4387,6 +4496,7 @@ class Compiler {
         if (!plan.any()) break;
         apply_rc_elision(prog, plan);
       }
+      shape_elide(prog);
       return prog;
     } catch (const Unsupported& u) {
       throw CulebraError("VmError", "--vm: unsupported: " + u.what,
@@ -13342,8 +13452,9 @@ inline std::string dump(const Chunk& c) {
       "Safepoint", "DropSuppress",
       "BArity",    "LazyNsReg", "FnHandle",  "OwnedMark", "OwnedExit",
       "ReplCell",  "ReplBind",  "DbgStmt",
-      "Halt",      "MoveRetain"};
-  static_assert(std::size(kNames) == static_cast<size_t>(Op::MoveRetain) + 1);
+      "Halt",      "MoveRetain", "ReleaseMany"};
+  static_assert(std::size(kNames) ==
+                static_cast<size_t>(Op::ReleaseMany) + 1);
   std::string out;
   out += culebra::format("; slots: {}\n", c.num_slots);
   if (!c.capture_src_slots.empty()) {
@@ -13370,6 +13481,11 @@ inline std::string dump(const Chunk& c) {
     }
     if (in.op == Op::NsCall)
       out += culebra::format("  -> {}", nsfn_name(in.c));
+    if (in.op == Op::ReleaseMany) {
+      out += "  ->";
+      for (int32_t k = 0; k < in.b; ++k)
+        out += culebra::format(" r{}", c.release_slots[in.a + k]);
+    }
     out += "\n";
   }
   return out;
@@ -14023,6 +14139,13 @@ struct Exec {
                                             v.data, line, col);
     };
 
+    // The loop poll, on `Safepoint` and on every back edge the shape pass
+    // moved one onto.
+    auto poll = [] {
+      if (culebra_g_wake.load(std::memory_order_relaxed))
+        culebra::throw_if_interrupted();
+    };
+
     // The safepoint poll below runs per instruction, so resolve the heap
     // once: the Heap lives in the Runtime's substate for this frame's whole
     // execution (RuntimeScope restores any nested switch before control
@@ -14075,6 +14198,17 @@ struct Exec {
           regs[in.a] = JitValue{TAG_NIL, 0};
           ++pc;
           break;
+        case Op::ReleaseMany: {  // a whole ladder, fused by the shape pass
+          const int32_t* run = c.release_slots.data() + in.a;
+          for (int32_t k = 0; k < in.b; ++k) {
+            JitValue& v = regs[run[k]];
+            if (is_refcounted(v))
+              culebra_runtime_value_release(static_cast<int8_t>(v.tag), v.data);
+            v = JitValue{TAG_NIL, 0};
+          }
+          ++pc;
+          break;
+        }
         case Op::Neg: {
           const JitValue& v = regs[in.b];
           if (v.tag == TAG_LONG) {
@@ -15094,6 +15228,7 @@ struct Exec {
           break;
         }
         case Op::Jump:
+          if (jump_polls(in)) poll();
           pc = static_cast<size_t>(in.a);
           break;
         case Op::JumpIfFalse:
@@ -15839,8 +15974,9 @@ struct Exec {
           break;
         }
         case Op::ForLoop: {
+          if (for_loop_polls(in)) poll();
           RangeBounds rb{regs[in.a].data, regs[in.a + 1].data,
-                         regs[in.a + 2].data, in.d != 0,
+                         regs[in.a + 2].data, for_loop_inclusive(in),
                          regs[in.a + 3].data != 0};
           if (rb.done()) {
             ++pc;
@@ -15898,8 +16034,7 @@ struct Exec {
           break;
         }
         case Op::Safepoint:
-          if (culebra_g_wake.load(std::memory_order_relaxed))
-            culebra::throw_if_interrupted();
+          poll();
           ++pc;
           break;
         case Op::DropSuppress:
