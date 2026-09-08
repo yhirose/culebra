@@ -28,13 +28,15 @@ cd "$(dirname "$0")/../.."
 fail=0
 note() { echo "header-naming FAIL: $*" >&2; fail=1; }
 
-# What this check is about is the source tree. Every build directory holds
-# CMake dependency files that quote whatever the headers were called when
-# they were written, so a stale one names a retired header forever and the
-# check fails on a tree that is perfectly clean. `build*` rather than the
-# four names that exist today: `build-asan`, `build-cov` and `build-no-jit`
-# are one `just` recipe away, and each would have re-opened this.
-SKIP=(--exclude-dir='build*' --exclude-dir=vendor --exclude-dir=.git)
+# What this check is about is the source tree: what git tracks, plus files not
+# added yet. Everything else in the working directory quotes whatever a header
+# was called when it was written and goes on naming it forever — CMake
+# dependency files under build*/, session plan notes under .claude/ — so a
+# stale one fails the check on a source tree that is perfectly clean. Ignored
+# is out of scope, and --no-recurse-submodules keeps vendor/ out of it.
+src_grep() {
+  git grep --no-recurse-submodules --untracked --exclude-standard "$@" || true
+}
 
 # --- 1. names that were renamed away ---------------------------------------
 
@@ -46,9 +48,10 @@ RETIRED=(
 # layout.md is excluded because naming these is its job: it is the document
 # that says which spellings were retired and what each one had come to hide.
 # This script is excluded for the same reason — the list above is the list.
+EXCEPT=(':!:tools/checks/check_header_naming.sh'
+        ':!:docs/internals/layout.md' ':!:docs/internals/layout.ja.md')
 for old in "${RETIRED[@]}"; do
-  hits=$(grep -rIln "${SKIP[@]}" \
-         --exclude=check_header_naming.sh --exclude=layout.md --exclude=layout.ja.md -F "$old" . 2>/dev/null || true)
+  hits=$(src_grep -Il -F "$old" -- . "${EXCEPT[@]}")
   if [[ -n $hits ]]; then
     note "\`$old\` was renamed away but is named again in:"
     printf '  %s\n' $hits >&2
@@ -57,8 +60,7 @@ done
 # grammar_blob.h is retired too, but grammar_blob.gen.h contains it as no
 # substring, so a plain -F search would be clean either way; match the bare
 # form only where it is not followed by the new suffix.
-hits=$(grep -rIln "${SKIP[@]}" \
-       --exclude=check_header_naming.sh --exclude=layout.md --exclude=layout.ja.md -E 'grammar_blob\.h([^a-z]|$)' . 2>/dev/null || true)
+hits=$(src_grep -Il -E 'grammar_blob\.h([^a-z]|$)' -- . "${EXCEPT[@]}")
 [[ -n $hits ]] && { note "\`grammar_blob.h\` was renamed to grammar_blob.gen.h; still named in:"; printf '  %s\n' $hits >&2; }
 
 # --- 2. jit means LLVM ------------------------------------------------------
@@ -74,7 +76,7 @@ hits=$(grep -rIln "${SKIP[@]}" \
 LLVM_OK=(include/jit/jit.h include/jit/lowering.h include/jit/baked_address.h
          include/stdlib/bindings.h)
 mapfile -t llvm_users < <(
-  grep -rIl --exclude-dir=vendor -E '(#include *<llvm/)|llvm::' include/ 2>/dev/null | sort)
+  src_grep -Il -E '(#include *<llvm/)|llvm::' -- include | sort)
 for f in "${llvm_users[@]}"; do
   ok=0
   for a in "${LLVM_OK[@]}"; do [[ $f == "$a" ]] && ok=1 && break; done
@@ -118,8 +120,7 @@ while IFS= read -r line; do
   f=${line%%:*}
   [[ $f == include/rt/rt.h ]] && continue
   note "$f includes an .inc.h fragment; only rt.h may (they are its body, and one extern \"C\" block spans four of them)."
-done < <(grep -rIn "${SKIP[@]}" \
-         -E '#include *[<"]rt/[a-z]+\.inc\.h[>"]' include/ src/ tests/ 2>/dev/null || true)
+done < <(src_grep -In -E '#include *[<"]rt/[a-z]+\.inc\.h[>"]' -- include src tests)
 
 (( fail )) && exit 1
 echo "header-naming OK (retired names gone; LLVM confined to ${#LLVM_OK[@]} files; .gen.h and .inc.h mean what they say)"
