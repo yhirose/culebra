@@ -1375,8 +1375,7 @@ struct JitUnwindRelease {
   JitUnwindRelease(std::initializer_list<JitValue> vals) {
     assert(vals.size() <= 3);
     for (auto& x : vals)
-      if (x.data != 0 && _is_refcounted_value_tag(static_cast<int8_t>(x.tag)))
-        v[n++] = x;
+      if (_is_refcounted_value(x)) v[n++] = x;
     if (n) exc = std::uncaught_exceptions();
   }
   JitUnwindRelease(const JitUnwindRelease&) = delete;

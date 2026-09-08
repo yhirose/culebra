@@ -542,10 +542,6 @@ refcount and owned-stack analyses need no arm for the new opcode: their
 `default` is clobber-all / read-all, the safe direction, so the
 postcondition they assert only gets more careful.
 
-Over `tests/`, `examples/` and the benchmarks, this one pass takes
-1,956,262 instructions to 1,500,611 — 23% of everything the four passes
-above left behind.
-
 Deleting or rewriting an instruction is a pass over the finished `Chunk`,
 not a second emission: the seven pc-keyed tables (`code`'s jump operands,
 `positions`, `cleanups`, `slot_debug`, `temp_points`, `call_argpos`, the
@@ -556,7 +552,9 @@ instructions a loop iteration to eight this way: three `Release`s (the
 loop carries only a `Long`) and the loop body's `OwnedMark`/`OwnedExit`
 pair (nothing in it constructs a droppable object). Over the tests and
 the language front ends together, the four passes take 736,777
-instructions to 701,179.
+instructions to 701,179; the fifth takes what is left down by a further
+23% — a release ladder is two or three rungs and there is one at the end
+of almost every scope.
 
 ### 5.3 The opcode families
 
@@ -1270,9 +1268,13 @@ every lane.
 with its own indirect jump to the next opcode's arm rather than returning
 to one site a `switch` would share. A shared site sees every opcode the
 program runs and learns none of them; a per-arm site sees what follows
-THAT opcode, which is often one thing. The table is ordered by the `Op`
-enum and asserted against it, so an opcode added without a row does not
-compile.
+THAT opcode, which is often one thing. The table is indexed by the opcode,
+so its order is the `Op` enum's. An opcode added without a row does not
+compile; a row in the WRONG place is not something the language can catch —
+a label address is not a constant expression, so the table cannot name its
+own indices — and where a permuted `kNames` prints a wrong name, a permuted
+row runs a wrong instruction. `tools/checks/check_vm_dispatch_table.sh`
+holds the order, against `kNames` as the one written-out ordering.
 
 Each arm is a `do { … } while (0)`, which is what makes that a rename
 rather than a rewrite: an arm's own `break` still leaves it, a nested
@@ -1281,8 +1283,7 @@ scope exit, so the destructors of anything the arm built still run. A
 bare label-and-goto form does not have that property — a computed goto
 out of a live scope skips them, which is a leak the switch never had.
 
-`run_frame` allocates the
-frame's register window as a variable-length array on the machine stack
+`run_frame` allocates the frame's register window as a variable-length array on the machine stack
 (sized from the chunk's `num_slots`, so a small function pays for a
 small frame), binds the parameters, the receiver and the `fn` handle in
 the prologue, and enters `dispatch`. The window is on the C++ stack for

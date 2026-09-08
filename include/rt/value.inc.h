@@ -946,6 +946,17 @@ constexpr bool _is_refcounted_value_tag(int8_t tag) {
          tag == GC_TAG_TUPLE || tag == GC_TAG_SET;
 }
 
+// The same question about a whole value: a null payload owns no count either.
+// This pair is what retain and release open with, what their callers test
+// ahead of the call when the call is worth avoiding, and what the lowering
+// emits as IR (emit_value_retain) — so it is spelled once.
+constexpr bool _is_refcounted_value(int8_t tag, int64_t data) {
+  return data != 0 && _is_refcounted_value_tag(tag);
+}
+constexpr bool _is_refcounted_value(const JitValue& v) {
+  return _is_refcounted_value(static_cast<int8_t>(v.tag), v.data);
+}
+
 // Primitive type-name → TAG_* (nullopt for anything else: `Any`, traits,
 // user classes). Single source for the JIT's TYPED_IDENT pattern emitter
 // and the VM compiler's tag gate — the generic-strip and the Any / union /

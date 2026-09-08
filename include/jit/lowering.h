@@ -1016,10 +1016,9 @@ struct Lowering {
           j.emit_value_retain(load_slot(in.a));
           break;
         case Op::ReleaseMany:  // a whole ladder, fused by the shape pass
-          for (int32_t k = 0; k < in.b; ++k) {
-            const int32_t s = c.release_slots[in.a + k];
-            j.emit_value_release(load_slot(s));
-            b.CreateStore(j.make_nil(), slots[s]);
+          for (int32_t sl : chunk_release_run(c, in)) {
+            j.emit_value_release(load_slot(sl));
+            b.CreateStore(j.make_nil(), slots[sl]);
           }
           break;
         case Op::Take:

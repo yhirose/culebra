@@ -743,10 +743,9 @@ enum class Op : uint8_t {
                  // source it comes from.
   ReleaseMany,   // release and nil release_slots[a .. a+b), in that order.
                  // A scope's release ladder is one decision the compiler
-                 // already made as a unit, and spending an instruction per
-                 // rung on it made Release a sixth of everything a program
-                 // executes. Emitted by the shape pass, never by the
-                 // compiler, for the same reason MoveRetain is.
+                 // already made as a unit (docs §5.2.1). Emitted by the shape
+                 // pass, never by the compiler, for the same reason
+                 // MoveRetain is.
 };
 
 struct Insn {
@@ -2962,6 +2961,14 @@ inline int32_t chunk_innermost_cleanup(const Chunk& c, size_t pc) {
 
 // The statement temporaries live at `pc`, newest last (the unwind releases
 // them in reverse).
+// An Op::ReleaseMany's slots: the instruction names a stretch of the chunk's
+// one flat array, the way a TempPoint names one of `temp_slots`. One reader
+// for the three lanes, so none of them can decode the pair differently.
+inline std::span<const int32_t> chunk_release_run(const Chunk& c,
+                                                  const Insn& in) {
+  return {c.release_slots.data() + in.a, static_cast<size_t>(in.b)};
+}
+
 inline std::span<const int32_t> chunk_temps_at(const Chunk& c, size_t pc) {
   auto it = std::upper_bound(
       c.temp_points.begin(), c.temp_points.end(), static_cast<uint32_t>(pc),
@@ -3489,6 +3496,16 @@ inline Succ rc_successors(const Insn& in) {
   }
 }
 
+// The pcs a jump can land on. Two passes need them for the same reason —
+// a rewrite that spans instructions must not be entered in the middle.
+inline void mark_jump_targets(const Chunk& c, std::vector<char>& out) {
+  for (const Insn& in : c.code) {
+    int32_t t = rc_successors(in).target;
+    if (t >= 0 && static_cast<size_t>(t) < out.size())
+      out[static_cast<size_t>(t)] = 1;
+  }
+}
+
 // The transfer function: what one instruction does to the slot state. One
 // switch, one `default`, so the safety argument above has no second door.
 inline void rc_apply(const Chunk& c, const Insn& in, RcWords& out,
@@ -3968,11 +3985,7 @@ inline std::vector<char> rc_plan_for_chunk(const Chunk& c, RcScratch& s,
   // target is never a candidate.
   {
     std::vector<char> is_target(n, 0);
-    for (size_t pc = 0; pc < n; ++pc) {
-      auto sc = rc_successors(c.code[pc]);
-      if (sc.target >= 0 && static_cast<size_t>(sc.target) < n)
-        is_target[static_cast<size_t>(sc.target)] = 1;
-    }
+    mark_jump_targets(c, is_target);
     for (size_t pc = 0; pc + 1 < n; ++pc) {
       const Insn& prod = c.code[pc];
       const Insn& take = c.code[pc + 1];
@@ -4230,7 +4243,6 @@ inline void apply_rc_elision(Chunk& c, const std::vector<char>& dead,
                              const std::vector<Coalesce>& coalesce,
                              const std::vector<uint32_t>& fuse) {
   const size_t n = c.code.size();
-  if (n == 0) return;
   // The rewrites first, in the old numbering: each just redirects a
   // producer's destination, or turns a Move into the fused MoveRetain, and
   // the instruction it absorbs is in `dead`.
@@ -4242,30 +4254,29 @@ inline void apply_rc_elision(Chunk& c, const std::vector<char>& dead,
 }
 
 // Bookkeeping the SHAPE of the code makes redundant, rather than anything its
-// dataflow proves: releasing a scope's slots is one decision the compiler
-// already made as a unit, and one instruction per rung is what made `Release`
-// a sixth of everything a program executes. A run becomes one `ReleaseMany`
-// naming the same slots in the same order.
+// dataflow proves: a run of `Release` becomes one `ReleaseMany` over the same
+// slots in the same order (docs §5.2.1 for what that is worth).
 //
-// This is syntactic, so it runs once after the dataflow passes have reached
+// Being syntactic is why it runs once after the dataflow passes have reached
 // their fixpoint: nothing here can uncover work for them, and nothing they
 // leave behind changes the answer here. The refcount and owned-stack analyses
 // need no arm for `ReleaseMany` — their `default` is clobber-all / read-all,
-// which is the safe direction, and the postcondition they assert only gets
-// more conservative.
+// which is the safe direction, so fusion can only cost them precision.
 inline void shape_elide_chunk(Chunk& c) {
   const size_t n = c.code.size();
-  if (n == 0) return;
-  std::vector<char> dead(n, 0);
+  auto adjacent_releases = [&] {
+    for (size_t pc = 0; pc + 1 < n; ++pc)
+      if (c.code[pc].op == Op::Release && c.code[pc + 1].op == Op::Release)
+        return true;
+    return false;
+  };
+  if (!adjacent_releases()) return;  // most chunks: nothing to allocate for
 
   // A run may not be entered in the middle, so its interior must be nothing's
   // target — neither a jump's nor a cleanup's, whose ranges are how an unwind
   // picks the ladder to run.
-  std::vector<char> anchored(n + 1, 0);
-  for (const Insn& in : c.code) {
-    int32_t t = rc_detail::rc_successors(in).target;
-    if (t >= 0 && static_cast<size_t>(t) < n) anchored[t] = 1;
-  }
+  std::vector<char> anchored(n, 0);
+  rc_detail::mark_jump_targets(c, anchored);
   auto anchor = [&](uint32_t pc) {
     if (pc < n) anchored[pc] = 1;
   };
@@ -4274,29 +4285,23 @@ inline void shape_elide_chunk(Chunk& c) {
     anchor(cu.end);
     if (cu.handler != Chunk::kNoHandler) anchor(cu.handler);
   }
+
+  std::vector<char> dead(n, 0);
   for (size_t pc = 0; pc < n;) {
-    if (c.code[pc].op != Op::Release || dead[pc]) { ++pc; continue; }
+    if (c.code[pc].op != Op::Release) { ++pc; continue; }
     size_t end = pc + 1;
-    while (end < n && c.code[end].op == Op::Release && !dead[end] &&
-           !anchored[end])
-      ++end;
+    while (end < n && c.code[end].op == Op::Release && !anchored[end]) ++end;
     if (end - pc >= 2) {
       const auto first = static_cast<int32_t>(c.release_slots.size());
-      for (size_t k = pc; k < end; ++k) {
-        c.release_slots.push_back(c.code[k].a);
-        if (k > pc) dead[k] = 1;
-      }
+      for (size_t k = pc; k < end; ++k) c.release_slots.push_back(c.code[k].a);
       c.code[pc] = Insn{Op::ReleaseMany, first,
                         static_cast<int32_t>(end - pc)};
+      std::fill(dead.begin() + pc + 1, dead.begin() + end, 1);
     }
     pc = end;
   }
 
   delete_marked(c, dead);
-}
-
-inline void shape_elide(VmProgram& p) {
-  for (Chunk& c : p.chunks) shape_elide_chunk(c);
 }
 
 // Run the elision over a whole program.
@@ -4462,7 +4467,12 @@ class Compiler {
         if (!plan.any()) break;
         apply_rc_elision(prog, plan);
       }
-      shape_elide(prog);
+      for (Chunk& c : prog.chunks) shape_elide_chunk(c);
+      // The postcondition, over what SHIPS rather than over what the fixpoint
+      // last looked at. It is also the only thing that hands the four
+      // analysis switches an `Op::ReleaseMany` — the shape pass runs after
+      // them, so without this their `default` arms are never exercised.
+      assert(!plan_rc_elision(prog).any());
       return prog;
     } catch (const Unsupported& u) {
       throw CulebraError("VmError", "--vm: unsupported: " + u.what,
@@ -13449,8 +13459,8 @@ inline std::string dump(const Chunk& c) {
       out += culebra::format("  -> {}", nsfn_name(in.c));
     if (in.op == Op::ReleaseMany) {
       out += "  ->";
-      for (int32_t k = 0; k < in.b; ++k)
-        out += culebra::format(" r{}", c.release_slots[in.a + k]);
+      for (int32_t sl : chunk_release_run(c, in))
+        out += culebra::format(" r{}", sl);
     }
     out += "\n";
   }
@@ -13765,7 +13775,7 @@ struct Exec {
     if (s < 0 || s >= c.num_slots) return;
     if (as_cell)
       culebra_runtime_cell_release(reinterpret_cast<JitCell*>(regs[s].data));
-    else
+    else if (_is_refcounted_value(regs[s]))
       culebra_runtime_value_release(static_cast<int8_t>(regs[s].tag),
                                     regs[s].data);
     regs[s] = JitValue{TAG_NIL, 0};
@@ -14086,15 +14096,6 @@ struct Exec {
       return (l.tag == TAG_LONG || l.tag == TAG_FLOAT) &&
              (r.tag == TAG_LONG || r.tag == TAG_FLOAT);
     };
-    // The guard the JIT's lowering emits inline ahead of every refcount call
-    // (emit_tag_is_refcounted). The out-of-line helper opens with the same
-    // test, but a call site cannot see it, so the executor paid a call on
-    // every Release of a Long or a Nil -- and Release alone is a sixth of the
-    // instructions a program runs.
-    auto is_refcounted = [](const JitValue& v) {
-      return v.data != 0 &&
-             _is_refcounted_value_tag(static_cast<int8_t>(v.tag));
-    };
     // Borrow-contract helpers throughout the dispatch (the `_borrow` twins):
     // operands stay owned by the frame's registers on every path, so a try
     // handler's release ladder is the one releaser after a throw.
@@ -14115,9 +14116,15 @@ struct Exec {
     // Replicated dispatch: an indirect jump at the end of every arm,
     // instead of the one site a switch shares. The shared site sees every
     // opcode the program runs and learns none of them; a per-arm site sees
-    // what follows THAT opcode, which is often one thing. `kLabels` is
-    // ordered by the Op enum and asserted against it, so an opcode added
-    // without a row here does not compile.
+    // what follows THAT opcode, which is often one thing.
+    //
+    // `kLabels` is indexed by the opcode, so its ORDER is the Op enum's. The
+    // static_assert below catches an opcode added without a row; nothing in
+    // the language catches a row in the wrong place (a label address is not
+    // a constant expression, so the table cannot name its own indices), and
+    // a permuted row runs the wrong instruction rather than printing a wrong
+    // name the way kNames would. tools/checks/check_vm_dispatch_table.sh is
+    // what holds the order, against kNames as the one written-out ordering.
     //
     // Each arm is a `do { } while (0)`, which is what keeps the conversion
     // a rename: an arm's own `break` still leaves it, a nested loop's still
@@ -14164,7 +14171,7 @@ struct Exec {
     // deferred collect runs (rt_gc.h kDeferToSafepoint). Between
     // instructions every live value of every frame sits in a register
     // window on the linear-memory stack, which the conservative scan does
-    // see -- unless a helper frame that may hold sole references is
+    // see — unless a helper frame that may hold sole references is
     // suspended below us, which safepoint_collect checks. Folds away on
     // native builds.
     // `pc` is a reference the unwinder reads, so it stays where it is; the
@@ -14200,7 +14207,7 @@ struct Exec {
         do {
           [[maybe_unused]] const Insn& in = *ip;
           regs[in.a] = regs[in.b];
-          if (is_refcounted(regs[in.a]))
+          if (_is_refcounted_value(regs[in.a]))
             culebra_runtime_value_retain(static_cast<int8_t>(regs[in.a].tag),
                                          regs[in.a].data);
           ++pc;
@@ -14219,7 +14226,7 @@ struct Exec {
       L_Retain:
         do {
           [[maybe_unused]] const Insn& in = *ip;
-          if (is_refcounted(regs[in.a]))
+          if (_is_refcounted_value(regs[in.a]))
             culebra_runtime_value_retain(static_cast<int8_t>(regs[in.a].tag),
                                          regs[in.a].data);
           ++pc;
@@ -14229,7 +14236,7 @@ struct Exec {
       L_Release:
         do {
           [[maybe_unused]] const Insn& in = *ip;
-          if (is_refcounted(regs[in.a]))
+          if (_is_refcounted_value(regs[in.a]))
             culebra_runtime_value_release(static_cast<int8_t>(regs[in.a].tag),
                                           regs[in.a].data);
           regs[in.a] = JitValue{TAG_NIL, 0};
@@ -14240,10 +14247,9 @@ struct Exec {
       L_ReleaseMany:  // a whole ladder, fused by the shape pass
         do {
           [[maybe_unused]] const Insn& in = *ip;
-          const int32_t* run = c.release_slots.data() + in.a;
-          for (int32_t k = 0; k < in.b; ++k) {
-            JitValue& v = regs[run[k]];
-            if (is_refcounted(v))
+          for (int32_t sl : chunk_release_run(c, in)) {
+            JitValue& v = regs[sl];
+            if (_is_refcounted_value(v))
               culebra_runtime_value_release(static_cast<int8_t>(v.tag), v.data);
             v = JitValue{TAG_NIL, 0};
           }

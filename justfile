@@ -207,6 +207,16 @@ check-search-splitter:
 check-layering:
     tools/checks/check_layering.sh
 
+# The executor's kLabels is indexed by the opcode, so a row in the wrong place
+# runs the wrong instruction — and a label address is not a constant
+# expression, so the table cannot name its own indices and the static_assert
+# beside it can only count rows. kNames has the same shape and is read every
+# time anyone looks at a --vm-dump, so this holds the one against the other.
+[group("test")]
+[doc("Verify the executor's dispatch table is in Op order (kLabels == kNames)")]
+check-vm-dispatch-table:
+    tools/checks/check_vm_dispatch_table.sh
+
 # The embedding chapter names headers a host includes, and `doctest` reads
 # ```culebra fences only — so a rename broke those examples with nothing to
 # say so. This half only resolves the names, which is the half that a rename
@@ -228,7 +238,7 @@ check-docs-cpp:
 # the workflow-coverage ratchet. Cheap enough to gate both test recipes:
 # well under a second once the grammar-blob tool is ccache-warm.
 [private]
-check-generated: check-grammar-sync check-preambles check-blob check-site-version check-difftest-coverage check-release-coverage check-spec-examples check-api-coverage check-canon-return-types check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-docs-cpp-includes check-header-naming check-search-splitter check-layering check-codegen-enums
+check-generated: check-grammar-sync check-preambles check-blob check-site-version check-difftest-coverage check-release-coverage check-spec-examples check-api-coverage check-canon-return-types check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-docs-cpp-includes check-header-naming check-search-splitter check-layering check-codegen-enums check-vm-dispatch-table
 
 # Such a build still runs programs — everything below the LLVM lowering
 # (rt.h, vm.h) is LLVM-free, so the bytecode VM's executor is intact; what it

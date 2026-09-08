@@ -372,7 +372,7 @@ using JitReleaseTrashcan = culebra::Trashcan<JitValue, &_jit_release_one>;
 inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
   // Non-refcounted tags are a no-op in the release switch, so they skip
   // the trashcan bookkeeping entirely (this is the hottest release path).
-  if (data == 0 || !_is_refcounted_value_tag(tag)) return;
+  if (!_is_refcounted_value(tag, data)) return;
   // So does a value still shared after this release — by far the common
   // case, and the one the trashcan has nothing to say about: its bookkeeping
   // is for a teardown, and a teardown is what happens only at zero. Every
@@ -514,7 +514,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_value_retain(int8_t tag,
   // the fast exit for a value type, and it is the one predicate the lowering's
   // peephole drops settled retains on the authority of (see
   // JIT::is_settled_refcount). The switch below must never widen past it.
-  if (data == 0 || !_is_refcounted_value_tag(tag)) return;
+  if (!_is_refcounted_value(tag, data)) return;
   switch (tag) {
     case TAG_FUNC:
       reinterpret_cast<JitClosure*>(data)->refcount++;
