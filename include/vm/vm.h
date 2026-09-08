@@ -7417,6 +7417,16 @@ class Compiler {
     // here, so neither the well-known contract nor the drop registration
     // applies (the JIT's emit_bind_static).
     emit(Op::BindStatic, cls, kconst_str("new"), owned_src(ast, {ctor, true}));
+    // The class's own name, so a class object reached through `class_of`
+    // can say what it is (`type_of` of a class object is `Class`). Bound
+    // before the statics, so a `static name` shadows it the way a static
+    // shadows anything else.
+    {
+      int32_t nm = alloc_temp(ast);
+      emit(Op::LoadConst, nm, kconst_str(class_name));
+      emit(Op::BindStatic, cls, kconst_str("name"), nm);
+      forget_temp(nm);
+    }
     // Statics overload the same way, on their own dispatcher — the class
     // object and the instance meta are separate namespaces.
     for (const auto& arms : group_overloads(static_names)) {

@@ -12,7 +12,7 @@ two:1,2
 plain
 inst:1
 inst2:1,2
-['new', 'make', 'plain']
+['new', 'name', 'make', 'plain']
 [function]
 Class
 helper:1
@@ -21,7 +21,7 @@ one:1
 two:1,2
 one:9
 0
-['new']
+['new', 'name']
 one:1
 two
 one:3

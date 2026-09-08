@@ -5176,6 +5176,48 @@ inspect(to_string([1, 2]))  # => '[1, 2]'
 inspect(to_string('hi'))    # => 'hi'
 ```
 
+### `class_of(v: Any) -> Object?`
+
+The class object that built `v`, or `nil`. `type_of` answers what a value
+is called; this answers with the thing itself — which is where a class's
+statics live, and where a decorator that took the class and returned it put
+whatever it added. It is the only way to reach either from an instance,
+since neither is copied onto one.
+
+```culebra
+let mark = fn (cls) {
+  cls.marked = true
+  cls
+}
+
+@mark
+class Point {
+  new(x, y) {
+    self.x = x
+    self.y = y
+  }
+}
+
+let p = Point(4, 5)
+inspect(class_of(p) == Point)   # => true
+inspect(class_of(p).marked)     # => true
+inspect(class_of(p).name)       # => 'Point'
+inspect(class_of(p).name == type_of(p))  # => true
+```
+
+A class object answers `class_of` with itself, so the read is idempotent.
+Everything with no class object of its own answers `nil`, which is more
+than it sounds: a plain Object, a primitive, an enum variant (a variant is
+not a class — its constructor is a closure), and a `Range`. So
+`class_of(v).name` is not a second spelling of `type_of(v)`: only
+class-sugar values have both.
+
+```culebra
+inspect(class_of(42))        # => nil
+inspect(class_of({a: 1}))    # => nil
+inspect(class_of(1..3))      # => nil
+```
+
 ### `type_of(v: Any) -> String`
 
 Return the name of `v`'s type, in the vocabulary type annotations speak:

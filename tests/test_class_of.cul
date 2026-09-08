@@ -1,0 +1,74 @@
+# `class_of(v)` — the class object that built a value, which is where its
+# statics live and where a decorator that took the class put what it added.
+# Neither is copied onto an instance, so this is the only route from one.
+# (issue #18: a decorator's addition was unreachable from an instance.)
+
+let mark = fn (cls) {
+  cls.marked = true
+  cls
+}
+
+@mark
+class Point {
+  new(x, y) {
+    self.x = x
+    self.y = y
+  }
+  static origin() { Point(0, 0) }
+}
+
+let p = Point(4, 5)
+
+# The decorator's addition, reached from an instance.
+assert_eq(Point.marked, true)
+assert_eq(class_of(p).marked, true)
+assert_eq(class_of(p) == Point, true)
+
+# Statics too, and the class's own name.
+assert_eq(class_of(p).origin().x, 0)
+assert_eq(class_of(p).name, 'Point')
+assert_eq(class_of(p).name, type_of(p))
+
+# A class object answers with itself: the read is idempotent.
+assert_eq(class_of(Point) == Point, true)
+
+# A `static name` shadows the bound one, the way a static shadows anything.
+class Shadow {
+  static name = 'mine'
+  new() { self.a = 1 }
+}
+assert_eq(Shadow.name, 'mine')
+
+# Everything with no class object of its own answers nil.
+enum R {
+  Ok(Any),
+  Empty,
+}
+assert_eq(class_of(42), nil)
+assert_eq(class_of('s'), nil)
+assert_eq(class_of(nil), nil)
+assert_eq(class_of({a: 1}), nil)
+assert_eq(class_of([1, 2]), nil)
+assert_eq(class_of(1..3), nil)
+assert_eq(class_of(R.Ok(1)), nil)
+assert_eq(class_of(R.Empty), nil)
+
+# A spread copy is a plain Object, so it has no class either.
+assert_eq(class_of({...p}), nil)
+
+# @value instances reach their class the same way.
+@value class V {
+  x: Long
+  new(x) {
+    self.x = x
+  }
+}
+assert_eq(class_of(V(1)) == V, true)
+assert_eq(class_of(V(1)).name, 'V')
+
+# As a value, and through a higher-order call.
+let f = class_of
+assert_eq(f(p) == Point, true)
+assert_eq([p, Point(1, 1)].map(|v| class_of(v).name), ['Point', 'Point'])
+
+println('class_of OK')

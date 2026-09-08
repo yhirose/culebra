@@ -28,7 +28,7 @@ ImmutableError
 3
 50
 Class
-['new']
+['new', 'name']
 nil
 TypeError
 3

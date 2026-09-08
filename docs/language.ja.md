@@ -4929,6 +4929,48 @@ inspect(to_string([1, 2]))  # => '[1, 2]'
 inspect(to_string('hi'))    # => 'hi'
 ```
 
+### `class_of(v: Any) -> Object?`
+
+`v`を作ったクラスオブジェクト、または`nil`。`type_of`が「何と呼ばれるか」
+を答えるのに対し、こちらは実体そのものを答えます。クラスのstaticはそこに
+あり、クラスを受け取って返すデコレータが足したものもそこにあります。
+どちらもインスタンスにはコピーされないので、インスタンスから届く手段は
+これだけです。
+
+```culebra
+let mark = fn (cls) {
+  cls.marked = true
+  cls
+}
+
+@mark
+class Point {
+  new(x, y) {
+    self.x = x
+    self.y = y
+  }
+}
+
+let p = Point(4, 5)
+inspect(class_of(p) == Point)   # => true
+inspect(class_of(p).marked)     # => true
+inspect(class_of(p).name)       # => 'Point'
+inspect(class_of(p).name == type_of(p))  # => true
+```
+
+クラスオブジェクト自身は`class_of`に自分を答えるので、この読みは冪等です。
+自分のクラスオブジェクトを持たない値は`nil`で、これは見た目より広い範囲を
+指します: 普通のObject、プリミティブ、enumのバリアント（バリアントはクラス
+ではなく、コンストラクタはクロージャです）、そして`Range`。つまり
+`class_of(v).name`は`type_of(v)`の別の綴りではありません — 両方を持つのは
+`class`構文の値だけです。
+
+```culebra
+inspect(class_of(42))        # => nil
+inspect(class_of({a: 1}))    # => nil
+inspect(class_of(1..3))      # => nil
+```
+
 ### `type_of(v: Any) -> String`
 
 `v`の型の名前を、型注釈と同じ語彙で返します。

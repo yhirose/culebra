@@ -1395,6 +1395,8 @@ inline constexpr CanonParam kCanonParams_Bare[] = {
   {"label", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
   // 44: Range
   {"args", false, false, false, true, false, "", CanonDefault::None, 0, {}},
+  // 45: class_of
+  {"v", false, false, false, false, false, "", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonSigs_Bare[] = {
@@ -1402,6 +1404,7 @@ inline constexpr CanonSig kCanonSigs_Bare[] = {
   {"", "", "print", kCanonParams_Bare + 1, 1, "", 1, 1, false, -1, -1, -1},
   {"", "", "println", kCanonParams_Bare + 2, 1, "", 0, 1, false, -1, -1, -1},
   {"", "", "type_of", kCanonParams_Bare + 3, 1, "String", 1, 1, false, -1, -1, -1},
+  {"", "", "class_of", kCanonParams_Bare + 45, 1, "", 1, 1, false, -1, -1, -1},
   {"", "", "to_long", kCanonParams_Bare + 4, 2, "Long", 1, 1, false, -1, 1, -1},
   {"", "", "to_float", kCanonParams_Bare + 6, 1, "Float", 1, 1, false, -1, -1, -1},
   {"", "", "to_string", kCanonParams_Bare + 7, 1, "String", 1, 1, false, -1, -1, -1},

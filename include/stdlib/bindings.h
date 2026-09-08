@@ -4276,6 +4276,24 @@ inline JitValue _ns_global_type_of(JitValue* a, int64_t) {
   }
   return _ns_adapt::v_string(culebra_runtime_type_of(a[0].tag));
 }
+// `class_of(v)` — the class object that built `v`, or nil. The class is
+// where a decorator's additions and the statics live, so this is how an
+// instance reaches them; `type_of` answers the name, and this answers the
+// thing. Every instance already holds its class (JitObject::cls, +1 for its
+// whole life), which is the same read a member's prologue makes to resolve
+// its own class name — see culebra_runtime_class_self.
+//
+// Nil for everything with no class object of its own, which is more than it
+// sounds: a plain Object, an enum variant (a variant is not a class — its
+// constructor is a closure), and the values the runtime builds with a meta
+// but no class behind it, `1..3` among them. So `class_of(v).name` is not a
+// second spelling of `type_of(v)`: only the class-sugar half has both.
+inline JitValue _ns_global_class_of(JitValue* a, int64_t) {
+  auto v = culebra_runtime_class_self(a[0].tag, a[0].data);
+  if (v.tag == TAG_NO_SELF) return {TAG_NIL, 0};
+  return v;
+}
+
 inline JitValue _ns_global_to_long(JitValue* a, int64_t n) {
   // interp's builtin reads __LINE__/__COLUMN__ (its call-site channel) and
   // throws the bad-conversion error WITH that position — not positionless,
@@ -10158,6 +10176,7 @@ inline const NsMethod kBuiltinFns[] = {
   {"", "print",     1, &_ns_io_print},
   {"", "println",   1, &_ns_io_println},
   {"", "type_of",   1, &_ns_global_type_of},
+  {"", "class_of",  1, &_ns_global_class_of},
   {"", "to_long",   2, &_ns_global_to_long},
   {"", "to_float",  1, &_ns_global_to_float},
   {"", "to_string", 1, &_ns_global_to_string},
@@ -11176,7 +11195,7 @@ inline const std::unordered_set<std::string_view>& builtin_var_names() {
   static const std::unordered_set<std::string_view> names = {
       "inspect", "print",   "println",   "repeat",
       "to_long", "to_float",  "to_string", "type_of", "hash", "__eff_copy",
-      "Range",
+      "Range",   "class_of",
       "__eff_abort", "__eff_catch_abort",
       "Math",    "IO",        "FS",        "File",     "Embed",   "_Time",
       "Random",  "Sys",       "JSON",      "Tensor",   "GC",

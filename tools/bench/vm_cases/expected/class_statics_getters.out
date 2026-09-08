@@ -4,7 +4,7 @@ circle/square
 1
 1
 shape:circle
-['new', 'circle', 'square', 'both', 'unit', 'UNIT']
+['new', 'name', 'circle', 'square', 'both', 'unit', 'UNIT']
 Function
 ImmutableError
 Class
@@ -21,7 +21,7 @@ static-B
 3
 42
 nil
-['new', 'A', 'FROM_OUTER', 'B']
+['new', 'name', 'A', 'FROM_OUTER', 'B']
 42
 v=21
 21
