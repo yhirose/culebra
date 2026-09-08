@@ -2586,6 +2586,24 @@ for i in 10..0 by -2 {
 iterated). Slicing (`xs[a..b by n]`) ignores `step` — it only affects
 iteration.
 
+**Building one from computed parts** — `Range(start, end, inclusive = false,
+step = 1)`. The literal states in syntax what it cannot state at runtime:
+which end is open, and whether the range is inclusive. The constructor takes
+both as values, and `nil` for an endpoint is the open form (`a..`, `..b`,
+`..`). A zero step raises `ValueError`, as the literal's does.
+
+```culebra
+inspect(Range(1, 5))              # => 1..5
+inspect(Range(1, 5, true))        # => 1..=5
+inspect(Range(1, 9, false, 2))    # => 1..9 by 2
+inspect(Range(2, nil))            # => 2..
+inspect(Range(1, 5) == 1..5)      # => true
+```
+
+A range is what `a..b` or `Range(...)` built, not whatever wears its fields:
+an Object carrying the same keys is an ordinary Object, and slicing,
+iterating or passing it to `grid` raises rather than treating it as a range.
+
 **Destructuring loop variable.** The `var` may be a pattern, matched
 against each element's shape (a mismatch raises `ValueError`).
 Comma-separated targets without parens are sugar for a tuple pattern:

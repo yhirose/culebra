@@ -1393,6 +1393,8 @@ inline constexpr CanonParam kCanonParams_Bare[] = {
   {"b", false, false, false, false, false, "", CanonDefault::None, 0, {}},
   {"tol", false, false, false, false, false, "", CanonDefault::None, 0, {}},
   {"label", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
+  // 44: Range
+  {"args", false, false, false, true, false, "", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonSigs_Bare[] = {
@@ -1411,6 +1413,7 @@ inline constexpr CanonSig kCanonSigs_Bare[] = {
   {"", "", "iota", kCanonParams_Bare + 14, 1, "", 0, 0, true, -1, -1, 0},
   {"", "", "repeat", kCanonParams_Bare + 15, 2, "Array", 2, 2, false, -1, -1, -1},
   {"", "", "grid", kCanonParams_Bare + 17, 1, "", 0, 0, true, -1, -1, 0},
+  {"", "", "Range", kCanonParams_Bare + 44, 1, "Range", 0, 0, true, -1, -1, 0},
   {"", "", "assert_true", kCanonParams_Bare + 18, 2, "Nil", 1, 2, false, -1, -1, -1},
   {"", "", "assert_false", kCanonParams_Bare + 20, 2, "Nil", 1, 2, false, -1, -1, -1},
   {"", "", "assert_eq", kCanonParams_Bare + 22, 3, "Nil", 2, 3, false, -1, -1, -1},

@@ -54,7 +54,7 @@
 ((type) @type.builtin
  (#match? @type.builtin "^(Canvas|Scene|Net|Desktop|Webview|Vector2|Vector3|Deque|PriorityQueue|StateMachine)$"))
 ((type) @type.builtin
- (#match? @type.builtin "^(PEG|FST|Search)$"))
+ (#match? @type.builtin "^(PEG|FST|Search|Range)$"))
 ; === END AUTO-BUILTINS ===
 
 (identifier) @variable

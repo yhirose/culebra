@@ -785,9 +785,9 @@ inline JitValue _jit_channel_result(ChanTryPopStatus status, JitValue* payload) 
   }
   int64_t arity = payload ? 1 : 0;
   // Natively produced: no declaration owns a meta for these, so they share
-  // one from the Runtime's table (see _jit_native_variant_meta).
+  // one from the Runtime's table (see _jit_native_meta).
   return culebra_runtime_build_variant(
-      _jit_native_variant_meta(name, kEnum), name, kEnum, arity, payload,
+      _jit_native_meta(name, kEnum), name, kEnum, arity, payload,
       arity, 0, 0);
 }
 

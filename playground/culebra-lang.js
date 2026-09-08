@@ -32,7 +32,7 @@ const BUILTINS = new Set([
   "Isolate", "Channel", "Parallel", "Signal", "SharedBuffer", "Shared", "GC", "Regex", "Http",
   "Encoding", "Compress", "Hash", "CSV", "Env", "UUID", "Term", "Log", "TOML", "SQLite",
   "Canvas", "Scene", "Net", "Desktop", "Webview", "Vector2", "Vector3", "Deque", "PriorityQueue", "StateMachine",
-  "PEG", "FST", "Search",
+  "PEG", "FST", "Search", "Range",
 ]);
 // === END AUTO-KEYWORDS
 const LANG_VARS = new Set(["self", "__ARGS__"]);

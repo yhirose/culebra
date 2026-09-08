@@ -1939,6 +1939,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_make_range(
   static const struct { JitStrHeader h; char bytes[6]; } kRange = {{5},
                                                                    "Range"};
   auto* o = culebra_runtime_object_new();
+  // Identity, not shape: every range shares one meta, so _jit_is_range_shaped
+  // is a pointer compare and a dict wearing the same five keys is not a range.
+  o->set_proto(_jit_range_meta());  // transferred
   culebra_runtime_object_set(o, "class", false, TAG_STRING,
                              reinterpret_cast<int64_t>(kRange.bytes), 0, 0);
   culebra_runtime_object_set(o, "start", false,

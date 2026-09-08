@@ -4358,6 +4358,61 @@ inline JitValue _ns_global_repeat(JitValue* a, int64_t) {
 // validation, same as the direct-call fast path. Line/col fall back to
 // 0:0 like range/iota (the NsMethod adapter ABI carries no call-site
 // position either).
+// `Range(start, end, inclusive = false, step = 1)` — the constructor for the
+// value `a..b` builds. Either endpoint may be nil, the open-ended forms `a..`
+// and `..b` spell; `step` must not be zero, the rule the literal enforces.
+// This exists because the literal cannot say at runtime what it says in
+// syntax: which end is open, and whether the range is inclusive. Without it
+// the only way to build a range from computed parts was to hand-write the
+// object, which is exactly what stopped being a range when identity replaced
+// shape (_jit_is_range_shaped).
+inline JitValue _ns_global_range_ctor(JitValue* a, int64_t) {
+  auto* arr = reinterpret_cast<JitArray*>(a[0].data);
+  int64_t cnt = arr->size;
+  if (cnt < 2 || cnt > 4) {
+    throw_runtime_error_at("ArityError",
+        culebra::builtin_arity_error_message("Range", 2, 4, cnt), 0, 0);
+  }
+  auto endpoint = [&](int64_t i) {
+    const auto& v = arr->items[i];
+    if (v.tag != TAG_LONG && v.tag != TAG_NIL) {
+      throw_runtime_error_at("TypeError",
+          culebra::type_mismatch_message("Long",
+                                         culebra_runtime_type_of(v.tag)),
+          0, 0);
+    }
+    return v;
+  };
+  auto start = endpoint(0);
+  auto end = endpoint(1);
+  int8_t inclusive = 0;
+  if (cnt > 2) {
+    if (arr->items[2].tag != TAG_BOOL) {
+      throw_runtime_error_at("TypeError",
+          culebra::type_mismatch_message(
+              "Bool", culebra_runtime_type_of(arr->items[2].tag)),
+          0, 0);
+    }
+    inclusive = static_cast<int8_t>(arr->items[2].data != 0);
+  }
+  int64_t step = 1;
+  if (cnt > 3) {
+    if (arr->items[3].tag != TAG_LONG) {
+      throw_runtime_error_at("TypeError",
+          culebra::type_mismatch_message(
+              "Long", culebra_runtime_type_of(arr->items[3].tag)),
+          0, 0);
+    }
+    step = arr->items[3].data;
+  }
+  if (step == 0) {
+    throw_runtime_error_at("ValueError", "range step must not be zero", 0, 0);
+  }
+  return _ns_adapt::v_object(culebra_runtime_make_range(
+      start.tag == TAG_LONG, start.data, end.tag == TAG_LONG, end.data,
+      inclusive, step));
+}
+
 inline JitValue _ns_global_grid(JitValue* a, int64_t) {
   auto* arr = reinterpret_cast<JitArray*>(a[0].data);
   int64_t cnt = arr->size;
@@ -6130,9 +6185,9 @@ inline JitValue _jit_ws_result(int kind, JitValue* payload) {
   const char* name = kind == 1 ? kMessage : (kind == -1 ? kEmpty : kClosed);
   int64_t arity = payload ? 1 : 0;
   // Natively produced: no declaration owns a meta for these, so they share
-  // one from the Runtime's table (see _jit_native_variant_meta).
+  // one from the Runtime's table (see _jit_native_meta).
   return culebra_runtime_build_variant(
-      _jit_native_variant_meta(name, kEnum), name, kEnum, arity, payload,
+      _jit_native_meta(name, kEnum), name, kEnum, arity, payload,
       arity, 0, 0);
 }
 
@@ -8747,7 +8802,8 @@ inline bool _ns_method_uses_kwarg_slab(const NsMethod* m) {
   if (ns == "Compress") return nm == "deflate";  // level default
   if (ns == "IO")       return nm == "println";  // arg defaults to ""
   if (ns.empty())       return nm == "range" || nm == "iota" ||
-                               nm == "grid" || nm == "println" ||
+                               nm == "grid" || nm == "Range" ||
+                               nm == "println" ||
                                nm == "to_long" ||
                                // the matchers' trailing `label` is optional,
                                // and an optional positional is resolved from
@@ -10101,6 +10157,7 @@ inline const NsMethod kBuiltinFns[] = {
   {"", "iota",     -1, &_ns_global_iota},
   {"", "repeat",    2, &_ns_global_repeat},
   {"", "grid",     -1, &_ns_global_grid},
+  {"", "Range",    -1, &_ns_global_range_ctor},
   // Matchers, native so a failure carries the call site's position.
   // `assert_throws` is not here — it stays in the __Matchers preamble.
   {"", "assert_true",  2, &_ns_assert_true},
@@ -11107,6 +11164,7 @@ inline const std::unordered_set<std::string_view>& builtin_var_names() {
   static const std::unordered_set<std::string_view> names = {
       "inspect", "print",   "println",   "repeat",
       "to_long", "to_float",  "to_string", "type_of", "hash", "__eff_copy",
+      "Range",
       "__eff_abort", "__eff_catch_abort",
       "Math",    "IO",        "FS",        "File",     "Embed",   "_Time",
       "Random",  "Sys",       "JSON",      "Tensor",   "GC",

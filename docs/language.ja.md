@@ -2457,6 +2457,24 @@ for i in 10..0 by -2 {
 `step`は`0`にできません（rangeを反復した時点で`ValueError`）。
 スライス（`xs[a..b by n]`）は`step`を無視します — 反復にのみ影響します。
 
+**計算した値から組み立てる** — `Range(start, end, inclusive = false,
+step = 1)`。リテラルは「どちら側が開いているか」「両端を含むか」を構文で
+書きますが、実行時に決めることはできません。コンストラクタはその2つを値で
+受け取り、端に`nil`を渡すと開いた形（`a..`、`..b`、`..`）になります。
+刻み幅が`0`ならリテラルと同じく`ValueError`です。
+
+```culebra
+inspect(Range(1, 5))              # => 1..5
+inspect(Range(1, 5, true))        # => 1..=5
+inspect(Range(1, 9, false, 2))    # => 1..9 by 2
+inspect(Range(2, nil))            # => 2..
+inspect(Range(1, 5) == 1..5)      # => true
+```
+
+rangeとは`a..b`か`Range(...)`が作ったもののことで、同じ形をまとった値の
+ことではありません。同じキーを持つObjectはただのObjectで、スライス・反復・
+`grid`への引き渡しはrangeとして扱われず例外になります。
+
 **ループ変数の分解。** `var`はパターンにでき、各要素の形にマッチさせる
 （不一致は`ValueError`）。括弧なしのカンマ区切りはタプルパターンの糖衣で、
 `for k, v in xs`は`for (k, v) in xs`と同じ:

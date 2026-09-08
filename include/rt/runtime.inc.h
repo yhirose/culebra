@@ -2852,20 +2852,24 @@ culebra_runtime_make_variant_meta(const char* variant_name,
   meta->is_class_meta = true;
   meta->specials = new JitSpecialTable();
   meta->specials->name = _intern_str(std::string_view(variant_name));
-  meta->specials->enum_name = _intern_str(std::string_view(enum_name));
+  if (enum_name)
+    meta->specials->enum_name = _intern_str(std::string_view(enum_name));
   return meta;
 }
 
-// The shared meta a natively produced variant carries. ChannelResult and
-// WsResult have no declaration to own one, and minting a meta per result
-// cost ~20% of `try_recv` (488 -> 389 ns/op measured at -O1), so they come
-// from a table instead. Per Runtime, and pinned: a table is a root the
-// cycle collector cannot see, and the trial-deletion pass would otherwise
-// find the meta's count fully explained by the instances and condemn it out
-// from under them. Returns +1 (transferable, like make_variant_meta).
-struct _JitNativeVariantMetas {
+// The shared meta a value the runtime builds itself carries: the Range `a..b`
+// makes, and the ChannelResult / WsResult variants `try_recv` and
+// `ws_receive` return. None has a declaration to own a meta, and minting one
+// per value cost ~20% of `try_recv` (488 -> 389 ns/op measured at -O1), so
+// they come from a table instead. Per Runtime, and pinned: a table is a root
+// the cycle collector cannot see, and the trial-deletion pass would otherwise
+// find the meta's count fully explained by the values pointing at it and
+// condemn it out from under them. `enum_name` is null for a plain class.
+// Both names must already be interned — the table keys on the pointers.
+// Returns +1 (transferable, like make_variant_meta).
+struct _JitNativeMetas {
   std::map<std::pair<const char*, const char*>, JitObject*> tbl;
-  ~_JitNativeVariantMetas() {
+  ~_JitNativeMetas() {
     for (auto& [_, meta] : tbl) {
       _gc_heap().unpin(meta);
       _culebra_value_release_impl(TAG_OBJECT,
@@ -2874,19 +2878,25 @@ struct _JitNativeVariantMetas {
   }
 };
 
-inline JitObject* _jit_native_variant_meta(const char* variant_name,
-                                           const char* enum_name) {
-  auto& t = culebra::runtime_substate<_JitNativeVariantMetas>(
-      culebra::kSlotJitNativeVariantMetas);
-  auto key = std::make_pair(variant_name, enum_name);
+inline JitObject* _jit_native_meta(const char* name, const char* enum_name) {
+  auto& t = culebra::runtime_substate<_JitNativeMetas>(
+      culebra::kSlotJitNativeMetas);
+  auto key = std::make_pair(name, enum_name);
   auto it = t.tbl.find(key);
   if (it == t.tbl.end()) {
-    auto* meta = culebra_runtime_make_variant_meta(variant_name, enum_name);
+    auto* meta = culebra_runtime_make_variant_meta(name, enum_name);
     _gc_heap().pin(meta);
     it = t.tbl.emplace(key, meta).first;
   }
   it->second->refcount++;
   return it->second;
+}
+
+// The one meta every Range value shares (its interned name, which
+// _jit_is_range_shaped compares against, lives in rt_string.inc.h beside
+// that check — this file is included after it).
+inline JitObject* _jit_range_meta() {
+  return _jit_native_meta(_jit_range_name(), nullptr);
 }
 
 // The per-callsite Shape cache every static-key-list construction site

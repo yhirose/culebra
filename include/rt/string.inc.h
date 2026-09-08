@@ -47,34 +47,25 @@ inline JitValue _jit_slot_or_nil(const JitObject* obj, std::string_view k) {
                                       : obj->slots[i].value;
 }
 
-// A value is a Range only when it carries the full shape `a..b` builds:
-// class:"Range", start/end Long or Nil, inclusive Bool, step Long (or
-// absent). A hand-built partial `{class:"Range"}` dict stays an ordinary
-// Object — point-key lookup, generic display, method iteration — instead
-// of slicing with unchecked slot reads. Shared by every class=="Range"
-// gate (slice dispatch, display, for-in coercion) so the shape rule
-// cannot drift; the interpreter's is_range_value is the mirror.
+// The interned name every Range value's meta carries — the identity the
+// check below and _jit_range_meta (rt_runtime.inc.h) agree on.
+inline const char* _jit_range_name() {
+  static const char* kRange = _intern_str("Range");
+  return kRange;
+}
+
+// A value is a Range when it was built as one: `a..b` and `Range(...)` share
+// a single meta per Runtime, so this is a pointer compare against that meta's
+// interned name. It used to re-derive the answer from the shape — a
+// class:"Range" tag plus four slots of the right types — because the tag
+// alone could be written by hand, and then a dict wearing all five keys was
+// a range for slicing, display and for-in alike. Identity settles it instead,
+// so the dict is an ordinary Object however it is spelled. Shared by every
+// range gate so the rule cannot drift.
 inline bool _jit_is_range_shaped(const JitObject* obj) {
-  auto cls = _jit_slot_or_nil(obj, "class");
-  if (cls.tag != TAG_STRING ||
-      std::string_view(reinterpret_cast<const char*>(cls.data)) != "Range") {
-    return false;
-  }
-  auto long_or_nil = [&](std::string_view k) {
-    auto i = obj->find_slot(k);
-    if (i == static_cast<size_t>(-1)) return false;
-    auto t = obj->slots[i].value.tag;
-    return t == TAG_LONG || t == TAG_NIL;
-  };
-  if (!long_or_nil("start") || !long_or_nil("end")) return false;
-  auto inc = obj->find_slot("inclusive");
-  if (inc == static_cast<size_t>(-1) ||
-      obj->slots[inc].value.tag != TAG_BOOL) {
-    return false;
-  }
-  auto step = obj->find_slot("step");
-  return step == static_cast<size_t>(-1) ||
-         obj->slots[step].value.tag == TAG_LONG;
+  auto* meta = obj->proto();
+  return meta && meta->is_class_meta && meta->specials &&
+         meta->specials->name == _jit_range_name();
 }
 
 // Internal helper (C++ - not extern C, but inline to satisfy ODR)

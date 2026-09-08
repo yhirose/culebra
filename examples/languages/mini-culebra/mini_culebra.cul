@@ -1900,28 +1900,15 @@ fn __obj_put(recv, pk, key, val, is_prop, line, col) {
   nil
 }
 
-# A range is recognized structurally, as culebra does: a plain object
-# whose class is "Range", start / end Long or nil, inclusive Bool, and
-# step absent or Long. A..b builds exactly that shape, and a hand-built
-# one is indistinguishable from it.
+# A range is recognized by identity, as culebra does: only __mk_range marks
+# one, under a hidden key no source can write. It used to be recognized
+# structurally -- a "Range" tag plus fields of the right types -- and then a
+# hand-built object wearing that shape was a range too, which is exactly what
+# culebra stopped accepting when its ranges got a meta of their own. The
+# visible tag stays: it is what a range's .class reads.
 fn __is_range(v) {
   if __typeof(v) != 'object' { return false }
-  if __is_instance(v) || __is_tuple(v) || __is_set(v) { return false }
-  if !__objecthas(v, 'class') { return false }
-  if __typeof(v['class']) != 'string' { return false }
-  if v['class'] != 'Range' { return false }
-  if !__objecthas(v, 'start') || !__objecthas(v, 'end') || !__objecthas(v, 'inclusive') {
-    return false
-  }
-  let ts = __typeof(v['start'])
-  let te = __typeof(v['end'])
-  if ts != 'int' && ts != 'nil' { return false }
-  if te != 'int' && te != 'nil' { return false }
-  if __typeof(v['inclusive']) != 'bool' { return false }
-  if __objecthas(v, 'step') {
-    if __typeof(v['step']) != 'int' { return false }
-  }
-  true
+  __objecthas(v, "\zr")
 }
 
 fn __range_step(r) {
@@ -5252,8 +5239,8 @@ fn __range_iter3(a, b, step, incl) {
             })
 }
 
-# a..b / a..=b / a.. (open, for slicing) / ..b / by step: the plain object
-# __is_range recognizes
+# a..b / a..=b / a.. (open, for slicing) / ..b / by step. The hidden marker
+# is the identity __is_range checks; no source can write that key.
 fn __mk_range(a, b, incl, step, line, col) {
   if __typeof(a) != 'int' && __typeof(a) != 'nil' {
     __raise('TypeError', 'type error: expected Long, got ' + __type_name(a),
@@ -5268,7 +5255,11 @@ fn __mk_range(a, b, incl, step, line, col) {
               line, col)
     }
   }
-  {class: 'Range', start: a, end: b, inclusive: incl == 1, step: st}
+  mut r = {class: 'Range', start: a, end: b, inclusive: incl == 1, step: st}
+  # the marker goes on by subscript: a \z key is not spellable in the
+  # literal's key position, which is half of why nothing else can wear it
+  r["\zr"] = true
+  r
 }
 
 # What escapes main: culebra's own one-line report, then a marker throw
