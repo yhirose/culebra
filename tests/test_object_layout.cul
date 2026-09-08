@@ -73,7 +73,7 @@ assert_eq(z.s + 'x', 'x')
 assert_eq(type_of(z.s), 'String')
 assert_eq(z.b, false)
 assert_eq(z.o, nil)
-assert_eq(z.keys(), ['class', 'f', 'n', 's', 'b', 'o'])
+assert_eq(z.keys(), ['f', 'n', 's', 'b', 'o'])
 z.n = 7
 assert_eq(z.n, 7)
 
@@ -91,7 +91,7 @@ assert_eq(m.b, 1)
 assert_eq(m.c, nil)
 assert_eq(m.d, 0)
 assert_eq(m.e, 10)
-assert_eq(m.keys(), ['class', 'a', 'b', 'c', 'd', 'e'])
+assert_eq(m.keys(), ['a', 'b', 'c', 'd', 'e'])
 
 class WithNew {
   x: Float
@@ -103,7 +103,7 @@ class WithNew {
   }
 }
 let w = WithNew(1.0, 2.0)
-assert_eq(w.keys(), ['class', 'x', 'y', 'extra'])
+assert_eq(w.keys(), ['x', 'y', 'extra'])
 assert_eq(w.extra, 3.0)
 
 # the same class constructed many times keeps the same shape and values

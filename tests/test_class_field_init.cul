@@ -60,7 +60,7 @@ test_declared_fields_take_their_type_zero()
 
 test_declared_fields_keep_declaration_order = fn () {
   let p = Plain.new(1.0)
-  assert_eq(p.keys(), ['class', 'x', 'y', 's', 'b', 'a'])
+  assert_eq(p.keys(), ['x', 'y', 's', 'b', 'a'])
 }
 test_declared_fields_keep_declaration_order()
 
@@ -80,7 +80,7 @@ test_class_without_a_constructor_still_initializes = fn () {
   let n = NoCtor.new()
   assert_eq(n.x, 0)
   assert_eq(n.y, 9)
-  assert_eq(n.keys(), ['class', 'x', 'y'])
+  assert_eq(n.keys(), ['x', 'y'])
 }
 test_class_without_a_constructor_still_initializes()
 

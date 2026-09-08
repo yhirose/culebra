@@ -710,7 +710,6 @@ fn __construct(cls, pos, kws, apos, line, col) {
             __type_name(cls), line, col)
   }
   mut inst = {}
-  inst['class'] = cls['name']
   inst["\zc"] = cls
   # the constructor is picked before anything runs: a dispatch miss builds
   # nothing, and the declared field initializers run once per success
@@ -1576,8 +1575,13 @@ fn __destr(v, n, line, col) {
   items
 }
 
+# type_of names the class that built the value, when one did: culebra reads
+# that off the meta every instance reaches, and nothing else can answer to
+# the name. Error text keeps the tag name (__type_name), as culebra's does.
 fn __type_of(v, line, col) {
   if __is_tuple(v) { return 'Tuple' }
+  if __is_instance(v) { return v["\zc"]['name'] }
+  if __is_range(v) { return 'Range' }
   __type_name(v)
 }
 
@@ -1749,12 +1753,8 @@ fn __repr(v) {
     # instance of that name
     mut named = false
     mut out = '{'
-    if __objecthas(v, 'class') {
-      if __typeof(v['class']) == 'string' {
-        named = true
-        out = v['class'] + ' {'
-      }
-    }
+    # (an instance takes the named branch above; a plain object never does,
+    # so a class field prints like any other)
     mut first = true
     mut i = 0
     while i < __len(ks) {
@@ -5255,7 +5255,7 @@ fn __mk_range(a, b, incl, step, line, col) {
               line, col)
     }
   }
-  mut r = {class: 'Range', start: a, end: b, inclusive: incl == 1, step: st}
+  mut r = {start: a, end: b, inclusive: incl == 1, step: st}
   # the marker goes on by subscript: a \z key is not spellable in the
   # literal's key position, which is half of why nothing else can wear it
   r["\zr"] = true

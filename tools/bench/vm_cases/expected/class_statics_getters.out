@@ -7,8 +7,8 @@ shape:circle
 ['new', 'circle', 'square', 'both', 'unit', 'UNIT']
 Function
 ImmutableError
-Object
-Object
+Class
+Class
 instance
 nil
 TypeError
@@ -29,7 +29,7 @@ Long
 Function
 [function]
 99
-['class', 'v']
+['v']
 C {mut v: 21}
 getter
 2
@@ -37,7 +37,7 @@ getter
 8
 1
 5
-['class', 'v', 'set_by_ctor']
+['v', 'set_by_ctor']
 ['g', 'g', ['p']]
 dict
 TypeError: type error: expected Object, Array, or Tensor, got Long at 148:10.

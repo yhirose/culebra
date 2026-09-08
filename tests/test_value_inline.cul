@@ -73,7 +73,7 @@ test_boxed_form_is_untouched = fn () {
   assert_eq(v.len(), 5.0)
   assert_eq(v.scale(2.0).x, 6.0)
   assert_eq(v, V2.new(3.0, 4.0))
-  assert_eq(v.keys(), ['class', 'x', 'y'])
+  assert_eq(v.keys(), ['x', 'y'])
   assert_throws('ImmutableError', fn () {
     v.x = 9.0
   })

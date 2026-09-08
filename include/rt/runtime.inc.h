@@ -120,13 +120,19 @@ inline bool _culebra_value_equal(int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
       return true;
     }
     case TAG_OBJECT: {
-      // Structural eq: same own slots (data fields + tags; methods live
-      // on the shared proto, not own slots) and non-String entries, with
-      // equal values. Order-independent. Mirrors interp's _object_eq
-      // result (same-class same-field instances compare equal).
+      // Nominal first, then structural: same class (and, for a variant, the
+      // same parent enum), then the same own slots — data fields only now,
+      // since methods live on the shared proto and the class tag is not a
+      // slot at all. Order-independent. The names are interned, so the
+      // identity test is a pointer compare, and two plain dicts pass it with
+      // both null. Mirrors interp's _object_eq (same-class same-field
+      // instances compare equal, a Point and a Circle of the same shape do
+      // not, and neither does a dict wearing an instance's fields).
       auto* a = reinterpret_cast<JitObject*>(d1);
       auto* b = reinterpret_cast<JitObject*>(d2);
       if (a == b) return true;
+      if (_jit_meta_class_name(a) != _jit_meta_class_name(b)) return false;
+      if (_jit_meta_enum_name(a) != _jit_meta_enum_name(b)) return false;
       if (a->prop_size() != b->prop_size()) return false;
       culebra::ValueWalkFrame walk;
       bool eq = true;
@@ -570,12 +576,10 @@ inline std::optional<std::string_view> _jit_string_slot(JitObject* obj,
 // an object cannot be given a meta by writing to it.
 inline std::string_view _jit_derived_class_tag(JitObject* obj) {
   const char* meta = _jit_meta_class_name(obj);
-  _jit_migration_check("class", meta, _jit_string_slot(obj, "class"));
   return meta ? std::string_view(meta) : std::string_view{};
 }
 inline std::optional<std::string_view> _jit_enum_name(JitObject* obj) {
   const char* meta = _jit_meta_enum_name(obj);
-  _jit_migration_check("__enum", meta, _jit_string_slot(obj, "__enum"));
   if (!meta) return std::nullopt;
   return std::string_view(meta);
 }
@@ -1213,8 +1217,6 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
       if (e && e->value.tag == TAG_FUNC) return true;
     }
     if (const char* name = _jit_meta_class_name(obj)) {
-      _jit_migration_check("class@type_matches", name,
-                           _jit_string_slot(obj, "class"));
       class_tag_view = std::string_view(name);
       if (class_tag_view == expected) return true;
     }
@@ -3358,8 +3360,9 @@ inline JitValue _jit_packable_read_field(const uint8_t* base,
         culebra::PackableField::scalar(f.layout.elem_type));
   }
   if (f.layout.is_enum) {
-    // `[tag:i32][payload]` -> the tagged variant instance (class/__enum +
-    // positional `_0.._n` fields), matching culebra_runtime_build_variant.
+    // `[tag:i32][payload]` -> the variant instance: its meta names the
+    // variant and its enum, and the positional `_0.._n` fields follow,
+    // matching culebra_runtime_build_variant.
     const auto* el = culebra::lookup_packable_enum(f.layout.elem_type);
     int32_t tag; std::memcpy(&tag, p, 4);
     if (!el || tag < 0 || tag >= static_cast<int32_t>(el->variants.size()))
@@ -3368,10 +3371,6 @@ inline JitValue _jit_packable_read_field(const uint8_t* base,
     auto* inst = culebra_runtime_object_new();
     inst->set_proto(culebra_runtime_make_variant_meta(  // transferred
         _intern_str(var.name), _intern_str(f.layout.elem_type)));
-    culebra_runtime_object_set(inst, "class", false, TAG_STRING,
-        reinterpret_cast<int64_t>(_intern_str(var.name)), 0, 0);
-    culebra_runtime_object_set(inst, "__enum", false, TAG_STRING,
-        reinterpret_cast<int64_t>(_intern_str(f.layout.elem_type)), 0, 0);
     const uint8_t* payload = p + el->payload_offset;
     for (size_t fi = 0; fi < var.fields.size(); fi++) {
       JitValue fv = _jit_packable_read_field(

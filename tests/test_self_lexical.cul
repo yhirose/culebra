@@ -216,7 +216,7 @@ class F {
   }
 }
 let fc = F.new().cb
-assert_eq(fc(), 'Object')
+assert_eq(fc(), 'F')
 
 // --- `let self` shadowing stays legal ---------------------------------------
 class S {

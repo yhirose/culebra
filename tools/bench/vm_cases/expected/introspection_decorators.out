@@ -23,9 +23,9 @@ true
 6
 inner
 outer
-Object
+Class
 42
-true Tagged
+true nil
 --- decorator errors
 TypeError
 --- churn

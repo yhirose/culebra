@@ -33,7 +33,7 @@ println(a >= b)
 
 # Derived methods live on the meta, so they are not own properties.
 inspect(a.keys())
-println(a.class)
+println(type_of(a))
 println(type_of(a))
 # A derived method taken as a value keeps its receiver.
 let f = a.eq

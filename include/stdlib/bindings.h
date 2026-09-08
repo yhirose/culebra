@@ -4262,6 +4262,18 @@ inline JitValue _ns_io_capture(JitValue* a, int64_t) {
 // are 0 — the value/HOF call site can't thread a position through the closure
 // ABI, matching the ns-method adapters above.
 inline JitValue _ns_global_type_of(JitValue* a, int64_t) {
+  // The name in the vocabulary type annotations speak: `Point` sits beside
+  // `Long` there (`fn (v: Point)` binds), so this answers with the class
+  // that built the value rather than the tag it is stored under. A class
+  // object is a `Class`, the way `Point.class` is `Class` in the languages
+  // that model it. Everything with no class of its own — a plain Object
+  // included — falls through to its tag name.
+  if (a[0].tag == TAG_OBJECT) {
+    auto* o = reinterpret_cast<JitObject*>(a[0].data);
+    if (const char* name = _jit_meta_class_name(o))
+      return _ns_adapt::v_string(name);
+    if (o->is_class) return _ns_adapt::v_string(_intern_str("Class"));
+  }
   return _ns_adapt::v_string(culebra_runtime_type_of(a[0].tag));
 }
 inline JitValue _ns_global_to_long(JitValue* a, int64_t n) {

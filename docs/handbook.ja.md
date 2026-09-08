@@ -1101,7 +1101,7 @@ car = Car.new(5)
 car.run(1)
 car.run(2)
 inspect(car.total())  # => '走行距離: 15 miles'
-inspect(car.class)    # => 'Car'
+inspect(type_of(car))  # => 'Car'
 ```
 
 クラスそのものを呼び出すのは`.new`のショートハンドです。`Car(5)`は

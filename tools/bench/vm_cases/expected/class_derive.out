@@ -13,9 +13,9 @@ true
 true
 false
 true
-['class', 'x', 'y']
+['x', 'y']
 Point
-Object
+Point
 true
 Point(1, 2)
 false
@@ -39,7 +39,7 @@ eq2
 OverEq(1)
 DispatchError
 Fielded(1, 'z', 3.5)
-['class', 'a', 'b', 'c']
+['a', 'b', 'c']
 true
 true
 0

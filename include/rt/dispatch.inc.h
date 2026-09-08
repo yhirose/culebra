@@ -43,8 +43,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitCell* culebra_runtime_cell_new(
 // (Every position this file publishes lives in `_jit_thread`, rt_runtime.inc.h.)
 
 // Build a variant instance: `meta` is TRANSFERRED (the instance's proto takes
-// the caller's +1), tagged with `class` = variant name and
-// `__enum` = parent enum name, with the `arity` declared payload fields
+// the caller's +1) and is where the variant and enum names live, with the
+// `arity` declared payload fields
 // `_0.._{arity-1}` taking ownership of the caller's args (object_set
 // transfers the +1, mirroring the default-ctor path). `n_args` is what the
 // caller actually passed: too few raises "missing required argument '_k'"
@@ -68,11 +68,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_variant(
         line, col);
   }
   auto* inst = culebra_runtime_object_new();
-  inst->set_proto(meta);  // transferred: no retain
-  culebra_runtime_object_set(inst, "class", /*mut*/ false, TAG_STRING,
-                             reinterpret_cast<int64_t>(variant_name), 0, 0);
-  culebra_runtime_object_set(inst, "__enum", /*mut*/ false, TAG_STRING,
-                             reinterpret_cast<int64_t>(enum_name), 0, 0);
+  inst->set_proto(meta);  // transferred: no retain — and it carries both names
   for (int64_t i = 0; i < arity; i++) {
     auto fname = culebra::positional_field_name(static_cast<size_t>(i));
     culebra_runtime_object_set(inst, fname.data(), /*mut*/ false, args[i].tag,
@@ -157,17 +153,20 @@ inline int _jit_derived_cmp3(const JitValue& a, const JitValue& b) {
 
 // eq(other): same class tag + every data field equal (JitValueEq, so
 // nested user/derived eq composes). A non-Object or different class is
-// unequal. A variant's `__enum` tag is walked like a field: it is part of
-// the identity, so same-named variants of two enums stay unequal.
+// unequal, and for a variant the parent enum counts too: it used to be a
+// field the walk happened to reach, and is now read from the meta beside
+// the variant's own name, so same-named variants of two enums stay unequal.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_derived_eq(
     JitObject* lhs, JitValue other) {
   if (other.tag != TAG_OBJECT) return {TAG_BOOL, 0};
   auto* rhs = reinterpret_cast<JitObject*>(other.data);
   if (_jit_derived_class_tag(lhs) != _jit_derived_class_tag(rhs))
     return {TAG_BOOL, 0};
+  if (_jit_meta_enum_name(lhs) != _jit_meta_enum_name(rhs))
+    return {TAG_BOOL, 0};
   bool eq = true;
   lhs->for_each([&](std::string_view name, const JitObjectEntry& e) {
-    if (!eq || name == "class" || e.value.tag == TAG_FUNC) return;
+    if (!eq || e.value.tag == TAG_FUNC) return;
     auto idx = rhs->find_slot(name);
     if (idx == static_cast<size_t>(-1)) {
       eq = false;
@@ -179,13 +178,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_derived_eq(
 }
 
 // hash(): combine the class-name hash with each data field's hash
-// (JitValueHash composes nested user/derived hashes). `__enum` is walked
-// as in derived_eq.
+// (JitValueHash composes nested user/derived hashes). The name comes from
+// the meta, so two enums that each declare an `Ok` still hash apart.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_derived_hash(
     JitObject* obj) {
   size_t h = std::hash<std::string_view>{}(_jit_derived_class_tag(obj));
+  if (const char* en = _jit_meta_enum_name(obj))
+    h = h * 31 + std::hash<std::string_view>{}(std::string_view(en));
   obj->for_each([&](std::string_view name, const JitObjectEntry& e) {
-    if (name == "class" || e.value.tag == TAG_FUNC) return;
+    if (e.value.tag == TAG_FUNC) return;
     h = h * 31 + JitValueHash{}(e.value);
   });
   return static_cast<int64_t>(h);
@@ -211,7 +212,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_derived_show(
   s += "(";
   bool first = true;
   obj->for_each([&](std::string_view name, const JitObjectEntry& e) {
-    if (name == "class" || name == "__enum" || e.value.tag == TAG_FUNC) return;
+    if (e.value.tag == TAG_FUNC) return;
     if (!first) s += ", ";
     first = false;
     s += _culebra_value_to_str_impl(e.value.tag, e.value.data);
@@ -228,8 +229,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_derived_cmp(
   int64_t result = 0;
   bool done = false;
   lhs->for_each([&](std::string_view name, const JitObjectEntry& e) {
-    if (done || name == "class" || name == "__enum" || e.value.tag == TAG_FUNC)
-      return;
+    if (done || e.value.tag == TAG_FUNC) return;
     auto idx = rhs->find_slot(name);
     if (idx == static_cast<size_t>(-1)) {
       done = true;

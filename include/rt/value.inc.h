@@ -649,11 +649,10 @@ struct JitObject {
 };
 static_assert(sizeof(JitObject) <= 128 && !std::is_polymorphic_v<JitObject>);
 
-// TEMPORARY (issue #18 migration scaffolding — remove with the slot).
-// The class name reached through the meta, which every identity question now
-// answers from, and a cross-check against the `class` own slot that no longer
-// decides anything. One pass over the corpus with CULEBRA_MIGRATION_CHECK=1
-// enumerates every object where the two still disagree.
+// The names a value answers to, read from the meta it reaches through
+// `proto`: the class that built it, and — on an enum variant — the enum
+// that declares it. Null for a plain Object, which has no meta and so no
+// name to be given by writing to it.
 inline const char* _jit_meta_class_name(JitObject* obj) {
   auto* m = obj->proto();
   return (m && m->is_class_meta && m->specials) ? m->specials->name : nullptr;
@@ -662,22 +661,6 @@ inline const char* _jit_meta_enum_name(JitObject* obj) {
   auto* m = obj->proto();
   return (m && m->is_class_meta && m->specials) ? m->specials->enum_name
                                                 : nullptr;
-}
-inline void _jit_migration_check(const char* where, const char* meta,
-                                 std::optional<std::string_view> slot) {
-  static const bool on = [] {
-    const char* e = std::getenv("CULEBRA_MIGRATION_CHECK");
-    return e && std::string_view(e) == "1";
-  }();
-  if (!on) return;
-  std::string_view mv = meta ? std::string_view(meta) : std::string_view{};
-  std::string_view sv = slot.value_or(std::string_view{});
-  if (mv == sv) return;
-  static thread_local std::set<std::string> seen;
-  std::string key = std::string(where) + "|meta=" + std::string(mv) +
-                    "|slot=" + std::string(sv);
-  if (seen.insert(key).second)
-    std::fprintf(stderr, "MIGRATION-MISMATCH %s\n", key.c_str());
 }
 
 // culebra_runtime_build_class_meta's flag bits (Chunk::name_table_flags).

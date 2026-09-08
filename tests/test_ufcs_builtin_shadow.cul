@@ -146,7 +146,7 @@ class Box {
     self.v = v
   }
 }
-assert_eq(Box(1).push(9), "ufcs push:Object")
+assert_eq(Box(1).push(9), "ufcs push:Box")
 assert_eq(type_of(Box(1).size()), "Long")  # dict `size`, not "ufcs size"
 
 # An own property beats UFCS even when it isn't callable — the receiver

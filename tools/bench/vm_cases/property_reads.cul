@@ -5,7 +5,7 @@ let r = 0..3
 println(r.start)
 println(r.end)
 println(r.inclusive)
-println(r.class)
+println(type_of(r))
 println(r.nope)
 
 let ri = 0..=3

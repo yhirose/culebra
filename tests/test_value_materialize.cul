@@ -82,7 +82,7 @@ assert_eq(b.val.x, 2.0)
 # --- structural identity: a materialized run equals a freshly boxed twin ---
 
 assert_eq(takes_untyped(v), V2.new(v.x, v.y))
-assert_eq(takes_untyped(v).keys(), ['class', 'x', 'y'])
+assert_eq(takes_untyped(v).keys(), ['x', 'y'])
 
 # --- no leak across many materialize-and-discard iterations ---
 

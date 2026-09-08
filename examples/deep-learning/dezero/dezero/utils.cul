@@ -148,7 +148,7 @@ fn get_dot_graph(output, verbose = true) {
   while !funcs.empty() {
     f = funcs.pop()
     fid = b.fn_id(f)
-    lines.push("{fid} [label=\"{f.class}\", color=lightblue, style=filled, shape=box]")
+    lines.push("{fid} [label=\"{type_of(f)}\", color=lightblue, style=filled, shape=box]")
     for x in f.inputs {
       xid = b.var_id(x)
       xname = if x.name == nil {

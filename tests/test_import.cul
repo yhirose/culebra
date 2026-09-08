@@ -42,11 +42,11 @@ assert_eq(multi.three, 3)
 # --- Cache: importing the same module twice yields the same export ---
 # Function values aren't `==`-comparable per §5, so check via a
 # value the user can observe instead: the same class Pair carries
-# the same `.class` tag on instances built from either import.
+# the same type name on instances built from either import.
 import math2 from './test_import_helpers/math_utils.cul'
 let p_a = math.Pair.new(1, 2)
 let p_b = math2.Pair.new(1, 2)
-assert_true(p_a.class == 'Pair' && p_b.class == 'Pair')
+assert_true(type_of(p_a) == 'Pair' && type_of(p_b) == 'Pair')
 assert_eq(math2.add(1, 2), math.add(1, 2))
 
 IO.inspect('test_import OK')

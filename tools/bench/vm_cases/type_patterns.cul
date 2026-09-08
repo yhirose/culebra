@@ -213,7 +213,7 @@ probe("typed leaf match", fn () {
 # `Duration` type name, so time arithmetic needs this gate.
 let t = Time.now()
 let d = Time.hours(2)
-println([(t + d).class, (t - d).class, (t - t).class, (d + d).class])
+println([type_of(t + d), type_of(t - d), type_of(t - t), type_of(d + d)])
 
 # Churn: an instance per turn, gated and dropped, so a leaked retain shows up
 # as growth rather than a wrong answer.

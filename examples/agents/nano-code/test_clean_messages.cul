@@ -111,7 +111,7 @@ fn every_variant_carries_a_payload() {
   for m in ms {
     assert_true(msg.content_of(m) != '')
   }
-  assert_eq(ms.map(|m| m.class), ['User', 'System', 'Assistant', 'Tool'])
+  assert_eq(ms.map(|m| type_of(m)), ['User', 'System', 'Assistant', 'Tool'])
 }
 
 @test

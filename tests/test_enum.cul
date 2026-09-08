@@ -22,7 +22,7 @@ enum Shape {
 // --- Construction + payload field access ---
 let r = Result.Ok(5)
 assert_eq(r._0, 5)
-assert_eq(r.class, "Ok")
+assert_eq(type_of(r), "Ok")
 let e = Result.Err("boom")
 assert_eq(e._0, "boom")
 

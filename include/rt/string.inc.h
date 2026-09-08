@@ -170,18 +170,14 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
           return out;
         }
       }
-      // Hoist a String `class:` tag to a prefix (matches the tree
-      // interpreter's str_object formatting).
+      // A named value prints its name before its fields (matches the tree
+      // interpreter's str_object formatting). The name comes from the meta,
+      // so it is the class that built the value — an Object with a `class`
+      // field is a plain Object and prints as one.
       std::string s;
-      bool has_class_tag = false;
-      {
-        auto idx = obj->find_slot("class");
-        if (idx != static_cast<size_t>(-1) &&
-            obj->slots[idx].value.tag == TAG_STRING) {
-          s = reinterpret_cast<const char*>(obj->slots[idx].value.data);
-          s += " ";
-          has_class_tag = true;
-        }
+      if (const char* cname = _jit_meta_class_name(obj)) {
+        s = cname;
+        s += " ";
       }
       s += "{";
       bool first = true;
@@ -191,7 +187,6 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
         for (const auto& key : *obj->key_order) {
           if (key.tag == TAG_STRING) {
             auto name = reinterpret_cast<const char*>(key.data);
-            if (has_class_tag && std::string_view(name) == "class") continue;
             auto idx = obj->shape ? obj->shape->offset(name)
                                   : static_cast<size_t>(-1);
             if (idx == static_cast<size_t>(-1)) continue;
@@ -221,7 +216,6 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
         // the per-property key_order push that mixed-key objects need.
         for (size_t i = 0; i < obj->prop_size(); i++) {
           const auto& name = obj->prop_name(i);
-          if (has_class_tag && name == "class") continue;
           const auto& entry = obj->slots[i];
           if (!first) s += ", ";
           first = false;

@@ -2,7 +2,7 @@ let _time_module = fn () {
   let _tname = fn (o) {
     let t = type_of(o)
     if t == "Object" && o.has("class") {
-      o.class
+      type_of(o)
     } else {
       t
     }

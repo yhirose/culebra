@@ -20,7 +20,7 @@ fn _regex_escape(s) {
   out
 }
 fn _regex_interp(x) {
-  if type_of(x) == "Object" && x.has("class") && x["class"] == "Regex" {
+  if type_of(x) == "Regex" {
     "(?:" + x._pat + ")"
   } else {
     _regex_escape("{x}")

@@ -449,7 +449,7 @@ c.run(3)
 inspect(c.miles)   # => 15
 inspect(c.far)     # => true
 inspect(c.wheels)  # => 4
-inspect(c.class)   # => 'Car'
+inspect(type_of(c))  # => 'Car'
 ```
 
 演算子はdunderメソッド (`__add__`、`__eq__`、`__lt__`、`__index__`、

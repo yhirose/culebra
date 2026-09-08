@@ -511,9 +511,9 @@ enum class Op : uint8_t {
                // them), so the argument run is nil'd. Emitted as the whole
                // body of a synthetic constructor chunk.
   ValueBox,    // regs[a] = a fresh, frozen instance (+1) reboxing the run
-               // at regs[b .. b+N) — N from value_box_specs[c]'s key count
-               // (minus the leading "class" key) — as that site's
-               // Chunk::ValueBoxSpec, using meta regs[d] (borrowed).
+               // at regs[b .. b+N) — N from value_box_specs[c]'s key count —
+               // as that site's Chunk::ValueBoxSpec, using meta regs[d]
+               // (borrowed).
                // culebra_runtime_materialize_value; no `new`, no field-init,
                // nothing to run — the fields are already-computed scalars.
                // The run's own slots are a snapshot read: neither consumed
@@ -2545,14 +2545,13 @@ struct Chunk {
   std::vector<ObjectShapeSpec> object_shape_specs;
   // One entry per Op::ValueBox site (Compiler::materialize_run). `keys`
   // is the SAME kind of baked, dedup-free key array ObjectShapeSpec keeps
-  // (raw pointers into `str_arena`) — `keys[0]` is always "class", and
-  // `keys[1..]` is the flat layout's field names in declaration order, so
-  // resolving `shape` once (lazily, exactly like ObjectShapeSpec — a
-  // Shape* is a per-process pointer, not a per-program one) reproduces the
-  // identical Shape a boxed construction of the same class resolves to.
-  // `class_name` is the same interned bytes a `MakeInst` site's `consts[c]`
-  // would hold for this class — reused directly as the instance's "class"
-  // slot value (TAG_STRING, no header copy needed).
+  // (raw pointers into `str_arena`): the flat layout's field names in
+  // declaration order, so resolving `shape` once (lazily, exactly like
+  // ObjectShapeSpec — a Shape* is a per-process pointer, not a per-program
+  // one) reproduces the identical Shape a boxed construction of the same
+  // class resolves to. `class_name` is the same interned bytes a `MakeInst`
+  // site's `consts[c]` would hold; the instance's name comes from its meta,
+  // so this is only what the runtime entry still takes.
   struct ValueBoxSpec {
     mutable void* shape = nullptr;
     std::vector<const char*> keys;
@@ -10118,8 +10117,6 @@ class Compiler {
     auto vc = value_class_of(*run.unboxed_class);
     assert(vc && "a marked run's class must still be flat-eligible");
     Chunk::ValueBoxSpec spec;
-    spec.keys.push_back(
-        reinterpret_cast<const char*>(chunk_.consts[kconst_str("class")].data));
     for (const auto& f : *run.unboxed)
       spec.keys.push_back(
           reinterpret_cast<const char*>(chunk_.consts[kconst_str(f)].data));

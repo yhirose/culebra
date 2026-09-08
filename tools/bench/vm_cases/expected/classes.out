@@ -1,19 +1,19 @@
 15
 Car
-['class', 'miles', 'mpr']
+['miles', 'mpr']
 Car {mut miles: 15, mut mpr: 5}
 8
 hi
-['class']
+[]
 3
 NoCtor {mut a: 1, mut b: 2, mut c: ''}
-['class', 'a', 'b', 'c']
+['a', 'b', 'c']
 ctor sees n=1
 1/plain/[]/7/0
 ctor sees n=1
 []
 [9]
-['class', 'n', 'tag', 'items', 'bare', 'extra']
+['n', 'tag', 'items', 'bare', 'extra']
 6
 R {mut x: 1}
 ImmutableError
@@ -27,7 +27,7 @@ ImmutableError
 3
 3
 50
-Object
+Class
 ['new']
 nil
 TypeError

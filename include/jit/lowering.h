@@ -4327,7 +4327,7 @@ struct Lowering {
         }
         case Op::ValueBox: {
           const auto& spec = c.value_box_specs[in.c];
-          const int64_t n_fields = static_cast<int64_t>(spec.keys.size()) - 1;
+          const int64_t n_fields = static_cast<int64_t>(spec.keys.size());
           auto [cacheGlobal, keysArray] = j.build_shape_cache_globals(
               spec.keys, ".value.box", j.value_box_counter_);
           // The field values are scattered across N separate slot allocas
@@ -4358,8 +4358,8 @@ struct Lowering {
               {cacheGlobal, keysArray,
                b.getInt64(static_cast<int64_t>(spec.keys.size())),
                b.CreateIntToPtr(j.extract_data(metaV), ptrTy),
-               // Same header-backed literal MakeInst builds for the
-               // instance's own "class" TAG_STRING value.
+               // The class name, which the meta above already carries; still
+               // passed so the runtime entry keeps one signature.
                j.emit_str_literal(_str_sv(spec.class_name)), fieldsPtr},
               "vm.value.box");
           b.CreateStore(inst, slots[in.a]);

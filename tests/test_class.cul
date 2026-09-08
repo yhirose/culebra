@@ -21,7 +21,7 @@ test_class_basic = fn () {
   c.run(1)
   c.run(2)
   assert_eq(c.total(), 15)
-  assert_eq(c.class, 'Car')
+  assert_eq(type_of(c), 'Car')
 }
 
 test_class_default_ctor = fn () {
@@ -32,7 +32,7 @@ test_class_default_ctor = fn () {
   }
   e = Empty.new()
   assert_eq(e.greet(), 'hi')
-  assert_eq(e.class, 'Empty')
+  assert_eq(type_of(e), 'Empty')
 }
 
 test_class_independent_instances = fn () {
@@ -82,7 +82,7 @@ test_class_match_tag = fn () {
   }
   describe = fn (o) {
     match o {
-      {class} if class == 'Point' => 'point',
+      p: Point => 'point',
       _ => 'other',
     }
   }
@@ -309,11 +309,10 @@ test_default_display = fn () {
   p = Point.new(3, 4)
   assert_eq(to_string(p), 'Point {mut x: 3, mut y: 4}')
 
-  # Plain literals using the `class:` convention get the same treatment.
+  # A `class` field is an ordinary property: the name a value displays is
+  # the class that built it, and a literal cannot be given one.
   tagged = {class: 'Tag', x: 10}
-  assert_eq(to_string(tagged), 'Tag {x: 10}')
-
-  # A non-String `class` field is treated as a regular property.
+  assert_eq(to_string(tagged), `{class: 'Tag', x: 10}`)
   weird = {class: 42, x: 1}
   assert_eq(to_string(weird), '{class: 42, x: 1}')
 
@@ -674,7 +673,7 @@ fn test_member_default_sees_receiver() {
   let r = R.new()
   assert_eq(r.m(), 10)
   assert_eq(r.m(1), 2)
-  assert_eq(R.s(), 'Object')
+  assert_eq(R.s(), 'Class')
   assert_eq(r.countdown(1), 'Function')
   # In a `new` default the instance exists but its fields have not been
   # initialized yet (they run once the parameters bind).

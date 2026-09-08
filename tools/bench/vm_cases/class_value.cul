@@ -20,7 +20,7 @@ class Vec2 {
 
 let v = Vec2.new(1, 2)
 println(v)
-println(v.class)
+println(type_of(v))
 println(v.keys())
 println(v + Vec2.new(3, 4))
 println(match v {

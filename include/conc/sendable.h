@@ -151,6 +151,19 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
       // as a backref. A meta whose methods reach a native closure (derived
       // eq/show thunks, a method capturing the class object and thus its
       // ctor) rejects exactly like the interp's body==nullptr check.
+      // A class meta holds its class's name (and, for a variant, its enum's)
+      // in C++ fields rather than slots, so the entry walk above cannot
+      // carry them. They ride in the node's string, separated by '/' — not
+      // a character an identifier can contain. Without this the receiver
+      // rebuilds a nameless meta and every instance behind it loses the one
+      // thing that says what it is.
+      if (o->is_class_meta && o->specials && o->specials->name) {
+        n.s = o->specials->name;
+        if (o->specials->enum_name) {
+          n.s += '/';
+          n.s += o->specials->enum_name;
+        }
+      }
       if (o->proto()) {
         // Carry the instance's own drop gate rather than re-deriving it
         // from the meta on the other side: a nested instance can relink
@@ -330,6 +343,25 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
           culebra_runtime_object_set_any(o, key.tag, key.data, mut, val.tag,
                                          val.data, 0, 0, /*is_init=*/true);
         }
+      }
+      // A class meta arrives as an ordinary Object plus the names above.
+      // Restore what makes it a meta: the flag, the special-method table
+      // (refilled from the methods just rebuilt, since it is a cache of
+      // them), and the interned names its instances read.
+      if (!n.s.empty()) {
+        o->is_class_meta = true;
+        o->specials = new JitSpecialTable();
+        auto sep = n.s.find('/');
+        std::string_view all(n.s);
+        o->specials->name = _intern_str(all.substr(0, sep));
+        if (sep != std::string::npos)
+          o->specials->enum_name = _intern_str(all.substr(sep + 1));
+        for (size_t si = 0; si < static_cast<size_t>(Special::Count); si++) {
+          auto* e = _find_property(o, kSpecialNames[si]);
+          if (e && e->value.tag == TAG_FUNC)
+            o->specials->fn[si] = reinterpret_cast<JitClosure*>(e->value.data);
+        }
+        o->methods_drop = _find_property(o, "drop") != nullptr;
       }
       // Class instance: relink the proto (elems[0] = the rebuilt class
       // meta), mirroring build_class_instance — the proto pointer holds

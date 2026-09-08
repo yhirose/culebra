@@ -11,5 +11,5 @@ built
   = not read
   = NameError|undefined variable 'self'
   = ImmutableError|cannot reassign 'self' (declared without 'mut')
-  = Object
+  = Class
 2003000

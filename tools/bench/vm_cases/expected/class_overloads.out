@@ -4,7 +4,7 @@
 no dispatcher
 11/13
 Function
-['class', 'base']
+['base']
 15
 21
 one:1
@@ -14,7 +14,7 @@ inst:1
 inst2:1,2
 ['new', 'make', 'plain']
 [function]
-Object
+Class
 helper:1
 empty
 one:1

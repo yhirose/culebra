@@ -120,7 +120,7 @@ assert_eq((1..3) == (1..3), true)
 assert_eq((1..3) == (1..=3), false)
 assert_eq([1..2] == [1..2], true)
 let req = 4..6
-assert_eq(req.class, "Range")
-assert_eq(req.class == "Range", true)
+assert_eq(type_of(req), "Range")
+assert_eq(type_of(req) == "Range", true)
 
 inspect("slice ok")

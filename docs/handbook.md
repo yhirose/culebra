@@ -1121,7 +1121,7 @@ car = Car.new(5)
 car.run(1)
 car.run(2)
 inspect(car.total())  # => 'total: 15 miles'
-inspect(car.class)    # => 'Car'
+inspect(type_of(car))  # => 'Car'
 ```
 
 Calling the class itself is shorthand for `.new` — `Car(5)` is exactly

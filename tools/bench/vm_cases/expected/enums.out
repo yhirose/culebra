@@ -1,6 +1,6 @@
-A {mut __enum: 'E', mut _0: 5}
-B {mut __enum: 'E'}
-Object
+A {mut _0: 5}
+B {}
+A
 A
 5
 ['A', 'B']
@@ -11,11 +11,11 @@ bare-binds
 3.0
 ['ok-1', 'err-bad', 'pair-2-3']
 path-1
-A {mut __enum: 'E', mut _0: 9}
-B {mut __enum: 'E'}
+A {mut _0: 9}
+B {}
 true
-[One {mut __enum: 'Local'}, Two {mut __enum: 'Local', mut _0: 2}]
-[Some {mut __enum: 'Opt', mut _0: 3}, Nothing {mut __enum: 'Opt'}]
+[One {}, Two {mut _0: 2}]
+[Some {mut _0: 3}, Nothing {}]
 [7, 'none']
 missing payload ::: err=ArityError|missing required argument '_0'
 unknown member ::: ok=nil

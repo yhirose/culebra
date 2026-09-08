@@ -15,7 +15,7 @@ class Car {
 let c = Car.new(5)
 c.run(3)
 println(c.total())
-println(c.class)
+println(type_of(c))
 inspect(c.keys())
 inspect(c)
 

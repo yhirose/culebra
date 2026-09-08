@@ -198,7 +198,7 @@ class Box {
 let hbox = Isolate.spawn(fn (b) {
   [b.inner(), b.keys(), b.p.keys()]
 }, Box(Point(3, 4)))
-assert_eq(hbox.join(), [25, ['class', 'p'], ['class', 'x', 'y']])
+assert_eq(hbox.join(), [25, ['p'], ['x', 'y']])
 
 # an instance built inside the isolate is rebuilt callable on the parent
 let hmade = Isolate.spawn(fn () {
@@ -214,7 +214,7 @@ let hmade = Isolate.spawn(fn () {
 })
 let made = hmade.join()
 assert_eq(made.twice(), 14)
-assert_eq(made.keys(), ['class', 'v'])
+assert_eq(made.keys(), ['v'])
 assert_eq(made.to_string(), 'Made {mut v: 7}')
 
 inspect("test_isolate: all assertions passed")

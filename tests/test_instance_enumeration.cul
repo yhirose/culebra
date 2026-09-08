@@ -19,8 +19,8 @@ fn test_keys_excludes_methods() {
     }
   }
   let p = P()
-  assert_eq(p.keys(), ['class', 'a'])
-  assert_eq(p.size(), 2)
+  assert_eq(p.keys(), ['a'])
+  assert_eq(p.size(), 1)
   assert_eq(p.empty(), false)
 }
 
@@ -38,16 +38,16 @@ fn test_declared_fields_enumerate_too() {
     }
   }
   let c = C()
-  assert_eq(c.keys(), ['class', 'a', 'b', 'c'])
-  assert_eq(c.size(), 4)
+  assert_eq(c.keys(), ['a', 'b', 'c'])
+  assert_eq(c.size(), 3)
   assert_eq(c.to_string(), 'C {mut a: 1, mut b: 0, mut c: 3}')
-  assert_eq(JSON.stringify(c), '{"class":"C","a":1,"b":0,"c":3}')
+  assert_eq(JSON.stringify(c), '{"a":1,"b":0,"c":3}')
   mut acc = []
   for k, v in c {
     acc.push([k, v])
   }
-  assert_eq(acc, [['class', 'C'], ['a', 1], ['b', 0], ['c', 3]])
-  assert_eq({...c}.keys(), ['class', 'a', 'b', 'c'])
+  assert_eq(acc, [['a', 1], ['b', 0], ['c', 3]])
+  assert_eq({...c}.keys(), ['a', 'b', 'c'])
 }
 
 fn test_keys_no_fields() {
@@ -57,8 +57,8 @@ fn test_keys_no_fields() {
     }
   }
   let q = Q()
-  assert_eq(q.keys(), ['class'])
-  assert_eq(q.size(), 1)
+  assert_eq(q.keys(), [])
+  assert_eq(q.size(), 0)
 }
 
 fn test_to_string_hoists_class_and_hides_methods() {
@@ -94,10 +94,10 @@ fn test_for_in_yields_class_and_fields() {
   for k, v in P() {
     acc.push([k, v])
   }
-  assert_eq(acc, [['class', 'P'], ['a', 1], ['b', 2]])
+  assert_eq(acc, [['a', 1], ['b', 2]])
 }
 
-fn test_spread_copies_class_and_fields_only() {
+fn test_spread_copies_fields_only() {
   class P {
     new() {
       self.a = 1
@@ -106,10 +106,13 @@ fn test_spread_copies_class_and_fields_only() {
       2
     }
   }
+  # A spread copies entries, and an instance's name is not one — so the copy
+  # is a plain Object that happens to hold the same fields.
   let d = {...P()}
-  assert_eq(d.keys(), ['class', 'a'])
-  assert_eq(d.class, 'P')
+  assert_eq(d.keys(), ['a'])
+  assert_eq(type_of(d), 'Object')
   assert_eq(d.a, 1)
+  assert_eq(d == P(), false)
 }
 
 fn test_json_stringify_serializes_instance() {
@@ -121,7 +124,7 @@ fn test_json_stringify_serializes_instance() {
       2
     }
   }
-  assert_eq(JSON.stringify(P()), '{"class":"P","a":1}')
+  assert_eq(JSON.stringify(P()), '{"a":1}')
 }
 
 fn test_methods_still_reachable() {
@@ -145,7 +148,8 @@ fn test_methods_still_reachable() {
   assert_true(!p.has('size'))
   # A method is not a data entry: `get`/subscript stay own-only.
   assert_eq(p.get('m', 'none'), 'none')
-  assert_eq(p['class'], 'P')
+  # the class name is not an entry either: it lives on the meta
+  assert_eq(p.get('class', 'none'), 'none')
   # `__str__` also lives on the meta and still wins over the formatter.
   assert_eq(p.to_string(), 'custom')
 }
@@ -159,8 +163,8 @@ fn test_own_field_shadows_method() {
   mut p = P()
   p.m = 'field'
   assert_eq(p.m, 'field')
-  assert_eq(p.keys(), ['class', 'm'])
-  assert_eq(p.size(), 2)
+  assert_eq(p.keys(), ['m'])
+  assert_eq(p.size(), 1)
 }
 
 fn test_instances_share_one_meta() {
@@ -198,7 +202,7 @@ fn test_operator_and_call_specials_live_on_the_meta() {
   let b = V(2)
   assert_eq((a + b).n, 3)
   assert_eq(a(10), 10)
-  assert_eq((a + b).keys(), ['class', 'n'])
+  assert_eq((a + b).keys(), ['n'])
 }
 
 fn test_drop_runs_from_the_meta() {
@@ -216,7 +220,7 @@ fn test_drop_runs_from_the_meta() {
       }
     }
     let r = R('a')
-    assert_eq(r.keys(), ['class', 't'])
+    assert_eq(r.keys(), ['t'])
   }
   run()
   assert_eq(log, ['close:a'])
@@ -227,7 +231,7 @@ test_declared_fields_enumerate_too()
 test_keys_no_fields()
 test_to_string_hoists_class_and_hides_methods()
 test_for_in_yields_class_and_fields()
-test_spread_copies_class_and_fields_only()
+test_spread_copies_fields_only()
 test_json_stringify_serializes_instance()
 test_methods_still_reachable()
 test_own_field_shadows_method()

@@ -1657,7 +1657,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_class_new_method(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_class_matches(
     JitObject* obj, const char* expected) {
   const char* cls = _jit_meta_class_name(obj);
-  _jit_migration_check("class@match", cls, _jit_string_slot(obj, "class"));
   return cls && expected && std::strcmp(cls, expected) == 0;
 }
 
@@ -1769,8 +1768,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_run_field_init(
 // Class-sugar constructor body. Mirrors the tree interpreter's
 // `eval_class_decl` constructor path:
 //   1. Allocate a fresh instance (refcount=1, caller-owned).
-//   2. Stamp the `class:` tag.
-//   3. Wire the instance's `proto` at the shared class meta object;
+//   2. Wire the instance's `proto` at the shared class meta object, which is
+//      where its class name lives;
 //      method lookups fall through to it via _lookup_special /
 //      culebra_runtime_object_get / object_has.
 //   4. Invoke the synthetic field-init closure with `self` bound —
@@ -1818,22 +1817,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
   if (class_meta && class_meta->methods_drop)
     _jit_owned_bind_drop(inst);
 
-  // `class_name` is a process-lifetime LLVM module global; TAG_STRING
-  // values are borrowed (no refcount), so we can stash it directly
-  // without the per-instance malloc + memcpy that `_culebra_heap_str`
-  // would do.
-  //
-  // Appended directly rather than through culebra_runtime_object_set: on a
-  // fresh instance the key always misses, so append_slot re-interns the same
-  // one-key shape under the registry's lock per instantiation. That shape is
-  // the same for every class in the process (it is keyed by name, not value),
-  // so it resolves once here. Nothing else object_set does applies — "class"
-  // is not in is_well_known_prop's set and is not "drop".
-  static culebra::Shape* const kClassShape = culebra::shape_registry()
-      .transition_add(culebra::shape_registry().root(), "class");
-  inst->append_slot_shaped(
-      kClassShape, {TAG_STRING, reinterpret_cast<int64_t>(class_name)},
-      /*mut=*/false);
+  // The instance's own slots are its fields and nothing else: its name is
+  // on the meta above, reached through `proto`. (`class_name` is still
+  // taken, for the meta's benefit on the paths that build one lazily.)
 
   JitValue self_val = {TAG_OBJECT, reinterpret_cast<int64_t>(inst)};
   // Each _jit_invoke consumes one retained `self` ref (the callee's slot
@@ -1900,15 +1886,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
 // read here, not a consuming one — its own slots are untouched, so the
 // binding keeps running afterward.
 //
-// `keys[0]` is always "class" and `field_values[i]` supplies `keys[i+1]`'s
-// slot, in the SAME declaration order the flat layout unboxed it in — so
-// this instance's Shape, `.keys()` order and structural equality are
-// identical to one a boxed `new` of the same class would have built.
-// Building the slot list directly (rather than through the sequence of
-// `object_set`-style appends `build_class_instance` uses for its one
-// "class" slot) means there is no add-refused ordering to get backwards:
-// nothing here ever asks whether the field set is closed, because nothing
-// here is ever an append.
+// `field_values[i]` supplies `keys[i]`'s slot, in the SAME declaration order
+// the flat layout unboxed it in — so this instance's Shape, `.keys()` order
+// and structural equality are identical to one a boxed `new` of the same
+// class would have built. Building the slot list directly means there is no
+// add-refused ordering to get backwards: nothing here ever asks whether the
+// field set is closed, because nothing here is ever an append.
 //
 // The Shape cache (`*shape_cache`) is the same per-callsite one
 // ObjectNewShaped's runtime half uses — see `_jit_resolve_cached_shape`
@@ -1921,11 +1904,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_materialize_value(
   auto* inst = culebra_runtime_object_new();
   inst->shape = shape;
   inst->slots.reserve(static_cast<size_t>(n_keys));
-  inst->slots.push_back(JitObjectEntry{
-      JitValue{TAG_STRING, reinterpret_cast<int64_t>(class_name)},
-      /*mut=*/false});
-  for (int64_t i = 1; i < n_keys; i++)
-    inst->slots.push_back(JitObjectEntry{field_values[i - 1], /*mut=*/false});
+  for (int64_t i = 0; i < n_keys; i++)
+    inst->slots.push_back(JitObjectEntry{field_values[i], /*mut=*/false});
+  (void)class_name;  // the meta names the class now
   inst->set_proto(class_meta);
   if (class_meta) class_meta->refcount++;
   if (class_meta && class_meta->methods_drop)
@@ -1935,23 +1916,18 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_materialize_value(
   return {TAG_OBJECT, reinterpret_cast<int64_t>(inst)};
 }
 
-// Build a range value `{class:"Range", start, end, inclusive, step}`. An
-// absent endpoint (open-ended range) is stored Nil; `step` defaults to 1 and
-// is never Nil. Mirrors the interpreter's _make_range so both backends
-// represent a range identically. Returns a fresh +1 JitObject.
+// Build a range value `{start, end, inclusive, step}` carrying the shared
+// Range meta. An absent endpoint (open-ended range) is stored Nil; `step`
+// defaults to 1 and is never Nil. Mirrors the interpreter's _make_range so
+// both backends represent a range identically. Returns a fresh +1
+// JitObject.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_make_range(
     int8_t has_start, int64_t start, int8_t has_end, int64_t end,
     int8_t inclusive, int64_t step) {
-  // Header-backed: every TAG_STRING must carry the length at data[-8]
-  // (_str_len); a bare char array segfaults the structural `==` walk.
-  static const struct { JitStrHeader h; char bytes[6]; } kRange = {{5},
-                                                                   "Range"};
   auto* o = culebra_runtime_object_new();
   // Identity, not shape: every range shares one meta, so _jit_is_range_shaped
-  // is a pointer compare and a dict wearing the same five keys is not a range.
+  // is a pointer compare and a dict wearing the same four keys is not a range.
   o->set_proto(_jit_range_meta());  // transferred
-  culebra_runtime_object_set(o, "class", false, TAG_STRING,
-                             reinterpret_cast<int64_t>(kRange.bytes), 0, 0);
   culebra_runtime_object_set(o, "start", false,
                              has_start ? TAG_LONG : TAG_NIL,
                              has_start ? start : 0, 0, 0);

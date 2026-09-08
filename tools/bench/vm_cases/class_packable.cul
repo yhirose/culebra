@@ -38,7 +38,7 @@ let p = P.mk()
 println(p.a)
 println(p.b)
 inspect(p.keys())
-println(p.class)
+println(type_of(p))
 println(type_of(p))
 println(p.m())
 p.a = 9

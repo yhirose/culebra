@@ -10,7 +10,7 @@ enum E {
 println(E.A(5))
 println(E.B)
 println(type_of(E.A(5)))
-println(E.A(5).class)
+println(type_of(E.A(5)))
 println(E.A(5)._0)
 println(E.keys())
 

@@ -79,7 +79,7 @@ class Box<T> {
   }
 }
 let b = Box.new(42)
-assert_true(b.class == "Box" && b.v == 42)
+assert_true(type_of(b) == "Box" && b.v == 42)
 
 class Pair<K, V> {
   new(k, v) {
@@ -88,7 +88,7 @@ class Pair<K, V> {
   }
 }
 let p = Pair.new("a", 1)
-assert_true(p.class == "Pair" && p.k == "a" && p.v == 1)
+assert_true(type_of(p) == "Pair" && p.k == "a" && p.v == 1)
 
 fn unbox(b: Box<Long>) -> Long {
   b.v

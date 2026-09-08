@@ -112,7 +112,7 @@ class Cell<T> {
 }
 show('generic one', || Cell(7).v)
 show('generic two', || Cell(1, 2).v)
-show('generic class name', || Cell(7).class)
+show('generic class name', || type_of(Cell(7)))
 fn ident<T>(x: T) -> T { x }
 show('generic fn', || ident('s'))
 

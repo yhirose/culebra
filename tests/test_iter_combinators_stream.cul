@@ -185,10 +185,10 @@ class Counter {
 }
 assert_eq(
   [1].iter().chain(Counter.new()).collect(),
-  [1, ('class', 'Counter'), ('n', 0)],
+  [1, ('n', 0)],
 )
 assert_eq(
   [Counter.new()].iter().flatten().collect(),
-  [('class', 'Counter'), ('n', 0)],
+  [('n', 0)],
 )
 assert_eq([1].iter().chain({'a': 1}).collect(), [1, ('a', 1)])

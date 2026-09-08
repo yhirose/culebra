@@ -73,10 +73,10 @@ out=$(session "fn f() { 1 }" "fn f(a) { 2 }" "f()" "f(1)" \
 # line — the session registers a namespace's builder once, when a line first
 # mentions it.
 out=$(session "class P { new(a) { self.a = a } }" "let p = P.new(21)" "p.a * 2" \
-              "enum E { A, B }" "E.A")
-[[ "$out" == *"42"*"E"* ]] || { echo "FAIL classes: $out"; fail=1; }
+              "enum E { A, B }" "type_of(E.A)")
+[[ "$out" == *"42"*"'A'"* ]] || { echo "FAIL classes: $out"; fail=1; }
 out=$(session "Math.abs(-3)" "to_string(42)" "assert_eq(1, 1)" \
-              "Time.now().class" "[1, 2].map(|v| v * 2)")
+              "type_of(Time.now())" "[1, 2].map(|v| v * 2)")
 [[ "$out" == "3"$'\n'"'42'"$'\n'"'Instant'"$'\n'"[2, 4]" ]] ||
   { echo "FAIL stdlib: $out"; fail=1; }
 

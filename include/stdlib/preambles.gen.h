@@ -6,7 +6,7 @@ inline constexpr const char* TIME_MODULE_SOURCE = R"=culpre=(let _time_module = 
   let _tname = fn (o) {
     let t = type_of(o)
     if t == "Object" && o.has("class") {
-      o.class
+      type_of(o)
     } else {
       t
     }
@@ -2157,7 +2157,7 @@ fn _regex_escape(s) {
   out
 }
 fn _regex_interp(x) {
-  if type_of(x) == "Object" && x.has("class") && x["class"] == "Regex" {
+  if type_of(x) == "Regex" {
     "(?:" + x._pat + ")"
   } else {
     _regex_escape("{x}")
@@ -2621,11 +2621,10 @@ inline constexpr const char* PATH_MODULE_SOURCE = R"=culpre=(# Path — a thin, 
 # every method accepts either a String or another Path wherever a path is
 # expected.
 let _path_module = fn () {
-  # A structural "is this a Path" probe: a Path is the only object carrying a
-  # `_path` string field. `type_of` first so `.has` is only ever called on an
-  # Object (String/Array/… don't answer `.has`).
+  # A Path is what the Path class built, and `type_of` names it: nothing
+  # else can answer to the name, so the probe is one comparison.
   let _is_path = fn (o) {
-    type_of(o) == "Object" && o.has("_path")
+    type_of(o) == "Path"
   }
   # PathLike coercion used *inside* the class: a String/StringView stays a
   # string, a Path collapses to its inner string via __str__. Anything else is

@@ -1151,23 +1151,22 @@ Merged entries are mutable. Spreading a non-Object raises `TypeError`.
 
 ### Display conventions
 
-The default formatter (used when an Object has no `__str__`) hoists a
-String `class:` property to a prefix, and omits it from the property
-list. So a class-sugar instance with fields `x`, `y` displays as
-`Point {mut x: 3, mut y: 4}` instead of `{class: 'Point', mut x: 3,
-mut y: 4}`. Plain objects that happen to carry a `class:` key get the
-same treatment; a non-String `class` field is displayed as a regular
-property.
+The default formatter (used when an Object has no `__str__`) prefixes a
+value with the class that built it. So a class-sugar instance with fields
+`x`, `y` displays as `Point {mut x: 3, mut y: 4}`. A plain Object has no
+class and displays as `{...}`, whatever its fields are named — a `class`
+field is an ordinary property and appears in the list like any other.
 
 ### Enumeration
 
 `keys()`, `size()`, `to_string()`, `for k, v in obj`, spread (`{...obj}`)
 and `JSON.stringify` all enumerate the same set: the object's own
 entries, in insertion order. For a class-sugar instance that is the
-`class:` tag, then the declared fields in declaration order, then the
-ones the constructor and methods set with `self.x = y`. Methods are
-not own entries — they live on one per-class method table every instance
-delegates to (see §25) — so they never appear:
+declared fields in declaration order, then the ones the constructor and
+methods set with `self.x = y`. Neither the class name nor the methods are
+own entries — both live on one per-class meta every instance delegates to
+(see §25) — so neither appears. A spread of an instance therefore copies
+its fields into a plain Object, which is not an instance of anything:
 
     class P { new() { self.a = 1 }  m() { 2 } }
     let p = P()
@@ -1479,23 +1478,25 @@ is a lightweight alternative that desugars to the same runtime shape:
       total()   { self.miles }
     }
     c = Car.new(5); c.run(3); inspect(c.total())
-    inspect(c.class)            # 'Car' — nominal tag for match / debugging
+    inspect(type_of(c))         # 'Car' — the class that built it
 
 Semantics:
 
 * The decl binds `Car` to an `Object` with a single `new` property.
-* `Car.new(...)` returns a fresh `Object` carrying `class: 'Car'` plus
-  the fields the constructor sets. `self` is bound to that object for the
-  duration of the constructor body. Methods are not copied onto the
-  instance: every non-`new` method lives on a single per-class method
-  table each instance delegates to, so `c.run` resolves through it while
-  `c.keys()` reports only `class` and the fields (see *Enumeration*).
+* `Car.new(...)` returns a fresh `Object` holding the fields the
+  constructor sets. `self` is bound to that object for the duration of the
+  constructor body. Neither the class name nor the methods are copied onto
+  the instance: both live on a single per-class meta each instance
+  delegates to, so `c.run` resolves through it and `type_of(c)` reads the
+  name off it, while `c.keys()` reports only the fields (see
+  *Enumeration*). An Object cannot be given a class by writing a field:
+  `type_of`, `match`, a class-typed parameter and `==` all ask the meta.
 * Fields created via `self.x = y` inside constructors and methods are
   **mutable by default** (unlike bare `o.x = y`, which creates an
   immutable property). This matches the idiom of classes whose methods
   routinely mutate instance state.
 * The `new` method is optional; without it the class accepts no
-  arguments and returns an instance carrying only `class:`.
+  arguments and returns an instance with no fields at all.
 * `self` is immutable inside the constructor body. Attempting
   `self = newObj` raises `ImmutableError`. The constructor always
   returns the originally allocated
@@ -3119,7 +3120,7 @@ below. The class is bound under the outer name (`Box`, `Pair`), and
 instances carry the outer class tag:
 
     let b = Box.new(42)
-    b.class                 # → 'Box'
+    type_of(b)              # → 'Box'
 
 Annotations referring to a Generic class use the same `<...>`
 syntax as built-in Generic types and behave the same way (outer
@@ -4427,7 +4428,6 @@ features. They are checked by name on both backends:
 | `__str__` | Custom display form | §10 |
 | `drop` | RAII cleanup hook | §17 |
 | `iter`, `next` | Iterator protocol | §18.5 |
-| `class` (property, not a method) | Nominal tag for `match` / debug | §10 |
 
 Conventions:
 
@@ -5178,9 +5178,15 @@ inspect(to_string('hi'))    # => 'hi'
 
 ### `type_of(v: Any) -> String`
 
-Return the runtime type name of `v`. One of
-`'Nil'`, `'Bool'`, `'Long'`, `'Float'`, `'String'`, `'Array'`,
-`'Object'`, `'Function'`, `'Tensor'`, `'Tuple'`, `'Set'`.
+Return the name of `v`'s type, in the vocabulary type annotations speak:
+one of `'Nil'`, `'Bool'`, `'Long'`, `'Float'`, `'String'`,
+`'StringView'`, `'Array'`, `'Object'`, `'Function'`, `'Tensor'`,
+`'Tuple'`, `'Set'`, `'Range'` — or, for a value some class built, that
+class's own name (an enum variant answers with the variant's). A class
+object itself is a `'Class'`. So the set is open, and `type_of(v) == 'T'`
+answers the same question `v: T` asks of a parameter, except that an
+annotation also accepts a subtype (`Object` accepts any instance) where
+this names the exact one.
 
 ```culebra
 inspect(type_of(42))      # => 'Long'
@@ -5189,6 +5195,8 @@ inspect(type_of('hi'))    # => 'String'
 inspect(type_of([1, 2]))  # => 'Array'
 inspect(type_of((1, 2)))  # => 'Tuple'
 inspect(type_of({1, 2}))  # => 'Set'
+inspect(type_of({a: 1}))  # => 'Object'
+inspect(type_of(1..3))    # => 'Range'
 ```
 
 ### `range(n: Long, *, step: Long = 1) -> Iterator` / `range(start: Long, end: Long, *, step: Long = 1) -> Iterator`
