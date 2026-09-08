@@ -74,12 +74,30 @@ build() {  # build <name> <source> [extra build flags...]: binary + nm listing
     exit 1
   fi
   nm -C --defined-only "$work/$1" > "$work/$1.nm"
+  # Mach-O only: `-m` is the one nm mode that reports the weak-external bit
+  # (see sym_class) -- GNU nm doesn't take this flag, so it's skipped there.
+  [[ "$(uname)" == "Darwin" ]] && nm -m "$work/$1" > "$work/$1.nm-m"
 }
 # nm class letter of the defined symbol whose demangled name starts with `$2`
 # (int64_t demangles as `long` on LP64 and `long long` on Mach-O, so the
 # patterns stop before the argument list).
 sym_class() {
-  awk -v n="$2" '$3 ~ n { print toupper($2); exit }' "$work/$1.nm"
+  local match addr class
+  match=$(awk -v n="$2" '$3 ~ n { print; exit }' "$work/$1.nm")
+  [[ -z "$match" ]] && return
+  addr=$(awk '{print $1}' <<<"$match")
+  class=$(awk '{print toupper($2)}' <<<"$match")
+  # GNU/ELF nm folds the weak-external bit into the class letter itself
+  # ('W'), but Mach-O's default nm reports every __TEXT symbol 'T' whether
+  # or not it carries that bit -- a weak Culebra choke (segmenter_open, say)
+  # reads as strong on macOS even though the link is correctly weak. Cross-
+  # check the same address in the `-m` dump, which does show the bit, rather
+  # than trusting the class letter alone on this platform.
+  if [[ "$class" == "T" && -f "$work/$1.nm-m" ]] &&
+     grep -q "^${addr} .*weak external" "$work/$1.nm-m"; then
+    class="W"
+  fi
+  echo "$class"
 }
 # Checks the nm class of the ONE symbol whose demangled name starts with
 # <symbol-start ERE> (sym_class's field-3 anchor) against <allowed-class ERE>
