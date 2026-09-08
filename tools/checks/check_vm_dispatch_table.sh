@@ -17,7 +17,7 @@ cd "$(dirname "$0")/../.."
 
 vm=include/vm/vm.h
 
-names=$(sed -n '/static constexpr const char\* kNames\[\] = {/,/^  };\|};/p' "$vm" \
+names=$(sed -n '/static constexpr const char\* kNames\[\] = {/,/};/p' "$vm" \
         | grep -o '"[A-Za-z0-9]\+"' | tr -d '"')
 labels=$(sed -n '/static void\* const kLabels\[\] = {/,/^    };/p' "$vm" \
          | grep -o '&&L_[A-Za-z0-9]\+' | sed 's/^&&L_//')
