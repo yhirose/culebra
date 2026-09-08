@@ -3311,15 +3311,16 @@ way, since nothing checked what went into it. A `mut` binding takes no
 such promise either: its reassignment is not re-checked, so there is
 nothing to read the declaration off.
 
-The entry check tests the class a value names, and an ordinary Object can
-name any class it likes (`{class: 'Point', x: 'no'}`), so the assumption
-is verified where it is used: reading such a field off a receiver whose
-property never went through the write check is a `TypeError` naming the
-field and the type, rather than a value of the wrong kind. A real
-instance never meets it. For the same reason `remove` refuses a
-scalar-declared field: a field that can vanish is no contract. A field
-declared anything else is removable, since nothing was promised about
-it.
+The entry check tests what built the value, not what it looks like: a
+class's name lives on the meta every one of its instances reaches, and an
+ordinary Object cannot acquire one by carrying a field. So an Object that
+names a class is refused where it is passed, before any field is read. The
+read keeps a check of its own for the receivers no entry check saw — a
+method value moved onto a foreign object reads `self.x` the same way — and
+it names the field and the type rather than answering with a value of the
+wrong kind. For the same reason `remove` refuses a scalar-declared field: a
+field that can vanish is no contract. A field declared anything else is
+removable, since nothing was promised about it.
 
 ```culebra
 class Point {
@@ -3335,9 +3336,9 @@ fn scaled(p: Point) {
 
 inspect(scaled(Point(1.5)))            # => 3.0
 
-# An Object may name any class, but its property never met the write
-# check, so the read refuses it rather than answering with the wrong kind.
-# !! TypeError
+# An Object that merely names the class is not one, so it never binds the
+# parameter.
+# !! DispatchError
 scaled({class: 'Point', x: 'not a float'})
 ```
 

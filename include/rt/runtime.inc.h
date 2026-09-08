@@ -563,16 +563,21 @@ inline std::optional<std::string_view> _jit_string_slot(JitObject* obj,
   if (v.tag != TAG_STRING) return std::nullopt;
   return _culebra_str_view(v.tag, v.data);
 }
-// The two tags an instance carries: `class` on every class-sugar instance
-// (empty if absent, defensively) and `__enum` on a variant only — the
-// parent enum's name, nullopt for any other object.
+// The two names an instance answers to, both read from the meta it reaches
+// through `proto`: the class (empty when the object has none) and, on a
+// variant only, its parent enum (nullopt for anything else). Nothing derives
+// either from an own slot any more, which is what makes them unforgeable —
+// an object cannot be given a meta by writing to it.
 inline std::string_view _jit_derived_class_tag(JitObject* obj) {
-  auto slot = _jit_string_slot(obj, "class").value_or(std::string_view{});
-  _jit_migration_check("class", slot, _jit_meta_class_name(obj));
-  return slot;
+  const char* meta = _jit_meta_class_name(obj);
+  _jit_migration_check("class", meta, _jit_string_slot(obj, "class"));
+  return meta ? std::string_view(meta) : std::string_view{};
 }
 inline std::optional<std::string_view> _jit_enum_name(JitObject* obj) {
-  return _jit_string_slot(obj, "__enum");
+  const char* meta = _jit_meta_enum_name(obj);
+  _jit_migration_check("__enum", meta, _jit_string_slot(obj, "__enum"));
+  if (!meta) return std::nullopt;
+  return std::string_view(meta);
 }
 
 // `hash(v)` builtin runtime entry. Routes Object to a user-defined
@@ -1207,16 +1212,11 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
       auto* e = _find_property(obj, "__call__");
       if (e && e->value.tag == TAG_FUNC) return true;
     }
-    if (auto idx = obj->find_slot("class");
-        idx != static_cast<size_t>(-1)) {
-      const auto& cls_slot = obj->slots[idx].value;
-      if (cls_slot.tag == TAG_STRING) {
-        class_tag_view = std::string_view(
-            reinterpret_cast<const char*>(cls_slot.data));
-        _jit_migration_check("class@type_matches", class_tag_view,
-                             _jit_meta_class_name(obj));
-        if (class_tag_view == expected) return true;
-      }
+    if (const char* name = _jit_meta_class_name(obj)) {
+      _jit_migration_check("class@type_matches", name,
+                           _jit_string_slot(obj, "class"));
+      class_tag_view = std::string_view(name);
+      if (class_tag_view == expected) return true;
     }
     // A wrapped C++ instance (wrap.h) carries its class name in `__foreign__`
     // instead of `class` — never both — so a method parameter declared

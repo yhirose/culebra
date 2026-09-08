@@ -241,10 +241,11 @@ assert_throws('TypeError', fn () {
 #
 # A parameter's class annotation is checked on entry, so inside the function
 # the field's declared type is settled and the read needs no tag question.
-# What the checks below pin is that the assumption cannot be turned into a
-# wrong answer: a receiver that wears the class's name without having gone
-# through the write check is refused at the read, in the write check's own
-# words, on both lanes.
+# What the checks below pin is that nothing reaches the read that did not go
+# through the write check. The entry check used to be satisfiable by any
+# object carrying the class's name, which is why the read verified the tag a
+# second time; now the name comes from the class's meta and nothing else can
+# claim it, so the forgery is refused where it is passed, on both lanes.
 
 class Read {
   f: Float
@@ -285,17 +286,17 @@ fn scaled(r: Read) {
 
 assert_eq(scaled(r), 4.5)
 
-# an object wearing the class's name is not an instance of it: its property
-# never met the write check, so the read refuses rather than reading the
-# payload as the declared kind
+# an object wearing the class's name is not an instance of it, so it never
+# binds the parameter: the call finds no overload it fits
 let forged = {class: 'Read', f: 'not a float'}
-assert_throws('TypeError', fn () {
+assert_throws('DispatchError', fn () {
   read_f(forged)
 })
 
-# a spread copy of a real instance is the same shape of forgery
+# a spread copy of a real instance is the same shape of forgery — a plain
+# Object, whatever fields it copied
 let copy = {...r, f: 'not a float'}
-assert_throws('TypeError', fn () {
+assert_throws('DispatchError', fn () {
   read_f(copy)
 })
 
@@ -339,8 +340,12 @@ fn read_opt(r: Read?) {
 assert_eq(read_opt(r), 1.5)
 assert_eq(read_opt(nil), nil)
 
+# `Read?` is no looser about what a Read is: nil or an instance, nothing
+# that merely names one
 let forged2 = {class: 'Read', f: 'still a string'}
-assert_eq(read_opt(forged2), 'still a string')
+assert_throws('DispatchError', fn () {
+  read_opt(forged2)
+})
 
 
 # --- a member's own `self.x` carries the same promise ---

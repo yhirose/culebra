@@ -649,27 +649,33 @@ struct JitObject {
 };
 static_assert(sizeof(JitObject) <= 128 && !std::is_polymorphic_v<JitObject>);
 
-// TEMPORARY (issue #18 migration scaffolding — remove before B5 lands).
-// The class name reached through the meta, and a cross-check against the
-// `class` own slot that is still the source of truth. One pass over the
-// corpus with CULEBRA_MIGRATION_CHECK=1 enumerates every object the meta
-// cannot yet speak for.
+// TEMPORARY (issue #18 migration scaffolding — remove with the slot).
+// The class name reached through the meta, which every identity question now
+// answers from, and a cross-check against the `class` own slot that no longer
+// decides anything. One pass over the corpus with CULEBRA_MIGRATION_CHECK=1
+// enumerates every object where the two still disagree.
 inline const char* _jit_meta_class_name(JitObject* obj) {
   auto* m = obj->proto();
   return (m && m->is_class_meta && m->specials) ? m->specials->name : nullptr;
 }
-inline void _jit_migration_check(const char* where, std::string_view slot,
-                                 const char* meta) {
+inline const char* _jit_meta_enum_name(JitObject* obj) {
+  auto* m = obj->proto();
+  return (m && m->is_class_meta && m->specials) ? m->specials->enum_name
+                                                : nullptr;
+}
+inline void _jit_migration_check(const char* where, const char* meta,
+                                 std::optional<std::string_view> slot) {
   static const bool on = [] {
     const char* e = std::getenv("CULEBRA_MIGRATION_CHECK");
     return e && std::string_view(e) == "1";
   }();
   if (!on) return;
   std::string_view mv = meta ? std::string_view(meta) : std::string_view{};
-  if (mv == slot) return;
+  std::string_view sv = slot.value_or(std::string_view{});
+  if (mv == sv) return;
   static thread_local std::set<std::string> seen;
-  std::string key = std::string(where) + "|slot=" + std::string(slot) +
-                    "|meta=" + std::string(mv);
+  std::string key = std::string(where) + "|meta=" + std::string(mv) +
+                    "|slot=" + std::string(sv);
   if (seen.insert(key).second)
     std::fprintf(stderr, "MIGRATION-MISMATCH %s\n", key.c_str());
 }

@@ -1650,16 +1650,24 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_class_new_method(
   return {TAG_NIL, 0};
 }
 
-// `match v { x: ClassName => ... }` predicate. Returns true when
-// `obj` carries a String `class` property whose value equals
-// `expected`. Mirrors `culebra::class_tag()` + name comparison in
-// the interp's `type_matches`.
+// `match v { x: ClassName => ... }` predicate. Returns true when `obj` was
+// built by a class of that name — read from its meta, so an object cannot
+// answer to a name by carrying one. Mirrors `culebra::class_tag()` + name
+// comparison in the interp's `type_matches`.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_class_matches(
     JitObject* obj, const char* expected) {
-  auto* entry = _find_property(obj, "class");
-  if (!entry || entry->value.tag != TAG_STRING) return false;
-  auto* cls = reinterpret_cast<const char*>(entry->value.data);
+  const char* cls = _jit_meta_class_name(obj);
+  _jit_migration_check("class@match", cls, _jit_string_slot(obj, "class"));
   return cls && expected && std::strcmp(cls, expected) == 0;
+}
+
+// Does `obj` have a nominal identity — is it a class-sugar instance, an enum
+// variant, or one of the values the runtime builds with a meta of its own?
+// The question three sites used to ask as `has("class")`, back when carrying
+// the key was the same thing as being one.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_is_instance(
+    JitObject* obj) {
+  return _jit_meta_class_name(obj) != nullptr;
 }
 
 // Generic `obj.has(k)`. String keys go through the shape path (matches

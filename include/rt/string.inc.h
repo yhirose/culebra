@@ -179,7 +179,6 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
         if (idx != static_cast<size_t>(-1) &&
             obj->slots[idx].value.tag == TAG_STRING) {
           s = reinterpret_cast<const char*>(obj->slots[idx].value.data);
-          _jit_migration_check("class@display", s, _jit_meta_class_name(obj));
           s += " ";
           has_class_tag = true;
         }

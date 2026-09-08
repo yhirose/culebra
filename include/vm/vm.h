@@ -14949,7 +14949,7 @@ struct Exec {
           if (recv.tag == TAG_OBJECT) {
             auto* obj = reinterpret_cast<JitObject*>(recv.data);
             use_auto =
-                culebra_runtime_object_has(obj, "class") &&
+                culebra_runtime_object_is_instance(obj) &&
                 !culebra_runtime_object_has_or_trait_default(obj, "parameters");
           }
           regs[in.a] = JitValue{TAG_BOOL, use_auto ? 1 : 0};

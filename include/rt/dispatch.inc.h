@@ -1183,8 +1183,8 @@ inline culebra::ArgType _jit_value_arg_type(JitValue v) {
     case TAG_TENSOR:     return {"Tensor", {}};
     case TAG_OBJECT: {
       auto* obj = reinterpret_cast<JitObject*>(v.data);
-      auto cls = _jit_string_slot(obj, "class");
-      return {cls.value_or(std::string_view("Object")),
+      auto cls = _jit_derived_class_tag(obj);
+      return {cls.empty() ? std::string_view("Object") : cls,
               _jit_enum_name(obj).value_or(std::string_view{})};
     }
   }
@@ -1566,7 +1566,7 @@ inline void _jit_walk_collect_params(JitValue v, JitArray* out) {
     }
   } else if (v.tag == TAG_OBJECT) {
     auto* obj = reinterpret_cast<JitObject*>(v.data);
-    if (obj->has_own("class")) {
+    if (culebra_runtime_object_is_instance(obj)) {
       // Class instance — leaf parameter, collect.
       culebra_runtime_value_retain(v.tag, v.data);
       culebra_runtime_array_push(out, v.tag, v.data);

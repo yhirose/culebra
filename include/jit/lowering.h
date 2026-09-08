@@ -1643,8 +1643,10 @@ struct Lowering {
               contBB);
           b.SetInsertPoint(objBB);
           auto objPtr = b.CreateIntToPtr(j.extract_data(recv), ptrTy);
-          auto hasClass = j.emit_object_has(
-              objPtr, j.get_or_create_global_str("class", ".vcp.ck"));
+          auto hasClass = j.emit_call(
+              j.module_->getOrInsertFunction(rt::object_is_instance,
+                                             b.getInt1Ty(), ptrTy),
+              {objPtr}, "vcp.has.class");
           auto hasUser = j.emit_call(
               j.module_->getOrInsertFunction(rt::object_has_or_trait_default,
                                              b.getInt1Ty(), ptrTy, ptrTy),
