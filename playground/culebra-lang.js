@@ -97,10 +97,13 @@ function tokenBase(stream, state) {
     if (CONSTANTS.has(name)) return "atom";
     if (LANG_VARS.has(name)) return "specialVar";
     // Capitalized: a stdlib namespace or type-annotation name reads as
-    // language-provided, anything else the program declared itself.
+    // language-provided, anything else the program declared itself. Checked
+    // before the call-site test below, so ClassName(args) ctor sugar reads
+    // as a type name rather than a call — the same colour as
+    // ClassName.new(args).
     if (BUILTINS.has(name)) return "builtinName";
-    if (stream.peek() === "(") return "callName";
     if (/^[A-Z]/.test(name)) return "typeName";
+    if (stream.peek() === "(") return "callName";
     return "variableName";
   }
 
