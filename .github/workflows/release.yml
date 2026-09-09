@@ -287,14 +287,18 @@ jobs:
       # without first paying the ~40 min LTO link.
       - name: Verify the Canvas window backend is in this build
         run: misc/aot_axes/verify_canvas_window.sh build
-      - name: Verify Scene is in this build too (it follows the window)
-        run: misc/aot_axes/verify_scene_axis.sh build
       # Only `culebra` (+ its embedded runtime archives): the default `all`
       # pulls in POSIX-only test targets.
       - name: Build
         env:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: cmake --build build --target culebra -j
+      # After the build, not before it: the check looks for the Scene runtime
+      # archive, which is a build product. Ahead of the build it fails on every
+      # run that has Scene on — it only passed while Windows had it off (see
+      # ci.yml's windows-aot-build, which gets this order right).
+      - name: Verify Scene is in this build too (it follows the window)
+        run: misc/aot_axes/verify_scene_axis.sh build
       - run: ccache -s || true
       # The whole point of -static here: a downloaded .exe must not need a DLL
       # the user does not have. Same script — and so the same allowlist — as
