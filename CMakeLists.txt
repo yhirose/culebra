@@ -214,6 +214,13 @@ if(APPLE)
   # binaries need neither (compiled frames are ~350B — the same sweep runs in
   # under 1MB).
   add_link_options(-Wl,-stack_size,0x1000000)
+  # CMake accumulates every target_link_libraries() call on a target into one
+  # item list, then repeats spans of it as needed to satisfy circular usage
+  # requirements among LLVM's own component archives -- a plain left-to-right
+  # linker needs the repeat; ld64 resolves the cycle without one. raylib/SDL3
+  # land inside the same repeated span. The repeat is CMake's, not a duplicate
+  # this file introduces, but Xcode 15's newer ld now warns about it anyway.
+  add_link_options(-Wl,-no_warn_duplicate_libraries)
 endif()
 find_package(ZLIB REQUIRED)
 message(STATUS "Found ZLIB ${ZLIB_VERSION_STRING}")
