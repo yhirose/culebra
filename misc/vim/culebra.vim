@@ -78,6 +78,13 @@ syn match   culUserType     "\<[A-Z][A-Za-z0-9_]*\>"
 " Function-call sites
 syn match   culFuncCall     "\<\h\w*\ze("
 
+" Capitalized call sites are the ClassName(args) ctor-sugar for
+" ClassName.new(args) (§ Constructor multidispatch), not an ordinary function
+" call. Defined after culFuncCall so it wins that match's same-column tie and
+" keeps `Hello(...)` the same colour as `Hello.new(...)` and the `Hello` in
+" `class Hello`.
+syn match   culCtorCall     "\<[A-Z][A-Za-z0-9_]*\ze("
+
 hi def link culLineComment   Comment
 hi def link culComment       Comment
 hi def link culCommentTodo   Todo
@@ -106,5 +113,6 @@ hi def link culStorage       StorageClass
 hi def link culBuiltin       Type
 hi def link culUserType      Identifier
 hi def link culFuncCall      Function
+hi def link culCtorCall      Identifier
 
 let b:current_syntax = "culebra"
