@@ -217,6 +217,19 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
+      # Ahead of checkout, and on the runner's own git (msys2 isn't set up
+      # yet): GitHub's windows-latest runner has core.autocrlf=true in the
+      # global git config actions/checkout uses, so it writes CRLF for every
+      # text file at checkout. Every later step's git (MSYS2's own separate
+      # install, installed below) then compares that CRLF working tree
+      # against the LF-committed blobs under its own autocrlf policy and
+      # calls the whole tree modified -- caught by package_release.sh's
+      # clean-checkout guard, but only after paying for the build. Turning
+      # autocrlf off before checkout means the tree lands as the blobs are
+      # stored (LF), so neither git has anything to disagree about.
+      - name: Disable autocrlf so checkout doesn't rewrite line endings
+        shell: pwsh
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@v5
         with:
           submodules: recursive
