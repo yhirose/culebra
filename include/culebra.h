@@ -4,7 +4,7 @@
 // playground/build.sh greps this line to stamp the Playground title, so keep
 // the `#define CULEBRA_VERSION "X.Y.Z"` form on one line. What `--version`
 // appends past it to name a development build is build_info.h's.
-#define CULEBRA_VERSION "0.4.0"
+#define CULEBRA_VERSION "0.5.0"
 
 #include "frontend/module_loader.h"
 
