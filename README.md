@@ -16,14 +16,11 @@ in that one executable. Nothing else to install!
 Quickstart
 ----------
 
-Paste this into a terminal on macOS (Apple Silicon) — it downloads
-culebra, writes an example to `hello.cul`, and runs that same source
-file three ways: as a script, JIT-compiled, and built into a
-standalone binary.
+Paste this into a terminal — it downloads culebra, writes an example to `hello.cul`, and runs that same source
+file three ways: as a script, JIT-compiled, and built into a standalone binary.
 
 ```bash
-curl -fsSL https://github.com/yhirose/culebra/releases/latest/download/culebra-macos-arm64.tar.gz | tar xz
-export PATH="$PWD/culebra-macos-arm64:$PATH"
+curl -fsSL https://raw.githubusercontent.com/yhirose/culebra/master/install.sh | sh
 culebra --version
 
 cat > hello.cul <<'EOF'

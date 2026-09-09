@@ -17,13 +17,11 @@ AOTビルドです。スクリプト、CLIツール、機械学習、デスク�
 Quickstart
 ----------
 
-macOS（Apple Silicon）のターミナルにこれを貼り付けると、culebraを
-ダウンロードし、例を`hello.cul`として書き出し、同じソース1ファイルを
+ターミナルにこれを貼り付けると、culebraをダウンロードし、例を`hello.cul`として書き出し、同じソース1ファイルを
 スクリプト・JITコンパイル・単体バイナリの3通りで実行します:
 
 ```bash
-curl -fsSL https://github.com/yhirose/culebra/releases/latest/download/culebra-macos-arm64.tar.gz | tar xz
-export PATH="$PWD/culebra-macos-arm64:$PATH"
+curl -fsSL https://raw.githubusercontent.com/yhirose/culebra/master/install.sh | sh
 culebra --version
 
 cat > hello.cul <<'EOF'
