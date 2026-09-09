@@ -86,9 +86,15 @@ jobs:
       CMAKE_C_COMPILER_LAUNCHER: ccache
       CMAKE_CXX_COMPILER_LAUNCHER: ccache
     steps:
+      # Pinned explicitly: a workflow_dispatch re-run (see TAG above) otherwise
+      # checks out whatever ref it was dispatched on, which is what runs this
+      # YAML too. Fixing a workflow bug means dispatching from a ref past the
+      # tag, and without this pin that ref's source would ship as the tag's
+      # release — package_release.sh's clean-checkout guard is what caught it.
       - uses: actions/checkout@v5
         with:
           submodules: recursive
+          ref: ${{ env.TAG }}
       - run: brew install llvm just ccache
       - name: Restore ccache
         uses: actions/cache@v4
@@ -135,6 +141,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           submodules: recursive
+          ref: ${{ env.TAG }}
       # The same toolchain every Linux CI job builds with, plus both windowed
       # axes: this download is the one build that must carry everything a
       # contributor's local `just build` does. Neither axis costs the binary a
@@ -213,6 +220,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           submodules: recursive
+          ref: ${{ env.TAG }}
       # mingw-w64, not MSVC: the Value type is used through std::vector<Value>
       # while incomplete, which libstdc++ accepts and the MSVC STL rejects
       # (see ci.yml's windows jobs). UCRT64 rather than MINGW64 — same gcc and
