@@ -1,0 +1,12 @@
+# Force LF on checkout regardless of a checkout tool's local core.autocrlf.
+# Without this, Git for Windows (autocrlf=true on GitHub's Windows runners)
+# writes CRLF for every text file at checkout time, while MSYS2's own git --
+# a separate install, used by every workflow step once setup-msys2 runs --
+# compares those bytes under its own autocrlf policy and reports nearly the
+# whole tree as modified. eol=lf pins the checked-out line ending so both
+# gits agree without either one's autocrlf setting mattering.
+* text=auto eol=lf
+
+# A verbatim upstream fixture (Pascal community sources are commonly CRLF);
+# keep it byte-for-byte rather than renormalize it.
+examples/languages/pl0/samples/gcd.pas -text
