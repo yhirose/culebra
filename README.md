@@ -118,8 +118,8 @@ Fast cold start, single-file programs, and a stdlib that is already in
 scope add up to a runtime that doesn't punish an agent for invoking it
 every turn.
 
-- **No import lines for the stdlib.** `JSON`, `Http`, `FS`, `Tensor`
-  and the rest are bound before the program runs.
+- **No `import` lines for the stdlib.** `JSON`, `Http`, `Regex`, `PEG`,
+  `FS`, `Tensor`, `SQLite`, `Search`, and the rest are bound before the program runs.
 - **One file, one program.** Run it without a project layout.
 - **Ship the result.** `culebra build` turns the script the agent just
   wrote into a binary it can hand back to the user.
@@ -350,7 +350,7 @@ Design choices
   and mutation is visible where it happens.
 - **UFCS, not pipeline.** `x.f(...)` doubles as the resolution path
   for free functions over user types.
-- **The stdlib needs no import.** Namespaces are bound before the
+- **The stdlib needs no `import`.** Namespaces are bound before the
   program runs, so a one-file script has no import block. Splitting
   across files uses top-level `import` / `export`, which keeps the
   dependency graph known at parse time — what AOT bundling and
