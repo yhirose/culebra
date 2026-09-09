@@ -76,7 +76,12 @@ build() {  # build <name> <source> [extra build flags...]: binary + nm listing
   nm -C --defined-only "$work/$1" > "$work/$1.nm"
   # Mach-O only: `-m` is the one nm mode that reports the weak-external bit
   # (see sym_class) -- GNU nm doesn't take this flag, so it's skipped there.
-  [[ "$(uname)" == "Darwin" ]] && nm -m "$work/$1" > "$work/$1.nm-m"
+  # An `if`, not `[[ ]] &&`: as the last statement of the function, a false
+  # test would be build()'s return status, and `set -e` would end the run
+  # right here -- silently, and only off Mach-O.
+  if [[ "$(uname)" == "Darwin" ]]; then
+    nm -m "$work/$1" > "$work/$1.nm-m"
+  fi
 }
 # nm class letter of the defined symbol whose demangled name starts with `$2`
 # (int64_t demangles as `long` on LP64 and `long long` on Mach-O, so the
