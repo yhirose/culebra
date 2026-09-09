@@ -199,12 +199,12 @@ fn thinking_stays_out_of_what_the_model_said() {
 fn a_generation_that_broke_is_an_error_rather_than_a_finished_turn() {
   # The same failure in this format: a 200 whose body is an error in place of
   # the turn.
-  let http = AnthropicStub.new(an_anthropic_response(200, {
+  let http = AnthropicStub(an_anthropic_response(200, {
     type: 'error',
     error: {type: 'api_error', message: 'inference generation failed'},
   }))
   let raised = try {
-    anthropic.AnthropicModel.new(http, 'a-model')
+    anthropic.AnthropicModel(http, 'a-model')
       .do_generate({messages: []})
     nil
   } catch e {
@@ -231,9 +231,9 @@ fn names_every_reason_the_model_stopped() {
 
 @test
 fn posts_a_body_this_format_would_accept() {
-  let http = AnthropicStub.new(an_anthropic_response(200,
+  let http = AnthropicStub(an_anthropic_response(200,
     an_anthropic_reply([{type: 'text', text: 'hi'}], 'end_turn')))
-  let model = anthropic.AnthropicModel.new(http, 'a-model')
+  let model = anthropic.AnthropicModel(http, 'a-model')
 
   let out = model.do_generate({
     messages: [msg.system('be brief'), msg.user('hello')],
@@ -251,9 +251,9 @@ fn posts_a_body_this_format_would_accept() {
 
 @test
 fn leaves_out_what_it_has_nothing_to_say_about() {
-  let http = AnthropicStub.new(an_anthropic_response(200,
+  let http = AnthropicStub(an_anthropic_response(200,
     an_anthropic_reply([{type: 'text', text: 'hi'}], 'end_turn')))
-  anthropic.AnthropicModel.new(http, 'a-model')
+  anthropic.AnthropicModel(http, 'a-model')
     .do_generate({messages: [msg.user('hello')], tools: []})
 
   # An empty `tools` is rejected by this format, so it is left out rather than
@@ -267,9 +267,9 @@ fn leaves_out_what_it_has_nothing_to_say_about() {
 
 @test
 fn a_refusal_names_the_status_and_what_the_body_said() {
-  let http = AnthropicStub.new(an_anthropic_response(400,
+  let http = AnthropicStub(an_anthropic_response(400,
     {error: {type: 'invalid_request_error', message: 'model not found'}}))
-  let model = anthropic.AnthropicModel.new(http, 'no-such-model')
+  let model = anthropic.AnthropicModel(http, 'no-such-model')
 
   let raised = try {
     model.do_generate({messages: [msg.user('hello')], tools: []})
@@ -287,9 +287,9 @@ fn a_refusal_names_the_status_and_what_the_body_said() {
 fn repairs_the_pairing_before_sending() {
   # A tool result whose call was compressed away cannot go on the wire.
   let history = [msg.user('go'), msg.tool_result('gone', 'readFile', 'stale')]
-  let http = AnthropicStub.new(an_anthropic_response(200,
+  let http = AnthropicStub(an_anthropic_response(200,
     an_anthropic_reply([{type: 'text', text: 'ok'}], 'end_turn')))
-  anthropic.AnthropicModel.new(http, 'a-model').do_generate({messages: history})
+  anthropic.AnthropicModel(http, 'a-model').do_generate({messages: history})
 
   assert_eq(http.last_body().messages, [{role: 'user', content: 'go'}])
 }

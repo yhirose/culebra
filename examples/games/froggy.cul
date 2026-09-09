@@ -298,23 +298,23 @@ fn run(s) {
 
   mut score = 0
   mut tic = 0
-  let frog = Frog.new()
-  let fruit = Food.new(
+  let frog = Frog()
+  let fruit = Food(
     "🍓🍌🍎🍑🍇🍉🍐🍊🍋🍒🍍🥝🍏🍅🥑🥕🥔🍆🍠🌽"
       .graphemes()
       .collect(),
     0.01,
     1,
   )
-  let dessert = Food.new(
+  let dessert = Food(
     "🍦🍩🍧🧁🍨🍪🍫🍰🍮🍭🍿🥛🍷🍶🍹🍼🍵"
       .graphemes()
       .collect(),
     0.02,
     2,
   )
-  let eagle = Enemy.new("🦅", 0.03)
-  let snake = Enemy.new("🐍", 0.02)
+  let eagle = Enemy("🦅", 0.03)
+  let snake = Enemy("🐍", 0.02)
 
   while time > 0 && frog.alive() && (fruit.remaining() > 0 || dessert.remaining() > 0) && (MAX_TICKS < 0 || tic < MAX_TICKS) {
     let ev = s.poll(0.1)

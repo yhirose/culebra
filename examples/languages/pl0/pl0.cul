@@ -168,7 +168,7 @@ fn fail(node, msg) {
 # ident/block pairs. Returns the new scope and the block's statement.
 
 fn enter(block, outer) {
-  let scope = Scope.new(outer)
+  let scope = Scope(outer)
   let [consts, vars, procs, body] = block.nodes
   for [name, value] in consts.nodes.iter().chunks(2) {
     scope.declare('const', name.token, to_long(value.token), name)

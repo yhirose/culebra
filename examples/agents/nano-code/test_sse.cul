@@ -5,7 +5,7 @@ import sse from './core/sse.cul'
 # comes out.
 
 fn events_of(chunks) {
-  let dec = sse.SseDecoder.new()
+  let dec = sse.SseDecoder()
   mut out = []
   for c in chunks {
     for e in dec.feed(c) {
@@ -97,7 +97,7 @@ fn an_id_carries_to_later_events_as_the_last_one_seen() {
 
 @test
 fn an_unfinished_event_waits_for_the_rest() {
-  let dec = sse.SseDecoder.new()
+  let dec = sse.SseDecoder()
   assert_true(dec.feed("data: half").empty())
   assert_true(dec.feed(" and half\n").empty())
   assert_eq(dec.feed("\n")[0].data, 'half and half')

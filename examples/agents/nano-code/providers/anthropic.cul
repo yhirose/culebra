@@ -36,7 +36,7 @@ fn create_anthropic(config = {}) {
       'anthropic-version': ANTHROPIC_VERSION,
     },
     timeout: config.timeout ?? TIMEOUT)
-  |model_id| AnthropicModel.new(http, model_id)
+  |model_id| AnthropicModel(http, model_id)
 }
 
 class AnthropicModel {
@@ -60,8 +60,8 @@ class AnthropicModel {
   # into the body the non-streaming endpoint would have sent, and `read_reply`
   # is what reads it either way.
   do_stream(params, on_text) {
-    let turn = AnthropicStream.new(on_text)
-    let stream = sse.EventStream.new(|e| turn.take(e))
+    let turn = AnthropicStream(on_text)
+    let stream = sse.EventStream(|e| turn.take(e))
     let res = self.http.post('/messages', json: self.body_for(params, true),
                              into: stream.sink())
     if !res.ok {

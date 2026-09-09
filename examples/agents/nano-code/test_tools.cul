@@ -10,7 +10,7 @@ import tools from './tools/index.cul'
 fn temp_ws() {
   let dir = FS.join(Sys.env('TMPDIR', '/tmp'), 'nano-code-t-' + UUID.v4())
   FS.mkdir(dir)
-  ws.Workspace.new(dir)
+  ws.Workspace(dir)
 }
 
 fn reason_of(f) {

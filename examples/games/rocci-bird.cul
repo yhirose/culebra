@@ -33,7 +33,7 @@ let decode2bpp = fn (bytes, w, h) {
 
 let load_sprite = fn (hex, w, h, pal) {
   let bytes = Encoding.hex.decode(hex).bytes().collect()
-  Canvas.Sprite.new(decode2bpp(bytes, w, h), w, h, pal)
+  Canvas.Sprite(decode2bpp(bytes, w, h), w, h, pal)
 }
 
 let rocci_sheet = load_sprite(
@@ -167,7 +167,7 @@ class Anim {
   }
 }
 
-let idle_anim = |fc| Anim.new(
+let idle_anim = |fc| Anim(
   rocci_sheet,
   16,
   [[17, 0], [6, 16], [17, 32]],
@@ -175,7 +175,7 @@ let idle_anim = |fc| Anim.new(
   0,
   AnimState.Loop,
 )
-let flap_anim = |fc| Anim.new(
+let flap_anim = |fc| Anim(
   rocci_sheet,
   16,
   [[6, 16], [12, 32], [1, 0]],
@@ -183,7 +183,7 @@ let flap_anim = |fc| Anim.new(
   2,
   AnimState.Completed,
 )
-let fall_anim = |fc| Anim.new(
+let fall_anim = |fc| Anim(
   rocci_sheet,
   16,
   [[10, 48], [10, 64]],
@@ -191,7 +191,7 @@ let fall_anim = |fc| Anim.new(
   0,
   AnimState.Loop,
 )
-let hiscore_anim = |fc| Anim.new(
+let hiscore_anim = |fc| Anim(
   hiscore_sheet,
   32,
   [[5, 0], [5, 32], [5, 64], [5, 96]],
@@ -289,7 +289,7 @@ enum Mode {
 class App {
   # Session state, alive across restarts.
   interactive = IO.stdin_is_terminal()
-  input = Canvas.Input.new()
+  input = Canvas.Input()
   high_score = load_high_score()
   fc = 0
   # Per-mode state, owned by the enter_* transitions below.
@@ -491,6 +491,6 @@ class App {
   }
 }
 
-let app = App.new()
+let app = App()
 Canvas.title("Rocci Bird")
 Canvas.run(W, H, app.tick)

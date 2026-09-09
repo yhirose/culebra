@@ -321,7 +321,7 @@ enum Mode {
 # marker shows through under the player.
 fn sprite(art, keys, colors) {
   let pixels = art.lines().join('').iter().map(|ch| keys.index_of(ch)).collect()
-  Canvas.Sprite.new(pixels, ART, ART, colors)
+  Canvas.Sprite(pixels, ART, ART, colors)
 }
 
 # Nearest-neighbour, so the 16x16 drawing stays square-edged at ZOOM rather

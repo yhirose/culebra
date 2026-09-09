@@ -86,11 +86,11 @@ fn main() {
     Sys.exit(1)
   }
 
-  let a = agent.Agent.new({
+  let a = agent.Agent({
     name: 'nano-code',
     instructions: prompt.load_instructions(root),
     model: factory.create_model_from_env(),
-    tools: tools.make_tools(workspace.Workspace.new(root)),
+    tools: tools.make_tools(workspace.Workspace(root)),
     max_steps: MAX_STEPS,
     verbose: true,
     stream: opts.stream,

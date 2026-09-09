@@ -101,7 +101,7 @@ let RAW_KEEP = 2000
 class EventStream {
   new(on_event) {
     self.on_event = on_event
-    self.decoder = SseDecoder.new()
+    self.decoder = SseDecoder()
     self.raw = ''
     self.events = 0
   }

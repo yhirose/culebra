@@ -77,7 +77,7 @@ let from_text = StateMachine.parse(
   actions: actions,
   context: fresh(),
 )
-let from_desc = StateMachine.new(desc, name: "Vending", context: fresh())
+let from_desc = StateMachine(desc, name: "Vending", context: fresh())
 
 # --- run the same events through both ------------------------------------
 let script = [

@@ -53,7 +53,7 @@ fn calls_a_tool(n, name) {
 }
 
 fn an_agent(model, tools, extra) {
-  agent.Agent.new({
+  agent.Agent({
     name: 'test-agent',
     instructions: 'do as you are told',
     model: model,
@@ -72,7 +72,7 @@ fn last_of(messages) {
 
 @test
 fn runs_a_tool_then_finishes() {
-  let model = ScriptedModel.new([
+  let model = ScriptedModel([
     {
       text: 'I will search.',
       tool_calls: [{tool_call_id: 'call_1', name: 'search',
@@ -98,7 +98,7 @@ fn runs_a_tool_then_finishes() {
 
 @test
 fn every_call_starts_a_conversation_of_its_own() {
-  let model = ScriptedModel.new([{text: 'It is four.'}, {text: 'Still four.'}])
+  let model = ScriptedModel([{text: 'It is four.'}, {text: 'Still four.'}])
   let a = an_agent(model, {}, {})
   a.generate('what is two and two')
   a.generate('are you sure')
@@ -113,7 +113,7 @@ fn every_call_starts_a_conversation_of_its_own() {
 fn the_last_words_are_what_comes_back() {
   # Text arrives on the turn that also calls a tool, and again at the end. What
   # the caller gets is the last of them.
-  let model = ScriptedModel.new([
+  let model = ScriptedModel([
     {text: 'working on it',
      tool_calls: [{tool_call_id: 'c1', name: 'noop', args: {}}]},
     {text: 'all done'},
@@ -127,7 +127,7 @@ fn what_a_provider_asks_to_have_back_stays_on_the_turn() {
   # The loop does not read them; it keeps them attached to the turn they came
   # from, so the next request carries them.
   let block = {type: 'thinking', thinking: 'first, look around'}
-  let model = ScriptedModel.new([
+  let model = ScriptedModel([
     {text: '', reasoning_blocks: [block],
      tool_calls: [{tool_call_id: 'c1', name: 'noop', args: {}}]},
     {text: 'done'},
@@ -143,7 +143,7 @@ fn what_a_provider_asks_to_have_back_stays_on_the_turn() {
 @test
 fn stops_at_the_step_budget() {
   # Always another tool call: only the budget can end this.
-  let model = ScriptedModel.new([1, 2, 3].map(|n| calls_a_tool(n, 'dummy')))
+  let model = ScriptedModel([1, 2, 3].map(|n| calls_a_tool(n, 'dummy')))
   let tools = {dummy: a_tool('dummy', false, fn (_args) { 'ok' })}
   an_agent(model, tools, {max_steps: 3}).generate('never end')
 
@@ -155,7 +155,7 @@ fn stops_at_the_step_budget() {
 @test
 fn an_approved_call_runs() {
   let ran = []
-  let model = ScriptedModel.new([calls_a_tool(1, 'write')])
+  let model = ScriptedModel([calls_a_tool(1, 'write')])
   let tools = {
     write: a_tool('write', true, fn (args) { ran.push(args); 'written' }),
   }
@@ -170,7 +170,7 @@ fn an_approved_call_runs() {
 @test
 fn a_refused_call_does_not_run() {
   let ran = []
-  let model = ScriptedModel.new([calls_a_tool(1, 'write')])
+  let model = ScriptedModel([calls_a_tool(1, 'write')])
   let tools = {
     write: a_tool('write', true, fn (args) { ran.push(args); 'written' }),
   }
@@ -187,7 +187,7 @@ fn a_refused_call_does_not_run() {
 @test
 fn a_tool_without_needs_approval_is_never_asked_about() {
   let asked = []
-  let model = ScriptedModel.new([calls_a_tool(1, 'read')])
+  let model = ScriptedModel([calls_a_tool(1, 'read')])
   let tools = {read: a_tool('read', false, fn (_args) { 'contents' })}
   an_agent(model, tools, {max_steps: 2,
                           approval_func: |name, _args| asked.push(name)})
@@ -201,7 +201,7 @@ fn a_tool_without_needs_approval_is_never_asked_about() {
 
 @test
 fn an_unknown_tool_comes_back_as_a_result() {
-  let model = ScriptedModel.new([calls_a_tool(1, 'nope')])
+  let model = ScriptedModel([calls_a_tool(1, 'nope')])
   an_agent(model, {}, {max_steps: 2}).generate('use a missing tool')
 
   let told = msg.content_of(last_of(model.last_messages()))
@@ -210,7 +210,7 @@ fn an_unknown_tool_comes_back_as_a_result() {
 
 @test
 fn a_tool_that_throws_comes_back_as_a_result() {
-  let model = ScriptedModel.new([calls_a_tool(1, 'boom')])
+  let model = ScriptedModel([calls_a_tool(1, 'boom')])
   let tools = {
     boom: a_tool('boom', false, fn (_args) {
       throw err.tool_error('boom', 'not_found', 'no such file: x.txt')
@@ -228,7 +228,7 @@ fn a_tool_that_throws_comes_back_as_a_result() {
 @test
 fn a_tool_is_run_by_name_not_by_the_key_it_was_filed_under() {
   # The model calls what the schema advertised, and the schema carries `name`.
-  let model = ScriptedModel.new([calls_a_tool(1, 'search')])
+  let model = ScriptedModel([calls_a_tool(1, 'search')])
   let tools = {anything: a_tool('search', false, fn (_args) { 'found' })}
   an_agent(model, tools, {max_steps: 2}).generate('go')
 
@@ -239,7 +239,7 @@ fn a_tool_is_run_by_name_not_by_the_key_it_was_filed_under() {
 
 @test
 fn a_short_history_is_left_alone() {
-  let a = an_agent(ScriptedModel.new([]), {}, {})
+  let a = an_agent(ScriptedModel([]), {}, {})
   let history = [msg.system('instructions'), msg.user('hello')]
   assert_eq(a.manage_context(history).size(), 2)
 }
@@ -248,7 +248,7 @@ fn a_short_history_is_left_alone() {
 fn a_long_history_is_compressed_before_it_is_sent() {
   # Four tool results of 12,000 characters: the third step is where the
   # history first passes the limit.
-  let model = ScriptedModel.new([1, 2, 3, 4].map(|n| calls_a_tool(n, 'big')))
+  let model = ScriptedModel([1, 2, 3, 4].map(|n| calls_a_tool(n, 'big')))
   let tools = {
     big: a_tool('big', false, fn (_args) { 'result'.repeat(2000) }),
   }
@@ -280,7 +280,7 @@ fn verbose_output(model, tools, max_steps) {
 
 @test
 fn a_call_and_its_result_are_logged() {
-  let model = ScriptedModel.new([calls_a_tool(1, 'search'), {text: 'done'}])
+  let model = ScriptedModel([calls_a_tool(1, 'search'), {text: 'done'}])
   let tools = {search: a_tool('search', false, fn (_args) { 'found it' })}
   let out = verbose_output(model, tools, 5)
 
@@ -293,7 +293,7 @@ fn a_call_and_its_result_are_logged() {
 fn a_call_naming_a_tool_that_is_not_there_is_logged_too() {
   # The step ends before the `[tool]` line, so this one used to print nothing
   # at all: a verbose run went quiet with no reason given.
-  let model = ScriptedModel.new([calls_a_tool(1, 'nope'), {text: 'done'}])
+  let model = ScriptedModel([calls_a_tool(1, 'nope'), {text: 'done'}])
   let out = verbose_output(model, {}, 5)
 
   assert_true(out.contains('[tool] nope: no such tool'))
@@ -301,7 +301,7 @@ fn a_call_naming_a_tool_that_is_not_there_is_logged_too() {
 
 @test
 fn reaching_the_step_budget_warns() {
-  let model = ScriptedModel.new([1, 2].map(|n| calls_a_tool(n, 'dummy')))
+  let model = ScriptedModel([1, 2].map(|n| calls_a_tool(n, 'dummy')))
   let tools = {dummy: a_tool('dummy', false, fn (_args) { 'ok' })}
 
   assert_true(verbose_output(model, tools, 2)
@@ -310,7 +310,7 @@ fn reaching_the_step_budget_warns() {
 
 @test
 fn answering_without_using_a_tool_warns() {
-  let model = ScriptedModel.new([{text: 'nothing to do'}])
+  let model = ScriptedModel([{text: 'nothing to do'}])
 
   assert_true(verbose_output(model, {}, 5)
     .contains('warning: finished without using a tool'))
@@ -318,7 +318,7 @@ fn answering_without_using_a_tool_warns() {
 
 @test
 fn a_quiet_run_prints_what_the_model_said_and_nothing_else() {
-  let model = ScriptedModel.new([calls_a_tool(1, 'search'), {text: 'done'}])
+  let model = ScriptedModel([calls_a_tool(1, 'search'), {text: 'done'}])
   let tools = {search: a_tool('search', false, fn (_args) { 'found it' })}
   let out = IO.capture(fn () {
     an_agent(model, tools, {}).generate('go')

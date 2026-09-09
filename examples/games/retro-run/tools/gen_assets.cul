@@ -2176,8 +2176,7 @@ if what != "sprites" {
   for (name, scene) in SCENES {
     let path = FS.join(outdir, "background_{name}.png")
     let png = Canvas
-      .Sprite
-      .new(bg.k, bg.w, bg.h, palette_colors(scene))
+      .Sprite(bg.k, bg.w, bg.h, palette_colors(scene))
       .to_png()
     FS.write(path, png)
     written.push((path, png.size()))
@@ -2188,8 +2187,7 @@ if what != "backgrounds" {
   let sp = build_sprites()
   let sprite_path = FS.join(outdir, "sprites.png")
   let sprite_png = Canvas
-    .Sprite
-    .new(sp.k, sp.w, sp.h, palette_colors(HIRU))
+    .Sprite(sp.k, sp.w, sp.h, palette_colors(HIRU))
     .to_png()
   FS.write(sprite_path, sprite_png)
   written.push((sprite_path, sprite_png.size()))

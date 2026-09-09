@@ -102,40 +102,40 @@ class Art {
   }
 }
 
-let PALM_TREE = Art.new(5, 5, 215, 540)
-let BILLBOARD08 = Art.new(230, 5, 385, 265)
-let TREE1 = Art.new(625, 5, 360, 360)
-let DEAD_TREE1 = Art.new(5, 555, 135, 332)
-let BILLBOARD09 = Art.new(150, 555, 328, 282)
-let BOULDER3 = Art.new(230, 280, 320, 220)
-let COLUMN = Art.new(995, 5, 200, 315)
-let BILLBOARD01 = Art.new(625, 375, 300, 170)
-let BILLBOARD06 = Art.new(488, 555, 298, 190)
-let BILLBOARD05 = Art.new(5, 897, 298, 190)
-let BILLBOARD07 = Art.new(313, 897, 298, 190)
-let BOULDER2 = Art.new(621, 897, 298, 140)
-let TREE2 = Art.new(1205, 5, 282, 295)
-let BILLBOARD04 = Art.new(1205, 310, 268, 170)
-let DEAD_TREE2 = Art.new(1205, 490, 150, 260)
-let BOULDER1 = Art.new(1205, 760, 168, 248)
-let BUSH1 = Art.new(5, 1097, 240, 155)
-let CACTUS = Art.new(929, 897, 235, 118)
-let BUSH2 = Art.new(255, 1097, 232, 152)
-let BILLBOARD03 = Art.new(5, 1262, 230, 220)
-let BILLBOARD02 = Art.new(245, 1262, 215, 220)
-let STUMP = Art.new(995, 330, 195, 140)
-let SEMI = Art.new(1365, 490, 122, 144)
-let TRUCK = Art.new(1365, 644, 100, 78)
-let CAR03 = Art.new(1383, 760, 88, 55)
-let CAR02 = Art.new(1383, 825, 80, 59)
-let CAR04 = Art.new(1383, 894, 80, 57)
-let CAR01 = Art.new(1205, 1018, 80, 56)
-let PLAYER_UPHILL_LEFT = Art.new(1383, 961, 80, 45)
-let PLAYER_UPHILL_STRAIGHT = Art.new(1295, 1018, 80, 45)
-let PLAYER_UPHILL_RIGHT = Art.new(1385, 1018, 80, 45)
-let PLAYER_LEFT = Art.new(995, 480, 80, 41)
-let PLAYER_STRAIGHT = Art.new(1085, 480, 80, 41)
-let PLAYER_RIGHT = Art.new(995, 531, 80, 41)
+let PALM_TREE = Art(5, 5, 215, 540)
+let BILLBOARD08 = Art(230, 5, 385, 265)
+let TREE1 = Art(625, 5, 360, 360)
+let DEAD_TREE1 = Art(5, 555, 135, 332)
+let BILLBOARD09 = Art(150, 555, 328, 282)
+let BOULDER3 = Art(230, 280, 320, 220)
+let COLUMN = Art(995, 5, 200, 315)
+let BILLBOARD01 = Art(625, 375, 300, 170)
+let BILLBOARD06 = Art(488, 555, 298, 190)
+let BILLBOARD05 = Art(5, 897, 298, 190)
+let BILLBOARD07 = Art(313, 897, 298, 190)
+let BOULDER2 = Art(621, 897, 298, 140)
+let TREE2 = Art(1205, 5, 282, 295)
+let BILLBOARD04 = Art(1205, 310, 268, 170)
+let DEAD_TREE2 = Art(1205, 490, 150, 260)
+let BOULDER1 = Art(1205, 760, 168, 248)
+let BUSH1 = Art(5, 1097, 240, 155)
+let CACTUS = Art(929, 897, 235, 118)
+let BUSH2 = Art(255, 1097, 232, 152)
+let BILLBOARD03 = Art(5, 1262, 230, 220)
+let BILLBOARD02 = Art(245, 1262, 215, 220)
+let STUMP = Art(995, 330, 195, 140)
+let SEMI = Art(1365, 490, 122, 144)
+let TRUCK = Art(1365, 644, 100, 78)
+let CAR03 = Art(1383, 760, 88, 55)
+let CAR02 = Art(1383, 825, 80, 59)
+let CAR04 = Art(1383, 894, 80, 57)
+let CAR01 = Art(1205, 1018, 80, 56)
+let PLAYER_UPHILL_LEFT = Art(1383, 961, 80, 45)
+let PLAYER_UPHILL_STRAIGHT = Art(1295, 1018, 80, 45)
+let PLAYER_UPHILL_RIGHT = Art(1385, 1018, 80, 45)
+let PLAYER_LEFT = Art(995, 480, 80, 41)
+let PLAYER_STRAIGHT = Art(1085, 480, 80, 41)
+let PLAYER_RIGHT = Art(995, 531, 80, 41)
 
 let BILLBOARDS = [
   BILLBOARD01,
@@ -167,9 +167,9 @@ let CARS = [CAR01, CAR02, CAR03, CAR04, SEMI, TRUCK]
 let PLAYER_W = PLAYER_STRAIGHT.sw
 
 # The three background layers, each 1280x480 inside the sheet.
-let BG_HILLS = Art.new(5, 5, 1280, 480)
-let BG_SKY = Art.new(5, 495, 1280, 480)
-let BG_TREES = Art.new(5, 985, 1280, 480)
+let BG_HILLS = Art(5, 5, 1280, 480)
+let BG_SKY = Art(5, 495, 1280, 480)
+let BG_TREES = Art(5, 985, 1280, 480)
 
 # --- assets ----------------------------------------------------------------
 # `--assets <dir>` points at art held elsewhere — upstream's own, say; without
@@ -357,7 +357,7 @@ let last_y = fn () {
 }
 
 let add_segment = fn (curve, y) {
-  segments.push(Segment.new(segments.size(), last_y(), y, curve))
+  segments.push(Segment(segments.size(), last_y(), y, curve))
 }
 
 let add_road = fn (enter, hold, leave, curve, y) {
@@ -437,7 +437,7 @@ let find_segment = fn (z) {
 }
 
 let add_prop = fn (n, art, offset) {
-  segments[n].sprites.push(Prop.new(art, offset))
+  segments[n].sprites.push(Prop(art, offset))
 }
 
 let reset_props = fn () {
@@ -508,7 +508,7 @@ let reset_cars = fn () {
     # The semi is slower, so it needs a narrower spread to stay behind traffic.
     let spread = art == SEMI ? 4.0 : 2.0
     let seg = Random.int(START_CLEAR, segments.size())
-    let car = Car.new(
+    let car = Car(
       art,
       Random.uniform(0.0, 1.0) * side,
       seg,

@@ -5,11 +5,11 @@ class Vec2 {
   }
 
   __add__(o) {
-    Vec2.new(self.x + o.x, self.y + o.y)
+    Vec2(self.x + o.x, self.y + o.y)
   }
 
   __mul__(k) {
-    Vec2.new(self.x * k, self.y * k)
+    Vec2(self.x * k, self.y * k)
   }
 
   __str__() {
@@ -21,8 +21,8 @@ class Vec2 {
   }
 }
 
-let a = Vec2.new(1, 2)
-let b = Vec2.new(3, 4)
+let a = Vec2(1, 2)
+let b = Vec2(3, 4)
 
 println("a + b   = {a + b}")
 println("a * 10  = {a * 10}")
@@ -55,4 +55,4 @@ fn greet(g: Greeter) {
   g.hello()
 }
 
-println(greet(Robot.new(7)))
+println(greet(Robot(7)))

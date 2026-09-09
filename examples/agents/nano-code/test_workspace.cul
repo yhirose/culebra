@@ -24,7 +24,7 @@ fn reason_of(f) {
 fn resolves_a_path_inside() {
   let dir = temp_root()
   defer { FS.remove(dir, recursive: true) }
-  let w = ws.Workspace.new(dir)
+  let w = ws.Workspace(dir)
   assert_eq(w.resolve('a/b.txt'), FS.join(w.root, 'a/b.txt'))
   assert_eq(w.resolve('.'), w.root)
 }
@@ -33,7 +33,7 @@ fn resolves_a_path_inside() {
 fn refuses_to_climb_out() {
   let dir = temp_root()
   defer { FS.remove(dir, recursive: true) }
-  let w = ws.Workspace.new(dir)
+  let w = ws.Workspace(dir)
   # FS.join alone would answer '<root>/../x' and a prefix test would accept it.
   assert_eq(reason_of(fn () { w.resolve('../x') }), 'outside_workspace')
   assert_eq(reason_of(fn () { w.resolve('a/../../x') }), 'outside_workspace')
@@ -43,7 +43,7 @@ fn refuses_to_climb_out() {
 fn refuses_an_absolute_path() {
   let dir = temp_root()
   defer { FS.remove(dir, recursive: true) }
-  let w = ws.Workspace.new(dir)
+  let w = ws.Workspace(dir)
   assert_eq(reason_of(fn () { w.resolve('/etc/passwd') }), 'outside_workspace')
 }
 
@@ -51,7 +51,7 @@ fn refuses_an_absolute_path() {
 fn refuses_a_symlink_that_leaves() {
   let dir = temp_root()
   defer { FS.remove(dir, recursive: true) }
-  let w = ws.Workspace.new(dir)
+  let w = ws.Workspace(dir)
   # Lexically this is inside; only the filesystem knows where it goes.
   FS.symlink('/etc', FS.join(w.root, 'escape'))
   assert_eq(reason_of(fn () { w.resolve('escape/passwd') }), nil)
@@ -62,7 +62,7 @@ fn refuses_a_symlink_that_leaves() {
 fn allows_a_symlink_that_stays() {
   let dir = temp_root()
   defer { FS.remove(dir, recursive: true) }
-  let w = ws.Workspace.new(dir)
+  let w = ws.Workspace(dir)
   FS.mkdir(FS.join(w.root, 'real'))
   FS.write(FS.join(w.root, 'real/f.txt'), 'hi')
   FS.symlink(FS.join(w.root, 'real'), FS.join(w.root, 'link'))
@@ -73,7 +73,7 @@ fn allows_a_symlink_that_stays() {
 fn resolves_a_path_that_does_not_exist_yet() {
   let dir = temp_root()
   defer { FS.remove(dir, recursive: true) }
-  let w = ws.Workspace.new(dir)
+  let w = ws.Workspace(dir)
   # The write case: realpath is weakly canonical, so the missing tail survives
   # and no walk up to an existing parent is needed.
   let target = w.resolve_real('new/deep/file.txt')
@@ -87,7 +87,7 @@ fn a_root_behind_a_symlink_still_contains_itself() {
   # kept verbatim would fail every check made against it.
   let dir = temp_root()
   defer { FS.remove(dir, recursive: true) }
-  let w = ws.Workspace.new(dir)
+  let w = ws.Workspace(dir)
   assert_eq(w.root, FS.realpath(dir))
   assert_true(w.contains(w.root))
   assert_eq(reason_of(fn () { w.resolve_real('inside.txt') }), nil)

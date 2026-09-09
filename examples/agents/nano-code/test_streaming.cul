@@ -100,8 +100,8 @@ fn anthropic_whole() {
 }
 
 fn anthropic_stream(chunks, on_text) {
-  let http = StreamStub.new(chunks)
-  let out = anthropic.AnthropicModel.new(http, 'a-model')
+  let http = StreamStub(chunks)
+  let out = anthropic.AnthropicModel(http, 'a-model')
     .do_stream({messages: [msg.user('read a.txt')]}, on_text)
   {out: out, http: http}
 }
@@ -231,11 +231,11 @@ fn asks_for_a_stream_and_sends_the_same_body_otherwise() {
 fn a_refusal_is_read_out_of_the_stream_rather_than_the_empty_body() {
   # `into:` takes the body, so `res.body` is empty by the time the status is
   # known. Without the stream's own copy there is nothing to quote.
-  let http = StreamStub.new([]).failing(429,
+  let http = StreamStub([]).failing(429,
     JSON.stringify({error: {type: 'rate_limit_error',
                             message: 'slow down please'}}))
   let raised = try {
-    anthropic.AnthropicModel.new(http, 'a-model')
+    anthropic.AnthropicModel(http, 'a-model')
       .do_stream({messages: [msg.user('go')]}, nil)
     nil
   } catch e {
@@ -304,8 +304,8 @@ fn openai_whole() {
 }
 
 fn openai_stream(chunks, on_text) {
-  let http = StreamStub.new(chunks)
-  let out = openai.OpenAIModel.new(http, 'a-model')
+  let http = StreamStub(chunks)
+  let out = openai.OpenAIModel(http, 'a-model')
     .do_stream({messages: [msg.user('read a.txt')]}, on_text)
   {out: out, http: http}
 }
@@ -430,7 +430,7 @@ class WholeOnlyModel {
 
 fn run(model, streaming) {
   IO.capture(fn () {
-    agent.Agent.new({
+    agent.Agent({
       name: 'test-agent',
       instructions: 'do as you are told',
       model: model,
@@ -445,17 +445,17 @@ fn run(model, streaming) {
 fn a_streamed_run_prints_what_the_same_run_prints_whole() {
   # The pieces arrive with their own spacing, and what a reader ends up with is
   # the answer and one newline — the same transcript either way.
-  let whole = run(BothWaysModel.new([{text: 'all done'}]), false)
-  let streamed = run(BothWaysModel.new([{text: 'all done'}]), true)
+  let whole = run(BothWaysModel([{text: 'all done'}]), false)
+  let streamed = run(BothWaysModel([{text: 'all done'}]), true)
   assert_eq(streamed, whole)
 }
 
 @test
 fn the_answer_of_a_streamed_run_is_still_what_comes_back() {
-  let model = BothWaysModel.new([{text: 'all done'}])
+  let model = BothWaysModel([{text: 'all done'}])
   mut out = nil
   IO.capture(fn () {
-    out = agent.Agent.new({
+    out = agent.Agent({
       name: 'test-agent', instructions: 'go on', model: model, tools: {},
       max_steps: 3, stream: true,
     }).generate('go')
@@ -468,7 +468,7 @@ fn a_model_that_cannot_stream_says_so_at_the_call() {
   # Structural conformance: no `do_stream`, no `StreamingLanguageModel`. The
   # failure names the call rather than surfacing as a nil several frames later.
   let raised = try {
-    run(WholeOnlyModel.new(), true)
+    run(WholeOnlyModel(), true)
     nil
   } catch e {
     e

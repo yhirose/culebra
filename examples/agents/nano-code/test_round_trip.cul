@@ -89,7 +89,7 @@ fn talk_over(provider, port) {
     api_key: 'test-key',
     base_url: "http://127.0.0.1:{port}/v1",
   })('a/model')
-  agent.Agent.new({
+  agent.Agent({
     name: 'nano-code',
     instructions: 'be brief',
     model: model,

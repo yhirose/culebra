@@ -29,7 +29,7 @@ fn create_openai(config = {}) {
     config.base_url ?? Sys.env('OPENAI_BASE_URL', DEFAULT_BASE_URL),
     headers: {Authorization: "Bearer {key}"},
     timeout: config.timeout ?? TIMEOUT)
-  |model_id| OpenAIModel.new(http, model_id)
+  |model_id| OpenAIModel(http, model_id)
 }
 
 class OpenAIModel {
@@ -52,8 +52,8 @@ class OpenAIModel {
   # into the body a non-streaming request would have returned, so `read_reply`
   # is what interprets it either way.
   do_stream(params, on_text) {
-    let turn = OpenAIStream.new(on_text)
-    let stream = sse.EventStream.new(|e| turn.take(e))
+    let turn = OpenAIStream(on_text)
+    let stream = sse.EventStream(|e| turn.take(e))
     let res = self.http.post('/chat/completions',
                              json: self.body_for(params, true),
                              into: stream.sink())

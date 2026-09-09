@@ -95,7 +95,7 @@ fn cmp_name(tok) {
 # The four phases below (collect declarations, scan free variables, solve
 # captures by fixpoint, emit) all read and mutate the same per-compile
 # state, so they live as methods on one `Binder` instance instead of on
-# module-level `mut` globals -- a second `Binder.new()` in the same process
+# module-level `mut` globals -- a second `Binder()` in the same process
 # starts from nothing rather than inheriting another compile's leftovers.
 class Binder {
   blocks = []                  # {parent, name, consts, var_slot, var_names, procs, children, body}
@@ -478,7 +478,7 @@ try {
   # `program <- _ block '.' _` folds to a single child, so the root that
   # arrives is the block itself -- same fact pl0.cul's own driver leans on.
   let tree = PEG.parse(grammar, FS.read(args[0]), path: args[0])
-  let m = Binder.new().build(CodeGen.Module.new(), tree)
+  let m = Binder().build(CodeGen.Module.new(), tree)
   m.verify()
   cond {
     want_ir => print(m.dump_ir()),

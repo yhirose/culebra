@@ -102,11 +102,11 @@ class Param {
 let make_weight = fn (in_dim, out_dim) {
   let t = Tensor.randn(in_dim, out_dim) * Math.sqrt(2.0 / to_float(in_dim))
   Tensor.eval(t)
-  Param.new(t.detach().requires_grad())
+  Param(t.detach().requires_grad())
 }
 
 let make_bias = fn (out_dim) {
-  Param.new(Tensor.zeros(1, out_dim).requires_grad())
+  Param(Tensor.zeros(1, out_dim).requires_grad())
 }
 
 let w1 = make_weight(784, 128)

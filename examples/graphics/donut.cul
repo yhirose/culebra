@@ -19,7 +19,7 @@ mut a = 0.0  # rotation about one axis
 mut b = 0.0  # rotation about the other
 
 # A Screen diffs frames so only the cells that change are redrawn.
-let s = Term.Screen.new()
+let s = Term.Screen()
 IO.print(Term.hide())
 
 while mut frame_no = 0; max_frames < 0 || frame_no < max_frames {

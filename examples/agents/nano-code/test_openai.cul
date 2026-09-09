@@ -134,9 +134,9 @@ fn keeps_this_formats_own_names_for_stopping() {
 
 @test
 fn posts_a_body_this_format_would_accept() {
-  let http = OpenAIStub.new(
+  let http = OpenAIStub(
     an_openai_response(200, an_openai_reply({content: 'hi'}, 'stop')))
-  let out = openai.OpenAIModel.new(http, 'a-model').do_generate({
+  let out = openai.OpenAIModel(http, 'a-model').do_generate({
     messages: [msg.system('be brief'), msg.user('hello')],
     tools: [{name: 'readFile', description: 'read it', parameters: {}}],
   })
@@ -156,11 +156,11 @@ fn posts_a_body_this_format_would_accept() {
 
 @test
 fn a_refusal_names_the_status_and_what_the_body_said() {
-  let http = OpenAIStub.new(an_openai_response(404,
+  let http = OpenAIStub(an_openai_response(404,
     {error: {message: 'model not found', type: 'invalid_request_error'}}))
 
   let raised = try {
-    openai.OpenAIModel.new(http, 'no-such-model')
+    openai.OpenAIModel(http, 'no-such-model')
       .do_generate({messages: [msg.user('hello')]})
     nil
   } catch e {
@@ -205,7 +205,7 @@ fn a_generation_that_broke_is_an_error_rather_than_a_finished_turn() {
   # routes to a provider reports the provider's failure this way, and calling
   # it a turn is what makes an overloaded free tier look like a model that had
   # nothing to say.
-  let http = OpenAIStub.new(an_openai_response(200, {
+  let http = OpenAIStub(an_openai_response(200, {
     choices: [{
       error: {code: 502, message: 'inference generation failed',
               metadata: {error_type: 'provider_unavailable'}},
@@ -214,7 +214,7 @@ fn a_generation_that_broke_is_an_error_rather_than_a_finished_turn() {
     }],
   }))
   let raised = try {
-    openai.OpenAIModel.new(http, 'a-model').do_generate({messages: []})
+    openai.OpenAIModel(http, 'a-model').do_generate({messages: []})
     nil
   } catch e {
     e
@@ -227,9 +227,9 @@ fn a_generation_that_broke_is_an_error_rather_than_a_finished_turn() {
 
 @test
 fn an_answer_with_no_choices_is_an_error_rather_than_an_empty_turn() {
-  let http = OpenAIStub.new(an_openai_response(200, {choices: []}))
+  let http = OpenAIStub(an_openai_response(200, {choices: []}))
   let raised = try {
-    openai.OpenAIModel.new(http, 'a-model').do_generate({messages: []})
+    openai.OpenAIModel(http, 'a-model').do_generate({messages: []})
     nil
   } catch e {
     e
