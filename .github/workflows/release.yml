@@ -244,8 +244,6 @@ jobs:
             mingw-w64-ucrt-x86_64-lld
             zip
             git
-      - name: DEBUG dirty check (post-checkout)
-        run: git status --porcelain=v1 -uall --ignore-submodules=none
       - name: Restore ccache
         uses: actions/cache@v4
         with:
@@ -303,8 +301,6 @@ jobs:
         env:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: cmake --build build --target culebra -j
-      - name: DEBUG dirty check (post-build)
-        run: git status --porcelain=v1 -uall --ignore-submodules=none
       # After the build, not before it: the check looks for the Scene runtime
       # archive, which is a build product. Ahead of the build it fails on every
       # run that has Scene on — it only passed while Windows had it off (see
