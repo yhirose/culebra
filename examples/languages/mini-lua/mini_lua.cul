@@ -2562,7 +2562,11 @@ fn build(mm, root) {
 
 let want_ir = Sys.argv.contains('--ir')
 let want_ast = Sys.argv.contains('--ast')
-let args = Sys.argv.filter(|a| a != '--ir' && a != '--ast')
+# Which Lua this run renders floats for. 5.5 changed tostring, and the oracle
+# is whichever `lua` is installed, so the target is told to the front end
+# rather than frozen into it.
+let lua54 = Sys.argv.contains('--lua54')
+let args = Sys.argv.filter(|a| a != '--ir' && a != '--ast' && a != '--lua54')
 if args.empty() {
   println('usage: culebra mini_lua.cul [--ir] PROGRAM.lua')
   Sys.exit(1)
@@ -2584,14 +2588,14 @@ try {
     _ => mod
       .compile()
       .run(natives: {
-      # Lua's own float rendering (5.5): 14 significant digits, bumped to
-      # 17 when that loses precision (its round-trip check, not a search
-      # for the shortest digit count -- pi prints as ...897931, one digit
-      # past its actual 16-digit shortest form), and a `.0` kept on
-      # whichever one would otherwise read as an integer.
+      # Lua's own float rendering: 14 significant digits, and a `.0` kept on
+      # one that would otherwise read as an integer. 5.5 bumps that to 17
+      # when 14 loses precision (its round-trip check, not a search for the
+      # shortest digit count -- pi prints as ...897931, one digit past its
+      # actual 16-digit shortest form); 5.4 and earlier stop at 14.
       __luafmt: fn (v) {
         let t = "{v:.14g}"
-        let t = cond { to_float(t) == v => t, _ => "{v:.17g}" }
+        let t = cond { lua54 || to_float(t) == v => t, _ => "{v:.17g}" }
         cond {
           t.contains('.') || t.contains('e') || t.contains('n') => t,
           _ => t + '.0',
