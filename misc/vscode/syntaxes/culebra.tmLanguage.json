@@ -9,6 +9,7 @@
     { "include": "#numbers" },
     { "include": "#keywords" },
     { "include": "#language-constants" },
+    { "include": "#ctor-call" },
     { "include": "#function-call" },
     { "include": "#types" },
     { "include": "#operators" }
@@ -203,9 +204,14 @@
       "name": "variable.language.culebra"
     },
     "function-call": {
-      "comment": "An identifier immediately followed by '(' is a call site.",
-      "match": "\\b([A-Za-z_]\\w*)(?=\\()",
+      "comment": "A lowercase identifier immediately followed by '(' is a call site. Capitalized call sites are #ctor-call instead, so this never has to out-order that rule for the same position.",
+      "match": "\\b([a-z_]\\w*)(?=\\()",
       "name": "entity.name.function.culebra"
+    },
+    "ctor-call": {
+      "comment": "ClassName(args) is ctor sugar for ClassName.new(args) (§ Constructor multidispatch); colour it like the class name it is, not like a function call.",
+      "match": "\\b([A-Z][A-Za-z0-9_]*)(?=\\()",
+      "name": "entity.name.type.culebra"
     },
     "types": {
       "comment": "Capitalized identifiers: built-in types, stdlib namespaces, user classes.",
