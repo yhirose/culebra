@@ -82,6 +82,24 @@ if [ "$build_rc" -eq 0 ]; then
       native=$(cmd //c "$(basename "$aot")" 2>&1); native_rc=$?
       echo "native_out=[$native] native_rc=$native_rc"
       detail="$detail | size: $(wc -c < "$aot" 2>/dev/null) | native rc=$native_rc out=[$native]"
+      # 127 is ERROR_PROC_NOT_FOUND: the loader could not resolve an import,
+      # and the process ends before its first write. The name it could not
+      # find is the whole diagnosis, so say which imports this binary has that
+      # one built earlier in the same job — and started — does not.
+      if [ "$native_rc" -eq 127 ] || [ "$rc" -eq 127 ]; then
+        for ref in ./p_wrapped.exe ./aot_LONG.exe ./triv.exe; do
+          [ -f "$ref" ] || continue
+          syms() {
+            objdump -p "$1" 2>/dev/null \
+              | awk '/DLL Name:/ {dll = $NF} /^\t[0-9a-f]+\t/ {print dll "!" $NF}' \
+              | sort -u
+          }
+          extra=$(comm -23 <(syms "$aot") <(syms "$ref") | tr '\n' ' ')
+          echo "imports_not_in_$(basename "$ref")=[$extra]"
+          detail="$detail | vs $(basename "$ref"): $extra"
+          break
+        done
+      fi
     fi
     note_failure "${label}_AOT_RUN_FAIL" "$rc" "$detail"
     fail=1
