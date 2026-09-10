@@ -20,6 +20,18 @@ script=${2:?}
 expected=${3:?}
 label=${4:?}
 
+# What a lane saw, as an annotation as well as on stdout. A run's log needs
+# repository admin to read while its annotations do not, so on the platforms
+# with no local oracle — Windows above all — this is what carries a failure
+# off the runner. `%0A` is how a workflow command spells a newline.
+note_failure() {
+  local what=$1 rc=$2 detail=$3
+  echo "$what"
+  [ -n "${GITHUB_ACTIONS:-}" ] || return 0
+  detail=$(printf '%s' "$detail" | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g')
+  printf '::error::%s rc=%s: %s\n' "$what" "$rc" "$(printf '%.2000s' "$detail")"
+}
+
 fail=0
 for mode in "--jit" "--vm"; do
   echo "=== $exe $mode $script ==="
@@ -36,18 +48,34 @@ for mode in "--jit" "--vm"; do
         continue
       fi ;;
   esac
-  echo "${label}_${mode}_FAIL"; fail=1
+  note_failure "${label}_${mode}_FAIL" "$rc" "$out"; fail=1
 done
 
 echo "=== $exe build $script ==="
 aot=./aot_$label.exe
-if "$exe" build "$script" -o "$aot"; then
+build_out=$("$exe" build "$script" -o "$aot" 2>&1); build_rc=$?
+printf '%s\n' "$build_out"
+if [ "$build_rc" -eq 0 ]; then
+  # An AOT binary that will not start prints nothing, so the file itself and
+  # what it imports are the report — without them "empty output" cannot be
+  # told from "the assertions failed".
+  ls -l "$aot"
+  imports=""
+  if [ "${OS:-}" = "Windows_NT" ] && command -v objdump > /dev/null 2>&1; then
+    imports=$(objdump -p "$aot" 2>/dev/null | sed -n 's/.*DLL Name:[[:space:]]*//p' \
+      | sort -u | tr '\n' ' ')
+    echo "imports=[$imports]"
+  fi
   out=$(timeout 60 "$aot" 2>&1); rc=$?
   echo "out=[$out] rc=$rc"
-  [ "$out" = "$expected" ] && echo "${label}_AOT_PASS" \
-    || { echo "${label}_AOT_RUN_FAIL"; fail=1; }
+  if [ "$out" = "$expected" ]; then
+    echo "${label}_AOT_PASS"
+  else
+    note_failure "${label}_AOT_RUN_FAIL" "$rc" "$out${imports:+ | imports: $imports}"
+    fail=1
+  fi
 else
-  echo "${label}_AOT_BUILD_FAIL rc=$?"
+  note_failure "${label}_AOT_BUILD_FAIL" "$build_rc" "$build_out"
   fail=1
 fi
 exit $fail
