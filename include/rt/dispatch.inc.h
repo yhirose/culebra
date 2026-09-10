@@ -681,6 +681,10 @@ culebra_runtime_register_trait(const char* trait_name, const char* spec,
 struct JitMultifnDispatcher {
   std::string name;
   const JitMultiMethodEntry* mono = nullptr;
+  // One required tag per positional parameter (-1 = any) when `mono` is an
+  // annotated overload; empty when it needs no gate. See
+  // _jit_multifn_refresh_mono and _jit_mono_admits.
+  std::vector<int8_t> mono_tags;
 };
 
 // Side table mapping a dispatcher closure pointer to its record, so the
@@ -717,25 +721,88 @@ extern "C++" {
 inline JitMultifnDispatcher* _jit_dispatcher_record(JitClosure* c);
 }
 
+// The tag whose values ALWAYS satisfy this annotation, or -1 when no single
+// tag does. The inverse of _jit_value_arg_type over the labels it produces
+// one-to-one, which is what lets `arg.tag == this` stand in for the picker:
+// the label the argument reports IS the annotation, so multifn_specificity's
+// concrete-exact arm answers and nothing below it runs.
+//
+// The Object-side labels are left out on purpose: TAG_OBJECT reports a class
+// name, so an `Array` annotation would admit a user class called `Array`.
+// `Function` is out for the opposite reason — the scorer lets a class instance
+// with `__call__` match it, so the tag is not the whole answer. Anything left
+// out declines the shortcut and takes the picker, which is only slower.
+inline int8_t _jit_tag_exactly_matching(std::string_view annotation) {
+  if (annotation == "Nil") return TAG_NIL;
+  if (annotation == "Bool") return TAG_BOOL;
+  if (annotation == "Long") return TAG_LONG;
+  if (annotation == "Float") return TAG_FLOAT;
+  if (annotation == "String") return TAG_STRING;
+  if (annotation == "StringView") return TAG_STRINGVIEW;
+  if (annotation == "Array") return TAG_ARRAY;
+  if (annotation == "Tuple") return TAG_TUPLE;
+  if (annotation == "Set") return TAG_SET;
+  if (annotation == "Tensor") return TAG_TENSOR;
+  return -1;
+}
+
 // Recompute the shortcut and publish it. Both halves are non-owning: the
 // table entry holds the body's +1, and both are rewritten whenever it is.
+//
+// A lone overload with no annotations admits every call its arity accepts, so
+// the shortcut is unconditional. One whose annotations are all tag-exact keeps
+// the shortcut behind a gate (`mono_tags`) that the call site checks: matching
+// arguments reach the body, and everything else falls through to the picker,
+// which is what keeps a mismatch's DispatchError coming from where it always
+// came from. A defaulted, variadic or keyword-taking overload is left out —
+// then the arguments no longer line up one-to-one with the annotations.
 inline void _jit_multifn_refresh_mono(JitClosure* c) {
   auto* d = _jit_dispatcher_record(c);
   if (!d) return;
   d->mono = nullptr;
+  d->mono_tags.clear();
   auto& tbl = _jit_multimethods();
   if (auto it = tbl.find(d->name); it != tbl.end() && it->second.size() == 1) {
     const auto& m = it->second.front();
     d->mono = &m;
+    bool annotated = false;
     for (const auto& t : m.param_types)
-      if (!t.empty()) {
+      if (!t.empty()) annotated = true;
+    if (annotated) {
+      if (m.variadic || m.min_params != m.param_types.size()) {
         d->mono = nullptr;
-        break;
+      } else {
+        for (const auto& t : m.param_types) {
+          const int8_t tag = t.empty() ? -1 : _jit_tag_exactly_matching(t);
+          if (!t.empty() && tag < 0) {
+            d->mono = nullptr;
+            d->mono_tags.clear();
+            break;
+          }
+          d->mono_tags.push_back(tag);
+        }
       }
+    }
   }
   c->captures[kMultifnMonoCapture]->value =
       d->mono ? JitValue{TAG_LONG, reinterpret_cast<int64_t>(d->mono->body)}
               : JitValue{TAG_NIL, 0};
+}
+
+// Do THESE arguments take the shortcut? An unannotated overload has no gate
+// and admits every call its arity accepts; an annotated one admits the
+// arguments whose tags match, and sends the rest to the picker, which is what
+// keeps a mismatch's DispatchError coming from where it always came from
+// (the body's own check reports a TypeError at the argument instead).
+inline bool _jit_mono_admits(const JitMultifnDispatcher& d, int64_t n_args,
+                             const JitValue* args) {
+  if (d.mono_tags.empty()) return true;
+  if (static_cast<size_t>(n_args) != d.mono_tags.size()) return false;
+  for (int64_t i = 0; i < n_args; ++i) {
+    const int8_t want = d.mono_tags[static_cast<size_t>(i)];
+    if (want >= 0 && args[i].tag != want) return false;
+  }
+  return true;
 }
 
 // Non-owning body→dispatcher uplinks: the multifn self-recursion handle.
@@ -1313,7 +1380,8 @@ inline void _jit_multifn_dispatcher_thunk(JitValue* __ret, JitClosure* cls,
     const auto* m = rec->mono;
     auto n = static_cast<size_t>(n_args);
     if (m && n >= m->min_params &&
-        (m->variadic || n <= m->param_types.size())) {
+        (m->variadic || n <= m->param_types.size()) &&
+        _jit_mono_admits(*rec, n_args, args)) {
       *__ret = _jit_invoke(m->body, self_val, n_args, args);
       return;
     }

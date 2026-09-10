@@ -1,0 +1,153 @@
+// A `fn name` with one overload reaches its body without consulting the
+// overload table. That shortcut used to be withdrawn the moment a parameter
+// carried an annotation, because the body's own entry check reports a
+// mismatch differently from the picker: `TypeError: parameter 'n' expects
+// Long` at the argument, against `DispatchError: no matching method` at the
+// call. The shortcut is now gated on the argument tags instead, so a matching
+// call takes it and everything else still goes to the picker.
+//
+// What this file pins is that the gate is invisible. The two errors are told
+// apart by their message, so asserting the message is what catches a gate that
+// let a mismatched argument through to the body.
+
+fn only(n: Long) {
+  "long:{n}"
+}
+assert_eq(only(3), 'long:3')
+
+// A mismatch is the picker's error, not the body's.
+mut e = nil
+try {
+  only('x')
+} catch ex {
+  e = ex
+}
+assert_eq(e.kind, 'DispatchError')
+assert_eq(e.message, 'no matching method for `only`')
+
+// So is an arity the one overload does not accept.
+mut e2 = nil
+try {
+  only(1, 2)
+} catch ex {
+  e2 = ex
+}
+assert_eq(e2.kind, 'DispatchError')
+assert_eq(e2.message, 'no matching method for `only`')
+
+// --- annotations the gate cannot decide from a tag alone: all still dispatch,
+// because declining the shortcut only means taking the picker.
+
+// `Float` does not admit a Long, and the gate must not widen it.
+fn onlyf(x: Float) {
+  'float'
+}
+assert_eq(onlyf(3.5), 'float')
+mut e3 = nil
+try {
+  onlyf(3)
+} catch ex {
+  e3 = ex
+}
+assert_eq(e3.kind, 'DispatchError')
+
+// A class name: an Object tag says nothing about which class, so no gate.
+class Box {
+  new(v) {
+    self.v = v
+  }
+}
+fn takesbox(b: Box) {
+  'box'
+}
+assert_eq(takesbox(Box(1)), 'box')
+mut e4 = nil
+try {
+  takesbox(3)
+} catch ex {
+  e4 = ex
+}
+assert_eq(e4.kind, 'DispatchError')
+
+// `Function` admits a class instance with `__call__`, so the tag is not the
+// whole answer and the gate has to stay out of it.
+class Callable {
+  __call__(a) {
+    a
+  }
+}
+fn takesfn(f: Function) {
+  'fn'
+}
+assert_eq(takesfn(Callable()), 'fn')
+assert_eq(takesfn(fn (a) {
+  a
+}), 'fn')
+
+// Optional and union spellings.
+fn opt(x: Long?) {
+  'opt'
+}
+assert_eq(opt(1), 'opt')
+assert_eq(opt(nil), 'opt')
+
+fn uni(x: Long | String) {
+  'uni'
+}
+assert_eq(uni(1), 'uni')
+assert_eq(uni('s'), 'uni')
+
+// --- shapes where the arguments do not line up with the annotations one to
+// one, which is why the gate declines them outright.
+
+fn withdef(a: Long, b: Long = 2) {
+  a + b
+}
+assert_eq(withdef(1), 3)
+assert_eq(withdef(1, 5), 6)
+
+fn variadic(a: Long, *rest) {
+  a + rest.size()
+}
+assert_eq(variadic(1), 1)
+assert_eq(variadic(1, 9, 9), 3)
+
+// --- a second overload withdraws the shortcut; both still dispatch.
+fn two(n: Long) {
+  'long'
+}
+fn two(s: String) {
+  'string'
+}
+assert_eq(two(1), 'long')
+assert_eq(two('s'), 'string')
+mut e5 = nil
+try {
+  two(1.5)
+} catch ex {
+  e5 = ex
+}
+assert_eq(e5.kind, 'DispatchError')
+
+// --- the other tag-exact annotations, so the table in
+// _jit_tag_exactly_matching is exercised rather than trusted.
+fn s_(x: String) {
+  'S'
+}
+fn b_(x: Bool) {
+  'B'
+}
+fn a_(x: Array) {
+  'A'
+}
+fn t_(x: Tuple) {
+  'T'
+}
+fn n_(x: Nil) {
+  'N'
+}
+assert_eq(s_('x'), 'S')
+assert_eq(b_(true), 'B')
+assert_eq(a_([1]), 'A')
+assert_eq(t_((1, 2)), 'T')
+assert_eq(n_(nil), 'N')
