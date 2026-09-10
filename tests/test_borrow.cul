@@ -122,7 +122,9 @@ fn closed_msg(thunk) {
   assert_eq(err.col, 5)  # the receiver, not 0
 }
 
-# --- A borrow is not Sendable (it carries a borrow id). ----------------------
+# --- Neither handle is Sendable: a borrow carries a borrow id, an owning one
+# reaches a C++ instance this thread owns. Both are refused by the class they
+# share, so both belong here rather than one apiece. --------------------------
 {
   let b = __Foreign.Box.new(1)
   let c = b.inner()
@@ -134,6 +136,18 @@ fn closed_msg(thunk) {
     e.kind
   }
   assert_eq(r, 'SendError')
+}
+{
+  let o = __Foreign.Counter.new(1)
+  let r = try {
+    Isolate.spawn(fn () {
+      o.value()
+    }).join()
+  } catch e {
+    e.kind
+  }
+  assert_eq(r, 'SendError')
+  o.drop()
 }
 
 # --- Forging a borrow's internal slots is memory-safe (no raw pointer is

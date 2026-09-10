@@ -215,4 +215,11 @@ assert_eq(d3.message, "TOML.stringify: nesting too deep (limit 1000)")
 let p = TOML.parse
 assert_eq(p("k = 9").k, 9)
 
+// --- an instance whose class says it has no fields to enumerate serializes
+// as an empty table, the same as JSON.stringify gives it ---
+let handle = __Foreign.Counter.new(1)
+assert_eq(TOML.stringify(handle), "")
+assert_eq(JSON.stringify(handle), '{}')  // raw: {} would interpolate
+handle.drop()
+
 inspect("toml tests passed")
