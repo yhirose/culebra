@@ -1,0 +1,47 @@
+// A nested scope's owned bracket is elided when nothing between its Mark and
+// its Exit can register a `drop` (owned_plan_for_chunk). Which instructions
+// those are is a whitelist, and a `Call` is deliberately not on it: the
+// argument that it could be -- a callee drains its own frame bracket before
+// returning, so nothing it registers outlives the call -- holds for everything
+// refcounting reaches, and fails for exactly the case the bracket exists for.
+//
+// A CYCLE returned from a call keeps its own refcount above zero, so releasing
+// the caller's slot does not drop it; only the enclosing scope's bracket does.
+// Elide that bracket and the drops slide to frame exit instead. Every other
+// drop test binds its resource with a constructor in the loop body, where
+// `MakeInst` blocks the elision on its own, so this shape is what states the
+// rule.
+
+let log = []
+
+class R {
+  new(lg) {
+    self.log = lg
+    self.me = nil
+  }
+  drop() {
+    self.log.push(1)
+  }
+}
+
+fn make_cycle() {
+  let a = R.new(log)
+  a.me = a
+  a
+}
+
+// The loop body holds nothing but the call and integer arithmetic, so the
+// bracket around it is exactly what carries the drops.
+fn body() {
+  mut i = 0
+  while i < 3 {
+    let r = make_cycle()
+    i += 1
+  }
+  // Read before this frame's own bracket runs: with the loop's bracket doing
+  // its job this is 3, and 0 if the drops were deferred to frame exit.
+  log.size()
+}
+
+assert_eq(body(), 3)
+assert_eq(log.size(), 3)

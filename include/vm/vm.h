@@ -4080,10 +4080,16 @@ namespace owned_detail {
 // nothing on the owned stack (rt/owned.inc.h §14.3 — deterministic drop for
 // what refcounting alone cannot reclaim). Registration happens the moment a
 // `drop` method is bound: instance construction, or a property write named
-// `drop` (fixed.inc.h's _jit_owned_bind_drop call sites). A Call is NOT on
-// that list and needs no case here — whatever a callee registers, its own
-// frame-level bracket (establish_frame_owned_mark) drains before it returns
-// control, so nothing a call does can outlive the call instruction. That is
+// `drop` (fixed.inc.h's _jit_owned_bind_drop call sites). A Call stays OFF
+// the whitelist below, and the tempting argument for putting it on — a callee
+// drains its own frame-level bracket (establish_frame_owned_mark) before
+// returning, so nothing it registers outlives the call — holds only for what
+// refcounting reaches. A cycle the callee RETURNS keeps its own refcount
+// above zero, so releasing the caller's slot does not drop it and the
+// enclosing scope's bracket is the only thing that will; elide that bracket
+// and its drops slide to frame exit. tests/test_drop_returned_cycle.cul is
+// that shape, and every other drop test binds its resource with a constructor
+// in the region, where `MakeInst` blocks the elision on its own. That is
 // also why the throw path resolves ONLY the frame's own mark (Exec::unwind:
 // "the JIT resolves at its frame cleanup pad and nowhere else on the throw
 // path") — a nested scope's bracket is a synchronous-path optimization only,
