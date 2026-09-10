@@ -303,8 +303,14 @@ inline constexpr CanonSig kCanonSigs_Sys[] = {
   {"Sys", "", "time", nullptr, 0, "Float", 0, 0, false, -1, -1, -1},
 };
 
+inline constexpr CanonParam kCanonParams_GC[] = {
+  // 0: GC.refcount
+  {"value", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+};
+
 inline constexpr CanonSig kCanonSigs_GC[] = {
   {"GC", "", "stat", nullptr, 0, "Object", 0, 0, false, -1, -1, -1},
+  {"GC", "", "refcount", kCanonParams_GC + 0, 1, "Long | Nil", 1, 1, false, -1, -1, -1},
 };
 
 inline constexpr CanonParam kCanonParams_Regex_native[] = {

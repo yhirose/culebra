@@ -5415,6 +5415,20 @@ inline JitValue _ns_gc_stat(JitValue*, int64_t) {
   return {TAG_OBJECT, reinterpret_cast<int64_t>(obj)};
 }
 
+// `GC.refcount(v)` — the live reference count of a heap value, or nil for
+// one that carries none (Long, Float, Bool, nil, and the traced-only
+// Strings). Every refcounted type keeps the count at offset 0, the same
+// invariant the release path relies on (mem.inc.h). Diagnostic: read it as a
+// delta, since the call itself is holding a +1 while it answers.
+inline JitValue _ns_gc_refcount(JitValue* a, int64_t n) {
+  if (n != 1) {
+    throw culebra::CulebraError("ArityError",
+        "GC.refcount: expected 1 argument (value)");
+  }
+  if (!_is_refcounted_value(a[0].tag, a[0].data)) return {TAG_NIL, 0};
+  return {TAG_LONG, *reinterpret_cast<const int64_t*>(a[0].data)};
+}
+
 // Proc. The first-class `Proc.*` value (bare-value calls) and AOT route
 // through these trampoline adapters. They receive a positional slab whose
 // slots match the NsParamMeta order (kwargs already resolved + defaults
@@ -9045,6 +9059,7 @@ inline const NsMethod kNsRows_Sys[] = {
 };
 inline const NsMethod kNsRows_GC[] = {
   {"GC",     "stat", 0, &_ns_gc_stat},
+  {"GC",     "refcount", 1, &_ns_gc_refcount, nullptr, "Any", "value"},
 };
 inline const NsMethod kNsRows_Regex_native[] = {
   {"_Regex", "check",       1, &_ns_regex_check},
@@ -9702,8 +9717,16 @@ inline JitValue _jit_ns_method_dispatch(const NsMethod* m, int64_t n_args,
 }
 
 inline void _jit_ns_method_trampoline(
-    JitValue* __ret, JitClosure* cls, int8_t /*self_tag*/,
-    int64_t /*self_data*/, int64_t n_args, JitValue* args) {
+    JitValue* __ret, JitClosure* cls, int8_t self_tag, int64_t self_data,
+    int64_t n_args, JitValue* args) {
+  // The method ABI passes the receiver at +1 and the callee consumes it
+  // (JitMethodSelf, fixed.inc.h). An ns method takes its receiver as args[0]
+  // when it has one, so `self` is unused here — but it still has to be
+  // released, on every exit including a throw below. Reaching this with a
+  // receiver at all is the two-step member call (`Ns.Class.new(...)`, a
+  // wrapped static): the `Ns.fn(...)` peephole passes none, and a nil is a
+  // no-op release.
+  JitMethodSelf _s{JitValue{self_tag, self_data}};
   const auto* m = reinterpret_cast<const NsMethod*>(
       cls->captures[0]->value.data);
   // As-value call (`let g = ns.method; g(...)`): the indirect-call codegen
@@ -9998,7 +10021,7 @@ inline bool _jit_ns_kwarg_resolve_core(
 // Closure-ABI wrapper: extract the NsMethod from the closure and resolve.
 // Returns false (the hook's "not mine" signal) for non-ns closures.
 inline bool _jit_ns_kwarg_resolve(
-    JitClosure* cls, JitValue /*self_val*/, int64_t n_pos, JitValue* positional,
+    JitClosure* cls, JitValue self_val, int64_t n_pos, JitValue* positional,
     int64_t n_kw, const char* const* kw_keys, JitValue* kw_vals,
     int64_t n_splat, JitValue* splat_objs, int64_t line, int64_t col,
     JitValue* out) {
@@ -10007,9 +10030,19 @@ inline bool _jit_ns_kwarg_resolve(
   }
   const auto* m = reinterpret_cast<const NsMethod*>(
       cls->captures[0]->value.data);
-  return _jit_ns_kwarg_resolve_core(m, n_pos, positional, n_kw, kw_keys,
-                                    kw_vals, n_splat, splat_objs, line, col,
-                                    out);
+  bool handled = _jit_ns_kwarg_resolve_core(m, n_pos, positional, n_kw,
+                                            kw_keys, kw_vals, n_splat,
+                                            splat_objs, line, col, out);
+  // Answering "handled" ends culebra_runtime_call_with_kwargs at its `return
+  // out`, past both of that function's consumers of the +1 receiver — its
+  // release_owned throw path and the callee frame on hand-off — and an ns
+  // method takes its receiver as a positional, never as `self`. So the
+  // success answer is what consumes it. NOT scope-wide (no JitMethodSelf):
+  // on the throw out of the core the receiver is already the unwinding call
+  // site's to release, and taking it here too frees the namespace object out
+  // from under the program.
+  if (handled) _culebra_value_release_impl(self_val.tag, self_val.data);
+  return handled;
 }
 
 // Callback-arity bounds for an ns-method closure handed to a HOF. Reads the

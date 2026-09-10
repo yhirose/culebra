@@ -1446,6 +1446,26 @@ inspect(GC.stat().live_objects - base)  # 構造が保持しているオブジ�
 留まることをassertする。メモリはそれ以外は自動管理 — メモリモデルと
 確定的`drop`は言語仕様を参照。
 
+`GC.refcount(value)`はヒープ値が開いている参照の数を返す。参照カウントを
+持たない値では`nil` — `Long`・`Float`・`Bool`・`nil`は即値で、`String`は
+カウントでなくトレースで管理される。これは`GC.stat()`では答えられない
+問いに答える: 決して回収されない値 — 例えばnamespaceから到達可能なもの — は、
+参照がいくら積み上がってもオブジェクト数を1つも増やさないので、そうした値に
+対して漏れた参照はオブジェクト数の計測には写らない。
+
+```culebra
+let obj = {a: 1}
+let base = GC.refcount(obj)
+for _ in range(100) {
+  let alias = obj
+}
+inspect(GC.refcount(obj) - base)  # => 0
+```
+
+絶対値ではなく必ずdeltaとして読むこと: 答えを返している間その呼び出し自身が
+参照を1つ持っているし、ランタイムがrootとして保持している値は、プログラムから
+見える数よりはるかに大きな値を返す。
+
 ---
 
 ## 8. `Tensor`

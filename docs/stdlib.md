@@ -1483,6 +1483,27 @@ stays bounded across many iterations. Memory is otherwise managed
 automatically — see the language spec for the memory model and
 deterministic `drop`.
 
+`GC.refcount(value)` reports how many references a heap value is holding
+open, or `nil` for one that carries no count — `Long`, `Float`, `Bool` and
+`nil` are immediates, and a `String` is traced rather than counted. It
+answers the question `GC.stat()` cannot: a value that is never collected —
+anything reachable from a namespace, say — contributes no object growth
+however many references pile up on it, so a reference that leaks against
+such a value is invisible to a count of objects.
+
+```culebra
+let obj = {a: 1}
+let base = GC.refcount(obj)
+for _ in range(100) {
+  let alias = obj
+}
+inspect(GC.refcount(obj) - base)  # => 0
+```
+
+Read it as a delta, never as an absolute: the call is holding a reference
+of its own while it answers, and a value the runtime roots reads far above
+what the program can see.
+
 ---
 
 ## 8. `Tensor`
