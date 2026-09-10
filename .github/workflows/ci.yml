@@ -1720,6 +1720,38 @@ jobs:
         run: |
           misc/run_all_backends.sh ./build-win-aot/culebra.exe \
             tests/test_foreign.cul "'test_foreign OK'" FOREIGN
+      # When the fixture's AOT binary is the one that failed, the program is
+      # what has to be bisected — and only this platform can do it. Each prefix
+      # ends at a section boundary, so every one is a whole program, and the
+      # first that stops printing names the section that costs the binary its
+      # ability to run. Runs only after a failure, so a green job pays nothing.
+      - name: Bisect — which section of the fixture an AOT binary cannot run
+        if: failure()
+        run: |
+          set +e
+          prev=0
+          for start in $(grep -n '^# ---' tests/test_foreign.cul | cut -d: -f1) 999999; do
+            end=$((start - 1))
+            [ "$end" -gt "$prev" ] || continue
+            [ "$end" -lt "$(wc -l < tests/test_foreign.cul)" ] || \
+              end=$(wc -l < tests/test_foreign.cul)
+            prev=$end
+            head -n "$end" tests/test_foreign.cul > "pre_$end.cul"
+            printf '\nprint("ok")\n' >> "pre_$end.cul"
+            ./build-win-aot/culebra.exe build "pre_$end.cul" -o "pre_$end.exe" \
+              > /dev/null 2>&1
+            if [ $? -ne 0 ]; then echo "lines 1-$end: BUILD_FAIL"; continue; fi
+            out=$(timeout 60 "./pre_$end.exe" 2>&1); rc=$?
+            echo "lines 1-$end: rc=$rc out=[$out]"
+            # The whole-file prefix prints the fixture's own last line first,
+            # so it is the last line that answers, not the whole capture.
+            if [ "$(printf '%s' "$out" | tail -n 1)" != "ok" ]; then
+              printf '::error::fixture AOT stops running at lines 1-%s (rc=%s): %s\n' \
+                "$end" "$rc" "$(sed -n "$((end - 20)),${end}p" tests/test_foreign.cul \
+                  | tr '\n' ' ' | sed 's/%/%25/g' | cut -c1-800)"
+              break
+            fi
+          done
       # What the window backend adds, through all three backends: a window build
       # forced headless must behave exactly like a headless one. It names
       # `_Canvas`, which the AOT scan does not match against the `Canvas` axis,
