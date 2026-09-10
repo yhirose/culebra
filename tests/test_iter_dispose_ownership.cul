@@ -106,3 +106,58 @@ fn run_gen() {
 }
 run_gen()
 inspect("gen: after run")
+
+# A `dispose` member that is not a function is skipped, not called. The
+# executor answers `if (fn.tag != TAG_FUNC) return;`; the JIT used to hand
+# whatever it found to its generic call path instead, whose cold arm
+# CONSTRUCTS from a class object — so `dispose: SomeClass` ran a constructor
+# under --jit and AOT and nothing under the executor.
+class Ctor {
+  new() {
+    inspect("dispose: class ctor ran (it must not)")
+  }
+}
+
+fn mk_dispose(d) {
+  mut i = 0
+  {
+    has_next: fn () {
+      i < 1
+    },
+    next: fn () {
+      i += 1
+      i
+    },
+    dispose: d,
+  }
+}
+
+for _ in {iter: fn () {
+  mk_dispose(Ctor)
+}} {
+  nil
+}
+for _ in {iter: fn () {
+  mk_dispose(42)
+}} {
+  nil
+}
+inspect("dispose: non-function skipped")
+
+# ...and a real one still runs, on every exit the loop can take.
+mut ran = []
+for _ in {iter: fn () {
+  mk_dispose(fn () {
+    ran.push("drain")
+  })
+}} {
+  nil
+}
+for _ in {iter: fn () {
+  mk_dispose(fn () {
+    ran.push("break")
+  })
+}} {
+  break
+}
+inspect(ran)

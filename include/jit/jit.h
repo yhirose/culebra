@@ -4062,6 +4062,21 @@ struct JIT {
 
     builder_.SetInsertPoint(disposeBB);
     auto dispose_fn_val = emit_property_get(iterFinal, "dispose");
+    // A `dispose` that is not a function is skipped, not called — the
+    // executor's for_dispose answers `if (fn.tag != TAG_FUNC) return;` and
+    // this has to say the same thing. Without the check the cold path of
+    // compile_function_call_raw takes over and constructs from a class
+    // object, which the executor never does. The property is borrowed
+    // (own_receiver=false), so skipping releases nothing.
+    auto disposeCallBB =
+        llvm::BasicBlock::Create(ctx_, name(".dispose.fn"), fn);
+    builder_.CreateCondBr(
+        builder_.CreateICmpEQ(extract_tag(dispose_fn_val),
+                              builder_.getInt8(TAG_FUNC),
+                              name(".dispose.is_fn")),
+        disposeCallBB, doneBB);
+
+    builder_.SetInsertPoint(disposeCallBB);
     // Hand the dispose frame its own +1 for `self` (same convention as the
     // iter() call in emit_for_open_protocol) — the slot keeps holding its own
     // ref until scope teardown, so this retain is the frame's alone.
@@ -5328,8 +5343,16 @@ struct JIT {
       // Terminator added after callBB so all arms can merge at contBB.
 
       // Not a callable instance: try a class object — `C(args)` dispatches
-      // to its `new`. The constructor builds its own instance, so it takes
-      // no `self` (nil receiver, no retain), matching interp.
+      // to its `new`. This arm does NOT mirror what the executor and the
+      // bytecode lowering do for the same source form: they hand the class
+      // object over as the constructor's receiver (vm.h's Call/CallM, and
+      // lowering.h's emit_invoke), which is where MakeInst reads it back to
+      // set JitObject::cls. Passing no `self` here builds an instance whose
+      // class_of is nil. Both of this helper's callers screen the callee
+      // first — the iterator protocol rejects a non-Function `iter`, and the
+      // dispose emitter skips a non-Function `dispose` — so nothing reaches
+      // it today. A new caller that could must fix this arm rather than
+      // trust it.
       builder_.SetInsertPoint(tryCtorBB);
       auto newMethod = emit_value_call(
           module_->getOrInsertFunction(
