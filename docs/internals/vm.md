@@ -1116,6 +1116,22 @@ the instruction already says, and both engines call the same helpers.
 `tests/test_object_layout.cul` pins the observables each replaced lookup
 decided.
 
+**A class with no declaration still has a meta.** `Range`, the variants
+the runtime returns from `try_recv` and `ws_receive`, and the C++ classes
+a `wrap<T>` declaration binds are all values whose class was never
+written in culebra, and each reaches one anyway: a meta per class held by
+a per-`Runtime` table, pinned, because a table is a root the cycle
+collector cannot see and the trial-deletion pass would otherwise find the
+meta's count fully explained by the instances pointing at it. That is what
+lets every question about identity — the name, `==`, an operator, a
+class-typed parameter, multimethod scoring, trait conformance — read the
+meta and nothing else. A wrapped class keeps two, an owning handle's and a
+borrowing handle's, which differ in `drop` alone, and states on them what
+is true of the class rather than of an instance: which C++ type it is,
+that its instances cannot be sent to another isolate, and that they have
+no fields to enumerate (so `keys()`, `size()`, spread, JSON and the
+display show none of the bookkeeping that reaches the id table).
+
 ### 5.4 Built-in methods are a table
 
 The value-type methods (`'ab'.upper()`, `xs.map(f)`, `it.count()`, …)

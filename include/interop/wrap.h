@@ -197,8 +197,8 @@ struct wrap_param {
       default_tag = TAG_LONG;
       default_data = static_cast<int64_t>(v);
     } else if constexpr (std::is_constructible_v<std::string, V>) {
-      // Interned (immortal, GC-invisible — the same storage a handle's
-      // __foreign__ name uses), so an omitted argument costs no allocation
+      // Interned (immortal, GC-invisible — the same storage a wrapped
+      // class's name lives in), so an omitted argument costs no allocation
       // and needs no rooting.
       default_tag = TAG_STRING;
       default_data =
@@ -277,8 +277,8 @@ struct jit_class_info {
 };
 
 // Generation of a handle, or -1 when it is no longer valid. Both
-// owning (_state_fn + table) and borrowing (_bid + borrow table) read
-// through an indirection — a forged slot misses, never derefs.
+// owning (the class's state fn + the table) and borrowing (_bid + the borrow
+// table) read through an indirection — a forged id misses, never derefs.
 inline int64_t jit_handle_gen(JitObject* h) {
   constexpr size_t npos = static_cast<size_t>(-1);
   if (h->find_slot("_bid") != npos)
@@ -422,6 +422,7 @@ template <class T>
 JitObject* jit_wrapped_meta(bool borrow) {
   auto& t =
       culebra::runtime_substate<WrappedMetas>(culebra::kSlotWrappedMetas);
+  // One entry per (class, which handle kind) — the two differ in `drop`.
   int64_t key = foreign::state_fn_id<T>() * 2 + (borrow ? 1 : 0);
   if (auto it = t.tbl.find(key); it != t.tbl.end()) return it->second;
   // The method closures are unrooted until slotted into the meta, so a
@@ -435,16 +436,12 @@ JitObject* jit_wrapped_meta(bool borrow) {
       meta, "drop", borrow ? &jit_borrow_drop_thunk<T> : &jit_drop_thunk<T>, 0);
   meta->is_class_meta = true;
   meta->specials = new JitSpecialTable();
-  // Interned: the meta outlives whatever storage jit_class_info<T>::name is
-  // in, and every question about a handle's identity compares the pointer.
+  // What is true of the class rather than of one instance of it. The name is
+  // interned: it outlives whatever storage jit_class_info<T>::name is in, and
+  // identity compares the pointer.
   meta->specials->name = _intern_str(jit_class_info<T>::name);
-  // A handle's slots are how it reaches the C++ instance, not fields the
-  // program put there: they stay out of keys() / size() / spread / JSON /
-  // the display, which have nothing else of the instance to show.
-  meta->specials->opaque_instances = true;
-  // A handle reaches a C++ object this thread owns, so it cannot be sent;
-  // and which C++ type it is, is what the class knows.
-  meta->specials->nonsendable_instances = true;
+  meta->specials->opaque_instances = true;  // its state is in C++, not in slots
+  meta->specials->nonsendable_instances = true;  // it reaches this thread
   meta->specials->foreign_state_fn = foreign::state_fn_id<T>();
   // The method set is fixed from here on — resolve the specials table and
   // the `drop` gate once, as a declared class's meta does.

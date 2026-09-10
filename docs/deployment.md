@@ -833,9 +833,16 @@ produces standalone AOT binaries that carry the binding.
 
 A wrapped instance answers to its class the way any other instance does:
 `type_of(v)` is the declared name (`'Vec2'`), a `v: Vec2` parameter
-accepts it, and its methods come from the class rather than from the
-instance — so what a trait asks of it is what the declaration actually
-provides, and `keys()` shows only the handle's own bookkeeping.
+accepts it (an object cannot claim the name by spelling a field — it
+comes from the class that built the value), and its methods come from
+the class, so what a trait asks of it is the method set the declaration
+provides.
+
+Its state is in C++, not in fields, and nothing pretends otherwise:
+`keys()` is empty, `size()` is 0, spread copies nothing, `JSON.stringify`
+gives `{}`, and the display is the class name and an empty body. Declare
+a method as `__str__` to say more than that. The instance cannot cross
+an isolate (`SendError`): it reaches an object the sending thread owns.
 
 A wrapped C++ body that throws — ctor, method or static — does not escape
 the process: a `std::exception` surfaces as a catchable `RuntimeError`
