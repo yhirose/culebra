@@ -3308,6 +3308,31 @@ inline int multifn_specificity(std::string_view param_type, ArgType arg) {
   return -1;
 }
 
+// Can this annotation reach the `lookup_trait` branch above? Mirrors the
+// decomposition arm for arm — kept here so a new arm there is a line away
+// from the answer. A dispatcher warms the conformance cache only for tables
+// where this is true, and the trait branch reads that cache read-only, so a
+// shallower test (is the whole annotation a trait name?) would stop warming
+// for a trait spelled inside a union and mis-score class instances there.
+inline bool param_type_mentions_trait(std::string_view t) {
+  if (t.empty() || t == "Any") return false;
+  if (has_toplevel_pipe(t)) {
+    for (auto cand : split_union_types(t))
+      if (param_type_mentions_trait(cand)) return true;
+    return false;
+  }
+  if (has_toplevel_plus(t)) {
+    for (auto part : split_intersection_types(t))
+      if (param_type_mentions_trait(part)) return true;
+    return false;
+  }
+  if (is_fn_type(t)) return false;
+  if (t.back() == '?') return param_type_mentions_trait(t.substr(0, t.size() - 1));
+  if (t.find('<') != std::string_view::npos)
+    return param_type_mentions_trait(parse_generic_head(t).outer);
+  return lookup_trait(t) != nullptr;
+}
+
 // Pick the most specific matching entry. Returns:
 //   idx >= 0  : matching entry index
 //   -1        : no match
