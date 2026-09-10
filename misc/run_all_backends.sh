@@ -71,7 +71,19 @@ if [ "$build_rc" -eq 0 ]; then
   if [ "$out" = "$expected" ]; then
     echo "${label}_AOT_PASS"
   else
-    note_failure "${label}_AOT_RUN_FAIL" "$rc" "$out${imports:+ | imports: $imports}"
+    detail="$out${imports:+ | imports: $imports}"
+    # A binary that produced nothing has not said whether it ran. Ask the two
+    # questions its silence leaves open: how big it is (a link that emitted a
+    # stub answers here), and what Windows itself makes of it — cmd.exe
+    # reports the process's own exit status, where the msys layer reports its
+    # spawn's, and 127 from one with 0 from the other is a launch that never
+    # happened rather than a program that failed.
+    if [ "${OS:-}" = "Windows_NT" ]; then
+      native=$(cmd //c "$(basename "$aot")" 2>&1); native_rc=$?
+      echo "native_out=[$native] native_rc=$native_rc"
+      detail="$detail | size: $(wc -c < "$aot" 2>/dev/null) | native rc=$native_rc out=[$native]"
+    fi
+    note_failure "${label}_AOT_RUN_FAIL" "$rc" "$detail"
     fail=1
   fi
 else
