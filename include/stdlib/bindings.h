@@ -8270,16 +8270,15 @@ inline bool is_segmenter(JitValue v) {
              static_cast<size_t>(-1);
 }
 
-// The class name a wrapped handle shows (`__foreign__`), for an index's
-// shape. Empty when `v` is not such a handle.
+// The class name a wrapped handle shows, for an index's shape. Empty when
+// `v` is not such a handle — every wrapped class declares its instances
+// opaque (wrap.h), which is what tells one apart from a declared class's.
 inline std::string foreign_class_name(JitValue v) {
   if (v.tag != TAG_OBJECT) return {};
   auto* h = reinterpret_cast<JitObject*>(v.data);
-  if (h->find_slot("__foreign__") == static_cast<size_t>(-1)) return {};
-  int8_t tag = TAG_NIL;
-  int64_t data = 0;
-  culebra_runtime_object_get(h, "__foreign__", &tag, &data);
-  return std::string(_culebra_str_view(tag, data));
+  if (!_jit_meta_opaque(h)) return {};
+  const char* name = _jit_meta_class_name(h);
+  return name ? std::string(name) : std::string();
 }
 
 // A wrapped C++ splitter in the analyzer's `splitter` slot: a handle of a

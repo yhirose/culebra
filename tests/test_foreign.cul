@@ -262,19 +262,30 @@ assert_eq(__Foreign.Counter.live(), 0)
 }
 assert_eq(__Foreign.Counter.live(), 0)
 
-# --- A handle built by hand from script-writable slots (no real table
-# entry) is ClosedError, not a crash: the id table miss is the only thing
-# that ever runs, never a raw pointer read. ---
+# --- An object cannot name itself a wrapped class: the name comes from the
+# meta its class built, and writing slots does not give an object one. A
+# hand-built lookalike is a TypeError at the parameter, before the wrapped
+# body runs. (Were one to get past that, the id it carries still resolves
+# through the table — a miss, never a raw pointer read.) ---
 {
   let c = __Foreign.Counter.new(1)
-  let forged = {__foreign__: 'Counter', _id: 999999}
+  let forged = {_id: 999999}
   mut kind = nil
   try {
     c.merge(forged)
   } catch e {
     kind = e.kind
   }
-  assert_eq(kind, 'ClosedError')
+  assert_eq(kind, 'TypeError')
+  # Nor does wearing a real handle's slots: spread copies no meta.
+  let copied = {...c}
+  mut kind2 = nil
+  try {
+    c.merge(copied)
+  } catch e {
+    kind2 = e.kind
+  }
+  assert_eq(kind2, 'TypeError')
   c.drop()
 }
 assert_eq(__Foreign.Counter.live(), 0)

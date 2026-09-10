@@ -463,10 +463,6 @@ JitValue jit_make_handle(int64_t id) {
   culebra::gc::Heap::CollectPause pause(_gc_heap());
   auto* h = culebra_runtime_object_new();
   jit_handle_set_meta(h, jit_wrapped_meta<T>(/*borrow=*/false));
-  h->set_or_append("__foreign__",
-                   JitValue{TAG_STRING, reinterpret_cast<int64_t>(_intern_str(
-                                            jit_class_info<T>::name))},
-                   false);
   h->set_or_append("_id", JitValue{TAG_LONG, id}, false);
   h->set_or_append("_state_fn",
                    JitValue{TAG_LONG, foreign::state_fn_id<T>()}, false);
@@ -489,10 +485,6 @@ JitValue jit_make_borrow_handle(T2* p, JitValue parent, int64_t pgen) {
 
   auto* h = culebra_runtime_object_new();
   jit_handle_set_meta(h, jit_wrapped_meta<T2>(/*borrow=*/true));
-  h->set_or_append("__foreign__",
-                   JitValue{TAG_STRING, reinterpret_cast<int64_t>(_intern_str(
-                                            jit_class_info<T2>::name))},
-                   false);
   h->set_or_append("_bid", JitValue{TAG_LONG, bid}, false);
   culebra_runtime_value_retain(parent.tag, parent.data);
   h->set_or_append("__parent__", parent, false);
