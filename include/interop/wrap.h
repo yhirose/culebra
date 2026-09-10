@@ -51,7 +51,6 @@
 #include <string>
 #include <tuple>
 #include <type_traits>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -402,66 +401,46 @@ void jit_borrow_drop_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_
 // true of the instance. Owning and borrowing handles differ in `drop` alone,
 // so there are two per class.
 //
-// Per Runtime and pinned, like every other meta a value with no declaration
-// reaches (_jit_native_meta): a table is a root the cycle collector cannot
-// see, and the trial-deletion pass would otherwise find the meta's count
-// fully explained by the instances pointing at it and condemn it out from
-// under them.
-struct WrappedMetas {
-  std::unordered_map<int64_t, JitObject*> tbl;
-  ~WrappedMetas() {
-    for (auto& [_, meta] : tbl) {
-      _gc_heap().unpin(meta);
-      _culebra_value_release_impl(TAG_OBJECT,
-                                  reinterpret_cast<int64_t>(meta));
-    }
-  }
-};
-
+// Per Runtime and pinned for the reason _jit_native_meta states, and returning
+// +1 the way it does — the caller transfers it into the instance's `proto`.
 template <class T>
 JitObject* jit_wrapped_meta(bool borrow) {
-  auto& t =
-      culebra::runtime_substate<WrappedMetas>(culebra::kSlotWrappedMetas);
+  auto& t = culebra::runtime_substate<_JitPinnedMetas<int64_t>>(
+      culebra::kSlotWrappedMetas);
   // One entry per (class, which handle kind) — the two differ in `drop`.
   int64_t key = foreign::state_fn_id<T>() * 2 + (borrow ? 1 : 0);
-  if (auto it = t.tbl.find(key); it != t.tbl.end()) return it->second;
-  // The method closures are unrooted until slotted into the meta, so a
-  // GC_STRESS collect mid-build would sweep them.
-  culebra::gc::Heap::CollectPause pause(_gc_heap());
-  auto* meta = culebra_runtime_object_new();
-  for (const auto& m : jit_class_info<T>::methods) {
-    _jit_handle_bind_method(meta, m.name.c_str(), m.thunk, m.arity, m.meta);
+  auto it = t.tbl.find(key);
+  if (it == t.tbl.end()) {
+    // The method closures are unrooted until slotted into the meta, so a
+    // GC_STRESS collect mid-build would sweep them.
+    culebra::gc::Heap::CollectPause pause(_gc_heap());
+    auto* meta = culebra_runtime_make_variant_meta(
+        jit_class_info<T>::name.c_str(), /*enum_name=*/nullptr);
+    for (const auto& m : jit_class_info<T>::methods) {
+      _jit_handle_bind_method(meta, m.name.c_str(), m.thunk, m.arity, m.meta);
+    }
+    _jit_handle_bind_method(
+        meta, "drop",
+        borrow ? &jit_borrow_drop_thunk<T> : &jit_drop_thunk<T>, 0);
+    // What is true of the class rather than of one instance of it.
+    meta->specials->opaque_instances = true;  // state is in C++, not in slots
+    meta->specials->nonsendable_instances = true;  // it reaches this thread
+    meta->specials->foreign_state_fn = foreign::state_fn_id<T>();
+    // The method set is fixed from here on — resolve the specials table and
+    // the `drop` gate once, as a declared class's meta does.
+    _jit_fill_specials(meta);
+    _gc_heap().pin(meta);
+    it = t.tbl.emplace(key, meta).first;
   }
-  _jit_handle_bind_method(
-      meta, "drop", borrow ? &jit_borrow_drop_thunk<T> : &jit_drop_thunk<T>, 0);
-  meta->is_class_meta = true;
-  meta->specials = new JitSpecialTable();
-  // What is true of the class rather than of one instance of it. The name is
-  // interned: it outlives whatever storage jit_class_info<T>::name is in, and
-  // identity compares the pointer.
-  meta->specials->name = _intern_str(jit_class_info<T>::name);
-  meta->specials->opaque_instances = true;  // its state is in C++, not in slots
-  meta->specials->nonsendable_instances = true;  // it reaches this thread
-  meta->specials->foreign_state_fn = foreign::state_fn_id<T>();
-  // The method set is fixed from here on — resolve the specials table and
-  // the `drop` gate once, as a declared class's meta does.
-  _jit_fill_specials(meta);
-  _gc_heap().pin(meta);
-  return t.tbl.emplace(key, meta).first->second;
-}
-
-// The +1 an instance holds on its meta (released in the JitObject
-// destructor), so a meta outlives every handle that reaches it.
-inline void jit_handle_set_meta(JitObject* h, JitObject* meta) {
-  h->set_proto(meta);
-  meta->refcount++;
+  it->second->refcount++;
+  return it->second;
 }
 
 template <class T>
 JitValue jit_make_handle(int64_t id) {
   culebra::gc::Heap::CollectPause pause(_gc_heap());
   auto* h = culebra_runtime_object_new();
-  jit_handle_set_meta(h, jit_wrapped_meta<T>(/*borrow=*/false));
+  h->set_proto(jit_wrapped_meta<T>(/*borrow=*/false));  // transferred
   h->set_or_append("_id", JitValue{TAG_LONG, id}, false);
   _jit_owned_bind_drop(h);
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
@@ -480,7 +459,7 @@ JitValue jit_make_borrow_handle(T2* p, JitValue parent, int64_t pgen) {
   int64_t bid = foreign::borrow_adopt(p, state, owner_id, parent_bid, pgen);
 
   auto* h = culebra_runtime_object_new();
-  jit_handle_set_meta(h, jit_wrapped_meta<T2>(/*borrow=*/true));
+  h->set_proto(jit_wrapped_meta<T2>(/*borrow=*/true));  // transferred
   h->set_or_append("_bid", JitValue{TAG_LONG, bid}, false);
   culebra_runtime_value_retain(parent.tag, parent.data);
   h->set_or_append("__parent__", parent, false);

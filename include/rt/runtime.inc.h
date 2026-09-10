@@ -1238,7 +1238,7 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
     std::string trait_name(expected);
     auto* obj = reinterpret_cast<JitObject*>(data);
     // The name came from the meta, so the meta is there to answer from.
-    auto& cache = obj->proto()->specials->conformance;
+    auto& cache = *_jit_meta_conformance(obj);
     std::unique_lock lock(culebra::trait_mutex());
     if (cache.gen != culebra::trait_generation()) {
       cache.by_trait.clear();
@@ -2856,9 +2856,11 @@ culebra_runtime_make_variant_meta(const char* variant_name,
 // condemn it out from under them. `enum_name` is null for a plain class.
 // Both names must already be interned — the table keys on the pointers.
 // Returns +1 (transferable, like make_variant_meta).
-struct _JitNativeMetas {
-  std::map<std::pair<const char*, const char*>, JitObject*> tbl;
-  ~_JitNativeMetas() {
+extern "C++" {  // a template cannot have C linkage; we sit in extern "C"
+template <class Key>
+struct _JitPinnedMetas {
+  std::map<Key, JitObject*> tbl;
+  ~_JitPinnedMetas() {
     for (auto& [_, meta] : tbl) {
       _gc_heap().unpin(meta);
       _culebra_value_release_impl(TAG_OBJECT,
@@ -2866,6 +2868,8 @@ struct _JitNativeMetas {
     }
   }
 };
+using _JitNativeMetas = _JitPinnedMetas<std::pair<const char*, const char*>>;
+}  // extern "C++"
 
 inline JitObject* _jit_native_meta(const char* name, const char* enum_name) {
   auto& t = culebra::runtime_substate<_JitNativeMetas>(

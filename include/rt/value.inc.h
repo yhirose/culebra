@@ -675,33 +675,40 @@ static_assert(sizeof(JitObject) <= 128 && !std::is_polymorphic_v<JitObject>);
 // `proto`: the class that built it, and — on an enum variant — the enum
 // that declares it. Null for a plain Object, which has no meta and so no
 // name to be given by writing to it.
+// What a value's class states about itself, or null when it has no class:
+// every question below reaches it through the one guard.
+inline JitSpecialTable* _jit_meta_specials(JitObject* obj) {
+  auto* m = obj->proto();
+  return (m && m->is_class_meta) ? m->specials : nullptr;
+}
 inline const char* _jit_meta_class_name(JitObject* obj) {
-  auto* m = obj->proto();
-  return (m && m->is_class_meta && m->specials) ? m->specials->name : nullptr;
+  auto* sp = _jit_meta_specials(obj);
+  return sp ? sp->name : nullptr;
 }
-// Whether this value's class declares its instances to have no fields to
-// enumerate (JitSpecialTable::opaque_instances) — the one question every
-// listing of an object's properties asks before it walks them.
+// Whether the class declares its instances to have no fields to enumerate —
+// the one question every listing of an object's properties asks first.
 inline bool _jit_meta_opaque(JitObject* obj) {
-  auto* m = obj->proto();
-  return m && m->is_class_meta && m->specials && m->specials->opaque_instances;
+  auto* sp = _jit_meta_specials(obj);
+  return sp && sp->opaque_instances;
 }
-// Whether this value's class declares its instances non-Sendable.
+// Whether the class declares its instances non-Sendable.
 inline bool _jit_meta_nonsendable(JitObject* obj) {
-  auto* m = obj->proto();
-  return m && m->is_class_meta && m->specials &&
-         m->specials->nonsendable_instances;
+  auto* sp = _jit_meta_specials(obj);
+  return sp && sp->nonsendable_instances;
 }
 // The wrapped C++ type behind this value, as its state-fn id, or -1.
 inline int64_t _jit_meta_foreign_state_fn(JitObject* obj) {
-  auto* m = obj->proto();
-  return (m && m->is_class_meta && m->specials) ? m->specials->foreign_state_fn
-                                                : -1;
+  auto* sp = _jit_meta_specials(obj);
+  return sp ? sp->foreign_state_fn : -1;
+}
+// The class's trait-conformance cache, or null when it has no class.
+inline culebra::TraitConformance* _jit_meta_conformance(JitObject* obj) {
+  auto* sp = _jit_meta_specials(obj);
+  return sp ? &sp->conformance : nullptr;
 }
 inline const char* _jit_meta_enum_name(JitObject* obj) {
-  auto* m = obj->proto();
-  return (m && m->is_class_meta && m->specials) ? m->specials->enum_name
-                                                : nullptr;
+  auto* sp = _jit_meta_specials(obj);
+  return sp ? sp->enum_name : nullptr;
 }
 
 // culebra_runtime_build_class_meta's flag bits (Chunk::name_table_flags).

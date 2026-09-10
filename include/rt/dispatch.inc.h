@@ -1200,7 +1200,7 @@ inline culebra::ArgType _jit_value_arg_type(JitValue v) {
       // Carry the class's conformance cache along: scoring a trait param
       // reads it, and only the value knows which class this name is.
       return {cls, _jit_enum_name(obj).value_or(std::string_view{}),
-              &obj->proto()->specials->conformance};
+              _jit_meta_conformance(obj)};
     }
   }
   return {"Object", {}};

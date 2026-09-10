@@ -24,6 +24,7 @@ assert_eq(__Foreign.Counter.live(), 0)
   assert_eq(c.keys(), [])
   assert_eq(c.size(), 0)
   assert_eq(JSON.stringify(c), '{}')
+  assert_eq(TOML.stringify(c), '')  # every serializer, not just the first
   assert_eq({...c}, {})
   assert_eq(to_string(c), 'Counter {}')
   assert_true(c._id != nil)  # readable by name: not enumerable is not absent
@@ -293,15 +294,6 @@ assert_eq(__Foreign.Counter.live(), 0)
     kind = e.kind
   }
   assert_eq(kind, 'TypeError')
-  # Nor does wearing a real handle's slots: spread copies no meta.
-  let copied = {...c}
-  mut kind2 = nil
-  try {
-    c.merge(copied)
-  } catch e {
-    kind2 = e.kind
-  }
-  assert_eq(kind2, 'TypeError')
   c.drop()
 }
 assert_eq(__Foreign.Counter.live(), 0)

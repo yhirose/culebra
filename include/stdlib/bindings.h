@@ -7365,7 +7365,7 @@ inline culebra::toml::Node _jit_to_toml_node(int8_t tag, int64_t data,
             "TOML.stringify: Object has non-String keys", line, col);
       }
       N t = N::table();
-      if (obj->shape) {
+      if (obj->shape && !_jit_meta_opaque(obj)) {
         for (size_t i = 0; i < obj->prop_size(); i++)
           t.set(std::string(obj->prop_name(i)),
                 _jit_to_toml_node(obj->slots[i].value.tag,
@@ -8271,12 +8271,11 @@ inline bool is_segmenter(JitValue v) {
 }
 
 // The class name a wrapped handle shows, for an index's shape. Empty when
-// `v` is not such a handle — every wrapped class declares its instances
-// opaque (wrap.h), which is what tells one apart from a declared class's.
+// `v` is not such a handle — only a wrapped class carries a C++ type.
 inline std::string foreign_class_name(JitValue v) {
   if (v.tag != TAG_OBJECT) return {};
   auto* h = reinterpret_cast<JitObject*>(v.data);
-  if (!_jit_meta_opaque(h)) return {};
+  if (_jit_meta_foreign_state_fn(h) < 0) return {};
   const char* name = _jit_meta_class_name(h);
   return name ? std::string(name) : std::string();
 }
