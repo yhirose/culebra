@@ -9,7 +9,7 @@ culebra は個人の趣味プロジェクト（プログラミング言語処理
 - 会話・計画・進捗報告・エラー説明はすべて**日本語**。
 - コード内コメントは既存スタイルに合わせて**英語**のまま。
 - **コミットメッセージは英語**。GitHub PR の title/body・issue・PR コメントなど公開コンテンツも英語。
-- コミットメッセージに `Co-Authored-By: Claude ...` 等の trailer や Generated-with バナーは**絶対に追加しない**（amend/squash でも同様）。
+- コミットメッセージ・PR 本文に Claude 由来の trailer（`Co-Authored-By: Claude ...`、`Claude-Session: ...` など）や Generated-with バナーは**絶対に追加しない**（amend/squash でも同様）。ハーネスが注入してくる形式は変わるので、名前ではなく「Claude 由来のメタ情報」という範囲で判断する。`includeCoAuthoredBy: false` はこのうち `Co-Authored-By` 一行しか止めないので、この規則が本体。
 - 日本語 docs（`docs/*.ja.md` など）の半角スペース規則は `.claude/rules/japanese-docs-spacing.md` を参照（該当ファイルを触るときのみ自動ロード）。
 
 ## 作業フロー: worktree 必須（例外なし）
