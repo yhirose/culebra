@@ -1,0 +1,79 @@
+// A trait-typed parameter is scored from the conformance cache, and the
+// dispatcher only warms that cache for tables that declare one. Finding the
+// declaration means walking the annotation the way multifn_specificity does:
+// a trait can sit inside a union, behind `?`, or as a generic bound, not just
+// spelled bare. A shallower answer ("is the whole annotation a trait name?")
+// stops warming for those shapes and mis-scores class-instance arguments.
+//
+// The cache is per-run and keyed by class, so each shape needs its OWN class:
+// score any trait against a class once and every later shape rides that entry,
+// which hides exactly the bug this file is here to catch.
+
+trait Greet {
+  hello() -> String
+}
+
+class Bare {
+  hello() {
+    'bare'
+  }
+}
+class Inside {
+  hello() {
+    'inside'
+  }
+}
+class Maybe {
+  hello() {
+    'maybe'
+  }
+}
+class Bound {
+  hello() {
+    'bound'
+  }
+}
+class Mute {
+  nothing() {
+    0
+  }
+}
+
+// Inside a union.
+fn u(x: Long | Greet) {
+  'union'
+}
+fn u(x) {
+  'plain'
+}
+assert_eq(u(Inside.new()), 'union')
+assert_eq(u(Mute.new()), 'plain')
+
+// Behind `?`.
+fn opt(x: Greet?) {
+  'opt'
+}
+fn opt(x) {
+  'plain'
+}
+assert_eq(opt(Maybe.new()), 'opt')
+assert_eq(opt(nil), 'opt')
+assert_eq(opt(Mute.new()), 'plain')
+
+// As a generic bound.
+fn g<T: Greet>(x: T) {
+  x.hello()
+}
+assert_eq(g(Bound.new()), 'bound')
+
+// Bare, the shape every other trait test already covers -- last, so it cannot
+// warm the cache for the ones above.
+fn describe(x: Greet) {
+  'greeter'
+}
+fn describe(x) {
+  'plain'
+}
+assert_eq(describe(Bare.new()), 'greeter')
+assert_eq(describe(Mute.new()), 'plain')
+assert_eq(describe(42), 'plain')

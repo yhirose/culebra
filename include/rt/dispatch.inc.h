@@ -1224,6 +1224,42 @@ inline int64_t _jit_multifn_pick(
       });
 }
 
+// Can this declared parameter type reach `lookup_trait` in
+// multifn_specificity? Mirrors that function's decomposition arm for arm —
+// union, composite bound, `fn(...)`, `T?`, generic outer — so the warm-up
+// runs exactly when the scorer has a conformance cache to read.
+inline bool _jit_param_type_mentions_trait(std::string_view t) {
+  if (t.empty() || t == "Any") return false;
+  if (culebra::has_toplevel_pipe(t)) {
+    for (auto cand : culebra::split_union_types(t))
+      if (_jit_param_type_mentions_trait(cand)) return true;
+    return false;
+  }
+  if (culebra::has_toplevel_plus(t)) {
+    for (auto part : culebra::split_intersection_types(t))
+      if (_jit_param_type_mentions_trait(part)) return true;
+    return false;
+  }
+  if (culebra::is_fn_type(t)) return false;
+  if (t.back() == '?')
+    return _jit_param_type_mentions_trait(t.substr(0, t.size() - 1));
+  if (t.find('<') != std::string_view::npos)
+    return _jit_param_type_mentions_trait(culebra::parse_generic_head(t).outer);
+  return culebra::lookup_trait(t) != nullptr;
+}
+
+// Does any overload in this table declare a trait-typed parameter? Asked per
+// resolve rather than cached: the table is a handful of entries with a
+// handful of parameters, and a cache would have to be invalidated by trait
+// registration, which can happen after the table is built.
+inline bool _jit_multifn_wants_trait_warmup(
+    const std::vector<JitMultiMethodEntry>& methods) {
+  for (const auto& m : methods)
+    for (const auto& t : m.param_types)
+      if (_jit_param_type_mentions_trait(t)) return true;
+  return false;
+}
+
 // Recover (body, name) for a multifn dispatcher closure given the
 // positional arg types. Throws DispatchError on no-match / ambiguous;
 // `release` runs before every throw, letting the kwargs-path caller
@@ -1260,10 +1296,20 @@ inline MultifnPick _jit_multifn_resolve(
   // Pre-populate trait conformance cache so multifn_specificity can
   // score `fn show(x: Stringer)` style trait params without holding
   // the arg instances. Mirrors interp's pick_method warm-up.
-  for (const auto& trait_name : culebra::snapshot_trait_names()) {
-    for (size_t i = 0; i < arg_types.size(); i++) {
-      (void)_culebra_type_matches_single(positional[i].tag,
-                                          positional[i].data, trait_name);
+  //
+  // Only the tables that can actually reach that cache: snapshot_trait_names
+  // is written for "trait-free programs have an empty registry", but the
+  // preamble registers the built-in traits, so the registry is never empty
+  // and every typed `fn name` call ran the whole sweep — a locked snapshot
+  // that copies every trait name, then a type_matches per name per argument.
+  // It measured 423 ns per call, three quarters of what a typed declaration
+  // costs over an untyped one.
+  if (_jit_multifn_wants_trait_warmup(m_it->second)) {
+    for (const auto& trait_name : culebra::snapshot_trait_names()) {
+      for (size_t i = 0; i < arg_types.size(); i++) {
+        (void)_culebra_type_matches_single(positional[i].tag,
+                                            positional[i].data, trait_name);
+      }
     }
   }
   auto pick = _jit_multifn_pick(m_it->second, arg_types, kwarg_keys);
