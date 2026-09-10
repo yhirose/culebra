@@ -1752,6 +1752,34 @@ jobs:
               break
             fi
           done
+          # A section is a braced block, so no prefix of one parses — drill in
+          # by operation instead: the same handle, one thing done to it, each
+          # a whole program. Whichever stops printing is the operation the
+          # binary cannot carry.
+          echo "=== by operation ==="
+          i=0
+          while IFS= read -r op; do
+            [ -n "$op" ] || continue
+            i=$((i + 1))
+            printf 'let c = __Foreign.Counter.new(1)\n%s\nc.drop()\nprint("ok")\n' \
+              "$op" > "op_$i.cul"
+            ./build-win-aot/culebra.exe build "op_$i.cul" -o "op_$i.exe" \
+              > /dev/null 2>&1
+            if [ $? -ne 0 ]; then echo "op $i BUILD_FAIL: $op"; continue; fi
+            out=$(timeout 60 "./op_$i.exe" 2>&1); rc=$?
+            echo "op $i: rc=$rc out=[$out] <- $op"
+            [ "$out" = "ok" ] || printf '::error::AOT cannot run: %s (rc=%s out=[%s])\n' \
+              "$(printf '%s' "$op" | sed 's/%/%25/g')" "$rc" "$out"
+          done <<'OPS'
+          assert_eq(type_of(c), 'Counter')
+          assert_eq(c.value(), 1)
+          assert_eq(c.keys(), [])
+          assert_eq(c.size(), 0)
+          assert_eq(JSON.stringify(c), '{}')
+          assert_eq({...c}, {})
+          assert_eq(to_string(c), 'Counter {}')
+          assert_true(c._id != nil)
+          OPS
       # What the window backend adds, through all three backends: a window build
       # forced headless must behave exactly like a headless one. It names
       # `_Canvas`, which the AOT scan does not match against the `Canvas` axis,
