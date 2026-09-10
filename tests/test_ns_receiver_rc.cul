@@ -18,13 +18,13 @@ for _ in range(200) {
 }
 assert_eq(GC.refcount(CodeGen.Module), mod_base)
 
-// A wrapped static, the other shape that reaches the trampoline with a
-// receiver.
-let img_base = GC.refcount(Scene.Image)
+// A ctor that takes an argument, the other shape reaching the trampoline
+// with a receiver.
+let box_base = GC.refcount(__Foreign.Box)
 for _ in range(200) {
-  Scene.Image.new(2, 2)
+  __Foreign.Box.new(1)
 }
-assert_eq(GC.refcount(Scene.Image), img_base)
+assert_eq(GC.refcount(__Foreign.Box), box_base)
 
 // The throwing paths hand the receiver over the same way, and unwinding it
 // twice would free the namespace object out from under the program. Arity,
@@ -33,22 +33,22 @@ assert_eq(GC.refcount(Scene.Image), img_base)
 let rs_base = GC.refcount(CodeGen.Resolver)
 for _ in range(50) {
   assert_throws('ArityError', fn () {
-    Scene.Image.new(2)
+    __Foreign.Box.new()
   })
   assert_throws('TypeError', fn () {
-    Scene.Image.new('a', 'b')
+    __Foreign.Box.new('a')
   })
   assert_throws('TypeError', fn () {
-    Scene.Image.new(w: 2, h: 2)
+    __Foreign.Box.new(start: 1)
   })
   assert_throws('ArityError', fn () {
     CodeGen.Resolver.new(1)
   })
 }
-assert_eq(GC.refcount(Scene.Image), img_base)
+assert_eq(GC.refcount(__Foreign.Box), box_base)
 assert_eq(GC.refcount(CodeGen.Resolver), rs_base)
 // Still usable — an over-release would have freed it by now.
-assert_eq(Scene.Image.new(2, 2).width(), 2.0)
+assert_eq(type_of(__Foreign.Box.new(2)), type_of(__Foreign.Box(2)))
 
 // A value that carries no reference count has none to report — Strings are
 // traced rather than counted, and the rest are immediates.
