@@ -99,7 +99,7 @@ fn cmp_name(tok) {
 # starts from nothing rather than inheriting another compile's leftovers.
 class Binder {
   blocks = []                  # {parent, name, consts, var_slot, var_names, procs, children, body}
-  rs = CodeGen.Resolver.new()  # blocks and its funcs share indices: collect registers both
+  rs = CodeGen.Resolver()  # blocks and its funcs share indices: collect registers both
   m = nil                      # the Module, once build has one
 
   # --- Phase 1: collect declarations -----------------------------------------
@@ -478,7 +478,7 @@ try {
   # `program <- _ block '.' _` folds to a single child, so the root that
   # arrives is the block itself -- same fact pl0.cul's own driver leans on.
   let tree = PEG.parse(grammar, FS.read(args[0]), path: args[0])
-  let m = Binder().build(CodeGen.Module.new(), tree)
+  let m = Binder().build(CodeGen.Module(), tree)
   m.verify()
   cond {
     want_ir => print(m.dump_ir()),

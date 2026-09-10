@@ -23,7 +23,7 @@ let html = """
 </html>
 """
 
-let w = Webview.Window.new()
+let w = Webview.Window()
 w.set_title("Hello from culebra")
 w.set_size(640, 480)
 w.set_html(html)

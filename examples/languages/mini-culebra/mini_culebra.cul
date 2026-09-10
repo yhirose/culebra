@@ -11408,7 +11408,7 @@ for path in cli {
   # Positions repeat across programs, so nothing keyed by position -- and
   # no per-function table -- may survive from one compile into the next.
   funcs = []
-  rs = CodeGen.Resolver.new()
+  rs = CodeGen.Resolver()
   fn_scopes = []
   slot_var = []
   var_mut = {}
@@ -11443,7 +11443,7 @@ for path in cli {
   traits = {}
   try {
     let tree = PEG.parse(grammar, FS.read(path), path: path)
-    let m = CodeGen.Module.new()
+    let m = CodeGen.Module()
     ir = m
     build(m, prelude_tree, tree)
     m.verify()

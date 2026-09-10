@@ -2545,7 +2545,7 @@ mut for_close = {}  # pkey of a for-of -> {func: the closer, slot: its iterator 
 # its names bind in: CodeGen.Resolver, from the standard library. A variable
 # is an id it hands out rather than a (function, slot) pair -- `var_slot`
 # answers the slot where a lowering needs the number itself.
-let rs = CodeGen.Resolver.new()
+let rs = CodeGen.Resolver()
 # The Resolver keeps one scope stack for the whole walk; functions nest on it
 # because walk_fn enters a function's scope and leaves it around the body.
 # `scope_base[f]` is where f's own scopes start, which is what a `var` hoist
@@ -5971,7 +5971,7 @@ for path in cli {
       inspect(tree)
       continue
     }
-    let m = CodeGen.Module.new()
+    let m = CodeGen.Module()
     ir = m
     build(m, tree)
     m.verify()

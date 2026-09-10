@@ -939,7 +939,7 @@ fn spawn(caller, g, at) {
 # which is the one CodeGen runs.
 fn build(mm, root) {
   m = mm
-  rs = CodeGen.Resolver.new()
+  rs = CodeGen.Resolver()
   let boot = new_func('$entry', root)
   collect(root)
   chan_runtime()
@@ -1022,7 +1022,7 @@ if args.empty() {
 
 try {
   let tree = PEG.parse(grammar, FS.read(args[0]), path: args[0])
-  let m2 = build(CodeGen.Module.new(), tree)
+  let m2 = build(CodeGen.Module(), tree)
   m2.verify()
   cond {
     want_ir => print(m2.dump_ir()),

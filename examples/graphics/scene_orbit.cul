@@ -8,7 +8,7 @@
 
 let max_frames = !Sys.argv.empty() ? to_long(Sys.argv[0]) : -1
 
-let view = Scene.View.new(960, 540, 'Scene orbit')
+let view = Scene.View(960, 540, 'Scene orbit')
 view.target_fps(60)
 view.sky(120, 160, 220, 235, 240, 250)
 view.sun(-0.4, -1.0, -0.3, 3.0, 255, 245, 230)
@@ -29,7 +29,7 @@ view.add_box(3.0, 2.0, 0.05).move(2.5, 1.0, 1.0).material(glass)
 
 # A label: text baked into an image on the CPU, uploaded once, shown on a
 # thin box that turns to face the camera.
-let img = Scene.Image.new(256, 64)
+let img = Scene.Image(256, 64)
 img.fill(20, 24, 40)
 img.text('culebra', 22, 10, 44, 255, 255, 255)
 let label = view.add_material().texture(view.texture(img)).unlit()

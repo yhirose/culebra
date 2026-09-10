@@ -2489,7 +2489,7 @@ fn emit_one_suffix(f, v, sfx) {
 
 fn build(mm, root) {
   m = mm
-  rs = CodeGen.Resolver.new()
+  rs = CodeGen.Resolver()
   root_fn = new_func('main', root, nil)
   enter_scope(root_fn)
   g_var = declare(root_fn, '_ENV', root)
@@ -2579,7 +2579,7 @@ try {
     inspect(tree)
     Sys.exit(0)
   }
-  let mod = build(CodeGen.Module.new(), tree)
+  let mod = build(CodeGen.Module(), tree)
   mod.verify()
   cond {
     want_ir => print(mod.dump_ir()),
