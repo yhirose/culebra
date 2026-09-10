@@ -1635,16 +1635,18 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_mark_class(
 }
 
 // `C(args)` construction: returns the class object's `new` constructor as a
-// borrowed TAG_FUNC JitValue, or Nil for a non-class. Gated on `is_class`
-// (set only by CLASS_DECL) so a plain dict holding a "new" key stays
-// non-callable, matching the interp is_class gate. The constructor needs no
-// `self` (it builds its own instance), so the caller invokes it with a nil
-// receiver — the twin of class_call_method but for the class object itself.
+// borrowed TAG_FUNC JitValue, or Nil for a value that has none. Gated on the
+// two flags the engine sets itself — `is_class` (CLASS_DECL, and the wrapped
+// native classes bindings.h marks) and `is_namespace` (a builtin namespace
+// whose own `new` is a factory: Channel, SharedBuffer, Shared) — so a plain
+// dict holding a "new" key stays non-callable, which is what the gate is
+// for. A namespace without a `new` finds none below and raises the same
+// TypeError as before.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_class_new_method(
     int8_t tag, int64_t data) {
   if (tag != TAG_OBJECT) return {TAG_NIL, 0};
   auto* obj = reinterpret_cast<JitObject*>(data);
-  if (!obj->is_class) return {TAG_NIL, 0};
+  if (!obj->is_class && !obj->is_namespace) return {TAG_NIL, 0};
   if (auto* e = _find_property(obj, "new")) {
     if (e->value.tag == TAG_FUNC) return e->value;
   }

@@ -658,6 +658,7 @@ single most common transfer mistake.
 |---|---|
 | `if c { a } else { b }` as a value | `c ? a : b` |
 | `if` / `else if` chain yielding a value | one value against constants: `match`; unrelated conditions: `cond` |
+| `ClassName.new(...)` | `ClassName(...)` — a `class`-defined type is callable and desugars to its constructor |
 | `"a" + x + "b"` (splicing literal text around a value) | `"a{x}b"` |
 | `i = i + 1` | `i += 1` |
 | `x.size() == 0` / `> 0` | `x.empty()` / `!x.empty()` |
@@ -680,6 +681,12 @@ single most common transfer mistake.
 `cond` is a `match` with no subject, so a chain of unrelated tests is
 `cond { a > 1 => …, b < 2 => …, _ => … }`. A loop that must report
 whether it finished takes a `nobreak` block instead of a flag.
+
+This holds for every constructor the library documents, not just the
+types written in Culebra: `Scene.Image(4, 4)` and `Channel()` are the
+same calls as `Scene.Image.new(4, 4)` and `Channel.new()`. The index in
+section 4 still spells each one `.new(...)`, since that is the method
+being described.
 
 ## 4. Signature index
 

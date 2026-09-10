@@ -94,4 +94,90 @@ try {
 }
 assert_eq(bad, true)
 
+// --- native classes construct the same way as `class` ones ---
+// A wrapped class (wrap.h) with a registered ctor is callable, so the rule
+// has no exceptions: anything with a documented `.new(...)` also answers to
+// `X(...)`. Instances are native handles compared by identity, so the two
+// spellings are equivalent in what they build, not in `==`.
+assert_eq(type_of(CodeGen.Module()), type_of(CodeGen.Module.new()))
+assert_eq(CodeGen.Module() == CodeGen.Module.new(), false)
+assert_eq(Scene.Image(4, 4).width(), Scene.Image.new(4, 4).width())
+assert_eq(type_of(CodeGen.Resolver()), type_of(CodeGen.Resolver.new()))
+
+// A builtin namespace whose own `new` is a factory answers too — without
+// becoming a class (see the type_of block below).
+let (tx, rx) = Channel()
+tx.send(7)
+assert_eq(rx.recv(), 7)
+assert_eq(type_of(Shared(42)), "Object")
+
+// Both spellings reject keyword arguments identically: a wrapped ctor
+// declares parameter names but takes positionals only. Frozen so the
+// sugar can never drift from `.new` on this.
+let mut kw_sugar = false
+try {
+  let _ = Scene.Image(w: 4, h: 4)
+} catch e {
+  kw_sugar = true
+}
+let mut kw_new = false
+try {
+  let _ = Scene.Image.new(w: 4, h: 4)
+} catch e {
+  kw_new = true
+}
+assert_eq(kw_sugar, kw_new)
+assert_eq(kw_sugar, true)
+
+// The `Function` boundary above holds for native classes too.
+let mut map_native = false
+try {
+  let _ = [1].map(CodeGen.Module)
+} catch e {
+  map_native = true
+}
+assert_eq(map_native, true)
+
+// --- what is a class, and what merely constructs ---
+// A type reports 'Class'; a namespace stays 'Object' even though calling it
+// now works. A wrapped class with no ctor is a handle you get from a
+// factory, so it is neither callable nor a class.
+assert_eq(type_of(CodeGen.Module), "Class")
+assert_eq(type_of(Scene.Image), "Class")
+assert_eq(type_of(Channel), "Object")
+assert_eq(type_of(Math), "Object")
+assert_eq(type_of(Scene.Texture), "Object")
+
+// A namespace with no `new` is unchanged: same TypeError as before.
+let mut ns_threw = false
+try {
+  Math()
+} catch e {
+  ns_threw = true
+}
+assert_eq(ns_threw, true)
+let mut noctor = false
+try {
+  Scene.Texture()
+} catch e {
+  noctor = true
+}
+assert_eq(noctor, true)
+
+// Lazy preamble modules are ordinary object literals tagged as namespaces
+// after the fact, so a `new:` key added to one would silently make it
+// constructible. None has one today — frozen here so that is a decision.
+for ns in [Time, Term, Canvas, Args, Regex, PEG, FST, Log, Desktop] {
+  assert_eq(ns.has("new"), false)
+}
+
+// Constructing through the sugar hands the class object over as the
+// receiver exactly as `.new` does, so it must not accumulate references
+// either (test_ns_receiver_rc.cul covers the ABI contract itself).
+let rc_base = GC.refcount(CodeGen.Module)
+for _ in range(200) {
+  CodeGen.Module()
+}
+assert_eq(GC.refcount(CodeGen.Module), rc_base)
+
 inspect("test_class_call ok")

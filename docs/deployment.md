@@ -818,13 +818,18 @@ optimized binary (slower build).
 
 ```culebra
 # doctest: skip
-let v = Geo.Vec2.new(3.0, 4.0)
+let v = Geo.Vec2(3.0, 4.0)  # `Geo.Vec2.new(3.0, 4.0)` is the same call
 inspect(v.len())  # => 5
 v.scale(2.0)
 let u = v.unit()  # by-value return -> a NEW owned instance
 v.drop()          # ~Vec2 runs NOW (deterministic)
 v.len()           # !! ClosedError
 ```
+
+Declaring a `ctor` makes the bound name callable, so your type constructs
+the way a `class` does and `type_of(Geo.Vec2)` reports `'Class'`. A type
+you bind without a `ctor` — a handle reachable only from a factory — is
+not callable and stays an ordinary `Object`.
 
 Wrapped instances are resources with the full lifetime model: scope-exit
 deterministic drop (cycles included), an idempotent explicit `drop()`,

@@ -813,13 +813,18 @@ culebra wrap mylib_binding.cpp --link "-L/opt/mylib/lib -lmylib" -o ext-culebra
 
 ```culebra
 # doctest: skip
-let v = Geo.Vec2.new(3.0, 4.0)
+let v = Geo.Vec2(3.0, 4.0)  # `Geo.Vec2.new(3.0, 4.0)`と同じ呼び出し
 inspect(v.len())  # => 5
 v.scale(2.0)
 let u = v.unit()  # 値返し -> 新しい所有インスタンス
 v.drop()          # ~Vec2 が「いま」走る（確定的）
 v.len()           # !! ClosedError
 ```
+
+`ctor`を宣言すると束縛された名前が呼び出し可能になるので、`class`と
+同じ書き方で構築でき、`type_of(Geo.Vec2)`は`'Class'`を返します。
+`ctor`を宣言せずにbindした型 — ファクトリ経由でしか得られないハンドル —
+は呼び出し不可で、通常の`Object`のままです。
 
 ラップされたインスタンスは完全なlifetimeモデルを持つリソースです:
 scope終端の確定drop（循環込み）、冪等な明示`drop()`、use-after-dropの

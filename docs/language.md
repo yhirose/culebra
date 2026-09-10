@@ -1491,6 +1491,13 @@ Semantics:
   name off it, while `c.keys()` reports only the fields (see
   *Enumeration*). An Object cannot be given a class by writing a field:
   `type_of`, `match`, a class-typed parameter and `==` all ask the meta.
+* Calling the class calls its constructor: `Car(5)` is `Car.new(5)`,
+  keyword arguments and all. The rule is stated over the `new` a value
+  carries, not over how the value was written, so it reaches the library's
+  own constructors too — `Vector2(1, 2)`, `Scene.Image(4, 4)`,
+  `Channel()` — and there is no documented `.new(...)` it does not cover.
+  What it does not reach is a plain `Object` with a `new` key: that stays
+  inert, so a dict cannot be made callable by naming a field.
 * Fields created via `self.x = y` inside constructors and methods are
   **mutable by default** (unlike bare `o.x = y`, which creates an
   immutable property). This matches the idiom of classes whose methods

@@ -10140,11 +10140,22 @@ inline JitObject* _jit_build_namespace_object(std::string_view ns_name,
   for (const auto& m : rows) add_method(m);
   for (auto& m : _wrapped_ns_methods()) add_method(m);
   // Wrapped classes with no ctor/static rows still get their (empty)
-  // class sub-object, mirroring the interp's registry walk.
+  // class sub-object, mirroring the interp's registry walk. A `new` among
+  // the rows just added makes one constructible — `Scene.Image(4, 4)` is the
+  // same call as `Scene.Image.new(4, 4)`, as it is for a `class` decl. One
+  // with no ctor (Scene.Texture, a handle you get from a factory) stays
+  // unmarked: a `class` with no `new` hands back an empty instance, and
+  // there is no empty native handle to answer with. Which subs are classes
+  // is the registry's answer, not a member name's, so `Encoding.base64` and
+  // its siblings stay namespaces however they grow.
   for (auto& wc : culebra::wrapped_class_names()) {
     if (ns_name != wc.ns) continue;
-    (void)sub_object(wc.name);
+    auto* so = sub_object(wc.name);
+    if (_find_property(so, "new")) so->is_class = true;
   }
+  // Search.Index is the one class declared as a static row (kNsRows_Search)
+  // rather than through wrap.h, so the registry above does not name it.
+  if (ns_name == "Search") sub_object("Index")->is_class = true;
   for (auto& [name, sub] : subs) {
     obj->append_slot(name, JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(sub)},
                      /*mut=*/false);
