@@ -831,6 +831,12 @@ deterministic drop (cycles included), an idempotent explicit `drop()`,
 and `ClosedError` on use-after-drop. `ext-culebra build script.cul`
 produces standalone AOT binaries that carry the binding.
 
+A wrapped instance answers to its class the way any other instance does:
+`type_of(v)` is the declared name (`'Vec2'`), a `v: Vec2` parameter
+accepts it, and its methods come from the class rather than from the
+instance — so what a trait asks of it is what the declaration actually
+provides, and `keys()` shows only the handle's own bookkeeping.
+
 A wrapped C++ body that throws — ctor, method or static — does not escape
 the process: a `std::exception` surfaces as a catchable `RuntimeError`
 carrying its `what()`, reported at the call like any other error, and a

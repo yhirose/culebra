@@ -11,6 +11,20 @@
 
 assert_eq(__Foreign.Counter.live(), 0)
 
+# --- What a handle carries. Its methods live on the class's meta, which is
+# also where its name comes from, so an instance's own slots are only the
+# bookkeeping that differs per instance. Pinned: a method bound per instance
+# again would cost a closure apiece at construction, and 64 own slots would
+# put the handle in dictionary mode, where it can hold no meta at all. ---
+{
+  let c = __Foreign.Counter.new(1)
+  assert_eq(c.keys(), ['__foreign__', '_id', '_state_fn', '__nonsendable__'])
+  assert_eq(type_of(c), 'Counter')
+  assert_eq(c.value(), 1)  # reached through the meta
+  c.drop()
+}
+assert_eq(__Foreign.Counter.live(), 0)
+
 # --- Construction, methods, marshalling. ---
 {
   let c = __Foreign.Counter.new(10)

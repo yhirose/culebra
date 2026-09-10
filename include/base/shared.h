@@ -2202,6 +2202,12 @@ enum RuntimeSlot : size_t {
   // GC heap and slab are still alive. Per Runtime, not per process: a meta
   // belongs to the heap that allocated it.
   kSlotJitNativeMetas,
+  // The same, for the classes wrap.h declares: one meta per wrapped class
+  // (two — an owning and a borrowing handle differ only in `drop`), holding
+  // the shared method closures every handle of that class reaches through
+  // `proto`. Holds a +1 and a pin on each, so it needs the placement the
+  // registries above have — torn down while the GC heap and slab are alive.
+  kSlotWrappedMetas,
   kSlotShapeRegistry,  // reserved/unused: the Shape intern table is now a
                        // process-global singleton (see jit.h ShapeRegistry) —
                        // Shapes are shared immutable metadata, not isolated heap

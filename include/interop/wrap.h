@@ -51,6 +51,7 @@
 #include <string>
 #include <tuple>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -369,28 +370,6 @@ void jit_drop_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_
   { *__ret = {TAG_NIL, 0}; return; }
 }
 
-template <class T>
-JitValue jit_make_handle(int64_t id) {
-  // Multi-object construction: the method closures are unrooted until
-  // slotted into `h`, so a GC_STRESS collect mid-build would sweep them.
-  culebra::gc::Heap::CollectPause pause(_gc_heap());
-  auto* h = culebra_runtime_object_new();
-  h->set_or_append("__foreign__",
-                   JitValue{TAG_STRING, reinterpret_cast<int64_t>(_intern_str(
-                                            jit_class_info<T>::name))},
-                   false);
-  h->set_or_append("_id", JitValue{TAG_LONG, id}, false);
-  h->set_or_append("_state_fn",
-                   JitValue{TAG_LONG, foreign::state_fn_id<T>()}, false);
-  h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
-  for (const auto& m : jit_class_info<T>::methods) {
-    _jit_handle_bind_method(h, m.name.c_str(), m.thunk, m.arity, m.meta);
-  }
-  _jit_handle_bind_method(h, "drop", &jit_drop_thunk<T>, 0);
-  _jit_owned_bind_drop(h);
-  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
-}
-
 // The borrow id of a JIT parent handle; -1 owner_id / state for a
 // borrowing parent (chained borrow).
 inline void jit_parent_link(JitObject* parent, int64_t* state,
@@ -418,6 +397,80 @@ void jit_borrow_drop_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_
   { *__ret = {TAG_NIL, 0}; return; }
 }
 
+// The one meta every handle of a wrapped class shares. A method thunk is
+// captureless — it reads its state from `self` — so an instance has no reason
+// to carry a copy of the set: it points `proto` at this, the way a class
+// instance points at the meta its declaration built, and carries only what is
+// true of the instance. Owning and borrowing handles differ in `drop` alone,
+// so there are two per class.
+//
+// Per Runtime and pinned, like every other meta a value with no declaration
+// reaches (_jit_native_meta): a table is a root the cycle collector cannot
+// see, and the trial-deletion pass would otherwise find the meta's count
+// fully explained by the instances pointing at it and condemn it out from
+// under them.
+struct WrappedMetas {
+  std::unordered_map<int64_t, JitObject*> tbl;
+  ~WrappedMetas() {
+    for (auto& [_, meta] : tbl) {
+      _gc_heap().unpin(meta);
+      _culebra_value_release_impl(TAG_OBJECT,
+                                  reinterpret_cast<int64_t>(meta));
+    }
+  }
+};
+
+template <class T>
+JitObject* jit_wrapped_meta(bool borrow) {
+  auto& t =
+      culebra::runtime_substate<WrappedMetas>(culebra::kSlotWrappedMetas);
+  int64_t key = foreign::state_fn_id<T>() * 2 + (borrow ? 1 : 0);
+  if (auto it = t.tbl.find(key); it != t.tbl.end()) return it->second;
+  // The method closures are unrooted until slotted into the meta, so a
+  // GC_STRESS collect mid-build would sweep them.
+  culebra::gc::Heap::CollectPause pause(_gc_heap());
+  auto* meta = culebra_runtime_object_new();
+  for (const auto& m : jit_class_info<T>::methods) {
+    _jit_handle_bind_method(meta, m.name.c_str(), m.thunk, m.arity, m.meta);
+  }
+  _jit_handle_bind_method(
+      meta, "drop", borrow ? &jit_borrow_drop_thunk<T> : &jit_drop_thunk<T>, 0);
+  meta->is_class_meta = true;
+  meta->specials = new JitSpecialTable();
+  // Interned: the meta outlives whatever storage jit_class_info<T>::name is
+  // in, and every question about a handle's identity compares the pointer.
+  meta->specials->name = _intern_str(jit_class_info<T>::name);
+  // The method set is fixed from here on — resolve the specials table and
+  // the `drop` gate once, as a declared class's meta does.
+  _jit_fill_specials(meta);
+  _gc_heap().pin(meta);
+  return t.tbl.emplace(key, meta).first->second;
+}
+
+// The +1 an instance holds on its meta (released in the JitObject
+// destructor), so a meta outlives every handle that reaches it.
+inline void jit_handle_set_meta(JitObject* h, JitObject* meta) {
+  h->set_proto(meta);
+  meta->refcount++;
+}
+
+template <class T>
+JitValue jit_make_handle(int64_t id) {
+  culebra::gc::Heap::CollectPause pause(_gc_heap());
+  auto* h = culebra_runtime_object_new();
+  jit_handle_set_meta(h, jit_wrapped_meta<T>(/*borrow=*/false));
+  h->set_or_append("__foreign__",
+                   JitValue{TAG_STRING, reinterpret_cast<int64_t>(_intern_str(
+                                            jit_class_info<T>::name))},
+                   false);
+  h->set_or_append("_id", JitValue{TAG_LONG, id}, false);
+  h->set_or_append("_state_fn",
+                   JitValue{TAG_LONG, foreign::state_fn_id<T>()}, false);
+  h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
+  _jit_owned_bind_drop(h);
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
+}
+
 // Borrowing handle, JIT side — same shape as the interp's: opaque _bid
 // (raw ptr + parent link in the borrow table), __parent__ for liveness,
 // an internal drop that erases the id, registered on the owned stack so
@@ -431,6 +484,7 @@ JitValue jit_make_borrow_handle(T2* p, JitValue parent, int64_t pgen) {
   int64_t bid = foreign::borrow_adopt(p, state, owner_id, parent_bid, pgen);
 
   auto* h = culebra_runtime_object_new();
+  jit_handle_set_meta(h, jit_wrapped_meta<T2>(/*borrow=*/true));
   h->set_or_append("__foreign__",
                    JitValue{TAG_STRING, reinterpret_cast<int64_t>(_intern_str(
                                             jit_class_info<T2>::name))},
@@ -439,10 +493,6 @@ JitValue jit_make_borrow_handle(T2* p, JitValue parent, int64_t pgen) {
   culebra_runtime_value_retain(parent.tag, parent.data);
   h->set_or_append("__parent__", parent, false);
   h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
-  for (const auto& m : jit_class_info<T2>::methods) {
-    _jit_handle_bind_method(h, m.name.c_str(), m.thunk, m.arity, m.meta);
-  }
-  _jit_handle_bind_method(h, "drop", &jit_borrow_drop_thunk<T2>, 0);
   _jit_owned_bind_drop(h);
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
