@@ -1632,6 +1632,41 @@ jobs:
             fail=1
           fi
           exit $fail
+      # What an AOT binary carries, one axis at a time. The driver is verified
+      # standalone at build time; its OUTPUT never was — and a binary that
+      # fails to start says nothing about why, since the program's own stdout
+      # is all a test lane sees (an exit code of 127 and an empty capture is
+      # what one looked like). Each probe reports the three answers separately:
+      # whether the file exists, what it imports, and what it prints. The set
+      # bisects by axis — bare, an isolate's threads, a force-loaded feature
+      # archive, and that archive with each namespace beside it.
+      - name: Smoke — what an AOT binary carries (bare / isolate / wrapped)
+        run: |
+          set +e
+          fail=0
+          probe() {
+            name=$1
+            echo "=== probe $name: build ==="
+            ./build-win-aot/culebra.exe build "p_$name.cul" -o "p_$name.exe"
+            echo "build rc=$?"
+            if ! ls -l "p_$name.exe"; then
+              echo "PROBE_${name}_NO_OUTPUT"; fail=1; return
+            fi
+            misc/windows_toolchain/verify_standalone_exe.sh "p_$name.exe" \
+              || { echo "PROBE_${name}_NOT_STANDALONE"; fail=1; }
+            out=$(timeout 60 "./p_$name.exe" 2>&1); rc=$?
+            echo "out=[$out] rc=$rc"
+            [ "$out" = "ok" ] || { echo "PROBE_${name}_RUN_FAIL"; fail=1; }
+          }
+          printf 'print("ok")\n' > p_bare.cul
+          printf 'let n = Isolate.spawn(fn () { 1 }).join()\nprint(if n == 1 { "ok" } else { "n={n}" })\n' > p_isolate.cul
+          printf 'let c = __Foreign.Counter.new(1)\nc.drop()\nprint("ok")\n' > p_wrapped.cul
+          printf 'let c = __Foreign.Counter.new(1)\nlet r = try { Isolate.spawn(fn () { c.value() }).join() } catch e { e.kind }\nc.drop()\nprint(if r == "SendError" { "ok" } else { r })\n' > p_wrapped_isolate.cul
+          printf 'let c = __Foreign.Counter.new(1)\nlet r = TOML.stringify(c)\nc.drop()\nprint(if r == "" { "ok" } else { r })\n' > p_wrapped_toml.cul
+          for n in bare isolate wrapped wrapped_isolate wrapped_toml; do
+            probe "$n"
+          done
+          exit $fail
       # The one Windows-only path nothing else covers: a feature archive is
       # force-loaded by absolute path, and that path goes through cmd.exe. The
       # trivial smoke above never reaches it (no feature is named, so no archive
