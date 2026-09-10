@@ -181,7 +181,10 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
       }
       s += "{";
       bool first = true;
-      if (obj->key_order) {
+      if (_jit_meta_opaque(obj)) {
+        // A class whose instances have no fields to show: the name and an
+        // empty body. `__str__` on the class is how one says more than that.
+      } else if (obj->key_order) {
         // Mixed-key path: walk the unified vector so String and
         // non-String keys interleave in true insertion order.
         for (const auto& key : *obj->key_order) {

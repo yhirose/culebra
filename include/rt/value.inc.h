@@ -282,6 +282,14 @@ struct JitSpecialTable {
   // on first ask and reached from a value through `proto`, so two classes that
   // share a name cannot share an answer.
   culebra::TraitConformance conformance;
+  // The instances of this class have no fields to enumerate: their state is
+  // not in their slots. A wrapped C++ class is the case — what its handles
+  // carry is the bookkeeping that reaches the instance in the id table, not
+  // data the program put there — so `keys()`, `size()`, spread, JSON and the
+  // display show nothing rather than showing that. Reads by name still work
+  // (`h._id`), and so does everything the runtime itself asks of the slots:
+  // `==` compares them, and the collector still traverses them.
+  bool opaque_instances = false;
 };
 
 // All refcounted heap types share the same first field: i64 refcount.
@@ -660,6 +668,13 @@ static_assert(sizeof(JitObject) <= 128 && !std::is_polymorphic_v<JitObject>);
 inline const char* _jit_meta_class_name(JitObject* obj) {
   auto* m = obj->proto();
   return (m && m->is_class_meta && m->specials) ? m->specials->name : nullptr;
+}
+// Whether this value's class declares its instances to have no fields to
+// enumerate (JitSpecialTable::opaque_instances) — the one question every
+// listing of an object's properties asks before it walks them.
+inline bool _jit_meta_opaque(JitObject* obj) {
+  auto* m = obj->proto();
+  return m && m->is_class_meta && m->specials && m->specials->opaque_instances;
 }
 inline const char* _jit_meta_enum_name(JitObject* obj) {
   auto* m = obj->proto();

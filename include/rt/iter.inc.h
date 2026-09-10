@@ -3699,6 +3699,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_reverse(JitArray* a
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_object_keys(
     JitObject* obj) {
   auto* r = culebra_runtime_array_new();
+  if (_jit_meta_opaque(obj)) return r;
   // Walk key_order when populated so String and non-String keys come
   // out interleaved in insertion order. Fall back to the shape walk
   // for objects built via direct slot append (class instances).

@@ -1597,7 +1597,7 @@ struct _JitJsonReader {
   object_entries(const JitValue& v) {
     auto* obj = reinterpret_cast<JitObject*>(v.data);
     std::vector<std::pair<std::string_view, const JitValue*>> entries;
-    if (!obj->shape) return entries;
+    if (!obj->shape || _jit_meta_opaque(obj)) return entries;
     entries.reserve(obj->prop_size());
     for (size_t i = 0; i < obj->prop_size(); i++) {
       entries.emplace_back(obj->prop_name(i), &obj->slots[i].value);

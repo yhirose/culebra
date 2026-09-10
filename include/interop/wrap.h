@@ -440,6 +440,10 @@ JitObject* jit_wrapped_meta(bool borrow) {
   // Interned: the meta outlives whatever storage jit_class_info<T>::name is
   // in, and every question about a handle's identity compares the pointer.
   meta->specials->name = _intern_str(jit_class_info<T>::name);
+  // A handle's slots are how it reaches the C++ instance, not fields the
+  // program put there: they stay out of keys() / size() / spread / JSON /
+  // the display, which have nothing else of the instance to show.
+  meta->specials->opaque_instances = true;
   // The method set is fixed from here on — resolve the specials table and
   // the `drop` gate once, as a declared class's meta does.
   _jit_fill_specials(meta);

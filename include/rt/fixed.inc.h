@@ -740,6 +740,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_merge(
         line, col);
   }
   auto* src = reinterpret_cast<JitObject*>(data);
+  if (_jit_meta_opaque(src)) return;  // nothing of its own to spread
   src->for_each([&](std::string_view name, const JitObjectEntry& e) {
     culebra_runtime_value_retain(e.value.tag, e.value.data);
     culebra_runtime_object_set(dst, std::string(name).c_str(), /*mut=*/true,
@@ -1958,6 +1959,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_is_range(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_object_size(
     JitObject* obj) {
+  if (_jit_meta_opaque(obj)) return 0;
   int64_t n = static_cast<int64_t>(obj->prop_size());
   if (obj->non_string_props) {
     n += static_cast<int64_t>(obj->non_string_props->size());
