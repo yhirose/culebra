@@ -2602,6 +2602,16 @@ struct Chunk {
   // the statement list, its binding lands later).
   std::vector<uint32_t> slot_rank;
   std::vector<PosEntry> positions;
+  // pc -> the `positions` row covering it, so the executor's position read is
+  // two indexed loads rather than a binary search over the run-length table.
+  // `positions` stays the source of truth and the only thing delete_marked
+  // remaps; this is derived from it once, after the elision fixpoint has
+  // finished moving pcs (build_pos_index). Empty means "not built yet" —
+  // during compilation, and for a chunk an embedder assembled by hand — and
+  // chunk_pos_at falls back to the search it was always doing.
+  // kPosBefore marks a pc ahead of the first entry, which reads as {0, 0}.
+  std::vector<uint32_t> pos_ix;
+  static constexpr uint32_t kPosBefore = ~uint32_t{0};
   std::vector<std::string> slot_names;  // debug table, always emitted
   // One binding's live range, which is what a debugger's scope enumeration
   // asks for: the names a frame paused at pc can see, and where their values
@@ -3290,16 +3300,51 @@ inline void repl_bind(const char* name, ReplBindMode mode, bool builtin,
 // user can type (field_init_slot_name's trick).
 inline constexpr const char* kReplResultName = "\x1f__repl_result";
 
-inline std::pair<int64_t, int64_t> chunk_pos_at(const Chunk& c, size_t pc) {
+// The covering `positions` row, searched. What pos_ix is built from, and what
+// chunk_pos_at falls back to before it exists.
+inline std::pair<int64_t, int64_t> chunk_pos_search(const Chunk& c, size_t pc) {
   // `positions` is built append-only in emit order, so it is sorted by
-  // first_insn — binary-search the covering entry (this runs on the
-  // executor's slow paths, e.g. once per Call).
+  // first_insn — binary-search the covering entry.
   auto it = std::upper_bound(
       c.positions.begin(), c.positions.end(), pc,
       [](size_t v, const PosEntry& e) { return v < e.first_insn; });
   if (it == c.positions.begin()) return {0, 0};
   --it;
   return {it->line, it->col};
+}
+
+inline std::pair<int64_t, int64_t> chunk_pos_at(const Chunk& c, size_t pc) {
+  // Every call instruction asks, and so does every arm that reports at its
+  // own position — switching the search off measured 1.6 ns per call on the
+  // executor, which is why the answer is precomputed (Chunk::pos_ix).
+  if (pc < c.pos_ix.size()) {
+    const uint32_t row = c.pos_ix[pc];
+    if (row == Chunk::kPosBefore) return {0, 0};
+    const PosEntry& e = c.positions[row];
+    return {e.line, e.col};
+  }
+  return chunk_pos_search(c, pc);
+}
+
+// Derive pos_ix from `positions`. Called once per chunk, after every pass
+// that moves pcs has run; the answers are the search's, row for row.
+//
+// One pass over every chunk the program and its preamble compiled. What it
+// buys is ~2 ns per call (fib -3%); what it costs at startup did not rise
+// above this machine's run-to-run spread (0.0-0.3 ms on a 4 ms empty
+// program), so it is at or under the noise rather than measurably free.
+// Skipping the small chunks was tried and dropped: it returned little of that
+// and cost half the per-call win, because the pass is dominated by a few
+// large chunks rather than by the many small ones.
+inline void build_pos_index(Chunk& c) {
+  c.pos_ix.assign(c.code.size(), Chunk::kPosBefore);
+  size_t row = 0;
+  for (size_t pc = 0; pc < c.code.size(); ++pc) {
+    while (row < c.positions.size() && c.positions[row].first_insn <= pc) ++row;
+    // `row` is now one past the covering entry, which is where the search's
+    // upper_bound lands too; before the first entry there is none.
+    c.pos_ix[pc] = row == 0 ? Chunk::kPosBefore : static_cast<uint32_t>(row - 1);
+  }
 }
 
 // AST -> VmProgram. The front end is the shared FnAnalysis — the same passes
@@ -4203,6 +4248,9 @@ inline void delete_marked(Chunk& c, const std::vector<char>& dead) {
   }
   c.code = std::move(code);
 
+  // Derived from `positions` and the pcs, both of which move here; rebuilt
+  // once the passes are done (build_pos_index), and searched until then.
+  c.pos_ix.clear();
   // A run-length table can end up with two rows on one pc when the
   // instruction between them died; chunk_pos_at takes the last of them, so
   // keeping the last is what preserves the answer. Same for temp_points.
@@ -4468,6 +4516,9 @@ class Compiler {
         apply_rc_elision(prog, plan);
       }
       for (Chunk& c : prog.chunks) shape_elide_chunk(c);
+      // Last, because every pass above moves pcs and delete_marked drops the
+      // index when they do.
+      for (Chunk& c : prog.chunks) build_pos_index(c);
       // The postcondition, over what SHIPS rather than over what the fixpoint
       // last looked at. It is also the only thing that hands the four
       // analysis switches an `Op::ReleaseMany` — the shape pass runs after
