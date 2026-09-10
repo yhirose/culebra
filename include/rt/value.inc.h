@@ -278,6 +278,10 @@ struct JitSpecialTable {
   const char* name = nullptr;
   // The parent enum, on a variant's meta only (null on a class's). Interned.
   const char* enum_name = nullptr;
+  // Which traits this class conforms to (culebra::TraitConformance): resolved
+  // on first ask and reached from a value through `proto`, so two classes that
+  // share a name cannot share an answer.
+  culebra::TraitConformance conformance;
 };
 
 // All refcounted heap types share the same first field: i64 refcount.

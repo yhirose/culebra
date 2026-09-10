@@ -309,4 +309,25 @@ assert_eq(Res.new(1).tagged(), 'trait tagged')
 assert_eq((5).drop(), 'free drop')
 assert_eq((5).tagged(), 'free tagged')
 
+# Conformance is a fact about a class, not about its name: two classes can
+# carry the same name (each declared in its own scope) and answer differently.
+trait Speak {
+  say()
+}
+fn speak_to(x: Speak) { 'speaks' }
+fn make_speaking() {
+  class Dup {
+    say() { 'hi' }
+  }
+  Dup()
+}
+fn make_silent() {
+  class Dup {
+    x: Long
+  }
+  Dup()
+}
+assert_eq(speak_to(make_speaking()), 'speaks')
+assert_eq(try { speak_to(make_silent()) } catch e { e.kind }, 'DispatchError')
+
 IO.inspect("test_traits OK")

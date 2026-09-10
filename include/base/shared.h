@@ -2936,17 +2936,23 @@ inline std::unordered_map<std::string, TraitDef>& trait_registry() {
   return reg;
 }
 
-// Cache: class name → trait name → conforms? Populated lazily by
-// type_matches when it encounters a value of a known class against a
-// known trait. Cleared on new trait registration (later traits may flip
-// earlier "no" answers for already-cached classes). Shares trait_mutex().
-inline std::unordered_map<std::string,
-                          std::unordered_map<std::string, bool>>&
-trait_conformance_cache() {
-  static std::unordered_map<std::string,
-                            std::unordered_map<std::string, bool>>
-      cache;
-  return cache;
+// Which traits one class conforms to, answered on first ask (the walk over
+// its method set is not free). It hangs off the class's meta
+// (JitSpecialTable::conformance), not off a table keyed by class name: two
+// classes can share a name — a wrapped C++ class and a declared one, or the
+// same declaration re-entered in two scopes — and would otherwise share an
+// answer. `gen` stamps the answers with trait_generation() so a later trait
+// declaration, which can flip an earlier "no", discards them. Guarded by
+// trait_mutex().
+struct TraitConformance {
+  std::unordered_map<std::string, bool> by_trait;
+  uint64_t gen = 0;
+};
+
+// Bumped on every trait registration; see TraitConformance.
+inline uint64_t& trait_generation() {
+  static uint64_t gen = 1;
+  return gen;
 }
 
 // Merge a supertrait's methods into `def` (dedup by name, keeping
@@ -2972,7 +2978,7 @@ inline void register_trait(TraitDef def) {
   // merges via culebra_runtime_register_trait_super after registration.
   for (const auto& super : def.supertraits) merge_supertrait_into(def, super);
   trait_registry()[def.name] = std::move(def);
-  trait_conformance_cache().clear();
+  ++trait_generation();
 }
 
 inline const TraitDef* lookup_trait(std::string_view name) {
@@ -3154,6 +3160,11 @@ inline bool is_primitive_type_label(std::string_view n) {
 struct ArgType {
   std::string_view name;
   std::string_view enum_name;  // empty unless `name` is an enum variant
+  // The conformance cache of the class this argument is an instance of, so
+  // scoring a trait param can read what type_matches already resolved. Null
+  // for a primitive or a bare Object literal — neither has a class meta, and
+  // both are answered by the built-in table instead.
+  TraitConformance* conformance = nullptr;
 };
 
 // Specificity score for a (param_type, arg) pair. Higher = more
@@ -3277,16 +3288,15 @@ inline int multifn_specificity(std::string_view param_type, ArgType arg) {
     if (is_primitive_type_label(arg.name)) {
       return builtin_conforms_to_trait(arg.name, param_type) ? 3 : -1;
     }
-    // Read-only path: `multifn_specificity` only reads the cache and
-    // returns -1 on miss. Use `.find()` (not `operator[]`) so a miss
-    // doesn't materialize an empty by_trait entry, and take a shared
-    // lock so dispatchers don't serialize on this hot path.
+    // Read-only path: `multifn_specificity` only reads the class's cache and
+    // returns -1 on miss (the warm-up in _jit_multifn_resolve is what fills
+    // it, through type_matches). Take a shared lock so dispatchers don't
+    // serialize on this hot path.
+    if (!arg.conformance) return -1;
     std::shared_lock lock(trait_mutex());
-    auto& cache = trait_conformance_cache();
-    auto outer = cache.find(std::string(arg.name));
-    if (outer == cache.end()) return -1;
-    auto it = outer->second.find(std::string(param_type));
-    if (it != outer->second.end()) return it->second ? 3 : -1;
+    if (arg.conformance->gen != trait_generation()) return -1;
+    auto it = arg.conformance->by_trait.find(std::string(param_type));
+    if (it != arg.conformance->by_trait.end()) return it->second ? 3 : -1;
     return -1;
   }
   return -1;

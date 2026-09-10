@@ -1253,13 +1253,18 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
       // (e.g. `iter()` for Iterable) so the built-in table answers.
       return culebra::builtin_conforms_to_trait("Object", expected);
     }
-    std::string class_name(class_tag_view);
     std::string trait_name(expected);
+    auto* obj = reinterpret_cast<JitObject*>(data);
+    // The name came from the meta, so the meta is there to answer from.
+    auto& cache = obj->proto()->specials->conformance;
     std::unique_lock lock(culebra::trait_mutex());
-    auto& by_trait = culebra::trait_conformance_cache()[class_name];
+    if (cache.gen != culebra::trait_generation()) {
+      cache.by_trait.clear();
+      cache.gen = culebra::trait_generation();
+    }
+    auto& by_trait = cache.by_trait;
     auto it = by_trait.find(trait_name);
     if (it != by_trait.end()) return it->second;
-    auto* obj = reinterpret_cast<JitObject*>(data);
     // A variant has no method table; what it conforms to is fixed.
     if (_jit_enum_name(obj)) {
       return by_trait[trait_name] =
