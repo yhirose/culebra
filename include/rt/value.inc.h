@@ -290,6 +290,16 @@ struct JitSpecialTable {
   // (`h._id`), and so does everything the runtime itself asks of the slots:
   // `==` compares them, and the collector still traverses them.
   bool opaque_instances = false;
+  // The instances of this class cannot cross an isolate: what they carry
+  // reaches a resource this thread owns. The other native handles say the
+  // same with a `__nonsendable__` slot of their own; a class that can say it
+  // once says it here (conc/sendable.h checks both).
+  bool nonsendable_instances = false;
+  // The per-T state-fn id of a wrapped class (interop/foreign.h), or -1.
+  // It is a fact about the class, so it rides here rather than in a slot on
+  // every handle — which is also what lets a consumer holding only a
+  // JitValue find the C++ type behind it in one load.
+  int64_t foreign_state_fn = -1;
 };
 
 // All refcounted heap types share the same first field: i64 refcount.
@@ -675,6 +685,18 @@ inline const char* _jit_meta_class_name(JitObject* obj) {
 inline bool _jit_meta_opaque(JitObject* obj) {
   auto* m = obj->proto();
   return m && m->is_class_meta && m->specials && m->specials->opaque_instances;
+}
+// Whether this value's class declares its instances non-Sendable.
+inline bool _jit_meta_nonsendable(JitObject* obj) {
+  auto* m = obj->proto();
+  return m && m->is_class_meta && m->specials &&
+         m->specials->nonsendable_instances;
+}
+// The wrapped C++ type behind this value, as its state-fn id, or -1.
+inline int64_t _jit_meta_foreign_state_fn(JitObject* obj) {
+  auto* m = obj->proto();
+  return (m && m->is_class_meta && m->specials) ? m->specials->foreign_state_fn
+                                                : -1;
 }
 inline const char* _jit_meta_enum_name(JitObject* obj) {
   auto* m = obj->proto();

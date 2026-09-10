@@ -31,6 +31,22 @@ assert_eq(__Foreign.Counter.live(), 0)
 }
 assert_eq(__Foreign.Counter.live(), 0)
 
+# --- A handle is not Sendable: it reaches a C++ instance this thread owns.
+# (The borrow handle's own case is in test_borrow.cul.) ---
+{
+  let c = __Foreign.Counter.new(1)
+  let r = try {
+    Isolate.spawn(fn () {
+      c.value()
+    }).join()
+  } catch e {
+    e.kind
+  }
+  assert_eq(r, 'SendError')
+  c.drop()
+}
+assert_eq(__Foreign.Counter.live(), 0)
+
 # --- Construction, methods, marshalling. ---
 {
   let c = __Foreign.Counter.new(10)

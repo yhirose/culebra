@@ -127,7 +127,10 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
         n.s = std::string(_culebra_str_view(nv.tag, nv.data));
         return n;
       }
-      if (o->find_slot("__nonsendable__") != static_cast<size_t>(-1))
+      // A native handle says so with a slot of its own; a wrapped class says
+      // it once, on the meta all its handles share.
+      if (o->find_slot("__nonsendable__") != static_cast<size_t>(-1) ||
+          _jit_meta_nonsendable(o))
         sendable::send_error("a native handle is not Sendable");
       if (!ctx.visiting.insert(o).second)
         sendable::send_error("a cyclic value cannot be sent");

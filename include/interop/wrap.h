@@ -281,12 +281,10 @@ struct jit_class_info {
 // through an indirection — a forged slot misses, never derefs.
 inline int64_t jit_handle_gen(JitObject* h) {
   constexpr size_t npos = static_cast<size_t>(-1);
-  if (h->find_slot("_state_fn") != npos) {
-    return foreign::owner_gen_via(_jit_handle_long(h, "_state_fn"),
-                                  _jit_handle_long(h, "_id"));
-  }
   if (h->find_slot("_bid") != npos)
     return foreign::borrow_gen(_jit_handle_long(h, "_bid"));
+  if (auto state = _jit_meta_foreign_state_fn(h); state >= 0)
+    return foreign::owner_gen_via(state, _jit_handle_long(h, "_id"));
   return -1;
 }
 
@@ -379,7 +377,7 @@ inline void jit_parent_link(JitObject* parent, int64_t* state,
     *owner_id = 0;
     *bid = _jit_handle_long(parent, "_bid");
   } else {
-    *state = _jit_handle_long(parent, "_state_fn");
+    *state = _jit_meta_foreign_state_fn(parent);
     *owner_id = _jit_handle_long(parent, "_id");
     *bid = -1;
   }
@@ -444,6 +442,10 @@ JitObject* jit_wrapped_meta(bool borrow) {
   // program put there: they stay out of keys() / size() / spread / JSON /
   // the display, which have nothing else of the instance to show.
   meta->specials->opaque_instances = true;
+  // A handle reaches a C++ object this thread owns, so it cannot be sent;
+  // and which C++ type it is, is what the class knows.
+  meta->specials->nonsendable_instances = true;
+  meta->specials->foreign_state_fn = foreign::state_fn_id<T>();
   // The method set is fixed from here on — resolve the specials table and
   // the `drop` gate once, as a declared class's meta does.
   _jit_fill_specials(meta);
@@ -464,9 +466,6 @@ JitValue jit_make_handle(int64_t id) {
   auto* h = culebra_runtime_object_new();
   jit_handle_set_meta(h, jit_wrapped_meta<T>(/*borrow=*/false));
   h->set_or_append("_id", JitValue{TAG_LONG, id}, false);
-  h->set_or_append("_state_fn",
-                   JitValue{TAG_LONG, foreign::state_fn_id<T>()}, false);
-  h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
   _jit_owned_bind_drop(h);
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
@@ -488,7 +487,6 @@ JitValue jit_make_borrow_handle(T2* p, JitValue parent, int64_t pgen) {
   h->set_or_append("_bid", JitValue{TAG_LONG, bid}, false);
   culebra_runtime_value_retain(parent.tag, parent.data);
   h->set_or_append("__parent__", parent, false);
-  h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
   _jit_owned_bind_drop(h);
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }

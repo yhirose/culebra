@@ -74,13 +74,13 @@ wrapped_implementers() {
   return v;
 }
 // The accessor for `v`, or null when it is not a handle of a wrapped class
-// implementing I (a missing `_state_fn` slot reads as -1, which no class has).
+// implementing I (anything else reads as -1, which no class has).
 template <class I>
 inline WrappedImplementerOf<I> wrapped_implementer(JitValue v) {
   if (v.tag != TAG_OBJECT) return nullptr;
   auto& registry = wrapped_implementers<I>();
   auto it = registry.find(
-      _jit_handle_long(reinterpret_cast<JitObject*>(v.data), "_state_fn"));
+      _jit_meta_foreign_state_fn(reinterpret_cast<JitObject*>(v.data)));
   return it == registry.end() ? nullptr : it->second;
 }
 
