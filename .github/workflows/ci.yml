@@ -1775,21 +1775,27 @@ jobs:
           let m = CodeGen.Module.new()\nlet s = to_string({a: 1})\nm.drop()
           let db = SQLite.open(":memory:")\nlet s = to_string({a: 1})\ndb.drop()
           PROGS
-          # Which image differs, and how: a PE whose TLS directory or section
-          # set is not what a working one has is the load-time answer the exit
-          # code cannot give. Reported for one that failed and one that did not.
-          for pair in "fmt_7 fmt_4"; do
-            for n in $pair; do
-              [ -f "$n.exe" ] || continue
-              echo "=== $n.exe ==="
-              objdump -x "$n.exe" 2>/dev/null | sed -n '/^Sections:/,/^SYMBOL TABLE/p' \
-                | awk '{print $2, $3}' | tr '\n' ' '
-              echo
-              tls=$(objdump -x "$n.exe" 2>/dev/null | grep -iA 6 "Thread Local Storage" | tr '\n' ' ')
-              echo "tls=[$tls]"
-              printf '::warning::image %s: tls=[%s]\n' "$n" \
-                "$(printf '%s' "$tls" | sed 's/%/%25/g' | cut -c1-600)"
-            done
+          # Two variables left, both cheap to ask. Whether the strip does it:
+          # the Windows link ends in -Wl,-s, and --keep-symbols is the same
+          # link without it. And how the images differ: the data directories
+          # (the TLS one among them) and the section list of a binary that
+          # failed beside one that did not.
+          fail_prog='let c = __Foreign.Counter.new(1)\nlet s = to_string({a: 1})\nc.drop()'
+          printf '%b\nprint("ok")\n' "$fail_prog" > keep.cul
+          ./build-win-aot/culebra.exe build --keep-symbols keep.cul -o keep.exe \
+            > /dev/null 2>&1
+          kout=$(timeout 60 ./keep.exe 2>&1); krc=$?
+          echo "--keep-symbols: rc=$krc out=[$kout]"
+          printf '::warning::keep-symbols: rc=%s out=[%s]\n' "$krc" "$kout"
+          for n in fmt_8 fmt_4; do
+            [ -f "$n.exe" ] || continue
+            dirs=$(objdump -p "$n.exe" 2>/dev/null \
+              | sed -n '/The Data Directory/,/^$/p' | grep -viE "^$|Data Directory" \
+              | awk '$3 != "00000000" {print $NF}' | tr '\n' ' ')
+            secs=$(objdump -h "$n.exe" 2>/dev/null | awk '/^ *[0-9]+ \./ {print $2}' \
+              | tr '\n' ' ')
+            echo "$n: dirs=[$dirs] secs=[$secs]"
+            printf '::warning::image %s: dirs=[%s] secs=[%s]\n' "$n" "$dirs" "$secs"
           done
       # When the fixture's AOT binary is the one that failed, the program is
       # what has to be bisected — and only this platform can do it. Each prefix
