@@ -1903,7 +1903,7 @@ endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_libraries(smoke_suite Threads::Threads ${CMAKE_DL_LIBS})
 endif()
-foreach(smoke mt mi module_scope define closure_flags signal single_ast utf8_invalid)
+foreach(smoke mt mi module_scope define closure_flags signal single_ast utf8_invalid value_api)
   add_test(NAME ${smoke}_smoke COMMAND smoke_suite ${smoke})
 endforeach()
 # Two entries, not one: the device default installs from a function-local

@@ -356,8 +356,22 @@ int main() {
 }
 ```
 
-`vm::Embed` is a session: each `run_source` sees the top-level bindings
-every earlier run made, and the host reads them back afterwards
+`run_source` reports a failure as text, the same line the CLI prints.
+A host with no console to print it to takes the other entry, where the
+value is the return and a failure is the exception `call` already raises:
+
+```cpp
+auto n = embed.eval("1 + 2").as<int64_t>();   // 3
+```
+
+`eval` throws `culebra::CulebraError` — kind, message and position
+intact — for a parse failure (kind `SyntaxError`) and for anything the
+run raises. An uncaught script `throw` arrives as kind `RuntimeError`
+carrying the `uncaught: ...` line every lane prints for one, because the
+engine flattens the thrown object at its boundary.
+
+`vm::Embed` is a session: each run sees the top-level bindings every
+earlier run made, and the host reads them back afterwards
 (`embed.global("x")`) or calls into them (`embed.call`, below). Use one
 `Embed` per independent engine instance. `run_source` copies its source
 (the parse's AST views into that copy, and the session owns it as long
@@ -522,6 +536,73 @@ process-wide default that every Runtime falls back to when its own
 override is unset — that's the legacy single-VM and multi-thread
 embedding path.
 
+### Reading and writing script values
+
+`vm::Value` is the handle the host holds a script value through. Reading
+it comes in two strengths. The `to_*` family is lenient — a mismatched
+value reads as `0` / `false` / `""`, so a host that has already checked
+the shape pays nothing — while `as<T>()` raises the `TypeError` the
+script's own accessors raise for that mismatch:
+
+```cpp
+auto port = cfg["port"].as<int64_t>();   // TypeError if it isn't a Long
+auto n    = cfg["port"].to_long();       // 0 if it isn't a Long
+cfg["port"].type_name();                 // "Long" — what type_of says
+```
+
+Objects and Arrays read as containers, with the script's own semantics:
+a missing Object key is a `KeyError`, an index past the end an
+`IndexError`, and a receiver that is neither a `TypeError`.
+
+```cpp
+Value cfg = embed.global("config");
+
+cfg.size();                    // entry count (Array/Tuple: length)
+cfg.has("port");               // the lookup question, class methods included
+cfg["db"]["host"].as<std::string>();
+cfg["hosts"][0].as<std::string>();
+cfg["hosts"][-1];              // negative counts from the end
+cfg.at(key);                   // any hashable key — a Long, a Tuple, ...
+
+for (const auto& h : cfg["hosts"]) connect(h.as<std::string>());
+for (const auto& [k, v] : cfg["limits"].items())
+  set_limit(k.as<std::string>(), v.as<int64_t>());
+```
+
+An Object or an Array is a reference, so what `operator[]` hands back is
+the script's own value, not a copy: writing through it writes into the
+parent, however deep.
+
+```cpp
+cfg.set("port", 8080);               // cfg[k] = v
+cfg["db"].set("host", "localhost");  // ... two levels down
+cfg["db"]["opts"].set("tls", true);  // ... three
+cfg["hosts"].push("b.example");      // Array append
+cfg["hosts"].set(int64_t{0}, "a2.example");
+```
+
+The value argument converts from every type `Value`'s constructors take
+(plus `std::vector`, `std::map<std::string, T>` and `std::optional`), so
+a scalar needs no cast. Scalars, on the other hand, are values: a `Long`
+read out of an Object is a copy, and writing to it changes nothing —
+address the Object that holds it, as above.
+
+The script's own rules hold for a host write. A property the script
+declared without `mut` raises `ImmutableError`, and an index past the
+end of an Array raises `IndexError` rather than growing it (`push` is
+how an Array grows).
+
+To build a value for the script rather than reach into one it made:
+
+```cpp
+auto opts = Value::object({{"port", 8080},
+                           {"tags", Value::array({"x", "y"})}});
+embed.call("connect", opts);
+```
+
+The entries a builder makes are mutable — `{mut k: v}`, not `{k: v}` —
+since what the host builds is the host's own data.
+
 ### Calling script functions from C++
 
 After a run, any top-level `fn` or `let f = fn ...` lands in the
@@ -539,6 +620,14 @@ auto v = embed.call("update", std::move(args));
 `call` binds positional args to positional params. `vm::Value` args are
 consumed by the call (pass a fresh vector); the result comes back
 owned by the returned handle.
+
+Arguments the host spells inline need no vector, and convert the way a
+`set` value does:
+
+```cpp
+auto v = embed.call("update", 1, 2);          // v.as<int64_t>() == 5
+embed.call("connect", "api", opts);           // Value args pass through
+```
 
 ### Handling script errors
 
@@ -637,7 +726,24 @@ embed.define("host_add",
 Supported argument and return types: `int64_t`, `long`, `long long`,
 `int`,
 `double`, `float`, `bool`, `std::string`, `std::string_view`, and
-`culebra::vm::Value` (passthrough). A mistyped argument raises a
+`culebra::vm::Value` (passthrough) — plus `std::vector<T>` (an Array),
+`std::map<std::string, T>` (an Object) and `std::optional<T>` (`nil`
+when empty) over any of them, nested:
+
+```cpp
+embed.define("total", [](std::vector<int64_t> xs) -> int64_t {
+  return std::accumulate(xs.begin(), xs.end(), int64_t{0});
+}, {"xs"});
+
+embed.define("resolve", [](std::string host) -> std::optional<std::string> {
+  return lookup(host);          // an empty optional reaches the script as nil
+}, {"host"});
+```
+
+A container argument converts element by element, so a bad element
+raises the `TypeError` that element would have raised on its own. The
+same conversions read back out of a `Value`
+(`v.as<std::vector<std::string>>()`). A mistyped argument raises a
 catchable `TypeError` at the call site rather than inside the
 callable; a wrong argument count raises `ArityError`. Binding is
 positional (host functions take no keyword arguments); for a richer

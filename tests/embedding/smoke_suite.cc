@@ -20,6 +20,7 @@
 #include "single_ast_smoke.cc"
 #include "tensor_device_smoke.cc"
 #include "utf8_invalid_smoke.cc"
+#include "value_api_smoke.cc"
 
 #include <cstdio>
 #include <cstring>
@@ -42,9 +43,12 @@ int main(int argc, char** argv) {
       return tensor_device_smoke_ns::run(true);
     if (std::strcmp(argv[1], "utf8_invalid") == 0)
       return utf8_invalid_smoke_ns::run();
+    if (std::strcmp(argv[1], "value_api") == 0)
+      return value_api_smoke_ns::run();
   }
   std::fprintf(stderr,
                "usage: smoke_suite <define|mi|module_scope|mt|signal|"
-               "single_ast|tensor_device|tensor_device_pin|utf8_invalid>\n");
+               "single_ast|tensor_device|tensor_device_pin|utf8_invalid|"
+               "value_api>\n");
   return 2;
 }

@@ -346,7 +346,22 @@ int main() {
 }
 ```
 
-`vm::Embed`はセッションです。各`run_source`はそれまでの実行が
+`run_source`は失敗をテキストで返します（CLIが表示するのと同じ
+行）。表示先のコンソールを持たないホストにはもう一方の入口が
+あります。値が戻り値で、失敗は`call`と同じ例外です:
+
+```cpp
+auto n = embed.eval("1 + 2").as<int64_t>();   // 3
+```
+
+`eval`は`culebra::CulebraError`を投げます。種別・メッセージ・
+位置はそのまま残ります。parse失敗の種別は`SyntaxError`、実行中
+の失敗はその種別です。捕まらなかったスクリプトの`throw`だけは
+種別`RuntimeError`になり、どのレーンも表示する`uncaught: ...`の
+行を持ちます — 投げられたオブジェクトはエンジンの境界で1行の
+テキストに畳まれるためです。
+
+`vm::Embed`はセッションです。各実行はそれまでの実行が
 作ったトップレベル束縛を見ることができ、ホストは実行後にそれを
 読み戻したり（`embed.global("x")`）、呼び出したり（後述の
 `embed.call`）できます。独立したエンジンインスタンスごとに1つの
@@ -518,6 +533,75 @@ culebra::Runtime trusted, sandbox;
 すべてのRuntimeがそこにフォールバックします — これが従来の
 単一VMとマルチスレッドembeddingのパスです。
 
+### スクリプトの値を読む・書く
+
+`vm::Value`はホストがスクリプトの値を持つためのハンドルです。
+読み出しには強さの違う2通りがあります。`to_*`系は寛容で、型が
+違えば`0`/`false`/`""`を返します（形を確認済みのホストは何も
+払いません）。`as<T>()`は同じ食い違いに対してスクリプト自身の
+アクセサが出すのと同じ`TypeError`を投げます:
+
+```cpp
+auto port = cfg["port"].as<int64_t>();   // Longでなければ TypeError
+auto n    = cfg["port"].to_long();       // Longでなければ 0
+cfg["port"].type_name();                 // "Long" — type_of と同じ
+```
+
+ObjectとArrayは容器として読めます。意味はスクリプト側と同じで、
+Objectの鍵が無ければ`KeyError`、範囲外の添字は`IndexError`、
+どちらでもない受け手は`TypeError`です。
+
+```cpp
+Value cfg = embed.global("config");
+
+cfg.size();                    // エントリ数（Array/Tupleなら長さ）
+cfg.has("port");               // 参照の可否。クラスのメソッドも答える
+cfg["db"]["host"].as<std::string>();
+cfg["hosts"][0].as<std::string>();
+cfg["hosts"][-1];              // 負の添字は末尾から
+cfg.at(key);                   // 任意のhashableな鍵（Long・Tupleなど）
+
+for (const auto& h : cfg["hosts"]) connect(h.as<std::string>());
+for (const auto& [k, v] : cfg["limits"].items())
+  set_limit(k.as<std::string>(), v.as<int64_t>());
+```
+
+ObjectとArrayは参照です。`operator[]`が返すのはコピーではなく
+スクリプトが持っているその値なので、そこへ書けば親に届きます。
+何段深くても同じです。
+
+```cpp
+cfg.set("port", 8080);               // cfg[k] = v
+cfg["db"].set("host", "localhost");  // 2段下
+cfg["db"]["opts"].set("tls", true);  // 3段下
+cfg["hosts"].push("b.example");      // Arrayへの追加
+cfg["hosts"].set(int64_t{0}, "a2.example");
+```
+
+値の引数は`Value`のコンストラクタが受ける型すべて（に加えて
+`std::vector`・`std::map<std::string, T>`・`std::optional`）から
+変換されるので、数値や文字列をそのまま書けます。逆に、数値や
+文字列そのものは値です — Objectから読んだ`Long`はコピーなので、
+それに書いても何も変わりません。上のように、それを持っている
+Object側に書いてください。
+
+ホストからの書き込みにもスクリプト側の規則がそのまま効きます。
+`mut`なしで宣言されたプロパティは`ImmutableError`になり、Arrayの
+末尾より後ろへの添字書き込みは配列を伸ばさずに`IndexError`に
+なります（伸ばすのは`push`です）。
+
+スクリプトが作った値に手を入れるのではなく、ホスト側で新しい値を
+組むには:
+
+```cpp
+auto opts = Value::object({{"port", 8080},
+                           {"tags", Value::array({"x", "y"})}});
+embed.call("connect", opts);
+```
+
+ビルダが作るエントリは`mut`付き（`{mut k: v}`であって`{k: v}`
+ではない）です。ホストが組んだものはホスト自身のデータなので。
+
 ### C++ からスクリプト関数を呼ぶ
 
 実行後、トップレベルの`fn`や`let f = fn ...`はセッションに
@@ -535,6 +619,14 @@ auto v = embed.call("update", std::move(args));
 `call`は位置引数を位置パラメータにバインドします。`vm::Value`の
 引数は呼び出しが消費します（新しいvectorを渡す）。結果は
 返されたハンドルが所有します。
+
+ホストがその場に書く引数ならvectorは要りません。変換は`set`の
+値と同じです:
+
+```cpp
+auto v = embed.call("update", 1, 2);          // v.as<int64_t>() == 5
+embed.call("connect", "api", opts);           // Valueはそのまま通る
+```
 
 ### スクリプトエラーの扱い
 
@@ -637,7 +729,24 @@ embed.define("host_add",
 
 サポートする引数・戻り値の型: `int64_t`, `long`, `long long`, `int`,
 `double`, `float`, `bool`, `std::string`, `std::string_view`,
-`culebra::vm::Value`（透過）。誤った型の引数はcallableに入る前に
+`culebra::vm::Value`（透過）。さらに、これらを容れる
+`std::vector<T>`（Array）・`std::map<std::string, T>`（Object）・
+`std::optional<T>`（空なら`nil`）も使えます。入れ子も可です:
+
+```cpp
+embed.define("total", [](std::vector<int64_t> xs) -> int64_t {
+  return std::accumulate(xs.begin(), xs.end(), int64_t{0});
+}, {"xs"});
+
+embed.define("resolve", [](std::string host) -> std::optional<std::string> {
+  return lookup(host);          // 空のoptionalはスクリプトにnilで届く
+}, {"host"});
+```
+
+容器の引数は要素ごとに変換されるので、要素が1つでも合わなければ
+その要素単体で出るはずの`TypeError`になります。同じ変換は`Value`
+からの読み出し（`v.as<std::vector<std::string>>()`）にも効きます。
+誤った型の引数はcallableに入る前に
 呼び出し側でcatch可能な`TypeError`として弾かれ、引数の個数違いは
 `ArityError`になります。バインドは位置引数のみ（ホスト関数は
 キーワード引数を取りません）。メソッド・ハンドル・キーワード束縛

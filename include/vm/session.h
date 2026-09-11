@@ -22,6 +22,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <unordered_set>
@@ -137,6 +138,10 @@ class Session {
     _culebra_value_release_impl(v.tag, v.data);
   }
 
+  // The last failure, structured (run_reported keeps it beside the text).
+  const std::optional<CulebraError>& last_error() const { return last_error_; }
+  void clear_last_error() { last_error_.reset(); }
+
  private:
   // A preamble text and the AST whose tokens point into it.
   struct ParsedPreamble {
@@ -164,23 +169,29 @@ class Session {
 
   // Run `body`, reporting what it throws the way interpret() reports it. An
   // interrupt passes through: the session hosts no loop, so whoever does (the
-  // REPL, an embedder) answers for it, and a runner stops on it.
+  // REPL, an embedder) answers for it, and a runner stops on it. The
+  // structured error is kept beside the formatted line for a caller that
+  // wants to re-raise it (Embed::eval) rather than print it.
   template <class Body>
-  static bool run_reported(std::vector<std::string>& msgs, Body&& body) {
+  bool run_reported(std::vector<std::string>& msgs, Body&& body) {
     try {
       body();
       return true;
     } catch (const CulebraError& e) {
       // interpret()'s formatter, which is main.cc's.
       msgs.push_back(format_error_message(e));
+      last_error_ = e;
     } catch (const std::exception& e) {
       // Exec::run has already turned an uncaught user throw into the
-      // "uncaught: ..." line both other backends print for one.
+      // "uncaught: ..." line both other backends print for one — the kind it
+      // carried is gone by here, so the re-raise names the boundary's.
       msgs.push_back(e.what());
+      last_error_ = CulebraError("RuntimeError", e.what());
     }
     return false;
   }
 
+  std::optional<CulebraError> last_error_;
   RetainedRuns retained_;
   // Module lists run_modules kept alive (shared_ptr'd sources + ASTs): a
   // retained program's chunks hold string_views into them.

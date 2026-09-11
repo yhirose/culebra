@@ -22,10 +22,15 @@
 #include <vm/session.h>
 
 #include <bit>
+#include <concepts>
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <initializer_list>
+#include <iterator>
+#include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -33,6 +38,11 @@
 #include <vector>
 
 namespace culebra::vm {
+
+class Value;
+namespace _embed_detail {
+class Arg;
+}
 
 // ---------------------------------------------------------------------------
 // Value — an owning RAII handle over the runtime's tagged value. The tag and
@@ -91,6 +101,130 @@ class Value {
     return _culebra_uncaught_display(v_.tag, v_.data);
   }
 
+  // --- What this value is --------------------------------------------------
+  bool is_long() const { return v_.tag == TAG_LONG; }
+  bool is_float() const { return v_.tag == TAG_FLOAT; }
+  bool is_bool() const { return v_.tag == TAG_BOOL; }
+  bool is_string() const {
+    return v_.tag == TAG_STRING || v_.tag == TAG_STRINGVIEW;
+  }
+  bool is_array() const { return v_.tag == TAG_ARRAY || v_.tag == TAG_TUPLE; }
+  bool is_object() const { return v_.tag == TAG_OBJECT; }
+  // The name the script's own `type_of` gives this value ('Long', 'Object').
+  const char* type_name() const { return _culebra_tag_name(v_.tag); }
+
+  // The strict read, where to_long() and friends hand back a silent 0: a
+  // mismatch raises the same TypeError text the script's accessors raise.
+  // T is the define() set (long/int/double/float/bool/std::string/
+  // std::string_view/Value) plus std::vector<T>, std::map<std::string, T>
+  // and std::optional<T>. A std::string_view borrows this value's bytes.
+  template <class T>
+  T as() const;
+
+  // --- As a container ------------------------------------------------------
+  // Array/Tuple length, or an Object's entry count (TypeError otherwise).
+  int64_t size() const {
+    if (v_.tag == TAG_ARRAY || v_.tag == TAG_TUPLE)
+      return culebra_runtime_array_size(reinterpret_cast<JitArray*>(v_.data));
+    if (v_.tag == TAG_OBJECT)
+      return culebra_runtime_object_size(reinterpret_cast<JitObject*>(v_.data));
+    culebra_runtime_type_error_typed(0, 0, "Array, Tuple, or Object", v_.tag);
+  }
+
+  // `obj.has(key)`: the lookup question, so a class method answers it too.
+  bool has(std::string_view key) const {
+    if (v_.tag != TAG_OBJECT)
+      culebra_runtime_type_error_typed(0, 0, "Object", v_.tag);
+    std::string k(key);
+    return culebra_runtime_object_has(reinterpret_cast<JitObject*>(v_.data),
+                                      k.c_str());
+  }
+
+  // `recv[key]`, with the script's semantics unchanged: an Object miss is a
+  // KeyError, an out-of-range index an IndexError, another receiver a
+  // TypeError. Object and Array are references, so what comes back IS the
+  // parent's value — set()/push() through it write into the parent.
+  Value operator[](std::string_view key) const {
+    if (v_.tag != TAG_OBJECT)
+      culebra_runtime_type_error_typed(0, 0, "Object", v_.tag);
+    std::string k(key);  // a String key is borrowed bytes, never consumed
+    int8_t t;
+    int64_t d;
+    culebra_runtime_object_get_any(reinterpret_cast<JitObject*>(v_.data),
+                                   TAG_STRING,
+                                   reinterpret_cast<int64_t>(k.c_str()), &t, &d,
+                                   0, 0, /*own_receiver=*/false);
+    return Value(JitValue{t, d}, Adopt{});
+  }
+  Value operator[](int64_t idx) const { return at(Value(idx)); }
+  // Any hashable key (a Long index, a Tuple, ...) — Op::Index's dispatch.
+  Value at(const Value& key) const {
+    const JitValue k = key.v_;
+    if (v_.tag == TAG_ARRAY || v_.tag == TAG_TUPLE) {
+      if (k.tag != TAG_LONG)
+        culebra_runtime_type_error_typed(0, 0, "Long", k.tag);
+      int8_t t;
+      int64_t d;
+      culebra_runtime_array_get(reinterpret_cast<JitArray*>(v_.data), k.data,
+                                &t, &d, 0, 0);
+      culebra_runtime_value_retain(t, d);  // array_get borrows the slot
+      return Value(JitValue{t, d}, Adopt{});
+    }
+    if (v_.tag == TAG_OBJECT) {
+      // object_get_any consumes a non-String key on every path.
+      culebra_runtime_value_retain(k.tag, k.data);
+      int8_t t;
+      int64_t d;
+      culebra_runtime_object_get_any(reinterpret_cast<JitObject*>(v_.data),
+                                     k.tag, k.data, &t, &d, 0, 0,
+                                     /*own_receiver=*/false);
+      return Value(JitValue{t, d}, Adopt{});
+    }
+    culebra_runtime_type_error_typed(0, 0, "Array", v_.tag);
+  }
+
+  // An Object's entries in insertion order — `for k, v in obj`'s set (own
+  // entries only, non-String keys included). A snapshot: the host may write
+  // to the object while walking it.
+  std::vector<std::pair<Value, Value>> items() const {
+    if (v_.tag != TAG_OBJECT)
+      culebra_runtime_type_error_typed(0, 0, "Object", v_.tag);
+    auto* obj = reinterpret_cast<JitObject*>(v_.data);
+    Value keys = Value(
+        JitValue{TAG_ARRAY,
+                 reinterpret_cast<int64_t>(culebra_runtime_object_keys(obj))},
+        Adopt{});
+    std::vector<std::pair<Value, Value>> out;
+    out.reserve(static_cast<size_t>(keys.size()));
+    for (int64_t i = 0; i < keys.size(); i++) {
+      Value k = keys[i];
+      out.emplace_back(k, at(k));
+    }
+    return out;
+  }
+
+  // Array/Tuple elements, for range-for (defined below — it stashes the
+  // element it is on, so `for (auto& e : arr)` binds to a Value that lives
+  // as long as the loop step).
+  class iterator;
+  iterator begin() const;
+  iterator end() const;
+
+  // --- Writing -------------------------------------------------------------
+  // `recv[key] = v` / `arr.push(v)`. The key's own rules hold: a property
+  // declared without `mut` raises ImmutableError here too, and an index past
+  // the end of an Array is an IndexError (push is how an Array grows).
+  void set(std::string_view key, _embed_detail::Arg v);
+  void set(int64_t idx, _embed_detail::Arg v);
+  void set(const Value& key, _embed_detail::Arg v);
+  void push(_embed_detail::Arg v);
+
+  // Build one for the script: the entries are mutable, like a spread's.
+  static Value array(std::initializer_list<_embed_detail::Arg> items);
+  static Value object(
+      std::initializer_list<std::pair<std::string_view, _embed_detail::Arg>>
+          entries);
+
   JitValue get() const { return v_; }  // borrowed view
   // Hand the owned reference out (the caller now holds the +1).
   JitValue release() {
@@ -104,6 +238,48 @@ class Value {
   Value(JitValue v, Adopt) : v_(v) {}
   JitValue v_;
 };
+
+// One Array element at a time, stashed so `*it` is a reference with the
+// loop step's lifetime. Input-iterator shape: one pass, and `end()` compares
+// on the index alone.
+class Value::iterator {
+ public:
+  using iterator_category = std::input_iterator_tag;
+  using value_type = Value;
+  using difference_type = std::ptrdiff_t;
+  using reference = const Value&;
+  using pointer = const Value*;
+
+  iterator() = default;
+  iterator(const Value* owner, int64_t i) : owner_(owner), i_(i) { load(); }
+
+  const Value& operator*() const { return cur_; }
+  const Value* operator->() const { return &cur_; }
+  iterator& operator++() {
+    ++i_;
+    load();
+    return *this;
+  }
+  void operator++(int) { ++*this; }
+  bool operator==(const iterator& o) const { return i_ == o.i_; }
+
+ private:
+  void load() {
+    if (owner_ && i_ < owner_->size()) cur_ = (*owner_)[i_];
+    else cur_ = Value();
+  }
+  const Value* owner_ = nullptr;
+  int64_t i_ = 0;
+  Value cur_;
+};
+
+inline Value::iterator Value::begin() const {
+  if (!is_array()) culebra_runtime_type_error_typed(0, 0, "Array", v_.tag);
+  return iterator(this, 0);
+}
+inline Value::iterator Value::end() const {
+  return iterator(nullptr, is_array() ? size() : 0);
+}
 
 // ---------------------------------------------------------------------------
 // Host-function bridge. One generic trampoline serves every define(): the
@@ -145,23 +321,25 @@ inline void trampoline(JitValue* __ret, JitClosure* self, int8_t self_tag,
 // define(): long/int/double/float/bool/std::string/std::string_view/Value.
 template <class T>
 struct FromJit;
-[[noreturn]] inline void _arg_type_error(std::string_view fn,
-                                         std::string_view param,
-                                         const char* expected) {
-  throw culebra::CulebraError(
-      "TypeError", std::string(fn) + "() argument '" + std::string(param) +
-                       "': expected a " + expected);
-}
 struct ArgCtx {
-  std::string_view fn;
+  std::string_view fn;    // empty at a host read (Value::as<T>)
   std::string_view param;
 };
+[[noreturn]] inline void _arg_type_error(ArgCtx c, const char* expected,
+                                         int8_t got) {
+  // A host read has no argument to name, so it reports what the script's own
+  // accessors report for the same mismatch.
+  if (c.fn.empty()) culebra_runtime_type_error_typed(0, 0, expected, got);
+  throw culebra::CulebraError(
+      "TypeError", std::string(c.fn) + "() argument '" + std::string(c.param) +
+                       "': expected a " + expected);
+}
 // int64_t aliases `long` on LP64 and `long long` on macOS/LLP64; specialize
 // the fundamental types so each ABI sees exactly one definition per type.
 template <>
 struct FromJit<long long> {
   static long long get(const JitValue& v, ArgCtx c) {
-    if (v.tag != TAG_LONG) _arg_type_error(c.fn, c.param, "Long");
+    if (v.tag != TAG_LONG) _arg_type_error(c, "Long", v.tag);
     return v.data;
   }
 };
@@ -181,7 +359,7 @@ template <>
 struct FromJit<double> {
   static double get(const JitValue& v, ArgCtx c) {
     if (v.tag == TAG_LONG) return static_cast<double>(v.data);
-    if (v.tag != TAG_FLOAT) _arg_type_error(c.fn, c.param, "Float");
+    if (v.tag != TAG_FLOAT) _arg_type_error(c, "Float", v.tag);
     return std::bit_cast<double>(v.data);
   }
 };
@@ -194,7 +372,7 @@ struct FromJit<float> {
 template <>
 struct FromJit<bool> {
   static bool get(const JitValue& v, ArgCtx c) {
-    if (v.tag != TAG_BOOL) _arg_type_error(c.fn, c.param, "Bool");
+    if (v.tag != TAG_BOOL) _arg_type_error(c, "Bool", v.tag);
     return v.data != 0;
   }
 };
@@ -202,7 +380,7 @@ template <>
 struct FromJit<std::string> {
   static std::string get(const JitValue& v, ArgCtx c) {
     if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW)
-      _arg_type_error(c.fn, c.param, "String");
+      _arg_type_error(c, "String", v.tag);
     return std::string(_str_sv(reinterpret_cast<const char*>(v.data)));
   }
 };
@@ -210,13 +388,57 @@ template <>
 struct FromJit<std::string_view> {
   static std::string_view get(const JitValue& v, ArgCtx c) {
     if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW)
-      _arg_type_error(c.fn, c.param, "String");
+      _arg_type_error(c, "String", v.tag);
     return _str_sv(reinterpret_cast<const char*>(v.data));
   }
 };
 template <>
 struct FromJit<Value> {
   static Value get(const JitValue& v, ArgCtx) { return Value::borrow(v); }
+};
+
+// Containers, element-wise through the same specializations — so a
+// std::vector<std::string> parameter rejects [1, 2] with the String
+// TypeError its elements would have raised one at a time.
+template <class T>
+struct FromJit<std::vector<T>> {
+  static std::vector<T> get(const JitValue& v, ArgCtx c) {
+    if (v.tag != TAG_ARRAY && v.tag != TAG_TUPLE)
+      _arg_type_error(c, "Array", v.tag);
+    auto* arr = reinterpret_cast<JitArray*>(v.data);
+    std::vector<T> out;
+    out.reserve(arr->size);
+    for (size_t i = 0; i < arr->size; i++)
+      out.push_back(FromJit<T>::get(arr->items[i], c));
+    return out;
+  }
+};
+template <class T>
+struct FromJit<std::map<std::string, T>> {
+  static std::map<std::string, T> get(const JitValue& v, ArgCtx c) {
+    if (v.tag != TAG_OBJECT) _arg_type_error(c, "Object", v.tag);
+    auto* obj = reinterpret_cast<JitObject*>(v.data);
+    Value keys = Value::adopt(
+        {TAG_ARRAY,
+         reinterpret_cast<int64_t>(culebra_runtime_object_keys(obj))});
+    std::map<std::string, T> out;
+    for (int64_t i = 0; i < keys.size(); i++) {
+      Value k = keys[i];
+      // A std::map<std::string, T> names String keys; an Object holding a
+      // Long or Tuple key cannot round-trip into one.
+      if (!k.is_string()) _arg_type_error(c, "Object with String keys", v.tag);
+      Value e = Value::borrow(v).at(k);
+      out.emplace(k.to_string(), FromJit<T>::get(e.get(), c));
+    }
+    return out;
+  }
+};
+template <class T>
+struct FromJit<std::optional<T>> {
+  static std::optional<T> get(const JitValue& v, ArgCtx c) {
+    if (v.tag == TAG_NIL) return std::nullopt;
+    return FromJit<T>::get(v, c);
+  }
 };
 
 // C++ return -> owned runtime value.
@@ -236,6 +458,79 @@ inline JitValue to_jit(const std::string& s) {
 }
 inline JitValue to_jit(const char* s) { return to_jit(std::string_view(s)); }
 inline JitValue to_jit(Value v) { return v.release(); }
+inline JitValue to_jit(std::nullptr_t) { return {TAG_NIL, 0}; }
+
+template <class T>
+JitValue to_jit(const std::vector<T>& xs) {
+  auto* arr = culebra_runtime_array_new();
+  JitValue out{TAG_ARRAY, reinterpret_cast<int64_t>(arr)};
+  // An element's conversion cannot throw today, but the array is live from
+  // here on; hold it so a future one that does cannot strand it.
+  Value guard = Value::adopt(out);
+  for (const auto& x : xs) {
+    auto e = to_jit(x);
+    culebra_runtime_array_push(arr, e.tag, e.data);  // absorbs the +1
+  }
+  return guard.release();
+}
+template <class T>
+JitValue to_jit(const std::map<std::string, T>& m) {
+  auto* obj = culebra_runtime_object_new();
+  Value guard =
+      Value::adopt({TAG_OBJECT, reinterpret_cast<int64_t>(obj)});
+  for (const auto& [k, x] : m) {
+    auto e = to_jit(x);
+    culebra_runtime_object_set(obj, k.c_str(), /*mut=*/true, e.tag, e.data, 0,
+                               0, /*is_init=*/true);
+  }
+  return guard.release();
+}
+template <class T>
+JitValue to_jit(const std::optional<T>& o) {
+  if (!o) return {TAG_NIL, 0};
+  return to_jit(*o);
+}
+
+// ---------------------------------------------------------------------------
+// Arg — a value the host spells inline: at set/push/call and the two builders
+// the scalar conversions `Value` keeps explicit are implicit, so
+// `cfg.set("port", 8080)` needs no cast. Holds one +1; `owned()` mints the
+// one its consumer absorbs.
+// ---------------------------------------------------------------------------
+class Arg {
+ public:
+  Arg(Value v) : v_(v.release()) {}
+  Arg(std::nullptr_t) : v_{TAG_NIL, 0} {}
+  Arg(bool b) : v_(to_jit(b)) {}
+  Arg(int n) : v_(to_jit(n)) {}
+  Arg(long n) : v_(to_jit(n)) {}
+  Arg(long long n) : v_(to_jit(n)) {}
+  Arg(double d) : v_(to_jit(d)) {}
+  Arg(float d) : v_(to_jit(d)) {}
+  Arg(const char* s) : v_(to_jit(s)) {}
+  Arg(std::string_view s) : v_(to_jit(s)) {}
+  Arg(const std::string& s) : v_(to_jit(s)) {}
+  template <class T>
+  Arg(const std::vector<T>& xs) : v_(to_jit(xs)) {}
+  template <class T>
+  Arg(const std::map<std::string, T>& m) : v_(to_jit(m)) {}
+  template <class T>
+  Arg(const std::optional<T>& o) : v_(to_jit(o)) {}
+
+  Arg(const Arg& o) : v_(o.v_) {  // initializer_list copies its elements out
+    culebra_runtime_value_retain(v_.tag, v_.data);
+  }
+  Arg& operator=(const Arg&) = delete;
+  ~Arg() { _culebra_value_release_impl(v_.tag, v_.data); }
+
+  JitValue owned() const {
+    culebra_runtime_value_retain(v_.tag, v_.data);
+    return v_;
+  }
+
+ private:
+  JitValue v_;
+};
 
 template <class Fn, class R, class... A>
 HostFn make_adapter(Fn fn, std::string name,
@@ -264,6 +559,88 @@ HostFn make_adapter(Fn fn, std::string name,
 }
 
 }  // namespace _embed_detail
+
+// ---------------------------------------------------------------------------
+// Value's host-facing writes and reads, defined once `Arg` and the FromJit
+// specializations they name are complete.
+// ---------------------------------------------------------------------------
+
+template <class T>
+T Value::as() const {
+  return _embed_detail::FromJit<T>::get(v_, _embed_detail::ArgCtx{});
+}
+
+inline void Value::set(std::string_view key, _embed_detail::Arg v) {
+  if (v_.tag != TAG_OBJECT)
+    culebra_runtime_type_error_typed(0, 0, "Object", v_.tag);
+  std::string k(key);  // a String key is borrowed bytes, never consumed
+  const JitValue val = v.owned();  // the store absorbs this +1
+  culebra_runtime_object_set_any(reinterpret_cast<JitObject*>(v_.data),
+                                 TAG_STRING,
+                                 reinterpret_cast<int64_t>(k.c_str()),
+                                 /*mut=*/true, val.tag, val.data, 0, 0,
+                                 /*is_init=*/false);
+}
+
+inline void Value::set(int64_t idx, _embed_detail::Arg v) {
+  set(Value(idx), std::move(v));
+}
+
+inline void Value::set(const Value& key, _embed_detail::Arg v) {
+  const JitValue k = key.get();
+  const JitValue val = v.owned();  // the store absorbs this +1
+  if (v_.tag == TAG_ARRAY) {
+    if (k.tag != TAG_LONG) {
+      _culebra_value_release_impl(val.tag, val.data);
+      culebra_runtime_type_error_typed(0, 0, "Long", k.tag);
+    }
+    culebra_runtime_array_set(reinterpret_cast<JitArray*>(v_.data), k.data,
+                              val.tag, val.data, 0, 0);
+    return;
+  }
+  if (v_.tag == TAG_OBJECT) {
+    // object_set_any consumes the key and the value on every path.
+    culebra_runtime_value_retain(k.tag, k.data);
+    culebra_runtime_object_set_any(reinterpret_cast<JitObject*>(v_.data), k.tag,
+                                   k.data, /*mut=*/true, val.tag, val.data, 0,
+                                   0, /*is_init=*/false);
+    return;
+  }
+  _culebra_value_release_impl(val.tag, val.data);
+  culebra_runtime_type_error_typed(0, 0, "Array", v_.tag);
+}
+
+inline void Value::push(_embed_detail::Arg v) {
+  if (v_.tag != TAG_ARRAY)
+    culebra_runtime_type_error_typed(0, 0, "Array", v_.tag);
+  const JitValue val = v.owned();
+  culebra_runtime_array_push(reinterpret_cast<JitArray*>(v_.data), val.tag,
+                             val.data);  // absorbs the +1
+}
+
+inline Value Value::array(std::initializer_list<_embed_detail::Arg> items) {
+  Value out = Value::adopt(
+      {TAG_ARRAY, reinterpret_cast<int64_t>(culebra_runtime_array_new())});
+  for (const auto& item : items) out.push(item);
+  return out;
+}
+
+inline Value Value::object(
+    std::initializer_list<std::pair<std::string_view, _embed_detail::Arg>>
+        entries) {
+  Value out = Value::adopt(
+      {TAG_OBJECT, reinterpret_cast<int64_t>(culebra_runtime_object_new())});
+  auto* obj = reinterpret_cast<JitObject*>(out.get().data);
+  for (const auto& [key, val] : entries) {
+    std::string k(key);
+    const JitValue v = val.owned();
+    // is_init: the object-literal seat. `mut` because a host-built Object is
+    // the host's own data — `{mut k: v}`, not `{k: v}`.
+    culebra_runtime_object_set(obj, k.c_str(), /*mut=*/true, v.tag, v.data, 0,
+                               0, /*is_init=*/true);
+  }
+  return out;
+}
 
 // ---------------------------------------------------------------------------
 // Embed — one engine session for a host. Construction installs the compiled
@@ -327,6 +704,22 @@ class Embed {
     });
   }
 
+  // Run one input and hand its value back, reporting a failure the way `call`
+  // reports one — a CulebraError with kind/line/col — instead of a message
+  // list. The entry for a host that has no console to print `msgs` to.
+  // (An uncaught script `throw` arrives as kind "RuntimeError" carrying the
+  // "uncaught: ..." text: Exec flattens the thrown object at the engine
+  // boundary, the same line every lane prints for one.)
+  Value eval(std::string_view source, std::string_view name = "<inline>") {
+    Value result;
+    std::vector<std::string> msgs;
+    units_.clear_last_error();
+    if (run_source(name, source, result, msgs)) return result;
+    if (const auto& e = units_.last_error()) throw *e;
+    // A parse failure never reaches the session — the text is all there is.
+    throw culebra::CulebraError("SyntaxError", join(msgs));
+  }
+
   // Parse-and-run convenience: copies `source`, parses it under `name`, and
   // runs it — the recommended host entry (ownership cannot be got wrong).
   bool run_source(std::string_view name, std::string_view source,
@@ -373,6 +766,25 @@ class Embed {
       _culebra_value_release_impl(v.tag, v.data);
       throw culebra::CulebraError(kind, message);
     }
+  }
+
+  // The same call with its arguments spelled inline: every scalar `Value`
+  // constructs from, plus vector / map / optional, converts here. The
+  // `std::vector<Value>` form above stays the way to pass values the host
+  // already holds.
+  template <class... Ts>
+    requires(sizeof...(Ts) > 0 &&
+             !(sizeof...(Ts) == 1 &&
+               (std::same_as<std::remove_cvref_t<Ts>, std::vector<Value>> &&
+                ...)) &&
+             (std::constructible_from<_embed_detail::Arg, Ts> && ...))
+  Value call(std::string_view name, Ts&&... args) {
+    std::vector<Value> vals;
+    vals.reserve(sizeof...(Ts));
+    (vals.push_back(Value::adopt(
+         _embed_detail::Arg(std::forward<Ts>(args)).owned())),
+     ...);
+    return call(name, std::move(vals));
   }
 
   // Bind a host callable as a session function (define's seat). Parameter
