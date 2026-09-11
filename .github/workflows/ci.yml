@@ -1616,6 +1616,31 @@ jobs:
           compression-level: 1
       # Trivial AOT (no exceptions): exercises COFF object emit + the Windows
       # link driver (g++/quoting/-static). Verbose so the link command shows.
+      # Baseline probe (this branch only): does an AOT binary that
+      # force-loads a wrap.h-reaching archive AND formats an Object run on
+      # Windows, at a commit before the wrap-meta series? Answers whether that
+      # series caused the failure or merely first exercised the path.
+      - name: Probe — wrap archive + Object display (baseline)
+        continue-on-error: true
+        run: |
+          set +e
+          i=0
+          while IFS= read -r prog; do
+            [ -n "$prog" ] || continue
+            i=$((i + 1))
+            printf '%b\nprint("ok")\n' "$prog" > "base_$i.cul"
+            ./build-win-aot/culebra.exe build "base_$i.cul" -o "base_$i.exe" \
+              > /dev/null 2>&1 || { echo "base $i BUILD_FAIL: $prog"; continue; }
+            out=$(timeout 60 "./base_$i.exe" 2>&1); rc=$?
+            echo "base $i: rc=$rc out=[$out] <- $prog"
+            printf '::warning::baseline %s: rc=%s out=[%s] <- %s\n' "$i" "$rc" "$out" \
+              "$(printf '%s' "$prog" | sed 's/%/%25/g')"
+          done <<'PROGS'
+          let s = to_string({a: 1})
+          let c = __Foreign.Counter.new(1)\nc.drop()
+          let c = __Foreign.Counter.new(1)\nlet s = to_string({a: 1})\nc.drop()
+          let m = CodeGen.Module.new()\nlet s = to_string({a: 1})\nm.drop()
+          PROGS
       - name: Smoke — trivial AOT (no EH)
         env:
           CULEBRA_VERBOSE: "1"
