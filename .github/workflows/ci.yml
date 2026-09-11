@@ -1735,7 +1735,18 @@ jobs:
       # duplicate helpers (they have an owner now), not the strip
       # (--keep-symbols fails the same). What is left is the image, so this
       # reports it: two binaries that differ only in the display.
-      - name: Probe (open) — the image an AOT binary that formats an Object gets
+      # OPEN, Windows AOT only: a binary that force-loads a wrap.h-reaching
+      # feature archive AND formats an Object fails to load — no output, exit
+      # 127, before its first statement. Neither half alone does it, an archive
+      # that does not reach wrap.h (SQLite) does not, and it predates the
+      # wrap-meta series (measured on ci/win-aot-baseline). Ruled out: the
+      # duplicate helpers (they have an owner now), the strip (--keep-symbols
+      # fails the same), the import table (identical to a binary that runs),
+      # the section layout and the TLS size (identical). 127 is the loader's
+      # ERROR_PROC_NOT_FOUND and nothing in the tree exits with it, so what is
+      # left is what the loader reads and a section table does not show: the
+      # TLS callbacks and the entry point.
+      - name: Probe (open) — what the loader reads in the two images
         continue-on-error: true
         run: |
           set +e
@@ -1745,20 +1756,22 @@ jobs:
             ./build-win-aot/culebra.exe build "$n.cul" -o "$n.exe" > /dev/null 2>&1 \
               || { echo "$n BUILD_FAIL"; continue; }
             out=$(timeout 60 "./$n.exe" 2>&1); rc=$?
-            dirs=$(objdump -p "$n.exe" 2>/dev/null \
-              | sed -n '/The Data Directory/,/^$/p' \
-              | grep -vE "^$|Data Directory" \
-              | awk '$2 != "00000000" {printf "%s ", $1}')
-            secs=$(objdump -h "$n.exe" 2>/dev/null \
-              | awk '/^ *[0-9]+ / {printf "%s:%s ", $2, $3}')
-            nt=$(ntldd -R "$n.exe" 2>&1 | grep -iE "not found|error" | head -3 | tr '\n' ' ')
-            echo "$n: rc=$rc out=[$out]"
-            echo "$n: dirs=[$dirs]"
-            echo "$n: secs=[$secs]"
-            echo "$n: ntldd=[$nt]"
-            printf '::warning::%s rc=%s dirs=[%s] ntldd=[%s]\n' "$n" "$rc" \
-              "$(printf '%s' "$dirs" | cut -c1-300)" "$(printf '%s' "$nt" | cut -c1-300)"
-            printf '::warning::%s secs=[%s]\n' "$n" "$(printf '%s' "$secs" | cut -c1-600)"
+            echo "=== $n: rc=$rc out=[$out] ==="
+            objdump -p "$n.exe" 2>/dev/null | grep -iE "entry point|Thread|tls" | head -20
+            tls=$(objdump -p "$n.exe" 2>/dev/null \
+              | grep -iA 8 "Thread Storage Directory" | tr -s ' \n' ' ')
+            ep=$(objdump -f "$n.exe" 2>/dev/null | grep -i "start address")
+            echo "$n tls=[$tls]"
+            echo "$n ep=[$ep]"
+            printf '::warning::%s rc=%s %s tls=[%s]\n' "$n" "$rc" "$ep" \
+              "$(printf '%s' "$tls" | sed 's/%/%25/g' | cut -c1-500)"
+          done
+          # And what a walker makes of each: msys2 ships `ldd` for PE.
+          for n in bad good; do
+            [ -f "$n.exe" ] || continue
+            l=$(ldd "$n.exe" 2>&1 | grep -icE "not found" )
+            echo "$n ldd-missing=$l"
+            printf '::warning::%s ldd-missing=%s\n' "$n" "$l"
           done
       # When the fixture's AOT binary is the one that failed, the program is
       # what has to be bisected — and only this platform can do it. Each prefix
