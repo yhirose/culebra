@@ -1720,59 +1720,57 @@ jobs:
         run: |
           misc/run_all_backends.sh ./build-win-aot/culebra.exe \
             tests/test_foreign.cul "'test_foreign OK'" FOREIGN
-      # OPEN, Windows AOT only: a binary that formats a wrapped handle does
-      # not start. It links (2 MB, system DLLs only, no import a working
-      # binary lacks) and then exits 127 before its first write; the same
-      # program is green under --vm and --jit here and on every lane
-      # elsewhere, AOT included. The bisect that found it is above; this
-      # keeps the axis measured while it is open, and reports without
-      # holding the job red. Delete the step, not the probe, when it passes.
       # OPEN, Windows AOT only: a binary that force-loads a wrap.h-reaching
-      # feature archive AND formats an Object fails to load — no output, exit
-      # 127, before its first statement. Neither half alone does it, an
-      # archive that does not reach wrap.h (SQLite) does not, and it predates
-      # the wrap-meta series (measured on ci/win-aot-baseline). Not the
-      # duplicate helpers (they have an owner now), not the strip
-      # (--keep-symbols fails the same). What is left is the image, so this
-      # reports it: two binaries that differ only in the display.
-      # OPEN, Windows AOT only: a binary that force-loads a wrap.h-reaching
-      # feature archive AND formats an Object fails to load — no output, exit
-      # 127, before its first statement. Neither half alone does it, an archive
-      # that does not reach wrap.h (SQLite) does not, and it predates the
-      # wrap-meta series (measured on ci/win-aot-baseline). Ruled out: the
-      # duplicate helpers (they have an owner now), the strip (--keep-symbols
-      # fails the same), the import table (identical to a binary that runs),
-      # the section layout and the TLS size (identical). 127 is the loader's
-      # ERROR_PROC_NOT_FOUND and nothing in the tree exits with it, so what is
-      # left is what the loader reads and a section table does not show: the
-      # TLS callbacks and the entry point.
-      - name: Probe (open) — what the loader reads in the two images
+      # feature archive AND formats an Object prints nothing and exits 127.
+      # Neither half alone does it, an archive that does not reach wrap.h
+      # (SQLite) does not, and it predates the wrap-meta series (measured on
+      # ci/win-aot-baseline). Ruled out: the duplicate helpers, the strip, the
+      # import table, the section layout, the TLS directory and the entry point
+      # (all identical to a binary that runs).
+      #
+      # What 127 and the silence do NOT say: msys2's bash folds every NTSTATUS
+      # exit above 0xC0000000 to 127 except a handful it maps to signals
+      # (access violation is 139), and `print` buffers, so a program that
+      # crashed in its second statement looks exactly like one that never
+      # loaded. So this asks in three ways that cannot be misread: cmd.exe's
+      # errorlevel is the raw NTSTATUS; IO.eprintln goes to an unbuffered
+      # stderr, so the last marker seen is where it died; and gdb reports what
+      # the process was doing when it did, with the symbols kept.
+      - name: Probe (open) — where the image dies, and doing what
         continue-on-error: true
         run: |
           set +e
-          printf 'let c = __Foreign.Counter.new(1)\nlet s = to_string({a: 1})\nc.drop()\nprint("ok")\n' > bad.cul
-          printf 'let c = __Foreign.Counter.new(1)\nc.drop()\nprint("ok")\n' > good.cul
+          printf 'IO.eprintln("A")\nlet c = __Foreign.Counter.new(1)\nIO.eprintln("B")\nlet s = to_string({a: 1})\nIO.eprintln("C")\nc.drop()\nprintln("ok")\n' > bad.cul
+          printf 'IO.eprintln("A")\nlet c = __Foreign.Counter.new(1)\nIO.eprintln("B")\nc.drop()\nprintln("ok")\n' > good.cul
+          esc() { tr '\r\n' '  ' | sed 's/%/%25/g' | cut -c1-"${1:-900}"; }
           for n in bad good; do
-            ./build-win-aot/culebra.exe build "$n.cul" -o "$n.exe" > /dev/null 2>&1 \
-              || { echo "$n BUILD_FAIL"; continue; }
-            out=$(timeout 60 "./$n.exe" 2>&1); rc=$?
-            echo "=== $n: rc=$rc out=[$out] ==="
-            objdump -p "$n.exe" 2>/dev/null | grep -iE "entry point|Thread|tls" | head -20
-            tls=$(objdump -p "$n.exe" 2>/dev/null \
-              | grep -iA 8 "Thread Storage Directory" | tr -s ' \n' ' ')
-            ep=$(objdump -f "$n.exe" 2>/dev/null | grep -i "start address")
-            echo "$n tls=[$tls]"
-            echo "$n ep=[$ep]"
-            printf '::warning::%s rc=%s %s tls=[%s]\n' "$n" "$rc" "$ep" \
-              "$(printf '%s' "$tls" | sed 's/%/%25/g' | cut -c1-500)"
+            ./build-win-aot/culebra.exe build --keep-symbols "$n.cul" -o "$n.exe" \
+              > /dev/null 2>&1 || { echo "$n BUILD_FAIL"; continue; }
+            # A .bat expands %errorlevel% one line at a time, after the exe
+            # ran; cmd.exe returns the process's own status, signed decimal.
+            printf '@echo off\r\n%s.exe\r\necho EXIT=%%errorlevel%%\r\n' "$n" > "run_$n.bat"
+            out=$(timeout 60 cmd //c "run_$n.bat" 2>&1); rc=$?
+            echo "=== $n: bash rc=$rc out=[$out] ==="
+            printf '::warning::%s: bash rc=%s; cmd sees [%s]\n' "$n" "$rc" "$(printf '%s' "$out" | esc)"
           done
-          # And what a walker makes of each: msys2 ships `ldd` for PE.
-          for n in bad good; do
-            [ -f "$n.exe" ] || continue
-            l=$(ldd "$n.exe" 2>&1 | grep -icE "not found" )
-            echo "$n ldd-missing=$l"
-            printf '::warning::%s ldd-missing=%s\n' "$n" "$l"
-          done
+          # gdb: a load-time failure says "During startup program exited with
+          # code 0x...", a crash names the signal and the frame it was in.
+          g=$(timeout 180 gdb -batch -q -ex 'set pagination off' \
+                -ex 'set print thread-events off' -ex run -ex 'x/2i $pc' \
+                -ex 'bt 24' -ex 'bt -6' ./bad.exe 2>&1)
+          printf '%s\n' "$g"
+          printf '::warning::gdb: %s\n' \
+            "$(printf '%s\n' "$g" | grep -iE 'exited|received signal|During startup|=> 0x' | head -4 | esc)"
+          printf '%s\n' "$g" | grep -E '^#[0-9]+ ' | sed 's/%/%25/g' \
+            | awk '{ b = b " " $0 } length(b) > 900 { print "::warning::gdb bt:" b; b = "" }
+                   END { if (b != "") print "::warning::gdb bt:" b }' | head -3
+          # The 3 KB the display costs the image: which symbols bad has that
+          # good does not names the archive members the display pulled in.
+          syms() { nm --defined-only -C "$1" 2>/dev/null | sed -E 's/^[0-9a-fA-F]+ . //' | sort -u; }
+          comm -13 <(syms good.exe) <(syms bad.exe) > only_bad.txt
+          echo "only in bad: $(wc -l < only_bad.txt)"; cat only_bad.txt
+          printf '::warning::only in bad (%s): %s\n' "$(wc -l < only_bad.txt)" \
+            "$(head -c 1500 only_bad.txt | esc 1000)"
       # When the fixture's AOT binary is the one that failed, the program is
       # what has to be bisected — and only this platform can do it. Each prefix
       # ends at a section boundary, so every one is a whole program, and the
