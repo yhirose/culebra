@@ -825,12 +825,7 @@ if(CULEBRA_ENABLE_SCENE)
   # helper the compiler declined to inline, against the core archive's strong
   # one — the leftover Webview's Windows fragment absorbs above, for the same
   # reason (PE has no weak external). Appended after the split from
-  # _raylib_aot_link, not into it: a Canvas link that never force-loads the
-  # Scene archive keeps strict duplicate detection.
-  # tools/checks/check_rt_archive_tls.sh fails if the count grows past a leftover or two.
-  if(WIN32)
-    string(APPEND _scene_link " -Wl,--allow-multiple-definition")
-  endif()
+  # _raylib_aot_link, not into it.
   message(STATUS "Scene: enabled (vendored static SDL3 + raylib)")
 endif()
 
@@ -912,16 +907,6 @@ if(CULEBRA_ENABLE_WEBVIEW)
       set(_webview_libs ole32 shell32 shlwapi user32 version advapi32)
       list(TRANSFORM _webview_libs PREPEND "-l" OUTPUT_VARIABLE _webview_lflags)
       list(JOIN _webview_lflags " " _webview_link)
-      # The binding reaches wrap.h, so its TU can emit a `culebra_runtime_*`
-      # helper the core archive defines strongly, and PE has no weak external
-      # to fold the two with. CULEBRA_RT_FEATURE_ARCHIVE (rt_macros.h) stops
-      # the wholesale emission but not the last un-inlined one — that is the
-      # compiler's business. It takes the first definition and drops the
-      # diagnostic; COMDAT folding is what handles the ordinary inline bodies.
-      # Scoped to this axis, so a link that does not use Webview keeps strict
-      # duplicate detection, and tools/checks/check_rt_archive_tls.sh fails if the
-      # count grows past a leftover or two.
-      string(APPEND _webview_link " -Wl,--allow-multiple-definition")
     else()
       message(STATUS "Webview: disabled (WebView2.h not found — install webview2-loader)")
       set(CULEBRA_ENABLE_WEBVIEW OFF)
@@ -1706,26 +1691,17 @@ if(CULEBRA_ENABLE_JIT)
   target_compile_definitions(culebra PRIVATE CULEBRA_WEBVIEW_LINK="${_webview_link}")
 endif()
 
-# The __Foreign fixture archive reaches wrap.h, so its TU can emit a
-# `culebra_runtime_*` helper the core archive defines strongly — the same
-# un-inlined leftover Webview's Windows fragment absorbs above, and for the
-# same reason (PE has no weak external). Scoped to this axis, which only the
-# foreign-object tests trigger, so ordinary links keep strict duplicate
-# detection; tools/checks/check_rt_archive_tls.sh fails if the count grows.
+# The __Foreign fixture archive reaches wrap.h. CULEBRA_RT_FEATURE_ARCHIVE
+# (rt_macros.h) is what keeps it from defining a `culebra_runtime_*` helper the
+# core archive owns, so this fragment carries no duplicate-definition waiver.
 set(_foreign_link "")
-if(WIN32)
-  set(_foreign_link "-Wl,--allow-multiple-definition")
-endif()
 if(CULEBRA_ENABLE_JIT)
   target_compile_definitions(culebra PRIVATE CULEBRA_FOREIGN_LINK="${_foreign_link}")
 endif()
 
-# CodeGen.Module's archive reaches wrap.h too, so it needs the same Windows
-# absorption as __Foreign, for the same reason (PE has no weak external).
+# CodeGen.Module's archive reaches wrap.h too, and borrows the core's helpers
+# the same way.
 set(_codegen_link "")
-if(WIN32)
-  set(_codegen_link "-Wl,--allow-multiple-definition")
-endif()
 if(CULEBRA_ENABLE_JIT)
   target_compile_definitions(culebra PRIVATE CULEBRA_CODEGEN_LINK="${_codegen_link}")
 endif()

@@ -158,67 +158,38 @@ echo "rt-archive-deps OK (core archive references no OpenSSL/zlib/httplib symbol
 if [[ "$(uname -s)" == "Darwin" ]]; then
   echo "rt-archive-dup SKIP (symbol classes are read on ELF -- see strong_defs)"
 else
-  # The waiver is only as true as the flag, and it is that axis's own fragment
-  # that must carry it -- not some other axis. This script is where a fragment
-  # that lost the flag goes unnoticed otherwise (it did, once: the flag was
-  # deleted and only the comment came back). Every waived axis reaches wrap.h,
-  # which is what leaves the un-inlined `culebra_runtime_*` helper behind.
-  waved=()
-  if grep -q -- '_webview_link.*--allow-multiple-definition' CMakeLists.txt; then
-    waved+=("libculebra_rt_webview.a")
-  fi
-  if grep -q -- '_foreign_link.*--allow-multiple-definition' CMakeLists.txt; then
-    waved+=("libculebra_rt_foreign.a")
-  fi
-  if grep -q -- '_codegen_link.*--allow-multiple-definition' CMakeLists.txt; then
-    waved+=("libculebra_rt_codegen.a")
-  fi
-  if grep -q -- '_scene_link.*--allow-multiple-definition' CMakeLists.txt; then
-    waved+=("libculebra_rt_scene.a")
-  fi
-  waved_max=8   # a leftover or two; 348 was the archive before the attribute came off
+  # A feature TU must not define what the core archive defines strongly: PE
+  # has no weak external, so mingw's ld calls each one a multiple definition
+  # and the Windows AOT link fails. It used to be enough to hope the optimizer
+  # inlined them all, with --allow-multiple-definition on the axes that reach
+  # wrap.h to absorb what it did not — and an absorbed duplicate produced an
+  # image that could fail to load. CULEBRA_RT_FEATURE_ARCHIVE now gives those
+  # helpers GNU89 inline semantics (rt_macros.h), so a feature archive calls
+  # the core's definition instead of emitting one. Nothing is waived: the
+  # answer is zero.
   core_strong=$(strong_defs "$core")
   dup_fail=0
   for ar in "$BUILD_DIR"/libculebra_rt_*.a; do
     [[ -f "$ar" ]] || continue
     shared=$(comm -12 <(printf '%s\n' "$core_strong") <(all_defs "$ar"))
     [[ -n "$shared" ]] || continue
-    n=$(printf '%s\n' "$shared" | grep -c .)
-    is_waved=0
-    for w in ${waved+"${waved[@]}"}; do
-      [[ "$ar" == */"$w" ]] && is_waved=1 && break
-    done
-    if (( is_waved )) && (( n <= waved_max )); then
-      echo "rt-archive-dup OK: $(basename "$ar") leaves $n un-inlined" \
-           "helper(s) for its fragment's --allow-multiple-definition"
-      continue
-    fi
     dup_fail=1
-    echo "rt-archive-dup FAIL: $(basename "$ar") re-defines $n symbol(s) the" \
+    echo "rt-archive-dup FAIL: $(basename "$ar") re-defines $(printf '%s\n' "$shared" | grep -c .) symbol(s) the" \
          "core archive defines strongly:" >&2
     printf '%s\n' "$shared" | demangle | sed 's/^/  /' | head -20 >&2
   done
   if (( dup_fail )); then
     cat >&2 <<'EOF'
   PE has no weak external, so mingw's ld calls each of these a multiple
-  definition and the Windows AOT link fails. A feature TU must not define what
-  the core archive defines strongly: check that its build carries
-  CULEBRA_RT_FEATURE_ARCHIVE (CMakeLists' feature loop). Many of them mean the
-  __attribute__((used)) came back (rt_macros.h); one or two mean a call stopped
-  inlining, which only an axis whose link fragment carries
-  --allow-multiple-definition can absorb.
-
-  If this names libculebra_rt_scene.a with more than a leftover or two, the
-  waiver above has stopped covering it: Scene reaches wrap.h the same way
-  Webview does, and its own fragment (not the raylib one it is built from,
-  which Canvas shares) carries the flag.
-
-  (An axis you just switched OFF still has its archive in the build dir --
-  delete that .a and re-run.)
+  definition and the Windows AOT link fails. Check that the archive's build
+  carries CULEBRA_RT_FEATURE_ARCHIVE (CMakeLists' feature loop) — that is what
+  makes a `culebra_runtime_*` call reach the core's definition instead of
+  emitting a copy beside it. A symbol that is not one of those helpers has no
+  such owner yet, and needs one.
 EOF
     exit 1
   fi
-  echo "rt-archive-dup OK (no unabsorbed duplicate of the core's" \
+  echo "rt-archive-dup OK (no feature archive re-defines any of the core's" \
        "$(printf '%s\n' "$core_strong" | grep -c . || true) strong symbols)"
 fi
 

@@ -49,7 +49,15 @@
 #define CULEBRA_RT_INLINE
 #elif defined(CULEBRA_RT_FEATURE_ARCHIVE)
 #define CULEBRA_RT_KEEP
-#define CULEBRA_RT_INLINE inline
+// GNU89 inline semantics: inline where the compiler can, and where it cannot,
+// CALL the core archive's definition — never emit a copy beside it. Plain
+// `inline` left that to the optimizer, and what survived was a COMDAT against
+// the core's strong definition, the one shape PE has no weak external to fold
+// (rt_archive-dup's waiver absorbed the diagnostic, and the image it produced
+// could fail to load). This is the helpers' half of the ownership
+// CULEBRA_RT_CORE_OWNED gives the thread_locals: the core defines, a feature
+// archive borrows.
+#define CULEBRA_RT_INLINE inline __attribute__((gnu_inline))
 #else
 #define CULEBRA_RT_KEEP __attribute__((used))
 #define CULEBRA_RT_INLINE inline
