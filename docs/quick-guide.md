@@ -624,6 +624,9 @@ produces something else, in Culebra.
 | `0 == false` | `false` — there is no cross-type coercion |
 | `.length` / `.count` | `.size()`. A missing property is `nil`, so `.length` reads as `nil` instead of raising |
 | `.append(x)` | `.push(x)` |
+| `xs.sort(\|a, b\| ...)` — a comparator | `xs.sorted_by(key)` takes a *key*, not a comparator; `reverse: true` descends. There is no `<=>` |
+| `xs.take(n)` / `xs[:n]` | `xs.slice(0, n)`. `take` is an Iterator method — `xs.iter().take(n).collect()` |
+| `obj.items()` / `obj.entries()` / `obj.to_array()` | `for k, v in obj`, or `obj.keys().map(\|k\| (k, obj[k]))` |
 | `del a[i]` / `a.splice(i, 1)` | `a.remove_at(i)`, which returns the removed element |
 | an `Object` keyed by text you do not control | `drop` is the RAII hook (2.9), so that one key throws `DropContractError` — prefix such keys |
 | `obj['missing']` | `KeyError`. `obj.missing` is `nil`; `obj.get('missing', dflt)` takes a fallback |
