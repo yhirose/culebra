@@ -614,6 +614,7 @@ inspect(show('hi'))  # => 'hi'
 | `.length` / `.count` | `.size()`。存在しないプロパティは`nil`なので`.length`はraiseせず`nil`になる |
 | `.append(x)` | `.push(x)` |
 | `del a[i]` / `a.splice(i, 1)` | `a.remove_at(i)`。取り除いた要素を返す |
+| 自分で決めていない文字列をキーにした`Object` | `drop`はRAIIフック (2.9) なので、そのキーだけ`DropContractError`になる — 接頭辞を付ける |
 | `obj['missing']` | `KeyError`。`obj.missing`は`nil`、`obj.get('missing', dflt)`はfallbackを取る |
 | `'ab' * 3` | `TypeError`。文字列の繰り返し演算子は無い |
 | `s.find(x)` / `s.indexOf(x)` | `s.index_of(x)` — バイトオフセット、無ければ`-1` |

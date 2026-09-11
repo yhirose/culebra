@@ -625,6 +625,7 @@ produces something else, in Culebra.
 | `.length` / `.count` | `.size()`. A missing property is `nil`, so `.length` reads as `nil` instead of raising |
 | `.append(x)` | `.push(x)` |
 | `del a[i]` / `a.splice(i, 1)` | `a.remove_at(i)`, which returns the removed element |
+| an `Object` keyed by text you do not control | `drop` is the RAII hook (2.9), so that one key throws `DropContractError` — prefix such keys |
 | `obj['missing']` | `KeyError`. `obj.missing` is `nil`; `obj.get('missing', dflt)` takes a fallback |
 | `'ab' * 3` | `TypeError`. There is no string repetition operator |
 | `s.find(x)` / `s.indexOf(x)` | `s.index_of(x)` — a byte offset, `-1` when absent |
