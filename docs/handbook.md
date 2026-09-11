@@ -1972,22 +1972,35 @@ int main() {
   culebra::RuntimeScope scope(rt);
   culebra::vm::Embed embed;   // stdlib installed, traits registered
 
-  culebra::vm::Value val;
-  std::vector<std::string> msgs;
-  embed.run_source("<inline>", R"(
+  auto v = embed.eval(R"(
     add = fn (a, b) { a + b }
     add(40, 2)
-  )", val, msgs);
-  std::cout << val.to_long() << "\n";   // 42
+  )");
+  std::cout << v.as<int64_t>() << "\n";   // 42
 }
 ```
 
-`vm::Embed` is a session: each `run_source` sees the bindings the
-earlier ones made, and the host reads them back with `embed.global` or
-calls them with `embed.call`. The standard library is installed, and so
-are the `inspect` / `print` / `println` globals — the same names a
-script sees. A script-level `throw` surfaces as a `culebra::CulebraError`
-carrying the thrown value's kind, message and position.
+`vm::Embed` is a session: each run sees the bindings the earlier ones
+made, and the host reads them back with `embed.global` or calls them
+with `embed.call`. The standard library is installed, and so are the
+`inspect` / `print` / `println` globals — the same names a script sees.
+
+What comes back is a `vm::Value`, which reads and writes as the thing it
+is. An Object and an Array are references, so a write through one lands
+in the script's own value:
+
+```cpp
+auto cfg = embed.global("config");
+auto port = cfg["port"].as<int64_t>();   // TypeError if it isn't a Long
+cfg["db"].set("host", "localhost");
+for (const auto& h : cfg["hosts"]) connect(h.as<std::string>());
+```
+
+`eval` and `call` raise `culebra::CulebraError` for anything the script
+raises, carrying the kind, message and position a script `catch` sees.
+`run_source(name, src, val, msgs)` is the same run with the failure
+reported as the text the CLI prints, for a host that would rather show
+it than catch it.
 
 See [`deployment.md`](deployment.md) for environment customization,
 value conversion, hosting the JIT, and the AOT-archive embed pathway

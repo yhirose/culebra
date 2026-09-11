@@ -331,10 +331,10 @@ culebra build hello.cul -o hello &amp;&amp; ./hello  # AOT: compile once, ship t
   culebra::RuntimeScope scope(rt);
   culebra::vm::Embed embed;   <span class="c">// stdlib installed, traits registered</span>
 
-  culebra::vm::Value val;
-  std::vector&lt;std::string&gt; msgs;
-  embed.run_source(<span class="s">"&lt;inline&gt;"</span>, <span class="s">"1 + 2"</span>, val, msgs);
-  <span class="c">// val.to_long() == 3</span>
+  <span class="k">auto</span> n = embed.eval(<span class="s">"1 + 2"</span>).as&lt;<span class="k">int64_t</span>&gt;();   <span class="c">// 3</span>
+
+  <span class="k">auto</span> cfg = embed.global(<span class="s">"config"</span>);
+  cfg[<span class="s">"db"</span>].set(<span class="s">"host"</span>, <span class="s">"localhost"</span>);   <span class="c">// writes into the script's own value</span>
 }</pre>
           <p class="fine-print">No LLVM dependency — the bytecode VM drops
             straight into a C++23 host through a minimal session API.

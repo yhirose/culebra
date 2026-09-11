@@ -306,15 +306,31 @@ int main() {
   culebra::RuntimeScope scope(rt);
   culebra::vm::Embed embed;   // stdlib installed, traits registered
 
-  culebra::vm::Value val;
-  std::vector<std::string> msgs;
-  embed.run_source("<inline>", "1 + 2", val, msgs);
-  // val.to_long() == 3
+  auto n = embed.eval("1 + 2").as<int64_t>();   // 3
 }
 ```
 
-See [`docs/deployment.md`](docs/deployment.md#2-embedding-culebra-in-a-c-host)
-for the JIT path, threading, and host-function registration.
+The session outlives each run, so the host reads what a script left and
+calls back into it. A `Value` reads and writes as the container it is —
+an Object and an Array are references, so a write through one lands in
+the script's own value:
+
+```cpp
+embed.define("log", [](std::string m) { std::println("{}", m); }, {"m"});
+embed.eval(source);
+
+auto cfg = embed.global("config");
+auto port = cfg["port"].as<int64_t>();      // TypeError if it isn't a Long
+cfg["db"].set("host", "localhost");
+for (const auto& h : cfg["hosts"]) connect(h.as<std::string>());
+
+embed.call("update", 1, 2);
+```
+
+Failures arrive as `culebra::CulebraError` with the kind, message and
+position the script's own `catch` sees. See
+[`docs/deployment.md`](docs/deployment.md#2-embedding-culebra-in-a-c-host)
+for the JIT path, threading, and wrapping C++ classes.
 
 Design choices
 --------------

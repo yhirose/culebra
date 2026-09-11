@@ -1940,21 +1940,33 @@ int main() {
   culebra::RuntimeScope scope(rt);
   culebra::vm::Embed embed;   // 標準ライブラリとtraitを登録済み
 
-  culebra::vm::Value val;
-  std::vector<std::string> msgs;
-  embed.run_source("<inline>", R"(
+  auto v = embed.eval(R"(
     add = fn (a, b) { a + b }
     add(40, 2)
-  )", val, msgs);
-  std::cout << val.to_long() << "\n";   // 42
+  )");
+  std::cout << v.as<int64_t>() << "\n";   // 42
 }
 ```
 
-`vm::Embed`はセッション。`run_source`は前の実行が作った束縛を引き継ぎ、
+`vm::Embed`はセッション。各実行は前の実行が作った束縛を引き継ぎ、
 ホスト側は`embed.global`で読み、`embed.call`で呼べる。標準ライブラリは
 登録済みで、`inspect` / `print` / `println`のグローバルも入る（スクリプト
-から見えるのと同じ名前）。スクリプト側の`throw`は`culebra::CulebraError`
-例外になり、投げられた値のkind・メッセージ・位置を持つ。
+から見えるのと同じ名前）。
+
+戻ってくるのは`vm::Value`で、それ自身が中身に応じて読み書きできる。
+ObjectとArrayは参照なので、そこへ書けばスクリプトが持つその値に届く:
+
+```cpp
+auto cfg = embed.global("config");
+auto port = cfg["port"].as<int64_t>();   // Longでなければ TypeError
+cfg["db"].set("host", "localhost");
+for (const auto& h : cfg["hosts"]) connect(h.as<std::string>());
+```
+
+`eval`と`call`は、スクリプトが投げたものを`culebra::CulebraError`として
+上げる。kind・メッセージ・位置はスクリプト側の`catch`が見るものと同じ。
+`run_source(name, src, val, msgs)`は同じ実行で、失敗をCLIが表示するのと
+同じテキストで返す入口 — catchするより表示したいホスト向け。
 
 環境カスタマイズ、値変換、JITホスト、AOT-archive埋め込み経路
 (`libculebra_rt.a`) の詳細は [`deployment.ja.md`](deployment.ja.md)。

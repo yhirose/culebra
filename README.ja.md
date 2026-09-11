@@ -304,14 +304,29 @@ int main() {
   culebra::RuntimeScope scope(rt);
   culebra::vm::Embed embed;   // 標準ライブラリとtraitを登録済み
 
-  culebra::vm::Value val;
-  std::vector<std::string> msgs;
-  embed.run_source("<inline>", "1 + 2", val, msgs);
-  // val.to_long() == 3
+  auto n = embed.eval("1 + 2").as<int64_t>();   // 3
 }
 ```
 
-JIT経路、スレッド、ホスト関数の登録については
+セッションは各実行より長く生きるので、ホストはスクリプトが残した値を
+読み、呼び戻せます。`Value`はそれ自身が容器として読み書きできます。
+ObjectとArrayは参照なので、そこへ書けばスクリプトが持つその値に届きます:
+
+```cpp
+embed.define("log", [](std::string m) { std::println("{}", m); }, {"m"});
+embed.eval(source);
+
+auto cfg = embed.global("config");
+auto port = cfg["port"].as<int64_t>();      // Longでなければ TypeError
+cfg["db"].set("host", "localhost");
+for (const auto& h : cfg["hosts"]) connect(h.as<std::string>());
+
+embed.call("update", 1, 2);
+```
+
+失敗は`culebra::CulebraError`として届き、種別・メッセージ・位置は
+スクリプト側の`catch`が見るものと同じです。JIT経路、スレッド、C++
+クラスのラップについては
 [`docs/deployment.ja.md`](docs/deployment.ja.md#2-c-ホストへの-culebra-埋め込み)を
 参照してください。
 

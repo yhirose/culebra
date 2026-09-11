@@ -1632,13 +1632,23 @@ comes free.
 
 ### 8.4 Embedding
 
-`vm::Embed` (`vm_embed.h`) is the C++ host API (`deployment.md` §2): a
+`vm::Embed` (`vm/embed.h`) is the C++ host API (`deployment.md` §2): a
 session whose bindings outlive the scripts it runs, so a host can run
 source and then read a global or call a function. `vm::Value` is the
 owning handle for values crossing the boundary — every retain and
 release stays inside it. Each `Embed` carries its own `ReplSession` and
 swaps it in for the duration of every call, so two embeds on one thread
 share nothing.
+
+The value surface routes through the runtime helpers the executor's own
+opcodes call — `Value::operator[]` and `at()` are `Op::Index`'s dispatch,
+`set()` is `Op::IndexSet`'s — so a host read raises the KeyError a script
+read raises, and a host write answers to the same `mut` flag. Object and
+Array being references, what a read hands back is the parent's value
+rather than a copy. `Embed::eval` is the entry that reports a failure as
+`CulebraError` instead of formatted text: `Session::run_reported` keeps
+the structured error beside the message it pushes, since the formatter
+flattens kind and position into one line.
 
 ## 9. Build configurations
 

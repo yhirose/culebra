@@ -1607,13 +1607,23 @@ evaluate、set_variable。`VmDebugEngine`は`Debug::Step`でコンパイル
 
 ### 8.4 embedding
 
-`vm::Embed`（`vm_embed.h`）はC++ホストAPI（`deployment.md` §2）で
+`vm::Embed`（`vm/embed.h`）はC++ホストAPI（`deployment.md` §2）で
 あり、自分が実行するスクリプトより長生きする束縛を持つセッション
 である。これによりホストはソースを実行してからグローバルを読んだり
 関数を呼んだりできる。`vm::Value`は境界を越える値の所有ハンドルで
 あり、すべてのretainとreleaseはその内側に留まる。各`Embed`は自分
 自身の`ReplSession`を持ち、すべての呼び出しの間それをswap inする
 ので、1つのスレッド上の2つのembedは何も共有しない。
+
+値の操作面はexecutor自身のopcodeが呼ぶのと同じランタイムヘルパを
+通る。`Value::operator[]`と`at()`は`Op::Index`の、`set()`は
+`Op::IndexSet`のディスパッチであり、ホストの読みはスクリプトの読みと
+同じKeyErrorを投げ、ホストの書き込みも同じ`mut`フラグに従う。Object
+とArrayは参照なので、読みが返すのはコピーではなく親が持つその値で
+ある。`Embed::eval`は失敗を整形テキストではなく`CulebraError`で返す
+入口で、`Session::run_reported`が押し込むメッセージの横に構造化された
+エラーを残しているために成り立つ（整形すると種別と位置は1行に
+畳まれてしまう）。
 
 ## 9. ビルド構成
 
