@@ -281,8 +281,9 @@ inline constexpr int _JIT_ARGPOS_MAX = 64;
 // single value any of these fields holds.
 //
 // constinit is load-bearing, not decoration: a thread_local with dynamic
-// initialization emits a "TLS init function" in every TU that declares it,
-// which is the duplicate-symbol hazard rt_shared_tls.h exists to manage.
+// initialization emits a "TLS init function" in every TU that declares it —
+// a duplicate definition to PE's ld, and a reference lld's COFF link resolved
+// to zero when a feature archive borrowed one (check_rt_archive_tls.sh).
 struct JitOwnedStack;
 struct JitThreadState {
   // Culebra frames open on this thread — the recursion guard's counter
@@ -3011,12 +3012,17 @@ struct CulebraEffAbort {
 // live while the next is pushed. Pushed in eff_abort, popped in eff_catch_abort
 // — the single consumer that stops an abort (cleanup/user-catch landingpads
 // only rethrow it, never consume) — so the two stay 1:1.
-CULEBRA_RT_CORE_OWNED thread_local std::vector<JitValue> _eff_abort_inflight;
+// A Runtime substate rather than a thread_local, as _jit_str_visiting
+// (string.inc.h) is.
+inline std::vector<JitValue>& _eff_abort_inflight() {
+  return culebra::runtime_substate<std::vector<JitValue>>(
+      culebra::kSlotEffAbortInflight);
+}
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_eff_abort(int8_t tag,
                                                                  int64_t data) {
   culebra_runtime_value_retain(tag, data);
-  _eff_abort_inflight.push_back(JitValue{tag, data});
+  _eff_abort_inflight().push_back(JitValue{tag, data});
   throw CulebraEffAbort{JitValue{tag, data}};
 }
 
@@ -3041,7 +3047,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_eff_catch_abort(
   // Pop only now: array_new/array_push may collect, and until the payload is
   // stored in `pair` (itself stack-rooted here) the inflight entry is its sole
   // root. LIFO with eff_abort's push; this frame caught the abort it pops.
-  if (from_abort) _eff_abort_inflight.pop_back();
+  if (from_abort) _eff_abort_inflight().pop_back();
   return pair;
 }
 

@@ -150,20 +150,12 @@ fn closed_msg(thunk) {
   o.drop()
 }
 
-# --- What a handle prints: the class it came from and an empty body, since
-# its state is in C++ and none of it is a field. (Here rather than in
-# test_foreign.cul because Windows builds that fixture into an AOT binary,
-# and one that formats a handle does not start there — ci.yml keeps a probe
-# on that axis.) ------------------------------------------------------------
+# --- What a borrow prints: the class it borrows (Box::inner lends out a
+# Counter) and an empty body, like the owning handle test_foreign.cul prints
+# — its _bid and __parent__ are not fields. --------------------------------
 {
-  let o = __Foreign.Counter.new(1)
-  assert_eq(to_string(o), 'Counter {}')
-  assert_eq("{o}", 'Counter {}')
   let b = __Foreign.Box.new(2)
-  # A borrow shows the class it borrows (Box::inner lends out a Counter), and
-  # shows no body either — its _bid and __parent__ are not fields.
   assert_eq(to_string(b.inner()), 'Counter {}')
-  o.drop()
   b.drop()
 }
 

@@ -39,10 +39,7 @@
 // the driver, and a source-file property reaches every target that names the
 // file. Suppressing `used` in the driver strips the JIT's own helpers out of
 // the image it resolves them from — tools/checks/check_jit_host_symbols.sh is the
-// ratchet, and its header records what that cost. That is why this is a
-// separate flag from CULEBRA_RT_FEATURE_BUILD (rt_shared_tls.h), which does
-// belong on the sources: borrowing a thread_local is right in both places,
-// borrowing a helper is not.
+// ratchet, and its header records what that cost.
 
 #ifdef CULEBRA_RT_DEFINE_RUNTIME
 #define CULEBRA_RT_KEEP
@@ -54,9 +51,8 @@
 // `inline` left that to the optimizer, and what survived was a COMDAT against
 // the core's strong definition, the one shape PE has no weak external to fold
 // (rt_archive-dup's waiver absorbed the diagnostic, and the image it produced
-// could fail to load). This is the helpers' half of the ownership
-// CULEBRA_RT_CORE_OWNED gives the thread_locals: the core defines, a feature
-// archive borrows.
+// could fail to load). The core defines, a feature archive calls — and unlike a
+// thread_local, a function has no initializer for the borrower to lose.
 #define CULEBRA_RT_INLINE inline __attribute__((gnu_inline))
 #else
 #define CULEBRA_RT_KEEP __attribute__((used))

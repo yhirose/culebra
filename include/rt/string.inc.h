@@ -7,21 +7,26 @@
 // fragments rely on rt.h's #include block and are included by rt.h in a
 // fixed sequence (see rt.h); they are not standalone headers.
 
-// Cycle detection during string conversion. Core-owned: a feature archive that
-// pulls in the JIT headers (Webview via wrap.h) must borrow, not redefine.
-CULEBRA_RT_CORE_OWNED thread_local std::unordered_set<const void*>
-    _jit_str_visiting;
+// Cycle detection during string conversion: the containers this walk is
+// inside of. A Runtime substate, not a thread_local: as a thread_local that
+// feature archives borrowed, its initializer resolved to zero on Windows AOT
+// (tools/checks/check_rt_archive_tls.sh has the mechanism and the ratchet).
+inline std::unordered_set<const void*>& _jit_str_visiting() {
+  return culebra::runtime_substate<std::unordered_set<const void*>>(
+      culebra::kSlotJitStrVisiting);
+}
 
 // RAII: inserts on construction, erases on destruction. `already` is true if
 // the pointer was present (i.e., we're inside a cycle).
 struct _JitStrGuard {
+  std::unordered_set<const void*>& visiting;
   const void* key;
   bool already;
-  explicit _JitStrGuard(const void* k) : key(k) {
-    already = !_jit_str_visiting.insert(k).second;
+  explicit _JitStrGuard(const void* k) : visiting(_jit_str_visiting()), key(k) {
+    already = !visiting.insert(k).second;
   }
   ~_JitStrGuard() {
-    if (!already) _jit_str_visiting.erase(key);
+    if (!already) visiting.erase(key);
   }
 };
 

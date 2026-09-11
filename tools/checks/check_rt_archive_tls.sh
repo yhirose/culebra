@@ -14,11 +14,25 @@
 # and the Windows AOT link fails. The rule is therefore ownership: each such
 # variable has exactly one defining archive.
 #
-# The two ways to satisfy it, both in use:
-#   - the core archive has no business holding the state (its stubs never touch
-#     it): gate the declaration out of the weak build     -> sqlite.h
-#   - both halves need it: the core owns the definition and the feature archive
-#     borrows it via `extern thread_local`                -> http.h
+# Ownership is not enough, though: the variable must also be TOUCHED by that
+# archive alone. A TU that sees only `extern thread_local T x;` still emits the
+# TLS wrapper that decides whether x's initializer has run, and it names the
+# init function by a weak reference. On COFF a weak definition (the owner's,
+# a COMDAT whose default is the body) and a weak reference (the borrower's,
+# whose default is absolute zero) are the same weak external, and lld keeps
+# the first it sees. A wrap.h-reaching archive is force-loaded before the
+# core, so the image resolved `TLS init function for _jit_str_visiting` to
+# zero and the set was used before it was constructed (a divide by zero in
+# the hashtable, Windows AOT only, `__Foreign` + Object display). ELF binds
+# the same reference to the owner's definition, which is why no local lane
+# saw it.
+#
+# The two ways to satisfy both rules, both in use:
+#   - the state is one archive's alone: gate the declaration and every use
+#     into that archive's build                             -> sqlite.h, http.h
+#   - both halves need it: make it a Runtime substate, which is built by
+#     whichever side touches it first and has no TLS initializer to lose
+#                                       -> string.inc.h's _jit_str_visiting
 #
 # Only namespace-scope variables are at stake. A function-local
 # `static thread_local` initializes behind a guard inside its own function and
@@ -36,8 +50,8 @@ if [[ ! -f "$core" ]]; then
 fi
 
 # Mangled names of the namespace-scope, dynamically-initialized thread_locals a
-# given archive *defines*. An undefined reference is the borrowing side of the
-# `extern thread_local` split and must not count.
+# given archive *defines*. An undefined reference is a borrow, and is the
+# second check's subject, not this one's.
 #
 # ELF names the colliding symbol directly (_ZTH<var>, absent for function-local
 # statics). Mach-O has no init symbol, so stand in with the thread-local guard
@@ -73,6 +87,9 @@ tls_defs() {
 all_defs() {
   nm --defined-only "$1" 2>/dev/null | awk '{print $NF}' | sort -u
 }
+undef_syms() {
+  nm -u "$1" 2>/dev/null | awk '{print $NF}' | sort -u
+}
 strong_defs() {
   nm --defined-only "$1" 2>/dev/null \
     | awk '$2 ~ /^[TDBR]$/ {print $NF}' | sort -u
@@ -101,15 +118,50 @@ if (( fail )); then
   cat >&2 <<'EOF'
   Windows AOT links that force-load this archive fail with "multiple definition
   of `TLS init function for ...'". Give each variable one owner: gate it out of
-  the weak build when the core's stubs never touch it (sqlite.h), or declare it
-  `extern thread_local` in the feature build and let the core define it
-  (http.h).
+  the weak build when the core's stubs never touch it (sqlite.h, http.h), or
+  make it a Runtime substate when both halves need it (string.inc.h's
+  _jit_str_visiting).
 EOF
   exit 1
 fi
 
 echo "rt-archive-tls OK ($checked feature archives," \
-     "$(printf '%s\n' "$core_defs" | grep -c . || true) core-owned thread_locals)"
+     "$(printf '%s\n' "$core_defs" | grep -c . || true) core thread_locals)"
+
+# The borrowing side. A TU referencing a TLS init function it does not define
+# has compiled a use of some other TU's dynamically-initialized thread_local
+# through an `extern` declaration — the reference lld's COFF link resolves to
+# zero (see the header). Read on every archive, the core included, and on ELF
+# only (see all_defs): `nm -u` lists the reference whether the compiler made
+# it weak (clang) or not (GCC).
+tls_borrows() {
+  undef_syms "$1" | { grep '^_ZTH' || true; }
+}
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  echo "rt-archive-borrow SKIP (references are read on ELF -- see all_defs)"
+else
+  borrow_fail=0
+  for ar in "$core" "$BUILD_DIR"/libculebra_rt_*.a; do
+    [[ -f "$ar" ]] || continue
+    borrowed=$(tls_borrows "$ar")
+    [[ -n "$borrowed" ]] || continue
+    borrow_fail=1
+    echo "rt-archive-borrow FAIL: $(basename "$ar") borrows thread_local state" \
+         "another archive initializes:" >&2
+    printf '%s\n' "$borrowed" | demangle | sed 's/^/  /' >&2
+  done
+  if (( borrow_fail )); then
+    cat >&2 <<'EOF'
+  On Windows that reference resolves to zero and the initializer never runs
+  (see the header). Either gate the variable and every use of it into one
+  archive's build (sqlite.h, http.h), or make it a Runtime substate
+  (string.inc.h's _jit_str_visiting), built by the first touch on either side.
+EOF
+    exit 1
+  fi
+  echo "rt-archive-borrow OK (no archive references a TLS init function it" \
+       "does not define)"
+fi
 
 # The core archive must never declare an httplib type, let alone reference the
 # TLS/compression libraries behind it: http.h gates the httplib.h include on
@@ -126,7 +178,7 @@ echo "rt-archive-tls OK ($checked feature archives," \
 # corner of OpenSSL/zlib still trips it. `7httplib` is the Itanium mangling of
 # `namespace httplib`, matched directly so the check does not depend on c++filt
 # being installed (demangle() falls back to `cat`, which would silently pass).
-core_undef=$(nm -u "$core" 2>/dev/null | awk '{print $NF}' | sort -u)
+core_undef=$(undef_syms "$core")
 leak=$(printf '%s\n' "$core_undef" | grep -E \
   '^_?(SSL|X509|EVP_|BIO_|ERR_|ASN1_|RAND_|PEM_|OPENSSL|CRYPTO_|OCSP_|i2d_|d2i_|GENERAL_NAME|deflate|inflate|crc32|adler32|compress|uncompress|zlib|gz)|7httplib' \
   || true)
@@ -195,10 +247,9 @@ fi
 
 # The same invariant one level down: the driver is several TUs in one PE image,
 # so two of them defining the same thread_local is the identical link error --
-# and until now nothing checked it. main.cc is the owner; every other TU must
-# borrow (see CMakeLists' set_source_files_properties) or, better, not reach
-# the headers at all. Objects, not archives, so this runs off `build-dev` too:
-# seconds here instead of a Windows CI round trip.
+# and until now nothing checked it. main.cc is the owner; no other TU may reach
+# the headers that define one. Objects, not archives, so this runs off
+# `build-dev` too: seconds here instead of a Windows CI round trip.
 driver_dir="$BUILD_DIR/CMakeFiles/culebra.dir"
 owner="$driver_dir/src/main.cc.o"
 if [[ -f "$owner" ]]; then
@@ -208,26 +259,38 @@ if [[ -f "$owner" ]]; then
     [[ "$obj" == "$owner" ]] && continue
     objs=$((objs + 1))
     shared=$(comm -12 <(printf '%s\n' "$owner_defs") <(tls_defs "$obj"))
-    [[ -n "$shared" ]] || continue
+    if [[ -n "$shared" ]]; then
+      fail=1
+      echo "rt-driver-tls FAIL: ${obj#$driver_dir/} re-defines thread_local state" \
+           "main.cc already defines:" >&2
+      printf '%s\n' "$shared" | demangle | sed 's/^/  /' >&2
+    fi
+    # And the borrow, the same way as for the archives: a TU that declared
+    # one of these `extern` resolves its initializer to zero under lld.
+    [[ "$(uname -s)" == "Darwin" ]] && continue
+    borrowed=$(tls_borrows "$obj")
+    [[ -n "$borrowed" ]] || continue
     fail=1
-    echo "rt-driver-tls FAIL: ${obj#$driver_dir/} re-defines thread_local state" \
-         "main.cc already defines:" >&2
-    printf '%s\n' "$shared" | demangle | sed 's/^/  /' >&2
+    echo "rt-driver-tls FAIL: ${obj#$driver_dir/} borrows thread_local state" \
+         "another TU initializes:" >&2
+    printf '%s\n' "$borrowed" | demangle | sed 's/^/  /' >&2
   done < <(find "$driver_dir" -name '*.o' -o -name '*.obj' | sort)
   if (( fail )); then
     cat >&2 <<'EOF'
-  mingw's ld fails the driver link with "multiple definition of `TLS init
-  function for ...'"; ELF and Mach-O fold it, so only Windows CI would notice.
+  Two TUs defining one thread_local is a duplicate TLS init function, and a
+  TU borrowing one is an initializer lld resolves to zero (see the header);
+  ELF folds the first and binds the second, so only Windows would notice.
   Keep the TU off the interpreter/JIT headers if it can be -- reaching
-  culebra.h costs ~70 s of compile for them anyway. If it genuinely needs
-  them, CULEBRA_RT_FEATURE_BUILD covers the CULEBRA_RT_CORE_OWNED variables
-  (rt_shared_tls.h) and nothing else: the net/http/sqlite registries are plain
-  `inline thread_local` and no build flag will move them. Do not reach for
-  CULEBRA_RT_FEATURE_ARCHIVE here -- it drops the `used` that keeps the JIT's
-  helpers in the driver image (tools/checks/check_jit_host_symbols.sh).
+  culebra.h costs ~70 s of compile for them anyway. If it genuinely needs the
+  variable, make it a Runtime substate: the net/http/sqlite registries are
+  plain `inline thread_local`, and there is no build flag that moves one
+  (borrowing through `extern thread_local` was tried, and is the Windows bug
+  the header describes). Do not reach for CULEBRA_RT_FEATURE_ARCHIVE here --
+  it drops the `used` that keeps the JIT's helpers in the driver image
+  (tools/checks/check_jit_host_symbols.sh).
 EOF
     exit 1
   fi
-  echo "rt-driver-tls OK ($objs driver TUs borrow main.cc's" \
+  echo "rt-driver-tls OK ($objs driver TUs neither define nor borrow main.cc's" \
        "$(printf '%s\n' "$owner_defs" | grep -c . || true) thread_locals)"
 fi

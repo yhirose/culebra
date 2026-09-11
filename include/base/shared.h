@@ -509,9 +509,9 @@ class Trashcan {
   // Function-local statics, not namespace-scope `inline thread_local`: the
   // consumers live in headers shared between the core runtime archive and the
   // feature archives, where a namespace-scope thread_local with dynamic
-  // initialization needs the CULEBRA_RT_CORE_OWNED split rt_shared_tls.h
-  // describes. A function-local static's guard is per-inline-function and
-  // merges under ODR without that machinery.
+  // initialization is a TLS init symbol every archive would define
+  // (check_rt_archive_tls.sh). A function-local static's guard is
+  // per-inline-function and merges under ODR without any ownership split.
   struct State {
     int64_t depth = 0;
     bool has_deferred = false;
@@ -2224,6 +2224,13 @@ enum RuntimeSlot : size_t {
   // ~Runtime's null-after-delete + revival protocol like the owned stacks
   // above: a late touch just revives it empty for the next pass to collect.
   kSlotPendingSaveStack,
+  // string.inc.h's _jit_str_visiting() and runtime.inc.h's
+  // _eff_abort_inflight(): thread_locals until a feature archive's borrow of
+  // them broke on Windows (tools/checks/check_rt_archive_tls.sh). Neither
+  // releases anything in its destructor, so their place among the GC slots
+  // is moot.
+  kSlotJitStrVisiting,
+  kSlotEffAbortInflight,
   kSlotJitHooks,
   kSlotJitModuleTable,
   kSlotJitNamespaceTable,

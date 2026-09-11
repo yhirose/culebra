@@ -13,10 +13,11 @@
 # windows-aot-build), so what it names is also what that link has to carry.
 # Keep the namespaces it reaches to the wrapped class itself: a handle's
 # behaviour under Isolate lives in test_borrow.cul, under TOML in
-# test_toml.cul. Formatting one lives there too, and not by taste — an AOT
-# binary that formats a handle does not start on Windows (ci.yml keeps a
-# probe on that axis), which is a platform bug of its own, not this
-# fixture's subject.
+# test_toml.cul. Formatting one stays here on purpose: an AOT binary that
+# force-loads this archive and formats any Object used to die on Windows
+# (a thread_local the archive borrowed from the core was never initialized
+# there — see tools/checks/check_rt_archive_tls.sh), and this is the one
+# lane that runs that link.
 
 assert_eq(__Foreign.Counter.live(), 0)
 
@@ -34,6 +35,10 @@ assert_eq(__Foreign.Counter.live(), 0)
   assert_eq(c.size(), 0)
   assert_eq(JSON.stringify(c), '{}')
   assert_eq({...c}, {})
+  # Printing one: the class it came from and an empty body, since its state
+  # is in C++ and none of it is a field.
+  assert_eq(to_string(c), 'Counter {}')
+  assert_eq("{c}", 'Counter {}')
   assert_true(c._id != nil)  # readable by name: not enumerable is not absent
   c.drop()
 }

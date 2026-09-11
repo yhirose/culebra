@@ -26,7 +26,6 @@
 #include <base/packable.h>
 #include <frontend/parser.h>
 #include <base/format.h>
-#include <base/shared_tls.h>  // CULEBRA_RT_CORE_OWNED (one owner per thread_local)
 #include <rt/macros.h>
 #include <base/shared.h>
 #include <base/stdout_capture.h>  // program_out() — where a program's output goes

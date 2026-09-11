@@ -50,7 +50,6 @@
 #endif
 
 #include <base/id_registry.h>    // IdRegistry<T> (slot+generation handle table)
-#include <base/shared_tls.h>  // CULEBRA_RT_CORE_OWNED (one owner per thread_local)
 #include <base/shared.h>  // throw_if_interrupted / culebra_g_sigint (Ctrl+C wiring)
 #include <stdlib/vfs.h>     // Dir / DiskDir / EmbeddedDir / serve_static (static assets)
 
@@ -319,7 +318,8 @@ inline std::string encode_query(const HeaderList& pairs) {
 // handle table, the httplib-touching helpers and the HttpClient definition.
 // The WEAK core archive's stubs never intern a handle, and a `thread_local`
 // carried by both it and the force-loaded feature archive breaks the Windows
-// AOT link (see rt_shared_tls.h), so none of it is compiled there.
+// AOT link (see tools/checks/check_rt_archive_tls.sh), so none of it is
+// compiled there.
 #if !defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
 
 // A persistent client holding one reused keep-alive connection plus a base URL
@@ -939,8 +939,8 @@ using WsHandler = std::function<void(const ServerRequest&, WebSocketRef*)>;
 // hold a small integer id, a forged/closed id resolves to nullptr and fails
 // safely. thread_local because a server (v0) runs on the thread that created it.
 // Gated with the bodies that intern a server, so the core archive does not also
-// define the table (see rt_shared_tls.h). Same no-ABA reasoning as the client
-// registry above.
+// define the table (see tools/checks/check_rt_archive_tls.sh). Same no-ABA
+// reasoning as the client registry above.
 #if !defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
 struct HttpServer;
 inline thread_local IdRegistry<HttpServer> g_http_servers;
@@ -958,23 +958,33 @@ inline void _http_server_unregister(int64_t id) { g_http_servers.invalidate(id);
 // pushes one chunk. The sink is valid only during that one provider call, so
 // scripts hold an id that encodes (slot, generation): a captured/escaped sink
 // resolves stale and write() returns false instead of touching a dead DataSink.
-// These helpers only touch DataSink (no httplib::Server/Client), so they pull
-// no TLS symbol and stay outside the WEAK/STRONG gate.
 
 // Borrowed chunk writers, one per in-flight streaming response. What gets
 // registered is the httplib::DataSink's own `write` member (which is exactly a
 // BodySink) rather than the DataSink: pointing at the callback instead of its
-// owner keeps this registry and http_sink_write free of any httplib type, so
-// both stay ungated and the core archive keeps defining the registry (the
-// feature archive borrows it — see rt_shared_tls.h).
-CULEBRA_RT_CORE_OWNED thread_local IdRegistry<BodySink> g_http_sinks;
+// owner keeps the registry free of any httplib type. Gated with the server
+// registry above, with http_sink_write linkage-split like the other server
+// entry points, so the core archive neither defines nor borrows the table.
+#if !defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+inline thread_local IdRegistry<BodySink> g_http_sinks;
+#endif  // !CULEBRA_RT_HTTP_REQUEST_WEAK
 
 // Write a chunk through sink `id`. Returns false if the id is stale/invalid (an
 // escaped sink) or the client has gone away — so the handler can stop early.
-inline bool http_sink_write(int64_t id, const char* data, size_t len) {
+// The WEAK stub never runs: the provider that mints a sink id is registered by
+// http_res_set_stream, itself a stub in that build.
+CULEBRA_RT_HTTP_LINKAGE bool http_sink_write(int64_t id, const char* data,
+                                             size_t len) {
+#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+  (void)id;
+  (void)data;
+  (void)len;
+  return false;
+#else
   BodySink* w = g_http_sinks.get(id);
   if (!w) return false;
   return (*w)(data, len);
+#endif
 }
 
 // Backend-supplied stream runner: given a sink id, invoke the script's stream
