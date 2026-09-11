@@ -1727,31 +1727,36 @@ jobs:
       # elsewhere, AOT included. The bisect that found it is above; this
       # keeps the axis measured while it is open, and reports without
       # holding the job red. Delete the step, not the probe, when it passes.
-      - name: Probe (open) — an AOT binary that formats a wrapped handle
+      - name: Probe (open) — an AOT binary that formats an Object
         continue-on-error: true
         run: |
           set +e
           i=0
-          while IFS= read -r body; do
-            [ -n "$body" ] || continue
+          # Each line is a whole program. The wrapped class is named only
+          # where the probe is about one, so the force-loaded archive is a
+          # variable here rather than a constant.
+          while IFS= read -r prog; do
+            [ -n "$prog" ] || continue
             i=$((i + 1))
-            printf 'let c = __Foreign.Counter.new(1)\n%s\nc.drop()\nprint("ok")\n' \
-              "$body" > "fmt_$i.cul"
+            printf '%b\nprint("ok")\n' "$prog" > "fmt_$i.cul"
             ./build-win-aot/culebra.exe build "fmt_$i.cul" -o "fmt_$i.exe" \
-              > /dev/null 2>&1 || { echo "fmt $i BUILD_FAIL: $body"; continue; }
+              > /dev/null 2>&1 || { echo "fmt $i BUILD_FAIL: $prog"; continue; }
             out=$(timeout 60 "./fmt_$i.exe" 2>&1); rc=$?
-            echo "fmt $i: rc=$rc out=[$out] <- $body"
+            echo "fmt $i: rc=$rc out=[$out] <- $prog"
             # inspect() prints before the marker, so the last line answers.
             [ "$(printf '%s' "$out" | tail -n 1)" = "ok" ] \
               || printf '::warning::open axis: %s (rc=%s out=[%s])\n' \
-              "$(printf '%s' "$body" | sed 's/%/%25/g')" "$rc" "$out"
-          done <<'BODIES'
-          let s = to_string(c)
-          let s = to_string({a: 1})
+              "$(printf '%s' "$prog" | sed 's/%/%25/g')" "$rc" "$out"
+          done <<'PROGS'
           let s = to_string(42)
-          let s = "{c}"
-          inspect(c)
-          BODIES
+          let s = to_string("hi")
+          let s = to_string([1, 2])
+          let s = to_string({a: 1})
+          let o = {a: 1}\nlet s = "{o}"
+          inspect({a: 1})
+          let c = __Foreign.Counter.new(1)\nlet s = to_string(c)\nc.drop()
+          let c = __Foreign.Counter.new(1)\nc.drop()
+          PROGS
       # When the fixture's AOT binary is the one that failed, the program is
       # what has to be bisected — and only this platform can do it. Each prefix
       # ends at a section boundary, so every one is a whole program, and the
