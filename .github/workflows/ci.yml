@@ -1747,6 +1747,20 @@ jobs:
             [ "$(printf '%s' "$out" | tail -n 1)" = "ok" ] \
               || printf '::warning::open axis: %s (rc=%s out=[%s])\n' \
               "$(printf '%s' "$prog" | sed 's/%/%25/g')" "$rc" "$out"
+            # Where it died: a staged program says whether the binary even
+            # reaches main. No output at all is a load-time failure; A and B
+            # without C is the format call itself.
+            if [ "$(printf '%s' "$out" | tail -n 1)" != "ok" ]; then
+              printf 'print("A")\nlet c = __Foreign.Counter.new(1)\nprint("B")\nlet s = to_string(c)\nprint("C")\nprint("ok")\n' \
+                > "stage_$i.cul"
+              for opt in -O2 -O0; do
+                ./build-win-aot/culebra.exe build $opt "stage_$i.cul" \
+                  -o "stage_$i$opt.exe" > /dev/null 2>&1 || continue
+                sout=$(timeout 60 "./stage_$i$opt.exe" 2>&1); src=$?
+                echo "stage $opt: rc=$src out=[$sout]"
+                printf '::warning::staged %s: rc=%s out=[%s]\n' "$opt" "$src" "$sout"
+              done
+            fi
           done <<'PROGS'
           let s = to_string(42)
           let s = to_string("hi")
