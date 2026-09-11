@@ -56,9 +56,9 @@ aot=./aot_$label.exe
 build_out=$("$exe" build "$script" -o "$aot" 2>&1); build_rc=$?
 printf '%s\n' "$build_out"
 if [ "$build_rc" -eq 0 ]; then
-  # An AOT binary that will not start prints nothing, so the file itself and
-  # what it imports are the report — without them "empty output" cannot be
-  # told from "the assertions failed".
+  # An AOT binary that dies before its first write prints nothing, so the file
+  # itself and what it imports are part of the report — without them "empty
+  # output" cannot be told from "the assertions failed".
   ls -l "$aot"
   imports=""
   if [ "${OS:-}" = "Windows_NT" ] && command -v objdump > /dev/null 2>&1; then
@@ -72,34 +72,16 @@ if [ "$build_rc" -eq 0 ]; then
     echo "${label}_AOT_PASS"
   else
     detail="$out${imports:+ | imports: $imports}"
-    # A binary that produced nothing has not said whether it ran. Ask the two
-    # questions its silence leaves open: how big it is (a link that emitted a
-    # stub answers here), and what Windows itself makes of it — cmd.exe
-    # reports the process's own exit status, where the msys layer reports its
-    # spawn's, and 127 from one with 0 from the other is a launch that never
-    # happened rather than a program that failed.
+    # On Windows the exit code above says little: the msys layer folds every
+    # NT status from 0xC0000000 up to 127, loader failure and divide by zero
+    # alike. cmd.exe keeps the status itself in %errorlevel% — asked from a
+    # .bat, whose lines expand one at a time, after the exe ran.
     if [ "${OS:-}" = "Windows_NT" ]; then
-      native=$(cmd //c "$(basename "$aot")" 2>&1); native_rc=$?
-      echo "native_out=[$native] native_rc=$native_rc"
-      detail="$detail | size: $(wc -c < "$aot" 2>/dev/null) | native rc=$native_rc out=[$native]"
-      # 127 is ERROR_PROC_NOT_FOUND: the loader could not resolve an import,
-      # and the process ends before its first write. The name it could not
-      # find is the whole diagnosis, so say which imports this binary has that
-      # one built earlier in the same job — and started — does not.
-      if [ "$native_rc" -eq 127 ] || [ "$rc" -eq 127 ]; then
-        for ref in ./p_wrapped.exe ./aot_LONG.exe ./triv.exe; do
-          [ -f "$ref" ] || continue
-          syms() {
-            objdump -p "$1" 2>/dev/null \
-              | awk '/DLL Name:/ {dll = $NF} /^\t[0-9a-f]+\t/ {print dll "!" $NF}' \
-              | sort -u
-          }
-          extra=$(comm -23 <(syms "$aot") <(syms "$ref") | tr '\n' ' ')
-          echo "imports_not_in_$(basename "$ref")=[$extra]"
-          detail="$detail | vs $(basename "$ref"): $extra"
-          break
-        done
-      fi
+      printf '@echo off\r\n%s\r\necho EXIT=%%errorlevel%%\r\n' \
+        "$(basename "$aot")" > "run_$label.bat"
+      native=$(timeout 60 cmd //c "run_$label.bat" 2>&1 | tr -d '\r')
+      echo "cmd.exe=[$native]"
+      detail="$detail | size: $(wc -c < "$aot" 2>/dev/null) | cmd.exe: $(printf '%s\n' "$native" | tail -n 1)"
     fi
     note_failure "${label}_AOT_RUN_FAIL" "$rc" "$detail"
     fail=1
