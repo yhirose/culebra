@@ -1769,8 +1769,28 @@ jobs:
           let o = {a: 1}\nlet s = "{o}"
           inspect({a: 1})
           let c = __Foreign.Counter.new(1)\nlet s = to_string(c)\nc.drop()
+          let c = __Foreign.Counter.new(1)\nlet s = to_string({a: 1})\nc.drop()
           let c = __Foreign.Counter.new(1)\nc.drop()
+          let m = CodeGen.Module.new()\nm.drop()
+          let m = CodeGen.Module.new()\nlet s = to_string({a: 1})\nm.drop()
+          let db = SQLite.open(":memory:")\nlet s = to_string({a: 1})\ndb.drop()
           PROGS
+          # Which image differs, and how: a PE whose TLS directory or section
+          # set is not what a working one has is the load-time answer the exit
+          # code cannot give. Reported for one that failed and one that did not.
+          for pair in "fmt_7 fmt_4"; do
+            for n in $pair; do
+              [ -f "$n.exe" ] || continue
+              echo "=== $n.exe ==="
+              objdump -x "$n.exe" 2>/dev/null | sed -n '/^Sections:/,/^SYMBOL TABLE/p' \
+                | awk '{print $2, $3}' | tr '\n' ' '
+              echo
+              tls=$(objdump -x "$n.exe" 2>/dev/null | grep -iA 6 "Thread Local Storage" | tr '\n' ' ')
+              echo "tls=[$tls]"
+              printf '::warning::image %s: tls=[%s]\n' "$n" \
+                "$(printf '%s' "$tls" | sed 's/%/%25/g' | cut -c1-600)"
+            done
+          done
       # When the fixture's AOT binary is the one that failed, the program is
       # what has to be bisected — and only this platform can do it. Each prefix
       # ends at a section boundary, so every one is a whole program, and the
