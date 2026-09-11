@@ -1771,6 +1771,25 @@ jobs:
           echo "only in bad: $(wc -l < only_bad.txt)"; cat only_bad.txt
           printf '::warning::only in bad (%s): %s\n' "$(wc -l < only_bad.txt)" \
             "$(head -c 1500 only_bad.txt | esc 1000)"
+          # The set that was never constructed is a core-owned thread_local a
+          # feature TU borrows through `extern thread_local`. Its TLS wrapper
+          # is what decides whether the init function runs, so read the one
+          # the image kept, and which archive each half came from.
+          echo "=== who defines what ==="
+          for ar in build-win-aot/libculebra_rt.a build-win-aot/libculebra_rt_foreign.a; do
+            echo "--- $ar"; nm "$ar" 2>/dev/null | grep -E 'jit_str_visiting' | sort -u
+          done
+          nm bad.exe 2>/dev/null | grep -E 'jit_str_visiting' | sort -u
+          printf '::warning::foreign.a: [%s] core.a: [%s] bad.exe: [%s]\n' \
+            "$(nm build-win-aot/libculebra_rt_foreign.a 2>/dev/null | grep -E 'jit_str_visiting' | awk '{print $(NF-1), $NF}' | sort -u | esc 300)" \
+            "$(nm build-win-aot/libculebra_rt.a 2>/dev/null | grep -E 'jit_str_visiting' | awk '{print $(NF-1), $NF}' | sort -u | esc 300)" \
+            "$(nm bad.exe 2>/dev/null | grep -E 'jit_str_visiting' | awk '{print $(NF-1), $NF}' | sort -u | esc 300)"
+          echo "=== the wrapper the image kept ==="
+          w=$(objdump -d bad.exe 2>/dev/null | awk '/<_ZTW17_jit_str_visiting>:/{p=1} p{print} p&&/ret/{exit}' | head -40)
+          printf '%s\n' "$w"
+          printf '::warning::_ZTW in bad.exe: %s\n' "$(printf '%s\n' "$w" | sed -E 's/^ +[0-9a-f]+:\t//; s/\t/ /g' | tr -s ' ' | esc 1000)"
+          # What the good image kept, for the pair.
+          objdump -d good.exe 2>/dev/null | awk '/<_ZTW17_jit_str_visiting>:/{p=1} p{print} p&&/ret/{exit}' | head -40
       # When the fixture's AOT binary is the one that failed, the program is
       # what has to be bisected — and only this platform can do it. Each prefix
       # ends at a section boundary, so every one is a whole program, and the
