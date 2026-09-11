@@ -26,6 +26,7 @@
 #include <set>
 #include <string>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace culebra::vm {
@@ -139,8 +140,10 @@ class Session {
   }
 
   // The last failure, structured (run_reported keeps it beside the text).
-  const std::optional<CulebraError>& last_error() const { return last_error_; }
-  void clear_last_error() { last_error_.reset(); }
+  // Taking it clears it, so a later read cannot pick up an older failure.
+  std::optional<CulebraError> take_last_error() {
+    return std::exchange(last_error_, std::nullopt);
+  }
 
  private:
   // A preamble text and the AST whose tokens point into it.

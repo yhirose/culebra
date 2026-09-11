@@ -39,9 +39,11 @@ std::string kind_of(Body&& body) {
   return "";
 }
 
-// Everything the surface touches lives here, so `run` can audit the heap
-// once every Value and the session itself are gone.
-bool body() {
+}  // namespace
+
+int run() {
+  culebra::Runtime rt;
+  culebra::RuntimeScope scope(rt);
   culebra::vm::Embed embed;
   bool ok = true;
 
@@ -80,6 +82,11 @@ bool body() {
               "index an Array");
   ok &= check(cfg["hosts"][-1].as<std::string>() == "b.example",
               "a negative index counts from the end");
+  ok &= check(cfg["hosts"].at(embed.eval("0..1")).size() == 1,
+              "a Range key slices, as it does in script");
+  ok &= check(embed.eval("class P { new() { self.a = 1 } }\nP()")
+                  .type_name() == std::string("P"),
+              "type_name() answers with the class, like type_of");
 
   {  // range-for over an Array
     std::string joined;
@@ -235,15 +242,6 @@ bool body() {
                 "100 rounds strand no reference");
   }
 
-  return ok;
-}
-
-}  // namespace
-
-int run() {
-  culebra::Runtime rt;
-  culebra::RuntimeScope scope(rt);
-  bool ok = body();
   std::cout << (ok ? "OK\n" : "FAIL\n");
   return ok ? 0 : 1;
 }
