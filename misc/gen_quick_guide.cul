@@ -14,6 +14,13 @@
 BEGIN_MARK = '<!-- BEGIN GENERATED: signature index -->'
 END_MARK = '<!-- END GENERATED -->'
 
+# The whole documented surface, one signature per line, for
+# tools/checks/check_api_coverage.sh. That gate's population has to be
+# everything the reference documents, not the part the context pack lists
+# inline -- reading it off the pack would have quietly halved what it measures
+# the moment a namespace moved to being named rather than listed.
+SURFACE = 'tools/checks/api_surface.txt'
+
 HEADING = re'^#{3,5} (.+)$'
 TABLE = re'^\|\s*`([^`]+)`([^`|]*)\|(.*)$'
 # The same row, when its first cell holds SEVERAL signatures
@@ -31,6 +38,30 @@ CELL_RET = re'^\s*`([^`]+)`\s*(—|-|$)'
 SIG_SHAPE = re'^\.?[A-Za-z_][A-Za-z0-9_.]*(\(|$)'
 SPAN = re'`[^`]+`'
 NS_HEADING = re'^## \d+\. (.+)$'
+# stdlib.md's own index: `27. [`Scene`](#27-scene) — one line about it`. The
+# summaries a named-only namespace carries below come from there, so there is
+# still one place to edit when a namespace changes.
+INDEX_ROW = re'^\d+\. \[([^\]]+)\]\([^)]+\)\s+—\s+(.+)$'
+
+# These namespaces are named rather than listed signature by signature. Each
+# drives a stateful subsystem -- a view and a frame loop, an open connection,
+# a grammar, an emitter -- where the signatures alone do not say how to drive
+# it, so a reader holding only them writes code that lints and does not run.
+# They are also half of every signature here, spent on whichever subsystem the
+# task at hand is not about. `culebra docs stdlib <name>` prints one whole.
+# Membership only: the table keeps stdlib.md's chapter order.
+BY_NAME = {
+  'SQLite',
+  'Canvas',
+  'Scene',
+  'Net',
+  'Desktop / Webview',
+  'PEG',
+  'CodeGen',
+  'StateMachine',
+  'FST',
+  'Search',
+}
 
 # The six built-in-type groups live in language.md; every other group is one
 # stdlib.md namespace. Only the Set anchor differs between en and ja — the
@@ -130,7 +161,9 @@ fn harvest(lines) {
           for span in SPAN.find_all_str(mm[1]) {
             inner = unescape(strip_ticks(span))
             if inner.contains('(') {
-              cands.push(r == nil || inner.contains('->') ? inner : inner + ' -> ' + r)
+              cands.push(r == nil || inner.contains('->')
+                ? inner
+                : inner + ' -> ' + r)
             }
           }
         } else {
@@ -171,29 +204,36 @@ fn read_lines(path) {
   out
 }
 
+# Every group has the same shape — {title, sigs, experimental, by_name,
+# summary} — in document order, language.md's built-in types first. Whether a
+# group is listed inline or only named is a flag read at render time, so the
+# surface file below is ordered by the reference, not by that choice.
+fn group(title, sigs) {
+  {title: title, sigs: sigs, experimental: false, by_name: false, summary: ''}
+}
+
 # A namespace whose own section calls itself **experimental** carries the mark
 # into the index, so the one file written to be read whole says which entries
 # a released binary may not have. stdlib.md stays the single source.
-fn ns_group(title, buf) {
-  mut mark = ''
-  for line in buf {
-    if line.contains('**experimental**') {
-      mark = ' (experimental)'
-      break
-    }
+fn ns_group(title, buf, summaries) {
+  {
+    ...group(title, harvest(buf)),
+    experimental: buf.any(|line| line.contains('**experimental**')),
+    by_name: BY_NAME.contains(title),
+    summary: summaries.get(title, ''),
   }
-  {title: title + mark, sigs: harvest(buf)}
 }
 
 # One group per `## N. Name` section of stdlib.md.
 fn namespace_groups(lines) {
+  summaries = index_summaries(lines)
   mut out = []
   mut title = nil
   mut buf = []
   for line in lines {
     if line.starts_with('## ') {
       if title != nil {
-        out.push(ns_group(title, buf))
+        out.push(ns_group(title, buf, summaries))
       }
       m = NS_HEADING.find(line)
       title = m == nil ? nil : m[1].replace('`', '').trim().to_string()
@@ -203,7 +243,18 @@ fn namespace_groups(lines) {
     }
   }
   if title != nil {
-    out.push(ns_group(title, buf))
+    out.push(ns_group(title, buf, summaries))
+  }
+  out
+}
+
+fn index_summaries(lines) {
+  mut out = {}
+  for line in lines {
+    m = INDEX_ROW.find(line)
+    if m != nil {
+      out[m[1].replace('`', '').trim().to_string()] = m[2].trim().to_string()
+    }
   }
   out
 }
@@ -211,23 +262,45 @@ fn namespace_groups(lines) {
 fn collect(ja) {
   suffix = ja ? '.ja' : ''
   lang = read_lines("docs/language{suffix}.md")
-  mut out = []
+  mut groups = []
   for g in builtin_groups(ja) {
-    out.push({title: g.title, sigs: harvest(slice_lines(lang, g.from, g.to))})
+    groups.push(group(g.title, harvest(slice_lines(lang, g.from, g.to))))
   }
-  for g in namespace_groups(read_lines("docs/stdlib{suffix}.md")) {
-    out.push(g)
-  }
-  out
+  groups + namespace_groups(read_lines("docs/stdlib{suffix}.md"))
 }
 
-fn render(groups) {
+fn mark(g) {
+  g.experimental ? ' (experimental)' : ''
+}
+
+fn render(groups, ja) {
   mut out = []
-  for g in groups {
-    out.push('**' +
-      g.title +
-      '** — ' +
-      g.sigs.join('; ')) if g.sigs.size() > 0
+  for g in groups.filter(|g| !g.by_name && g.sigs.size() > 0) {
+    out.push('**' + g.title + mark(g) + '** — ' + g.sigs.join('; '))
+  }
+  rows_for = groups.filter(|g| g.by_name)
+  if rows_for.size() > 0 {
+    out.push(ja
+      ? '### 一覧ではなく章を読むもの'
+      : '### Read the chapter for these')
+    mut rows = [
+      ja
+        ? '| 名前空間 | 署名 | 何をするもの |'
+        : '| Namespace | Signatures | What it is |',
+      '|---|---:|---|',
+    ]
+    for g in rows_for {
+      name = g.title.split(' / ').map(|p| '`' + p.to_string() + '`').join(' / ')
+      rows.push('| ' +
+        name +
+        mark(g) +
+        ' | ' +
+        to_string(g.sigs.size()) +
+        ' | ' +
+        g.summary.replace('|', '\|').to_string() +
+        ' |')
+    }
+    out.push(rows.join("\n"))
   }
   out.join("\n\n")
 }
@@ -258,22 +331,57 @@ fn splice(text, body) {
   out.join("\n")
 }
 
+fn surface_text(groups) {
+  mut out = ['# Generated by misc/gen_quick_guide.cul -- do not edit by hand.']
+  for g in groups {
+    for sig in g.sigs {
+      out.push(sig)
+    }
+  }
+  out.join("\n") + "\n"
+}
+
+fn count(groups, by_name) {
+  groups.filter(|g| g.by_name == by_name).map(|g| g.sigs.size()).sum()
+}
+
 check = Sys.argv.contains('--check')
 mut stale = []
 
-for ja in [false, true] {
-  path = ja ? 'docs/quick-guide.ja.md' : 'docs/quick-guide.md'
-  groups = collect(ja)
-  want = splice(FS.read(path), render(groups))
-  total = groups.iter().map(|g| g.sigs.size()).sum()
+fn settle(check, stale, path, want, label) {
   if want == FS.read(path) {
-    println("{path}: up to date ({total} signatures)")
+    println("{path}: up to date ({label})")
   } else if check {
     stale.push(path)
     println("{path}: STALE")
   } else {
     FS.write(path, want)
-    println("{path}: regenerated ({total} signatures)")
+    println("{path}: regenerated ({label})")
+  }
+}
+
+for ja in [false, true] {
+  path = ja ? 'docs/quick-guide.ja.md' : 'docs/quick-guide.md'
+  groups = collect(ja)
+  want = splice(FS.read(path), render(groups, ja))
+  listed = count(groups, false)
+  named = count(groups, true)
+  names = groups.filter(|g| g.by_name).size()
+  settle(
+    check,
+    stale,
+    path,
+    want,
+    "{listed} signatures, {named} more behind {names} names",
+  )
+  if !ja {
+    settle(
+      check,
+      stale,
+      SURFACE,
+      surface_text(groups),
+      "{listed + named} signatures",
+    )
   }
 }
 

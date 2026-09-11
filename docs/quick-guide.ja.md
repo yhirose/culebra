@@ -1,12 +1,16 @@
 Culebraクイックガイド
 ==========================
 
-正しいCulebraを書くために必要なものを1ファイルにまとめたもの:
-構文、他言語から**持ち込むと外れる**習慣、そして標準ライブラリの全
-シグネチャ。凝縮元のリファレンス
+引きようがないものを1ファイルにまとめたもの: 構文、他言語から
+**持ち込むと外れる**習慣、そして「使おうと言われなくても手が伸びる」
+範囲のライブラリのシグネチャ。凝縮元のリファレンス
 ([`handbook.ja.md`](handbook.ja.md)、[`language.ja.md`](language.ja.md)、
 [`stdlib.ja.md`](stdlib.ja.md)) は合計15万トークン規模で、これは
 そのうちプロンプトに載る部分です。
+
+ここに載せていないもの — 3D、2D、ソケット、パーサ、全文検索 — は
+§4で名前だけを挙げ、その章をまるごと出すコマンドを添えてあります。
+署名の一覧だけでは動かし方が分からず、章を読めば分かるからです。
 
 以下の` ```culebra `ブロックはすべて`culebra test --doc docs`が
 実行するので、実装から乖離することはありません。行末の
@@ -33,10 +37,11 @@ culebra test                     # cwd以下のtest_*.culを全実行
 culebra fmt -i .                 # その場で整形 (スタイル指定は無し)
 culebra lint .                   # 静的検査; 警告1 / エラー2でexit
 culebra docs -g 'Math.wrap'      # リファレンスから署名を引く
+culebra docs stdlib Scene        # 名前空間の章をまるごと出す
 ```
 
 ソースファイルの拡張子は`.cul`。プロジェクトファイルもマニフェストも
-パッケージマネージャもありません。§4の内容はすべて`import`なしで
+パッケージマネージャもありません。標準ライブラリは全部`import`なしで
 スコープに入っています。
 
 未定義の名前はプログラム実行**前**に弾かれるので、ライブラリ名の当て
@@ -620,9 +625,9 @@ inspect(show('hi'))  # => 'hi'
 | `elif` | `else if` |
 | コメントが`#`だけ、または`//`だけ | 両方使える。加えて`/* ... */` |
 | `async` / `await` | 設計上存在しない — I/Oはblocking。`Isolate` / `Parallel`を使う |
-| パッケージマネージャ | §4の内容はすべて`import`なしでスコープにある |
+| パッケージマネージャ | 標準ライブラリは全部`import`なしでスコープにある |
 
-エラーにならず値が返るぶん見落としやすいものが2つ:
+エラーにならず値が返るぶん見落としやすいものが3つ:
 
 ```culebra
 # split が返すのは String ではなく StringView。安いが type_of は異なる
@@ -631,6 +636,12 @@ inspect(type_of('a,b'.split(',')[0]))  # => 'StringView'
 # 存在しないプロパティは黙って nil
 inspect([1, 2].length)  # => nil
 inspect([1, 2].size())  # => 2
+
+# どの arm にも当たらない match はエラーではなく nil。lint が指摘するのは
+# 対象が enum のときだけなので、それ以外の match には `_` の arm を置く
+inspect(match 9 {
+  0 => 'zero',
+})  # => nil
 ```
 
 ### 慣用形
@@ -684,6 +695,14 @@ inspect([1, 2].size())  # => 2
 **(experimental)**が付いたグループはビルド時のopt-inで、リリースバイナリ
 には入っていないことがあります（[`stdlib.ja.md`](stdlib.ja.md)の該当節に
 書いてあります）。
+
+末尾の表にある名前空間は、一覧にせず名前だけを挙げてあります。どれも状態を
+持つ仕組み — viewとフレームループ、開いた接続、文法、エミッタ — を
+動かすもので、署名は「何を呼ぶか」は言っても「どの順で、何に対して、
+結果は誰のものか」を言いません。`culebra docs stdlib <名前>`でその章が
+まるごと（前書きも小節も込みで）出ます。その名前空間を使う前に読んで
+ください。署名から推測して書くと、lintは通るのに動かないコードになり
+ます。
 
 <!-- BEGIN GENERATED: signature index -->
 
@@ -747,16 +766,6 @@ inspect([1, 2].size())  # => 2
 
 **TOML** — TOML.parse(text: String) -> Object; TOML.stringify(v: Object, sort_keys: Bool = false) -> String
 
-**SQLite** — SQLite.open(path: String) -> Database; SQLite.version() -> String; db.execute(sql: String, params = nil) -> Long; db.query(sql: String, params = nil) -> Array<Object>; db.prepare(sql: String) -> Statement; db.transaction(fn: Function) -> Any; db.close(); stmt.run(params = nil) -> Long; stmt.query(params = nil) -> Array<Object>; stmt.finalize()
-
-**Canvas** — Canvas.init(w, h); Canvas.clear(color); Canvas.set_pixel(x, y, color); Canvas.get_pixel(x, y) -> Long; Canvas.rect(x, y, w, h, color, fill = true); Canvas.line(x1, y1, x2, y2, color); Canvas.circle(cx, cy, r, color, fill = true); Canvas.ellipse(cx, cy, rx, ry, color, fill = true); Canvas.triangle(x1, y1, x2, y2, x3, y3, color, fill = true); Canvas.polygon(points, color, fill = true); Canvas.width(); Canvas.height() -> Long; Canvas.to_png() -> String; Canvas.present(); Canvas.title(name); Canvas.toggle_fullscreen(); Canvas.fullscreen() -> Bool; Canvas.resizable(enabled); Canvas.resized() -> Bool; Canvas.show_cursor(); Canvas.hide_cursor(); Canvas.cursor_hidden() -> Bool; Canvas.clipboard() -> String; Canvas.set_clipboard(text); Canvas.quit(); Canvas.can_quit() -> Bool; sprite.draw(x, y, flip_x = false, flip_y = false, transpose = false); sprite.draw_sub(x, y, sx, sy, sw, sh, flip_x = false, flip_y = false, transpose = false); sprite.draw_scaled(x, y, w, h, flip_x = false, flip_y = false, smooth = false, alpha = 255); sprite.draw_sub_scaled(x, y, w, h, sx, sy, sw, sh, flip_x = false, flip_y = false, smooth = false, alpha = 255); sprite.to_png() -> String; sprite.width(); sprite.height(); font.draw(s, x, y, color, size); font.draw_screen(s, x, y, color, size); font.text_width(s, size) -> Long; font.ascent(size) -> Long; font.advance(codepoint, size) -> Long; Canvas.buttons() -> Long; Canvas.mouse() -> Object; Canvas.key(name) -> Bool; Canvas.key_queue() -> Array; Canvas.typed() -> String; Canvas.wheel() -> Float; input.update(); input.down(btn) -> Bool; input.pressed(btn) -> Bool; Canvas.pad_available(index = 0) -> Bool; Canvas.pad_axis(axis, index = 0) -> Float; Canvas.pad_held(button, index = 0) -> Bool; Canvas.pad_pressed(button, index = 0) -> Bool; Canvas.pad_name(index = 0) -> String; Canvas.pad_rumble(left, right, sec, index = 0); Canvas.pad_mappings(db) -> Bool; Canvas.rect_overlap(x1, y1, w1, h1, x2, y2, w2, h2) -> Bool; Canvas.circle_overlap(x1, y1, r1, x2, y2, r2) -> Bool; Canvas.point_in_rect(px, py, x, y, w, h) -> Bool; Canvas.point_in_circle(px, py, cx, cy, r) -> Bool; sound.play(vol = 100); sound.stop(); sound.playing() -> Bool; Canvas.music(data, loop = true, vol = 100, start = 0.0); Canvas.music_stop(); Canvas.music_pause(); Canvas.music_resume(); Canvas.music_volume(vol); Canvas.music_seek(seconds); Canvas.music_playing() -> Bool; Canvas.dt() -> Float; Canvas.target_fps(n); Canvas.fps() -> Long
-
-**Scene** — view.target_fps(fps); view.closing() -> Bool; view.quit(); view.dt() -> Float; view.width(); view.height() -> Float; view.camera(px,py,pz, tx,ty,tz, ux,uy,uz, fov); view.render_3d(); view.begin_2d(); view.present(); view.fullscreen(on); view.is_fullscreen() -> Bool; view.resizable(on); view.resized() -> Bool; view.size(w, h); view.title(s); view.vsync(on); view.cursor(on); view.mouse_capture(on); view.clipboard() -> String; view.set_clipboard(s); view.fps() -> Long; view.time() -> Float; view.supersample(n); view.clip_planes(near, far); view.add_box(w, h, d); add_sphere(r); add_cylinder(r, h); add_plane(w, d); view.add_mesh(); node.add_mesh(); node.move(x, y, z); node.yaw(a); pitch(a); roll(a); node.spin(x, y, z, a); euler(x, y, z); node.scale(s); scale3(x, y, z); node.tint(r, g, b); node.material(m); node.order(n); node.opacity(a); node.quat(x, y, z, w); node.billboard(on = true); node.hide(); show(); name(n); node.x(); y(); z() -> Float; node.world_x(); world_y(); world_z() -> Float; node.child_count() -> Long; node.child_at(i) -> Node; node.find(name) -> Node; node.has(name) -> Bool; node.remove(); node.vertex_count() -> Long; node.cull_radius(r); node.culling(on); view.remove(node); view.find(name) -> Node; view.has(name) -> Bool; view.culling(on); view.add_material() -> Material; mat.rgb(r, g, b) -> Material; mat.pbr(metallic, roughness) -> Material; mat.texture(tex) -> Material; mat.uv(us, vs, uo = 0.0, vo = 0.0) -> Material; mat.normal_map(tex, strength = 1.0) -> Material; mat.opacity(a) -> Material; mat.cutout(threshold) -> Material; mat.blend(name) -> Material; mat.emissive(r, g, b, k = 1.0) -> Material; mat.unlit(on = true) -> Material; mat.double_sided(on = true) -> Material; mat.depth_write(on); mat.depth_test(on) -> Material; mat.casts_shadow(on) -> Material; mat.fog(on) -> Material; view.post_process(on); view.exposure(k); view.saturation(k); view.bloom(threshold, strength); view.dof(strength, range); view.ssao(strength, radius); view.vignette(k); view.lut(tex, amount = 1.0); view.texture(img, mipmaps = true, repeat = true) -> Texture; view.texture_png(bytes) -> Texture; view.checker(px, checks, r1,g1,b1, r2,g2,b2) -> Texture; view.grain(px, r, g, b, amt) -> Texture; view.canvas(w, h) -> Texture; view.canvas_end(); view.render_target(w, h) -> Texture; tex.width(); tex.height() -> Float; tex.filter(name) -> Texture; tex.wrap(name) -> Texture; Scene.Image.new(w, h) -> Image; Scene.Image.from_png(bytes) -> Image; img.width(); img.height() -> Float; img.get(x, y) -> Long; img.copy() -> Image; img.save_png(path) -> Bool; img.to_png() -> String; img.fill(r, g, b, a = 255); img.pixel(x, y, r, g, b, a = 255); img.rect(x, y, w, h, r, g, b, a = 255); img.rect_line(x, y, w, h, r, g, b, a = 255); img.circle(x, y, radius, r, g, b, a = 255); img.circle_line(x, y, radius, r, g, b, a = 255); img.line(x0, y0, x1, y1, thick, r, g, b, a = 255); img.triangle(x0, y0, x1, y1, x2, y2, r, g, b, a = 255); img.text(s, x, y, size, r, g, b, a = 255, font = nil, spacing = 0.0); img.gradient(r1,g1,b1, r2,g2,b2, direction = 0); img.gradient_radial(density, r1,g1,b1, r2,g2,b2); img.noise(seed, scale, amount = 255); img.cellular(tile, amount = 255); img.blit(src, x, y, r = 255, g = 255, b = 255, a = 255); img.blit_rot(src, x, y, rot = 0.0, scale = 1.0); img.blur(radius); img.tint(r, g, b); img.invert(); img.grayscale(); img.brightness(k); img.flip_v(); img.flip_h(); img.rotate(degrees); img.resize(w, h); img.crop(x, y, w, h); img.to_normal(strength = 1.0); view.background(r, g, b); view.sky(tr,tg,tb, br,bg,bb); view.sun(dx,dy,dz, intensity, r,g,b); view.ambient(intensity, r, g, b); view.fog(start, end, r, g, b); view.screenshot(path); view.alpha(a); view.text(s, x, y, size, r, g, b, font = nil, spacing = 0.0, rot = 0.0); view.text_width(s, size, font = nil, spacing = 0.0) -> Float; view.text_height(s, size, font = nil, spacing = 0.0) -> Float; view.rect(x, y, w, h, r, g, b); view.rect_line(x, y, w, h, thick, r, g, b); view.rect_round(x, y, w, h, roundness, r, g, b); view.rect_round_line(x, y, w, h, roundness, thick, r, g, b); view.rect_gradient(x, y, w, h, r1,g1,b1, r2,g2,b2, horizontal = false); view.circle(x, y, radius, r, g, b); view.circle_line(x, y, radius, r, g, b); view.circle_gradient(x, y, radius, r1,g1,b1, r2,g2,b2); view.ring(x, y, r_in, r_out, a0, a1, r, g, b); view.line(x0, y0, x1, y1, thick, r, g, b); view.triangle(x0, y0, x1, y1, x2, y2, r, g, b); view.poly(x, y, sides, radius, rot, r, g, b); view.sprite(tex, x, y, w, h, rot = 0.0, ox = 0.0, oy = 0.0, r = 255, g = 255, b = 255); view.sprite_rec(tex, sx, sy, sw, sh, x, y, w, h, rot = 0.0, ox = 0.0, oy = 0.0); view.clip(x, y, w, h); view.clip_end(); view.key(name) -> Bool; view.key_pressed(name) -> Bool; key_released(name) -> Bool; view.pad_available(index = 0) -> Bool; view.pad_axis(name, index = 0) -> Float; view.pad(name, index = 0) -> Bool; pad_pressed(name, index = 0) -> Bool; view.rumble(left, right, sec, index = 0); view.pad_name(index = 0) -> String; view.gamepad_mappings(db); view.mouse_x(); mouse_y() -> Float; view.mouse_dx(); mouse_dy() -> Float; view.mouse_wheel() -> Float; view.mouse(button) -> Bool; mouse_pressed(button) -> Bool; Scene.Audio.new(rate, channels, buffer) -> Audio; audio.ready() -> Bool; audio.needed() -> Long; audio.push(s); audio.push2(l, r); audio.pending() -> Long; audio.submit() -> Long; audio.dropped() -> Long; audio.latency() -> Float; audio.play(); stop(); pause(); resume(); playing() -> Bool; audio.volume(v); pitch(p); pan(p)
-
-**Net** — Net.connect(host: String, port: Long, timeout: Long = 0) -> Socket; read(n = nil); read_line(); read_exact(n); lines(); write(data); shutdown_write(); local_addr(); peer_addr(); set_timeout(ms); set_nodelay(on = true); is_open(); close(); Net.listen(port: Long, host: String = "0.0.0.0", backlog: Long = 0) -> Listener; accept(); serve(handler, workers = 0); listener.serve(handler, workers = 0); Net.udp(port: Long = 0, host: String = "0.0.0.0") -> UdpSocket; send_to(data, host, port); recv_from(max = 65536); set_broadcast(on = true); Net.resolve(host: String) -> Array<String>
-
-**Desktop / Webview** — Desktop.run(config: Object) -> Nil; Webview.Window.new(); w.set_title(title); w.set_size(width, height); w.set_html(html); w.navigate(url); w.run(); w.terminate(); Webview.Window.quit(); Webview.Window.is_running()
-
 **Vector2** — Vector2.new(x, y); a.hash() -> Long; a.dot(b); a.length(); a.length_squared(); a.normalized(); a.distance_to(b); a.distance_squared_to(b) -> Float; to_string(a) -> String
 
 **Vector3** — Vector3.new(x, y, z); a.hash() -> Long; a.dot(b); a.length(); a.length_squared(); a.normalized(); a.distance_to(b); a.distance_squared_to(b) -> Float; to_string(a) -> String
@@ -765,15 +774,20 @@ inspect([1, 2].size())  # => 2
 
 **PriorityQueue** — PriorityQueue.new(*, key: Function | Nil = nil, reverse: Bool = false); pq.push(x); pq.pop() -> Any; pq.peek() -> Any; pq.size(); pq.empty(); to_string(pq) -> String
 
-**PEG** — PEG.compile(grammar) -> PEG; PEG.compile(grammar, start); PEG.compile(grammar, start, optimize); PEG.compile(grammar, start, optimize, packrat); PEG.check(grammar) -> Nil; PEG.check(grammar, start); p.parse(text); p.parse(text, path); p.parse(text, path, actions); p.test(text) -> Bool; PEG.parse(grammar, text); PEG.parse(grammar, text, start, optimize, packrat, path, actions); PEG.test(grammar, text); PEG.test(grammar, text, start, packrat); PEG.walk(node) -> Iterator; PEG.find(node, name); PEG.find_all(node, name) -> [Node]; PEG.str(node) -> String
+### 一覧ではなく章を読むもの
 
-**CodeGen** — CodeGen.Module.new(); m.literal(v:, at:); m.bool_literal(v:, at:); m.double_literal(v:, at:); m.nil_literal(at:); m.str_literal(s:, at:); m.var_ref(kind:, index:, at:); m.unary(op:, operand:, at:); m.binary(op:, lhs:, rhs:, at:); m.assign(kind:, index:, value:, at:); m.make_if(cond:, then_branch:, at:); m.make_if_else(cond:, then_branch:, else_branch:, at:); m.make_switch(subject:, arms:, at:); m.make_switch_default(subject:, arms:, default_body:, at:); m.make_while(cond:, body:, at:); m.block(stmts:, at:); m.call(func:, cmap:, at:); m.make_closure(func:, cmap:, at:); m.call_value(callee:, args:, at:); m.declare_native(name:); m.native_ref(index:, at:); m.intrinsic(name:, args:, at:); m.array_lit(items:, at:); m.object_lit(kv:, at:); m.index(recv:, key:, at:); m.set_index(recv:, key:, value:, at:); m.field_get(recv:, slot:, name:, at:); m.field_set(recv:, slot:, name:, value:, at:); m.scope(first_local:, end_local:, body:, at:); m.scope_release(first_local:, end_local:, body:, release:, at:); m.make_return(value:, at:); m.make_break(line:, col:, depth: 0); m.make_continue(line:, col:, depth: 0); m.make_throw(value:, at:); m.make_try(caught_local:, body:, handler:, at:); m.make_defer(value:, at:); m.cell_fresh(cell:, at:); m.make_yield(value:, at:); m.set_generator(func:); m.set_lenient_arity(func:); m.set_tail_calls(func:); m.set_singleton(func:); m.set_entry_frame_drops(on:); m.list_new(); m.list_push(list:, value:); m.add_func(name:, num_locals:, num_captures:, num_cells:, num_params:, body:); m.set_local_name(func:, index:, name:); m.set_capture_name(func:, index:, name:); m.capture_map_new(); m.capture_map_push(cmap:, kind:, index:); m.add_capture_map(cmap:); m.verify(); m.run(); m.dump_ir(); m.dump_bc(); m.num_nodes(); m.node_tag(node:); m.node_line(node:); m.node_col(node:); m.num_children(node:); m.child(node:, index:); m.const_kind(node:); m.int_const(node:); m.bool_const(node:); m.double_const(node:); m.str_const(node:); m.node_op(node:); m.var_kind(node:); m.var_index(node:); m.switch_subject(node:); m.switch_arm_count(node:); m.switch_key(node:, index:); m.switch_body(node:, index:); m.switch_has_default(node:); m.switch_default_body(node:); m.field_slot(node:); m.field_name(node:); m.field_receiver(node:); m.field_set_value(node:); m.scope_first_local(node:); m.scope_end_local(node:); m.try_caught_local(node:); m.closure_func(node:); m.closure_cmap(node:); m.cell_index(node:); m.num_funcs(); m.func_name(func:); m.func_num_locals(func:); m.func_num_captures(func:); m.func_num_cells(func:); m.func_num_params(func:); m.func_body(func:); m.func_is_generator(func:); m.func_lenient_arity(func:); m.func_singleton(func:); m.func_local_name(func:, index:); m.func_capture_name(func:, index:); m.num_capture_maps(); m.num_capture_entries(cmap:); m.capture_kind(cmap:, index:); m.capture_index(cmap:, index:); m.compile(); CodeGen.Runtime.new(); p.run(rt: nil, max_call_depth: 10000, natives: nil); p.dump_bc(); rt.live_objects(); rt.heap_bytes(); rt.collect(); CodeGen.Resolver.new(); rs.new_fn(parent:); rs.set_func_index(fn:, index:); rs.func_index(fn:); rs.push_scope(); rs.pop_scope(); rs.depth(); rs.declare(name:, owner:); rs.declare_in(scope:, name:, owner:); rs.alias(name:, v:); rs.declared_here(name:); rs.declared_at(scope:, name:); rs.declared_count(scope:); rs.declared_index(scope:, i:); rs.lookup(name:); rs.lookup_from(name:, from_scope:); rs.use(v:, fn:); rs.var_name(v:); rs.var_owner(v:); rs.var_slot(v:); rs.set_var_slot(v:, slot:); rs.number_captures(); rs.read(m:, fn:, v:, at:); rs.write(m:, fn:, v:, value:, at:); rs.name_captures(m:, func:, fn:); rs.access_kind(fn:, v:); rs.access_index(fn:, v:); rs.num_captures(fn:); rs.num_cells(fn:); rs.cell_of(fn:, v:); rs.closure(m:, builder:, target:, at:); rs.capture_map(m:, builder:, target:); rs.reaches(fn:, v:); rs.mark(); rs.rollback(mark:); rs.reset_fn(fn:, parent:)
-
-**StateMachine** — StateMachine.new(desc: Object, *, name: String = "", guards: Object = {}, actions: Object = {}, context = nil); StateMachine.parse(text: String, *, guards: Object = {}, actions: Object = {}, context = nil, path: String = "") -> StateMachine; m.state() -> String; m.in_state(name: String) -> Bool; m.fire(event: String, payload = nil) -> Bool; m.can_fire(event: String, payload = nil) -> Bool; m.reset() -> Nil; to_string(m) -> String
-
-**FST** — FST.compile_set(keys: [String], sorted: Bool = false); FST.compile_map(entries: Object, sorted: Bool = false); FST.compile_index_map(entries: Object, sorted: Bool = false); FST.compile_auto_index(keys: [String], sorted: Bool = false); FST.Set.new(bytes) -> Set; FST.Map.new(bytes) -> Map; FST.IndexMap.new(bytes) -> IndexMap; contains(key); get(key); common_prefix_search(text) -> [Long]; longest_common_prefix_search(text); predictive_search(prefix) -> [String]; edit_distance_search(word, max_edits, insert_cost = 1, delete_cost = 1, replace_cost = 1); suggest(word)
-
-**Search** — Search.Index.new(analyzer: Object = nil) -> Index; Search.Index.load(path: String, analyzer: Object = nil, readonly: Bool = false) -> Index; idx.add(key: String, text: String) -> Nil; idx.remove(key: String) -> Nil; idx.search(query: String, limit: Long = 10) -> Array; idx.save(path: String) -> Nil; idx.close() -> Nil; Search.segmenter(model: String) -> Segmenter; seg.close() -> Nil
+| 名前空間 | 署名 | 何をするもの |
+|---|---:|---|
+| `SQLite` | 10 | 組み込みSQLデータベース（query / execute / プリペアド文 / トランザクション） |
+| `Canvas` | 71 | ゲーム向けイミディエイトモード2Dフレームバッファ（図形 / スプライト / オフスクリーン描画先 / テキスト / キー・マウス・ゲームパッド / ウィンドウ制御 / tone / 効果音 / music） |
+| `Scene` | 195 | 手続きジオメトリ向けのretained-mode 3Dレンダラ |
+| `Net` | 22 | 生のTCP / UDPソケットと名前解決（`Http`の下位レイヤ） |
+| `Desktop` / `Webview` | 10 | ネイティブWebViewのデスクトップアプリ: ローカルHTTPサーバ + ウィンドウを1呼び出しで |
+| `PEG` | 18 | PEGパーサジェネレータ。文法を書くと構文木が返る |
+| `CodeGen` | 144 | 小さな言語のIRを手で組み立てて実行する |
+| `StateMachine` | 8 | 入れ子にできる状態機械。テキストでも書ける |
+| `FST` | 14 | 書き換えない辞書を圧縮して持つ。前方一致・補完・あいまい検索 |
+| `Search` | 9 | 自分の文書を全文検索して順位をつける |
 
 <!-- END GENERATED -->
 

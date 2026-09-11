@@ -77,12 +77,17 @@ ratchetが持ちます。
 
 stdlibリファレンスが文書化する個々の`Ns.fn`やgrammar keywordに
 実際の呼び出し元があるか、は`tools/checks/check_api_coverage.sh`が
-`docs/quick-guide.md`に生成される署名索引とPEG grammarから
+`tools/checks/api_surface.txt` — quick-guideの索引と同じ生成パスが
+書き出す、リファレンスが文書化している署名の全体 — とPEG grammarから
 抜き出したkeyword集合を読み、それぞれの名前を`tests/*.cul`・
 `tests/*.sh`・`just doctest`が走らせるdoctestブロックと突き合わせます。
 呼び出し元がどこにも無い文書化済みの名前は`tools/checks/api_untested.txt`
 に記載されていない限り検査に落ち、記載済みの名前が呼び出し元を
 得た場合も落ちるので、このファイルも減る方向にしか動きません。
+母集団に`docs/quick-guide.md`の索引を使っていないのは意図的です。
+あちらは凝縮パックが本文に並べる名前空間しか載せないので、そこから
+読んでいたら、ある名前空間を「名前だけ」に移した瞬間にこの検査の
+母集団が半分に落ちていました。
 
 どちらも`check-generated`の一部として走るため、`just test-dev`と
 CIの両方がこれを回します。

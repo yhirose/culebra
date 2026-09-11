@@ -15,7 +15,7 @@
 # name|English summary|Japanese summary — `quick-guide` leads because it is
 # the one a reader with no context should open first.
 set(TOPICS
-  "quick-guide|Everything needed to write culebra, in one file|書き始めに必要な全部を 1 ファイルに凝縮"
+  "quick-guide|What cannot be looked up, in one file|引きようがないものを 1 ファイルに凝縮"
   "agent|Rules to paste into a coding agent's instructions|コーディングエージェントの指示ファイルに貼る規則"
   "handbook|Task-oriented walkthrough of the language|言語のタスク指向ガイド"
   "language|The language reference|言語リファレンス"

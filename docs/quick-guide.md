@@ -1,12 +1,17 @@
 Culebra Quick Guide
 ====================
 
-One file with everything needed to write correct Culebra: the syntax,
-the habits from other languages that do *not* carry over, and every
-standard-library signature. The reference set it condenses
-([`handbook.md`](handbook.md), [`language.md`](language.md),
-[`stdlib.md`](stdlib.md)) is around 150k tokens; this is the part that
-fits in a prompt.
+One file with what cannot be looked up: the syntax, the habits from
+other languages that do *not* carry over, and the signatures of the
+library a program reaches for without being told to. The reference set
+it condenses ([`handbook.md`](handbook.md),
+[`language.md`](language.md), [`stdlib.md`](stdlib.md)) is around 150k
+tokens; this is the part that fits in a prompt.
+
+The subsystems it leaves out — 3D, 2D, sockets, parsers, full-text
+search — are named in section 4 with the one command that prints each
+one whole, because a signature list is not enough to drive them and
+reading the chapter is.
 
 Every ` ```culebra ` block below is executed by `culebra test --doc
 docs`, so it cannot drift from the implementation. A line ending in
@@ -33,11 +38,12 @@ culebra test                     # run every test_*.cul below the cwd
 culebra fmt -i .                 # format in place (no style options)
 culebra lint .                   # static checks; exit 1 warn, 2 error
 culebra docs -g 'Math.wrap'      # look a signature up in the reference
+culebra docs stdlib Scene        # print one namespace's chapter whole
 ```
 
 Source files use the `.cul` extension. There is no project file, no
-manifest, and no package manager: everything in section 4 is in scope
-without an `import`.
+manifest, and no package manager: the whole standard library is in
+scope without an `import`.
 
 Undefined names are rejected before the program runs, so a wrong
 library guess fails immediately rather than halfway through:
@@ -630,9 +636,9 @@ produces something else, in Culebra.
 | `elif` | `else if` |
 | `#` only, or `//` only, for comments | both work, plus `/* ... */` |
 | `async` / `await` | absent by design — I/O blocks; use `Isolate` / `Parallel` |
-| a package manager | everything in section 4 is in scope with no `import` |
+| a package manager | the whole standard library is in scope with no `import` |
 
-Two that yield a value rather than an error, and so are easy to miss:
+Three that yield a value rather than an error, and so are easy to miss:
 
 ```culebra
 # split returns StringView, not String — cheap, but type_of differs
@@ -641,6 +647,12 @@ inspect(type_of('a,b'.split(',')[0]))  # => 'StringView'
 # a missing property is nil, silently
 inspect([1, 2].length)  # => nil
 inspect([1, 2].size())  # => 2
+
+# a match no arm covers is nil, not an error — and `lint` only says so
+# when the subject is an enum, so give every other match a `_` arm
+inspect(match 9 {
+  0 => 'zero',
+})  # => nil
 ```
 
 ### Idioms
@@ -696,6 +708,15 @@ entry with no receiver at all (`contains(x)` under **Set methods**,
 `json()` under **Http**) is a method on that group's own type. A group
 marked **(experimental)** is opt-in at build time and may be missing from
 a released binary; its section in [`stdlib.md`](stdlib.md) says so.
+
+The namespaces in the table at the end are named, not listed.
+Each drives a stateful subsystem — a view and a frame loop, an open
+connection, a grammar, an emitter — where the signatures say what to
+call but not in what order, against what, or what owns the result.
+`culebra docs stdlib <name>` prints one of those chapters whole, intro
+and subsections together. Read it before writing against the namespace;
+guessing from a signature there produces code that lints and does not
+run.
 
 <!-- BEGIN GENERATED: signature index -->
 
@@ -759,16 +780,6 @@ a released binary; its section in [`stdlib.md`](stdlib.md) says so.
 
 **TOML** — TOML.parse(text: String) -> Object; TOML.stringify(v: Object, sort_keys: Bool = false) -> String
 
-**SQLite** — SQLite.open(path: String) -> Database; SQLite.version() -> String; db.execute(sql: String, params = nil) -> Long; db.query(sql: String, params = nil) -> Array<Object>; db.prepare(sql: String) -> Statement; db.transaction(fn: Function) -> Any; db.close(); stmt.run(params = nil) -> Long; stmt.query(params = nil) -> Array<Object>; stmt.finalize()
-
-**Canvas** — Canvas.init(w, h); Canvas.clear(color); Canvas.set_pixel(x, y, color); Canvas.get_pixel(x, y) -> Long; Canvas.rect(x, y, w, h, color, fill = true); Canvas.line(x1, y1, x2, y2, color); Canvas.circle(cx, cy, r, color, fill = true); Canvas.ellipse(cx, cy, rx, ry, color, fill = true); Canvas.triangle(x1, y1, x2, y2, x3, y3, color, fill = true); Canvas.polygon(points, color, fill = true); Canvas.width(); Canvas.height() -> Long; Canvas.to_png() -> String; Canvas.present(); Canvas.title(name); Canvas.toggle_fullscreen(); Canvas.fullscreen() -> Bool; Canvas.resizable(enabled); Canvas.resized() -> Bool; Canvas.show_cursor(); Canvas.hide_cursor(); Canvas.cursor_hidden() -> Bool; Canvas.clipboard() -> String; Canvas.set_clipboard(text); Canvas.quit(); Canvas.can_quit() -> Bool; sprite.draw(x, y, flip_x = false, flip_y = false, transpose = false); sprite.draw_sub(x, y, sx, sy, sw, sh, flip_x = false, flip_y = false, transpose = false); sprite.draw_scaled(x, y, w, h, flip_x = false, flip_y = false, smooth = false, alpha = 255); sprite.draw_sub_scaled(x, y, w, h, sx, sy, sw, sh, flip_x = false, flip_y = false, smooth = false, alpha = 255); sprite.to_png() -> String; sprite.width(); sprite.height(); font.draw(s, x, y, color, size); font.draw_screen(s, x, y, color, size); font.text_width(s, size) -> Long; font.ascent(size) -> Long; font.advance(codepoint, size) -> Long; Canvas.buttons() -> Long; Canvas.mouse() -> Object; Canvas.key(name) -> Bool; Canvas.key_queue() -> Array; Canvas.typed() -> String; Canvas.wheel() -> Float; input.update(); input.down(btn) -> Bool; input.pressed(btn) -> Bool; Canvas.pad_available(index = 0) -> Bool; Canvas.pad_axis(axis, index = 0) -> Float; Canvas.pad_held(button, index = 0) -> Bool; Canvas.pad_pressed(button, index = 0) -> Bool; Canvas.pad_name(index = 0) -> String; Canvas.pad_rumble(left, right, sec, index = 0); Canvas.pad_mappings(db) -> Bool; Canvas.rect_overlap(x1, y1, w1, h1, x2, y2, w2, h2) -> Bool; Canvas.circle_overlap(x1, y1, r1, x2, y2, r2) -> Bool; Canvas.point_in_rect(px, py, x, y, w, h) -> Bool; Canvas.point_in_circle(px, py, cx, cy, r) -> Bool; sound.play(vol = 100); sound.stop(); sound.playing() -> Bool; Canvas.music(data, loop = true, vol = 100, start = 0.0); Canvas.music_stop(); Canvas.music_pause(); Canvas.music_resume(); Canvas.music_volume(vol); Canvas.music_seek(seconds); Canvas.music_playing() -> Bool; Canvas.dt() -> Float; Canvas.target_fps(n); Canvas.fps() -> Long
-
-**Scene** — view.target_fps(fps); view.closing() -> Bool; view.quit(); view.dt() -> Float; view.width(); view.height() -> Float; view.camera(px,py,pz, tx,ty,tz, ux,uy,uz, fov); view.render_3d(); view.begin_2d(); view.present(); view.fullscreen(on); view.is_fullscreen() -> Bool; view.resizable(on); view.resized() -> Bool; view.size(w, h); view.title(s); view.vsync(on); view.cursor(on); view.mouse_capture(on); view.clipboard() -> String; view.set_clipboard(s); view.fps() -> Long; view.time() -> Float; view.supersample(n); view.clip_planes(near, far); view.add_box(w, h, d); add_sphere(r); add_cylinder(r, h); add_plane(w, d); view.add_mesh(); node.add_mesh(); node.move(x, y, z); node.yaw(a); pitch(a); roll(a); node.spin(x, y, z, a); euler(x, y, z); node.scale(s); scale3(x, y, z); node.tint(r, g, b); node.material(m); node.order(n); node.opacity(a); node.quat(x, y, z, w); node.billboard(on = true); node.hide(); show(); name(n); node.x(); y(); z() -> Float; node.world_x(); world_y(); world_z() -> Float; node.child_count() -> Long; node.child_at(i) -> Node; node.find(name) -> Node; node.has(name) -> Bool; node.remove(); node.vertex_count() -> Long; node.cull_radius(r); node.culling(on); view.remove(node); view.find(name) -> Node; view.has(name) -> Bool; view.culling(on); view.add_material() -> Material; mat.rgb(r, g, b) -> Material; mat.pbr(metallic, roughness) -> Material; mat.texture(tex) -> Material; mat.uv(us, vs, uo = 0.0, vo = 0.0) -> Material; mat.normal_map(tex, strength = 1.0) -> Material; mat.opacity(a) -> Material; mat.cutout(threshold) -> Material; mat.blend(name) -> Material; mat.emissive(r, g, b, k = 1.0) -> Material; mat.unlit(on = true) -> Material; mat.double_sided(on = true) -> Material; mat.depth_write(on); mat.depth_test(on) -> Material; mat.casts_shadow(on) -> Material; mat.fog(on) -> Material; view.post_process(on); view.exposure(k); view.saturation(k); view.bloom(threshold, strength); view.dof(strength, range); view.ssao(strength, radius); view.vignette(k); view.lut(tex, amount = 1.0); view.texture(img, mipmaps = true, repeat = true) -> Texture; view.texture_png(bytes) -> Texture; view.checker(px, checks, r1,g1,b1, r2,g2,b2) -> Texture; view.grain(px, r, g, b, amt) -> Texture; view.canvas(w, h) -> Texture; view.canvas_end(); view.render_target(w, h) -> Texture; tex.width(); tex.height() -> Float; tex.filter(name) -> Texture; tex.wrap(name) -> Texture; Scene.Image.new(w, h) -> Image; Scene.Image.from_png(bytes) -> Image; img.width(); img.height() -> Float; img.get(x, y) -> Long; img.copy() -> Image; img.save_png(path) -> Bool; img.to_png() -> String; img.fill(r, g, b, a = 255); img.pixel(x, y, r, g, b, a = 255); img.rect(x, y, w, h, r, g, b, a = 255); img.rect_line(x, y, w, h, r, g, b, a = 255); img.circle(x, y, radius, r, g, b, a = 255); img.circle_line(x, y, radius, r, g, b, a = 255); img.line(x0, y0, x1, y1, thick, r, g, b, a = 255); img.triangle(x0, y0, x1, y1, x2, y2, r, g, b, a = 255); img.text(s, x, y, size, r, g, b, a = 255, font = nil, spacing = 0.0); img.gradient(r1,g1,b1, r2,g2,b2, direction = 0); img.gradient_radial(density, r1,g1,b1, r2,g2,b2); img.noise(seed, scale, amount = 255); img.cellular(tile, amount = 255); img.blit(src, x, y, r = 255, g = 255, b = 255, a = 255); img.blit_rot(src, x, y, rot = 0.0, scale = 1.0); img.blur(radius); img.tint(r, g, b); img.invert(); img.grayscale(); img.brightness(k); img.flip_v(); img.flip_h(); img.rotate(degrees); img.resize(w, h); img.crop(x, y, w, h); img.to_normal(strength = 1.0); view.background(r, g, b); view.sky(tr,tg,tb, br,bg,bb); view.sun(dx,dy,dz, intensity, r,g,b); view.ambient(intensity, r, g, b); view.fog(start, end, r, g, b); view.screenshot(path); view.alpha(a); view.text(s, x, y, size, r, g, b, font = nil, spacing = 0.0, rot = 0.0); view.text_width(s, size, font = nil, spacing = 0.0) -> Float; view.text_height(s, size, font = nil, spacing = 0.0) -> Float; view.rect(x, y, w, h, r, g, b); view.rect_line(x, y, w, h, thick, r, g, b); view.rect_round(x, y, w, h, roundness, r, g, b); view.rect_round_line(x, y, w, h, roundness, thick, r, g, b); view.rect_gradient(x, y, w, h, r1,g1,b1, r2,g2,b2, horizontal = false); view.circle(x, y, radius, r, g, b); view.circle_line(x, y, radius, r, g, b); view.circle_gradient(x, y, radius, r1,g1,b1, r2,g2,b2); view.ring(x, y, r_in, r_out, a0, a1, r, g, b); view.line(x0, y0, x1, y1, thick, r, g, b); view.triangle(x0, y0, x1, y1, x2, y2, r, g, b); view.poly(x, y, sides, radius, rot, r, g, b); view.sprite(tex, x, y, w, h, rot = 0.0, ox = 0.0, oy = 0.0, r = 255, g = 255, b = 255); view.sprite_rec(tex, sx, sy, sw, sh, x, y, w, h, rot = 0.0, ox = 0.0, oy = 0.0); view.clip(x, y, w, h); view.clip_end(); view.key(name) -> Bool; view.key_pressed(name) -> Bool; key_released(name) -> Bool; view.pad_available(index = 0) -> Bool; view.pad_axis(name, index = 0) -> Float; view.pad(name, index = 0) -> Bool; pad_pressed(name, index = 0) -> Bool; view.rumble(left, right, sec, index = 0); view.pad_name(index = 0) -> String; view.gamepad_mappings(db); view.mouse_x(); mouse_y() -> Float; view.mouse_dx(); mouse_dy() -> Float; view.mouse_wheel() -> Float; view.mouse(button) -> Bool; mouse_pressed(button) -> Bool; Scene.Audio.new(rate, channels, buffer) -> Audio; audio.ready() -> Bool; audio.needed() -> Long; audio.push(s); audio.push2(l, r); audio.pending() -> Long; audio.submit() -> Long; audio.dropped() -> Long; audio.latency() -> Float; audio.play(); stop(); pause(); resume(); playing() -> Bool; audio.volume(v); pitch(p); pan(p)
-
-**Net** — Net.connect(host: String, port: Long, timeout: Long = 0) -> Socket; read(n = nil); read_line(); read_exact(n); lines(); write(data); shutdown_write(); local_addr(); peer_addr(); set_timeout(ms); set_nodelay(on = true); is_open(); close(); Net.listen(port: Long, host: String = "0.0.0.0", backlog: Long = 0) -> Listener; accept(); serve(handler, workers = 0); listener.serve(handler, workers = 0); Net.udp(port: Long = 0, host: String = "0.0.0.0") -> UdpSocket; send_to(data, host, port); recv_from(max = 65536); set_broadcast(on = true); Net.resolve(host: String) -> Array<String>
-
-**Desktop / Webview** — Desktop.run(config: Object) -> Nil; Webview.Window.new(); w.set_title(title); w.set_size(width, height); w.set_html(html); w.navigate(url); w.run(); w.terminate(); Webview.Window.quit(); Webview.Window.is_running()
-
 **Vector2** — Vector2.new(x, y); a.hash() -> Long; a.dot(b); a.length(); a.length_squared(); a.normalized(); a.distance_to(b); a.distance_squared_to(b) -> Float; to_string(a) -> String
 
 **Vector3** — Vector3.new(x, y, z); a.hash() -> Long; a.dot(b); a.length(); a.length_squared(); a.normalized(); a.distance_to(b); a.distance_squared_to(b) -> Float; to_string(a) -> String
@@ -777,15 +788,20 @@ a released binary; its section in [`stdlib.md`](stdlib.md) says so.
 
 **PriorityQueue** — PriorityQueue.new(*, key: Function | Nil = nil, reverse: Bool = false); pq.push(x); pq.pop() -> Any; pq.peek() -> Any; pq.size(); pq.empty(); to_string(pq) -> String
 
-**PEG** — PEG.compile(grammar) -> PEG; PEG.compile(grammar, start); PEG.compile(grammar, start, optimize); PEG.compile(grammar, start, optimize, packrat); PEG.check(grammar) -> Nil; PEG.check(grammar, start); p.parse(text); p.parse(text, path); p.parse(text, path, actions); p.test(text) -> Bool; PEG.parse(grammar, text); PEG.parse(grammar, text, start, optimize, packrat, path, actions); PEG.test(grammar, text); PEG.test(grammar, text, start, packrat); PEG.walk(node) -> Iterator; PEG.find(node, name); PEG.find_all(node, name) -> [Node]; PEG.str(node) -> String
+### Read the chapter for these
 
-**CodeGen** — CodeGen.Module.new(); m.literal(v:, at:); m.bool_literal(v:, at:); m.double_literal(v:, at:); m.nil_literal(at:); m.str_literal(s:, at:); m.var_ref(kind:, index:, at:); m.unary(op:, operand:, at:); m.binary(op:, lhs:, rhs:, at:); m.assign(kind:, index:, value:, at:); m.make_if(cond:, then_branch:, at:); m.make_if_else(cond:, then_branch:, else_branch:, at:); m.make_switch(subject:, arms:, at:); m.make_switch_default(subject:, arms:, default_body:, at:); m.make_while(cond:, body:, at:); m.block(stmts:, at:); m.call(func:, cmap:, at:); m.make_closure(func:, cmap:, at:); m.call_value(callee:, args:, at:); m.declare_native(name:); m.native_ref(index:, at:); m.intrinsic(name:, args:, at:); m.array_lit(items:, at:); m.object_lit(kv:, at:); m.index(recv:, key:, at:); m.set_index(recv:, key:, value:, at:); m.field_get(recv:, slot:, name:, at:); m.field_set(recv:, slot:, name:, value:, at:); m.scope(first_local:, end_local:, body:, at:); m.scope_release(first_local:, end_local:, body:, release:, at:); m.make_return(value:, at:); m.make_break(line:, col:, depth: 0); m.make_continue(line:, col:, depth: 0); m.make_throw(value:, at:); m.make_try(caught_local:, body:, handler:, at:); m.make_defer(value:, at:); m.cell_fresh(cell:, at:); m.make_yield(value:, at:); m.set_generator(func:); m.set_lenient_arity(func:); m.set_tail_calls(func:); m.set_singleton(func:); m.set_entry_frame_drops(on:); m.list_new(); m.list_push(list:, value:); m.add_func(name:, num_locals:, num_captures:, num_cells:, num_params:, body:); m.set_local_name(func:, index:, name:); m.set_capture_name(func:, index:, name:); m.capture_map_new(); m.capture_map_push(cmap:, kind:, index:); m.add_capture_map(cmap:); m.verify(); m.run(); m.dump_ir(); m.dump_bc(); m.num_nodes(); m.node_tag(node:); m.node_line(node:); m.node_col(node:); m.num_children(node:); m.child(node:, index:); m.const_kind(node:); m.int_const(node:); m.bool_const(node:); m.double_const(node:); m.str_const(node:); m.node_op(node:); m.var_kind(node:); m.var_index(node:); m.switch_subject(node:); m.switch_arm_count(node:); m.switch_key(node:, index:); m.switch_body(node:, index:); m.switch_has_default(node:); m.switch_default_body(node:); m.field_slot(node:); m.field_name(node:); m.field_receiver(node:); m.field_set_value(node:); m.scope_first_local(node:); m.scope_end_local(node:); m.try_caught_local(node:); m.closure_func(node:); m.closure_cmap(node:); m.cell_index(node:); m.num_funcs(); m.func_name(func:); m.func_num_locals(func:); m.func_num_captures(func:); m.func_num_cells(func:); m.func_num_params(func:); m.func_body(func:); m.func_is_generator(func:); m.func_lenient_arity(func:); m.func_singleton(func:); m.func_local_name(func:, index:); m.func_capture_name(func:, index:); m.num_capture_maps(); m.num_capture_entries(cmap:); m.capture_kind(cmap:, index:); m.capture_index(cmap:, index:); m.compile(); CodeGen.Runtime.new(); p.run(rt: nil, max_call_depth: 10000, natives: nil); p.dump_bc(); rt.live_objects(); rt.heap_bytes(); rt.collect(); CodeGen.Resolver.new(); rs.new_fn(parent:); rs.set_func_index(fn:, index:); rs.func_index(fn:); rs.push_scope(); rs.pop_scope(); rs.depth(); rs.declare(name:, owner:); rs.declare_in(scope:, name:, owner:); rs.alias(name:, v:); rs.declared_here(name:); rs.declared_at(scope:, name:); rs.declared_count(scope:); rs.declared_index(scope:, i:); rs.lookup(name:); rs.lookup_from(name:, from_scope:); rs.use(v:, fn:); rs.var_name(v:); rs.var_owner(v:); rs.var_slot(v:); rs.set_var_slot(v:, slot:); rs.number_captures(); rs.read(m:, fn:, v:, at:); rs.write(m:, fn:, v:, value:, at:); rs.name_captures(m:, func:, fn:); rs.access_kind(fn:, v:); rs.access_index(fn:, v:); rs.num_captures(fn:); rs.num_cells(fn:); rs.cell_of(fn:, v:); rs.closure(m:, builder:, target:, at:); rs.capture_map(m:, builder:, target:); rs.reaches(fn:, v:); rs.mark(); rs.rollback(mark:); rs.reset_fn(fn:, parent:)
-
-**StateMachine** — StateMachine.new(desc: Object, *, name: String = "", guards: Object = {}, actions: Object = {}, context = nil); StateMachine.parse(text: String, *, guards: Object = {}, actions: Object = {}, context = nil, path: String = "") -> StateMachine; m.state() -> String; m.in_state(name: String) -> Bool; m.fire(event: String, payload = nil) -> Bool; m.can_fire(event: String, payload = nil) -> Bool; m.reset() -> Nil; to_string(m) -> String
-
-**FST** — FST.compile_set(keys: [String], sorted: Bool = false); FST.compile_map(entries: Object, sorted: Bool = false); FST.compile_index_map(entries: Object, sorted: Bool = false); FST.compile_auto_index(keys: [String], sorted: Bool = false); FST.Set.new(bytes) -> Set; FST.Map.new(bytes) -> Map; FST.IndexMap.new(bytes) -> IndexMap; contains(key); get(key); common_prefix_search(text) -> [Long]; longest_common_prefix_search(text); predictive_search(prefix) -> [String]; edit_distance_search(word, max_edits, insert_cost = 1, delete_cost = 1, replace_cost = 1); suggest(word)
-
-**Search** — Search.Index.new(analyzer: Object = nil) -> Index; Search.Index.load(path: String, analyzer: Object = nil, readonly: Bool = false) -> Index; idx.add(key: String, text: String) -> Nil; idx.remove(key: String) -> Nil; idx.search(query: String, limit: Long = 10) -> Array; idx.save(path: String) -> Nil; idx.close() -> Nil; Search.segmenter(model: String) -> Segmenter; seg.close() -> Nil
+| Namespace | Signatures | What it is |
+|---|---:|---|
+| `SQLite` | 10 | embedded SQL database (query / execute / prepared statements / transactions) |
+| `Canvas` | 71 | immediate-mode 2D framebuffer for games (shapes, sprites, offscreen targets, text, keys/mouse/gamepad, window controls, tone, sound, music) |
+| `Scene` | 195 | retained-mode 3D renderer for procedural geometry |
+| `Net` | 22 | raw TCP / UDP sockets and name resolution (the layer under `Http`) |
+| `Desktop` / `Webview` | 10 | native WebView desktop app: local HTTP server + window, one call |
+| `PEG` | 18 | PEG parser generator: write a grammar, get a syntax tree |
+| `CodeGen` | 144 | build a small language's IR by hand and run it |
+| `StateMachine` | 8 | hierarchical state machine, with a text DSL |
+| `FST` | 14 | compiled read-only dictionary: prefix, predictive and fuzzy search |
+| `Search` | 9 | full-text index over your own documents, ranked |
 
 <!-- END GENERATED -->
 

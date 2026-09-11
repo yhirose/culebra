@@ -79,13 +79,17 @@ that gains one fails it too, so the file only shrinks.
 
 Whether an individual `Ns.fn` the stdlib reference documents, or a
 grammar keyword, has a durable caller at all:
-`tools/checks/check_api_coverage.sh` reads the signature index generated
-into `docs/quick-guide.md` and the keyword set parsed out of the PEG
+`tools/checks/check_api_coverage.sh` reads `tools/checks/api_surface.txt`
+— every signature the reference documents, written by the same pass that
+generates the quick-guide index — and the keyword set parsed out of the PEG
 grammar, and checks each name against `tests/*.cul`, `tests/*.sh` and
 the doctest blocks `just doctest` runs. A documented name with no
 caller anywhere fails the check unless it is filed in
 `tools/checks/api_untested.txt`; a filed name that gains one fails too, so
-the file only shrinks.
+the file only shrinks. The surface file is deliberately not the index in
+`docs/quick-guide.md`: that one lists only the namespaces the context pack
+carries inline, so reading the population from it would have dropped half
+of this gate's names the moment a namespace moved to being named there.
 
 Both run as part of `check-generated`, so `just test-dev` and CI both
 carry them.

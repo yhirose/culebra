@@ -147,20 +147,26 @@ inside the binary, so it always matches the build being run:
 ```bash
 culebra docs -g 'Math.wrap'          # print the sections that match
 culebra docs -g '<name>' >/dev/null  # exits 1 when nothing matches
+culebra docs stdlib Scene            # print one namespace's chapter whole
 ```
 
 Exit status is grep's: `0` printed something, `1` nothing matched. A
 signature `-g` cannot find does not exist.
 
 **Read `culebra docs quick-guide` before writing Culebra.** It is one
-prompt-sized file: the syntax, every standard-library signature, and a
-table of the habits from other languages that do not carry over. One
-row of that table, for the kind of thing it covers:
+prompt-sized file: the syntax, the signatures a program reaches for
+unprompted, and a table of the habits from other languages that do not
+carry over. One row of that table, for the kind of thing it covers:
 
 ```culebra
 # !! TypeError
 'ab' * 3
 ```
+
+The quick guide names the stateful subsystems — `Scene`, `Canvas`,
+`Net`, `PEG`, `CodeGen` and the rest — rather than listing them. Print
+the chapter for one before writing against it; its signatures alone do
+not say in what order to call them or what owns the result.
 
 **Run what you write.** Undefined names are rejected before the program
 starts, but that check covers names, not members: `Math.abss(1)` and

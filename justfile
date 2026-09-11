@@ -1393,14 +1393,16 @@ doctest LANE="all": build check-docs-cpp
 
 # Rewrite the signature index inside docs/quick-guide.md and
 # docs/quick-guide.ja.md from language.md and stdlib.md, so the context pack
-# never becomes a second copy of the reference that can drift.
-# `check-quick-guide` is the CI gate.
+# never becomes a second copy of the reference that can drift. The same pass
+# writes tools/checks/api_surface.txt — the whole documented surface, which
+# check-api-coverage measures against, since the pack itself lists only the
+# namespaces it carries inline. `check-quick-guide` is the CI gate for both.
 [doc("Regenerate the signature index in docs/quick-guide.md (en+ja)")]
 [group("docs")]
 gen-quick-guide: build
     ./build/culebra --vm misc/gen_quick_guide.cul
 
-[doc("Fail if docs/quick-guide.md's signature index is stale")]
+[doc("Fail if the quick-guide index or tools/checks/api_surface.txt is stale")]
 [group("docs")]
 check-quick-guide: build
     ./build/culebra --vm misc/gen_quick_guide.cul --check

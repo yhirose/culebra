@@ -390,9 +390,9 @@ BLAS級の数値計算です。
   [`docs/guides/`](docs/guides/) — 現在は
   [PEGで解析する](docs/guides/parsing-with-peg.ja.md)と
   [デスクトップアプリを作る](docs/guides/desktop-app.ja.md)
-* クイックガイド — 構文、間違えやすい点、標準ライブラリの全シグネチャを
-  1ファイルに凝縮したもの。LLMのプロンプト用に書いていますが、人が最初から
-  最後まで読み切れる分量でもあります:
+* クイックガイド — 構文、間違えやすい点、言われなくても手が伸びる範囲の
+  標準ライブラリのシグネチャを1ファイルに凝縮したもの。LLMのプロンプト用に
+  書いていますが、人が最初から最後まで読み切れる分量でもあります:
   [`docs/quick-guide.ja.md`](docs/quick-guide.ja.md)
   / [English](docs/quick-guide.md)
 * エージェント規約 — 同じ出発点をコーディングエージェントが読む形にした

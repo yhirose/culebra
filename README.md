@@ -392,9 +392,10 @@ Documentation
   [`docs/guides/`](docs/guides/) — currently
   [parsing with PEG](docs/guides/parsing-with-peg.md) and
   [building a desktop app](docs/guides/desktop-app.md)
-* Quick guide — the syntax, the carried-over mistakes and every stdlib
-  signature condensed into one file; written for an LLM prompt, and short
-  enough for a human to read start to finish:
+* Quick guide — the syntax, the carried-over mistakes and the stdlib
+  signatures a program reaches for unprompted, condensed into one file;
+  written for an LLM prompt, and short enough for a human to read start
+  to finish:
   [`docs/quick-guide.md`](docs/quick-guide.md)
   / [日本語](docs/quick-guide.ja.md)
 * Agent rules — the same starting point in the form a coding agent
