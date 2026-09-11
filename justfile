@@ -1162,6 +1162,13 @@ _run-tests BACKEND:
     # (tools/checks/check_rt_keep_scope.sh).
     run_rt_keep_scope() { bash tools/checks/check_rt_keep_scope.sh; }
 
+    # The tests/*.cul sweep runs on every lane, so a file in it may only name
+    # namespaces every build carries — not Scene/Webview/Desktop, which a CMake
+    # option takes away and the display-less lanes build without. Source-only:
+    # it reads the sweep, not a binary, so a local run catches what otherwise
+    # only shows up on the lanes that lack the axis.
+    run_optional_ns() { bash tools/checks/check_tests_optional_ns.sh; }
+
     # Runtime-archive ownership: a dynamically-initialized namespace-scope
     # thread_local — and any symbol the core archive defines strongly — must
     # come from one archive, never both. mingw's ld rejects the duplicate and
@@ -1238,6 +1245,7 @@ _run-tests BACKEND:
         phase "long width (language values are int64_t, not long)"; run_long_width
         phase "iter wiring (JitIterDrive + upstream forwarding ratchet)"; run_iter_wiring
         phase "rt-keep scope (CULEBRA_RT_KEEP is culebra_runtime_*-only)"; run_rt_keep_scope
+        phase "optional ns (the tests/*.cul sweep names no optional namespace)"; run_optional_ns
     }
     case "{{BACKEND}}" in
       # Order: cheap tests first, then AOT (slowest + most env-sensitive,

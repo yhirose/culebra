@@ -45,6 +45,12 @@ culebra は個人の趣味プロジェクト（プログラミング言語処理
 3. フルゲート **`just test`**（実測 450〜880s、うち 95% は difftest + leak 系 + AOT）
 4. **docs を触ったら必ず `just doctest`**（`just test` には含まれない別ステップ）
 
+`tests/*.cul` は全レーンが回すので、**CMake オプションで消える namespace（`Scene` / `Webview` /
+`Desktop`）を名指ししない**。ローカルはその軸を build しているので緑になり、軸の無いレーンだけが
+`NameError` で落ちる（実例2回）。その軸が要るテストは `tests/gui/` か専用の `*_test.sh` に置く。
+`tools/checks/check_tests_optional_ns.sh` が `tests/*.cul` については機械的に見るが、`docs/` や
+`examples/` は見ないので、そちらは `# doctest: skip` を忘れないこと。
+
 ### どこまで回すか（変更内容に比例させる）
 
 **ローカル全ゲートは既定にしない。** Ubuntu CI が `just test` を skip なしで回すので、

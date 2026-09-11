@@ -164,10 +164,13 @@ try {
 }
 assert_eq(noctor, true)
 
-// Lazy preamble modules are ordinary object literals tagged as namespaces
-// after the fact, so a `new:` key added to one would silently make it
-// constructible. None has one today — frozen here so that is a decision.
-for ns in [Time, Term, Canvas, Args, Regex, PEG, FST, Log, Desktop] {
+// The namespace-shaped lazy preamble modules are ordinary object literals
+// tagged as namespaces after the fact, so a `new:` key added to one would
+// silently make it constructible. None has one today — frozen here so that is
+// a decision. Out of the list: the class-shaped modules (Path, Vector2,
+// Deque, ...), which carry a `new` by design, and Desktop, which preamble.h
+// registers only in a Webview build.
+for ns in [Time, Term, Canvas, Args, Regex, PEG, FST, Log] {
   assert_eq(ns.has("new"), false)
 }
 
