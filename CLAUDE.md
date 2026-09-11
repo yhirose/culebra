@@ -141,8 +141,11 @@ culebra fmt -i .          # format in place (no style options)
 culebra lint .            # static checks
 ```
 
-**Look an API up instead of guessing it.** The whole reference is
-inside the binary, so it always matches the build being run:
+**Look an API up instead of guessing it** — especially the ones that
+feel too ordinary to check. `sort`, `take`, `items`, `length`: a name
+every language has is where a wrong guess is most confident and least
+noticed. The whole reference is inside the binary, so it always
+matches the build being run:
 
 ```bash
 culebra docs -g 'Math.wrap'          # print the sections that match
