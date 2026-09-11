@@ -3,6 +3,7 @@
 #include <regexlib.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -58,6 +59,7 @@ struct Doc {
   std::vector<std::string_view> lines;
   std::vector<bool> in_code;
   std::vector<bool> is_heading;
+  std::vector<int> level;  // 1-6 on a heading line, 0 elsewhere
   std::vector<Section> sections;
 };
 
@@ -76,9 +78,14 @@ std::vector<std::string_view> split_lines(std::string_view s) {
   return out;
 }
 
-bool is_atx_heading(std::string_view l) {
+size_t hash_count(std::string_view l) {
   size_t h = 0;
   while (h < l.size() && l[h] == '#') h++;
+  return h;
+}
+
+bool is_atx_heading(std::string_view l) {
+  size_t h = hash_count(l);
   return h >= 1 && h <= 6 && h < l.size() && l[h] == ' ';
 }
 
@@ -105,6 +112,7 @@ Doc build_doc(const Topic& t) {
   d.lines = split_lines(t.text);
   d.in_code.assign(d.lines.size(), false);
   d.is_heading.assign(d.lines.size(), false);
+  d.level.assign(d.lines.size(), 0);
 
   bool fenced = false;
   for (size_t i = 0; i < d.lines.size(); i++) {
@@ -120,9 +128,11 @@ Doc build_doc(const Topic& t) {
     if (fenced) continue;
     if (is_atx_heading(l)) {
       d.is_heading[i] = true;
+      d.level[i] = static_cast<int>(hash_count(l));
     } else if (is_setext_rule(l) && i > 0 && !blank(d.lines[i - 1]) &&
                !d.is_heading[i - 1] && !d.in_code[i - 1]) {
       d.is_heading[i - 1] = true;
+      d.level[i - 1] = l[0] == '=' ? 1 : 2;
     }
   }
 
@@ -291,9 +301,13 @@ void print_list(bool ja, const char* version) {
   std::println("");
   std::println("  culebra docs <topic>          print it");
   std::println(
+      "  culebra docs <topic> <name>   print one chapter of it whole");
+  std::println(
       "  culebra docs -g <pattern>     search every topic, printing the");
   std::println("                                sections that match");
   std::println("  culebra docs <topic> -g <p>   search one topic");
+  std::println("  culebra docs <topic> <name> -g <p>");
+  std::println("                                search one chapter of it");
   std::println("  culebra docs --ja ...         the Japanese edition");
   std::println("");
   std::println(
@@ -323,9 +337,18 @@ void print_agent_hint() {
 }
 
 void print_usage() {
-  std::println("Usage: culebra docs [topic] [-g <pattern>] [options]");
+  std::println("Usage: culebra docs [topic] [chapter] [-g <pattern>]"
+               " [options]");
   std::println("");
   std::println("Read the reference docs carried inside this binary.");
+  std::println("");
+  std::println("Naming a chapter prints it whole — intro and subsections"
+               " together, which");
+  std::println("is the unit to read before writing against a subsystem:"
+               " `culebra docs");
+  std::println("stdlib Scene`. With -g it scopes the search to that chapter"
+               " instead. A name");
+  std::println("that does not exist lists the ones that do.");
   std::println("");
   std::println("Options:");
   std::println("  -g, --grep <pattern>  Print the sections matching <pattern>."
@@ -346,7 +369,130 @@ void print_usage() {
                " usage.");
 }
 
-int search(std::string_view pattern, const Topic* only, bool ja, bool full) {
+// The names a heading answers to: its text with the `#`s, the chapter number
+// and the backticks taken off, plus each backticked span on its own — so
+// `## 29. `Desktop` / `Webview`` is found by either half as well as by both.
+std::vector<std::string> heading_names(std::string_view l) {
+  std::string_view t = l.substr(hash_count(l));
+  while (!t.empty() && t.front() == ' ') t.remove_prefix(1);
+  size_t p = 0;
+  while (p < t.size() && (isdigit(static_cast<unsigned char>(t[p])) ||
+                          t[p] == '.')) {
+    p++;
+  }
+  if (p > 0 && p < t.size() && t[p] == ' ') t = t.substr(p + 1);
+  t = rstrip(t);
+
+  std::vector<std::string> out;
+  std::string whole;
+  for (char c : t) {
+    if (c != '`') whole += c;
+  }
+  out.push_back(whole);
+  for (size_t i = t.find('`'); i != std::string_view::npos;
+       i = t.find('`', i + 1)) {
+    size_t e = t.find('`', i + 1);
+    if (e == std::string_view::npos) break;
+    out.emplace_back(t.substr(i + 1, e - i - 1));
+    i = e;
+  }
+  return out;
+}
+
+bool eq_ignore_case(std::string_view a, std::string_view b) {
+  return a.size() == b.size() &&
+         std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+           return std::tolower(static_cast<unsigned char>(x)) ==
+                  std::tolower(static_cast<unsigned char>(y));
+         });
+}
+
+// Deeper than any markdown heading, so "no level yet" compares as such.
+constexpr int kBelowAnyHeading = 7;
+
+// The chapters answering to `name`: each is a heading plus everything under
+// it, to the next heading at its own level or above, so subsections come
+// with it. The shallowest matching headings win — there is normally one, but
+// `Images` names a subsection of both Canvas and Scene, and both are the
+// answer.
+std::vector<Section> find_chapters(const Doc& d, std::string_view name) {
+  int best = kBelowAnyHeading;
+  std::vector<size_t> heads;
+  for (size_t k = 0; k < d.sections.size(); k++) {
+    int lvl = d.level[d.sections[k].first];
+    if (lvl == 0 || lvl > best) continue;
+    bool match = false;
+    for (const std::string& n : heading_names(d.lines[d.sections[k].first])) {
+      if (eq_ignore_case(n, name)) {
+        match = true;
+        break;
+      }
+    }
+    if (!match) continue;
+    if (lvl < best) {
+      best = lvl;
+      heads.clear();
+    }
+    heads.push_back(k);
+  }
+
+  std::vector<Section> out;
+  for (size_t k : heads) {
+    Section span = d.sections[k];
+    for (size_t j = k + 1; j < d.sections.size(); j++) {
+      int lvl = d.level[d.sections[j].first];
+      if (lvl != 0 && lvl <= best) break;
+      span.last = d.sections[j].last;
+    }
+    out.push_back(span);
+  }
+  return out;
+}
+
+bool within(const std::vector<Section>& spans, const Section& s) {
+  return std::any_of(spans.begin(), spans.end(), [&](const Section& c) {
+    return c.first <= s.first && s.last <= c.last;
+  });
+}
+
+// A wrong chapter name is most often a half-remembered one, so it is answered
+// with the list it was drawn from rather than with nothing: the headings at
+// the shallowest level below the document title.
+int no_such_chapter(const Doc& d, std::string_view name) {
+  std::println(stderr, "culebra docs: {} has no chapter named '{}'", d.file,
+               name);
+  int shallow = kBelowAnyHeading;
+  for (size_t i = 0; i < d.lines.size(); i++) {
+    if (d.is_heading[i] && d.level[i] > 1 && d.level[i] < shallow) {
+      shallow = d.level[i];
+    }
+  }
+  std::println(stderr, "");
+  std::println(stderr, "Chapters in {}:", d.file);
+  for (size_t i = 0; i < d.lines.size(); i++) {
+    if (d.is_heading[i] && d.level[i] == shallow) {
+      std::println(stderr, "  {}", heading_names(d.lines[i]).front());
+    }
+  }
+  return 1;
+}
+
+// `-g` splits at every heading, so it can never hand back an API whole: the
+// chapter intro that says how the thing is driven and the signatures that
+// drive it land in different sections. Naming a chapter prints it entire,
+// which is the unit an agent needs before writing against a subsystem.
+int print_chapter(const Topic& t, std::string_view name) {
+  Doc d = build_doc(t);
+  std::vector<Section> chapters = find_chapters(d, name);
+  if (chapters.empty()) return no_such_chapter(d, name);
+  for (const Section& c : chapters) print_section(d, c, /*uncapped=*/true);
+  return 0;
+}
+
+// `chapter` narrows a one-topic search to the chapters of that name — the
+// step after "restrict it to one topic" when a pattern is still too broad.
+int search(std::string_view pattern, const Topic* only,
+           std::string_view chapter, bool ja, bool full) {
   bool fell_back = false;
   auto re = compile_pattern(pattern, fell_back);
   if (!re) return 2;
@@ -374,6 +520,12 @@ int search(std::string_view pattern, const Topic* only, bool ja, bool full) {
     docs.push_back(build_doc(t));
   }
 
+  std::vector<Section> scope;
+  if (!chapter.empty()) {
+    scope = find_chapters(docs.front(), chapter);
+    if (scope.empty()) return no_such_chapter(docs.front(), chapter);
+  }
+
   struct Hit {
     const Doc* doc;
     const Section* sec;
@@ -382,7 +534,9 @@ int search(std::string_view pattern, const Topic* only, bool ja, bool full) {
   for (Doc& d : docs) {
     rank_sections(d, *re);
     for (const Section& s : d.sections) {
-      if (s.rank != Rank::None) hits.push_back({&d, &s});
+      if (s.rank == Rank::None) continue;
+      if (!scope.empty() && !within(scope, s)) continue;
+      hits.push_back({&d, &s});
     }
   }
   if (hits.empty()) {
@@ -412,7 +566,9 @@ int search(std::string_view pattern, const Topic* only, bool ja, bool full) {
   std::println("{} more sections match /{}/ — headings only. Narrow the"
                " pattern, restrict it",
                hits.size() - in_full, pattern);
-  std::println("to one topic (`culebra docs stdlib -g …`), or pass --full.");
+  std::println("to one topic (`culebra docs stdlib -g …`) or chapter (`culebra"
+               " docs stdlib Scene -g …`),");
+  std::println("or pass --full.");
   std::println("");
   size_t shown = std::min(hits.size(), in_full + kIndexLimit);
   for (size_t i = in_full; i < shown; i++) {
@@ -443,7 +599,7 @@ int print_at(const Topic& t, long line) {
 }  // namespace
 
 int run_docs(int argc, const char** argv, const char* version) {
-  std::string_view topic_name, pattern;
+  std::string_view topic_name, chapter, pattern;
   bool ja = false, full = false, list = false;
   long at = 0;
 
@@ -479,6 +635,8 @@ int run_docs(int argc, const char** argv, const char* version) {
       return 2;
     } else if (topic_name.empty()) {
       topic_name = a;
+    } else if (chapter.empty()) {
+      chapter = a;
     } else {
       std::println(stderr, "culebra docs: unexpected argument {}", a);
       return 2;
@@ -503,7 +661,8 @@ int run_docs(int argc, const char** argv, const char* version) {
     }
     return print_at(*topic, at);
   }
-  if (!pattern.empty()) return search(pattern, topic, ja, full);
+  if (!pattern.empty()) return search(pattern, topic, chapter, ja, full);
+  if (!chapter.empty()) return print_chapter(*topic, chapter);
   if (topic && !list) {
     std::fwrite(topic->text, 1, std::strlen(topic->text), stdout);
     if (std::string_view(topic->name) == "agent") print_agent_hint();

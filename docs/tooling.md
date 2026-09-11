@@ -718,6 +718,7 @@ not need one.
 ```
 culebra docs                     # list the topics, with a size estimate
 culebra docs stdlib              # print one topic
+culebra docs stdlib Scene        # print one chapter of it, whole
 culebra docs -g 'Math.wrap'      # print the sections that match
 culebra docs stdlib -g 'wrap'    # search one topic
 culebra docs --ja ...            # the Japanese edition
@@ -758,13 +759,42 @@ Sections stay small by construction (21 lines at the median), so a hit
 is normally shown whole; anything past 60 lines is truncated with a
 pointer to `--at`.
 
+### Naming a chapter
+
+A second argument names a chapter of the topic and prints it entire —
+its intro and every subsection, uncapped. That is what `-g` cannot
+give: a search splits at every heading, so the prose saying how a
+subsystem is driven and the signatures that drive it come back as
+separate hits, or as an index of both.
+
+```
+culebra docs stdlib Scene        # the whole `Scene` chapter
+culebra docs stdlib Webview      # either half of `Desktop` / `Webview`
+```
+
+The match is case-insensitive and ignores the chapter number, so
+`scene` and `Scene` both work. A name no chapter answers to exits 1
+after listing the names that exist, which makes a half-remembered one
+self-correcting.
+
+With `-g` the chapter scopes the search instead of printing — the step
+after "restrict it to one topic" when a pattern is still too broad:
+
+```
+culebra docs stdlib Scene -g 'mesh'    # only Scene's sections that mention it
+```
+
 ### Which topic to read
 
 `culebra docs quick-guide` is the condensed pack: the syntax, the habits from
-other languages that do not carry over, and every standard-library
-signature, in a file that fits in a prompt. It is the one to read
-before writing culebra rather than to search. The rest of the set is
-larger than a prompt window, which is what `-g` is for.
+other languages that do not carry over, and the signatures a program
+reaches for unprompted, in a file that fits in a prompt. It is the one
+to read before writing culebra rather than to search. The stateful
+subsystems — `Scene`, `Canvas`, `Net`, `PEG`, `CodeGen` and the rest —
+it names rather than lists, because their signatures do not say how to
+drive them; print the chapter for one when the task calls for it. The
+rest of the set is larger than a prompt window, which is what `-g` is
+for.
 
 `culebra docs agent` is shorter still, and the only topic written to
 leave the program: rules to append to whatever file a coding agent

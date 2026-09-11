@@ -81,6 +81,35 @@ check_contains "quick-guide searchable on request" 'quick-guide.md:' quick-guide
 check_absent   "agent excluded by default" 'agent.md:' -g 'Math.wrap'
 check_contains "agent searchable on request" 'agent.md:' agent -g 'Math.wrap'
 
+# Naming a chapter prints it whole. This is the path the quick guide sends a
+# reader down for the namespaces it names rather than lists, so what has to
+# hold is that the whole chapter arrives: every subsection, and no truncation
+# marker — which is exactly what `-g` on the same name cannot give.
+check_exit     "chapter"              0 stdlib Scene
+check_exit     "chapter, lowercased"  0 stdlib scene
+check_exit     "chapter, either half" 0 stdlib Webview
+check_exit     "chapter, ja"          0 --ja stdlib Scene
+check_exit     "chapter of another topic" 0 language Sets
+check_exit     "no such chapter"      1 stdlib Nosuchchapter
+check_contains "chapter locator"      'stdlib.md:' stdlib Scene
+# With -g the chapter scopes the search: the same pattern hits inside the
+# chapter that has it and misses in the one that does not, and a hit in
+# another chapter (`gamepad` is Canvas's too) never leaks in.
+check_exit     "scoped search hit"    0 stdlib Scene -g 'frame loop'
+check_exit     "scoped search miss"   1 stdlib Canvas -g 'frame loop'
+check_exit     "scoped search, no such chapter" 1 stdlib Nosuchchapter -g 'x'
+check_absent   "scoped search stays in chapter" '## 26.' stdlib Scene -g 'gamepad'
+# A half-remembered name answers with the list it was drawn from.
+check_contains "no such chapter lists them" 'Canvas' stdlib Nosuchchapter
+
+subs=$("$CULEBRA" docs stdlib Scene 2>&1 | grep -c '^### ')
+if [[ $subs -lt 3 ]]; then
+  echo "FAIL chapter subsections: $subs '###' headings (expected the whole chapter)"; fail=1
+fi
+if "$CULEBRA" docs stdlib Scene 2>&1 | grep -q '… (+'; then
+  echo "FAIL chapter truncated: a named chapter must print uncapped"; fail=1
+fi
+
 # `culebra docs agent` is meant to be redirected into an instructions file, so
 # the note about which file that is has to stay out of the redirect.
 check_contains "agent names its destinations" 'CLAUDE.md' agent
