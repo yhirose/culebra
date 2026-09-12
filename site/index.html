@@ -361,8 +361,10 @@ culebra build hello.cul -o hello &amp;&amp; ./hello  # AOT: compile once, ship t
       if (t) document.documentElement.setAttribute("data-theme", t);
     } catch (e) {}
 
-    // Both buttons hand the same snippet to the Playground through ?code=,
-    // so the <pre> below is the one copy of it — nothing can drift.
+    // Both buttons hand the same snippet to the Playground through #code=,
+    // so the <pre> below is the one copy of it — nothing can drift. Plain
+    // base64url, not gzipped: the snippet is a few hundred bytes, where the
+    // gzip envelope costs more than it saves (playground/share-link.js).
     function encodeSampleCode() {
       var src = document.getElementById("sample").textContent;
       var bytes = new TextEncoder().encode(src);
@@ -370,7 +372,7 @@ culebra build hello.cul -o hello &amp;&amp; ./hello  # AOT: compile once, ship t
       for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
       return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
     }
-    document.getElementById("open-playground").href = "./playground/?code=" + encodeSampleCode();
+    document.getElementById("open-playground").href = "./playground/#code=" + encodeSampleCode();
 
     // Run swaps the listing for the Playground in an iframe. Loading it on
     // demand is the point: the wasm interpreter is ~1.2 MB compressed, which
@@ -379,7 +381,7 @@ culebra build hello.cul -o hello &amp;&amp; ./hello  # AOT: compile once, ship t
       var frame = document.createElement("iframe");
       frame.className = "sample-frame";
       frame.title = "culebra Playground";
-      frame.src = "./playground/?embed=1&run=1&code=" + encodeSampleCode();
+      frame.src = "./playground/?embed=1&run=1#code=" + encodeSampleCode();
 
       var wrap = document.getElementById("sample-wrap");
       wrap.replaceChild(frame, document.getElementById("sample"));
@@ -415,11 +417,9 @@ culebra build hello.cul -o hello &amp;&amp; ./hello  # AOT: compile once, ship t
 
     // YouTube-style poster → click → live game, on demand for the same
     // ~1.2 MB-wasm reason as run-sample above. `?example=` names the catalog
-    // entry rather than inlining the source as base64 in `?code=`: Rocci
-    // Bird's ~24 KB encoded is short enough for a local dev server but 414s
-    // on GitHub Pages' CDN, which caps the request line at a few KB. Naming
-    // the entry keeps the URL short and the Playground fetches its own copy,
-    // so this still can't drift from what ships in examples/games/rocci-bird.cul.
+    // entry rather than inlining the source in `#code=`: the Playground then
+    // fetches its own copy, so this can't drift from what ships in
+    // examples/games/rocci-bird.cul, and the page carries no base64 of it.
     function startPosterDemo(posterId, exampleTitle, frameTitle) {
       var poster = document.getElementById(posterId);
       // One shot — a second call must not stack another iframe underneath
