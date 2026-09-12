@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build inside misc/repro-ubuntu.dockerfile's image, the way ci.yml's Linux
+# Build inside this directory's Dockerfile image, the way ci.yml's Linux
 # jobs do. Not part of the build; a reproduction aid.
 set -euo pipefail
 cd /src
