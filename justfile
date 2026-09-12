@@ -583,11 +583,10 @@ _run-tests BACKEND:
             # Timed separately from the vm run above: --jit compile time is
             # what check_jit_file_budget below ratchets, and folding the vm
             # run in would blur a slow file into the same number as a slow
-            # backend mismatch.
-            t0=$(date +%s%N)
-            out_jit=$(cul --jit "$f" 2> "$d/$name.jit.err"); rc_jit=$?
-            t1=$(date +%s%N)
-            echo $(( (t1 - t0) / 1000000 )) > "$d/$name.jitms"
+            # backend mismatch. CPU time (user+sys), not wall: the file runs
+            # inside the JOBS-way sweep, and its wall there is whatever else
+            # the machine is doing — a gate in a second session doubles it.
+            { TIMEFORMAT="%U %S"; time out_jit=$(cul --jit "$f" 2> "$d/$name.jit.err"); } 2> "$d/$name.jitcpu"; rc_jit=$?
             if [[ "$rc_jit" -ne 0 ]]; then
                 { echo "--jit failed for $f (rc=$rc_jit):"; \
                   cat "$d/$name.jit.err"; } > "$d/$name.err"
@@ -626,23 +625,31 @@ _run-tests BACKEND:
     # This times the file inside the same JOBS-way parallel run the sweep
     # always uses, deliberately — that contention is real (measured 2.5-3x
     # over an idle run on this box) and is what a regressed file actually
-    # costs the gate. CULEBRA_JIT_FILE_BUDGET_MS overrides the ceiling; the
-    # default sits above every file's measured contended time on this
-    # machine (worst observed 42s) with headroom for slower/noisier CI
+    # costs the gate. It reads the compile's CPU time, not its wall: with the
+    # sweep alone on the machine the two agree (every job is on a core the
+    # whole time, and the 2.5-3x is SMT and turbo, which CPU time counts too
+    # — a file that idles at 12.5 s measures 45 s either way), but a gate
+    # running in a second worktree doubles the wall and leaves the CPU time
+    # where it was — that was the 2026-09-10 failure, a 61 s wall on a file
+    # that had not changed since August. CULEBRA_JIT_FILE_BUDGET_MS overrides
+    # the ceiling; the default sits above every file's measured time on this
+    # machine (worst observed 45s) with headroom for slower/noisier CI
     # runners, while a return to the 2026-07/09 incidents (which idle at
     # 35-64s, i.e. well over 100s under this same contention) still trips it.
     check_jit_file_budget() {
         local d="$1"
         local budget_ms="${CULEBRA_JIT_FILE_BUDGET_MS:-60000}"
-        local f name ms over=()
-        for f in "$d"/*.jitms; do
+        local f name u s ms over=()
+        for f in "$d"/*.jitcpu; do
             [[ -e "$f" ]] || continue
-            name=$(basename "$f" .jitms)
-            ms=$(cat "$f")
+            name=$(basename "$f" .jitcpu)
+            # bash's TIMEFORMAT "%U %S": seconds with three decimals each.
+            read -r u s < "$f"
+            ms=$(( 10#${u%.*} * 1000 + 10#${u#*.} + 10#${s%.*} * 1000 + 10#${s#*.} ))
             (( ms > budget_ms )) && over+=("$ms $name")
         done
         (( ${#over[@]} == 0 )) && return 0
-        echo "test (vm vs jit) FAIL: tests/*.cul --jit compile time exceeds ${budget_ms}ms:" >&2
+        echo "test (vm vs jit) FAIL: tests/*.cul --jit compile CPU time exceeds ${budget_ms}ms:" >&2
         printf '%s\n' "${over[@]}" | sort -rn | while read -r ms name; do
             echo "  ${ms}ms  tests/$name.cul" >&2
         done
