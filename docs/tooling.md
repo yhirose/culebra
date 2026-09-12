@@ -23,6 +23,10 @@ The plain `culebra [flags] script.cul` form — `--jit`, `-O0`..`-O3`,
 For a narrative introduction to the same tools see
 [`handbook.md` §15](handbook.md#15-tooling-test-lint-fmt-debug).
 
+The browser Playground is the one tool that is not the binary.
+[§7](#7-linking-to-the-playground) specifies the URLs that open it on a
+given program, which is also the format the Share button writes.
+
 Contents
 --------
 
@@ -39,6 +43,11 @@ Contents
    * [Zed](#zed)
 5. [Reading the docs (`culebra docs`)](#5-reading-the-docs-culebra-docs)
 6. [Serving static files (`culebra serve`)](#6-serving-static-files-culebra-serve)
+7. [Linking to the Playground](#7-linking-to-the-playground)
+   * [The project](#the-project)
+   * [The text](#the-text)
+   * [The page](#the-page)
+   * [The Share button](#the-share-button)
 
 ---
 
@@ -833,3 +842,112 @@ culebra serve -p 3000 -d site  # serve site/ on :3000
 For routes, WebSocket, or an API alongside static files, reach for the
 `Http.server()` stdlib namespace instead — see
 [`stdlib.md` §15](stdlib.md#15-http).
+
+---
+
+## 7. Linking to the Playground
+
+The Playground runs Culebra in the browser, and what it opens is
+entirely in the URL. A link has three parts, each independent of the
+others: the **project** the text runs beside, the **text** itself, and
+the **page** the recipient lands on. Any of them may be left out.
+
+### The project
+
+| Parameter | Opens |
+|---|---|
+| `?example=<title>` | a catalog entry, by its exact title in the Examples menu |
+| `?src=<https URL>` | a `.cul` file fetched from the web |
+| `?args=<command line>` | the arguments the program is given, overriding the project's own |
+
+`?example=` names one of the Playground's own examples, URL-encoded as
+the menu spells it. Its companion files come with it: an example that
+lives in its own directory brings the whole directory, so its imports
+and data files resolve the way they do in a checkout.
+
+`?src=` takes a file on GitHub in any of the three spellings a person
+copies:
+
+```
+https://github.com/<owner>/<repo>/blob/<ref>/<path>.cul
+https://raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>.cul
+https://cdn.jsdelivr.net/gh/<owner>/<repo>@<ref>/<path>.cul
+```
+
+The directory that file lives in comes with it, recursively, fetched
+through jsDelivr because GitHub's own hosts give a browser no directory
+listing. A directory of more than 500 files or 20 MB is refused with a
+message saying so, so a program at the root of a large repository has
+to move into a directory of its own first. An https URL anywhere else
+is fetched as a single file with nothing beside it.
+
+The entry's path is the program's `Sys.script`, and `import` resolves
+against it, so a linked program finds its files by the same expressions
+it would use in a checkout. Without a project the text runs alone as
+`main.cul`.
+
+### The text
+
+`#code=<payload>` carries the source itself. The payload is the UTF-8
+source as base64url (`-` and `_` in place of `+` and `/`, no padding),
+gzip-compressed when that comes out shorter. No parameter says which of
+the two it is: gzip's two magic bytes cannot begin a Culebra source, so
+the payload describes itself and the decoder reads them. A payload
+longer than a megabyte of characters is refused unread.
+
+It rides the fragment rather than the query string because a fragment
+never reaches the server, and GitHub Pages' CDN rejects a request line
+somewhere past 8 KB, which a whole program encoded plain can exceed.
+`?code=` is the older spelling, still read after the fragment for links
+already in the wild.
+
+Where both a project and a text are present, the text replaces the
+project's own entry source and the project still supplies everything
+beside it. That is what an edited example shares as. A payload that
+cannot be decoded is reported to the browser console and the link falls
+back to the project's source. With neither, the Playground opens the
+project's entry source, else the draft it saved on the last visit, else
+the Hello example.
+
+### The page
+
+Two parameters shape what the recipient sees. `?embed=` is how much of
+the page to show, and `?view=` is which output pane is the visible one.
+
+| Parameter | Shows |
+|---|---|
+| `?embed=` absent | the whole Playground |
+| `?embed=editor` | the editor, Run/Stop and the panes, without the site header, the example menus, the argument box or the New/Share buttons |
+| `?embed=output` | one output pane, alone |
+| `?view=output` | the Output pane (the default) |
+| `?view=tui` | the TUI pane |
+| `?view=canvas` | the Canvas pane |
+
+The two compose. `?embed=output&view=canvas` is a game with nothing
+around it; `?embed=output&view=tui` is the same for a terminal program;
+`?embed=editor&view=output` is a source listing with its output beneath,
+inside a page that brings its own branding. `?embed=1` is the older
+spelling of `?embed=editor`.
+
+A program that draws moves to its own pane when it starts (a TUI one at
+the alternate-screen escape, a Canvas one at its first frame), so
+`?view=` decides what is on screen before that, and decides for good in
+an `?embed=output` page, where there is no tab strip to change it.
+
+`?run=1` starts the program once the engine is ready, rather than
+waiting for Run. It fires once. A link whose project or text failed to
+load does not autorun what it fell back to.
+
+An `?embed=output` page has no toolbar, so a play button sits over the
+pane whenever the program is not running: that is how a visitor starts
+it without `?run=1`, and how anyone replays it once it ends.
+
+### The Share button
+
+Share opens a menu with those three choices in it (`Embed`, `View`,
+`On open`) and copies the link for what is chosen. Everything else in
+the link comes from the page: the project, the arguments when they
+differ from the project's own, and the text only when it was edited, so
+an unedited example shares as its short name rather than as a fragment
+of several kilobytes. The defaults reproduce the plain standalone page,
+which is why an uncustomised link carries none of the three.
