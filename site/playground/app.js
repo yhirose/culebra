@@ -279,6 +279,13 @@ function selectExample(title) {
   exampleItemSel.value = title;
 }
 
+// The reverse of selectExample(): both selects back to the placeholders
+// index.html ships, for text that is no longer any example's.
+function clearExampleSelection() {
+  exampleCatSel.value = "";
+  exampleItemSel.innerHTML = '<option value="">…</option>';
+}
+
 function catalogProject(title) {
   const e = EXAMPLES[title];
   return { base: "./", entry: e.path, files: e.assets || [], args: e.args, example: title };
@@ -490,6 +497,21 @@ clearBtn.addEventListener("click", () => {
   output.textContent = "";
   output.classList.remove("err");
 });
+
+// New starts an empty program that belongs to no project. NO_PROJECT is what
+// puts Sys.script back to main.cul, rather than leaving the last example's
+// path, companion files and arguments under text that has nothing to do with
+// them. Nothing is lost for good: the editor's history undoes the clear, and
+// a program worth keeping had a Share link.
+const newBtn = $("new");
+newBtn.addEventListener("click", async () => {
+  const src = await useProject(NO_PROJECT, "");
+  projectSource = null;   // no fetched source for Share to call this unedited against
+  clearExampleSelection();
+  editor.setValue(src);
+  editor.focus();
+});
+
 // The link names the project the text runs beside (?src= or ?example=), the
 // arguments when they differ from the project's own, and the text itself only
 // when it was edited — an unedited example shares as its short name. ?run=1
