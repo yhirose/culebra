@@ -127,6 +127,11 @@ enum class Op {
   // same rotation conjugated by a sign flip, so the backward re-runs the
   // forward rather than keeping a cos/sin table (see the VJP switch).
   Rope,
+  // Fused causal attention over [H, T, D]: row t of each head attends rows
+  // 0..t. The forward keeps no probabilities (on CUDA it is one kernel that
+  // never materializes the [T, T] scores), so the VJP recomputes them with
+  // the unfused ops; `scale` rides in extra0 for that (see the VJP switch).
+  CausalAttention,
 };
 
 struct TensorShape {
@@ -1035,6 +1040,41 @@ inline TensorPtr tensor_rope(TensorPtr x, int64_t pos, float base = 10000.0f) {
   return out;
 }
 
+inline TensorPtr tensor_reshape(TensorPtr t, TensorShape new_shape);
+
+// causal_attention(k, v): out(h, t) = softmax(scale · q(h, t)·k(h, ≤t)ᵀ)·
+// v(h, ≤t). q/k/v share one shape, [H, T, D] or — one head — [T, D], which
+// goes through as [1, T, D] and comes back out, so the fused node always
+// sees rank 3. `scale` rides in extra0 for the VJP.
+inline TensorPtr tensor_causal_attention(TensorPtr q, TensorPtr k, TensorPtr v,
+                                         float scale) {
+  if (q->dtype != k->dtype || q->dtype != v->dtype) {
+    throw CulebraError("ValueError",
+                       "Tensor: causal_attention: mismatched dtypes.");
+  }
+  const auto& s = q->shape.dims;
+  if (k->shape.dims != s || v->shape.dims != s) {
+    throw CulebraError("ValueError",
+                       "Tensor: causal_attention: q, k, v must share one "
+                       "shape ([H, T, D] or [T, D]).");
+  }
+  if (s.size() == 2) {
+    TensorShape three(std::vector<int64_t>{1, s[0], s[1]});
+    auto out = tensor_causal_attention(tensor_reshape(q, three),
+                                       tensor_reshape(k, three),
+                                       tensor_reshape(v, three), scale);
+    return tensor_reshape(std::move(out), TensorShape(s));
+  }
+  auto val = _tl_guard([&] {
+    return tl::array::attn_prefill(q->value, k->value, v->value, scale);
+  });
+  auto dtype = q->dtype;
+  auto out = tensor_make_op(Op::CausalAttention, std::move(val), dtype,
+                            std::vector<TensorPtr>{q, k, v});
+  out->extra0 = scale;
+  return out;
+}
+
 // Fused MLP forward: sigmoid(W @ x + b). Bias is broadcast against
 // the output [M, N] (typical: b is [M, 1] or [M]). The tl graph is
 // dot + broadcast-add + sigmoid; backend fusion (bias/activation GEMM
@@ -1229,6 +1269,16 @@ inline TensorPtr _tensor_window_backward(const TensorPtr& g, int64_t axis,
 // The sign flip that turns rope's rotation into its own transpose: +1 over
 // the first half of the last axis, -1 over the second. Shaped [1, ..., 1, D]
 // so one row's worth broadcasts across however many rows the gradient has.
+// The additive causal mask for a [T, T] score matrix, as [1, T, T] so it
+// broadcasts over the heads: 0 on and below the diagonal, -1e30 above (large
+// enough that the softmax underflows it to exactly 0, finite so no inf·0).
+inline TensorPtr _tensor_causal_mask(int64_t T, Dtype dt) {
+  std::vector<float> m(static_cast<size_t>(T * T), 0.0f);
+  for (int64_t t = 0; t < T; t++)
+    for (int64_t j = t + 1; j < T; j++) m[static_cast<size_t>(t * T + j)] = -1e30f;
+  return _tensor_wrap_const(tl::array::from(std::move(m), {1, T, T}), dt);
+}
+
 inline TensorPtr _tensor_rope_sign_mask(const TensorShape& shape, Dtype dt) {
   auto d = shape.dims.back();
   std::vector<float> m(static_cast<size_t>(d), 1.0f);
@@ -1595,6 +1645,35 @@ inline void _tensor_vjp(const TensorPtr& n) {
                              static_cast<float>(n->extra0));
       _tensor_grad_add(n->inputs[0],
                        tensor_binop(Op::Mul, std::move(rot), std::move(m)));
+      break;
+    }
+    case Op::CausalAttention: {
+      // out = P·v with P = softmax(scale · q·kᵀ + causal) per head. The
+      // fused forward kept no P, so rebuild it with the unfused (batched)
+      // ops, then the standard attention pullback:
+      //   dv = Pᵀ·g;  dP = g·vᵀ;  dS = P ⊙ (dP − rowsum(dP ⊙ P));
+      //   dq = scale · dS·k;  dk = scale · dSᵀ·q.
+      // A masked score is -1e30, so its P is exactly 0 and it drops out of
+      // all three.
+      const auto& q = n->inputs[0];
+      const auto& k = n->inputs[1];
+      const auto& v = n->inputs[2];
+      const int64_t H = n->shape.dims[0], T = n->shape.dims[1];
+      auto swap = [](TensorPtr t) {
+        return tensor_permute(std::move(t), {0, 2, 1});
+      };
+      auto scale = tensor_scalar(n->extra0, dt);
+      auto S = tensor_binop(Op::Mul, tensor_dot(q, swap(k)), scale);
+      S = tensor_binop(Op::Add, std::move(S), _tensor_causal_mask(T, dt));
+      auto P = tensor_unary(Op::Softmax, std::move(S));
+      auto dP = tensor_dot(g, swap(v));
+      auto rowsum = tensor_reshape(
+          tensor_reduce_axis(Op::Sum, tensor_binop(Op::Mul, dP, P), 2),
+          TensorShape(std::vector<int64_t>{H, T, 1}));
+      auto dS = tensor_binop(Op::Mul, P, tensor_binop(Op::Sub, dP, rowsum));
+      _tensor_grad_add(v, tensor_dot(swap(P), g));
+      _tensor_grad_add(q, tensor_binop(Op::Mul, tensor_dot(dS, k), scale));
+      _tensor_grad_add(k, tensor_binop(Op::Mul, tensor_dot(swap(dS), q), scale));
       break;
     }
   }

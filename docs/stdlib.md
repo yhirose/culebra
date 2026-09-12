@@ -1676,6 +1676,7 @@ Shape ops, linear algebra, and reductions use method syntax:
 | `.tanh() / .sin() / .cos() -> Tensor` | lazy | elementwise trig / hyperbolic tangent |
 | `.clamp(lo, hi) -> Tensor` | lazy | elementwise clip to `[lo, hi]` |
 | `.rope(pos: Long, base) -> Tensor` | lazy | rotary position embedding (half-split convention) over the last axis; `self` is `[H, D]` or `[H, T, D]`, row `r`'s position is `pos + (r % T)` |
+| `.causal_attention(k, v) -> Tensor` | lazy | causal self-attention: `softmax(self·kᵀ / sqrt(D))·v` with row `t` attending rows `0..t`; `self`, `k`, `v` share one shape, `[H, T, D]` or `[T, D]` — see below |
 | `.transpose() -> Tensor` | view | reverse all axes (matrix transpose for rank-2) |
 | `.permute(axes: Array) -> Tensor` | view | general axis reorder; `axes[i]` names which of self's axes becomes result axis `i` |
 | `.slice(start, end) -> Tensor` | view | take axis 0 in `[start, end)` |
@@ -1724,6 +1725,31 @@ probability underflows to zero contributes `-log(1e-15)` rather than an
 infinite loss. Like dezero's own fused `SoftmaxCrossEntropy`, the backward
 takes the closed form and does not differentiate that clamp.
 
+#### `.causal_attention(k, v) -> Tensor`
+
+Causal self-attention in one op: for each head and each row `t`,
+`softmax(self[t]·k[0..t]ᵀ / sqrt(D))·v[0..t]` — a row attends itself and
+the rows before it, never the ones after. `self`, `k` and `v` share one
+shape, `[H, T, D]` (heads, rows, head width) or `[T, D]` for a single
+head. The scale is fixed at `1/sqrt(D)`; for any other factor, scale
+`self` first — the product is bilinear, so that is the same op.
+
+```culebra
+# doctest: skip
+let q = x.dot(Wq).reshape([T, H, D]).permute([1, 0, 2])  # [H, T, D]
+let k = x.dot(Wk).reshape([T, H, D]).permute([1, 0, 2])
+let v = x.dot(Wv).reshape([T, H, D]).permute([1, 0, 2])
+let ctx = q.causal_attention(k, v)                        # [H, T, D]
+```
+
+Spelled out, the same product is a `.dot()`, a mask added to the `[T, T]`
+scores, a `.softmax()` and another `.dot()`. Fused, on CUDA with `D` of
+64 or 128 the forward is a single kernel that streams `k` and `v` past
+each block of query rows and never writes the `[T, T]` scores out;
+elsewhere it is a reference loop with the same result. The backward
+rebuilds the probabilities from the unfused ops and applies the standard
+attention pullback, so a fused forward trains like the composed one.
+
 ### Autograd (reverse-mode)
 
 The Tensor primitive carries a native reverse-mode autodiff engine: the
@@ -1747,7 +1773,8 @@ produces a grad-tracking output. Differentiable ops include `+ - * /`,
 `.pow()` (w.r.t. the base), `.dot()`, axis `.sum()` / `.mean()`,
 `.relu()`, `.sigmoid()`, `.softmax()`, `.log()`, `.tanh()`, `.sin()`,
 `.cos()`, `.clamp()`, `.transpose()`, `.permute()`, `.reshape()`,
-`.slice()`, `.narrow()`, `.rope()`, `.softmax_cross_entropy()`,
+`.slice()`, `.narrow()`, `.rope()`, `.causal_attention()`,
+`.softmax_cross_entropy()`,
 `Tensor.concat()`, `Tensor.where()`, and `.index_select()` /
 `Tensor.index_add()` (each other's own VJP). Gradients
 un-broadcast automatically, so a bias added across a batch sums back to its

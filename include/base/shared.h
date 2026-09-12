@@ -90,7 +90,7 @@ inline const std::unordered_set<std::string_view>& builtin_method_names() {
       "gt",         "lt",          "ge",         "le",         "eq",
       "ne",         "permute",     "narrow",     "index_select",
       "unfold",     "pad",         "fold",       "rope",
-      "softmax_cross_entropy",
+      "softmax_cross_entropy", "causal_attention",
       "add",
       "union",      "intersect",   "diff",       "sym_diff",   "subset",
       "superset",   "requires_grad","grad",      "backward",   "zero_grad",

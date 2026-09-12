@@ -1677,6 +1677,9 @@ inline constexpr CanonParam kCanonParamPool[] = {
   // 128: rope
   {"pos", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
   {"base", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  // 130: causal_attention
+  {"k", false, false, false, false, false, "Tensor", CanonDefault::None, 0, {}},
+  {"v", false, false, false, false, false, "Tensor", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonObjectSigs[] = {
@@ -1809,6 +1812,7 @@ inline constexpr CanonSig kCanonTupleSigs[] = {
 inline constexpr CanonSig kCanonTensorSigs[] = {
   {"", "", "argmax", kCanonParamPool + 72, 1, "Tensor", 1, 1, false, -1, -1, -1},
   {"", "", "backward", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
+  {"", "", "causal_attention", kCanonParamPool + 130, 2, "Tensor", 2, 2, false, -1, -1, -1},
   {"", "", "clamp", kCanonParamPool + 125, 2, "Tensor", 2, 2, false, -1, -1, -1},
   {"", "", "clone", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
   {"", "", "cos", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},

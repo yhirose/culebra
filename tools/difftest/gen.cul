@@ -84,6 +84,7 @@ let methods = [
   'backward',
   'bytes',
   'capitalize',
+  'causal_attention',
   'chain',
   'chunk_by',
   'chunks',

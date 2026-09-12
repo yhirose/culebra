@@ -2556,6 +2556,18 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_rope(
       culebra::tensor_rope(t->impl, pos, base));
 }
 
+// .causal_attention(k, v) — the fused forward, scaled by 1/sqrt(D) (D the
+// last axis). Any other factor is the caller scaling q: the product is
+// bilinear, so that is the same op with fewer parameters.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_causal_attention(
+    JitTensor* q, JitTensor* k, JitTensor* v) {
+  const auto& dims = q->impl->shape.dims;
+  float scale = dims.empty() ? 1.0f
+                             : 1.0f / std::sqrt(static_cast<float>(dims.back()));
+  return _culebra_jit_tensor_register(
+      culebra::tensor_causal_attention(q->impl, k->impl, v->impl, scale));
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_clone(
     JitTensor* t) {
   return _culebra_jit_tensor_register(culebra::tensor_clone(t->impl));

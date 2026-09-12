@@ -309,6 +309,7 @@ Tensor.eval(t1, t2, ...) -> Nil
 .tanh() / .sin() / .cos() -> Tensor
 .clamp(lo, hi) -> Tensor
 .rope(pos: Long, base) -> Tensor
+.causal_attention(k, v) -> Tensor
 .transpose() -> Tensor
 .permute(axes: Array) -> Tensor
 .slice(start, end) -> Tensor

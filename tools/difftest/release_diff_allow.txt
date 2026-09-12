@@ -57,3 +57,10 @@ selflex|*
 # and `Sc.new()` is the sweep's only class instance.
 ufcsshadow|size|*|Sc.new()
 ufcsshadownest|size|*|Sc.new()
+
+# `.causal_attention(k, v)` (fused causal attention over a Tensor) is new
+# since v0.5.0: the baseline answers each case as an unknown member where this
+# build answers as a built-in, and a bare read of the name is now the
+# built-in-method diagnostic where the baseline read nil.
+m|*|causal_attention|*
+bareread|*|causal_attention

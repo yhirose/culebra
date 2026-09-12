@@ -3302,6 +3302,14 @@ struct Lowering {
                    j.extract_data(arg(1))},
                   "vbm.trope"));
               break;
+            case BMeth::CausalAttention:
+              j.emit_set_op_pos();  // shape check
+              res = j.make_tensor(j.emit_call(
+                  j.module_->getFunction(rt::tensor_causal_attention),
+                  {arr(), b.CreateIntToPtr(j.extract_data(arg(0)), ptrTy),
+                   b.CreateIntToPtr(j.extract_data(arg(1)), ptrTy)},
+                  "vbm.tattn"));
+              break;
             case BMeth::Transpose:
             case BMeth::Clone:
             case BMeth::RequiresGrad:

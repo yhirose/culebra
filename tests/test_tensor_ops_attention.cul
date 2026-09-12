@@ -1,0 +1,192 @@
+# Conformance: stdlib §7 (Tensor). See docs/stdlib.md.
+#
+# .causal_attention(k, v): the fused causal attention against the same
+# product spelled out with .dot / a mask / .softmax / .dot — forward and
+# backward, on one head ([T, D]) and on several ([H, T, D]). A head width
+# the CUDA kernel takes (64) runs under Tensor.use_gpu() when a GPU is
+# present, so the fused kernel is what is compared there.
+#
+# Run with:  ./build/culebra tests/test_tensor_ops_attention.cul
+#            ./build/culebra --jit tests/test_tensor_ops_attention.cul
+
+# Deterministic values: no Tensor.randn, so the two graphs below start from
+# the same leaves and the expected numbers are the same on every backend.
+let fill = fn (rows, cols, seed) {
+  mut out = []
+  for i in range(rows) {
+    mut row = []
+    for j in range(cols) {
+      row.push(Math.sin(to_float(seed + i * cols + j) * 0.7) * 0.5)
+    }
+    out.push(row)
+  }
+  out
+}
+
+# Tensor.from takes rank 1 or 2, so a [H, T, D] operand is its heads
+# stacked along axis 0 and reshaped.
+let stack = fn (parts) {
+  let t = parts[0].size()
+  let d = parts[0][0].size()
+  Tensor.concat(parts.map(|p| Tensor.from(p)), 0).reshape([parts.size(), t, d])
+}
+
+# The explicit form for one head: a [T, T] additive mask, 0 on and below
+# the diagonal and a large negative above.
+let causal_mask = fn (t) {
+  mut rows = []
+  for i in range(t) {
+    mut row = []
+    for j in range(t) {
+      row.push(if j <= i {
+        0.0
+      } else {
+        -1.0e30
+      })
+    }
+    rows.push(row)
+  }
+  Tensor.from(rows)
+}
+let explicit_head = fn (q, k, v) {
+  let t = q.shape()[0]
+  let d = q.shape()[1]
+  let s = q.dot(k.transpose()) * (1.0 / Math.sqrt(to_float(d))) + causal_mask(t)
+  s.softmax().dot(v)
+}
+# Several heads: the single-head form per head, stacked back together.
+let explicit = fn (q, k, v) {
+  if q.shape().size() == 2 {
+    explicit_head(q, k, v)
+  } else {
+    let h = q.shape()[0]
+    let t = q.shape()[1]
+    let d = q.shape()[2]
+    mut parts = []
+    for i in range(h) {
+      let qi = q.narrow([0, i, i + 1]).reshape([t, d])
+      let ki = k.narrow([0, i, i + 1]).reshape([t, d])
+      let vi = v.narrow([0, i, i + 1]).reshape([t, d])
+      parts.push(explicit_head(qi, ki, vi).reshape([1, t, d]))
+    }
+    Tensor.concat(parts, 0)
+  }
+}
+
+# .to_array() takes rank 1 or 2, so compare through a flat view.
+let flat = fn (t) {
+  mut n = 1
+  for x in t.shape() {
+    n = n * x
+  }
+  t.reshape([n]).to_array()
+}
+let assert_tensor_close = fn (a, b, tol) {
+  let fa = flat(a)
+  let fb = flat(b)
+  assert_eq(fa.size(), fb.size())
+  for i in range(fa.size()) {
+    assert_close(to_float(fa[i]), to_float(fb[i]), tol)
+  }
+}
+
+# --- forward: one head, then several -----------------------------------------
+
+let T = 5
+let D = 4
+let q2 = Tensor.from(fill(T, D, 1))
+let k2 = Tensor.from(fill(T, D, 30))
+let v2 = Tensor.from(fill(T, D, 60))
+assert_eq(q2.causal_attention(k2, v2).shape(), [T, D])
+assert_tensor_close(q2.causal_attention(k2, v2), explicit(q2, k2, v2), 1.0e-5)
+
+# Row 0 sees only itself: its output is v's row 0 exactly.
+let row0 = q2.causal_attention(k2, v2).narrow([0, 0, 1])
+assert_tensor_close(row0, v2.narrow([0, 0, 1]), 1.0e-6)
+
+let H = 3
+let q3 = stack([fill(T, D, 1), fill(T, D, 7), fill(T, D, 13)])
+let k3 = stack([fill(T, D, 30), fill(T, D, 37), fill(T, D, 43)])
+let v3 = stack([fill(T, D, 60), fill(T, D, 67), fill(T, D, 73)])
+assert_eq(q3.causal_attention(k3, v3).shape(), [H, T, D])
+assert_tensor_close(q3.causal_attention(k3, v3), explicit(q3, k3, v3), 1.0e-5)
+
+# --- shape errors ---------------------------------------------------------------
+
+assert_throws('ValueError', fn () {
+  q3.causal_attention(k2, v3)
+})
+assert_throws('ValueError', fn () {
+  q2.causal_attention(k2, v2.transpose())
+})
+assert_throws('ValueError', fn () {
+  Tensor
+    .from(fill(T, D, 1))
+    .reshape([T * D])
+    .causal_attention(
+      Tensor.from(fill(T, D, 1)).reshape([T * D]),
+      Tensor.from(fill(T, D, 1)).reshape([T * D]),
+    )
+})
+
+# --- backward: the fused op's gradients match the composed form's --------------
+# Same leaf values on both sides, a weighted sum as the loss so every
+# gradient entry is exercised.
+
+let grads_of = fn (attn) {
+  let q = stack([fill(T, D, 1), fill(T, D, 7), fill(T, D, 13)]).requires_grad()
+  let k = stack([
+    fill(T, D, 30),
+    fill(T, D, 37),
+    fill(T, D, 43),
+  ]).requires_grad()
+  let v = stack([
+    fill(T, D, 60),
+    fill(T, D, 67),
+    fill(T, D, 73),
+  ]).requires_grad()
+  let w = stack([fill(T, D, 90), fill(T, D, 97), fill(T, D, 103)])
+  (attn(q, k, v) * w).sum(2).sum(1).sum(0).backward()
+  [q.grad(), k.grad(), v.grad()]
+}
+let fused_g = grads_of(fn (q, k, v) {
+  q.causal_attention(k, v)
+})
+let composed_g = grads_of(explicit)
+for i in range(3) {
+  assert_tensor_close(fused_g[i], composed_g[i], 1.0e-5)
+}
+
+# One head as well: the [T, D] form goes through as [1, T, D] and back, and
+# its gradients come back out to [T, D].
+let grads_of_2d = fn (attn) {
+  let q = Tensor.from(fill(T, D, 1)).requires_grad()
+  let k = Tensor.from(fill(T, D, 30)).requires_grad()
+  let v = Tensor.from(fill(T, D, 60)).requires_grad()
+  let w = Tensor.from(fill(T, D, 90))
+  (attn(q, k, v) * w).sum(1).sum(0).backward()
+  [q.grad(), k.grad(), v.grad()]
+}
+let fused_g2 = grads_of_2d(fn (q, k, v) {
+  q.causal_attention(k, v)
+})
+let composed_g2 = grads_of_2d(explicit)
+for i in range(3) {
+  assert_eq(fused_g2[i].shape(), [T, D])
+  assert_tensor_close(fused_g2[i], composed_g2[i], 1.0e-5)
+}
+
+# --- the fused kernel: a head width it takes, on the GPU when there is one ----
+# D=64 is a kernel head dim; pinned to the GPU so the comparison is against
+# the kernel, not the reference loop. Skipped (not failed) where no GPU is.
+
+if Tensor.gpu_available() {
+  Tensor.use_gpu()
+  let Tg = 9
+  let Dg = 64
+  let qg = stack([fill(Tg, Dg, 1), fill(Tg, Dg, 5)])
+  let kg = stack([fill(Tg, Dg, 300), fill(Tg, Dg, 305)])
+  let vg = stack([fill(Tg, Dg, 600), fill(Tg, Dg, 605)])
+  assert_tensor_close(qg.causal_attention(kg, vg), explicit(qg, kg, vg), 1.0e-4)
+  Tensor.use_auto()
+}

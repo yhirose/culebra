@@ -1637,6 +1637,7 @@ let m = z.clamp(-1.0, 1.0)  # elementwise clip、[lo, hi]に収める
 | `.tanh() / .sin() / .cos() -> Tensor` | lazy | elementwiseな三角関数・双曲線正接 |
 | `.clamp(lo, hi) -> Tensor` | lazy | `[lo, hi]`へのelementwise clip |
 | `.rope(pos: Long, base) -> Tensor` | lazy | 回転位置埋め込み（half-split方式）、最後の軸に適用。selfは`[H, D]`または`[H, T, D]`、行rの位置は`pos + (r % T)` |
+| `.causal_attention(k, v) -> Tensor` | lazy | 因果的なself-attention: `softmax(self·kᵀ / sqrt(D))·v`、行`t`は行`0..t`だけを見る。`self`・`k`・`v`は同じ形で`[H, T, D]`または`[T, D]` — 下記参照 |
 | `.transpose() -> Tensor` | view | 全軸逆順（rank-2で行列転置） |
 | `.permute(axes: Array) -> Tensor` | view | 任意軸並べ替え。`axes[i]`が結果の軸`i`に対応する自分自身の軸を指定 |
 | `.slice(start, end) -> Tensor` | view | 軸0を`[start, end)`で切り出し |
@@ -1684,6 +1685,31 @@ let sft = (rows * mask).sum(0) * (1.0 / kept)  # 一部の行だけ採点する�
 融合`SoftmaxCrossEntropy`と同じく、backwardは閉形を取り、このclampは
 微分しません。
 
+#### `.causal_attention(k, v) -> Tensor`
+
+因果的なself-attentionを1つのopで計算します。各headの各行`t`について
+`softmax(self[t]·k[0..t]ᵀ / sqrt(D))·v[0..t]` — 行は自分と自分より前の
+行だけを見て、後ろの行は見ません。`self`・`k`・`v`は同じ形で、
+`[H, T, D]`（head数、行数、headの幅）か、1 headなら`[T, D]`です。係数は
+`1/sqrt(D)`に固定です。別の係数にしたいときは`self`を先にスケールして
+ください。積は双線形なので、それで同じopになります。
+
+```culebra
+# doctest: skip
+let q = x.dot(Wq).reshape([T, H, D]).permute([1, 0, 2])  # [H, T, D]
+let k = x.dot(Wk).reshape([T, H, D]).permute([1, 0, 2])
+let v = x.dot(Wv).reshape([T, H, D]).permute([1, 0, 2])
+let ctx = q.causal_attention(k, v)                        # [H, T, D]
+```
+
+同じ積を手で書くと、`.dot()`、`[T, T]`のスコアへのマスクの加算、
+`.softmax()`、もう1つの`.dot()`になります。融合版は、CUDAで`D`が64か
+128のときforwardが1つのカーネルになり、query行のブロックごとに`k`と
+`v`を流し込んで`[T, T]`のスコアを一度も書き出しません。それ以外では
+同じ結果を返す参照ループです。backwardは融合前のopで確率を作り直して
+attentionの標準的なpullbackを当てるので、融合したforwardも合成版と
+同じように学習できます。
+
 ### 自動微分（reverse-mode）
 
 Tensorプリミティブはネイティブなreverse-mode自動微分エンジンを
@@ -1707,7 +1733,8 @@ op自身がvector-Jacobian productを知っています。tapeが記録される
 ついて）、`.dot()`、軸`.sum()` / `.mean()`、`.relu()`、`.sigmoid()`、
 `.softmax()`、`.log()`、`.tanh()`、`.sin()`、`.cos()`、`.clamp()`、
 `.transpose()`、`.permute()`、`.reshape()`、`.slice()`、`.narrow()`、
-`.rope()`、`.softmax_cross_entropy()`、`Tensor.concat()`、`Tensor.where()`、
+`.rope()`、`.causal_attention()`、`.softmax_cross_entropy()`、
+`Tensor.concat()`、`Tensor.where()`、
 `.index_select()` /
 `Tensor.index_add()`（互いが相手のVJP）。勾配は自動でun-broadcastされる
 ので、バッチ越しに加えたbiasは元の形状に和を取って戻ります。
