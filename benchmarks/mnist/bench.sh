@@ -18,13 +18,16 @@ cd "$ROOT"
 RUNS=${1:-3}
 
 # bench_cmd LABEL CMD...  — runs CMD $RUNS times, reads its `BENCH ...`
-# line, and prints one row with mean(load), mean(cold), mean(warm).
+# line, and prints one row with mean(load), mean(cold), mean(warm). A row
+# whose runtime is absent here (no MPS off macOS, no julia installed) fails
+# its command; `|| true` keeps that from ending the whole table under
+# `set -e`, and the row reports "(no BENCH output)" instead.
 bench_cmd() {
   local label=$1; shift
   local out
   out=$(
     for _ in $(seq "$RUNS"); do
-      "$@" 2>&1 | awk '/^BENCH /'
+      "$@" 2>&1 | awk '/^BENCH /' || true
     done
   )
   if [ -z "$out" ]; then
