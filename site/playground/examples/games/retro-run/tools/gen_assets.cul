@@ -1,0 +1,2219 @@
+# Generate retro-run's art.
+#
+# The upstream javascript-racer ships sprites lifted from OutRun and music that
+# may not be redistributed, so this draws its own from scratch. What is NOT
+# free is the geometry: every sprite lands at the exact atlas rectangle
+# common.js names, because SPRITES.w feeds both collision (Util.overlap) and
+# scale (SPRITES.SCALE = 0.3 / PLAYER_STRAIGHT.w). Swap the pictures, keep the
+# rectangles, and the game plays identically.
+#
+# The four day-cycle backgrounds must be geometry-identical — the cross-fade
+# blends them pixel for pixel, so a ridge line one pixel out would ghost. That
+# is enforced structurally: the art is drawn once into a buffer of palette
+# KEYS, and each scene is that one buffer handed to `Canvas.Sprite` with a
+# different palette. There is no way to draw a scene-specific shape, because
+# the drawing code never sees a colour.
+#
+# The game's own road colours (retro-run.cul's SCENE_COLORS) are the values
+# printed at the end of a run, so the road meets the horizon in the colour the
+# picture ends in.
+#
+# Run:  culebra --jit examples/games/retro-run/tools/gen_assets.cul [outdir] [what]
+#       (default outdir is ../assets; `what` is `backgrounds` or `sprites`
+#       to rebuild only one set while iterating on it)
+
+import atlas from './atlas.cul'
+
+# --- palette -----------------------------------------------------------------
+# Colours that do not change with the time of day. The sprite sheet is baked
+# once, so every material a sprite uses lives here.
+let COMMON = {
+  INK: [28, 22, 40],
+  SHADOW: [56, 44, 72],
+  LEAF0: [28, 88, 40],
+  LEAF1: [36, 120, 48],
+  LEAF2: [72, 168, 56],
+  LEAF3: [140, 212, 80],
+  BLOSSOM_D: [216, 96, 144],
+  BLOSSOM_L: [248, 168, 200],
+  FLOWER: [240, 64, 144],
+  CACT_D: [40, 120, 88],
+  CACT_L: [104, 184, 128],
+  WOOD0: [72, 44, 32],
+  WOOD1: [124, 80, 48],
+  WOOD2: [180, 132, 80],
+  ROCK0: [64, 52, 64],
+  ROCK1: [112, 96, 104],
+  ROCK2: [160, 144, 144],
+  ROCK3: [208, 196, 188],
+  STONE0: [116, 96, 80],
+  STONE1: [168, 144, 116],
+  STONE2: [216, 196, 160],
+  RED0: [128, 16, 24],
+  RED1: [216, 32, 40],
+  RED2: [255, 104, 96],
+  BLUE0: [16, 40, 128],
+  BLUE1: [32, 88, 216],
+  BLUE2: [112, 160, 255],
+  YELLOW0: [176, 120, 8],
+  YELLOW1: [248, 200, 24],
+  YELLOW2: [255, 240, 128],
+  GREEN0: [16, 96, 64],
+  GREEN1: [32, 168, 104],
+  GREEN2: [120, 224, 152],
+  WHITE0: [136, 136, 152],
+  WHITE1: [208, 208, 216],
+  WHITE2: [248, 248, 252],
+  ORANGE0: [168, 72, 8],
+  ORANGE1: [240, 128, 24],
+  ORANGE2: [255, 192, 96],
+  GLASS0: [40, 64, 104],
+  GLASS1: [96, 152, 208],
+  GLASS2: [200, 232, 255],
+  TYRE0: [32, 28, 40],
+  TYRE1: [80, 76, 92],
+  CHROME: [232, 236, 240],
+  LAMP_R: [168, 24, 32],
+  LAMP_RL: [255, 80, 64],
+  LAMP_A: [255, 176, 48],
+  LAMP_W: [255, 248, 224],
+  PLATE: [240, 236, 200],
+  SKIN: [240, 184, 136],
+  HAIR_BROWN: [96, 56, 32],
+  HAIR_BLOND: [248, 216, 96],
+  SHIRT_A: [40, 72, 176],
+  SHIRT_B: [232, 88, 120],
+  POST: [72, 72, 88],
+  FRAME: [176, 180, 192],
+  P_WHITE: [252, 252, 248],
+  P_YELLOW: [255, 216, 48],
+  P_RED: [224, 40, 48],
+  P_BLUE: [40, 104, 224],
+  P_NAVY: [24, 40, 104],
+  P_ORANGE: [255, 144, 32],
+  P_CYAN: [72, 208, 232],
+  P_GREEN: [48, 168, 80],
+  P_PINK: [255, 128, 176],
+  P_BROWN: [120, 72, 40],
+  LANE: [252, 248, 242],
+}
+
+# Per-scene colours: the sky ramp top to horizon, clouds lit/mid/base, the
+# sun, two mountain ridges with their lit and shaded faces, the sea, the
+# tree-line's foliage and trunks, and the road-side colours the game reads.
+let HIRU = {
+  SKY0: [40, 104, 232],
+  SKY1: [56, 136, 248],
+  SKY2: [80, 164, 252],
+  SKY3: [116, 196, 255],
+  SKY4: [160, 220, 255],
+  SKY5: [204, 238, 255],
+  HAZE: [236, 250, 255],
+  CLOUD_L: [255, 255, 255],
+  CLOUD_M: [220, 230, 248],
+  CLOUD_D: [168, 188, 224],
+  SUN: [255, 250, 216],
+  SUN_GLOW: [228, 240, 255],
+  MTN_FAR_L: [140, 180, 212],
+  MTN_FAR_D: [104, 144, 188],
+  MTN_L: [104, 160, 100],
+  MTN_D: [56, 112, 72],
+  MTN_SNOW: [244, 250, 255],
+  SEA_D: [24, 120, 200],
+  SEA_L: [56, 172, 228],
+  FOAM: [236, 250, 255],
+  SAND: [240, 224, 160],
+  TREE_D: [24, 88, 40],
+  TREE_M: [44, 140, 56],
+  TREE_L: [96, 196, 72],
+  TRUNK_D: [92, 60, 40],
+  TRUNK_L: [156, 116, 72],
+  GROUND: [56, 152, 72],
+  GRASS_D: [40, 144, 48],
+  GRASS_L: [56, 168, 56],
+  ROAD_D: [96, 96, 108],
+  ROAD_L: [106, 106, 118],
+  RUMBLE_D: [192, 88, 80],
+  RUMBLE_L: [232, 228, 220],
+  FOG: [212, 236, 252],
+}
+let ASAYAKE = {
+  SKY0: [72, 64, 160],
+  SKY1: [112, 88, 184],
+  SKY2: [168, 112, 192],
+  SKY3: [224, 144, 168],
+  SKY4: [248, 176, 136],
+  SKY5: [255, 208, 128],
+  HAZE: [255, 232, 168],
+  CLOUD_L: [255, 228, 204],
+  CLOUD_M: [240, 168, 168],
+  CLOUD_D: [176, 120, 168],
+  SUN: [255, 228, 104],
+  SUN_GLOW: [255, 204, 120],
+  MTN_FAR_L: [172, 124, 180],
+  MTN_FAR_D: [132, 92, 156],
+  MTN_L: [124, 84, 124],
+  MTN_D: [84, 52, 100],
+  MTN_SNOW: [255, 220, 204],
+  SEA_D: [96, 88, 172],
+  SEA_L: [208, 152, 164],
+  FOAM: [255, 236, 212],
+  SAND: [232, 196, 148],
+  TREE_D: [44, 44, 76],
+  TREE_M: [76, 84, 92],
+  TREE_L: [124, 116, 100],
+  TRUNK_D: [60, 44, 60],
+  TRUNK_L: [100, 76, 84],
+  GROUND: [108, 124, 76],
+  GRASS_D: [100, 140, 68],
+  GRASS_L: [116, 156, 76],
+  ROAD_D: [104, 96, 120],
+  ROAD_L: [114, 106, 130],
+  RUMBLE_D: [188, 100, 92],
+  RUMBLE_L: [240, 224, 208],
+  FOG: [248, 204, 148],
+}
+let YUUGURE = {
+  SKY0: [200, 72, 48],
+  SKY1: [224, 104, 48],
+  SKY2: [240, 136, 48],
+  SKY3: [248, 168, 56],
+  SKY4: [252, 200, 72],
+  SKY5: [255, 224, 112],
+  HAZE: [255, 240, 160],
+  CLOUD_L: [255, 204, 120],
+  CLOUD_M: [240, 140, 72],
+  CLOUD_D: [196, 84, 64],
+  SUN: [255, 244, 168],
+  SUN_GLOW: [255, 212, 96],
+  MTN_FAR_L: [204, 124, 92],
+  MTN_FAR_D: [164, 92, 76],
+  MTN_L: [132, 76, 60],
+  MTN_D: [92, 44, 52],
+  MTN_SNOW: [255, 204, 140],
+  SEA_D: [172, 92, 60],
+  SEA_L: [244, 172, 84],
+  FOAM: [255, 236, 172],
+  SAND: [228, 180, 116],
+  TREE_D: [60, 32, 44],
+  TREE_M: [100, 64, 52],
+  TREE_L: [156, 108, 68],
+  TRUNK_D: [60, 32, 36],
+  TRUNK_L: [108, 68, 52],
+  GROUND: [132, 100, 52],
+  GRASS_D: [128, 120, 48],
+  GRASS_L: [144, 136, 56],
+  ROAD_D: [104, 88, 104],
+  ROAD_L: [114, 98, 114],
+  RUMBLE_D: [184, 92, 76],
+  RUMBLE_L: [240, 216, 184],
+  FOG: [248, 196, 108],
+}
+let TWILIGHT = {
+  SKY0: [24, 24, 88],
+  SKY1: [48, 40, 128],
+  SKY2: [88, 56, 160],
+  SKY3: [136, 72, 176],
+  SKY4: [192, 104, 184],
+  SKY5: [232, 144, 184],
+  HAZE: [248, 184, 192],
+  CLOUD_L: [216, 168, 216],
+  CLOUD_M: [160, 112, 184],
+  CLOUD_D: [104, 72, 144],
+  SUN: [248, 240, 216],
+  SUN_GLOW: [204, 180, 212],
+  MTN_FAR_L: [108, 84, 156],
+  MTN_FAR_D: [76, 60, 124],
+  MTN_L: [68, 52, 108],
+  MTN_D: [40, 32, 72],
+  MTN_SNOW: [232, 204, 228],
+  SEA_D: [40, 40, 104],
+  SEA_L: [124, 92, 164],
+  FOAM: [232, 196, 220],
+  SAND: [156, 132, 156],
+  TREE_D: [24, 20, 48],
+  TREE_M: [40, 36, 72],
+  TREE_L: [76, 68, 108],
+  TRUNK_D: [24, 20, 40],
+  TRUNK_L: [52, 44, 68],
+  GROUND: [48, 64, 72],
+  GRASS_D: [48, 88, 80],
+  GRASS_L: [56, 100, 88],
+  ROAD_D: [64, 56, 88],
+  ROAD_L: [74, 66, 98],
+  RUMBLE_D: [136, 72, 92],
+  RUMBLE_L: [200, 172, 192],
+  FOG: [180, 124, 176],
+}
+
+# Cycled one per lap, in this order.
+let SCENES = [
+  ("asayake", ASAYAKE),
+  ("hiru", HIRU),
+  ("yuugure", YUUGURE),
+  ("twilight", TWILIGHT),
+]
+
+# Key 0 is transparent; the rest index this list. Drawing code names keys,
+# never colours, which is what keeps the four scenes geometry-identical.
+let KEYS = [""]
+  .iter()
+  .chain(COMMON.keys().to_set().union(HIRU.keys().to_set()).to_array().sorted())
+  .collect()
+let KEY_ID = KEYS.enumerate().map(|(i, name)| (name, i)).to_object()
+
+# A scene's palette as the packed-RGBA array `Canvas.Sprite` indexes with the
+# key buffer. Slot 0 stays 0 — fully transparent, the shape mask.
+fn palette_colors(scene) {
+  let pal = {...COMMON, ...scene}
+  KEYS.map(|name| name == ""
+    ? 0
+    : Canvas.rgba(pal[name][0], pal[name][1], pal[name][2]))
+}
+
+# --- deterministic noise -----------------------------------------------------
+# A hash, not an RNG: the same input always gives the same value, so nothing in
+# the output depends on evaluation order or on how many shapes came before.
+fn noise(*args) {
+  mut h = 2166136261
+  for a in args {
+    h = (h ^ a.to_long() & 0xFFFFFFFF) * 16777619 & 0xFFFFFFFF
+  }
+  # FNV barely stirs its last input (noise(s, i, 1) and noise(s, i, 2) came
+  # out within 0.4% of each other), so finish with an avalanche.
+  h = (h ^ h >> 16) * 0x85EBCA6B & 0xFFFFFFFF
+  h = (h ^ h >> 13) * 0xC2B2AE35 & 0xFFFFFFFF
+  h = h ^ h >> 16
+  h.to_float() / 4294967295.0
+}
+
+# 4x4 ordered-dither thresholds, so a blend between two keys reads as a
+# regular texture rather than as noise.
+let BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5]
+let MARK = Canvas.rgba(255, 255, 255)
+
+# --- canvas ------------------------------------------------------------------
+# A grid of palette keys. Everything is drawn here, in cells, and expanded to
+# pixels at the end — that is where the pixel-art grid comes from. A wrapping
+# grid folds x modulo its width, so a scrolling layer's shapes meet themselves.
+class Cells {
+  new(w, h, wrap = false) {
+    self.w = w
+    self.h = h
+    self.wrap = wrap
+    self.k = repeat(w * h, 0)
+    self.scratch = nil
+  }
+
+  id(key) {
+    type_of(key) == "String" ? KEY_ID[key] : key
+  }
+
+  get(x, y) {
+    mut xi = x.to_long()
+    let yi = y.to_long()
+    xi = Math.wrap(xi, self.w) if self.wrap
+    xi >= 0 && xi < self.w && yi >= 0 && yi < self.h
+      ? self.k[yi * self.w + xi]
+      : 0
+  }
+
+  set(x, y, key) {
+    mut xi = x.to_long()
+    let yi = y.to_long()
+    xi = Math.wrap(xi, self.w) if self.wrap
+    if xi >= 0 && xi < self.w && yi >= 0 && yi < self.h {
+      self.k[yi * self.w + xi] = self.id(key)
+    }
+  }
+
+  # Ordered dither between two keys: `t` is how much of `key_b`, 0..1.
+  mix(x, y, key_a, key_b, t) {
+    let xi = x.to_long()
+    let yi = y.to_long()
+    let th = (BAYER[Math.wrap(yi, 4) * 4 + Math.wrap(xi, 4)] + 0.5) / 16.0
+    self.set(xi, yi, t > th ? key_b : key_a)
+  }
+
+  rect(x, y, w, h, key) {
+    let xs = x.to_long()..(x + w).to_long()
+    let ys = y.to_long()..(y + h).to_long()
+    for (xx, yy) in grid(xs, ys) {
+      self.set(xx, yy, key)
+    }
+  }
+
+  # Checkerboard between two keys.
+  dither(x, y, w, h, key_a, key_b, size = 1) {
+    let xs = x.to_long()..(x + w).to_long()
+    let ys = y.to_long()..(y + h).to_long()
+    for (xx, yy) in grid(xs, ys) {
+      self.set(xx, yy, (xx / size + yy / size) % 2 == 0 ? key_a : key_b)
+    }
+  }
+
+  # Vertical ramp through `stops`, each `[position 0..1, key]` ascending,
+  # dithered between neighbouring stops.
+  vgrad(x, y, w, h, stops) {
+    for yy in y.to_long()..(y + h).to_long() {
+      let t = (yy - y).to_float() / h
+      mut i = 0
+      while i < stops.size() - 2 && stops[i + 1][0] <= t {
+        i += 1
+      }
+      let [p0, a] = stops[i]
+      let [p1, b] = stops[i + 1]
+      let f = Math.clamp((t - p0) / Math.max(0.0001, p1 - p0), 0.0, 1.0)
+      for xx in x.to_long()..(x + w).to_long() {
+        self.mix(xx, yy, a, b, f)
+      }
+    }
+  }
+
+  ellipse(cx, cy, rx, ry, key) {
+    return nil if rx <= 0 || ry <= 0
+    for yy in (cy - ry).to_long()..=(cy + ry).to_long() {
+      # `.to_float()`: callers pass Longs as often as Floats, and `/` on two
+      # Longs truncates — which would flatten the ellipse into a rectangle.
+      let dy = (yy - cy).to_float() / ry
+      continue if Math.abs(dy) > 1
+      let half = rx * Math.sqrt(1 - dy * dy)
+      for xx in (cx - half).to_long()..=(cx + half).to_long() {
+        self.set(xx, yy, key)
+      }
+    }
+  }
+
+  circle(cx, cy, r, key) {
+    self.ellipse(cx, cy, r, r, key)
+  }
+
+  # Shapes the Canvas rasterises for us — polygons, lines, text — are drawn
+  # into a scratch sprite and copied back as keys. `draw` runs with the
+  # scratch as the draw target; (x0, y0)-(x1, y1) bounds what it touched.
+  raster(x0, y0, x1, y1, key, draw) {
+    self.scratch ??= Canvas.Sprite.blank(self.w, self.h)
+    let xs = Math.max(0, x0.to_long())..Math.min(self.w, x1.to_long() + 1)
+    let ys = Math.max(0, y0.to_long())..Math.min(self.h, y1.to_long() + 1)
+    Canvas.draw_to(self.scratch, fn () {
+      Canvas.clear(0)
+      draw()
+      for (x, y) in grid(xs, ys) {
+        self.set(x, y, key) if Canvas.get_pixel(x, y) != 0
+      }
+    })
+  }
+
+  # Filled polygon from a flat [x0, y0, x1, y1, ...] list. On a wrapping grid a
+  # shape that crosses an edge is drawn again one width over.
+  poly(points, key) {
+    let xs = points
+      .enumerate()
+      .filter(|(i, _)| i % 2 == 0)
+      .map(|(_, v)| v)
+      .collect()
+    let ys = points
+      .enumerate()
+      .filter(|(i, _)| i % 2 == 1)
+      .map(|(_, v)| v)
+      .collect()
+    let shifts = self.wrap ? [0, -self.w, self.w] : [0]
+    for dx in shifts {
+      let x0 = xs.min() + dx
+      let x1 = xs.max() + dx
+      continue if x1 < 0 || x0 >= self.w
+      let pts = points
+        .enumerate()
+        .map(|(i, v)| i % 2 == 0 ? v + dx : v)
+        .collect()
+      self.raster(x0, ys.min(), x1, ys.max(), key, || Canvas.polygon(pts, MARK))
+    }
+  }
+
+  # A line `thick` cells wide: a quad along the segment (thin ones go
+  # straight to the Canvas).
+  line(x1, y1, x2, y2, key, thick = 1) {
+    if thick <= 1 {
+      let shifts = self.wrap ? [0, -self.w, self.w] : [0]
+      for dx in shifts {
+        let lo = Math.min(x1, x2) + dx
+        let hi = Math.max(x1, x2) + dx
+        continue if hi < 0 || lo >= self.w
+        self.raster(
+          lo,
+          Math.min(y1, y2),
+          hi,
+          Math.max(y1, y2),
+          key,
+          || Canvas.line(x1 + dx, y1, x2 + dx, y2, MARK),
+        )
+      }
+      return nil
+    }
+    let dx = (x2 - x1).to_float()
+    let dy = (y2 - y1).to_float()
+    let len = Math.max(0.001, Math.sqrt(dx * dx + dy * dy))
+    let px = -dy / len * thick / 2.0
+    let py = dx / len * thick / 2.0
+    self.poly(
+      [x1 + px, y1 + py, x2 + px, y2 + py, x2 - px, y2 - py, x1 - px, y1 - py],
+      key,
+    )
+  }
+
+  # The built-in 8x8 font, one cell per font pixel (times `scale`).
+  text(s, x, y, key, scale = 1) {
+    let w = Canvas.text_width(s, scale)
+    self.raster(
+      x,
+      y,
+      x + w,
+      y + 8 * scale,
+      key,
+      || Canvas.text(s, x, y, MARK, scale),
+    )
+  }
+
+  # One-cell border around everything drawn so far. Runs on a copy so the
+  # border doesn't grow into itself.
+  outline(key = "INK") {
+    let src = self.k.slice(0, self.k.size())
+    let kid = KEY_ID[key]
+    for (x, y) in grid(0..self.w, 0..self.h) {
+      continue if src[y * self.w + x] != 0
+      mut touching = false
+      for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+        let nx = x + dx
+        let ny = y + dy
+        if nx >= 0 && nx < self.w && ny >= 0 && ny < self.h {
+          let v = src[ny * self.w + nx]
+          if v != 0 && v != kid {
+            touching = true
+            break
+          }
+        }
+      }
+      self.k[y * self.w + x] = kid if touching
+    }
+  }
+
+  # Shift every row above `pivot` sideways by `k` cells per row of height —
+  # a car leaning into a turn.
+  shear(pivot, k) {
+    let src = self.k.slice(0, self.k.size())
+    for (x, y) in grid(0..self.w, 0..self.h) {
+      let d = y < pivot ? Math.round((pivot - y) * k) : 0
+      let sx = x - d
+      self.k[y * self.w + x] = sx >= 0 && sx < self.w ? src[y * self.w + sx] : 0
+    }
+  }
+
+  # Replace every cell holding `from` (or in `froms`) that the predicate
+  # accepts — the way facets and textures get their tone after the fact.
+  recolor(froms, f) {
+    let ids = froms.map(|k| self.id(k)).to_set()
+    for (x, y) in grid(0..self.w, 0..self.h) {
+      let v = self.k[y * self.w + x]
+      continue if !ids.contains(v)
+      let nk = f(x, y, v)
+      self.k[y * self.w + x] = self.id(nk) if nk != nil
+    }
+  }
+}
+
+# A full-resolution buffer of palette keys — the atlas under construction.
+class KeyImage {
+  new(w, h) {
+    self.w = w
+    self.h = h
+    self.k = repeat(w * h, 0)
+  }
+
+  # Expand `cells` by `scale` and drop it at (x, y), cropped to w x h.
+  blit_cells(cells, x, y, w, h, scale) {
+    for py in 0..h {
+      let cy = py / scale
+      break if cy >= cells.h
+      let row = cy * cells.w
+      let base = (y + py) * self.w + x
+      for px in 0..w {
+        let cx = px / scale
+        break if cx >= cells.w
+        let v = cells.k[row + cx]
+        self.k[base + px] = v if v != 0
+      }
+    }
+  }
+}
+
+# --- background --------------------------------------------------------------
+# Three 1280x480 layers at the atlas rectangles common.js names. Each scrolls
+# horizontally at its own rate and wraps. The road's vanishing point is
+# HORIZON, so everything worth looking at sits above it; below it the layers
+# are filled solid, which only shows when the road dips.
+let BG_CELL = 2          # one drawn cell = 2x2 pixels
+let LW = 1280 / BG_CELL  # 640 cells across
+let LH = 480 / BG_CELL   # 240 cells down
+let HORIZON = LH / 2
+
+# Smooth periodic noise over the layer width: values on a lattice `spacing`
+# cells apart (which must divide LW), interpolated between.
+fn pnoise(x, spacing, seed) {
+  if LW % spacing != 0 {
+    throw {
+      kind: "ValueError",
+      message: "spacing {spacing} does not divide the layer width",
+    }
+  }
+  let n = LW / spacing
+  let fx = x.to_float() / spacing
+  let i = Math.floor(fx)
+  let f = fx - i
+  let s = f * f * (3 - 2 * f)
+  let a = noise(Math.wrap(i, n), seed)
+  let b = noise(Math.wrap(i + 1, n), seed)
+  a + (b - a) * s
+}
+
+# Noise folded into a ridge: 0 in the valleys, sharp 1s at the peaks.
+fn ridge(v) {
+  1 - Math.abs(2 * v - 1)
+}
+
+let SUN_X = LW * 0.72
+let SUN_Y = 62
+let SUN_R = 12
+
+fn draw_sky(c) {
+  c.vgrad(
+    0,
+    0,
+    LW,
+    HORIZON,
+    [
+      [0.0, "SKY0"],
+      [0.22, "SKY1"],
+      [0.42, "SKY2"],
+      [0.60, "SKY3"],
+      [0.76, "SKY4"],
+      [0.90, "SKY5"],
+      [1.0, "HAZE"],
+    ],
+  )
+  c.rect(0, HORIZON, LW, LH - HORIZON, "HAZE")
+
+  # Cumulus: a band of big ones low over the mountains, smaller ones higher
+  # up, and a few wisps near the top.
+  for i in 0..4 {
+    let cx = i * LW / 4.0 + noise(i, 21) * 60
+    let cy = 62 + noise(i, 22) * 14
+    let w = 60 + noise(i, 23) * 40
+    cloud(c, cx, cy, w, w * (0.30 + noise(i, 24) * 0.1), i)
+  }
+  for i in 0..7 {
+    let cx = (i + 0.5) * LW / 7.0 + noise(i, 31) * 50
+    let cy = 22 + noise(i, 32) * 26
+    let w = 22 + noise(i, 33) * 22
+    cloud(c, cx, cy, w, w * 0.32, 10 + i)
+  }
+  for i in 0..6 {
+    let cx = (i + 0.3) * LW / 6.0 + noise(i, 41) * 60
+    let cy = 6 + noise(i, 42) * 14
+    let w = 8 + noise(i, 43) * 10
+    cloud(c, cx, cy, w, w * 0.3, 20 + i)
+  }
+
+  # The sun, in front of the clouds the way a flat sky sprite has it: a disc
+  # in a dithered glow that fades into whatever is there.
+  for (
+    x,
+    y,
+  ) in grid((SUN_X - SUN_R * 2.2).to_long()..(SUN_X + SUN_R * 2.2).to_long(), SUN_Y - SUN_R * 2..SUN_Y + SUN_R * 2 + 1) {
+    let d = Math.sqrt((x - SUN_X) * (x - SUN_X) +
+      (y - SUN_Y) * (y - SUN_Y).to_float())
+    continue if d > SUN_R * 2.2
+    c.mix(
+      x,
+      y,
+      c.get(x, y),
+      "SUN_GLOW",
+      1 - (d - SUN_R) / (SUN_R * 1.2),
+    ) if d > SUN_R
+  }
+  c.circle(SUN_X, SUN_Y, SUN_R, "SUN")
+}
+
+# A cumulus: lumps along the top over a flat base, lit from above so each
+# column shades from white at its own top down to a dark underside.
+fn cloud(c, cx, cy, w, h, seed) {
+  let base = (cy + h * 0.5).to_long()
+  let n = 3 + (w / 16).to_long()
+  let lumps = iota(n).map(fn (i) {
+    let lx = cx - w / 2 + (i + 0.5) * w / n
+    let edge = i == 0 || i == n - 1 ? 0.7 : 1.0
+    let r = h * (0.5 + 0.4 * noise(seed, i, 1)) * edge
+    let ly = base - r * (0.5 + 0.35 * noise(seed, i, 2))
+    [lx, ly, r]
+  })
+  let x0 = (cx - w / 2 - h).to_long()
+  let x1 = (cx + w / 2 + h).to_long()
+  mut top = repeat(x1 - x0 + 1, base)
+  for [lx, ly, r] in lumps {
+    for xx in (lx - r).to_long()..=(lx + r).to_long() {
+      continue if xx < x0 || xx > x1
+      let dx = (xx - lx).to_float() / r
+      continue if Math.abs(dx) > 1
+      let ty = ly - r * Math.sqrt(1 - dx * dx)
+      top[xx - x0] = Math.min(top[xx - x0], ty.to_long())
+    }
+  }
+  for xx in x0..=x1 {
+    let t0 = top[xx - x0]
+    continue if t0 >= base
+    let hh = (base - t0).to_float()
+    for yy in t0..base {
+      let t = (yy - t0) / hh
+      cond {
+        t < 0.45 => c.set(xx, yy, "CLOUD_L"),
+        t < 0.7 => c.mix(xx, yy, "CLOUD_L", "CLOUD_M", (t - 0.45) / 0.25),
+        t < 0.88 => c.set(xx, yy, "CLOUD_M"),
+        _ => c.mix(xx, yy, "CLOUD_M", "CLOUD_D", (t - 0.88) / 0.12 + 0.3),
+      }
+    }
+  }
+}
+
+# Two mountain ridges over a strip of sea and sand. Faces that look toward
+# the sun (it sits to the right) take the lit tone, the others the shade.
+let SEA_TOP = HORIZON - 20
+let SAND_TOP = HORIZON - 4
+
+fn draw_hills(c) {
+  # Each ridge is a smooth profile (which decides the shading) plus fine
+  # detail (which only roughens the outline).
+  let far_base = fn (x) {
+    HORIZON - 46 - 24 * pnoise(x, 160, 1)
+  }
+  let far = fn (x) {
+    far_base(x) - 8 * pnoise(x, 40, 2)
+  }
+  let near_base = fn (x) {
+    HORIZON -
+      24 -
+      44 * ridge(pnoise(x, 80, 3)) * (0.5 + 0.5 * pnoise(x, 320, 5))
+  }
+  let near = fn (x) {
+    near_base(x) - 6 * pnoise(x, 16, 4)
+  }
+  for x in 0..LW {
+    for (
+      f,
+      base,
+      lit,
+      dark,
+    ) in [(far, far_base, "MTN_FAR_L", "MTN_FAR_D"), (near, near_base, "MTN_L", "MTN_D")] {
+      let top = f(x)
+      # y grows downward, so a positive slope is a face turned to the right,
+      # toward the sun. Three tones only: lit, shade, and a dithered mix for
+      # the near-level ground between.
+      let slope = base(x + 4) - base(x - 4)
+      let t = cond {
+        slope > 1.2 => 1.0,
+        slope < -1.2 => 0.0,
+        _ => 0.5,
+      }
+      for y in top.to_long()..SEA_TOP {
+        c.mix(x, y, dark, lit, t)
+      }
+    }
+    # Snow on the tall peaks of the near ridge, thinning downward.
+    let top = near(x)
+    let cap = HORIZON - 50
+    if top < cap {
+      for y in top.to_long()..cap {
+        c.mix(x, y, c.get(x, y), "MTN_SNOW", 1.1 - (y - top) / (cap - top))
+      }
+    }
+  }
+  # The sea: dark water under short light streaks that gather toward the
+  # shore, sparkles where the sun sits, a foam line, then sand.
+  c.rect(0, SEA_TOP, LW, SAND_TOP - SEA_TOP, "SEA_D")
+  for (x, y) in grid(0..LW, SEA_TOP..SAND_TOP) {
+    let near_shore = (y - SEA_TOP).to_float() / (SAND_TOP - SEA_TOP)
+    let streak = pnoise(x, 4, 40 + y) * (0.4 + 0.6 * pnoise(x, 32, 60 + y))
+    let sparkle = Math.abs(x - SUN_X) < 30 && noise(x, y, 8) < 0.25
+    c.set(x, y, "SEA_L") if streak > 0.66 - near_shore * 0.2 || sparkle
+    c.set(x, y, "FOAM") if sparkle && noise(x, y, 9) < 0.5
+    c.set(x, y, "FOAM") if y == SAND_TOP - 1 && pnoise(x, 4, 70) > 0.4
+  }
+  c.rect(0, SAND_TOP, LW, LH - SAND_TOP, "SAND")
+  c.dither(0, SAND_TOP, LW, 1, "SAND", "FOAM")
+}
+
+# A palm: a bending ringed trunk under a crown of drooping fronds. `hgt` sets
+# the size; everything else is proportional, so the tree line and the big
+# roadside sprite are the same routine.
+fn palm(c, bx, by, hgt, seed, tones) {
+  let (trunk_d, trunk_l, leaf_d, leaf_m, leaf_l, nut) = tones
+  let lean = (noise(seed, 1) - 0.5) * 0.5
+  let tw = Math.max(1.0, hgt * 0.04)
+  let th = hgt * 0.72
+  let band = Math.max(2, (hgt * 0.03).to_long())
+  for i in 0..=th.to_long() {
+    let t = i / th
+    let x = bx + lean * hgt * t * t
+    let half = tw * (1 - 0.4 * t)
+    let light = (i / band) % 2 == 0
+    c.rect(x - half, by - i, half * 2 + 1, 1, light ? trunk_l : trunk_d)
+    c.rect(x - half, by - i, Math.max(1.0, half * 0.7), 1, trunk_d) if light
+  }
+  let cx = bx + lean * hgt
+  let cy = by - th
+  let n = 11
+  # Lower fronds first, so the lit ones on top overlap them.
+  for i in iota(n).sorted_by(|i| -Math.abs(i - (n - 1) / 2.0)) {
+    let a = -Math.pi * (i + 0.5) / n
+    let len = hgt * (0.30 + 0.12 * noise(seed, i, 3))
+    let up = -Math.sin(a)
+    let (spine, leaf) = cond {
+      up > 0.75 => (leaf_m, leaf_l),
+      up > 0.35 => (leaf_d, leaf_m),
+      _ => (leaf_d, leaf_d),
+    }
+    frond(c, cx, cy, a, len, spine, leaf)
+  }
+  c.circle(cx, cy, Math.max(1.5, hgt * 0.035), leaf_d)
+  for i in 0..3 {
+    c.circle(
+      cx - hgt * 0.03 + i * hgt * 0.03,
+      cy + hgt * 0.03,
+      Math.max(1.0, hgt * 0.018),
+      nut,
+    )
+  }
+}
+
+# One frond: a spine that leaves the crown at angle `a` and bends down under
+# its own weight, with leaflets off both sides swept toward the tip.
+fn frond(c, cx, cy, a, len, spine, leaf) {
+  let steps = Math.max(6, (len * 1.5).to_long())
+  let droop = 0.75 * (1 - 0.7 * Math.abs(Math.sin(a)))
+  let at = fn (u) {
+    (
+      cx + Math.cos(a) * len * u,
+      cy + Math.sin(a) * len * u * 0.6 + droop * u * u * len,
+    )
+  }
+  let leaf_w = Math.max(1.0, len * 0.012)
+  let every = Math.max(1, steps / 20)
+  for j in 0..=steps {
+    let t = j.to_float() / steps
+    let (fx, fy) = at(t)
+    let (gx, gy) = at(Math.min(1.0, t + 0.05))
+    let thick = Math.max(1.0, (1 - t) * len * 0.07)
+    c.circle(fx, fy, thick / 2, spine)
+    continue if t < 0.12 || j % every != 0
+    # Leaflets: a little toward the tip, a little down.
+    let dx = gx - fx
+    let dy = gy - fy
+    let d = Math.max(0.001, Math.sqrt(dx * dx + dy * dy))
+    let (tx, ty) = (dx / d, dy / d)
+    let ll = len * 0.16 * (1 - t * 0.5)
+    let side = (j / every) % 2 == 0 ? 1 : -1
+    let ox = -ty * side + tx * 0.5
+    let oy = tx * side + ty * 0.5 + 0.45
+    let od = Math.sqrt(ox * ox + oy * oy)
+    c.line(fx, fy, fx + ox / od * ll, fy + oy / od * ll, leaf, leaf_w)
+  }
+}
+
+# The tree line: palms along the shore with scrub between them, on a strip
+# of grass. Gaps are deliberate — the sea and the ridges show through them.
+fn draw_trees(c) {
+  c.rect(0, HORIZON - 3, LW, LH - HORIZON + 3, "GROUND")
+  c.dither(0, HORIZON - 3, LW, 1, "GROUND", "SAND")
+  for i in 0..14 {
+    let x = i * LW / 14.0 + noise(i, 51) * 30
+    let y = HORIZON - 3
+    for j in 0..3 {
+      let w = 4 + noise(i, j, 52) * 6
+      let h = 3 + noise(i, j, 53) * 4
+      let ox = x + (j - 1) * w * 1.2
+      c.ellipse(ox, y, w, h, "TREE_D")
+      c.ellipse(ox - w * 0.2, y - h * 0.3, w * 0.5, h * 0.5, "TREE_M")
+      c.set(ox - w * 0.4, y - h * 0.7, "TREE_L")
+    }
+  }
+  for i in 0..10 {
+    let x = i * LW / 10.0 + noise(i, 61) * 40
+    let hgt = 56 + noise(i, 62) * 34
+    palm(
+      c,
+      x,
+      HORIZON - 2,
+      hgt,
+      100 + i,
+      ("TRUNK_D", "TRUNK_L", "TREE_D", "TREE_M", "TREE_L", "TRUNK_D"),
+    )
+  }
+}
+
+# A scrolling layer meets its own left edge. Column 0 and column LW-1 are
+# neighbours once it wraps, so a shape that changes abruptly across that join
+# is a seam. Allow a little change — real detail differs column to column —
+# but not more than two neighbouring interior columns do.
+fn check_wraps(name, cells) {
+  let diff = fn (a, b) {
+    iota(cells.h).filter(|y| cells.get(a, y) != cells.get(b, y)).size()
+  }
+  let seam = diff(LW - 1, 0)
+  let interior = iota(1, LW - 2).map(|x| diff(x, x + 1)).max()
+  if seam > interior {
+    throw {
+      kind: "ValueError",
+      message: "{name} does not wrap: {seam} cells change across the " +
+        "seam, at most {interior} change between interior columns",
+    }
+  }
+}
+
+# Draw all three layers once, into keys. Returns the atlas.
+fn build_background() {
+  mut img = KeyImage(atlas.BG_W, atlas.BG_H)
+  for (
+    name,
+    draw,
+  ) in [("SKY", draw_sky), ("HILLS", draw_hills), ("TREES", draw_trees)] {
+    mut cells = Cells(LW, LH, true)
+    draw(cells)
+    check_wraps(name, cells)
+    let [x, y, w, h] = atlas.BACKGROUND[name]
+    img.blit_cells(cells, x, y, w, h, BG_CELL)
+  }
+  img
+}
+
+# --- sprites -----------------------------------------------------------------
+# The atlas rectangles are the contract (see atlas.cul); this file only draws
+# inside them.
+
+# Pixels per drawn cell. Vehicles are already at pixel-art size and draw one
+# cell per pixel; the roadside scenery is drawn at half resolution so it
+# reads at the same chunkiness once the game scales it.
+fn cell_scale(w, h) {
+  Math.max(w, h) <= 150 ? 1 : 2
+}
+
+# A checkerboard of shadow under a sprite, drawn last so the outline pass
+# does not border every dot.
+fn ground_shadow(c, cx, cy, rx, ry) {
+  for yy in (cy - ry).to_long()..=(cy + ry).to_long() {
+    let dy = (yy - cy).to_float() / ry
+    continue if Math.abs(dy) > 1
+    let half = rx * Math.sqrt(1 - dy * dy)
+    for xx in (cx - half).to_long()..=(cx + half).to_long() {
+      c.set(xx, yy, "SHADOW") if (xx + yy) % 2 == 0 && c.get(xx, yy) == 0
+    }
+  }
+}
+
+# A tapering trunk with its shaded side and a highlight streak.
+fn trunk(c, x0, y0, x1, y1, w0, w1, tones) {
+  let (d, m, l) = tones
+  c.poly(
+    [
+      x0 - w0 / 2.0,
+      y0,
+      x0 + w0 / 2.0,
+      y0,
+      x1 + w1 / 2.0,
+      y1,
+      x1 - w1 / 2.0,
+      y1,
+    ],
+    m,
+  )
+  c.poly(
+    [
+      x0 - w0 / 2.0,
+      y0,
+      x0 - w0 / 2.0 + w0 * 0.35,
+      y0,
+      x1 - w1 / 2.0 + w1 * 0.35,
+      y1,
+      x1 - w1 / 2.0,
+      y1,
+    ],
+    d,
+  )
+  c.line(x0 + w0 * 0.2, y0, x1 + w1 * 0.2, y1, l, Math.max(1.0, w0 * 0.12))
+}
+
+# Fine foliage: a scatter of small leaf strokes over an ellipse, dense in the
+# middle and thinning to a ragged edge, lit from the upper left; `hang` lets
+# the lower ones droop below it. No outline goes over these — bordering every
+# leaf would fill the gaps in — so the wood is outlined before the leaves go on.
+fn foliage(c, cx, cy, rx, ry, n, seed, tones, hang = 0.0, stroke = 2.5) {
+  for i in 0..n {
+    let a = noise(seed, i, 1) * 2 * Math.pi
+    let d = Math.sqrt(noise(seed, i, 2))
+    let px = cx + Math.cos(a) * d * rx
+    let py = cy + Math.sin(a) * d * ry + hang * ry * noise(seed, i, 5)
+    let lit = (cy - py) / ry * 0.6 -
+      (px - cx) / rx * 0.4 +
+      (noise(seed, i, 3) - 0.5) * 0.9
+    let tone = tones[cond {
+      lit > 0.35 => 2,
+      lit > -0.3 => 1,
+      _ => 0,
+    }]
+    let len = (noise(seed, i, 4) * stroke).to_long()
+    let dir = noise(seed, i, 6) < 0.5 ? 1 : -1
+    for k in 0..=len {
+      c.set(px + k * dir, py + k, tone)
+    }
+  }
+}
+
+let WOOD = ("WOOD0", "WOOD1", "WOOD2")
+let BARK = ("WHITE0", "WHITE1", "WHITE2")
+
+# A birch: a slim white trunk marked with dark lenticels, leaders that bend
+# outward, and light hanging foliage that lets the branches show through.
+fn draw_birch(c, w, h, seed) {
+  let bx = w * 0.5
+  let by = h * 0.98
+  let fork = h * 0.5
+  let fx = bx + w * 0.02
+  trunk(c, bx, by, fx, fork, w * 0.085, w * 0.05, BARK)
+  let tips = [
+    [bx - w * 0.3, h * 0.14],
+    [bx - w * 0.06, h * 0.03],
+    [bx + w * 0.16, h * 0.06],
+    [bx + w * 0.34, h * 0.18],
+  ]
+  for (i, [tx, ty]) in tips.enumerate() {
+    let mx = fx + (tx - fx) * 0.45 + (noise(seed, i) - 0.5) * w * 0.08
+    let my = fork - (fork - ty) * 0.5
+    trunk(c, fx, fork + 2, mx, my, w * 0.045, w * 0.03, BARK)
+    trunk(c, mx, my, tx, ty, w * 0.03, w * 0.012, BARK)
+    c.line(mx, my, mx + (tx - bx) * 0.5, my - h * 0.1, "WHITE0", 1)
+    c.line(tx, ty, tx + (tx - bx) * 0.3, ty + h * 0.08, "WHITE0", 1)
+  }
+  c.outline()
+  for j in 0..12 {
+    let y = fork + (by - fork) * (0.08 + 0.85 * noise(seed, j, 9))
+    let t = (by - y) / (by - fork)
+    let half = w * 0.0425 * (1 - 0.4 * t)
+    let x = bx + w * 0.02 * t - half + 1
+    c.rect(
+      x + half * noise(seed, j, 11),
+      y,
+      half * (0.5 + noise(seed, j, 10) * 0.7),
+      1,
+      "INK",
+    )
+  }
+  let tones = ["LEAF1", "LEAF2", "LEAF3"]
+  for (i, [tx, ty]) in tips.enumerate() {
+    foliage(
+      c,
+      tx,
+      ty + h * 0.07,
+      w * 0.19,
+      h * 0.14,
+      900,
+      seed * 11 + i,
+      tones,
+      0.9,
+      3.0,
+    )
+    foliage(
+      c,
+      (tx + fx) / 2,
+      (ty + fork) / 2,
+      w * 0.14,
+      h * 0.11,
+      500,
+      seed * 13 + i,
+      tones,
+      0.9,
+      3.0,
+    )
+  }
+  ground_shadow(c, bx, by, w * 0.36, h * 0.03)
+}
+
+# A cherry: a dark trunk fanning into branches, each tip in a cloud of
+# blossom fine enough for the wood to show between.
+fn draw_cherry(c, w, h, seed) {
+  let bx = w * 0.5
+  let by = h * 0.98
+  let fork = h * 0.56
+  let fx = bx - w * 0.03
+  trunk(c, bx, by, fx, fork, w * 0.11, w * 0.06, WOOD)
+  let tips = [
+    [bx - w * 0.42, h * 0.3],
+    [bx - w * 0.22, h * 0.1],
+    [bx + w * 0.04, h * 0.05],
+    [bx + w * 0.26, h * 0.1],
+    [bx + w * 0.44, h * 0.28],
+  ]
+  for (i, [tx, ty]) in tips.enumerate() {
+    let mx = fx + (tx - fx) * 0.5 + (noise(seed, i) - 0.5) * w * 0.06
+    let my = fork - (fork - ty) * 0.55
+    trunk(c, fx, fork + 2, mx, my, w * 0.05, w * 0.03, WOOD)
+    trunk(c, mx, my, tx, ty, w * 0.03, w * 0.012, WOOD)
+    c.line(mx, my, mx + (tx - bx) * 0.3, my - h * 0.12, "WOOD0", 1)
+  }
+  c.outline()
+  let tones = ["BLOSSOM_D", "BLOSSOM_L", "P_WHITE"]
+  for (i, [tx, ty]) in tips.enumerate() {
+    foliage(
+      c,
+      tx,
+      ty + h * 0.03,
+      w * 0.18,
+      h * 0.14,
+      650,
+      seed * 11 + i,
+      tones,
+      0.5,
+      1.4,
+    )
+    foliage(
+      c,
+      (tx + fx) / 2,
+      (ty + fork) / 2,
+      w * 0.13,
+      h * 0.1,
+      320,
+      seed * 13 + i,
+      tones,
+      0.5,
+      1.4,
+    )
+  }
+  ground_shadow(c, bx, by, w * 0.36, h * 0.03)
+}
+
+# A bare tree: limbs that fork, thin, and bend toward the light.
+fn draw_dead_tree(c, w, h, seed) {
+  fn branch(x, y, angle, len, thick, depth, s) {
+    let x1 = x + Math.cos(angle) * len
+    let y1 = y + Math.sin(angle) * len
+    c.line(x, y, x1, y1, "WOOD0", thick)
+    c.line(
+      x + 1,
+      y,
+      x1 + 1,
+      y1,
+      "WOOD1",
+      Math.max(1.0, thick * 0.35),
+    ) if thick >= 3
+    return nil if depth == 0
+    let n = depth >= 3 ? 3 : 2
+    for i in 0..n {
+      let spread = 0.35 + 0.45 * noise(seed, s, i, 1)
+      let da = (i.to_float() / (n - 1) - 0.5) * 2 * spread +
+        (noise(seed, s, i, 2) - 0.5) * 0.4
+      branch(
+        x1,
+        y1,
+        angle + da,
+        len * (0.62 + 0.18 * noise(seed, s, i, 3)),
+        thick * 0.6,
+        depth - 1,
+        s * 3 + i,
+      )
+    }
+  }
+  branch(
+    w * 0.5,
+    h * 0.99,
+    -Math.pi / 2 + (noise(seed, 5) - 0.5) * 0.2,
+    h * 0.3,
+    w * 0.13,
+    4,
+    1,
+  )
+  c.outline()
+  ground_shadow(c, w * 0.5, h * 0.98, w * 0.3, h * 0.02)
+}
+
+fn draw_palm_sprite(c, w, h, seed) {
+  palm(
+    c,
+    w * 0.46,
+    h * 0.97,
+    h * 0.96,
+    seed,
+    ("WOOD0", "WOOD2", "LEAF1", "LEAF2", "LEAF3", "WOOD1"),
+  )
+  # A tuft of grass at the foot.
+  for i in 0..7 {
+    let gx = w * 0.46 + (i - 3) * w * 0.05
+    c.line(
+      gx,
+      h * 0.98,
+      gx + (i - 3) * w * 0.03,
+      h * 0.92 - noise(seed, i) * h * 0.03,
+      "LEAF1",
+      1,
+    )
+  }
+  c.outline()
+  ground_shadow(c, w * 0.46, h * 0.98, w * 0.3, h * 0.012)
+}
+
+# A shrub: stems fanning up from the foot under a mound of fine leaves.
+fn draw_bush(c, w, h, seed, flowers = false) {
+  for i in 0..5 {
+    c.line(
+      w * 0.5 + (i - 2) * w * 0.03,
+      h * 0.95,
+      w * (0.2 + 0.6 * i / 4.0),
+      h * (0.3 + 0.2 * noise(seed, i)),
+      "WOOD0",
+      1,
+    )
+  }
+  c.outline()
+  foliage(
+    c,
+    w * 0.5,
+    h * 0.56,
+    w * 0.46,
+    h * 0.36,
+    2600,
+    seed,
+    ["LEAF1", "LEAF2", "LEAF3"],
+    0.2,
+    3.0,
+  )
+  if flowers {
+    for i in 0..60 {
+      let fx = w * (0.08 + 0.84 * noise(seed, i, 7))
+      let fy = h * (0.2 + 0.6 * noise(seed, i, 8))
+      continue if c.get(fx, fy) == 0
+      c.set(fx, fy, noise(seed, i, 9) < 0.6 ? "FLOWER" : "P_WHITE")
+      c.set(fx + 1, fy, "BLOSSOM_L")
+    }
+  }
+  ground_shadow(c, w * 0.5, h * 0.94, w * 0.44, h * 0.05)
+}
+
+# A prickly pear: a cluster of pads growing off each other, spines in rows,
+# fruit on the top pads.
+fn draw_cactus(c, w, h, seed) {
+  let pads = [
+    [0.50, 0.78, 0.17, 0.20],
+    [0.32, 0.60, 0.15, 0.19],
+    [0.68, 0.58, 0.15, 0.18],
+    [0.16, 0.36, 0.13, 0.17],
+    [0.46, 0.40, 0.13, 0.17],
+    [0.84, 0.36, 0.12, 0.16],
+    [0.30, 0.18, 0.11, 0.14],
+    [0.66, 0.20, 0.11, 0.14],
+  ]
+  for [px, py, rx, ry] in pads.sorted_by(|p| -p[1]) {
+    c.ellipse(w * px, h * py, w * rx, h * ry, "CACT_D")
+    c.ellipse(
+      w * px - w * rx * 0.25,
+      h * py - h * ry * 0.25,
+      w * rx * 0.62,
+      h * ry * 0.62,
+      "CACT_L",
+    )
+    c.ellipse(
+      w * px + w * rx * 0.55,
+      h * py,
+      w * rx * 0.4,
+      h * ry * 0.9,
+      "CACT_D",
+    )
+    for (sx, sy) in grid(-3..4, -3..4) {
+      let x = w * px + sx * w * rx * 0.3
+      let y = h * py + sy * h * ry * 0.3
+      c.set(x, y, "P_WHITE") if c.get(x, y) != 0 && (sx + sy) % 2 == 0
+    }
+  }
+  for [px, py, rx, ry] in pads.slice(6, 8) {
+    for i in 0..3 {
+      c.ellipse(
+        w * px + (i - 1) * w * rx * 0.55,
+        h * (py - ry) + 1,
+        2,
+        2.5,
+        "LAMP_R",
+      )
+    }
+  }
+  c.outline()
+  ground_shadow(c, w * 0.5, h * 0.96, w * 0.42, h * 0.05)
+}
+
+# A stump: bark on the flank, rings on the cut, roots at the foot.
+fn draw_stump(c, w, h, seed) {
+  let top = h * 0.34
+  let bottom = h * 0.9
+  let ry = h * 0.14
+  c.poly(
+    [w * 0.22, top, w * 0.78, top, w * 0.82, bottom, w * 0.18, bottom],
+    "WOOD1",
+  )
+  for i in 0..9 {
+    let x = w * (0.2 + 0.6 * noise(seed, i)) + 2
+    c.line(
+      x,
+      top + ry,
+      x + (noise(seed, i, 2) - 0.5) * 4,
+      bottom - 2,
+      i % 3 == 0 ? "WOOD2" : "WOOD0",
+      1 + i % 2,
+    )
+  }
+  c.dither(w * 0.18, top, w * 0.14, bottom - top, "WOOD0", "WOOD1")
+  for (dx, side) in [(-1, 0.18), (1, 0.82)] {
+    c.poly(
+      [
+        w * side,
+        bottom - h * 0.1,
+        w * side,
+        bottom,
+        w * (side + dx * 0.14),
+        bottom,
+        w * (side + dx * 0.04),
+        bottom - h * 0.08,
+      ],
+      "WOOD0",
+    )
+  }
+  c.ellipse(w * 0.5, top, w * 0.28, ry, "WOOD2")
+  for i in [0.78, 0.56, 0.34, 0.14] {
+    c.ellipse(w * 0.5, top, w * 0.28 * i, ry * i, i == 0.14 ? "WOOD1" : "WOOD2")
+    c.ellipse(
+      w * 0.5,
+      top,
+      w * 0.28 * (i - 0.05),
+      ry * (i - 0.05),
+      "WOOD1",
+    ) if i > 0.14
+    c.ellipse(
+      w * 0.5,
+      top,
+      w * 0.28 * (i - 0.1),
+      ry * (i - 0.1),
+      "WOOD2",
+    ) if i > 0.14
+  }
+  c.outline()
+  ground_shadow(c, w * 0.5, bottom + 1, w * 0.36, h * 0.05)
+}
+
+# A boulder: an irregular silhouette split into facets (nearest of a few
+# seed points), each toned by which way it faces, with cracks between.
+fn draw_boulder(c, w, h, seed) {
+  let n = 18
+  let cx = w * 0.5
+  let cy = h * 0.5
+  let ground = h * 0.9  # the row the rock sits on
+  mut pts = []
+  for i in 0..n {
+    let a = i.to_float() / n * 2 * Math.pi
+    let r = 0.7 + 0.3 * noise(seed, i, 1) * (0.5 + 0.5 * noise(seed, i / 3, 7))
+    pts.push(cx + Math.cos(a) * w * 0.48 * r)
+    pts.push(Math.min(ground, cy + Math.sin(a) * h * 0.46 * r))
+  }
+  c.poly(pts, "ROCK1")
+  let seeds = iota(16 + (w / 10).to_long()).map(fn (i) {
+    let qx = w * (0.05 + 0.9 * noise(seed, i, 2))
+    let qy = h * (0.1 + 0.8 * noise(seed, i, 3))
+    let lit = (cy - qy) / h * 2.0 -
+      (qx - cx) / w * 1.2 +
+      (noise(seed, i, 4) - 0.5) * 0.8
+    [qx, qy, Math.clamp(Math.round(lit * 1.8 + 1.3), 0, 3)]
+  })
+  let facet = fn (x, y) {
+    seeds
+      .enumerate()
+      .min_by(|(_, s)| (s[0] - x) * (s[0] - x) + (s[1] - y) * (s[1] - y))[0]
+  }
+  let tones = ["ROCK0", "ROCK1", "ROCK2", "ROCK3"]
+  c.recolor(["ROCK1"], fn (x, y, _) {
+    let f = facet(x, y)
+    let tone = seeds[f][2]
+    let right = facet(x + 1, y)
+    let below = facet(x, y + 1)
+    # A crack shows where a facet meets a darker neighbour; a lit edge where
+    # it meets a lighter one.
+    cond {
+      right != f && seeds[right][2] < tone => "ROCK0",
+      below != f && seeds[below][2] < tone => "ROCK0",
+      right != f && seeds[right][2] > tone => tones[Math.min(3, tone + 1)],
+      _ => tones[tone],
+    }
+  })
+  # Weathering: each facet darkens toward its lower edge, blotches of the
+  # next tone down mottle the surface, and a few grains catch the light.
+  c.recolor(["ROCK1", "ROCK2", "ROCK3"], fn (x, y, v) {
+    let i = tones.index_of(KEYS[v])
+    let s = seeds[facet(x, y)]
+    let local = Math.clamp((y - s[1]) / (h * 0.22), 0.0, 1.0)
+    cond {
+      noise(seed, x, y, 5) < 0.05 => tones[Math.min(3, i + 1)],
+      noise(seed, x / 5, y / 4, 8) < 0.28 => tones[i - 1],
+      local > 0.4 && noise(seed, x, y, 6) < (local - 0.4) * 1.2 => tones[i - 1],
+      _ => nil,
+    }
+  })
+  c.outline()
+  ground_shadow(c, cx, ground, w * 0.46, h * 0.045)
+}
+
+# A ruined watchtower: rows of stone with the shading of a cylinder, slit
+# windows, battlements.
+fn draw_column(c, w, h, seed) {
+  let x0 = w * 0.16
+  let x1 = w * 0.84
+  let top = h * 0.12
+  c.poly([x0 + w * 0.03, top, x1 - w * 0.03, top, x1, h, x0, h], "STONE1")
+  let row_h = Math.max(3, (h * 0.045).to_long())
+  let brick_w = Math.max(6, (w * 0.14).to_long())
+  c.recolor(["STONE1"], fn (x, y, _) {
+    let row = (y - top.to_long()) / row_h
+    let shift = row % 2 == 0 ? 0 : brick_w / 2
+    let bx = (x + shift) / brick_w
+    let mortar = (y - top.to_long()) % row_h == 0 || (x + shift) % brick_w == 0
+    return "STONE0" if mortar
+    # Cylinder shading: dark at both edges, brightest left of centre.
+    let u = (x - x0) / (x1 - x0)
+    let shade = cond {
+      u < 0.12 || u > 0.88 => "STONE0",
+      u < 0.25 || u > 0.72 => (bx + row + x + y) % 2 == 0 ? "STONE0" : "STONE1",
+      u > 0.3 && u < 0.5 => (bx + row) % 3 == 0 ? "STONE2" : "STONE1",
+      _ => "STONE1",
+    }
+    noise(seed, bx, row) < 0.15 && shade == "STONE1" ? "STONE2" : shade
+  })
+  for i in 0..5 {
+    let mx = x0 + w * 0.02 + i * (x1 - x0 - w * 0.04) / 5
+    c.rect(mx, h * 0.03, (x1 - x0) / 5 * 0.62, top - h * 0.03 + 1, "STONE1")
+    c.rect(mx, h * 0.03, 2, top - h * 0.03 + 1, "STONE0")
+  }
+  for y in [0.36, 0.62] {
+    c.rect(w * 0.47, h * y, w * 0.06, h * 0.09, "INK")
+    c.rect(w * 0.47, h * y, w * 0.06, 1, "STONE2")
+  }
+  c.outline()
+  ground_shadow(c, w * 0.5, h * 0.99, w * 0.42, h * 0.02)
+}
+
+# --- billboards --------------------------------------------------------------
+# A poster is a function of the panel's inner rectangle. Text goes through
+# the built-in font at the largest scale that fits; an icon takes one end.
+fn fit_scale(lines, w, h) {
+  mut s = 4
+  while s > 1 && lines.any(|(t, _)| Canvas.text_width(t, s) > w || lines.size() * 10 * s > h) {
+    s -= 1
+  }
+  s
+}
+
+# Lines of text stacked and centred in (x, y, w, h).
+fn caption(c, x, y, w, h, lines, shadow = nil) {
+  let s = fit_scale(lines, w, h)
+  let total = lines.size() * 10 * s
+  mut ty = y + (h - total) / 2.0
+  for (t, key) in lines {
+    let tx = x + (w - Canvas.text_width(t, s)) / 2.0
+    c.text(t, tx + s, ty + s, shadow, s) if shadow != nil
+    c.text(t, tx, ty, key, s)
+    ty += 10 * s
+  }
+}
+
+# Icon at one end of the panel, text in the rest; tall panels stack them.
+fn poster(c, x, y, w, h, bg, lines, icon, shadow = nil) {
+  c.rect(x, y, w, h, bg)
+  if h > w * 0.7 {
+    icon(c, x + w * 0.25, y + h * 0.06, w * 0.5, h * 0.42)
+    caption(c, x + w * 0.04, y + h * 0.5, w * 0.92, h * 0.46, lines, shadow)
+  } else {
+    icon(c, x + w * 0.04, y + h * 0.12, w * 0.28, h * 0.76)
+    caption(c, x + w * 0.34, y + h * 0.05, w * 0.62, h * 0.9, lines, shadow)
+  }
+}
+
+let ICONS = {
+  snake: fn (c, x, y, w, h) {
+    for i in 0..(w * 0.9).to_long() {
+      let t = i / (w * 0.9)
+      let sx = x + w * 0.05 + i
+      let sy = y + h * 0.5 + Math.sin(t * 2 * Math.pi * 1.5) * h * 0.3
+      c.rect(sx, sy - h * 0.09, 1, h * 0.18, "P_GREEN")
+    }
+    c.circle(x + w * 0.9, y + h * 0.5, h * 0.14, "P_GREEN")
+    c.set(x + w * 0.92, y + h * 0.46, "INK")
+    c.rect(x + w * 0.96, y + h * 0.5, w * 0.08, 1, "P_RED")
+  },
+  sun: fn (c, x, y, w, h) {
+    let cx = x + w * 0.5
+    let cy = y + h * 0.66
+    for i in 0..7 {
+      let a = Math.pi + i / 6.0 * Math.pi
+      c.line(
+        cx + Math.cos(a) * w * 0.34,
+        cy + Math.sin(a) * h * 0.34,
+        cx + Math.cos(a) * w * 0.5,
+        cy + Math.sin(a) * h * 0.5,
+        "P_ORANGE",
+        2,
+      )
+    }
+    c.circle(cx, cy, Math.min(w, h) * 0.28, "P_YELLOW")
+    c.rect(x, cy, w, h * 0.34, "P_NAVY")
+    c.rect(x, cy, w, 1, "P_ORANGE")
+  },
+  burger: fn (c, x, y, w, h) {
+    let cx = x + w * 0.5
+    c.ellipse(cx, y + h * 0.32, w * 0.42, h * 0.24, "P_ORANGE")
+    c.rect(cx - w * 0.42, y + h * 0.32, w * 0.84, h * 0.12, "P_ORANGE")
+    c.rect(cx - w * 0.46, y + h * 0.44, w * 0.92, h * 0.1, "P_GREEN")
+    c.rect(cx - w * 0.42, y + h * 0.54, w * 0.84, h * 0.14, "P_BROWN")
+    c.rect(cx - w * 0.44, y + h * 0.68, w * 0.88, h * 0.08, "P_YELLOW")
+    c.rect(cx - w * 0.4, y + h * 0.76, w * 0.8, h * 0.14, "P_ORANGE")
+    for i in 0..4 {
+      c.set(cx - w * 0.25 + i * w * 0.16, y + h * 0.22 + (i % 2) * 2, "P_WHITE")
+    }
+  },
+  pump: fn (c, x, y, w, h) {
+    c.rect(x + w * 0.2, y + h * 0.1, w * 0.5, h * 0.85, "P_RED")
+    c.rect(x + w * 0.28, y + h * 0.18, w * 0.34, h * 0.22, "P_WHITE")
+    c.rect(x + w * 0.1, y + h * 0.92, w * 0.7, h * 0.08, "INK")
+    c.rect(x + w * 0.72, y + h * 0.3, w * 0.08, h * 0.45, "INK")
+    c.rect(x + w * 0.72, y + h * 0.3, w * 0.22, h * 0.08, "INK")
+    c.rect(x + w * 0.86, y + h * 0.3, w * 0.08, h * 0.25, "INK")
+  },
+  wave: fn (c, x, y, w, h) {
+    for (oy, key) in [(0.0, "P_WHITE"), (0.3, "P_NAVY")] {
+      for i in 0..(w * 0.96).to_long() {
+        let t = i / (w * 0.96)
+        let sy = y +
+          h * (0.55 + oy) -
+          Math.abs(Math.sin(t * Math.pi * 1.5)) * h * 0.4
+        c.rect(x + i, sy, 1, h * 0.12, key)
+      }
+    }
+    c.circle(x + w * 0.2, y + h * 0.18, h * 0.08, "P_WHITE")
+  },
+  palm: fn (c, x, y, w, h) {
+    palm(
+      c,
+      x + w * 0.5,
+      y + h * 0.98,
+      h * 0.95,
+      7,
+      ("P_BROWN", "P_YELLOW", "P_GREEN", "P_GREEN", "P_WHITE", "P_BROWN"),
+    )
+  },
+  bottle: fn (c, x, y, w, h) {
+    let cx = x + w * 0.5
+    c.rect(cx - w * 0.12, y, w * 0.24, h * 0.12, "P_WHITE")
+    c.poly(
+      [
+        cx - w * 0.12,
+        y + h * 0.12,
+        cx + w * 0.12,
+        y + h * 0.12,
+        cx + w * 0.28,
+        y + h * 0.35,
+        cx + w * 0.28,
+        y + h,
+        cx - w * 0.28,
+        y + h,
+        cx - w * 0.28,
+        y + h * 0.35,
+      ],
+      "P_WHITE",
+    )
+    c.rect(cx - w * 0.28, y + h * 0.5, w * 0.56, h * 0.22, "P_RED")
+    c.rect(cx - w * 0.2, y + h * 0.56, w * 0.4, h * 0.1, "P_WHITE")
+    c.rect(cx - w * 0.14, y, w * 0.28, h * 0.04, "P_YELLOW")
+  },
+  radio: fn (c, x, y, w, h) {
+    c.rect(x + w * 0.05, y + h * 0.35, w * 0.9, h * 0.6, "P_CYAN")
+    c.circle(x + w * 0.3, y + h * 0.65, Math.min(w, h) * 0.18, "P_NAVY")
+    c.circle(x + w * 0.3, y + h * 0.65, Math.min(w, h) * 0.1, "P_WHITE")
+    for i in 0..4 {
+      c.rect(
+        x + w * 0.56 + i * w * 0.09,
+        y + h * 0.5 + (i % 2) * h * 0.1,
+        w * 0.06,
+        h * 0.35 - (i % 2) * h * 0.1,
+        "P_PINK",
+      )
+    }
+    c.line(x + w * 0.85, y + h * 0.35, x + w * 0.95, y, "P_WHITE", 2)
+  },
+  pizza: fn (c, x, y, w, h) {
+    let cx = x + w * 0.5
+    c.poly(
+      [
+        cx - w * 0.44,
+        y + h * 0.1,
+        cx + w * 0.44,
+        y + h * 0.1,
+        cx,
+        y + h * 0.98,
+      ],
+      "P_YELLOW",
+    )
+    c.poly(
+      [
+        cx - w * 0.44,
+        y + h * 0.1,
+        cx + w * 0.44,
+        y + h * 0.1,
+        cx + w * 0.38,
+        y + h * 0.24,
+        cx - w * 0.38,
+        y + h * 0.24,
+      ],
+      "P_ORANGE",
+    )
+    for (
+      px,
+      py,
+    ) in [(0.36, 0.32), (0.6, 0.36), (0.5, 0.58), (0.4, 0.5), (0.52, 0.76)] {
+      c.circle(x + w * px, y + h * py, Math.min(w, h) * 0.07, "P_RED")
+    }
+  },
+}
+
+let POSTERS = [
+  {
+    bg: "P_WHITE",
+    lines: [("CULEBRA", "P_RED"), ("RETRO RUN", "P_NAVY")],
+    icon: "snake",
+  },
+  {
+    bg: "P_NAVY",
+    lines: [("SUNSET", "P_YELLOW"), ("MOTEL", "P_YELLOW")],
+    icon: "sun",
+  },
+  {
+    bg: "P_YELLOW",
+    lines: [("COAST", "P_RED"), ("DINER", "P_RED")],
+    icon: "burger",
+  },
+  {bg: "P_WHITE", lines: [("GAS", "P_BLUE"), ("24H", "P_RED")], icon: "pump"},
+  {
+    bg: "P_CYAN",
+    lines: [("SURF", "P_WHITE"), ("SHOP", "P_WHITE")],
+    icon: "wave",
+    shadow: "P_NAVY",
+  },
+  {
+    bg: "P_ORANGE",
+    lines: [("PALM", "P_WHITE"), ("BEACH", "P_WHITE")],
+    icon: "palm",
+    shadow: "P_RED",
+  },
+  {
+    bg: "P_RED",
+    lines: [("COLA", "P_WHITE"), ("ICE COLD", "P_YELLOW")],
+    icon: "bottle",
+  },
+  {
+    bg: "P_NAVY",
+    lines: [("RADIO", "P_CYAN"), ("88.8 FM", "P_PINK")],
+    icon: "radio",
+  },
+  {
+    bg: "P_WHITE",
+    lines: [("PIZZA", "P_GREEN"), ("HOT!", "P_RED")],
+    icon: "pizza",
+  },
+]
+
+# A sign panel in a metal frame on two posts, with lamps over the top.
+fn draw_billboard(c, w, h, seed, design) {
+  let post_w = Math.max(3, (w * 0.05).to_long())
+  let panel_y = h * 0.06
+  let panel_h = h * 0.6
+  for px in [w * 0.2, w * 0.8 - post_w] {
+    c.rect(px, panel_y + panel_h - 2, post_w, h - panel_y - panel_h + 2, "POST")
+    c.rect(
+      px + post_w - 1,
+      panel_y + panel_h - 2,
+      1,
+      h - panel_y - panel_h + 2,
+      "INK",
+    )
+    c.rect(px - post_w, h * 0.97, post_w * 3, h * 0.03, "POST")
+  }
+  c.rect(w * 0.03, panel_y, w * 0.94, panel_h, "FRAME")
+  c.rect(w * 0.03, panel_y + panel_h - 2, w * 0.94, 2, "POST")
+  c.rect(w * 0.03, panel_y, 2, panel_h, "P_WHITE")
+  for lx in [w * 0.3, w * 0.7] {
+    c.rect(lx - 1, 0, 2, panel_y + 1, "POST")
+    c.rect(lx - w * 0.04, 0, w * 0.08, Math.max(2.0, h * 0.03), "LAMP_W")
+  }
+  let inset = Math.max(3.0, w * 0.03)
+  poster(
+    c,
+    w * 0.03 + inset,
+    panel_y + inset,
+    w * 0.94 - inset * 2,
+    panel_h - inset * 2 - 2,
+    design.bg,
+    design.lines,
+    ICONS[design.icon],
+    design.get("shadow", nil),
+  )
+  c.outline()
+}
+
+# --- vehicles ----------------------------------------------------------------
+# Rear view, one cell per pixel. `style` picks the silhouette family and the
+# paint; `steer` leans the cabin into a turn; `hill` is how many extra rows
+# of the rear face show when the car is climbing.
+
+# The wheels: a pair of tyres with tread, wider apart than the body's waist
+# so their outer halves show.
+fn wheels(c, w, floor, tyre_w, tyre_h, inset) {
+  for tx in [inset, w - inset - tyre_w] {
+    c.rect(tx, floor - tyre_h, tyre_w, tyre_h, "TYRE0")
+    for (
+      x,
+      y,
+    ) in [(tx, floor - tyre_h), (tx + tyre_w - 1, floor - tyre_h), (tx, floor - 1), (tx + tyre_w - 1, floor - 1)] {
+      c.set(x, y, 0)
+    }
+    c.rect(tx + 2, floor - tyre_h + 1, tyre_w - 4, 1, "TYRE1")
+    for y in floor - tyre_h + 3..floor - 1 by 2 {
+      c.set(tx, y, "TYRE1")
+      c.set(tx + tyre_w - 1, y, "TYRE1")
+    }
+  }
+}
+
+# Half-width of a body at row `y`, from control points `[[y, half], ...]`
+# (ascending y), smoothed between them so the flanks curve rather than step.
+fn profile(points, y) {
+  return points[0][1] if y <= points[0][0]
+  let last = points[points.size() - 1]
+  return last[1] if y >= last[0]
+  mut i = 0
+  while points[i + 1][0] < y {
+    i += 1
+  }
+  let [y0, h0] = points[i]
+  let [y1, h1] = points[i + 1]
+  let t = (y - y0).to_float() / (y1 - y0)
+  h0 + (h1 - h0) * t * t * (3 - 2 * t)
+}
+
+# Fill a profile's rows: the flanks shade toward the dark tone where the
+# surface turns away, the first `top_light` rows toward the light one.
+fn shell(c, cx, points, tones, top_light) {
+  let (d, m, l) = tones
+  let y0 = points[0][0].to_long()
+  let y1 = points[points.size() - 1][0].to_long()
+  for y in y0..=y1 {
+    let half = profile(points, y)
+    for x in (cx - half).to_long()..=(cx + half).to_long() {
+      let u = Math.abs(x - cx) / Math.max(1.0, half)
+      cond {
+        u > 0.92 => c.set(x, y, d),
+        u > 0.78 => c.mix(x, y, m, d, (u - 0.78) / 0.14),
+        y <
+          y0 +
+            top_light => c.mix(
+          x,
+          y,
+          l,
+          m,
+          (y - y0).to_float() / top_light * 0.8 + u * 0.4,
+        ),
+        _ => c.set(x, y, m),
+      }
+    }
+  }
+}
+
+# Glass inside a cabin profile, `inset` cells in from the pillars: dark tint
+# with a lighter band low down and two highlight strokes upper left.
+fn glass(c, cx, points, inset) {
+  let y0 = points[0][0].to_long() + inset
+  let y1 = points[points.size() - 1][0].to_long() - inset
+  for y in y0..=y1 {
+    let half = profile(points, y) - inset - 1
+    continue if half < 1
+    let t = (y - y0).to_float() / Math.max(1, y1 - y0)
+    for x in (cx - half).to_long()..=(cx + half).to_long() {
+      c.set(x, y, t > 0.7 ? "GLASS1" : "GLASS0")
+    }
+  }
+  let hw = profile(points, y0 + 2)
+  c.line(cx - hw * 0.55, y1 - 1, cx - hw * 0.2, y0 + 1, "GLASS2", 1)
+  c.line(cx - hw * 0.75, y1 - 1, cx - hw * 0.45, y0 + 2, "GLASS2", 1)
+}
+
+fn plate(c, cx, y, pw) {
+  c.rect(cx - pw / 2.0, y, pw, 4, "PLATE")
+  for x in (cx - pw / 2.0 + 2).to_long()..(cx + pw / 2.0 - 2).to_long() by 2 {
+    c.set(x, y + 2, "INK")
+  }
+}
+
+# A pair of tail lamps that follow the body's curve: each row starts at the
+# flank, so a lamp wraps round the corner the way the profile does. The
+# lower part is the red lens, the top the lit strip, the inner end amber.
+fn wrap_lamps(c, cx, body, y, lamp_h, lw) {
+  for i in 0..lamp_h {
+    let half = profile(body, y + i) - 2
+    for (x0, dir) in [(cx - half, 1), (cx + half - lw, 1)] {
+      c.rect(x0, y + i, lw, 1, i < 2 ? "LAMP_RL" : "LAMP_R")
+      let amber = x0 < cx ? x0 + lw - 2 : x0
+      c.rect(amber, y + i, 2, 1, "LAMP_A") if i >= 1
+    }
+  }
+}
+
+# Two riders in an open cabin: seats, shoulders, heads with hair.
+fn riders(c, cx, top, spacing) {
+  for (
+    dx,
+    hair,
+    shirt,
+  ) in [(-spacing, "HAIR_BROWN", "SHIRT_A"), (spacing, "HAIR_BLOND", "SHIRT_B")] {
+    let x = cx + dx
+    c.rect(x - 6, top + 7, 12, 6, "TYRE1")   # seat back
+    c.rect(x - 5, top + 5, 10, 4, shirt)     # shoulders
+    c.circle(x, top + 3, 3.4, "SKIN")        # head
+    c.ellipse(x, top + 1.5, 3.6, 2.2, hair)  # hair
+    c.rect(x - 4, top + 1, 8, 1, hair)
+    c.set(x + (hair == "HAIR_BLOND" ? 3 : -3), top + 4, hair)
+  }
+}
+
+# The player's car, after the mid-engined coupés of the early nineties: low
+# and wide, a slim glass canopy over a broad tail, a lamp bar the width of
+# the car under a lip spoiler, a black lower bumper. The roof is off, so the
+# two riders sit up through the canopy. `hill` adds rows to the tail and
+# moves everything above it down with them.
+fn draw_sports_car(c, w, h, steer, hill) {
+  let cx = w / 2.0
+  let floor = h - 1
+  let top = 3 + hill
+  let deck = 17 + hill
+  wheels(c, w, floor, 13, 15, 0)
+  let body = [
+    [deck, w * 0.40],
+    [deck + 2, w * 0.47],
+    [deck + 6, w * 0.5],
+    [floor - 8, w * 0.5],
+    [floor - 4, w * 0.48],
+    [floor - 2, w * 0.44],
+  ]
+  shell(c, cx, body, ("RED0", "RED1", "RED2"), 3)
+  # The lip spoiler along the deck's trailing edge, the lamp bar under it.
+  c.rect(cx - w * 0.42, deck - 1, w * 0.84, 2, "RED0")
+  c.rect(cx - w * 0.40, deck - 2, w * 0.80, 1, "RED2")
+  let bar_y = deck + 3
+  let bar_half = profile(body, bar_y) - 2
+  c.rect(cx - bar_half, bar_y, bar_half * 2, 5, "LAMP_R")
+  c.rect(cx - bar_half + 1, bar_y, bar_half * 2 - 2, 2, "LAMP_RL")
+  for (
+    x,
+    y,
+  ) in [(cx - bar_half, bar_y), (cx + bar_half - 1, bar_y), (cx - bar_half, bar_y + 4), (cx + bar_half - 1, bar_y + 4)] {
+    c.set(x, y, "RED1")
+  }
+  for x in (cx - bar_half + 7).to_long()..(cx + bar_half).to_long() by 8 {
+    c.rect(x, bar_y, 1, 5, "INK")
+  }
+  # The black lower bumper, darkening toward the ground, with the plate and
+  # the pipes.
+  let low = floor - 9
+  for y in low..floor - 1 {
+    let half = profile(body, y) - 1
+    for x in (cx - half).to_long()..=(cx + half).to_long() {
+      c.mix(x, y, "TYRE1", "TYRE0", (y - low).to_float() / (floor - 1 - low))
+    }
+  }
+  plate(c, cx, low + 2, 14)
+  for ex in [cx - w * 0.3, cx + w * 0.3 - 6] {
+    c.rect(ex, floor - 4, 6, 2, "CHROME")  # exhausts
+    c.rect(ex + 1, floor - 4, 4, 1, "TYRE1")
+  }
+  # The canopy: pillars in body colour, glass between, the riders through it.
+  let canopy = [
+    [top, w * 0.2],
+    [top + 3, w * 0.3],
+    [top + 8, w * 0.35],
+    [deck, w * 0.39],
+  ]
+  shell(c, cx, canopy, ("RED0", "RED1", "RED2"), 0)
+  glass(c, cx, canopy, 2)
+  c.rect(cx - w * 0.2, top, w * 0.4, 1, "INK")  # the roof hoop
+  riders(c, cx, top, 8)
+  c.ellipse(cx - w * 0.43, top + 8, 3, 2, "RED1")  # mirrors
+  c.ellipse(cx + w * 0.43, top + 8, 3, 2, "RED1")
+  c.outline()
+  c.shear(deck, -steer * 0.2) if steer != 0
+  ground_shadow(c, w / 2, floor, w * 0.48, 1)
+}
+
+# Traffic: hardtops of four silhouettes, each a cabin profile over a body
+# profile. The proportions are fractions of the box, so an 80x56 coupe and
+# an 88x55 pickup share the routine.
+fn draw_hardtop(c, w, h, kind, body, seed) {
+  let (d, m, l) = body
+  let cx = w / 2.0
+  let floor = h - 1
+  let roof = (h * 0.06).to_long()
+  let deck = (h * cond {
+    kind == "beetle" => 0.46,
+    kind == "pickup" => 0.32,
+    _ => 0.42,
+  }).to_long()
+  wheels(
+    c,
+    w,
+    floor,
+    Math.max(9, (w * 0.14).to_long()),
+    (h * 0.24).to_long(),
+    1,
+  )
+  # The lower body: shoulders that swell over the wheels, tucking in at the sill.
+  let lower = match kind {
+    "sedan" => [
+      [deck, w * 0.43],
+      [deck + 3, w * 0.485],
+      [deck + 9, w * 0.495],
+      [floor - 9, w * 0.49],
+      [floor - 5, w * 0.46],
+      [floor - 2, w * 0.4],
+    ],
+    "beetle" => [
+      [deck, w * 0.36],
+      [deck + 3, w * 0.44],
+      [deck + 8, w * 0.48],
+      [floor - 9, w * 0.485],
+      [floor - 5, w * 0.45],
+      [floor - 2, w * 0.38],
+    ],
+    _ => [
+      [deck, w * 0.40],
+      [deck + 3, w * 0.47],
+      [deck + 8, w * 0.49],
+      [floor - 9, w * 0.485],
+      [floor - 5, w * 0.46],
+      [floor - 2, w * 0.4],
+    ],
+  }
+  # The cabin: a fastback for the coupe, a dome for the beetle, a notchback
+  # otherwise.
+  let cabin = match kind {
+    "coupe" => [
+      [roof, w * 0.2],
+      [roof + 2, w * 0.3],
+      [roof + 6, w * 0.35],
+      [deck, w * 0.41],
+    ],
+    "beetle" => [
+      [roof, w * 0.05],
+      [roof + 3, w * 0.22],
+      [roof + 8, w * 0.31],
+      [deck, w * 0.36],
+    ],
+    "pickup" => [
+      [roof, w * 0.22],
+      [roof + 2, w * 0.29],
+      [roof + 5, w * 0.31],
+      [deck, w * 0.32],
+    ],
+    _ => [
+      [roof, w * 0.27],
+      [roof + 2, w * 0.34],
+      [roof + 6, w * 0.37],
+      [deck, w * 0.41],
+    ],
+  }
+  shell(c, cx, cabin, body, 3)
+  glass(c, cx, cabin, kind == "beetle" ? 4 : 3)
+  shell(c, cx, lower, body, kind == "pickup" ? 2 : 4)
+  let crease = deck + (h * 0.1).to_long()
+  if kind == "pickup" {
+    # The bed: its rim, the dark inside, and a tailgate with a handle.
+    c.rect(
+      cx - profile(lower, deck + 1) + 2,
+      deck + 1,
+      profile(lower, deck + 1) * 2 - 4,
+      crease - deck - 1,
+      d,
+    )
+    c.rect(
+      cx - profile(lower, deck) + 1,
+      deck,
+      profile(lower, deck) * 2 - 2,
+      1,
+      l,
+    )
+    c.rect(cx - 4, crease + 2, 8, 2, "CHROME")
+  } else {
+    c.rect(
+      cx - profile(lower, crease) + 2,
+      crease,
+      profile(lower, crease) * 2 - 4,
+      1,
+      d,
+    )
+  }
+  c.rect(
+    cx - profile(lower, floor - 4) + 1,
+    floor - 5,
+    profile(lower, floor - 4) * 2 - 2,
+    3,
+    kind == "beetle" ? "CHROME" : d,
+  )
+  match kind {
+    "beetle" => {
+      for sx in [cx - w * 0.36, cx + w * 0.36] {
+        c.ellipse(sx, crease + 5, 3.5, 3.5, "LAMP_R")
+        c.ellipse(sx, crease + 4, 2, 1.5, "LAMP_RL")
+      }
+      for y in crease + 2..crease + 10 by 2 {
+        c.rect(cx - 9, y, 18, 1, d)  # engine-lid slats
+      }
+      plate(c, cx, floor - 10, 12)
+    },
+    "sedan" => {
+      wrap_lamps(c, cx, lower, crease + 2, 5, (w * 0.28).to_long())
+      c.rect(cx - w * 0.2, crease + 4, w * 0.4, 1, "CHROME")  # the strip that joins them
+      plate(c, cx, floor - 10, 14)
+    },
+    "pickup" => {
+      for sx in [cx - profile(lower, crease + 2) + 2, cx + profile(lower, crease + 2) - 6] {
+        c.rect(sx, crease + 1, 4, 10, "LAMP_R")
+        c.rect(sx, crease + 1, 4, 3, "LAMP_RL")
+      }
+      plate(c, cx, floor - 10, 12)
+    },
+    _ => {
+      wrap_lamps(c, cx, lower, crease + 2, 5, (w * 0.22).to_long())
+      plate(c, cx, floor - 10, 14)
+    },
+  }
+  let my = roof + (deck - roof) * 0.72
+  c.ellipse(cx - profile(cabin, my) - 3, my, 3, 1.6, m)  # mirrors
+  c.ellipse(cx + profile(cabin, my) + 3, my, 3, 1.6, m)
+  c.rect(cx + w * 0.22, floor - 2, 5, 2, "CHROME") if kind != "beetle"  # exhaust
+  c.outline()
+  ground_shadow(c, w / 2, floor, w * 0.46, 1)
+}
+
+# A box body on twin wheels — the truck, and the trailer of the semi. The
+# box carries a stripe and a name; the doors meet at a seam down the middle.
+fn draw_box_truck(c, w, h, seed, name, band) {
+  let floor = h - 2
+  let box_x = (w * 0.05).to_long()
+  let box_w = w - box_x * 2
+  let box_top = 2
+  let box_bottom = floor - (h * 0.16).to_long()
+  let tw = Math.max(8, (w * 0.12).to_long())
+  wheels(c, w, floor, tw, (h * 0.13).to_long(), box_x + 2)
+  wheels(c, w, floor, tw, (h * 0.13).to_long(), box_x + 2 + tw + 1)
+  c.rect(box_x, box_top, box_w, box_bottom - box_top, "WHITE1")
+  c.rect(box_x, box_top, box_w, 2, "WHITE2")
+  c.rect(box_x, box_top, 2, box_bottom - box_top, "WHITE2")
+  c.dither(
+    box_x + box_w - 4,
+    box_top,
+    4,
+    box_bottom - box_top,
+    "WHITE0",
+    "WHITE1",
+  )
+  c.dither(box_x, box_bottom - 5, box_w, 5, "WHITE0", "WHITE1")
+  let band_y = box_top + ((box_bottom - box_top) * 0.42).to_long()
+  let band_h = Math.max(6, ((box_bottom - box_top) * 0.22).to_long())
+  c.rect(box_x, band_y, box_w, band_h, band)
+  c.rect(box_x, band_y + band_h, box_w, 1, "INK")
+  let s = fit_scale([(name, "")], box_w - 8, band_h - 2)
+  c.text(
+    name,
+    w / 2 - Canvas.text_width(name, s) / 2,
+    band_y + (band_h - 8 * s) / 2,
+    "WHITE2",
+    s,
+  )
+  c.rect(w / 2, box_top, 1, box_bottom - box_top, "WHITE0")  # door seam
+  for y in [box_top + 6, box_bottom - 8] {
+    c.rect(w / 2 - 4, y, 3, 3, "TYRE1")
+    c.rect(w / 2 + 2, y, 3, 3, "TYRE1")
+  }
+  c.rect(box_x, box_bottom, box_w, 3, "TYRE1")  # sill
+  for x in box_x..box_x + box_w by 6 {
+    c.rect(x, box_bottom, 3, 3, "P_YELLOW")
+  }
+  c.rect(box_x + 2, box_bottom + 4, box_w - 4, 3, "TYRE0")  # underride bar
+  for lx in [box_x + 2, box_x + box_w - 8] {
+    c.rect(lx, box_bottom + 4, 6, 3, "LAMP_R")
+    c.rect(lx, box_bottom + 4, 6, 1, "LAMP_RL")
+  }
+  c.rect(w / 2 - 6, box_bottom + 4, 12, 3, "PLATE")
+  for tx in [box_x, box_x + box_w - tw - 2] {
+    c.rect(tx, box_bottom + 7, tw + 2, (h * 0.07).to_long(), "TYRE1")  # mudflaps
+  }
+  c.outline()
+  ground_shadow(c, w / 2, floor + 1, w * 0.48, 1)
+}
+
+# Which routine draws what. One table, so adding a sprite is one line.
+mut DRAW = {
+  CAR01: |c, w, h| draw_hardtop(
+    c,
+    w,
+    h,
+    "coupe",
+    ("BLUE0", "BLUE1", "BLUE2"),
+    1,
+  ),
+  CAR02: |c, w, h| draw_hardtop(
+    c,
+    w,
+    h,
+    "beetle",
+    ("YELLOW0", "YELLOW1", "YELLOW2"),
+    2,
+  ),
+  CAR03: |c, w, h| draw_hardtop(
+    c,
+    w,
+    h,
+    "pickup",
+    ("GREEN0", "GREEN1", "GREEN2"),
+    3,
+  ),
+  CAR04: |c, w, h| draw_hardtop(
+    c,
+    w,
+    h,
+    "sedan",
+    ("WHITE0", "WHITE1", "WHITE2"),
+    4,
+  ),
+  TRUCK: |c, w, h| draw_box_truck(c, w, h, 5, "FRESH", "P_GREEN"),
+  SEMI: |c, w, h| draw_box_truck(c, w, h, 6, "CULEBRA", "P_BLUE"),
+  PLAYER_STRAIGHT: |c, w, h| draw_sports_car(c, w, h, 0, 0),
+  PLAYER_LEFT: |c, w, h| draw_sports_car(c, w, h, -1, 0),
+  PLAYER_RIGHT: |c, w, h| draw_sports_car(c, w, h, 1, 0),
+  PLAYER_UPHILL_STRAIGHT: |c, w, h| draw_sports_car(c, w, h, 0, 4),
+  PLAYER_UPHILL_LEFT: |c, w, h| draw_sports_car(c, w, h, -1, 4),
+  PLAYER_UPHILL_RIGHT: |c, w, h| draw_sports_car(c, w, h, 1, 4),
+  TREE1: |c, w, h| draw_birch(c, w, h, 20),
+  TREE2: |c, w, h| draw_cherry(c, w, h, 21),
+  DEAD_TREE1: |c, w, h| draw_dead_tree(c, w, h, 22),
+  DEAD_TREE2: |c, w, h| draw_dead_tree(c, w, h, 23),
+  PALM_TREE: |c, w, h| draw_palm_sprite(c, w, h, 24),
+  BUSH1: |c, w, h| draw_bush(c, w, h, 25),
+  BUSH2: |c, w, h| draw_bush(c, w, h, 26, true),
+  CACTUS: |c, w, h| draw_cactus(c, w, h, 27),
+  STUMP: |c, w, h| draw_stump(c, w, h, 28),
+  BOULDER1: |c, w, h| draw_boulder(c, w, h, 29),
+  BOULDER2: |c, w, h| draw_boulder(c, w, h, 30),
+  BOULDER3: |c, w, h| draw_boulder(c, w, h, 31),
+  COLUMN: |c, w, h| draw_column(c, w, h, 32),
+}
+for i in 1..10 {
+  DRAW["BILLBOARD{i:02}"] = |c, w, h| draw_billboard(
+    c,
+    w,
+    h,
+    40 + i,
+    POSTERS[i - 1],
+  )
+}
+
+# One sheet. Sprites are not recoloured per scene (only the backgrounds are),
+# so the sheet is baked with the day palette.
+fn build_sprites() {
+  mut img = KeyImage(atlas.SPRITE_W, atlas.SPRITE_H)
+  let missing = atlas.SPRITES.keys().filter(|n| !DRAW.has(n))
+  if !missing.empty() {
+    throw {
+      kind: "ValueError",
+      message: "no draw routine for {missing.sorted()}",
+    }
+  }
+  for name, r in atlas.SPRITES {
+    let [x, y, w, h] = r
+    let s = cell_scale(w, h)
+    let cw = (w + s - 1) / s  # ceil, then crop back to w x h
+    let ch = (h + s - 1) / s
+    mut cells = Cells(cw, ch)
+    DRAW[name](cells, cw, ch)
+    img.blit_cells(cells, x, y, w, h, s)
+  }
+  img
+}
+
+# --- main --------------------------------------------------------------------
+let outdir = !Sys.argv.empty()
+  ? Sys.argv[0]
+  : FS.join(FS.dirname(FS.dirname(Sys.script)), "assets")
+let what = Sys.argv.get(1, "all")
+FS.mkdir(outdir)
+Canvas.init(1, 1)
+mut written = []
+
+if what != "sprites" {
+  let bg = build_background()
+  for (name, scene) in SCENES {
+    let path = FS.join(outdir, "background_{name}.png")
+    let png = Canvas
+      .Sprite(bg.k, bg.w, bg.h, palette_colors(scene))
+      .to_png()
+    FS.write(path, png)
+    written.push((path, png.size()))
+  }
+}
+
+if what != "backgrounds" {
+  let sp = build_sprites()
+  let sprite_path = FS.join(outdir, "sprites.png")
+  let sprite_png = Canvas
+    .Sprite(sp.k, sp.w, sp.h, palette_colors(HIRU))
+    .to_png()
+  FS.write(sprite_path, sprite_png)
+  written.push((sprite_path, sprite_png.size()))
+}
+
+for (path, n) in written {
+  println("{FS.basename(path):<28} {n:>8} bytes")
+}
+
+# The road-side colours retro-run.cul lerps between, in its SCENE_COLORS
+# order: grass dark/light, road dark/light, rumble dark/light, fog, sky.
+println()
+println("SCENE_COLORS for retro-run.cul:")
+for (name, scene) in SCENES {
+  let pal = {...COMMON, ...scene}
+  let row = [
+    "GRASS_D",
+    "GRASS_L",
+    "ROAD_D",
+    "ROAD_L",
+    "RUMBLE_D",
+    "RUMBLE_L",
+    "FOG",
+    "SKY0",
+  ].flat_map(|k| pal[k])
+  println("  # {name}")
+  println("  [{row.slice(0, 12).join(", ")},")
+  println("   {row.slice(12, 24).join(", ")}],")
+}

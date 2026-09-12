@@ -38,16 +38,7 @@
         { "title": "Tensors on the GPU", "path": "examples/tensor/tensors_gpu.cul" },
         {
           "title": "Canvas: MNIST digits",
-          "path": "examples/tensor/mnist/mnist.cul",
-          "assets": [
-            "examples/tensor/mnist/weights/w1.csv",
-            "examples/tensor/mnist/weights/b1.csv",
-            "examples/tensor/mnist/weights/w2.csv",
-            "examples/tensor/mnist/weights/b2.csv",
-            "examples/tensor/mnist/weights/w3.csv",
-            "examples/tensor/mnist/weights/b3.csv",
-            "examples/tensor/mnist/assets/Inter-SemiBold-subset.ttf"
-          ]
+          "path": "examples/tensor/mnist/mnist.cul"
         }
       ]
     },
@@ -60,13 +51,6 @@
         {
           "title": "Canvas: Retro Run",
           "path": "examples/games/retro-run/retro-run.cul",
-          "assets": [
-            "examples/games/retro-run/assets/sprites.png",
-            "examples/games/retro-run/assets/background_asayake.png",
-            "examples/games/retro-run/assets/background_hiru.png",
-            "examples/games/retro-run/assets/background_yuugure.png",
-            "examples/games/retro-run/assets/background_twilight.png"
-          ],
           "args": ["--cars", "200", "300"]
         }
       ]

@@ -417,6 +417,11 @@ jobs:
       - name: Round-trip the Playground share-link codec
         run: node tools/playground/share_link_test.mjs
 
+      # ?src= URL forms, the file list a repo tree contributes, and the file
+      # lists copy-frontend.sh derived for the catalog.
+      - name: Check the Playground project model
+        run: node tools/playground/project_test.mjs
+
   # The macOS leg of what used to be a two-OS test matrix, unchanged in what
   # it runs: the clean-env build + the SKIP_HEAVY `_run-tests all` sweep +
   # the macOS-only smokes. The test suite's heavy phases (the generated

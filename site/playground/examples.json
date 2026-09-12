@@ -3,50 +3,125 @@
     {
       "name": "Basics",
       "examples": [
-        { "title": "Hello", "path": "examples/basics/greeting.cul" },
-        { "title": "Functions & closures", "path": "examples/basics/closures.cul" },
-        { "title": "Classes & traits", "path": "examples/basics/classes.cul" },
-        { "title": "Control flow", "path": "examples/basics/flow.cul" },
-        { "title": "Pattern matching", "path": "examples/basics/match.cul" },
-        { "title": "Generators", "path": "examples/basics/generators.cul" },
-        { "title": "Iterators", "path": "examples/basics/iterator.cul" },
-        { "title": "Strings", "path": "examples/basics/string.cul" },
-        { "title": "Arrays", "path": "examples/basics/array.cul" },
-        { "title": "Algebraic effects", "path": "examples/basics/effects.cul" },
-        { "title": "Error handling", "path": "examples/basics/error_handling.cul" }
+        {
+          "title": "Hello",
+          "path": "examples/basics/greeting.cul",
+          "assets": []
+        },
+        {
+          "title": "Functions & closures",
+          "path": "examples/basics/closures.cul",
+          "assets": []
+        },
+        {
+          "title": "Classes & traits",
+          "path": "examples/basics/classes.cul",
+          "assets": []
+        },
+        {
+          "title": "Control flow",
+          "path": "examples/basics/flow.cul",
+          "assets": []
+        },
+        {
+          "title": "Pattern matching",
+          "path": "examples/basics/match.cul",
+          "assets": []
+        },
+        {
+          "title": "Generators",
+          "path": "examples/basics/generators.cul",
+          "assets": []
+        },
+        {
+          "title": "Iterators",
+          "path": "examples/basics/iterator.cul",
+          "assets": []
+        },
+        {
+          "title": "Strings",
+          "path": "examples/basics/string.cul",
+          "assets": []
+        },
+        {
+          "title": "Arrays",
+          "path": "examples/basics/array.cul",
+          "assets": []
+        },
+        {
+          "title": "Algebraic effects",
+          "path": "examples/basics/effects.cul",
+          "assets": []
+        },
+        {
+          "title": "Error handling",
+          "path": "examples/basics/error_handling.cul",
+          "assets": []
+        }
       ]
     },
     {
       "name": "Parsing",
       "examples": [
-        { "title": "Choice actions", "path": "examples/peg/calc_choice.cul" },
-        { "title": "Parse to a tree", "path": "examples/peg/calc_tree.cul" },
-        { "title": "Operator precedence", "path": "examples/peg/calc_precedence.cul" }
+        {
+          "title": "Choice actions",
+          "path": "examples/peg/calc_choice.cul",
+          "assets": []
+        },
+        {
+          "title": "Parse to a tree",
+          "path": "examples/peg/calc_tree.cul",
+          "assets": []
+        },
+        {
+          "title": "Operator precedence",
+          "path": "examples/peg/calc_precedence.cul",
+          "assets": []
+        }
       ]
     },
     {
       "name": "State Machine",
       "examples": [
-        { "title": "Vending machine", "path": "examples/state-machine/vending.cul" },
-        { "title": "Nested states", "path": "examples/state-machine/media_player.cul" }
+        {
+          "title": "Vending machine",
+          "path": "examples/state-machine/vending.cul",
+          "assets": []
+        },
+        {
+          "title": "Nested states",
+          "path": "examples/state-machine/media_player.cul",
+          "assets": []
+        }
       ]
     },
     {
       "name": "Tensor",
       "examples": [
-        { "title": "Tensors", "path": "examples/tensor/tensors.cul" },
-        { "title": "Tensors on the GPU", "path": "examples/tensor/tensors_gpu.cul" },
+        {
+          "title": "Tensors",
+          "path": "examples/tensor/tensors.cul",
+          "assets": []
+        },
+        {
+          "title": "Tensors on the GPU",
+          "path": "examples/tensor/tensors_gpu.cul",
+          "assets": []
+        },
         {
           "title": "Canvas: MNIST digits",
           "path": "examples/tensor/mnist/mnist.cul",
           "assets": [
-            "examples/tensor/mnist/weights/w1.csv",
+            "examples/tensor/mnist/README.md",
+            "examples/tensor/mnist/assets/Inter-SemiBold-subset.ttf",
+            "examples/tensor/mnist/assets/OFL.txt",
+            "examples/tensor/mnist/train.cul",
             "examples/tensor/mnist/weights/b1.csv",
-            "examples/tensor/mnist/weights/w2.csv",
             "examples/tensor/mnist/weights/b2.csv",
-            "examples/tensor/mnist/weights/w3.csv",
             "examples/tensor/mnist/weights/b3.csv",
-            "examples/tensor/mnist/assets/Inter-SemiBold-subset.ttf"
+            "examples/tensor/mnist/weights/w1.csv",
+            "examples/tensor/mnist/weights/w2.csv",
+            "examples/tensor/mnist/weights/w3.csv"
           ]
         }
       ]
@@ -54,28 +129,60 @@
     {
       "name": "Games",
       "examples": [
-        { "title": "TUI: Same Game", "path": "examples/games/samegame.cul" },
-        { "title": "Canvas: Rocci Bird", "path": "examples/games/rocci-bird.cul" },
-        { "title": "Canvas: Sokoban", "path": "examples/games/sokoban.cul" },
+        {
+          "title": "TUI: Same Game",
+          "path": "examples/games/samegame.cul",
+          "assets": []
+        },
+        {
+          "title": "Canvas: Rocci Bird",
+          "path": "examples/games/rocci-bird.cul",
+          "assets": []
+        },
+        {
+          "title": "Canvas: Sokoban",
+          "path": "examples/games/sokoban.cul",
+          "assets": []
+        },
         {
           "title": "Canvas: Retro Run",
           "path": "examples/games/retro-run/retro-run.cul",
+          "args": [
+            "--cars",
+            "200",
+            "300"
+          ],
           "assets": [
-            "examples/games/retro-run/assets/sprites.png",
+            "examples/games/retro-run/README.md",
+            "examples/games/retro-run/assets/README.md",
+            "examples/games/retro-run/assets/background-template.png",
             "examples/games/retro-run/assets/background_asayake.png",
             "examples/games/retro-run/assets/background_hiru.png",
+            "examples/games/retro-run/assets/background_twilight.png",
             "examples/games/retro-run/assets/background_yuugure.png",
-            "examples/games/retro-run/assets/background_twilight.png"
-          ],
-          "args": ["--cars", "200", "300"]
+            "examples/games/retro-run/assets/sprites-template.png",
+            "examples/games/retro-run/assets/sprites.png",
+            "examples/games/retro-run/tools/atlas.cul",
+            "examples/games/retro-run/tools/check_assets.cul",
+            "examples/games/retro-run/tools/gen_assets.cul",
+            "examples/games/retro-run/tools/gen_templates.cul"
+          ]
         }
       ]
     },
     {
       "name": "Graphics",
       "examples": [
-        { "title": "Canvas: Perlin Noise", "path": "examples/graphics/perlin_noise.cul" },
-        { "title": "Canvas: Sierpinski", "path": "examples/graphics/sierpinski.cul" }
+        {
+          "title": "Canvas: Perlin Noise",
+          "path": "examples/graphics/perlin_noise.cul",
+          "assets": []
+        },
+        {
+          "title": "Canvas: Sierpinski",
+          "path": "examples/graphics/sierpinski.cul",
+          "assets": []
+        }
       ]
     }
   ]

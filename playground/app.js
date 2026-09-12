@@ -3,6 +3,7 @@
 // the Output/TUI tabs.
 import { createEditor } from "./editor.js";
 import { encodeShareParam, decodeShareParam } from "./share-link.js";
+import { parseSourceUrl, projectFiles, cdnBase, treeUrl } from "./project.js";
 import { Terminal } from "https://esm.sh/@xterm/xterm@5.5.0";
 
 const $ = (id) => document.getElementById(id);
@@ -215,22 +216,27 @@ function routeOutput(text) {
   }
 }
 
-// --- examples ---------------------------------------------------------------
+// --- examples and projects ---------------------------------------------------
 //
-// examples.json lists {title, path, assets?} per category. `assets` is every
-// extra file the program needs beside its entry source — imported modules as
-// well as data — since both are just files it opens at run time. `path` and
-// each entry of `assets` double as the fetch URL (relative to this file) and,
-// at build time, the repo-root source path build.sh copies from — one list, so
-// the copy and the fetch cannot drift. The worker mirrors them into its
-// in-memory filesystem under the same relative paths before the program runs.
+// examples.json lists {title, path, args?} per category; copy-frontend.sh
+// fills each entry's `assets` (the <name>/<name>.cul rule lives there), so no
+// file is named by hand. Paths stay repo-relative, which is what lets an
+// example's source run here byte-identical to the checkout.
+//
+// A project is what the editor's text runs beside, wherever it came from:
+//   base:   fetch prefix — "./" for the catalog, a CDN prefix for a ?src= repo
+//   entry:  repo-relative path of the entry source (its Sys.script)
+//   files:  repo-relative paths fetched alongside, the entry excluded
+//   args:   the arguments it was tuned with
+//   example | src: how a link names it again (the Share button)
 
-let EXAMPLE_CATALOG = [];  // [{name, examples: [{title, path, assets?, args?}]}]
-let EXAMPLE_PATHS = {};    // title -> path
-let EXAMPLE_ASSETS = {};   // title -> [path]
-let EXAMPLE_ARGS = {};     // title -> [arg], the program's Sys.argv here
-let EXAMPLE_CATEGORY = {}; // title -> category name
-let currentExample = null;
+let EXAMPLE_CATALOG = [];  // [{name, examples: [{title, path, assets, args?}]}]
+let EXAMPLES = {};         // title -> {path, assets, args, category}
+// Until something is loaded (a draft, a shared snippet naming no project) the
+// text runs alone as main.cul.
+const NO_PROJECT = { base: "./", entry: "main.cul", files: [], args: [] };
+let project = NO_PROJECT;
+let projectSource = null;  // the entry text as fetched, so Share can tell an edit
 
 async function loadExampleCatalog() {
   const res = await fetch("./examples.json");
@@ -241,10 +247,7 @@ async function loadExampleCatalog() {
     opt.textContent = category.name;
     exampleCatSel.appendChild(opt);
     for (const example of category.examples) {
-      EXAMPLE_PATHS[example.title] = example.path;
-      EXAMPLE_ASSETS[example.title] = example.assets || [];
-      EXAMPLE_ARGS[example.title] = (example.args || []).map(String);
-      EXAMPLE_CATEGORY[example.title] = category.name;
+      EXAMPLES[example.title] = { ...example, args: (example.args || []).map(String), category: category.name };
     }
   }
   exampleItemSel.disabled = false;
@@ -268,23 +271,48 @@ function populateExampleItems(categoryName) {
 
 // Points both selects at `title` — the category select, and the item select
 // after populateExampleItems() rebuilds it for that category — without
-// loading it into the editor. Callers that also want it loaded (boot, for a
-// `?example=` match) call loadExample() themselves once they have it synced.
+// loading it into the editor; useProject() does that and calls this.
 function selectExample(title) {
-  const category = EXAMPLE_CATEGORY[title];
+  const { category } = EXAMPLES[title];
   exampleCatSel.value = category;
   populateExampleItems(category);
   exampleItemSel.value = title;
 }
 
-async function loadExample(title) {
-  currentExample = title;
-  // Show the example's own arguments rather than applying them invisibly: an
-  // example tuned for this host (Retro Run asks for fewer cars and a shorter
-  // draw distance) should say so, and stay editable from there.
-  argsInput.value = formatArgs(EXAMPLE_ARGS[title] || []);
-  const res = await fetch(EXAMPLE_PATHS[title]);
-  return res.text();
+function catalogProject(title) {
+  const e = EXAMPLES[title];
+  return { base: "./", entry: e.path, files: e.assets || [], args: e.args, example: title };
+}
+
+// A `.cul` on GitHub brings its directory (project.js has the forms and the
+// caps); a file anywhere else comes alone.
+async function loadExternalProject(text) {
+  const src = parseSourceUrl(text);
+  if (src.url) {
+    const cut = src.url.lastIndexOf("/") + 1;
+    return { base: src.url.slice(0, cut), entry: src.url.slice(cut), files: [], args: [], src: src.url };
+  }
+  const res = await fetch(treeUrl(src.owner, src.repo, src.ref));
+  if (!res.ok) throw new Error(`${src.owner}/${src.repo}@${src.ref}: HTTP ${res.status} listing the repository`);
+  const base = cdnBase(src.owner, src.repo, src.ref);
+  return { base, entry: src.path, files: projectFiles(await res.json(), src.path), args: [], src: base + src.path };
+}
+
+// Makes `p` the project and returns the text to show: `text` when the link
+// carried its own, else the entry source. The example picker follows a
+// catalog project. The argument box shows the project's own arguments rather
+// than applying them invisibly: an example tuned for this host (Retro Run
+// asks for fewer cars and a shorter draw distance) should say so, and stay
+// editable from there.
+async function useProject(p, text = null) {
+  project = p;
+  if (p.example) selectExample(p.example);
+  argsInput.value = formatArgs(p.args);
+  if (text !== null) return text;
+  const res = await fetch(p.base + p.entry);
+  if (!res.ok) throw new Error(`${p.base}${p.entry}: HTTP ${res.status}`);
+  projectSource = await res.text();
+  return projectSource;
 }
 
 // The box holds a command line, so an argument containing a space has to
@@ -425,8 +453,9 @@ function run() {
   worker.postMessage({
     type: "run",
     src: editor.getValue(),
-    path: EXAMPLE_PATHS[currentExample] || "main.cul",
-    assets: EXAMPLE_ASSETS[currentExample] || [],
+    path: project.entry,
+    base: project.base,
+    files: project.files,
     args: parseArgs(argsInput.value),
   });
 }
@@ -461,15 +490,28 @@ clearBtn.addEventListener("click", () => {
   output.textContent = "";
   output.classList.remove("err");
 });
-// The link carries the editor's text and nothing else: ?example= would lose
-// to it, ?run=1 is the host's visitor having pressed Run, and ?embed=1 /
-// ?view=canvas are the host's chrome, which a recipient is not inside. The
-// href is split rather than rebuilt from origin so a file:// checkout works.
+// The link names the project the text runs beside (?src= or ?example=), the
+// arguments when they differ from the project's own, and the text itself only
+// when it was edited — an unedited example shares as its short name. ?run=1
+// is the host's visitor having pressed Run and ?embed=1 / ?view=canvas are
+// the host's chrome, which a recipient is not inside, so neither rides along.
+// The href is split rather than rebuilt from origin so a file:// checkout
+// works.
+async function shareLink() {
+  const url = new URL(location.href.split(/[?#]/)[0]);
+  if (project.src) url.searchParams.set("src", project.src);
+  else if (project.example) url.searchParams.set("example", project.example);
+  const args = argsInput.value.trim();
+  if (args !== formatArgs(project.args)) url.searchParams.set("args", args);
+  const text = editor.getValue();
+  if (text !== projectSource) url.hash = "code=" + await encodeShareParam(text);
+  return url.href;
+}
+
 const shareBtn = $("share");
 let shareTimer = null;
 shareBtn.addEventListener("click", async () => {
-  const param = await encodeShareParam(editor.getValue());
-  const url = location.href.split(/[?#]/)[0] + "#code=" + param;
+  const url = await shareLink();
   try {
     await navigator.clipboard.writeText(url);
   } catch {
@@ -485,7 +527,7 @@ shareBtn.addEventListener("click", async () => {
   shareTimer = setTimeout(() => { shareBtn.textContent = "Share"; }, 1500);
 });
 function loadExampleIntoEditor(title) {
-  return loadExample(title).then((src) => {
+  return useProject(catalogProject(title)).then((src) => {
     editor.setValue(src);
     editor.focus();
   });
@@ -493,11 +535,11 @@ function loadExampleIntoEditor(title) {
 exampleCatSel.addEventListener("change", () => {
   populateExampleItems(exampleCatSel.value);
   const name = exampleItemSel.value;
-  if (name) loadExampleIntoEditor(name);
+  if (name) loadExampleIntoEditor(name).catch(showLoadError);
 });
 exampleItemSel.addEventListener("change", () => {
   const name = exampleItemSel.value;
-  if (name) loadExampleIntoEditor(name);
+  if (name) loadExampleIntoEditor(name).catch(showLoadError);
 });
 // Enter in a command line runs it, the way it would in a shell.
 argsInput.addEventListener("keydown", (e) => {
@@ -986,29 +1028,37 @@ gameCanvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
 // --- boot -----------------------------------------------------------------
 
-// `#code=` seeds the editor with the source as base64url, gzip-compressed or
-// not (share-link.js is how the payload says which), so a page that already
+// What the page opens comes from the URL in two independent halves.
+//
+// The project — what the text runs beside — is `?src=<url>`: a `.cul` on
+// GitHub, whose whole directory comes along through jsDelivr (project.js), or
+// on any other https host, that one file. Else `?example=<catalog title>`,
+// an examples.json entry the Playground fetches from its own copy. `?args=`
+// overrides the project's own arguments.
+//
+// The text is `#code=`, the source as base64url, gzip-compressed or not
+// (share-link.js is how the payload says which), so a page that already
 // shows a snippet can hand it over instead of keeping a second copy that
 // drifts. It rides the fragment rather than the query string because a
 // fragment never reaches the server: GitHub Pages' CDN 414s a request line
 // somewhere between 8 and 9 KB, and rocci-bird.cul is 25 KB encoded plain.
 // `?code=` is the pre-fragment spelling, still read (after the fragment) for
-// links already in the wild.
-// `?example=<catalog title>` names an `examples.json` entry instead — the
-// form for a link this repo controls, since the Playground then fetches its
-// own copy and nothing can drift from what ships in examples/.
+// links already in the wild. Without either, the text is the project's entry,
+// else the saved draft, else "Hello".
+//
 // `?run=1` starts it once the worker is up — an embed's visitor pressed Run
 // on the hosting page and should not have to press it again.
-// Precedence: code > example > saved draft > "Hello".
 const params = new URLSearchParams(location.search);
 const hashParams = new URLSearchParams(location.hash.slice(1));
 const codeParam = hashParams.get("code") ?? params.get("code");
-// Decoding may gunzip, so it starts now and joins the catalog fetch below.
+// Decoding may gunzip, so it starts now and joins the project below.
 const seeding = decodeShareParam(codeParam).catch((err) => {
   console.error("ignoring unreadable code payload", err);
   return null;
 });
+const srcParam = params.get("src");
 const exampleParam = params.get("example");
+const argsParam = params.get("args");
 let pendingAutorun = params.get("run") === "1";
 let seedApplied = false;
 
@@ -1025,38 +1075,49 @@ function maybeAutorun() {
   run();
 }
 
-Promise.all([loadExampleCatalog(), seeding])
-  .then(([, seeded]) => {
+// A link that cannot be opened says so where a run's error would go: the
+// output pane, which the next Run clears.
+function showLoadError(err) {
+  console.error(err);
+  pendingAutorun = false;   // a link that failed must not autorun something else
+  output.textContent = String(err?.message || err);
+  output.classList.add("err");
+}
+
+const catalogReady = loadExampleCatalog();
+// A ?src= or #code= page may never wait on the catalog; report its failure
+// here so it is not an unhandled rejection.
+catalogReady.catch((err) => console.error("failed to load the example catalog", err));
+// Only a catalog project waits for the catalog; a ?src= link stands on its
+// own, so a catalog that fails to load costs the picker, not the program.
+const projectReady = (srcParam !== null ? loadExternalProject(srcParam)
+  : exampleParam === null ? Promise.resolve(null)
+  : catalogReady.then(() => {
+      if (Object.prototype.hasOwnProperty.call(EXAMPLES, exampleParam)) return catalogProject(exampleParam);
+      throw new Error(`no example named ${exampleParam}`);
+    })
+).catch((err) => { showLoadError(err); return null; });
+
+Promise.all([projectReady, seeding])
+  .then(async ([p, seeded]) => {
+    if (p !== null) return useProject(p, seeded);
     if (seeded !== null) return seeded;
-    if (exampleParam === null) {
-      // A saved draft loses to ?example= but wins over the "Hello" default:
-      // a visitor who followed a link wants what the link names, not last
-      // time's edits, but one who didn't gets their own work back.
-      const draft = loadDraft();
-      if (draft !== null) return draft;
-      selectExample("Hello");
-      return loadExample("Hello");
-    }
-    if (Object.prototype.hasOwnProperty.call(EXAMPLE_PATHS, exampleParam)) {
-      selectExample(exampleParam);
-      return loadExample(exampleParam);
-    }
-    console.error("ignoring unknown ?example=", exampleParam);
-    selectExample("Hello");
-    return loadExample("Hello");
-  })
-  .catch((err) => {
-    console.error("failed to load example catalog", err);
-    // Only ?example= and the "Hello" default need the catalog; a link that
-    // carries its own source still seeds (and still autoruns) without it.
-    return seeding;
+    // A saved draft loses to a link that names something but wins over the
+    // "Hello" default: a visitor who followed a link wants what the link
+    // names, not last time's edits, but one who didn't gets their own work
+    // back.
+    const draft = loadDraft();
+    if (draft !== null) return draft;
+    await catalogReady;
+    return useProject(catalogProject("Hello"));
   })
   .then((src) => {
-    if (src === null) return;
+    if (argsParam !== null) argsInput.value = argsParam;
     editor.setValue(src);
     seedApplied = true;
     maybeAutorun();
-  });
+  })
+  .catch(showLoadError);
 // Ask the browser to keep the save directory (worker.js's IDBFS mount) out of
 // its eviction pool. Only the page can ask — a Worker has no
 // navigator.storage.persist — and a refusal costs nothing: saves still land,

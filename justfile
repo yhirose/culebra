@@ -1646,6 +1646,7 @@ site-build:
 check-playground bin="./build/culebra":
     node tools/playground/smoke.mjs {{bin}}
     node tools/playground/share_link_test.mjs
+    node tools/playground/project_test.mjs
 
 # build.sh's copy step, replayed without emsdk: the frontend files it cps,
 # the version it stamps into index.html, and the examples it mirrors, each

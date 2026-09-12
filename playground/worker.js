@@ -201,25 +201,29 @@ function writeFile(path, data) {
   mod.FS.writeFile(path, data);
 }
 
-// Fetch every extra file the catalog lists for this example and drop it where
-// the program expects it — imported modules as much as data, since the loader
-// opens both the same way. They are named repo-relative in examples.json, which
-// is also how build.sh mirrors them next to the page, so one list serves both
-// the copy at build time and the fetch here and neither can drift.
+// Fetch every file the project carries beside its entry and drop it where the
+// program expects it — imported modules as much as data, since the loader
+// opens both the same way. Paths are repo-relative and `base` is where they
+// are served from: the page's own directory for a catalog example, a CDN
+// prefix for a project loaded from GitHub (app.js's project model).
 const staged = new Set();
 
 async function stageProgram(msg) {
   const rel = msg.path || "main.cul";
   const path = MEMFS_ROOT + "/" + rel;
   writeFile(path, msg.src);          // so FS.read(Sys.script) works too
-  for (const asset of msg.assets || []) {
-    const dst = MEMFS_ROOT + "/" + asset;
-    if (staged.has(dst)) continue;   // assets are immutable; fetch each once
-    const res = await fetch("./" + asset);
-    if (!res.ok) throw new Error("asset " + asset + ": HTTP " + res.status);
-    writeFile(dst, new Uint8Array(await res.arrayBuffer()));
-    staged.add(dst);
-  }
+  // Files are immutable, so each is fetched once; the batch goes out at once
+  // rather than one round trip per file.
+  const pending = (msg.files || []).filter((file) => !staged.has(msg.base + file));
+  const bodies = await Promise.all(pending.map(async (file) => {
+    const res = await fetch(msg.base + file);
+    if (!res.ok) throw new Error("file " + file + ": HTTP " + res.status);
+    return new Uint8Array(await res.arrayBuffer());
+  }));
+  pending.forEach((file, i) => {
+    writeFile(MEMFS_ROOT + "/" + file, bodies[i]);
+    staged.add(msg.base + file);
+  });
   return path;
 }
 
