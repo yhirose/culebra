@@ -133,8 +133,8 @@ compile "culebra-full.wasm (WebGPU + TUI, JSPI)" "$OUT/culebra-full.js" \
 
 # Copy the static frontend alongside the wasm (brand.css lives in site/assets/).
 cp playground/index.html playground/app.js playground/worker.js \
-   playground/editor.js playground/culebra-lang.js playground/styles.css \
-   playground/examples.json "$OUT/"
+   playground/editor.js playground/culebra-lang.js playground/share-link.js \
+   playground/styles.css playground/examples.json "$OUT/"
 
 # Stamp the version into the copy, reading the one place that defines it. The
 # source index.html keeps the placeholder — it is never served directly, only

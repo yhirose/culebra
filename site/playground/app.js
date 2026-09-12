@@ -2,6 +2,7 @@
 // the editor, toolbar, worker lifecycle (Stop = terminate + respawn), and
 // the Output/TUI tabs.
 import { createEditor } from "./editor.js";
+import { decodeShareParam } from "./share-link.js";
 import { Terminal } from "https://esm.sh/@xterm/xterm@5.5.0";
 
 const $ = (id) => document.getElementById(id);
@@ -962,34 +963,35 @@ gameCanvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
 // --- boot -----------------------------------------------------------------
 
-// `?code=` seeds the editor with base64url-encoded source, so a page that
-// already shows a snippet can hand it over instead of keeping a second copy
-// that drifts. It's fine for the few-line Quickstart sample, but a full
-// example inlined this way can push the URL past a host's request-line limit
-// (GitHub Pages' CDN 414s past a few KB) — `?example=<catalog title>` covers
-// that case by naming a `examples.json` entry instead, so the Playground
-// fetches its own copy and the URL stays short regardless of source size.
+// `#code=` seeds the editor with the source as base64url, gzip-compressed or
+// not (share-link.js is how the payload says which), so a page that already
+// shows a snippet can hand it over instead of keeping a second copy that
+// drifts. It rides the fragment rather than the query string because a
+// fragment never reaches the server: GitHub Pages' CDN 414s a request line
+// somewhere between 8 and 9 KB, and rocci-bird.cul is 25 KB encoded plain.
+// `?code=` is the pre-fragment spelling, still read (after the fragment) for
+// links already in the wild.
+// `?example=<catalog title>` names an `examples.json` entry instead — the
+// form for a link this repo controls, since the Playground then fetches its
+// own copy and nothing can drift from what ships in examples/.
 // `?run=1` starts it once the worker is up — an embed's visitor pressed Run
 // on the hosting page and should not have to press it again.
+// Precedence: code > example > saved draft > "Hello".
 const params = new URLSearchParams(location.search);
-const seeded = decodeSource(params.get("code"));
+const hashParams = new URLSearchParams(location.hash.slice(1));
+const codeParam = hashParams.get("code") ?? params.get("code");
+// Decoding may gunzip, so it starts now and joins the catalog fetch below.
+const seeding = decodeShareParam(codeParam).catch((err) => {
+  console.error("ignoring unreadable code payload", err);
+  return null;
+});
 const exampleParam = params.get("example");
 let pendingAutorun = params.get("run") === "1";
 let seedApplied = false;
 
-function decodeSource(param) {
-  if (!param) return null;
-  try {
-    const b64 = param.replace(/-/g, "+").replace(/_/g, "/");
-    const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
-    // atob gives one char per byte; the source is UTF-8, so decode it as such.
-    const bytes = Uint8Array.from(atob(padded), (c) => c.charCodeAt(0));
-    return new TextDecoder().decode(bytes);
-  } catch (err) {
-    console.error("ignoring unreadable ?code=", err);
-    return null;
-  }
-}
+// A share link pasted into a tab already on this page changes only the
+// fragment, which is not a navigation; reload so it seeds all the same.
+addEventListener("hashchange", () => location.reload());
 
 // Both halves race: the catalog is fetched while the worker compiles. Run when
 // whichever finishes last lands — `runBtn.disabled` is the worker's own ready
@@ -1000,8 +1002,8 @@ function maybeAutorun() {
   run();
 }
 
-loadExampleCatalog()
-  .then(() => {
+Promise.all([loadExampleCatalog(), seeding])
+  .then(([, seeded]) => {
     if (seeded !== null) return seeded;
     if (exampleParam === null) {
       // A saved draft loses to ?example= but wins over the "Hello" default:
@@ -1020,12 +1022,18 @@ loadExampleCatalog()
     selectExample("Hello");
     return loadExample("Hello");
   })
+  .catch((err) => {
+    console.error("failed to load example catalog", err);
+    // Only ?example= and the "Hello" default need the catalog; a link that
+    // carries its own source still seeds (and still autoruns) without it.
+    return seeding;
+  })
   .then((src) => {
+    if (src === null) return;
     editor.setValue(src);
     seedApplied = true;
     maybeAutorun();
-  })
-  .catch((err) => console.error("failed to load example catalog", err));
+  });
 // Ask the browser to keep the save directory (worker.js's IDBFS mount) out of
 // its eviction pool. Only the page can ask — a Worker has no
 // navigator.storage.persist — and a refusal costs nothing: saves still land,
