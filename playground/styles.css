@@ -195,6 +195,10 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 }
 .pg-share-row { display: flex; align-items: center; gap: 0.6rem; font-size: 0.85rem; }
 .pg-share-label { color: var(--muted); flex: none; width: 4.2rem; }
+/* Without this the menu is open before Share is ever pressed: an author
+   stylesheet's display beats the UA stylesheet's [hidden], whatever the
+   specificity. Same reason as .pg-tab-action[hidden] and .pg-play[hidden]. */
+.pg-share-menu[hidden] { display: none; }
 .pg-share-row label { display: inline-flex; align-items: center; gap: 0.25rem; cursor: pointer; }
 /* The link itself, so the choices above are not a guess about what they do. */
 .pg-share-url {
