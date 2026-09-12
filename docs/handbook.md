@@ -1980,6 +1980,11 @@ int main() {
 }
 ```
 
+The `Runtime` and its scope are optional — without them the first use of
+the engine creates a thread-local default, which is all a single-engine
+host needs; write them to run independent engines on one thread
+([`deployment.md`](deployment.md#running-multiple-scripts-on-one-thread)).
+
 `vm::Embed` is a session: each run sees the bindings the earlier ones
 made, and the host reads them back with `embed.global` or calls them
 with `embed.call`. The standard library is installed, and so are the

@@ -302,8 +302,6 @@ via a minimal session API:
 #include <vm/embed.h>
 
 int main() {
-  culebra::Runtime rt;
-  culebra::RuntimeScope scope(rt);
   culebra::vm::Embed embed;   // stdlib installed, traits registered
 
   auto n = embed.eval("1 + 2").as<int64_t>();   // 3
@@ -316,7 +314,7 @@ an Object and an Array are references, so a write through one lands in
 the script's own value:
 
 ```cpp
-embed.define("log", [](std::string m) { std::println("{}", m); }, {"m"});
+embed.define("log", [](std::string m) { std::println("{}", m); });
 embed.eval(source);
 
 auto cfg = embed.global("config");

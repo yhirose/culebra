@@ -327,8 +327,6 @@ culebra build hello.cul -o hello &amp;&amp; ./hello  # AOT: compile once, ship t
 <span class="k">#include</span> &lt;vm/embed.h&gt;
 
 <span class="k">int</span> main() {
-  culebra::Runtime rt;
-  culebra::RuntimeScope scope(rt);
   culebra::vm::Embed embed;   <span class="c">// stdlib installed, traits registered</span>
 
   <span class="k">auto</span> n = embed.eval(<span class="s">"1 + 2"</span>).as&lt;<span class="k">int64_t</span>&gt;();   <span class="c">// 3</span>

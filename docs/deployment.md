@@ -356,6 +356,17 @@ int main() {
 }
 ```
 
+The two lines before `Embed` are optional. Left out, the first use of the
+engine creates a **thread-local default Runtime** and everything below
+works unchanged — which is why the README's example is three lines
+shorter. Write them when you want something the default cannot give you:
+more than one independent engine on one thread
+([below](#running-multiple-scripts-on-one-thread)), or a stdlib the host
+has cut down for this engine only
+([below](#per-runtime-extension-hooks)). A host that wants neither can
+forget `Runtime` exists until it starts a second thread
+([Threading](#threading)).
+
 `run_source` reports a failure as text, the same line the CLI prints.
 A host with no console to print it to takes the other entry, where the
 value is the return and a failure is the exception `call` already raises:
@@ -722,6 +733,25 @@ embed.define("log", [](std::string msg) {
 embed.define("host_add",
              [](int64_t a, int64_t b) { return a + b; }, {"a", "b"});
 ```
+
+**The parameter names are optional, and they only name the argument in
+the error.** Binding is positional either way. C++23 cannot see what a
+lambda called its parameters — neither `std::source_location` nor
+`__PRETTY_FUNCTION__` carries them, because a parameter's name is not
+part of the function's type — so a name the host does not write is one
+nothing can recover, and the message falls back to the position:
+
+```
+host_add() argument 'a': expected a Long     // defined with {"a", "b"}
+host_add() argument '_arg0': expected a Long // defined without them
+```
+
+Pass the ones a caller would recognize; leave them off where the
+position says everything (`host_neg(x)`). Naming some and not others
+works too — `{"", "b"}` names only the second. (Where names are *not*
+optional is `culebra wrap` ([§3](#3-wrapping-c-libraries-culebra-wrap)):
+a wrapped method binds keyword arguments by them, so there they carry
+meaning rather than diagnostics.)
 
 Supported argument and return types: `int64_t`, `long`, `long long`,
 `int`,

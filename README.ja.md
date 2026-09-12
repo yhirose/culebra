@@ -300,8 +300,6 @@ C++ホストへの組み込み
 #include <vm/embed.h>
 
 int main() {
-  culebra::Runtime rt;
-  culebra::RuntimeScope scope(rt);
   culebra::vm::Embed embed;   // 標準ライブラリとtraitを登録済み
 
   auto n = embed.eval("1 + 2").as<int64_t>();   // 3
@@ -313,7 +311,7 @@ int main() {
 ObjectとArrayは参照なので、そこへ書けばスクリプトが持つその値に届きます:
 
 ```cpp
-embed.define("log", [](std::string m) { std::println("{}", m); }, {"m"});
+embed.define("log", [](std::string m) { std::println("{}", m); });
 embed.eval(source);
 
 auto cfg = embed.global("config");
