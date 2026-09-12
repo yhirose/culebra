@@ -532,10 +532,11 @@ newBtn.addEventListener("click", async () => {
   editor.focus();
 });
 
-// Share opens a menu rather than copying on the spot. The link always names
-// the project the text runs beside (?src= or ?example=), the arguments when
-// they differ from the project's own, and the text itself only when it was
-// edited — an unedited example shares as its short name. What the menu adds
+// Share opens a menu rather than copying on the spot. The link names the
+// project the text runs beside (?src= or ?example=, while the page still says
+// it is on one), the arguments when they differ from the project's own, and
+// the text itself when it was edited — an unedited example shares as its
+// short name rather than as kilobytes of fragment. What the menu adds
 // is the shape of the recipient's page: how much of it (?embed=), which pane
 // (?view=), and whether it starts on its own (?run=1). Every default is the
 // plain standalone page, so an uncustomised link is as short as it ever was.
@@ -549,13 +550,29 @@ function shareChoice(name) {
   return shareMenu.querySelector(`input[name="share-${name}"]:checked`).value;
 }
 
+// A ?src= link always names where it came from; a catalog one names its
+// example only while the picker still shows it. Putting the picker back on
+// "Examples…" is how someone says the text is no longer that example, and
+// the link follows. Returns whether the link names a project at all.
+function nameProject(url) {
+  if (project.src) {
+    url.searchParams.set("src", project.src);
+    return true;
+  }
+  if (project.example && exampleItemSel.value === project.example) {
+    url.searchParams.set("example", project.example);
+    return true;
+  }
+  return false;
+}
+
 // The href is split rather than rebuilt from origin so a file:// checkout
-// works. `hash` is the already-encoded #code= payload, or "" for a link that
-// carries no text of its own.
-function buildShareLink(hash) {
+// works. `code` is the encoded payload for the editor's text; it rides along
+// when the text was edited, and always when the link names no project —
+// there would be nothing at the other end otherwise.
+function buildShareLink(code) {
   const url = new URL(location.href.split(/[?#]/)[0]);
-  if (project.src) url.searchParams.set("src", project.src);
-  else if (project.example) url.searchParams.set("example", project.example);
+  const named = nameProject(url);
   const args = argsInput.value.trim();
   if (args !== formatArgs(project.args)) url.searchParams.set("args", args);
   const embed = shareChoice("embed");
@@ -563,7 +580,7 @@ function buildShareLink(hash) {
   const view = shareChoice("view");
   if (view !== TABS[0]) url.searchParams.set("view", view);
   if (shareChoice("run")) url.searchParams.set("run", "1");
-  url.hash = hash;
+  if (!named || editor.getValue() !== projectSource) url.hash = "code=" + code;
   return url.href;
 }
 
@@ -573,10 +590,9 @@ function buildShareLink(hash) {
 let shareSeq = 0;
 async function refreshShareUrl() {
   const mine = ++shareSeq;
-  const text = editor.getValue();
-  const hash = text === projectSource ? "" : "code=" + await encodeShareParam(text);
+  const code = await encodeShareParam(editor.getValue());
   if (mine !== shareSeq) return;
-  shareUrlEl.textContent = buildShareLink(hash);
+  shareUrlEl.textContent = buildShareLink(code);
 }
 
 function closeShareMenu() {

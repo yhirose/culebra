@@ -947,7 +947,13 @@ it without `?run=1`, and how anyone replays it once it ends.
 Share opens a menu with those three choices in it (`Embed`, `View`,
 `On open`) and copies the link for what is chosen. Everything else in
 the link comes from the page: the project, the arguments when they
-differ from the project's own, and the text only when it was edited, so
-an unedited example shares as its short name rather than as a fragment
-of several kilobytes. The defaults reproduce the plain standalone page,
+differ from the project's own, and the text when it was edited, so an
+unedited example shares as its short name rather than as a fragment of
+several kilobytes. The defaults reproduce the plain standalone page,
 which is why an uncustomised link carries none of the three.
+
+A `?src=` page always names where its program came from. A catalog one
+names its example only while the Examples menus still show it: putting
+them back on their placeholder says the text is no longer that example,
+and the link stops naming it. A link that names no project carries the
+text whether or not it was edited, since nothing else would arrive.
