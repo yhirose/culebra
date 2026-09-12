@@ -180,16 +180,61 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   .pg-tab-action { padding: 0.35rem 0.8rem; }
 }
 
-/* --- embed mode (?embed=1) --------------------------------------------- */
-/* A page hosting the Playground in an iframe brings its own branding and
-   supplies the source through #code=, so the standalone header, the example
-   picker, the argument box and the share button have nothing to do here.
-   Run/Stop, the status and the panes stay: they are the part that is being
-   embedded. */
+/* --- share popover ------------------------------------------------------ */
+/* Share opens this rather than copying straight away: the same source can be
+   shared as a page, as an embed, or as something that starts on its own, and
+   those are choices only the person sharing can make. The defaults reproduce
+   the plain page, so a link nobody customised is as short as it ever was. */
+.pg-share { position: relative; display: inline-flex; }
+.pg-share-menu {
+  position: absolute; top: calc(100% + 0.4rem); right: 0; z-index: 20;
+  display: grid; gap: 0.55rem; padding: 0.8rem;
+  min-width: 21rem; max-width: calc(100vw - 2rem);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+.pg-share-row { display: flex; align-items: center; gap: 0.6rem; font-size: 0.85rem; }
+.pg-share-label { color: var(--muted); flex: none; width: 4.2rem; }
+.pg-share-row label { display: inline-flex; align-items: center; gap: 0.25rem; cursor: pointer; }
+/* The link itself, so the choices above are not a guess about what they do. */
+.pg-share-url {
+  display: block; max-height: 4.6rem; overflow: auto; word-break: break-all;
+  padding: 0.45rem 0.55rem; border-radius: var(--radius);
+  background: var(--code-bg); color: var(--muted); font-size: 0.75rem;
+}
+
+/* --- the play overlay --------------------------------------------------- */
+/* An output-only embed has no toolbar, so this is the only way to start the
+   program. The same circle as the landing page's poster button, over whatever
+   the pane holds: the empty pane before the first run, the last frame after
+   one, which makes it replay without a second control. [hidden] needs saying
+   because a class's display beats the UA stylesheet's. */
+.pg-play {
+  position: absolute; inset: 0; z-index: 5;
+  display: flex; align-items: center; justify-content: center;
+  background: none; border: 0; padding: 0; cursor: pointer;
+}
+.pg-play[hidden] { display: none; }
+.pg-play-glyph {
+  width: 4.2rem; height: 4.2rem; border-radius: 50%;
+  background: rgba(10, 12, 20, 0.6); color: #fff;
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.5rem; padding-left: 0.25rem; transition: background 0.15s;
+}
+.pg-play:hover .pg-play-glyph { background: var(--brand-strong); }
+
+/* --- embed modes (?embed=editor | ?embed=output) ------------------------ */
+/* One ladder, two rungs: how much of the page a hosting iframe wants. A page
+   hosting the Playground brings its own branding and supplies the source
+   through #code=, so the standalone header, the example picker, the argument
+   box and the New/Share buttons have nothing to do here. Run/Stop, the status
+   and the panes stay: they are the part that is being embedded. */
 .embed .pg-header,
 .embed .example-select,
 .embed #args,
-.embed #share,
+.embed .pg-share,
+.embed #new,
 .embed .backend { display: none; }
 .embed .pg-toolbar { padding: 0.45rem 0.8rem; }
 /* Stacked at every width, not just the phone one the standalone page splits
@@ -200,22 +245,24 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 .embed .pg-main { grid-template-columns: 1fr; grid-template-rows: 1.35fr 1fr; }
 .embed .pg-editor { border-right: 0; border-bottom: 1px solid var(--border); }
 
-/* --- canvas-only mode (?view=canvas) ------------------------------------ */
-/* A poster-and-play-button host wants just the running game — no source,
-   no Run/Stop/status, no tab strip. .pg-editor is gone, so .pg-main drops
-   to a single column instead of leaving its half of the grid empty; the
-   canvas pane (already flex: 1 inside .pg-right) fills what remains. */
-.canvas-only .pg-toolbar,
-.canvas-only .pg-tabs,
-.canvas-only .pg-editor { display: none; }
+/* The far rung: just the running program — no source, no Run/Stop/status, no
+   tab strip, and not the site header either. Which pane is left is `?view=`,
+   so a TUI program embeds the same way a Canvas one does. .pg-editor is gone,
+   so .pg-main drops to a single column instead of leaving its half of the
+   grid empty; the pane (already flex: 1 inside .pg-right) fills what remains.
+   Run is off screen here, which is what #play is for. */
+.embed-output .pg-header,
+.embed-output .pg-toolbar,
+.embed-output .pg-tabs,
+.embed-output .pg-editor { display: none; }
 /* grid-template-rows needs stating explicitly: with .pg-editor gone,
    .pg-right is the grid's only item, and an unset (auto) row sizes to its
    content height rather than stretching to fill .pg-main — leaving the
    canvas pane's own #000 short of the bottom and the host page's
    background showing through beneath it. */
-.canvas-only .pg-main { grid-template-columns: 1fr; grid-template-rows: 1fr; }
+.embed-output .pg-main { grid-template-columns: 1fr; grid-template-rows: 1fr; }
 /* .pg-pane's base overflow: auto is for the Output/TUI panes, which can
    genuinely grow past their box; the canvas pane never needs to scroll,
    and a few px of sub-pixel layout slop was enough to paint a scrollbar
    sliver along the edge. */
-.canvas-only .pg-canvas { overflow: hidden; }
+.embed-output .pg-canvas { overflow: hidden; }

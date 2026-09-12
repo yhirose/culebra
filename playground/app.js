@@ -385,6 +385,7 @@ function spawnWorker() {
             ? "Auto mode runs large tensor ops on the GPU"
             : "No WebGPU device here, so every tensor op runs on the CPU";
       if (!running) setStatus("ready");
+      updatePlayOverlay();
       maybeAutorun();
       return;
     }
@@ -415,6 +416,7 @@ function spawnWorker() {
       resetSounds();
       stopBtn.disabled = true;
       runBtn.disabled = false;
+      updatePlayOverlay();
       if (!inTui && !inCanvas && output.textContent === "") output.textContent = "(no output)";
       output.classList.toggle("err", msg.rc !== 0);
       if (msg.rc !== 0) {
@@ -436,6 +438,7 @@ function spawnWorker() {
       worker.terminate();
       spawnWorker();
     }
+    updatePlayOverlay();
   };
 }
 
@@ -447,6 +450,7 @@ function run() {
   running = true;
   runBtn.disabled = true;
   stopBtn.disabled = false;
+  updatePlayOverlay();
   output.classList.remove("err");
   output.textContent = "";
   editor.clearError();
@@ -483,11 +487,27 @@ function stop() {
   resetSounds();
   stopBtn.disabled = true;
   runBtn.disabled = true; // until the fresh worker reports ready
+  updatePlayOverlay();
   resetToOutput();
   setStatus("stopped — reloading…");
   appendOutput("\n[stopped]");
   spawnWorker();
 }
+
+// --- the play overlay -----------------------------------------------------
+//
+// An output-only embed (?embed=output) has no toolbar, so this is that page's
+// only way to start the program — and, once the program ends, its only way
+// to start it again. Up whenever such a page is idle with an engine ready,
+// which is the same condition as "Run would do something".
+const OUTPUT_EMBED = document.documentElement.classList.contains("embed-output");
+const playBtn = $("play");
+
+function updatePlayOverlay() {
+  playBtn.hidden = !OUTPUT_EMBED || running || runBtn.disabled;
+}
+
+playBtn.addEventListener("click", run);
 
 // --- toolbar wiring -------------------------------------------------------
 
@@ -512,28 +532,79 @@ newBtn.addEventListener("click", async () => {
   editor.focus();
 });
 
-// The link names the project the text runs beside (?src= or ?example=), the
-// arguments when they differ from the project's own, and the text itself only
-// when it was edited — an unedited example shares as its short name. ?run=1
-// is the host's visitor having pressed Run and ?embed=1 / ?view=canvas are
-// the host's chrome, which a recipient is not inside, so neither rides along.
+// Share opens a menu rather than copying on the spot. The link always names
+// the project the text runs beside (?src= or ?example=), the arguments when
+// they differ from the project's own, and the text itself only when it was
+// edited — an unedited example shares as its short name. What the menu adds
+// is the shape of the recipient's page: how much of it (?embed=), which pane
+// (?view=), and whether it starts on its own (?run=1). Every default is the
+// plain standalone page, so an uncustomised link is as short as it ever was.
+const shareBtn = $("share");
+const shareMenu = $("share-menu");
+const shareUrlEl = $("share-url");
+const shareCopyBtn = $("share-copy");
+let shareTimer = null;
+
+function shareChoice(name) {
+  return shareMenu.querySelector(`input[name="share-${name}"]:checked`).value;
+}
+
 // The href is split rather than rebuilt from origin so a file:// checkout
-// works.
-async function shareLink() {
+// works. `hash` is the already-encoded #code= payload, or "" for a link that
+// carries no text of its own.
+function buildShareLink(hash) {
   const url = new URL(location.href.split(/[?#]/)[0]);
   if (project.src) url.searchParams.set("src", project.src);
   else if (project.example) url.searchParams.set("example", project.example);
   const args = argsInput.value.trim();
   if (args !== formatArgs(project.args)) url.searchParams.set("args", args);
-  const text = editor.getValue();
-  if (text !== projectSource) url.hash = "code=" + await encodeShareParam(text);
+  const embed = shareChoice("embed");
+  if (embed) url.searchParams.set("embed", embed);
+  const view = shareChoice("view");
+  if (view !== TABS[0]) url.searchParams.set("view", view);
+  if (shareChoice("run")) url.searchParams.set("run", "1");
+  url.hash = hash;
   return url.href;
 }
 
-const shareBtn = $("share");
-let shareTimer = null;
-shareBtn.addEventListener("click", async () => {
-  const url = await shareLink();
+// Encoding the text can gzip, so the menu shows a link that arrives a tick
+// after the click that asked for it; `shareSeq` is what keeps a slow encode
+// from painting over a newer choice's faster one.
+let shareSeq = 0;
+async function refreshShareUrl() {
+  const mine = ++shareSeq;
+  const text = editor.getValue();
+  const hash = text === projectSource ? "" : "code=" + await encodeShareParam(text);
+  if (mine !== shareSeq) return;
+  shareUrlEl.textContent = buildShareLink(hash);
+}
+
+function closeShareMenu() {
+  shareMenu.hidden = true;
+  shareBtn.setAttribute("aria-expanded", "false");
+}
+
+// The menu opens on whichever pane is showing: sharing what you are looking
+// at is the common case, and the other two are one click away.
+async function openShareMenu() {
+  for (const input of shareMenu.querySelectorAll('input[name="share-view"]'))
+    input.checked = input.value === activeTab;
+  await refreshShareUrl();
+  shareMenu.hidden = false;
+  shareBtn.setAttribute("aria-expanded", "true");
+}
+
+shareBtn.addEventListener("click", () => {
+  if (shareMenu.hidden) openShareMenu().catch(showLoadError);
+  else closeShareMenu();
+});
+shareMenu.addEventListener("change", () => { refreshShareUrl(); });
+document.addEventListener("click", (e) => {
+  if (!shareMenu.hidden && !e.target.closest(".pg-share")) closeShareMenu();
+});
+
+shareCopyBtn.addEventListener("click", async () => {
+  const url = shareUrlEl.textContent;
   try {
     await navigator.clipboard.writeText(url);
   } catch {
@@ -542,11 +613,15 @@ shareBtn.addEventListener("click", async () => {
     // prompt(): a modal dialog stalls the page.
     console.log(url);
     setStatus("copy failed; the link is in the console", true);
+    closeShareMenu();
     return;
   }
   clearTimeout(shareTimer);
-  shareBtn.textContent = "Copied!";
-  shareTimer = setTimeout(() => { shareBtn.textContent = "Share"; }, 1500);
+  shareCopyBtn.textContent = "Copied!";
+  shareTimer = setTimeout(() => {
+    shareCopyBtn.textContent = "Copy link";
+    closeShareMenu();
+  }, 900);
 });
 function loadExampleIntoEditor(title) {
   return useProject(catalogProject(title)).then((src) => {
@@ -1050,7 +1125,8 @@ gameCanvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
 // --- boot -----------------------------------------------------------------
 
-// What the page opens comes from the URL in two independent halves.
+// What the page opens comes from the URL in three independent parts: the
+// project, the text, and the shape of the page (docs/tooling.md §7).
 //
 // The project — what the text runs beside — is `?src=<url>`: a `.cul` on
 // GitHub, whose whole directory comes along through jsDelivr (project.js), or
@@ -1068,8 +1144,12 @@ gameCanvas.addEventListener("contextmenu", (e) => e.preventDefault());
 // links already in the wild. Without either, the text is the project's entry,
 // else the saved draft, else "Hello".
 //
-// `?run=1` starts it once the worker is up — an embed's visitor pressed Run
-// on the hosting page and should not have to press it again.
+// The page is `?embed=` (how much of it: `editor` keeps the editor and the
+// controls, `output` leaves one pane alone — index.html marks the root
+// element) and `?view=` (which pane that is). `?run=1` starts the program
+// once the worker is up, for a host whose visitor already pressed Run on the
+// page around the frame; without it an `?embed=output` page waits behind the
+// play overlay, which is the only control it has.
 const params = new URLSearchParams(location.search);
 const hashParams = new URLSearchParams(location.hash.slice(1));
 const codeParam = hashParams.get("code") ?? params.get("code");
@@ -1082,6 +1162,13 @@ const srcParam = params.get("src");
 const exampleParam = params.get("example");
 const argsParam = params.get("args");
 let pendingAutorun = params.get("run") === "1";
+// `?view=` is the pane the page opens on. A program that draws switches panes
+// by itself once it does (the alt-screen marker, the first frame), so this
+// matters most before a run — and in an output-only embed, where the tab
+// strip is gone and this is the only way to say which pane is the embedded
+// one.
+const viewParam = params.get("view");
+if (viewParam !== null && TABS.includes(viewParam)) switchTab(viewParam);
 let seedApplied = false;
 
 // A share link pasted into a tab already on this page changes only the

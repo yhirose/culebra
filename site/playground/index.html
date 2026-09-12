@@ -10,16 +10,16 @@
   <link rel="stylesheet" href="./styles.css">
   <link rel="stylesheet" href="https://esm.sh/@xterm/xterm@5.5.0/css/xterm.css">
   <script>
-    // ?embed=1 drops the chrome a hosting page already provides. Marked on the
-    // root element from <head>, before the body is parsed, so an embed never
-    // paints the standalone header and then takes it away.
-    if (new URLSearchParams(location.search).get("embed") === "1")
-      document.documentElement.classList.add("embed");
-    // ?view=canvas is for a host that wants only the running game — a
-    // poster-and-play-button embed with no source, controls, or other panes
-    // to distract from it. See the styles.css "canvas-only mode" block.
-    if (new URLSearchParams(location.search).get("view") === "canvas")
-      document.documentElement.classList.add("canvas-only");
+    // ?embed= says how much of the page a hosting iframe wants: `editor` drops
+    // the chrome that page already provides and keeps the editor and the
+    // controls, `output` leaves the output pane alone (which pane is `?view=`).
+    // `1` is the older spelling of `editor`. Marked on the root element from
+    // <head>, before the body is parsed, so an embed never paints the
+    // standalone header and then takes it away. See the styles.css
+    // "embed modes" block.
+    var embed = new URLSearchParams(location.search).get("embed");
+    if (embed === "1" || embed === "editor") document.documentElement.classList.add("embed");
+    if (embed === "output") document.documentElement.classList.add("embed-output");
   </script>
 </head>
 <body>
@@ -59,7 +59,31 @@
     <input id="args" type="text" spellcheck="false" autocomplete="off"
            placeholder="arguments → Sys.argv" aria-label="Command-line arguments">
     <button id="new" class="btn" title="Start an empty program">New</button>
-    <button id="share" class="btn" title="Copy a link to this source">Share</button>
+    <div class="pg-share">
+      <button id="share" class="btn" title="Copy a link to this source"
+              aria-haspopup="true" aria-expanded="false">Share</button>
+      <div id="share-menu" class="pg-share-menu" role="dialog" aria-label="Share a link" hidden>
+        <div class="pg-share-row" role="radiogroup" aria-label="Embed">
+          <span class="pg-share-label">Embed</span>
+          <label><input type="radio" name="share-embed" value="" checked>Off</label>
+          <label><input type="radio" name="share-embed" value="editor">Editor</label>
+          <label><input type="radio" name="share-embed" value="output">Output</label>
+        </div>
+        <div class="pg-share-row" role="radiogroup" aria-label="View">
+          <span class="pg-share-label">View</span>
+          <label><input type="radio" name="share-view" value="output" checked>Output</label>
+          <label><input type="radio" name="share-view" value="tui">TUI</label>
+          <label><input type="radio" name="share-view" value="canvas">Canvas</label>
+        </div>
+        <div class="pg-share-row" role="radiogroup" aria-label="On open">
+          <span class="pg-share-label">On open</span>
+          <label><input type="radio" name="share-run" value="" checked>Wait</label>
+          <label><input type="radio" name="share-run" value="1">Run</label>
+        </div>
+        <code id="share-url" class="pg-share-url"></code>
+        <button id="share-copy" class="btn btn-primary">Copy link</button>
+      </div>
+    </div>
     <span class="spacer"></span>
     <span id="backend" class="backend"></span>
     <span id="status" class="status">loading…</span>
@@ -89,6 +113,12 @@
             <canvas id="game-text" class="pg-canvas-overlay"></canvas>
           </div>
         </div>
+        <!-- Shown when the program is not running and the page is an
+             output-only embed, where the toolbar's Run is not on screen.
+             Covers the pane the way a video poster does: click anywhere. -->
+        <button id="play" class="pg-play" hidden aria-label="Run this program">
+          <span class="pg-play-glyph" aria-hidden="true">▷</span>
+        </button>
       </div>
     </div>
   </main>

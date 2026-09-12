@@ -107,8 +107,8 @@
     }
     .poster:hover .play-btn { background: var(--brand-strong); }
     /* Same on-demand-iframe trick as the hero sample — see the run-sample
-       handler below. &view=canvas strips the embed down to just the running
-       game. Loaded underneath the still-visible poster image (see the
+       handler below. embed=output&view=canvas strips the page down to just
+       the running game. Loaded underneath the still-visible poster image (see the
        z-index above) and only unveiled once the embedded page's first real
        frame lands — see app.js's drawFrame(), which posts that moment up to
        here — so the WASM boot's black .pg-canvas background is never
@@ -381,7 +381,7 @@ culebra build hello.cul -o hello &amp;&amp; ./hello  # AOT: compile once, ship t
       var frame = document.createElement("iframe");
       frame.className = "sample-frame";
       frame.title = "culebra Playground";
-      frame.src = "./playground/?embed=1&run=1#code=" + encodeSampleCode();
+      frame.src = "./playground/?embed=editor&run=1#code=" + encodeSampleCode();
 
       var wrap = document.getElementById("sample-wrap");
       wrap.replaceChild(frame, document.getElementById("sample"));
@@ -429,7 +429,7 @@ culebra build hello.cul -o hello &amp;&amp; ./hello  # AOT: compile once, ship t
       var frame = document.createElement("iframe");
       frame.className = "game-frame";
       frame.title = frameTitle;
-      frame.src = "./playground/?embed=1&view=canvas&run=1&example=" + encodeURIComponent(exampleTitle);
+      frame.src = "./playground/?embed=output&view=canvas&run=1&example=" + encodeURIComponent(exampleTitle);
       // Stays hidden behind the poster (z-index) until the embedded page
       // says its first frame is actually on screen.
       window.addEventListener("message", function onFirstFrame(e) {
