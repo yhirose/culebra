@@ -32,7 +32,7 @@ culebra は個人の趣味プロジェクト（プログラミング言語処理
 
 ## ビルド
 
-- inner loop（修正→実行→修正）は **`just dev`**（LTO off、`-O1`、AOT archive スキップ、`main.cc` 単体 rebuild）。ヘッダを実質変更した場合の再ビルドは約 1 分半。
+- inner loop（修正→実行→修正）は **`just dev`**（LTO off、`-O1`、AOT archive スキップ、`main.cc` 単体 rebuild）。ヘッダを実質変更した場合の再ビルドは約 1 分半（stdlib preamble の焼き直し ~15s を含む。`-j20` では main.cc の裏に隠れ、`CULEBRA_BUILD_JOBS=8` では表に出る。dev でも焼き込むのは、無いと `just test-dev` の sweep が名前で呼ぶモジュールを毎回ソースから lowering し、gate/CI と別のプログラムを比べることになるため）。
 - ccache は既定の `~/.cache/ccache` をそのまま使う（`CCACHE_DIR` を設定しない）。justfile が `CCACHE_BASEDIR` を worktree root に export するので、同じ commit なら別 worktree の初回ビルドがキャッシュに当たる（実測 90s → 32s）。**絶対パスを焼き込む define を `main.cc` 側に足さないこと** — worktree 間共有が壊れる（`src/source_dir.cc` に隔離してある）。
 - **`just build`** はコミット前の最終確認、または AOT runtime archive 自体を触った変更のときのみ。**性能計測は必ず `just build`（`-O3` + LTO）で**。`build-dev/` は `-O1` なので数字が出ない。
 - このマシンは 20 スレッド / 15 GB。`just build-gate` は `-j20` でピーク約 11 GB 使うので、**別 worktree セッションと build を同時に走らせるとスワップする** — これは `misc/one_at_a_time.sh` のロックで直列化済み（下記「並走時のマシン占有」）。ロックを外して並走させるなら片方を `CULEBRA_BUILD_JOBS=8` 程度に絞る。

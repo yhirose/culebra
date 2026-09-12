@@ -2156,9 +2156,11 @@ add_test(NAME sys_argv_test
 # compiler and lowering in a tool of their own — it inherits the driver's
 # definitions, options and libraries so the two cannot disagree about what
 # a module is — and the list below is checked against the C++ list at build.
-# The inner-loop build (CULEBRA_DEV_NO_RT) skips all of it and splices the
-# source as before.
-if(CULEBRA_ENABLE_JIT AND NOT CULEBRA_DEV_NO_RT)
+# The inner-loop build (CULEBRA_DEV_NO_RT) bakes too and skips only the
+# archive side below: without the entries `just test-dev` lowers each named
+# stdlib module on every `--jit` start, and tests a different program than
+# the gate.
+if(CULEBRA_ENABLE_JIT)
   # The driver's per-namespace binding TUs (src/runtime/*.cc: the window
   # backend, the webview loader, ...) hold the strong bodies the runtime
   # headers reference; the tool links the same set.
@@ -2228,8 +2230,11 @@ if(CULEBRA_ENABLE_JIT AND NOT CULEBRA_DEV_NO_RT)
   file(CONFIGURE OUTPUT "${_baked_tu}" CONTENT "${_baked_src}" @ONLY)
   target_sources(culebra PRIVATE ${_baked_objs} "${_baked_tu}")
   target_compile_definitions(culebra PRIVATE CULEBRA_HAS_BAKED_PREAMBLES=1)
-  # ...and archive members for `culebra build`, pulled by reference.
-  target_sources(culebra_rt PRIVATE ${_baked_objs})
+  # ...and archive members for `culebra build`, pulled by reference (the
+  # inner-loop build has no archive to add them to).
+  if(TARGET culebra_rt)
+    target_sources(culebra_rt PRIVATE ${_baked_objs})
+  endif()
   add_custom_target(culebra_preamble_list_check
     COMMAND culebra_preamble_cc --check-list ${_baked_names}
     DEPENDS culebra_preamble_cc
