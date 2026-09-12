@@ -1386,6 +1386,22 @@ loweringするIRは6,167行ではなく758行、起動は82msではなく7msに�
 （`JIT::define_baked_preambles`）、ビルドされたバイナリはアーカイブ
 メンバーを引く。
 
+起動の残りが何に使われているかは`CULEBRA_JIT_TIME_PASSES`で読める:
+4つのフェーズ（lower・optimize・codegen・run）と、IRパイプラインと
+バックエンドそれぞれについてのLLVM自身のパス別レポートである。
+`tests/`のどのファイルでも実行は数msで、残りの大きい方の半分は
+バックエンドにある。フラットなスクリプト — 1つの関数で、トップ
+レベルのスロットとthread-stateポインタがその全体にわたって生きて
+いる — はそのほとんどをregister coalescerに使っていた。呼び出し
+サイトごとのそれらのコピーを、interval全体に対して1つずつjoinする
+からである。`JIT::tune_backend`はこれをLLVMの
+`large-interval-freq-threshold`（256から16へ）で抑える。`tools/bench/`
+のthroughputの行は動かない。ホットループ自身のコピーが先にjoin
+されるからである。この上限はrefcountガードの形に敏感で、
+`emit_tag_is_refcounted`でsentinelタグを`& 31`で畳む形（サイトごとに
+2命令少なく、モジュールは5%小さい）にすると同じファイルのcoalescerが
+1.2sから9.2sに戻る。範囲テストはそのために残している。
+
 このパイプラインのうち1つのパスはlowering自身のものである。
 4つのrefcountヘルパーはそれぞれガードで始まる — 値の2つは
 `_is_refcounted_value_tag`とnullペイロードに対して、cellの2つは

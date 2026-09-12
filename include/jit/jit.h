@@ -10,6 +10,7 @@
 #include <frontend/module_loader.h>  // LoadedModule — the embedding entries' argument
 #include <stdlib/preamble.h>  // baked_preambles — symbols every JITDylib defines
 
+#include <chrono>  // time_phase (CULEBRA_JIT_TIME_PASSES)
 #include <filesystem>  // the object cache's directory
 
 #include "llvm/ExecutionEngine/ObjectCache.h"
@@ -22,6 +23,7 @@
 #include "llvm/IR/MDBuilder.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/Passes/OptimizationLevel.h"
+#include "llvm/IR/PassTimingInfo.h"  // TimePassesHandler (CULEBRA_JIT_TIME_PASSES)
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/MC/TargetRegistry.h"
@@ -618,6 +620,15 @@ struct JIT {
     auto& opts = llvm::cl::getRegisteredOptions();
     if (auto it = opts.find("aarch64-enable-early-ifcvt"); it != opts.end())
       static_cast<llvm::cl::opt<bool>*>(it->second)->setValue(false);
+    // A flat script is one function whose entry-block values (the thread
+    // state, the owned-stack pointer, the top-level slots) live across all of
+    // it, and the register coalescer joins every call site's copy of those
+    // against that whole interval — 42% of a `--jit` start on a large test
+    // file (docs/internals/vm.md §7, with the numbers). This is LLVM's own
+    // bound on how many times such an interval is joined; process-wide like
+    // the ifcvt knob above, so `culebra build` allocates under it too.
+    if (auto it = opts.find("large-interval-freq-threshold"); it != opts.end())
+      static_cast<llvm::cl::opt<unsigned>*>(it->second)->setValue(16);
   }
 
   // Process-wide LLVM target init. Concurrent callers race on the
@@ -1229,9 +1240,29 @@ struct JIT {
     }
   };
 
+  // CULEBRA_JIT_TIME_PASSES: the lane's phases (lower / optimize / codegen /
+  // run) on stderr, and LLVM's own per-pass report for the IR pipeline and
+  // the backend (docs/internals/vm.md §7).
+  static bool time_passes() {
+    static const bool on = std::getenv("CULEBRA_JIT_TIME_PASSES") != nullptr;
+    return on;
+  }
+  static void time_phase(const char* name,
+                         std::chrono::steady_clock::time_point& t) {
+    if (!time_passes()) return;
+    auto now = std::chrono::steady_clock::now();
+    std::fprintf(stderr, "[jit-time] %-8s %8.1f ms\n", name,
+                 std::chrono::duration<double, std::milli>(now - t).count());
+    t = now;
+  }
+
   static void optimize_module(llvm::Module& mod, int opt_level) {
     using namespace llvm;
-    PassBuilder PB;
+    PassInstrumentationCallbacks PIC;
+    TimePassesHandler pass_timer(time_passes());
+    pass_timer.registerCallbacks(PIC);
+    PassBuilder PB(nullptr, PipelineTuningOptions(), std::nullopt,
+                   time_passes() ? &PIC : nullptr);
 
     LoopAnalysisManager LAM;
     FunctionAnalysisManager FAM;
@@ -1281,6 +1312,7 @@ struct JIT {
 
     ModulePassManager MPM = PB.buildPerModuleDefaultPipeline(level);
     MPM.run(mod, MAM);
+    if (time_passes()) pass_timer.print();
     assert(no_settled_refcounts(mod));
     // The lowered IR is verified before it gets here (lower_program); this
     // says the pipeline — PromoteFloatPhis included, which is the one pass
@@ -2159,7 +2191,9 @@ struct JIT {
   // retain do any work for? The mask is folded out of the predicate itself, so
   // a tag that joins the set joins here too. Every refcounted tag is small; the
   // range test is what keeps the sentinels out (TAG_KWREST 125, TAG_NO_SELF
-  // 126, TAG_UNFILLED 127) without a poison shift.
+  // 126, TAG_UNFILLED 127) without a poison shift. Keep the range test:
+  // folding the sentinels under `& 31` instead defeats tune_backend's
+  // coalescer bound (measured, vm.md §7).
   llvm::Value* emit_tag_is_refcounted(llvm::Value* tag) {
     constexpr uint32_t kMask = [] {
       uint32_t m = 0;
@@ -5473,6 +5507,7 @@ struct JIT {
                    std::unique_ptr<llvm::Module> mod,
                    bool fast_codegen = false) {
     using namespace llvm;
+    auto phase_t = std::chrono::steady_clock::now();
     auto jit = create_jit_instance(fast_codegen);
     // Reap what the script left running before `jit` (just above) tears down:
     // declared after `jit`, so on any exit path — including an uncaught throw
@@ -5489,11 +5524,16 @@ struct JIT {
       }
     } script_teardown_guard;
     orc::ThreadSafeContext tsctx(std::move(ctx));
+    // The backend's passes run under ORC's legacy pass manager, which reads
+    // this global at construction; the report prints once codegen is done.
+    if (time_passes()) TimePassesIsEnabled = true;
     cantFail(jit->addIRModule(
         orc::ThreadSafeModule(std::move(mod), std::move(tsctx))));
 
     auto mainFn =
         cantFail(jit->lookup("__culebra_main")).toPtr<void (*)()>();
+    if (time_passes()) reportAndResetTimings();
+    time_phase("codegen", phase_t);
     // GAP5 detector fixture (debug/tests only): CULEBRA_GC_TEST_LEAK=1 mints
     // a handful of deliberately orphaned +1 arrays here, before the program
     // body runs, so the teardown audit has a guaranteed inflated-RC leak to
@@ -5544,6 +5584,7 @@ struct JIT {
     } collect_guard;
     try {
       mainFn();
+      time_phase("run", phase_t);
     } catch (const CulebraException& e) {
       // Format first, then consume the carrier's reference (the payload's
       // final +1 — releasing first would free it under the formatter).

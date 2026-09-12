@@ -1415,6 +1415,21 @@ the program names, and the lane's link supplies the symbol — the JIT
 defines it from the driver's table (`JIT::define_baked_preambles`), the
 built binary pulls the archive member.
 
+What the rest of a start-up costs is read with `CULEBRA_JIT_TIME_PASSES`:
+the four phases (lower, optimize, codegen, run) and LLVM's own per-pass
+report for the IR pipeline and the backend. Execution is a few
+milliseconds on any file of `tests/`; the backend is the larger half of
+the rest, and a flat script — one function, its top-level slots and the
+thread-state pointer live across all of it — used to spend most of that
+in the register coalescer, joining every call site's copy of those
+against the whole interval. `JIT::tune_backend` bounds that with LLVM's
+`large-interval-freq-threshold` (16, from 256); the throughput rows of
+`tools/bench/` do not move, since a hot loop's own copies are joined
+first. The bound is sensitive to the shape of the refcount guards:
+folding the sentinel tags under `& 31` in `emit_tag_is_refcounted` — two
+instructions fewer per site, a 5% smaller module — took the same file's
+coalescer from 1.2 s back to 9.2 s, so the range test stays.
+
 One pass of that pipeline is the lowering's own. The four refcount
 helpers each open with a guard — the value pair against
 `_is_refcounted_value_tag` and a null payload, the cell pair against a

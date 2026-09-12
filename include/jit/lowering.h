@@ -83,8 +83,11 @@ struct Lowering {
     JIT::apply_target(*mod, Triple(sys::getDefaultTargetTriple()));
     IRBuilder<> builder(*ctx);
     JIT jit(ctx.get(), mod.get(), builder);
+    auto phase_t = std::chrono::steady_clock::now();
     lower_program(jit, p, "__culebra_main", baked);
+    JIT::time_phase("lower", phase_t);
     if (opt_level > 0) JIT::optimize_module(*mod, opt_level);
+    JIT::time_phase("optimize", phase_t);
     if (emit_llvm) {
       mod->print(outs(), nullptr);
     } else {
