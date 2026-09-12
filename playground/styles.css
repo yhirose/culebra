@@ -25,6 +25,10 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   display: flex; align-items: center; gap: 0.6rem;
   padding: 0.55rem 1.1rem; border-bottom: 1px solid var(--border);
   background: var(--surface-2); flex-wrap: wrap;
+  /* The share popover hangs off this, not off the Share button: the toolbar
+     wraps on a narrow window, and a menu anchored to a button that has moved
+     to the left of a second row reaches off the side of the page. */
+  position: relative;
 }
 .pg-toolbar .spacer { flex: 1; }
 .pg-toolbar .status { color: var(--muted); font-size: 0.85rem; font-variant-numeric: tabular-nums; }
@@ -108,19 +112,26 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   word-break: break-word;
 }
 .pg-output.err { color: var(--danger); }
-.pg-output .placeholder { color: var(--muted); }
 
 /* xterm.js fills the TUI pane; it manages its own internal canvas sizing
    from the fixed cols/rows given at construction (see app.js), not from
    this container's box — the padding just keeps the game off the edges. */
-.pg-tui { padding: 0.6rem; background: #000; }
+/* The terminal paints its own background (the theme in app.js); this is the
+   gutter around it, and has to agree with it. */
+.pg-tui { padding: 0.6rem; background: var(--bg); }
 
 /* Canvas pane: centre the framebuffer and scale it up with crisp (nearest-
    neighbour) pixels, so a 160x160 game fills the pane without blurring. */
+/* Site-coloured until a frame lands, on the standalone page as much as in an
+   embed: a black rectangle under a tab nobody has run anything in reads as
+   something broken rather than as somewhere a game will appear. Once one has
+   been drawn the pane is the letterbox around it, and black is what that
+   wants. */
 .pg-canvas {
   display: flex; align-items: center; justify-content: center;
-  background: #000; outline: none;
+  background: var(--bg); outline: none;
 }
+.pg-canvas.drawn { background: #000; }
 /* The framebuffer and the screen layer over it, kept exactly co-extensive.
    The ratio is the framebuffer's, set inline by app.js when a frame's size is
    known: the box used to size itself from #game's own width/height attributes
@@ -185,11 +196,15 @@ body { display: flex; flex-direction: column; overflow: hidden; }
    shared as a page, as an embed, or as something that starts on its own, and
    those are choices only the person sharing can make. The defaults reproduce
    the plain page, so a link nobody customised is as short as it ever was. */
-.pg-share { position: relative; display: inline-flex; }
+.pg-share { display: inline-flex; }
+/* Below the toolbar and in from its right edge, whatever row Share ended up
+   on. The width is stated rather than left to shrink-to-fit: the link is one
+   long unbroken word, and against a containing block as wide as the toolbar
+   it would pull the menu out to the full width of the page. */
 .pg-share-menu {
-  position: absolute; top: calc(100% + 0.4rem); right: 0; z-index: 20;
+  position: absolute; top: calc(100% + 0.4rem); right: 0.8rem; z-index: 20;
   display: grid; gap: 0.55rem; padding: 0.8rem;
-  min-width: 21rem; max-width: calc(100vw - 2rem);
+  width: min(21rem, calc(100vw - 2.4rem));
   border: 1px solid var(--border); border-radius: var(--radius);
   background: var(--surface); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
 }
@@ -221,7 +236,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 .pg-play[hidden] { display: none; }
 .pg-play-glyph {
   width: 4.2rem; height: 4.2rem; border-radius: 50%;
-  background: rgba(10, 12, 20, 0.6); color: #fff;
+  background: rgba(10, 12, 20, 0.75); color: #fff;
   border: 2px solid rgba(255, 255, 255, 0.85);
   display: flex; align-items: center; justify-content: center;
   font-size: 1.5rem; padding-left: 0.25rem; transition: background 0.15s;

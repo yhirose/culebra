@@ -62,8 +62,32 @@ const backendEl = $("backend");
 // (term.h) to read.
 const TERM_COLS = 80;
 const TERM_ROWS = 24;
-const term = new Terminal({ cols: TERM_COLS, rows: TERM_ROWS, cursorBlink: true });
+
+// xterm paints its own background, so the pane's colour has to be handed to
+// it and cannot just be set in CSS. Read from the stylesheet, which index.html
+// has already stamped data-theme on, so light and dark stay defined in one
+// place. The Playground has no theme toggle of its own, so once is enough.
+function siteColor(name, fallback) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+}
+
+const term = new Terminal({
+  cols: TERM_COLS,
+  rows: TERM_ROWS,
+  cursorBlink: true,
+  theme: {
+    background: siteColor("--bg", "#f7f5ef"),
+    foreground: siteColor("--text", "#1a201d"),
+    cursor: siteColor("--text", "#1a201d"),
+  },
+});
 term.open($("tui"));
+
+// An idle terminal is not waiting for anyone to type, so it shows no cursor.
+// A program that wants one asks for it; run() puts the pane back to this
+// after the reset that clears the last program's screen.
+const HIDE_CURSOR = "\x1b[?25l";
+term.write(HIDE_CURSOR);
 
 // 80 columns at the default font is wider than a phone, and the grid cannot
 // reflow — a Term.app draws to fixed coordinates — so the part that does give
@@ -158,6 +182,7 @@ function switchTab(name) {
   // Same reason for the canvas: the screen layer's scale comes from the
   // displayed width, which is 0 while the pane is hidden.
   if (name === "canvas") { sendScreenScale(); canvasPane.focus(); }
+  updatePlayOverlay();   // which pane is showing decides whether it belongs
 }
 tabButtons.output.addEventListener("click", () => switchTab("output"));
 tabButtons.tui.addEventListener("click", () => switchTab("tui"));
@@ -171,6 +196,7 @@ const ALT_SCREEN_ENTER = "\x1b[?1049h";
 const ALT_SCREEN_EXIT = "\x1b[?1049l";
 let inTui = false;
 let inCanvas = false;   // a "frame" message has switched to the Canvas pane
+let ranOnce = false;    // a program has finished in this page (see the overlay)
 
 // Leave TUI/Canvas mode and show the Output pane. The routing state (inTui /
 // inCanvas) and the visible tab must move together, so run/stop/onerror share
@@ -416,13 +442,14 @@ function spawnWorker() {
       resetSounds();
       stopBtn.disabled = true;
       runBtn.disabled = false;
-      updatePlayOverlay();
+      ranOnce = true;
       if (!inTui && !inCanvas && output.textContent === "") output.textContent = "(no output)";
       output.classList.toggle("err", msg.rc !== 0);
       if (msg.rc !== 0) {
         markErrorFromOutput();
         switchTab("output");   // a crash mid-TUI/Canvas: show the message, not a frozen frame
       }
+      updatePlayOverlay();   // after the error path has had its say on the pane
       setStatus(msg.rc === 0 ? `done in ${Math.round(msg.ms)} ms` : "error", msg.rc !== 0);
     }
   };
@@ -455,6 +482,7 @@ function run() {
   output.textContent = "";
   editor.clearError();
   term.reset();
+  term.write(HIDE_CURSOR);
   resetToOutput();
   startRafPump();   // drives Canvas present()'s frame wait; harmless otherwise
   setStatus("running…");
@@ -504,7 +532,12 @@ const OUTPUT_EMBED = document.documentElement.classList.contains("embed-output")
 const playBtn = $("play");
 
 function updatePlayOverlay() {
-  playBtn.hidden = !OUTPUT_EMBED || running || runBtn.disabled;
+  // Never across the Output pane once a run has put something in it: that
+  // pane is a transcript to read, and a button over it reads as "this did
+  // not run". The Canvas and TUI panes are live surfaces, where a finished
+  // frame reads as paused and this is how it is played again.
+  const transcript = ranOnce && activeTab === TABS[0];
+  playBtn.hidden = !OUTPUT_EMBED || running || runBtn.disabled || transcript;
 }
 
 playBtn.addEventListener("click", run);
@@ -698,6 +731,7 @@ term.onData((data) => {
 // The first frame of a run auto-switches to the Canvas tab, mirroring how the
 // TUI tab reacts to the alt-screen marker.
 function drawFrame(msg) {
+  canvasPane.classList.add("drawn");   // the pane is a letterbox from here on
   if (gameCanvas.width !== msg.w || gameCanvas.height !== msg.h) {
     gameCanvas.width = msg.w;
     gameCanvas.height = msg.h;
