@@ -381,7 +381,7 @@ culebra build hello.cul -o hello &amp;&amp; ./hello  # AOT: compile once, ship t
       var frame = document.createElement("iframe");
       frame.className = "sample-frame";
       frame.title = "culebra Playground";
-      frame.src = "./playground/?embed=editor&run=1#code=" + encodeSampleCode();
+      frame.src = "./playground/?embed=editor&split=top&run=1#code=" + encodeSampleCode();
 
       var wrap = document.getElementById("sample-wrap");
       wrap.replaceChild(frame, document.getElementById("sample"));

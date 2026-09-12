@@ -119,6 +119,13 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 /* The terminal paints its own background (the theme in app.js); this is the
    gutter around it, and has to agree with it. */
 .pg-tui { padding: 0.6rem; background: var(--bg); }
+/* xterm keeps a scrollbar gutter whether or not anything can scroll, and on a
+   fixed 80x24 grid nothing ever can: the pane is a screen, not a log. Left
+   alone it paints a bar down the right of every TUI program. The overflow
+   itself is xterm's own inline style and cannot be overridden from here, so
+   what goes is the bar. */
+.pg-tui .xterm-viewport { scrollbar-width: none; }
+.pg-tui .xterm-viewport::-webkit-scrollbar { display: none; }
 
 /* Canvas pane: centre the framebuffer and scale it up with crisp (nearest-
    neighbour) pixels, so a 160x160 game fills the pane without blurring. */
@@ -214,7 +221,25 @@ body { display: flex; flex-direction: column; overflow: hidden; }
    stylesheet's display beats the UA stylesheet's [hidden], whatever the
    specificity. Same reason as .pg-tab-action[hidden] and .pg-play[hidden]. */
 .pg-share-menu[hidden] { display: none; }
-.pg-share-row label { display: inline-flex; align-items: center; gap: 0.25rem; cursor: pointer; }
+/* Each choice is a cell of one bar rather than a dot beside a word: the
+   options are the whole of what is on offer, so a filled-in row says both
+   what is chosen and what else there was to choose. */
+.pg-share-tiles {
+  display: flex; flex: 1; min-width: 0;
+  border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;
+}
+.pg-share-tiles label { flex: 1; min-width: 0; cursor: pointer; }
+.pg-share-tiles input { position: absolute; opacity: 0; pointer-events: none; }
+.pg-share-tiles span {
+  display: block; padding: 0.3rem 0.2rem; text-align: center;
+  background: var(--surface); color: var(--text);
+  border-left: 1px solid var(--border);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.pg-share-tiles label:first-child span { border-left: 0; }
+.pg-share-tiles label:hover span { background: var(--surface-2); }
+.pg-share-tiles input:checked + span { background: var(--brand-strong); color: #fff; }
+.pg-share-tiles input:focus-visible + span { outline: 2px solid var(--brand); outline-offset: -2px; }
 /* The link itself, so the choices above are not a guess about what they do. */
 .pg-share-url {
   display: block; max-height: 4.6rem; overflow: auto; word-break: break-all;
@@ -256,13 +281,14 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 .embed #new,
 .embed .backend { display: none; }
 .embed .pg-toolbar { padding: 0.45rem 0.8rem; }
-/* Stacked at every width, not just the phone one the standalone page splits
-   at: a host page gives the frame the full column width but only a few
-   hundred pixels of height, so side by side leaves the source wrapping in
-   half the width while the output's few lines waste the other half. The
-   source takes the larger share — it is the thing the host is showing. */
-.embed .pg-main { grid-template-columns: 1fr; grid-template-rows: 1.35fr 1fr; }
-.embed .pg-editor { border-right: 0; border-bottom: 1px solid var(--border); }
+/* Where the output goes under the source rather than beside it. A host page
+   often gives the frame the full column width but only a few hundred pixels
+   of height, where side by side leaves the source wrapping in half the width
+   while the output's few lines waste the other half; the source takes the
+   larger share, being the thing the host is showing. Not embed-only: the
+   standalone page offers the same choice, and ?split= carries it. */
+.split-top .pg-main { grid-template-columns: 1fr; grid-template-rows: 1.35fr 1fr; }
+.split-top .pg-editor { border-right: 0; border-bottom: 1px solid var(--border); }
 
 /* The far rung: just the running program — no source, no Run/Stop/status, no
    tab strip, and not the site header either. Which pane is left is `?view=`,

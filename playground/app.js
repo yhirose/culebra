@@ -75,6 +75,7 @@ const term = new Terminal({
   cols: TERM_COLS,
   rows: TERM_ROWS,
   cursorBlink: true,
+  scrollback: 0,
   theme: {
     background: siteColor("--bg", "#f7f5ef"),
     foreground: siteColor("--text", "#1a201d"),
@@ -610,6 +611,8 @@ function buildShareLink(code) {
   if (embed) url.searchParams.set("embed", embed);
   const view = shareChoice("view");
   if (view !== TABS[0]) url.searchParams.set("view", view);
+  const split = shareChoice("split");
+  if (split) url.searchParams.set("split", split);
   if (shareChoice("run")) url.searchParams.set("run", "1");
   if (!named || editor.getValue() !== projectSource) url.hash = "code=" + code;
   return url.href;
@@ -636,6 +639,9 @@ function closeShareMenu() {
 async function openShareMenu() {
   for (const input of shareMenu.querySelectorAll('input[name="share-view"]'))
     input.checked = input.value === activeTab;
+  const split = document.documentElement.classList.contains("split-top") ? "top" : "";
+  for (const input of shareMenu.querySelectorAll('input[name="share-split"]'))
+    input.checked = input.value === split;
   await refreshShareUrl();
   shareMenu.hidden = false;
   shareBtn.setAttribute("aria-expanded", "true");

@@ -17,9 +17,13 @@
     // <head>, before the body is parsed, so an embed never paints the
     // standalone header and then takes it away. See the styles.css
     // "embed modes" block.
-    var embed = new URLSearchParams(location.search).get("embed");
+    var search = new URLSearchParams(location.search);
+    var embed = search.get("embed");
     if (embed === "1" || embed === "editor") document.documentElement.classList.add("embed");
     if (embed === "output") document.documentElement.classList.add("embed-output");
+    // ?split= puts the output under the source rather than beside it, for a
+    // host that has the page's full width but only a few hundred pixels of it.
+    if (search.get("split") === "top") document.documentElement.classList.add("split-top");
   </script>
 </head>
 <body>
@@ -65,23 +69,36 @@
       <div id="share-menu" class="pg-share-menu" role="dialog" aria-label="Share a link" hidden>
         <div class="pg-share-row" role="radiogroup" aria-label="Embed">
           <span class="pg-share-label">Embed</span>
-          <label><input type="radio" name="share-embed" value="" checked>Off</label>
-          <label><input type="radio" name="share-embed" value="editor">Editor</label>
-          <label><input type="radio" name="share-embed" value="output">Output</label>
+          <div class="pg-share-tiles">
+            <label><input type="radio" name="share-embed" value="" checked><span>Off</span></label>
+            <label><input type="radio" name="share-embed" value="editor"><span>Editor</span></label>
+            <label><input type="radio" name="share-embed" value="output"><span>Output</span></label>
+          </div>
         </div>
         <div class="pg-share-row" role="radiogroup" aria-label="View">
           <span class="pg-share-label">View</span>
-          <label><input type="radio" name="share-view" value="output" checked>Output</label>
-          <label><input type="radio" name="share-view" value="tui">TUI</label>
-          <label><input type="radio" name="share-view" value="canvas">Canvas</label>
+          <div class="pg-share-tiles">
+            <label><input type="radio" name="share-view" value="output" checked><span>Output</span></label>
+            <label><input type="radio" name="share-view" value="tui"><span>TUI</span></label>
+            <label><input type="radio" name="share-view" value="canvas"><span>Canvas</span></label>
+          </div>
+        </div>
+        <div class="pg-share-row" role="radiogroup" aria-label="Split">
+          <span class="pg-share-label">Split</span>
+          <div class="pg-share-tiles">
+            <label><input type="radio" name="share-split" value="" checked><span>Beside</span></label>
+            <label><input type="radio" name="share-split" value="top"><span>Below</span></label>
+          </div>
         </div>
         <div class="pg-share-row" role="radiogroup" aria-label="On open">
           <span class="pg-share-label">On open</span>
-          <label><input type="radio" name="share-run" value="" checked>Wait</label>
-          <label><input type="radio" name="share-run" value="1">Run</label>
+          <div class="pg-share-tiles">
+            <label><input type="radio" name="share-run" value="" checked><span>Wait</span></label>
+            <label><input type="radio" name="share-run" value="1"><span>Run</span></label>
+          </div>
         </div>
-        <code id="share-url" class="pg-share-url"></code>
         <button id="share-copy" class="btn btn-primary">Copy link</button>
+        <code id="share-url" class="pg-share-url"></code>
       </div>
     </div>
     <span class="spacer"></span>

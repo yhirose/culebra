@@ -872,11 +872,17 @@ GitHub PagesのCDNは8 KBを少し超えたあたりでリクエスト行を拒�
 | `?view=output` | Outputペイン（既定） |
 | `?view=tui` | TUIペイン |
 | `?view=canvas` | Canvasペイン |
+| `?split=top` | 出力をソースの横ではなく下に置く |
 
-2つは組み合わせられます。`?embed=output&view=canvas`は周りに何も無いゲーム、
+組み合わせられます。`?embed=output&view=canvas`は周りに何も無いゲーム、
 `?embed=output&view=tui`はターミナルプログラムの同じ形、
-`?embed=editor&view=output`はソースとその下の出力を、自前のブランディングを持つ
-ページの中に置いた形です。`?embed=1`は`?embed=editor`の古い綴りです。
+`?embed=editor&split=top&view=output`はソースとその下の出力を、自前の
+ブランディングを持つページの中に置いた形です。`?embed=1`は`?embed=editor`の
+古い綴りです。
+
+`?split=`はソースと出力の並べ方です。既定の横並びは幅を必要とし、`top`は出力を
+下に置きます。ページの全幅と数百ピクセルの高さしか無いフレームが欲しいのは後者です。
+720px未満ではどちらにしても縦に積まれます。分ける幅が無いためです。
 
 描画するプログラムは始まると自分のペインへ移ります（TUIは代替スクリーンの
 エスケープで、Canvasは最初のフレームで）。`?view=`が効くのはそれより前と、

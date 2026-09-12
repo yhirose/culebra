@@ -922,12 +922,19 @@ the page to show, and `?view=` is which output pane is the visible one.
 | `?view=output` | the Output pane (the default) |
 | `?view=tui` | the TUI pane |
 | `?view=canvas` | the Canvas pane |
+| `?split=top` | the output under the source rather than beside it |
 
-The two compose. `?embed=output&view=canvas` is a game with nothing
-around it; `?embed=output&view=tui` is the same for a terminal program;
-`?embed=editor&view=output` is a source listing with its output beneath,
-inside a page that brings its own branding. `?embed=1` is the older
-spelling of `?embed=editor`.
+They compose. `?embed=output&view=canvas` is a game with nothing around
+it; `?embed=output&view=tui` is the same for a terminal program;
+`?embed=editor&split=top&view=output` is a source listing with its
+output beneath, inside a page that brings its own branding. `?embed=1`
+is the older spelling of `?embed=editor`.
+
+`?split=` says which way the source and the output sit. Side by side is
+the default and wants width; `top` puts the output underneath, which is
+what a frame with the page's full width and a few hundred pixels of
+height wants. Below 720px the page stacks either way, there being no
+width to split.
 
 A program that draws moves to its own pane when it starts (a TUI one at
 the alternate-screen escape, a Canvas one at its first frame), so
