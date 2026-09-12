@@ -550,16 +550,14 @@ function shareChoice(name) {
   return shareMenu.querySelector(`input[name="share-${name}"]:checked`).value;
 }
 
-// A ?src= link always names where it came from; a catalog one names its
-// example only while the picker still shows it. Putting the picker back on
-// "Examples…" is how someone says the text is no longer that example, and
-// the link follows. Returns whether the link names a project at all.
+// Where the text runs beside something, the link says so. Returns whether it
+// named anything, which decides whether the text has to ride along.
 function nameProject(url) {
   if (project.src) {
     url.searchParams.set("src", project.src);
     return true;
   }
-  if (project.example && exampleItemSel.value === project.example) {
+  if (project.example) {
     url.searchParams.set("example", project.example);
     return true;
   }
@@ -645,7 +643,22 @@ function loadExampleIntoEditor(title) {
     editor.focus();
   });
 }
+// Choosing the "Examples…" placeholder says the text is no longer that
+// example, and the project goes with the name: from then on the text runs
+// alone as main.cul, with none of the example's companion files or arguments
+// under it, and a link to it names nothing. The text stays; New is the one
+// that clears that too.
+async function deselectExample() {
+  await useProject(NO_PROJECT, editor.getValue());
+  projectSource = null;
+  clearExampleSelection();
+}
+
 exampleCatSel.addEventListener("change", () => {
+  if (!exampleCatSel.value) {
+    deselectExample().catch(showLoadError);
+    return;
+  }
   populateExampleItems(exampleCatSel.value);
   const name = exampleItemSel.value;
   if (name) loadExampleIntoEditor(name).catch(showLoadError);

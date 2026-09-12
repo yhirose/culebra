@@ -952,8 +952,10 @@ unedited example shares as its short name rather than as a fragment of
 several kilobytes. The defaults reproduce the plain standalone page,
 which is why an uncustomised link carries none of the three.
 
-A `?src=` page always names where its program came from. A catalog one
-names its example only while the Examples menus still show it: putting
-them back on their placeholder says the text is no longer that example,
-and the link stops naming it. A link that names no project carries the
-text whether or not it was edited, since nothing else would arrive.
+Putting the Examples menus back on their placeholder says the text is
+no longer that example, and the project goes with the name: from then
+on the text runs alone as `main.cul`, with none of the example's
+companion files or arguments under it, and a link to it names nothing.
+The text itself stays, which is what separates this from New. A link
+that names no project carries the text whether or not it was edited,
+since nothing else would arrive.
