@@ -182,12 +182,14 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 
 /* --- embed mode (?embed=1) --------------------------------------------- */
 /* A page hosting the Playground in an iframe brings its own branding and
-   supplies the source through ?code=, so the standalone header, the example
-   picker and the argument box have nothing to do here. Run/Stop, the status
-   and the panes stay: they are the part that is being embedded. */
+   supplies the source through #code=, so the standalone header, the example
+   picker, the argument box and the share button have nothing to do here.
+   Run/Stop, the status and the panes stay: they are the part that is being
+   embedded. */
 .embed .pg-header,
 .embed .example-select,
 .embed #args,
+.embed #share,
 .embed .backend { display: none; }
 .embed .pg-toolbar { padding: 0.45rem 0.8rem; }
 /* Stacked at every width, not just the phone one the standalone page splits

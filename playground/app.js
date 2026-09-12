@@ -2,7 +2,7 @@
 // the editor, toolbar, worker lifecycle (Stop = terminate + respawn), and
 // the Output/TUI tabs.
 import { createEditor } from "./editor.js";
-import { decodeShareParam } from "./share-link.js";
+import { encodeShareParam, decodeShareParam } from "./share-link.js";
 import { Terminal } from "https://esm.sh/@xterm/xterm@5.5.0";
 
 const $ = (id) => document.getElementById(id);
@@ -460,6 +460,29 @@ stopBtn.addEventListener("click", stop);
 clearBtn.addEventListener("click", () => {
   output.textContent = "";
   output.classList.remove("err");
+});
+// The link carries the editor's text and nothing else: ?example= would lose
+// to it, ?run=1 is the host's visitor having pressed Run, and ?embed=1 /
+// ?view=canvas are the host's chrome, which a recipient is not inside. The
+// href is split rather than rebuilt from origin so a file:// checkout works.
+const shareBtn = $("share");
+let shareTimer = null;
+shareBtn.addEventListener("click", async () => {
+  const param = await encodeShareParam(editor.getValue());
+  const url = location.href.split(/[?#]/)[0] + "#code=" + param;
+  try {
+    await navigator.clipboard.writeText(url);
+  } catch {
+    // An http:// address other than localhost has no clipboard API, and a
+    // permission can be denied; the link is still worth having. Not a
+    // prompt(): a modal dialog stalls the page.
+    console.log(url);
+    setStatus("copy failed; the link is in the console", true);
+    return;
+  }
+  clearTimeout(shareTimer);
+  shareBtn.textContent = "Copied!";
+  shareTimer = setTimeout(() => { shareBtn.textContent = "Share"; }, 1500);
 });
 function loadExampleIntoEditor(title) {
   return loadExample(title).then((src) => {
