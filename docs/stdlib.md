@@ -1889,9 +1889,13 @@ out to be unreachable still lands on the CPU.
 
 `use_auto` is the default because small tensors lose to kernel-launch
 overhead: it keeps those on the CPU and sends only the ops big enough
-to pay for the trip. Calling `use_cpu()` / `use_gpu()` anywhere —
-including before the first tensor exists — pins every later op to that
-device instead.
+to pay for the trip. Where that line falls for a matrix product is
+measured on the machine itself, at the first evaluation under `auto`
+(a few square products timed on both devices, a few milliseconds
+once), so the split follows the CPU and GPU actually present rather
+than a table from another box. Calling `use_cpu()` / `use_gpu()`
+anywhere — including before the first tensor exists — pins every later
+op to that device instead.
 
 `use_gpu()` on a build with no reachable GPU falls back to the CPU
 path rather than throwing, so a program stays portable; check
