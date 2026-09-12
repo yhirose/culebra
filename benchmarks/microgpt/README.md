@@ -69,47 +69,53 @@ helps less than it looks: it caches what the *backend* emits, so a warm
 program's compile went 1.58 s cold, 0.70 s warm, against 0.31 s for a
 cold `--jit-faststart`.
 
-### Scalar microgpt — alloc-bound, ~parity with Python
+### Scalar microgpt — alloc-bound, ahead of Python on the JIT
 
-The scalar port builds thousands of `Value` objects per step (one per
-scalar arithmetic op), so it is **alloc-bound**: GC + refcount + malloc are
-~55% of steady-state time. Current per-step is **slower than Python**
-(JIT ~149 ms/step vs Python ~83 ms/step on this machine; absolute figures
-drift with load — compare ratios).
+The scalar port builds ~60k `Value` objects per step (one per scalar
+arithmetic op, each a class instance plus two Arrays), so it is
+**alloc-bound**. Linux (20-thread Zen, one core used), 2026-09-12,
+ms/step over the first two 50-step windows — the per-step cost moves ~20%
+with document length, so compare the same window, not one wall-clock
+average:
 
-An earlier version of this README reported the scalar JIT *beating* Python
-(~0.85×). That advantage relied on the old minor-only cycle collector,
-which was **fast but leaked** (microgpt grew to ~5 GB). The current
-conservative mark-sweep backstop is sound (no leak) but pays a real cost on
-this GC-bound workload — roughly the ~1.8× difference. Recovering it
-precisely (Julia-style shadow-stack rooting → cycle-only collection) is
-tracked separately; the decisive-speed answer for ML on Culebra is the
-**Tensor** path above. Both backends still produce bit-identical loss
-(Python diverges only via a different Mersenne-Twister shuffle, expected).
+| implementation   | steps 1–50 | steps 51–100 |
+|------------------|-----------:|-------------:|
+| Python 3.11      |      75 ms |        81 ms |
+| Culebra `--jit`  |  **60 ms** |    **71 ms** |
+| Culebra `--vm`   |     107 ms |       122 ms |
 
-## Where time goes (`--jit`, 500-step, 8 s sample post-warmup)
+Until 2026-09-12 the JIT sat at 102 / 115 ms, behind Python, and this
+README blamed the collector. Profiling (sampling, self time) showed the
+collector at under 1% and the gap somewhere else: `backward()` spelled
+its inner loop as `range(n).for_each(fn (j) ...)`, which builds a
+`range`, an iterator and a closure for every node — `range` is a
+namespace method call with an argument slab, not a loop — and that alone
+was 40% of the step. The port now writes it as the counted loop Python's
+`zip` walk is; `dot`/`sum_v` keep their `reduce` spelling, since the
+closure *calls* are cheap and moving them to loops measured no gain.
+Both engines still produce bit-identical loss (Python diverges only via
+a different Mersenne-Twister shuffle, expected).
 
-| Category                                 | Inclusive |
-|------------------------------------------|----------:|
-Leaf self-time (a fresh sample), grouped — memory management dominates:
+## Where time goes (`--jit`, self time, sampling profiler, 150 steps)
 
-| Category                                   | Self-time |
-|--------------------------------------------|----------:|
-| GC (mark-sweep + registry: `collect_impl` / `adopt` / `enumerate_children` / sweep / madvise) | ~28% |
-| Refcount (`_culebra_value_release_impl` / `retain` / swap) | ~19% |
-| malloc / free (nanov2)                     | ~8% |
-| thread-local access (`_tlv_get_addr`)      | ~6% |
-| shape / key compare (`memcmp`)             | ~5% |
+| Category                                                        | Self-time |
+|-----------------------------------------------------------------|----------:|
+| JIT-emitted code                                                |      ~28% |
+| Refcount (`_culebra_value_release_impl` / `_release_node`)      |      ~13% |
+| Allocation (`array_new` / `object_new` / malloc / free)         |      ~12% |
+| GC registry insert/erase (`Heap::adopt` / `_gc_note_free`)      |      ~10% |
+| Property/index access (`array_get` / `object_set_fast` / slots) |       ~7% |
+| Collector proper (`collect_impl`)                               |       <1% |
 
-The genuine bottleneck is the per-step `Value` object lifecycle: each scalar
-op creates one heap `Value` (a class instance) + two `JitArray`s = 3
-GC-registered objects.
+The remaining cost is the per-step `Value` lifecycle: three heap objects
+per scalar op, each registered with the collector on birth and
+de-registered on death. Turning the collector off (`CULEBRA_GC_NEVER=1`)
+does not speed the run up, and the heap at each collect stays between
+50k and 280k objects across hundreds of steps — the collection itself is
+not the cost, the bookkeeping around allocation is. The `--vm` lane adds
+dispatch (~25%) and an out-of-line `culebra_runtime_value_retain`
+(~17%) that the JIT inlines as IR.
 
-Most of the GC cost is **over-retention by the conservative stack scan**:
-each collect marks ~200–400k objects (wildly varying) while the true working
-set is ~36k. The high-leverage fix is **precise rooting** (a Julia-style
-tagged-value shadow stack) so RC reclaims the bulk and the collector only
-handles real cycles.
 The structural answer that sidesteps per-scalar Values entirely is the
 **Tensor** port above (one node per layer-level op + BLAS).
 
@@ -140,7 +146,10 @@ inlined as IR.
 **HOF fusion** (close the gap for functional style):
 inlined Array `map`/`filter`/`for_each`/`reduce`, inlined Iterator
 `reduce`/`for_each`/`map.collect`, and `range(N).<HOF>(...)`
-chains fused into direct counter loops.
+chains fused into direct counter loops. This lived in the tree-walking
+interpreter and went with it (v0.3.1 was its last release); the bytecode
+VM and the JIT call these methods as written, which is why the port's
+`backward()` spells its hot loop as `for` today.
 
 Plus narrow wins: skip per-instance `class_name` heap copy, omit
 `__ARGS__` allocation when the body never reads it.

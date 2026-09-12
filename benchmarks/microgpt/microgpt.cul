@@ -105,12 +105,17 @@ class Value {
     build_topo(self)
     self.grad = 1.0
     topo.reverse()
-    topo.for_each(fn (v) {
-      range(v._children.size()).for_each(fn (j) {
-        let child = v._children[j]
-        child.grad = child.grad + v._local_grads[j] * v.grad
-      })
-    })
+    # Python's `for child, local_grad in zip(...)`: a counted loop, not
+    # `range(n).for_each(fn ...)` -- that spelling built a range, an iterator
+    # and a closure per node (~60k per step) and cost 40% of the step.
+    for v in topo {
+      let children = v._children
+      let local_grads = v._local_grads
+      for j in 0..children.size() {
+        let child = children[j]
+        child.grad = child.grad + local_grads[j] * v.grad
+      }
+    }
     for tv in topo {
       tv._visited = false
     }

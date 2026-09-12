@@ -173,7 +173,7 @@
 <body>
 <header>
   <h1>microgpt
-    <span class="sub">Karpathy autograd — Python (207) · Culebra scalar (289)</span>
+    <span class="sub">Karpathy autograd — Python (207) · Culebra scalar (341)</span>
   </h1>
 </header>
 <main>
@@ -219,7 +219,7 @@
 <tr><td class="ln"> 20</td><td class="src">          file=sys.stderr)</td></tr>
 <tr><td class="ln"> 21</td><td class="src">    sys.exit(<span class="num">1</span>)</td></tr>
 </tbody></table></div></td><td class="right"><div class="scroll"><table class="code"><tbody>
-<tr><td class="ln">  7</td><td class="src">Random.seed(<span class="num">42</span>) <span class="cmt"># Let there be order among chaos</span></td></tr>
+<tr><td class="ln">  7</td><td class="src">Random.seed(<span class="num">42</span>)  <span class="cmt"># Let there be order among chaos</span></td></tr>
 <tr><td class="ln">  8</td><td class="src">&nbsp;</td></tr>
 <tr><td class="ln">  9</td><td class="src"><span class="cmt"># Let there be a Dataset `docs`: list[str] of documents (e.g. a list of names)</span></td></tr>
 <tr><td class="ln"> 10</td><td class="src">data_path = <span class="str">'benchmarks/microgpt/names.txt'</span></td></tr>
@@ -237,7 +237,7 @@
 <tr><td class="ln"> 16</td><td class="src"><span class="kw">mut</span> docs = []</td></tr>
 <tr><td class="ln"> 17</td><td class="src"><span class="kw">for</span> line <span class="kw">in</span> FS.read(data_path).split(<span class="str">"\n"</span>) {</td></tr>
 <tr><td class="ln"> 18</td><td class="src">  <span class="kw">let</span> s = line.trim()</td></tr>
-<tr><td class="ln"> 19</td><td class="src">  <span class="kw">if</span> s.size() &gt; <span class="num">0</span> { docs.push(s) }</td></tr>
+<tr><td class="ln"> 19</td><td class="src">  docs.push(s) <span class="kw">if</span> s.size() &gt; <span class="num">0</span></td></tr>
 <tr><td class="ln"> 20</td><td class="src">}</td></tr>
 <tr><td class="ln"> 21</td><td class="src">Random.shuffle(docs)</td></tr>
 <tr><td class="ln"> 22</td><td class="src"><span class="kw">inspect</span>(<span class="str">"num docs: {docs.size()}"</span>)</td></tr>
@@ -251,12 +251,16 @@
 <tr><td class="ln"> 30</td><td class="src">print(f<span class="str">"vocab size: {vocab_size}"</span>)</td></tr>
 </tbody></table></div></td><td class="right"><div class="scroll"><table class="code"><tbody>
 <tr><td class="ln"> 24</td><td class="src"><span class="cmt"># Let there be a Tokenizer to translate strings to sequences of integers ("tokens") and back</span></td></tr>
-<tr><td class="ln"> 25</td><td class="src"><span class="kw">mut</span> uchars = [] <span class="cmt"># unique characters in the dataset become token ids 0..n-1</span></td></tr>
-<tr><td class="ln"> 26</td><td class="src"><span class="kw">for</span> d <span class="kw">in</span> docs { <span class="kw">for</span> c <span class="kw">in</span> d { <span class="kw">if</span> !uchars.contains(c) { uchars.push(c) } } }</td></tr>
-<tr><td class="ln"> 27</td><td class="src">uchars.sort_by(|c| c)</td></tr>
-<tr><td class="ln"> 28</td><td class="src">BOS = uchars.size()              <span class="cmt"># token id for a special Beginning of Sequence (BOS) token</span></td></tr>
-<tr><td class="ln"> 29</td><td class="src">vocab_size = uchars.size() + <span class="num">1</span>   <span class="cmt"># total number of unique tokens, +1 is for BOS</span></td></tr>
-<tr><td class="ln"> 30</td><td class="src"><span class="kw">inspect</span>(<span class="str">"vocab size: {vocab_size}"</span>)</td></tr>
+<tr><td class="ln"> 25</td><td class="src"><span class="kw">mut</span> uchars = []  <span class="cmt"># unique characters in the dataset become token ids 0..n-1</span></td></tr>
+<tr><td class="ln"> 26</td><td class="src"><span class="kw">for</span> d <span class="kw">in</span> docs {</td></tr>
+<tr><td class="ln"> 27</td><td class="src">  <span class="kw">for</span> c <span class="kw">in</span> d {</td></tr>
+<tr><td class="ln"> 28</td><td class="src">    uchars.push(c) <span class="kw">if</span> !uchars.contains(c)</td></tr>
+<tr><td class="ln"> 29</td><td class="src">  }</td></tr>
+<tr><td class="ln"> 30</td><td class="src">}</td></tr>
+<tr><td class="ln"> 31</td><td class="src">uchars.sort_by(|c| c)</td></tr>
+<tr><td class="ln"> 32</td><td class="src">BOS = uchars.size()             <span class="cmt"># token id for a special Beginning of Sequence (BOS) token</span></td></tr>
+<tr><td class="ln"> 33</td><td class="src">vocab_size = uchars.size() + <span class="num">1</span>  <span class="cmt"># total number of unique tokens, +1 is for BOS</span></td></tr>
+<tr><td class="ln"> 34</td><td class="src"><span class="kw">inspect</span>(<span class="str">"vocab size: {vocab_size}"</span>)</td></tr>
 </tbody></table></div></td></tr>
       <tr class="section"><td colspan="2">class Value — fields &amp; special methods</td></tr>
       <tr class="code-row"><td class="left"><div class="scroll"><table class="code"><tbody>
@@ -290,43 +294,66 @@
 <tr><td class="ln"> 59</td><td class="src">    <span class="kw">def</span> __truediv__(self, other): <span class="kw">return</span> self * other**-<span class="num">1</span></td></tr>
 <tr><td class="ln"> 60</td><td class="src">    <span class="kw">def</span> __rtruediv__(self, other): <span class="kw">return</span> other * self**-<span class="num">1</span></td></tr>
 </tbody></table></div></td><td class="right"><div class="scroll"><table class="code"><tbody>
-<tr><td class="ln"> 33</td><td class="src"><span class="cmt"># Let there be Autograd to recursively apply the chain rule through a computation graph</span></td></tr>
-<tr><td class="ln"> 34</td><td class="src"><span class="kw">class</span> Value {</td></tr>
-<tr><td class="ln"> 35</td><td class="src">  <span class="kw">new</span>(data, children = [], local_grads = []) {</td></tr>
-<tr><td class="ln"> 36</td><td class="src">    <span class="kw">this</span>.data = data                <span class="cmt"># scalar value of this node calculated during forward pass</span></td></tr>
-<tr><td class="ln"> 37</td><td class="src">    <span class="kw">this</span>.grad = <span class="num">0.0</span>                 <span class="cmt"># derivative of the loss w.r.t. this node, calculated in backward pass</span></td></tr>
-<tr><td class="ln"> 38</td><td class="src">    <span class="kw">this</span>._children = children       <span class="cmt"># children of this node in the computation graph</span></td></tr>
-<tr><td class="ln"> 39</td><td class="src">    <span class="kw">this</span>._local_grads = local_grads <span class="cmt"># local derivative of this node w.r.t. its children</span></td></tr>
-<tr><td class="ln"> 40</td><td class="src">    <span class="kw">this</span>._visited = <span class="kw">false</span></td></tr>
-<tr><td class="ln"> 41</td><td class="src">  }</td></tr>
-<tr><td class="ln"> 42</td><td class="src">  __add__(other) {</td></tr>
-<tr><td class="ln"> 43</td><td class="src">    <span class="kw">match</span> other {</td></tr>
-<tr><td class="ln"> 44</td><td class="src">      o: Object =&gt; Value.<span class="kw">new</span>(<span class="kw">this</span>.data + o.data, [<span class="kw">this</span>, o], [<span class="num">1.0</span>, <span class="num">1.0</span>]),</td></tr>
-<tr><td class="ln"> 45</td><td class="src">      _         =&gt; Value.<span class="kw">new</span>(<span class="kw">this</span>.data + other, [<span class="kw">this</span>], [<span class="num">1.0</span>])</td></tr>
-<tr><td class="ln"> 46</td><td class="src">    }</td></tr>
-<tr><td class="ln"> 47</td><td class="src">  }</td></tr>
-<tr><td class="ln"> 48</td><td class="src">  __mul__(other) {</td></tr>
-<tr><td class="ln"> 49</td><td class="src">    <span class="kw">match</span> other {</td></tr>
-<tr><td class="ln"> 50</td><td class="src">      o: Object =&gt; Value.<span class="kw">new</span>(<span class="kw">this</span>.data * o.data, [<span class="kw">this</span>, o], [o.data, <span class="kw">this</span>.data]),</td></tr>
-<tr><td class="ln"> 51</td><td class="src">      _         =&gt; Value.<span class="kw">new</span>(<span class="kw">this</span>.data * other, [<span class="kw">this</span>], [other])</td></tr>
-<tr><td class="ln"> 52</td><td class="src">    }</td></tr>
-<tr><td class="ln"> 53</td><td class="src">  }</td></tr>
-<tr><td class="ln"> 54</td><td class="src">  __pow__(n)     { Value.<span class="kw">new</span>(<span class="kw">this</span>.data ** n, [<span class="kw">this</span>], [n * <span class="kw">this</span>.data ** (n - <span class="num">1</span>)]) }</td></tr>
-<tr><td class="ln"> 55</td><td class="src">  __neg__()      { <span class="kw">this</span> * (-<span class="num">1.0</span>) }</td></tr>
-<tr><td class="ln"> 56</td><td class="src">  __sub__(other) { <span class="kw">this</span> + (-other) }</td></tr>
-<tr><td class="ln"> 57</td><td class="src">  __div__(other) {</td></tr>
-<tr><td class="ln"> 58</td><td class="src">    <span class="kw">match</span> other {</td></tr>
-<tr><td class="ln"> 59</td><td class="src">      o: Object =&gt; <span class="kw">this</span> * (o ** -<span class="num">1.0</span>),</td></tr>
-<tr><td class="ln"> 60</td><td class="src">      _         =&gt; <span class="kw">this</span> * (<span class="num">1.0</span> / other)</td></tr>
-<tr><td class="ln"> 61</td><td class="src">    }</td></tr>
-<tr><td class="ln"> 62</td><td class="src">  }</td></tr>
-<tr><td class="ln"> 63</td><td class="src">  log()  { Value.<span class="kw">new</span>(Math.log(<span class="kw">this</span>.data), [<span class="kw">this</span>], [<span class="num">1.0</span> / <span class="kw">this</span>.data]) }</td></tr>
-<tr><td class="ln"> 64</td><td class="src">  exp()  { d = Math.exp(<span class="kw">this</span>.data); Value.<span class="kw">new</span>(d, [<span class="kw">this</span>], [d]) }</td></tr>
-<tr><td class="ln"> 65</td><td class="src">  relu() {</td></tr>
-<tr><td class="ln"> 66</td><td class="src">    d = <span class="kw">if</span> <span class="kw">this</span>.data &gt; <span class="num">0.0</span> { <span class="kw">this</span>.data } <span class="kw">else</span> { <span class="num">0.0</span> }</td></tr>
-<tr><td class="ln"> 67</td><td class="src">    g = <span class="kw">if</span> <span class="kw">this</span>.data &gt; <span class="num">0.0</span> { <span class="num">1.0</span> } <span class="kw">else</span> { <span class="num">0.0</span> }</td></tr>
-<tr><td class="ln"> 68</td><td class="src">    Value.<span class="kw">new</span>(d, [<span class="kw">this</span>], [g])</td></tr>
+<tr><td class="ln"> 36</td><td class="src"><span class="cmt"># Let there be Autograd to recursively apply the chain rule through a computation graph</span></td></tr>
+<tr><td class="ln"> 37</td><td class="src"><span class="kw">class</span> Value {</td></tr>
+<tr><td class="ln"> 38</td><td class="src">  <span class="kw">new</span>(data, children = [], local_grads = []) {</td></tr>
+<tr><td class="ln"> 39</td><td class="src">    <span class="kw">self</span>.data = data                 <span class="cmt"># scalar value of this node calculated during forward pass</span></td></tr>
+<tr><td class="ln"> 40</td><td class="src">    <span class="kw">self</span>.grad = <span class="num">0.0</span>                  <span class="cmt"># derivative of the loss w.r.t. this node, calculated in backward pass</span></td></tr>
+<tr><td class="ln"> 41</td><td class="src">    <span class="kw">self</span>._children = children        <span class="cmt"># children of this node in the computation graph</span></td></tr>
+<tr><td class="ln"> 42</td><td class="src">    <span class="kw">self</span>._local_grads = local_grads  <span class="cmt"># local derivative of this node w.r.t. its children</span></td></tr>
+<tr><td class="ln"> 43</td><td class="src">    <span class="kw">self</span>._visited = <span class="kw">false</span></td></tr>
+<tr><td class="ln"> 44</td><td class="src">  }</td></tr>
+<tr><td class="ln"> 45</td><td class="src">  __add__(other) {</td></tr>
+<tr><td class="ln"> 46</td><td class="src">    <span class="kw">match</span> other {</td></tr>
+<tr><td class="ln"> 47</td><td class="src">      o: Object =&gt; Value.<span class="kw">new</span>(<span class="kw">self</span>.data + o.data, [<span class="kw">self</span>, o], [<span class="num">1.0</span>, <span class="num">1.0</span>]),</td></tr>
+<tr><td class="ln"> 48</td><td class="src">      _ =&gt; Value.<span class="kw">new</span>(<span class="kw">self</span>.data + other, [<span class="kw">self</span>], [<span class="num">1.0</span>]),</td></tr>
+<tr><td class="ln"> 49</td><td class="src">    }</td></tr>
+<tr><td class="ln"> 50</td><td class="src">  }</td></tr>
+<tr><td class="ln"> 51</td><td class="src">  __mul__(other) {</td></tr>
+<tr><td class="ln"> 52</td><td class="src">    <span class="kw">match</span> other {</td></tr>
+<tr><td class="ln"> 53</td><td class="src">      o: Object =&gt; Value.<span class="kw">new</span>(</td></tr>
+<tr><td class="ln"> 54</td><td class="src">        <span class="kw">self</span>.data * o.data,</td></tr>
+<tr><td class="ln"> 55</td><td class="src">        [<span class="kw">self</span>, o],</td></tr>
+<tr><td class="ln"> 56</td><td class="src">        [o.data, <span class="kw">self</span>.data],</td></tr>
+<tr><td class="ln"> 57</td><td class="src">      ),</td></tr>
+<tr><td class="ln"> 58</td><td class="src">      _ =&gt; Value.<span class="kw">new</span>(<span class="kw">self</span>.data * other, [<span class="kw">self</span>], [other]),</td></tr>
+<tr><td class="ln"> 59</td><td class="src">    }</td></tr>
+<tr><td class="ln"> 60</td><td class="src">  }</td></tr>
+<tr><td class="ln"> 61</td><td class="src">  __pow__(n) {</td></tr>
+<tr><td class="ln"> 62</td><td class="src">    Value.<span class="kw">new</span>(<span class="kw">self</span>.data ** n, [<span class="kw">self</span>], [n * <span class="kw">self</span>.data ** (n - <span class="num">1</span>)])</td></tr>
+<tr><td class="ln"> 63</td><td class="src">  }</td></tr>
+<tr><td class="ln"> 64</td><td class="src">  __neg__() {</td></tr>
+<tr><td class="ln"> 65</td><td class="src">    <span class="kw">self</span> * -<span class="num">1.0</span></td></tr>
+<tr><td class="ln"> 66</td><td class="src">  }</td></tr>
+<tr><td class="ln"> 67</td><td class="src">  __sub__(other) {</td></tr>
+<tr><td class="ln"> 68</td><td class="src">    <span class="kw">self</span> + -other</td></tr>
 <tr><td class="ln"> 69</td><td class="src">  }</td></tr>
+<tr><td class="ln"> 70</td><td class="src">  __div__(other) {</td></tr>
+<tr><td class="ln"> 71</td><td class="src">    <span class="kw">match</span> other {</td></tr>
+<tr><td class="ln"> 72</td><td class="src">      o: Object =&gt; <span class="kw">self</span> * o ** (-<span class="num">1.0</span>),</td></tr>
+<tr><td class="ln"> 73</td><td class="src">      _ =&gt; <span class="kw">self</span> * (<span class="num">1.0</span> / other),</td></tr>
+<tr><td class="ln"> 74</td><td class="src">    }</td></tr>
+<tr><td class="ln"> 75</td><td class="src">  }</td></tr>
+<tr><td class="ln"> 76</td><td class="src">  log() {</td></tr>
+<tr><td class="ln"> 77</td><td class="src">    Value.<span class="kw">new</span>(Math.log(<span class="kw">self</span>.data), [<span class="kw">self</span>], [<span class="num">1.0</span> / <span class="kw">self</span>.data])</td></tr>
+<tr><td class="ln"> 78</td><td class="src">  }</td></tr>
+<tr><td class="ln"> 79</td><td class="src">  exp() {</td></tr>
+<tr><td class="ln"> 80</td><td class="src">    d = Math.exp(<span class="kw">self</span>.data)</td></tr>
+<tr><td class="ln"> 81</td><td class="src">    Value.<span class="kw">new</span>(d, [<span class="kw">self</span>], [d])</td></tr>
+<tr><td class="ln"> 82</td><td class="src">  }</td></tr>
+<tr><td class="ln"> 83</td><td class="src">  relu() {</td></tr>
+<tr><td class="ln"> 84</td><td class="src">    d = <span class="kw">if</span> <span class="kw">self</span>.data &gt; <span class="num">0.0</span> {</td></tr>
+<tr><td class="ln"> 85</td><td class="src">      <span class="kw">self</span>.data</td></tr>
+<tr><td class="ln"> 86</td><td class="src">    } <span class="kw">else</span> {</td></tr>
+<tr><td class="ln"> 87</td><td class="src">      <span class="num">0.0</span></td></tr>
+<tr><td class="ln"> 88</td><td class="src">    }</td></tr>
+<tr><td class="ln"> 89</td><td class="src">    g = <span class="kw">if</span> <span class="kw">self</span>.data &gt; <span class="num">0.0</span> {</td></tr>
+<tr><td class="ln"> 90</td><td class="src">      <span class="num">1.0</span></td></tr>
+<tr><td class="ln"> 91</td><td class="src">    } <span class="kw">else</span> {</td></tr>
+<tr><td class="ln"> 92</td><td class="src">      <span class="num">0.0</span></td></tr>
+<tr><td class="ln"> 93</td><td class="src">    }</td></tr>
+<tr><td class="ln"> 94</td><td class="src">    Value.<span class="kw">new</span>(d, [<span class="kw">self</span>], [g])</td></tr>
+<tr><td class="ln"> 95</td><td class="src">  }</td></tr>
 </tbody></table></div></td></tr>
       <tr class="section"><td colspan="2">Value.backward — topo + grad walk</td></tr>
       <tr class="code-row"><td class="left"><div class="scroll"><table class="code"><tbody>
@@ -345,33 +372,44 @@
 <tr><td class="ln"> 74</td><td class="src">            <span class="kw">for</span> child, local_grad <span class="kw">in</span> zip(v._children, v._local_grads):</td></tr>
 <tr><td class="ln"> 75</td><td class="src">                child.grad += local_grad * v.grad</td></tr>
 </tbody></table></div></td><td class="right"><div class="scroll"><table class="code"><tbody>
-<tr><td class="ln"> 70</td><td class="src">  backward() {</td></tr>
-<tr><td class="ln"> 71</td><td class="src">    <span class="kw">mut</span> topo = []</td></tr>
-<tr><td class="ln"> 72</td><td class="src">    build_topo = |node| <span class="kw">if</span> !node._visited {</td></tr>
-<tr><td class="ln"> 73</td><td class="src">      node._visited = <span class="kw">true</span></td></tr>
-<tr><td class="ln"> 74</td><td class="src">      <span class="kw">for</span> ch <span class="kw">in</span> node._children { <span class="kw">self</span>(ch) }</td></tr>
-<tr><td class="ln"> 75</td><td class="src">      topo.push(node)</td></tr>
-<tr><td class="ln"> 76</td><td class="src">    }</td></tr>
-<tr><td class="ln"> 77</td><td class="src">    build_topo(<span class="kw">this</span>)</td></tr>
-<tr><td class="ln"> 78</td><td class="src">    <span class="kw">this</span>.grad = <span class="num">1.0</span></td></tr>
-<tr><td class="ln"> 79</td><td class="src">    topo.reverse()</td></tr>
-<tr><td class="ln"> 80</td><td class="src">    topo.for_each(<span class="kw">fn</span> (v) {</td></tr>
-<tr><td class="ln"> 81</td><td class="src">      range(v._children.size()).for_each(<span class="kw">fn</span> (j) {</td></tr>
-<tr><td class="ln"> 82</td><td class="src">        <span class="kw">let</span> child = v._children[j]</td></tr>
-<tr><td class="ln"> 83</td><td class="src">        child.grad = child.grad + v._local_grads[j] * v.grad</td></tr>
-<tr><td class="ln"> 84</td><td class="src">      })</td></tr>
-<tr><td class="ln"> 85</td><td class="src">    })</td></tr>
-<tr><td class="ln"> 86</td><td class="src">    <span class="kw">for</span> tv <span class="kw">in</span> topo { tv._visited = <span class="kw">false</span> }</td></tr>
-<tr><td class="ln"> 87</td><td class="src">  }</td></tr>
-<tr><td class="ln"> 88</td><td class="src">}</td></tr>
+<tr><td class="ln"> 96</td><td class="src">  backward() {</td></tr>
+<tr><td class="ln"> 97</td><td class="src">    <span class="kw">mut</span> topo = []</td></tr>
+<tr><td class="ln"> 98</td><td class="src">    build_topo = |node| <span class="kw">if</span> !node._visited {</td></tr>
+<tr><td class="ln"> 99</td><td class="src">      node._visited = <span class="kw">true</span></td></tr>
+<tr><td class="ln">100</td><td class="src">      <span class="kw">for</span> ch <span class="kw">in</span> node._children {</td></tr>
+<tr><td class="ln">101</td><td class="src">        <span class="kw">fn</span>(ch)</td></tr>
+<tr><td class="ln">102</td><td class="src">      }</td></tr>
+<tr><td class="ln">103</td><td class="src">      topo.push(node)</td></tr>
+<tr><td class="ln">104</td><td class="src">    }</td></tr>
+<tr><td class="ln">105</td><td class="src">    build_topo(<span class="kw">self</span>)</td></tr>
+<tr><td class="ln">106</td><td class="src">    <span class="kw">self</span>.grad = <span class="num">1.0</span></td></tr>
+<tr><td class="ln">107</td><td class="src">    topo.reverse()</td></tr>
+<tr><td class="ln">108</td><td class="src">    <span class="cmt"># Python's `for child, local_grad in zip(...)`: a counted loop, not</span></td></tr>
+<tr><td class="ln">109</td><td class="src">    <span class="cmt"># `range(n).for_each(fn ...)` -- that spelling built a range, an iterator</span></td></tr>
+<tr><td class="ln">110</td><td class="src">    <span class="cmt"># and a closure per node (~60k per step) and cost 40% of the step.</span></td></tr>
+<tr><td class="ln">111</td><td class="src">    <span class="kw">for</span> v <span class="kw">in</span> topo {</td></tr>
+<tr><td class="ln">112</td><td class="src">      <span class="kw">let</span> children = v._children</td></tr>
+<tr><td class="ln">113</td><td class="src">      <span class="kw">let</span> local_grads = v._local_grads</td></tr>
+<tr><td class="ln">114</td><td class="src">      <span class="kw">for</span> j <span class="kw">in</span> <span class="num">0</span>..children.size() {</td></tr>
+<tr><td class="ln">115</td><td class="src">        <span class="kw">let</span> child = children[j]</td></tr>
+<tr><td class="ln">116</td><td class="src">        child.grad = child.grad + local_grads[j] * v.grad</td></tr>
+<tr><td class="ln">117</td><td class="src">      }</td></tr>
+<tr><td class="ln">118</td><td class="src">    }</td></tr>
+<tr><td class="ln">119</td><td class="src">    <span class="kw">for</span> tv <span class="kw">in</span> topo {</td></tr>
+<tr><td class="ln">120</td><td class="src">      tv._visited = <span class="kw">false</span></td></tr>
+<tr><td class="ln">121</td><td class="src">    }</td></tr>
+<tr><td class="ln">122</td><td class="src">  }</td></tr>
+<tr><td class="ln">123</td><td class="src">}</td></tr>
 </tbody></table></div></td></tr>
       <tr class="section"><td colspan="2">sum_v / max_data (Culebra helpers; Python uses sum() / max() builtins)</td></tr>
       <tr class="code-row"><td class="left"><div class="empty">— no equivalent (handled by language builtins) —</div></td><td class="right"><div class="scroll"><table class="code"><tbody>
-<tr><td class="ln"> 90</td><td class="src">sum_v = |arr| arr.reduce(Value.<span class="kw">new</span>(<span class="num">0.0</span>), |a, b| a + b)</td></tr>
-<tr><td class="ln"> 91</td><td class="src">&nbsp;</td></tr>
-<tr><td class="ln"> 92</td><td class="src">max_data = |arr| arr.reduce(arr[<span class="num">0</span>].data, |best, v|</td></tr>
-<tr><td class="ln"> 93</td><td class="src">  <span class="kw">if</span> v.data &gt; best { v.data } <span class="kw">else</span> { best }</td></tr>
-<tr><td class="ln"> 94</td><td class="src">)</td></tr>
+<tr><td class="ln">125</td><td class="src">sum_v = |arr| arr.reduce(Value.<span class="kw">new</span>(<span class="num">0.0</span>), |a, b| a + b)</td></tr>
+<tr><td class="ln">126</td><td class="src">&nbsp;</td></tr>
+<tr><td class="ln">127</td><td class="src">max_data = |arr| arr.reduce(arr[<span class="num">0</span>].data, |best, v| <span class="kw">if</span> v.data &gt; best {</td></tr>
+<tr><td class="ln">128</td><td class="src">  v.data</td></tr>
+<tr><td class="ln">129</td><td class="src">} <span class="kw">else</span> {</td></tr>
+<tr><td class="ln">130</td><td class="src">  best</td></tr>
+<tr><td class="ln">131</td><td class="src">})</td></tr>
 </tbody></table></div></td></tr>
       <tr class="section"><td colspan="2">Hyperparameters</td></tr>
       <tr class="code-row"><td class="left"><div class="scroll"><table class="code"><tbody>
@@ -382,22 +420,21 @@
 <tr><td class="ln"> 81</td><td class="src">n_head = <span class="num">4</span>      <span class="cmt"># number of attention heads</span></td></tr>
 <tr><td class="ln"> 82</td><td class="src">head_dim = n_embd // n_head <span class="cmt"># derived dimension of each head</span></td></tr>
 </tbody></table></div></td><td class="right"><div class="scroll"><table class="code"><tbody>
-<tr><td class="ln"> 97</td><td class="src"><span class="cmt"># Initialize the parameters, to store the knowledge of the model</span></td></tr>
-<tr><td class="ln"> 98</td><td class="src">n_layer = <span class="num">1</span>     <span class="cmt"># depth of the transformer neural network (number of layers)</span></td></tr>
-<tr><td class="ln"> 99</td><td class="src">n_embd = <span class="num">16</span>     <span class="cmt"># width of the network (embedding dimension)</span></td></tr>
-<tr><td class="ln">100</td><td class="src">block_size = <span class="num">16</span> <span class="cmt"># maximum context length of the attention window (note: the longest name is 15 characters)</span></td></tr>
-<tr><td class="ln">101</td><td class="src">n_head = <span class="num">4</span>      <span class="cmt"># number of attention heads</span></td></tr>
-<tr><td class="ln">102</td><td class="src">head_dim = n_embd / n_head <span class="cmt"># derived dimension of each head</span></td></tr>
-<tr><td class="ln">103</td><td class="src">attn_scale = <span class="num">1.0</span> / (head_dim ** <span class="num">0.5</span>)</td></tr>
+<tr><td class="ln">133</td><td class="src"><span class="cmt"># Initialize the parameters, to store the knowledge of the model</span></td></tr>
+<tr><td class="ln">134</td><td class="src">n_layer = <span class="num">1</span>                 <span class="cmt"># depth of the transformer neural network (number of layers)</span></td></tr>
+<tr><td class="ln">135</td><td class="src">n_embd = <span class="num">16</span>                 <span class="cmt"># width of the network (embedding dimension)</span></td></tr>
+<tr><td class="ln">136</td><td class="src">block_size = <span class="num">16</span>             <span class="cmt"># maximum context length of the attention window (note: the longest name is 15 characters)</span></td></tr>
+<tr><td class="ln">137</td><td class="src">n_head = <span class="num">4</span>                  <span class="cmt"># number of attention heads</span></td></tr>
+<tr><td class="ln">138</td><td class="src">head_dim = n_embd / n_head  <span class="cmt"># derived dimension of each head</span></td></tr>
+<tr><td class="ln">139</td><td class="src">attn_scale = <span class="num">1.0</span> / head_dim ** <span class="num">0.5</span></td></tr>
 </tbody></table></div></td></tr>
       <tr class="section"><td colspan="2">matrix factory</td></tr>
       <tr class="code-row"><td class="left"><div class="scroll"><table class="code"><tbody>
 <tr><td class="ln"> 83</td><td class="src">matrix = <span class="kw">lambda</span> nout, nin, std=<span class="num">0.08</span>: [[Value(random.gauss(<span class="num">0</span>, std)) <span class="kw">for</span> _ <span class="kw">in</span> range(nin)] <span class="kw">for</span> _ <span class="kw">in</span> range(nout)]</td></tr>
 </tbody></table></div></td><td class="right"><div class="scroll"><table class="code"><tbody>
-<tr><td class="ln">105</td><td class="src">matrix = |nout, nin, std = <span class="num">0.08</span>|</td></tr>
-<tr><td class="ln">106</td><td class="src">  range(nout).map(|_|</td></tr>
-<tr><td class="ln">107</td><td class="src">    range(nin).map(|_| Value.<span class="kw">new</span>(Random.gauss(<span class="num">0.0</span>, std))).collect()</td></tr>
-<tr><td class="ln">108</td><td class="src">  ).collect()</td></tr>
+<tr><td class="ln">141</td><td class="src">matrix = |nout, nin, std = <span class="num">0.08</span>| range(nout)</td></tr>
+<tr><td class="ln">142</td><td class="src">  .map(|_| range(nin).map(|_| Value.<span class="kw">new</span>(Random.gauss(<span class="num">0.0</span>, std))).collect())</td></tr>
+<tr><td class="ln">143</td><td class="src">  .collect()</td></tr>
 </tbody></table></div></td></tr>
       <tr class="section"><td colspan="2">state / params collection</td></tr>
       <tr class="code-row"><td class="left"><div class="scroll"><table class="code"><tbody>
@@ -412,39 +449,38 @@
 <tr><td class="ln"> 92</td><td class="src">params = [p <span class="kw">for</span> mat <span class="kw">in</span> state_dict.values() <span class="kw">for</span> row <span class="kw">in</span> mat <span class="kw">for</span> p <span class="kw">in</span> row] <span class="cmt"># flatten params into a single list[Value]</span></td></tr>
 <tr><td class="ln"> 93</td><td class="src">print(f<span class="str">"num params: {len(params)}"</span>)</td></tr>
 </tbody></table></div></td><td class="right"><div class="scroll"><table class="code"><tbody>
-<tr><td class="ln">110</td><td class="src"><span class="cmt"># Wrap the parameters in a class so that `model.parameters()` returns</span></td></tr>
-<tr><td class="ln">111</td><td class="src"><span class="cmt"># every Value automatically (the walker descends Arrays and plain</span></td></tr>
-<tr><td class="ln">112</td><td class="src"><span class="cmt"># Object dicts in alphabetical-key order). Matrix construction order</span></td></tr>
-<tr><td class="ln">113</td><td class="src"><span class="cmt"># mirrors the upstream Python's `state_dict.values()` iteration</span></td></tr>
-<tr><td class="ln">114</td><td class="src"><span class="cmt"># (`wte`, `wpe`, `lm_head`, then per-layer attn/mlp) for structural</span></td></tr>
-<tr><td class="ln">115</td><td class="src"><span class="cmt"># fidelity. Loss curves still diverge step-by-step because</span></td></tr>
-<tr><td class="ln">116</td><td class="src"><span class="cmt"># `Random.shuffle` / `Random.gauss` use different PRNG algorithms</span></td></tr>
-<tr><td class="ln">117</td><td class="src"><span class="cmt"># than Python (Mersenne Twister state isn't portable), but the</span></td></tr>
-<tr><td class="ln">118</td><td class="src"><span class="cmt"># overall convergence behavior matches.</span></td></tr>
-<tr><td class="ln">119</td><td class="src"><span class="kw">class</span> GPT {</td></tr>
-<tr><td class="ln">120</td><td class="src">  <span class="kw">new</span>() {</td></tr>
-<tr><td class="ln">121</td><td class="src">    <span class="kw">this</span>.wte = matrix(vocab_size, n_embd)</td></tr>
-<tr><td class="ln">122</td><td class="src">    <span class="kw">this</span>.wpe = matrix(block_size, n_embd)</td></tr>
-<tr><td class="ln">123</td><td class="src">    <span class="kw">this</span>.lm_head = matrix(vocab_size, n_embd)</td></tr>
-<tr><td class="ln">124</td><td class="src">    <span class="kw">mut</span> layers = []</td></tr>
-<tr><td class="ln">125</td><td class="src">    <span class="kw">for</span> _ <span class="kw">in</span> <span class="num">0</span>..n_layer {</td></tr>
-<tr><td class="ln">126</td><td class="src">      layers.push({</td></tr>
-<tr><td class="ln">127</td><td class="src">        attn_wq: matrix(n_embd, n_embd),</td></tr>
-<tr><td class="ln">128</td><td class="src">        attn_wk: matrix(n_embd, n_embd),</td></tr>
-<tr><td class="ln">129</td><td class="src">        attn_wv: matrix(n_embd, n_embd),</td></tr>
-<tr><td class="ln">130</td><td class="src">        attn_wo: matrix(n_embd, n_embd),</td></tr>
-<tr><td class="ln">131</td><td class="src">        mlp_fc1: matrix(<span class="num">4</span> * n_embd, n_embd),</td></tr>
-<tr><td class="ln">132</td><td class="src">        mlp_fc2: matrix(n_embd, <span class="num">4</span> * n_embd)</td></tr>
-<tr><td class="ln">133</td><td class="src">      })</td></tr>
-<tr><td class="ln">134</td><td class="src">    }</td></tr>
-<tr><td class="ln">135</td><td class="src">    <span class="kw">this</span>.layers = layers</td></tr>
-<tr><td class="ln">136</td><td class="src">  }</td></tr>
-<tr><td class="ln">137</td><td class="src">}</td></tr>
-<tr><td class="ln">138</td><td class="src">&nbsp;</td></tr>
-<tr><td class="ln">139</td><td class="src"><span class="kw">let</span> model = GPT.<span class="kw">new</span>()</td></tr>
-<tr><td class="ln">140</td><td class="src"><span class="kw">let</span> params = model.parameters()</td></tr>
-<tr><td class="ln">141</td><td class="src"><span class="kw">inspect</span>(<span class="str">"num params: {params.size()}"</span>) <span class="cmt"># flat Array&lt;Value&gt;, one per scalar weight</span></td></tr>
-<tr><td class="ln">142</td><td class="src">&nbsp;</td></tr>
+<tr><td class="ln">145</td><td class="src"><span class="cmt"># Wrap the parameters in a class so that `model.parameters()` returns</span></td></tr>
+<tr><td class="ln">146</td><td class="src"><span class="cmt"># every Value automatically (the walker descends Arrays and plain</span></td></tr>
+<tr><td class="ln">147</td><td class="src"><span class="cmt"># Object dicts in alphabetical-key order). Matrix construction order</span></td></tr>
+<tr><td class="ln">148</td><td class="src"><span class="cmt"># mirrors the upstream Python's `state_dict.values()` iteration</span></td></tr>
+<tr><td class="ln">149</td><td class="src"><span class="cmt"># (`wte`, `wpe`, `lm_head`, then per-layer attn/mlp) for structural</span></td></tr>
+<tr><td class="ln">150</td><td class="src"><span class="cmt"># fidelity. Loss curves still diverge step-by-step because</span></td></tr>
+<tr><td class="ln">151</td><td class="src"><span class="cmt"># `Random.shuffle` / `Random.gauss` use different PRNG algorithms</span></td></tr>
+<tr><td class="ln">152</td><td class="src"><span class="cmt"># than Python (Mersenne Twister state isn't portable), but the</span></td></tr>
+<tr><td class="ln">153</td><td class="src"><span class="cmt"># overall convergence behavior matches.</span></td></tr>
+<tr><td class="ln">154</td><td class="src"><span class="kw">class</span> GPT {</td></tr>
+<tr><td class="ln">155</td><td class="src">  <span class="kw">new</span>() {</td></tr>
+<tr><td class="ln">156</td><td class="src">    <span class="kw">self</span>.wte = matrix(vocab_size, n_embd)</td></tr>
+<tr><td class="ln">157</td><td class="src">    <span class="kw">self</span>.wpe = matrix(block_size, n_embd)</td></tr>
+<tr><td class="ln">158</td><td class="src">    <span class="kw">self</span>.lm_head = matrix(vocab_size, n_embd)</td></tr>
+<tr><td class="ln">159</td><td class="src">    <span class="kw">mut</span> layers = []</td></tr>
+<tr><td class="ln">160</td><td class="src">    <span class="kw">for</span> _ <span class="kw">in</span> <span class="num">0</span>..n_layer {</td></tr>
+<tr><td class="ln">161</td><td class="src">      layers.push({</td></tr>
+<tr><td class="ln">162</td><td class="src">        attn_wq: matrix(n_embd, n_embd),</td></tr>
+<tr><td class="ln">163</td><td class="src">        attn_wk: matrix(n_embd, n_embd),</td></tr>
+<tr><td class="ln">164</td><td class="src">        attn_wv: matrix(n_embd, n_embd),</td></tr>
+<tr><td class="ln">165</td><td class="src">        attn_wo: matrix(n_embd, n_embd),</td></tr>
+<tr><td class="ln">166</td><td class="src">        mlp_fc1: matrix(<span class="num">4</span> * n_embd, n_embd),</td></tr>
+<tr><td class="ln">167</td><td class="src">        mlp_fc2: matrix(n_embd, <span class="num">4</span> * n_embd),</td></tr>
+<tr><td class="ln">168</td><td class="src">      })</td></tr>
+<tr><td class="ln">169</td><td class="src">    }</td></tr>
+<tr><td class="ln">170</td><td class="src">    <span class="kw">self</span>.layers = layers</td></tr>
+<tr><td class="ln">171</td><td class="src">  }</td></tr>
+<tr><td class="ln">172</td><td class="src">}</td></tr>
+<tr><td class="ln">173</td><td class="src">&nbsp;</td></tr>
+<tr><td class="ln">174</td><td class="src"><span class="kw">let</span> model = GPT.<span class="kw">new</span>()</td></tr>
+<tr><td class="ln">175</td><td class="src"><span class="kw">let</span> params = model.parameters()</td></tr>
+<tr><td class="ln">176</td><td class="src"><span class="kw">inspect</span>(<span class="str">"num params: {params.size()}"</span>)  <span class="cmt"># flat Array&lt;Value&gt;, one per scalar weight</span></td></tr>
 </tbody></table></div></td></tr>
       <tr class="section"><td colspan="2">linear (with dot helper)</td></tr>
       <tr class="code-row"><td class="left"><div class="scroll"><table class="code"><tbody>
@@ -453,12 +489,11 @@
 <tr><td class="ln"> 97</td><td class="src"><span class="kw">def</span> linear(x, w):</td></tr>
 <tr><td class="ln"> 98</td><td class="src">    <span class="kw">return</span> [sum(wi * xi <span class="kw">for</span> wi, xi <span class="kw">in</span> zip(wo, x)) <span class="kw">for</span> wo <span class="kw">in</span> w]</td></tr>
 </tbody></table></div></td><td class="right"><div class="scroll"><table class="code"><tbody>
-<tr><td class="ln">145</td><td class="src"><span class="cmt"># Follow GPT-2, blessed among the GPTs, with minor differences: layernorm -&gt; rmsnorm, no biases, GeLU -&gt; ReLU</span></td></tr>
-<tr><td class="ln">146</td><td class="src">dot = |a, b| range(a.size()).reduce(Value.<span class="kw">new</span>(<span class="num">0.0</span>),</td></tr>
-<tr><td class="ln">147</td><td class="src">  |acc, i| acc + a[i] * b[i])</td></tr>
-<tr><td class="ln">148</td><td class="src">&nbsp;</td></tr>
-<tr><td class="ln">149</td><td class="src">linear = |x, w| w.map(|wo| dot(wo, x))</td></tr>
-<tr><td class="ln">150</td><td class="src">&nbsp;</td></tr>
+<tr><td class="ln">178</td><td class="src"><span class="cmt"># Define the model architecture: a function mapping tokens and parameters to logits over what comes next</span></td></tr>
+<tr><td class="ln">179</td><td class="src"><span class="cmt"># Follow GPT-2, blessed among the GPTs, with minor differences: layernorm -&gt; rmsnorm, no biases, GeLU -&gt; ReLU</span></td></tr>
+<tr><td class="ln">180</td><td class="src">dot = |a, b| range(a.size()).reduce(Value.<span class="kw">new</span>(<span class="num">0.0</span>), |acc, i| acc + a[i] * b[i])</td></tr>
+<tr><td class="ln">181</td><td class="src">&nbsp;</td></tr>
+<tr><td class="ln">182</td><td class="src">linear = |x, w| w.map(|wo| dot(wo, x))</td></tr>
 </tbody></table></div></td></tr>
       <tr class="section"><td colspan="2">softmax</td></tr>
       <tr class="code-row"><td class="left"><div class="scroll"><table class="code"><tbody>
@@ -468,12 +503,12 @@
 <tr><td class="ln">103</td><td class="src">    total = sum(exps)</td></tr>
 <tr><td class="ln">104</td><td class="src">    <span class="kw">return</span> [e / total <span class="kw">for</span> e <span class="kw">in</span> exps]</td></tr>
 </tbody></table></div></td><td class="right"><div class="scroll"><table class="code"><tbody>
-<tr><td class="ln">152</td><td class="src">  <span class="kw">let</span> mx = max_data(logits)</td></tr>
-<tr><td class="ln">153</td><td class="src">  <span class="kw">let</span> exps = logits.map(|v| (v - mx).exp())</td></tr>
-<tr><td class="ln">154</td><td class="src">  <span class="kw">let</span> total = sum_v(exps)</td></tr>
-<tr><td class="ln">155</td><td class="src">  exps.map(|e| e / total)</td></tr>
-<tr><td class="ln">156</td><td class="src">}</td></tr>
-<tr><td class="ln">157</td><td class="src">&nbsp;</td></tr>
+<tr><td class="ln">184</td><td class="src">softmax = <span class="kw">fn</span> (logits) {</td></tr>
+<tr><td class="ln">185</td><td class="src">  <span class="kw">let</span> mx = max_data(logits)</td></tr>
+<tr><td class="ln">186</td><td class="src">  <span class="kw">let</span> exps = logits.map(|v| (v - mx).exp())</td></tr>
+<tr><td class="ln">187</td><td class="src">  <span class="kw">let</span> total = sum_v(exps)</td></tr>
+<tr><td class="ln">188</td><td class="src">  exps.map(|e| e / total)</td></tr>
+<tr><td class="ln">189</td><td class="src">}</td></tr>
 </tbody></table></div></td></tr>
       <tr class="section"><td colspan="2">rmsnorm</td></tr>
       <tr class="code-row"><td class="left"><div class="scroll"><table class="code"><tbody>
@@ -482,15 +517,15 @@
 <tr><td class="ln">108</td><td class="src">    scale = (ms + <span class="num">1e-5</span>) ** -<span class="num">0.5</span></td></tr>
 <tr><td class="ln">109</td><td class="src">    <span class="kw">return</span> [xi * scale <span class="kw">for</span> xi <span class="kw">in</span> x]</td></tr>
 </tbody></table></div></td><td class="right"><div class="scroll"><table class="code"><tbody>
-<tr><td class="ln">159</td><td class="src">  <span class="kw">let</span> ms = sum_v(x.map(|xi| xi * xi)) * (<span class="num">1.0</span> / x.size())</td></tr>
-<tr><td class="ln">160</td><td class="src">  <span class="kw">let</span> scale = (ms + <span class="num">1e-5</span>) ** -<span class="num">0.5</span></td></tr>
-<tr><td class="ln">161</td><td class="src">  x.map(|xi| xi * scale)</td></tr>
-<tr><td class="ln">162</td><td class="src">}</td></tr>
-<tr><td class="ln">163</td><td class="src">&nbsp;</td></tr>
+<tr><td class="ln">191</td><td class="src">rmsnorm = <span class="kw">fn</span> (x) {</td></tr>
+<tr><td class="ln">192</td><td class="src">  <span class="kw">let</span> ms = sum_v(x.map(|xi| xi * xi)) * (<span class="num">1.0</span> / x.size())</td></tr>
+<tr><td class="ln">193</td><td class="src">  <span class="kw">let</span> scale = (ms + <span class="num">1e-5</span>) ** (-<span class="num">0.5</span>)</td></tr>
+<tr><td class="ln">194</td><td class="src">  x.map(|xi| xi * scale)</td></tr>
+<tr><td class="ln">195</td><td class="src">}</td></tr>
 </tbody></table></div></td></tr>
       <tr class="section"><td colspan="2">add_v (element-wise vector add)</td></tr>
       <tr class="code-row"><td class="left"><div class="empty">— no equivalent (handled by language builtins) —</div></td><td class="right"><div class="scroll"><table class="code"><tbody>
-<tr><td class="ln">165</td><td class="src">&nbsp;</td></tr>
+<tr><td class="ln">197</td><td class="src">add_v = |a, b| range(a.size()).map(|i| a[i] + b[i]).collect()</td></tr>
 </tbody></table></div></td></tr>
       <tr class="section"><td colspan="2">gpt — forward pass (model)</td></tr>
       <tr class="code-row"><td class="left"><div class="scroll"><table class="code"><tbody>
@@ -532,46 +567,48 @@
 <tr><td class="ln">146</td><td class="src">    logits = linear(x, state_dict[<span class="str">'lm_head'</span>])</td></tr>
 <tr><td class="ln">147</td><td class="src">    <span class="kw">return</span> logits</td></tr>
 </tbody></table></div></td><td class="right"><div class="scroll"><table class="code"><tbody>
-<tr><td class="ln">167</td><td class="src">  <span class="kw">let</span> tok_emb = model.wte[token_id]               <span class="cmt"># token embedding</span></td></tr>
-<tr><td class="ln">168</td><td class="src">  <span class="kw">let</span> pos_emb = model.wpe[pos_id]                 <span class="cmt"># position embedding</span></td></tr>
-<tr><td class="ln">169</td><td class="src">  <span class="kw">mut</span> x = rmsnorm(add_v(tok_emb, pos_emb))        <span class="cmt"># joint token and position embedding, then rmsnorm</span></td></tr>
-<tr><td class="ln">170</td><td class="src">                                                  <span class="cmt"># (not redundant: backward pass via the residual connection)</span></td></tr>
-<tr><td class="ln">171</td><td class="src">&nbsp;</td></tr>
-<tr><td class="ln">172</td><td class="src">  <span class="kw">for</span> li <span class="kw">in</span> <span class="num">0</span>..n_layer {</td></tr>
-<tr><td class="ln">173</td><td class="src">    <span class="cmt"># 1) Multi-head Attention block</span></td></tr>
-<tr><td class="ln">174</td><td class="src">    <span class="kw">let</span> x_residual1 = x</td></tr>
-<tr><td class="ln">175</td><td class="src">    x = rmsnorm(x)</td></tr>
-<tr><td class="ln">176</td><td class="src">    <span class="kw">let</span> layer = model.layers[li]</td></tr>
-<tr><td class="ln">177</td><td class="src">    <span class="kw">let</span> q = linear(x, layer.attn_wq)</td></tr>
-<tr><td class="ln">178</td><td class="src">    <span class="kw">let</span> k = linear(x, layer.attn_wk)</td></tr>
-<tr><td class="ln">179</td><td class="src">    <span class="kw">let</span> v = linear(x, layer.attn_wv)</td></tr>
-<tr><td class="ln">180</td><td class="src">    keys[li].push(k)</td></tr>
-<tr><td class="ln">181</td><td class="src">    values[li].push(v)</td></tr>
-<tr><td class="ln">182</td><td class="src">&nbsp;</td></tr>
-<tr><td class="ln">183</td><td class="src">    <span class="kw">let</span> x_attn = range(n_head).flat_map(<span class="kw">fn</span> (h) {</td></tr>
-<tr><td class="ln">184</td><td class="src">      <span class="kw">let</span> hs = h * head_dim</td></tr>
-<tr><td class="ln">185</td><td class="src">      <span class="kw">let</span> q_h = q.slice(hs, hs + head_dim)</td></tr>
-<tr><td class="ln">186</td><td class="src">      <span class="kw">let</span> k_h = keys[li].map(|ki| ki.slice(hs, hs + head_dim))</td></tr>
-<tr><td class="ln">187</td><td class="src">      <span class="kw">let</span> v_h = values[li].map(|vi| vi.slice(hs, hs + head_dim))</td></tr>
-<tr><td class="ln">188</td><td class="src">      <span class="kw">let</span> attn_logits = k_h.map(|kt| dot(kt, q_h) * attn_scale)</td></tr>
-<tr><td class="ln">189</td><td class="src">      <span class="kw">let</span> attn_weights = softmax(attn_logits)</td></tr>
-<tr><td class="ln">190</td><td class="src">      range(head_dim).map(|j|</td></tr>
-<tr><td class="ln">191</td><td class="src">        range(v_h.size()).reduce(Value.<span class="kw">new</span>(<span class="num">0.0</span>),</td></tr>
-<tr><td class="ln">192</td><td class="src">          |acc, t| acc + attn_weights[t] * v_h[t][j])</td></tr>
-<tr><td class="ln">193</td><td class="src">      ).collect()</td></tr>
-<tr><td class="ln">194</td><td class="src">    }).collect()</td></tr>
-<tr><td class="ln">195</td><td class="src">&nbsp;</td></tr>
-<tr><td class="ln">196</td><td class="src">    x = add_v(linear(x_attn, layer.attn_wo), x_residual1)</td></tr>
-<tr><td class="ln">197</td><td class="src">&nbsp;</td></tr>
-<tr><td class="ln">198</td><td class="src">    <span class="cmt"># 2) MLP block</span></td></tr>
-<tr><td class="ln">199</td><td class="src">    <span class="kw">let</span> x_residual2 = x</td></tr>
-<tr><td class="ln">200</td><td class="src">    x = rmsnorm(x)</td></tr>
-<tr><td class="ln">201</td><td class="src">    x = linear(x, layer.mlp_fc1).map(|xi| xi.relu())</td></tr>
-<tr><td class="ln">202</td><td class="src">    x = add_v(linear(x, layer.mlp_fc2), x_residual2)</td></tr>
-<tr><td class="ln">203</td><td class="src">  }</td></tr>
-<tr><td class="ln">204</td><td class="src">  linear(x, model.lm_head)</td></tr>
-<tr><td class="ln">205</td><td class="src">}</td></tr>
-<tr><td class="ln">206</td><td class="src">&nbsp;</td></tr>
+<tr><td class="ln">199</td><td class="src">gpt = <span class="kw">fn</span> (token_id, pos_id, keys, values) {</td></tr>
+<tr><td class="ln">200</td><td class="src">  <span class="kw">let</span> tok_emb = model.wte[token_id]         <span class="cmt"># token embedding</span></td></tr>
+<tr><td class="ln">201</td><td class="src">  <span class="kw">let</span> pos_emb = model.wpe[pos_id]           <span class="cmt"># position embedding</span></td></tr>
+<tr><td class="ln">202</td><td class="src">  <span class="kw">mut</span> x = rmsnorm(add_v(tok_emb, pos_emb))  <span class="cmt"># joint token and position embedding, then rmsnorm</span></td></tr>
+<tr><td class="ln">203</td><td class="src">  <span class="cmt"># (not redundant: backward pass via the residual connection)</span></td></tr>
+<tr><td class="ln">204</td><td class="src">&nbsp;</td></tr>
+<tr><td class="ln">205</td><td class="src">  <span class="kw">for</span> li <span class="kw">in</span> <span class="num">0</span>..n_layer {</td></tr>
+<tr><td class="ln">206</td><td class="src">    <span class="cmt"># 1) Multi-head Attention block</span></td></tr>
+<tr><td class="ln">207</td><td class="src">    <span class="kw">let</span> x_residual1 = x</td></tr>
+<tr><td class="ln">208</td><td class="src">    x = rmsnorm(x)</td></tr>
+<tr><td class="ln">209</td><td class="src">    <span class="kw">let</span> layer = model.layers[li]</td></tr>
+<tr><td class="ln">210</td><td class="src">    <span class="kw">let</span> q = linear(x, layer.attn_wq)</td></tr>
+<tr><td class="ln">211</td><td class="src">    <span class="kw">let</span> k = linear(x, layer.attn_wk)</td></tr>
+<tr><td class="ln">212</td><td class="src">    <span class="kw">let</span> v = linear(x, layer.attn_wv)</td></tr>
+<tr><td class="ln">213</td><td class="src">    keys[li].push(k)</td></tr>
+<tr><td class="ln">214</td><td class="src">    values[li].push(v)</td></tr>
+<tr><td class="ln">215</td><td class="src">&nbsp;</td></tr>
+<tr><td class="ln">216</td><td class="src">    <span class="kw">let</span> x_attn = range(n_head).flat_map(<span class="kw">fn</span> (h) {</td></tr>
+<tr><td class="ln">217</td><td class="src">      <span class="kw">let</span> hs = h * head_dim</td></tr>
+<tr><td class="ln">218</td><td class="src">      <span class="kw">let</span> q_h = q.slice(hs, hs + head_dim)</td></tr>
+<tr><td class="ln">219</td><td class="src">      <span class="kw">let</span> k_h = keys[li].map(|ki| ki.slice(hs, hs + head_dim))</td></tr>
+<tr><td class="ln">220</td><td class="src">      <span class="kw">let</span> v_h = values[li].map(|vi| vi.slice(hs, hs + head_dim))</td></tr>
+<tr><td class="ln">221</td><td class="src">      <span class="kw">let</span> attn_logits = k_h.map(|kt| dot(kt, q_h) * attn_scale)</td></tr>
+<tr><td class="ln">222</td><td class="src">      <span class="kw">let</span> attn_weights = softmax(attn_logits)</td></tr>
+<tr><td class="ln">223</td><td class="src">      range(head_dim)</td></tr>
+<tr><td class="ln">224</td><td class="src">        .map(|j| range(v_h.size()).reduce(</td></tr>
+<tr><td class="ln">225</td><td class="src">          Value.<span class="kw">new</span>(<span class="num">0.0</span>),</td></tr>
+<tr><td class="ln">226</td><td class="src">          |acc, t| acc + attn_weights[t] * v_h[t][j],</td></tr>
+<tr><td class="ln">227</td><td class="src">        ))</td></tr>
+<tr><td class="ln">228</td><td class="src">        .collect()</td></tr>
+<tr><td class="ln">229</td><td class="src">    }).collect()</td></tr>
+<tr><td class="ln">230</td><td class="src">&nbsp;</td></tr>
+<tr><td class="ln">231</td><td class="src">    x = add_v(linear(x_attn, layer.attn_wo), x_residual1)</td></tr>
+<tr><td class="ln">232</td><td class="src">&nbsp;</td></tr>
+<tr><td class="ln">233</td><td class="src">    <span class="cmt"># 2) MLP block</span></td></tr>
+<tr><td class="ln">234</td><td class="src">    <span class="kw">let</span> x_residual2 = x</td></tr>
+<tr><td class="ln">235</td><td class="src">    x = rmsnorm(x)</td></tr>
+<tr><td class="ln">236</td><td class="src">    x = linear(x, layer.mlp_fc1).map(|xi| xi.relu())</td></tr>
+<tr><td class="ln">237</td><td class="src">    x = add_v(linear(x, layer.mlp_fc2), x_residual2)</td></tr>
+<tr><td class="ln">238</td><td class="src">  }</td></tr>
+<tr><td class="ln">239</td><td class="src">  linear(x, model.lm_head)</td></tr>
+<tr><td class="ln">240</td><td class="src">}</td></tr>
 </tbody></table></div></td></tr>
       <tr class="section"><td colspan="2">Adam state init</td></tr>
       <tr class="code-row"><td class="left"><div class="scroll"><table class="code"><tbody>
@@ -580,14 +617,17 @@
 <tr><td class="ln">151</td><td class="src">m = [<span class="num">0.0</span>] * len(params) <span class="cmt"># first moment buffer</span></td></tr>
 <tr><td class="ln">152</td><td class="src">v = [<span class="num">0.0</span>] * len(params) <span class="cmt"># second moment buffer</span></td></tr>
 </tbody></table></div></td><td class="right"><div class="scroll"><table class="code"><tbody>
-<tr><td class="ln">209</td><td class="src">learning_rate = <span class="num">0.01</span></td></tr>
-<tr><td class="ln">210</td><td class="src">beta1 = <span class="num">0.85</span></td></tr>
-<tr><td class="ln">211</td><td class="src">beta2 = <span class="num">0.99</span></td></tr>
-<tr><td class="ln">212</td><td class="src">eps_adam = <span class="num">1e-8</span></td></tr>
-<tr><td class="ln">213</td><td class="src"><span class="kw">mut</span> m_buf = [] <span class="cmt"># first moment buffer</span></td></tr>
-<tr><td class="ln">214</td><td class="src"><span class="kw">mut</span> v_buf = [] <span class="cmt"># second moment buffer</span></td></tr>
-<tr><td class="ln">215</td><td class="src"><span class="kw">for</span> _ <span class="kw">in</span> <span class="num">0</span>..params.size() { m_buf.push(<span class="num">0.0</span>); v_buf.push(<span class="num">0.0</span>) }</td></tr>
-<tr><td class="ln">216</td><td class="src">&nbsp;</td></tr>
+<tr><td class="ln">242</td><td class="src"><span class="cmt"># Let there be Adam, the blessed optimizer and its buffers</span></td></tr>
+<tr><td class="ln">243</td><td class="src">learning_rate = <span class="num">0.01</span></td></tr>
+<tr><td class="ln">244</td><td class="src">beta1 = <span class="num">0.85</span></td></tr>
+<tr><td class="ln">245</td><td class="src">beta2 = <span class="num">0.99</span></td></tr>
+<tr><td class="ln">246</td><td class="src">eps_adam = <span class="num">1e-8</span></td></tr>
+<tr><td class="ln">247</td><td class="src"><span class="kw">mut</span> m_buf = []  <span class="cmt"># first moment buffer</span></td></tr>
+<tr><td class="ln">248</td><td class="src"><span class="kw">mut</span> v_buf = []  <span class="cmt"># second moment buffer</span></td></tr>
+<tr><td class="ln">249</td><td class="src"><span class="kw">for</span> _ <span class="kw">in</span> <span class="num">0</span>..params.size() {</td></tr>
+<tr><td class="ln">250</td><td class="src">  m_buf.push(<span class="num">0.0</span>)</td></tr>
+<tr><td class="ln">251</td><td class="src">  v_buf.push(<span class="num">0.0</span>)</td></tr>
+<tr><td class="ln">252</td><td class="src">}</td></tr>
 </tbody></table></div></td></tr>
       <tr class="section"><td colspan="2">Training loop</td></tr>
       <tr class="code-row"><td class="left"><div class="scroll"><table class="code"><tbody>
@@ -627,51 +667,62 @@
 <tr><td class="ln">187</td><td class="src">    <span class="kw">if</span> (step + <span class="num">1</span>) % <span class="num">50</span> == <span class="num">0</span> <span class="kw">or</span> step == <span class="num">0</span>:</td></tr>
 <tr><td class="ln">188</td><td class="src">        print(f<span class="str">"step {step+1:4d} / {num_steps:4d} | loss {loss.data:.4f}"</span>)</td></tr>
 </tbody></table></div></td><td class="right"><div class="scroll"><table class="code"><tbody>
-<tr><td class="ln">218</td><td class="src">num_steps = <span class="kw">if</span> Sys.argv.size() &gt; <span class="num">0</span> { to_long(Sys.argv[<span class="num">0</span>]) } <span class="kw">else</span> { <span class="num">1000</span> } <span class="cmt"># number of training steps</span></td></tr>
-<tr><td class="ln">219</td><td class="src"><span class="kw">mut</span> final_loss = <span class="num">0.0</span></td></tr>
-<tr><td class="ln">220</td><td class="src">&nbsp;</td></tr>
-<tr><td class="ln">221</td><td class="src"><span class="kw">mut</span> step = <span class="num">0</span></td></tr>
-<tr><td class="ln">222</td><td class="src"><span class="kw">while</span> step &lt; num_steps {</td></tr>
-<tr><td class="ln">223</td><td class="src">  <span class="cmt"># Take single document, tokenize it, surround it with BOS special token on both sides</span></td></tr>
-<tr><td class="ln">224</td><td class="src">  <span class="kw">let</span> doc = docs[step % docs.size()]</td></tr>
-<tr><td class="ln">225</td><td class="src">  <span class="kw">mut</span> tokens = [BOS]</td></tr>
-<tr><td class="ln">226</td><td class="src">  <span class="kw">for</span> c <span class="kw">in</span> doc { tokens.push(uchars.index_of(c)) }</td></tr>
-<tr><td class="ln">227</td><td class="src">  tokens.push(BOS)</td></tr>
-<tr><td class="ln">228</td><td class="src">  <span class="kw">let</span> n = <span class="kw">if</span> block_size &lt; tokens.size() - <span class="num">1</span> { block_size } <span class="kw">else</span> { tokens.size() - <span class="num">1</span> }</td></tr>
-<tr><td class="ln">229</td><td class="src">&nbsp;</td></tr>
-<tr><td class="ln">230</td><td class="src">  <span class="cmt"># Forward the token sequence through the model, building up the computation graph all the way to the loss</span></td></tr>
-<tr><td class="ln">231</td><td class="src">  <span class="kw">mut</span> keys = []</td></tr>
-<tr><td class="ln">232</td><td class="src">  <span class="kw">mut</span> values = []</td></tr>
-<tr><td class="ln">233</td><td class="src">  <span class="kw">for</span> _ <span class="kw">in</span> <span class="num">0</span>..n_layer { keys.push([]); values.push([]) }</td></tr>
-<tr><td class="ln">234</td><td class="src">&nbsp;</td></tr>
-<tr><td class="ln">235</td><td class="src">  <span class="kw">let</span> total_loss = range(n).reduce(Value.<span class="kw">new</span>(<span class="num">0.0</span>), <span class="kw">fn</span> (acc, pos_id) {</td></tr>
-<tr><td class="ln">236</td><td class="src">    <span class="kw">let</span> probs = softmax(gpt(tokens[pos_id], pos_id, keys, values))</td></tr>
-<tr><td class="ln">237</td><td class="src">    acc + (-probs[tokens[pos_id + <span class="num">1</span>]].log())</td></tr>
-<tr><td class="ln">238</td><td class="src">  })</td></tr>
-<tr><td class="ln">239</td><td class="src">  <span class="kw">let</span> loss = (<span class="num">1.0</span> / n) * total_loss <span class="cmt"># final average loss over the document sequence. May yours be low.</span></td></tr>
-<tr><td class="ln">240</td><td class="src">&nbsp;</td></tr>
-<tr><td class="ln">241</td><td class="src">  <span class="cmt"># Backward the loss, calculating the gradients with respect to all model parameters</span></td></tr>
-<tr><td class="ln">242</td><td class="src">  loss.backward()</td></tr>
-<tr><td class="ln">243</td><td class="src">&nbsp;</td></tr>
-<tr><td class="ln">244</td><td class="src">  <span class="cmt"># Adam optimizer update: update the model parameters based on the corresponding gradients</span></td></tr>
-<tr><td class="ln">245</td><td class="src">  <span class="kw">let</span> lr_t = learning_rate * (<span class="num">1.0</span> - to_float(step) / to_float(num_steps)) <span class="cmt"># linear learning rate decay</span></td></tr>
-<tr><td class="ln">246</td><td class="src">  <span class="kw">for</span> i <span class="kw">in</span> <span class="num">0</span>..params.size() {</td></tr>
-<tr><td class="ln">247</td><td class="src">    <span class="kw">let</span> p = params[i]</td></tr>
-<tr><td class="ln">248</td><td class="src">    m_buf[i] = beta1 * m_buf[i] + (<span class="num">1.0</span> - beta1) * p.grad</td></tr>
-<tr><td class="ln">249</td><td class="src">    v_buf[i] = beta2 * v_buf[i] + (<span class="num">1.0</span> - beta2) * p.grad * p.grad</td></tr>
-<tr><td class="ln">250</td><td class="src">    <span class="kw">let</span> m_hat = m_buf[i] / (<span class="num">1.0</span> - beta1 ** (step + <span class="num">1</span>))</td></tr>
-<tr><td class="ln">251</td><td class="src">    <span class="kw">let</span> v_hat = v_buf[i] / (<span class="num">1.0</span> - beta2 ** (step + <span class="num">1</span>))</td></tr>
-<tr><td class="ln">252</td><td class="src">    p.data = p.data - lr_t * m_hat / (v_hat ** <span class="num">0.5</span> + eps_adam)</td></tr>
-<tr><td class="ln">253</td><td class="src">    p.grad = <span class="num">0.0</span></td></tr>
-<tr><td class="ln">254</td><td class="src">  }</td></tr>
-<tr><td class="ln">255</td><td class="src">&nbsp;</td></tr>
-<tr><td class="ln">256</td><td class="src">  <span class="kw">if</span> (step + <span class="num">1</span>) % <span class="num">10</span> == <span class="num">0</span> || step == <span class="num">0</span> {</td></tr>
-<tr><td class="ln">257</td><td class="src">    <span class="kw">inspect</span>(<span class="str">"step {step+1} / {num_steps} | loss {loss.data}"</span>)</td></tr>
-<tr><td class="ln">258</td><td class="src">  }</td></tr>
-<tr><td class="ln">259</td><td class="src">  final_loss = loss.data</td></tr>
-<tr><td class="ln">260</td><td class="src">  step = step + <span class="num">1</span></td></tr>
-<tr><td class="ln">261</td><td class="src">}</td></tr>
-<tr><td class="ln">262</td><td class="src">&nbsp;</td></tr>
+<tr><td class="ln">254</td><td class="src"><span class="cmt"># Repeat in sequence</span></td></tr>
+<tr><td class="ln">255</td><td class="src">num_steps = <span class="kw">if</span> Sys.argv.size() &gt; <span class="num">0</span> {</td></tr>
+<tr><td class="ln">256</td><td class="src">  to_long(Sys.argv[<span class="num">0</span>])</td></tr>
+<tr><td class="ln">257</td><td class="src">} <span class="kw">else</span> {</td></tr>
+<tr><td class="ln">258</td><td class="src">  <span class="num">1000</span></td></tr>
+<tr><td class="ln">259</td><td class="src">}  <span class="cmt"># number of training steps</span></td></tr>
+<tr><td class="ln">260</td><td class="src"><span class="kw">mut</span> final_loss = <span class="num">0.0</span></td></tr>
+<tr><td class="ln">261</td><td class="src">&nbsp;</td></tr>
+<tr><td class="ln">262</td><td class="src"><span class="kw">for</span> step <span class="kw">in</span> <span class="num">0</span>..num_steps {</td></tr>
+<tr><td class="ln">263</td><td class="src">  <span class="cmt"># Take single document, tokenize it, surround it with BOS special token on both sides</span></td></tr>
+<tr><td class="ln">264</td><td class="src">  <span class="kw">let</span> doc = docs[step % docs.size()]</td></tr>
+<tr><td class="ln">265</td><td class="src">  <span class="kw">mut</span> tokens = [BOS]</td></tr>
+<tr><td class="ln">266</td><td class="src">  <span class="kw">for</span> c <span class="kw">in</span> doc {</td></tr>
+<tr><td class="ln">267</td><td class="src">    tokens.push(uchars.index_of(c))</td></tr>
+<tr><td class="ln">268</td><td class="src">  }</td></tr>
+<tr><td class="ln">269</td><td class="src">  tokens.push(BOS)</td></tr>
+<tr><td class="ln">270</td><td class="src">  <span class="kw">let</span> n = <span class="kw">if</span> block_size &lt; tokens.size() - <span class="num">1</span> {</td></tr>
+<tr><td class="ln">271</td><td class="src">    block_size</td></tr>
+<tr><td class="ln">272</td><td class="src">  } <span class="kw">else</span> {</td></tr>
+<tr><td class="ln">273</td><td class="src">    tokens.size() - <span class="num">1</span></td></tr>
+<tr><td class="ln">274</td><td class="src">  }</td></tr>
+<tr><td class="ln">275</td><td class="src">&nbsp;</td></tr>
+<tr><td class="ln">276</td><td class="src">  <span class="cmt"># Forward the token sequence through the model, building up the computation graph all the way to the loss</span></td></tr>
+<tr><td class="ln">277</td><td class="src">  <span class="kw">mut</span> keys = []</td></tr>
+<tr><td class="ln">278</td><td class="src">  <span class="kw">mut</span> values = []</td></tr>
+<tr><td class="ln">279</td><td class="src">  <span class="kw">for</span> _ <span class="kw">in</span> <span class="num">0</span>..n_layer {</td></tr>
+<tr><td class="ln">280</td><td class="src">    keys.push([])</td></tr>
+<tr><td class="ln">281</td><td class="src">    values.push([])</td></tr>
+<tr><td class="ln">282</td><td class="src">  }</td></tr>
+<tr><td class="ln">283</td><td class="src">&nbsp;</td></tr>
+<tr><td class="ln">284</td><td class="src">  <span class="kw">let</span> total_loss = range(n).reduce(Value.<span class="kw">new</span>(<span class="num">0.0</span>), <span class="kw">fn</span> (acc, pos_id) {</td></tr>
+<tr><td class="ln">285</td><td class="src">    <span class="kw">let</span> probs = softmax(gpt(tokens[pos_id], pos_id, keys, values))</td></tr>
+<tr><td class="ln">286</td><td class="src">    acc + -probs[tokens[pos_id + <span class="num">1</span>]].log()</td></tr>
+<tr><td class="ln">287</td><td class="src">  })</td></tr>
+<tr><td class="ln">288</td><td class="src">  <span class="kw">let</span> loss = (<span class="num">1.0</span> / n) * total_loss  <span class="cmt"># final average loss over the document sequence. May yours be low.</span></td></tr>
+<tr><td class="ln">289</td><td class="src">&nbsp;</td></tr>
+<tr><td class="ln">290</td><td class="src">  <span class="cmt"># Backward the loss, calculating the gradients with respect to all model parameters</span></td></tr>
+<tr><td class="ln">291</td><td class="src">  loss.backward()</td></tr>
+<tr><td class="ln">292</td><td class="src">&nbsp;</td></tr>
+<tr><td class="ln">293</td><td class="src">  <span class="cmt"># Adam optimizer update: update the model parameters based on the corresponding gradients</span></td></tr>
+<tr><td class="ln">294</td><td class="src">  <span class="kw">let</span> lr_t = learning_rate * (<span class="num">1.0</span> - to_float(step) / to_float(num_steps))  <span class="cmt"># linear learning rate decay</span></td></tr>
+<tr><td class="ln">295</td><td class="src">  <span class="kw">for</span> i <span class="kw">in</span> <span class="num">0</span>..params.size() {</td></tr>
+<tr><td class="ln">296</td><td class="src">    <span class="kw">let</span> p = params[i]</td></tr>
+<tr><td class="ln">297</td><td class="src">    m_buf[i] = beta1 * m_buf[i] + (<span class="num">1.0</span> - beta1) * p.grad</td></tr>
+<tr><td class="ln">298</td><td class="src">    v_buf[i] = beta2 * v_buf[i] + (<span class="num">1.0</span> - beta2) * p.grad * p.grad</td></tr>
+<tr><td class="ln">299</td><td class="src">    <span class="kw">let</span> m_hat = m_buf[i] / (<span class="num">1.0</span> - beta1 ** (step + <span class="num">1</span>))</td></tr>
+<tr><td class="ln">300</td><td class="src">    <span class="kw">let</span> v_hat = v_buf[i] / (<span class="num">1.0</span> - beta2 ** (step + <span class="num">1</span>))</td></tr>
+<tr><td class="ln">301</td><td class="src">    p.data = p.data - lr_t * m_hat / (v_hat ** <span class="num">0.5</span> + eps_adam)</td></tr>
+<tr><td class="ln">302</td><td class="src">    p.grad = <span class="num">0.0</span></td></tr>
+<tr><td class="ln">303</td><td class="src">  }</td></tr>
+<tr><td class="ln">304</td><td class="src">&nbsp;</td></tr>
+<tr><td class="ln">305</td><td class="src">  <span class="kw">if</span> (step + <span class="num">1</span>) % <span class="num">10</span> == <span class="num">0</span> || step == <span class="num">0</span> {</td></tr>
+<tr><td class="ln">306</td><td class="src">    <span class="kw">inspect</span>(<span class="str">"step {step+1} / {num_steps} | loss {loss.data}"</span>)</td></tr>
+<tr><td class="ln">307</td><td class="src">  }</td></tr>
+<tr><td class="ln">308</td><td class="src">  final_loss = loss.data</td></tr>
+<tr><td class="ln">309</td><td class="src">}</td></tr>
 </tbody></table></div></td></tr>
       <tr class="section"><td colspan="2">Final loss + inference</td></tr>
       <tr class="code-row"><td class="left"><div class="scroll"><table class="code"><tbody>
@@ -694,32 +745,37 @@
 <tr><td class="ln">206</td><td class="src">        sample.append(uchars[token_id])</td></tr>
 <tr><td class="ln">207</td><td class="src">    print(f<span class="str">"sample {sample_idx+1:2d}: {''.join(sample)}"</span>)</td></tr>
 </tbody></table></div></td><td class="right"><div class="scroll"><table class="code"><tbody>
-<tr><td class="ln">264</td><td class="src">&nbsp;</td></tr>
-<tr><td class="ln">265</td><td class="src">&nbsp;</td></tr>
-<tr><td class="ln">266</td><td class="src"><span class="cmt"># Inference: may the model babble back to us</span></td></tr>
-<tr><td class="ln">267</td><td class="src"><span class="kw">let</span> n_samples = <span class="kw">if</span> Sys.argv.size() &gt; <span class="num">1</span> { to_long(Sys.argv[<span class="num">1</span>]) } <span class="kw">else</span> { <span class="num">5</span> }</td></tr>
-<tr><td class="ln">268</td><td class="src">temperature = <span class="num">0.5</span> <span class="cmt"># in (0, 1], control the "creativity" of generated text, low to high</span></td></tr>
-<tr><td class="ln">269</td><td class="src"><span class="kw">inspect</span>(<span class="str">'--- inference (new, hallucinated names) ---'</span>)</td></tr>
-<tr><td class="ln">270</td><td class="src"><span class="kw">let</span> pop = range(vocab_size).collect()</td></tr>
-<tr><td class="ln">271</td><td class="src">&nbsp;</td></tr>
-<tr><td class="ln">272</td><td class="src"><span class="kw">mut</span> sample_idx = <span class="num">0</span></td></tr>
-<tr><td class="ln">273</td><td class="src"><span class="kw">while</span> sample_idx &lt; n_samples {</td></tr>
-<tr><td class="ln">274</td><td class="src">  <span class="kw">mut</span> keys2 = []</td></tr>
-<tr><td class="ln">275</td><td class="src">  <span class="kw">mut</span> values2 = []</td></tr>
-<tr><td class="ln">276</td><td class="src">  <span class="kw">for</span> _ <span class="kw">in</span> <span class="num">0</span>..n_layer { keys2.push([]); values2.push([]) }</td></tr>
-<tr><td class="ln">277</td><td class="src">  <span class="kw">mut</span> token_id = BOS</td></tr>
-<tr><td class="ln">278</td><td class="src">  <span class="kw">mut</span> sample = []</td></tr>
-<tr><td class="ln">279</td><td class="src">  <span class="kw">for</span> pos_id <span class="kw">in</span> <span class="num">0</span>..block_size {</td></tr>
-<tr><td class="ln">280</td><td class="src">    <span class="kw">let</span> logits = gpt(token_id, pos_id, keys2, values2)</td></tr>
-<tr><td class="ln">281</td><td class="src">    <span class="kw">let</span> probs = softmax(logits.map(|l| l / temperature))</td></tr>
-<tr><td class="ln">282</td><td class="src">    <span class="kw">let</span> weights = probs.map(|p| p.data)</td></tr>
-<tr><td class="ln">283</td><td class="src">    token_id = Random.weighted_choice(pop, weights)</td></tr>
-<tr><td class="ln">284</td><td class="src">    <span class="kw">if</span> token_id == BOS { <span class="kw">break</span> }</td></tr>
-<tr><td class="ln">285</td><td class="src">    sample.push(uchars[token_id])</td></tr>
-<tr><td class="ln">286</td><td class="src">  }</td></tr>
-<tr><td class="ln">287</td><td class="src">  <span class="kw">inspect</span>(<span class="str">"sample {sample_idx+1}: {sample.join('')}"</span>)</td></tr>
-<tr><td class="ln">288</td><td class="src">  sample_idx = sample_idx + <span class="num">1</span></td></tr>
-<tr><td class="ln">289</td><td class="src">}</td></tr>
+<tr><td class="ln">311</td><td class="src"><span class="kw">inspect</span>(<span class="str">"final loss: {final_loss}"</span>)</td></tr>
+<tr><td class="ln">312</td><td class="src">&nbsp;</td></tr>
+<tr><td class="ln">313</td><td class="src"><span class="cmt"># Inference: may the model babble back to us</span></td></tr>
+<tr><td class="ln">314</td><td class="src"><span class="kw">let</span> n_samples = <span class="kw">if</span> Sys.argv.size() &gt; <span class="num">1</span> {</td></tr>
+<tr><td class="ln">315</td><td class="src">  to_long(Sys.argv[<span class="num">1</span>])</td></tr>
+<tr><td class="ln">316</td><td class="src">} <span class="kw">else</span> {</td></tr>
+<tr><td class="ln">317</td><td class="src">  <span class="num">5</span></td></tr>
+<tr><td class="ln">318</td><td class="src">}</td></tr>
+<tr><td class="ln">319</td><td class="src">temperature = <span class="num">0.5</span>  <span class="cmt"># in (0, 1], control the "creativity" of generated text, low to high</span></td></tr>
+<tr><td class="ln">320</td><td class="src"><span class="kw">inspect</span>(<span class="str">'--- inference (new, hallucinated names) ---'</span>)</td></tr>
+<tr><td class="ln">321</td><td class="src"><span class="kw">let</span> pop = range(vocab_size).collect()</td></tr>
+<tr><td class="ln">322</td><td class="src">&nbsp;</td></tr>
+<tr><td class="ln">323</td><td class="src"><span class="kw">for</span> sample_idx <span class="kw">in</span> <span class="num">0</span>..n_samples {</td></tr>
+<tr><td class="ln">324</td><td class="src">  <span class="kw">mut</span> keys2 = []</td></tr>
+<tr><td class="ln">325</td><td class="src">  <span class="kw">mut</span> values2 = []</td></tr>
+<tr><td class="ln">326</td><td class="src">  <span class="kw">for</span> _ <span class="kw">in</span> <span class="num">0</span>..n_layer {</td></tr>
+<tr><td class="ln">327</td><td class="src">    keys2.push([])</td></tr>
+<tr><td class="ln">328</td><td class="src">    values2.push([])</td></tr>
+<tr><td class="ln">329</td><td class="src">  }</td></tr>
+<tr><td class="ln">330</td><td class="src">  <span class="kw">mut</span> token_id = BOS</td></tr>
+<tr><td class="ln">331</td><td class="src">  <span class="kw">mut</span> sample = []</td></tr>
+<tr><td class="ln">332</td><td class="src">  <span class="kw">for</span> pos_id <span class="kw">in</span> <span class="num">0</span>..block_size {</td></tr>
+<tr><td class="ln">333</td><td class="src">    <span class="kw">let</span> logits = gpt(token_id, pos_id, keys2, values2)</td></tr>
+<tr><td class="ln">334</td><td class="src">    <span class="kw">let</span> probs = softmax(logits.map(|l| l / temperature))</td></tr>
+<tr><td class="ln">335</td><td class="src">    <span class="kw">let</span> weights = probs.map(|p| p.data)</td></tr>
+<tr><td class="ln">336</td><td class="src">    token_id = Random.weighted_choice(pop, weights)</td></tr>
+<tr><td class="ln">337</td><td class="src">    <span class="kw">break</span> <span class="kw">if</span> token_id == BOS</td></tr>
+<tr><td class="ln">338</td><td class="src">    sample.push(uchars[token_id])</td></tr>
+<tr><td class="ln">339</td><td class="src">  }</td></tr>
+<tr><td class="ln">340</td><td class="src">  <span class="kw">inspect</span>(<span class="str">"sample {sample_idx+1}: {sample.join('')}"</span>)</td></tr>
+<tr><td class="ln">341</td><td class="src">}</td></tr>
 </tbody></table></div></td></tr>
       </tbody>
     </table>
