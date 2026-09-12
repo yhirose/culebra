@@ -37,6 +37,16 @@ concurrency:
 # the default itself (tests/cli_input_test.sh).
 env:
   CULEBRA_REQUIRE_EXPLICIT_ENGINE: "1"
+  # Every ccache lineage below (one per lane and OS, a dozen in all) is saved
+  # whole by actions/cache after each run, so without a bound it keeps every
+  # object it ever compiled — ccache's own default is 5 GB — and a lineage
+  # was measured at 1.4 GB after a few weeks. The repository's cache quota
+  # is 10 GB across every branch, and a `ci/**` branch push saves a copy of
+  # every lineage; at that point master's own entries are what gets evicted,
+  # and its next run rebuilds from nothing (81 s -> 506 s on build-ubuntu,
+  # 319 s -> 870 s on macOS). One full build is ~0.1 GB; a lineage never
+  # needs more than a few of those.
+  CCACHE_MAXSIZE: 300M
 
 jobs:
   # Ubuntu used to be one job (build + `_run-tests all`), and on the 4-core

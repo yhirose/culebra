@@ -31,6 +31,9 @@ env:
   # the engine it means (`--jit` / `--vm`) instead of taking the
   # build's default (docs/internals/vm.md §2).
   CULEBRA_REQUIRE_EXPLICIT_ENGINE: "1"
+  # The cache quota is per repository, so the two release lineages are bounded
+  # like ci.yml's (see the note there).
+  CCACHE_MAXSIZE: 300M
   # Note there is deliberately no CULEBRA_CANVAS_WINDOW_DEFAULT here, unlike
   # ci.yml which pins it OFF for the jobs that do not want it. Each platform
   # gets CMake's own default, which is ON everywhere now — so every download
