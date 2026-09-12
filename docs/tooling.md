@@ -945,9 +945,12 @@ an `?embed=output` page, where there is no tab strip to change it.
 waiting for Run. It fires once. A link whose project or text failed to
 load does not autorun what it fell back to.
 
-An `?embed=output` page has no toolbar, so a play button sits over the
-pane whenever the program is not running: that is how a visitor starts
-it without `?run=1`, and how anyone replays it once it ends.
+An `?embed=output` page has no toolbar, so it carries its own two
+controls: a play button over the pane whenever the program is not
+running, which is how a visitor starts it without `?run=1` and how
+anyone replays it once it ends, and a stop in the corner while one is,
+so a program that will not end by itself does not have to be closed
+with the tab.
 
 ### The Share button
 

@@ -532,6 +532,8 @@ function stop() {
 const OUTPUT_EMBED = document.documentElement.classList.contains("embed-output");
 const playBtn = $("play");
 
+const haltBtn = $("halt");
+
 function updatePlayOverlay() {
   // Never across the Output pane once a run has put something in it: that
   // pane is a transcript to read, and a button over it reads as "this did
@@ -539,9 +541,11 @@ function updatePlayOverlay() {
   // frame reads as paused and this is how it is played again.
   const transcript = ranOnce && activeTab === TABS[0];
   playBtn.hidden = !OUTPUT_EMBED || running || runBtn.disabled || transcript;
+  haltBtn.hidden = !OUTPUT_EMBED || !running;
 }
 
 playBtn.addEventListener("click", run);
+haltBtn.addEventListener("click", stop);
 
 // --- toolbar wiring -------------------------------------------------------
 

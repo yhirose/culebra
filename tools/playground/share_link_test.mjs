@@ -61,4 +61,18 @@ await assert.rejects(decodeShareParam(gz.slice(0, 40)), "a truncated gzip stream
 await assert.rejects(decodeShareParam("H4sIAAAA" + "AAAA".repeat(4)), "gzip magic over garbage");
 await assert.rejects(decodeShareParam("A".repeat((1 << 20) + 4)), "over the size bound");
 
+// A gzip bomb: inside the encoded bound, hundreds of megabytes once inflated.
+// The decoder has to give up while inflating rather than after, so the test is
+// that this returns at all — it used to buffer the whole expansion first.
+const bomb = await encodeShareParam("\0".repeat(64 << 20));
+assert.ok(bomb.length < (1 << 20), `a 64 MB run of zeros encodes to ${bomb.length} chars`);
+await assert.rejects(decodeShareParam(bomb), "expands past the source bound");
+
+// And the cap does not catch a program anyone would actually write: every
+// example in the catalogue has to survive the round trip, the largest
+// included.
+for (const name of ["games/samegame.cul", "games/rocci-bird.cul"]) {
+  await roundTrip(example(name));
+}
+
 console.log("share-link: ok");

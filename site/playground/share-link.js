@@ -33,13 +33,45 @@ async function pipe(bytes, transform) {
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
+// Inflating, which is the direction that takes a stranger's bytes. Read in
+// chunks and stop at the cap rather than handing the whole stream to
+// Response: gzip reaches about 1000:1, so a payload inside MAX_PARAM_CHARS
+// can ask for hundreds of megabytes, and a link should not be able to take
+// the tab down before the program it carries has even been looked at.
+async function inflate(bytes) {
+  const reader = new Blob([bytes]).stream()
+    .pipeThrough(new DecompressionStream("gzip")).getReader();
+  const parts = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > MAX_SOURCE_BYTES) {
+      await reader.cancel();
+      throw new RangeError(`share payload expands past ${MAX_SOURCE_BYTES >> 20} MB`);
+    }
+    parts.push(value);
+  }
+  const out = new Uint8Array(size);
+  let at = 0;
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.length;
+  }
+  return out;
+}
+
 function isGzip(bytes) {
   return bytes[0] === 0x1f && bytes[1] === 0x8b;
 }
 
-// The fragment is untrusted input: refuse an absurd payload before inflating
-// it. The largest example ships well under 8 KB encoded.
+// The fragment is untrusted input, capped at both ends: the encoded payload
+// before it is read, and the source it expands into. The largest example
+// ships well under 8 KB encoded, and no program anyone writes by hand comes
+// near either limit.
 const MAX_PARAM_CHARS = 1 << 20;
+const MAX_SOURCE_BYTES = 4 << 20;
 
 // Whichever form is shorter. gzip loses on a snippet, where its envelope is
 // most of the payload (73-byte greeting.cul: 98 chars plain, 102 gzipped), and
@@ -59,7 +91,7 @@ export async function decodeShareParam(param) {
   if (!param) return null;
   if (param.length > MAX_PARAM_CHARS) throw new RangeError("share payload too large");
   let bytes = fromBase64url(param);
-  if (isGzip(bytes)) bytes = await pipe(bytes, new DecompressionStream("gzip"));
+  if (isGzip(bytes)) bytes = await inflate(bytes);
   // atob gave one char per byte; the source is UTF-8, so decode it as such.
   return new TextDecoder().decode(bytes);
 }
