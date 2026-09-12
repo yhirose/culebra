@@ -238,7 +238,7 @@ check-docs-cpp:
 # the workflow-coverage ratchet. Cheap enough to gate both test recipes:
 # well under a second once the grammar-blob tool is ccache-warm.
 [private]
-check-generated: check-grammar-sync check-preambles check-blob check-site-version check-difftest-coverage check-release-coverage check-spec-examples check-api-coverage check-canon-return-types check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-docs-cpp-includes check-header-naming check-search-splitter check-layering check-codegen-enums check-vm-dispatch-table
+check-generated: check-grammar-sync check-preambles check-blob check-site-version check-site-playground-sync check-difftest-coverage check-release-coverage check-spec-examples check-api-coverage check-canon-return-types check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-docs-cpp-includes check-header-naming check-search-splitter check-layering check-codegen-enums check-vm-dispatch-table
 
 # Such a build still runs programs — everything below the LLVM lowering
 # (rt.h, vm.h) is LLVM-free, so the bytecode VM's executor is intact; what it
@@ -1645,6 +1645,18 @@ site-build:
 [doc("Check the committed playground wasm against native --vm")]
 check-playground bin="./build/culebra":
     node tools/playground/smoke.mjs {{bin}}
+    node tools/playground/share_link_test.mjs
+
+# build.sh's copy step, replayed without emsdk: the frontend files it cps,
+# the version it stamps into index.html, and the examples it mirrors, each
+# against the committed copy under site/playground/. The wasm is out of its
+# scope on purpose — a stale engine is a rebuild decision, not a forgotten
+# copy. Part of check-generated, so an edit to playground/ that did not run
+# `just site-build` cannot land.
+[group("site")]
+[doc("Verify site/playground/ is what build.sh would copy from playground/")]
+check-site-playground-sync:
+    tools/checks/check_site_playground_sync.sh
 
 [group("site")]
 [doc("Serve site/ locally (run `just site-build` first if the playground needs rebuilding)")]

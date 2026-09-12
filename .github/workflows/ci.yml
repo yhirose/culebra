@@ -121,6 +121,11 @@ jobs:
       - name: Check Playground version sync (culebra.h -> site/playground)
         run: just check-site-version
 
+      # The same gap for the rest of what build.sh copies: the frontend and
+      # the mirrored examples can be edited at their source and shipped stale.
+      - name: Check Playground copy sync (playground/ -> site/playground)
+        run: just check-site-playground-sync
+
       # vendor/cpp-vmlib is a submodule: a bump can hand scripts a new IR
       # vocabulary member with nothing documenting it, or a new Tag with no
       # builder and no reader at all. Needs no build, so it runs here with the
@@ -406,6 +411,11 @@ jobs:
 
       - name: Run the committed wasm against native --vm
         run: node tools/playground/smoke.mjs ./build/culebra
+
+      # The share-link codec the page loads, round-tripped through node's own
+      # CompressionStream — no wasm and no binary involved.
+      - name: Round-trip the Playground share-link codec
+        run: node tools/playground/share_link_test.mjs
 
   # The macOS leg of what used to be a two-OS test matrix, unchanged in what
   # it runs: the clean-env build + the SKIP_HEAVY `_run-tests all` sweep +
