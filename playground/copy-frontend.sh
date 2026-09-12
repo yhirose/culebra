@@ -13,7 +13,7 @@ mkdir -p "$OUT"
 # The frontend alongside the wasm (brand.css lives in site/assets/).
 # examples.json is not copied but written below, each example's file list
 # filled in.
-cp playground/index.html playground/app.js playground/worker.js \
+cp playground/index.html playground/boot.js playground/app.js playground/worker.js \
    playground/editor.js playground/culebra-lang.js playground/share-link.js \
    playground/project.js playground/styles.css "$OUT/"
 

@@ -3,28 +3,28 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Everything this page loads, and nothing else. 'wasm-unsafe-eval' is what
+       lets the engine instantiate; 'unsafe-inline' in style-src is CodeMirror,
+       which injects its theme as a <style> element at runtime. No inline
+       script: boot.js is a file for that reason. frame-ancestors and
+       report-only are header-only and so out of reach on GitHub Pages. -->
+  <meta http-equiv="Content-Security-Policy" content="
+    default-src 'none';
+    script-src 'self' https://esm.sh 'wasm-unsafe-eval';
+    style-src 'self' https://esm.sh 'unsafe-inline';
+    img-src 'self' data:;
+    font-src 'self' https://esm.sh;
+    connect-src 'self' https:;
+    worker-src 'self' blob:;
+    base-uri 'none';
+    form-action 'none'">
   <title>culebra Playground {{CULEBRA_VERSION}}</title>
   <meta name="description" content="Run culebra in your browser — the interpreter compiled to WebAssembly.">
   <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">
   <link rel="stylesheet" href="../assets/brand.css">
   <link rel="stylesheet" href="./styles.css">
   <link rel="stylesheet" href="https://esm.sh/@xterm/xterm@5.5.0/css/xterm.css">
-  <script>
-    // ?embed= says how much of the page a hosting iframe wants: `editor` drops
-    // the chrome that page already provides and keeps the editor and the
-    // controls, `output` leaves the output pane alone (which pane is `?view=`).
-    // `1` is the older spelling of `editor`. Marked on the root element from
-    // <head>, before the body is parsed, so an embed never paints the
-    // standalone header and then takes it away. See the styles.css
-    // "embed modes" block.
-    var search = new URLSearchParams(location.search);
-    var embed = search.get("embed");
-    if (embed === "1" || embed === "editor") document.documentElement.classList.add("embed");
-    if (embed === "output") document.documentElement.classList.add("embed-output");
-    // ?split= puts the output under the source rather than beside it, for a
-    // host that has the page's full width but only a few hundred pixels of it.
-    if (search.get("split") === "top") document.documentElement.classList.add("split-top");
-  </script>
+  <script src="./boot.js"></script>
 </head>
 <body>
   <header class="pg-header">
@@ -143,12 +143,6 @@
     </div>
   </main>
 
-  <script>
-    try {
-      var t = localStorage.getItem("culebra-theme");
-      if (t) document.documentElement.setAttribute("data-theme", t);
-    } catch (e) {}
-  </script>
   <script type="module" src="./app.js"></script>
 </body>
 </html>
