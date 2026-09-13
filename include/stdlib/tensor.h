@@ -1418,12 +1418,11 @@ inline void _tensor_vjp(const TensorPtr& n) {
     case Op::Mean: {
       const auto& a = n->inputs[0];
       int64_t axis = n->op_param;
-      // Re-insert the reduced axis (size 1) — already there under keepdims,
-      // where the ranks match — then broadcast g back.
+      // Re-insert the reduced axis (size 1) then broadcast g back; under
+      // keepdims g already has it and the reshape is a same-shape view.
       auto kd = a->shape.dims;
       kd[axis] = 1;
-      auto g_kd = g->shape.dims.size() == kd.size() ? g
-                                                    : tensor_reshape(g, TensorShape(kd));
+      auto g_kd = tensor_reshape(g, TensorShape(kd));
       TensorPtr contrib =
           tensor_binop(Op::Add, tensor_zeros(a->shape, dt), g_kd);
       if (n->op == Op::Mean) {
@@ -1452,10 +1451,7 @@ inline void _tensor_vjp(const TensorPtr& n) {
       const TensorPtr& y = n;
       int64_t last = static_cast<int64_t>(y->shape.dims.size()) - 1;
       auto gy = tensor_binop(Op::Mul, g, y);
-      auto s = tensor_reduce_axis(Op::Sum, gy, last);
-      auto kd = y->shape.dims;
-      kd[last] = 1;
-      auto s_kd = tensor_reshape(s, TensorShape(kd));
+      auto s_kd = tensor_reduce_axis(Op::Sum, gy, last, /*keepdims=*/true);
       auto diff = tensor_binop(Op::Sub, g, s_kd);
       _tensor_grad_add(n->inputs[0], tensor_binop(Op::Mul, y, diff));
       break;
@@ -1671,9 +1667,8 @@ inline void _tensor_vjp(const TensorPtr& n) {
       S = tensor_binop(Op::Add, std::move(S), _tensor_causal_mask(T, dt));
       auto P = tensor_unary(Op::Softmax, std::move(S));
       auto dP = tensor_dot(g, swap(v));
-      auto rowsum = tensor_reshape(
-          tensor_reduce_axis(Op::Sum, tensor_binop(Op::Mul, dP, P), 2),
-          TensorShape(std::vector<int64_t>{H, T, 1}));
+      auto rowsum = tensor_reduce_axis(Op::Sum, tensor_binop(Op::Mul, dP, P), 2,
+                                       /*keepdims=*/true);
       auto dS = tensor_binop(Op::Mul, P, tensor_binop(Op::Sub, dP, rowsum));
       _tensor_grad_add(v, tensor_dot(swap(P), g));
       _tensor_grad_add(q, tensor_binop(Op::Mul, tensor_dot(dS, k), scale));
