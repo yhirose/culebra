@@ -584,6 +584,20 @@ function shareChoice(name) {
   return shareMenu.querySelector(`input[name="share-${name}"]:checked`).value;
 }
 
+// Split says where the source sits beside the output, which an embed showing
+// only the output has neither of. Rather than let the menu offer a choice the
+// link would carry and the page would ignore, the row goes quiet and returns
+// to its default, so the link does not carry it either.
+function syncShareRows() {
+  const off = shareChoice("embed") === "output";
+  const row = shareMenu.querySelector('input[name="share-split"]').closest(".pg-share-tiles");
+  row.classList.toggle("off", off);
+  for (const input of row.querySelectorAll("input")) {
+    input.disabled = off;
+    if (off) input.checked = input.value === "";
+  }
+}
+
 // Where the text runs beside something, the link says so. Returns whether it
 // named anything, which decides whether the text has to ride along.
 function nameProject(url) {
@@ -642,6 +656,7 @@ async function openShareMenu() {
   const split = document.documentElement.classList.contains("split-top") ? "top" : "";
   for (const input of shareMenu.querySelectorAll('input[name="share-split"]'))
     input.checked = input.value === split;
+  syncShareRows();
   await refreshShareUrl();
   shareMenu.hidden = false;
   shareBtn.setAttribute("aria-expanded", "true");
@@ -651,7 +666,10 @@ shareBtn.addEventListener("click", () => {
   if (shareMenu.hidden) openShareMenu().catch(showLoadError);
   else closeShareMenu();
 });
-shareMenu.addEventListener("change", () => { refreshShareUrl(); });
+shareMenu.addEventListener("change", () => {
+  syncShareRows();
+  refreshShareUrl();
+});
 document.addEventListener("click", (e) => {
   if (!shareMenu.hidden && !e.target.closest(".pg-share")) closeShareMenu();
 });

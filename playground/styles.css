@@ -246,8 +246,16 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 }
 .pg-share-tiles label:first-child span { border-left: 0; }
 .pg-share-tiles label:hover span { background: var(--surface-2); }
-.pg-share-tiles input:checked + span { background: var(--brand-strong); color: #fff; }
-.pg-share-tiles input:focus-visible + span { outline: 2px solid var(--brand); outline-offset: -2px; }
+.pg-share-tiles input:checked + span { background: var(--brand); color: #fff; }
+.pg-share-tiles input:focus-visible + span { outline: 2px solid var(--brand-strong); outline-offset: -2px; }
+/* A row whose choice cannot reach the page it describes: Split under an embed
+   that shows no editor. Dimmed rather than removed, so the menu keeps its
+   shape and the reason stays visible. */
+.pg-share-tiles.off { opacity: 0.42; }
+.pg-share-tiles.off label { cursor: default; }
+.pg-share-tiles.off label:hover span { background: var(--surface); }
+.pg-share-menu .btn-primary { background: var(--brand-strong); border-color: var(--brand-strong); }
+.pg-share-menu .btn-primary:hover { background: var(--brand); border-color: var(--brand); }
 /* The link itself, so the choices above are not a guess about what they do. */
 .pg-share-url {
   display: block; max-height: 4.6rem; overflow: auto; word-break: break-all;
