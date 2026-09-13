@@ -113,5 +113,12 @@ a code { color: inherit; }
   color: #fff;
 }
 .btn-primary:hover { background: var(--brand-strong); border-color: var(--brand-strong); }
-:root[data-theme="dark"] .btn-primary,
-:root:not([data-theme="light"]) .btn-primary { color: #08130d; }
+/* The dark palette's brand is a pale blue, which wants dark text on it. Both
+   spellings of "dark" need saying: the stored choice, and the system default
+   with no choice stored. The second belongs inside the media query — on its
+   own it also matches a light system that has simply never been asked, which
+   is most visitors, and put near-black text on the light theme's deep blue. */
+:root[data-theme="dark"] .btn-primary { color: #08130d; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .btn-primary { color: #08130d; }
+}
