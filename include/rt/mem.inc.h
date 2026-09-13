@@ -506,10 +506,10 @@ inline void _culebra_cell_release(JitCell* c) {
   }
 }
 
-extern "C" {
-
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_value_retain(int8_t tag,
-                                                               int64_t data) {
+// The retain's body, inlinable like _culebra_value_release_impl: the VM calls
+// it directly, and culebra_runtime_value_retain below — the symbol the JIT
+// resolves by name — wraps it.
+inline void _culebra_value_retain_impl(int8_t tag, int64_t data) {
   // Same guard as the release side, and for the same reason twice over: it is
   // the fast exit for a value type, and it is the one predicate the lowering's
   // peephole drops settled retains on the authority of (see
@@ -535,6 +535,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_value_retain(int8_t tag,
   }
 }
 
+extern "C" {
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_value_retain(int8_t tag,
+                                                               int64_t data) {
+  _culebra_value_retain_impl(tag, data);
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_value_release(int8_t tag,
                                                                 int64_t data) {
   _culebra_value_release_impl(tag, data);
@@ -544,7 +551,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_value_release(int8_t tag,
 // the postfix loop's per-step ownership swap.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_value_swap_owned(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd) {
-  culebra_runtime_value_retain(rt, rd);
+  _culebra_value_retain_impl(rt, rd);
   _culebra_value_release_impl(lt, ld);
 }
 

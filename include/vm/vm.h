@@ -1697,7 +1697,7 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
     case BMeth::Presence:
       // The receiver itself when non-empty — a second owner hands it out.
       if (bmeth_size(recv) == 0) return JitValue{TAG_NIL, 0};
-      culebra_runtime_value_retain(static_cast<int8_t>(recv.tag), recv.data);
+      _culebra_value_retain_impl(static_cast<int8_t>(recv.tag), recv.data);
       return recv;
     case BMeth::Upper:
       return str(culebra_runtime_str_upper(cstr(recv)));
@@ -2125,7 +2125,7 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
         // consumes rather than handing over the slot's. (A Shared view never
         // reaches here — MethGate routes its every built-in name to the user
         // arm — so the helper's own release-then-reject path is unreachable.)
-        culebra_runtime_value_retain(static_cast<int8_t>(args[0].tag),
+        _culebra_value_retain_impl(static_cast<int8_t>(args[0].tag),
                                      args[0].data);
         culebra_runtime_object_remove_any(
             reinterpret_cast<JitObject*>(recv.data),
@@ -2222,7 +2222,7 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
                                               /*limit=*/0,
                                               /*from_right=*/false, line, col);
       auto* it = culebra_runtime_array_iter(pieces);
-      culebra_runtime_value_release(TAG_ARRAY,
+      _culebra_value_release_impl(TAG_ARRAY,
                                     reinterpret_cast<int64_t>(pieces));
       return obj(it);
     }
@@ -13679,12 +13679,12 @@ struct Exec {
       // frames.
       if (!c.forwards_args && n_args < c.required) {
         for (int64_t i = 0; i < n_args; ++i)
-          culebra_runtime_value_release(static_cast<int8_t>(args[i].tag),
+          _culebra_value_release_impl(static_cast<int8_t>(args[i].tag),
                                         args[i].data);
         // The receiver's +1 would strand here too — the JIT's arity error
         // releases it in the same prologue, before the frame's cleanup
         // ladder covers anything.
-        culebra_runtime_value_release(self_tag, self_data);
+        _culebra_value_release_impl(self_tag, self_data);
         // The runtime helper owns the diagnostic (message + prefer-the-
         // published-call-site policy) for every lane; cold path.
         std::vector<const char*> names;
@@ -13715,7 +13715,7 @@ struct Exec {
         // its ArgsRest instruction builds.
         if (!c.keeps_args)
           for (int64_t i = from_args; i < n_args; ++i)
-            culebra_runtime_value_release(static_cast<int8_t>(args[i].tag),
+            _culebra_value_release_impl(static_cast<int8_t>(args[i].tag),
                                           args[i].data);
       }
       // The receiver: a receiver frame's slot takes the +1 (and the frame
@@ -13728,12 +13728,12 @@ struct Exec {
                                 ? JitValue{TAG_NIL, 0}
                                 : JitValue{self_tag, self_data};
       } else {
-        culebra_runtime_value_release(self_tag, self_data);
+        _culebra_value_release_impl(self_tag, self_data);
       }
       if (c.fn_slot >= 0) {
         regs[c.fn_slot] =
             JitValue{TAG_FUNC, reinterpret_cast<int64_t>(cls)};
-        culebra_runtime_value_retain(TAG_FUNC, regs[c.fn_slot].data);
+        _culebra_value_retain_impl(TAG_FUNC, regs[c.fn_slot].data);
       }
     }
     // A try handler restores the recursion count to this frame's own level
@@ -13848,7 +13848,7 @@ struct Exec {
     if (as_cell)
       culebra_runtime_cell_release(reinterpret_cast<JitCell*>(regs[s].data));
     else if (_is_refcounted_value(regs[s]))
-      culebra_runtime_value_release(static_cast<int8_t>(regs[s].tag),
+      _culebra_value_release_impl(static_cast<int8_t>(regs[s].tag),
                                     regs[s].data);
     regs[s] = JitValue{TAG_NIL, 0};
   }
@@ -13875,7 +13875,7 @@ struct Exec {
         culebra_runtime_type_error_typed(line, col, "Function",
                                          static_cast<int8_t>(iter_fn.tag));
       }
-      culebra_runtime_value_retain(static_cast<int8_t>(src.tag), src.data);
+      _culebra_value_retain_impl(static_cast<int8_t>(src.tag), src.data);
       JitValue iter = _jit_invoke(reinterpret_cast<JitClosure*>(iter_fn.data),
                                   src, 0, nullptr);
       JitClosure* has_next = nullptr;
@@ -13934,7 +13934,7 @@ struct Exec {
         }
         auto* obj = reinterpret_cast<JitObject*>(it.data);
         if (culebra_runtime_object_has(obj, "iter")) {
-          culebra_runtime_value_retain(static_cast<int8_t>(it.tag), it.data);
+          _culebra_value_retain_impl(static_cast<int8_t>(it.tag), it.data);
           proto_open(it);
           return;
         }
@@ -13964,7 +13964,7 @@ struct Exec {
         cur[kForPos].data = i + 1;
         culebra_runtime_array_get(arr, i, &tag, &data, 0, 0);
         // Read straight out of the container: the slot wants its own +1.
-        culebra_runtime_value_retain(tag, data);
+        _culebra_value_retain_impl(tag, data);
         break;
       }
       case FOR_STRING: {
@@ -13978,7 +13978,7 @@ struct Exec {
         data = reinterpret_cast<int64_t>(
             culebra_runtime_str_scalar_view(bytes, off, n));
         tag = TAG_STRINGVIEW;
-        culebra_runtime_value_retain(tag, data);
+        _culebra_value_retain_impl(tag, data);
         break;
       }
       default: {
@@ -14013,10 +14013,10 @@ struct Exec {
     if (fn.tag != TAG_FUNC) return;
     // The frame gets its own `+1` for `self`, as the iter() call above did.
     auto call = [&] {
-      culebra_runtime_value_retain(static_cast<int8_t>(iter.tag), iter.data);
+      _culebra_value_retain_impl(static_cast<int8_t>(iter.tag), iter.data);
       JitValue r = _jit_invoke(reinterpret_cast<JitClosure*>(fn.data), iter, 0,
                                nullptr);
-      culebra_runtime_value_release(static_cast<int8_t>(r.tag), r.data);
+      _culebra_value_release_impl(static_cast<int8_t>(r.tag), r.data);
     };
     if (!swallow) {
       call();
@@ -14280,7 +14280,7 @@ struct Exec {
           [[maybe_unused]] const Insn& in = *ip;
           regs[in.a] = regs[in.b];
           if (_is_refcounted_value(regs[in.a]))
-            culebra_runtime_value_retain(static_cast<int8_t>(regs[in.a].tag),
+            _culebra_value_retain_impl(static_cast<int8_t>(regs[in.a].tag),
                                          regs[in.a].data);
           ++pc;
           break;
@@ -14299,7 +14299,7 @@ struct Exec {
         do {
           [[maybe_unused]] const Insn& in = *ip;
           if (_is_refcounted_value(regs[in.a]))
-            culebra_runtime_value_retain(static_cast<int8_t>(regs[in.a].tag),
+            _culebra_value_retain_impl(static_cast<int8_t>(regs[in.a].tag),
                                          regs[in.a].data);
           ++pc;
           break;
@@ -14309,7 +14309,7 @@ struct Exec {
         do {
           [[maybe_unused]] const Insn& in = *ip;
           if (_is_refcounted_value(regs[in.a]))
-            culebra_runtime_value_release(static_cast<int8_t>(regs[in.a].tag),
+            _culebra_value_release_impl(static_cast<int8_t>(regs[in.a].tag),
                                           regs[in.a].data);
           regs[in.a] = JitValue{TAG_NIL, 0};
           ++pc;
@@ -14322,7 +14322,7 @@ struct Exec {
           for (int32_t sl : chunk_release_run(c, in)) {
             JitValue& v = regs[sl];
             if (_is_refcounted_value(v))
-              culebra_runtime_value_release(static_cast<int8_t>(v.tag), v.data);
+              _culebra_value_release_impl(static_cast<int8_t>(v.tag), v.data);
             v = JitValue{TAG_NIL, 0};
           }
           ++pc;
@@ -14916,12 +14916,12 @@ struct Exec {
             int64_t d;
             culebra_runtime_array_get(reinterpret_cast<JitArray*>(recv.data),
                                       key.data, &t, &d, line, col);
-            culebra_runtime_value_retain(t, d);  // array_get borrows the slot
+            _culebra_value_retain_impl(t, d);  // array_get borrows the slot
             regs[in.a] = JitValue{t, d};
           } else if (recv.tag == TAG_OBJECT) {
             // object_get_any consumes a non-String key on every path;
             // retain so the register keeps its owner +1. The result is +1.
-            culebra_runtime_value_retain(static_cast<int8_t>(key.tag),
+            _culebra_value_retain_impl(static_cast<int8_t>(key.tag),
                                          key.data);
             int8_t t;
             int64_t d;
@@ -14965,7 +14965,7 @@ struct Exec {
           if (in.op == Op::PropRaw) {
             // The register owns what it holds, so the borrowed view becomes a
             // +1 here; the statement sweep is its releaser.
-            culebra_runtime_value_retain(static_cast<int8_t>(view.tag),
+            _culebra_value_retain_impl(static_cast<int8_t>(view.tag),
                                          view.data);
             regs[in.a] = view;
           } else if (in.d != 0) {
@@ -15058,7 +15058,7 @@ struct Exec {
                 (culebra::is_object_builtin_method_name(key) &&
                  culebra_runtime_is_shared_val(recv.data))) {
               // The register owns what it holds; the sweep is its releaser.
-              culebra_runtime_value_retain(static_cast<int8_t>(view.tag),
+              _culebra_value_retain_impl(static_cast<int8_t>(view.tag),
                                            view.data);
               regs[in.a] = view;
               ++pc;
@@ -15251,7 +15251,7 @@ struct Exec {
             int64_t d;
             culebra_runtime_array_get(reinterpret_cast<JitArray*>(recv.data),
                                       key.data, &t, &d, line, col);
-            culebra_runtime_value_retain(t, d);
+            _culebra_value_retain_impl(t, d);
             regs[in.a] = JitValue{t, d};
           } else if (recv.tag == TAG_OBJECT) {
             // The nc receiver-kind rejects fire ahead of the read, the
@@ -15279,7 +15279,7 @@ struct Exec {
               default:
                 break;
             }
-            culebra_runtime_value_retain(static_cast<int8_t>(key.tag),
+            _culebra_value_retain_impl(static_cast<int8_t>(key.tag),
                                          key.data);
             int8_t t;
             int64_t d;
@@ -15312,16 +15312,16 @@ struct Exec {
             // (the assignment expression reads it afterwards). On the OOB
             // throw the minted +1 strands to the GC backstop, like the
             // JIT's rval.
-            culebra_runtime_value_retain(static_cast<int8_t>(val.tag),
+            _culebra_value_retain_impl(static_cast<int8_t>(val.tag),
                                          val.data);
             culebra_runtime_array_set(reinterpret_cast<JitArray*>(recv.data),
                                       key.data, static_cast<int8_t>(val.tag),
                                       val.data, line, col);
           } else if (recv.tag == TAG_OBJECT) {
             // object_set_any consumes the key and the value on every path.
-            culebra_runtime_value_retain(static_cast<int8_t>(key.tag),
+            _culebra_value_retain_impl(static_cast<int8_t>(key.tag),
                                          key.data);
-            culebra_runtime_value_retain(static_cast<int8_t>(val.tag),
+            _culebra_value_retain_impl(static_cast<int8_t>(val.tag),
                                          val.data);
             culebra_runtime_object_set_any(
                 reinterpret_cast<JitObject*>(recv.data),
@@ -15363,7 +15363,7 @@ struct Exec {
                 static_cast<int8_t>(recv.tag));
           // The retain feeds object_set's consuming store; the register
           // keeps its +1 so the assignment expression reads it afterwards.
-          culebra_runtime_value_retain(static_cast<int8_t>(val.tag), val.data);
+          _culebra_value_retain_impl(static_cast<int8_t>(val.tag), val.data);
           int64_t dotpk = c.consts[in.d].data;
           culebra_runtime_object_set_uncached(
               reinterpret_cast<JitObject*>(recv.data),
@@ -15401,7 +15401,7 @@ struct Exec {
           JitValue view = culebra_runtime_prop_get(TAG_OBJECT, recv.data, key,
                                                    &ic, line, col,
                                                    /*own_receiver=*/false);
-          culebra_runtime_value_retain(static_cast<int8_t>(view.tag),
+          _culebra_value_retain_impl(static_cast<int8_t>(view.tag),
                                        view.data);
           regs[in.a] = view;
           ++pc;
@@ -15443,7 +15443,7 @@ struct Exec {
           JitValue view = culebra_runtime_prop_get(
               TAG_OBJECT, recv.data, key, &ic, pk >> 32, pk & 0xffffffff,
               /*own_receiver=*/false);
-          culebra_runtime_value_retain(static_cast<int8_t>(view.tag),
+          _culebra_value_retain_impl(static_cast<int8_t>(view.tag),
                                        view.data);
           regs[in.a] = view;
           ++pc;
@@ -15474,7 +15474,7 @@ struct Exec {
           int8_t t;
           int64_t d;
           culebra_runtime_array_get(arr, at, &t, &d, line, col);
-          culebra_runtime_value_retain(t, d);  // array_get borrows the slot
+          _culebra_value_retain_impl(t, d);  // array_get borrows the slot
           regs[in.a] = JitValue{t, d};
           ++pc;
           break;
@@ -15506,7 +15506,7 @@ struct Exec {
           int64_t d;
           culebra_runtime_object_get(reinterpret_cast<JitObject*>(recv.data),
                                      key, &t, &d);
-          culebra_runtime_value_retain(t, d);  // object_get borrows the slot
+          _culebra_value_retain_impl(t, d);  // object_get borrows the slot
           regs[in.a] = JitValue{t, d};
           ++pc;
           break;
@@ -15630,7 +15630,7 @@ struct Exec {
             target = culebra_runtime_class_call_method(
                 static_cast<int8_t>(callee.tag), callee.data);
             if (target.tag == TAG_FUNC) {
-              culebra_runtime_value_retain(static_cast<int8_t>(callee.tag),
+              _culebra_value_retain_impl(static_cast<int8_t>(callee.tag),
                                            callee.data);
               self = callee;
             } else {
@@ -15639,7 +15639,7 @@ struct Exec {
               target = culebra_runtime_class_new_method(
                   static_cast<int8_t>(callee.tag), callee.data);
               if (target.tag == TAG_FUNC) {
-                culebra_runtime_value_retain(static_cast<int8_t>(callee.tag),
+                _culebra_value_retain_impl(static_cast<int8_t>(callee.tag),
                                              callee.data);
                 self = callee;
               }
@@ -15701,9 +15701,9 @@ struct Exec {
             target = culebra_runtime_class_call_method(
                 static_cast<int8_t>(callee.tag), callee.data);
             if (target.tag == TAG_FUNC) {
-              culebra_runtime_value_retain(static_cast<int8_t>(callee.tag),
+              _culebra_value_retain_impl(static_cast<int8_t>(callee.tag),
                                            callee.data);
-              culebra_runtime_value_release(static_cast<int8_t>(self.tag),
+              _culebra_value_release_impl(static_cast<int8_t>(self.tag),
                                             self.data);
               self = callee;
             } else {
@@ -15714,9 +15714,9 @@ struct Exec {
               target = culebra_runtime_class_new_method(
                   static_cast<int8_t>(callee.tag), callee.data);
               if (target.tag == TAG_FUNC) {
-                culebra_runtime_value_retain(static_cast<int8_t>(callee.tag),
+                _culebra_value_retain_impl(static_cast<int8_t>(callee.tag),
                                              callee.data);
-                culebra_runtime_value_release(static_cast<int8_t>(self.tag),
+                _culebra_value_release_impl(static_cast<int8_t>(self.tag),
                                               self.data);
                 self = callee;
               }
@@ -15782,10 +15782,10 @@ struct Exec {
             JitValue m = culebra_runtime_class_call_method(
                 static_cast<int8_t>(callee.tag), callee.data);
             if (m.tag == TAG_FUNC) {
-              culebra_runtime_value_retain(static_cast<int8_t>(callee.tag),
+              _culebra_value_retain_impl(static_cast<int8_t>(callee.tag),
                                            callee.data);
               if (kc.has_receiver) {
-                culebra_runtime_value_release(static_cast<int8_t>(self.tag),
+                _culebra_value_release_impl(static_cast<int8_t>(self.tag),
                                               self.data);
                 regs[in.c] = JitValue{TAG_NIL, 0};
               }
@@ -15794,10 +15794,10 @@ struct Exec {
               m = culebra_runtime_class_new_method(
                   static_cast<int8_t>(callee.tag), callee.data);
               if (m.tag == TAG_FUNC) {
-                culebra_runtime_value_retain(static_cast<int8_t>(callee.tag),
+                _culebra_value_retain_impl(static_cast<int8_t>(callee.tag),
                                              callee.data);
                 if (kc.has_receiver) {
-                  culebra_runtime_value_release(
+                  _culebra_value_release_impl(
                       static_cast<int8_t>(self.tag), self.data);
                   regs[in.c] = JitValue{TAG_NIL, 0};
                 }
@@ -15861,7 +15861,7 @@ struct Exec {
           [[maybe_unused]] const Insn& in = *ip;
           auto* cell = reinterpret_cast<JitCell*>(regs[in.b].data);
           regs[in.a] = cell->value;
-          culebra_runtime_value_retain(static_cast<int8_t>(regs[in.a].tag),
+          _culebra_value_retain_impl(static_cast<int8_t>(regs[in.a].tag),
                                        regs[in.a].data);
           ++pc;
           break;
@@ -15874,7 +15874,7 @@ struct Exec {
           JitValue old = cell->value;
           cell->value = regs[in.b];
           regs[in.b] = JitValue{TAG_NIL, 0};
-          culebra_runtime_value_release(static_cast<int8_t>(old.tag),
+          _culebra_value_release_impl(static_cast<int8_t>(old.tag),
                                         old.data);
           ++pc;
           break;
@@ -16487,7 +16487,7 @@ struct Exec {
           int64_t v = rb.take();
           regs[in.a] = JitValue{TAG_LONG, rb.cur};
           regs[in.a + 3] = JitValue{TAG_LONG, rb.exhausted ? 1 : 0};
-          culebra_runtime_value_release(static_cast<int8_t>(regs[in.c].tag),
+          _culebra_value_release_impl(static_cast<int8_t>(regs[in.c].tag),
                                         regs[in.c].data);
           regs[in.c] = JitValue{TAG_LONG, v};
           pc = static_cast<size_t>(in.b);
