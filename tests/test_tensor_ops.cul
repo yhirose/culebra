@@ -35,6 +35,16 @@ let where_gy = Tensor.where(Tensor.from([[1.0, 0.0, 1.0]]), where_ga, where_gb)
 assert_eq(where_ga.grad().to_array(), [[1.0, 0.0, 3.0]])
 assert_eq(where_gb.grad().to_array(), [[0.0, 2.0, 0.0]])
 
+# --- keepdims reductions: the VJP reads the kept axis off the ranks ---------
+
+let kd_x = Tensor.from([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]]).requires_grad()
+let kd_w = Tensor.from([[1.0], [2.0]])
+(kd_x.mean(1, keepdims: true) * kd_w).sum(0).sum(0).backward()
+assert_eq(kd_x.grad().to_array(), [[0.25, 0.25, 0.25, 0.25], [0.5, 0.5, 0.5, 0.5]])
+let kd_y = Tensor.from([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]).requires_grad()
+(kd_y.sum(0, keepdims: true) * Tensor.from([[1.0, 2.0, 3.0]])).sum(1).sum(0).backward()
+assert_eq(kd_y.grad().to_array(), [[1.0, 2.0, 3.0], [1.0, 2.0, 3.0]])
+
 # --- index_select / Tensor.index_add: the embedding-table lookup -----------
 
 let table = Tensor.from([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]])

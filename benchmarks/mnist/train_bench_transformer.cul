@@ -23,10 +23,9 @@ let EPS = 0.00001
 
 # LayerNorm over the last axis. gamma/beta are [1, d] (broadcast over rows).
 let layer_norm = fn (x, gamma, beta) {
-  let seq = x.shape()[0]
-  let mu = x.mean(1).reshape([seq, 1])
+  let mu = x.mean(1, keepdims: true)
   let diff = x - mu
-  let var = (diff * diff).mean(1).reshape([seq, 1])
+  let var = (diff * diff).mean(1, keepdims: true)
   let normed = diff * (var + EPS).pow(-0.5)
   normed * gamma + beta
 }

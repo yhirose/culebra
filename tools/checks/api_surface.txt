@@ -319,10 +319,10 @@ Tensor.eval(t1, t2, ...) -> Nil
 .pad(params: Array) -> Tensor
 .fold(params: Array) -> Tensor
 .sum() -> Float
-.sum(axis: Long?) -> Tensor
-.mean() / .mean(axis)
-.max() / .max(axis)
-.argmax(axis: Long) -> Tensor
+.sum(axis: Long?, keepdims: Bool = false) -> Tensor
+.mean() / .mean(axis, keepdims:)
+.max() / .max(axis, keepdims:)
+.argmax(axis: Long, keepdims: Bool = false) -> Tensor
 .index_select(indices: Tensor) -> Tensor
 .softmax_cross_entropy(targets: Tensor) -> Tensor
 .to_array() -> Array

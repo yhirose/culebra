@@ -1686,10 +1686,10 @@ Shape ops, linear algebra, and reductions use method syntax:
 | `.pad(params: Array) -> Tensor` | new buffer | `[axis, before, after]`; zero-pad along `axis` |
 | `.fold(params: Array) -> Tensor` | new buffer | `[axis, orig_size, step]`; `.unfold()`'s inverse — scatter-add every window overlap back onto `axis` |
 | `.sum() -> Float` | scalar | sum of all elements (forces eval) |
-| `.sum(axis: Long?) -> Tensor` | lazy | reduce one axis; a nil axis reads as no axis, i.e. the scalar form |
-| `.mean() / .mean(axis)` | Float / Tensor | likewise |
-| `.max() / .max(axis)` | Float / Tensor | likewise |
-| `.argmax(axis: Long) -> Tensor` | lazy | reduce one axis to indices stored as Float |
+| `.sum(axis: Long?, keepdims: Bool = false) -> Tensor` | lazy | reduce one axis; a nil axis reads as no axis, i.e. the scalar form. `keepdims: true` keeps the axis as size 1, so the result broadcasts back over the input: `x - x.mean(1, keepdims: true)` |
+| `.mean() / .mean(axis, keepdims:)` | Float / Tensor | likewise |
+| `.max() / .max(axis, keepdims:)` | Float / Tensor | likewise |
+| `.argmax(axis: Long, keepdims: Bool = false) -> Tensor` | lazy | reduce one axis to indices stored as Float |
 | `.index_select(indices: Tensor) -> Tensor` | lazy | row gather along axis 0: `out[i] = self[indices[i]]` — the embedding-table lookup |
 | `.softmax_cross_entropy(targets: Tensor) -> Tensor` | lazy | fused softmax + cross-entropy over the rows of `[N, C]` logits; one loss per row (`[N]`) |
 | `.to_array() -> Array` | eager | convert to a Culebra Array (forces eval) |

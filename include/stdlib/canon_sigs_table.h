@@ -1680,6 +1680,13 @@ inline constexpr CanonParam kCanonParamPool[] = {
   // 130: causal_attention
   {"k", false, false, false, false, false, "Tensor", CanonDefault::None, 0, {}},
   {"v", false, false, false, false, false, "Tensor", CanonDefault::None, 0, {}},
+  // 132: sum / mean / max (Tensor arms; 76/77/82 above are their pre-keepdims
+  // rows, kept so the indices after them hold)
+  {"axis", true, false, false, false, false, "Long?", CanonDefault::Nil, 0, {}},
+  {"keepdims", true, true, false, false, false, "Bool", CanonDefault::Bool, 0, {}},
+  // 134: argmax (72 above likewise)
+  {"axis", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"keepdims", true, true, false, false, false, "Bool", CanonDefault::Bool, 0, {}},
 };
 
 inline constexpr CanonSig kCanonObjectSigs[] = {
@@ -1810,7 +1817,7 @@ inline constexpr CanonSig kCanonTupleSigs[] = {
 };
 
 inline constexpr CanonSig kCanonTensorSigs[] = {
-  {"", "", "argmax", kCanonParamPool + 72, 1, "Tensor", 1, 1, false, -1, -1, -1},
+  {"", "", "argmax", kCanonParamPool + 134, 2, "Tensor", 1, 1, false, -1, 1, -1},
   {"", "", "backward", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
   {"", "", "causal_attention", kCanonParamPool + 130, 2, "Tensor", 2, 2, false, -1, -1, -1},
   {"", "", "clamp", kCanonParamPool + 125, 2, "Tensor", 2, 2, false, -1, -1, -1},
@@ -1829,8 +1836,8 @@ inline constexpr CanonSig kCanonTensorSigs[] = {
   {"", "", "linear_sigmoid", kCanonParamPool + 74, 2, "Tensor", 2, 2, false, -1, -1, -1},
   {"", "", "log", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
   {"", "", "lt", kCanonParamPool + 120, 1, "Tensor", 1, 1, false, -1, -1, -1},
-  {"", "", "max", kCanonParamPool + 76, 1, "", 0, 1, false, -1, -1, -1},
-  {"", "", "mean", kCanonParamPool + 77, 1, "", 0, 1, false, -1, -1, -1},
+  {"", "", "max", kCanonParamPool + 132, 2, "", 0, 1, false, -1, 1, -1},
+  {"", "", "mean", kCanonParamPool + 132, 2, "", 0, 1, false, -1, 1, -1},
   {"", "", "narrow", kCanonParamPool + 118, 1, "Tensor", 1, 1, false, -1, -1, -1},
   {"", "", "ne", kCanonParamPool + 124, 1, "Tensor", 1, 1, false, -1, -1, -1},
   {"", "", "pad", kCanonParamPool + 114, 1, "Tensor", 1, 1, false, -1, -1, -1},
@@ -1846,7 +1853,7 @@ inline constexpr CanonSig kCanonTensorSigs[] = {
   {"", "", "slice", kCanonParamPool + 80, 2, "Tensor", 2, 2, false, -1, -1, -1},
   {"", "", "softmax", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
   {"", "", "softmax_cross_entropy", kCanonParamPool + 127, 1, "Tensor", 1, 1, false, -1, -1, -1},
-  {"", "", "sum", kCanonParamPool + 82, 1, "", 0, 1, false, -1, -1, -1},
+  {"", "", "sum", kCanonParamPool + 132, 2, "", 0, 1, false, -1, 1, -1},
   {"", "", "tanh", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},
   {"", "", "to_array", nullptr, 0, "Array", 0, 0, false, -1, -1, -1},
   {"", "", "transpose", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},

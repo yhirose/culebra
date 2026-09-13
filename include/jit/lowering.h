@@ -3379,7 +3379,8 @@ struct Lowering {
               b.CreateStore(
                   j.make_tensor(j.emit_call(
                       j.module_->getFunction(rt::tensor_reduce_axis),
-                      {arr(), op, j.extract_data(arg(0))}, "vbm.trax")),
+                      {arr(), op, j.extract_data(arg(0)), kw_flag(1)},
+                      "vbm.trax")),
                   out);
               b.CreateBr(joinBB);
               b.SetInsertPoint(joinBB);

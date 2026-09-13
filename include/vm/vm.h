@@ -1332,10 +1332,21 @@ inline std::span<const BMethSpec> bmeth_specs() {
       // three that may omit it and plain `Long` on argmax, which may not —
       // the interp's own signatures, so the wording follows.
       {"mean", 0, Mean, kRecvTensor, 0, nullptr, {}, {}},
-      {"sum", 1, SumAxis, kRecvTensor, 1, nullptr, {LongOpt}, {"axis"}},
-      {"mean", 1, MeanAxis, kRecvTensor, 1, nullptr, {LongOpt}, {"axis"}},
-      {"max", 1, MaxAxis, kRecvTensor, 1, nullptr, {LongOpt}, {"axis"}},
-      {"argmax", 1, Argmax, kRecvTensor, 1, nullptr, {Long}, {"axis"}},
+      // Axis reductions take `keepdims:` keyword-only (numpy's), the reduced
+      // axis kept as size 1 so the result broadcasts back over its input
+      // without a reshape: `x - x.mean(1, keepdims: true)`.
+      {"sum", 1, SumAxis, kRecvTensor, 2, nullptr, {LongOpt, Bool},
+       {"axis", "keepdims"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/false, /*kw=*/"keepdims"},
+      {"mean", 1, MeanAxis, kRecvTensor, 2, nullptr, {LongOpt, Bool},
+       {"axis", "keepdims"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/false, /*kw=*/"keepdims"},
+      {"max", 1, MaxAxis, kRecvTensor, 2, nullptr, {LongOpt, Bool},
+       {"axis", "keepdims"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/false, /*kw=*/"keepdims"},
+      {"argmax", 1, Argmax, kRecvTensor, 2, nullptr, {Long, Bool},
+       {"axis", "keepdims"}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/false, /*kw=*/"keepdims"},
       {"dot", 1, Dot, kRecvTensor, 1, nullptr, {Tensor}, {"other"}},
       {"index_select", 1, IndexSelect, kRecvTensor, 1, nullptr, {Tensor},
        {"indices"}},
@@ -2444,7 +2455,7 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
       return JitValue{
           TAG_TENSOR,
           reinterpret_cast<int64_t>(culebra_runtime_tensor_reduce_axis(
-              ten(recv), bmeth_reduce_op(id), args[0].data))};
+              ten(recv), bmeth_reduce_op(id), args[0].data, kw_flag(args[1])))};
     case BMeth::Dot:
       culebra_runtime_set_op_pos(line, col);  // rank check
       return JitValue{TAG_TENSOR,

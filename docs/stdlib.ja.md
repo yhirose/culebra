@@ -1647,10 +1647,10 @@ let m = z.clamp(-1.0, 1.0)  # elementwise clip、[lo, hi]に収める
 | `.pad(params: Array) -> Tensor` | new buffer | `[axis, before, after]`。`axis`沿いにゼロパディング |
 | `.fold(params: Array) -> Tensor` | new buffer | `[axis, orig_size, step]`。`.unfold()`の逆——重なる窓をscatter-addで`axis`へ戻す |
 | `.sum() -> Float` | scalar | 全要素和（暗黙eval） |
-| `.sum(axis: Long?) -> Tensor` | lazy | 軸を1つ畳む。axisがnilなら軸指定なし＝スカラー形と同じ |
-| `.mean() / .mean(axis)` | Float / Tensor | 同様 |
-| `.max() / .max(axis)` | Float / Tensor | 同様 |
-| `.argmax(axis: Long) -> Tensor` | lazy | 軸を畳んでインデックスをFloatで格納 |
+| `.sum(axis: Long?, keepdims: Bool = false) -> Tensor` | lazy | 軸を1つ畳む。axisがnilなら軸指定なし＝スカラー形と同じ。`keepdims: true`なら畳んだ軸を長さ1で残すので、結果はそのまま入力にブロードキャストできる: `x - x.mean(1, keepdims: true)` |
+| `.mean() / .mean(axis, keepdims:)` | Float / Tensor | 同様 |
+| `.max() / .max(axis, keepdims:)` | Float / Tensor | 同様 |
+| `.argmax(axis: Long, keepdims: Bool = false) -> Tensor` | lazy | 軸を畳んでインデックスをFloatで格納 |
 | `.index_select(indices: Tensor) -> Tensor` | lazy | 軸0方向の行gather: `out[i] = self[indices[i]]`——embeddingテーブルのlookup |
 | `.softmax_cross_entropy(targets: Tensor) -> Tensor` | lazy | `[N, C]`のlogitsの行ごとにsoftmax + cross-entropyを融合。行あたり1つのloss（`[N]`） |
 | `.to_array() -> Array` | eager | Culebra Arrayへ変換（暗黙eval） |

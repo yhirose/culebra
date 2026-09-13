@@ -2740,9 +2740,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_linear_sigmo
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_reduce_axis(
-    JitTensor* t, int64_t op_id, int64_t axis) {
+    JitTensor* t, int64_t op_id, int64_t axis, bool keepdims) {
   return _culebra_jit_tensor_register(culebra::tensor_reduce_axis(
-      static_cast<culebra::Op>(op_id), t->impl, axis));
+      static_cast<culebra::Op>(op_id), t->impl, axis, keepdims));
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_tensor_reduce_all(

@@ -713,19 +713,21 @@ CULEBRA_RT_TENSOR_EVAL_LINKAGE bool tensor_inplace_binop(TensorImpl& dst, Op op,
 #endif
 }
 
-// Build a lazy reduction along `axis`. Output shape drops that axis
-// (numpy's keepdims=false). Caller must validate `axis` ∈ [0, rank).
-inline TensorPtr tensor_reduce_axis(Op op, TensorPtr a, int64_t axis) {
+// Build a lazy reduction along `axis`. Output shape drops that axis, or
+// keeps it as size 1 with `keepdims` (numpy's). op_param carries the axis;
+// the VJP reads keepdims off the ranks.
+inline TensorPtr tensor_reduce_axis(Op op, TensorPtr a, int64_t axis,
+                                    bool keepdims = false) {
   if (axis < 0 || axis >= static_cast<int64_t>(a->shape.dims.size())) {
     throw CulebraError("IndexError", "Tensor: reduction axis out of range.");
   }
   auto v = _tl_guard([&]() -> tl::array {
     int ax = static_cast<int>(axis);
     switch (op) {
-      case Op::Sum: return a->value.sum(ax);
-      case Op::Mean: return a->value.mean(ax);
-      case Op::Max: return a->value.max(ax);
-      case Op::Argmax: return a->value.argmax(ax);
+      case Op::Sum: return a->value.sum(ax, keepdims);
+      case Op::Mean: return a->value.mean(ax, keepdims);
+      case Op::Max: return a->value.max(ax, keepdims);
+      case Op::Argmax: return a->value.argmax(ax, keepdims);
       default:
         throw std::logic_error("tensor: non-reduction op in reduce dispatch");
     }
@@ -1416,10 +1418,12 @@ inline void _tensor_vjp(const TensorPtr& n) {
     case Op::Mean: {
       const auto& a = n->inputs[0];
       int64_t axis = n->op_param;
-      // Re-insert the reduced axis (size 1) then broadcast g back.
+      // Re-insert the reduced axis (size 1) — already there under keepdims,
+      // where the ranks match — then broadcast g back.
       auto kd = a->shape.dims;
       kd[axis] = 1;
-      auto g_kd = tensor_reshape(g, TensorShape(kd));
+      auto g_kd = g->shape.dims.size() == kd.size() ? g
+                                                    : tensor_reshape(g, TensorShape(kd));
       TensorPtr contrib =
           tensor_binop(Op::Add, tensor_zeros(a->shape, dt), g_kd);
       if (n->op == Op::Mean) {

@@ -223,11 +223,25 @@ let col_mean = R.mean(0)
 Tensor.eval(row_max, col_mean)
 assert_eq(to_string(row_max.shape()), "[2]")
 
+# keepdims: the reduced axis stays as size 1, so the result broadcasts back
+# over the input without a reshape.
+let kd_sum = R.sum(1, keepdims: true)
+let kd_mean = R.mean(0, keepdims: true)
+let kd_max = R.max(1, keepdims: true)
+Tensor.eval(kd_sum, kd_mean, kd_max)
+assert_eq(to_string(kd_sum.shape()), "[2, 1]")
+assert_eq(to_string(kd_mean.shape()), "[1, 3]")
+assert_eq(kd_sum.to_array(), [[3.0], [3.0]])
+assert_eq(kd_max.to_array(), [[1.0], [1.0]])
+assert_eq((R - R.mean(1, keepdims: true)).to_array(), [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+assert_eq(to_string(R.sum(1, keepdims: false).shape()), "[2]")
+
 # argmax: returns Tensor with the reduced axis dropped, F32 indices
 let M3 = Tensor.from([[1.0, 9.0, 2.0], [5.0, 3.0, 8.0]])
 let idx = M3.argmax(1)
 Tensor.eval(idx)
 assert_eq(to_string(idx.shape()), "[2]")
+assert_eq(M3.argmax(1, keepdims: true).to_array(), [[1.0], [2.0]])
 
 # The optional axis is a declared `Long?` parameter, so a bad one is the
 # binder's error at the argument's own position and an explicit nil reads as
