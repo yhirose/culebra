@@ -196,6 +196,16 @@ function mkdirp(dir) {
   }
 }
 
+// Every path the page sends is repo-relative and lands under /work. A `..`
+// would climb out of it — as far as the IDBFS mount, which outlives the page
+// — so none is accepted. Today no link can produce one (the browser folds
+// `..` out of the URL before the entry is fetched, so such a project never
+// loads), but that is a property of the fetch, not of this function.
+function underWork(rel) {
+  if (rel.split("/").includes("..")) throw new Error("path leaves the project: " + rel);
+  return MEMFS_ROOT + "/" + rel;
+}
+
 function writeFile(path, data) {
   mkdirp(path.slice(0, path.lastIndexOf("/")));
   mod.FS.writeFile(path, data);
@@ -210,7 +220,7 @@ const staged = new Set();
 
 async function stageProgram(msg) {
   const rel = msg.path || "main.cul";
-  const path = MEMFS_ROOT + "/" + rel;
+  const path = underWork(rel);
   writeFile(path, msg.src);          // so FS.read(Sys.script) works too
   // Files are immutable, so each is fetched once; the batch goes out at once
   // rather than one round trip per file.
@@ -221,7 +231,7 @@ async function stageProgram(msg) {
     return new Uint8Array(await res.arrayBuffer());
   }));
   pending.forEach((file, i) => {
-    writeFile(MEMFS_ROOT + "/" + file, bodies[i]);
+    writeFile(underWork(file), bodies[i]);
     staged.add(msg.base + file);
   });
   return path;

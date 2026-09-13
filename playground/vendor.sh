@@ -14,6 +14,11 @@
 # history is in git for playground/editor.js). A bundle has one copy of
 # everything, which is also why that problem is gone.
 #
+# --ignore-scripts: a package's install hooks are the one place code from the
+# registry would run outside the browser, on the machine doing the build, and
+# nothing here needs them — esbuild's platform binary arrives as an optional
+# dependency of its own, and its postinstall only checks that it did.
+#
 # Inputs are vendor/package.json (exact versions) and vendor/package-lock.json
 # (the resolution of everything under them, written on the first run and
 # committed with the bundle). Outputs are the three files copy-frontend.sh
@@ -30,9 +35,9 @@ trap 'rm -rf "$WORK"' EXIT
 cp "$VENDOR/package.json" "$WORK/"
 if [ -f "$VENDOR/package-lock.json" ]; then
   cp "$VENDOR/package-lock.json" "$WORK/"
-  (cd "$WORK" && npm ci --silent --no-audit --no-fund)
+  (cd "$WORK" && npm ci --silent --no-audit --no-fund --ignore-scripts)
 else
-  (cd "$WORK" && npm install --silent --no-audit --no-fund)
+  (cd "$WORK" && npm install --silent --no-audit --no-fund --ignore-scripts)
   cp "$WORK/package-lock.json" "$VENDOR/"
 fi
 
