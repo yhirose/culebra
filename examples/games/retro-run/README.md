@@ -67,9 +67,13 @@ picture behind them stays put.
 
 A `music.ogg` or `music.mp3` in the directory (looked for in that order) loops
 under the run via `Canvas.music`, replacing the built-in chiptune riff —
-upstream's own soundtrack, if you have it. It plays at `vol: 60`, under the
-engine but clearly audible; edit the `Canvas.music` call to taste. The
-generated set ships no music, so the chiptune is the default.
+upstream's own soundtrack, if you have it. It plays at `MUSIC_VOL` (60), under
+the engine but clearly audible; edit the constant to taste. The generated set
+ships no music, so the chiptune is the default.
+
+Either way the flag ends it: the music fades out over a couple of seconds, a
+few more pass in silence, and a slow chiptune theme plays once over the frozen
+finish; when it is done, the sea comes in and stays until the restart.
 
 ## Performance
 

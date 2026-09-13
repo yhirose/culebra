@@ -587,7 +587,8 @@ mut finished = false
 # music, so the riff below is the default. It sits under the engine and the
 # chiptune's own level, loud enough to carry on laptop speakers.
 let MUSIC_FILE = ["music.ogg", "music.mp3"].find(|n| ART.exists(n))
-Canvas.music(art(MUSIC_FILE), vol: 60) if MUSIC_FILE != nil
+let MUSIC_VOL = 60
+Canvas.music(art(MUSIC_FILE), vol: MUSIC_VOL) if MUSIC_FILE != nil
 
 # The chiptune fallback — a breezy fusion tune, not a transcription of any
 # particular one: sixteen bars over the "royal road" progression (IV△7 V7
@@ -894,19 +895,24 @@ let BASS = [0, nil, nil, 0, 12, nil, 0, nil, nil, 12, nil, 0, 7, nil, -1, nil]
 let ARP = [0, 1, 2, 3, 2, 3, 1, 2]
 
 # A note table becomes (frequency, length in sixteenths) at each onset.
-let lead_notes = fn () {
-  mut out = repeat(LEAD.size(), nil)
-  for i, n in LEAD.enumerate() {
+let onsets = fn (table) {
+  mut out = repeat(table.size(), nil)
+  for i, n in table.enumerate() {
     continue if n <= 0
     mut len = 1
-    while i + len < LEAD.size() && LEAD[i + len] == -1 {
+    while i + len < table.size() && table[i + len] == -1 {
       len += 1
     }
     out[i] = (hz(n), len)
   }
   out
-}()
+}
+let lead_notes = onsets(LEAD)
 mut bgm_frame = 0
+
+# The tune's level, 1.0 while the race runs; the ending turns it down.
+mut bgm_gain = 1.0
+let bgm_vol = |v| Math.round(v * bgm_gain)
 
 let tick_bgm = fn () {
   if bgm_frame % TICK == 0 {
@@ -919,7 +925,7 @@ let tick_bgm = fn () {
       Canvas.tone(
         f,
         len * TICK - 2,
-        vol: 15,
+        vol: bgm_vol(15),
         wave: Canvas.PULSE,
         attack: 1,
         decay: 2,
@@ -932,7 +938,7 @@ let tick_bgm = fn () {
       Canvas.tone(
         hz(root + (iv < 0 ? pickup : iv)),
         TICK * 2 - 3,
-        vol: 18,
+        vol: bgm_vol(18),
         wave: Canvas.SAWTOOTH,
         decay: 3,
         release: 3,
@@ -942,7 +948,7 @@ let tick_bgm = fn () {
       Canvas.tone(
         hz(tones[ARP[slot / 2]]),
         TICK * 2 - 4,
-        vol: 7,
+        vol: bgm_vol(7),
         wave: Canvas.TRIANGLE,
         attack: 1,
         decay: 4,
@@ -955,19 +961,186 @@ let tick_bgm = fn () {
           12 => Canvas.tone(
         800,
         3,
-        vol: 13,
+        vol: bgm_vol(13),
         wave: Canvas.NOISE,
         decay: 2,
         release: 2,
       ),
       slot ==
-        14 => Canvas.tone(3000, 3, vol: 6, wave: Canvas.NOISE, release: 3),
+        14 => Canvas.tone(
+        3000,
+        3,
+        vol: bgm_vol(6),
+        wave: Canvas.NOISE,
+        release: 3,
+      ),
       slot % 2 ==
-        0 => Canvas.tone(3000, 1, vol: 5, wave: Canvas.NOISE, release: 1),
+        0 => Canvas.tone(
+        3000,
+        1,
+        vol: bgm_vol(5),
+        wave: Canvas.NOISE,
+        release: 1,
+      ),
       _ => nil,
     }
   }
   bgm_frame = (bgm_frame + 1) % BGM_LOOP
+}
+
+# --- ending ----------------------------------------------------------------
+# After the flag the run's music fades out, a few seconds pass, and a slow
+# theme plays once over the frozen finish; when it is done the sea takes over
+# and stays.
+let FADE_OUT = 2.5     # seconds the run's music takes to go
+let ENDING_REST = 3.0  # seconds of silence before the theme
+
+# The theme: a ballad at 75 bpm, sixteen bars that lean on I, iii, IV and a
+# suspended V, with a borrowed iv for a shadow near the end. Electric-piano
+# arpeggios in eighths, a round bass that holds each root, brushes from the
+# second half, and a lead that sings long notes. Same note-table conventions
+# as the run's tune, a bar per row.
+let END_TICK = 12  # frames per sixteenth (75 bpm)
+let END_CHORDS = [
+  (48, [60, 64, 67, 71]),  # C△7
+  (52, [64, 67, 71, 74]),  # Em7
+  (53, [65, 69, 72, 76]),  # F△7
+  (55, [67, 72, 74, 77]),  # G7sus4
+  (57, [69, 72, 76, 79]),  # Am7
+  (52, [64, 67, 71, 74]),  # Em7
+  (53, [65, 69, 72, 76]),  # F△7
+  (55, [67, 71, 74, 77]),  # G7
+  (48, [60, 64, 67, 71]),  # C△7
+  (57, [69, 72, 76, 79]),  # Am7
+  (50, [62, 65, 69, 72]),  # Dm7
+  (55, [67, 71, 74, 77]),  # G7
+  (53, [65, 68, 72, 76]),  # Fm△7, the borrowed shade
+  (52, [64, 67, 71, 74]),  # Em7
+  (55, [67, 72, 74, 77]),  # G7sus4
+  (48, [60, 64, 67, 71]),  # C△7, ringing out
+]
+let END_LEAD = [
+  [0, 0, 0, 0, 0, 0, 0, 0, 76, -1, -1, -1, 79, -1, -1, -1],
+  [83, -1, -1, -1, -1, -1, -1, -1, 81, -1, -1, -1, 79, -1, -1, -1],
+  [81, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 77, -1, 76, -1],
+  [74, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 0, 76, -1],
+  [79, -1, -1, -1, -1, -1, 81, -1, 84, -1, -1, -1, -1, -1, -1, -1],
+  [83, -1, -1, -1, -1, -1, -1, -1, 79, -1, -1, -1, -1, -1, -1, -1],
+  [81, -1, -1, -1, -1, -1, 77, -1, 76, -1, -1, -1, -1, -1, -1, -1],
+  [74, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+  [72, -1, -1, -1, -1, -1, -1, -1, 0, 0, 0, 0, 76, -1, 79, -1],
+  [84, -1, -1, -1, -1, -1, -1, -1, 83, -1, -1, -1, 81, -1, -1, -1],
+  [77, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 81, -1, -1, -1],
+  [79, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 0, 77, -1],
+  [80, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 77, -1, 76, -1],
+  [74, -1, -1, -1, -1, -1, -1, -1, 76, -1, -1, -1, 79, -1, -1, -1],
+  [81, -1, -1, -1, -1, -1, -1, -1, 74, -1, -1, -1, -1, -1, -1, -1],
+  [76, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+].flat_map(|bar| bar)
+# Keys: chord tones on every eighth, rising and settling back.
+let END_ARP = [0, 1, 2, 3, 2, 1, 2, 3]
+let END_LENGTH = END_TICK * BAR * END_CHORDS.size()
+let end_lead_notes = onsets(END_LEAD)
+mut end_frame = 0
+
+let tick_ending_song = fn () {
+  if end_frame % END_TICK == 0 {
+    let step = end_frame / END_TICK
+    let (root, tones) = END_CHORDS[step / BAR]
+    let slot = step % BAR
+    let note = end_lead_notes[step]
+    if note != nil {
+      let (f, len) = note
+      Canvas.tone(
+        f,
+        len * END_TICK - 4,
+        vol: 10,
+        wave: Canvas.PULSE,
+        attack: 4,
+        decay: 6,
+        release: 12,
+        duty: Canvas.DUTY_HALF,
+      )
+    }
+    # The bass holds the root for three beats and touches the fifth on the
+    # fourth.
+    if slot == 0 {
+      Canvas.tone(
+        hz(root),
+        END_TICK * 11,
+        vol: 14,
+        wave: Canvas.TRIANGLE,
+        attack: 2,
+        release: 10,
+      )
+    } else if slot == 12 {
+      Canvas.tone(
+        hz(root + 7),
+        END_TICK * 3,
+        vol: 11,
+        wave: Canvas.TRIANGLE,
+        attack: 2,
+        release: 8,
+      )
+    }
+    if slot % 2 == 0 {
+      Canvas.tone(
+        hz(tones[END_ARP[slot / 2]]),
+        END_TICK * 2 - 6,
+        vol: 6,
+        wave: Canvas.PULSE2,
+        decay: 8,
+        release: 8,
+        duty: Canvas.DUTY_QUARTER,
+      )
+    }
+    if step >= BAR * 8 && (slot == 4 || slot == 12) {
+      Canvas.tone(4000, 2, vol: 3, wave: Canvas.NOISE, release: 4)  # brushes
+    }
+  }
+  end_frame += 1
+}
+
+# The sea: one wave at a time on the noise channel, a hiss that swells, breaks
+# and draws back over four or five seconds, then a pause of its own choosing.
+mut wave_wait = 0
+let tick_waves = fn () {
+  if wave_wait == 0 {
+    let swell = Random.int(30, 60)
+    Canvas.tone(
+      Random.int(200, 400),
+      swell * 2,
+      vol: Random.int(3, 6),
+      wave: Canvas.NOISE,
+      end_freq: Random.int(800, 1600),
+      attack: swell,
+      decay: swell,
+      release: swell * 4,
+      peak: Random.int(7, 11),
+    )
+    wave_wait = swell * 8 + Random.int(30, 150)
+  }
+  wave_wait -= 1
+}
+
+mut ending_t = 0.0
+let tick_ending = fn (dt) {
+  ending_t += dt
+  if ending_t < FADE_OUT {
+    let gain = 1.0 - ending_t / FADE_OUT
+    if MUSIC_FILE == nil {
+      bgm_gain = gain
+      tick_bgm()
+    } else {
+      Canvas.music_volume(Math.round(MUSIC_VOL * gain))
+    }
+  } else if ending_t < FADE_OUT + ENDING_REST {
+    Canvas.music_stop() if MUSIC_FILE != nil && Canvas.music_playing()
+  } else if end_frame < END_LENGTH {
+    tick_ending_song()
+  } else {
+    tick_waves()
+  }
 }
 
 # --- race control ----------------------------------------------------------
@@ -1011,6 +1184,12 @@ let restart_race = fn () {
   finished = false
   count_in = COUNT_IN
   counted = 4
+  ending_t = 0.0
+  end_frame = 0
+  wave_wait = 0
+  bgm_gain = 1.0
+  bgm_frame = 0
+  Canvas.music(art(MUSIC_FILE), vol: MUSIC_VOL) if MUSIC_FILE != nil
 }
 
 # --- update ----------------------------------------------------------------
@@ -1809,12 +1988,12 @@ let frame = fn () {
   gdt += dt
   while gdt > STEP {
     gdt -= STEP
-    # Exactly one of these runs, and each keeps the music going: the world is
+    # Exactly one of these runs, and each keeps the sound going: the world is
     # frozen both before the drop and after the flag.
     if count_in > 0.0 {
       tick_count_in(STEP)
     } else if finished {
-      tick_bgm() if MUSIC_FILE == nil
+      tick_ending(STEP)
     } else {
       count_in -= STEP if count_in > -GO_HOLD
       update(STEP)
