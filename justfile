@@ -644,7 +644,20 @@ _run-tests BACKEND:
             [[ -e "$f" ]] || continue
             name=$(basename "$f" .jitcpu)
             # bash's TIMEFORMAT "%U %S": seconds with three decimals each.
-            read -r u s < "$f"
+            # Anything else means the line never arrived intact — seen twice on
+            # 2026-09-12, once under a load of 84 and once under 5, cause not
+            # yet found. Parsing it regardless turned the gate into a bash
+            # arithmetic error ("10#: invalid integer constant") that said
+            # nothing about which file or what was in it, and took the whole
+            # run down with it. Say what was there and carry on: a timing
+            # that cannot be read is a measurement lost, not a budget broken,
+            # and the next occurrence leaves evidence.
+            read -r u s < "$f" || true
+            if [[ ! "$u" =~ ^[0-9]+\.[0-9]+$ || ! "$s" =~ ^[0-9]+\.[0-9]+$ ]]; then
+                echo "test (vm vs jit) WARN: unreadable --jit timing for tests/$name.cul, not measured against the budget" >&2
+                echo "  $f held: $(tr '\n' '|' < "$f" | head -c 200)" >&2
+                continue
+            fi
             ms=$(( 10#${u%.*} * 1000 + 10#${u#*.} + 10#${s%.*} * 1000 + 10#${s#*.} ))
             (( ms > budget_ms )) && over+=("$ms $name")
         done
