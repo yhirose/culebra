@@ -892,8 +892,11 @@ it would use in a checkout. Without a project the text runs alone as
 source as base64url (`-` and `_` in place of `+` and `/`, no padding),
 gzip-compressed when that comes out shorter. No parameter says which of
 the two it is: gzip's two magic bytes cannot begin a Culebra source, so
-the payload describes itself and the decoder reads them. A payload
-longer than a megabyte of characters is refused unread.
+the payload describes itself and the decoder reads them. It is bounded
+at both ends: a payload longer than a megabyte of characters is refused
+unread, and one that expands past four megabytes of source is abandoned
+while it inflates. gzip reaches about 1000:1, so the first bound alone
+would let a link ask for hundreds of megabytes.
 
 It rides the fragment rather than the query string because a fragment
 never reaches the server, and GitHub Pages' CDN rejects a request line
@@ -960,7 +963,7 @@ the link comes from the page: the project, the arguments when they
 differ from the project's own, and the text when it was edited, so an
 unedited example shares as its short name rather than as a fragment of
 several kilobytes. The defaults reproduce the plain standalone page,
-which is why an uncustomised link carries none of the three.
+which is why an uncustomised link carries none of the four.
 
 Split is offered only where it can land: a layout built from the view
 alone has no source to sit beside, so the row goes quiet there and the
@@ -970,6 +973,7 @@ Putting the Examples menus back on their placeholder says the text is
 no longer that example, and the project goes with the name: from then
 on the text runs alone as `main.cul`, with none of the example's
 companion files or arguments under it, and a link to it names nothing.
-The text itself stays, which is what separates this from New. A link
+The text itself stays, which is what separates this from the New
+button beside Share: that one clears the text as well. A link
 that names no project carries the text whether or not it was edited,
 since nothing else would arrive.
