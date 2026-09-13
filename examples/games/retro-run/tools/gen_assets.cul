@@ -1802,18 +1802,24 @@ fn riders(c, cx, top, spacing) {
 # The player's car, after the mid-engined coupés of the early nineties: low
 # and wide, a slim glass canopy over a broad tail, a lamp bar the width of
 # the car under a lip spoiler, a black lower bumper. The roof is off, so the
-# two riders sit up through the canopy. `hill` adds rows to the tail and
-# moves everything above it down with them.
+# two riders sit up through the canopy. `hill` pitches the car nose-up for
+# the uphill variant, as the camera behind it then sees it: the engine lid, a
+# top surface, tips toward the camera and grows by three times `hill` (a
+# trapezoid, its far edge the narrow one), while the tail face tips away and
+# loses `hill` from between the lamps and half of `hill` from each of the lamp
+# bar and the bumper.
 fn draw_sports_car(c, w, h, steer, hill) {
   let cx = w / 2.0
   let floor = h - 1
-  let top = 3 + hill
-  let deck = 17 + hill
+  let top = 3
+  let deck = 17
+  let lid = 3 + 3 * hill
+  let bumper = 8 - hill / 2
   wheels(c, w, floor, 13, 15, 0)
   let body = [
     [deck, w * 0.40],
-    [deck + 2, w * 0.47],
-    [deck + 6, w * 0.5],
+    [deck + lid * 2 / 3, w * 0.47],
+    [deck + lid + 3, w * 0.5],
     [floor - 8, w * 0.5],
     [floor - 4, w * 0.48],
     [floor - 2, w * 0.44],
@@ -1822,29 +1828,35 @@ fn draw_sports_car(c, w, h, steer, hill) {
   # The lip spoiler along the deck's trailing edge, the lamp bar under it.
   c.rect(cx - w * 0.42, deck - 1, w * 0.84, 2, "RED0")
   c.rect(cx - w * 0.40, deck - 2, w * 0.80, 1, "RED2")
-  let bar_y = deck + 3
+  # Vents across the lid, only once there is a lid to see them on.
+  for y in deck + 3..deck + lid - 3 by 4 {
+    let half = profile(body, y) * 0.6
+    c.rect(cx - half, y, half * 2, 1, "RED0")
+  }
+  let bar_y = deck + lid
+  let bar_h = 5 - hill / 2
   let bar_half = profile(body, bar_y) - 2
-  c.rect(cx - bar_half, bar_y, bar_half * 2, 5, "LAMP_R")
+  c.rect(cx - bar_half, bar_y, bar_half * 2, bar_h, "LAMP_R")
   c.rect(cx - bar_half + 1, bar_y, bar_half * 2 - 2, 2, "LAMP_RL")
   for (
     x,
     y,
-  ) in [(cx - bar_half, bar_y), (cx + bar_half - 1, bar_y), (cx - bar_half, bar_y + 4), (cx + bar_half - 1, bar_y + 4)] {
+  ) in [(cx - bar_half, bar_y), (cx + bar_half - 1, bar_y), (cx - bar_half, bar_y + bar_h - 1), (cx + bar_half - 1, bar_y + bar_h - 1)] {
     c.set(x, y, "RED1")
   }
   for x in (cx - bar_half + 7).to_long()..(cx + bar_half).to_long() by 8 {
-    c.rect(x, bar_y, 1, 5, "INK")
+    c.rect(x, bar_y, 1, bar_h, "INK")
   }
   # The black lower bumper, darkening toward the ground, with the plate and
   # the pipes.
-  let low = floor - 9
+  let low = floor - 1 - bumper
   for y in low..floor - 1 {
     let half = profile(body, y) - 1
     for x in (cx - half).to_long()..=(cx + half).to_long() {
       c.mix(x, y, "TYRE1", "TYRE0", (y - low).to_float() / (floor - 1 - low))
     }
   }
-  plate(c, cx, low + 2, 14)
+  plate(c, cx, low + (bumper - 4) / 2, 14)
   for ex in [cx - w * 0.3, cx + w * 0.3 - 6] {
     c.rect(ex, floor - 4, 6, 2, "CHROME")  # exhausts
     c.rect(ex + 1, floor - 4, 4, 1, "TYRE1")
