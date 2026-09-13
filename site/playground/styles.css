@@ -295,6 +295,15 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 }
 .pg-play:hover .pg-play-glyph { background: var(--brand-strong); }
 
+/* The listing under that button, on a view-only page that has not run yet:
+   the source where the Output pane's transcript will go. Over the panes and
+   under the button, and down for good at the first run. */
+.pg-listing {
+  position: absolute; inset: 0; z-index: 1;
+  background: var(--code-bg); overflow: auto;
+}
+.pg-listing[hidden] { display: none; }
+
 /* --- layouts (?layout=editor | ?layout=view) ---------------------------- */
 /* One ladder, two rungs: how much of the page a hosting iframe wants. A page
    hosting the Playground brings its own branding and supplies the source

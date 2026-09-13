@@ -56,11 +56,15 @@ const theme = EditorView.theme({
   },
 });
 
-export function createEditor(parent, doc, { onChange } = {}) {
+export function createEditor(parent, doc, { onChange, readOnly = false } = {}) {
   const view = new EditorView({
     doc,
     extensions: [
       basicSetup,
+      // The opening listing (app.js) is the same editor with the typing taken
+      // out: still selectable, still copyable, still highlighted by the rules
+      // below.
+      readOnly ? EditorView.editable.of(false) : [],
       keymap.of([indentWithTab]),
       culebraLanguage,
       syntaxHighlighting(culebraHighlightStyle),

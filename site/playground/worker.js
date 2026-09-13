@@ -136,8 +136,24 @@ self.__waitForKey = (timeoutMs) => {
 // the *next* tick after it's called, so an unheeded tick between frames is just
 // dropped. A setTimeout fallback keeps a backgrounded tab (where rAF stalls)
 // from wedging the run.
+// A page that opens on its first screen (app.js's view-only pages) asks for
+// the run to stop at the first present(): the frame is drawn, and nothing
+// advances until the play button's "resume". The rAF fallback below is what
+// the hold has to get past — its whole point is that a stalled tab keeps
+// going, and here the stall is deliberate.
 let pendingFrameResolve = null;
+let holdFirstFrame = false;
+let heldFrameResolve = null;
 self.__nextFrame = () => {
+  if (holdFirstFrame) {
+    return new Promise((resolve) => {
+      heldFrameResolve = () => {
+        holdFirstFrame = false;
+        heldFrameResolve = null;
+        resolve();
+      };
+    });
+  }
   return new Promise((resolve) => {
     let done = false;
     const timer = setTimeout(() => {
@@ -247,6 +263,11 @@ onmessage = async (e) => {
     if (pendingFrameResolve) pendingFrameResolve();
     return;
   }
+  if (type === "resume") {
+    if (heldFrameResolve) heldFrameResolve();
+    else holdFirstFrame = false;   // the hold had not been reached yet
+    return;
+  }
   if (type === "input") {
     self.__canvasButtons = e.data.buttons;
     // Arbitrary-key state (Canvas.key / key_queue / typed): the held names
@@ -311,6 +332,8 @@ onmessage = async (e) => {
   keyQueue.length = 0;
   pendingKeyResolve = null;
   pendingFrameResolve = null;
+  holdFirstFrame = !!e.data.holdFirstFrame;
+  heldFrameResolve = null;
   self.__canvasButtons = 0;
   self.__canvasMouseButtons = 0;
   self.__canvasKeysHeld = new Set();

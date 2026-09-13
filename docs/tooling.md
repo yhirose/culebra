@@ -955,6 +955,20 @@ pane whenever the program is not running: that is how a visitor starts
 it without `?run=1`, and how anyone replays it once it ends. There is
 no stop; a program that will not end by itself ends with the tab.
 
+Such a page opens on its program rather than on an empty pane. Under
+`?view=output` that is the source, read-only and highlighted, until the
+first run replaces it with the output. Under `?view=canvas` and
+`?view=tui` it is the program's first screen, which is reached by
+running it that far and stopping there: a Canvas program is held at its
+first `Canvas.present()`, and a TUI one holds itself at the
+`Term.read_key` its first screen ends in. The play button lets go of
+that hold rather than starting a second run, and being a click it is
+also what unlocks the sound (a browser keeps a page's audio locked until
+the page has been clicked, which is why an `?run=1` page is silent until
+its visitor touches it). The program does run to reach that screen, so a
+link whose program does something on its way there does it when the page
+opens, not when the visitor presses play.
+
 ### The Share button
 
 Share opens a menu with those choices in it (`Layout`, `View`, `Split`,

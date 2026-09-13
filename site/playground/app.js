@@ -177,13 +177,17 @@ function switchTab(name) {
   // Clear empties the Output pane and nothing else, so it rides the tab strip
   // and leaves with the pane it belongs to.
   clearBtn.hidden = name !== "output";
-  // A hidden pane has no width to measure against, so the terminal is sized
-  // the moment it becomes visible rather than only on load and on resize.
-  if (name === "tui") { fitTerm(); term.focus(); }
-  // Same reason for the canvas: the screen layer's scale comes from the
-  // displayed width, which is 0 while the pane is hidden.
-  if (name === "canvas") { sendScreenScale(); canvasPane.focus(); }
+  focusPane(name);
   updatePlayOverlay();   // which pane is showing decides whether it belongs
+}
+
+// Hand the keyboard to the pane that reads it, and measure what could not be
+// measured while it was hidden: a hidden pane has no width, so the terminal is
+// sized and the screen layer's scale is taken the moment one becomes visible.
+// Both a tab switch and the play button (which took the focus itself) need it.
+function focusPane(name) {
+  if (name === "tui") { fitTerm(); term.focus(); }
+  if (name === "canvas") { sendScreenScale(); canvasPane.focus(); }
 }
 tabButtons.output.addEventListener("click", () => switchTab("output"));
 tabButtons.tui.addEventListener("click", () => switchTab("tui"));
@@ -198,6 +202,7 @@ const ALT_SCREEN_EXIT = "\x1b[?1049l";
 let inTui = false;
 let inCanvas = false;   // a "frame" message has switched to the Canvas pane
 let ranOnce = false;    // a program has finished in this page (see the overlay)
+let previewing = false; // a run is holding on its first screen (see maybeOpen)
 
 // Leave TUI/Canvas mode and show the Output pane. The routing state (inTui /
 // inCanvas) and the visible tab must move together, so run/stop/onerror share
@@ -413,7 +418,7 @@ function spawnWorker() {
             : "No WebGPU device here, so every tensor op runs on the CPU";
       if (!running) setStatus("ready");
       updatePlayOverlay();
-      maybeAutorun();
+      maybeOpen();
       return;
     }
     if (msg.type === "output") {
@@ -438,6 +443,7 @@ function spawnWorker() {
     }
     if (msg.type === "done") {
       running = false;
+      previewing = false;
       stopRafPump();
       resetMusic();   // the native analogue: process exit silences the slot
       resetSounds();
@@ -470,7 +476,7 @@ function spawnWorker() {
   };
 }
 
-function run() {
+function run({ holdFirstFrame = false } = {}) {
   if (running || runBtn.disabled) return;
   ensureAudio();    // this click is a user gesture — unlock audio for any tones
   resetMusic();     // a fresh run must not inherit the previous run's BGM
@@ -481,6 +487,7 @@ function run() {
   updatePlayOverlay();
   output.classList.remove("err");
   output.textContent = "";
+  listing.hidden = true;   // the pane is a transcript from here on
   editor.clearError();
   term.reset();
   term.write(HIDE_CURSOR);
@@ -497,6 +504,7 @@ function run() {
     base: project.base,
     files: project.files,
     args: parseArgs(argsInput.value),
+    holdFirstFrame,
   });
 }
 
@@ -511,6 +519,7 @@ function stop() {
   if (!running) return;
   worker.terminate();
   running = false;
+  previewing = false;
   stopRafPump();
   resetMusic();     // terminating the worker must also silence a looping BGM
   resetSounds();
@@ -521,6 +530,21 @@ function stop() {
   setStatus("stopped — reloading…");
   appendOutput("\n[stopped]");
   spawnWorker();
+}
+
+// --- the opening listing ---------------------------------------------------
+//
+// A view-only page whose view is Output has nothing to show before a run: an
+// empty pane with a play button over it. Show the program instead, read-only
+// and highlighted, which is what a reader wants of a link they have not run
+// yet. It goes up with the text and comes down at the first run, from when
+// the pane belongs to the transcript.
+const listing = $("listing");
+
+function showListing(src) {
+  if (!VIEW_ONLY || pendingAutorun || activeTab !== "output") return;
+  listing.hidden = false;
+  createEditor(listing, src, { readOnly: true });
 }
 
 // --- the play overlay -----------------------------------------------------
@@ -538,14 +562,26 @@ function updatePlayOverlay() {
   // not run". The Canvas and TUI panes are live surfaces, where a finished
   // frame reads as paused and this is how it is played again.
   const transcript = ranOnce && activeTab === TABS[0];
-  playBtn.hidden = !VIEW_ONLY || running || runBtn.disabled || transcript;
+  const idle = !running && !runBtn.disabled;
+  playBtn.hidden = !VIEW_ONLY || transcript || !(idle || previewing);
 }
 
-playBtn.addEventListener("click", run);
+// The button means whatever the page is waiting for: start the program, or
+// let go of the one already held on its first screen.
+playBtn.addEventListener("click", () => (previewing ? releaseHold() : run()));
+
+function releaseHold() {
+  previewing = false;
+  ensureAudio();    // this click is the gesture that unlocks the game's sound
+  worker.postMessage({ type: "resume" });
+  startRafPump();   // drawFrame stopped it when the frame was drawn
+  updatePlayOverlay();
+  focusPane(activeTab);   // the button took the focus the pane needs
+}
 
 // --- toolbar wiring -------------------------------------------------------
 
-runBtn.addEventListener("click", run);
+runBtn.addEventListener("click", () => run());
 stopBtn.addEventListener("click", stop);
 clearBtn.addEventListener("click", () => {
   output.textContent = "";
@@ -812,6 +848,9 @@ function drawFrame(msg) {
     // instead of exposing .pg-canvas's black background for the load gap.
     if (window.parent !== window) window.parent.postMessage({ type: "culebra-canvas-first-frame" }, "*");
   }
+  // A held run draws this one frame and stops there, so the heartbeat has
+  // nothing left to drive until the play button lets go.
+  if (previewing) stopRafPump();
 }
 
 // A requestAnimationFrame heartbeat paced to a fixed 60 Hz: each forwarded tick
@@ -1271,6 +1310,7 @@ const srcParam = params.get("src");
 const exampleParam = params.get("example");
 const argsParam = params.get("args");
 let pendingAutorun = params.get("run") === "1";
+let previewed = false;
 // `?view=` is the pane the page opens on. A program that draws switches panes
 // by itself once it does (the alt-screen marker, the first frame), so this
 // matters most before a run — and in a view-only layout, where the tab strip
@@ -1284,13 +1324,27 @@ let seedApplied = false;
 // fragment, which is not a navigation; reload so it seeds all the same.
 addEventListener("hashchange", () => location.reload());
 
-// Both halves race: the catalog is fetched while the worker compiles. Run when
+// Both halves race: the catalog is fetched while the worker compiles. Open when
 // whichever finishes last lands — `runBtn.disabled` is the worker's own ready
 // signal, so no second flag tracks it.
-function maybeAutorun() {
-  if (!pendingAutorun || !seedApplied || runBtn.disabled) return;
-  pendingAutorun = false;
-  run();
+//
+// `?run=1` runs. A view-only page that was not asked to run still opens on its
+// program rather than on an empty pane: a TUI or Canvas view runs it and stops
+// at the first screen, which the play button lets go of. A Canvas one is held
+// there by the worker; a TUI one holds itself, at the Term.read_key its first
+// screen ends in. (An Output view has the listing above, which needs no
+// engine.)
+function maybeOpen() {
+  if (!seedApplied || runBtn.disabled) return;
+  if (pendingAutorun) {
+    pendingAutorun = false;
+    run();
+    return;
+  }
+  if (!VIEW_ONLY || previewed || activeTab === "output") return;
+  previewed = true;   // one shot, like the autorun
+  previewing = true;
+  run({ holdFirstFrame: true });
 }
 
 // A link that cannot be opened says so where a run's error would go: the
@@ -1332,8 +1386,9 @@ Promise.all([projectReady, seeding])
   .then((src) => {
     if (argsParam !== null) argsInput.value = argsParam;
     editor.setValue(src);
+    showListing(src);
     seedApplied = true;
-    maybeAutorun();
+    maybeOpen();
   })
   .catch(showLoadError);
 // Ask the browser to keep the save directory (worker.js's IDBFS mount) out of
