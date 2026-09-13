@@ -911,24 +911,26 @@ the Hello example.
 
 ### The page
 
-Two parameters shape what the recipient sees. `?embed=` is how much of
-the page to show, and `?view=` is which output pane is the visible one.
+Two parameters shape what the recipient sees. `?layout=` is how much of
+the page to build, and `?view=` is which pane it is built around.
 
 | Parameter | Shows |
 |---|---|
-| `?embed=` absent | the whole Playground |
-| `?embed=editor` | the editor, Run/Stop and the panes, without the site header, the example menus, the argument box or the New/Share buttons |
-| `?embed=output` | one output pane, alone |
+| `?layout=` absent | the whole Playground |
+| `?layout=editor` | the editor, Run/Stop and the panes, without the site header, the example menus, the argument box or the New/Share buttons |
+| `?layout=view` | one pane, alone |
 | `?view=output` | the Output pane (the default) |
 | `?view=tui` | the TUI pane |
 | `?view=canvas` | the Canvas pane |
-| `?split=top` | the output under the source rather than beside it |
+| `?split=top` | the view under the source rather than beside it |
 
-They compose. `?embed=output&view=canvas` is a game with nothing around
-it; `?embed=output&view=tui` is the same for a terminal program;
-`?embed=editor&split=top&view=output` is a source listing with its
-output beneath, inside a page that brings its own branding. `?embed=1`
-is the older spelling of `?embed=editor`.
+They compose, the second naming what the first leaves. `?layout=view`
+with `?view=canvas` is a game with nothing around it; with `?view=tui`
+it is the same for a terminal program; `?layout=editor&split=top` is a
+source listing with its output beneath, inside a page that brings its
+own branding. `?embed=1` and `?embed=editor` are older spellings of
+`?layout=editor`, and `?embed=output` of `?layout=view`; all three are
+still read.
 
 `?split=` says which way the source and the output sit. Side by side is
 the default and wants width; `top` puts the output underneath, which is
@@ -939,26 +941,30 @@ width to split.
 A program that draws moves to its own pane when it starts (a TUI one at
 the alternate-screen escape, a Canvas one at its first frame), so
 `?view=` decides what is on screen before that, and decides for good in
-an `?embed=output` page, where there is no tab strip to change it.
+a `?layout=view` page, where there is no tab strip to change it.
 
 `?run=1` starts the program once the engine is ready, rather than
 waiting for Run. It fires once. A link whose project or text failed to
 load does not autorun what it fell back to.
 
-An `?embed=output` page has no toolbar, so a play button sits over the
+A `?layout=view` page has no toolbar, so a play button sits over the
 pane whenever the program is not running: that is how a visitor starts
 it without `?run=1`, and how anyone replays it once it ends. There is
 no stop; a program that will not end by itself ends with the tab.
 
 ### The Share button
 
-Share opens a menu with those three choices in it (`Embed`, `View`,
+Share opens a menu with those choices in it (`Layout`, `View`, `Split`,
 `On open`) and copies the link for what is chosen. Everything else in
 the link comes from the page: the project, the arguments when they
 differ from the project's own, and the text when it was edited, so an
 unedited example shares as its short name rather than as a fragment of
 several kilobytes. The defaults reproduce the plain standalone page,
 which is why an uncustomised link carries none of the three.
+
+Split is offered only where it can land: a layout built from the view
+alone has no source to sit beside, so the row goes quiet there and the
+link stops carrying it.
 
 Putting the Examples menus back on their placeholder says the text is
 no longer that example, and the project goes with the name: from then

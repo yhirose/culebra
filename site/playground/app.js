@@ -525,11 +525,11 @@ function stop() {
 
 // --- the play overlay -----------------------------------------------------
 //
-// An output-only embed (?embed=output) has no toolbar, so this is that page's
+// A view-only layout (?layout=view) has no toolbar, so this is that page's
 // only way to start the program — and, once the program ends, its only way
 // to start it again. Up whenever such a page is idle with an engine ready,
 // which is the same condition as "Run would do something".
-const OUTPUT_EMBED = document.documentElement.classList.contains("embed-output");
+const VIEW_ONLY = document.documentElement.classList.contains("layout-view");
 const playBtn = $("play");
 
 function updatePlayOverlay() {
@@ -538,7 +538,7 @@ function updatePlayOverlay() {
   // not run". The Canvas and TUI panes are live surfaces, where a finished
   // frame reads as paused and this is how it is played again.
   const transcript = ranOnce && activeTab === TABS[0];
-  playBtn.hidden = !OUTPUT_EMBED || running || runBtn.disabled || transcript;
+  playBtn.hidden = !VIEW_ONLY || running || runBtn.disabled || transcript;
 }
 
 playBtn.addEventListener("click", run);
@@ -571,7 +571,7 @@ newBtn.addEventListener("click", async () => {
 // it is on one), the arguments when they differ from the project's own, and
 // the text itself when it was edited — an unedited example shares as its
 // short name rather than as kilobytes of fragment. What the menu adds
-// is the shape of the recipient's page: how much of it (?embed=), which pane
+// is the shape of the recipient's page: how much of it (?layout=), which pane
 // (?view=), and whether it starts on its own (?run=1). Every default is the
 // plain standalone page, so an uncustomised link is as short as it ever was.
 const shareBtn = $("share");
@@ -584,12 +584,12 @@ function shareChoice(name) {
   return shareMenu.querySelector(`input[name="share-${name}"]:checked`).value;
 }
 
-// Split says where the source sits beside the output, which an embed showing
-// only the output has neither of. Rather than let the menu offer a choice the
-// link would carry and the page would ignore, the row goes quiet and returns
-// to its default, so the link does not carry it either.
+// Split says how the source and the view sit together, which a layout built
+// from the view alone has no use for. Rather than let the menu offer a choice
+// the link would carry and the page would ignore, the row goes quiet and
+// returns to its default, so the link does not carry it either.
 function syncShareRows() {
-  const off = shareChoice("embed") === "output";
+  const off = shareChoice("layout") === "view";
   const row = shareMenu.querySelector('input[name="share-split"]').closest(".pg-share-tiles");
   row.classList.toggle("off", off);
   for (const input of row.querySelectorAll("input")) {
@@ -621,8 +621,8 @@ function buildShareLink(code) {
   const named = nameProject(url);
   const args = argsInput.value.trim();
   if (args !== formatArgs(project.args)) url.searchParams.set("args", args);
-  const embed = shareChoice("embed");
-  if (embed) url.searchParams.set("embed", embed);
+  const layout = shareChoice("layout");
+  if (layout) url.searchParams.set("layout", layout);
   const view = shareChoice("view");
   if (view !== TABS[0]) url.searchParams.set("view", view);
   const split = shareChoice("split");
@@ -1231,12 +1231,12 @@ gameCanvas.addEventListener("contextmenu", (e) => e.preventDefault());
 // links already in the wild. Without either, the text is the project's entry,
 // else the saved draft, else "Hello".
 //
-// The page is `?embed=` (how much of it: `editor` keeps the editor and the
-// controls, `output` leaves one pane alone — index.html marks the root
-// element) and `?view=` (which pane that is). `?run=1` starts the program
-// once the worker is up, for a host whose visitor already pressed Run on the
-// page around the frame; without it an `?embed=output` page waits behind the
-// play overlay, which is the only control it has.
+// The page is `?layout=` (how much of it: `editor` keeps the editor and the
+// controls, `view` leaves one pane alone — boot.js marks the root element)
+// and `?view=` (which pane that is). `?run=1` starts the program once the
+// worker is up, for a host whose visitor already pressed Run on the page
+// around the frame; without it a `?layout=view` page waits behind the play
+// overlay, which is the only control it has.
 const params = new URLSearchParams(location.search);
 const hashParams = new URLSearchParams(location.hash.slice(1));
 const codeParam = hashParams.get("code") ?? params.get("code");
@@ -1251,9 +1251,9 @@ const argsParam = params.get("args");
 let pendingAutorun = params.get("run") === "1";
 // `?view=` is the pane the page opens on. A program that draws switches panes
 // by itself once it does (the alt-screen marker, the first frame), so this
-// matters most before a run — and in an output-only embed, where the tab
-// strip is gone and this is the only way to say which pane is the embedded
-// one.
+// matters most before a run — and in a view-only layout, where the tab strip
+// is gone and this is the only way to say which pane the page is built
+// around.
 const viewParam = params.get("view");
 if (viewParam !== null && TABS.includes(viewParam)) switchTab(viewParam);
 let seedApplied = false;

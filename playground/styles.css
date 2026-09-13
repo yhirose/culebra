@@ -130,7 +130,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 /* Canvas pane: centre the framebuffer and scale it up with crisp (nearest-
    neighbour) pixels, so a 160x160 game fills the pane without blurring. */
 /* Site-coloured until a frame lands, on the standalone page as much as in an
-   embed: a black rectangle under a tab nobody has run anything in reads as
+   layout: a black rectangle under a tab nobody has run anything in reads as
    something broken rather than as somewhere a game will appear. Once one has
    been drawn the pane is the letterbox around it, and black is what that
    wants. */
@@ -219,7 +219,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 .pg-share-menu {
   position: absolute; top: calc(100% + 0.4rem); right: 0.8rem; z-index: 20;
   display: grid; gap: 0.55rem; padding: 0.8rem;
-  width: min(21rem, calc(100vw - 2.4rem));
+  width: min(26rem, calc(100vw - 2.4rem));
   border: 1px solid var(--border); border-radius: var(--radius);
   background: var(--surface); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
 }
@@ -248,8 +248,8 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 .pg-share-tiles label:hover span { background: var(--surface-2); }
 .pg-share-tiles input:checked + span { background: var(--brand); color: #fff; }
 .pg-share-tiles input:focus-visible + span { outline: 2px solid var(--brand-strong); outline-offset: -2px; }
-/* A row whose choice cannot reach the page it describes: Split under an embed
-   that shows no editor. Dimmed rather than removed, so the menu keeps its
+/* A row whose choice cannot reach the page it describes: Split under a
+   layout that shows no editor. Dimmed rather than removed, so the menu keeps its
    shape and the reason stays visible. */
 .pg-share-tiles.off { opacity: 0.42; }
 .pg-share-tiles.off label { cursor: default; }
@@ -257,6 +257,15 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 .pg-share-menu .btn-primary { background: var(--brand-strong); border-color: var(--brand-strong); }
 .pg-share-menu .btn-primary:hover { background: var(--brand); border-color: var(--brand); }
 /* The link itself, so the choices above are not a guess about what they do. */
+/* The menu's width is clamped to the viewport, and below about 420px of it
+   three cells of what is left stop holding "Editor + View" (measured: fine in
+   a 380px menu, clipped in a 341px one, which is what a 380px viewport gives).
+   Under 440px, with margin for a wider font than this one, the row gives the
+   label its own line and the tiles the whole width. */
+@media (max-width: 440px) {
+  .pg-share-row { flex-direction: column; align-items: stretch; gap: 0.25rem; }
+  .pg-share-label { width: auto; }
+}
 .pg-share-url {
   display: block; max-height: 4.6rem; overflow: auto; word-break: break-all;
   padding: 0.45rem 0.55rem; border-radius: var(--radius);
@@ -264,7 +273,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 }
 
 /* --- the play overlay --------------------------------------------------- */
-/* An output-only embed has no toolbar, so this is the only way to start the
+/* A view-only layout has no toolbar, so this is the only way to start the
    program. The same circle as the landing page's poster button, over whatever
    the pane holds: the empty pane before the first run, the last frame after
    one, which makes it replay without a second control. [hidden] needs saying
@@ -284,25 +293,25 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 }
 .pg-play:hover .pg-play-glyph { background: var(--brand-strong); }
 
-/* --- embed modes (?embed=editor | ?embed=output) ------------------------ */
+/* --- layouts (?layout=editor | ?layout=view) ---------------------------- */
 /* One ladder, two rungs: how much of the page a hosting iframe wants. A page
    hosting the Playground brings its own branding and supplies the source
    through #code=, so the standalone header, the example picker, the argument
    box and the New/Share buttons have nothing to do here. Run/Stop, the status
    and the panes stay: they are the part that is being embedded. */
-.embed .pg-header,
-.embed .example-select,
-.embed #args,
-.embed .pg-share,
-.embed #new,
-.embed .backend { display: none; }
-.embed .pg-toolbar { padding: 0.45rem 0.8rem; }
+.layout-editor .pg-header,
+.layout-editor .example-select,
+.layout-editor #args,
+.layout-editor .pg-share,
+.layout-editor #new,
+.layout-editor .backend { display: none; }
+.layout-editor .pg-toolbar { padding: 0.45rem 0.8rem; }
 /* Where the output goes under the source rather than beside it. A host page
    often gives the frame the full column width but only a few hundred pixels
    of height, where side by side leaves the source wrapping in half the width
    while the output's few lines waste the other half; the source takes the
-   larger share, being the thing the host is showing. Not embed-only: the
-   standalone page offers the same choice, and ?split= carries it. */
+   larger share, being the thing the host is showing. Not for embeds alone:
+   the whole page offers the same choice, and ?split= carries it. */
 .split-top .pg-main { grid-template-columns: 1fr; grid-template-rows: 1.35fr 1fr; }
 .split-top .pg-editor { border-right: 0; border-bottom: 1px solid var(--border); }
 
@@ -312,18 +321,18 @@ body { display: flex; flex-direction: column; overflow: hidden; }
    so .pg-main drops to a single column instead of leaving its half of the
    grid empty; the pane (already flex: 1 inside .pg-right) fills what remains.
    Run is off screen here, which is what #play is for. */
-.embed-output .pg-header,
-.embed-output .pg-toolbar,
-.embed-output .pg-tabs,
-.embed-output .pg-editor { display: none; }
+.layout-view .pg-header,
+.layout-view .pg-toolbar,
+.layout-view .pg-tabs,
+.layout-view .pg-editor { display: none; }
 /* grid-template-rows needs stating explicitly: with .pg-editor gone,
    .pg-right is the grid's only item, and an unset (auto) row sizes to its
    content height rather than stretching to fill .pg-main — leaving the
    canvas pane's own #000 short of the bottom and the host page's
    background showing through beneath it. */
-.embed-output .pg-main { grid-template-columns: 1fr; grid-template-rows: 1fr; }
+.layout-view .pg-main { grid-template-columns: 1fr; grid-template-rows: 1fr; }
 /* .pg-pane's base overflow: auto is for the Output/TUI panes, which can
    genuinely grow past their box; the canvas pane never needs to scroll,
    and a few px of sub-pixel layout slop was enough to paint a scrollbar
    sliver along the edge. */
-.embed-output .pg-canvas { overflow: hidden; }
+.layout-view .pg-canvas { overflow: hidden; }

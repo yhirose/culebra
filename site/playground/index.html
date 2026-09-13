@@ -73,12 +73,12 @@
       <button id="share" class="btn" title="Copy a link to this source"
               aria-haspopup="true" aria-expanded="false">Share</button>
       <div id="share-menu" class="pg-share-menu" role="dialog" aria-label="Share a link" hidden>
-        <div class="pg-share-row" role="radiogroup" aria-label="Embed">
-          <span class="pg-share-label">Embed</span>
+        <div class="pg-share-row" role="radiogroup" aria-label="Layout">
+          <span class="pg-share-label">Layout</span>
           <div class="pg-share-tiles">
-            <label><input type="radio" name="share-embed" value="" checked><span>Off</span></label>
-            <label><input type="radio" name="share-embed" value="editor"><span>Editor</span></label>
-            <label><input type="radio" name="share-embed" value="output"><span>Output</span></label>
+            <label><input type="radio" name="share-layout" value="" checked><span>Full</span></label>
+            <label><input type="radio" name="share-layout" value="editor"><span>Editor + View</span></label>
+            <label><input type="radio" name="share-layout" value="view"><span>View only</span></label>
           </div>
         </div>
         <div class="pg-share-row" role="radiogroup" aria-label="View">
@@ -133,8 +133,8 @@
             <canvas id="game-text" class="pg-canvas-overlay"></canvas>
           </div>
         </div>
-        <!-- Shown when the program is not running and the page is an
-             output-only embed, where the toolbar's Run is not on screen.
+        <!-- Shown when the program is not running and the page is laid out
+             as the view alone, where the toolbar's Run is not on screen.
              Covers the pane the way a video poster does: click anywhere. -->
         <button id="play" class="pg-play" hidden aria-label="Run this program">
           <span class="pg-play-glyph" aria-hidden="true">▷</span>
