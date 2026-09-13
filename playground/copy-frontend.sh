@@ -16,6 +16,11 @@ mkdir -p "$OUT"
 cp playground/index.html playground/boot.js playground/app.js playground/worker.js \
    playground/editor.js playground/culebra-lang.js playground/share-link.js \
    playground/project.js playground/styles.css "$OUT/"
+# The vendored libraries (vendor.sh): the bundles and the stylesheet are what
+# the page loads; package.json, the lockfile and VERSIONS are how they were
+# built, and stay behind.
+mkdir -p "$OUT/vendor"
+cp playground/vendor/codemirror.js playground/vendor/xterm.js playground/vendor/xterm.css "$OUT/vendor/"
 
 # Stamp the version into the copy, reading the one place that defines it. The
 # source index.html keeps the placeholder — it is never served directly, only

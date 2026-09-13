@@ -1636,6 +1636,14 @@ vendor-update *extra:
 site-build:
     ./playground/build.sh
 
+# The third-party front end (CodeMirror, xterm) as one bundle each under
+# playground/vendor/, from the versions pinned in its package.json. Needs
+# node and npm. Outputs are committed, like the wasm; rerun after changing a
+# pin, then `just site-build` (or copy-frontend.sh) to carry them to site/.
+[doc("Bundle the playground's vendored libraries into playground/vendor/")]
+site-vendor:
+    ./playground/vendor.sh
+
 # Run the committed wasm and hold it to the native executor. Separate from
 # site-build because it checks the artifact that ships rather than the one just
 # produced — the CI job runs it on every push, where no emsdk exists and the

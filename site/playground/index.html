@@ -3,17 +3,20 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <!-- Everything this page loads, and nothing else. 'wasm-unsafe-eval' is what
-       lets the engine instantiate; 'unsafe-inline' in style-src is CodeMirror,
-       which injects its theme as a <style> element at runtime. No inline
-       script: boot.js is a file for that reason. frame-ancestors and
-       report-only are header-only and so out of reach on GitHub Pages. -->
+  <!-- Everything this page loads, and nothing else: no script, style or font
+       from anywhere but here, the libraries included (vendor.sh).
+       'wasm-unsafe-eval' is what lets the engine instantiate; 'unsafe-inline'
+       in style-src is CodeMirror, which injects its theme as a <style> element
+       at runtime. No inline script: boot.js is a file for that reason.
+       connect-src stays open to https because ?src= takes a file from any
+       host. frame-ancestors and report-only are header-only and so out of
+       reach on GitHub Pages. -->
   <meta http-equiv="Content-Security-Policy" content="
     default-src 'none';
-    script-src 'self' https://esm.sh 'wasm-unsafe-eval';
-    style-src 'self' https://esm.sh 'unsafe-inline';
+    script-src 'self' 'wasm-unsafe-eval';
+    style-src 'self' 'unsafe-inline';
     img-src 'self' data:;
-    font-src 'self' https://esm.sh;
+    font-src 'self';
     connect-src 'self' https:;
     worker-src 'self' blob:;
     base-uri 'none';
@@ -23,7 +26,7 @@
   <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">
   <link rel="stylesheet" href="../assets/brand.css">
   <link rel="stylesheet" href="./styles.css">
-  <link rel="stylesheet" href="https://esm.sh/@xterm/xterm@5.5.0/css/xterm.css">
+  <link rel="stylesheet" href="./vendor/xterm.css">
   <script src="./boot.js"></script>
 </head>
 <body>

@@ -4,7 +4,7 @@
 import { createEditor } from "./editor.js";
 import { encodeShareParam, decodeShareParam } from "./share-link.js";
 import { parseSourceUrl, projectFiles, cdnBase, treeUrl } from "./project.js";
-import { Terminal } from "https://esm.sh/@xterm/xterm@5.5.0";
+import { Terminal } from "./vendor/xterm.js";
 
 const $ = (id) => document.getElementById(id);
 

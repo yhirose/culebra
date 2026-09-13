@@ -1,17 +1,12 @@
-// CodeMirror 6 wiring for the playground editor. Loaded from esm.sh (CDN, no
-// local vendoring/build step). esm.sh dedupes a package across imports ONLY
-// when the version strings agree byte-for-byte; `codemirror@6.0.1` (which
-// carries basicSetup) pulls @codemirror/state|view|commands|language via
-// floating `^6.0.0` ranges that esm.sh re-resolves on every request. A pinned
-// exact version here can drift from wherever that floating range currently
-// lands, loading a second module instance and breaking instanceof-based
-// extension resolution ("Unrecognized extension value"). So every direct
-// import below must mirror codemirror@6.0.1's own ranges, not a fixed number.
-import { EditorView, basicSetup } from "https://esm.sh/codemirror@6.0.1";
-import { keymap, Decoration } from "https://esm.sh/@codemirror/view@^6.0.0";
-import { StateField, StateEffect } from "https://esm.sh/@codemirror/state@^6.0.0";
-import { indentWithTab } from "https://esm.sh/@codemirror/commands@^6.0.0";
-import { syntaxHighlighting } from "https://esm.sh/@codemirror/language@^6.0.0";
+// CodeMirror 6 wiring for the playground editor. The library comes from
+// vendor/codemirror.js, one bundle built by vendor.sh from pinned versions,
+// so every extension here resolves against the same copy of @codemirror/state
+// (instanceof across two copies was how the CDN era broke). A name imported
+// here has to be exported by the bundle's entry in vendor.sh.
+import {
+  EditorView, basicSetup, keymap, Decoration, StateField, StateEffect,
+  indentWithTab, syntaxHighlighting,
+} from "./vendor/codemirror.js";
 import { culebraLanguage, culebraHighlightStyle } from "./culebra-lang.js";
 
 // Error-line highlight: a failed run carries `at LINE:COL` in its message (see
