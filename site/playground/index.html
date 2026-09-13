@@ -65,6 +65,9 @@
     </select>
     <input id="args" type="text" spellcheck="false" autocomplete="off"
            placeholder="arguments → Sys.argv" aria-label="Command-line arguments">
+    <span class="spacer"></span>
+    <span id="backend" class="backend"></span>
+    <span id="status" class="status">loading…</span>
     <button id="new" class="btn" title="Start an empty program">New</button>
     <div class="pg-share">
       <button id="share" class="btn" title="Copy a link to this source"
@@ -104,9 +107,6 @@
         <code id="share-url" class="pg-share-url"></code>
       </div>
     </div>
-    <span class="spacer"></span>
-    <span id="backend" class="backend"></span>
-    <span id="status" class="status">loading…</span>
   </div>
 
   <main class="pg-main">

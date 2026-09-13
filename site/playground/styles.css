@@ -203,9 +203,17 @@ body { display: flex; flex-direction: column; overflow: hidden; }
    shared as a page, as an embed, or as something that starts on its own, and
    those are choices only the person sharing can make. The defaults reproduce
    the plain page, so a link nobody customised is as short as it ever was. */
+/* New and Share sit at the right end of whichever row they land on: an auto
+   margin takes the free space of its own flex line, so when the toolbar wraps
+   and the pair moves to a second row, they still end at the right edge, which
+   is where the menu below is anchored. On one row the spacer already does
+   this and the margin has nothing to take. */
+.pg-toolbar #new { margin-left: auto; }
 .pg-share { display: inline-flex; }
-/* Below the toolbar and in from its right edge, whatever row Share ended up
-   on. The width is stated rather than left to shrink-to-fit: the link is one
+/* Below the toolbar and in from its right edge, which is where Share is: it is
+   the toolbar's last control, so the two line up without any measuring. On a
+   phone the toolbar wraps and the menu is nearly the page's width anyway.
+   The width is stated rather than left to shrink-to-fit: the link is one
    long unbroken word, and against a containing block as wide as the toolbar
    it would pull the menu out to the full width of the page. */
 .pg-share-menu {
