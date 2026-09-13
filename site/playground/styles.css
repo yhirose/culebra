@@ -33,7 +33,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 .pg-toolbar .spacer { flex: 1; }
 .pg-toolbar .status { color: var(--muted); font-size: 0.85rem; font-variant-numeric: tabular-nums; }
 .pg-toolbar .backend {
-  color: var(--muted); font-size: 0.78rem; margin-right: 0.9rem;
+  color: var(--muted); font-size: 0.78rem;
   padding: 0.15rem 0.5rem; border: 1px solid var(--border); border-radius: 999px;
 }
 .pg-toolbar .status.err { color: var(--danger); }
