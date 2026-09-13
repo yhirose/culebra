@@ -583,7 +583,9 @@ inline tl::array _tl_binop(Op op, const tl::array& a, const tl::array& b) {
 // scalar chains collapse to one node), where the lifted rank-0 tensor
 // form runs a broadcast kernel over the large side. `t * 2.0` from the
 // language and every scalar the VJPs build (lr, -1, 1/n) hit this.
-// The Op tape keeps the rank-0 tensor as a real input either way, so
+// Pow and the comparisons keep the scalar in the tl node too (a kernel
+// argument), where the rank-0 tensor was an allocation and an upload per
+// call. The Op tape keeps the rank-0 tensor as a real input either way, so
 // autograd is unaffected.
 inline tl::array _tl_binop_vs_scalar(Op op, const tl::array& a, float s,
                                      bool scalar_on_left) {
@@ -593,6 +595,13 @@ inline tl::array _tl_binop_vs_scalar(Op op, const tl::array& a, float s,
       case Op::Sub: return a - s;
       case Op::Mul: return a * s;
       case Op::Div: return a / s;
+      case Op::Pow: return tl::pow(a, s);
+      case Op::Gt: return a > s;
+      case Op::Lt: return a < s;
+      case Op::Ge: return a >= s;
+      case Op::Le: return a <= s;
+      case Op::Eq: return a == s;
+      case Op::Ne: return a != s;
       default: break;
     }
   } else {
@@ -601,31 +610,23 @@ inline tl::array _tl_binop_vs_scalar(Op op, const tl::array& a, float s,
       case Op::Sub: return s - a;
       case Op::Mul: return s * a;
       case Op::Div: return s / a;
+      // `s > a` is `a < s`: the comparison mirrors, NaN included.
+      case Op::Gt: return a < s;
+      case Op::Lt: return a > s;
+      case Op::Ge: return a <= s;
+      case Op::Le: return a >= s;
+      case Op::Eq: return a == s;
+      case Op::Ne: return a != s;
       default: break;
     }
   }
   throw std::logic_error("tensor: bad op in scalar binop dispatch");
 }
 
-// Ops _tl_binop_vs_scalar has no case for: Pow needs tl::pow(a,b), not an
-// operator, and the comparisons need correct operand-order flipping for
-// the scalar_on_left direction (`s > b` is `b < s`, not `b > s`) that
-// isn't worth the risk for a path that is a fusion micro-optimization,
-// not a correctness requirement -- these just take the general _tl_binop
-// path below instead.
-inline bool _tl_binop_has_scalar_fast_path(Op op) {
-  switch (op) {
-    case Op::Pow:
-    case Op::Gt:
-    case Op::Lt:
-    case Op::Ge:
-    case Op::Le:
-    case Op::Eq:
-    case Op::Ne:
-      return false;
-    default:
-      return true;
-  }
+// A scalar base (`s ** t`) has no tensor-scalar form in tl; it takes the
+// general _tl_binop path with the rank-0 operand.
+inline bool _tl_binop_has_scalar_fast_path(Op op, bool scalar_on_left) {
+  return !(scalar_on_left && op == Op::Pow);
 }
 
 // Build a lazy elementwise binop node. Shapes are broadcast per numpy
@@ -648,11 +649,11 @@ CULEBRA_RT_TENSOR_EVAL_LINKAGE TensorPtr tensor_binop(Op op, TensorPtr a,
     throw CulebraError("ValueError", "Tensor: dtype mismatch in binop.");
   }
   tensor_broadcast_check(a->shape, b->shape);  // culebra-worded error
-  bool fast_path_ok = _tl_binop_has_scalar_fast_path(op);
-  bool b_scalar = fast_path_ok && b->shape.rank() == 0 &&
-                  b->value.materialized();
-  bool a_scalar = fast_path_ok && a->shape.rank() == 0 &&
-                  a->value.materialized() && b->shape.rank() != 0;
+  bool b_scalar = b->shape.rank() == 0 && b->value.materialized() &&
+                  _tl_binop_has_scalar_fast_path(op, false);
+  bool a_scalar = a->shape.rank() == 0 && a->value.materialized() &&
+                  b->shape.rank() != 0 &&
+                  _tl_binop_has_scalar_fast_path(op, true);
   auto v = _tl_guard([&] {
     if (b_scalar) return _tl_binop_vs_scalar(op, a->value, b->value.raw()[0],
                                              /*scalar_on_left=*/false);
