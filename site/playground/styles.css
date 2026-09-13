@@ -268,21 +268,6 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 }
 .pg-play:hover .pg-play-glyph { background: var(--brand-strong); }
 
-/* Stop, for the same page: small, in the corner, and faint until it is
-   wanted, since the pane under it is the thing being watched. Always drawn
-   rather than revealed on hover, which a touch screen has no way to do. */
-.pg-halt {
-  position: absolute; top: 0.5rem; right: 0.5rem; z-index: 6;
-  width: 1.8rem; height: 1.8rem; border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 0.7rem; line-height: 1; cursor: pointer;
-  background: rgba(10, 12, 20, 0.55); color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.7);
-  opacity: 0.45; transition: opacity 0.15s, background 0.15s;
-}
-.pg-halt[hidden] { display: none; }
-.pg-halt:hover, .pg-halt:focus-visible { opacity: 1; background: var(--brand-strong); }
-
 /* --- embed modes (?embed=editor | ?embed=output) ------------------------ */
 /* One ladder, two rungs: how much of the page a hosting iframe wants. A page
    hosting the Playground brings its own branding and supplies the source
