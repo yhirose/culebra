@@ -2,7 +2,7 @@
 #
 # The pseudo-3D road, the projection, the road geometry, the AI and every
 # constant come from the original; what changed is the art (generated, see
-# assets/README.md), the day cycle (four scenes over one lap), the race around
+# assets/README.md), the day cycle (five scenes over one lap), the race around
 # it (a count-in, two laps, a results screen — the original runs forever), and
 # the shape of the hot loops. The interpreter charges a C++ stack unwind for
 # `return`,
@@ -184,7 +184,7 @@ let ART = ART_DIR != nil
     read: |n| FS.read(ART_DIR + "/" + n),
   }
   : Embed.dir("assets")
-let SCENES = ["asayake", "hiru", "yuugure", "twilight"]
+let SCENES = ["asayake", "hiru", "yuugata", "yuugure", "twilight"]
 let SCENE_COUNT = SCENES.size()
 
 # A missing file is what a mistyped `--assets` looks like, so say which one.
@@ -227,6 +227,9 @@ let SCENE_COLORS = [
   # hiru
   [40, 144, 48, 56, 168, 56, 96, 96, 108, 106, 106, 118,
    192, 88, 80, 232, 228, 220, 212, 236, 252, 40, 104, 232],
+  # yuugata
+  [96, 136, 52, 112, 152, 60, 100, 94, 106, 110, 104, 116,
+   188, 92, 80, 240, 224, 200, 248, 220, 160, 168, 120, 184],
   # yuugure
   [128, 120, 48, 144, 136, 56, 104, 88, 104, 114, 98, 114,
    184, 92, 76, 240, 216, 184, 248, 196, 108, 200, 72, 48],
@@ -590,27 +593,57 @@ let MUSIC_FILE = ["music.ogg", "music.mp3"].find(|n| ART.exists(n))
 let MUSIC_VOL = 60
 Canvas.music(art(MUSIC_FILE), vol: MUSIC_VOL) if MUSIC_FILE != nil
 
-# The chiptune fallback — a breezy fusion tune, not a transcription of any
-# particular one: sixteen bars over the "royal road" progression (IV△7 V7
-# iii7 vi7, twice) and a ii-V turnaround home, a lyrical lead that holds its
-# long notes, a slap-style bass that pops up the octave, arpeggiated
-# electric-piano chords, and a hat-and-snare backbeat. Ticked from `update()`
-# so its rhythm is exact regardless of display framerate. `tone()` is
-# fire-and-forget (the APU keeps playing the note on its own), so the
-# sequencer only asks "does a note start on this sixteenth".
-let TICK = 7  # frames per sixteenth (~129 bpm)
+# The chiptune fallback: a tune per lap, sequenced from `update()` so the
+# rhythm is exact regardless of display framerate. `tone()` is fire-and-forget
+# (the APU keeps playing the note on its own), so the sequencer only asks
+# "does a note start on this sixteenth".
 let BAR = 16  # sixteenths per bar
-let BGM_LOOP = TICK * BAR * 16
 
 # Pitches are MIDI numbers, converted once at load.
 let hz = fn (n) {
   Math.round(440 * Math.exp((n - 69) / 12.0 * Math.log(2.0)))
 }
 
-# One bar each: the bass root, the four chord tones the keys arpeggiate, and
-# the interval the bass uses as a pickup into the next bar (the 6th on a
-# major chord, the 7th elsewhere).
-let CHORDS = [
+# A note table becomes (frequency, length in sixteenths) at each onset.
+let onsets = fn (table) {
+  mut out = repeat(table.size(), nil)
+  for i, n in table.enumerate() {
+    continue if n <= 0
+    mut len = 1
+    while i + len < table.size() && table[i + len] == -1 {
+      len += 1
+    }
+    out[i] = (hz(n), len)
+  }
+  out
+}
+
+# A tune: frames per sixteenth; a chord per bar as the bass root, the four
+# tones the keys arpeggiate and the interval the bass plays as a pickup into
+# the next bar; the lead as a note table, a bar per row (a pitch starts a
+# note, -1 holds it, 0 rests); the bass as intervals over the root on each
+# sixteenth (nil a rest, -1 the pickup) with the length of its notes in
+# sixteenths; the keys' arpeggio order over the bar's eighths; and how many
+# sixteenths apart the hats fall.
+let tune = fn (tick, chords, lead, bass, bass_len, arp, hat) {
+  {
+    tick: tick,
+    chords: chords,
+    lead: onsets(lead.flat_map(|bar| bar)),
+    bass: bass,
+    bass_len: bass_len,
+    arp: arp,
+    hat: hat,
+    length: tick * BAR * chords.size(),
+  }
+}
+
+# Lap one cruises: a breezy fusion tune, sixteen bars over the "royal road"
+# progression (IV△7 V7 iii7 vi7, twice) and a ii-V turnaround home, a lyrical
+# lead that holds its long notes, a slap-style bass that pops up the octave,
+# arpeggiated electric-piano chords, and a hat-and-snare backbeat. The pickup
+# is the 6th on a major chord, the 7th elsewhere.
+let CRUISE_CHORDS = [
   (41, [65, 69, 72, 76], 9),   # F△7
   (43, [67, 71, 74, 77], 10),  # G7
   (40, [64, 67, 71, 74], 10),  # Em7
@@ -630,301 +663,113 @@ let CHORDS = [
 ]
 
 # The lead, a bar per line: a pitch starts a note, -1 holds it, 0 rests.
-let LEAD = [
-  84,
-  -1,
-  -1,
-  81,
-  -1,
-  -1,
-  79,
-  -1,
-  -1,
-  -1,
-  76,
-  -1,
-  79,
-  -1,
-  81,
-  -1,
-  83,
-  -1,
-  -1,
-  -1,
-  -1,
-  -1,
-  79,
-  -1,
-  81,
-  -1,
-  -1,
-  83,
-  -1,
-  -1,
-  86,
-  -1,
-  83,
-  -1,
-  -1,
-  -1,
-  79,
-  -1,
-  76,
-  -1,
-  74,
-  -1,
-  -1,
-  -1,
-  -1,
-  -1,
-  76,
-  79,
-  81,
-  -1,
-  -1,
-  -1,
-  -1,
-  -1,
-  -1,
-  -1,
-  -1,
-  -1,
-  -1,
-  -1,
-  0,
-  0,
-  76,
-  79,
-  81,
-  -1,
-  -1,
-  84,
-  -1,
-  -1,
-  86,
-  -1,
-  -1,
-  -1,
-  84,
-  -1,
-  -1,
-  -1,
-  81,
-  -1,
-  83,
-  -1,
-  -1,
-  -1,
-  81,
-  -1,
-  79,
-  -1,
-  77,
-  -1,
-  -1,
-  76,
-  -1,
-  74,
-  -1,
-  -1,
-  76,
-  -1,
-  -1,
-  -1,
-  -1,
-  -1,
-  79,
-  -1,
-  83,
-  -1,
-  -1,
-  -1,
-  -1,
-  -1,
-  81,
-  -1,
-  81,
-  -1,
-  -1,
-  79,
-  -1,
-  -1,
-  76,
-  -1,
-  73,
-  -1,
-  -1,
-  -1,
-  76,
-  -1,
-  79,
-  -1,
-  81,
-  -1,
-  -1,
-  -1,
-  -1,
-  -1,
-  79,
-  -1,
-  77,
-  -1,
-  -1,
-  74,
-  -1,
-  -1,
-  77,
-  -1,
-  79,
-  -1,
-  -1,
-  -1,
-  -1,
-  -1,
-  77,
-  -1,
-  74,
-  -1,
-  -1,
-  71,
-  -1,
-  -1,
-  74,
-  -1,
-  76,
-  -1,
-  -1,
-  -1,
-  -1,
-  -1,
-  -1,
-  -1,
-  79,
-  -1,
-  -1,
-  76,
-  -1,
-  72,
-  -1,
-  -1,
-  74,
-  -1,
-  -1,
-  72,
-  -1,
-  -1,
-  69,
-  -1,
-  -1,
-  -1,
-  -1,
-  -1,
-  0,
-  0,
-  67,
-  69,
-  72,
-  -1,
-  -1,
-  -1,
-  74,
-  -1,
-  77,
-  -1,
-  -1,
-  -1,
-  81,
-  -1,
-  -1,
-  -1,
-  79,
-  -1,
-  77,
-  -1,
-  -1,
-  -1,
-  74,
-  -1,
-  71,
-  -1,
-  74,
-  -1,
-  -1,
-  -1,
-  -1,
-  -1,
-  76,
-  -1,
-  79,
-  -1,
-  -1,
-  -1,
-  -1,
-  -1,
-  -1,
-  -1,
-  -1,
-  -1,
-  -1,
-  -1,
-  -1,
-  -1,
-  0,
-  0,
-  0,
-  0,
-  0,
-  0,
-  0,
-  0,
-  0,
-  0,
-  67,
-  69,
-  71,
-  74,
-  76,
-  79,
-  81,
-  83,
+let CRUISE_LEAD = [
+  [84, -1, -1, 81, -1, -1, 79, -1, -1, -1, 76, -1, 79, -1, 81, -1],
+  [83, -1, -1, -1, -1, -1, 79, -1, 81, -1, -1, 83, -1, -1, 86, -1],
+  [83, -1, -1, -1, 79, -1, 76, -1, 74, -1, -1, -1, -1, -1, 76, 79],
+  [81, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 0, 76, 79],
+  [81, -1, -1, 84, -1, -1, 86, -1, -1, -1, 84, -1, -1, -1, 81, -1],
+  [83, -1, -1, -1, 81, -1, 79, -1, 77, -1, -1, 76, -1, 74, -1, -1],
+  [76, -1, -1, -1, -1, -1, 79, -1, 83, -1, -1, -1, -1, -1, 81, -1],
+  [81, -1, -1, 79, -1, -1, 76, -1, 73, -1, -1, -1, 76, -1, 79, -1],
+  [81, -1, -1, -1, -1, -1, 79, -1, 77, -1, -1, 74, -1, -1, 77, -1],
+  [79, -1, -1, -1, -1, -1, 77, -1, 74, -1, -1, 71, -1, -1, 74, -1],
+  [76, -1, -1, -1, -1, -1, -1, -1, 79, -1, -1, 76, -1, 72, -1, -1],
+  [74, -1, -1, 72, -1, -1, 69, -1, -1, -1, -1, -1, 0, 0, 67, 69],
+  [72, -1, -1, -1, 74, -1, 77, -1, -1, -1, 81, -1, -1, -1, 79, -1],
+  [77, -1, -1, -1, 74, -1, 71, -1, 74, -1, -1, -1, -1, -1, 76, -1],
+  [79, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 0],
+  [0, 0, 0, 0, 0, 0, 0, 0, 67, 69, 71, 74, 76, 79, 81, 83],
 ]
-# The bass line as intervals over the bar's root: root and octave pops with
-# the 5th and the pickup toward the end; `nil` is a rest.
-let BASS = [0, nil, nil, 0, 12, nil, 0, nil, nil, 12, nil, 0, 7, nil, -1, nil]
-# Keys: chord tones on every eighth, up and back down.
-let ARP = [0, 1, 2, 3, 2, 3, 1, 2]
+# ~129 bpm; the bass pops root and octave with the 5th and the pickup toward
+# the end of the bar, the keys run up the chord and back down, hats on the
+# eighths.
+let CRUISE = tune(
+  7,
+  CRUISE_CHORDS,
+  CRUISE_LEAD,
+  [0, nil, nil, 0, 12, nil, 0, nil, nil, 12, nil, 0, 7, nil, -1, nil],
+  2,
+  [0, 1, 2, 3, 2, 3, 1, 2],
+  2,
+)
 
-# A note table becomes (frequency, length in sixteenths) at each onset.
-let onsets = fn (table) {
-  mut out = repeat(table.size(), nil)
-  for i, n in table.enumerate() {
-    continue if n <= 0
-    mut len = 1
-    while i + len < table.size() && table[i + len] == -1 {
-      len += 1
-    }
-    out[i] = (hz(n), len)
-  }
-  out
-}
-let lead_notes = onsets(LEAD)
+# Lap two sprints for the flag: 150 bpm in A minor, i–VI–VII and i–VI–V7
+# twice, then a iv–VII–III–VI run to the half-diminished ii and back to the
+# top on the V. The bass bounces root and octave on every sixteenth, the hats
+# fall on every sixteenth, and the lead alternates held notes with runs.
+let SPRINT_CHORDS = [
+  (45, [69, 72, 76, 79], 10),  # Am7
+  (45, [69, 72, 76, 79], 10),  # Am7
+  (41, [65, 69, 72, 76], 9),   # F△7
+  (43, [67, 71, 74, 79], 10),  # G
+  (45, [69, 72, 76, 79], 10),  # Am7
+  (45, [69, 72, 76, 79], 10),  # Am7
+  (41, [65, 69, 72, 76], 9),   # F△7
+  (40, [64, 68, 71, 74], 10),  # E7
+  (38, [62, 65, 69, 72], 10),  # Dm7
+  (43, [67, 71, 74, 77], 10),  # G7
+  (36, [60, 64, 67, 71], 9),   # C△7
+  (41, [65, 69, 72, 76], 9),   # F△7
+  (47, [71, 74, 77, 81], 10),  # Bm7♭5
+  (40, [64, 68, 71, 74], 10),  # E7
+  (45, [69, 72, 76, 79], 10),  # Am7
+  (40, [64, 68, 71, 74], 4),   # E7, the leading tone back to the top
+]
+let SPRINT_LEAD = [
+  [81, -1, -1, -1, 84, -1, 83, -1, 81, -1, -1, -1, 76, -1, -1, -1],
+  [79, -1, 81, -1, 79, -1, 76, -1, 74, -1, -1, -1, -1, -1, 72, 74],
+  [76, -1, -1, -1, 77, -1, 76, -1, 74, -1, 72, -1, 74, -1, -1, -1],
+  [71, -1, -1, -1, -1, -1, -1, -1, 74, 76, 77, 79, 81, -1, 83, -1],
+  [84, -1, -1, -1, 88, -1, 86, -1, 84, -1, -1, -1, 81, -1, -1, -1],
+  [83, -1, 84, -1, 83, -1, 79, -1, 81, -1, -1, -1, -1, -1, -1, -1],
+  [77, -1, 79, -1, 81, -1, -1, -1, 79, -1, 77, -1, 76, -1, -1, -1],
+  [80, -1, -1, -1, -1, -1, -1, -1, 76, -1, -1, -1, 0, 0, 79, 80],
+  [81, -1, -1, -1, 84, -1, -1, -1, 86, -1, 84, -1, 81, -1, -1, -1],
+  [83, -1, 81, -1, 79, -1, -1, -1, 77, -1, -1, -1, 79, -1, -1, -1],
+  [76, -1, -1, -1, 79, -1, -1, -1, 84, -1, -1, -1, 83, -1, 81, -1],
+  [81, -1, -1, -1, -1, -1, -1, -1, 77, 79, 81, 84, 86, -1, -1, -1],
+  [86, -1, -1, -1, 84, -1, -1, -1, 83, -1, 81, -1, 77, -1, -1, -1],
+  [80, -1, -1, -1, -1, -1, 83, -1, 86, -1, -1, -1, 88, -1, -1, -1],
+  [88, -1, -1, -1, -1, -1, -1, -1, 84, -1, -1, -1, 81, -1, -1, -1],
+  [83, -1, -1, -1, 81, -1, -1, -1, 80, -1, -1, -1, 76, -1, 79, 80],
+]
+let SPRINT = tune(
+  6,
+  SPRINT_CHORDS,
+  SPRINT_LEAD,
+  [0, 12, 0, 12, 0, 12, 0, 12, 0, 12, 0, 12, 7, 12, -1, 12],
+  1,
+  [0, 2, 1, 3, 0, 2, 1, 3],
+  1,
+)
+
+let LAP_TUNES = [CRUISE, SPRINT]
+mut playing = CRUISE
 mut bgm_frame = 0
+
+# The tune for lap `n`, from its first bar.
+let start_tune = fn (n) {
+  playing = LAP_TUNES[(n - 1) % LAP_TUNES.size()]
+  bgm_frame = 0
+}
 
 # The tune's level, 1.0 while the race runs; the ending turns it down.
 mut bgm_gain = 1.0
 let bgm_vol = |v| Math.round(v * bgm_gain)
 
 let tick_bgm = fn () {
-  if bgm_frame % TICK == 0 {
-    let step = bgm_frame / TICK
-    let (root, tones, pickup) = CHORDS[step / BAR]
+  let tick = playing.tick
+  if bgm_frame % tick == 0 {
+    let step = bgm_frame / tick
+    let (root, tones, pickup) = playing.chords[step / BAR]
     let slot = step % BAR
-    let note = lead_notes[step]
+    let note = playing.lead[step]
     if note != nil {
       let (f, len) = note
       Canvas.tone(
         f,
-        len * TICK - 2,
+        len * tick - 2,
         vol: bgm_vol(15),
         wave: Canvas.PULSE,
         attack: 1,
@@ -933,11 +778,11 @@ let tick_bgm = fn () {
         duty: Canvas.DUTY_QUARTER,
       )
     }
-    let iv = BASS[slot]
+    let iv = playing.bass[slot]
     if iv != nil {
       Canvas.tone(
         hz(root + (iv < 0 ? pickup : iv)),
-        TICK * 2 - 3,
+        tick * playing.bass_len - 3,
         vol: bgm_vol(18),
         wave: Canvas.SAWTOOTH,
         decay: 3,
@@ -946,8 +791,8 @@ let tick_bgm = fn () {
     }
     if slot % 2 == 0 {
       Canvas.tone(
-        hz(tones[ARP[slot / 2]]),
-        TICK * 2 - 4,
+        hz(tones[playing.arp[slot / 2]]),
+        tick * 2 - 4,
         vol: bgm_vol(7),
         wave: Canvas.TRIANGLE,
         attack: 1,
@@ -974,7 +819,7 @@ let tick_bgm = fn () {
         wave: Canvas.NOISE,
         release: 3,
       ),
-      slot % 2 ==
+      slot % playing.hat ==
         0 => Canvas.tone(
         3000,
         1,
@@ -985,7 +830,7 @@ let tick_bgm = fn () {
       _ => nil,
     }
   }
-  bgm_frame = (bgm_frame + 1) % BGM_LOOP
+  bgm_frame = (bgm_frame + 1) % playing.length
 }
 
 # --- ending ----------------------------------------------------------------
@@ -1188,7 +1033,7 @@ let restart_race = fn () {
   end_frame = 0
   wave_wait = 0
   bgm_gain = 1.0
-  bgm_frame = 0
+  start_tune(1)
   Canvas.music(art(MUSIC_FILE), vol: MUSIC_VOL) if MUSIC_FILE != nil
 }
 
@@ -1354,6 +1199,7 @@ let update = fn (dt) {
         finished = true
       } else {
         lap += 1
+        start_tune(lap)
       }
     } else {
       current_lap_time += dt
@@ -1876,7 +1722,7 @@ let render = fn () {
 
   # The day cycle runs on distance, not on the clock, so it reads the same
   # however fast the car is driven. Each scene owns an equal stretch of the
-  # track — the four together are exactly one lap — held for the first part of
+  # track — the five together are exactly one lap — held for the first part of
   # its stretch and cross-faded into the next over the rest.
   let cycle = position * SCENE_COUNT / track_length
   let scene = to_long(cycle)

@@ -17,6 +17,7 @@ the game will not notice, as long as the sizes below stay exactly as they are.
 | `sprites.png` | 1492×1487 | 34 sprites at the atlas rectangles `common.js` names |
 | `background_asayake.png` | 1290×1470 | dawn — sky / hills / trees, 1280×480 each |
 | `background_hiru.png` | 1290×1470 | day |
+| `background_yuugata.png` | 1290×1470 | golden hour |
 | `background_yuugure.png` | 1290×1470 | dusk |
 | `background_twilight.png` | 1290×1470 | twilight |
 
@@ -31,20 +32,20 @@ the game will not notice, as long as the sizes below stay exactly as they are.
 - The three background layer rectangles, and that each layer wraps
   horizontally — the layers scroll, so a shape that changes abruptly across the
   seam shows as a line sliding past.
-- That the four backgrounds are **geometry-identical**. The day cycle cross-fades
+- That the five backgrounds are **geometry-identical**. The day cycle cross-fades
   them, so a ridge one pixel out would ghost through the blend.
 
 **Free — redraw at will:** every colour and every shape inside those boxes.
 
 The generator enforces the fixed parts rather than trusting them. It draws the
 backgrounds once into a buffer of palette *keys*, then hands that one buffer to
-`Canvas.Sprite` four times with four palettes — so a scene-specific shape is not
-expressible, and the four images cannot disagree about geometry or about which
+`Canvas.Sprite` five times with five palettes — so a scene-specific shape is not
+expressible, and the five images cannot disagree about geometry or about which
 pixels are transparent. It also checks that each layer wraps.
 
 `../tools/check_assets.cul` re-checks the shipped files from the outside — it
 loads them with `Canvas.Sprite.from_png` and verifies every rectangle is where
-`common.js` says, that no sprite fills its whole box, and that the four
+`common.js` says, that no sprite fills its whole box, and that the five
 backgrounds still share one mask.
 
 ## Layout of a background
@@ -67,4 +68,4 @@ copies. The generator prints that table at the end of a run, so the two cannot
 drift silently.
 
 `sprites.png` is baked once with the **day** palette and is not recoloured per
-scene — only the backgrounds have four variants.
+scene — only the backgrounds have five variants.

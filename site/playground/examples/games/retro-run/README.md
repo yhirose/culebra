@@ -5,7 +5,7 @@ A culebra port of Jake Gordon's
 (`v4.final.html`, MIT) — the pseudo-3D road, the segment/curve/hill geometry,
 the AI traffic, collision, and lap timing all come from the original. What's
 different: the art (generated, not lifted — see `assets/README.md`), a
-four-scene day cycle that gives each scene a quarter of the track, a race
+five-scene day cycle that gives each scene a fifth of the track, a race
 around it — a three-second count-in, two laps, a results screen, where the
 original runs forever — and the shape of the hot loops, rewritten for a tree-walking interpreter rather than a
 JIT'd browser (see `retro-run.cul`'s header comment for why).
@@ -66,10 +66,11 @@ at its art leaves the day cycle to the road, fog and sky colours while the
 picture behind them stays put.
 
 A `music.ogg` or `music.mp3` in the directory (looked for in that order) loops
-under the run via `Canvas.music`, replacing the built-in chiptune riff —
+under the run via `Canvas.music`, replacing the built-in chiptune —
 upstream's own soundtrack, if you have it. It plays at `MUSIC_VOL` (60), under
 the engine but clearly audible; edit the constant to taste. The generated set
-ships no music, so the chiptune is the default.
+ships no music, so the chiptune is the default: a tune a lap, breezy for the
+first and a sprint for the second.
 
 Either way the flag ends it: the music fades out over a couple of seconds, a
 few more pass in silence, and a slow chiptune theme plays once over the frozen

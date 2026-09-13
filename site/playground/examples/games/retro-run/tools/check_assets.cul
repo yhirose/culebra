@@ -51,7 +51,7 @@ let BACKGROUND = {
   TREES: [5, 985, 1280, 480],
 }
 
-let SCENES = ["asayake", "hiru", "yuugure", "twilight"]
+let SCENES = ["asayake", "hiru", "yuugata", "yuugure", "twilight"]
 
 # The alpha mask is sampled coarsely: every 13th column of every 11th row.
 let MASK_STEP_X = 13
@@ -100,7 +100,7 @@ for name, r in SPRITES {
 check(SPRITES.size() == 34, "expected 34 sprites, checked {SPRITES.size()}")
 
 # --- background_<scene>.png --------------------------------------------------
-# The cross-fade blends the four scenes pixel for pixel, so their opaque masks
+# The cross-fade blends the scenes pixel for pixel, so their opaque masks
 # must coincide exactly and their geometry must be identical.
 let masks = SCENES.map(|scene| {
   let bg = Canvas.Sprite.from_png(FS.read(dir + "/background_{scene}.png"))

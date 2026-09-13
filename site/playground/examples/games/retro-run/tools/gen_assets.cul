@@ -7,7 +7,7 @@
 # scale (SPRITES.SCALE = 0.3 / PLAYER_STRAIGHT.w). Swap the pictures, keep the
 # rectangles, and the game plays identically.
 #
-# The four day-cycle backgrounds must be geometry-identical — the cross-fade
+# The day-cycle backgrounds must be geometry-identical — the cross-fade
 # blends them pixel for pixel, so a ridge line one pixel out would ghost. That
 # is enforced structurally: the art is drawn once into a buffer of palette
 # KEYS, and each scene is that one buffer handed to `Canvas.Sprite` with a
@@ -73,6 +73,7 @@ let COMMON = {
   TYRE0: [32, 28, 40],
   TYRE1: [80, 76, 92],
   CHROME: [232, 236, 240],
+  SHINE: [255, 244, 240],
   LAMP_R: [168, 24, 32],
   LAMP_RL: [255, 80, 64],
   LAMP_A: [255, 176, 48],
@@ -173,6 +174,46 @@ let ASAYAKE = {
   RUMBLE_L: [240, 224, 208],
   FOG: [248, 204, 148],
 }
+# The golden hour between day and dusk. A blue sky and an orange one
+# cross-fade through a muddy violet that reads as night, so the cycle steps
+# through this: still blue-lilac overhead, gold at the horizon, and every
+# midpoint on either side of it stays bright.
+let YUUGATA = {
+  SKY0: [168, 120, 184],
+  SKY1: [196, 140, 168],
+  SKY2: [224, 168, 152],
+  SKY3: [244, 196, 136],
+  SKY4: [252, 216, 128],
+  SKY5: [255, 232, 144],
+  HAZE: [255, 244, 192],
+  CLOUD_L: [255, 240, 216],
+  CLOUD_M: [240, 192, 160],
+  CLOUD_D: [200, 140, 148],
+  SUN: [255, 248, 200],
+  SUN_GLOW: [255, 224, 152],
+  MTN_FAR_L: [200, 156, 164],
+  MTN_FAR_D: [160, 120, 148],
+  MTN_L: [144, 120, 84],
+  MTN_D: [96, 72, 76],
+  MTN_SNOW: [255, 232, 216],
+  SEA_D: [88, 104, 164],
+  SEA_L: [216, 176, 160],
+  FOAM: [255, 240, 216],
+  SAND: [240, 212, 148],
+  TREE_D: [40, 64, 44],
+  TREE_M: [88, 120, 56],
+  TREE_L: [176, 176, 80],
+  TRUNK_D: [84, 52, 40],
+  TRUNK_L: [152, 108, 68],
+  GROUND: [100, 136, 60],
+  GRASS_D: [96, 136, 52],
+  GRASS_L: [112, 152, 60],
+  ROAD_D: [100, 94, 106],
+  ROAD_L: [110, 104, 116],
+  RUMBLE_D: [188, 92, 80],
+  RUMBLE_L: [240, 224, 200],
+  FOG: [248, 220, 160],
+}
 let YUUGURE = {
   SKY0: [200, 72, 48],
   SKY1: [224, 104, 48],
@@ -250,12 +291,13 @@ let TWILIGHT = {
 let SCENES = [
   ("asayake", ASAYAKE),
   ("hiru", HIRU),
+  ("yuugata", YUUGATA),
   ("yuugure", YUUGURE),
   ("twilight", TWILIGHT),
 ]
 
 # Key 0 is transparent; the rest index this list. Drawing code names keys,
-# never colours, which is what keeps the four scenes geometry-identical.
+# never colours, which is what keeps the scenes geometry-identical.
 let KEYS = [""]
   .iter()
   .chain(COMMON.keys().to_set().union(HIRU.keys().to_set()).to_array().sorted())
@@ -1715,28 +1757,39 @@ fn profile(points, y) {
   h0 + (h1 - h0) * t * t * (3 - 2 * t)
 }
 
-# Fill a profile's rows: the flanks shade toward the dark tone where the
-# surface turns away, the first `top_light` rows toward the light one.
+# Fill a profile's rows as glossy paint under a light from above. A row's
+# brightness comes from how the surface faces: where the profile spreads
+# going down the surface faces up and catches the light (the shoulder), where
+# it tucks in it falls into shadow (the sill), and across each row the flank
+# turns away toward the dark tone. The first `top_light` rows lift toward the
+# light tone regardless (a deck or roof seen flat on). The brightest points
+# of the shoulder turn specular, and a reflection streak slides down and out
+# across the lower body, the way sky reads on a curved panel.
 fn shell(c, cx, points, tones, top_light) {
   let (d, m, l) = tones
   let y0 = points[0][0].to_long()
   let y1 = points[points.size() - 1][0].to_long()
+  let mid = (y0 + y1) / 2
   for y in y0..=y1 {
     let half = profile(points, y)
+    let spread = profile(points, y + 1) - profile(points, y - 1)
+    let facing = Math.clamp(spread * 0.15, -0.3, 0.5)
+    let flat = y < y0 + top_light
+      ? (1.0 - (y - y0).to_float() / top_light) * 0.5
+      : 0.0
+    # The lower body sits in its own shadow, deeper toward the sill.
+    let under = y > mid
+      ? (y - mid).to_float() / Math.max(1, y1 - mid) * 0.35
+      : 0.0
+    let streak = half * 0.45 + (y - mid) * 0.5
     for x in (cx - half).to_long()..=(cx + half).to_long() {
       let u = Math.abs(x - cx) / Math.max(1.0, half)
+      mut light = 0.5 + facing + flat - under - u * u * u * 0.8
+      light += 0.45 if y > mid && Math.abs(Math.abs(x - cx) - streak) < 1.5
       cond {
-        u > 0.92 => c.set(x, y, d),
-        u > 0.78 => c.mix(x, y, m, d, (u - 0.78) / 0.14),
-        y <
-          y0 +
-            top_light => c.mix(
-          x,
-          y,
-          l,
-          m,
-          (y - y0).to_float() / top_light * 0.8 + u * 0.4,
-        ),
+        light > 1.05 => c.mix(x, y, l, "SHINE", (light - 1.05) / 0.3),
+        light > 0.72 => c.mix(x, y, m, l, (light - 0.72) / 0.33),
+        light < 0.4 => c.mix(x, y, d, m, (light - 0.1) / 0.3),
         _ => c.set(x, y, m),
       }
     }
@@ -1847,6 +1900,16 @@ fn draw_sports_car(c, w, h, steer, hill) {
   for x in (cx - bar_half + 7).to_long()..(cx + bar_half).to_long() by 8 {
     c.rect(x, bar_y, 1, bar_h, "INK")
   }
+  # The gloss on the lenses: a broken white line just under their top edge.
+  for x in (cx - bar_half + 2).to_long()..(cx + bar_half - 2).to_long() {
+    c.mix(
+      x,
+      bar_y + 1,
+      "LAMP_RL",
+      "LAMP_W",
+      0.5,
+    ) if c.get(x, bar_y + 1) != KEY_ID["INK"]
+  }
   # The black lower bumper, darkening toward the ground, with the plate and
   # the pipes.
   let low = floor - 1 - bumper
@@ -1855,6 +1918,11 @@ fn draw_sports_car(c, w, h, steer, hill) {
     for x in (cx - half).to_long()..=(cx + half).to_long() {
       c.mix(x, y, "TYRE1", "TYRE0", (y - low).to_float() / (floor - 1 - low))
     }
+  }
+  # A chrome trim along the bumper's top edge, dithered so it reads as a line
+  # catching the light rather than a bar.
+  for x in (cx - profile(body, low) + 3).to_long()..(cx + profile(body, low) - 2).to_long() {
+    c.mix(x, low, "TYRE1", "CHROME", 0.5)
   }
   plate(c, cx, low + (bumper - 4) / 2, 14)
   for ex in [cx - w * 0.3, cx + w * 0.3 - 6] {
