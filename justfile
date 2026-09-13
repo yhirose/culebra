@@ -1640,6 +1640,9 @@ site-build:
 # playground/vendor/, from the versions pinned in its package.json. Needs
 # node and npm. Outputs are committed, like the wasm; rerun after changing a
 # pin, then `just site-build` (or copy-frontend.sh) to carry them to site/.
+# The build is reproducible, so running this on an unchanged tree leaves no
+# diff — which is also how to check that the committed bundle is what the
+# pins say. `just vendor-update` is what reports a release newer than a pin.
 [doc("Bundle the playground's vendored libraries into playground/vendor/")]
 site-vendor:
     ./playground/vendor.sh
