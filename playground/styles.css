@@ -99,6 +99,9 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   background: var(--surface); color: var(--muted); cursor: pointer;
 }
 .pg-tab-action:hover { color: var(--text); }
+/* An author stylesheet's display beats the UA stylesheet's [hidden] whatever
+   the specificity, so every element here that is given a display says this
+   too (.pg-share-menu, .pg-play). */
 .pg-tab-action[hidden] { display: none; }
 
 .pg-panes { flex: 1; min-height: 0; position: relative; }
@@ -130,7 +133,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 /* Canvas pane: centre the framebuffer and scale it up with crisp (nearest-
    neighbour) pixels, so a 160x160 game fills the pane without blurring. */
 /* Site-coloured until a frame lands, on the standalone page as much as in an
-   layout: a black rectangle under a tab nobody has run anything in reads as
+   embedded one: a black rectangle under a tab nobody has run anything in reads as
    something broken rather than as somewhere a game will appear. Once one has
    been drawn the pane is the letterbox around it, and black is what that
    wants. */
@@ -225,9 +228,8 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 }
 .pg-share-row { display: flex; align-items: center; gap: 0.6rem; font-size: 0.85rem; }
 .pg-share-label { color: var(--muted); flex: none; width: 4.2rem; }
-/* Without this the menu is open before Share is ever pressed: an author
-   stylesheet's display beats the UA stylesheet's [hidden], whatever the
-   specificity. Same reason as .pg-tab-action[hidden] and .pg-play[hidden]. */
+/* Without this the menu is open before Share is ever pressed; see
+   .pg-tab-action[hidden]. */
 .pg-share-menu[hidden] { display: none; }
 /* Each choice is a cell of one bar rather than a dot beside a word: the
    options are the whole of what is on offer, so a filled-in row says both
@@ -256,7 +258,6 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 .pg-share-tiles.off label:hover span { background: var(--surface); }
 .pg-share-menu .btn-primary { background: var(--brand-strong); border-color: var(--brand-strong); }
 .pg-share-menu .btn-primary:hover { background: var(--brand); border-color: var(--brand); }
-/* The link itself, so the choices above are not a guess about what they do. */
 /* The menu's width is clamped to the viewport, and below about 420px of it
    three cells of what is left stop holding "Editor + View" (measured: fine in
    a 380px menu, clipped in a 341px one, which is what a 380px viewport gives).
@@ -266,6 +267,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   .pg-share-row { flex-direction: column; align-items: stretch; gap: 0.25rem; }
   .pg-share-label { width: auto; }
 }
+/* The link itself, so the choices above are not a guess about what they do. */
 .pg-share-url {
   display: block; max-height: 4.6rem; overflow: auto; word-break: break-all;
   padding: 0.45rem 0.55rem; border-radius: var(--radius);
@@ -277,7 +279,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
    program. The same circle as the landing page's poster button, over whatever
    the pane holds: the empty pane before the first run, the last frame after
    one, which makes it replay without a second control. [hidden] needs saying
-   because a class's display beats the UA stylesheet's. */
+   here too; see .pg-tab-action[hidden]. */
 .pg-play {
   position: absolute; inset: 0; z-index: 5;
   display: flex; align-items: center; justify-content: center;

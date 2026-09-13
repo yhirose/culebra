@@ -193,22 +193,20 @@ done
 if (( ${#outdated[@]} == 0 )); then
   echo
   echo "all vendor submodules up to date."
-fi
-
-if (( ${#outdated[@]} > 0 )); then
-echo
-echo "outdated: ${#outdated[@]}"
-log_limit=20
-for entry in "${outdated[@]}"; do
-  IFS='|' read -r path label latest <<< "$entry"
+else
   echo
-  echo "--- $path ($label) ---"
-  total=$(git -C "$path" rev-list --count "HEAD..$latest")
-  git --no-pager -C "$path" log --oneline -n "$log_limit" "HEAD..$latest"
-  if (( total > log_limit )); then
-    echo "... and $((total - log_limit)) more (see: git -C $path log --oneline HEAD..$latest)"
-  fi
-done
+  echo "outdated: ${#outdated[@]}"
+  log_limit=20
+  for entry in "${outdated[@]}"; do
+    IFS='|' read -r path label latest <<< "$entry"
+    echo
+    echo "--- $path ($label) ---"
+    total=$(git -C "$path" rev-list --count "HEAD..$latest")
+    git --no-pager -C "$path" log --oneline -n "$log_limit" "HEAD..$latest"
+    if (( total > log_limit )); then
+      echo "... and $((total - log_limit)) more (see: git -C $path log --oneline HEAD..$latest)"
+    fi
+  done
 fi
 
 pg_outdated=0
@@ -229,21 +227,25 @@ if (( run == 0 )); then
   exit 0
 fi
 
-echo
-for entry in "${outdated[@]}"; do
-  IFS='|' read -r path label latest <<< "$entry"
-  echo "updating $path -> ${latest:0:10} ($label)"
-  git -C "$path" checkout --quiet "$latest"
-done
-
-# The blob is keyed to the cpp-peglib version, and a vendor bump's diff never
-# mentions grammar_blob.gen.h. Regenerating unconditionally is idempotent. Never
-# fatal: the checkouts above are already applied, and a peglib bump that breaks
-# the generator's own compile is exactly when the closing advice is needed.
 blob_before=$(git hash-object include/frontend/grammar_blob.gen.h)
-echo
-echo "regenerating include/frontend/grammar_blob.gen.h (keyed to the cpp-peglib version)"
-just gen-blob || echo "WARNING: gen-blob failed — run it before committing" >&2
+if (( ${#outdated[@]} > 0 )); then
+  echo
+  for entry in "${outdated[@]}"; do
+    IFS='|' read -r path label latest <<< "$entry"
+    echo "updating $path -> ${latest:0:10} ($label)"
+    git -C "$path" checkout --quiet "$latest"
+  done
+
+  # The blob is keyed to the cpp-peglib version, and a vendor bump's diff never
+  # mentions grammar_blob.gen.h. Regenerating unconditionally is idempotent.
+  # Never fatal: the checkouts above are already applied, and a peglib bump that
+  # breaks the generator's own compile is exactly when the closing advice is
+  # needed. Inside this branch because it belongs to the submodules: a run that
+  # only moves an npm pin has not touched peglib at all.
+  echo
+  echo "regenerating include/frontend/grammar_blob.gen.h (keyed to the cpp-peglib version)"
+  just gen-blob || echo "WARNING: gen-blob failed — run it before committing" >&2
+fi
 
 if (( pg_outdated )); then
   pg_apply

@@ -653,7 +653,7 @@ _run-tests BACKEND:
             # that cannot be read is a measurement lost, not a budget broken,
             # and the next occurrence leaves evidence.
             read -r u s < "$f" || true
-            if [[ ! "$u" =~ ^[0-9]+\.[0-9]+$ || ! "$s" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            if [[ ! "$u" =~ ^[0-9]+\.[0-9]{3}$ || ! "$s" =~ ^[0-9]+\.[0-9]{3}$ ]]; then
                 echo "test (vm vs jit) WARN: unreadable --jit timing for tests/$name.cul, not measured against the budget" >&2
                 echo "  $f held: $(tr '\n' '|' < "$f" | head -c 200)" >&2
                 continue
@@ -1656,6 +1656,7 @@ site-build:
 # The build is reproducible, so running this on an unchanged tree leaves no
 # diff — which is also how to check that the committed bundle is what the
 # pins say. `just vendor-update` is what reports a release newer than a pin.
+[group("site")]
 [doc("Bundle the playground's vendored libraries into playground/vendor/")]
 site-vendor:
     ./playground/vendor.sh

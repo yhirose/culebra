@@ -64,7 +64,7 @@ const TERM_COLS = 80;
 const TERM_ROWS = 24;
 
 // xterm paints its own background, so the pane's colour has to be handed to
-// it and cannot just be set in CSS. Read from the stylesheet, which index.html
+// it and cannot just be set in CSS. Read from the stylesheet, which boot.js
 // has already stamped data-theme on, so light and dark stay defined in one
 // place. The Playground has no theme toggle of its own, so once is enough.
 function siteColor(name, fallback) {
@@ -552,17 +552,24 @@ clearBtn.addEventListener("click", () => {
   output.classList.remove("err");
 });
 
-// New starts an empty program that belongs to no project. NO_PROJECT is what
-// puts Sys.script back to main.cul, rather than leaving the last example's
-// path, companion files and arguments under text that has nothing to do with
-// them. Nothing is lost for good: the editor's history undoes the clear, and
-// a program worth keeping had a Share link.
+// The text stops belonging to a project. NO_PROJECT is what puts Sys.script
+// back to main.cul, rather than leaving the last example's path, companion
+// files and arguments under text that has nothing to do with them, and
+// projectSource goes with it: there is no fetched source left to call this
+// unedited against. Both New and deselecting an example end up here.
+async function detachProject(text) {
+  await useProject(NO_PROJECT, text);
+  projectSource = null;
+  clearExampleSelection();
+}
+
+// New starts an empty program that belongs to no project. Nothing is lost for
+// good: the editor's history undoes the clear, and a program worth keeping had
+// a Share link.
 const newBtn = $("new");
 newBtn.addEventListener("click", async () => {
-  const src = await useProject(NO_PROJECT, "");
-  projectSource = null;   // no fetched source for Share to call this unedited against
-  clearExampleSelection();
-  editor.setValue(src);
+  await detachProject("");
+  editor.setValue("");
   editor.focus();
 });
 
@@ -584,6 +591,11 @@ function shareChoice(name) {
   return shareMenu.querySelector(`input[name="share-${name}"]:checked`).value;
 }
 
+function setShareChoice(name, value) {
+  for (const input of shareMenu.querySelectorAll(`input[name="share-${name}"]`))
+    input.checked = input.value === value;
+}
+
 // Split says how the source and the view sit together, which a layout built
 // from the view alone has no use for. Rather than let the menu offer a choice
 // the link would carry and the page would ignore, the row goes quiet and
@@ -592,24 +604,22 @@ function syncShareRows() {
   const off = shareChoice("layout") === "view";
   const row = shareMenu.querySelector('input[name="share-split"]').closest(".pg-share-tiles");
   row.classList.toggle("off", off);
-  for (const input of row.querySelectorAll("input")) {
-    input.disabled = off;
-    if (off) input.checked = input.value === "";
-  }
+  for (const input of row.querySelectorAll("input")) input.disabled = off;
+  if (off) setShareChoice("split", "");
 }
 
-// Where the text runs beside something, the link says so. Returns whether it
-// named anything, which decides whether the text has to ride along.
+// Where the text runs beside something, the link says so.
 function nameProject(url) {
-  if (project.src) {
-    url.searchParams.set("src", project.src);
-    return true;
-  }
-  if (project.example) {
-    url.searchParams.set("example", project.example);
-    return true;
-  }
-  return false;
+  if (project.src) url.searchParams.set("src", project.src);
+  else if (project.example) url.searchParams.set("example", project.example);
+}
+
+// The link carries the text when it was edited, and always when it names no
+// project — there would be nothing at the other end otherwise. Asked before
+// the payload is encoded as well as when it is spent, so an unedited example
+// never pays for one.
+function linkCarriesText() {
+  return !(project.src || project.example) || editor.getValue() !== projectSource;
 }
 
 // The href is split rather than rebuilt from origin so a file:// checkout
@@ -618,7 +628,7 @@ function nameProject(url) {
 // there would be nothing at the other end otherwise.
 function buildShareLink(code) {
   const url = new URL(location.href.split(/[?#]/)[0]);
-  const named = nameProject(url);
+  nameProject(url);
   const args = argsInput.value.trim();
   if (args !== formatArgs(project.args)) url.searchParams.set("args", args);
   const layout = shareChoice("layout");
@@ -628,19 +638,28 @@ function buildShareLink(code) {
   const split = shareChoice("split");
   if (split) url.searchParams.set("split", split);
   if (shareChoice("run")) url.searchParams.set("run", "1");
-  if (!named || editor.getValue() !== projectSource) url.hash = "code=" + code;
+  if (linkCarriesText()) url.hash = "code=" + code;
   return url.href;
 }
 
 // Encoding the text can gzip, so the menu shows a link that arrives a tick
 // after the click that asked for it; `shareSeq` is what keeps a slow encode
-// from painting over a newer choice's faster one.
+// from painting over a newer choice's faster one. Every radio in the menu
+// comes through here, and none of them changes the text, so the payload is
+// kept against the text it was made from rather than made again per click.
 let shareSeq = 0;
+let shareCodeFor = null;   // the text shareCode was encoded from
+let shareCode = "";
 async function refreshShareUrl() {
   const mine = ++shareSeq;
-  const code = await encodeShareParam(editor.getValue());
-  if (mine !== shareSeq) return;
-  shareUrlEl.textContent = buildShareLink(code);
+  const text = editor.getValue();
+  if (linkCarriesText() && text !== shareCodeFor) {
+    const code = await encodeShareParam(text);
+    if (mine !== shareSeq) return;
+    shareCodeFor = text;
+    shareCode = code;
+  }
+  shareUrlEl.textContent = buildShareLink(shareCode);
 }
 
 function closeShareMenu() {
@@ -651,11 +670,8 @@ function closeShareMenu() {
 // The menu opens on whichever pane is showing: sharing what you are looking
 // at is the common case, and the other two are one click away.
 async function openShareMenu() {
-  for (const input of shareMenu.querySelectorAll('input[name="share-view"]'))
-    input.checked = input.value === activeTab;
-  const split = document.documentElement.classList.contains("split-top") ? "top" : "";
-  for (const input of shareMenu.querySelectorAll('input[name="share-split"]'))
-    input.checked = input.value === split;
+  setShareChoice("view", activeTab);
+  setShareChoice("split", document.documentElement.classList.contains("split-top") ? "top" : "");
   syncShareRows();
   await refreshShareUrl();
   shareMenu.hidden = false;
@@ -668,7 +684,7 @@ shareBtn.addEventListener("click", () => {
 });
 shareMenu.addEventListener("change", () => {
   syncShareRows();
-  refreshShareUrl();
+  refreshShareUrl().catch(showLoadError);
 });
 document.addEventListener("click", (e) => {
   if (!shareMenu.hidden && !e.target.closest(".pg-share")) closeShareMenu();
@@ -706,9 +722,7 @@ function loadExampleIntoEditor(title) {
 // under it, and a link to it names nothing. The text stays; New is the one
 // that clears that too.
 async function deselectExample() {
-  await useProject(NO_PROJECT, editor.getValue());
-  projectSource = null;
-  clearExampleSelection();
+  await detachProject(editor.getValue());
 }
 
 exampleCatSel.addEventListener("change", () => {
@@ -754,8 +768,15 @@ term.onData((data) => {
 // backing store (so a script can pick any size); CSS scales it up crisply.
 // The first frame of a run auto-switches to the Canvas tab, mirroring how the
 // TUI tab reacts to the alt-screen marker.
+// A posted frame arrives as this thread's own Uint8Array (the worker sliced it
+// out of the heap), and ImageData wants a Uint8ClampedArray. Constructing one
+// from a typed array copies the whole framebuffer; over the same buffer it is
+// a view, which is the same picture without a per-frame allocation.
+function clampedView(u8) {
+  return new Uint8ClampedArray(u8.buffer, u8.byteOffset, u8.length);
+}
+
 function drawFrame(msg) {
-  canvasPane.classList.add("drawn");   // the pane is a letterbox from here on
   if (gameCanvas.width !== msg.w || gameCanvas.height !== msg.h) {
     gameCanvas.width = msg.w;
     gameCanvas.height = msg.h;
@@ -763,7 +784,7 @@ function drawFrame(msg) {
     canvasStack.style.aspectRatio = msg.w + " / " + msg.h;
     sendScreenScale();  // a new framebuffer size is a new scale
   }
-  gctx.putImageData(new ImageData(new Uint8ClampedArray(msg.buf), msg.w, msg.h), 0, 0);
+  gctx.putImageData(new ImageData(clampedView(msg.buf), msg.w, msg.h), 0, 0);
   // The screen layer, sized by what the wasm side actually rasterized rather
   // than by measuring here — the two must agree or putImageData would throw.
   // screenBuf is null on frames that drew no screen text, which is most frames
@@ -779,10 +800,11 @@ function drawFrame(msg) {
   }
   if (msg.screenBuf && msg.screenW > 0 && msg.screenH > 0) {
     tctx.putImageData(
-      new ImageData(new Uint8ClampedArray(msg.screenBuf), msg.screenW, msg.screenH), 0, 0);
+      new ImageData(clampedView(msg.screenBuf), msg.screenW, msg.screenH), 0, 0);
     overlayPainted = true;
   }
   if (!inCanvas) {
+    canvasPane.classList.add("drawn");   // the pane is a letterbox from here on
     inCanvas = true;
     switchTab("canvas");
     // Lets an embedding host (e.g. the homepage's poster-and-play-button)
