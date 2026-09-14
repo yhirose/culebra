@@ -156,7 +156,9 @@ draft が 2 つできる（v0.1.0 で実際に発生し、片方を消したら�
     gh run watch <databaseId> --exit-status
 
 macOS / Linux x64 / Windows x64 の 3 本を並列でビルドし、それぞれ
-`culebra-<os>-<arch>.{tar.gz,zip}` + `.sha256` を、最後に `SHA256SUMS` を添付する
+`culebra-<os>-<arch>.{tar.gz,zip}` + `.sha256` を添付する。Windows job はさらに AOT の
+リンク kit `culebra-toolchain-windows-x64.zip` + `.sha256` を添付し（`culebra toolchain install`
+がこの名前で取りに来る）、最後に `finalize` が `SHA256SUMS` を添付する
 （アーカイブ名に版数は入らない — README の `releases/latest/download/...` を固定リンクに
 保つため。中のディレクトリ名と `culebra --version` が版を名乗る）。
 
@@ -165,7 +167,10 @@ macOS / Linux x64 / Windows x64 の 3 本を並列でビルドし、それぞれ
     gh release edit vX.Y.Z --notes-file <file>
 
 念のため `gh release view vX.Y.Z --json tagName,assets` で、タグ名が `vX.Y.Z` のままで
-アセットが 7 個（3 アーカイブ + 3 `.sha256` + `SHA256SUMS`）あることを確認する。
+アセットが 9 個（3 アーカイブ + toolchain kit + 各 `.sha256` 4 個 + `SHA256SUMS`）あることを
+確認する。数が合わないときは、まず前回リリースのアセット構成
+（`gh release view <prev-tag> --json assets`）と比べる — `release.yml` に添付物が増減した
+だけならこの行の方が古い。
 
 **失敗したら draft のまま停止してユーザーに報告する。** 自動でリトライしたり release を消したり
 しない。ログを見て原因を伝え、直したうえで
