@@ -1,6 +1,6 @@
 // VSCode extension for Culebra: a client for `culebra lsp`, which supplies the
-// diagnostics, hover, formatting, definitions, references, highlights, the
-// outline and rename. The debugger is registered in package.json
+// diagnostics, hover, completion, formatting, definitions, references,
+// highlights, the outline and rename. The debugger is registered in package.json
 // (it launches `culebra dap`), and highlighting is the TextMate grammar.
 //
 // The client speaks the protocol's base framing — a Content-Length header, then
@@ -254,6 +254,17 @@ class Client {
     return (r || []).map(toSymbol);
   }
 
+  async completion(doc, pos) {
+    const r = await this.request('textDocument/completion', at(doc, pos));
+    return ((r && r.items) || []).map((i) => {
+      // LSP counts CompletionItemKind from 1, VSCode from 0.
+      const item = new vscode.CompletionItem(i.label, i.kind - 1);
+      item.detail = i.detail;
+      item.sortText = i.sortText;
+      return item;
+    });
+  }
+
   // A refusal comes back as an error, whose message VSCode shows as it stands.
   async prepareRename(doc, pos) {
     const r = await this.request('textDocument/prepareRename', at(doc, pos));
@@ -329,6 +340,9 @@ function activate(context) {
       prepareRename: (doc, pos) => client.prepareRename(doc, pos),
       provideRenameEdits: (doc, pos, newName) => client.rename(doc, pos, newName),
     }),
+    vscode.languages.registerCompletionItemProvider(selector, {
+      provideCompletionItems: (doc, pos) => client.completion(doc, pos).catch(() => []),
+    }, '.'),
   );
 }
 

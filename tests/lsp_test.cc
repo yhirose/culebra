@@ -259,6 +259,33 @@ int main(int argc, char** argv) {
   response_contains(17, "{\"uri\":\"file://" + dir + "/lsp_mod_helper.cul\"," +
                             range(0, 3, 0, 9) + "}");
 
+  // Completion, where the buffer mid-edit does not parse: a built-in method's
+  // result, a class instance, a stdlib namespace, and the class a
+  // culebra-source module's function returns.
+  must_contain("\"completionProvider\":{\"triggerCharacters\":[\".\"]}");
+  open_doc("lsp_c1.cul", "let words = 'a b'.split(' ')\\nwords.\\n");
+  send(request(20, "textDocument/completion", uri("lsp_c1.cul"), 1, 6));
+  response_contains(20, "\"label\":\"join\"");
+  open_doc("lsp_c2.cul", "class Box {\\n  area() { 1 }\\n}\\nlet b = Box()\\nb.\\n");
+  send(request(21, "textDocument/completion", uri("lsp_c2.cul"), 4, 2));
+  response_contains(21, "\"label\":\"area\"");
+  open_doc("lsp_c3.cul", "Math.\\n");
+  send(request(22, "textDocument/completion", uri("lsp_c3.cul"), 0, 5));
+  response_contains(22, "\"label\":\"abs\"");
+  open_doc("lsp_c4.cul", "let r = Regex.compile('a')\\nr.\\n");
+  send(request(23, "textDocument/completion", uri("lsp_c4.cul"), 1, 2));
+  response_contains(23, "\"label\":\"test\"");
+  // A bare name: what is visible there, then the globals.
+  open_doc("lsp_c5.cul", "let alpha = 1\\nfn f(beta) {\\n  al\\n}\\n");
+  send(request(24, "textDocument/completion", uri("lsp_c5.cul"), 2, 4));
+  response_contains(24, "\"label\":\"alpha\"");
+  response_contains(24, "\"label\":\"beta\"");
+  response_contains(24, "\"label\":\"print\"");
+  // A hover over a declared name shows its type.
+  open_doc("lsp_c6.cul", "let parts = 'a b'.split(' ')\\nparts\\n");
+  send(request(25, "textDocument/hover", uri("lsp_c6.cul"), 1, 1));
+  response_contains(25, "parts: Array<String>");
+
   send("{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"textDocument/nonexistent\","
        "\"params\":{}}");
   read_until("\"id\":5,\"error\":{\"code\":-32601");

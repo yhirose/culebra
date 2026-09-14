@@ -15,6 +15,7 @@
 #include <cli/init_cmd.h>
 #include <cli/lint_source.h>
 #include <cli/lsp.h>
+#include <cli/stdlib_catalog.h>
 #include <cli/toolchain_cmd.h>
 #include <stdlib/proc.h>  // run_all — the doc shards are child processes
 #include <base/source_dir.h>
@@ -2485,7 +2486,10 @@ int run_main(int argc, const char** argv) {
     // Language Server Protocol over stdio: lint diagnostics, formatting and
     // hover for an editor. It reads source and never runs it, so no engine.
     int protocol_out = culebra::claim_stdout_for_protocol();
-    culebra::lsp::Server server(/*in=*/0, protocol_out, CULEBRA_VERSION);
+    culebra::lsp::Server server(/*in=*/0, protocol_out, CULEBRA_VERSION, [] {
+      return static_cast<const culebra::infer::Catalog*>(
+          &culebra::lsp::stdlib_catalog());
+    });
     return server.run();
   }
 #ifdef CULEBRA_JIT_ENABLED

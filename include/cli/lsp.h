@@ -17,6 +17,7 @@
 #include <cli/docs_cmd.h>
 #include <cli/formatter.h>
 #include <cli/framed_stdio.h>
+#include <cli/infer.h>
 #include <cli/lint_source.h>
 #include <frontend/module_loader.h>  // resolve_module_path
 #include <frontend/resolve.h>
@@ -31,10 +32,12 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -253,9 +256,13 @@ inline std::optional<HoverName> hover_name(std::string_view line, size_t byte) {
 
 class Server {
  public:
-  Server(int in_fd, int out_fd, std::string version)
+  // `catalog` supplies the stdlib to type inference, built on first use;
+  // without one, completion knows only what the document declares.
+  Server(int in_fd, int out_fd, std::string version,
+         std::function<const infer::Catalog*()> catalog = {})
       : channel_(std::make_shared<Channel>(in_fd, out_fd)),
-        version_(std::move(version)) {}
+        version_(std::move(version)),
+        catalog_provider_(std::move(catalog)) {}
 
   // Serve until the client sends `exit` or closes the stream. The exit code is
   // 0 after an orderly `shutdown` and 1 otherwise, as the protocol asks.
@@ -322,7 +329,8 @@ class Server {
   // Navigation reads it while the buffer is mid-edit and does not parse; a
   // rename insists that it still matches the buffer.
   struct Snapshot {
-    std::string text;  // as the parse normalized it
+    std::string text;  // as the parse normalized it; the AST views it
+    std::shared_ptr<peg::Ast> ast;
     resolve::Resolution res;
     std::vector<resolve::OutlineItem> outline;
   };
@@ -409,6 +417,7 @@ class Server {
     if (m == "textDocument/didClose") return did_close(params);
     if (m == "textDocument/formatting") return reply(id, formatting(params));
     if (m == "textDocument/hover") return reply(id, hover(params));
+    if (m == "textDocument/completion") return reply(id, completion(params));
     if (m == "textDocument/definition") return reply(id, definition(params));
     if (m == "textDocument/references") return reply(id, references(params));
     if (m == "textDocument/documentHighlight")
@@ -430,6 +439,11 @@ class Server {
     caps.set("textDocumentSync", std::move(sync));
     caps.set("documentFormattingProvider", boolean(true));
     caps.set("hoverProvider", boolean(true));
+    Json triggers = array();
+    triggers.elems.push_back(str("."));
+    Json completion_caps = object();
+    completion_caps.set("triggerCharacters", std::move(triggers));
+    caps.set("completionProvider", std::move(completion_caps));
     caps.set("definitionProvider", boolean(true));
     caps.set("referencesProvider", boolean(true));
     caps.set("documentHighlightProvider", boolean(true));
@@ -505,8 +519,11 @@ class Server {
 
   void analyze(const std::string& uri, Document& d) {
     d.due.reset();
-    std::string src = d.text;  // the parse normalizes it; positions use d.text
-    auto linted = lint_source(uri_to_path(uri), src);
+    // The parse normalizes the text it reads and the AST views it, so it reads
+    // the snapshot's own copy; diagnostics are placed in the buffer's text.
+    auto snap = std::make_shared<Snapshot>();
+    snap->text = d.text;
+    auto linted = lint_source(uri_to_path(uri), snap->text);
     LineIndex lines(d.text);
     Json diags = array();
     auto add = [&](int64_t line, int64_t col, const std::string& message,
@@ -534,10 +551,9 @@ class Server {
       }
     }
     if (linted.authored) {
-      auto snap = std::make_shared<Snapshot>();
-      snap->res = resolve::resolve_module(*linted.authored, src);
-      snap->outline = resolve::outline(*linted.authored, src, snap->res);
-      snap->text = std::move(src);  // after the last read through the AST
+      snap->ast = linted.authored;
+      snap->res = resolve::resolve_module(*snap->ast, snap->text);
+      snap->outline = resolve::outline(*snap->ast, snap->text, snap->res);
       d.snapshot = std::move(snap);
     }
     Json p = object();
@@ -568,6 +584,7 @@ class Server {
   }
 
   Json hover(const Json& params) {
+    if (Json typed = symbol_hover(params); typed.type != Json::Nil) return typed;
     auto it = docs_.find(uri_of(params));
     if (it == docs_.end()) return Json();
     const Json& pos = at(params, "position");
@@ -908,8 +925,195 @@ class Server {
     reply(id, std::move(r));
   }
 
+  // ---- completion ---------------------------------------------------------
+  // The name completion puts where the half-typed one was, so the buffer parses.
+  static constexpr std::string_view kPlaceholder = "__culebra_complete__";
+
+  static int64_t completion_kind(infer::MemberKind k) {
+    switch (k) {  // LSP CompletionItemKind
+      case infer::MemberKind::Method: return 2;
+      case infer::MemberKind::Function: return 3;
+      case infer::MemberKind::Constructor: return 4;
+      case infer::MemberKind::Field: return 5;
+      case infer::MemberKind::Variable:
+      case infer::MemberKind::Parameter: return 6;
+      case infer::MemberKind::Class: return 7;
+      case infer::MemberKind::Namespace:
+      case infer::MemberKind::Module: return 9;
+      case infer::MemberKind::Enum: return 13;
+      case infer::MemberKind::EnumMember: return 20;
+      case infer::MemberKind::Constant: return 21;
+    }
+    return 6;
+  }
+
+  const infer::Catalog* catalog() const {
+    if (!catalog_ && catalog_provider_) catalog_ = catalog_provider_();
+    return catalog_;
+  }
+
+  // An import's top-level names, read from its open buffer or its file. Only
+  // names: types would point into a parse that ends here.
+  infer::Inference::ModuleMembers module_members_for(const std::string& uri) {
+    return [this, uri](std::string_view import_path) {
+      std::vector<infer::Member> out;
+      auto path = resolve_module_path(
+          std::string(import_path),
+          std::filesystem::path(uri_to_path(uri)).parent_path());
+      std::string text;
+      if (auto it = docs_.find(path_to_uri(path.string())); it != docs_.end()) {
+        text = it->second.text;
+      } else {
+        std::ifstream in(path, std::ios::binary);
+        if (!in) return out;
+        std::stringstream ss;
+        ss << in.rdbuf();
+        text = ss.str();
+      }
+      std::vector<ParseFailure> failures;
+      auto ast = parse(path.string(), text, failures);
+      if (!ast) return out;
+      auto res = resolve::resolve_module(*ast, text);
+      infer::Inference inf(*ast, text, res, catalog());
+      out = inf.visible(text.size());
+      settle(out, inf);
+      for (auto& m : out) m.type = {};
+      return out;
+    };
+  }
+
+  // Members leave the inference that listed them: settle a deferred field
+  // type into its detail, and drop what pointed into that inference.
+  static void settle(std::vector<infer::Member>& ms, const infer::Inference& inf) {
+    for (auto& m : ms) {
+      if (m.kind == infer::MemberKind::Field && m.detail == m.name) {
+        infer::Type t = inf.member_type(m);
+        if (!t.unknown()) m.detail = m.name + ": " + t.to_string();
+      }
+      if (m.owner == &inf) {
+        m.owner = nullptr;
+        m.function = m.value = m.field_class = nullptr;
+      }
+    }
+  }
+
+  static const peg::Ast* placeholder_call(const peg::Ast& n, size_t& index) {
+    using namespace peg::udl;
+    if (n.tag == "CALL"_)
+      for (size_t i = 1; i < n.nodes.size(); i++)
+        if (n.nodes[i]->tag == "IDENTIFIER"_ && n.nodes[i]->token == kPlaceholder) {
+          index = i;
+          return &n;
+        }
+    for (const auto& c : n.nodes)
+      if (const auto* found = placeholder_call(*c, index)) return found;
+    return nullptr;
+  }
+
+  Json completion(const Json& params) {
+    Document* d = current(params);
+    if (!d) return Json();
+    const std::string& uri = uri_of(params);
+    LineIndex lines(d->text);
+    size_t cursor = offset_at(lines, at(params, "position"));
+    size_t start = cursor;
+    while (start > 0 && ident_char(d->text[start - 1])) start--;
+    bool member = start > 0 && d->text[start - 1] == '.';
+
+    std::vector<infer::Member> primary, secondary;
+    // Complete against the buffer with the half-typed name replaced by a
+    // placeholder, which parses where the buffer mid-edit usually does not.
+    std::string probe = d->text.substr(0, start) + std::string(kPlaceholder) +
+                        d->text.substr(cursor);
+    std::vector<ParseFailure> failures;
+    auto ast = parse(uri_to_path(uri), probe, failures);
+    if (ast) {
+      auto res = resolve::resolve_module(*ast, probe);
+      infer::Inference inf(*ast, probe, res, catalog(), module_members_for(uri));
+      size_t offset = probe.find(kPlaceholder);
+      if (member) {
+        size_t index = 0;
+        if (const peg::Ast* call = placeholder_call(*ast, index)) {
+          primary = inf.members(inf.chain_type(*call, index));
+          secondary = inf.ufcs(offset);
+        }
+      } else {
+        primary = inf.visible(offset);
+        if (catalog()) secondary = catalog()->globals();
+      }
+      settle(primary, inf);
+      settle(secondary, inf);
+    } else if (d->snapshot && d->snapshot->ast) {
+      // The placeholder did not make it parse: answer from the last version
+      // that did, where the cursor's offset is a close guess.
+      const Snapshot& s = *d->snapshot;
+      infer::Inference inf(*s.ast, s.text, s.res, catalog(), module_members_for(uri));
+      size_t offset = std::min(start, s.text.size());
+      if (member) {
+        size_t end = start - 1, begin = end;
+        while (begin > 0 && ident_char(d->text[begin - 1])) begin--;
+        std::string name = d->text.substr(begin, end - begin);
+        size_t sym = s.res.lookup(s.res.scope_at(offset), name);
+        if (sym != resolve::kNone) {
+          primary = inf.members(inf.symbol_type(sym));
+        } else if (catalog()) {
+          if (const auto* ms = catalog()->namespace_members(name)) primary = *ms;
+        }
+        secondary = inf.ufcs(offset);
+      } else {
+        primary = inf.visible(offset);
+        if (catalog()) secondary = catalog()->globals();
+      }
+      settle(primary, inf);
+      settle(secondary, inf);
+    }
+
+    Json items = array();
+    std::set<std::string, std::less<>> seen;
+    auto emit = [&](const std::vector<infer::Member>& ms, char rank,
+                    bool functions_only) {
+      for (const auto& m : ms) {
+        if (functions_only && m.kind != infer::MemberKind::Function) continue;
+        if (!seen.insert(m.name).second) continue;
+        Json item = object();
+        item.set("label", str(m.name));
+        item.set("kind", num(completion_kind(m.kind)));
+        if (!m.detail.empty()) item.set("detail", str(m.detail));
+        item.set("sortText", str(std::string(1, rank) + m.name));
+        items.elems.push_back(std::move(item));
+      }
+    };
+    // A member of the value's type first, then a free function UFCS reaches.
+    emit(primary, '0', false);
+    emit(secondary, '1', member);
+    Json r = object();
+    r.set("isIncomplete", boolean(false));
+    r.set("items", std::move(items));
+    return r;
+  }
+
+  // A hover over a name the document declares: its declaration and type.
+  Json symbol_hover(const Json& params) {
+    Target t = target(params);
+    if (!t.occ || !t.snap->ast) return Json();
+    infer::Inference inf(*t.snap->ast, t.snap->text, t.snap->res, catalog(),
+                         module_members_for(uri_of(params)));
+    LineIndex lines(t.snap->text);
+    Json contents = object();
+    contents.set("kind", str("markdown"));
+    contents.set("value",
+                 str("```culebra\n" + inf.describe(t.occ->symbol) + "\n```"));
+    Json r = object();
+    r.set("contents", std::move(contents));
+    r.set("range",
+          span_range(lines, t.occ->position, t.occ->position + t.occ->length));
+    return r;
+  }
+
   std::shared_ptr<Channel> channel_;
   std::string version_;
+  std::function<const infer::Catalog*()> catalog_provider_;
+  mutable const infer::Catalog* catalog_ = nullptr;
   std::map<std::string, Document> docs_;  // by URI
   bool shutdown_ = false;
   bool exit_ = false;
