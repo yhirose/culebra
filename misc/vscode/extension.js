@@ -222,10 +222,7 @@ class Client {
   // ---- requests -------------------------------------------------------------
 
   async hover(doc, pos) {
-    const r = await this.request('textDocument/hover', {
-      textDocument: { uri: doc.uri.toString() },
-      position: { line: pos.line, character: pos.character },
-    });
+    const r = await this.request('textDocument/hover', at(doc, pos));
     if (!r) return null;
     return new vscode.Hover(new vscode.MarkdownString(r.contents.value),
       r.range ? toRange(r.range) : undefined);

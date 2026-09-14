@@ -2277,8 +2277,8 @@ inline std::shared_ptr<peg::Ast> parse_for_format(
   _culebra_parse_depth = 0;  // an aborted parse leaves the count mid-flight
 
   parser.set_logger([&](size_t ln, size_t col, const std::string& err_msg) {
-    msgs.push_back(std::format("{}:{}:{}: {}\n", path, ln,
-                               codepoint_column_to_byte(expr, ln, col), err_msg));
+    msgs.push_back(format_parse_failure(
+        path, {ln, codepoint_column_to_byte(expr, ln, col), err_msg}));
   });
 
   std::shared_ptr<peg::Ast> ast;

@@ -206,19 +206,7 @@ inline std::string path_to_uri(std::string path) {
     if (c == '\\') c = '/';
   if (!path.empty() && path[0] != '/') path.insert(path.begin(), '/');
 #endif
-  static constexpr std::string_view kHex = "0123456789ABCDEF";
-  std::string out = "file://";
-  for (unsigned char c : path) {
-    if (std::isalnum(c) || c == '/' || c == '-' || c == '.' || c == '_' ||
-        c == '~' || c == ':') {
-      out += static_cast<char>(c);
-    } else {
-      out += '%';
-      out += kHex[c >> 4];
-      out += kHex[c & 15];
-    }
-  }
-  return out;
+  return "file://" + percent_encode(path, "/:");
 }
 
 // The name a hover asks about: the identifier under `byte`, with the
@@ -333,6 +321,14 @@ class Server {
     std::shared_ptr<peg::Ast> ast;
     resolve::Resolution res;
     std::vector<resolve::OutlineItem> outline;
+
+    const LineIndex& lines() const {
+      if (!line_index) line_index = std::make_unique<const LineIndex>(text);
+      return *line_index;
+    }
+
+   private:
+    mutable std::unique_ptr<const LineIndex> line_index;
   };
 
   struct Document {
@@ -600,16 +596,10 @@ class Server {
     if (!entry) return Json();
     std::string value = "```culebra\n" + entry->signature + "\n```";
     if (!entry->body.empty()) value += "\n\n" + entry->body;
-    Json contents = object();
-    contents.set("kind", str("markdown"));
-    contents.set("value", str(std::move(value)));
-    Json r = object();
-    r.set("contents", std::move(contents));
-    r.set("range", make_range(static_cast<size_t>(line),
-                              utf16_column(text, name->begin),
-                              static_cast<size_t>(line),
-                              utf16_column(text, name->end)));
-    return r;
+    return markdown_hover(
+        std::move(value),
+        make_range(static_cast<size_t>(line), utf16_column(text, name->begin),
+                   static_cast<size_t>(line), utf16_column(text, name->end)));
   }
 
   // ---- navigation ---------------------------------------------------------
@@ -645,6 +635,30 @@ class Server {
     return loc;
   }
 
+  // A symbol's occurrences, one per position (a keyword label can name the
+  // same parameter of several overloads).
+  template <class F>
+  static void for_each_occurrence(const resolve::Resolution& res, size_t symbol,
+                                  F&& f) {
+    size_t last = resolve::kNone;
+    for (size_t i : res.symbols[symbol].occurrences) {
+      const auto& x = res.occurrences[i];
+      if (x.position == last) continue;
+      last = x.position;
+      f(x);
+    }
+  }
+
+  static Json markdown_hover(std::string value, Json range) {
+    Json contents = object();
+    contents.set("kind", str("markdown"));
+    contents.set("value", str(std::move(value)));
+    Json r = object();
+    r.set("contents", std::move(contents));
+    r.set("range", std::move(range));
+    return r;
+  }
+
   // The name under the request's position in the document's last snapshot.
   struct Target {
     Document* doc = nullptr;
@@ -657,7 +671,7 @@ class Server {
     t.doc = current(params);
     if (!t.doc || !t.doc->snapshot) return t;
     t.snap = t.doc->snapshot.get();
-    LineIndex lines(t.snap->text);
+    const LineIndex& lines = t.snap->lines();
     t.offset = offset_at(lines, at(params, "position"));
     t.occ = t.snap->res.occurrence_at(t.offset);
     return t;
@@ -675,7 +689,7 @@ class Server {
     if (sym.kind == resolve::SymbolKind::Import &&
         t.occ->role == resolve::Role::Declaration)
       return module_definition(uri, *t.snap, t.occ->symbol, "");
-    LineIndex lines(t.snap->text);
+    const LineIndex& lines = t.snap->lines();
     Json locs = array();
     for (size_t i : sym.occurrences) {
       const auto& x = res.occurrences[i];
@@ -693,36 +707,19 @@ class Server {
     const resolve::Import* imp = nullptr;
     for (const auto& i : snap.res.imports)
       if (i.symbol == import_symbol) imp = &i;
-    if (!imp) return Json();
-    auto path = resolve_module_path(
-        imp->path, std::filesystem::path(uri_to_path(uri)).parent_path());
-    std::string target_uri = path_to_uri(path.string());
-    std::string text;
-    if (auto it = docs_.find(target_uri); it != docs_.end()) {
-      text = it->second.text;
-    } else {
-      std::ifstream in(path, std::ios::binary);
-      if (!in) return Json();
-      std::stringstream ss;
-      ss << in.rdbuf();
-      text = ss.str();
-    }
+    Module* mod = imp ? module_for(uri, imp->path) : nullptr;
+    if (!mod) return Json();
+    std::string target_uri = path_to_uri(mod->path);
+    LineIndex lines(mod->text);
     Json locs = array();
-    if (!member.empty()) {
-      std::vector<ParseFailure> failures;
-      if (auto ast = parse(path.string(), text, failures)) {
-        auto res = resolve::resolve_module(*ast, text);
-        LineIndex lines(text);
-        auto it = res.scopes[0].names.find(member);
-        if (it != res.scopes[0].names.end())
-          for (size_t i : res.symbols[it->second].occurrences) {
-            const auto& x = res.occurrences[i];
-            if (x.role == resolve::Role::Declaration)
-              locs.elems.push_back(location(target_uri, lines, x.position,
-                                            x.position + x.length));
-          }
+    if (auto it = mod->res.scopes[0].names.find(member);
+        !member.empty() && it != mod->res.scopes[0].names.end())
+      for (size_t i : mod->res.symbols[it->second].occurrences) {
+        const auto& x = mod->res.occurrences[i];
+        if (x.role == resolve::Role::Declaration)
+          locs.elems.push_back(
+              location(target_uri, lines, x.position, x.position + x.length));
       }
-    }
     if (locs.elems.empty()) {
       Json loc = object();
       loc.set("uri", str(target_uri));
@@ -739,17 +736,12 @@ class Server {
     const resolve::Resolution& res = t.snap->res;
     bool with_declaration =
         at(at(params, "context"), "includeDeclaration").to_bool();
-    LineIndex lines(t.snap->text);
+    const LineIndex& lines = t.snap->lines();
     Json locs = array();
-    size_t last = resolve::kNone;
-    for (size_t i : res.symbols[t.occ->symbol].occurrences) {
-      const auto& x = res.occurrences[i];
-      if (x.position == last) continue;
-      last = x.position;
-      if (!with_declaration && x.role == resolve::Role::Declaration) continue;
-      locs.elems.push_back(
-          location(uri, lines, x.position, x.position + x.length));
-    }
+    for_each_occurrence(res, t.occ->symbol, [&](const resolve::Occurrence& x) {
+      if (!with_declaration && x.role == resolve::Role::Declaration) return;
+      locs.elems.push_back(location(uri, lines, x.position, x.position + x.length));
+    });
     return locs;
   }
 
@@ -757,18 +749,14 @@ class Server {
     Target t = target(params);
     if (!t.occ) return Json();
     const resolve::Resolution& res = t.snap->res;
-    LineIndex lines(t.snap->text);
+    const LineIndex& lines = t.snap->lines();
     Json out = array();
-    size_t last = resolve::kNone;
-    for (size_t i : res.symbols[t.occ->symbol].occurrences) {
-      const auto& x = res.occurrences[i];
-      if (x.position == last) continue;
-      last = x.position;
+    for_each_occurrence(res, t.occ->symbol, [&](const resolve::Occurrence& x) {
       Json h = object();
       h.set("range", span_range(lines, x.position, x.position + x.length));
       h.set("kind", num(x.role == resolve::Role::Read ? 2 : 3));  // Read : Write
       out.elems.push_back(std::move(h));
-    }
+    });
     return out;
   }
 
@@ -808,7 +796,7 @@ class Server {
   Json outline(const Json& params) {
     Document* d = current(params);
     if (!d || !d->snapshot) return Json();
-    LineIndex lines(d->snapshot->text);
+    const LineIndex& lines = d->snapshot->lines();
     Json out = array();
     for (const auto& it : d->snapshot->outline)
       out.elems.push_back(outline_item(lines, it));
@@ -858,7 +846,7 @@ class Server {
     if (is_always_bound_name(name))
       return std::format("`{}` is a name the language binds itself.", name);
     if (name == sym.name) return "";
-    LineIndex lines(snap.text);
+    const LineIndex& lines = snap.lines();
     for (size_t i : sym.occurrences) {
       const auto& x = res.occurrences[i];
       size_t other = res.lookup(x.scope, name);
@@ -884,7 +872,7 @@ class Server {
     if (!t.snap) return reply(id, Json());
     std::string why = rename_blocker(t);
     if (!why.empty()) return reply_error(id, -32803, why);  // RequestFailed
-    LineIndex lines(t.snap->text);
+    const LineIndex& lines = t.snap->lines();
     Json r = object();
     r.set("range",
           span_range(lines, t.occ->position, t.occ->position + t.occ->length));
@@ -903,13 +891,9 @@ class Server {
     const std::string& name = at(params, "newName").to_string();
     const resolve::Resolution& res = t.snap->res;
     const resolve::Symbol& sym = res.symbols[t.occ->symbol];
-    LineIndex lines(t.snap->text);
+    const LineIndex& lines = t.snap->lines();
     Json edits = array();
-    size_t last = resolve::kNone;
-    for (size_t i : sym.occurrences) {
-      const auto& x = res.occurrences[i];
-      if (x.position == last) continue;
-      last = x.position;
+    for_each_occurrence(res, t.occ->symbol, [&](const resolve::Occurrence& x) {
       // `{x}` keeps its key: it becomes `{x: renamed}`.
       bool shorthand = x.spelling == resolve::Spelling::ObjectShorthand ||
                        x.spelling == resolve::Spelling::PatternShorthand;
@@ -917,7 +901,7 @@ class Server {
       e.set("range", span_range(lines, x.position, x.position + x.length));
       e.set("newText", str(shorthand ? sym.name + ": " + name : name));
       edits.elems.push_back(std::move(e));
-    }
+    });
     Json changes = object();
     changes.set(uri_of(params), std::move(edits));
     Json r = object();
@@ -956,6 +940,7 @@ class Server {
   // its members carry point into this entry, which lives until that text
   // changes, so they stay valid across the requests that read them.
   struct Module {
+    std::string path;
     std::string source;  // as read, to tell a change
     std::string text;    // the parse's copy, which it normalizes and the AST views
     std::shared_ptr<peg::Ast> ast;
@@ -964,42 +949,49 @@ class Server {
     std::vector<infer::Member> members;
   };
 
-  // An import's top-level declarations, from its open buffer or its file.
+  // An import, from its open buffer or its file, parsed and inferred once per
+  // text it has; nullptr when it cannot be read or parsed.
+  Module* module_for(const std::string& uri, std::string_view import_path) {
+    auto path = resolve_module_path(
+        std::string(import_path),
+        std::filesystem::path(uri_to_path(uri)).parent_path());
+    std::string source;
+    if (auto it = docs_.find(path_to_uri(path.string())); it != docs_.end()) {
+      source = it->second.text;
+    } else {
+      std::ifstream in(path, std::ios::binary);
+      if (!in) return nullptr;
+      std::stringstream ss;
+      ss << in.rdbuf();
+      source = ss.str();
+    }
+    const std::string key = path.string();
+    if (auto it = modules_.find(key);
+        it != modules_.end() && it->second->source == source)
+      return it->second.get();
+    auto mod = std::make_unique<Module>();
+    mod->path = key;
+    mod->source = source;
+    mod->text = std::move(source);
+    std::vector<ParseFailure> failures;
+    mod->ast = parse(key, mod->text, failures);
+    if (!mod->ast) {
+      modules_.erase(key);
+      return nullptr;
+    }
+    mod->res = resolve::resolve_module(*mod->ast, mod->text);
+    mod->inference = std::make_unique<infer::Inference>(*mod->ast, mod->text,
+                                                        mod->res, catalog());
+    mod->members = mod->inference->visible(mod->text.size());
+    auto& slot = modules_[key];
+    slot = std::move(mod);
+    return slot.get();
+  }
+
   infer::Inference::ModuleMembers module_members_for(const std::string& uri) {
     return [this, uri](std::string_view import_path) {
-      auto path = resolve_module_path(
-          std::string(import_path),
-          std::filesystem::path(uri_to_path(uri)).parent_path());
-      std::string source;
-      if (auto it = docs_.find(path_to_uri(path.string())); it != docs_.end()) {
-        source = it->second.text;
-      } else {
-        std::ifstream in(path, std::ios::binary);
-        if (!in) return std::vector<infer::Member>{};
-        std::stringstream ss;
-        ss << in.rdbuf();
-        source = ss.str();
-      }
-      const std::string key = path.string();
-      if (auto it = modules_.find(key);
-          it != modules_.end() && it->second->source == source)
-        return it->second->members;
-      auto mod = std::make_unique<Module>();
-      mod->source = source;
-      mod->text = std::move(source);
-      std::vector<ParseFailure> failures;
-      mod->ast = parse(key, mod->text, failures);
-      if (!mod->ast) {
-        modules_.erase(key);
-        return std::vector<infer::Member>{};
-      }
-      mod->res = resolve::resolve_module(*mod->ast, mod->text);
-      mod->inference = std::make_unique<infer::Inference>(*mod->ast, mod->text,
-                                                          mod->res, catalog());
-      mod->members = mod->inference->visible(mod->text.size());
-      auto members = mod->members;
-      modules_[key] = std::move(mod);
-      return members;
+      Module* mod = module_for(uri, import_path);
+      return mod ? mod->members : std::vector<infer::Member>{};
     };
   }
 
@@ -1032,61 +1024,67 @@ class Server {
   }
 
   Json completion(const Json& params) {
-    Document* d = current(params);
-    if (!d) return Json();
-    const std::string& uri = uri_of(params);
-    LineIndex lines(d->text);
-    size_t cursor = offset_at(lines, at(params, "position"));
+    // Not `current()`: the placeholder parse reads the buffer as it is, so an
+    // edit still settling need not be analysed first.
+    auto doc = docs_.find(uri_of(params));
+    if (doc == docs_.end()) return Json();
+    const Document& d = doc->second;
+    const std::string& uri = doc->first;
+    LineIndex buffer(d.text);
+    size_t cursor = offset_at(buffer, at(params, "position"));
     size_t start = cursor;
-    while (start > 0 && ident_char(d->text[start - 1])) start--;
-    bool member = start > 0 && d->text[start - 1] == '.';
+    while (start > 0 && ident_char(d.text[start - 1])) start--;
+    bool member = start > 0 && d.text[start - 1] == '.';
 
-    std::vector<infer::Member> primary, secondary;
     // Complete against the buffer with the half-typed name replaced by a
-    // placeholder, which parses where the buffer mid-edit usually does not.
-    std::string probe = d->text.substr(0, start) + std::string(kPlaceholder) +
-                        d->text.substr(cursor);
+    // placeholder, which parses where the buffer mid-edit usually does not;
+    // failing that, against the last version that parsed, where the cursor's
+    // offset is a close guess.
+    std::string probe = d.text.substr(0, start) + std::string(kPlaceholder) +
+                        d.text.substr(cursor);
     std::vector<ParseFailure> failures;
-    auto ast = parse(uri_to_path(uri), probe, failures);
+    std::shared_ptr<peg::Ast> ast = parse(uri_to_path(uri), probe, failures);
+    std::optional<resolve::Resolution> probe_res;
+    std::optional<infer::Inference> inf;
+    size_t offset = 0;
+    std::optional<infer::Type> receiver;
     if (ast) {
-      auto res = resolve::resolve_module(*ast, probe);
-      infer::Inference inf(*ast, probe, res, catalog(), module_members_for(uri));
-      size_t offset = probe.find(kPlaceholder);
-      if (member) {
-        size_t index = 0;
-        if (const peg::Ast* call = placeholder_call(*ast, index)) {
-          primary = inf.members(inf.chain_type(*call, index));
-          secondary = inf.ufcs(offset);
-        }
-      } else {
-        primary = inf.visible(offset);
-        if (catalog()) secondary = catalog()->globals();
-      }
-      settle(primary, inf);
-      settle(secondary, inf);
-    } else if (d->snapshot && d->snapshot->ast) {
-      // The placeholder did not make it parse: answer from the last version
-      // that did, where the cursor's offset is a close guess.
-      const Snapshot& s = *d->snapshot;
-      infer::Inference inf(*s.ast, s.text, s.res, catalog(), module_members_for(uri));
-      size_t offset = std::min(start, s.text.size());
+      probe_res.emplace(resolve::resolve_module(*ast, probe));
+      inf.emplace(*ast, probe, *probe_res, catalog(), module_members_for(uri));
+      offset = probe.find(kPlaceholder);
+      size_t index = 0;
+      if (member)
+        if (const peg::Ast* call = placeholder_call(*ast, index))
+          receiver = inf->chain_type(*call, index);
+    } else if (const Snapshot* s = d.snapshot.get(); s && s->ast) {
+      inf.emplace(*s->ast, s->text, s->res, catalog(), module_members_for(uri));
+      offset = std::min(start, s->text.size());
       if (member) {
         size_t end = start - 1, begin = end;
-        while (begin > 0 && ident_char(d->text[begin - 1])) begin--;
-        std::string name = d->text.substr(begin, end - begin);
-        size_t sym = s.res.lookup(s.res.scope_at(offset), name);
+        while (begin > 0 && ident_char(d.text[begin - 1])) begin--;
+        std::string name = d.text.substr(begin, end - begin);
+        size_t sym = s->res.lookup(s->res.scope_at(offset), name);
         if (sym != resolve::kNone) {
-          primary = inf.members(inf.symbol_type(sym));
-        } else if (catalog()) {
-          if (const auto* ms = catalog()->namespace_members(name)) primary = *ms;
+          receiver = inf->symbol_type(sym);
+        } else if (catalog() && catalog()->namespace_members(name)) {
+          infer::Alt a{infer::Kind::Namespace};
+          a.name = name;
+          receiver = infer::Type::single(std::move(a));
         }
-        secondary = inf.ufcs(offset);
+      }
+    }
+
+    std::vector<infer::Member> primary, secondary;
+    if (inf) {
+      if (member) {
+        if (receiver) primary = inf->members(*receiver);
+        secondary = inf->ufcs(offset);
       } else {
-        primary = inf.visible(offset);
+        primary = inf->visible(offset);
         if (catalog()) secondary = catalog()->globals();
       }
-      settle(primary, inf);
-      settle(secondary, inf);
+      settle(primary, *inf);
+      settle(secondary, *inf);
     }
 
     Json items = array();
@@ -1119,16 +1117,10 @@ class Server {
     if (!t.occ || !t.snap->ast) return Json();
     infer::Inference inf(*t.snap->ast, t.snap->text, t.snap->res, catalog(),
                          module_members_for(uri_of(params)));
-    LineIndex lines(t.snap->text);
-    Json contents = object();
-    contents.set("kind", str("markdown"));
-    contents.set("value",
-                 str("```culebra\n" + inf.describe(t.occ->symbol) + "\n```"));
-    Json r = object();
-    r.set("contents", std::move(contents));
-    r.set("range",
-          span_range(lines, t.occ->position, t.occ->position + t.occ->length));
-    return r;
+    const LineIndex& lines = t.snap->lines();
+    return markdown_hover(
+        "```culebra\n" + inf.describe(t.occ->symbol) + "\n```",
+        span_range(lines, t.occ->position, t.occ->position + t.occ->length));
   }
 
   std::shared_ptr<Channel> channel_;

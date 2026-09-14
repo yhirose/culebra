@@ -144,16 +144,18 @@ struct Resolution {
   }
 
   // The innermost scope whose syntax spans `position`.
+  // Scopes nest, so the last one to begin at or before `position` is the
+  // innermost that spans it or lies inside it; its parents lead out to it.
   size_t scope_at(size_t position) const {
-    size_t best = 0;
-    for (size_t i = 1; i < scopes.size(); i++) {
-      const Scope& sc = scopes[i];
-      if (sc.begin <= position && position <= sc.end &&
-          sc.end - sc.begin <= scopes[best].end - scopes[best].begin)
-        best = i;
-    }
-    return best;
+    auto it = std::upper_bound(
+        scopes_by_begin.begin(), scopes_by_begin.end(), position,
+        [&](size_t p, size_t i) { return p < scopes[i].begin; });
+    if (it == scopes_by_begin.begin()) return 0;
+    for (size_t s = *(it - 1); s != kNone; s = scopes[s].parent)
+      if (scopes[s].begin <= position && position <= scopes[s].end) return s;
+    return 0;
   }
+  std::vector<size_t> scopes_by_begin;  // scope indices, ordered by begin
 
   // Where a symbol is first declared, or kNone.
   size_t first_declaration(size_t symbol) const {
@@ -169,6 +171,18 @@ struct Resolution {
                               std::less<>());
   }
 };
+
+// The byte offset in `source` of a name node's text, or kNone for a node the
+// parse synthesized (a desugaring) whose text is not in the source.
+inline size_t name_offset(const peg::Ast& n, std::string_view name,
+                          std::string_view source) {
+  const char* p = n.is_token && !n.token.empty() ? n.token.data()
+                                                 : source.data() + n.position;
+  if (p < source.data() || p + name.size() > source.data() + source.size())
+    return kNone;
+  size_t off = static_cast<size_t>(p - source.data());
+  return source.substr(off, name.size()) == name ? off : kNone;
+}
 
 namespace _detail {
 
@@ -234,12 +248,7 @@ class Resolver {
   // Byte offset of a name node's text, or kNone for a node the parse
   // synthesized (a desugaring) whose text is not in the source.
   size_t offset_of(const peg::Ast& n, std::string_view name) const {
-    const char* p = n.is_token && !n.token.empty() ? n.token.data()
-                                                   : src_.data() + n.position;
-    if (p < src_.data() || p + name.size() > src_.data() + src_.size())
-      return kNone;
-    size_t off = static_cast<size_t>(p - src_.data());
-    return src_.substr(off, name.size()) == name ? off : kNone;
+    return name_offset(n, name, src_);
   }
 
   void add(const peg::Ast& n, std::string_view name, size_t sym, size_t scope,
@@ -307,6 +316,12 @@ class Resolver {
                      });
     for (size_t i = 0; i < r_.occurrences.size(); i++)
       r_.symbols[r_.occurrences[i].symbol].occurrences.push_back(i);
+    auto& order = r_.scopes_by_begin;
+    order.resize(r_.scopes.size());
+    for (size_t i = 0; i < order.size(); i++) order[i] = i;
+    std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+      return r_.scopes[a].begin < r_.scopes[b].begin;
+    });
     auto& m = r_.method_call_names;
     std::sort(m.begin(), m.end());
     m.erase(std::unique(m.begin(), m.end()), m.end());
@@ -506,6 +521,14 @@ class Resolver {
     if (sym_out) *sym_out = sym;
   }
 
+  // `if` / `while` / `match` with an init clause: its bindings get a scope
+  // around the whole construct.
+  void open_init_scope(const peg::Ast& n, const peg::Ast* init) {
+    if (!init) return;
+    cur_ = push_scope(cur_, false, n.position, end_of(n));
+    for (const auto& b : init->nodes) walk(*b);
+  }
+
   void walk(const peg::Ast& n) {
     switch (n.tag) {
       case "IDENTIFIER"_:
@@ -653,10 +676,7 @@ class Resolver {
         if (n.nodes.size() < 2) break;
         auto wv = view_while(n);
         size_t saved = cur_;
-        if (wv.init) {
-          cur_ = push_scope(cur_, false, n.position, end_of(n));
-          for (const auto& b : wv.init->nodes) walk(*b);
-        }
+        open_init_scope(n, wv.init);
         walk(*wv.cond);
         scoped_body(*wv.body);
         if (wv.nobreak) scoped_body(*wv.nobreak);
@@ -667,10 +687,7 @@ class Resolver {
       case "IF"_: {
         auto iv = view_if(n);
         size_t saved = cur_;
-        if (iv.init) {
-          cur_ = push_scope(cur_, false, n.position, end_of(n));
-          for (const auto& b : iv.init->nodes) walk(*b);
-        }
+        open_init_scope(n, iv.init);
         for (size_t i = iv.arm_off; i < n.nodes.size(); i++)
           walk_body(*n.nodes[i]);
         cur_ = saved;
@@ -681,10 +698,7 @@ class Resolver {
         if (n.nodes.size() < 2) break;
         auto mv = view_match(n);
         size_t saved = cur_;
-        if (mv.init) {
-          cur_ = push_scope(cur_, false, n.position, end_of(n));
-          for (const auto& b : mv.init->nodes) walk(*b);
-        }
+        open_init_scope(n, mv.init);
         walk(*mv.subject);
         size_t around = cur_;
         for (const auto& arm : mv.arms->nodes) {
@@ -789,14 +803,9 @@ inline std::vector<OutlineItem> outline(const peg::Ast& root,
   std::vector<OutlineItem> out;
   auto span_of = [&](const peg::Ast& name_node, std::string_view name,
                      size_t& b, size_t& e) {
-    const char* p = name_node.is_token && !name_node.token.empty()
-                        ? name_node.token.data()
-                        : source.data() + name_node.position;
-    if (p < source.data() || p + name.size() > source.data() + source.size())
-      return false;
-    b = static_cast<size_t>(p - source.data());
+    b = name_offset(name_node, name, source);
     e = b + name.size();
-    return true;
+    return b != kNone;
   };
   auto item = [&](const peg::Ast& decl, const peg::Ast& name_node,
                   std::string_view name, OutlineKind kind) {
@@ -870,27 +879,26 @@ inline std::vector<OutlineItem> outline(const peg::Ast& root,
           out.push_back(item(s, *t, t->token, OutlineKind::Variable));
         return;
       }
-      case "DESTRUCTURE_ASSIGN"_:
-        if (s.nodes.size() >= 3)
-          for_each_pattern_binding(
-              *s.nodes[2], [&](std::string_view name, size_t, size_t) {
-                // Find the binding's node by its text inside the pattern.
-                size_t from = s.nodes[2]->position;
-                size_t to = from + s.nodes[2]->length;
-                size_t at = source.substr(0, to).find(name, from);
-                if (at == std::string_view::npos) return;
-                const Occurrence* o = res.occurrence_at(at);
-                if (!o || o->role != Role::Declaration) return;
-                OutlineItem it;
-                it.name = std::string(name);
-                it.kind = OutlineKind::Variable;
-                it.begin = s.position;
-                it.end = s.position + s.length;
-                it.name_begin = o->position;
-                it.name_end = o->position + o->length;
-                out.push_back(std::move(it));
-              });
+      case "DESTRUCTURE_ASSIGN"_: {
+        // The pattern's declarations, as the resolver recorded them.
+        if (s.nodes.size() < 3) return;
+        size_t from = s.nodes[2]->position, to = from + s.nodes[2]->length;
+        auto it = std::lower_bound(
+            res.occurrences.begin(), res.occurrences.end(), from,
+            [](const Occurrence& o, size_t p) { return o.position < p; });
+        for (; it != res.occurrences.end() && it->position < to; ++it) {
+          if (it->role != Role::Declaration) continue;
+          OutlineItem item;
+          item.name = res.symbols[it->symbol].name;
+          item.kind = OutlineKind::Variable;
+          item.begin = s.position;
+          item.end = s.position + s.length;
+          item.name_begin = it->position;
+          item.name_end = it->position + it->length;
+          out.push_back(std::move(item));
+        }
         return;
+      }
       default:
         return;
     }

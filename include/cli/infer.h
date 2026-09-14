@@ -24,6 +24,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <span>
 #include <string>
@@ -170,12 +171,6 @@ inline std::string Type::to_string() const {
 // A class a type's text may name, or nothing.
 using ClassLookup = std::function<std::optional<Alt>(std::string_view)>;
 
-inline std::string_view trim(std::string_view s) {
-  while (!s.empty() && s.front() == ' ') s.remove_prefix(1);
-  while (!s.empty() && s.back() == ' ') s.remove_suffix(1);
-  return s;
-}
-
 // A type annotation or a declared return type: `Long`, `Array<Long>`,
 // `Long | Nil`, `T?`, `fn(Long) -> Long`. A name it does not know adds nothing.
 inline Type parse_type(std::string_view text, const ClassLookup& classes = {}) {
@@ -194,7 +189,7 @@ inline Type parse_type(std::string_view text, const ClassLookup& classes = {}) {
   }
   parts.push_back(text.substr(start));
   for (auto part : parts) {
-    part = trim(part);
+    part = trim_ascii(part);
     if (part.empty()) continue;
     if (part.starts_with("fn")) {
       add_alt(t, Alt{Kind::Function});
@@ -206,7 +201,7 @@ inline Type parse_type(std::string_view text, const ClassLookup& classes = {}) {
     }
     std::string_view name = part, arg;
     if (auto lt = part.find('<'); lt != std::string_view::npos && part.back() == '>') {
-      name = trim(part.substr(0, lt));
+      name = trim_ascii(part.substr(0, lt));
       arg = part.substr(lt + 1, part.size() - lt - 2);
       int d = 0;
       for (size_t i = 0; i < arg.size(); i++) {
@@ -440,10 +435,6 @@ class Inference {
     bind_calls();
   }
 
-  const resolve::Resolution& resolution() const { return res_; }
-  std::string_view source() const { return src_; }
-  const peg::Ast& root() const { return root_; }
-
   // ---- queries --------------------------------------------------------------
 
   Type expr_type(const peg::Ast& e) const {
@@ -509,13 +500,11 @@ class Inference {
         if (s != resolve::kNone) return symbol_type(s);
         if (catalog_ && catalog_->namespace_members(e.token))
           return Type::single(Alt{Kind::Namespace, std::string(e.token)});
-        if (catalog_)
-          for (const auto& g : catalog_->globals())
-            if (g.name == e.token && g.kind == MemberKind::Function) {
-              Alt a{Kind::Function};
-              a.name = g.name;
-              return Type::single(std::move(a));
-            }
+        if (global_function(e.token)) {
+          Alt a{Kind::Function};
+          a.name = std::string(e.token);
+          return Type::single(std::move(a));
+        }
         return {};
       }
       case "CALL"_:
@@ -665,7 +654,7 @@ class Inference {
         continue;
       }
       if (c.original_tag == "ARGUMENTS"_) {
-        t = call_result(t, i == 1 ? &head : nullptr);
+        t = call_result(t);
       } else if (c.original_tag == "INDEX"_ || c.original_tag == "SAFE_INDEX"_ ||
                  c.tag == "INDEX"_ || c.tag == "SAFE_INDEX"_) {
         t = index_type(t);
@@ -750,9 +739,7 @@ class Inference {
   // The free functions visible at `offset`, which `value.name(...)` reaches
   // when the value has no member of that name (UFCS).
   std::vector<Member> ufcs(size_t offset) const {
-    std::vector<Member> out;
-    for (auto& m : visible(offset))
-      if (m.kind == MemberKind::Function) out.push_back(std::move(m));
+    std::vector<Member> out = visible(offset, /*functions_only=*/true);
     if (catalog_) {
       std::set<std::string, std::less<>> seen;
       for (const auto& m : out) seen.insert(m.name);
@@ -765,7 +752,7 @@ class Inference {
 
   // The names a bare identifier at `offset` can be: declared earlier in the
   // same function, or anywhere in an enclosing one.
-  std::vector<Member> visible(size_t offset) const {
+  std::vector<Member> visible(size_t offset, bool functions_only = false) const {
     std::vector<Member> out;
     std::set<std::string, std::less<>> seen;
     bool same_function = true;
@@ -774,6 +761,7 @@ class Inference {
       for (const auto& [name, sym] : res_.scopes[sc].names) {
         if (seen.contains(name)) continue;
         if (same_function && res_.first_declaration(sym) >= offset) continue;
+        if (functions_only && !callable(sym)) continue;
         seen.insert(name);
         out.push_back(member_for(sym));
       }
@@ -935,10 +923,14 @@ class Inference {
   };
 
   size_t offset_of(const peg::Ast& n) const {
-    const char* p = n.is_token && !n.token.empty() ? n.token.data()
-                                                   : src_.data() + n.position;
-    if (p < src_.data() || p >= src_.data() + src_.size()) return resolve::kNone;
-    return static_cast<size_t>(p - src_.data());
+    return resolve::name_offset(n, n.is_token ? n.token : std::string_view{}, src_);
+  }
+
+  const Member* global_function(std::string_view name) const {
+    if (!catalog_) return nullptr;
+    for (const auto& g : catalog_->globals())
+      if (g.name == name && g.kind == MemberKind::Function) return &g;
+    return nullptr;
   }
 
   size_t symbol_at(const peg::Ast& n) const {
@@ -992,6 +984,14 @@ class Inference {
     std::string text(src_.substr(params->position, params->length));
     if (n.tag == "LAMBDA"_ && text.size() >= 2) text = "(" + text.substr(1, text.size() - 2) + ")";
     return text;
+  }
+
+  // A function declaration, or a variable bound to a function literal.
+  bool callable(size_t s) const {
+    auto k = res_.symbols[s].kind;
+    return k == resolve::SymbolKind::Function ||
+           k == resolve::SymbolKind::EffectOperation ||
+           (k == resolve::SymbolKind::Variable && declarations_.contains(s));
   }
 
   Member member_for(size_t s) const {
@@ -1161,14 +1161,38 @@ class Inference {
     }
   }
 
-  Type call_result(const Type& t, const peg::Ast* direct_head) const {
+  // The member `name` of a value of one alternative, without copying the
+  // built-in or namespace table it comes from.
+  std::optional<Member> find_member(const Alt& a, std::string_view name) const {
+    auto in = [&](const std::vector<Member>& ms) -> std::optional<Member> {
+      for (const auto& m : ms)
+        if (m.name == name) return m;
+      return std::nullopt;
+    };
+    switch (a.kind) {
+      case Kind::String:
+      case Kind::Array:
+      case Kind::Set:
+      case Kind::Tuple:
+      case Kind::Tensor:
+      case Kind::Iterator:
+        return in(value_members(a.kind));
+      case Kind::Namespace:
+        if (catalog_)
+          if (const auto* ms = catalog_->namespace_members(a.name)) return in(*ms);
+        return std::nullopt;
+      default:
+        return in(members_of(a));
+    }
+  }
+
+  Type call_result(const Type& t) const {
     Type out;
     for (const auto& a : t.alts) {
       if (a.kind == Kind::Function && a.function && a.owner) {
         out = join(out, a.owner->return_type(*a.function));
-      } else if (a.kind == Kind::Function && catalog_ && !a.name.empty()) {
-        for (const auto& g : catalog_->globals())
-          if (g.name == a.name && g.kind == MemberKind::Function) out = join(out, g.type);
+      } else if (a.kind == Kind::Function && !a.name.empty()) {
+        if (const Member* g = global_function(a.name)) out = join(out, g->type);
       } else if (a.kind == Kind::Class && a.decl) {
         Alt inst{Kind::Instance};
         inst.name = a.name;
@@ -1177,7 +1201,6 @@ class Inference {
         add_alt(out, std::move(inst));
       }
     }
-    (void)direct_head;
     return out;
   }
 
@@ -1190,15 +1213,13 @@ class Inference {
       if (!r.unknown()) return r;
     }
     for (const auto& a : t.alts) {
-      for (const auto& m : members_of(a)) {
-        if (m.name != name) continue;
+      if (auto m = find_member(a, name)) {
         found = true;
-        bool callable_value = m.kind == MemberKind::Field ||
-                              m.kind == MemberKind::Constant ||
-                              m.kind == MemberKind::Variable;
-        Type mt = member_type(m);
-        out = join(out, callable_value ? call_result(mt, nullptr) : mt);
-        break;
+        bool callable_value = m->kind == MemberKind::Field ||
+                              m->kind == MemberKind::Constant ||
+                              m->kind == MemberKind::Variable;
+        Type mt = member_type(*m);
+        out = join(out, callable_value ? call_result(mt) : mt);
       }
     }
     if (!found) return free_function_result(name, offset);
@@ -1227,8 +1248,8 @@ class Inference {
   bool reaches_free_function(const Source& src) const {
     if (!src.call) return true;
     std::string_view name = src.call->nodes[src.index]->token;
-    for (const auto& m : members(chain_type(*src.call, src.index)))
-      if (m.name == name) return false;
+    for (const auto& a : chain_type(*src.call, src.index).alts)
+      if (find_member(a, name)) return false;
     return true;
   }
 
@@ -1260,7 +1281,7 @@ class Inference {
                              ? positional[rule.callback_arg]
                              : nullptr;
     auto fn_result = [&]() -> Type {
-      return fn ? call_result(expr_type(*fn), nullptr) : Type{};
+      return fn ? call_result(expr_type(*fn)) : Type{};
     };
     Type out;
     for (const auto& a : receiver.alts) {
@@ -1320,23 +1341,19 @@ class Inference {
   // function of that name visible at `offset` (UFCS), or a global's.
   Type free_function_result(std::string_view name, size_t offset) const {
     size_t s = res_.lookup(res_.scope_at(offset), name);
-    if (s != resolve::kNone) return call_result(symbol_type(s), nullptr);
-    if (catalog_)
-      for (const auto& g : catalog_->globals())
-        if (g.name == name && g.kind == MemberKind::Function) return g.type;
+    if (s != resolve::kNone) return call_result(symbol_type(s));
+    if (const Member* g = global_function(name)) return g->type;
     return {};
   }
 
   Type property_type(const Type& t, std::string_view name) const {
     Type out;
     for (const auto& a : t.alts)
-      for (const auto& m : members_of(a)) {
-        if (m.name != name) continue;
-        if (m.kind == MemberKind::Method || m.kind == MemberKind::Function)
+      if (auto m = find_member(a, name)) {
+        if (m->kind == MemberKind::Method || m->kind == MemberKind::Function)
           out = join(out, Type::of(Kind::Function));
         else
-          out = join(out, member_type(m));
-        break;
+          out = join(out, member_type(*m));
       }
     return out;
   }
