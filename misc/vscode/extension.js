@@ -1,5 +1,6 @@
 // VSCode extension for Culebra: a client for `culebra lsp`, which supplies the
-// diagnostics, hover and formatting. The debugger is registered in package.json
+// diagnostics, hover, formatting, definitions, references, highlights, the
+// outline and rename. The debugger is registered in package.json
 // (it launches `culebra dap`), and highlighting is the TextMate grammar.
 //
 // The client speaks the protocol's base framing — a Content-Length header, then
@@ -27,6 +28,26 @@ const SEVERITIES = [
 
 function toRange(r) {
   return new vscode.Range(r.start.line, r.start.character, r.end.line, r.end.character);
+}
+
+function toLocation(l) {
+  return new vscode.Location(vscode.Uri.parse(l.uri), toRange(l.range));
+}
+
+function toSymbol(s) {
+  // LSP counts SymbolKind from 1, VSCode from 0.
+  const out = new vscode.DocumentSymbol(s.name, '', s.kind - 1,
+    toRange(s.range), toRange(s.selectionRange));
+  out.children = (s.children || []).map(toSymbol);
+  return out;
+}
+
+function at(doc, pos, extra = {}) {
+  return {
+    textDocument: { uri: doc.uri.toString() },
+    position: { line: pos.line, character: pos.character },
+    ...extra,
+  };
 }
 
 // Only buffers backed by a file or not yet saved: a `git:` or diff view of the
@@ -210,6 +231,45 @@ class Client {
       r.range ? toRange(r.range) : undefined);
   }
 
+  async definition(doc, pos) {
+    const r = await this.request('textDocument/definition', at(doc, pos));
+    return r ? r.map(toLocation) : null;
+  }
+
+  async references(doc, pos, context) {
+    const r = await this.request('textDocument/references',
+      at(doc, pos, { context: { includeDeclaration: context.includeDeclaration } }));
+    return (r || []).map(toLocation);
+  }
+
+  async highlights(doc, pos) {
+    const r = await this.request('textDocument/documentHighlight', at(doc, pos));
+    return (r || []).map((h) => new vscode.DocumentHighlight(toRange(h.range),
+      h.kind === 3 ? vscode.DocumentHighlightKind.Write : vscode.DocumentHighlightKind.Read));
+  }
+
+  async symbols(doc) {
+    const r = await this.request('textDocument/documentSymbol',
+      { textDocument: { uri: doc.uri.toString() } });
+    return (r || []).map(toSymbol);
+  }
+
+  // A refusal comes back as an error, whose message VSCode shows as it stands.
+  async prepareRename(doc, pos) {
+    const r = await this.request('textDocument/prepareRename', at(doc, pos));
+    if (!r) throw new Error('There is no name here to rename.');
+    return { range: toRange(r.range), placeholder: r.placeholder };
+  }
+
+  async rename(doc, pos, newName) {
+    const r = await this.request('textDocument/rename', at(doc, pos, { newName }));
+    const edit = new vscode.WorkspaceEdit();
+    for (const [uri, edits] of Object.entries((r && r.changes) || {})) {
+      for (const e of edits) edit.replace(vscode.Uri.parse(uri), toRange(e.range), e.newText);
+    }
+    return edit;
+  }
+
   // `culebra fmt` is a whole-file formatter, so only document formatting exists.
   async format(doc) {
     const edits = await this.request('textDocument/formatting', {
@@ -251,6 +311,23 @@ function activate(context) {
     }),
     vscode.languages.registerDocumentFormattingEditProvider(selector, {
       provideDocumentFormattingEdits: (doc) => client.format(doc).catch(() => []),
+    }),
+    vscode.languages.registerDefinitionProvider(selector, {
+      provideDefinition: (doc, pos) => client.definition(doc, pos).catch(() => null),
+    }),
+    vscode.languages.registerReferenceProvider(selector, {
+      provideReferences: (doc, pos, context) =>
+        client.references(doc, pos, context).catch(() => []),
+    }),
+    vscode.languages.registerDocumentHighlightProvider(selector, {
+      provideDocumentHighlights: (doc, pos) => client.highlights(doc, pos).catch(() => []),
+    }),
+    vscode.languages.registerDocumentSymbolProvider(selector, {
+      provideDocumentSymbols: (doc) => client.symbols(doc).catch(() => []),
+    }),
+    vscode.languages.registerRenameProvider(selector, {
+      prepareRename: (doc, pos) => client.prepareRename(doc, pos),
+      provideRenameEdits: (doc, pos, newName) => client.rename(doc, pos, newName),
     }),
   );
 }

@@ -4,7 +4,9 @@
 // (Content-Length-framed JSON-RPC), and asserts what an editor relies on:
 // diagnostics with UTF-16 ranges (after a four-byte character too), a syntax
 // error, a line comment ending the buffer, re-analysis after an edit, hover
-// over a documented name and none over a value's member, formatting, an unknown
+// over a documented name and none over a value's member, formatting,
+// definition (in the document and in an imported module), references with a
+// keyword label, highlight, outline, rename and its refusals, an unknown
 // request, and an orderly shutdown and exit. No JSON library and no culebra
 // linkage — substring checks on the raw stream, in the style of dap_test.
 //
@@ -16,6 +18,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -104,6 +107,38 @@ static std::string range(int l0, int c0, int l1, int c1) {
          std::to_string(l1) + ",\"character\":" + std::to_string(c1) + "}}";
 }
 
+// A request at a position in a document, with extra params appended.
+static std::string request(int id, const char* method, const std::string& doc,
+                           int line, int character,
+                           const std::string& extra = "") {
+  return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+         ",\"method\":\"" + method + "\",\"params\":{\"textDocument\":{\"uri\":\"" +
+         doc + "\"},\"position\":{\"line\":" + std::to_string(line) +
+         ",\"character\":" + std::to_string(character) + "}" + extra + "}}";
+}
+
+// The response to request `id`, up to the next message.
+static std::string response(int id) {
+  std::string marker = "\"id\":" + std::to_string(id) + ",";
+  size_t at = acc.find(marker);
+  if (at == std::string::npos) fail("no response to request " + std::to_string(id));
+  size_t end = acc.find("Content-Length:", at);
+  return acc.substr(at, end == std::string::npos ? std::string::npos : end - at);
+}
+
+static void response_contains(int id, const std::string& needle) {
+  read_until("\"id\":" + std::to_string(id) + ",");
+  if (response(id).find(needle) == std::string::npos)
+    fail("response " + std::to_string(id) + " lacks: " + needle);
+}
+
+static void write_file(const std::string& path, const char* text) {
+  FILE* f = std::fopen(path.c_str(), "w");
+  if (!f) fail("cannot write " + path);
+  std::fputs(text, f);
+  std::fclose(f);
+}
+
 int main(int argc, char** argv) {
   if (argc < 2) {
     std::fprintf(stderr, "usage: lsp_test <culebra>\n");
@@ -116,6 +151,7 @@ int main(int argc, char** argv) {
   read_until("\"id\":1,\"result\"");
   must_contain("\"hoverProvider\":true");
   must_contain("\"documentFormattingProvider\":true");
+  must_contain("\"renameProvider\":{\"prepareProvider\":true}");
   send("{\"jsonrpc\":\"2.0\",\"method\":\"initialized\",\"params\":{}}");
 
   // A lint error, ranged over the identifier.
@@ -167,6 +203,61 @@ int main(int argc, char** argv) {
   read_until("\"id\":4,\"result\"");
   must_contain("\"newText\":\"print(1)\\n\"");
   must_contain(range(0, 0, 0, 10));
+
+  // Navigation over the names the resolver binds. Lines of lsp_nav.cul:
+  //   0 fn total(count) {       3 }
+  //   1   let sum = count       4 let sum = total(count: 2)
+  //   2   sum                   5 let o = {sum}
+  const std::string nav = uri("lsp_nav.cul");
+  open_doc("lsp_nav.cul",
+           "fn total(count) {\\n  let sum = count\\n  sum\\n}\\n"
+           "let sum = total(count: 2)\\nlet o = {sum}\\nprint(o)\\n");
+  send(request(10, "textDocument/definition", nav, 2, 2));
+  response_contains(10, "{\"uri\":\"" + nav + "\"," + range(1, 6, 1, 9) + "}");
+
+  // A parameter's references include the keyword label at a direct call.
+  send(request(11, "textDocument/references", nav, 0, 9,
+               ",\"context\":{\"includeDeclaration\":true}"));
+  response_contains(11, range(0, 9, 0, 14));
+  response_contains(11, range(1, 12, 1, 17));
+  response_contains(11, range(4, 16, 4, 21));
+
+  send(request(12, "textDocument/documentHighlight", nav, 4, 4));
+  response_contains(12, range(4, 4, 4, 7) + ",\"kind\":3");
+  response_contains(12, range(5, 9, 5, 12) + ",\"kind\":2");
+
+  send("{\"jsonrpc\":\"2.0\",\"id\":13,\"method\":\"textDocument/documentSymbol\","
+       "\"params\":{\"textDocument\":{\"uri\":\"" + nav + "\"}}}");
+  response_contains(13, "\"name\":\"total\",\"kind\":12");
+  response_contains(13, "\"name\":\"o\",\"kind\":13");
+
+  // Rename keeps an object shorthand's key.
+  send(request(14, "textDocument/rename", nav, 4, 4, ",\"newName\":\"result\""));
+  response_contains(14, range(4, 4, 4, 7) + ",\"newText\":\"result\"");
+  response_contains(14, range(5, 9, 5, 12) + ",\"newText\":\"sum: result\"");
+
+  send(request(15, "textDocument/rename", nav, 1, 6, ",\"newName\":\"count\""));
+  response_contains(15, "already names something visible");
+
+  // A function also called as a method may be reached by UFCS: no rename.
+  open_doc("lsp_ufcs.cul", "fn double(v) { v * 2 }\\nprint([3].double())\\n");
+  send(request(16, "textDocument/prepareRename", uri("lsp_ufcs.cul"), 0, 3));
+  response_contains(16, "also called as a method");
+
+  // `Alias.member` on an import goes to the imported module's declaration.
+  const char* tmp = std::getenv("TMPDIR");
+  char real[PATH_MAX];
+  if (!::realpath(tmp && *tmp ? tmp : "/tmp", real)) fail("realpath of TMPDIR");
+  std::string dir = real;
+  write_file(dir + "/lsp_mod_helper.cul", "fn helper() { 1 }\n");
+  const std::string main_uri = "file://" + dir + "/lsp_mod_main.cul";
+  send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+       "\"textDocument\":{\"uri\":\"" + main_uri +
+       "\",\"languageId\":\"culebra\",\"version\":1,\"text\":\""
+       "import H from './lsp_mod_helper.cul'\\nH.helper()\\n\"}}}");
+  send(request(17, "textDocument/definition", main_uri, 1, 3));
+  response_contains(17, "{\"uri\":\"file://" + dir + "/lsp_mod_helper.cul\"," +
+                            range(0, 3, 0, 9) + "}");
 
   send("{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"textDocument/nonexistent\","
        "\"params\":{}}");
