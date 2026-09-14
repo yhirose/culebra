@@ -559,7 +559,8 @@ inline TensorShape tensor_broadcast_shape(const TensorShape& a,
   return TensorShape(std::move(out));
 }
 
-inline tl::array _tl_binop(Op op, const tl::array& a, const tl::array& b) {
+inline tl::array _tl_binop_general(Op op, const tl::array& a,
+                                   const tl::array& b) {
   switch (op) {
     case Op::Add: return a + b;
     case Op::Sub: return a - b;
@@ -584,9 +585,9 @@ inline tl::array _tl_binop(Op op, const tl::array& a, const tl::array& b) {
 // form runs a broadcast kernel over the large side. `t * 2.0` from the
 // language and every scalar the VJPs build (lr, -1, 1/n) hit this.
 // Pow and the comparisons keep the scalar in the tl node too (a kernel
-// argument), where the rank-0 tensor was an allocation and an upload per
-// call. The Op tape keeps the rank-0 tensor as a real input either way, so
-// autograd is unaffected.
+// argument), sparing the rank-0 operand's upload and broadcast kernel. The
+// Op tape keeps the rank-0 tensor as a real input either way, so autograd is
+// unaffected.
 inline tl::array _tl_binop_vs_scalar(Op op, const tl::array& a, float s,
                                      bool scalar_on_left) {
   if (!scalar_on_left) {
@@ -623,10 +624,18 @@ inline tl::array _tl_binop_vs_scalar(Op op, const tl::array& a, float s,
   throw std::logic_error("tensor: bad op in scalar binop dispatch");
 }
 
-// A scalar base (`s ** t`) has no tensor-scalar form in tl; it takes the
-// general _tl_binop path with the rank-0 operand.
-inline bool _tl_binop_has_scalar_fast_path(Op op, bool scalar_on_left) {
-  return !(scalar_on_left && op == Op::Pow);
+// Elementwise binop on tl values: a materialized rank-0 operand goes through
+// _tl_binop_vs_scalar above, except a scalar base (`s ** t`), which has no
+// tensor-scalar form in tl.
+inline tl::array _tl_binop(Op op, const tl::array& a, const tl::array& b) {
+  if (b.shape().empty() && b.materialized()) {
+    return _tl_binop_vs_scalar(op, a, b.raw()[0], /*scalar_on_left=*/false);
+  }
+  if (a.shape().empty() && a.materialized() && !b.shape().empty() &&
+      op != Op::Pow) {
+    return _tl_binop_vs_scalar(op, b, a.raw()[0], /*scalar_on_left=*/true);
+  }
+  return _tl_binop_general(op, a, b);
 }
 
 // Build a lazy elementwise binop node. Shapes are broadcast per numpy
@@ -649,18 +658,7 @@ CULEBRA_RT_TENSOR_EVAL_LINKAGE TensorPtr tensor_binop(Op op, TensorPtr a,
     throw CulebraError("ValueError", "Tensor: dtype mismatch in binop.");
   }
   tensor_broadcast_check(a->shape, b->shape);  // culebra-worded error
-  bool b_scalar = b->shape.rank() == 0 && b->value.materialized() &&
-                  _tl_binop_has_scalar_fast_path(op, false);
-  bool a_scalar = a->shape.rank() == 0 && a->value.materialized() &&
-                  b->shape.rank() != 0 &&
-                  _tl_binop_has_scalar_fast_path(op, true);
-  auto v = _tl_guard([&] {
-    if (b_scalar) return _tl_binop_vs_scalar(op, a->value, b->value.raw()[0],
-                                             /*scalar_on_left=*/false);
-    if (a_scalar) return _tl_binop_vs_scalar(op, b->value, a->value.raw()[0],
-                                             /*scalar_on_left=*/true);
-    return _tl_binop(op, a->value, b->value);
-  });
+  auto v = _tl_guard([&] { return _tl_binop(op, a->value, b->value); });
   auto dtype = a->dtype;
   return tensor_make_op(op, std::move(v), dtype,
                         std::vector<TensorPtr>{std::move(a), std::move(b)});
@@ -1393,8 +1391,12 @@ inline void _tensor_vjp(const TensorPtr& n) {
     case Op::Pow: {
       const auto& a = n->inputs[0];
       const auto& b = n->inputs[1];
-      // da = g * b * a^(b-1)
-      auto exp_m1 = tensor_binop(Op::Sub, b, tensor_scalar(1.0, dt));
+      // da = g * b * a^(b-1); a materialized rank-0 exponent folds b-1 on the
+      // host (on the GPU the Sub node would stay lazy), so a^(b-1) stays a
+      // tensor-scalar pow.
+      auto exp_m1 = b->shape.rank() == 0 && b->value.materialized()
+                        ? tensor_scalar(b->value.raw()[0] - 1.0, dt)
+                        : tensor_binop(Op::Sub, b, tensor_scalar(1.0, dt));
       auto a_pow = tensor_binop(Op::Pow, a, exp_m1);
       _tensor_grad_add(a, tensor_binop(Op::Mul, tensor_binop(Op::Mul, g, b),
                                        a_pow));
