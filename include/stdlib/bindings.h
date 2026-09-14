@@ -11077,6 +11077,8 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty());
   jit.module_->getOrInsertFunction(rt::tensor_causal_attention, ptrTy, ptrTy,
                                ptrTy, ptrTy);
+  jit.module_->getOrInsertFunction(rt::tensor_layer_norm, ptrTy, ptrTy, ptrTy,
+                               ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_clone, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_slice, ptrTy, ptrTy,
                                jit.builder_.getInt64Ty(),

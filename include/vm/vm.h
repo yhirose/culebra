@@ -859,6 +859,9 @@ enum class BMeth : uint8_t {
   // causal_attention(k, v): fused causal attention over [H, T, D], two
   // Tensor params like LinearSigmoid (its own runtime function).
   CausalAttention,
+  // layer_norm(gamma, beta): fused layer norm over the last axis, two Tensor
+  // params like CausalAttention (its own runtime function).
+  LayerNorm,
   // im2col's own building blocks. Each takes one params Array ([axis, win,
   // step] / [axis, before, after] / [axis, orig_size, step]) rather than 3
   // positional Longs, same reason Reshape takes a dims Array: BMethSpec's
@@ -1325,6 +1328,8 @@ inline std::span<const BMethSpec> bmeth_specs() {
       {"rope", 2, Rope, kRecvTensor, 2, nullptr, {Long, Any}, {"pos", "base"}},
       {"causal_attention", 2, CausalAttention, kRecvTensor, 2, nullptr,
        {Tensor, Tensor}, {"k", "v"}},
+      {"layer_norm", 2, LayerNorm, kRecvTensor, 2, nullptr, {Tensor, Tensor},
+       {"gamma", "beta"}},
       {"reshape", 1, Reshape, kRecvTensor, 1, nullptr, {Array}, {"dims"}},
       // The reductions. `sum` and `max` already have an axis-less row above
       // (Array / Tensor / iterator); `mean` has no such spelling outside
@@ -2395,6 +2400,12 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
       return JitValue{
           TAG_TENSOR,
           reinterpret_cast<int64_t>(culebra_runtime_tensor_causal_attention(
+              ten(recv), ten(args[0]), ten(args[1])))};
+    case BMeth::LayerNorm:
+      culebra_runtime_set_op_pos(line, col);  // shape check
+      return JitValue{
+          TAG_TENSOR,
+          reinterpret_cast<int64_t>(culebra_runtime_tensor_layer_norm(
               ten(recv), ten(args[0]), ten(args[1])))};
     case BMeth::Transpose:
       return JitValue{TAG_TENSOR,

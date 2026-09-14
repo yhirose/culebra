@@ -19,17 +19,6 @@ if device == 'cpu' {
   Tensor.use_auto()
 }
 
-let EPS = 0.00001
-
-# LayerNorm over the last axis. gamma/beta are [1, d] (broadcast over rows).
-let layer_norm = fn (x, gamma, beta) {
-  let mu = x.mean(1, keepdims: true)
-  let diff = x - mu
-  let var = (diff * diff).mean(1, keepdims: true)
-  let normed = diff * (var + EPS).pow(-0.5)
-  normed * gamma + beta
-}
-
 # seq, d_model, d_ff, iters — silarray's GPU configs
 let configs = [
   [256, 512, 2048, 20],
@@ -65,7 +54,7 @@ for cfg in configs {
   let beta2 = Tensor.zeros(1, d)
 
   let block = fn () {
-    let h = layer_norm(x, gamma1, beta1)
+    let h = x.layer_norm(gamma1, beta1)
     let Q = h.dot(Wq) + bq
     let K = h.dot(Wk) + bk
     let V = h.dot(Wv) + bv
@@ -73,7 +62,7 @@ for cfg in configs {
     let context = attn.dot(V)
     let attn_out = context.dot(Wo) + bo
     let r1 = x + attn_out
-    let h2 = layer_norm(r1, gamma2, beta2)
+    let h2 = r1.layer_norm(gamma2, beta2)
     let ff = (h2.dot(W1) + b1).relu()
     let out = r1 + (ff.dot(W2) + b2)
     Tensor.eval(out)

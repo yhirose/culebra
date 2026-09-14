@@ -135,6 +135,7 @@ let methods = [
   'keys',
   'last',
   'last_index_of',
+  'layer_norm',
   'le',
   'linear_sigmoid',
   'lines',

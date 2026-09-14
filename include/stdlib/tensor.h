@@ -132,6 +132,10 @@ enum class Op {
   // never materializes the [T, T] scores), so the VJP recomputes them with
   // the unfused ops; `scale` rides in extra0 for that (see the VJP switch).
   CausalAttention,
+  // Fused layer norm over the last axis: inputs {x, gamma, beta}. The
+  // forward keeps no normalized x, so the VJP rebuilds it with the unfused
+  // ops; `eps` rides in extra0 for that (see the VJP switch).
+  LayerNorm,
 };
 
 struct TensorShape {
@@ -1076,6 +1080,35 @@ inline TensorPtr tensor_causal_attention(TensorPtr q, TensorPtr k, TensorPtr v,
   return out;
 }
 
+// layer_norm(gamma, beta): (x - mean) / sqrt(var + eps) · gamma + beta over
+// the last axis, mean and (biased) variance per row. gamma and beta each hold
+// that axis's d weights, as [d] or [1, d]. `eps` rides in extra0 for the VJP.
+inline TensorPtr tensor_layer_norm(TensorPtr x, TensorPtr gamma, TensorPtr beta,
+                                   float eps = 1e-5f) {
+  if (x->dtype != gamma->dtype || x->dtype != beta->dtype) {
+    throw CulebraError("ValueError", "Tensor: layer_norm: mismatched dtypes.");
+  }
+  const auto& s = x->shape.dims;
+  int64_t d = s.empty() ? 0 : s.back();
+  auto holds_d = [d](const TensorPtr& w) {
+    return !w->shape.dims.empty() && w->shape.dims.back() == d &&
+           w->shape.num_elements() == d;
+  };
+  if (d <= 0 || !holds_d(gamma) || !holds_d(beta)) {
+    throw CulebraError("ValueError",
+                       "Tensor: layer_norm: gamma and beta must each hold the "
+                       "last axis's size ([d] or [1, d]).");
+  }
+  auto val = _tl_guard([&] {
+    return tl::array::layer_norm(x->value, gamma->value, beta->value, eps);
+  });
+  auto dtype = x->dtype;
+  auto out = tensor_make_op(Op::LayerNorm, std::move(val), dtype,
+                            std::vector<TensorPtr>{x, gamma, beta});
+  out->extra0 = eps;
+  return out;
+}
+
 // Fused MLP forward: sigmoid(W @ x + b). Bias is broadcast against
 // the output [M, N] (typical: b is [M, 1] or [M]). The tl graph is
 // dot + broadcast-add + sigmoid; backend fusion (bias/activation GEMM
@@ -1676,6 +1709,35 @@ inline void _tensor_vjp(const TensorPtr& n) {
       _tensor_grad_add(v, tensor_dot(swap(P), g));
       _tensor_grad_add(q, tensor_binop(Op::Mul, tensor_dot(dS, k), scale));
       _tensor_grad_add(k, tensor_binop(Op::Mul, tensor_dot(swap(dS), q), scale));
+      break;
+    }
+    case Op::LayerNorm: {
+      // y = x̂·γ + β with x̂ = (x − μ)·s, s = 1/sqrt(var + eps). The fused
+      // forward kept no x̂, so rebuild it with the unfused ops, then the
+      // closed form over the last axis (means keepdims):
+      //   dx = s · (ĝ − mean(ĝ) − x̂ · mean(ĝ ⊙ x̂)),  ĝ = g ⊙ γ;
+      //   dγ = g ⊙ x̂;  dβ = g  (both un-broadcast to γ/β's shape).
+      const auto& x = n->inputs[0];
+      const auto& gamma = n->inputs[1];
+      const auto& beta = n->inputs[2];
+      int64_t last = static_cast<int64_t>(x->shape.dims.size()) - 1;
+      auto mean_kd = [&](TensorPtr t) {
+        return tensor_reduce_axis(Op::Mean, std::move(t), last,
+                                  /*keepdims=*/true);
+      };
+      auto diff = tensor_binop(Op::Sub, x, mean_kd(x));
+      auto var = mean_kd(tensor_binop(Op::Mul, diff, diff));
+      auto s = tensor_binop(
+          Op::Pow, tensor_binop(Op::Add, std::move(var), tensor_scalar(n->extra0, dt)),
+          tensor_scalar(-0.5, dt));
+      auto xhat = tensor_binop(Op::Mul, std::move(diff), s);
+      auto gh = tensor_binop(Op::Mul, g, gamma);
+      auto inner = tensor_binop(
+          Op::Sub, tensor_binop(Op::Sub, gh, mean_kd(gh)),
+          tensor_binop(Op::Mul, xhat, mean_kd(tensor_binop(Op::Mul, gh, xhat))));
+      _tensor_grad_add(x, tensor_binop(Op::Mul, std::move(s), std::move(inner)));
+      _tensor_grad_add(gamma, tensor_binop(Op::Mul, g, xhat));
+      _tensor_grad_add(beta, g);
       break;
     }
   }

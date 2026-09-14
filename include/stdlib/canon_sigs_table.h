@@ -1683,6 +1683,9 @@ inline constexpr CanonParam kCanonParamPool[] = {
   // 132: argmax: axis, keepdims
   {"axis", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
   {"keepdims", true, true, false, false, false, "Bool", CanonDefault::Bool, 0, {}},
+  // 134: layer_norm
+  {"gamma", false, false, false, false, false, "Tensor", CanonDefault::None, 0, {}},
+  {"beta", false, false, false, false, false, "Tensor", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonObjectSigs[] = {
@@ -1828,6 +1831,7 @@ inline constexpr CanonSig kCanonTensorSigs[] = {
   {"", "", "gt", kCanonParamPool + 119, 1, "Tensor", 1, 1, false, -1, -1, -1},
   {"", "", "index_select", kCanonParamPool + 117, 1, "Tensor", 1, 1, false, -1, -1, -1},
   {"", "", "item", nullptr, 0, "Float", 0, 0, false, -1, -1, -1},
+  {"", "", "layer_norm", kCanonParamPool + 134, 2, "Tensor", 2, 2, false, -1, -1, -1},
   {"", "", "le", kCanonParamPool + 122, 1, "Tensor", 1, 1, false, -1, -1, -1},
   {"", "", "linear_sigmoid", kCanonParamPool + 74, 2, "Tensor", 2, 2, false, -1, -1, -1},
   {"", "", "log", nullptr, 0, "Tensor", 0, 0, false, -1, -1, -1},

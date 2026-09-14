@@ -2568,6 +2568,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_causal_atten
       culebra::tensor_causal_attention(q->impl, k->impl, v->impl, scale));
 }
 
+// .layer_norm(gamma, beta) — the fused forward over the last axis. eps stays
+// at tensor_layer_norm's 1e-5: BMethSpec's two parameter slots hold gamma and
+// beta.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_layer_norm(
+    JitTensor* x, JitTensor* gamma, JitTensor* beta) {
+  return _culebra_jit_tensor_register(
+      culebra::tensor_layer_norm(x->impl, gamma->impl, beta->impl));
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_clone(
     JitTensor* t) {
   return _culebra_jit_tensor_register(culebra::tensor_clone(t->impl));

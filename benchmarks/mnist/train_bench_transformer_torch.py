@@ -40,11 +40,7 @@ def sync():
 
 
 def layer_norm(x, gamma, beta):
-    mu = x.mean(1, keepdim=True)
-    diff = x - mu
-    var = (diff * diff).mean(1, keepdim=True)
-    normed = diff * (var + EPS).rsqrt()
-    return normed * gamma + beta
+    return torch.nn.functional.layer_norm(x, gamma.shape, gamma, beta, EPS)
 
 
 def main():

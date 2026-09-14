@@ -1638,6 +1638,7 @@ let m = z.clamp(-1.0, 1.0)  # elementwise clip、[lo, hi]に収める
 | `.clamp(lo, hi) -> Tensor` | lazy | `[lo, hi]`へのelementwise clip |
 | `.rope(pos: Long, base) -> Tensor` | lazy | 回転位置埋め込み（half-split方式）、最後の軸に適用。selfは`[H, D]`または`[H, T, D]`、行rの位置は`pos + (r % T)` |
 | `.causal_attention(k, v) -> Tensor` | lazy | 因果的なself-attention: `softmax(self·kᵀ / sqrt(D))·v`、行`t`は行`0..t`だけを見る。`self`・`k`・`v`は同じ形で`[H, T, D]`または`[T, D]` — 下記参照 |
+| `.layer_norm(gamma, beta) -> Tensor` | lazy | 最後の軸についてのlayer normalization: 行ごとに`(self - mean) / sqrt(var + 1e-5) · gamma + beta`。`gamma`・`beta`は`[D]`または`[1, D]` — 下記参照 |
 | `.transpose() -> Tensor` | view | 全軸逆順（rank-2で行列転置） |
 | `.permute(axes: Array) -> Tensor` | view | 任意軸並べ替え。`axes[i]`が結果の軸`i`に対応する自分自身の軸を指定 |
 | `.slice(start, end) -> Tensor` | view | 軸0を`[start, end)`で切り出し |
@@ -1710,6 +1711,28 @@ let ctx = q.causal_attention(k, v)                        # [H, T, D]
 attentionの標準的なpullbackを当てるので、融合したforwardも合成版と
 同じように学習できます。
 
+#### `.layer_norm(gamma, beta) -> Tensor`
+
+最後の軸についてのlayer normalizationを1つのopで計算します。行ごとに
+平均`mean`と分散`var`（`D`で割ったもの）を求め、
+`(x - mean) / sqrt(var + 1e-5) · gamma + beta`を返します。`gamma`と
+`beta`は最後の軸の要素1つにつき重みを1つ持ち、形は`[D]`か`[1, D]`です。
+`self`のrankは1以上なら何でも構いません。epsilonは`1e-5`に固定です。
+
+```culebra
+# doctest: skip
+let gamma = Tensor.ones(1, D)
+let beta = Tensor.zeros(1, D)
+let h = x.layer_norm(gamma, beta)  # x: [T, D] または [B, T, D]
+```
+
+同じ結果を手で書くと、`.mean(last, keepdims: true)`、引き算、2乗、
+もう1回の平均、`+ 1e-5`、`.pow(-0.5)`、2つの積と足し算の9個のopになり、
+そのどれもが`self`と同じ大きさのバッファを新しく書きます。融合版は
+CPUでは行ごとに1回なめるだけ、GPUでは1つのカーネルで済み、書き出すのは
+結果だけです。backwardは融合前のopで正規化した行を作り直してから閉形の
+式で勾配を求めるので、合成版と同じ勾配になります。
+
 ### 自動微分（reverse-mode）
 
 Tensorプリミティブはネイティブなreverse-mode自動微分エンジンを
@@ -1733,7 +1756,7 @@ op自身がvector-Jacobian productを知っています。tapeが記録される
 ついて）、`.dot()`、軸`.sum()` / `.mean()`、`.relu()`、`.sigmoid()`、
 `.softmax()`、`.log()`、`.tanh()`、`.sin()`、`.cos()`、`.clamp()`、
 `.transpose()`、`.permute()`、`.reshape()`、`.slice()`、`.narrow()`、
-`.rope()`、`.causal_attention()`、`.softmax_cross_entropy()`、
+`.rope()`、`.causal_attention()`、`.layer_norm()`、`.softmax_cross_entropy()`、
 `Tensor.concat()`、`Tensor.where()`、
 `.index_select()` /
 `Tensor.index_add()`（互いが相手のVJP）。勾配は自動でun-broadcastされる

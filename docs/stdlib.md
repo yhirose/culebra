@@ -1677,6 +1677,7 @@ Shape ops, linear algebra, and reductions use method syntax:
 | `.clamp(lo, hi) -> Tensor` | lazy | elementwise clip to `[lo, hi]` |
 | `.rope(pos: Long, base) -> Tensor` | lazy | rotary position embedding (half-split convention) over the last axis; `self` is `[H, D]` or `[H, T, D]`, row `r`'s position is `pos + (r % T)` |
 | `.causal_attention(k, v) -> Tensor` | lazy | causal self-attention: `softmax(self·kᵀ / sqrt(D))·v` with row `t` attending rows `0..t`; `self`, `k`, `v` share one shape, `[H, T, D]` or `[T, D]` — see below |
+| `.layer_norm(gamma, beta) -> Tensor` | lazy | layer normalization over the last axis: `(self - mean) / sqrt(var + 1e-5) · gamma + beta` per row; `gamma`, `beta` are `[D]` or `[1, D]` — see below |
 | `.transpose() -> Tensor` | view | reverse all axes (matrix transpose for rank-2) |
 | `.permute(axes: Array) -> Tensor` | view | general axis reorder; `axes[i]` names which of self's axes becomes result axis `i` |
 | `.slice(start, end) -> Tensor` | view | take axis 0 in `[start, end)` |
@@ -1750,6 +1751,29 @@ elsewhere it is a reference loop with the same result. The backward
 rebuilds the probabilities from the unfused ops and applies the standard
 attention pullback, so a fused forward trains like the composed one.
 
+#### `.layer_norm(gamma, beta) -> Tensor`
+
+Layer normalization over the last axis in one op: each row becomes
+`(x - mean) / sqrt(var + 1e-5) · gamma + beta`, with `mean` and `var` (the
+variance, divided by `D`) taken over that row. `gamma` and `beta` hold one
+weight per element of the last axis, shaped `[D]` or `[1, D]`; `self` may
+have any rank from 1 up. The epsilon is fixed at `1e-5`.
+
+```culebra
+# doctest: skip
+let gamma = Tensor.ones(1, D)
+let beta = Tensor.zeros(1, D)
+let h = x.layer_norm(gamma, beta)  # x: [T, D] or [B, T, D]
+```
+
+Spelled out, the same result is `.mean(last, keepdims: true)`, a
+subtraction, a square, a second mean, `+ 1e-5`, `.pow(-0.5)`, two products
+and a sum: nine ops, each writing a new buffer the size of `self`. Fused, it
+is one pass per row on the CPU and one kernel on the GPU, and only the
+result is written. The backward rebuilds the normalized rows from the
+unfused ops and applies the closed-form pullback, so the gradients match
+the composed form's.
+
 ### Autograd (reverse-mode)
 
 The Tensor primitive carries a native reverse-mode autodiff engine: the
@@ -1774,7 +1798,7 @@ produces a grad-tracking output. Differentiable ops include `+ - * /`,
 `.relu()`, `.sigmoid()`, `.softmax()`, `.log()`, `.tanh()`, `.sin()`,
 `.cos()`, `.clamp()`, `.transpose()`, `.permute()`, `.reshape()`,
 `.slice()`, `.narrow()`, `.rope()`, `.causal_attention()`,
-`.softmax_cross_entropy()`,
+`.layer_norm()`, `.softmax_cross_entropy()`,
 `Tensor.concat()`, `Tensor.where()`, and `.index_select()` /
 `Tensor.index_add()` (each other's own VJP). Gradients
 un-broadcast automatically, so a bias added across a batch sums back to its

@@ -3310,6 +3310,14 @@ struct Lowering {
                    b.CreateIntToPtr(j.extract_data(arg(1)), ptrTy)},
                   "vbm.tattn"));
               break;
+            case BMeth::LayerNorm:
+              j.emit_set_op_pos();  // shape check
+              res = j.make_tensor(j.emit_call(
+                  j.module_->getFunction(rt::tensor_layer_norm),
+                  {arr(), b.CreateIntToPtr(j.extract_data(arg(0)), ptrTy),
+                   b.CreateIntToPtr(j.extract_data(arg(1)), ptrTy)},
+                  "vbm.tlnorm"));
+              break;
             case BMeth::Transpose:
             case BMeth::Clone:
             case BMeth::RequiresGrad:

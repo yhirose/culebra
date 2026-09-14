@@ -1,0 +1,140 @@
+# Conformance: stdlib §7 (Tensor). See docs/stdlib.md.
+#
+# .layer_norm(gamma, beta): the fused layer norm against the same arithmetic
+# spelled out with .mean / .pow / * / + — forward and backward, on rows
+# ([N, D]) and on a batch of them ([B, N, D]), with gamma and beta as [D] and
+# as [1, D]. A row wider than one GPU thread group runs under
+# Tensor.use_gpu() when a GPU is present, so the fused kernel is what is
+# compared there.
+#
+# Run with:  ./build/culebra tests/test_tensor_ops_layer_norm.cul
+#            ./build/culebra --jit tests/test_tensor_ops_layer_norm.cul
+
+# Deterministic values: no Tensor.randn, so the two graphs below start from
+# the same leaves and the expected numbers are the same on every backend.
+let fill = fn (rows, cols, seed) {
+  mut out = []
+  for i in range(rows) {
+    mut row = []
+    for j in range(cols) {
+      row.push(Math.sin(to_float(seed + i * cols + j) * 0.7) * 0.5)
+    }
+    out.push(row)
+  }
+  out
+}
+
+# .to_array() takes rank 1 or 2, so compare through a flat view.
+let flat = fn (t) {
+  mut n = 1
+  for x in t.shape() {
+    n = n * x
+  }
+  t.reshape([n]).to_array()
+}
+let assert_tensor_close = fn (a, b, tol) {
+  let fa = flat(a)
+  let fb = flat(b)
+  assert_eq(fa.size(), fb.size())
+  for i in range(fa.size()) {
+    assert_close(to_float(fa[i]), to_float(fb[i]), tol)
+  }
+}
+
+# The composition the fused op replaces, eps 1e-5 like the op's own.
+let explicit = fn (x, gamma, beta) {
+  let last = x.shape().size() - 1
+  let mu = x.mean(last, keepdims: true)
+  let diff = x - mu
+  let var = (diff * diff).mean(last, keepdims: true)
+  diff * (var + 0.00001).pow(-0.5) * gamma + beta
+}
+
+let N = 4
+let D = 6
+let x2 = Tensor.from(fill(N, D, 1))
+let g1 = Tensor.from(fill(1, D, 20)[0])  # [D]
+let b1 = Tensor.from(fill(1, D, 40))     # [1, D]
+let x3 = Tensor.concat([Tensor.from(fill(N, D, 1)), Tensor.from(fill(N, D, 9))], 0).reshape([
+  2,
+  N,
+  D,
+])
+
+# --- forward -------------------------------------------------------------------
+
+assert_eq(x2.layer_norm(g1, b1).shape(), [N, D])
+assert_tensor_close(x2.layer_norm(g1, b1), explicit(x2, g1, b1), 1.0e-5)
+assert_tensor_close(x2.layer_norm(b1, g1), explicit(x2, b1, g1), 1.0e-5)
+assert_eq(x3.layer_norm(g1, b1).shape(), [2, N, D])
+assert_tensor_close(x3.layer_norm(g1, b1), explicit(x3, g1, b1), 1.0e-5)
+
+# With gamma 1 and beta 0 every row comes out with mean 0 and mean square
+# var / (var + eps), within a part in a thousand of 1 at these magnitudes.
+let unit = x2.layer_norm(Tensor.ones(D), Tensor.zeros(D))
+for m in unit.mean(1).to_array() {
+  assert_close(to_float(m), 0.0, 1.0e-5)
+}
+for m in (unit * unit).mean(1).to_array() {
+  assert_close(to_float(m), 1.0, 1.0e-3)
+}
+
+# --- shape errors ----------------------------------------------------------------
+
+assert_throws('ValueError', fn () {
+  x2.layer_norm(Tensor.ones(D - 1), b1)
+})
+assert_throws('ValueError', fn () {
+  x2.layer_norm(g1, Tensor.ones(2, D))
+})
+
+# --- backward: the fused op's gradients match the composed form's --------------
+# Same leaf values on both sides, a weighted sum as the loss so every
+# gradient entry is exercised; gamma and beta un-broadcast back to [D] / [1, D].
+
+let grads_of = fn (norm) {
+  let x = Tensor.concat([Tensor.from(fill(N, D, 1)), Tensor.from(fill(N, D, 9))], 0).reshape([
+    2,
+    N,
+    D,
+  ]).requires_grad()
+  let gamma = Tensor.from(fill(1, D, 20)[0]).requires_grad()
+  let beta = Tensor.from(fill(1, D, 40)).requires_grad()
+  let w = Tensor.concat([Tensor.from(fill(N, D, 60)), Tensor.from(fill(N, D, 70))], 0).reshape([
+    2,
+    N,
+    D,
+  ])
+  (norm(x, gamma, beta) * w).sum(2).sum(1).sum(0).backward()
+  [x.grad(), gamma.grad(), beta.grad()]
+}
+let fused_g = grads_of(fn (x, gamma, beta) {
+  x.layer_norm(gamma, beta)
+})
+let composed_g = grads_of(explicit)
+assert_eq(fused_g[1].shape(), [D])
+assert_eq(fused_g[2].shape(), [1, D])
+for i in range(3) {
+  assert_eq(fused_g[i].shape(), composed_g[i].shape())
+  assert_tensor_close(fused_g[i], composed_g[i], 1.0e-4)
+}
+
+# --- a same-named global does not capture the method call -----------------------
+
+fn layer_norm(t, gamma, beta) {
+  'global'
+}
+assert_eq(layer_norm(x2, g1, b1), 'global')
+assert_eq(x2.layer_norm(g1, b1).shape(), [N, D])
+
+# --- the fused kernel: a row wider than a thread group, on the GPU if any -------
+
+if Tensor.gpu_available() {
+  Tensor.use_gpu()
+  let Dg = 300
+  let xg = Tensor.from(fill(5, Dg, 3))
+  let gg = Tensor.from(fill(1, Dg, 11)[0])
+  let bg = Tensor.from(fill(1, Dg, 17))
+  assert_tensor_close(xg.layer_norm(gg, bg), explicit(xg, gg, bg), 1.0e-4)
+  Tensor.use_auto()
+}

@@ -64,3 +64,8 @@ ufcsshadownest|size|*|Sc.new()
 # built-in-method diagnostic where the baseline read nil.
 m|*|causal_attention|*
 bareread|*|causal_attention
+
+# `.layer_norm(gamma, beta)` (fused layer norm over a Tensor's last axis) is
+# new since v0.5.0, the same two-way difference as causal_attention above.
+m|*|layer_norm|*
+bareread|*|layer_norm
