@@ -11,12 +11,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 # (never $CC/$CXX — LLVM is linked into the binary), and the base image has
 # `cc` but no `c++`, so the AOT lane's embedded-asset step finds nothing to
 # compile with. A CI runner has both; this makes the image agree.
-#
-# just's version and checksum are pinned to
-# .github/actions/install-just/action.yml, so this image and CI never install
-# different just binaries. A `#` comment cannot live inside the RUN below —
-# with every line continued by `\`, the shell joins them onto one logical
-# line, where `#` would silence everything after it, `just` included.
 RUN apt-get update && apt-get install -y \
       ccache cmake g++ g++-14 libblas-dev mold wget git \
       lsb-release software-properties-common gnupg \
@@ -24,11 +18,20 @@ RUN apt-get update && apt-get install -y \
  && wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh \
  && chmod +x /tmp/llvm.sh && /tmp/llvm.sh 22 \
  && apt-get install -y llvm-22-dev \
- && wget -qO /tmp/just.tar.gz https://github.com/casey/just/releases/download/1.58.0/just-1.58.0-x86_64-unknown-linux-musl.tar.gz \
+ && rm -rf /var/lib/apt/lists/*
+
+# A separate layer: just's version and checksum change on their own (see
+# .github/actions/install-just/action.yml, the source of truth this pins to,
+# so this image and CI never install different just binaries), and a
+# just-only bump shouldn't invalidate the apt+LLVM layer above and force a
+# multi-minute reinstall of it. A `#` comment cannot live inside a RUN's
+# backslash-continued lines — the shell joins them onto one logical line,
+# where `#` would silence everything after it — so this explanation stays
+# above the instruction, not inside it.
+RUN wget -qO /tmp/just.tar.gz https://github.com/casey/just/releases/download/1.58.0/just-1.58.0-x86_64-unknown-linux-musl.tar.gz \
  && echo "4a5cc2f53e6f0f8c59092a6cc38291eb729d46a7dd95d3ae582008881b84931d  /tmp/just.tar.gz" | sha256sum -c - \
  && tar -xzf /tmp/just.tar.gz -C /usr/local/bin just \
- && rm -f /tmp/just.tar.gz \
- && rm -rf /var/lib/apt/lists/*
+ && rm -f /tmp/just.tar.gz
 
 # The same four the toolchain action exports. CMAKE_PREFIX_PATH and
 # LLVM_CONFIG both: without them cmake silently configures the driver with no

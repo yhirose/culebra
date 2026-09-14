@@ -13,8 +13,7 @@
 {
   "name": "culebra",
   "build": {
-    "dockerfile": "../misc/repro_ubuntu/Dockerfile",
-    "context": ".."
+    "dockerfile": "../misc/repro_ubuntu/Dockerfile"
   },
   "workspaceFolder": "/src",
   "workspaceMount": "source=${localWorkspaceFolder},target=/src,type=bind,consistency=cached",

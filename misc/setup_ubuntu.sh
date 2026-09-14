@@ -58,12 +58,14 @@ export CMAKE_PREFIX_PATH=/usr/lib/llvm-22
 export LLVM_CONFIG=/usr/lib/llvm-22/bin/llvm-config
 EOF
 
-echo
-echo "==> Done. Wrote $env_file — source it in every shell that builds culebra:"
-echo
-echo "    echo 'source \"$env_file\"' >> ~/.bashrc && source ~/.bashrc"
-echo
-echo "Then, from the culebra checkout:"
-echo
-echo "    just build      # -O3 + LTO, with JIT"
-echo "    just test-dev     # quick gate (~80s)"
+cat <<EOF
+
+==> Done. Wrote $env_file — source it in every shell that builds culebra:
+
+    echo 'source "$env_file"' >> ~/.bashrc && source ~/.bashrc
+
+Then, from the culebra checkout:
+
+    just build      # -O3 + LTO, with JIT
+    just test-dev     # quick gate (~80s)
+EOF
