@@ -7,9 +7,11 @@
 // that follows.
 
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #if defined(_WIN32)
-#include <io.h>  // _read / _write
+#include <fcntl.h>  // _O_BINARY
+#include <io.h>     // _read / _write / _dup / _dup2 / _setmode
 #else
 #include <unistd.h>
 #endif
@@ -40,9 +42,34 @@ inline int64_t write_fd(int fd, const char* buf, size_t n) {
 }
 }  // namespace _framed_io
 
+// A private descriptor for a protocol written to stdout, with fd 1 itself
+// pointed at stderr: a stray write to stdout (a library's diagnostic) then lands
+// in the editor's log instead of inside a message. Returns 1 when the
+// descriptors cannot be moved.
+inline int claim_stdout_for_protocol() {
+  std::fflush(stdout);
+#if defined(_WIN32)
+  int fd = _dup(1);
+  if (fd < 0) return 1;
+  _dup2(2, 1);
+#else
+  int fd = ::dup(1);
+  if (fd < 0) return 1;
+  ::dup2(2, 1);
+#endif
+  return fd;
+}
+
 class FramedStdio {
  public:
-  FramedStdio(int in_fd, int out_fd) : in_(in_fd), out_(out_fd) {}
+  FramedStdio(int in_fd, int out_fd) : in_(in_fd), out_(out_fd) {
+#if defined(_WIN32)
+    // Text mode would turn each `\n` of a body into `\r\n` behind the
+    // Content-Length that counted it.
+    _setmode(in_fd, _O_BINARY);
+    _setmode(out_fd, _O_BINARY);
+#endif
+  }
 
   // The next message's body. False at end of input or on a read error; a
   // message cut short by either is dropped.

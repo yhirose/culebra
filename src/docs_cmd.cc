@@ -9,6 +9,7 @@
 #include <cstring>
 #include <format>
 #include <memory>
+#include <optional>
 #include <print>
 #include <string>
 #include <string_view>
@@ -596,7 +597,66 @@ int print_at(const Topic& t, long line) {
   return 1;
 }
 
+// An entry's prose is a hover, not a chapter: past this many lines it is cut.
+constexpr size_t kEntryLineCap = 24;
+
+// The documents an entry lookup reads, split into sections once.
+const std::vector<Doc>& reference_docs() {
+  static const std::vector<Doc> docs = [] {
+    std::vector<Doc> out;
+    for (std::string_view name : {"stdlib", "language"})
+      if (const Topic* t = find_topic(name, false)) out.push_back(build_doc(*t));
+    return out;
+  }();
+  return docs;
+}
+
+// Whether a heading's code span documents `name`: the span is the name itself
+// (`Math.pi`) or a signature of it (`Math.abs(x: Long|Float) -> Long|Float`).
+bool span_documents(std::string_view span, std::string_view name) {
+  return span == name ||
+         (span.size() > name.size() && span.starts_with(name) &&
+          span[name.size()] == '(');
+}
+
 }  // namespace
+
+std::optional<DocEntry> find_doc_entry(std::string_view name) {
+  if (name.empty()) return std::nullopt;
+  for (const Doc& d : reference_docs()) {
+    for (const Section& s : d.sections) {
+      if (d.level[s.first] == 0) continue;
+      auto names = heading_names(d.lines[s.first]);
+      std::string signature;
+      for (size_t i = 1; i < names.size(); i++) {  // [0] is the whole heading
+        if (!span_documents(names[i], name)) continue;
+        if (!signature.empty()) signature += '\n';
+        signature += names[i];
+      }
+      if (signature.empty()) continue;
+
+      size_t first = s.first + 1, last = s.last;
+      while (first <= last && blank(d.lines[first])) first++;
+      while (last > first && blank(d.lines[last])) last--;
+      std::string body;
+      bool fenced = false;
+      for (size_t i = first, shown = 0; i <= last; i++, shown++) {
+        if (shown == kEntryLineCap) {
+          if (fenced) body += "```\n";
+          body += "...\n";
+          break;
+        }
+        std::string_view l = d.lines[i];
+        if (l.starts_with("```")) fenced = !fenced;
+        body.append(l);
+        body += '\n';
+      }
+      while (!body.empty() && body.back() == '\n') body.pop_back();
+      return DocEntry{std::move(signature), std::move(body)};
+    }
+  }
+  return std::nullopt;
+}
 
 int run_docs(int argc, const char** argv, const char* version) {
   std::string_view topic_name, chapter, pattern;

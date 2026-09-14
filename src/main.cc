@@ -14,6 +14,7 @@
 #include <cli/formatter.h>
 #include <cli/init_cmd.h>
 #include <cli/lint_source.h>
+#include <cli/lsp.h>
 #include <cli/toolchain_cmd.h>
 #include <stdlib/proc.h>  // run_all — the doc shards are child processes
 #include <base/source_dir.h>
@@ -737,6 +738,8 @@ void print_usage(ostream& os) {
         "  fmt [paths...]            Reformat source to canonical style\n"
         "                            (-i in-place, -l list, --check; `culebra fmt --help`)\n"
         "  dap                       Speak the Debug Adapter Protocol over\n"
+        "                            stdin/stdout (your editor launches this)\n"
+        "  lsp                       Speak the Language Server Protocol over\n"
         "                            stdin/stdout (your editor launches this)\n"
         "  docs [topic]              Read the reference docs carried in this\n"
         "                            binary (-g searches them; `culebra docs`\n"
@@ -2476,6 +2479,13 @@ int run_main(int argc, const char** argv) {
     }
     require_explicit_engine(named, "dap");
     culebra::DapServer server(/*in=*/0, /*out=*/1, /*argv=*/{});
+    return server.run();
+  }
+  if (argc >= 2 && string(argv[1]) == "lsp") {
+    // Language Server Protocol over stdio: lint diagnostics, formatting and
+    // hover for an editor. It reads source and never runs it, so no engine.
+    int protocol_out = culebra::claim_stdout_for_protocol();
+    culebra::lsp::Server server(/*in=*/0, protocol_out, CULEBRA_VERSION);
     return server.run();
   }
 #ifdef CULEBRA_JIT_ENABLED

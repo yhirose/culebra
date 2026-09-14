@@ -1918,6 +1918,13 @@ add_executable(dap_test tests/dap_test.cc)
 target_compile_features(dap_test PRIVATE cxx_std_23)
 add_test(NAME dap_test COMMAND dap_test $<TARGET_FILE:culebra>)
 
+# Headless LSP server test — drives `culebra lsp` over a pipe: diagnostics with
+# UTF-16 ranges, re-analysis after an edit, hover, formatting, shutdown and exit.
+# Standalone (no culebra linkage); spawns the binary at runtime.
+add_executable(lsp_test tests/lsp_test.cc)
+target_compile_features(lsp_test PRIVATE cxx_std_23)
+add_test(NAME lsp_test COMMAND lsp_test $<TARGET_FILE:culebra>)
+
 # http.h core test: in-process loopback cpp-httplib server exercises the
 # value-neutral client core (GET/POST/DELETE/404 + transport-error + URL
 # validation). Needs OpenSSL (httplib.h pulls it in under HTTP builds) but the
