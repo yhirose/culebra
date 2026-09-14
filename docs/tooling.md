@@ -1033,8 +1033,13 @@ It provides:
   returns (`Regex.compile(p).`). The free functions the call could reach
   through UFCS follow. A bare name completes to what is visible at that
   point, then the globals. Types come from literals, return types,
-  annotations and assignments; a value whose type is not known gets only
-  the UFCS candidates.
+  annotations and assignments; from a built-in method that takes a
+  function, whose parameter receives the receiver's elements
+  (`words.map(|w| w.`) and whose result follows from what it returns; from
+  the values the calls in the document pass to an unannotated parameter,
+  unless the function is exported or passed around as a value; and through
+  an import, from the imported module's declarations. A value whose type
+  is not known gets only the UFCS candidates.
 - **Go to definition, find references, highlight** — for a variable,
   parameter, function, class, enum, import or effect operation, following
   the scoping rules of [`language.md` §6](language.md#6-variables-and-scope):
