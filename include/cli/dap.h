@@ -23,10 +23,8 @@
 
 #include <climits>
 #include <cstdlib>
-#if defined(_WIN32)
-#include <io.h>  // _read / _write (DAP stdio transport)
-#else
-#include <unistd.h>
+#if !defined(_WIN32)
+#include <unistd.h>  // pipe / dup / dup2 (output capture)
 #endif
 
 #include <atomic>
@@ -44,41 +42,21 @@
 
 #include <cli/dap_json.h>
 #include <cli/debug_engine.h>
+#include <cli/framed_stdio.h>
 
 namespace culebra {
-
-// Byte-stream read/write on a raw fd for the DAP stdio transport. On Windows the
-// POSIX ::read/::write live in <io.h> under an underscore; the fd values (0/1)
-// are the same CRT descriptors.
-namespace _dap_io {
-inline int64_t read_fd(int fd, char* buf, size_t n) {
-#if defined(_WIN32)
-  return _read(fd, buf, static_cast<unsigned>(n));
-#else
-  return ::read(fd, buf, n);
-#endif
-}
-inline int64_t write_fd(int fd, const char* buf, size_t n) {
-#if defined(_WIN32)
-  return _write(fd, buf, static_cast<unsigned>(n));
-#else
-  return ::write(fd, buf, n);
-#endif
-}
-}  // namespace _dap_io
 
 class DapServer {
  public:
   DapServer(int in_fd, int out_fd, std::vector<std::string> argv)
-      : in_(in_fd),
-        out_(out_fd),
+      : io_(in_fd, out_fd),
         argv_(std::move(argv)),
         engine_(make_debug_engine()) {}
 
   int run() {
     setup_output_capture();
     std::string body;
-    while (!should_exit_ && read_message(body)) {
+    while (!should_exit_ && io_.read(body)) {
       try {
         handle(dapjson::parse(body));
       } catch (const std::exception&) {
@@ -123,43 +101,7 @@ class DapServer {
   }
 
   // ---- transport --------------------------------------------------------
-  bool fill() {
-    char buf[4096];
-    int64_t n = _dap_io::read_fd(in_, buf, sizeof(buf));
-    if (n <= 0) return false;
-    inbuf_.append(buf, static_cast<size_t>(n));
-    return true;
-  }
-  bool read_message(std::string& body) {
-    size_t hdr_end;
-    while ((hdr_end = inbuf_.find("\r\n\r\n")) == std::string::npos) {
-      if (!fill()) return false;
-    }
-    std::string headers = inbuf_.substr(0, hdr_end);
-    size_t len = 0;
-    auto p = headers.find("Content-Length:");
-    if (p != std::string::npos)
-      len = std::strtoul(headers.c_str() + p + 15, nullptr, 10);
-    size_t start = hdr_end + 4;
-    while (inbuf_.size() < start + len) {
-      if (!fill()) return false;
-    }
-    body = inbuf_.substr(start, len);
-    inbuf_.erase(0, start + len);
-    return true;
-  }
-  void send(const Value& msg) {
-    std::string body = dapjson::stringify(msg);
-    std::string frame =
-        "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body;
-    std::lock_guard<std::mutex> lk(write_mu_);
-    int64_t off = 0, total = static_cast<long>(frame.size());
-    while (off < total) {
-      int64_t n = _dap_io::write_fd(out_, frame.data() + off, total - off);
-      if (n <= 0) break;
-      off += n;
-    }
-  }
+  void send(const Value& msg) { io_.write(dapjson::stringify(msg)); }
   void respond(const Value& req, Value body, bool success = true,
                const std::string& message = "") {
     Obj r;
@@ -613,9 +555,9 @@ class DapServer {
     if (::pipe(pipefd) != 0) return;
     out_pipe_r_ = pipefd[0];
     // From here, fd 1/2 (what the debuggee writes to) go to the pipe; DAP keeps
-    // writing to the original stdout via the saved `out_`.
-    int saved = ::dup(out_);
-    if (saved >= 0) out_ = saved;
+    // writing to the original stdout via the saved duplicate.
+    int saved = ::dup(io_.out_fd());
+    if (saved >= 0) io_.set_out_fd(saved);
     ::dup2(pipefd[1], 1);
     ::dup2(pipefd[1], 2);
     ::close(pipefd[1]);
@@ -645,11 +587,9 @@ class DapServer {
 #endif
   }
 
-  int in_, out_;
+  FramedStdio io_;
   std::vector<std::string> argv_;
-  std::string inbuf_;
   std::atomic<long> seq_{1};
-  std::mutex write_mu_;
 
   std::unique_ptr<DebugEngine> engine_;
   culebra::SizedThread debuggee_;
