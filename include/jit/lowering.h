@@ -3303,21 +3303,17 @@ struct Lowering {
                   "vbm.trope"));
               break;
             case BMeth::CausalAttention:
-              j.emit_set_op_pos();  // shape check
+            case BMeth::LayerNorm: {  // two Tensor params, a shape check
+              const bool attn = static_cast<BMeth>(in.c) == BMeth::CausalAttention;
+              j.emit_set_op_pos();
               res = j.make_tensor(j.emit_call(
-                  j.module_->getFunction(rt::tensor_causal_attention),
+                  j.module_->getFunction(attn ? rt::tensor_causal_attention
+                                              : rt::tensor_layer_norm),
                   {arr(), b.CreateIntToPtr(j.extract_data(arg(0)), ptrTy),
                    b.CreateIntToPtr(j.extract_data(arg(1)), ptrTy)},
-                  "vbm.tattn"));
+                  attn ? "vbm.tattn" : "vbm.tlnorm"));
               break;
-            case BMeth::LayerNorm:
-              j.emit_set_op_pos();  // shape check
-              res = j.make_tensor(j.emit_call(
-                  j.module_->getFunction(rt::tensor_layer_norm),
-                  {arr(), b.CreateIntToPtr(j.extract_data(arg(0)), ptrTy),
-                   b.CreateIntToPtr(j.extract_data(arg(1)), ptrTy)},
-                  "vbm.tlnorm"));
-              break;
+            }
             case BMeth::Transpose:
             case BMeth::Clone:
             case BMeth::RequiresGrad:

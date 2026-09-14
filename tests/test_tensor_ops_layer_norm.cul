@@ -55,11 +55,13 @@ let D = 6
 let x2 = Tensor.from(fill(N, D, 1))
 let g1 = Tensor.from(fill(1, D, 20)[0])  # [D]
 let b1 = Tensor.from(fill(1, D, 40))     # [1, D]
-let x3 = Tensor.concat([Tensor.from(fill(N, D, 1)), Tensor.from(fill(N, D, 9))], 0).reshape([
-  2,
-  N,
-  D,
-])
+# Two [N, D] fills stacked to [2, N, D] (Tensor.from takes rank 1 or 2).
+let stack2 = fn (a, b) {
+  Tensor
+    .concat([Tensor.from(fill(N, D, a)), Tensor.from(fill(N, D, b))], 0)
+    .reshape([2, N, D])
+}
+let x3 = stack2(1, 9)
 
 # --- forward -------------------------------------------------------------------
 
@@ -93,18 +95,10 @@ assert_throws('ValueError', fn () {
 # gradient entry is exercised; gamma and beta un-broadcast back to [D] / [1, D].
 
 let grads_of = fn (norm) {
-  let x = Tensor.concat([Tensor.from(fill(N, D, 1)), Tensor.from(fill(N, D, 9))], 0).reshape([
-    2,
-    N,
-    D,
-  ]).requires_grad()
+  let x = stack2(1, 9).requires_grad()
   let gamma = Tensor.from(fill(1, D, 20)[0]).requires_grad()
   let beta = Tensor.from(fill(1, D, 40)).requires_grad()
-  let w = Tensor.concat([Tensor.from(fill(N, D, 60)), Tensor.from(fill(N, D, 70))], 0).reshape([
-    2,
-    N,
-    D,
-  ])
+  let w = stack2(60, 70)
   (norm(x, gamma, beta) * w).sum(2).sum(1).sum(0).backward()
   [x.grad(), gamma.grad(), beta.grad()]
 }

@@ -2396,17 +2396,14 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
               ten(recv), args[0].data, static_cast<int8_t>(args[1].tag),
               args[1].data))};
     case BMeth::CausalAttention:
-      culebra_runtime_set_op_pos(line, col);  // shape check
-      return JitValue{
-          TAG_TENSOR,
-          reinterpret_cast<int64_t>(culebra_runtime_tensor_causal_attention(
-              ten(recv), ten(args[0]), ten(args[1])))};
-    case BMeth::LayerNorm:
-      culebra_runtime_set_op_pos(line, col);  // shape check
-      return JitValue{
-          TAG_TENSOR,
-          reinterpret_cast<int64_t>(culebra_runtime_tensor_layer_norm(
-              ten(recv), ten(args[0]), ten(args[1])))};
+    case BMeth::LayerNorm: {  // two Tensor params, a shape check
+      auto* fn = id == BMeth::CausalAttention
+                     ? culebra_runtime_tensor_causal_attention
+                     : culebra_runtime_tensor_layer_norm;
+      culebra_runtime_set_op_pos(line, col);
+      return JitValue{TAG_TENSOR, reinterpret_cast<int64_t>(fn(
+                                      ten(recv), ten(args[0]), ten(args[1])))};
+    }
     case BMeth::Transpose:
       return JitValue{TAG_TENSOR,
                       reinterpret_cast<int64_t>(
