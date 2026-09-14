@@ -27,6 +27,16 @@ installs the same toolchain (gcc-14, LLVM 22, `just`) CI does. On macOS,
 `brew install llvm just ccache coreutils` is enough; `justfile` finds
 Homebrew's `clang++` on its own.
 
+Or skip installing anything: [`.devcontainer/devcontainer.json`](.devcontainer/devcontainer.json)
+builds the same Ubuntu toolchain into a container, and its `postCreateCommand`
+initializes submodules for you. Open this repo in
+[GitHub Codespaces](https://codespaces.new/yhirose/culebra) — `gh` comes
+pre-authenticated for this repo, so `gh pr create` works with no extra
+login — or use VS Code's "Reopen in Container" locally. The container is
+headless Ubuntu: `just test-dev` / `just test` build and run fine, but
+Canvas/Scene/Webview real-window tests and the Tensor CUDA backend don't
+run there, the same gap as any Ubuntu CI job.
+
 ```bash
 just build              # with JIT (Release + LTO)
 just build-no-jit       # no LLVM: interpreter + bytecode VM, ~1 MB binary

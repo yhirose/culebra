@@ -1,6 +1,9 @@
 # The Ubuntu toolchain ci.yml's Linux jobs build with, for reproducing a
 # failure that only shows there (.github/actions/setup-linux-toolchain).
 # Not part of the build: `docker build -f misc/repro_ubuntu/Dockerfile .`
+#
+# Also the base image for .devcontainer/devcontainer.json (GitHub Codespaces
+# / VS Code Dev Containers) — a toolchain bump here reaches both consumers.
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive

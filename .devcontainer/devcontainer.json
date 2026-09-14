@@ -1,0 +1,39 @@
+// culebra's build toolchain in a container, for GitHub Codespaces or VS
+// Code's "Reopen in Container". Builds from misc/repro_ubuntu/Dockerfile —
+// the same image that reproduces Ubuntu CI failures locally (see that file
+// for what it installs and why); this is its second consumer, so a
+// toolchain bump there reaches both without drifting apart.
+//
+// workspaceFolder/workspaceMount put the checkout at /src, matching that
+// Dockerfile's WORKDIR, so misc/repro_ubuntu/*.sh also run unmodified here.
+//
+// No window/GPU access: Canvas/Scene/Webview real-window tests and the
+// Tensor CUDA backend don't run in this container, same as any headless
+// Ubuntu CI job. `just test-dev` and `just test` (minus those) do.
+{
+  "name": "culebra",
+  "build": {
+    "dockerfile": "../misc/repro_ubuntu/Dockerfile",
+    "context": ".."
+  },
+  "workspaceFolder": "/src",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/src,type=bind,consistency=cached",
+  // EnterWorktree/submodule update --init is a Claude Code worktree concern;
+  // a plain container checkout just needs this once, the same as CI's
+  // `actions/checkout@v5 with: submodules: recursive`.
+  "postCreateCommand": "git submodule update --init --recursive",
+  // just build-gate peaks around 11 GB; ask Codespaces for a machine sized
+  // to match rather than the smallest default.
+  "hostRequirements": {
+    "cpus": 4,
+    "memory": "16gb"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.cpptools",
+        "ms-vscode.cmake-tools"
+      ]
+    }
+  }
+}
