@@ -18,9 +18,9 @@
 # instantiated without JSPI — the glue calls `new WebAssembly.Suspending()`
 # while wiring imports — so a single "full" build would take the whole page
 # down on Safari (and on every iOS browser, all of which are WebKit).
-# Chrome/Edge 137+ and Firefox 153+ have JSPI; Safari has it in 27 beta, so
-# the basic build is expected to become unnecessary once that ships. Each
-# visitor downloads exactly one of the two.
+# Chrome/Edge 137+, Firefox 153+ and Safari 27+ have JSPI; the basic build
+# stays for as long as an older Safari (and so every iOS browser on it) is
+# worth serving. Each visitor downloads exactly one of the two.
 #
 # Both builds share the engine, so they differ by roughly the size of
 # the emdawnwebgpu port (tens of KB), not by a meaningful fraction. The basic

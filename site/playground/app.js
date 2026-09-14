@@ -538,11 +538,13 @@ function stop() {
 // empty pane with a play button over it. Show the program instead, read-only
 // and highlighted, which is what a reader wants of a link they have not run
 // yet. It goes up with the text and comes down at the first run, from when
-// the pane belongs to the transcript.
+// the pane belongs to the transcript. A Canvas or TUI view shows it too, with
+// a note saying why, where this browser cannot run the program there
+// (VIEW_CANNOT_RUN).
 const listing = $("listing");
 
-function showListing(src) {
-  if (!VIEW_ONLY || pendingAutorun || activeTab !== "output") return;
+function showListing(src, { note = false } = {}) {
+  $("listing-note").hidden = !note;
   listing.hidden = false;
   createEditor(listing, src, { readOnly: true });
 }
@@ -843,10 +845,6 @@ function drawFrame(msg) {
     canvasPane.classList.add("drawn");   // the pane is a letterbox from here on
     inCanvas = true;
     switchTab("canvas");
-    // Lets an embedding host (e.g. the homepage's poster-and-play-button)
-    // hold its own placeholder over the iframe until real pixels are ready,
-    // instead of exposing .pg-canvas's black background for the load gap.
-    if (window.parent !== window) window.parent.postMessage({ type: "culebra-canvas-first-frame" }, "*");
   }
   // A held run draws this one frame and stops there, so the heartbeat has
   // nothing left to drive until the play button lets go.
@@ -1318,6 +1316,13 @@ let previewed = false;
 // around.
 const viewParam = params.get("view");
 if (viewParam !== null && TABS.includes(viewParam)) switchTab(viewParam);
+// A view-only page has no Stop, and without JSPI a Canvas or TUI program can
+// neither be held on its first screen nor take input: started, it would spin
+// in the worker until the tab closes. Such a page shows its source and loads
+// no engine at all. Decided from the pane the page opens on, since a run
+// switches panes by itself, and by the test worker.js picks its build with.
+const VIEW_CANNOT_RUN =
+  VIEW_ONLY && typeof WebAssembly.Suspending !== "function" && activeTab !== "output";
 let seedApplied = false;
 
 // A share link pasted into a tab already on this page changes only the
@@ -1386,7 +1391,8 @@ Promise.all([projectReady, seeding])
   .then((src) => {
     if (argsParam !== null) argsInput.value = argsParam;
     editor.setValue(src);
-    showListing(src);
+    if (VIEW_CANNOT_RUN) showListing(src, { note: true });
+    else if (VIEW_ONLY && !pendingAutorun && activeTab === "output") showListing(src);
     seedApplied = true;
     maybeOpen();
   })
@@ -1409,5 +1415,7 @@ addEventListener("pagehide", () => {
   if (worker) worker.postMessage({ type: "flush" });
 });
 
-setStatus("loading…");
-spawnWorker();
+if (!VIEW_CANNOT_RUN) {
+  setStatus("loading…");
+  spawnWorker();
+}

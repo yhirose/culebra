@@ -975,6 +975,13 @@ its visitor touches it). The program does run to reach that screen, so a
 link whose program does something on its way there does it when the page
 opens, not when the visitor presses play.
 
+A browser without WebAssembly JSPI (Safari before 27) can neither hold
+a Canvas or TUI program on its first screen nor give it input, and a
+`?layout=view` page has no stop. There a `?view=canvas` or `?view=tui`
+page runs nothing, with or without `?run=1`: it shows the source, as
+`?view=output` does, under a note naming what the browser lacks, and
+no play button.
+
 ### The Share button
 
 Share opens a menu with those choices in it (`Layout`, `View`, `Split`,

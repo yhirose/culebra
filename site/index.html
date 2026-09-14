@@ -76,47 +76,18 @@
     .showcase { display: grid; grid-template-columns: 1fr; gap: 2.2rem; margin: 1.6rem 0 0.6rem; }
     .showcase-card h3 { margin: 0 0 0.7rem; font-size: 1.05rem; }
     .showcase-card pre.sample { border-radius: var(--radius); }
-    /* Square-ish, matching the poster PNG's aspect (the game's own 160x160
-       framebuffer, upscaled) so the play button lands dead center. Capped
-       so a full-width single column doesn't blow it up to page-width.
-       aspect-ratio (rather than sizing from the img) keeps the box's size
-       independent of which child is inside it — the poster img, or later
-       the game iframe once the poster is gone — so swapping one for the
-       other during play never collapses or resizes the box. */
-    .poster {
-      position: relative; border-radius: var(--radius); overflow: hidden;
-      border: 1px solid var(--border); cursor: pointer; line-height: 0;
-      max-width: 420px; aspect-ratio: 1 / 1;
+    /* The Playground laid out as the view alone (layout=view&view=canvas),
+       given its src by the script below as the reader scrolls near rather
+       than with the page. The box takes the framebuffer's shape
+       (Rocci Bird's 160x160) so the game fills it, and is capped so a
+       full-width single column doesn't blow it up to page width. Before the
+       first frame the pane is the site's own background, not a black hole. */
+    .demo-frame {
+      display: block; width: 100%; height: auto; max-width: 420px; aspect-ratio: 1 / 1;
+      border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg);
     }
-    /* The MNIST demo's own 640x380 framebuffer, so its poster and iframe
-       share the box the same way the square one does for Rocci Bird. */
-    .poster-wide { aspect-ratio: 32 / 19; max-width: 560px; }
-    /* Starts on its own (scroll into view), so nothing here to click. */
-    .poster-auto { cursor: default; }
-    /* Positioned + z-index so the poster paints over the game-frame iframe
-       (see below) while the game is still loading, instead of the iframe's
-       own black background winning by DOM order. */
-    .poster img { display: block; width: 100%; height: auto; position: relative; z-index: 1; }
-    .play-btn {
-      position: absolute; inset: 0; margin: auto; width: 4.2rem; height: 4.2rem;
-      border-radius: 50%; background: rgba(10, 12, 20, 0.6); color: #fff;
-      border: 2px solid rgba(255, 255, 255, 0.85); cursor: pointer;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 1.5rem; padding: 0 0 0 0.25rem; transition: background 0.15s;
-      z-index: 1;
-    }
-    .poster:hover .play-btn { background: var(--brand-strong); }
-    /* Same on-demand-iframe trick as the hero sample — see the run-sample
-       handler below. layout=view&view=canvas strips the page down to just
-       the running game. Loaded underneath the still-visible poster image (see the
-       z-index above) and only unveiled once the embedded page's first real
-       frame lands — see app.js's drawFrame(), which posts that moment up to
-       here — so the WASM boot's black .pg-canvas background is never
-       exposed as a flash. */
-    .game-frame {
-      position: absolute; inset: 0; display: block; width: 100%; height: 100%; border: 0;
-      background: #000;
-    }
+    /* The MNIST demo's own 640x380 framebuffer. */
+    .demo-frame-wide { aspect-ratio: 32 / 19; max-width: 560px; }
 
     footer { border-top: 1px solid var(--border); color: var(--muted); font-size: 0.85rem; }
     .foot-inner { max-width: 800px; margin: 0 auto; padding: 1.6rem 1.4rem; }
@@ -294,10 +265,10 @@ culebra build hello.cul -o hello &amp;&amp; ./hello  # AOT: compile once, ship t
         </div>
         <div class="showcase-card">
           <h3>A retro game</h3>
-          <div class="poster" id="rocci-poster">
-            <img src="./assets/rocci-bird-poster.png" alt="Rocci Bird title screen — a culebra Canvas game" width="1092" height="1092">
-            <button id="play-rocci" class="play-btn" type="button" aria-label="Play Rocci Bird">▷</button>
-          </div>
+          <!-- No ?run=1: the page opens held on the game's first screen, and
+               its play button is the click that also unlocks the sound. -->
+          <iframe class="demo-frame" title="Rocci Bird, a culebra Canvas game"
+                  data-src="./playground/?layout=view&amp;view=canvas&amp;example=Canvas%3A%20Rocci%20Bird"></iframe>
           <p class="fine-print">Sprites, collision, chiptune audio — all
             <a href="https://github.com/yhirose/culebra/blob/master/docs/stdlib.md#26-canvas">Canvas</a>,
             running live in your browser —
@@ -308,9 +279,10 @@ culebra build hello.cul -o hello &amp;&amp; ./hello  # AOT: compile once, ship t
         </div>
         <div class="showcase-card">
           <h3>A neural network</h3>
-          <div class="poster poster-wide poster-auto" id="mnist-poster">
-            <img src="./assets/mnist-poster.png" alt="MNIST digit recognition — draw a digit and a culebra-trained MLP scores it" width="1280" height="760">
-          </div>
+          <!-- ?run=1: it takes no keyboard and plays no sound, so there is
+               nothing for a click to add before it starts. -->
+          <iframe class="demo-frame demo-frame-wide" title="MNIST digit recognition in culebra"
+                  data-src="./playground/?layout=view&amp;view=canvas&amp;run=1&amp;example=Canvas%3A%20MNIST%20digits"></iframe>
           <p class="fine-print">Handwritten-digit recognition, end to end in
             culebra: a small MLP trained with the built-in
             <a href="https://github.com/yhirose/culebra/blob/master/docs/stdlib.md#8-tensor">Tensor</a>
@@ -375,8 +347,8 @@ culebra build hello.cul -o hello &amp;&amp; ./hello  # AOT: compile once, ship t
     document.getElementById("open-playground").href = "./playground/#code=" + encodeSampleCode();
 
     // Run swaps the listing for the Playground in an iframe. Loading it on
-    // demand is the point: the wasm interpreter is ~1.2 MB compressed, which
-    // nobody should pay for just to read the page.
+    // demand is the point: the wasm interpreter is ~1.6 MB as GitHub Pages
+    // serves it (gzip), which nobody should pay for just to read the page.
     document.getElementById("run-sample").addEventListener("click", function () {
       var frame = document.createElement("iframe");
       frame.className = "sample-frame";
@@ -415,44 +387,20 @@ culebra build hello.cul -o hello &amp;&amp; ./hello  # AOT: compile once, ship t
     wireCopyButton("copy-quickstart", "quickstart");
     wireCopyButton("copy-init", "init-cmd");
 
-    // YouTube-style poster → click → live game, on demand for the same
-    // ~1.2 MB-wasm reason as run-sample above. `?example=` names the catalog
-    // entry rather than inlining the source in `#code=`: the Playground then
-    // fetches its own copy, so this can't drift from what ships in
-    // examples/games/rocci-bird.cul, and the page carries no base64 of it.
-    function startPosterDemo(posterId, exampleTitle, frameTitle) {
-      var poster = document.getElementById(posterId);
-      // One shot — a second call must not stack another iframe underneath
-      // while the first is still loading.
-      if (poster.querySelector("iframe")) return;
-
-      var frame = document.createElement("iframe");
-      frame.className = "game-frame";
-      frame.title = frameTitle;
-      frame.src = "./playground/?layout=view&view=canvas&run=1&example=" + encodeURIComponent(exampleTitle);
-      // Stays hidden behind the poster (z-index) until the embedded page
-      // says its first frame is actually on screen.
-      window.addEventListener("message", function onFirstFrame(e) {
-        if (e.source !== frame.contentWindow) return;
-        if (!e.data || e.data.type !== "culebra-canvas-first-frame") return;
-        window.removeEventListener("message", onFirstFrame);
-        poster.querySelector("img").remove();
-        poster.style.cursor = "default";
+    // The live demos load once scrolled near, so merely opening the page
+    // never pays for the engine (see run-sample above) or MNIST's weights.
+    // Not loading="lazy": a browser starts those a couple of thousand pixels
+    // early, which on a desktop is the page's opening screen.
+    var demoObserver = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (!e.isIntersecting) return;
+        demoObserver.unobserve(e.target);
+        e.target.src = e.target.dataset.src;
       });
-      poster.appendChild(frame);
-    }
-    document.getElementById("play-rocci").addEventListener("click", function () {
-      this.remove();
-      startPosterDemo("rocci-poster", "Canvas: Rocci Bird", "Rocci Bird — culebra Playground");
+    }, { rootMargin: "200px" });
+    document.querySelectorAll(".demo-frame[data-src]").forEach(function (f) {
+      demoObserver.observe(f);
     });
-    // The MNIST demo takes no keyboard and plays no sound, so it starts by
-    // itself — but only once scrolled near, so merely opening the page never
-    // pays for the wasm interpreter and the weight CSVs.
-    new IntersectionObserver(function (entries, observer) {
-      if (!entries.some(function (e) { return e.isIntersecting; })) return;
-      observer.disconnect();
-      startPosterDemo("mnist-poster", "Canvas: MNIST digits", "MNIST digits — culebra Playground");
-    }, { rootMargin: "200px" }).observe(document.getElementById("mnist-poster"));
   </script>
 </body>
 </html>

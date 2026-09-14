@@ -276,10 +276,10 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 
 /* --- the play overlay --------------------------------------------------- */
 /* A view-only layout has no toolbar, so this is the only way to start the
-   program. The same circle as the landing page's poster button, over whatever
-   the pane holds: the empty pane before the first run, the last frame after
-   one, which makes it replay without a second control. [hidden] needs saying
-   here too; see .pg-tab-action[hidden]. */
+   program. A circle in the middle, over whatever the pane holds: the empty
+   pane before the first run, the last frame after one, which makes it replay
+   without a second control. [hidden] needs saying here too; see
+   .pg-tab-action[hidden]. */
 .pg-play {
   position: absolute; inset: 0; z-index: 5;
   display: flex; align-items: center; justify-content: center;
@@ -300,9 +300,17 @@ body { display: flex; flex-direction: column; overflow: hidden; }
    under the button, and down for good at the first run. */
 .pg-listing {
   position: absolute; inset: 0; z-index: 1;
+  display: flex; flex-direction: column;
   background: var(--code-bg); overflow: auto;
 }
 .pg-listing[hidden] { display: none; }
+.pg-listing .cm-editor { flex: 1; min-height: 0; }
+/* Over the listing when it stands in for a Canvas or TUI view this browser
+   cannot run (app.js's viewCannotRun). */
+.pg-listing-note {
+  margin: 0; padding: 0.6rem 1.2rem; font-size: 0.85rem; color: var(--muted);
+  background: var(--surface-2); border-bottom: 1px solid var(--border);
+}
 
 /* --- layouts (?layout=editor | ?layout=view) ---------------------------- */
 /* One ladder, two rungs: how much of the page a hosting iframe wants. A page
