@@ -2185,6 +2185,20 @@ inline const std::vector<std::string>& ast_optimizer_keep_rules() {
   return rules;
 }
 
+// Where a parse stopped and why: the grammar's own error, the nesting-depth
+// guard, or a rejected bare carriage return.
+struct ParseFailure {
+  size_t line = 0;
+  size_t col = 0;
+  std::string message;
+};
+
+// A failure as every CLI prints it: `path:line:col: message`, newline included.
+inline std::string format_parse_failure(const std::string& path,
+                                        const ParseFailure& f) {
+  return std::format("{}:{}:{}: {}\n", path, f.line, f.col, f.message);
+}
+
 // `expr` is taken by mutable reference because the newline normalization edits
 // it: the AST's tokens are string_views into this buffer, so it is the one that
 // has to hold the normalized bytes. Callers already had to keep it alive for as
@@ -2192,12 +2206,12 @@ inline const std::vector<std::string>& ast_optimizer_keep_rules() {
 // only visible to a caller parsing one buffer from several threads.
 inline std::shared_ptr<peg::Ast> parse(const std::string& path,
                                        std::string& expr,
-                                       std::vector<std::string>& msgs) {
+                                       std::vector<ParseFailure>& failures) {
   auto& parser = get_parser();
   _culebra_parse_depth = 0;  // an aborted parse leaves the count mid-flight
 
   parser.set_logger([&](size_t ln, size_t col, const std::string& err_msg) {
-    msgs.push_back(std::format("{}:{}:{}: {}\n", path, ln, col, err_msg));
+    failures.push_back({ln, col, err_msg});
   });
 
   std::shared_ptr<peg::Ast> ast;
@@ -2212,12 +2226,22 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
       return nullptr;
     }
   } catch (const CulebraError& e) {
-    msgs.push_back(std::format("{}:{}:{}: {}\n", path, e.line, e.col, e.what()));
+    failures.push_back({static_cast<size_t>(e.line), static_cast<size_t>(e.col),
+                        e.what()});
     return nullptr;
   }
 
   auto opt = peg::AstOptimizer(true, ast_optimizer_keep_rules());
   return desugar_postfix_modifiers(desugar_regex_literals(opt.optimize(ast)));
+}
+
+inline std::shared_ptr<peg::Ast> parse(const std::string& path,
+                                       std::string& expr,
+                                       std::vector<std::string>& msgs) {
+  std::vector<ParseFailure> failures;
+  auto ast = parse(path, expr, failures);
+  for (const auto& f : failures) msgs.push_back(format_parse_failure(path, f));
+  return ast;
 }
 
 // Like parse(), but keeps REGEX_LIT and postfix-modifier (`stmt if cond` /

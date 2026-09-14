@@ -13,6 +13,7 @@
 #include <base/exe_path.h>  // current_executable_path — `--doc --jobs` re-runs this
 #include <cli/formatter.h>
 #include <cli/init_cmd.h>
+#include <cli/lint_source.h>
 #include <cli/toolchain_cmd.h>
 #include <stdlib/proc.h>  // run_all — the doc shards are child processes
 #include <base/source_dir.h>
@@ -2141,10 +2142,6 @@ int run_lint(int argc, const char** argv) {
   int errors = 0, warnings = 0;
   bool had_failure = !expand_ok;
   for (const auto& path : files) {
-    // Per file, because `culebra lint .` sees both kinds in one pass — and
-    // keyed on the runner's own matcher, so the two cannot come to disagree
-    // about what a test file is.
-    culebra::set_test_ambients(culebra::default_test_cul_matcher(path));
     auto contents = read_file(path.c_str());
     if (!contents) {
       std::println(stderr, "culebra lint: can't open '{}'", path);
@@ -2152,38 +2149,14 @@ int run_lint(int argc, const char** argv) {
       continue;
     }
     std::string src = std::move(*contents);
-    // `collect_module` wants both views of the program: the lowered AST the
-    // backends run (sound error checks) and the source as written (advisory
-    // warnings). See its comment for why neither alone is enough.
-    auto lint_source = [&](std::string& s, vector<string>& parse_msgs,
-                           std::shared_ptr<peg::Ast>* authored_out = nullptr)
-        -> std::optional<vector<culebra::lint::Diagnostic>> {
-      auto authored = culebra::parse(path, s, parse_msgs);
-      if (!authored) return std::nullopt;
-      if (authored_out) *authored_out = authored;
-      // The lowering itself rejects malformed effects (two `return` clauses,
-      // a duplicate handler clause, …) by throwing. Report those as ordinary
-      // error diagnostics instead of letting them escape the CLI — a linter
-      // must never abort on the input it was asked to inspect.
-      std::shared_ptr<peg::Ast> lowered;
-      try {
-        lowered = culebra::parse_with_transforms(path, s, parse_msgs);
-      } catch (const culebra::CulebraError& e) {
-        return vector<culebra::lint::Diagnostic>{
-            {e.kind, e.what(), e.line, e.col, culebra::lint::Severity::Error}};
-      }
-      if (!lowered) return std::nullopt;
-      return culebra::lint::collect_module(*lowered, *authored);
-    };
-
-    vector<string> parse_msgs;
-    std::shared_ptr<peg::Ast> authored;
-    auto diags = lint_source(src, parse_msgs, &authored);
-    if (!diags) {
-      for (const auto& m : parse_msgs) std::print(stderr, "{}", m);
+    auto linted = culebra::lint_source(path, src);
+    if (!linted.parsed) {
+      for (const auto& m : linted.messages) std::print(stderr, "{}", m);
       had_failure = true;
       continue;
     }
+    vector<culebra::lint::Diagnostic> diags = std::move(linted.diagnostics);
+    std::shared_ptr<peg::Ast> authored = linted.authored;
 
     if (fix) {
       // Only lines that hold one import and nothing else can be deleted
@@ -2191,7 +2164,7 @@ int run_lint(int argc, const char** argv) {
       auto removable = culebra::lint::removable_import_lines(*authored);
       std::set<long> import_lines;
       int shared_lines = 0;
-      for (const auto& d : *diags)
+      for (const auto& d : diags)
         if (d.kind == "UnusedImport") {
           if (removable.contains(d.line))
             import_lines.insert(d.line);
@@ -2205,14 +2178,13 @@ int run_lint(int argc, const char** argv) {
                      path, shared_lines, shared_lines == 1 ? "" : "s");
       if (!import_lines.empty()) {
         auto fixed_src = remove_source_lines(src, import_lines);
-        vector<string> fix_msgs;
-        auto fixed_diags = lint_source(fixed_src, fix_msgs);
-        bool verified = fixed_diags.has_value();
+        auto fixed = culebra::lint_source(path, fixed_src);
+        bool verified = fixed.parsed;
         if (verified) {
           int orig_errors = 0, new_errors = 0;
-          for (const auto& d : *diags)
+          for (const auto& d : diags)
             if (d.severity == culebra::lint::Severity::Error) orig_errors++;
-          for (const auto& d : *fixed_diags) {
+          for (const auto& d : fixed.diagnostics) {
             if (d.severity == culebra::lint::Severity::Error) new_errors++;
             if (d.kind == "UnusedImport") verified = false;
           }
@@ -2229,7 +2201,7 @@ int run_lint(int argc, const char** argv) {
             std::println("{}: fixed {} unused import{}", path,
                         import_lines.size(), import_lines.size() == 1 ? "" : "s");
             src = std::move(fixed_src);
-            diags = std::move(fixed_diags);
+            diags = std::move(fixed.diagnostics);
           }
         } else {
           std::println(stderr,
@@ -2241,7 +2213,7 @@ int run_lint(int argc, const char** argv) {
       }
     }
 
-    for (const auto& d : *diags) {
+    for (const auto& d : diags) {
       const char* sev =
           d.severity == culebra::lint::Severity::Error ? "error" : "warning";
       std::println("{}:{}:{}: {}: {}", path, d.line, d.col, sev, d.message);
