@@ -1076,10 +1076,13 @@ if(CULEBRA_ENABLE_JIT)
   # source_dir.cc, not the target — see include/base/source_dir.h.
   set_source_files_properties(./src/source_dir.cc PROPERTIES
     COMPILE_DEFINITIONS "CULEBRA_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"")
+  # The one TU that includes the generated culebra_rt_assets.h — see
+  # include/base/embedded_rt.h.
+  target_sources(culebra PRIVATE ./src/embedded_rt.cc)
 
   if(CULEBRA_DEV_NO_RT)
   # Fast inner-loop build: don't compile or embed the runtime archives.
-  # Provide a stub culebra_rt_assets.h so main.cc still links; an empty
+  # Provide a stub culebra_rt_assets.h so embedded_rt.cc still links; an empty
   # CulebraRT::FS makes `culebra build` (AOT) fail with a clear
   # "embedded runtime archive ... not found" instead of crashing.
   set(_dev_rt_stub_dir "${CMAKE_CURRENT_BINARY_DIR}/dev_rt_stub")

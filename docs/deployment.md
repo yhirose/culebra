@@ -948,7 +948,10 @@ culebra wrap mylib_binding.cpp --link "-L/opt/mylib/lib -lmylib" -o ext-culebra
 in (the checkout it was built from, or `$CULEBRA_HOME`), caching under
 `~/.cache/culebra-wrap/`. With ccache configured the rebuild is
 effectively compile-your-declaration + relink. `--lto` produces an
-optimized binary (slower build).
+optimized binary (slower build). `--build-dir <dir>` builds in `<dir>`
+instead; ccache keys on paths relative to `CCACHE_BASEDIR`, so a
+directory beside an existing build of the same checkout (with the same
+`--lto` setting) reuses that build's objects.
 
 ### Use — on every backend
 

@@ -28,7 +28,7 @@
 #define CULEBRA_WRAP_LINK_FLAGS ""
 #endif
 #include <aot/scan.h>
-#include "culebra_rt_assets.h"
+#include <base/embedded_rt.h>
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
 #endif
@@ -330,19 +330,8 @@ constexpr std::string_view kNullDevice = "/dev/null";
 // runtime instead of an older one left behind on disk. FNV-1a 64-bit,
 // truncated to 8 hex chars; computed once per process.
 static std::string asset_fingerprint() {
-  static const std::string cached = []() {
-    std::uint64_t h = 0xcbf29ce484222325ULL;
-    for (const auto& entry : CulebraRT::FS) {
-      if (!entry.is_file()) continue;
-      auto data = entry.bytes();
-      if (!data) continue;
-      for (auto b : *data) {
-        h ^= b;
-        h *= 0x100000001b3ULL;
-      }
-    }
-    return std::format("{:016x}", h).substr(0, 8);
-  }();
+  static const std::string cached =
+      std::format("{:016x}", culebra::embedded_rt_hash()).substr(0, 8);
   return cached;
 }
 
@@ -447,16 +436,8 @@ static std::filesystem::path materialize_archive(
   if (std::filesystem::exists(cache)) return cache;
 
   // The entries are embedded compressed (see CMakeLists).
-  auto it = CulebraRT::FS.find(name);
-  if (it == CulebraRT::FS.end()) {
-    err = std::format("embedded runtime archive '{}' not found", name);
-    return {};
-  }
-  auto packed = (*it).text();
-  if (!packed) {
-    err = std::format("embedded runtime archive '{}' has no data", name);
-    return {};
-  }
+  auto packed = culebra::embedded_rt_archive(name, err);
+  if (!packed) return {};
   auto archive = culebra::compress::gunzip(*packed);
   if (!archive.error.empty()) {
     err = std::format("embedded runtime archive '{}' is corrupt: {}", name,
@@ -1400,6 +1381,7 @@ struct WrapOptions {
   vector<string> sources;
   string output = "culebra-wrapped";
   string link_flags;
+  string build_dir;
   bool lto = false;
 };
 
@@ -1408,6 +1390,8 @@ void print_wrap_usage(ostream& os) {
         "  -o <path>        output binary (default: ./culebra-wrapped)\n"
         "  --link <flags>   extra link flags for the wrapped library\n"
         "  --lto            build the extended binary with LTO (slower)\n"
+        "  --build-dir <d>  CMake build tree to use (default: a cache\n"
+        "                   dir under ~/.cache/culebra-wrap)\n"
         "  CULEBRA_HOME     source checkout to build against (default:\n"
         "                   the path this binary was built from)\n";
 }
@@ -1420,6 +1404,8 @@ int run_wrap(int argc, const char** argv) {
       opts.output = argv[++i];
     } else if (a == "--link" && i + 1 < argc) {
       opts.link_flags = argv[++i];
+    } else if (a == "--build-dir" && i + 1 < argc) {
+      opts.build_dir = argv[++i];
     } else if (a == "--lto") {
       opts.lto = true;
     } else if (a == "-h" || a == "--help") {
@@ -1452,6 +1438,11 @@ int run_wrap(int argc, const char** argv) {
     std::println(stderr, "culebra wrap: --link must not contain a single quote");
     return 1;
   }
+  if (opts.build_dir.find('\'') != string::npos) {
+    std::println(stderr,
+        "culebra wrap: --build-dir must not contain a single quote");
+    return 1;
+  }
 
   // The source tree to rebuild. `wrap` needs a buildable tree, not just the
   // headers `build` needs, so it checks for CMakeLists.txt.
@@ -1465,18 +1456,26 @@ int run_wrap(int argc, const char** argv) {
     return 1;
   }
 
-  // One cache dir per (sources, link, lto) configuration so switching
-  // declarations doesn't thrash a shared build tree.
-  string fingerprint;
-  for (const auto& s : opts.sources) fingerprint += s + ";";
-  fingerprint += opts.link_flags + (opts.lto ? "|lto" : "");
-  auto cache_root = home_cache_root("culebra-wrap");
-  auto build_dir =
-      cache_root / std::format("{:016x}", std::hash<string>{}(fingerprint));
-  // Drop old build trees before adding another — each is a full CMake build
-  // dir, so the wrap cache bloats even faster than the runtime-archive one.
-  prune_stale_cache_dirs(build_dir);
   std::error_code ec;
+  std::filesystem::path build_dir;
+  if (!opts.build_dir.empty()) {
+    // A caller-chosen tree, e.g. one beside the checkout's own build/: ccache
+    // keys on paths relative to CCACHE_BASEDIR, so only a tree at the same
+    // depth can reuse that build's objects.
+    build_dir = std::filesystem::absolute(opts.build_dir, ec);
+  } else {
+    // One cache dir per (sources, link, lto) configuration so switching
+    // declarations doesn't thrash a shared build tree.
+    string fingerprint;
+    for (const auto& s : opts.sources) fingerprint += s + ";";
+    fingerprint += opts.link_flags + (opts.lto ? "|lto" : "");
+    build_dir = home_cache_root("culebra-wrap") /
+                std::format("{:016x}", std::hash<string>{}(fingerprint));
+    // Drop old build trees before adding another — each is a full CMake
+    // build dir, so the wrap cache bloats even faster than the
+    // runtime-archive one.
+    prune_stale_cache_dirs(build_dir);
+  }
   std::filesystem::create_directories(build_dir, ec);
 
   string wrap_sources;

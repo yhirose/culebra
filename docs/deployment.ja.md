@@ -943,6 +943,10 @@ culebra wrap mylib_binding.cpp --link "-L/opt/mylib/lib -lmylib" -o ext-culebra
 `$CULEBRA_HOME`）にあなたのTUを加えて再ビルドし、`~/.cache/culebra-wrap/`
 にキャッシュします。ccacheがあれば実質「宣言のコンパイル + relink」で
 済みます。`--lto`で最適化バイナリ（ビルドは遅くなります）。
+`--build-dir <dir>`を渡すと`<dir>`でビルドします。ccacheは
+`CCACHE_BASEDIR`からの相対パスでキャッシュを引くので、同じチェックアウトの
+既存ビルドと同じ深さのディレクトリを選び、`--lto`の有無も揃えれば、
+そのビルドのオブジェクトを再利用できます。
 
 ### 使う — 全 backend で
 

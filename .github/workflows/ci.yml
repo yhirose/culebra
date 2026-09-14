@@ -226,8 +226,9 @@ jobs:
     env:
       # The wrap rebuild must configure exactly like build-ubuntu's Build step
       # (LTO on, Canvas window off, ccache launcher) or its ccache restore
-      # misses on every TU (see wrap_test.sh on CULEBRA_WRAP_LTO). Harmless
-      # for the other lanes, which never run cmake.
+      # misses on every TU (wrap_test.sh reads CULEBRA_WRAP_LTO, and builds
+      # beside build/ for the same reason). Harmless for the other lanes,
+      # which never run cmake.
       CULEBRA_WRAP_LTO: "1"
       CULEBRA_CANVAS_WINDOW_DEFAULT: OFF
       CCACHE_DIR: ${{ github.workspace }}/.ccache
