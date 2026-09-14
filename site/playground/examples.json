@@ -175,6 +175,11 @@
       "name": "Graphics",
       "examples": [
         {
+          "title": "Canvas: Barnsley Fern",
+          "path": "examples/graphics/barnsley_fern.cul",
+          "assets": []
+        },
+        {
           "title": "Canvas: Perlin Noise",
           "path": "examples/graphics/perlin_noise.cul",
           "assets": []

@@ -1,0 +1,67 @@
+# Barnsley fern — the iterated function system from Michael Barnsley's
+# "Fractals Everywhere" (table III.3). A point jumps under one of four
+# affine maps picked at random by weight; the orbit settles onto the fern.
+#
+#   stem              x' = 0                  y' = 0.16y
+#   smaller leaflets  x' =  0.85x + 0.04y     y' = -0.04x + 0.85y + 1.6
+#   left leaflet      x' =  0.20x - 0.26y     y' =  0.23x + 0.22y + 1.6
+#   right leaflet     x' = -0.15x + 0.28y     y' =  0.26x + 0.24y + 0.44
+#
+# Run it:  culebra examples/graphics/barnsley_fern.cul   (Esc to quit)
+
+let W = 360
+let H = 600
+let POINTS_PER_FRAME = 2000
+let MAX_POINTS = 400000
+
+# The fern lies within -2.1820 < x < 2.6558 and 0 <= y < 9.9983.
+let MARGIN = 20.0
+let SCALE = (H - 2 * MARGIN) / 9.9983
+let OFFSET_X = (W - (2.6558 + 2.1820) * SCALE) / 2 + 2.1820 * SCALE
+
+let BACKGROUND = Canvas.rgba(12, 18, 14)
+
+# lighter green toward the tip, so the fronds read against each other
+fn shade(y) {
+  Canvas.hsv(0.33 - y * 0.008, 0.75, 0.45 + y * 0.05)
+}
+
+# The points accumulate in an offscreen sprite; each frame is one blit.
+let fern = Canvas.Sprite.blank(W, H, BACKGROUND)
+
+mut x = 0.0
+mut y = 0.0
+mut plotted = 0
+
+fn step() {
+  r = Random.uniform(0.0, 1.0)
+  let (nx, ny) = if r < 0.01 {
+    (0.0, 0.16 * y)
+  } else if r < 0.86 {
+    (0.85 * x + 0.04 * y, -0.04 * x + 0.85 * y + 1.6)
+  } else if r < 0.93 {
+    (0.20 * x - 0.26 * y, 0.23 * x + 0.22 * y + 1.6)
+  } else {
+    (-0.15 * x + 0.28 * y, 0.26 * x + 0.24 * y + 0.44)
+  }
+  x = nx
+  y = ny
+}
+
+Canvas.title('barnsley fern')
+Canvas.run(W, H, fn () {
+  Canvas.quit() if Canvas.key('escape')
+
+  if plotted < MAX_POINTS {
+    Canvas.draw_to(fern, fn () {
+      for _ in 0..POINTS_PER_FRAME {
+        step()
+        Canvas.set_pixel(OFFSET_X + x * SCALE, H - MARGIN - y * SCALE, shade(y))
+      }
+    })
+    plotted += POINTS_PER_FRAME
+  }
+
+  fern.draw(0, 0)
+  true
+}, frames: 36000)
