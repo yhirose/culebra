@@ -445,93 +445,60 @@ fn pat_ufcs_hook_throw(N) {
   }
 }
 
+# One row per pattern: the name gc_leak_check.sh lists and runs, and its body.
+let PATTERNS = [
+  ["object_literal", pat_object_literal],
+  ["array_literal", pat_array_literal],
+  ["instance_plain", pat_instance_plain],
+  ["default_param", pat_default_param],
+  ["operator_overload", pat_operator_overload],
+  ["user_method", pat_user_method],
+  ["free_fn", pat_free_fn],
+  ["ufcs_chain", pat_ufcs_chain],
+  ["closure", pat_closure],
+  ["map_collect", pat_map_collect],
+  ["reduce", pat_reduce],
+  ["match_bind", pat_match_bind],
+  ["match_stmt", pat_match_stmt],
+  ["cmp_lt", pat_cmp_lt],
+  ["cmp_eq", pat_cmp_eq],
+  ["neg_op", pat_neg_op],
+  ["defer_obj", pat_defer_obj],
+  ["forin_keys", pat_forin_keys],
+  ["forin_range_value", pat_forin_range_value],
+  ["forin_proto_iterable", pat_forin_proto_iterable],
+  ["forin_dispose_throw", pat_forin_dispose_throw],
+  ["forin_throw_unwind", pat_forin_throw_unwind],
+  ["forin_set_throw", pat_forin_set_throw],
+  ["forin_generator", pat_forin_generator],
+  ["class_in_fn", pat_class_in_fn],
+  ["throw_in_literal", pat_throw_in_literal],
+  ["forin_early_return", pat_forin_early_return],
+  ["auto_parameters", pat_auto_parameters],
+  ["set_add_remove", pat_set_add_remove],
+  ["iter_map_collect_fused", pat_iter_map_collect_fused],
+  ["iter_for_each_inline", pat_iter_for_each_inline],
+  ["iter_reduce_inline", pat_iter_reduce_inline],
+  ["iter_filter_lazy", pat_iter_filter_lazy],
+  ["iter_flat_map", pat_iter_flat_map],
+  ["iter_find_driver", pat_iter_find_driver],
+  ["iter_any_driver", pat_iter_any_driver],
+  ["array_sized_default", pat_array_sized_default],
+  ["deco_let", pat_deco_let],
+  ["conditional_decl", pat_conditional_decl],
+  ["ufcs_hook_throw", pat_ufcs_hook_throw],
+]
+
 fn run(which, N) {
-  if which == "object_literal" {
-    pat_object_literal(N)
-  } else if which == "array_literal" {
-    pat_array_literal(N)
-  } else if which == "instance_plain" {
-    pat_instance_plain(N)
-  } else if which == "default_param" {
-    pat_default_param(N)
-  } else if which == "operator_overload" {
-    pat_operator_overload(N)
-  } else if which == "user_method" {
-    pat_user_method(N)
-  } else if which == "free_fn" {
-    pat_free_fn(N)
-  } else if which == "ufcs_chain" {
-    pat_ufcs_chain(N)
-  } else if which == "closure" {
-    pat_closure(N)
-  } else if which == "map_collect" {
-    pat_map_collect(N)
-  } else if which == "reduce" {
-    pat_reduce(N)
-  } else if which == "match_bind" {
-    pat_match_bind(N)
-  } else if which == "match_stmt" {
-    pat_match_stmt(N)
-  } else if which == "cmp_lt" {
-    pat_cmp_lt(N)
-  } else if which == "cmp_eq" {
-    pat_cmp_eq(N)
-  } else if which == "neg_op" {
-    pat_neg_op(N)
-  } else if which == "defer_obj" {
-    pat_defer_obj(N)
-  } else if which == "forin_keys" {
-    pat_forin_keys(N)
-  } else if which == "forin_range_value" {
-    pat_forin_range_value(N)
-  } else if which == "forin_proto_iterable" {
-    pat_forin_proto_iterable(N)
-  } else if which == "forin_dispose_throw" {
-    pat_forin_dispose_throw(N)
-  } else if which == "forin_throw_unwind" {
-    pat_forin_throw_unwind(N)
-  } else if which == "forin_set_throw" {
-    pat_forin_set_throw(N)
-  } else if which == "forin_generator" {
-    pat_forin_generator(N)
-  } else if which == "class_in_fn" {
-    pat_class_in_fn(N)
-  } else if which == "throw_in_literal" {
-    pat_throw_in_literal(N)
-  } else if which == "forin_early_return" {
-    pat_forin_early_return(N)
-  } else if which == "auto_parameters" {
-    pat_auto_parameters(N)
-  } else if which == "set_add_remove" {
-    pat_set_add_remove(N)
-  } else if which == "iter_map_collect_fused" {
-    pat_iter_map_collect_fused(N)
-  } else if which == "iter_for_each_inline" {
-    pat_iter_for_each_inline(N)
-  } else if which == "iter_reduce_inline" {
-    pat_iter_reduce_inline(N)
-  } else if which == "iter_filter_lazy" {
-    pat_iter_filter_lazy(N)
-  } else if which == "iter_flat_map" {
-    pat_iter_flat_map(N)
-  } else if which == "iter_find_driver" {
-    pat_iter_find_driver(N)
-  } else if which == "iter_any_driver" {
-    pat_iter_any_driver(N)
-  } else if which == "array_sized_default" {
-    pat_array_sized_default(N)
-  } else if which == "deco_let" {
-    pat_deco_let(N)
-  } else if which == "conditional_decl" {
-    pat_conditional_decl(N)
-  } else if which == "ufcs_hook_throw" {
-    pat_ufcs_hook_throw(N)
-  } else {
-    print("unknown pattern: " + which + "\n")
-    return
+  for p in PATTERNS {
+    if p[0] == which {
+      p[1](N)
+      let st = GC.stat()
+      print(which + " live=" + st.live_objects.to_string() + "\n")
+      return
+    }
   }
-  let st = GC.stat()
-  print(which + " live=" + st.live_objects.to_string() + "\n")
+  print("unknown pattern: " + which + "\n")
 }
 
 fn mk(x) {
@@ -660,50 +627,8 @@ fn mtest2(o) {
 }
 
 if which == "list" {
-  let names = [
-    "object_literal",
-    "array_literal",
-    "instance_plain",
-    "default_param",
-    "operator_overload",
-    "user_method",
-    "free_fn",
-    "ufcs_chain",
-    "closure",
-    "map_collect",
-    "reduce",
-    "match_bind",
-    "match_stmt",
-    "cmp_lt",
-    "cmp_eq",
-    "neg_op",
-    "defer_obj",
-    "forin_keys",
-    "forin_range_value",
-    "forin_proto_iterable",
-    "forin_dispose_throw",
-    "forin_throw_unwind",
-    "forin_set_throw",
-    "forin_generator",
-    "class_in_fn",
-    "throw_in_literal",
-    "forin_early_return",
-    "auto_parameters",
-    "set_add_remove",
-    "iter_map_collect_fused",
-    "iter_for_each_inline",
-    "iter_reduce_inline",
-    "iter_filter_lazy",
-    "iter_flat_map",
-    "iter_find_driver",
-    "iter_any_driver",
-    "array_sized_default",
-    "deco_let",
-    "conditional_decl",
-    "ufcs_hook_throw",
-  ]
-  for n in names {
-    print(n + "\n")
+  for p in PATTERNS {
+    print(p[0] + "\n")
   }
 } else {
   run(which, N)

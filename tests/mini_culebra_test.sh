@@ -4,11 +4,8 @@
 # implementation is the compiler's oracle. Each sample must produce
 # identical stdout from both, under the executor and --jit-faststart.
 #
-# --jit-faststart rather than --jit: at O2 compiling the front end itself is
-# minutes of LLVM optimization (its functions run to tens of thousands of IR
-# lines) while running the samples takes a second, and what this test checks
-# is the front end against its oracle. Optimized JIT output is the tests/*.cul
-# sweep's job.
+# Not --jit: at O2 the front end's own compile takes minutes and the samples a
+# second; optimized JIT output is the tests/*.cul sweep's job.
 #
 # No AOT leg: pl0_codegen_test.sh already proves the CodeGen archive links
 # and runs under AOT, and this test adds no new runtime surface to that

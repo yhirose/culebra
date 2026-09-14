@@ -45,21 +45,11 @@ BASELINE="$HERE/leak_baseline.txt"
 THRESH="${LEAKFUZZ_THRESH:-20}"
 mkdir -p "$WORK"
 
-# Generate cases, then prepend the leak-measuring preamble (not difftest's).
-if ! "$CULEBRA" --vm "$HERE/gen.cul" > "$WORK/cases.cul"; then
-  echo "leakfuzz: FAIL — generator gen.cul did not run cleanly" >&2; exit 1
-fi
-cases=$(grep -c '^_p(' "$WORK/cases.cul")
-if [ "$cases" -lt 1000 ]; then
-  echo "leakfuzz: FAIL — only $cases cases generated (expected >= 1000)" >&2; exit 1
-fi
-
-# Chunk for JIT compile time + parallelism (identical rationale to run.sh).
-CHUNK="${LEAKFUZZ_CHUNK:-236}"
-chunkdir="$WORK/chunks"; rm -rf "$chunkdir"; mkdir -p "$chunkdir"
-split -l "$CHUNK" "$WORK/cases.cul" "$chunkdir/c."
-chunks=( "$chunkdir"/c.* )
-for cf in "${chunks[@]}"; do cat "$HERE/leak_preamble.cul" "$HERE/canvas_fixtures.cul" "$cf" > "$cf.cul"; done
+# The difftest corpus, chunked behind the leak-measuring preamble.
+source "$HERE/corpus.sh"
+cases=$(corpus_generate "$CULEBRA" "$WORK") || exit 1
+corpus_chunk "$WORK" "${LEAKFUZZ_CHUNK:-}" "$HERE/leak_preamble.cul"
+chunks=( "${CORPUS_CHUNKS[@]}" )
 
 JOBS="${LEAKFUZZ_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)}"
 run_one() {

@@ -22,11 +22,8 @@ if command -v ccache > /dev/null 2>&1; then
 fi
 
 EXT="$OUT/ext-culebra"
-# The rebuild hits the ccache entries the binary's own build left only when it
-# compiles with the same flags from a tree at the same depth: ccache keys on
-# paths relative to CCACHE_BASEDIR (the checkout), so build-wrap/ sits beside
-# build/, and CULEBRA_WRAP_LTO=1 matches a build that ran with LTO on (CI's).
-# In a tree under ~/.cache nearly every TU missed: 8-11 min of CI per run.
+# Reuse the binary's own ccache entries: ccache keys on paths relative to
+# CCACHE_BASEDIR, so build beside build/, and match its LTO (CULEBRA_WRAP_LTO=1).
 wrap_opts=(--build-dir "$ROOT/build-wrap")
 [[ "${CULEBRA_WRAP_LTO:-}" == 1 ]] && wrap_opts+=(--lto)
 # Two binding TUs in one extended binary: the Vec2 example, and the probe that

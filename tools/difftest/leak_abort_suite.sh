@@ -77,24 +77,12 @@ for bf in "$HERE"/leak_abort_bare.d/*.cul; do
 done
 [ "$bare_fail" = 0 ] || exit 1
 
-# Generate cases, then chunk. Chunk size balances JIT compile time against the
-# per-case fallback cost (a bigger chunk clears more clean cases per process but
-# means more solo re-runs when it aborts). The compile grows superlinearly with
-# the chunk (measured 3.3 s at 236 lines, 8.6 s at 471, 25.6 s at 942), so past
-# ~236 a bigger chunk costs more CPU in total, not less.
-if ! "$CULEBRA" --vm "$HERE/gen.cul" > "$WORK/cases.cul"; then
-  echo "leak-abort-suite: FAIL — generator gen.cul did not run cleanly" >&2; exit 1
-fi
-cases=$(grep -c '^_p(' "$WORK/cases.cul")
-if [ "$cases" -lt 1000 ]; then
-  echo "leak-abort-suite: FAIL — only $cases cases generated (expected >= 1000)" >&2; exit 1
-fi
-
-CHUNK="${LEAKABORT_CHUNK:-236}"
-chunkdir="$WORK/chunks"; rm -rf "$chunkdir"; mkdir -p "$chunkdir"
-split -l "$CHUNK" "$WORK/cases.cul" "$chunkdir/c."
-chunks=( "$chunkdir"/c.* )
-for cf in "${chunks[@]}"; do cat "$PREAMBLE" "$HERE/canvas_fixtures.cul" "$cf" > "$cf.cul"; done
+# The difftest corpus, chunked behind the audit preamble (a chunk that aborts
+# costs a solo re-run of each of its cases, phase 2).
+source "$HERE/corpus.sh"
+cases=$(corpus_generate "$CULEBRA" "$WORK") || exit 1
+corpus_chunk "$WORK" "${LEAKABORT_CHUNK:-}" "$PREAMBLE"
+chunks=( "${CORPUS_CHUNKS[@]}" )
 
 JOBS="${LEAKABORT_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)}"
 

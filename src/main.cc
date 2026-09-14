@@ -1459,9 +1459,7 @@ int run_wrap(int argc, const char** argv) {
   std::error_code ec;
   std::filesystem::path build_dir;
   if (!opts.build_dir.empty()) {
-    // A caller-chosen tree, e.g. one beside the checkout's own build/: ccache
-    // keys on paths relative to CCACHE_BASEDIR, so only a tree at the same
-    // depth can reuse that build's objects.
+    // Caller-chosen, e.g. beside build/ to share its ccache entries.
     build_dir = std::filesystem::absolute(opts.build_dir, ec);
   } else {
     // One cache dir per (sources, link, lto) configuration so switching

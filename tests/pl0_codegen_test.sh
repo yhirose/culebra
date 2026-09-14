@@ -4,8 +4,7 @@
 # other compiles it to Core-IR and runs cpp-vmlib's bytecode executor), each
 # the other's oracle. Every examples/languages/pl0/samples/*.pas must produce identical
 # stdout from both, across the executor, --jit-faststart and an AOT-built
-# binary (the optimized build of the front end is the AOT leg's; at O2 the JIT
-# leg is seconds of compile per sample — see mini_culebra_test.sh).
+# binary (why not --jit: see mini_culebra_test.sh).
 #
 # Can't be a plain tests/*.cul sweep test: it has to invoke two whole
 # top-level scripts as subprocesses (one of them needs stdin), and needs to

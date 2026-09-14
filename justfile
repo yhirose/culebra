@@ -407,7 +407,7 @@ asan:
 # Clean build directories + local editor/cache scratch (all regenerable)
 [group("build")]
 clean:
-    rm -rf build build-dev build-gate build-asan build-assert build-no-jit build-cov
+    rm -rf build build-dev build-gate build-asan build-assert build-no-jit build-cov build-wrap
     rm -rf .cache-ccache .zed .vscode .vimspector.json misc/*/.zed
 
 # Regenerate misc/culebra.peg + the Vim/VSCode AUTO-KEYWORDS from include/frontend/parser.h
@@ -806,10 +806,7 @@ _run-tests BACKEND:
                 exit 0
             fi
             out_aot=$(${TIMEOUT_BIN:+$TIMEOUT_BIN "$CULEBRA_TEST_TIMEOUT"} "$bin")
-            # Against the executor, the reference lane the symmetry phase holds
-            # --jit to: the same check without compiling every file under the
-            # JIT a second time (CI runs this lane apart from that phase, and
-            # the worst file is 27 s of compile).
+            # --vm: the reference lane the symmetry phase holds --jit to.
             out_vm=$(cul --vm "$f")
             if [[ "$out_aot" != "$out_vm" ]]; then
                 {
