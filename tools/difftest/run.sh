@@ -26,7 +26,7 @@ out_vm="$WORK/out_vm.txt"
 # Build the corpus. Each chunk record is one line:
 #   <label> ::: ok=<Type>:<repr>      | err=<kind>|<message>|<line>|<col>
 cases=$(corpus_generate "$CULEBRA" "$WORK") || exit 1
-corpus_chunk "$WORK" "${DIFFTEST_CHUNK:-400}"
+corpus_chunk "$WORK" "${DIFFTEST_CHUNK:-}"
 chunks=( "${CORPUS_CHUNKS[@]}" )
 
 # Run every (chunk × backend) as an independent parallel job — this is the bulk

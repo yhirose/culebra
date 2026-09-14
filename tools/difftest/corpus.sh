@@ -40,11 +40,12 @@ corpus_generate() {
 # runners independent units of work. Each `_p` case is self-contained, so a
 # chunk never splits one, and every lane runs the identical chunk file, so
 # error-record line numbers stay chunk-local but consistent across lanes.
-# ~400 is the empirical sweet spot on an 8-core box (smaller modules compile
-# faster and balance the pool better, but below ~256 per-process startup starts
-# to dominate). Tunable.
+# Per case, a chunk costs about the same from 118 to 236 lines (12 ms of JIT)
+# and ~10% more at 400, where the superlinear growth starts to show; startup
+# does not dominate even at 118. 236 keeps the chunks small without making
+# thousands of processes. Tunable.
 corpus_chunk() {
-  local work="$1" size="${2:-400}" chunkdir cf
+  local work="$1" size="${2:-236}" chunkdir cf
   chunkdir="$work/chunks"
   rm -rf "$chunkdir"; mkdir -p "$chunkdir"
   split -l "$size" "$work/cases.cul" "$chunkdir/c."

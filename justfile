@@ -558,16 +558,11 @@ _run-tests BACKEND:
         collect_results "$d" "jit"
     }
 
-    # Where this phase parks each file's JIT output for the AOT phase to reuse
-    # (see run_aot): the two phases both need `culebra --jit <file>`, and for
-    # the slowest file that is 27 s of JIT compile paid twice.
-    jit_out="$job_dir/jit-out"
-
     run_diff_vm_jit() {
         local d="$job_dir/diff"
-        mkdir -p "$d" "$jit_out"
+        mkdir -p "$d"
         printf '%s\n' tests/*.cul | xargs -n1 -P "$JOBS" -I '{}' bash -c '
-            f="$1"; d="$2"; jit_out="$3"
+            f="$1"; d="$2"
             name=$(basename "$f" .cul)
             # The executor is the reference lane (the default engine; the
             # tree-walker oracle seat retired in B7-c — behavior intent is
@@ -600,10 +595,7 @@ _run-tests BACKEND:
                 touch "$d/$name.fail"
                 exit 0
             fi
-            # Only an agreed run is worth reusing (run_aot rereads it); a
-            # mismatch fails the gate here anyway.
-            printf "%s" "$out_jit" > "$jit_out/$name.txt"
-        ' _ '{}' "$d" "$jit_out"
+        ' _ '{}' "$d"
         if ! collect_results "$d" "(vm vs jit)"; then
             echo "test (vm vs jit) FAIL" >&2
             exit 1
@@ -802,7 +794,7 @@ _run-tests BACKEND:
         {{nice_cmd}} bash misc/aot_axes/probe_webview_aot_link.sh "$BIN" "$out_dir/webview" \
             || exit 1
         printf '%s\n' tests/*.cul | xargs -n1 -P "$JOBS" -I '{}' bash -c '
-            f="$1"; d="$2"; out_dir="$3"; jit_out="$4"
+            f="$1"; d="$2"; out_dir="$3"
             name=$(basename "$f" .cul)
             bin="$out_dir/$name"
             if ! cul build "$f" -o "$bin" 2> "$d/$name.build.err"; then
@@ -814,23 +806,19 @@ _run-tests BACKEND:
                 exit 0
             fi
             out_aot=$(${TIMEOUT_BIN:+$TIMEOUT_BIN "$CULEBRA_TEST_TIMEOUT"} "$bin")
-            # The symmetry phase already ran this file under the JIT and kept
-            # the output; recompiling it here costs 27 s on the worst file for
-            # a byte-identical result. Standalone `just test aot` has no such
-            # file and falls back to running it.
-            if [[ -f "$jit_out/$name.txt" ]]; then
-                out_jit=$(cat "$jit_out/$name.txt")
-            else
-                out_jit=$(cul --jit "$f")
-            fi
-            if [[ "$out_aot" != "$out_jit" ]]; then
+            # Against the executor, the reference lane the symmetry phase holds
+            # --jit to: the same check without compiling every file under the
+            # JIT a second time (CI runs this lane apart from that phase, and
+            # the worst file is 27 s of compile).
+            out_vm=$(cul --vm "$f")
+            if [[ "$out_aot" != "$out_vm" ]]; then
                 {
-                    echo "AOT and JIT outputs differ for $f:"
-                    diff <(printf "%s" "$out_aot") <(printf "%s" "$out_jit") || true
+                    echo "AOT and --vm outputs differ for $f:"
+                    diff <(printf "%s" "$out_aot") <(printf "%s" "$out_vm") || true
                 } > "$d/$name.err"
                 touch "$d/$name.fail"
             fi
-        ' _ '{}' "$d" "$out_dir" "$jit_out"
+        ' _ '{}' "$d" "$out_dir"
         if ! collect_results "$d" "aot"; then
             echo "test aot FAIL" >&2
             exit 1
@@ -849,7 +837,7 @@ _run-tests BACKEND:
         # the source again, two seconds slower per module); read it off the
         # emitted IR and the linked outputs.
         {{nice_cmd}} bash tools/checks/check_baked_preamble.sh "$(dirname "$BIN")" || exit 1
-        echo "test aot OK: AOT binaries match --jit"
+        echo "test aot OK: AOT binaries match --vm"
     }
 
     run_embed() {

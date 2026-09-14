@@ -49,7 +49,7 @@ selftest=$("$HERE/release_diff_selftest.sh" 2>&1) || {
 }
 
 cases=$(corpus_generate "$CULEBRA" "$WORK") || exit 1
-corpus_chunk "$WORK" "${DIFFTEST_CHUNK:-400}"
+corpus_chunk "$WORK" "${DIFFTEST_CHUNK:-}"
 chunks=( "${CORPUS_CHUNKS[@]}" )
 
 JOBS="${DIFFTEST_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)}"

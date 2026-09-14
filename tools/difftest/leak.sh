@@ -55,7 +55,7 @@ if [ "$cases" -lt 1000 ]; then
 fi
 
 # Chunk for JIT compile time + parallelism (identical rationale to run.sh).
-CHUNK="${LEAKFUZZ_CHUNK:-400}"
+CHUNK="${LEAKFUZZ_CHUNK:-236}"
 chunkdir="$WORK/chunks"; rm -rf "$chunkdir"; mkdir -p "$chunkdir"
 split -l "$CHUNK" "$WORK/cases.cul" "$chunkdir/c."
 chunks=( "$chunkdir"/c.* )
