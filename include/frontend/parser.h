@@ -2185,6 +2185,27 @@ inline const std::vector<std::string>& ast_optimizer_keep_rules() {
   return rules;
 }
 
+// peglib's error reporter counts a column in code points; every other position
+// culebra reports (an AST node, the nesting guard, a bare `\r`) counts bytes.
+// Converting the one keeps a column meaning the same thing everywhere.
+inline size_t codepoint_column_to_byte(std::string_view src, size_t line,
+                                       size_t col) {
+  size_t pos = 0;
+  for (size_t l = 1; l < line; l++) {
+    size_t nl = src.find('\n', pos);
+    if (nl == std::string_view::npos) return col;
+    pos = nl + 1;
+  }
+  size_t start = pos;
+  for (size_t k = 1; k < col && pos < src.size() && src[pos] != '\n'; k++) {
+    pos++;
+    while (pos < src.size() &&
+           (static_cast<unsigned char>(src[pos]) & 0xC0) == 0x80)
+      pos++;
+  }
+  return pos - start + 1;
+}
+
 // Where a parse stopped and why: the grammar's own error, the nesting-depth
 // guard, or a rejected bare carriage return.
 struct ParseFailure {
@@ -2211,7 +2232,7 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
   _culebra_parse_depth = 0;  // an aborted parse leaves the count mid-flight
 
   parser.set_logger([&](size_t ln, size_t col, const std::string& err_msg) {
-    failures.push_back({ln, col, err_msg});
+    failures.push_back({ln, codepoint_column_to_byte(expr, ln, col), err_msg});
   });
 
   std::shared_ptr<peg::Ast> ast;
@@ -2256,7 +2277,8 @@ inline std::shared_ptr<peg::Ast> parse_for_format(
   _culebra_parse_depth = 0;  // an aborted parse leaves the count mid-flight
 
   parser.set_logger([&](size_t ln, size_t col, const std::string& err_msg) {
-    msgs.push_back(std::format("{}:{}:{}: {}\n", path, ln, col, err_msg));
+    msgs.push_back(std::format("{}:{}:{}: {}\n", path, ln,
+                               codepoint_column_to_byte(expr, ln, col), err_msg));
   });
 
   std::shared_ptr<peg::Ast> ast;

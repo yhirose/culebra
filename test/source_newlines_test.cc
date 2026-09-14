@@ -16,6 +16,7 @@
 #include <frontend/parser.h>
 
 #include <cstdio>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -159,6 +160,38 @@ void test_line_comment_may_end_the_file() {
   }
 }
 
+// A column counts bytes wherever culebra reports one. peglib's error reporter
+// counts code points, so a syntax error after a multi-byte character landed left
+// of where an AST node on the same line would.
+void test_syntax_error_column_counts_bytes() {
+  // `)` is the 13th code point and the 16th byte: the emoji is four bytes.
+  std::string bad = "let s = '\xf0\x9f\x98\x80' )";
+  std::vector<culebra::ParseFailure> failures;
+  auto none = culebra::parse("(col)", bad, failures);
+  check(none == nullptr && failures.size() == 1 && failures[0].line == 1 &&
+            failures[0].col == 16,
+        std::format("parse: syntax error column counts bytes (got {})",
+                    failures.empty() ? 0 : failures[0].col));
+
+  std::string bad_fmt = bad;
+  std::vector<std::string> msgs;
+  culebra::parse_for_format("(col)", bad_fmt, msgs);
+  check(msgs.size() == 1 && msgs[0].find("(col):1:16:") != std::string::npos,
+        "parse_for_format: syntax error column counts bytes");
+
+  // The same line parsed: `zz` starts at byte 18, and so does its node.
+  std::string good = "let s = '\xf0\x9f\x98\x80' + zz";
+  std::vector<culebra::ParseFailure> ok_failures;
+  auto ast = culebra::parse("(col)", good, ok_failures);
+  size_t col = 0;
+  std::function<void(const peg::Ast&)> find = [&](const peg::Ast& n) {
+    if (n.token == "zz") col = n.column;
+    for (const auto& c : n.nodes) find(*c);
+  };
+  if (ast) find(*ast);
+  check(col == 18, std::format("an AST node column counts bytes (got {})", col));
+}
+
 }  // namespace
 
 int main() {
@@ -168,6 +201,7 @@ int main() {
   test_bare_cr_is_rejected_with_a_position();
   test_both_parse_entries_route_through_it();
   test_line_comment_may_end_the_file();
+  test_syntax_error_column_counts_bytes();
 
   if (failures) {
     std::printf("source_newlines_test: %d failure(s)\n", failures);
