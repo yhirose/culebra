@@ -79,6 +79,7 @@ struct Symbol {
 struct Scope {
   size_t parent = kNone;
   bool function = false;
+  size_t begin = 0, end = 0;  // the bytes of the syntax that opens it
   std::map<std::string, size_t, std::less<>> names;  // name -> symbol
 };
 
@@ -142,6 +143,26 @@ struct Resolution {
     return nullptr;
   }
 
+  // The innermost scope whose syntax spans `position`.
+  size_t scope_at(size_t position) const {
+    size_t best = 0;
+    for (size_t i = 1; i < scopes.size(); i++) {
+      const Scope& sc = scopes[i];
+      if (sc.begin <= position && position <= sc.end &&
+          sc.end - sc.begin <= scopes[best].end - scopes[best].begin)
+        best = i;
+    }
+    return best;
+  }
+
+  // Where a symbol is first declared, or kNone.
+  size_t first_declaration(size_t symbol) const {
+    for (size_t i : symbols[symbol].occurrences)
+      if (occurrences[i].role == Role::Declaration)
+        return occurrences[i].position;
+    return kNone;
+  }
+
   bool called_as_method(std::string_view name) const {
     return std::binary_search(method_call_names.begin(),
                               method_call_names.end(), name,
@@ -159,7 +180,7 @@ class Resolver {
       : root_(root), src_(source) {}
 
   Resolution run() {
-    cur_ = push_scope(kNone, /*function=*/true);
+    cur_ = push_scope(kNone, /*function=*/true, 0, src_.size());
     walk_body(root_);
     for (const auto* e : exports_) {
       read(*e, e->token, Spelling::Plain);
@@ -200,10 +221,12 @@ class Resolver {
 
   // ---- bookkeeping ----------------------------------------------------------
 
-  size_t push_scope(size_t parent, bool function) {
+  size_t push_scope(size_t parent, bool function, size_t begin, size_t end) {
     Scope s;
     s.parent = parent;
     s.function = function;
+    s.begin = begin;
+    s.end = end;
     r_.scopes.push_back(std::move(s));
     return r_.scopes.size() - 1;
   }
@@ -301,16 +324,20 @@ class Resolver {
     }
   }
 
+  static size_t end_of(const peg::Ast& n) { return n.position + n.length; }
+
   void scoped_body(const peg::Ast& n) {
     size_t saved = cur_;
-    cur_ = push_scope(cur_, false);
+    cur_ = push_scope(cur_, false, n.position, end_of(n));
     walk_body(n);
     cur_ = saved;
   }
 
   void run_job(const Job& job) {
     size_t saved = cur_;
-    cur_ = push_scope(job.parent, true);
+    cur_ = push_scope(job.parent, true,
+                      job.params ? job.params->position : job.body->position,
+                      end_of(*job.body));
     if (job.params) {
       for (const auto& p : job.params->nodes) {
         if (is_kw_only_sep(*p)) continue;
@@ -603,7 +630,7 @@ class Resolver {
 
       case "LEXICAL_SCOPE"_: {
         size_t saved = cur_;
-        cur_ = push_scope(cur_, false);
+        cur_ = push_scope(cur_, false, n.position, end_of(n));
         for (const auto& c : n.nodes) walk_body(*c);
         cur_ = saved;
         return;
@@ -614,7 +641,7 @@ class Resolver {
         auto fv = view_for(n);
         walk(*fv.iter);
         size_t saved = cur_;
-        cur_ = push_scope(cur_, false);
+        cur_ = push_scope(cur_, false, fv.binding->position, end_of(*fv.body));
         bind_pattern(*fv.binding, Bind::Declare);
         walk_body(*fv.body);
         cur_ = saved;
@@ -627,7 +654,7 @@ class Resolver {
         auto wv = view_while(n);
         size_t saved = cur_;
         if (wv.init) {
-          cur_ = push_scope(cur_, false);
+          cur_ = push_scope(cur_, false, n.position, end_of(n));
           for (const auto& b : wv.init->nodes) walk(*b);
         }
         walk(*wv.cond);
@@ -641,7 +668,7 @@ class Resolver {
         auto iv = view_if(n);
         size_t saved = cur_;
         if (iv.init) {
-          cur_ = push_scope(cur_, false);
+          cur_ = push_scope(cur_, false, n.position, end_of(n));
           for (const auto& b : iv.init->nodes) walk(*b);
         }
         for (size_t i = iv.arm_off; i < n.nodes.size(); i++)
@@ -655,14 +682,14 @@ class Resolver {
         auto mv = view_match(n);
         size_t saved = cur_;
         if (mv.init) {
-          cur_ = push_scope(cur_, false);
+          cur_ = push_scope(cur_, false, n.position, end_of(n));
           for (const auto& b : mv.init->nodes) walk(*b);
         }
         walk(*mv.subject);
         size_t around = cur_;
         for (const auto& arm : mv.arms->nodes) {
           if (arm->nodes.empty()) continue;
-          cur_ = push_scope(around, false);
+          cur_ = push_scope(around, false, arm->position, end_of(*arm));
           bind_pattern(*arm->nodes[0], Bind::Declare);
           for (size_t k = 1; k < arm->nodes.size(); k++)
             walk_body(*arm->nodes[k]);
@@ -676,7 +703,7 @@ class Resolver {
         if (n.nodes.size() < 3) break;
         scoped_body(*n.nodes[0]);
         size_t saved = cur_;
-        cur_ = push_scope(cur_, false);
+        cur_ = push_scope(cur_, false, n.nodes[1]->position, end_of(*n.nodes[2]));
         if (n.nodes[1]->is_token)
           declare(*n.nodes[1], n.nodes[1]->token, SymbolKind::Variable);
         walk_body(*n.nodes[2]);

@@ -2025,6 +2025,15 @@ target_include_directories(resolve_test PRIVATE include vendor/cpp-peglib)
 add_test(NAME resolve_test
          COMMAND resolve_test ${CMAKE_CURRENT_SOURCE_DIR})
 
+# Editor type inference (include/cli/infer.h): what it establishes case by
+# case, then a measurement over the corpus of how many method-call receivers
+# get a known type (printed, never failing).
+add_executable(infer_test test/infer_test.cc)
+target_compile_features(infer_test PRIVATE cxx_std_23)
+target_include_directories(infer_test PRIVATE include vendor/cpp-peglib)
+add_test(NAME infer_test
+         COMMAND infer_test ${CMAKE_CURRENT_SOURCE_DIR})
+
 # The control for the object file's no-live-address rule
 # (include/jit/baked_address.h): a module built by hand for each shape a
 # baked address can take, so the walk that refuses `culebra build` output
