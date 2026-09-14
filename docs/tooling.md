@@ -1024,9 +1024,31 @@ It provides:
   own: a stdlib function or constant (`Math.abs`, `Math.pi`) or a global
   function (`type_of`). A method called on a value (`xs.size()`) shows
   nothing, because which method it is depends on the value's type.
+- **Go to definition, find references, highlight** — for a variable,
+  parameter, function, class, enum, import or effect operation, following
+  the scoping rules of [`language.md` §6](language.md#6-variables-and-scope):
+  a block, a loop body and a match arm each have their own names, and a
+  closure sees a variable of the function around it wherever that variable
+  is declared. A keyword argument at a direct call (`f(count: 2)`) counts as
+  a reference to the parameter. Going to the definition of `Alias.member`,
+  where `Alias` is an import, opens the module at its top-level declaration
+  of `member`.
+- **Outline** — the top-level declarations, with the members of each class,
+  enum and trait.
+- **Rename** — every occurrence in the document. An object shorthand keeps
+  its key: `{sum}` becomes `{sum: total}`. The server refuses a rename it
+  cannot carry out in full:
+  - the name is exported, so importing modules would not follow;
+  - a method call of the same name exists (`value.name(...)`), which may
+    reach the function through UFCS;
+  - the new name is a keyword, or already names something visible where
+    the renamed name is used;
+  - the document does not parse as it stands.
 
 Positions follow the protocol's default: lines count from 0 and columns
-count UTF-16 code units.
+count UTF-16 code units. While a buffer does not parse, definitions,
+references, highlights and the outline come from the last version that
+did.
 
 ### Setting it up
 

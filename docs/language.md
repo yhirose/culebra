@@ -400,8 +400,10 @@ Assignment with a simple identifier LHS is handled as follows:
     the global scope), that binding is reassigned. This may update
     captured variables in outer scopes (see §11). This is the
     mechanism by which closure-based objects mutate their state.
-  * Otherwise a new (immutable) binding is created in the current
-    function's scope.
+  * Otherwise a new (immutable) binding is created in the innermost
+    scope: the block, loop body or match arm the assignment is written in.
+    An `if` arm shares its enclosing scope, so a binding made there stays
+    visible after the `if`.
 
 ### Compound assignment
 
