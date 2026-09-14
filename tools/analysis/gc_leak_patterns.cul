@@ -50,322 +50,482 @@ class V {
   }
 }
 
+fn pat_object_literal(N) {
+  for i in 0..N {
+    let _ = {v: i, w: i + 1}
+  }
+}
+
+fn pat_array_literal(N) {
+  for i in 0..N {
+    let _ = [i, i + 1, i + 2]
+  }
+}
+
+fn pat_instance_plain(N) {
+  # every argument explicit — no default value is evaluated
+  for i in 0..N {
+    let _ = V.new(i, [], [])
+  }
+}
+
+fn pat_default_param(N) {
+  # the `children = []` / `grads = []` defaults fire and allocate
+  for i in 0..N {
+    let _ = V.new(i)
+  }
+}
+
+fn pat_operator_overload(N) {
+  for i in 0..N {
+    let _ = V.new(i, [], []) + V.new(i + 1, [], [])
+  }
+}
+
+fn pat_user_method(N) {
+  for i in 0..N {
+    let _ = V.new(i, [], []).twice()
+  }
+}
+
+fn pat_free_fn(N) {
+  for i in 0..N {
+    let _ = mk(i)
+  }
+}
+
+fn pat_ufcs_chain(N) {
+  for i in 0..N {
+    let _ = V.new(i, [], []).twice().twice()
+  }
+}
+
+fn pat_closure(N) {
+  for i in 0..N {
+    let n = i
+    let f = || n + 1
+    let _ = f()
+  }
+}
+
+fn pat_map_collect(N) {
+  for i in 0..N {
+    let _ = range(4).map(|x| x * 2).collect()
+  }
+}
+
+fn pat_reduce(N) {
+  for i in 0..N {
+    let _ = [
+      V.new(1, [], []),
+      V.new(2, [], []),
+    ].reduce(V.new(0, [], []), |a, b| a + b)
+  }
+}
+
+fn pat_match_bind(N) {
+  # type-pattern binding that captures the bound name into the result —
+  # exactly microgpt's operator shape `match o { x:Object => V.new(.., [.., x]) }`
+  for i in 0..N {
+    let _ = mtest(V.new(i, [], []))
+  }
+}
+
+fn pat_match_stmt(N) {
+  # match as a statement with a call subject and a scalar result — the
+  # double-free guard for the subject-release fix.
+  for i in 0..N {
+    let _ = mtest2(mk(i))
+  }
+}
+
+fn pat_cmp_lt(N) {
+  # overloaded ordering `<` (value_compare slow path → user __lt__): both
+  # heap operands are dead after the comparison; compile_condition must
+  # release them.
+  for i in 0..N {
+    let _ = V.new(i, [], []) < V.new(i + 1, [], [])
+  }
+}
+
+fn pat_cmp_eq(N) {
+  # overloaded equality `==` (value_equal slow path → user __eq__).
+  for i in 0..N {
+    let _ = V.new(i, [], []) == V.new(i + 1, [], [])
+  }
+}
+
+fn pat_neg_op(N) {
+  # overloaded unary minus `-x` (num_neg slow path → user __neg__): the heap
+  # operand is dead after the call. microgpt's dominant leak — `__sub__` is
+  # `self + (-other)` and the loss term is `-(...).log()`.
+  for i in 0..N {
+    let _ = -V.new(i, [], [])
+  }
+}
+
+fn pat_defer_obj(N) {
+  # a deferred block whose body produces a heap value (the defer thunk's
+  # result is discarded, not returned — it must be released).
+  for i in 0..N {
+    {
+      let dv = V.new(i, [], [])
+      defer {
+        let _ = dv.twice()
+      }
+    }
+  }
+}
+
+fn pat_forin_keys(N) {
+  # for-in over an Object's keys drives object_iter, which builds a fresh
+  # iterator each loop. The protocol loop must release both that iterator
+  # and its source object (fresh literal here so a source leak shows up).
+  for i in 0..N {
+    let mut s = 0
+    for k in {a: i, b: i + 1} {
+      s = s + 1
+    }
+  }
+}
+
+fn pat_forin_range_value(N) {
+  # for-in over a range *value* (a bound variable, not a literal, so the
+  # counted fast path is skipped) drives range_iter's fresh iterator.
+  for i in 0..N {
+    let r = 0..3
+    let mut s = 0
+    for j in r {
+      s = s + j
+    }
+  }
+}
+
+fn pat_forin_proto_iterable(N) {
+  # for-in over a user-`iter` object whose iterator is a distinct object:
+  # the proto branch must release the iterable via its scope slot (it used
+  # to orphan that ref), and the dispose call's frame must get its own +1
+  # (it used to consume the alloca's, then skipBB released it again).
+  for i in 0..N {
+    let mut s = 0
+    for x in mk_proto(i) {
+      s = s + x
+    }
+  }
+}
+
+fn pat_forin_dispose_throw(N) {
+  # a throwing dispose() on the break path propagates, but must not strand
+  # the iterator alloca's +1 (the dispose frame consumes its own retain);
+  # the local lpad releases it before rethrowing.
+  for i in 0..N {
+    try {
+      for x in mk_proto_throwing(i) {
+        break
+      }
+    } catch e {
+    }
+  }
+}
+
+fn pat_forin_throw_unwind(N) {
+  # a throw unwinding out of the for-in's enclosing function must release
+  # the iterable's scope-slot +1 (the for statement's own cleanup pad).
+  # Cross-function shape on purpose: within one frame the declaration
+  # store overwrites-and-releases the previous strand, hiding the leak.
+  for i in 0..N {
+    try {
+      forin_thrower(i)
+    } catch e {
+    }
+  }
+}
+
+fn pat_forin_set_throw(N) {
+  # same, Set branch: the set_to_array temp array (a scope slot beside
+  # the iterable) must not strand on unwind or early return.
+  for i in 0..N {
+    try {
+      forin_set_thrower(i)
+    } catch e {
+    }
+  }
+}
+
+fn pat_forin_generator(N) {
+  # for-in over a generator (self-returning iter(): iterable == iterator,
+  # two refs on one object). Both the protocol cleanup and pop_scope must
+  # release exactly once each — a leak or an over-release shows here.
+  for i in 0..N {
+    let mut s = 0
+    for x in gen2(i) {
+      s = s + x
+    }
+  }
+}
+
+fn pat_class_in_fn(N) {
+  # a class declared inside a function re-builds its class meta (with a fresh
+  # closure per method) on every call. build_class_meta must take over those
+  # method closures' refs, not retain on top of them — else each method
+  # leaks one closure per instantiation. Generators hit this via their
+  # synthesized _Gen_ class (iter/has_next/next/dispose).
+  for i in 0..N {
+    let _ = mk_local(i)
+  }
+}
+
+fn pat_throw_in_literal(N) {
+  # a container literal whose later element throws must release the partial
+  # container (and the elements already pushed) via the construction cleanup
+  # landingpad — else the partial array + its built element leak each turn.
+  for i in 0..N {
+    try {
+      let _ = [mk(i), boom(), mk(i + 1)]
+    } catch e {
+    }
+  }
+}
+
+fn pat_forin_early_return(N) {
+  # an early `return` out of a for-in over an Object (range value) must
+  # dispose+release the iterator (compile_return, mirroring interp), else the
+  # per-loop iterator + its closures/cells leak.
+  for i in 0..N {
+    let _ = forin_ret(i)
+  }
+}
+
+fn pat_auto_parameters(N) {
+  # auto-synthesized `parameters()` on a class instance: the autoBB arm
+  # (runtime walker) borrows the receiver, so the frame must release the
+  # +1 the postfix chain transferred.
+  for i in 0..N {
+    let _ = V.new(i, [], []).parameters()
+  }
+}
+
+fn pat_set_add_remove(N) {
+  # Set `.add`/`.remove` fast dispatch: both runtime helpers borrow the
+  # Set receiver — the setBB arm must consume the +1 itself.
+  for i in 0..N {
+    let s = {i, i + 1}
+    s.add(i + 2)
+    s.remove(i)
+  }
+}
+
+fn pat_iter_map_collect_fused(N) {
+  # fused `it.map(λ).collect()`: the inline loop borrows the iterator, so
+  # the fused arm must release the receiver +1 (the unfused arm hands it
+  # to compile_method_call instead).
+  for i in 0..N {
+    let _ = [i, i + 1].iter().map(|x| x).collect()
+  }
+}
+
+fn pat_iter_for_each_inline(N) {
+  # `it.for_each(inlinable λ)`: dispatch_arr_iter's obj arm borrows the
+  # iterator receiver (like the Array arm), so the inline loop borrows too —
+  # no retain, no release. Guards against re-introducing an imbalance.
+  for i in 0..N {
+    [i, i + 1].iter().for_each(|x| x)
+  }
+}
+
+fn pat_iter_reduce_inline(N) {
+  # `it.reduce(init, inlinable λ)`: same shape as for_each.
+  for i in 0..N {
+    let _ = [i, i + 1].iter().reduce(0, |a, x| a + x)
+  }
+}
+
+fn pat_iter_filter_lazy(N) {
+  # `it.filter(λ).collect()`: filter is a lazy wrapper over the iterator
+  # (no fusion). The obj arm must NOT retain — the factory retains upstream
+  # itself; an extra dispatch retain leaked one upstream ref per wrapper.
+  for i in 0..N {
+    let _ = [i, i + 1, i + 2].iter().filter(|x| x > i).collect()
+  }
+}
+
+fn pat_iter_flat_map(N) {
+  # `it.flat_map(λ).collect()`: flat_map is a lazy wrapper over the iterator
+  # (like filter). The factory retains upstream itself, so the obj arm must
+  # NOT retain — the stray +1 leaked ~one upstream ref/loop.
+  for i in 0..N {
+    let _ = [i, i + 1].iter().flat_map(|x| [x, x]).collect()
+  }
+}
+
+fn pat_iter_find_driver(N) {
+  # `it.find(λ)`: a runtime-driver terminal (no inline form). The driver
+  # only pulls values — it borrows the receiver, so the obj arm must not
+  # retain (the stray +1 leaked one iterator ref per call).
+  for i in 0..N {
+    let _ = [i, i + 1, i + 2].iter().find(|x| x == i + 1)
+  }
+}
+
+fn pat_iter_any_driver(N) {
+  # `it.any(λ)`: same runtime-driver borrow contract as find.
+  for i in 0..N {
+    let _ = [i, i + 1, i + 2].iter().any(|x| x == i + 1)
+  }
+}
+
+fn pat_array_sized_default(N) {
+  # `[](n, heapDefault)`: array_resize retains one alias ref per slot and
+  # the literal releases its own +1 (n=0 exercises the unused-default path).
+  for i in 0..N {
+    let _ = [](3, {v: i})
+    let _e = [](0, {v: i})
+  }
+}
+
+fn pat_deco_let(N) {
+  # a let-bound closure decorator: the application site borrows the
+  # callee, so it must release the +1 the callee expression produced
+  # (fn-decl decorators load unretained and never showed the leak).
+  for i in 0..N {
+    let _ = mk_decorated(i)
+  }
+}
+
+fn pat_conditional_decl(N) {
+  # A name whose only declaration sites are nested inside if/cond arms
+  # (runtime_decl slot): exercises the sentinel store/release cycle —
+  # declare-path store, reassign-path release-then-store, and the
+  # scope-exit re-arm to the sentinel each loop pass — for both a
+  # never-taken branch (sentinel released as-is) and heap payloads
+  # flowing through the declare/reassign/read guards.
+  for i in 0..N {
+    if i % 3 == 0 {
+      v = V.new(i, [], [])
+    } else if i % 3 == 1 {
+      mut v = V.new(i, [], [])
+      v = V.new(i + 1, [], [])
+    }
+    if i % 3 != 2 {
+      let _ = v.data
+    }
+  }
+}
+
+fn pat_ufcs_hook_throw(N) {
+  # ufcs-builtin hook error arms (unknown kwarg / arity / value_to_long
+  # type error) must consume the heap receiver / compiled arg +1 before
+  # the throw.
+  for i in 0..N {
+    let o = V.new(i, [], [])
+    try {
+      o.range(bad: 1)
+    } catch e {
+    }
+    try {
+      o.range(1, 2, 3)
+    } catch e {
+    }
+    try {
+      o.range()
+    } catch e {
+    }
+    try {
+      1.range([i])
+    } catch e {
+    }
+    try {
+      o.to_long(1)
+    } catch e {
+    }
+    try {
+      o.to_string(1)
+    } catch e {
+    }
+  }
+}
+
 fn run(which, N) {
   if which == "object_literal" {
-    for i in 0..N {
-      let _ = {v: i, w: i + 1}
-    }
+    pat_object_literal(N)
   } else if which == "array_literal" {
-    for i in 0..N {
-      let _ = [i, i + 1, i + 2]
-    }
+    pat_array_literal(N)
   } else if which == "instance_plain" {
-    # every argument explicit — no default value is evaluated
-    for i in 0..N {
-      let _ = V.new(i, [], [])
-    }
+    pat_instance_plain(N)
   } else if which == "default_param" {
-    # the `children = []` / `grads = []` defaults fire and allocate
-    for i in 0..N {
-      let _ = V.new(i)
-    }
+    pat_default_param(N)
   } else if which == "operator_overload" {
-    for i in 0..N {
-      let _ = V.new(i, [], []) + V.new(i + 1, [], [])
-    }
+    pat_operator_overload(N)
   } else if which == "user_method" {
-    for i in 0..N {
-      let _ = V.new(i, [], []).twice()
-    }
+    pat_user_method(N)
   } else if which == "free_fn" {
-    for i in 0..N {
-      let _ = mk(i)
-    }
+    pat_free_fn(N)
   } else if which == "ufcs_chain" {
-    for i in 0..N {
-      let _ = V.new(i, [], []).twice().twice()
-    }
+    pat_ufcs_chain(N)
   } else if which == "closure" {
-    for i in 0..N {
-      let n = i
-      let f = || n + 1
-      let _ = f()
-    }
+    pat_closure(N)
   } else if which == "map_collect" {
-    for i in 0..N {
-      let _ = range(4).map(|x| x * 2).collect()
-    }
+    pat_map_collect(N)
   } else if which == "reduce" {
-    for i in 0..N {
-      let _ = [
-        V.new(1, [], []),
-        V.new(2, [], []),
-      ].reduce(V.new(0, [], []), |a, b| a + b)
-    }
+    pat_reduce(N)
   } else if which == "match_bind" {
-    # type-pattern binding that captures the bound name into the result —
-    # exactly microgpt's operator shape `match o { x:Object => V.new(.., [.., x]) }`
-    for i in 0..N {
-      let _ = mtest(V.new(i, [], []))
-    }
+    pat_match_bind(N)
   } else if which == "match_stmt" {
-    # match as a statement with a call subject and a scalar result — the
-    # double-free guard for the subject-release fix.
-    for i in 0..N {
-      let _ = mtest2(mk(i))
-    }
+    pat_match_stmt(N)
   } else if which == "cmp_lt" {
-    # overloaded ordering `<` (value_compare slow path → user __lt__): both
-    # heap operands are dead after the comparison; compile_condition must
-    # release them.
-    for i in 0..N {
-      let _ = V.new(i, [], []) < V.new(i + 1, [], [])
-    }
+    pat_cmp_lt(N)
   } else if which == "cmp_eq" {
-    # overloaded equality `==` (value_equal slow path → user __eq__).
-    for i in 0..N {
-      let _ = V.new(i, [], []) == V.new(i + 1, [], [])
-    }
+    pat_cmp_eq(N)
   } else if which == "neg_op" {
-    # overloaded unary minus `-x` (num_neg slow path → user __neg__): the heap
-    # operand is dead after the call. microgpt's dominant leak — `__sub__` is
-    # `self + (-other)` and the loss term is `-(...).log()`.
-    for i in 0..N {
-      let _ = -V.new(i, [], [])
-    }
+    pat_neg_op(N)
   } else if which == "defer_obj" {
-    # a deferred block whose body produces a heap value (the defer thunk's
-    # result is discarded, not returned — it must be released).
-    for i in 0..N {
-      {
-        let dv = V.new(i, [], [])
-        defer {
-          let _ = dv.twice()
-        }
-      }
-    }
+    pat_defer_obj(N)
   } else if which == "forin_keys" {
-    # for-in over an Object's keys drives object_iter, which builds a fresh
-    # iterator each loop. The protocol loop must release both that iterator
-    # and its source object (fresh literal here so a source leak shows up).
-    for i in 0..N {
-      let mut s = 0
-      for k in {a: i, b: i + 1} {
-        s = s + 1
-      }
-    }
+    pat_forin_keys(N)
   } else if which == "forin_range_value" {
-    # for-in over a range *value* (a bound variable, not a literal, so the
-    # counted fast path is skipped) drives range_iter's fresh iterator.
-    for i in 0..N {
-      let r = 0..3
-      let mut s = 0
-      for j in r {
-        s = s + j
-      }
-    }
+    pat_forin_range_value(N)
   } else if which == "forin_proto_iterable" {
-    # for-in over a user-`iter` object whose iterator is a distinct object:
-    # the proto branch must release the iterable via its scope slot (it used
-    # to orphan that ref), and the dispose call's frame must get its own +1
-    # (it used to consume the alloca's, then skipBB released it again).
-    for i in 0..N {
-      let mut s = 0
-      for x in mk_proto(i) {
-        s = s + x
-      }
-    }
+    pat_forin_proto_iterable(N)
   } else if which == "forin_dispose_throw" {
-    # a throwing dispose() on the break path propagates, but must not strand
-    # the iterator alloca's +1 (the dispose frame consumes its own retain);
-    # the local lpad releases it before rethrowing.
-    for i in 0..N {
-      try {
-        for x in mk_proto_throwing(i) {
-          break
-        }
-      } catch e {
-      }
-    }
+    pat_forin_dispose_throw(N)
   } else if which == "forin_throw_unwind" {
-    # a throw unwinding out of the for-in's enclosing function must release
-    # the iterable's scope-slot +1 (the for statement's own cleanup pad).
-    # Cross-function shape on purpose: within one frame the declaration
-    # store overwrites-and-releases the previous strand, hiding the leak.
-    for i in 0..N {
-      try {
-        forin_thrower(i)
-      } catch e {
-      }
-    }
+    pat_forin_throw_unwind(N)
   } else if which == "forin_set_throw" {
-    # same, Set branch: the set_to_array temp array (a scope slot beside
-    # the iterable) must not strand on unwind or early return.
-    for i in 0..N {
-      try {
-        forin_set_thrower(i)
-      } catch e {
-      }
-    }
+    pat_forin_set_throw(N)
   } else if which == "forin_generator" {
-    # for-in over a generator (self-returning iter(): iterable == iterator,
-    # two refs on one object). Both the protocol cleanup and pop_scope must
-    # release exactly once each — a leak or an over-release shows here.
-    for i in 0..N {
-      let mut s = 0
-      for x in gen2(i) {
-        s = s + x
-      }
-    }
+    pat_forin_generator(N)
   } else if which == "class_in_fn" {
-    # a class declared inside a function re-builds its class meta (with a fresh
-    # closure per method) on every call. build_class_meta must take over those
-    # method closures' refs, not retain on top of them — else each method
-    # leaks one closure per instantiation. Generators hit this via their
-    # synthesized _Gen_ class (iter/has_next/next/dispose).
-    for i in 0..N {
-      let _ = mk_local(i)
-    }
+    pat_class_in_fn(N)
   } else if which == "throw_in_literal" {
-    # a container literal whose later element throws must release the partial
-    # container (and the elements already pushed) via the construction cleanup
-    # landingpad — else the partial array + its built element leak each turn.
-    for i in 0..N {
-      try {
-        let _ = [mk(i), boom(), mk(i + 1)]
-      } catch e {
-      }
-    }
+    pat_throw_in_literal(N)
   } else if which == "forin_early_return" {
-    # an early `return` out of a for-in over an Object (range value) must
-    # dispose+release the iterator (compile_return, mirroring interp), else the
-    # per-loop iterator + its closures/cells leak.
-    for i in 0..N {
-      let _ = forin_ret(i)
-    }
+    pat_forin_early_return(N)
   } else if which == "auto_parameters" {
-    # auto-synthesized `parameters()` on a class instance: the autoBB arm
-    # (runtime walker) borrows the receiver, so the frame must release the
-    # +1 the postfix chain transferred.
-    for i in 0..N {
-      let _ = V.new(i, [], []).parameters()
-    }
+    pat_auto_parameters(N)
   } else if which == "set_add_remove" {
-    # Set `.add`/`.remove` fast dispatch: both runtime helpers borrow the
-    # Set receiver — the setBB arm must consume the +1 itself.
-    for i in 0..N {
-      let s = {i, i + 1}
-      s.add(i + 2)
-      s.remove(i)
-    }
+    pat_set_add_remove(N)
   } else if which == "iter_map_collect_fused" {
-    # fused `it.map(λ).collect()`: the inline loop borrows the iterator, so
-    # the fused arm must release the receiver +1 (the unfused arm hands it
-    # to compile_method_call instead).
-    for i in 0..N {
-      let _ = [i, i + 1].iter().map(|x| x).collect()
-    }
+    pat_iter_map_collect_fused(N)
   } else if which == "iter_for_each_inline" {
-    # `it.for_each(inlinable λ)`: dispatch_arr_iter's obj arm borrows the
-    # iterator receiver (like the Array arm), so the inline loop borrows too —
-    # no retain, no release. Guards against re-introducing an imbalance.
-    for i in 0..N {
-      [i, i + 1].iter().for_each(|x| x)
-    }
+    pat_iter_for_each_inline(N)
   } else if which == "iter_reduce_inline" {
-    # `it.reduce(init, inlinable λ)`: same shape as for_each.
-    for i in 0..N {
-      let _ = [i, i + 1].iter().reduce(0, |a, x| a + x)
-    }
+    pat_iter_reduce_inline(N)
   } else if which == "iter_filter_lazy" {
-    # `it.filter(λ).collect()`: filter is a lazy wrapper over the iterator
-    # (no fusion). The obj arm must NOT retain — the factory retains upstream
-    # itself; an extra dispatch retain leaked one upstream ref per wrapper.
-    for i in 0..N {
-      let _ = [i, i + 1, i + 2].iter().filter(|x| x > i).collect()
-    }
+    pat_iter_filter_lazy(N)
   } else if which == "iter_flat_map" {
-    # `it.flat_map(λ).collect()`: flat_map is a lazy wrapper over the iterator
-    # (like filter). The factory retains upstream itself, so the obj arm must
-    # NOT retain — the stray +1 leaked ~one upstream ref/loop.
-    for i in 0..N {
-      let _ = [i, i + 1].iter().flat_map(|x| [x, x]).collect()
-    }
+    pat_iter_flat_map(N)
   } else if which == "iter_find_driver" {
-    # `it.find(λ)`: a runtime-driver terminal (no inline form). The driver
-    # only pulls values — it borrows the receiver, so the obj arm must not
-    # retain (the stray +1 leaked one iterator ref per call).
-    for i in 0..N {
-      let _ = [i, i + 1, i + 2].iter().find(|x| x == i + 1)
-    }
+    pat_iter_find_driver(N)
   } else if which == "iter_any_driver" {
-    # `it.any(λ)`: same runtime-driver borrow contract as find.
-    for i in 0..N {
-      let _ = [i, i + 1, i + 2].iter().any(|x| x == i + 1)
-    }
+    pat_iter_any_driver(N)
   } else if which == "array_sized_default" {
-    # `[](n, heapDefault)`: array_resize retains one alias ref per slot and
-    # the literal releases its own +1 (n=0 exercises the unused-default path).
-    for i in 0..N {
-      let _ = [](3, {v: i})
-      let _e = [](0, {v: i})
-    }
+    pat_array_sized_default(N)
   } else if which == "deco_let" {
-    # a let-bound closure decorator: the application site borrows the
-    # callee, so it must release the +1 the callee expression produced
-    # (fn-decl decorators load unretained and never showed the leak).
-    for i in 0..N {
-      let _ = mk_decorated(i)
-    }
+    pat_deco_let(N)
   } else if which == "conditional_decl" {
-    # A name whose only declaration sites are nested inside if/cond arms
-    # (runtime_decl slot): exercises the sentinel store/release cycle —
-    # declare-path store, reassign-path release-then-store, and the
-    # scope-exit re-arm to the sentinel each loop pass — for both a
-    # never-taken branch (sentinel released as-is) and heap payloads
-    # flowing through the declare/reassign/read guards.
-    for i in 0..N {
-      if i % 3 == 0 {
-        v = V.new(i, [], [])
-      } else if i % 3 == 1 {
-        mut v = V.new(i, [], [])
-        v = V.new(i + 1, [], [])
-      }
-      if i % 3 != 2 {
-        let _ = v.data
-      }
-    }
+    pat_conditional_decl(N)
   } else if which == "ufcs_hook_throw" {
-    # ufcs-builtin hook error arms (unknown kwarg / arity / value_to_long
-    # type error) must consume the heap receiver / compiled arg +1 before
-    # the throw.
-    for i in 0..N {
-      let o = V.new(i, [], [])
-      try {
-        o.range(bad: 1)
-      } catch e {
-      }
-      try {
-        o.range(1, 2, 3)
-      } catch e {
-      }
-      try {
-        o.range()
-      } catch e {
-      }
-      try {
-        1.range([i])
-      } catch e {
-      }
-      try {
-        o.to_long(1)
-      } catch e {
-      }
-      try {
-        o.to_string(1)
-      } catch e {
-      }
-    }
+    pat_ufcs_hook_throw(N)
   } else {
     print("unknown pattern: " + which + "\n")
     return

@@ -79,7 +79,9 @@ done
 
 # Generate cases, then chunk. Chunk size balances JIT compile time against the
 # per-case fallback cost (a bigger chunk clears more clean cases per process but
-# means more solo re-runs when it aborts). 471 keeps ~12 chunks over the corpus.
+# means more solo re-runs when it aborts). The compile grows superlinearly with
+# the chunk (measured 3.3 s at 236 lines, 8.6 s at 471, 25.6 s at 942), so past
+# ~236 a bigger chunk costs more CPU in total, not less.
 if ! "$CULEBRA" --vm "$HERE/gen.cul" > "$WORK/cases.cul"; then
   echo "leak-abort-suite: FAIL — generator gen.cul did not run cleanly" >&2; exit 1
 fi
@@ -88,7 +90,7 @@ if [ "$cases" -lt 1000 ]; then
   echo "leak-abort-suite: FAIL — only $cases cases generated (expected >= 1000)" >&2; exit 1
 fi
 
-CHUNK="${LEAKABORT_CHUNK:-471}"
+CHUNK="${LEAKABORT_CHUNK:-236}"
 chunkdir="$WORK/chunks"; rm -rf "$chunkdir"; mkdir -p "$chunkdir"
 split -l "$CHUNK" "$WORK/cases.cul" "$chunkdir/c."
 chunks=( "$chunkdir"/c.* )

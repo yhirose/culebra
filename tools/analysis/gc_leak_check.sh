@@ -71,10 +71,11 @@ else
   echo "--------------------------------------------------------------------"
   # Each pattern is an independent pair of culebra runs (conservative vs
   # gc_refs), and each run reports only its own process's live count — so the
-  # battery fans out across patterns with no cross-talk. Serially the ~39
-  # patterns dominate the gate (~5 s each); parallel they collapse to the
-  # slowest single pattern. Per-pattern output is buffered and replayed in list
-  # order; a leak/error drops a marker file collected afterward.
+  # battery fans out across patterns with no cross-talk. Serially the 40
+  # patterns dominate the gate (every run compiles the whole battery before
+  # its loop); parallel they collapse to the slowest single pattern.
+  # Per-pattern output is buffered and replayed in list order; a leak/error
+  # drops a marker file collected afterward.
   work="$(mktemp -d "${TMPDIR:-/tmp}/culebra-leak.XXXXXX")" || { echo "error: mktemp -d failed" >&2; exit 2; }
   trap 'rm -rf "$work"' EXIT
   list="$work/patterns"
