@@ -1788,7 +1788,7 @@ let render = fn () {
       # it, so the car's own projection is the constant H — v4 interpolates its
       # camera-space height to arrive at the same number, then four pixels up
       # so the bottom of the car clears the edge of the framebuffer.
-      draw_player(speed / MAX_SPEED, H - 4.0, cond {
+      draw_player(finished ? 0.0 : speed / MAX_SPEED, H - 4.0, cond {
         key_left => -1.0,
         key_right => 1.0,
         _ => 0.0,
