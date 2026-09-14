@@ -2,7 +2,13 @@
 # examples/languages/mini-culebra/mini_culebra.cul against the real culebra binary:
 # every samples/*.cul is written in the subset both implement, so the real
 # implementation is the compiler's oracle. Each sample must produce
-# identical stdout from both, under the executor and --jit.
+# identical stdout from both, under the executor and --jit-faststart.
+#
+# --jit-faststart rather than --jit: at O2 compiling the front end itself is
+# minutes of LLVM optimization (its functions run to tens of thousands of IR
+# lines) while running the samples takes a second, and what this test checks
+# is the front end against its oracle. Optimized JIT output is the tests/*.cul
+# sweep's job.
 #
 # No AOT leg: pl0_codegen_test.sh already proves the CodeGen archive links
 # and runs under AOT, and this test adds no new runtime surface to that
@@ -40,9 +46,9 @@ lane() {
   "$CULEBRA" "$flag" "$MINI" "$SAMPLES"/*.cul >"$TMP/got$flag" 2>&1
 }
 lane --vm &
-lane --jit &
+lane --jit-faststart &
 wait
-for flag in --vm --jit; do
+for flag in --vm --jit-faststart; do
   if ! diff -u "$TMP/want$flag" "$TMP/got$flag" >"$TMP/diff$flag"; then
     echo "FAIL [$flag]: mini_culebra differs from culebra itself" >&2
     cat "$TMP/diff$flag" >&2

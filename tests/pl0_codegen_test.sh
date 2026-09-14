@@ -3,7 +3,9 @@
 # implementations of the same language (one interprets the AST directly, the
 # other compiles it to Core-IR and runs cpp-vmlib's bytecode executor), each
 # the other's oracle. Every examples/languages/pl0/samples/*.pas must produce identical
-# stdout from both, across the executor, --jit and an AOT-built binary.
+# stdout from both, across the executor, --jit-faststart and an AOT-built
+# binary (the optimized build of the front end is the AOT leg's; at O2 the JIT
+# leg is seconds of compile per sample — see mini_culebra_test.sh).
 #
 # Can't be a plain tests/*.cul sweep test: it has to invoke two whole
 # top-level scripts as subprocesses (one of them needs stdin), and needs to
@@ -46,10 +48,10 @@ run() {
 
 for sample in square.pas gcd.pas fib.pas nested.pas odd.pas unary.pas; do
   run "vm  $sample"  "--vm"  "$sample"
-  run "jit $sample"  "--jit" "$sample"
+  run "jit $sample"  "--jit-faststart" "$sample"
 done
 run "vm  read.pas"  "--vm"  "read.pas"  "$SAMPLES/read.stdin"
-run "jit read.pas"  "--jit" "read.pas"  "$SAMPLES/read.stdin"
+run "jit read.pas"  "--jit-faststart" "read.pas"  "$SAMPLES/read.stdin"
 
 # --- AOT: build pl0_codegen.cul itself once, run every sample through it. ---
 # `--vm` on the pl0.cul side only: a gate build with CULEBRA_REQUIRE_EXPLICIT_ENGINE
