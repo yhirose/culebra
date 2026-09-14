@@ -353,6 +353,72 @@ inline const std::vector<Member>& value_members(Kind k) {
   return it == tables.end() ? kEmpty : it->second;
 }
 
+// ---- callbacks ------------------------------------------------------------
+//
+// The built-in methods that take a function (map, filter, reduce, ...) pass it
+// the receiver's elements, and what they return depends on the function. The
+// canonical signature table declares that parameter as a plain `Function` —
+// a string the runtime also reads — so the element flow lives here, for
+// inference only.
+
+enum class CallbackResult : uint8_t {
+  Same,        // the receiver: filter, sorted_by, take_while, tap
+  Map,         // the receiver's kind, of what the function returns
+  FlatMap,     // the receiver's kind, of the elements of what it returns
+  Element,     // one element or nil: find, min_by, max_by
+  Fold,        // the initial value or what the function returns: reduce
+  Bool,        // all, any
+  Nil,         // for_each, sort_by
+  Object,      // group_by
+  Tuple,       // partition
+  Position,    // an index or nil
+  Iterator,    // an iterator of something else: chunk_by, scan
+};
+
+struct CallbackRule {
+  std::string_view method;
+  int callback_arg;   // the positional argument that is the function
+  int element_param;  // the function's parameter that receives an element
+  CallbackResult result;
+};
+
+inline const CallbackRule* callback_rule(std::string_view method) {
+  static constexpr CallbackRule kRules[] = {
+      {"all", 0, 0, CallbackResult::Bool},
+      {"any", 0, 0, CallbackResult::Bool},
+      {"chunk_by", 0, 0, CallbackResult::Iterator},
+      {"filter", 0, 0, CallbackResult::Same},
+      {"find", 0, 0, CallbackResult::Element},
+      {"flat_map", 0, 0, CallbackResult::FlatMap},
+      {"for_each", 0, 0, CallbackResult::Nil},
+      {"group_by", 0, 0, CallbackResult::Object},
+      {"map", 0, 0, CallbackResult::Map},
+      {"max_by", 0, 0, CallbackResult::Element},
+      {"min_by", 0, 0, CallbackResult::Element},
+      {"partition", 0, 0, CallbackResult::Tuple},
+      {"position", 0, 0, CallbackResult::Position},
+      {"reduce", 1, 1, CallbackResult::Fold},
+      {"scan", 1, 1, CallbackResult::Iterator},
+      {"skip_while", 0, 0, CallbackResult::Same},
+      {"sort_by", 0, 0, CallbackResult::Nil},
+      {"sorted_by", 0, 0, CallbackResult::Same},
+      {"take_while", 0, 0, CallbackResult::Same},
+      {"tap", 0, 0, CallbackResult::Same},
+  };
+  for (const auto& r : kRules)
+    if (r.method == method) return &r;
+  return nullptr;
+}
+
+// The positional arguments of an ARGUMENTS node, keyword arguments left out.
+inline std::vector<const peg::Ast*> positional_args(const peg::Ast& args) {
+  using namespace peg::udl;
+  std::vector<const peg::Ast*> out;
+  for (const auto& a : args.nodes)
+    if (a->tag != "KWARG"_ && a->tag != "KWARG_SPLAT"_) out.push_back(a.get());
+  return out;
+}
+
 // ---- inference ------------------------------------------------------------
 
 class Inference {
@@ -371,6 +437,7 @@ class Inference {
         catalog_(catalog),
         modules_(std::move(modules)) {
     index(root_, nullptr);
+    bind_calls();
   }
 
   const resolve::Resolution& resolution() const { return res_; }
@@ -559,6 +626,14 @@ class Inference {
           if (src.kind == Source::Value) t = join(t, expr_type(*src.node));
           if (src.kind == Source::ElementOf)
             t = join(t, element_of(expr_type(*src.node)));
+          if (src.kind == Source::CallbackElement)
+            t = join(t, element_of(chain_type(*src.node, src.index)));
+          if (src.kind == Source::Argument || src.kind == Source::UfcsReceiver) {
+            if (escapes(src.function) || !reaches_free_function(src)) continue;
+            t = join(t, src.kind == Source::Argument
+                            ? expr_type(*src.node)
+                            : chain_type(*src.call, src.index));
+          }
         }
       }
     }
@@ -582,7 +657,7 @@ class Inference {
       if (member) {
         bool called = i + 1 < upto && call.nodes[i + 1]->original_tag == "ARGUMENTS"_;
         if (called) {
-          t = method_result(t, c.token, c.position);
+          t = method_result(t, c.token, c.position, call.nodes[i + 1].get());
           i++;
         } else {
           t = property_type(t, c.token);
@@ -841,9 +916,22 @@ class Inference {
 
  private:
   struct Source {
-    enum Kind : uint8_t { Value, ElementOf, Annotation } kind;
+    enum Kind : uint8_t {
+      Value,
+      ElementOf,
+      Annotation,
+      CallbackElement,  // `node` is the CALL, `index` the member taking the callback
+      Argument,         // `node` is the argument a call passes
+      UfcsReceiver,     // `call`'s chain before `index` is the receiver
+    } kind;
     const peg::Ast* node;
     std::string_view text;
+    size_t index = 0;
+    // Argument / UfcsReceiver: the function called, whose callers must all be
+    // in view; and for a UFCS call, the CALL and the member, since the call
+    // reaches the function only when the receiver has no member of that name.
+    size_t function = resolve::kNone;
+    const peg::Ast* call = nullptr;
   };
 
   size_t offset_of(const peg::Ast& n) const {
@@ -1093,9 +1181,14 @@ class Inference {
     return out;
   }
 
-  Type method_result(const Type& t, std::string_view name, size_t offset) const {
+  Type method_result(const Type& t, std::string_view name, size_t offset,
+                     const peg::Ast* args = nullptr) const {
     Type out;
     bool found = false;
+    if (const CallbackRule* rule = callback_rule(name); rule && args) {
+      Type r = callback_result(t, *rule, *args);
+      if (!r.unknown()) return r;
+    }
     for (const auto& a : t.alts) {
       for (const auto& m : members_of(a)) {
         if (m.name != name) continue;
@@ -1109,6 +1202,117 @@ class Inference {
       }
     }
     if (!found) return free_function_result(name, offset);
+    return out;
+  }
+
+  // Whether a function's callers may lie outside this document or reach it
+  // through a value: it is exported, or its name is read other than as a
+  // callee. Then the calls in view do not tell a parameter's type.
+  bool escapes(size_t fn) const {
+    if (fn == resolve::kNone) return true;
+    const resolve::Symbol& sym = res_.symbols[fn];
+    if (sym.exported) return true;
+    for (size_t i : sym.occurrences) {
+      const auto& o = res_.occurrences[i];
+      if (o.role != resolve::Role::Read ||
+          o.spelling == resolve::Spelling::KeywordLabel)
+        continue;
+      if (!called_at_.contains(o.position)) return true;
+    }
+    return false;
+  }
+
+  // A source from a UFCS call counts only if the receiver has no member of
+  // the called name; any other source counts.
+  bool reaches_free_function(const Source& src) const {
+    if (!src.call) return true;
+    std::string_view name = src.call->nodes[src.index]->token;
+    for (const auto& m : members(chain_type(*src.call, src.index)))
+      if (m.name == name) return false;
+    return true;
+  }
+
+  // The parameter symbols of every declaration bound to `fn`, in order (kNone
+  // for a pattern parameter).
+  std::vector<std::vector<size_t>> parameter_lists(size_t fn) const {
+    using namespace peg::udl;
+    std::vector<std::vector<size_t>> out;
+    auto it = declarations_.find(fn);
+    if (it == declarations_.end()) return out;
+    for (const peg::Ast* params : it->second) {
+      std::vector<size_t> list;
+      for (const auto& p : params->nodes) {
+        if (is_kw_only_sep(*p)) continue;
+        bool plain = p->tag == "PARAMETER"_ && p->nodes.size() >= 2 &&
+                     !is_pattern_param(*p);
+        list.push_back(plain ? symbol_at(*p->nodes[1]) : resolve::kNone);
+      }
+      out.push_back(std::move(list));
+    }
+    return out;
+  }
+
+  // What a built-in method that takes a function gives, from its rule.
+  Type callback_result(const Type& receiver, const CallbackRule& rule,
+                       const peg::Ast& args) const {
+    auto positional = positional_args(args);
+    const peg::Ast* fn = rule.callback_arg < static_cast<int>(positional.size())
+                             ? positional[rule.callback_arg]
+                             : nullptr;
+    auto fn_result = [&]() -> Type {
+      return fn ? call_result(expr_type(*fn), nullptr) : Type{};
+    };
+    Type out;
+    for (const auto& a : receiver.alts) {
+      bool container =
+          a.kind == Kind::Array || a.kind == Kind::Iterator || a.kind == Kind::Set;
+      if (!container) continue;
+      Kind kind = a.kind == Kind::Set ? Kind::Array : a.kind;
+      switch (rule.result) {
+        case CallbackResult::Same:
+          add_alt(out, a);
+          break;
+        case CallbackResult::Map: {
+          Alt m{kind};
+          m.element = ref(fn_result());
+          add_alt(out, std::move(m));
+          break;
+        }
+        case CallbackResult::FlatMap: {
+          Alt m{kind};
+          m.element = ref(element_of(fn_result()));
+          add_alt(out, std::move(m));
+          break;
+        }
+        case CallbackResult::Element:
+          if (a.element) out = join(out, *a.element);
+          add_alt(out, Alt{Kind::Nil});
+          break;
+        case CallbackResult::Fold:
+          if (!positional.empty()) out = join(out, expr_type(*positional[0]));
+          out = join(out, fn_result());
+          break;
+        case CallbackResult::Bool:
+          add_alt(out, Alt{Kind::Bool});
+          break;
+        case CallbackResult::Nil:
+          add_alt(out, Alt{Kind::Nil});
+          break;
+        case CallbackResult::Object:
+          add_alt(out, Alt{Kind::Object});
+          break;
+        case CallbackResult::Tuple:
+          add_alt(out, Alt{Kind::Tuple});
+          break;
+        case CallbackResult::Position:
+          add_alt(out, Alt{Kind::Long});
+          add_alt(out, Alt{Kind::Nil});
+          break;
+        case CallbackResult::Iterator:
+          add_alt(out, Alt{Kind::Iterator});
+          break;
+      }
+    }
     return out;
   }
 
@@ -1148,6 +1352,9 @@ class Inference {
             if (!av.type_annotation.empty())
               sources_[s].push_back({Source::Annotation, nullptr, av.type_annotation});
             sources_[s].push_back({Source::Value, av.rhs, {}});
+            if ((av.rhs->tag == "FUNCTION"_ || av.rhs->tag == "LAMBDA"_) &&
+                !av.rhs->nodes.empty())
+              declarations_[s].push_back(av.rhs->nodes[0].get());
           }
         } else if (cls && av.lvalcnt == 2 && !av.compound) {
           const peg::Ast& base = *n.nodes[av.lvaloff];
@@ -1162,7 +1369,11 @@ class Inference {
         size_t i = first_non_decorator_index(n);
         if (i < n.nodes.size()) {
           size_t s = symbol_at(*n.nodes[i]);
-          if (s != resolve::kNone) functions_[s].push_back(&n);
+          if (s != resolve::kNone) {
+            functions_[s].push_back(&n);
+            if (i + 1 < n.nodes.size())
+              declarations_[s].push_back(n.nodes[i + 1].get());
+          }
         }
         break;
       }
@@ -1193,12 +1404,43 @@ class Inference {
           if (s != resolve::kNone)
             sources_[s].push_back({Source::Annotation, nullptr, n.nodes[2]->token});
         }
+        if (const auto* d = extract_default_expr(n); d && n.nodes.size() >= 2) {
+          size_t s = symbol_at(*n.nodes[1]);
+          if (s != resolve::kNone) sources_[s].push_back({Source::Value, d, {}});
+        }
         break;
       case "TYPED_IDENT"_:
         if (n.nodes.size() >= 2) {
           size_t s = symbol_at(*n.nodes[0]);
           if (s != resolve::kNone)
             sources_[s].push_back({Source::Annotation, nullptr, n.nodes[1]->token});
+        }
+        break;
+      case "CALL"_:
+        note_call(n);
+        for (size_t i = 1; i + 1 < n.nodes.size(); i++) {
+          const peg::Ast& c = *n.nodes[i];
+          if (c.tag != "IDENTIFIER"_ || c.original_tag != "DOT"_) continue;
+          if (n.nodes[i + 1]->original_tag != "ARGUMENTS"_) continue;
+          const CallbackRule* rule = callback_rule(c.token);
+          if (!rule) continue;
+          auto positional = positional_args(*n.nodes[i + 1]);
+          if (rule->callback_arg >= static_cast<int>(positional.size())) continue;
+          const peg::Ast& fn = *positional[rule->callback_arg];
+          if (fn.tag != "FUNCTION"_ && fn.tag != "LAMBDA"_) continue;
+          const peg::Ast* params = fn.nodes.empty() ? nullptr : fn.nodes[0].get();
+          if (!params) continue;
+          int k = 0;
+          for (const auto& param : params->nodes) {
+            if (is_kw_only_sep(*param)) continue;
+            if (k++ != rule->element_param) continue;
+            if (param->tag == "PARAMETER"_ && param->nodes.size() >= 2 &&
+                !is_pattern_param(*param)) {
+              size_t sym = symbol_at(*param->nodes[1]);
+              if (sym != resolve::kNone)
+                sources_[sym].push_back({Source::CallbackElement, &n, {}, i});
+            }
+          }
         }
         break;
       case "MATCH"_:
@@ -1217,6 +1459,79 @@ class Inference {
     }
     for (const auto& c : n.nodes) index(*c, cls);
   }
+
+  // A call whose arguments bind a function's parameters, kept until every
+  // declaration is indexed: the callee may be declared further down.
+  struct PendingCall {
+    const peg::Ast* call;
+    size_t member;  // 0 for `f(args)`; the member's index for `recv.f(args)`
+    size_t function;
+  };
+
+  void note_call(const peg::Ast& call) {
+    using namespace peg::udl;
+    if (call.nodes.size() < 2) return;
+    const peg::Ast& head = *call.nodes[0];
+    if (head.tag == "IDENTIFIER"_ && head.original_tag != "DOT"_ &&
+        call.nodes[1]->original_tag == "ARGUMENTS"_) {
+      size_t fn = symbol_at(head);
+      if (fn != resolve::kNone) {
+        called_at_.insert(offset_of(head));
+        pending_.push_back({&call, 0, fn});
+      }
+    }
+    for (size_t i = 1; i + 1 < call.nodes.size(); i++) {
+      const peg::Ast& m = *call.nodes[i];
+      if (m.tag != "IDENTIFIER"_ || m.original_tag != "DOT"_) continue;
+      if (call.nodes[i + 1]->original_tag != "ARGUMENTS"_) continue;
+      size_t off = offset_of(m);
+      if (off == resolve::kNone) continue;
+      size_t fn = res_.lookup(res_.scope_at(off), m.token);
+      if (fn != resolve::kNone) pending_.push_back({&call, i, fn});
+    }
+  }
+
+  void bind_calls() {
+    using namespace peg::udl;
+    for (const auto& c : pending_) {
+      bool ufcs = c.member != 0;
+      const peg::Ast& args = *c.call->nodes[ufcs ? c.member + 1 : 1];
+      for (const auto& list : parameter_lists(c.function)) {
+        Source base{Source::Argument, nullptr, {}, c.member, c.function,
+                    ufcs ? c.call : nullptr};
+        if (ufcs && !list.empty() && list[0] != resolve::kNone) {
+          Source recv = base;
+          recv.kind = Source::UfcsReceiver;
+          sources_[list[0]].push_back(recv);
+        }
+        size_t k = ufcs ? 1 : 0;
+        for (const auto& a : args.nodes) {
+          if (a->tag == "KWARG_SPLAT"_) continue;
+          if (a->tag == "KWARG"_) {
+            if (a->nodes.size() < 2) continue;
+            for (size_t p : list)
+              if (p != resolve::kNone && res_.symbols[p].name == a->nodes[0]->token) {
+                Source arg = base;
+                arg.node = a->nodes[1].get();
+                sources_[p].push_back(arg);
+              }
+            continue;
+          }
+          if (k < list.size() && list[k] != resolve::kNone) {
+            Source arg = base;
+            arg.node = a.get();
+            sources_[list[k]].push_back(arg);
+          }
+          k++;
+        }
+      }
+    }
+    pending_.clear();
+  }
+
+  std::vector<PendingCall> pending_;
+  std::set<size_t> called_at_;  // offsets of names read as a callee
+  std::map<size_t, std::vector<const peg::Ast*>> declarations_;  // fn -> parameter lists
 
   const peg::Ast& root_;
   std::string_view src_;

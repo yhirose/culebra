@@ -952,33 +952,54 @@ class Server {
     return catalog_;
   }
 
-  // An import's top-level names, read from its open buffer or its file. Only
-  // names: types would point into a parse that ends here.
+  // An imported module, parsed and inferred once per text it has. The types
+  // its members carry point into this entry, which lives until that text
+  // changes, so they stay valid across the requests that read them.
+  struct Module {
+    std::string source;  // as read, to tell a change
+    std::string text;    // the parse's copy, which it normalizes and the AST views
+    std::shared_ptr<peg::Ast> ast;
+    resolve::Resolution res;
+    std::unique_ptr<infer::Inference> inference;
+    std::vector<infer::Member> members;
+  };
+
+  // An import's top-level declarations, from its open buffer or its file.
   infer::Inference::ModuleMembers module_members_for(const std::string& uri) {
     return [this, uri](std::string_view import_path) {
-      std::vector<infer::Member> out;
       auto path = resolve_module_path(
           std::string(import_path),
           std::filesystem::path(uri_to_path(uri)).parent_path());
-      std::string text;
+      std::string source;
       if (auto it = docs_.find(path_to_uri(path.string())); it != docs_.end()) {
-        text = it->second.text;
+        source = it->second.text;
       } else {
         std::ifstream in(path, std::ios::binary);
-        if (!in) return out;
+        if (!in) return std::vector<infer::Member>{};
         std::stringstream ss;
         ss << in.rdbuf();
-        text = ss.str();
+        source = ss.str();
       }
+      const std::string key = path.string();
+      if (auto it = modules_.find(key);
+          it != modules_.end() && it->second->source == source)
+        return it->second->members;
+      auto mod = std::make_unique<Module>();
+      mod->source = source;
+      mod->text = std::move(source);
       std::vector<ParseFailure> failures;
-      auto ast = parse(path.string(), text, failures);
-      if (!ast) return out;
-      auto res = resolve::resolve_module(*ast, text);
-      infer::Inference inf(*ast, text, res, catalog());
-      out = inf.visible(text.size());
-      settle(out, inf);
-      for (auto& m : out) m.type = {};
-      return out;
+      mod->ast = parse(key, mod->text, failures);
+      if (!mod->ast) {
+        modules_.erase(key);
+        return std::vector<infer::Member>{};
+      }
+      mod->res = resolve::resolve_module(*mod->ast, mod->text);
+      mod->inference = std::make_unique<infer::Inference>(*mod->ast, mod->text,
+                                                          mod->res, catalog());
+      mod->members = mod->inference->visible(mod->text.size());
+      auto members = mod->members;
+      modules_[key] = std::move(mod);
+      return members;
     };
   }
 
@@ -1115,6 +1136,7 @@ class Server {
   std::function<const infer::Catalog*()> catalog_provider_;
   mutable const infer::Catalog* catalog_ = nullptr;
   std::map<std::string, Document> docs_;  // by URI
+  std::map<std::string, std::unique_ptr<Module>> modules_;  // imports, by path
   bool shutdown_ = false;
   bool exit_ = false;
 };

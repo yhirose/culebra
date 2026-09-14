@@ -286,6 +286,16 @@ int main(int argc, char** argv) {
   send(request(25, "textDocument/hover", uri("lsp_c6.cul"), 1, 1));
   response_contains(25, "parts: Array<String>");
 
+  // Through an import: a module function's return type carries its members.
+  write_file(dir + "/lsp_mod_types.cul", "fn make() {\n  {size: 1}\n}\n");
+  const std::string types_main = "file://" + dir + "/lsp_mod_types_main.cul";
+  send("{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{"
+       "\"textDocument\":{\"uri\":\"" + types_main +
+       "\",\"languageId\":\"culebra\",\"version\":1,\"text\":\""
+       "import T from './lsp_mod_types.cul'\\nT.make().\\n\"}}}");
+  send(request(26, "textDocument/completion", types_main, 1, 9));
+  response_contains(26, "\"label\":\"size\"");
+
   send("{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"textDocument/nonexistent\","
        "\"params\":{}}");
   read_until("\"id\":5,\"error\":{\"code\":-32601");

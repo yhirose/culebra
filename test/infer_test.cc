@@ -147,6 +147,34 @@ void test_functions() {
   }
 }
 
+void test_callbacks() {
+  if (auto a = analyse("let words = 'a b'.split(' ')\nlet loud = words.map(|word| word.upper())\nloud\n")) {
+    eq(type_of_last(*a, "loud"), "Array<String>", "map gives an array of what the function returns");
+    eq(type_of_last(*a, "word"), "String", "a callback's parameter is the receiver's element");
+  }
+  if (auto a = analyse("let total = [1, 2].reduce(0, |acc, n| acc + n)\ntotal\n"))
+    eq(type_of_last(*a, "total"), "Long", "reduce gives the initial value's type");
+  if (auto a = analyse("let hit = ['a'].find(|s| s.empty())\nhit\n"))
+    eq(type_of_last(*a, "hit"), "String | Nil", "find gives an element or nil");
+  if (auto a = analyse("let evens = 'a b'.split_iter(' ').filter(|w| w.empty())\nevens\n"))
+    eq(type_of_last(*a, "evens"), "Iterator<String>", "filter keeps the receiver's element");
+}
+
+void test_call_sites() {
+  if (auto a = analyse("fn shout(said) { said }\nshout('a')\nshout(b: 1) if false\n"))
+    eq(type_of_last(*a, "said"), "String", "a parameter takes what its calls pass");
+  if (auto a = analyse("fn tally(count) { count }\ntally(count: 2)\n"))
+    eq(type_of_last(*a, "count"), "Long", "a keyword argument binds by name");
+  if (auto a = analyse("fn twice(text) { text }\nlet r = 'a'.twice()\n"))
+    eq(type_of_last(*a, "text"), "String", "a UFCS receiver is the first argument");
+  if (auto a = analyse("fn grow(step = 1) { step }\n"))
+    eq(type_of_last(*a, "step"), "Long", "a default is a value the parameter takes");
+  if (auto a = analyse("fn ident(value) { value }\nlet alias = ident\nident(1)\n"))
+    eq(type_of_last(*a, "value"), "", "a function passed as a value has callers out of view");
+  if (auto a = analyse("fn size(xs) { xs }\n[1].size()\n"))
+    eq(type_of_last(*a, "xs"), "", "a method the receiver owns is not a UFCS call");
+}
+
 void test_classes() {
   if (auto a = analyse("class Box {\n  new(w) { self.w = w }\n  area() { self.w * 2 }\n"
                        "  static unit() { Box(1) }\n}\nlet b = Box(3)\nb\n")) {
@@ -307,6 +335,8 @@ int main(int argc, char** argv) {
   test_values();
   test_functions();
   test_classes();
+  test_callbacks();
+  test_call_sites();
   test_catalog_and_scope();
   if (argc >= 2) measure_corpus(argv[1]);
 
