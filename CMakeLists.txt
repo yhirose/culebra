@@ -2016,6 +2016,15 @@ target_include_directories(fragment_ledger_test PRIVATE include
                            vendor/cpp-peglib)
 add_test(NAME fragment_ledger_test COMMAND fragment_ledger_test)
 
+# Static name resolution (include/frontend/resolve.h): the compiler's scoping
+# rules case by case, then the resolver against the lint's undefined-variable
+# analysis over every tracked .cul file.
+add_executable(resolve_test test/resolve_test.cc)
+target_compile_features(resolve_test PRIVATE cxx_std_23)
+target_include_directories(resolve_test PRIVATE include vendor/cpp-peglib)
+add_test(NAME resolve_test
+         COMMAND resolve_test ${CMAKE_CURRENT_SOURCE_DIR})
+
 # The control for the object file's no-live-address rule
 # (include/jit/baked_address.h): a module built by hand for each shape a
 # baked address can take, so the walk that refuses `culebra build` output
