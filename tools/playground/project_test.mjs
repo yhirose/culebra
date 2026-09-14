@@ -1,10 +1,11 @@
 // Hold the Playground's project model to fixtures: how a ?src= URL is read,
 // which files a jsDelivr tree contributes, and what copy-frontend.sh derives
-// for the catalog. Needs only node.
+// for the catalog. Needs node and git.
 //
 //   node tools/playground/project_test.mjs
 
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { parseSourceUrl, projectFiles, cdnBase, treeUrl } from "../../playground/project.js";
@@ -80,10 +81,12 @@ for (const [p, e] of Object.entries(src)) {
   const m = /^(.*\/)?([^/]+)\/\2\.cul$/.exec(p);
   if (!m) { assert.deepEqual(out[p].assets, [], p); continue; }
   const dir = path.join(root, (m[1] ?? "") + m[2]);
-  const onDisk = fs.readdirSync(dir, { recursive: true, withFileTypes: true })
-    .filter((d) => d.isFile())
-    .map((d) => path.relative(root, path.join(d.parentPath ?? d.path, d.name)))
-    // No dotfile in any segment, the same rule copy-frontend.sh applies.
+  // What a checkout holds (tracked, or untracked but not ignored), minus
+  // dotfiles: the same rules copy-frontend.sh applies.
+  const onDisk = execFileSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", dir],
+                              { cwd: root, encoding: "utf8" })
+    .split("\0")
+    .filter((f) => f && fs.statSync(path.join(root, f), { throwIfNoEntry: false })?.isFile())
     .filter((f) => f !== p && !path.relative(dir, path.join(root, f)).split(path.sep).some((s) => s.startsWith(".")))
     .sort();
   assert.deepEqual(out[p].assets, onDisk, p);

@@ -38,11 +38,17 @@ mv "$OUT/index.html.tmp" "$OUT/index.html"
 # fetch; the source examples.json names no file by hand. The directory is the
 # unit because a program finds its files by its own path, so anything beside
 # it is fair game; the naming rule is what keeps examples/tensor/tensors.cul
-# from dragging mnist/weights/ along. Dotfiles are skipped so a .DS_Store
-# cannot make one machine's copy differ from another's.
+# from dragging mnist/weights/ along. The directory is read through git, so a
+# gitignored file (generated assets, __pycache__) cannot make one machine's
+# copy differ from a checkout's; dotfiles are skipped for the same reason.
 echo "[playground] copying example sources and assets…"
 python3 - "$OUT" <<'PY'
-import json, pathlib, shutil, sys
+import json, pathlib, shutil, subprocess, sys
+
+def checkout_files(d):  # tracked, or untracked but not ignored
+  out = subprocess.run(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", str(d)],
+                       check=True, capture_output=True).stdout
+  return {pathlib.Path(p) for p in out.decode().split("\0") if p}
 
 out = pathlib.Path(sys.argv[1])
 catalog = json.loads(pathlib.Path("playground/examples.json").read_text())
@@ -56,7 +62,7 @@ for category in catalog["categories"]:
     own = entry.parent.name == entry.stem
     def visible(p):  # no dotfile in any segment: .DS_Store, .cache/, .venv/
       return p.is_file() and not any(s.startswith(".") for s in p.relative_to(entry.parent).parts)
-    files = sorted(filter(visible, entry.parent.rglob("*")), key=str) if own else [entry]
+    files = sorted(filter(visible, checkout_files(entry.parent)), key=str) if own else [entry]
     example["assets"] = [str(p) for p in files if p != entry]
     for src in files:
       dst = out / src
