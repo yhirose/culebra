@@ -50,6 +50,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace culebra {
@@ -1919,7 +1920,7 @@ inline std::shared_ptr<peg::Ast> transform_effects_in(
 // transformation passes. Every caller that wants `yield` / effects support
 // (interp module load, JIT/AOT, REPL, lazy module loader) routes through
 // here.
-inline std::shared_ptr<peg::Ast> parse_with_transforms(
+inline std::shared_ptr<peg::Ast> _parse_with_transforms_in_active_ledger(
     const std::string& path, std::string& expr,
     std::vector<std::string>& msgs) {
   auto ast = parse_with_generator_transforms(path, expr, msgs);
@@ -1949,6 +1950,27 @@ inline std::shared_ptr<peg::Ast> parse_with_transforms(
     }
   }
   return out;
+}
+
+inline std::shared_ptr<peg::Ast> parse_with_transforms(
+    const std::string& path, std::string& expr,
+    std::vector<std::string>& msgs) {
+  return _parse_with_transforms_in_active_ledger(path, expr, msgs);
+}
+
+// The same, with the fragments the lowering synthesizes owned by `fragments`
+// instead of the process. The returned AST views them, so `fragments` must
+// outlive it — as `expr` must.
+inline std::shared_ptr<peg::Ast> parse_with_transforms(
+    const std::string& path, std::string& expr, std::vector<std::string>& msgs,
+    FragmentLedger& fragments) {
+  struct Scope {
+    FragmentLedger* saved;
+    explicit Scope(FragmentLedger& l)
+        : saved(std::exchange(_scoped_fragment_ledger, &l)) {}
+    ~Scope() { _scoped_fragment_ledger = saved; }
+  } scope(fragments);
+  return _parse_with_transforms_in_active_ledger(path, expr, msgs);
 }
 
 }  // namespace culebra

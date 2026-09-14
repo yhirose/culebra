@@ -46,8 +46,8 @@ namespace culebra {
 
 // Storage for synthesized generator source fragments. peg::Ast holds
 // `string_view`s into the parsed source, so anything the transform
-// re-parses needs process-lifetime backing — the same fix the lazy-module
-// path uses.
+// re-parses needs backing that outlives the AST: the process by default —
+// the same fix the lazy-module path uses — or a caller-owned FragmentLedger.
 //
 // Process-global, and written from several threads at once: every isolate
 // resolves the lazy stdlib modules on its own thread and those modules contain
@@ -62,9 +62,34 @@ inline std::mutex& fragment_ledger_mutex() {
   static std::mutex m;
   return m;
 }
-inline std::vector<std::shared_ptr<std::string>>& _fragment_sources() {
-  static std::vector<std::shared_ptr<std::string>> sources;
-  return sources;
+// The synthesized buffers a lowering's AST views, and the parse label each was
+// read under. `by_label` lets a transform that walks a tree with spliced-in
+// subtrees (identified by a different `node->path`) resolve the right slice
+// base — e.g. the effects pass reaching a construct inside a generator-lowered
+// body. Non-unique labels (internal re-parses that never splice nodes into the
+// final AST) may overwrite each other; only `next_fragment_label` labels are
+// ever looked up.
+struct FragmentLedger {
+  std::vector<std::shared_ptr<std::string>> sources;
+  std::map<std::string, std::shared_ptr<std::string>, std::less<>> by_label;
+};
+
+// The default owner, for every AST that may be cached or shared across threads.
+inline FragmentLedger& _process_fragment_ledger() {
+  static FragmentLedger ledger;
+  return ledger;
+}
+
+// Non-null only for the span of one `parse_with_transforms(..., FragmentLedger&)`
+// call, so a caller that owns its ASTs frees their fragments with them (an
+// editor re-analysing a buffer on every keystroke). Nothing but that one
+// lowering runs inside the span, so no process-lifetime AST can come to view a
+// buffer this ledger frees.
+inline thread_local FragmentLedger* _scoped_fragment_ledger = nullptr;
+
+inline FragmentLedger& _active_fragment_ledger() {
+  return _scoped_fragment_ledger ? *_scoped_fragment_ledger
+                                 : _process_fragment_ledger();
 }
 
 // These tag types open a fresh fn-body scope: anything found inside (a
@@ -945,41 +970,29 @@ inline std::optional<std::string> rewrite_yielding_fors_to_while(
 // lifetime store with `parse` — used by both the generator wrapper parse and
 // the effects transform's body re-parse, so the "register before parse" rule
 // lives in one spot.
-// Ledger from parse label -> the fragment buffer it was parsed from. A
-// transform that walks a tree with spliced-in subtrees (identified by a
-// different `node->path`) resolves the right slice base here — e.g. the
-// effects pass reaching a construct inside a generator-lowered body.
-// Non-unique labels (internal re-parses that never splice nodes into the
-// final AST) may overwrite each other; only `next_fragment_label` labels
-// are ever looked up. Guarded by fragment_ledger_mutex(), like the vector.
-inline std::map<std::string, std::shared_ptr<std::string>, std::less<>>&
-_fragment_registry() {
-  static std::map<std::string, std::shared_ptr<std::string>, std::less<>> reg;
-  return reg;
-}
-
 // The buffer a spliced-in subtree was parsed from, or null. A copy of the
 // shared_ptr, so the caller reads the buffer without holding the lock.
 inline std::shared_ptr<std::string> fragment_source_for(
     std::string_view label) {
   std::lock_guard<std::mutex> lk(fragment_ledger_mutex());
-  auto& reg = _fragment_registry();
+  auto& reg = _active_fragment_ledger().by_label;
   auto it = reg.find(label);
   return it == reg.end() ? nullptr : it->second;
 }
 
-// Every synthesized fragment so far (CULEBRA_TRANSFORM_STATS reporting).
+// Every fragment the active ledger holds (CULEBRA_TRANSFORM_STATS reporting).
 inline std::vector<std::shared_ptr<std::string>> fragment_sources_snapshot() {
   std::lock_guard<std::mutex> lk(fragment_ledger_mutex());
-  return _fragment_sources();
+  return _active_fragment_ledger().sources;
 }
 
 inline std::shared_ptr<peg::Ast> parse_registered_source(
     const char* label, std::shared_ptr<std::string> synthesized) {
   {
     std::lock_guard<std::mutex> lk(fragment_ledger_mutex());
-    _fragment_sources().push_back(synthesized);
-    _fragment_registry()[label] = synthesized;
+    auto& ledger = _active_fragment_ledger();
+    ledger.sources.push_back(synthesized);
+    ledger.by_label[label] = synthesized;
   }
   std::vector<std::string> msgs;
   return parse(label, *synthesized, msgs);

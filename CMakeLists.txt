@@ -2000,6 +2000,15 @@ target_include_directories(source_newlines_test PRIVATE include
                            vendor/cpp-peglib)
 add_test(NAME source_newlines_test COMMAND source_newlines_test)
 
+# The fragment ledger's caller-owned form (include/frontend/generator_transform.h):
+# a lowering given its own ledger leaves the process ledger untouched and frees
+# its synthesized buffers with that ledger.
+add_executable(fragment_ledger_test test/fragment_ledger_test.cc)
+target_compile_features(fragment_ledger_test PRIVATE cxx_std_23)
+target_include_directories(fragment_ledger_test PRIVATE include
+                           vendor/cpp-peglib)
+add_test(NAME fragment_ledger_test COMMAND fragment_ledger_test)
+
 # The control for the object file's no-live-address rule
 # (include/jit/baked_address.h): a module built by hand for each shape a
 # baked address can take, so the walk that refuses `culebra build` output
