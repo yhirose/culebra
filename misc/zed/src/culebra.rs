@@ -1,7 +1,7 @@
-// Zed extension entry point for Culebra. Registers the `culebra` debug adapter,
-// which Zed can't do declaratively — it needs this thin WASM shim that tells Zed
-// how to launch the adapter. The adapter itself is `culebra dap` (a stdio DAP
-// server shipped in the culebra binary); all the debugging logic lives there.
+// Zed extension entry point for Culebra. Registers the `culebra` language server
+// and debug adapter, which Zed can't do declaratively — it needs this thin WASM
+// shim that tells Zed how to launch them. Both are the culebra binary itself
+// (`culebra lsp` and `culebra dap`, stdio servers); all the logic lives there.
 //
 // The grammar + language config (syntax highlighting) are declared in
 // extension.toml / languages/ and need no code here.
@@ -9,8 +9,9 @@
 use zed_extension_api::{
     self as zed,
     serde_json::{self, json, Value},
-    DebugAdapterBinary, DebugConfig, DebugRequest, DebugScenario, DebugTaskDefinition, Result,
-    StartDebuggingRequestArguments, StartDebuggingRequestArgumentsRequest, Worktree,
+    DebugAdapterBinary, DebugConfig, DebugRequest, DebugScenario, DebugTaskDefinition,
+    LanguageServerId, Result, StartDebuggingRequestArguments,
+    StartDebuggingRequestArgumentsRequest, Worktree,
 };
 
 struct CulebraExtension;
@@ -18,6 +19,22 @@ struct CulebraExtension;
 impl zed::Extension for CulebraExtension {
     fn new() -> Self {
         CulebraExtension
+    }
+
+    // Start `culebra lsp` for a Culebra buffer: the binary on the worktree's
+    // PATH, else hope it resolves at launch.
+    fn language_server_command(
+        &mut self,
+        _language_server_id: &LanguageServerId,
+        worktree: &Worktree,
+    ) -> Result<zed::Command> {
+        Ok(zed::Command {
+            command: worktree
+                .which("culebra")
+                .unwrap_or_else(|| "culebra".to_string()),
+            args: vec!["lsp".into()],
+            env: Default::default(),
+        })
     }
 
     // The culebra debugger only launches a program; it never attaches.

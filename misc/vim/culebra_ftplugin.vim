@@ -77,6 +77,13 @@ endfunction
 
 command! -buffer CulebraVimspectorInit call <SID>CulebraVimspectorInit()
 
+" Neovim 0.10+: attach `culebra lsp` for diagnostics, hover (K) and formatting
+" (`:lua vim.lsp.buf.format()`). `let g:culebra_lsp = 0` turns it off. Vim has
+" no built-in client; `culebra docs tooling` shows a vim-lsp setup.
+if has('nvim-0.10') && get(g:, 'culebra_lsp', 1) && executable('culebra')
+  lua vim.lsp.start({ name = 'culebra', cmd = { 'culebra', 'lsp' }, root_dir = vim.fs.root(0, { '.git' }) or vim.fn.getcwd() })
+endif
+
 " Format on save: `let g:culebra_fmt_autosave = 1` in your vimrc to enable
 " (off by default, mirroring g:go_fmt_autosave / g:rustfmt_autosave).
 if get(g:, 'culebra_fmt_autosave', 0)
