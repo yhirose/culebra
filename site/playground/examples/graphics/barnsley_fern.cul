@@ -35,17 +35,12 @@ mut plotted = 0
 
 fn step() {
   r = Random.uniform(0.0, 1.0)
-  let (nx, ny) = if r < 0.01 {
-    (0.0, 0.16 * y)
-  } else if r < 0.86 {
-    (0.85 * x + 0.04 * y, -0.04 * x + 0.85 * y + 1.6)
-  } else if r < 0.93 {
-    (0.20 * x - 0.26 * y, 0.23 * x + 0.22 * y + 1.6)
-  } else {
-    (-0.15 * x + 0.28 * y, 0.26 * x + 0.24 * y + 0.44)
+  (x, y) = cond {
+    r < 0.01 => (0.0, 0.16 * y),
+    r < 0.86 => (0.85 * x + 0.04 * y, -0.04 * x + 0.85 * y + 1.6),
+    r < 0.93 => (0.20 * x - 0.26 * y, 0.23 * x + 0.22 * y + 1.6),
+    _ => (-0.15 * x + 0.28 * y, 0.26 * x + 0.24 * y + 0.44),
   }
-  x = nx
-  y = ny
 }
 
 Canvas.title('barnsley fern')
@@ -53,7 +48,7 @@ Canvas.run(W, H, fn () {
   Canvas.quit() if Canvas.key('escape')
 
   if plotted < MAX_POINTS {
-    Canvas.draw_to(fern, fn () {
+    Canvas.draw_to(fern, || {
       for _ in 0..POINTS_PER_FRAME {
         step()
         Canvas.set_pixel(OFFSET_X + x * SCALE, H - MARGIN - y * SCALE, shade(y))

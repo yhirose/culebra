@@ -154,6 +154,9 @@
           ],
           "assets": [
             "examples/games/retro-run/README.md",
+            "examples/games/retro-run/assets-racer/background.png",
+            "examples/games/retro-run/assets-racer/music.mp3",
+            "examples/games/retro-run/assets-racer/sprites.png",
             "examples/games/retro-run/assets/README.md",
             "examples/games/retro-run/assets/background-template.png",
             "examples/games/retro-run/assets/background_asayake.png",
@@ -163,6 +166,7 @@
             "examples/games/retro-run/assets/background_yuugure.png",
             "examples/games/retro-run/assets/sprites-template.png",
             "examples/games/retro-run/assets/sprites.png",
+            "examples/games/retro-run/tools/__pycache__/gen_assets.cpython-314.pyc",
             "examples/games/retro-run/tools/atlas.cul",
             "examples/games/retro-run/tools/check_assets.cul",
             "examples/games/retro-run/tools/gen_assets.cul",
