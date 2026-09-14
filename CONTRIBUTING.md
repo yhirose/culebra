@@ -18,10 +18,14 @@ Building from source
 
 Requires a C++23 compiler and [`just`](https://github.com/casey/just).
 The JIT and AOT (`culebra build`) backends also need LLVM 20+; a build
-without them still has the interpreter and the bytecode VM, and no LLVM
-dependency. The toolchain versions
-CI builds against are in
+without them still has the bytecode VM, with no LLVM dependency. The
+toolchain versions CI builds against are in
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+
+On a fresh Ubuntu machine, [`misc/setup_ubuntu.sh`](misc/setup_ubuntu.sh)
+installs the same toolchain (gcc-14, LLVM 22, `just`) CI does. On macOS,
+`brew install llvm just ccache coreutils` is enough; `justfile` finds
+Homebrew's `clang++` on its own.
 
 ```bash
 just build              # with JIT (Release + LTO)
