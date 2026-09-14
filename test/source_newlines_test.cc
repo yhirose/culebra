@@ -143,6 +143,22 @@ void test_both_parse_entries_route_through_it() {
   }
 }
 
+// The last line need not end in a newline, and that includes a line comment:
+// an editor buffer whose final line is a comment being typed has no `\n` yet.
+void test_line_comment_may_end_the_file() {
+  for (bool for_format : {false, true}) {
+    const char* which = for_format ? "parse_for_format" : "parse";
+    for (std::string src : {"let x = 1\n# note", "let x = 1 # note",
+                            "let x = 1\n// note", "# only a comment"}) {
+      std::vector<std::string> msgs;
+      auto ast = for_format ? culebra::parse_for_format("(eof)", src, msgs)
+                            : culebra::parse("(eof)", src, msgs);
+      check(ast != nullptr,
+            std::format("{}: a line comment ends the file: '{}'", which, src));
+    }
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -151,6 +167,7 @@ int main() {
   test_normalizing_is_idempotent();
   test_bare_cr_is_rejected_with_a_position();
   test_both_parse_entries_route_through_it();
+  test_line_comment_may_end_the_file();
 
   if (failures) {
     std::printf("source_newlines_test: %d failure(s)\n", failures);

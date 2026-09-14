@@ -594,7 +594,7 @@ const auto grammar_ = R"(
   IdentInitChar            <-  [a-zA-Z_]
   IdentChar                <-  [a-zA-Z0-9_]
   BlockComment             <-  '/*' (!'*/' .)* '*/'
-  LineComment              <-  ('#' / '//') (!EndOfLine .)* &EndOfLine
+  LineComment              <-  ('#' / '//') (!EndOfLine .)* &(EndOfLine / !.)
 
   K(S)                     <-  < S > !IdentInitChar # Keyward Macro
 )";

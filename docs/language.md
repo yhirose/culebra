@@ -88,7 +88,7 @@ which one changes what the program means.
 
 ### Comments
 
-* Line comments: `# ...` or `// ...` until end of line.
+* Line comments: `# ...` or `// ...` until end of line or end of file.
 * Block comments: `/* ... */`, not nestable.
 
 ### Identifiers
