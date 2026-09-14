@@ -1020,10 +1020,21 @@ It provides:
 - **Formatting** — the whole document, as `culebra fmt` formats it
   ([§3](#3-formatting-culebra-fmt)). A buffer that does not parse is left
   alone.
-- **Hover** — the reference entry for a name the docs give a heading of its
-  own: a stdlib function or constant (`Math.abs`, `Math.pi`) or a global
-  function (`type_of`). A method called on a value (`xs.size()`) shows
-  nothing, because which method it is depends on the value's type.
+- **Hover** — for a name the document declares, its declaration with the
+  type inference gives it (`parts: Array<String>`). Otherwise, the reference
+  entry for a name the docs give a heading of its own: a stdlib function or
+  constant (`Math.abs`, `Math.pi`) or a global function (`type_of`). A method
+  called on a value (`xs.size()`) shows nothing, because which method it is
+  depends on the value's type.
+- **Completion** — after `value.`, the members of the value's type as far as
+  it can be established: a built-in type's methods, a class instance's
+  methods and fields (`self` included), an object literal's keys, a
+  namespace's members, and the methods of the class a stdlib function
+  returns (`Regex.compile(p).`). The free functions the call could reach
+  through UFCS follow. A bare name completes to what is visible at that
+  point, then the globals. Types come from literals, return types,
+  annotations and assignments; a value whose type is not known gets only
+  the UFCS candidates.
 - **Go to definition, find references, highlight** — for a variable,
   parameter, function, class, enum, import or effect operation, following
   the scoping rules of [`language.md` §6](language.md#6-variables-and-scope):
