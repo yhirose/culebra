@@ -265,6 +265,7 @@ Every subcommand below is part of the executable that runs a program.
 | `culebra lint [paths...]` | report static problems without running the program |
 | `culebra fmt [paths...]` | reformat source to the canonical style |
 | `culebra dap` | speak the Debug Adapter Protocol over stdio (VSCode / Vim / Zed) |
+| `culebra lsp` | serve diagnostics, hover and formatting to an editor over stdio |
 | `culebra docs [topic]` | read and search the embedded reference docs |
 | `culebra init` | set up this directory's AI agent instructions and this machine's editors |
 | `culebra build <in.cul> -o <out>` | compile ahead-of-time into a standalone executable |
@@ -394,8 +395,9 @@ Documentation
   / [日本語](docs/language.ja.md)
 * Standard library reference: [`docs/stdlib.md`](docs/stdlib.md)
   / [日本語](docs/stdlib.ja.md)
-* Tooling — the test runner, linter, formatter, debug adapter and
-  embedded docs (`culebra test` / `lint` / `fmt` / `dap` / `docs`):
+* Tooling — the test runner, linter, formatter, debug adapter, language
+  server and embedded docs (`culebra test` / `lint` / `fmt` / `dap` /
+  `lsp` / `docs`):
   [`docs/tooling.md`](docs/tooling.md)
   / [日本語](docs/tooling.ja.md)
 * Deployment — standalone binary build, embedding from C++, wrapping

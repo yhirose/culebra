@@ -1,7 +1,7 @@
 # Culebra ツール
 
 `culebra`バイナリはツールチェーンそのものです。プログラムを実行する同じ
-実行ファイルが、テストランナー・リンタ・フォーマッタ・デバッグアダプタ、
+実行ファイルが、テストランナー・リンタ・フォーマッタ・デバッグアダプタ・言語サーバ、
 そしてリファレンス文書そのものも兼ねています。この文書はそれらの
 開発用サブコマンドのリファレンスです。
 
@@ -12,6 +12,7 @@
 | `culebra lint [paths...]` | 実行せずに静的な問題を報告する | [§2](#2-lint-culebra-lint) |
 | `culebra fmt [paths...]` | ソースを正準スタイルに整形する | [§3](#3-フォーマット-culebra-fmt) |
 | `culebra dap` | Debug Adapter Protocolをstdioで話す | [§4](#4-デバッグ-culebra-dap) |
+| `culebra lsp` | エディタに診断・ホバー・整形をstdioで提供する | [§8](#8-エディタ支援-culebra-lsp) |
 | `culebra docs [topic]` | 埋め込まれたリファレンスを読む・検索する | [§5](#5-ドキュメントを読む-culebra-docs) |
 | `culebra serve [-p PORT] [-d DIR]` | ディレクトリを静的ファイルとして配信する | [§6](#6-静的ファイルの配信-culebra-serve) |
 | `culebra build <in.cul> -o <out>` | AOTコンパイルして単体実行ファイルを作る | [`deployment.ja.md` §1](deployment.ja.md#1-standalone-バイナリビルドculebra-build) |
@@ -48,6 +49,8 @@
    * [テキスト](#テキスト)
    * [ページ](#ページ)
    * [Shareボタン](#shareボタン)
+8. [エディタ支援 (`culebra lsp`)](#8-エディタ支援-culebra-lsp)
+   * [設定](#設定)
 
 ---
 
@@ -372,8 +375,8 @@ culebra lint --fix joined.cul
 未知のフラグはパスではなくエラー（exit 2）です: `culebra lint --fixx app.cul`
 は、修正が無効なままlintを続けるのではなく打ち間違いを報告します。
 
-予定: エディタ／LSP統合向けの`--format json`モードと、インラインの
-`# lint: ignore`による抑制。
+これらの診断は、`culebra lsp`を通して入力中のエディタにも表示されます
+（[§8](#8-エディタ支援-culebra-lsp)）。予定: インラインの`# lint: ignore`による抑制。
 
 ---
 
@@ -429,21 +432,20 @@ match / condのアーム、クラス・trait・enumのメンバ、分配パタ�
 
 ### エディタ統合
 
-stdin形式 (`culebra fmt -`) が整形フックです。各統合はバッファ全体を整形し、
-終了コードが0のときだけ結果を反映するので、パース／安全性エラーの時は
-バッファに触れません。
+エディタは、言語サーバ（[§8](#8-エディタ支援-culebra-lsp)）かstdin形式
+(`culebra fmt -`) のどちらかで整形します。どちらもバッファ全体を整形し、
+パース／安全性エラーの時はバッファに触れません。
 
-- **VSCode** — 同梱拡張がdocument formatting providerを登録するので、
+- **VSCode** — 同梱拡張が言語サーバを通して整形するので、
   **Format Document** と`editor.formatOnSave`が`.cul`でそのまま動きます
   （導入は`culebra init`、またはソースチェックアウトから
   `misc/vscode/install.sh`）。
-- **Zed** — `settings.json`の
-  `"languages": { "Culebra": { ... } }`の下に外部フォーマッタを追加:
-  `"formatter": { "external": { "command": "culebra", "arguments": ["fmt", "-"] } }`
+- **Zed** — 拡張が登録する言語サーバが`.cul`を整形します。設定は要りません。
 - **Vim/Neovim** — 同梱の`ftplugin`が`:CulebraFmt`コマンドを提供します
   （カーソル位置を保持、エラー時は無変更）。保存時整形は
   `let g:culebra_fmt_autosave = 1`。`gq` / `'formatprg'`は意図的に使いません
-  — パースできない範囲を空出力で置き換えてしまうためです。
+  — パースできない範囲を空出力で置き換えてしまうためです。Neovim 0.10以降は
+  `:lua vim.lsp.buf.format()`で言語サーバを通しても整形できます。
 - 保存時フックを持つ他のエディタも、同じようにバッファを`culebra fmt -`に
   通せます。
 
@@ -504,7 +506,7 @@ culebra dap        # stdin/stdoutでDAPを話す
 
 プロジェクトディレクトリで`culebra init`を実行すると、このマシンにある
 VSCode・Vim・Neovim・Zedのうち見つかったものに対して、エディタ統合（シンタックス
-ハイライト＋`culebra dap`デバッグアダプタ）とAIコーディングエージェント向け
+ハイライト、`culebra lsp`言語サーバ、`culebra dap`デバッグアダプタ）とAIコーディングエージェント向け
 指示を導入・更新します。ペイロードはバイナリ内に同梱されているのでソース
 チェックアウトは不要です。Zedだけは構文文法について「ソースチェックアウト
 不要」の例外です — Zedはtree-sitter文法をgitリポジトリからしか取得できない
@@ -925,3 +927,56 @@ Examplesのメニューをプレースホルダに戻すことは「このテキ
 テキスト自体は残ります。そこがShareの隣のNewボタンとの違いで、あちらはテキストも
 消します。プロジェクトを名指ししないリンクは、
 編集の有無にかかわらずテキストを載せます。そうしないと相手に何も届かないからです。
+
+---
+
+## 8. エディタ支援 (`culebra lsp`)
+
+`culebra lsp`は
+[Language Server Protocol](https://microsoft.github.io/language-server-protocol/)
+（LSP）のサーバです。エディタがこれを起動し、標準入出力で通信します。
+ソースを読むだけで、プログラムは実行しません。
+
+```
+culebra lsp        # 標準入出力でLSPを話す
+```
+
+提供する機能は次の3つです。
+
+- **診断** — `culebra lint`が報告する内容（[§2](#2-lint-culebra-lint)）を、
+  入力しながら表示します。編集したバッファは、入力が0.25秒止まったところで
+  解析し直します。保存したときはすぐに解析します。
+- **整形** — 文書全体を`culebra fmt`と同じように整形します
+  （[§3](#3-フォーマット-culebra-fmt)）。パースできないバッファには触れません。
+- **ホバー** — リファレンスに見出しがある名前について、その項目を表示します。
+  標準ライブラリの関数や定数（`Math.abs`、`Math.pi`）と、グローバル関数
+  （`type_of`）が対象です。値に対して呼ぶメソッド（`xs.size()`）には何も
+  表示しません。どのメソッドになるかは値の型で決まるためです。
+
+位置はプロトコルの既定に従います。行は0から数え、列はUTF-16のコード単位で
+数えます。
+
+### 設定
+
+`culebra init`（[§4](#手早いセットアップ-culebra-init)）は、ほかのエディタ統合と
+一緒に、このサーバをVSCode・Neovim・Zedに組み込みます。
+
+- **VSCode** — 同梱の拡張が`.cul`ファイルに対して`culebra lsp`を起動します。
+  **Format Document** と`editor.formatOnSave`もこのサーバを通ります。
+- **Neovim 0.10以降** — 同梱の`ftplugin`が`.cul`のバッファごとに起動します。
+  `K`でホバーを表示し、`:lua vim.lsp.buf.format()`で整形します。止めるには
+  `let g:culebra_lsp = 0`を設定します。
+- **Zed** — 拡張がサーバを登録します。Zedは既定でこのサーバを使って整形します。
+- **Vim** — Vimには組み込みのクライアントがありません。
+  [vim-lsp](https://github.com/prabirshrestha/vim-lsp)を使う場合は、
+  `vimrc`でサーバを登録します。
+
+  ```vim
+  au User lsp_setup call lsp#register_server({
+      \ 'name': 'culebra',
+      \ 'cmd': ['culebra', 'lsp'],
+      \ 'allowlist': ['culebra'],
+      \ })
+  ```
+- **ほかのLSPクライアント** — `culebra`言語（拡張子`.cul`のファイル）に対して
+  `culebra lsp`を起動します。

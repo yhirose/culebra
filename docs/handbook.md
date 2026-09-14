@@ -1901,8 +1901,10 @@ culebra fmt -i .        # format the project in place
 culebra fmt --check .   # exit 1 if anything is unformatted (CI gate)
 ```
 
-Editors hook the formatter through the stdin form (`culebra fmt -`); the
-bundled VSCode, Zed and Vim integrations are already wired to it.
+In an editor, `culebra lsp` shows the lint diagnostics as you type and
+formats on request. The bundled VSCode, Zed and Neovim integrations start
+it for you (setup in [`tooling.md` §8](tooling.md#8-editor-support-culebra-lsp)).
+Any other editor can pipe a buffer through the stdin form, `culebra fmt -`.
 
 ### 15.3 Debugging
 

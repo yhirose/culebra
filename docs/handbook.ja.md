@@ -1870,8 +1870,10 @@ culebra fmt -i .        # プロジェクトをその場で整形
 culebra fmt --check .   # 未整形があれば exit 1（CI ゲート）
 ```
 
-エディタはstdin形式 (`culebra fmt -`) でフォーマッタを呼びます。同梱の
-VSCode・Zed・Vim統合はすでにこれに繋いであります。
+エディタでは`culebra lsp`が、入力中にlintの診断を表示し、求めに応じて整形します。
+同梱のVSCode・Zed・Neovim統合がこれを起動します（設定は
+[`tooling.ja.md` §8](tooling.ja.md#8-エディタ支援-culebra-lsp)）。ほかのエディタは、
+バッファをstdin形式の`culebra fmt -`に通して整形できます。
 
 ### 15.3 デバッグ
 

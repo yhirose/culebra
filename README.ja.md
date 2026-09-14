@@ -262,6 +262,7 @@ Canvas.run(160, 160, fn () {
 | `culebra lint [paths...]` | プログラムを走らせずに静的な問題を報告する |
 | `culebra fmt [paths...]` | ソースを正準スタイルに整形する |
 | `culebra dap` | 標準入出力でDebug Adapter Protocolを話す（VSCode / Vim / Zed） |
+| `culebra lsp` | 標準入出力でエディタに診断・ホバー・整形を提供する |
 | `culebra docs [topic]` | 埋め込みのリファレンスを読む・検索する |
 | `culebra build <in.cul> -o <out>` | 事前コンパイルして単体実行ファイルにする |
 | `culebra wrap` | 自前のC++クラスを公開する拡張バイナリをビルドする |
@@ -391,8 +392,8 @@ BLAS級の数値計算です。
   / [English](docs/language.md)
 * 標準ライブラリリファレンス: [`docs/stdlib.ja.md`](docs/stdlib.ja.md)
   / [English](docs/stdlib.md)
-* ツール — テストランナー、リンタ、フォーマッタ、デバッグアダプタ、埋め込み
-  ドキュメント（`culebra test` / `lint` / `fmt` / `dap` / `docs`）:
+* ツール — テストランナー、リンタ、フォーマッタ、デバッグアダプタ、言語サーバ、
+  埋め込みドキュメント（`culebra test` / `lint` / `fmt` / `dap` / `lsp` / `docs`）:
   [`docs/tooling.ja.md`](docs/tooling.ja.md)
   / [English](docs/tooling.md)
 * デプロイ — 単体バイナリのビルド、C++からの埋め込み、C++ライブラリの

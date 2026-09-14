@@ -2,7 +2,8 @@
 
 The `culebra` binary is the whole toolchain: the same executable that
 runs a program also carries the test runner, the linter, the formatter,
-the debug adapter, and the reference documentation itself. This document
+the debug adapter, the language server, and the reference documentation
+itself. This document
 is the reference for those development subcommands.
 
 | Subcommand | What it does | Reference |
@@ -12,6 +13,7 @@ is the reference for those development subcommands.
 | `culebra lint [paths...]` | report static problems without running the program | [§2](#2-linting-culebra-lint) |
 | `culebra fmt [paths...]` | reformat source to the canonical style | [§3](#3-formatting-culebra-fmt) |
 | `culebra dap` | speak the Debug Adapter Protocol over stdio | [§4](#4-debugging-culebra-dap) |
+| `culebra lsp` | serve diagnostics, hover and formatting to an editor over stdio | [§8](#8-editor-support-culebra-lsp) |
 | `culebra docs [topic]` | read and search the embedded reference docs | [§5](#5-reading-the-docs-culebra-docs) |
 | `culebra serve [-p PORT] [-d DIR]` | serve a directory of static files | [§6](#6-serving-static-files-culebra-serve) |
 | `culebra build <in.cul> -o <out>` | compile ahead-of-time into a standalone executable | [`deployment.md` §1](deployment.md#1-standalone-binary-build-culebra-build) |
@@ -48,6 +50,8 @@ Contents
    * [The text](#the-text)
    * [The page](#the-page)
    * [The Share button](#the-share-button)
+8. [Editor support (`culebra lsp`)](#8-editor-support-culebra-lsp)
+   * [Setting it up](#setting-it-up)
 
 ---
 
@@ -381,8 +385,9 @@ An unrecognized flag is an error (exit 2), not a path: `culebra lint
 --fixx app.cul` reports the typo instead of linting the file with the fix
 silently disabled.
 
-Planned: a `--format json` mode for editor / LSP integration, and inline
-`# lint: ignore` suppression.
+Editors show these diagnostics as you type through `culebra lsp`
+([§8](#8-editor-support-culebra-lsp)). Planned: inline `# lint: ignore`
+suppression.
 
 ---
 
@@ -442,22 +447,23 @@ running it once.
 
 ### Editor integration
 
-The stdin form (`culebra fmt -`) is the format hook: each integration
-formats the whole buffer and applies the result only when it exits zero,
-leaving the buffer untouched on a parse/safety error.
+An editor formats either through the language server
+([§8](#8-editor-support-culebra-lsp)) or through the stdin form
+(`culebra fmt -`). Both format the whole buffer and leave it untouched on
+a parse or safety error.
 
-- **VSCode** — the bundled extension registers a document formatting
-  provider, so **Format Document** and `editor.formatOnSave` work for
-  `.cul` files out of the box once it's installed (`culebra init`, or
-  `misc/vscode/install.sh` from a source checkout).
-- **Zed** — add an external formatter in `settings.json`:
-  `"formatter": { "external": { "command": "culebra", "arguments": ["fmt", "-"] } }`
-  under `"languages": { "Culebra": { ... } }`.
+- **VSCode** — the bundled extension formats through the language server,
+  so **Format Document** and `editor.formatOnSave` work for `.cul` files
+  once it's installed (`culebra init`, or `misc/vscode/install.sh` from a
+  source checkout).
+- **Zed** — the extension's language server formats `.cul` files; no
+  settings are needed.
 - **Vim/Neovim** — the bundled `ftplugin` provides a `:CulebraFmt`
   command (cursor preserved, untouched on error); set
   `let g:culebra_fmt_autosave = 1` for format-on-save. It deliberately
   skips `gq` / `'formatprg'`, which would replace an unparseable range
-  with empty output.
+  with empty output. Neovim 0.10+ can also format through the language
+  server with `:lua vim.lsp.buf.format()`.
 - Any other editor with a format-on-save hook can pipe the buffer through
   `culebra fmt -` the same way.
 
@@ -523,8 +529,8 @@ Notes that apply to every editor:
 ### Quick setup: `culebra init`
 
 Run `culebra init` in your project directory to install or update the
-editor integration (syntax highlighting + the `culebra dap` debug
-adapter) for whichever of VSCode, Vim, Neovim, or Zed it finds on this
+editor integration (syntax highlighting, the `culebra lsp` language
+server and the `culebra dap` debug adapter) for whichever of VSCode, Vim, Neovim, or Zed it finds on this
 machine, plus AI coding agent instructions — no source checkout
 needed, since the payload travels inside the binary. Zed is the one
 exception to "no source checkout needed" for its syntax grammar: Zed
@@ -991,3 +997,59 @@ The text itself stays, which is what separates this from the New
 button beside Share: that one clears the text as well. A link
 that names no project carries the text whether or not it was edited,
 since nothing else would arrive.
+
+---
+
+## 8. Editor support (`culebra lsp`)
+
+`culebra lsp` is a
+[Language Server Protocol](https://microsoft.github.io/language-server-protocol/)
+(LSP) server. An editor starts it and talks to it over stdin/stdout. It
+reads your source and never runs it.
+
+```
+culebra lsp        # speak LSP over stdin/stdout
+```
+
+It provides:
+
+- **Diagnostics** — what `culebra lint` reports
+  ([§2](#2-linting-culebra-lint)), shown as you type. A changed buffer is
+  analysed again once typing pauses for a quarter of a second, and at once
+  when it is saved.
+- **Formatting** — the whole document, as `culebra fmt` formats it
+  ([§3](#3-formatting-culebra-fmt)). A buffer that does not parse is left
+  alone.
+- **Hover** — the reference entry for a name the docs give a heading of its
+  own: a stdlib function or constant (`Math.abs`, `Math.pi`) or a global
+  function (`type_of`). A method called on a value (`xs.size()`) shows
+  nothing, because which method it is depends on the value's type.
+
+Positions follow the protocol's default: lines count from 0 and columns
+count UTF-16 code units.
+
+### Setting it up
+
+`culebra init` ([§4](#quick-setup-culebra-init)) wires the server into
+VSCode, Neovim and Zed along with the rest of the editor integration.
+
+- **VSCode** — the bundled extension starts `culebra lsp` for `.cul` files.
+  **Format Document** and `editor.formatOnSave` go through it.
+- **Neovim 0.10+** — the bundled `ftplugin` starts it for each `.cul`
+  buffer: `K` shows the hover and `:lua vim.lsp.buf.format()` formats. Set
+  `let g:culebra_lsp = 0` to turn it off.
+- **Zed** — the extension registers the server, and Zed formats through it
+  by default.
+- **Vim** — Vim has no built-in client. With
+  [vim-lsp](https://github.com/prabirshrestha/vim-lsp), register the server
+  in your `vimrc`:
+
+  ```vim
+  au User lsp_setup call lsp#register_server({
+      \ 'name': 'culebra',
+      \ 'cmd': ['culebra', 'lsp'],
+      \ 'allowlist': ['culebra'],
+      \ })
+  ```
+- **Any other LSP client** — run `culebra lsp` for the `culebra` language,
+  files ending in `.cul`.
