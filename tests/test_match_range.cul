@@ -1,0 +1,88 @@
+# A range pattern (`lo..hi`, `lo..=hi`, `..hi`, `lo..`) matches a number of
+# either type inside the interval: exactly what `Range#contains` answers for
+# the same bounds. Anything that is not a number falls through, never raises.
+
+fn error_of(f) {
+  try {
+    f()
+    "no error"
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+
+# The case the syntax exists for: cumulative thresholds, tried top to bottom.
+fn fern(r) {
+  match r {
+    ..0.01 => 'stem',
+    ..0.86 => 'leaf',
+    ..0.93 => 'left',
+    _ => 'right',
+  }
+}
+assert_eq(fern(0.005), 'stem')
+assert_eq(fern(0.01), 'leaf')
+assert_eq(fern(0.9), 'left')
+assert_eq(fern(0.99), 'right')
+
+# Pattern == contains, over every shape and a spread of edge values.
+let values = [-1, 0, 0.0, -0.0, 0.5, 1, 1.0, 9007199254740992,
+              9007199254740993, Math.inf, -Math.inf, Math.nan, nil, 'a', true]
+fn same_as_contains(matcher, r) {
+  for v in values {
+    assert_eq(matcher(v), r.contains(v))
+  }
+}
+same_as_contains(|v| match v { 0..1 => true, _ => false }, 0..1)
+same_as_contains(|v| match v { 0..=1 => true, _ => false }, 0..=1)
+same_as_contains(|v| match v { ..0.5 => true, _ => false }, ..0.5)
+same_as_contains(|v| match v { ..=0 => true, _ => false }, ..=0)
+same_as_contains(|v| match v { 0.5.. => true, _ => false }, 0.5..)
+same_as_contains(|v| match v { -1..1 => true, _ => false }, -1..1)
+same_as_contains(|v| match v { -2.5..=-0.5 => true, _ => false }, -2.5..=-0.5)
+same_as_contains(|v| match v {
+  9007199254740992..9007199254740993 => true,
+  _ => false,
+}, 9007199254740992..9007199254740993)
+
+# Unlike a literal pattern, a range pattern does not care whether the number
+# is a Long or a Float.
+assert_eq(match 5.5 { 0..10 => 'in', _ => 'out' }, 'in')
+assert_eq(match 1.0 { 1 => 'long', _ => 'other' }, 'other')
+assert_eq(match 1.0 { 1..=1 => 'range', _ => 'other' }, 'range')
+
+# Negative literal patterns keep the literal's exact type.
+assert_eq(match -1 { -1 => 'neg', _ => 'other' }, 'neg')
+assert_eq(match -1.5 { -1.5 => 'neg', _ => 'other' }, 'neg')
+assert_eq(match -1.0 { -1 => 'long', _ => 'other' }, 'other')
+
+# A non-number falls through.
+assert_eq(match nil { ..0.01 => 1, _ => 2 }, 2)
+assert_eq(match 'a' { 0.. => 1, _ => 2 }, 2)
+assert_eq(match [1] { ..0 => 1, _ => 2 }, 2)
+
+# Range patterns compose like any literal pattern.
+assert_eq(match 3 { 1..3 | 5 => 'hit', _ => 'miss' }, 'miss')
+assert_eq(match 5 { 1..3 | 5 => 'hit', _ => 'miss' }, 'hit')
+assert_eq(match [0.5, 'x'] { [0..1, s] => s, _ => nil }, 'x')
+assert_eq(match {k: -3} { {k: ..0} => 'neg', _ => 'other' }, 'neg')
+enum Reading {
+  Good(Float),
+  Bad,
+}
+assert_eq(match Reading.Good(0.25) { Good(0.0..1.0) => 'unit', _ => 'other' },
+          'unit')
+
+# Inside a destructuring pattern, a miss is the usual ValueError.
+assert_eq(error_of(fn () { let [0..1, a] = [5, 1] }),
+          "ValueError: destructure pattern did not match value")
+
+# Neighbouring syntax still parses as before.
+assert_eq(match [1, 2, 3] { [...rest] => rest.size(), _ => 0 }, 3)
+assert_eq(match 31 { 0x1f => 'hex', _ => 'no' }, 'hex')
+assert_eq(match 5 { 0b101 => 'bin', _ => 'no' }, 'bin')
+assert_eq(match 15 { 0o17 => 'oct', _ => 'no' }, 'oct')
+assert_eq(match 100000.0 { 1e5 => 'exp', _ => 'no' }, 'exp')
+assert_eq(match 1.2 { 0..1.5 => 'in', _ => 'out' }, 'in')
+
+println('match range OK')

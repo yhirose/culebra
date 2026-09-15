@@ -804,12 +804,14 @@ inspect(describe([1]))   # => 'other'
 
 ### 6.2 As an expression
 
-`match` produces a value; use it inside computations.
+`match` produces a value; use it inside computations. A range pattern
+(`..0`, `1..=9`, `0.5..`) matches any number inside it, `Long` or
+`Float`.
 
 ```culebra
 classify = fn (n: Long) -> Long {
   match n {
-    n if n < 0 => -1,
+    ..0 => -1,
     0 => 0,
     _ => 1,
   }

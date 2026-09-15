@@ -330,8 +330,17 @@ const auto grammar_ = R"(
   COND_ARM                 <-  (WILDCARD / EXPRESSION) _ '=>' _ (EXPRESSION / BLOCK)
 
   PATTERN                  <-  PRIMARY_PATTERN (_ '|' _ PRIMARY_PATTERN)*
-  PRIMARY_PATTERN          <-  WILDCARD / CTOR_PATTERN / TYPED_IDENT / NIL / BOOLEAN / FLOAT / NUMBER / STRING / RAW_STRING / INTERPOLATED_STRING /
+  PRIMARY_PATTERN          <-  WILDCARD / CTOR_PATTERN / TYPED_IDENT / NIL / BOOLEAN / RANGE_PATTERN / NUMBER_PATTERN / STRING / RAW_STRING / INTERPOLATED_STRING /
                                ARRAY_PATTERN / OBJECT_PATTERN / TUPLE_PATTERN / IDENTIFIER
+  # A numeric interval (`0..10`, `..0.01`, `1..=9`, `5..`, `-2.5..=-0.5`):
+  # RANGE's shape over literal bounds, with no `by` and no bare `..`. Tried
+  # before NUMBER_PATTERN, whose literal is its start. It always keeps two or
+  # more children, so decode_range_layout reads it as it reads a RANGE.
+  RANGE_PATTERN            <-  NUMBER_PATTERN _h_ RANGE_OPERATOR (_h_ NUMBER_PATTERN)? / RANGE_OPERATOR _h_ NUMBER_PATTERN
+  # A numeric literal, optionally negated: the negated form is the
+  # UNARY_MINUS node literal_scalar folds, the bare one collapses to its
+  # FLOAT / NUMBER.
+  NUMBER_PATTERN           <-  UNARY_MINUS_OPERATOR? (FLOAT / NUMBER)  { ast_name: UNARY_MINUS }
   WILDCARD                 <-  '_' !IdentChar
   # Enum constructor pattern: `Ok(x)`, `Result.Ok(x)`, `Pair(a, b)`.
   # The ctor path (variant name, optionally `Enum.Variant`) is the

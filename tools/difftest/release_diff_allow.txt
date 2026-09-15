@@ -25,6 +25,10 @@ range_float|*
 # range and raised a call on nil.
 range_contains|*
 
+# Range patterns (`..0.01 =>`, `0..10 =>`) and negative literal patterns
+# (`-1 =>`) are new syntax: the baseline cannot parse these cases.
+match_range|*
+
 # `s.words()` and `s.sentences()` (UAX #29 segmentation) are new since
 # v0.4.0: the baseline answers each case as an unknown member where this
 # build answers as a built-in, and a bare read of either name is now the

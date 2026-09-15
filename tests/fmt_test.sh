@@ -324,6 +324,30 @@ if ! diff -u "$TMP/mod_want.cul" "$TMP/mod_got.cul" > "$TMP/mod_diff" 2>&1; then
   fail=1
 fi
 
+# --- 1f2. Golden fixture: range and negative literal patterns --------------
+# A range pattern prints like a range expression, with no spaces around the
+# operator; `5..` keeps its space before `=>` (`5..=>` would read as `..=`).
+cat > "$TMP/rpat_in.cul" <<'EOF'
+let x = 0.5
+let a = match x { 0 .. 1 => 1, -1 => 2, ..= -0.5 => 3, 5.. => 4, _ => 5 }
+EOF
+cat > "$TMP/rpat_want.cul" <<'EOF'
+let x = 0.5
+let a = match x {
+  0..1 => 1,
+  -1 => 2,
+  ..=-0.5 => 3,
+  5.. => 4,
+  _ => 5,
+}
+EOF
+"$CULEBRA" fmt "$TMP/rpat_in.cul" > "$TMP/rpat_got.cul" 2>"$TMP/rpat_err"
+if ! diff -u "$TMP/rpat_want.cul" "$TMP/rpat_got.cul" > "$TMP/rpat_diff" 2>&1; then
+  echo "FAIL golden (range patterns): formatted output differs from expected"
+  cat "$TMP/rpat_diff"
+  fail=1
+fi
+
 # --- 1g. Golden fixture: 1-element Set keeps its trailing comma -----------
 # `{a,}` is the only spelling of a 1-element Set (`{a}` doesn't parse; `{}`
 # is the empty Object), so print_set must keep the comma the same way a

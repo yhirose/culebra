@@ -345,6 +345,7 @@ describe = fn (v) {
   match v {
     0 => 'zero',
     1 | 2 | 3 => 'small',
+    ..0 => 'negative',
     n: Long if n > 100 => "big ({n})",
     n: Long => "int ({n})",
     s: String => "str ({s})",
@@ -356,6 +357,7 @@ describe = fn (v) {
   }
 }
 inspect(describe(2))            # => 'small'
+inspect(describe(-2.5))         # => 'negative'
 inspect(describe(999))          # => 'big (999)'
 inspect(describe([1, 2, 3]))    # => 'head=1 rest=2'
 inspect(describe({name: 'z'}))  # => 'named z'

@@ -787,12 +787,13 @@ inspect(describe([1]))   # => 'other'
 
 ### 6.2 式として
 
-`match`は値を生む — 計算式の中で使える。
+`match`は値を生む — 計算式の中で使える。範囲パターン（`..0`、`1..=9`、
+`0.5..`）は、その区間に入る数値なら`Long`でも`Float`でも一致する。
 
 ```culebra
 classify = fn (n: Long) -> Long {
   match n {
-    n if n < 0 => -1,
+    ..0 => -1,
     0 => 0,
     _ => 1,
   }

@@ -40,6 +40,13 @@ expect_syntax_reject() {
 }
 expect_loop_reject() { expect_syntax_reject "$1" "outside loop" "$2"; }
 
+# A range pattern's bounds are numeric literals: a `by` step or a bare `..`
+# does not parse as a pattern.
+expect_syntax_reject "range pattern with by" "syntax error" \
+  'match 1 { 0..10 by 2 => 1, _ => 0 }'
+expect_syntax_reject "bare range pattern" "syntax error" \
+  'match 1 { .. => 1, _ => 0 }'
+
 # Rejected: reassigning a `let` binding (hoisted ImmutableError).
 expect_reject "top-level let reassign"  'let a = 1
 a = 2'

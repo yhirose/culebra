@@ -1362,6 +1362,7 @@ class Printer {
       return doc_concat({doc_text(std::string(n.nodes[0]->token)),
                          print_delimited("(", std::move(items), ")")});
     }
+    if (n.name == "RANGE_PATTERN") return print_range(n);  // `0..1`, `..=-0.5`
     return verbatim(n);
   }
 

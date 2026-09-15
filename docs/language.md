@@ -2860,6 +2860,8 @@ fall-through, or an exception).
 | Form              | Matches                                  |
 |-------------------|------------------------------------------|
 | `0`, `'x'`, `"x"`, `nil`, `true` | Literal equality (a string pattern is `'...'`, a backtick string, or a `"..."` with no interpolation) |
+| `-1`, `-2.5`      | A negative numeric literal: equality, of the same type, like `1` |
+| `lo..hi`, `lo..=hi`, `..hi`, `lo..` | A `Long` or `Float` inside the interval, as `Range#contains` decides; the bounds are numeric literals |
 | `name`            | Any value, binds it to `name`            |
 | `_`               | Any value, no binding                    |
 | `name: Type`      | Value whose type is `Type`; binds        |
@@ -2878,6 +2880,30 @@ fall-through, or an exception).
 * A literal pattern must be a compile-time constant. An *interpolating*
   `"...{x}..."` is a SyntaxError — match against the runtime value with a
   guard instead (`s if s == x => ...`).
+* A range pattern matches the numbers `(lo..hi).contains(x)` accepts. A
+  `Long` and a `Float` compare the way `<` compares them, so unlike a
+  literal pattern it does not care which of the two the subject is:
+  `match 5.5 { 0..10 => … }` matches, `match 1.0 { 1 => … }` does not. A
+  subject that is not a number, or is `NaN`, falls through without
+  raising. The bounds are numeric literals, optionally negated, and take
+  no `by`. Leave a space in `5.. =>`: `5..=>` reads as `..=`.
+
+```culebra
+kind = fn (x) {
+  match x {
+    -1 => 'minus one',
+    ..0 => 'negative',
+    0..=9 => 'digit',
+    _ => 'other',
+  }
+}
+inspect(kind(-1))    # => 'minus one'
+inspect(kind(-0.5))  # => 'negative'
+inspect(kind(3.0))   # => 'digit'
+inspect(kind(9.5))   # => 'other'
+inspect(kind('a'))   # => 'other'
+```
+
 * Patterns are tried left-to-right, and sub-patterns are evaluated
   depth-first.
 * A binding `name` introduced by the pattern is visible in the guard

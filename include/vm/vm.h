@@ -12711,13 +12711,33 @@ class Compiler {
         lit_eq(kconst({TAG_BOOL, pat.token == "true"}));
         return;
       case "NUMBER"_:
-        tag_gate({TAG_LONG});
-        lit_eq(kconst_long(culebra::parse_integer_literal(pat.token)));
+      case "FLOAT"_:
+      case "UNARY_MINUS"_: {
+        // A numeric literal, negated or not (the grammar admits nothing else
+        // under the minus here): the same type and an equal value.
+        auto v = *literal_scalar(pat);
+        tag_gate({static_cast<int8_t>(v.tag)});
+        lit_eq(kconst(v));
         return;
-      case "FLOAT"_: {
-        tag_gate({TAG_FLOAT});
-        lit_eq(kconst({TAG_FLOAT, _culebra_double_to_bits(
-                                      pat.token_to_number<double>())}));
+      }
+      case "RANGE_PATTERN"_: {
+        // Range#contains' interval, inlined: a number of either type passes
+        // the gate (anything else is outside, never an error), then Le/Lt's
+        // own numeric arms decide — exact on two Longs, promoted otherwise,
+        // false on NaN.
+        auto lay = culebra::decode_range_layout(pat);
+        tag_gate({TAG_LONG, TAG_FLOAT});
+        auto bound = [&](const peg::Ast& lit, Op op, bool subj_first) {
+          int32_t k = alloc_temp(pat);
+          emit(Op::LoadConst, k, kconst(*literal_scalar(lit)));
+          int32_t t = alloc_temp(pat);
+          emit(op, t, subj_first ? subj : k, subj_first ? k : subj);
+          fail.push_back(emit(Op::JumpIfFalse, t));
+        };
+        if (lay.start) bound(*lay.start, Op::Le, /*subj_first=*/false);
+        if (lay.end) {
+          bound(*lay.end, lay.inclusive ? Op::Le : Op::Lt, /*subj_first=*/true);
+        }
         return;
       }
       case "STRING"_:
