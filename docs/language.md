@@ -4018,7 +4018,7 @@ handler installed for the duration. When `BODY` (or anything it calls)
 performs `op`, the matching clause runs with the operation's arguments bound to
 the leading parameters and the **continuation** bound to the last parameter
 (`resume` above) — a first-class function that resumes the performing code with
-the value passed to it.
+the value passed to it. `resume()` with no argument resumes with `nil`.
 
 A handler may resume, or not — declining to call `resume` discards the rest of
 the performing computation:

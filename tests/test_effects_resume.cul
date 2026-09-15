@@ -1,6 +1,7 @@
 // Conformance: algebraic effects — multi-shot resume: a handler may
 // resume the same continuation N times, including across a delegate
-// boundary and alongside the return clause. Originally split from
+// boundary and alongside the return clause; also `resume()` with no
+// argument, which resumes with nil. Originally split from
 // test_effects.cul (see test_effects_defer.cul for why); this file had
 // itself grown back into a flat single-JIT-function outlier and is now
 // split further into test_effects_resume_capture.cul (nested-handle
@@ -10,6 +11,38 @@
 //
 // Run with:  ./build/culebra tests/test_effects_resume.cul
 //            ./build/culebra --jit tests/test_effects_resume.cul
+
+// --- resume() with no argument resumes with nil (issue #20) ---
+
+effect fn nr_op()
+mut nr_log = []
+
+// tail clause reached by direct dispatch from a plain fn
+fn nr_plain() {
+  nr_log.push("enter")
+  let v = perform nr_op()
+  nr_log.push(v)
+}
+handle { nr_plain() } with nr_op(resume) {
+  nr_log.push("handled")
+  resume()
+}
+assert_eq(nr_log, ["enter", "handled", nil])
+
+// tail clause on the driven path (an effect fn body)
+effect fn nr_driven() {
+  let v = perform nr_op()
+  [v]
+}
+assert_eq(handle { nr_driven() } with nr_op(resume) { resume() }, [nil])
+
+// full-control clause: a non-tail resume() captures the continuation
+let nr_full = handle { nr_driven() } with nr_op(resume) {
+  let r = resume()
+  r.push("after")
+  r
+}
+assert_eq(nr_full, [nil, "after"])
 
 // --- multi-shot resume: a handler may resume the same continuation N times ---
 

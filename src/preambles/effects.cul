@@ -52,7 +52,7 @@ let _eff_module = fn () {
   # Identity resume for tail clauses (direct dispatch and the driven fast
   # path) — hoisted so the per-perform hot path does not allocate a closure
   # (which also perturbs the leak oracle).
-  let _id_resume = fn (v) {
+  let _id_resume = fn (v = nil) {
     v
   }
 
@@ -195,7 +195,7 @@ let _eff_module = fn () {
         }
         let is_abort = h.t == "a"
         let snapshot = stack  # frozen at the suspend point; forks clone it
-        let resume = fn (v) {
+        let resume = fn (v = nil) {
           _drive(snapshot.map(fn (c) { _fork(c) }), v, ret)
         }
         # An "a" clause never mentions `resume`, so — like the tail path — a
