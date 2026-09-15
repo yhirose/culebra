@@ -654,8 +654,7 @@ inline void jit_check_args(JitValue self, int64_t n, JitValue* args) {
     auto pos = _jit_arg_pos(static_cast<int>(bad));
     throw culebra::CulebraError(
         "TypeError",
-        culebra::format("type error: parameter '{}' expects {}",
-                        params[bad].name, kAnnos[bad]),
+        culebra::param_type_error_message(params[bad].name, kAnnos[bad]),
         pos.line, pos.col);
   }
 }

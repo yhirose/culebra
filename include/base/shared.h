@@ -384,6 +384,13 @@ inline std::string positional_kw_conflict_message(std::string_view name) {
                          name);
 }
 
+// "type error: parameter 'name' expects Type" — an argument its declared
+// parameter type rejects.
+inline std::string param_type_error_message(std::string_view name,
+                                            std::string_view type) {
+  return culebra::format("type error: parameter '{}' expects {}", name, type);
+}
+
 // "type error: expected X, got Y" — an argument/receiver type mismatch.
 inline std::string type_mismatch_message(std::string_view expected,
                                          std::string_view got) {

@@ -1630,8 +1630,8 @@ inline bool bmeth_param_applies(const BMethSpec& s, int32_t i, int8_t tag) {
 
 // The message a rejected argument carries, in the interp binder's wording.
 inline std::string bmeth_param_message(const BMethSpec& s, int32_t i) {
-  return culebra::format("type error: parameter '{}' expects {}", s.pnames[i],
-                         bmeth_param_type(s.params[i]));
+  return culebra::param_type_error_message(s.pnames[i],
+                                           bmeth_param_type(s.params[i]));
 }
 
 // emit_receiver_resolution_error's two halves, executor-side. A scalar

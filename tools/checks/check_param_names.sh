@@ -24,15 +24,21 @@ cd "$(dirname "$0")/../.."
 CULEBRA="${1:-./build-dev/culebra}"
 [ -x "$CULEBRA" ] || { echo "param-names: $CULEBRA not found/executable" >&2; exit 1; }
 
-# 221 documented functions have nameable params (the rest take none, or only
-# `*args`); far fewer means the surface list or the resolution broke, and a
+# Well over this many documented functions have nameable params (the rest take
+# none, or only `*args`); far fewer means the surface list or the resolution broke, and a
 # gate comparing nothing would pass.
 MIN_COMPARED=200
 
-# Namespaces a CMake option takes away (tools/checks/check_tests_optional_ns.sh
-# keeps the authoritative table). Their rows run in a file of their own, so a
-# binary built without one skips that file instead of failing on its name.
-OPTIONAL='Scene Webview Desktop'
+# Namespaces a CMake option takes away, read from the table
+# tools/checks/check_tests_optional_ns.sh keeps. Their rows run in a file of
+# their own, so a binary built without one skips that file instead of failing
+# on its name.
+OPTIONAL=$(sed -nE "s/^(OPTIONAL=')?([A-Z][A-Za-z0-9]*):CULEBRA_[A-Z_]+'?$/\2/p" \
+             tools/checks/check_tests_optional_ns.sh | tr '\n' ' ')
+[ -n "$OPTIONAL" ] || {
+  echo "param-names: no optional namespaces in check_tests_optional_ns.sh" >&2
+  exit 1
+}
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/culebra-param-names.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
@@ -53,17 +59,15 @@ IDENT = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)')
 bare_globals = set()
 in_bare = False
 for line in open('include/stdlib/canon_sigs_table.h'):
-    if 'kCanonParams_Bare[]' in line:
+    if line.startswith('inline constexpr CanonSig kCanonSigs_Bare[]'):
         in_bare = True
     elif in_bare and line.startswith('};'):
         break
-    elif in_bare:
-        m = re.match(r'\s*// \d+: ([a-z_][A-Za-z0-9_]*)$', line)
-        if m and not m.group(1).startswith('_'):
-            bare_globals.add(m.group(1))
+    elif in_bare and (m := re.match(r'\s*\{"", "", "([a-z][A-Za-z0-9_]*)"', line)):
+        bare_globals.add(m.group(1))
 if len(bare_globals) < 10:
     sys.exit(f'param-names: found only {len(bare_globals)} bare globals in '
-             'canon_sigs_table.h -- did kCanonParams_Bare move?')
+             'canon_sigs_table.h -- did kCanonSigs_Bare move?')
 
 
 def split_top(s):
@@ -116,27 +120,27 @@ let mut compared = 0
 let bad = []
 for row in rows {
   let f = try {
-    row[2]()
+    row.resolve()
   } catch e {
-    println("SKIP {row[0]}: resolving it threw {e.kind}")
+    println("SKIP {row.name}: resolving it threw {e.kind}")
     nil
   }
   if f == nil {
     continue
   }
   if type_of(f) != 'Function' {
-    println("SKIP {row[0]}: a {type_of(f)}, not a Function")
+    println("SKIP {row.name}: a {type_of(f)}, not a Function")
     continue
   }
   let ps = f.params
   if ps.size() == 0 || ps.any(|p| p.kwargs_rest) {
-    println("SKIP {row[0]}: no nameable params")
+    println("SKIP {row.name}: no nameable params")
     continue
   }
   # `fn.params` leaves a `*args` collector out, so all-keyword-only params
   # (`range(*args, step:)`) mean the documented positionals are collected.
   if ps.all(|p| p.kw_only) {
-    println("SKIP {row[0]}: positionals collected by *args")
+    println("SKIP {row.name}: positionals collected by *args")
     continue
   }
   compared += 1
@@ -145,11 +149,11 @@ for row in rows {
     d.size() <= actual.size() && actual.slice(0, d.size()) == d &&
       ps.slice(d.size(), ps.size()).all(|p| p.has_default)
   }
-  if !row[1].any(matches) {
+  if !row.docs.any(matches) {
     # `name?` marks a defaulted param.
     let show = |sig| "(" + sig.map(|e| if e[1] { e[0] + "?" } else { e[0] }).join(", ") + ")"
-    let documented = row[1].map(show).join(" / ")
-    bad.push("{row[0]} binds {show(actual)}, documented {documented}")
+    let documented = row.docs.map(show).join(" / ")
+    bad.push("{row.name} binds {show(actual)}, documented {documented}")
   }
 }
 for b in bad {
@@ -168,7 +172,7 @@ def emit(path, items):
                 '[' + ', '.join(f"[{n!r}, {'true' if dflt else 'false'}]"
                                 for n, dflt in d) + ']'
                 for d in docs)
-            out.write(f"  ['{name}', [{lists}], || {name}],\n")
+            out.write(f"  {{name: '{name}', docs: [{lists}], resolve: || {name}}},\n")
         out.write(']\n')
         out.write(CHECK)
 
@@ -187,10 +191,9 @@ run_file() {
   local file=$1 out rc=0
   out=$(CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" --vm "$file" 2>&1) || rc=$?
   if [[ $rc -ne 0 ]]; then
-    local ns=${file##*/optional_}
-    ns=${ns%.cul}
     if [[ $file == */optional_* ]] && grep -q "NameError" <<<"$out"; then
-      echo "param-names: $ns not in this binary, skipped"
+      local ns=${file##*/optional_}
+      echo "param-names: ${ns%.cul} not in this binary, skipped"
       return
     fi
     echo "param-names FAIL: $file did not run (exit $rc):" >&2

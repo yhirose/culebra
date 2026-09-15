@@ -24,8 +24,8 @@ inline JitValue codegen_raw_arg(int64_t n, JitValue* args, int64_t i,
     const auto pos = _jit_arg_pos(static_cast<int>(i));
     throw culebra::CulebraError(
         "TypeError",
-        culebra::format("type error: parameter '{}' expects {}", name,
-                        wrap_detail::param_type_name<A>()),
+        culebra::param_type_error_message(name,
+                                          wrap_detail::param_type_name<A>()),
         pos.line, pos.col);
   }
   return v;

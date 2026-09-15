@@ -492,9 +492,10 @@ inline JitCell* (*_jit_closure_desc_hook)(JitClosure*) = nullptr;
 // NsParamMeta carried in the closure's capture. Returns true if it handled
 // the call (writing the result to *out); false if `cls` isn't an ns-method
 // closure, so the regular meta-lookup path runs. Ownership of the +1 on
-// each positional/kwarg/splat transfers to the hook when it returns true.
+// each positional/kwarg/splat transfers to the hook when it returns true; the
+// receiver stays the caller's either way.
 inline bool (*_jit_ns_kwarg_hook)(
-    JitClosure* cls, JitValue self_val, int64_t n_pos, JitValue* positional,
+    JitClosure* cls, int64_t n_pos, JitValue* positional,
     int64_t n_kw, const char* const* kw_keys, JitValue* kw_vals,
     int64_t n_splat, JitValue* splat_objs, int64_t line, int64_t col,
     JitValue* out) = nullptr;
@@ -1915,6 +1916,19 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_getter_or_value(
   return {view_tag, view_data};
 }
 
+// A `**` operand must be an Object keyed only by Strings: the TypeError message
+// for one that is not, or "". Every keyword binder checks this before reading
+// an operand's entries.
+inline std::string _jit_splat_operand_error(JitValue sv) {
+  if (sv.tag != TAG_OBJECT)
+    return culebra::format("**: splat operand must be Object, got {}",
+                           _culebra_tag_name(sv.tag));
+  auto* obj = reinterpret_cast<JitObject*>(sv.data);
+  if (obj->non_string_props && !obj->non_string_props->empty())
+    return "**: splat key must be String";
+  return {};
+}
+
 // Runtime kwarg resolver: routes a call carrying keyword arguments
 // and/or dynamic `**splat` operands against the parameter names the
 // closure's own JitParamMeta carries. Mirrors the interp's
@@ -1972,17 +1986,19 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
         positional, n_kw, kw_keys, kw_vals, n_splat, splat_objs, line, col);
   }
 
-  // stdlib namespace methods route through the hook FIRST — before the splat
-  // validation below — because the resolver owns its whole error order: a
-  // positional overflow comes before the splat operand check, and it names
-  // the call the way the method's canonical signature does. It validates
-  // splats itself, in the same splat-first order user fns get below.
+  // stdlib namespace methods route through the hook FIRST: the resolver owns
+  // its whole error order (positional overflow, then the splat-first binding
+  // user fns get below), so the splat validation below must not pre-empt it.
+  // An ns method takes no `self`, so once the hook takes the call the receiver
+  // it was read from is dropped here, on return and throw alike.
   if (_jit_ns_kwarg_hook) {
+    JitOwnedVal receiver(self_val);
     JitValue out;
-    if (_jit_ns_kwarg_hook(cls, self_val, n_pos, positional, n_kw, kw_keys,
-                           kw_vals, n_splat, splat_objs, line, col, &out)) {
+    if (_jit_ns_kwarg_hook(cls, n_pos, positional, n_kw, kw_keys, kw_vals,
+                           n_splat, splat_objs, line, col, &out)) {
       return out;
     }
+    receiver.consume();  // not an ns method: the paths below hand it on
   }
 
   // Validate `**` splat operands up front — before the multifn dispatcher
@@ -1992,18 +2008,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
   // skipped while building the dispatcher's kwarg key set and then surface as a
   // DispatchError.
   for (int64_t i = 0; i < n_splat; i++) {
-    auto sv = splat_objs[i];
-    if (sv.tag != TAG_OBJECT) {
+    if (auto err = _jit_splat_operand_error(splat_objs[i]); !err.empty()) {
       release_owned();
-      throw culebra::CulebraError("TypeError", culebra::format(
-          "**: splat operand must be Object, got {}",
-          _culebra_tag_name(sv.tag)), line, col);
-    }
-    auto* obj = reinterpret_cast<JitObject*>(sv.data);
-    if (obj->non_string_props && !obj->non_string_props->empty()) {
-      release_owned();
-      throw culebra::CulebraError("TypeError",
-          "**: splat key must be String", line, col);
+      throw culebra::CulebraError("TypeError", err, line, col);
     }
   }
 

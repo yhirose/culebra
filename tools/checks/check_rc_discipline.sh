@@ -142,11 +142,11 @@ count_bare() { # file
 # after the call returns), so each of the n copies needs its own retain
 # before array_push absorbs it. Same "no Owned/JitOwnedVal layer reachable
 # from a raw runtime adapter" shape as random_choice/weighted_choice above.
-# 100 -> 98 (2026-09-15): one release was already gone from the tree the
-# ceiling was last set on; the other is the kwarg hook's receiver, now a
-# JitOwnedVal that is dropped on both the "handled" answer and a throw out of
-# the resolver (the throw used to strand it).
-ratchet "bare RC calls (stdlib_rt.h)" "$(count_bare include/stdlib/bindings.h)" 98
+# 100 -> 82 (2026-09-15): the slab and raw-argv keyword binders became one
+# that holds every value in JitOwnedVal, so the slab path's hand-placed
+# releases and its splat retain are gone, and the kwarg hook no longer takes
+# the receiver (a throw out of the resolver used to strand it).
+ratchet "bare RC calls (stdlib_rt.h)" "$(count_bare include/stdlib/bindings.h)" 82
 # 17 -> 12 (2026-08-01): the isolate/parallel child entries hold the rebuilt
 # closure, its args and the call result in JitOwnedVal, so their tail releases
 # are gone — and with them the hang a throwing child caused by never dropping a
@@ -164,12 +164,10 @@ ratchet "bare RC calls (sendable_rt.h)" "$(count_bare include/conc/sendable.h)" 
 # CodeGen.Program.run's natives table, which holds each bound closure for the
 # run rather than trusting the caller's Object to keep it -- a native could
 # reach that Object and remove the very entry the shim is about to call;
-# _jit_ns_kwarg_resolve_raw's `**` merge, which copies each splat entry out of
-# its Object into the argv the dispatch consumes).
-# 2 -> 3 (2026-09-15, reviewed): the raw-argv keyword binder holds every value
-# it binds in JitOwnedVal, so its throw paths need no hand-placed release; the
-# one retain left is a splat entry becoming an argument, the same copy the
-# slab resolver makes with a bare retain.
+# _jit_ns_take_kwargs' `**` merge, which copies each splat entry out of its
+# Object toward the argv the dispatch consumes).
+# 2 -> 3 (2026-09-15, reviewed): that merge replaced a bare retain in the
+# keyword binder, which now holds every value in JitOwnedVal.
 rbrw=$(grep -rE --include='*.h' "JitOwnedVal::from_borrowed\(" include/ \
        | grep -vcE "^[^:]*:[[:space:]]*//" || true)
 ratchet "runtime borrow->owned seam sites" "$rbrw" 3
@@ -226,6 +224,6 @@ ratchet "typed consume assignments (jit.h)" "$tassign" 0
 if (( fail )); then exit 1; fi
 echo "rc-discipline OK (release=$rel/55 retain=$ret/34 borrow=$brw/5" \
      "rt-borrow=$rbrw/3 tail-self=$tail_self/0" \
-     "stdlib=$(count_bare include/stdlib/bindings.h)/98" \
+     "stdlib=$(count_bare include/stdlib/bindings.h)/82" \
      "sendable=$(count_bare include/conc/sendable.h)/11 throwguard=$tg/21" \
      "unchecked=$cu/14 vphi=$vphi/0 typed-consume=$tassign/0 rawcompile=$rawc/0)"
