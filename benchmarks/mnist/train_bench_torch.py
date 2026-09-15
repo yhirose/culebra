@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PyTorch training benchmark. DEVICE env var selects cpu | mps.
+"""PyTorch training benchmark. DEVICE env var selects cpu | cuda | mps.
 
 Hand-coded backprop, identical algorithm to train_bench_numpy.py.
 """
@@ -33,6 +33,8 @@ def load_int(path):
 def sync():
     if DEVICE.type == "mps":
         torch.mps.synchronize()
+    elif DEVICE.type == "cuda":
+        torch.cuda.synchronize()
 
 
 def run_epoch(W1, b1, W2, b2, X, Y, n):

@@ -1543,6 +1543,14 @@ bench-vector-loop steps="1000000": build
 bench-langs reps="3": build
     ./tools/bench/langs/run.sh --reps {{reps}}
 
+# Tensor against PyTorch on this machine: a GPT training step, single ops,
+# and a transformer block forward, in alternating rounds with the ratio
+# per row. Rows without torch installed report Culebra alone.
+[doc("Tensor vs. PyTorch: GPT training step, single ops, transformer block (report, not a gate)")]
+[group("bench")]
+bench-tensor device="gpu" rounds="5": build
+    ./benchmarks/tensor/run.sh --device {{device}} --rounds {{rounds}}
+
 # Smoke: run microgpt 5 training steps (no inference) on both compiled
 # lanes to catch regressions in the value-ownership / special-method
 # dispatch paths that the unit tests don't exercise at scale.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PyTorch single-transformer-block benchmark. DEVICE env var selects cpu | mps.
+"""PyTorch single-transformer-block benchmark. DEVICE env var selects cpu | cuda | mps.
 
 Ported op-for-op from train_bench_transformer.cul (which itself follows
 silarray's bench/composite/bench_transformer.cpp), so Culebra Tensor's

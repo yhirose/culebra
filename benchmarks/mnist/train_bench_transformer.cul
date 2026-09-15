@@ -20,6 +20,8 @@ if device == 'cpu' {
 }
 
 # seq, d_model, d_ff, iters — silarray's GPU configs
+let runs = to_long(Sys.env('RUNS', '6'))
+
 let configs = [
   [256, 512, 2048, 20],
   [256, 768, 3072, 15],
@@ -73,12 +75,17 @@ for cfg in configs {
     block()
   }
 
-  mut total = 0.0
-  for it in range(iters) {
-    let t0 = Sys.time()
-    block()
-    total = total + (Sys.time() - t0)
+  # min over RUNS outer repetitions, the same aggregate the torch script reports
+  mut best = 1.0e9
+  for r in range(runs) {
+    mut total = 0.0
+    for it in range(iters) {
+      let t0 = Sys.time()
+      block()
+      total = total + (Sys.time() - t0)
+    }
+    let per = 1000.0 * total / to_float(iters)  # ms/iter
+    best = per if per < best
   }
-  let per = 1000.0 * total / to_float(iters)  # ms/iter
-  print("BENCH label=culebra_transformer device={device} seq={seq} d={d} d_ff={dff} ms_per_iter={per}\n")
+  print("BENCH label=culebra_transformer device={device} seq={seq} d={d} d_ff={dff} ms_per_iter={best}\n")
 }

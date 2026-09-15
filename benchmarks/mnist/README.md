@@ -5,6 +5,12 @@ across six implementations: numpy, pure Python, PyTorch (CPU and
 Apple MPS), Julia, and Culebra Tensor. Both **inference** and
 **training** are measured.
 
+For Culebra Tensor against PyTorch on a GPU-sized workload — a GPT
+training step, single ops, and the transformer block described below —
+see [`../tensor/`](../tensor/README.md), which runs both sides in
+alternating rounds. The tables in this file were measured on Apple
+silicon on 2026-07-17.
+
 The reference algorithm follows Michael Nielsen's
 [network.py](http://neuralnetworksanddeeplearning.com/chap1.html) —
 mini-batch SGD with MSE loss, sigmoid hidden + sigmoid output +

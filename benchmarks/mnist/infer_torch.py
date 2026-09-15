@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PyTorch inference benchmark. DEVICE env var selects cpu | mps."""
+"""PyTorch inference benchmark. DEVICE env var selects cpu | cuda | mps."""
 
 import os
 import time
@@ -27,6 +27,8 @@ def load_int(path):
 def sync():
     if DEVICE.type == "mps":
         torch.mps.synchronize()
+    elif DEVICE.type == "cuda":
+        torch.cuda.synchronize()
 
 
 def main():

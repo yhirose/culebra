@@ -1,0 +1,101 @@
+# Single Tensor ops, one shape each, the Culebra side of ops.py. Each row
+# times one op evaluated on its own, so a gap here points at a kernel (or
+# its launch), not at how a model composes ops.
+#
+# Usage: ./build/culebra --jit benchmarks/tensor/ops.cul [cpu|gpu|auto]
+
+let device = if !Sys.argv.empty() {
+  Sys.argv[0]
+} else {
+  'gpu'
+}
+if device == 'cpu' {
+  Tensor.use_cpu()
+} else if device == 'gpu' {
+  Tensor.use_gpu()
+} else {
+  Tensor.use_auto()
+}
+
+let ITERS = 20
+let RUNS = 5
+
+# µs per evaluation, min over RUNS batches of ITERS.
+let time_op = fn (name, body) {
+  for w in range(3) {
+    body()
+  }
+  mut best = 1.0e12
+  for r in range(RUNS) {
+    let t0 = Sys.time()
+    for i in range(ITERS) {
+      body()
+    }
+    let us = 1.0e6 * (Sys.time() - t0) / to_float(ITERS)
+    best = us if us < best
+  }
+  print("BENCH label=culebra_op device={device} op={name} us={best}\n")
+}
+
+# Deterministic ids in [0, n): the same sequence ops.py builds.
+let ids = fn (count, n) {
+  mut out = []
+  for i in range(count) {
+    out.push(to_float((i * 7919) % n))
+  }
+  Tensor.from(out)
+}
+
+let a = Tensor.randn(256, 1024)
+let b = Tensor.randn(1024, 4096)
+let bias = Tensor.zeros(4096)
+time_op('mm_256x1024x4096', fn () {
+  Tensor.eval(a.dot(b))
+})
+time_op('addmm_256x1024x4096', fn () {
+  Tensor.eval(a.dot(b) + bias)
+})
+
+let sq = Tensor.randn(1024, 1024)
+time_op('mm_1024x1024x1024', fn () {
+  Tensor.eval(sq.dot(sq))
+})
+
+let q = Tensor.randn(8, 1024, 64)
+let k = Tensor.randn(8, 1024, 64)
+let v = Tensor.randn(8, 1024, 64)
+time_op('causal_attention_H8_T1024_D64', fn () {
+  Tensor.eval(q.causal_attention(k, v))
+})
+
+let x = Tensor.randn(4096, 1024)
+let y = Tensor.randn(4096, 1024)
+let z = Tensor.randn(4096, 1024)
+let gamma = Tensor.ones(1024)
+let beta = Tensor.zeros(1024)
+time_op('layer_norm_4096x1024', fn () {
+  Tensor.eval(x.layer_norm(gamma, beta))
+})
+time_op('elementwise_relu_xy_plus_z_4096x1024', fn () {
+  Tensor.eval((x * y + z).relu())
+})
+time_op('sum_axis1_4096x1024', fn () {
+  Tensor.eval(x.sum(1))
+})
+
+let scores = Tensor.randn(1024, 1024)
+time_op('softmax_1024x1024', fn () {
+  Tensor.eval(scores.softmax())
+})
+
+let table = Tensor.randn(16384, 768)
+let rows = ids(4096, 16384)
+time_op('index_select_4096_of_16384x768', fn () {
+  Tensor.eval(table.index_select(rows))
+})
+
+let logits = Tensor.randn(4096, 16384)
+let targets = ids(4096, 16384)
+time_op('cross_entropy_4096x16384', fn () {
+  Tensor.eval(logits.softmax_cross_entropy(targets).mean(0))
+})
