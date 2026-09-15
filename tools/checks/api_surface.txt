@@ -241,7 +241,7 @@ p.exists()
 p.is_file()
 p.is_dir()
 p.read()
-p.write(s)
+p.write(content)
 p.mkdir()
 p.remove(recursive=false)
 p.rename(dst)
@@ -362,7 +362,7 @@ rx.drop()
 rx.recv()
 rx.try_recv()
 rx.drain(max = nil)
-Channel.fan_in(sources: [rx]) -> rx
+Channel.fan_in(items: [rx]) -> rx
 Channel.fan_in(items, fn) -> rx
 Parallel.map(items, fn, limit = <cores>)
 Parallel.each(items, fn, limit = <cores>)
@@ -370,9 +370,9 @@ Parallel.map_settled(items, fn, limit = <cores>)
 Parallel.race(items, fn, limit = <cores>)
 Signal.notify(tx)
 Signal.reset()
-SharedBuffer.new(count, Class) -> buffer
-SharedBuffer.file(path, count, Class) -> buffer
-SharedBuffer.shared(count, Class) -> buffer
+SharedBuffer.new(count, type: Class) -> buffer
+SharedBuffer.file(path, count, type: Class) -> buffer
+SharedBuffer.shared(count, type: Class) -> buffer
 buffer.with_lock(fn)
 assert_true(x: Bool, label: String? = nil) -> Nil
 assert_false(x: Bool, label: String? = nil) -> Nil
@@ -384,17 +384,17 @@ assert_gt(a, b, label: String? = nil) -> Nil
 assert_ge(a, b, label: String? = nil) -> Nil
 assert_throws(kind: String, f: Function) -> Nil
 assert_close(a: Float, b: Float, tol: Float, label: String? = nil) -> Nil
-Regex.compile(pat) -> Regex
-Regex.compile(pat, flags) -> Regex
+Regex.compile(pattern) -> Regex
+Regex.compile(pattern, flags) -> Regex
 Regex.escape(s) -> String
 Regex.interp(x) -> String
-Regex.find(pat, s)
-Regex.match(pat, s)
-Regex.find_all(pat, s)
-Regex.test(pat, s)
-Regex.split(pat, s)
-Regex.replace_all(pat, s, repl) -> String
-Regex.replace_first(pat, s, repl) -> String
+Regex.find(pattern, s)
+Regex.match(pattern, s)
+Regex.find_all(pattern, s)
+Regex.test(pattern, s)
+Regex.split(pattern, s)
+Regex.replace_all(pattern, s, repl) -> String
+Regex.replace_first(pattern, s, repl) -> String
 re.test(s) -> Bool
 re.find(s)
 re.match(s)
@@ -812,21 +812,21 @@ Webview.Window.quit()
 Webview.Window.is_running()
 Vector2.new(x, y)
 a.hash() -> Long
-a.dot(b)
+a.dot(other)
 a.length()
 a.length_squared()
 a.normalized()
-a.distance_to(b)
-a.distance_squared_to(b) -> Float
+a.distance_to(other)
+a.distance_squared_to(other) -> Float
 to_string(a) -> String
 Vector3.new(x, y, z)
 a.hash() -> Long
-a.dot(b)
+a.dot(other)
 a.length()
 a.length_squared()
 a.normalized()
-a.distance_to(b)
-a.distance_squared_to(b) -> Float
+a.distance_to(other)
+a.distance_squared_to(other) -> Float
 to_string(a) -> String
 Deque.new()
 d.push_back(x)

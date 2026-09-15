@@ -357,17 +357,18 @@ let e6_ctor_dup = try {
 assert_true(e6_ctor_dup.kind == 'TypeError' &&
   e6_ctor_dup.message.contains('duplicate'))
 
-# A bare global builtin that accepts no keyword arguments reports the same
-# catchable TypeError on both backends (the JIT used to raise an uncatchable
-# compile-time SyntaxError for a well-formed kwarg here).
+# A bare global builtin binds its documented parameter names, and an unknown
+# one is the same catchable TypeError on both backends (the JIT used to raise
+# an uncatchable compile-time SyntaxError for a well-formed kwarg here).
+assert_eq(to_string(v: 12), '12')
 let e6_builtin_kw = try {
-  inspect(x: 1)
+  to_string(12, zz: 1)
   nil
 } catch e {
   e
 }
 assert_true(e6_builtin_kw.kind == 'TypeError' &&
-  e6_builtin_kw.message.contains('does not accept keyword'))
+  e6_builtin_kw.message.contains("unknown keyword argument 'zz'"))
 
 let e7 = try {
   let bad = {1: 'a'}

@@ -61,11 +61,11 @@ assert_eq([1, 2, 3].map(fn (x) {
 }), [2, 4, 6])
 assert_eq("hi".upper(), "HI")
 
-// --- ns-method arity / splat check ORDER matches interp -------------------
-// A strict-arity ns-method checks its positional count BEFORE validating splat
-// operands, mirroring the interp's strict_arity block: a `**`splat (which only
-// carries keywords) never satisfies a required positional, and the ArityError
-// fires before any splat type error. Same kind/message/timing on both backends.
+// --- ns-method arity / splat check ORDER matches a user fn ----------------
+// A keyword or `**` splat can fill a required parameter, as it does for a user
+// fn, so a splat operand is validated before any missing-argument check. A call
+// with no keyword content keeps the count-form ArityError. Same
+// kind/message/timing on both backends.
 fn nm_err(thunk) {
   try {
     thunk()
@@ -75,18 +75,26 @@ fn nm_err(thunk) {
   }
 }
 
-// 0 positional + bad splat → ArityError (arity checked first), not a splat error.
+// 0 positional + bad splat → the splat error, as `f(**5)` reports for a user fn.
 let a1 = nm_err(fn () {
   JSON.stringify(**5)
 })
-assert_eq(a1.kind, 'ArityError')
-assert_true(a1.message.contains('expected 1 positional argument, got 0'))
-// A required positional given only as a keyword is still missing for arity.
+assert_eq(a1.kind, 'TypeError')
+assert_eq(a1.message, '**: splat operand must be Object, got Long')
+// A required parameter given only as a keyword binds.
+assert_eq(JSON.stringify(v: [1]), JSON.stringify([1]))
+// One the keywords leave unfilled is named.
 let a2 = nm_err(fn () {
-  JSON.stringify(v: {a: 1})
+  JSON.stringify(indent: 2)
 })
 assert_eq(a2.kind, 'ArityError')
-assert_true(a2.message.contains('got 0'))
+assert_eq(a2.message, "missing required argument 'v'")
+// Without keywords, too few positionals keep the count form.
+let a2b = nm_err(fn () {
+  JSON.stringify()
+})
+assert_eq(a2b.kind, 'ArityError')
+assert_true(a2b.message.contains('expected 1 positional argument, got 0'))
 // With the required positional present, a bad splat IS reported (Object check,
 // with the operand's type — the message carries `, got <type>`).
 let a3 = nm_err(fn () {
@@ -114,7 +122,41 @@ assert_true(a5.message.contains('expected 4 positional arguments, got 5'))
 let a6 = nm_err(fn () {
   FS.remove(**5)
 })
-assert_eq(a6.kind, 'ArityError')
+assert_eq(a6.kind, 'TypeError')
+
+// --- a raw-argv ns-method binds keywords through its canonical params -------
+// Math.clamp's adapter takes positional argv; the names come from the
+// signature table, so every call form a user fn accepts works here too.
+assert_eq(Math.clamp(x: 5, lo: 0, hi: 3), 3)
+assert_eq(Math.clamp(hi: 3, x: 5, lo: 0), 3)
+assert_eq(Math.clamp(5, hi: 3, lo: 0), 3)
+assert_eq(Math.clamp(**{x: 5, lo: 0, hi: 3}), 3)
+let clamp_value = Math.clamp
+assert_eq(clamp_value(x: -1, lo: 0, hi: 3), 0)
+let k1 = nm_err(fn () {
+  Math.clamp(x: 5, lo: 0)
+})
+assert_eq(k1.kind, 'ArityError')
+assert_eq(k1.message, "missing required argument 'hi'")
+let k2 = nm_err(fn () {
+  Math.clamp(x: 5, lo: 0, hi: 3, zz: [1])
+})
+assert_eq(k2.kind, 'TypeError')
+assert_eq(k2.message, "unknown keyword argument 'zz'")
+let k3 = nm_err(fn () {
+  Math.clamp(5, x: 5, lo: 0, hi: 3)
+})
+assert_eq(k3.kind, 'TypeError')
+assert_true(k3.message.contains("'x'"))
+let k4 = nm_err(fn () {
+  Math.clamp(x: [5], lo: 0, hi: 3)
+})
+assert_eq(k4.kind, 'TypeError')
+// A function collecting `*args` has no names to bind.
+let k5 = nm_err(fn () {
+  Math.max(a: 1, b: 2)
+})
+assert_eq(k5.kind, 'TypeError')
 
 // --- ns-method-as-value: binder wording + argument position ----------------
 // Calling a method through a value (`let g = ns.method; g(...)`) goes through

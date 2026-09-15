@@ -351,7 +351,7 @@ let _canvas_module = fn () {
   # Draw `s` at (x, y) in `color`, left to right (8 * scale px per glyph, each
   # font pixel a scale x scale block). Characters outside the printable range
   # are skipped (advance still applies), so layout stays stable.
-  let text = fn (s, x, y, color, scale = 1) {
+  let _text = fn (s, x, y, color, scale = 1) {
     mut cx = x
     for ch in s.graphemes() {
       let code = ch.bytes().collect()[0]
@@ -466,8 +466,8 @@ let _canvas_module = fn () {
   let clipboard = fn () {
     _Canvas.clipboard_get()
   }
-  let set_clipboard = fn (s) {
-    _Canvas.clipboard_set(s)
+  let set_clipboard = fn (text) {
+    _Canvas.clipboard_set(text)
   }
   # Lets the OS window be dragged larger/smaller; every Canvas window is a
   # fixed size otherwise. The framebuffer's own logical resolution does not
@@ -727,82 +727,108 @@ let _canvas_module = fn () {
   #
   # rect/circle/ellipse/triangle accept `fill` positionally or as `fill:`
   # (tests/test_canvas_module.cul), and *args can't combine with a named
-  # default param (docs/language.md) — so each param list is sized to the
-  # scalar form's own max arity; the shorter Vector2 form's unused trailing
-  # slot catches its own positional `fill` instead (`d ?? fill` / `e ?? fill`
-  # below, named for each function's own trailing param).
-  let set_pixel = fn (a, b, c = nil) {
-    match a {
-      p: Vector2 => _Canvas.set_pixel(p.x, p.y, b),
-      _ => _Canvas.set_pixel(a, b, c),
+  # default param (docs/language.md) — so each param list is the scalar form's,
+  # under its documented names (a call binds them by keyword too). The shorter
+  # Vector2 form fills the leading slots with its own arguments, so its
+  # positional `fill` lands in a slot the scalar form spends on `color` (`color
+  # ?? fill` below). Those trailing scalar slots default to nil to make room,
+  # and `_need` requires them back.
+  let _need = fn (v, name) {
+    if v == nil {
+      throw {kind: "ArityError", message: "missing required argument '{name}'"}
+    }
+    v
+  }
+  let set_pixel = fn (x, y, color = nil) {
+    match x {
+      p: Vector2 => _Canvas.set_pixel(p.x, p.y, y),
+      _ => _Canvas.set_pixel(x, y, _need(color, "color")),
     }
   }
-  let get_pixel = fn (a, b = nil) {
-    match a {
+  let get_pixel = fn (x, y = nil) {
+    match x {
       p: Vector2 => _Canvas.get_pixel(p.x, p.y),
-      _ => _Canvas.get_pixel(a, b),
+      _ => _Canvas.get_pixel(x, _need(y, "y")),
     }
   }
-  let line = fn (a, b, c, d = nil, e = nil) {
-    match a {
-      p1: Vector2 => _Canvas.line(p1.x, p1.y, b.x, b.y, c),
-      _ => _Canvas.line(a, b, c, d, e),
+  let line = fn (x1, y1, x2, y2 = nil, color = nil) {
+    match x1 {
+      p1: Vector2 => _Canvas.line(p1.x, p1.y, y1.x, y1.y, x2),
+      _ => _Canvas.line(x1, y1, x2, _need(y2, "y2"), _need(color, "color")),
     }
   }
-  let rect = fn (a, b, c, d, e = nil, fill = true) {
-    match a {
-      p: Vector2 => _Canvas.rect(p.x, p.y, b, c, d, if e ?? fill {
+  let rect = fn (x, y, w, h, color = nil, fill = true) {
+    match x {
+      p: Vector2 => _Canvas.rect(p.x, p.y, y, w, h, if color ?? fill {
         1
       } else {
         0
       }),
-      _ => _Canvas.rect(a, b, c, d, e, if fill {
-        1
-      } else {
-        0
-      }),
-    }
-  }
-  let circle = fn (a, b, c, d = nil, fill = true) {
-    match a {
-      p: Vector2 => _Canvas.ellipse(p.x, p.y, b, b, c, if d ?? fill {
-        1
-      } else {
-        0
-      }),
-      _ => _Canvas.ellipse(a, b, c, c, d, if fill {
+      _ => _Canvas.rect(x, y, w, h, _need(color, "color"), if fill {
         1
       } else {
         0
       }),
     }
   }
-  let ellipse = fn (a, b, c, d, e = nil, fill = true) {
-    match a {
-      p: Vector2 => _Canvas.ellipse(p.x, p.y, b, c, d, if e ?? fill {
+  let circle = fn (cx, cy, r, color = nil, fill = true) {
+    match cx {
+      p: Vector2 => _Canvas.ellipse(p.x, p.y, cy, cy, r, if color ?? fill {
         1
       } else {
         0
       }),
-      _ => _Canvas.ellipse(a, b, c, d, e, if fill {
+      _ => _Canvas.ellipse(cx, cy, r, r, _need(color, "color"), if fill {
         1
       } else {
         0
       }),
     }
   }
-  let triangle = fn (a, b, c, d, e = nil, f = nil, g = nil, fill = true) {
-    match a {
-      p1: Vector2 => _Canvas.triangle(p1.x, p1.y, b.x, b.y, c.x, c.y, d, if e ?? fill {
+  let ellipse = fn (cx, cy, rx, ry, color = nil, fill = true) {
+    match cx {
+      p: Vector2 => _Canvas.ellipse(p.x, p.y, cy, rx, ry, if color ?? fill {
         1
       } else {
         0
       }),
-      _ => _Canvas.triangle(a, b, c, d, e, f, g, if fill {
+      _ => _Canvas.ellipse(cx, cy, rx, ry, _need(color, "color"), if fill {
         1
       } else {
         0
       }),
+    }
+  }
+  let triangle = fn (
+    x1,
+    y1,
+    x2,
+    y2,
+    x3 = nil,
+    y3 = nil,
+    color = nil,
+    fill = true,
+  ) {
+    match x1 {
+      p1: Vector2 => {
+        let on = if x3 ?? fill {
+          1
+        } else {
+          0
+        }
+        _Canvas.triangle(p1.x, p1.y, y1.x, y1.y, x2.x, x2.y, y2, on)
+      },
+      _ => {
+        let on = if fill {
+          1
+        } else {
+          0
+        }
+        let corner_x = _need(x3, "x3")
+        let corner_y = _need(y3, "y3")
+        let c = _need(color, "color")
+        _Canvas.triangle(x1, y1, x2, y2, corner_x, corner_y, c, on)
+      },
     }
   }
 
@@ -861,7 +887,7 @@ let _canvas_module = fn () {
     },
     Sprite: Sprite,
     draw_to: draw_to,
-    text: text,
+    text: _text,
     text_width: text_width,
     Font: Font,
     buttons: buttons,

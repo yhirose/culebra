@@ -39,7 +39,7 @@ for _ in range(50) {
     __Foreign.Box.new('a')
   })
   assert_throws('TypeError', fn () {
-    __Foreign.Box.new(start: 1)
+    __Foreign.Box.new(1, zz: 1)
   })
   assert_throws('ArityError', fn () {
     CodeGen.Resolver.new(1)
@@ -47,6 +47,24 @@ for _ in range(50) {
 }
 assert_eq(GC.refcount(__Foreign.Box), box_base)
 assert_eq(GC.refcount(CodeGen.Resolver), rs_base)
+
+// A keyword call reaches the method through the kwargs binder instead, which
+// hands the namespace object over as the receiver: on the binder's slab path
+// (JSON) and its raw-argv path (Math) alike, and on the throws out of each.
+let json_base = GC.refcount(JSON)
+let math_base = GC.refcount(Math)
+for _ in range(50) {
+  assert_eq(JSON.stringify(v: 1), '1')
+  assert_throws('ArityError', fn () {
+    JSON.stringify(indent: 2)
+  })
+  assert_eq(Math.clamp(x: 5, lo: 0, hi: 3), 3)
+  assert_throws('ArityError', fn () {
+    Math.clamp(x: 5, lo: 0)
+  })
+}
+assert_eq(GC.refcount(JSON), json_base)
+assert_eq(GC.refcount(Math), math_base)
 // Still usable — an over-release would have freed it by now.
 assert_eq(type_of(__Foreign.Box.new(2)), type_of(__Foreign.Box(2)))
 

@@ -376,8 +376,8 @@ let _term_module = fn () {
       }
       self
     }
-    set(x, y, g, style = "") {
-      let gs = to_string(g)  # graphemes()/slices yield StringView
+    set(x, y, glyph, style = "") {
+      let gs = to_string(glyph)  # graphemes()/slices yield StringView
       if x >= 0 && x < self._w && y >= 0 && y < self._h {
         let idx = y * self._w + x
         self._back[idx] = gs

@@ -582,8 +582,8 @@ inline constexpr const char* TERM_MODULE_SOURCE = R"=culpre=(let _term_module = 
       }
       self
     }
-    set(x, y, g, style = "") {
-      let gs = to_string(g)  # graphemes()/slices yield StringView
+    set(x, y, glyph, style = "") {
+      let gs = to_string(glyph)  # graphemes()/slices yield StringView
       if x >= 0 && x < self._w && y >= 0 && y < self._h {
         let idx = y * self._w + x
         self._back[idx] = gs
@@ -1179,7 +1179,7 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
   # Draw `s` at (x, y) in `color`, left to right (8 * scale px per glyph, each
   # font pixel a scale x scale block). Characters outside the printable range
   # are skipped (advance still applies), so layout stays stable.
-  let text = fn (s, x, y, color, scale = 1) {
+  let _text = fn (s, x, y, color, scale = 1) {
     mut cx = x
     for ch in s.graphemes() {
       let code = ch.bytes().collect()[0]
@@ -1294,8 +1294,8 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
   let clipboard = fn () {
     _Canvas.clipboard_get()
   }
-  let set_clipboard = fn (s) {
-    _Canvas.clipboard_set(s)
+  let set_clipboard = fn (text) {
+    _Canvas.clipboard_set(text)
   }
   # Lets the OS window be dragged larger/smaller; every Canvas window is a
   # fixed size otherwise. The framebuffer's own logical resolution does not
@@ -1555,82 +1555,108 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
   #
   # rect/circle/ellipse/triangle accept `fill` positionally or as `fill:`
   # (tests/test_canvas_module.cul), and *args can't combine with a named
-  # default param (docs/language.md) — so each param list is sized to the
-  # scalar form's own max arity; the shorter Vector2 form's unused trailing
-  # slot catches its own positional `fill` instead (`d ?? fill` / `e ?? fill`
-  # below, named for each function's own trailing param).
-  let set_pixel = fn (a, b, c = nil) {
-    match a {
-      p: Vector2 => _Canvas.set_pixel(p.x, p.y, b),
-      _ => _Canvas.set_pixel(a, b, c),
+  # default param (docs/language.md) — so each param list is the scalar form's,
+  # under its documented names (a call binds them by keyword too). The shorter
+  # Vector2 form fills the leading slots with its own arguments, so its
+  # positional `fill` lands in a slot the scalar form spends on `color` (`color
+  # ?? fill` below). Those trailing scalar slots default to nil to make room,
+  # and `_need` requires them back.
+  let _need = fn (v, name) {
+    if v == nil {
+      throw {kind: "ArityError", message: "missing required argument '{name}'"}
+    }
+    v
+  }
+  let set_pixel = fn (x, y, color = nil) {
+    match x {
+      p: Vector2 => _Canvas.set_pixel(p.x, p.y, y),
+      _ => _Canvas.set_pixel(x, y, _need(color, "color")),
     }
   }
-  let get_pixel = fn (a, b = nil) {
-    match a {
+  let get_pixel = fn (x, y = nil) {
+    match x {
       p: Vector2 => _Canvas.get_pixel(p.x, p.y),
-      _ => _Canvas.get_pixel(a, b),
+      _ => _Canvas.get_pixel(x, _need(y, "y")),
     }
   }
-  let line = fn (a, b, c, d = nil, e = nil) {
-    match a {
-      p1: Vector2 => _Canvas.line(p1.x, p1.y, b.x, b.y, c),
-      _ => _Canvas.line(a, b, c, d, e),
+  let line = fn (x1, y1, x2, y2 = nil, color = nil) {
+    match x1 {
+      p1: Vector2 => _Canvas.line(p1.x, p1.y, y1.x, y1.y, x2),
+      _ => _Canvas.line(x1, y1, x2, _need(y2, "y2"), _need(color, "color")),
     }
   }
-  let rect = fn (a, b, c, d, e = nil, fill = true) {
-    match a {
-      p: Vector2 => _Canvas.rect(p.x, p.y, b, c, d, if e ?? fill {
+  let rect = fn (x, y, w, h, color = nil, fill = true) {
+    match x {
+      p: Vector2 => _Canvas.rect(p.x, p.y, y, w, h, if color ?? fill {
         1
       } else {
         0
       }),
-      _ => _Canvas.rect(a, b, c, d, e, if fill {
-        1
-      } else {
-        0
-      }),
-    }
-  }
-  let circle = fn (a, b, c, d = nil, fill = true) {
-    match a {
-      p: Vector2 => _Canvas.ellipse(p.x, p.y, b, b, c, if d ?? fill {
-        1
-      } else {
-        0
-      }),
-      _ => _Canvas.ellipse(a, b, c, c, d, if fill {
+      _ => _Canvas.rect(x, y, w, h, _need(color, "color"), if fill {
         1
       } else {
         0
       }),
     }
   }
-  let ellipse = fn (a, b, c, d, e = nil, fill = true) {
-    match a {
-      p: Vector2 => _Canvas.ellipse(p.x, p.y, b, c, d, if e ?? fill {
+  let circle = fn (cx, cy, r, color = nil, fill = true) {
+    match cx {
+      p: Vector2 => _Canvas.ellipse(p.x, p.y, cy, cy, r, if color ?? fill {
         1
       } else {
         0
       }),
-      _ => _Canvas.ellipse(a, b, c, d, e, if fill {
+      _ => _Canvas.ellipse(cx, cy, r, r, _need(color, "color"), if fill {
         1
       } else {
         0
       }),
     }
   }
-  let triangle = fn (a, b, c, d, e = nil, f = nil, g = nil, fill = true) {
-    match a {
-      p1: Vector2 => _Canvas.triangle(p1.x, p1.y, b.x, b.y, c.x, c.y, d, if e ?? fill {
+  let ellipse = fn (cx, cy, rx, ry, color = nil, fill = true) {
+    match cx {
+      p: Vector2 => _Canvas.ellipse(p.x, p.y, cy, rx, ry, if color ?? fill {
         1
       } else {
         0
       }),
-      _ => _Canvas.triangle(a, b, c, d, e, f, g, if fill {
+      _ => _Canvas.ellipse(cx, cy, rx, ry, _need(color, "color"), if fill {
         1
       } else {
         0
       }),
+    }
+  }
+  let triangle = fn (
+    x1,
+    y1,
+    x2,
+    y2,
+    x3 = nil,
+    y3 = nil,
+    color = nil,
+    fill = true,
+  ) {
+    match x1 {
+      p1: Vector2 => {
+        let on = if x3 ?? fill {
+          1
+        } else {
+          0
+        }
+        _Canvas.triangle(p1.x, p1.y, y1.x, y1.y, x2.x, x2.y, y2, on)
+      },
+      _ => {
+        let on = if fill {
+          1
+        } else {
+          0
+        }
+        let corner_x = _need(x3, "x3")
+        let corner_y = _need(y3, "y3")
+        let c = _need(color, "color")
+        _Canvas.triangle(x1, y1, x2, y2, corner_x, corner_y, c, on)
+      },
     }
   }
 
@@ -1689,7 +1715,7 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
     },
     Sprite: Sprite,
     draw_to: draw_to,
-    text: text,
+    text: _text,
     text_width: text_width,
     Font: Font,
     buttons: buttons,
@@ -2527,21 +2553,21 @@ inline constexpr const char* LOG_MODULE_SOURCE = R"=culpre=(let _log_module = fn
       error: fn (msg, fields = {}) {
         _emit("error", 3, msg, bound, fields)
       },
-      with: fn (more) {
-        _methods({...bound, ...more})
+      with: fn (fields) {
+        _methods({...bound, ...fields})
       },
     }
   }
-  let _set_level = fn (l) {
-    let n = _levels.get(l, -1)
-    throw "Log.set_level: unknown level '" + l + "'" if n < 0
+  let _set_level = fn (level) {
+    let n = _levels.get(level, -1)
+    throw "Log.set_level: unknown level '" + level + "'" if n < 0
     _threshold = n
   }
-  let _set_format = fn (f) {
-    if f != "text" {
-      throw "Log.set_format: unknown format '" + f + "'" if f != "json"
+  let _set_format = fn (format) {
+    if format != "text" && format != "json" {
+      throw "Log.set_format: unknown format '{format}'"
     }
-    _format = f
+    _format = format
   }
   {..._methods({}), set_level: _set_level, set_format: _set_format}
 }
@@ -2669,8 +2695,8 @@ let _path_module = fn () {
     }
 
     # --- joining: `base / "sub" / "leaf"` ---
-    join(o) {
-      Path.new(FS.join(self._path, _s(o)))
+    join(other) {
+      Path.new(FS.join(self._path, _s(other)))
     }
     __div__(o) {
       self.join(o)
@@ -2806,8 +2832,8 @@ let _vector2_module = fn () {
     # Each of these spells its arithmetic out rather than delegating
     # (length -> length_squared -> dot): a dynamic call costs more than the
     # two products it would wrap, and these are what a per-frame loop calls.
-    dot(o) {
-      self.x * o.x + self.y * o.y
+    dot(other) {
+      self.x * other.x + self.y * other.y
     }
     length_squared() {
       let x = self.x
@@ -2831,14 +2857,14 @@ let _vector2_module = fn () {
     # throwaway Vector2 just to measure it. Ranking or thresholding distances
     # never needs the square root, so distance_squared_to is the form a hot
     # path wants.
-    distance_to(o) {
-      let dx = self.x - o.x
-      let dy = self.y - o.y
+    distance_to(other) {
+      let dx = self.x - other.x
+      let dy = self.y - other.y
       Math.sqrt(dx * dx + dy * dy)
     }
-    distance_squared_to(o) {
-      let dx = self.x - o.x
-      let dy = self.y - o.y
+    distance_squared_to(other) {
+      let dx = self.x - other.x
+      let dy = self.y - other.y
       dx * dx + dy * dy
     }
   }
@@ -2886,8 +2912,8 @@ let _vector3_module = fn () {
     # Each of these spells its arithmetic out rather than delegating
     # (length -> length_squared -> dot): a dynamic call costs more than the
     # three products it would wrap, and these are what a per-frame loop calls.
-    dot(o) {
-      self.x * o.x + self.y * o.y + self.z * o.z
+    dot(other) {
+      self.x * other.x + self.y * other.y + self.z * other.z
     }
     length_squared() {
       let x = self.x
@@ -2912,16 +2938,16 @@ let _vector3_module = fn () {
     # throwaway Vector3 just to measure it. Ranking or thresholding distances
     # never needs the square root, so distance_squared_to is the form a hot
     # path wants.
-    distance_to(o) {
-      let dx = self.x - o.x
-      let dy = self.y - o.y
-      let dz = self.z - o.z
+    distance_to(other) {
+      let dx = self.x - other.x
+      let dy = self.y - other.y
+      let dz = self.z - other.z
       Math.sqrt(dx * dx + dy * dy + dz * dz)
     }
-    distance_squared_to(o) {
-      let dx = self.x - o.x
-      let dy = self.y - o.y
-      let dz = self.z - o.z
+    distance_squared_to(other) {
+      let dx = self.x - other.x
+      let dy = self.y - other.y
+      let dz = self.z - other.z
       dx * dx + dy * dy + dz * dz
     }
   }
@@ -3448,9 +3474,9 @@ let _state_machine_module = fn () {
       false
     }
 
-    fire(name, payload = nil) {
-      let ev = {name: name, payload: payload}
-      let t = self._select(name, ev)
+    fire(event, payload = nil) {
+      let ev = {name: event, payload: payload}
+      let t = self._select(event, ev)
       return false if t == nil
       if t.enter == nil {
         # An internal transition: the action runs, the configuration stands.
@@ -3465,8 +3491,8 @@ let _state_machine_module = fn () {
 
     # Whether `fire` would take a transition. Guards see the same event, so
     # they must be free of side effects for this to mean anything.
-    can_fire(name, payload = nil) {
-      self._select(name, {name: name, payload: payload}) != nil
+    can_fire(event, payload = nil) {
+      self._select(event, {name: event, payload: payload}) != nil
     }
 
     # Leave the active configuration and enter the initial one again. The

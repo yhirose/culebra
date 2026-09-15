@@ -1229,6 +1229,12 @@ _run-tests BACKEND:
     # its own unannotated control so it cannot pass by measuring nothing.
     run_param_tag() { bash tools/checks/check_param_tag_fold.sh "$BIN"; }
 
+    # Parameter-name gate: every stdlib function binds keywords under the
+    # names the reference docs print, so each documented `Ns.fn(...)` row is
+    # compared with the binary's own `fn.params`
+    # (tools/checks/check_param_names.sh).
+    run_param_names() { bash tools/checks/check_param_names.sh "$BIN"; }
+
     # Webview dynamic-load gate (Linux): the engine is dlopen'd at window
     # creation, so neither the driver nor an AOT binary may carry it in
     # DT_NEEDED or export the forwarders (tools/checks/check_webview_dynload.sh).
@@ -1266,6 +1272,7 @@ _run-tests BACKEND:
         phase "alloca discipline (scratch slots stay entry-block)"; run_alloca_discipline
         phase "float carry (loop-carried Floats stay double phis)"; run_float_carry
         phase "param tag (a declared parameter type reaches the code)"; run_param_tag
+        phase "param names (stdlib functions bind their documented names)"; run_param_names
         phase "early ifcvt (a carried Float's if arm stays a branch)"; run_early_ifcvt
         phase "rt-archive TLS ownership (core vs force-loaded features)"; run_rt_archive_tls
         phase "webview dynload (engine stays behind dlopen)"; run_webview_dynload
@@ -1302,6 +1309,7 @@ _run-tests BACKEND:
         phase "alloca discipline (scratch slots stay entry-block)"; run_alloca_discipline
         phase "float carry (loop-carried Floats stay double phis)"; run_float_carry
         phase "param tag (a declared parameter type reaches the code)"; run_param_tag
+        phase "param names (stdlib functions bind their documented names)"; run_param_names
         phase "early ifcvt (a carried Float's if arm stays a branch)"; run_early_ifcvt
         phase "vm/jit symmetry (real test files)"; run_diff_vm_jit
         phase "vm_cases (frozen expected outputs)"; run_vm_cases
@@ -1342,6 +1350,7 @@ _run-tests BACKEND:
         phase "alloca discipline (scratch slots stay entry-block)"; run_alloca_discipline
         phase "float carry (loop-carried Floats stay double phis)"; run_float_carry
         phase "param tag (a declared parameter type reaches the code)"; run_param_tag
+        phase "param names (stdlib functions bind their documented names)"; run_param_names
         phase "early ifcvt (a carried Float's if arm stays a branch)"; run_early_ifcvt
         phase "vm/jit symmetry (real test files)"; run_diff_vm_jit
         phase "vm_cases (frozen expected outputs)"; run_vm_cases

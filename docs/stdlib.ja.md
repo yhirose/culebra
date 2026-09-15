@@ -868,7 +868,7 @@ for src in root.glob("*/content.src.js") {
 | `p.parent` | `Path` | `FS.dirname` |
 | `p.resolve()` | `Path`（絶対） | `FS.abspath` |
 | `p.exists()` / `p.is_file()` / `p.is_dir()` | `Bool` | `FS.*` |
-| `p.read()` / `p.write(s)` | `String` / `Nil` | `FS.read` / `FS.write` |
+| `p.read()` / `p.write(content)` | `String` / `Nil` | `FS.read` / `FS.write` |
 | `p.mkdir()` | `Nil`（親も作成） | `FS.mkdir` |
 | `p.remove(recursive=false)` | `Nil` | `FS.remove` |
 | `p.rename(dst)` | `Path`（移動先） | `FS.rename` |
@@ -2616,7 +2616,7 @@ for ev in rx.drain(16) { world.apply(ev) }   # このフレームは最大16件
 どちらのメソッドも`Channel.fan_in`のreceiverではまだ使えません。プレーンな
 `rx`専用です。
 
-#### `Channel.fan_in(sources: [rx]) -> rx`
+#### `Channel.fan_in(items: [rx]) -> rx`
 
 複数のreceiverを1つに束ねます。返る`rx`は、readyなsourceから順に値を
 返し（全sourceを同時に待つ — Goの`select` / core.asyncの`merge`と同じ
@@ -2781,14 +2781,14 @@ class FloatPair {
 非スカラフィールドはロード時に`SyntaxError`。デフォルト省略時は型の
 ゼロ値（`0` / `0.0` / `false`）。
 
-#### `SharedBuffer.new(count, Class) -> buffer`
+#### `SharedBuffer.new(count, type: Class) -> buffer`
 
 `Class`のレイアウトで`count`個のゼロ初期化レコードを確保する。
 `buffer.size`（`.count` / `.len`も同じ）が要素数を返す。バイトはこのプロセス
 のヒープに置かれる — isolate（スレッド）間では共有できるが、プロセス間では
 共有できない。
 
-#### `SharedBuffer.file(path, count, Class) -> buffer`
+#### `SharedBuffer.file(path, count, type: Class) -> buffer`
 
 同じbufferを、メモリマップしたファイル（POSIX `mmap(MAP_SHARED)`、Windows
 `CreateFileMapping`）で裏打ちする。書き込み
@@ -2809,7 +2809,7 @@ buf[0].v = 42
 buf.flush()  # ディスクへ永続化
 ```
 
-#### `SharedBuffer.shared(count, Class) -> buffer`
+#### `SharedBuffer.shared(count, type: Class) -> buffer`
 
 同じbufferを、**匿名の**共有メモリ（名前のないfd — Linuxは`memfd`、macOSは
 即unlinkしたPOSIX shmオブジェクト、Windowsはpagefile-backedの
@@ -3352,25 +3352,25 @@ catastrophic backtrackingが原理的に起きないためbackreferenceはあり
 
 | コンストラクタ / 静的 | 結果 |
 | --- | --- |
-| `Regex.compile(pat)` | `Regex` — コンパイル（再利用）。不正パターンは送出 |
-| `Regex.compile(pat, flags)` | `Regex` — `flags`は`"i"` / `"m"` / `"s"`の文字列 |
+| `Regex.compile(pattern)` | `Regex` — コンパイル（再利用）。不正パターンは送出 |
+| `Regex.compile(pattern, flags)` | `Regex` — `flags`は`"i"` / `"m"` / `"s"`の文字列 |
 | `Regex.escape(s)` | `String` — メタ文字を全てバックスラッシュエスケープし`s`をリテラル一致に |
 | `Regex.interp(x)` | `String` — `re"...${x}..."`用の合成ヘルパ: `Regex` → `(?:src)`、それ以外 → エスケープしてリテラル一致 |
 
 その場限りの利用には、下のnamespaceメソッドがパターンを直接受け取り`compile`を隠します
 。1つのパターンを多数の入力に再利用するなら
-`Regex.compile(pat)`を使いますが、エンジンがパターンでキャッシュするのでone-shot形に再コンパイルの
+`Regex.compile(pattern)`を使いますが、エンジンがパターンでキャッシュするのでone-shot形に再コンパイルの
 コストはありません。フラグはインライン（`(?i)` / `(?m)` / `(?s)`）で。
 
 | one-shot | 等価 |
 | --- | --- |
-| `Regex.find(pat, s)` | `Regex.compile(pat).find(s)` — `Match`または`nil` |
-| `Regex.match(pat, s)` | 先頭アンカーのマッチ |
-| `Regex.find_all(pat, s)` | `[Match]` |
-| `Regex.test(pat, s)` | `Bool` |
-| `Regex.split(pat, s)` | `[String]` |
-| `Regex.replace_all(pat, s, repl)` | `String` — テンプレートまたは`fn (Match) -> String`のrepl、全マッチ置換 |
-| `Regex.replace_first(pat, s, repl)` | `String` — replは同じ、最左マッチのみ置換 |
+| `Regex.find(pattern, s)` | `Regex.compile(pattern).find(s)` — `Match`または`nil` |
+| `Regex.match(pattern, s)` | 先頭アンカーのマッチ |
+| `Regex.find_all(pattern, s)` | `[Match]` |
+| `Regex.test(pattern, s)` | `Bool` |
+| `Regex.split(pattern, s)` | `[String]` |
+| `Regex.replace_all(pattern, s, repl)` | `String` — テンプレートまたは`fn (Match) -> String`のrepl、全マッチ置換 |
+| `Regex.replace_first(pattern, s, repl)` | `String` — replは同じ、最左マッチのみ置換 |
 
 ```culebra
 inspect(Regex.find('(\d+)', "ab12")[1])                 # => '12'
@@ -6107,11 +6107,11 @@ inspect(a + Vector2.new(1, 1))  # => (4.0, 5.0)
 | `-a` | `Vector2` |
 | `a == b` | `Bool` — nominal判定: `Vector2`以外(同形の`Vector3`も含む)は常に`false`、例外は投げない |
 | `a.hash()` | `Long` — 等しいvectorは同じhash値になるので、`Set`の要素やObjectのキーにできる |
-| `a.dot(b)` | `Float` |
+| `a.dot(other)` | `Float` |
 | `a.length()` / `a.length_squared()` | `Float` |
 | `a.normalized()` | `Vector2`（単位長；ゼロベクトルは`ZeroDivisionError`、他の`Float / 0.0`と同じ） |
-| `a.distance_to(b)` | `Float` |
-| `a.distance_squared_to(b)` | `Float` — 平方根を省く。距離の比較や閾値判定用 |
+| `a.distance_to(other)` | `Float` |
+| `a.distance_squared_to(other)` | `Float` — 平方根を省く。距離の比較や閾値判定用 |
 | `"{a}"` / `to_string(a)` | `String` — `"(x, y)"` |
 
 `cross()`は(`Vector2`・`Vector3`(§31)いずれにも)意図的に持たせて
@@ -6146,11 +6146,11 @@ inspect(a + Vector3.new(1, 1, 1))  # => (2.0, 3.0, 4.0)
 | `-a` | `Vector3` |
 | `a == b` | `Bool` — nominal判定、`Vector2`と同様 |
 | `a.hash()` | `Long` — `Vector2`と同様 |
-| `a.dot(b)` | `Float` |
+| `a.dot(other)` | `Float` |
 | `a.length()` / `a.length_squared()` | `Float` |
 | `a.normalized()` | `Vector3`（単位長；ゼロベクトルは`ZeroDivisionError`） |
-| `a.distance_to(b)` | `Float` |
-| `a.distance_squared_to(b)` | `Float` — 平方根を省く。距離の比較や閾値判定用 |
+| `a.distance_to(other)` | `Float` |
+| `a.distance_squared_to(other)` | `Float` — 平方根を省く。距離の比較や閾値判定用 |
 | `"{a}"` / `to_string(a)` | `String` — `"(x, y, z)"` |
 
 ## 32. `Deque`

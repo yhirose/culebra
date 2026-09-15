@@ -889,7 +889,7 @@ accepts a `String` or a `Path`. String interpolation (`"{p}"`) and
 | `p.parent` | `Path` | `FS.dirname` |
 | `p.resolve()` | `Path` (absolute) | `FS.abspath` |
 | `p.exists()` / `p.is_file()` / `p.is_dir()` | `Bool` | `FS.*` |
-| `p.read()` / `p.write(s)` | `String` / `Nil` | `FS.read` / `FS.write` |
+| `p.read()` / `p.write(content)` | `String` / `Nil` | `FS.read` / `FS.write` |
 | `p.mkdir()` | `Nil` (creates parents) | `FS.mkdir` |
 | `p.remove(recursive=false)` | `Nil` | `FS.remove` |
 | `p.rename(dst)` | `Path` (the destination) | `FS.rename` |
@@ -2693,7 +2693,7 @@ The rest stays queued for the next call. `max` must be a `Long` (a count) or
 Neither method is available on a `Channel.fan_in` receiver yet; both are only
 on a plain `rx`.
 
-#### `Channel.fan_in(sources: [rx]) -> rx`
+#### `Channel.fan_in(items: [rx]) -> rx`
 
 Merge several receivers into one. The returned `rx` yields values from whichever
 source is ready (it waits on all of them at once, like Go's `select` or
@@ -2863,13 +2863,13 @@ must be a fixed scalar — `Float32`, `Float64`/`Float`, `Int8`, `Int16`,
 `SyntaxError` at load time. A field with no default takes the type's zero
 value (`0`, `0.0`, `false`).
 
-#### `SharedBuffer.new(count, Class) -> buffer`
+#### `SharedBuffer.new(count, type: Class) -> buffer`
 
 Allocates `count` zero-initialized records laid out per `Class`. `buffer.size`
 (also `.count` / `.len`) reports the element count. The bytes live in this
 process's heap — shareable across isolates (threads), not across processes.
 
-#### `SharedBuffer.file(path, count, Class) -> buffer`
+#### `SharedBuffer.file(path, count, type: Class) -> buffer`
 
 Same buffer, backed by a memory-mapped file (POSIX `mmap(MAP_SHARED)`, Windows
 `CreateFileMapping`). Writes go to the file's pages — **persistent** (the file
@@ -2890,7 +2890,7 @@ buf[0].v = 42
 buf.flush()  # durable on disk
 ```
 
-#### `SharedBuffer.shared(count, Class) -> buffer`
+#### `SharedBuffer.shared(count, type: Class) -> buffer`
 
 Same buffer, backed by **anonymous** shared memory (a name-less fd — `memfd` on
 Linux, an immediately-unlinked POSIX shm object on macOS; a pagefile-backed
@@ -3451,26 +3451,26 @@ so the `StringView` results of `String.split` / `.slice` compose directly:
 
 | Constructor / static | Result |
 | --- | --- |
-| `Regex.compile(pat)` | `Regex` — compile (reused); bad pattern raises |
-| `Regex.compile(pat, flags)` | `Regex` — `flags` a string of `"i"` / `"m"` / `"s"` |
+| `Regex.compile(pattern)` | `Regex` — compile (reused); bad pattern raises |
+| `Regex.compile(pattern, flags)` | `Regex` — `flags` a string of `"i"` / `"m"` / `"s"` |
 | `Regex.escape(s)` | `String` — backslash-quote every metacharacter so `s` matches literally |
 | `Regex.interp(x)` | `String` — splice helper for `re"...${x}..."`: a `Regex` → `(?:src)`, anything else → escaped to match literally |
 
 For a single use, the namespace methods below take the pattern directly and
 hide the `compile` step. Reusing one
-pattern across many inputs still wants `Regex.compile(pat)`, but the engine
+pattern across many inputs still wants `Regex.compile(pattern)`, but the engine
 caches by pattern so the one-shot forms pay no recompile. Put flags inline
 (`(?i)` / `(?m)` / `(?s)`).
 
 | One-shot | Equivalent |
 | --- | --- |
-| `Regex.find(pat, s)` | `Regex.compile(pat).find(s)` — `Match` or `nil` |
-| `Regex.match(pat, s)` | anchored match at the start |
-| `Regex.find_all(pat, s)` | `[Match]` |
-| `Regex.test(pat, s)` | `Bool` |
-| `Regex.split(pat, s)` | `[String]` |
-| `Regex.replace_all(pat, s, repl)` | `String` — template or `fn (Match) -> String` repl, every match |
-| `Regex.replace_first(pat, s, repl)` | `String` — same `repl`, only the leftmost match |
+| `Regex.find(pattern, s)` | `Regex.compile(pattern).find(s)` — `Match` or `nil` |
+| `Regex.match(pattern, s)` | anchored match at the start |
+| `Regex.find_all(pattern, s)` | `[Match]` |
+| `Regex.test(pattern, s)` | `Bool` |
+| `Regex.split(pattern, s)` | `[String]` |
+| `Regex.replace_all(pattern, s, repl)` | `String` — template or `fn (Match) -> String` repl, every match |
+| `Regex.replace_first(pattern, s, repl)` | `String` — same `repl`, only the leftmost match |
 
 ```culebra
 inspect(Regex.find('(\d+)', "ab12")[1])                 # => '12'
@@ -6293,11 +6293,11 @@ inspect({Vector2.new(1, 2), Vector2.new(1, 2)}.size())  # => 1
 | `-a` | `Vector2` |
 | `a == b` | `Bool` — nominal: a non-`Vector2` (including a same-shaped `Vector3`) is always `false`, never a thrown error |
 | `a.hash()` | `Long` — equal vectors hash equally, so a `Vector2` can be a `Set` member or an Object key |
-| `a.dot(b)` | `Float` |
+| `a.dot(other)` | `Float` |
 | `a.length()` / `a.length_squared()` | `Float` |
 | `a.normalized()` | `Vector2` (unit length; a zero vector raises `ZeroDivisionError`, same as any `Float / 0.0`) |
-| `a.distance_to(b)` | `Float` |
-| `a.distance_squared_to(b)` | `Float` — skips the square root, for ranking or thresholding distances |
+| `a.distance_to(other)` | `Float` |
+| `a.distance_squared_to(other)` | `Float` — skips the square root, for ranking or thresholding distances |
 | `"{a}"` / `to_string(a)` | `String` — `"(x, y)"` |
 
 `cross()` is intentionally not provided (on either `Vector2` or `Vector3`
@@ -6332,11 +6332,11 @@ inspect(a + Vector3.new(1, 1, 1))  # => (2.0, 3.0, 4.0)
 | `-a` | `Vector3` |
 | `a == b` | `Bool` — nominal, same as `Vector2` |
 | `a.hash()` | `Long` — same as `Vector2` |
-| `a.dot(b)` | `Float` |
+| `a.dot(other)` | `Float` |
 | `a.length()` / `a.length_squared()` | `Float` |
 | `a.normalized()` | `Vector3` (unit length; a zero vector raises `ZeroDivisionError`) |
-| `a.distance_to(b)` | `Float` |
-| `a.distance_squared_to(b)` | `Float` — skips the square root, for ranking or thresholding distances |
+| `a.distance_to(other)` | `Float` |
+| `a.distance_squared_to(other)` | `Float` — skips the square root, for ranking or thresholding distances |
 | `"{a}"` / `to_string(a)` | `String` — `"(x, y, z)"` |
 
 ## 32. `Deque`

@@ -1972,13 +1972,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
         positional, n_kw, kw_keys, kw_vals, n_splat, splat_objs, line, col);
   }
 
-  // stdlib namespace methods route through the hook FIRST — before the
-  // splat validation below — because an ns-method (strict_arity) checks its
-  // positional arity *before* validating splat operands, mirroring the
-  // interp's strict_arity block: `JSON.stringify(**5)` is `ArityError: got 0`,
-  // not a splat TypeError. The resolver does that ordering itself; reaching the
-  // splat-first validation below would pre-empt it. (User fns / multifn
-  // dispatchers, handled after, are splat-first like the interp's user binder.)
+  // stdlib namespace methods route through the hook FIRST — before the splat
+  // validation below — because the resolver owns its whole error order: a
+  // positional overflow comes before the splat operand check, and it names
+  // the call the way the method's canonical signature does. It validates
+  // splats itself, in the same splat-first order user fns get below.
   if (_jit_ns_kwarg_hook) {
     JitValue out;
     if (_jit_ns_kwarg_hook(cls, self_val, n_pos, positional, n_kw, kw_keys,

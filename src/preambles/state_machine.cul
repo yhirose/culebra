@@ -313,9 +313,9 @@ let _state_machine_module = fn () {
       false
     }
 
-    fire(name, payload = nil) {
-      let ev = {name: name, payload: payload}
-      let t = self._select(name, ev)
+    fire(event, payload = nil) {
+      let ev = {name: event, payload: payload}
+      let t = self._select(event, ev)
       return false if t == nil
       if t.enter == nil {
         # An internal transition: the action runs, the configuration stands.
@@ -330,8 +330,8 @@ let _state_machine_module = fn () {
 
     # Whether `fire` would take a transition. Guards see the same event, so
     # they must be free of side effects for this to mean anything.
-    can_fire(name, payload = nil) {
-      self._select(name, {name: name, payload: payload}) != nil
+    can_fire(event, payload = nil) {
+      self._select(event, {name: event, payload: payload}) != nil
     }
 
     # Leave the active configuration and enter the initial one again. The

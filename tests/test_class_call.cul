@@ -111,18 +111,19 @@ tx.send(7)
 assert_eq(rx.recv(), 7)
 assert_eq(type_of(Shared(42)), "Object")
 
-// Both spellings reject keyword arguments identically: a wrapped ctor
-// declares parameter names but takes positionals only. Frozen so the
-// sugar can never drift from `.new` on this.
+// Both spellings bind keyword arguments identically: a wrapped ctor binds
+// the parameter names it declares, like every other native, and rejects any
+// other name. Frozen so the sugar can never drift from `.new` on this.
+assert_eq(type_of(__Foreign.Box(start: 4)), type_of(__Foreign.Box.new(start: 4)))
 let mut kw_sugar = false
 try {
-  let _ = __Foreign.Box(start: 4)
+  let _ = __Foreign.Box(zz: 4)
 } catch e {
   kw_sugar = true
 }
 let mut kw_new = false
 try {
-  let _ = __Foreign.Box.new(start: 4)
+  let _ = __Foreign.Box.new(zz: 4)
 } catch e {
   kw_new = true
 }

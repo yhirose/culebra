@@ -56,8 +56,8 @@ clamp arity: {kind: 'ArityError', message: 'expected 3 positional arguments, got
 atan2 str: {kind: 'TypeError', message: 'type error', line: 82, col: 22}
 atan2 arity: {kind: 'ArityError', message: 'expected 2 positional arguments, got 1', line: 83, col: 24}
 floor str: {kind: 'TypeError', message: 'type error', line: 84, col: 22}
-kwarg: {kind: 'TypeError', message: 'function does not accept keyword arguments', line: 85, col: 18}
-bad kwarg: {kind: 'TypeError', message: 'function does not accept keyword arguments', line: 86, col: 22}
+kwarg: 2.0
+bad kwarg: {kind: 'ArityError', message: 'missing required argument 'x'', line: 86, col: 22}
 missing: {kind: 'AttributeError', message: 'namespace 'Math' has no member 'nope'', line: 87, col: 20}
 as value: {kind: 'TypeError', message: 'type error', line: 90, col: 3}
 as value ok: 3.0

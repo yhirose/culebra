@@ -65,8 +65,8 @@ let _path_module = fn () {
     }
 
     # --- joining: `base / "sub" / "leaf"` ---
-    join(o) {
-      Path.new(FS.join(self._path, _s(o)))
+    join(other) {
+      Path.new(FS.join(self._path, _s(other)))
     }
     __div__(o) {
       self.join(o)

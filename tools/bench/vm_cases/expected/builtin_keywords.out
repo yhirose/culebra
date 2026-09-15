@@ -43,7 +43,7 @@ ufcs candidate, resolved ::: err=TypeError|built-in method 'size' does not accep
 ufcs splat ::: ok=['ufcs-size', 5, 7]
 ufcs duplicate kw ::: err=TypeError|duplicate keyword argument 'k'
 str.to_string(k: 1) ::: err=TypeError|built-in method 'to_string' does not accept keyword arguments
-long.to_string(k: 1) ::: err=TypeError|function does not accept keyword arguments
-dict.to_string(k: 1) ::: err=TypeError|function does not accept keyword arguments
+long.to_string(k: 1) ::: err=TypeError|unknown keyword argument 'k'
+dict.to_string(k: 1) ::: err=TypeError|unknown keyword argument 'k'
 ns.to_string(k: 1) ::: err=AttributeError|namespace 'Math' has no member 'to_string'
 churn done

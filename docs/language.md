@@ -2178,35 +2178,27 @@ Rules:
   (`fn f(xs = [])`) is a fresh value each time rather than one
   accumulating across calls.
 
-JIT support: kwargs and `**` splat work on both backends for the
-common patterns:
+A keyword may skip a defaulted parameter: `f(1, z: 3)` against
+`(x, y = 10, z = 20)` fills `y` from its default.
 
-* Direct calls to user functions: `f(x, y: 2)` where `f` is in scope.
-* Captured / passed-around closures: `let g = make_fn(...); g(y: 2)`.
-* UFCS: `x.free_fn(y: 2)` becomes `free_fn(x, y: 2)`.
-* Object methods: `obj.method(y: 2)`.
-* Built-in `JSON.{stringify, parse}`: kwargs for `indent`,
-  `sort_keys`, `lines`, `number_mode`.
-* Dynamic `**variable` splat against user functions: resolved at
-  runtime through closure-attached parameter metadata.
+**Standard library functions.** A namespace function or bare global
+function of the standard library (`Math.clamp`, `JSON.stringify`,
+`Canvas.rect`, `to_string`) binds keyword arguments and `**` splats by
+the same rules, under the parameter names its reference entry prints —
+a required parameter included:
 
-Middle-gap defaults (e.g. `f(1, z: 3)` against `(x, y=10, z=20)`)
-work in JIT via a `TAG_UNFILLED` sentinel passed through the slab;
-the callee prologue picks up the inline default expression.
+    Math.clamp(x: 5, lo: 0, hi: 3)                      # → 3
+    Canvas.rect(**{x: 1, y: 1, w: 6, h: 6, color: c})
+    Math.clamp(x: 5, lo: 0)   # ArityError: missing required argument 'hi'
 
-JIT limitations:
+A function that collects `*args` (`Math.max`) has no names to bind and
+rejects a keyword with a `TypeError`. The methods of the built-in value
+types bind by position instead (see "Built-in methods bind
+positionally").
 
-* Other namespace built-ins (`Math`, `IO`, `Random`, `Sys`) take only
-  positional arguments — kwargs against them surface a clean
-  `SyntaxError` at compile time.
-* Dynamic `**variable` splat against built-in dispatchers (e.g.
-  `JSON.stringify(v, **opts)`) works on both backends via a
-  per-built-in kwarg adapter (`JSON.stringify` and `JSON.parse`
-  ship adapters; other namespaces are positional-only and still
-  reject kwargs at compile time).
-* Compile-time errors (e.g. `positional argument follows keyword
-  argument`) are detected during compilation and bypass `try/catch`
-  on both engines.
+Compile-time errors (e.g. `positional argument follows keyword
+argument`) are detected during compilation and bypass `try/catch` on
+every engine.
 
 ### Return
 

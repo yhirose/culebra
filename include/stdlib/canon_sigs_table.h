@@ -19,17 +19,17 @@ inline constexpr CanonSig kCanonSigs_Embed[] = {
 
 inline constexpr CanonParam kCanonParams_IO[] = {
   // 0: IO.inspect
-  {"arg", false, false, false, false, true, "", CanonDefault::None, 0, {}},
+  {"x", false, false, false, false, true, "", CanonDefault::None, 0, {}},
   // 1: IO.print
-  {"arg", false, false, false, false, true, "", CanonDefault::None, 0, {}},
+  {"x", false, false, false, false, true, "", CanonDefault::None, 0, {}},
   // 2: IO.println
-  {"arg", true, false, false, false, true, "", CanonDefault::Str, 0, ""},
+  {"x", true, false, false, false, true, "", CanonDefault::Str, 0, ""},
   // 3: IO.einspect
-  {"arg", false, false, false, false, true, "", CanonDefault::None, 0, {}},
+  {"x", false, false, false, false, true, "", CanonDefault::None, 0, {}},
   // 4: IO.eprint
-  {"arg", false, false, false, false, true, "", CanonDefault::None, 0, {}},
+  {"x", false, false, false, false, true, "", CanonDefault::None, 0, {}},
   // 5: IO.eprintln
-  {"arg", false, false, false, false, true, "", CanonDefault::None, 0, {}},
+  {"x", false, false, false, false, true, "", CanonDefault::None, 0, {}},
   // 6: IO.capture
   {"f", false, false, false, false, false, "Function", CanonDefault::None, 0, {}},
 };
@@ -689,7 +689,7 @@ inline constexpr CanonParam kCanonParams_Channel[] = {
   // 0: Channel.new
   {"cap", true, false, false, false, false, "", CanonDefault::Long, 1, {}},
   // 1: Channel.fan_in
-  {"a", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  {"items", false, false, false, false, false, "", CanonDefault::None, 0, {}},
   {"fn", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
 };
 
@@ -948,7 +948,7 @@ inline constexpr CanonParam kCanonParams_Tensor[] = {
   // 4: Tensor.from_csv
   {"path", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
   // 5: Tensor.from
-  {"a", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
+  {"arr", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
   // 6: Tensor.concat
   {"parts", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
   {"axis", true, false, false, false, false, "Long", CanonDefault::Long, 0, {}},
@@ -1332,11 +1332,11 @@ inline constexpr CanonSig kCanonSigs_Canvas_native[] = {
 
 inline constexpr CanonParam kCanonParams_Bare[] = {
   // 0: inspect
-  {"arg", false, false, false, false, true, "", CanonDefault::None, 0, {}},
+  {"x", false, false, false, false, true, "", CanonDefault::None, 0, {}},
   // 1: print
-  {"arg", false, false, false, false, true, "", CanonDefault::None, 0, {}},
+  {"x", false, false, false, false, true, "", CanonDefault::None, 0, {}},
   // 2: println
-  {"arg", true, false, false, false, true, "", CanonDefault::Str, 0, ""},
+  {"x", true, false, false, false, true, "", CanonDefault::Str, 0, ""},
   // 3: type_of
   {"v", false, false, false, false, false, "", CanonDefault::None, 0, {}},
   // 4: to_long

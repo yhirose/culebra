@@ -142,7 +142,11 @@ count_bare() { # file
 # after the call returns), so each of the n copies needs its own retain
 # before array_push absorbs it. Same "no Owned/JitOwnedVal layer reachable
 # from a raw runtime adapter" shape as random_choice/weighted_choice above.
-ratchet "bare RC calls (stdlib_rt.h)" "$(count_bare include/stdlib/bindings.h)" 100
+# 100 -> 98 (2026-09-15): one release was already gone from the tree the
+# ceiling was last set on; the other is the kwarg hook's receiver, now a
+# JitOwnedVal that is dropped on both the "handled" answer and a throw out of
+# the resolver (the throw used to strand it).
+ratchet "bare RC calls (stdlib_rt.h)" "$(count_bare include/stdlib/bindings.h)" 98
 # 17 -> 12 (2026-08-01): the isolate/parallel child entries hold the rebuilt
 # closure, its args and the call result in JitOwnedVal, so their tail releases
 # are gone — and with them the hang a throwing child caused by never dropping a
@@ -156,13 +160,19 @@ ratchet "bare RC calls (sendable_rt.h)" "$(count_bare include/conc/sendable.h)" 
 # inside the ownership layer, so it is invisible to count_bare above — the same
 # blind spot emit_borrow_to_owned has on the codegen side. Count the call sites
 # on their own ceiling so the seam cannot become a quiet way to add hand-placed
-# retains. Current population: 2 (Sys.env returning its borrowed `fallback`;
+# retains. Current population: 3 (Sys.env returning its borrowed `fallback`;
 # CodeGen.Program.run's natives table, which holds each bound closure for the
 # run rather than trusting the caller's Object to keep it -- a native could
-# reach that Object and remove the very entry the shim is about to call).
+# reach that Object and remove the very entry the shim is about to call;
+# _jit_ns_kwarg_resolve_raw's `**` merge, which copies each splat entry out of
+# its Object into the argv the dispatch consumes).
+# 2 -> 3 (2026-09-15, reviewed): the raw-argv keyword binder holds every value
+# it binds in JitOwnedVal, so its throw paths need no hand-placed release; the
+# one retain left is a splat entry becoming an argument, the same copy the
+# slab resolver makes with a bare retain.
 rbrw=$(grep -rE --include='*.h' "JitOwnedVal::from_borrowed\(" include/ \
        | grep -vcE "^[^:]*:[[:space:]]*//" || true)
-ratchet "runtime borrow->owned seam sites" "$rbrw" 2
+ratchet "runtime borrow->owned seam sites" "$rbrw" 3
 
 # Codegen-side hand-placed throw guards: the automatic unwind-temp window
 # is the default cleaner for a codegen-owned +1, so the hand-placed
@@ -215,7 +225,7 @@ ratchet "typed consume assignments (jit.h)" "$tassign" 0
 
 if (( fail )); then exit 1; fi
 echo "rc-discipline OK (release=$rel/55 retain=$ret/34 borrow=$brw/5" \
-     "rt-borrow=$rbrw/1 tail-self=$tail_self/0" \
-     "stdlib=$(count_bare include/stdlib/bindings.h)/100" \
+     "rt-borrow=$rbrw/3 tail-self=$tail_self/0" \
+     "stdlib=$(count_bare include/stdlib/bindings.h)/98" \
      "sendable=$(count_bare include/conc/sendable.h)/11 throwguard=$tg/21" \
      "unchecked=$cu/14 vphi=$vphi/0 typed-consume=$tassign/0 rawcompile=$rawc/0)"

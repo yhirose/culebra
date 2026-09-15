@@ -2063,35 +2063,27 @@ kwargsをObjectとして受け取ります。位置はパラメータリスト�
   （`fn f(xs = [])`）は毎回新しい値になり、呼び出しをまたいで
   溜まっていくことはありません。
 
-JITサポート: kwargsと`**` splatは次の主要パターンで両バック
-エンド共に動作します:
+デフォルト値のあるパラメータは、キーワードで飛ばせます。
+`(x, y = 10, z = 20)`に`f(1, z: 3)`と渡すと、`y`はデフォルト値に
+なります。
 
-* 直接呼び出し: スコープ内の`f(x, y: 2)`
-* キャプチャ / 引き渡されるクロージャ: `let g = make_fn(...); g(y: 2)`
-* UFCS: `x.free_fn(y: 2)` → `free_fn(x, y: 2)`
-* Objectメソッド: `obj.method(y: 2)`
-* ビルトイン`JSON.{stringify, parse}`の`indent` / `sort_keys` /
-  `lines` / `number_mode` kwargs
-* ユーザ関数に対する動的`**variable` splat: クロージャに付随
-  したパラメータメタデータを使い実行時に解決
+**標準ライブラリの関数。** 名前空間の関数や組み込みのグローバル関数
+（`Math.clamp`、`JSON.stringify`、`Canvas.rect`、`to_string`）も、
+同じ規則でキーワード引数と`**` splatを受け付けます。使える名前は
+リファレンスの見出しに書かれた引数名で、必須の引数も名前で渡せます:
 
-middle-gap default（`f(1, z: 3)`を`(x, y=10, z=20)`に対して呼ぶ等）
-は`TAG_UNFILLED`センチネル経由で動き、calleeプロローグのinline
-default式が埋めます。
+    Math.clamp(x: 5, lo: 0, hi: 3)                      # → 3
+    Canvas.rect(**{x: 1, y: 1, w: 6, h: 6, color: c})
+    Math.clamp(x: 5, lo: 0)   # ArityError: missing required argument 'hi'
 
-JIT制限:
+`*args`で引数をまとめて受け取る関数（`Math.max`）には名前の付いた
+引数がないので、キーワード引数は`TypeError`になります。組み込みの
+値型のメソッドは位置で受け取ります（「組み込みメソッドは位置引数で
+バインドする」を参照）。
 
-* 他の名前空間ビルトイン（`Math`, `IO`, `Random`, `Sys`）は位置引数
-  のみ対応で、kwargsを渡すとコンパイル時に`SyntaxError`で拒否
-  されます。
-* ビルトインdispatch（例: `JSON.stringify(v, **opts)`でoptsが
-  実行時Object）への動的`**variable` splatは両バックエンド対応
-  （per-built-in kwarg adapter経由）。現在`JSON.stringify` /
-  `JSON.parse`がadapterを持ち、他のネームスペース（Math, IO,
-  Random, Sys）はpositional-onlyでコンパイル時に拒否されます。
-* コンパイル時エラー（例: `positional argument follows keyword
-  argument`）は両エンジンともコンパイル段階で検出され、
-  `try/catch`ではキャッチできません。
+コンパイル時エラー（例: `positional argument follows keyword
+argument`）はどのエンジンでもコンパイル段階で検出され、
+`try/catch`ではキャッチできません。
 
 ### 戻り値
 

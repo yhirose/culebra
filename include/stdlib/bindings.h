@@ -8716,7 +8716,7 @@ struct NsMethod {
   const char* sub = nullptr;
   // Declared type + interp param name of the (single) leading positional, for
   // methods that don't use a kwarg slab (e.g. FS.read: arg0_name="path",
-  // arg0_type="String"; Tensor.from: "a"/"Array"). Lets the compile side emit
+  // arg0_type="String"; Tensor.from: "arr"/"Array"). Lets the compile side emit
   // an inline check at the argument position, and `_jit_ns_method_dispatch`
   // check the as-value / HOF path (where there is no inline check).
   const char* arg0_type = nullptr;
@@ -9233,7 +9233,7 @@ inline const NsMethod kNsRows_Tensor[] = {
   {"Tensor", "randn",    -1, &_ns_tensor_randn},
   {"Tensor", "eval",     -1, &_ns_tensor_eval},
   {"Tensor", "from_csv",  1, &_ns_tensor_from_csv, nullptr, "String", "path"},
-  {"Tensor", "from",      1, &_ns_tensor_from, nullptr, "Array",  "a"},
+  {"Tensor", "from",      1, &_ns_tensor_from, nullptr, "Array",  "arr"},
   {"Tensor", "concat",   -1, &_ns_tensor_concat, nullptr, "Array", "parts"},
   {"Tensor", "where",     3, &_ns_tensor_where},
   {"Tensor", "index_add", 3, &_ns_tensor_index_add},
@@ -9799,6 +9799,115 @@ inline JitClosure* _jit_make_ns_method_closure(const NsMethod* m) {
   return cls;
 }
 
+// A keyword call against a method whose adapter takes raw positional argv
+// rather than a kwarg slab: bind the names through the canonical params into
+// that argv and dispatch it as the positional call would be. A defaulted param
+// skipped before a later named one takes its canonical default. Returns false
+// (consuming nothing) for a method with no nameable params — no canonical
+// signature, or an args-rest one (`Math.max(*args)`).
+inline bool _jit_ns_kwarg_resolve_raw(
+    const NsMethod* m, int64_t n_pos, JitValue* positional, int64_t n_kw,
+    const char* const* kw_keys, JitValue* kw_vals, int64_t n_splat,
+    JitValue* splat_objs, int64_t line, int64_t col, JitValue* out) {
+  const NsParamMeta* tm = _ns_type_meta(m);
+  if (!tm || tm->args_rest_idx >= 0 || tm->kwargs_rest_idx >= 0) return false;
+  // Every incoming +1 is owned from here on, so a throw anywhere below
+  // releases what the dispatch has not taken. The vectors are heap the
+  // collector does not scan, which a traced-only String held in them would not
+  // survive (see the slab path in _jit_ns_kwarg_resolve_core).
+  culebra::gc::Heap::CollectPause _pause(_gc_heap());
+  auto own = [](JitValue* vs, int64_t count) {
+    std::vector<JitOwnedVal> owned;
+    owned.reserve(static_cast<size_t>(count));
+    for (int64_t i = 0; i < count; i++) owned.emplace_back(vs[i]);
+    return owned;
+  };
+  auto pos = own(positional, n_pos);
+  auto kws = own(kw_vals, n_kw);
+  auto splats = own(splat_objs, n_splat);
+  if (n_pos > tm->max_arity)
+    _ns_adapt::arity_error(m->ns, m->name, tm->max_arity, n_pos, line, col);
+
+  // Splats in operand order, then explicit kwargs; a repeated name replaces.
+  std::unordered_map<std::string_view, JitOwnedVal> named;
+  for (auto& s : splats) {
+    JitValue sv = s.borrow();
+    if (sv.tag != TAG_OBJECT)
+      throw culebra::CulebraError("TypeError", culebra::format(
+          "**: splat operand must be Object, got {}", _culebra_tag_name(sv.tag)),
+          line, col);
+    auto* obj = reinterpret_cast<JitObject*>(sv.data);
+    if (obj->non_string_props && !obj->non_string_props->empty())
+      throw culebra::CulebraError("TypeError", "**: splat key must be String",
+                                  line, col);
+    if (!obj->shape) continue;
+    for (size_t k = 0; k < obj->prop_size(); k++)
+      named.insert_or_assign(obj->prop_name(k),
+                             JitOwnedVal::from_borrowed(obj->slots[k].value));
+  }
+  for (int64_t i = 0; i < n_kw; i++)
+    named.insert_or_assign(kw_keys[i], std::move(kws[i]));
+
+  const int n = tm->n_params;
+  // A fixed-arity adapter takes exactly its arity; a variadic one the prefix
+  // through the last param the call named.
+  int target = m->arity >= 0 ? m->arity
+                             : std::max<int>(static_cast<int>(n_pos),
+                                             tm->min_arity);
+  if (m->arity < 0)
+    for (int i = static_cast<int>(n_pos); i < n; i++)
+      if (named.contains(tm->params[i].name)) target = std::max(target, i + 1);
+  target = std::min(target, n);
+  auto check_type = [&](int i, const JitOwnedVal& v, int64_t l, int64_t c) {
+    std::string_view ty = tm->params[i].type;
+    if (!ty.empty() &&
+        !_culebra_value_matches_type(v.borrow().tag, v.borrow().data, ty))
+      throw culebra::CulebraError("TypeError", culebra::format(
+          "type error: parameter '{}' expects {}", tm->params[i].name, ty),
+          l, c);
+  };
+  std::vector<JitOwnedVal> argv;
+  argv.reserve(static_cast<size_t>(target));
+  for (int i = 0; i < static_cast<int>(n_pos); i++) {
+    if (named.contains(tm->params[i].name))
+      throw culebra::CulebraError("TypeError",
+          culebra::positional_kw_conflict_message(tm->params[i].name),
+          line, col);
+    bool at_arg = i < _jit_thread.argpos_n;
+    check_type(i, pos[i], at_arg ? _jit_thread.argpos_line[i] : line,
+               at_arg ? _jit_thread.argpos_col[i] : col);
+    argv.push_back(std::move(pos[i]));
+  }
+  for (int i = static_cast<int>(n_pos); i < target; i++) {
+    const CanonParam& p = tm->params[i];
+    if (auto it = named.find(p.name); it != named.end()) {
+      argv.push_back(std::move(it->second));
+      named.erase(it);
+      check_type(i, argv.back(), line, col);
+    } else if (!p.has_default) {
+      throw culebra::CulebraError("ArityError",
+          culebra::missing_required_arg_message(p.name), line, col);
+    } else if (p.default_kind != CanonDefault::None) {
+      argv.emplace_back(_jit_default_from_canon(p));
+    } else {
+      throw culebra::CulebraError("TypeError", culebra::format(
+          "argument '{}' cannot be skipped", p.name), line, col);
+    }
+  }
+  if (!named.empty())
+    throw culebra::CulebraError("TypeError", culebra::unknown_kwarg_message(
+        culebra::canonical_unknown_kwarg(named)), line, col);
+  // The dispatch consumes its args, so hand every +1 over.
+  std::vector<JitValue> args;
+  args.reserve(argv.size());
+  for (auto& a : argv) args.push_back(a.consume());
+  *out = _jit_ns_method_dispatch(m, static_cast<int64_t>(args.size()),
+                                 args.data(), line, col, line, col,
+                                 _jit_thread.boundary_line,
+                                 _jit_thread.boundary_col);
+  return true;
+}
+
 // Resolve a kwarg/splat call against an ns-method `m` carrying NsParamMeta.
 // Mirrors culebra_runtime_call_with_kwargs' merge order (splat first, explicit
 // kwargs override) but fills missing defaulted slots with the param's real
@@ -9811,8 +9920,12 @@ inline bool _jit_ns_kwarg_resolve_core(
     int64_t n_kw, const char* const* kw_keys, JitValue* kw_vals,
     int64_t n_splat, JitValue* splat_objs, int64_t line, int64_t col,
     JitValue* out) {
+  const bool has_kw = n_kw > 0 || n_splat > 0;
   const NsParamMeta* pm = _ns_meta(m);
-  if (!pm) return false;  // method doesn't take kwargs
+  if (!pm)  // a raw-argv adapter: names bind into its argv, if any were passed
+    return has_kw && _jit_ns_kwarg_resolve_raw(m, n_pos, positional, n_kw,
+                                               kw_keys, kw_vals, n_splat,
+                                               splat_objs, line, col, out);
 
   auto release_all = [&]() {
     for (int64_t i = 0; i < n_pos; i++)
@@ -9823,14 +9936,11 @@ inline bool _jit_ns_kwarg_resolve_core(
       _culebra_value_release_impl(splat_objs[i].tag, splat_objs[i].data);
   };
 
-  // Arity check on positional count — up front, before merging splats/kwargs,
-  // mirroring the interp's strict_arity block (invoke_user_function_with_args):
-  // a required positional is never satisfied by a keyword/splat, and the
-  // ArityError fires before any splat type check. Variadic (args_rest) methods
-  // carry no positional cap (handled below), so skip — matching interp's
-  // `if (!b.variadic)`. Too few reports the required count, too many the cap.
+  // Positional count, up front: too many always fails here, too few only when
+  // no keyword could fill the gap (a named required param binds below, as for
+  // a user fn). Args-rest methods carry no positional cap (handled below).
   if (pm->args_rest_idx < 0 &&
-      (n_pos < pm->min_arity || n_pos > pm->max_arity)) {
+      (n_pos > pm->max_arity || (!has_kw && n_pos < pm->min_arity))) {
     release_all();
     throw culebra::CulebraError("ArityError",
         culebra::ns_fn_arity_error_message(
@@ -9987,11 +10097,12 @@ inline bool _jit_ns_kwarg_resolve_core(
         if (filled[k]) _culebra_value_release_impl(slab[k].tag, slab[k].data);
       for (auto& [_, v] : merged)
         _culebra_value_release_impl(v.tag, v.data);
-      // Count-based message (required count, got positionals) — the shared
-      // canonical form interp's binder uses, so `Http.get()` /
-      // `Http.request("GET")` etc. report identically across backends.
+      // A call that named arguments reports the param it missed, as a user fn
+      // does; a positional-only one keeps the count form (`Http.get()`).
       throw culebra::CulebraError("ArityError",
-          culebra::ns_fn_arity_error_message(pm->min_arity, n_pos), line, col);
+          has_kw ? culebra::missing_required_arg_message(pm->params[i].name)
+                 : culebra::ns_fn_arity_error_message(pm->min_arity, n_pos),
+          line, col);
     }
   }
   // Any leftover kwargs are unknown to this method.
@@ -10030,18 +10141,18 @@ inline bool _jit_ns_kwarg_resolve(
   }
   const auto* m = reinterpret_cast<const NsMethod*>(
       cls->captures[0]->value.data);
+  // An ns method takes its receiver as a positional, never as `self`, so the
+  // +1 receiver is this hook's to drop whenever the call ends here: on the
+  // "handled" answer, which returns past culebra_runtime_call_with_kwargs'
+  // own consumers of it, and on a throw out of the core, which unwinds past
+  // them too. Not on "not mine": that answer falls through to the caller's
+  // release_owned, and dropping it here as well frees the namespace object
+  // out from under the program.
+  JitOwnedVal receiver(self_val);
   bool handled = _jit_ns_kwarg_resolve_core(m, n_pos, positional, n_kw,
                                             kw_keys, kw_vals, n_splat,
                                             splat_objs, line, col, out);
-  // Answering "handled" ends culebra_runtime_call_with_kwargs at its `return
-  // out`, past both of that function's consumers of the +1 receiver — its
-  // release_owned throw path and the callee frame on hand-off — and an ns
-  // method takes its receiver as a positional, never as `self`. So the
-  // success answer is what consumes it. NOT scope-wide (no JitMethodSelf):
-  // on the throw out of the core the receiver is already the unwinding call
-  // site's to release, and taking it here too frees the namespace object out
-  // from under the program.
-  if (handled) _culebra_value_release_impl(self_val.tag, self_val.data);
+  if (!handled) receiver.consume();  // the caller's release_owned takes it
   return handled;
 }
 
