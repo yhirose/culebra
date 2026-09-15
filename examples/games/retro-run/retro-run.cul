@@ -240,6 +240,11 @@ let SCENE_COLORS = [
 # How much of a scene's stretch of road holds still before the cross-fade into
 # the next one starts.
 let SCENE_HOLD = 3.0 / 7.0
+# A lane dash gets its dimmer rim round a bright core only on a band whose
+# road is this many pixels half-wide or more; nearer the horizon the dash is
+# a pixel or two across and the rim would not show. The curb's face and the
+# edge lines go on every band, thinning out with the road.
+let DETAIL_W = 60.0
 let LANE_R = 252
 let LANE_G = 248
 let LANE_B = 242
@@ -254,11 +259,14 @@ let KIND_LIGHT = 1
 # the grass and the rumble alike — so the goal arrives as a white or black band
 # spanning the whole frame rather than a line across the track. Here they are
 # markings on the tarmac: the scenery beside them keeps the stripe colours it
-# would have had, and the finish gets a checkered flag instead of flat black.
+# would have had, and the start and finish get a checkered flag instead of
+# flat white and black.
 let MARK_NONE = 0
 let MARK_START = 1
 let MARK_FINISH = 2
-let CHECKER_COLS = 8  # squares across the road on a finish segment
+# Squares across the road on a finish segment: 20 across the 4000-wide road
+# are as wide as a segment is deep, so the check is square on the ground.
+let CHECKER_COLS = 20
 
 # --- Util (common.js) ------------------------------------------------------
 let limit = fn (v, lo, hi) {
@@ -566,6 +574,10 @@ mut key_left = false
 mut key_right = false
 mut key_faster = false
 mut key_slower = false
+# How hard the car is steered, -1 (full left) to 1, and which way its picture
+# turns: the keys give full lock or none, the autopilot anything between.
+mut steer = 0.0
+mut lean = 0.0
 mut current_lap_time = 0.0
 mut last_lap_time = 0.0
 mut fast_lap_time = 180.0  # v4's starting target, session-lived
@@ -574,6 +586,7 @@ mut fast_lap_time = 180.0  # v4's starting target, session-lived
 # so GO! can hold for a beat, and the physics wait for it to reach zero.
 let COUNT_IN = 3.0
 let GO_HOLD = 0.9
+let GO_BEEP = 20  # frames the GO beep lasts
 mut count_in = COUNT_IN
 mut counted = 4  # the last number that has had its beep
 
@@ -591,20 +604,111 @@ mut finished = false
 # chiptune's own level, loud enough to carry on laptop speakers.
 let MUSIC_FILE = ["music.ogg", "music.mp3"].find(|n| ART.exists(n))
 let MUSIC_VOL = 60
-Canvas.music(art(MUSIC_FILE), vol: MUSIC_VOL) if MUSIC_FILE != nil
+# Whichever it is starts a second after the GO beep has sounded, not during
+# the count-in.
+let MUSIC_DELAY = GO_BEEP + FPS  # frames from the green light to the music
+mut music_on = false
+mut music_wait = MUSIC_DELAY
 
 # The chiptune fallback: a tune per lap, sequenced from `update()` so the
 # rhythm is exact regardless of display framerate. `tone()` is fire-and-forget
 # (the APU keeps playing the note on its own), so the sequencer only asks
-# "does a note start on this sixteenth".
+# "does a note start on this sixteenth". Every channel is monophonic, so each
+# has one part: the lead on the pulse, a second pulse that echoes or
+# harmonises it, the bass on the sawtooth, the chords broken up on the
+# triangle, the drums on the noise.
 let BAR = 16  # sixteenths per bar
+let ECHO = 3  # sixteenths the echo trails the lead by
 
 # Pitches are MIDI numbers, converted once at load.
 let hz = fn (n) {
   Math.round(440 * Math.exp((n - 69) / 12.0 * Math.log(2.0)))
 }
+let HZ = iota(128).map(hz)
 
-# A note table becomes (frequency, length in sixteenths) at each onset.
+let PITCH_CLASS = {C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11}
+
+# The letter and accidental at the head of `s` ("F#m7", "Bb5") as a pitch
+# class, and the rest of the string.
+let split_root = fn (s) {
+  let letter = s.slice(0, 1).to_string()
+  if !PITCH_CLASS.has(letter) {
+    throw {kind: "ValueError", message: "not a note: {s}"}
+  }
+  let accidental = s.size() > 1 ? s.slice(1, 2).to_string() : ""
+  let shift = cond {
+    accidental == "#" => 1,
+    accidental == "b" => -1,
+    _ => 0,
+  }
+  let head = shift == 0 ? 1 : 2
+  (
+    Math.wrap(PITCH_CLASS[letter] + shift, 12),
+    s.slice(head, s.size()).to_string(),
+  )
+}
+
+# A lead token: a note name starts a note ("A5" is 81), `-` holds the one
+# before it (-1), `.` rests (0).
+let note_number = fn (tok) {
+  return -1 if tok == "-"
+  return 0 if tok == "."
+  let (pc, octave) = split_root(tok)
+  (to_long(octave) + 1) * 12 + pc
+}
+
+# The intervals of a chord quality, always four, so an arpeggio has four
+# tones to walk.
+let chord_shape = fn (quality) {
+  match quality {
+    "" => [0, 4, 7, 12],
+    "m" => [0, 3, 7, 12],
+    "6" => [0, 4, 7, 9],
+    "m6" => [0, 3, 7, 9],
+    "7" => [0, 4, 7, 10],
+    "maj7" => [0, 4, 7, 11],
+    "m7" => [0, 3, 7, 10],
+    "m7b5" => [0, 3, 6, 10],
+    "sus4" => [0, 5, 7, 12],
+    "7sus4" => [0, 5, 7, 10],
+    "add9" => [0, 4, 7, 14],
+    "9" => [0, 4, 7, 10, 14],
+    "maj9" => [0, 4, 7, 11, 14],
+    "m9" => [0, 3, 7, 10, 14],
+    _ => nil,
+  }
+}
+
+# A chord symbol ("F#m/A") as (bass, tones): the bass in E2..D#3, so a line
+# that walks down the roots walks down, and the tones from middle C up.
+let chord = fn (name) {
+  let (symbol, over) = name.split_once("/") ?? (name, nil)
+  let (pc, quality) = split_root(symbol.to_string())
+  let shape = chord_shape(quality)
+  if shape == nil {
+    throw {kind: "ValueError", message: "unknown chord: {name}"}
+  }
+  mut bass_pc = pc
+  if over != nil {
+    let (over_pc, _) = split_root(over.to_string())
+    bass_pc = over_pc
+  }
+  (40 + Math.wrap(bass_pc - 4, 12), shape.map(|i| 60 + pc + i))
+}
+
+# The whitespace-separated tokens of a pattern, which must number `n`.
+let tokens = fn (text, n) {
+  let out = text.split_whitespace().map(|tok| tok.to_string())
+  if out.size() != n {
+    throw {
+      kind: "ValueError",
+      message: "want {n} tokens, got {out.size()}: {text}",
+    }
+  }
+  out
+}
+
+# A note table becomes (pitch, length in sixteenths) at each onset.
 let onsets = fn (table) {
   mut out = repeat(table.size(), nil)
   for i, n in table.enumerate() {
@@ -613,136 +717,528 @@ let onsets = fn (table) {
     while i + len < table.size() && table[i + len] == -1 {
       len += 1
     }
-    out[i] = (hz(n), len)
+    out[i] = (n, len)
   }
   out
 }
 
-# A tune: frames per sixteenth; a chord per bar as the bass root, the four
-# tones the keys arpeggiate and the interval the bass plays as a pickup into
-# the next bar; the lead as a note table, a bar per row (a pitch starts a
-# note, -1 holds it, 0 rests); the bass as intervals over the root on each
-# sixteenth (nil a rest, -1 the pickup) with the length of its notes in
-# sixteenths; the keys' arpeggio order over the bar's eighths; and how many
-# sixteenths apart the hats fall.
-let tune = fn (tick, chords, lead, bass, bass_len, arp, hat) {
+# The highest of `tones`, in any octave, at least a minor third under `m`.
+let below = fn (tones, m) {
+  tones.map(|tone| m - 3 - Math.wrap(m - 3 - tone, 12)).max()
+}
+
+# A tune from its score, expanded to what starts on each sixteenth.
+#
+# `chords` has a bar per entry: one chord symbol, or two split at the half
+# bar. `lead` has a bar per entry of sixteen tokens (a note name starts a
+# note, `-` holds it, `.` rests). `form` names the groove each bar plays, and
+# a groove is the bass as intervals over the root per sixteenth (`.` rests,
+# `>` steps up a semitone into the next bar's root; each note lasts until the
+# next unless `bass_len` says otherwise), the arpeggio as chord tones by
+# index per eighth, the drums as a letter of `kit` per sixteenth, and what
+# the second pulse plays: `echo` (the lead, ECHO sixteenths late and softer)
+# or `harmony` (the chord tone under each lead note).
+let tune = fn (score) {
+  let bars = score.chords.size()
+  let steps = bars * BAR
+  if score.lead.size() != bars || score.form.size() != bars {
+    throw {
+      kind: "ValueError",
+      message: "{bars} bars of chords, {score.lead.size()} of lead, {score.form.size()} of form",
+    }
+  }
+  let changes = score.chords.map(fn (text) {
+    text.split_whitespace().map(|name| chord(name.to_string()))
+  })
+  let lead = onsets(score.lead.flat_map(fn (text) {
+    tokens(text, BAR).map(note_number)
+  }))
+  mut grooves = {}
+  for name, g in score.grooves {
+    let hits = g.drums.iter().map(|ch| ch.to_string()).collect()
+    if hits.size() != BAR || hits.any(|ch| ch != "." && !score.kit.has(ch)) {
+      throw {kind: "ValueError", message: "bad drums in {name}: {g.drums}"}
+    }
+    grooves[name] = {
+      bass: tokens(g.bass, BAR),
+      bass_len: g.get("bass_len", nil),
+      arp: tokens(g.arp, BAR / 2),
+      drums: hits,
+      second: g.get("second", nil),
+    }
+  }
+  if !score.form.all(|name| grooves.has(name)) {
+    throw {kind: "ValueError", message: "form names a groove the score lacks"}
+  }
+
+  let arp_shift = score.get("arp_shift", 0)
+  mut bass = repeat(steps, nil)
+  mut arp = repeat(steps, nil)
+  mut drums = repeat(steps, nil)
+  mut second = repeat(steps, nil)
+  for step in 0..steps {
+    let bar = step / BAR
+    let slot = step % BAR
+    let g = grooves[score.form[bar]]
+    let here = changes[bar]
+    let (root, tones) = here[here.size() == 2 && slot >= BAR / 2 ? 1 : 0]
+
+    let bass_hit = g.bass[slot]
+    if bass_hit != "." {
+      let (next_root, _) = changes[(bar + 1) % bars][0]
+      mut run = 1
+      while slot + run < BAR && g.bass[slot + run] == "." {
+        run += 1
+      }
+      bass[step] = (
+        bass_hit == ">" ? next_root - 1 : root + to_long(bass_hit),
+        g.bass_len ?? run,
+      )
+    }
+    let pick = g.arp[slot / 2]
+    arp[step] = tones[to_long(pick)] + arp_shift if slot % 2 == 0 && pick != "."
+    drums[step] = g.drums[slot] if g.drums[slot] != "."
+
+    let echoed = lead[Math.wrap(step - ECHO, steps)]
+    if g.second == "echo" && echoed != nil {
+      let (echo_pitch, echo_len) = echoed
+      second[step] = (echo_pitch, echo_len, 0.7)
+    } else if g.second == "harmony" && lead[step] != nil {
+      let (sung, sung_len) = lead[step]
+      second[step] = (below(tones, sung), sung_len, 1.0)
+    }
+  }
   {
-    tick: tick,
-    chords: chords,
-    lead: onsets(lead.flat_map(|bar| bar)),
+    tick: score.tick,
+    length: score.tick * steps,
+    voices: score.voices,
+    kit: score.kit,
+    lead: lead,
+    second: second,
     bass: bass,
-    bass_len: bass_len,
     arp: arp,
-    hat: hat,
-    length: tick * BAR * chords.size(),
+    drums: drums,
   }
 }
 
-# Lap one cruises: a breezy fusion tune, sixteen bars over the "royal road"
-# progression (IV△7 V7 iii7 vi7, twice) and a ii-V turnaround home, a lyrical
-# lead that holds its long notes, a slap-style bass that pops up the octave,
-# arpeggiated electric-piano chords, and a hat-and-snare backbeat. The pickup
-# is the 6th on a major chord, the 7th elsewhere.
-let CRUISE_CHORDS = [
-  (41, [65, 69, 72, 76], 9),   # F△7
-  (43, [67, 71, 74, 77], 10),  # G7
-  (40, [64, 67, 71, 74], 10),  # Em7
-  (45, [69, 72, 76, 79], 10),  # Am7
-  (41, [65, 69, 72, 76], 9),   # F△7
-  (43, [67, 71, 74, 77], 10),  # G7
-  (40, [64, 67, 71, 74], 10),  # Em7
-  (45, [69, 73, 76, 79], 10),  # A7, lifting into the second half
-  (38, [62, 65, 69, 72], 10),  # Dm7
-  (43, [67, 71, 74, 77], 10),  # G7
-  (36, [60, 64, 67, 71], 9),   # C△7
-  (45, [69, 72, 76, 79], 10),  # Am7
-  (38, [62, 65, 69, 72], 10),  # Dm7
-  (43, [67, 71, 74, 77], 10),  # G7
-  (36, [60, 64, 67, 71], 9),   # C△7
-  (43, [67, 72, 74, 77], 5),   # G7sus4, the run back to the top
-]
+# An instrument: the channel, its sustain level and envelope in frames.
+let voice = fn (wave, vol, attack, decay, release, duty = Canvas.DUTY_HALF) {
+  {
+    wave: wave,
+    vol: vol,
+    attack: attack,
+    decay: decay,
+    release: release,
+    duty: duty,
+  }
+}
 
-# The lead, a bar per line: a pitch starts a note, -1 holds it, 0 rests.
-let CRUISE_LEAD = [
-  [84, -1, -1, 81, -1, -1, 79, -1, -1, -1, 76, -1, 79, -1, 81, -1],
-  [83, -1, -1, -1, -1, -1, 79, -1, 81, -1, -1, 83, -1, -1, 86, -1],
-  [83, -1, -1, -1, 79, -1, 76, -1, 74, -1, -1, -1, -1, -1, 76, 79],
-  [81, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 0, 76, 79],
-  [81, -1, -1, 84, -1, -1, 86, -1, -1, -1, 84, -1, -1, -1, 81, -1],
-  [83, -1, -1, -1, 81, -1, 79, -1, 77, -1, -1, 76, -1, 74, -1, -1],
-  [76, -1, -1, -1, -1, -1, 79, -1, 83, -1, -1, -1, -1, -1, 81, -1],
-  [81, -1, -1, 79, -1, -1, 76, -1, 73, -1, -1, -1, 76, -1, 79, -1],
-  [81, -1, -1, -1, -1, -1, 79, -1, 77, -1, -1, 74, -1, -1, 77, -1],
-  [79, -1, -1, -1, -1, -1, 77, -1, 74, -1, -1, 71, -1, -1, 74, -1],
-  [76, -1, -1, -1, -1, -1, -1, -1, 79, -1, -1, 76, -1, 72, -1, -1],
-  [74, -1, -1, 72, -1, -1, 69, -1, -1, -1, -1, -1, 0, 0, 67, 69],
-  [72, -1, -1, -1, 74, -1, 77, -1, -1, -1, 81, -1, -1, -1, 79, -1],
-  [77, -1, -1, -1, 74, -1, 71, -1, 74, -1, -1, -1, -1, -1, 76, -1],
-  [79, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 0],
-  [0, 0, 0, 0, 0, 0, 0, 0, 67, 69, 71, 74, 76, 79, 81, 83],
-]
-# ~129 bpm; the bass pops root and octave with the 5th and the pickup toward
-# the end of the bar, the keys run up the chord and back down, hats on the
-# eighths.
-let CRUISE = tune(
-  7,
-  CRUISE_CHORDS,
-  CRUISE_LEAD,
-  [0, nil, nil, 0, 12, nil, 0, nil, nil, 12, nil, 0, 7, nil, -1, nil],
-  2,
-  [0, 1, 2, 3, 2, 3, 1, 2],
-  2,
-)
+let sound = fn (v, pitch, frames, gain) {
+  Canvas.tone(
+    HZ[pitch],
+    frames,
+    vol: Math.round(v.vol * gain),
+    wave: v.wave,
+    attack: v.attack,
+    decay: v.decay,
+    release: v.release,
+    duty: v.duty,
+  )
+}
 
-# Lap two sprints for the flag: 150 bpm in A minor, i–VI–VII and i–VI–V7
-# twice, then a iv–VII–III–VI run to the half-diminished ii and back to the
-# top on the V. The bass bounces root and octave on every sixteenth, the hats
-# fall on every sixteenth, and the lead alternates held notes with runs.
-let SPRINT_CHORDS = [
-  (45, [69, 72, 76, 79], 10),  # Am7
-  (45, [69, 72, 76, 79], 10),  # Am7
-  (41, [65, 69, 72, 76], 9),   # F△7
-  (43, [67, 71, 74, 79], 10),  # G
-  (45, [69, 72, 76, 79], 10),  # Am7
-  (45, [69, 72, 76, 79], 10),  # Am7
-  (41, [65, 69, 72, 76], 9),   # F△7
-  (40, [64, 68, 71, 74], 10),  # E7
-  (38, [62, 65, 69, 72], 10),  # Dm7
-  (43, [67, 71, 74, 77], 10),  # G7
-  (36, [60, 64, 67, 71], 9),   # C△7
-  (41, [65, 69, 72, 76], 9),   # F△7
-  (47, [71, 74, 77, 81], 10),  # Bm7♭5
-  (40, [64, 68, 71, 74], 10),  # E7
-  (45, [69, 72, 76, 79], 10),  # Am7
-  (40, [64, 68, 71, 74], 4),   # E7, the leading tone back to the top
+# One hit of a kit's drum on the noise channel.
+let drum = fn (d, gain) {
+  Canvas.tone(
+    d.freq,
+    d.dur,
+    vol: Math.round(d.vol * gain),
+    wave: Canvas.NOISE,
+    end_freq: d.end_freq ?? d.freq,
+    decay: d.decay ?? 0,
+    release: d.release ?? 0,
+  )
+}
+
+# Start whatever begins on sixteenth `step` of tune `t`, at `gain`.
+let play_step = fn (t, step, gain) {
+  let v = t.voices
+  let lead = t.lead[step]
+  if lead != nil {
+    let (lead_pitch, lead_len) = lead
+    sound(v.lead, lead_pitch, lead_len * t.tick - 2, gain)
+  }
+  let second = t.second[step]
+  if second != nil {
+    let (second_pitch, second_len, level) = second
+    sound(v.second, second_pitch, second_len * t.tick - 2, gain * level)
+  }
+  let bass = t.bass[step]
+  if bass != nil {
+    let (bass_pitch, bass_len) = bass
+    sound(v.bass, bass_pitch, bass_len * t.tick - 3, gain)
+  }
+  let key = t.arp[step]
+  sound(v.arp, key, t.tick * 2 - 4, gain) if key != nil
+  let hit = t.drums[step]
+  drum(t.kit[hit], gain) if hit != nil
+}
+
+# The race's band: a nasal lead, a thin second pulse under it, a sawtooth
+# bass, soft triangle arpeggios. The kit: kick, snare, closed and open hat,
+# crash, high and low tom.
+let RUN_VOICES = {
+  lead: voice(Canvas.PULSE, 15, 1, 2, 4, Canvas.DUTY_QUARTER),
+  second: voice(Canvas.PULSE2, 9, 1, 2, 6, Canvas.DUTY_EIGHTH),
+  bass: voice(Canvas.SAWTOOTH, 18, 0, 3, 3),
+  arp: voice(Canvas.TRIANGLE, 7, 1, 4, 6),
+}
+let RUN_KIT = {
+  k: {freq: 120, dur: 1, vol: 20, decay: 3, release: 2},
+  s: {freq: 800, dur: 3, vol: 13, decay: 2, release: 2},
+  h: {freq: 3000, dur: 1, vol: 5, release: 1},
+  o: {freq: 3000, dur: 3, vol: 6, release: 3},
+  c: {freq: 5000, dur: 4, vol: 11, release: 30},
+  t: {freq: 900, end_freq: 500, dur: 3, vol: 12, release: 4},
+  T: {freq: 500, end_freq: 250, dur: 3, vol: 13, release: 5},
+}
+
+# Lap one cruises, ~129 bpm in C: four bars over IV-V-iii-vi on a straight
+# beat, a figure that springs off two sixteenths and is answered higher, then
+# a long note and a turnaround; a
+# verse whose phrases answer each other, sixteenth pickups against held notes,
+# over a city-pop turn (a borrowed Fm6 for a moment of shade); a pre-chorus
+# that climbs over falling chords; and a hook over the royal road that states
+# its figure, answers it and builds to a high G, played twice: echoed, then in
+# harmony with a second ending that reaches the high G again before falling
+# back to the top of the tune.
+let CRUISE_HOOK = [
+  "C6 - - A5  - - C6 -  E6 - - -  D6 - C6 -",
+  "D6 - - -  - - B5 -  - - G5 -  A5 - B5 -",
+  "B5 - - G5  - - B5 -  D6 - - -  E6 - D6 -",
+  "C6 - - -  - - - -  . . E6 -  D6 - C6 -",
+  "A5 - - F5  - - A5 -  C6 - - -  E6 - F6 -",
+  "G6 - - -  F6 - D6 -  B5 - - -  D6 - F6 -",
+  "E6 - - -  - - - -  D6 - B5 -  G5 - A5 -",
+  "- - - -  . . Bb5 -  A5 - G5 -  E5 - G5 -",
 ]
-let SPRINT_LEAD = [
-  [81, -1, -1, -1, 84, -1, 83, -1, 81, -1, -1, -1, 76, -1, -1, -1],
-  [79, -1, 81, -1, 79, -1, 76, -1, 74, -1, -1, -1, -1, -1, 72, 74],
-  [76, -1, -1, -1, 77, -1, 76, -1, 74, -1, 72, -1, 74, -1, -1, -1],
-  [71, -1, -1, -1, -1, -1, -1, -1, 74, 76, 77, 79, 81, -1, 83, -1],
-  [84, -1, -1, -1, 88, -1, 86, -1, 84, -1, -1, -1, 81, -1, -1, -1],
-  [83, -1, 84, -1, 83, -1, 79, -1, 81, -1, -1, -1, -1, -1, -1, -1],
-  [77, -1, 79, -1, 81, -1, -1, -1, 79, -1, 77, -1, 76, -1, -1, -1],
-  [80, -1, -1, -1, -1, -1, -1, -1, 76, -1, -1, -1, 0, 0, 79, 80],
-  [81, -1, -1, -1, 84, -1, -1, -1, 86, -1, 84, -1, 81, -1, -1, -1],
-  [83, -1, 81, -1, 79, -1, -1, -1, 77, -1, -1, -1, 79, -1, -1, -1],
-  [76, -1, -1, -1, 79, -1, -1, -1, 84, -1, -1, -1, 83, -1, 81, -1],
-  [81, -1, -1, -1, -1, -1, -1, -1, 77, 79, 81, 84, 86, -1, -1, -1],
-  [86, -1, -1, -1, 84, -1, -1, -1, 83, -1, 81, -1, 77, -1, -1, -1],
-  [80, -1, -1, -1, -1, -1, 83, -1, 86, -1, -1, -1, 88, -1, -1, -1],
-  [88, -1, -1, -1, -1, -1, -1, -1, 84, -1, -1, -1, 81, -1, -1, -1],
-  [83, -1, -1, -1, 81, -1, -1, -1, 80, -1, -1, -1, 76, -1, 79, 80],
-]
-let SPRINT = tune(
-  6,
-  SPRINT_CHORDS,
-  SPRINT_LEAD,
-  [0, 12, 0, 12, 0, 12, 0, 12, 0, 12, 0, 12, 7, 12, -1, 12],
-  1,
-  [0, 2, 1, 3, 0, 2, 1, 3],
-  1,
-)
+let CRUISE = tune({
+  tick: 7,
+  voices: RUN_VOICES,
+  kit: RUN_KIT,
+  chords: [
+    "Fmaj7",
+    "G6",
+    "Em7",
+    "Am7",
+    "Cmaj7",
+    "Bm7b5 E7",
+    "Am7",
+    "Gm7 C7",
+    "Fmaj7",
+    "Fm6",
+    "Em7 A7",
+    "Dm7 G7",
+    "Fmaj7",
+    "Em7",
+    "Dm7",
+    "G7sus4 G7",
+    "Fmaj7",
+    "G7",
+    "Em7",
+    "Am7",
+    "Dm7",
+    "G7",
+    "Cmaj7",
+    "Gm7 C7",
+    "Fmaj7",
+    "G7",
+    "Em7",
+    "Am7",
+    "Dm7",
+    "G7",
+    "Cmaj7",
+    "Gm7 C7",
+  ],
+  lead: [
+    ". . A5 C6  E6 - - D6  - - C6 -  A5 - - -",
+    ". . B5 D6  G6 - - E6  - - D6 -  B5 - D6 -",
+    "E6 - - -  - - - -  D6 - B5 -  G5 - A5 -",
+    "B5 - - C6  - - - -  E6 - D6 -  C6 - B5 -",
+    ". . . .  . . E5 G5  B5 - - A5  - - G5 -",
+    "- - - -  F5 - E5 -  D5 - - -  G#5 - B5 -",
+    "C6 - - -  - - B5 -  A5 - - -  E5 - G5 -",
+    "- - F5 -  Bb5 - - A5  - - G5 -  E5 - - -",
+    "F5 - - -  . . A5 C6  E6 - - D6  - - C6 -",
+    "- - - -  . . Ab5 -  G5 - F5 -  D5 - F5 -",
+    "E5 - - -  G5 - B5 -  C#6 - - E6  - - D6 -",
+    "- - - -  C6 - A5 -  B5 - - -  G5 - F5 -",
+    "E5 - F5 -  A5 - C6 -  - - E6 -  C6 - A5 -",
+    "B5 - - -  G5 - B5 -  - - D6 -  B5 - G5 -",
+    "A5 - C6 -  D6 - F6 -  - - E6 -  D6 - C6 -",
+    "D6 - - -  - - C6 -  B5 - - -  . G5 A5 B5",
+    ...CRUISE_HOOK,
+    ...CRUISE_HOOK.slice(0, 6),
+    "E6 - - -  - - - -  G6 - E6 -  D6 - C6 -",
+    "- - - -  . . D6 -  C6 - Bb5 -  G5 - E5 -",
+  ],
+  grooves: {
+    intro: {
+      bass: "0 . . 0  12 . 0 .  0 . . 0  12 . > .",
+      bass_len: 2,
+      arp: "0 1 2 3 2 3 1 2",
+      drums: "k.h.s.h.k.hks.h.",
+      second: "harmony",
+    },
+    intro_turn: {
+      bass: "0 . . 0  12 . 0 .  0 . . 0  12 . > .",
+      bass_len: 2,
+      arp: "0 1 2 3 2 3 1 2",
+      drums: "k.h.s.h.k.hsstTT",
+      second: "harmony",
+    },
+    verse: {
+      bass: "0 . . 0  12 . 0 .  . 12 . 0  7 . > .",
+      bass_len: 2,
+      arp: "0 1 2 3 2 3 1 2",
+      drums: "k.h.s.hkk.h.s.o.",
+    },
+    climb: {
+      bass: "0 . 0 .  0 . 0 .  0 . 0 .  0 . > .",
+      bass_len: 2,
+      arp: "0 1 2 3 0 1 2 3",
+      drums: "k.hhs.hhk.hhs.hh",
+      second: "echo",
+    },
+    fill: {
+      bass: "0 . 0 .  0 . 0 .  0 . 0 .  0 . > .",
+      bass_len: 2,
+      arp: "0 1 2 3 0 1 2 3",
+      drums: "k.s.s.ssttttTTTT",
+      second: "echo",
+    },
+    hook_in: {
+      bass: "0 . 12 .  0 12 . 0  . 12 0 .  7 . > .",
+      bass_len: 2,
+      arp: "3 2 1 0 1 2 3 2",
+      drums: "c.h.s.hkk.h.s.ho",
+      second: "echo",
+    },
+    hook: {
+      bass: "0 . 12 .  0 12 . 0  . 12 0 .  7 . > .",
+      bass_len: 2,
+      arp: "3 2 1 0 1 2 3 2",
+      drums: "k.h.s.hkk.h.s.ho",
+      second: "echo",
+    },
+    hook_turn: {
+      bass: "0 . 12 .  0 12 . 0  . 12 0 .  7 . > .",
+      bass_len: 2,
+      arp: "3 2 1 0 1 2 3 2",
+      drums: "k.h.s.hkk.hsssTT",
+      second: "echo",
+    },
+    twin_in: {
+      bass: "0 . 12 .  0 12 . 0  . 12 0 .  7 . > .",
+      bass_len: 2,
+      arp: "3 2 1 0 1 2 3 2",
+      drums: "c.h.s.hkk.h.s.ho",
+      second: "harmony",
+    },
+    twin: {
+      bass: "0 . 12 .  0 12 . 0  . 12 0 .  7 . > .",
+      bass_len: 2,
+      arp: "3 2 1 0 1 2 3 2",
+      drums: "k.h.s.hkk.h.s.ho",
+      second: "harmony",
+    },
+    twin_turn: {
+      bass: "0 . 12 .  0 12 . 0  . 12 0 .  7 . > .",
+      bass_len: 2,
+      arp: "3 2 1 0 1 2 3 2",
+      drums: "k.h.s.hkk.hsssTT",
+      second: "harmony",
+    },
+  },
+  form: [
+    ...repeat(3, "intro"),
+    "intro_turn",
+    ...repeat(8, "verse"),
+    ...repeat(3, "climb"),
+    "fill",
+    "hook_in",
+    ...repeat(6, "hook"),
+    "hook_turn",
+    "twin_in",
+    ...repeat(6, "twin"),
+    "twin_turn",
+  ],
+})
+
+# Lap two sprints for the flag, 150 bpm in D, after the Japanese fusion bands
+# of the 80s: a twin-lead riff of 3-3-2 hits that climbs out of each one,
+# over Dmaj7, C/D and Bbmaj7; a verse phrased
+# like a saxophone, leaning on ninths, a Lydian sharp four and a flat seven
+# over ii-iii-IV-V and a bVII9; a pre-chorus climbing sus chords a step at a
+# time; and a chorus that holds major sevenths while the chords slide down a
+# semitone (IV-iii-bIII), echoed in D, then in harmony a step up in E before
+# bVI-bVII drops it back into the riff. Sixteenth hats and a bass bouncing on
+# the octave keep it running.
+let SPRINT = tune({
+  tick: 6,
+  voices: RUN_VOICES,
+  kit: RUN_KIT,
+  chords: [
+    "Dmaj7",
+    "C/D",
+    "Bbmaj7",
+    "A7sus4 A7",
+    "Em9",
+    "F#m7",
+    "Gmaj7",
+    "A7sus4 A7",
+    "Bm9",
+    "Gmaj7",
+    "C9",
+    "F#m7 B7",
+    "G/A",
+    "A/B",
+    "Bb/C",
+    "C/D D7",
+    "Gmaj7",
+    "F#m7",
+    "Fmaj7",
+    "Em7 A7",
+    "Bm7",
+    "E9",
+    "Gmaj7/A",
+    "Cmaj7 D/E",
+    "Amaj7",
+    "G#m7",
+    "Gmaj7",
+    "F#m7 B7",
+    "C#m7",
+    "F#9",
+    "Amaj7/B",
+    "Bbmaj7 C",
+  ],
+  lead: [
+    "D6 - . A5  - . D6 -  E6 - F#6 -  . A6 - -",
+    "G6 - - -  . . E6 -  . D6 - C6  - - A5 -",
+    "Bb5 - . F5  - . Bb5 -  C6 - D6 -  . F6 - -",
+    "E6 - - D6  - - A5 -  C#6 - E6 -  D6 C#6 B5 A5",
+    "F#5 - - -  - - - -  . . G5 A5  B5 - D6 -",
+    "- - E6 -  - - C#6 -  - - B5 -  A5 - - -",
+    "- - - -  . . F#5 A5  C#6 - - B5  - - A5 -",
+    "- - E5 -  G5 - A5 -  D6 - - C#6  - - . .",
+    ". . F#5 A5  C#6 - - -  B5 - A5 -  - - F#5 -",
+    "- - - -  E5 - F#5 -  A5 - - B5  - - D6 -",
+    "E6 - - -  D6 - Bb5 -  - - G5 -  E5 - G5 -",
+    "A5 - - C#6  - - E6 -  D#6 - - -  A5 - F#5 -",
+    "E5 - A5 -  B5 - D6 -  - - E6 -  D6 - B5 -",
+    "F#5 - B5 -  C#6 - E6 -  - - F#6 -  E6 - C#6 -",
+    "G5 - C6 -  D6 - F6 -  - - G6 -  F6 - D6 -",
+    "E6 - - -  - - D6 -  C6 - A5 -  F#5 G5 A5 -",
+    "F#6 - - -  - - - -  E6 - F#6 -  D6 - F#6 -",
+    "- - E6 -  C#6 - - -  B5 - C#6 -  E6 - - -",
+    "E6 - - -  - - - -  D6 - E6 -  C6 - E6 -",
+    "- - D6 -  B5 - - -  C#6 - E6 -  G6 - F#6 -",
+    "- - - -  - - E6 -  D6 - - C#6  - - B5 -",
+    "- - - -  G#5 - B5 -  D6 - - E6  - - F#6 -",
+    "- - - -  - - E6 -  D6 - - B5  - - A5 -",
+    "- - - -  G5 - B5 -  D6 - - E6  - - F#6 -",
+    "G#6 - - -  - - - -  F#6 - G#6 -  E6 - G#6 -",
+    "- - F#6 -  D#6 - - -  C#6 - D#6 -  F#6 - - -",
+    "F#6 - - -  - - - -  E6 - F#6 -  D6 - F#6 -",
+    "- - E6 -  C#6 - - -  D#6 - F#6 -  A6 - G#6 -",
+    "- - - -  - - F#6 -  E6 - - D#6  - - C#6 -",
+    "- - - -  A#5 - C#6 -  E6 - - F#6  - - G#6 -",
+    "- - - -  A6 - G#6 -  F#6 - E6 -  C#6 - A5 -",
+    "- - - -  D6 - F6 -  A6 - G6 -  E6 - C6 -",
+  ],
+  grooves: {
+    riff: {
+      bass: "0 . . 0  . . 0 .  . 0 . .  0 . 12 .",
+      bass_len: 2,
+      arp: "0 1 2 3 3 2 1 0",
+      drums: "k.hhs.hkk.hhs.ho",
+      second: "harmony",
+    },
+    verse: {
+      bass: "0 12 0 12  0 12 0 12  0 12 0 12  7 12 > 12",
+      bass_len: 1,
+      arp: "0 2 1 3 0 2 1 3",
+      drums: "khhhshhkhhkhshhh",
+    },
+    lift: {
+      bass: "0 . 0 .  0 . 0 .  0 . 0 .  0 . > .",
+      bass_len: 2,
+      arp: "0 1 2 3 0 1 2 3",
+      drums: "khhhshhhkhhhshhh",
+      second: "echo",
+    },
+    fill: {
+      bass: "0 . 0 .  0 . 0 .  0 . 0 .  0 . > .",
+      bass_len: 2,
+      arp: "0 1 2 3 0 1 2 3",
+      drums: "khhhshhhs.ssttTT",
+      second: "echo",
+    },
+    chorus_in: {
+      bass: "0 . 12 0  . 12 0 .  0 12 . 0  12 . > 12",
+      bass_len: 1,
+      arp: "3 2 1 0 3 2 1 0",
+      drums: "chhhshhkkhhhshoh",
+      second: "echo",
+    },
+    chorus: {
+      bass: "0 . 12 0  . 12 0 .  0 12 . 0  12 . > 12",
+      bass_len: 1,
+      arp: "3 2 1 0 3 2 1 0",
+      drums: "khohshokkhohshoh",
+      second: "echo",
+    },
+    chorus_turn: {
+      bass: "0 . 12 0  . 12 0 .  0 12 . 0  12 . > 12",
+      bass_len: 1,
+      arp: "3 2 1 0 3 2 1 0",
+      drums: "khohshokkhssttTT",
+      second: "echo",
+    },
+    twin_in: {
+      bass: "0 . 12 0  . 12 0 .  0 12 . 0  12 . > 12",
+      bass_len: 1,
+      arp: "3 2 1 0 3 2 1 0",
+      drums: "chhhshhkkhhhshoh",
+      second: "harmony",
+    },
+    twin: {
+      bass: "0 . 12 0  . 12 0 .  0 12 . 0  12 . > 12",
+      bass_len: 1,
+      arp: "3 2 1 0 3 2 1 0",
+      drums: "khohshokkhohshoh",
+      second: "harmony",
+    },
+    twin_turn: {
+      bass: "0 . 12 0  . 12 0 .  0 12 . 0  12 . > 12",
+      bass_len: 1,
+      arp: "3 2 1 0 3 2 1 0",
+      drums: "khohshokkhssttTT",
+      second: "harmony",
+    },
+  },
+  form: [
+    ...repeat(4, "riff"),
+    ...repeat(8, "verse"),
+    ...repeat(3, "lift"),
+    "fill",
+    "chorus_in",
+    ...repeat(6, "chorus"),
+    "chorus_turn",
+    "twin_in",
+    ...repeat(6, "twin"),
+    "twin_turn",
+  ],
+})
 
 let LAP_TUNES = [CRUISE, SPRINT]
 mut playing = CRUISE
@@ -756,195 +1252,344 @@ let start_tune = fn (n) {
 
 # The tune's level, 1.0 while the race runs; the ending turns it down.
 mut bgm_gain = 1.0
-let bgm_vol = |v| Math.round(v * bgm_gain)
 
 let tick_bgm = fn () {
-  let tick = playing.tick
-  if bgm_frame % tick == 0 {
-    let step = bgm_frame / tick
-    let (root, tones, pickup) = playing.chords[step / BAR]
-    let slot = step % BAR
-    let note = playing.lead[step]
-    if note != nil {
-      let (f, len) = note
-      Canvas.tone(
-        f,
-        len * tick - 2,
-        vol: bgm_vol(15),
-        wave: Canvas.PULSE,
-        attack: 1,
-        decay: 2,
-        release: 4,
-        duty: Canvas.DUTY_QUARTER,
-      )
-    }
-    let iv = playing.bass[slot]
-    if iv != nil {
-      Canvas.tone(
-        hz(root + (iv < 0 ? pickup : iv)),
-        tick * playing.bass_len - 3,
-        vol: bgm_vol(18),
-        wave: Canvas.SAWTOOTH,
-        decay: 3,
-        release: 3,
-      )
-    }
-    if slot % 2 == 0 {
-      Canvas.tone(
-        hz(tones[playing.arp[slot / 2]]),
-        tick * 2 - 4,
-        vol: bgm_vol(7),
-        wave: Canvas.TRIANGLE,
-        attack: 1,
-        decay: 4,
-        release: 6,
-      )
-    }
-    cond {
-      slot == 4 ||
-        slot ==
-          12 => Canvas.tone(
-        800,
-        3,
-        vol: bgm_vol(13),
-        wave: Canvas.NOISE,
-        decay: 2,
-        release: 2,
-      ),
-      slot ==
-        14 => Canvas.tone(
-        3000,
-        3,
-        vol: bgm_vol(6),
-        wave: Canvas.NOISE,
-        release: 3,
-      ),
-      slot % playing.hat ==
-        0 => Canvas.tone(
-        3000,
-        1,
-        vol: bgm_vol(5),
-        wave: Canvas.NOISE,
-        release: 1,
-      ),
-      _ => nil,
-    }
-  }
+  play_step(
+    playing,
+    bgm_frame / playing.tick,
+    bgm_gain,
+  ) if bgm_frame % playing.tick == 0
   bgm_frame = (bgm_frame + 1) % playing.length
 }
 
 # --- ending ----------------------------------------------------------------
-# After the flag the run's music fades out, a few seconds pass, and a slow
-# theme plays once over the frozen finish; when it is done the sea takes over
-# and stays.
+# After the flag the run's music fades out while the car coasts to a stop, the
+# electric piano is built while a few seconds pass in silence, and a slow theme
+# plays once, the car driving itself off when its opening bars are done; when
+# it is over the sea takes over and stays.
 let FADE_OUT = 2.5     # seconds the run's music takes to go
-let ENDING_REST = 3.0  # seconds of silence before the theme
+let ENDING_REST = 3.0  # seconds of silence before the theme, at the least
 
-# The theme: a ballad at 75 bpm, sixteen bars that lean on I, iii, IV and a
-# suspended V, with a borrowed iv for a shadow near the end. Electric-piano
-# arpeggios in eighths, a round bass that holds each root, brushes from the
-# second half, and a lead that sings long notes. Same note-table conventions
-# as the run's tune, a bar per row.
-let END_TICK = 12  # frames per sixteenth (75 bpm)
-let END_CHORDS = [
-  (48, [60, 64, 67, 71]),  # C△7
-  (52, [64, 67, 71, 74]),  # Em7
-  (53, [65, 69, 72, 76]),  # F△7
-  (55, [67, 72, 74, 77]),  # G7sus4
-  (57, [69, 72, 76, 79]),  # Am7
-  (52, [64, 67, 71, 74]),  # Em7
-  (53, [65, 69, 72, 76]),  # F△7
-  (55, [67, 71, 74, 77]),  # G7
-  (48, [60, 64, 67, 71]),  # C△7
-  (57, [69, 72, 76, 79]),  # Am7
-  (50, [62, 65, 69, 72]),  # Dm7
-  (55, [67, 71, 74, 77]),  # G7
-  (53, [65, 68, 72, 76]),  # Fm△7, the borrowed shade
-  (52, [64, 67, 71, 74]),  # Em7
-  (55, [67, 72, 74, 77]),  # G7sus4
-  (48, [60, 64, 67, 71]),  # C△7, ringing out
-]
-let END_LEAD = [
-  [0, 0, 0, 0, 0, 0, 0, 0, 76, -1, -1, -1, 79, -1, -1, -1],
-  [83, -1, -1, -1, -1, -1, -1, -1, 81, -1, -1, -1, 79, -1, -1, -1],
-  [81, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 77, -1, 76, -1],
-  [74, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 0, 76, -1],
-  [79, -1, -1, -1, -1, -1, 81, -1, 84, -1, -1, -1, -1, -1, -1, -1],
-  [83, -1, -1, -1, -1, -1, -1, -1, 79, -1, -1, -1, -1, -1, -1, -1],
-  [81, -1, -1, -1, -1, -1, 77, -1, 76, -1, -1, -1, -1, -1, -1, -1],
-  [74, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-  [72, -1, -1, -1, -1, -1, -1, -1, 0, 0, 0, 0, 76, -1, 79, -1],
-  [84, -1, -1, -1, -1, -1, -1, -1, 83, -1, -1, -1, 81, -1, -1, -1],
-  [77, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 81, -1, -1, -1],
-  [79, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 0, 77, -1],
-  [80, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 77, -1, 76, -1],
-  [74, -1, -1, -1, -1, -1, -1, -1, 76, -1, -1, -1, 79, -1, -1, -1],
-  [81, -1, -1, -1, -1, -1, -1, -1, 74, -1, -1, -1, -1, -1, -1, -1],
-  [76, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
-].flat_map(|bar| bar)
-# Keys: chord tones on every eighth, rising and settling back.
-let END_ARP = [0, 1, 2, 3, 2, 1, 2, 3]
-let END_LENGTH = END_TICK * BAR * END_CHORDS.size()
-let end_lead_notes = onsets(END_LEAD)
-mut end_frame = 0
+# The theme's electric piano is sampled rather than an APU channel: a chord
+# needs several notes at once, and a struck tine needs more than a pulse.
+# Each pitch the theme uses is synthesised once into a WAV and kept as a
+# `Sound`, which is a voice of its own, so a chord is several of them.
+let EP_RATE = 22050
 
-let tick_ending_song = fn () {
-  if end_frame % END_TICK == 0 {
-    let step = end_frame / END_TICK
-    let (root, tones) = END_CHORDS[step / BAR]
-    let slot = step % BAR
-    let note = end_lead_notes[step]
-    if note != nil {
-      let (f, len) = note
-      Canvas.tone(
-        f,
-        len * END_TICK - 4,
-        vol: 10,
-        wave: Canvas.PULSE,
-        attack: 4,
-        decay: 6,
-        release: 12,
-        duty: Canvas.DUTY_HALF,
-      )
+# `v` as `n` little-endian bytes.
+let le_bytes = fn (v, n) {
+  iota(n).map(|i| v >> 8 * i & 255)
+}
+
+# 16-bit mono samples as a WAV file's bytes.
+let pcm_wav = fn (samples) {
+  let n = samples.size()
+  mut out = [
+    ...le_bytes(0x46464952, 4),  # RIFF
+    ...le_bytes(36 + n * 2, 4),
+    ...le_bytes(0x45564157, 4),  # WAVE
+    ...le_bytes(0x20746d66, 4),  # fmt
+    ...le_bytes(16, 4),
+    ...le_bytes(1, 2),  # PCM
+    ...le_bytes(1, 2),  # mono
+    ...le_bytes(EP_RATE, 4),
+    ...le_bytes(EP_RATE * 2, 4),
+    ...le_bytes(2, 2),
+    ...le_bytes(16, 2),
+    ...le_bytes(0x61746164, 4),  # data
+    ...le_bytes(n * 2, 4),
+  ]
+  for s in samples {
+    let v = s & 0xFFFF
+    out.push(v & 255)
+    out.push(v >> 8)
+  }
+  String.from_bytes(out)
+}
+
+# Three seconds of one electric-piano note. Two FM pairs a hair apart give
+# the slow chorus of a real instrument; the modulation index starts high and
+# falls away after the hammer (the bark, scaled by `bark`) to a warm sine;
+# a bell partial rings for an instant above notes low enough to keep it
+# under the Nyquist limit; higher keys die away sooner.
+let ep_samples = fn (pitch, bark) {
+  let freq = 440.0 * Math.exp((pitch - 69) / 12.0 * Math.log(2.0))
+  let n = EP_RATE * 3
+  let w = 2.0 * Math.pi * freq / EP_RATE
+  let w2 = w * 1.0025
+  let decay = 1.1 * Math.sqrt(freq / 261.63)
+  let ping = freq * 15 < EP_RATE / 2 ? 0.08 : 0.0
+  mut out = repeat(n, 0)
+  for i in 0..n {
+    let t = i.to_float() / EP_RATE
+    let index = bark * (1.4 * Math.exp(-t * 6.0) + 0.25)
+    let tines = Math.sin(w * i + index * Math.sin(w * i)) +
+      Math.sin(w2 * i + index * Math.sin(w2 * i))
+    let bell = Math.sin(w * 15.0 * i) * Math.exp(-t * 35.0) * ping
+    let env = Math.exp(-t * decay) *
+      Math.min(1.0, i / 40.0) *
+      Math.min(1.0, (n - i) / 800.0)
+    out[i] = ((tines * 0.5 + bell) * env * 7000).to_long()
+  }
+  out
+}
+
+# A chord as the piano plays it: rootless (the bass has the root), close,
+# from the E below middle C upward.
+let voicing = fn (name) {
+  let (symbol, _) = name.split_once("/") ?? (name, nil)
+  let (pc, quality) = split_root(symbol.to_string())
+  mut out = []
+  mut lowest = 52
+  for i in chord_shape(quality).filter(|i| i % 12 != 0) {
+    mut p = 48 + Math.wrap(pc + i, 12)
+    while p < lowest {
+      p += 12
     }
-    # The bass holds the root for three beats and touches the fifth on the
-    # fourth.
-    if slot == 0 {
-      Canvas.tone(
-        hz(root),
-        END_TICK * 11,
-        vol: 14,
-        wave: Canvas.TRIANGLE,
-        attack: 2,
-        release: 10,
-      )
-    } else if slot == 12 {
-      Canvas.tone(
-        hz(root + 7),
-        END_TICK * 3,
-        vol: 11,
-        wave: Canvas.TRIANGLE,
-        attack: 2,
-        release: 8,
-      )
-    }
-    if slot % 2 == 0 {
-      Canvas.tone(
-        hz(tones[END_ARP[slot / 2]]),
-        END_TICK * 2 - 6,
-        vol: 6,
-        wave: Canvas.PULSE2,
-        decay: 8,
-        release: 8,
-        duty: Canvas.DUTY_QUARTER,
-      )
-    }
-    if step >= BAR * 8 && (slot == 4 || slot == 12) {
-      Canvas.tone(4000, 2, vol: 3, wave: Canvas.NOISE, release: 4)  # brushes
+    out.push(p)
+    lowest = p + 1
+  }
+  out
+}
+
+# The theme from its score, expanded per sixteenth like a lap's tune. The
+# melody is the piano's top line; a groove's `comp` strikes the voiced chord
+# (`x`), one of its notes by index (a digit), or nothing (`.`); `bass` and
+# `drums` read as in `tune`. `voices` lists every (key, pitch, bark) the
+# theme needs sampled: the melody's notes brighter than the chords'.
+let ballad = fn (score) {
+  let bars = score.chords.size()
+  let steps = bars * BAR
+  if score.melody.size() != bars || score.form.size() != bars {
+    throw {
+      kind: "ValueError",
+      message: "{bars} bars of chords, {score.melody.size()} of melody, {score.form.size()} of form",
     }
   }
-  end_frame += 1
+  let changes = score.chords.map(fn (text) {
+    text.split_whitespace().map(fn (symbol) {
+      let (low, _) = chord(symbol.to_string())
+      (low, voicing(symbol.to_string()))
+    })
+  })
+  let melody = onsets(score.melody.flat_map(fn (bar_text) {
+    tokens(bar_text, BAR).map(note_number)
+  }))
+  mut grooves = {}
+  for groove_name, g in score.grooves {
+    let hits = g.drums.iter().map(|ch| ch.to_string()).collect()
+    if hits.size() != BAR || hits.any(|ch| ch != "." && !score.kit.has(ch)) {
+      throw {
+        kind: "ValueError",
+        message: "bad drums in {groove_name}: {g.drums}",
+      }
+    }
+    grooves[groove_name] = {
+      comp: tokens(g.comp, BAR),
+      bass: tokens(g.bass, BAR),
+      drums: hits,
+    }
+  }
+
+  mut comp = repeat(steps, nil)
+  mut bass = repeat(steps, nil)
+  mut drums = repeat(steps, nil)
+  mut wanted = {}
+  for step in 0..steps {
+    let bar = step / BAR
+    let slot = step % BAR
+    let g = grooves[score.form[bar]]
+    let here = changes[bar]
+    let (root, notes) = here[here.size() == 2 && slot >= BAR / 2 ? 1 : 0]
+
+    let strike = g.comp[slot]
+    if strike != "." {
+      let struck = strike == "x"
+        ? notes
+        : [notes[Math.min(to_long(strike), notes.size() - 1)]]
+      comp[step] = struck
+      for p in struck {
+        wanted["c{p}"] = {pitch: p, bark: 0.8}
+      }
+    }
+    let bass_hit = g.bass[slot]
+    if bass_hit != "." {
+      let (next_root, _) = changes[(bar + 1) % bars][0]
+      mut run = 1
+      while slot + run < BAR && g.bass[slot + run] == "." {
+        run += 1
+      }
+      bass[step] = (
+        bass_hit == ">" ? next_root - 1 : root + to_long(bass_hit),
+        run,
+      )
+    }
+    drums[step] = g.drums[slot] if g.drums[slot] != "."
+    let sung = melody[step]
+    if sung != nil {
+      let (sung_pitch, _) = sung
+      wanted["m{sung_pitch}"] = {pitch: sung_pitch, bark: 1.3}
+    }
+  }
+  {
+    tick: score.tick,
+    length: score.tick * steps,
+    kit: score.kit,
+    melody: melody,
+    comp: comp,
+    bass: bass,
+    drums: drums,
+    voices: wanted
+      .keys()
+      .sorted()
+      .map(|key| (key, wanted[key].pitch, wanted[key].bark)),
+  }
 }
+
+# The theme: a slow ballad at 69 bpm in Eb, after the late-night coast-road
+# ballads of the 16-bit arcades. Four bars of the piano alone drifting down
+# IV-iii-ii-V through a C7 that leans into the ii: a high Bb, the note the
+# verse will open on, sighing down by step to the C7's third, resolving up
+# to the ii where the opening figure answers on its extensions, the last
+# bar's suspension resolving with the chord; a verse whose phrases sing a long note and sigh
+# down from it,
+# turning through G7 to the relative minor and a borrowed Abm6; a second
+# half that climbs to its high Eb and settles through ii-V; and two bars
+# ringing out on Ebmaj9. A round triangle bass walks under it, brushes on
+# two and four from the verse, a ride joins at the peak.
+let BALLAD = ballad({
+  tick: 13,
+  kit: {
+    b: {freq: 4000, dur: 2, vol: 4, release: 5},
+    r: {freq: 6000, dur: 1, vol: 3, release: 10},
+  },
+  chords: [
+    "Abmaj9",
+    "Gm7 C7",
+    "Fm9",
+    "Bb7sus4 Bb7",
+    "Ebmaj9",
+    "Gm7 Cm9",
+    "Abmaj9",
+    "Fm9 Bb7sus4",
+    "Ebmaj9",
+    "Dm7b5 G7",
+    "Cm9",
+    "Abm6 Db9",
+    "Abmaj9",
+    "Bb/Ab",
+    "Gm7",
+    "Cm9",
+    "Fm9",
+    "Bb7sus4 Bb7",
+    "Abmaj9",
+    "Ebmaj9",
+  ],
+  melody: [
+    ". . . .  . . Bb5 G5  Bb5 - - -  - - - -",
+    "- - - -  G5 - F5 -  E5 - - -  - - - -",
+    "F5 - - -  - - Bb5 G5  Eb5 - - -  - - - -",
+    "- - - -  . . Eb5 F5  D5 - - -  F5 - G5 -",
+    "Bb5 - - -  - - - -  - - G5 -  - - F5 -",
+    "G5 - - -  - - - -  Eb5 - - -  D5 - Eb5 -",
+    "C6 - - -  - - - -  Bb5 - - -  G5 - - -",
+    "Ab5 - - -  - - G5 -  F5 - - -  Eb5 - - -",
+    "D5 - - -  - - Eb5 -  F5 - - -  G5 - Bb5 -",
+    "C6 - - -  - - Ab5 -  B5 - - -  - - G5 -",
+    "G5 - - -  - - - -  - - Eb5 -  D5 - C5 -",
+    "Eb5 - - -  - - - -  F5 - - -  Eb5 - - -",
+    "Eb6 - - -  - - C6 -  - - - -  Bb5 - - -",
+    "D6 - - -  - - - -  C6 - - -  Bb5 - - -",
+    "Bb5 - - -  - - D6 -  - - - -  C6 - Bb5 -",
+    "G5 - - -  - - - -  - - Bb5 -  G5 - Eb5 -",
+    "F5 - - -  - - - -  Ab5 - - -  G5 - - -",
+    "Eb5 - - -  - - F5 -  D5 - - -  - - . .",
+    "Eb5 - - -  - - - -  G5 - - -  Bb5 - - -",
+    "G5 - - -  - - - -  - - - -  - - - -",
+  ],
+  grooves: {
+    alone: {
+      comp: "x . . .  . . . .  . . 3 .  . . . .",
+      bass: "0 . . .  . . . .  . . . .  7 . . .",
+      drums: "....r.......r...",
+    },
+    alone_two: {
+      comp: "x . . .  . . . .  x . . .  . . . .",
+      bass: "0 . . .  . . . .  0 . . .  . . > .",
+      drums: "....r.......r...",
+    },
+    verse: {
+      comp: "x . . .  . . . .  . . x .  . . 3 .",
+      bass: "0 . . .  . . . .  . . 7 .  . . > .",
+      drums: "....b.......b...",
+    },
+    peak: {
+      comp: "x . . 3  . . 2 .  x . . 3  . . 2 .",
+      bass: "0 . . .  . . 7 .  0 . . .  12 . > .",
+      drums: "....b...r...b.r.",
+    },
+    settle: {
+      comp: "x . . .  . . 3 .  . . 2 .  . . 1 .",
+      bass: "0 . . .  . . . .  . . . .  . . . .",
+      drums: "................",
+    },
+    ring: {
+      comp: "x . . .  . . . .  . . . .  . . . .",
+      bass: "0 . . .  . . . .  . . . .  . . . .",
+      drums: "................",
+    },
+  },
+  form: [
+    "alone",
+    "alone_two",
+    "alone",
+    "alone_two",
+    ...repeat(8, "verse"),
+    ...repeat(6, "peak"),
+    "settle",
+    "ring",
+  ],
+})
+
+# Loudness against the APU: a `Sound` plays at `vol`% of its own level, a
+# tone at a fifth of that.
+let EP_MELODY_VOL = 46
+let EP_COMP_VOL = 26
+let BALLAD_BASS = voice(Canvas.TRIANGLE, 34, 3, 0, 14)
+
+mut ep_voices = {}
+let ep_ready = fn () {
+  ep_voices.size() == BALLAD.voices.size()
+}
+
+# Sample the next note the theme still lacks. One a frame, so the frozen
+# finish stays responsive while the piano is built.
+let build_ep_voice = fn () {
+  let missing = BALLAD.voices.find(|v| !ep_voices.has(v[0]))
+  if missing != nil {
+    let (key, pitch, bark) = missing
+    ep_voices[key] = Canvas.Sound.new(pcm_wav(ep_samples(pitch, bark)))
+  }
+}
+
+let play_ballad_step = fn (b, step) {
+  let sung = b.melody[step]
+  if sung != nil {
+    let (sung_pitch, _) = sung
+    ep_voices["m{sung_pitch}"].play(EP_MELODY_VOL)
+  }
+  for p in b.comp[step] ?? [] {
+    ep_voices["c{p}"].play(EP_COMP_VOL)
+  }
+  let low = b.bass[step]
+  if low != nil {
+    let (low_pitch, low_len) = low
+    sound(BALLAD_BASS, low_pitch, low_len * b.tick - 3, 1.0)
+  }
+  let hit = b.drums[step]
+  drum(b.kit[hit], 1.0) if hit != nil
+}
+mut end_frame = 0
 
 # The sea: one wave at a time on the noise channel, a hiss that swells, breaks
 # and draws back over four or five seconds, then a pause of its own choosing.
@@ -979,10 +1624,15 @@ let tick_ending = fn (dt) {
     } else {
       Canvas.music_volume(Math.round(MUSIC_VOL * gain))
     }
-  } else if ending_t < FADE_OUT + ENDING_REST {
+  } else if ending_t < FADE_OUT + ENDING_REST || !ep_ready() {
     Canvas.music_stop() if MUSIC_FILE != nil && Canvas.music_playing()
-  } else if end_frame < END_LENGTH {
-    tick_ending_song()
+    build_ep_voice()
+  } else if end_frame < BALLAD.length {
+    play_ballad_step(
+      BALLAD,
+      end_frame / BALLAD.tick,
+    ) if end_frame % BALLAD.tick == 0
+    end_frame += 1
   } else {
     tick_waves()
   }
@@ -998,14 +1648,66 @@ let tick_count_in = fn (dt) {
     counted = n
     Canvas.tone(
       n > 0 ? 660 : 990,
-      n > 0 ? 8 : 20,
+      n > 0 ? 8 : GO_BEEP,
       vol: 25,
       wave: Canvas.PULSE,
       decay: 2,
       release: 4,
     )
   }
-  tick_bgm() if MUSIC_FILE == nil
+}
+
+# After the flag the car drives itself. It holds the nearest lane and coasts
+# to a stop while the race music fades, stands there through the theme's
+# opening bars, then cruises off at an easy pace, moving over for anything
+# slower ahead.
+let THEME_INTRO = 4 * BAR * BALLAD.tick  # frames of the theme spent standing
+let CRUISE_SPEED = MAX_SPEED * 0.45
+let LANE_CENTRES = iota(LANES).map(|i| (2.0 * i + 1.0) / LANES - 1.0)
+mut auto_lane = 0.0
+
+# Whether a car slower than the cruise is in `lane` within `reach` segments
+# of segment `from`.
+let lane_blocked = fn (lane, from, reach) {
+  let n = segments.size()
+  for i in 0..reach {
+    for car in segments[(from + i) % n].cars {
+      return true if car.speed < CRUISE_SPEED &&
+        Math.abs(car.offset - lane) < 0.5
+    }
+  }
+  false
+}
+
+# The keys the car presses for itself this step.
+let autopilot = fn () {
+  let segment = find_segment(position + PLAYER_Z)
+  let here = segment.index
+  let rolling = end_frame >= THEME_INTRO
+  if !rolling {
+    auto_lane = LANE_CENTRES.min_by(|lane| Math.abs(lane - player_x))
+  } else if lane_blocked(auto_lane, here, 12) {
+    let free = LANE_CENTRES
+      .filter(|lane| !lane_blocked(lane, here, 12))
+      .sorted_by(|lane| Math.abs(lane - player_x))
+    auto_lane = free[0] if !free.empty()
+  }
+  # Steer against the bend's pull, and back toward the lane in proportion to
+  # how far off it the car is, so the wheel moves smoothly. The picture turns
+  # only once the steering is clearly one way and straightens only once it is
+  # clearly not, so it does not flicker between the two through a bend.
+  let pull = speed / MAX_SPEED * segment.curve * CENTRIFUGAL
+  steer = Math.clamp(pull + 3.0 * (auto_lane - player_x), -1.0, 1.0)
+  lean = cond {
+    steer > 0.35 => 1.0,
+    steer < -0.35 => -1.0,
+    Math.abs(steer) < 0.2 => 0.0,
+    _ => lean,
+  }
+  key_faster = rolling &&
+    speed < CRUISE_SPEED &&
+    !lane_blocked(auto_lane, here, 3)
+  key_slower = false
 }
 
 # Back to the line for another two laps. The traffic is scattered again (a
@@ -1034,7 +1736,8 @@ let restart_race = fn () {
   wave_wait = 0
   bgm_gain = 1.0
   start_tune(1)
-  Canvas.music(art(MUSIC_FILE), vol: MUSIC_VOL) if MUSIC_FILE != nil
+  music_on = false
+  music_wait = MUSIC_DELAY
 }
 
 # --- update ----------------------------------------------------------------
@@ -1136,11 +1839,7 @@ let update = fn (dt) {
 
   position = increase(position, dt * speed, track_length)
 
-  if key_left {
-    player_x -= dx
-  } else if key_right {
-    player_x += dx
-  }
+  player_x += dx * steer
   player_x -= dx * speed_percent * player_segment.curve * CENTRIFUGAL
 
   if key_faster {
@@ -1168,7 +1867,8 @@ let update = fn (dt) {
   }
 
   for car in player_segment.cars {
-    if speed > car.speed && overlap(player_x, PLAYER_W, car.offset, car.w, 0.8) {
+    if speed > car.speed &&
+        overlap(player_x, PLAYER_W, car.offset, car.w, 0.8) {
       speed = car.speed * (car.speed / speed)
       position = increase(car.z, -PLAYER_Z, track_length)
       break
@@ -1186,8 +1886,9 @@ let update = fn (dt) {
   tree_offset = increase(tree_offset, TREE_SPEED * scroll, 1.0)
 
   # The lap turns over where the player crosses the line, not where `position`
-  # wraps — the camera is PLAYER_Z behind the car.
-  if position > PLAYER_Z {
+  # wraps — the camera is PLAYER_Z behind the car. After the flag the clock
+  # and the laps stand still however far the car cruises.
+  if !finished && position > PLAYER_Z {
     if current_lap_time > 0.0 && start_position < PLAYER_Z {
       last_lap_time = current_lap_time
       current_lap_time = 0.0
@@ -1206,7 +1907,16 @@ let update = fn (dt) {
     }
   }
 
-  tick_bgm() if MUSIC_FILE == nil
+  # The music waits a second past the GO beep, so the beep is never cut
+  # short by the tune's downbeat (which strikes every channel).
+  if !music_on {
+    music_wait -= 1
+    if music_wait <= 0 {
+      music_on = true
+      Canvas.music(art(MUSIC_FILE), vol: MUSIC_VOL) if MUSIC_FILE != nil
+    }
+  }
+  tick_bgm() if MUSIC_FILE == nil && music_on && !finished
 }
 
 # --- render ----------------------------------------------------------------
@@ -1222,7 +1932,9 @@ let fog_i = iota(DRAW_DISTANCE).map(|n| Math.round(exponential_fog(
 # each segment lerped toward the fog colour. Both are integer arithmetic —
 # floats would need a Math.round per channel to reach the Long the primitive
 # takes, and that is 3 us a call.
-mut pal = [[], []]  # by segment kind: grass, rumble, road, lane
+# By segment kind: grass, rumble, road, lane, then the rumble's outer face
+# (turned from the light).
+mut pal = [[], []]
 # Road marking colours for this frame: light r,g,b then dark r,g,b. White and
 # black would be the obvious choice and they punch a hole in a pastel scene,
 # so the pair is built out of the palette instead — the light half is mostly
@@ -1257,6 +1969,9 @@ let build_palette = fn (scene, blend) {
     LANE_R,
     LANE_G,
     LANE_B,
+    c(12) * 7 / 8,
+    c(13) * 7 / 8,
+    c(14) * 7 / 8,
   ]
   pal[KIND_LIGHT] = [
     c(3),
@@ -1271,6 +1986,9 @@ let build_palette = fn (scene, blend) {
     LANE_R,
     LANE_G,
     LANE_B,
+    c(15) * 7 / 8,
+    c(16) * 7 / 8,
+    c(17) * 7 / 8,
   ]
   mark_rgb = [
     (LANE_R * 4 + c(9)) / 5,
@@ -1382,6 +2100,24 @@ let draw_background = fn (id, player_y, alpha) {
 # v4 draws a translucent fog rectangle over each band; lerping the four colours
 # toward the fog colour is the same picture (the bands tile exactly, so nothing
 # is covered twice) without an alpha pass.
+# The screen row at depth `d` into a projected segment (0 at its near edge, 1
+# at its far one). Depth is linear in 1/scale, not in rows, so the two edges'
+# rows are weighted by it.
+let mark_row = fn (segment, d) {
+  let a = (1.0 - d) / segment.p1_scale
+  let b = d / segment.p2_scale
+  H2 - (a * (H2 - segment.p1_sy) + b * (H2 - segment.p2_sy)) / (a + b)
+}
+
+# A colour at `rgb[i..i+3]` faded toward this frame's fog: `f` parts of it to
+# `g` of fog, out of 256.
+let fogged = fn (rgb, i, f, g) {
+  (rgb[i] * f + fog_r * g) / 256 +
+    ((rgb[i + 1] * f + fog_g * g) / 256) * 256 +
+    ((rgb[i + 2] * f + fog_b * g) / 256) * 65536 +
+    OPAQUE
+}
+
 let draw_road = fn (base_index, base_percent, player_y) {
   let n_segments = segments.size()
   let camera_y = player_y + CAMERA_HEIGHT
@@ -1475,6 +2211,7 @@ let draw_road = fn (base_index, base_percent, player_y) {
       }
       let r1 = w1 / 6.0
       let r2 = w2 / 6.0
+      let detail = w1 > DETAIL_W
       _Canvas.rect(0, top, W, edge - top, c_grass, 1)
       _Canvas.polygon(
         [x1 - w1 - r1, edge, x1 - w1, edge, x2 - w2, top, x2 - w2 - r2, top],
@@ -1486,9 +2223,73 @@ let draw_road = fn (base_index, base_percent, player_y) {
         c_rumble,
         1,
       )
+      # A curb's outer part is its face, turned away from the light.
+      let c_face = fogged(p, 12, f, g)
+      _Canvas.polygon(
+        [
+          x1 - w1 - r1,
+          edge,
+          x1 - w1 - r1 * 0.55,
+          edge,
+          x2 - w2 - r2 * 0.55,
+          top,
+          x2 - w2 - r2,
+          top,
+        ],
+        c_face,
+        1,
+      )
+      _Canvas.polygon(
+        [
+          x1 + w1 + r1,
+          edge,
+          x1 + w1 + r1 * 0.55,
+          edge,
+          x2 + w2 + r2 * 0.55,
+          top,
+          x2 + w2 + r2,
+          top,
+        ],
+        c_face,
+        1,
+      )
       _Canvas.polygon(
         [x1 - w1, edge, x1 + w1, edge, x2 + w2, top, x2 - w2, top],
         c_road,
+        1,
+      )
+      # A solid line marks each edge of the road inside the curb, on every
+      # band like the curb itself: stopping it short of the horizon leaves its
+      # end hanging in view.
+      let c_edge = fogged(mark_rgb, 0, f, g)
+      let e1 = w1 * 0.03
+      let e2 = w2 * 0.03
+      _Canvas.polygon(
+        [
+          x1 - w1 + e1,
+          edge,
+          x1 - w1 + e1 * 2,
+          edge,
+          x2 - w2 + e2 * 2,
+          top,
+          x2 - w2 + e2,
+          top,
+        ],
+        c_edge,
+        1,
+      )
+      _Canvas.polygon(
+        [
+          x1 + w1 - e1,
+          edge,
+          x1 + w1 - e1 * 2,
+          edge,
+          x2 + w2 - e2 * 2,
+          top,
+          x2 + w2 - e2,
+          top,
+        ],
+        c_edge,
         1,
       )
       if segment.kind == KIND_LIGHT {
@@ -1500,60 +2301,91 @@ let draw_road = fn (base_index, base_percent, player_y) {
         let lw2 = w2 * 2.0 / LANES
         let l1 = w1 / 64.0  # half a lane marker, which is w/max(32, 8*lanes)
         let l2 = w2 / 64.0
+        # Up close a dash is thick paint: a slightly dimmer rim round a
+        # bright core.
+        let c_rim = detail
+          ? (p[9] * 7 / 8 * f + fog_r * g) / 256 +
+            ((p[10] * 7 / 8 * f + fog_g * g) / 256) * 256 +
+            ((p[11] * 7 / 8 * f + fog_b * g) / 256) * 65536 +
+            OPAQUE
+          : c_lane
         mut lx1 = x1 - w1 + lw1
         mut lx2 = x2 - w2 + lw2
         for _ in 1..LANES {
           _Canvas.polygon(
             [lx1 - l1, edge, lx1 + l1, edge, lx2 + l2, top, lx2 - l2, top],
-            c_lane,
+            c_rim,
             1,
           )
+          if detail {
+            let k1 = l1 * 0.55
+            let k2 = l2 * 0.55
+            _Canvas.polygon(
+              [lx1 - k1, edge, lx1 + k1, edge, lx2 + k2, top, lx2 - k2, top],
+              c_lane,
+              1,
+            )
+          }
           lx1 += lw1
           lx2 += lw2
         }
       }
-      # Road markings go on last, over the tarmac and the lane dashes both,
-      # and never wider than the road: the start line is solid white, the
-      # finish a checkered flag. The flag lays its dark squares down as one
-      # black trapezoid and overlays the light ones, so a column that rounds a
-      # hair short shows black rather than grass. Its phase flips with the
-      # segment index, making the three segments of the stripe the rows of the
-      # check.
+
+      # Road markings go on last, over everything else on the tarmac and never
+      # wider than the road. A marking is laid out in the segment's own terms:
+      # depth along it (0 at the near edge) and `u` across the road (-1..1). A
+      # depth becomes a row through `mark_row`, clamped to the rows this band
+      # owns, and a row a point on the band's edges, which run straight from
+      # the row `x1`/`w1` belong to up to `sy2` — so a band a fraction of a
+      # segment deep lands where the ground puts it. The flag lays its dark
+      # squares down as one trapezoid and overlays the light ones, so a column
+      # that rounds a hair short shows dark rather than grass. Its phase flips
+      # with the segment index, making the stripe's segments the rows of the
+      # check, and a white band closes it at either end.
       if segment.mark != MARK_NONE {
-        let c_light = (mark_rgb[0] * f + fog_r * g) / 256 +
-          ((mark_rgb[1] * f + fog_g * g) / 256) * 256 +
-          ((mark_rgb[2] * f + fog_b * g) / 256) * 65536 +
-          OPAQUE
-        if segment.mark == MARK_START {
-          _Canvas.polygon(
-            [x1 - w1, edge, x1 + w1, edge, x2 + w2, top, x2 - w2, top],
-            c_light,
-            1,
-          )
-        } else {
-          let c_dark = (mark_rgb[3] * f + fog_r * g) / 256 +
-            ((mark_rgb[4] * f + fog_g * g) / 256) * 256 +
-            ((mark_rgb[5] * f + fog_b * g) / 256) * 65536 +
-            OPAQUE
-          _Canvas.polygon(
-            [x1 - w1, edge, x1 + w1, edge, x2 + w2, top, x2 - w2, top],
-            c_dark,
-            1,
-          )
-          let cw1 = w1 * 2.0 / CHECKER_COLS
-          let cw2 = w2 * 2.0 / CHECKER_COLS
-          let bx1 = x1 - w1
-          let bx2 = x2 - w2
-          for i in segment.index % 2..CHECKER_COLS by 2 {
-            let a1 = bx1 + cw1 * i
-            let a2 = bx2 + cw2 * i
+        let band_bottom = edge * 1.0
+        let band_top = top * 1.0
+        let near_row = edge == H && sy1 > edge ? band_bottom : sy1
+        let far_row = sy2
+        let (near_x, near_w) = (x1, w1)
+        let paint = fn (d0, d1, u0, u1, color) {
+          let ya = Math.min(band_bottom, mark_row(segment, d0))
+          let yb = Math.max(band_top, mark_row(segment, d1))
+          if yb < ya {
+            let span = Math.max(0.001, near_row - far_row)
+            let ka = (near_row - ya) / span
+            let kb = (near_row - yb) / span
+            let xa = near_x + (x2 - near_x) * ka
+            let wa = near_w + (w2 - near_w) * ka
+            let xb = near_x + (x2 - near_x) * kb
+            let wb = near_w + (w2 - near_w) * kb
             _Canvas.polygon(
-              [a1, edge, a1 + cw1, edge, a2 + cw2, top, a2, top],
-              c_light,
+              [
+                xa + u0 * wa,
+                ya,
+                xa + u1 * wa,
+                ya,
+                xb + u1 * wb,
+                yb,
+                xb + u0 * wb,
+                yb,
+              ],
+              color,
               1,
             )
           }
         }
+        let c_light = fogged(mark_rgb, 0, f, g)
+        let c_dark = fogged(mark_rgb, 3, f, g)
+        paint(0.0, 1.0, -1.0, 1.0, c_dark)
+        let cw = 2.0 / CHECKER_COLS
+        for col in segment.index % 2..CHECKER_COLS by 2 {
+          paint(0.0, 1.0, -1.0 + cw * col, -1.0 + cw * (col + 1), c_light)
+        }
+        let before = segments[(segment.index + n_segments - 1) % n_segments]
+        let after = segments[(segment.index + 1) % n_segments]
+        paint(0.0, 0.1, -1.0, 1.0, c_light) if before.mark != segment.mark
+        paint(0.9, 1.0, -1.0, 1.0, c_light) if after.mark != segment.mark
       }
       edge = top
     }
@@ -1621,9 +2453,10 @@ let draw_player = fn (speed_percent, dest_y, steer, updown) {
 
 # --- HUD -------------------------------------------------------------------
 # The original puts these in the page around the canvas; here they go on a
-# strip across the top, in the built-in 8x8 font.
-let HUD_BG = 28 + 22 * 256 + 40 * 65536 + OPAQUE
-let HUD_FG = 252 + 252 * 256 + 248 * 65536 + OPAQUE
+# strip across the top, in the built-in 8x8 font: cream on a deep beige, the
+# same beige the results panel is washed in.
+let HUD_BG = 138 + 106 * 256 + 72 * 65536 + OPAQUE
+let HUD_FG = 255 + 248 * 256 + 232 * 65536 + OPAQUE
 
 let format_time = fn (t) {
   let minutes = Math.floor(t / 60.0)
@@ -1641,11 +2474,11 @@ let draw_hud = fn () {
   Canvas.text("BEST {format_time(fast_lap_time)}", 480, 3, HUD_FG)
 }
 
-let BANNER_SHADOW = Canvas.rgba(128, 124, 136)
-let PANEL_BG = Canvas.rgba(28, 22, 40, 168)
+let BANNER_SHADOW = Canvas.rgba(70, 48, 30)
+let PANEL_BG = Canvas.rgba(124, 94, 62, 184)
 
-# One line of banner text, centred, with a one-block grey drop shadow so it
-# reads against either the sky or the tarmac.
+# One line of banner text, centred, with a one-block dark brown drop shadow so
+# it reads against either the sky or the tarmac.
 let draw_banner = fn (s, y, scale) {
   let x = (W - Canvas.text_width(s, scale)) / 2
   Canvas.text(s, x + scale, y + scale, BANNER_SHADOW, scale)
@@ -1696,8 +2529,8 @@ let draw_count_in = fn () {
   draw_banner(n > 0 ? "{n}" : "GO!", (H - 8 * 6) / 2, 6)
 }
 
-# The results, on a panel because the road behind them is a still image and
-# every one of these lines has to be readable at a glance.
+# The results, on a panel so every one of these lines reads at a glance over
+# the road, standing or cruising.
 let draw_finish = fn () {
   draw_panel(120, 150, 400, 160, 12)
   draw_banner("FINISH", 170, 5)
@@ -1788,11 +2621,12 @@ let render = fn () {
       # it, so the car's own projection is the constant H — v4 interpolates its
       # camera-space height to arrive at the same number, then four pixels up
       # so the bottom of the car clears the edge of the framebuffer.
-      draw_player(finished ? 0.0 : speed / MAX_SPEED, H - 4.0, cond {
-        key_left => -1.0,
-        key_right => 1.0,
-        _ => 0.0,
-      }, player_segment.p2_wy - player_segment.p1_wy)
+      draw_player(
+        speed / MAX_SPEED,
+        H - 4.0,
+        lean,
+        player_segment.p2_wy - player_segment.p1_wy,
+      )
     }
     mi -= 1
     mi = n_segments - 1 if mi < 0
@@ -1828,6 +2662,8 @@ let frame = fn () {
   let held = _Canvas.buttons()
   key_left = held & Canvas.LEFT != 0
   key_right = held & Canvas.RIGHT != 0
+  steer = key_left ? -1.0 : key_right ? 1.0 : 0.0
+  lean = steer
   key_faster = held & Canvas.UP != 0
   key_slower = held & Canvas.DOWN != 0
 
@@ -1835,11 +2671,13 @@ let frame = fn () {
   while gdt > STEP {
     gdt -= STEP
     # Exactly one of these runs, and each keeps the sound going: the world is
-    # frozen both before the drop and after the flag.
+    # frozen before the drop, and after the flag the car drives itself.
     if count_in > 0.0 {
       tick_count_in(STEP)
     } else if finished {
       tick_ending(STEP)
+      autopilot()
+      update(STEP)
     } else {
       count_in -= STEP if count_in > -GO_HOLD
       update(STEP)

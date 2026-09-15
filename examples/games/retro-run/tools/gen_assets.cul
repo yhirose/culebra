@@ -37,8 +37,10 @@ let COMMON = {
   BLOSSOM_D: [216, 96, 144],
   BLOSSOM_L: [248, 168, 200],
   FLOWER: [240, 64, 144],
+  CACT0: [26, 84, 68],
   CACT_D: [40, 120, 88],
   CACT_L: [104, 184, 128],
+  CACT3: [156, 212, 144],
   WOOD0: [72, 44, 32],
   WOOD1: [124, 80, 48],
   WOOD2: [180, 132, 80],
@@ -52,21 +54,36 @@ let COMMON = {
   RED0: [128, 16, 24],
   RED1: [216, 32, 40],
   RED2: [255, 104, 96],
+  SOUL0: [58, 10, 20],
+  SOUL1: [110, 20, 32],
+  SOUL2: [160, 32, 44],
+  SOUL3: [206, 70, 78],
+  SOUL4: [244, 176, 170],
   BLUE0: [16, 40, 128],
   BLUE1: [32, 88, 216],
-  BLUE2: [112, 160, 255],
+  BLUE2: [72, 128, 248],
   YELLOW0: [176, 120, 8],
   YELLOW1: [248, 200, 24],
   YELLOW2: [255, 240, 128],
-  GREEN0: [16, 96, 64],
-  GREEN1: [32, 168, 104],
-  GREEN2: [120, 224, 152],
+  GOLD2: [255, 226, 80],
+  GREEN0: [60, 124, 28],
+  GREEN1: [128, 196, 44],
+  GREEN2: [194, 234, 100],
   WHITE0: [136, 136, 152],
   WHITE1: [208, 208, 216],
   WHITE2: [248, 248, 252],
   ORANGE0: [168, 72, 8],
   ORANGE1: [240, 128, 24],
   ORANGE2: [255, 192, 96],
+  AQUA0: [36, 104, 156],
+  AQUA1: [92, 180, 228],
+  AQUA2: [168, 224, 250],
+  PINK0: [160, 40, 96],
+  PINK1: [236, 104, 160],
+  PINK2: [252, 146, 190],
+  CREAM0: [176, 150, 110],
+  CREAM1: [232, 214, 170],
+  CREAM2: [252, 244, 216],
   GLASS0: [40, 64, 104],
   GLASS1: [96, 152, 208],
   GLASS2: [200, 232, 255],
@@ -327,6 +344,23 @@ fn noise(*args) {
   h = (h ^ h >> 13) * 0xC2B2AE35 & 0xFFFFFFFF
   h = h ^ h >> 16
   h.to_float() / 4294967295.0
+}
+
+# The hash on a lattice `cell` cells apart, blended smoothly between its
+# points: blotches with soft edges rather than the lattice's squares.
+fn smooth_noise(seed, x, y, cell) {
+  let gx = x / cell.to_float()
+  let gy = y / cell.to_float()
+  let ix = Math.floor(gx)
+  let iy = Math.floor(gy)
+  let fx = gx - ix
+  let fy = gy - iy
+  let sx = fx * fx * (3 - 2 * fx)
+  let sy = fy * fy * (3 - 2 * fy)
+  let top = noise(seed, ix, iy) * (1 - sx) + noise(seed, ix + 1, iy) * sx
+  let bottom = noise(seed, ix, iy + 1) * (1 - sx) +
+    noise(seed, ix + 1, iy + 1) * sx
+  top * (1 - sy) + bottom * sy
 }
 
 # 4x4 ordered-dither thresholds, so a blend between two keys reads as a
@@ -792,80 +826,175 @@ fn draw_hills(c) {
   c.dither(0, SAND_TOP, LW, 1, "SAND", "FOAM")
 }
 
-# A palm: a bending ringed trunk under a crown of drooping fronds. `hgt` sets
-# the size; everything else is proportional, so the tree line and the big
-# roadside sprite are the same routine.
-fn palm(c, bx, by, hgt, seed, tones) {
+# A palm: a bending ringed trunk under a crown of arching fronds. `hgt` sets
+# the size; everything else is proportional, so the tree line, the big
+# roadside sprite and a billboard's icon are the same routine. `reach` is a
+# frond's length against the height, `lean` how far over the crown sits (a
+# little either way, by the seed, unless given), and `squash` narrows the
+# crown's spread for a sprite with no room for all of it.
+#
+# `bark` (dark, mid, light) shades the trunk as a cylinder of overlapping leaf
+# scars; without it the rings are flat bands, which is all the distant tree
+# line has room for.
+fn palm(
+  c,
+  bx,
+  by,
+  hgt,
+  seed,
+  tones,
+  bark_tones = nil,
+  lean = nil,
+  reach = 0.26,
+  squash = 1.0,
+) {
   let (trunk_d, trunk_l, leaf_d, leaf_m, leaf_l, nut) = tones
-  let lean = (noise(seed, 1) - 0.5) * 0.5
+  let tilt = lean ?? (noise(seed, 1) - 0.5) * 0.5
   let tw = Math.max(1.0, hgt * 0.04)
   let th = hgt * 0.72
   let band = Math.max(2, (hgt * 0.03).to_long())
   for i in 0..=th.to_long() {
     let t = i / th
-    let x = bx + lean * hgt * t * t
+    let x = bx + tilt * hgt * t * t
     let half = tw * (1 - 0.4 * t)
-    let light = (i / band) % 2 == 0
-    c.rect(x - half, by - i, half * 2 + 1, 1, light ? trunk_l : trunk_d)
-    c.rect(x - half, by - i, Math.max(1.0, half * 0.7), 1, trunk_d) if light
-  }
-  let cx = bx + lean * hgt
-  let cy = by - th
-  let n = 11
-  # Lower fronds first, so the lit ones on top overlap them.
-  for i in iota(n).sorted_by(|i| -Math.abs(i - (n - 1) / 2.0)) {
-    let a = -Math.pi * (i + 0.5) / n
-    let len = hgt * (0.30 + 0.12 * noise(seed, i, 3))
-    let up = -Math.sin(a)
-    let (spine, leaf) = cond {
-      up > 0.75 => (leaf_m, leaf_l),
-      up > 0.35 => (leaf_d, leaf_m),
-      _ => (leaf_d, leaf_d),
+    if bark_tones == nil {
+      let light = (i / band) % 2 == 0
+      c.rect(x - half, by - i, half * 2 + 1, 1, light ? trunk_l : trunk_d)
+      c.rect(x - half, by - i, Math.max(1.0, half * 0.7), 1, trunk_d) if light
+      continue
     }
-    frond(c, cx, cy, a, len, spine, leaf)
+    for xx in (x - half).to_long()..=(x + half).to_long() {
+      let u = Math.clamp((xx + 0.5 - x) / half, -1.0, 1.0)
+      # Each scar's upper face catches the light and throws the band below it
+      # into shadow; a ring above eye level shows its near side higher.
+      let ring = (i - (1 - u * u) * band * 0.3) / band
+      let p = ring - Math.floor(ring)
+      let lift = cond {
+        p < 0.22 => 0.3,
+        p > 0.8 => -0.35,
+        _ => 0.0,
+      }
+      bark(c, xx, by - i, u, i, half, bark_tones, seed, false, lift)
+    }
   }
-  c.circle(cx, cy, Math.max(1.5, hgt * 0.035), leaf_d)
+  let cx = bx + tilt * hgt
+  let cy = by - th
+  let len = hgt * reach
+  # Dead fronds hang brown against the trunk, under the live crown.
   for i in 0..3 {
-    c.circle(
-      cx - hgt * 0.03 + i * hgt * 0.03,
-      cy + hgt * 0.03,
-      Math.max(1.0, hgt * 0.018),
-      nut,
+    let az = Math.pi * (0.25 + 0.25 * i) + (noise(seed, i, 6) - 0.5) * 0.5
+    frond(
+      c,
+      cx,
+      cy,
+      az,
+      -1.1,
+      len * 0.7,
+      0.2,
+      (trunk_d, trunk_d, trunk_l),
+      seed * 31 + i,
+      squash,
     )
+  }
+  # Three tiers staggered round the crown: young fronds standing up, the
+  # spreading ones, and old ones sagging beneath.
+  let tiers = [(3, 0.95, 0.6), (6, 0.55, 1.0), (6, 0.1, 0.95)]
+  mut fronds = []
+  for tier in 0..tiers.size() {
+    let (count, rise, size) = tiers[tier]
+    for i in 0..count {
+      let k = tier * 10 + i
+      fronds.push({
+        az: 2 * Math.pi * (i + 0.5 * tier + 0.35 * noise(seed, k, 2)) / count,
+        rise: rise + (noise(seed, k, 3) - 0.5) * 0.3,
+        len: len * size * (0.85 + 0.3 * noise(seed, k, 4)),
+        sag: 0.35 + 0.2 * tier + 0.25 * noise(seed, k, 5),
+        seed: seed * 31 + 7 + k,
+      })
+    }
+  }
+  # The far side first, in shade; the nuts hang over it, then the near side.
+  mut nuts = false
+  for f in fronds.sorted_by(|g| Math.sin(g.az)) {
+    let depth = Math.sin(f.az)
+    if depth >= 0 && !nuts {
+      crown_nuts(c, cx, cy, hgt, leaf_d, nut, trunk_l)
+      nuts = true
+    }
+    let shades = cond {
+      depth < -0.35 => (leaf_d, leaf_d, leaf_m),
+      depth < 0.35 && f.rise < 0.7 => (leaf_m, leaf_d, leaf_m),
+      _ => (leaf_l, leaf_m, leaf_l),
+    }
+    frond(c, cx, cy, f.az, f.rise, f.len, f.sag, shades, f.seed, squash)
   }
 }
 
-# One frond: a spine that leaves the crown at angle `a` and bends down under
-# its own weight, with leaflets off both sides swept toward the tip.
-fn frond(c, cx, cy, a, len, spine, leaf) {
-  let steps = Math.max(6, (len * 1.5).to_long())
-  let droop = 0.75 * (1 - 0.7 * Math.abs(Math.sin(a)))
-  let at = fn (u) {
-    (
-      cx + Math.cos(a) * len * u,
-      cy + Math.sin(a) * len * u * 0.6 + droop * u * u * len,
-    )
+# The boss the fronds leave from, and a cluster of nuts hanging under it.
+fn crown_nuts(c, cx, cy, hgt, boss, nut, shine) {
+  c.circle(cx, cy, Math.max(1.5, hgt * 0.03), boss)
+  let r = Math.max(1.0, hgt * 0.016)
+  for i in 0..4 {
+    let nx = cx + (i - 1.5) * r * 1.5
+    let ny = cy + r * (1.2 + 0.6 * (i % 2))
+    c.circle(nx, ny, r, nut)
+    c.set(nx - r * 0.4, ny - r * 0.4, shine) if r >= 2
   }
-  let leaf_w = Math.max(1.0, len * 0.012)
-  let every = Math.max(1, steps / 20)
+}
+
+# One frond: a midrib leaving the crown heading `az` round it (0 is to the
+# right, a quarter turn is toward the viewer) at `rise` above level, arching
+# down by `sag` under its own weight. Leaflets hang off both sides, drooping,
+# longest a third of the way out and ragged where a few have gone; on a big
+# frond every other one is left out, so each reads on its own. `shades` is
+# the midrib, the leaflets under it, and those over it that catch the light;
+# `squash` narrows the frond's sideways reach.
+fn frond(c, cx, cy, az, rise, len, sag, shades, seed, squash = 1.0) {
+  let (rib, under, over) = shades
+  let hx = Math.cos(az) * Math.cos(rise) * squash
+  let vy = -Math.sin(rise)
+  let steps = Math.max(8, (len * 1.2).to_long())
+  let at = |p| (cx + hx * len * p, cy + (vy * p + sag * p * p) * len)
+  # The side under the midrib first, so the lit one lies over it.
+  for upper in [false, true] {
+    for j in 0..=steps {
+      let u = j.to_float() / steps
+      continue if u < 0.06 || noise(seed, j, upper ? 1 : 0, 2) < 0.08
+      continue if len > 30 && j % 2 == 1
+      let dy = vy + 2 * sag * u
+      let d = Math.max(0.001, Math.sqrt(hx * hx + dy * dy))
+      let tx = hx / d
+      let ty = dy / d
+      let s = (tx >= 0) == upper ? -1 : 1
+      let px = -ty * s
+      let py = tx * s
+      let size = len *
+        0.18 *
+        Math.sin(Math.pi * Math.exp(0.7 * Math.log(u))) *
+        (0.75 + 0.35 * noise(seed, j, s, 1))
+      continue if size < 1
+      let (fx, fy) = at(u)
+      let mx = fx + (px * 0.75 + tx * 0.35) * size * 0.55
+      let my = fy + (py * 0.75 + ty * 0.35 + 0.2) * size * 0.55
+      let ex = mx + (px * 0.45 + tx * 0.3) * size * 0.5
+      let ey = my + (py * 0.45 + ty * 0.3 + 0.55) * size * 0.5
+      plot_line(c, fx, fy, mx, my, upper ? over : under)
+      plot_line(c, mx, my, ex, ey, upper ? over : under)
+    }
+  }
   for j in 0..=steps {
-    let t = j.to_float() / steps
-    let (fx, fy) = at(t)
-    let (gx, gy) = at(Math.min(1.0, t + 0.05))
-    let thick = Math.max(1.0, (1 - t) * len * 0.07)
-    c.circle(fx, fy, thick / 2, spine)
-    continue if t < 0.12 || j % every != 0
-    # Leaflets: a little toward the tip, a little down.
-    let dx = gx - fx
-    let dy = gy - fy
-    let d = Math.max(0.001, Math.sqrt(dx * dx + dy * dy))
-    let (tx, ty) = (dx / d, dy / d)
-    let ll = len * 0.16 * (1 - t * 0.5)
-    let side = (j / every) % 2 == 0 ? 1 : -1
-    let ox = -ty * side + tx * 0.5
-    let oy = tx * side + ty * 0.5 + 0.45
-    let od = Math.sqrt(ox * ox + oy * oy)
-    c.line(fx, fy, fx + ox / od * ll, fy + oy / od * ll, leaf, leaf_w)
+    let (fx, fy) = at(j.to_float() / steps)
+    c.set(fx, fy, rib)
+  }
+}
+
+# A one-cell line stepped cell by cell, for strokes too many and too small to
+# go through the Canvas rasteriser.
+fn plot_line(c, x0, y0, x1, y1, key) {
+  let n = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0)).to_long() + 1
+  for i in 0..=n {
+    let t = i.to_float() / n
+    c.set(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, key)
   }
 }
 
@@ -959,36 +1088,61 @@ fn ground_shadow(c, cx, cy, rx, ry) {
   }
 }
 
-# A tapering trunk with its shaded side and a highlight streak.
-fn trunk(c, x0, y0, x1, y1, w0, w1, tones) {
+# One cell of a round stem lit from the upper left. `u` runs across the stem
+# (-1 at the left edge, 1 at the right), `v` along it in cells, `half` is the
+# half-width in cells. The cross-section gives a Lambert term, the shadow edge
+# gets a little bounce light back, `lift` brightens or darkens on top (a
+# palm's rings), and bark adds furrows: two-cell columns broken into staggered
+# runs, so they read as bark rather than stripes.
+fn bark(c, x, y, u, v, half, tones, seed, fissures = true, lift = 0.0) {
   let (d, m, l) = tones
-  c.poly(
-    [
-      x0 - w0 / 2.0,
-      y0,
-      x0 + w0 / 2.0,
-      y0,
-      x1 + w1 / 2.0,
-      y1,
-      x1 - w1 / 2.0,
-      y1,
-    ],
-    m,
+  mut light = -0.6 * u + 0.8 * Math.sqrt(Math.max(0.0, 1 - u * u)) + lift
+  light += 0.18 if u > 0.75
+  if fissures {
+    let col = ((u + 1) * half / 2.0).to_long()
+    let run = ((v + noise(seed, col, 23) * 9) / 9).to_long()
+    light -= 0.32 if noise(seed, col, run, 22) < 0.35
+  }
+  cond {
+    light > 0.9 => c.set(x, y, l),
+    light > 0.7 => c.mix(x, y, m, l, (light - 0.7) / 0.2),
+    light > 0.45 => c.set(x, y, m),
+    light > 0.2 => c.mix(x, y, d, m, (light - 0.2) / 0.25),
+    _ => c.set(x, y, d),
+  }
+}
+
+# A tapering stem from (x0, y0) to (x1, y1), shaded as a cylinder. The far
+# end is rounded, so a limb that carries on at an angle joins without a notch.
+fn trunk(c, x0, y0, x1, y1, w0, w1, tones, fissures = true) {
+  let len = Math.max(
+    0.001,
+    Math.sqrt((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0)),
   )
-  c.poly(
-    [
-      x0 - w0 / 2.0,
-      y0,
-      x0 - w0 / 2.0 + w0 * 0.35,
-      y0,
-      x1 - w1 / 2.0 + w1 * 0.35,
-      y1,
-      x1 - w1 / 2.0,
-      y1,
-    ],
-    d,
-  )
-  c.line(x0 + w0 * 0.2, y0, x1 + w1 * 0.2, y1, l, Math.max(1.0, w0 * 0.12))
+  let tx = (x1 - x0) / len
+  let ty = (y1 - y0) / len
+  # The normal that points right on screen, so -u is always the lit side.
+  let flip = ty > 0 || ty == 0 && tx < 0
+  let nx = flip ? ty : -ty
+  let ny = flip ? -tx : tx
+  let r = Math.max(w0, w1) / 2.0 + 1
+  let seed = noise(x0, y0, x1, y1) * 100000
+  for yy in (Math.min(y0, y1) - r).to_long()..=(Math.max(y0, y1) + r).to_long() {
+    for xx in (Math.min(x0, x1) - r).to_long()..=(Math.max(x0, x1) + r).to_long() {
+      let px = xx + 0.5 - x0
+      let py = yy + 0.5 - y0
+      let along = px * tx + py * ty
+      continue if along < 0
+      let half = Math.max(
+        0.6,
+        (w0 + (w1 - w0) * Math.min(1.0, along / len)) / 2.0,
+      )
+      let d = px * nx + py * ny
+      let past = Math.max(0.0, along - len)
+      continue if d * d + past * past > half * half
+      bark(c, xx, yy, d / half, along, half, tones, seed, fissures)
+    }
+  }
 }
 
 # Fine foliage: a scatter of small leaf strokes over an ellipse, dense in the
@@ -1144,15 +1298,11 @@ fn draw_dead_tree(c, w, h, seed) {
   fn branch(x, y, angle, len, thick, depth, s) {
     let x1 = x + Math.cos(angle) * len
     let y1 = y + Math.sin(angle) * len
-    c.line(x, y, x1, y1, "WOOD0", thick)
-    c.line(
-      x + 1,
-      y,
-      x1 + 1,
-      y1,
-      "WOOD1",
-      Math.max(1.0, thick * 0.35),
-    ) if thick >= 3
+    if thick >= 2.5 {
+      trunk(c, x, y, x1, y1, thick, thick * 0.6, WOOD)
+    } else {
+      c.line(x, y, x1, y1, "WOOD0", thick)
+    }
     return nil if depth == 0
     let n = depth >= 3 ? 3 : 2
     for i in 0..n {
@@ -1183,18 +1333,25 @@ fn draw_dead_tree(c, w, h, seed) {
   ground_shadow(c, w * 0.5, h * 0.98, w * 0.3, h * 0.02)
 }
 
+# The roadside palm leans its crown to the middle of the sprite, so no frond
+# is cut off at either edge.
 fn draw_palm_sprite(c, w, h, seed) {
+  let foot = w * 0.36
   palm(
     c,
-    w * 0.46,
+    foot,
     h * 0.97,
     h * 0.96,
     seed,
     ("WOOD0", "WOOD2", "LEAF1", "LEAF2", "LEAF3", "WOOD1"),
+    WOOD,
+    w * 0.14 / (h * 0.96),
+    0.24,
+    0.85,
   )
   # A tuft of grass at the foot.
   for i in 0..7 {
-    let gx = w * 0.46 + (i - 3) * w * 0.05
+    let gx = foot + (i - 3) * w * 0.05
     c.line(
       gx,
       h * 0.98,
@@ -1205,7 +1362,7 @@ fn draw_palm_sprite(c, w, h, seed) {
     )
   }
   c.outline()
-  ground_shadow(c, w * 0.46, h * 0.98, w * 0.3, h * 0.012)
+  ground_shadow(c, foot, h * 0.98, w * 0.3, h * 0.012)
 }
 
 # A shrub: stems fanning up from the foot under a mound of fine leaves.
@@ -1245,9 +1402,13 @@ fn draw_bush(c, w, h, seed, flowers = false) {
   ground_shadow(c, w * 0.5, h * 0.94, w * 0.44, h * 0.05)
 }
 
-# A prickly pear: a cluster of pads growing off each other, spines in rows,
-# fruit on the top pads.
+# A prickly pear: pads growing off each other, each a thick disc turned a
+# little outward and lit from the upper left, darker round its rim where it
+# stands over the pad behind. The areoles sit on a staggered lattice, each a
+# dark pit with a pale tuft and some with a spine; fruit crowd the top edges,
+# and one flower has opened.
 fn draw_cactus(c, w, h, seed) {
+  let ramp = ["CACT0", "CACT_D", "CACT_L", "CACT3"]
   let pads = [
     [0.50, 0.78, 0.17, 0.20],
     [0.32, 0.60, 0.15, 0.19],
@@ -1258,41 +1419,101 @@ fn draw_cactus(c, w, h, seed) {
     [0.30, 0.18, 0.11, 0.14],
     [0.66, 0.20, 0.11, 0.14],
   ]
+  c.rect(w * 0.47, h * 0.84, w * 0.06, h * 0.12, "WOOD1")  # the woody stem
+  c.rect(w * 0.47, h * 0.84, 1, h * 0.12, "WOOD0")
   for [px, py, rx, ry] in pads.sorted_by(|p| -p[1]) {
-    c.ellipse(w * px, h * py, w * rx, h * ry, "CACT_D")
-    c.ellipse(
-      w * px - w * rx * 0.25,
-      h * py - h * ry * 0.25,
-      w * rx * 0.62,
-      h * ry * 0.62,
-      "CACT_L",
-    )
-    c.ellipse(
-      w * px + w * rx * 0.55,
-      h * py,
-      w * rx * 0.4,
-      h * ry * 0.9,
-      "CACT_D",
-    )
-    for (sx, sy) in grid(-3..4, -3..4) {
-      let x = w * px + sx * w * rx * 0.3
-      let y = h * py + sy * h * ry * 0.3
-      c.set(x, y, "P_WHITE") if c.get(x, y) != 0 && (sx + sy) % 2 == 0
+    let ox = w * px
+    let oy = h * py
+    let ax = w * rx
+    let ay = h * ry
+    let tilt = (px - 0.5) * 0.9
+    let ca = Math.cos(tilt)
+    let sa = Math.sin(tilt)
+    let id = (px * 100 + py * 10).to_long()
+    let span = Math.max(ax, ay)
+    let xs = (ox - span).to_long()..=(ox + span).to_long()
+    let ys = (oy - span).to_long()..=(oy + span).to_long()
+    for (x, y) in grid(xs, ys) {
+      let dx = x + 0.5 - ox
+      let dy = y + 0.5 - oy
+      let nx = (dx * ca + dy * sa) / ax
+      let ny = (dy * ca - dx * sa) / ay
+      let r2 = nx * nx + ny * ny
+      continue if r2 > 1
+      # The pad's face turned back to the screen, for the light.
+      let sx = nx * ca - ny * sa
+      let sy = nx * sa + ny * ca
+      mut light = 0.58 - 0.26 * sx - 0.34 * sy + 0.14 * (1 - r2)
+      light -= 0.32 if r2 > 0.82
+      light += 0.14 * (smooth_noise(seed + id, x, y, 4) - 0.5)
+      ramp_tone(c, x, y, light, ramp)
+    }
+    for (i, j) in grid(-3..=3, -3..=3) {
+      let lx = (i + Math.wrap(j, 2) * 0.5) * ax * 0.34
+      let ly = j * ay * 0.3
+      let q = (lx / ax) * (lx / ax) + (ly / ay) * (ly / ay)
+      continue if q > 0.6
+      let pit_x = ox + lx * ca - ly * sa
+      let pit_y = oy + lx * sa + ly * ca
+      c.set(pit_x, pit_y, "CACT0")
+      c.set(pit_x - 1, pit_y - 1, "CREAM1")
+      continue if noise(seed, id, i, j) < 0.45
+      let d = Math.max(0.001, Math.sqrt(lx * lx + ly * ly))
+      let ux = q < 0.02 ? 0.0 : (lx * ca - ly * sa) / d
+      let uy = q < 0.02 ? -1.0 : (lx * sa + ly * ca) / d
+      plot_line(
+        c,
+        pit_x + ux,
+        pit_y + uy,
+        pit_x + ux * 2,
+        pit_y + uy * 2,
+        "CREAM2",
+      )
     }
   }
-  for [px, py, rx, ry] in pads.slice(6, 8) {
-    for i in 0..3 {
-      c.ellipse(
-        w * px + (i - 1) * w * rx * 0.55,
-        h * (py - ry) + 1,
-        2,
-        2.5,
-        "LAMP_R",
-      )
+  # Fruit along the top of the upper pads; on one of them, a flower.
+  for [px, py, rx, ry] in pads.filter(|p| p[1] < 0.45) {
+    let tilt = (px - 0.5) * 0.9
+    let count = py < 0.3 ? 3 : 2
+    for k in 0..count {
+      let a = -Math.pi / 2 + (k - (count - 1) / 2.0) * 0.62
+      let lx = w * rx * Math.cos(a)
+      let ly = h * ry * Math.sin(a)
+      let fx = w * px + lx * Math.cos(tilt) - ly * Math.sin(tilt)
+      let fy = h * py + lx * Math.sin(tilt) + ly * Math.cos(tilt) - 1.5
+      if px < 0.2 && k == 0 {
+        pear_flower(c, fx, fy - 1)
+      } else {
+        pear_fruit(c, fx, fy)
+      }
     }
   }
   c.outline()
   ground_shadow(c, w * 0.5, h * 0.96, w * 0.42, h * 0.05)
+}
+
+# A prickly pear's fruit: an egg lit from the upper left, a pit at its top.
+fn pear_fruit(c, fx, fy) {
+  let xs = (fx - 3).to_long()..=(fx + 3).to_long()
+  let ys = (fy - 4).to_long()..=(fy + 4).to_long()
+  for (x, y) in grid(xs, ys) {
+    let nx = (x + 0.5 - fx) / 2.4
+    let ny = (y + 0.5 - fy) / 3.4
+    let r2 = nx * nx + ny * ny
+    continue if r2 > 1
+    let light = 0.62 - 0.3 * nx - 0.3 * ny + 0.2 * (1 - r2)
+    ramp_tone(c, x, y, light, ["RED0", "PINK0", "PINK1", "PINK2"])
+  }
+  c.set(fx, fy - 3, "RED0")
+  c.set(fx - 1, fy + 1, "CREAM1")
+}
+
+# An opened flower: petals round a darker heart.
+fn pear_flower(c, fx, fy) {
+  c.circle(fx, fy, 3.2, "YELLOW0")
+  c.circle(fx - 0.4, fy - 0.4, 2.6, "YELLOW1")
+  c.circle(fx - 0.8, fy - 0.8, 1.2, "YELLOW2")
+  c.set(fx, fy, "ORANGE1")
 }
 
 # A stump: bark on the flank, rings on the cut, roots at the foot.
@@ -1300,22 +1521,13 @@ fn draw_stump(c, w, h, seed) {
   let top = h * 0.34
   let bottom = h * 0.9
   let ry = h * 0.14
-  c.poly(
-    [w * 0.22, top, w * 0.78, top, w * 0.82, bottom, w * 0.18, bottom],
-    "WOOD1",
-  )
-  for i in 0..9 {
-    let x = w * (0.2 + 0.6 * noise(seed, i)) + 2
-    c.line(
-      x,
-      top + ry,
-      x + (noise(seed, i, 2) - 0.5) * 4,
-      bottom - 2,
-      i % 3 == 0 ? "WOOD2" : "WOOD0",
-      1 + i % 2,
-    )
+  for y in top.to_long()..bottom.to_long() {
+    let half = w * (0.28 + 0.04 * (y - top) / (bottom - top))
+    for x in (w * 0.5 - half).to_long()..=(w * 0.5 + half).to_long() {
+      let u = Math.clamp((x + 0.5 - w * 0.5) / half, -1.0, 1.0)
+      bark(c, x, y, u, y, half, WOOD, seed)
+    }
   }
-  c.dither(w * 0.18, top, w * 0.14, bottom - top, "WOOD0", "WOOD1")
   for (dx, side) in [(-1, 0.18), (1, 0.82)] {
     c.poly(
       [
@@ -1354,7 +1566,11 @@ fn draw_stump(c, w, h, seed) {
 }
 
 # A boulder: an irregular silhouette split into facets (nearest of a few
-# seed points), each toned by which way it faces, with cracks between.
+# seed points). Each facet is a plane, lit by which way it faces and shading
+# across itself, darker toward the ground. Soft blotches of weathering and a
+# fine grain run over all of them; a crack opens where a facet drops away into
+# a darker one, the edge catches the light where one rises over its
+# neighbours, and a few fractures run down the face.
 fn draw_boulder(c, w, h, seed) {
   let n = 18
   let cx = w * 0.5
@@ -1368,47 +1584,57 @@ fn draw_boulder(c, w, h, seed) {
     pts.push(Math.min(ground, cy + Math.sin(a) * h * 0.46 * r))
   }
   c.poly(pts, "ROCK1")
+  # Each facet: its seed point, its light there, and how that light changes
+  # per cell across and down it.
   let seeds = iota(16 + (w / 10).to_long()).map(fn (i) {
     let qx = w * (0.05 + 0.9 * noise(seed, i, 2))
     let qy = h * (0.1 + 0.8 * noise(seed, i, 3))
-    let lit = (cy - qy) / h * 2.0 -
-      (qx - cx) / w * 1.2 +
-      (noise(seed, i, 4) - 0.5) * 0.8
-    [qx, qy, Math.clamp(Math.round(lit * 1.8 + 1.3), 0, 3)]
+    let lit = 0.5 +
+      (cy - qy) / h * 1.1 -
+      (qx - cx) / w * 0.7 +
+      (noise(seed, i, 4) - 0.5) * 0.45
+    let gx = ((noise(seed, i, 5) - 0.5) * 2.0 - 0.5) / w
+    let gy = ((noise(seed, i, 6) - 0.5) * 2.0 - 0.7) / h
+    [qx, qy, lit, gx, gy]
   })
-  let facet = fn (x, y) {
+  let facet = fn (px, py) {
     seeds
       .enumerate()
-      .min_by(|(_, s)| (s[0] - x) * (s[0] - x) + (s[1] - y) * (s[1] - y))[0]
+      .min_by(|(_, s)| (s[0] - px) * (s[0] - px) + (s[1] - py) * (s[1] - py))[0]
   }
-  let tones = ["ROCK0", "ROCK1", "ROCK2", "ROCK3"]
-  c.recolor(["ROCK1"], fn (x, y, _) {
-    let f = facet(x, y)
-    let tone = seeds[f][2]
-    let right = facet(x + 1, y)
-    let below = facet(x, y + 1)
-    # A crack shows where a facet meets a darker neighbour; a lit edge where
-    # it meets a lighter one.
-    cond {
-      right != f && seeds[right][2] < tone => "ROCK0",
-      below != f && seeds[below][2] < tone => "ROCK0",
-      right != f && seeds[right][2] > tone => tones[Math.min(3, tone + 1)],
-      _ => tones[tone],
+  let ramp = ["ROCK0", "ROCK1", "ROCK2", "ROCK3"]
+  let solid = grid(0..w, 0..h).filter(|(sx, sy)| c.get(sx, sy) != 0).collect()
+  for (x, y) in solid {
+    let here = seeds[facet(x, y)]
+    let drop = Math.min(seeds[facet(x + 1, y)][2], seeds[facet(x, y + 1)][2]) -
+      here[2]
+    if drop < -0.15 {
+      c.set(x, y, "ROCK0")
+      continue
     }
-  })
-  # Weathering: each facet darkens toward its lower edge, blotches of the
-  # next tone down mottle the surface, and a few grains catch the light.
-  c.recolor(["ROCK1", "ROCK2", "ROCK3"], fn (x, y, v) {
-    let i = tones.index_of(KEYS[v])
-    let s = seeds[facet(x, y)]
-    let local = Math.clamp((y - s[1]) / (h * 0.22), 0.0, 1.0)
-    cond {
-      noise(seed, x, y, 5) < 0.05 => tones[Math.min(3, i + 1)],
-      noise(seed, x / 5, y / 4, 8) < 0.28 => tones[i - 1],
-      local > 0.4 && noise(seed, x, y, 6) < (local - 0.4) * 1.2 => tones[i - 1],
-      _ => nil,
+    let ridge = Math.min(seeds[facet(x - 1, y)][2], seeds[facet(x, y - 1)][2]) -
+      here[2]
+    mut light = here[2] + (x - here[0]) * here[3] + (y - here[1]) * here[4]
+    light -= Math.max(0.0, (y - cy) / (ground - cy)) * 0.3
+    light += 0.18 * (smooth_noise(seed, x, y, 7) - 0.5)
+    light += 0.1 * (smooth_noise(seed + 1, x, y, 2.5) - 0.5)
+    light += 0.2 if ridge < -0.15 || c.get(x, y - 1) == 0
+    let grain = noise(seed, x, y, 5)
+    light += 0.25 if grain < 0.04
+    light -= 0.3 if grain > 0.955
+    ramp_tone(c, x, y, light, ramp)
+  }
+  for crack in 0..2 + w / 70 {
+    mut fx = w * (0.3 + 0.4 * noise(seed, crack, 11))
+    mut fy = h * (0.25 + 0.25 * noise(seed, crack, 12))
+    for k in 0..(h * (0.12 + 0.18 * noise(seed, crack, 13))).to_long() {
+      break if c.get(fx, fy + 1) == 0
+      c.set(fx, fy, "ROCK0")
+      c.set(fx + 1, fy, "ROCK2") if noise(seed, crack, k, 14) < 0.5
+      fx += (noise(seed, crack, k, 15) - 0.45) * 1.8
+      fy += 1
     }
-  })
+  }
   c.outline()
   ground_shadow(c, cx, ground, w * 0.46, h * 0.045)
 }
@@ -1456,17 +1682,23 @@ fn draw_column(c, w, h, seed) {
 # the built-in font at the largest scale that fits; an icon takes one end.
 fn fit_scale(lines, w, h) {
   mut s = 4
-  while s > 1 && lines.any(|(t, _)| Canvas.text_width(t, s) > w || lines.size() * 10 * s > h) {
+  while s > 1 &&
+      lines.any(|(
+        t,
+        _,
+      )| Canvas.text_width(t, s) > w || lines.size() * 10 * s > h) {
     s -= 1
   }
   s
 }
 
-# Lines of text stacked and centred in (x, y, w, h).
+# Lines of text stacked and centred in (x, y, w, h). A capital inks the top
+# seven of the font's eight rows and the shadow falls a scaled cell under it,
+# so the block is centred on what shows rather than on the line spacing.
 fn caption(c, x, y, w, h, lines, shadow = nil) {
   let s = fit_scale(lines, w, h)
-  let total = lines.size() * 10 * s
-  mut ty = y + (h - total) / 2.0
+  let ink = (lines.size() - 1) * 10 * s + 7 * s + (shadow != nil ? s : 0)
+  mut ty = Math.round(y + (h - ink) / 2.0)
   for (t, key) in lines {
     let tx = x + (w - Canvas.text_width(t, s)) / 2.0
     c.text(t, tx + s, ty + s, shadow, s) if shadow != nil
@@ -1556,7 +1788,10 @@ let ICONS = {
       y + h * 0.98,
       h * 0.95,
       7,
-      ("P_BROWN", "P_YELLOW", "P_GREEN", "P_GREEN", "P_WHITE", "P_BROWN"),
+      ("P_BROWN", "P_YELLOW", "LEAF1", "P_GREEN", "LEAF3", "P_BROWN"),
+      nil,
+      0.0,
+      0.42,
     )
   },
   bottle: fn (c, x, y, w, h) {
@@ -1679,42 +1914,169 @@ let POSTERS = [
   },
 ]
 
-# A sign panel in a metal frame on two posts, with lamps over the top.
+# The shaded and lit tones of each poster ground, for lighting the panel.
+let PANEL_TONES = {
+  P_WHITE: ("WHITE1", "WHITE2"),
+  P_NAVY: ("INK", "BLUE0"),
+  P_YELLOW: ("YELLOW0", "YELLOW2"),
+  P_RED: ("RED0", "RED2"),
+  P_CYAN: ("GLASS1", "GLASS2"),
+  P_ORANGE: ("ORANGE0", "ORANGE2"),
+}
+let STEEL = ("TYRE0", "POST", "WHITE0")
+
+# A thin line that only fills empty cells, so it passes behind what is there.
+fn line_behind(c, x0, y0, x1, y1, key) {
+  let n = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0)).to_long() + 1
+  for i in 0..=n {
+    let x = x0 + (x1 - x0) * i / n
+    let y = y0 + (y1 - y0) * i / n
+    c.set(x, y, key) if c.get(x, y) == 0
+  }
+}
+
+# A sign panel in a bevelled metal frame on two steel posts with concrete
+# footings and a catwalk, two hooded lamps over the top. The poster is lit
+# after it is drawn: the frame's lip shades its top edge, the lamps throw
+# pools of light below them, a gloss streak crosses it, and it dims toward
+# the bottom. Only cells still showing the poster's ground are relit, so the
+# lettering and the icon stay crisp.
 fn draw_billboard(c, w, h, seed, design) {
   let post_w = Math.max(3, (w * 0.05).to_long())
+  let panel_x = w * 0.03
+  let panel_w = w * 0.94
   let panel_y = h * 0.06
   let panel_h = h * 0.6
-  for px in [w * 0.2, w * 0.8 - post_w] {
-    c.rect(px, panel_y + panel_h - 2, post_w, h - panel_y - panel_h + 2, "POST")
-    c.rect(
-      px + post_w - 1,
-      panel_y + panel_h - 2,
-      1,
-      h - panel_y - panel_h + 2,
-      "INK",
-    )
-    c.rect(px - post_w, h * 0.97, post_w * 3, h * 0.03, "POST")
+  let foot = h * 0.94
+  let post_xs = [w * 0.2, w * 0.8 - post_w]
+  for px in post_xs {
+    let half = post_w / 2.0
+    for y in (panel_y + panel_h - 2).to_long()..foot.to_long() {
+      for x in px.to_long()..(px + post_w).to_long() {
+        bark(c, x, y, (x + 0.5 - px - half) / half, y, half, STEEL, seed, false)
+      }
+    }
+    # A concrete footing: lit top, shaded right face.
+    let fx = px - post_w * 0.6
+    let fw = post_w * 2.2
+    c.rect(fx, foot, fw, h - foot, "ROCK2")
+    c.rect(fx, foot, fw, 1, "ROCK3")
+    c.rect(fx + fw * 0.7, foot + 1, fw * 0.3, h - foot, "ROCK1")
   }
-  c.rect(w * 0.03, panel_y, w * 0.94, panel_h, "FRAME")
-  c.rect(w * 0.03, panel_y + panel_h - 2, w * 0.94, 2, "POST")
-  c.rect(w * 0.03, panel_y, 2, panel_h, "P_WHITE")
-  for lx in [w * 0.3, w * 0.7] {
-    c.rect(lx - 1, 0, 2, panel_y + 1, "POST")
-    c.rect(lx - w * 0.04, 0, w * 0.08, Math.max(2.0, h * 0.03), "LAMP_W")
-  }
+
+  # The frame: brushed metal, light along the top and left, dark along the
+  # bottom and right, with rivets round the border.
+  c.vgrad(
+    panel_x,
+    panel_y,
+    panel_w,
+    panel_h,
+    [[0.0, "WHITE1"], [0.25, "FRAME"], [0.85, "FRAME"], [1.0, "WHITE0"]],
+  )
+  c.rect(panel_x, panel_y, panel_w, 1, "WHITE2")
+  c.rect(panel_x, panel_y, 1, panel_h, "WHITE2")
+  c.rect(panel_x + panel_w - 1, panel_y, 1, panel_h, "WHITE0")
+  c.rect(panel_x, panel_y + panel_h - 2, panel_w, 2, "POST")
+  # The catwalk under the panel.
+  let walk_y = panel_y + panel_h
+  c.rect(w * 0.1, walk_y, w * 0.8, 1, "WHITE0")
+  c.rect(w * 0.1, walk_y + 1, w * 0.8, 1, "POST")
+
   let inset = Math.max(3.0, w * 0.03)
+  let x0 = panel_x + inset
+  let y0 = panel_y + inset
+  let pw = panel_w - inset * 2
+  let ph = panel_h - inset * 2 - 2
+  let rivet_y = [panel_y + inset / 2, panel_y + panel_h - 2 - inset / 2]
+  mut rx = panel_x + inset / 2
+  while rx < panel_x + panel_w - 1 {
+    for ry in rivet_y {
+      c.set(rx, ry, "WHITE0")
+      c.set(rx - 1, ry - 1, "WHITE2")
+    }
+    rx += Math.max(6.0, panel_w / 12)
+  }
   poster(
     c,
-    w * 0.03 + inset,
-    panel_y + inset,
-    w * 0.94 - inset * 2,
-    panel_h - inset * 2 - 2,
+    x0,
+    y0,
+    pw,
+    ph,
     design.bg,
     design.lines,
     ICONS[design.icon],
     design.get("shadow", nil),
   )
+
+  let lamp_xs = [w * 0.3, w * 0.7]
+  let bg = KEY_ID[design.bg]
+  let (shade, lit) = PANEL_TONES[design.bg]
+  let xs = x0.to_long()..(x0 + pw).to_long()
+  let ys = y0.to_long()..(y0 + ph).to_long()
+  for (x, y) in grid(xs, ys) {
+    continue if c.get(x, y) != bg
+    let fy = (y - y0) / ph
+    let fx = (x - x0) / pw
+    mut light = 0.0
+    for lx in lamp_xs {
+      let dx = (x - lx) / (pw * 0.2)
+      let dy = fy / 0.7
+      light += Math.max(0.0, 1 - dx * dx - dy * dy) * 0.45
+    }
+    let streak = fx - (1 - fy) * 0.25
+    light += 0.55 if Math.abs(streak - 0.55) < 0.035 ||
+      Math.abs(streak - 0.63) < 0.012
+    light -= Math.max(0.0, fy - 0.7) * 1.2
+    light = -1.0 if y - y0 < 1
+    light = Math.min(light, -0.5) if y - y0 < 2 || x - x0 < 1
+    # Three steps — none, a checker, solid — read as halftone; a finer ramp
+    # breaks up into stray dots at this size.
+    let step = cond {
+      Math.abs(light) > 0.75 => 1.0,
+      Math.abs(light) > 0.25 => 0.5,
+      _ => 0.0,
+    }
+    c.mix(x, y, design.bg, light > 0 ? lit : shade, step)
+  }
+  # The recess: shadow inside the top and left of the frame, a lit lip along
+  # the bottom and right.
+  c.rect(x0 - 1, y0 - 1, pw + 2, 1, "WHITE0")
+  c.rect(x0 - 1, y0 - 1, 1, ph + 2, "WHITE0")
+  c.rect(x0 - 1, y0 + ph, pw + 2, 1, "WHITE2")
+  c.rect(x0 + pw, y0 - 1, 1, ph + 2, "WHITE2")
+
+  # Lamps: a stem up from behind the frame and a hood with its lens lit.
+  let hood_w = Math.max(5.0, w * 0.1)
+  let hood_h = Math.max(3.0, panel_y - 1)
+  for lx in lamp_xs {
+    c.rect(lx - 1, hood_h - 1, 2, panel_y - hood_h + 2, "POST")
+    c.poly(
+      [
+        lx - hood_w * 0.3,
+        0,
+        lx + hood_w * 0.3,
+        0,
+        lx + hood_w * 0.5,
+        hood_h - 1,
+        lx - hood_w * 0.5,
+        hood_h - 1,
+      ],
+      "POST",
+    )
+    c.rect(lx - hood_w * 0.3, 0, hood_w * 0.3, 1, "WHITE0")
+    c.rect(lx - hood_w * 0.5 + 1, hood_h - 1, hood_w - 2, 1, "LAMP_W")
+  }
   c.outline()
+
+  # Cross-bracing between the posts, behind them, and the sign's shadow.
+  let (a, b) = (post_xs[0] + post_w + 1, post_xs[1] - 2)
+  let top = walk_y + 3
+  let mid = (top + foot) / 2
+  line_behind(c, a, top, b, mid, "POST")
+  line_behind(c, b, top, a, mid, "POST")
+  line_behind(c, a, mid, b, foot - 1, "POST")
+  line_behind(c, b, mid, a, foot - 1, "POST")
+  ground_shadow(c, w * 0.5, h - 1, w * 0.42, Math.max(1.5, h * 0.02))
 }
 
 # --- vehicles ----------------------------------------------------------------
@@ -1763,9 +2125,9 @@ fn profile(points, y) {
 # it tucks in it falls into shadow (the sill), and across each row the flank
 # turns away toward the dark tone. The first `top_light` rows lift toward the
 # light tone regardless (a deck or roof seen flat on). The brightest points
-# of the shoulder turn specular, and a reflection streak slides down and out
-# across the lower body, the way sky reads on a curved panel.
-fn shell(c, cx, points, tones, top_light) {
+# of the shoulder turn toward `shine`, and a reflection streak slides down and
+# out across the lower body, the way sky reads on a curved panel.
+fn shell(c, cx, points, tones, top_light, shine = "SHINE") {
   let (d, m, l) = tones
   let y0 = points[0][0].to_long()
   let y1 = points[points.size() - 1][0].to_long()
@@ -1787,7 +2149,7 @@ fn shell(c, cx, points, tones, top_light) {
       mut light = 0.5 + facing + flat - under - u * u * u * 0.8
       light += 0.45 if y > mid && Math.abs(Math.abs(x - cx) - streak) < 1.5
       cond {
-        light > 1.05 => c.mix(x, y, l, "SHINE", (light - 1.05) / 0.3),
+        light > 1.05 => c.mix(x, y, l, shine, (light - 1.05) / 0.3),
         light > 0.72 => c.mix(x, y, m, l, (light - 0.72) / 0.33),
         light < 0.4 => c.mix(x, y, d, m, (light - 0.1) / 0.3),
         _ => c.set(x, y, m),
@@ -1835,15 +2197,20 @@ fn wrap_lamps(c, cx, body, y, lamp_h, lw) {
   }
 }
 
-# Two riders in an open cabin: seats, shoulders, heads with hair.
-fn riders(c, cx, top, spacing) {
-  for (
-    dx,
-    hair,
-    shirt,
-  ) in [(-spacing, "HAIR_BROWN", "SHIRT_A"), (spacing, "HAIR_BLOND", "SHIRT_B")] {
-    let x = cx + dx
-    c.rect(x - 6, top + 7, 12, 6, "TYRE1")   # seat back
+# Two riders in an open cabin: seats, shoulders, heads with hair. `crew` is
+# the (hair, shirt) of the left rider and of the right.
+fn riders(
+  c,
+  cx,
+  top,
+  spacing,
+  seat = "TYRE1",
+  crew = [("HAIR_BROWN", "SHIRT_A"), ("HAIR_BLOND", "SHIRT_B")],
+) {
+  for (i, look) in crew.enumerate() {
+    let (hair, shirt) = look
+    let x = cx + (i == 0 ? -spacing : spacing)
+    c.rect(x - 6, top + 7, 12, 6, seat)      # seat back
     c.rect(x - 5, top + 5, 10, 4, shirt)     # shoulders
     c.circle(x, top + 3, 3.4, "SKIN")        # head
     c.ellipse(x, top + 1.5, 3.6, 2.2, hair)  # hair
@@ -1852,343 +2219,947 @@ fn riders(c, cx, top, spacing) {
   }
 }
 
-# The player's car, after the mid-engined coupés of the early nineties: low
-# and wide, a slim glass canopy over a broad tail, a lamp bar the width of
-# the car under a lip spoiler, a black lower bumper. The roof is off, so the
-# two riders sit up through the canopy. `hill` pitches the car nose-up for
-# the uphill variant, as the camera behind it then sees it: the engine lid, a
-# top surface, tips toward the camera and grows by three times `hill` (a
-# trapezoid, its far edge the narrow one), while the tail face tips away and
-# loses `hill` from between the lamps and half of `hill` from each of the lamp
-# bar and the bumper.
+# A glass-coated paint over a body profile. The colour's own light depends on
+# how the surface faces: up toward the sky on the deck, turning away at the
+# flanks, in its own shadow low down. The clear coat mirrors the scene
+# sharply: sky down to a crisp bright line where the horizon lies across the
+# panel, bending down toward the hips, the dark road below it, and a glint on
+# each hip where it turns to the light. `ramp` runs dark to light, and only a
+# narrow middle between two of its tones is dithered, so the coat reads as
+# smooth bands rather than a mesh.
+fn glass_coat(c, cx, body, top_rows, ramp) {
+  let y0 = body[0][0].to_long()
+  let y1 = body[body.size() - 1][0].to_long()
+  let horizon = y0 + top_rows + 2
+  for y in y0..=y1 {
+    let half = profile(body, y)
+    let spread = profile(body, y + 1) - profile(body, y - 1)
+    let flat = y < y0 + top_rows ? 1.0 - (y - y0).to_float() / top_rows : 0.0
+    let up = Math.clamp(spread * 0.25 + flat * 0.8, -0.6, 1.0)
+    for x in (cx - half).to_long()..=(cx + half).to_long() {
+      let u = (x + 0.5 - cx) / Math.max(1.0, half)
+      let side = Math.abs(u)
+      let edge = horizon + side * side * 5
+      mut light = 0.42 + 0.3 * up - 0.45 * side * side * side
+      light += cond {
+        y < edge - 1 => 0.3 - 0.05 * (edge - y),
+        y < edge + 1 => 0.5,
+        _ => -0.08 - 0.15 * (y - edge) / Math.max(1.0, y1 - edge),
+      }
+      let near = y >= edge - 4 && y < edge + 1
+      light += 0.5 if near && Math.abs(u + 0.55) < 0.07
+      light += 0.35 if near && Math.abs(u - 0.62) < 0.05
+      let t = Math.clamp(light, 0.0, 0.999) * (ramp.size() - 1)
+      let i = t.to_long()
+      let f = t - i
+      cond {
+        f < 0.35 => c.set(x, y, ramp[i]),
+        f > 0.65 => c.set(x, y, ramp[i + 1]),
+        _ => c.mix(x, y, ramp[i], ramp[i + 1], 0.5),
+      }
+    }
+  }
+}
+
+# A round tail lamp in a dark bezel: a red lens, a lit ring inside it, a pale
+# centre, and a clear bar running out from it toward the flank (`out` is -1
+# for the left lamp, 1 for the right).
+fn round_lamp(c, lx, ly, r, out) {
+  let reach = (r * 2.4).to_long()
+  for i in 0..reach {
+    let bx = lx + out * (r + i)
+    c.set(bx, ly - 1, "CHROME")
+    c.set(bx, ly, i < reach - 2 ? "WHITE1" : "WHITE0")
+  }
+  c.circle(lx, ly, r + 0.7, "SOUL0")
+  let span = (r + 1).to_long()
+  for (dx, dy) in grid(-span..=span, -span..=span) {
+    let d = Math.sqrt((dx * dx + dy * dy).to_float())
+    continue if d > r
+    c.set(
+      lx + dx,
+      ly + dy,
+      Math.abs(d - r * 0.62) < 0.55 ? "LAMP_RL" : "LAMP_R",
+    )
+  }
+  c.rect(lx - 1, ly - 1, 2, 2, "WHITE0")
+  c.set(lx - 1, ly - 1, "WHITE1")
+  c.set(lx - r * 0.5, ly - r * 0.6, "LAMP_W")
+}
+
+# The player's car, after today's small Japanese roadster: open, with two
+# roll hoops behind the seats and the riders' heads above them, a short deck
+# over wide rounded hips, round tail lamps each with a clear bar running out
+# toward the flank, a plate low in a recess, a black diffuser with twin pipes
+# and an aerial. The paint is a deep red under a glass coat that mirrors the
+# sky. `hill` pitches the car nose-up for the uphill variant, as the camera
+# behind it then sees it: the deck, a top surface, grows by twice `hill`, and
+# the tail face below it gives up part of that between the lamps and the
+# plate.
 fn draw_sports_car(c, w, h, steer, hill) {
   let cx = w / 2.0
   let floor = h - 1
-  let top = 3
-  let deck = 17
-  let lid = 3 + 3 * hill
-  let bumper = 8 - hill / 2
-  wheels(c, w, floor, 13, 15, 0)
+  let top = 2
+  let deck = 14
+  let lid = 3 + 2 * hill
+  let lamp_y = deck + lid + 3 - hill / 2
+  let plate_y = floor - 10 + hill / 4
+  wheels(c, w, floor, 12, 14, 2)
+  # The hips swell out quickly from the deck and ease into their full width,
+  # so a long deck (climbing) still reads as a full body rather than a waist;
+  # they round off at the sill, and stop a cell short of the sprite's edge so
+  # the outline runs down the sides too. The deck's far edge sets the width of
+  # everything standing on it.
   let body = [
-    [deck, w * 0.40],
-    [deck + lid * 2 / 3, w * 0.47],
-    [deck + lid + 3, w * 0.5],
-    [floor - 8, w * 0.5],
-    [floor - 4, w * 0.48],
-    [floor - 2, w * 0.44],
+    [deck, w * 0.37],
+    [deck + lid * 0.5, w * 0.45],
+    [deck + lid, w * 0.475],
+    [lamp_y + 4, w * 0.485],
+    [floor - 8, w * 0.485],
+    [floor - 4, w * 0.46],
+    [floor - 2, w * 0.4],
   ]
-  shell(c, cx, body, ("RED0", "RED1", "RED2"), 3)
-  # The lip spoiler along the deck's trailing edge, the lamp bar under it.
-  c.rect(cx - w * 0.42, deck - 1, w * 0.84, 2, "RED0")
-  c.rect(cx - w * 0.40, deck - 2, w * 0.80, 1, "RED2")
-  # Vents across the lid, only once there is a lid to see them on.
-  for y in deck + 3..deck + lid - 3 by 4 {
-    let half = profile(body, y) * 0.6
-    c.rect(cx - half, y, half * 2, 1, "RED0")
-  }
-  let bar_y = deck + lid
-  let bar_h = 5 - hill / 2
-  let bar_half = profile(body, bar_y) - 2
-  c.rect(cx - bar_half, bar_y, bar_half * 2, bar_h, "LAMP_R")
-  c.rect(cx - bar_half + 1, bar_y, bar_half * 2 - 2, 2, "LAMP_RL")
-  for (
-    x,
-    y,
-  ) in [(cx - bar_half, bar_y), (cx + bar_half - 1, bar_y), (cx - bar_half, bar_y + bar_h - 1), (cx + bar_half - 1, bar_y + bar_h - 1)] {
-    c.set(x, y, "RED1")
-  }
-  for x in (cx - bar_half + 7).to_long()..(cx + bar_half).to_long() by 8 {
-    c.rect(x, bar_y, 1, bar_h, "INK")
-  }
-  # The gloss on the lenses: a broken white line just under their top edge.
-  for x in (cx - bar_half + 2).to_long()..(cx + bar_half - 2).to_long() {
-    c.mix(
-      x,
-      bar_y + 1,
-      "LAMP_RL",
-      "LAMP_W",
-      0.5,
-    ) if c.get(x, bar_y + 1) != KEY_ID["INK"]
-  }
-  # The black lower bumper, darkening toward the ground, with the plate and
-  # the pipes.
-  let low = floor - 1 - bumper
-  for y in low..floor - 1 {
-    let half = profile(body, y) - 1
+  let rim = profile(body, deck)
+  # The windscreen, bright glass in a black frame that rounds over its top
+  # corners and meets the deck at its width; the riders in front of it; the
+  # two hoops nearest of all, apart, with the mesh board low between them.
+  let screen = [
+    [top + 2, w * 0.2],
+    [top + 4, w * 0.27],
+    [top + 8, w * 0.32],
+    [deck - 2, rim - 1],
+  ]
+  for y in top + 2..deck - 1 {
+    let half = profile(screen, y)
     for x in (cx - half).to_long()..=(cx + half).to_long() {
-      c.mix(x, y, "TYRE1", "TYRE0", (y - low).to_float() / (floor - 1 - low))
+      if y == top + 2 ||
+          x == (cx - half).to_long() ||
+          x == (cx + half).to_long() {
+        c.set(x, y, "TYRE0")
+      } else {
+        c.mix(x, y, "GLASS1", "GLASS2", y < top + 5 ? 0.5 : 0.0)
+      }
     }
   }
-  # A chrome trim along the bumper's top edge, dithered so it reads as a line
-  # catching the light rather than a bar.
-  for x in (cx - profile(body, low) + 3).to_long()..(cx + profile(body, low) - 2).to_long() {
-    c.mix(x, low, "TYRE1", "CHROME", 0.5)
-  }
-  plate(c, cx, low + (bumper - 4) / 2, 14)
-  for ex in [cx - w * 0.3, cx + w * 0.3 - 6] {
-    c.rect(ex, floor - 4, 6, 2, "CHROME")  # exhausts
-    c.rect(ex + 1, floor - 4, 4, 1, "TYRE1")
-  }
-  # The canopy: pillars in body colour, glass between, the riders through it.
-  let canopy = [
-    [top, w * 0.2],
-    [top + 3, w * 0.3],
-    [top + 8, w * 0.35],
-    [deck, w * 0.39],
-  ]
-  shell(c, cx, canopy, ("RED0", "RED1", "RED2"), 0)
-  glass(c, cx, canopy, 2)
-  c.rect(cx - w * 0.2, top, w * 0.4, 1, "INK")  # the roof hoop
+  c.line(cx - w * 0.22, deck - 3, cx - w * 0.12, top + 3, "GLASS2")
   riders(c, cx, top, 8)
-  c.ellipse(cx - w * 0.43, top + 8, 3, 2, "RED1")  # mirrors
-  c.ellipse(cx + w * 0.43, top + 8, 3, 2, "RED1")
+  c.dither(cx - 2, top + 11, 5, deck - top - 11, "TYRE0", "TYRE1")  # the mesh board
+  for s in [-1, 1] {
+    let hx = cx + s * 8
+    c.ellipse(hx, top + 9, 5, 4, "TYRE0")
+    c.rect(hx - 5, top + 9, 11, deck - top - 9, "TYRE0")
+    c.rect(hx - 3, top + 6, 7, 1, "TYRE1")
+    c.ellipse(cx + s * w * 0.42, top + 9, 3, 2, "SOUL2")  # mirrors
+    c.rect(cx + s * w * 0.42 - 2, top + 10, 5, 1, "SOUL0")
+  }
+  c.rect(cx - rim, deck - 2, rim * 2 + 1, 2, "TYRE0")  # the folded top's cover
+  c.rect(cx - rim + 2, deck - 2, rim * 2 - 3, 1, "TYRE1")
+
+  glass_coat(c, cx, body, lid, ["SOUL0", "SOUL1", "SOUL2", "SOUL3", "SOUL4"])
+  c.rect(cx - w * 0.12, deck, w * 0.24, 1, "LAMP_R")  # the high brake lamp
+  # The lid's trailing edge, the badge, the lamps.
+  c.rect(cx - w * 0.2, lamp_y - 4, w * 0.4 + 1, 1, "SOUL1")
+  c.rect(cx - 2, lamp_y - 2, 5, 2, "CHROME")
+  c.set(cx, lamp_y - 1, "SOUL1")
+  let lamp_r = 3.4 - hill * 0.1
+  for s in [-1, 1] {
+    round_lamp(c, cx + s * w * 0.3, lamp_y, lamp_r, s)
+  }
+
+  # The plate in its recess, reflectors low at the corners, the diffuser and
+  # the pipes.
+  c.rect(cx - 9, plate_y - 1, 18, 6, "SOUL0")
+  plate(c, cx, plate_y, 14)
+  for s in [-1, 1] {
+    let rx = cx + s * w * 0.37
+    c.rect(rx - 2, floor - 8, 4, 2, "TYRE0")
+    c.rect(rx - 1, floor - 8, 2, 1, "LAMP_R")
+  }
+  let low = floor - 4
+  for y in low..floor - 1 {
+    let half = profile(body, y) - 2
+    c.rect(cx - half, y, half * 2 + 1, 1, y == low ? "TYRE1" : "TYRE0")
+  }
+  for ex in [cx + 6, cx + 11] {
+    c.ellipse(ex, floor - 3, 2.2, 1.6, "CHROME")
+    c.set(ex, floor - 3, "TYRE0")
+  }
   c.outline()
+  # The aerial goes on after the outline, which would thicken a single line.
+  c.line(cx + w * 0.38, deck + 1, cx + w * 0.42, 0, "TYRE1")
   c.shear(deck, -steer * 0.2) if steer != 0
   ground_shadow(c, w / 2, floor, w * 0.48, 1)
 }
 
-# Traffic: hardtops of four silhouettes, each a cabin profile over a body
-# profile. The proportions are fractions of the box, so an 80x56 coupe and
-# an 88x55 pickup share the routine.
-fn draw_hardtop(c, w, h, kind, body, seed) {
-  let (d, m, l) = body
-  let cx = w / 2.0
-  let floor = h - 1
-  let roof = (h * 0.06).to_long()
-  let deck = (h * cond {
-    kind == "beetle" => 0.46,
-    kind == "pickup" => 0.32,
-    _ => 0.42,
-  }).to_long()
-  wheels(
-    c,
-    w,
-    floor,
-    Math.max(9, (w * 0.14).to_long()),
-    (h * 0.24).to_long(),
-    1,
-  )
-  # The lower body: shoulders that swell over the wheels, tucking in at the sill.
-  let lower = match kind {
-    "sedan" => [
-      [deck, w * 0.43],
-      [deck + 3, w * 0.485],
-      [deck + 9, w * 0.495],
-      [floor - 9, w * 0.49],
-      [floor - 5, w * 0.46],
-      [floor - 2, w * 0.4],
-    ],
-    "beetle" => [
-      [deck, w * 0.36],
-      [deck + 3, w * 0.44],
-      [deck + 8, w * 0.48],
-      [floor - 9, w * 0.485],
-      [floor - 5, w * 0.45],
-      [floor - 2, w * 0.38],
-    ],
-    _ => [
-      [deck, w * 0.40],
-      [deck + 3, w * 0.47],
-      [deck + 8, w * 0.49],
-      [floor - 9, w * 0.485],
-      [floor - 5, w * 0.46],
-      [floor - 2, w * 0.4],
-    ],
+# Traffic. Each vehicle is its tail drawn square-on plus a strip of its right
+# flank, the way a car a lane over shows a little of its side: `side_face`
+# sweeps the tail's right edge back toward the horizon one tone darker.
+
+# What a colour turns into on a face turned away from the light.
+mut DARKER = {
+  SHINE: "WHITE2",
+  CHROME: "WHITE1",
+  PLATE: "WHITE1",
+  LAMP_W: "LAMP_RL",
+  LAMP_RL: "LAMP_R",
+  LAMP_R: "RED0",
+  LAMP_A: "ORANGE0",
+  GLASS2: "GLASS1",
+  GLASS1: "GLASS0",
+  TYRE1: "TYRE0",
+  GOLD2: "YELLOW1",
+  FRAME: "WHITE0",
+}
+for ramp in [["RED0", "RED1", "RED2"], ["BLUE0", "BLUE1", "BLUE2"], ["YELLOW0", "YELLOW1", "YELLOW2"], ["GREEN0", "GREEN1", "GREEN2"], ["WHITE0", "WHITE1", "WHITE2"], ["ORANGE0", "ORANGE1", "ORANGE2"], ["AQUA0", "AQUA1", "AQUA2"], ["PINK0", "PINK1", "PINK2"], ["CREAM0", "CREAM1", "CREAM2"]] {
+  for i in 1..ramp.size() {
+    DARKER[ramp[i]] = ramp[i - 1]
   }
-  # The cabin: a fastback for the coupe, a dome for the beetle, a notchback
-  # otherwise.
-  let cabin = match kind {
-    "coupe" => [
-      [roof, w * 0.2],
-      [roof + 2, w * 0.3],
-      [roof + 6, w * 0.35],
-      [deck, w * 0.41],
-    ],
-    "beetle" => [
-      [roof, w * 0.05],
-      [roof + 3, w * 0.22],
-      [roof + 8, w * 0.31],
-      [deck, w * 0.36],
-    ],
-    "pickup" => [
-      [roof, w * 0.22],
-      [roof + 2, w * 0.29],
-      [roof + 5, w * 0.31],
-      [deck, w * 0.32],
-    ],
-    _ => [
-      [roof, w * 0.27],
-      [roof + 2, w * 0.34],
-      [roof + 6, w * 0.37],
-      [deck, w * 0.41],
-    ],
-  }
-  shell(c, cx, cabin, body, 3)
-  glass(c, cx, cabin, kind == "beetle" ? 4 : 3)
-  shell(c, cx, lower, body, kind == "pickup" ? 2 : 4)
-  let crease = deck + (h * 0.1).to_long()
-  if kind == "pickup" {
-    # The bed: its rim, the dark inside, and a tailgate with a handle.
-    c.rect(
-      cx - profile(lower, deck + 1) + 2,
-      deck + 1,
-      profile(lower, deck + 1) * 2 - 4,
-      crease - deck - 1,
-      d,
-    )
-    c.rect(
-      cx - profile(lower, deck) + 1,
-      deck,
-      profile(lower, deck) * 2 - 2,
-      1,
-      l,
-    )
-    c.rect(cx - 4, crease + 2, 8, 2, "CHROME")
-  } else {
-    c.rect(
-      cx - profile(lower, crease) + 2,
-      crease,
-      profile(lower, crease) * 2 - 4,
-      1,
-      d,
-    )
-  }
-  c.rect(
-    cx - profile(lower, floor - 4) + 1,
-    floor - 5,
-    profile(lower, floor - 4) * 2 - 2,
-    3,
-    kind == "beetle" ? "CHROME" : d,
-  )
-  match kind {
-    "beetle" => {
-      for sx in [cx - w * 0.36, cx + w * 0.36] {
-        c.ellipse(sx, crease + 5, 3.5, 3.5, "LAMP_R")
-        c.ellipse(sx, crease + 4, 2, 1.5, "LAMP_RL")
-      }
-      for y in crease + 2..crease + 10 by 2 {
-        c.rect(cx - 9, y, 18, 1, d)  # engine-lid slats
-      }
-      plate(c, cx, floor - 10, 12)
-    },
-    "sedan" => {
-      wrap_lamps(c, cx, lower, crease + 2, 5, (w * 0.28).to_long())
-      c.rect(cx - w * 0.2, crease + 4, w * 0.4, 1, "CHROME")  # the strip that joins them
-      plate(c, cx, floor - 10, 14)
-    },
-    "pickup" => {
-      for sx in [cx - profile(lower, crease + 2) + 2, cx + profile(lower, crease + 2) - 6] {
-        c.rect(sx, crease + 1, 4, 10, "LAMP_R")
-        c.rect(sx, crease + 1, 4, 3, "LAMP_RL")
-      }
-      plate(c, cx, floor - 10, 12)
-    },
-    _ => {
-      wrap_lamps(c, cx, lower, crease + 2, 5, (w * 0.22).to_long())
-      plate(c, cx, floor - 10, 14)
-    },
-  }
-  let my = roof + (deck - roof) * 0.72
-  c.ellipse(cx - profile(cabin, my) - 3, my, 3, 1.6, m)  # mirrors
-  c.ellipse(cx + profile(cabin, my) + 3, my, 3, 1.6, m)
-  c.rect(cx + w * 0.22, floor - 2, 5, 2, "CHROME") if kind != "beetle"  # exhaust
-  c.outline()
-  ground_shadow(c, w / 2, floor, w * 0.46, 1)
 }
 
-# A box body on twin wheels — the truck, and the trailer of the semi. The
-# box carries a stripe and a name; the doors meet at a seam down the middle.
-fn draw_box_truck(c, w, h, seed, name, band) {
+# A light level 0..1 as a tone of `ramp` (dark to light): solid tones with a
+# checker between each pair, so shading steps in bands rather than speckle.
+fn ramp_tone(c, x, y, light, ramp) {
+  let band = (Math.clamp(light, 0.0, 0.999) * (ramp.size() * 2 - 1)).to_long()
+  if band % 2 == 0 {
+    c.set(x, y, ramp[band / 2])
+  } else {
+    c.mix(x, y, ramp[band / 2], ramp[band / 2 + 1], 0.5)
+  }
+}
+
+# Sweep column `edge` rightward `depth` cells as a receding flank: column i
+# repeats the edge a tone darker with its rows pulled toward row `hy` (by
+# `shrink` at the far end), and every `rib`th column is darker again.
+fn side_face(c, edge, depth, hy, shrink, rib = 0) {
+  for i in 1..=depth {
+    let f = 1.0 - shrink * i / depth
+    for y in 0..c.h {
+      let v = c.get(edge, hy + (y - hy) / f)
+      continue if v == 0
+      mut key = KEYS[v]
+      key = DARKER[key] if DARKER.has(key)
+      key = DARKER[key] if rib > 0 && i % rib == 0 && DARKER.has(key)
+      c.set(edge + i, y, key)
+    }
+  }
+}
+
+# A tyre seen from behind: the tread faces the camera, so it is a dark block
+# with clipped corners crossed by staggered rows of lugs.
+fn tyre(c, x, y, tw, th, lug) {
+  c.rect(x, y, tw, th, "TYRE0")
+  for ty in y + 1..y + th - 1 by 3 {
+    let shift = (ty - y) / 3 % 2 == 0 ? 0 : lug / 2 + 1
+    for tx in x + 1 - shift..x + tw - 1 by lug + 1 {
+      let a = Math.max(x + 1, tx)
+      let b = Math.min(x + tw - 1, tx + lug)
+      c.rect(a, ty, b - a, 2, "TYRE1") if b > a
+    }
+  }
+  for (
+    px,
+    py,
+  ) in [(x, y), (x + tw - 1, y), (x, y + th - 1), (x + tw - 1, y + th - 1)] {
+    c.set(px, py, 0)
+  }
+}
+
+# A chrome bar `bh` rows deep: bright along the top, the dark of the road
+# reflected across the middle, a lighter lower lip.
+fn chrome_bar(c, x, y, bw, bh) {
+  let rows = ["WHITE2", "CHROME", "WHITE1", "TYRE1", "WHITE0", "WHITE1"]
+  for i in 0..bh {
+    c.rect(x, y + i, bw, 1, rows[i * rows.size() / bh])
+  }
+}
+
+# Swap one paint for another, tone for tone, inside a box: a stripe laid over
+# shading that is already there.
+fn repaint(c, x0, y0, x1, y1, from, to) {
+  let (fd, fm, fl) = from
+  let (td, tm, tl) = to
+  let swap = [(fd, td), (fm, tm), (fl, tl)]
+  for (x, y) in grid(x0.to_long()..=x1.to_long(), y0.to_long()..=y1.to_long()) {
+    let name = KEYS[c.get(x, y)]
+    for (a, b) in swap {
+      c.set(x, y, b) if name == a
+    }
+  }
+}
+
+# An ellipsoid swelling lit from the upper left, a wing standing proud of the
+# body over a wheel, cut off flat below row `cut`.
+fn bulge(c, cx, cy, rx, ry, ramp, cut) {
+  let xs = (cx - rx).to_long()..=(cx + rx).to_long()
+  for (x, y) in grid(xs, (cy - ry).to_long()..=cut) {
+    let nx = (x - cx).to_float() / rx
+    let ny = (y - cy).to_float() / ry
+    let r2 = nx * nx + ny * ny
+    continue if r2 > 1
+    let facing = -0.4 * nx - 0.5 * ny + 0.75 * Math.sqrt(1 - r2)
+    ramp_tone(c, x, y, 0.12 + 0.8 * Math.max(0.0, facing), ramp)
+  }
+}
+
+# Text from the 8x8 font stretched `sy` times taller, the condensed lettering
+# painted on a truck, with a `shade` shadow one cell to the right of each
+# stroke. A `chip` fraction of the paint has flaked off.
+fn stamp_text(c, s, x, y, sy, key, shade, chip, seed) {
+  let tw = Canvas.text_width(s, 1)
+  mut glyphs = Cells(tw, 8)
+  glyphs.text(s, 0, 0, key)
+  for (gx, gy) in grid(0..tw, 0..8) {
+    continue if glyphs.get(gx, gy) == 0
+    for dy in 0..sy {
+      let py = y + gy * sy + dy
+      c.set(x + gx, py, key) if noise(seed, x + gx, py, 9) >= chip
+      c.set(x + gx + 1, py, shade) if glyphs.get(gx + 1, gy) == 0
+    }
+  }
+}
+
+# How much grime darkens a door cell `y` rows below the first ridge: streaks
+# two cells wide start under some ridges (one every `period` rows) and fade
+# out over a length of their own.
+fn grime(seed, x, y, period) {
+  let col = x / 2
+  mut dark = 0.0
+  for back in 0..3 {
+    let ridge = y / period - back
+    continue if ridge < 0 || noise(seed, col, ridge, 5) > 0.1
+    let len = 6 + noise(seed, col, ridge, 6) * 18
+    let dy = y - ridge * period
+    dark = Math.max(dark, 0.4 * (1 - dy / len)) if dy < len
+  }
+  dark
+}
+
+# Hot-rod flames licking up from row `base` across [x0, x1]: tongues of
+# varied height leaning right, yellow at the root through orange to red
+# tips, with a dark pinstripe round them.
+fn flames(c, x0, x1, base, reach, seed) {
+  let period = 9.0
+  mut lit = repeat(c.w * c.h, false)
+  for (x, y) in grid(x0..=x1, base - reach..=base) {
+    let rise = (base - y).to_float()
+    let q = (x - x0 - rise * 0.6) / period
+    let k = q < 0 ? q.to_long() - 1 : q.to_long()
+    let u = Math.abs(2 * (q - k) - 1)
+    let tall = reach * (0.45 + 0.55 * noise(seed, k, 11)) * Math.sqrt(1 - u)
+    continue if rise > tall
+    let t = rise / reach
+    c.set(x, y, cond {
+      t < 0.3 => "P_YELLOW",
+      t < 0.6 && rise < tall - 2 => "ORANGE1",
+      _ => "RED1",
+    })
+    lit[y * c.w + x] = true
+  }
+  for (x, y) in grid(x0..=x1, base - reach - 1..=base) {
+    continue if lit[y * c.w + x]
+    for (nx, ny) in [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)] {
+      if nx >= x0 && nx <= x1 && ny <= base && lit[ny * c.w + nx] {
+        c.set(x, y, "RED0")
+        break
+      }
+    }
+  }
+}
+
+# The semi, as its trailer: a white steel box. Pressed ridges cross the
+# doors, the paint is bright above and grimy below, dirt runs down from
+# the ridges, the name is painted on in tall letters that have chipped, and
+# the lock rods run over all of it. Beneath: twin tyres, lamps, a striped
+# underride bar.
+fn draw_trailer(c, w, h, seed) {
   let floor = h - 2
-  let box_x = (w * 0.05).to_long()
-  let box_w = w - box_x * 2
-  let box_top = 2
-  let box_bottom = floor - (h * 0.16).to_long()
-  let tw = Math.max(8, (w * 0.12).to_long())
-  wheels(c, w, floor, tw, (h * 0.13).to_long(), box_x + 2)
-  wheels(c, w, floor, tw, (h * 0.13).to_long(), box_x + 2 + tw + 1)
-  c.rect(box_x, box_top, box_w, box_bottom - box_top, "WHITE1")
-  c.rect(box_x, box_top, box_w, 2, "WHITE2")
-  c.rect(box_x, box_top, 2, box_bottom - box_top, "WHITE2")
-  c.dither(
-    box_x + box_w - 4,
-    box_top,
-    4,
-    box_bottom - box_top,
-    "WHITE0",
-    "WHITE1",
+  let depth = 12
+  let x0 = 1
+  let x1 = w - depth - 2
+  let cx = (x0 + x1 + 1) / 2
+  let top = 4
+  let bottom = floor - 34
+  let paint = ["WHITE0", "FRAME", "WHITE1", "WHITE2"]
+  for tx in [x0 + 1, x0 + 15, x1 - 26, x1 - 12] {
+    tyre(c, tx, bottom + 4, 13, floor - bottom - 3, 4)
+  }
+  c.rect(x0 + 28, floor - 18, x1 - x0 - 54, 3, "TYRE0")  # axle
+  c.rect(x0 + 28, floor - 18, x1 - x0 - 54, 1, "TYRE1")
+
+  for (x, y) in grid(x0..=x1, top..bottom) {
+    let t = (y - top).to_float() / (bottom - top)
+    mut light = 0.92 - 0.38 * t
+    if x < x0 + 4 || x > x1 - 4 || y < top + 5 {
+      light -= 0.12
+      light += 0.22 if x == x0 + 1 || y == top + 1
+    } else {
+      let r = Math.wrap(y - top - 5, 8)
+      light += 0.22 if r == 0
+      light -= 0.2 if r == 1
+      light -= 0.6 * grime(seed, x, y - top - 5, 8)
+    }
+    light -= 0.22 if noise(seed, x, y, 3) < 0.025
+    ramp_tone(c, x, y, light, paint)
+  }
+  c.rect(cx - 1, top + 5, 1, bottom - top - 5, "WHITE0")  # the doors' seam
+  c.rect(cx, top + 5, 1, bottom - top - 5, "WHITE2")
+  stamp_text(c, "CULEBRA", cx - 29, top + 20, 2, "RED1", "RED0", 0.12, seed)
+  stamp_text(c, "EXPRESS", cx - 29, top + 42, 1, "BLUE1", "BLUE0", 0.2, seed)
+
+  for k in 0..4 {
+    let hinge = top + 12 + k * 26
+    c.rect(x0 + 3, hinge, 3, 4, "TYRE1")
+    c.rect(x1 - 5, hinge, 3, 4, "TYRE1")
+  }
+  # Lock rods with their keepers top and bottom and a lever each.
+  let lever = top + (bottom - top) * 0.62
+  for rx in [x0 + 14, cx - 12, cx + 11, x1 - 14] {
+    c.rect(rx, top + 3, 1, bottom - top - 1, "WHITE1")
+    c.rect(rx + 1, top + 3, 1, bottom - top - 1, "WHITE0")
+    for ky in [top + 3, bottom - 3] {
+      c.rect(rx - 1, ky, 4, 3, "TYRE1")
+      c.set(rx, ky + 1, "WHITE0")
+    }
+    c.rect(rx, lever, 7, 2, "WHITE1")
+    c.rect(rx, lever + 2, 7, 1, "WHITE0")
+    c.rect(rx + 5, lever - 1, 2, 4, "TYRE1")
+  }
+  for i in -1..=1 {
+    c.rect(cx - 1 + i * 6, top + 1, 3, 2, "LAMP_A")  # clearance lamps
+    c.set(cx - 1 + i * 6, top + 1, "LAMP_W")
+  }
+  for kx in [x0, x1 - 4] {
+    c.rect(kx, top - 1, 5, 4, "TYRE1")  # corner castings
+    c.rect(kx + 1, top, 3, 1, "TYRE0")
+  }
+
+  # The rear sill with its lamps and plate, the underride bar hung below.
+  for y in bottom..bottom + 7 {
+    c.rect(x0, y, x1 - x0 + 1, 1, cond {
+      y == bottom => "WHITE0",
+      y < bottom + 3 => "TYRE1",
+      _ => "TYRE0",
+    })
+  }
+  for lx in [x0 + 5, x0 + 12, x1 - 12, x1 - 5] {
+    c.circle(lx, bottom + 4, 2.6, "LAMP_R")
+    c.rect(lx - 1, bottom + 3, 2, 1, "LAMP_RL")
+  }
+  c.rect(x0 + 18, bottom + 3, 4, 2, "LAMP_A")
+  c.rect(x1 - 21, bottom + 3, 4, 2, "LAMP_A")
+  plate(c, cx, bottom + 2, 16)
+  let bar = bottom + 15
+  for sx in [x0 + 30, x1 - 32] {
+    c.rect(sx, bottom + 7, 3, bar - bottom - 7, "TYRE0")
+    c.rect(sx, bottom + 7, 1, bar - bottom - 7, "TYRE1")
+  }
+  for x in x0 + 6..x1 - 5 {
+    let tape = (x + bar) / 5 % 2 == 0 ? "LAMP_R" : "WHITE2"
+    c.rect(x, bar, 1, 2, tape)
+    c.set(x, bar + 2, "TYRE1")
+    c.set(x, bar + 3, "TYRE0")
+  }
+
+  side_face(c, x1, depth, top + (bottom - top) * 0.35, 0.16, 4)
+  c.outline()
+  ground_shadow(c, (x0 + x1 + depth) / 2, floor + 1, w * 0.49, 1)
+}
+
+# The truck: a lifted pickup. A black roll bar with lamp pods over the bed,
+# the driver through the sliding rear window, flames up the tailgate, tall
+# stacked lamps at the corners, a chrome step bumper, and big lugged tyres
+# with the axle and shocks between them.
+fn draw_pickup(c, w, h, seed) {
+  let floor = h - 1
+  let depth = 8
+  let x0 = 1
+  let x1 = w - depth - 2
+  let cx = (x0 + x1) / 2.0
+  let hw = (x1 - x0) / 2.0
+  let paint = ("GREEN0", "GREEN1", "GREEN2")
+  let (d, m, l) = paint
+  let roof = 8
+  let rail = 28
+  let gate = 34
+  let bumper = 57
+  let tw = 17
+  for tx in [x0 + 1, x1 - tw + 1] {
+    tyre(c, tx, bumper + 2, tw, floor - bumper - 2, 5)
+  }
+  c.rect(x0 + tw, floor - 11, x1 - x0 - 2 * tw, 3, "TYRE0")  # axle
+  c.rect(x0 + tw, floor - 11, x1 - x0 - 2 * tw, 1, "TYRE1")
+  c.ellipse(cx, floor - 10, 7, 5, "TYRE1")  # differential
+  c.ellipse(cx - 2, floor - 12, 3, 1.5, "WHITE0")
+  for s in [-1, 1] {
+    c.line(
+      cx + s * (hw - tw - 2),
+      bumper + 3,
+      cx + s * (hw - tw - 6),
+      floor - 9,
+      "P_YELLOW",
+      2,
+    )  # shocks
+  }
+  c.rect(cx + 8, bumper + 8, 5, 3, "CHROME")  # exhaust
+  c.rect(cx + 9, bumper + 9, 3, 1, "TYRE0")
+
+  let cab = [[roof, hw * 0.6], [roof + 3, hw * 0.7], [rail, hw * 0.76]]
+  shell(c, cx, cab, paint, 3, l)
+  glass(c, cx, cab, 4)
+  # The driver sits on the right, seen through the tint.
+  let dx = cx + hw * 0.3
+  c.rect(dx - 5, rail - 7, 11, 3, "SHIRT_A")
+  c.circle(dx, rail - 10, 3.2, "SKIN")
+  c.ellipse(dx, rail - 12, 3.6, 1.8, "RED1")  # cap
+  c.rect(dx - 4, rail - 12, 8, 1, "RED0")
+  for s in [-1, 1] {
+    c.rect(cx + s * hw * 0.18, roof + 4, 1, rail - roof - 8, "TYRE0")  # sliding pane
+    let mx = cx + s * hw * 0.93
+    c.line(cx + s * hw * 0.74, rail - 6, mx, rail - 9, "TYRE0", 1)  # mirrors
+    c.rect(mx - 2, rail - 17, 5, 9, "TYRE1")
+    c.rect(mx - 2, rail - 17, 1, 9, "WHITE0")
+  }
+
+  let body = [
+    [rail, hw * 0.94],
+    [rail + 2, hw],
+    [bumper - 3, hw],
+    [bumper, hw * 0.97],
+  ]
+  shell(c, cx, body, paint, 2, l)
+  let bed = hw * 0.86
+  for (
+    x,
+    y,
+  ) in grid((cx - bed).to_long()..=(cx + bed).to_long(), rail + 2..gate - 1) {
+    c.set(x, y, Math.wrap(x, 4) == 0 || y == rail + 2 ? "TYRE0" : "TYRE1")
+  }
+  c.rect(cx - bed, gate - 1, bed * 2 + 1, 1, l)  # the tailgate's top edge
+  let gx = hw * 0.74
+  c.rect(cx - gx, gate, 1, bumper - gate - 1, d)
+  c.rect(cx + gx, gate, 1, bumper - gate - 1, d)
+  c.rect(cx - gx, bumper - 2, gx * 2 + 1, 1, d)
+  flames(
+    c,
+    (cx - gx + 2).to_long(),
+    (cx + gx - 2).to_long(),
+    bumper - 4,
+    15,
+    seed,
   )
-  c.dither(box_x, box_bottom - 5, box_w, 5, "WHITE0", "WHITE1")
-  let band_y = box_top + ((box_bottom - box_top) * 0.42).to_long()
-  let band_h = Math.max(6, ((box_bottom - box_top) * 0.22).to_long())
-  c.rect(box_x, band_y, box_w, band_h, band)
-  c.rect(box_x, band_y + band_h, box_w, 1, "INK")
-  let s = fit_scale([(name, "")], box_w - 8, band_h - 2)
-  c.text(
-    name,
-    w / 2 - Canvas.text_width(name, s) / 2,
-    band_y + (band_h - 8 * s) / 2,
-    "WHITE2",
-    s,
+  c.rect(cx - 6, gate + 2, 12, 3, "CHROME")  # handle
+  c.rect(cx - 5, gate + 3, 10, 1, "TYRE0")
+  for lx in [x0 + 3, x1 - 7] {
+    c.rect(lx - 1, gate, 7, 19, "CHROME")
+    c.rect(lx, gate + 1, 5, 17, "LAMP_R")
+    c.rect(lx, gate + 1, 5, 3, "LAMP_RL")
+    c.rect(lx, gate + 10, 5, 3, "LAMP_W")
+    c.rect(lx, gate + 14, 5, 4, "LAMP_A")
+  }
+  plate(c, cx, bumper - 7, 16)
+  chrome_bar(c, x0 + 1, bumper, x1 - x0 - 1, 7)
+  c.rect(cx - 9, bumper + 2, 18, 3, "TYRE0")  # the step
+  for x in (cx - 8).to_long()..(cx + 8).to_long() by 2 {
+    c.set(x, bumper + 3, "TYRE1")
+  }
+
+  let bx = hw * 0.66
+  for s in [-1, 1] {
+    c.rect(cx + s * bx - 1, roof + 4, 3, rail - roof - 3, "TYRE0")
+    c.rect(cx + s * bx - 1, roof + 4, 1, rail - roof - 3, "TYRE1")
+  }
+  c.rect(cx - bx - 1, roof + 3, bx * 2 + 3, 3, "TYRE0")
+  c.rect(cx - bx - 1, roof + 3, bx * 2 + 3, 1, "TYRE1")
+  for i in 0..4 {
+    let px = cx + (i - 1.5) * bx * 0.62
+    c.circle(px, roof, 3.4, "TYRE0")  # lamp pods, seen from behind
+    c.circle(px - 0.6, roof - 0.6, 2.2, "TYRE1")
+    c.set(px - 2, roof - 2, "CHROME")
+  }
+
+  side_face(c, x1, depth, -70, 0.03)
+  c.outline()
+  ground_shadow(c, (x0 + x1 + depth) / 2.0, floor, w * 0.48, 1)
+}
+
+# A slick seen from behind: a black block with rounded shoulders, the rubber
+# catching a soft light along the top and down one side.
+fn slick(c, x, y, tw, th) {
+  for (px, py) in grid(x..x + tw, y..y + th) {
+    let u = (px + 0.5 - x) / tw * 2 - 1
+    let v = (py + 0.5 - y) / th
+    continue if Math.abs(u) > 0.7 && (v < 0.08 || v > 0.94)
+    let lit = v < 0.06 || u > -0.55 && u < -0.3 && v < 0.9
+    c.set(px, py, lit ? "TYRE1" : "TYRE0")
+  }
+}
+
+# Text from the 8x8 font condensed to six columns a letter: the second column
+# of each glyph's left stem and of its right one are left out, so the bold
+# strokes thin to one cell and the word narrows by a quarter. Centred on `cx`.
+fn condensed_text(c, s, cx, y, key) {
+  let tw = Canvas.text_width(s, 1)
+  mut glyphs = Cells(tw, 8)
+  glyphs.text(s, 0, 0, key)
+  let cols = iota(tw - 1).filter(|x| x % 8 != 1 && x % 8 != 6)
+  let x0 = Math.round(cx - cols.size() / 2.0)
+  for i, gx in cols.enumerate() {
+    for gy in 0..8 {
+      let v = glyphs.get(gx, gy)
+      c.set(x0 + i, y + gy, v) if v != 0
+    }
+  }
+}
+
+# A turbo-era Formula One car from behind, in blue, yellow and white: wide
+# slick rear tyres at the corners, the smaller right front one showing past
+# its shoulder the way a car a lane over shows its flank, a tall rear wing on
+# black endplates with the name in red, the yellow airbox rising over it,
+# blue sidepods over white, wishbones reaching out to the wheels, a rain
+# light on the gearbox and a black diffuser.
+fn draw_f1(c, w, h, seed) {
+  let tw = 20        # a rear tyre's width
+  let right = w - 7  # the right rear tyre's outer edge; the front one is past it
+  let cx = right / 2.0
+  let inner = cx - tw  # from the centre line to a rear tyre's inner edge
+  let blue = ("BLUE0", "BLUE1", "BLUE2")
+  let yellow = ("YELLOW0", "YELLOW1", "YELLOW2")
+  slick(c, right - 7, 19, 9, 20)
+
+  let cover = [[1, 2.5], [8, 4], [16, 8], [26, 14]]
+  shell(c, cx, cover, yellow, 2, "WHITE2")
+  repaint(c, cx - 20, 18, cx + 20, 26, yellow, blue)
+  for s in [-1, 1] {
+    c.line(cx + s * 6, 21, cx + s * 11, 19, "TYRE0")  # mirrors
+    c.rect(cx + s * 13 - 2, 18, 4, 3, "WHITE1")
+  }
+  let pods = [[26, inner - 2], [30, inner + 1], [38, inner], [43, inner - 5]]
+  shell(c, cx, pods, blue, 2)
+  repaint(
+    c,
+    cx - inner - 2,
+    34,
+    cx + inner + 2,
+    44,
+    blue,
+    ("WHITE0", "WHITE1", "WHITE2"),
   )
-  c.rect(w / 2, box_top, 1, box_bottom - box_top, "WHITE0")  # door seam
-  for y in [box_top + 6, box_bottom - 8] {
-    c.rect(w / 2 - 4, y, 3, 3, "TYRE1")
-    c.rect(w / 2 + 2, y, 3, 3, "TYRE1")
+  c.rect(cx - 5, 26, 10, 16, "TYRE1")  # the gearbox
+  c.rect(cx - 5, 26, 1, 16, "TYRE0")
+  c.rect(cx + 4, 26, 1, 16, "TYRE0")
+  c.rect(cx - 3, 31, 6, 5, "TYRE0")  # the rain light
+  c.rect(cx - 2, 32, 4, 3, "LAMP_R")
+  c.rect(cx - 2, 32, 4, 1, "LAMP_RL")
+  for s in [-1, 1] {
+    c.line(cx + s * 5, 30, cx + s * (inner + 1), 28, "TYRE0")  # wishbones
+    c.line(cx + s * 5, 39, cx + s * (inner + 1), 37, "TYRE0")
   }
-  c.rect(box_x, box_bottom, box_w, 3, "TYRE1")  # sill
-  for x in box_x..box_x + box_w by 6 {
-    c.rect(x, box_bottom, 3, 3, "P_YELLOW")
+  c.rect(cx - inner, 43, inner * 2, 8, "TYRE0")  # the diffuser
+  c.rect(cx - inner, 43, inner * 2, 1, "TYRE1")
+  for x in (cx - inner + 3).to_long()..(cx + inner - 2).to_long() by 5 {
+    c.rect(x, 45, 1, 6, "TYRE1")
   }
-  c.rect(box_x + 2, box_bottom + 4, box_w - 4, 3, "TYRE0")  # underride bar
-  for lx in [box_x + 2, box_x + box_w - 8] {
-    c.rect(lx, box_bottom + 4, 6, 3, "LAMP_R")
-    c.rect(lx, box_bottom + 4, 6, 1, "LAMP_RL")
+  slick(c, 0, 21, tw, 34)
+  slick(c, right - tw, 21, tw, 34)
+
+  # The wing, a little wider than the gap between the rear tyres: endplates,
+  # the main plane with the name, the flap below it with smaller lettering.
+  let half = inner + 6
+  let x0 = cx - half
+  let x1 = cx + half
+  for ex in [x0 - 2, x1] {
+    c.rect(ex, 5, 2, 24, "TYRE0")
+    c.rect(ex, 5, 1, 24, "TYRE1")
   }
-  c.rect(w / 2 - 6, box_bottom + 4, 12, 3, "PLATE")
-  for tx in [box_x, box_x + box_w - tw - 2] {
-    c.rect(tx, box_bottom + 7, tw + 2, (h * 0.07).to_long(), "TYRE1")  # mudflaps
+  c.rect(x0, 7, half * 2, 12, "WHITE2")
+  c.rect(x0, 7, half * 2, 1, "WHITE1")
+  c.rect(x0, 17, half * 2, 2, "WHITE1")
+  condensed_text(c, "RETRO", cx, 9, "RED1")
+  c.rect(x0, 22, half * 2, 4, "WHITE2")
+  c.rect(x0, 25, half * 2, 1, "WHITE1")
+  for x in (x0 + 3).to_long()..(x1 - 3).to_long() {
+    c.set(x, 23, "RED1") if noise(seed, x, 1) < 0.6 && x % 7 != 0
+    c.set(x, 24, "RED0") if noise(seed, x, 2) < 0.4 && x % 7 != 0
   }
   c.outline()
-  ground_shadow(c, w / 2, floor + 1, w * 0.48, 1)
+  ground_shadow(c, cx + 3, h - 1, w * 0.49, 1)
+}
+
+# A beetle in sky blue: a dome with a small rear window over a narrow body, wings
+# swelling out over the wheels with the lamps on top, louvres in the engine
+# lid, a blade bumper with overriders, twin tailpipes.
+fn draw_beetle(c, w, h, seed) {
+  let floor = h - 1
+  let depth = 5
+  let x0 = 1
+  let x1 = w - depth - 2
+  let cx = (x0 + x1) / 2.0
+  let hw = (x1 - x0) / 2.0
+  let paint = ("AQUA0", "AQUA1", "AQUA2")
+  let (d, m, l) = paint
+  let roof = 4
+  let deck = 27
+  tyre(c, x0 + 3, floor - 11, 10, 12, 2)
+  tyre(c, x1 - 12, floor - 11, 10, 12, 2)
+  let cabin = [
+    [roof, hw * 0.14],
+    [roof + 3, hw * 0.44],
+    [roof + 8, hw * 0.6],
+    [deck, hw * 0.66],
+  ]
+  shell(c, cx, cabin, paint, 3, l)
+  glass(c, cx, cabin, 5)
+  let body = [
+    [deck, hw * 0.64],
+    [deck + 5, hw * 0.74],
+    [floor - 12, hw * 0.76],
+    [floor - 7, hw * 0.7],
+    [floor - 4, hw * 0.62],
+  ]
+  shell(c, cx, body, paint, 3, l)
+  for s in [-1, 1] {
+    bulge(
+      c,
+      cx + s * hw * 0.76,
+      floor - 16,
+      hw * 0.26,
+      13,
+      ["AQUA0", "AQUA1", "AQUA2"],
+      floor - 8,
+    )
+    let lx = cx + s * hw * 0.8
+    c.ellipse(lx, floor - 22, 2.5, 4, "LAMP_R")
+    c.ellipse(lx - 0.5, floor - 23, 1.2, 2, "LAMP_RL")
+  }
+  for y in deck + 5..deck + 13 by 2 {
+    c.rect(cx - 7, y, 14, 1, d)  # engine-lid louvres
+    c.rect(cx - 7, y + 1, 14, 1, l)
+  }
+  c.rect(cx - 5, floor - 20, 10, 3, "CHROME")  # plate lamp
+  plate(c, cx, floor - 16, 12)
+  c.rect(cx - hw * 0.6, floor - 8, hw * 1.2, 3, "TYRE0")
+  chrome_bar(c, cx - hw, floor - 11, hw * 2, 3)
+  for s in [-1, 1] {
+    c.rect(cx + s * 13 - 1, floor - 14, 3, 7, "CHROME")  # overriders
+    c.rect(cx + s * 13 + 1, floor - 14, 1, 7, "WHITE0")
+    c.rect(cx + s * 7 - 1, floor - 7, 3, 3, "CHROME")  # tailpipes
+    c.set(cx + s * 7, floor - 5, "TYRE0")
+  }
+  let my = roof + (deck - roof) * 0.72
+  c.ellipse(cx - profile(cabin, my) - 3, my, 2.5, 1.5, "CHROME")
+  c.ellipse(cx + profile(cabin, my) + 3, my, 2.5, 1.5, "CHROME")
+  side_face(c, x1, depth, -60, 0.02)
+  c.outline()
+  ground_shadow(c, (x0 + x1 + depth) / 2.0, floor, w * 0.46, 1)
+}
+
+# An open cruiser in pink: a chrome-framed windshield with two riders under
+# it, the folded top in its cream boot, a long lit deck between tall fins
+# with bullet lamps, and a heavy chrome bumper with the exhaust through it. It
+# sits low: everything over the deck starts `top` rows down the sprite, so the
+# tail face is no taller than the lamps and the bumper need.
+fn draw_convertible(c, w, h, seed) {
+  let floor = h - 1
+  let depth = 5
+  let x0 = 1
+  let x1 = w - depth - 2
+  let cx = (x0 + x1) / 2.0
+  let hw = (x1 - x0) / 2.0
+  let paint = ("PINK0", "PINK1", "PINK2")
+  let (d, m, l) = paint
+  let top = 8
+  let deck = top + 16
+  tyre(c, x0 + 2, floor - 10, 12, 11, 3)
+  tyre(c, x1 - 13, floor - 10, 12, 11, 3)
+  c.poly(
+    [
+      cx - hw * 0.5,
+      top,
+      cx + hw * 0.5,
+      top,
+      cx + hw * 0.62,
+      top + 10,
+      cx - hw * 0.62,
+      top + 10,
+    ],
+    "CHROME",
+  )
+  c.poly(
+    [
+      cx - hw * 0.45,
+      top + 2,
+      cx + hw * 0.45,
+      top + 2,
+      cx + hw * 0.56,
+      top + 10,
+      cx - hw * 0.56,
+      top + 10,
+    ],
+    "GLASS1",
+  )
+  c.rect(cx - hw * 0.56, top + 8, hw * 1.12, 2, "GLASS0")
+  c.line(cx - hw * 0.3, top + 8, cx - hw * 0.18, top + 2, "GLASS2", 1)
+  c.rect(cx - hw * 0.8, top + 9, hw * 1.6, 6, "RED0")  # the cockpit
+  riders(
+    c,
+    cx,
+    top + 1,
+    10,
+    "WHITE1",
+    [("INK", "P_CYAN"), ("HAIR_BLOND", "SHIRT_B")],
+  )
+  for s in [-1, 1] {
+    c.ellipse(cx + s * hw * 0.68, top + 7, 2.5, 1.5, "CHROME")  # mirrors
+  }
+
+  let body = [
+    [deck - 4, hw * 0.84],
+    [deck, hw * 0.95],
+    [deck + 4, hw],
+    [floor - 8, hw],
+    [floor - 5, hw * 0.96],
+    [floor - 4, hw * 0.88],
+  ]
+  shell(c, cx, body, paint, 8, l)
+  for i in 0..4 {
+    c.rect(cx -
+      hw * 0.6 +
+      (i == 0 ? 1 : 0), deck - 5 + i, hw * 1.2 - (i == 0 ? 2 : 0), 1, cond {
+      i == 0 => "CREAM2",
+      i == 3 => "CREAM0",
+      _ => "CREAM1",
+    })  # the boot over the folded top
+  }
+  for s in [-1, 1] {
+    c.poly(
+      [
+        cx + s * hw,
+        deck + 8,
+        cx + s * hw * 0.97,
+        deck - 7,
+        cx + s * hw * 0.86,
+        deck - 5,
+        cx + s * hw * 0.66,
+        deck + 3,
+      ],
+      m,
+    )  # fins
+    c.line(cx + s * hw * 0.97, deck - 7, cx + s * hw * 0.66, deck + 3, l, 1)
+    c.line(cx + s * hw, deck + 8, cx + s * hw * 0.97, deck - 7, d, 1)
+    for ly in [deck - 1, deck + 5] {
+      c.ellipse(cx + s * hw * 0.92, ly, 2, 3.5, "LAMP_R")
+      c.rect(cx + s * hw * 0.92 - 1, ly - 2, 1, 3, "LAMP_RL")
+    }
+  }
+  c.line(cx - 5, deck + 6, cx, deck + 10, "CHROME")  # badge
+  c.line(cx, deck + 10, cx + 5, deck + 6, "CHROME")
+  for lx in [cx - hw * 0.9, cx + hw * 0.9 - 22] {
+    c.rect(lx, floor - 19, 22, 3, "LAMP_R")
+    c.rect(lx, floor - 19, 22, 1, "LAMP_RL")
+  }
+  plate(c, cx, floor - 17, 16)
+  chrome_bar(c, cx - hw * 1.02, floor - 13, hw * 2.04, 6)
+  c.ellipse(cx - hw * 0.55, floor - 10, 3.5, 1.5, "TYRE0")  # exhaust ports
+  c.ellipse(cx + hw * 0.55, floor - 10, 3.5, 1.5, "TYRE0")
+  c.rect(cx - hw * 0.7, floor - 5, hw * 1.4, 2, "TYRE0")
+  side_face(c, x1, depth, -60, 0.02)
+  c.outline()
+  ground_shadow(c, (x0 + x1 + depth) / 2.0, floor, w * 0.47, 1)
+}
+
+# A rear-engined coupé in yellow: a small rounded cabin, hips flared wide over
+# the wheels, a black whale-tail spoiler with a rubber lip and a grille, a red
+# reflector band between the lamps, a black valance and a single pipe.
+fn draw_whaletail(c, w, h, seed) {
+  let floor = h - 1
+  let depth = 5
+  let x0 = 1
+  let x1 = w - depth - 2
+  let cx = (x0 + x1) / 2.0
+  let hw = (x1 - x0) / 2.0
+  let paint = ("YELLOW0", "YELLOW1", "GOLD2")
+  let (d, m, l) = paint
+  let roof = 5
+  let deck = 21
+  tyre(c, x0, floor - 12, 14, 13, 3)
+  tyre(c, x1 - 13, floor - 12, 14, 13, 3)
+  let cabin = [
+    [roof, hw * 0.38],
+    [roof + 3, hw * 0.52],
+    [roof + 8, hw * 0.6],
+    [deck, hw * 0.66],
+  ]
+  shell(c, cx, cabin, paint, 3, l)
+  glass(c, cx, cabin, 3)
+  let body = [
+    [deck, hw * 0.68],
+    [deck + 5, hw * 0.85],
+    [deck + 12, hw],
+    [floor - 7, hw],
+    [floor - 5, hw * 0.94],
+    [floor - 4, hw * 0.86],
+  ]
+  shell(c, cx, body, paint, 8, l)
+  c.poly(
+    [
+      cx - hw * 0.78,
+      deck + 2,
+      cx + hw * 0.78,
+      deck + 2,
+      cx + hw * 0.62,
+      deck + 11,
+      cx - hw * 0.62,
+      deck + 11,
+    ],
+    "TYRE0",
+  )
+  c.rect(cx - hw * 0.8, deck + 1, hw * 1.6, 2, "TYRE1")  # rubber lip
+  for x in (cx - hw * 0.78).to_long()..(cx + hw * 0.78).to_long() {
+    c.mix(x, deck + 1, "TYRE1", "WHITE0", 0.5)
+  }
+  for y in deck + 5..deck + 11 by 2 {
+    c.rect(cx - hw * 0.4, y, hw * 0.8, 1, "TYRE1")  # grille
+  }
+
+  let ly = deck + 14
+  c.rect(cx - hw * 0.92, ly, hw * 1.84, 5, "RED0")
+  c.rect(cx - hw * 0.92, ly, hw * 1.84, 1, "LAMP_R")
+  for lx in [cx - hw * 0.92, cx + hw * 0.92 - 12] {
+    c.rect(lx, ly, 12, 5, "LAMP_R")
+    c.rect(lx, ly, 12, 2, "LAMP_RL")
+    c.rect(lx < cx ? lx + 10 : lx, ly + 2, 2, 3, "LAMP_A")
+  }
+  c.rect(cx - hw * 0.5, ly + 1, hw, 3, "TYRE0")
+  for i in 0..7 {
+    c.set(cx - 9 + i * 3, ly + 2, "CHROME")  # the name in chrome
+  }
+  c.rect(cx - 9, ly + 7, 18, 6, d)  # plate recess
+  plate(c, cx, ly + 8, 14)
+  c.rect(cx - hw * 0.98, floor - 8, hw * 1.96, 1, "TYRE0")  # rubber strip
+  for s in [-1, 1] {
+    c.rect(cx + s * 16 - 1, floor - 10, 3, 5, "TYRE0")  # overriders
+  }
+  for y in floor - 5..floor - 1 {
+    c.rect(cx - hw * 0.8, y, hw * 1.6, 1, y < floor - 3 ? "TYRE1" : "TYRE0")
+  }
+  c.rect(cx - 22, floor - 4, 6, 3, "CHROME")
+  c.rect(cx - 21, floor - 3, 4, 1, "TYRE0")
+  let my = roof + (deck - roof) * 0.72
+  c.ellipse(cx - profile(cabin, my) - 3, my, 3, 1.6, m)
+  c.ellipse(cx + profile(cabin, my) + 3, my, 3, 1.6, m)
+  side_face(c, x1, depth, -60, 0.02)
+  c.outline()
+  ground_shadow(c, (x0 + x1 + depth) / 2.0, floor, w * 0.47, 1)
 }
 
 # Which routine draws what. One table, so adding a sprite is one line.
 mut DRAW = {
-  CAR01: |c, w, h| draw_hardtop(
-    c,
-    w,
-    h,
-    "coupe",
-    ("BLUE0", "BLUE1", "BLUE2"),
-    1,
-  ),
-  CAR02: |c, w, h| draw_hardtop(
-    c,
-    w,
-    h,
-    "beetle",
-    ("YELLOW0", "YELLOW1", "YELLOW2"),
-    2,
-  ),
-  CAR03: |c, w, h| draw_hardtop(
-    c,
-    w,
-    h,
-    "pickup",
-    ("GREEN0", "GREEN1", "GREEN2"),
-    3,
-  ),
-  CAR04: |c, w, h| draw_hardtop(
-    c,
-    w,
-    h,
-    "sedan",
-    ("WHITE0", "WHITE1", "WHITE2"),
-    4,
-  ),
-  TRUCK: |c, w, h| draw_box_truck(c, w, h, 5, "FRESH", "P_GREEN"),
-  SEMI: |c, w, h| draw_box_truck(c, w, h, 6, "CULEBRA", "P_BLUE"),
+  CAR01: |c, w, h| draw_f1(c, w, h, 1),
+  CAR02: |c, w, h| draw_beetle(c, w, h, 2),
+  CAR03: |c, w, h| draw_convertible(c, w, h, 3),
+  CAR04: |c, w, h| draw_whaletail(c, w, h, 4),
+  TRUCK: |c, w, h| draw_pickup(c, w, h, 5),
+  SEMI: |c, w, h| draw_trailer(c, w, h, 6),
   PLAYER_STRAIGHT: |c, w, h| draw_sports_car(c, w, h, 0, 0),
   PLAYER_LEFT: |c, w, h| draw_sports_car(c, w, h, -1, 0),
   PLAYER_RIGHT: |c, w, h| draw_sports_car(c, w, h, 1, 0),
@@ -2255,9 +3226,7 @@ if what != "sprites" {
   let bg = build_background()
   for (name, scene) in SCENES {
     let path = FS.join(outdir, "background_{name}.png")
-    let png = Canvas
-      .Sprite(bg.k, bg.w, bg.h, palette_colors(scene))
-      .to_png()
+    let png = Canvas.Sprite(bg.k, bg.w, bg.h, palette_colors(scene)).to_png()
     FS.write(path, png)
     written.push((path, png.size()))
   }
