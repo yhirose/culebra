@@ -547,7 +547,9 @@ class Printer {
     if (name == "BIT_XOR") return 7;
     if (name == "BIT_AND") return 8;
     if (name == "SHIFT") return 9;
-    if (name == "RANGE") return 10;
+    // The bare `..` collapses to its RANGE_OPERATOR, still a range operand:
+    // `(..).contains(x)` without its parentheses reads `...contains(x)`.
+    if (name == "RANGE" || name == "RANGE_OPERATOR") return 10;
     if (name == "ADDITIVE") return 11;
     if (name == "MULTIPLICATIVE") return 12;
     if (name == "UNARY_PLUS" || name == "UNARY_MINUS" || name == "UNARY_NOT" ||
