@@ -2,7 +2,6 @@ Culebra Programming Language
 ============================
 
 [![CI](https://github.com/yhirose/culebra/actions/workflows/ci.yml/badge.svg)](https://github.com/yhirose/culebra/actions/workflows/ci.yml)
-[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/yhirose/culebra)
 
 > **Status:** pre-1.0 and under active development — APIs and syntax may change.
 
@@ -13,6 +12,8 @@ desktop apps, and games.
 
 The stdlib, test runner, linter, formatter, debugger and docs are all
 in that one executable. Nothing else to install!
+Or try it in the browser first on the
+[Playground](https://yhirose.github.io/culebra/playground/).
 
 Quickstart
 ----------
