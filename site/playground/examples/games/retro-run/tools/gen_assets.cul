@@ -749,10 +749,10 @@ fn cloud(c, cx, cy, w, h, seed) {
     let hh = (base - t0).to_float()
     for yy in t0..base {
       let t = (yy - t0) / hh
-      cond {
-        t < 0.45 => c.set(xx, yy, "CLOUD_L"),
-        t < 0.7 => c.mix(xx, yy, "CLOUD_L", "CLOUD_M", (t - 0.45) / 0.25),
-        t < 0.88 => c.set(xx, yy, "CLOUD_M"),
+      match t {
+        ..0.45 => c.set(xx, yy, "CLOUD_L"),
+        ..0.7 => c.mix(xx, yy, "CLOUD_L", "CLOUD_M", (t - 0.45) / 0.25),
+        ..0.88 => c.set(xx, yy, "CLOUD_M"),
         _ => c.mix(xx, yy, "CLOUD_M", "CLOUD_D", (t - 0.88) / 0.12 + 0.3),
       }
     }

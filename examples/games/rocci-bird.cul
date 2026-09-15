@@ -244,9 +244,9 @@ let draw_pipes = fn (pipes) {
   }
 }
 let draw_score = fn (score, base_x, y) {
-  let x = cond {
-    score < 10 => base_x + 8,
-    score < 100 => base_x + 4,
+  let x = match score {
+    ..10 => base_x + 8,
+    ..100 => base_x + 4,
     _ => base_x,
   }
   Canvas.text(to_string(score), x, y, C4)

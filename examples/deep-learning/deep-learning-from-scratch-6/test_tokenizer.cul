@@ -167,6 +167,6 @@ fn a_batch_is_windows_of_the_corpus_and_their_next_tokens() {
   }
 
   # A window never runs off the end.
-  assert_true(inputs.all(|v| v >= 0 && v < 200))
-  assert_true(targets.all(|v| v >= 0 && v < 200))
+  assert_true(inputs.all(|v| (0..200).contains(v)))
+  assert_true(targets.all(|v| (0..200).contains(v)))
 }

@@ -1,7 +1,7 @@
 fn describe(x) {
   match x {
     0 => "zero",
-    n if n < 0 => "negative",
+    ..0 => "negative",
     n if n % 2 == 0 => "even {n}",
     n => "odd {n}",
   }

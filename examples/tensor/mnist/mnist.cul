@@ -144,7 +144,7 @@ let preprocess = fn () {
     for x in 0..28 {
       let sx = x - dx
       let sy = y - dy
-      row.push(if sx >= 0 && sx < 28 && sy >= 0 && sy < 28 {
+      row.push(if (0..28).contains(sx) && (0..28).contains(sy) {
         vals[sy * 28 + sx]
       } else {
         0.0

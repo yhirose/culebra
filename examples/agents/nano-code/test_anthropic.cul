@@ -25,7 +25,7 @@ class AnthropicStub {
 
 fn an_anthropic_response(status, payload) {
   {
-    ok: status >= 200 && status < 300,
+    ok: (200..300).contains(status),
     status: status,
     body: JSON.stringify(payload),
     json: fn () { payload },

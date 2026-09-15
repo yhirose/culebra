@@ -363,7 +363,13 @@ inspect(describe([1, 2, 3]))    # => 'head=1 rest=2'
 inspect(describe({name: 'z'}))  # => 'named z'
 ```
 
+A range pattern (`..0`, `1..=9`, `0.5..`) matches any number inside the
+interval, `Long` or `Float` — the values `(1..=9).contains(x)` accepts.
 There is no exhaustiveness check; supply a `_` arm.
+
+The same patterns bind (`let (a, b) = pair`); without `let` they assign
+to *existing* variables, right-hand side evaluated first — `(a, b) =
+(b, a)` swaps, `(x, y) = match … { … }` writes both.
 
 ### 2.8 Errors, `defer`, `drop`
 
@@ -691,6 +697,7 @@ single most common transfer mistake.
 | `iota(n).map(\|_\| v)` | `repeat(n, v)` |
 | `for i in 0..xs.size() { xs[i] … }` | `for x in xs` |
 | `mut i = start; while i < end { …; i += 1 }` | `for i in start..end { … }` |
+| `match n { k if k < 10 => … }` / `x >= lo && x < hi` | `match n { ..10 => … }` — a range pattern; `(lo..hi).contains(x)` for the test alone |
 | `{k1: v1, k2: obj.k2, k3: obj.k3}` (copy every field to change one) | `{...obj, k1: v1}` |
 | `if cond { stmt }` — single statement, no `else` | `stmt if cond` (`stmt unless cond` for the negation) |
 | `if x == nil { x = v }` / `if !d.has(k) { d[k] = v }` | `x ??= v` / `d[k] ??= v` — also targets `obj.key` |

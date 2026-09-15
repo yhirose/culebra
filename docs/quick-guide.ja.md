@@ -356,7 +356,13 @@ inspect(describe([1, 2, 3]))    # => 'head=1 rest=2'
 inspect(describe({name: 'z'}))  # => 'named z'
 ```
 
+範囲パターン（`..0`、`1..=9`、`0.5..`）は、その区間に入る数値なら`Long`でも
+`Float`でも一致します（`(1..=9).contains(x)`が受け付ける値と同じ）。
 網羅性検査はありません。`_`の腕を用意してください。
+
+同じパターンで束縛できます（`let (a, b) = pair`）。`let`を外すと**既存の
+変数**への代入になり、右辺を先に全部評価します — `(a, b) = (b, a)`で
+入れ替え、`(x, y) = match … { … }`で2つ同時に書き込めます。
 
 ### 2.8 エラー・`defer`・`drop`
 
@@ -678,6 +684,7 @@ inspect(match 9 {
 | `iota(n).map(\|_\| v)` | `repeat(n, v)` |
 | `for i in 0..xs.size() { xs[i] … }` | `for x in xs` |
 | `mut i = start; while i < end { …; i += 1 }` | `for i in start..end { … }` |
+| `match n { k if k < 10 => … }` / `x >= lo && x < hi` | `match n { ..10 => … }`（範囲パターン）。判定だけなら`(lo..hi).contains(x)` |
 | `{k1: v1, k2: obj.k2, k3: obj.k3}`（1つ変えるために全フィールドを手コピー） | `{...obj, k1: v1}` |
 | `if cond { stmt }` — `else`なしの単文 | `stmt if cond`（否定は`stmt unless cond`） |
 | `if x == nil { x = v }` / `if !d.has(k) { d[k] = v }` | `x ??= v` / `d[k] ??= v`（`obj.key`にも使える） |

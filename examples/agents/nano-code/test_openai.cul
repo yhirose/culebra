@@ -25,7 +25,7 @@ class OpenAIStub {
 
 fn an_openai_response(status, payload) {
   {
-    ok: status >= 200 && status < 300,
+    ok: (200..300).contains(status),
     status: status,
     body: JSON.stringify(payload),
     json: fn () { payload },
