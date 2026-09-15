@@ -2714,24 +2714,37 @@ struct JIT {
     return phi;
   }
 
+  // Continue only when `ok` holds; otherwise throw "expected <expected>, got
+  // <tag>" at the current position.
+  void emit_tag_guard(llvm::Value* ok, llvm::Value* tag, const char* expected) {
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto okBB = llvm::BasicBlock::Create(ctx_, "tagchk.ok", fn);
+    auto errorBB = llvm::BasicBlock::Create(ctx_, "tagchk.error", fn);
+    builder_.CreateCondBr(ok, okBB, errorBB);
+
+    builder_.SetInsertPoint(errorBB);
+    emit_type_error_typed(expected, tag);
+    builder_.CreateUnreachable();
+
+    builder_.SetInsertPoint(okBB);
+  }
+
   // value_to_long: returns i64, calls type_error if not Long
   llvm::Value* value_to_long(llvm::Value* v) {
     auto tag = extract_tag(v);
     auto data = extract_data(v);
-
-    auto fn = builder_.GetInsertBlock()->getParent();
-    auto okBB = llvm::BasicBlock::Create(ctx_, "tolong.ok", fn);
-    auto errorBB = llvm::BasicBlock::Create(ctx_, "tolong.error", fn);
-
-    auto isLong = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_LONG));
-    builder_.CreateCondBr(isLong, okBB, errorBB);
-
-    builder_.SetInsertPoint(errorBB);
-    emit_type_error_typed("Long", tag);
-    builder_.CreateUnreachable();
-
-    builder_.SetInsertPoint(okBB);
+    emit_tag_guard(builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_LONG)), tag,
+                   "Long");
     return data;
+  }
+
+  // Op::ChkNum: a range endpoint must be a Long or a Float.
+  void check_num(llvm::Value* v) {
+    auto tag = extract_tag(v);
+    emit_tag_guard(
+        builder_.CreateOr(builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_LONG)),
+                          builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_FLOAT))),
+        tag, "Long or Float");
   }
 
 
@@ -3201,19 +3214,24 @@ struct JIT {
 
 
 
-  // Build a range value via culebra_runtime_make_range. A null start/end is
-  // an open endpoint (passed as has_*=false); a null step defaults to 1.
+  // Build a range value via culebra_runtime_make_range. start/end are whole
+  // values (tag and payload pass through); a null one is an open endpoint,
+  // passed as Nil. A null step (an i64 payload) defaults to 1.
   llvm::Value* emit_make_range(llvm::Value* startV, llvm::Value* endV,
                                bool inclusive, llvm::Value* stepV = nullptr) {
     auto i8Ty = builder_.getInt8Ty();
     auto i64Ty = builder_.getInt64Ty();
+    auto tag_of = [&](llvm::Value* v) {
+      return v ? extract_tag(v) : builder_.getInt8(TAG_NIL);
+    };
+    auto data_of = [&](llvm::Value* v) {
+      return v ? extract_data(v) : builder_.getInt64(0);
+    };
     auto obj = emit_call(
         module_->getOrInsertFunction(
             rt::make_range, llvm::PointerType::get(ctx_, 0), i8Ty, i64Ty,
             i8Ty, i64Ty, i8Ty, i64Ty),
-        {builder_.getInt8(startV ? 1 : 0),
-         startV ? startV : builder_.getInt64(0),
-         builder_.getInt8(endV ? 1 : 0), endV ? endV : builder_.getInt64(0),
+        {tag_of(startV), data_of(startV), tag_of(endV), data_of(endV),
          builder_.getInt8(inclusive ? 1 : 0),
          stepV ? stepV : builder_.getInt64(1)});
     return make_object(obj);

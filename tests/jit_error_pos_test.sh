@@ -244,6 +244,17 @@ f()'
 check_same "range iter zero step"     'for i in (0..5 by 0).iter() { }'
 check_same "range iter unbounded"     'let x = (0..).iter()'
 
+# A range value may hold Float endpoints; what needs integers (iteration,
+# grid, slicing) reports at its own site, and a non-numeric endpoint at the
+# range expression.
+check_same "range endpoint string"    "let r = 'a'..1"
+check_same "range var float iter"     'let r = 0.5..3
+for x in r { }'
+check_same "range float iter method"  'let x = (0.5..3).iter()'
+check_same "range float slice"        'let x = [1, 2, 3][0.5..2]'
+check_same "range float grid"         'let g = grid(0.5..2, 0..2)'
+check_same "range contains stepped"   'let c = (0..10 by 2).contains(3)'
+
 # A native handle method is entered with no line/col (the thunk ABI carries
 # none), so its entry point backfills the published call site — one case per
 # wrapped entry point. Every case fails offline (refused / unbound / bad path).

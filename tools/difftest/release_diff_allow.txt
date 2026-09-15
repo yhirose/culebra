@@ -16,6 +16,15 @@
 # `unsupported` on the baseline side means the older binary could not even
 # parse the case — syntax that release predates.
 
+# A range's endpoints may be Float: the baseline refused `0.0..0.86` and
+# `Range(nil, 0.86)` where they were built, and named only Long in the
+# endpoint TypeError. Iteration, slicing and grid still require Long.
+range_float|*
+
+# `r.contains(x)` on a range is new: the baseline had no such method on a
+# range and raised a call on nil.
+range_contains|*
+
 # `s.words()` and `s.sentences()` (UAX #29 segmentation) are new since
 # v0.4.0: the baseline answers each case as an unknown member where this
 # build answers as a built-in, and a bare read of either name is now the

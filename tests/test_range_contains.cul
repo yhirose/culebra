@@ -1,0 +1,64 @@
+# Range#contains is interval membership: `start <= x` and `x < end` (`<=`
+# with `..=`), an open end bounding nothing. Numbers compare as `<` compares
+# them; anything that is not a number is simply outside.
+
+fn error_of(f) {
+  try {
+    f()
+    "no error"
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+
+# Long, Float and mixed endpoints and arguments.
+assert_eq((0..10).contains(0), true)
+assert_eq((0..10).contains(10), false)
+assert_eq((0..=10).contains(10), true)
+assert_eq((0..10).contains(5.5), true)
+assert_eq((0.0..0.86).contains(0.5), true)
+assert_eq((0.0..0.86).contains(0.86), false)
+assert_eq((0.0..=0.86).contains(0.86), true)
+assert_eq((0.5..2).contains(1), true)
+assert_eq((0.5..2).contains(0), false)
+
+# Open ends bound nothing.
+assert_eq((..0.5).contains(-1000), true)
+assert_eq((..0.5).contains(0.5), false)
+assert_eq((..=0.5).contains(0.5), true)
+assert_eq((5..).contains(5), true)
+assert_eq((5..).contains(4.999), false)
+assert_eq((0..).contains(Math.inf), true)
+assert_eq((..0).contains(-Math.inf), true)
+assert_eq((..).contains(42), true)
+assert_eq((0..).contains(-0.0), true)
+
+# NaN and non-numbers are outside every range, never an error.
+assert_eq((..).contains(Math.nan), false)
+assert_eq((0..10).contains(nil), false)
+assert_eq((0..10).contains('a'), false)
+assert_eq((0..10).contains([1]), false)
+assert_eq((0..10).contains(true), false)
+
+# Two Longs compare exactly, past the doubles' 2^53.
+assert_eq((9007199254740992..9007199254740993).contains(9007199254740992), true)
+assert_eq((9007199254740992..9007199254740993).contains(9007199254740993), false)
+
+# An empty interval holds nothing; a step of 1 is no step at all.
+assert_eq(Range(5, 1).contains(3), false)
+assert_eq((0..10 by 1).contains(3), true)
+
+# A stepped range raises, before the argument is considered.
+assert_eq(error_of(|| (0..10 by 2).contains(3)),
+          "ValueError: contains() on a stepped range is not supported (step 2)")
+assert_eq(error_of(|| (0..10 by 0).contains('a')),
+          "ValueError: contains() on a stepped range is not supported (step 0)")
+
+# Other receivers keep their own contains.
+assert_eq([1, 2, 3].contains(2), true)
+assert_eq('abc'.contains('b'), true)
+assert_eq((1..4).iter().contains(3), true)
+let own = {contains: |x| "own {x}"}
+assert_eq(own.contains(1), "own 1")
+
+println('range contains OK')

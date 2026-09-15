@@ -1,0 +1,62 @@
+# A range's endpoints are numbers, Long or Float: the value bounds an
+# interval. Only what walks or indexes it (iteration, `grid`, slicing, `by`)
+# needs Long endpoints, and each says so where it reads them.
+
+fn error_of(f) {
+  try {
+    f()
+    "no error"
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+
+# The literal and the constructor take Float endpoints.
+let r = 0.0..0.86
+assert_eq("{r}", "0.0..0.86")
+assert_eq(r.start, 0.0)
+assert_eq(r.end, 0.86)
+assert_eq("{..0.86}", "..0.86")
+assert_eq("{0..=1.5}", "0..=1.5")
+assert_eq("{Range(nil, 0.86)}", "..0.86")
+assert_eq(Range(0.5, 1, true), 0.5..=1)
+
+# Equality compares endpoints the way `==` compares numbers.
+assert_eq(1..3 == 1.0..3.0, true)
+assert_eq(0.5..1 == 0.5..=1, false)
+
+# A non-numeric endpoint is refused before the next endpoint evaluates.
+let hits = []
+fn hit() {
+  hits.push(1)
+  1
+}
+let not_numeric = "TypeError: type error: expected Long or Float, got String"
+assert_eq(error_of(|| 'a'..hit()), not_numeric)
+assert_eq(hits, [])
+assert_eq(error_of(|| Range('a', 1)), not_numeric)
+assert_eq(error_of(|| 0..1 by 0.5),
+          "TypeError: type error: expected Long, got Float")
+
+# Iteration needs Long endpoints; an open end is reported first.
+let expected_long = "TypeError: type error: expected Long, got Float"
+let floaty = 0.5..3
+assert_eq(error_of(fn () {
+  for x in floaty {
+  }
+}), expected_long)
+assert_eq(error_of(|| floaty.iter()), expected_long)
+assert_eq(error_of(|| [1, 2].iter().zip(0..1.5).collect()), expected_long)
+assert_eq(error_of(|| grid(0.5..2, 0..2)), expected_long)
+assert_eq(error_of(|| (0.5..).iter()),
+          "TypeError: cannot iterate an unbounded range")
+
+# So does slicing; the receiver is still checked before the bounds.
+assert_eq(error_of(|| [1, 2, 3][0.5..2]), expected_long)
+assert_eq(error_of(|| [1, 2, 3][..1.5]), expected_long)
+assert_eq(error_of(|| 'abc'[0..1.5]), expected_long)
+assert_eq(error_of(|| 5[0.5..1]),
+          "TypeError: type error: expected Array, got Long")
+assert_eq([1, 2, 3][1..], [2, 3])
+
+println('range numeric OK')

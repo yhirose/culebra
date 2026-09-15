@@ -1928,22 +1928,18 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_materialize_value(
 }
 
 // Build a range value `{start, end, inclusive, step}` carrying the shared
-// Range meta. An absent endpoint (open-ended range) is stored Nil; `step`
-// defaults to 1 and is never Nil. Mirrors the interpreter's _make_range so
-// both backends represent a range identically. Returns a fresh +1
-// JitObject.
+// Range meta. Each endpoint arrives tagged — Long or Float, already checked
+// by the caller, or Nil for an open end; `step` is a Long, defaulting to 1.
+// Returns a fresh +1 JitObject.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_make_range(
-    int8_t has_start, int64_t start, int8_t has_end, int64_t end,
+    int8_t start_tag, int64_t start, int8_t end_tag, int64_t end,
     int8_t inclusive, int64_t step) {
   auto* o = culebra_runtime_object_new();
   // Identity, not shape: every range shares one meta, so _jit_is_range_shaped
   // is a pointer compare and a dict wearing the same four keys is not a range.
   o->set_proto(_jit_range_meta());  // transferred
-  culebra_runtime_object_set(o, "start", false,
-                             has_start ? TAG_LONG : TAG_NIL,
-                             has_start ? start : 0, 0, 0);
-  culebra_runtime_object_set(o, "end", false, has_end ? TAG_LONG : TAG_NIL,
-                             has_end ? end : 0, 0, 0);
+  culebra_runtime_object_set(o, "start", false, start_tag, start, 0, 0);
+  culebra_runtime_object_set(o, "end", false, end_tag, end, 0, 0);
   culebra_runtime_object_set(o, "inclusive", false, TAG_BOOL,
                              inclusive ? 1 : 0, 0, 0);
   culebra_runtime_object_set(o, "step", false, TAG_LONG, step, 0, 0);

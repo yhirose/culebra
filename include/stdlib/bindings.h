@@ -4396,9 +4396,9 @@ inline JitValue _ns_global_range_ctor(JitValue* a, int64_t) {
   }
   auto endpoint = [&](int64_t i) {
     const auto& v = arr->items[i];
-    if (v.tag != TAG_LONG && v.tag != TAG_NIL) {
+    if (v.tag != TAG_LONG && v.tag != TAG_FLOAT && v.tag != TAG_NIL) {
       throw_runtime_error_at("TypeError",
-          culebra::type_mismatch_message("Long",
+          culebra::type_mismatch_message("Long or Float",
                                          culebra_runtime_type_of(v.tag)),
           0, 0);
     }
@@ -4430,8 +4430,8 @@ inline JitValue _ns_global_range_ctor(JitValue* a, int64_t) {
     throw_runtime_error_at("ValueError", "range step must not be zero", 0, 0);
   }
   return _ns_adapt::v_object(culebra_runtime_make_range(
-      start.tag == TAG_LONG, start.data, end.tag == TAG_LONG, end.data,
-      inclusive, step));
+      static_cast<int8_t>(start.tag), start.data,
+      static_cast<int8_t>(end.tag), end.data, inclusive, step));
 }
 
 inline JitValue _ns_global_grid(JitValue* a, int64_t) {

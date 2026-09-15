@@ -489,6 +489,14 @@ class Inference {
         return Type::single(std::move(a));
       }
       case "RANGE"_: {
+        // A Float endpoint bounds an interval, which does not iterate.
+        auto lay = culebra::decode_range_layout(e);
+        for (const auto* p : {lay.start, lay.end}) {
+          if (!p) continue;
+          for (const auto& alt : expr_type(*p).alts) {
+            if (alt.kind == Kind::Float) return {};
+          }
+        }
         Alt a{Kind::Iterator};
         a.element = ref(Type::of(Kind::Long));
         return Type::single(std::move(a));

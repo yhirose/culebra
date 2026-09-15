@@ -1,1 +1,1 @@
-TypeError: type error: expected Long, got Float at 3:9.
+TypeError: type error: expected Long or Float, got String at 3:9.

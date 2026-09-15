@@ -184,16 +184,19 @@ enum class Op : uint8_t {
                // loader makes that unreachable from a normal run, since it
                // walks every `import` before any of them compiles.
   RangeNew,    // regs[a] = fresh Range object (+1) from the contiguous run
-               // regs[b..b+2] = start, end, step (each Long — ChkLong ran
-               // right after its endpoint compiled; step defaults via a
-               // LoadConst 1). c packs has_start | has_end<<1 | inclusive<<2
-               // (an absent endpoint's slot is unread). make_range only
-               // allocates — never throws.
+               // regs[b..b+2] = start, end, step (start/end Long or Float —
+               // ChkNum ran right after each compiled; step Long via ChkLong,
+               // or a LoadConst 1). c packs has_start | has_end<<1 |
+               // inclusive<<2 (an absent endpoint's slot is unread).
+               // make_range only allocates — never throws.
   ChkLong,     // if regs[a].tag != Long, throw the typed TypeError
                // ("expected Long, got X") at this instruction's position —
-               // a range endpoint's strictness check, emitted between
-               // endpoint compiles so `0.5..t()` throws before t() runs
-               // (the JIT's value_to_long-after-each-compile order).
+               // a range step's check, and a counted for-in's endpoints',
+               // emitted between compiles so `for i in 0.5..t()` throws
+               // before t() runs (the JIT's value_to_long-after-each-compile
+               // order).
+  ChkNum,      // ChkLong's shape for a range endpoint: throws "expected
+               // Long or Float, got X" unless regs[a] is numeric.
   NilChk,      // `expr!!`: if regs[a] is nil, throw NilError at this
                // instruction's position (the `!!` token — both backends'
                // anchor, unlike the index errors' chain-head). Usually
@@ -1040,6 +1043,9 @@ struct BMethSpec {
   // keyword shares the signature with one. Its check comes first — the binder
   // walks parameters in order — and the sorter's own would be too late.
   int8_t callback_param = -1;
+  // Whether a Range passes the iterator-shape gate too: `contains` on a range
+  // is interval membership, answered without walking a sequence.
+  bool range_recv = false;
 };
 
 inline std::span<const BMethSpec> bmeth_specs() {
@@ -1127,7 +1133,8 @@ inline std::span<const BMethSpec> bmeth_specs() {
       {"slice", 2, Slice, kRecvSliceable, 2, nullptr, {Long, Long},
        {"start", "end"}},
       {"contains", 1, Contains, kRecvContains, 1, nullptr, {StrLike}, {"sub"},
-       {kRecvStrLike}, /*subsumes_global=*/false, /*obj_iter_shaped=*/true},
+       {kRecvStrLike}, /*subsumes_global=*/false, /*obj_iter_shaped=*/true,
+       /*kw=*/nullptr, /*callback_param=*/-1, /*range_recv=*/true},
       {"to_string", 0, ToString, kRecvAny, 0, nullptr, {}, {}, {},
        /*subsumes_global=*/true},
       // join/sum/product/min/max/to_set: Array's own value table plus an
@@ -1868,6 +1875,12 @@ inline JitValue bmeth_apply(BMeth id, const JitValue& recv,
                        arr(recv), static_cast<int8_t>(args[0].tag),
                        args[0].data) != 0;
           case TAG_OBJECT:
+            // A range answers by interval rather than by walking.
+            if (culebra_runtime_is_range(TAG_OBJECT, recv.data)) {
+              return culebra_runtime_range_contains(
+                         recv.data, static_cast<int8_t>(args[0].tag),
+                         args[0].data, line, col) != 0;
+            }
             // The iterator protocol itself: an object that does not carry it
             // fails inside the drive, the same error interp reports.
             culebra_runtime_set_op_pos(line, col);
@@ -9211,9 +9224,9 @@ class Compiler {
 
     // Endpoints evaluate before the binding exists, in source order, with
     // errors attributed to the range expression — same as both backends. Each
-    // is ChkLong'd right after it compiles, compile_range's order and for its
-    // reason: the counter is a Long, and a Float bound is the interpreter's
-    // TypeError rather than something to truncate (`for i in 1.5..3` ran no
+    // is ChkLong'd right after it compiles (compile_range's order): the
+    // counter is a Long, and a Float bound is a TypeError rather than
+    // something to truncate (`for i in 1.5..3` ran no
     // iterations here, and `by 0.5` walked a step of its own invention).
     stamp(*fv.iter);
     store_into(base + 0, compile_expr(*lay.start), /*dst_is_fresh=*/true);
@@ -12162,10 +12175,10 @@ class Compiler {
 
   // `a..b` / `a..=b` (optionally `by step`) and the bare `..`: a Range
   // object over a contiguous start/end/step slot run. Each present
-  // endpoint is ChkLong'd right after it compiles — `0.5..t()` throws
-  // before t() runs, the JIT's value_to_long-after-each-compile order —
-  // with every check and the RangeNew stamped at the range node, both
-  // backends' anchor for endpoint type errors.
+  // endpoint is ChkNum'd (the step ChkLong'd) right after it compiles —
+  // `'a'..t()` throws before t() runs, the JIT's check-after-each-compile
+  // order — with every check and the RangeNew stamped at the range node,
+  // both backends' anchor for endpoint type errors.
   ExprResult compile_range(const peg::Ast& ast) {
     using namespace peg::udl;
     culebra::RangeLayout lay{};
@@ -12174,11 +12187,11 @@ class Compiler {
     for (int i = 0; i < 3; i++) alloc_temp(ast);
     if (lay.start) {
       store_into(base + 0, compile_expr(*lay.start), /*dst_is_fresh=*/true);
-      emit(Op::ChkLong, base + 0);
+      emit(Op::ChkNum, base + 0);
     }
     if (lay.end) {
       store_into(base + 1, compile_expr(*lay.end), /*dst_is_fresh=*/true);
-      emit(Op::ChkLong, base + 1);
+      emit(Op::ChkNum, base + 1);
     }
     if (lay.step) {
       store_into(base + 2, compile_expr(*lay.step), /*dst_is_fresh=*/true);
@@ -13490,7 +13503,7 @@ inline std::string dump(const Chunk& c) {
       "TupleNew",  "TuplePush", "SetNew",     "SetAdd",
       "ObjectNew", "ObjectNewShaped", "ObjectSet", "SlotInit", "ObjectSetAny", "ObjectMerge",
       "ModReg",    "ModGet",
-      "RangeNew",  "ChkLong",   "NilChk",
+      "RangeNew",  "ChkLong",   "ChkNum",     "NilChk",
       "Index",     "IndexWr",   "IndexCo",    "IndexSet",
       "PropSet",   "PropWr",    "PropCo",     "NsWrChk",
       "PropVal",   "BareMethChk", "MethGate", "ChkParam", "CallRecv",
@@ -14231,7 +14244,8 @@ struct Exec {
         &&L_ArrayResize, &&L_TupleNew, &&L_TuplePush, &&L_SetNew, &&L_SetAdd,
         &&L_ObjectNew, &&L_ObjectNewShaped, &&L_ObjectSet, &&L_SlotInit,
         &&L_ObjectSetAny, &&L_ObjectMerge, &&L_ModReg, &&L_ModGet,
-        &&L_RangeNew, &&L_ChkLong, &&L_NilChk, &&L_Index, &&L_IndexWr,
+        &&L_RangeNew, &&L_ChkLong, &&L_ChkNum, &&L_NilChk, &&L_Index,
+        &&L_IndexWr,
         &&L_IndexCo, &&L_IndexSet, &&L_PropSet, &&L_PropWr, &&L_PropCo,
         &&L_NsWrChk, &&L_PropVal, &&L_BareMethChk, &&L_MethGate, &&L_ChkParam,
         &&L_CallRecv, &&L_CbType, &&L_ArityChk, &&L_BMeth, &&L_PropRaw,
@@ -14869,7 +14883,9 @@ struct Exec {
           [[maybe_unused]] const Insn& in = *ip;
           bool hs = in.c & 1, he = in.c & 2;
           auto* o = culebra_runtime_make_range(
-              hs ? 1 : 0, hs ? regs[in.b].data : 0, he ? 1 : 0,
+              hs ? static_cast<int8_t>(regs[in.b].tag) : TAG_NIL,
+              hs ? regs[in.b].data : 0,
+              he ? static_cast<int8_t>(regs[in.b + 1].tag) : TAG_NIL,
               he ? regs[in.b + 1].data : 0, (in.c & 4) ? 1 : 0,
               regs[in.b + 2].data);
           regs[in.a] = JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(o)};
@@ -14884,6 +14900,19 @@ struct Exec {
             auto [line, col] = chunk_pos_at(c, pc);
             culebra_runtime_type_error_typed(
                 line, col, "Long", static_cast<int8_t>(regs[in.a].tag));
+          }
+          ++pc;
+          break;
+        } while (0);
+        VM_NEXT();
+      L_ChkNum:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
+          if (regs[in.a].tag != TAG_LONG && regs[in.a].tag != TAG_FLOAT) {
+            auto [line, col] = chunk_pos_at(c, pc);
+            culebra_runtime_type_error_typed(
+                line, col, "Long or Float",
+                static_cast<int8_t>(regs[in.a].tag));
           }
           ++pc;
           break;
@@ -15092,7 +15121,9 @@ struct Exec {
           // object carries the protocol; a plain dict merely lacks it.
           if (ok && gate.obj_iter_shaped && recv.tag == TAG_OBJECT)
             ok = culebra_runtime_object_has(
-                reinterpret_cast<JitObject*>(recv.data), "next");
+                     reinterpret_cast<JitObject*>(recv.data), "next") ||
+                 (gate.range_recv &&
+                  culebra_runtime_is_range(TAG_OBJECT, recv.data));
           if (!ok) {
             if (bmeth_scalar_tag(static_cast<int8_t>(recv.tag)))
               bmeth_scalar_receiver_error(static_cast<int8_t>(recv.tag), line,

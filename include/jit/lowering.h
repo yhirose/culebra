@@ -1342,8 +1342,8 @@ struct Lowering {
         case Op::RangeNew: {
           bool hs = in.c & 1, he = in.c & 2;
           auto res = j.emit_make_range(
-              hs ? j.extract_data(load_slot(in.b)) : nullptr,
-              he ? j.extract_data(load_slot(in.b + 1)) : nullptr, in.c & 4,
+              hs ? load_slot(in.b) : nullptr,
+              he ? load_slot(in.b + 1) : nullptr, in.c & 4,
               j.extract_data(load_slot(in.b + 2)));
           b.CreateStore(res, slots[in.a]);
           break;
@@ -1352,6 +1352,9 @@ struct Lowering {
           // value_to_long's error branch is the whole point; the Long
           // payload is discarded.
           j.value_to_long(load_slot(in.a));
+          break;
+        case Op::ChkNum:
+          j.check_num(load_slot(in.a));
           break;
         case Op::NilChk: {
           // emit_nonnull_assert's shape, with the position from the chunk
@@ -1737,11 +1740,12 @@ struct Lowering {
                 sw->addCase(b.getInt8(t), t == TAG_OBJECT ? shapeBB : okBB);
             if (shapeBB != okBB) {
               b.SetInsertPoint(shapeBB);
-              b.CreateCondBr(
-                  j.emit_object_has(
-                      b.CreateIntToPtr(j.extract_data(recv), ptrTy),
-                      j.get_or_create_global_str("next", ".it.next")),
-                  okBB, badBB);
+              llvm::Value* shaped = j.emit_object_has(
+                  b.CreateIntToPtr(j.extract_data(recv), ptrTy),
+                  j.get_or_create_global_str("next", ".it.next"));
+              if (gate.range_recv)
+                shaped = b.CreateOr(shaped, j.emit_is_range(recv));
+              b.CreateCondBr(shaped, okBB, badBB);
             }
             // A scalar receiver fails here and now; anything else only lacks
             // the method, which BMeth reports once the arguments have run.
@@ -2309,6 +2313,22 @@ struct Lowering {
                     out);
                 b.CreateBr(joinBB);
                 b.SetInsertPoint(iterBB);
+                // A range answers by interval rather than by walking.
+                auto rangeBB = arm("vbm.ct.range");
+                auto walkBB = arm("vbm.ct.walk");
+                b.CreateCondBr(j.emit_is_range(recv), rangeBB, walkBB);
+                b.SetInsertPoint(rangeBB);
+                b.CreateStore(
+                    boolv(j.emit_call(
+                        j.module_->getOrInsertFunction(
+                            rt::range_contains, b.getInt8Ty(), i64Ty,
+                            b.getInt8Ty(), i64Ty, i64Ty, i64Ty),
+                        {j.extract_data(recv), nTag, nData, b.getInt64(line),
+                         b.getInt64(col)},
+                        "vbm.ctr")),
+                    out);
+                b.CreateBr(joinBB);
+                b.SetInsertPoint(walkBB);
                 // The iterator protocol itself: an object that does not carry
                 // it fails inside the drive, the same error interp reports.
                 j.emit_set_op_pos();

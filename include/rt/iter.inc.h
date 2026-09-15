@@ -1408,8 +1408,9 @@ inline JitObject* _range_iter_new(int64_t start, int64_t end, int64_t step,
                                   bool inclusive, int64_t line, int64_t col);
 
 // Read start/end/step/inclusive off a Range JitObject. An open start or end
-// has no defined iteration bound, so an unbounded range is not iterable —
-// checked here once so culebra_runtime_range_iter (for-in) and
+// has no defined iteration bound, so an unbounded range is not iterable, and
+// a Float endpoint bounds an interval, not a sequence — both checked here
+// once so culebra_runtime_range_iter (for-in) and
 // _grid_bounds_from_range (grid()) cannot drift on the wording. `step`
 // defaults to 1 when absent (older/manually-built range objects); callers
 // that need step != 0 enforced check it themselves (_range_iter_new does,
@@ -1422,6 +1423,12 @@ inline culebra::RangeBounds _range_bounds_from_object(JitObject* o,
   if (sv.tag == TAG_NIL || ev.tag == TAG_NIL) {
     throw culebra::CulebraError("TypeError", "cannot iterate an unbounded range",
                                 line, col);
+  }
+  for (auto v : {sv, ev}) {
+    if (v.tag != TAG_LONG) {
+      culebra_runtime_type_error_typed(line, col, "Long",
+                                       static_cast<int8_t>(v.tag));
+    }
   }
   auto iv = _jit_slot_or_nil(o, "inclusive");
   auto stv = _jit_slot_or_nil(o, "step");
@@ -1438,6 +1445,47 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_range_iter(
   auto b = _range_bounds_from_object(reinterpret_cast<JitObject*>(data),
                                      line, col);
   return _range_iter_new(b.cur, b.end, b.step, b.inclusive, line, col);
+}
+
+// x <= y, or x < y when `strict`, for two numbers: the Lt/Le ops' own numeric
+// arms (exact on two Longs, promoted doubles otherwise, false on NaN), not
+// _culebra_value_ord, whose Long arm compares through double.
+inline bool _num_before(const JitValue& x, const JitValue& y, bool strict) {
+  if (x.tag == TAG_LONG && y.tag == TAG_LONG) {
+    return strict ? x.data < y.data : x.data <= y.data;
+  }
+  double xd = _culebra_coerce_num(static_cast<int8_t>(x.tag), x.data);
+  double yd = _culebra_coerce_num(static_cast<int8_t>(y.tag), y.data);
+  return strict ? xd < yd : xd <= yd;
+}
+
+// Range#contains: interval membership, `start <= x` and `x < end` (`<=` for
+// `..=`), an open end bounding nothing; a range pattern lowers to the same
+// comparisons. A stepped range raises before the argument is looked at, and
+// an argument that is not a number, or is NaN, lies outside every range (`..`
+// included, where no comparison would run to say so).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_range_contains(
+    int64_t range_data, int8_t tag, int64_t data, int64_t line, int64_t col) {
+  auto* o = reinterpret_cast<JitObject*>(range_data);
+  auto stv = _jit_slot_or_nil(o, "step");
+  if (stv.tag == TAG_LONG && stv.data != 1) {
+    throw culebra::CulebraError(
+        "ValueError",
+        culebra::format(
+            "contains() on a stepped range is not supported (step {})",
+            stv.data),
+        line, col);
+  }
+  if (tag != TAG_LONG && tag != TAG_FLOAT) return 0;
+  if (tag == TAG_FLOAT && std::isnan(_culebra_float_to_double(data))) return 0;
+  JitValue x{tag, data};
+  auto sv = _jit_slot_or_nil(o, "start");
+  auto ev = _jit_slot_or_nil(o, "end");
+  auto iv = _jit_slot_or_nil(o, "inclusive");
+  bool inclusive = iv.tag == TAG_BOOL && iv.data != 0;
+  if (sv.tag != TAG_NIL && !_num_before(sv, x, false)) return 0;
+  if (ev.tag != TAG_NIL && !_num_before(x, ev, !inclusive)) return 0;
+  return 1;
 }
 
 // Defined below, next to the other Object walkers.

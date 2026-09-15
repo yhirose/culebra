@@ -165,10 +165,15 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
           auto ev = _jit_slot_or_nil(obj, "end");
           auto iv = _jit_slot_or_nil(obj, "inclusive");
           auto stv = _jit_slot_or_nil(obj, "step");
+          // An endpoint is a Long or a Float, printed as the number alone.
           std::string out;
-          if (sv.tag != TAG_NIL) out += std::to_string(sv.data);
+          if (sv.tag != TAG_NIL) {
+            out += _culebra_value_to_str_impl(static_cast<int8_t>(sv.tag), sv.data);
+          }
           out += (iv.tag == TAG_BOOL && iv.data != 0) ? "..=" : "..";
-          if (ev.tag != TAG_NIL) out += std::to_string(ev.data);
+          if (ev.tag != TAG_NIL) {
+            out += _culebra_value_to_str_impl(static_cast<int8_t>(ev.tag), ev.data);
+          }
           if (stv.tag != TAG_NIL && stv.data != 1) {
             out += " by " + std::to_string(stv.data);
           }

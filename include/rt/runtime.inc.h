@@ -2298,6 +2298,17 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_remove_at(
   arr->size--;
 }
 
+// One slice bound: an open end reads as `open`, a Long as itself. A range
+// may carry Float endpoints, but an index is an integer.
+inline int64_t _slice_bound(const JitValue& v, int64_t open, int64_t line,
+                            int64_t col) {
+  if (v.tag == TAG_NIL) return open;
+  if (v.tag != TAG_LONG) {
+    culebra::throw_type_mismatch("Long", _culebra_tag_name(v.tag), line, col);
+  }
+  return v.data;
+}
+
 // Slice `tag:data` by the range value `range_data` (a `{class:"Range",
 // start, end, inclusive}` JitObject; an open start/end is stored Nil).
 // Bounds are normalized by the shared _slice_bounds (so JIT/AOT stay
@@ -2315,10 +2326,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_slice(
   auto iv = _jit_slot_or_nil(ro, "inclusive");
   bool open_end = ev.tag == TAG_NIL;
   bool inclusive = !open_end && iv.tag == TAG_BOOL && iv.data != 0;
-  int64_t lo = sv.tag == TAG_NIL ? 0 : sv.data;
   if (tag == TAG_ARRAY || tag == TAG_TUPLE) {
     auto* src = reinterpret_cast<JitArray*>(data);
-    int64_t hi = open_end ? static_cast<int64_t>(src->size) : ev.data;
+    int64_t lo = _slice_bound(sv, 0, line, col);
+    int64_t hi = _slice_bound(ev, static_cast<int64_t>(src->size), line, col);
     auto [s, e] = culebra::_slice_bounds(lo, hi, inclusive, src->size);
     auto* r = culebra_runtime_array_slice(src, static_cast<int64_t>(s),
                                           static_cast<int64_t>(e - s));
@@ -2328,7 +2339,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_slice(
   }
   if (tag == TAG_STRING || tag == TAG_STRINGVIEW) {
     auto view = _culebra_str_view(tag, data);
-    int64_t hi = open_end ? static_cast<int64_t>(view.size()) : ev.data;
+    int64_t lo = _slice_bound(sv, 0, line, col);
+    int64_t hi = _slice_bound(ev, static_cast<int64_t>(view.size()), line, col);
     auto [s, e] = culebra::_slice_bounds(lo, hi, inclusive, view.size());
     auto* v = _culebra_heap_view(view.data() + s, e - s,
                                  _view_owner_base(tag, data));

@@ -1069,7 +1069,8 @@ be **omitted** — an open start defaults to `0`, an open end to the
 sequence length: `xs[2..]` drops the first two, `xs[..3]` keeps the first
 three, `xs[..]` copies the whole sequence. Out-of-range endpoints
 **clamp**, and a start past the end yields an empty result, so slicing
-never raises on bounds.
+never raises on bounds. An endpoint is an index, so it must be a `Long`:
+a range with a `Float` endpoint raises `TypeError` as a slice.
 
 Arrays return a **shallow copy** — the slice's spine is independent of
 the source, but elements are shared (a reference-semantic array sliced
@@ -1080,9 +1081,9 @@ byte indexing; a slice that lands mid-codepoint keeps the raw bytes).
 Tuples return a tuple.
 
 A range is a **first-class value** (`let r = 1..3`) — store it, pass it
-to a function, and use it to subscript later (`xs[r]`). A bounded range
-is also iterable (`for i in 1..4`); an unbounded one (`2..`) has no
-iteration end and raises if iterated.
+to a function, and use it to subscript later (`xs[r]`). A range bounded
+by two `Long` endpoints is also iterable (`for i in 1..4`); an unbounded
+one (`2..`) has no iteration end and raises if iterated.
 
 ```culebra
 let xs = [10, 20, 30, 40, 50]
@@ -2572,8 +2573,22 @@ same lazy integer sequence as `range`. A bounded range (both `Long`
 endpoints present) is iterable; an open-ended range used for slicing
 (`xs[2..]`) has no iteration end and raises if iterated.
 
+An endpoint may also be a `Float`. Such a range is a numeric interval
+rather than a sequence: it can be built, displayed and compared, but
+iterating it, slicing with it or passing it to `grid` raises
+`TypeError` (`expected Long, got Float`) where that happens. An
+endpoint that is not a number raises `TypeError` where the range is
+built.
+
+```culebra
+inspect(0.0..0.86)          # => 0.0..0.86
+inspect(..0.5)              # => ..0.5
+inspect(1..3 == 1.0..3.0)   # => true
+```
+
 A range takes an optional `by <step>` clause to iterate by something
-other than 1, including descending (`step` negative):
+other than 1, including descending (`step` negative). The step is
+always a `Long`:
 
 ```culebra
 for i in 0..10 by 2 {
@@ -2605,6 +2620,20 @@ inspect(Range(1, 5) == 1..5)      # => true
 A range is what `a..b` or `Range(...)` built, not whatever wears its fields:
 an Object carrying the same keys is an ordinary Object, and slicing,
 iterating or passing it to `grid` raises rather than treating it as a range.
+
+**Membership** — `r.contains(x)` tests the interval: `start <= x` and
+`x < end` (`x <= end` for `..=`), where an open end bounds nothing. A
+`Long` and a `Float` compare the way `<` compares them. An argument that
+is not a number, and `NaN`, lie outside every range, so the call never
+raises for its argument. A range with a `by` step other than 1 raises
+`ValueError`.
+
+```culebra
+inspect((0..10).contains(5.5))       # => true
+inspect((0.0..0.86).contains(0.86))  # => false
+inspect((..=0.5).contains(0.5))      # => true
+inspect((0..10).contains('a'))       # => false
+```
 
 **Destructuring loop variable.** The `var` may be a pattern, matched
 against each element's shape (a mismatch raises `ValueError`).
