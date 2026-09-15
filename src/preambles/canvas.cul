@@ -719,119 +719,6 @@ let _canvas_module = fn () {
     }
   }
 
-  # --- coordinate methods, scalar + Vector2 overloads --------------------
-  # Each is a single `let`-bound fn matching on the first arg's type, not a
-  # `fn name(...)` multimethod pair: measured up to ~5x combined overhead
-  # from per-call dispatcher-arm scoring and from `fn name(...)`'s wider
-  # closure-over-scope cost this deep in the module (2M-call JIT microbench).
-  #
-  # rect/circle/ellipse/triangle accept `fill` positionally or as `fill:`
-  # (tests/test_canvas_module.cul), and *args can't combine with a named
-  # default param (docs/language.md) — so each param list is the scalar form's,
-  # under its documented names (a call binds them by keyword too). The shorter
-  # Vector2 form fills the leading slots with its own arguments, so its
-  # positional `fill` lands in a slot the scalar form spends on `color` (`color
-  # ?? fill` below). Those trailing scalar slots default to nil to make room,
-  # and `_need` requires them back.
-  let _need = fn (v, name) {
-    if v == nil {
-      throw {kind: "ArityError", message: "missing required argument '{name}'"}
-    }
-    v
-  }
-  let set_pixel = fn (x, y, color = nil) {
-    match x {
-      p: Vector2 => _Canvas.set_pixel(p.x, p.y, y),
-      _ => _Canvas.set_pixel(x, y, _need(color, "color")),
-    }
-  }
-  let get_pixel = fn (x, y = nil) {
-    match x {
-      p: Vector2 => _Canvas.get_pixel(p.x, p.y),
-      _ => _Canvas.get_pixel(x, _need(y, "y")),
-    }
-  }
-  let line = fn (x1, y1, x2, y2 = nil, color = nil) {
-    match x1 {
-      p1: Vector2 => _Canvas.line(p1.x, p1.y, y1.x, y1.y, x2),
-      _ => _Canvas.line(x1, y1, x2, _need(y2, "y2"), _need(color, "color")),
-    }
-  }
-  let rect = fn (x, y, w, h, color = nil, fill = true) {
-    match x {
-      p: Vector2 => _Canvas.rect(p.x, p.y, y, w, h, if color ?? fill {
-        1
-      } else {
-        0
-      }),
-      _ => _Canvas.rect(x, y, w, h, _need(color, "color"), if fill {
-        1
-      } else {
-        0
-      }),
-    }
-  }
-  let circle = fn (cx, cy, r, color = nil, fill = true) {
-    match cx {
-      p: Vector2 => _Canvas.ellipse(p.x, p.y, cy, cy, r, if color ?? fill {
-        1
-      } else {
-        0
-      }),
-      _ => _Canvas.ellipse(cx, cy, r, r, _need(color, "color"), if fill {
-        1
-      } else {
-        0
-      }),
-    }
-  }
-  let ellipse = fn (cx, cy, rx, ry, color = nil, fill = true) {
-    match cx {
-      p: Vector2 => _Canvas.ellipse(p.x, p.y, cy, rx, ry, if color ?? fill {
-        1
-      } else {
-        0
-      }),
-      _ => _Canvas.ellipse(cx, cy, rx, ry, _need(color, "color"), if fill {
-        1
-      } else {
-        0
-      }),
-    }
-  }
-  let triangle = fn (
-    x1,
-    y1,
-    x2,
-    y2,
-    x3 = nil,
-    y3 = nil,
-    color = nil,
-    fill = true,
-  ) {
-    match x1 {
-      p1: Vector2 => {
-        let on = if x3 ?? fill {
-          1
-        } else {
-          0
-        }
-        _Canvas.triangle(p1.x, p1.y, y1.x, y1.y, x2.x, x2.y, y2, on)
-      },
-      _ => {
-        let on = if fill {
-          1
-        } else {
-          0
-        }
-        let corner_x = _need(x3, "x3")
-        let corner_y = _need(y3, "y3")
-        let c = _need(color, "color")
-        _Canvas.triangle(x1, y1, x2, y2, corner_x, corner_y, c, on)
-      },
-    }
-  }
-
   {
     rgba: rgba,
     rgb_to_hsv: rgb_to_hsv,
@@ -851,16 +738,43 @@ let _canvas_module = fn () {
     clear: fn (color) {
       _Canvas.clear(color)
     },
-    # set_pixel/get_pixel/rect/line/circle/ellipse/triangle: multimethod
-    # dispatchers declared above (scalar + Vector2 overloads), bound here as
-    # first-class Function values like any other field.
-    set_pixel: set_pixel,
-    get_pixel: get_pixel,
-    rect: rect,
-    line: line,
-    circle: circle,
-    ellipse: ellipse,
-    triangle: triangle,
+    set_pixel: fn (x, y, color) {
+      _Canvas.set_pixel(x, y, color)
+    },
+    get_pixel: fn (x, y) {
+      _Canvas.get_pixel(x, y)
+    },
+    rect: fn (x, y, w, h, color, fill = true) {
+      _Canvas.rect(x, y, w, h, color, if fill {
+        1
+      } else {
+        0
+      })
+    },
+    line: fn (x1, y1, x2, y2, color) {
+      _Canvas.line(x1, y1, x2, y2, color)
+    },
+    circle: fn (cx, cy, r, color, fill = true) {
+      _Canvas.ellipse(cx, cy, r, r, color, if fill {
+        1
+      } else {
+        0
+      })
+    },
+    ellipse: fn (cx, cy, rx, ry, color, fill = true) {
+      _Canvas.ellipse(cx, cy, rx, ry, color, if fill {
+        1
+      } else {
+        0
+      })
+    },
+    triangle: fn (x1, y1, x2, y2, x3, y3, color, fill = true) {
+      _Canvas.triangle(x1, y1, x2, y2, x3, y3, color, if fill {
+        1
+      } else {
+        0
+      })
+    },
     # Polygon from a flat x0, y0, x1, y1, ... vertex list (even-odd rule; the
     # outline closes itself). Each filled row covers [xl, xr), like rect, so
     # polygons sharing an edge tile with no seam.

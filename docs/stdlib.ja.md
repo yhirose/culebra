@@ -1065,7 +1065,7 @@ ISO 8601タイムスタンプをparse。受け付けるvariant:
 
 Unix epoch秒から構築（Floatならsub-秒精度）。
 
-#### `Time.from_parts(p: Object, utc: false) -> Instant`
+#### `Time.from_parts(p: Object, utc: Bool = false) -> Instant`
 
 parts dictからtimestampを組み立て — `Instant.parts`の逆操作。
 認識キー: `year`、`month`、`day`、`hour`、`minute`、`second`、
@@ -4449,7 +4449,7 @@ inspect(UUID.v4() != UUID.v4())  # => true
 | `Term.rgb(s, r, g, b) -> String` | 24bitトゥルーカラー前景 |
 | `Term.red(s)` / `green` / `yellow` / `blue` / `magenta` / `cyan` / `white` / `black` | 名前付き16色前景 |
 | `Term.bold(s)` / `Term.dim(s)` / `Term.underline(s)` / `Term.reverse(s)` | 文字属性 |
-| `Term.style(fg:, bg:, bold:, dim:, underline:, reverse:) -> String` | `Screen`セル用のSGRパラメータ文字列。`fg`/`bg`は256色インデックスか`(r,g,b)`タプル |
+| `Term.style(fg = nil, bg = nil, bold = false, dim = false, underline = false, reverse = false) -> String` | `Screen`セル用のSGRパラメータ文字列。`fg`/`bg`は256色インデックスか`(r,g,b)`タプル |
 
 色は端末の**ケイパビリティレベル**（`0`なし / `1` 16 / `2` 256 / `3`
 トゥルーカラー）に適応します。レベルは`isatty`・`NO_COLOR`（あれば無効）・
@@ -4892,15 +4892,6 @@ inspect(Canvas.hsv(h, Math.min(1.0, s * 1.4), v))  # => 4291327148
 | `Canvas.width()` / `Canvas.height() -> Long` | 現在の描画先の寸法 |
 | `Canvas.to_png() -> String` | 現在の描画先のピクセルをPNGバイト列で返す |
 | `Canvas.present()` | フレームを提示（下記ループ参照） |
-
-`set_pixel`、`get_pixel`、`rect`、`line`、`circle`、`ellipse`、
-`triangle`は、それぞれ`(x, y)`座標ペアの代わりに[`Vector2`](#30-vector2)
-も受け付けます——`Canvas.line(Vector2.new(0, 0), Vector2.new(10, 10),
-color)`は`Canvas.line(0, 0, 10, 10, color)`と等価です。`fill:`はどちら
-の形でも位置引数・キーワード引数のいずれでも指定できます。`polygon`
-に`Vector2`版はありません(`points`引数は平坦な`Array`で、宣言された
-パラメータ型だけでは数値の`Array`と`Vector2`の`Array`を区別できない
-ため)。
 
 フレームバッファとスプライトレジストリは1つのisolateのもので、最初に触れた
 isolate（描画でも`width`/`get_pixel`のような読み取りでも）が持ち主になる。
@@ -6119,18 +6110,11 @@ inspect(a + Vector2.new(1, 1))  # => (4.0, 5.0)
 非対称な演算で、このリポジトリのどのexampleでも必要とされなかった
 ためです。
 
-[`§26 Canvas`](#26-canvas)の座標を取るメソッド(`set_pixel`、
-`get_pixel`、`line`、`rect`、`circle`、`ellipse`、`triangle`)は、
-それぞれ`(x, y)`座標ペアの代わりに`Vector2`も受け付けます。
-
 ## 31. `Vector3`
 
 `Vector2`(§30)の3D版——同じ設計(Float固定、独立したPoint型を
 作らない、nominalな`==`)、同じメンバー構成で、`x` / `y` / `z`
-フィールドと`Vector3.new(x, y, z)`を持ちます。現時点で`Canvas`
-(2D専用)や`Scene`(culebra側wrapper層を持たないネイティブクラスで、
-`Canvas`のようにオーバーロードを追加する経路が無い)からは受け
-付けられません。
+フィールドと`Vector3.new(x, y, z)`を持ちます。
 
 ```culebra
 let a = Vector3.new(1, 2, 3)

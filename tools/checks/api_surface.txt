@@ -265,7 +265,7 @@ Time.monotonic() -> Float
 Time.sleep(secs: Float) -> Nil
 Time.from_iso(s: String) -> Instant
 Time.from_unix(secs: Long|Float) -> Instant
-Time.from_parts(p: Object, utc: false) -> Instant
+Time.from_parts(p: Object, utc: Bool = false) -> Instant
 Time.parse(s: String, fmt: String) -> Instant
 t.iso(utc: true) -> String
 t.format(fmt: String, utc: false) -> String
@@ -474,7 +474,7 @@ Term.bold(s)
 Term.dim(s)
 Term.underline(s)
 Term.reverse(s)
-Term.style(fg:, bg:, bold:, dim:, underline:, reverse:) -> String
+Term.style(fg = nil, bg = nil, bold = false, dim = false, underline = false, reverse = false) -> String
 Term.clear() -> String
 Term.move(x, y) -> String
 Term.hide()

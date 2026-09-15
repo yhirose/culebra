@@ -1091,7 +1091,7 @@ Throws `ValueError` on a malformed input.
 
 From Unix epoch seconds (Float gives sub-second precision).
 
-#### `Time.from_parts(p: Object, utc: false) -> Instant`
+#### `Time.from_parts(p: Object, utc: Bool = false) -> Instant`
 
 Compose from a parts dict — the inverse of `Instant.parts`.
 Recognised keys: `year`, `month`, `day`, `hour`, `minute`, `second`,
@@ -4587,7 +4587,7 @@ so calls nest:
 | `Term.rgb(s, r, g, b) -> String` | 24-bit truecolor foreground |
 | `Term.red(s)` / `green` / `yellow` / `blue` / `magenta` / `cyan` / `white` / `black` | named 16-color foreground |
 | `Term.bold(s)` / `Term.dim(s)` / `Term.underline(s)` / `Term.reverse(s)` | text attributes |
-| `Term.style(fg:, bg:, bold:, dim:, underline:, reverse:) -> String` | an SGR parameter string for a `Screen` cell; `fg`/`bg` take a 256-color index or an `(r,g,b)` tuple |
+| `Term.style(fg = nil, bg = nil, bold = false, dim = false, underline = false, reverse = false) -> String` | an SGR parameter string for a `Screen` cell; `fg`/`bg` take a 256-color index or an `(r,g,b)` tuple |
 
 Colors adapt to the terminal's **capability level** — `0` none, `1` 16,
 `2` 256, `3` truecolor — detected from `isatty`, `NO_COLOR` (present ⇒ off),
@@ -5041,15 +5041,6 @@ visually-close approximation.
 | `Canvas.width()` / `Canvas.height() -> Long` | current draw-target dimensions |
 | `Canvas.to_png() -> String` | the current draw target's pixels as PNG bytes |
 | `Canvas.present()` | show the frame (see the loop below) |
-
-`set_pixel`, `get_pixel`, `rect`, `line`, `circle`, `ellipse`, and
-`triangle` each also accept a [`Vector2`](#30-vector2) in place of their
-`(x, y)` coordinate pair(s) — `Canvas.line(Vector2.new(0, 0), Vector2.new(10,
-10), color)` is equivalent to `Canvas.line(0, 0, 10, 10, color)`. `fill:`
-works either positionally or by keyword with either form.
-`polygon` does not have a `Vector2` form (its `points` argument is a flat
-`Array`, and there's no way to distinguish an `Array` of numbers from an
-`Array` of `Vector2` by declared parameter type alone).
 
 The framebuffer and the sprite registry belong to one isolate — the first one
 to touch them, by drawing or by reading (`width`, `get_pixel`). A second
@@ -6305,18 +6296,11 @@ inspect({Vector2.new(1, 2), Vector2.new(1, 2)}.size())  # => 1
 while a 3D cross product returns a vector, and no example in this codebase
 needed one.
 
-[`§26 Canvas`](#26-canvas)'s coordinate-taking methods (`set_pixel`,
-`get_pixel`, `line`, `rect`, `circle`, `ellipse`, `triangle`) each accept a
-`Vector2` in place of their `(x, y)` pair(s), alongside the original
-scalar form.
-
 ## 31. `Vector3`
 
 The 3D counterpart of `Vector2` (§30) — same design (Float-only, no
 separate "Point" type, nominal `==`), same member set, with `x`, `y`, `z`
-fields and `Vector3.new(x, y, z)`. Not currently accepted by `Canvas`
-(2D-only) or `Scene` (a native class with no culebra-side wrapper to add
-an overload to, unlike `Canvas`).
+fields and `Vector3.new(x, y, z)`.
 
 ```culebra
 let a = Vector3.new(1, 2, 3)
