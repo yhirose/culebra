@@ -1262,15 +1262,18 @@ inline TensorPtr _tensor_unbroadcast(TensorPtr g, const TensorShape& target) {
 
 // Accumulate `contrib` into node->grad, reducing it back to node's
 // shape first. No-op when the node does not track grad. node->grad is
-// always a materialized Const so the in-place add path always applies.
+// always a materialized Const, so `.grad()` never hands back a lazy value.
 inline void _tensor_grad_add(const TensorPtr& node, TensorPtr contrib) {
   if (!node->requires_grad) return;
   contrib = _tensor_unbroadcast(std::move(contrib), node->shape);
   if (!node->grad) {
     node->grad = tensor_clone(contrib);
   } else {
+    // A device add realized without a sync: tl's add_ is a host loop, which on
+    // a GPU reads both buffers back. The sum replaces `value` inside the same
+    // TensorImpl, so a held .grad() sees it.
     _tl_guard([&] {
-      node->grad->value.add_(contrib->value);
+      node->grad->value = (node->grad->value + contrib->value).realize();
       return 0;
     });
   }
@@ -1749,6 +1752,9 @@ inline void tensor_backward(const TensorPtr& root) {
   // has no double-backward (grad is always a Const), so those intermediates
   // never need their own tape. Suppress it for the whole reverse pass.
   TensorNoGradGuard no_grad;
+  // Every VJP and grad accumulation evaluates on the spot; keep those kernels
+  // in flight and drain the device once when the walk ends.
+  tl::defer_flush defer;
   tensor_eval_node(*root);
   std::vector<TensorPtr> topo;
   std::unordered_set<TensorImpl*> visited;
@@ -1830,6 +1836,9 @@ CULEBRA_RT_TENSOR_EVAL_LINKAGE void tensor_eval_node(TensorImpl& t) {
   tensor_rt_bootstrap();
   _tl_guard([&] {
     t.value.eval();
+    // A value realized earlier (a clone, a detach) may still be in flight;
+    // Tensor.eval returns once the device is done either way.
+    tl::synchronize();
     return 0;
   });
 #endif
