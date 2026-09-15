@@ -467,10 +467,12 @@ let reset_props = fn () {
   add_prop(segments.size() - 25, BILLBOARD07, -1.2)
   add_prop(segments.size() - 25, BILLBOARD06, 1.2)
 
+  # Two rows of palms, the near one just past the rumble (w/6 outside the road)
+  # so no trunk stands on the tarmac or the kerb.
   mut n = 10
   while n < 200 {
-    add_prop(n, PALM_TREE, 0.5 + Random.uniform(0.0, 0.5))
-    add_prop(n, PALM_TREE, 1.0 + Random.uniform(0.0, 2.0))
+    add_prop(n, PALM_TREE, 1.2 + Random.uniform(0.0, 0.5))
+    add_prop(n, PALM_TREE, 1.7 + Random.uniform(0.0, 2.0))
     n += 4 + n / 100
   }
 
@@ -1253,7 +1255,20 @@ let start_tune = fn (n) {
 # The tune's level, 1.0 while the race runs; the ending turns it down.
 mut bgm_gain = 1.0
 
+# Crossing into a new lap fades the last lap's tune out before the next one
+# starts from its first bar.
+let LAP_FADE = 2 * FPS  # frames the last lap's tune takes to go
+mut lap_fade = 0
+
 let tick_bgm = fn () {
+  if lap_fade > 0 {
+    lap_fade -= 1
+    bgm_gain = lap_fade / to_float(LAP_FADE)
+    if lap_fade == 0 {
+      start_tune(lap)
+      bgm_gain = 1.0
+    }
+  }
   play_step(
     playing,
     bgm_frame / playing.tick,
@@ -1735,6 +1750,7 @@ let restart_race = fn () {
   end_frame = 0
   wave_wait = 0
   bgm_gain = 1.0
+  lap_fade = 0
   start_tune(1)
   music_on = false
   music_wait = MUSIC_DELAY
@@ -1900,7 +1916,7 @@ let update = fn (dt) {
         finished = true
       } else {
         lap += 1
-        start_tune(lap)
+        lap_fade = LAP_FADE
       }
     } else {
       current_lap_time += dt
