@@ -1462,8 +1462,12 @@ inline void _tensor_vjp(const TensorPtr& n) {
       auto kd = a->shape.dims;
       kd[axis] = 1;
       auto g_kd = tensor_reshape(g, TensorShape(kd));
-      TensorPtr contrib =
-          tensor_binop(Op::Add, tensor_zeros(a->shape, dt), g_kd);
+      // Widen the reduced axis back with a stride-0 view: a zero tensor of the
+      // input's shape added to g would cost a host fill and an upload of the
+      // whole buffer on every backward.
+      TensorPtr contrib = _tensor_wrap_const(
+          _tl_guard([&] { return g_kd->value.broadcast_to(a->shape.dims); }),
+          dt);
       if (n->op == Op::Mean) {
         contrib = tensor_binop(
             Op::Mul, contrib,
