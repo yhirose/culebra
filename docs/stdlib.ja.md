@@ -1675,11 +1675,13 @@ let loss = rows.mean(0)                        # 素直なバッチ平均
 let sft = (rows * mask).sum(0) * (1.0 / kept)  # 一部の行だけ採点する場合
 ```
 
-自前で合成しても値は同じですが、勾配の経路が違います。合成した場合
-`.backward()`はlog、clamp、積、softmaxを順に遡り、そのそれぞれが
-`[N, C]`のフルパスです。融合すると、VJPは閉形`softmax(self) - onehot`の
-1パスになります。`[512, 1000]`でbackwardが4.2 msから0.7 msになります
-（forwardは4.0 ms）。
+自前で合成しても値は同じですが、道のりが長くなります。合成した場合、
+forwardは`[N, C]`のsoftmaxとone-hotとclampしたlogを作ってから行ごとの
+lossに畳み、`.backward()`はその全部を遡ります。融合すると、forwardは
+各行を`logsumexp(self) - self[target]`に畳むだけで`[N, C]`のものを
+何も作らず、VJPは閉形`softmax(self) - onehot`の1パスになります。
+RTX 3090の`[512, 1000]`で、forwardが91 µsに対し47 µs、backwardが
+203 µsに対し59 µsです。
 
 合成版に必要なclampはop内部にあります。確率が0にアンダーフローした
 クラスは、無限大のlossではなく`-log(1e-15)`を寄与します。dezero自身の

@@ -1140,17 +1140,16 @@ inline TensorPtr tensor_linear_sigmoid(TensorPtr W, TensorPtr x, TensorPtr b) {
 // caller picks its own reduction — `.mean(0)` for the plain loss, or a
 // masked sum for one that scores only some rows (SFT/GRPO).
 //
-// Forward is the composed expression op for op (softmax, a one-hot scatter,
-// a masked sum of clamped logs), so the value matches what composing it by
-// hand gives. Fusing buys the backward: the VJP is (softmax(x) - onehot) in
-// one pass rather than a walk back through log, clamp, mul and softmax,
-// each a full [N, C] intermediate.
+// Row i's loss is logsumexp(logits[i]) - logits[i, targets[i]] — the
+// definition with softmax substituted in and the log folded through, so no
+// [N, C] intermediate is built at all. Spelling it as softmax, a one-hot
+// scatter and a masked sum of logs gives the same numbers, but walks that
+// matrix five times to reach one float per row.
 //
-// `probs` and `onehot` are built with the tape suppressed and ride in
-// `inputs` past the real operands — the same "an input the gradient does
-// not flow to" slot Where's `cond` uses. They hold the very tl nodes the
-// forward evaluated, so backward reads a materialized softmax rather than
-// recomputing one, and TensorImpl needs no extra field.
+// `lse` is built with the tape suppressed and rides in `inputs` past the
+// real operands — the same "an input the gradient does not flow to" slot
+// Where's `cond` uses. It is one float per row, and the backward rebuilds
+// the probabilities from it, so TensorImpl still needs no extra field.
 inline TensorPtr tensor_softmax_cross_entropy(TensorPtr logits,
                                               TensorPtr targets) {
   if (logits->dtype != targets->dtype) {
@@ -1167,27 +1166,22 @@ inline TensorPtr tensor_softmax_cross_entropy(TensorPtr logits,
         "Tensor: softmax_cross_entropy requires one target per logits row.");
   }
   auto dtype = logits->dtype;
-  int64_t rows = logits->shape.dims[0];
-  int64_t classes = logits->shape.dims[1];
-  TensorPtr probs, onehot;
-  {
-    TensorNoGradGuard no_grad;
-    probs = tensor_unary(Op::Softmax, logits);
-    onehot = tensor_scatter_to_axis(
-        targets, tensor_ones(TensorShape({rows}), dtype), classes);
-  }
-  // Clamping the whole row (not just the selected class) keeps a 0-weight
-  // log out of 0 * -inf; dezero's own SoftmaxCrossEntropy clamps the same
-  // way, and its backward likewise ignores the clamp.
+  auto lse = _tensor_wrap_const(
+      _tl_guard([&] { return logits->value.logsumexp(1); }), dtype);
+  // The composed form clamps the target probability at 1e-15 before taking
+  // its log, so a row whose target underflows reports -log(1e-15) instead of
+  // an infinite loss. Same ceiling here — but applied to the [N] losses
+  // rather than to an [N, C] probability matrix, and the backward ignores it
+  // either way (it takes the closed form, as it always did).
+  static const float kLossCeiling = -std::log(1.0e-15f);
   auto v = _tl_guard([&] {
-    return (onehot->value * probs->value.clamp(1.0e-15f, 1.0f).log()).sum(1) *
-           -1.0f;
+    return (lse->value - tl::gather_from_axis(logits->value, targets->value))
+        .clamp(-std::numeric_limits<float>::max(), kLossCeiling);
   });
   return tensor_make_op(Op::SoftmaxCrossEntropy, std::move(v), dtype,
                         std::vector<TensorPtr>{std::move(logits),
                                                std::move(targets),
-                                               std::move(probs),
-                                               std::move(onehot)});
+                                               std::move(lse)});
 }
 
 // View with a different shape when `t` is contiguous; a materializing copy
@@ -1513,13 +1507,28 @@ inline void _tensor_vjp(const TensorPtr& n) {
     }
     case Op::SoftmaxCrossEntropy: {
       // Each row's loss depends only on that row: dx[i] = g[i] * (p[i] -
-      // onehot[i]). g is one gradient per row ([N]), so it reshapes to a
-      // column and broadcasts across the classes. Both p and onehot were
-      // stashed by the forward (see tensor_softmax_cross_entropy).
+      // onehot[i]), with p rebuilt out of the logsumexp the forward stashed
+      // (p[i,j] = exp(x[i,j] - lse[i])). One pass where the device has the
+      // fused kernel; otherwise the same value composed, which materializes
+      // a softmax and a one-hot to get there.
       const auto& x = n->inputs[0];
-      const auto& probs = n->inputs[2];
-      const auto& onehot = n->inputs[3];
-      auto g_col = tensor_reshape(g, TensorShape({n->shape.dims[0], 1}));
+      const auto& targets = n->inputs[1];
+      const auto& lse = n->inputs[2];
+      if (auto fused = tl::array::xent_bwd(x->value, lse->value,
+                                           targets->value, g->value)) {
+        _tensor_grad_add(x, _tensor_wrap_const(std::move(*fused), dt));
+        break;
+      }
+      int64_t rows = n->shape.dims[0];
+      int64_t classes = x->shape.dims[1];
+      TensorPtr probs, onehot;
+      {
+        TensorNoGradGuard no_grad;
+        probs = tensor_unary(Op::Softmax, x);
+        onehot = tensor_scatter_to_axis(
+            targets, tensor_ones(TensorShape({rows}), dt), classes);
+      }
+      auto g_col = tensor_reshape(g, TensorShape({rows, 1}));
       auto diff = tensor_binop(Op::Sub, probs, onehot);
       _tensor_grad_add(x, tensor_binop(Op::Mul, diff, g_col));
       break;

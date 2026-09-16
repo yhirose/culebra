@@ -1715,11 +1715,13 @@ let loss = rows.mean(0)                        # the plain batch mean
 let sft = (rows * mask).sum(0) * (1.0 / kept)  # scoring only some rows
 ```
 
-Composing it by hand gives the same value, but a different gradient path:
-composed, `.backward()` walks back through the log, the clamp, the product
-and the softmax, each a full `[N, C]` pass. Fused, the VJP is the closed
-form `softmax(self) - onehot`, in one. At `[512, 1000]` that takes the
-backward from 4.2 ms to 0.7 ms, against a 4.0 ms forward.
+Composing it by hand gives the same value by a longer route. Composed, the
+forward builds a softmax, a one-hot and a clamped log over `[N, C]` before
+summing each row to one loss, and `.backward()` walks all of that back.
+Fused, the forward reduces each row to `logsumexp(self) - self[target]`
+with nothing of `[N, C]` in between, and the VJP is the closed form
+`softmax(self) - onehot` in one pass. On an RTX 3090 at `[512, 1000]`:
+forward 47 µs against 91 µs, backward 59 µs against 203 µs.
 
 The clamp the composed form needs is inside the op: a class whose
 probability underflows to zero contributes `-log(1e-15)` rather than an
