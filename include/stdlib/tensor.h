@@ -1701,6 +1701,29 @@ inline void _tensor_vjp(const TensorPtr& n) {
       const auto& q = n->inputs[0];
       const auto& k = n->inputs[1];
       const auto& v = n->inputs[2];
+      // Where the device has the fused pullback, two kernels rebuild the
+      // scores in registers and write the three gradients directly. They
+      // decline together (one head width, one residency rule), so a fused dq
+      // without a fused dK/dV means the composition below runs for all three.
+      auto fq = _tl_guard([&] {
+        return tl::array::attn_prefill_bwd_dq(q->value, k->value, v->value,
+                                              g->value, n->value,
+                                              static_cast<float>(n->extra0));
+      });
+      std::optional<std::pair<tl::array, tl::array>> fkv;
+      if (fq) {
+        fkv = _tl_guard([&] {
+          return tl::array::attn_prefill_bwd_dkv(
+              q->value, k->value, v->value, g->value, fq->second,
+              static_cast<float>(n->extra0));
+        });
+      }
+      if (fkv) {
+        _tensor_grad_add(q, _tensor_wrap_const(fq->first, dt));
+        _tensor_grad_add(k, _tensor_wrap_const(fkv->first, dt));
+        _tensor_grad_add(v, _tensor_wrap_const(fkv->second, dt));
+        break;
+      }
       const int64_t H = n->shape.dims[0], T = n->shape.dims[1];
       auto swap = [](TensorPtr t) {
         return tensor_permute(std::move(t), {0, 2, 1});

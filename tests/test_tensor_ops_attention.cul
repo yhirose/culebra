@@ -188,5 +188,24 @@ if Tensor.gpu_available() {
   let kg = stack([fill(Tg, Dg, 300), fill(Tg, Dg, 305)])
   let vg = stack([fill(Tg, Dg, 600), fill(Tg, Dg, 605)])
   assert_tensor_close(qg.causal_attention(kg, vg), explicit(qg, kg, vg), 1.0e-4)
+
+  # The backward at that width is the fused pullback (a kernel for dq, one
+  # for dk/dv) where the composed form spells the scores out; the two must
+  # still agree entry for entry.
+  let grads_of_gpu = fn (attn) {
+    let q = stack([fill(Tg, Dg, 1), fill(Tg, Dg, 5)]).requires_grad()
+    let k = stack([fill(Tg, Dg, 300), fill(Tg, Dg, 305)]).requires_grad()
+    let v = stack([fill(Tg, Dg, 600), fill(Tg, Dg, 605)]).requires_grad()
+    let w = stack([fill(Tg, Dg, 900), fill(Tg, Dg, 905)])
+    (attn(q, k, v) * w).sum(2).sum(1).sum(0).backward()
+    [q.grad(), k.grad(), v.grad()]
+  }
+  let fused_gg = grads_of_gpu(fn (q, k, v) {
+    q.causal_attention(k, v)
+  })
+  let composed_gg = grads_of_gpu(explicit)
+  for i in range(3) {
+    assert_tensor_close(fused_gg[i], composed_gg[i], 1.0e-4)
+  }
   Tensor.use_auto()
 }

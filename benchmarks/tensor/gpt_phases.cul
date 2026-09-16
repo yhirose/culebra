@@ -1,0 +1,241 @@
+# The same GPT training step gpt_train.cul times, split into its three
+# phases — forward, backward, Adam — with a host read between them so each
+# phase's kernels have finished before the clock moves on. It answers "where
+# does a step go?", which a single ms/step number cannot.
+#
+# `PHASES_ABLATE` replaces one op with a cheap stand-in of the same shape that
+# keeps every parameter in the graph, so the drop in a phase is that op's
+# share of it:
+#
+#   attn   q.causal_attention(k, v)  ->  q*0.5 + k*0.5 + v
+#   ln     x.layer_norm(g, b)        ->  x*g + b
+#   head   softmax_cross_entropy     ->  logits.mean(1)
+#
+# Usage: ./build/culebra --jit benchmarks/tensor/gpt_phases.cul [cpu|gpu|auto] [small|medium|large]
+#        PHASES_ABLATE=attn ./build/culebra --jit benchmarks/tensor/gpt_phases.cul gpu medium
+
+let device = if !Sys.argv.empty() {
+  Sys.argv[0]
+} else {
+  'gpu'
+}
+let config = if Sys.argv.size() > 1 {
+  Sys.argv[1]
+} else {
+  'small'
+}
+let ablate = Sys.env('PHASES_ABLATE', 'none')
+if device == 'cpu' {
+  Tensor.use_cpu()
+} else if device == 'gpu' {
+  Tensor.use_gpu()
+} else {
+  Tensor.use_auto()
+}
+
+# vocab, width, heads, layers, seq, batch, warmup steps, timed steps —
+# identical to gpt_train.cul
+let cfg = if config == 'small' {
+  [4096, 256, 4, 4, 256, 8, 3, 10]
+} else if config == 'medium' {
+  [8192, 512, 8, 6, 512, 8, 3, 10]
+} else {
+  [16384, 768, 12, 8, 1024, 4, 3, 5]
+}
+let V = cfg[0]
+let C = cfg[1]
+let H = cfg[2]
+let L = cfg[3]
+let T = cfg[4]
+let B = cfg[5]
+let WARMUP = cfg[6]
+let STEPS = cfg[7]
+let D = C / H
+let N = B * T
+let LR = 3.0e-4
+let BETA1 = 0.9
+let BETA2 = 0.95
+let EPS = 1.0e-8
+
+let id_tensor = fn (mul, add, n) {
+  mut out = []
+  for i in range(N) {
+    out.push(to_float((i * mul + add) % n))
+  }
+  Tensor.from(out)
+}
+let tokens = id_tensor(7919, 13, V)
+let targets = id_tensor(104729, 7, V)
+let positions = id_tensor(1, 0, T)
+
+class Param {
+  new(t) {
+    self.t = t
+  }
+}
+
+let leaf = fn (t) {
+  Param.new(t.detach().requires_grad())
+}
+let normal = fn (rows, cols) {
+  leaf(Tensor.randn(rows, cols) * 0.02)
+}
+let zeros = fn (n) {
+  leaf(Tensor.zeros(n))
+}
+let ones = fn (n) {
+  leaf(Tensor.ones(n))
+}
+
+let wte = normal(V, C)
+let wpe = normal(T, C)
+let lnf_g = ones(C)
+let lnf_b = zeros(C)
+mut layers = []
+for _ in range(L) {
+  layers.push({
+    ln1_g: ones(C),
+    ln1_b: zeros(C),
+    wq: normal(C, C),
+    bq: zeros(C),
+    wk: normal(C, C),
+    bk: zeros(C),
+    wv: normal(C, C),
+    bv: zeros(C),
+    wo: normal(C, C),
+    bo: zeros(C),
+    ln2_g: ones(C),
+    ln2_b: zeros(C),
+    fc1: normal(C, 4 * C),
+    b1: zeros(4 * C),
+    fc2: normal(4 * C, C),
+    b2: zeros(C),
+  })
+}
+
+mut params = [wte, wpe, lnf_g, lnf_b]
+for l in layers {
+  for p in [l.ln1_g, l.ln1_b, l.wq, l.bq, l.wk, l.bk, l.wv, l.bv, l.wo, l.bo, l.ln2_g, l.ln2_b, l.fc1, l.b1, l.fc2, l.b2] {
+    params.push(p)
+  }
+}
+
+# --- Model, with one op swappable for a same-shape stand-in ---
+
+let split_heads = fn (t) {
+  t.reshape([B, T, H, D]).permute([0, 2, 1, 3]).reshape([B * H, T, D])
+}
+let merge_heads = fn (t) {
+  t.reshape([B, H, T, D]).permute([0, 2, 1, 3]).reshape([N, C])
+}
+let attention = fn (q, k, v) {
+  if ablate == 'attn' {
+    q * 0.5 + k * 0.5 + v
+  } else {
+    q.causal_attention(k, v)
+  }
+}
+let norm = fn (x, g, b) {
+  if ablate == 'ln' {
+    x * g + b
+  } else {
+    x.layer_norm(g, b)
+  }
+}
+let head = fn (logits) {
+  if ablate == 'head' {
+    logits.mean(1).mean(0)
+  } else {
+    logits.softmax_cross_entropy(targets).mean(0)
+  }
+}
+
+let forward = fn () {
+  mut x = wte.t.index_select(tokens) + wpe.t.index_select(positions)
+  for l in layers {
+    let h = norm(x, l.ln1_g.t, l.ln1_b.t)
+    let q = split_heads(h.dot(l.wq.t) + l.bq.t)
+    let k = split_heads(h.dot(l.wk.t) + l.bk.t)
+    let v = split_heads(h.dot(l.wv.t) + l.bv.t)
+    let ctx = merge_heads(attention(q, k, v))
+    x += ctx.dot(l.wo.t) + l.bo.t
+    let h2 = norm(x, l.ln2_g.t, l.ln2_b.t)
+    x += (h2.dot(l.fc1.t) + l.b1.t).relu().dot(l.fc2.t) + l.b2.t
+  }
+  head(norm(x, lnf_g.t, lnf_b.t).dot(wte.t.transpose()))  # tied head
+}
+
+mut m = []
+mut v = []
+for p in params {
+  m.push(Tensor.zeros(p.t.shape()))
+  v.push(Tensor.zeros(p.t.shape()))
+}
+
+let adam = fn (step) {
+  let bc1 = 1.0 - BETA1 ** to_float(step)
+  let bc2 = 1.0 - BETA2 ** to_float(step)
+  for i in range(params.size()) {
+    let p = params[i]
+    let g = p.t.grad()
+    m[i] = (m[i] * BETA1 + g * (1.0 - BETA1)).detach()
+    v[i] = (v[i] * BETA2 + g * g * (1.0 - BETA2)).detach()
+    let update = (m[i] * (LR / bc1)) / ((v[i] * (1.0 / bc2)).pow(0.5) + EPS)
+    p.t = (p.t - update).detach().requires_grad()
+  }
+}
+
+# --- The step, with a host read closing each phase ---
+#
+# Reading one scalar is what makes a phase boundary real: the launches the
+# phase queued have to finish before the value comes back. It is a [C] row
+# reduced to a scalar either way — negligible against a phase, and the same
+# work in all three, so the split does not favour one.
+
+let sync_scalar = fn (t) {
+  t.mean(0).item()
+}
+
+let phased_step = fn (step) {
+  for p in params {
+    p.t.zero_grad()
+  }
+  let t0 = Sys.time()
+  let loss = forward()
+  let value = loss.item()
+  let t1 = Sys.time()
+  loss.backward()
+  sync_scalar(lnf_b.t.grad())
+  let t2 = Sys.time()
+  adam(step)
+  sync_scalar(lnf_b.t)
+  let t3 = Sys.time()
+  [1000.0 * (t1 - t0), 1000.0 * (t2 - t1), 1000.0 * (t3 - t2), value]
+}
+
+let loss0 = phased_step(1)[3]
+for s in 2..=WARMUP {
+  phased_step(s)
+}
+
+mut best = [1.0e9, 1.0e9, 1.0e9]
+mut total = 1.0e9
+mut last = loss0
+for s in WARMUP + 1..=WARMUP + STEPS {
+  let r = phased_step(s)
+  for i in range(3) {
+    if r[i] < best[i] {
+      best[i] = r[i]
+    }
+  }
+  let sum = r[0] + r[1] + r[2]
+  if sum < total {
+    total = sum
+  }
+  last = r[3]
+}
+
+let fwd = best[0]
+let bwd = best[1]
+let opt = best[2]
+print("PHASES device={device} config={config} ablate={ablate} forward={fwd} backward={bwd} adam={opt} step={total} loss0={loss0} loss={last}\n")
