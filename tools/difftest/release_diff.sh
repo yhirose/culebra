@@ -91,7 +91,7 @@ fallback_chunk() {
   done < <(grep '^_p(' "$cf")
   printf '%s\n' "$d"/*.cul | xargs -P "$JOBS" -I '{}' \
     env -u CULEBRA_REQUIRE_EXPLICIT_ENGINE bash -c \
-      '"$0" "$1" > "$1.out" 2>&1 || :' "$bin" '{}'
+      '"$0" "$1" > "$1.out" 2>&1 || true' "$bin" '{}'
   : > "$cf.$side"
   local n=$i
   for ((i = 1; i <= n; i++)); do
