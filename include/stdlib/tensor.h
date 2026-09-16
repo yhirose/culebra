@@ -1458,15 +1458,18 @@ inline void _tensor_vjp(const TensorPtr& n) {
       auto g_kd = tensor_reshape(g, TensorShape(kd));
       // Widen the reduced axis back with a stride-0 view: a zero tensor of the
       // input's shape added to g would cost a host fill and an upload of the
-      // whole buffer on every backward.
+      // whole buffer on every backward. Mean's 1/dim goes on before that
+      // widening, where it still costs only the reduced shape.
       TensorPtr contrib = _tensor_wrap_const(
-          _tl_guard([&] { return g_kd->value.broadcast_to(a->shape.dims); }),
+          _tl_guard([&] {
+            auto v = g_kd->value;
+            if (n->op == Op::Mean) {
+              v = v * static_cast<float>(
+                          1.0 / static_cast<double>(a->shape.dims[axis]));
+            }
+            return v.broadcast_to(a->shape.dims);
+          }),
           dt);
-      if (n->op == Op::Mean) {
-        contrib = tensor_binop(
-            Op::Mul, contrib,
-            tensor_scalar(1.0 / static_cast<double>(a->shape.dims[axis]), dt));
-      }
       _tensor_grad_add(a, contrib);
       break;
     }
