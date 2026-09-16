@@ -45,4 +45,8 @@
 {kind: 'ArityError', message: 'missing required argument 'a'', line: 84, col: 15}
 {kind: 'TypeError', message: 'type error: parameter 'a' expects Long', line: 86, col: 15}
 {kind: 'TypeError', message: 'type error: parameter 'b' expects String', line: 87, col: 15}
+[[1, 2], {k: 3}, {extra: 'v'}]
+[[1, 2], (3, 4), {extra: ['x']}]
+[[5], {m: 6}, {extra: (7, 8)}]
+[[9, 10], ['q'], {extra: {r: 11}}]
 2000

@@ -15879,18 +15879,30 @@ struct Exec {
                   line, col, "Function", static_cast<int8_t>(callee.tag));
             callee = m;
           }
+          // Rooted: the run stays in this frame's registers across the call,
+          // like the plain call's args, so a safepoint collect beneath it
+          // sees them. A copy into a heap vector would sit off the scanned
+          // machine stack and be swept out from under the resolver (the
+          // lowering's own run is an entry-block alloca for this reason).
           // The resolver consumes the receiver and every value it is handed,
-          // so hand them over and nil the run first — it is their only owner
-          // from the call on, throw paths included.
-          std::vector<JitValue> vals(regs + in.c, regs + in.c + total);
+          // so the run is nil'd once it returns — on the throw path too, so
+          // the frame's release ladder cannot release them a second time.
+          JitValue* pos_p = regs + in.c + off;
+          JitValue r;
+          try {
+            r = culebra_runtime_call_with_kwargs(
+                reinterpret_cast<JitClosure*>(callee.data),
+                static_cast<int8_t>(self.tag), self.data, kc.n_pos, pos_p,
+                kc.n_kw, kc.kw_keys.data(), pos_p + kc.n_pos, kc.n_splat,
+                pos_p + kc.n_pos + kc.n_kw, line, col);
+          } catch (...) {
+            for (int32_t i = 0; i < total; ++i)
+              regs[in.c + i] = JitValue{TAG_NIL, 0};
+            throw;
+          }
           for (int32_t i = 0; i < total; ++i)
             regs[in.c + i] = JitValue{TAG_NIL, 0};
-          JitValue* pos_p = vals.data() + off;
-          regs[in.a] = culebra_runtime_call_with_kwargs(
-              reinterpret_cast<JitClosure*>(callee.data),
-              static_cast<int8_t>(self.tag), self.data, kc.n_pos, pos_p,
-              kc.n_kw, kc.kw_keys.data(), pos_p + kc.n_pos, kc.n_splat,
-              pos_p + kc.n_pos + kc.n_kw, line, col);
+          regs[in.a] = r;
           ++pc;
           break;
         } while (0);

@@ -86,6 +86,22 @@ let typed = fn (a: Long, b: String = 'x') { [a, b] }
 probe(fn () { typed(a: 'no') })
 probe(fn () { typed(1, b: 5) })
 
+# --- The operands stay rooted across the bind -----------------------------
+# While the resolver runs, the run it was handed is the only reference to
+# each operand, so a collect there (every allocation under GC stress) must
+# still see them. Each one is read back, so a swept operand is a wrong
+# answer rather than a quiet survivor.
+let carry = fn (a, b = 2, **kw) { [a, b, kw] }
+inspect(carry(a: [1, 2], b: {'k': 3}, extra: 'v'))
+inspect(carry([1, 2], b: (3, 4), extra: ['x']))
+inspect(carry(**{'a': [5], 'b': {'m': 6}}, extra: (7, 8)))
+class Box {
+  v: Array
+  new(v = []) { self.v = v }
+  keep(p, **kw) { [self.v, p, kw] }
+}
+inspect(Box.new(v: [9, 10]).keep(p: ['q'], extra: {'r': 11}))
+
 # --- Churn: every round builds and drops a rest Object --------------------
 mut i = 0
 while i < 2000 {
