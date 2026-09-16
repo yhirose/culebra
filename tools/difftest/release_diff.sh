@@ -72,6 +72,13 @@ run_one() {
 # and there are cores. A case that still produces no record is emitted as
 # `<label> ::: unsupported`, which keeps the two sides aligned record for record
 # and tells the report exactly what the older binary could not express.
+#
+# The per-case command swallows its status, and that is what isolates the cases
+# from one another: a failure to parse leaves the binary at 255, and 255 is the
+# one status xargs treats as `stop everything`. Left to propagate it aborts the
+# batch mid-flight, so the cases that had not started yet are read as
+# `unsupported` too — a set that depends on how far the parallel run had got,
+# which is how one unparseable case turned into 70-odd phantom differences.
 fallback_chunk() {
   local cf="$1" side="$2" bin d i=0 line label
   case "$side" in b) bin="$BASELINE" ;; *) bin="$CULEBRA" ;; esac
@@ -84,7 +91,7 @@ fallback_chunk() {
   done < <(grep '^_p(' "$cf")
   printf '%s\n' "$d"/*.cul | xargs -P "$JOBS" -I '{}' \
     env -u CULEBRA_REQUIRE_EXPLICIT_ENGINE bash -c \
-      '"$0" "$1" > "$1.out" 2>&1' "$bin" '{}'
+      '"$0" "$1" > "$1.out" 2>&1 || :' "$bin" '{}'
   : > "$cf.$side"
   local n=$i
   for ((i = 1; i <= n; i++)); do
