@@ -1986,6 +1986,61 @@ driver itself is loaded at run time, so a CUDA-enabled binary still
 runs on a machine with no GPU — `gpu_available()` just reports
 `false`.
 
+### Profiling
+
+| Function | Effect |
+| --- | --- |
+| `Tensor.profile(fn) -> Array` | run `fn` with the engine's profiler on; the rows it recorded |
+| `Tensor.profile_scope(label, fn) -> Any` | run `fn` under a scope named `label`; `fn`'s result |
+
+`Tensor.profile` returns what the profiler recorded while `fn` ran;
+`fn`'s own result is dropped. During the session the evaluator opens a
+scope named after each op it evaluates (`dot`, `sum_to`, `layer_norm`,
+…), `.backward()` opens `backward` and one scope per VJP named after
+the Culebra op (`Dot`, `LayerNorm`), and `Tensor.adam_step` opens
+`adam_step`. Nested scopes join into a path with `/`. Every kernel
+launch, host-device copy and blocking wait a backend performs is
+attributed to the innermost open scope.
+
+`Tensor.profile_scope` adds a scope of your own — a training phase, a
+layer — around `fn` and returns whatever `fn` returns. Outside a
+session it just calls `fn`.
+
+Each row is an Object:
+
+| Field | Meaning |
+| --- | --- |
+| `path` | the scope path (`'step/backward/Dot/dot'`) |
+| `kernel` | `''` for the scope's own row; a kernel name for launches under it; `'h2d'` / `'d2h'` for copies, `'wait'` for a blocking wait |
+| `count` | scope entries, or launches / copies / waits |
+| `host_ms` | scope rows: inclusive wall time; copy and wait rows: how long the host was blocked |
+| `device_ms` | kernel rows: summed kernel time on the device, where the backend can time it |
+| `device_timed` | how many of the row's launches `device_ms` covers |
+| `bytes` | copy rows: bytes moved |
+
+Rows come grouped by path, the paths in descending order of their
+scope's inclusive time, each scope's own row first and its kernels by
+device time. `device_ms` is per launch on CUDA. Metal times a command
+buffer, not a launch, so its kernel rows have `device_timed` of 0 and
+the batch time is not in the rows; WebGPU counts launches only. A row
+with `device_timed` below `count` was not timed, which is not the same
+as fast.
+
+```culebra
+let w = Tensor.from([[1.0, 2.0], [3.0, 4.0]]).requires_grad()
+let rows = Tensor.profile(fn () {
+  Tensor.profile_scope('step', fn () {
+    w.dot(w).sum(0).sum(0).backward()
+  })
+})
+let paths = rows.map(|r| r.path)
+inspect(paths.filter(|p| p.starts_with('step/backward/Dot')).size() > 0)  # => true
+```
+
+Setting `TL_PROFILE=1` in the environment profiles a whole program
+from its first evaluation and prints the same rows as a table to
+stderr at exit — no code change needed.
+
 ---
 
 ## 9. `JSON`

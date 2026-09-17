@@ -230,6 +230,32 @@ CULEBRA_RT_TENSOR_EVAL_LINKAGE bool tensor_gpu_available();
 // installed lazily, so reading tl directly would answer "cpu" for a program
 // that has not built a tensor yet and "auto" for the same program one line
 // later. Going through the choke keeps one source of truth for the default.
+// Tensor.profile / Tensor.profile_scope: tl::profile's session and scope,
+// with the rows handed over as plain data (ms, not µs) so the runtime shapes
+// them into Objects without naming tl.
+struct TensorProfileRow {
+  std::string path, kernel;
+  int64_t count;
+  double host_ms, device_ms;
+  int64_t device_timed, bytes;
+};
+inline void tensor_profile_start() { tl::profile::start(); }
+inline std::vector<TensorProfileRow> tensor_profile_stop() {
+  tl::profile::stop();
+  std::vector<TensorProfileRow> out;
+  for (const auto& r : tl::profile::rows()) {
+    out.push_back({r.path, r.kernel, static_cast<int64_t>(r.count),
+                   r.host_us / 1000.0, r.device_us / 1000.0,
+                   static_cast<int64_t>(r.device_timed),
+                   static_cast<int64_t>(r.bytes)});
+  }
+  return out;
+}
+struct TensorProfileScope {
+  explicit TensorProfileScope(const char* label) : scope(label) {}
+  tl::profile::scope scope;
+};
+
 inline const char* tensor_device() {
   tensor_rt_bootstrap();
   switch (tl::device_) {
@@ -758,6 +784,7 @@ CULEBRA_RT_TENSOR_EVAL_LINKAGE void tensor_adam_step(TensorImpl& p, TensorPtr m,
   }
   double bc1 = 1.0 - std::pow(beta1, static_cast<double>(step));
   double bc2 = 1.0 - std::pow(beta2, static_cast<double>(step));
+  tl::profile::scope ps("adam_step");
   bool ran = _tl_guard([&] {
     return tl::array::adam_step(
         p.value, m->value, v->value, g->value, static_cast<float>(lr),
@@ -1443,7 +1470,59 @@ inline TensorPtr _tensor_swap_last_two(TensorPtr t) {
   return tensor_permute(std::move(t), std::move(axes));
 }
 
+// The op's name as tl::profile labels its VJP: the backward pass reads as
+// `backward/<Op>/<tl op>/<kernel>`.
+inline const char* tensor_op_name(Op op) {
+  switch (op) {
+    case Op::Const: return "Const";
+    case Op::Add: return "Add";
+    case Op::Sub: return "Sub";
+    case Op::Mul: return "Mul";
+    case Op::Div: return "Div";
+    case Op::Pow: return "Pow";
+    case Op::Gt: return "Gt";
+    case Op::Lt: return "Lt";
+    case Op::Ge: return "Ge";
+    case Op::Le: return "Le";
+    case Op::Eq: return "Eq";
+    case Op::Ne: return "Ne";
+    case Op::Sum: return "Sum";
+    case Op::Mean: return "Mean";
+    case Op::Max: return "Max";
+    case Op::Argmax: return "Argmax";
+    case Op::Dot: return "Dot";
+    case Op::Sigmoid: return "Sigmoid";
+    case Op::Relu: return "Relu";
+    case Op::Softmax: return "Softmax";
+    case Op::Log: return "Log";
+    case Op::Tanh: return "Tanh";
+    case Op::Sin: return "Sin";
+    case Op::Cos: return "Cos";
+    case Op::Clip: return "Clip";
+    case Op::LinearSigmoid: return "LinearSigmoid";
+    case Op::SoftmaxCrossEntropy: return "SoftmaxCrossEntropy";
+    case Op::Concat: return "Concat";
+    case Op::Transpose: return "Transpose";
+    case Op::Reshape: return "Reshape";
+    case Op::Slice: return "Slice";
+    case Op::Unfold: return "Unfold";
+    case Op::Permute: return "Permute";
+    case Op::Pad: return "Pad";
+    case Op::Fold: return "Fold";
+    case Op::Where: return "Where";
+    case Op::IndexSelect: return "IndexSelect";
+    case Op::IndexAdd: return "IndexAdd";
+    case Op::ScatterAxis: return "ScatterAxis";
+    case Op::Narrow: return "Narrow";
+    case Op::Rope: return "Rope";
+    case Op::CausalAttention: return "CausalAttention";
+    case Op::LayerNorm: return "LayerNorm";
+  }
+  return "?";
+}
+
 inline void _tensor_vjp(const TensorPtr& n) {
+  tl::profile::scope ps(tensor_op_name(n->op));
   const TensorPtr& g = n->grad;
   Dtype dt = n->dtype;
   auto neg = [&](TensorPtr t) {
@@ -1847,6 +1926,7 @@ inline void tensor_backward(const TensorPtr& root) {
   // has no double-backward (grad is always a Const), so those intermediates
   // never need their own tape. Suppress it for the whole reverse pass.
   TensorNoGradGuard no_grad;
+  tl::profile::scope ps("backward");
   // Every VJP and grad accumulation evaluates on the spot; keep those kernels
   // in flight and drain the device once when the walk ends.
   tl::defer_flush defer;

@@ -1,0 +1,111 @@
+# Conformance: stdlib §8 (Tensor) — Tensor.profile / Tensor.profile_scope.
+# See docs/stdlib.md "Profiling".
+#
+# The CPU path is what every lane can assert on: scope entries and the
+# evaluator's per-op scopes under them. A device, when there is one, adds
+# kernel rows; their names are the backend's, so only their presence is
+# checked.
+
+Tensor.use_cpu()
+
+let w = Tensor.from([[1.0, 2.0], [3.0, 4.0]]).requires_grad()
+let x = Tensor.from([[0.5], [0.25]]).requires_grad()
+
+let find = fn (rows, path, kernel) {
+  mut hit = nil
+  for r in rows {
+    if r.path == path && r.kernel == kernel {
+      hit = r
+    }
+  }
+  hit
+}
+
+let rows = Tensor.profile(fn () {
+  let loss = Tensor.profile_scope('forward', fn () {
+    let y = w.dot(x)
+    let l = (y * y).sum(0).sum(0)
+    Tensor.eval(l)
+    l
+  })
+  Tensor.profile_scope('bwd', fn () {
+    loss.backward()
+  })
+  'dropped'  # fn's own result is not what profile() returns
+})
+assert_eq(type_of(rows), 'Array')
+assert_eq(type_of(rows[0]), 'Object')
+assert_eq(rows[0].keys(), ['path', 'kernel', 'count', 'host_ms', 'device_ms',
+                           'device_timed', 'bytes'])
+
+# The caller's scopes, with the evaluator's op scopes nested under them.
+let forward = find(rows, 'forward', '')
+assert_eq(forward.count, 1)
+assert_gt(forward.host_ms, 0.0)
+let fwd_dot = find(rows, 'forward/dot', '')
+assert_eq(fwd_dot.count, 1)
+assert_ge(forward.host_ms, fwd_dot.host_ms)
+
+# backward() opens its own scope and one per VJP, named by the culebra op.
+assert_eq(find(rows, 'bwd/backward', '').count, 1)
+assert_eq(find(rows, 'bwd/backward/Dot', '').count, 1)
+assert_eq(find(rows, 'bwd/backward/Sum', '').count, 2)
+assert_eq(find(rows, 'bwd/backward/Mul', '').count, 1)
+
+# The CPU path launches nothing: every row is a scope's own.
+for r in rows {
+  assert_eq(r.kernel, '')
+  assert_eq(r.device_timed, 0)
+  assert_eq(r.bytes, 0)
+}
+
+# A session is one profile() call: the next starts from nothing, and work
+# outside any session leaves no trace in it.
+Tensor.eval(w.dot(x))
+let again = Tensor.profile(fn () {
+  Tensor.profile_scope('later', fn () {
+    Tensor.eval(w.dot(x))
+  })
+})
+assert_eq(find(again, 'forward', ''), nil)
+assert_eq(find(again, 'later/dot', '').count, 1)
+
+# profile_scope returns what fn returns, in or out of a session.
+assert_eq(Tensor.profile_scope('outside', fn () { 42 }), 42)
+
+# A throw out of fn closes the session on the way out.
+assert_throws('ValueError', fn () {
+  Tensor.profile(fn () {
+    throw {kind: 'ValueError', message: 'inside'}
+  })
+})
+let after_throw = Tensor.profile(fn () {
+  Tensor.profile_scope('clean', fn () {
+    Tensor.eval(w.dot(x))
+  })
+})
+assert_eq(find(after_throw, 'clean/dot', '').count, 1)
+
+# With a device: the matmul's kernels land under the evaluator's dot scope.
+if Tensor.gpu_available() {
+  Tensor.use_gpu()
+  let a = Tensor.ones(64, 64)
+  let b = Tensor.ones(64, 64)
+  Tensor.eval(a, b)
+  let dev = Tensor.profile(fn () {
+    Tensor.profile_scope('mm', fn () {
+      Tensor.eval(a.dot(b))
+    })
+  })
+  mut launches = 0
+  for r in dev {
+    if r.path == 'mm/dot' && r.kernel != '' && r.kernel != 'wait' &&
+       r.kernel != 'h2d' && r.kernel != 'd2h' {
+      launches = launches + r.count
+    }
+  }
+  assert_ge(launches, 1)
+  Tensor.use_cpu()
+}
+
+inspect("test_tensor_profile: OK")

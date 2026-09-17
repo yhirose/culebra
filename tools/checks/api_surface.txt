@@ -339,6 +339,8 @@ Tensor.use_gpu() -> Nil
 Tensor.use_auto() -> Nil
 Tensor.gpu_available() -> Bool
 Tensor.device() -> String
+Tensor.profile(fn) -> Array
+Tensor.profile_scope(label, fn) -> Any
 JSON.stringify(v, indent=0, sort_keys=false, lines=false) -> String
 JSON.parse(s, lines=false, number_mode='auto', jsonc=false) -> Any
 Args.parse(argv: Array<String>, spec: Object) -> Object

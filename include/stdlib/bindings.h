@@ -7529,20 +7529,31 @@ inline JitValue _ns_tensor_adam_step(JitValue* a, int64_t) {
       _ns_adapt::take_long(a[8]));
   return _ns_adapt::v_nil();
 }
-inline JitValue _ns_tensor_no_grad(JitValue* a, int64_t) {
-  // The "Function" gate also admits a structural callable (a __call__
-  // object), but the closure-invoke ABI only handles real closures.
-  // interp's _invoke_callback rejects a non-closure via to_function();
-  // mirror that exact wording (call-site position is filled by the
-  // dispatch wrapper) instead of reinterpret_cast'ing into a crash.
-  if (a[0].tag != TAG_FUNC) {
+// The "Function" gate also admits a structural callable (a __call__
+// object), but the closure-invoke ABI only handles real closures.
+// interp's _invoke_callback rejects a non-closure via to_function();
+// mirror that exact wording (call-site position is filled by the
+// dispatch wrapper) instead of reinterpret_cast'ing into a crash.
+inline JitClosure* _ns_tensor_closure(JitValue v) {
+  if (v.tag != TAG_FUNC) {
     throw culebra::CulebraError(
         "TypeError",
         culebra::type_mismatch_message("Function",
-                                       culebra_runtime_type_of(a[0].tag)));
+                                       culebra_runtime_type_of(v.tag)));
   }
-  return culebra_runtime_tensor_no_grad(
-      reinterpret_cast<JitClosure*>(a[0].data));
+  return reinterpret_cast<JitClosure*>(v.data);
+}
+inline JitValue _ns_tensor_no_grad(JitValue* a, int64_t) {
+  return culebra_runtime_tensor_no_grad(_ns_tensor_closure(a[0]));
+}
+inline JitValue _ns_tensor_profile(JitValue* a, int64_t) {
+  return _ns_adapt::v_array(
+      culebra_runtime_tensor_profile(_ns_tensor_closure(a[0])));
+}
+inline JitValue _ns_tensor_profile_scope(JitValue* a, int64_t) {
+  std::string label(_ns_adapt::require_sv(a[0], "label"));
+  return culebra_runtime_tensor_profile_scope(label.c_str(),
+                                              _ns_tensor_closure(a[1]));
 }
 // Activations relu/sigmoid/softmax are Tensor instance methods
 // (`t.relu()`), dispatched in compile_builtin_method — not namespace
@@ -9240,6 +9251,8 @@ inline const NsMethod kNsRows_Tensor[] = {
   {"Tensor", "scatter_to_axis", 3, &_ns_tensor_scatter_to_axis},
   {"Tensor", "adam_step", 9, &_ns_tensor_adam_step},
   {"Tensor", "no_grad",   1, &_ns_tensor_no_grad, nullptr, "Function", "fn"},
+  {"Tensor", "profile",   1, &_ns_tensor_profile, nullptr, "Function", "fn"},
+  {"Tensor", "profile_scope", 2, &_ns_tensor_profile_scope, nullptr, "String", "label"},
   {"Tensor", "use_cpu",       0, &_ns_tensor_use_cpu},
   {"Tensor", "use_gpu",       0, &_ns_tensor_use_gpu},
   {"Tensor", "use_auto",      0, &_ns_tensor_use_auto},
@@ -11039,6 +11052,9 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::tensor_to_array, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_item, jit.valueType_, ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_no_grad, jit.valueType_, ptrTy);
+  jit.module_->getOrInsertFunction(rt::tensor_profile, ptrTy, ptrTy);
+  jit.module_->getOrInsertFunction(rt::tensor_profile_scope, jit.valueType_,
+                                   ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_dot, ptrTy, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_index_select, ptrTy, ptrTy,
                                    ptrTy);

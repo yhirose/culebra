@@ -1937,6 +1937,60 @@ Metalはビルド時に何も要りません。CUDAは`nvcc`が見つかった�
 自体は実行時にロードされるので、CUDAを有効にしたバイナリはGPUの無い
 マシンでもそのまま動き、`gpu_available()`が`false`を返すだけです。
 
+### プロファイル
+
+| 関数 | 効果 |
+| --- | --- |
+| `Tensor.profile(fn) -> Array` | エンジンのプロファイラを有効にして`fn`を実行し、記録した行を返す |
+| `Tensor.profile_scope(label, fn) -> Any` | `label`という名前のスコープの下で`fn`を実行し、`fn`の戻り値を返す |
+
+`Tensor.profile`が返すのは`fn`の実行中にプロファイラが記録した行で、
+`fn`自身の戻り値は捨てられます。セッション中、評価器は評価する演算ごとに
+その名前のスコープ（`dot`・`sum_to`・`layer_norm`など）を開き、
+`.backward()`は`backward`と、VJPごとにCulebra側の演算名（`Dot`・`LayerNorm`）
+のスコープを開きます。`Tensor.adam_step`は`adam_step`を開きます。入れ子の
+スコープは`/`でつないだパスになります。バックエンドが行うカーネル起動・
+ホストとデバイス間のコピー・ブロックする待ちは、そのとき一番内側で開いて
+いるスコープに帰属します。
+
+`Tensor.profile_scope`は自分で名付けたスコープ（学習のフェーズ、層など）を
+`fn`の周りに足し、`fn`の戻り値をそのまま返します。セッションの外では単に
+`fn`を呼ぶだけです。
+
+各行はObjectです:
+
+| フィールド | 意味 |
+| --- | --- |
+| `path` | スコープのパス（`'step/backward/Dot/dot'`） |
+| `kernel` | スコープ自身の行は`''`。その下の起動はカーネル名。コピーは`'h2d'` / `'d2h'`、ブロックする待ちは`'wait'` |
+| `count` | スコープに入った回数、または起動 / コピー / 待ちの回数 |
+| `host_ms` | スコープの行: 中身を含む経過時間。コピーと待ちの行: ホストがブロックされた時間 |
+| `device_ms` | カーネルの行: デバイス上のカーネル時間の合計（バックエンドが計れる場合） |
+| `device_timed` | その行の起動のうち`device_ms`に含まれる数 |
+| `bytes` | コピーの行: 転送したバイト数 |
+
+行はパスごとにまとまり、パスはスコープの経過時間の降順、各パスの中は
+スコープ自身の行が先で、カーネルはデバイス時間の降順です。`device_ms`は
+CUDAでは起動ごとに計ります。Metalは起動ではなくコマンドバッファ単位でしか
+計れないので、カーネルの行は`device_timed`が0で、バッチの時間は行に含まれ
+ません。WebGPUは起動回数だけを数えます。`device_timed`が`count`より小さい
+行は計れなかったのであって、速いのではありません。
+
+```culebra
+let w = Tensor.from([[1.0, 2.0], [3.0, 4.0]]).requires_grad()
+let rows = Tensor.profile(fn () {
+  Tensor.profile_scope('step', fn () {
+    w.dot(w).sum(0).sum(0).backward()
+  })
+})
+let paths = rows.map(|r| r.path)
+inspect(paths.filter(|p| p.starts_with('step/backward/Dot')).size() > 0)  # => true
+```
+
+環境変数`TL_PROFILE=1`を付けると、プログラム全体を最初の評価から
+プロファイルし、終了時に同じ行を表としてstderrに出します。コードの
+変更は要りません。
+
 ---
 
 ## 9. `JSON`

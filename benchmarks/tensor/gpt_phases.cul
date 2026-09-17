@@ -3,16 +3,14 @@
 # phase's kernels have finished before the clock moves on. It answers "where
 # does a step go?", which a single ms/step number cannot.
 #
-# `PHASES_ABLATE` replaces one op with a cheap stand-in of the same shape that
-# keeps every parameter in the graph, so the drop in a phase is that op's
-# share of it:
-#
-#   attn   q.causal_attention(k, v)  ->  q*0.5 + k*0.5 + v
-#   ln     x.layer_norm(g, b)        ->  x*g + b
-#   head   softmax_cross_entropy     ->  logits.mean(1)
+# `PHASES_PROFILE=1` goes one level down: after the timed steps it runs one
+# more under `Tensor.profile`, with each phase as a scope (`.backward()`
+# names its own), and prints the rows — per op, per kernel, with the device
+# time where the backend stamps it (CUDA) — so the phase that dominates can
+# be read op by op.
 #
 # Usage: ./build/culebra --jit benchmarks/tensor/gpt_phases.cul [cpu|gpu|auto] [small|medium|large]
-#        PHASES_ABLATE=attn ./build/culebra --jit benchmarks/tensor/gpt_phases.cul gpu medium
+#        PHASES_PROFILE=1 ./build/culebra --jit benchmarks/tensor/gpt_phases.cul gpu medium
 
 let device = if !Sys.argv.empty() {
   Sys.argv[0]
@@ -24,7 +22,7 @@ let config = if Sys.argv.size() > 1 {
 } else {
   'small'
 }
-let ablate = Sys.env('PHASES_ABLATE', 'none')
+let profile = Sys.env('PHASES_PROFILE', '') != ''
 if device == 'cpu' {
   Tensor.use_cpu()
 } else if device == 'gpu' {
@@ -120,7 +118,7 @@ for l in layers {
   }
 }
 
-# --- Model, with one op swappable for a same-shape stand-in ---
+# --- Model ---
 
 let split_heads = fn (t) {
   t.reshape([B, T, H, D]).permute([0, 2, 1, 3]).reshape([B * H, T, D])
@@ -128,41 +126,21 @@ let split_heads = fn (t) {
 let merge_heads = fn (t) {
   t.reshape([B, H, T, D]).permute([0, 2, 1, 3]).reshape([N, C])
 }
-let attention = fn (q, k, v) {
-  if ablate == 'attn' {
-    q * 0.5 + k * 0.5 + v
-  } else {
-    q.causal_attention(k, v)
-  }
-}
-let norm = fn (x, g, b) {
-  if ablate == 'ln' {
-    x * g + b
-  } else {
-    x.layer_norm(g, b)
-  }
-}
-let head = fn (logits) {
-  if ablate == 'head' {
-    logits.mean(1).mean(0)
-  } else {
-    logits.softmax_cross_entropy(targets).mean(0)
-  }
-}
 
 let forward = fn () {
   mut x = wte.t.index_select(tokens) + wpe.t.index_select(positions)
   for l in layers {
-    let h = norm(x, l.ln1_g.t, l.ln1_b.t)
+    let h = x.layer_norm(l.ln1_g.t, l.ln1_b.t)
     let q = split_heads(h.dot(l.wq.t) + l.bq.t)
     let k = split_heads(h.dot(l.wk.t) + l.bk.t)
     let v = split_heads(h.dot(l.wv.t) + l.bv.t)
-    let ctx = merge_heads(attention(q, k, v))
+    let ctx = merge_heads(q.causal_attention(k, v))
     x += ctx.dot(l.wo.t) + l.bo.t
-    let h2 = norm(x, l.ln2_g.t, l.ln2_b.t)
+    let h2 = x.layer_norm(l.ln2_g.t, l.ln2_b.t)
     x += (h2.dot(l.fc1.t) + l.b1.t).relu().dot(l.fc2.t) + l.b2.t
   }
-  head(norm(x, lnf_g.t, lnf_b.t).dot(wte.t.transpose()))  # tied head
+  let logits = x.layer_norm(lnf_g.t, lnf_b.t).dot(wte.t.transpose())  # tied head
+  logits.softmax_cross_entropy(targets).mean(0)
 }
 
 mut m = []
@@ -233,4 +211,75 @@ for s in WARMUP + 1..=WARMUP + STEPS {
 let fwd = best[0]
 let bwd = best[1]
 let opt = best[2]
-print("PHASES device={device} config={config} ablate={ablate} forward={fwd} backward={bwd} adam={opt} step={total} loss0={loss0} loss={last}\n")
+print("PHASES device={device} config={config} forward={fwd} backward={bwd} adam={opt} step={total} loss0={loss0} loss={last}\n")
+
+# --- One more step under the profiler, each phase a scope ---
+
+if profile {
+  let step = WARMUP + STEPS + 1
+  mut walls = [0.0, 0.0, 0.0]
+  let rows = Tensor.profile(fn () {
+    for p in params {
+      p.t.zero_grad()
+    }
+    let t0 = Sys.time()
+    let loss = Tensor.profile_scope('forward', fn () {
+      let l = forward()
+      l.item()
+      l
+    })
+    let t1 = Sys.time()
+    # .backward() opens its own `backward` scope; the sync after it lands
+    # at the top level, which is where a phase boundary belongs.
+    loss.backward()
+    sync_scalar(lnf_b.t.grad())
+    let t2 = Sys.time()
+    Tensor.profile_scope('adam', fn () {
+      adam(step)
+      sync_scalar(lnf_b.t)
+    })
+    let t3 = Sys.time()
+    walls = [1000.0 * (t1 - t0), 1000.0 * (t2 - t1), 1000.0 * (t3 - t2)]
+  })
+  # The profiled step's own clock, against the timed steps above: the
+  # per-launch events cost something, and this is what they cost here.
+  print("profiled step: forward={walls[0]} backward={walls[1]} adam={walls[2]}\n")
+  let pad = fn (s, n) {
+    let str = to_string(s)
+    if str.size() >= n {
+      str
+    } else {
+      ' '.repeat(n - str.size()) + str
+    }
+  }
+  let ms = fn (x) {
+    to_string(Math.round(x * 1000) / 1000.0)
+  }
+  # Every phase's device time is the sum of the kernel rows beneath it.
+  mut device = {}
+  for r in rows {
+    if r.kernel != '' && r.device_timed > 0 {
+      let phase = r.path.split('/')[0]
+      device[phase] = device.get(phase, 0.0) + r.device_ms
+    }
+  }
+  print("device ms by phase: {device}\n")
+  print("{pad('count', 8)} {pad('host ms', 11)} {pad('device ms', 11)}  path / kernel\n")
+  for r in rows {
+    if r.kernel == '' {
+      print("{pad(r.count, 8)} {pad(ms(r.host_ms), 11)} {pad('', 11)}  {r.path}\n")
+    } else {
+      let dev = if r.device_timed > 0 {
+        ms(r.device_ms)
+      } else {
+        ''
+      }
+      let host = if r.host_ms > 0.0 {
+        ms(r.host_ms)
+      } else {
+        ''
+      }
+      print("{pad(r.count, 8)} {pad(host, 11)} {pad(dev, 11)}    {r.kernel}\n")
+    }
+  }
+}

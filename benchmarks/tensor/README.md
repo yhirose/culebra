@@ -32,13 +32,15 @@ runs on `mps`.
 `gpt_phases.cul` asks a different question of the same step — where does it
 go? It runs the model of `gpt_train.cul` with a host read between the
 forward, the backward and Adam, so each phase's kernels have finished before
-the clock moves on, and `PHASES_ABLATE` swaps one op for a cheap stand-in of
-the same shape, which makes the drop that op's share of the phase. It reports
-Culebra alone; a ratio against PyTorch is what the table above is for.
+the clock moves on. `PHASES_PROFILE=1` then runs one more step under
+`Tensor.profile` with each phase as a scope and prints the rows: per op, per
+kernel, with the device time where the backend stamps it (see "Profiling" in
+`docs/stdlib.md`). It reports Culebra alone; a ratio against PyTorch is what
+the table above is for.
 
 ```bash
 ./build/culebra --jit benchmarks/tensor/gpt_phases.cul gpu medium
-PHASES_ABLATE=attn ./build/culebra --jit benchmarks/tensor/gpt_phases.cul gpu medium
+PHASES_PROFILE=1 ./build/culebra --jit benchmarks/tensor/gpt_phases.cul gpu medium
 ```
 
 ## Method

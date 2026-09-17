@@ -976,6 +976,11 @@ inline constexpr CanonParam kCanonParams_Tensor[] = {
   {"beta2", false, false, false, false, false, "Float", CanonDefault::None, 0, {}},
   {"eps", false, false, false, false, false, "Float", CanonDefault::None, 0, {}},
   {"step", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 27: Tensor.profile
+  {"fn", false, false, false, false, false, "Function", CanonDefault::None, 0, {}},
+  // 28: Tensor.profile_scope
+  {"label", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
+  {"fn", false, false, false, false, false, "Function", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonSigs_Tensor[] = {
@@ -991,6 +996,8 @@ inline constexpr CanonSig kCanonSigs_Tensor[] = {
   {"Tensor", "", "index_add", kCanonParams_Tensor + 12, 3, "Tensor", 3, 3, false, -1, -1, -1},
   {"Tensor", "", "scatter_to_axis", kCanonParams_Tensor + 15, 3, "Tensor", 3, 3, false, -1, -1, -1},
   {"Tensor", "", "adam_step", kCanonParams_Tensor + 18, 9, "", 9, 9, false, -1, -1, -1},
+  {"Tensor", "", "profile", kCanonParams_Tensor + 27, 1, "Array", 1, 1, false, -1, -1, -1},
+  {"Tensor", "", "profile_scope", kCanonParams_Tensor + 28, 2, "Any", 2, 2, false, -1, -1, -1},
   {"Tensor", "", "use_cpu", nullptr, 0, "", 0, 0, false, -1, -1, -1},
   {"Tensor", "", "use_gpu", nullptr, 0, "", 0, 0, false, -1, -1, -1},
   {"Tensor", "", "use_auto", nullptr, 0, "", 0, 0, false, -1, -1, -1},

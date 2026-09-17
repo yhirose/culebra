@@ -159,6 +159,8 @@ assert_eq(
     "scatter_to_axis",
     "adam_step",
     "no_grad",
+    "profile",
+    "profile_scope",
     "use_cpu",
     "use_gpu",
     "use_auto",
