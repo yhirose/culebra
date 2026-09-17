@@ -91,3 +91,9 @@ kw|Math.abs(x: 1)
 # The same change makes a native parameter's name user-facing, so the type
 # error names the documented `arr` where the baseline named the internal `a`.
 tensor|Tensor.from(5)
+
+# Tensor.no_grad's closure check is the adapters' shared one since v0.5.0
+# (Tensor.profile / profile_scope use it too), so a `__call__` object gets
+# "parameter 'fn' expects Function" where the baseline spelled out the type
+# it was handed.
+tensor|*Tensor.no_grad(C.new())
