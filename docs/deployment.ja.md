@@ -492,7 +492,7 @@ OpenSSLを使います。`CPPHTTPLIB_OPENSSL_SUPPORT`なしでもhttpの送受�
 
 ```sh
 c++ -std=c++23 ...上の-Iリスト... \
-    -DCULEBRA_HTTP_ENABLED -DCPPHTTPLIB_ZLIB_SUPPORT \
+    -DCULEBRA_HTTP_ENABLED \
     -DCPPHTTPLIB_OPENSSL_SUPPORT $(pkg-config --cflags openssl) \
     -I culebra/vendor/cpp-httplib \
     host.cpp $(pkg-config --libs openssl) -lz -o host

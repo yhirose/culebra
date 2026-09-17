@@ -502,7 +502,7 @@ serves and fetches plain http, and an https URL raises `HttpError`:
 
 ```sh
 c++ -std=c++23 ...the -I list above... \
-    -DCULEBRA_HTTP_ENABLED -DCPPHTTPLIB_ZLIB_SUPPORT \
+    -DCULEBRA_HTTP_ENABLED \
     -DCPPHTTPLIB_OPENSSL_SUPPORT $(pkg-config --cflags openssl) \
     -I culebra/vendor/cpp-httplib \
     host.cpp $(pkg-config --libs openssl) -lz -o host

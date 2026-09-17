@@ -245,11 +245,10 @@ if(CULEBRA_ENABLE_HTTP)
   endif()
   find_package(OpenSSL REQUIRED)
   message(STATUS "Found OpenSSL ${OPENSSL_VERSION} (static)")
-  # cpp-httplib then auto-sends Accept-Encoding and transparently decompresses
-  # gzip responses (decompress_ defaults true). zlib is found unconditionally
-  # above (also used by the Compress namespace).
-  add_compile_definitions(CULEBRA_HTTP_ENABLED CPPHTTPLIB_OPENSSL_SUPPORT
-                          CPPHTTPLIB_ZLIB_SUPPORT)
+  # CPPHTTPLIB_ZLIB_SUPPORT (transparent gzip) is set by http.h itself, so a
+  # header-only host gets it too; zlib is found unconditionally above (also
+  # used by the Compress namespace).
+  add_compile_definitions(CULEBRA_HTTP_ENABLED CPPHTTPLIB_OPENSSL_SUPPORT)
   # Make OpenSSL headers visible to every TU that includes httplib.h — notably
   # culebra_rt_http (the Http feature archive), which compiles httplib.h but
   # doesn't link it (the AOT consumer's link resolves the symbols via

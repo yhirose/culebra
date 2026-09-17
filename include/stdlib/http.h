@@ -46,6 +46,13 @@
 // Windows AOT binary stop linking OpenSSL/zlib unconditionally (src/main.cc,
 // win_static) for a program that never uses Http.
 #if !defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+// Transparent gzip on responses. Set here rather than by the build so an
+// embedding host that includes this header gets the same client the CLI has:
+// without it a gzip-encoded body is an HttpError, not a decoded string. zlib
+// is linked everywhere anyway (Compress).
+#ifndef CPPHTTPLIB_ZLIB_SUPPORT
+#define CPPHTTPLIB_ZLIB_SUPPORT
+#endif
 #include <httplib.h>
 #endif
 
