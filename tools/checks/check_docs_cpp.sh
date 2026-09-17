@@ -9,9 +9,11 @@
 # one. Two checks, cheap first:
 #
 #   A. Every `#include <x>` inside a ```cpp fence resolves — to a header
-#      under include/, or to one the compiler finds on its own. This is
-#      the half that catches a rename, and it runs in under a second, so
-#      it is also available as --fast for the always-on lane.
+#      under include/, or to one the compiler finds on its own. Prose
+#      counts too: a page that names `<base/shared.h>` in a sentence is
+#      telling a host to include it, and a rename leaves it behind the
+#      same way (the page sent hosts to `<stdlib_rt.h>` long after that
+#      header was gone). Runs in under a second, so --fast has it.
 #
 #   B. Every fence that is a complete program (it has `int main(`)
 #      compiles with the flags deployment.md documents. ~25s per block,
@@ -119,8 +121,8 @@ while IFS= read -r line; do
   printf '#include <%s>\n' "$hdr" \
     | "$CXXBIN" -std=c++23 -fsyntax-only -x c++ - 2>/dev/null && continue
   echo "docs-cpp FAIL: <$hdr> is neither under include/ nor findable —" >&2
-  echo "  renamed, moved, or a typo. Named by a \`\`\`cpp block in the docs" >&2
-  echo "  or by the embedding sample on the landing page." >&2
+  echo "  renamed, moved, or a typo. Named by a \`\`\`cpp block, by the" >&2
+  echo "  prose around it, or by the landing page's embedding sample." >&2
   missing=1
 done < <({
   grep -ho '#include *<[^>]*>' "$TMP"/*.cpp 2>/dev/null
@@ -131,6 +133,10 @@ done < <({
   # the include's own brackets — the other order eats `#include</span>`.
   sed -e 's/<[^>]*>//g' -e 's/&lt;/</g' -e 's/&gt;/>/g' site/*.html 2>/dev/null \
     | grep -ho '#include *<[^>]*>'
+  # Headers named in prose, as `<base/shared.h>`. Nothing compiles those, and
+  # a backticked <...h> is always a header, so the shape alone identifies them.
+  grep -hoE '`<[A-Za-z0-9_/]+\.h>`' "${SOURCES[@]}" 2>/dev/null \
+    | tr -d '`' | sed 's/^/#include /'
 } | sort -u)
 (( missing )) && fail=1
 (( missing )) || echo "docs-cpp OK (includes): every <header> in $blocks block(s) and site/ resolves"

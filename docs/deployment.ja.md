@@ -417,9 +417,9 @@ culebra::vm::Value val;
 embed.run(modules, val, msgs);
 ```
 
-LLVMレーンを使う場合は`<stdlib_rt.h>`を追加し、起動時に
-`culebra::install_jit_stdlib()`を1回呼んで、
-`culebra::JIT::run(ast)`を使います。
+LLVMレーンを使う場合は、起動時に`culebra::install_jit_stdlib()`を1回
+呼んで`culebra::JIT::run(ast)`を使います。どちらも`CULEBRA_JIT_ENABLED`
+のもとで`<culebra.h>`が宣言します。
 
 ### ホストプログラムのビルド
 
@@ -726,7 +726,7 @@ embed.call("connect", "api", opts);           // Valueはそのまま通る
 
 ### スクリプトエラーの扱い
 
-スクリプト内で発生した失敗は`culebra::CulebraError`（`<shared.h>`
+スクリプト内で発生した失敗は`culebra::CulebraError`（`<base/shared.h>`
 で定義、`std::runtime_error`のサブクラス）として送出されます。
 スクリプト側`try`/`catch`で見える構造化フィールドをそのまま保
 持します:

@@ -427,9 +427,9 @@ culebra::vm::Value val;
 embed.run(modules, val, msgs);
 ```
 
-For the LLVM lane, add `<stdlib_rt.h>`, call
-`culebra::install_jit_stdlib()` once at startup, and use
-`culebra::JIT::run(ast)`.
+For the LLVM lane, call `culebra::install_jit_stdlib()` once at startup
+and use `culebra::JIT::run(ast)`; `<culebra.h>` declares both, under
+`CULEBRA_JIT_ENABLED`.
 
 ### Building your host program
 
@@ -733,7 +733,7 @@ embed.call("connect", "api", opts);           // Value args pass through
 ### Handling script errors
 
 Failures inside script code surface as `culebra::CulebraError`
-(declared in `<shared.h>`), a `std::runtime_error` subclass carrying
+(declared in `<base/shared.h>`), a `std::runtime_error` subclass carrying
 the structured fields exposed to script `try`/`catch`:
 
 ```cpp
