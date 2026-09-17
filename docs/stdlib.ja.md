@@ -1544,6 +1544,29 @@ let scores = Tensor.randn(4, 3)
 let masked = Tensor.where(mask, scores, -1.0e9)  # padding maskのパターン
 ```
 
+#### `Tensor.adam_step(p, m, v, g, lr, beta1, beta2, eps, step) -> Nil`
+
+Adamの更新を1パラメータ分その場で行います: モーメント`m`と`v`が勾配`g`で進み、
+続いて`p`がバイアス補正済みの比の分だけ動きます。4つは同じ形・同じdtypeで、
+`p`・`m`・`v`は書き換えられるのでviewであってはならず、3つとも評価済みである
+必要があります。`step`は1始まりで、バイアス補正の指数です。
+
+式に開くと`m = m*beta1 + g*(1-beta1)`、`v = v*beta2 + g*g*(1-beta2)`、
+`p -= m/(1-beta1^step) * lr / (sqrt(v/(1-beta2^step)) + eps)`となり、
+1パラメータあたり15個前後の演算と、そのそれぞれがパラメータと同じ大きさの
+バッファを確保します。融合したこの形なら4つを1回なめるだけで、CUDAでは
+カーネル起動も1回です。
+
+```culebra
+# doctest: skip
+for i in range(params.size()) {
+  let p = params[i]
+  Tensor.adam_step(p, moments[i], velocities[i], p.grad(),
+                   lr: 3.0e-4, beta1: 0.9, beta2: 0.95, eps: 1.0e-8,
+                   step: t)
+}
+```
+
 #### `Tensor.index_add(indices: Tensor, values: Tensor, target_shape: Array) -> Tensor`
 
 `.index_select()`の正確な双対: `t.index_select(indices)`のような形の

@@ -7520,6 +7520,15 @@ inline JitValue _ns_tensor_from_csv(JitValue* a, int64_t) {
   return _ns_adapt::v_tensor(
       culebra_runtime_tensor_from_csv(_ns_adapt::take_str(a[0])));
 }
+inline JitValue _ns_tensor_adam_step(JitValue* a, int64_t) {
+  culebra_runtime_tensor_adam_step(
+      _ns_adapt::take_tensor(a[0]), _ns_adapt::take_tensor(a[1]),
+      _ns_adapt::take_tensor(a[2]), _ns_adapt::take_tensor(a[3]),
+      _ns_adapt::take_double(a[4]), _ns_adapt::take_double(a[5]),
+      _ns_adapt::take_double(a[6]), _ns_adapt::take_double(a[7]),
+      _ns_adapt::take_long(a[8]));
+  return _ns_adapt::v_nil();
+}
 inline JitValue _ns_tensor_no_grad(JitValue* a, int64_t) {
   // The "Function" gate also admits a structural callable (a __call__
   // object), but the closure-invoke ABI only handles real closures.
@@ -9229,6 +9238,7 @@ inline const NsMethod kNsRows_Tensor[] = {
   {"Tensor", "where",     3, &_ns_tensor_where},
   {"Tensor", "index_add", 3, &_ns_tensor_index_add},
   {"Tensor", "scatter_to_axis", 3, &_ns_tensor_scatter_to_axis},
+  {"Tensor", "adam_step", 9, &_ns_tensor_adam_step},
   {"Tensor", "no_grad",   1, &_ns_tensor_no_grad, nullptr, "Function", "fn"},
   {"Tensor", "use_cpu",       0, &_ns_tensor_use_cpu},
   {"Tensor", "use_gpu",       0, &_ns_tensor_use_gpu},

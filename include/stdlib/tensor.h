@@ -716,6 +716,70 @@ CULEBRA_RT_TENSOR_EVAL_LINKAGE bool tensor_inplace_binop(TensorImpl& dst, Op op,
 #endif
 }
 
+// Adam's update for one parameter, fused and in place: m and v advance on the
+// gradient, then p moves by the bias-corrected ratio. The loop every optimizer
+// writes today spells that as ~15 ops, each allocating a buffer the size of the
+// parameter; this is one pass (one kernel launch on CUDA).
+//
+// Same ownership rule as the in-place binop above — p, m and v write into their
+// own buffers, so a view or an unevaluated node is a caller error rather than a
+// silent copy. `step` is 1-based: the exponent the bias correction uses.
+CULEBRA_RT_TENSOR_EVAL_LINKAGE void tensor_adam_step(TensorImpl& p, TensorPtr m,
+                                                     TensorPtr v, TensorPtr g,
+                                                     double lr, double beta1,
+                                                     double beta2, double eps,
+                                                     int64_t step) {
+#ifdef CULEBRA_RT_TENSOR_EVAL_WEAK
+  (void)p, (void)m, (void)v, (void)g, (void)lr, (void)beta1, (void)beta2,
+      (void)eps, (void)step;
+  throw CulebraError("InternalError",
+                     "tensor runtime entered in a no-tensor binary", 0, 0);
+#else
+  if (step < 1) {
+    throw CulebraError("ValueError",
+                       "Tensor.adam_step: step is 1-based; got " +
+                           std::to_string(step) + ".");
+  }
+  if (p.dtype != m->dtype || p.dtype != v->dtype || p.dtype != g->dtype) {
+    throw CulebraError("ValueError", "Tensor.adam_step: dtype mismatch.");
+  }
+  if (!(p.shape == m->shape) || !(p.shape == v->shape) ||
+      !(p.shape == g->shape)) {
+    throw CulebraError("ValueError",
+                       "Tensor.adam_step: p, m, v and g must share one shape.");
+  }
+  if (p.is_view || m->is_view || v->is_view) {
+    throw CulebraError("ValueError",
+                       "Tensor.adam_step: p, m and v are updated in place, so "
+                       "none of them may be a view.");
+  }
+  if (!p.value.materialized() || !m->value.materialized() ||
+      !v->value.materialized()) {
+    throw CulebraError("ValueError",
+                       "Tensor.adam_step: p, m and v must be evaluated first "
+                       "(Tensor.eval or .detach()).");
+  }
+  double bc1 = 1.0 - std::pow(beta1, static_cast<double>(step));
+  double bc2 = 1.0 - std::pow(beta2, static_cast<double>(step));
+  if (bc1 == 0.0 || bc2 == 0.0) {
+    throw CulebraError("ValueError",
+                       "Tensor.adam_step: beta^step is 1, leaving no bias "
+                       "correction to divide by.");
+  }
+  bool ran = _tl_guard([&] {
+    return tl::array::adam_step(
+        p.value, m->value, v->value, g->value, static_cast<float>(lr),
+        static_cast<float>(beta1), static_cast<float>(beta2),
+        static_cast<float>(eps), static_cast<float>(bc1),
+        static_cast<float>(bc2));
+  });
+  if (!ran) {
+    throw CulebraError("ValueError",
+                       "Tensor.adam_step: p, m, v and g must be contiguous.");
+  }
+#endif
+}
+
 // Build a lazy reduction along `axis`. Output shape drops that axis, or
 // keeps it as size 1 with `keepdims` (numpy's). op_param carries the axis;
 // the VJP reads keepdims off the ranks.

@@ -297,6 +297,7 @@ Tensor.randn(...)
 Tensor.from(arr: Array) -> Tensor
 Tensor.concat(parts: Array, axis: Long = 0) -> Tensor
 Tensor.where(cond: Tensor, a, b) -> Tensor
+Tensor.adam_step(p, m, v, g, lr, beta1, beta2, eps, step) -> Nil
 Tensor.index_add(indices: Tensor, values: Tensor, target_shape: Array) -> Tensor
 Tensor.scatter_to_axis(indices: Tensor, values: Tensor, size: Long) -> Tensor
 Tensor.from_csv(path: String) -> Tensor

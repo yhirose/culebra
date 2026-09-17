@@ -2513,6 +2513,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_tensor_eval_one(
   culebra::tensor_eval_node(*t->impl);
 }
 
+// Tensor.adam_step(p, m, v, g, ...) — one parameter's whole optimizer update,
+// written through p, m and v. See culebra::tensor_adam_step for the rules.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_tensor_adam_step(
+    JitTensor* p, JitTensor* m, JitTensor* v, JitTensor* g, double lr,
+    double beta1, double beta2, double eps, int64_t step) {
+  culebra::tensor_adam_step(*p->impl, m->impl, v->impl, g->impl, lr, beta1,
+                            beta2, eps, step);
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_transpose(
     JitTensor* t) {
   return _culebra_jit_tensor_register(culebra::tensor_transpose(t->impl));

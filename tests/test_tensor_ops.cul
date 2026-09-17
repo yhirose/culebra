@@ -35,6 +35,54 @@ let where_gy = Tensor.where(Tensor.from([[1.0, 0.0, 1.0]]), where_ga, where_gb)
 assert_eq(where_ga.grad().to_array(), [[1.0, 0.0, 3.0]])
 assert_eq(where_gb.grad().to_array(), [[0.0, 2.0, 0.0]])
 
+# --- Tensor.adam_step: the fused update lands where the composition does ----
+
+let adam_close = fn (got, want) {
+  for r in range(got.size()) {
+    for c in range(got[r].size()) {
+      assert_close(got[r][c], want[r][c], 1.0e-6)
+    }
+  }
+}
+
+let adam_p0 = Tensor.from([[0.5, -0.25], [1.5, -2.0]])
+let adam_m0 = Tensor.from([[0.1, 0.2], [-0.3, 0.4]])
+let adam_v0 = Tensor.from([[0.01, 0.04], [0.09, 0.16]])
+let adam_g = Tensor.from([[0.2, -0.4], [0.6, -0.8]])
+let adam_lr = 0.01
+let adam_b1 = 0.9
+let adam_b2 = 0.999
+let adam_eps = 1.0e-8
+let adam_t = 2
+let adam_bc1 = 1.0 - adam_b1 ** to_float(adam_t)
+let adam_bc2 = 1.0 - adam_b2 ** to_float(adam_t)
+
+# the composition an optimizer loop writes without this op
+let adam_m_ref = (adam_m0 * adam_b1 + adam_g * (1.0 - adam_b1)).detach()
+let adam_v_ref = (adam_v0 * adam_b2 + adam_g * adam_g * (1.0 - adam_b2)).detach()
+let adam_p_ref = (adam_p0 - (adam_m_ref * (adam_lr / adam_bc1)) /
+                  ((adam_v_ref * (1.0 / adam_bc2)).pow(0.5) + adam_eps)).detach()
+Tensor.eval(adam_m_ref, adam_v_ref, adam_p_ref)
+
+let adam_p = adam_p0.detach()
+let adam_m = adam_m0.detach()
+let adam_v = adam_v0.detach()
+Tensor.adam_step(adam_p, adam_m, adam_v, adam_g, lr: adam_lr, beta1: adam_b1,
+                 beta2: adam_b2, eps: adam_eps, step: adam_t)
+Tensor.eval(adam_p, adam_m, adam_v)
+adam_close(adam_m.to_array(), adam_m_ref.to_array())
+adam_close(adam_v.to_array(), adam_v_ref.to_array())
+adam_close(adam_p.to_array(), adam_p_ref.to_array())
+
+# the originals are untouched: adam_p holds its own buffer
+adam_close(adam_p0.to_array(), [[0.5, -0.25], [1.5, -2.0]])
+
+# a view cannot be written through, and step is 1-based
+assert_throws('ValueError', fn () {
+  Tensor.adam_step(adam_p, adam_m, adam_v, adam_g, lr: adam_lr, beta1: adam_b1,
+                   beta2: adam_b2, eps: adam_eps, step: 0)
+})
+
 # --- keepdims reductions: the VJP reads the kept axis off the ranks ---------
 
 let kd_x = Tensor.from([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]]).requires_grad()

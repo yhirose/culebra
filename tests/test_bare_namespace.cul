@@ -157,6 +157,7 @@ assert_eq(
     "where",
     "index_add",
     "scatter_to_axis",
+    "adam_step",
     "no_grad",
     "use_cpu",
     "use_gpu",

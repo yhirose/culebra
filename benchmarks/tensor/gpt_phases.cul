@@ -173,15 +173,10 @@ for p in params {
 }
 
 let adam = fn (step) {
-  let bc1 = 1.0 - BETA1 ** to_float(step)
-  let bc2 = 1.0 - BETA2 ** to_float(step)
   for i in range(params.size()) {
     let p = params[i]
-    let g = p.t.grad()
-    m[i] = (m[i] * BETA1 + g * (1.0 - BETA1)).detach()
-    v[i] = (v[i] * BETA2 + g * g * (1.0 - BETA2)).detach()
-    let update = (m[i] * (LR / bc1)) / ((v[i] * (1.0 / bc2)).pow(0.5) + EPS)
-    p.t = (p.t - update).detach().requires_grad()
+    Tensor.adam_step(p.t, m[i], v[i], p.t.grad(), lr: LR, beta1: BETA1,
+                     beta2: BETA2, eps: EPS, step: step)
   }
 }
 

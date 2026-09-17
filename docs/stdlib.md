@@ -1581,6 +1581,30 @@ let scores = Tensor.randn(4, 3)
 let masked = Tensor.where(mask, scores, -1.0e9)  # padding-mask pattern
 ```
 
+#### `Tensor.adam_step(p, m, v, g, lr, beta1, beta2, eps, step) -> Nil`
+
+Adam's update for one parameter, in place: the moments `m` and `v` advance on
+the gradient `g`, then `p` moves by the bias-corrected ratio. All four share
+one shape and dtype; `p`, `m` and `v` are written through, so none of them may
+be a view and all three must already be evaluated. `step` is 1-based — the
+exponent the bias correction uses.
+
+Written out, a step is `m = m*beta1 + g*(1-beta1)`, `v = v*beta2 +
+g*g*(1-beta2)` and `p -= m/(1-beta1^step) * lr / (sqrt(v/(1-beta2^step)) +
+eps)`: about fifteen operations per parameter, each allocating a buffer the
+size of the parameter. This is one pass over the four, and one kernel launch
+on CUDA.
+
+```culebra
+# doctest: skip
+for i in range(params.size()) {
+  let p = params[i]
+  Tensor.adam_step(p, moments[i], velocities[i], p.grad(),
+                   lr: 3.0e-4, beta1: 0.9, beta2: 0.95, eps: 1.0e-8,
+                   step: t)
+}
+```
+
 #### `Tensor.index_add(indices: Tensor, values: Tensor, target_shape: Array) -> Tensor`
 
 `.index_select()`'s exact dual: scatter-adds `values` (shaped like some
