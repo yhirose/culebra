@@ -450,6 +450,16 @@ stdlibがどれも無条件に参照するためです。`-lz`はAOTのリンク
 `Compress`とPNGライタが参照するため、スクリプトが使うかどうかに
 関わらずホスト側でリンクします。
 
+macOSでは、stdlibが無条件に参照するシステムフレームワークもリンクに
+加えます。`FS.watch`（FSEvents）の`CoreServices`と、`Tensor`
+バックエンドの`Accelerate`・`Metal`です:
+
+```sh
+c++ -std=c++23 ...上の-Iリスト... \
+    host.cpp -lz -framework CoreServices -framework Accelerate \
+    -framework Metal -o host
+```
+
 LLVMレーン（`JIT::run`・`JIT::build_object`）では、該当ヘッダを
 有効にするdefineとLLVM本体が加わります:
 

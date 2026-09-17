@@ -460,6 +460,16 @@ unconditionally. `-lz` is the zlib an AOT link needs
 for the same reason ([§1](#host-requirements)) — `Compress` and the PNG
 writer refer to it whether or not the script does.
 
+On macOS the link also names the system frameworks the stdlib reaches
+unconditionally: `CoreServices` for `FS.watch` (FSEvents), and
+`Accelerate` and `Metal` for the `Tensor` backends:
+
+```sh
+c++ -std=c++23 ...the -I list above... \
+    host.cpp -lz -framework CoreServices -framework Accelerate \
+    -framework Metal -o host
+```
+
 The LLVM lane — `JIT::run`, `JIT::build_object` — adds the define that
 turns those headers on, plus LLVM:
 

@@ -297,8 +297,9 @@ in [`docs/deployment.md`](docs/deployment.md#1-standalone-binary-build-culebra-b
 Embedding in a C++ host
 -----------------------
 
-The bytecode VM (no LLVM dependency) embeds into a C++23 host
-via a minimal session API:
+The bytecode VM embeds into a C++23 host. It is header-only and needs
+no LLVM: there is no library to install or link against, only the
+culebra checkout on the include path.
 
 ```cpp
 #include <culebra.h>
@@ -311,27 +312,140 @@ int main() {
 }
 ```
 
-The session outlives each run, so the host reads what a script left and
-calls back into it. A `Value` reads and writes as the container it is —
-an Object and an Array are references, so a write through one lands in
-the script's own value:
-
-```cpp
-embed.define("log", [](std::string m) { std::println("{}", m); });
-embed.eval(source);
-
-auto cfg = embed.global("config");
-auto port = cfg["port"].as<int64_t>();      // TypeError if it isn't a Long
-cfg["db"].set("host", "localhost");
-for (const auto& h : cfg["hosts"]) connect(h.as<std::string>());
-
-embed.call("update", 1, 2);
+```sh
+c++ -std=c++23 \
+    -I culebra/include \
+    -I culebra/vendor/cpp-peglib \
+    -I culebra/vendor/cpp-vmlib \
+    -I culebra/vendor/cpp-unicodelib \
+    -I culebra/vendor/cpp-tensorlib/include \
+    -I culebra/vendor/stb \
+    -I culebra/vendor/cpp-regexlib \
+    -I culebra/vendor/cpp-fstlib \
+    -I culebra/vendor/cpp-searchlib/include \
+    -isystem culebra/vendor/cpp-searchlib/third_party \
+    host.cpp -lz -o host
+# macOS also needs: -framework CoreServices -framework Accelerate -framework Metal
 ```
 
-Failures arrive as `culebra::CulebraError` with the kind, message and
-position the script's own `catch` sees. See
+### Calling C++ from a script
+
+`define` registers a C++ callable under a name the script calls like
+any other function. The argument and return types come from the
+callable's signature, and the script's values convert at the boundary:
+
+```cpp
+embed.define("log", [](std::string msg) { std::println("{}", msg); });
+
+embed.define("hypot", [](double x, double y) { return std::hypot(x, y); },
+             {"x", "y"});
+
+embed.define("role_of", [&](std::string name) -> std::optional<std::string> {
+  auto it = users.find(name);
+  if (it == users.end()) return std::nullopt;   // the script sees nil
+  return it->second;
+}, {"name"});
+
+embed.define("open_db", [](std::string path) -> int64_t {
+  throw std::runtime_error("cannot open " + path);
+}, {"path"});
+
+embed.eval(R"(
+  log("hypot = {hypot(3, 4)}")          # hypot = 5.0
+  log("bob is {role_of('bob')}")        # bob is nil
+
+  try {
+    open_db('/nope')
+  } catch e {
+    log("{e.kind}: {e.message}")        # RuntimeError: cannot open /nope
+  }
+)");
+```
+
+- **Types.** `int64_t` / `int` / `long`, `double` / `float`, `bool`,
+  `std::string` / `std::string_view`, and `culebra::vm::Value` (any
+  script value, passed through). `std::vector<T>` is an Array,
+  `std::map<std::string, T>` an Object, `std::optional<T>` is `nil`
+  when empty, and they nest.
+- **Wrong arguments.** A mistyped argument raises `TypeError` at the
+  call site (`hypot() argument 'x': expected a Float`), a wrong count
+  `ArityError`. The names in braces are optional and only label the
+  argument in that message; binding is positional.
+- **Exceptions.** A `std::exception` thrown from the callable reaches
+  the script as a catchable `RuntimeError`. Throw
+  `culebra::CulebraError` to pick the kind.
+- **State.** A lambda's captures are how a host function reaches host
+  state (`users` above). A capture by reference must outlive every
+  script that calls the function.
+
+### Calling a script from C++
+
+An `Embed` is a session: top-level bindings outlive the run that made
+them, so the host can read a script's globals afterwards and call its
+functions. Arguments convert the same way a host function's return
+does:
+
+```cpp
+embed.eval(R"(
+  config = {mut port: 8080, hosts: ['a.example', 'b.example'], db: {mut host: ''}}
+  fn handle(path, body) { "{path}: {body.size()} bytes" }
+)");
+
+auto reply = embed.call("handle", "/index", "hello");   // "/index: 5 bytes"
+```
+
+A `Value` reads and writes as the container it is. An Object and an
+Array are references, so a write through one lands in the script's own
+value:
+
+```cpp
+auto cfg = embed.global("config");
+auto port = cfg["port"].as<int64_t>();   // TypeError if it isn't a Long
+cfg["db"].set("host", "localhost");      // the script now sees config.db.host
+for (const auto& h : cfg["hosts"]) connect(h.as<std::string>());
+```
+
+`as<T>()` takes the same types `define` does and raises the script's
+own `TypeError` on a mismatch; `to_long()`, `to_string()` and the rest
+read a mismatch as `0` / `""` instead. The script's rules hold for a
+host write too: a property declared without `mut` raises
+`ImmutableError`.
+
+### Errors
+
+A failure in script code arrives at `eval` / `call` as
+`culebra::CulebraError`, carrying the kind, message and position a
+script's own `catch` would see. An uncaught `throw` arrives as kind
+`RuntimeError` with the `uncaught: ...` line the CLI prints:
+
+```cpp
+try {
+  embed.call("handle", "/index", 42);
+} catch (const culebra::CulebraError& e) {
+  std::println(stderr, "{}: {}", e.kind, e.what());   // TypeError: ...
+}
+```
+
+### Wrapping C++ classes
+
+`define` binds functions. To give a script a C++ class, with
+constructors, methods and deterministic destruction, declare it with
+`culebra::wrap` and build an extended `culebra` binary with
+`culebra wrap`. The class then works on the VM, `--jit`, and in the
+binaries that `culebra build` produces:
+
+```cpp
+culebra::wrap<demo::Vec2>("Geo", "Vec2")
+    .ctor<double, double>({"x", "y"})
+    .method<&demo::Vec2::len>("len")
+    .method<&demo::Vec2::scale>("scale", {"k"});
+```
+
 [`docs/deployment.md`](docs/deployment.md#2-embedding-culebra-in-a-c-host)
-for the JIT path, threading, and wrapping C++ classes.
+covers the rest: the JIT path, threading and multiple engines on one
+thread, running whole programs with imports, interrupts, and
+[`culebra wrap`](docs/deployment.md#3-wrapping-c-libraries-culebra-wrap)
+in full.
 
 Design choices
 --------------
