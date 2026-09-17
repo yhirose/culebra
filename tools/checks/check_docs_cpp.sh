@@ -26,6 +26,12 @@
 #      headers stopped needing (cpp-vmlib, once CodeGen left embed.h) sat
 #      in the docs with nothing to say so.
 #
+#   E. A host links and runs with the link line the docs give: the core
+#      build, then Http, SQLite (the amalgamation TU) and CodeGen the way
+#      the same page adds them. B is -fsyntax-only, so the macOS frameworks
+#      the stdlib reaches unconditionally were missing from the docs for a
+#      release and nothing noticed.
+#
 # The include list below is duplicated in the docs on purpose: the gate
 # exists to prove that what the doc tells a reader to type is what actually
 # builds. C fails when the copies differ, B and D when the list is wrong.
@@ -54,6 +60,18 @@ INC=(-I include
      -I vendor/cpp-fstlib
      -I vendor/cpp-searchlib/include
      -isystem vendor/cpp-searchlib/third_party)
+
+# The link line, as documented: zlib everywhere (Compress, and Http's gzip),
+# and on macOS the frameworks FS.watch (FSEvents) and the Tensor backends
+# reach whether or not the script does.
+FRAMEWORKS=(CoreServices Accelerate Metal)
+LIBS=(-lz)
+if [[ $(uname) == Darwin ]]; then
+  for fw in "${FRAMEWORKS[@]}"; do LIBS+=(-framework "$fw"); done
+fi
+
+# The pages that print that build line; C holds all of them to the lists above.
+BUILD_LINE_PAGES=(README.md README.ja.md docs/deployment.md docs/deployment.ja.md)
 
 fail=0
 TMP=$(mktemp -d)
@@ -119,7 +137,7 @@ done < <({
 # the later ones (Http, SQLite) add to it and are not the list.
 expected=$(printf '%s %s\n' "${INC[@]}")
 drifted=0
-for f in README.md README.ja.md docs/deployment.md docs/deployment.ja.md; do
+for f in "${BUILD_LINE_PAGES[@]}"; do
   [[ -f $f ]] || continue
   got=$(awk '
     /^```sh$/ { inb = 1; n = 0; next }
@@ -136,9 +154,17 @@ for f in README.md README.ja.md docs/deployment.md docs/deployment.ja.md; do
     diff <(echo "$expected") <(echo "$got") | sed 's/^/  /' >&2 || true
     drifted=1
   fi
+  # The link tokens can sit on any line of any ```sh fence (the macOS ones
+  # are a comment after the build line), so this half reads all the fences.
+  fences=$(awk '/^```sh$/ { inb = 1; next } /^```$/ { inb = 0 } inb' "$f")
+  for tok in -lz "${FRAMEWORKS[@]/#/-framework }"; do
+    grep -qF -- "$tok" <<<"$fences" && continue
+    echo "docs-cpp FAIL: $f's host build line does not mention '$tok'" >&2
+    drifted=1
+  done
 done
 (( drifted )) && fail=1
-(( drifted )) || echo "docs-cpp OK (list): the READMEs and deployment pages print this include list"
+(( drifted )) || echo "docs-cpp OK (docs): the READMEs and deployment pages print this include list and link line"
 
 (( fast )) && exit $fail
 
@@ -196,8 +222,18 @@ if (( ${#progs[@]} == 0 )); then
   exit 1
 fi
 
-JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
-export CXXBIN llvm_inc
+# Every block parses the whole stdlib header set (1.6 GB peak RSS for one
+# compile), so the fan-out is bounded by RAM before cores: one per 3 GB. On an
+# 8-core 16 GB machine a plain -P nproc swapped and the gate took 208 s where
+# -P 4 takes 60 s.
+jobs_cpu=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
+mem_bytes=$(sysctl -n hw.memsize 2>/dev/null \
+  || echo $(( $(getconf _PHYS_PAGES 2>/dev/null || echo 0) * $(getconf PAGE_SIZE 2>/dev/null || echo 4096) )))
+jobs_mem=$(( mem_bytes / 3000000000 ))
+(( jobs_mem >= 1 )) || jobs_mem=1
+(( jobs_mem < jobs_cpu )) && jobs_cpu=$jobs_mem
+JOBS="${JOBS:-$jobs_cpu}"
+export CXXBIN llvm_inc TMP
 export INCS="${INC[*]}"
 
 printf '%s\n' "${progs[@]}" | xargs -P "$JOBS" -I{} bash -c '
@@ -240,10 +276,15 @@ cat > "$TMP/minimal.cc" <<'EOF'
 #include <vm/embed.h>
 int main() {}
 EOF
-export TMP
-seq 0 2 $(( ${#INC[@]} - 2 )) | xargs -P "$JOBS" -I{} bash -c '
+# -1 is the control: with the full list the probe has to compile, or every
+# drop below fails for the same unrelated reason and this check proves nothing.
+{ echo -1; seq 0 2 $(( ${#INC[@]} - 2 )); } | xargs -P "$JOBS" -I{} bash -c '
   i="$1"
   read -ra inc <<< "$INCS"
+  if (( i < 0 )); then
+    "$CXXBIN" -std=c++23 -fsyntax-only "${inc[@]}" "$TMP/minimal.cc" 2>/dev/null || echo CONTROL
+    exit 0
+  fi
   dropped="${inc[$i]} ${inc[$((i + 1))]}"
   rest=("${inc[@]:0:$i}" "${inc[@]:$((i + 2))}")
   if "$CXXBIN" -std=c++23 -fsyntax-only "${rest[@]}" "$TMP/minimal.cc" 2>/dev/null; then
@@ -251,7 +292,11 @@ seq 0 2 $(( ${#INC[@]} - 2 )) | xargs -P "$JOBS" -I{} bash -c '
   fi
 ' _ {} > "$TMP/unused" 2>/dev/null || true
 
-if [[ -s $TMP/unused ]]; then
+if grep -q '^CONTROL$' "$TMP/unused"; then
+  echo "docs-cpp FAIL: the probe does not compile with the full include list —" >&2
+  echo "  the drop results prove nothing." >&2
+  fail=1
+elif [[ -s $TMP/unused ]]; then
   while IFS= read -r line; do
     echo "docs-cpp FAIL: the host build line does not need '${line#UNUSED }' —" >&2
     echo "  the headers stopped reaching it. Drop it here and from the docs." >&2
@@ -259,6 +304,96 @@ if [[ -s $TMP/unused ]]; then
   fail=1
 else
   echo "docs-cpp OK (needed): each of the $(( ${#INC[@]} / 2 )) include entries is needed"
+fi
+
+# --- E. a host links and runs, per feature, with the documented line ---------
+
+# One program per lane; each prints the line the run below expects, so a
+# feature that compiles and links but is not registered (a missing static
+# registrar, a define one TU short) is caught here rather than by a host.
+mkdir -p "$TMP/link"
+cat > "$TMP/link/core.cc" <<'EOF'
+#include <culebra.h>
+#include <vm/embed.h>
+#include <print>
+int main() {
+  culebra::vm::Embed embed;
+  embed.define("host_add", [](int64_t a, int64_t b) { return a + b; });
+  std::println("{}", embed.eval("host_add(40, 2)").as<int64_t>());
+}
+EOF
+cat > "$TMP/link/http.cc" <<'EOF'
+#include <culebra.h>
+#include <vm/embed.h>
+#include <print>
+int main() {
+  culebra::vm::Embed embed;
+  std::println("{}", embed.eval("type_of(Http.get)").as<std::string>());
+}
+EOF
+cat > "$TMP/link/sqlite.cc" <<'EOF'
+#include <culebra.h>
+#include <vm/embed.h>
+#include <print>
+int main() {
+  culebra::vm::Embed embed;
+  // SQLITE_ENABLE_FTS5: the amalgamation TU's options, not a system library's.
+  std::println("{}", embed.eval(
+      "db = SQLite.open(':memory:')\n"
+      "db.execute('create virtual table d using fts5(b)')\n"
+      "db.execute(\"insert into d values ('x')\")\n"
+      "db.query(\"select b from d where d match 'x'\").size()").as<int64_t>());
+}
+EOF
+cat > "$TMP/link/codegen.cc" <<'EOF'
+#include <stdlib/codegen_binding.h>  // before culebra.h
+#include <culebra.h>
+#include <vm/embed.h>
+#include <print>
+namespace {
+const bool codegen_registered = culebra::register_codegen_binding();
+}
+int main() {
+  culebra::vm::Embed embed;
+  std::println("{}", embed.eval("type_of(CodeGen.Module.new())").as<std::string>());
+}
+EOF
+
+# lane: name | extra compile flags | extra sources or objects | expected stdout
+lanes=(
+  "core|||42"
+  "http|-DCULEBRA_HTTP_ENABLED -I vendor/cpp-httplib||Function"
+  "sqlite|-DCULEBRA_SQLITE_ENABLED -I vendor/sqlite|$TMP/link/culebra_sqlite3.o|1"
+  "codegen|-I vendor/cpp-vmlib|src/runtime/codegen_rt.cc|Module"
+)
+"${CULEBRA_DOCS_CC:-${CC:-cc}}" -O0 -w -c src/runtime/culebra_sqlite3.c -o "$TMP/link/culebra_sqlite3.o"
+
+export LIBS_STR="${LIBS[*]}"
+printf '%s\n' "${lanes[@]}" | xargs -P "$JOBS" -I{} bash -c '
+  IFS="|" read -r name flags extra want <<< "$1"
+  read -ra inc <<< "$INCS"; read -ra libs <<< "$LIBS_STR"; read -ra fl <<< "$flags"
+  src="$TMP/link/$name.cc"; exe="$TMP/link/$name"
+  if ! "$CXXBIN" -std=c++23 -O0 -w "${inc[@]}" "${fl[@]}" "$src" $extra "${libs[@]}" -o "$exe" 2>"$exe.err"; then
+    echo "BAD $name (build)"; exit 0
+  fi
+  got=$("$exe" 2>>"$exe.err") || { echo "BAD $name (run)"; exit 0; }
+  [[ $got == "$want" ]] && echo "OK $name" || echo "BAD $name (printed: $got)"
+' _ {} > "$TMP/link/results" 2>/dev/null || true
+
+linked=$(grep -c '^OK ' "$TMP/link/results" || true)
+if grep -q '^BAD ' "$TMP/link/results"; then
+  while IFS= read -r line; do
+    name=${line#BAD }; name=${name%% *}
+    echo "docs-cpp FAIL: the documented $name host build does not link and run: ${line#BAD }" >&2
+    { grep -m5 'error' "$TMP/link/$name.err" || sed -n '1,10p' "$TMP/link/$name.err"; } >&2
+  done < <(grep '^BAD ' "$TMP/link/results")
+  fail=1
+elif (( linked != ${#lanes[@]} )); then
+  echo "docs-cpp FAIL: only $linked of the ${#lanes[@]} host lanes reported a verdict —" >&2
+  echo "  the lane runner died before finishing, so this check proved nothing." >&2
+  fail=1
+else
+  echo "docs-cpp OK (link): $linked host builds link and run (core, Http, SQLite, CodeGen)"
 fi
 
 exit $fail

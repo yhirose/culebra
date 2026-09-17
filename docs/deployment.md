@@ -523,6 +523,36 @@ c++ -std=c++23 ...the -I list above... \
     host.cpp culebra_sqlite3.o -lz -o host
 ```
 
+`CodeGen` is registered by the driver, not by the headers, because its
+wrap registrar is a static initializer (`src/runtime/culebra_rt_codegen.cc`
+says why). A host that wants it adds the binding TU-side, compiles
+cpp-vmlib's runtime contract with it, and puts `vendor/cpp-vmlib` on the
+include path. Include the binding before `culebra.h`: on macOS the
+CoreServices header `FS.watch` needs makes `nil` a macro, and cpp-vmlib
+names a local that.
+
+```cpp
+#include <stdlib/codegen_binding.h>  // before culebra.h
+#include <culebra.h>
+#include <vm/embed.h>
+
+namespace {
+const bool codegen_registered = culebra::register_codegen_binding();
+}
+```
+
+```sh
+c++ -std=c++23 ...the -I list above... -I culebra/vendor/cpp-vmlib \
+    host.cpp culebra/src/runtime/codegen_rt.cc -lz -o host
+```
+
+What is left is what needs a window system or a build of its own:
+`Scene`, `Webview` and `Desktop` are not there (a `NameError`, as in a
+`culebra` built without them), and `Canvas` draws offscreen only —
+`Canvas.window_available()` is absent. They come with `culebra wrap`
+([§3](#3-wrapping-c-libraries-culebra-wrap)), which rebuilds the driver
+around your code, not with the headers.
+
 What the script sees as `Sys.argv` is a process-wide holder. Fill it
 once at startup:
 
@@ -826,6 +856,12 @@ embed.define("resolve", [](std::string host) -> std::optional<std::string> {
   return lookup(host);          // an empty optional reaches the script as nil
 }, {"host"});
 ```
+
+A lambda's captures are how a host function reaches host state. The
+registry holds the callable for the life of the process, so what a
+capture refers to has to outlive every script that can call the
+function — capture by value, or by reference to something the host owns
+for at least that long.
 
 A container argument converts element by element, so a bad element
 raises the `TypeError` that element would have raised on its own. The

@@ -512,6 +512,36 @@ c++ -std=c++23 ...上の-Iリスト... \
     host.cpp culebra_sqlite3.o -lz -o host
 ```
 
+`CodeGen`はヘッダではなくドライバが登録します。wrapのレジストラが
+静的初期化子だからです（理由は`src/runtime/culebra_rt_codegen.cc`）。
+使いたいホストは、バインディングをTU側で足し、cpp-vmlibのランタイム契約を
+一緒にコンパイルし、`vendor/cpp-vmlib`をinclude pathに入れます。
+バインディングは`culebra.h`より前にインクルードしてください。macOSでは
+`FS.watch`が要るCoreServicesのヘッダが`nil`をマクロにし、cpp-vmlibは
+その名前のローカル変数を持っています。
+
+```cpp
+#include <stdlib/codegen_binding.h>  // culebra.h より前に
+#include <culebra.h>
+#include <vm/embed.h>
+
+namespace {
+const bool codegen_registered = culebra::register_codegen_binding();
+}
+```
+
+```sh
+c++ -std=c++23 ...上の-Iリスト... -I culebra/vendor/cpp-vmlib \
+    host.cpp culebra/src/runtime/codegen_rt.cc -lz -o host
+```
+
+残るのは、ウィンドウシステムか専用のビルドが要るものです。`Scene`・
+`Webview`・`Desktop`は存在せず（それら無しでビルドした`culebra`と同じく
+`NameError`）、`Canvas`はオフスクリーン描画のみで
+`Canvas.window_available()`はありません。これらはヘッダではなく、
+あなたのコードを組み込んでドライバを作り直す`culebra wrap`
+（[§3](#3-c-ライブラリのラッピングculebra-wrap)）で入ります。
+
 スクリプトが`Sys.argv`として見る値はプロセス全体のホルダです。
 起動時に1回入れてください:
 
@@ -822,6 +852,12 @@ embed.define("resolve", [](std::string host) -> std::optional<std::string> {
   return lookup(host);          // 空のoptionalはスクリプトにnilで届く
 }, {"host"});
 ```
+
+ホストの状態には、ラムダのキャプチャで届きます。レジストリは
+callableをプロセスが終わるまで保持するので、キャプチャが指す先は
+その関数を呼びうるスクリプトより長く生きている必要があります
+（値でキャプチャするか、それだけの期間ホストが所有するものを参照で
+キャプチャしてください）。
 
 容器の引数は要素ごとに変換されるので、要素が1つでも合わなければ
 その要素単体で出るはずの`TypeError`になります。同じ変換は`Value`

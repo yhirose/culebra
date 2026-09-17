@@ -236,7 +236,7 @@ inline bool shim(coreir::NativeCall& call) {
 // script that wants both call set_entry_frame_drops() before compile().
 class Program {
  public:
-  Program(vm::Program p, bool entry_frame_drops)
+  Program(::vm::Program p, bool entry_frame_drops)
       : p_(std::move(p)), entry_frame_drops_(entry_frame_drops) {}
 
   // rt is nil (the default) -- a program's own throwaway heap, same as
@@ -254,16 +254,16 @@ class Program {
   // queue (enqueued closures and scheduled coroutines alike) before it
   // returns, so nothing can call a native afterwards.
   void run(Runtime* rt = nullptr,
-           int64_t max_call_depth = vm::RunOptions{}.max_call_depth,
+           int64_t max_call_depth = ::vm::RunOptions{}.max_call_depth,
            JitValue natives_obj = {TAG_NIL, 0}) {
     std::vector<std::unique_ptr<natives::BoundNative>> bound;
-    vm::RunOptions opts;
+    ::vm::RunOptions opts;
     opts.entry_frame_drops = entry_frame_drops_;
     opts.max_call_depth = static_cast<int>(max_call_depth);
     opts.natives = bind_natives(natives_obj, bound);
     if (!rt) {
       coreir::Runtime scratch;  // the program's own heap, gone at the return
-      vm::run(p_, scratch, opts);
+      ::vm::run(p_, scratch, opts);
       return;
     }
     if (rt->bound_ != 0 && rt->bound_ != id_ && rt->rt_.live_objects() != 0) {
@@ -271,20 +271,20 @@ class Program {
           "IrError", "runtime still holds objects from another program", 0, 0);
     }
     rt->bound_ = id_;
-    vm::run(p_, rt->rt_, opts);
+    ::vm::run(p_, rt->rt_, opts);
   }
 
-  std::string dump_bc() const { return vm::to_string(p_); }
+  std::string dump_bc() const { return ::vm::to_string(p_); }
 
  private:
   // Resolves every name the module declared against the supplied table,
   // failing here rather than inside vm::run so the diagnostic can name the
   // one that is missing. A name in the table the module never declared is
   // not an error: one table can serve several programs.
-  std::vector<vm::NativeDef> bind_natives(
+  std::vector<::vm::NativeDef> bind_natives(
       JitValue natives_obj,
       std::vector<std::unique_ptr<natives::BoundNative>>& bound) const {
-    std::vector<vm::NativeDef> defs;
+    std::vector<::vm::NativeDef> defs;
     if (p_.natives.empty()) return defs;
     JitObject* table = natives_obj.tag == TAG_OBJECT
                            ? reinterpret_cast<JitObject*>(natives_obj.data)
@@ -331,7 +331,7 @@ class Program {
     return n++;
   }
 
-  vm::Program p_;
+  ::vm::Program p_;
   bool entry_frame_drops_;
   uint64_t id_ = next_id();
 };
@@ -697,7 +697,7 @@ class Module {
   // between runs -- see Program above.
   Program compile() {
     verify_or_throw();
-    return Program(vm::compile(m_), entry_frame_drops_);
+    return Program(::vm::compile(m_), entry_frame_drops_);
   }
 
   // Sugar over compile(): a throwaway Runtime, run once. The single call

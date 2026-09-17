@@ -54,7 +54,7 @@ inline void codegen_program_run_thunk(JitValue* __ret, JitClosure*,
           : wrap_detail::jit_handle_self<codegen::Runtime>(rt_v);
   const JitValue depth_v = codegen_raw_arg<long>(n, args, 1, "max_call_depth");
   const int64_t depth = depth_v.tag == TAG_NIL
-                            ? vm::RunOptions{}.max_call_depth
+                            ? ::vm::RunOptions{}.max_call_depth
                             : depth_v.data;
   // No annotation names "an Object", so this one is checked by hand.
   const JitValue natives =
@@ -246,7 +246,7 @@ inline bool register_codegen_binding() {
       // behind naming the old one.
       .raw_method("run", &codegen_program_run_thunk,
                   {{"rt", nullptr},
-                   {"max_call_depth", vm::RunOptions{}.max_call_depth},
+                   {"max_call_depth", ::vm::RunOptions{}.max_call_depth},
                    {"natives", nullptr}})
       .method<&codegen::Program::dump_bc>("dump_bc");
   wrap<codegen::Runtime>("CodeGen", "Runtime")
