@@ -1994,13 +1994,13 @@ runs on a machine with no GPU — `gpu_available()` just reports
 | `Tensor.profile_scope(label, fn) -> Any` | run `fn` under a scope named `label`; `fn`'s result |
 
 `Tensor.profile` returns what the profiler recorded while `fn` ran;
-`fn`'s own result is dropped. During the session the evaluator opens a
-scope named after each op it evaluates (`dot`, `sum_to`, `layer_norm`,
-…), `.backward()` opens `backward` and one scope per VJP named after
-the Culebra op (`Dot`, `LayerNorm`), and `Tensor.adam_step` opens
-`adam_step`. Nested scopes join into a path with `/`. Every kernel
-launch, host-device copy and blocking wait a backend performs is
-attributed to the innermost open scope.
+`fn`'s own result is dropped. During the session the engine opens a
+scope named after each op it runs (`dot`, `sum_to`, `layer_norm`,
+`adam_step`, …), and `.backward()` opens `backward` and one scope per
+VJP named after the Culebra op (`Dot`, `LayerNorm`). Nested scopes
+join into a path with `/`. Every kernel launch, host-device copy and
+blocking wait a backend performs is attributed to the innermost open
+scope.
 
 `Tensor.profile_scope` adds a scope of your own — a training phase, a
 layer — around `fn` and returns whatever `fn` returns. Outside a
@@ -2010,18 +2010,19 @@ Each row is an Object:
 
 | Field | Meaning |
 | --- | --- |
+| `kind` | `'scope'` for a scope's own row; `'launch'`, `'transfer'` or `'wait'` for work under it |
 | `path` | the scope path (`'step/backward/Dot/dot'`) |
-| `kernel` | `''` for the scope's own row; a kernel name for launches under it; `'h2d'` / `'d2h'` for copies, `'wait'` for a blocking wait |
-| `count` | scope entries, or launches / copies / waits |
-| `host_ms` | scope rows: inclusive wall time; copy and wait rows: how long the host was blocked |
-| `device_ms` | kernel rows: summed kernel time on the device, where the backend can time it |
+| `kernel` | a launch's kernel name; `'h2d'` / `'d2h'` for a transfer; `''` otherwise |
+| `count` | scope entries, or launches / transfers / waits |
+| `host_ms` | scope: inclusive wall time; transfer and wait: how long the host was blocked |
+| `device_ms` | launch: summed kernel time on the device, where the backend can time it |
 | `device_timed` | how many of the row's launches `device_ms` covers |
-| `bytes` | copy rows: bytes moved |
+| `bytes` | transfer: bytes moved |
 
 Rows come grouped by path, the paths in descending order of their
-scope's inclusive time, each scope's own row first and its kernels by
+scope's inclusive time, each scope's own row first and its launches by
 device time. `device_ms` is per launch on CUDA. Metal times a command
-buffer, not a launch, so its kernel rows have `device_timed` of 0 and
+buffer, not a launch, so its launch rows have `device_timed` of 0 and
 the batch time is not in the rows; WebGPU counts launches only. A row
 with `device_timed` below `count` was not timed, which is not the same
 as fast.

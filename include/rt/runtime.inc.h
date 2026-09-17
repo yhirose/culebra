@@ -2745,14 +2745,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_tensor_no_grad(
   return _culebra_invoke0(fn);
 }
 
-// Tensor.profile_scope(label, fn): fn's evaluations attributed under `label`
-// (nested inside whatever scope is open), returning what fn returns.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_tensor_profile_scope(
-    const char* label, JitClosure* fn) {
-  culebra::TensorProfileScope scope(label);
-  return _culebra_invoke0(fn);
-}
-
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitTensor* culebra_runtime_tensor_from_csv(
     const char* path) {
   return _culebra_jit_tensor_register(
@@ -3322,48 +3314,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set(
     int64_t line, int64_t col, bool is_init = false) {
   _jit_object_set_declared(obj, key, mut, tag, data, line, col, is_init,
                            culebra::FieldType::Any);
-}
-
-// Tensor.profile(fn): fn under a profiling session; what it returns is
-// dropped and the session's rows come back as an Array of Objects. A throw
-// out of fn still closes the session. Sits here, below the object helpers it
-// builds the rows with, rather than with the other Tensor entry points.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_tensor_profile(
-    JitClosure* fn) {
-  culebra::tensor_profile_start();
-  JitValue r;
-  try {
-    r = _culebra_invoke0(fn);
-  } catch (...) {
-    culebra::tensor_profile_stop();
-    throw;
-  }
-  _culebra_value_release_impl(r.tag, r.data);
-  auto* arr = culebra_runtime_array_new();
-  for (const auto& row : culebra::tensor_profile_stop()) {
-    auto* obj = culebra_runtime_object_new();
-    auto str = [&](const char* key, const std::string& s) {
-      culebra_runtime_object_set(obj, key, false, TAG_STRING,
-                                 reinterpret_cast<int64_t>(_culebra_heap_str(s)),
-                                 0, 0);
-    };
-    auto num = [&](const char* key, double x) {
-      culebra_runtime_object_set(obj, key, false, TAG_FLOAT,
-                                 _culebra_double_to_bits(x), 0, 0);
-    };
-    auto count = [&](const char* key, int64_t n) {
-      culebra_runtime_object_set(obj, key, false, TAG_LONG, n, 0, 0);
-    };
-    str("path", row.path);
-    str("kernel", row.kernel);
-    count("count", row.count);
-    num("host_ms", row.host_ms);
-    num("device_ms", row.device_ms);
-    count("device_timed", row.device_timed);
-    count("bytes", row.bytes);
-    culebra_runtime_array_push(arr, TAG_OBJECT, reinterpret_cast<int64_t>(obj));
-  }
-  return arr;
 }
 
 // --- @packable SharedBuffer: handle objects + raw bytes <-> JitValue -----

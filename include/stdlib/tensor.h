@@ -234,25 +234,40 @@ CULEBRA_RT_TENSOR_EVAL_LINKAGE bool tensor_gpu_available();
 // with the rows handed over as plain data (ms, not µs) so the runtime shapes
 // them into Objects without naming tl.
 struct TensorProfileRow {
+  const char* kind;  // "scope" / "launch" / "transfer" / "wait"
   std::string path, kernel;
   int64_t count;
   double host_ms, device_ms;
   int64_t device_timed, bytes;
 };
-inline void tensor_profile_start() { tl::profile::start(); }
-inline std::vector<TensorProfileRow> tensor_profile_stop() {
-  tl::profile::stop();
-  std::vector<TensorProfileRow> out;
-  for (const auto& r : tl::profile::rows()) {
-    out.push_back({r.path, r.kernel, static_cast<int64_t>(r.count),
-                   r.host_us / 1000.0, r.device_us / 1000.0,
-                   static_cast<int64_t>(r.device_timed),
-                   static_cast<int64_t>(r.bytes)});
+// A session held for a block: whatever leaves the block, the profiler is
+// off again. rows() ends it early and reads it out.
+struct TensorProfileSession {
+  TensorProfileSession() { tl::profile::start(); }
+  ~TensorProfileSession() { tl::profile::stop(); }
+  TensorProfileSession(const TensorProfileSession&) = delete;
+  TensorProfileSession& operator=(const TensorProfileSession&) = delete;
+  std::vector<TensorProfileRow> rows() {
+    tl::profile::stop();
+    std::vector<TensorProfileRow> out;
+    for (auto& r : tl::profile::rows()) {
+      const char* kind = "scope";
+      switch (r.kind) {
+        case tl::profile::row::kind_t::scope: break;
+        case tl::profile::row::kind_t::launch: kind = "launch"; break;
+        case tl::profile::row::kind_t::transfer: kind = "transfer"; break;
+        case tl::profile::row::kind_t::wait: kind = "wait"; break;
+      }
+      out.push_back({kind, std::move(r.path), std::move(r.kernel),
+                     static_cast<int64_t>(r.count), r.host_us / 1000.0,
+                     r.device_us / 1000.0, static_cast<int64_t>(r.device_timed),
+                     static_cast<int64_t>(r.bytes)});
+    }
+    return out;
   }
-  return out;
-}
+};
 struct TensorProfileScope {
-  explicit TensorProfileScope(const char* label) : scope(label) {}
+  explicit TensorProfileScope(std::string_view label) : scope(label) {}
   tl::profile::scope scope;
 };
 
@@ -784,7 +799,6 @@ CULEBRA_RT_TENSOR_EVAL_LINKAGE void tensor_adam_step(TensorImpl& p, TensorPtr m,
   }
   double bc1 = 1.0 - std::pow(beta1, static_cast<double>(step));
   double bc2 = 1.0 - std::pow(beta2, static_cast<double>(step));
-  tl::profile::scope ps("adam_step");
   bool ran = _tl_guard([&] {
     return tl::array::adam_step(
         p.value, m->value, v->value, g->value, static_cast<float>(lr),

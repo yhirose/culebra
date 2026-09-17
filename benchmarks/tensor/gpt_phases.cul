@@ -169,18 +169,28 @@ let sync_scalar = fn (t) {
   t.mean(0).item()
 }
 
+# The forward and Adam phases are profile scopes as well: outside a profile
+# session `Tensor.profile_scope` just calls its function, and `.backward()`
+# names its own scope. The sync after each phase lands at the top level,
+# which is where a phase boundary belongs.
 let phased_step = fn (step) {
   for p in params {
     p.t.zero_grad()
   }
   let t0 = Sys.time()
-  let loss = forward()
-  let value = loss.item()
+  # forward() only builds the graph; the item() read is what evaluates it,
+  # so it stays inside the scope.
+  let (loss, value) = Tensor.profile_scope('forward', fn () {
+    let l = forward()
+    (l, l.item())
+  })
   let t1 = Sys.time()
   loss.backward()
   sync_scalar(lnf_b.t.grad())
   let t2 = Sys.time()
-  adam(step)
+  Tensor.profile_scope('adam', fn () {
+    adam(step)
+  })
   sync_scalar(lnf_b.t)
   let t3 = Sys.time()
   [1000.0 * (t1 - t0), 1000.0 * (t2 - t1), 1000.0 * (t3 - t2), value]
@@ -216,70 +226,43 @@ print("PHASES device={device} config={config} forward={fwd} backward={bwd} adam=
 # --- One more step under the profiler, each phase a scope ---
 
 if profile {
-  let step = WARMUP + STEPS + 1
-  mut walls = [0.0, 0.0, 0.0]
+  mut walls = []
   let rows = Tensor.profile(fn () {
-    for p in params {
-      p.t.zero_grad()
-    }
-    let t0 = Sys.time()
-    let loss = Tensor.profile_scope('forward', fn () {
-      let l = forward()
-      l.item()
-      l
-    })
-    let t1 = Sys.time()
-    # .backward() opens its own `backward` scope; the sync after it lands
-    # at the top level, which is where a phase boundary belongs.
-    loss.backward()
-    sync_scalar(lnf_b.t.grad())
-    let t2 = Sys.time()
-    Tensor.profile_scope('adam', fn () {
-      adam(step)
-      sync_scalar(lnf_b.t)
-    })
-    let t3 = Sys.time()
-    walls = [1000.0 * (t1 - t0), 1000.0 * (t2 - t1), 1000.0 * (t3 - t2)]
+    walls = phased_step(WARMUP + STEPS + 1)
   })
   # The profiled step's own clock, against the timed steps above: the
   # per-launch events cost something, and this is what they cost here.
   print("profiled step: forward={walls[0]} backward={walls[1]} adam={walls[2]}\n")
-  let pad = fn (s, n) {
-    let str = to_string(s)
-    if str.size() >= n {
-      str
-    } else {
-      ' '.repeat(n - str.size()) + str
-    }
-  }
-  let ms = fn (x) {
-    to_string(Math.round(x * 1000) / 1000.0)
-  }
-  # Every phase's device time is the sum of the kernel rows beneath it.
+  # Every phase's device time is the sum of the launch rows beneath it.
   mut device = {}
   for r in rows {
-    if r.kernel != '' && r.device_timed > 0 {
+    if r.device_timed > 0 {
       let phase = r.path.split('/')[0]
       device[phase] = device.get(phase, 0.0) + r.device_ms
     }
   }
   print("device ms by phase: {device}\n")
-  print("{pad('count', 8)} {pad('host ms', 11)} {pad('device ms', 11)}  path / kernel\n")
+  print("{'count':>8} {'host ms':>11} {'device ms':>11}  path / kernel\n")
   for r in rows {
-    if r.kernel == '' {
-      print("{pad(r.count, 8)} {pad(ms(r.host_ms), 11)} {pad('', 11)}  {r.path}\n")
+    let host = if r.kind == 'scope' || r.host_ms > 0.0 {
+      "{r.host_ms:.3f}"
     } else {
-      let dev = if r.device_timed > 0 {
-        ms(r.device_ms)
+      ''
+    }
+    let dev = if r.device_timed > 0 {
+      "{r.device_ms:.3f}"
+    } else {
+      ''
+    }
+    if r.kind == 'scope' {
+      print("{r.count:>8} {host:>11} {dev:>11}  {r.path}\n")
+    } else {
+      let name = if r.kind == 'wait' {
+        'wait'
       } else {
-        ''
+        r.kernel
       }
-      let host = if r.host_ms > 0.0 {
-        ms(r.host_ms)
-      } else {
-        ''
-      }
-      print("{pad(r.count, 8)} {pad(host, 11)} {pad(dev, 11)}    {r.kernel}\n")
+      print("{r.count:>8} {host:>11} {dev:>11}    {name}\n")
     }
   }
 }

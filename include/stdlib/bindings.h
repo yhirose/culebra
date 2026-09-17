@@ -4180,6 +4180,10 @@ inline JitValue v_object(JitObject* o)   {
 inline JitValue v_tensor(JitTensor* t)   {
   return {TAG_TENSOR, reinterpret_cast<int64_t>(t)};
 }
+// One field of a data object an adapter builds (a result record).
+inline void set_field(JitObject* o, const char* name, JitValue v) {
+  culebra_runtime_object_set(o, name, false, v.tag, v.data, 0, 0);
+}
 
 }  // namespace _ns_adapt
 
@@ -7529,31 +7533,41 @@ inline JitValue _ns_tensor_adam_step(JitValue* a, int64_t) {
       _ns_adapt::take_long(a[8]));
   return _ns_adapt::v_nil();
 }
-// The "Function" gate also admits a structural callable (a __call__
-// object), but the closure-invoke ABI only handles real closures.
-// interp's _invoke_callback rejects a non-closure via to_function();
-// mirror that exact wording (call-site position is filled by the
-// dispatch wrapper) instead of reinterpret_cast'ing into a crash.
-inline JitClosure* _ns_tensor_closure(JitValue v) {
-  if (v.tag != TAG_FUNC) {
-    throw culebra::CulebraError(
-        "TypeError",
-        culebra::type_mismatch_message("Function",
-                                       culebra_runtime_type_of(v.tag)));
-  }
-  return reinterpret_cast<JitClosure*>(v.data);
-}
+// The "Function" gate also admits a structural callable (a __call__ object),
+// but the closure-invoke ABI only handles real closures, so the adapters
+// check again rather than reinterpret_cast into a crash.
 inline JitValue _ns_tensor_no_grad(JitValue* a, int64_t) {
-  return culebra_runtime_tensor_no_grad(_ns_tensor_closure(a[0]));
+  return culebra_runtime_tensor_no_grad(_ns_adapt::require_func(a[0], "fn"));
 }
+// Tensor.profile(fn): fn under a profiling session; what it returns is
+// dropped and the session's rows come back as an Array of Objects. Like
+// GC.stat, the Objects are built here: nothing needs a runtime symbol.
 inline JitValue _ns_tensor_profile(JitValue* a, int64_t) {
-  return _ns_adapt::v_array(
-      culebra_runtime_tensor_profile(_ns_tensor_closure(a[0])));
+  JitClosure* fn = _ns_adapt::require_func(a[0], "fn");
+  culebra::TensorProfileSession session;
+  { JitOwnedVal dropped(_culebra_invoke0(fn)); }
+  auto* arr = culebra_runtime_array_new();
+  for (const auto& row : session.rows()) {
+    auto* o = culebra_runtime_object_new();
+    _ns_adapt::set_field(o, "kind", _ns_adapt::v_string(_intern_str(row.kind)));
+    _ns_adapt::set_field(o, "path",
+                         _ns_adapt::v_string(_culebra_heap_str(row.path)));
+    _ns_adapt::set_field(o, "kernel",
+                         _ns_adapt::v_string(_culebra_heap_str(row.kernel)));
+    _ns_adapt::set_field(o, "count", _ns_adapt::v_long(row.count));
+    _ns_adapt::set_field(o, "host_ms", _ns_adapt::v_float(row.host_ms));
+    _ns_adapt::set_field(o, "device_ms", _ns_adapt::v_float(row.device_ms));
+    _ns_adapt::set_field(o, "device_timed", _ns_adapt::v_long(row.device_timed));
+    _ns_adapt::set_field(o, "bytes", _ns_adapt::v_long(row.bytes));
+    culebra_runtime_array_push(arr, TAG_OBJECT, reinterpret_cast<int64_t>(o));
+  }
+  return _ns_adapt::v_array(arr);
 }
+// Tensor.profile_scope(label, fn): fn's evaluations attributed under `label`
+// (nested inside whatever scope is open), returning what fn returns.
 inline JitValue _ns_tensor_profile_scope(JitValue* a, int64_t) {
-  std::string label(_ns_adapt::require_sv(a[0], "label"));
-  return culebra_runtime_tensor_profile_scope(label.c_str(),
-                                              _ns_tensor_closure(a[1]));
+  culebra::TensorProfileScope scope(_ns_adapt::require_sv(a[0], "label"));
+  return _culebra_invoke0(_ns_adapt::require_func(a[1], "fn"));
 }
 // Activations relu/sigmoid/softmax are Tensor instance methods
 // (`t.relu()`), dispatched in compile_builtin_method — not namespace
@@ -7986,9 +8000,7 @@ inline JitValue _ns_peg_parse(JitValue* a, int64_t) {
 
 namespace _fst_adapt {
 
-inline void set_field(JitObject* o, const char* name, JitValue v) {
-  culebra_runtime_object_set(o, name, false, v.tag, v.data, 0, 0);
-}
+using _ns_adapt::set_field;
 
 inline JitValue str(std::string_view s) {
   return _ns_adapt::v_string(_culebra_heap_str(s));
@@ -8321,9 +8333,7 @@ inline culebra::search::Analyzer::NativeSplitter foreign_splitter(JitValue v) {
   };
 }
 
-inline void set_field(JitObject* o, const char* name, JitValue v) {
-  culebra_runtime_object_set(o, name, false, v.tag, v.data, 0, 0);
-}
+using _ns_adapt::set_field;
 
 inline JitValue hits(const std::vector<culebra::search::Hit>& list) {
   auto* arr = culebra_runtime_array_new_reserved(list.size());
@@ -11052,9 +11062,6 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::tensor_to_array, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_item, jit.valueType_, ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_no_grad, jit.valueType_, ptrTy);
-  jit.module_->getOrInsertFunction(rt::tensor_profile, ptrTy, ptrTy);
-  jit.module_->getOrInsertFunction(rt::tensor_profile_scope, jit.valueType_,
-                                   ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_dot, ptrTy, ptrTy, ptrTy);
   jit.module_->getOrInsertFunction(rt::tensor_index_select, ptrTy, ptrTy,
                                    ptrTy);
