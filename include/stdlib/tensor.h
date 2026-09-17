@@ -743,11 +743,8 @@ CULEBRA_RT_TENSOR_EVAL_LINKAGE void tensor_adam_step(TensorImpl& p, TensorPtr m,
   if (p.dtype != m->dtype || p.dtype != v->dtype || p.dtype != g->dtype) {
     throw CulebraError("ValueError", "Tensor.adam_step: dtype mismatch.");
   }
-  if (!(p.shape == m->shape) || !(p.shape == v->shape) ||
-      !(p.shape == g->shape)) {
-    throw CulebraError("ValueError",
-                       "Tensor.adam_step: p, m, v and g must share one shape.");
-  }
+  // Shape agreement and a zero bias correction are tl's own checks; _tl_guard
+  // turns them into the ValueError, with the four shapes spelled out.
   if (p.is_view || m->is_view || v->is_view) {
     throw CulebraError("ValueError",
                        "Tensor.adam_step: p, m and v are updated in place, so "
@@ -761,11 +758,6 @@ CULEBRA_RT_TENSOR_EVAL_LINKAGE void tensor_adam_step(TensorImpl& p, TensorPtr m,
   }
   double bc1 = 1.0 - std::pow(beta1, static_cast<double>(step));
   double bc2 = 1.0 - std::pow(beta2, static_cast<double>(step));
-  if (bc1 == 0.0 || bc2 == 0.0) {
-    throw CulebraError("ValueError",
-                       "Tensor.adam_step: beta^step is 1, leaving no bias "
-                       "correction to divide by.");
-  }
   bool ran = _tl_guard([&] {
     return tl::array::adam_step(
         p.value, m->value, v->value, g->value, static_cast<float>(lr),
