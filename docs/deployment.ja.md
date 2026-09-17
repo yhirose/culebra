@@ -429,7 +429,6 @@ VMレーンにLLVMは要りません:
 c++ -std=c++23 \
     -I culebra/include \
     -I culebra/vendor/cpp-peglib \
-    -I culebra/vendor/cpp-vmlib \
     -I culebra/vendor/cpp-unicodelib \
     -I culebra/vendor/cpp-tensorlib/include \
     -I culebra/vendor/stb \

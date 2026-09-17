@@ -18,12 +18,19 @@
 #      so the blocks build in parallel and this half lives in `doctest`
 #      rather than `test-dev`.
 #
-# The include list below is duplicated in deployment.md's "Building your
-# host program" on purpose: the gate exists to prove that what the doc
-# tells a reader to type is what actually builds. Change one, change the
-# other — B is what fails when they drift.
+#   C. The include list each README and deployment page prints is the
+#      list below, entry for entry. Text only, so it runs with A.
 #
-# Usage: check_docs_cpp.sh [--fast]     (--fast runs A only)
+#   D. Every entry of that list is load-bearing: dropping any one of them
+#      stops the build. B only proves the list is enough, so an entry the
+#      headers stopped needing (cpp-vmlib, once CodeGen left embed.h) sat
+#      in the docs with nothing to say so.
+#
+# The include list below is duplicated in the docs on purpose: the gate
+# exists to prove that what the doc tells a reader to type is what actually
+# builds. C fails when the copies differ, B and D when the list is wrong.
+#
+# Usage: check_docs_cpp.sh [--fast]     (--fast runs A and C only)
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -40,7 +47,6 @@ SOURCES=(docs/*.md README.md README.ja.md)
 # bindings reach all five unconditionally.
 INC=(-I include
      -I vendor/cpp-peglib
-     -I vendor/cpp-vmlib
      -I vendor/cpp-unicodelib
      -I vendor/cpp-tensorlib/include
      -I vendor/stb
@@ -106,6 +112,33 @@ done < <({
 } | sort -u)
 (( missing )) && fail=1
 (( missing )) || echo "docs-cpp OK (includes): every <header> in $blocks block(s) and site/ resolves"
+
+# --- C. the documented include list is this one -----------------------------
+
+# The first ```sh fence that spells `-I culebra/...` is the host build line;
+# the later ones (Http, SQLite) add to it and are not the list.
+expected=$(printf '%s %s\n' "${INC[@]}")
+drifted=0
+for f in README.md README.ja.md docs/deployment.md docs/deployment.ja.md; do
+  [[ -f $f ]] || continue
+  got=$(awk '
+    /^```sh$/ { inb = 1; n = 0; next }
+    /^```$/   { if (inb && n) exit; inb = 0; next }
+    inb && match($0, /-(I|isystem) culebra\/[^ ]+/) {
+      e = substr($0, RSTART, RLENGTH); sub(/culebra\//, "", e); print e; n++
+    }
+  ' "$f")
+  if [[ -z $got ]]; then
+    echo "docs-cpp FAIL: $f has no host build line (-I culebra/...) any more" >&2
+    drifted=1
+  elif [[ $got != "$expected" ]]; then
+    echo "docs-cpp FAIL: $f's include list differs from check_docs_cpp.sh's:" >&2
+    diff <(echo "$expected") <(echo "$got") | sed 's/^/  /' >&2 || true
+    drifted=1
+  fi
+done
+(( drifted )) && fail=1
+(( drifted )) || echo "docs-cpp OK (list): the READMEs and deployment pages print this include list"
 
 (( fast )) && exit $fail
 
@@ -198,6 +231,34 @@ if (( fail == 0 )); then
   [[ -n $llvm_via ]] && msg="$msg (LLVM via $llvm_via)"
   (( skipped > 0 )) && msg="$msg, $skipped skipped: no llvm-config >= $LLVM_FLOOR"
   echo "$msg"
+fi
+
+# --- D. every entry is load-bearing -------------------------------------------
+
+cat > "$TMP/minimal.cc" <<'EOF'
+#include <culebra.h>
+#include <vm/embed.h>
+int main() {}
+EOF
+export TMP
+seq 0 2 $(( ${#INC[@]} - 2 )) | xargs -P "$JOBS" -I{} bash -c '
+  i="$1"
+  read -ra inc <<< "$INCS"
+  dropped="${inc[$i]} ${inc[$((i + 1))]}"
+  rest=("${inc[@]:0:$i}" "${inc[@]:$((i + 2))}")
+  if "$CXXBIN" -std=c++23 -fsyntax-only "${rest[@]}" "$TMP/minimal.cc" 2>/dev/null; then
+    echo "UNUSED $dropped"
+  fi
+' _ {} > "$TMP/unused" 2>/dev/null || true
+
+if [[ -s $TMP/unused ]]; then
+  while IFS= read -r line; do
+    echo "docs-cpp FAIL: the host build line does not need '${line#UNUSED }' —" >&2
+    echo "  the headers stopped reaching it. Drop it here and from the docs." >&2
+  done < "$TMP/unused"
+  fail=1
+else
+  echo "docs-cpp OK (needed): each of the $(( ${#INC[@]} / 2 )) include entries is needed"
 fi
 
 exit $fail
