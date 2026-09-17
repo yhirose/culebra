@@ -18,8 +18,9 @@
 #      so the blocks build in parallel and this half lives in `doctest`
 #      rather than `test-dev`.
 #
-#   C. The include list each README and deployment page prints is the
-#      list below, entry for entry. Text only, so it runs with A.
+#   C. The include list each deployment page prints is the list below,
+#      entry for entry, and the link line names the same libraries. Text
+#      only, so it runs with A.
 #
 #   D. Every entry of that list is load-bearing: dropping any one of them
 #      stops the build. B only proves the list is enough, so an entry the
@@ -71,7 +72,9 @@ if [[ $(uname) == Darwin ]]; then
 fi
 
 # The pages that print that build line; C holds all of them to the lists above.
-BUILD_LINE_PAGES=(README.md README.ja.md docs/deployment.md docs/deployment.ja.md)
+# The READMEs are not among them: they point at deployment.md rather than
+# reprinting ten -I flags a reader of a language README did not ask for.
+BUILD_LINE_PAGES=(docs/deployment.md docs/deployment.ja.md)
 
 fail=0
 TMP=$(mktemp -d)
@@ -164,7 +167,7 @@ for f in "${BUILD_LINE_PAGES[@]}"; do
   done
 done
 (( drifted )) && fail=1
-(( drifted )) || echo "docs-cpp OK (docs): the READMEs and deployment pages print this include list and link line"
+(( drifted )) || echo "docs-cpp OK (docs): the deployment pages print this include list and link line"
 
 (( fast )) && exit $fail
 

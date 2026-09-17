@@ -301,17 +301,21 @@ culebra build hello.cul -o hello &amp;&amp; ./hello  # AOT: compile once, ship t
 <span class="k">int</span> main() {
   culebra::vm::Embed embed;   <span class="c">// stdlib installed, traits registered</span>
 
-  <span class="k">auto</span> n = embed.eval(<span class="s">"1 + 2"</span>).as&lt;<span class="k">int64_t</span>&gt;();   <span class="c">// 3</span>
+  <span class="c">// C++ the script calls by name, and the other direction:</span>
+  embed.define(<span class="s">"log"</span>, [](std::string m) { std::println(<span class="s">"{}"</span>, m); });
+  embed.eval(<span class="s">"config = {mut port: 8080}"</span>);
+  embed.eval(<span class="s">"log(\"port {config.port}\")"</span>);   <span class="c">// port 8080</span>
 
   <span class="k">auto</span> cfg = embed.global(<span class="s">"config"</span>);
-  cfg[<span class="s">"db"</span>].set(<span class="s">"host"</span>, <span class="s">"localhost"</span>);   <span class="c">// writes into the script's own value</span>
+  cfg.set(<span class="s">"port"</span>, 9090);   <span class="c">// writes into the script's own value</span>
 }</pre>
           <p class="fine-print">No LLVM dependency — the bytecode VM drops
             straight into a C++23 host through a minimal session API.
             See
             <a href="https://github.com/yhirose/culebra#embedding-in-a-c-host">Embedding in a C++ host</a>
-            in the README for the JIT path, threading, and host-function
-            registration.</p>
+            in the README, and
+            <a href="https://github.com/yhirose/culebra/blob/master/docs/deployment.md#2-embedding-culebra-in-a-c-host">deployment.md</a>
+            for the build line, the JIT path and threading.</p>
         </div>
       </div>
       <div class="cta cta-secondary">

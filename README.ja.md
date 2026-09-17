@@ -293,9 +293,9 @@ Tools）とLinux（`cc`）で、Windowsではバイナリ自身がリンカを�
 C++ホストへの組み込み
 ---------------------
 
-バイトコードVMはC++23のホストに埋め込めます。ヘッダオンリーでLLVMにも
-依存しません。インストールやリンクするライブラリは無く、culebraの
-チェックアウトをインクルードパスに入れるだけです。
+バイトコードVMはC++23のホストに埋め込めます。ヘッダオンリーで、LLVMも
+リンクするライブラリも要りません。C++とスクリプトは互いを呼べるので、
+ホストの設定や拡張をスクリプトで書けます。
 
 ```cpp
 #include <culebra.h>
@@ -304,138 +304,31 @@ C++ホストへの組み込み
 int main() {
   culebra::vm::Embed embed;   // 標準ライブラリとtraitを登録済み
 
-  auto n = embed.eval("1 + 2").as<int64_t>();   // 3
+  std::vector<double> readings{18.5, 41.2, 79.8};   // ホスト側のデータ
+
+  // 引数と戻り値の型はシグネチャから決まる。body が読むホストの状態は
+  // ただのキャプチャ。
+  embed.define("temperature", [&readings](int64_t sensor) {
+    return readings.at(sensor);
+  }, {"sensor"});
+
+  embed.eval(R"(
+    fn too_hot(sensor) { temperature(sensor) > 40.0 }
+  )");
+
+  // セッションは実行より長く生きるので、残したものをホストから呼び戻せる。
+  auto hot = embed.call("too_hot", 1).as<bool>();   // true: 41.2 > 40.0
 }
 ```
 
-```sh
-c++ -std=c++23 \
-    -I culebra/include \
-    -I culebra/vendor/cpp-peglib \
-    -I culebra/vendor/cpp-unicodelib \
-    -I culebra/vendor/cpp-tensorlib/include \
-    -I culebra/vendor/stb \
-    -I culebra/vendor/cpp-regexlib \
-    -I culebra/vendor/cpp-fstlib \
-    -I culebra/vendor/cpp-searchlib/include \
-    -isystem culebra/vendor/cpp-searchlib/third_party \
-    host.cpp -lz -o host
-# macOS ではさらに: -framework CoreServices -framework Accelerate -framework Metal
-```
+スクリプト内の失敗は`culebra::CulebraError`として届き、種別・メッセージ・
+位置はスクリプト側の`catch`が見るものと同じです。
 
-### スクリプトからC++を呼ぶ
-
-`define`はC++の呼び出し可能オブジェクトを名前付きで登録し、スクリプトは
-それを普通の関数として呼びます。引数と戻り値の型はシグネチャから推論され、
-値は境界で変換されます:
-
-```cpp
-embed.define("log", [](std::string msg) { std::println("{}", msg); });
-
-embed.define("hypot", [](double x, double y) { return std::hypot(x, y); },
-             {"x", "y"});
-
-embed.define("role_of", [&](std::string name) -> std::optional<std::string> {
-  auto it = users.find(name);
-  if (it == users.end()) return std::nullopt;   // スクリプトには nil
-  return it->second;
-}, {"name"});
-
-embed.define("open_db", [](std::string path) -> int64_t {
-  throw std::runtime_error("cannot open " + path);
-}, {"path"});
-
-embed.eval(R"(
-  log("hypot = {hypot(3, 4)}")          # hypot = 5.0
-  log("bob is {role_of('bob')}")        # bob is nil
-
-  try {
-    open_db('/nope')
-  } catch e {
-    log("{e.kind}: {e.message}")        # RuntimeError: cannot open /nope
-  }
-)");
-```
-
-- **型。** `int64_t`/`int`/`long`、`double`/`float`、`bool`、
-  `std::string`/`std::string_view`、`culebra::vm::Value`（任意の値を
-  そのまま渡す）。`std::vector<T>`はArray、`std::map<std::string, T>`は
-  Object、`std::optional<T>`は空なら`nil`で、入れ子にもできます。
-- **誤った引数。** 型が合わない引数は呼び出し箇所で`TypeError`
-  （`hypot() argument 'x': expected a Float`）、個数の誤りは
-  `ArityError`になります。波括弧の名前は省略可能で、このメッセージで
-  引数を示すためだけに使われます。束縛は位置で行います。
-- **例外。** 関数から投げた`std::exception`は、スクリプト側で捕捉できる
-  `RuntimeError`として届きます。種別を指定するなら
-  `culebra::CulebraError`を投げます。
-- **状態。** ホストの状態にはラムダのキャプチャで届きます（上の`users`）。
-  参照キャプチャは、その関数を呼ぶスクリプトより長く生きる必要があります。
-
-### C++からスクリプトを呼ぶ
-
-`Embed`はセッションです。トップレベルの束縛は作った実行より長く生きるので、
-ホストは実行後にスクリプトのグローバルを読み、その関数を呼べます。引数は
-ホスト関数の戻り値と同じ規則で変換されます:
-
-```cpp
-embed.eval(R"(
-  config = {mut port: 8080, hosts: ['a.example', 'b.example'], db: {mut host: ''}}
-  fn handle(path, body) { "{path}: {body.size()} bytes" }
-)");
-
-auto reply = embed.call("handle", "/index", "hello");   // "/index: 5 bytes"
-```
-
-`Value`はそれ自身が容器として読み書きできます。ObjectとArrayは参照なので、
-そこへ書けばスクリプトが持つその値に届きます:
-
-```cpp
-auto cfg = embed.global("config");
-auto port = cfg["port"].as<int64_t>();   // Longでなければ TypeError
-cfg["db"].set("host", "localhost");      // スクリプトの config.db.host が変わる
-for (const auto& h : cfg["hosts"]) connect(h.as<std::string>());
-```
-
-`as<T>()`は`define`と同じ型を受け付け、合わなければスクリプトと同じ
-`TypeError`を投げます。`to_long()`や`to_string()`などは、合わない値を
-`0`や`""`として読みます。ホストからの書き込みにもスクリプトの規則が
-そのまま効き、`mut`なしで宣言したプロパティへの書き込みは
-`ImmutableError`になります。
-
-### エラー
-
-スクリプト内の失敗は`eval`/`call`に`culebra::CulebraError`として届き、
-種別・メッセージ・位置はスクリプト側の`catch`が見るものと同じです。
-捕捉されなかった`throw`は、CLIが表示する`uncaught: ...`の行を持つ
-`RuntimeError`として届きます:
-
-```cpp
-try {
-  embed.call("handle", "/index", 42);
-} catch (const culebra::CulebraError& e) {
-  std::println(stderr, "{}: {}", e.kind, e.what());   // TypeError: ...
-}
-```
-
-### C++クラスのラップ
-
-`define`が束縛するのは関数です。コンストラクタ・メソッド・決定的な破棄を
-備えたC++クラスをスクリプトに渡すには、`culebra::wrap`で宣言し、
-`culebra wrap`で拡張版の`culebra`バイナリをビルドします。そのクラスは
-VM、`--jit`、`culebra build`が生成するバイナリのいずれでも動きます:
-
-```cpp
-culebra::wrap<demo::Vec2>("Geo", "Vec2")
-    .ctor<double, double>({"x", "y"})
-    .method<&demo::Vec2::len>("len")
-    .method<&demo::Vec2::scale>("scale", {"k"});
-```
-
-JIT経路、スレッドと1スレッド上の複数エンジン、importを含むプログラム全体の
-実行、割り込み、[`culebra wrap`](docs/deployment.ja.md#3-c-ライブラリのラッピングculebra-wrap)
-の詳細は
-[`docs/deployment.ja.md`](docs/deployment.ja.md#2-c-ホストへの-culebra-埋め込み)を
-参照してください。
+ビルドコマンドとそれ以外は
+[`docs/deployment.ja.md`](docs/deployment.ja.md#2-c-ホストへの-culebra-埋め込み)
+にあります。`define`が変換する型、スクリプトのObjectとArrayの読み書き、
+[`culebra wrap`](docs/deployment.ja.md#3-c-ライブラリのラッピングculebra-wrap)
+によるC++クラス、JIT経路、スレッド、割り込みです。
 
 設計の選択
 ----------
