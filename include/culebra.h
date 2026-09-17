@@ -13,6 +13,10 @@
 // bytecode and defines JIT::run / JIT::build_object over it.
 #include "vm/vm.h"
 
+// The session a C++ host drives (docs/deployment.md §2). It rides this header
+// so an embedder includes one thing; vm.h already pulls what it costs.
+#include "vm/embed.h"
+
 #ifdef CULEBRA_JIT_ENABLED
 #include "jit/jit.h"
 #include "jit/lowering.h"

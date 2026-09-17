@@ -352,7 +352,6 @@ LLVMをリンクすれば、C++ からbytecode VMやJITを駆動できます。
 
 ```cpp
 #include <culebra.h>
-#include <vm/embed.h>
 
 int main() {
   culebra::Runtime rt;
@@ -365,6 +364,11 @@ int main() {
   // val.to_long() == 3
 }
 ```
+
+includeは`<culebra.h>`の1つで足ります。パーサ・stdlibのバインディング・
+module loader・`CULEBRA_VERSION`・下のセッション、そして
+`CULEBRA_JIT_ENABLED`のもとではJITの入口まで、これが引き込みます。
+セッション自体は`<vm/embed.h>`にあり、それだけをincludeすることもできます。
 
 `Embed`の前の2行は省けます。書かなければ、エンジンを最初に使った
 時点で**スレッドローカルの既定Runtime**が作られ、以下はそのまま動きます
@@ -523,7 +527,6 @@ c++ -std=c++23 ...上の-Iリスト... \
 ```cpp
 #include <stdlib/codegen_binding.h>  // culebra.h より前に
 #include <culebra.h>
-#include <vm/embed.h>
 
 namespace {
 const bool codegen_registered = culebra::register_codegen_binding();

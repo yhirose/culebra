@@ -276,7 +276,6 @@ fi
 
 cat > "$TMP/minimal.cc" <<'EOF'
 #include <culebra.h>
-#include <vm/embed.h>
 int main() {}
 EOF
 # -1 is the control: with the full list the probe has to compile, or every
@@ -317,7 +316,6 @@ fi
 mkdir -p "$TMP/link"
 cat > "$TMP/link/core.cc" <<'EOF'
 #include <culebra.h>
-#include <vm/embed.h>
 #include <print>
 int main() {
   culebra::vm::Embed embed;
@@ -327,7 +325,6 @@ int main() {
 EOF
 cat > "$TMP/link/http.cc" <<'EOF'
 #include <culebra.h>
-#include <vm/embed.h>
 #include <print>
 int main() {
   culebra::vm::Embed embed;
@@ -336,7 +333,6 @@ int main() {
 EOF
 cat > "$TMP/link/sqlite.cc" <<'EOF'
 #include <culebra.h>
-#include <vm/embed.h>
 #include <print>
 int main() {
   culebra::vm::Embed embed;
@@ -351,7 +347,6 @@ EOF
 cat > "$TMP/link/codegen.cc" <<'EOF'
 #include <stdlib/codegen_binding.h>  // before culebra.h
 #include <culebra.h>
-#include <vm/embed.h>
 #include <print>
 namespace {
 const bool codegen_registered = culebra::register_codegen_binding();

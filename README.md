@@ -303,25 +303,29 @@ can be what the host is configured — or extended — with.
 
 ```cpp
 #include <culebra.h>
-#include <vm/embed.h>
 
 int main() {
   culebra::vm::Embed embed;   // stdlib installed, traits registered
 
   std::vector<double> readings{18.5, 41.2, 79.8};   // the host's own data
+  size_t call_count = 0;
 
   // The argument and return types come from the signature; the host state
-  // the body reads is an ordinary capture.
-  embed.define("temperature", [&readings](int64_t sensor) {
+  // the body reads and writes is an ordinary capture.
+  embed.define("temperature", [&](int64_t sensor) {
+    call_count++;
     return readings.at(sensor);
   }, {"sensor"});
 
   embed.eval(R"(
     fn too_hot(sensor) { temperature(sensor) > 40.0 }
+    too_hot(0)
   )");
 
   // The session outlives the run, so the host calls back into what it left.
   auto hot = embed.call("too_hot", 1).as<bool>();   // true: 41.2 > 40.0
+
+  // call_count is 2 by now: the script's own call, and this one.
 }
 ```
 

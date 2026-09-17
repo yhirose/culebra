@@ -299,25 +299,29 @@ C++ホストへの組み込み
 
 ```cpp
 #include <culebra.h>
-#include <vm/embed.h>
 
 int main() {
   culebra::vm::Embed embed;   // 標準ライブラリとtraitを登録済み
 
   std::vector<double> readings{18.5, 41.2, 79.8};   // ホスト側のデータ
+  size_t call_count = 0;
 
-  // 引数と戻り値の型はシグネチャから決まる。body が読むホストの状態は
-  // ただのキャプチャ。
-  embed.define("temperature", [&readings](int64_t sensor) {
+  // 引数と戻り値の型はシグネチャから決まる。body が読み書きするホストの
+  // 状態はただのキャプチャ。
+  embed.define("temperature", [&](int64_t sensor) {
+    call_count++;
     return readings.at(sensor);
   }, {"sensor"});
 
   embed.eval(R"(
     fn too_hot(sensor) { temperature(sensor) > 40.0 }
+    too_hot(0)
   )");
 
   // セッションは実行より長く生きるので、残したものをホストから呼び戻せる。
   auto hot = embed.call("too_hot", 1).as<bool>();   // true: 41.2 > 40.0
+
+  // この時点で call_count は 2。スクリプト自身の呼び出しと、この呼び出し。
 }
 ```
 

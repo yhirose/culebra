@@ -364,7 +364,6 @@ JIT, and you can drive the bytecode VM or the JIT from C++.
 
 ```cpp
 #include <culebra.h>
-#include <vm/embed.h>
 
 int main() {
   culebra::Runtime rt;
@@ -377,6 +376,11 @@ int main() {
   // val.to_long() == 3
 }
 ```
+
+`<culebra.h>` is the whole include: the parser, the stdlib bindings, the
+module loader, `CULEBRA_VERSION`, the session below, and — under
+`CULEBRA_JIT_ENABLED` — the JIT entries. The session itself lives in
+`<vm/embed.h>`, which a host can include on its own where that matters.
 
 The two lines before `Embed` are optional. Left out, the first use of the
 engine creates a **thread-local default Runtime** and everything below
@@ -534,7 +538,6 @@ names a local that.
 ```cpp
 #include <stdlib/codegen_binding.h>  // before culebra.h
 #include <culebra.h>
-#include <vm/embed.h>
 
 namespace {
 const bool codegen_registered = culebra::register_codegen_binding();
