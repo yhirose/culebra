@@ -492,10 +492,36 @@ itself uses.
 
 `Http` and `SQLite` stay out unless `CULEBRA_HTTP_ENABLED` /
 `CULEBRA_SQLITE_ENABLED` are defined — the names CMake sets for a
-`culebra` build. Each then wants its vendored directory on the include
-path (`vendor/cpp-httplib`, `vendor/sqlite`) and brings its own link
-dependency. Undefined, those two names are simply absent from both
-lanes.
+`culebra` build. Undefined, those two names are simply absent from both
+lanes. Every TU that includes the culebra headers has to see the same
+defines.
+
+`Http` is header-only (`vendor/cpp-httplib`). For https it takes
+OpenSSL from the system; without `CPPHTTPLIB_OPENSSL_SUPPORT` it still
+serves and fetches plain http, and an https URL raises `HttpError`:
+
+```sh
+c++ -std=c++23 ...the -I list above... \
+    -DCULEBRA_HTTP_ENABLED -DCPPHTTPLIB_ZLIB_SUPPORT \
+    -DCPPHTTPLIB_OPENSSL_SUPPORT $(pkg-config --cflags openssl) \
+    -I culebra/vendor/cpp-httplib \
+    host.cpp $(pkg-config --libs openssl) -lz -o host
+# macOS also needs: -framework CoreFoundation -framework Security
+```
+
+`SQLite` compiles the vendored amalgamation into the host.
+`src/runtime/culebra_sqlite3.c` is that amalgamation with the options
+`culebra` itself is built with (foreign keys on by default, FTS5,
+R-Tree, ...), so the host's SQLite behaves the same as the CLI's rather
+than as whichever system library the link would otherwise find. Compile
+it once as C:
+
+```sh
+cc -O2 -w -c culebra/src/runtime/culebra_sqlite3.c -o culebra_sqlite3.o
+c++ -std=c++23 ...the -I list above... \
+    -DCULEBRA_SQLITE_ENABLED -I culebra/vendor/sqlite \
+    host.cpp culebra_sqlite3.o -lz -o host
+```
 
 What the script sees as `Sys.argv` is a process-wide holder. Fill it
 once at startup:

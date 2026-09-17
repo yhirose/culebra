@@ -155,27 +155,19 @@ if(CULEBRA_ENABLE_SQLITE)
 add_compile_definitions(CULEBRA_SQLITE_ENABLED)
 include_directories(./vendor/sqlite)
 
-# SQLite amalgamation (vendor/sqlite/sqlite3.c, public domain) for the builtin
+# SQLite amalgamation (vendor/sqlite/sqlite3.c, public domain, via the wrapper
+# TU src/runtime/culebra_sqlite3.c) for the builtin
 # SQLite namespace. Compiled once into an OBJECT library and reused by both the
 # `culebra` driver (in-process interp/JIT run SQLite directly) and the gated
 # culebra_rt_sqlite feature archive (AOT). Like cpp-httplib's OpenSSL choke,
 # the heavy dependency is partitioned: a non-SQLite AOT binary force-loads
 # neither this object nor the strong wrappers (see sqlite.h / aot_uses_sqlite).
+# The compile-time options are in the wrapper TU, which an embedding host
+# compiles too, so both get the same SQLite.
 # Warnings are silenced (-w) since the amalgamation is third-party generated
 # code; -ffunction-sections lets the AOT link dead-strip unused SQLite code.
-add_library(culebra_sqlite3 OBJECT ./vendor/sqlite/sqlite3.c)
+add_library(culebra_sqlite3 OBJECT ./src/runtime/culebra_sqlite3.c)
 target_compile_options(culebra_sqlite3 PRIVATE -w -ffunction-sections -fdata-sections)
-target_compile_definitions(culebra_sqlite3 PRIVATE
-  SQLITE_THREADSAFE=1
-  SQLITE_DQS=0
-  SQLITE_OMIT_LOAD_EXTENSION
-  SQLITE_DEFAULT_FOREIGN_KEYS=1
-  SQLITE_OMIT_DEPRECATED
-  SQLITE_OMIT_SHARED_CACHE
-  SQLITE_LIKE_DOESNT_MATCH_BLOBS
-  SQLITE_DEFAULT_MEMSTATUS=0
-  SQLITE_ENABLE_FTS5
-  SQLITE_ENABLE_RTREE)
 endif()
 
 # zlib (libz): the gzip choke for the Compress namespace (gzip/gunzip) and, when

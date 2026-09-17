@@ -98,5 +98,34 @@ assert_eq(nkind, "TypeError")
 // --- empty result set is an empty array ---
 assert_eq(db.query("SELECT * FROM users WHERE id = 999").size(), 0)
 
+// --- the compile-time options src/runtime/culebra_sqlite3.c sets ---
+// SQLITE_DEFAULT_FOREIGN_KEYS=1: a dangling reference is rejected unasked.
+db.execute("CREATE TABLE parent (id INTEGER PRIMARY KEY)")
+db.execute("CREATE TABLE child (pid INTEGER REFERENCES parent(id))")
+let mut fk = ""
+try {
+  db.execute("INSERT INTO child VALUES (99)")
+} catch e {
+  fk = e.message
+}
+assert_true(fk.contains("FOREIGN KEY"))
+
+// SQLITE_DQS=0: a double-quoted token is an identifier, never a string.
+let mut dqs = ""
+try {
+  db.query("SELECT \"no such column\"")
+} catch e {
+  dqs = e.message
+}
+assert_true(dqs.contains("no such column"))
+
+// SQLITE_ENABLE_FTS5 / SQLITE_ENABLE_RTREE
+db.execute("CREATE VIRTUAL TABLE docs USING fts5(body)")
+db.execute("INSERT INTO docs VALUES ('embedded sql engine')")
+assert_eq(db.query("SELECT body FROM docs WHERE docs MATCH 'sql'").size(), 1)
+db.execute("CREATE VIRTUAL TABLE boxes USING rtree(id, x0, x1)")
+db.execute("INSERT INTO boxes VALUES (1, 0.0, 10.0)")
+assert_eq(db.query("SELECT id FROM boxes WHERE x0 <= 5 AND x1 >= 5").size(), 1)
+
 db.close()
 inspect("sqlite ok")

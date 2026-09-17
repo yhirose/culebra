@@ -482,10 +482,35 @@ VMも動き、ホストのどこもLLVMを参照しません。culebra自身のn
 
 `Http`と`SQLite`は`CULEBRA_HTTP_ENABLED` / `CULEBRA_SQLITE_ENABLED`を
 定義しない限り入りません（`culebra`のビルドでCMakeが設定するのと同じ
-名前です）。定義するならそれぞれvendor配下のディレクトリ
-（`vendor/cpp-httplib`・`vendor/sqlite`）をinclude pathに足し、
-固有のリンク依存も付きます。定義しなければ、この2つの名前は
-どちらのレーンにも存在しません。
+名前です）。定義しなければ、この2つの名前はどちらのレーンにも存在
+しません。culebraのヘッダをインクルードするTUは、すべて同じdefineで
+コンパイルしてください。
+
+`Http`はヘッダオンリーです（`vendor/cpp-httplib`）。httpsにはシステムの
+OpenSSLを使います。`CPPHTTPLIB_OPENSSL_SUPPORT`なしでもhttpの送受信は
+でき、httpsのURLは`HttpError`になります:
+
+```sh
+c++ -std=c++23 ...上の-Iリスト... \
+    -DCULEBRA_HTTP_ENABLED -DCPPHTTPLIB_ZLIB_SUPPORT \
+    -DCPPHTTPLIB_OPENSSL_SUPPORT $(pkg-config --cflags openssl) \
+    -I culebra/vendor/cpp-httplib \
+    host.cpp $(pkg-config --libs openssl) -lz -o host
+# macOS ではさらに: -framework CoreFoundation -framework Security
+```
+
+`SQLite`は同梱のamalgamationをホストに組み込みます。
+`src/runtime/culebra_sqlite3.c`は、`culebra`本体と同じオプション
+（外部キー制約が既定で有効、FTS5、R-Treeなど）を付けたamalgamationです。
+これを使えば、リンク時にたまたま見つかるシステムのライブラリではなく、
+CLIと同じ動作のSQLiteになります。Cとして一度だけコンパイルします:
+
+```sh
+cc -O2 -w -c culebra/src/runtime/culebra_sqlite3.c -o culebra_sqlite3.o
+c++ -std=c++23 ...上の-Iリスト... \
+    -DCULEBRA_SQLITE_ENABLED -I culebra/vendor/sqlite \
+    host.cpp culebra_sqlite3.o -lz -o host
+```
 
 スクリプトが`Sys.argv`として見る値はプロセス全体のホルダです。
 起動時に1回入れてください:

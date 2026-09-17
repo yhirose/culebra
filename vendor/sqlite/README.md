@@ -11,8 +11,9 @@ git source; SQLite distributes it as a zip from sqlite.org.
 - **License:** Public Domain (https://www.sqlite.org/copyright.html)
 
 Files:
-- `sqlite3.c` — the amalgamated library (compiled only into the gated
-  `culebra_rt_sqlite` feature archive, never into the core build).
+- `sqlite3.c` — the amalgamated library. Never compiled directly:
+  `src/runtime/culebra_sqlite3.c` sets culebra's compile-time options and
+  includes it, for the build and for embedding hosts alike.
 - `sqlite3.h` — the public API header.
 - `sqlite3ext.h` — loadable-extension header (kept for completeness).
 
