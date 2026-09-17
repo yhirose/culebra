@@ -314,14 +314,20 @@ int main() {
   }, {"sensor"});
 
   embed.eval(R"(
-    fn too_hot(sensor) { temperature(sensor) > 40.0 }
+    config = {mut limit: 40.0}
+    fn too_hot(sensor) { temperature(sensor) > config.limit }
     too_hot(0)
   )");
 
-  // セッションは実行より長く生きるので、残したものをホストから呼び戻せる。
+  // セッションは実行より長く生きるので、スクリプトが残した値をホストが読み、
+  // 呼び戻し、書き込める。Objectはコピーでなく参照。
+  auto config = embed.global("config");
+  auto limit = config["limit"].as<double>();        // 40.0
   auto hot = embed.call("too_hot", 1).as<bool>();   // true: 41.2 > 40.0
+  config.set("limit", 50.0);
+  hot = embed.call("too_hot", 1).as<bool>();        // 同じスクリプトが false
 
-  // この時点で call_count は 2。スクリプト自身の呼び出しと、この呼び出し。
+  // この時点で call_count は 3。スクリプト自身の呼び出しと、上の2回。
 }
 ```
 
@@ -330,7 +336,8 @@ int main() {
 
 ビルドコマンドとそれ以外は
 [`docs/deployment.ja.md`](docs/deployment.ja.md#2-c-ホストへの-culebra-埋め込み)
-にあります。`define`が変換する型、スクリプトのObjectとArrayの読み書き、
+にあります。`define`が変換する型、スクリプトのObjectとArrayを扱う
+`Value`の残りの面、
 [`culebra wrap`](docs/deployment.ja.md#3-c-ライブラリのラッピングculebra-wrap)
 によるC++クラス、JIT経路、スレッド、割り込みです。
 

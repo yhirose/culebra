@@ -318,14 +318,21 @@ int main() {
   }, {"sensor"});
 
   embed.eval(R"(
-    fn too_hot(sensor) { temperature(sensor) > 40.0 }
+    config = {mut limit: 40.0}
+    fn too_hot(sensor) { temperature(sensor) > config.limit }
     too_hot(0)
   )");
 
-  // The session outlives the run, so the host calls back into what it left.
+  // The session outlives the run, so the host reads what the script left,
+  // calls back into it, and writes into its values — an Object is a
+  // reference, not a copy.
+  auto config = embed.global("config");
+  auto limit = config["limit"].as<double>();        // 40.0
   auto hot = embed.call("too_hot", 1).as<bool>();   // true: 41.2 > 40.0
+  config.set("limit", 50.0);
+  hot = embed.call("too_hot", 1).as<bool>();        // false, same script
 
-  // call_count is 2 by now: the script's own call, and this one.
+  // call_count is 3 by now: the script's own call, and the two above.
 }
 ```
 
@@ -333,8 +340,8 @@ A failure in script code arrives as `culebra::CulebraError`, with the
 kind, message and position the script's own `catch` sees.
 
 [`docs/deployment.md`](docs/deployment.md#2-embedding-culebra-in-a-c-host)
-has the build line and the rest: the types `define` converts, reading and
-writing a script's Objects and Arrays, C++ classes through
+has the build line and the rest: the types `define` converts, the rest of
+the `Value` surface over a script's Objects and Arrays, C++ classes through
 [`culebra wrap`](docs/deployment.md#3-wrapping-c-libraries-culebra-wrap),
 the JIT path, threading, and interrupts.
 

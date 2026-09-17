@@ -31,7 +31,8 @@
 #      build, then Http, SQLite (the amalgamation TU) and CodeGen the way
 #      the same page adds them. B is -fsyntax-only, so the macOS frameworks
 #      the stdlib reaches unconditionally were missing from the docs for a
-#      release and nothing noticed.
+#      release and nothing noticed. The landing page's C++ card is a lane
+#      too — A reads its #includes, and nothing else ever read the rest.
 #
 # The include list below is duplicated in the docs on purpose: the gate
 # exists to prove that what the doc tells a reader to type is what actually
@@ -357,12 +358,29 @@ int main() {
 }
 EOF
 
+# The landing page's C++ card, extracted the way A reads its includes: tags
+# first (they use real angle brackets), then the entities that spell the
+# code's own. It is HTML, so no pass over the .md files ever touched it.
+awk '
+  /<pre class="sample">/ { blk = ""; inb = 1 }
+  inb                    { line = $0; gsub(/<[^>]*>/, "", line); blk = blk line "\n" }
+  inb && /<\/pre>/       { inb = 0; if (blk ~ /int main\(/) { printf "%s", blk; exit } }
+' site/index.html \
+  | sed -e 's/&lt;/</g' -e 's/&gt;/>/g' -e 's/&amp;/\&/g' \
+  > "$TMP/link/site.cc"
+if ! grep -q 'int main(' "$TMP/link/site.cc"; then
+  echo "docs-cpp FAIL: site/index.html has no C++ sample with an int main() —" >&2
+  echo "  the card moved or its markup changed, and its lane below proves nothing." >&2
+  fail=1
+fi
+
 # lane: name | extra compile flags | extra sources or objects | expected stdout
 lanes=(
   "core|||42"
   "http|-DCULEBRA_HTTP_ENABLED -I vendor/cpp-httplib||Function"
   "sqlite|-DCULEBRA_SQLITE_ENABLED -I vendor/sqlite|$TMP/link/culebra_sqlite3.o|1"
   "codegen|-I vendor/cpp-vmlib|src/runtime/codegen_rt.cc|Module"
+  "site|||"
 )
 "${CULEBRA_DOCS_CC:-${CC:-cc}}" -O0 -w -c src/runtime/culebra_sqlite3.c -o "$TMP/link/culebra_sqlite3.o"
 
@@ -391,7 +409,7 @@ elif (( linked != ${#lanes[@]} )); then
   echo "  the lane runner died before finishing, so this check proved nothing." >&2
   fail=1
 else
-  echo "docs-cpp OK (link): $linked host builds link and run (core, Http, SQLite, CodeGen)"
+  echo "docs-cpp OK (link): $linked host builds link and run (core, Http, SQLite, CodeGen, the site card)"
 fi
 
 exit $fail

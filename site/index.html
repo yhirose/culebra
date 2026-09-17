@@ -298,15 +298,17 @@ culebra build hello.cul -o hello &amp;&amp; ./hello  # AOT: compile once, ship t
           <pre class="sample"><span class="k">#include</span> &lt;culebra.h&gt;
 
 <span class="k">int</span> main() {
-  culebra::vm::Embed embed;   <span class="c">// stdlib installed, traits registered</span>
+  culebra::vm::Embed embed;
+  std::vector&lt;<span class="k">double</span>&gt; readings{18.5, 41.2, 79.8};   <span class="c">// the host's own data</span>
 
-  <span class="c">// C++ the script calls by name, and the other direction:</span>
-  embed.define(<span class="s">"log"</span>, [](std::string m) { std::println(<span class="s">"{}"</span>, m); });
-  embed.eval(<span class="s">"config = {mut port: 8080}"</span>);
-  embed.eval(<span class="s">"log(\"port {config.port}\")"</span>);   <span class="c">// port 8080</span>
+  embed.define(<span class="s">"temperature"</span>, [&amp;](<span class="k">int64_t</span> s) { <span class="k">return</span> readings.at(s); });
+  embed.eval(R<span class="s">"(
+    config = {mut limit: 40.0}
+    fn too_hot(s) { temperature(s) &gt; config.limit }
+  )"</span>);
 
-  <span class="k">auto</span> cfg = embed.global(<span class="s">"config"</span>);
-  cfg.set(<span class="s">"port"</span>, 9090);   <span class="c">// writes into the script's own value</span>
+  <span class="k">auto</span> hot = embed.call(<span class="s">"too_hot"</span>, 1).as&lt;<span class="k">bool</span>&gt;();   <span class="c">// true: 41.2 &gt; 40.0</span>
+  embed.global(<span class="s">"config"</span>).set(<span class="s">"limit"</span>, 50.0);        <span class="c">// into the script's own value</span>
 }</pre>
           <p class="fine-print">No LLVM dependency — the bytecode VM drops
             straight into a C++23 host through a minimal session API.
