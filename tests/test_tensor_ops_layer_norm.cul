@@ -151,8 +151,9 @@ if Tensor.gpu_available() {
     assert_tensor_close(fused_gg[i], composed_gg[i], 1.0e-4)
   }
 
-  # Exactly one pullback runs: the fused one's scope, or the composed form's
-  # own keepdims means.
+  # Exactly one pullback runs: kernels under the fused one's scope, or the
+  # composed form's own keepdims means. The scope alone does not tell: a
+  # backend without the kernels still opens it before declining.
   let rows = Tensor.profile(fn () {
     grads_of_gpu(fused)
   })
@@ -160,10 +161,8 @@ if Tensor.gpu_available() {
     rows.find(|r| r.kind == 'scope' && r.path == path)
   }
   assert_eq(scope_at('backward/LayerNorm').count, 1)
-  let fused_row = scope_at('backward/LayerNorm/layer_norm_bwd')
-  assert_eq(fused_row != nil, scope_at('backward/LayerNorm/mean') == nil)
-  if fused_row != nil {
-    assert_eq(fused_row.count, 1)
-  }
+  let fused_launches = rows.filter(|r| r.kind == 'launch' &&
+                                       r.path == 'backward/LayerNorm/layer_norm_bwd')
+  assert_eq(fused_launches.size() > 0, scope_at('backward/LayerNorm/mean') == nil)
   Tensor.use_auto()
 }
