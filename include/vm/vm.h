@@ -14508,7 +14508,7 @@ struct Exec {
   // The dispatch loop proper: runs until Ret/Halt, or unwinds with `pc`
   // still at the faulting instruction (run_frame's catch consults it).
   static JitValue dispatch(const VmProgram& p, const Chunk& c,
-                           const Insn* code, JitValue* regs, size_t& pc,
+                           const Insn* code, JitValue* regs, size_t& pc_out,
                            int32_t chunk_idx, JitClosure* cls,
                            int64_t& frame_depth, int64_t n_args,
                            JitValue* args, int64_t* marks) {
@@ -14606,15 +14606,25 @@ struct Exec {
     // see — unless a helper frame that may hold sole references is
     // suspended below us, which safepoint_collect checks. Folds away on
     // native builds.
-    // `pc` is a reference the unwinder reads, so it stays where it is; the
-    // instruction it names is cached here, or every arm would reload `pc`
-    // through the reference and redo the index a second time.
+    // The unwinder reads the faulting pc through `pc_out`, so each dispatch
+    // stores it there — but the loop runs on a local copy the compiler can
+    // keep in a register, where reading `pc_out` back put a load, an add and
+    // a store on every instruction's critical path. An arm that moves `pc`
+    // and then may still throw republishes it (DbgStmt); every other arm
+    // moves it only on its way out. A handler covering the whole loop would
+    // do the same with no store at all, but it gives every call site in the
+    // loop a landing pad, and the personality routine's walk over that table
+    // doubled the cost of a throw through five frames. The instruction `pc`
+    // names is cached in `ip`, or every arm would redo the index a second
+    // time.
+    size_t pc = pc_out;
     const Insn* ip = nullptr;
 #define VM_NEXT()                                                          \
   do {                                                                     \
     if constexpr (gc::kDeferToSafepoint) {                                 \
       if (sp_heap->safepoint_pending()) sp_heap->safepoint_collect();      \
     }                                                                      \
+    pc_out = pc;                                                           \
     ip = &code[pc];                                                        \
     goto* kLabels[static_cast<size_t>(ip->op)];                            \
   } while (0)
@@ -17049,6 +17059,7 @@ struct Exec {
             f.col = col;
           }
           ++pc;
+          pc_out = pc;  // the hook may throw, and it runs past this statement
           if (st.hook) {
             st.hook(in.a != 0, line, col);
           } else if (in.a) {
