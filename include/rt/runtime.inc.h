@@ -353,6 +353,13 @@ struct JitThreadState {
   int argpos_n = 0;
   int64_t argpos_line[_JIT_ARGPOS_MAX] = {};
   int64_t argpos_col[_JIT_ARGPOS_MAX] = {};
+
+  // The last answer culebra_runtime_multifn_self gave: a recursive body asks
+  // the same question on every call. The current Runtime's uplink table is
+  // the truth; every write to it drops this (_jit_multifn_uplink_set/erase),
+  // and so does a Runtime switch, since the table is per Runtime.
+  JitClosure* mf_body = nullptr;
+  JitClosure* mf_dispatcher = nullptr;
 };
 inline constinit thread_local JitThreadState _jit_thread;
 static_assert(offsetof(JitThreadState, depth) == 0 &&
@@ -366,7 +373,10 @@ extern "C" {
 // those used to be its own runtime call and its own _tlv_get_addr. The
 // owned-stack cache is dropped on every Runtime switch (RuntimeTls::on_switch)
 // and re-resolved here, on the next frame's entry.
-inline void _jit_thread_forget_runtime() { _jit_thread.owned = nullptr; }
+inline void _jit_thread_forget_runtime() {
+  _jit_thread.owned = nullptr;
+  _jit_thread.mf_body = nullptr;
+}
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitThreadState* culebra_runtime_thread_state() {
   auto& ts = _jit_thread;
   if (!ts.owned) {

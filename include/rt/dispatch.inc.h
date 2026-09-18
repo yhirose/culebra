@@ -816,6 +816,17 @@ inline std::map<JitClosure*, JitClosure*>& _jit_multifn_body_uplinks() {
       culebra::kSlotJitMultifnUplinks);
 }
 
+// Every write to the uplink table goes through these two, which is what
+// keeps the thread's last-answer cache (JitThreadState::mf_body) honest.
+inline void _jit_multifn_uplink_set(JitClosure* body, JitClosure* dispatcher) {
+  _jit_multifn_body_uplinks()[body] = dispatcher;
+  if (_jit_thread.mf_body == body) _jit_thread.mf_body = nullptr;
+}
+inline void _jit_multifn_uplink_erase(JitClosure* body) {
+  _jit_multifn_body_uplinks().erase(body);
+  if (_jit_thread.mf_body == body) _jit_thread.mf_body = nullptr;
+}
+
 // The self-handle read a multifn body's prologue emits: the dispatcher
 // this body was registered into, +1 for the frame (alive for the whole
 // call — the caller invoked us through it). A miss — a body handle that
@@ -824,11 +835,18 @@ inline std::map<JitClosure*, JitClosure*>& _jit_multifn_body_uplinks() {
 // undeclared name gets.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue
 culebra_runtime_multifn_self(JitClosure* body) {
-  auto& uplinks = _jit_multifn_body_uplinks();
-  auto it = uplinks.find(body);
-  if (it == uplinks.end()) return JitValue{TAG_NO_SELF, 0};
-  it->second->refcount++;
-  return JitValue{TAG_FUNC, reinterpret_cast<int64_t>(it->second)};
+  // Through thread_state, which installs the Runtime-switch hook that
+  // clears the cache.
+  auto& ts = *culebra_runtime_thread_state();
+  if (ts.mf_body != body) {
+    auto& uplinks = _jit_multifn_body_uplinks();
+    auto it = uplinks.find(body);
+    if (it == uplinks.end()) return JitValue{TAG_NO_SELF, 0};
+    ts.mf_body = body;
+    ts.mf_dispatcher = it->second;
+  }
+  ts.mf_dispatcher->refcount++;
+  return JitValue{TAG_FUNC, reinterpret_cast<int64_t>(ts.mf_dispatcher)};
 }
 
 // The class-name read a class member's prologue emits: the class object its
@@ -1080,7 +1098,7 @@ inline void _jit_multifn_forget(JitClosure* c, bool release_bodies) {
     // paths — the sweep reclaims the bodies through their own entries, and
     // a stale uplink would dangle at the raw-pointer layer.
     for (auto& e : mit->second)
-      if (e.body) _jit_multifn_body_uplinks().erase(e.body);
+      if (e.body) _jit_multifn_uplink_erase(e.body);
     if (release_bodies) doomed = std::move(mit->second);
     tbl.erase(mit);
   }
@@ -1623,14 +1641,14 @@ culebra_runtime_multifn_register_and_install(const char* name_cstr,
   if (!displaced) methods.push_back(std::move(method));
   // The body's self-recursion uplink (culebra_runtime_multifn_self); leaves
   // with the table entry, so it can never outlive the dispatcher it names.
-  _jit_multifn_body_uplinks()[body] = dispatcher;
+  _jit_multifn_uplink_set(body, dispatcher);
   // Table and shortcut are final BEFORE the displaced body's table +1 goes:
   // the cascade fires pending `drop`s (user code) that may dispatch this
   // very name, so neither may still hold the freed body. Cycle-held remains
   // park for the GC backstop.
   _jit_multifn_refresh_mono(dispatcher);
   if (displaced) {
-    _jit_multifn_body_uplinks().erase(displaced);
+    _jit_multifn_uplink_erase(displaced);
     _culebra_value_release_impl(TAG_FUNC,
                                 reinterpret_cast<int64_t>(displaced));
   }

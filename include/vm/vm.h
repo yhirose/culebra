@@ -2833,6 +2833,9 @@ struct Chunk {
   // expression rather than at the call. Entries only exist for calls that
   // pass arguments.
   std::vector<std::pair<uint32_t, std::vector<int64_t>>> call_argpos;
+  // pc -> 1 + the `call_argpos` row keyed by it, 0 where none is; derived
+  // by build_pos_index like pos_ix, empty until it has run.
+  std::vector<uint32_t> argpos_ix;
   // The function chunk each Call / CallM was resolved to, indexed by the
   // instruction, -1 where the callee stays a run-time question. A resolved
   // callee is a name bound once, by a `fn` literal, and never rebound. Only
@@ -2930,13 +2933,23 @@ inline uint64_t chunk_closure_flags(const Chunk& c) {
 
 // The argument positions the call at `ix` published, or null when it has
 // none (the call site stands in — the interp binder's own fallback).
-inline const std::vector<int64_t>* chunk_argpos_at(const Chunk& c, size_t ix) {
+inline const std::vector<int64_t>* chunk_argpos_search(const Chunk& c,
+                                                      size_t ix) {
   auto it = std::lower_bound(
       c.call_argpos.begin(), c.call_argpos.end(), static_cast<uint32_t>(ix),
       [](const auto& e, uint32_t k) { return e.first < k; });
   if (it == c.call_argpos.end() || it->first != static_cast<uint32_t>(ix))
     return nullptr;
   return &it->second;
+}
+
+// Asked once per Call, so the search is precomputed (Chunk::argpos_ix).
+inline const std::vector<int64_t>* chunk_argpos_at(const Chunk& c, size_t ix) {
+  if (ix < c.argpos_ix.size()) {
+    const uint32_t row = c.argpos_ix[ix];
+    return row ? &c.call_argpos[row - 1].second : nullptr;
+  }
+  return chunk_argpos_search(c, ix);
 }
 
 // The function chunk the call at `ix` was resolved to, with chunk -1 when its
@@ -3361,8 +3374,9 @@ inline std::pair<int64_t, int64_t> chunk_pos_at(const Chunk& c, size_t pc) {
   return chunk_pos_search(c, pc);
 }
 
-// Derive pos_ix from `positions`. Runs once per chunk, after every pass that
-// moves pcs (compile_unit asserts the two still agree).
+// Derive pos_ix from `positions`, and argpos_ix from `call_argpos`. Runs
+// once per chunk, after every pass that moves pcs (compile_unit asserts the
+// indexes still agree with the searches).
 inline void build_pos_index(Chunk& c) {
   c.pos_ix.clear();
   c.pos_ix.reserve(c.code.size());
@@ -3373,6 +3387,10 @@ inline void build_pos_index(Chunk& c) {
     while (row < c.positions.size() && c.positions[row].first_insn <= pc) ++row;
     c.pos_ix.push_back(static_cast<uint32_t>(row));
   }
+  c.argpos_ix.assign(c.code.size(), 0);
+  for (size_t r = 0; r < c.call_argpos.size(); ++r)
+    if (c.call_argpos[r].first < c.argpos_ix.size())
+      c.argpos_ix[c.call_argpos[r].first] = static_cast<uint32_t>(r + 1);
 }
 
 // Does every pc read the same through the index as through the search? The
@@ -3382,7 +3400,9 @@ inline bool pos_index_agrees(const VmProgram& p) {
   for (const Chunk& c : p.chunks) {
     if (c.pos_ix.size() != c.code.size()) return false;
     for (size_t pc = 0; pc < c.code.size(); ++pc)
-      if (chunk_pos_at(c, pc) != chunk_pos_search(c, pc)) return false;
+      if (chunk_pos_at(c, pc) != chunk_pos_search(c, pc) ||
+          chunk_argpos_at(c, pc) != chunk_argpos_search(c, pc))
+        return false;
   }
   return true;
 }
@@ -3516,12 +3536,17 @@ struct RcPlan {
   // Per chunk, the `Move` pcs that become `MoveRetain`, absorbing the
   // `Retain` after them (which `dead` carries).
   std::vector<std::vector<uint32_t>> fuse;
+  // Per chunk, the `Move` pcs that become `Take`, absorbing the `Retain` and
+  // the `Release` after them (both in `dead`).
+  std::vector<std::vector<uint32_t>> take;
 
   bool any() const {
     bool rewrites =
         std::any_of(coalesce.begin(), coalesce.end(),
                     [](const std::vector<Coalesce>& v) { return !v.empty(); }) ||
         std::any_of(fuse.begin(), fuse.end(),
+                    [](const std::vector<uint32_t>& v) { return !v.empty(); }) ||
+        std::any_of(take.begin(), take.end(),
                     [](const std::vector<uint32_t>& v) { return !v.empty(); });
     return rewrites ||
            std::any_of(dead.begin(), dead.end(), [](const std::vector<char>& d) {
@@ -3888,7 +3913,8 @@ struct RcScratch {
 // One chunk's decisions, in emission order.
 inline std::vector<char> rc_plan_for_chunk(const Chunk& c, RcScratch& s,
                                           std::vector<Coalesce>& out_coalesce,
-                                          std::vector<uint32_t>& out_fuse) {
+                                          std::vector<uint32_t>& out_fuse,
+                                          std::vector<uint32_t>& out_take) {
   const size_t n = c.code.size();
   const size_t slots = static_cast<size_t>(c.num_slots);
   std::vector<char> dead(n, 0);
@@ -4105,6 +4131,36 @@ inline std::vector<char> rc_plan_for_chunk(const Chunk& c, RcScratch& s,
       dead[pc + 1] = 1;
     }
 
+    // `Move X, Y ; Retain X ; Release Y` hands Y's value to X: the copy's
+    // +1 and the release's -1 cancel (the value is never the last reference
+    // in between, so no `drop` can run), which is what `Take X, Y` does in
+    // one instruction — Y is left nil either way. It is how a function
+    // returns a parameter as is. Nothing may land in the middle.
+    for (size_t pc = 0; pc + 2 < n; ++pc) {
+      const Insn& mv = c.code[pc];
+      if (mv.op != Op::Move || c.code[pc + 1].op != Op::Retain ||
+          c.code[pc + 2].op != Op::Release)
+        continue;
+      if (c.code[pc + 1].a != mv.a || c.code[pc + 2].a != mv.b ||
+          mv.a == mv.b)
+        continue;
+      if (dead[pc] || dead[pc + 1] || dead[pc + 2]) continue;
+      if (is_target[pc + 1] || is_target[pc + 2]) continue;
+      out_take.push_back(static_cast<uint32_t>(pc));
+      dead[pc + 1] = 1;
+      dead[pc + 2] = 1;
+    }
+    // The same pair once a previous round fused the first two.
+    for (size_t pc = 0; pc + 1 < n; ++pc) {
+      const Insn& mv = c.code[pc];
+      if (mv.op != Op::MoveRetain || c.code[pc + 1].op != Op::Release ||
+          c.code[pc + 1].a != mv.b || mv.a == mv.b)
+        continue;
+      if (dead[pc] || dead[pc + 1] || is_target[pc + 1]) continue;
+      out_take.push_back(static_cast<uint32_t>(pc));
+      dead[pc + 1] = 1;
+    }
+
     // `Move X, Y ; Retain X` is the borrow idiom, and it is the ONLY shape a
     // Retain is emitted in (store_into's not-owned arm writes both). Fusing
     // the pair into one instruction saves a dispatch on each; the fused op
@@ -4242,15 +4298,17 @@ inline RcPlan plan_rc_elision(const VmProgram& p) {
   plan.dead.reserve(p.chunks.size());
   plan.coalesce.reserve(p.chunks.size());
   plan.fuse.reserve(p.chunks.size());
+  plan.take.reserve(p.chunks.size());
   rc_detail::RcScratch scratch;
   for (const Chunk& c : p.chunks) {
     std::vector<Coalesce> co;
-    std::vector<uint32_t> fz;
-    auto dead = rc_detail::rc_plan_for_chunk(c, scratch, co, fz);
+    std::vector<uint32_t> fz, tk;
+    auto dead = rc_detail::rc_plan_for_chunk(c, scratch, co, fz, tk);
     owned_detail::owned_plan_for_chunk(c, dead);
     plan.dead.push_back(std::move(dead));
     plan.coalesce.push_back(std::move(co));
     plan.fuse.push_back(std::move(fz));
+    plan.take.push_back(std::move(tk));
   }
   return plan;
 }
@@ -4305,6 +4363,7 @@ inline void delete_marked(Chunk& c, const std::vector<char>& dead) {
   c.code = std::move(code);
 
   c.pos_ix.clear();  // derived from `positions` and the pcs, both moving here
+  c.argpos_ix.clear();
   // A run-length table can end up with two rows on one pc when the
   // instruction between them died; chunk_pos_at takes the last of them, so
   // keeping the last is what preserves the answer. Same for temp_points.
@@ -4343,7 +4402,8 @@ inline void delete_marked(Chunk& c, const std::vector<char>& dead) {
 
 inline void apply_rc_elision(Chunk& c, const std::vector<char>& dead,
                              const std::vector<Coalesce>& coalesce,
-                             const std::vector<uint32_t>& fuse) {
+                             const std::vector<uint32_t>& fuse,
+                             const std::vector<uint32_t>& take) {
   const size_t n = c.code.size();
   // The rewrites first, in the old numbering: each just redirects a
   // producer's destination, or turns a Move into the fused MoveRetain, and
@@ -4352,6 +4412,8 @@ inline void apply_rc_elision(Chunk& c, const std::vector<char>& dead,
     if (co.at < n) c.code[co.at].a = co.dest;
   for (uint32_t at : fuse)
     if (at < n) c.code[at].op = Op::MoveRetain;
+  for (uint32_t at : take)
+    if (at < n) c.code[at].op = Op::Take;
   delete_marked(c, dead);
 }
 
@@ -4409,10 +4471,11 @@ inline void shape_elide_chunk(Chunk& c) {
 // Run the elision over a whole program.
 inline void apply_rc_elision(VmProgram& p, const RcPlan& plan) {
   size_t n = std::min({p.chunks.size(), plan.dead.size(),
-                       plan.coalesce.size(), plan.fuse.size()});
+                       plan.coalesce.size(), plan.fuse.size(),
+                       plan.take.size()});
   for (size_t ci = 0; ci < n; ++ci)
     apply_rc_elision(p.chunks[ci], plan.dead[ci], plan.coalesce[ci],
-                     plan.fuse[ci]);
+                     plan.fuse[ci], plan.take[ci]);
 }
 // What a lane that calls baked preamble entries (stdlib_preamble.h) leaves
 // out of the unit, and what it has to hand back so the compile still sees
@@ -14342,11 +14405,13 @@ struct Exec {
     return culebra_runtime_nc_receiver_kind(reinterpret_cast<int64_t>(o)) == 0;
   }
 
-  // The owned stack's next id, read the way compiled code reads it: off the
-  // hot fields whose address the runtime hands out (next_id is at offset 0).
+  // The owned stack, read the way compiled code reads it: through the
+  // thread state's cached pointer, not the Runtime's own lookup.
+  static JitOwnedStack& owned_hot() {
+    return *culebra_runtime_thread_state()->owned;
+  }
   static int64_t owned_next_id() {
-    return *reinterpret_cast<const int64_t*>(
-        static_cast<uintptr_t>(culebra_runtime_owned_hot()));
+    return static_cast<int64_t>(owned_hot().next_id);
   }
 
   static void publish_call_site(const Chunk& c, size_t pc, int64_t line,
@@ -16944,7 +17009,9 @@ struct Exec {
       L_OwnedExit:
         do {
           [[maybe_unused]] const Insn& in = *ip;
-          culebra_runtime_owned_scope_exit(marks[in.a]);
+          // The JIT's inline empty-region check (emit_owned_scope_exit).
+          if (owned_hot().top_stamp > static_cast<uint64_t>(marks[in.a]))
+            culebra_runtime_owned_scope_exit(marks[in.a]);
           ++pc;
           break;
         } while (0);

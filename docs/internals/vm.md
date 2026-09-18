@@ -524,7 +524,11 @@ so a jump target is never a candidate.
 shape a `Retain` is ever emitted in (`store_into`'s not-owned arm writes
 both), so the pair becomes one `MoveRetain`, saving a dispatch on each.
 That opcode exists for the pass to emit; the compiler still writes the
-pair, which keeps the source it comes from readable.
+pair, which keeps the source it comes from readable. When the borrow is
+followed by `Release Y`, the copy's `+1` and the release's `-1` cancel —
+the value is never its last reference in between, so no `drop` can run —
+and the three become one `Take X, Y`, which leaves `Y` nil just as the
+`Release` did. That is how a function returns a parameter as is.
 
 **Fusing the ladder** is the fifth, and unlike the four above it proves
 nothing — it is about the SHAPE of the code rather than its dataflow, so

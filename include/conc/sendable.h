@@ -407,7 +407,7 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
                              n.mf_min_params[i]});
           // The rebuilt body's self-recursion uplink, exactly as
           // registration would have installed it.
-          _jit_multifn_body_uplinks()[body_cls] = c;
+          _jit_multifn_uplink_set(body_cls, c);
         }
         _jit_multifn_refresh_mono(c);
         return cv;
