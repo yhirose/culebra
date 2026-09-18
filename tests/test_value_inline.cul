@@ -91,6 +91,41 @@ test_typed_param_still_checks = fn () {
 }
 test_typed_param_still_checks()
 
+# The inlined constructor is the boxed one in every observable way: a field
+# store checks the field's declared type (same wording as the boxed store),
+# a field the body never assigns starts at its typed zero, and a keyword
+# argument binds by name.
+@value
+class Partial {
+  x: Float
+  y: Float
+
+  new(x) {
+    self.x = x
+  }
+}
+
+test_inlined_ctor_matches_boxed = fn () {
+  let boxed = try {
+    Partial(1).x
+  } catch e {
+    e.message
+  }
+  let inlined = try {
+    Partial.new(1).x
+  } catch e {
+    e.message
+  }
+  assert_eq(boxed, "type error: field 'x' expects Float")
+  assert_eq(inlined, boxed)
+  assert_eq(Partial.new(1.0).y, 0.0)
+  assert_eq(type_of(Partial.new(1.0).y), 'Float')
+  let k = V2.new(y: 2.0, x: 1.0)
+  assert_eq((k.x, k.y), (1.0, 2.0))
+  assert_eq(V2.new(y: 2.0, x: 1.0).len(), V2.new(1.0, 2.0).len())
+}
+test_inlined_ctor_matches_boxed()
+
 # --- the shapes that must NOT inline, and must still be right ---------------
 
 @value

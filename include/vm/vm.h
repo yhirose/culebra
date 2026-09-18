@@ -7112,6 +7112,9 @@ class Compiler {
           if (mv.is_typed_field || (mv.is_field && !mv.is_static))
             fields.push_back(ast.nodes[i].get());
         }
+        // The field types too: a splice into the baked class's constructor
+        // (flat_field_type) reads them, as the compiled lane's would.
+        register_declared_field_types(class_name, fields);
         register_value_class_layout(ast, class_name, fields, analysis);
       }
     }
@@ -8895,6 +8898,9 @@ class Compiler {
       // can appear here: the contract check at the class declaration already
       // refused any other name (value_undeclared_self_write_message).
       if (int32_t ix = inline_field_index(recv, fin.token); ix >= 0) {
+        StampGuard pos(*this, ast);
+        emit_inline_field_check(value_class_of(*recv.unboxed_class)->name,
+                                fin.token, rhs.slot);
         store_into(recv.slot + ix, rhs, /*dst_is_fresh=*/false);
         return rhs;
       }
@@ -9504,6 +9510,17 @@ class Compiler {
                      std::string(pv.type_annotation)});
     }
     return out;
+  }
+
+  // A splice binds arguments to parameters by position (bind_inline_params),
+  // so a keyword argument — which the boxed call resolves by name — sends
+  // the call down the boxed path instead.
+  static bool positional_args_match(const std::vector<InlineParam>& ps,
+                                    const peg::Ast& args) {
+    if (ps.size() != args.nodes.size()) return false;
+    for (const auto& a : args.nodes)
+      if (is_kwarg(*a) || is_kwarg_splat(*a)) return false;
+    return true;
   }
 
   // Whether a member's body may be compiled into this chunk. The hygiene
@@ -10658,6 +10675,32 @@ class Compiler {
     }
   }
 
+  // The declared type of a flat `@value` field. The flat layout admits only
+  // Long / Float / Bool fields (is_flat_value_field_type), each registered
+  // under the class, so a run's field always has one.
+  static culebra::FieldType flat_field_type(std::string_view class_name,
+                                            std::string_view field) {
+    const auto* types = culebra::class_field_types_of(class_name);
+    assert(types && "a flat field is a typed field");
+    auto it = types->find(field);
+    assert(it != types->end() && "a flat field is a typed field");
+    return static_cast<culebra::FieldType>(it->second);
+  }
+
+  // `self.x = v` inside a spliced constructor: the store a boxed instance
+  // would make goes through the field's declared type (object_set_declared),
+  // so the run's slot gets the same check, worded the same way, at the
+  // assignment's own position.
+  void emit_inline_field_check(std::string_view class_name,
+                               std::string_view field, int32_t slot) {
+    auto type = culebra::field_type_name(flat_field_type(class_name, field));
+    std::vector<size_t> skip;
+    emit_type_check_gate(type, slot, skip);
+    emit(Op::ChkTypeAt, slot, kconst_str(type),
+         kconst_str(culebra::format("field '{}'", field)), -1);
+    for (size_t ix : skip) patch_to_here(ix);
+  }
+
   // N contiguous slots named after a run's fields. `prefix` is only the
   // debug name: the class for a fresh run, the parameter for a bound one.
   int32_t alloc_run_slots(const peg::Ast& at, std::string_view prefix,
@@ -10669,17 +10712,21 @@ class Compiler {
   }
 
   // A fresh run of N slots for an unboxed instance's fields: allocated AND
-  // nil-initialized, matching the zero-init every other frame-entry slot
-  // gets from the chunk's own prologue — a slot `alloc_slot` reserves
-  // mid-compile does not otherwise get that for free, and `emit_inline_body`
-  // storing into it (`dst_is_fresh=false`, so it releases whatever was
-  // there first) needs it to hold something safe to release.
+  // initialized to each field's typed zero — what a boxed instance's
+  // FieldsInit starts the field at, so a constructor that leaves a field
+  // alone reads the same `0.0` either way. A slot `alloc_slot` reserves
+  // mid-compile does not otherwise get any init for free, and
+  // `emit_inline_body` storing into it (`dst_is_fresh=false`, so it
+  // releases whatever was there first) needs it to hold something safe to
+  // release.
   int32_t alloc_zeroed_run(const peg::Ast& at, std::string_view class_name,
                            const std::vector<std::string>& layout) {
     int32_t base = alloc_run_slots(at, class_name, layout);
     for (size_t k = 0; k < layout.size(); k++) {
       int32_t z = alloc_temp(at);
-      emit(Op::LoadConst, z, kconst({TAG_NIL, 0}));
+      emit(Op::LoadConst, z,
+           zero_const(culebra::field_type_name(
+               flat_field_type(class_name, layout[k]))));
       store_into(base + static_cast<int32_t>(k), ExprResult{z, true},
                 /*dst_is_fresh=*/false);
     }
@@ -10896,7 +10943,7 @@ class Compiler {
         return false;
       auto mv = culebra::view_method(*m);
       auto ps = inline_params(mv.params);
-      if (!ps || ps->size() != at.nodes[i + 1]->nodes.size()) return false;
+      if (!ps || !positional_args_match(*ps, *at.nodes[i + 1])) return false;
       i += 2;
       if (!member_returns_own(*m, class_name))
         return i == at.nodes.size();  // a scalar result must end the chain
@@ -10942,7 +10989,7 @@ class Compiler {
         !inline_body_ok(*ctor, /*is_ctor=*/true, *cls, class_name, layout))
       return nullptr;
     auto cps = inline_params(culebra::view_method(*ctor).params);
-    if (!cps || cps->size() != ast.nodes[2]->nodes.size()) return nullptr;
+    if (!cps || !positional_args_match(*cps, *ast.nodes[2])) return nullptr;
     if (!chain_stays_unboxed(ast, 3, *cls, class_name, layout,
                              allow_trailing_class))
       return nullptr;
@@ -10986,7 +11033,7 @@ class Compiler {
         !inline_body_ok(*ctor, /*is_ctor=*/true, *cls, class_name, layout))
       return std::nullopt;
     auto cps = inline_params(culebra::view_method(*ctor).params);
-    if (!cps || cps->size() != ast.nodes[2]->nodes.size())
+    if (!cps || !positional_args_match(*cps, *ast.nodes[2]))
       return std::nullopt;
     if (!chain_stays_unboxed(ast, 3, *cls, class_name, layout,
                              allow_trailing_class))
