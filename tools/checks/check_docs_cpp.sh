@@ -76,8 +76,12 @@ fi
 
 # The pages that print that build line; C holds all of them to the lists above.
 # The READMEs are not among them: they point at deployment.md rather than
-# reprinting ten -I flags a reader of a language README did not ask for.
+# reprinting nine include flags a reader of a language README did not ask for.
 BUILD_LINE_PAGES=(docs/deployment.md docs/deployment.ja.md)
+
+# HTML to the text it shows: tags first (they use real angle brackets), then
+# the entities that spell the code's own — the other order eats `</span>`.
+html_text() { sed -e 's/<[^>]*>//g' -e 's/&lt;/</g' -e 's/&gt;/>/g' -e 's/&amp;/\&/g'; }
 
 fail=0
 TMP=$(mktemp -d)
@@ -129,17 +133,14 @@ done < <({
   # The landing page carries the same embedding sample, HTML-escaped, so no
   # pass that rewrites `#include <x>` ever touched it. It sat one release
   # behind the headers until this check reached it.
-  # Tags first (they use real angle brackets), then the entities that spell
-  # the include's own brackets — the other order eats `#include</span>`.
-  sed -e 's/<[^>]*>//g' -e 's/&lt;/</g' -e 's/&gt;/>/g' site/*.html 2>/dev/null \
-    | grep -ho '#include *<[^>]*>'
+  cat site/*.html 2>/dev/null | html_text | grep -ho '#include *<[^>]*>'
   # Headers named in prose, as `<base/shared.h>`. Nothing compiles those, and
   # a backticked <...h> is always a header, so the shape alone identifies them.
-  grep -hoE '`<[A-Za-z0-9_/]+\.h>`' "${SOURCES[@]}" 2>/dev/null \
+  grep -hoE '`<[A-Za-z0-9_/.-]+\.h>`' "${SOURCES[@]}" 2>/dev/null \
     | tr -d '`' | sed 's/^/#include /'
 } | sort -u)
 (( missing )) && fail=1
-(( missing )) || echo "docs-cpp OK (includes): every <header> in $blocks block(s) and site/ resolves"
+(( missing )) || echo "docs-cpp OK (includes): every <header> in $blocks block(s), the prose and site/ resolves"
 
 # --- C. the documented include list is this one -----------------------------
 
@@ -369,11 +370,9 @@ EOF
 # code's own. It is HTML, so no pass over the .md files ever touched it.
 awk '
   /<pre class="sample">/ { blk = ""; inb = 1 }
-  inb                    { line = $0; gsub(/<[^>]*>/, "", line); blk = blk line "\n" }
-  inb && /<\/pre>/       { inb = 0; if (blk ~ /int main\(/) { printf "%s", blk; exit } }
-' site/index.html \
-  | sed -e 's/&lt;/</g' -e 's/&gt;/>/g' -e 's/&amp;/\&/g' \
-  > "$TMP/link/site.cc"
+  inb                    { blk = blk $0 "\n" }
+  inb && /<\/pre>/       { inb = 0; if (blk ~ /#include/) { printf "%s", blk; exit } }
+' site/index.html | html_text > "$TMP/link/site.cc"
 if ! grep -q 'int main(' "$TMP/link/site.cc"; then
   echo "docs-cpp FAIL: site/index.html has no C++ sample with an int main() —" >&2
   echo "  the card moved or its markup changed, and its lane below proves nothing." >&2
@@ -386,7 +385,7 @@ lanes=(
   "http|-DCULEBRA_HTTP_ENABLED -I vendor/cpp-httplib||Function"
   "sqlite|-DCULEBRA_SQLITE_ENABLED -I vendor/sqlite|$TMP/link/culebra_sqlite3.o|1"
   "codegen|-I vendor/cpp-vmlib|src/runtime/codegen_rt.cc|Module"
-  "site|||"
+  "site|||true false"
 )
 "${CULEBRA_DOCS_CC:-${CC:-cc}}" -O0 -w -c src/runtime/culebra_sqlite3.c -o "$TMP/link/culebra_sqlite3.o"
 

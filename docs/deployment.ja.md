@@ -418,8 +418,9 @@ embed.run(modules, val, msgs);
 ```
 
 LLVMレーンを使う場合は、起動時に`culebra::install_jit_stdlib()`を1回
-呼んで`culebra::JIT::run(ast)`を使います。どちらも`CULEBRA_JIT_ENABLED`
-のもとで`<culebra.h>`が宣言します。
+呼んで`culebra::JIT::run(ast)`を使います。どちらも`<culebra.h>`が宣言し、
+`CULEBRA_JIT_ENABLED`のもとにあるのは`JIT::run`だけです（`Embed`は
+JITの有無に関わらず自分でstdlibをinstallします）。
 
 ### ホストプログラムのビルド
 

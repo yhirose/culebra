@@ -428,8 +428,9 @@ embed.run(modules, val, msgs);
 ```
 
 For the LLVM lane, call `culebra::install_jit_stdlib()` once at startup
-and use `culebra::JIT::run(ast)`; `<culebra.h>` declares both, under
-`CULEBRA_JIT_ENABLED`.
+and use `culebra::JIT::run(ast)`. `<culebra.h>` declares both; `JIT::run`
+is the one behind `CULEBRA_JIT_ENABLED` (an `Embed` installs the stdlib
+itself, with or without the JIT).
 
 ### Building your host program
 

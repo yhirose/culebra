@@ -298,8 +298,8 @@ Embedding in a C++ host
 -----------------------
 
 The bytecode VM embeds into a C++23 host: header-only, no LLVM, no
-library to link against. C++ and the script call each other, so a script
-can be what the host is configured — or extended — with.
+culebra library to build or install. C++ and the script call each other,
+so a script can be what the host is configured — or extended — with.
 
 ```cpp
 #include <culebra.h>
