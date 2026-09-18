@@ -6,6 +6,7 @@
 #include <culebra.h>
 #include <cli/dap.h>
 #include <cli/docs_cmd.h>
+#include <cli/embed_flags_cmd.h>
 #include <interop/foreign_binding.h>  // the __Foreign.Counter wrap fixture
                               // (tests/test_foreign.cul); registered by the
                               // TU-level variable below
@@ -729,6 +730,9 @@ void print_usage(ostream& os) {
         "  init                      Set up this directory (AI agent\n"
         "                            instructions) and this machine's editors\n"
         "                            (VSCode/Vim/Neovim); safe to re-run\n"
+        "  embed-flags --cflags      Print the flags a C++ host needs to embed\n"
+        "                            this engine (--libs, --sources, --http,\n"
+        "                            --tls, --sqlite, --codegen, --jit)\n"
 #ifdef CULEBRA_HTTP_ENABLED
         "  serve [-p PORT] [-d DIR]  Serve a directory of static files\n"
         "                            (default: port 8000, current directory)\n"
@@ -2454,6 +2458,9 @@ int run_main(int argc, const char** argv) {
   }
   if (argc >= 2 && string(argv[1]) == "init") {
     return culebra::run_init(argc, argv);
+  }
+  if (argc >= 2 && string(argv[1]) == "embed-flags") {
+    return culebra::run_embed_flags(argc, argv);
   }
 #ifdef CULEBRA_JIT_ENABLED
   // Beside `build`, the only thing a toolchain is for: a build without the JIT

@@ -339,8 +339,9 @@ int main() {
 A failure in script code arrives as `culebra::CulebraError`, with the
 kind, message and position the script's own `catch` sees.
 
+`culebra embed-flags --cflags` / `--libs` prints what to build it with.
 [`docs/deployment.md`](docs/deployment.md#2-embedding-culebra-in-a-c-host)
-has the build line and the rest: the types `define` converts, the rest of
+has that and the rest: the types `define` converts, the rest of
 the `Value` surface over a script's Objects and Arrays, C++ classes through
 [`culebra wrap`](docs/deployment.md#3-wrapping-c-libraries-culebra-wrap),
 the JIT path, threading, and interrupts.

@@ -434,11 +434,50 @@ itself, with or without the JIT).
 
 ### Building your host program
 
-There is no install step and no library to link against: a host builds
-against a culebra checkout. The headers reach into the vendored
-libraries, so those directories are on the include path too.
+There is no install step and no library to build: a host compiles against
+a culebra checkout. The headers reach into the vendored libraries, so
+those directories are on the include path too, and the stdlib reaches
+zlib and (on macOS) three system frameworks whether or not the script
+does. `culebra embed-flags` prints that whole set, from the binary that
+will run the scripts:
 
-The VM lane needs no LLVM at all:
+```sh
+c++ $(culebra embed-flags --cflags) host.cpp \
+    $(culebra embed-flags --libs) -o host
+```
+
+It takes a feature per flag — `--http`, `--tls`, `--sqlite`, `--codegen`,
+`--jit` — and `--sources` names the culebra `.c` / `.cc` files that
+configuration asks the host to compile:
+
+```sh
+flags="--http --tls --sqlite"
+cc -O2 -w -c $(culebra embed-flags --sources $flags) -o culebra_sqlite3.o
+c++ $(culebra embed-flags --cflags $flags) $(pkg-config --cflags openssl) \
+    host.cpp culebra_sqlite3.o \
+    $(culebra embed-flags --libs $flags) $(pkg-config --libs openssl) -o host
+```
+
+What `--sources` names is compiled by its own language's driver — the
+SQLite amalgamation is C, and a C++ compiler rejects it on its first
+`new` used as a name.
+
+OpenSSL and LLVM stay the host's own: their prefix is a choice culebra
+does not make, so `--tls` and `--jit` set culebra's side and leave
+`pkg-config` / `llvm-config` to name theirs. For the JIT that is
+`-I "$(llvm-config --includedir)"` beside `--cflags`, not
+`--cxxflags`, which would put its own `-std=c++17 -fno-exceptions` on
+top of culebra's.
+
+The flags point at a checkout — the tree the binary was built from, or
+`$CULEBRA_HOME`. A downloaded binary has neither until you clone the
+sources for its version, and says so rather than printing paths from the
+machine it was built on.
+
+The rest of this section writes the same set out on this page, for a
+reader who wants to see it or a build system that would rather not shell
+out — with the caveat that a written page has one platform's link line
+and the command has the host's. The VM lane needs no LLVM at all:
 
 ```sh
 c++ -std=c++23 \

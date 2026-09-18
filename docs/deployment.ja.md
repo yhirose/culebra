@@ -424,11 +424,48 @@ JITの有無に関わらず自分でstdlibをinstallします）。
 
 ### ホストプログラムのビルド
 
-インストール手順も、リンクすべきライブラリもありません。ホストは
-culebraのチェックアウトに対して直接ビルドします。ヘッダがvendor配下の
-ライブラリを参照するので、それらのディレクトリもinclude pathに入ります。
+インストール手順も、ビルドすべきライブラリもありません。ホストは
+culebraのチェックアウトに対して直接コンパイルします。ヘッダがvendor配下の
+ライブラリを参照するのでそれらのディレクトリもinclude pathに入り、stdlibは
+スクリプトが使うかどうかに関わらずzlibと（macOSでは）3つのシステム
+フレームワークに届きます。`culebra embed-flags`は、スクリプトを実行する
+そのバイナリ自身から、この一式を出力します:
 
-VMレーンにLLVMは要りません:
+```sh
+c++ $(culebra embed-flags --cflags) host.cpp \
+    $(culebra embed-flags --libs) -o host
+```
+
+機能はフラグで足します（`--http`・`--tls`・`--sqlite`・`--codegen`・
+`--jit`）。`--sources`は、その構成でホストがコンパイルすべきculebra側の
+`.c` / `.cc`を出力します:
+
+```sh
+flags="--http --tls --sqlite"
+cc -O2 -w -c $(culebra embed-flags --sources $flags) -o culebra_sqlite3.o
+c++ $(culebra embed-flags --cflags $flags) $(pkg-config --cflags openssl) \
+    host.cpp culebra_sqlite3.o \
+    $(culebra embed-flags --libs $flags) $(pkg-config --libs openssl) -o host
+```
+
+`--sources`が出すファイルは、それぞれの言語のドライバでコンパイルします。
+SQLiteのamalgamationはCで、C++コンパイラは最初に現れる`new`という名前で
+弾きます。
+
+OpenSSLとLLVMはホスト側のものです。prefixはculebraが決める話ではないので、
+`--tls`と`--jit`はculebra側だけを設定し、あちらの指定は
+`pkg-config` / `llvm-config`に任せます。JITなら`--cflags`の横に
+`-I "$(llvm-config --includedir)"`です。`--cxxflags`は使いません——
+それ自身の`-std=c++17 -fno-exceptions`がculebra側の指定の上に乗ります。
+
+フラグが指すのはチェックアウト——そのバイナリのビルド元か`$CULEBRA_HOME`——
+です。ダウンロードしたバイナリはその版のソースをcloneするまでどちらも
+持たないので、ビルドされたマシンのパスを出す代わりにその旨を伝えます。
+
+この節の残りは同じ一式をこのページに書き下したものです。中身を見たい
+読者と、シェルを介したくないビルドシステムのために残しています。ただし
+ページに書けるリンク行は1つのプラットフォームのもので、コマンドが出すのは
+ホストのものです。VMレーンにLLVMは要りません:
 
 ```sh
 c++ -std=c++23 \

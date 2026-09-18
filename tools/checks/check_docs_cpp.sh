@@ -36,6 +36,15 @@
 #      release and nothing noticed. The landing page's C++ card is a lane
 #      too — A reads its #includes, and nothing else ever read the rest.
 #
+#   F. `culebra embed-flags` prints this same list, and a host built from
+#      nothing but its output runs. The command is the third copy of the
+#      flags (source, docs, gate) and the one a host actually types, so it
+#      is the one that must not drift. Needs a built binary: $BIN, or the
+#      build / build-dev driver beside this checkout; skips with a word
+#      when there is none. The --sqlite build is here because a feature's
+#      flags have their own way to be wrong: --sources named a .c file
+#      that the page then handed to the C++ driver, which rejects it.
+#
 # The include list below is duplicated in the docs on purpose: the gate
 # exists to prove that what the doc tells a reader to type is what actually
 # builds. C fails when the copies differ, B and D when the list is wrong.
@@ -415,6 +424,103 @@ elif (( linked != ${#lanes[@]} )); then
   fail=1
 else
   echo "docs-cpp OK (link): $linked host builds link and run (core, Http, SQLite, CodeGen, the site card)"
+fi
+
+# --- F. `culebra embed-flags` says the same thing, and its output builds -----
+
+# `just doctest` builds build/ first, so that driver is the fresh one; a
+# build-dev/ left over from an inner loop would otherwise answer for it, and a
+# stale answer is the drift this stage is looking for.
+EF_BIN="${BIN:-}"
+[[ -n $EF_BIN && -x $EF_BIN ]] || EF_BIN=build/culebra
+[[ -x $EF_BIN ]] || EF_BIN=build-dev/culebra
+if [[ ! -x $EF_BIN ]]; then
+  echo "docs-cpp SKIP (embed-flags): no built driver (set BIN=<path>)"
+  exit $fail
+fi
+
+# The include entries the command prints, in the shape INC holds them: the
+# paths are absolute there, and this checkout is what they are absolute to.
+# CULEBRA_HOME is what the command answers with, and a developer who has it
+# exported would otherwise diff two identical lists under different roots.
+export CULEBRA_HOME="$PWD"
+if ! ef_cflags_out=$("$EF_BIN" embed-flags --cflags); then
+  echo "docs-cpp FAIL: \`$EF_BIN embed-flags --cflags\` exited non-zero" >&2
+  exit 1
+fi
+ef_inc=$(printf '%s\n' "$ef_cflags_out" \
+  | tr ' ' '\n' \
+  | awk -v root="$PWD/" '
+      $0 == "-I" || $0 == "-isystem" { flag = $0; next }
+      flag != "" { sub("^" root, "", $0); print flag " " $0; flag = "" }
+    ')
+if [[ $ef_inc != "$expected" ]]; then
+  echo "docs-cpp FAIL: \`culebra embed-flags --cflags\` differs from this list:" >&2
+  diff <(echo "$expected") <(echo "$ef_inc") | sed 's/^/  /' >&2 || true
+  fail=1
+fi
+
+# A checkout is what the flags name, so the command owes an error rather than
+# paths from the machine it was built on when it has none. Run it somewhere
+# that is not one, with the override this stage sets undone.
+if (CULEBRA_HOME="$TMP" "$EF_BIN" embed-flags --cflags >/dev/null 2>&1); then
+  echo "docs-cpp FAIL: embed-flags answered for a directory that is no checkout" >&2
+  fail=1
+fi
+
+# And the flags work. One lane per feature that has flags of its own, each
+# building the program stage E wrote for it, from the command's output alone:
+# a wrong entry the documented list happens to carry passes the comparison
+# above and fails here. In parallel, since a host compile is the whole cost.
+#
+# lane: name | embed-flags features | program | expected stdout
+ef_lanes=(
+  "core||$TMP/link/core.cc|42"
+  "sqlite|--sqlite|$TMP/link/sqlite.cc|1"
+  "codegen|--codegen|$TMP/link/codegen.cc|Module"
+  "http|--http|$TMP/link/http.cc|Function"
+)
+export EF_BIN
+printf '%s\n' "${ef_lanes[@]}" | xargs -P "$JOBS" -I{} bash -c '
+  IFS="|" read -r name feats prog want <<< "$1"
+  read -ra feat <<< "$feats"
+  err="$TMP/link/ef_$name.err"
+  read -ra cf <<< "$("$EF_BIN" embed-flags --cflags "${feat[@]}")"
+  read -ra lb <<< "$("$EF_BIN" embed-flags --libs "${feat[@]}")"
+  objs=()
+  while IFS= read -r src; do
+    [[ -n $src ]] || continue
+    o="$TMP/link/ef_${name}_$(basename "${src%.*}").o"
+    # Each source through its own language driver: the SQLite amalgamation is
+    # C, and a C++ compiler stops on the first `new` it uses as a name.
+    if [[ $src == *.c ]]; then
+      "${CULEBRA_DOCS_CC:-${CC:-cc}}" -w -c "$src" -o "$o" 2>>"$err" || { echo "BAD $name (sources)"; exit 0; }
+    else
+      "$CXXBIN" -w "${cf[@]}" -c "$src" -o "$o" 2>>"$err" || { echo "BAD $name (sources)"; exit 0; }
+    fi
+    objs+=("$o")
+  done < <("$EF_BIN" embed-flags --sources "${feat[@]}")
+  if ! "$CXXBIN" -w "${cf[@]}" "$prog" "${objs[@]}" "${lb[@]}" \
+         -o "$TMP/link/ef_$name" 2>>"$err"; then
+    echo "BAD $name (build)"; exit 0
+  fi
+  got=$("$TMP/link/ef_$name" 2>>"$err") || { echo "BAD $name (run)"; exit 0; }
+  [[ $got == "$want" ]] && echo "OK $name" || echo "BAD $name (printed: $got)"
+' _ {} > "$TMP/link/ef_results" 2>/dev/null || true
+
+ef_ok=$(grep -c '^OK ' "$TMP/link/ef_results" || true)
+if grep -q '^BAD ' "$TMP/link/ef_results"; then
+  while IFS= read -r line; do
+    name=${line#BAD }; name=${name%% *}
+    echo "docs-cpp FAIL: \`culebra embed-flags\` flags do not build a host: ${line#BAD }" >&2
+    { grep -m5 'error' "$TMP/link/ef_$name.err" || sed -n '1,10p' "$TMP/link/ef_$name.err"; } >&2
+  done < <(grep '^BAD ' "$TMP/link/ef_results")
+  fail=1
+elif (( ef_ok != ${#ef_lanes[@]} )); then
+  echo "docs-cpp FAIL: only $ef_ok of the ${#ef_lanes[@]} embed-flags lanes reported a verdict" >&2
+  fail=1
+elif (( fail == 0 )); then
+  echo "docs-cpp OK (embed-flags): the command prints this list, and $ef_ok hosts built from it run (core, SQLite, CodeGen, Http)"
 fi
 
 exit $fail

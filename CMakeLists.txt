@@ -979,6 +979,7 @@ add_custom_target(culebra_build_info
 
 add_executable(culebra ./src/main.cc ./src/source_dir.cc ./src/docs_cmd.cc
                        ./src/init_cmd.cc ./src/toolchain_cmd.cc
+                       ./src/embed_flags_cmd.cc
                        ${_docs_gen} ${_editor_gen} ${_build_info_gen})
 add_dependencies(culebra culebra_build_info)
 if(_culebra_enable_lto)
