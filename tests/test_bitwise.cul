@@ -78,4 +78,66 @@ assert_eq(em2, "type error: expected Long, got String")
 let em3 = try { ~1.5 } catch er { er.message }
 assert_eq(em3, "type error: expected Long, got Float")
 
+// --- Compound assignment: `&=` `|=` `^=` `<<=` `>>=` ---
+mut b = 0b1100
+b &= 0b1010
+assert_eq(b, 0b1000)
+b |= 0b0101
+assert_eq(b, 0b1101)
+b ^= 0b0011
+assert_eq(b, 0b1110)
+b <<= 4
+assert_eq(b, 0b11100000)
+b >>= 2
+assert_eq(b, 0b111000)
+mut neg = -16
+neg >>= 2  // arithmetic, like `>>`
+assert_eq(neg, -4)
+mut wide = 1
+wide <<= 65  // count masked to the low 6 bits, like `<<`
+assert_eq(wide, 2)
+
+// Index, property and `self` targets.
+mut regs = [1, 2, 3]
+regs[1] |= 0x10
+assert_eq(regs, [1, 18, 3])
+mut st = {mut flags: 1}
+st.flags <<= 3
+assert_eq(st.flags, 8)
+class Status {
+  new() { self.bits = 0 }
+  set(m) { self.bits |= m }
+  clear(m) { self.bits &= ~m }
+}
+let status = Status()
+status.set(0b101)
+status.clear(0b001)
+assert_eq(status.bits, 0b100)
+
+// A captured variable, stepped from inside a closure.
+mut mask = 1
+let widen = fn () { mask <<= 1 }
+widen()
+widen()
+assert_eq(mask, 4)
+
+// RHS first, then the read — the same order as `+=`.
+mut ord = 1
+ord |= (fn () { ord = 4; 2 })()
+assert_eq(ord, 6)
+
+// `<=`, `>=` and a nested generic's `>>` still parse as before.
+assert_eq(b <= 1, false)
+assert_eq(b >= 1, true)
+let nested: Array<Array<Long>> = [[1]]
+assert_eq(nested, [[1]])
+
+// Same errors as the spelled-out `x = x | y`.
+let ce = try { mut s = "a"; s |= 1; nil } catch er { er.message }
+assert_eq(ce, "type error: expected Long, got String")
+let ce2 = try { mut f = 1; f <<= 1.5; nil } catch er { er.message }
+assert_eq(ce2, "type error: expected Long, got Float")
+let ce3 = try { let k = 1; k ^= 2; nil } catch er { er.kind }
+assert_eq(ce3, "ImmutableError")
+
 IO.inspect("test_bitwise OK")

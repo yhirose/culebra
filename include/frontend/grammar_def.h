@@ -160,7 +160,8 @@ const auto grammar_ = R"(
   # `=` (plain) vs the compound forms. `**=` precedes `*=` so the
   # alternation chooses the longer match. `??=` is the nil-coalescing
   # assign (`a ??= b` assigns only when `a` is nil; short-circuits b).
-  ASSIGN_OP                <-  < '**=' / '??=' / '+=' / '-=' / '*=' / '/=' / '%=' / '@=' / '=' >
+  ASSIGN_OP                <-  < '**=' / '??=' / '+=' / '-=' / '*=' / '/=' / '%=' / '@='
+                                 / '&=' / '|=' / '^=' / '<<=' / '>>=' / '=' >
 
   # C-style ternary: `c ? a : b`. Right-associative; sits just below
   # assignment and just above `??` (so `a ?? b ? c : d` is `(a ?? b) ? c : d`).

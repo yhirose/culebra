@@ -8787,16 +8787,30 @@ class Compiler {
     return read_binding(tgt, *b);
   }
 
-  // The compound-step op table, shared by the scalar and index forms;
+  // The binary-operator token table the fold and compound assignment share,
+  // so `x op= y` steps with the same op `x = x op y` does; nullopt for any
+  // other token.
+  static std::optional<Op> binary_op_for_token(std::string_view t) {
+    if (t == "|") return Op::BitOr;
+    if (t == "^") return Op::BitXor;
+    if (t == "&") return Op::BitAnd;
+    if (t == "<<") return Op::Shl;
+    if (t == ">>") return Op::Shr;
+    if (t == "+") return Op::Add;
+    if (t == "-") return Op::Sub;
+    if (t == "*") return Op::Mul;
+    if (t == "/") return Op::Div;
+    if (t == "%") return Op::Mod;
+    if (t == "@") return Op::MatMul;
+    return std::nullopt;
+  }
+
+  // The compound-step op table, shared by the scalar and index forms: the
+  // fold's operators plus `**` (a right-associative power, not a fold);
   // an operator the table doesn't know is rejected.
   Op compound_op(const peg::Ast& ast, std::string_view base) {
-    if (base == "+") return Op::Add;
-    if (base == "-") return Op::Sub;
-    if (base == "*") return Op::Mul;
-    if (base == "/") return Op::Div;
-    if (base == "%") return Op::Mod;
     if (base == "**") return Op::Pow;
-    if (base == "@") return Op::MatMul;
+    if (auto op = binary_op_for_token(base)) return *op;
     reject(ast, culebra::format("operator '{}='", base));
   }
 
@@ -11173,19 +11187,10 @@ class Compiler {
                           : compile_expr(*ast.nodes[0]);
     for (size_t i = 1; i + 1 < ast.nodes.size(); i += 2) {
       auto op_tok = ast.nodes[i]->token;
-      Op op;
-      if (op_tok == "|") op = Op::BitOr;
-      else if (op_tok == "^") op = Op::BitXor;
-      else if (op_tok == "&") op = Op::BitAnd;
-      else if (op_tok == "<<") op = Op::Shl;
-      else if (op_tok == ">>") op = Op::Shr;
-      else if (op_tok == "+") op = Op::Add;
-      else if (op_tok == "-") op = Op::Sub;
-      else if (op_tok == "*") op = Op::Mul;
-      else if (op_tok == "/") op = Op::Div;
-      else if (op_tok == "%") op = Op::Mod;
-      else if (op_tok == "@") op = Op::MatMul;
-      else reject(*ast.nodes[i], culebra::format("operator '{}'", op_tok));
+      auto found = binary_op_for_token(op_tok);
+      if (!found)
+        reject(*ast.nodes[i], culebra::format("operator '{}'", op_tok));
+      Op op = *found;
       // An unboxed accumulator: splice the class's operator method instead
       // of the runtime dispatch. fold_resolves_to_class's up-front scan is
       // what guarantees a dunder exists here whenever `acc` is unboxed —

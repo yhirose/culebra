@@ -364,6 +364,10 @@
       "required": false,
       "types": [
         {
+          "type": "backtick_content",
+          "named": true
+        },
+        {
           "type": "escape",
           "named": true
         },
@@ -452,6 +456,14 @@
   {
     "type": "__ARGS__",
     "named": false
+  },
+  {
+    "type": "`",
+    "named": false
+  },
+  {
+    "type": "backtick_content",
+    "named": true
   },
   {
     "type": "block_comment",

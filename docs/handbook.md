@@ -238,7 +238,7 @@ x = 10      # bare: new immutable binding, or reassign outer
 let y = 20  # let: new immutable binding (must not shadow outer)
 mut z = 30  # mut: new mutable binding
 z = 31      # mut allows reassignment
-z += 1      # compound (`-= *= /= %= **= @=` work the same way)
+z += 1      # compound (`-= *= /= %= **= @= &= |= ^= <<= >>=` work the same way)
 inspect(z)  # => 32
 ```
 

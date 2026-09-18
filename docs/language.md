@@ -191,6 +191,7 @@ and a one-element set respectively.
     ..  ..=                     # range literals (exclusive / inclusive)
     =                           # assignment
     +=  -=  *=  /=  %=  **=  @= # compound assignment
+    &=  |=  ^=  <<=  >>=        # compound assignment (bitwise)
     ??=                         # nil-coalescing assignment
     =>                          # match arm separator
     ->                          # return type
@@ -407,7 +408,7 @@ Assignment with a simple identifier LHS is handled as follows:
 
 ### Compound assignment
 
-Seven compound-assignment operators rewrite `LHS OP= RHS` as
+Twelve compound-assignment operators rewrite `LHS OP= RHS` as
 `LHS = LHS OP RHS`, with the side-effect that the LHS is evaluated
 exactly once. They cannot be combined with `let` or `mut` (compound
 assignment only updates an existing binding):
@@ -419,6 +420,11 @@ assignment only updates an existing binding):
     x %= 5
     x **= 2
     x @= M     # matrix multiply (via Tensor / __matmul__)
+    x &= MASK  # the bitwise five are Long-only, like their operators
+    x |= FLAG
+    x ^= 1
+    x <<= 2
+    x >>= 2
 
 The LHS may be an identifier, an array element (`a[i]`), or an object
 property (`o.x`). Index expressions and property names are evaluated

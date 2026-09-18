@@ -75,7 +75,7 @@ x = 1       # immutable binding, or reassign an outer one
 let y = 2   # immutable; must not shadow an outer binding
 mut z = 3   # mutable
 z = 4       # bare reassignment
-z += 1      # also -= *= /= %= **= @=
+z += 1      # also -= *= /= %= **= @= &= |= ^= <<= >>=
 inspect(z)  # => 5
 ```
 
