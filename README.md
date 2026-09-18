@@ -336,13 +336,18 @@ int main() {
 }
 ```
 
+Build it with the flags the engine itself reports:
+
+```sh
+c++ $(culebra embed-flags --cflags) host.cpp $(culebra embed-flags --libs) -o host
+```
+
 A failure in script code arrives as `culebra::CulebraError`, with the
 kind, message and position the script's own `catch` sees.
 
-`culebra embed-flags --cflags` / `--libs` prints what to build it with.
 [`docs/deployment.md`](docs/deployment.md#2-embedding-culebra-in-a-c-host)
-has that and the rest: the types `define` converts, the rest of
-the `Value` surface over a script's Objects and Arrays, C++ classes through
+has the rest: the types `define` converts, the rest of the `Value` surface
+over a script's Objects and Arrays, C++ classes through
 [`culebra wrap`](docs/deployment.md#3-wrapping-c-libraries-culebra-wrap),
 the JIT path, threading, and interrupts.
 

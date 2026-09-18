@@ -331,11 +331,16 @@ int main() {
 }
 ```
 
+ビルドには、エンジン自身が出力するフラグを使います:
+
+```sh
+c++ $(culebra embed-flags --cflags) host.cpp $(culebra embed-flags --libs) -o host
+```
+
 スクリプト内の失敗は`culebra::CulebraError`として届き、種別・メッセージ・
 位置はスクリプト側の`catch`が見るものと同じです。
 
-ビルドに必要なフラグは`culebra embed-flags --cflags` / `--libs`が出力します。
-それも含めた詳細は
+残りは
 [`docs/deployment.ja.md`](docs/deployment.ja.md#2-c-ホストへの-culebra-埋め込み)
 にあります。`define`が変換する型、スクリプトのObjectとArrayを扱う
 `Value`の残りの面、
