@@ -1796,9 +1796,10 @@ Spelled out, the same result is `.mean(last, keepdims: true)`, a
 subtraction, a square, a second mean, `+ 1e-5`, `.pow(-0.5)`, two products
 and a sum: nine ops, each writing a new buffer the size of `self`. Fused, it
 is one pass per row on the CPU and one kernel on the GPU, and only the
-result is written. The backward rebuilds the normalized rows from the
-unfused ops and applies the closed-form pullback, so the gradients match
-the composed form's.
+result is written. The backward applies the closed-form pullback: on CUDA
+three kernels recompute each row's statistics and write the three
+gradients directly, elsewhere the normalized rows are rebuilt from the
+unfused ops, and either way the gradients match the composed form's.
 
 ### Autograd (reverse-mode)
 

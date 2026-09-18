@@ -130,5 +130,46 @@ if Tensor.gpu_available() {
   let gg = Tensor.from(fill(1, Dg, 11)[0])
   let bg = Tensor.from(fill(1, Dg, 17))
   assert_tensor_close(xg.layer_norm(gg, bg), explicit(xg, gg, bg), 1.0e-4)
+
+  # The backward on a device with the fused pullback is three kernels where
+  # the composed form spells the row statistics out; the gradients must still
+  # agree entry for entry, with gamma as [D] and beta as [1, D] un-broadcast
+  # from the kernel's [D].
+  let grads_of_gpu = fn (norm) {
+    let x = Tensor.from(fill(5, Dg, 3)).requires_grad()
+    let gamma = Tensor.from(fill(1, Dg, 11)[0]).requires_grad()
+    let beta = Tensor.from(fill(1, Dg, 17)).requires_grad()
+    let w = Tensor.from(fill(5, Dg, 23))
+    (norm(x, gamma, beta) * w).sum(1).sum(0).backward()
+    [x.grad(), gamma.grad(), beta.grad()]
+  }
+  let fused_gg = grads_of_gpu(fn (x, gamma, beta) {
+    x.layer_norm(gamma, beta)
+  })
+  let composed_gg = grads_of_gpu(explicit)
+  assert_eq(fused_gg[1].shape(), [Dg])
+  assert_eq(fused_gg[2].shape(), [1, Dg])
+  for i in range(3) {
+    assert_eq(fused_gg[i].shape(), composed_gg[i].shape())
+    assert_tensor_close(fused_gg[i], composed_gg[i], 1.0e-4)
+  }
+
+  # The pullback names itself in the profile when the device took it (a
+  # backend without the kernels declines and the composed VJP's own op scopes
+  # stand there instead), once per .layer_norm() in the graph.
+  let rows = Tensor.profile(fn () {
+    grads_of_gpu(fn (x, gamma, beta) {
+      x.layer_norm(gamma, beta)
+    })
+  })
+  let fused_row = rows.find(|r| r.kind == 'scope' &&
+                                r.path == 'backward/LayerNorm/layer_norm_bwd')
+  let vjp_row = rows.find(|r| r.kind == 'scope' && r.path == 'backward/LayerNorm')
+  assert_eq(vjp_row.count, 1)
+  if fused_row != nil {
+    assert_eq(fused_row.count, 1)
+    assert_gt(rows.filter(|r| r.kind == 'launch' &&
+                              r.path == 'backward/LayerNorm/layer_norm_bwd').size(), 0)
+  }
   Tensor.use_auto()
 }

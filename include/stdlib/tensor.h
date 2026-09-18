@@ -1911,6 +1911,21 @@ inline void _tensor_vjp(const TensorPtr& n) {
       const auto& x = n->inputs[0];
       const auto& gamma = n->inputs[1];
       const auto& beta = n->inputs[2];
+      // Where the device has the fused pullback, three kernels recompute the
+      // row statistics and write all three gradients (dγ and dβ as [D], so
+      // reshaped to the weights' own [D] or [1, D]).
+      auto fused = _tl_guard([&] {
+        return tl::array::layer_norm_bwd(x->value, gamma->value, g->value,
+                                         static_cast<float>(n->extra0));
+      });
+      if (fused) {
+        _tensor_grad_add(x, _tensor_wrap_const((*fused)[0], dt));
+        _tensor_grad_add(gamma, _tensor_wrap_const(
+                                    (*fused)[1].reshape(gamma->shape.dims), dt));
+        _tensor_grad_add(beta, _tensor_wrap_const(
+                                   (*fused)[2].reshape(beta->shape.dims), dt));
+        break;
+      }
       int64_t last = static_cast<int64_t>(x->shape.dims.size()) - 1;
       auto mean_kd = [&](TensorPtr t) {
         return tensor_reduce_axis(Op::Mean, std::move(t), last,
