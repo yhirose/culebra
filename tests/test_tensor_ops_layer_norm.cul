@@ -154,22 +154,21 @@ if Tensor.gpu_available() {
     assert_tensor_close(fused_gg[i], composed_gg[i], 1.0e-4)
   }
 
-  # The pullback names itself in the profile when the device took it (a
-  # backend without the kernels declines and the composed VJP's own op scopes
-  # stand there instead), once per .layer_norm() in the graph.
+  # Exactly one of the two pullbacks runs. The fused one opens its scope
+  # before it knows whether the device takes it, so what tells them apart is
+  # whether kernels launched under it: if they did, none of the composed
+  # form's ops (its keepdims means) may run too; if not, those must.
   let rows = Tensor.profile(fn () {
     grads_of_gpu(fn (x, gamma, beta) {
       x.layer_norm(gamma, beta)
     })
   })
-  let fused_row = rows.find(|r| r.kind == 'scope' &&
-                                r.path == 'backward/LayerNorm/layer_norm_bwd')
   let vjp_row = rows.find(|r| r.kind == 'scope' && r.path == 'backward/LayerNorm')
   assert_eq(vjp_row.count, 1)
-  if fused_row != nil {
-    assert_eq(fused_row.count, 1)
-    assert_gt(rows.filter(|r| r.kind == 'launch' &&
-                              r.path == 'backward/LayerNorm/layer_norm_bwd').size(), 0)
-  }
+  let fused_launches = rows.filter(|r| r.kind == 'launch' &&
+                                       r.path == 'backward/LayerNorm/layer_norm_bwd')
+  let composed_mean = rows.find(|r| r.kind == 'scope' &&
+                                    r.path == 'backward/LayerNorm/mean')
+  assert_eq(fused_launches.size() > 0, composed_mean == nil)
   Tensor.use_auto()
 }
