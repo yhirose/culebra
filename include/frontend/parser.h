@@ -1596,6 +1596,13 @@ inline bool is_args_rest(const peg::Ast& node) {
   return node.tag == "ARGS_REST"_;
 }
 
+// `new(.x)`: a field parameter, [FIELD_MARK, IDENTIFIER, FIELD_OPTIONAL,
+// (TYPE_ANNOTATION)?, (DEFAULT_VALUE)?].
+inline bool is_field_param(const peg::Ast& node) {
+  using namespace peg::udl;
+  return node.nodes.size() >= 3 && node.nodes[0]->tag == "FIELD_MARK"_;
+}
+
 // A destructuring pattern used as a binding target: `fn ({a, b})` params
 // and `for (k, v) in …` loop bindings both route through here. FOR_BINDING
 // (the multi-target `for k, v` node) has the same shape as a tuple pattern
@@ -1808,6 +1815,8 @@ struct ParameterView {
   std::string_view type_annotation;   // normal form, "" when absent
   const peg::Ast* default_value;      // normal form, nullptr when absent
   const peg::Ast* pattern;            // destructuring param node, else nullptr
+  bool is_field = false;              // `.name`: stores into the field too
+  bool is_optional = false;           // `.name?`: the declaration's default
 };
 
 inline ParameterView view_parameter(const peg::Ast& p) {
@@ -1827,6 +1836,17 @@ inline ParameterView view_parameter(const peg::Ast& p) {
   if (is_args_rest(p)) {
     return ParameterView{false, true, false, false, loc.name, loc.line,
                          loc.column, {}, nullptr, nullptr};
+  }
+  if (is_field_param(p)) {
+    return ParameterView{
+        false, false, false, false,
+        loc.name, loc.line, loc.column,
+        extract_type_annotation(p, 3),
+        extract_default_expr(p),
+        nullptr,
+        /*is_field=*/true,
+        /*is_optional=*/p.nodes[2]->token == "?",
+    };
   }
   return ParameterView{
       false, false, false,

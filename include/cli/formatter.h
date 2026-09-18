@@ -1374,7 +1374,9 @@ class Printer {
     if (v.is_args_rest) return doc_text("*" + std::string(v.name));
     if (v.is_kwargs_rest) return doc_text("**" + std::string(v.name));
     if (v.pattern) return print_pattern(*v.pattern);
-    DocP d = doc_text((v.is_mut ? "mut " : "") + std::string(v.name));
+    DocP d = v.is_field
+                 ? doc_text("." + std::string(v.name) + (v.is_optional ? "?" : ""))
+                 : doc_text((v.is_mut ? "mut " : "") + std::string(v.name));
     if (!v.type_annotation.empty())
       d = doc_concat({d, doc_text(": " + std::string(v.type_annotation))});
     if (v.default_value) {

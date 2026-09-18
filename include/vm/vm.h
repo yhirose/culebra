@@ -3398,6 +3398,9 @@ inline bool pos_index_agrees(const VmProgram& p) {
 // ABI's `self`.
 struct MemberOpts {
   bool receiver = false;
+  // This chunk is a class's `new` body: the one parameter list a field
+  // parameter (`.x`) may appear in.
+  bool ctor = false;
   // This chunk IS the synthetic field-init thunk: its body is the declared
   // field stores rather than the AST's.
   const std::vector<const peg::Ast*>* thunk_fields = nullptr;
@@ -7390,6 +7393,7 @@ class Compiler {
       body_chunks.push_back(compile_fn_chunk(
           *m, mv.params, **mv.body,
           {.receiver = true,
+           .ctor = true,
            .field_init_owner = fields_need_a_thunk ? &ast : nullptr,
            .prologue_fields =
                (!fields.empty() && !fields_need_a_thunk) ? &fields : nullptr,
@@ -7961,6 +7965,7 @@ class Compiler {
       int32_t abi_index;
       bool is_mut;
       bool sink;
+      bool optional;          // has a default, or is a `.x?` field param
       int32_t pos_slot = -1;  // PosSnap's eager snapshot, -1 = cold path
     };
     std::vector<ParamPlan> plans;
@@ -8017,6 +8022,10 @@ class Compiler {
           pat_params.push_back({pv.pattern, slot});
           continue;
         }
+        // Lint's rule, kept as the compile-time safety net every backend
+        // shares (the same shape as the class-contract rejects).
+        if (pv.is_field && !mo.ctor)
+          reject(*p, "a field parameter outside a class's `new`");
         auto name = std::string(pv.name);
         int32_t slot = fc.alloc_slot(*p, name);
         auto type = mo.type_params && !mo.type_params->empty()
@@ -8027,10 +8036,13 @@ class Compiler {
         fc.chunk_.param_names.push_back(name);
         fc.chunk_.param_types.push_back(type);
         fc.chunk_.param_declared_types.emplace_back(pv.type_annotation);
-        fc.chunk_.param_has_default.push_back(pv.default_value ? 1 : 0);
+        // `.x?` is optional without a default expression of its own: the
+        // slot stays unfilled and the field's declaration supplies the value.
+        bool optional = pv.default_value || pv.is_optional;
+        fc.chunk_.param_has_default.push_back(optional ? 1 : 0);
         fc.chunk_.param_mut.push_back(pv.is_mut ? 1 : 0);
         plans.push_back({p.get(), name, std::move(type), pv.default_value,
-                         slot, abi, pv.is_mut, is_sink_name(name)});
+                         slot, abi, pv.is_mut, is_sink_name(name), optional});
       }
     }
     // Required parameters are the leading run without a default (lint
@@ -8038,7 +8050,7 @@ class Compiler {
     // a single count and the unsupplied tail is exactly the defaulted one.
     fc.chunk_.required = fc.chunk_.arity;
     for (const auto& pl : plans)
-      if (pl.default_expr) {
+      if (pl.optional) {
         fc.chunk_.required = pl.abi_index;
         break;
       }
@@ -9504,7 +9516,7 @@ class Compiler {
     for (const auto& pn : params->nodes) {
       auto pv = culebra::view_parameter(*pn);
       if (pv.is_kw_only_sep || pv.is_args_rest || pv.is_kwargs_rest ||
-          pv.pattern || pv.default_value)
+          pv.pattern || pv.default_value || pv.is_field)
         return std::nullopt;
       out.push_back({pn.get(), std::string(pv.name),
                      std::string(pv.type_annotation)});

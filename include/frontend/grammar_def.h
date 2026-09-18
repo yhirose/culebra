@@ -412,7 +412,14 @@ const auto grammar_ = R"(
   # `fn ([x, y])`, `|(k, v)| …` — which binds the pattern's names from
   # the matching argument (desugared to a synthetic param + a destructure
   # at the function body's entry).
-  PARAMETER                <-  KWARGS_REST / ARGS_REST / KW_ONLY_SEP / OBJECT_PATTERN / ARRAY_PATTERN / TUPLE_PATTERN / MUTABLE _ IDENTIFIER (_ TYPE_ANNOTATION)? (_ '=' _ DEFAULT_VALUE)?
+  # A field parameter (`new(.x, .y: T = v, .z?)`) is a `new` parameter that
+  # also stores into the field of its name. It keeps the ordinary layout
+  # — the mark at [0] where MUTABLE sits, the name at [1] — so every
+  # reader of a parameter's name finds it in the same place; FIELD_OPTIONAL
+  # at [2] carries the `?` (or nothing) and shifts the annotation to [3].
+  PARAMETER                <-  KWARGS_REST / ARGS_REST / KW_ONLY_SEP / OBJECT_PATTERN / ARRAY_PATTERN / TUPLE_PATTERN / FIELD_MARK IDENTIFIER FIELD_OPTIONAL (_ TYPE_ANNOTATION)? (_ '=' _ DEFAULT_VALUE)? / MUTABLE _ IDENTIFIER (_ TYPE_ANNOTATION)? (_ '=' _ DEFAULT_VALUE)?
+  FIELD_MARK               <-  < '.' >
+  FIELD_OPTIONAL           <-  < '?'? >
   KW_ONLY_SEP              <-  '*' !'*'
   ARGS_REST                <-  '*' _ < IdentInitChar IdentChar* >
   KWARGS_REST              <-  '**' _ < IdentInitChar IdentChar* >

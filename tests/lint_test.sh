@@ -239,6 +239,18 @@ expect_param_reject "dangling separator" "named arguments must follow '*' separa
 expect_param_reject "lambda non-default" "non-default parameter 'b' follows a default parameter" 'let g = |a = 1, b| a'
 expect_param_reject "method kwargs not last" "'**' catch-all must be the last parameter" 'class C { m(**kw, b) { } }'
 expect_param_reject "trait sig dangling sep" "named arguments must follow '*' separator" 'trait T { sig(a, *) }'
+# A field parameter (`new(.x)`) belongs to a class's `new` alone, `.x?` takes
+# its type and default from the field's declaration, and it counts as an
+# optional parameter for the ordering rule.
+expect_param_reject "field param in fn"      "field parameter '.x' is only allowed in a class's \`new\`" 'fn f(.x) { x }'
+expect_param_reject "field param in lambda"  "field parameter '.x' is only allowed in a class's \`new\`" 'let g = |.x| x'
+expect_param_reject "field param in method"  "field parameter '.x' is only allowed in a class's \`new\`" 'class C { m(.x) { x } }'
+expect_param_reject "optional field typed"   "field parameter '.x?' takes its type and default from the field's declaration" 'class C { x = 1
+new(.x?: Long) { } }'
+expect_param_reject "optional field default" "field parameter '.x?' takes its type and default from the field's declaration" 'class C { x = 1
+new(.x? = 2) { } }'
+expect_param_reject "required field after optional" "non-default parameter 'y' follows a default parameter" 'class C { x = 1
+new(.x?, .y) { } }'
 # Dead code still rejected (the win over the interp's eval-time check, which
 # would never run a never-evaluated branch).
 expect_param_reject "dead-code malformed" "'**' catch-all must be the last parameter" 'if false { fn f(**kw, b) { } }'

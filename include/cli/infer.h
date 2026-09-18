@@ -1424,10 +1424,10 @@ class Inference {
         break;
       }
       case "PARAMETER"_:
-        if (n.nodes.size() >= 3 && n.nodes[2]->tag == "TYPE_ANNOTATION"_) {
+        if (auto type = view_parameter(n).type_annotation; !type.empty()) {
           size_t s = symbol_at(*n.nodes[1]);
           if (s != resolve::kNone)
-            sources_[s].push_back({Source::Annotation, nullptr, n.nodes[2]->token});
+            sources_[s].push_back({Source::Annotation, nullptr, type});
         }
         if (const auto* d = extract_default_expr(n); d && n.nodes.size() >= 2) {
           size_t s = symbol_at(*n.nodes[1]);

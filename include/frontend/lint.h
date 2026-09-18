@@ -259,7 +259,9 @@ class ScopeWalker {
   // a duplicate `*`, and a bare trailing `*`); hoisting the full set here
   // closes those interp/JIT divergences. Stops at the first violation, as the
   // interp's throwing builder does.
-  void check_param_wellformed(const peg::Ast& params) {
+  // `fields`: this is a class's `new`, the one list a field parameter
+  // (`.x`, docs/language.md §10) may appear in.
+  void check_param_wellformed(const peg::Ast& params, bool fields = false) {
     bool seen_default = false, kw_only = false, seen_sep = false;
     bool seen_kwargs_rest = false, seen_args_rest = false;
     size_t kw_only_count = 0;
@@ -301,11 +303,22 @@ class ScopeWalker {
         seen_kwargs_rest = true;
         continue;
       }
+      if (pv.is_field && !fields) {
+        return err(std::format("field parameter '.{}' is only allowed in a "
+                               "class's `new`", pv.name),
+                   pv.name_line, pv.name_col);
+      }
+      if (pv.is_optional && (pv.default_value || !pv.type_annotation.empty())) {
+        return err(std::format("field parameter '.{}?' takes its type and "
+                               "default from the field's declaration", pv.name),
+                   pv.name_line, pv.name_col);
+      }
       // A destructuring parameter cannot carry a default, so it is a
       // required one and falls under the same ordering rule — the binders
       // count required slots by position, and a required slot after a
-      // defaulted one has no arity that can fill it.
-      if (pv.default_value) {
+      // defaulted one has no arity that can fill it. `.x?` is optional the
+      // same way a defaulted one is.
+      if (pv.default_value || pv.is_optional) {
         seen_default = true;
       } else if (seen_default && !kw_only) {
         return err(
@@ -692,7 +705,8 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
         }
         check_dup_params(*mv.params);
         check_reserved_params(*mv.params);
-        check_param_wellformed(*mv.params);
+        check_param_wellformed(*mv.params,
+                               /*fields=*/mv.name == "new" && !mv.is_static);
         FnDepthGuard fg(fn_depth_);
         scoped(**mv.body, [&](Scope& s) { collect_idents(*mv.params, s.muts); });
       }
