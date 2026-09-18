@@ -991,6 +991,11 @@ struct Lowering {
             case TAG_BOOL: v = j.make_bool(b.getInt1(k.data != 0)); break;
             case TAG_NIL: v = j.make_nil(); break;
             case TAG_NO_SELF: v = j.make_no_self(); break;  // unbound sentinel
+            // "Not supplied", handed to a field-init thunk for a field this
+            // constructor takes no argument for (the prologue's own sentinel).
+            case TAG_UNFILLED:
+              v = j.make_value(b.getInt8(TAG_UNFILLED), b.getInt64(0));
+              break;
             case TAG_FLOAT: {
               double d;
               std::memcpy(&d, &k.data, 8);

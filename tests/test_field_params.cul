@@ -1,0 +1,185 @@
+# Constructor field parameters: `new(.x)` is a parameter `x` that also
+# stores into the field `x`, at that field's place in the declaration order;
+# `.x?` is optional and takes the declaration's own default when omitted
+# (docs/language.md §10).
+
+# --- the stores, without a field initializer anywhere (the prologue path) --
+
+class Color {
+  r: Long
+  g: Long
+  b: Long
+  a: Long
+
+  new(.r, .g, .b, .a?) {
+    self.seen = (r, g, b, a)  # the body reads every one as a parameter
+  }
+}
+
+test_required_and_optional = fn () {
+  let c = Color(1, 2, 3)
+  assert_eq((c.r, c.g, c.b, c.a), (1, 2, 3, 0))  # omitted: the typed zero
+  assert_eq(c.seen, (1, 2, 3, 0))                # `.a?` reads as the field
+  assert_eq(Color(1, 2, 3, 7).a, 7)
+  assert_eq(Color(1, 2, 3, a: 7).a, 7)
+  assert_eq(Color(b: 3, r: 1, g: 2).seen, (1, 2, 3, 0))
+  assert_eq(c.keys(), ['r', 'g', 'b', 'a', 'seen'])  # declaration order
+  assert_throws('ArityError', fn () {
+    Color(1, 2)
+  })
+  assert_throws('TypeError', fn () {
+    Color(1, 2, 3, q: 4)
+  })
+}
+test_required_and_optional()
+
+# --- with field initializers (the thunk path) ------------------------------
+
+let CHR_BANK = 4
+
+class Cartridge {
+  prg_rom: Array
+  chr_rom: Array
+  chr_ram = self.chr_rom.empty() ? repeat(CHR_BANK, 0) : []
+  mapper_id = 0
+  mirroring = 'horizontal'
+  has_battery = false
+
+  new(.prg_rom, .chr_rom, *, .mapper_id?, .mirroring?, .has_battery?) {
+    self.seen = (mapper_id, mirroring, has_battery)
+  }
+}
+
+test_initializer_reads_a_supplied_field = fn () {
+  # `chr_ram` sits below `chr_rom` and reads what the argument stored.
+  assert_eq(Cartridge([1], []).chr_ram, [0, 0, 0, 0])
+  assert_eq(Cartridge([1], [2]).chr_ram, [])
+  let c = Cartridge([1], [2], mapper_id: 4, has_battery: true)
+  assert_eq((c.mapper_id, c.mirroring, c.has_battery), (4, 'horizontal', true))
+  assert_eq(c.seen, (4, 'horizontal', true))
+  assert_eq(Cartridge([1], []).seen, (0, 'horizontal', false))
+  assert_eq(
+    c.keys(),
+    [
+      'prg_rom',
+      'chr_rom',
+      'chr_ram',
+      'mapper_id',
+      'mirroring',
+      'has_battery',
+      'seen',
+    ],
+  )
+  assert_throws('TypeError', fn () {
+    Cartridge([1], [], 4)  # keyword-only after `*`
+  })
+}
+test_initializer_reads_a_supplied_field()
+
+test_nil_is_a_value_not_an_omission = fn () {
+  assert_eq(Cartridge([1], [], mirroring: nil).mirroring, nil)
+  assert_eq(Cartridge([1], [], mirroring: nil).seen, (0, nil, false))
+}
+test_nil_is_a_value_not_an_omission()
+
+# Two overloads supply different fields through the one shared thunk.
+class Point {
+  x = 10
+  y = 20
+  tag = 'none'
+
+  new(.x?, .y?) {}
+
+  new(s: String) {
+    self.tag = s
+  }
+}
+
+test_overloads_share_the_thunk = fn () {
+  assert_eq((Point().x, Point().y, Point().tag), (10, 20, 'none'))
+  assert_eq((Point(y: 2).x, Point(y: 2).y), (10, 2))
+  assert_eq((Point('s').x, Point('s').y, Point('s').tag), (10, 20, 's'))
+}
+test_overloads_share_the_thunk()
+
+# --- the parameter is an ordinary parameter --------------------------------
+
+class Q {
+  a: Long
+  b: Long
+
+  new(.a, .b = a * 2) {
+    # a default reads the earlier parameter
+    self.f = fn () {
+      # a captured one lives in a cell; the store reads it
+      a + b
+    }
+  }
+}
+
+test_default_and_capture = fn () {
+  assert_eq((Q(3).a, Q(3).b, Q(3).f()), (3, 6, 9))
+  assert_eq((Q(3, 4).b, Q(3, 4).f()), (4, 7))
+}
+test_default_and_capture()
+
+# --- the store is the boxed store: checked against the declared type -------
+
+class F {
+  x: Float
+
+  new(.x) {}
+}
+
+test_store_type_check = fn () {
+  let e = try {
+    F(1)
+    nil
+  } catch er {
+    er.message
+  }
+  assert_eq(e, "type error: field 'x' expects Float")
+  assert_eq(F(1.5).x, 1.5)
+}
+test_store_type_check()
+
+# --- a @value class ----------------------------------------------------------
+
+@value
+class V {
+  x: Float
+  y: Float = 0.5
+
+  new(.x, .y?) {}
+}
+
+test_value_class = fn () {
+  assert_eq((V(1.0).x, V(1.0).y), (1.0, 0.5))
+  assert_eq(V(1.0, 2.0).y, 2.0)
+  assert_eq(V(1.0), V(1.0, 0.5))
+  assert_throws('ImmutableError', fn () {
+    V(1.0).x = 2.0
+  })
+}
+test_value_class()
+
+# A flat @value class (no initializer): the boxed and the `.new` spellings
+# agree, whichever path the compiler takes.
+@value
+class Flat {
+  x: Long
+  y: Long
+
+  new(.x, .y) {}
+}
+
+test_flat_value_class = fn () {
+  let a = Flat(1, 2)
+  let b = Flat.new(1, 2)
+  assert_eq(a, b)
+  assert_eq((a.x, a.y, b.x, b.y), (1, 2, 1, 2))
+  assert_eq(Flat.new(y: 2, x: 1), a)
+}
+test_flat_value_class()
+
+inspect('field-params OK')

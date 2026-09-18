@@ -515,6 +515,9 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       // position (the layout calc in eval/compile is then only a safety net).
       auto class_name =
           culebra::parse_generic_head(node.nodes[i]->token).outer;
+      // What the body declares, for the `new` field parameters' checks —
+      // gathered up front, since a `new` may sit above the fields it names.
+      auto declared_fields = culebra::declared_instance_fields(node, i + 1);
       // Method bodies and field initializers are function-boundary contexts.
       LoopBoundary g(loop_labels_);
       std::vector<std::pair<std::string, std::string>> pk_fields;
@@ -630,6 +633,14 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
           check_named(static_fields, static_methods, mv, is_field_member);
         } else if (!is_field_member && mv.name == "new") {
           if (!new_sigs.insert(method_signature(*mv.params)).second) dup_sig(mv);
+          culebra::check_field_params(
+              *mv.params, declared_fields, class_name,
+              [&](std::string msg, size_t line, size_t col) {
+                diags_.push_back(Diagnostic{"SyntaxError", std::move(msg),
+                                            static_cast<long>(line),
+                                            static_cast<long>(col),
+                                            Severity::Error});
+              });
         } else {
           check_named(inst_fields, inst_methods, mv, is_field_member);
         }

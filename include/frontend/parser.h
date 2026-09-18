@@ -1858,6 +1858,111 @@ inline ParameterView view_parameter(const peg::Ast& p) {
   };
 }
 
+// --- Field parameters (`new(.x, .y: T = v, .z?)`, docs/language.md §10) ---
+//
+// A field parameter is an ordinary parameter that also stores into the
+// field of its name, at that field's place in the declaration order. What
+// a class body declares about the field decides what the parameter may
+// say: a declaration with an initializer is only reached through `.x?`
+// (the parameter would otherwise always supply the value), and a type on
+// the parameter must repeat the declaration's. The same check runs in lint
+// (pre-eval, every diagnostic) and in the compiler (the first, thrown), so
+// the questions and their wording live here.
+struct DeclaredField {
+  bool has_initializer;
+  std::string_view type;  // "" for `x = v`
+};
+using DeclaredFields = std::map<std::string, DeclaredField, std::less<>>;
+
+// The instance fields a class body declares, by name — the member
+// classification compile_class_decl makes (a typed field is an instance
+// field even when written `static`).
+inline DeclaredFields declared_instance_fields(const peg::Ast& cls,
+                                               size_t members_from) {
+  DeclaredFields out;
+  for (size_t i = members_from; i < cls.nodes.size(); i++) {
+    auto mv = view_method(*cls.nodes[i]);
+    if (mv.is_typed_field || (mv.is_field && !mv.is_static))
+      out.insert_or_assign(std::string(mv.name),
+                           DeclaredField{mv.value != nullptr, mv.type_annotation});
+  }
+  return out;
+}
+
+inline std::string field_param_initializer_message(std::string_view name,
+                                                   std::string_view class_name) {
+  return std::format(
+      "field parameter '.{}' always supplies the value, so field `{}` of "
+      "class `{}` cannot have an initializer (use '.{}?' to take the "
+      "declaration's default)",
+      name, name, class_name, name);
+}
+inline std::string field_param_type_message(std::string_view name,
+                                            std::string_view param_type,
+                                            std::string_view class_name,
+                                            std::string_view field_type) {
+  if (field_type.empty())
+    return std::format("field parameter '.{}: {}' disagrees with the untyped "
+                       "declaration of `{}` in class `{}`",
+                       name, param_type, name, class_name);
+  return std::format("field parameter '.{}: {}' disagrees with the declaration "
+                     "`{}: {}` in class `{}`",
+                     name, param_type, name, field_type, class_name);
+}
+inline std::string field_param_undeclared_message(std::string_view name,
+                                                  bool optional,
+                                                  std::string_view class_name) {
+  if (optional)
+    return std::format("field parameter '.{}?' takes its default from a "
+                       "declaration, but class `{}` declares no field `{}`",
+                       name, class_name, name);
+  return std::format("field parameter '.{}' names no declared field of "
+                     "class `{}`",
+                     name, class_name);
+}
+
+// Every field parameter of a `new` against the class's declared fields;
+// `report(message, line, col)` once per violation.
+template <class Report>
+inline void check_field_params(const peg::Ast& params,
+                               const DeclaredFields& fields,
+                               std::string_view class_name, Report report) {
+  for (const auto& p : params.nodes) {
+    auto pv = view_parameter(*p);
+    if (!pv.is_field) continue;
+    auto it = fields.find(pv.name);
+    if (it == fields.end()) {
+      report(field_param_undeclared_message(pv.name, pv.is_optional, class_name),
+             pv.name_line, pv.name_col);
+      continue;
+    }
+    if (!pv.is_optional && it->second.has_initializer)
+      report(field_param_initializer_message(pv.name, class_name),
+             pv.name_line, pv.name_col);
+    if (!pv.type_annotation.empty() &&
+        pv.type_annotation != it->second.type)
+      report(field_param_type_message(pv.name, pv.type_annotation, class_name,
+                                      it->second.type),
+             pv.name_line, pv.name_col);
+  }
+}
+
+// The field names every `new` overload's field parameters reach, in the
+// order `fields` declares them — the field-init thunk's parameter list.
+inline std::vector<std::string> field_param_names(
+    const std::vector<const peg::Ast*>& new_asts,
+    const std::vector<const peg::Ast*>& fields) {
+  std::set<std::string_view> named;
+  for (const auto* m : new_asts)
+    for (const auto& p : view_method(*m).params->nodes)
+      if (auto pv = view_parameter(*p); pv.is_field) named.insert(pv.name);
+  std::vector<std::string> out;
+  for (const auto* f : fields)
+    if (auto name = view_method(*f).name; named.contains(name))
+      out.emplace_back(name);
+  return out;
+}
+
 // For a FUNCTION AST node, returns the declared return type (or {}) and
 // writes the body's node index to *body_idx.
 inline std::string_view extract_return_type(const peg::Ast& fn_ast,

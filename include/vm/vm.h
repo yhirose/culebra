@@ -3412,6 +3412,13 @@ struct MemberOpts {
   // declared fields sets neither.
   const peg::Ast* field_init_owner = nullptr;
   const std::vector<const peg::Ast*>* prologue_fields = nullptr;
+  // The fields the class's `new` overloads take as field parameters
+  // (culebra::field_param_names): the thunk's own parameter list, one slot
+  // per field in declaration order (`thunk_params`), and the argument list
+  // a `new` body hands it (`finit_params`) — its own value where it has
+  // one, the unfilled sentinel where it does not.
+  const std::vector<std::string>* thunk_params = nullptr;
+  const std::vector<std::string>* finit_params = nullptr;
   // The enclosing class's constructor chunk, reserved before the members
   // compiled, so `Name.new(...)` inside a member resolves — behind the guard
   // its receiver-read name owes (Chunk::Reach::Guarded).
@@ -5775,7 +5782,23 @@ class Compiler {
   // an initializer sees of the fields declared below it — is unchanged. A
   // typed one takes a one-field Op::FieldsInit of its own just before that
   // store, which is how its declared type reaches the slot.
-  void emit_declared_field_stores(const std::vector<const peg::Ast*>& fields) {
+  //
+  // `provided` names the fields a field parameter (`new(.x)`) supplies: the
+  // slot (or cell) holding the argument, and whether it may be unfilled
+  // (`.x?`, or a thunk shared by several `new` overloads). A supplied value
+  // is stored at the field's own place in the order, after the same typed
+  // layout the zero would have taken, so the slot carries its declared type
+  // and the store is checked against it like every other write; an
+  // unfilled one falls back to what the declaration says.
+  struct ProvidedField {
+    int32_t slot;
+    bool is_cell;
+    bool optional;
+  };
+  using ProvidedFields = std::map<std::string, ProvidedField, std::less<>>;
+
+  void emit_declared_field_stores(const std::vector<const peg::Ast*>& fields,
+                                  const ProvidedFields* provided = nullptr) {
     std::vector<const peg::Ast*> run;
     auto flush = [&] {
       if (run.empty()) return;
@@ -5784,24 +5807,60 @@ class Compiler {
     };
     for (const auto* f : fields) {
       auto mv = culebra::view_method(*f);
-      if (!mv.value) {
+      auto pf = provided ? provided->find(mv.name) : ProvidedFields::const_iterator{};
+      bool supplied = provided && pf != provided->end();
+      if (!mv.value && !supplied) {
         run.push_back(f);
         continue;
       }
       flush();
       TempScope fts(*this);
-      ExprResult v = compile_expr(*mv.value);
-      // A slot learns its declared type from the layout op, so a field with
-      // an initializer takes its typed zero first and its own store is the
-      // overwrite every later write is — checked by the same rule. Emitted
-      // after the initializer, which must not see the field it defines.
+      if (!supplied) {
+        emit_declared_field_store(*f, mv);
+        continue;
+      }
+      // The argument, +1 (a Retain of the sentinel is a no-op).
+      int32_t v = alloc_temp(*f);
+      if (pf->second.is_cell) {
+        emit(Op::CellGet, v, pf->second.slot);
+      } else {
+        emit(Op::Move, v, pf->second.slot);
+        emit(Op::Retain, v);
+      }
+      size_t filled = 0, done = 0;
+      if (pf->second.optional) {
+        filled = emit(Op::JumpIfFilled, v);
+        emit_declared_field_store(*f, mv);
+        done = emit(Op::Jump);
+        patch_to_here(filled);
+      }
       if (culebra::field_type_for_annotation(mv.type_annotation) !=
           culebra::FieldType::Any)
         emit_declared_field_layout({f});
-      emit(Op::ObjectSet, chunk_.self_slot, owned_src(*f, v),
-           kconst_str(std::string(mv.name)), /*mut=*/1);
+      emit(Op::ObjectSet, chunk_.self_slot, v, kconst_str(std::string(mv.name)),
+           /*mut=*/1);
+      if (pf->second.optional) patch_to_here(done);
     }
     flush();
+  }
+
+  // One declared field from its declaration alone: the typed zero, or the
+  // initializer's value.
+  void emit_declared_field_store(const peg::Ast& f, const culebra::MethodView& mv) {
+    if (!mv.value) {
+      emit_declared_field_layout({&f});
+      return;
+    }
+    ExprResult v = compile_expr(*mv.value);
+    // A slot learns its declared type from the layout op, so a field with
+    // an initializer takes its typed zero first and its own store is the
+    // overwrite every later write is — checked by the same rule. Emitted
+    // after the initializer, which must not see the field it defines.
+    if (culebra::field_type_for_annotation(mv.type_annotation) !=
+        culebra::FieldType::Any)
+      emit_declared_field_layout({&f});
+    emit(Op::ObjectSet, chunk_.self_slot, owned_src(f, v),
+         kconst_str(std::string(mv.name)), /*mut=*/1);
   }
 
   // The slots for a run of fields as one Op::FieldsInit: the instance takes
@@ -7371,11 +7430,26 @@ class Compiler {
         std::any_of(fields.begin(), fields.end(), [](const peg::Ast* f) {
           return culebra::view_method(*f).value != nullptr;
         });
+    // The field parameters each `new` declares, against the fields: lint
+    // reports the same violations pre-eval; this is the compile-time
+    // safety net, thrown at the first. The union of their fields, in
+    // declaration order, is the thunk's parameter list.
+    auto declared_fields = culebra::declared_instance_fields(ast, dec_end + 1);
+    for (const auto* m : new_asts)
+      culebra::check_field_params(
+          *culebra::view_method(*m).params, declared_fields, class_name,
+          [](std::string msg, size_t line, size_t col) {
+            throw culebra::CulebraError("SyntaxError", std::move(msg),
+                                        static_cast<long>(line),
+                                        static_cast<long>(col));
+          });
+    auto field_params = culebra::field_param_names(new_asts, fields);
     int32_t finit_slot = -1;
     if (!fields.empty() && (fields_need_a_thunk || !new_ast)) {
       int32_t idx = compile_fn_chunk(ast, /*params=*/nullptr, ast,
                                      {.receiver = true,
                                       .thunk_fields = &fields,
+                                      .thunk_params = &field_params,
                                       .type_params = &type_params});
       int32_t t = alloc_temp(ast);
       emit(Op::MakeClosure, t, idx);
@@ -7397,6 +7471,7 @@ class Compiler {
            .field_init_owner = fields_need_a_thunk ? &ast : nullptr,
            .prologue_fields =
                (!fields.empty() && !fields_need_a_thunk) ? &fields : nullptr,
+           .finit_params = fields_need_a_thunk ? &field_params : nullptr,
            .owner_ctor_chunk = ctor_chunk_idx,
            .type_params = &type_params,
            .owner_fields = own_fields,
@@ -7966,6 +8041,7 @@ class Compiler {
       bool is_mut;
       bool sink;
       bool optional;          // has a default, or is a `.x?` field param
+      bool is_field;          // `.x`: also stored into the field
       int32_t pos_slot = -1;  // PosSnap's eager snapshot, -1 = cold path
     };
     std::vector<ParamPlan> plans;
@@ -8042,13 +8118,33 @@ class Compiler {
         fc.chunk_.param_has_default.push_back(optional ? 1 : 0);
         fc.chunk_.param_mut.push_back(pv.is_mut ? 1 : 0);
         plans.push_back({p.get(), name, std::move(type), pv.default_value,
-                         slot, abi, pv.is_mut, is_sink_name(name), optional});
+                         slot, abi, pv.is_mut, is_sink_name(name), optional,
+                         pv.is_field});
       }
+    }
+    // The field-init thunk's parameters: one ABI slot per field a `new`
+    // overload supplies, every one optional (an overload that takes no
+    // argument for it passes the unfilled sentinel). Not bound under the
+    // field's name — an initializer expression must keep resolving a bare
+    // name to the class's defining scope, never to a constructor argument.
+    ProvidedFields thunk_provided;
+    if (mo.thunk_params) {
+      for (const auto& n : *mo.thunk_params) {
+        auto synth = culebra::format("(field.arg.{})", n);
+        int32_t slot = fc.alloc_slot(ast, synth);
+        fc.chunk_.param_names.push_back(synth);
+        fc.chunk_.param_types.emplace_back();
+        fc.chunk_.param_declared_types.emplace_back();
+        fc.chunk_.param_has_default.push_back(1);
+        fc.chunk_.param_mut.push_back(0);
+        thunk_provided[n] = {slot, /*is_cell=*/false, /*optional=*/true};
+      }
+      fc.chunk_.arity = static_cast<int32_t>(mo.thunk_params->size());
     }
     // Required parameters are the leading run without a default (lint
     // rejects a required one after a defaulted one), so the arity guard is
     // a single count and the unsupplied tail is exactly the defaulted one.
-    fc.chunk_.required = fc.chunk_.arity;
+    fc.chunk_.required = mo.thunk_params ? 0 : fc.chunk_.arity;
     for (const auto& pl : plans)
       if (pl.optional) {
         fc.chunk_.required = pl.abi_index;
@@ -8413,6 +8509,16 @@ class Compiler {
       fc.emit(Op::DestrErr);
       fc.patch_to_here(done);
     }
+    // The field parameters, now bound: what this `new` supplies to the
+    // field stores below, wherever they are emitted.
+    ProvidedFields provided;
+    std::vector<const ParamPlan*> optional_fields;
+    for (const auto& pl : plans) {
+      if (!pl.is_field || pl.sink) continue;
+      const Binding* b = fc.lookup(pl.name);
+      provided[pl.name] = {b->slot, b->is_cell, pl.optional};
+      if (pl.optional) optional_fields.push_back(&pl);
+    }
     // A `new` body runs the class's field initializers here — after the
     // parameters bound, before the first body statement (interp's
     // init_instance_fields timing: an arity error leaves no field behind).
@@ -8422,19 +8528,56 @@ class Compiler {
           fc.lookup(culebra::field_init_slot_name(*mo.field_init_owner));
       int32_t t = fc.alloc_temp(ast);
       fc.emit(Op::CellGet, t, fb->slot);
-      fc.emit(Op::FieldInit, t, fc.chunk_.self_slot);
+      if (mo.finit_params && !mo.finit_params->empty()) {
+        // The thunk takes the supplied fields as arguments: a method call
+        // whose run is the receiver (+1, as FieldInit's retain) then one
+        // value per thunk parameter — the argument where this `new` has
+        // one, the unfilled sentinel where it does not.
+        int32_t base = fc.next_slot_;
+        int32_t s = fc.alloc_temp(ast);
+        fc.emit(Op::Move, s, fc.chunk_.self_slot);
+        fc.emit(Op::Retain, s);
+        for (const auto& n : *mo.finit_params) {
+          int32_t a = fc.alloc_temp(ast);
+          auto it = provided.find(n);
+          if (it == provided.end()) {
+            fc.emit(Op::LoadConst, a, fc.kconst({TAG_UNFILLED, 0}));
+          } else if (it->second.is_cell) {
+            fc.emit(Op::CellGet, a, it->second.slot);
+          } else {
+            fc.emit(Op::Move, a, it->second.slot);
+            fc.emit(Op::Retain, a);
+          }
+        }
+        int32_t r = fc.alloc_temp(ast);
+        fc.emit(Op::CallM, r, t, base,
+                static_cast<int32_t>(mo.finit_params->size()));
+      } else {
+        fc.emit(Op::FieldInit, t, fc.chunk_.self_slot);
+      }
     } else if (mo.prologue_fields) {
       // The same stores, in this frame instead of a thunk's. A declaration
       // with no initializer only has to put the field there, and a whole
       // culebra frame to do it was the reason declared fields cost MORE than
       // assigning in the constructor — the opposite of what a value type
       // wants (docs/language.md §21).
-      fc.emit_declared_field_stores(*mo.prologue_fields);
+      fc.emit_declared_field_stores(*mo.prologue_fields, &provided);
+    }
+    // `.x?` left out by the caller: the parameter reads as the field the
+    // declaration just initialized, so the body never sees the sentinel.
+    for (const ParamPlan* pl : optional_fields) {
+      const Binding* b = fc.lookup(pl->name);
+      TempScope fts(fc);
+      size_t filled = fc.emit(Op::JumpIfFilled, fc.lazy_probe(*pl->at, *b));
+      int32_t v = fc.alloc_temp(*pl->at);
+      fc.emit(Op::PropVal, v, fc.chunk_.self_slot, fc.kconst_str(pl->name), 0);
+      fc.store_binding(*pl->at, *b, {v, true});
+      fc.patch_to_here(filled);
     }
     int32_t rv = fc.alloc_temp(ast);
     if (mo.thunk_fields) {
       // The synthetic field-init thunk's whole body.
-      fc.emit_declared_field_stores(*mo.thunk_fields);
+      fc.emit_declared_field_stores(*mo.thunk_fields, &thunk_provided);
     } else {
       // The body compiles INTO the frame scope rather than a nested one (the
       // JIT's "the body BLOCK is this frame's scope"): its locals belong to
