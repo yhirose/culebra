@@ -33,16 +33,12 @@
 // array::xent_bwd, which a VJP reaches for, so `tensor_backward` is choked
 // whole alongside the older tensor_eval_node / tensor_binop.
 //
-// Reaching a backend is not a runtime bug — a binary with no Tensor value
-// cannot call the path — but the link is not so forgiving: the framework is on
-// the link line only when the AST scan named Tensor, so an
-// unreachable-at-runtime reference still fails `culebra build` outright, and
-// only on macOS. Worse, the scan is not what decides: lowering maps the method
-// NAMES `clone` / `backward` / `detach` to these helpers, so a class of the
-// user's own with a method so named emitted the arm. The gate is
-// tools/checks/check_rt_archive_backend_free.sh, which forces every
-// `culebra_runtime_*` helper live in a dead-strip link of the core archive
-// alone: a new path into a backend fails there instead of on a user's desk.
+// The link is stricter than the runtime here: a no-Tensor binary cannot call
+// the path, but `-framework Metal` reaches the link line only when the AST
+// scan named Tensor — and the scan is not what decides, since lowering maps
+// the method NAMES `clone` / `backward` / `detach` to these helpers, so a user
+// class with a method so named emitted the arm (macOS only).
+// Gate: tools/checks/check_rt_archive_backend_free.sh.
 
 #include <base/shared.h>
 

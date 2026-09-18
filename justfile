@@ -1188,9 +1188,10 @@ _run-tests BACKEND:
     # backend either (Metal, BLAS, OpenSSL, sqlite3, zlib). The link line only
     # carries the framework when the AST scan says the feature is used, so such
     # a reference breaks the AOT link of programs that never touch the feature
-    # (tools/checks/check_rt_archive_backend_free.sh). Reads the archive's
-    # undefined symbols only, so it is fast enough to keep out of the AOT lane
-    # -- which is what the macOS runner skips, and macOS is where it bites.
+    # (tools/checks/check_rt_archive_backend_free.sh). One dead-strip link of
+    # the archive alone, compiling none of culebra's own sources, so it is fast
+    # enough to keep out of the AOT lane -- which is what the macOS runner
+    # skips, and macOS is where it bites. Gate-only (`test-dev` has no archives).
     run_rt_archive_backend_free() {
         bash tools/checks/check_rt_archive_backend_free.sh "$(dirname "$BIN")"
     }

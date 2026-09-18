@@ -205,8 +205,7 @@ nothing on culebra's side of the boundary could have gated it.)
 forcing every runtime helper live in a dead-strip link of the base
 archive on its own and reading what is left undefined.
 
-`Proc`'s
-fork/exec layer, the PNG/TTF decoders behind
+`Proc`'s fork/exec layer, the PNG/TTF decoders behind
 `Canvas.Sprite.from_png` / `Canvas.Font`, and `PEG` (cpp-peglib) link
 nothing external either but need no choke of their own: they compile
 as plain code reached only through their namespace's dispatch table,

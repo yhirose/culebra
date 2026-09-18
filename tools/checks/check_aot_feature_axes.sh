@@ -423,7 +423,7 @@ expect_output tensor "222.0"
 # for it -- in a program the AST scan reports as Tensor-free, which is what
 # decides whether `-framework Metal` is on the link line. That this probe
 # BUILDS is the check; the symbols are the same axis said the other way.
-build bmeth 'class Box {
+build method_names 'class Box {
   new(v) {
     self.v = v
   }
@@ -439,9 +439,9 @@ build bmeth 'class Box {
 }
 let b = Box.new(2)
 IO.print(b.clone().v + b.backward() + b.detach())'
-expect_absent bmeth "$tensor_kernels" "cpp-tensorlib's elementwise kernels"
-expect_absent bmeth "$tensor_device_clone" "clone()'s device arm"
-expect_output bmeth "6"
+expect_absent method_names "$tensor_kernels" "cpp-tensorlib's elementwise kernels"
+expect_absent method_names "$tensor_device_clone" "clone()'s device arm"
+expect_output method_names "6"
 
 # A Shared.new view: its reader arrives through the hook, and the view's
 # `copy` reaches the deserializer, which reaches everything else.

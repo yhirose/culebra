@@ -177,7 +177,7 @@ MSYS2ツールチェーンを必要とします。[`CONTRIBUTING.md`](../CONTRIB
 `culebra::tensor_inplace_binop`（遅延の`+`とin-placeの`+=`の経路）に
 同じ弱/強分岐を掛けている。効果は約115 KBで、helloの4分の1に当たる。
 
-`culebra::tensor_backward`も同じ分岐を取るが、こちらの理由はサイズでは
+3つめは`culebra::tensor_backward`で、その理由はサイズでは
 ない。cpp-tensorlibは確保とグラフ評価をtensor archiveが仕込むhook経由に
 しているので、グラフを組むだけの翻訳単位はバックエンドを名指ししない。
 しかしeagerに走るカーネルは直接デバイスを掴みにいき、VJPの1つがそれを
