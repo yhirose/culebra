@@ -405,8 +405,12 @@ if(CULEBRA_ENABLE_JIT)
   # Resolved here, before the target list below, because linking lld decides
   # that list: its COFF driver calls InitializeAllTargets*() for LTO inputs, so
   # every backend has to be present or the driver does not link.
+  #
+  # Clang builds only: MSYS2 compiles the lld archives with clang, and GNU ld
+  # does not fold a gcc COMDAT into clang's copy when the two compilers place
+  # it in different sections (std::regex's static locals: .data$ vs .bss$).
   set(CULEBRA_LLD_LIBS "")
-  if(WIN32)
+  if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     find_library(CULEBRA_LLD_MINGW  NAMES lldMinGW  HINTS ${LLVM_LIBRARY_DIRS})
     find_library(CULEBRA_LLD_COFF   NAMES lldCOFF   HINTS ${LLVM_LIBRARY_DIRS})
     find_library(CULEBRA_LLD_COMMON NAMES lldCommon HINTS ${LLVM_LIBRARY_DIRS})
