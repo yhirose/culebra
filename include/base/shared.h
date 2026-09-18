@@ -2260,6 +2260,11 @@ enum RuntimeSlot : size_t {
   // is what keeps that revival from leaking.
   kSlotInterpOwnedStack,
   kSlotJitOwnedStack,
+  // The bytecode executor's inline frames (vm.h Exec::VmStack): register
+  // windows the collector reads through its roots hook. Non-owning, like
+  // the owned stacks; above the GC slots so a collect a teardown `drop`
+  // fires resolves the nulled slot to a fresh, empty stack.
+  kSlotVmStack,
   // Foreign-instance tables (wrapped C++ objects, see foreign.h): one
   // type-erased registry holding a per-T id table. Owns the C++
   // instances; destroyed with the Runtime — FIRST in the reverse-order

@@ -1312,7 +1312,7 @@ register as a root without registration.
 
 A call the compiler resolved (`Chunk::call_targets`) does not enter
 `run_frame` again. `dispatch` pushes the callee's frame — a `VmFrame`
-record, its registers and its owned-stack marks — onto the thread's
+record, its registers and its owned-stack marks — onto the Runtime's
 `VmStack` and keeps running in the same loop (`enter_inline`); `Ret` pops
 it and resumes the caller (`leave_inline`). That is Lua's shape: one C++
 activation per entry from native code, however deep the culebra calls

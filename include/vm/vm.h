@@ -14024,18 +14024,19 @@ struct Exec {
     size_t mark_seg, mark_used;  // the VmStack position to pop back to
   };
 
-  // The register windows of inline frames, per thread. Segments never move,
-  // so a frame's `regs` and `parent` stay valid; the collector reads the
-  // live part through vm_stack_roots, since nothing here is on the machine
-  // stack its scan walks.
+  // The register windows of inline frames, per Runtime — the frames belong
+  // to the heap that holds their values, and a Runtime's teardown finds its
+  // stack empty or revived empty (kSlotVmStack). Segments never move, so a
+  // frame's `regs` and `parent` stay valid; the collector reads the live
+  // part through vm_stack_roots, since nothing here is on the machine stack
+  // its scan walks.
   struct VmStack {
     static constexpr size_t kSegment = size_t{1} << 15;  // JitValues
     std::vector<std::unique_ptr<JitValue[]>> segs;
     size_t seg = 0, used = 0;
   };
   static VmStack& vm_stack() {
-    static thread_local VmStack s;
-    return s;
+    return culebra::runtime_substate<VmStack>(culebra::kSlotVmStack);
   }
   // A frame's block: the record, then its registers, then its marks.
   static constexpr size_t kFrameHeader =
