@@ -1,3 +1,5 @@
+import sys
+
 def run(n):
     s = ""
     i = 0
@@ -6,4 +8,4 @@ def run(n):
         i = i + 1
     return len(s)
 
-print(run(40000))
+print(run(int(sys.argv[1])))

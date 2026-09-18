@@ -11,7 +11,7 @@ class Program {
     return total;
   }
 
-  static void Main() {
-    Console.WriteLine(Run(1200000));
+  static void Main(string[] args) {
+    Console.WriteLine(Run(long.Parse(args[0])));
   }
 }

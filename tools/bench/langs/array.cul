@@ -14,4 +14,4 @@ fn run(n) {
   total
 }
 
-println(run(500000))
+println(run(to_long(Sys.argv[0])))

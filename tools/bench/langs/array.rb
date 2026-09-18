@@ -14,4 +14,4 @@ def run(n)
   total
 end
 
-puts run(500000)
+puts run(ARGV[0].to_i)

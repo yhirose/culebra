@@ -11,7 +11,7 @@ class Program {
     return s.Length;
   }
 
-  static void Main() {
-    Console.WriteLine(Run(40000));
+  static void Main(string[] args) {
+    Console.WriteLine(Run(long.Parse(args[0])));
   }
 }

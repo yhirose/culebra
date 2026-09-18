@@ -8,4 +8,4 @@ local function run(n)
   return #s
 end
 
-print(run(40000))
+print(run(tonumber(arg[1])))

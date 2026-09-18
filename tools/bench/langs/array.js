@@ -13,4 +13,4 @@ function run(n) {
   }
   return total;
 }
-console.log(run(500000));
+console.log(run(Number(process.argv[2])));

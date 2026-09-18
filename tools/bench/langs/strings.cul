@@ -8,4 +8,4 @@ fn run(n) {
   s.size()
 }
 
-println(run(40000))
+println(run(to_long(Sys.argv[0])))

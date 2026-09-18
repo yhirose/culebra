@@ -7,12 +7,11 @@ local function run(n)
   end
   local total = 0
   local j = 1
-  local len = #xs
-  while j <= len do
+  while j <= #xs do
     total = (total + xs[j]) % 1000000007
     j = j + 1
   end
   return total
 end
 
-print(run(500000))
+print(run(tonumber(arg[1])))

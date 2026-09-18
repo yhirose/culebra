@@ -7,5 +7,5 @@
 (define (run n)
   (sum-list (build 1 n '()) 0))
 
-(display (run 500000))
+(display (run (string->number (cadr (command-line)))))
 (newline)

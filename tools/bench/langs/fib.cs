@@ -6,7 +6,7 @@ class Program {
     return Fib(n - 1) + Fib(n - 2);
   }
 
-  static void Main() {
-    Console.WriteLine(Fib(28));
+  static void Main(string[] args) {
+    Console.WriteLine(Fib(int.Parse(args[0])));
   }
 }

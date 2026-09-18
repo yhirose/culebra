@@ -7,4 +7,4 @@ function run(n) {
   }
   return s.length;
 }
-console.log(run(40000));
+console.log(run(Number(process.argv[2])));

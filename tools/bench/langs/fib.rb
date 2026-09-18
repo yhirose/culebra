@@ -3,4 +3,4 @@ def fib(n)
   fib(n - 1) + fib(n - 2)
 end
 
-puts fib(28)
+puts fib(ARGV[0].to_i)

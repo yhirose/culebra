@@ -1,6 +1,10 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+	"strconv"
+)
 
 func run(n int64) int64 {
 	var total int64 = 0
@@ -13,5 +17,10 @@ func run(n int64) int64 {
 }
 
 func main() {
-	fmt.Println(run(1200000))
+	fmt.Println(run(size()))
+}
+
+func size() int64 {
+	n, _ := strconv.ParseInt(os.Args[1], 10, 64)
+	return n
 }

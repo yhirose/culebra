@@ -1,3 +1,5 @@
+import sys
+
 def run(n):
     xs = []
     i = 1
@@ -11,4 +13,4 @@ def run(n):
         j = j + 1
     return total
 
-print(run(500000))
+print(run(int(sys.argv[1])))

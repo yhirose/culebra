@@ -1550,8 +1550,10 @@ bench-vector-loop steps="1000000": build
 # The same five small programs on both engines and on seven other language
 # runtimes, in milliseconds. `just perf` measures the VM against the JIT,
 # which cannot say whether either is fast in absolute terms; this says it in
-# a unit a reader already has a feel for. A runtime that is not installed is
-# reported as "-". Report, not a gate.
+# a unit a reader already has a feel for. Two tables: "wall" (one run, start
+# to exit) and "compute" (startup and JIT compile differenced out of a run
+# at a larger size). A runtime that is not installed is reported as "-".
+# Report, not a gate.
 [doc("Five programs on both engines vs. other language runtimes (report, not a gate)")]
 [group("bench")]
 bench-langs reps="3": build
