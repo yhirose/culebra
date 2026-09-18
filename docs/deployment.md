@@ -182,7 +182,30 @@ operand could be a `Tensor`, which is every binary that does
 arithmetic at all. `culebra::tensor_binop` and
 `culebra::tensor_inplace_binop` (the lazy `+` and the in-place `+=`
 paths) therefore take the same weak/strong split, which is worth
-~115 KB — a quarter of a hello. `Proc`'s
+~115 KB — a quarter of a hello.
+
+`culebra::tensor_backward` takes it for a third reason, and that one
+is not about size at all. cpp-tensorlib routes allocation and graph
+evaluation through hooks the tensor archive installs, so a translation
+unit that only builds graphs names no backend — but the kernels it
+runs eagerly reach for the device directly, and a VJP asks for one
+(`array::xent_bwd`, the fused loss's pullback). Nothing in a
+Tensor-free binary can call that: it holds no `Tensor` value to call
+it with. A linker does not ask. `-framework Metal` reaches the link
+line only when the AST scan reports `Tensor`, and the scan is not what
+puts the reference there — the lowering maps the method *names*
+`clone`, `backward` and `detach` to these runtime helpers, so a class
+of your own with a method so named emits a Tensor arm for it, and
+`culebra build` on that program failed on macOS with an undefined
+`_MTLCreateSystemDefaultDevice`. (`array::clone()`'s device copy was
+the same hole one layer down, and is a runtime hook now rather than a
+choke: tl calls `clone` from inside `reshape` and `logsumexp`, where
+nothing on culebra's side of the boundary could have gated it.)
+`tools/checks/check_rt_archive_backend_free.sh` holds the line, by
+forcing every runtime helper live in a dead-strip link of the base
+archive on its own and reading what is left undefined.
+
+`Proc`'s
 fork/exec layer, the PNG/TTF decoders behind
 `Canvas.Sprite.from_png` / `Canvas.Font`, and `PEG` (cpp-peglib) link
 nothing external either but need no choke of their own: they compile
@@ -1175,7 +1198,7 @@ emits it as a base archive plus one small archive per heavy feature
 | Archive | Contents |
 |---|---|
 | `libculebra_rt.a` | base — everything, but with **weak stubs** for each feature's choke (so nothing it can call reaches BLAS, OpenSSL, zlib, sqlite3 or the regex engine); the subprocess layer, the image decoders (stb_image / stb_truetype), and the cpp-peglib parser generator (`PEG`) link nothing external, so they compile straight into this archive and rely on the namespace-group dead-stripping below rather than a choke of their own — `PEG` is the one of the three that still leaves a fixed ~53 KB of peglib RTTI/vtable metadata behind even unused (see [§1](#tensor-free-and-http-free-binaries)) |
-| `libculebra_rt_tensor.a` | strong tensor chokes: the backend one (pulls BLAS / Accelerate) and the elementwise kernels the generic arithmetic path would otherwise reach (see [§1](#tensor-free-and-http-free-binaries)) |
+| `libculebra_rt_tensor.a` | strong tensor chokes: the backend one (pulls BLAS / Accelerate), the elementwise kernels the generic arithmetic path would otherwise reach, and `backward`, whose VJP asks tl for an eager device kernel (see [§1](#tensor-free-and-http-free-binaries)) |
 | `libculebra_rt_http.a` | strong http choke (pulls OpenSSL + zlib) |
 | `libculebra_rt_http_notls.a` | the same choke with cpp-httplib's TLS off, force-loaded in its place under `--no-tls` (see [§1](#building-http-without-tls)). The one axis with two archives; a link takes exactly one, and the base carries neither |
 | `libculebra_rt_compress.a` | strong compress choke (pulls zlib; `to_png` rides it too) |

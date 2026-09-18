@@ -1657,7 +1657,11 @@ AOTランタイムアーカイブ（`libculebra_rt*.a`、`src/runtime/`）は
 ドライバと同じヘッダを、ビルドされたプログラムがリンクするライブラリ
 にコンパイルする。loweringが名指す`culebra_runtime_*`シンボル集合
 は両方に存在しなければならない（`tools/checks/check_jit_host_symbols.sh`、
-`tools/checks/check_rt_archive_tls.sh`）。
+`tools/checks/check_rt_archive_tls.sh`）。さらに、base archiveが
+解決するものはそれをリンクするプログラムが供給できるものでなければ
+ならない — そこから機能側の外部ライブラリを参照すると、その機能を
+名指していないプログラムのリンクが壊れる
+（`tools/checks/check_rt_archive_backend_free.sh`）。
 
 Playground（`playground/wasm_main.cc`、`em++`でビルド）はwasm上の
 executorである。2つのプラットフォーム上の事実がこれを形作る。

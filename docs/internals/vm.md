@@ -1679,7 +1679,11 @@ rather than merely linking it.
 The AOT runtime archives (`libculebra_rt*.a`, `src/runtime/`) compile the
 same headers as the driver into a library a built program links; the
 `culebra_runtime_*` symbol set the lowering names must exist in both
-(`tools/checks/check_jit_host_symbols.sh`, `tools/checks/check_rt_archive_tls.sh`).
+(`tools/checks/check_jit_host_symbols.sh`, `tools/checks/check_rt_archive_tls.sh`),
+and what the base archive resolves has to be what a program linking it
+can supply — a reference into a feature's external library from there
+breaks the link of programs that never named the feature
+(`tools/checks/check_rt_archive_backend_free.sh`).
 
 The Playground (`playground/wasm_main.cc`, built with `em++`) is the
 executor on wasm. Two platform facts shape it. A `Runtime` is created per

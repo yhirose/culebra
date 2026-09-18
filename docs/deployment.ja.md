@@ -176,6 +176,26 @@ MSYS2ツールチェーンを必要とします。[`CONTRIBUTING.md`](../CONTRIB
 算術を含む全バイナリが該当する。そこで`culebra::tensor_binop`と
 `culebra::tensor_inplace_binop`（遅延の`+`とin-placeの`+=`の経路）に
 同じ弱/強分岐を掛けている。効果は約115 KBで、helloの4分の1に当たる。
+
+`culebra::tensor_backward`も同じ分岐を取るが、こちらの理由はサイズでは
+ない。cpp-tensorlibは確保とグラフ評価をtensor archiveが仕込むhook経由に
+しているので、グラフを組むだけの翻訳単位はバックエンドを名指ししない。
+しかしeagerに走るカーネルは直接デバイスを掴みにいき、VJPの1つがそれを
+呼ぶ（`array::xent_bwd`、融合損失のpullback）。Tensor不使用の
+バイナリにそこを呼ぶ経路は無い——渡せる`Tensor`値が存在しない。だが
+リンカはそこを問わない。`-framework Metal`がリンク行に載るのはAST
+スキャンが`Tensor`を報告したときだけで、参照を置いているのはその
+スキャンではない——loweringはメソッド"名"`clone`・`backward`・`detach`を
+これらのruntime helperへ対応付けるので、自分で定義したクラスに同名の
+メソッドがあるだけでそこにTensorの腕が生成され、そのプログラムの
+`culebra build`がmacOSで`_MTLCreateSystemDefaultDevice`未定義で落ちて
+いた。（`array::clone()`のデバイスコピーは1つ下の層の同じ穴で、choke
+ではなくruntime hookにした。tlは`reshape`や`logsumexp`の内部から
+`clone`を呼ぶので、culebra側の境界では塞ぎようがない。）
+`tools/checks/check_rt_archive_backend_free.sh`がこの線を守る——base
+archive単体のdead-stripリンクで全runtime helperを強制的に生かし、
+未定義のまま残るものを読む。
+
 `Proc`のfork/exec層、`Canvas.Sprite.from_png` / `Canvas.Font`の背後の
 PNG/TTFデコーダ、そして`PEG`（cpp-peglib）も外部ライブラリを引かない
 が、それぞれ専用のchokeは不要——自身のnamespaceのdispatch tableを
@@ -1145,7 +1165,7 @@ CMakeは`-DCULEBRA_ENABLE_JIT=ON`で、base archive＋ 重い機能ごとに
 | Archive | 内容 |
 |---|---|
 | `libculebra_rt.a` | base — 全部入りだが各機能のchokeは**弱シンボルのスタブ**（ここから呼べるコードはBLAS・OpenSSL・zlib・sqlite3・正規表現エンジンに到達しない）。サブプロセス層、画像デコーダ（stb_image / stb_truetype）、cpp-peglibパーサジェネレータ（`PEG`）は外部ライブラリを引かないのでこのarchiveに直接コンパイルされ、chokeでなく下のnamespace-group単位のdead-strippingに委ねる——3つのうち`PEG`だけは未使用でも固定約53 KBのpeglib RTTI/vtableメタデータを残す（§1参照） |
-| `libculebra_rt_tensor.a` | 強いtensor choke 2種: バックエンド側（BLAS / Accelerateを引く）と、汎用の算術経路が到達してしまうelementwiseカーネル（[§1](#tensor-free--http-free-バイナリ)参照） |
+| `libculebra_rt_tensor.a` | 強いtensor choke 3種: バックエンド側（BLAS / Accelerateを引く）、汎用の算術経路が到達してしまうelementwiseカーネル、そしてVJPがtlのeagerなデバイスカーネルを呼ぶ`backward`（[§1](#tensor-free--http-free-バイナリ)参照） |
 | `libculebra_rt_http.a` | 強いhttp choke（OpenSSL + zlibを引く） |
 | `libculebra_rt_http_notls.a` | 同じchokeをcpp-httplibのTLS無しでビルドしたもの。`--no-tls`のときこちらが代わりにforce-loadされる（[§1](#tls抜きでhttpをビルドする)参照）。アーカイブが2本ある唯一の軸で、1回のリンクは必ず片方だけを取り、baseはどちらも持たない |
 | `libculebra_rt_compress.a` | 強いcompress choke（zlibを引く。`to_png`もこれに乗る） |

@@ -26,6 +26,23 @@
 // first tensor construction. A program that never touches Tensor links a
 // core archive with zero Metal/Accelerate/evaluator references, and
 // -dead_strip drops the helpers themselves.
+//
+// The hooks cover what tl routes through them — allocation, graph evaluation,
+// and clone's device copy, which is a hook for this reason and no other. What
+// they cannot cover is a kernel culebra asks for eagerly by name:
+// array::xent_bwd, which a VJP reaches for, so `tensor_backward` is choked
+// whole alongside the older tensor_eval_node / tensor_binop.
+//
+// Reaching a backend is not a runtime bug — a binary with no Tensor value
+// cannot call the path — but the link is not so forgiving: the framework is on
+// the link line only when the AST scan named Tensor, so an
+// unreachable-at-runtime reference still fails `culebra build` outright, and
+// only on macOS. Worse, the scan is not what decides: lowering maps the method
+// NAMES `clone` / `backward` / `detach` to these helpers, so a class of the
+// user's own with a method so named emitted the arm. The gate is
+// tools/checks/check_rt_archive_backend_free.sh, which forces every
+// `culebra_runtime_*` helper live in a dead-strip link of the core archive
+// alone: a new path into a backend fails there instead of on a user's desk.
 
 #include <base/shared.h>
 
@@ -404,6 +421,13 @@ using TensorPtr = std::shared_ptr<TensorImpl>;
 // is now about intent (and the historical choke name), not reachability —
 // that job moved to tensor_rt_bootstrap.
 CULEBRA_RT_TENSOR_EVAL_LINKAGE void tensor_eval_node(TensorImpl& t);
+
+// backward(). Choked as a whole subtree, not for a dependency of its own but
+// because a VJP reaches one: tl::array::xent_bwd, the fused loss's pullback,
+// is an eager device-only kernel and names the backend itself. Any VJP may
+// reach for such a kernel, so the reverse walk belongs in the tensor archive
+// entire rather than one VJP at a time. Body with the other chokes, bottom.
+CULEBRA_RT_TENSOR_EVAL_LINKAGE void tensor_backward(const TensorPtr& root);
 
 // No-grad scope: while the depth is > 0, ops do not propagate
 // requires_grad to their outputs, so no autograd graph is tracked. Used
@@ -1950,28 +1974,6 @@ inline void _tensor_vjp(const TensorPtr& n) {
   }
 }
 
-// backward(): seed dL/droot = 1 and propagate through the whole graph.
-inline void tensor_backward(const TensorPtr& root) {
-  // VJPs build gradient tensors with the same op builders as forward; culebra
-  // has no double-backward (grad is always a Const), so those intermediates
-  // never need their own tape. Suppress it for the whole reverse pass.
-  TensorNoGradGuard no_grad;
-  tl::profile::scope ps("backward");
-  // Every VJP and grad accumulation evaluates on the spot; keep those kernels
-  // in flight and drain the device once when the walk ends.
-  tl::defer_flush defer;
-  tensor_eval_node(*root);
-  std::vector<TensorPtr> topo;
-  std::unordered_set<TensorImpl*> visited;
-  _tensor_build_topo(root, topo, visited);
-  root->grad = tensor_ones(root->shape, root->dtype);
-  for (auto it = topo.rbegin(); it != topo.rend(); ++it) {
-    const TensorPtr& n = *it;
-    if (!n->requires_grad || !n->grad) continue;
-    _tensor_vjp(n);
-  }
-}
-
 // Read the gradient as a tensor — zeros (matching shape) if backward
 // has not populated it yet, so `.grad()` is always a usable tensor.
 inline TensorPtr tensor_grad(const TensorPtr& t) {
@@ -2046,6 +2048,34 @@ CULEBRA_RT_TENSOR_EVAL_LINKAGE void tensor_eval_node(TensorImpl& t) {
     tl::synchronize();
     return 0;
   });
+#endif
+}
+
+// backward(): seed dL/droot = 1 and propagate through the whole graph.
+CULEBRA_RT_TENSOR_EVAL_LINKAGE void tensor_backward(const TensorPtr& root) {
+#ifdef CULEBRA_RT_TENSOR_EVAL_WEAK
+  (void)root;
+  throw CulebraError("InternalError",
+                     "tensor runtime entered in a no-tensor binary", 0, 0);
+#else
+  // VJPs build gradient tensors with the same op builders as forward; culebra
+  // has no double-backward (grad is always a Const), so those intermediates
+  // never need their own tape. Suppress it for the whole reverse pass.
+  TensorNoGradGuard no_grad;
+  tl::profile::scope ps("backward");
+  // Every VJP and grad accumulation evaluates on the spot; keep those kernels
+  // in flight and drain the device once when the walk ends.
+  tl::defer_flush defer;
+  tensor_eval_node(*root);
+  std::vector<TensorPtr> topo;
+  std::unordered_set<TensorImpl*> visited;
+  _tensor_build_topo(root, topo, visited);
+  root->grad = tensor_ones(root->shape, root->dtype);
+  for (auto it = topo.rbegin(); it != topo.rend(); ++it) {
+    const TensorPtr& n = *it;
+    if (!n->requires_grad || !n->grad) continue;
+    _tensor_vjp(n);
+  }
 #endif
 }
 

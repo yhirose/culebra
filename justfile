@@ -1184,6 +1184,17 @@ _run-tests BACKEND:
         bash tools/checks/check_rt_archive_tls.sh "$(dirname "$BIN")"
     }
 
+    # The other half of that ownership: the core archive may not NAME a gated
+    # backend either (Metal, BLAS, OpenSSL, sqlite3, zlib). The link line only
+    # carries the framework when the AST scan says the feature is used, so such
+    # a reference breaks the AOT link of programs that never touch the feature
+    # (tools/checks/check_rt_archive_backend_free.sh). Reads the archive's
+    # undefined symbols only, so it is fast enough to keep out of the AOT lane
+    # -- which is what the macOS runner skips, and macOS is where it bites.
+    run_rt_archive_backend_free() {
+        bash tools/checks/check_rt_archive_backend_free.sh "$(dirname "$BIN")"
+    }
+
     # The driver is what the in-process JIT resolves `culebra_runtime_*` from
     # (dlsym over the process), so every helper codegen names has to survive
     # the driver's own dead-strip (tools/checks/check_jit_host_symbols.sh). Reads the
@@ -1275,6 +1286,7 @@ _run-tests BACKEND:
         phase "param names (stdlib functions bind their documented names)"; run_param_names
         phase "early ifcvt (a carried Float's if arm stays a branch)"; run_early_ifcvt
         phase "rt-archive TLS ownership (core vs force-loaded features)"; run_rt_archive_tls
+        phase "rt-archive backend-free (core names no gated backend)"; run_rt_archive_backend_free
         phase "webview dynload (engine stays behind dlopen)"; run_webview_dynload
         phase "vm/jit symmetry (real test files)"; run_diff_vm_jit
         phase "vm_cases (frozen expected outputs)"; run_vm_cases
@@ -1336,6 +1348,7 @@ _run-tests BACKEND:
       ci-buildtree)
         run_source_ratchets
         phase "rt-archive TLS ownership (core vs force-loaded features)"; run_rt_archive_tls
+        phase "rt-archive backend-free (core names no gated backend)"; run_rt_archive_backend_free
         phase "webview dynload (engine stays behind dlopen)"; run_webview_dynload
         phase "ctest (embedding smokes)"; run_embed
         phase "done"; echo "test OK (ci-buildtree)"

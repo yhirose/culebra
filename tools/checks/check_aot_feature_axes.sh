@@ -214,6 +214,17 @@ codegen_choke='jit_class_info<culebra::codegen::Module>::methods'
 # silent -- the binary still runs, it just carries ~115 KB it never enters.
 tensor_kernels='tl::detail::map_binary'
 
+# tl::array::clone()'s device arm. lowering.h maps the method names `clone` /
+# `backward` / `detach` to the tensor runtime helpers, so a user class with a
+# method so named used to drag this into a binary that never evaluates a
+# tensor, and the macOS link failed on _MTLCreateSystemDefaultDevice. It is
+# behind a runtime hook now (tensorlib install_runtime_hooks), so it links
+# where the tensor archive does and nowhere else. `[(]` anchors this to the
+# function: the hook POINTER is a data symbol every clone path reads, null or
+# not, so it survives anywhere clone() does -- the arm behind it is the thing
+# that must not.
+tensor_device_clone='tl::detail::device_clone_[(]'
+
 # OpenSSL, by two symbols that cannot both survive an accident: an entry point
 # the TLS client calls and the largest table it drags along (512 KB of SM2
 # curve, for an algorithm no HTTPS client on the public web negotiates — it is
@@ -252,6 +263,7 @@ expect_absent none 'culebra::_jit_shared_val_prop_impl[(]' "the SharedVal reader
 expect_absent none '_jit_isolate_teardown_join_all' "the isolate teardown join"
 expect_absent none "$fmt_machinery" "libstdc++'s formatter, a program that formats nothing"
 expect_absent none "$tensor_kernels" "cpp-tensorlib's elementwise kernels"
+expect_absent none "$tensor_device_clone" "clone()'s device arm"
 expect_absent none "$openssl_syms" "OpenSSL"
 expect_output none "none"
 # The namespace groups (stdlib_rt.h ns_groups()): a namespace's dispatch rows
@@ -404,6 +416,32 @@ expect_class tensor "$search_choke" "W?" "expected 'W' or absent" "Tensor only"
 expect_class tensor "$peg_choke" "" "expected absent" "Tensor only"
 expect_absent tensor "$fmt_machinery" "libstdc++'s formatter, Tensor"
 expect_output tensor "222.0"
+
+# The Tensor axis reached by method NAME rather than by namespace. lowering.h
+# maps `clone` / `backward` / `detach` (and a dozen more) to the tensor
+# runtime helpers, so a user class with a method so named emits a Tensor arm
+# for it -- in a program the AST scan reports as Tensor-free, which is what
+# decides whether `-framework Metal` is on the link line. That this probe
+# BUILDS is the check; the symbols are the same axis said the other way.
+build bmeth 'class Box {
+  new(v) {
+    self.v = v
+  }
+  clone() {
+    Box.new(self.v)
+  }
+  backward() {
+    self.v
+  }
+  detach() {
+    self.v
+  }
+}
+let b = Box.new(2)
+IO.print(b.clone().v + b.backward() + b.detach())'
+expect_absent bmeth "$tensor_kernels" "cpp-tensorlib's elementwise kernels"
+expect_absent bmeth "$tensor_device_clone" "clone()'s device arm"
+expect_output bmeth "6"
 
 # A Shared.new view: its reader arrives through the hook, and the view's
 # `copy` reaches the deserializer, which reaches everything else.
