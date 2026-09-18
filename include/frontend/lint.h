@@ -259,9 +259,9 @@ class ScopeWalker {
   // a duplicate `*`, and a bare trailing `*`); hoisting the full set here
   // closes those interp/JIT divergences. Stops at the first violation, as the
   // interp's throwing builder does.
-  // `fields`: this is a class's `new`, the one list a field parameter
+  // `ctor`: this is a class's `new`, the one list a field parameter
   // (`.x`, docs/language.md §10) may appear in.
-  void check_param_wellformed(const peg::Ast& params, bool fields = false) {
+  void check_param_wellformed(const peg::Ast& params, bool ctor = false) {
     bool seen_default = false, kw_only = false, seen_sep = false;
     bool seen_kwargs_rest = false, seen_args_rest = false;
     size_t kw_only_count = 0;
@@ -303,7 +303,7 @@ class ScopeWalker {
         seen_kwargs_rest = true;
         continue;
       }
-      if (pv.is_field && !fields) {
+      if (pv.is_field && !ctor) {
         return err(std::format("field parameter '.{}' is only allowed in a "
                                "class's `new`", pv.name),
                    pv.name_line, pv.name_col);
@@ -515,9 +515,11 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       // position (the layout calc in eval/compile is then only a safety net).
       auto class_name =
           culebra::parse_generic_head(node.nodes[i]->token).outer;
-      // What the body declares, for the `new` field parameters' checks —
-      // gathered up front, since a `new` may sit above the fields it names.
-      auto declared_fields = culebra::declared_instance_fields(node, i + 1);
+      // The instance fields in declaration order (the body's and the ones
+      // the `new` field parameters declare), gathered up front: a `new`
+      // may sit above the fields its parameters name.
+      auto inst_field_list = culebra::collect_instance_fields(node, i + 1);
+      auto declared_fields = culebra::declared_instance_fields(inst_field_list);
       // Method bodies and field initializers are function-boundary contexts.
       LoopBoundary g(loop_labels_);
       std::vector<std::pair<std::string, std::string>> pk_fields;
@@ -568,10 +570,6 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
             static_cast<long>(mv.name_col), Severity::Error});
       };
       std::set<std::string, std::less<>> inst_fields, static_fields, new_sigs;
-      // The @value contract's field set, collected by the same rule
-      // compile_class_decl uses (a typed field is an instance field even
-      // when written `static`), so the two scans agree on what is declared.
-      std::set<std::string, std::less<>> value_declared;
       std::map<std::string, std::set<std::string>, std::less<>> inst_methods,
           static_methods;
       auto dup_sig = [&](const culebra::MethodView& mv) {
@@ -609,8 +607,6 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       for (size_t j = i + 1; j < node.nodes.size(); j++) {
         auto mv = culebra::view_method(*node.nodes[j]);
         bool is_field_member = mv.is_field || mv.is_typed_field;
-        if (is_value && (mv.is_typed_field || (mv.is_field && !mv.is_static)))
-          value_declared.emplace(mv.name);
         // A getter is read as a property, so it has no call site to take
         // arguments at — shared message with the evaluator-side safety net
         // (require_getter_no_params).
@@ -660,9 +656,34 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
           val_ok = false;
         }
         if (mv.is_field || mv.is_typed_field) {
+          // The field's own checks ran over the field list above; only its
+          // initializer is left to walk.
+          if (mv.value) walk(*mv.value);
+          continue;
+        }
+        check_dup_params(*mv.params);
+        check_reserved_params(*mv.params);
+        check_param_wellformed(*mv.params,
+                               /*ctor=*/mv.name == "new" && !mv.is_static);
+        FnDepthGuard fg(fn_depth_);
+        scoped(**mv.body, [&](Scope& s) { collect_idents(*mv.params, s.muts); });
+      }
+      // The per-field clauses, over the instance fields in declaration order
+      // — the body's and the ones the `new` field parameters declare, the
+      // list the compiler lays the class out from. A typed field written
+      // `static` is an instance field (compile_class_decl's wart), so it is
+      // a value member here too.
+      for (const auto* f : inst_field_list) {
+        auto mv = culebra::view_method(*f);
+        // A field a `new` parameter declares joins the instance namespace
+        // under the same uniqueness rule as a body declaration; the body's
+        // own fields already passed through check_named in the loop above.
+        if (culebra::is_field_param(*f))
+          check_named(inst_fields, inst_methods, mv, /*is_field_member=*/true);
+        {
           // A value's field set is fixed at the declaration, and each field
           // holds a scalar or another value.
-          if (value_member && mv.is_typed_field &&
+          if (is_value && mv.is_typed_field &&
               !culebra::is_value_field_type(mv.type_annotation)) {
             diags_.push_back(Diagnostic{
                 "SyntaxError",
@@ -672,7 +693,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
                 static_cast<long>(mv.name_col), Severity::Error});
             val_ok = false;
           }
-          if (value_member && mv.is_field) {
+          if (is_value && mv.is_field) {
             diags_.push_back(Diagnostic{
                 "SyntaxError",
                 culebra::value_untyped_field_message(mv.name, class_name),
@@ -683,7 +704,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
           // An untyped instance field carries no type for the byte layout —
           // shared message with the evaluator-side safety net
           // (require_typed_packable_field).
-          if (is_packable && mv.is_field && !mv.is_static) {
+          if (is_packable && mv.is_field) {
             diags_.push_back(Diagnostic{
                 "SyntaxError",
                 culebra::packable_untyped_field_message(mv.name, class_name),
@@ -711,20 +732,14 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
                                      std::string(mv.type_annotation));
             }
           }
-          if (mv.value) walk(*mv.value);
-          continue;
         }
-        check_dup_params(*mv.params);
-        check_reserved_params(*mv.params);
-        check_param_wellformed(*mv.params,
-                               /*fields=*/mv.name == "new" && !mv.is_static);
-        FnDepthGuard fg(fn_depth_);
-        scoped(**mv.body, [&](Scope& s) { collect_idents(*mv.params, s.muts); });
       }
       // The clause that needs the whole field set: a member writing
       // `self.<undeclared>` would give one instance a field its siblings
       // lack. Same scan the compiler runs, after its own member loop.
       if (is_value) {
+        std::set<std::string, std::less<>> value_declared;
+        for (const auto& [name, _] : declared_fields) value_declared.insert(name);
         auto writes = culebra::find_value_self_writes_in_members(
             node, i + 1, value_declared);
         for (const auto& w : writes) {

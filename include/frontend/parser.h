@@ -818,8 +818,28 @@ struct MethodView {
                                   // alive through this instead of the raw ptr
 };
 
+// `new(.x)`: a field parameter, [FIELD_MARK, IDENTIFIER, FIELD_OPTIONAL,
+// (TYPE_ANNOTATION)?, (DEFAULT_VALUE)?].
+inline bool is_field_param(const peg::Ast& node) {
+  using namespace peg::udl;
+  return node.nodes.size() >= 3 && node.nodes[0]->tag == "FIELD_MARK"_;
+}
+
 inline MethodView view_method(const peg::Ast& m) {
   using namespace peg::udl;
+  // A field parameter of `new` that declares its field (`.x: T` with no
+  // body declaration of `x`, docs/language.md §10) reads as that
+  // declaration: a typed field, or an untyped one with no initializer.
+  if (is_field_param(m)) {
+    const auto& id = *m.nodes[1];
+    std::string_view type = extract_type_annotation(m, 3);
+    return MethodView{
+        /*is_static=*/false, /*is_getter=*/false, id.token, id.line, id.column,
+        /*is_field=*/type.empty(), /*is_typed_field=*/!type.empty(), type,
+        /*params=*/nullptr, /*body=*/nullptr, /*value=*/nullptr,
+        /*value_sp=*/nullptr,
+    };
+  }
   const auto& ident = *m.nodes[1];
   // MEMBER_MOD (nodes[0]) carries at most one of `static` / `get`.
   bool is_static = m.nodes[0]->token == "static";
@@ -1596,13 +1616,6 @@ inline bool is_args_rest(const peg::Ast& node) {
   return node.tag == "ARGS_REST"_;
 }
 
-// `new(.x)`: a field parameter, [FIELD_MARK, IDENTIFIER, FIELD_OPTIONAL,
-// (TYPE_ANNOTATION)?, (DEFAULT_VALUE)?].
-inline bool is_field_param(const peg::Ast& node) {
-  using namespace peg::udl;
-  return node.nodes.size() >= 3 && node.nodes[0]->tag == "FIELD_MARK"_;
-}
-
 // A destructuring pattern used as a binding target: `fn ({a, b})` params
 // and `for (k, v) in …` loop bindings both route through here. FOR_BINDING
 // (the multi-target `for k, v` node) has the same shape as a tuple pattern
@@ -1871,20 +1884,61 @@ inline ParameterView view_parameter(const peg::Ast& p) {
 struct DeclaredField {
   bool has_initializer;
   std::string_view type;  // "" for `x = v`
+  bool by_param;          // declared by a `new` field parameter, not the body
 };
 using DeclaredFields = std::map<std::string, DeclaredField, std::less<>>;
 
-// The instance fields a class body declares, by name — the member
-// classification compile_class_decl makes (a typed field is an instance
-// field even when written `static`).
-inline DeclaredFields declared_instance_fields(const peg::Ast& cls,
-                                               size_t members_from) {
-  DeclaredFields out;
+// A class's instance fields in declaration order, each a node view_method
+// reads: the body's own (a typed field is an instance field even when
+// written `static`, compile_class_decl's classification), and the fields
+// the `new` overloads' field parameters declare — a `.x` naming no body
+// field, spliced in at the first `new`'s place, the first spelling of each
+// name winning (check_field_params holds the others to it). Lint, the
+// compiler and the baked-stdlib scan all lay fields out from this one list.
+inline std::vector<const peg::Ast*> collect_instance_fields(
+    const peg::Ast& cls, size_t members_from) {
+  std::vector<const peg::Ast*> out;
+  std::set<std::string_view> body_names;
   for (size_t i = members_from; i < cls.nodes.size(); i++) {
     auto mv = view_method(*cls.nodes[i]);
     if (mv.is_typed_field || (mv.is_field && !mv.is_static))
-      out.insert_or_assign(std::string(mv.name),
-                           DeclaredField{mv.value != nullptr, mv.type_annotation});
+      body_names.insert(mv.name);
+  }
+  bool spliced = false;
+  for (size_t i = members_from; i < cls.nodes.size(); i++) {
+    const auto& m = *cls.nodes[i];
+    auto mv = view_method(m);
+    if (mv.is_typed_field || (mv.is_field && !mv.is_static)) {
+      out.push_back(&m);
+      continue;
+    }
+    if (spliced || mv.is_static || mv.name != "new" || !mv.params) continue;
+    spliced = true;
+    std::set<std::string_view> seen;
+    for (size_t j = i; j < cls.nodes.size(); j++) {
+      auto nv = view_method(*cls.nodes[j]);
+      if (nv.is_static || nv.name != "new" || !nv.params) continue;
+      for (const auto& p : nv.params->nodes) {
+        auto pv = view_parameter(*p);
+        if (!pv.is_field || pv.is_optional || body_names.contains(pv.name) ||
+            !seen.insert(pv.name).second)
+          continue;
+        out.push_back(p.get());
+      }
+    }
+  }
+  return out;
+}
+
+// The same fields by name, from the list collect_instance_fields gave.
+inline DeclaredFields declared_instance_fields(
+    const std::vector<const peg::Ast*>& fields) {
+  DeclaredFields out;
+  for (const auto* f : fields) {
+    auto mv = view_method(*f);
+    out.insert_or_assign(std::string(mv.name),
+                         DeclaredField{mv.value != nullptr, mv.type_annotation,
+                                       is_field_param(*f)});
   }
   return out;
 }
@@ -1901,13 +1955,16 @@ inline std::string field_param_type_message(std::string_view name,
                                             std::string_view param_type,
                                             std::string_view class_name,
                                             std::string_view field_type) {
+  auto param = param_type.empty()
+                   ? std::format("'.{}' (untyped)", name)
+                   : std::format("'.{}: {}'", name, param_type);
   if (field_type.empty())
-    return std::format("field parameter '.{}: {}' disagrees with the untyped "
+    return std::format("field parameter {} disagrees with the untyped "
                        "declaration of `{}` in class `{}`",
-                       name, param_type, name, class_name);
-  return std::format("field parameter '.{}: {}' disagrees with the declaration "
+                       param, name, class_name);
+  return std::format("field parameter {} disagrees with the declaration "
                      "`{}: {}` in class `{}`",
-                     name, param_type, name, field_type, class_name);
+                     param, name, field_type, class_name);
 }
 inline std::string field_param_undeclared_message(std::string_view name,
                                                   bool optional,
@@ -1939,8 +1996,13 @@ inline void check_field_params(const peg::Ast& params,
     if (!pv.is_optional && it->second.has_initializer)
       report(field_param_initializer_message(pv.name, class_name),
              pv.name_line, pv.name_col);
-    if (!pv.type_annotation.empty() &&
-        pv.type_annotation != it->second.type)
+    // (`.x?` carries no type of its own: the parameter check refuses one.)
+    // Against a body declaration an untyped `.x` takes the declared type;
+    // a field the parameters declare has no one place to take it from, so
+    // every overload spells it the same way, untyped included.
+    bool mismatch = pv.type_annotation != it->second.type &&
+                    (it->second.by_param || !pv.type_annotation.empty());
+    if (!pv.is_optional && mismatch)
       report(field_param_type_message(pv.name, pv.type_annotation, class_name,
                                       it->second.type),
              pv.name_line, pv.name_col);

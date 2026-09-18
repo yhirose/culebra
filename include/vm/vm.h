@@ -5797,20 +5797,48 @@ class Compiler {
   };
   using ProvidedFields = std::map<std::string, ProvidedField, std::less<>>;
 
+  // A supplied field's argument, +1 (a Retain of the sentinel is a no-op).
+  int32_t emit_provided_read(const peg::Ast& at, const ProvidedField& pf) {
+    if (!pf.is_cell) return owned_src(at, {pf.slot, /*owned=*/false});
+    int32_t v = alloc_temp(at);
+    emit(Op::CellGet, v, pf.slot);
+    return v;
+  }
+
   void emit_declared_field_stores(const std::vector<const peg::Ast*>& fields,
-                                  const ProvidedFields* provided = nullptr) {
+                                  const ProvidedFields& provided) {
     std::vector<const peg::Ast*> run;
+    // The supplied fields of the run: laid out with it (their typed zero
+    // and type come from the one FieldsInit, so an untyped one never
+    // appends a slot of its own), then overwritten right after.
+    std::vector<std::pair<const peg::Ast*, const ProvidedField*>> pending;
     auto flush = [&] {
       if (run.empty()) return;
       emit_declared_field_layout(run);
       run.clear();
+      for (auto [f, pf] : pending) {
+        TempScope fts(*this);
+        int32_t v = emit_provided_read(*f, *pf);
+        size_t filled = 0, skip = 0;
+        if (pf->optional) {
+          filled = emit(Op::JumpIfFilled, v);
+          skip = emit(Op::Jump);  // left out: the zero already laid out
+          patch_to_here(filled);
+        }
+        emit(Op::ObjectSet, chunk_.self_slot, v,
+             kconst_str(std::string(culebra::view_method(*f).name)),
+             /*mut=*/1);
+        if (pf->optional) patch_to_here(skip);
+      }
+      pending.clear();
     };
     for (const auto* f : fields) {
       auto mv = culebra::view_method(*f);
-      auto pf = provided ? provided->find(mv.name) : ProvidedFields::const_iterator{};
-      bool supplied = provided && pf != provided->end();
-      if (!mv.value && !supplied) {
+      auto pf = provided.find(mv.name);
+      bool supplied = pf != provided.end();
+      if (!mv.value) {
         run.push_back(f);
+        if (supplied) pending.emplace_back(f, &pf->second);
         continue;
       }
       flush();
@@ -5819,14 +5847,9 @@ class Compiler {
         emit_declared_field_store(*f, mv);
         continue;
       }
-      // The argument, +1 (a Retain of the sentinel is a no-op).
-      int32_t v = alloc_temp(*f);
-      if (pf->second.is_cell) {
-        emit(Op::CellGet, v, pf->second.slot);
-      } else {
-        emit(Op::Move, v, pf->second.slot);
-        emit(Op::Retain, v);
-      }
+      // An initializer field is only ever supplied through `.x?` (or a
+      // thunk parameter): left out, the initializer runs as declared.
+      int32_t v = emit_provided_read(*f, pf->second);
       size_t filled = 0, done = 0;
       if (pf->second.optional) {
         filled = emit(Op::JumpIfFilled, v);
@@ -7165,15 +7188,8 @@ class Compiler {
         auto head = culebra::parse_generic_head(ast.nodes[dec_end]->token);
         auto class_name = std::string(head.outer);
         culebra::register_value_class(class_name);
-        // The same member classification compile_class_decl makes: a typed
-        // field is an instance field even when written `static` (its wart),
-        // an untyped one only when not static.
-        std::vector<const peg::Ast*> fields;
-        for (size_t i = dec_end + 1; i < ast.nodes.size(); i++) {
-          auto mv = culebra::view_method(*ast.nodes[i]);
-          if (mv.is_typed_field || (mv.is_field && !mv.is_static))
-            fields.push_back(ast.nodes[i].get());
-        }
+        // The same field list compile_class_decl lays the class out from.
+        auto fields = culebra::collect_instance_fields(ast, dec_end + 1);
         // The field types too: a splice into the baked class's constructor
         // (flat_field_type) reads them, as the compiled lane's would.
         register_declared_field_types(class_name, fields);
@@ -7222,36 +7238,37 @@ class Compiler {
     std::vector<std::string> static_names;
     std::vector<const peg::Ast*> static_asts;
     std::vector<const peg::Ast*> static_fields;
-    std::vector<const peg::Ast*> fields;
+    // The instance fields in declaration order: the body's, and the ones the
+    // `new` overloads' field parameters declare (collect_instance_fields —
+    // including the classification's wart that a *typed* field is an
+    // instance field even when written `static`, so `static T: Long = 5`
+    // lands on every instance and the class object never carries it). The
+    // shared per-field checks run over that one list: a @packable field
+    // carries the type its bytes are laid out from, a @value field holds a
+    // value (lint reports both first; this is the same safety net the other
+    // backends keep).
+    auto fields = culebra::collect_instance_fields(ast, dec_end + 1);
     // Declared (name, type) pairs in field order — the @packable layout spec.
     std::vector<std::pair<std::string, std::string>> packable_fields;
-    for (size_t i = dec_end + 1; i < ast.nodes.size(); i++) {
-      const auto& m = *ast.nodes[i];
-      auto mv = culebra::view_method(m);
-      // The shared member checks both other backends run while collecting:
-      // a getter takes no parameters (and is a method, not a field form), and
-      // a @packable field carries the type its bytes are laid out from (lint
-      // reports both first; these are the same safety net the others keep).
-      if (mv.is_getter) culebra::require_getter_no_params(mv, class_name);
-      if (is_packable && mv.is_field && !mv.is_static)
+    for (const auto* f : fields) {
+      auto mv = culebra::view_method(*f);
+      if (is_packable && mv.is_field)
         culebra::require_typed_packable_field(mv, class_name);
       if (is_value) culebra::require_value_member(mv, class_name);
       if (is_packable && mv.is_typed_field)
         packable_fields.emplace_back(mv.name, mv.type_annotation);
-      // Member classification, mirroring collect_class_members on both
-      // backends — including its wart: a *typed* field is an instance field
-      // even when written `static`, so `static T: Long = 5` lands on every
-      // instance and the class object never carries it (probed, and the two
-      // agree, so the slice inherits it rather than inventing a third
-      // reading).
-      if (mv.is_typed_field) {
-        fields.push_back(&m);
-        continue;
-      }
+    }
+    for (size_t i = dec_end + 1; i < ast.nodes.size(); i++) {
+      const auto& m = *ast.nodes[i];
+      auto mv = culebra::view_method(m);
+      // A getter takes no parameters (and is a method, not a field form).
+      if (mv.is_getter) culebra::require_getter_no_params(mv, class_name);
+      if (mv.is_typed_field || (mv.is_field && !mv.is_static)) continue;
       if (mv.is_field) {
-        (mv.is_static ? static_fields : fields).push_back(&m);
+        static_fields.push_back(&m);
         continue;
       }
+      if (is_value) culebra::require_value_member(mv, class_name);
       if (mv.is_static) {
         static_names.emplace_back(mv.name);
         static_asts.push_back(&m);
@@ -7434,7 +7451,7 @@ class Compiler {
     // reports the same violations pre-eval; this is the compile-time
     // safety net, thrown at the first. The union of their fields, in
     // declaration order, is the thunk's parameter list.
-    auto declared_fields = culebra::declared_instance_fields(ast, dec_end + 1);
+    auto declared_fields = culebra::declared_instance_fields(fields);
     for (const auto* m : new_asts)
       culebra::check_field_params(
           *culebra::view_method(*m).params, declared_fields, class_name,
@@ -8053,6 +8070,18 @@ class Compiler {
     const peg::Ast* rest_at = nullptr;
     std::string args_rest_name;
     const peg::Ast* args_rest_at = nullptr;
+    // An ABI slot the caller cannot name: the `**rest` Object, a
+    // destructuring pattern's argument, a field-init thunk's value.
+    auto push_synthetic_param = [&](const peg::Ast& at, std::string name,
+                                    uint8_t has_default) {
+      int32_t slot = fc.alloc_slot(at, name);
+      fc.chunk_.param_names.push_back(std::move(name));
+      fc.chunk_.param_types.emplace_back();
+      fc.chunk_.param_declared_types.emplace_back();
+      fc.chunk_.param_has_default.push_back(has_default);
+      fc.chunk_.param_mut.push_back(0);
+      return slot;
+    };
     if (params) {
       for (const auto& p : params->nodes) {
         auto pv = culebra::view_parameter(*p);
@@ -8076,25 +8105,16 @@ class Compiler {
         if (pv.is_kwargs_rest) {
           rest_name = std::string(pv.name);
           rest_at = p.get();
-          rest_slot = fc.alloc_slot(*p, rest_name);
           fc.chunk_.kwargs_rest_idx =
               static_cast<int32_t>(fc.chunk_.param_names.size());
-          fc.chunk_.param_names.push_back(rest_name);
-          fc.chunk_.param_types.emplace_back();
-          fc.chunk_.param_declared_types.emplace_back();
-          fc.chunk_.param_has_default.push_back(1);  // the empty Object
-          fc.chunk_.param_mut.push_back(0);
+          rest_slot = push_synthetic_param(*p, rest_name,
+                                           /*has_default=*/1);  // the empty Object
           continue;
         }
         if (pv.pattern) {
           auto synth = std::string(
               culebra::destructure_param_name(fc.chunk_.param_names.size()));
-          int32_t slot = fc.alloc_slot(*p, synth);
-          fc.chunk_.param_names.push_back(synth);
-          fc.chunk_.param_types.emplace_back();
-          fc.chunk_.param_declared_types.emplace_back();
-          fc.chunk_.param_has_default.push_back(0);
-          fc.chunk_.param_mut.push_back(0);
+          int32_t slot = push_synthetic_param(*p, synth, /*has_default=*/0);
           pat_params.push_back({pv.pattern, slot});
           continue;
         }
@@ -8130,13 +8150,8 @@ class Compiler {
     ProvidedFields thunk_provided;
     if (mo.thunk_params) {
       for (const auto& n : *mo.thunk_params) {
-        auto synth = culebra::format("(field.arg.{})", n);
-        int32_t slot = fc.alloc_slot(ast, synth);
-        fc.chunk_.param_names.push_back(synth);
-        fc.chunk_.param_types.emplace_back();
-        fc.chunk_.param_declared_types.emplace_back();
-        fc.chunk_.param_has_default.push_back(1);
-        fc.chunk_.param_mut.push_back(0);
+        int32_t slot = push_synthetic_param(
+            ast, culebra::format("(field.arg.{})", n), /*has_default=*/1);
         thunk_provided[n] = {slot, /*is_cell=*/false, /*optional=*/true};
       }
       fc.chunk_.arity = static_cast<int32_t>(mo.thunk_params->size());
@@ -8534,20 +8549,15 @@ class Compiler {
         // value per thunk parameter — the argument where this `new` has
         // one, the unfilled sentinel where it does not.
         int32_t base = fc.next_slot_;
-        int32_t s = fc.alloc_temp(ast);
-        fc.emit(Op::Move, s, fc.chunk_.self_slot);
-        fc.emit(Op::Retain, s);
+        fc.owned_src(ast, {fc.chunk_.self_slot, /*owned=*/false});
         for (const auto& n : *mo.finit_params) {
-          int32_t a = fc.alloc_temp(ast);
           auto it = provided.find(n);
-          if (it == provided.end()) {
-            fc.emit(Op::LoadConst, a, fc.kconst({TAG_UNFILLED, 0}));
-          } else if (it->second.is_cell) {
-            fc.emit(Op::CellGet, a, it->second.slot);
-          } else {
-            fc.emit(Op::Move, a, it->second.slot);
-            fc.emit(Op::Retain, a);
+          if (it != provided.end()) {
+            fc.emit_provided_read(ast, it->second);
+            continue;
           }
+          fc.emit(Op::LoadConst, fc.alloc_temp(ast),
+                  fc.kconst({TAG_UNFILLED, 0}));
         }
         int32_t r = fc.alloc_temp(ast);
         fc.emit(Op::CallM, r, t, base,
@@ -8561,7 +8571,7 @@ class Compiler {
       // culebra frame to do it was the reason declared fields cost MORE than
       // assigning in the constructor — the opposite of what a value type
       // wants (docs/language.md §21).
-      fc.emit_declared_field_stores(*mo.prologue_fields, &provided);
+      fc.emit_declared_field_stores(*mo.prologue_fields, provided);
     }
     // `.x?` left out by the caller: the parameter reads as the field the
     // declaration just initialized, so the body never sees the sentinel.
@@ -8570,14 +8580,15 @@ class Compiler {
       TempScope fts(fc);
       size_t filled = fc.emit(Op::JumpIfFilled, fc.lazy_probe(*pl->at, *b));
       int32_t v = fc.alloc_temp(*pl->at);
-      fc.emit(Op::PropVal, v, fc.chunk_.self_slot, fc.kconst_str(pl->name), 0);
+      fc.emit(Op::PropVal, v, fc.chunk_.self_slot, fc.kconst_str(pl->name),
+              fc.self_field_read_tag(pl->name));
       fc.store_binding(*pl->at, *b, {v, true});
       fc.patch_to_here(filled);
     }
     int32_t rv = fc.alloc_temp(ast);
     if (mo.thunk_fields) {
       // The synthetic field-init thunk's whole body.
-      fc.emit_declared_field_stores(*mo.thunk_fields, &thunk_provided);
+      fc.emit_declared_field_stores(*mo.thunk_fields, thunk_provided);
     } else {
       // The body compiles INTO the frame scope rather than a nested one (the
       // JIT's "the body BLOCK is this frame's scope"): its locals belong to
@@ -8679,11 +8690,7 @@ class Compiler {
     auto r = compile_expr(*av.rhs);
     if (!av.type_annotation.empty()) {
       StampGuard pos(*this, ast);
-      std::vector<size_t> skip;
-      emit_type_check_gate(av.type_annotation, r.slot, skip);
-      emit(Op::ChkTypeAt, r.slot, kconst_str(av.type_annotation),
-           kconst_str("assignment"), -1);  // d<0: report at this instruction
-      for (size_t ix : skip) patch_to_here(ix);
+      emit_type_check(av.type_annotation, r.slot, "assignment");
     }
     return r;
   }
@@ -9647,10 +9654,14 @@ class Compiler {
   // destructuring pattern, `*args`, `**rest`, or a keyword-only run. Each is
   // refused rather than handled because each is machinery whose whole point
   // is the call boundary being removed here.
+  // A required field parameter (`new(.x)`) is a plain parameter plus a
+  // store into the run, so it splices; `.x?` is an optional one, refused
+  // with the defaults.
   struct InlineParam {
     const peg::Ast* at;
     std::string name;
     std::string type;
+    bool field = false;
   };
   static std::optional<std::vector<InlineParam>> inline_params(
       const peg::Ast* params) {
@@ -9659,10 +9670,10 @@ class Compiler {
     for (const auto& pn : params->nodes) {
       auto pv = culebra::view_parameter(*pn);
       if (pv.is_kw_only_sep || pv.is_args_rest || pv.is_kwargs_rest ||
-          pv.pattern || pv.default_value || pv.is_field)
+          pv.pattern || pv.default_value || pv.is_optional)
         return std::nullopt;
       out.push_back({pn.get(), std::string(pv.name),
-                     std::string(pv.type_annotation)});
+                     std::string(pv.type_annotation), pv.is_field});
     }
     return out;
   }
@@ -9672,10 +9683,7 @@ class Compiler {
   // the call down the boxed path instead.
   static bool positional_args_match(const std::vector<InlineParam>& ps,
                                     const peg::Ast& args) {
-    if (ps.size() != args.nodes.size()) return false;
-    for (const auto& a : args.nodes)
-      if (is_kwarg(*a) || is_kwarg_splat(*a)) return false;
-    return true;
+    return ps.size() == args.nodes.size() && !has_kwargs(args);
   }
 
   // Whether a member's body may be compiled into this chunk. The hygiene
@@ -10848,12 +10856,8 @@ class Compiler {
   // assignment's own position.
   void emit_inline_field_check(std::string_view class_name,
                                std::string_view field, int32_t slot) {
-    auto type = culebra::field_type_name(flat_field_type(class_name, field));
-    std::vector<size_t> skip;
-    emit_type_check_gate(type, slot, skip);
-    emit(Op::ChkTypeAt, slot, kconst_str(type),
-         kconst_str(culebra::format("field '{}'", field)), -1);
-    for (size_t ix : skip) patch_to_here(ix);
+    emit_type_check(culebra::field_type_name(flat_field_type(class_name, field)),
+                    slot, culebra::format("field '{}'", field));
   }
 
   // N contiguous slots named after a run's fields. `prefix` is only the
@@ -10915,6 +10919,25 @@ class Compiler {
     push_scope(member, /*owned_mark=*/false);
     inlines_.push_back({cls, &cls_ast, self_base, layout});
     bind_inline_params(ps, args, arg_asts);
+    // A constructor's field parameters store into the run before the body,
+    // as the boxed `new` stores them before its own statements — through
+    // the same field type check, at the parameter's position.
+    if (is_ctor) {
+      for (size_t i = 0; i < ps.size(); i++) {
+        if (!ps[i].field) continue;
+        const Binding* b = lookup(ps[i].name);
+        auto ix = std::find(layout->begin(), layout->end(), ps[i].name);
+        assert(b && ix != layout->end() && "a field parameter names a field");
+        StampGuard pos(*this, *ps[i].at);
+        // An annotated parameter was just checked against the same scalar
+        // type (check_field_params holds the two identical), so only an
+        // unannotated `.x` on a typed field has the field's check to make.
+        if (ps[i].type.empty())
+          emit_inline_field_check(cls, ps[i].name, b->slot);
+        store_into(self_base + static_cast<int32_t>(ix - layout->begin()),
+                   ExprResult{b->slot, /*owned=*/false});
+      }
+    }
     // A member the caller proved returns its own class (member_own_tail,
     // asked before out_base was allocated as a run) has its tail compiled
     // through the SAME splice machinery as any other chain, not the
@@ -11631,7 +11654,14 @@ class Compiler {
   // every other read. The write check (docs/language.md §10) is what makes
   // this an answer rather than a guess.
   int32_t declared_read_tag(const peg::Ast& head, std::string_view field) {
-    const culebra::ClassFieldTypes* fields = name_fields(head);
+    return field_read_tag(name_fields(head), field);
+  }
+  // The same for the enclosing class's own `self.<field>`.
+  int32_t self_field_read_tag(std::string_view field) {
+    return field_read_tag(self_fields_, field);
+  }
+  static int32_t field_read_tag(const culebra::ClassFieldTypes* fields,
+                                std::string_view field) {
     if (!fields) return 0;
     auto it = fields->find(field);
     if (it == fields->end()) return 0;
@@ -13125,16 +13155,21 @@ class Compiler {
     }
   }
 
-  // A declared parameter type checked at its argument (stamped by the
-  // caller): the tag gate, then the check the gate skips when the tag
-  // already matches, reported as "parameter 'x'".
-  void emit_param_type_check(std::string_view type, int32_t slot,
-                             std::string_view pname) {
+  // A value checked against an annotation where it stands (stamped by the
+  // caller; d<0 reports at this instruction): the tag gate, then the check
+  // the gate skips when the tag already matches, worded by `context`.
+  void emit_type_check(std::string_view type, int32_t slot,
+                       const std::string& context) {
     std::vector<size_t> skip;
     emit_type_check_gate(type, slot, skip);
-    emit(Op::ChkTypeAt, slot, kconst_str(type),
-         kconst_str(culebra::format("parameter '{}'", pname)), -1);
+    emit(Op::ChkTypeAt, slot, kconst_str(type), kconst_str(context), -1);
     for (size_t ix : skip) patch_to_here(ix);
+  }
+
+  // A declared parameter type checked at its argument, as "parameter 'x'".
+  void emit_param_type_check(std::string_view type, int32_t slot,
+                             std::string_view pname) {
+    emit_type_check(type, slot, culebra::format("parameter '{}'", pname));
   }
 
   // A pattern's type annotation: fall through when the subject satisfies it,

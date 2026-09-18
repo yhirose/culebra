@@ -245,12 +245,35 @@ expect_param_reject "trait sig dangling sep" "named arguments must follow '*' se
 expect_param_reject "field param in fn"      "field parameter '.x' is only allowed in a class's \`new\`" 'fn f(.x) { x }'
 expect_param_reject "field param in lambda"  "field parameter '.x' is only allowed in a class's \`new\`" 'let g = |.x| x'
 expect_param_reject "field param in method"  "field parameter '.x' is only allowed in a class's \`new\`" 'class C { m(.x) { x } }'
+expect_param_reject "field param in static"  "field parameter '.x' is only allowed in a class's \`new\`" 'class C { static m(.x) { x } }'
+expect_param_reject "field param shadows a method" "duplicate member 'x'" 'class C { new(.x) { }
+x() { 1 } }'
 expect_param_reject "optional field typed"   "field parameter '.x?' takes its type and default from the field's declaration" 'class C { x = 1
 new(.x?: Long) { } }'
 expect_param_reject "optional field default" "field parameter '.x?' takes its type and default from the field's declaration" 'class C { x = 1
 new(.x? = 2) { } }'
 expect_param_reject "required field after optional" "non-default parameter 'y' follows a default parameter" 'class C { x = 1
 new(.x?, .y) { } }'
+# Against the class's declared fields: `.x` never lets an initializer run, a
+# type must repeat the declaration's, `.x?` needs a declaration to default
+# from, and a parameter that declares the field falls under the @value /
+# @packable field rules like a body declaration.
+expect_param_reject "field param over initializer" "cannot have an initializer" 'class C { x = 1
+new(.x) { } }'
+expect_param_reject "field param type disagrees" "disagrees with the declaration \`x: Long\`" 'class C { x: Long
+new(.x: Float) { } }'
+expect_param_reject "optional field undeclared" "declares no field \`y\`" 'class C { x = 1
+new(.y?) { } }'
+expect_param_reject "overloads disagree on a declared field" "disagrees with the declaration \`k: Long\`" 'class C { new(.k: Long) { }
+new(.k: Float, s) { } }'
+expect_param_reject "untyped overload of a typed declaration" "field parameter '.k' (untyped) disagrees with the declaration \`k: Long\`" 'class C { new(.k: Long) { }
+new(.k, s) { } }'
+expect_param_reject "typed overload of an untyped declaration" "disagrees with the untyped declaration of \`k\`" 'class C { new(.k) { }
+new(.k: Long, s) { } }'
+expect_param_reject "value field param untyped" "needs a type annotation" '@value
+class C { new(.k) { } }'
+expect_param_reject "packable field param untyped" "needs a type annotation" '@packable
+class C { new(.k) { } }'
 # Dead code still rejected (the win over the interp's eval-time check, which
 # would never run a never-evaluated branch).
 expect_param_reject "dead-code malformed" "'**' catch-all must be the last parameter" 'if false { fn f(**kw, b) { } }'

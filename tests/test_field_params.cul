@@ -182,4 +182,99 @@ test_flat_value_class = fn () {
 }
 test_flat_value_class()
 
+# --- a parameter declares its field ----------------------------------------
+
+# `.w: Long` and `.name` name no body field, so they declare one: at the
+# `new`'s own place in the declaration order, typed or not.
+class Rect {
+  above = 'a'
+
+  new(.w: Long, .h: Long, .name) {
+    self.after = 1
+  }
+
+  below = 'b'
+}
+
+test_parameter_declares_the_field = fn () {
+  let r = Rect(2, 3, 'box')
+  assert_eq(r.keys(), ['above', 'w', 'h', 'name', 'below', 'after'])
+  assert_eq((r.w, r.h, r.name), (2, 3, 'box'))
+  assert_eq(Rect(1, 1, nil).name, nil)  # untyped: no zero, no check
+  let e = try {
+    Rect(1, 1, 'x').w = 'no'
+    nil
+  } catch er {
+    er.message
+  }
+  assert_eq(e, "type error: field 'w' expects Long")  # typed: checked on write
+}
+test_parameter_declares_the_field()
+
+class Twice {
+  new(.n: Long) {}
+
+  double() {
+    self.n * 2  # a typed read of the field the parameter declared
+  }
+}
+
+class Agree {
+  new(.k: Long) {}
+
+  new(.k: Long, s: String) {
+    self.s = s
+  }
+}
+
+# A defaulted parameter declares its field too.
+class Dflt {
+  new(.n = 7, .t: Long = 3) {}
+}
+
+test_declared_by_parameter_reads = fn () {
+  assert_eq(Twice(21).double(), 42)
+  assert_eq((Agree(1).k, Agree(2, 'x').keys()), (1, ['k', 's']))
+  assert_eq((Dflt().n, Dflt().t, Dflt(1).n, Dflt(1, 2).t), (7, 3, 1, 2))
+  assert_eq(Dflt().keys(), ['n', 't'])
+}
+test_declared_by_parameter_reads()
+
+# --- the unboxed @value path -------------------------------------------------
+
+# A flat @value class whose fields the parameters declare: `V.new(...)` in a
+# function splices into the caller, and the stores go through the same field
+# type check the boxed form makes.
+@value
+class Vec2 {
+  new(.x: Float, .y: Float) {}
+}
+
+fn len2(v: Vec2) {
+  v.x * v.x + v.y * v.y
+}
+
+fn spliced() {
+  let v = Vec2.new(3.0, 4.0)
+  (v.x, v.y, len2(v), v == Vec2(3.0, 4.0))
+}
+
+test_value_splice = fn () {
+  assert_eq(spliced(), (3.0, 4.0, 25.0, true))
+  assert_eq(Vec2(1.0, 2.0).keys(), ['x', 'y'])
+  let boxed = try {
+    Vec2(1.0, 2).y
+  } catch er {
+    er.message
+  }
+  let inlined = try {
+    Vec2.new(1.0, 2).y
+  } catch er {
+    er.message
+  }
+  assert_eq(boxed, "type error: parameter 'y' expects Float")
+  assert_eq(inlined, boxed)
+}
+test_value_splice()
+
 inspect('field-params OK')
