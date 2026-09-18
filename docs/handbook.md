@@ -1173,6 +1173,31 @@ inspect(t.fahrenheit)  # => 212.0
 inspect(t.scale)       # => 'C'
 ```
 
+A constructor that only copies its arguments into fields can say so in
+its parameter list: `.x` is a parameter that also stores into the field
+`x`, and `.x?` is an optional one whose default is the field
+declaration's. The body is then free for whatever else construction
+needs, or empty.
+
+```culebra
+class Color {
+  r: Long
+  g: Long
+  b: Long
+  a: Long = 255
+  new(.r, .g, .b, .a?) {}
+}
+
+c = Color(10, 20, 30)
+inspect((c.r, c.g, c.b, c.a))  # => (10, 20, 30, 255)
+inspect(Color(1, 2, 3, a: 0).a)  # => 0
+```
+
+A parameter can declare the field too (`new(.x: Float, .y: Float) {}`
+with no `x`, `y` declared in the class body); a small record-like class
+then needs nothing else. Full rules: [language.md §10](language.md)
+(`class` sugar).
+
 ### 9.2 The closure-based alternative
 
 A class is sugar; the same encapsulation works with a factory that

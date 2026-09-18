@@ -1593,8 +1593,8 @@ Semantics:
     turn sees every declared field. Constructor parameters are *not*
     visible inside initializers (initializers close over the class's
     defining scope, not over the constructor call); pass ctor args to
-    fields
-    explicitly with `self.x = a` in the body.
+    fields explicitly with `self.x = a` in the body, or with a field
+    parameter (`new(.x)`, below).
   - A typed field without an initializer (`name: String` above) takes
     its type's zero value: `0` / `0.0` / `''` / `false`; reference
     types (`Array`, `Object`, ...) default to `nil`. The untyped form
@@ -1631,6 +1631,56 @@ Semantics:
   compute their fixed byte layout, and `@value` classes to check that
   every field is a scalar or another `@value` class, so both require
   typed fields (`x = 7` in either is a SyntaxError).
+* `new(.x)` declares a **field parameter**: a `new` parameter `x` that
+  also stores its argument into the field `x`, so the body carries no
+  assignment for it. `.x: T` and `.x = v` give it a type and a default
+  the way any parameter takes them; `.x?` makes it optional and takes
+  both from the field's declaration instead:
+
+      class Cartridge {
+        prg_rom: Array
+        chr_rom: Array
+        chr_ram = self.chr_rom.empty() ? repeat(8192, 0) : []
+        mapper_id = 0
+        has_battery = false
+        new(.prg_rom, .chr_rom, *, .mapper_id?, .has_battery?) {}
+      }
+      let c = Cartridge([0x4E, 0x45, 0x53], [], mapper_id: 4)
+      inspect(c.mapper_id)       # 4
+      inspect(c.has_battery)     # false — the declaration's default
+      inspect(c.chr_ram.size())  # 8192 — the initializer read chr_rom
+
+  - It is an ordinary parameter named `x`: passed as `x` by keyword,
+    reported as `x` in arity and type errors, readable as `x` in later
+    defaults and in the body. Positional and keyword passing, `*`, and
+    the ordering rule (a required parameter cannot follow an optional
+    one) apply unchanged; `.x?` counts as optional.
+  - The argument is stored at the field's own place in the declaration
+    order, after the arguments bound and before the `new` body, so an
+    initializer declared *below* the field reads what the argument
+    stored (`chr_ram` above) and one declared *above* it reads `nil`,
+    as ever. The store is the checked write every other store is: a
+    scalar declared type refuses a value of another type.
+  - `.x?` left out by the caller takes the declaration's own value, the
+    initializer or the type's zero value, and the parameter `x` reads as
+    that value in the body. Passing `nil` is passing a value, not leaving it
+    out.
+  - Naming a declared field: the declaration must carry no initializer
+    unless the parameter is `.x?` (the parameter would otherwise always
+    supply the value); a type on the parameter must repeat the
+    declaration's; `.x?` takes neither a type nor a default of its own.
+  - Naming no declared field: `.x` and `.x: T` **declare** it, in the
+    class's field list at the first `new`'s place (every overload's such
+    fields go there, in the order the overloads name them), with the type
+    given (an untyped one starts as `nil`, has no zero value and is
+    unchecked). Several `new` overloads may declare the same field so,
+    spelling its type identically (an untyped `.x` included), and the
+    name is held to the same uniqueness rule as a body declaration. A
+    `@value` or `@packable` class holds such a field to its field rules
+    (a type is required). `.x?` has no declaration to default from there
+    and is a SyntaxError.
+  - Only a `new` parameter list accepts the form; anywhere else it is a
+    SyntaxError.
 * `get NAME () { ... }` declares a **getter** — a no-parameter method
   that is invoked on a bare property read, with no call parentheses:
 

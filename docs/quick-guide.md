@@ -448,9 +448,8 @@ reference to an instance goes away.
 ```culebra
 class Car {
   wheels = 4  # declared field with a default
-  new(mpr) {
+  new(.mpr, .wheels?) {  # field parameters: stored into self.mpr / self.wheels
     self.miles = 0
-    self.mpr = mpr
   }
   drop() {}  # cleanup resources when the last reference goes away
   run(n) {
@@ -471,6 +470,10 @@ inspect(c.far)     # => true
 inspect(c.wheels)  # => 4
 inspect(type_of(c))  # => 'Car'
 ```
+
+A `new` parameter written `.x` also stores into the field `x`
+(declaring it if the body does not); `.x?` is optional and takes the
+declaration's default, so `Car(5, wheels: 3)` overrides the 4.
 
 Operators map to dunder methods (`__add__`, `__eq__`, `__lt__`,
 `__index__`, `__setindex__`, `__call__`, ...). Reverse-side methods
@@ -683,6 +686,7 @@ single most common transfer mistake.
 | `if c { a } else { b }` as a value | `c ? a : b` |
 | `if` / `else if` chain yielding a value | one value against constants: `match`; unrelated conditions: `cond` |
 | `ClassName.new(...)` | `ClassName(...)` — a `class`-defined type is callable and desugars to its constructor |
+| `new(x, y) { self.x = x; self.y = y }` | `new(.x, .y) {}` — a field parameter stores into its field |
 | `"a" + x + "b"` (splicing literal text around a value) | `"a{x}b"` |
 | `i = i + 1` | `i += 1` |
 | `x.size() == 0` / `> 0` | `x.empty()` / `!x.empty()` |

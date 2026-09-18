@@ -441,9 +441,8 @@ inspect('after')
 ```culebra
 class Car {
   wheels = 4  # デフォルト付きの宣言フィールド
-  new(mpr) {
+  new(.mpr, .wheels?) {  # field parameter: self.mpr / self.wheelsにも格納
     self.miles = 0
-    self.mpr = mpr
   }
   drop() {}  # 最後の参照が消えた時点でリソースを後始末
   run(n) {
@@ -464,6 +463,10 @@ inspect(c.far)     # => true
 inspect(c.wheels)  # => 4
 inspect(type_of(c))  # => 'Car'
 ```
+
+`new`のパラメータを`.x`と書くとフィールド`x`にも格納します（本体に
+宣言がなければそのフィールドを宣言します）。`.x?`は省略可能で宣言の
+デフォルトを取るので、`Car(5, wheels: 3)`は4を上書きします。
 
 演算子はdunderメソッド (`__add__`、`__eq__`、`__lt__`、`__index__`、
 `__setindex__`、`__call__`等) に対応します。逆側メソッド
@@ -670,6 +673,7 @@ inspect(match 9 {
 | 値としての`if c { a } else { b }` | `c ? a : b` |
 | 値を返す`if` / `else if`の連鎖 | 1つの値を定数群と比較するなら`match`、互いに無関係な条件なら`cond` |
 | `ClassName.new(...)` | `ClassName(...)` — `class`定義型は呼び出し可能で、コンストラクタ呼び出しの糖衣になる |
+| `new(x, y) { self.x = x; self.y = y }` | `new(.x, .y) {}` — field parameterはフィールドにも格納する |
 | `"a" + x + "b"`（値の前後にリテラル文字列を継ぎ足す） | `"a{x}b"` |
 | `i = i + 1` | `i += 1` |
 | `x.size() == 0` / `> 0` | `x.empty()` / `!x.empty()` |
