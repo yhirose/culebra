@@ -1177,8 +1177,14 @@ inline void _jit_gc_enumerate_children(void* obj, uint8_t tag,
 // Roots held in containers outside any scanned stack. Exhaustive over the
 // jit.h-local global tables; the cached namespace objects (built in
 // stdlib_rt.h) are instead pinned at creation, so they need no entry here.
+// The bytecode executor's inline frames keep their registers in a heap
+// stack the machine-stack scan does not walk (vm.h's Exec::VmStack); set when
+// a VM program is prepared.
+inline void (*_jit_vm_stack_roots_hook)(std::vector<void*>& out) = nullptr;
+
 inline void _jit_gc_enumerate_roots(std::vector<void*>& out) {
   for (auto& [_, v] : _jit_module_table()) _gc_push_value(out, v);
+  if (_jit_vm_stack_roots_hook) _jit_vm_stack_roots_hook(out);
   for (auto& [_, methods] : _jit_trait_default_impls())
     for (auto& [__, cls] : methods)
       if (cls) out.push_back(cls);

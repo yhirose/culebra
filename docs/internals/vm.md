@@ -1306,9 +1306,30 @@ out of a live scope skips them, which is a leak the switch never had.
 `run_frame` allocates the frame's register window as a variable-length array on the machine stack
 (sized from the chunk's `num_slots`, so a small function pays for a
 small frame), binds the parameters, the receiver and the `fn` handle in
-the prologue, and enters `dispatch`. The window is on the C++ stack for
-the collector's sake: the conservative scan finds every register as a
-root without registration.
+the prologue (`bind_params`), and enters `dispatch`. The window is on the
+C++ stack for the collector's sake: the conservative scan finds every
+register as a root without registration.
+
+A call the compiler resolved (`Chunk::call_targets`) does not enter
+`run_frame` again. `dispatch` pushes the callee's frame — a `VmFrame`
+record, its registers and its owned-stack marks — onto the thread's
+`VmStack` and keeps running in the same loop (`enter_inline`); `Ret` pops
+it and resumes the caller (`leave_inline`). That is Lua's shape: one C++
+activation per entry from native code, however deep the culebra calls
+below it, so a call costs no C++ prologue and no register window on the
+machine stack, a throw crosses culebra frames without crossing C++ ones,
+and the recursion limit is what the language says rather than what the
+machine stack allows. The `VmStack` is heap memory the machine-stack scan
+does not walk, so `Exec::prepare` installs `vm_stack_roots` beside the
+descriptor hook: the collector takes the live part of every segment as
+roots, the way it takes the module table. A frame the `VmStack` cannot
+take — a debug session, which keeps its frame stack by `run_frame`'s
+guard; a chunk larger than a segment — goes through `run_frame`, as every
+unresolved call does.
+
+The loop runs on the instruction pointer alone and stores it into the
+frame at every dispatch for the unwinder's sake; nothing reads it back
+on the way, which keeps the pc off each instruction's critical path.
 
 ### 6.1 Closures and the trampoline
 
@@ -1346,7 +1367,12 @@ is a plain `int64_t` because the runtime is single-threaded per
 
 `run_frame` wraps `dispatch` in `catch (...)` and calls `unwind`, which
 walks the tables of §5.5 and either resumes at a handler or re-raises
-with the frame uncounted. Uncaught errors are formatted at the engine
+with the frame uncounted. The inline frames above it unwind in the same
+handler, top first (`unwind_frames`), each popped as it goes. A `defer`
+that throws while its scope unwinds replaces the exception in flight for
+the frames below, which the nesting of `run_frame` catches used to give
+for free; `unwind_frames` recurses from inside its own handler, which is
+the same nesting. Uncaught errors are formatted at the engine
 boundary (`run_prepared`): a user `throw` becomes the same `uncaught: …`
 line every lane prints, and a positionless `CulebraError` is backfilled
 from the last published op position. An interrupt reaches neither: it is
@@ -1362,14 +1388,15 @@ and per-isolate cancel) and throws `Interrupted`. On wasm the same poll
 is where the collector runs (§9): a threshold trip only sets a pending
 flag, and the executor collects at the next instruction boundary, where
 every live value of every frame sits in a register window the scan can
-see.
+see — on the machine stack, or on the `VmStack` the roots hook covers.
 
 ### 6.4 Debug support
 
 Compiled with `Debug::Step`, every statement of user source emits
 `DbgStmt`, which calls the thread-local `DbgState::hook`; `run_frame`
 pushes a `DbgFrame` (program, chunk, register window, pc) on entry and
-pops it on every exit. `Debug::Break` emits only what the `debugger`
+pops it on every exit, and a tracking session takes no inline frames, so
+every culebra frame has its `run_frame`. `Debug::Break` emits only what the `debugger`
 statement needs. A plain run (`Debug::Off`) emits neither.
 
 ## 7. The LLVM lowering
