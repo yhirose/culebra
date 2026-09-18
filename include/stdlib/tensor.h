@@ -1919,11 +1919,12 @@ inline void _tensor_vjp(const TensorPtr& n) {
                                          static_cast<float>(n->extra0));
       });
       if (fused) {
-        _tensor_grad_add(x, _tensor_wrap_const((*fused)[0], dt));
-        _tensor_grad_add(gamma, _tensor_wrap_const(
-                                    (*fused)[1].reshape(gamma->shape.dims), dt));
-        _tensor_grad_add(beta, _tensor_wrap_const(
-                                   (*fused)[2].reshape(beta->shape.dims), dt));
+        auto& [dx, dgamma, dbeta] = *fused;
+        _tensor_grad_add(x, _tensor_wrap_const(dx, dt));
+        _tensor_grad_add(
+            gamma, _tensor_wrap_const(dgamma.reshape(gamma->shape.dims), dt));
+        _tensor_grad_add(
+            beta, _tensor_wrap_const(dbeta.reshape(beta->shape.dims), dt));
         break;
       }
       int64_t last = static_cast<int64_t>(x->shape.dims.size()) - 1;

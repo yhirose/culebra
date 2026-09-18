@@ -131,10 +131,8 @@ if Tensor.gpu_available() {
   let bg = Tensor.from(fill(1, Dg, 17))
   assert_tensor_close(xg.layer_norm(gg, bg), explicit(xg, gg, bg), 1.0e-4)
 
-  # The backward on a device with the fused pullback is three kernels where
-  # the composed form spells the row statistics out; the gradients must still
-  # agree entry for entry, with gamma as [D] and beta as [1, D] un-broadcast
-  # from the kernel's [D].
+  # Where the device has the fused pullback the gradients come from its
+  # kernels; they must still match the composed form's.
   let grads_of_gpu = fn (norm) {
     let x = Tensor.from(fill(5, Dg, 3)).requires_grad()
     let gamma = Tensor.from(fill(1, Dg, 11)[0]).requires_grad()
@@ -143,9 +141,8 @@ if Tensor.gpu_available() {
     (norm(x, gamma, beta) * w).sum(1).sum(0).backward()
     [x.grad(), gamma.grad(), beta.grad()]
   }
-  let fused_gg = grads_of_gpu(fn (x, gamma, beta) {
-    x.layer_norm(gamma, beta)
-  })
+  let fused = |x, gamma, beta| x.layer_norm(gamma, beta)
+  let fused_gg = grads_of_gpu(fused)
   let composed_gg = grads_of_gpu(explicit)
   assert_eq(fused_gg[1].shape(), [Dg])
   assert_eq(fused_gg[2].shape(), [1, Dg])
@@ -154,21 +151,19 @@ if Tensor.gpu_available() {
     assert_tensor_close(fused_gg[i], composed_gg[i], 1.0e-4)
   }
 
-  # Exactly one of the two pullbacks runs. The fused one opens its scope
-  # before it knows whether the device takes it, so what tells them apart is
-  # whether kernels launched under it: if they did, none of the composed
-  # form's ops (its keepdims means) may run too; if not, those must.
+  # Exactly one pullback runs: the fused one's scope, or the composed form's
+  # own keepdims means.
   let rows = Tensor.profile(fn () {
-    grads_of_gpu(fn (x, gamma, beta) {
-      x.layer_norm(gamma, beta)
-    })
+    grads_of_gpu(fused)
   })
-  let vjp_row = rows.find(|r| r.kind == 'scope' && r.path == 'backward/LayerNorm')
-  assert_eq(vjp_row.count, 1)
-  let fused_launches = rows.filter(|r| r.kind == 'launch' &&
-                                       r.path == 'backward/LayerNorm/layer_norm_bwd')
-  let composed_mean = rows.find(|r| r.kind == 'scope' &&
-                                    r.path == 'backward/LayerNorm/mean')
-  assert_eq(fused_launches.size() > 0, composed_mean == nil)
+  let scope_at = fn (path) {
+    rows.find(|r| r.kind == 'scope' && r.path == path)
+  }
+  assert_eq(scope_at('backward/LayerNorm').count, 1)
+  let fused_row = scope_at('backward/LayerNorm/layer_norm_bwd')
+  assert_eq(fused_row != nil, scope_at('backward/LayerNorm/mean') == nil)
+  if fused_row != nil {
+    assert_eq(fused_row.count, 1)
+  }
   Tensor.use_auto()
 }
