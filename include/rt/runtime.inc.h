@@ -3234,20 +3234,19 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_release_overflow_args(
   }
 }
 
-// Validate the well-known-property contract (see shared.h)
-// for a freshly-bound JIT value: must be a 0-arg Function. No-op for
-// ordinary names. The arg's +1 is released before throwing — callers
+// Validate the well-known-property contract (see shared.h) for a
+// freshly-bound JIT value: a Function under one of the names must take no
+// arguments. Anything else is data that happens to use the name — never a
+// protocol member (_protocol_member) — so it binds like any property. No-op
+// for ordinary names. The arg's +1 is released before throwing — callers
 // pass ownership and expect either store-into-slot or release.
 inline void _culebra_check_well_known_prop(std::string_view name,
                                            int8_t tag, int64_t data) {
-  if (!culebra::is_well_known_prop(name)) return;
-  auto bad = [&]() {
-    _culebra_value_release_impl(tag, data);
-    culebra::throw_well_known_prop_contract_error(name);
-  };
-  if (tag != GC_TAG_FUNC) bad();
+  if (tag != GC_TAG_FUNC || !culebra::is_well_known_prop(name)) return;
   auto* cls = reinterpret_cast<JitClosure*>(data);
-  if (!cls || cls->arity != 0) bad();
+  if (cls && cls->arity == 0) return;
+  _culebra_value_release_impl(tag, data);
+  culebra::throw_well_known_prop_contract_error(name);
 }
 
 // Overwrite an existing String-keyed object slot last-wins. Shared by the

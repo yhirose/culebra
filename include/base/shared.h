@@ -2800,16 +2800,19 @@ inline std::mt19937_64& random_engine() {
 //   iter      - iterator constructor (returns an Iterator Object)
 //   has_next  - iterator gate (Bool, called before each next)
 //   next      - iterator advance (returns the next element)
-// Each must be a 0-arg Function. The name set and error wording live
-// here so the two backends can't drift; per-backend type checks stay
-// in each backend (Value vs JitClosure aren't interchangeable).
+// A Function bound to one of them must take no arguments. Anything else
+// bound there is data that happens to use the name (a parsed
+// `{"next": "…"}`), not a protocol member. The name set and error wording
+// live here so the two backends can't drift.
 //
-// The three protocol names are checked as a set: `has_next` was the one
-// left out, which let a broken one reach a raw closure cast in the JIT (a
-// jump through a Long payload). Binding is the first of two lines — the
-// protocol open (see `_check_iter_protocol` / iter_protocol_open) is what
-// makes the cast safe even for objects built by paths that bypass this
-// check, e.g. a native builder writing slots directly.
+// So a name's presence says nothing: the question every consumer asks is
+// "is a Function there?", and it is answered in one place — the runtime's
+// _protocol_member, with the two shape questions built on it
+// (is_iterator_shaped, has_iter_method). `has_next` once missed the binding
+// check and a broken one reached a raw closure cast in the JIT (a jump
+// through a Long payload); that cannot recur by omission now, because no
+// cast happens off a bare key lookup — check_protocol_member_door.sh fails
+// a probe that names one of these keys anywhere else.
 inline bool is_well_known_prop(std::string_view name) {
   return name == "drop" || name == "iter" || name == "has_next" ||
          name == "next";

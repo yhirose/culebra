@@ -5415,8 +5415,11 @@ fn __is_protocol_key(pk) {
 }
 
 fn __bind_contract(o, key, f, line, col) {
-  mut ok = __is_fn(f)
-  if ok && __is_marker(f) {
+  # a value that is not a function is data that happens to use the name:
+  # never a protocol member (__has_proto asks for the function)
+  if !__is_fn(f) { return nil }
+  mut ok = true
+  if __is_marker(f) {
     if __objecthas(f, "\zspec") {
       if __len(f["\zspec"][0]) > 0 { ok = false }
     }

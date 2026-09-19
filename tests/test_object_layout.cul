@@ -29,9 +29,7 @@ assert_throws('ImmutableError', fn () {
 
 # --- literals: the well-known contract and `drop` registration ---
 
-assert_throws('DropContractError', fn () {
-  {next: 1}
-})
+assert_eq({next: 1}.next, 1)  # not a Function: data, bound like any key
 assert_throws('DropContractError', fn () {
   {iter: fn (a) {
     a

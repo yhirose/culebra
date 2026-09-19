@@ -128,13 +128,13 @@ assert_eq(r_iwnc.kind, 'TypeError')
 assert_eq(r_iwnc.message, 'type error: expected Array, got Long')
 
 # --- DropContractError ---
-let r9 = try {
-  let _ = {drop: 42}
-  nil
-} catch e {
-  e
-}
-assert_eq(r9.kind, 'DropContractError')
+# a Function under a well-known name must take no arguments; a value that is
+# not a Function is data and binds like any property
+let r9 = {drop: 42, next: 'page-2'}
+assert_eq(r9.drop, 42)
+assert_eq(r9.next, 'page-2')
+# (the absolute line numbers asserted further down count from here)
+assert_eq(r9.keys(), ['drop', 'next'])
 
 let r10 = try {
   let _ = {drop: fn (x) {
@@ -859,20 +859,43 @@ assert_eq(40000, compound_throw_churn())
 # --- the tag names an index error can report ------------------------------
 # `expected Long, got X` renders the tag it was handed; Function and Set are
 # the two arms nothing durable had ever produced.
-let by_fn = try { [1, 2][fn () { 1 }]; nil } catch e { e }
+let by_fn = try {
+  [1, 2][fn () {
+    1
+  }]
+  nil
+} catch e {
+  e
+}
 assert_eq(by_fn.message, 'type error: expected Long, got Function')
-let by_set = try { [1, 2][{1, 2}]; nil } catch e { e }
+let by_set = try {
+  [1, 2][{1, 2}]
+  nil
+} catch e {
+  e
+}
 assert_eq(by_set.message, 'type error: expected Long, got Set')
 
 # --- arithmetic guards on the two operators that carry their own ----------
-assert_eq(try { let _ = 1 / 'a'; nil } catch e { e.kind }, 'TypeError')
-assert_eq(try { let _ = -'a'; nil } catch e { e.kind }, 'TypeError')
+assert_eq(try {
+  let _ = 1 / 'a'
+  nil
+} catch e {
+  e.kind
+}, 'TypeError')
+assert_eq(try {
+  let _ = -'a'
+  nil
+} catch e {
+  e.kind
+}, 'TypeError')
 
 # --- writing past the end of an array is an IndexError, not a grow --------
 let oob = try {
   mut xs = [1, 2]
   xs[99] = 5
   nil
-} catch e { e }
+} catch e {
+  e
+}
 assert_eq(oob.kind, 'IndexError')
-

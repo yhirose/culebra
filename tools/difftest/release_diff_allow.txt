@@ -110,3 +110,29 @@ tensor|*Tensor.no_grad(C.new())
 # 27. Written over several lines the same program reports the true position
 # in both. The kind, message and line are unchanged.
 iterthrow|fn g() { for v in * { if v == 2 { [1][9] }; yield *
+
+# The well-known property contract constrains Functions alone since v0.6.0: a
+# Function bound to `drop` / `iter` / `has_next` / `next` must still take no
+# arguments, but a value that is not a Function is data that happens to use
+# the name and binds like any property — `JSON.parse('{"next": "/page/2"}')`
+# is an ordinary Object where the baseline raised DropContractError, and so
+# are the literal, subscript and `self.x =` forms of the same store. Such an
+# Object is never a protocol member: a `for` walks it by its keys, and an
+# iterator whose `has_next` or `next` is data is refused where it is opened
+# (TypeError) instead of where the data was bound.
+wkprop|*= 42; 0 } catch e { e.kind }
+wkprop|try { let _ = { drop: fn () { nil }, drop: 42 }; 0 } catch e { e.kind }
+wkprop|try { JSON.parse(*
+wkprop|try { class Wc { new() { self.drop = 42 } }; Wc.new(); 0 } catch e { e.kind }
+wkprop|try { class Wi { new() { self.iter = 1 } }; Wi.new(); 0 } catch e { e.kind }
+wkprop|let o = JSON.parse(*
+wkprop|let o = {has_next: 1, next: 2}*
+wkprop|let o = {drop: 1, iter: 2}*
+wkprop|mut n = 0; { let o = {mut drop: 1}*
+wkprop|try { for x in {iter: fn () { {has_next: 1, next: fn () { 0 }} }}*
+wkprop|try { {has_next: 1, next: fn () { 0 }}.map(*
+wkprop|try { {next: 1}.next(); 0 } catch e { e.kind }
+iterproto|let o = { has_next: 1 }; o
+iterproto|let o = { next: 1 }; o
+iterproto|let o = { iter: 1 }; o
+iterthrow|let it = { iter: fn () { self }, next: 1 }; it.reduce(*

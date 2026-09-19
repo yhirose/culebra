@@ -41,7 +41,7 @@ mut i = 0
 while i < 300 {
     let o = {x: (i, i), ...base, "s": i, 9: i, nil: i}
     let ok = try {
-        let bad = {next: 5}
+        let bad = {next: fn (a) { a }}
         false
     } catch er {
         er.kind == "DropContractError"
@@ -67,12 +67,12 @@ println(i)
 # positionless in the runtime, backfilled to the literal), and a non-Object
 # spread source.
 try {
-    {next: 5}
+    {next: fn (a) { a }}
 } catch err {
     println("{err.kind}: {err.message}")
 }
 try {
-    {has_next: 1}
+    {has_next: fn (a) { a }}
 } catch err {
     println("{err.kind}: {err.message}")
 }

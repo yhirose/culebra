@@ -2609,10 +2609,11 @@ for c in borrowthrow {
 }
 
 # --- Dimension: well-known property contract (drop/iter/has_next/next) ----
-# Bind-time enforcement must hold on every write surface (literal prop,
-# dynamic/literal subscript, native builder, class decl) with the interp's
-# ordering: immutable gate first, then the contract check. Statics are a
-# namespace — exempt. See shared.h is_well_known_prop.
+# A Function bound to one of the names takes no arguments, enforced on every
+# write surface (literal prop, dynamic/literal subscript, native builder,
+# class decl) with the immutable gate checked first; a value that is not a
+# Function is data and binds like any property. Statics are a namespace —
+# exempt. See shared.h is_well_known_prop.
 let wkprop = [
   # dynamic + literal subscript keys reach the same chokepoint
   'mut o = {mut x: 1}; let k = "drop"; try { o[k] = 42; 0 } catch e { e.kind }',
@@ -2658,6 +2659,22 @@ let wkprop = [
   'trait Wtj { current() -> Long  next() { self.current() + 1 } }; class Wtk { new() {} current() { 41 } }; Wtk.new().next()',
   'try { trait Wtl { tag() -> Long  step(x) { x } }; 1 } catch e { e.kind }',
   'try { trait Wtm { next(x) }; 1 } catch e { e.kind }',
+  # a value that is not a Function is data under any of the names: it binds,
+  # a `for` walks the Object by its keys, and it copies like any property
+  'let o = JSON.parse("\{\"next\": \"/p2\", \"iter\": 1}"); mut ks = []; for k, v in o { ks.push(k) }; ks',
+  'let o = {has_next: 1, next: 2}; mut ks = []; for k, v in o { ks.push((k, v)) }; ks',
+  'let o = {drop: 1, iter: 2}; let c = {}; for k, v in o { c[k] = v }; [c == o, {...o} == o]',
+  'mut n = 0; { let o = {mut drop: 1}; o.drop = fn () { n += 1 } }; n',
+  # ...and never a protocol member: a half-data iterator is refused where it
+  # opens, not called through its payload
+  'try { for x in {iter: fn () { {has_next: 1, next: fn () { 0 }} }} { x }; 0 } catch e { e.kind }',
+  'try { {has_next: 1, next: fn () { 0 }}.map(|x| x).collect(); 0 } catch e { e.kind }',
+  'try { {next: 1}.next(); 0 } catch e { e.kind }',
+  # a Function that takes a parameter is still refused on every write surface
+  'mut o = {mut x: 1}; let k = "next"; try { o[k] = fn (a) { a }; 0 } catch e { e.kind }',
+  'try { let _ = {has_next: fn (a) { a }}; 0 } catch e { e.kind }',
+  'mut o = {mut drop: fn () { nil }}; try { o.drop = fn (a) { a }; 0 } catch e { e.kind }',
+  'try { class Wp { new() { self.drop = fn (a) { a } } }; Wp.new(); 0 } catch e { e.kind }',
 ]
 for c in wkprop {
   case("wkprop|" + c, c)

@@ -299,28 +299,45 @@ assert_throws("AttributeError", fn () {
 })
 
 # --- Iterator protocol contract (language.md §18.5) ---
-# `iter` / `has_next` / `next` are well-known properties: binding one to
-# anything but a 0-arg Function is rejected where it is bound. That is what
-# keeps every protocol call site safe — a `has_next` holding a Long used to
-# be cast to a closure and called (JIT/AOT segfault), and a 1-arg `has_next`
-# was invoked with nothing bound, which looped forever on the interpreter.
-assert_throws("DropContractError", fn () {
-  let o = {has_next: 1}
-  o
-})
+# `iter` / `has_next` / `next` are well-known properties: a Function bound to
+# one must take no arguments (a 1-arg `has_next` was once invoked with nothing
+# bound, which looped forever). A value that is not a Function is data, and
+# data is never a protocol member: every protocol site asks for the Function
+# before it calls one — a `has_next` holding a Long used to be cast to a
+# closure and called (JIT/AOT segfault).
 assert_throws("DropContractError", fn () {
   let o = {has_next: fn (a) {
     a
   }}
   o
 })
-assert_throws("DropContractError", fn () {
-  let o = {next: 1}
-  o
+assert_eq({has_next: 1}.has_next, 1)
+assert_eq({next: 1}.next, 1)
+assert_eq({iter: 1}.iter, 1)
+# an Object that only has the names is a plain Object to a `for`...
+fn walked(o) {
+  mut out = []
+  for k, v in o {
+    out.push((k, v))
+  }
+  out
+}
+assert_eq(walked({has_next: 1, next: 2}), [('has_next', 1), ('next', 2)])
+assert_eq(walked({iter: 1}), [('iter', 1)])
+# ...and an iterator whose `has_next` is data is a broken iterator, reported
+# where it is opened rather than called through its payload
+let half_data = fn () {
+  {has_next: 1, next: fn () {
+    0
+  }}
+}
+assert_throws("TypeError", fn () {
+  for x in {iter: half_data} {
+    x
+  }
 })
-assert_throws("DropContractError", fn () {
-  let o = {iter: 1}
-  o
+assert_throws("TypeError", fn () {
+  half_data().map(|x| x).collect()
 })
 # Only the protocol names are reserved; a lookalike field is still data.
 assert_eq({has_next_at: 1}.has_next_at, 1)

@@ -1,7 +1,8 @@
 # Conformance: well-known property contract (drop/iter/has_next/next).
 # See docs/language.md §Auto-drop and §Iteration protocol. The bind-time
-# contract (0-arg Function) must hold on every write surface, with the
-# interp's check order: immutable gate first, then the contract.
+# contract — a Function bound to one of the names takes no arguments — must
+# hold on every write surface, with the immutable gate checked first. A value
+# that is not a Function is data that happens to use the name: section (8).
 # The difftest corpus (dimension `wkprop|`) pins backend symmetry; this
 # file pins the contract itself with expected values.
 
@@ -9,7 +10,9 @@
 let r1 = try {
   mut o = {mut x: 1}
   let k = "drop"
-  o[k] = 42
+  o[k] = fn (a) {
+    a
+  }
   nil
 } catch e {
   e
@@ -22,7 +25,9 @@ assert_eq(
 
 let r1b = try {
   mut o = {mut x: 1}
-  o["iter"] = 42
+  o["iter"] = fn (a) {
+    a
+  }
   nil
 } catch e {
   e
@@ -37,21 +42,10 @@ o1[k1] = fn () {
 }
 assert_eq(o1.x, 1)
 
-# --- (2) native builders route through the same chokepoint ---
-let r2 = try {
-  JSON.parse('{"drop": 42}')
-  nil
-} catch e {
-  e
-}
-assert_eq(r2.kind, 'DropContractError')
-let r2b = try {
-  JSON.parse('{"has_next": true}')
-  nil
-} catch e {
-  e
-}
-assert_eq(r2b.kind, 'DropContractError')
+# --- (2) native builders route through the same chokepoint: what they
+#     build is data, so the names bind like any key ---
+assert_eq(JSON.parse('{"drop": 42}').drop, 42)
+assert_eq(JSON.parse('{"has_next": true}').has_next, true)
 assert_eq(JSON.parse('{"x": 7}').x, 7)
 
 # --- (3) check order: immutable gate wins over the contract ---
@@ -73,7 +67,9 @@ mut o3 = {mut drop: fn () {
   log3.push("old")
 }}
 let r3b = try {
-  o3.drop = 42
+  o3.drop = fn (a) {
+    a
+  }
   nil
 } catch e {
   e
@@ -127,7 +123,9 @@ assert_eq(r4c.kind, 'DropContractError')
 let r4d = try {
   class B4d {
     new() {
-      self.drop = 42
+      self.drop = fn (a) {
+        a
+      }
     }
   }
   B4d.new()
@@ -269,5 +267,49 @@ let r7d = try {
   e.kind
 }
 assert_eq(r7d, 'ok')
+
+# --- (8) a value that is not a Function is data, whatever its key ---
+# Parsed text decides its own keys: `{"next": "<url>"}` is what a paginated
+# API answers with. Such an Object is not a protocol member of anything.
+let page = JSON.parse('{"drop": 1, "iter": 2, "has_next": 3, "next": "/page/2"}')
+assert_eq(page.next, '/page/2')
+assert_eq(page.keys(), ['drop', 'iter', 'has_next', 'next'])
+# a `for` walks it by its keys, like any Object — the `iter` key is not an
+# iterator constructor
+mut seen8 = []
+for k, v in page {
+  seen8.push(k)
+}
+assert_eq(seen8, ['drop', 'iter', 'has_next', 'next'])
+# copying it key by key, and spreading it, bind the same names again
+let copy8 = {}
+for k, v in page {
+  copy8[k] = v
+}
+assert_eq(copy8, page)
+assert_eq({...page}, page)
+# nothing fires when it goes away, and nothing is there to call
+{
+  let gone = {drop: 'not a function'}
+}
+assert_eq(try {
+  page.next()
+} catch e {
+  e.kind
+}, 'TypeError')
+# the literal and the assignment forms agree with the parsed one
+assert_eq({next: 1}.next, 1)
+mut o8 = {mut drop: 1}
+o8.drop = 2
+assert_eq(o8.drop, 2)
+# data first, a real drop later: the Function is the member
+mut log8 = []
+{
+  let late = {mut drop: 'data'}
+  late.drop = fn () {
+    log8.push('dropped')
+  }
+}
+assert_eq(log8, ['dropped'])
 
 IO.inspect('test_wellknown_contract OK')
