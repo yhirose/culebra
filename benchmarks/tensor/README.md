@@ -109,7 +109,7 @@ The same step on the CPU (minimum of 3 rounds):
 
 | config | Culebra CPU | PyTorch CPU | ratio |
 |---|---:|---:|---:|
-| small | 178.7 | 133.6 | 1.34 |
+| small | 156.7 | 127.6 | 1.23 |
 
 Both sides' losses fall by the same amount (small on the GPU: 8.38 to
 6.33 in Culebra, 8.37 to 6.30 in PyTorch). The GPU ratio falls as the
@@ -117,9 +117,10 @@ step grows — 2.1 at small, 1.3 at large — while the single ops below sit
 between 0.45 and 1.14 of PyTorch. What is left on the GPU is spread across
 the backward pass rather than sitting in one op: its matrix products, the
 copies that materialize a permuted or reshaped gradient, and the first
-accumulation of each gradient. On the CPU the backward's attention,
-cross-entropy and LayerNorm pullbacks are still compositions of ops (the
-fused ones are CUDA kernels), about 68 of its 125 ms.
+accumulation of each gradient. On the CPU the attention, cross-entropy and
+LayerNorm pullbacks are fused as they are on the GPU (about 18 ms of the
+backward, where their compositions took 68); its matrix products are now
+most of what is left.
 
 ### Single ops on the GPU (µs, minimum of 5 rounds)
 
