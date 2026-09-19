@@ -47,6 +47,22 @@ inline void _arith_guard_numeric(const char* op, int8_t lt, int8_t rt,
                                   _culebra_tag_name(rt), line, col);
 }
 
+// Walk a Set's members for a probe that may run a user `hash` / `eq`: by
+// index, since that code may grow the vector, and over a member the walk
+// holds, since it may also drop the set's own ref to it.
+template <class F>
+inline void _set_walk(JitSet* s, F&& f) {
+  for (size_t i = 0; i < s->members.size(); i++) {
+    JitValue m = s->members[i];
+    culebra_runtime_value_retain(m.tag, m.data);
+    struct Hold {
+      JitValue v;
+      ~Hold() { _culebra_value_release_impl(v.tag, v.data); }
+    } hold{m};
+    f(m);
+  }
+}
+
 // Same-tag equality matching the interpreter's operator==. Strings compare by
 // contents; reference types (func/array/object) by identity. Long↔Float
 // cross-type uses numeric equality (`1 == 1.0`).
@@ -99,10 +115,11 @@ inline bool _culebra_value_equal(int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
       if (a->members.size() != b->members.size()) return false;
       if (!b->index) return false;
       culebra::ValueWalkFrame walk;
-      for (auto& m : a->members) {
-        if (!b->index->contains(m)) return false;
-      }
-      return true;
+      bool all = true;
+      _set_walk(a, [&](JitValue m) {
+        if (all && !b->index->contains(m)) all = false;
+      });
+      return all;
     }
     case TAG_ARRAY: {
       // Element-wise eq (structural), matching interp's _array_eq.
@@ -191,7 +208,9 @@ inline bool _culebra_value_ord(int8_t t1, int64_t d1, int8_t t2, int64_t d2,
   switch (t1) {
     case TAG_NIL: return false;
     case TAG_BOOL: return cmp(double(d1 != 0), double(d2 != 0));
-    case TAG_LONG: return cmp(double(d1), double(d2));
+    case TAG_LONG:
+      // Exact: past 2^53 two Longs a unit apart round to one double.
+      return cmp(double((d1 > d2) - (d1 < d2)), 0.0);
     case TAG_FLOAT:
       return cmp(_culebra_float_to_double(d1), _culebra_float_to_double(d2));
     case TAG_STRING:
@@ -710,7 +729,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_safepoint() {
 struct _JitModuleTable {
   std::unordered_map<std::string, JitValue> entries;
   ~_JitModuleTable() {
+    // Runtime teardown: what a module exported goes the way of the entry's
+    // own top-level bindings (docs §17) — released without `drop`, whose
+    // body would otherwise run on a Runtime that is half gone.
+    bool was = _jit_drop_suppressed();
+    _jit_drop_suppressed() = true;
     for (auto& [_, v] : entries) _culebra_value_release_impl(v.tag, v.data);
+    _jit_drop_suppressed() = was;
   }
 };
 inline std::unordered_map<std::string, JitValue>& _jit_module_table() {
@@ -2024,55 +2049,57 @@ inline void _set_take(JitSet* out, const JitValue& v) {
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitSet* culebra_runtime_set_union(JitSet* a,
                                                                JitSet* b) {
   auto* out = culebra_runtime_set_new();
-  for (auto& v : a->members) _set_take(out, v);
-  for (auto& v : b->members) _set_take(out, v);
+  _set_walk(a, [&](JitValue v) { _set_take(out, v); });
+  _set_walk(b, [&](JitValue v) { _set_take(out, v); });
   return out;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitSet* culebra_runtime_set_intersect(JitSet* a,
                                                                    JitSet* b) {
   auto* out = culebra_runtime_set_new();
-  for (auto& v : a->members) {
+  _set_walk(a, [&](JitValue v) {
     if (b->index->contains(v)) _set_take(out, v);
-  }
+  });
   return out;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitSet* culebra_runtime_set_diff(JitSet* a,
                                                               JitSet* b) {
   auto* out = culebra_runtime_set_new();
-  for (auto& v : a->members) {
+  _set_walk(a, [&](JitValue v) {
     if (!b->index->contains(v)) _set_take(out, v);
-  }
+  });
   return out;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitSet* culebra_runtime_set_sym_diff(JitSet* a,
                                                                   JitSet* b) {
   auto* out = culebra_runtime_set_new();
-  for (auto& v : a->members) {
+  _set_walk(a, [&](JitValue v) {
     if (!b->index->contains(v)) _set_take(out, v);
-  }
-  for (auto& v : b->members) {
+  });
+  _set_walk(b, [&](JitValue v) {
     if (!a->index->contains(v)) _set_take(out, v);
-  }
+  });
   return out;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_set_subset(JitSet* a,
                                                                JitSet* b) {
-  for (auto& v : a->members) {
-    if (!b->index->contains(v)) return 0;
-  }
-  return 1;
+  bool all = true;
+  _set_walk(a, [&](JitValue v) {
+    if (all && !b->index->contains(v)) all = false;
+  });
+  return all;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_set_superset(JitSet* a,
                                                                  JitSet* b) {
-  for (auto& v : b->members) {
-    if (!a->index->contains(v)) return 0;
-  }
-  return 1;
+  bool all = true;
+  _set_walk(b, [&](JitValue v) {
+    if (all && !a->index->contains(v)) all = false;
+  });
+  return all;
 }
 
 // Mutating add: returns 1 on insert, 0 if already present. Hands the
@@ -2101,11 +2128,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_set_remove(
   if (!_jit_at_pos(line, col, [&] { return set->index->erase(key); }))
     return 0;
   // Find and erase from the members vector (O(n) — same as the interp's
-  // OrderedSymbolMap erase pattern).
-  for (auto it = set->members.begin(); it != set->members.end(); ++it) {
-    if (JitValueEq{}(*it, key)) {
-      _culebra_value_release_impl(it->tag, it->data);
-      set->members.erase(it);
+  // OrderedSymbolMap erase pattern). By index: a user `eq` may grow it.
+  for (size_t i = 0; i < set->members.size(); i++) {
+    JitValue m = set->members[i];
+    if (JitValueEq{}(m, key)) {
+      set->members.erase(set->members.begin() + static_cast<ptrdiff_t>(i));
+      _culebra_value_release_impl(m.tag, m.data);
       return 1;
     }
   }

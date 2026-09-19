@@ -27,4 +27,11 @@ assert_eq([].sorted_by(fn (x) {
   x
 }), [])
 
+// A String key has no owner but the sort's own table, and any later key
+// call may collect: every key must survive to the comparison (the
+// GC-stress lane collects on each allocation).
+let n = 2000
+let shuffled = iota(n).map(|i| (i * 7919) % n)
+assert_eq(shuffled.sorted_by(|x| "k{x:07}"), iota(n))
+
 IO.inspect("test_sorted_by OK")

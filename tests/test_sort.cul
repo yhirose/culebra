@@ -270,4 +270,53 @@ let e2 = try {
 }
 assert_eq(e2, "TypeError")
 
+// Longs past 2^53 order exactly: as doubles the pair below is one value.
+let big = [9007199254740993, 9007199254740992]
+assert_eq(big.sorted(), [9007199254740992, 9007199254740993])
+assert_eq(big.sorted_by(|x| x), [9007199254740992, 9007199254740993])
+assert_eq(big.max(), 9007199254740993)
+assert_eq(big.min(), 9007199254740992)
+assert_eq(big.iter().max(), 9007199254740993)
+assert_eq(big.max_by(|x| x), 9007199254740993)
+assert_eq(big.iter().min_by(|x| x), 9007199254740992)
+assert_eq([9223372036854775807, 9223372036854775806].sorted(),
+  [9223372036854775806, 9223372036854775807])
+
+// A `__lt__` or key function that resizes the array mid-sort: the sort is
+// refused (its order no longer describes the array), never a read of a
+// freed slot.
+mut ks = []
+class K {
+  new(.n) {}
+  __lt__(o) {
+    if ks.size() > 3 {
+      ks.pop()
+    }
+    self.n < o.n
+  }
+}
+for n in [3, 1, 2, 0] {
+  ks.push(K(n))
+}
+let sort_err = try {
+  ks.sort()
+  "sorted"
+} catch e {
+  e.kind
+}
+assert_eq(sort_err, "ValueError")
+mut ys = [3, 1, 2]
+let by_err = try {
+  ys.sort_by(fn (x) {
+    if ys.size() > 1 {
+      ys.pop()
+    }
+    x
+  })
+  "sorted"
+} catch e {
+  e.kind
+}
+assert_eq(by_err, "ValueError")
+
 IO.inspect("test_sort OK")

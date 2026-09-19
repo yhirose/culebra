@@ -1,0 +1,15 @@
+// A module whose exports carry `drop` — an instance, and a closure capturing
+// one. The runtime releases the module table at teardown without running the
+// drop bodies (the entry's own top-level bindings get the same treatment);
+// running them there took the process down at exit.
+class Kept {
+  new(.n) {}
+  drop() {
+    nil
+  }
+}
+let kept = Kept(1)
+let keeper = fn () {
+  kept.n
+}
+export {kept, keeper}

@@ -168,9 +168,13 @@ ratchet "bare RC calls (sendable_rt.h)" "$(count_bare include/conc/sendable.h)" 
 # Object toward the argv the dispatch consumes).
 # 2 -> 3 (2026-09-15, reviewed): that merge replaced a bare retain in the
 # keyword binder, which now holds every value in JitOwnedVal.
+# 3 -> 4 (2026-09-19, reviewed): the Array HOFs' `_held_element` — filter's
+# kept element, find's answer and min_by/max_by's running best are held
+# owned across the user callback, which may pop them from the receiver
+# (their only owner until then); the three helpers share the one site.
 rbrw=$(grep -rE --include='*.h' "JitOwnedVal::from_borrowed\(" include/ \
        | grep -vcE "^[^:]*:[[:space:]]*//" || true)
-ratchet "runtime borrow->owned seam sites" "$rbrw" 3
+ratchet "runtime borrow->owned seam sites" "$rbrw" 4
 
 # Codegen-side hand-placed throw guards: the automatic unwind-temp window
 # is the default cleaner for a codegen-owned +1, so the hand-placed

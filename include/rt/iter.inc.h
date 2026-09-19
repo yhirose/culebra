@@ -815,6 +815,18 @@ struct _JitNumAcc {
   }
 };
 
+// Numeric `<` for min/max over elements already checked numeric: exact
+// between two Longs (a double has 53 bits, so past 2^53 two Longs a unit
+// apart round to one value), by value across the pair otherwise.
+inline bool _num_less(JitValue a, JitValue b) {
+  if (a.tag == TAG_LONG && b.tag == TAG_LONG) return a.data < b.data;
+  auto d = [](JitValue v) {
+    return v.tag == TAG_LONG ? static_cast<double>(v.data)
+                             : _culebra_float_to_double(v.data);
+  };
+  return d(a) < d(b);
+}
+
 // Coerce one aggregate element to double, reporting a non-numeric like the
 // interp's Value::to_double_coerce ("expected Long or Float, got X"). The
 // element's +1 is released before throwing, so the unwind edge strands
@@ -878,13 +890,10 @@ inline JitValue _iter_minmax(int8_t it, int64_t id, bool want_max,
         "ValueError", std::string(what) + " of empty Iterator", line, col);
   }
   JitValue best = v;
-  double bestd = _iter_agg_num(v, line, col);
+  _iter_agg_num(v, line, col);  // the numeric check
   while (drive.pull(v)) {
-    double x = _iter_agg_num(v, line, col);
-    if (want_max ? (x > bestd) : (x < bestd)) {
-      best = v;
-      bestd = x;
-    }
+    _iter_agg_num(v, line, col);
+    if (want_max ? _num_less(best, v) : _num_less(v, best)) best = v;
   }
   drive.finish();
   return best;
@@ -920,16 +929,17 @@ inline JitValue _iter_minmax_by(int8_t it, int64_t id, int8_t ft, int64_t fd,
     culebra_runtime_value_retain(e.tag, e.data);   // the call consumes one
     auto k = _culebra_invoke1_at(fn, e, line, col);
     JitOwnedVal kg(k);
-    return _iter_agg_num(k, line, col);
+    _iter_agg_num(k, line, col);  // an immediate once it passes
+    return k;
   };
   JitOwnedVal best(v);
-  double bestd = key_of(best.borrow());
+  JitValue bestk = key_of(best.borrow());
   while (drive.pull(v)) {
     JitOwnedVal cand(v);
-    double x = key_of(cand.borrow());
-    if (want_max ? (x > bestd) : (x < bestd)) {
+    JitValue k = key_of(cand.borrow());
+    if (want_max ? _num_less(bestk, k) : _num_less(k, bestk)) {
       best = std::move(cand);   // releases the old best
-      bestd = x;
+      bestk = k;
     }
   }
   drive.finish();
@@ -3033,20 +3043,28 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_map(
   return out;
 }
 
+// An element a helper keeps using after the callback returns (filter's
+// kept one, find's answer, min_by's running best), held owned across the
+// call: the callback may pop it from the receiver, whose ref was the only
+// one. The one borrow -> +1 crossing of the Array HOFs (check_rc_discipline).
+inline JitOwnedVal _held_element(JitArray* arr, size_t i) {
+  return JitOwnedVal::from_borrowed(arr->items[i]);
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_filter(
     JitArray* arr, int8_t fn_tag, int64_t fn_data, int64_t line, int64_t col) {
   JitHofCallback fn(fn_tag, fn_data, 1,"filter", "f", line, col);
   auto* out = culebra_runtime_array_new();
   JitOwnedVal out_guard(JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(out)});
   for (size_t i = 0; i < arr->size; i++) {
-    auto e = arr->items[i];
-    culebra_runtime_value_retain(e.tag, e.data);
-    JitValue r = _culebra_invoke1_at(fn, e, line, col);
+    auto e = _held_element(arr, i);
+    culebra_runtime_value_retain(e.v.tag, e.v.data);  // the call consumes one
+    JitValue r = _culebra_invoke1_at(fn, e.borrow(), line, col);
     bool keep = (r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false;
     _culebra_value_release_impl(r.tag, r.data);
     if (keep) {
-      culebra_runtime_value_retain(e.tag, e.data);
-      culebra_runtime_array_push(out, e.tag, e.data);
+      auto v = e.consume();
+      culebra_runtime_array_push(out, v.tag, v.data);
     }
   }
   out_guard.consume();
@@ -3070,15 +3088,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_find(
     int8_t* out_tag, int64_t* out_data) {
   JitHofCallback fn(fn_tag, fn_data, 1,"find", "f", line, col);
   for (size_t i = 0; i < arr->size; i++) {
-    auto e = arr->items[i];
-    culebra_runtime_value_retain(e.tag, e.data);
-    JitValue r = _culebra_invoke1_at(fn, e, line, col);
+    auto e = _held_element(arr, i);
+    culebra_runtime_value_retain(e.v.tag, e.v.data);  // the call consumes one
+    JitValue r = _culebra_invoke1_at(fn, e.borrow(), line, col);
     bool keep = (r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false;
     _culebra_value_release_impl(r.tag, r.data);
     if (keep) {
-      culebra_runtime_value_retain(e.tag, e.data);
-      *out_tag = e.tag;
-      *out_data = e.data;
+      auto v = e.consume();
+      *out_tag = v.tag;
+      *out_data = v.data;
       return;
     }
   }
@@ -3164,52 +3182,72 @@ inline void _apply_sort_permutation(JitArray* arr,
   std::copy(sorted.begin(), sorted.end(), arr->items);
 }
 
-// Shared body of sort_by / sorted_by: evaluate the key function once per
-// element and return the (key, index) pairs in sorted order. Mirrors the
-// interpreter's _keyed_sort — see shared.h for why the uniform-key case may
-// sort the pairs directly while anything else must order indices instead.
-inline std::vector<std::pair<JitOwnedVal, size_t>> _keyed_sort(
-    JitArray* arr, JitHofCallback& fn, bool reverse, int64_t line,
-    int64_t col) {
-  std::vector<std::pair<JitOwnedVal, size_t>> keyed;
-  keyed.reserve(arr->size);
-  bool uniform = true;
-  int kind0 = 0;
-  for (size_t i = 0; i < arr->size; i++) {
-    auto e = arr->items[i];
-    culebra_runtime_value_retain(e.tag, e.data);
-    keyed.emplace_back(JitOwnedVal(_culebra_invoke1_at(fn, e, line, col)), i);
-    if (uniform) {
-      int kd = _orderable_kind(keyed.back().first.borrow());
-      if (i == 0) kind0 = kd;
-      uniform = kd != 0 && kd == kind0;
+// A +1 copy of an Array's elements in a fresh heap Array reached only from
+// this frame. A sort that runs user code (a key function, a `__lt__`) works
+// against the copy: the elements stay alive whatever that code does to the
+// receiver, and stay GC-visible — a collection beneath the callback scans the
+// machine stack, where the copy's pointer is, not a std::vector's buffer.
+struct _ArraySnapshot {
+  JitArray* arr;
+  JitOwnedVal guard;
+  explicit _ArraySnapshot(JitArray* src)
+      : arr(culebra_runtime_array_new_reserved(
+            static_cast<int64_t>(src->size))),
+        guard(JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(arr)}) {
+    for (size_t i = 0; i < src->size; i++) {
+      auto e = src->items[i];
+      culebra_runtime_value_retain(e.tag, e.data);
+      culebra_runtime_array_push(arr, e.tag, e.data);  // absorbs the +1
     }
   }
-  if (uniform) {
-    std::stable_sort(keyed.begin(), keyed.end(),
-                     [reverse, line, col](const auto& a, const auto& b) {
-                       const auto& x = reverse ? b : a;
-                       const auto& y = reverse ? a : b;
-                       auto xk = x.first.borrow(), yk = y.first.borrow();
-                       return _culebra_value_ord(
-                           xk.tag, xk.data, yk.tag, yk.data,
-                           [](double p, double q) { return p < q; },
-                           line, col);
-                     });
-    return keyed;
+  size_t size() const { return arr->size; }
+  JitValue operator[](size_t i) const { return arr->items[i]; }
+};
+
+// An in-place sort writes its order back only over the elements it sorted.
+// A callback that resized or reassigned the receiver meanwhile has left it
+// in a state the order no longer describes, so the sort refuses, as
+// Python's list.sort does; the receiver keeps what the callback made of it.
+inline void _require_unchanged_during(const JitArray* arr,
+                                      const _ArraySnapshot& snap,
+                                      const char* what, int64_t line,
+                                      int64_t col) {
+  bool same = arr->size == snap.size();
+  for (size_t i = 0; same && i < arr->size; i++) {
+    same = arr->items[i].tag == snap[i].tag &&
+           arr->items[i].data == snap[i].data;
   }
-  auto perm = culebra::stable_sort_permutation(
-      arr->size, [&](size_t a, size_t b) {
-        auto xk = keyed[reverse ? b : a].first.borrow();
-        auto yk = keyed[reverse ? a : b].first.borrow();
+  if (!same) {
+    throw culebra::CulebraError(
+        "ValueError", std::string("Array modified during ") + what, line, col);
+  }
+}
+
+// Shared body of sort_by / sorted_by: the key of each snapshotted element,
+// computed once into a second heap Array (reached from this frame like the
+// snapshot, so a collection under a later key call sees every key — a String
+// key has no owner but that Array), and the stable order of the indices by
+// those keys. Mirrors the interpreter's _keyed_sort.
+inline std::vector<size_t> _keyed_sort(const _ArraySnapshot& elems,
+                                       JitHofCallback& fn, bool reverse,
+                                       int64_t line, int64_t col) {
+  auto* keys =
+      culebra_runtime_array_new_reserved(static_cast<int64_t>(elems.size()));
+  JitOwnedVal keys_guard(JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(keys)});
+  for (size_t i = 0; i < elems.size(); i++) {
+    auto e = elems[i];
+    culebra_runtime_value_retain(e.tag, e.data);  // the call consumes one
+    auto k = _culebra_invoke1_at(fn, e, line, col);
+    culebra_runtime_array_push(keys, k.tag, k.data);  // absorbs the +1
+  }
+  return culebra::stable_sort_permutation(
+      elems.size(), [&](size_t a, size_t b) {
+        auto xk = keys->items[reverse ? b : a];
+        auto yk = keys->items[reverse ? a : b];
         return _culebra_value_ord(xk.tag, xk.data, yk.tag, yk.data,
                                   [](double p, double q) { return p < q; },
                                   line, col);
       });
-  std::vector<std::pair<JitOwnedVal, size_t>> ordered;
-  ordered.reserve(arr->size);
-  for (auto i : perm) ordered.push_back(std::move(keyed[i]));
-  return ordered;
 }
 
 // sort_by: evaluates the key function on each element once, stable-sorts
@@ -3219,12 +3257,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_sort_by(
     JitArray* arr, int8_t fn_tag, int64_t fn_data, bool reverse, int64_t line,
     int64_t col) {
   JitHofCallback fn(fn_tag, fn_data, 1,"sort_by", "f", line, col);
-  // Each computed key is held owned, so every exit path — normal, a throw
-  // from the key callback, or from the key comparison — releases it.
-  auto keyed = _keyed_sort(arr, fn, reverse, line, col);
-  std::vector<JitValue> sorted(arr->size);
-  for (size_t i = 0; i < arr->size; i++) sorted[i] = arr->items[keyed[i].second];
-  std::copy(sorted.begin(), sorted.end(), arr->items);
+  _ArraySnapshot elems(arr);
+  auto perm = _keyed_sort(elems, fn, reverse, line, col);
+  _require_unchanged_during(arr, elems, "sort_by", line, col);
+  _apply_sort_permutation(arr, perm);
 }
 
 // Non-mutating sort_by: returns a fresh array with the elements in sorted
@@ -3234,12 +3270,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_sorted_by(
     JitArray* arr, int8_t fn_tag, int64_t fn_data, bool reverse, int64_t line,
     int64_t col) {
   JitHofCallback fn(fn_tag, fn_data, 1, "sorted_by", "f", line, col);
-  // Owned keys release on every exit path (normal, callback throw, or a throw
-  // from the key comparison).
-  auto keyed = _keyed_sort(arr, fn, reverse, line, col);
-  auto* out = culebra_runtime_array_new();
-  for (auto& [k, idx] : keyed) {
-    auto e = arr->items[idx];
+  _ArraySnapshot elems(arr);
+  auto perm = _keyed_sort(elems, fn, reverse, line, col);
+  auto* out =
+      culebra_runtime_array_new_reserved(static_cast<int64_t>(perm.size()));
+  for (auto i : perm) {
+    auto e = elems[i];
     culebra_runtime_value_retain(e.tag, e.data);
     culebra_runtime_array_push(out, e.tag, e.data);
   }
@@ -3265,12 +3301,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_sort(
                      });
     return;
   }
+  // Observable: a `__lt__` / `cmp` runs, so compare over a snapshot.
+  _ArraySnapshot elems(arr);
   auto perm = culebra::stable_sort_permutation(
-      arr->size, [&](size_t a, size_t b) {
-        const auto& x = arr->items[reverse ? b : a];
-        const auto& y = arr->items[reverse ? a : b];
+      elems.size(), [&](size_t a, size_t b) {
+        auto x = elems[reverse ? b : a];
+        auto y = elems[reverse ? a : b];
         return _value_less_borrow(x.tag, x.data, y.tag, y.data, line, col);
       });
+  _require_unchanged_during(arr, elems, "sort", line, col);
   _apply_sort_permutation(arr, perm);
 }
 
@@ -3361,14 +3400,11 @@ inline JitValue _arr_minmax(JitArray* arr, bool want_max, const char* what,
         "ValueError", std::string(what) + " of empty Array", line, col);
   }
   JitValue best = arr->items[0];
-  double bestd = _arr_agg_num(best, line, col);
+  _arr_agg_num(best, line, col);  // the numeric check
   for (size_t i = 1; i < arr->size; i++) {
     auto& e = arr->items[i];
-    double x = _arr_agg_num(e, line, col);
-    if (want_max ? (x > bestd) : (x < bestd)) {
-      best = e;
-      bestd = x;
-    }
+    _arr_agg_num(e, line, col);
+    if (want_max ? _num_less(best, e) : _num_less(e, best)) best = e;
   }
   return best;
 }
@@ -3383,8 +3419,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_array_max(
   return _arr_minmax(arr, true, "max", line, col);
 }
 
-// Keyed twin of _arr_minmax. Elements are borrowed from the Array, so only
-// the callback's own argument ref and its result need handling.
+// Keyed twin of _arr_minmax. The running best is held owned across the key
+// calls (the callback may pop it from the Array); a key that passed the
+// numeric check is an immediate, so it needs no holding.
 inline JitValue _arr_minmax_by(JitArray* arr, int8_t ft, int64_t fd,
                                bool want_max, const char* what,
                                int64_t line, int64_t col) {
@@ -3397,19 +3434,20 @@ inline JitValue _arr_minmax_by(JitArray* arr, int8_t ft, int64_t fd,
     culebra_runtime_value_retain(e.tag, e.data);   // the call consumes one
     auto k = _culebra_invoke1_at(fn, e, line, col);
     JitOwnedVal kg(k);
-    return _arr_agg_num(k, line, col);
+    _arr_agg_num(k, line, col);
+    return k;
   };
-  JitValue best = arr->items[0];
-  double bestd = key_of(best);
+  auto best = _held_element(arr, 0);
+  JitValue bestk = key_of(best.borrow());
   for (size_t i = 1; i < arr->size; i++) {
-    double x = key_of(arr->items[i]);
-    if (want_max ? (x > bestd) : (x < bestd)) {
-      best = arr->items[i];
-      bestd = x;
+    auto cand = _held_element(arr, i);
+    JitValue k = key_of(cand.borrow());
+    if (want_max ? _num_less(bestk, k) : _num_less(k, bestk)) {
+      best = std::move(cand);   // releases the old best
+      bestk = k;
     }
   }
-  culebra_runtime_value_retain(best.tag, best.data);  // +1 for the caller
-  return best;
+  return best.consume();  // +1 for the caller
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_array_min_by(

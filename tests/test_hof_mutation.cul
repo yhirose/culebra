@@ -1,0 +1,79 @@
+// Array HOFs and Set operations run user code that may mutate the very
+// container they walk. The element in hand outlives the callback (the
+// receiver's ref was its only one), and a walk over a Set's members survives
+// the member vector growing under a user `hash`.
+
+fn mk(n) {
+  {n: n, drop: fn () {
+    nil
+  }}
+}
+
+// filter: the callback pops the element it was handed; it is still the one
+// filter keeps.
+mut xs = [mk(1), mk(2)]
+let kept = xs.filter(fn (x) {
+  if x.n == 2 {
+    xs.pop()
+  }
+  true
+})
+assert_eq(kept.map(|o| o.n), [1, 2])
+
+// find: the answer was popped from the receiver during the callback.
+mut ys = [mk(1), mk(2), mk(3)]
+let found = ys.find(fn (x) {
+  ys.pop()
+  x.n == 1
+})
+assert_eq(found.n, 1)
+
+// max_by / min_by: the running best is removed from the receiver.
+mut zs = [mk(5), mk(1)]
+let best = zs.max_by(fn (x) {
+  if x.n == 1 {
+    zs.remove_at(0)
+  }
+  x.n
+})
+assert_eq(best.n, 5)
+mut ws = [mk(5), mk(1)]
+let least = ws.min_by(fn (x) {
+  if x.n == 1 {
+    ws.remove_at(0)
+  }
+  x.n
+})
+assert_eq(least.n, 1)
+
+// Set operations: a `hash` that grows the set being walked.
+mut grow = false
+mut seen = {0,}
+class H {
+  new(.n) {}
+  hash() {
+    if grow {
+      grow = false
+      for i in 1..500 {
+        seen.add(100000 + i)
+      }
+    }
+    self.n
+  }
+  eq(o) {
+    type_of(o) == 'H' && self.n == o.n
+  }
+}
+let other = {H(1), H(2), 5}
+seen.add(H(7))
+seen.add(H(1))
+grow = true
+assert_eq(seen.intersect(other).size(), 1)
+grow = true
+assert_true(seen.diff(other).size() >= 500)
+grow = true
+assert_true(seen.union(other).size() >= 500)
+grow = true
+assert_true(!seen.subset(other))
+
+IO.inspect("test_hof_mutation OK")

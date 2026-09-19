@@ -9,6 +9,7 @@ import math from './test_import_helpers/math_utils.cul'
 import chain from './test_import_helpers/chain_lib.cul'
 import empty from './test_import_helpers/empty.cul'
 import multi from './test_import_helpers/multi_export.cul'
+import dropmod from './test_import_helpers/drop_export.cul'
 
 # --- Basic function / class import ---
 assert_eq(math.add(2, 3), 5)
@@ -48,5 +49,10 @@ let p_a = math.Pair.new(1, 2)
 let p_b = math2.Pair.new(1, 2)
 assert_true(type_of(p_a) == 'Pair' && type_of(p_b) == 'Pair')
 assert_eq(math2.add(1, 2), math.add(1, 2))
+
+# --- Exports carrying `drop` are released at teardown without running it ---
+# (the process segfaulted at exit otherwise; see drop_export.cul)
+assert_eq(dropmod.keeper(), 1)
+assert_eq(dropmod.kept.n, 1)
 
 IO.inspect('test_import OK')
