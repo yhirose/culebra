@@ -5344,17 +5344,18 @@ inline JitValue _ns_random_choice(JitValue* a, int64_t) {
 }
 
 // Sys
-// The doctest runner's exit guard: while set, Sys.exit throws a catchable
+// The test runners' exit guard: while set, Sys.exit throws a catchable
 // ExitError (the interp runner's install_doctest_exit_guard wording) instead
-// of terminating the process — a doc block calling Sys.exit must fail its
-// block, not kill the whole run. Process-global like the runner itself.
-inline bool& doctest_exit_guard() {
+// of terminating the process — a doc block or a unit test calling Sys.exit
+// must fail its block, not end the run with the rest unreported (and, at
+// exit(0), green). Process-global like the runners themselves.
+inline bool& test_exit_guard() {
   static bool on = false;
   return on;
 }
 inline JitValue _ns_sys_exit(JitValue* a, int64_t) {
   int64_t code = _ns_adapt::take_long(a[0]);
-  if (doctest_exit_guard()) {
+  if (test_exit_guard()) {
     throw culebra::CulebraError("ExitError",
                                 culebra::format("Sys.exit({}) called", code));
   }

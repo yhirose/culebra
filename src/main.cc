@@ -1727,7 +1727,7 @@ culebra::BlockRunner doc_block_runner(RunnerEngine engine) {
   // namespace beyond the core globals is an unresolved identifier.
   culebra::install_jit_stdlib();
   // Sys.exit must fail the block, not the run.
-  culebra::doctest_exit_guard() = true;
+  culebra::test_exit_guard() = true;
   return [run](const std::string& name,
                const std::string& code) -> culebra::DocRunOutcome {
     // A block is independent of every other: its own Runtime, where the
@@ -2015,6 +2015,8 @@ int run_test(int argc, const char** argv) {
           "culebra test: no test files found (looking for test_*.cul)");
       return 1;
     }
+    // Sys.exit must fail the test, not end the run with its verdict unsaid.
+    culebra::test_exit_guard() = true;
     auto host = culebra::make_test_host();
     summary = culebra::run_tests(
         *host, files, filter, reporter, bail_after, list_only);

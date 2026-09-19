@@ -2094,6 +2094,12 @@ add_test(NAME init_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/init_test.sh
                  $<TARGET_FILE:culebra>)
 
+# `culebra test` (src/main.cc run_tests): a test that calls Sys.exit fails and
+# the run goes on — the process ending there hid every later verdict.
+add_test(NAME unit_runner_test
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/unit_runner_test.sh
+                 $<TARGET_FILE:culebra>)
+
 # Compile-time error position symmetry (include/jit/jit.h compile() wrapper):
 # the JIT must backfill the compiling node's line/col onto position-less
 # compile-time throws, matching the interp's eval() stamping byte-for-byte.

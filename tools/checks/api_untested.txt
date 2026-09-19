@@ -23,6 +23,5 @@ Desktop.run
 IO.input
 Regex.interp
 Signal.reset
-Sys.exit
 Tensor.from_csv
 Term.flush
