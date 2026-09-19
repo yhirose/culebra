@@ -1334,14 +1334,12 @@ inline std::string ascii_capitalize(std::string s) {
   return s;
 }
 
-// Byte length of the UTF-8 scalar that starts at leading byte `c`. A
-// continuation or invalid byte reports 1, so callers always advance.
-inline size_t utf8_scalar_len(unsigned char c) {
-  if (c < 0x80) return 1;
-  if ((c >> 5) == 0x6) return 2;
-  if ((c >> 4) == 0xE) return 3;
-  if ((c >> 3) == 0x1E) return 4;
-  return 1;
+// Byte length of the UTF-8 scalar at `s[i]` (`i < s.size()`). An ill-formed
+// sequence counts as its first byte alone, so callers always advance and a
+// String splits into the same scalars everywhere `iter()` walks it.
+inline size_t utf8_scalar_len(std::string_view s, size_t i) {
+  size_t n = unicode::utf8::codepoint_length(s.data() + i, s.size() - i);
+  return n ? n : 1;
 }
 
 // Trim scalars in `chars` from one or both ends. An empty `chars` trims
@@ -1354,8 +1352,7 @@ inline std::string_view trim_chars(std::string_view s, std::string_view chars,
       return ch.size() == 1 && std::isspace(static_cast<unsigned char>(ch[0]));
     }
     for (size_t i = 0; i < chars.size();) {
-      size_t n = utf8_scalar_len(static_cast<unsigned char>(chars[i]));
-      if (i + n > chars.size()) n = 1;
+      size_t n = utf8_scalar_len(chars, i);
       if (chars.substr(i, n) == ch) return true;
       i += n;
     }
@@ -1364,8 +1361,7 @@ inline std::string_view trim_chars(std::string_view s, std::string_view chars,
   size_t b = 0, e = s.size();
   if (left) {
     while (b < e) {
-      size_t n = utf8_scalar_len(static_cast<unsigned char>(s[b]));
-      if (b + n > e) n = 1;
+      size_t n = utf8_scalar_len(s, b);
       if (!in_set(s.substr(b, n))) break;
       b += n;
     }
@@ -1374,6 +1370,9 @@ inline std::string_view trim_chars(std::string_view s, std::string_view chars,
     while (e > b) {
       size_t st = e - 1;  // walk back over UTF-8 continuation bytes
       while (st > b && (static_cast<unsigned char>(s[st]) & 0xC0) == 0x80) st--;
+      // Continuation bytes that don't end a whole scalar are each their own,
+      // as the forward walk splits them.
+      if (utf8_scalar_len(s, st) != e - st) st = e - 1;
       if (!in_set(s.substr(st, e - st))) break;
       e = st;
     }
@@ -1391,8 +1390,7 @@ inline std::string str_tr(std::string_view s, std::string_view from,
   auto scalars = [](std::string_view x) {
     std::vector<std::string_view> v;
     for (size_t i = 0; i < x.size();) {
-      size_t n = utf8_scalar_len(static_cast<unsigned char>(x[i]));
-      if (i + n > x.size()) n = 1;
+      size_t n = utf8_scalar_len(x, i);
       v.push_back(x.substr(i, n));
       i += n;
     }
@@ -1403,8 +1401,7 @@ inline std::string str_tr(std::string_view s, std::string_view from,
   std::string out;
   out.reserve(s.size());
   for (size_t i = 0; i < s.size();) {
-    size_t n = utf8_scalar_len(static_cast<unsigned char>(s[i]));
-    if (i + n > s.size()) n = 1;
+    size_t n = utf8_scalar_len(s, i);
     std::string_view ch = s.substr(i, n);
     auto it = std::find(from_s.begin(), from_s.end(), ch);
     if (it == from_s.end()) {

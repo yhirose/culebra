@@ -106,13 +106,6 @@ class LineIndex {
   std::vector<size_t> starts_;
 };
 
-// Byte length of the scalar at `s[i]`. An ill-formed byte stands for itself,
-// as an editor decoding the same bytes shows it as one U+FFFD.
-inline size_t utf8_sequence_length(std::string_view s, size_t i) {
-  size_t n = unicode::utf8::codepoint_length(s.data() + i, s.size() - i);
-  return n ? n : 1;
-}
-
 // UTF-16 code units of a scalar `n` UTF-8 bytes long. Only a 4-byte scalar
 // lies outside the BMP and takes a surrogate pair.
 inline int64_t utf16_units(size_t n) { return n == 4 ? 2 : 1; }
@@ -121,7 +114,7 @@ inline int64_t utf16_units(size_t n) { return n == 4 ? 2 : 1; }
 inline int64_t utf16_column(std::string_view line, size_t bytes) {
   int64_t units = 0;
   for (size_t i = 0; i < line.size() && i < bytes;) {
-    size_t n = utf8_sequence_length(line, i);
+    size_t n = utf8_scalar_len(line, i);
     units += utf16_units(n);
     i += n;
   }
@@ -132,7 +125,7 @@ inline int64_t utf16_column(std::string_view line, size_t bytes) {
 inline size_t byte_column(std::string_view line, int64_t units) {
   size_t i = 0;
   for (int64_t u = 0; i < line.size() && u < units;) {
-    size_t n = utf8_sequence_length(line, i);
+    size_t n = utf8_scalar_len(line, i);
     u += utf16_units(n);
     i += n;
   }
@@ -168,7 +161,7 @@ inline Json diagnostic_range(const LineIndex& lines, int64_t line,
   if (e < text.size() && ident_char(text[e])) {
     while (e < text.size() && ident_char(text[e])) e++;
   } else if (e < text.size()) {
-    e += utf8_sequence_length(text, e);
+    e += utf8_scalar_len(text, e);
   }
   return make_range(l, utf16_column(text, b), l, utf16_column(text, e));
 }

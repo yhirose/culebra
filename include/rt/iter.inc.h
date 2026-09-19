@@ -3456,14 +3456,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_array_max_by(
 }
 
 // Length in UTF-8 bytes of the next scalar at `offset`. Returns 0
-// once `offset >= len`; on an invalid lead byte, returns 1 (emit the
-// raw byte to avoid stalling the iterator). Mirrors the interpreter's
-// String.iter semantics.
+// once `offset >= len`; an ill-formed sequence yields its first byte
+// alone (emit the raw byte to avoid stalling the iterator), as
+// String.iter does.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_utf8_scalar_len(
     const char* s, int64_t offset, int64_t len) {
   if (offset >= len) return 0;
-  auto r = peg::codepoint_length(s + offset, len - offset);
-  return r == 0 ? 1 : static_cast<int64_t>(r);
+  return static_cast<int64_t>(culebra::utf8_scalar_len(
+      std::string_view(s, static_cast<size_t>(len)),
+      static_cast<size_t>(offset)));
 }
 
 // Heap-copy `scalar_len` bytes from `s + offset` into a new String.
