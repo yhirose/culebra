@@ -1267,7 +1267,17 @@ A throw at `pc` is torn down scope by scope:
 defer stack (`DeferPush`); marks are taken per frame and per scope
 (`DeferMark`) and `DeferRunTo` runs back to one. A `try` ends its region
 before the body's fall-through defer run, so a defer that throws at the
-try body's normal exit escapes its own `catch`. Program exit releases
+try body's normal exit escapes its own `catch`.
+
+A defer that throws during step 2 replaces the exception in flight, and
+the walk goes on from that scope with the replacement: `unwind` keeps it
+as an `exception_ptr`, finishes the scope's releases and the enclosing
+steps, and re-raises it at the frame's foot unless a handler on the way
+took it. `defer_run_to` has already put the replacement in the carrier
+(and ended the references of the payload it replaced), which is all a
+handler reads. The one handler that does not look is the scope's own —
+a `try` body's defers stay outside its `catch` on the throw exit as on
+the normal one. Program exit releases
 the top level's bindings without firing their `drop`
 (`suppress_frame_drop`, `language.md` §17).
 
@@ -1566,6 +1576,14 @@ statement temporaries abandoned by a throw get one pad per distinct set,
 sharing rungs by prefix, with a single re-raise at the foot. A `try`
 scope's step classifies the exception after its releases
 (`emit_classify_tail`), the order the executor uses.
+
+A step's defer run is the one `invoke` inside a pad. Its unwind edge is a
+relay (`emit_landingpad`'s `replaces` mode) that ends the exception the
+region was carrying — opened and closed on the spot, which is what frees
+it — stores the replacement in the region's slot and rejoins the step,
+so the rest of the ladder runs with it. A `try` scope reads a phi of
+which edge it arrived by, and hands a replacement its own defers threw
+on unclassified.
 
 A value live into a landing pad must be spilled — the unwinder restores
 callee-saved registers and nothing else — so a function with many

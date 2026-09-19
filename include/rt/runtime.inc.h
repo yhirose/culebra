@@ -1192,7 +1192,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_defer_run_to(int64_t mark
       _culebra_value_release_impl(r.tag, r.data);
     } catch (...) {
       _culebra_value_release_impl(v.tag, v.data);
-      // Drop remaining defers for this scope so they don't leak.
+      // A throwing defer abandons the rest of its scope's defers; they are
+      // dropped here so they don't leak.
       while (static_cast<int64_t>(s.size()) > mark) {
         auto rem = s.back();
         s.pop_back();

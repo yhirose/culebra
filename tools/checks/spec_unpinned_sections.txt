@@ -64,7 +64,6 @@
 15. Error handling > Runtime errors
 15. Error handling > Scope guard pattern
 15. Error handling > The value-nesting bound
-15. Error handling > `defer`
 15. Error handling > `throw` / `try` / `catch`
 16. Algebraic effects > Declaring an effect
 16. Algebraic effects > Semantics and limitations

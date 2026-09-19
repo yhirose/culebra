@@ -1,0 +1,13 @@
+drop inner local
+outer defer
+drop local
+caught replacement
+drop inner local
+outer defer
+drop local
+caught replacement
+outer own
+u defer
+drop u local
+top-level defer
+IndexError: index out of range at 40:13.

@@ -1234,7 +1234,17 @@ LIFO deferスタックに積まれる（`DeferPush`）。マークはフレー�
 スコープごとに取られ（`DeferMark`）、`DeferRunTo`はそのマークまで
 実行する。`try`は本体のfall-throughのdefer実行より前に自分の領域を
 終えるので、try本体の正常な出口でthrowするdeferは自分自身の`catch`
-から逃れる。プログラム終了はトップレベルの束縛を`drop`を発火させ
+から逃れる。
+
+手順2の途中でdeferがthrowすると、その例外が進行中の例外を置き換え、
+巻き戻しはそのスコープから置き換え後の例外で続く。`unwind`はそれを
+`exception_ptr`として持ち、そのスコープの解放と外側の手順を最後まで
+済ませ、途中のhandlerが引き取らなければフレームの末尾でre-raiseする。
+`defer_run_to`がすでに置き換え後の例外をキャリアに入れ（置き換えられた
+payloadの参照も終わらせ）ており、handlerが読むのはキャリアだけである。
+唯一それを見ないhandlerはそのスコープ自身のもの — `try`本体のdeferは、
+正常な出口と同じく、throwでの出口でも自分の`catch`の外にある。
+プログラム終了はトップレベルの束縛を`drop`を発火させ
 ずに解放する（`suppress_frame_drop`、`language.md` §17）。
 
 ### 5.6 コンパイラが拒否するもの
@@ -1537,6 +1547,13 @@ fn.release.2 → … → fn.unwind`）を下る。これにより各slotの解�
 re-raiseする。`try`スコープのステップは、自分の解放の後に例外を
 分類する（`emit_classify_tail`）。これはexecutorが使う順序と同じ
 である。
+
+ステップのdefer実行は、padの中でただ1つの`invoke`である。そのunwind
+edgeはrelay（`emit_landingpad`の`replaces`モード）で、領域が運んでいた
+例外をそこで終わらせ — その場で開いて閉じる。それが例外オブジェクトを
+解放する — 置き換え後の例外を領域のslotに入れてステップに戻るので、
+ladderの残りはその例外で走る。`try`スコープはどちらのedgeから来たかを
+phiで読み、自分のdeferが投げた置き換えは分類せずに先へ渡す。
 
 landing padに生きたまま入る値はspillされなければならない —
 unwinderはcallee-savedレジスタしか復元しないので — したがって

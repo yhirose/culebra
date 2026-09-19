@@ -483,8 +483,14 @@ struct JIT {
   // `__cxa_end_catch`; a pad that only cleans up and hands the throw on does
   // not (CleanupPad), so the ABI's handler count reaches the real handler
   // untouched and the exception object is freed exactly once.
+  //
+  // `replaces` is the third kind: a pad inside a cleanup region, reached by a
+  // `defer` that threw while the region was carrying an exception. The one it
+  // was carrying ends here — opened and closed on the spot, which is what
+  // frees it — and the region carries the new one from now on.
   llvm::LandingPadInst* emit_landingpad(llvm::BasicBlock* padBB,
-                                        const char* name, bool open) {
+                                        const char* name, bool open,
+                                        bool replaces = false) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     builder_.SetInsertPoint(padBB);
     auto lpadTy = llvm::StructType::get(ptrTy, builder_.getInt32Ty());
@@ -499,6 +505,11 @@ struct JIT {
           module_->getOrInsertFunction("__cxa_begin_catch", ptrTy, ptrTy),
           {excPtr});
     } else {
+      if (replaces) {
+        emit_open_exception();
+        builder_.CreateCall(module_->getOrInsertFunction(
+            "__cxa_end_catch", builder_.getVoidTy()));
+      }
       builder_.CreateStore(excPtr, exception_slot());
     }
     return lpad;

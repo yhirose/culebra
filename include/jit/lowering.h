@@ -4997,10 +4997,30 @@ struct Lowering {
       // (`for x in {iter: fn () { {a: 1} }}`). Releasing nil-clears each slot,
       // so an enclosing pad draining again is a no-op.
       j.release_unwind_temps();
+      // Set when this scope's own defer threw (Exec::unwind's flag of the
+      // same name): a try scope then hands the replacement on unclassified.
+      llvm::Value* ownDeferThrew = nullptr;
       if (cu.defer_mark_slot >= 0) {
+        // A defer that throws replaces the exception this pad carries and
+        // the ladder goes on with it (Exec::unwind's `replaced`): the relay
+        // swaps the carried exception and rejoins, so the bindings below
+        // still release and the enclosing pads see the replacement.
         auto markV = b.CreateLoad(j.valueType_, slots[cu.defer_mark_slot]);
-        b.CreateCall(j.module_->getFunction(rt::defer_run_to),
-                     {j.extract_data(markV)});
+        auto ranBB = BasicBlock::Create(j.ctx_, "vm.scope.defers.ran", fn);
+        auto relayBB = BasicBlock::Create(j.ctx_, "vm.scope.defer.exc", fn);
+        auto* fromBB = b.GetInsertBlock();
+        b.CreateInvoke(j.module_->getFunction(rt::defer_run_to), ranBB,
+                       relayBB, {j.extract_data(markV)});
+        j.emit_landingpad(relayBB, "defer.exc", /*open=*/false,
+                          /*replaces=*/true);
+        b.CreateBr(ranBB);
+        b.SetInsertPoint(ranBB);
+        if (cu.handler != Chunk::kNoHandler) {
+          auto* threw = b.CreatePHI(b.getInt1Ty(), 2, "defer.threw");
+          threw->addIncoming(b.getFalse(), fromBB);
+          threw->addIncoming(b.getTrue(), relayBB);
+          ownDeferThrew = threw;
+        }
       }
       bool hush = frame && c.suppress_frame_drop;
       auto suppress = [&](int v) {
@@ -5027,12 +5047,22 @@ struct Lowering {
       if (cu.handler == Chunk::kNoHandler) continue;  // pad dtor re-raises
       // A try scope classifies what it just cleaned up after: our own throw
       // enters the catch, a foreign one travels on to the encloser (interp's
-      // catch(...) sees the same order — cleanup, then the decision).
+      // catch(...) sees the same order — cleanup, then the decision). What
+      // the body's own defer threw is not this catch's: that arm is left
+      // open, and the pad's destructor hands it on like any cleanup pad's.
+      BasicBlock* passBB = nullptr;
+      if (ownDeferThrew) {
+        passBB = BasicBlock::Create(j.ctx_, "vm.scope.defer.pass", fn);
+        auto classifyBB = BasicBlock::Create(j.ctx_, "vm.scope.classify", fn);
+        b.CreateCondBr(ownDeferThrew, passBB, classifyBB);
+        b.SetInsertPoint(classifyBB);
+      }
       j.emit_open_exception();
       j.emit_classify_tail(frame ? nullptr
                                  : pads[static_cast<size_t>(cu.parent)],
                            depthSlot, slots[cu.caught_slot],
                            blocks.at(static_cast<int32_t>(cu.handler)));
+      if (passBB) b.SetInsertPoint(passBB);
     }
   }
 };

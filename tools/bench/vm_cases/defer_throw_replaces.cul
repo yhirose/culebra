@@ -1,0 +1,45 @@
+# A defer that throws while its scope unwinds replaces the exception in
+# flight; the unwind goes on from that scope outward with the replacement.
+fn res(name) {
+  {drop: fn () { println("drop {name}") }}
+}
+fn t() {
+  defer { println("outer defer") }
+  let a = res("local")
+  {
+    let b = res("inner local")
+    defer { throw "replacement" }
+    throw "original"
+  }
+}
+
+# Caught by the caller, after the whole frame has been left in order.
+try { t() } catch e { println("caught {e}") }
+
+# The same through a native frame (map's callback).
+println(try { [1].map(fn (x) { t() }) } catch e { "caught {e}" })
+
+# A try body's own defers run outside its catch's reach, on the throw exit
+# as on the normal one; the enclosing try gets what they throw.
+println(try {
+  try {
+    defer { throw "own" }
+    throw "original"
+  } catch e {
+    "inner {e}"
+  }
+} catch e {
+  "outer {e}"
+})
+
+# Uncaught, the replacement — a trap here — is what the program ends on.
+fn u() {
+  defer { println("u defer") }
+  let a = res("u local")
+  {
+    defer { [1][5] }
+    throw "original"
+  }
+}
+defer { println("top-level defer") }
+u()

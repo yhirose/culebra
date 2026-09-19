@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <cstring>
 #include <deque>
+#include <exception>
 #include <filesystem>
 #include <iterator>
 #include <map>
@@ -14330,7 +14331,11 @@ struct Exec {
       } catch (...) {
         if (f == base) throw;
         top = pop_inline(f);
-        return unwind_frames(top, base);
+        if (unwind_frames(top, base)) return true;
+        // Nothing below caught it: the rethrow belongs in this handler, where
+        // the replacement is the exception being handled — the caller's own
+        // `throw;` would re-raise the one it replaced.
+        throw;
       }
       if (f == base) return false;
       top = pop_inline(f);
@@ -14365,14 +14370,30 @@ struct Exec {
     for (size_t i = temps.size(); i > 0; --i)
       if (temps[i - 1] >= floor)
         release_slot(c, regs, temps[i - 1], /*as_cell=*/false);
+    // A defer that throws replaces the exception in flight, and the unwind
+    // goes on from that scope outward with the replacement: the scope's
+    // bindings still release, the enclosing scopes still run their defers,
+    // and an enclosing try scope of this frame may catch it (the carrier
+    // already holds it — defer_run_to saw to that). Not the try whose own
+    // body's defer it was: those run outside their catch's reach, as they do
+    // when the body ends normally. The JIT's pads swap the exception they
+    // carry at the same point.
+    std::exception_ptr replaced;
     for (int32_t k = chunk_innermost_cleanup(c, pc); k >= 0;) {
       const auto& cu = c.cleanups[static_cast<size_t>(k)];
       bool frame = cu.parent < 0;
       // The tag check is belt-and-braces: a scope's DeferMark runs before
       // any instruction its range covers.
+      bool own_defer_threw = false;
       if (cu.defer_mark_slot >= 0 &&
-          regs[cu.defer_mark_slot].tag == TAG_LONG)
-        culebra_runtime_defer_run_to(regs[cu.defer_mark_slot].data);
+          regs[cu.defer_mark_slot].tag == TAG_LONG) {
+        try {
+          culebra_runtime_defer_run_to(regs[cu.defer_mark_slot].data);
+        } catch (...) {
+          replaced = std::current_exception();
+          own_defer_threw = true;
+        }
+      }
       bool hush = frame && c.suppress_frame_drop;
       if (hush) culebra_runtime_set_drop_suppressed(1);
       for (int32_t s : chunk_release_order(c, cu.slot_lo, cu.slot_hi)) {
@@ -14390,7 +14411,7 @@ struct Exec {
       // for the frame here too. Suppressed at program exit.
       if (frame && !hush && c.owned_frame_depth >= 0)
         culebra_runtime_owned_scope_exit(marks[c.owned_frame_depth]);
-      if (cu.handler != Chunk::kNoHandler) {
+      if (cu.handler != Chunk::kNoHandler && !own_defer_threw) {
         culebra_runtime_try_translate();
         if (culebra_runtime_get_is_throw()) {
           culebra_runtime_clear_is_throw();
@@ -14405,6 +14426,7 @@ struct Exec {
     }
     // Uncount the frame on the way out (chunk 0 is the program itself).
     if (chunk_idx != 0) culebra_runtime_recursion_restore(frame_depth - 1);
+    if (replaced) std::rethrow_exception(replaced);
     return false;
   }
 

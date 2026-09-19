@@ -22,6 +22,7 @@ defer_basic	0
 defer_loops	0
 defer_return	0
 defer_throw	0
+defer_throw_replaces	255
 destructure	0
 dict_methods	0
 diverging_expressions	0
