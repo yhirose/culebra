@@ -58,6 +58,9 @@ field-forward-read
 # instance quietly carried. `type_of()` and printing answer the real class or
 # enum name where the baseline could only ever say "Object" for the tag it
 # never looked past.
+#
+# An enum variant also prints the way it is written now, `E.V(1)` and `E.W`,
+# where the baseline printed it as a class instance (`V {mut _0: 1}`, `W {}`).
 ctor-enum|*
 ctor-class|*
 ctor-call|*

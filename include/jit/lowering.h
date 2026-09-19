@@ -1441,38 +1441,21 @@ struct Lowering {
         }
         case Op::EnumVariant: {
           auto [line, col] = chunk_pos_at(c, i);
-          // Header-backed literals: build_variant stores both names as
-          // culebra Strings, whose length lives in the bytes before the
-          // pointer (a bare C global would read garbage there).
+          // Header-backed literals: the variant's name is also the key it is
+          // bound under, and a culebra String's length lives in the bytes
+          // before the pointer (a bare C global would read garbage there).
           auto name = [&](int32_t k) {
             return j.emit_str_literal(std::string(
                 _str_sv(reinterpret_cast<const char*>(c.consts[k].data))));
           };
-          auto variant = name(in.c);
-          auto en = name(in.d);
-          if (in.b == 0) {
-            // The singleton owns its meta, and the enum object owns the
-            // singleton — so the collector reaches it the ordinary way.
-            auto meta = j.emit_call(
-                j.module_->getOrInsertFunction(rt::make_variant_meta, ptrTy,
-                                               ptrTy, ptrTy),
-                {variant, en}, "vm.variant.meta");
-            auto inst = j.emit_value_call(
-                j.module_->getOrInsertFunction(rt::build_variant, j.valueType_,
-                                               ptrTy, ptrTy, ptrTy, i64Ty,
-                                               ptrTy, i64Ty, i64Ty, i64Ty),
-                {meta, variant, en, b.getInt64(0),
-                 llvm::ConstantPointerNull::get(ptrTy), b.getInt64(0),
-                 b.getInt64(line), b.getInt64(col)},
-                "vm.variant");
-            b.CreateStore(inst, slots[in.a]);
-          } else {
-            auto ctor = j.emit_call(
-                j.module_->getOrInsertFunction(rt::make_variant_ctor, ptrTy,
-                                               ptrTy, ptrTy, i64Ty),
-                {variant, en, b.getInt64(in.b)}, "vm.varctor");
-            b.CreateStore(j.make_func(ctor), slots[in.a]);
-          }
+          auto enum_obj = b.CreateIntToPtr(
+              j.extract_data(load_slot(in.a)), ptrTy, "vm.enum.obj");
+          j.emit_call(
+              j.module_->getOrInsertFunction(rt::enum_define_variant,
+                                             b.getVoidTy(), ptrTy, ptrTy, ptrTy,
+                                             i64Ty, i64Ty, i64Ty),
+              {enum_obj, name(in.c), name(in.d), b.getInt64(in.b),
+               b.getInt64(line), b.getInt64(col)});
           break;
         }
         case Op::TypeMatch: {

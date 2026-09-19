@@ -39,19 +39,49 @@ class Shadow {
 }
 assert_eq(Shadow.name, 'mine')
 
-# Everything with no class object of its own answers nil.
+# An enum variant answers with its enum, whichever way it was built.
 enum R {
   Ok(Any),
   Empty,
 }
+enum R2 {
+  Ok(Any),
+}
+let mk = R.Ok
+assert_eq(class_of(R.Ok(1)) == R, true)
+assert_eq(class_of(R.Empty) == R, true)
+assert_eq(class_of(mk(1)) == R, true)
+assert_eq([1, 2].map(R.Ok).all(|v| class_of(v) == R), true)
+assert_eq(class_of(R2.Ok(1)) == R, false)
+assert_eq(class_of(R2.Ok(1)) == R2, true)
+assert_eq(type_of(R.Ok(1)), 'Ok')
+
+# An enum declared in a function is a fresh object per call, and its
+# variants answer with the one that built them.
+fn local_enum() {
+  enum L { A, B(Long) }
+  (L, L.A, L.B(1))
+}
+let (l1, a1, b1) = local_enum()
+let (l2, a2, b2) = local_enum()
+assert_eq(class_of(a1) == l1 && class_of(b1) == l1, true)
+assert_eq(class_of(a2) == l2 && class_of(b2) == l2, true)
+assert_eq(class_of(a1) == l2, false)
+
+# A variant rebuilt from a Channel has no declaration to answer with.
+let (tx, rx) = Channel()
+tx.send(R.Ok(3))
+let got = rx.recv()
+assert_eq(class_of(got), nil)
+assert_eq(got == R.Ok(3), true)
+
+# Everything with no class object of its own answers nil.
 assert_eq(class_of(42), nil)
 assert_eq(class_of('s'), nil)
 assert_eq(class_of(nil), nil)
 assert_eq(class_of({a: 1}), nil)
 assert_eq(class_of([1, 2]), nil)
 assert_eq(class_of(1..3), nil)
-assert_eq(class_of(R.Ok(1)), nil)
-assert_eq(class_of(R.Empty), nil)
 
 # A spread copy is a plain Object, so it has no class either.
 assert_eq(class_of({...p}), nil)
