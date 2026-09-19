@@ -5052,6 +5052,14 @@ class Compiler {
   // What the enclosing class declares about its fields, for a member's own
   // `self.x` reads (MemberOpts::owner_fields).
   const culebra::ClassFieldTypes* self_fields_ = nullptr;
+  // The register the declared-field stores write the instance through: the
+  // ABI receiver slot, unless a closure in the frame captured `self` and
+  // the prologue moved it into a cell (draining that slot), in which case a
+  // slot holding the cell's value (compile_fn_chunk_impl).
+  int32_t field_recv_ = -1;
+  int32_t field_recv() const {
+    return field_recv_ >= 0 ? field_recv_ : chunk_.self_slot;
+  }
   const culebra::ClassFieldClasses* self_field_classes_ = nullptr;
   const FuncInfo* info_;  // this chunk's analysis (captured_locals gate)
   Chunk chunk_;
@@ -5875,7 +5883,7 @@ class Compiler {
           skip = emit(Op::Jump);  // left out: the zero already laid out
           patch_to_here(filled);
         }
-        emit(Op::ObjectSet, chunk_.self_slot, v,
+        emit(Op::ObjectSet, field_recv(), v,
              kconst_str(std::string(culebra::view_method(*f).name)),
              /*mut=*/1);
         if (pf->optional) patch_to_here(skip);
@@ -5910,7 +5918,7 @@ class Compiler {
       if (culebra::field_type_for_annotation(mv.type_annotation) !=
           culebra::FieldType::Any)
         emit_declared_field_layout({f});
-      emit(Op::ObjectSet, chunk_.self_slot, v, kconst_str(std::string(mv.name)),
+      emit(Op::ObjectSet, field_recv(), v, kconst_str(std::string(mv.name)),
            /*mut=*/1);
       if (pf->second.optional) patch_to_here(done);
     }
@@ -5932,7 +5940,7 @@ class Compiler {
     if (culebra::field_type_for_annotation(mv.type_annotation) !=
         culebra::FieldType::Any)
       emit_declared_field_layout({&f});
-    emit(Op::ObjectSet, chunk_.self_slot, owned_src(f, v),
+    emit(Op::ObjectSet, field_recv(), owned_src(f, v),
          kconst_str(std::string(mv.name)), /*mut=*/1);
   }
 
@@ -5954,7 +5962,7 @@ class Compiler {
     }
     auto idx = static_cast<int32_t>(chunk_.field_layout_specs.size());
     chunk_.field_layout_specs.push_back(std::move(spec));
-    emit(Op::FieldsInit, chunk_.self_slot, idx);
+    emit(Op::FieldsInit, field_recv(), idx);
   }
 
   // The constant a typed field with no initializer starts as (the shared
@@ -8584,6 +8592,15 @@ class Compiler {
       provided[pl.name] = {b->slot, b->is_cell, pl.optional};
       if (pl.optional) optional_fields.push_back(&pl);
     }
+    // A `self` some closure in this frame captures was moved into a cell
+    // above, leaving the ABI receiver slot drained: the field stores reach
+    // the instance through the cell's value instead.
+    if (mo.field_init_owner || mo.prologue_fields || mo.thunk_fields) {
+      if (const Binding* sb = fc.lookup("self"); sb && sb->is_cell) {
+        fc.field_recv_ = fc.alloc_slot(ast, "(self.fields)");
+        fc.emit(Op::CellGet, fc.field_recv_, sb->slot);
+      }
+    }
     // A `new` body runs the class's field initializers here — after the
     // parameters bound, before the first body statement (interp's
     // init_instance_fields timing: an arity error leaves no field behind).
@@ -8599,7 +8616,7 @@ class Compiler {
         // value per thunk parameter — the argument where this `new` has
         // one, the unfilled sentinel where it does not.
         int32_t base = fc.next_slot_;
-        fc.owned_src(ast, {fc.chunk_.self_slot, /*owned=*/false});
+        fc.owned_src(ast, {fc.field_recv(), /*owned=*/false});
         for (const auto& n : *mo.finit_params) {
           auto it = provided.find(n);
           if (it != provided.end()) {
@@ -8613,7 +8630,7 @@ class Compiler {
         fc.emit(Op::CallM, r, t, base,
                 static_cast<int32_t>(mo.finit_params->size()));
       } else {
-        fc.emit(Op::FieldInit, t, fc.chunk_.self_slot);
+        fc.emit(Op::FieldInit, t, fc.field_recv());
       }
     } else if (mo.prologue_fields) {
       // The same stores, in this frame instead of a thunk's. A declaration
@@ -8630,7 +8647,7 @@ class Compiler {
       TempScope fts(fc);
       size_t filled = fc.emit(Op::JumpIfFilled, fc.lazy_probe(*pl->at, *b));
       int32_t v = fc.alloc_temp(*pl->at);
-      fc.emit(Op::PropVal, v, fc.chunk_.self_slot, fc.kconst_str(pl->name),
+      fc.emit(Op::PropVal, v, fc.field_recv(), fc.kconst_str(pl->name),
               fc.self_field_read_tag(pl->name));
       fc.store_binding(*pl->at, *b, {v, true});
       fc.patch_to_here(filled);

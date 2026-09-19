@@ -119,4 +119,46 @@ test_a_failed_construction_yields_nothing = fn () {
 }
 test_a_failed_construction_yields_nothing()
 
+# A closure that captures `self` moves it into a cell before the field stores
+# run, so the stores must reach the instance through that cell — in the
+# `new` prologue, in the thunk a `new` calls, and in the thunk itself.
+class CapturesInNew {
+  x: Long
+
+  new(v) {
+    self.x = v
+    self.f = range(2).map(|_| self.x).collect()
+  }
+}
+
+class CapturesWithInitializer {
+  n = 1
+
+  new(v) {
+    self.v = v
+    self.g = range(2).map(|_| self.v + self.n).collect()
+  }
+}
+
+class CapturesInInitializer {
+  x: Long = 2
+  f = fn () {
+    self.x * 10
+  }
+}
+
+class CapturesWithFieldParam {
+  new(.cfg) {
+    self.blocks = range(cfg.n).map(|_| self.cfg.k).collect()
+  }
+}
+
+test_self_captured_by_a_closure = fn () {
+  assert_eq(CapturesInNew.new(5).f, [5, 5])
+  assert_eq(CapturesWithInitializer.new(5).g, [6, 6])
+  assert_eq(CapturesInInitializer.new().f(), 20)
+  assert_eq(CapturesWithFieldParam.new({n: 3, k: 7}).blocks, [7, 7, 7])
+}
+test_self_captured_by_a_closure()
+
 inspect('class-field-init OK')
