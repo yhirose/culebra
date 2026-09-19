@@ -1,0 +1,41 @@
+# A packed view's field read returns a borrowed value, like every property
+# read, but a sub-view or an enum variant is minted by the read. The view keeps
+# what it minted, so a read that discards the value, one that keeps it, a
+# re-read after the bytes change and two reads in one expression all leave no
+# reference behind.
+@packable
+enum Shape {
+  Circle(Float32),
+  Point,
+}
+
+@packable
+class Inner {
+  x: Float32
+}
+
+@packable
+class Obj {
+  shape: Shape
+  inner: Inner
+  arr: FixedArray<Int32, 4>
+}
+
+let objs = SharedBuffer.new(2, Obj)
+let v = objs[0]
+v.shape = Shape.Circle(2.0)
+v.shape
+v.inner
+v.arr
+let kept = v.shape
+v.shape = Shape.Point
+let pair = (kept, v.shape, v.shape)
+v.inner.x = 3.0
+v.arr.push(7)
+
+fn in_frame() {
+  let w = objs[1]
+  w.shape
+  w.inner.x
+}
+in_frame()

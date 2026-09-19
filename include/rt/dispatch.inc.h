@@ -1167,6 +1167,7 @@ inline void _jit_gc_enumerate_children(void* obj, uint8_t tag,
         out.push_back(o->proto());
         if (o->cls) out.push_back(o->cls);
       }
+      _jit_view_cache_each(o, [&](JitValue& v) { _gc_push_value(out, v); });
       break;
     }
     case GC_TAG_CELL:
@@ -1241,6 +1242,7 @@ inline void _jit_gc_sweep_object(void* obj, uint8_t tag) {
       delete o->non_string_props;
       if (o->is_dict) delete o->dict_;
       if (o->is_class_meta) delete o->specials;
+      if (o->is_packed_view) delete o->view_cache;
       _jit_enum_forget(o);
       delete o;
       break;

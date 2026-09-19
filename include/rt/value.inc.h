@@ -270,6 +270,16 @@ static_assert(std::size(kSpecialNames) == static_cast<size_t>(Special::Count));
 inline const char* special_name(Special s) {
   return kSpecialNames[static_cast<size_t>(s)];
 }
+// A packed view's field reads return under the +0-borrowed contract every
+// property read does, but a heap value one mints — a sub-view, an enum
+// variant — is a fresh +1. The view keeps each here, keyed by the field's
+// offset in its record, and owns it: released with the view, traced as its
+// edge. Off to the side rather than in the view's properties, which `==`,
+// display and a send would otherwise see.
+struct JitViewCache {
+  std::vector<std::pair<int64_t, JitValue>> fields;
+};
+
 // A declared enum's weak handle: the enum object holds one and every variant
 // meta it declared shares it, the way a std::weak_ptr shares a control block.
 // The enum owns its nullary singletons and its constructors, so a strong edge
@@ -500,10 +510,12 @@ struct JitObject {
   // A declared enum's object: `enum_ref` is its weak handle, which it clears
   // as it is freed (_jit_enum_forget). Never GEP'd.
   bool is_enum = false;
-  // One trailing pointer, four exclusive roles: a declared enum's weak handle
-  // (`is_enum`, see JitEnumRef), a builtin namespace's name
-  // (`is_namespace`), the class object a class-sugar instance (the only kind
-  // with a `proto`) was built by, or a class meta's special-method table
+  // One trailing pointer, five exclusive roles: a packed view's cache of the
+  // heap values its field reads minted (`is_packed_view`, see JitViewCache), a
+  // declared enum's weak handle (`is_enum`, see JitEnumRef), a builtin
+  // namespace's name (`is_namespace`), the class object a class-sugar
+  // instance (the only kind with a `proto`) was built by, or a class meta's
+  // special-method table
   // (`is_class_meta`, see Special) — owned by the meta and freed with it. The
   // instance holds a +1 on its class, released with it, so a method can name
   // the class through its receiver after the declaring scope is gone
@@ -514,6 +526,7 @@ struct JitObject {
     JitObject* cls;
     JitSpecialTable* specials;
     JitEnumRef* enum_ref;
+    JitViewCache* view_cache;
   };
 
   // --- Shape-based property access helpers ---
@@ -765,6 +778,13 @@ inline void _jit_enum_forget(JitObject* obj) {
   obj->enum_ref->obj = nullptr;
   obj->enum_ref->release();
   obj->enum_ref = nullptr;
+}
+// Each value a packed view's cache owns — an edge the release path, the
+// collector and the trial-deletion walk follow beside the view's slots.
+template <class F>
+inline void _jit_view_cache_each(JitObject* obj, F&& f) {
+  if (!obj->is_packed_view || !obj->view_cache) return;
+  for (auto& entry : obj->view_cache->fields) f(entry.second);
 }
 
 // culebra_runtime_build_class_meta's flag bits (Chunk::name_table_flags).

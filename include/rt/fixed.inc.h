@@ -267,6 +267,9 @@ inline JitValue _jit_make_fixed_array_view(int64_t id, int64_t abs_off,
   meth("get", _jit_fa_get_m);
   meth("set", _jit_fa_set_m);
   meth("iter", _jit_fa_iter);
+  // Its state is the bytes; the handle is shared by every read of the field
+  // (JitViewCache), so nothing may be written onto the handle itself.
+  h->frozen = true;
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
 
@@ -429,6 +432,7 @@ inline JitValue _jit_make_fixed_set_view(int64_t id, int64_t abs_off,
   meth("add", _jit_fs_add);
   meth("remove", _jit_fs_remove);
   meth("iter", _jit_fs_iter);
+  h->frozen = true;  // as the FixedArray view's
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
 
@@ -635,6 +639,7 @@ inline JitValue _jit_make_fixed_map_view(int64_t id, int64_t abs_off,
   meth("remove", _jit_fm_remove);
   meth("keys", _jit_fm_keys_m);
   meth("iter", _jit_fm_iter);
+  h->frozen = true;  // as the FixedArray view's
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
 
@@ -879,7 +884,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
   // branch that mints one), so any write reaching here is an add. The guard
   // above owns the key and the value on this edge; throw without releasing.
   if (_jit_value_add_refused(obj, /*is_init=*/false))
-    _jit_throw_value_add(nullptr, line, col);
+    _jit_throw_value_add(obj, nullptr, line, col);
   if (!obj->non_string_props) {
     obj->non_string_props = new JitObject::AnyKeyMap();
     // First non-String key: activate key_order and back-fill with the
@@ -1414,8 +1419,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
     int64_t col) {
   // @packable handles: a packed view's `.field` reads the backing bytes
   // (zero copy); a buffer's `.size`/`.count`/`.len` reports its length.
-  // Returns a primitive — no retain needed. (Always reaches the slow path:
-  // these names are never own slots, so the IC stays cold.)
+  // Borrowed like any other read: a heap value the view mints is cached on it
+  // (JitViewCache). (Always reaches the slow path: these names are never own
+  // slots, so the IC stays cold.)
   if (_jit_is_packed_view(obj)) {
     return _jit_packed_view_get(obj, key, line, col);
   }

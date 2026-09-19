@@ -3213,8 +3213,10 @@ for k, v in m { ... }          # yields (key, value) tuples
 `add` / `set` past capacity raise `CapacityError`. Key and value types must be
 fixed scalars; equality is by the scalar's bytes (so `FixedSet<Float32>` treats
 `0.0` and `-0.0` as distinct). Assigning the whole field is a `TypeError` —
-mutate through the view. The bytes live in the record, so the collection shares
-across isolates with the buffer.
+mutate through the view's methods. The view itself holds nothing but the way to
+the bytes, so writing onto it (`m.note = 1`, `m[42] = 1`) is an
+`ImmutableError`. The bytes live in the record, so the collection shares across
+isolates with the buffer.
 
 #### Optional fields: `T?`
 

@@ -90,4 +90,13 @@ w.join()
 assert_eq(shared[0].tags.contains(111), true)
 assert_eq(shared[0].counts.get(5), 55)
 
+// The view holds only the way to the bytes, and every read of the field hands
+// out the same one, so nothing may be written onto the view itself.
+let held = SharedBuffer.new(1, Bag)
+let hv = held[0]
+assert_throws("ImmutableError", fn () { hv.counts.note = 1 })
+assert_throws("ImmutableError", fn () { hv.counts[42] = 1 })
+assert_throws("ImmutableError", fn () { hv.tags.note = 1 })
+assert_eq(hv.counts.get(42), nil)
+
 IO.inspect("test_fixedmapset OK")

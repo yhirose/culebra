@@ -230,6 +230,7 @@ culebra_runtime_owned_scope_exit(int64_t mark_arg) {
       case TAG_OBJECT: {
         auto* o = reinterpret_cast<JitObject*>(p);
         for (auto& entry : o->slots) self(entry.value, id, self);
+        _jit_view_cache_each(o, [&](JitValue& v) { self(v, id, self); });
         if (o->key_order && o->non_string_props) {
           for (const auto& k : *o->key_order) {
             self(k, id, self);
@@ -438,6 +439,13 @@ inline void _culebra_value_release_node(int8_t tag, int64_t data) {
         }
         for (auto& entry : o->slots) {
           _culebra_value_release_impl(entry.value.tag, entry.value.data);
+        }
+        _jit_view_cache_each(o, [](JitValue& v) {
+          _culebra_value_release_impl(v.tag, v.data);
+        });
+        if (o->is_packed_view) {
+          delete o->view_cache;
+          o->view_cache = nullptr;
         }
         // Sidecar teardown. Both `key_order` and the AnyKeyMap hold
         // a +1 ref on each refcounted (Tuple) key, plus the map holds

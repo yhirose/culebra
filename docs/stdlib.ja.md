@@ -3125,8 +3125,10 @@ for k, v in m { ... }          # (key, value) タプルを yield
 
 容量超過の`add` / `set`は`CapacityError`。キー/値型は固定スカラに限り、等価は
 スカラのバイト比較（`FixedSet<Float32>`は`0.0`と`-0.0`を別物とみなす）。
-フィールドまるごとの代入は`TypeError` — view経由で変更する。バイトはレコード内
-にあるので、bufferとともにisolate間で共有される。
+フィールドまるごとの代入は`TypeError` — viewのメソッド経由で変更する。view自体は
+バイトへの道筋しか持たないので、viewへの書き込み（`m.note = 1`、`m[42] = 1`）は
+`ImmutableError`。バイトはレコード内にあるので、bufferとともにisolate間で共有
+される。
 
 #### Optional フィールド: `T?`
 

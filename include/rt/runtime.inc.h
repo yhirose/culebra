@@ -3176,13 +3176,19 @@ inline void _jit_overwrite_slot(JitObjectEntry& entry,
 // non-String sidecar — so the closed field set holds however the write is
 // spelled. `key` is null for a non-String key, which is an entry rather than
 // a property.
-[[noreturn]] inline void _jit_throw_value_add(const char* key, int64_t line,
+// A FixedArray/Set/Map view is frozen too — its state is the bytes behind it
+// — and is named as what it is.
+[[noreturn]] inline void _jit_throw_value_add(const JitObject* obj,
+                                              const char* key, int64_t line,
                                               int64_t col) {
+  const char* what = obj->is_fixed_array_view ? "a FixedArray view"
+                     : obj->has_own("__fs_id__") ? "a FixedSet view"
+                     : obj->has_own("__fm_id__") ? "a FixedMap view"
+                                                 : "a @value instance";
   throw culebra::CulebraError(
       "ImmutableError",
-      key ? culebra::format("cannot add property '{}' to a @value instance",
-                            key)
-          : std::string("cannot add an entry to a @value instance"),
+      key ? culebra::format("cannot add property '{}' to {}", key, what)
+          : culebra::format("cannot add an entry to {}", what),
       line, col);
 }
 
@@ -3203,7 +3209,7 @@ inline void _jit_reject_value_add(JitObject* obj, const char* key, int8_t tag,
                                   bool is_init) {
   if (!_jit_value_add_refused(obj, is_init)) return;
   _culebra_value_release_impl(tag, data);
-  _jit_throw_value_add(key, line, col);
+  _jit_throw_value_add(obj, key, line, col);
 }
 
 // Raise the well-known contract error at declaration execution time.
@@ -3658,6 +3664,28 @@ inline JitValue _jit_make_fixed_set_view(int64_t id, int64_t abs_off,
 inline JitValue _jit_make_fixed_map_view(int64_t id, int64_t abs_off,
                                          const culebra::PackableField& f);
 
+// The value a packed view's read of the field at `field_off` last minted, or
+// null (see JitViewCache).
+inline JitValue* _jit_packed_view_cached(JitObject* view, int64_t field_off) {
+  if (!view->view_cache) return nullptr;
+  for (auto& [off, v] : view->view_cache->fields)
+    if (off == field_off) return &v;
+  return nullptr;
+}
+// Hand `minted` (+1) to the view, replacing what that field last minted, and
+// return it borrowed.
+inline JitValue _jit_packed_view_cache(JitObject* view, int64_t field_off,
+                                       JitValue minted) {
+  if (auto* held = _jit_packed_view_cached(view, field_off)) {
+    _culebra_value_release_impl(held->tag, held->data);
+    *held = minted;
+    return minted;
+  }
+  if (!view->view_cache) view->view_cache = new JitViewCache();
+  view->view_cache->fields.emplace_back(field_off, minted);
+  return minted;
+}
+
 inline JitValue _jit_packed_view_get(JitObject* view, const char* key,
                                     int64_t line = 0, int64_t col = 0) {
   int64_t id = view->slots[view->find_slot("__packedview_id__")].value.data;
@@ -3674,13 +3702,27 @@ inline JitValue _jit_packed_view_get(JitObject* view, const char* key,
                         _jit_packed_view_class(view, *core), key), line, col);
   }
   int64_t abs_off = off + static_cast<int64_t>(f->offset);
-  if (f->layout.is_fixed_array) return _jit_make_fixed_array_view(id, abs_off, *f);
-  if (f->layout.is_fixed_set) return _jit_make_fixed_set_view(id, abs_off, *f);
-  if (f->layout.is_fixed_map) return _jit_make_fixed_map_view(id, abs_off, *f);
-  if (f->layout.is_struct)
-    return {TAG_OBJECT, reinterpret_cast<int64_t>(
-                            _jit_make_nested_view(id, abs_off, f->layout.elem_type.c_str()))};
-  return _jit_packable_read_field(core->data + off, *f);
+  auto field_off = static_cast<int64_t>(f->offset);
+  // A sub-view reads the bytes live, so the one a field first minted serves
+  // every later read.
+  if (f->layout.is_fixed_array || f->layout.is_fixed_set ||
+      f->layout.is_fixed_map || f->layout.is_struct) {
+    if (auto* held = _jit_packed_view_cached(view, field_off)) return *held;
+    JitValue sub;
+    if (f->layout.is_fixed_array) sub = _jit_make_fixed_array_view(id, abs_off, *f);
+    else if (f->layout.is_fixed_set) sub = _jit_make_fixed_set_view(id, abs_off, *f);
+    else if (f->layout.is_fixed_map) sub = _jit_make_fixed_map_view(id, abs_off, *f);
+    else
+      sub = {TAG_OBJECT, reinterpret_cast<int64_t>(_jit_make_nested_view(
+                             id, abs_off, f->layout.elem_type.c_str()))};
+    return _jit_packed_view_cache(view, field_off, sub);
+  }
+  // An enum variant is a snapshot of the bytes, so each read mints one; the
+  // cache holds the latest, which a reader that kept it still has its own
+  // reference to.
+  JitValue v = _jit_packable_read_field(core->data + off, *f);
+  if (v.tag == TAG_OBJECT) return _jit_packed_view_cache(view, field_off, v);
+  return v;
 }
 
 inline void _jit_packed_view_set(JitObject* view, const char* key, int8_t tag,
