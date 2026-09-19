@@ -22,6 +22,8 @@ RUNS = 5
 def sync():
     if DEVICE.type == "cuda":
         torch.cuda.synchronize()
+    elif DEVICE.type == "mps":
+        torch.mps.synchronize()
 
 
 def time_op(name, body):
