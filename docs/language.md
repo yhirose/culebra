@@ -3860,7 +3860,8 @@ Block scope (not function scope) means:
 * `defer` in a conditional block fires only if that block actually ran.
 * To tie cleanup to the function, place `defer` at the top of the
   function body (the function body itself is a block).
-* Top-level `defer` runs when the program exits.
+* Top-level `defer` runs when the program exits — an imported module's
+  top-level `defer` too, after the entry module's.
 
 A `return` inside a defer body exits only the defer closure, not the
 enclosing function. `throw` inside a defer body aborts that defer and
@@ -5584,6 +5585,20 @@ area("hello")  # → 5      (String)
 
 Anonymous function expressions `let f = fn(...) {...}` are unaffected.
 Multimethods only apply to **top-level `fn name(...)` declarations**.
+
+The overloads of a name belong to the scope that declares them. An `if`
+or `cond` arm is not a scope of its own (§6), so a `fn name` written in
+one joins the overloads of the scope around it, from the moment the arm
+runs:
+
+```culebra
+fn describe(x: Long) { 'a number' }
+if true {
+  fn describe(x: String) { 'a string' }
+}
+inspect(describe(1))     # => 'a number'
+inspect(describe('hi'))  # => 'a string'
+```
 
 **Default parameters and arity.** A method with default parameters
 matches any call whose positional-argument count is between its
