@@ -212,8 +212,8 @@ check_same "lazy ns missing bare"     'let x = Time.typo'
 check_same "lazy ns via bound value"  'let x = Time
 x.typo'
 
-# The well-known property contract (drop/iter/has_next/next must be a 0-arg
-# Function) throws from four places. Three carried a position already; the
+# The well-known property contract (a Function bound to drop/iter/has_next/
+# next takes no arguments) throws from four places. Three carried a position already; the
 # method-template check inside build_class_meta printed location-less under
 # the JIT because nothing published the op position before the call, while
 # the interp stamped the CLASS_DECL node.
@@ -221,7 +221,7 @@ check_same "wk contract proto method"  'class P { new() { self.x = 1 }
   next(n) { n } }'
 check_same "wk contract overload set"  'class P { drop() { nil }
   drop(a) { a } }'
-check_same "wk contract ctor slot"     'class P { new() { self.drop = 42 } }
+check_same "wk contract ctor slot"     'class P { new() { self.drop = fn (a) { a } } }
 P.new()'
 check_same "wk contract trait default" 'trait P { tag() -> Long
   next(x) { x } }'
