@@ -50,7 +50,7 @@ PHASES_PROFILE=1 ./build/culebra --jit benchmarks/tensor/gpt_phases.cul gpu medi
   is the minimum over rounds. A GPU's timing drifts with temperature and
   with whatever else the machine is doing, and two runs taken back to back
   see the same drift.
-- **Both sides wait for the device.** `Tensor.eval` and `.detach()` return
+- **Both sides wait for the device.** `Tensor.eval` and `.item()` return
   after the GPU has finished; the PyTorch scripts call
   `torch.cuda.synchronize()` (or `torch.mps.synchronize()`) before reading
   the clock.
@@ -63,7 +63,11 @@ PHASES_PROFILE=1 ./build/culebra --jit benchmarks/tensor/gpt_phases.cul gpu medi
   (`nn.Linear`, `F.scaled_dot_product_attention`, `F.cross_entropy`,
   `torch.optim.Adam` with its default implementation); the Culebra side
   follows the training loop the Tensor chapter of the stdlib reference
-  describes (a leaf per parameter, `.detach()` on each update).
+  describes (a leaf per parameter, `Tensor.adam_step` for the update). Each
+  side uses its library's optimizer: until 2026-09-18 the Culebra step spelled
+  Adam out as about ten tensor ops per parameter — the GPU small step took
+  20.1 ms that way against 12.8 with `adam_step` — so the ratios published
+  before then read high.
 
 Sizes (vocab / width / heads / layers / sequence / batch):
 
@@ -89,7 +93,7 @@ Sizes (vocab / width / heads / layers / sequence / batch):
 
 ## Numbers
 
-RTX 3090 (driver 591.86) and i7-12700KF under WSL2, 2026-09-16. Culebra
+RTX 3090 (driver 591.86) and i7-12700KF under WSL2, 2026-09-18. Culebra
 0.6.0 built from this tree (`just build`), PyTorch 2.9.1+cu128. The ratio
 is Culebra's time over PyTorch's, so below 1 means Culebra is faster.
 
@@ -97,47 +101,46 @@ is Culebra's time over PyTorch's, so below 1 means Culebra is faster.
 
 | config | Culebra GPU | PyTorch CUDA | ratio |
 |---|---:|---:|---:|
-| small | 20.8 | 6.59 | 3.16 |
-| medium | 79.2 | 45.4 | 1.75 |
-| large | 206.8 | 132.6 | 1.56 |
+| small | 12.8 | 6.14 | 2.08 |
+| medium | 58.3 | 42.7 | 1.37 |
+| large | 160.0 | 124.9 | 1.28 |
 
 The same step on the CPU (minimum of 3 rounds):
 
 | config | Culebra CPU | PyTorch CPU | ratio |
 |---|---:|---:|---:|
-| small | 299.1 | 143.5 | 2.08 |
+| small | 178.7 | 133.6 | 1.34 |
 
-Both sides' losses fall by the same amount (small: 8.37 to 6.31 in
-Culebra, 8.37 to 6.30 in PyTorch). The GPU ratio falls as the step grows
-— 3.2 at small, 1.6 at large — while the single ops below sit between
-0.76 and 1.16 of PyTorch, the cross-entropy aside. What is left is spread
-across the backward pass rather than sitting in one op: its matrix
-products, the LayerNorm pullback, and the optimizer's elementwise work.
-The attention pullback used to be the exception — it rebuilt the
-[H, T, T] scores the fused forward does not keep, and walked them — and
-is now two kernels that rebuild them in registers instead: 1.38 ms
-against that forward's 0.33 at one medium layer's shape.
+Both sides' losses fall by the same amount (small on the GPU: 8.38 to
+6.33 in Culebra, 8.37 to 6.30 in PyTorch). The GPU ratio falls as the
+step grows — 2.1 at small, 1.3 at large — while the single ops below sit
+between 0.45 and 1.14 of PyTorch. What is left on the GPU is spread across
+the backward pass rather than sitting in one op: its matrix products, the
+copies that materialize a permuted or reshaped gradient, and the first
+accumulation of each gradient. On the CPU the backward's attention,
+cross-entropy and LayerNorm pullbacks are still compositions of ops (the
+fused ones are CUDA kernels), about 68 of its 125 ms.
 
 ### Single ops on the GPU (µs, minimum of 5 rounds)
 
 | op | Culebra | PyTorch | ratio |
 |---|---:|---:|---:|
-| mm 256×1024×4096 | 138.5 | 131.0 | 1.06 |
-| addmm 256×1024×4096 | 141.3 | 133.2 | 1.06 |
-| mm 1024×1024×1024 | 149.1 | 138.1 | 1.08 |
-| causal attention, 8 heads × 1024 rows × 64 | 244.6 | 322.9 | 0.76 |
-| layer_norm 4096×1024 | 66.2 | 76.9 | 0.86 |
-| softmax 1024×1024 | 35.4 | 33.7 | 1.05 |
-| relu(x·y + z) 4096×1024 | 183.7 | 184.5 | 1.00 |
-| sum over axis 1, 4096×1024 | 42.9 | 46.0 | 0.93 |
-| index_select 4096 rows of 16384×768 | 66.2 | 57.3 | 1.16 |
-| cross-entropy 4096×16384 | 4053.7 | 780.1 | 5.20 |
+| mm 256×1024×4096 | 130.6 | 124.1 | 1.05 |
+| addmm 256×1024×4096 | 131.5 | 125.5 | 1.05 |
+| mm 1024×1024×1024 | 133.8 | 133.1 | 1.01 |
+| causal attention, 8 heads × 1024 rows × 64 | 232.5 | 302.6 | 0.77 |
+| layer_norm 4096×1024 | 63.0 | 73.6 | 0.86 |
+| softmax 1024×1024 | 32.5 | 31.6 | 1.03 |
+| relu(x·y + z) 4096×1024 | 173.0 | 175.1 | 0.99 |
+| sum over axis 1, 4096×1024 | 40.3 | 44.3 | 0.91 |
+| index_select 4096 rows of 16384×768 | 62.9 | 55.1 | 1.14 |
+| cross-entropy 4096×16384 | 335.2 | 737.2 | 0.45 |
 
 ### Transformer block forward on the GPU (ms/iter, minimum of 5 rounds)
 
 | seq × d_model | Culebra | PyTorch | ratio |
 |---|---:|---:|---:|
-| 256 × 512 | 0.247 | 0.260 | 0.95 |
-| 256 × 768 | 0.383 | 0.368 | 1.04 |
-| 256 × 1024 | 0.521 | 0.495 | 1.05 |
-| 512 × 1024 | 0.981 | 0.889 | 1.10 |
+| 256 × 512 | 0.251 | 0.265 | 0.95 |
+| 256 × 768 | 0.364 | 0.369 | 0.99 |
+| 256 × 1024 | 0.515 | 0.501 | 1.03 |
+| 512 × 1024 | 0.928 | 0.902 | 1.03 |
