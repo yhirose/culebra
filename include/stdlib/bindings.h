@@ -5345,10 +5345,9 @@ inline JitValue _ns_random_choice(JitValue* a, int64_t) {
 
 // Sys
 // The test runners' exit guard: while set, Sys.exit throws a catchable
-// ExitError (the interp runner's install_doctest_exit_guard wording) instead
-// of terminating the process — a doc block or a unit test calling Sys.exit
-// must fail its block, not end the run with the rest unreported (and, at
-// exit(0), green). Process-global like the runners themselves.
+// ExitError instead of terminating the process — a doc block or a unit test
+// calling Sys.exit must fail its block, not end the run with the rest
+// unreported (and, at exit(0), green). Process-global like the runners.
 inline bool& test_exit_guard() {
   static bool on = false;
   return on;

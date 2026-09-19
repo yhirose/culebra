@@ -1314,8 +1314,9 @@ inline constexpr const char* kHttpAlreadyStarted =
 
 #if !defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
 // Open and not yet served — what both bind and serve need before anything else,
-// and what a route or mount needs too: the tables they add to are read by the
-// worker threads a start launches, without a lock.
+// and what a static mount needs too: it writes a table the worker threads a
+// start launches read without a lock. (Routes are recorded by the binding and
+// installed at serve, so they never reach a started server's tables.)
 // Single-use guard: a second start would move-assign onto a joinable
 // accept_thread (std::terminate) or restart a stopped httplib::Server (hangs).
 // Reject it as a catchable error — serve again with a fresh Http.server().

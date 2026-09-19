@@ -132,11 +132,9 @@ class EffectsLowerer {
         src_is_original_(src_is_original), path_(std::move(path)),
         markers_{src, src_is_original} {}
 
-  // What the scopes enclosing the node being walked bind — the `outer` of
-  // collect_local_names, which decides whether a bare `x = …` in a lowered
-  // body declares or reassigns. transform() extends it per fn-like node; a
-  // sub-lowerer inherits the current set.
-  void set_outer(std::set<std::string> names) { outer_ = std::move(names); }
+  // The program the walk starts at — the root of the ScopeChain that decides
+  // whether a bare `x = …` in a lowered body declares or reassigns.
+  void set_scope_root(const peg::Ast* root) { scopes_.root = root; }
 
   // --- entry: rebuild the tree, lowering effect constructs -------------
   std::shared_ptr<peg::Ast> transform(std::shared_ptr<peg::Ast> ast) {
@@ -146,10 +144,7 @@ class EffectsLowerer {
     // ours — hand the walk to a lowerer over the right slice base.
     if (!path_.empty() && ast->path != path_) {
       if (auto src = fragment_source_for(ast->path)) {
-        EffectsLowerer sub(*src, effect_fns_,
-                           /*src_is_original=*/false, ast->path);
-        sub.outer_ = outer_;
-        return sub.transform(ast);
+        return sub_lowerer(*src, false, ast->path).transform(ast);
       }
     }
     if (ast->tag == "EFFECT_FN_DECL"_) return lower_effect_fn_decl(ast);
@@ -172,17 +167,12 @@ class EffectsLowerer {
           op, args, line));
       return reparse_expr(synth, line);
     }
-    // A scope-opening node extends what its children see (the `outer` of
-    // collect_local_names); a `handle` is lowered above, its body's own
-    // level being the lowering's business.
-    if (opens_scope(ast->tag)) {
-      auto saved = outer_;
-      outer_ = scope_names_of_node(*ast, outer_);
-      for (auto& child : ast->nodes) child = transform(child);
-      outer_ = std::move(saved);
-      return ast;
-    }
+    // A scope-opening node is on the chain while its children are walked; a
+    // `handle` is lowered above, its body's own level being the lowering's.
+    bool opens = opens_scope(ast->tag);
+    if (opens) scopes_.nodes.push_back(ast.get());
     for (auto& child : ast->nodes) child = transform(child);
+    if (opens) scopes_.nodes.pop_back();
     return ast;
   }
 
@@ -191,8 +181,16 @@ class EffectsLowerer {
   const std::set<std::string>& effect_fns_;
   bool src_is_original_ = false;
   std::string path_;
-  std::set<std::string> outer_;
+  ScopeChain scopes_;
   mutable LineMarkers markers_;
+
+  // A lowerer over another buffer, at the same place in the program.
+  EffectsLowerer sub_lowerer(const std::string& src, bool src_is_original = false,
+                             std::string path = "") const {
+    EffectsLowerer sub(src, effect_fns_, src_is_original, std::move(path));
+    sub.scopes_ = scopes_;
+    return sub;
+  }
 
   // Error-position line: provenance when known, else the raw (fragment) line.
   int64_t err_line(const peg::Ast& n) const {
@@ -1541,14 +1539,11 @@ class EffectsLowerer {
             "InternalError",
             "effects A-normalization produced unparseable source", 0, 0);
       }
-      EffectsLowerer sub(*src2, effect_fns_);
-      sub.outer_ = outer_;
-      return sub.build_class_from_program(class_name, *prog2, param_names,
-                                          rv_name);
+      return sub_lowerer(*src2).build_class_from_program(
+          class_name, *prog2, param_names, rv_name);
     }
-    EffectsLowerer sub(*src, effect_fns_);
-    sub.outer_ = outer_;
-    return sub.build_class_from_program(class_name, *prog, param_names, rv_name);
+    return sub_lowerer(*src).build_class_from_program(class_name, *prog,
+                                                      param_names, rv_name);
   }
 
   // Names of named fn decls in the body (statement level or nested control
@@ -1586,7 +1581,7 @@ class EffectsLowerer {
       const std::string& class_name, const peg::Ast& program,
       const std::vector<std::string_view>& param_names,
       const std::string& rv_name) const {
-    auto locals = collect_local_names(program, outer_);
+    auto locals = collect_local_names(program, names_in_scope(scopes_));
     for (auto& fname : collect_named_fn_decls(program)) locals.insert(fname);
     auto rewrite = make_promoted_locals(program, locals, param_names);
 
@@ -1884,11 +1879,9 @@ class EffectsLowerer {
       throw CulebraError("InternalError",
                          "effects transform produced unparseable source", 0, 0);
     }
-    fn = transform_generators_in(fn, *synth, outer_);
-    EffectsLowerer sub(*synth, effect_fns_,
-                       /*src_is_original=*/false, label);
-    sub.outer_ = outer_;
-    auto out = sub.transform(fn);
+    ScopeChain chain = scopes_;
+    fn = transform_generators_in(fn, *synth, chain);
+    auto out = sub_lowerer(*synth, false, label).transform(fn);
     // Restore original line numbers from the provenance markers; machinery
     // lines fall back to the declaration's line. Subtrees spliced in by the
     // nested lowering above carry other labels and are already repositioned.
@@ -1908,12 +1901,10 @@ class EffectsLowerer {
       throw CulebraError("InternalError",
                          "effects transform produced unparseable source", 0, 0);
     }
-    fn = transform_generators_in(fn, *synth, outer_);
+    ScopeChain chain = scopes_;
+    fn = transform_generators_in(fn, *synth, chain);
     auto body = fn->nodes.back();
-    EffectsLowerer sub(*synth, effect_fns_,
-                       /*src_is_original=*/false, label);
-    sub.outer_ = outer_;
-    auto out = sub.transform(body);
+    auto out = sub_lowerer(*synth, false, label).transform(body);
     return reposition_ast(out, marker_line_map(*synth), fallback_line, label);
   }
 
@@ -1937,7 +1928,7 @@ inline std::shared_ptr<peg::Ast> transform_effects_in(
   auto effect_fns = collect_effect_fn_names(*ast);
   EffectsLowerer lowerer(src, effect_fns, /*src_is_original=*/true,
                          ast->path);
-  lowerer.set_outer(top_level_names(*ast));
+  lowerer.set_scope_root(ast.get());
   return lowerer.transform(ast);
 }
 

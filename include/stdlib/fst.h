@@ -108,21 +108,22 @@ template <typename O> inline const char* _map_kind() {
 // catches a bit-flip inside it. The constructors here (`*_check`) pay the
 // full read once; a query only opens, since a matcher is rebuilt per call
 // (see the file comment).
-inline ::fst::set open_set(std::string_view bc, bool verify = false) {
-  ::fst::set m(bc.data(), bc.size());
+template <typename Matcher>
+inline Matcher open(std::string_view bc, const char* kind, bool verify) {
+  Matcher m(bc.data(), bc.size());
   _require_valid(static_cast<bool>(m) &&
                      (!verify || ::fst::verify(bc.data(), bc.size())),
-                 "Set");
+                 kind);
   return m;
+}
+
+inline ::fst::set open_set(std::string_view bc, bool verify = false) {
+  return open<::fst::set>(bc, "Set", verify);
 }
 
 template <typename O>
 inline ::fst::map<O> open_map(std::string_view bc, bool verify = false) {
-  ::fst::map<O> m(bc.data(), bc.size());
-  _require_valid(static_cast<bool>(m) &&
-                     (!verify || ::fst::verify(bc.data(), bc.size())),
-                 _map_kind<O>());
-  return m;
+  return open<::fst::map<O>>(bc, _map_kind<O>(), verify);
 }
 
 // --- Building ------------------------------------------------------------

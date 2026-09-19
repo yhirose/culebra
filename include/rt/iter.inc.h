@@ -815,16 +815,15 @@ struct _JitNumAcc {
   }
 };
 
-// Numeric `<` for min/max over elements already checked numeric: exact
-// between two Longs (a double has 53 bits, so past 2^53 two Longs a unit
-// apart round to one value), by value across the pair otherwise.
-inline bool _num_less(JitValue a, JitValue b) {
-  if (a.tag == TAG_LONG && b.tag == TAG_LONG) return a.data < b.data;
-  auto d = [](JitValue v) {
-    return v.tag == TAG_LONG ? static_cast<double>(v.data)
-                             : _culebra_float_to_double(v.data);
-  };
-  return d(a) < d(b);
+// Whether `cand` replaces `best` in a min / max, by the language's `<`: exact
+// between two Longs, where comparing their doubles would tie neighbours past
+// 2^53. Ties keep the earlier element.
+inline bool _beats(JitValue cand, JitValue best, bool want_max, int64_t line,
+                   int64_t col) {
+  JitValue lo = want_max ? best : cand, hi = want_max ? cand : best;
+  return _culebra_value_ord(lo.tag, lo.data, hi.tag, hi.data,
+                            [](double p, double q) { return p < q; }, line,
+                            col);
 }
 
 // Coerce one aggregate element to double, reporting a non-numeric like the
@@ -893,7 +892,7 @@ inline JitValue _iter_minmax(int8_t it, int64_t id, bool want_max,
   _iter_agg_num(v, line, col);  // the numeric check
   while (drive.pull(v)) {
     _iter_agg_num(v, line, col);
-    if (want_max ? _num_less(best, v) : _num_less(v, best)) best = v;
+    if (_beats(v, best, want_max, line, col)) best = v;
   }
   drive.finish();
   return best;
@@ -937,7 +936,7 @@ inline JitValue _iter_minmax_by(int8_t it, int64_t id, int8_t ft, int64_t fd,
   while (drive.pull(v)) {
     JitOwnedVal cand(v);
     JitValue k = key_of(cand.borrow());
-    if (want_max ? _num_less(bestk, k) : _num_less(k, bestk)) {
+    if (_beats(k, bestk, want_max, line, col)) {
       best = std::move(cand);   // releases the old best
       bestk = k;
     }
@@ -3172,9 +3171,7 @@ inline int _orderable_kind(const JitValue& v) {
 }
 
 // Reorder an array's slots into `perm` order. Each element's ref moves with
-// its slot, so no retain/release is involved. sort_by inlines this same gather
-// against its (key, index) pairs — it already has the indices and building a
-// separate perm vector for them measurably costs more than the duplication.
+// its slot, so no retain/release is involved.
 inline void _apply_sort_permutation(JitArray* arr,
                                     const std::vector<size_t>& perm) {
   std::vector<JitValue> sorted(arr->size);
@@ -3202,6 +3199,10 @@ struct _ArraySnapshot {
   }
   size_t size() const { return arr->size; }
   JitValue operator[](size_t i) const { return arr->items[i]; }
+  JitArray* release() {  // the copy's +1, to a caller that returns it
+    guard.consume();
+    return arr;
+  }
 };
 
 // An in-place sort writes its order back only over the elements it sorted.
@@ -3272,14 +3273,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_sorted_by(
   JitHofCallback fn(fn_tag, fn_data, 1, "sorted_by", "f", line, col);
   _ArraySnapshot elems(arr);
   auto perm = _keyed_sort(elems, fn, reverse, line, col);
-  auto* out =
-      culebra_runtime_array_new_reserved(static_cast<int64_t>(perm.size()));
-  for (auto i : perm) {
-    auto e = elems[i];
-    culebra_runtime_value_retain(e.tag, e.data);
-    culebra_runtime_array_push(out, e.tag, e.data);
-  }
-  return out;
+  _apply_sort_permutation(elems.arr, perm);  // the copy is the result
+  return elems.release();
 }
 
 // Keyless natural-order sort (in place). Elements compare by the same rule as
@@ -3404,7 +3399,7 @@ inline JitValue _arr_minmax(JitArray* arr, bool want_max, const char* what,
   for (size_t i = 1; i < arr->size; i++) {
     auto& e = arr->items[i];
     _arr_agg_num(e, line, col);
-    if (want_max ? _num_less(best, e) : _num_less(e, best)) best = e;
+    if (_beats(e, best, want_max, line, col)) best = e;
   }
   return best;
 }
@@ -3442,7 +3437,7 @@ inline JitValue _arr_minmax_by(JitArray* arr, int8_t ft, int64_t fd,
   for (size_t i = 1; i < arr->size; i++) {
     auto cand = _held_element(arr, i);
     JitValue k = key_of(cand.borrow());
-    if (want_max ? _num_less(bestk, k) : _num_less(k, bestk)) {
+    if (_beats(k, bestk, want_max, line, col)) {
       best = std::move(cand);   // releases the old best
       bestk = k;
     }

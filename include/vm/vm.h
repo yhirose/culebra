@@ -14636,37 +14636,45 @@ struct Exec {
   // The closure a dynamic call runs, in the JIT's order (emit_invoke): the
   // value itself when it is a Function, else the two cold probes — a
   // callable instance's `__call__`, then a class object's `new` — and the
-  // TypeError a missing method has always raised when neither answers. The
-  // keyword-only guard runs on the closure found, and only once it passes
-  // does the receiver change hands: on a probe arm the called value becomes
-  // the receiver, its +1 minted here, and the receiver the call started
-  // with (`self_reg`, when the call has one) is released and nil'd — so
-  // the frame's release ladder neither frees it a second time nor, on the
-  // guard's throw, strands the minted +1.
+  // TypeError a missing method has always raised when neither answers.
+  static JitValue probe_callee(const JitValue& callee, int64_t line,
+                               int64_t col) {
+    if (callee.tag == TAG_FUNC) return callee;
+    auto tag = static_cast<int8_t>(callee.tag);
+    JitValue target = culebra_runtime_class_call_method(tag, callee.data);
+    if (target.tag != TAG_FUNC)
+      target = culebra_runtime_class_new_method(tag, callee.data);
+    if (target.tag != TAG_FUNC)
+      culebra_runtime_type_error_typed(line, col, "Function", tag);
+    return target;
+  }
+
+  // On a probe arm the called value becomes the receiver: its +1 is minted
+  // here, and the receiver the call started with (`self_reg`, when the call
+  // has one) is released and nil'd, so the frame's release ladder does not
+  // free it a second time. A call with a keyword-only guard runs it first,
+  // so the guard's throw strands no minted +1.
+  static void adopt_callee_as_self(const JitValue& callee, JitValue* self_reg,
+                                   JitValue& self) {
+    if (callee.tag == TAG_FUNC) return;
+    _culebra_value_retain_impl(static_cast<int8_t>(callee.tag), callee.data);
+    if (self_reg) {
+      _culebra_value_release_impl(static_cast<int8_t>(self_reg->tag),
+                                  self_reg->data);
+      *self_reg = JitValue{TAG_NIL, 0};
+    }
+    self = callee;
+  }
+
+  // The closure a positional call runs, with the keyword-only guard between
+  // finding it and handing the receiver over.
   static JitValue dynamic_callee(const JitValue& callee, JitValue* self_reg,
                                  JitValue& self, int64_t argc, int64_t line,
                                  int64_t col) {
-    auto tag = static_cast<int8_t>(callee.tag);
-    JitValue target = callee;
-    bool probed = target.tag != TAG_FUNC;
-    if (probed) {
-      target = culebra_runtime_class_call_method(tag, callee.data);
-      if (target.tag != TAG_FUNC)
-        target = culebra_runtime_class_new_method(tag, callee.data);
-      if (target.tag != TAG_FUNC)
-        culebra_runtime_type_error_typed(line, col, "Function", tag);
-    }
+    JitValue target = probe_callee(callee, line, col);
     culebra_runtime_check_pos_count_cls(
         reinterpret_cast<JitClosure*>(target.data), argc, line, col);
-    if (probed) {
-      _culebra_value_retain_impl(tag, callee.data);
-      if (self_reg) {
-        _culebra_value_release_impl(static_cast<int8_t>(self_reg->tag),
-                                    self_reg->data);
-        *self_reg = JitValue{TAG_NIL, 0};
-      }
-      self = callee;
-    }
+    adopt_callee_as_self(callee, self_reg, self);
     return target;
   }
 
@@ -16371,41 +16379,12 @@ struct Exec {
           JitValue callee = regs[in.b];
           JitValue self = kc.has_receiver ? regs[in.c]
                                           : JitValue{TAG_NO_SELF, 0};
-          if (callee.tag != TAG_FUNC) {
-            // The same two cold probes the plain call makes, in the same
-            // order: a callable instance becomes both callee and receiver
-            // (releasing the receiver this call started with, which nothing
-            // else takes now), and a class object hands over its `new`.
-            JitValue m = culebra_runtime_class_call_method(
-                static_cast<int8_t>(callee.tag), callee.data);
-            if (m.tag == TAG_FUNC) {
-              _culebra_value_retain_impl(static_cast<int8_t>(callee.tag),
-                                           callee.data);
-              if (kc.has_receiver) {
-                _culebra_value_release_impl(static_cast<int8_t>(self.tag),
-                                              self.data);
-                regs[in.c] = JitValue{TAG_NIL, 0};
-              }
-              self = callee;
-            } else {
-              m = culebra_runtime_class_new_method(
-                  static_cast<int8_t>(callee.tag), callee.data);
-              if (m.tag == TAG_FUNC) {
-                _culebra_value_retain_impl(static_cast<int8_t>(callee.tag),
-                                             callee.data);
-                if (kc.has_receiver) {
-                  _culebra_value_release_impl(
-                      static_cast<int8_t>(self.tag), self.data);
-                  regs[in.c] = JitValue{TAG_NIL, 0};
-                }
-                self = callee;
-              }
-            }
-            if (m.tag != TAG_FUNC)
-              culebra_runtime_type_error_typed(
-                  line, col, "Function", static_cast<int8_t>(callee.tag));
-            callee = m;
-          }
+          // The same two cold probes the plain call makes, in the same order;
+          // no keyword-only guard, since the resolver binds keywords itself.
+          JitValue target = probe_callee(callee, line, col);
+          adopt_callee_as_self(callee, kc.has_receiver ? &regs[in.c] : nullptr,
+                               self);
+          callee = target;
           // Rooted: the run stays in this frame's registers across the call,
           // like the plain call's args, so a safepoint collect beneath it
           // sees them. A copy into a heap vector would sit off the scanned

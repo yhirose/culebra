@@ -47,20 +47,76 @@ inline void _arith_guard_numeric(const char* op, int8_t lt, int8_t rt,
                                   _culebra_tag_name(rt), line, col);
 }
 
-// Walk a Set's members for a probe that may run a user `hash` / `eq`: by
-// index, since that code may grow the vector, and over a member the walk
-// holds, since it may also drop the set's own ref to it.
-template <class F>
-inline void _set_walk(JitSet* s, F&& f) {
+// Move-only owned JitValue for runtime *helper* bodies — the C++-side twin of
+// the codegen `Owned` handle (see the `Owned` struct further down). Releases
+// its `+1` on scope exit — every exit path, INCLUDING C++ exception unwind —
+// unless `consume()`d (handed to an out-param / return / a sink that takes
+// ownership). The iterator/HOF helpers held raw `JitValue` across a throwing
+// `_culebra_invoke*` and leaked on the throw path (leak-fuzzer P0); wrapping
+// a helper's owned locals in this makes the throw path release for free. Also
+// the single chokepoint for callee-consumes contracts (a @packable store, a
+// native method's `self`/args — see `JitMethodSelf`/`JitMethodArgs`).
+struct JitOwnedVal {
+  JitValue v;
+  bool owned;
+  explicit JitOwnedVal(JitValue val) : v(val), owned(true) {}
+  JitOwnedVal(int8_t t, int64_t d) : v{t, d}, owned(true) {}
+  JitOwnedVal(JitOwnedVal&& o) noexcept : v(o.v), owned(o.owned) { o.owned = false; }
+  JitOwnedVal& operator=(JitOwnedVal&& o) noexcept {  // releases the old value
+    if (this != &o) {
+      if (owned) _culebra_value_release_impl(v.tag, v.data);
+      v = o.v;
+      owned = o.owned;
+      o.owned = false;
+    }
+    return *this;
+  }
+  JitOwnedVal(const JitOwnedVal&) = delete;
+  JitOwnedVal& operator=(const JitOwnedVal&) = delete;
+  JitValue borrow() const { return v; }            // read without consuming
+  JitValue consume() { owned = false; return v; }  // hand the +1 onward
+  ~JitOwnedVal() { if (owned) _culebra_value_release_impl(v.tag, v.data); }
+
+  // Borrow -> +1, the runtime-helper twin of codegen's emit_borrow_to_owned. A
+  // native adapter only borrows its arguments (the dispatcher releases them
+  // on return), so one handed back as the *result* needs its own reference.
+  static JitOwnedVal from_borrowed(JitValue val) {
+    culebra_runtime_value_retain(val.tag, val.data);
+    return JitOwnedVal(val);
+  }
+};
+
+// Whether a probe of this member for a Set can run a user `hash` / `eq`: an
+// Object can define them, and a container can hold one.
+inline bool _member_reaches_user_code(int8_t tag) {
+  return tag == TAG_OBJECT || tag == TAG_ARRAY || tag == TAG_TUPLE ||
+         tag == TAG_SET;
+}
+
+// Whether `pred` holds for every member of `s`, stopping at the first that it
+// does not. The walk is by index, since a user `hash` / `eq` run by the probe
+// may grow the vector, and holds a member such a probe could drop the set's
+// own ref to.
+template <class Pred>
+inline bool _set_all(JitSet* s, Pred&& pred) {
   for (size_t i = 0; i < s->members.size(); i++) {
     JitValue m = s->members[i];
-    culebra_runtime_value_retain(m.tag, m.data);
-    struct Hold {
-      JitValue v;
-      ~Hold() { _culebra_value_release_impl(v.tag, v.data); }
-    } hold{m};
-    f(m);
+    if (!_member_reaches_user_code(m.tag)) {
+      if (!pred(m)) return false;
+      continue;
+    }
+    auto held = JitOwnedVal::from_borrowed(m);
+    if (!pred(held.borrow())) return false;
   }
+  return true;
+}
+
+template <class F>
+inline void _set_walk(JitSet* s, F&& f) {
+  _set_all(s, [&](JitValue m) {
+    f(m);
+    return true;
+  });
 }
 
 // Same-tag equality matching the interpreter's operator==. Strings compare by
@@ -115,11 +171,7 @@ inline bool _culebra_value_equal(int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
       if (a->members.size() != b->members.size()) return false;
       if (!b->index) return false;
       culebra::ValueWalkFrame walk;
-      bool all = true;
-      _set_walk(a, [&](JitValue m) {
-        if (all && !b->index->contains(m)) all = false;
-      });
-      return all;
+      return _set_all(a, [&](JitValue m) { return b->index->contains(m); });
     }
     case TAG_ARRAY: {
       // Element-wise eq (structural), matching interp's _array_eq.
@@ -2086,20 +2138,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitSet* culebra_runtime_set_sym_diff(JitSet* a
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_set_subset(JitSet* a,
                                                                JitSet* b) {
-  bool all = true;
-  _set_walk(a, [&](JitValue v) {
-    if (all && !b->index->contains(v)) all = false;
-  });
-  return all;
+  return _set_all(a, [&](JitValue v) { return b->index->contains(v); });
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_set_superset(JitSet* a,
                                                                  JitSet* b) {
-  bool all = true;
-  _set_walk(b, [&](JitValue v) {
-    if (all && !a->index->contains(v)) all = false;
-  });
-  return all;
+  return _set_all(b, [&](JitValue v) { return a->index->contains(v); });
 }
 
 // Mutating add: returns 1 on insert, 0 if already present. Hands the
@@ -3483,45 +3527,6 @@ inline JitValue _jit_packable_read_field(const uint8_t* base,
   if (f.type == "Bool") { uint8_t v; std::memcpy(&v, p, 1); return {TAG_BOOL, v ? 1 : 0}; }
   return {TAG_NIL, 0};
 }
-
-// Move-only owned JitValue for runtime *helper* bodies — the C++-side twin of
-// the codegen `Owned` handle (see the `Owned` struct further down). Releases
-// its `+1` on scope exit — every exit path, INCLUDING C++ exception unwind —
-// unless `consume()`d (handed to an out-param / return / a sink that takes
-// ownership). The iterator/HOF helpers held raw `JitValue` across a throwing
-// `_culebra_invoke*` and leaked on the throw path (leak-fuzzer P0); wrapping
-// a helper's owned locals in this makes the throw path release for free. Also
-// the single chokepoint for callee-consumes contracts (a @packable store, a
-// native method's `self`/args — see `JitMethodSelf`/`JitMethodArgs`).
-struct JitOwnedVal {
-  JitValue v;
-  bool owned;
-  explicit JitOwnedVal(JitValue val) : v(val), owned(true) {}
-  JitOwnedVal(int8_t t, int64_t d) : v{t, d}, owned(true) {}
-  JitOwnedVal(JitOwnedVal&& o) noexcept : v(o.v), owned(o.owned) { o.owned = false; }
-  JitOwnedVal& operator=(JitOwnedVal&& o) noexcept {  // releases the old value
-    if (this != &o) {
-      if (owned) _culebra_value_release_impl(v.tag, v.data);
-      v = o.v;
-      owned = o.owned;
-      o.owned = false;
-    }
-    return *this;
-  }
-  JitOwnedVal(const JitOwnedVal&) = delete;
-  JitOwnedVal& operator=(const JitOwnedVal&) = delete;
-  JitValue borrow() const { return v; }            // read without consuming
-  JitValue consume() { owned = false; return v; }  // hand the +1 onward
-  ~JitOwnedVal() { if (owned) _culebra_value_release_impl(v.tag, v.data); }
-
-  // Borrow -> +1, the runtime-helper twin of codegen's emit_borrow_to_owned. A
-  // native adapter only borrows its arguments (the dispatcher releases them
-  // on return), so one handed back as the *result* needs its own reference.
-  static JitOwnedVal from_borrowed(JitValue val) {
-    culebra_runtime_value_retain(val.tag, val.data);
-    return JitOwnedVal(val);
-  }
-};
 
 // Encode a primitive JitValue into field `f`'s raw bytes. Numeric coercion
 // mirrors the interp (Long<->Float implicit). Pure borrow-and-write: it

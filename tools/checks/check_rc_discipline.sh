@@ -172,9 +172,11 @@ ratchet "bare RC calls (sendable_rt.h)" "$(count_bare include/conc/sendable.h)" 
 # kept element, find's answer and min_by/max_by's running best are held
 # owned across the user callback, which may pop them from the receiver
 # (their only owner until then); the three helpers share the one site.
+# 4 -> 5 (2026-09-19, reviewed): `_set_all` holds a Set member whose probe can
+# run a user `hash` / `eq`, which may drop the set's own ref to it.
 rbrw=$(grep -rE --include='*.h' "JitOwnedVal::from_borrowed\(" include/ \
        | grep -vcE "^[^:]*:[[:space:]]*//" || true)
-ratchet "runtime borrow->owned seam sites" "$rbrw" 4
+ratchet "runtime borrow->owned seam sites" "$rbrw" 5
 
 # Codegen-side hand-placed throw guards: the automatic unwind-temp window
 # is the default cleaner for a codegen-owned +1, so the hand-placed

@@ -302,21 +302,17 @@ struct Parser {
       while (p < end && (*p >= '0' && *p <= '9')) advance();
       if (p == exp) fail("expected a digit in the exponent");
     }
-    std::string buf(start, p);
     if (number_mode != "float" && !is_float) {
       int64_t n = 0;
-      auto r = std::from_chars(buf.data(), buf.data() + buf.size(), n);
-      if (r.ec == std::errc{}) return B::integer(n);
+      if (std::from_chars(start, p, n).ec == std::errc{}) return B::integer(n);
       // Past Long's range: JSON bounds no integer, so it reads as a Float —
       // what JavaScript makes of every number (`std::stoll` threw a C++
       // out_of_range no `try` could catch).
     }
+    std::string buf(start, p);  // strtod wants a terminated string
     errno = 0;
-    char* stop = nullptr;
-    double d = std::strtod(buf.c_str(), &stop);
-    if (stop != buf.c_str() + buf.size() || errno == ERANGE) {
-      fail("number out of range");
-    }
+    double d = std::strtod(buf.c_str(), nullptr);
+    if (errno == ERANGE) fail("number out of range");
     return B::real(d);
   }
 };

@@ -686,16 +686,17 @@ inline std::string box_local(std::string_view name) {
   return "_bx_" + std::string(name);
 }
 
-// The instance field a promoted name is stored under. The synthesized state
-// class has methods of its own (a generator's iterator protocol, an effect
-// body's `_step` / `_eff_*`), so a local spelled like one lives under a
-// mangled field rather than overwriting the method — `let dispose = 'x'`
-// silently skipped the generator's defers otherwise.
+// The instance field a promoted name is stored under. A user's local gets a
+// namespace of its own, apart from the state class's methods (the iterator
+// protocol, `_step`), its machinery fields and the names the runtime reads
+// off an object (`drop`) — `let dispose = 'x'` silently skipped a generator's
+// defers when a local shared the method's name. The machinery's own names
+// (`_g_*`, `_eff_*`, like the `_eff_outer` a nested handle is handed) are
+// read back by their spelling and keep it.
 inline std::string instance_field(std::string_view name) {
-  static const std::set<std::string_view> taken = {
-      "iter", "has_next", "next", "dispose", "_step", "_eff_finalize",
-      "_eff_refork"};
-  return taken.contains(name) ? "_l_" + std::string(name) : std::string(name);
+  if (name.starts_with("_g_") || name.starts_with("_eff_"))
+    return std::string(name);
+  return "_l_" + std::string(name);
 }
 
 // Where a promoted name lives, as source: the box's field when it is boxed,
@@ -801,41 +802,51 @@ inline bool opens_scope(unsigned int tag) {
          tag == "HANDLE"_;
 }
 
-// Every name bound at `n`'s own scope level: assignment targets (declared
-// or bare), destructure leaves, and nested `fn` / `class` / `enum` names
-// among its children, without entering a child that opens a scope of its
-// own (whose bindings are that scope's — a loop's binding included).
-inline void level_names(const peg::Ast& n, std::set<std::string>& out) {
-  using namespace peg::udl;
-  std::function<void(const peg::Ast&)> walk = [&](const peg::Ast& c) {
-    if (c.tag == "MULTIFN_DECL"_ || c.tag == "CLASS_DECL"_ ||
-        c.tag == "ENUM_DECL"_ || c.tag == "EFFECT_FN_DECL"_) {
-      out.insert(std::string(c.nodes[first_non_decorator_index(c)]->token));
-      return;
-    }
-    if (opens_scope(c.tag)) return;
-    if (c.tag == "ASSIGNMENT"_) {
-      auto av = view_assignment(c);
-      if (const auto* t = assign_name_target(c, av))
-        out.insert(std::string(t->token));
-    } else if (c.tag == "DESTRUCTURE_ASSIGN"_ && c.nodes.size() >= 3) {
-      for_each_pattern_binding(*c.nodes[2], [&](std::string_view nm, size_t,
-                                               size_t) {
-        out.insert(std::string(nm));
-      });
-    }
-    for (auto& g : c.nodes) walk(*g);
-  };
-  for (auto& c : n.nodes) walk(*c);
+// Positional parameter names of a PARAMETERS node, skipping the kw-only
+// separator and any `**kwargs` rest. Shared by the generator and effects
+// transforms — both feed the names into ctor slot emission, so the skip rules
+// must stay in lockstep.
+inline std::vector<std::string_view> collect_positional_param_names(
+    const peg::Ast& params_ast) {
+  std::vector<std::string_view> names;
+  for (const auto& pn : params_ast.nodes) {
+    if (is_kw_only_sep(*pn) || is_kwargs_rest(*pn)) continue;
+    names.push_back(view_parameter(*pn).name);
+  }
+  return names;
 }
 
-// What is visible inside a scope-opening node: the names its enclosing
-// scopes bind, what the node itself binds on entry (parameters, a loop's
-// or an arm's pattern), and what its own level binds.
-inline std::set<std::string> scope_names_of_node(
-    const peg::Ast& n, const std::set<std::string>& outer) {
+// What `c` binds at the level it sits on: an assignment target (declared or
+// bare), a destructure's leaves, a nested `fn` / `class` / `enum` name —
+// without entering a node that opens a scope of its own (whose bindings are
+// that scope's, a loop's binding included).
+inline void bind_level(const peg::Ast& c, std::set<std::string>& out) {
   using namespace peg::udl;
-  std::set<std::string> names = outer;
+  if (c.tag == "MULTIFN_DECL"_ || c.tag == "CLASS_DECL"_ ||
+      c.tag == "ENUM_DECL"_ || c.tag == "EFFECT_FN_DECL"_) {
+    auto head = c.nodes[first_non_decorator_index(c)]->token;
+    out.insert(std::string(culebra::parse_generic_head(head).outer));
+    return;
+  }
+  if (opens_scope(c.tag)) return;
+  if (c.tag == "ASSIGNMENT"_) {
+    auto av = view_assignment(c);
+    if (const auto* t = assign_name_target(c, av))
+      out.insert(std::string(t->token));
+  } else if (c.tag == "DESTRUCTURE_ASSIGN"_ && c.nodes.size() >= 3) {
+    for_each_pattern_binding(*c.nodes[2], [&](std::string_view nm, size_t,
+                                             size_t) {
+      out.insert(std::string(nm));
+    });
+  }
+  for (auto& g : c.nodes) bind_level(*g, out);
+}
+
+// Add what a scope-opening node makes visible inside it: what it binds on
+// entry (parameters, a loop's or an arm's pattern) and what its own level
+// binds.
+inline void add_scope_names(const peg::Ast& n, std::set<std::string>& names) {
+  using namespace peg::udl;
   auto bind = [&](std::string_view nm, size_t, size_t) {
     names.insert(std::string(nm));
   };
@@ -856,12 +867,32 @@ inline std::set<std::string> scope_names_of_node(
       for_each_pattern_binding(*arm->nodes[0], bind);
   }
   if (params && params->tag == "PARAMETERS"_) {
-    for (const auto& pn : params->nodes) {
-      if (is_kw_only_sep(*pn) || is_kwargs_rest(*pn)) continue;
-      names.insert(std::string(view_parameter(*pn).name));
-    }
+    for (auto nm : collect_positional_param_names(*params))
+      names.insert(std::string(nm));
   }
-  level_names(n, names);
+  for (auto& c : n.nodes) bind_level(*c, names);
+}
+
+// Where a node sits: the program, and the scope-opening nodes between it and
+// the node, outermost first. A walk carries this (pointers only) and turns it
+// into names — the `outer` of collect_local_names — only for a body it
+// actually lowers, so a program with no generator or effect pays nothing.
+struct ScopeChain {
+  const peg::Ast* root = nullptr;
+  std::vector<const peg::Ast*> nodes;
+};
+
+inline std::set<std::string> names_in_scope(const ScopeChain& chain) {
+  using namespace peg::udl;
+  std::set<std::string> names;
+  if (!chain.root) return names;
+  // A one-statement program is that statement, with no STATEMENTS above it.
+  if (chain.root->tag == "STATEMENTS"_) {
+    for (auto& c : chain.root->nodes) bind_level(*c, names);
+  } else {
+    bind_level(*chain.root, names);
+  }
+  for (const auto* n : chain.nodes) add_scope_names(*n, names);
   return names;
 }
 
@@ -882,8 +913,7 @@ inline bool is_flat_tuple_pattern(const peg::Ast& pattern) {
 // destructure's leaf) declares only where no enclosing scope binds `x`,
 // since otherwise it reassigns that binding (docs §Scope), and promoting
 // it would silently split the two. `outer` is the enclosing scopes' bound
-// names (scope_names_of_node, per scope-opening ancestor). Stops at nested
-// fn boundaries.
+// names (names_in_scope). Stops at nested fn boundaries.
 inline std::set<std::string> collect_local_names(
     const peg::Ast& body, const std::set<std::string>& outer) {
   using namespace peg::udl;
@@ -1180,20 +1210,6 @@ inline bool swap_body_with_wrapper_params(
 // Stage 3 and Stage 6b — both stages seed `ctor_inits` with their own
 // state-field prefix (`_g_drained` / `_g_phase` / etc.) before calling
 // this to append the per-instance bindings.
-// Positional parameter names of a PARAMETERS node, skipping the kw-only
-// separator and any `**kwargs` rest. Shared by the generator and effects
-// transforms — both feed the names into ctor slot emission, so the skip rules
-// must stay in lockstep.
-inline std::vector<std::string_view> collect_positional_param_names(
-    const peg::Ast& params_ast) {
-  std::vector<std::string_view> names;
-  for (const auto& pn : params_ast.nodes) {
-    if (is_kw_only_sep(*pn) || is_kwargs_rest(*pn)) continue;
-    names.push_back(view_parameter(*pn).name);
-  }
-  return names;
-}
-
 inline void emit_ctor_param_and_local_inits(
     const std::vector<std::string_view>& param_names,
     const std::set<std::string>& locals,
@@ -1766,37 +1782,24 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
 
 // Walk the AST, transforming every yield-carrying MULTIFN_DECL. The
 // walk visits every node — yield-free modules pay one whole-tree
-// pointer pass (dwarfed by the PEG parse already run). `outer` is what the
-// scopes enclosing `ast` bind (see collect_local_names); a fn-like node
-// extends it for its own body.
+// pointer pass (dwarfed by the PEG parse already run). `chain` is where
+// `ast` sits; a scope-opening node is on it while its children are walked.
 inline std::shared_ptr<peg::Ast> transform_generators_in(
-    std::shared_ptr<peg::Ast> ast, const std::string& src,
-    const std::set<std::string>& outer) {
+    std::shared_ptr<peg::Ast> ast, const std::string& src, ScopeChain& chain) {
   using namespace peg::udl;
-  std::set<std::string> own;
-  const std::set<std::string>* scope = &outer;
-  if (opens_scope(ast->tag)) {
-    own = scope_names_of_node(*ast, outer);
-    scope = &own;
-  }
+  bool opens = opens_scope(ast->tag);
+  if (opens) chain.nodes.push_back(ast.get());
   for (auto& child : ast->nodes) {
-    child = transform_generators_in(child, src, *scope);
+    child = transform_generators_in(child, src, chain);
   }
+  if (opens) chain.nodes.pop_back();
   if (ast->tag == "MULTIFN_DECL"_) {
     auto& body = ast->nodes.back();
     if (fn_body_has_yield(*body)) {
-      return transform_one_generator_fn(ast, src, outer);
+      return transform_one_generator_fn(ast, src, names_in_scope(chain));
     }
   }
   return ast;
-}
-
-// The names a whole program binds at its top level — the `outer` of
-// everything declared in it.
-inline std::set<std::string> top_level_names(const peg::Ast& ast) {
-  std::set<std::string> names;
-  level_names(ast, names);
-  return names;
 }
 
 // Parse + the generator transformation pass. The public entry
@@ -1807,7 +1810,8 @@ inline std::shared_ptr<peg::Ast> parse_with_generator_transforms(
     std::vector<std::string>& msgs) {
   auto ast = parse(path, expr, msgs);
   if (!ast) return ast;
-  return transform_generators_in(ast, expr, top_level_names(*ast));
+  ScopeChain chain{ast.get(), {}};
+  return transform_generators_in(ast, expr, chain);
 }
 
 // Reject the yields no pass claimed. Runs from `parse_with_transforms` once
