@@ -4480,9 +4480,13 @@ directly at the **top level** (a scope that never exits). Those fire
 at the **GC backstop**:
 a collection finalizes every orphaned resource exactly once — before
 reclaiming memory, while the structure is still intact — in the
-spirit of Python's PEP 442. Backstop timing is collection-driven
-(force one with `GC.stat()`), and finalization order within one
-collection is unspecified. The collection at **program exit** is the
+spirit of Python's PEP 442. The background collections run on an
+allocation threshold and find their roots conservatively, so *when*
+one of them reaches a given orphan is not specified; `GC.stat()` runs
+a collection that finds its roots from the reference counts, and it
+finalizes every orphan unreachable at that call, on every backend.
+Finalization order within one collection is unspecified. The
+collection at **program exit** is the
 exception: like top-level bindings (below), an orphan that survives to
 exit is *not* finalized — its memory is reclaimed but `drop` does not
 run, on every backend. When cleanup must happen at a known point,

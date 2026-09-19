@@ -426,10 +426,12 @@ CPython's `gc_refs` algorithm can be run over this heap
 refcount and subtract one for every reference held by another tracked
 object (found by walking children); what remains is the count
 contributed by things *outside* the heap — stack values, globals,
-borrows. `CULEBRA_GC_REFS=1` makes this the collector's root-finding
-(seed from objects with a positive residue, no stack scan at all), and
-comparing its answer against the conservative scanner's on the same
-heap classifies every object the two disagree about:
+borrows. An explicit collection (`GC.stat()`) uses this as its
+root-finding — seed from objects with a positive residue, the stack
+scanned only for the traced-only Strings (§6.2) — and
+`CULEBRA_GC_REFS=1` extends it to every collection. Comparing its
+answer against the conservative scanner's on the same heap classifies
+every object the two disagree about:
 
 - **Conservative-dead, `gc_refs`-retained, and reachable only from
   other tracked objects**: a reference cycle — expected, and exactly
@@ -502,7 +504,18 @@ deterministic `drop`. So RC stays primary, and this collector's only
 job is reclaiming what RC structurally cannot — plus strings, which are
 traced-only (§3).
 
-### 6.2 Conservative root-finding
+### 6.2 Root-finding
+
+The collector has two ways to find roots (`Heap::Roots`). The
+threshold-triggered collections scan conservatively, as described in
+this section. An explicit collection (`GC.stat()`) seeds from the
+reference counts instead — the classifier of §5.1 used as a root
+finder — so what it reclaims is a function of the refcounts alone,
+identical across lanes and runs; only the traced-only Strings, which
+carry no count, are still found by the stack scan. `CULEBRA_GC_REFS=1`
+makes every collection refcount-seeded: the test axis for the counts'
+exactness, since an under-counted reference would free a live object
+there.
 
 At the moment a collection runs (`Heap::scan_roots`), every machine
 word that, read as a pointer, lands on a valid object's starting
@@ -578,6 +591,15 @@ destructor runs and its slot is reclaimed. A full mark-and-sweep from
 the actual root set reclaims any unreachable object regardless of how
 stale its refcount is — the property that makes leaks recoverable
 rather than permanent.
+
+One window needs care under both root sources: an object whose
+refcount just reached zero is still registered while its release runs
+— it frees children and fires `drop`, user code that can collect. Until
+its `forget()` the heap keeps it a root and leaves its edges out of the
+refcount accounting (`Heap::begin_teardown`, the role CPython's
+`GC_UnTrack` plays at the top of `tp_dealloc`); otherwise a collection
+from inside that `drop` would sweep the corpse under its own release,
+or discount live children through edges it has already dropped.
 
 ### 6.4 Why not a moving or fully precise collector
 

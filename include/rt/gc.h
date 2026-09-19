@@ -41,6 +41,7 @@ static inline char** backtrace_symbols(void* const*, int) { return nullptr; }
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <csetjmp>
 #include <cstddef>
 #include <cstdint>
@@ -330,7 +331,7 @@ class Heap {
   bool safepoint_pending() const { return collect_pending_; }
   void safepoint_collect() {
     if (collect_paused_ || safepoint_unsafe_depth > 0) return;
-    collect_and_rearm();
+    collect_and_rearm(pending_roots_);
   }
 
   // De-register an object whose memory the CALLER frees (RC release-to-zero
@@ -438,16 +439,32 @@ class Heap {
   using NoRcFn = bool (*)(uint8_t type_tag);
   void set_no_rc_fn(NoRcFn f) { no_rc_fn_ = f; }
 
-  // Full conservative mark-sweep. Returns objects reclaimed. MUST be
-  // called directly on the mutator thread (scan walks this thread's stack
-  // for roots). Non-moving.
+  // Where a collection finds its roots.
   //
-  // Soundness vs completeness: a conservative collector NEVER frees a
-  // reachable object (soundness — the safety guarantee), but MAY retain an
-  // unreachable one when a stale stack/register word looks like a pointer
-  // to it (completeness is best-effort). So callers/tests may only assume
-  // "reachable survives"; the exact reclaimed set is non-deterministic.
-  size_t collect() {
+  // kConservative: the machine stack scanned word by word, plus the non-stack
+  // tables. Sound — a reachable object is never freed — but a stale stack or
+  // register word can keep garbage alive, so WHAT one collection reclaims is
+  // not deterministic. The amortised backstop uses this: a threshold trip
+  // only has to bound memory, and the scan is the cheaper pass.
+  //
+  // kRefcounts: CPython's gc_refs (collect_refs). An object whose refcount
+  // exceeds the references the heap itself holds to it is a root; nothing is
+  // read off the stack for a refcounted object. The reclaimed set is then a
+  // function of the refcounts alone — the same on every lane and every run —
+  // which is what lets a collection the program asks for (GC.stat) promise
+  // that every orphaned resource unreachable at that call is finalized by it.
+  // It walks every object's edges once more than the scan (~2.5x the cost at
+  // 400k objects) and it trusts the refcounts to be exact: an over-counted
+  // reference merely retains, an under-counted one frees a live object. That
+  // exactness is what the whole suite under CULEBRA_GC_REFS=1 (every
+  // collection refcount-seeded) + CULEBRA_GC_STRESS=1 tests.
+  enum class Roots { kConservative, kRefcounts };
+
+  // Full mark-sweep from the given roots. Returns objects reclaimed. MUST be
+  // called directly on the mutator thread (the conservative scan walks this
+  // thread's stack, and so does the traced-only seed of the refcount mode).
+  // Non-moving.
+  size_t collect(Roots roots = Roots::kConservative) {
     if (never()) return 0;
     // wasm: a helper frame between VM frames may hold the only reference to
     // a live object in wasm locals the scan cannot reach — defer to the next
@@ -455,19 +472,11 @@ class Heap {
     // the explicit entry points (GC.stat) the same way as threshold trips.
     if constexpr (kDeferToSafepoint) {
       if (safepoint_unsafe_depth > 0) {
-        collect_pending_ = true;
+        request_pending(roots);
         return 0;
       }
     }
-    // Experimental refcount-based cycle collection (CPython gc_refs): seed
-    // roots purely from the reference counts the compiler already maintains —
-    // no stack scan, no shadow stack. Because a live value's refcount counts
-    // it, this dissolves the safepoint-liveness problem (a freshly allocated
-    // object held only in a register has refcount 1 and zero internal refs, so
-    // it is a root and survives). Off by default; the brutal correctness test
-    // for whether the JIT refcounts are accurate enough to retire the
-    // conservative scan. See collect_refs.
-    if (gc_refs_mode()) return collect_refs();
+    if (roots == Roots::kRefcounts || gc_refs_mode()) return collect_refs();
     // Experimental precise-only mode (Phase 3 dry-run): seed solely from the
     // precise roots — the JIT shadow stack plus the non-stack tables — with NO
     // conservative stack scan. A missing root frees a live object, so this is
@@ -509,6 +518,16 @@ class Heap {
     if (leak_abort()) audit_inflated_rc();
   }
 
+  // Quiescent-point invariant: every release-to-zero ran through to forget(),
+  // so no teardown is pending. A stale entry would be harmless in itself (its
+  // address becomes a permanent root: an over-retain), which is why only the
+  // assert build checks it — a pop that misses means a release path skipped
+  // its forget() or ran out of order with its parent's.
+  void assert_quiescent() const {
+    assert(dying_.empty() && "gc: a teardown never reached forget()");
+  }
+  ~Heap() { assert_quiescent(); }
+
  private:
   // GC_STRESS=1 collects on every allocation (SpiderMonkey gcZeal style) so a
   // missing root or a teardown bug surfaces immediately under the test suite.
@@ -526,7 +545,10 @@ class Heap {
     static const bool s = std::getenv("CULEBRA_GC_PRECISE_ONLY") != nullptr;
     return s;
   }
-  // CULEBRA_GC_REFS=1 selects refcount-based cycle collection (see collect()).
+  // CULEBRA_GC_REFS=1 makes EVERY collection refcount-seeded, the threshold
+  // and stress ones included (Roots::kRefcounts only covers the explicit
+  // ones). This is the test axis for the refcounts' exactness, not a mode a
+  // program would pick.
   static bool gc_refs_mode() {
     static const bool s = std::getenv("CULEBRA_GC_REFS") != nullptr;
     return s;
@@ -541,9 +563,9 @@ class Heap {
     return s;
   }
 
-  // Refcount-based cycle collection (CPython's gc_refs algorithm). Roots are
-  // found from the reference counts the compiler maintains, not by scanning
-  // the stack:
+  // Refcount-seeded cycle collection (CPython's gc_refs algorithm; the
+  // Roots::kRefcounts mode). Roots are found from the reference counts the
+  // compiler maintains, not by scanning the stack:
   //   1. gc_refs[o] = o's refcount (the i64 at offset 0 of every GC struct).
   //   2. For each object, walk its children and subtract one from each — this
   //      removes the references that live INSIDE the heap.
@@ -833,19 +855,27 @@ class Heap {
     // (and anything a helper holds only in wasm locals) is invisible to the
     // scan. Flag it; the VM's safepoint poll runs the collect.
     if constexpr (kDeferToSafepoint) {
-      collect_pending_ = true;
+      request_pending(Roots::kConservative);
       return;
     }
     collect_and_rearm();
   }
 
+  // wasm: record a deferred collection. A refcount-seeded request is never
+  // downgraded by a later threshold trip; the poll runs the stronger one.
+  void request_pending(Roots roots) {
+    collect_pending_ = true;
+    if (roots == Roots::kRefcounts) pending_roots_ = roots;
+  }
+
   // Run a collect and reset/re-arm the trigger state as one unit — shared by
   // the native inline path above and the wasm safepoint path, so a future
   // collect entry point cannot forget the re-arm half.
-  void collect_and_rearm() {
+  void collect_and_rearm(Roots roots = Roots::kConservative) {
     collect_pending_ = false;
+    pending_roots_ = Roots::kConservative;
     alloc_since_collect_ = 0;
-    collect();
+    collect(roots);
     rearm_thresholds();
   }
 
@@ -1072,6 +1102,7 @@ class Heap {
   bool callbacks_wired_ = false;
   int collect_paused_ = 0;
   bool collect_pending_ = false;  // wasm safepoint flag (kDeferToSafepoint)
+  Roots pending_roots_ = Roots::kConservative;  // what the pending poll runs
   size_t alloc_since_collect_ = 0;
   size_t collect_threshold_ = stress() ? 1 : kMinThreshold;
   size_t byte_threshold_ = kByteFloor;

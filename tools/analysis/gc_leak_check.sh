@@ -1,26 +1,29 @@
 #!/usr/bin/env bash
-# Detect reference-count leaks in the JIT by differential collection.
+# Detect reference-count leaks in the JIT, one allocation pattern at a time.
 #
 # An object that a *correct* refcount would free, but that survives because a
-# codegen path leaked its release, stays alive with a non-zero refcount. We
-# surface that by collecting two ways and comparing the live-object count:
+# codegen path leaked its release, stays alive with a non-zero refcount. The
+# collector's quiescent-point audit (CULEBRA_GC_LEAK_ABORT=1, gc.h
+# audit_inflated_rc) classifies exactly that: an object the conservative scan
+# finds unreachable whose refcount still exceeds the references the heap holds
+# to it — a phantom +1 — and aborts naming its birth site. Each pattern runs
+# once under that audit, with the collector otherwise off (CULEBRA_GC_NEVER=1)
+# so no background collection reclaims the leaked garbage before the audit
+# sees it. Zero false positives: a reference cycle the pattern builds on
+# purpose has no phantom count and is not reported.
 #
-#   conservative (default) : marks from real reachability (stack + globals).
-#                            Frees everything truly unreachable, regardless of
-#                            refcount — so leaked garbage is reclaimed and the
-#                            live count stays flat.
-#   CULEBRA_GC_REFS=1       : seeds collection purely from reference counts.
-#                            Trusts the refcount, so leaked garbage (refcount
-#                            stuck > 0) is retained — the live count balloons.
-#
-# A pattern whose gc_refs live count far exceeds its conservative count has an
-# RC leak in the operation it exercises.
+# (This used to compare live counts between a conservative and a
+# refcount-seeded GC.stat(); now that GC.stat() itself seeds from the
+# refcounts the two runs would agree, and the audit is the direct measurement.)
 #
 # Usage:
 #   gc_leak_check.sh                      # run the built-in pattern battery
-#   gc_leak_check.sh path/to/program.cul  # audit one program (must end by
-#                                         # printing `... live=<N>` via GC.stat)
-#   CULEBRA=./build/culebra gc_leak_check.sh   # pick the binary (default build-dev)
+#   gc_leak_check.sh path/to/program.cul  # audit one program
+#   CULEBRA=./build-gate/culebra gc_leak_check.sh  # pick the binary (default build-dev)
+#
+# Pass a NO-LTO binary (build-dev/ or build-gate/): the audit rides the
+# conservative scan's completeness, and LTO's altered stack layout aliases
+# leaked objects as live and under-reports.
 #
 # Exit status: 0 = no leak detected, 1 = at least one leaking pattern.
 
@@ -30,35 +33,30 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 CULEBRA="${CULEBRA:-$ROOT/build-dev/culebra}"
 PATTERNS="$HERE/gc_leak_patterns.cul"
 N="${N:-50000}"
-# Ratio above which gc_refs/conservative counts a leak. Real garbage keeps both
-# counts tiny and flat; a leak makes the gc_refs count grow with the loop, so
-# the ratio is enormous (>100x) — 4x is a safe, noise-proof threshold.
-THRESHOLD="${THRESHOLD:-4}"
 
 if [[ ! -x "$CULEBRA" ]]; then
   echo "error: culebra binary not found at $CULEBRA (set CULEBRA=...)" >&2
   exit 2
 fi
 
-live_of() { # args: <env...> -- <file> <pattern-args...>; echoes the live count
-  local out
-  out=$("$@" 2>/dev/null | sed -n 's/.* live=\([0-9][0-9]*\).*/\1/p' | tail -1)
-  echo "${out:-?}"
-}
-
-check_one() { # args: <label> <file> <pattern-args...>
+check_one() { # args: <label> <file> <pattern-args...>; prints a row, exits 1 on a leak
   local label="$1"; shift
-  local cons refs
-  cons=$(live_of "$CULEBRA" --jit "$@")
-  refs=$(live_of env CULEBRA_GC_REFS=1 CULEBRA_GC_MULT=1 "$CULEBRA" --jit "$@")
-  local verdict="ok"
-  if [[ "$cons" =~ ^[0-9]+$ && "$refs" =~ ^[0-9]+$ ]]; then
-    if (( cons == 0 )); then cons=1; fi
-    if (( refs > cons * THRESHOLD && refs - cons > 100 )); then verdict="LEAK"; fi
-  else
-    verdict="error"
+  local err verdict="ok"
+  # detect_leaks=0 as in the other audit runners: with the collector off,
+  # LSan's exit-time report would turn a clean pattern into a non-zero exit.
+  err=$(env CULEBRA_GC_NEVER=1 CULEBRA_GC_LEAK_ABORT=1 ASAN_OPTIONS=detect_leaks=0 \
+        "$CULEBRA" --jit "$@" 2>&1 >/dev/null)
+  local st=$?
+  if grep -q '\[gc-leak-abort\]' <<< "$err"; then
+    verdict="LEAK"
+  elif (( st != 0 )); then
+    verdict="error(exit=$st)"
   fi
-  printf "%-20s conservative=%-8s gc_refs=%-8s  %s\n" "$label" "$cons" "$refs" "$verdict"
+  printf "%-20s audit=%s\n" "$label" "$verdict"
+  if [[ "$verdict" == "LEAK" ]]; then
+    # The birth sites the audit printed, indented under the row.
+    sed -n '/\[gc-leak-abort\]/,$p' <<< "$err" | sed 's/^/    /'
+  fi
   [[ "$verdict" == "ok" ]]
 }
 
@@ -67,15 +65,14 @@ if [[ $# -ge 1 ]]; then
   # Audit a user-supplied program.
   check_one "$(basename "$1")" "$@" || rc=1
 else
-  echo "GC leak check — N=$N, threshold=${THRESHOLD}x (binary: $CULEBRA)"
+  echo "GC leak check — N=$N (binary: $CULEBRA)"
   echo "--------------------------------------------------------------------"
-  # Each pattern is an independent pair of culebra runs (conservative vs
-  # gc_refs), and each run reports only its own process's live count — so the
-  # battery fans out across patterns with no cross-talk. Serially the
-  # patterns dominate the gate (every run compiles the whole battery before
-  # its loop); parallel they collapse to the slowest single pattern.
-  # Per-pattern output is buffered and replayed in list order; a leak/error
-  # drops a marker file collected afterward.
+  # Each pattern is an independent culebra run reporting only its own
+  # process's audit, so the battery fans out across patterns with no
+  # cross-talk. Serially the patterns dominate the gate (every run compiles
+  # the whole battery before its loop); parallel they collapse to the slowest
+  # single pattern. Per-pattern output is buffered and replayed in list
+  # order; a leak/error drops a marker file collected afterward.
   work="$(mktemp -d "${TMPDIR:-/tmp}/culebra-leak.XXXXXX")" || { echo "error: mktemp -d failed" >&2; exit 2; }
   trap 'rm -rf "$work"' EXIT
   list="$work/patterns"
@@ -85,8 +82,8 @@ else
     exit 2
   fi
   jobs="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)}"
-  export -f check_one live_of
-  export CULEBRA PATTERNS N THRESHOLD work
+  export -f check_one
+  export CULEBRA PATTERNS N work
   xargs -P "$jobs" -I '{}' bash -c '
       row=$(check_one "{}" "$PATTERNS" "{}" "$N"); st=$?
       printf "%s\n" "$row" > "$work/{}.row"

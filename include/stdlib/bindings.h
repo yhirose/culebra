@@ -5398,7 +5398,10 @@ inline JitValue _ns_sys_set_env(JitValue* a, int64_t) {
 // isn't included in its own report.
 inline JitValue _ns_gc_stat(JitValue*, int64_t) {
   auto& gc = _gc_heap();
-  gc.collect();  // report reachable objects, not registry residue not yet swept
+  // Refcount-seeded: what this collection reclaims (and so which orphaned
+  // `drop`s it fires) depends on the refcounts alone, not on stale stack
+  // words — the same on every lane, which is the promise docs make for it.
+  gc.collect(culebra::gc::Heap::Roots::kRefcounts);
   int64_t live = static_cast<int64_t>(gc.live_count());
   int64_t rc_live = static_cast<int64_t>(gc.rc_live_count());
   int64_t bytes = static_cast<int64_t>(gc.live_bytes());

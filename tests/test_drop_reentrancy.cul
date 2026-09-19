@@ -1,40 +1,16 @@
 # Drop bodies are user code that runs inside delicate runtime windows —
 # the GC's finalize pass, a multimethod table mutation, its own cycle
-# teardown. Each case here crashed or hung one backend before its guard
-# existed (see the Phase 2-4 commit): re-entrant collect deferral,
-# detach-before-release in the multifn replace/forget paths, and the
-# saturating self-pin in _culebra_call_drop_if_present. Observations are
-# count-based: WHEN a drop fires differs by design between the backends'
-# reclaim mechanisms (replace-time vs backstop), but each fires exactly
-# once and nothing may crash.
+# teardown, a release that has not yet de-registered its object. Each case
+# here crashed or hung a lane before its guard existed (see the Phase 2-4
+# commit and the dying-object one): re-entrant collect deferral,
+# detach-before-release in the multifn replace/forget paths, the
+# saturating self-pin in _culebra_call_drop_if_present, and the teardown
+# stack the collector treats as roots. `GC.stat()` finds its roots from
+# the reference counts, so every count below is exact on both lanes; each
+# drop fires exactly once and nothing may crash.
 
-fn churn(n) {
-  mut acc = []
-  mut i = 0
-  while i < n {
-    acc.push('x' + i.to_string())
-    i = i + 1
-  }
-  acc.size()
-}
-# Adaptive: collect until the expected number of drops landed (or a
-# generous cap — a genuinely missing drop still fails the assert that
-# follows). A fixed iteration count flakes: a stale word can survive
-# several collections.
-# `arr` is the current case's own event array: a LATE backstop fire from a
-# prior case (conservatively retained past its own settle) pushes into that
-# prior case's array, never into a later case's observations.
-fn gc_settle(arr, want) {
-  mut i = 0
-  while i < 20 && arr.size() < want {
-    churn(8)
-    GC.stat()
-    i = i + 1
-  }
-}
-
-# --- 1) A drop body fired by the finalize pass calls GC.stat() itself:
-# the re-entrant collect must defer, not corrupt the in-flight dead set.
+# --- 1) A drop body fired at a release calls GC.stat() itself: the
+# collect runs while the holder's release is still on the stack.
 let ev1 = []
 make_lam = fn () {
   let res = {id: 'lam', drop: fn () {
@@ -53,10 +29,8 @@ fn run_lam() {
   nil
 }
 run_lam()
-gc_settle(ev1, 1)
-assert_true(ev1.size() <= 1)  # conservative retention tolerance; the
-# crash-freedom of the re-entrant collect
-# is the point
+GC.stat()
+assert_eq(ev1.size(), 1)
 
 # --- 2) A drop body breaking its OWN cycle edge releases through itself:
 # the in-drop pin must absorb any number of self-releases.
@@ -79,14 +53,12 @@ fn run_self() {
   nil
 }
 run_self()
-gc_settle(ev2, 1)
-assert_true(ev2.size() <= 1)
+GC.stat()
+assert_eq(ev2.size(), 1)
 
 # --- 3) A displaced multimethod body's drop dispatches the very name
 # being replaced: the table must already hold the replacement, never the
-# freed body. Firing points differ (the JIT fires displaced drops at the
-# re-declaration, the interp parks them for the backstop), so only the
-# settled total is asserted.
+# freed body. 'a' and 'b' fire on the replace path, 'c' at the collection.
 let ev3 = []
 fn make_replace(tag) {
   mut use_res = nil
@@ -102,15 +74,11 @@ fn make_replace(tag) {
 make_replace('a')
 make_replace('b')
 make_replace('c')
-gc_settle(ev3, 3)
-# Same one-chain tolerance as test_drop_backstop.cul's multi-orphan case:
-# conservative false retention can keep one chain alive for the whole run.
+GC.stat()
 # Count only — each push calls use_res(), which dispatches to the CURRENT
 # body, so the pushed ids legitimately repeat; the point of this case is
 # that the dispatch never reaches a freed body.
-# 'a' and 'b' fire on the replace path (refcount-driven, deterministic);
-# only 'c' is collection-timed — hence the >= 2 floor holds everywhere.
-assert_true(ev3.size() >= 2 && ev3.size() <= 3)
+assert_eq(ev3.size(), 3)
 
 # --- 4) A drop fired from a dying dispatcher's body-release re-declares
 # the same `fn` site: it must find a clean table and a fresh dispatcher,
@@ -136,9 +104,8 @@ fn make_forget() {
   nil
 }
 make_forget()
-gc_settle(ev4, 2)
+GC.stat()
 assert_eq(ev4.size(), 2)  # outer drop + one recursive make's drop
-# (both refcount-driven: deterministic)
 
 # --- 5) A drop fired by a plain release-to-zero (not the finalize pass)
 # collects while its holder is mid-teardown: the array / capture cell has
@@ -167,5 +134,5 @@ fn run_cell_holder() {
 run_array_holder()
 run_cell_holder()
 GC.stat()
-assert_eq(ev5, ['a', 'c'])  # refcount-driven: deterministic
+assert_eq(ev5, ['a', 'c'])
 assert_eq(keep5.x, [1, 2])

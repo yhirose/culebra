@@ -5619,6 +5619,7 @@ struct JIT {
         // wired — the one sound point to audit for inflated-RC leaks and abort
         // at their birth site (no-op unless CULEBRA_GC_LEAK_ABORT=1). Do it
         // BEFORE the reclaiming collect, while the leaked residue is still live.
+        _gc_heap().assert_quiescent();
         _gc_heap().maybe_audit_leaks();
         bool saved = _jit_drop_suppressed();
         _jit_drop_suppressed() = true;

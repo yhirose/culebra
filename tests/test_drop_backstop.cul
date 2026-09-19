@@ -2,54 +2,15 @@
 # owner was orphaned — the narrow residue deterministic scope-exit drop
 # cannot reach (the "option 2 backstop", PEP 442 style).
 #
-# Closure-held cycles used to be a backstop case on both backends; the
-# JIT now resolves them at scope exit (the owned walker follows closure
-# captures, and a call site no longer leaks its callee ref), so cases
-# 1/2/4/6 fire deterministically there. The interp's whole-env capture
-# force-pins a self-captured env instead, so the same shapes fire at its
-# next (precise) collection — the gc_settle below covers that, and the
-# settled counts are exact on both backends. The remaining true backstop
-# case is cyclic garbage discarded at the TOP LEVEL (a scope that never
-# exits, case 5): there the JIT's CONSERVATIVE collector can retain an
-# orphan for a whole run when a stale stack/register word happens to
-# alias it, so only that case keeps an upper-bound tolerance. The hard
-# assertions stay the SOUNDNESS ones (a drop never fires twice, never on
-# a live resource); finalization order within one collection is
-# unspecified (PEP 442).
-
-# The JIT's conservative collector may retain an orphan across collections
-# while a stale callee-saved register / stack word still looks like a
-# pointer to it (rt_gc.h: completeness is best-effort). Two pieces of
-# hygiene keep the observations deterministic on both backends: interleave
-# real, register-churning work with a few collections (gc_settle), and run
-# each case's mutating part inside a helper fn — its spills then live in a
-# dead frame region below the collector's stack scan, instead of in the
-# top-level frame that stays scanned forever. The interp (precise) fires
-# on the first pass either way.
-fn churn(n) {
-  mut acc = []
-  mut i = 0
-  while i < n {
-    acc.push('x' + i.to_string())
-    i = i + 1
-  }
-  acc.size()
-}
-# Adaptive: collect until the expected number of drops landed (or a
-# generous cap — a genuinely missing drop still fails the assert that
-# follows). A fixed iteration count flakes: a stale word can survive
-# several collections.
-# `arr` is the current case's own event array: a LATE backstop fire from a
-# prior case (conservatively retained past its own settle) pushes into that
-# prior case's array, never into a later case's observations.
-fn gc_settle(arr, want) {
-  mut i = 0
-  while i < 20 && arr.size() < want {
-    churn(8)
-    GC.stat()
-    i = i + 1
-  }
-}
+# Closure-held cycles used to be a backstop case; the owned walker now
+# follows closure captures (and a call site no longer leaks its callee
+# ref), so cases 1/2/4/6 fire at scope exit, on both lanes. The remaining
+# true backstop case is cyclic garbage discarded at the TOP LEVEL (a scope
+# that never exits, case 5). `GC.stat()` finds its roots from the
+# reference counts, so what it finalizes is exact on both lanes: every
+# count below is asserted, not bounded. The soundness assertions stay as
+# well (a drop never fires twice, never on a live resource);
+# finalization order within one collection is unspecified (PEP 442).
 
 # --- 1) Closure-held cycle: `g` captures the scope that binds `res`. ---
 let ev1 = []
@@ -69,11 +30,11 @@ fn run_lam() {
   nil
 }
 run_lam()
-gc_settle(ev1, 1)
-assert_eq(ev1.size(), 1)  # exactly once (JIT: at scope exit;
+GC.stat()
+assert_eq(ev1.size(), 1)  # exactly once, at the scope exit
 for e in ev1 {
   assert_eq(e, 'lam')
-}  # interp: at the settle's collect)
+}
 
 # --- 2) Nested `fn name` (multimethod) capturing a resource. ---
 let ev2 = []
@@ -93,7 +54,7 @@ fn run_nf() {
   nil
 }
 run_nf()
-gc_settle(ev2, 1)
+GC.stat()
 assert_eq(ev2.size(), 1)
 for e in ev2 {
   assert_eq(e, 'nf')
@@ -101,7 +62,8 @@ for e in ev2 {
 
 # --- 3) Exactly-once: further collections must not re-fire. ---
 let n3 = ev2.size()
-gc_settle(ev2, n3 + 1)
+GC.stat()
+GC.stat()
 assert_eq(ev2.size(), n3)
 
 # --- 4) Several orphans in one collection: all fire, order unspecified. ---
@@ -122,10 +84,8 @@ fn run_each() {
   nil
 }
 run_each()
-gc_settle(ev4, 3)
-# Exact: the JIT fires each at its make_each exit, the interp at the
-# settle's precise collect — neither depends on the conservative scan.
-assert_eq(ev4.size(), 3)
+GC.stat()
+assert_eq(ev4.size(), 3)  # each at its make_each exit
 let seen = ev4.sorted_by(|x| x)
 mut prev = ''
 for t in seen {
@@ -154,8 +114,8 @@ fn build_pair() {
 build_pair()
 a = nil
 b = nil
-gc_settle(ev5, 2)
-assert_true(ev5.size() <= 2)
+GC.stat()
+assert_eq(ev5.size(), 2)  # both members, at this collection
 let seen2 = ev5.sorted_by(|x| x)
 mut prev2 = ''
 for t in seen2 {
@@ -180,11 +140,9 @@ fn run_cyc() {
   nil
 }
 run_cyc()
-# One unconditional collection: on the JIT `cyc` already dropped at the
-# block's exit, so without this the "garbage next to a live holder"
-# collection scenario would only ever run on the interp.
+# `cyc` dropped at the block's exit; this collection sweeps its memory,
+# which still holds the edge to the live keeper.
 GC.stat()
-gc_settle(ev6, 1)
 for e in ev6 {
   assert_eq(e, 'dead')
 }  # keeper must NEVER fire here
@@ -193,5 +151,5 @@ let before = ev6.size()
 keeper.drop()  # still alive and explicitly droppable
 assert_eq(ev6.size(), before + 1)
 assert_eq(ev6[before], 'live')
-gc_settle(ev6, before + 2)
+GC.stat()
 assert_eq(ev6.size(), before + 1)  # no re-fire of either
