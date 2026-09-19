@@ -13,8 +13,8 @@ let scratch = FS.mkdtemp("culebra_search_model_")
 Sys.set_env("XDG_DATA_HOME", scratch)
 Sys.set_env("HOME", scratch)
 Sys.set_env("APPDATA", scratch)
-let cached = FS.join(Sys.data_dir("culebra"), "models", "ja-ud-gsd-v0.1.1.mod")
-let url = "https://raw.githubusercontent.com/yhirose/cpp-segmentlib/v0.1.1/models/mlp/ja-ud-gsd.mod"
+let cached = FS.join(Sys.data_dir("culebra"), "models", "ja-ud-gsd-v0.2.0.mod")
+let url = "https://raw.githubusercontent.com/yhirose/cpp-segmentlib/v0.2.0/models/mlp/ja-ud-gsd.mod"
 
 let miss = fn () {
   try {

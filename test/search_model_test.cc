@@ -65,7 +65,7 @@ struct Fake {
                          std::string& err) {
       ++fetched;
       CHECK(url.starts_with("https://raw.githubusercontent.com/yhirose/"
-                            "cpp-segmentlib/v0.1.1/"));
+                            "cpp-segmentlib/v0.2.0/"));
       if (!reachable) return err = "could not reach " + url, false;
       out = body;
       return true;
@@ -85,7 +85,7 @@ int main(int argc, char** argv) {
 
   auto dir = fs::temp_directory_path() / "culebra-search-model-test";
   fs::remove_all(dir);
-  const auto cached = dir / "ja-ud-gsd-v0.1.1.mod";
+  const auto cached = dir / "ja-ud-gsd-v0.2.0.mod";
 
   // A path is a path: nothing is looked up, nothing is asked.
   {

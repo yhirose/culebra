@@ -83,10 +83,10 @@ ja_core_news models, which are trained on the same treebank.
 // re-index, and a model that silently changed would mean one nobody knew to
 // do. The digest is what makes the pin a pin.
 inline constexpr ModelSpec kModels[] = {
-    {"ja-ud-gsd", "0.1.1",
-     "https://raw.githubusercontent.com/yhirose/cpp-segmentlib/v0.1.1/models/"
+    {"ja-ud-gsd", "0.2.0",
+     "https://raw.githubusercontent.com/yhirose/cpp-segmentlib/v0.2.0/models/"
      "mlp/ja-ud-gsd.mod",
-     "3e08be0d6bcd5a40756caf1589e43763c045b9f333ca3dbf562c59a4e3542091",
+     "ef5b61be166530a8735409bb55b20196e625626095e9f0d776d3b502b2d13e00",
      "2.1 MB", "CC BY-SA 4.0", kJaUdGsdNotice},
 };
 
