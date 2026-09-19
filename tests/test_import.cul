@@ -10,6 +10,7 @@ import chain from './test_import_helpers/chain_lib.cul'
 import empty from './test_import_helpers/empty.cul'
 import multi from './test_import_helpers/multi_export.cul'
 import dropmod from './test_import_helpers/drop_export.cul'
+import only from './test_import_helpers/import_only.cul'
 
 # --- Basic function / class import ---
 assert_eq(math.add(2, 3), 5)
@@ -54,5 +55,11 @@ assert_eq(math2.add(1, 2), math.add(1, 2))
 # (the process segfaulted at exit otherwise; see drop_export.cul)
 assert_eq(dropmod.keeper(), 1)
 assert_eq(dropmod.kept.n, 1)
+
+# --- A module that is a single `import` line still has its dependency loaded ---
+# (a one-statement module arrives as that statement, not as a list of one;
+# the loader read the import's own children as the statement list and found
+# no imports — `ImportError: module ... was not loaded`)
+assert_eq(only.keys(), [])
 
 IO.inspect('test_import OK')

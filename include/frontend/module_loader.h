@@ -191,35 +191,36 @@ inline size_t ModuleLoader::load_recursive(
   return idx;
 }
 
+// A module's top-level statements. AstOptimizer folds every one-child node
+// into that child, so PROGRAM arrives as its STATEMENTS list — and a module
+// of a single statement arrives as that statement itself, whose children are
+// not statements at all.
+template <typename Fn>
+inline void for_each_toplevel_statement(const peg::Ast& ast, Fn&& fn) {
+  using namespace peg::udl;
+  if (ast.tag == "STATEMENTS"_) {
+    for (const auto& child : ast.nodes) fn(*child);
+  } else {
+    fn(ast);
+  }
+}
+
 inline std::vector<std::filesystem::path> ModuleLoader::extract_imports(
     const peg::Ast& ast, const std::filesystem::path& from_dir) {
   using namespace peg::udl;
   std::vector<std::filesystem::path> out;
   std::unordered_set<std::string> seen;
-  // AstOptimizer folds PROGRAM into its sole STATEMENTS child, so the
-  // top-level node is already STATEMENTS itself; degenerate single-
-  // statement programs come through wrapped, hence the fallback.
-  const peg::Ast* stmts =
-      ast.tag == "STATEMENTS"_ || ast.original_tag == "STATEMENTS"_
-          ? &ast
-          : (ast.nodes.empty() ? nullptr : ast.nodes[0].get());
-  if (!stmts) return out;
-  for (const auto& child : stmts->nodes) {
-    const peg::Ast* node = child.get();
-    if (node->tag != "IMPORT_STMT"_) continue;
+  for_each_toplevel_statement(ast, [&](const peg::Ast& node) {
+    if (node.tag != "IMPORT_STMT"_) return;
     auto canon = resolve_module_path(
-        std::string(node->nodes[1]->token), from_dir);
+        std::string(node.nodes[1]->token), from_dir);
     if (seen.insert(canon.string()).second) out.push_back(canon);
-  }
+  });
   return out;
 }
 
 inline void ModuleLoader::validate_module(const peg::Ast& ast) {
   using namespace peg::udl;
-  const peg::Ast* stmts =
-      ast.tag == "STATEMENTS"_ || ast.original_tag == "STATEMENTS"_
-          ? &ast
-          : (ast.nodes.empty() ? nullptr : ast.nodes[0].get());
 
   // Recursive walk that flags an IMPORT_STMT / EXPORT_STMT found
   // anywhere off the toplevel STATEMENTS chain.
@@ -237,19 +238,11 @@ inline void ModuleLoader::validate_module(const peg::Ast& ast) {
         }
         for (const auto& c : node.nodes) walk(*c, false);
       };
-  // Iterate either the STATEMENTS children or — when AstOptimizer
-  // folded the wrapper for a single-statement program — `ast` itself.
-  auto for_each_toplevel = [&](auto&& fn) {
-    if (stmts) {
-      for (const auto& child : stmts->nodes) fn(*child);
-    } else {
-      fn(ast);
-    }
-  };
-  for_each_toplevel([&](const peg::Ast& s) { walk(s, true); });
+  for_each_toplevel_statement(ast,
+                              [&](const peg::Ast& s) { walk(s, true); });
 
   std::unordered_set<std::string_view> seen;
-  for_each_toplevel([&](const peg::Ast& s) {
+  for_each_toplevel_statement(ast, [&](const peg::Ast& s) {
     if (s.tag != "EXPORT_STMT"_) return;
     for (const auto& id : s.nodes) {
       auto name = id->token;
