@@ -2088,6 +2088,10 @@ CULEBRA_RT_TENSOR_EVAL_LINKAGE void tensor_backward(const TensorPtr& root) {
     const TensorPtr& n = *it;
     if (!n->requires_grad || !n->grad) continue;
     _tensor_vjp(n);
+    // Every contribution has arrived (reverse topo), so a non-leaf's gradient
+    // is spent: holding it would keep one per node alive to the end, and a
+    // second backward through the same graph would count it again.
+    if (n->op != Op::Const) n->grad.reset();
   }
 #endif
 }

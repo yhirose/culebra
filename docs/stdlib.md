@@ -1872,6 +1872,12 @@ cross-entropy, Adam) built entirely on these methods.
 `Tensor.eval` of the loss. `.grad()` returns a Tensor like any other —
 materialize it with `Tensor.eval` before `.to_array()`.
 
+Gradients are kept at the leaves only. An intermediate's gradient is
+released as soon as it has been passed on to that node's inputs, so its
+`.grad()` reads zeros after `.backward()`, and a second `.backward()`
+through the same graph adds to the leaves exactly what that pass
+contributes.
+
 `Tensor.no_grad(fn) -> Any` runs `fn` with grad tracking suppressed:
 ops inside build no autograd graph (so no tape and no `requires_grad`
 flow), and the call returns whatever `fn` returns. Use it for inference
