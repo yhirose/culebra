@@ -113,6 +113,21 @@ assert_eq(try { FST.Set.new(map_bytes) } catch e { e.kind }, "FSTError")
 assert_eq(try { FST.IndexMap.new(map_bytes) } catch e { e.kind }, "FSTError")
 assert_eq(try { FST.Set.new("not a dictionary") } catch e { e.kind }, "FSTError")
 
+// --- Truncated or altered bytes are refused at open, not read ---
+// Every truncation (this one crashed the process once its tail happened to
+// read as a header), a byte flipped inside the body (the checksum's job),
+// and byte code from before the trailer existed (the last 24 bytes gone).
+for n in 0..set_bytes.size() {
+  assert_eq(try { FST.Set.new(set_bytes.slice(0, n).to_string()) } catch e { e.kind },
+    "FSTError")
+}
+mut raw = set_bytes.bytes().collect()
+raw[10] = (raw[10] + 1) % 256
+assert_eq(try { FST.Set.new(String.from_bytes(raw)) } catch e { e.kind },
+  "FSTError")
+let untrailed = set_bytes.slice(0, set_bytes.size() - 24).to_string()
+assert_eq(try { FST.Set.new(untrailed) } catch e { e.kind }, "FSTError")
+
 // --- Build-time key errors name the offending index ---
 assert_eq(try { FST.compile_set(["dup", "dup"]) } catch e { e.message },
   "FST: duplicate key at index 1")

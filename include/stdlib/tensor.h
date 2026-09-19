@@ -161,6 +161,7 @@ struct TensorShape {
         throw CulebraError("ValueError", "Tensor: negative dim.");
       }
     }
+    num_elements();  // refuses a product past size_t here, not at a use
   }
 
   size_t rank() const { return dims.size(); }
@@ -168,7 +169,15 @@ struct TensorShape {
   // Empty shape (rank 0) is a scalar tensor: one element by convention.
   size_t num_elements() const {
     size_t n = 1;
-    for (auto d : dims) n *= static_cast<size_t>(d);
+    for (auto d : dims) {
+      auto m = static_cast<size_t>(d);
+      // A wrapped product sized a 0-element buffer for a shape whose views
+      // then indexed past it.
+      if (m != 0 && n > SIZE_MAX / m) {
+        throw CulebraError("ValueError", "Tensor: shape too large.");
+      }
+      n *= m;
+    }
     return n;
   }
 

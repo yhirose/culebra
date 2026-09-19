@@ -2096,7 +2096,9 @@ serializable — `stringify` throws `TypeError` for these.
 Parse a JSON string into a Culebra value.
 
 * `number_mode='auto'` (default): integers (no decimal point or
-  exponent) read as `Long`; everything else as `Float`.
+  exponent) read as `Long`; everything else as `Float`. An integer past
+  `Long`'s range reads as a `Float` too (JSON bounds no number); one past
+  `Float`'s range is a `ValueError`.
 * `number_mode='float'` reads every number as `Float` — useful for
   round-trip safety when the producer treats numbers uniformly.
 * `lines=true` parses **JSON Lines**: split `s` on `\n`, parse each
@@ -7400,7 +7402,10 @@ inspect(dict.predictive_search("hel"))  # => ['hell', 'hello', 'help']
 ```
 
 The byte code is an ordinary `String` (binary-safe, like `Compress` output),
-so it needs no special file API:
+so it needs no special file API. It carries its own length and checksum, which
+is how a truncated or corrupted file is refused when opened rather than read
+(byte code written before v0.7.0 has neither and is refused too — rebuild it
+from the words with `FST.compile_*`):
 
 ```culebra
 # doctest: skip

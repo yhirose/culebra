@@ -2042,7 +2042,8 @@ Culebraの値とJSONテキストの相互変換。両バックエンドで同じ
 JSON文字列をCulebraの値に変換します。
 
 * `number_mode='auto'`（既定）: 小数点や指数を含まない数値は`Long`、
-  それ以外は`Float`。
+  それ以外は`Float`。`Long`に収まらない整数も`Float`として読む（JSON は
+  数の大きさを制限しない）。`Float`にも収まらなければ`ValueError`。
 * `number_mode='float'`: すべての数値を`Float`に。生産者側が
   数値型を統一している場合のround-trip安全性向上に。
 * `lines=true`: 入力を`\n`で分割し、空でない各行を独立したJSON
@@ -7168,7 +7169,7 @@ inspect(dict.contains("hell"))         # => true
 inspect(dict.predictive_search("hel"))  # => ['hell', 'hello', 'help']
 ```
 
-バイト列は普通の`String`で（`Compress`の出力と同じくバイト列をそのまま持てる）、専用のファイル API は要らない。
+バイト列は普通の`String`で（`Compress`の出力と同じくバイト列をそのまま持てる）、専用のファイル API は要らない。長さとチェックサムを自分で持っているので、途中で切れたり壊れたりしたファイルは読まれる前に開く時点で弾かれる（v0.7.0 より前に書き出したバイト列はどちらも持たないので同じく弾かれる。元の語彙から`FST.compile_*`で作り直すこと）。
 
 ```culebra
 # doctest: skip

@@ -373,4 +373,16 @@ let control = 'bell:' + String.from_code_point(7) + ':end'
 assert_eq(JSON.stringify(control), '"bell:' + bs + 'u0007:end"')
 assert_eq(JSON.parse(JSON.stringify(control)), control)
 
+// A number JSON allows but Long cannot hold reads as a Float, not as a C++
+// exception no `try` catches; one no Float holds is a ValueError, as is a
+// number RFC 8259 does not write.
+assert_eq(JSON.parse('12345678901234567890'), 12345678901234567890.0)
+assert_eq(JSON.parse('-9223372036854775808'), -9223372036854775807 - 1)
+assert_eq(try { JSON.parse('1e999') } catch e { e.kind }, "ValueError")
+for bad in ['1.', '01', '1e', '1.5e+', '-'] {
+  assert_eq(try { JSON.parse(bad) } catch e { e.kind }, "ValueError")
+}
+assert_eq(JSON.parse('-0'), 0)
+assert_eq(JSON.parse('1.5E-3'), 0.0015)
+
 IO.inspect("test_json OK")

@@ -407,6 +407,15 @@ try {
   reerr = e.kind
 }
 inspect("listen_async twice -> " + reerr)
+# Mounting a directory after the start would hand the workers a table they are
+# reading; it is the same catchable error as a second start.
+mut sterr = "none"
+try {
+  asrv.static("/late", ".")
+} catch e {
+  sterr = e.kind
+}
+inspect("static after start -> " + sterr)
 asrv.stop()  # cross-thread stop + join
 inspect("async stopped")
 mut reerr2 = "none"

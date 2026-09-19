@@ -1309,6 +1309,29 @@ CULEBRA_RT_HTTP_LINKAGE void http_server_route(int64_t id,
 #endif
 }
 
+inline constexpr const char* kHttpAlreadyStarted =
+    "Http: server already started (create a new server to serve again)";
+
+#if !defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
+// Open and not yet served — what both bind and serve need before anything else,
+// and what a route or mount needs too: the tables they add to are read by the
+// worker threads a start launches, without a lock.
+// Single-use guard: a second start would move-assign onto a joinable
+// accept_thread (std::terminate) or restart a stopped httplib::Server (hangs).
+// Reject it as a catchable error — serve again with a fresh Http.server().
+inline bool _http_server_open_unstarted(HttpServer* s, std::string& err) {
+  if (!s) {
+    err = "Http: server is closed";
+    return false;
+  }
+  if (s->started) {
+    err = kHttpAlreadyStarted;
+    return false;
+  }
+  return true;
+}
+#endif
+
 // Serve files under `dir` at the URL prefix `mount`. `err` is set when the dir
 // cannot be mounted. A closed id no-ops.
 CULEBRA_RT_HTTP_LINKAGE void http_server_static(int64_t id,
@@ -1320,10 +1343,7 @@ CULEBRA_RT_HTTP_LINKAGE void http_server_static(int64_t id,
   err = "Http runtime not linked (no Http use detected at build)";
 #else
   HttpServer* s = _http_server_get(id);
-  if (!s) {
-    err = "Http: server is closed";
-    return;
-  }
+  if (!_http_server_open_unstarted(s, err)) return;
   if (!s->svr.set_mount_point(mount, dir)) {
     err = "Http: cannot serve directory: " + dir;
   }
@@ -1346,10 +1366,7 @@ CULEBRA_RT_HTTP_LINKAGE void http_server_serve_embed(int64_t id,
   err = "Http runtime not linked (no Http use detected at build)";
 #else
   HttpServer* s = _http_server_get(id);
-  if (!s) {
-    err = "Http: server is closed";
-    return;
-  }
+  if (!_http_server_open_unstarted(s, err)) return;
   s->static_mounts.push_back({mount, culebra::open_embed_dir(name)});
   if (!s->static_handler_installed) {
     s->static_handler_installed = true;
@@ -1375,27 +1392,6 @@ CULEBRA_RT_HTTP_LINKAGE void http_server_serve_embed(int64_t id,
   }
 #endif
 }
-
-inline constexpr const char* kHttpAlreadyStarted =
-    "Http: server already started (create a new server to serve again)";
-
-#if !defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
-// Open and not yet served — what both bind and serve need before anything else.
-// Single-use guard: a second start would move-assign onto a joinable
-// accept_thread (std::terminate) or restart a stopped httplib::Server (hangs).
-// Reject it as a catchable error — serve again with a fresh Http.server().
-inline bool _http_server_open_unstarted(HttpServer* s, std::string& err) {
-  if (!s) {
-    err = "Http: server is closed";
-    return false;
-  }
-  if (s->started) {
-    err = kHttpAlreadyStarted;
-    return false;
-  }
-  return true;
-}
-#endif
 
 // Serving is two calls, `http_server_bind` then one of the two serve entries,
 // because a blocking accept loop never returns and so can report nothing. Bind

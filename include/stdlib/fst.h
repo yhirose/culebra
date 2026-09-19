@@ -99,6 +99,32 @@ template <typename O> inline const char* _map_kind() {
   }
 }
 
+// --- Opening ----------------------------------------------------------------
+//
+// cpp-fstlib's byte code ends in a trailer (body size, XXH64 of the body,
+// format version, magic). A matcher's constructor checks the trailer and the
+// header — O(1), so a truncated, foreign or older byte code is invalid rather
+// than read — and `fst::verify` also hashes the body, the O(n) read that
+// catches a bit-flip inside it. The constructors here (`*_check`) pay the
+// full read once; a query only opens, since a matcher is rebuilt per call
+// (see the file comment).
+inline ::fst::set open_set(std::string_view bc, bool verify = false) {
+  ::fst::set m(bc.data(), bc.size());
+  _require_valid(static_cast<bool>(m) &&
+                     (!verify || ::fst::verify(bc.data(), bc.size())),
+                 "Set");
+  return m;
+}
+
+template <typename O>
+inline ::fst::map<O> open_map(std::string_view bc, bool verify = false) {
+  ::fst::map<O> m(bc.data(), bc.size());
+  _require_valid(static_cast<bool>(m) &&
+                     (!verify || ::fst::verify(bc.data(), bc.size())),
+                 _map_kind<O>());
+  return m;
+}
+
 // --- Building ------------------------------------------------------------
 
 // Keys only, no value per key: loads as `FST.Set`.
@@ -131,55 +157,40 @@ inline std::string compile_map(
 
 // --- Querying: Set -------------------------------------------------------
 
-inline void set_check(std::string_view bc) {
-  ::fst::set m(bc.data(), bc.size());
-  _require_valid(static_cast<bool>(m), "Set");
-}
+inline void set_check(std::string_view bc) { open_set(bc, /*verify=*/true); }
 
 inline bool set_contains(std::string_view bc, std::string_view key) {
-  ::fst::set m(bc.data(), bc.size());
-  _require_valid(static_cast<bool>(m), "Set");
-  return m.contains(key);
+  return open_set(bc).contains(key);
 }
 
 inline std::vector<size_t> set_common_prefix_search(std::string_view bc,
                                                     std::string_view text) {
-  ::fst::set m(bc.data(), bc.size());
-  _require_valid(static_cast<bool>(m), "Set");
-  return m.common_prefix_search(text);
+  return open_set(bc).common_prefix_search(text);
 }
 
 // 0 when nothing matches: a key is never empty (EmptyKey is a compile error),
 // so a 0-length prefix hit cannot otherwise occur.
 inline size_t set_longest_common_prefix_search(std::string_view bc,
                                                std::string_view text) {
-  ::fst::set m(bc.data(), bc.size());
-  _require_valid(static_cast<bool>(m), "Set");
-  return m.longest_common_prefix_search(text);
+  return open_set(bc).longest_common_prefix_search(text);
 }
 
 inline std::vector<std::string> set_predictive_search(std::string_view bc,
                                                       std::string_view prefix) {
-  ::fst::set m(bc.data(), bc.size());
-  _require_valid(static_cast<bool>(m), "Set");
-  return m.predictive_search(prefix);
+  return open_set(bc).predictive_search(prefix);
 }
 
 inline std::vector<std::string> set_edit_distance_search(
     std::string_view bc, std::string_view word, size_t max_edits,
     size_t insert_cost, size_t delete_cost, size_t replace_cost) {
-  ::fst::set m(bc.data(), bc.size());
-  _require_valid(static_cast<bool>(m), "Set");
-  return m.edit_distance_search(word, max_edits, insert_cost, delete_cost,
-                                replace_cost);
+  return open_set(bc).edit_distance_search(word, max_edits, insert_cost,
+                                           delete_cost, replace_cost);
 }
 
 inline std::vector<RankedKey> set_suggest(std::string_view bc,
                                           std::string_view word) {
-  ::fst::set m(bc.data(), bc.size());
-  _require_valid(static_cast<bool>(m), "Set");
   std::vector<RankedKey> out;
-  for (auto& [ratio, key] : m.suggest(word)) {
+  for (auto& [ratio, key] : open_set(bc).suggest(word)) {
     out.push_back({ratio, std::move(key)});
   }
   return out;
@@ -191,26 +202,21 @@ inline std::vector<RankedKey> set_suggest(std::string_view bc,
 // index_t (`FST.IndexMap`); the binding layer picks the instantiation.
 
 template <typename O> inline void map_check(std::string_view bc) {
-  ::fst::map<O> m(bc.data(), bc.size());
-  _require_valid(static_cast<bool>(m), _map_kind<O>());
+  open_map<O>(bc, /*verify=*/true);
 }
 
 // false (leaving `out` untouched) on a miss — `at` throws, which the culebra
 // side spells as nil instead.
 template <typename O>
 inline bool map_get(std::string_view bc, std::string_view key, O& out) {
-  ::fst::map<O> m(bc.data(), bc.size());
-  _require_valid(static_cast<bool>(m), _map_kind<O>());
-  return m.exact_match_search(key, out);
+  return open_map<O>(bc).exact_match_search(key, out);
 }
 
 template <typename O>
 inline std::vector<PrefixHit<O>> map_common_prefix_search(
     std::string_view bc, std::string_view text) {
-  ::fst::map<O> m(bc.data(), bc.size());
-  _require_valid(static_cast<bool>(m), _map_kind<O>());
   std::vector<PrefixHit<O>> out;
-  for (auto& [length, value] : m.common_prefix_search(text)) {
+  for (auto& [length, value] : open_map<O>(bc).common_prefix_search(text)) {
     out.push_back({length, std::move(value)});
   }
   return out;
@@ -220,18 +226,14 @@ inline std::vector<PrefixHit<O>> map_common_prefix_search(
 template <typename O>
 inline size_t map_longest_common_prefix_search(std::string_view bc,
                                                std::string_view text, O& out) {
-  ::fst::map<O> m(bc.data(), bc.size());
-  _require_valid(static_cast<bool>(m), _map_kind<O>());
-  return m.longest_common_prefix_search(text, out);
+  return open_map<O>(bc).longest_common_prefix_search(text, out);
 }
 
 template <typename O>
 inline std::vector<Entry<O>> map_predictive_search(std::string_view bc,
                                                    std::string_view prefix) {
-  ::fst::map<O> m(bc.data(), bc.size());
-  _require_valid(static_cast<bool>(m), _map_kind<O>());
   std::vector<Entry<O>> out;
-  for (auto& [key, value] : m.predictive_search(prefix)) {
+  for (auto& [key, value] : open_map<O>(bc).predictive_search(prefix)) {
     out.push_back({std::move(key), std::move(value)});
   }
   return out;
@@ -241,10 +243,8 @@ template <typename O>
 inline std::vector<Entry<O>> map_edit_distance_search(
     std::string_view bc, std::string_view word, size_t max_edits,
     size_t insert_cost, size_t delete_cost, size_t replace_cost) {
-  ::fst::map<O> m(bc.data(), bc.size());
-  _require_valid(static_cast<bool>(m), _map_kind<O>());
   std::vector<Entry<O>> out;
-  for (auto& [key, value] : m.edit_distance_search(
+  for (auto& [key, value] : open_map<O>(bc).edit_distance_search(
            word, max_edits, insert_cost, delete_cost, replace_cost)) {
     out.push_back({std::move(key), std::move(value)});
   }
@@ -254,10 +254,8 @@ inline std::vector<Entry<O>> map_edit_distance_search(
 template <typename O>
 inline std::vector<Ranked<O>> map_suggest(std::string_view bc,
                                           std::string_view word) {
-  ::fst::map<O> m(bc.data(), bc.size());
-  _require_valid(static_cast<bool>(m), _map_kind<O>());
   std::vector<Ranked<O>> out;
-  for (auto& [ratio, key, value] : m.suggest(word)) {
+  for (auto& [ratio, key, value] : open_map<O>(bc).suggest(word)) {
     out.push_back({ratio, std::move(key), std::move(value)});
   }
   return out;

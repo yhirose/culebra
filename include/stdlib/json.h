@@ -44,8 +44,11 @@
 #include <base/format.h>
 
 #include <algorithm>
+#include <cerrno>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -283,20 +286,38 @@ struct Parser {
     const char* digits_start = p;
     while (p < end && (*p >= '0' && *p <= '9')) advance();
     if (p == digits_start) fail("expected value");
+    // RFC 8259 §6: no leading zero ahead of another digit; a fraction and
+    // an exponent each carry at least one digit.
+    if (*digits_start == '0' && p - digits_start > 1) fail("leading zero");
     if (p < end && *p == '.') {
       is_float = true; advance();
+      const char* frac = p;
       while (p < end && (*p >= '0' && *p <= '9')) advance();
+      if (p == frac) fail("expected a digit after '.'");
     }
     if (p < end && (*p == 'e' || *p == 'E')) {
       is_float = true; advance();
       if (p < end && (*p == '+' || *p == '-')) advance();
+      const char* exp = p;
       while (p < end && (*p >= '0' && *p <= '9')) advance();
+      if (p == exp) fail("expected a digit in the exponent");
     }
     std::string buf(start, p);
-    if (number_mode == "float" || is_float) {
-      return B::real(std::stod(buf));
+    if (number_mode != "float" && !is_float) {
+      int64_t n = 0;
+      auto r = std::from_chars(buf.data(), buf.data() + buf.size(), n);
+      if (r.ec == std::errc{}) return B::integer(n);
+      // Past Long's range: JSON bounds no integer, so it reads as a Float —
+      // what JavaScript makes of every number (`std::stoll` threw a C++
+      // out_of_range no `try` could catch).
     }
-    return B::integer(static_cast<int64_t>(std::stoll(buf)));
+    errno = 0;
+    char* stop = nullptr;
+    double d = std::strtod(buf.c_str(), &stop);
+    if (stop != buf.c_str() + buf.size() || errno == ERANGE) {
+      fail("number out of range");
+    }
+    return B::real(d);
   }
 };
 
