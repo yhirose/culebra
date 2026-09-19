@@ -981,7 +981,10 @@ _run-tests BACKEND:
     run_unit_runner_sweep() {
         local out rc=0 want
         want=$(ls tests/*.cul | wc -l | tr -d ' ')
-        out=$(cul test --vm --reporter json tests/*.cul 2>&1) || rc=$?
+        # stdin from /dev/null, as the xargs phases get it: test_io_streams
+        # reads a non-terminal stdin to EOF, and a pipe nobody closes (an
+        # editor's or agent's shell) held the sweep until its timeout.
+        out=$(cul test --vm --reporter json tests/*.cul 2>&1 < /dev/null) || rc=$?
         if [[ "$rc" != 0 ]]; then
             echo "culebra test: the tests/*.cul sweep failed (rc $rc)" >&2
             printf '%s\n' "$out" | grep '"event":"file_error"' | tail -20 >&2
