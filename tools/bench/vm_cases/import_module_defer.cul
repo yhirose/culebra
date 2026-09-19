@@ -1,0 +1,7 @@
+# A dependency's top-level defer fires at program exit, though the entry
+# module declares no defer of its own — and a module that is nothing but one
+# `import` line still has that dependency loaded.
+import only from './import_helpers/import_only.cul'
+import d from './import_helpers/deferring.cul'
+println("entry sees {d.v}")
+println("entry done")

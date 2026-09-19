@@ -121,6 +121,7 @@ generics_matmul	0
 higher_order_methods	0
 if_arm_scope	0
 implicit_declaration	0
+import_module_defer	0
 imports	0
 index_access	0
 init_clause	0

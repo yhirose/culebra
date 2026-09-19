@@ -4692,8 +4692,12 @@ class Compiler {
     prog.source_path = ast.path;
     // The top-level frame mark (JIT main's fn.mark): first insn, so a
     // throw at any pc finds it populated. The Halt epilogue runs to it —
-    // before the top scope's releases, hence the inlined block below.
-    main.establish_frame_defer_mark(ast, top_info);
+    // before the top scope's releases, hence the inlined block below. A
+    // dependency's top-level defers stand on it too: they run in this frame
+    // and fire at program exit, whether or not the entry declares one.
+    main.establish_frame_defer_mark(
+        ast, top_info.has_any_defer ||
+                 std::ranges::any_of(dep_infos, &FuncInfo::has_any_defer));
     {
       using namespace peg::udl;
       main.push_scope(ast, /*owned_mark=*/false);
@@ -6664,7 +6668,10 @@ class Compiler {
   // allocated and taken as the chunk's FIRST instruction, so the executor's
   // catch-all / the lowering's frame pad can trust the slot at any pc.
   void establish_frame_defer_mark(const peg::Ast& at, const FuncInfo& info) {
-    if (!info.has_any_defer) return;
+    establish_frame_defer_mark(at, info.has_any_defer);
+  }
+  void establish_frame_defer_mark(const peg::Ast& at, bool has_any_defer) {
+    if (!has_any_defer) return;
     frame_defer_mark_ = alloc_slot(at, "(defer.mark)");
     chunk_.defer_mark_slot = frame_defer_mark_;
     emit(Op::DeferMark, frame_defer_mark_);

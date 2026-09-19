@@ -1,0 +1,4 @@
+println("deferring: loaded")
+defer { println("deferring: top-level defer") }
+let v = 42
+export {v}

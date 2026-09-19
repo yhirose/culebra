@@ -1,0 +1,4 @@
+deferring: loaded
+entry sees 42
+entry done
+deferring: top-level defer
