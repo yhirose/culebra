@@ -928,11 +928,13 @@ inline VariantView view_variant(const peg::Ast& v) {
 // (`_0`, `_1`, ...) so a FunctionValue::Parameter's string_view name
 // and the instance field key outlive the call. Capped well above any
 // realistic variant arity.
+inline constexpr size_t kMaxPositionalFields = 64;
 inline std::string_view positional_field_name(size_t i) {
   static const std::vector<std::string> names = [] {
     std::vector<std::string> v;
-    v.reserve(64);
-    for (size_t k = 0; k < 64; k++) v.push_back("_" + std::to_string(k));
+    v.reserve(kMaxPositionalFields);
+    for (size_t k = 0; k < kMaxPositionalFields; k++)
+      v.push_back("_" + std::to_string(k));
     return v;
   }();
   return names.at(i);

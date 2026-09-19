@@ -119,21 +119,33 @@ inline void _jit_variant_ctor_thunk(JitValue* __ret, JitClosure* cls, int8_t sel
       _jit_thread.call_col);
 }
 
-// Create a payload-variant constructor closure (`Result.Ok`): a closure over
-// the shared thunk holding the variant's meta in its single capture. Returns
-// +1 (caller owns; the enum namespace slot takes it), and the meta rides
-// along — released with the closure, enumerated with its captures, so it is
-// reachable from the enum object like everything else the declaration built.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure*
-culebra_runtime_make_variant_ctor(const char* variant_name,
-                                    const char* enum_name, int64_t arity) {
-  auto* cls = culebra_runtime_closure_new(
-      reinterpret_cast<void*>(&_jit_variant_ctor_thunk), /*n_captures=*/1,
-      static_cast<size_t>(arity), JIT_CLOSURE_NATIVE, /*meta=*/nullptr);
-  auto* vmeta = culebra_runtime_make_variant_meta(variant_name, enum_name);
-  cls->captures[0] = culebra_runtime_cell_new(
-      TAG_OBJECT, reinterpret_cast<int64_t>(vmeta));  // transferred
-  return cls;
+// One variant of `enum E { ... }`, bound on the enum object `enum_obj` under
+// its own name, immutable: a nullary variant as the singleton instance it
+// always is, a payload one as the constructor (`Result.Ok`) — a closure over
+// the shared thunk capturing the variant's meta. Each piece is owned by the
+// enum's slot, so it is reachable from the enum like everything else the
+// declaration built. The meta names the enum back only weakly (JitEnumRef),
+// which is what `class_of` reads.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_enum_define_variant(
+    JitObject* enum_obj, const char* variant_name, const char* enum_name,
+    int64_t arity, int64_t line, int64_t col) {
+  auto* meta = culebra_runtime_make_variant_meta(variant_name, enum_name);
+  meta->specials->enum_ref = _jit_enum_ref_of(enum_obj);
+  meta->specials->enum_ref->refs++;
+  JitValue v;
+  if (arity == 0) {
+    v = culebra_runtime_build_variant(meta, variant_name, enum_name, 0,
+                                      nullptr, 0, line, col);
+  } else {
+    auto* ctor = culebra_runtime_closure_new(
+        reinterpret_cast<void*>(&_jit_variant_ctor_thunk), /*n_captures=*/1,
+        static_cast<size_t>(arity), JIT_CLOSURE_NATIVE, /*meta=*/nullptr);
+    ctor->captures[0] = culebra_runtime_cell_new(
+        TAG_OBJECT, reinterpret_cast<int64_t>(meta));  // transferred
+    v = JitValue{TAG_FUNC, reinterpret_cast<int64_t>(ctor)};
+  }
+  culebra_runtime_object_set(enum_obj, variant_name, /*mut=*/false, v.tag,
+                             v.data, line, col, /*is_init=*/true);
 }
 
 // --- @derive reflective methods ---------------------------------------
@@ -1229,6 +1241,7 @@ inline void _jit_gc_sweep_object(void* obj, uint8_t tag) {
       delete o->non_string_props;
       if (o->is_dict) delete o->dict_;
       if (o->is_class_meta) delete o->specials;
+      _jit_enum_forget(o);
       delete o;
       break;
     }

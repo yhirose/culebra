@@ -484,11 +484,12 @@ enum class Op : uint8_t {
                // running process, which under AOT is not the compiling one.
                // The field types are lint-validated, so nothrow. d=1 reads
                // the spec as an enum's tagged union instead.
-  EnumVariant, // regs[a] = one variant of enum consts[d], named consts[c]:
-               // with arity b=0 the singleton instance it always is
-               // (build_variant), otherwise the constructor closure that
-               // builds one from b positional payload fields
-               // (make_variant_ctor). Both yield a fresh +1.
+  EnumVariant, // bind one variant of enum consts[d], named consts[c], on
+               // the enum namespace regs[a], immutable: with arity b=0 the
+               // singleton instance it always is, otherwise the constructor
+               // closure that builds one from b positional payload fields
+               // (culebra_runtime_enum_define_variant). Either way the
+               // variant's meta names the namespace weakly, for `class_of`.
   TypeMatch,   // a pattern's type test: unless regs[a] satisfies the type
                // name consts[c] (culebra_runtime_type_matches — a class tag,
                // an enum's variant or parent, a trait's conformance, `T?`,
@@ -7761,13 +7762,9 @@ class Compiler {
           spec += std::string(vv.field_types[f]);
         }
       }
-      int32_t v = alloc_temp(*ast.nodes[i]);
-      emit(Op::EnumVariant, v, static_cast<int32_t>(vv.arity),
+      StampGuard vpos(*this, *ast.nodes[i]);
+      emit(Op::EnumVariant, obj, static_cast<int32_t>(vv.arity),
            kconst_str(variant), kconst_str(enum_name));
-      // The member is immutable, as it is on both other backends — a
-      // variant is not reassignable through the enum object.
-      emit(Op::ObjectSet, obj, v, kconst_str(variant), 0);
-      forget_temp(v);  // the store absorbed the +1
     }
     // @packable: the tagged-union layout has to land in the process that
     // RUNS, which under AOT is not the one that compiled — so it registers
@@ -16696,18 +16693,9 @@ struct Exec {
               reinterpret_cast<const char*>(c.consts[in.c].data);
           const char* en = reinterpret_cast<const char*>(c.consts[in.d].data);
           auto [line, col] = chunk_pos_at(c, VM_PC);
-          if (in.b == 0) {
-            // The singleton owns its meta, and the enum object owns the
-            // singleton — so the collector reaches it the ordinary way.
-            regs[in.a] = culebra_runtime_build_variant(
-                culebra_runtime_make_variant_meta(variant, en), variant, en, 0,
-                nullptr, 0, line, col);
-          } else {
-            regs[in.a] = JitValue{
-                TAG_FUNC, reinterpret_cast<int64_t>(
-                              culebra_runtime_make_variant_ctor(variant, en,
-                                                                in.b))};
-          }
+          culebra_runtime_enum_define_variant(
+              reinterpret_cast<JitObject*>(regs[in.a].data), variant, en, in.b,
+              line, col);
           ++ip;
           break;
         } while (0);

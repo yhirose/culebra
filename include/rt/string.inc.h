@@ -180,6 +180,23 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
           return out;
         }
       }
+      // An enum variant prints the way it is written: `Color.Red`,
+      // `Shape.Rect(3.0, 4.0)` — the payload is its positional fields.
+      if (const char* en = _jit_meta_enum_name(obj)) {
+        std::string out = en;
+        out += '.';
+        out += _jit_meta_class_name(obj);
+        size_t i = 0;
+        for (; i < culebra::kMaxPositionalFields; i++) {
+          auto idx = obj->find_slot(culebra::positional_field_name(i));
+          if (idx == static_cast<size_t>(-1)) break;
+          out += i == 0 ? "(" : ", ";
+          const auto& e = obj->slots[idx].value;
+          out += _culebra_value_to_str_impl(e.tag, e.data);
+        }
+        if (i > 0) out += ')';
+        return out;
+      }
       // A named value prints its name before its fields (matches the tree
       // interpreter's str_object formatting). The name comes from the meta,
       // so it is the class that built the value — an Object with a `class`

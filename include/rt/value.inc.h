@@ -270,7 +270,29 @@ static_assert(std::size(kSpecialNames) == static_cast<size_t>(Special::Count));
 inline const char* special_name(Special s) {
   return kSpecialNames[static_cast<size_t>(s)];
 }
+// A declared enum's weak handle: the enum object holds one and every variant
+// meta it declared shares it, the way a std::weak_ptr shares a control block.
+// The enum owns its nullary singletons and its constructors, so a strong edge
+// back from a variant would make every declaration a reference cycle; this
+// one owns nothing, and the enum clears `obj` as it is freed, so a variant
+// that outlives its enum reads null rather than freed memory. Not a heap
+// value: counted by its holders alone, invisible to the collector.
+struct JitObject;
+struct JitEnumRef {
+  JitObject* obj;
+  int64_t refs = 1;
+  void release() {
+    if (--refs == 0) delete this;
+  }
+};
+
 struct JitSpecialTable {
+  JitSpecialTable() = default;
+  JitSpecialTable(const JitSpecialTable&) = delete;
+  JitSpecialTable& operator=(const JitSpecialTable&) = delete;
+  ~JitSpecialTable() {
+    if (enum_ref) enum_ref->release();
+  }
   JitClosure* fn[static_cast<size_t>(Special::Count)] = {};
   // The class this meta belongs to, interned. Every instance reaches it
   // through `proto`, so the name lives here rather than on JitObject, which
@@ -278,6 +300,10 @@ struct JitSpecialTable {
   const char* name = nullptr;
   // The parent enum, on a variant's meta only (null on a class's). Interned.
   const char* enum_name = nullptr;
+  // The enum object that declared this variant, weakly (see JitEnumRef).
+  // Null on a class's meta and on a variant with no declaration behind it —
+  // a native one, or one rebuilt from bytes or a Channel.
+  JitEnumRef* enum_ref = nullptr;
   // Which traits this class conforms to (culebra::TraitConformance): resolved
   // on first ask and reached from a value through `proto`, so two classes that
   // share a name cannot share an answer.
@@ -471,7 +497,11 @@ struct JitObject {
   // could be added — including the two the declaration cannot see, a
   // computed key and a write through an alias. Never GEP'd.
   bool fields_closed = false;
-  // One trailing pointer, three exclusive roles: a builtin namespace's name
+  // A declared enum's object: `enum_ref` is its weak handle, which it clears
+  // as it is freed (_jit_enum_forget). Never GEP'd.
+  bool is_enum = false;
+  // One trailing pointer, four exclusive roles: a declared enum's weak handle
+  // (`is_enum`, see JitEnumRef), a builtin namespace's name
   // (`is_namespace`), the class object a class-sugar instance (the only kind
   // with a `proto`) was built by, or a class meta's special-method table
   // (`is_class_meta`, see Special) — owned by the meta and freed with it. The
@@ -483,6 +513,7 @@ struct JitObject {
     const char* ns_name = nullptr;
     JitObject* cls;
     JitSpecialTable* specials;
+    JitEnumRef* enum_ref;
   };
 
   // --- Shape-based property access helpers ---
@@ -709,6 +740,31 @@ inline culebra::TraitConformance* _jit_meta_conformance(JitObject* obj) {
 inline const char* _jit_meta_enum_name(JitObject* obj) {
   auto* sp = _jit_meta_specials(obj);
   return sp ? sp->enum_name : nullptr;
+}
+// The enum object that declared a variant, or null: not a variant, no
+// declaration behind it, or its enum already freed.
+inline JitObject* _jit_variant_enum(JitObject* obj) {
+  auto* sp = _jit_meta_specials(obj);
+  return sp && sp->enum_ref ? sp->enum_ref->obj : nullptr;
+}
+// The weak handle of the enum object `obj`, made on its first variant.
+inline JitEnumRef* _jit_enum_ref_of(JitObject* obj) {
+  if (!obj->is_enum) {
+    obj->is_enum = true;
+    obj->enum_ref = new JitEnumRef{obj};
+  }
+  return obj->enum_ref;
+}
+// An enum tells the variants that outlive it that it is gone. Called as an
+// object is condemned, before any `drop` runs, so a drop body cannot reach the
+// dying enum through `class_of` (the order CPython's collector clears weakrefs
+// in, ahead of finalizers). Idempotent: the sweep calls it again.
+inline void _jit_enum_forget(JitObject* obj) {
+  if (!obj->is_enum) return;
+  obj->is_enum = false;
+  obj->enum_ref->obj = nullptr;
+  obj->enum_ref->release();
+  obj->enum_ref = nullptr;
 }
 
 // culebra_runtime_build_class_meta's flag bits (Chunk::name_table_flags).
