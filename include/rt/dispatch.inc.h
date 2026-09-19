@@ -95,22 +95,11 @@ inline JitValue _jit_build_native_variant(const char* name,
                                        0, 0);
 }
 
-// A declared variant's instance holds its enum namespace the way a class
-// instance holds its class object (JitObject::cls, +1 for its whole life), so
-// `class_of` answers the same read for both. The namespace holds the nullary
-// singletons and the constructors that reach it back — a cycle per
-// declaration, which the collector traces like any other.
-inline void _jit_variant_set_enum(JitValue v, JitObject* enum_obj) {
-  auto* inst = reinterpret_cast<JitObject*>(v.data);
-  inst->cls = enum_obj;
-  enum_obj->refcount++;
-}
-
 // JitFn-ABI shared thunk installed as `fn_ptr` on every payload-variant
 // constructor closure. Recovers the variant's meta — and with it the two
-// names — and the enum namespace from the closure's own captures, and builds
-// the instance from the call args. The captures are what keep both alive and
-// GC-reachable for as long as any instance can still be built.
+// names — from the closure's own capture, and builds the instance from the
+// call args. The capture is what keeps the meta alive and GC-reachable for
+// as long as any instance can still be built.
 inline void _jit_variant_ctor_thunk(JitValue* __ret, JitClosure* cls, int8_t self_tag,
                                          int64_t self_data, int64_t n_args,
                                          JitValue* args) {
@@ -121,45 +110,30 @@ inline void _jit_variant_ctor_thunk(JitValue* __ret, JitClosure* cls, int8_t sel
   // it must drop that +1 or the namespace strands one reference per call.
   // (An indirect `let f = E.V; f(x)` passes nil — a no-op release.)
   _culebra_value_release_impl(self_val.tag, self_val.data);
-  assert(cls->n_captures == 2 && cls->captures);
+  assert(cls->n_captures == 1 && cls->captures);
   auto* meta = reinterpret_cast<JitObject*>(cls->captures[0]->value.data);
-  auto* enum_obj = reinterpret_cast<JitObject*>(cls->captures[1]->value.data);
   meta->refcount++;  // the instance's own reference; the capture keeps its
   *__ret = culebra_runtime_build_variant(
       meta, meta->specials->name, meta->specials->enum_name, n_args, args,
       static_cast<int64_t>(cls->arity), _jit_thread.call_line,
       _jit_thread.call_col);
-  _jit_variant_set_enum(*__ret, enum_obj);
 }
 
-// One variant of `enum E { ... }`, bound on the enum namespace `enum_obj`
-// under its own name, immutable: a nullary variant as the singleton instance
-// it always is, a payload one as the constructor (`Result.Ok`) — a closure
-// over the shared thunk capturing the variant's meta and the namespace. Each
-// piece is owned by the namespace slot, so it is reachable from the enum
-// object like everything else the declaration built.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_enum_define_variant(
-    JitObject* enum_obj, const char* variant_name, const char* enum_name,
-    int64_t arity, int64_t line, int64_t col) {
-  auto* meta = culebra_runtime_make_variant_meta(variant_name, enum_name);
-  JitValue v;
-  if (arity == 0) {
-    v = culebra_runtime_build_variant(meta, variant_name, enum_name, 0,
-                                      nullptr, 0, line, col);
-    _jit_variant_set_enum(v, enum_obj);
-  } else {
-    auto* ctor = culebra_runtime_closure_new(
-        reinterpret_cast<void*>(&_jit_variant_ctor_thunk), /*n_captures=*/2,
-        static_cast<size_t>(arity), JIT_CLOSURE_NATIVE, /*meta=*/nullptr);
-    ctor->captures[0] = culebra_runtime_cell_new(
-        TAG_OBJECT, reinterpret_cast<int64_t>(meta));  // transferred
-    enum_obj->refcount++;
-    ctor->captures[1] = culebra_runtime_cell_new(
-        TAG_OBJECT, reinterpret_cast<int64_t>(enum_obj));
-    v = JitValue{TAG_FUNC, reinterpret_cast<int64_t>(ctor)};
-  }
-  culebra_runtime_object_set(enum_obj, variant_name, /*mut=*/false, v.tag,
-                             v.data, line, col, /*is_init=*/true);
+// Create a payload-variant constructor closure (`Result.Ok`): a closure over
+// the shared thunk holding the variant's meta in its single capture. Returns
+// +1 (caller owns; the enum namespace slot takes it), and the meta rides
+// along — released with the closure, enumerated with its captures, so it is
+// reachable from the enum object like everything else the declaration built.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure*
+culebra_runtime_make_variant_ctor(const char* variant_name,
+                                    const char* enum_name, int64_t arity) {
+  auto* cls = culebra_runtime_closure_new(
+      reinterpret_cast<void*>(&_jit_variant_ctor_thunk), /*n_captures=*/1,
+      static_cast<size_t>(arity), JIT_CLOSURE_NATIVE, /*meta=*/nullptr);
+  auto* vmeta = culebra_runtime_make_variant_meta(variant_name, enum_name);
+  cls->captures[0] = culebra_runtime_cell_new(
+      TAG_OBJECT, reinterpret_cast<int64_t>(vmeta));  // transferred
+  return cls;
 }
 
 // --- @derive reflective methods ---------------------------------------

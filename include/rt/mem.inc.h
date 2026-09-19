@@ -926,9 +926,10 @@ inline constexpr auto materialize_value
     = "culebra_runtime_materialize_value";
 inline constexpr auto run_field_init
     = "culebra_runtime_run_field_init";
+inline constexpr auto build_variant       = "culebra_runtime_build_variant";
 inline constexpr auto object_is_instance  = "culebra_runtime_object_is_instance";
-inline constexpr auto enum_define_variant
-    = "culebra_runtime_enum_define_variant";
+inline constexpr auto make_variant_meta   = "culebra_runtime_make_variant_meta";
+inline constexpr auto make_variant_ctor   = "culebra_runtime_make_variant_ctor";
 inline constexpr auto make_derived_method
     = "culebra_runtime_make_derived_method";
 inline constexpr auto build_class_meta

@@ -472,13 +472,12 @@ struct JitObject {
   // computed key and a write through an alias. Never GEP'd.
   bool fields_closed = false;
   // One trailing pointer, three exclusive roles: a builtin namespace's name
-  // (`is_namespace`), the object an instance with a `proto` was built by (a
-  // class-sugar instance's class, a declared enum variant's enum), or a class
-  // meta's special-method table (`is_class_meta`, see Special) — owned by the
-  // meta and freed with it. The instance holds a +1 on it, released with it,
-  // so a method can name the class through its receiver after the declaring
-  // scope is gone and `class_of` can answer (culebra_runtime_class_self);
-  // sharing the slot is what keeps JitObject
+  // (`is_namespace`), the class object a class-sugar instance (the only kind
+  // with a `proto`) was built by, or a class meta's special-method table
+  // (`is_class_meta`, see Special) — owned by the meta and freed with it. The
+  // instance holds a +1 on its class, released with it, so a method can name
+  // the class through its receiver after the declaring scope is gone
+  // (culebra_runtime_class_self); sharing the slot is what keeps JitObject
   // inside its 128-byte slab class. Never GEP'd.
   union {
     const char* ns_name = nullptr;

@@ -324,9 +324,7 @@ Culebra has exactly twelve types — the names `type_of` can return:
 | `Set`        | Insertion-ordered collection of unique hashable values (`{1, 2, 3}`)                 |
 
 Classes, enum variants, modules, iterators, and stdlib namespaces are
-all `Object`s. `type_of` reports `'Object'` for a module, an iterator and
-a namespace, the class's own name for a class instance, and the variant's
-name for an enum variant (§19).
+all `Object`s; `type_of` reports `'Object'` for them.
 
 Arithmetic and comparison between `Long` and `Float` promote the
 `Long` operand to `Float` automatically — see §7. Outside that
@@ -3503,16 +3501,6 @@ any of its variants.
 Payload is positional and reachable as `_0`, `_1`, … (`r._0`), though
 constructor patterns are the idiomatic accessor.
 
-A variant prints the way it is written — in interpolation, `println`,
-`to_string()` and `inspect` alike. `type_of` names the variant, and
-`class_of` answers with the enum object itself, so `class_of(v) == Shape`
-asks which enum a variant belongs to:
-
-    "{Color.Red}"                     # 'Color.Red'
-    inspect(Shape.Rect(3.0, 4.0))     # Shape.Rect(3.0, 4.0)
-    type_of(Shape.Origin)             # 'Origin'
-    class_of(Shape.Origin) == Shape   # true
-
 A variant is `Eq` and `Hashable` by construction — its identity is the
 enum, the variant, and each payload field — so it is an `Object` /
 `Set` key and a `hash(v)` argument as-is, with no `@derive`. A payload
@@ -5330,26 +5318,9 @@ inspect(class_of(p).name == type_of(p))  # => true
 ```
 
 A class object answers `class_of` with itself, so the read is idempotent.
-An enum variant answers with its enum — the object its variants are read
-from — and `type_of` names the variant, so the two together say which
-variant of which enum a value is:
-
-```culebra
-enum Mirroring { Horizontal, Vertical }
-enum Shape { Circle(Float), Rect(Float, Float) }
-
-inspect(class_of(Mirroring.Vertical) == Mirroring)  # => true
-inspect(class_of(Shape.Circle(1.0)) == Shape)       # => true
-inspect(type_of(Shape.Circle(1.0)))                 # => 'Circle'
-```
-
-The enum is reached from the variant the declaration built, so a variant
-rebuilt elsewhere — received from a `Channel` or read back from a
-`SharedBuffer` — answers `nil`, as a class instance received from a
-`Channel` does. It still prints and compares as its variant.
-
 Everything with no class object of its own answers `nil`, which is more
-than it sounds: a plain Object, a primitive, and a `Range`. So
+than it sounds: a plain Object, a primitive, an enum variant (a variant is
+not a class — its constructor is a closure), and a `Range`. So
 `class_of(v).name` is not a second spelling of `type_of(v)`: only
 class-sugar values have both.
 

@@ -372,14 +372,4 @@ fn shown(x: Left.Same?) {
 }
 assert_eq(shown.params[0].type, "Left.Same | Nil")
 
-// --- A variant prints the way it is written ---
-assert_eq("{Color.Red}", "Color.Red")
-assert_eq(Color.Red.to_string(), "Color.Red")
-assert_eq(to_string(Shape.Rect(3.0, 4.0)), "Shape.Rect(3.0, 4.0)")
-assert_eq("{Result.Err('boom')}", "Result.Err('boom')")
-assert_eq("{[Shape.Origin, Result.Ok(Color.Blue)]}",
-          "[Shape.Origin, Result.Ok(Color.Blue)]")
-let circle = Shape.Circle
-assert_eq("{circle(1.5)}", "Shape.Circle(1.5)")
-
 IO.inspect("test_enum OK")

@@ -305,9 +305,7 @@ Culebraの型は厳密に12種類 — `type_of`が返しうる名前がすべて
 | `Set`       | 挿入順を保持する一意ハッシュ可能値の集合（`{1, 2, 3}`）             |
 
 class・enumバリアント・モジュール・イテレータ・stdlib namespaceは
-すべて`Object`です。`type_of`はモジュール・イテレータ・namespaceには
-`'Object'`を、classインスタンスにはそのクラス名を、enumバリアントには
-バリアント名を返します（§19）。
+すべて`Object`で、`type_of`は`'Object'`を返します。
 
 `Long`と`Float`の間では算術・比較時に自動的に`Float`へ昇格します
 （§7参照）。これ以外の型間の暗黙変換はなく、算術・比較・論理演算子が
@@ -3277,16 +3275,6 @@ variant名だけを書くと、それはvariantの名前であってenumの名�
 payloadはpositionalで`_0`, `_1`, … (`r._0`) で参照可能だが、
 constructor patternがidiomaticなアクセサ。
 
-variantは書いたとおりの形で表示される。補間・`println`・`to_string()`・
-`inspect`のどれでも同じ。`type_of`はvariant名を返し、`class_of`は
-enumオブジェクトそのものを返すので、`class_of(v) == Shape`で
-variantがどのenumに属するかを問える:
-
-    "{Color.Red}"                     # 'Color.Red'
-    inspect(Shape.Rect(3.0, 4.0))     # Shape.Rect(3.0, 4.0)
-    type_of(Shape.Origin)             # 'Origin'
-    class_of(Shape.Origin) == Shape   # true
-
 variantは構造上`Eq`かつ`Hashable` — そのidentityはenum・variant・
 各payload fieldの組 — なので、`@derive`なしでそのまま`Object` /
 `Set`のkeyや`hash(v)`の引数になる。payload variantがkeyになれる
@@ -5080,26 +5068,9 @@ inspect(class_of(p).name == type_of(p))  # => true
 ```
 
 クラスオブジェクト自身は`class_of`に自分を答えるので、この読みは冪等です。
-enumのバリアントは自分のenum（バリアントを読み出す元のオブジェクト）を
-答え、`type_of`はバリアント名を答えるので、この2つで「どのenumのどの
-バリアントか」が分かります。
-
-```culebra
-enum Mirroring { Horizontal, Vertical }
-enum Shape { Circle(Float), Rect(Float, Float) }
-
-inspect(class_of(Mirroring.Vertical) == Mirroring)  # => true
-inspect(class_of(Shape.Circle(1.0)) == Shape)       # => true
-inspect(type_of(Shape.Circle(1.0)))                 # => 'Circle'
-```
-
-enumには宣言が作ったバリアントから辿るので、別の場所で作り直された
-バリアント（`Channel`で受け取ったもの、`SharedBuffer`から読み戻したもの）
-は`nil`を答えます。`Channel`で受け取ったclassインスタンスと同じです。
-表示と比較は元のバリアントのままです。
-
 自分のクラスオブジェクトを持たない値は`nil`で、これは見た目より広い範囲を
-指します: 普通のObject、プリミティブ、そして`Range`。つまり
+指します: 普通のObject、プリミティブ、enumのバリアント（バリアントはクラス
+ではなく、コンストラクタはクロージャです）、そして`Range`。つまり
 `class_of(v).name`は`type_of(v)`の別の綴りではありません — 両方を持つのは
 `class`構文の値だけです。
 

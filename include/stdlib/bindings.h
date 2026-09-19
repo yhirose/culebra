@@ -4278,12 +4278,11 @@ inline JitValue _ns_global_type_of(JitValue* a, int64_t) {
 // whole life), which is the same read a member's prologue makes to resolve
 // its own class name — see culebra_runtime_class_self.
 //
-// A declared enum variant holds its enum object in the same slot, so it
-// answers with the enum. Nil for everything with no class object of its own:
-// a plain Object, and the values the runtime builds with a meta but no class
-// behind it — `1..3`, and a variant rebuilt from bytes or a Channel among
-// them. So `class_of(v).name` is not a second spelling of `type_of(v)`: only
-// the class-sugar half has both.
+// Nil for everything with no class object of its own, which is more than it
+// sounds: a plain Object, an enum variant (a variant is not a class — its
+// constructor is a closure), and the values the runtime builds with a meta
+// but no class behind it, `1..3` among them. So `class_of(v).name` is not a
+// second spelling of `type_of(v)`: only the class-sugar half has both.
 inline JitValue _ns_global_class_of(JitValue* a, int64_t) {
   auto v = culebra_runtime_class_self(a[0].tag, a[0].data);
   if (v.tag == TAG_NO_SELF) return {TAG_NIL, 0};

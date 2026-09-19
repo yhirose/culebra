@@ -1,5 +1,5 @@
-E.A(5)
-E.B
+A {mut _0: 5}
+B {}
 A
 A
 5
@@ -11,11 +11,11 @@ bare-binds
 3.0
 ['ok-1', 'err-bad', 'pair-2-3']
 path-1
-E.A(9)
-E.B
+A {mut _0: 9}
+B {}
 true
-[Local.One, Local.Two(2)]
-[Opt.Some(3), Opt.Nothing]
+[One {}, Two {mut _0: 2}]
+[Some {mut _0: 3}, Nothing {}]
 [7, 'none']
 missing payload ::: err=ArityError|missing required argument '_0'
 unknown member ::: ok=nil
