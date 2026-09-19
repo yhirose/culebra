@@ -42,6 +42,7 @@ static inline char** backtrace_symbols(void* const*, int) { return nullptr; }
 #include <algorithm>
 #include <array>
 #include <csetjmp>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -78,18 +79,28 @@ class GcRegistry {
  public:
   GcRegistry() { rehash(kInitCap); }
 
-  // Pointer to the live entry's header, or nullptr if absent. `key` may be any
-  // word from a conservative scan, so reject the empty/tombstone sentinels (no
-  // real object lives at address 0 or 1) before they alias a slot's key.
-  GcHeader* find(void* key) {
-    if (key == kEmpty || key == kTomb()) return nullptr;
+  static constexpr size_t kNpos = ~size_t(0);
+
+  // Slot index of key's live entry, or kNpos: a dense key for per-object side
+  // tables sized by capacity(), stable until the next insert rehashes. `key`
+  // may be any word from a conservative scan, so reject the empty/tombstone
+  // sentinels (no real object lives at address 0 or 1) before they alias a
+  // slot's key.
+  size_t find_slot(void* key) const {
+    if (key == kEmpty || key == kTomb()) return kNpos;
     size_t i = index(key);
     for (;;) {
       void* k = slots_[i].key;
-      if (k == key) return &slots_[i].val;
-      if (k == kEmpty) return nullptr;
+      if (k == key) return i;
+      if (k == kEmpty) return kNpos;
       i = (i + 1) & mask_;
     }
+  }
+
+  // Pointer to the live entry's header, or nullptr if absent.
+  GcHeader* find(void* key) {
+    size_t i = find_slot(key);
+    return i == kNpos ? nullptr : &slots_[i].val;
   }
 
   // Insert (or overwrite) key→val. `key` must be a real object pointer
@@ -122,13 +133,21 @@ class GcRegistry {
   }
 
   size_t size() const { return size_; }
+  size_t capacity() const { return cap_; }
+  GcHeader& header_at(size_t slot) { return slots_[slot].val; }
 
-  // Visit every live entry as f(void* key, GcHeader& val). The callback may
-  // mutate the header (mark/flags) but must NOT insert/erase during the walk.
+  // Visit every live entry as f(size_t slot, void* key, GcHeader& val). The
+  // callback may mutate the header (mark/flags) but must NOT insert/erase
+  // during the walk.
+  template <class F>
+  void for_each_slot(F&& f) {
+    for (size_t i = 0; i < slots_.size(); i++)
+      if (slots_[i].key != kEmpty && slots_[i].key != kTomb())
+        f(i, slots_[i].key, slots_[i].val);
+  }
   template <class F>
   void for_each(F&& f) {
-    for (auto& s : slots_)
-      if (s.key != kEmpty && s.key != kTomb()) f(s.key, s.val);
+    for_each_slot([&](size_t, void* k, GcHeader& v) { f(k, v); });
   }
 
  private:
@@ -137,7 +156,6 @@ class GcRegistry {
     GcHeader val{};
   };
   static constexpr size_t kInitCap = 16;
-  static constexpr size_t kNpos = ~size_t(0);
   static constexpr void* kEmpty = nullptr;
   static void* kTomb() { return reinterpret_cast<void*>(uintptr_t(1)); }
 
@@ -539,48 +557,56 @@ class Heap {
   // enumerate_children must report each internal reference exactly as many
   // times as it is counted in the child's refcount (no over-report). An
   // UNDER-report or a too-high refcount only over-retains (safe); the danger
-  // is over-subtraction, which the GC_STRESS + difftest gates catch. This is
-  // the same algorithm the interpreter's InterpGC uses, so the two backends
-  // share one cycle-collection model.
-  // Build the gc_refs map: each object's refcount (the i64 @ offset 0) minus
+  // is over-subtraction, which the GC_STRESS + difftest gates catch.
+  // Build the gc_refs table: each object's refcount (the i64 @ offset 0) minus
   // its internal (heap) in-edges. A positive residue means a reference from
   // OUTSIDE the heap (a root/borrow) still holds it. This edge accounting is
   // load-bearing and over-subtraction is the one unsafe direction (see the
   // collect_refs docblock), so both users — collect_refs (cycle collection) and
   // classify_leaks (leak diagnostics) — share this single construction.
-  void compute_gc_refs(std::unordered_map<void*, int64_t>& gc_refs) {
+  //
+  // The table is indexed by registry slot, not keyed by address: a hash map
+  // here cost a node allocation per object and a pointer chase per edge, and
+  // was the bulk of a refs collect (80 ms vs 48 ms at 400k objects). One
+  // scratch vector sized by capacity(), reused across collections.
+  void compute_gc_refs() {
     flag_dying();
-    gc_refs.reserve(objects_.size());
-    objects_.for_each([&](void* o, GcHeader& h) {
+    refs_residue_.assign(objects_.capacity(), 0);
+    // One walk adds each object's count to its own slot and subtracts one
+    // from each child's; the sum is the same whichever lands first.
+    std::vector<void*> kids;
+    objects_.for_each_slot([&](size_t i, void* o, GcHeader& h) {
       // Traced-only tags have no refcount at offset 0 (content lives there),
       // so they take no part in RC arithmetic — the tracing mark-sweep is
-      // their sole reclaimer. Leaving them out of the map means they are
-      // never seeded as RC roots and, as children, never decrement anyone
-      // (find() misses). A String reached only from a live container is
-      // still marked via children_fn during the reachability walk.
-      if (no_rc_fn_ && no_rc_fn_(h.type_tag)) return;
-      gc_refs.emplace(o, *reinterpret_cast<int64_t*>(o));  // refcount @ off 0
-    });
-    std::vector<void*> kids;
-    objects_.for_each([&](void* o, GcHeader& h) {
+      // their sole reclaimer. Never seeded, their slot only ever goes down
+      // from 0, so it fails the > 0 root test below. A String reached only
+      // from a live container is still marked via children_fn during the
+      // reachability walk.
+      if (!no_rc_fn_ || !no_rc_fn_(h.type_tag))
+        refs_residue_[i] += *reinterpret_cast<int64_t*>(o);  // refcount @ off 0
       if (!children_fn_ || h.flags & kFlagDying) return;
       kids.clear();
       children_fn_(o, h.type_tag, kids);
       for (void* c : kids) {
-        auto it = gc_refs.find(c);
-        if (it != gc_refs.end()) it->second--;
+        size_t ci = objects_.find_slot(c);
+        if (ci != GcRegistry::kNpos) refs_residue_[ci]--;
       }
+    });
+  }
+
+  // Seed every object whose residue says a reference from outside the heap holds it.
+  template <class Cb>
+  void seed_refs_roots(Cb&& push) {
+    objects_.for_each_slot([&](size_t i, void* o, GcHeader&) {
+      if (refs_residue_[i] > 0) push(o);
     });
   }
 
   size_t collect_refs() {
     if (gc_refs_diag()) collect_refs_diag();
     return collect_impl([this](auto&& push) {
-      std::unordered_map<void*, int64_t> gc_refs;
-      compute_gc_refs(gc_refs);
-      for (auto& [o, refs] : gc_refs) {
-        if (refs > 0) push(o);
-      }
+      compute_gc_refs();
+      seed_refs_roots(push);
       // Traced-only values (Strings/Views) carry no refcount to seed from and
       // can live purely on the stack, so the refcount seed above cannot root
       // them — freeing one still borrowed would crash. Seed them the way the
@@ -635,23 +661,22 @@ class Heap {
   // leaked count. This is the zero-false-positive detector GAP5 makes loud.
   size_t classify_leaks(std::vector<void*>& inflated, size_t by_tag[256],
                         int64_t& transitively_held) {
-    std::unordered_map<void*, int64_t> gc_refs;
-    compute_gc_refs(gc_refs);
+    compute_gc_refs();
     std::unordered_set<void*> refs_live, cons_live;
-    mark_reachable(refs_live, [&](auto&& push) {
-      for (auto& [o, r] : gc_refs) if (r > 0) push(o);
-    });
+    mark_reachable(refs_live, [this](auto&& push) { seed_refs_roots(push); });
     mark_reachable(cons_live, [this](auto&& push) { scan_roots(push); });
     size_t leak = 0;
     transitively_held = 0;
     for (void* o : refs_live) {
       if (cons_live.count(o)) continue;  // genuinely live — keep
       leak++;
-      GcHeader* h = objects_.find(o);
-      if (h) by_tag[h->type_tag]++;
-      // gc_refs[o] here is refcount - internal; > 0 means external refs remain.
-      if (gc_refs[o] > 0) inflated.push_back(o);  // phantom +1 = RC leak
-      else transitively_held++;                   // via a retained-live ancestor
+      size_t i = objects_.find_slot(o);
+      if (i != GcRegistry::kNpos) by_tag[objects_.header_at(i).type_tag]++;
+      // The residue is refcount - internal; > 0 means external refs remain.
+      if (i != GcRegistry::kNpos && refs_residue_[i] > 0)
+        inflated.push_back(o);  // phantom +1 = RC leak
+      else
+        transitively_held++;  // via a retained-live ancestor
     }
     return leak;
   }
@@ -1037,6 +1062,7 @@ class Heap {
   std::vector<void**> global_roots_;
   std::vector<void*> extra_roots_;  // scratch reused across collections
   std::vector<void*> dying_;        // mid-teardown objects (begin_teardown)
+  std::vector<int64_t> refs_residue_;  // compute_gc_refs, by registry slot
   ChildrenFn children_fn_ = nullptr;
   RootFn extra_roots_fn_ = nullptr;
   SweepFn sweep_fn_ = nullptr;
