@@ -81,7 +81,7 @@ int main(int argc, char** argv) {
     return 2;
   }
   const std::string model_bytes = read_file(argv[1]);
-  CHECK(model_bytes.size() == 2164434);
+  CHECK(model_bytes.size() == 2164458);
 
   auto dir = fs::temp_directory_path() / "culebra-search-model-test";
   fs::remove_all(dir);

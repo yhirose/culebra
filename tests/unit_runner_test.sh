@@ -13,7 +13,7 @@ fail=0
 
 printf 'test("exits", fn () {\n  Sys.exit(0)\n})\n' > "$TMP/test_a.cul"
 printf 'test("passes", fn () {\n  assert_eq(1, 1)\n})\n' > "$TMP/test_b.cul"
-out=$(cd "$TMP" && "$CULEBRA" test . 2>&1); rc=$?
+out=$(cd "$TMP" && "$CULEBRA" test --vm . 2>&1); rc=$?
 [[ $rc -eq 1 ]] || { echo "FAIL rc: expected 1, got $rc"; echo "$out"; fail=1; }
 [[ "$out" == *"ExitError"* ]] || { echo "FAIL: no ExitError reported"; echo "$out"; fail=1; }
 [[ "$out" == *"1 passed, 1 failed"* ]] || { echo "FAIL summary: $out"; fail=1; }
