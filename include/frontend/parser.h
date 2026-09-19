@@ -170,7 +170,7 @@ inline uint32_t parse_fixed_hex(std::string_view raw, size_t start, int width,
 inline size_t decode_unicode_escape_u(std::string_view raw, size_t i,
                                        std::string& out) {
   uint32_t cp = parse_fixed_hex(raw, i + 2, 4, "\\u");
-  if (cp >= 0xD800 && cp <= 0xDFFF) {
+  if (!is_unicode_scalar_value(cp)) {  // 4 hex digits: only a surrogate fails
     throw CulebraError("SyntaxError", std::format(
         "invalid \\u escape: U+{:04X} is not a Unicode scalar value "
         "(surrogate).", cp));

@@ -106,20 +106,19 @@ class LineIndex {
   std::vector<size_t> starts_;
 };
 
-inline size_t utf8_sequence_length(unsigned char lead) {
-  if (lead < 0x80) return 1;
-  if ((lead & 0xE0) == 0xC0) return 2;
-  if ((lead & 0xF0) == 0xE0) return 3;
-  if ((lead & 0xF8) == 0xF0) return 4;
-  return 1;  // a stray continuation or invalid byte stands for itself
+// Byte length of the scalar at `s[i]`. An ill-formed byte stands for itself,
+// as an editor decoding the same bytes shows it as one U+FFFD.
+inline size_t utf8_sequence_length(std::string_view s, size_t i) {
+  size_t n = unicode::utf8::codepoint_length(s.data() + i, s.size() - i);
+  return n ? n : 1;
 }
 
-// UTF-16 code units in the first `bytes` bytes of `line`.
+// UTF-16 code units in the first `bytes` bytes of `line`. Only a 4-byte
+// scalar lies outside the BMP and takes a surrogate pair.
 inline int64_t utf16_column(std::string_view line, size_t bytes) {
   int64_t units = 0;
   for (size_t i = 0; i < line.size() && i < bytes;) {
-    size_t n = utf8_sequence_length(static_cast<unsigned char>(line[i]));
-    if (i + n > line.size()) n = 1;
+    size_t n = utf8_sequence_length(line, i);
     units += n == 4 ? 2 : 1;
     i += n;
   }
@@ -130,8 +129,7 @@ inline int64_t utf16_column(std::string_view line, size_t bytes) {
 inline size_t byte_column(std::string_view line, int64_t units) {
   size_t i = 0;
   for (int64_t u = 0; i < line.size() && u < units;) {
-    size_t n = utf8_sequence_length(static_cast<unsigned char>(line[i]));
-    if (i + n > line.size()) n = 1;
+    size_t n = utf8_sequence_length(line, i);
     u += n == 4 ? 2 : 1;
     i += n;
   }
@@ -167,8 +165,7 @@ inline Json diagnostic_range(const LineIndex& lines, int64_t line,
   if (e < text.size() && ident_char(text[e])) {
     while (e < text.size() && ident_char(text[e])) e++;
   } else if (e < text.size()) {
-    e += std::min(utf8_sequence_length(static_cast<unsigned char>(text[e])),
-                  text.size() - e);
+    e += utf8_sequence_length(text, e);
   }
   return make_range(l, utf16_column(text, b), l, utf16_column(text, e));
 }

@@ -217,17 +217,22 @@ struct Parser {
   // boundary the language's own `\u` escape and TOML's draw.
   void read_unicode_escape(std::string& out) {
     advance();  // the 'u'
-    uint32_t cp = read_hex4();
-    if (cp >= 0xD800 && cp <= 0xDBFF) {
-      if (!(p + 1 < end && *p == '\\' && p[1] == 'u')) fail_not_scalar(cp);
+    char16_t units[2] = {static_cast<char16_t>(read_hex4()), 0};
+    size_t n = 1;
+    if (units[0] >= 0xD800 && units[0] <= 0xDBFF) {
+      if (!(p + 1 < end && *p == '\\' && p[1] == 'u')) {
+        fail_not_scalar(units[0]);
+      }
       advance(); advance();  // the '\' and the 'u'
-      uint32_t low = read_hex4();
-      if (low < 0xDC00 || low > 0xDFFF) fail_not_scalar(cp);
-      cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
+      units[1] = static_cast<char16_t>(read_hex4());
+      n = 2;
     }
-    // What is left is either a scalar value or a low surrogate with nothing
-    // in front of it.
-    if (!is_unicode_scalar_value(cp)) fail_not_scalar(cp);
+    // Rejects a high surrogate whose partner is not a low one, and a low
+    // surrogate with nothing in front of it.
+    char32_t cp;
+    if (!unicode::utf16::decode_codepoint(units, n, cp)) {
+      fail_not_scalar(units[0]);
+    }
     append_utf8(out, cp);
   }
   V parse_string() { return B::string(parse_string_raw()); }
