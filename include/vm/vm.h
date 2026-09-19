@@ -4941,10 +4941,6 @@ class Compiler {
   };
   struct LoopCtx {
     int32_t slot_watermark;  // slots >= this are inner to the loop scope
-    size_t defer_watermark;  // defer_scopes_.size() at loop entry: entries
-                             // above it are scopes a break/continue jumps
-                             // out of, and the first (outermost) one's mark
-                             // bounds every defer the iteration pushed
     std::vector<size_t> break_jumps;
     std::vector<size_t> continue_jumps;
     // A `nobreak { … }` clause runs only when the loop was not broken out
@@ -5116,10 +5112,6 @@ class Compiler {
   std::string ret_type_str_;  // same annotation, for emit_type_check_gate
   int32_t ret_ctx_ = -1;
   int32_t ret_pos_slot_ = -1;
-  // Mark slots of the open scopes that declared their own defers, outermost
-  // first (the JIT's Scope::defer_mark, flattened): break/continue run to
-  // the first entry above the loop's defer_watermark.
-  std::vector<int32_t> defer_scopes_;
   // A mark taken for the scope that is about to be pushed (DeferScope and
   // compile_try establish theirs before the push, since the slot has to
   // outlive the scope's own releases). push_scope consumes it.
@@ -5695,7 +5687,11 @@ class Compiler {
   }
 
   void release_down_to(int32_t watermark) {
-    for (int32_t s : release_order(watermark, next_slot_)) {
+    release_range(watermark, next_slot_);
+  }
+
+  void release_range(int32_t lo, int32_t hi) {
+    for (int32_t s : release_order(lo, hi)) {
       // An open for-in closes its iterator at the rung that frees it, so a
       // `return` out of the body — and the loop's own exit — reach it with
       // the iteration's bindings, released by the rungs above, already gone.
@@ -5708,6 +5704,30 @@ class Compiler {
         else emit(Op::Release, s);
       }
     }
+  }
+
+  // The ladder a jump walks out of every open scope down to scopes_[floor],
+  // innermost first, each the way its own fall-through leaves it: its defers,
+  // its slots, its owned mark. So a `break`, `continue` or `return` is the
+  // same exit as falling out of the nest one scope at a time — an outer
+  // scope's defer never sees an inner scope's binding still alive. `lo` is
+  // where the outermost of them starts releasing (a loop's own slots sit
+  // below its body scope's watermark), `floor_mark` the mark that scope's
+  // defers stand on when it carries none itself (a frame's).
+  void leave_scopes(size_t floor, int32_t lo, int32_t floor_mark = -1) {
+    int32_t hi = next_slot_;
+    for (size_t i = scopes_.size(); i-- > floor;) {
+      const Scope& sc = scopes_[i];
+      const bool last = i == floor;
+      int32_t mark = sc.defer_mark;
+      if (mark < 0 && last) mark = floor_mark;
+      if (mark >= 0) emit(Op::DeferRunTo, mark);
+      int32_t from = last ? lo : sc.slot_watermark;
+      release_range(from, hi);
+      hi = from;
+      if (sc.owned_mark >= 0) emit(Op::OwnedExit, sc.owned_mark);
+    }
+    release_range(lo, hi);  // a jump taken before the floor scope opened
   }
 
   // Emits the scope's Releases and returns its slots to the allocator
@@ -6363,8 +6383,9 @@ class Compiler {
   // mark slot lives in the ENCLOSING scope (it must survive this scope's
   // release ladder); DeferMark re-executes per entry, so one slot serves a
   // loop body's every iteration. Exits run before the scope's releases —
-  // fall-through here, break/continue via defer_scopes_, a throw via the
-  // region handler's mark (compile_try) or the frame's (run_frame).
+  // fall-through here, a jump out via the scope's own mark (leave_scopes), a
+  // throw via the region handler's mark (compile_try) or the frame's
+  // (run_frame).
   struct DeferScope {
     Compiler& c;
     int32_t mark = -1;
@@ -6372,20 +6393,12 @@ class Compiler {
       if (c.analysis_.scope_has_defer.contains(&key)) {
         mark = c.alloc_slot(key, "(defer.mark)");
         c.emit(Op::DeferMark, mark);
-        c.defer_scopes_.push_back(mark);
         c.pending_scope_mark_ = mark;  // the scope this brackets adopts it
       }
     }
-    // Emit the fall-through run; pop before the caller's pop_scope so the
-    // releases that follow are no longer "inside" this defer scope.
+    // Emit the fall-through run, ahead of the caller's pop_scope.
     void close() {
-      if (mark < 0) return;
-      c.emit(Op::DeferRunTo, mark);
-      c.defer_scopes_.pop_back();
-      mark = -1;
-    }
-    ~DeferScope() {
-      if (mark >= 0) c.defer_scopes_.pop_back();  // reject-unwind path
+      if (mark >= 0) c.emit(Op::DeferRunTo, mark);
     }
   };
 
@@ -6592,16 +6605,8 @@ class Compiler {
         // ours; an enclosing statement below the loop still needs its own.
         for (int32_t t : stmt_temps_)
           if (t >= lc.slot_watermark) emit(Op::Release, t);
-        // Then the pending defers — everything above the outermost defer
-        // scope opened inside the loop — before the named-slot releases
-        // (interp unwinds scope by scope, defers first).
-        if (defer_scopes_.size() > lc.defer_watermark)
-          emit(Op::DeferRunTo, defer_scopes_[lc.defer_watermark]);
-        release_down_to(lc.slot_watermark);
-        // The body scope's mark bounds every scope this jump abandons.
-        if (lc.body_scope_index < scopes_.size() &&
-            scopes_[lc.body_scope_index].owned_mark >= 0)
-          emit(Op::OwnedExit, scopes_[lc.body_scope_index].owned_mark);
+        // Then every scope the jump abandons, from the body scope up.
+        leave_scopes(lc.body_scope_index, lc.slot_watermark);
         if (brk && lc.broke_slot >= 0)
           emit(Op::LoadConst, lc.broke_slot, kconst_long(1));
         (brk ? lc.break_jumps : lc.continue_jumps).push_back(emit(Op::Jump));
@@ -6630,15 +6635,9 @@ class Compiler {
         // of leaving them to the GC backstop. `rv` rides past.
         for (int32_t t : stmt_temps_)
           if (t != rv) emit(Op::Release, t);
-        // Run every still-pending defer of the frame before its slots
-        // release (the fn.mark bounds them all — nested scope marks sit
-        // above it, so one run covers a return from any depth).
-        if (frame_defer_mark_ >= 0) emit(Op::DeferRunTo, frame_defer_mark_);
-        release_down_to(0);
-        // One resolution for every scope the return abandons: the frame's
-        // mark is the lowest of them (owned ids are monotonic).
-        if (chunk_.owned_frame_depth >= 0)
-          emit(Op::OwnedExit, chunk_.owned_frame_depth);
+        // Every scope of the frame, the frame's own last: its defers stand
+        // on the fn.mark.
+        leave_scopes(0, 0, frame_defer_mark_);
         emit(Op::Ret, rv);
         break;
       }
@@ -9362,7 +9361,7 @@ class Compiler {
                /*dst_is_fresh=*/true);
     emit(Op::ForOpen, base);
 
-    loops_.push_back({next_slot_, defer_scopes_.size(), {}, {}, broke,
+    loops_.push_back({next_slot_, {}, {}, broke,
                       scopes_.size(), enter_loop_label(fv.label)});
     size_t head_ix = chunk_.code.size();
     // A step's positionless throws report at the statement, not at the
@@ -9496,7 +9495,7 @@ class Compiler {
     size_t prep = emit(Op::ForPrep, base);
 
     if (!sink) push_binding({std::string(id.token), bind, false, cell});
-    loops_.push_back({next_slot_, defer_scopes_.size(), {}, {}, broke,
+    loops_.push_back({next_slot_, {}, {}, broke,
                       scopes_.size(), enter_loop_label(fv.label)});
     size_t body_ix = chunk_.code.size();
     if (cell) emit(Op::CellNew, bind, var);
@@ -9581,7 +9580,7 @@ class Compiler {
     }
     size_t exit_jump = emit(Op::JumpIfFalse, cond_slot);
 
-    loops_.push_back({next_slot_, defer_scopes_.size(), {}, {}, broke,
+    loops_.push_back({next_slot_, {}, {}, broke,
                       scopes_.size(), enter_loop_label(wv.label)});
     compile_block(*wv.body);
     emit(Op::Jump, static_cast<int32_t>(top_ix));
@@ -12665,16 +12664,12 @@ class Compiler {
     // inside the region — is caught here, exactly as the interp's nesting has
     // it. The tail keeps a cleanup entry of its own so the body's bindings
     // still release as that escaping throw passes them.
-    if (body_scope_defer) defer_scopes_.push_back(rmark);
     pending_scope_mark_ = rmark;
     push_scope(ast);
     predeclare_forward_refs(*ast.nodes[0]);
     compile_body_into(*ast.nodes[0], res);
     auto end = static_cast<uint32_t>(chunk_.code.size());
-    if (body_scope_defer) {
-      emit(Op::DeferRunTo, rmark);
-      defer_scopes_.pop_back();
-    }
+    if (body_scope_defer) emit(Op::DeferRunTo, rmark);
     auto region = pop_scope();
     size_t end_jump = emit(Op::Jump);
     auto handler = static_cast<uint32_t>(chunk_.code.size());

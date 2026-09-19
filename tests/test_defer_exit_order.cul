@@ -1,0 +1,246 @@
+# A jump out of nested scopes — break, continue, a labelled break, return —
+# leaves them the way falling out of each one does: innermost scope first,
+# and within a scope its defers before its bindings. Each case records the
+# order and compares it with the same nest left by fall-through.
+
+mut log = []
+fn res(name) {
+  {drop: fn () {
+    log.push("drop {name}")
+  }}
+}
+fn taken() {
+  let out = log
+  log = []
+  out
+}
+
+# --- the reference: fall-through
+for i in 0..1 {
+  defer {
+    log.push('outer defer')
+  }
+  let a = res('outer')
+  {
+    let r = res('inner')
+    defer {
+      log.push('inner defer')
+    }
+  }
+}
+let reference = taken()
+assert_eq(reference, ['inner defer', 'drop inner', 'outer defer', 'drop outer'])
+
+# --- break leaves scope by scope
+fn () {
+  for i in 0..1 {
+    defer {
+      log.push('outer defer')
+    }
+    let a = res('outer')
+    {
+      let r = res('inner')
+      defer {
+        log.push('inner defer')
+      }
+      break
+    }
+  }
+  assert_eq(taken(), reference)
+}()
+
+# --- continue leaves scope by scope
+fn () {
+  for i in 0..1 {
+    defer {
+      log.push('outer defer')
+    }
+    let a = res('outer')
+    {
+      let r = res('inner')
+      defer {
+        log.push('inner defer')
+      }
+      continue
+    }
+  }
+  assert_eq(taken(), reference)
+}()
+
+# --- a labelled break leaves one loop at a time
+fn () {
+  search: for i in 0..1 {
+    defer {
+      log.push('outer defer')
+    }
+    let a = res('outer')
+    for j in 0..1 {
+      let r = res('inner')
+      defer {
+        log.push('inner defer')
+      }
+      break search
+    }
+  }
+  assert_eq(taken(), reference)
+}()
+
+# --- a labelled continue leaves one loop at a time
+fn () {
+  search: for i in 0..1 {
+    defer {
+      log.push('outer defer')
+    }
+    let a = res('outer')
+    for j in 0..1 {
+      let r = res('inner')
+      defer {
+        log.push('inner defer')
+      }
+      continue search
+    }
+  }
+  assert_eq(taken(), reference)
+}()
+
+# --- return leaves scope by scope
+fn () {
+  fn f() {
+    defer {
+      log.push('outer defer')
+    }
+    let a = res('outer')
+    {
+      let r = res('inner')
+      defer {
+        log.push('inner defer')
+      }
+      return 1
+    }
+  }
+  assert_eq(f(), 1)
+  assert_eq(taken(), reference)
+}()
+
+# --- return out of a loop nest
+fn () {
+  fn f() {
+    defer {
+      log.push('fn defer')
+    }
+    let a = res('fn')
+    for i in 0..1 {
+      defer {
+        log.push('loop defer')
+      }
+      let b = res('loop')
+      {
+        let r = res('block')
+        defer {
+          log.push('block defer')
+        }
+        return 1
+      }
+    }
+  }
+  f()
+  assert_eq(
+    taken(),
+    [
+      'block defer',
+      'drop block',
+      'loop defer',
+      'drop loop',
+      'fn defer',
+      'drop fn',
+    ],
+  )
+}()
+
+# --- a scope without a defer between two that have one
+fn () {
+  for i in 0..1 {
+    defer {
+      log.push('outer defer')
+    }
+    let a = res('outer')
+    {
+      let m = res('middle')
+      {
+        let r = res('inner')
+        defer {
+          log.push('inner defer')
+        }
+        break
+      }
+    }
+  }
+  assert_eq(
+    taken(),
+    ['inner defer', 'drop inner', 'drop middle', 'outer defer', 'drop outer'],
+  )
+}()
+
+# --- a throw takes the same order
+fn () {
+  try {
+    defer {
+      log.push('outer defer')
+    }
+    let a = res('outer')
+    {
+      let r = res('inner')
+      defer {
+        log.push('inner defer')
+      }
+      throw 'x'
+    }
+  } catch _ {
+    nil
+  }
+  assert_eq(taken(), reference)
+}()
+# --- a cycle an inner scope owns is resolved as that scope is left, ahead of
+#     the outer defer, on a jump as on fall-through
+fn cyc(name) {
+  let o = {drop: fn () {
+    log.push("drop {name}")
+  }}
+  o.me = o
+  o
+}
+for i in 0..1 {
+  defer {
+    log.push('outer defer')
+  }
+  {
+    let c = cyc('cycle')
+  }
+}
+let cycle_reference = taken()
+fn () {
+  for i in 0..1 {
+    defer {
+      log.push('outer defer')
+    }
+    {
+      let c = cyc('cycle')
+      break
+    }
+  }
+  assert_eq(taken(), cycle_reference)
+}()
+fn () {
+  fn f() {
+    defer {
+      log.push('outer defer')
+    }
+    for i in 0..1 {
+      let c = cyc('cycle')
+      return 1
+    }
+  }
+  f()
+  assert_eq(taken(), cycle_reference)
+}()
+inspect('defer exit order: ok')
