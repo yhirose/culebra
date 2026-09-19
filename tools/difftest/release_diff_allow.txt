@@ -100,3 +100,13 @@ tensor|Tensor.from(5)
 # "parameter 'fn' expects Function" where the baseline spelled out the type
 # it was handed.
 tensor|*Tensor.no_grad(C.new())
+
+# A generator's promoted locals live under `self._l_<name>` since v0.6.0
+# (`self.<name>` before), so a body local can no longer collide with the
+# state machine's own fields. The column of an error raised inside a
+# generator body is counted in the lowered text when a rewritten name
+# precedes it on the same line — it was already off in the baseline (the
+# true column here is 43) and the three extra characters move it from 24 to
+# 27. Written over several lines the same program reports the true position
+# in both. The kind, message and line are unchanged.
+iterthrow|fn g() { for v in * { if v == 2 { [1][9] }; yield *
