@@ -816,8 +816,7 @@ inline std::map<JitClosure*, JitClosure*>& _jit_multifn_body_uplinks() {
       culebra::kSlotJitMultifnUplinks);
 }
 
-// Every write to the uplink table goes through these two, which is what
-// keeps the thread's last-answer cache (JitThreadState::mf_body) honest.
+// The uplink table's only writers (JitThreadState::mf_body says why).
 inline void _jit_multifn_uplink_set(JitClosure* body, JitClosure* dispatcher) {
   _jit_multifn_body_uplinks()[body] = dispatcher;
   if (_jit_thread.mf_body == body) _jit_thread.mf_body = nullptr;
@@ -835,8 +834,7 @@ inline void _jit_multifn_uplink_erase(JitClosure* body) {
 // undeclared name gets.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue
 culebra_runtime_multifn_self(JitClosure* body) {
-  // Through thread_state, which installs the Runtime-switch hook that
-  // clears the cache.
+  // thread_state installs the Runtime-switch hook that clears the cache.
   auto& ts = *culebra_runtime_thread_state();
   if (ts.mf_body != body) {
     auto& uplinks = _jit_multifn_body_uplinks();

@@ -57,26 +57,32 @@ if [ ! -x "$BIN" ]; then
     exit 2
 fi
 
-WORKLOADS="startup fib loop array strings"
-
-# Base size, then the larger size "compute" differences against. The larger
-# size is picked so the slowest runtime here still finishes in seconds.
-base_size() {
+# Each sized workload: its base size and the answer it prints there, then
+# the larger size "compute" differences against and its answer. The answer
+# is checked so a wrong-but-fast number cannot pass as a result (a mismatch
+# warns on stderr and still reports its time). The larger size is picked so
+# the slowest runtime here still finishes in seconds.
+SIZED="fib loop array strings"
+spec() {
     case $1 in
-        fib) echo 28 ;;
-        loop) echo 1200000 ;;
-        array) echo 500000 ;;
-        strings) echo 40000 ;;
+        fib) echo 28 317811 32 2178309 ;;
+        loop) echo 1200000 968194995 12000000 1524224 ;;
+        array) echo 500000 375082463 5000000 747875 ;;
+        strings) echo 40000 40000 80000 80000 ;;
     esac
 }
-big_size() {
-    case $1 in
-        fib) echo 32 ;;
-        loop) echo 12000000 ;;
-        array) echo 5000000 ;;
-        strings) echo 80000 ;;
-    esac
+# shellcheck disable=SC2046 # spec's fields are a deliberate word list
+base_size() { set -- $(spec "$1"); echo "$1"; }
+# shellcheck disable=SC2046
+big_size() { set -- $(spec "$1"); echo "$3"; }
+# workload [size] -> the answer; startup has no size and prints 1.
+# shellcheck disable=SC2046
+expected() {
+    [ -z "${2:-}" ] && { echo 1; return; }
+    set -- "$2" $(spec "$1")
+    if [ "$1" = "$2" ]; then echo "$3"; else echo "$5"; fi
 }
+WORKLOADS="startup $SIZED"
 
 # How much work a size is, in any unit that is the same for both sizes: the
 # calls fib(n) makes, the steps of a loop. strings counts its appends, and
@@ -90,21 +96,6 @@ work() {
                                     for (i = 0; i <= n; i++) { t = a + b; a = b; b = t }
                                     print 2 * a - 1 }' ;;
         *) echo "$2" ;;
-    esac
-}
-
-# Answer each workload prints at a size, so a wrong-but-fast number cannot
-# pass as a result. A mismatch warns on stderr and still reports its time.
-expected() {
-    case $1:${2:-} in
-        startup:) echo 1 ;;
-        fib:28) echo 317811 ;;
-        fib:32) echo 2178309 ;;
-        loop:1200000) echo 968194995 ;;
-        loop:12000000) echo 1524224 ;;
-        array:500000) echo 375082463 ;;
-        array:5000000) echo 747875 ;;
-        strings:*) echo "$2" ;;
     esac
 }
 
@@ -264,7 +255,6 @@ node|run_node
 dotnet|run_dotnet
 go|run_go"
 
-COMPUTED="fib loop array strings"
 WALL_TABLE=""
 COMPUTE_TABLE=""
 while IFS='|' read -r label fn; do
@@ -286,16 +276,24 @@ while IFS='|' read -r label fn; do
     echo "langs: $label done" >&2
 done <<< "$ROWS"
 
-# shellcheck disable=SC2086 # $WORKLOADS / $COMPUTED are deliberate word lists
+# A table's header: the column names, then a rule under each.
+header() {
+    printf '%-14s' runtime
+    printf ' %9s' "$@"
+    printf '\n%-14s' --------
+    local _
+    for _ in "$@"; do printf ' %9s' -------; done
+    printf '\n'
+}
+
+# shellcheck disable=SC2086 # $WORKLOADS / $SIZED are deliberate word lists
 {
     echo "wall: one run at the base size, startup and JIT compile included"
-    printf '%-14s %9s %9s %9s %9s %9s\n' runtime $WORKLOADS
-    printf '%-14s %9s %9s %9s %9s %9s\n' -------- ------- ------- ------- ------- -------
+    header $WORKLOADS
     printf '%s' "$WALL_TABLE"
     echo
     echo "compute: the same base-size work, startup and JIT compile differenced out"
-    printf '%-14s %9s %9s %9s %9s\n' runtime $COMPUTED
-    printf '%-14s %9s %9s %9s %9s\n' -------- ------- ------- ------- -------
+    header $SIZED
     printf '%s' "$COMPUTE_TABLE"
     echo "(strings: the $(big_size strings)-append run minus the $(base_size strings)-append run)"
 }

@@ -3533,21 +3533,18 @@ struct RcPlan {
   // Per chunk, the destination rewrites the third one asks for. A rewrite,
   // not a delete, so it rides beside `dead` rather than in it.
   std::vector<std::vector<Coalesce>> coalesce;
-  // Per chunk, the `Move` pcs that become `MoveRetain`, absorbing the
-  // `Retain` after them (which `dead` carries).
-  std::vector<std::vector<uint32_t>> fuse;
-  // Per chunk, the `Move` pcs that become `Take`, absorbing the `Retain` and
-  // the `Release` after them (both in `dead`).
-  std::vector<std::vector<uint32_t>> take;
+  // Per chunk, the instructions whose op changes as they absorb the ones
+  // after them (which `dead` carries): a `Move` into the fused `MoveRetain`,
+  // or a borrow followed by its source's `Release` into a `Take`.
+  std::vector<std::vector<std::pair<uint32_t, Op>>> retag;
 
   bool any() const {
     bool rewrites =
         std::any_of(coalesce.begin(), coalesce.end(),
                     [](const std::vector<Coalesce>& v) { return !v.empty(); }) ||
-        std::any_of(fuse.begin(), fuse.end(),
-                    [](const std::vector<uint32_t>& v) { return !v.empty(); }) ||
-        std::any_of(take.begin(), take.end(),
-                    [](const std::vector<uint32_t>& v) { return !v.empty(); });
+        std::any_of(retag.begin(), retag.end(), [](const auto& v) {
+          return !v.empty();
+        });
     return rewrites ||
            std::any_of(dead.begin(), dead.end(), [](const std::vector<char>& d) {
              return std::find(d.begin(), d.end(), 1) != d.end();
@@ -3913,8 +3910,8 @@ struct RcScratch {
 // One chunk's decisions, in emission order.
 inline std::vector<char> rc_plan_for_chunk(const Chunk& c, RcScratch& s,
                                           std::vector<Coalesce>& out_coalesce,
-                                          std::vector<uint32_t>& out_fuse,
-                                          std::vector<uint32_t>& out_take) {
+                                          std::vector<std::pair<uint32_t, Op>>&
+                                              out_retag) {
   const size_t n = c.code.size();
   const size_t slots = static_cast<size_t>(c.num_slots);
   std::vector<char> dead(n, 0);
@@ -4135,30 +4132,25 @@ inline std::vector<char> rc_plan_for_chunk(const Chunk& c, RcScratch& s,
     // +1 and the release's -1 cancel (the value is never the last reference
     // in between, so no `drop` can run), which is what `Take X, Y` does in
     // one instruction — Y is left nil either way. It is how a function
-    // returns a parameter as is. Nothing may land in the middle.
-    for (size_t pc = 0; pc + 2 < n; ++pc) {
-      const Insn& mv = c.code[pc];
-      if (mv.op != Op::Move || c.code[pc + 1].op != Op::Retain ||
-          c.code[pc + 2].op != Op::Release)
-        continue;
-      if (c.code[pc + 1].a != mv.a || c.code[pc + 2].a != mv.b ||
-          mv.a == mv.b)
-        continue;
-      if (dead[pc] || dead[pc + 1] || dead[pc + 2]) continue;
-      if (is_target[pc + 1] || is_target[pc + 2]) continue;
-      out_take.push_back(static_cast<uint32_t>(pc));
-      dead[pc + 1] = 1;
-      dead[pc + 2] = 1;
-    }
-    // The same pair once a previous round fused the first two.
+    // returns a parameter as is. The borrow may already be one `MoveRetain`
+    // from a previous round. Nothing may land in the middle.
     for (size_t pc = 0; pc + 1 < n; ++pc) {
       const Insn& mv = c.code[pc];
-      if (mv.op != Op::MoveRetain || c.code[pc + 1].op != Op::Release ||
-          c.code[pc + 1].a != mv.b || mv.a == mv.b)
+      size_t rel = 0;  // the Release, when the borrow before it is whole
+      if (mv.op == Op::MoveRetain)
+        rel = pc + 1;
+      else if (mv.op == Op::Move && pc + 2 < n &&
+               c.code[pc + 1].op == Op::Retain && c.code[pc + 1].a == mv.a)
+        rel = pc + 2;
+      if (!rel || c.code[rel].op != Op::Release || c.code[rel].a != mv.b ||
+          mv.a == mv.b || dead[pc])
         continue;
-      if (dead[pc] || dead[pc + 1] || is_target[pc + 1]) continue;
-      out_take.push_back(static_cast<uint32_t>(pc));
-      dead[pc + 1] = 1;
+      bool clear = true;
+      for (size_t k = pc + 1; k <= rel; ++k)
+        clear = clear && !dead[k] && !is_target[k];
+      if (!clear) continue;
+      out_retag.push_back({static_cast<uint32_t>(pc), Op::Take});
+      for (size_t k = pc + 1; k <= rel; ++k) dead[k] = 1;
     }
 
     // `Move X, Y ; Retain X` is the borrow idiom, and it is the ONLY shape a
@@ -4174,7 +4166,7 @@ inline std::vector<char> rc_plan_for_chunk(const Chunk& c, RcScratch& s,
         continue;
       if (c.code[pc + 1].a != c.code[pc].a) continue;
       if (dead[pc] || dead[pc + 1] || is_target[pc + 1]) continue;
-      out_fuse.push_back(static_cast<uint32_t>(pc));
+      out_retag.push_back({static_cast<uint32_t>(pc), Op::MoveRetain});
       dead[pc + 1] = 1;
     }
   }
@@ -4297,18 +4289,16 @@ inline RcPlan plan_rc_elision(const VmProgram& p) {
   RcPlan plan;
   plan.dead.reserve(p.chunks.size());
   plan.coalesce.reserve(p.chunks.size());
-  plan.fuse.reserve(p.chunks.size());
-  plan.take.reserve(p.chunks.size());
+  plan.retag.reserve(p.chunks.size());
   rc_detail::RcScratch scratch;
   for (const Chunk& c : p.chunks) {
     std::vector<Coalesce> co;
-    std::vector<uint32_t> fz, tk;
-    auto dead = rc_detail::rc_plan_for_chunk(c, scratch, co, fz, tk);
+    std::vector<std::pair<uint32_t, Op>> rt;
+    auto dead = rc_detail::rc_plan_for_chunk(c, scratch, co, rt);
     owned_detail::owned_plan_for_chunk(c, dead);
     plan.dead.push_back(std::move(dead));
     plan.coalesce.push_back(std::move(co));
-    plan.fuse.push_back(std::move(fz));
-    plan.take.push_back(std::move(tk));
+    plan.retag.push_back(std::move(rt));
   }
   return plan;
 }
@@ -4402,18 +4392,16 @@ inline void delete_marked(Chunk& c, const std::vector<char>& dead) {
 
 inline void apply_rc_elision(Chunk& c, const std::vector<char>& dead,
                              const std::vector<Coalesce>& coalesce,
-                             const std::vector<uint32_t>& fuse,
-                             const std::vector<uint32_t>& take) {
+                             const std::vector<std::pair<uint32_t, Op>>&
+                                 retag) {
   const size_t n = c.code.size();
   // The rewrites first, in the old numbering: each just redirects a
   // producer's destination, or turns a Move into the fused MoveRetain, and
   // the instruction it absorbs is in `dead`.
   for (const auto& co : coalesce)
     if (co.at < n) c.code[co.at].a = co.dest;
-  for (uint32_t at : fuse)
-    if (at < n) c.code[at].op = Op::MoveRetain;
-  for (uint32_t at : take)
-    if (at < n) c.code[at].op = Op::Take;
+  for (auto [at, op] : retag)
+    if (at < n) c.code[at].op = op;
   delete_marked(c, dead);
 }
 
@@ -4471,11 +4459,10 @@ inline void shape_elide_chunk(Chunk& c) {
 // Run the elision over a whole program.
 inline void apply_rc_elision(VmProgram& p, const RcPlan& plan) {
   size_t n = std::min({p.chunks.size(), plan.dead.size(),
-                       plan.coalesce.size(), plan.fuse.size(),
-                       plan.take.size()});
+                       plan.coalesce.size(), plan.retag.size()});
   for (size_t ci = 0; ci < n; ++ci)
     apply_rc_elision(p.chunks[ci], plan.dead[ci], plan.coalesce[ci],
-                     plan.fuse[ci], plan.take[ci]);
+                     plan.retag[ci]);
 }
 // What a lane that calls baked preamble entries (stdlib_preamble.h) leaves
 // out of the unit, and what it has to hand back so the compile still sees
@@ -13910,8 +13897,10 @@ inline std::string dump(const VmProgram& p) {
   return out;
 }
 
-// The VM executor. Registers live in a C++ stack array so the conservative
-// GC stack scan roots them for free. Numeric/comparison dispatch mirrors the
+// The VM executor. A frame's registers live on the machine stack, where the
+// conservative scan roots them for free, or — for a frame the loop entered
+// itself — on the Runtime's VmStack, which the collector reads through its
+// roots hook. Numeric/comparison dispatch mirrors the
 // JIT's emit paths instruction for instruction: the Long×Long fast path is
 // inline, everything else funnels into the exact runtime helper the JIT
 // calls — so behavior, error kinds/messages, and positions match by
@@ -13998,10 +13987,11 @@ struct Exec {
 
   // One culebra frame, as dispatch runs it. A run_frame keeps its own on
   // the machine stack (`parent` null); a resolved call made from inside the
-  // loop pushes the callee's onto the thread's VmStack and keeps running,
+  // loop pushes the callee's onto the Runtime's VmStack and keeps running,
   // instead of entering run_frame again (Lua's and V8's shape): no C++ frames
   // per culebra call, and a throw crosses culebra frames without crossing
   // C++ ones.
+  struct VmStack;
   struct VmFrame {
     const Chunk* c;
     JitValue* regs;
@@ -14010,13 +14000,14 @@ struct Exec {
     JitValue* args;
     int64_t n_args;
     int32_t chunk_idx;
-    // Where dispatch (re-)enters, and what unwind reads. While the frame
-    // runs, `ip` is the truth: dispatch stores it at every instruction and
-    // run_frame's handler turns it back into `pc`.
-    size_t pc;
+    // The instruction running: dispatch stores it at every instruction and
+    // (re-)enters here, and the unwinder reads the frame's pc off it.
     const Insn* ip;
     int64_t frame_depth;
     VmFrame* parent;
+    // Where this frame's callees go, resolved once per run_frame; null in a
+    // debug session, which keeps every frame in run_frame (DbgFrameGuard).
+    VmStack* stack;
     // The caller's call site: the result register, and the run of argument
     // registers the callee consumed (nil'd when it returns or throws, as
     // run_resolved's Drain does).
@@ -14027,9 +14018,9 @@ struct Exec {
   // The register windows of inline frames, per Runtime — the frames belong
   // to the heap that holds their values, and a Runtime's teardown finds its
   // stack empty or revived empty (kSlotVmStack). Segments never move, so a
-  // frame's `regs` and `parent` stay valid; the collector reads the live
-  // part through vm_stack_roots, since nothing here is on the machine stack
-  // its scan walks.
+  // frame's `regs` and `parent` stay valid; the collector reads the frames'
+  // registers through vm_stack_roots, since nothing here is on the machine
+  // stack its scan walks.
   struct VmStack {
     static constexpr size_t kSegment = size_t{1} << 15;  // JitValues
     std::vector<std::unique_ptr<JitValue[]>> segs;
@@ -14041,28 +14032,44 @@ struct Exec {
   // A frame's block: the record, then its registers, then its marks.
   static constexpr size_t kFrameHeader =
       (sizeof(VmFrame) + sizeof(JitValue) - 1) / sizeof(JitValue);
+  static size_t frame_block_size(const Chunk& c) {
+    return kFrameHeader + static_cast<size_t>(c.num_slots) +
+           static_cast<size_t>(c.owned_depths);
+  }
+  // Uninitialized: the caller writes the record before anything can walk it.
   static JitValue* vm_stack_alloc(VmStack& vs, size_t n) {
     if (vs.segs.empty()) vs.segs.emplace_back(new JitValue[VmStack::kSegment]);
     if (vs.used + n > VmStack::kSegment) {
-      // The tail left behind holds nothing live: clear it, so the root walk
-      // can take every segment below the current one whole.
-      std::memset(vs.segs[vs.seg].get() + vs.used, 0,
-                  (VmStack::kSegment - vs.used) * sizeof(JitValue));
+      // A null record ends the root walk's pass over this segment.
+      if (VmStack::kSegment - vs.used >= kFrameHeader)
+        std::memset(vs.segs[vs.seg].get() + vs.used, 0,
+                    kFrameHeader * sizeof(JitValue));
       if (++vs.seg == vs.segs.size())
         vs.segs.emplace_back(new JitValue[VmStack::kSegment]);
       vs.used = 0;
     }
     JitValue* at = vs.segs[vs.seg].get() + vs.used;
     vs.used += n;
-    std::memset(at, 0, n * sizeof(JitValue));
     return at;
   }
+  // Each live frame's registers and closure, walked block by block: the
+  // record at the head of a block says how long it is. A register's payload
+  // goes in whatever its tag says — a cell slot's JitCell, a for-in cursor's
+  // closures ride TAG_LONG — so this is the machine-stack scan's rule, every
+  // payload a candidate, not _gc_push_value's.
   static void vm_stack_roots(std::vector<void*>& out) {
     auto& vs = vm_stack();
     for (size_t s = 0; s < vs.segs.size() && s <= vs.seg; ++s) {
-      size_t n = s < vs.seg ? VmStack::kSegment : vs.used;
-      auto* w = reinterpret_cast<void* const*>(vs.segs[s].get());
-      out.insert(out.end(), w, w + n * (sizeof(JitValue) / sizeof(void*)));
+      JitValue* at = vs.segs[s].get();
+      JitValue* end = at + (s < vs.seg ? VmStack::kSegment : vs.used);
+      while (at + kFrameHeader <= end) {
+        const auto* f = reinterpret_cast<const VmFrame*>(at);
+        if (!f->c) break;
+        for (int32_t i = 0; i < f->c->num_slots; ++i)
+          out.push_back(reinterpret_cast<void*>(f->regs[i].data));
+        out.push_back(f->cls);
+        at += frame_block_size(*f->c);
+      }
     }
   }
 
@@ -14144,47 +14151,48 @@ struct Exec {
       const VmProgram& p, VmFrame* f, int32_t tgt, const JitValue& callee,
       JitValue self, int32_t ret_reg, int32_t run_base, int32_t n_run,
       int32_t argc, int64_t line, int64_t col) {
-    if (dbg_state().tracking) return nullptr;
+    VmStack* vs = f->stack;
+    if (!vs) return nullptr;
     assert(call_target_holds(p, callee, tgt));
     const Chunk& c = p.chunks[static_cast<size_t>(tgt)];
     culebra::throw_if_too_many_positionals(c.first_kw_only_idx, argc, line,
                                            col);
-    const size_t need = kFrameHeader + static_cast<size_t>(c.num_slots) +
-                        static_cast<size_t>(c.owned_depths);
+    const size_t need = frame_block_size(c);
     if (need > VmStack::kSegment) return nullptr;
-    auto& vs = vm_stack();
-    const size_t mark_seg = vs.seg, mark_used = vs.used;
-    JitValue* block = vm_stack_alloc(vs, need);
+    const size_t mark_seg = vs->seg, mark_used = vs->used;
+    JitValue* block = vm_stack_alloc(*vs, need);
     JitValue* regs = block + kFrameHeader;
+    // zero-init == {TAG_NIL, 0}; OwnedMark writes a mark before it is read.
+    std::memset(regs, 0, static_cast<size_t>(c.num_slots) * sizeof(JitValue));
     JitValue* run = f->regs + run_base;
-    JitValue* args = argc ? run + (n_run - argc) : nullptr;
     auto* cls = reinterpret_cast<JitClosure*>(callee.data);
+    // The record goes up before the binding runs: binding can allocate, and
+    // a collect walks the stack record by record.
+    auto* nf = new (block) VmFrame{
+        .c = &c,
+        .regs = regs,
+        .marks = reinterpret_cast<int64_t*>(regs + c.num_slots),
+        .cls = cls,
+        .args = argc ? run + (n_run - argc) : nullptr,
+        .n_args = argc,
+        .chunk_idx = tgt,
+        .ip = c.code.data(),
+        .frame_depth = -1,  // "never entered", as run_frame starts a callee
+        .parent = f,
+        .stack = vs,
+        .ret_reg = ret_reg,
+        .run_base = run_base,
+        .run_n = n_run,
+        .mark_seg = mark_seg,
+        .mark_used = mark_used};
     try {
-      bind_params(c, regs, cls, argc, args, static_cast<int8_t>(self.tag),
+      bind_params(c, regs, cls, argc, nf->args, static_cast<int8_t>(self.tag),
                   self.data);
     } catch (...) {
-      for (int32_t i = 0; i < n_run; ++i) run[i] = JitValue{TAG_NIL, 0};
-      vs.seg = mark_seg;
-      vs.used = mark_used;
+      pop_inline(nf);
       throw;
     }
-    // The "never entered" sentinel, as run_frame starts a callee's frame.
-    return new (block) VmFrame{&c,
-                               regs,
-                               reinterpret_cast<int64_t*>(regs + c.num_slots),
-                               cls,
-                               args,
-                               argc,
-                               tgt,
-                               0,
-                               nullptr,
-                               -1,
-                               f,
-                               ret_reg,
-                               run_base,
-                               n_run,
-                               mark_seg,
-                               mark_used};
+    return nf;
   }
 
   // Pop an inline frame, handing the caller what the call left: its result,
@@ -14194,17 +14202,15 @@ struct Exec {
     VmFrame* pf = f->parent;
     for (int32_t i = 0; i < f->run_n; ++i)
       pf->regs[f->run_base + i] = JitValue{TAG_NIL, 0};
-    auto& vs = vm_stack();
-    vs.seg = f->mark_seg;
-    vs.used = f->mark_used;
+    f->stack->seg = f->mark_seg;
+    f->stack->used = f->mark_used;
     return pf;
   }
   [[gnu::noinline]] static VmFrame* leave_inline(VmFrame* f, JitValue rv) {
     int32_t ret_reg = f->ret_reg;
     VmFrame* pf = pop_inline(f);
     pf->regs[ret_reg] = rv;
-    // Resume after the call.
-    pf->pc = static_cast<size_t>(pf->ip - pf->c->code.data()) + 1;
+    ++pf->ip;  // past the call
     return pf;
   }
 
@@ -14222,9 +14228,10 @@ struct Exec {
     // recursing through its ctor thunk ran out of an 8 MB stack at ~760
     // levels and took SIGSEGV where the other backends raise
     // RecursionError. The window stays on the machine stack so the
-    // conservative collector keeps finding these roots by scanning it
-    // (a heap buffer would be invisible without registering it).
-    // zero-init == {TAG_NIL, 0}; the executor never reads past num_slots.
+    // conservative collector keeps finding these roots by scanning it; the
+    // frames this one's loop enters itself are rooted through the VmStack's
+    // hook instead. zero-init == {TAG_NIL, 0}; the executor never reads past
+    // num_slots.
     JitValue regs[c.num_slots > 0 ? c.num_slots : 1];
     std::memset(regs, 0, sizeof(JitValue) * static_cast<size_t>(c.num_slots));
     // A debug session keeps the frame stack: the entry goes up as soon as
@@ -14238,7 +14245,9 @@ struct Exec {
       ~DbgFrameGuard() {
         if (on) dbg_state().frames.pop_back();
       }
-    } dbg_frame{dbg_state().tracking, p, c, regs};
+    };
+    const bool tracking = dbg_state().tracking;
+    DbgFrameGuard dbg_frame{tracking, p, c, regs};
     if (chunk_idx != 0)
       bind_params(c, regs, cls, n_args, args, self_tag, self_data);
     // A try handler restores the recursion count to this frame's own level
@@ -14257,8 +14266,17 @@ struct Exec {
     // which is what put the register window's recursion limit out of reach
     // before Phase 2 shrank it.
     int64_t marks[c.owned_depths > 0 ? c.owned_depths : 1];
-    VmFrame base{&c, regs, marks, cls, args, n_args, chunk_idx, 0, nullptr,
-                 frame_depth, nullptr, 0, 0, 0, 0, 0};
+    VmFrame base{.c = &c,
+                 .regs = regs,
+                 .marks = marks,
+                 .cls = cls,
+                 .args = args,
+                 .n_args = n_args,
+                 .chunk_idx = chunk_idx,
+                 .ip = c.code.data(),
+                 .frame_depth = frame_depth,
+                 .parent = nullptr,
+                 .stack = tracking ? nullptr : &vm_stack()};
     VmFrame* top = &base;
     // Dispatch, re-entering at a try scope's handler when a throw lands
     // inside one. Classification shares the JIT landingpad's carrier
@@ -14290,11 +14308,8 @@ struct Exec {
   static bool unwind_frames(VmFrame*& top, VmFrame* base) {
     for (;;) {
       VmFrame* f = top;
-      f->pc = static_cast<size_t>(f->ip - f->c->code.data());
       try {
-        if (unwind(*f->c, f->regs, f->pc, f->chunk_idx, f->frame_depth,
-                   f->marks))
-          return true;
+        if (unwind(*f)) return true;
       } catch (...) {
         if (f == base) throw;
         top = pop_inline(f);
@@ -14311,11 +14326,15 @@ struct Exec {
   // then each enclosing scope runs its pending defers and releases its own
   // bindings, innermost outward — so a `defer` and the `drop`s of the scope
   // it guards interleave the way they do on the other two backends. Returns
-  // true when a try scope caught it (`pc` then sits at its handler);
-  // otherwise the frame is uncounted and the caller re-raises.
-  static bool unwind(const Chunk& c, JitValue* regs, size_t& pc,
-                     int32_t chunk_idx, int64_t frame_depth,
-                     const int64_t* marks) {
+  // true when a try scope caught it (the frame's `ip` then sits at its
+  // handler); otherwise the frame is uncounted and the caller re-raises.
+  static bool unwind(VmFrame& f) {
+    const Chunk& c = *f.c;
+    JitValue* regs = f.regs;
+    const size_t pc = static_cast<size_t>(f.ip - c.code.data());
+    const int32_t chunk_idx = f.chunk_idx;
+    const int64_t frame_depth = f.frame_depth;
+    const int64_t* marks = f.marks;
     // Restore this frame's depth before any of it runs: the unwound callees
     // never ran their `leave`, and the defers (and any `drop` the releases
     // fire) must count from here. Every restore ignores the "never entered"
@@ -14360,7 +14379,7 @@ struct Exec {
           culebra_runtime_clear_is_throw();
           regs[cu.caught_slot] = JitValue{culebra_runtime_get_thrown_tag(),
                                           culebra_runtime_get_thrown_data()};
-          pc = static_cast<size_t>(cu.handler);
+          f.ip = c.code.data() + cu.handler;
           return true;
         }
         // Foreign: keep unwinding, the enclosing scopes' cleanup included.
@@ -14767,10 +14786,10 @@ struct Exec {
     // The wasm safepoint rides the dispatch, which is the only place a
     // deferred collect runs (rt_gc.h kDeferToSafepoint). Between
     // instructions every live value of every frame sits in a register
-    // window on the linear-memory stack, which the conservative scan does
-    // see — unless a helper frame that may hold sole references is
-    // suspended below us, which safepoint_collect checks. Folds away on
-    // native builds.
+    // window the collector sees — on the linear-memory stack, or on the
+    // VmStack its roots hook walks — unless a helper frame that may hold
+    // sole references is suspended below us, which safepoint_collect
+    // checks. Folds away on native builds.
     VmFrame* f = top;
     // The loop runs on `ip` alone and stores it into the frame at every
     // dispatch for the unwinder — never reading it back, which is what put
@@ -14815,7 +14834,7 @@ struct Exec {
       return culebra_runtime_to_bool_borrow(static_cast<int8_t>(v.tag),
                                             v.data, line, col);
     };
-    ip = code + f->pc;
+    ip = f->ip;
     VM_NEXT();
       L_LoadConst:
         do {
@@ -16190,6 +16209,8 @@ struct Exec {
           JitValue self{TAG_NO_SELF, 0};
           if (JitValue entered;
               tgt.chunk >= 0 && resolved_entry(p, tgt, callee, entered)) {
+            // The callee runs in this loop; BorrowWitness above then checks
+            // nothing, and the fallback below is what it still covers.
             if (VmFrame* nf = enter_inline(p, f, tgt.chunk, entered, self,
                                            in.a, in.c, in.d, in.d, line, col)) {
               top = f = nf;

@@ -1321,8 +1321,11 @@ machine stack, a throw crosses culebra frames without crossing C++ ones,
 and the recursion limit is what the language says rather than what the
 machine stack allows. The `VmStack` is heap memory the machine-stack scan
 does not walk, so `Exec::prepare` installs `vm_stack_roots` beside the
-descriptor hook: the collector takes the live part of every segment as
-roots, the way it takes the module table. A frame the `VmStack` cannot
+descriptor hook: the collector walks the stack frame by frame — each
+record says how long its block is — and takes every register's payload
+as a candidate root, the rule the machine-stack scan applies (a cell
+slot's `JitCell` and a for-in cursor's closures ride tags that say
+nothing about them). A frame the `VmStack` cannot
 take — a debug session, which keeps its frame stack by `run_frame`'s
 guard; a chunk larger than a segment — goes through `run_frame`, as every
 unresolved call does.
