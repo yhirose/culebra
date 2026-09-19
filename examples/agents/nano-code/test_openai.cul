@@ -8,8 +8,7 @@ import msg from './core/message.cul'
 # arguments travel as a JSON string.
 
 class OpenAIStub {
-  new(response) {
-    self.response = response
+  new(.response) {
     self.sent = []
   }
 

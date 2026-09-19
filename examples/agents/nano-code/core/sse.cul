@@ -99,8 +99,7 @@ let RAW_KEEP = 2000
 # Both providers read their stream through this; only what they do with an
 # event differs.
 class EventStream {
-  new(on_event) {
-    self.on_event = on_event
+  new(.on_event) {
     self.decoder = SseDecoder()
     self.raw = ''
     self.events = 0

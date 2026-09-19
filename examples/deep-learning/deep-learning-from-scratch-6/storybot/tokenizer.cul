@@ -156,10 +156,7 @@ fn count_pretokens_parallel(
 
 # One unique pre-token: its current ids and how often the corpus has it.
 class Entry {
-  new(ids, count) {
-    self.ids = ids
-    self.count = count
-  }
+  new(.ids, .count) {}
 }
 
 fn add_pair_counts(ids, weight, counts) {
@@ -299,9 +296,7 @@ fn encode_chunk(chunk, rule_of, end_token, end_token_id) {
 }
 
 class BPETokenizer {
-  new(merge_rules, end_token = END_TOKEN) {
-    self.merge_rules = merge_rules
-    self.end_token = end_token
+  new(.merge_rules, .end_token = END_TOKEN) {
     self.end_token_id = 256 + merge_rules.size()
 
     mut id_to_bytes = range(256).map(|b| [b]).collect()

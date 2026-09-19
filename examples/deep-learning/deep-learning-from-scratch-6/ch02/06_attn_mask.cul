@@ -27,9 +27,7 @@ fn causal_bias(c) {
 }
 
 class Attention {
-  new(embed_dim, key_dim) {
-    self.embed_dim = embed_dim
-    self.key_dim = key_dim
+  new(.embed_dim, .key_dim) {
     self.scale = 1.0 / Math.sqrt(to_float(key_dim))
     self.w_q = L.Linear(key_dim, false, embed_dim)
     self.w_k = L.Linear(key_dim, false, embed_dim)

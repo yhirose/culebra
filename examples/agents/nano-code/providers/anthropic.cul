@@ -40,10 +40,7 @@ fn create_anthropic(config = {}) {
 }
 
 class AnthropicModel {
-  new(http, model_id) {
-    self.http = http
-    self.model_id = model_id
-  }
+  new(.http, .model_id) {}
 
   do_generate(params) {
     let res = self.http.post('/messages', json: self.body_for(params, false))
@@ -229,8 +226,7 @@ fn call_of(b) {
 # format's blocks at the end, so that what `finish` answers is exactly a
 # non-streaming body.
 class AnthropicStream {
-  new(on_text) {
-    self.on_text = on_text
+  new(.on_text) {
     self.blocks = []
     self.stop_reason = nil
     self.sent = 0

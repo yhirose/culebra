@@ -219,9 +219,7 @@ class LeakyReLU {
   output = nil
   seen = -1
 
-  new(slope = 0.2) {
-    self.slope = slope
-  }
+  new(.slope = 0.2) {}
 
   forward(x) {
     dz.raw_elementwise(x, |v| if v > 0.0 {
@@ -249,9 +247,7 @@ class Softmax {
   output = nil
   seen = -1
 
-  new(axis = 1) {
-    self.axis = axis
-  }
+  new(.axis = 1) {}
 
   forward(x) {
     # `Tensor.softmax()` always normalizes over the last axis, and the
@@ -299,10 +295,7 @@ class Clip {
   output = nil
   seen = -1
 
-  new(x_min, x_max) {
-    self.x_min = x_min
-    self.x_max = x_max
-  }
+  new(.x_min, .x_max) {}
 
   forward(x) {
     x.clamp(self.x_min, self.x_max)
@@ -356,9 +349,7 @@ class SoftmaxCrossEntropy {
   output = nil
   seen = -1
 
-  new(t) {
-    self.t = t
-  }
+  new(.t) {}
 
   forward(x) {
     probs = x.softmax()
@@ -396,9 +387,7 @@ class SigmoidCrossEntropy {
   output = nil
   seen = -1
 
-  new(t) {
-    self.t = t
-  }
+  new(.t) {}
 
   forward(x) {
     p = x.sigmoid()
@@ -461,9 +450,7 @@ class Dropout {
   output = nil
   seen = -1
 
-  new(dropout_ratio = 0.5) {
-    self.dropout_ratio = dropout_ratio
-  }
+  new(.dropout_ratio = 0.5) {}
 
   forward(x) {
     if dz.is_training() && self.dropout_ratio > 0.0 {
@@ -500,8 +487,7 @@ class EmbedID {
   output = nil
   seen = -1
 
-  new(idx) {
-    self.idx = idx
+  new(.idx) {
     self.idx_tensor = Tensor.from(idx.map(to_float))
   }
 

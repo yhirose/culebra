@@ -45,9 +45,7 @@ class SGD {
   target = nil
   hooks = []
 
-  new(lr = 0.01) {
-    self.lr = lr
-  }
+  new(.lr = 0.01) {}
 
   setup(target) {
     optimizer_setup(self, target)
@@ -70,10 +68,7 @@ class MomentumSGD {
   target = nil
   hooks = []
 
-  new(lr = 0.01, momentum = 0.9) {
-    self.lr = lr
-    self.momentum = momentum
-  }
+  new(.lr = 0.01, .momentum = 0.9) {}
 
   setup(target) {
     optimizer_setup(self, target)
@@ -98,10 +93,7 @@ class AdaGrad {
   target = nil
   hooks = []
 
-  new(lr = 0.001, eps = 1.0e-8) {
-    self.lr = lr
-    self.eps = eps
-  }
+  new(.lr = 0.001, .eps = 1.0e-8) {}
 
   setup(target) {
     optimizer_setup(self, target)
@@ -127,10 +119,7 @@ class AdaDelta {
   target = nil
   hooks = []
 
-  new(rho = 0.95, eps = 1.0e-6) {
-    self.rho = rho
-    self.eps = eps
-  }
+  new(.rho = 0.95, .eps = 1.0e-6) {}
 
   setup(target) {
     optimizer_setup(self, target)
@@ -161,11 +150,7 @@ class Adam {
   target = nil
   hooks = []
 
-  new(alpha = 0.001, beta1 = 0.9, beta2 = 0.999, eps = 1.0e-8) {
-    self.alpha = alpha
-    self.beta1 = beta1
-    self.beta2 = beta2
-    self.eps = eps
+  new(.alpha = 0.001, .beta1 = 0.9, .beta2 = 0.999, .eps = 1.0e-8) {
     self.t = 0
   }
 
@@ -203,9 +188,7 @@ class Adam {
 # --- update hooks --------------------------------------------------------
 
 class WeightDecay {
-  new(rate) {
-    self.rate = rate
-  }
+  new(.rate) {}
 
   __call__(params) {
     for p in params {
@@ -215,9 +198,7 @@ class WeightDecay {
 }
 
 class ClipGrad {
-  new(max_norm) {
-    self.max_norm = max_norm
-  }
+  new(.max_norm) {}
 
   __call__(params) {
     mut total_norm = 0.0

@@ -92,11 +92,7 @@ let SW_K = ROAD_WIDTH * W2  # projected road half-width per unit scale
 let SPRITE_SCALE = 0.3 / 80.0  # 0.3 / PLAYER_STRAIGHT.w
 
 class Art {
-  new(x, y, w, h) {
-    self.x = x
-    self.y = y
-    self.w = w
-    self.h = h
+  new(.x, .y, .w, .h) {
     self.sw = w * SPRITE_SCALE  # world width, pre-scaled
     self.sh = h * SPRITE_SCALE
   }
@@ -311,8 +307,7 @@ let overlap = fn (x1, w1, x2, w2, percent) {
 # p1/p2 are flat fields rather than nested objects: the projection loop writes
 # ten of them per segment per frame.
 class Segment {
-  new(index, y1, y2, curve) {
-    self.index = index
+  new(.index, y1, y2, curve) {
     self.p1_wy = y1
     self.p1_wz = index * SEGMENT_LENGTH * 1.0
     self.p2_wy = y2
@@ -336,10 +331,7 @@ class Segment {
 }
 
 class Prop {
-  new(art, offset) {
-    self.art = art
-    self.offset = offset
-  }
+  new(.art, .offset) {}
 }
 
 # A car's position is (segment index, distance into that segment) rather than a
@@ -347,12 +339,7 @@ class Prop {
 # add and a carry, and the two find_segment calls the original does per car per
 # frame disappear.
 class Car {
-  new(art, offset, seg, zin, speed) {
-    self.art = art
-    self.offset = offset
-    self.seg = seg
-    self.zin = zin
-    self.speed = speed
+  new(.art, .offset, .seg, .zin, .speed) {
     self.percent = 0.0
     self.w = art.sw  # the AI compares widths every lookahead step
     self.z = seg * SEGMENT_LENGTH * 1.0 + zin

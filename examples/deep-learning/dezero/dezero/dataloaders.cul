@@ -19,10 +19,7 @@ fn gather_rows(t, indices) {
 }
 
 class DataLoader {
-  new(dataset, batch_size, shuffle = true) {
-    self.dataset = dataset
-    self.batch_size = batch_size
-    self.shuffle = shuffle
+  new(.dataset, .batch_size, .shuffle = true) {
     self.n = dataset.size()
     self.max_iter = (self.n + batch_size - 1) / batch_size
     self.reset()
@@ -59,9 +56,7 @@ class DataLoader {
 # minibatch layout, so consecutive `next_batch()` calls continue each
 # chunk's own sequence rather than reshuffling.
 class SeqDataLoader {
-  new(dataset, batch_size) {
-    self.dataset = dataset
-    self.batch_size = batch_size
+  new(.dataset, .batch_size) {
     self.n = dataset.size()
     self.jump = self.n / batch_size
     self.starts = range(batch_size).map(|i| i * self.jump).collect()

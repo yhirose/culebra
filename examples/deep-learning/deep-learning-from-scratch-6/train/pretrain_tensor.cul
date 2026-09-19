@@ -135,10 +135,8 @@ class MultiHeadAttention {
   bias = nil
   bias_c = 0
 
-  new(embed_dim, n_head, dropout_rate) {
-    self.n_head = n_head
+  new(embed_dim, .n_head, .dropout_rate) {
     self.head_dim = embed_dim / n_head
-    self.dropout_rate = dropout_rate
     self.scale = 1.0 / Math.sqrt(to_float(self.head_dim))
     self.w_q = Linear(embed_dim, embed_dim)
     self.w_k = Linear(embed_dim, embed_dim)
@@ -198,9 +196,7 @@ class MultiHeadAttention {
 }
 
 class FFN {
-  new(embed_dim, ff_dim, dropout_rate) {
-    self.embed_dim = embed_dim
-    self.dropout_rate = dropout_rate
+  new(.embed_dim, ff_dim, .dropout_rate) {
     self.fc1 = Linear(embed_dim, ff_dim)
     self.fc2 = Linear(ff_dim, embed_dim)
   }
@@ -214,8 +210,7 @@ class FFN {
 }
 
 class Block {
-  new(embed_dim, n_head, ff_dim, dropout_rate) {
-    self.embed_dim = embed_dim
+  new(.embed_dim, n_head, ff_dim, dropout_rate) {
     self.norm1 = LayerNorm(embed_dim)
     self.attn = MultiHeadAttention(embed_dim, n_head, dropout_rate)
     self.norm2 = LayerNorm(embed_dim)
@@ -254,8 +249,7 @@ class Block {
 # -- layer count, widths, causal multi-head attention, pre-norm blocks, a
 # tied unembedding -- so `common/checkpoint.cul` moves weights either way.
 class GPT {
-  new(cfg) {
-    self.cfg = cfg
+  new(.cfg) {
     # The same 0.02 codebot/model.cul uses, and for the same reason: the
     # unembedding is this table transposed, so its scale is the logit scale.
     self.embed = Param(Tensor.randn(cfg.vocab_size, cfg.embed_dim) * 0.02)
@@ -329,12 +323,7 @@ fn cross_entropy(logits, targets) {
 class Adam {
   t = 0
 
-  new(alpha = 0.001, beta1 = 0.9, beta2 = 0.999, eps = 1.0e-8) {
-    self.alpha = alpha
-    self.beta1 = beta1
-    self.beta2 = beta2
-    self.eps = eps
-  }
+  new(.alpha = 0.001, .beta1 = 0.9, .beta2 = 0.999, .eps = 1.0e-8) {}
 
   setup(target) {
     self.target = target

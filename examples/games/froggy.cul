@@ -140,10 +140,7 @@ class Frog {
 class Food {
   food_index = 0
 
-  new(foods, speed, score) {
-    self.foods = foods
-    self.speed = speed
-    self.score = score
+  new(.foods, .speed, .score) {
     # `self` is immutable inside a constructor, so settle away from the board
     # centre first and assign each field once.
     let (
@@ -179,9 +176,7 @@ class Food {
 }
 
 class Enemy {
-  new(emoji, speed) {
-    self.emoji = emoji
-    self.speed = speed
+  new(.emoji, .speed) {
     let (
       base,
       x,

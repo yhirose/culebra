@@ -72,9 +72,7 @@ class RMSNorm {
 # head axis, but that permutation would have to be applied to every Q and K
 # and undone afterwards, which is more work than the rotation itself.
 class RoPE {
-  new(head_dim, base = 10000.0) {
-    self.head_dim = head_dim
-    self.base = base
+  new(.head_dim, .base = 10000.0) {
     self.cache = {}
   }
 
@@ -126,11 +124,8 @@ class RoPE {
 }
 
 class MultiHeadAttention {
-  new(embed_dim, n_head, dropout_rate, rope) {
-    self.n_head = n_head
+  new(embed_dim, .n_head, .dropout_rate, .rope) {
     self.head_dim = embed_dim / n_head
-    self.dropout_rate = dropout_rate
-    self.rope = rope
     self.scale = 1.0 / Math.sqrt(to_float(self.head_dim))
     self.w_q = L.Linear(embed_dim, false, embed_dim)
     self.w_k = L.Linear(embed_dim, false, embed_dim)
@@ -199,9 +194,8 @@ fn swiglu_hidden(ff_dim) {
 }
 
 class FFN {
-  new(embed_dim, ff_dim, dropout_rate) {
+  new(embed_dim, ff_dim, .dropout_rate) {
     let hidden = swiglu_hidden(ff_dim)
-    self.dropout_rate = dropout_rate
     self.w1 = L.Linear(hidden, false, embed_dim)
     self.w3 = L.Linear(hidden, false, embed_dim)
     self.w2 = L.Linear(embed_dim, false, hidden)
@@ -258,8 +252,7 @@ class Block {
 }
 
 class GPT {
-  new(cfg) {
-    self.cfg = cfg
+  new(.cfg) {
     # `L.EmbedID` initialises at unit variance -- unlike `L.Linear`, it has
     # no 1/sqrt(fan_in). The unembedding is this table read the other way,
     # so that variance is the logit variance: at the book's width the

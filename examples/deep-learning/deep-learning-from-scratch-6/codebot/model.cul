@@ -43,10 +43,8 @@ fn causal_bias(c) {
 }
 
 class MultiHeadAttention {
-  new(embed_dim, n_head, dropout_rate) {
-    self.n_head = n_head
+  new(embed_dim, .n_head, .dropout_rate) {
     self.head_dim = embed_dim / n_head
-    self.dropout_rate = dropout_rate
     self.scale = 1.0 / Math.sqrt(to_float(self.head_dim))
     # `L.Linear(out, nobias, in)` -- the middle argument turns bias off.
     # GPT-2 keeps it, so every projection here has one.
@@ -97,8 +95,7 @@ class MultiHeadAttention {
 }
 
 class FFN {
-  new(embed_dim, ff_dim, dropout_rate) {
-    self.dropout_rate = dropout_rate
+  new(embed_dim, ff_dim, .dropout_rate) {
     self.fc1 = L.Linear(ff_dim, false, embed_dim)
     self.fc2 = L.Linear(embed_dim, false, ff_dim)
   }
@@ -149,8 +146,7 @@ class Block {
 }
 
 class GPT {
-  new(cfg) {
-    self.cfg = cfg
+  new(.cfg) {
     # `L.EmbedID` initialises at unit variance -- unlike `L.Linear`, it has
     # no 1/sqrt(fan_in). The unembedding is this table read the other way,
     # so that variance is the logit variance: at the book's width the

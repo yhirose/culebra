@@ -28,9 +28,7 @@ fn merge(ids, pair, new_id) {
 }
 
 class BPETokenizer {
-  new(merge_rules) {
-    self.merge_rules = merge_rules
-
+  new(.merge_rules) {
     # id -> the bytes it stands for. Ids 0-255 are the byte values; each
     # merged id is its two halves concatenated, and both are already in the
     # table because ids are assigned in training order.

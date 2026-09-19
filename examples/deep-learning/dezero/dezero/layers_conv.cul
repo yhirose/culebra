@@ -13,12 +13,14 @@ class Conv2d {
   w = nil
   b = nil
 
-  new(out_channels, kernel_size, stride = 1, pad = 0, nobias = false, in_channels = nil) {
-    self.out_channels = out_channels
-    self.kernel_size = kernel_size
-    self.stride = stride
-    self.pad = pad
-    self.in_channels = in_channels
+  new(
+    .out_channels,
+    .kernel_size,
+    .stride = 1,
+    .pad = 0,
+    nobias = false,
+    .in_channels = nil,
+  ) {
     if in_channels != nil {
       self.init_w(in_channels)
     }
@@ -55,12 +57,14 @@ class Deconv2d {
   w = nil
   b = nil
 
-  new(out_channels, kernel_size, stride = 1, pad = 0, nobias = false, in_channels = nil) {
-    self.out_channels = out_channels
-    self.kernel_size = kernel_size
-    self.stride = stride
-    self.pad = pad
-    self.in_channels = in_channels
+  new(
+    .out_channels,
+    .kernel_size,
+    .stride = 1,
+    .pad = 0,
+    nobias = false,
+    .in_channels = nil,
+  ) {
     if in_channels != nil {
       self.init_w(in_channels)
     }

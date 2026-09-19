@@ -107,8 +107,7 @@ fn causal_bias(c) {
 }
 
 class MultiHeadAttention {
-  new(embed_dim, n_head) {
-    self.n_head = n_head
+  new(embed_dim, .n_head) {
     self.head_dim = embed_dim / n_head
     self.scale = 1.0 / Math.sqrt(to_float(self.head_dim))
     self.w_q = L.Linear(embed_dim, false, embed_dim)

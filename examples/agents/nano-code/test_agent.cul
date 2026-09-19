@@ -16,8 +16,7 @@ import err from './core/errors.cul'
 
 # A model that answers from a list, and remembers what it was asked.
 class ScriptedModel {
-  new(replies) {
-    self.replies = replies
+  new(.replies) {
     self.seen = []
   }
 

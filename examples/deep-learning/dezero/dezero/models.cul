@@ -14,8 +14,7 @@ import F from './functions.cul'
 import L from './layers.cul'
 
 class MLP {
-  new(fc_output_sizes, activation = F.sigmoid) {
-    self.activation = activation
+  new(fc_output_sizes, .activation = F.sigmoid) {
     self.layers = fc_output_sizes.map(|size| L.Linear(size))
   }
 
@@ -46,9 +45,7 @@ class MLP {
 # rather than relying on a variadic `new`, which core.cul/functions.cul
 # never needed to exercise) — call it as `Sequential([a, b, c])`.
 class Sequential {
-  new(layers) {
-    self.layers = layers
-  }
+  new(.layers) {}
 
   forward(x) {
     mut v = x

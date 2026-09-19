@@ -127,12 +127,8 @@ enum AnimState {
 }
 
 class Anim {
-  new(sheet, sw, cells, fc, index, state) {
-    self.sheet = sheet
-    self.sw = sw
-    self.cells = cells
-    self.index = index
-    self.state = state  # an AnimState
+  new(.sheet, .sw, .cells, fc, .index, .state) {
+    # state: an AnimState
     self.last_updated = fc
   }
   reset(fc, index, state) {

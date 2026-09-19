@@ -33,10 +33,7 @@ fn create_openai(config = {}) {
 }
 
 class OpenAIModel {
-  new(http, model_id) {
-    self.http = http
-    self.model_id = model_id
-  }
+  new(.http, .model_id) {}
 
   do_generate(params) {
     let res = self.http.post('/chat/completions',
@@ -204,8 +201,7 @@ fn args_of(f) {
 let DONE = '[DONE]'
 
 class OpenAIStream {
-  new(on_text) {
-    self.on_text = on_text
+  new(.on_text) {
     self.content = ''
     self.reasoning = ''
     self.calls = []

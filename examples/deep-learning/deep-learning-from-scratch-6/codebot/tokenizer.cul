@@ -110,9 +110,7 @@ fn train_bpe(input_text, vocab_size, end_token = END_TOKEN) {
 }
 
 class BPETokenizer {
-  new(merge_rules, end_token = END_TOKEN) {
-    self.merge_rules = merge_rules
-    self.end_token = end_token
+  new(.merge_rules, .end_token = END_TOKEN) {
     self.end_token_id = 256 + merge_rules.size()
 
     # id -> the bytes it stands for. An Array indexed by id rather than a

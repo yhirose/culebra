@@ -94,9 +94,7 @@ inspect("loaded train={n_train} test={yt.size()} in {Sys.time() - load_t0}s")
 # === Model: He-initialized leaves in mutable boxes (microgpt pattern) ===
 
 class Param {
-  new(t) {
-    self.t = t
-  }
+  new(.t) {}
 }
 
 let make_weight = fn (in_dim, out_dim) {

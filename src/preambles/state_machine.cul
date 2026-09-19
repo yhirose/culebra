@@ -265,9 +265,7 @@ let _state_machine_module = fn () {
   }
 
   class StateMachine {
-    new(desc, *, name = "", guards = {}, actions = {}, context = nil) {
-      self.name = name
-      self.context = context
+    new(desc, *, .name = "", guards = {}, actions = {}, .context = nil) {
       let mut states = {}
       states[ROOT] = {
         parent: nil,

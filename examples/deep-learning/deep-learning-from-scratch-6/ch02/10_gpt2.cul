@@ -25,8 +25,7 @@ fn causal_bias(c) {
 }
 
 class MultiHeadAttention {
-  new(embed_dim, n_head) {
-    self.n_head = n_head
+  new(embed_dim, .n_head) {
     self.head_dim = embed_dim / n_head
     self.scale = 1.0 / Math.sqrt(to_float(self.head_dim))
     # `L.Linear(out, nobias, in)`: the middle argument turns bias *off*.
@@ -105,8 +104,7 @@ class Block {
 }
 
 class GPT {
-  new(cfg) {
-    self.cfg = cfg
+  new(.cfg) {
     self.embed = L.EmbedID(cfg.vocab_size, cfg.embed_dim)
     self.pos_embed = L.EmbedID(cfg.context_len, cfg.embed_dim)
     self.blocks = range(cfg.n_layer)

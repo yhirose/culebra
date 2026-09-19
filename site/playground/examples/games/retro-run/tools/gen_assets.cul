@@ -373,10 +373,7 @@ let MARK = Canvas.rgba(255, 255, 255)
 # pixels at the end — that is where the pixel-art grid comes from. A wrapping
 # grid folds x modulo its width, so a scrolling layer's shapes meet themselves.
 class Cells {
-  new(w, h, wrap = false) {
-    self.w = w
-    self.h = h
-    self.wrap = wrap
+  new(.w, .h, .wrap = false) {
     self.k = repeat(w * h, 0)
     self.scratch = nil
   }
@@ -599,9 +596,7 @@ class Cells {
 
 # A full-resolution buffer of palette keys — the atlas under construction.
 class KeyImage {
-  new(w, h) {
-    self.w = w
-    self.h = h
+  new(.w, .h) {
     self.k = repeat(w * h, 0)
   }
 

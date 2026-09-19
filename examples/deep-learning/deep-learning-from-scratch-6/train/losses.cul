@@ -20,10 +20,7 @@ class MaskedSoftmaxCrossEntropy {
   seen = -1
 
   # `t` is one Long class id per row; `mask` is one 0.0/1.0 Float per row.
-  new(t, mask) {
-    self.t = t
-    self.mask = mask
-  }
+  new(.t, .mask) {}
 
   forward(x) {
     let probs = x.softmax()

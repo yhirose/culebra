@@ -84,10 +84,7 @@ class SinCurve {
 # any `x`/`y` pair (e.g. `load_mnist_arrays`'s fields) in this instead.
 
 class ArrayDataset {
-  new(x, y) {
-    self.x = x
-    self.y = y
-  }
+  new(.x, .y) {}
   size() {
     self.y.size()
   }

@@ -140,11 +140,7 @@ class Im2col {
   output = nil
   seen = -1
 
-  new(kernel_size, stride = 1, pad = 0) {
-    self.kernel_size = kernel_size
-    self.stride = stride
-    self.pad = pad
-  }
+  new(.kernel_size, .stride = 1, .pad = 0) {}
 
   forward(x) {
     s = x.shape()
@@ -179,12 +175,7 @@ class Col2im {
   output = nil
   seen = -1
 
-  new(input_shape, kernel_size, stride = 1, pad = 0) {
-    self.input_shape = input_shape
-    self.kernel_size = kernel_size
-    self.stride = stride
-    self.pad = pad
-  }
+  new(.input_shape, .kernel_size, .stride = 1, .pad = 0) {}
 
   forward(x) {
     (
@@ -294,12 +285,7 @@ class WeightAsMatrix {
   output = nil
   seen = -1
 
-  new(out_c, in_c, kh, kw) {
-    self.out_c = out_c
-    self.in_c = in_c
-    self.kh = kh
-    self.kw = kw
-  }
+  new(.out_c, .in_c, .kh, .kw) {}
 
   forward(w) {
     k = self.in_c * self.kh * self.kw
@@ -393,11 +379,7 @@ class Pooling {
   output = nil
   seen = -1
 
-  new(kernel_size, stride = 1, pad = 0) {
-    self.kernel_size = kernel_size
-    self.stride = stride
-    self.pad = pad
-  }
+  new(.kernel_size, .stride = 1, .pad = 0) {}
 
   forward(x) {
     s = x.shape()
@@ -461,11 +443,7 @@ class AveragePooling {
   output = nil
   seen = -1
 
-  new(kernel_size, stride = 1, pad = 0) {
-    self.kernel_size = kernel_size
-    self.stride = stride
-    self.pad = pad
-  }
+  new(.kernel_size, .stride = 1, .pad = 0) {}
 
   forward(x) {
     s = x.shape()

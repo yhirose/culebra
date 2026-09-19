@@ -16,8 +16,7 @@ import msg from './core/message.cul'
 # A client whose POST streams: it hands the canned chunks to the `into:` sink
 # the way the socket would, and answers with an empty body as `into:` leaves it.
 class StreamStub {
-  new(chunks) {
-    self.chunks = chunks
+  new(.chunks) {
     self.status = 200
     self.sent = []
   }
@@ -387,8 +386,7 @@ fn the_other_format_asks_for_usage_along_with_the_stream() {
 
 # A model that answers from a list either way: whole, or a piece at a time.
 class BothWaysModel {
-  new(replies) {
-    self.replies = replies
+  new(.replies) {
     self.asked = 0
   }
 

@@ -306,11 +306,9 @@ fn causal_mask(t) {
 }
 
 class MultiHeadAttention {
-  new(n_embd, n_head, rope_base = 10000.0) {
-    self.n_head = n_head
+  new(n_embd, .n_head, .rope_base = 10000.0) {
     self.head_dim = n_embd / n_head
     self.scale = 1.0 / Math.sqrt(to_float(self.head_dim))
-    self.rope_base = rope_base
     self.wq = Linear(n_embd, true, n_embd)
     self.wk = Linear(n_embd, true, n_embd)
     self.wv = Linear(n_embd, true, n_embd)

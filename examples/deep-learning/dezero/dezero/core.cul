@@ -328,9 +328,7 @@ class SumTo {
   output = nil
   seen = -1
 
-  new(shape) {
-    self.shape = shape
-  }
+  new(.shape) {}
 
   forward(x) {
     self.x_shape = x.shape()
@@ -356,9 +354,7 @@ class BroadcastTo {
   output = nil
   seen = -1
 
-  new(shape) {
-    self.shape = shape
-  }
+  new(.shape) {}
 
   forward(x) {
     self.x_shape = x.shape()
@@ -384,10 +380,7 @@ class Sum {
   output = nil
   seen = -1
 
-  new(axis = nil, keepdims = false) {
-    self.axis = axis
-    self.keepdims = keepdims
-  }
+  new(.axis = nil, .keepdims = false) {}
 
   forward(x) {
     self.x_shape = x.shape()
@@ -555,9 +548,7 @@ class Pow {
   output = nil
   seen = -1
 
-  new(c) {
-    self.c = c
-  }
+  new(.c) {}
 
   forward(x) {
     x.pow(self.c)
@@ -582,9 +573,7 @@ class Reshape {
   output = nil
   seen = -1
 
-  new(shape) {
-    self.shape = shape
-  }
+  new(.shape) {}
 
   forward(x) {
     self.x_shape = x.shape()
@@ -627,9 +616,7 @@ class Transpose {
   output = nil
   seen = -1
 
-  new(axes = nil) {
-    self.axes = axes
-  }
+  new(.axes = nil) {}
 
   forward(x) {
     raw_transpose(x, self.axes)
@@ -708,10 +695,7 @@ class Max {
   output = nil
   seen = -1
 
-  new(axis = nil, keepdims = false) {
-    self.axis = axis
-    self.keepdims = keepdims
-  }
+  new(.axis = nil, .keepdims = false) {}
 
   forward(x) {
     self.x_shape = x.shape()
@@ -739,10 +723,7 @@ class Min {
   output = nil
   seen = -1
 
-  new(axis = nil, keepdims = false) {
-    self.axis = axis
-    self.keepdims = keepdims
-  }
+  new(.axis = nil, .keepdims = false) {}
 
   # Tensor has `.max()` but no `.min()`.
   forward(x) {
@@ -782,11 +763,7 @@ class Narrow {
   output = nil
   seen = -1
 
-  new(axis, start, end) {
-    self.axis = axis
-    self.start = start
-    self.end = end
-  }
+  new(.axis, .start, .end) {}
 
   forward(x) {
     self.x_len = x.shape()[self.axis]
@@ -816,9 +793,7 @@ class Concat {
   output = nil
   seen = -1
 
-  new(axis) {
-    self.axis = axis
-  }
+  new(.axis) {}
 
   forward(a, b) {
     self.a_len = a.shape()[self.axis]
@@ -854,9 +829,7 @@ class Where {
   output = nil
   seen = -1
 
-  new(cond) {
-    self.cond = cond
-  }
+  new(.cond) {}
 
   forward(a, b) {
     Tensor.where(self.cond, a, b)
