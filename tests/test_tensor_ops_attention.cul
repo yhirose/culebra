@@ -111,6 +111,39 @@ let v3 = stack([fill(T, D, 60), fill(T, D, 67), fill(T, D, 73)])
 assert_eq(q3.causal_attention(k3, v3).shape(), [H, T, D])
 assert_tensor_close(q3.causal_attention(k3, v3), explicit(q3, k3, v3), 1.0e-5)
 
+# --- views: a window of heads, or of rows, reads as its packed copy ------------
+# Heads 1..2 start past the buffer's head; rows 1..T of a longer sequence
+# skip between heads. The batched .dot and the fused op must both read them
+# as the tensors they stand for.
+
+let qh = q3.narrow([0, 1, 3])
+let kh = k3.narrow([0, 1, 3])
+let vh = v3.narrow([0, 1, 3])
+let qh_copy = stack([fill(T, D, 7), fill(T, D, 13)])
+let kh_copy = stack([fill(T, D, 37), fill(T, D, 43)])
+let vh_copy = stack([fill(T, D, 67), fill(T, D, 73)])
+assert_tensor_close(
+  qh.dot(kh.permute([0, 2, 1])),
+  qh_copy.dot(kh_copy.permute([0, 2, 1])),
+  1.0e-5,
+)
+assert_tensor_close(
+  qh.causal_attention(kh, vh),
+  qh_copy.causal_attention(kh_copy, vh_copy),
+  1.0e-5,
+)
+
+let rows = stack([fill(T + 2, D, 1), fill(T + 2, D, 7)]).narrow([1, 1, T + 1])
+let rows_copy = stack([
+  fill(T + 2, D, 1).slice(1, T + 1),
+  fill(T + 2, D, 7).slice(1, T + 1),
+])
+assert_tensor_close(
+  rows.causal_attention(rows, rows),
+  rows_copy.causal_attention(rows_copy, rows_copy),
+  1.0e-5,
+)
+
 # --- shape errors ---------------------------------------------------------------
 
 assert_throws('ValueError', fn () {
