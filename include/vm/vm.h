@@ -14633,6 +14633,43 @@ struct Exec {
       culebra_runtime_set_call_site(line, col);
   }
 
+  // The closure a dynamic call runs, in the JIT's order (emit_invoke): the
+  // value itself when it is a Function, else the two cold probes — a
+  // callable instance's `__call__`, then a class object's `new` — and the
+  // TypeError a missing method has always raised when neither answers. The
+  // keyword-only guard runs on the closure found, and only once it passes
+  // does the receiver change hands: on a probe arm the called value becomes
+  // the receiver, its +1 minted here, and the receiver the call started
+  // with (`self_reg`, when the call has one) is released and nil'd — so
+  // the frame's release ladder neither frees it a second time nor, on the
+  // guard's throw, strands the minted +1.
+  static JitValue dynamic_callee(const JitValue& callee, JitValue* self_reg,
+                                 JitValue& self, int64_t argc, int64_t line,
+                                 int64_t col) {
+    auto tag = static_cast<int8_t>(callee.tag);
+    JitValue target = callee;
+    bool probed = target.tag != TAG_FUNC;
+    if (probed) {
+      target = culebra_runtime_class_call_method(tag, callee.data);
+      if (target.tag != TAG_FUNC)
+        target = culebra_runtime_class_new_method(tag, callee.data);
+      if (target.tag != TAG_FUNC)
+        culebra_runtime_type_error_typed(line, col, "Function", tag);
+    }
+    culebra_runtime_check_pos_count_cls(
+        reinterpret_cast<JitClosure*>(target.data), argc, line, col);
+    if (probed) {
+      _culebra_value_retain_impl(tag, callee.data);
+      if (self_reg) {
+        _culebra_value_release_impl(static_cast<int8_t>(self_reg->tag),
+                                    self_reg->data);
+        *self_reg = JitValue{TAG_NIL, 0};
+      }
+      self = callee;
+    }
+    return target;
+  }
+
   // What a borrowed callee stands on, checked where the assert lanes run it
   // (`just test-assert`, CI's linux-assert): the cell the call read through
   // still holds the same value once the call is over — the throw path
@@ -15773,19 +15810,21 @@ struct Exec {
           if (gate.tag == TAG_NO_SELF && gate.data == kBMethGateMiss)
             bmeth_miss_error(line, col);  // the arguments have run by now
           if (gate.tag != TAG_NO_SELF) {
-            // The shadowing user method: CallM's hand-off, one slot over.
+            // The shadowing user method: CallM's hand-off, one slot over —
+            // the same cold probes and keyword-only guard (the JIT lowers
+            // this arm through its emit_invoke).
             publish_call_site(c, VM_PC, line, col);
-            if (gate.tag != TAG_FUNC)
-              culebra_runtime_type_error_typed(
-                  line, col, "Function", static_cast<int8_t>(gate.tag));
+            JitValue self = regs[in.b + 1];
+            JitValue target =
+                dynamic_callee(gate, &regs[in.b + 1], self, in.d, line, col);
             JitValue r;
             try {
               // Rooted: gate (regs[b]), receiver (regs[b+1]) and args
               // (regs[b+2..], nil'd only after the return) stay in this
               // frame's registers for the call's duration (rt_value.inc.h).
-              r = _jit_invoke_rooted(reinterpret_cast<JitClosure*>(gate.data),
-                                     regs[in.b + 1], in.d,
-                                     in.d ? &regs[in.b + 2] : nullptr);
+              r = _jit_invoke_rooted(
+                  reinterpret_cast<JitClosure*>(target.data), self, in.d,
+                  in.d ? &regs[in.b + 2] : nullptr);
             } catch (...) {
               for (int32_t i = 1; i <= in.d + 1; ++i)
                 regs[in.b + i] = JitValue{TAG_NIL, 0};
@@ -16235,40 +16274,10 @@ struct Exec {
             ++ip;
             break;
           }
-          if (target.tag != TAG_FUNC) {
-            // The two cold-path probes, in the JIT's order: a callable
-            // instance (`obj(args)` with a `__call__` method, own or a
-            // trait default) becomes a method call on itself, and a class
-            // object's `new` builds an instance. Both are borrowed reads —
-            // the register keeps its own +1 — so the receiver a `__call__`
-            // frame consumes is minted here.
-            target = culebra_runtime_class_call_method(
-                static_cast<int8_t>(callee.tag), callee.data);
-            if (target.tag == TAG_FUNC) {
-              _culebra_value_retain_impl(static_cast<int8_t>(callee.tag),
-                                           callee.data);
-              self = callee;
-            } else {
-              // `C(args)`: the class object is the constructor's receiver
-              // — the instance keeps a +1 on it (JitObject::cls).
-              target = culebra_runtime_class_new_method(
-                  static_cast<int8_t>(callee.tag), callee.data);
-              if (target.tag == TAG_FUNC) {
-                _culebra_value_retain_impl(static_cast<int8_t>(callee.tag),
-                                             callee.data);
-                self = callee;
-              }
-            }
-          }
-          if (target.tag != TAG_FUNC) {
-            culebra_runtime_type_error_typed(
-                line, col, "Function", static_cast<int8_t>(callee.tag));
-          }
-          // A keyword-only parameter cannot be filled positionally, and the
-          // callee is only known here — the JIT's own guard, at the same
-          // point in its call.
-          culebra_runtime_check_pos_count_cls(
-              reinterpret_cast<JitClosure*>(target.data), in.d, line, col);
+          // `obj(args)` / `C(args)`: the callable instance or the class
+          // object becomes the receiver (the instance keeps a +1 on its
+          // class, JitObject::cls); a plain call had none to release.
+          target = dynamic_callee(callee, nullptr, self, in.d, line, col);
           JitValue r;
           try {
             // Rooted: callee (regs[b]), receiver (== callee on the __call__
@@ -16314,48 +16323,15 @@ struct Exec {
             ++ip;
             break;
           }
-          if (target.tag != TAG_FUNC) {
-            // A method value that is itself a callable instance
-            // (`{m: Adder.new(1)}.m(41)`): it becomes both the callee and
-            // the receiver, and the original receiver — which nothing takes
-            // now — is released here, as the JIT's cold path does.
-            target = culebra_runtime_class_call_method(
-                static_cast<int8_t>(callee.tag), callee.data);
-            if (target.tag == TAG_FUNC) {
-              _culebra_value_retain_impl(static_cast<int8_t>(callee.tag),
-                                           callee.data);
-              _culebra_value_release_impl(static_cast<int8_t>(self.tag),
-                                            self.data);
-              self = callee;
-            } else {
-              // A class object reached as a member (`Canvas.Font(bytes)`):
-              // its `new` builds the instance, with the class object as its
-              // receiver in place of the one the call started with — the
-              // plain-call and kwargs arms probe in this same order.
-              target = culebra_runtime_class_new_method(
-                  static_cast<int8_t>(callee.tag), callee.data);
-              if (target.tag == TAG_FUNC) {
-                _culebra_value_retain_impl(static_cast<int8_t>(callee.tag),
-                                             callee.data);
-                _culebra_value_release_impl(static_cast<int8_t>(self.tag),
-                                              self.data);
-                self = callee;
-              }
-            }
-          }
-          if (target.tag != TAG_FUNC) {
-            // Where a missing method lands: the property read gave nil, so
-            // this is the interp's "expected Function, got Nil". The receiver
-            // and args stay register-owned — nothing has been handed over
-            // yet, so the enclosing ladder is still their releaser.
-            culebra_runtime_type_error_typed(
-                line, col, "Function", static_cast<int8_t>(callee.tag));
-          }
-          // A keyword-only parameter cannot be filled positionally, and the
-          // callee is only known here — the JIT's own guard, at the same
-          // point in its call.
-          culebra_runtime_check_pos_count_cls(
-              reinterpret_cast<JitClosure*>(target.data), in.d, line, col);
+          // A method value that is itself a callable instance
+          // (`{m: Adder.new(1)}.m(41)`) or a class object reached as a
+          // member (`Canvas.Font(bytes)`) becomes both the callee and the
+          // receiver, in place of the one the call started with. Where a
+          // missing method lands, the property read gave nil, so this is
+          // the interp's "expected Function, got Nil": the receiver and
+          // args stay register-owned — nothing has been handed over yet, so
+          // the enclosing ladder is still their releaser.
+          target = dynamic_callee(callee, &regs[in.c], self, in.d, line, col);
           // The run is receiver-then-args; the callee consumes all of it.
           // culebra_runtime_call_receiver is not mirrored: it only rewrites a
           // lowered state object's promoted body local into "no receiver",

@@ -851,12 +851,9 @@ struct Lowering {
       b.CreateCondBr(
           b.CreateICmpEQ(j.extract_tag(callM), b.getInt8(TAG_FUNC)),
           overloadBB, ctorBB);
-      // The instance becomes the receiver: mint the +1 its frame consumes,
-      // and release the receiver this call started with — on this arm
-      // nothing else takes it (the JIT's own_self_on_error release).
+      // The instance becomes the receiver (call.mint below, once the
+      // keyword-only guard has passed).
       b.SetInsertPoint(overloadBB);
-      j.emit_value_retain(callee0);
-      if (selfSlot >= 0) j.emit_value_release(load_slot(selfSlot));
       auto* overloadEndBB = b.GetInsertBlock();
       b.CreateBr(okBB);
 
@@ -871,11 +868,8 @@ struct Lowering {
           errBB);
       // The class object becomes the constructor's receiver (the instance
       // keeps a +1 on it, JitObject::cls), exactly as the `__call__` arm
-      // hands over the instance: mint its +1, release the one this call
-      // started with.
+      // hands over the instance.
       b.SetInsertPoint(ctorOkBB);
-      j.emit_value_retain(callee0);
-      if (selfSlot >= 0) j.emit_value_release(load_slot(selfSlot));
       auto* ctorEndBB = b.GetInsertBlock();
       b.CreateBr(okBB);
       b.SetInsertPoint(errBB);
@@ -909,6 +903,22 @@ struct Lowering {
                                                  i64Ty, i64Ty),
                   {clsPtr, b.getInt64(argc), b.getInt64(line),
                    b.getInt64(col)});
+      // On the probe arms the called value becomes the receiver: mint the +1
+      // its frame consumes, and release and nil the receiver this call
+      // started with — nothing else takes it now, and a slot left holding
+      // it would be released again by the frame's ladder. After the guard,
+      // so its throw strands no minted +1 (the executor's dynamic_callee).
+      auto mintBB = BasicBlock::Create(j.ctx_, "call.mint", fn);
+      auto dynBB2 = BasicBlock::Create(j.ctx_, "call.dyn", fn);
+      b.CreateCondBr(ovPhi, mintBB, dynBB2);
+      b.SetInsertPoint(mintBB);
+      j.emit_value_retain(callee0);
+      if (selfSlot >= 0) {
+        j.emit_value_release(load_slot(selfSlot));
+        b.CreateStore(j.make_nil(), slots[selfSlot]);
+      }
+      b.CreateBr(dynBB2);
+      b.SetInsertPoint(dynBB2);
       auto selfV = selfSlot >= 0 ? load_slot(selfSlot) : nullptr;
       auto dynResult = emit_abi_call(
           llvm::FunctionCallee(jit_fn_type(b, ptrTy), fnPtr), clsPtr,

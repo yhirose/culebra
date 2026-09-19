@@ -184,4 +184,67 @@ for _ in range(200) {
 }
 assert_eq(GC.refcount(CodeGen.Module), rc_base)
 
+// A user method shadowing a built-in name takes the dynamic call's whole
+// path — the keyword-only guard, and the callable-instance probe — on every
+// lane (the executor's built-in arm used to skip both).
+class ShadowPush {
+  new() {}
+  push(*, v = 7) {
+    "v={v}"
+  }
+}
+let sp = ShadowPush()
+assert_eq(try { sp.push(1) } catch e { e.kind }, "TypeError")
+assert_eq(sp.push(v: 2), "v=2")
+class AddN {
+  new(.n) {}
+  __call__(x) {
+    self.n + x
+  }
+}
+assert_eq({push: AddN(1)}.push(5), 6)
+
+// The receiver a callable member replaces is released once, not twice: the
+// holder outlives three calls the guard refuses, then the call that works.
+class KwOnlyCall {
+  new(.n) {}
+  __call__(*, k = 1) {
+    self.n + k
+  }
+}
+mut holder_dropped = 0
+class Holder {
+  new(.m) {}
+  drop() {
+    holder_dropped += 1
+  }
+}
+{
+  let h = Holder(KwOnlyCall(1))
+  for _ in range(3) {
+    assert_eq(try { h.m(5) } catch e { e.kind }, "TypeError")
+  }
+  assert_eq(h.m(k: 2), 3)
+  assert_eq(holder_dropped, 0)
+}
+assert_eq(holder_dropped, 1)
+// The +1 minted for a callable instance as its own receiver is not stranded
+// when the guard throws: the instance still drops with its scope.
+mut adder_dropped = 0
+class KwOnlyAdder {
+  new(.n) {}
+  __call__(*, k = 1) {
+    self.n + k
+  }
+  drop() {
+    adder_dropped += 1
+  }
+}
+{
+  let a = KwOnlyAdder(1)
+  assert_eq(try { a(5) } catch e { e.kind }, "TypeError")
+  assert_eq(a(k: 2), 3)
+}
+assert_eq(adder_dropped, 1)
+
 inspect("test_class_call ok")
