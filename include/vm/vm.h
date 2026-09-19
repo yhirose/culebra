@@ -6790,11 +6790,17 @@ class Compiler {
 
   // predeclare_cells for an `if`/`cond` hoist: the names this scope already
   // pre-declared conditionally keep the cell they have (conditional_here).
+  // So does a `fn name` this scope has already declared: an arm declares
+  // into the scope around it, where a second `fn name` is an overload of the
+  // first — it appends to that dispatcher (compile_multifn_decl) rather than
+  // hiding it behind a cell of its own.
   void predeclare_conditional_cells(const peg::Ast& ast,
                                     const DeclList& decls) {
     DeclList fresh;
     for (const auto& d : decls)
-      if (!conditional_here(d.name)) fresh.push_back(d);
+      if (!conditional_here(d.name) &&
+          !scopes_.back().multifn_decls.contains(d.name))
+        fresh.push_back(d);
     predeclare_cells(ast, fresh, /*conditional=*/true);
   }
 
@@ -6984,8 +6990,13 @@ class Compiler {
     Binding* b = lookup_mut(name);
     bool session_overload =
         b && b->session && repl_session().value(name).tag == TAG_FUNC;
-    mo.sole_multifn =
-        scopes_.back().sole_multifn.contains(name) && !session_overload;
+    // Nor is one that appends to a dispatcher this scope already declared —
+    // an `if` arm's `fn name` after the statement list's own, which the
+    // list's count never saw (the first one's grant is struck by the
+    // store_cell below, like any re-declaration's).
+    mo.sole_multifn = scopes_.back().sole_multifn.contains(name) &&
+                      !scopes_.back().multifn_decls.contains(name) &&
+                      !session_overload;
     if (dec_end > 0) {
       // A decorated declaration binds what the decorators return, so it
       // never reaches the multimethod registry: the name holds the

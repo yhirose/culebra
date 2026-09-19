@@ -1,0 +1,132 @@
+# An `if` / `cond` arm declares into the scope around it, so a `fn name`
+# written there is an overload of the `fn name` that scope already has — not
+# a second binding that hides it. It used to replace the set when the plain
+# declaration came first and the arm ran.
+
+fn g(a: Long) {
+  'long'
+}
+if true {
+  fn g(a: String) {
+    'string'
+  }
+}
+assert_eq(g('s'), 'string')
+assert_eq(g(1), 'long')
+
+# untyped overloads that differ by arity — the shape a single declaration's
+# direct call would get wrong if the arm's were not counted
+fn plain_first(flag) {
+  fn h(a) {
+    'one'
+  }
+  if flag {
+    fn h(a, b) {
+      'two'
+    }
+  }
+  (
+    try {
+      h(1)
+    } catch e {
+      e.kind
+    },
+    try {
+      h(1, 2)
+    } catch e {
+      e.kind
+    },
+  )
+}
+fn arm_first(flag) {
+  if flag {
+    fn h(a, b) {
+      'two'
+    }
+  }
+  fn h(a) {
+    'one'
+  }
+  (
+    try {
+      h(1)
+    } catch e {
+      e.kind
+    },
+    try {
+      h(1, 2)
+    } catch e {
+      e.kind
+    },
+  )
+}
+# an arm that did not run adds nothing, and one activation's overloads do
+# not reach the next
+assert_eq(plain_first(true), ('one', 'two'))
+assert_eq(plain_first(false), ('one', 'DispatchError'))
+assert_eq(plain_first(true), ('one', 'two'))
+assert_eq(arm_first(true), ('one', 'two'))
+assert_eq(arm_first(false), ('one', 'DispatchError'))
+
+# a closure built between the two sees what the dispatcher holds when it is
+# called, as it does between two declarations at the same level
+fn between(flag) {
+  fn h(a) {
+    'one'
+  }
+  let call = fn () {
+    try {
+      h(1, 2)
+    } catch e {
+      e.kind
+    }
+  }
+  if flag {
+    fn h(a, b) {
+      'two'
+    }
+  }
+  call()
+}
+assert_eq(between(true), 'two')
+assert_eq(between(false), 'DispatchError')
+
+# `cond` arms, and an `if` in value position
+fn in_cond(n) {
+  fn h(a) {
+    'one'
+  }
+  cond {
+    n == 2 => {
+      fn h(a, b) {
+        'two'
+      }
+    },
+    _ => nil,
+  }
+  let picked = if n == 3 {
+    fn h(a, b, c) {
+      'three'
+    }
+    'declared'
+  } else {
+    'skipped'
+  }
+  (
+    picked,
+    try {
+      h(1, 2)
+    } catch e {
+      e.kind
+    },
+    try {
+      h(1, 2, 3)
+    } catch e {
+      e.kind
+    },
+  )
+}
+assert_eq(in_cond(2), ('skipped', 'two', 'DispatchError'))
+assert_eq(in_cond(3), ('declared', 'DispatchError', 'three'))
+
+inspect('fn overload in if arm: ok')
