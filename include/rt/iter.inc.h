@@ -1711,11 +1711,7 @@ inline void _iter_str_scalars_fast_fn(JitClosure* cls, JitValue, bool* done,
     *done = true;
     return;
   }
-  char32_t cp;
-  size_t bytes;
-  if (!unicode::utf8::decode_codepoint(s + off, len - off, bytes, cp)) {
-    bytes = 1;  // invalid → one-byte view (raw), like the interp
-  }
+  size_t bytes = culebra::utf8_scalar_len(std::string_view(s, len), off);
   auto* v = _culebra_heap_view(s + off, bytes, s);
   off_cell->value.data = off + static_cast<int64_t>(bytes);
   *done = false;
@@ -1839,16 +1835,10 @@ inline void _iter_graphemes_fast_fn(JitClosure* cls, JitValue, bool* done,
   // yielded as a zero-copy StringView (matches interp — type StringView).
   // Cheap: cluster_len is almost always 1, rarely more than a handful for
   // ZWJ / regional-indicator sequences.
+  std::string_view src(s, static_cast<size_t>(src_len));
   int64_t byte_off = win_start_cell->value.data;
   for (int64_t i = 0; i < cluster_len; i++) {
-    char32_t cp;
-    size_t bytes;
-    if (!unicode::utf8::decode_codepoint(s + byte_off,
-                                         static_cast<size_t>(src_len - byte_off),
-                                         bytes, cp)) {
-      bytes = 1;
-    }
-    byte_off += static_cast<int64_t>(bytes);
+    byte_off += culebra::utf8_scalar_len(src, byte_off);
   }
 
   auto* v = _culebra_heap_view(s + win_start_cell->value.data,
@@ -1939,16 +1929,10 @@ inline void _iter_words_fast_fn(JitClosure* cls, JitValue, bool* done,
     }
   }
 
+  std::string_view src(s, static_cast<size_t>(src_len));
   int64_t byte_off = win_start_cell->value.data;
   for (int64_t i = 0; i < seg_len; i++) {
-    char32_t cp;
-    size_t bytes;
-    if (!unicode::utf8::decode_codepoint(s + byte_off,
-                                         static_cast<size_t>(src_len - byte_off),
-                                         bytes, cp)) {
-      bytes = 1;
-    }
-    byte_off += static_cast<int64_t>(bytes);
+    byte_off += culebra::utf8_scalar_len(src, byte_off);
   }
 
   auto* v = _culebra_heap_view(s + win_start_cell->value.data,
@@ -2025,16 +2009,10 @@ inline void _iter_sentences_fast_fn(JitClosure* cls, JitValue, bool* done,
                             avail + kGraphemeWindowExtendChunk);
   }
 
+  std::string_view src(s, static_cast<size_t>(src_len));
   int64_t byte_off = win_start_cell->value.data;
   for (int64_t i = 0; i < seg_len; i++) {
-    char32_t cp;
-    size_t bytes;
-    if (!unicode::utf8::decode_codepoint(s + byte_off,
-                                         static_cast<size_t>(src_len - byte_off),
-                                         bytes, cp)) {
-      bytes = 1;
-    }
-    byte_off += static_cast<int64_t>(bytes);
+    byte_off += culebra::utf8_scalar_len(src, byte_off);
   }
 
   auto* v = _culebra_heap_view(s + win_start_cell->value.data,
@@ -3455,16 +3433,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_array_max_by(
   return _arr_minmax_by(arr, ft, fd, true, "max_by", line, col);
 }
 
-// Length in UTF-8 bytes of the next scalar at `offset`. Returns 0
-// once `offset >= len`; an ill-formed sequence yields its first byte
-// alone (emit the raw byte to avoid stalling the iterator), as
-// String.iter does.
+// Length in UTF-8 bytes of the next scalar at `offset`, as
+// culebra::utf8_scalar_len splits it; 0 once `offset >= len`.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_utf8_scalar_len(
     const char* s, int64_t offset, int64_t len) {
   if (offset >= len) return 0;
-  return static_cast<int64_t>(culebra::utf8_scalar_len(
-      std::string_view(s, static_cast<size_t>(len)),
-      static_cast<size_t>(offset)));
+  return culebra::utf8_scalar_len(std::string_view(s, len), offset);
 }
 
 // Heap-copy `scalar_len` bytes from `s + offset` into a new String.

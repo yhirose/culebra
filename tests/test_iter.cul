@@ -233,11 +233,9 @@ for c in bad {
 }
 assert_eq(walked, [[0xE3], [0x41], [0x82]])
 assert_eq(bad.iter().map(fn (c) { c.bytes().collect() }).collect(), walked)
-assert_eq(bad.tr(String.from_bytes([0x82]), '').bytes().collect(), [0xE3, 0x41])
-assert_eq(
-  bad.trim_end(String.from_bytes([0x82])).bytes().collect(),
-  [0xE3, 0x41],
-)
+let b82 = String.from_bytes([0x82])
+assert_eq(bad.tr(b82, '').bytes().collect(), [0xE3, 0x41])
+assert_eq(bad.trim_end(b82).bytes().collect(), [0xE3, 0x41])
 assert_throws("ValueError", fn () {
   String.from_bytes([256])
 })  # above byte range

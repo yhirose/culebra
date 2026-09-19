@@ -1342,6 +1342,15 @@ inline size_t utf8_scalar_len(std::string_view s, size_t i) {
   return n ? n : 1;
 }
 
+// Start of the UTF-8 scalar that ends at `s[e]`, not before `lo` (`lo < e`):
+// the one split walking forward with utf8_scalar_len would give.
+inline size_t utf8_prev_scalar_start(std::string_view s, size_t lo, size_t e) {
+  for (size_t k = 2; k <= 4 && e - lo >= k; k++) {
+    if (utf8_scalar_len(s, e - k) == k) return e - k;
+  }
+  return e - 1;
+}
+
 // Trim scalars in `chars` from one or both ends. An empty `chars` trims
 // ASCII whitespace (the no-arg `trim`/`trim_start`/`trim_end` default).
 // Returns a view into `s`. Shared by interp + JIT so both agree.
@@ -1368,11 +1377,7 @@ inline std::string_view trim_chars(std::string_view s, std::string_view chars,
   }
   if (right) {
     while (e > b) {
-      size_t st = e - 1;  // walk back over UTF-8 continuation bytes
-      while (st > b && (static_cast<unsigned char>(s[st]) & 0xC0) == 0x80) st--;
-      // Continuation bytes that don't end a whole scalar are each their own,
-      // as the forward walk splits them.
-      if (utf8_scalar_len(s, st) != e - st) st = e - 1;
+      size_t st = utf8_prev_scalar_start(s, b, e);
       if (!in_set(s.substr(st, e - st))) break;
       e = st;
     }

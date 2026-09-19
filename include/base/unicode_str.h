@@ -238,11 +238,7 @@ inline std::string_view str_trim(std::string_view s, std::string_view chars,
   }
   if (right) {
     while (e > b) {
-      size_t start = e - 1;  // walk back over UTF-8 continuation bytes
-      while (start > b &&
-             (static_cast<unsigned char>(s[start]) & 0xC0) == 0x80) {
-        start--;
-      }
+      size_t start = utf8_prev_scalar_start(s, b, e);
       auto st = utf8_step(s, start);
       if (!st.valid || st.bytes.size() != e - start ||
           !unicode::is_white_space(st.cp)) {
