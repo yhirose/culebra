@@ -8430,6 +8430,17 @@ class Compiler {
             {"self", s, false, /*is_cell=*/false, /*lazy=*/true});
       }
     }
+    // The overflow arguments move into their Array ahead of everything in the
+    // prologue that can throw (a default expression, a type check): the
+    // frame's ladder owns the slot, where the caller's `+1`s would strand.
+    // `__ARGS__` and a named `*args` are two names for it, so it is built
+    // once and both bindings share it.
+    fc.chunk_.keeps_args = info.uses_args || !args_rest_name.empty();
+    int32_t args_slot = -1;
+    if (fc.chunk_.keeps_args) {
+      args_slot = fc.alloc_slot(ast, "(args.rest)");
+      fc.emit(Op::ArgsRest, args_slot);
+    }
     // Bind the declared parameters, now that the captures, `self` and `fn`
     // are in place for a default expression to read. Where a typed param's
     // error reports resolves per call: the common case (no earlier default)
@@ -8514,12 +8525,9 @@ class Compiler {
         }
       }
     }
-    // The overflow arguments, as one Array: `__ARGS__` and a named `*args`
-    // are two names for it, so it is built once and both bindings share it.
-    fc.chunk_.keeps_args = info.uses_args || !args_rest_name.empty();
+    // The overflow Array's names, after the parameters' own.
     if (fc.chunk_.keeps_args) {
-      int32_t aslot = fc.alloc_slot(ast, "(args.rest)");
-      fc.emit(Op::ArgsRest, aslot);
+      const int32_t aslot = args_slot;
       auto bind_args = [&](const std::string& nm, const peg::Ast& at,
                            int32_t src) {
         int32_t slot = src;

@@ -1200,8 +1200,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_defer_run_to(int64_t mark
       }
       // The defer's own throw replaces the in-flight payload: abandon the
       // snapshot (drop its retain, pop its pending frame) rather than
-      // restoring it over the replacement.
-      if (sflag) _culebra_value_release_impl(stag, sdata);
+      // restoring it over the replacement. No catch will ever consume the
+      // payload it replaced, so the reference its throw handed the carrier
+      // ends here too.
+      if (sflag) {
+        _culebra_value_release_impl(stag, sdata);
+        _culebra_value_release_impl(stag, sdata);
+      }
       _pending_save_stack().pop_back();
       throw;
     }

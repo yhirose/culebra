@@ -1,0 +1,109 @@
+# References a throw path used to strand. Both were true leaks: the count
+# never came back, so the value's drop never ran. GC.refcount reads them
+# exactly, where a live-object census only sees the ones the collector
+# cannot reach either.
+
+fn held(work) {
+  let v = {tag: 'payload'}
+  let base = GC.refcount(v)
+  mut k = 0
+  while k < 10 {
+    work(v)
+    k += 1
+  }
+  GC.refcount(v) - base
+}
+
+# --- a defer that throws during an unwind replaces the payload in flight:
+#     the one it replaced is nobody's to catch, so its reference ends there.
+#     The payload is a top-level binding, so the count is the carrier's alone.
+let payload = {tag: 'payload'}
+fn replaced() {
+  defer {
+    throw 'from defer'
+  }
+  throw payload
+}
+# the same with a trap, not a `throw`, as the replacement
+fn replaced_by_trap() {
+  defer {
+    1 / 0
+  }
+  throw payload
+}
+let payload_base = GC.refcount(payload)
+mut n = 0
+while n < 10 {
+  assert_eq(try {
+    replaced()
+  } catch e {
+    e
+  }, 'from defer')
+  assert_eq(try {
+    replaced_by_trap()
+  } catch e {
+    e.kind
+  }, 'ZeroDivisionError')
+  n += 1
+}
+assert_eq(GC.refcount(payload) - payload_base, 0)
+
+# and its drop runs
+mut dropped = 0
+fn replaced_droppable() {
+  defer {
+    throw 'from defer'
+  }
+  throw {drop: fn () {
+    dropped += 1
+  }}
+}
+try {
+  replaced_droppable()
+} catch _ {
+  nil
+}
+assert_eq(dropped, 1)
+
+# --- the surplus arguments of a `*rest` / `__ARGS__` function whose prologue
+#     throws on a type check, before the Array that would own them is built
+let typed_rest = fn (a: Long, *rest) {
+  rest.size()
+}
+let typed_args = fn (a: Long) {
+  __ARGS__.size()
+}
+class C {
+  m(a: Long, *rest) {
+    rest.size()
+  }
+}
+
+assert_eq(held(fn (v) {
+  assert_eq(try {
+    typed_rest('s', v, v)
+  } catch e {
+    e.kind
+  }, 'TypeError')
+}), 0)
+assert_eq(held(fn (v) {
+  assert_eq(try {
+    typed_args('s', v, v)
+  } catch e {
+    e.kind
+  }, 'TypeError')
+}), 0)
+assert_eq(held(fn (v) {
+  assert_eq(try {
+    C.new().m('s', v, v)
+  } catch e {
+    e.kind
+  }, 'TypeError')
+}), 0)
+# no throw: the Array takes them, and gives them back
+assert_eq(held(fn (v) {
+  assert_eq(typed_rest(1, v, v), 2)
+  assert_eq(typed_args(1, v, v), 2)
+}), 0)
+
+inspect('gc leak [throw paths]: no leak')
