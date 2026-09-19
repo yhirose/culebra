@@ -212,7 +212,8 @@ jobs:
           - lane: ci-light
           # generated difftest corpus + the corpus RC-leak regression gate
           - lane: ci-diff
-          # corpus inflated-RC audit + jit gc-stress + rc-leak battery
+          # refcount-lane difftest + corpus inflated-RC audit + gc-stress
+          # (conservative jit; refcount-seeded vm + jit) + rc-leak battery
           - lane: ci-leak
           # per-test AOT builds: `culebra build` shells out to the stock
           # `cc`/`c++` (never $CC/$CXX or LLVM tools — LLVM is statically

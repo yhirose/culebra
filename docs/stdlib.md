@@ -1472,12 +1472,15 @@ so back-to-back readings differ by a small constant — measure a delta around
 the code under test rather than an absolute count.
 
 The collection finds its roots from the reference counts (CPython's
-`gc_refs`), not from a scan of the stack, so which refcounted objects
-survive it — and which orphaned `drop`s it fires — is the same on every
-backend and every run. `rc_objects` is therefore a deterministic figure.
-`live_objects` also counts Strings, which are traced from a conservative
-stack scan and can straggle by a few; the background collections between
-two calls are conservative too, and cheaper.
+`gc_refs`), not from a scan of the stack, so which of the program's
+objects survive it — and which orphaned `drop`s it fires — is decided by
+the reference counts alone: the same on every backend and every run.
+`rc_objects` is therefore deterministic for a given program and engine
+(the engines keep a few bookkeeping objects of their own, so the two
+figures need not be equal to each other). `live_objects` also counts
+Strings, which are traced from a conservative stack scan and can straggle
+by a few; the background collections between two calls are conservative
+too, and cheaper.
 
 ```culebra
 # doctest: skip

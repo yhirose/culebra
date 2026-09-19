@@ -1062,6 +1062,13 @@ _run-tests BACKEND:
         # only a genuine hang trips it.
         ${TIMEOUT_BIN:+$TIMEOUT_BIN 1800} tools/difftest/run.sh "$BIN"
     }
+    # The same corpus on the refcount lane: every collection refcount-seeded
+    # and each record carrying rc_objects, so an engine holding one reference
+    # more or less on a value diverges byte-wise. GC.stat()'s collection
+    # rests on the two engines' refcounts agreeing; this is the gate for it.
+    run_difftest_refs() {
+        DIFFTEST_GC_REFS=1 ${TIMEOUT_BIN:+$TIMEOUT_BIN 1800} tools/difftest/run.sh "$BIN"
+    }
     # The release-diff comparator's own smoke test. The gate it serves runs on
     # master pushes only and prints OK when nothing changed, so a comparator
     # that stopped comparing would look exactly like a quiet release.
@@ -1075,12 +1082,13 @@ _run-tests BACKEND:
     # fails the gate instead of skipping. Quiet on success (the scripts print
     # one OK line per case × lane); full output is replayed on failure.
     run_vm_cases() {
-        local out
-        out="$(${TIMEOUT_BIN:+$TIMEOUT_BIN 300} tools/bench/vm_cases/compare.sh "$BIN" 2>&1)" \
-            || { printf '%s\n' "$out"; exit 1; }
-        out="$(STRESS=1 ${TIMEOUT_BIN:+$TIMEOUT_BIN 300} tools/bench/vm_cases/compare.sh "$BIN" 2>&1)" \
-            || { printf '%s\n' "$out"; exit 1; }
-        echo "vm_cases OK (both lanes == frozen expected, + GC_STRESS)"
+        local out mode
+        # Plain, then the two GC axes (compare.sh reads STRESS / REFS).
+        for mode in "" "STRESS=1" "REFS=1 STRESS=1"; do
+            out="$(env $mode ${TIMEOUT_BIN:+$TIMEOUT_BIN 300} tools/bench/vm_cases/compare.sh "$BIN" 2>&1)" \
+                || { printf '%s\n' "$out"; exit 1; }
+        done
+        echo "vm_cases OK (both lanes == frozen expected, + GC_STRESS, + GC_REFS GC_STRESS)"
     }
     # Leak-fuzz: rerun the same corpus under CULEBRA_GC_NEVER and fail on any
     # JIT RC leak not already in tools/difftest/leak_baseline.txt. A regression
@@ -1108,14 +1116,16 @@ _run-tests BACKEND:
             tools/difftest/leak_abort_suite.sh "$BIN"
     }
 
-    # Run every test file under the JIT with collect-on-every-allocation
-    # (CULEBRA_GC_STRESS=1) and assert none crash. This is the phase that would
-    # have caught the namespace/HOF dispatch use-after-frees: a transient GC
-    # value held only in a std::vector/map buffer (unscanned by the conservative
-    # collector) is swept mid-construction. A normal run collects far too rarely
-    # to hit the window; only stress mode makes it deterministic. JIT-only — the
-    # interp's shared_ptr values can't be swept out from under a C++ local, so it
-    # has no equivalent window.
+    # Run every test file with collect-on-every-allocation (CULEBRA_GC_STRESS=1)
+    # and assert none crash. Two sweeps. The JIT under the conservative
+    # collector: the phase that would have caught the namespace/HOF dispatch
+    # use-after-frees, where a transient GC value held only in a
+    # std::vector/map buffer (unscanned by the conservative collector) is swept
+    # mid-construction; a normal run collects far too rarely to hit the window.
+    # Then both lanes with every collection refcount-seeded (CULEBRA_GC_REFS=1):
+    # GC.stat()'s collection trusts the refcounts to be exact, and a collect at
+    # every allocation is what makes an under-counted reference free a live
+    # object here rather than in a user's program.
     run_gc_stress() {
         local d="$job_dir/gcstress"
         mkdir -p "$d"
@@ -1127,31 +1137,27 @@ _run-tests BACKEND:
             if ! CULEBRA_GC_STRESS=1 cul --jit "$f" > /dev/null 2> "$d/$name.err"; then
                 touch "$d/$name.fail"
             fi
-        ' _ '{}' "$d"
-        local fails=("$d"/*.fail)
-        if (( ${#fails[@]} > 0 )); then
-            echo "test (jit gc-stress) FAIL: ${#fails[@]} file(s) crashed:" >&2
-            for fail in "${fails[@]}"; do
-                name=$(basename "$fail" .fail)
-                echo "--- $name.cul ---" >&2
-                [[ -s "$d/$name.err" ]] && tail -3 "$d/$name.err" >&2
+            for lane in vm jit; do
+                if ! CULEBRA_GC_REFS=1 CULEBRA_GC_STRESS=1 cul --$lane "$f" > /dev/null 2> "$d/$name.refs-$lane.err"; then
+                    touch "$d/$name.refs-$lane.fail"
+                fi
             done
-            exit 1
-        fi
-        echo "test (jit gc-stress) OK"
+        ' _ '{}' "$d"
+        collect_failures "$d" "(gc-stress)" || exit 1
+        echo "test (gc-stress) OK (jit conservative; vm + jit refcount-seeded)"
     }
 
-    # RC-leak gate: run the differential leak battery (tools/analysis). Each
-    # pattern is collected two ways — conservative (real reachability) vs
-    # CULEBRA_GC_REFS (refcount-seeded) — and a gap means a codegen path
-    # leaked a release. The conservative backstop hides such leaks at runtime,
-    # so without this gate an RC leak ships silently; here it fails the build.
-    # This is the Level-2 safety net for the ownership flip: releases that
-    # can't be structurally guaranteed by the Owned handle (loop bodies) are
-    # still caught if they regress. N is kept modest — the leak signal is a
-    # ratio, so a few thousand iterations separate flat from leaking cleanly.
+    # RC-leak gate: run the leak battery (tools/analysis). Each pattern runs
+    # once under the quiescent-point inflated-RC audit (CULEBRA_GC_LEAK_ABORT),
+    # which names any object whose refcount exceeds the references the heap
+    # holds to it — a codegen path that leaked a release. The conservative
+    # backstop hides such leaks at runtime, so without this gate an RC leak
+    # ships silently; here it fails the build. This is the Level-2 safety net
+    # for the ownership flip: releases that can't be structurally guaranteed by
+    # the Owned handle (loop bodies) are still caught if they regress. N is
+    # kept modest — one leaked object is enough for the audit.
     run_leak_battery() {
-        if CULEBRA="$BIN" N=5000 THRESHOLD=4 bash tools/analysis/gc_leak_check.sh; then
+        if CULEBRA="$BIN" N=5000 bash tools/analysis/gc_leak_check.sh; then
             echo "test (rc-leak battery) OK"
         else
             echo "test (rc-leak battery) FAIL: an RC leak regressed" >&2
@@ -1286,7 +1292,7 @@ _run-tests BACKEND:
       # Order: cheap tests first, then AOT (slowest + most env-sensitive,
       # so a failure there shouldn't mask matcher regressions).
       # CULEBRA_TEST_SKIP_HEAVY skips the platform-independent heavy phases
-      # (the generated difftest, the JIT gc-stress sweep, and the
+      # (the generated difftest and its refcount lane, the gc-stress sweep, and the
       # per-test AOT links). CI sets it on the slow macOS runner — those run on
       # Linux CI and in local dev.
       all)
@@ -1305,11 +1311,12 @@ _run-tests BACKEND:
         phase "vm_cases (frozen expected outputs)"; run_vm_cases
         phase "codegen backends (-O0, fast vs --vm)"; run_codegen_backends
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "difftest (generated corpus)"; run_difftest; }
+        [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "difftest (refcount lane)"; run_difftest_refs; }
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "leak-fuzz (corpus RC-leak regression)"; run_leak_fuzz; }
         phase "leak-abort (GAP5 loud detector smoke)"; run_leak_abort
         [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "leak-abort-suite (corpus inflated-RC, throw-paths)"; run_leak_abort_suite; }
-        [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "jit gc-stress (collect every alloc)"; run_gc_stress; }
-        [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "rc-leak battery (gc_refs vs conservative)"; run_leak_battery; }
+        [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "gc-stress (collect every alloc; jit conservative, vm + jit refcount-seeded)"; run_gc_stress; }
+        [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "rc-leak battery (quiescent audit per pattern)"; run_leak_battery; }
         phase "ctest (embedding smokes)"; run_embed
         phase "languages (front ends vs their oracles)"; run_languages
         phase "culebra-test self"; run_culebra_test_self
@@ -1394,9 +1401,10 @@ _run-tests BACKEND:
         phase "done"; echo "test OK (ci-diff)"
         ;;
       ci-leak)
+        phase "difftest (refcount lane)"; run_difftest_refs
         phase "leak-abort-suite (corpus inflated-RC, throw-paths)"; run_leak_abort_suite
-        phase "jit gc-stress (collect every alloc)"; run_gc_stress
-        phase "rc-leak battery (gc_refs vs conservative)"; run_leak_battery
+        phase "gc-stress (collect every alloc; jit conservative, vm + jit refcount-seeded)"; run_gc_stress
+        phase "rc-leak battery (quiescent audit per pattern)"; run_leak_battery
         phase "done"; echo "test OK (ci-leak)"
         ;;
       *) echo "test: unknown backend '{{BACKEND}}' (expected: all|fast|jit|aot|embed|isolate|languages|wrap|ci-buildtree|ci-light|ci-diff|ci-leak)" >&2; exit 2 ;;

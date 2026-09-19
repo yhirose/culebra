@@ -1,0 +1,15 @@
+# Refcount-lane difftest (tools/difftest/run.sh, DIFFTEST_GC_REFS=1): cases
+# whose `rc` — the refcounted objects a case leaves behind — is allowed to
+# differ between the executor and the JIT. Their result is still compared.
+#
+# One line per case label, exactly as the record prints it before " ::: ".
+# Every entry names the engine-side structure that accounts for the
+# difference; a label is not added here to make a red gate green.
+#
+# A trait default-method body leaves one more refcounted object on the
+# executor than on the JIT (2 vs 1, measured with tools/analysis probes):
+# the executor keeps the body as a closure object in the trait's registry
+# entry, the JIT as compiled code. Per declaration, not per call.
+self|trait T { cur() -> Long  nxt() -> Long { self.cur() + 1 } }; class Z { new(){} cur() { 4 } }; to_string(Z.new().nxt())
+wkprop|trait Wtj { current() -> Long  next() { self.current() + 1 } }; class Wtk { new() {} current() { 41 } }; Wtk.new().next()
+wkprop|try { trait Wtl { tag() -> Long  step(x) { x } }; 1 } catch e { e.kind }

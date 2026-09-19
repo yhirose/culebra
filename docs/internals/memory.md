@@ -443,8 +443,8 @@ every object the two disagree about:
 
 The second category is a **zero-false-positive** leak detector: only an
 accounting error can produce it. `tools/analysis/gc_leak_check.sh`
-(the rc-leak battery in `just test`) runs a pattern file both ways and
-compares live counts.
+(the rc-leak battery in `just test`) runs each pattern of a battery
+under the audit of §5.2, one process per pattern.
 
 ### 5.2 Catching leaks before they ship
 
@@ -664,6 +664,11 @@ same way. On native builds the whole protocol folds away.
 ### 6.6 Safety devices
 
 - `CULEBRA_GC_STRESS=1` collects on every allocation (§5.4).
+- `CULEBRA_GC_REFS=1` makes every collection refcount-seeded (§6.2).
+  `just test` sweeps the test files under it with `CULEBRA_GC_STRESS=1`
+  on both lanes, and runs the difftest corpus under it with each record
+  carrying `rc_objects`, so the two engines are held to the same
+  refcounts.
 - `GC.stat()` exposes `live_objects`, `rc_objects` (refcounted objects
   only — the count the leak fuzzer watches) and `heap_bytes` for
   diagnostic use; `CULEBRA_GC_BIRTH_SITE=1` records an allocation

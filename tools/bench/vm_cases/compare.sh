@@ -3,10 +3,11 @@
 # every case file: the executor (--vm) and, when present, the LLVM lowering
 # (--jit).
 #
-# Usage: [STRESS=1] compare.sh <culebra-binary> [lane-flag]
+# Usage: [STRESS=1] [REFS=1] compare.sh <culebra-binary> [lane-flag]
 #        compare.sh --freeze <culebra-binary> [case.cul ...]
 # With no lane flag, both compiled lanes are asserted in one run. STRESS=1
-# runs the lanes under CULEBRA_GC_STRESS=1 (allocations forced to collect).
+# runs the lanes under CULEBRA_GC_STRESS=1 (allocations forced to collect);
+# REFS=1 under CULEBRA_GC_REFS=1 (every collection refcount-seeded).
 #
 # expected/ was frozen from the tree-walker while all three engines agreed
 # byte-for-byte (Phase 4 B7-c) — the B3 move again: expectations written
@@ -38,7 +39,8 @@ if [ ! -x "$BIN" ]; then
 fi
 if [ $# -ge 2 ]; then shift; ARGS=("$@"); else ARGS=(); fi
 STRESS="${STRESS:-}"
-tag="${STRESS:+ (GC_STRESS)}"
+REFS="${REFS:-}"
+tag="${STRESS:+ (GC_STRESS)}${REFS:+ (GC_REFS)}"
 cd "$(dirname "$0")"
 
 if [ "$FREEZE" = 1 ]; then
@@ -84,13 +86,12 @@ trap 'rm -rf "$work"' EXIT
 check_one() {
   local n="$1" lane="$2" want_rc="$3" log b b_rc
   log="$work/$n.${lane#--}.log"
-  # The runtime checks CULEBRA_GC_STRESS for presence, not value, so only
-  # set it when stressing.
-  if [ -n "$STRESS" ]; then
-    b="$(CULEBRA_GC_STRESS=1 "$BIN" "$lane" "$n.cul" 2>&1)"; b_rc=$?
-  else
-    b="$("$BIN" "$lane" "$n.cul" 2>&1)"; b_rc=$?
-  fi
+  # The runtime checks CULEBRA_GC_STRESS / CULEBRA_GC_REFS for presence, not
+  # value, so each is set only when asked for.
+  local -a gc_env=()
+  [ -n "$STRESS" ] && gc_env+=(CULEBRA_GC_STRESS=1)
+  [ -n "$REFS" ] && gc_env+=(CULEBRA_GC_REFS=1)
+  b="$(env ${gc_env[@]+"${gc_env[@]}"} "$BIN" "$lane" "$n.cul" 2>&1)"; b_rc=$?
   if [ "$b_rc" = "$want_rc" ] && printf '%s' "$b" | cmp -s - "expected/$n.out"; then
     echo "OK   $n.cul $lane$tag" > "$log"
   else
@@ -102,7 +103,7 @@ check_one() {
   fi
 }
 export -f check_one
-export work BIN STRESS tag
+export work BIN STRESS REFS tag
 
 # What the sweep cannot answer per lane: a case with no frozen expectation, and
 # one whose expectation is a parse error. Both reject the case itself, so they

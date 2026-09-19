@@ -1,0 +1,44 @@
+# Difftest preamble for the refcount lane (DIFFTEST_GC_REFS=1 in run.sh):
+# the same record as preamble.cul, plus `rc`, the change in the refcounted
+# live count since the previous record. Under CULEBRA_GC_REFS=1 every
+# collection finds its roots from the refcounts alone, so `rc` is what the
+# case left behind according to the refcounts the engine holds: an engine
+# that keeps one temporary more, or one less, on a value diverges here,
+# where the plain lane would only notice once a drop fired at the wrong
+# time. A delta, not a level: what an engine allocates once per process
+# for its own bookkeeping cancels out. The baseline is taken at the first
+# record, after the fixtures between this preamble and the cases have run.
+fn _show(v) {
+  type_of(v) + ":" + to_string(v)
+}
+# Warm-ups: the first use of a stdlib facility loads its preamble module,
+# and the two engines keep a different number of bookkeeping objects for
+# one (regex 102 vs 74, effects 69 vs 58, measured). Load them here — regex,
+# the Unicode tables a non-ASCII replacement pulls in, effects — so no case
+# is the first.
+let _warm_re = "a1".replace(re"\d", "#")
+let _warm_unicode = "a,b".replace(",", "、")
+effect fn _warm_eff()
+let _warm_h = handle { perform _warm_eff() } with _warm_eff(r) { r(1) }
+mut _rc_prev = -1
+fn _p(label, thunk) {
+  if _rc_prev < 0 {
+    _rc_prev = GC.stat().rc_objects
+  }
+  let r = try {
+    "ok=" + _show(thunk())
+  } catch e {
+    "err=" +
+      e.kind +
+      "|" +
+      e.message +
+      "|" +
+      e.line.to_string() +
+      "|" +
+      e.col.to_string()
+  }
+  let now = GC.stat().rc_objects
+  let d = now - _rc_prev
+  _rc_prev = now
+  print(label + " ::: " + r + " rc=" + d.to_string() + "\n")
+}

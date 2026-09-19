@@ -20,13 +20,26 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/corpus.sh"
 WORK="${DIFFTEST_WORK:-build/difftest}"
 
+# DIFFTEST_GC_REFS=1: the refcount lane. Every collection finds its roots
+# from the refcounts (CULEBRA_GC_REFS=1) and each record carries the
+# refcounted live count after one (preamble_refs.cul), so the byte diff holds
+# the two engines to the same refcounts, not only to the same results.
+PREAMBLE="$HERE/preamble.cul"
+TAG=""
+if [ -n "${DIFFTEST_GC_REFS:-}" ]; then
+  PREAMBLE="$HERE/preamble_refs.cul"
+  TAG=" (refcount lane)"
+  WORK="${DIFFTEST_WORK:-build/difftest-refs}"
+  export CULEBRA_GC_REFS=1
+fi
+
 out_jit="$WORK/out_jit.txt"
 out_vm="$WORK/out_vm.txt"
 
 # Build the corpus. Each chunk record is one line:
 #   <label> ::: ok=<Type>:<repr>      | err=<kind>|<message>|<line>|<col>
 cases=$(corpus_generate "$CULEBRA" "$WORK") || exit 1
-corpus_chunk "$WORK" "${DIFFTEST_CHUNK:-}"
+corpus_chunk "$WORK" "${DIFFTEST_CHUNK:-}" "$PREAMBLE"
 chunks=( "${CORPUS_CHUNKS[@]}" )
 
 # Run every (chunk × backend) as an independent parallel job — this is the bulk
@@ -83,18 +96,31 @@ for cf in "${chunks[@]}"; do
 done
 [ "$fail" = 0 ] || exit 1
 
+# Refcount lane: a case named in refs_allow.txt is compared on its result
+# only — its `rc` is blanked on both lanes before the diff. The file lists
+# the cases whose refcounted leftovers legitimately differ by engine (see
+# its comments); everything else must agree byte for byte, rc included.
+# Bytes, not characters: a case is free to print an invalid sequence.
+if [ -n "${DIFFTEST_GC_REFS:-}" ] && [ -s "$HERE/refs_allow.txt" ]; then
+  for f in "$out_jit" "$out_vm"; do
+    LC_ALL=C awk -F' ::: ' 'NR==FNR { if ($0 !~ /^#/ && $0 != "") allow[$0]=1; next }
+                   ($1 in allow) { sub(/ rc=-?[0-9]+$/, " rc=(allowed)") } { print }' \
+        "$HERE/refs_allow.txt" "$f" > "$f.allowed" && mv "$f.allowed" "$f"
+  done
+fi
+
 # Compare one pair of lanes. On a difference, count the divergences per
 # category (the label prefix before the first '|') and show the paired lines.
 compare_lanes() {
   local left="$1" right="$2" lf="$3" rf="$4" d
   if diff -q "$lf" "$rf" > /dev/null; then
-    echo "difftest: $cases cases, $left == $right ✓"
+    echo "difftest$TAG: $cases cases, $left == $right ✓"
     return 0
   fi
   # --text: a case is free to print a NUL, and without it diff answers
   # "binary files differ" and the report below has nothing to show.
   d=$(diff --text "$lf" "$rf" | grep -E '^[<>]')
-  echo "difftest: $cases cases, $(grep -c '^<' <<< "$d") DIVERGENCES" \
+  echo "difftest$TAG: $cases cases, $(grep -c '^<' <<< "$d") DIVERGENCES" \
        "($left vs $right)"
   echo
   echo "by category:"
