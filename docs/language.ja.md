@@ -3788,7 +3788,7 @@ shutdownパターン）は、`Signal.notify`でチャネルを登録します（
 | `SendError` | Sendableでない値をisolate境界（`Isolate.spawn` / `tx.send`）で渡した — ネイティブハンドル、`Tensor`、`mut`を捕獲したクロージャ、循環参照 | はい |
 | `ChannelError` | 全endpointが消えた（closed）channelへの`tx.send` | はい |
 | `ParallelError` | `Parallel.map` / `Parallel.each`の要素が例外を投げた。失敗要素のindexと原因を保持（fail-fast） | はい |
-| `DropContractError` | `drop` / `iter` / `has_next` / `next`プロパティが非Functionまたは非0引数Function | はい |
+| `DropContractError` | `drop` / `iter` / `has_next` / `next`プロパティに引数を取るFunctionを束縛した | はい |
 | `RecursionError` | 関数呼び出しの深さが固定上限1000フレームを超えた。ユーザ関数の入口（fn・lambda・メソッド・コンストラクタ — フィールド初期化子はコンストラクタのフレーム内で走る）が1フレームで、組み込みヘルパーやマルチメソッドのディスパッチは数えない。上限と報告される深さは全backendで同一、位置はcall site。カウントは`throw`とともに巻き戻るので、`catch`後は全予算を使い直せる | はい |
 | `RuntimeError` | 未変換throw siteから伝播した`std::runtime_error`をエンジンが拾うフォールバック。この場合のみ`e.line == 0` / `e.col == 0`がありうる | はい |
 
@@ -4295,8 +4295,8 @@ make_thing = fn () {
 同様（バックストップ限定の形は上記参照）。トップレベルの孤児は
 両方ともGCバックストップ行きで、トップレベルの*束縛*はプログラム
 終了時にdropされずにleakしたまま。well-known
-プロパティの契約（`drop` / `iter` / `has_next` / `next`は0引数の
-`Function`であること）も両バックエンドで代入時に強制されます。対象は
+プロパティの契約（`drop` / `iter` / `has_next` / `next`に束縛する
+`Function`は引数を取らないこと）も両バックエンドで代入時に強制されます。対象は
 すべての書き込み面: リテラルプロパティ、計算添字キー（`o[k] = v`）、
 nativeビルダー（`JSON.parse`等）、channel転送の受信側で再構築される
 値、class宣言（methodテンプレートがwell-known名を非適合な
@@ -4309,6 +4309,19 @@ bodyを持たないtraitメソッドは要求を宣言するだけで値を束�
 そのまま残ります。`static`メンバーは名前空間であってインスタンス
 プロトコルの一部ではありません: `drop`という名前のstatic（arity
 不問）はただの関数で、契約検査されず、自動呼び出しもされません。
+
+この契約は関数についてのものです。`Function`でない値は、たまたま
+その名前を使っているだけのデータで、他のプロパティと同じように
+束縛できます — プログラムが決められない文字列は、キーも自分で決めます:
+
+```culebra
+let page = JSON.parse('{"items": [1, 2], "next": "/page/2", "drop": false}')
+inspect(page.next)    # => '/page/2'
+inspect(page.keys())  # => ['items', 'next', 'drop']
+```
+
+こうした`Object`はどのプロトコルのメンバーでもありません。消えるときに
+何も走らず、`for`は他の`Object`と同じくキーを順にたどります。
 
 ---
 
@@ -4716,12 +4729,14 @@ inspect(prices.iter().map(|(k, v)| (v, k)).to_object())
 両者を区別したいときは`has_next()`でゲートしてください。
 
 **契約（プロパティ代入時に検査）**: `iter` / `has_next` / `next`を
-非`Function`値、または引数ありのFunctionに束縛すると、代入時点で
+引数を取るFunctionに束縛すると、代入時点で
 `DropContractError: type error: '<name>' must be a Function taking no
-arguments.`が送出されます（§17の`drop`契約と同じ）。3つの名前は
-セットで予約されているので、プロトコルのメンバーは常に呼び出し可能な
-値を保持します。名前が似ているだけのデータフィールド（`has_next_at`）
-は影響を受けません。
+arguments.`が送出されます（§17の`drop`契約と同じ）。`Function`でない値は
+データであり、他のプロパティと同じように束縛できます。データは決して
+プロトコルのメンバーにならないので、`next`というキーを持つだけの
+`Object`はイテレータではなく、`iter`キーにデータを持つ`Object`はキーを
+順にたどられます。名前が似ているだけのフィールド（`has_next_at`）は
+もともと影響を受けません。
 
 **イテレータを開くときに検査**: `for`-inはヘッドで最初のステップの
 前に、遅延チェーンは終端（`collect` / `count` …）が最初に駆動した

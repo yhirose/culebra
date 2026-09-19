@@ -4003,7 +4003,7 @@ builds (unless noted).
 | `SendError` | A value that is not Sendable was passed across an isolate boundary (`Isolate.spawn` / `tx.send`) — a native handle, a `Tensor`, a closure capturing a `mut`, or a cyclic value. | yes |
 | `ChannelError` | `tx.send` on a channel whose receivers/senders have all gone (closed). | yes |
 | `ParallelError` | A `Parallel.map` / `Parallel.each` element threw; carries the failing element's index and cause (fail-fast). | yes |
-| `DropContractError` | `drop` / `iter` / `has_next` / `next` property bound to a non-Function or non-zero-arity function. | yes |
+| `DropContractError` | `drop` / `iter` / `has_next` / `next` property bound to a function that takes arguments. | yes |
 | `RecursionError` | Function-call depth exceeded the fixed limit of 1000 frames. Every user-function entry counts one frame (fn, lambda, method, constructor — field initializers run inside the constructor's frame); built-in helpers and multimethod dispatch do not. The limit and the reported depth are identical on every backend, and reported at the call site. The count unwinds with `throw`, so a `catch` regains the full budget. | yes |
 | `RuntimeError` | Fallback when the engine catches an unconverted `std::runtime_error` from a not-yet-migrated throw site. `e.line == 0` and `e.col == 0` are possible in this case only. | yes |
 
@@ -4530,7 +4530,7 @@ VM — at scope exit, cycle members included, closure-held shapes too
 (backstop-only shapes as above);
 top-level orphans go to the GC backstop on both, and top-level
 *bindings* still leak un-dropped at program exit. The well-known property contract
-(`drop`/`iter`/`has_next`/`next` must be a 0-arg `Function`) is enforced at
+(a `Function` bound to `drop`/`iter`/`has_next`/`next` takes no arguments) is enforced at
 assignment time on both backends, on every write surface: literal
 properties, computed subscript keys (`o[k] = v`), native builders
 (`JSON.parse` etc.), values rebuilt on the receiving side of a channel
@@ -4546,6 +4546,19 @@ contract check, and a failed check leaves the old value in place.
 `static` members are a namespace, not part of the instance protocol:
 a static named `drop` (any arity) is an ordinary function — it is not
 contract-checked and is never auto-invoked.
+
+The contract is about functions. A value that is not a `Function` is data
+that happens to use the name, and binds like any other property — text a
+program does not control decides its own keys:
+
+```culebra
+let page = JSON.parse('{"items": [1, 2], "next": "/page/2", "drop": false}')
+inspect(page.next)    # => '/page/2'
+inspect(page.keys())  # => ['items', 'next', 'drop']
+```
+
+Such an `Object` is not a protocol member of anything: nothing runs when
+it goes away, and a `for` walks it by its keys like any other `Object`.
 
 ---
 
@@ -4959,12 +4972,13 @@ raising, the same as a drained generator. Since `nil` is also a
 perfectly good element, gate on `has_next()` to tell the two apart.
 
 **Contract, enforced at property assignment**: binding `iter`,
-`has_next` or `next` to a non-`Function` value, or to a function with
-non-zero arity, raises `DropContractError: type error: '<name>' must be
-a Function taking no arguments.` at the assignment site (mirrors the
-`drop` contract — §17). The three names are reserved as a set, so a
-protocol member always holds something callable; a lookalike data field
-(`has_next_at`) is unaffected.
+`has_next` or `next` to a function that takes arguments raises
+`DropContractError: type error: '<name>' must be a Function taking no
+arguments.` at the assignment site (mirrors the `drop` contract — §17).
+A value that is not a `Function` is data and binds like any property; it
+is never a protocol member, so an `Object` that merely has a `next` key
+is not an iterator, and one whose `iter` key holds data is walked by its
+keys. A lookalike field (`has_next_at`) was never affected.
 
 **Checked when the iterator is opened**: the `for`-in head validates
 before the first step, and a lazy chain validates when a terminal

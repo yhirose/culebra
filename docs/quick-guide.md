@@ -639,7 +639,6 @@ produces something else, in Culebra.
 | `xs.take(n)` / `xs[:n]` | `xs.slice(0, n)`. `take` is an Iterator method — `xs.iter().take(n).collect()` |
 | `obj.items()` / `obj.entries()` / `obj.to_array()` | `for k, v in obj`, or `obj.keys().map(\|k\| (k, obj[k]))` |
 | `del a[i]` / `a.splice(i, 1)` | `a.remove_at(i)`, which returns the removed element |
-| an `Object` keyed by text you do not control | `drop` is the RAII hook (2.9), so that one key throws `DropContractError` — prefix such keys |
 | `obj['missing']` | `KeyError`. `obj.missing` is `nil`; `obj.get('missing', dflt)` takes a fallback |
 | `'ab' * 3` | `TypeError`. There is no string repetition operator |
 | `s.find(x)` / `s.indexOf(x)` | `s.index_of(x)` — a byte offset, `-1` when absent |
