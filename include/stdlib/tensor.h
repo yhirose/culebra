@@ -349,8 +349,9 @@ struct TensorImpl {
 
   // --- Autograd ---
   // `grad` accumulates dL/dthis during backward(). It is always a
-  // materialized Const tensor (own buffer, no graph) so it can never
-  // form a cycle with the forward graph. nullptr until the first
+  // materialized Const tensor (no graph) so it can never form a cycle
+  // with the forward graph; only a leaf's owns its buffer, and a
+  // non-leaf's is released once its VJP has run. nullptr until the first
   // accumulation. `requires_grad` is true for leaves the user marked
   // and propagates forward (a node requires grad iff any input does).
   std::shared_ptr<TensorImpl> grad;
@@ -1395,7 +1396,21 @@ inline void _tensor_grad_add(const TensorPtr& node, TensorPtr contrib) {
   if (!node->requires_grad) return;
   contrib = _tensor_unbroadcast(std::move(contrib), node->shape);
   if (!node->grad) {
-    node->grad = tensor_clone(contrib);
+    // A leaf's gradient outlives backward and takes in-place writes (`+=`,
+    // adam_step), so it owns its buffer. A non-leaf's is read by its own VJP
+    // and released, and accumulation below swaps `value` rather than writing
+    // it, so it may share one: a fresh TensorImpl over the realized value.
+    // A strided view (a broadcast from sum/mean, a transpose) is still
+    // copied, since the fused pullbacks decline a non-contiguous gradient.
+    if (node->op == Op::Const) {
+      node->grad = tensor_clone(contrib);
+    } else {
+      auto v = _tl_guard([&] {
+        const tl::array& a = contrib->value.realize();
+        return a.contiguous() ? a : a.clone();
+      });
+      node->grad = _tensor_wrap_const(std::move(v), contrib->dtype);
+    }
   } else {
     // A device add realized without a sync: tl's add_ is a host loop, which on
     // a GPU reads both buffers back. The sum replaces `value` inside the same
