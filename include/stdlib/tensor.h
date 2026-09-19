@@ -342,6 +342,11 @@ struct TensorImpl {
   float extra0 = 0.0f;
   float extra1 = 0.0f;
 
+  // A rank-0 Const lifted from a host number (tensor_scalar): the number
+  // itself, so a binop takes tl's scalar form without reading the buffer
+  // back through a CPU barrier, which would drain the device.
+  std::optional<float> host_scalar;
+
   // --- Autograd ---
   // `grad` accumulates dL/dthis during backward(). It is always a
   // materialized Const tensor (own buffer, no graph) so it can never
@@ -485,16 +490,17 @@ inline TensorPtr tensor_zeros(TensorShape s, Dtype d) {
   return std::make_shared<TensorImpl>(std::move(s), d);
 }
 
-// Shared between the interp `tensor_ones` and the JIT runtime entry —
-// keeps the fill in one place.
-inline void tensor_fill_ones_inplace(TensorImpl& t) {
-  std::fill_n(t.data_as<float>(), t.shape.num_elements(), 1.0f);
+// A Const filled from the host by tl's host-filled constructor, not written
+// through data_as(), whose CPU read barrier would drain the device.
+inline TensorPtr _tensor_full(std::vector<int64_t> dims, float v, Dtype d) {
+  tensor_rt_bootstrap();
+  auto a = _tl_guard([&] { return tl::array::full(std::move(dims), v); });
+  return _tensor_wrap_const(std::move(a), d);
 }
 
+// Backward seeds its root with this while the forward is still in flight.
 inline TensorPtr tensor_ones(TensorShape s, Dtype d) {
-  auto t = std::make_shared<TensorImpl>(std::move(s), d);
-  tensor_fill_ones_inplace(*t);
-  return t;
+  return _tensor_full(std::move(s.dims), 1.0f, d);
 }
 
 // Direct CSV loader — reads the entire file into a single contiguous
@@ -689,18 +695,29 @@ inline tl::array _tl_binop_vs_scalar(Op op, const tl::array& a, float s,
   throw std::logic_error("tensor: bad op in scalar binop dispatch");
 }
 
+// A materialized rank-0 operand's value: the host number it was lifted
+// from when there is one, else read back from its buffer.
+inline std::optional<float> _tl_scalar_of(const TensorImpl& t) {
+  if (t.host_scalar) return t.host_scalar;
+  if (t.value.shape().empty() && t.value.materialized()) {
+    return t.value.raw()[0];
+  }
+  return std::nullopt;
+}
+
 // Elementwise binop on tl values: a materialized rank-0 operand goes through
 // _tl_binop_vs_scalar above, except a scalar base (`s ** t`), which has no
 // tensor-scalar form in tl.
-inline tl::array _tl_binop(Op op, const tl::array& a, const tl::array& b) {
-  if (b.shape().empty() && b.materialized()) {
-    return _tl_binop_vs_scalar(op, a, b.raw()[0], /*scalar_on_left=*/false);
+inline tl::array _tl_binop(Op op, const TensorImpl& a, const TensorImpl& b) {
+  if (auto s = _tl_scalar_of(b)) {
+    return _tl_binop_vs_scalar(op, a.value, *s, /*scalar_on_left=*/false);
   }
-  if (a.shape().empty() && a.materialized() && !b.shape().empty() &&
-      op != Op::Pow) {
-    return _tl_binop_vs_scalar(op, b, a.raw()[0], /*scalar_on_left=*/true);
+  if (!b.value.shape().empty() && op != Op::Pow) {
+    if (auto s = _tl_scalar_of(a)) {
+      return _tl_binop_vs_scalar(op, b.value, *s, /*scalar_on_left=*/true);
+    }
   }
-  return _tl_binop_general(op, a, b);
+  return _tl_binop_general(op, a.value, b.value);
 }
 
 // Build a lazy elementwise binop node. Shapes are broadcast per numpy
@@ -723,7 +740,7 @@ CULEBRA_RT_TENSOR_EVAL_LINKAGE TensorPtr tensor_binop(Op op, TensorPtr a,
     throw CulebraError("ValueError", "Tensor: dtype mismatch in binop.");
   }
   tensor_broadcast_check(a->shape, b->shape);  // culebra-worded error
-  auto v = _tl_guard([&] { return _tl_binop(op, a->value, b->value); });
+  auto v = _tl_guard([&] { return _tl_binop(op, *a, *b); });
   auto dtype = a->dtype;
   return tensor_make_op(op, std::move(v), dtype,
                         std::vector<TensorPtr>{std::move(a), std::move(b)});
@@ -733,8 +750,8 @@ CULEBRA_RT_TENSOR_EVAL_LINKAGE TensorPtr tensor_binop(Op op, TensorPtr a,
 // Rank-0 Tensor holding a single scalar — used to lift scalar Float
 // operands into the binop graph so broadcast does the rest.
 inline TensorPtr tensor_scalar(double v, Dtype d) {
-  auto t = std::make_shared<TensorImpl>(TensorShape{}, d);
-  t->data_as<float>()[0] = static_cast<float>(v);
+  auto t = _tensor_full({}, static_cast<float>(v), d);
+  t->host_scalar = static_cast<float>(v);
   return t;
 }
 
@@ -767,7 +784,7 @@ CULEBRA_RT_TENSOR_EVAL_LINKAGE bool tensor_inplace_binop(TensorImpl& dst, Op op,
     } else {
       // Materialize OP into its own buffer first, then overwrite dst —
       // the lazy node reads dst as a constant input, so ordering matters.
-      auto r = _tl_binop(op, dst.value, rhs->value);
+      auto r = _tl_binop(op, dst, *rhs);
       const float* src = r.raw();  // forces evaluation
       std::memcpy(dst.value.data(), src, dst.shape.num_elements() * 4);
     }
@@ -1593,9 +1610,9 @@ inline void _tensor_vjp(const TensorPtr& n) {
       // da = g * b * a^(b-1); a materialized rank-0 exponent folds b-1 on the
       // host (on the GPU the Sub node would stay lazy), so a^(b-1) stays a
       // tensor-scalar pow.
-      auto exp_m1 = b->shape.rank() == 0 && b->value.materialized()
-                        ? tensor_scalar(b->value.raw()[0] - 1.0, dt)
-                        : tensor_binop(Op::Sub, b, tensor_scalar(1.0, dt));
+      const auto s = _tl_scalar_of(*b);
+      auto exp_m1 = s ? tensor_scalar(*s - 1.0, dt)
+                      : tensor_binop(Op::Sub, b, tensor_scalar(1.0, dt));
       auto a_pow = tensor_binop(Op::Pow, a, exp_m1);
       _tensor_grad_add(a, tensor_binop(Op::Mul, tensor_binop(Op::Mul, g, b),
                                        a_pow));
