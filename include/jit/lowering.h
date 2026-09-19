@@ -1610,10 +1610,8 @@ struct Lowering {
           llvm::Value* objHit = j.emit_receiver_resolves_method(recv, key);
           if (in.d & kHasPropIterBit)
             objHit = b.CreateOr(
-                objHit,
-                j.emit_object_has(
-                    b.CreateIntToPtr(j.extract_data(recv), ptrTy),
-                    j.get_or_create_global_str("next", ".vhp.next")));
+                objHit, j.emit_is_iterator_shaped(b.CreateIntToPtr(
+                            j.extract_data(recv), ptrTy)));
           auto objEnd = b.GetInsertBlock();
           b.CreateBr(contBB);
           b.SetInsertPoint(contBB);
@@ -1738,9 +1736,8 @@ struct Lowering {
                 sw->addCase(b.getInt8(t), t == TAG_OBJECT ? shapeBB : okBB);
             if (shapeBB != okBB) {
               b.SetInsertPoint(shapeBB);
-              llvm::Value* shaped = j.emit_object_has(
-                  b.CreateIntToPtr(j.extract_data(recv), ptrTy),
-                  j.get_or_create_global_str("next", ".it.next"));
+              llvm::Value* shaped = j.emit_is_iterator_shaped(
+                  b.CreateIntToPtr(j.extract_data(recv), ptrTy));
               if (gate.range_recv)
                 shaped = b.CreateOr(shaped, j.emit_is_range(recv));
               b.CreateCondBr(shaped, okBB, badBB);
@@ -1840,11 +1837,9 @@ struct Lowering {
             }
             auto shapedBB = BasicBlock::Create(j.ctx_, "vbm.ar.shaped", fn);
             auto plainBB = BasicBlock::Create(j.ctx_, "vbm.ar.plain", fn);
-            b.CreateCondBr(
-                j.emit_object_has(
-                    b.CreateIntToPtr(j.extract_data(recv), ptrTy),
-                    j.get_or_create_global_str("next", ".it.next")),
-                shapedBB, plainBB);
+            b.CreateCondBr(j.emit_is_iterator_shaped(b.CreateIntToPtr(
+                               j.extract_data(recv), ptrTy)),
+                           shapedBB, plainBB);
             b.SetInsertPoint(shapedBB);
             if (shaped.empty()) b.CreateBr(contBB); else throw_msg(shaped);
             b.SetInsertPoint(plainBB);
@@ -4830,10 +4825,7 @@ struct Lowering {
                   b.getInt8(0));
               hit = b.CreateAnd(plain, b.CreateNot(own));
               if (arm.tag == Chunk::kArityIter)
-                hit = b.CreateAnd(
-                    hit, j.emit_object_has(objPtr,
-                                           j.get_or_create_global_str(
-                                               "next", ".vm.it.next")));
+                hit = b.CreateAnd(hit, j.emit_is_iterator_shaped(objPtr));
             }
             b.CreateCondBr(hit, badBB, okBB);
             b.SetInsertPoint(badBB);

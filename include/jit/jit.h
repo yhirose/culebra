@@ -3176,6 +3176,22 @@ struct JIT {
         {objPtr, keyPtr}, name);
   }
 
+  // The two protocol-shape questions (runtime.inc.h, next to
+  // _protocol_member): asked by name, so no site here spells a well-known
+  // key to probe with.
+  llvm::Value* emit_is_iterator_shaped(llvm::Value* objPtr) {
+    return emit_call(module_->getOrInsertFunction(
+                         rt::is_iterator_shaped, builder_.getInt1Ty(),
+                         llvm::PointerType::get(ctx_, 0)),
+                     {objPtr}, "iter.shaped");
+  }
+  llvm::Value* emit_has_iter_method(llvm::Value* objPtr) {
+    return emit_call(module_->getOrInsertFunction(
+                         rt::has_iter_method, builder_.getInt1Ty(),
+                         llvm::PointerType::get(ctx_, 0)),
+                     {objPtr}, "has.iter");
+  }
+
   // The property arm's test in both UFCS gates: an Object receiver takes it
   // when it resolves `method` itself — own slot, class meta, or a trait
   // default it inherits (the wider question only this gate asks; the
@@ -4365,8 +4381,7 @@ struct JIT {
     builder_.CreateBr(protoOpenBB);
 
     builder_.SetInsertPoint(notRangeBB);
-    auto iterKeyPtr = get_or_create_global_str("iter", ".iter.key");
-    auto hasIter = emit_object_has(objPtr, iterKeyPtr);
+    auto hasIter = emit_has_iter_method(objPtr);
     auto keysBB = llvm::BasicBlock::Create(ctx_, "for.obj.keys", fn);
     auto protoBB = llvm::BasicBlock::Create(ctx_, "for.obj.proto", fn);
     builder_.CreateCondBr(hasIter, protoBB, keysBB);

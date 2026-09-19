@@ -1558,6 +1558,34 @@ inline const JitObjectEntry* _find_property(JitObject* obj,
   return nullptr;
 }
 
+// The protocol member `obj` carries under one of the well-known names
+// (`drop` / `iter` / `has_next` / `next`), or null: a Function there is a
+// member, anything else is data that happens to use the name (a parsed
+// `{"next": "…"}`). The ONE place that question is answered — every
+// protocol consumer asks here (or one of the two named questions below)
+// rather than probing for the key, which is what lets the binding contract
+// constrain Functions alone (_culebra_check_well_known_prop);
+// check_protocol_member_door.sh holds it.
+inline JitClosure* _protocol_member(JitObject* obj, const char* name) {
+  auto* entry = _find_property(obj, name);
+  if (!entry || entry->value.tag != TAG_FUNC) return nullptr;
+  return reinterpret_cast<JitClosure*>(entry->value.data);
+}
+
+// The two questions the executor and compiled code ask about an Object's
+// shape, by name — so no well-known key is spelled outside this file's
+// protocol code. `next` is what shapes an iterator (it resolves the lazy
+// method set); `iter` makes an Object drive itself in a `for`, where a plain
+// one is walked by its keys.
+extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool
+culebra_runtime_is_iterator_shaped(JitObject* obj) {
+  return _protocol_member(obj, "next") != nullptr;
+}
+extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool
+culebra_runtime_has_iter_method(JitObject* obj) {
+  return _protocol_member(obj, "iter") != nullptr;
+}
+
 // The special method `s` an operator or protocol reaches on `tag:data`, or
 // null. A class instance answers from its meta's table (one load) unless its
 // own shape carries a special name, which is the only way an own slot could

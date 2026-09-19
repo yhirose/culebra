@@ -217,6 +217,15 @@ check-layering:
 check-vm-dispatch-table:
     tools/checks/check_vm_dispatch_table.sh
 
+# `drop` / `iter` / `has_next` / `next` are protocol members only when a
+# Function is bound there; anything else under those names is data. A probe
+# that asks for the key instead treats data as a member — once, a jump through
+# a Long payload in the JIT.
+[group("test")]
+[doc("Verify no probe asks for a well-known key's presence instead of its protocol member (ratchet)")]
+check-protocol-member-door:
+    tools/checks/check_protocol_member_door.sh
+
 # The embedding chapter names headers a host includes, and `doctest` reads
 # ```culebra fences only — so a rename broke those examples with nothing to
 # say so. This half only resolves the names, which is the half that a rename
@@ -238,7 +247,7 @@ check-docs-cpp:
 # the workflow-coverage ratchet. Cheap enough to gate both test recipes:
 # well under a second once the grammar-blob tool is ccache-warm.
 [private]
-check-generated: check-grammar-sync check-preambles check-blob check-site-version check-site-playground-sync check-difftest-coverage check-release-coverage check-spec-examples check-api-coverage check-canon-return-types check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-docs-cpp-includes check-header-naming check-search-splitter check-layering check-codegen-enums check-vm-dispatch-table
+check-generated: check-grammar-sync check-preambles check-blob check-site-version check-site-playground-sync check-difftest-coverage check-release-coverage check-spec-examples check-api-coverage check-canon-return-types check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-docs-cpp-includes check-header-naming check-search-splitter check-layering check-codegen-enums check-vm-dispatch-table check-protocol-member-door
 
 # Such a build still runs programs — everything below the LLVM lowering
 # (rt.h, vm.h) is LLVM-free, so the bytecode VM's executor is intact; what it

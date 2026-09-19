@@ -1497,7 +1497,7 @@ inline bool has_prop_apply(int32_t tags, const JitValue& recv,
   // eval_property's duck-typed fallback; `next` is what shapes it — a
   // concrete slot, like interp's is_iterator_shaped reads.
   return (tags & kHasPropIterBit) != 0 &&
-         culebra_runtime_object_has(obj, "next");
+         culebra_runtime_is_iterator_shaped(obj);
 }
 
 // The name a parameter's declared type carries into the error message.
@@ -14543,7 +14543,7 @@ struct Exec {
           return;
         }
         auto* obj = reinterpret_cast<JitObject*>(it.data);
-        if (culebra_runtime_object_has(obj, "iter")) {
+        if (culebra_runtime_has_iter_method(obj)) {
           _culebra_value_retain_impl(static_cast<int8_t>(it.tag), it.data);
           proto_open(it);
           return;
@@ -15766,8 +15766,8 @@ struct Exec {
           // An iterator-protocol name resolves on an Object only when the
           // object carries the protocol; a plain dict merely lacks it.
           if (ok && gate.obj_iter_shaped && recv.tag == TAG_OBJECT)
-            ok = culebra_runtime_object_has(
-                     reinterpret_cast<JitObject*>(recv.data), "next") ||
+            ok = culebra_runtime_is_iterator_shaped(
+                     reinterpret_cast<JitObject*>(recv.data)) ||
                  (gate.range_recv &&
                   culebra_runtime_is_range(TAG_OBJECT, recv.data));
           if (!ok) {
@@ -15818,8 +15818,8 @@ struct Exec {
             const JitValue& recv = regs[in.a + 1];
             bool shaped =
                 recv.tag == TAG_OBJECT &&
-                culebra_runtime_object_has(
-                    reinterpret_cast<JitObject*>(recv.data), "next");
+                culebra_runtime_is_iterator_shaped(
+                    reinterpret_cast<JitObject*>(recv.data));
             auto msg = bmeth_rival_arity_message(
                 bmeth_specs()[in.c], static_cast<int8_t>(recv.tag), shaped);
             if (!msg.empty()) {
@@ -17200,7 +17200,7 @@ struct Exec {
                         o, reinterpret_cast<const char*>(
                                c.consts[arm.name_k].data)) &&
                     (arm.tag == Chunk::kArityObj ||
-                     culebra_runtime_object_has(o, "next"));
+                     culebra_runtime_is_iterator_shaped(o));
             }
             if (!hit) continue;
             culebra_runtime_throw_error(

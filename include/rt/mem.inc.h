@@ -39,11 +39,7 @@ inline void _culebra_call_drop_if_present(JitObject* o) {
   if (o->dropped) return;  // already ran (explicit or backstop) — at most once
   if (_jit_drop_suppressed()) return;  // cycle-held resource — no finalizer
   // Walks proto so class-sugar instances find their inherited `drop`.
-  auto* entry = _find_property(o, "drop");
-  if (!entry) return;
-  const auto& v = entry->value;
-  if (v.tag != GC_TAG_FUNC) return;
-  auto* cls = reinterpret_cast<JitClosure*>(v.data);
+  auto* cls = _protocol_member(o, "drop");
   if (!cls || cls->arity != 0) return;
 
   o->dropped = true;  // set before running: re-entrancy-safe, at-most-once
@@ -910,6 +906,8 @@ inline constexpr auto explicit_drop       = "culebra_runtime_explicit_drop";
 inline constexpr auto owned_hot           = "culebra_runtime_owned_hot";
 inline constexpr auto owned_scope_exit    = "culebra_runtime_owned_scope_exit";
 inline constexpr auto object_has          = "culebra_runtime_object_has";
+inline constexpr auto is_iterator_shaped  = "culebra_runtime_is_iterator_shaped";
+inline constexpr auto has_iter_method     = "culebra_runtime_has_iter_method";
 inline constexpr auto object_has_or_trait_default
     = "culebra_runtime_object_has_or_trait_default";
 inline constexpr auto object_has_own_field

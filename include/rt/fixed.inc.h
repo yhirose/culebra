@@ -1711,7 +1711,7 @@ inline void _jit_fill_specials(JitObject* meta) {
     if (e && e->value.tag == TAG_FUNC)
       meta->specials->fn[s] = reinterpret_cast<JitClosure*>(e->value.data);
   }
-  meta->methods_drop = _find_property(meta, "drop") != nullptr;
+  meta->methods_drop = _protocol_member(meta, "drop") != nullptr;
 }
 
 // Build a "class meta" object that holds shared method closures for

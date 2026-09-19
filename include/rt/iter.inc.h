@@ -97,13 +97,9 @@ inline void _iter_self_iter_fn(JitValue* __ret, JitClosure*, int8_t self_val_tag
 inline JitClosure* _iter_method_closure(JitValue iter_val,
                                         const char* method) {
   if (iter_val.tag != TAG_OBJECT) return nullptr;
-  auto* iter_obj = reinterpret_cast<JitObject*>(iter_val.data);
-  // Walk instance + proto: class instances carry methods on their
-  // class meta proto, while Phase 2 wrapped iterators put them on
-  // the instance directly. `_find_property` handles both.
-  auto* entry = _find_property(iter_obj, method);
-  if (!entry || entry->value.tag != TAG_FUNC) return nullptr;
-  return reinterpret_cast<JitClosure*>(entry->value.data);
+  // Instance + proto: class instances carry methods on their class meta
+  // proto, while Phase 2 wrapped iterators put them on the instance directly.
+  return _protocol_member(reinterpret_cast<JitObject*>(iter_val.data), method);
 }
 
 inline JitClosure* _iter_has_next_closure(JitValue iter_val) {
@@ -1531,9 +1527,8 @@ inline JitValue _iter_coerce_iterable(int8_t t, int64_t d, int64_t line,
     // generator (or class instance) carries `iter` on its class meta, so the
     // instance-slots-only probe this used rejected `gen().zip(xs)` as
     // non-iterable on this backend while the interp accepted it.
-    auto* entry = _find_property(reinterpret_cast<JitObject*>(d), "iter");
-    if (entry && entry->value.tag == TAG_FUNC) {
-      auto* iv_cls = reinterpret_cast<JitClosure*>(entry->value.data);
+    if (auto* iv_cls =
+            _protocol_member(reinterpret_cast<JitObject*>(d), "iter")) {
       culebra_runtime_value_retain(t, d);
       return _jit_invoke(iv_cls, JitValue{t, d}, 0, nullptr);
     }
@@ -2235,9 +2230,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_values(
 // `ObjectValue::builtins()`.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject*
 culebra_runtime_object_iter_dispatch(JitObject* obj) {
-  auto* entry = _find_property(obj, "iter");
-  if (entry && entry->value.tag == TAG_FUNC) {
-    auto* cls = reinterpret_cast<JitClosure*>(entry->value.data);
+  if (auto* cls = _protocol_member(obj, "iter")) {
     auto self = JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(obj)};
     // `self` is borrowed: _culebra_invoke_method0 mints the callee's own +1, so
     // a throw from the user iter() body leaves this object's refcount alone.
