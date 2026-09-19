@@ -686,6 +686,18 @@ inline std::string box_local(std::string_view name) {
   return "_bx_" + std::string(name);
 }
 
+// The instance field a promoted name is stored under. The synthesized state
+// class has methods of its own (a generator's iterator protocol, an effect
+// body's `_step` / `_eff_*`), so a local spelled like one lives under a
+// mangled field rather than overwriting the method — `let dispose = 'x'`
+// silently skipped the generator's defers otherwise.
+inline std::string instance_field(std::string_view name) {
+  static const std::set<std::string_view> taken = {
+      "iter", "has_next", "next", "dispose", "_step", "_eff_finalize",
+      "_eff_refork"};
+  return taken.contains(name) ? "_l_" + std::string(name) : std::string(name);
+}
+
 // Where a promoted name lives, as source: the box's field when it is boxed,
 // the instance slot otherwise. The single definition of the spelling — the
 // locals rewrite reads through it and every synthesized store writes through
@@ -693,7 +705,7 @@ inline std::string box_local(std::string_view name) {
 inline std::string promoted_slot(const PromotedLocals& promoted,
                                  const std::string& name) {
   return promoted.boxed.contains(name) ? box_local(name) + ".v"
-                                       : "self." + name;
+                                       : "self." + instance_field(name);
 }
 
 // Bind the boxed locals `body` names, for prepending to it. Every emitted
@@ -708,7 +720,7 @@ inline std::string emit_box_prologue(const PromotedLocals& promoted,
   for (const auto& n : promoted.boxed) {
     auto local = box_local(n);
     if (body.find(local) == std::string_view::npos) continue;
-    out += std::format("      let {} = self.{}\n", local, n);
+    out += std::format("      let {} = self.{}\n", local, instance_field(n));
   }
   return out;
 }
@@ -721,6 +733,11 @@ inline std::string rewrite_locals_to_self(std::string_view src,
   // them. `std::regex` construction is the famously expensive part.
   static const std::regex strip_let_self(R"(\blet\s+self\.)");
   static const std::regex strip_mut_self(R"(\bmut\s+self\.)");
+  // A promoted flat tuple destructure (is_flat_tuple_pattern): its leaves
+  // now read `self.<name>` (or `_`), and dropping the keyword leaves the
+  // PLACE_ASSIGN `(self.a, self.b) = …`.
+  static const std::regex strip_decl_tuple(
+      R"(\b(?:let|mut)\s+(?=\(\s*(?:self\.|_\b)))");
   std::vector<std::string> sorted(names.begin(), names.end());
   std::sort(sorted.begin(), sorted.end(),
             [](const auto& a, const auto& b) { return a.size() > b.size(); });
@@ -763,17 +780,119 @@ inline std::string rewrite_locals_to_self(std::string_view src,
     }
     out = std::regex_replace(out, strip_let_self, "self.");
     out = std::regex_replace(out, strip_mut_self, "self.");
+    out = std::regex_replace(out, strip_decl_tuple, "");
     return out;
   };
   return rewrite_outside_strings(src, rewrite_code);
 }
 
-// Collect every name introduced by a `let`/`mut` decl in a fn body
-// (single-lvalue form only; multi-lvalue chains skipped). Stops at
-// nested fn boundaries.
-inline std::set<std::string> collect_local_names(const peg::Ast& body) {
+// Whether a node opens a variable scope of its own — the engines' sites, as
+// lint.h's ScopeWalker models them: fn-like and method bodies, a class's
+// members, LEXICAL_SCOPE, DEFER, loop bodies, MATCH arms, TRY bodies, and
+// a `handle` body (its own computation). IF shares its enclosing scope.
+// MATCH and TRY are taken as one level each (their arms as siblings), an
+// over-approximation in the direction collect_local_names tolerates.
+inline bool opens_scope(unsigned int tag) {
+  using namespace peg::udl;
+  return is_fn_boundary(tag) || tag == "EFFECT_FN_DECL"_ ||
+         tag == "METHOD"_ || tag == "CLASS_DECL"_ || tag == "TRAIT_DECL"_ ||
+         tag == "LEXICAL_SCOPE"_ || tag == "DEFER"_ || tag == "WHILE"_ ||
+         tag == "FOR"_ || tag == "MATCH"_ || tag == "TRY"_ ||
+         tag == "HANDLE"_;
+}
+
+// Every name bound at `n`'s own scope level: assignment targets (declared
+// or bare), destructure leaves, and nested `fn` / `class` / `enum` names
+// among its children, without entering a child that opens a scope of its
+// own (whose bindings are that scope's — a loop's binding included).
+inline void level_names(const peg::Ast& n, std::set<std::string>& out) {
+  using namespace peg::udl;
+  std::function<void(const peg::Ast&)> walk = [&](const peg::Ast& c) {
+    if (c.tag == "MULTIFN_DECL"_ || c.tag == "CLASS_DECL"_ ||
+        c.tag == "ENUM_DECL"_ || c.tag == "EFFECT_FN_DECL"_) {
+      out.insert(std::string(c.nodes[first_non_decorator_index(c)]->token));
+      return;
+    }
+    if (opens_scope(c.tag)) return;
+    if (c.tag == "ASSIGNMENT"_) {
+      auto av = view_assignment(c);
+      if (const auto* t = assign_name_target(c, av))
+        out.insert(std::string(t->token));
+    } else if (c.tag == "DESTRUCTURE_ASSIGN"_ && c.nodes.size() >= 3) {
+      for_each_pattern_binding(*c.nodes[2], [&](std::string_view nm, size_t,
+                                               size_t) {
+        out.insert(std::string(nm));
+      });
+    }
+    for (auto& g : c.nodes) walk(*g);
+  };
+  for (auto& c : n.nodes) walk(*c);
+}
+
+// What is visible inside a scope-opening node: the names its enclosing
+// scopes bind, what the node itself binds on entry (parameters, a loop's
+// or an arm's pattern), and what its own level binds.
+inline std::set<std::string> scope_names_of_node(
+    const peg::Ast& n, const std::set<std::string>& outer) {
+  using namespace peg::udl;
+  std::set<std::string> names = outer;
+  auto bind = [&](std::string_view nm, size_t, size_t) {
+    names.insert(std::string(nm));
+  };
+  const peg::Ast* params = nullptr;
+  if (n.tag == "MULTIFN_DECL"_) {
+    size_t i = first_non_decorator_index(n);
+    if (i + 2 < n.nodes.size()) params = n.nodes[i + 1].get();
+  } else if (n.tag == "FUNCTION"_) {
+    params = view_function(n).params;
+  } else if (n.tag == "LAMBDA"_) {
+    params = view_lambda(n).params;
+  } else if (n.tag == "METHOD"_) {
+    params = view_method(n).params;
+  } else if (n.tag == "FOR"_) {
+    for_each_pattern_binding(*view_for(n).binding, bind);
+  } else if (n.tag == "MATCH"_) {
+    for (auto& arm : view_match(n).arms->nodes)
+      for_each_pattern_binding(*arm->nodes[0], bind);
+  }
+  if (params && params->tag == "PARAMETERS"_) {
+    for (const auto& pn : params->nodes) {
+      if (is_kw_only_sep(*pn) || is_kwargs_rest(*pn)) continue;
+      names.insert(std::string(view_parameter(*pn).name));
+    }
+  }
+  level_names(n, names);
+  return names;
+}
+
+// `(a, b, _)`: every leaf a plain name — the one destructuring shape that
+// also reads as a PLACE_ASSIGN once its leaves are spelled `self.<name>`.
+inline bool is_flat_tuple_pattern(const peg::Ast& pattern) {
+  using namespace peg::udl;
+  if (pattern.tag != "TUPLE_PATTERN"_) return false;
+  for (const auto& leaf : pattern.nodes) {
+    if (leaf->tag != "IDENTIFIER"_) return false;
+  }
+  return true;
+}
+
+// Collect every name a lowered body declares — the locals the state object
+// carries across a suspension. A `let` / `mut` declares outright, in the
+// single-target and destructuring forms alike; a bare `x = …` (or a bare
+// destructure's leaf) declares only where no enclosing scope binds `x`,
+// since otherwise it reassigns that binding (docs §Scope), and promoting
+// it would silently split the two. `outer` is the enclosing scopes' bound
+// names (scope_names_of_node, per scope-opening ancestor). Stops at nested
+// fn boundaries.
+inline std::set<std::string> collect_local_names(
+    const peg::Ast& body, const std::set<std::string>& outer) {
   using namespace peg::udl;
   std::set<std::string> out;
+  auto declare = [&](std::string_view name, bool declared) {
+    if (is_sink_name(name)) return;
+    if (declared || !outer.contains(std::string(name)))
+      out.insert(std::string(name));
+  };
   std::function<void(const peg::Ast&)> walk = [&](const peg::Ast& n) {
     // A nested `handle` opens its own computation scope; its locals belong to
     // that inner computation, not this one (they must not be rewritten to this
@@ -781,10 +900,22 @@ inline std::set<std::string> collect_local_names(const peg::Ast& body) {
     if (is_fn_boundary(n.tag) || n.tag == "HANDLE"_) return;
     if (n.tag == "ASSIGNMENT"_) {
       auto av = view_assignment(n);
-      if ((av.is_let || av.is_mut) && av.lvalcnt == 1) {
-        const auto& ident = *n.nodes[av.lvaloff];
-        if (ident.tag == "IDENTIFIER"_) out.insert(std::string(ident.token));
+      if (!av.compound) {
+        if (const auto* t = assign_name_target(n, av))
+          declare(t->token, av.is_let || av.is_mut);
       }
+    } else if (n.tag == "DESTRUCTURE_ASSIGN"_ && n.nodes.size() >= 3 &&
+               is_flat_tuple_pattern(*n.nodes[2])) {
+      // [LET, MUTABLE, PATTERN, EXPRESSION]. Only a flat tuple pattern:
+      // the promoted leaves are written back as `(self.a, self.b) = …`,
+      // and PLACE_ASSIGN takes exactly that shape (no array / object /
+      // nested pattern), so the other forms stay as they were.
+      bool declared =
+          n.nodes[0]->token == "let" || n.nodes[1]->token == "mut";
+      for_each_pattern_binding(
+          *n.nodes[2], [&](std::string_view nm, size_t, size_t) {
+            declare(nm, declared);
+          });
     }
     for (auto& c : n.nodes) walk(*c);
   };
@@ -1074,9 +1205,10 @@ inline void emit_ctor_param_and_local_inits(
   // its `v` field (promoted_slot), so the box the closures captured stays the
   // live one.
   auto init = [&](const std::string& name, std::string_view value) {
+    auto field = instance_field(name);
     return promoted.boxed.contains(name)
-               ? std::format("      self.{} = {{mut v: {}}}\n", name, value)
-               : std::format("      self.{} = {}\n", name, value);
+               ? std::format("      self.{} = {{mut v: {}}}\n", field, value)
+               : std::format("      self.{} = {}\n", field, value);
   };
   std::set<std::string> param_set;
   for (size_t j = 0; j < param_names.size(); j++) {
@@ -1373,7 +1505,7 @@ struct CpsBuilder {
 inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
     std::shared_ptr<peg::Ast> ast, const std::string& src,
     const peg::Ast& name_ast, const peg::Ast& params_ast,
-    int64_t decl_fallback) {
+    int64_t decl_fallback, const std::set<std::string>& outer) {
   using namespace peg::udl;
 
   // Prefix from the shared constant: both backends recognize the state class
@@ -1384,7 +1516,7 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
                               name_ast.line, name_ast.column);
 
   auto param_names = collect_positional_param_names(params_ast);
-  auto locals = collect_local_names(*ast->nodes.back());
+  auto locals = collect_local_names(*ast->nodes.back(), outer);
   auto rewrite_set =
       make_promoted_locals(*ast->nodes.back(), locals, param_names);
 
@@ -1493,7 +1625,8 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
 // yields per iteration, post-loop tails, break/continue/return, defer,
 // yield from — is handled by the one engine.
 inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
-    std::shared_ptr<peg::Ast> ast, const std::string& src) {
+    std::shared_ptr<peg::Ast> ast, const std::string& src,
+    const std::set<std::string>& outer) {
   using namespace peg::udl;
   size_t i = 0;
   while (i < ast->nodes.size() && ast->nodes[i]->tag == "DECORATOR"_) i++;
@@ -1617,7 +1750,7 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
   const auto& params_ast = *ast->nodes[i + 1];
   auto orig_body = ast->nodes.back();
   auto out = transform_one_generator_fn_cps(ast, *cur, name_ast,
-                                            params_ast, decl_fallback);
+                                            params_ast, decl_fallback, outer);
   if (out->nodes.back().get() != orig_body.get()) return out;
 
   // CPS left the body untouched — it hit a construct it can't lower
@@ -1633,20 +1766,37 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
 
 // Walk the AST, transforming every yield-carrying MULTIFN_DECL. The
 // walk visits every node — yield-free modules pay one whole-tree
-// pointer pass (dwarfed by the PEG parse already run).
+// pointer pass (dwarfed by the PEG parse already run). `outer` is what the
+// scopes enclosing `ast` bind (see collect_local_names); a fn-like node
+// extends it for its own body.
 inline std::shared_ptr<peg::Ast> transform_generators_in(
-    std::shared_ptr<peg::Ast> ast, const std::string& src) {
+    std::shared_ptr<peg::Ast> ast, const std::string& src,
+    const std::set<std::string>& outer) {
   using namespace peg::udl;
+  std::set<std::string> own;
+  const std::set<std::string>* scope = &outer;
+  if (opens_scope(ast->tag)) {
+    own = scope_names_of_node(*ast, outer);
+    scope = &own;
+  }
   for (auto& child : ast->nodes) {
-    child = transform_generators_in(child, src);
+    child = transform_generators_in(child, src, *scope);
   }
   if (ast->tag == "MULTIFN_DECL"_) {
     auto& body = ast->nodes.back();
     if (fn_body_has_yield(*body)) {
-      return transform_one_generator_fn(ast, src);
+      return transform_one_generator_fn(ast, src, outer);
     }
   }
   return ast;
+}
+
+// The names a whole program binds at its top level — the `outer` of
+// everything declared in it.
+inline std::set<std::string> top_level_names(const peg::Ast& ast) {
+  std::set<std::string> names;
+  level_names(ast, names);
+  return names;
 }
 
 // Parse + the generator transformation pass. The public entry
@@ -1657,7 +1807,7 @@ inline std::shared_ptr<peg::Ast> parse_with_generator_transforms(
     std::vector<std::string>& msgs) {
   auto ast = parse(path, expr, msgs);
   if (!ast) return ast;
-  return transform_generators_in(ast, expr);
+  return transform_generators_in(ast, expr, top_level_names(*ast));
 }
 
 // Reject the yields no pass claimed. Runs from `parse_with_transforms` once

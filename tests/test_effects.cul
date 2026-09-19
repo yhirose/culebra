@@ -487,3 +487,49 @@ assert_eq(
   handle { ef_double() } with ef_tick(resume) { resume(7) },
   [1, 100, 7],
 )
+
+// --- evaluation order across a suspension ---
+// A `mut` the handler also reaches is read before the perform: the left
+// operand is evaluated first, as anywhere else.
+effect fn anf_ask()
+mut anf_n = 0
+let anf_sum = handle {
+  let r = anf_n + perform anf_ask()
+  r
+} with anf_ask(resume) {
+  anf_n = 1000
+  resume(1)
+}
+assert_eq(anf_sum, 1)
+anf_n = 0
+let anf_pair = handle {
+  let r = [anf_n, perform anf_ask()]
+  r
+} with anf_ask(resume) {
+  anf_n = 1000
+  resume(1)
+}
+assert_eq(anf_pair, [0, 1])
+
+// --- locals a handle body carries across a suspension ---
+// A bare `y = …` that nothing encloses, and a tuple destructure.
+let eff_locals = handle {
+  y = 5
+  let (a, b) = (1, 2)
+  let x = perform anf_ask()
+  y + a + b + x
+} with anf_ask(resume) {
+  resume(10)
+}
+assert_eq(eff_locals, 18)
+// A bare write to an enclosing binding stays a write to that binding.
+mut eff_outer = 0
+let eff_wrote = handle {
+  eff_outer = 5
+  let x = perform anf_ask()
+  eff_outer + x
+} with anf_ask(resume) {
+  resume(1)
+}
+assert_eq(eff_wrote, 6)
+assert_eq(eff_outer, 5)

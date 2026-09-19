@@ -431,4 +431,62 @@ fn g_label_nobreak(xs) {
 }
 assert_eq(g_label_nobreak([1, 2]).collect(), [11, 21, 999])
 
+// --- locals a state carries across a yield ---
+// A bare `gb_val = …` that nothing encloses declares, like a `let`.
+fn g_bare() {
+  gb_val = 10
+  yield gb_val
+  yield gb_val + 1
+}
+assert_eq(g_bare().collect(), [10, 11])
+// A tuple destructure, at the top of the body and inside a loop.
+fn g_tuple() {
+  let (a, b) = (1, 2)
+  yield a
+  yield b
+}
+assert_eq(g_tuple().collect(), [1, 2])
+fn g_tuple_for(ps) {
+  for p in ps {
+    let (a, b) = p
+    yield a + b
+  }
+}
+assert_eq(g_tuple_for([(1, 2), (3, 4)]).collect(), [3, 7])
+// A bare write to an enclosing binding stays a write to that binding.
+mut g_seen_total = 0
+fn g_outer(xs) {
+  for x in xs {
+    g_seen_total = g_seen_total + x
+    yield x
+  }
+}
+assert_eq(g_outer([1, 2, 3]).collect(), [1, 2, 3])
+assert_eq(g_seen_total, 6)
+// A local spelled like the state object's own methods is still a local.
+fn g_next(next) {
+  yield next
+  yield next + 1
+}
+assert_eq(g_next(10).collect(), [10, 11])
+fn g_has_next() {
+  let has_next = 3
+  yield has_next
+  yield 4
+}
+assert_eq(g_has_next().collect(), [3, 4])
+mut g_closed = false
+fn g_dispose() {
+  defer {
+    g_closed = true
+  }
+  let dispose = 'x'
+  yield dispose
+  yield 'y'
+}
+for v in g_dispose() {
+  break
+}
+assert_true(g_closed)
+
 IO.inspect('test_generator OK')

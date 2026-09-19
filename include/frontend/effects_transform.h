@@ -132,6 +132,12 @@ class EffectsLowerer {
         src_is_original_(src_is_original), path_(std::move(path)),
         markers_{src, src_is_original} {}
 
+  // What the scopes enclosing the node being walked bind — the `outer` of
+  // collect_local_names, which decides whether a bare `x = …` in a lowered
+  // body declares or reassigns. transform() extends it per fn-like node; a
+  // sub-lowerer inherits the current set.
+  void set_outer(std::set<std::string> names) { outer_ = std::move(names); }
+
   // --- entry: rebuild the tree, lowering effect constructs -------------
   std::shared_ptr<peg::Ast> transform(std::shared_ptr<peg::Ast> ast) {
     using namespace peg::udl;
@@ -142,6 +148,7 @@ class EffectsLowerer {
       if (auto src = fragment_source_for(ast->path)) {
         EffectsLowerer sub(*src, effect_fns_,
                            /*src_is_original=*/false, ast->path);
+        sub.outer_ = outer_;
         return sub.transform(ast);
       }
     }
@@ -165,6 +172,16 @@ class EffectsLowerer {
           op, args, line));
       return reparse_expr(synth, line);
     }
+    // A scope-opening node extends what its children see (the `outer` of
+    // collect_local_names); a `handle` is lowered above, its body's own
+    // level being the lowering's business.
+    if (opens_scope(ast->tag)) {
+      auto saved = outer_;
+      outer_ = scope_names_of_node(*ast, outer_);
+      for (auto& child : ast->nodes) child = transform(child);
+      outer_ = std::move(saved);
+      return ast;
+    }
     for (auto& child : ast->nodes) child = transform(child);
     return ast;
   }
@@ -174,6 +191,7 @@ class EffectsLowerer {
   const std::set<std::string>& effect_fns_;
   bool src_is_original_ = false;
   std::string path_;
+  std::set<std::string> outer_;
   mutable LineMarkers markers_;
 
   // Error-position line: provenance when known, else the raw (fragment) line.
@@ -403,9 +421,11 @@ class EffectsLowerer {
            std::equal(suffix.rbegin(), suffix.rend(), s.rbegin());
   }
 
-  // A re-evaluable leaf: a literal or a bare identifier. Freezing one before a
-  // suspension is unnecessary (a literal has no side effect; an identifier
-  // resolves to a stable `self.<local>` that a handler cannot mutate).
+  // A re-evaluable leaf: a literal. Freezing one before a suspension is
+  // unnecessary, having no side effect and no state. An identifier is NOT
+  // one: a `mut` the handler (or any closure it runs) also captures can
+  // change across the suspension, and `n + perform ask()` must have read
+  // `n` first.
   static bool is_atom(const peg::Ast& n) {
     using namespace peg::udl;
     switch (n.tag) {
@@ -415,7 +435,6 @@ class EffectsLowerer {
       case "RAW_STRING"_:
       case "BOOLEAN"_:
       case "NIL"_:
-      case "IDENTIFIER"_:
         return true;
       default:
         return false;
@@ -1523,10 +1542,12 @@ class EffectsLowerer {
             "effects A-normalization produced unparseable source", 0, 0);
       }
       EffectsLowerer sub(*src2, effect_fns_);
+      sub.outer_ = outer_;
       return sub.build_class_from_program(class_name, *prog2, param_names,
                                           rv_name);
     }
     EffectsLowerer sub(*src, effect_fns_);
+    sub.outer_ = outer_;
     return sub.build_class_from_program(class_name, *prog, param_names, rv_name);
   }
 
@@ -1565,7 +1586,7 @@ class EffectsLowerer {
       const std::string& class_name, const peg::Ast& program,
       const std::vector<std::string_view>& param_names,
       const std::string& rv_name) const {
-    auto locals = collect_local_names(program);
+    auto locals = collect_local_names(program, outer_);
     for (auto& fname : collect_named_fn_decls(program)) locals.insert(fname);
     auto rewrite = make_promoted_locals(program, locals, param_names);
 
@@ -1599,7 +1620,8 @@ class EffectsLowerer {
     // driver's `_fork`).
     std::string refork_body;
     for (const auto& n : rewrite.boxed)
-      refork_body += std::format("      self.{0} = {{mut v: self.{0}.v}}\n", n);
+      refork_body += std::format("      self.{0} = {{mut v: self.{0}.v}}\n",
+                                 instance_field(n));
 
     // Every computation exposes `_eff_finalize()` so the driver can call it
     // uniformly on the abort path; it is empty when the body has no defers,
@@ -1862,9 +1884,10 @@ class EffectsLowerer {
       throw CulebraError("InternalError",
                          "effects transform produced unparseable source", 0, 0);
     }
-    fn = transform_generators_in(fn, *synth);
+    fn = transform_generators_in(fn, *synth, outer_);
     EffectsLowerer sub(*synth, effect_fns_,
                        /*src_is_original=*/false, label);
+    sub.outer_ = outer_;
     auto out = sub.transform(fn);
     // Restore original line numbers from the provenance markers; machinery
     // lines fall back to the declaration's line. Subtrees spliced in by the
@@ -1885,10 +1908,11 @@ class EffectsLowerer {
       throw CulebraError("InternalError",
                          "effects transform produced unparseable source", 0, 0);
     }
-    fn = transform_generators_in(fn, *synth);
+    fn = transform_generators_in(fn, *synth, outer_);
     auto body = fn->nodes.back();
     EffectsLowerer sub(*synth, effect_fns_,
                        /*src_is_original=*/false, label);
+    sub.outer_ = outer_;
     auto out = sub.transform(body);
     return reposition_ast(out, marker_line_map(*synth), fallback_line, label);
   }
@@ -1913,6 +1937,7 @@ inline std::shared_ptr<peg::Ast> transform_effects_in(
   auto effect_fns = collect_effect_fn_names(*ast);
   EffectsLowerer lowerer(src, effect_fns, /*src_is_original=*/true,
                          ast->path);
+  lowerer.set_outer(top_level_names(*ast));
   return lowerer.transform(ast);
 }
 
