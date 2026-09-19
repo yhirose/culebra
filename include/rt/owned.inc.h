@@ -106,12 +106,21 @@ template <class T>
 inline void _gc_register(T* obj, int8_t tag) {
   _gc_heap().adopt(obj, sizeof(T), tag);
 }
+// The release path's first step once `obj`'s refcount reaches zero, before
+// it releases a child or fires `drop` (see Heap::begin_teardown). Returns the
+// heap for the matching _gc_note_free, so a death looks it up once.
+inline culebra::gc::Heap& _gc_note_teardown(void* obj) {
+  auto& heap = _gc_heap();
+  heap.begin_teardown(obj);
+  return heap;
+}
 // De-register `obj` from the registry just before the release path `delete`s
-// it (the conservative heap owns no memory — RC's `delete` frees it).
-// Doubles as the owned-stack tombstone chokepoint for objects.
-inline void _gc_note_free(void* obj, int8_t tag) {
+// it (the conservative heap owns no memory — RC's `delete` frees it). Ends
+// the teardown _gc_note_teardown began. Doubles as the owned-stack tombstone
+// chokepoint for objects.
+inline void _gc_note_free(culebra::gc::Heap& heap, void* obj, int8_t tag) {
   if (tag == GC_TAG_OBJECT)
     _jit_owned_unregister(static_cast<JitObject*>(obj));
-  _gc_heap().forget(obj);
+  heap.forget(obj);
 }
 

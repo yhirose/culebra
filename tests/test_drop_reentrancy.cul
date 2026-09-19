@@ -139,3 +139,33 @@ make_forget()
 gc_settle(ev4, 2)
 assert_eq(ev4.size(), 2)  # outer drop + one recursive make's drop
 # (both refcount-driven: deterministic)
+
+# --- 5) A drop fired by a plain release-to-zero (not the finalize pass)
+# collects while its holder is mid-teardown: the array / capture cell has
+# already reached zero and released part of what it holds. A holder still
+# visible to that collect is swept under its own running release, and its
+# stale edge to `keep5` discounts a live reference.
+let ev5 = []
+let keep5 = {x: [1, 2]}
+fn run_array_holder() {
+  let holder = [keep5, {id: 'a', drop: fn () {
+    GC.stat()
+    ev5.push('a')
+  }}]
+  nil
+}
+fn run_cell_holder() {
+  let res = {id: 'c', drop: fn () {
+    GC.stat()
+    ev5.push('c')
+  }}
+  let g = fn () {
+    res.id
+  }
+  g()
+}
+run_array_holder()
+run_cell_holder()
+GC.stat()
+assert_eq(ev5, ['a', 'c'])  # refcount-driven: deterministic
+assert_eq(keep5.x, [1, 2])

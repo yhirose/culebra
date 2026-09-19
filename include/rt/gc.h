@@ -62,7 +62,7 @@ struct GcHeader {
   uint8_t mark;        // 0 = unmarked (white), 1 = marked
   uint8_t type_tag;    // GC_TAG_* (opaque to the heap)
   uint8_t generation;  // 0 = young, 1 = old (Phase 2)
-  uint8_t flags;       // reserved
+  uint8_t flags;       // kFlagPinned | kFlagDying (Heap)
   uint32_t size;       // total object size in bytes (header + payload)
 };
 static_assert(sizeof(GcHeader) == 8, "GcHeader must stay 8 bytes");
@@ -277,6 +277,22 @@ class Heap {
     if (GcHeader* h = objects_.find(p)) h->flags &= ~kFlagPinned;
   }
 
+  // Mark an object whose refcount just reached zero as mid-teardown. Its
+  // release path frees children and fires `drop` — user code that can
+  // collect — before forget() de-registers the struct. Until then the corpse
+  // is a root (never swept under its own running release; what it has not
+  // yet released stays traced) and contributes no internal edges to gc_refs
+  // (its zero count no longer backs the references it still lists, some
+  // already released) — the role CPython's GC_UnTrack plays at the top of
+  // tp_dealloc, kept a root here because the conservative scan, unlike a
+  // refcount seed, would not otherwise see the children it still owns.
+  // Teardowns nest (a release inside a release), so the pending set is a
+  // stack forget() pops; a collect copies it into the headers (flag_dying).
+  // The release hot path pays a push/pop, not a registry probe.
+  static constexpr uint8_t kFlagDying = 2;
+  static constexpr uint8_t kRootFlags = kFlagPinned | kFlagDying;
+  void begin_teardown(void* p) { dying_.push_back(p); }
+
   // Pause collection across a multi-object construction whose intermediates
   // are not yet reachable from any root (e.g. building a namespace object: its
   // method closures exist registered-but-unrooted until they are slotted). A
@@ -303,6 +319,7 @@ class Heap {
   // `delete`s the struct, then calls forget). No free/poison here — the
   // memory is not the heap's to reclaim.
   void forget(void* p) {
+    if (!dying_.empty() && dying_.back() == p) dying_.pop_back();
     if (GcHeader* h = objects_.find(p)) {
       live_bytes_ -= h->size;
       objects_.erase(p);
@@ -532,6 +549,7 @@ class Heap {
   // collect_refs docblock), so both users — collect_refs (cycle collection) and
   // classify_leaks (leak diagnostics) — share this single construction.
   void compute_gc_refs(std::unordered_map<void*, int64_t>& gc_refs) {
+    flag_dying();
     gc_refs.reserve(objects_.size());
     objects_.for_each([&](void* o, GcHeader& h) {
       // Traced-only tags have no refcount at offset 0 (content lives there),
@@ -545,7 +563,7 @@ class Heap {
     });
     std::vector<void*> kids;
     objects_.for_each([&](void* o, GcHeader& h) {
-      if (!children_fn_) return;
+      if (!children_fn_ || h.flags & kFlagDying) return;
       kids.clear();
       children_fn_(o, h.type_tag, kids);
       for (void* c : kids) {
@@ -719,12 +737,13 @@ class Heap {
   // oracle's two passes.
   template <class Seed>
   void mark_reachable(std::unordered_set<void*>& live, Seed&& seed) {
+    flag_dying();
     std::vector<void*> work, kids;
     auto push = [&](void* o) {
       if (objects_.find(o) && live.insert(o).second) work.push_back(o);
     };
     objects_.for_each([&](void* k, GcHeader& h) {
-      if (h.flags & kFlagPinned) push(k);
+      if (h.flags & kRootFlags) push(k);
     });
     seed(push);
     while (!work.empty()) {
@@ -829,10 +848,18 @@ class Heap {
     byte_threshold_ = std::max(kByteFloor, live_bytes_ * 2);
   }
 
+  // Copy the pending teardowns into their headers (see begin_teardown). A
+  // flag stays set until forget() erases the entry with it.
+  void flag_dying() {
+    for (void* p : dying_)
+      if (GcHeader* h = objects_.find(p)) h->flags |= kFlagDying;
+  }
+
   // Shared mark-sweep core. `seed(push)` supplies the initial roots.
   template <class Seed>
   size_t collect_impl(Seed&& seed) {
     if (collect_paused_) return 0;  // defer re-entrant/paused collects
+    flag_dying();
     objects_.for_each([](void*, GcHeader& h) { h.mark = 0; });
 
     std::vector<void*> work;
@@ -843,9 +870,9 @@ class Heap {
         work.push_back(o);
       }
     };
-    // Pinned objects are always roots.
+    // Pinned and mid-teardown objects are always roots.
     objects_.for_each([&](void* k, GcHeader& h) {
-      if (h.flags & kFlagPinned && !h.mark) {
+      if (h.flags & kRootFlags && !h.mark) {
         h.mark = 1;
         work.push_back(k);
       }
@@ -1009,6 +1036,7 @@ class Heap {
   GcRegistry objects_;
   std::vector<void**> global_roots_;
   std::vector<void*> extra_roots_;  // scratch reused across collections
+  std::vector<void*> dying_;        // mid-teardown objects (begin_teardown)
   ChildrenFn children_fn_ = nullptr;
   RootFn extra_roots_fn_ = nullptr;
   SweepFn sweep_fn_ = nullptr;

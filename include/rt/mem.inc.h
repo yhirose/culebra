@@ -390,6 +390,7 @@ inline void _culebra_value_release_node(int8_t tag, int64_t data) {
     case GC_TAG_FUNC: {
       auto* c = reinterpret_cast<JitClosure*>(data);
       if (--c->refcount == 0) {
+        auto& heap = _gc_note_teardown(c);
         // A dispatcher reaching refcount 0 is non-recursive (a recursive one
         // sits in a dispatcher↔body cycle and is reclaimed by sweep instead),
         // so releasing its bodies' table-held +1 cannot re-enter this closure.
@@ -399,7 +400,7 @@ inline void _culebra_value_release_node(int8_t tag, int64_t data) {
           _culebra_cell_release(c->captures[i]);
         }
         std::free(c->captures);
-        _gc_note_free(c, GC_TAG_FUNC);
+        _gc_note_free(heap, c, GC_TAG_FUNC);
         delete c;
       }
       break;
@@ -408,11 +409,12 @@ inline void _culebra_value_release_node(int8_t tag, int64_t data) {
     case GC_TAG_TUPLE: {
       auto* a = reinterpret_cast<JitArray*>(data);
       if (--a->refcount == 0) {
+        auto& heap = _gc_note_teardown(a);
         for (size_t i = 0; i < a->size; i++) {
           _culebra_value_release_impl(a->items[i].tag, a->items[i].data);
         }
         delete[] a->items;
-        _gc_note_free(a, tag);
+        _gc_note_free(heap, a, tag);
         delete a;
       }
       break;
@@ -420,6 +422,7 @@ inline void _culebra_value_release_node(int8_t tag, int64_t data) {
     case GC_TAG_OBJECT: {
       auto* o = reinterpret_cast<JitObject*>(data);
       if (--o->refcount == 0) {
+        auto& heap = _gc_note_teardown(o);
         _jit_enum_forget(o);
         _culebra_call_drop_if_present(o);
         if (o->proto()) {
@@ -473,7 +476,7 @@ inline void _culebra_value_release_node(int8_t tag, int64_t data) {
           o->dict_ = nullptr;
           o->is_dict = false;
         }
-        _gc_note_free(o, GC_TAG_OBJECT);
+        _gc_note_free(heap, o, GC_TAG_OBJECT);
         if (o->is_class_meta) delete o->specials;
         delete o;
       }
@@ -482,7 +485,7 @@ inline void _culebra_value_release_node(int8_t tag, int64_t data) {
     case GC_TAG_TENSOR: {
       auto* t = reinterpret_cast<JitTensor*>(data);
       if (--t->refcount == 0) {
-        _gc_note_free(t, GC_TAG_TENSOR);
+        _gc_note_free(_gc_heap(), t, GC_TAG_TENSOR);
         delete t;  // ~JitTensor releases the shared_ptr<TensorImpl>
       }
       break;
@@ -490,11 +493,12 @@ inline void _culebra_value_release_node(int8_t tag, int64_t data) {
     case GC_TAG_SET: {
       auto* s = reinterpret_cast<JitSet*>(data);
       if (--s->refcount == 0) {
+        auto& heap = _gc_note_teardown(s);
         for (auto& m : s->members) {
           _culebra_value_release_impl(m.tag, m.data);
         }
         delete s->index;
-        _gc_note_free(s, GC_TAG_SET);
+        _gc_note_free(heap, s, GC_TAG_SET);
         delete s;
       }
       break;
@@ -507,8 +511,9 @@ inline void _culebra_value_release_node(int8_t tag, int64_t data) {
 inline void _culebra_cell_release(JitCell* c) {
   if (!c) return;
   if (--c->refcount == 0) {
+    auto& heap = _gc_note_teardown(c);
     _culebra_value_release_impl(c->value.tag, c->value.data);
-    _gc_note_free(c, GC_TAG_CELL);
+    _gc_note_free(heap, c, GC_TAG_CELL);
     delete c;
   }
 }
