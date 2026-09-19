@@ -1,8 +1,5 @@
 class Vec2 {
-  new(x, y) {
-    self.x = x
-    self.y = y
-  }
+  new(.x, .y) {}  # field parameters: each argument is stored into self.x / self.y
 
   __add__(o) {
     Vec2(self.x + o.x, self.y + o.y)
@@ -42,12 +39,12 @@ trait Greeter {
 }
 
 class Robot {
-  new(id) {
-    self.id = id
-  }
+  kind = 'robot'  # a declared field with a default
+
+  new(.id, .kind?) {}  # `.kind?` is optional: left out, the default stays
 
   hello() {
-    "beep {self.id}"
+    "beep {self.id} ({self.kind})"
   }
 }
 
@@ -56,3 +53,4 @@ fn greet(g: Greeter) {
 }
 
 println(greet(Robot(7)))
+println(greet(Robot(8, kind: 'drone')))
