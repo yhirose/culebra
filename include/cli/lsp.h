@@ -113,13 +113,16 @@ inline size_t utf8_sequence_length(std::string_view s, size_t i) {
   return n ? n : 1;
 }
 
-// UTF-16 code units in the first `bytes` bytes of `line`. Only a 4-byte
-// scalar lies outside the BMP and takes a surrogate pair.
+// UTF-16 code units of a scalar `n` UTF-8 bytes long. Only a 4-byte scalar
+// lies outside the BMP and takes a surrogate pair.
+inline int64_t utf16_units(size_t n) { return n == 4 ? 2 : 1; }
+
+// UTF-16 code units in the first `bytes` bytes of `line`.
 inline int64_t utf16_column(std::string_view line, size_t bytes) {
   int64_t units = 0;
   for (size_t i = 0; i < line.size() && i < bytes;) {
     size_t n = utf8_sequence_length(line, i);
-    units += n == 4 ? 2 : 1;
+    units += utf16_units(n);
     i += n;
   }
   return units;
@@ -130,7 +133,7 @@ inline size_t byte_column(std::string_view line, int64_t units) {
   size_t i = 0;
   for (int64_t u = 0; i < line.size() && u < units;) {
     size_t n = utf8_sequence_length(line, i);
-    u += n == 4 ? 2 : 1;
+    u += utf16_units(n);
     i += n;
   }
   return i;

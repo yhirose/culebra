@@ -217,22 +217,17 @@ struct Parser {
   // boundary the language's own `\u` escape and TOML's draw.
   void read_unicode_escape(std::string& out) {
     advance();  // the 'u'
-    char16_t units[2] = {static_cast<char16_t>(read_hex4()), 0};
+    char16_t u[2] = {static_cast<char16_t>(read_hex4())};
     size_t n = 1;
-    if (units[0] >= 0xD800 && units[0] <= 0xDBFF) {
-      if (!(p + 1 < end && *p == '\\' && p[1] == 'u')) {
-        fail_not_scalar(units[0]);
-      }
+    if (u[0] >= 0xD800 && u[0] <= 0xDBFF && p + 1 < end && *p == '\\' &&
+        p[1] == 'u') {
       advance(); advance();  // the '\' and the 'u'
-      units[1] = static_cast<char16_t>(read_hex4());
-      n = 2;
+      u[n++] = static_cast<char16_t>(read_hex4());
     }
-    // Rejects a high surrogate whose partner is not a low one, and a low
-    // surrogate with nothing in front of it.
+    // Rejects a high surrogate alone or with a partner that is not a low one,
+    // and a low surrogate with nothing in front of it.
     char32_t cp;
-    if (!unicode::utf16::decode_codepoint(units, n, cp)) {
-      fail_not_scalar(units[0]);
-    }
+    if (!unicode::utf16::decode_codepoint(u, n, cp)) fail_not_scalar(u[0]);
     append_utf8(out, cp);
   }
   V parse_string() { return B::string(parse_string_raw()); }
