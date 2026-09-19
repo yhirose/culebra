@@ -182,5 +182,21 @@ for mode in "" "--doc"; do
     echo "FAIL test runner default site [$mode]: rc=$rc out=$out"; fail=1; }
 done
 
+# A module's duplicate export name is refused before anything runs — also when
+# the `export` is the module's only statement. Such a module arrives as that
+# statement rather than as a list of one, and the loader used to read the
+# statement's own children as the list: the check saw nothing to compare.
+mkdir -p "$TMP/mods"
+printf 'export {println, println}\n' > "$TMP/mods/dup_only.cul"
+printf 'let a = 1\nexport {a, a}\n' > "$TMP/mods/dup_list.cul"
+for m in dup_only dup_list; do
+  printf "import d from './mods/%s.cul'\nIO.println('RAN')\n" "$m" > "$TMP/imp_$m.cul"
+  for lane in --vm --jit; do
+    out=$("$CULEBRA" $lane "$TMP/imp_$m.cul" 2>&1); rc=$?
+    [[ $rc -ne 0 && "$out" == *"duplicate export name"* && "$out" != *RAN* ]] || {
+      echo "FAIL duplicate export [$m $lane]: rc=$rc out=$out"; fail=1; }
+  done
+done
+
 if [[ $fail -eq 0 ]]; then echo "cli_input_test OK"; exit 0; fi
 echo "cli_input_test FAILED"; exit 1
