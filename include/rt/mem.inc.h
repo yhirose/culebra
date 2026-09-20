@@ -93,6 +93,17 @@ extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_explicit_drop(
     _culebra_call_drop_if_present(reinterpret_cast<JitObject*>(data));
 }
 
+// Whether `recv.drop()` is the guard above at all. What a declaration binds
+// — a class object, an enum's, a namespace — stands outside the instance
+// protocol (§17: a static `drop` is an ordinary function), so the call there
+// is an ordinary member call.
+extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool
+culebra_runtime_takes_drop_guard(int8_t tag, int64_t data) {
+  if (tag != TAG_OBJECT) return true;
+  auto* o = reinterpret_cast<JitObject*>(data);
+  return !o->is_class && !o->is_enum && !o->is_namespace;
+}
+
 // --- Deterministic drop: scope-exit resolution ---
 
 // GC backstop finalize (exactly-once backstop, PEP 442
@@ -908,6 +919,7 @@ inline constexpr auto class_call_method   = "culebra_runtime_class_call_method";
 inline constexpr auto class_new_method    = "culebra_runtime_class_new_method";
 inline constexpr auto mark_class          = "culebra_runtime_mark_class";
 inline constexpr auto explicit_drop       = "culebra_runtime_explicit_drop";
+inline constexpr auto takes_drop_guard    = "culebra_runtime_takes_drop_guard";
 inline constexpr auto owned_hot           = "culebra_runtime_owned_hot";
 inline constexpr auto owned_scope_exit    = "culebra_runtime_owned_scope_exit";
 inline constexpr auto object_has          = "culebra_runtime_object_has";

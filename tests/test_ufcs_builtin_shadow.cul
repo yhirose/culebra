@@ -554,8 +554,9 @@ assert_eq(dropper.drop(), nil)
 assert_eq(dropper.drop(), nil)
 assert_eq(own_drop_runs, 1)
 
-# A closed namespace resolves every name, so it reaches the guard too.
-assert_eq(Math.drop(), nil)
+# A closed namespace resolves every name, so the free `drop` never claims it —
+# and it is no receiver of the guard either: `drop` is a member it lacks.
+assert_eq(try { Math.drop() } catch e { e.kind }, 'AttributeError')
 
 # A non-Function binding is not a callee: the guard answers instead.
 fn drop_shadowed_by_value() {

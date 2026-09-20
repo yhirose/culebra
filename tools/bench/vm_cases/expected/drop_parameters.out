@@ -13,7 +13,7 @@ explicit twice
   = nil
   = nil
   = nil
-  = nil
+  = AttributeError|namespace 'Math' has no member 'drop'
   own drop
   = nil
   drop 5

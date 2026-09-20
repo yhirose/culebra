@@ -1361,7 +1361,9 @@ for step 1, so a global `parameters` never claims one. The explicit-drop
 form `x.drop()` (§17) sits *below* step 2 instead: a receiver carrying
 no `drop` of its own hands the call to a free `drop` in scope, and only
 a receiver that resolves the name — a handle with its own `drop`, or no
-candidate in scope at all — reaches the at-most-once guard.
+candidate in scope at all — reaches the at-most-once guard. A class
+object, an enum or a namespace never does: `C.drop()` is an ordinary
+call of the static `drop`.
 
 #### Built-in methods bind positionally
 
@@ -4562,7 +4564,22 @@ When the target slot is immutable, `ImmutableError` wins over the
 contract check, and a failed check leaves the old value in place.
 `static` members are a namespace, not part of the instance protocol:
 a static named `drop` (any arity) is an ordinary function — it is not
-contract-checked and is never auto-invoked.
+contract-checked and is never auto-invoked, and `C.drop()` calls it like
+any other static. The at-most-once guard of an explicit `x.drop()`
+belongs to instances: on a class object, an enum or a namespace, `drop`
+is a member name like any other, and one that is not there is the error
+any missing member gives.
+
+```culebra
+class Pool {
+  static drop() { 'pool emptied' }
+  drop() { inspect('connection closed') }
+}
+inspect(Pool.drop())    # => 'pool emptied'
+let c = Pool()
+c.drop()                # => 'connection closed'
+c.drop()                # already dropped: nothing runs
+```
 
 The contract is about functions. A value that is not a `Function` is data
 that happens to use the name, and binds like any other property — text a

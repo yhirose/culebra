@@ -180,6 +180,78 @@ fn scope5() {
 scope5()
 assert_eq(log5, [])
 
+# ...and is called like any other static: `C.drop()` is a member call, not the
+# at-most-once guard, which belongs to instances
+class U5 {
+  static drop() {
+    log5.push('static')
+    'from static drop'
+  }
+  drop() {
+    log5.push('instance')
+  }
+}
+assert_eq(U5.drop(), 'from static drop')
+assert_eq(U5.drop(), 'from static drop')
+let u5 = U5()
+assert_eq(u5.drop(), nil)
+assert_eq(u5.drop(), nil)
+assert_eq(log5, ['static', 'static', 'instance'])
+
+# a free `drop` in scope does not claim the class's own
+fn static_over_free() {
+  let drop = fn (x) {
+    'free drop'
+  }
+  U5.drop()
+}
+assert_eq(static_over_free(), 'from static drop')
+
+# a class object, an enum or a namespace without one answers as for any
+# missing member
+class V5 {
+  drop() {
+    log5.push('never')
+  }
+}
+enum W5 {
+  A,
+  B,
+}
+assert_eq(
+  try {
+    V5.drop()
+  } catch e {
+    e.kind
+  },
+  try {
+    V5.no_such_member()
+  } catch e {
+    e.kind
+  },
+)
+assert_eq(
+  try {
+    W5.drop()
+  } catch e {
+    e.kind
+  },
+  try {
+    W5.no_such_member()
+  } catch e {
+    e.kind
+  },
+)
+assert_eq(try {
+  Math.drop()
+} catch e {
+  e.kind
+}, 'AttributeError')
+
+# what is no part of either still answers nil
+assert_eq(5.drop(), nil)
+assert_eq({a: 1}.drop(), nil)
+
 # --- (6) channel transfer: the receiver copy keeps the drop protocol ---
 # (captures are deep-copied on send, so observe the drops via a channel)
 let (ntx6, nrx6) = Channel.new(2)

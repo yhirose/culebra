@@ -577,7 +577,7 @@ of almost every scope.
 | patterns | `TypeMatch` `SeqChk` `SeqGet` `SeqRest` `ObjGet` `DestrErr` `JumpIfTag` | `match` arms and destructuring; a failed test jumps to the next arm with nothing live |
 | control flow | `Jump` `JumpIfFalse` `JumpIfTrue` `JumpIfNil` `JumpIfNotNil` `Halt` | `JumpIfFalse` carries the shared truthiness coercion (a non-Bool condition is a TypeError) |
 | loops | `ForPrep` `ForLoop` `ForOpen` `ForNext` `ForDispose` `Safepoint` | a counted `for` over a Long range is the fused pair, a sink (`for _ in 0..n`) included; anything else walks a 12-slot cursor (`ForSlot`) through the protocol |
-| exceptions and defer | `Throw` `RaiseErr` `DeferMark` `DeferPush` `DeferRunTo` `OwnedMark` `OwnedExit` `DropSuppress` `Drop` | §5.5; `OwnedMark`/`OwnedExit` bracket a scope on the owned-resource stack for deterministic `drop` |
+| exceptions and defer | `Throw` `RaiseErr` `DeferMark` `DeferPush` `DeferRunTo` `OwnedMark` `OwnedExit` `DropSuppress` `Drop` `DropChk` | §5.5; `OwnedMark`/`OwnedExit` bracket a scope on the owned-resource stack for deterministic `drop` |
 | strings and output | `Fmt` `StrCat` `Disp` `Println` `SetOpPos` | interpolation, and the `println(<one arg>)` peephole |
 | namespace functions | `NsCall` `ToFloat` | a direct `Math.f(args)` / `to_float(x)` reaches its helper without the resolver or a closure (§5.4) |
 | sessions and debug | `ReplCell` `ReplBind` `DbgStmt` | §8.1, §8.3 |

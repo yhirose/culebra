@@ -350,6 +350,12 @@ enum class Op : uint8_t {
                // receiver is borrowed; a receiver with no `drop` is a no-op.
                // Explicit `x.drop()` only — the automatic one rides the
                // scope ladder.
+  DropChk,     // regs[a] = Bool: does `regs[b].drop()` take the guard above?
+               // Everything does but what a declaration binds (a class
+               // object, an enum's, a namespace): those are
+               // no part of the instance protocol, so a `drop` there is a
+               // member like any other and the call is an ordinary one.
+               // Nothrow.
   ClsParamsChk,  // regs[a] = Bool: is regs[b] a class instance with no
                // `parameters` of its own (own/proto slot or trait default)?
                // That is exactly when the synthesized walker below answers,
@@ -11953,14 +11959,26 @@ class Compiler {
   // array). Consuming unconditionally keeps one rule for every arm instead of
   // one per dispatch shape. The call's value is nil whatever the drop body
   // returned.
-  ExprResult emit_explicit_drop(const peg::Ast& at, ExprResult r) {
-    int32_t t = alloc_temp(at);
-    emit(Op::Drop, t, r.slot);
-    if (r.owned) {
-      emit(Op::Release, r.slot);
-      forget_temp(r.slot);
-    }
-    return {t, true};
+  //
+  // A class object or a namespace is no receiver of the guard (DropChk): its
+  // `drop` is a member like any other, and the call takes the ordinary
+  // property tail — compile_class_parameters' shape, the other arm consuming
+  // the receiver as that one does.
+  ExprResult emit_explicit_drop(const peg::Ast& at, const peg::Ast& post,
+                                const peg::Ast& args, ExprResult r) {
+    StampGuard pos(*this, at);
+    int32_t out = alloc_temp(at);
+    int32_t gate = alloc_temp(at);
+    emit(Op::DropChk, gate, r.slot);
+    size_t to_member = emit(Op::JumpIfFalse, gate);
+    emit(Op::Drop, out, r.slot);
+    if (r.owned) emit(Op::Release, r.slot);
+    size_t done = emit(Op::Jump);
+    patch_to_here(to_member);
+    store_into(out, compile_property_call(at, post, args, r),
+               /*dst_is_fresh=*/true);
+    patch_to_here(done);
+    return {out, true};
   }
 
   // `x.parameters(...)`: the synthesized walker when the receiver is a class
@@ -12031,7 +12049,7 @@ class Compiler {
     // owe (arity check first) and
     // then the ordinary property read.
     auto resolved_call = [&](ExprResult r) -> ExprResult {
-      if (is_drop) return emit_explicit_drop(at, r);
+      if (is_drop) return emit_explicit_drop(at, post, args, r);
       // A built-in method binds positionally; the one keyword it takes names
       // a keyword-only parameter, and the spec carries that slot. A keyword
       // it cannot bind dooms the call for every receiver that resolves the
@@ -12052,7 +12070,7 @@ class Compiler {
     // What a declined candidate leaves behind. For `drop` that is the guard
     // again (the JIT hands compile_resolved_or_ufcs the same body twice).
     auto declined_call = [&](ExprResult r) -> ExprResult {
-      if (is_drop) return emit_explicit_drop(at, r);
+      if (is_drop) return emit_explicit_drop(at, post, args, r);
       return compile_property_call(at, post, args, r);
     };
     // A built-in that subsumes its same-named global (`to_string`) does so
@@ -13858,7 +13876,7 @@ inline std::string dump(const Chunk& c) {
       "CbType",
       "ArityChk",  "BMeth",
       "PropRaw",
-      "HasProp",   "Drop",      "ClsParamsChk", "ClsParamsWalk",
+      "HasProp",   "Drop",      "DropChk",    "ClsParamsChk", "ClsParamsWalk",
       "SeqChk",    "SeqGet",    "SeqRest",    "ObjGet",       "DestrErr",
       "Jump",      "JumpIfFalse", "JumpIfTrue", "JumpIfNotNil", "JumpIfNil",
       "JumpIfTag",
@@ -14862,7 +14880,8 @@ struct Exec {
         &&L_IndexCo, &&L_IndexSet, &&L_PropSet, &&L_PropWr, &&L_PropCo,
         &&L_NsWrChk, &&L_PropVal, &&L_BareMethChk, &&L_MethGate, &&L_ChkParam,
         &&L_CallRecv, &&L_CbType, &&L_ArityChk, &&L_BMeth, &&L_PropRaw,
-        &&L_HasProp, &&L_Drop, &&L_ClsParamsChk, &&L_ClsParamsWalk,
+        &&L_HasProp, &&L_Drop, &&L_DropChk, &&L_ClsParamsChk,
+        &&L_ClsParamsWalk,
         &&L_SeqChk, &&L_SeqGet, &&L_SeqRest, &&L_ObjGet, &&L_DestrErr,
         &&L_Jump, &&L_JumpIfFalse, &&L_JumpIfTrue, &&L_JumpIfNotNil,
         &&L_JumpIfNil, &&L_JumpIfTag, &&L_MakeClosure, &&L_Call, &&L_CallM,
@@ -15698,6 +15717,19 @@ struct Exec {
           culebra_runtime_explicit_drop(static_cast<int8_t>(recv.tag),
                                         recv.data);
           regs[in.a] = JitValue{TAG_NIL, 0};
+          ++ip;
+          break;
+        } while (0);
+        VM_NEXT();
+      L_DropChk:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
+          const JitValue& recv = regs[in.b];
+          regs[in.a] = JitValue{
+              TAG_BOOL, culebra_runtime_takes_drop_guard(
+                            static_cast<int8_t>(recv.tag), recv.data)
+                            ? 1
+                            : 0};
           ++ip;
           break;
         } while (0);

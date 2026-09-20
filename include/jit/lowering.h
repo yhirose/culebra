@@ -1633,6 +1633,17 @@ struct Lowering {
           b.CreateStore(j.make_nil(), slots[in.a]);
           break;
         }
+        case Op::DropChk: {
+          auto recv = load_slot(in.b);
+          b.CreateStore(
+              j.make_bool(j.emit_call(
+                  j.module_->getOrInsertFunction(rt::takes_drop_guard,
+                                                 b.getInt1Ty(), b.getInt8Ty(),
+                                                 i64Ty),
+                  {j.extract_tag(recv), j.extract_data(recv)}, "vdc.guard")),
+              slots[in.a]);
+          break;
+        }
         case Op::ClsParamsChk: {
           // compile_class_parameters_call's `useAuto`: an Object carrying a
           // `class` tag and resolving no `parameters` of its own.

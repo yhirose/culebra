@@ -52,7 +52,7 @@ say(try { [1, 2].drop() } catch e { e.kind + '|' + e.message })
 say(try { 'ab'.drop() } catch e { e.kind + '|' + e.message })
 say(try { (5).drop() } catch e { e.kind + '|' + e.message })
 say(try { nil.drop() } catch e { e.kind + '|' + e.message })
-say(try { Math.drop() } catch e { e.kind + '|' + e.message })
+say(try { Math.drop() } catch e { e.kind + '|' + e.message })  # no receiver of the guard: a missing member
 # A dict whose own `drop` is a function still goes through the guard, which
 # answers nil whatever the body returned.
 say(try { {'drop': fn () { println('  own drop'); 7 }}.drop() }
