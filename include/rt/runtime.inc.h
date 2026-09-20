@@ -1087,6 +1087,14 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_defer_run_to(int64_t mark
     try {
       auto r = _culebra_invoke0(c);
       _culebra_value_release_impl(r.tag, r.data);
+    } catch (const culebra::Interrupted&) {
+      // interrupt: a press is not a program's throw. It carries no payload to
+      // replace the one in flight, and it is one-shot -- held here, no later
+      // safepoint would raise it again -- so it leaves at once, over the
+      // defers still pending, and the carrier goes back as it was.
+      culebra_runtime_restore_thrown(sflag, stag, sdata);
+      _culebra_value_release_impl(v.tag, v.data);
+      throw;
     } catch (...) {
       // The defer's own throw replaces the in-flight payload: abandon the
       // snapshot (drop its retain, pop its pending frame) rather than
