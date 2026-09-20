@@ -3654,9 +3654,24 @@ Culebraは`throw`で例外を発生させ、`try`/`catch`で受けます。
 
 defer本体内の`return`は**defer閉包のみ**を抜けます（外側の
 関数を抜けません）。defer本体内の`throw`はdeferを中断して
-通常の例外として伝播します。同じスコープでまだ走っていないdeferは
-捨てられ、そのスコープは例外が通り抜ける他のスコープと同じように
-抜けます — 束縛は解放され、外側のスコープは自分のdeferを順に走らせます。
+通常の例外として伝播します。ただし伝播するのは、同じスコープでまだ
+走っていないdeferが後入れ先出しの順のまま全部走った後です —
+後から登録されたdeferが何をしても、deferは必ず走ります。複数のdeferが
+`throw`した場合は、最後に投げられた例外が伝播します。そのスコープは
+例外が通り抜ける他のスコープと同じように抜けます — 束縛は解放され、
+外側のスコープは自分のdeferを順に走らせます。
+
+```culebra
+fn close_all() {
+  defer { inspect('file closed') }
+  defer { throw 'flush failed' }
+  inspect('body')
+}
+inspect(try { close_all() } catch e { e })
+# => 'body'
+# => 'file closed'
+# => 'flush failed'
+```
 
 そのスコープが別の例外ですでに巻き戻し中だった場合、deferの`throw`が
 元の例外を**置き換えます**。元の例外は捨てられ、巻き戻しはそのスコープ

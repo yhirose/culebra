@@ -1183,6 +1183,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_defer_run_to(int64_t mark
   int8_t sflag, stag;
   int64_t sdata;
   culebra_runtime_save_thrown(&sflag, &stag, &sdata);
+  // A defer always runs, whatever the ones registered after it did: a throw
+  // out of one is held while the rest of the scope's defers run, and the last
+  // of them is what leaves.
+  std::exception_ptr replaced;
   while (static_cast<int64_t>(s.size()) > mark) {
     auto v = s.back();
     s.pop_back();
@@ -1191,14 +1195,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_defer_run_to(int64_t mark
       auto r = _culebra_invoke0(c);
       _culebra_value_release_impl(r.tag, r.data);
     } catch (...) {
-      _culebra_value_release_impl(v.tag, v.data);
-      // A throwing defer abandons the rest of its scope's defers; they are
-      // dropped here so they don't leak.
-      while (static_cast<int64_t>(s.size()) > mark) {
-        auto rem = s.back();
-        s.pop_back();
-        _culebra_value_release_impl(rem.tag, rem.data);
-      }
       // The defer's own throw replaces the in-flight payload: abandon the
       // snapshot (drop its retain, pop its pending frame) rather than
       // restoring it over the replacement. No catch will ever consume the
@@ -1209,11 +1205,14 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_defer_run_to(int64_t mark
         _culebra_value_release_impl(stag, sdata);
       }
       _pending_save_stack().pop_back();
-      throw;
+      // The replacement is what is in flight for the defers still to run.
+      replaced = std::current_exception();
+      culebra_runtime_save_thrown(&sflag, &stag, &sdata);
     }
     _culebra_value_release_impl(v.tag, v.data);
   }
   culebra_runtime_restore_thrown(sflag, stag, sdata);
+  if (replaced) std::rethrow_exception(replaced);
 }
 
 inline const char* _culebra_tag_name(int8_t tag) {

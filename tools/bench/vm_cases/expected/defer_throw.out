@@ -10,8 +10,12 @@ c-after
 dboom
 body
 runs-first
+runs-last
 mid
 rt-defer
 {kind: 'ZeroDivisionError', message: 'divide by 0 error', line: 65, col: 3}
 rethrow-defer
 12
+w-between
+w-first-registered
+A

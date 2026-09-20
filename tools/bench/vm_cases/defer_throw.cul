@@ -44,10 +44,10 @@ let r = try {
 }
 println(r)
 
-# A throwing defer abandons the rest of its scope's defers (Swift order).
+# A throwing defer does not stop the rest of its scope's defers: they run, then it propagates.
 let s = try {
   {
-    defer { println("kept-out") }
+    defer { println("runs-last") }
     defer { throw "mid" }
     defer { println("runs-first") }
     println("body")
@@ -81,3 +81,17 @@ let u = try {
   e + 10
 }
 println(u)
+
+# When several defers of one scope throw, the last throw is the one that propagates.
+let w = try {
+  {
+    defer { println("w-first-registered") }
+    defer { throw "A" }
+    defer { println("w-between") }
+    defer { throw "B" }
+  }
+  "no"
+} catch e {
+  e
+}
+println(w)

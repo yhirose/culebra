@@ -3864,10 +3864,24 @@ Block scope (not function scope) means:
 
 A `return` inside a defer body exits only the defer closure, not the
 enclosing function. `throw` inside a defer body aborts that defer and
-propagates as a regular exception: the defers still pending in the same
-scope are abandoned, and the scope is then left like any other scope a
-throw passes through — its bindings are released, and the enclosing
-scopes run their own defers on the way out.
+propagates as a regular exception — after the defers still pending in
+the same scope have run, in the same last-in-first-out order: a defer
+always runs, whatever the ones registered after it did. If more than one
+of them throws, the last throw is the one that propagates. The scope is
+then left like any other scope a throw passes through — its bindings are
+released, and the enclosing scopes run their own defers on the way out.
+
+```culebra
+fn close_all() {
+  defer { inspect('file closed') }
+  defer { throw 'flush failed' }
+  inspect('body')
+}
+inspect(try { close_all() } catch e { e })
+# => 'body'
+# => 'file closed'
+# => 'flush failed'
+```
 
 If the scope was already unwinding from another exception, the defer's
 throw **replaces** it: the original is discarded, and the unwind goes on

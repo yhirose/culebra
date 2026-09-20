@@ -71,15 +71,15 @@ assert_eq(
 caller(on_unwind_path)
 assert_eq(taken(), reference)
 
-# --- a throwing defer abandons the rest of its OWN scope's defers, on
-#     either path; the enclosing scope's are not its own
+# --- a throwing defer does not stop the rest of its own scope's defers, on
+#     either path: they run in order, then the throw goes on
 fn same_scope(throws) {
   defer {
     log.push('enclosing scope')
   }
   {
     defer {
-      log.push('abandoned')
+      log.push('ran last')
     }
     defer {
       throw 'replacement'
@@ -98,7 +98,46 @@ for throws in [false, true] {
   } catch e {
     e
   }, 'replacement')
-  assert_eq(taken(), ['ran first', 'enclosing scope'])
+  assert_eq(taken(), ['ran first', 'ran last', 'enclosing scope'])
+}
+
+# --- when several defers of one scope throw, the last throw wins; a defer
+#     between them that throws and catches on its own leaves it alone
+fn swallows() {
+  try {
+    throw 'inner'
+  } catch e {
+    log.push("swallowed {e}")
+  }
+}
+fn several(throws) {
+  let mut zero = 0
+  defer {
+    log.push('first registered')
+  }
+  defer {
+    throw 'last throw'
+  }
+  defer {
+    swallows()
+  }
+  defer {
+    1 / zero
+  }
+  defer {
+    throw res('payload')
+  }
+  if throws {
+    throw 'original'
+  }
+}
+for throws in [false, true] {
+  assert_eq(try {
+    several(throws)
+  } catch e {
+    e
+  }, 'last throw')
+  assert_eq(taken(), ['drop payload', 'swallowed inner', 'first registered'])
 }
 
 # --- an enclosing scope's throwing defer replaces the replacement
