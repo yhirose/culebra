@@ -1,0 +1,28 @@
+name: Download the built culebra
+description: >-
+  Fetch the driver build-ubuntu uploaded and make it executable. Every Ubuntu
+  job that `needs: build-ubuntu` runs against that artifact rather than
+  building, so the artifact name and the exec-bit workaround live here instead
+  of once per consumer.
+
+inputs:
+  name:
+    description: Artifact to download.
+    required: false
+    default: culebra-ubuntu-latest
+  path:
+    description: Directory to unpack into; the driver lands at <path>/culebra.
+    required: false
+    default: build
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+
+    # Artifacts drop file modes.
+    - shell: bash
+      run: chmod +x ${{ inputs.path }}/culebra

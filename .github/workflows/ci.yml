@@ -144,13 +144,14 @@ jobs:
       - name: Build (interpreter + JIT)
         run: just build -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold
 
-      # Two consumers: the test-ubuntu lanes below download it to run against,
-      # and it's a binary to try on a real desktop, which no CI job can stand
-      # in for (a runner proves a window does not hang or crash, never that
-      # anyone can see it). Right after the build, so a test failure below
-      # still leaves it behind. Note it carries Canvas headless (the job pins
-      # CULEBRA_CANVAS_WINDOW_DEFAULT off) and no Webview (no gtk4/webkitgtk
-      # here) — the Windows artifact is the only one with a window backend.
+      # Every job below that `needs: build-ubuntu` runs against this instead
+      # of building, and it's also a binary to try on a real desktop, which no
+      # CI job can stand in for (a runner proves a window does not hang or
+      # crash, never that anyone can see it). Right after the build, so a test
+      # failure below still leaves it behind. Note it carries Canvas headless
+      # (the job pins CULEBRA_CANVAS_WINDOW_DEFAULT off) and no Webview (no
+      # gtk4/webkitgtk here) — the Windows artifact is the only one with a
+      # window backend.
       - name: Upload the binary for the test lanes and manual testing
         uses: actions/upload-artifact@v4
         with:
@@ -167,28 +168,6 @@ jobs:
       # everything else runs in the test-ubuntu lanes.
       - name: Test (build-tree phases - ratchets + rt archives + ctest)
         run: BIN=./build/culebra just _run-tests ci-buildtree
-
-      # Run the ```culebra examples in docs/ on both compiled lanes. Invoke the
-      # binary directly rather than `just doctest` so it reuses the build
-      # above instead of re-running `just build` without the ccache flags.
-      - name: Doctest (docs examples, VM + JIT)
-        run: |
-          jobs=$(getconf _NPROCESSORS_ONLN)
-          ./build/culebra test --doc --vm --jobs "$jobs" tests/doctest docs
-          ./build/culebra test --doc --jit --jobs "$jobs" tests/doctest docs
-
-      # The other half of the docs: the ```cpp blocks a host author copies.
-      # `test --doc` reads ```culebra fences only, and the step above calls the
-      # binary rather than `just doctest`, so the recipe's own dependency on
-      # this would never run here — name it explicitly.
-      - name: Doctest (embedding examples compile)
-        run: just check-docs-cpp
-
-      # docs/quick-guide.md's signature index is generated from language.md
-      # and stdlib.md; fail if a reference edit landed without regenerating
-      # it.
-      - name: Check the generated signature index (docs/quick-guide.md)
-        run: ./build/culebra --vm misc/gen_quick_guide.cul --check
 
       - name: Smoke test microgpt (5 steps, both backends)
         run: just smoke-microgpt
@@ -277,17 +256,57 @@ jobs:
             ${{ runner.os }}-ccache-
 
       - name: Download the built culebra
-        uses: actions/download-artifact@v4
-        with:
-          name: culebra-ubuntu-latest
-          path: build
-
-      # Artifacts drop file modes.
-      - name: Restore the exec bit
-        run: chmod +x build/culebra
+        uses: ./.github/actions/download-culebra
 
       - name: Test (${{ matrix.lane }})
         run: BIN=./build/culebra just _run-tests ${{ matrix.lane }}
+
+  # Both halves of `just doctest`: the ```culebra examples in docs/ and the
+  # ```cpp blocks a host author copies. Neither needs build-ubuntu's build
+  # tree — everything the cpp half compiles it compiles from the checkout
+  # (include/ and vendor/, plus two runtime sources), and the one thing its
+  # stage F wants already built is a driver, which is the artifact. Its own
+  # job because these steps were ~5 of build-ubuntu's 11-18 minutes, and every
+  # job that `needs` it waits on the whole job, not on the artifact it
+  # downloads — so this shortens the wait for every consumer, not just itself.
+  doctest-ubuntu:
+    needs: build-ubuntu
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # Recursive: the cpp half compiles and links against seven vendored
+      # submodules (see the INC list in tools/checks/check_docs_cpp.sh), so
+      # the narrow fetch the binary-only test lanes use is not enough here.
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      # For the cpp half: g++-14 (C++23) and LLVM_CONFIG, which is what keeps
+      # its JIT blocks off the runner's own older LLVM.
+      - name: Install dependencies
+        uses: ./.github/actions/setup-linux-toolchain
+
+      - name: Download the built culebra
+        uses: ./.github/actions/download-culebra
+
+      - name: Doctest (docs examples, VM + JIT)
+        run: BIN=./build/culebra just _doctest all
+
+      # This job has all three of the pieces the gate degrades to a skip
+      # without (a C++23 compiler, an llvm-config at the floor, a driver), so
+      # a skip here means it stopped checking what it exists to check.
+      # CULEBRA_REQUIRE_DOCS_CPP makes each of those a failure that says which
+      # piece went missing.
+      - name: Doctest (embedding examples compile)
+        env:
+          CULEBRA_REQUIRE_DOCS_CPP: "1"
+        run: just check-docs-cpp
+
+      # docs/quick-guide.md's signature index is generated from language.md
+      # and stdlib.md; fail if a reference edit landed without regenerating
+      # it.
+      - name: Check the generated signature index (docs/quick-guide.md)
+        run: BIN=./build/culebra just _check-quick-guide
 
   # No-LLVM gate (CULEBRA_ENABLE_JIT=OFF). The `culebra` driver is the one TU
   # with #ifdef CULEBRA_JIT_ENABLED gating, so a mismatched guard there breaks
@@ -366,14 +385,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Download the built culebra
-        uses: actions/download-artifact@v4
-        with:
-          name: culebra-ubuntu-latest
-          path: build
-
-      # Artifacts drop file modes.
-      - name: Restore the exec bit
-        run: chmod +x build/culebra
+        uses: ./.github/actions/download-culebra
 
       # No tag: the baseline is whatever is published, so a release moves this
       # gate forward on its own.
@@ -405,14 +417,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Download the built culebra
-        uses: actions/download-artifact@v4
-        with:
-          name: culebra-ubuntu-latest
-          path: build
-
-      # Artifacts drop file modes.
-      - name: Restore the exec bit
-        run: chmod +x build/culebra
+        uses: ./.github/actions/download-culebra
 
       - name: Run the committed wasm against native --vm
         run: node tools/playground/smoke.mjs ./build/culebra
@@ -468,6 +473,13 @@ jobs:
           # test so a frozen macOS VM fails the phase fast instead of hanging
           # the job (macOS has no native `timeout`).
           brew install llvm just ccache coreutils
+          # brew's llvm is keg-only, so llvm-config is not on PATH and anything
+          # that looks it up rather than reading the cmake path was falling
+          # through to a hardcoded guess at brew's prefix — name it instead,
+          # the way the linux toolchain action does. Without this
+          # check_docs_cpp.sh silently stopped compiling the docs' JIT blocks
+          # whenever that guess went stale.
+          echo "LLVM_CONFIG=$(brew --prefix llvm)/bin/llvm-config" >> "$GITHUB_ENV"
 
       # Compiler cache for incremental CI builds. Without it every PR push
       # re-compiles culebra from scratch (~4 min, dominated by
@@ -505,15 +517,17 @@ jobs:
         run: BIN=./build/culebra just _run-tests all
 
       - name: Doctest (docs examples, VM + JIT)
-        run: |
-          jobs=$(getconf _NPROCESSORS_ONLN)
-          ./build/culebra test --doc --vm --jobs "$jobs" tests/doctest docs
-          ./build/culebra test --doc --jit --jobs "$jobs" tests/doctest docs
+        run: BIN=./build/culebra just _doctest all
 
-      # Same as the ubuntu lane, and worth its own run here: the headers a
-      # host includes carry per-platform branches, so a macOS-only break in
-      # them shows up nowhere else.
+      # Worth its own run here: the headers a host includes carry per-platform
+      # branches, so a macOS-only break in them shows up nowhere else — which
+      # is exactly why this lane must not be the one that quietly skips. It
+      # has all three pieces the gate degrades without: a C++23 compiler (the
+      # Build step above proves it), the llvm-config the Install step names,
+      # and the driver it just built.
       - name: Doctest (embedding examples compile)
+        env:
+          CULEBRA_REQUIRE_DOCS_CPP: "1"
         run: just check-docs-cpp
 
       - name: Smoke test microgpt (5 steps, both backends)
