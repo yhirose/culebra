@@ -1622,9 +1622,8 @@ struct Lowering {
           break;
         }
         case Op::Drop: {
-          // The at-most-once guard, borrowing the receiver — the compiler's
-          // emit_explicit_drop without its consume (a register keeps owning
-          // what it holds).
+          // The at-most-once guard, borrowing the receiver: the register
+          // holding it keeps owning it.
           auto recv = load_slot(in.b);
           j.emit_call(
               j.module_->getOrInsertFunction(rt::explicit_drop, b.getVoidTy(),

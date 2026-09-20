@@ -5278,21 +5278,6 @@ struct JIT {
 
 
 
-  // The at-most-once explicit-drop guard itself. Consumes the receiver's `+1`
-  // (the runtime call only borrows it) and yields nil, `drop`'s value. The
-  // borrow rides an `Owned` so the unwind-temp window covers it: the runtime
-  // entry is not nothrow, so this is an invoke wherever a cleanup pad is live.
-  Owned emit_explicit_drop(llvm::Value* receiver) {
-    Owned recv = own(receiver);
-    emit_call(module_->getOrInsertFunction(rt::explicit_drop,
-                                           builder_.getVoidTy(),
-                                           builder_.getInt8Ty(),
-                                           builder_.getInt64Ty()),
-              {extract_tag(recv.borrow()), extract_data(recv.borrow())});
-    recv.drop();
-    return own(make_nil());
-  }
-
   // Whether an Object receiver is a closed builtin namespace. Valid only where
   // the tag is already known to be TAG_OBJECT — it probes the pointer. A
   // namespace resolves every member name itself (as a member, or as the
