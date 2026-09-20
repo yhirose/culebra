@@ -466,7 +466,7 @@ test BACKEND='all': check-generated build-gate
 [doc("Fast inner-loop tests vs build-dev/ (no LTO). BACKEND=fast|jit|isolate (default: fast).")]
 [group("test")]
 test-dev BACKEND='fast': check-generated dev
-    @./build-dev/culebra --vm misc/gen_quick_guide.cul --check
+    @BIN=./build-dev/culebra just _check-quick-guide
     @BIN=./build-dev/culebra CULEBRA_TEST_SKIP_HEAVY=1 just _run-tests {{BACKEND}}
 
 # The same sweep as test-dev against the assert-enabled binary (`just
@@ -1421,8 +1421,16 @@ _run-tests BACKEND:
 [doc("Run ` ```culebra ` doctest blocks in docs/ (VM + JIT)")]
 [group("test")]
 doctest LANE="all": build check-docs-cpp
+    @BIN=./build/culebra just _doctest {{LANE}}
+
+# The lanes alone, against $BIN. Split out so CI can run them against a
+# downloaded binary without the `build` prerequisite above rebuilding a tree
+# it already has — the same BIN= seam `_run-tests` uses.
+[private]
+_doctest LANE="all":
     #!/usr/bin/env bash
     set -euo pipefail
+    BIN="${BIN:-./build/culebra}"
     # One process per core: the JIT lane compiles an LLVM module per block, so
     # serially it is minutes against seconds for the other lane. The runner
     # keeps the report in source order whatever the shards finish in.
@@ -1430,7 +1438,16 @@ doctest LANE="all": build check-docs-cpp
     run_lane() {
       local label="$1"; shift
       echo ">>> doctest ($label)"
-      {{nice_cmd}} ./build/culebra test --doc --jobs "$JOBS" "$@" tests/doctest docs | tail -1
+      # The summary is the last line and the per-block FAIL lines go to stdout
+      # with it, so keep only the summary on success and print everything on
+      # failure — tailing unconditionally drops the whole report.
+      local out
+      if out=$({{nice_cmd}} "$BIN" test --doc --jobs "$JOBS" "$@" tests/doctest docs); then
+        printf '%s\n' "$out" | tail -1
+      else
+        printf '%s\n' "$out"
+        return 1
+      fi
     }
     case "{{LANE}}" in
       vm)     run_lane vm --vm ;;
@@ -1453,7 +1470,14 @@ gen-quick-guide: build
 [doc("Fail if the quick-guide index or tools/checks/api_surface.txt is stale")]
 [group("docs")]
 check-quick-guide: build
-    ./build/culebra --vm misc/gen_quick_guide.cul --check
+    @BIN=./build/culebra just _check-quick-guide
+
+# The check alone, against $BIN — for the callers that already have a binary
+# (test-dev's build-dev/, CI's downloaded artifact) and must not trigger the
+# `build` prerequisite above.
+[private]
+_check-quick-guide:
+    @"${BIN:-./build/culebra}" --vm misc/gen_quick_guide.cul --check
 
 # Differential test: generate the template-combinator corpus (tools/difftest)
 # and assert --vm == --jit byte-for-byte over every case. Enumerates
