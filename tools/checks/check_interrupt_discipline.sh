@@ -37,6 +37,13 @@ cd "$(dirname "$0")/../.."
 # there answers for a press nobody else can — even where the file has no
 # catch-all today, so that adding one asks the question. A new host belongs
 # here.
+#
+# The runtime headers are on it for the same reason from below: they call user
+# code (a drop body, a dispose, a defer) on paths that exist to swallow what it
+# throws, so a press arriving there is caught by a handler written for program
+# errors and reported as one. A handler under the program often cannot re-throw
+# — a release, an unwind — and then puts the press back with rearm_interrupt()
+# for the next safepoint, which is EXPLICIT all the same.
 kFiles=(
   src/main.cc
   include/cli/dap.h
@@ -54,6 +61,13 @@ kFiles=(
   include/vm/embed.h
   include/vm/session.h
   playground/wasm_main.cc
+  include/rt/runtime.inc.h
+  include/rt/iter.inc.h
+  include/rt/mem.inc.h
+  include/rt/dispatch.inc.h
+  include/rt/value.inc.h
+  include/rt/fixed.inc.h
+  include/rt/gc.h
 )
 
 missing=0

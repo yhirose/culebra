@@ -69,6 +69,11 @@ inline void _culebra_call_drop_if_present(JitObject* o) {
   try {
     auto r = _jit_invoke(cls, self_val, 0, nullptr);
     _culebra_value_release_impl(r.tag, r.data);
+  } catch (const culebra::Interrupted&) {
+    // A press is not the drop body's error, and this is a release path: the
+    // throw would cross whatever is already unwinding. Put it back for the
+    // next safepoint, and log nothing -- nothing failed.
+    culebra::rearm_interrupt();
   } catch (const CulebraException& e) {
     // Same line the interpreter logs for a user throw (str_display).
     std::cerr << "drop: " << _culebra_uncaught_display(e.tag, e.data)

@@ -130,6 +130,8 @@ inline void _iter_dispose_upstreams_fn(JitValue* __ret, JitClosure* cls,
       culebra_runtime_value_retain(up.tag, up.data);  // the callee consumes it
       auto r = _jit_invoke(dispose_cls, up, 0, nullptr);
       _culebra_value_release_impl(r.tag, r.data);
+    } catch (const culebra::Interrupted&) {
+      throw;  // a press outranks a dispose's error: it is no error at all
     } catch (...) {
       if (!first) first = std::current_exception();
     }
@@ -506,7 +508,14 @@ class JitIterDrive {
       int8_t flag, tag;
       int64_t data;
       culebra_runtime_save_thrown(&flag, &tag, &data);
-      try { dispose(); } catch (...) {}
+      try {
+        dispose();
+      } catch (const culebra::Interrupted&) {
+        // The press cannot be thrown over the error already unwinding; the
+        // next safepoint raises it instead.
+        culebra::rearm_interrupt();
+      } catch (...) {
+      }
       culebra_runtime_restore_thrown(flag, tag, data);
     } else {
       dispose();  // early exit that skipped finish(): drain rule, propagate

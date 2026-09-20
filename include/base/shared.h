@@ -2648,6 +2648,18 @@ inline void throw_if_interrupted() {
   }
 }
 
+// Put back an interrupt a cleanup path caught and cannot re-throw: a drop
+// body's cascade runs under a release, a dispose runs under an unwind, and
+// throwing from either would cross what is already in flight. The next
+// safepoint raises it instead. Only a Ctrl+C needs this — it is one-shot and
+// the throw consumed it; an isolate's cancel flag is sticky and still set, so
+// re-arming the process flag there would hand the main thread a press nobody
+// made.
+inline void rearm_interrupt() {
+  auto* f = current_runtime().interrupt_flag;
+  if (!f || is_sigint_flag(f)) request_interrupt();
+}
+
 // Whether a Ctrl+C or `flag`'s cancel is pending. `flag` is the watched
 // thread's, captured by it: a watcher on another thread cannot read
 // current_runtime() — it would get its own.
