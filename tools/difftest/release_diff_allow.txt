@@ -136,3 +136,13 @@ iterproto|let o = { has_next: 1 }; o
 iterproto|let o = { next: 1 }; o
 iterproto|let o = { iter: 1 }; o
 iterthrow|let it = { iter: fn () { self }, next: 1 }; it.reduce(*
+
+# `x.drop()` with no arguments is the at-most-once guard for an instance only.
+# What a declaration binds — a class object, an enum's, a namespace — stands
+# outside the instance protocol, so `drop` there is a member name like any
+# other: a static `drop` is called (the baseline answered nil without calling
+# it), and one that is not there is the error any missing member gives —
+# `Math.drop()` is an AttributeError where the baseline answered nil.
+ufcsshadow|drop|*|Math
+ufcsshadownest|drop|*|Math
+ufcsshadowform|drop|*|Math
