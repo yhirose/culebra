@@ -21,7 +21,6 @@ repo=$PWD
 BIN="${1:-${CULEBRA:-./build-dev/culebra}}"
 case "$BIN" in /*) ;; *) BIN="$repo/${BIN#./}" ;; esac
 roots=("$repo/docs")
-JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)}"
 work=$(mktemp -d "${TMPDIR:-/tmp}/culebra-skips.XXXXXX") || exit 1
 trap 'rm -rf "$work"' EXIT
 
@@ -104,7 +103,12 @@ if (( rc == 124 )); then
     }
     export -f probe run_capped
     export BIN2="$BIN" ROOT2="${roots[0]}"
-    xargs -P "$JOBS" -I '{}' bash -c 'probe "$1" "$2"' _ '{}' "$work" \
+    # One at a time, though it is the slow way: two of these blocks bind the
+    # same port (`Net.listen(7000)`, twice), and probed in parallel one of them
+    # takes the port and the other fails on it — so the pair reported a
+    # different member on each platform, and neither report was about the
+    # block. A diagnostic that names the wrong block is worse than a slow one.
+    xargs -P 1 -I '{}' bash -c 'probe "$1" "$2"' _ '{}' "$work" \
         < "$work/names"
     shopt -s nullglob
     hangs=("$work"/*.hang)

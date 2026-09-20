@@ -2475,7 +2475,7 @@ Object（通常の`{code, stdout, stderr, ok, signal, error, timed_out}`）を�
 にのみ送られます（孫には届きません）。
 
 ```culebra
-# doctest: skip
+# doctest: skip — 外部プログラムを起こす
 let server = Proc.spawn(["python", "-m", "http.server", "8000"])
 # ... サーバに対して作業 ...
 server.kill()  # SIGTERM
@@ -5928,7 +5928,7 @@ bindしてlistenする。`port: 0`はOSに空きポートを選ばせ、`listene
 読み戻せる — テストで固定ポートの衝突を避ける確実な方法。
 
 ```culebra
-# doctest: skip
+# doctest: skip — ポートを listen して割り込みまで待つ
 let server = Net.listen(7000)
 println("listening on " + server.port.to_string())
 for conn in server {
@@ -5956,7 +5956,7 @@ for conn in server {
 遅い接続がacceptループを止めることはない:
 
 ```culebra
-# doctest: skip
+# doctest: skip — ポートを listen して割り込みまで待つ
 let server = Net.listen(7000)
 server.serve(fn (conn) {
   for line in conn.lines() {

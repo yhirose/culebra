@@ -172,11 +172,18 @@ reading. A skip is now justified one of two ways: the block cannot run at
 all, or it says why it must not run here (`# doctest: skip — opens a
 window`). `check_doctest_skips.sh` runs the skips that give no reason on the
 executor, and a block that runs cleanly fails the gate — un-skip it, or give
-it the reason a reader wants anyway. Of the 338 skips this found, 86 turned
+it the reason a reader wants anyway. Of the 338 skips this found, 92 turned
 out to be windows, servers, watchers, stdin, the network, external programs
 or this machine's own paths, and 14 were illustrations that simply run; those
 now run, which is how §12's `nobreak` example became the first executed one
 for that section.
+
+Six of the 92 were found by CI rather than here, and they are the reason the
+lane runs on every platform: an example that cannot run on one machine can
+run on another. `Net.listen(7000)` and its accept loop hang on a runner and
+failed on this laptop; `Proc.spawn(["python", ...])` runs where `python` is
+on PATH and fails where only `python3` is. A skip that holds for the machine
+you are on is not a skip that holds.
 
 **`examples/`.** The 30 suites and 328 assertions under `examples/` were
 wired into no gate at all: the `vm2gol-v2` suite had not run since the unit

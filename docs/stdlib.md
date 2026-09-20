@@ -2550,7 +2550,7 @@ explicitly `wait()`ing or `kill()`ing is clearer. As with the other verbs, only
 the direct child is signalled, not any grandchildren.
 
 ```culebra
-# doctest: skip
+# doctest: skip — spawns external programs
 let server = Proc.spawn(["python", "-m", "http.server", "8000"])
 # ... do work against the server ...
 server.kill()  # SIGTERM
@@ -6116,7 +6116,7 @@ Bind and listen. `port: 0` asks the OS for a free port, readable back as
 `listener.port` — the reliable way to avoid a fixed-port collision in tests.
 
 ```culebra
-# doctest: skip
+# doctest: skip — listens on a port until interrupted
 let server = Net.listen(7000)
 println("listening on " + server.port.to_string())
 for conn in server {
@@ -6144,7 +6144,7 @@ accepting thread, so one slow connection blocks the next.
 slow connection can't stall the accept loop:
 
 ```culebra
-# doctest: skip
+# doctest: skip — listens on a port until interrupted
 let server = Net.listen(7000)
 server.serve(fn (conn) {
   for line in conn.lines() {
