@@ -144,14 +144,13 @@ jobs:
       - name: Build (interpreter + JIT)
         run: just build -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold
 
-      # Every job below that `needs: build-ubuntu` runs against this instead
-      # of building, and it's also a binary to try on a real desktop, which no
-      # CI job can stand in for (a runner proves a window does not hang or
-      # crash, never that anyone can see it). Right after the build, so a test
-      # failure below still leaves it behind. Note it carries Canvas headless
-      # (the job pins CULEBRA_CANVAS_WINDOW_DEFAULT off) and no Webview (no
-      # gtk4/webkitgtk here) — the Windows artifact is the only one with a
-      # window backend.
+      # What the jobs below download (see the download-culebra action), and a
+      # binary to try on a real desktop, which no CI job can stand in for (a
+      # runner proves a window does not hang or crash, never that anyone can
+      # see it). Right after the build, so a test failure below still leaves
+      # it behind. Note it carries Canvas headless (the job pins
+      # CULEBRA_CANVAS_WINDOW_DEFAULT off) and no Webview (no gtk4/webkitgtk
+      # here) — the Windows artifact is the only one with a window backend.
       - name: Upload the binary for the test lanes and manual testing
         uses: actions/upload-artifact@v4
         with:
@@ -292,14 +291,10 @@ jobs:
       - name: Doctest (docs examples, VM + JIT)
         run: BIN=./build/culebra just _doctest all
 
-      # This job has all three of the pieces the gate degrades to a skip
-      # without (a C++23 compiler, an llvm-config at the floor, a driver), so
-      # a skip here means it stopped checking what it exists to check.
-      # CULEBRA_REQUIRE_DOCS_CPP makes each of those a failure that says which
-      # piece went missing.
+      # A full run under Actions fails rather than skips a stage whose
+      # toolchain piece is missing — the Install step above puts all three
+      # here, so a skip would be the gate shrinking.
       - name: Doctest (embedding examples compile)
-        env:
-          CULEBRA_REQUIRE_DOCS_CPP: "1"
         run: just check-docs-cpp
 
       # docs/quick-guide.md's signature index is generated from language.md
@@ -521,13 +516,10 @@ jobs:
 
       # Worth its own run here: the headers a host includes carry per-platform
       # branches, so a macOS-only break in them shows up nowhere else — which
-      # is exactly why this lane must not be the one that quietly skips. It
-      # has all three pieces the gate degrades without: a C++23 compiler (the
-      # Build step above proves it), the llvm-config the Install step names,
-      # and the driver it just built.
+      # is exactly why this lane must not be the one that quietly skips a
+      # stage. The Install step above names the llvm-config that would have
+      # been the missing piece.
       - name: Doctest (embedding examples compile)
-        env:
-          CULEBRA_REQUIRE_DOCS_CPP: "1"
         run: just check-docs-cpp
 
       - name: Smoke test microgpt (5 steps, both backends)

@@ -58,16 +58,20 @@ fast=0
 
 # Three stages degrade to a skip when the box is missing a toolchain piece:
 # B's C++23 probe, B's JIT blocks without an llvm-config at the floor, and F
-# without a driver. That is right on a developer's box and wrong in CI, where
-# the missing piece means the gate stopped checking what it exists to check.
-# CI sets this and the skips become failures instead.
-require_full="${CULEBRA_REQUIRE_DOCS_CPP:-0}"
+# without a driver. That is right on a developer's box and wrong on a runner
+# that installs all three, where the missing piece means the gate stopped
+# checking what it exists to check — so a full run under Actions demands them
+# rather than trusting each job to ask. The --fast half rides every gate,
+# including lanes with no C++23 compiler, and keeps the skip.
+require_full="${CULEBRA_REQUIRE_DOCS_CPP:-${GITHUB_ACTIONS:+1}}"
+require_full="${require_full:-0}"
+(( fast )) && require_full=0
 
 # Report a stage that degraded for want of one of those pieces.
 degraded() {
   if [[ $require_full != 0 ]]; then
-    echo "docs-cpp FAIL: $1 — CULEBRA_REQUIRE_DOCS_CPP is set, so this gate" \
-         "must run every stage" >&2
+    echo "docs-cpp FAIL: $1 — this gate must run every stage here" \
+         "(CULEBRA_REQUIRE_DOCS_CPP=0 to allow the skip)" >&2
     exit 1
   fi
   echo "docs-cpp SKIP: $1"
