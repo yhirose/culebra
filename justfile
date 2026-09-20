@@ -1278,134 +1278,152 @@ _run-tests BACKEND:
     # interp/jit sweep — emit nothing until they finish).
     phase() { echo ">>> [${SECONDS}s] $1"; }
 
-    # The checks that need neither the binary nor a build tree, shared by the
-    # all/fast/ci-buildtree cases.
-    run_source_ratchets() {
-        phase "release-diff selftest (the comparator's own smoke)"; run_release_diff_selftest
-        phase "rc-discipline (bare retain/release ratchet)"; run_rc_discipline
-        phase "long width (language values are int64_t, not long)"; run_long_width
-        phase "iter wiring (JitIterDrive + upstream forwarding ratchet)"; run_iter_wiring
-        phase "rt-keep scope (CULEBRA_RT_KEEP is culebra_runtime_*-only)"; run_rt_keep_scope
-        phase "optional ns (the tests/*.cul sweep names no optional namespace)"; run_optional_ns
+    # ---------------------------------------------------------------------
+    # The gate table: one row per phase, and the only place a lane's contents
+    # are written down. Every lane below is a filter over it, so a new phase
+    # joins the local gates and the CI shards by declaring where it belongs
+    # instead of by being pasted into two hand-kept lists — which is how the
+    # codegen, GC and AOT axes came to be missing from `fast` while the
+    # refcount axis was in it, and how CULEBRA_TEST_SKIP_HEAVY came to be a
+    # no-op for every lane but `all`.
+    #
+    #   fn    | the shell function that runs it
+    #   label | what phase() announces
+    #   needs | static (checkout only) | binary | tree (a CMake build tree)
+    #   tiers | local entry points: dev = test-dev/test-assert/land, test = the full gate
+    #   ci    | CI shards that run it; every `test` row must name at least one
+    #   gate  | -  always | heavy  skipped by CULEBRA_TEST_SKIP_HEAVY | wrap  only with CULEBRA_TEST_WRAP
+    #   cost  | measured wall seconds, single run, 8-core M1 Pro, warm build-gate
+    #
+    # Order is execution order: cheap first, then the corpus sweeps, AOT last
+    # (slowest and most env-sensitive, so a failure there cannot mask a
+    # matcher regression).
+    gate_rows=(
+      "run_release_diff_selftest|release-diff selftest (the comparator's own smoke)|static|dev,test|buildtree|-|0"
+      "run_rc_discipline|rc-discipline (bare retain/release ratchet)|static|dev,test|buildtree|-|0"
+      "run_long_width|long width (language values are int64_t, not long)|static|dev,test|buildtree|-|0"
+      "run_iter_wiring|iter wiring (JitIterDrive + upstream forwarding ratchet)|static|dev,test|buildtree|-|0"
+      "run_rt_keep_scope|rt-keep scope (CULEBRA_RT_KEEP is culebra_runtime_*-only)|static|dev,test|buildtree|-|0"
+      "run_optional_ns|optional ns (the tests/*.cul sweep names no optional namespace)|static|dev,test|buildtree|-|0"
+      "run_jit_host_symbols|jit host symbols (driver defines what codegen names)|binary|dev,test|light|-|0"
+      "run_eh_balance|eh balance (every begin_catch is closed)|binary|dev,test|light|-|2"
+      "run_alloca_discipline|alloca discipline (scratch slots stay entry-block)|binary|dev,test|light|-|0"
+      "run_float_carry|float carry (loop-carried Floats stay double phis)|binary|dev,test|light|-|0"
+      "run_param_tag|param tag (a declared parameter type reaches the code)|binary|dev,test|light|-|0"
+      "run_param_names|param names (stdlib functions bind their documented names)|binary|dev,test|light|-|1"
+      "run_early_ifcvt|early ifcvt (a carried Float's if arm stays a branch)|binary|dev,test|light|-|1"
+      "run_rt_archive_tls|rt-archive TLS ownership (core vs force-loaded features)|tree|test|buildtree|-|0"
+      "run_rt_archive_backend_free|rt-archive backend-free (core names no gated backend)|tree|test|buildtree|-|1"
+      "run_webview_dynload|webview dynload (engine stays behind dlopen)|tree|test|buildtree|-|0"
+      "run_diff_vm_jit|vm/jit symmetry (real test files)|binary|dev,test|light|-|116"
+      "run_vm_cases|vm_cases (frozen expected outputs)|binary|dev,test|light|-|62"
+      "run_codegen_backends|codegen backends (-O0, fast vs --vm)|binary|test|light|-|24"
+      "run_difftest|difftest (generated corpus)|binary|test|diff|heavy|143"
+      "run_difftest_refs|difftest (refcount lane)|binary|test|leak|heavy|146"
+      "run_leak_fuzz|leak-fuzz (corpus RC-leak regression)|binary|test|diff|heavy|146"
+      "run_leak_abort|leak-abort (GAP5 loud detector smoke)|binary|test|light|-|1"
+      "run_leak_abort_suite|leak-abort-suite (corpus inflated-RC, throw-paths)|binary|test|leak|heavy|139"
+      "run_gc_stress|gc-stress (collect every alloc; jit conservative, vm + jit refcount-seeded)|binary|test|leak|heavy|227"
+      "run_leak_battery|rc-leak battery (quiescent audit per pattern)|binary|test|leak|heavy|31"
+      "run_embed|ctest (embedding smokes)|tree|test|buildtree|-|60"
+      "run_languages|languages (front ends vs their oracles)|binary|dev,test|light|-|13"
+      "run_culebra_test_self|culebra-test self|binary|dev,test|light|-|0"
+      "run_unit_runner_sweep|culebra-test sweep (tests/*.cul as session units)|binary|dev,test|light|-|11"
+      "run_isolate|isolate (jit + VM)|binary|dev,test|light|-|5"
+      "run_aot|AOT (== jit)|binary|test|aot|heavy|154"
+      "run_wrap_test|wrap (extended binary, 3 backends)|tree|test|wrap|wrap|0"
+    )
+
+    # What the table must say about itself. These are the invariants the
+    # comments used to ask a reader to maintain: a phase that reaches no CI
+    # shard is a phase CI silently stopped running, and a build-tree phase in
+    # a binary-only shard fails on the downloaded artifact rather than here.
+    gate_table_selftest() {
+        local fn label needs tiers ci gate cost bad=0
+        while IFS='|' read -r fn label needs tiers ci gate cost; do
+            [[ -n "$fn" ]] || continue
+            declare -F "$fn" > /dev/null \
+                || { echo "gate table: no such phase function: $fn" >&2; bad=1; }
+            [[ ",$tiers," != *",test,"* || -n "$ci" ]] \
+                || { echo "gate table: $fn is in the full gate but no CI shard" >&2; bad=1; }
+            if [[ "$needs" == tree && ",$ci," == *",light,"* ]]; then
+                echo "gate table: $fn needs a build tree but rides the binary-only ci-light shard" >&2
+                bad=1
+            fi
+        done < <(printf '%s\n' "${gate_rows[@]}")
+        (( bad == 0 )) || exit 2
     }
-    case "{{BACKEND}}" in
+
+    # Run one lane: every row selected by a tier key (dev|test) or a CI shard
+    # name, in table order. An empty selection is a typo, not a quiet pass —
+    # three ratchets in this tree once ran green while measuring nothing.
+    run_lane() {
+        local sel="$1" fn label needs tiers ci gate cost n=0
+        gate_table_selftest
+        while IFS='|' read -r fn label needs tiers ci gate cost; do
+            [[ -n "$fn" ]] || continue
+            case "$sel" in
+              dev|test) [[ ",$tiers," == *",$sel,"* ]] || continue ;;
+              *)        [[ ",$ci," == *",$sel,"* ]] || continue ;;
+            esac
+            case "$gate" in
+              heavy) [[ -z "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || continue ;;
+              wrap)  [[ -n "${CULEBRA_TEST_WRAP:-}" || "$sel" == wrap ]] || continue ;;
+            esac
+            n=$((n + 1))
+            # CULEBRA_GATE_DRYRUN prints the lane instead of running it: what a
+            # retiering changed, and the budget a lane is expected to cost.
+            if [[ -n "${CULEBRA_GATE_DRYRUN:-}" ]]; then
+                printf '%s\t%ss\t%s\n' "$fn" "$cost" "$label"
+                continue
+            fi
+            phase "$label"; "$fn"
+        done < <(printf '%s\n' "${gate_rows[@]}")
+        (( n > 0 )) || { echo "gate table: lane '$sel' selected no phase" >&2; exit 2; }
+    }
+    backend="{{BACKEND}}"
+    case "$backend" in
       # Order: cheap tests first, then AOT (slowest + most env-sensitive,
       # so a failure there shouldn't mask matcher regressions).
       # CULEBRA_TEST_SKIP_HEAVY skips the platform-independent heavy phases
       # (the generated difftest and its refcount lane, the gc-stress sweep, and the
       # per-test AOT links). CI sets it on the slow macOS runner — those run on
       # Linux CI and in local dev.
+      # The wrap row is opt-in rather than skip-by-flag: wrap rebuilds the
+      # whole tree, which doubled this gate, and only a wrap/CMake/AOT change
+      # can break it. Ubuntu CI runs it as its own lane (`_run-tests wrap`);
+      # locally use `just test wrap` or CULEBRA_TEST_WRAP=1.
       all)
-        run_source_ratchets
-        phase "jit host symbols (driver defines what codegen names)"; run_jit_host_symbols
-        phase "eh balance (every begin_catch is closed)"; run_eh_balance
-        phase "alloca discipline (scratch slots stay entry-block)"; run_alloca_discipline
-        phase "float carry (loop-carried Floats stay double phis)"; run_float_carry
-        phase "param tag (a declared parameter type reaches the code)"; run_param_tag
-        phase "param names (stdlib functions bind their documented names)"; run_param_names
-        phase "early ifcvt (a carried Float's if arm stays a branch)"; run_early_ifcvt
-        phase "rt-archive TLS ownership (core vs force-loaded features)"; run_rt_archive_tls
-        phase "rt-archive backend-free (core names no gated backend)"; run_rt_archive_backend_free
-        phase "webview dynload (engine stays behind dlopen)"; run_webview_dynload
-        phase "vm/jit symmetry (real test files)"; run_diff_vm_jit
-        phase "vm_cases (frozen expected outputs)"; run_vm_cases
-        phase "codegen backends (-O0, fast vs --vm)"; run_codegen_backends
-        [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "difftest (generated corpus)"; run_difftest; }
-        [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "difftest (refcount lane)"; run_difftest_refs; }
-        [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "leak-fuzz (corpus RC-leak regression)"; run_leak_fuzz; }
-        phase "leak-abort (GAP5 loud detector smoke)"; run_leak_abort
-        [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "leak-abort-suite (corpus inflated-RC, throw-paths)"; run_leak_abort_suite; }
-        [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "gc-stress (collect every alloc; jit conservative, vm + jit refcount-seeded)"; run_gc_stress; }
-        [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "rc-leak battery (quiescent audit per pattern)"; run_leak_battery; }
-        phase "ctest (embedding smokes)"; run_embed
-        phase "languages (front ends vs their oracles)"; run_languages
-        phase "culebra-test self"; run_culebra_test_self
-        phase "culebra-test sweep (tests/*.cul as session units)"; run_unit_runner_sweep
-        phase "isolate (jit + VM)"; run_isolate
-        [[ -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || { phase "AOT (== jit)"; run_aot; }
-        # Opt-in rather than skip-by-flag: wrap rebuilds the whole tree, which
-        # doubled this gate, and only a wrap/CMake/AOT change can break it.
-        # Ubuntu CI runs wrap as its own lane (`_run-tests wrap`); locally
-        # use `just test wrap` or CULEBRA_TEST_WRAP=1.
-        [[ -z "${CULEBRA_TEST_WRAP:-}" ]] || { phase "wrap (extended binary, 3 backends)"; run_wrap_test; }
+        run_lane test
         phase "done"; echo "test OK"
         ;;
       # Inner-loop core: the vm==JIT correctness invariant plus the two
       # cheap symmetric suites. No difftest/AOT/embed, so it runs against the
       # no-LTO build-dev/ binary too (see `test-dev`). This is the green-light
       # check after a single edit; `all` is the pre-commit gate.
+      # Inner-loop core, and the only gate `just land` puts in front of master.
+      # Runs against the no-LTO build-dev/ binary (see `test-dev`).
       fast)
-        run_source_ratchets
-        phase "jit host symbols (driver defines what codegen names)"; run_jit_host_symbols
-        phase "eh balance (every begin_catch is closed)"; run_eh_balance
-        phase "alloca discipline (scratch slots stay entry-block)"; run_alloca_discipline
-        phase "float carry (loop-carried Floats stay double phis)"; run_float_carry
-        phase "param tag (a declared parameter type reaches the code)"; run_param_tag
-        phase "param names (stdlib functions bind their documented names)"; run_param_names
-        phase "early ifcvt (a carried Float's if arm stays a branch)"; run_early_ifcvt
-        phase "vm/jit symmetry (real test files)"; run_diff_vm_jit
-        phase "vm_cases (frozen expected outputs)"; run_vm_cases
-        phase "languages (front ends vs their oracles)"; run_languages
-        phase "culebra-test self"; run_culebra_test_self
-        phase "culebra-test sweep (tests/*.cul as session units)"; run_unit_runner_sweep
-        phase "isolate (jit + VM)"; run_isolate
+        run_lane dev
         phase "done"; echo "test OK (fast)"
         ;;
+      # Single-phase modes for focused debugging. aot and wrap are CI shard
+      # names too, so they route through the table like the shards below.
       jit)    run_jit ;;
-      aot)    run_aot ;;
       embed)  run_embed ;;
       isolate) run_isolate ;;
       languages) run_languages ;;
-      wrap)   run_wrap_test ;;
-      # CI shards: ci.yml splits `all` across parallel Ubuntu jobs — the build
-      # job runs ci-buildtree against its build tree, and the lane matrix runs
-      # ci-light/ci-diff/ci-leak/aot/wrap against the downloaded binary. Keep
-      # the union of these shards equal to `all` when adding a phase, or CI
-      # silently stops running it.
-      # ci-buildtree groups everything that needs the CMake build tree (the
-      # runtime archives, driver objects, ctest executables), plus the
-      # source-only ratchets — the build job is the one place both exist.
-      ci-buildtree)
-        run_source_ratchets
-        phase "rt-archive TLS ownership (core vs force-loaded features)"; run_rt_archive_tls
-        phase "rt-archive backend-free (core names no gated backend)"; run_rt_archive_backend_free
-        phase "webview dynload (engine stays behind dlopen)"; run_webview_dynload
-        phase "ctest (embedding smokes)"; run_embed
-        phase "done"; echo "test OK (ci-buildtree)"
-        ;;
-      # The three binary-only lanes: everything below runs the culebra binary
-      # (plus scripts in the checkout) and touches no build tree, so the CI
-      # lanes need only the downloaded artifact. Grouped so the slowest lane
-      # stays under the wrap lane's wall-clock.
-      ci-light)
-        phase "jit host symbols (driver defines what codegen names)"; run_jit_host_symbols
-        phase "eh balance (every begin_catch is closed)"; run_eh_balance
-        phase "alloca discipline (scratch slots stay entry-block)"; run_alloca_discipline
-        phase "float carry (loop-carried Floats stay double phis)"; run_float_carry
-        phase "param tag (a declared parameter type reaches the code)"; run_param_tag
-        phase "param names (stdlib functions bind their documented names)"; run_param_names
-        phase "early ifcvt (a carried Float's if arm stays a branch)"; run_early_ifcvt
-        phase "vm/jit symmetry (real test files)"; run_diff_vm_jit
-        phase "vm_cases (frozen expected outputs)"; run_vm_cases
-        phase "codegen backends (-O0, fast vs --vm)"; run_codegen_backends
-        phase "leak-abort (GAP5 loud detector smoke)"; run_leak_abort
-        phase "languages (front ends vs their oracles)"; run_languages
-        phase "culebra-test self"; run_culebra_test_self
-        phase "culebra-test sweep (tests/*.cul as session units)"; run_unit_runner_sweep
-        phase "isolate (jit + VM)"; run_isolate
-        phase "done"; echo "test OK (ci-light)"
-        ;;
-      ci-diff)
-        phase "difftest (generated corpus)"; run_difftest
-        phase "leak-fuzz (corpus RC-leak regression)"; run_leak_fuzz
-        phase "done"; echo "test OK (ci-diff)"
-        ;;
-      ci-leak)
-        phase "difftest (refcount lane)"; run_difftest_refs
-        phase "leak-abort-suite (corpus inflated-RC, throw-paths)"; run_leak_abort_suite
-        phase "gc-stress (collect every alloc; jit conservative, vm + jit refcount-seeded)"; run_gc_stress
-        phase "rc-leak battery (quiescent audit per pattern)"; run_leak_battery
-        phase "done"; echo "test OK (ci-leak)"
+      # CI shards: ci.yml splits the full gate across parallel Ubuntu jobs —
+      # the build job runs ci-buildtree against its build tree, and the lane
+      # matrix runs ci-light/ci-diff/ci-leak/aot/wrap against the downloaded
+      # binary. The `ci` column of the table decides membership, and
+      # gate_table_selftest fails a full-gate phase that reaches no shard, so
+      # the union can no longer drift away from the gate by hand.
+      # ci-buildtree is where the build-tree phases (runtime archives, driver
+      # objects, ctest executables) and the source-only ratchets meet.
+      aot|wrap|ci-buildtree|ci-light|ci-diff|ci-leak)
+        run_lane "${backend#ci-}"
+        phase "done"; echo "test OK ({{BACKEND}})"
         ;;
       *) echo "test: unknown backend '{{BACKEND}}' (expected: all|fast|jit|aot|embed|isolate|languages|wrap|ci-buildtree|ci-light|ci-diff|ci-leak)" >&2; exit 2 ;;
     esac
