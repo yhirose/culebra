@@ -258,7 +258,12 @@ struct FnAnalysis {
       const std::vector<const std::set<std::string>*>& outer,
       DeclKinds& kinds) const {
     using namespace peg::udl;
-    if (node.tag == "FUNCTION"_ || node.tag == "LAMBDA"_) return;
+    // A defer body is a frame of its own (analyze_defer collects it, starting
+    // at the body): its bindings are not this function's, as lint's shadow
+    // walker reads it too.
+    if (node.tag == "FUNCTION"_ || node.tag == "LAMBDA"_ ||
+        node.tag == "DEFER"_)
+      return;
     // Record which bucket a freshly collected local belongs to; see
     // DeclKinds. Called next to every `locals.insert` below.
     auto note = [&](std::string_view name, bool from_assign) {

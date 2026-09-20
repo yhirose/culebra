@@ -289,4 +289,22 @@ log = ''
 assert_eq(defer_binds(), 20)
 assert_eq(log, 'i1;i2;m21;x;')
 
+# ...and they are the defer's own, not the function's: a closure beside the
+# defer still sees the enclosing name, which a defer-local `let` of the same
+# name neither shadows nor captures.
+let outer_name = 'outer'
+fn defer_frame() {
+  defer {
+    let outer_name = 'inner'
+    log = "{log}{outer_name};"
+  }
+  fn read() {
+    outer_name
+  }
+  read()
+}
+log = ''
+assert_eq(defer_frame(), 'outer')
+assert_eq(log, 'inner;')
+
 IO.inspect('test_defer OK')
