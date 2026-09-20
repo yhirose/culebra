@@ -1,0 +1,32 @@
+# The files chosen for IR shapes that stress the unoptimized backends, read by
+# the codegen-backends phase (--jit -O0 and --jit-faststart vs --vm) and used as
+# the mandatory seeds of the JIT shape set (tools/checks/jit_shape_set.txt).
+#
+# Chosen for: for-in tag handling, phi merges (cond/match), destructure,
+# invoke/unwind edges (drop-on-throw), generator CPS, iterator HOF,
+# per-iteration scopes. The second group throws through deep preamble call
+# chains — the shape that hid a backend miscompile from this gate until 2026-07
+# precisely because the first group never exercised it.
+#
+# test_effects_resume_gen.cul carries the generator-CPS-inside-effects shape
+# that used to live in test_effects_resume.cul before it was split further
+# (2026-09-04); that split file is small enough now not to need a slot of its
+# own. Heaviest first: the effects trio dominates the phase, and one job per
+# (file, backend) pair keeps a heavy file's two runs from idling the other lanes.
+tests/test_effects_defer.cul
+tests/test_effects.cul
+tests/test_effects_resume_gen.cul
+tests/test_dynamic_perform.cul
+tests/test_transform_error_lines.cul
+tests/test_forin_codegen.cul
+tests/test_forin_unwind_drop.cul
+tests/test_destructure_seq_unify.cul
+tests/test_match_block_arm.cul
+tests/test_generator_complex.cul
+tests/test_drop_on_throw.cul
+tests/test_cond.cul
+tests/test_while_scope.cul
+tests/callable_iterator_hof.cul
+tests/test_path.cul
+tests/test_regex.cul
+tests/test_args.cul

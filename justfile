@@ -114,6 +114,23 @@ check-blob: _gen-blob-tool
 check-difftest-coverage:
     tools/checks/check_difftest_coverage.sh
 
+# Recompute the JIT shape set: the smallest set of test files that still lowers
+# every bytecode op, which is what the landing gate's --jit leg sweeps. Run it
+# when the check below says the cover no longer holds — a new op, or a test file
+# the set named and that moved.
+[group("test")]
+[doc("Regenerate tools/checks/jit_shape_set.txt (the landing gate's JIT lane)")]
+gen-jit-shape-set: dev
+    @CULEBRA=./build-dev/culebra tools/checks/gen_jit_shape_set.sh
+
+# What the gate sweeps, held to the numbers in tools/checks/gate_budget.txt.
+# The populations are what grows quietly; the per-item costs live in the
+# justfile's gate table.
+[group("test")]
+[doc("Verify the swept populations match tools/checks/gate_budget.txt")]
+check-gate-budget:
+    tools/checks/check_gate_budget.sh
+
 # Every script release.yml runs, ci.yml runs too — a `v*` tag must not be the
 # first execution of anything. Both release failures were that shape.
 [group("test")]
@@ -247,7 +264,7 @@ check-docs-cpp:
 # the workflow-coverage ratchet. Cheap enough to gate both test recipes:
 # well under a second once the grammar-blob tool is ccache-warm.
 [private]
-check-generated: check-grammar-sync check-preambles check-blob check-site-version check-site-playground-sync check-difftest-coverage check-release-coverage check-spec-examples check-api-coverage check-canon-return-types check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-docs-cpp-includes check-header-naming check-search-splitter check-layering check-codegen-enums check-vm-dispatch-table check-protocol-member-door
+check-generated: check-grammar-sync check-preambles check-blob check-site-version check-site-playground-sync check-difftest-coverage check-gate-budget check-release-coverage check-spec-examples check-api-coverage check-canon-return-types check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-docs-cpp-includes check-header-naming check-search-splitter check-layering check-codegen-enums check-vm-dispatch-table check-protocol-member-door
 
 # Such a build still runs programs — everything below the LLVM lowering
 # (rt.h, vm.h) is LLVM-free, so the bytecode VM's executor is intact; what it
@@ -453,10 +470,22 @@ check-preambles:
 test BACKEND='all': check-generated build-gate
     @BIN=./build-gate/culebra {{lock_cmd}} just _run-tests {{BACKEND}}
 
+# The tier below test-dev: the source and IR ratchets plus the whole assertion
+# corpus in one executor process, and nothing that compiles the corpus through
+# LLVM. Cheap enough to run on every save, and it answers the question most
+# edits raise — did I break what the tree already asserts. `just test-dev` is
+# the gate for landing, `just test` for pushing.
+[doc("Edit-by-edit checks vs build-dev/: source + IR ratchets and the assertion corpus")]
+[group("test")]
+check: dev
+    @BIN=./build-dev/culebra just _run-tests check
+
 # Fast inner-loop tests against the no-LTO build-dev/ binary (`just dev`).
-# Runs only the phases that don't need LTO/AOT/embed exes: the vm==JIT
-# symmetry sweep + culebra-test self + isolate (BACKEND=fast, the default).
-# Run this after each edit; `just test` is the heavier pre-commit gate.
+# The landing gate: `just land` runs it and nothing else before fast-forwarding
+# master, so it carries the phases whose absence has let a break through — the
+# CLI half of ctest (twice) and the -O0 / faststart codegen axis (three times)
+# — while the axes that sweep the whole corpus a second time under a GC or
+# refcount setting run in `just test` and CI.
 # check-generated runs ahead of the build: `just land` runs this recipe as its
 # only gate before fast-forwarding master, so a stale generated file would
 # otherwise reach master with only CI left to notice. The quick-guide index is
@@ -567,10 +596,34 @@ _run-tests BACKEND:
         collect_results "$d" "jit"
     }
 
+    # The files this lane sweeps. SCOPE=full is the corpus; SCOPE=shape is the
+    # op cover (tools/checks/jit_shape_set.txt) plus whatever test files the
+    # branch touches, which is what the landing gate runs: the corpus costs 610
+    # CPU seconds on the --jit leg against 17 on the --vm leg — LLVM, not
+    # execution — and the cover buys 147 of the 151 ops back for 71 of those
+    # 610. The full sweep runs in `just test` and in CI's ci-light on every
+    # push, so a shape the cover misses is caught there rather than never.
+    diff_vm_jit_files() {
+        [[ "${1:-full}" == shape ]] || { printf '%s\n' tests/*.cul; return; }
+        grep '^tests/' tools/checks/jit_shape_set.txt
+        # Anything the branch changed, committed or not: the file you are
+        # working on is the one the cover has no way to know about. Each probe
+        # is optional — outside a repository, or on a checkout with no master,
+        # the cover alone is still a valid lane.
+        local base
+        git diff --name-only HEAD -- tests 2>/dev/null || true
+        if base=$(git merge-base HEAD master 2>/dev/null); then
+            git diff --name-only "$base" -- tests 2>/dev/null || true
+        fi
+        git ls-files --others --exclude-standard -- tests 2>/dev/null || true
+    }
+
     run_diff_vm_jit() {
-        local d="$job_dir/diff"
+        local d="$job_dir/diff" scope="${1:-full}" files
         mkdir -p "$d"
-        printf '%s\n' tests/*.cul | xargs -n1 -P "$JOBS" -I '{}' bash -c '
+        files=$(diff_vm_jit_files "$scope" | grep -E '^tests/[^/]+\.cul$' | sort -u)
+        [[ -n "$files" ]] || { echo "test (vm vs jit): no file selected" >&2; exit 1; }
+        printf '%s\n' $files | xargs -n1 -P "$JOBS" -I '{}' bash -c '
             f="$1"; d="$2"
             name=$(basename "$f" .cul)
             # The executor is the reference lane (the default engine; the
@@ -609,8 +662,15 @@ _run-tests BACKEND:
             echo "test (vm vs jit) FAIL" >&2
             exit 1
         fi
-        echo "test (vm vs jit) OK"
+        printf 'test (vm vs jit) OK (%s scope, %s files)\n' "$scope" \
+            "$(printf '%s\n' $files | wc -l | tr -d ' ')"
         check_jit_file_budget "$d"
+    }
+
+    # The subset the shape scope sweeps is only worth trusting while it still
+    # covers every op the executor implements.
+    run_jit_shape_set() {
+        {{nice_cmd}} bash tools/checks/check_jit_shape_set.sh "$BIN" || exit 1
     }
 
     # The sweep's wall clock is bounded by its slowest single file (they run
@@ -677,36 +737,10 @@ _run-tests BACKEND:
     # those paths abort or miscompile on (see
     # tests/test_forin_codegen.cul). Behavior must equal --vm on every
     # backend. Cheap: a handful of codegen-sensitive files, not the corpus.
-    # Files are chosen for IR shapes that stress the unoptimized backend:
-    # for-in tag handling, phi merges (cond/match), destructure, invoke/unwind
-    # edges (drop-on-throw), generator CPS, iterator HOF, per-iteration scopes.
-    # The second group throws through deep preamble call chains — the shape
-    # that hid a backend miscompile from this gate until 2026-07 precisely
-    # because the list above never exercised it.
-    # One job per (file, backend) pair, heaviest files first: the effects
-    # trio dominates the phase, so keeping a heavy file's two backend runs
-    # in one job would leave every other lane idle waiting for it.
-    # test_effects_resume_gen.cul carries the generator-CPS-inside-effects
-    # shape that used to live in test_effects_resume.cul before it was split
-    # further (2026-09-04); that split file itself is small enough now to
-    # not need a codegen-backends slot of its own.
-    codegen_files="tests/test_effects_defer.cul \
-        tests/test_effects.cul \
-        tests/test_effects_resume_gen.cul \
-        tests/test_dynamic_perform.cul \
-        tests/test_transform_error_lines.cul \
-        tests/test_forin_codegen.cul \
-        tests/test_forin_unwind_drop.cul \
-        tests/test_destructure_seq_unify.cul \
-        tests/test_match_block_arm.cul \
-        tests/test_generator_complex.cul \
-        tests/test_drop_on_throw.cul \
-        tests/test_cond.cul \
-        tests/test_while_scope.cul \
-        tests/callable_iterator_hof.cul \
-        tests/test_path.cul \
-        tests/test_regex.cul \
-        tests/test_args.cul"
+    # The file list lives in tools/checks/codegen_sensitive.txt, which the JIT
+    # shape set seeds itself from too — one list, so a shape the codegen lanes
+    # were given cannot go missing from the landing gate's sweep.
+    codegen_files="$(grep -v "^#" tools/checks/codegen_sensitive.txt | grep . | tr "\n" " ")"
     run_codegen_backends() {
         local d="$job_dir/codegen"
         mkdir -p "$d"
@@ -739,7 +773,7 @@ _run-tests BACKEND:
         echo "test (codegen backends: -O0, fast) OK"
     }
 
-    run_aot() {
+    run_aot_hygiene() {
         local out_dir="${TMPDIR:-/tmp}/culebra-aot-test"
         rm -rf "$out_dir" && mkdir -p "$out_dir"
         local d="$job_dir/aot"
@@ -802,7 +836,33 @@ _run-tests BACKEND:
         # driver built without Webview, which is what the sweep below cannot do).
         {{nice_cmd}} bash misc/aot_axes/probe_webview_aot_link.sh "$BIN" "$out_dir/webview" \
             || exit 1
-        printf '%s\n' tests/*.cul | xargs -n1 -P "$JOBS" -I '{}' bash -c '
+        echo "aot hygiene OK (CULEBRA_HOME, cache prune, TMPDIR, webview link)"
+    }
+
+    # The corpus sweep: every test file built, linked, run, and held to its
+    # `--vm` output. SCOPE=full is every file; SCOPE=sample is every tenth,
+    # which is what the local gate runs — the sweep has no language-level
+    # detection on its record (the equality it asserts is the one the symmetry
+    # phase already asserts through --jit), while its own risk is the link, and
+    # one link per axis is enough to see a broken one. CI's aot lane runs the
+    # full sweep on every push, and the sample is cheap enough to run on the
+    # macOS gate, which skipped AOT entirely and is the one place a macOS-only
+    # link break can show.
+    run_aot_sweep() {
+        local scope="${1:-full}"
+        local out_dir="${TMPDIR:-/tmp}/culebra-aot-test"
+        mkdir -p "$out_dir"
+        local d="$job_dir/aot"
+        mkdir -p "$d"
+        local files=(tests/*.cul)
+        if [[ "$scope" == sample ]]; then
+            local sampled=() i=0
+            for f in "${files[@]}"; do
+                (( i++ % 10 == 0 )) && sampled+=("$f")
+            done
+            files=("${sampled[@]}")
+        fi
+        printf '%s\n' "${files[@]}" | xargs -n1 -P "$JOBS" -I '{}' bash -c '
             f="$1"; d="$2"; out_dir="$3"
             name=$(basename "$f" .cul)
             bin="$out_dir/$name"
@@ -829,6 +889,15 @@ _run-tests BACKEND:
             echo "test aot FAIL" >&2
             exit 1
         fi
+        echo "aot sweep OK: AOT binaries match --vm"
+    }
+
+    # The AOT checks with their own detection record: the feature axes that
+    # vanish without a link error, the paths a fragment must not bake in (the
+    # failure only a downloaded binary sees), the baked preamble, and the one
+    # place an AOT binary is handed arguments. Cheap, and none of them is
+    # implied by the sweep, so every tier that can link runs them.
+    run_aot_axes() {
         # The sweep above runs every binary with no arguments, so this is the
         # one place an AOT build is asked what it does with some.
         {{nice_cmd}} bash tests/sys_argv_test.sh "$BIN" --aot || exit 1
@@ -843,7 +912,7 @@ _run-tests BACKEND:
         # the source again, two seconds slower per module); read it off the
         # emitted IR and the linked outputs.
         {{nice_cmd}} bash tools/checks/check_baked_preamble.sh "$(dirname "$BIN")" || exit 1
-        echo "test aot OK: AOT binaries match --vm"
+        echo "aot axes OK (arguments, feature axes, link portability, baked preamble)"
     }
 
     run_embed() {
@@ -1081,14 +1150,45 @@ _run-tests BACKEND:
     # VM slice, so a VmError here is an output mismatch — a slice regression
     # fails the gate instead of skipping. Quiet on success (the scripts print
     # one OK line per case × lane); full output is replayed on failure.
+    # AXES=plain runs the frozen comparison alone; AXES=gc adds the two GC
+    # axes (compare.sh reads STRESS / REFS). The axes cost 21s and 20s against
+    # the plain lane's 18s and re-apply to these 181 cases exactly what
+    # run_gc_stress applies to the whole corpus, so the landing gate takes the
+    # plain lane and the full gate — where run_gc_stress runs too — takes all
+    # three.
     run_vm_cases() {
-        local out mode
-        # Plain, then the two GC axes (compare.sh reads STRESS / REFS).
-        for mode in "" "STRESS=1" "REFS=1 STRESS=1"; do
+        local axes="${1:-gc}" out mode modes=("")
+        [[ "$axes" == plain ]] || modes=("" "STRESS=1" "REFS=1 STRESS=1")
+        for mode in "${modes[@]}"; do
             out="$(env $mode ${TIMEOUT_BIN:+$TIMEOUT_BIN 300} tools/bench/vm_cases/compare.sh "$BIN" 2>&1)" \
                 || { printf '%s\n' "$out"; exit 1; }
         done
-        echo "vm_cases OK (both lanes == frozen expected, + GC_STRESS, + GC_REFS GC_STRESS)"
+        if [[ "$axes" == plain ]]; then
+            echo "vm_cases OK (both lanes == frozen expected)"
+        else
+            echo "vm_cases OK (both lanes == frozen expected, + GC_STRESS, + GC_REFS GC_STRESS)"
+        fi
+    }
+
+    # The ctest entries that drive the built binary through a shell script.
+    # They need no test executable, so the dev tree — where `just dev` builds
+    # the driver alone — can run them, and the landing gate can carry the
+    # class of failure that twice reached master while `just test-dev` had no
+    # ctest at all (jit_error_pos_test, search_model_test). Membership is read
+    # off ctest's own listing rather than kept as a list here, so a new CLI
+    # test joins by existing; the three language front ends are left out
+    # because run_languages covers their samples in this tier and their ctest
+    # entries (which add the faststart and AOT legs) cost 152 of the suite's
+    # 310 CPU seconds.
+    run_embed_cli() {
+        local dir names
+        dir="$(dirname "$BIN")"
+        names=$(ctest --test-dir "$dir" --show-only=json-v1 \
+            | python3 tools/checks/ctest_shell_driven.py \
+            | grep -vE '^(pl0_codegen|mini_culebra|mini_js)_test$') || exit 1
+        [[ -n "$names" ]] || { echo "ctest (cli): no shell-driven test found" >&2; exit 1; }
+        {{nice_cmd}} ctest --test-dir "$dir" --output-on-failure --timeout 300 \
+            -j "$JOBS" -R "^($(printf '%s' "$names" | paste -sd '|' -))\$" || exit 1
     }
     # Leak-fuzz: rerun the same corpus under CULEBRA_GC_NEVER and fail on any
     # JIT RC leak not already in tools/difftest/leak_baseline.txt. A regression
@@ -1292,19 +1392,23 @@ _run-tests BACKEND:
     #   needs | static (checkout only) | binary | tree (a CMake build tree)
     #   tiers | local entry points: dev = test-dev/test-assert/land, test = the full gate
     #   ci    | CI shards that run it; every `test` row must name at least one
-    #   gate  | -  always | heavy  skipped by CULEBRA_TEST_SKIP_HEAVY | wrap  only with CULEBRA_TEST_WRAP
+    #   gate  | -  always | heavy  skipped by CULEBRA_TEST_SKIP_HEAVY | wrap  only
+    #         | with CULEBRA_TEST_WRAP | local  a local-only variant whose full
+    #         | version runs in a CI shard (the sampled AOT sweep, the plain
+    #         | vm_cases lane, the CLI half of ctest), exempt from the rule that
+    #         | a full-gate phase must reach CI
     #   cost  | measured wall seconds, single run, 8-core M1 Pro, warm build-gate
     #
     # Order is execution order: cheap first, then the corpus sweeps, AOT last
     # (slowest and most env-sensitive, so a failure there cannot mask a
     # matcher regression).
     gate_rows=(
-      "run_release_diff_selftest|release-diff selftest (the comparator's own smoke)|static|dev,test|buildtree|-|0"
-      "run_rc_discipline|rc-discipline (bare retain/release ratchet)|static|dev,test|buildtree|-|0"
-      "run_long_width|long width (language values are int64_t, not long)|static|dev,test|buildtree|-|0"
-      "run_iter_wiring|iter wiring (JitIterDrive + upstream forwarding ratchet)|static|dev,test|buildtree|-|0"
-      "run_rt_keep_scope|rt-keep scope (CULEBRA_RT_KEEP is culebra_runtime_*-only)|static|dev,test|buildtree|-|0"
-      "run_optional_ns|optional ns (the tests/*.cul sweep names no optional namespace)|static|dev,test|buildtree|-|0"
+      "run_release_diff_selftest|release-diff selftest (the comparator's own smoke)|static|check,dev,test|buildtree|-|0"
+      "run_rc_discipline|rc-discipline (bare retain/release ratchet)|static|check,dev,test|buildtree|-|0"
+      "run_long_width|long width (language values are int64_t, not long)|static|check,dev,test|buildtree|-|0"
+      "run_iter_wiring|iter wiring (JitIterDrive + upstream forwarding ratchet)|static|check,dev,test|buildtree|-|0"
+      "run_rt_keep_scope|rt-keep scope (CULEBRA_RT_KEEP is culebra_runtime_*-only)|static|check,dev,test|buildtree|-|0"
+      "run_optional_ns|optional ns (the tests/*.cul sweep names no optional namespace)|static|check,dev,test|buildtree|-|0"
       "run_jit_host_symbols|jit host symbols (driver defines what codegen names)|binary|dev,test|light|-|0"
       "run_eh_balance|eh balance (every begin_catch is closed)|binary|dev,test|light|-|2"
       "run_alloca_discipline|alloca discipline (scratch slots stay entry-block)|binary|dev,test|light|-|0"
@@ -1315,22 +1419,29 @@ _run-tests BACKEND:
       "run_rt_archive_tls|rt-archive TLS ownership (core vs force-loaded features)|tree|test|buildtree|-|0"
       "run_rt_archive_backend_free|rt-archive backend-free (core names no gated backend)|tree|test|buildtree|-|1"
       "run_webview_dynload|webview dynload (engine stays behind dlopen)|tree|test|buildtree|-|0"
-      "run_diff_vm_jit|vm/jit symmetry (real test files)|binary|dev,test|light|-|116"
-      "run_vm_cases|vm_cases (frozen expected outputs)|binary|dev,test|light|-|62"
-      "run_codegen_backends|codegen backends (-O0, fast vs --vm)|binary|test|light|-|24"
+      "run_jit_shape_set|jit shape set (the subset still covers every op)|binary|check,dev,test|light|-|3"
+      "run_diff_vm_jit shape|vm/jit symmetry (the op cover + what the branch touched)|binary|dev|-|local|15"
+      "run_diff_vm_jit full|vm/jit symmetry (every test file)|binary|test|light|-|116"
+      "run_vm_cases plain|vm_cases (frozen expected outputs)|binary|dev|-|local|18"
+      "run_vm_cases gc|vm_cases (frozen expected, + the two GC axes)|binary|test|light|-|62"
+      "run_codegen_backends|codegen backends (-O0, fast vs --vm)|binary|dev,test|light|-|24"
       "run_difftest|difftest (generated corpus)|binary|test|diff|heavy|143"
-      "run_difftest_refs|difftest (refcount lane)|binary|test|leak|heavy|146"
-      "run_leak_fuzz|leak-fuzz (corpus RC-leak regression)|binary|test|diff|heavy|146"
+      "run_difftest_refs|difftest (refcount lane)|binary||leak|-|146"
+      "run_leak_fuzz|leak-fuzz (corpus RC-leak regression)|binary||diff|-|146"
       "run_leak_abort|leak-abort (GAP5 loud detector smoke)|binary|test|light|-|1"
       "run_leak_abort_suite|leak-abort-suite (corpus inflated-RC, throw-paths)|binary|test|leak|heavy|139"
       "run_gc_stress|gc-stress (collect every alloc; jit conservative, vm + jit refcount-seeded)|binary|test|leak|heavy|227"
       "run_leak_battery|rc-leak battery (quiescent audit per pattern)|binary|test|leak|heavy|31"
+      "run_embed_cli|ctest (CLI entries, binary only)|tree|dev|-|local|20"
       "run_embed|ctest (embedding smokes)|tree|test|buildtree|-|60"
       "run_languages|languages (front ends vs their oracles)|binary|dev,test|light|-|13"
-      "run_culebra_test_self|culebra-test self|binary|dev,test|light|-|0"
-      "run_unit_runner_sweep|culebra-test sweep (tests/*.cul as session units)|binary|dev,test|light|-|11"
+      "run_culebra_test_self|culebra-test self|binary|check,dev,test|light|-|0"
+      "run_unit_runner_sweep|culebra-test sweep (tests/*.cul as session units)|binary|check,dev,test|light|-|11"
       "run_isolate|isolate (jit + VM)|binary|dev,test|light|-|5"
-      "run_aot|AOT (== jit)|binary|test|aot|heavy|154"
+      "run_aot_hygiene|AOT hygiene (CULEBRA_HOME, cache prune, TMPDIR, webview link)|binary|test|aot|-|6"
+      "run_aot_sweep sample|AOT (== vm, every tenth file)|binary|test|-|local|25"
+      "run_aot_sweep full|AOT (== vm, every file)|binary||aot|-|154"
+      "run_aot_axes|AOT axes (arguments, feature axes, link portability, baked preamble)|binary|test|aot|-|20"
       "run_wrap_test|wrap (extended binary, 3 backends)|tree|test|wrap|wrap|0"
     )
 
@@ -1339,12 +1450,13 @@ _run-tests BACKEND:
     # shard is a phase CI silently stopped running, and a build-tree phase in
     # a binary-only shard fails on the downloaded artifact rather than here.
     gate_table_selftest() {
-        local fn label needs tiers ci gate cost bad=0
+        local fn label needs tiers ci gate cost bad=0 cmd
         while IFS='|' read -r fn label needs tiers ci gate cost; do
             [[ -n "$fn" ]] || continue
-            declare -F "$fn" > /dev/null \
-                || { echo "gate table: no such phase function: $fn" >&2; bad=1; }
-            [[ ",$tiers," != *",test,"* || -n "$ci" ]] \
+            read -r -a cmd <<< "$fn"
+            declare -F "${cmd[0]}" > /dev/null \
+                || { echo "gate table: no such phase function: ${cmd[0]}" >&2; bad=1; }
+            [[ ",$tiers," != *",test,"* || -n "$ci" || "$gate" == local ]] \
                 || { echo "gate table: $fn is in the full gate but no CI shard" >&2; bad=1; }
             if [[ "$needs" == tree && ",$ci," == *",light,"* ]]; then
                 echo "gate table: $fn needs a build tree but rides the binary-only ci-light shard" >&2
@@ -1358,12 +1470,12 @@ _run-tests BACKEND:
     # name, in table order. An empty selection is a typo, not a quiet pass —
     # three ratchets in this tree once ran green while measuring nothing.
     run_lane() {
-        local sel="$1" fn label needs tiers ci gate cost n=0
+        local sel="$1" fn label needs tiers ci gate cost n=0 cmd budget=0 start=$SECONDS
         gate_table_selftest
         while IFS='|' read -r fn label needs tiers ci gate cost; do
             [[ -n "$fn" ]] || continue
             case "$sel" in
-              dev|test) [[ ",$tiers," == *",$sel,"* ]] || continue ;;
+              check|dev|test) [[ ",$tiers," == *",$sel,"* ]] || continue ;;
               *)        [[ ",$ci," == *",$sel,"* ]] || continue ;;
             esac
             case "$gate" in
@@ -1377,9 +1489,18 @@ _run-tests BACKEND:
                 printf '%s\t%ss\t%s\n' "$fn" "$cost" "$label"
                 continue
             fi
-            phase "$label"; "$fn"
+            budget=$((budget + cost))
+            read -r -a cmd <<< "$fn"
+            phase "$label"; "${cmd[@]}"
         done < <(printf '%s\n' "${gate_rows[@]}")
         (( n > 0 )) || { echo "gate table: lane '$sel' selected no phase" >&2; exit 2; }
+        # Reported, not gated: wall-clock on a loaded machine runs 1.5-2x the
+        # same lane's uncontended time, so this says whether the lane still
+        # costs what the table claims without failing anyone's build over the
+        # other session's ccache. The population behind the claim is what
+        # check-gate-budget holds.
+        [[ -n "${CULEBRA_GATE_DRYRUN:-}" ]] \
+            || echo "lane $sel: $n phases, $((SECONDS - start))s against a ${budget}s budget"
     }
     backend="{{BACKEND}}"
     case "$backend" in
@@ -1401,6 +1522,14 @@ _run-tests BACKEND:
       # cheap symmetric suites. No difftest/AOT/embed, so it runs against the
       # no-LTO build-dev/ binary too (see `test-dev`). This is the green-light
       # check after a single edit; `all` is the pre-commit gate.
+      # The edit-by-edit tier: the source and IR ratchets, and the whole
+      # assertion corpus in one executor process. Everything in it is cheap
+      # enough to run on every save, and between them they answer "did I break
+      # what this tree already says" — 8,539 assertions for 11 seconds.
+      check)
+        run_lane check
+        phase "done"; echo "test OK (check)"
+        ;;
       # Inner-loop core, and the only gate `just land` puts in front of master.
       # Runs against the no-LTO build-dev/ binary (see `test-dev`).
       fast)
@@ -1425,7 +1554,7 @@ _run-tests BACKEND:
         run_lane "${backend#ci-}"
         phase "done"; echo "test OK ({{BACKEND}})"
         ;;
-      *) echo "test: unknown backend '{{BACKEND}}' (expected: all|fast|jit|aot|embed|isolate|languages|wrap|ci-buildtree|ci-light|ci-diff|ci-leak)" >&2; exit 2 ;;
+      *) echo "test: unknown backend '{{BACKEND}}' (expected: all|check|fast|jit|aot|embed|isolate|languages|wrap|ci-buildtree|ci-light|ci-diff|ci-leak)" >&2; exit 2 ;;
     esac
 
 # Run the doctest examples in the public docs on both engines. Both en

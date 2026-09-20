@@ -1,0 +1,54 @@
+# The tests/*.cul files the landing gate runs on the JIT lane, chosen so
+# that every bytecode op the executor implements is lowered by the JIT
+# somewhere in that gate. Regenerate with `just gen-jit-shape-set`;
+# tools/checks/check_jit_shape_set.sh holds the coverage.
+#
+# The full corpus runs this lane in `just test` and in CI's ci-light on
+# every push. What this set does not cover is op COMBINATIONS — an unwind
+# edge inside a loop inside a closure — which is what the codegen seeds and
+# the generated difftest corpus are for.
+#
+# Generated from 279 files.
+tests/callable_iterator_hof.cul
+tests/test_args.cul
+tests/test_array_sized_default.cul
+tests/test_class_parameters.cul
+tests/test_cond.cul
+tests/test_destructure_seq_unify.cul
+tests/test_drop_on_throw.cul
+tests/test_drop_once.cul
+tests/test_dynamic_perform.cul
+tests/test_effects.cul
+tests/test_effects_defer.cul
+tests/test_effects_resume_gen.cul
+tests/test_forin_codegen.cul
+tests/test_forin_unwind_drop.cul
+tests/test_generator_complex.cul
+tests/test_import_scope_isolation.cul
+tests/test_long_width.cul
+tests/test_match_block_arm.cul
+tests/test_nil_coalesce_object.cul
+tests/test_nonnull.cul
+tests/test_packable_enum.cul
+tests/test_path.cul
+tests/test_range_shape.cul
+tests/test_regex.cul
+tests/test_self_lexical.cul
+tests/test_sorted_by_reverse.cul
+tests/test_spread.cul
+tests/test_string_concat.cul
+tests/test_tensor_nn_graph.cul
+tests/test_trailing_comma.cul
+tests/test_transform_error_lines.cul
+tests/test_value_materialize.cul
+tests/test_wellknown_contract.cul
+tests/test_while_scope.cul
+
+# Ops no test file reaches at all. This list may only shrink: an op that
+# gains a test leaves it, and a new op arrives covered or is filed here with
+# the reason.
+#unreachable
+DbgStmt
+ReplBind
+ReplCell
+Retain

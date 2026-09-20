@@ -1,0 +1,31 @@
+# What the gate sweeps, and how much of it. tools/checks/check_gate_budget.sh
+# holds each number exactly; growing one is fine and is done here, in the commit
+# that grows it, with the reason in the message.
+#
+# Why these and not seconds: wall-clock on a loaded machine varies by 1.5-2x
+# between runs of the same gate, so it cannot be a gate. The population is
+# deterministic, and it is the half that actually moved — see the per-phase
+# costs in the justfile's gate table for what one item is worth on each lane
+# (one tests/*.cul file: 0.06 CPU seconds under --vm, 2.2 under --jit).
+
+# The corpus every engine lane sweeps. The expensive one: a full --jit sweep is
+# 610 CPU seconds, an AOT sweep more, and three lanes of the full gate sweep it.
+tests.cul 279
+
+# tests/isolate/*.cul — run on both engines, plus the over-cap modes.
+tests.isolate 20
+
+# The curated bytecode cases held to frozen expected outputs, x2 lanes x3 GC
+# axes in the full gate.
+vm_cases 181
+
+# ctest entries. The shell-driven ones also make up the landing gate's CLI
+# phase (tools/checks/ctest_shell_driven.py names them).
+ctest.entries 34
+
+# ```culebra blocks under docs/ — `just doctest` runs the runnable ones on both
+# engines, and the JIT lane costs one LLVM module per block.
+docs.blocks 942
+
+# The samples the language front ends are run over (examples/languages/*).
+languages.samples 130
