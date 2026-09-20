@@ -2047,15 +2047,28 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_new() {
 // inlined HOF loops (see emit_inlined_array_map) so per-iteration
 // `array_push` doesn't re-grow the buffer log(N) times. `size`
 // stays 0 — push fills it as elements arrive.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_new_reserved(
-    int64_t capacity) {
+// An empty Array with room for `capacity` elements. The element block comes
+// first: a capacity the program asked for and no machine has fails there, as
+// `<what> is too large`, before there is an Array for the failure to strand.
+inline JitArray* _jit_array_new_reserved(int64_t capacity,
+                                         std::string_view what) {
+  const size_t cap = capacity > 0 ? static_cast<size_t>(capacity) : 0;
+  JitValue* items = cap == 0 ? nullptr
+                             : culebra::alloc_or_too_large(what, 0, 0, [&] {
+                                 return new JitValue[cap];
+                               });
   auto* arr = new JitArray();
   arr->refcount = 1;
   arr->size = 0;
-  arr->capacity = capacity > 0 ? static_cast<size_t>(capacity) : 0;
-  arr->items = capacity > 0 ? new JitValue[arr->capacity] : nullptr;
+  arr->capacity = cap;
+  arr->items = items;
   _gc_register(arr, GC_TAG_ARRAY);
   return arr;
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_new_reserved(
+    int64_t capacity) {
+  return _jit_array_new_reserved(capacity, "Array");
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_set_or_push(

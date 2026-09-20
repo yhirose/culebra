@@ -7,6 +7,7 @@
 #include <charconv>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -772,6 +773,22 @@ inline std::shared_ptr<SharedBufferCore> require_shareable_buffer(
   return core;
 }
 
+// The bytes `count` records of `layout` take after a `header`-byte prefix: the
+// one place that product is formed, for every storage and both platforms. A
+// count it overflowed on came back as a few bytes under the `count` that was
+// asked for, and every index the bounds check then passed landed outside the
+// allocation. `what` names the constructor in the error.
+inline size_t shared_buffer_bytes(const PackableLayout& layout, size_t count,
+                                  std::string_view what, size_t header = 0) {
+  // What a vector or a mapping can address, not merely what size_t can hold.
+  constexpr size_t kMax =
+      static_cast<size_t>(std::numeric_limits<std::ptrdiff_t>::max());
+  if (layout.stride != 0 && count > (kMax - header) / layout.stride)
+    throw CulebraError("ValueError",
+                       culebra::format("{}: count is too large", what));
+  return header + layout.stride * count;
+}
+
 // Allocate a zero-initialized SharedBuffer of `count` records laid out per
 // `layout`, register it (refcount 1 for the handle the caller builds), and
 // return its id. Pure metadata + raw bytes (no Value / JitValue), so interp
@@ -779,8 +796,10 @@ inline std::shared_ptr<SharedBufferCore> require_shareable_buffer(
 inline int64_t make_shared_buffer(const PackableLayout& layout,
                                std::string class_name, size_t count) {
   auto core = std::make_shared<SharedBufferCore>();
-  core->byte_size = layout.stride * count;
-  core->heap_bytes = std::make_shared<std::vector<uint8_t>>(core->byte_size, 0);
+  core->byte_size = shared_buffer_bytes(layout, count, "SharedBuffer.new");
+  core->heap_bytes = alloc_or_too_large("SharedBuffer.new: count", 0, 0, [&] {
+    return std::make_shared<std::vector<uint8_t>>(core->byte_size, 0);
+  });
   core->data = core->heap_bytes->data();  // fixed-size vector → never reallocs
   core->storage = SharedBufferCore::Storage::Heap;
   core->layout = layout;
@@ -810,7 +829,8 @@ inline std::string share_env_key(std::string_view name) {
 inline int64_t make_shared_buffer_file(const PackableLayout& layout,
                                     std::string class_name, size_t count,
                                     const std::string& path) {
-  size_t bytes = kLockHeader + layout.stride * count;
+  size_t bytes =
+      shared_buffer_bytes(layout, count, "SharedBuffer.file", kLockHeader);
   // O_EXCL picks exactly one creator; the loser reopens the existing file.
   bool creator = true;
   int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_EXCL, 0644);
@@ -932,7 +952,8 @@ inline int64_t _adopt_shared_fd(const PackableLayout& layout,
 // IOError on an OS failure.
 inline int64_t make_shared_buffer_shared(const PackableLayout& layout,
                                       std::string class_name, size_t count) {
-  size_t bytes = kLockHeader + layout.stride * count;
+  size_t bytes =
+      shared_buffer_bytes(layout, count, "SharedBuffer.shared", kLockHeader);
   int fd = make_anon_shm_fd(bytes);
   int64_t id = _adopt_shared_fd(layout, std::move(class_name), count, fd, bytes);
   shared_lock_init(*lookup_shared_buffer(id));
@@ -946,8 +967,9 @@ inline int64_t make_shared_buffer_shared(const PackableLayout& layout,
 inline int64_t make_shared_buffer_receive(const PackableLayout& layout,
                                        std::string class_name, size_t count,
                                        int fd) {
-  int64_t id = _adopt_shared_fd(layout, std::move(class_name), count, fd,
-                             kLockHeader + layout.stride * count);
+  int64_t id = _adopt_shared_fd(
+      layout, std::move(class_name), count, fd,
+      shared_buffer_bytes(layout, count, "SharedBuffer.receive", kLockHeader));
   shared_lock_wait_ready(*lookup_shared_buffer(id));
   return id;
 }
@@ -1088,7 +1110,8 @@ inline std::pair<DWORD, DWORD> _win_size_hilo(size_t bytes) {
 inline int64_t make_shared_buffer_file(const PackableLayout& layout,
                                     std::string class_name, size_t count,
                                     const std::string& path) {
-  size_t bytes = kLockHeader + layout.stride * count;
+  size_t bytes =
+      shared_buffer_bytes(layout, count, "SharedBuffer.file", kLockHeader);
   // FILE_SHARE_DELETE: without it, FS.remove on this path refuses while any
   // mapping of it is still open — Windows' default is stricter than POSIX
   // unlink-while-open, which every other opener assumes (fswatcher.h needs
@@ -1140,7 +1163,8 @@ inline int64_t make_shared_buffer_file(const PackableLayout& layout,
 // name (no HANDLE inheritance). Throws IOError on an OS failure.
 inline int64_t make_shared_buffer_shared(const PackableLayout& layout,
                                       std::string class_name, size_t count) {
-  size_t bytes = kLockHeader + layout.stride * count;
+  size_t bytes =
+      shared_buffer_bytes(layout, count, "SharedBuffer.shared", kLockHeader);
   unsigned seq = _win_shm_seq();
   DWORD pid = GetCurrentProcessId();
   std::string map_name = culebra::format("Local\\culebra_sbm_{}_{}", pid, seq);

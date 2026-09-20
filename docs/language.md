@@ -5485,7 +5485,8 @@ inspect(iota(5, 2))  # => []
 ### `repeat(n: Long, value: Any) -> Array`
 
 Materialise an `Array` of `n` copies of `value`. `n < 0` raises
-`ValueError`; `n == 0` returns `[]`. Every copy is the same
+`ValueError`, and so does an `n` too large to allocate (`repeat() result
+is too large`); `n == 0` returns `[]`. Every copy is the same
 `value` — if it's a mutable reference (`Array`/`Object`), all `n`
 slots alias one instance, the same sharing `[value] * n` gives in
 Python or `Array(n).fill(value)` in JavaScript.

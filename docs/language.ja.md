@@ -5231,6 +5231,7 @@ inspect(iota(5, 2))  # => []
 ### `repeat(n: Long, value: Any) -> Array`
 
 `value`を`n`個複製した`Array`を作ります。`n < 0`は`ValueError`、
+確保できないほど大きい`n`も`ValueError`（`repeat() result is too large`）、
 `n == 0`は`[]`。全スロットは同じ`value`です — `Array`/`Object`の
 ような可変参照の場合、`n`個のスロットは同一インスタンスを共有します
 （Pythonの`[value] * n`やJavaScriptの`Array(n).fill(value)`と同じ

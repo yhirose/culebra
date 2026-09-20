@@ -4378,7 +4378,7 @@ inline JitValue _ns_global_repeat(JitValue* a, int64_t) {
         "repeat() n must not be negative", 0, 0);
   }
   JitValue value = a[1];
-  auto* r = culebra_runtime_array_new_reserved(n);
+  auto* r = _jit_array_new_reserved(n, "repeat() result");
   for (int64_t i = 0; i < n; i++) {
     culebra_runtime_value_retain(value.tag, value.data);
     culebra_runtime_array_push(r, value.tag, value.data);

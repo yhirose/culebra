@@ -2970,6 +2970,8 @@ value (`0`, `0.0`, `false`).
 Allocates `count` zero-initialized records laid out per `Class`. `buffer.size`
 (also `.count` / `.len`) reports the element count. The bytes live in this
 process's heap — shareable across isolates (threads), not across processes.
+A `count` whose records cannot be addressed or allocated is a `ValueError`
+(`count is too large`), for `SharedBuffer.file` and `.shared` as well.
 
 #### `SharedBuffer.file(path, count, type: Class) -> buffer`
 

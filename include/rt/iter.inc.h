@@ -2706,7 +2706,16 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_math_range(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_iota(int64_t start,
                                                             int64_t end) {
-  auto* r = culebra_runtime_array_new();
+  // Reserved in one step: a span no machine holds is refused here rather
+  // than pushed toward one element at a time until memory runs out.
+  // (Unsigned subtraction: `end - start` overflows for a span past 2^63.)
+  const uint64_t span =
+      end > start ? static_cast<uint64_t>(end) - static_cast<uint64_t>(start)
+                  : 0;
+  auto* r = _jit_array_new_reserved(
+      span > static_cast<uint64_t>(INT64_MAX) ? INT64_MAX
+                                              : static_cast<int64_t>(span),
+      "iota() result");
   for (int64_t i = start; i < end; i++) {
     culebra_runtime_array_push(r, /*tag Long*/ 2, i);
   }

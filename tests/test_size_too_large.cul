@@ -1,0 +1,78 @@
+# A size the program supplies and no machine can satisfy is a ValueError the
+# program can catch. Each of these used to end it instead — std::bad_alloc or
+# std::bad_array_new_length, printed by their C++ names — and one came back as
+# a success: SharedBuffer.new formed `count * record size` unchecked, so a count
+# the product overflowed on allocated a few bytes under the count that was
+# asked for, and every index the bounds check passed landed outside them.
+
+let huge = 1 << 62
+
+fn too_large(f) {
+  try {
+    f()
+    'no error'
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+
+# --- Arrays built from a count ---
+assert_eq(too_large(fn () {
+  repeat(huge, 0)
+}), 'ValueError: repeat() result is too large')
+assert_eq(too_large(fn () {
+  iota(huge)
+}), 'ValueError: iota() result is too large')
+assert_eq(too_large(fn () {
+  'ab'.repeat(huge)
+}), 'ValueError: repeat() result is too large')
+assert_eq(repeat(3, 'x'), ['x', 'x', 'x'])
+assert_eq(iota(3), [0, 1, 2])
+
+# --- SharedBuffer: the product is checked, not just the allocation ---
+@packable
+class Rec {
+  x: Long
+  y: Long
+}
+# 16-byte records: 1 << 60 of them is exactly 2^64 bytes (wraps to 0), and one
+# more wraps to 16. Only counts the arithmetic refuses are here — whether an
+# allocation that does not wrap fails is the operating system's to decide.
+for count in [huge, 1 << 60, (1 << 60) + 1] {
+  assert_eq(too_large(fn () {
+    SharedBuffer.new(count, Rec)
+  }), 'ValueError: SharedBuffer.new: count is too large')
+}
+let small = SharedBuffer.new(4, Rec)
+assert_eq(small.size, 4)
+small[3].x = 7
+assert_eq(small[3].x, 7)
+assert_throws('IndexError', fn () {
+  small[4].x
+})
+
+# --- reads: `n` is a ceiling, not a size to allocate ---
+let dir = FS.mkdtemp('culebra_size_too_large_')
+let path = dir + '/data.txt'
+FS.write(path, 'abcdef')
+defer {
+  FS.remove(dir, recursive: true)
+}
+let f = File.open(path)
+assert_eq(f.read(2), 'ab')
+assert_eq(f.read(huge), 'cdef')
+assert_eq(f.read(huge), '')
+f.close()
+let g = File.open(path)
+assert_eq(g.chunks(huge).collect(), ['abcdef'])
+g.close()
+
+# a datagram is at most 64 KiB, whatever `max` says
+let u1 = Net.udp(0, host: '127.0.0.1')
+let u2 = Net.udp(0, host: '127.0.0.1')
+u1.send_to('ping', '127.0.0.1', u2.port)
+assert_eq(u2.recv_from(huge).data, 'ping')
+u1.close()
+u2.close()
+
+inspect('size too large: ok')

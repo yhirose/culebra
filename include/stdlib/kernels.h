@@ -419,9 +419,19 @@ inline std::string _file_read_n(int64_t id, int64_t n, int64_t line, int64_t col
   auto& s = _file_get(id, "read", line, col);
   if (!s.readable) _file_throw("File.read: file not opened for reading", line, col);
   if (n < 0) n = 0;
-  std::string buf(static_cast<size_t>(n), '\0');
-  s.fs().read(buf.data(), n);
-  buf.resize(static_cast<size_t>(s.fs().gcount()));
+  // `n` is a ceiling, not a size to allocate: `read(1 << 40)` on a small file
+  // is a small read. The buffer grows with what the file actually yields.
+  constexpr size_t kBlock = 64 * 1024;
+  std::string buf;
+  for (size_t want = static_cast<size_t>(n); want > 0;) {
+    const size_t step = std::min(want, kBlock), at = buf.size();
+    buf.resize(at + step);
+    s.fs().read(buf.data() + at, static_cast<std::streamsize>(step));
+    const size_t got = static_cast<size_t>(s.fs().gcount());
+    buf.resize(at + got);
+    if (got < step) break;  // EOF (or an error the next call reports)
+    want -= got;
+  }
   return buf;
 }
 

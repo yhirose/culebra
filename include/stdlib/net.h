@@ -1064,6 +1064,9 @@ inline IoStatus udp_recv_from(int64_t id, size_t max, std::string& out,
   detail::Sock* s = detail::get(id, Kind::Udp, err);
   if (!s) return IoStatus::Error;
   int64_t deadline = detail::deadline_from(s->timeout_ms);
+  // A datagram's length field is 16 bits, so no `max` above this can receive
+  // more — and the buffer is `max` bytes, which the caller chooses.
+  max = std::min<size_t>(max, 65536);
   std::string buf(max, '\0');
   for (;;) {
     IoStatus st = detail::wait_ready(s->fd, false, deadline, err);

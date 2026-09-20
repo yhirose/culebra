@@ -2882,7 +2882,9 @@ class FloatPair {
 `Class`のレイアウトで`count`個のゼロ初期化レコードを確保する。
 `buffer.size`（`.count` / `.len`も同じ）が要素数を返す。バイトはこのプロセス
 のヒープに置かれる — isolate（スレッド）間では共有できるが、プロセス間では
-共有できない。
+共有できない。レコード全体がアドレスできない、または確保できないほど大きい
+`count`は`ValueError`（`count is too large`）で、`SharedBuffer.file`と
+`.shared`も同じ。
 
 #### `SharedBuffer.file(path, count, type: Class) -> buffer`
 

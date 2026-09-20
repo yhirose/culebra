@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <new>
 #include <numeric>
 #include <csignal>
 #include <cctype>
@@ -1418,6 +1419,24 @@ inline std::string str_tr(std::string_view s, std::string_view from,
     i += n;
   }
   return out;
+}
+
+// Run an allocation whose size is a number the program supplied. Failing it is
+// that number being too large — the catchable ValueError `s.repeat(n)` gives —
+// rather than a std::bad_alloc (or bad_array_new_length, or length_error)
+// nothing in the language can catch, ending the program with the C++ name of
+// the exception. For sizes only: an allocation no user number bounds is the
+// machine running out, which this does not pretend to recover from.
+template <class F>
+inline auto alloc_or_too_large(std::string_view what, int64_t line,
+                               int64_t col, F&& alloc) -> decltype(alloc()) {
+  try {
+    return alloc();
+  } catch (const std::bad_alloc&) {  // bad_array_new_length derives from it
+  } catch (const std::length_error&) {
+  }
+  throw CulebraError("ValueError", culebra::format("{} is too large", what),
+                     line, col);
 }
 
 // `s.repeat(n)` — `n` copies of `s` concatenated. `n == 0` is the empty
