@@ -119,122 +119,11 @@ inline void _set_walk(JitSet* s, F&& f) {
   });
 }
 
-// Same-tag equality matching the interpreter's operator==. Strings compare by
-// contents; reference types (func/array/object) by identity. Long↔Float
-// cross-type uses numeric equality (`1 == 1.0`).
-inline bool _culebra_value_equal(int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
-  if (t1 != t2) {
-    // Numeric cross-type: promote to double and compare by value.
-    if ((t1 == TAG_LONG || t1 == TAG_FLOAT) &&
-        (t2 == TAG_LONG || t2 == TAG_FLOAT)) {
-      return _culebra_coerce_num(t1, d1) == _culebra_coerce_num(t2, d2);
-    }
-    // String/StringView byte-equality across flavors.
-    if ((t1 == TAG_STRING || t1 == TAG_STRINGVIEW) &&
-        (t2 == TAG_STRING || t2 == TAG_STRINGVIEW)) {
-      return _culebra_str_view(t1, d1) == _culebra_str_view(t2, d2);
-    }
-    return false;
-  }
-  switch (t1) {
-    case TAG_NIL: return true;
-    case TAG_BOOL: return (d1 != 0) == (d2 != 0);
-    case TAG_LONG: return d1 == d2;
-    case TAG_FLOAT:
-      return _culebra_float_to_double(d1) == _culebra_float_to_double(d2);
-    case TAG_STRING:
-    case TAG_STRINGVIEW:
-      return _culebra_str_view(t1, d1) == _culebra_str_view(t2, d2);
-    case TAG_TUPLE: {
-      // Element-wise eq, matching the interp's TupleValue compare.
-      auto* a = reinterpret_cast<JitArray*>(d1);
-      auto* b = reinterpret_cast<JitArray*>(d2);
-      if (a == b) return true;
-      if (a->size != b->size) return false;
-      // After the size fast-fail so a mismatched probe never pays the
-      // frame (same order on every arm here and in the interp).
-      culebra::ValueWalkFrame walk;
-      for (size_t i = 0; i < a->size; i++) {
-        if (!_culebra_value_equal(a->items[i].tag, a->items[i].data,
-                                  b->items[i].tag, b->items[i].data)) {
-          return false;
-        }
-      }
-      return true;
-    }
-    case TAG_SET: {
-      // Set eq: same size and every element of `a` is present in `b`'s
-      // index. Mirrors the interp's _set_eq.
-      auto* a = reinterpret_cast<JitSet*>(d1);
-      auto* b = reinterpret_cast<JitSet*>(d2);
-      if (a == b) return true;
-      if (a->members.size() != b->members.size()) return false;
-      if (!b->index) return false;
-      culebra::ValueWalkFrame walk;
-      return _set_all(a, [&](JitValue m) { return b->index->contains(m); });
-    }
-    case TAG_ARRAY: {
-      // Element-wise eq (structural), matching interp's _array_eq.
-      auto* a = reinterpret_cast<JitArray*>(d1);
-      auto* b = reinterpret_cast<JitArray*>(d2);
-      if (a == b) return true;
-      if (a->size != b->size) return false;
-      culebra::ValueWalkFrame walk;
-      for (size_t i = 0; i < a->size; i++) {
-        if (!_culebra_value_equal(a->items[i].tag, a->items[i].data,
-                                  b->items[i].tag, b->items[i].data)) {
-          return false;
-        }
-      }
-      return true;
-    }
-    case TAG_OBJECT: {
-      // Nominal first, then structural: same class (and, for a variant, the
-      // same parent enum), then the same own slots — data fields only now,
-      // since methods live on the shared proto and the class tag is not a
-      // slot at all. Order-independent. The names are interned, so the
-      // identity test is a pointer compare, and two plain dicts pass it with
-      // both null. Mirrors interp's _object_eq (same-class same-field
-      // instances compare equal, a Point and a Circle of the same shape do
-      // not, and neither does a dict wearing an instance's fields).
-      auto* a = reinterpret_cast<JitObject*>(d1);
-      auto* b = reinterpret_cast<JitObject*>(d2);
-      if (a == b) return true;
-      if (_jit_meta_class_name(a) != _jit_meta_class_name(b)) return false;
-      if (_jit_meta_enum_name(a) != _jit_meta_enum_name(b)) return false;
-      if (a->prop_size() != b->prop_size()) return false;
-      culebra::ValueWalkFrame walk;
-      bool eq = true;
-      a->for_each([&](std::string_view name, const JitObjectEntry& e) {
-        if (!eq) return;
-        auto idx = b->find_slot(name);
-        if (idx == static_cast<size_t>(-1)) { eq = false; return; }
-        if (!_culebra_value_equal(e.value.tag, e.value.data,
-                                  b->slots[idx].value.tag,
-                                  b->slots[idx].value.data)) {
-          eq = false;
-        }
-      });
-      if (!eq) return false;
-      size_t na = a->non_string_props ? a->non_string_props->size() : 0;
-      size_t nb = b->non_string_props ? b->non_string_props->size() : 0;
-      if (na != nb) return false;
-      if (a->non_string_props) {
-        for (auto& [k, entry] : *a->non_string_props) {
-          if (!b->non_string_props) return false;
-          auto it = b->non_string_props->find(k);
-          if (it == b->non_string_props->end()) return false;
-          if (!_culebra_value_equal(entry.value.tag, entry.value.data,
-                                    it->second.value.tag,
-                                    it->second.value.data)) {
-            return false;
-          }
-        }
-      }
-      return true;
-    }
-    default: return d1 == d2;  // func: identity
-  }
+// `==`'s one rule (_culebra_value_equal, with the walk behind it, further
+// down — past the helpers it dispatches through).
+extern "C" {
+[[gnu::always_inline]] inline bool _culebra_value_equal(int8_t t1, int64_t d1,
+                                                        int8_t t2, int64_t d2);
 }
 
 // Ordering helpers. Each one exactly mirrors the corresponding
@@ -431,6 +320,9 @@ struct JitThreadState {
   // and so does a Runtime switch, since the table is per Runtime.
   JitClosure* mf_body = nullptr;
   JitClosure* mf_dispatcher = nullptr;
+
+  // The innermost `==` walk open on this thread (JitEqWalk).
+  struct JitEqWalk* eq_walk = nullptr;
 };
 inline constinit thread_local JitThreadState _jit_thread;
 static_assert(offsetof(JitThreadState, depth) == 0 &&
@@ -1529,16 +1421,26 @@ inline std::optional<int64_t> _jit_object_user_hash(JitObject* obj) {
 // semantics (Bool/Long/Float), matching the interpreter's `_invoke_user_eq`
 // so a non-Bool `eq` agrees across backends (and, like interp, throws on a
 // non-coercible return).
+inline JitClosure* _lookup_special(int8_t tag, int64_t data, Special s);
+inline void _culebra_eq_walks_hold();
+
+// Run a user equality method — `__eq__` or `eq`, the operator's step or a
+// key probe's. The containers a walk is holding are pinned first: the method
+// may drop the last reference to either.
+inline bool _culebra_ask_equal(JitClosure* cls, JitValue self, JitValue other) {
+  _culebra_eq_walks_hold();
+  return _extract_bool_and_release(_culebra_invoke_method1(cls, self, other));
+}
+
 inline std::optional<bool> _jit_object_user_eq(JitObject* a, JitObject* b) {
-  auto* ea = _find_property(a, "eq");
-  auto* eb = _find_property(b, "eq");
-  if (!ea || !eb || ea->value.tag != TAG_FUNC || eb->value.tag != TAG_FUNC) {
+  // Through the special table: this runs for every pair of Objects a
+  // container comparison or a key probe meets, most of which carry no `eq`.
+  const JitValue va{TAG_OBJECT, reinterpret_cast<int64_t>(a)};
+  const JitValue vb{TAG_OBJECT, reinterpret_cast<int64_t>(b)};
+  auto* cls = _lookup_special(va.tag, va.data, Special::EqTrait);
+  if (!cls || !_lookup_special(vb.tag, vb.data, Special::EqTrait))
     return std::nullopt;
-  }
-  auto* cls = reinterpret_cast<JitClosure*>(ea->value.data);
-  return _extract_bool_and_release(_culebra_invoke_method1(
-      cls, {TAG_OBJECT, reinterpret_cast<int64_t>(a)},
-      {TAG_OBJECT, reinterpret_cast<int64_t>(b)}));
+  return _culebra_ask_equal(cls, va, vb);
 }
 
 // Look up a Function-typed property on a JitObject by name.
@@ -1585,21 +1487,42 @@ culebra_runtime_has_iter_method(JitObject* obj) {
   return _protocol_member(obj, "iter") != nullptr;
 }
 
-// The special method `s` an operator or protocol reaches on `tag:data`, or
-// null. A class instance answers from its meta's table (one load) unless its
-// own shape carries a special name, which is the only way an own slot could
-// shadow the class's method — then, as for a plain object, the name lookup
-// runs (own slots first, the proto after: _find_property's rule).
-inline JitClosure* _lookup_special(int8_t tag, int64_t data, Special s) {
-  if (tag != TAG_OBJECT) return nullptr;
+// Where a value keeps its special methods, decided once: a class instance
+// answers from its meta's table (one load) unless its own shape carries a
+// special name, which is the only way an own slot could shadow the class's
+// method — then, as for a plain object, the name lookup runs (own slots
+// first, the proto after: _find_property's rule). Asking for two names
+// (`==` wants `__eq__` and `eq`) then walks the shapes once.
+struct SpecialLookup {
+  JitObject* obj = nullptr;                // null: nothing to look up
+  const JitSpecialTable* table = nullptr;  // non-null: read the slot
+  JitClosure* operator()(Special s) const {
+    if (table) return table->fn[static_cast<size_t>(s)];
+    if (!obj) return nullptr;
+    auto* entry = _find_property(obj, special_name(s));
+    if (!entry || entry->value.tag != TAG_FUNC) return nullptr;
+    return reinterpret_cast<JitClosure*>(entry->value.data);
+  }
+};
+
+inline SpecialLookup _special_lookup(int8_t tag, int64_t data) {
+  if (tag != TAG_OBJECT) return {};
   auto* obj = reinterpret_cast<JitObject*>(data);
-  if (auto* meta = obj->proto();
-      meta && meta->is_class_meta && !obj->is_dict &&
+  auto* meta = obj->proto();
+  if (meta && meta->is_class_meta && !obj->is_dict &&
       !(obj->shape && obj->shape->any_special))
-    return meta->specials->fn[static_cast<size_t>(s)];
-  auto* entry = _find_property(obj, special_name(s));
-  if (!entry || entry->value.tag != TAG_FUNC) return nullptr;
-  return reinterpret_cast<JitClosure*>(entry->value.data);
+    return {obj, meta->specials};
+  // A plain shaped Object whose shape never took a special name has none to
+  // find (a dict's names are not in its shape, so it takes the lookup).
+  if (!meta && !obj->is_dict && obj->shape && !obj->shape->any_special)
+    return {};
+  return {obj, nullptr};
+}
+
+// The special method `s` an operator or protocol reaches on `tag:data`, or
+// null.
+inline JitClosure* _lookup_special(int8_t tag, int64_t data, Special s) {
+  return _special_lookup(tag, data)(s);
 }
 
 // Invoke a special method `recv.<name>(arg)`. Returns the +1 result
@@ -1794,6 +1717,183 @@ inline bool _extract_bool_and_release(JitValue v) {
 // extern "C" entry points for the comparison helpers. One per
 // operator so the JIT can look them up by name. The `_borrow` twin never
 // touches the operands' refs (the bytecode VM's contract).
+// --- `==` ---
+//
+// One rule, answered in one place: `__eq__` on either side, then an `eq` both
+// sides carry, then structure. Every comparison that means "equal" asks
+// _culebra_value_equal — the operator, `contains`, `index_of`, a derived
+// `cmp` — and so does the structural walk for each pair of elements, which is
+// what makes `[a] == [b]` agree with `a == b` (and with `a` and `b` being one
+// key). check_value_equal_door.sh holds it.
+
+// One level of a walk: the depth guard every value walker takes, and the two
+// containers being walked. A user `__eq__` / `eq` met further in may drop the
+// last reference to either, so they are retained once one is about to run
+// (_culebra_eq_walks_hold) — and not before, which is what keeps a comparison
+// that meets no such method free of refcount traffic. Linked through the C
+// stack, where the collector sees them.
+struct JitEqWalk {
+  culebra::ValueWalkFrame depth;
+  JitValue a, b;
+  JitEqWalk* up;
+  bool held = false;
+  JitEqWalk(JitValue a_, JitValue b_)
+      : a(a_), b(b_), up(_jit_thread.eq_walk) {
+    _jit_thread.eq_walk = this;
+  }
+  ~JitEqWalk() {
+    _jit_thread.eq_walk = up;
+    if (!held) return;
+    _culebra_value_release_impl(a.tag, a.data);
+    _culebra_value_release_impl(b.tag, b.data);
+  }
+  JitEqWalk(const JitEqWalk&) = delete;
+  JitEqWalk& operator=(const JitEqWalk&) = delete;
+};
+
+// Innermost outward, up to the first level an earlier call already held:
+// everything beyond it was held by that same call.
+inline void _culebra_eq_walks_hold() {
+  for (auto* w = _jit_thread.eq_walk; w && !w->held; w = w->up) {
+    culebra_runtime_value_retain(w->a.tag, w->a.data);
+    culebra_runtime_value_retain(w->b.tag, w->b.data);
+    w->held = true;
+  }
+}
+
+inline bool _culebra_any_key_values_equal(JitObject* a, JitObject* b);
+
+// An Array's or a Tuple's walk. By index, against both sizes every step: a
+// user `eq` run for one pair may have resized either.
+inline bool _culebra_items_equal(int8_t tag, JitArray* a, JitArray* b) {
+  if (a == b) return true;
+  if (a->size != b->size) return false;
+  // After the size fast-fail so a mismatched probe never pays the frame.
+  JitEqWalk walk({tag, reinterpret_cast<int64_t>(a)},
+                 {tag, reinterpret_cast<int64_t>(b)});
+  for (size_t i = 0; i < a->size && i < b->size; i++) {
+    const JitValue x = a->items[i], y = b->items[i];
+    if (!_culebra_value_equal(x.tag, x.data, y.tag, y.data)) return false;
+  }
+  return a->size == b->size;
+}
+
+// The structure of two values, their elements compared by `==`'s rule. Strings
+// compare by contents; a Function by identity. Long↔Float cross-type uses
+// numeric equality (`1 == 1.0`). Only _culebra_value_equal calls this.
+inline bool _culebra_structure_equal(int8_t t1, int64_t d1, int8_t t2,
+                                     int64_t d2) {
+  if (t1 != t2) {
+    // Numeric cross-type: promote to double and compare by value.
+    if ((t1 == TAG_LONG || t1 == TAG_FLOAT) &&
+        (t2 == TAG_LONG || t2 == TAG_FLOAT)) {
+      return _culebra_coerce_num(t1, d1) == _culebra_coerce_num(t2, d2);
+    }
+    // String/StringView byte-equality across flavors.
+    if ((t1 == TAG_STRING || t1 == TAG_STRINGVIEW) &&
+        (t2 == TAG_STRING || t2 == TAG_STRINGVIEW)) {
+      return _culebra_str_view(t1, d1) == _culebra_str_view(t2, d2);
+    }
+    return false;
+  }
+  switch (t1) {
+    case TAG_NIL: return true;
+    case TAG_BOOL: return (d1 != 0) == (d2 != 0);
+    case TAG_LONG: return d1 == d2;
+    case TAG_FLOAT:
+      return _culebra_float_to_double(d1) == _culebra_float_to_double(d2);
+    case TAG_STRING:
+    case TAG_STRINGVIEW:
+      return _culebra_str_view(t1, d1) == _culebra_str_view(t2, d2);
+    case TAG_TUPLE:
+    case TAG_ARRAY:
+      return _culebra_items_equal(t1, reinterpret_cast<JitArray*>(d1),
+                                  reinterpret_cast<JitArray*>(d2));
+    case TAG_SET: {
+      // Set eq: same size and every element of `a` is present in `b`'s
+      // index. Membership is key equality (JitValueEq), and _set_all holds
+      // each member its probe could drop.
+      auto* a = reinterpret_cast<JitSet*>(d1);
+      auto* b = reinterpret_cast<JitSet*>(d2);
+      if (a == b) return true;
+      if (a->members.size() != b->members.size()) return false;
+      if (!b->index) return false;
+      JitEqWalk walk({t1, d1}, {t2, d2});
+      return _set_all(a, [&](JitValue m) { return b->index->contains(m); });
+    }
+    case TAG_OBJECT: {
+      // Nominal first, then structural: same class (and, for a variant, the
+      // same parent enum), then the same own slots — data fields only now,
+      // since methods live on the shared proto and the class tag is not a
+      // slot at all. Order-independent. The names are interned, so the
+      // identity test is a pointer compare, and two plain dicts pass it with
+      // both null (same-class same-field instances compare equal, a Point and
+      // a Circle of the same shape do not, and neither does a dict wearing an
+      // instance's fields).
+      auto* a = reinterpret_cast<JitObject*>(d1);
+      auto* b = reinterpret_cast<JitObject*>(d2);
+      if (a == b) return true;
+      if (_jit_meta_class_name(a) != _jit_meta_class_name(b)) return false;
+      if (_jit_meta_enum_name(a) != _jit_meta_enum_name(b)) return false;
+      if (a->prop_size() != b->prop_size()) return false;
+      JitEqWalk walk({t1, d1}, {t2, d2});
+      bool eq = true;
+      // for_each walks by index, and both values are read before the pair
+      // is compared: a user `eq` may add a slot to either side.
+      a->for_each([&](std::string_view name, const JitObjectEntry& e) {
+        if (!eq) return;
+        auto idx = b->find_slot(name);
+        if (idx == static_cast<size_t>(-1)) { eq = false; return; }
+        const JitValue x = e.value, y = b->slots[idx].value;
+        if (!_culebra_value_equal(x.tag, x.data, y.tag, y.data)) eq = false;
+      });
+      if (!eq) return false;
+      return _culebra_any_key_values_equal(a, b);
+    }
+    default: return d1 == d2;  // func: identity
+  }
+}
+
+// `==`'s two user steps on one value, resolved in a single pass over its
+// special table: `__eq__`, and the `eq` an Eq-conforming class carries. Most
+// of what a container holds has neither, and goes straight to structure.
+struct EqSpecials {
+  JitClosure* dunder = nullptr;
+  JitClosure* trait = nullptr;
+};
+inline EqSpecials _eq_specials(int8_t tag, int64_t data) {
+  auto look = _special_lookup(tag, data);
+  return {look(Special::Eq), look(Special::EqTrait)};
+}
+
+// The first two steps of `==`, which only an Object can take: nullopt when
+// neither side answers, and structure decides.
+inline std::optional<bool> _culebra_user_equal(int8_t t1, int64_t d1,
+                                               int8_t t2, int64_t d2) {
+  const EqSpecials a = _eq_specials(t1, d1), b = _eq_specials(t2, d2);
+  // `==` is commutative, so try either side's `__eq__`.
+  if (a.dunder) return _culebra_ask_equal(a.dunder, {t1, d1}, {t2, d2});
+  if (b.dunder) return _culebra_ask_equal(b.dunder, {t2, d2}, {t1, d1});
+  // Eq-trait fallback: both sides carry `eq`, so the operator agrees with
+  // key equality (JitValueEq dispatches `eq` too, through the same step).
+  if (a.trait && b.trait)
+    return _culebra_ask_equal(a.trait, {t1, d1}, {t2, d2});
+  return std::nullopt;
+}
+
+[[gnu::always_inline]] inline bool _culebra_value_equal(int8_t t1, int64_t d1,
+                                                        int8_t t2, int64_t d2) {
+  // The two commonest elements, without a call.
+  if (t1 == TAG_LONG && t2 == TAG_LONG) return d1 == d2;
+  if (t1 == TAG_STRING && t2 == TAG_STRING)
+    return _culebra_str_view(t1, d1) == _culebra_str_view(t2, d2);
+  // Only an Object carries `__eq__` / `eq`.
+  if (t1 == TAG_OBJECT || t2 == TAG_OBJECT) {
+    if (auto e = _culebra_user_equal(t1, d1, t2, d2)) return *e;
+  }
+  return _culebra_structure_equal(t1, d1, t2, d2);
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_value_equal_borrow(
     int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
   // Two values neither of which is refcounted (scalars, nil, strings) can
@@ -1801,22 +1901,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_value_equal_borrow(
   // which is thread-local state, and this is the `x == nil` of every guard.
   if (!_is_refcounted_value_tag(t1) && !_is_refcounted_value_tag(t2))
     return _culebra_value_equal(t1, d1, t2, d2);
-  // The dispatches below are calls with no codegen call site; both backends
-  // publish the operator's position here before entering (the same hook the
-  // positionless backfill reads), so lend it to them.
+  // The dispatches behind `==` are calls with no codegen call site; both
+  // backends publish the operator's position here before entering (the same
+  // hook the positionless backfill reads), so lend it to them.
   JitBorrowedCallSite site{_jit_thread.op_line, _jit_thread.op_col};
-  // `==` is commutative, so try either side's `__eq__`.
-  if (auto r = _try_special_binop(t1, d1, t2, d2, Special::Eq))
-    return _extract_bool_and_release(*r);
-  if (auto r = _try_special_binop(t2, d2, t1, d1, Special::Eq))
-    return _extract_bool_and_release(*r);
-  // Eq-trait fallback: route through a user/derived `eq(other)` so the
-  // operator agrees with key equality (JitValueEq dispatches `eq` too).
-  if (t1 == TAG_OBJECT && t2 == TAG_OBJECT) {
-    if (auto e = _jit_object_user_eq(reinterpret_cast<JitObject*>(d1),
-                                     reinterpret_cast<JitObject*>(d2)))
-      return *e;
-  }
   return _culebra_value_equal(t1, d1, t2, d2);
 }
 
@@ -2288,6 +2376,45 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_push(JitArray* arr,
   arr->items[arr->size].tag = tag;
   arr->items[arr->size].data = data;
   arr->size++;
+}
+
+// _culebra_structure_equal's half for the entries under non-String keys: the
+// same keys, and equal values. The map offers no walk by index, and a user
+// `eq` may rehash it, so the pairs that can reach one are gathered first —
+// into an Array, which the collector sees where a C++ vector is invisible to
+// it — and compared once the map has been left.
+inline bool _culebra_any_key_values_equal(JitObject* a, JitObject* b) {
+  size_t na = a->non_string_props ? a->non_string_props->size() : 0;
+  size_t nb = b->non_string_props ? b->non_string_props->size() : 0;
+  if (na != nb) return false;
+  if (na == 0) return true;
+  JitOwnedVal pairs(JitValue{TAG_NIL, 0});
+  JitArray* held = nullptr;
+  for (auto& [k, entry] : *a->non_string_props) {
+    auto it = b->non_string_props->find(k);
+    if (it == b->non_string_props->end()) return false;
+    const JitValue x = entry.value, y = it->second.value;
+    if (!_member_reaches_user_code(x.tag) &&
+        !_member_reaches_user_code(y.tag)) {
+      if (!_culebra_value_equal(x.tag, x.data, y.tag, y.data)) return false;
+      continue;
+    }
+    if (!held) {
+      held = culebra_runtime_array_new();
+      pairs = JitOwnedVal(JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(held)});
+    }
+    culebra_runtime_value_retain(x.tag, x.data);
+    culebra_runtime_array_push(held, x.tag, x.data);
+    culebra_runtime_value_retain(y.tag, y.data);
+    culebra_runtime_array_push(held, y.tag, y.data);
+  }
+  if (!held) return true;
+  for (size_t i = 0; i + 1 < held->size; i += 2) {
+    if (!_culebra_value_equal(held->items[i].tag, held->items[i].data,
+                              held->items[i + 1].tag, held->items[i + 1].data))
+      return false;
+  }
+  return true;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_resize(

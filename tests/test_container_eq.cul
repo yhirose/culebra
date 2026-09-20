@@ -1,0 +1,192 @@
+# `==` has one rule — `__eq__` on either side, then an `eq` both sides carry,
+# then structure — and a container compares its elements by that same rule.
+# It used to compare them by structure alone, so `a == b` held while
+# `[a] == [b]` did not, though `a` and `b` were one Set member and one Object
+# key all along.
+
+# --- an `eq` that reads one field
+class Tagged {
+  new(id, label) {
+    self.id = id
+    self.label = label
+  }
+  eq(o) {
+    self.id == o.id
+  }
+  hash() {
+    self.id
+  }
+}
+let a = Tagged(1, 'a')
+let b = Tagged(1, 'b')
+let c = Tagged(2, 'a')
+assert_true(a == b)
+assert_true(a != c)
+
+# every container, at any depth
+assert_true([a] == [b])
+assert_true((a, 1) == (b, 1))
+assert_true({u: a} == {u: b})
+assert_true([[a], (a, {u: [a]})] == [[b], (b, {u: [b]})])
+assert_true({(1, 2): a, 7: [a]} == {(1, 2): b, 7: [b]})
+assert_true([a] != [c])
+assert_true((a, 1) != (c, 1))
+assert_true({u: a} != {u: c})
+assert_true({(1, 2): a} != {(1, 2): c})
+assert_eq([a, c], [b, c])
+
+# membership and search
+assert_true([c, a].contains(b))
+assert_eq([c, a].index_of(b), 1)
+assert_eq([c].index_of(b), -1)
+assert_true((c, a).contains(b))
+assert_true([c, a].iter().contains(b))
+assert_true(![c].iter().contains(b))
+
+# ...which is what keys always did: one member, one key, one equal element
+let members = {a, 0}
+assert_eq(type_of(members), 'Set')
+assert_true(members.contains(b))
+mut by_key = {}
+by_key[a] = 'first'
+by_key[b] = 'second'
+assert_eq(by_key.size(), 1)
+assert_true([a] == [b])
+
+# a run of equal keys is one run
+assert_eq(
+  [a, b, c].iter().chunk_by(|t| t).collect().map(|run| run.size()),
+  [2, 1],
+)
+
+# --- `__eq__` outranks `eq`, and either side's counts
+class Always {
+  new(v) {
+    self.v = v
+  }
+  __eq__(o) {
+    true
+  }
+}
+assert_true(Always(1) == Always(2))
+assert_true([Always(1)] == [Always(2)])
+assert_true([Always(1)] == [5])
+assert_true([5] == [Always(1)])
+assert_true([5, 6].contains(Always(1)))
+assert_true(!([Always(1)] != [Always(2)]))
+
+# --- no `eq` on one side: structure, as before
+class Plain {
+  new(v) {
+    self.v = v
+  }
+}
+assert_true([Plain(1)] == [Plain(1)])
+assert_true([Plain(1)] != [Plain(2)])
+assert_true([Plain(1)] != [{v: 1}])
+assert_true([1, [2.0, {k: 'x'}], (nil, true)] ==
+  [1.0, [2, {k: 'x'}], (nil, true)])
+assert_true([1, 2] != [1, 2, 3])
+assert_true([fn () {
+  1
+}] != [fn () {
+  1
+}])
+
+# --- an `eq` that throws leaves the comparison by that throw
+class Refuses {
+  eq(o) {
+    throw 'no comparison'
+  }
+}
+assert_eq(try {
+  [Refuses()] == [Refuses()]
+} catch e {
+  e
+}, 'no comparison')
+assert_eq(try {
+  [Refuses()].contains(Refuses())
+} catch e {
+  e
+}, 'no comparison')
+
+# --- an `eq` that edits the containers under comparison: the walk goes by
+#     index against both sizes, and holds the pair it is comparing
+mut left = []
+mut right = []
+class Shrinks {
+  new(n) {
+    self.n = n
+  }
+  eq(o) {
+    while !left.empty() {
+      left.pop()
+      right.pop()
+    }
+    true
+  }
+}
+left = [Shrinks(1), Shrinks(2), Shrinks(3)]
+right = [Shrinks(1), Shrinks(2), Shrinks(3)]
+assert_true(left == right)
+assert_eq(left.size(), 0)
+
+# ...and every container the walk is inside of: an `eq` two levels down that
+# empties the outermost one frees the arrays being walked, unless they are held
+mut outer_l = []
+mut outer_r = []
+class EmptiesOuter {
+  new(n) {
+    self.n = n
+  }
+  eq(o) {
+    while !outer_l.empty() {
+      outer_l.pop()
+      outer_r.pop()
+    }
+    true
+  }
+}
+fn nest(n) {
+  [[EmptiesOuter(n), EmptiesOuter(n + 1)], {k: (EmptiesOuter(n + 2), 0)}]
+}
+outer_l = nest(1)
+outer_r = nest(1)
+assert_true(outer_l == outer_r)
+assert_eq(outer_l.size(), 0)
+outer_l = nest(1)
+outer_r = nest(1)
+assert_true(!outer_l.contains([]))
+assert_eq(outer_l.index_of(outer_r[0]), 0)
+assert_eq(outer_l.size(), 0)
+
+mut grows_l = []
+mut grows_r = []
+class Grows {
+  eq(o) {
+    grows_l.push(0)
+    true
+  }
+}
+grows_l = [Grows(), Grows()]
+grows_r = [Grows(), Grows()]
+assert_true(grows_l != grows_r)
+
+mut holder_l = {}
+mut holder_r = {}
+class Rekeys {
+  new(n) {
+    self.n = n
+  }
+  eq(o) {
+    holder_l[self.n + 100] = 0
+    holder_r[self.n + 100] = 0
+    true
+  }
+}
+holder_l = {1: Rekeys(1), 2: Rekeys(2), 3: Rekeys(3)}
+holder_r = {1: Rekeys(1), 2: Rekeys(2), 3: Rekeys(3)}
+assert_true(holder_l == holder_r)
+assert_eq(holder_l.size(), 6)
+
+inspect('container eq: ok')

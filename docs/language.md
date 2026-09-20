@@ -357,9 +357,12 @@ promotion slow path with bit-for-bit identical semantics.
 
 * `String`: compares by contents.
 * `Array`, `Object`, `Tuple`, `Set`: compare by **value** (structural,
-  recursing through elements). Only `Function` and
-  `Tensor` compare by reference identity. (Value equality does not make
-  arrays hashable — they still can't be Object/Set keys.)
+  recursing through elements). Each pair of elements is compared by
+  `==` itself, so an element's own `__eq__` / `eq` (*Operator
+  overloading*) decides for it at any depth — `[a] == [b]` whenever
+  `a == b`. Only `Function` and `Tensor` compare by reference identity.
+  (Value equality does not make arrays hashable — they still can't be
+  Object/Set keys.)
 
 Cross-type numeric equality: `Long` and `Float` compare by numeric
 value. `1 == 1.0`, `0 == 0.0`. `NaN` compares unequal to everything
@@ -1766,6 +1769,26 @@ Precedence is **explicit dunder > trait method > default** (structural
 equality for `==`; a `type error` for ordering an `Object` with neither).
 Routing `==` through `eq` also keeps the operator consistent with the
 key equality used by `Object` / `Set` lookups.
+
+The same precedence holds for every comparison that means "equal", not
+the operator alone: the elements of two containers under `==`, and the
+searches `contains` and `index_of` (on an `Array`, a `Tuple`, an
+iterator).
+
+```culebra
+class Account {
+  new(id, note) { self.id = id; self.note = note }
+  eq(o) { self.id == o.id }
+  hash() { self.id }
+}
+let a = Account(7, 'as read from disk')
+let b = Account(7, 'as typed in')
+inspect(a == b)               # => true
+inspect([a] == [b])           # => true
+inspect({owner: a} == {owner: b})  # => true
+inspect([a].contains(b))      # => true
+inspect([a].index_of(b))      # => 0
+```
 
 **Subscripting.** A class instance can define `__index__(key)` and
 `__setindex__(key, value)` so `obj[k]` and `obj[k] = v` delegate to it —
@@ -4817,7 +4840,7 @@ inspect(seen)  # => [1, 2]
 | `a.get(i: Long, fallback: Any) -> Any`      | The element at `i` (negative counts from the end, like `a[i]`), or `fallback` if out of range. Read-only, never throws. |
 | `a.slice(start: Long, end: Long) -> Array`  | Shallow subarray `[start, end)`. Same clamping as `String.slice`. |
 | `a.join(sep: String) -> String`             | Concatenate elements via `to_string` (strings unquoted), separated by `sep`. |
-| `a.contains(v: Any) -> Bool`                | Whether `v == elem` for some element (reference types: identity; value types: contents). |
+| `a.contains(v: Any) -> Bool`                | Whether `v == elem` for some element — by `==`'s own rule, an element's `__eq__` / `eq` included. |
 | `a.index_of(v: Any) -> Long`                | Index of first equal element, else `-1`. |
 | `a.reverse() -> Nil` *(mutating)*           | Reverse in place.                     |
 | `a.map(f: Function) -> Array`               | New array of `f(x)` for each element. `f` must take one parameter. |
@@ -5178,7 +5201,7 @@ inspect(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())  # => [20, 40]
 | `it.last()` | Any \| `nil` | last element, else `nil` |
 | `it.nth(n)` | Any \| `nil` | element at 0-based `n`, else `nil`; pulls only `n + 1`. Negative `n` raises `ValueError` |
 | `it.position(p)` | `Long` \| `nil` | 0-based index of the first `x` where `p(x)` is truthy, else `nil` (unlike `Array.index_of`, which answers `-1`) |
-| `it.contains(v)` | `Bool` | `true` if some element equals `v` (structural equality, as `Array.contains`) |
+| `it.contains(v)` | `Bool` | `true` if some element `== v` (as `Array.contains`) |
 | `it.sum()` | `Long` \| `Float` | sum of all elements; `Long` while every element is a `Long`, `Float` once any element is one (empty → `0`) |
 | `it.product()` | `Long` \| `Float` | product of all elements, promoting like `sum` (empty → `1`) |
 | `it.min()` | Any | smallest element, compared numerically; the element is returned, so its own type survives. Throws on empty |

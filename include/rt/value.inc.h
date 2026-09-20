@@ -53,7 +53,7 @@ struct Shape {
   static bool is_special_name(std::string_view name) {
     return (name.size() > 4 && name.substr(0, 2) == "__" &&
             name.substr(name.size() - 2) == "__") ||
-           name == "hash" || name == "cmp";
+           name == "hash" || name == "cmp" || name == "eq";
   }
 
   bool has(std::string_view name) const {
@@ -254,18 +254,18 @@ struct JitObjectEntry {
 };
 
 // The special methods the runtime itself dispatches by name — an operator's
-// dunder, the protocol names `hash`/`cmp`, and `__call__`/`__str__`. A class
+// dunder, the protocol names `hash`/`cmp`/`eq`, and `__call__`/`__str__`. A class
 // meta resolves each of them once, at declaration (JitSpecialTable), so an
 // operator on an instance reads one pointer instead of walking two shapes'
 // name lists on every evaluation: Python's type slots, keyed the same way.
 enum class Special : uint8_t {
-  Add, Sub, Mul, Div, Mod, Pow, Matmul, Neg, Eq, Lt, Le, Cmp, Hash, Str,
-  Call, Index, SetIndex, Count
+  Add, Sub, Mul, Div, Mod, Pow, Matmul, Neg, Eq, EqTrait, Lt, Le, Cmp, Hash,
+  Str, Call, Index, SetIndex, Count
 };
 inline constexpr const char* kSpecialNames[] = {
     "__add__", "__sub__", "__mul__", "__div__", "__mod__", "__pow__",
-    "__matmul__", "__neg__", "__eq__", "__lt__", "__le__", "cmp", "hash",
-    "__str__", "__call__", "__index__", "__setindex__"};
+    "__matmul__", "__neg__", "__eq__", "eq", "__lt__", "__le__", "cmp",
+    "hash", "__str__", "__call__", "__index__", "__setindex__"};
 static_assert(std::size(kSpecialNames) == static_cast<size_t>(Special::Count));
 inline const char* special_name(Special s) {
   return kSpecialNames[static_cast<size_t>(s)];

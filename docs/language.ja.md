@@ -336,7 +336,10 @@ LLVM ORC JITのどちらでも完全にサポートされています。Longの�
 
 * `String`: 内容で比較。
 * `Array`, `Object`, `Tuple`, `Set`: **値（構造的）等価**（要素を
-  再帰比較）。`Function`と`Tensor`のみ参照同一性。
+  再帰比較）。要素の対はそれぞれ`==`そのもので比べるので、要素が自分の
+  `__eq__` / `eq`（*演算子オーバーロード*）を持っていれば、どの深さでも
+  それが決めます — `a == b`なら`[a] == [b]`です。`Function`と`Tensor`のみ
+  参照同一性。
   （値等価でもArrayはハッシュ不可のまま＝キーには使えない。）
 
 型をまたぐ数値等価性：`Long`と`Float`は数値として比較されます。
@@ -1661,6 +1664,25 @@ traitのメソッドにフォールバックします。`==` / `!=`は`eq(other)
 （`==`は構造比較、順序比較はどちらも無い`Object`で`type error`）。
 `==`を`eq`経由にすることで、演算子は`Object` / `Set`のキー等価と
 一致します。
+
+この優先順位は演算子だけのものではなく、「等しい」を意味する比較の
+すべてに当てはまります: `==`で比べる2つのコンテナの要素どうし、そして
+`contains`と`index_of`による探索（`Array`・`Tuple`・イテレータ）です。
+
+```culebra
+class Account {
+  new(id, note) { self.id = id; self.note = note }
+  eq(o) { self.id == o.id }
+  hash() { self.id }
+}
+let a = Account(7, 'as read from disk')
+let b = Account(7, 'as typed in')
+inspect(a == b)               # => true
+inspect([a] == [b])           # => true
+inspect({owner: a} == {owner: b})  # => true
+inspect([a].contains(b))      # => true
+inspect([a].index_of(b))      # => 0
+```
 
 **添字アクセス。** クラスインスタンスに`__index__(key)`と
 `__setindex__(key, value)`を定義すると、`obj[k]`と`obj[k] = v`が
@@ -4575,7 +4597,7 @@ inspect(seen)  # => [1, 2]
 | `a.get(i: Long, fallback: Any) -> Any`      | 位置`i`の要素（負の`i`は`a[i]`と同じく末尾から数える）、範囲外なら`fallback`。読み取り専用で、決して例外を投げない |
 | `a.slice(start: Long, end: Long) -> Array`  | 浅い部分配列`[start, end)`。`String.slice`と同じクランプ規則 |
 | `a.join(sep: String) -> String`             | 要素を`to_string`で変換（文字列は引用符なし）し`sep`で連結 |
-| `a.contains(v: Any) -> Bool`                | いずれかの要素が`v == elem`（参照型はポインタ同一性、値型は内容比較） |
+| `a.contains(v: Any) -> Bool`                | いずれかの要素が`v == elem` — `==`の規則そのままで、要素の`__eq__` / `eq`も効く |
 | `a.index_of(v: Any) -> Long`                | `v`と等しい最初の要素のインデックス。なければ`-1` |
 | `a.reverse() -> Nil` *(破壊的)*             | 配列をin-placeで反転                |
 | `a.map(f: Function) -> Array`               | 各要素に`f(x)`を適用した新配列。`f`は1引数を受け取る |
@@ -4932,7 +4954,7 @@ inspect(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())  # => [20, 40]
 | `it.last()` | Any \| `nil` | 末尾要素、空なら`nil` |
 | `it.nth(n)` | Any \| `nil` | 0起点で`n`番目の要素、無ければ`nil`。`n + 1`個しか引かない。負の`n`は`ValueError` |
 | `it.position(p)` | `Long` \| `nil` | 最初に`p(x)`が真になる0起点の添字、無ければ`nil`（`-1`を返す`Array.index_of`とは異なる） |
-| `it.contains(v)` | `Bool` | `v`と等しい要素があれば`true`（`Array.contains`と同じ構造的等価） |
+| `it.contains(v)` | `Bool` | `== v`の要素があれば`true`（`Array.contains`と同じ） |
 | `it.sum()` | `Long` \| `Float` | 合計。全要素が`Long`なら`Long`、一つでも`Float`があれば`Float`（空は`0`） |
 | `it.product()` | `Long` \| `Float` | 積。昇格規則は`sum`と同じ（空は`1`） |
 | `it.min()` | Any | 最小の要素。比較は数値だが返すのは要素なので、その型が保たれる。空では例外 |

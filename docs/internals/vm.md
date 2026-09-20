@@ -1100,7 +1100,7 @@ built binary's own run.
 on an instance (`v + w`, `a == b`, `str(x)`) reaches the class's dunder
 through `_lookup_special`, which walked the instance's own names and then
 the meta's on every evaluation. `build_class_meta` now resolves the whole
-`Special` set once — the operator dunders, `hash`/`cmp`, `__str__`,
+`Special` set once — the operator dunders, `hash`/`cmp`/`eq`, `__str__`,
 `__call__`, `__index__`/`__setindex__` — into a `JitSpecialTable` the meta
 owns, and whether the class binds a `drop` (`methods_drop`), which every
 construction used to ask by scanning the method names. The instance side
@@ -1119,6 +1119,25 @@ sense §5.3.1 uses: the runtime never has to re-derive from the name what
 the instruction already says, and both engines call the same helpers.
 `tests/test_object_layout.cul` pins the observables each replaced lookup
 decided.
+
+**`==` has one rule and one function that answers it.** `__eq__` on
+either side, then an `eq` both sides carry, then structure:
+`_culebra_value_equal`. The operator asks it, and so does everything else
+that means "equal" — `contains`, `index_of`, a derived `cmp`, `chunk_by`'s
+run boundaries — and so does the structural walk behind it, for each pair
+of elements. That last part is what makes `[a] == [b]` follow from
+`a == b`; the walk used to recurse into itself, so the first two steps
+stopped at the top level while Set members and Object keys (which always
+went through `eq`) disagreed with the containers holding them. Nothing
+outside the walk may name it, and `check_value_equal_door.sh` holds that.
+Two costs were kept off the programs that define no `eq`: a single
+question decides whether an Object can run a user method for `==` at all
+(the two slots of its class's special table, or its Shape's `any_special`
+flag), and the containers a walk is inside of are retained lazily — each
+level links its pair through the C stack (`JitEqWalk`), and they are
+retained only when a user `__eq__` / `eq` is about to run, since that
+method may drop the last reference to any of them. The walk itself goes by
+index against both sizes, for the same reason.
 
 **A class with no declaration still has a meta.** `Range`, the variants
 the runtime returns from `try_recv` and `ws_receive`, and the C++ classes
