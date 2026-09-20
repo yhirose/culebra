@@ -55,7 +55,13 @@ run_capped() {
 # One process for the whole lane: the executor runs a block in milliseconds, so
 # the steady state is a second or two. A block that runs and keeps running (a
 # server example) would hang it, which the classify pass below turns into a name.
-run_capped 60 "$BIN" "${lane[@]}" --reporter json "${roots[@]}" \
+#
+# The cap is generous because "slower than usual" is not the question it asks. A
+# blocked network gate turns a block that fails at once here into one that waits
+# out its own timeout (`Net.connect(..., timeout: 5000)`), and a dozen of those
+# is a minute on a CI runner that this laptop runs in three seconds.
+# The cap is overridable so both paths below can be exercised on demand.
+run_capped "${CULEBRA_DOCTEST_SKIPS_CAP:-300}" "$BIN" "${lane[@]}" --reporter json "${roots[@]}" \
     > "$work/out" 2> "$work/err"
 rc=$?
 
@@ -74,32 +80,65 @@ if (( rc == 124 )); then
     "$BIN" "${lane[@]}" --list "${roots[@]}" 2> /dev/null > "$work/names"
     probe() {
         local name="$1" d="$2"
-        local slug
+        local slug start
         slug=$(printf '%s' "$name" | tr -c '[:alnum:]' '_')
-        run_capped 10 "$BIN2" test --doc --only-skipped --vm --filter "$name" \
-            > /dev/null 2>&1
+        start=$SECONDS
+        # ROOT2 is not optional: the lane runs from a scratch directory, and
+        # without a root `--doc` discovers the .md files under the cwd, finds
+        # none, and exits — which reads here as "this block cannot run" for
+        # every block at once.
+        run_capped 30 "$BIN2" test --doc --only-skipped --vm --filter "$name" \
+            "$ROOT2" > /dev/null 2>&1
         case $? in
             0)   printf '%s\n' "$name" > "$d/$slug.ran" ;;
             124) printf '%s\n' "$name" > "$d/$slug.hang" ;;
         esac
+        # What made the whole-lane run slow, for the message below.
+        (( SECONDS - start >= 3 )) \
+            && printf '%ss %s\n' "$((SECONDS - start))" "$name" > "$d/$slug.slow"
+        # Every probe leaves a marker and returns 0: the count is checked below,
+        # and a nonzero return here makes xargs abandon the rest of the batch —
+        # which is how a hanging block went unreported while this said OK.
+        : > "$d/$slug.done"
+        return 0
     }
     export -f probe run_capped
-    export BIN2="$BIN"
+    export BIN2="$BIN" ROOT2="${roots[0]}"
     xargs -P "$JOBS" -I '{}' bash -c 'probe "$1" "$2"' _ '{}' "$work" \
         < "$work/names"
     shopt -s nullglob
     hangs=("$work"/*.hang)
     rans=("$work"/*.ran)
+    slows=("$work"/*.slow)
+    dones=("$work"/*.done)
+    want=$(wc -l < "$work/names" | tr -d ' ')
+    if (( ${#dones[@]} != want )); then
+        echo "doctest-skips: probed ${#dones[@]} of $want blocks — the pass did not finish" >&2
+        exit 1
+    fi
+    bad=0
     if (( ${#hangs[@]} )); then
         echo "doctest-skips: these blocks run without finishing:" >&2
         cat "${hangs[@]}" | sed "s|^$repo/||; s/^/  /" >&2
         echo "  Give each one a reason (\`# doctest: skip — serves until interrupted\`)." >&2
+        bad=1
     fi
     if (( ${#rans[@]} )); then
         cat "${rans[@]}" > "$work/ran"
         report_ran "$work/ran"
+        bad=1
     fi
-    exit 1
+    (( bad == 0 )) || exit 1
+    # Block by block, every skip held: none runs, none hangs. The lane was
+    # merely slower than its cap, which is a measurement about the machine and
+    # not about the docs — say what took the time and pass.
+    printf 'doctest-skips OK (%s unreasoned skips, none runnable; the lane needed more than its cap)\n' \
+        "$(wc -l < "$work/names" | tr -d ' ')"
+    if (( ${#slows[@]} )); then
+        echo "  slowest blocks:"
+        cat "${slows[@]}" | sort -rn | head -5 | sed "s|$repo/||; s/^/    /"
+    fi
+    exit 0
 fi
 
 grep -o '"event":"doc_pass","name":"[^"]*"' "$work/out" \
