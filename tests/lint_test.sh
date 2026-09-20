@@ -381,6 +381,13 @@ expect_shadow_accept "toplevel for-var"           'for i in [1] { fn g(i) { i } 
 expect_shadow_accept "nested captures for-var"    'fn f() { for i in [1] { let y = i; fn g() { y } } }'
 expect_shadow_accept "toplevel binding shadowable" 'let x = 1
 fn f() { let x = 2; x }'
+# A defer body is a frame of its own: what it binds is not the enclosing
+# function's, so it shadows nothing — but it may not rebind what it captures.
+expect_shadow_accept "defer body let"             'fn f() { defer { let r = 1; r } }
+f()'
+expect_shadow_accept "defer body catch binding"   'fn f() { defer { try { throw 1 } catch q { q } } }
+f()'
+expect_shadow_reject "defer body shadows fn let"  'fn f() { let r = 1; defer { let r = 2 } }'
 
 # --- Undefined variable (sound subset): a name bound in no enclosing scope
 # and not a builtin is certain to raise NameError, so it aborts before eval

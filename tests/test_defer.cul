@@ -265,4 +265,28 @@ while n < 2 {
 }
 assert_eq(log, 'b0;d0;b1;d1;')
 
+# A defer body inside a function binds names of its own: a `let`, a catch
+# binding, a loop variable. It reads the function's bindings as they are when
+# it runs.
+fn defer_binds() {
+  let mut n = 10
+  defer {
+    let m = n + 1
+    let caught = try {
+      throw 'x'
+    } catch q {
+      q
+    }
+    for i in [1, 2] {
+      log = "{log}i{i};"
+    }
+    log = "{log}m{m};{caught};"
+  }
+  n = 20
+  n
+}
+log = ''
+assert_eq(defer_binds(), 20)
+assert_eq(log, 'i1;i2;m21;x;')
+
 IO.inspect('test_defer OK')

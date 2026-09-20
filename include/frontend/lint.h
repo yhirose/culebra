@@ -1066,7 +1066,11 @@ void analyze_fn_body(const peg::Ast& params_ast, const peg::Ast& body_ast,
 inline void collect_locals(const peg::Ast& node, NameSet& locals,
                            const OuterChain& outer) {
   using namespace peg::udl;
-  if (node.tag == "FUNCTION"_ || node.tag == "LAMBDA"_) return;
+  // A defer body is a frame of its own (descend_into_nested): its bindings
+  // are not this function's.
+  if (node.tag == "FUNCTION"_ || node.tag == "LAMBDA"_ ||
+      node.tag == "DEFER"_)
+    return;
 
   if (node.tag == "MATCH"_) {
     // Match-arm bindings are arm-scoped at runtime, but we register
