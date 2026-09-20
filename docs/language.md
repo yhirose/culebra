@@ -360,9 +360,13 @@ promotion slow path with bit-for-bit identical semantics.
   recursing through elements). Each pair of elements is compared by
   `==` itself, so an element's own `__eq__` / `eq` (*Operator
   overloading*) decides for it at any depth — `[a] == [b]` whenever
-  `a == b`. Only `Function` and `Tensor` compare by reference identity.
-  (Value equality does not make arrays hashable — they still can't be
-  Object/Set keys.)
+  `a == b`. What is matched as a **key** — a `Set`'s members, an
+  `Object`'s non-`String` keys — is matched as a lookup matches it
+  instead, by `hash` and `eq`: that step reads no `__eq__` and crosses
+  no types, so `{1, 7} == {1.0, 7}` is false where `[1, 7] ==
+  [1.0, 7]` is true. Only `Function` and `Tensor` compare by reference
+  identity. (Value equality does not make arrays hashable — they still
+  can't be Object/Set keys.)
 
 Cross-type numeric equality: `Long` and `Float` compare by numeric
 value. `1 == 1.0`, `0 == 0.0`. `NaN` compares unequal to everything
