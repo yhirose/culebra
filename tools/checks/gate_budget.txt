@@ -27,7 +27,10 @@ ctest.entries 34
 
 # ```culebra blocks under docs/ — `just doctest` runs the runnable ones on both
 # engines, and the JIT lane costs one LLVM module per block.
-docs.blocks 942
+# 946 since §21 shows what `@value` changes instead of asserting it: the loop
+# that builds no instance, and the alias write an ordinary class accepts beside
+# the one a value class refuses — two blocks, in en and ja.
+docs.blocks 946
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

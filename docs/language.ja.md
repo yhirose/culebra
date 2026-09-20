@@ -3286,7 +3286,7 @@ variantがどのenumに属するかを問える:
     type_of(Shape.Origin)             # 'Origin'
     class_of(Shape.Origin) == Shape   # true
 
-variantは構造上`Eq`かつ`Hashable` — そのidentityはenum・variant・
+variantは構造上`Eq`かつ`Hashable` — その同一性はenum・variant・
 各payload fieldの組 — なので、`@derive`なしでそのまま`Object` /
 `Set`のkeyや`hash(v)`の引数になる。payload variantがkeyになれる
 のはpayloadがhashableなとき
@@ -5732,9 +5732,11 @@ multimethod側を先に定義してから別名でラップしたdecorated fnを
 
 ### 組み込みデコレータ: `@value`
 
-`@value`は呼び出し可能値ではなく、インスタンスが**identityを持たない**
-クラスを印付ける。同じフィールドを持つ2つのインスタンスは同じ値であり、
-プログラムからそれらを区別する手段は存在しない。
+`@value`は呼び出し可能値ではなく、クラスを**値型**として印付ける。使う動機は
+コストにある。小さなデータクラスをホットループで使うと、中間結果ごとに
+アロケーションを払うことになるが、全フィールドがスカラの`@value`クラスは
+それを1度も払わない。ループがマシンのスロットに落ち、インスタンスを1つも
+作らないからである:
 
 ```culebra
 @value
@@ -5750,13 +5752,70 @@ class Vec2 {
   __add__(o) {
     Vec2.new(self.x + o.x, self.y + o.y)
   }
+
+  __mul__(s) {
+    Vec2.new(self.x * s, self.y * s)
+  }
 }
 
-let v = Vec2.new(1, 2)
-v == Vec2.new(1, 2)   # true — オブジェクトではなくフィールドで比較
+let DT = 1.0 / 60.0
+let G = Vec2.new(0, -9.8)
+
+let mut p = Vec2.new(0, 100)
+let mut v = Vec2.new(12, 0)
+
+for _ in 0..600 {
+  v += G * DT
+  p += v * DT
+}
+
+inspect(Math.round(p.x))   # => 120
 ```
 
-contractは4条項からなり、それぞれがインスタンスのidentityを観測しうる
+`@value`の行を消しても同じ数を印字するが、そのときは1周ごとに4つの
+中間インスタンス（`G * DT`・`v + …`・`v * DT`・`p + …`）が作られて
+捨てられ、`__add__`と`__mul__`には通常のランタイムディスパッチ経由で
+到達する。付いていれば、`p`と`v`はループの間ずっと4つのマシンスロットの
+ままである。逆に、そのアロケーションが問題にならない場所では通常のクラスで
+十分である。この性能と引き換えに`@value`が手放すものが、以下の内容である。
+
+手放すのは**同一性（identity）**である。同じフィールドを持つ2つの
+インスタンスは同じ値であり、プログラムからそれらを区別する手段は存在しない。
+§5の値型と参照型の区別をクラスに適用したもので、インスタンスは`Long`が
+すでにそうであるもの — その中身だけ — になる。コピーと区別できない値で
+あれば、コンパイラはレジスタに置いても、分解しても、作り直してもよい。
+通常のインスタンスは同一性を持つので、2つの名前は同じ1つの可変な実体を
+指すことになる:
+
+```culebra
+class Mutable {
+  x: Float
+  new(x: Float) { self.x = x }
+}
+
+let p = Mutable.new(1.0)
+let q = p
+q.x = 5.0
+inspect(p.x)   # => 5.0
+```
+
+同じプログラムを`@value`クラスで書くと、最後の行には到達しない。書き込みが
+拒否されるからであり、1つの値を指す2つの名前が食い違う余地はこれで消える:
+
+```culebra
+@value
+class Frozen {
+  x: Float
+  new(x: Float) { self.x = x }
+}
+
+let p = Frozen.new(1.0)
+let q = p
+inspect(p == Frozen.new(1.0))   # => true
+q.x = 5.0                       # !! immutable property 'x'
+```
+
+contractは5条項からなり、それぞれがインスタンスの同一性を観測しうる
 経路を1つずつ塞ぐ:
 
 | 条項 | 検査 |
@@ -5785,25 +5844,31 @@ class Bad {
 }
 ```
 
-凍結は`new`が返るときに起きて、残りを閉じる:
+凍結が閉じるのは上の書き込みだけではなく、形そのものである:
 
 ```culebra
 # doctest: skip
-v.x = 5.0        # ImmutableError: immutable property 'x'
 v.z = 9          # ImmutableError: cannot add property 'z' to a @value instance
 v.remove('x')    # ImmutableError: cannot remove property 'x' from a @value instance
 ```
 
 `@value`クラスにはフィールドから導出された`eq`と`hash`が付く
-（`@derive(Eq, Hash)`が生成するのと同じ対）ので、`==`・`Set`の要素
-判定・Objectのキーがすべて一致する。自前の`__eq__`または`eq`を書いた
-クラスはそれを保持し、対の両方を辞退する — これが対の整合を保つ。
+（`@derive(Eq, Hash)`が生成するのと同じ対）ので、`Set`の要素判定と
+Objectのキーが`==`と一致する。通常のクラスが持たないのは`hash`のほうで、
+これが無ければインスタンスは`Set`の要素にもObjectのキーにもなれない。
+自前の`__eq__`または`eq`を書いたクラスはそれを保持し、対の両方を辞退する
+— これが対の整合を保つ。
 
 それ以外は何も変わらない: メソッド・演算子・getter・static・`match`の
 型パターン・`keys()`・表示は、どのクラスとも同じに振る舞う（§10）。
 フィールド型を意図的に狭く取っているのは、`String`・`Array`・`Object`・
-クロージャが自前の本体やidentityを持つため。別の`@value`クラスを
+クロージャが自前の本体や同一性を持つため。別の`@value`クラスを
 フィールド型に書く場合、そのクラスは先に宣言されている必要がある。
+
+アンボックス化は束縛ごとに決まり、all-or-nothingである。フィールド
+読み・同クラスの被演算子・再代入のいずれでもない使い方が1箇所でもあると
+— untypedな関数に`v`を渡す、配列に入れる、など — その束縛はスコープ
+全体で通常の経路に戻る。
 
 ### 組み込みデコレータ: `@packable`
 

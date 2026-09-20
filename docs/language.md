@@ -5998,9 +5998,11 @@ separate decorated wrapper if you need both.
 
 ### Built-in decorator: `@value`
 
-`@value` is not a callable — it marks a class whose instances have **no
-identity**: two instances holding the same fields are the same value, and
-nothing a program can do tells them apart.
+`@value` is not a callable — it marks a class as a **value type**. The
+reason to reach for it is cost. A small data class used in a hot loop pays
+an allocation for every intermediate result it produces; a `@value` class
+whose fields are all scalars pays none, because the loop compiles to
+machine slots and builds no instance at all:
 
 ```culebra
 @value
@@ -6016,13 +6018,72 @@ class Vec2 {
   __add__(o) {
     Vec2.new(self.x + o.x, self.y + o.y)
   }
+
+  __mul__(s) {
+    Vec2.new(self.x * s, self.y * s)
+  }
 }
 
-let v = Vec2.new(1, 2)
-v == Vec2.new(1, 2)   # true — compared by field, not by object
+let DT = 1.0 / 60.0
+let G = Vec2.new(0, -9.8)
+
+let mut p = Vec2.new(0, 100)
+let mut v = Vec2.new(12, 0)
+
+for _ in 0..600 {
+  v += G * DT
+  p += v * DT
+}
+
+inspect(Math.round(p.x))   # => 120
 ```
 
-The contract has four clauses, each closing one way a program could
+Delete the `@value` line and the loop prints the same number, but each
+iteration now builds and frees four intermediate instances — `G * DT`,
+`v + …`, `v * DT`, `p + …` — and reaches `__add__` and `__mul__` through
+the ordinary runtime dispatch. With it, `p` and `v` are four machine slots
+the loop never leaves. Where those allocations do not matter, an ordinary
+class is the right choice: what `@value` gives up to earn the loop is what
+the rest of this section describes.
+
+What it gives up is **identity**: two instances holding the same fields are
+the same value, and nothing a program can do tells them apart. It is §5's
+value/reference split, applied to a class — an instance becomes what a
+`Long` already is, its contents and nothing else, and a value the program
+cannot tell apart from a copy is one the compiler may keep in registers,
+take apart, and rebuild. An ordinary instance has an identity, so two names
+for it are two handles on one mutable thing:
+
+```culebra
+class Mutable {
+  x: Float
+  new(x: Float) { self.x = x }
+}
+
+let p = Mutable.new(1.0)
+let q = p
+q.x = 5.0
+inspect(p.x)   # => 5.0
+```
+
+The same program over a `@value` class does not get that far. The write is
+refused, which is what leaves two names for one value nothing to disagree
+about:
+
+```culebra
+@value
+class Frozen {
+  x: Float
+  new(x: Float) { self.x = x }
+}
+
+let p = Frozen.new(1.0)
+let q = p
+inspect(p == Frozen.new(1.0))   # => true
+q.x = 5.0                       # !! immutable property 'x'
+```
+
+The contract has five clauses, each closing one way a program could
 observe an instance's identity:
 
 | Clause | Checked |
@@ -6051,19 +6112,20 @@ class Bad {
 }
 ```
 
-The freeze happens when `new` returns, and closes the rest:
+The freeze closes the rest of the shape, not just the write above:
 
 ```culebra
 # doctest: skip
-v.x = 5.0        # ImmutableError: immutable property 'x'
 v.z = 9          # ImmutableError: cannot add property 'z' to a @value instance
 v.remove('x')    # ImmutableError: cannot remove property 'x' from a @value instance
 ```
 
 A `@value` class gets `eq` and `hash` derived from its fields — the same
-pair `@derive(Eq, Hash)` generates — so `==`, `Set` membership and Object
-keys all agree. A class that writes its own `__eq__` or `eq` keeps it and
-opts out of both, which is what keeps the pair consistent.
+pair `@derive(Eq, Hash)` generates — so `Set` membership and Object keys
+agree with `==`. `hash` is the half an ordinary class does not have:
+without it an instance is unhashable, so it cannot be a `Set` member or an
+Object key at all. A class that writes its own `__eq__` or `eq` keeps it
+and opts out of both, which is what keeps the pair consistent.
 
 Nothing else about the class changes: methods, operators, getters,
 statics, `match` type patterns, `keys()` and display all behave as they do
@@ -6071,6 +6133,11 @@ for any class (§10). The field types are deliberately narrow — `String`,
 `Array`, `Object` and closures carry a body or an identity of their own —
 and a field type naming another `@value` class must name one declared
 earlier.
+
+The unboxed form is decided per binding and is all-or-nothing: one use that
+is not a field read, a same-class operand or a reassignment — passing `v`
+to an untyped function, storing it in an array — puts that binding on the
+ordinary path for its whole scope.
 
 ### Built-in decorator: `@packable`
 
