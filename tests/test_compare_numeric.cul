@@ -69,3 +69,39 @@ let te = try {
   err.kind
 }
 assert_eq(te, 'TypeError')
+
+// A Long against a Float is exact too, or two Longs a unit apart past the
+// mantissa would both equal one Float while differing from each other --
+// and `==` would not be transitive.
+let big = 9007199254740993      // 2^53 + 1
+let exact = 9007199254740992.0  // 2^53
+assert_eq(big == exact, false)
+assert_eq(9007199254740992 == exact, true)
+assert_eq(exact == big, false)
+assert_eq(big != exact, true)
+
+// ...and ordering answers the same pair the same way, from either side.
+assert_eq(big < exact, false)
+assert_eq(big > exact, true)
+assert_eq(big <= exact, false)
+assert_eq(big >= exact, true)
+assert_eq(exact < big, true)
+assert_eq(exact > big, false)
+
+// Inside the mantissa nothing moves, fractions and signs included.
+assert_eq(1 == 1.0, true)
+assert_eq(1 < 1.5, true)
+assert_eq(-1 > -1.5, true)
+assert_eq(-1 < -0.5, true)
+assert_eq(2 > 1.5, true)
+assert_eq(Math.inf > big, true)
+assert_eq(-Math.inf < big, true)
+assert_eq(big == Math.inf, false)
+assert_eq(big < Math.nan, false)
+assert_eq(big > Math.nan, false)
+assert_eq(big == Math.nan, false)
+
+// A container compares its elements by the same rule.
+assert_eq([big] == [exact], false)
+assert_eq([9007199254740992] == [exact], true)
+assert_eq([big].contains(exact), false)

@@ -3917,10 +3917,24 @@ struct JIT {
     builder_.SetInsertPoint(checkNumBB);
     auto lIsFloat = builder_.CreateICmpEQ(ltag, floatTag);
     auto rIsFloat = builder_.CreateICmpEQ(rtag, floatTag);
+    // The lowering of _culebra_promotion_exact: inline for the pairs a
+    // promotion answers exactly, the rest to the helper the executor's own
+    // arm falls to. Neither side Long selects 0, which is in the window, so
+    // two Floats take the fast arm as they should.
     auto bothNum = builder_.CreateAnd(builder_.CreateOr(lIsLong, lIsFloat),
                                       builder_.CreateOr(rIsLong, rIsFloat),
                                       "cmp.bothnum");
-    builder_.CreateCondBr(bothNum, floatBB, slowBB);
+    auto exact = builder_.getInt64(_culebra_promotion_exact_max);
+    auto longData = builder_.CreateSelect(
+        lIsLong, ldata,
+        builder_.CreateSelect(rIsLong, rdata, builder_.getInt64(0)),
+        "cmp.ldata");
+    auto inRange = builder_.CreateAnd(
+        builder_.CreateICmpSLE(longData, exact),
+        builder_.CreateICmpSGE(longData, builder_.CreateNeg(exact)),
+        "cmp.exact");
+    auto fastNum = builder_.CreateAnd(bothNum, inRange, "cmp.fastnum");
+    builder_.CreateCondBr(fastNum, floatBB, slowBB);
 
     builder_.SetInsertPoint(floatBB);
     auto floatResult = builder_.CreateFCmp(fpred, num_as_double(lIsLong, ldata, "l"),

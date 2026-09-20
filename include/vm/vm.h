@@ -14840,6 +14840,12 @@ struct Exec {
       return (l.tag == TAG_LONG || l.tag == TAG_FLOAT) &&
              (r.tag == TAG_LONG || r.tag == TAG_FLOAT);
     };
+    // Comparison's fast arm: the pairs a promotion answers exactly, asked
+    // through the runtime's own predicate so the JIT's arm cannot drift.
+    auto promotion_exact = [](const JitValue& l, const JitValue& r) {
+      return _culebra_promotion_exact(static_cast<int8_t>(l.tag), l.data,
+                                      static_cast<int8_t>(r.tag), r.data);
+    };
 
     // The safepoint poll below runs per instruction, so resolve the heap
     // once: the Heap lives in the Runtime's substate for this frame's whole
@@ -15247,8 +15253,8 @@ struct Exec {
           bool eq;
           if (both_long(l, r)) {
             eq = l.data == r.data;
-          } else if (both_num(l, r)) {
-            eq = as_double(l) == as_double(r);  // the helper's own promotion
+          } else if (promotion_exact(l, r)) {
+            eq = as_double(l) == as_double(r);  // exact in this range
           } else {
             // The JIT publishes the operator position before the equality
             // helper (a user __eq__'s bool coercion throws positionless and
@@ -15280,8 +15286,8 @@ struct Exec {
               case Op::Gt: res = l.data > r.data; break;
               default:     res = l.data >= r.data; break;
             }
-          } else if (both_num(l, r)) {
-            // The helper's own numeric arm (promoted doubles; false on NaN).
+          } else if (promotion_exact(l, r)) {
+            // Exact in this range; false on NaN, as the helper is.
             double ld = as_double(l), rd = as_double(r);
             switch (in.op) {
               case Op::Lt: res = ld < rd; break;

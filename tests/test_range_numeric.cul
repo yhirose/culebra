@@ -59,4 +59,16 @@ assert_eq(error_of(|| 5[0.5..1]),
           "TypeError: type error: expected Array, got Long")
 assert_eq([1, 2, 3][1..], [2, 3])
 
+// A range's bounds are the `<` and `<=` the range is written as, exactly:
+// promoting the Long would land 2^53 + 1 on the inclusive end and let it in.
+let big = 9007199254740993      // 2^53 + 1
+assert_eq(big <= 9007199254740992.0, false)
+assert_eq((0.0..=9007199254740992.0).contains(big), false)
+assert_eq((0.0..=9007199254740992.0).contains(9007199254740992), true)
+assert_eq((0.0..9007199254740992.0).contains(big), false)
+assert_eq(match big {
+  0.0..=9007199254740992.0 => 'inside',
+  _ => 'outside',
+}, 'outside')
+
 println('range numeric OK')

@@ -1462,14 +1462,20 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_range_iter(
 }
 
 // x <= y, or x < y when `strict`, for two numbers: the Lt/Le ops' own numeric
-// arms (exact on two Longs, promoted doubles otherwise, false on NaN), not
-// _culebra_value_ord, whose Long arm compares through double.
+// arms, which is the same rule `<` answers -- exact on two Longs, and on a
+// mixed pair through the door both engines use, so a range agrees with the
+// comparison it is written as. False on NaN, as every ordering is.
 inline bool _num_before(const JitValue& x, const JitValue& y, bool strict) {
   if (x.tag == TAG_LONG && y.tag == TAG_LONG) {
     return strict ? x.data < y.data : x.data <= y.data;
   }
-  double xd = _culebra_coerce_num(static_cast<int8_t>(x.tag), x.data);
-  double yd = _culebra_coerce_num(static_cast<int8_t>(y.tag), y.data);
+  const auto xt = static_cast<int8_t>(x.tag), yt = static_cast<int8_t>(y.tag);
+  if (xt != yt) {  // one of each: the exact door, the same one `<` asks
+    const double c = _culebra_num_cross_cmp(xt, x.data, yt, y.data);
+    return strict ? c < 0.0 : c <= 0.0;
+  }
+  const double xd = _culebra_coerce_num(xt, x.data);
+  const double yd = _culebra_coerce_num(yt, y.data);
   return strict ? xd < yd : xd <= yd;
 }
 

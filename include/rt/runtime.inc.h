@@ -32,6 +32,50 @@ inline double _culebra_coerce_num(int8_t tag, int64_t data) {
   throw culebra::CulebraError("TypeError", "type error");
 }
 
+// A Long above this lands on a double unchanged, so promoting it is exact and
+// the fast arms both engines keep may answer the pair themselves.
+inline constexpr int64_t _culebra_promotion_exact_max = int64_t(1) << 53;
+
+// Whether promoting to double answers this pair exactly: two Floats, or a
+// Long inside the window above. The fast arm of each engine's comparison asks
+// this, so the two arms cannot drift apart.
+inline bool _culebra_promotion_exact(int8_t t1, int64_t d1, int8_t t2,
+                                     int64_t d2) {
+  if (t1 == TAG_FLOAT && t2 == TAG_FLOAT) return true;
+  const bool long_left = t1 == TAG_LONG && t2 == TAG_FLOAT;
+  const bool long_right = t1 == TAG_FLOAT && t2 == TAG_LONG;
+  if (!long_left && !long_right) return false;
+  const int64_t i = long_left ? d1 : d2;
+  return i <= _culebra_promotion_exact_max &&
+         i >= -_culebra_promotion_exact_max;
+}
+
+// A Long against a Float, exactly, as a sign: -1/0/+1 for i<d, i==d, i>d, and
+// the NaN itself when d is one, which makes every comparison against it false
+// the way IEEE does. Promoting the Long instead loses the bits past 2^53 that
+// tell two Longs apart, which costs `==` its transitivity -- 2^53 and 2^53+1
+// promote onto the same double, so both equal it while differing.
+inline double _culebra_long_cmp_double(int64_t i, double d) {
+  if (d >= -9223372036854775808.0 && d < 9223372036854775808.0) {
+    const int64_t ti = static_cast<int64_t>(d);  // toward zero; in range: exact
+    if (i != ti) return i < ti ? -1.0 : 1.0;
+    const double td = static_cast<double>(ti);  // past 2^53 d has no fraction
+    return d == td ? 0.0 : (d > td ? -1.0 : 1.0);
+  }
+  if (d != d) return d;                 // NaN, off the common path
+  return d < 0 ? 1.0 : -1.0;            // an infinity, or past int64's range
+}
+
+// The same for a mixed pair given as two tagged values, oriented left to
+// right. One side is the Long: the tags differ and both are numeric.
+inline double _culebra_num_cross_cmp(int8_t t1, int64_t d1, int8_t t2,
+                                     int64_t d2) {
+  const bool long_left = t1 == TAG_LONG;
+  const double c = _culebra_long_cmp_double(
+      long_left ? d1 : d2, _culebra_float_to_double(long_left ? d2 : d1));
+  return long_left ? c : -c;
+}
+
 // Throw the canonical `cannot apply 'op' to L and R` when either operand
 // is non-numeric, after special-method dispatch has already declined.
 // Single source for every arithmetic helper's type error, with location.
@@ -131,7 +175,7 @@ extern "C" {
 // interpreter `Value::operator<` / `<=` / `>` / `>=` so JIT
 // semantics match bit-for-bit. Nil is a special case: `nil op nil`
 // always returns false (ordering on `nil` is not defined). Cross-type
-// numeric (Long↔Float) promotes to double.
+// numeric (Long↔Float) is answered exactly, not through a promotion.
 
 template <typename Cmp>
 inline bool _culebra_value_ord(int8_t t1, int64_t d1, int8_t t2, int64_t d2,
@@ -142,7 +186,7 @@ inline bool _culebra_value_ord(int8_t t1, int64_t d1, int8_t t2, int64_t d2,
   if (t1 != t2) {
     if ((t1 == TAG_LONG || t1 == TAG_FLOAT) &&
         (t2 == TAG_LONG || t2 == TAG_FLOAT)) {
-      return cmp(_culebra_coerce_num(t1, d1), _culebra_coerce_num(t2, d2));
+      return cmp(_culebra_num_cross_cmp(t1, d1, t2, d2), 0.0);
     }
     culebra::throw_compare_type_error(_culebra_tag_name(t1),
                                       _culebra_tag_name(t2), line, col);
@@ -1793,10 +1837,10 @@ inline bool _culebra_items_equal(int8_t tag, JitArray* a, JitArray* b) {
 inline bool _culebra_structure_equal(int8_t t1, int64_t d1, int8_t t2,
                                      int64_t d2) {
   if (t1 != t2) {
-    // Numeric cross-type: promote to double and compare by value.
+    // Numeric cross-type, by value and exactly.
     if ((t1 == TAG_LONG || t1 == TAG_FLOAT) &&
         (t2 == TAG_LONG || t2 == TAG_FLOAT)) {
-      return _culebra_coerce_num(t1, d1) == _culebra_coerce_num(t2, d2);
+      return _culebra_num_cross_cmp(t1, d1, t2, d2) == 0.0;
     }
     // String/StringView byte-equality across flavors.
     if ((t1 == TAG_STRING || t1 == TAG_STRINGVIEW) &&

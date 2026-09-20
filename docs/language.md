@@ -328,9 +328,11 @@ all `Object`s. `type_of` reports `'Object'` for a module, an iterator and
 a namespace, the class's own name for a class instance, and the variant's
 name for an enum variant (§19).
 
-Arithmetic and comparison between `Long` and `Float` promote the
-`Long` operand to `Float` automatically — see §7. Outside that
-numeric pair there is no implicit conversion between types, and
+Arithmetic between `Long` and `Float` promotes the `Long` operand to
+`Float` automatically — see §7. Comparison mixes the two by value
+without that promotion, which past 2^53 would land two different
+`Long`s on one `Float`. Outside that numeric pair there is no
+implicit conversion between types, and
 arithmetic, comparison, or boolean operators given the wrong kind of
 value raise `type error` (see §15).
 
@@ -375,7 +377,8 @@ including itself.
 Ordering (`<`, `<=`, `>`, `>=`) is defined for:
 
 * `Long`, `Float`, and `Bool` — numeric ordering (booleans order
-  `false` < `true`; `Long` and `Float` mix by value via promotion).
+  `false` < `true`; `Long` and `Float` mix by value, exactly, so
+  ordering and `==` agree about every pair).
 * `String` — lexicographic byte ordering.
 * `Nil` — `nil` compares equal to `nil` and always returns `false`
   for ordering comparisons.
