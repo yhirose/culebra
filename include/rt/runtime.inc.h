@@ -120,7 +120,8 @@ inline void _set_walk(JitSet* s, F&& f) {
 }
 
 // `==`'s one rule (_culebra_value_equal, with the walk behind it, further
-// down — past the helpers it dispatches through).
+// down — past the helpers it dispatches through). The definition sits inside
+// this file's `extern "C"` block, so the declaration carries that linkage too.
 extern "C" {
 [[gnu::always_inline]] inline bool _culebra_value_equal(int8_t t1, int64_t d1,
                                                         int8_t t2, int64_t d2);
@@ -1415,23 +1416,23 @@ inline std::optional<int64_t> _jit_object_user_hash(JitObject* obj) {
   return r.data;
 }
 
-// Resolve user-defined `eq(other)` on a pair of Objects (Eq structural
-// conformance). Both sides must expose `eq`; otherwise nullopt so the
-// caller keeps reference equality. The return is coerced via `to_bool`
-// semantics (Bool/Long/Float), matching the interpreter's `_invoke_user_eq`
-// so a non-Bool `eq` agrees across backends (and, like interp, throws on a
-// non-coercible return).
 inline JitClosure* _lookup_special(int8_t tag, int64_t data, Special s);
 inline void _culebra_eq_walks_hold();
 
 // Run a user equality method — `__eq__` or `eq`, the operator's step or a
 // key probe's. The containers a walk is holding are pinned first: the method
-// may drop the last reference to either.
+// may drop the last reference to either. The return is coerced via `to_bool`
+// semantics (Bool/Long/Float), matching the interpreter's `_invoke_user_eq`
+// so a non-Bool `eq` agrees across backends (and, like interp, throws on a
+// non-coercible return).
 inline bool _culebra_ask_equal(JitClosure* cls, JitValue self, JitValue other) {
   _culebra_eq_walks_hold();
   return _extract_bool_and_release(_culebra_invoke_method1(cls, self, other));
 }
 
+// Resolve user-defined `eq(other)` on a pair of Objects (Eq structural
+// conformance). Both sides must expose `eq`; otherwise nullopt so the caller
+// keeps reference equality.
 inline std::optional<bool> _jit_object_user_eq(JitObject* a, JitObject* b) {
   // Through the special table: this runs for every pair of Objects a
   // container comparison or a key probe meets, most of which carry no `eq`.
@@ -1854,30 +1855,21 @@ inline bool _culebra_structure_equal(int8_t t1, int64_t d1, int8_t t2,
   }
 }
 
-// `==`'s two user steps on one value, resolved in a single pass over its
-// special table: `__eq__`, and the `eq` an Eq-conforming class carries. Most
-// of what a container holds has neither, and goes straight to structure.
-struct EqSpecials {
-  JitClosure* dunder = nullptr;
-  JitClosure* trait = nullptr;
-};
-inline EqSpecials _eq_specials(int8_t tag, int64_t data) {
-  auto look = _special_lookup(tag, data);
-  return {look(Special::Eq), look(Special::EqTrait)};
-}
-
-// The first two steps of `==`, which only an Object can take: nullopt when
-// neither side answers, and structure decides.
+// The first two steps of `==`, which only an Object can take: `__eq__` on
+// either side, then the `eq` an Eq-conforming class carries on both. Most of
+// what a container holds has neither, so each name is looked up only once the
+// step before it has not answered — a dict pays a hash probe per name. Nullopt
+// when neither side answers, and structure decides.
 inline std::optional<bool> _culebra_user_equal(int8_t t1, int64_t d1,
                                                int8_t t2, int64_t d2) {
-  const EqSpecials a = _eq_specials(t1, d1), b = _eq_specials(t2, d2);
+  const SpecialLookup a = _special_lookup(t1, d1), b = _special_lookup(t2, d2);
   // `==` is commutative, so try either side's `__eq__`.
-  if (a.dunder) return _culebra_ask_equal(a.dunder, {t1, d1}, {t2, d2});
-  if (b.dunder) return _culebra_ask_equal(b.dunder, {t2, d2}, {t1, d1});
+  if (auto* f = a(Special::Eq)) return _culebra_ask_equal(f, {t1, d1}, {t2, d2});
+  if (auto* f = b(Special::Eq)) return _culebra_ask_equal(f, {t2, d2}, {t1, d1});
   // Eq-trait fallback: both sides carry `eq`, so the operator agrees with
   // key equality (JitValueEq dispatches `eq` too, through the same step).
-  if (a.trait && b.trait)
-    return _culebra_ask_equal(a.trait, {t1, d1}, {t2, d2});
+  if (auto* f = a(Special::EqTrait); f && b(Special::EqTrait))
+    return _culebra_ask_equal(f, {t1, d1}, {t2, d2});
   return std::nullopt;
 }
 
@@ -2400,7 +2392,7 @@ inline bool _culebra_any_key_values_equal(JitObject* a, JitObject* b) {
       continue;
     }
     if (!held) {
-      held = culebra_runtime_array_new();
+      held = culebra_runtime_array_new_reserved(static_cast<int64_t>(2 * na));
       pairs = JitOwnedVal(JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(held)});
     }
     culebra_runtime_value_retain(x.tag, x.data);
