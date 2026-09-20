@@ -56,6 +56,23 @@ cd "$(dirname "$0")/../.."
 fast=0
 [[ "${1:-}" == "--fast" ]] && fast=1
 
+# Three stages degrade to a skip when the box is missing a toolchain piece:
+# B's C++23 probe, B's JIT blocks without an llvm-config at the floor, and F
+# without a driver. That is right on a developer's box and wrong in CI, where
+# the missing piece means the gate stopped checking what it exists to check.
+# CI sets this and the skips become failures instead.
+require_full="${CULEBRA_REQUIRE_DOCS_CPP:-0}"
+
+# Report a stage that degraded for want of one of those pieces.
+degraded() {
+  if [[ $require_full != 0 ]]; then
+    echo "docs-cpp FAIL: $1 — CULEBRA_REQUIRE_DOCS_CPP is set, so this gate" \
+         "must run every stage" >&2
+    exit 1
+  fi
+  echo "docs-cpp SKIP: $1"
+}
+
 SOURCES=(docs/*.md README.md README.ja.md)
 
 # The include path a host build needs, exactly as documented. Every entry
@@ -119,7 +136,7 @@ fi
 CXXBIN="${CULEBRA_DOCS_CXX:-${CXX:-c++}}"
 command -v "$CXXBIN" >/dev/null 2>&1 || CXXBIN=c++
 if ! echo 'int main(){}' | "$CXXBIN" -std=c++23 -fsyntax-only -x c++ - 2>/dev/null; then
-  echo "docs-cpp SKIP: $CXXBIN does not accept -std=c++23 (set CULEBRA_DOCS_CXX)"
+  degraded "$CXXBIN does not accept -std=c++23 (set CULEBRA_DOCS_CXX)"
   exit 0
 fi
 
@@ -282,10 +299,15 @@ if (( bad > 0 )); then
   fail=1
 fi
 
+# Its own line rather than a suffix on the OK message: a JIT block that went
+# unbuilt is the gate shrinking, not a footnote on a pass.
+if (( skipped > 0 )); then
+  degraded "$skipped JIT example(s) unbuilt: no llvm-config >= $LLVM_FLOOR"
+fi
+
 if (( fail == 0 )); then
   msg="docs-cpp OK (compile): $built complete example(s) build"
   [[ -n $llvm_via ]] && msg="$msg (LLVM via $llvm_via)"
-  (( skipped > 0 )) && msg="$msg, $skipped skipped: no llvm-config >= $LLVM_FLOOR"
   echo "$msg"
 fi
 
@@ -435,7 +457,7 @@ EF_BIN="${BIN:-}"
 [[ -n $EF_BIN && -x $EF_BIN ]] || EF_BIN=build/culebra
 [[ -x $EF_BIN ]] || EF_BIN=build-dev/culebra
 if [[ ! -x $EF_BIN ]]; then
-  echo "docs-cpp SKIP (embed-flags): no built driver (set BIN=<path>)"
+  degraded "embed-flags has no built driver (set BIN=<path>)"
   exit $fail
 fi
 
