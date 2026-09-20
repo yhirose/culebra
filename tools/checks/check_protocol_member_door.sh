@@ -16,47 +16,35 @@
 # mild form is a wrong diagnostic (`for k, v in parsed` failing on an `iter`
 # key); the severe one has happened — a `has_next` that was not a Function
 # reached a raw closure cast in the JIT, a jump through a Long payload.
-#
-# Checked over whole statements, not lines: these calls wrap, and the first
-# sweep for them — a grep for the literal — missed half.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 python3 - <<'PY'
-import pathlib, re, sys
+import re, sys
+sys.path.insert(0, 'tools/checks')
+import door_gate
 
+LABEL = 'protocol-member-door'
 PROBE = re.compile(r'\b(?:culebra_runtime_object_has\w*|emit_object_has\w*|'
                    r'_find_property|find_slot|get_or_create_global_str)\s*\(')
 NAME = re.compile(r'"(?:drop|iter|has_next|next)"')
 
-def offenders(src):
-    src = re.sub(r'//[^\n]*', '', src)
-    line, out = 1, []
-    for stmt in re.split(r'(?<=[;{}])', src):
-        lead = stmt[:len(stmt) - len(stmt.lstrip())]
-        here = line + lead.count('\n')  # the statement's own first line
-        line += stmt.count('\n')
-        if PROBE.search(stmt) and NAME.search(stmt):
-            out.append((here, ' '.join(stmt.split())[:140]))
-    return out
+match = lambda stmt: PROBE.search(stmt) and NAME.search(stmt)
+door_gate.require_scanner(
+    LABEL, match,
+    'ok = culebra_runtime_object_has(\n'
+    '    reinterpret_cast<JitObject*>(r.data),\n    "next");')
 
-# The scanner has to be able to fail: a wrapped probe, the shape the tree had.
-planted = 'ok = culebra_runtime_object_has(\n    reinterpret_cast<JitObject*>(r.data),\n    "next");'
-if not offenders(planted):
-    sys.exit('protocol-member-door FAIL: the scanner no longer sees a wrapped '
-             'probe, so a green run proves nothing')
-
-files = [p for root in ('include', 'src') for p in pathlib.Path(root).rglob('*')
-         if p.suffix in ('.h', '.cc') and 'vendor' not in p.parts]
-bad = [(p, n, s) for p in files for n, s in offenders(p.read_text())]
+text = door_gate.sources()
+bad = [(p, n, s) for p in text for n, s in door_gate.sites(text[p], match)]
 
 # ...and it has to be looking at the real thing: the door exists once, and
 # both lanes ask through the named questions.
-text = {p: p.read_text() for p in files}
-door = sum(t.count('inline JitClosure* _protocol_member(') for t in text.values())
-use = lambda path, name: text[pathlib.Path(path)].count(name)
+use = lambda path, name: text[path].count(name)
 population = [
-    ('_protocol_member defined once', door == 1),
+    ('_protocol_member defined once',
+     sum(t.count('inline JitClosure* _protocol_member(')
+         for t in text.values()) == 1),
     ('the executor asks is_iterator_shaped',
      use('include/vm/vm.h', 'culebra_runtime_is_iterator_shaped(') >= 1),
     ('the executor asks has_iter_method',
@@ -66,17 +54,10 @@ population = [
     ('the JIT for-in head asks has_iter_method',
      use('include/jit/jit.h', 'emit_has_iter_method(') >= 2),  # def + use
 ]
-missing = [what for what, ok in population if not ok]
 
-for p, n, s in bad:
-    print(f'protocol-member-door FAIL: {p}:{n}: {s}', file=sys.stderr)
-for what in missing:
-    print(f'protocol-member-door FAIL: expected {what}', file=sys.stderr)
-if bad or missing:
-    print('  A well-known key\'s presence is not a protocol member — ask\n'
-          '  _protocol_member (or is_iterator_shaped / has_iter_method).',
-          file=sys.stderr)
-    sys.exit(1)
-print(f'protocol-member-door OK ({len(files)} files, no key probe on a '
-      'well-known name)')
+door_gate.report(
+    LABEL, bad, population,
+    '  A well-known key\'s presence is not a protocol member — ask\n'
+    '  _protocol_member (or is_iterator_shaped / has_iter_method).',
+    text, 'no key probe on a well-known name')
 PY
