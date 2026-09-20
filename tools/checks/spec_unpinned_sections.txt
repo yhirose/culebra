@@ -41,7 +41,6 @@
 12. Control flow > Diverging expressions
 12. Control flow > `debugger`
 12. Control flow > `if`
-12. Control flow > `nobreak` (loop-else)
 12. Control flow > `return`
 12. Control flow > `while`
 13. Pattern matching > Arm bodies

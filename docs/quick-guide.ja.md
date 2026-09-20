@@ -571,7 +571,6 @@ inspect(handle {
 確定します。
 
 ```culebra
-# doctest: skip
 # lib.cul
 let greet = fn (n) {
   "hello, {n}"

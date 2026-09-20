@@ -390,7 +390,7 @@ Read a single line from standard input. The trailing newline is
 stripped. Returns `''` (empty string) on end-of-file.
 
 ```culebra
-# doctest: skip
+# doctest: skip — reads stdin
 println('name?')
 name = IO.input()
 println("Hello, {name}")
@@ -414,7 +414,7 @@ methods share one underlying buffer, so `.read(n)` then `.lines()` continues
 where the byte read left off.
 
 ```culebra
-# doctest: skip
+# doctest: skip — reads stdin
 # Filter: uppercase lines containing "error".
 for line in IO.stdin().lines() {
   if line.contains("error") {
@@ -584,7 +584,7 @@ newline translation. Throws `IOError` if the parent directory is
 missing or the path is not writable.
 
 ```culebra
-# doctest: skip
+# doctest: skip — writes files beside it
 FS.write('out.txt', 'hello\n')
 ```
 
@@ -754,7 +754,7 @@ per segment and `**` for recursive descent. This is shell-style glob,
 distinct from `Regex`.
 
 ```culebra
-# doctest: skip
+# doctest: skip — reads the working directory
 let sources = FS.glob('src/**/*.cul')
 ```
 
@@ -781,7 +781,7 @@ Backed by FSEvents on macOS, inotify on Linux and `ReadDirectoryChangesW`
 on Windows.
 
 ```culebra
-# doctest: skip
+# doctest: skip — watches until interrupted
 for e in FS.watch('src', match: ['.cul']) {
   println("{e.kind} {e.path}")
 }
@@ -792,7 +792,7 @@ the first pull is still delivered. The handle is iterable directly, and
 `break` leaves it usable — a named handle can be iterated again:
 
 ```culebra
-# doctest: skip
+# doctest: skip — watches until interrupted
 let w = FS.watch('src')
 for e in w { break }        # handle stays open
 for e in w { break }        # picks up where the first loop left off
@@ -1308,7 +1308,7 @@ path. Empty when the script is invoked with no trailing arguments or
 when running in the REPL.
 
 ```culebra
-# doctest: skip
+# doctest: skip — prints values particular to one machine
 # $ culebra run.cul hello world
 inspect(Sys.argv)  # ['hello', 'world']
 # $ culebra --jit run.cul hello   →  ['hello']   (--jit is culebra's)
@@ -1346,7 +1346,7 @@ separates an unset variable from one set to the empty string: the
 one-argument form folds both to `''`.
 
 ```culebra
-# doctest: skip
+# doctest: skip — prints values particular to one machine
 inspect(Sys.env('HOME'))                # '/Users/alice'
 inspect(Sys.env('NOT_A_VAR'))           # ''
 inspect(Sys.env('PORT', '8080'))        # '8080' while PORT is unset
@@ -1373,7 +1373,7 @@ path are resolved. Raises `IOError` if the directory cannot be determined
 (for example, it was removed out from under the process).
 
 ```culebra
-# doctest: skip
+# doctest: skip — prints values particular to one machine
 inspect(Sys.getcwd())  # '/Users/alice/project'
 ```
 
@@ -1383,7 +1383,7 @@ Change the process working directory to `path`. Raises `IOError` if the path
 does not exist or is not a directory.
 
 ```culebra
-# doctest: skip
+# doctest: skip — prints values particular to one machine
 Sys.chdir('/tmp')
 inspect(Sys.getcwd())  # '/tmp' (or its resolved path)
 ```
@@ -1422,7 +1422,7 @@ of relying on `culebra` being on `PATH`. (In an AOT-built program it is the path
 to that standalone binary.)
 
 ```culebra
-# doctest: skip
+# doctest: skip — prints values particular to one machine
 inspect(Sys.executable)  # '/usr/local/bin/culebra'
 ```
 
@@ -1435,7 +1435,7 @@ source file at runtime — the REPL, a piped `stdin`, or an AOT-built binary (wh
 carries no `.cul`; use `Sys.executable` there).
 
 ```culebra
-# doctest: skip
+# doctest: skip — prints values particular to one machine
 inspect(Sys.script)  # '/Users/alice/project/build.cul'
 ```
 
@@ -2260,7 +2260,6 @@ disagree: an optional positional needs a `default` to say what it is
 worth when absent, which on its own would have made it an option.
 
 ```culebra
-# doctest: skip
 {name: "file", positional: true, default: "-"}   # cat [<file>]
 {name: "file", positional: true, default: nil}   # the same, nil when absent
 {name: "out", positional: false}                 # a required --out
@@ -2500,7 +2499,7 @@ buffer (use `buf.with_lock` for contended cells). `inherit_env: false` gives
 every child an environment of its own, as it does for `Proc.run`.
 
 ```culebra
-# doctest: skip
+# doctest: skip — spawns programs this checkout does not carry
 let results = Proc.all(
   [["git", "fetch", "origin"], ["npm", "test"], ["cargo", "build"]],
   limit: 2,
@@ -2522,7 +2521,7 @@ redundant providers or "first mirror to respond wins". An empty list throws
 `Proc.run` / `Proc.all`.
 
 ```culebra
-# doctest: skip
+# doctest: skip — spawns programs this checkout does not carry
 let fastest = Proc.race([
   ["curl", "-s", "https://mirror-a.example/file"],
   ["curl", "-s", "https://mirror-b.example/file"],
@@ -2743,7 +2742,6 @@ immediately.
 It answers with one of three variants, the shape of an `enum`:
 
 ```culebra
-# doctest: skip
 enum ChannelResult { Value(Any), Empty, Closed }
 ```
 
@@ -2956,7 +2954,6 @@ A record type is an ordinary class marked `@packable`, whose fields carry a
 type annotation and an optional default:
 
 ```culebra
-# doctest: skip
 @packable
 class FloatPair {
   x: Float32 = 0.0
@@ -2989,7 +2986,7 @@ RAM-backed location (e.g. `/dev/shm/...` on Linux) gives shared memory without
 disk durability.
 
 ```culebra
-# doctest: skip
+# doctest: skip — runs a worker pool over a large buffer
 @packable
 class Cell {
   v: Int64 = 0
@@ -3041,7 +3038,7 @@ classic data-parallel pattern — workers updating disjoint elements —
 allocation-free:
 
 ```culebra
-# doctest: skip
+# doctest: skip — runs a worker pool over a large buffer
 @packable
 class Cell {
   v: Int64 = 0
@@ -3069,7 +3066,7 @@ it by that name with `SharedBuffer.receive(name, Class)`. Both processes map the
 same physical pages: writes are visible without copying or serializing.
 
 ```culebra
-# doctest: skip
+# doctest: skip — spawns programs this checkout does not carry
 # --- parent.cul ---
 @packable
 class Cell {
@@ -3117,7 +3114,7 @@ buffer's lock and returns the callback's value. The lock is released on every
 exit, including a thrown exception.
 
 ```culebra
-# doctest: skip
+# doctest: skip — runs a worker pool over a large buffer
 @packable
 class Counter {
   n: Int64 = 0
@@ -3279,7 +3276,7 @@ that enum type. Use it for component kinds, message types, and other
 discriminated payloads in a shared record.
 
 ```culebra
-# doctest: skip
+# doctest: skip — runs a worker pool over a large buffer
 @packable
 enum Shape {
   Circle(Float32),
@@ -4161,7 +4158,7 @@ once it has served, starting it again is an `HttpError` — create a new
 `Http.server()` to serve again.
 
 ```culebra
-# doctest: skip
+# doctest: skip — listens on a port until interrupted
 let srv = Http.server()
 srv.get("/health", fn (req) {
   "ok"
@@ -4175,7 +4172,7 @@ Alternatively, a blocking `listen` inside an isolate also works — dropping the
 isolate (or `Ctrl+C`) stops the accept loop:
 
 ```culebra
-# doctest: skip
+# doctest: skip — listens on a port until interrupted
 let srv_iso = Isolate.spawn(fn () {
   let srv = Http.server()
   srv.get("/health", fn (req) {
@@ -4195,7 +4192,7 @@ signal — the socket is open with a backlog, so a connection made after it is
 queued by the kernel even before `serve` starts accepting.
 
 ```culebra
-# doctest: skip
+# doctest: skip — listens on a port until interrupted
 let (tx, rx) = Channel.new(1)
 let srv_iso = Isolate.spawn(fn () {
   let srv = Http.server()
@@ -4218,7 +4215,7 @@ capture to know its own address: the server handle is **non-Sendable**, so a
 handler that reads `srv` is rejected, while a captured `Long` copies fine.
 
 ```culebra
-# doctest: skip
+# doctest: skip — listens on a port until interrupted
 let srv = Http.server()
 let port = srv.bind(0)
 Log.info("http server listening", {port: port})
@@ -4269,7 +4266,6 @@ for the same reason — `nil` cannot mean a message, "nothing yet" and "closed"
 at once:
 
 ```culebra
-# doctest: skip
 enum WsResult { Message(String), Empty, Closed }
 ```
 
@@ -4328,7 +4324,7 @@ if art.exists("music.ogg") {
 The same handle serves a whole directory over HTTP:
 
 ```culebra
-# doctest: skip
+# doctest: skip — listens on a port until interrupted
 let srv = Http.server()
 srv.static("/", Embed.dir("dist"))  # whole frontend, one line
 srv.get("/api/ping", fn (req) {
@@ -5307,7 +5303,7 @@ existed. `Canvas.to_png()` follows the **current draw target**, the way
 being drawn into, outside it encodes the framebuffer.
 
 ```culebra
-# doctest: skip
+# doctest: skip — writes files beside it
 Canvas.init(320, 240)
 Canvas.clear(Canvas.rgba(24, 24, 32))
 Canvas.circle(160, 120, 40, Canvas.rgba(240, 180, 90))
@@ -5596,7 +5592,7 @@ the second — it shows nothing, takes no input and has no close box — so it i
 capped like any other automated run.
 
 ```culebra
-# doctest: skip
+# doctest: skip — opens a window
 let red = Canvas.rgba(220, 60, 60)
 mut x = 0
 Canvas.run(160, 160, fn () {
@@ -6039,7 +6035,7 @@ the script is not keeping up — the stream then repeats or silences a block.
 ### A minimal scene
 
 ```culebra
-# doctest: skip
+# doctest: skip — opens a window
 let view = Scene.View.new(960, 540, "spinner")
 view.target_fps(60)
 view.background(30, 34, 42)
@@ -6085,7 +6081,7 @@ Connect to `host:port`. `timeout` is in milliseconds (`0` = wait forever) and
 bounds the connect, then becomes the socket's read/write timeout.
 
 ```culebra
-# doctest: skip
+# doctest: skip — reaches the network
 let s = Net.connect("example.com", 80, timeout: 5000)
 s.write("GET / HTTP/1.0\r\nHost: example.com\r\n\r\n")
 s.shutdown_write()  # tell the server the request is complete
@@ -6285,7 +6281,7 @@ app (`fetch('/__quit', {method: 'POST'})`); `Desktop.quit()` does the same
 from culebra code.
 
 ```culebra
-# doctest: skip
+# doctest: skip — opens a window
 Desktop.run({title: 'culebra desktop', size: [
   720,
   560,
@@ -6314,7 +6310,7 @@ remote URL).
 | `Webview.Window.is_running()` | `true` while a window is pumping its event loop. Not needed before `quit()` — a quit that arrives earlier is held — but lets another thread wait for the loop to be up |
 
 ```culebra
-# doctest: skip
+# doctest: skip — opens a window
 let w = Webview.Window.new()
 w.set_title('hello')
 w.set_size(480, 320)

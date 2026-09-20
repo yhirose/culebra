@@ -673,6 +673,14 @@ _run-tests BACKEND:
         {{nice_cmd}} bash tools/checks/check_jit_shape_set.sh "$BIN" || exit 1
     }
 
+    # A `# doctest: skip` is justified by the block not running, or by the
+    # reason it gives. Nothing else — a skip over a block that runs is an
+    # example nobody executes, which is how a documented form that had stopped
+    # working stayed documented twice.
+    run_doctest_skips() {
+        {{nice_cmd}} bash tools/checks/check_doctest_skips.sh "$BIN" || exit 1
+    }
+
     # The sweep's wall clock is bounded by its slowest single file (they run
     # in parallel), and that slowest file is always a `--jit` compile — LLVM's
     # optimization cost grows superlinearly (~N^1.9) with a flat script's
@@ -1076,6 +1084,31 @@ _run-tests BACKEND:
         esac
     }
 
+    # The suites under examples/: 30 files and 328 assertions that no gate ran.
+    # The vm2gol-v2 suite had not run since the unit runner moved to the VM —
+    # `culebra test` was rejecting every file with an `import` — and nothing
+    # said so, because examples/ was wired into no gate at all (996a1957).
+    # Three seconds in one process, so there is no reason for that to be true.
+    # These files are held to the optional-namespace rule as well
+    # (check_tests_optional_ns.sh), since they run on every lane.
+    run_examples_sweep() {
+        local out rc=0 want
+        want=$(find examples -name 'test_*.cul' | wc -l | tr -d ' ')
+        out=$(cul test --vm --reporter json examples 2>&1 < /dev/null) || rc=$?
+        if [[ "$rc" != 0 ]]; then
+            echo "culebra test: the examples/ sweep failed (rc $rc)" >&2
+            printf '%s\n' "$out" | grep '"event":"file_error"' | tail -20 >&2
+            printf '%s\n' "$out" | tail -3 >&2
+            exit 1
+        fi
+        case "${out##*$'\n'}" in
+            *'"files":'"$want"',"errored_files":0'*) ;;
+            *) echo "culebra test: the examples/ sweep ran the wrong file count (want $want)" >&2
+               printf '%s\n' "$out" | tail -1 >&2; exit 1 ;;
+        esac
+        echo "examples sweep OK ($want suites)"
+    }
+
     # Isolate tests live in a subdir kept out of the `tests/*.cul` vm-vs-JIT
     # diff glob. Every file runs under both engines: Isolate.spawn,
     # Channel, and Parallel are symmetric across backends now, including the
@@ -1420,6 +1453,7 @@ _run-tests BACKEND:
       "run_rt_archive_backend_free|rt-archive backend-free (core names no gated backend)|tree|test|buildtree|-|1"
       "run_webview_dynload|webview dynload (engine stays behind dlopen)|tree|test|buildtree|-|0"
       "run_jit_shape_set|jit shape set (the subset still covers every op)|binary|check,dev,test|light|-|3"
+      "run_doctest_skips|doctest skips (a skip is justified, or says why)|binary|check,dev,test|light|-|3"
       "run_diff_vm_jit shape|vm/jit symmetry (the op cover + what the branch touched)|binary|dev|-|local|15"
       "run_diff_vm_jit full|vm/jit symmetry (every test file)|binary|test|light|-|116"
       "run_vm_cases plain|vm_cases (frozen expected outputs)|binary|dev|-|local|18"
@@ -1437,6 +1471,7 @@ _run-tests BACKEND:
       "run_languages|languages (front ends vs their oracles)|binary|dev,test|light|-|13"
       "run_culebra_test_self|culebra-test self|binary|check,dev,test|light|-|0"
       "run_unit_runner_sweep|culebra-test sweep (tests/*.cul as session units)|binary|check,dev,test|light|-|11"
+      "run_examples_sweep|examples sweep (the suites under examples/)|binary|check,dev,test|light|-|3"
       "run_isolate|isolate (jit + VM)|binary|dev,test|light|-|5"
       "run_aot_hygiene|AOT hygiene (CULEBRA_HOME, cache prune, TMPDIR, webview link)|binary|test|aot|-|6"
       "run_aot_sweep sample|AOT (== vm, every tenth file)|binary|test|-|local|25"
@@ -1450,8 +1485,9 @@ _run-tests BACKEND:
     # shard is a phase CI silently stopped running, and a build-tree phase in
     # a binary-only shard fails on the downloaded artifact rather than here.
     gate_table_selftest() {
-        local fn label needs tiers ci gate cost bad=0 cmd
-        while IFS='|' read -r fn label needs tiers ci gate cost; do
+        local row fn label needs tiers ci gate cost bad=0 cmd
+        for row in "${gate_rows[@]}"; do
+            IFS='|' read -r fn label needs tiers ci gate cost <<< "$row"
             [[ -n "$fn" ]] || continue
             read -r -a cmd <<< "$fn"
             declare -F "${cmd[0]}" > /dev/null \
@@ -1462,17 +1498,22 @@ _run-tests BACKEND:
                 echo "gate table: $fn needs a build tree but rides the binary-only ci-light shard" >&2
                 bad=1
             fi
-        done < <(printf '%s\n' "${gate_rows[@]}")
+        done
         (( bad == 0 )) || exit 2
     }
 
     # Run one lane: every row selected by a tier key (dev|test) or a CI shard
     # name, in table order. An empty selection is a typo, not a quiet pass —
     # three ratchets in this tree once ran green while measuring nothing.
+    # The rows are iterated as an array rather than read from a pipe: a phase
+    # that reads stdin would otherwise swallow the rest of the table and the
+    # lane would end early, quietly, having run a prefix of itself. (It did —
+    # `just check` ran eight of eleven phases and said nothing.)
     run_lane() {
-        local sel="$1" fn label needs tiers ci gate cost n=0 cmd budget=0 start=$SECONDS
+        local sel="$1" row fn label needs tiers ci gate cost n=0 ran=0 cmd budget=0 start=$SECONDS
         gate_table_selftest
-        while IFS='|' read -r fn label needs tiers ci gate cost; do
+        for row in "${gate_rows[@]}"; do
+            IFS='|' read -r fn label needs tiers ci gate cost <<< "$row"
             [[ -n "$fn" ]] || continue
             case "$sel" in
               check|dev|test) [[ ",$tiers," == *",$sel,"* ]] || continue ;;
@@ -1491,9 +1532,21 @@ _run-tests BACKEND:
             fi
             budget=$((budget + cost))
             read -r -a cmd <<< "$fn"
-            phase "$label"; "${cmd[@]}"
-        done < <(printf '%s\n' "${gate_rows[@]}")
+            # stdin from /dev/null, as the sweeps inside the phases already take
+            # it: a phase that reads a terminal's stdin waits on the person who
+            # started the gate, and one that reads a pipe nobody closes waits
+            # forever.
+            phase "$label"; "${cmd[@]}" < /dev/null
+            ran=$((ran + 1))
+        done
         (( n > 0 )) || { echo "gate table: lane '$sel' selected no phase" >&2; exit 2; }
+        # Selected and ran have to be the same number. They were not once, and
+        # the lane said nothing: the loop read its rows from a pipe and a phase
+        # that read stdin consumed the rest of them.
+        if [[ -z "${CULEBRA_GATE_DRYRUN:-}" ]] && (( ran != n )); then
+            echo "gate table: lane '$sel' selected $n phases and ran $ran" >&2
+            exit 2
+        fi
         # Reported, not gated: wall-clock on a loaded machine runs 1.5-2x the
         # same lane's uncontended time, so this says whether the lane still
         # costs what the table claims without failing anyone's build over the

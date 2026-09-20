@@ -381,7 +381,7 @@ IO.println()      # → (空行)
 `''`（空文字列）を返します。
 
 ```culebra
-# doctest: skip
+# doctest: skip — stdin を読む
 println('name?')
 name = IO.input()
 println("Hello, {name}")
@@ -404,7 +404,7 @@ Unixフィルタのイディオム。読み取りはブロッキングかつ割�
 はバイト読みの続きから続行します。
 
 ```culebra
-# doctest: skip
+# doctest: skip — stdin を読む
 # フィルタ: "error" を含む行を大文字化
 for line in IO.stdin().lines() {
   if line.contains("error") {
@@ -569,7 +569,7 @@ contents = FS.read('data.txt')
 改行変換なし。親ディレクトリが無い・書込不可の場合`IOError`をthrow。
 
 ```culebra
-# doctest: skip
+# doctest: skip — 隣にファイルを書く
 FS.write('out.txt', 'hello\n')
 ```
 
@@ -736,7 +736,7 @@ glob `pattern`にマッチするパス（ソート済み）。セグメント単
 別物です。
 
 ```culebra
-# doctest: skip
+# doctest: skip — 作業ディレクトリを読む
 let sources = FS.glob('src/**/*.cul')
 ```
 
@@ -764,7 +764,7 @@ let sources = FS.glob('src/**/*.cul')
 `ReadDirectoryChangesW`。
 
 ```culebra
-# doctest: skip
+# doctest: skip — 割り込みまで監視を続ける
 for e in FS.watch('src', match: ['.cul']) {
   println("{e.kind} {e.path}")
 }
@@ -775,7 +775,7 @@ for e in FS.watch('src', match: ['.cul']) {
 です。名前付きハンドルは再度反復できます:
 
 ```culebra
-# doctest: skip
+# doctest: skip — 割り込みまで監視を続ける
 let w = FS.watch('src')
 for e in w { break }        # ハンドルは開いたまま
 for e in w { break }        # 前のループの続きから
@@ -1274,7 +1274,7 @@ Random.choice(['rock', 'paper', 'scissors'])
 ます。末尾引数が無い場合やREPL実行時は空配列です。
 
 ```culebra
-# doctest: skip
+# doctest: skip — マシン固有の値を印字する
 # $ culebra run.cul hello world
 inspect(Sys.argv)  # ['hello', 'world']
 # $ culebra --jit run.cul hello   →  ['hello']   (--jit は culebra 用)
@@ -1311,7 +1311,7 @@ if error_occurred {
 なります。
 
 ```culebra
-# doctest: skip
+# doctest: skip — マシン固有の値を印字する
 inspect(Sys.env('HOME'))                # '/Users/alice'
 inspect(Sys.env('NOT_A_VAR'))           # ''
 inspect(Sys.env('PORT', '8080'))        # '8080'（PORT未設定時）
@@ -1337,7 +1337,7 @@ inspect(Sys.env('CULEBRA_MODE'))  # => 'fast'
 削除された等）は`IOError`を送出します。
 
 ```culebra
-# doctest: skip
+# doctest: skip — マシン固有の値を印字する
 inspect(Sys.getcwd())  # '/Users/alice/project'
 ```
 
@@ -1347,7 +1347,7 @@ inspect(Sys.getcwd())  # '/Users/alice/project'
 ディレクトリでない場合は`IOError`を送出します。
 
 ```culebra
-# doctest: skip
+# doctest: skip — マシン固有の値を印字する
 Sys.chdir('/tmp')
 inspect(Sys.getcwd())  # '/tmp'（または解決後のパス）
 ```
@@ -1388,7 +1388,7 @@ culebraのワーカーコピーを起動するのに使う — 例
 その単体バイナリ自身のパスになる。）
 
 ```culebra
-# doctest: skip
+# doctest: skip — マシン固有の値を印字する
 inspect(Sys.executable)  # '/usr/local/bin/culebra'
 ```
 
@@ -1401,7 +1401,7 @@ inspect(Sys.executable)  # '/usr/local/bin/culebra'
 場合は`Sys.executable`を使う）— では`nil`。
 
 ```culebra
-# doctest: skip
+# doctest: skip — マシン固有の値を印字する
 inspect(Sys.script)  # '/Users/alice/project/build.cul'
 ```
 
@@ -2201,7 +2201,6 @@ positionalは「省略時の値」を言うために`default`が要るが、そ�
 optionと見なされてしまうため。
 
 ```culebra
-# doctest: skip
 {name: "file", positional: true, default: "-"}   # cat [<file>]
 {name: "file", positional: true, default: nil}   # 同じ。省略時はnil
 {name: "out", positional: false}                 # 必須の--out
@@ -2428,7 +2427,7 @@ throwしません。空リストは`[]`を返します。
 `inherit_env: false`は`Proc.run`と同様に、各子へ独自の環境を与えます。
 
 ```culebra
-# doctest: skip
+# doctest: skip — この checkout に無いプログラムを起こす
 let results = Proc.all(
   [["git", "fetch", "origin"], ["npm", "test"], ["cargo", "build"]],
   limit: 2,
@@ -2448,7 +2447,7 @@ for r in results {
 `inherit_env: false`が親の環境を子から遠ざけるのは`Proc.run`/`Proc.all`と同様です。
 
 ```culebra
-# doctest: skip
+# doctest: skip — この checkout に無いプログラムを起こす
 let fastest = Proc.race([
   ["curl", "-s", "https://mirror-a.example/file"],
   ["curl", "-s", "https://mirror-b.example/file"],
@@ -2662,7 +2661,6 @@ consumerなら直列化されるバーストも吸収できます。consumerご�
 戻り値は`enum`の形をした3つのvariantのいずれかです:
 
 ```culebra
-# doctest: skip
 enum ChannelResult { Value(Any), Empty, Closed }
 ```
 
@@ -2869,7 +2867,6 @@ drain_and_close()
 と任意のデフォルトを持つ:
 
 ```culebra
-# doctest: skip
 @packable
 class FloatPair {
   x: Float32 = 0.0
@@ -2903,7 +2900,7 @@ class FloatPair {
 ディスク永続なしの共有メモリになる。
 
 ```culebra
-# doctest: skip
+# doctest: skip — 大きなバッファを worker pool で回す
 @packable
 class Cell {
   v: Int64 = 0
@@ -2954,7 +2951,7 @@ bufferはisolate境界を **参照で**越える — 子は同じバイトを読
 更新する典型的なデータ並列パターンがアロケーションなしで書ける:
 
 ```culebra
-# doctest: skip
+# doctest: skip — 大きなバッファを worker pool で回す
 @packable
 class Cell {
   v: Int64 = 0
@@ -2982,7 +2979,7 @@ buffer`のObject）で渡し、子はその名前で`SharedBuffer.receive(name, 
 シリアライズなしで書き込みが見える。
 
 ```culebra
-# doctest: skip
+# doctest: skip — この checkout に無いプログラムを起こす
 # --- parent.cul ---
 @packable
 class Cell {
@@ -3030,7 +3027,7 @@ disjointな書き込みは同期不要。2つの書き手が本当に**同じ**�
 解放される。
 
 ```culebra
-# doctest: skip
+# doctest: skip — 大きなバッファを worker pool で回す
 @packable
 class Counter {
   n: Int64 = 0
@@ -3188,7 +3185,7 @@ payloadが最大variantに合わせた1領域を共有し、tagがどのvariant�
 共有レコード内の判別付きpayloadに使う:
 
 ```culebra
-# doctest: skip
+# doctest: skip — 大きなバッファを worker pool で回す
 @packable
 enum Shape {
   Circle(Float32),
@@ -4039,7 +4036,7 @@ srv.listen(8080, workers: 8)  # 8 ハンドラが並列実行
 です — もう一度配信するには新しい`Http.server()`を作ってください。
 
 ```culebra
-# doctest: skip
+# doctest: skip — ポートを listen して割り込みまで待つ
 let srv = Http.server()
 srv.get("/health", fn (req) {
   "ok"
@@ -4053,7 +4050,7 @@ srv.stop()  # 停止して背後スレッドを join
 （または`Ctrl+C`）してacceptループを止める方法もあります:
 
 ```culebra
-# doctest: skip
+# doctest: skip — ポートを listen して割り込みまで待つ
 let srv_iso = Isolate.spawn(fn () {
   let srv = Http.server()
   srv.get("/health", fn (req) {
@@ -4072,7 +4069,7 @@ srv_iso.drop()  # サーバに停止を通知して join
 その後に張られた接続は`serve`がacceptを始める前でもカーネルが受けています。
 
 ```culebra
-# doctest: skip
+# doctest: skip — ポートを listen して割り込みまで待つ
 let (tx, rx) = Channel.new(1)
 let srv_iso = Isolate.spawn(fn () {
   let srv = Http.server()
@@ -4095,7 +4092,7 @@ srv_iso.drop()
 `srv`を読むハンドラは弾かれますが、`Long`はそのままコピーされます。
 
 ```culebra
-# doctest: skip
+# doctest: skip — ポートを listen して割り込みまで待つ
 let srv = Http.server()
 let port = srv.bind(0)
 Log.info("http server listening", {port: port})
@@ -4143,7 +4140,6 @@ wsハンドルはそれを開いたスレッドのものです（Sendableでは�
 ません。
 
 ```culebra
-# doctest: skip
 enum WsResult { Message(String), Empty, Closed }
 ```
 
@@ -4202,7 +4198,7 @@ if art.exists("music.ogg") {
 同じハンドルでディレクトリ全体をHTTP配信できる:
 
 ```culebra
-# doctest: skip
+# doctest: skip — ポートを listen して割り込みまで待つ
 let srv = Http.server()
 srv.static("/", Embed.dir("dist"))  # フロントエンド全体を1行で
 srv.get("/api/ping", fn (req) {
@@ -5143,7 +5139,7 @@ Canvas.run(320, 240, fn () {
 に追随します — `draw_to`の中なら描画中のスプライト、外ならframebuffer。
 
 ```culebra
-# doctest: skip
+# doctest: skip — 隣にファイルを書く
 Canvas.init(320, 240)
 Canvas.clear(Canvas.rgba(24, 24, 32))
 Canvas.circle(160, 120, 40, Canvas.rgba(240, 180, 90))
@@ -5424,7 +5420,7 @@ Ogg対応はブラウザ依存（Safariは歴史的にMP3のみ）である点�
 自動実行と同じように上限が掛かる。
 
 ```culebra
-# doctest: skip
+# doctest: skip — ウィンドウを開く
 let red = Canvas.rgba(220, 60, 60)
 mut x = 0
 Canvas.run(160, 160, fn () {
@@ -5852,7 +5848,7 @@ JITなら余裕。`needed()`がフレームをまたいで高いままなら、�
 ### 最小のシーン
 
 ```culebra
-# doctest: skip
+# doctest: skip — ウィンドウを開く
 let view = Scene.View.new(960, 540, "spinner")
 view.target_fps(60)
 view.background(30, 34, 42)
@@ -5898,7 +5894,7 @@ Ctrl+C一回で`Interrupted`になる（ハングしない）。
 制限し、そのままこのソケットの読み書きタイムアウトになる。
 
 ```culebra
-# doctest: skip
+# doctest: skip — ネットワークに出る
 let s = Net.connect("example.com", 80, timeout: 5000)
 s.write("GET / HTTP/1.0\r\nHost: example.com\r\n\r\n")
 s.shutdown_write()  # リクエスト完了をサーバに伝える
@@ -6099,7 +6095,7 @@ culebraはそれを生成も所有もせず、その上にある2つの決めら
 （`fetch('/__quit', {method: 'POST'})`）。culebra側からは`Desktop.quit()`。
 
 ```culebra
-# doctest: skip
+# doctest: skip — ウィンドウを開く
 Desktop.run({title: 'culebra desktop', size: [
   720,
   560,
@@ -6128,7 +6124,7 @@ Desktop.run({title: 'culebra desktop', size: [
 | `Webview.Window.is_running()` | ウィンドウがイベントループを回している間`true`。`quit()`の前提ではない（早く届いたquitは保持される）が、別スレッドがループの起動を待てる |
 
 ```culebra
-# doctest: skip
+# doctest: skip — ウィンドウを開く
 let w = Webview.Window.new()
 w.set_title('hello')
 w.set_size(480, 320)

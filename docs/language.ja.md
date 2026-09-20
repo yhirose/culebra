@@ -2667,7 +2667,6 @@ inspect(found)  # => 4
 なります:
 
 ```culebra
-# doctest: skip
 fn find(xs, target) {
   for x in xs {
     if x == target {

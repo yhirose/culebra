@@ -29,3 +29,7 @@ docs.blocks 942
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130
+
+# The suites under examples/, swept by run_examples_sweep. They were in no gate
+# until the sweep was added; the count is here so that stays visible.
+examples.suites 30

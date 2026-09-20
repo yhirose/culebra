@@ -37,6 +37,15 @@ if (( ${#files[@]} < 100 )); then
   exit 1
 fi
 
+# The examples/ suites run on every lane too (run_examples_sweep), and so do the
+# modules they import — a suite's own directory is its library. Same rule, same
+# reason: a name a lane's binary does not carry kills the file before its first
+# assert.
+while IFS= read -r f; do files+=("$f"); done < <(
+  find examples -name 'test_*.cul' -exec dirname {} \; | sort -u \
+    | while IFS= read -r d; do find "$d" -maxdepth 1 -name '*.cul' | sort; done
+)
+
 # Comments go first: test_namespace_attr.cul names these in prose, and prose is
 # not a reference the loader has to resolve.
 hits=$(awk -v re="(^|[^A-Za-z0-9_])($alt)([^A-Za-z0-9_]|\$)" '

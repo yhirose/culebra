@@ -159,3 +159,29 @@ seconds, and nothing said so until the gate felt slow. Seconds are
 deliberately not the ratchet — the same lane varies by 1.5–2× on a loaded
 machine — so the table's per-phase costs are reported against the measured
 budget at the end of a lane and gate nothing.
+
+### What is exempt, and why it has to say so
+
+A check that does not run is a check that cannot fail, and two of the ways
+this tree lost coverage were exemptions nobody was holding:
+
+**`# doctest: skip`.** A skipped block is never executed, so a documented
+form that stopped working stays documented — which happened twice, to the
+`test("name", fn)` form and to the formatting examples, both found by
+reading. A skip is now justified one of two ways: the block cannot run at
+all, or it says why it must not run here (`# doctest: skip — opens a
+window`). `check_doctest_skips.sh` runs the skips that give no reason on the
+executor, and a block that runs cleanly fails the gate — un-skip it, or give
+it the reason a reader wants anyway. Of the 338 skips this found, 86 turned
+out to be windows, servers, watchers, stdin, the network, external programs
+or this machine's own paths, and 14 were illustrations that simply run; those
+now run, which is how §12's `nobreak` example became the first executed one
+for that section.
+
+**`examples/`.** The 30 suites and 328 assertions under `examples/` were
+wired into no gate at all: the `vm2gol-v2` suite had not run since the unit
+runner moved to the VM, because `culebra test` was rejecting every file with
+an `import`, and nothing said so. `run_examples_sweep` runs them in one
+executor process in three seconds, and they are held to the
+optional-namespace rule alongside `tests/*.cul`, since they now run on every
+lane too.

@@ -2805,7 +2805,6 @@ The canonical use is search — the block is the "not found" branch, with
 no flag variable:
 
 ```culebra
-# doctest: skip
 fn find(xs, target) {
   for x in xs {
     if x == target {

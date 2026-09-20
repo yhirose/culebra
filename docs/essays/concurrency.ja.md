@@ -122,14 +122,15 @@ CPUを使ってできる限り高速にやってほしい」という高レベ�
 ## 例3: メッセージパッシング — `Channel`と`fan_in`
 
 ```culebra
-# doctest: skip
+# doctest: skip — この checkout に無いログを読む
 # producer-consumer: パースを別isolateに逃がし、本体はストリームを消費する
 let (tx, rx) = Channel.new(64)
 let prod = Isolate.spawn(fn () {
   for line in File.open("big.log").lines() {
     tx.send(parse(line))
   }
-})  # isolate終了でtxがdrop → channel自動close → for-inが終わる
+})  # isolate側のtxは終了時にdropされる（正常終了でもthrowでも）
+tx.drop()  # 親のtxも手放す。でないとchannelが閉じず、for-inが待ち続ける
 
 for record in rx {
   index.add(record)
@@ -171,7 +172,7 @@ virtual thread（色なしのblockingへの回帰）に舵を切ったことは�
 ## 例4: 共有メモリの生き残り方 — `@packable`と`SharedBuffer`
 
 ```culebra
-# doctest: skip
+# doctest: skip — 10万要素の共有バッファを worker pool で回す
 @packable
 class Particle {
   x: Float32

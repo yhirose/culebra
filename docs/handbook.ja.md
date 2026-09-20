@@ -1554,7 +1554,6 @@ inspect(add_typed.return_type)             # => 'Long'
 モジュール全体を1つの名前に束縛する。
 
 ```culebra
-# doctest: skip
 # lib.cul
 let greet = fn (name) {
   "hello, {name}"

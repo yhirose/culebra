@@ -1580,7 +1580,6 @@ A module lists what it exposes with `export`; a consumer binds the
 whole module under one name with `import`.
 
 ```culebra
-# doctest: skip
 # lib.cul
 let greet = fn (name) {
   "hello, {name}"

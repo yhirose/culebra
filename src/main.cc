@@ -1843,6 +1843,7 @@ int run_test(int argc, const char** argv) {
   int bail_after = 0;
   bool list_only = false;
   bool doc_mode = false;
+  bool only_skipped = false;
   int jobs = 1;
   culebra::DocShard shard;
   auto engine = RunnerEngine::Vm;
@@ -1920,6 +1921,10 @@ int run_test(int argc, const char** argv) {
                    "  --doc           run the ```culebra blocks in *.md instead\n"
                    "  --jobs <n>      run the doc blocks in n processes\n"
                    "                  (--doc only; not with --bail / --list)\n"
+                   "  --only-skipped  run the `# doctest: skip` blocks that give\n"
+                   "                  no reason, and nothing else: a skip is\n"
+                   "                  justified by the block not running\n"
+                   "                  (--doc only; serial)\n"
 #ifdef CULEBRA_JIT_ENABLED
                    "  --jit           run the doc blocks through the LLVM JIT\n"
                    "                  (--doc only)\n"
@@ -1956,6 +1961,8 @@ int run_test(int argc, const char** argv) {
       list_only = true;
     } else if (arg == "--doc") {
       doc_mode = true;
+    } else if (arg == "--only-skipped") {
+      only_skipped = true;
     } else if (arg == "--vm") {
       named = true;
 #ifdef CULEBRA_JIT_ENABLED
@@ -1969,6 +1976,13 @@ int run_test(int argc, const char** argv) {
     } else {
       roots.push_back(arg);
     }
+  }
+  // --only-skipped selects doc blocks by their directive, so it means nothing
+  // without --doc. Refuse rather than ignore: a gate that passes a flag the
+  // binary drops is a gate measuring the wrong population.
+  if (only_skipped && !doc_mode) {
+    std::println(stderr, "culebra test: --only-skipped is for --doc blocks");
+    return 2;
   }
   culebra::TestRunSummary summary;
   require_explicit_engine(named, doc_mode ? "culebra test --doc"
@@ -1986,13 +2000,16 @@ int run_test(int argc, const char** argv) {
     // --bail is "stop at the first failure", which N processes racing each
     // other cannot mean, and --list walks names rather than running anything.
     // Both stay serial instead of quietly meaning something else.
-    if (jobs > 1 && !list_only && bail_after == 0) {
+    // --only-skipped joins them: the shards do not carry it, and the lane it
+    // selects is seconds long on the executor anyway.
+    if (jobs > 1 && !list_only && bail_after == 0 && !only_skipped) {
       if (!run_doc_shards(jobs, engine, reporter, filter, roots, summary))
         return 1;
       culebra::emit_doc_run_end(summary, false, reporter);
     } else {
       summary = culebra::run_doctests(files, filter, doc_block_runner(engine),
-                                      reporter, bail_after, list_only, shard);
+                                      reporter, bail_after, list_only, shard,
+                                      only_skipped);
     }
   } else {
     if (jobs > 1) {

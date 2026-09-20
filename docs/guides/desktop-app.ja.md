@@ -40,7 +40,7 @@ culebraの`Webview`・`Desktop`名前空間を使って、小さなデスクト�
 イベントループを回すだけです。
 
 ```culebra
-# doctest: skip
+# doctest: skip — ウィンドウを開く
 let w = Webview.Window.new()
 w.set_title("Hello")
 w.set_size(640, 480)
@@ -64,7 +64,7 @@ GUIスレッドの仕事はこれで全部です。`set_html`はHTML文字列リ
 `assets:`にディレクトリを渡すと、その中身が`/`で配信されます。
 
 ```culebra
-# doctest: skip
+# doctest: skip — ウィンドウを開く
 Desktop.run({title: "My App", size: [720, 560], assets: Embed.dir("dist")})
 ```
 
@@ -94,7 +94,7 @@ dist/
 説明しているものと同じサーバです）。
 
 ```culebra
-# doctest: skip
+# doctest: skip — ウィンドウを開く
 Desktop.run({assets: Embed.dir("dist"), routes: fn (srv) {
   srv.get("/api/hello", fn (req) {
     {
@@ -234,7 +234,7 @@ culebra --jit examples/webview/desktop_app.cul    # 同じ出力、JIT経由
 くれるようになります。
 
 ```culebra
-# doctest: skip
+# doctest: skip — ウィンドウを開く
 Desktop.run({
   assets: Embed.dir("dist"),
   port: 5173,

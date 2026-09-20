@@ -38,7 +38,7 @@ The raw binding is `Webview.Window`: create one, give it something to show,
 run its event loop.
 
 ```culebra
-# doctest: skip
+# doctest: skip — opens a window
 let w = Webview.Window.new()
 w.set_title("Hello")
 w.set_size(640, 480)
@@ -60,7 +60,7 @@ local HTTP server, points a window at it, and blocks until the window closes.
 Point `assets:` at a directory and the server serves it at `/`:
 
 ```culebra
-# doctest: skip
+# doctest: skip — opens a window
 Desktop.run({title: "My App", size: [720, 560], assets: Embed.dir("dist")})
 ```
 
@@ -89,7 +89,7 @@ A `routes:` closure registers the app's own endpoints on the underlying
 before the window opens:
 
 ```culebra
-# doctest: skip
+# doctest: skip — opens a window
 Desktop.run({assets: Embed.dir("dist"), routes: fn (srv) {
   srv.get("/api/hello", fn (req) {
     {
@@ -219,7 +219,7 @@ apps side by side, but it means the page's origin (and so its
 loudly instead of falling back when it's unavailable:
 
 ```culebra
-# doctest: skip
+# doctest: skip — opens a window
 Desktop.run({
   assets: Embed.dir("dist"),
   port: 5173,

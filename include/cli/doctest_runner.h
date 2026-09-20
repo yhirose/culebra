@@ -29,6 +29,7 @@ struct DocBlock {
   bool expect_throw = false;          // a `# !!` marker was present
   std::string throw_pattern;          // substring the thrown message must contain
   enum class Directive { None, Skip } directive = Directive::None;
+  std::string skip_reason;            // text after `# doctest: skip`, if any
   bool has_expectations = false;      // any `# =>` / `# !!` present
 };
 
@@ -157,10 +158,28 @@ inline std::vector<DocBlock> extract_doc_blocks(const std::string& md) {
       }
       auto t = trim(parts.comment);
 
-      // `# doctest: <directive>` — only as the block-leading line.
+      // `# doctest: <directive>` — only as the block-leading line. A skip may
+      // carry the reason it is skipped (`skip — opens a window`): the reason is
+      // what tells a reader why the example beside it is not executable, and
+      // what tells check_doctest_skips.sh that this skip was decided rather
+      // than inherited. A skip with no reason has to be a block that cannot
+      // run at all; that check is what holds the two apart.
       if (!seen_first && t.starts_with("doctest:")) {
         auto d = trim(t.substr(8));
-        if (d == "skip") blk.directive = DocBlock::Directive::Skip;
+        if (d.starts_with("skip")) {
+          auto rest = trim(d.substr(4));
+          // A reason has to be separated, so `skipping` is not a skip.
+          static constexpr std::string_view kSeps[] = {"—", "-", ":", "("};
+          std::string_view sep;
+          for (auto s : kSeps)
+            if (rest.starts_with(s)) sep = s;
+          if (rest.empty() || !sep.empty()) {
+            blk.directive = DocBlock::Directive::Skip;
+            // The parenthesis is part of the reason; a dash or colon is not.
+            blk.skip_reason =
+                trim(rest.substr(sep == "(" ? 0 : sep.size()));
+          }
+        }
         // Other directives (compile-only, *-only backend filters) are
         // not yet honored; the block runs normally. No doc uses them.
         seen_first = true;
@@ -232,11 +251,17 @@ inline void emit_doc_run_end(const TestRunSummary& summary, bool bailed,
 // Run the doctest blocks in each file. Mirrors run_tests' reporter
 // output (Default human lines / Json NDJSON) and summary/exit
 // semantics. Each block runs in a fresh env (blocks are independent).
+// only_skipped inverts the selection: run the blocks marked `# doctest: skip`
+// that give no reason, and nothing else. It is how check_doctest_skips.sh asks
+// whether each of those skips is still justified — a block that cannot run says
+// so by failing, and one that runs cleanly is a skip with nothing behind it,
+// which is the shape that twice let a documented form that no longer worked go
+// unnoticed. A skip that states its reason is a decision, and is left alone.
 inline TestRunSummary run_doctests(
     const std::vector<std::filesystem::path>& files,
     const std::string& filter, const BlockRunner& run_block,
     Reporter reporter = Reporter::Default, int bail_after = 0,
-    bool list_only = false, DocShard shard = {}) {
+    bool list_only = false, DocShard shard = {}, bool only_skipped = false) {
   using namespace doctest_detail;
   TestRunSummary summary;
 
@@ -337,6 +362,13 @@ inline TestRunSummary run_doctests(
     const std::string& name = items[i].name;
     const DocBlock& blk = items[i].blk;
 
+    bool skipped = blk.directive == DocBlock::Directive::Skip;
+    // The inverted lane's selection comes before --list, so listing it names
+    // the blocks it would run — which is what a caller that runs them one
+    // process at a time asks for (check_doctest_skips.sh, for the per-block
+    // timeout a server example in the docs makes necessary).
+    if (only_skipped && (!skipped || !blk.skip_reason.empty())) continue;
+
     if (list_only) {
       if (reporter == Reporter::Json) {
         std::cout << R"({"event":"doc_list","name":)" << json_escape(name)
@@ -347,7 +379,7 @@ inline TestRunSummary run_doctests(
       continue;
     }
 
-    if (blk.directive == DocBlock::Directive::Skip) {
+    if (!only_skipped && skipped) {
       if (reporter == Reporter::Json) {
         std::cout << R"({"event":"doc_skip","name":)" << json_escape(name)
                   << "}\n";

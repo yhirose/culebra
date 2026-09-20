@@ -27,6 +27,7 @@ measure() {
         ctest.entries)    grep -c '^ *add_test(' CMakeLists.txt ;;
         docs.blocks)      grep -rhc '^```culebra' docs/*.md docs/*/*.md | paste -sd+ - | bc ;;
         languages.samples) ls examples/languages/*/samples/* 2>/dev/null | wc -l ;;
+        examples.suites)  find examples -name 'test_*.cul' | wc -l ;;
         *)                echo "gate-budget: unknown population '$1'" >&2; return 1 ;;
     esac
 }

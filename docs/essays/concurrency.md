@@ -141,14 +141,15 @@ the same question.
 ## Example 3: message passing — `Channel` and `fan_in`
 
 ```culebra
-# doctest: skip
+# doctest: skip — reads a log this checkout does not carry
 # producer-consumer: offload parsing to a separate isolate, consume the stream in the body
 let (tx, rx) = Channel.new(64)
 let prod = Isolate.spawn(fn () {
   for line in File.open("big.log").lines() {
     tx.send(parse(line))
   }
-})  # tx drops when the isolate ends → the channel auto-closes → the for-in ends
+})  # the isolate's tx drops when it ends, normally or by throwing
+tx.drop()  # and the parent's, or nothing closes the channel and the for-in waits
 
 for record in rx {
   index.add(record)
@@ -195,7 +196,7 @@ failure turning into a deadlock.
 ## Example 4: shared memory's survival — `@packable` and `SharedBuffer`
 
 ```culebra
-# doctest: skip
+# doctest: skip — runs a worker pool over a 100k-element shared buffer
 @packable
 class Particle {
   x: Float32

@@ -581,7 +581,6 @@ maps the normal-completion value.
 known at parse time.
 
 ```culebra
-# doctest: skip
 # lib.cul
 let greet = fn (n) {
   "hello, {n}"
