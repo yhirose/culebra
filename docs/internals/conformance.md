@@ -93,3 +93,69 @@ of this gate's names the moment a namespace moved to being named there.
 
 Both run as part of `check-generated`, so `just test-dev` and CI both
 carry them.
+
+## 3. Tiers: where a check runs
+
+Every check above costs a population times a per-item price, and the two
+lanes an engine check can run on are not close to each other in price:
+the 279 files of `tests/` cost 17 CPU seconds under the executor and 610
+under `--jit`, because what the JIT lane pays for is LLVM rather than
+execution (a heavy file spends 8.5 s in the IR pipeline and 13.5 s in the
+backend, and 3 ms running). An axis applied to the whole corpus on that
+lane therefore costs about as much as everything else here put together,
+which is why where a check runs is part of what it is.
+
+The justfile's `gate_rows` is the single declaration of that placement:
+one row per phase, saying what it needs (the checkout, the binary, a build
+tree), which local tiers run it, which CI shard runs it, and what it
+measured. Every lane — `just check`, `just test-dev`, `just test`, and each
+CI shard — is a filter over that table, so a phase reaches the gates by
+declaring itself rather than by being pasted into each of them, and
+`gate_table_selftest` refuses a phase that names no shard, a build-tree
+phase riding a binary-only shard, and a lane that selects nothing.
+
+| tier | question it answers | what it holds |
+|---|---|---|
+| `just check` | did this edit break what the tree already asserts | the source and IR ratchets, and all 8,539 assertions in one executor process |
+| `just test-dev` | may this reach master (`just land` runs this and nothing else) | the above, plus the JIT lane over the op cover, the frozen `vm_cases` outputs, the `-O0` and faststart codegen axes, the CLI half of `ctest`, the language front ends, isolate |
+| `just test` | may this be pushed | every axis over every corpus, AOT included |
+| CI | both operating systems, and what a laptop cannot see | the full sweeps, the refcount and leak lanes, the platform and window builds |
+
+What the landing gate holds is decided by where breaks have actually got
+through rather than by what is cheapest to run: the CLI `ctest` entries
+(two escapes, `jit_error_pos_test` and `search_model_test`) and the
+`-O0` / faststart codegen axis (three bugs invisible at the default `-O2`)
+are in it, while an axis that re-sweeps the corpus under a GC or refcount
+setting — where the detection belongs to the axis rather than to the
+corpus — runs once, in `just test` and in CI.
+
+### The JIT lane's subset
+
+`tools/checks/jit_shape_set.txt` is what the landing gate's `--jit` leg
+sweeps: the smallest set of test files that still lowers every bytecode op
+the executor implements, seeded with the files
+`tools/checks/codegen_sensitive.txt` names, plus whatever test files the
+branch touches. It is 34 files covering 147 of the 151 ops for 71 of those
+610 CPU seconds; the four it cannot reach are filed in the set with the
+reason, and that list may only shrink.
+`tools/checks/check_jit_shape_set.sh` recomputes the coverage from the
+compiled bytecode on every run of the gate, so a new op fails the gate
+until a test reaches it.
+
+What the cover does not hold is op *combinations* — an unwind edge inside
+a loop inside a closure. That is what the codegen seeds carry by hand, what
+the generated corpus (`tools/difftest`, ~17k cases on both lanes) covers by
+construction, and why the full 279-file sweep still runs in `just test` and
+in CI's `ci-light` on every push.
+
+### The gate's own cost
+
+`tools/checks/gate_budget.txt` records each swept population — the corpus,
+the isolate files, the `vm_cases`, the ctest entries, the doc blocks, the
+language samples — and `check-gate-budget` holds them exactly. Growth is
+normal and is made here, in the commit that grows it: the corpus went from
+203 files to 279 in six weeks, which is 174 of the JIT sweep's 610 CPU
+seconds, and nothing said so until the gate felt slow. Seconds are
+deliberately not the ratchet — the same lane varies by 1.5–2× on a loaded
+machine — so the table's per-phase costs are reported against the measured
+budget at the end of a lane and gate nothing.
