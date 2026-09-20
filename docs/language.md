@@ -3785,6 +3785,11 @@ tag), so they stay correct as fields change. Details:
   construction, so `@derive` on an `enum` is a SyntaxError.
 * **Nominal:** derived `eq` requires the same class tag, so two classes
   with identical fields never compare equal.
+* **Derived `eq` compares fields as keys.** A field pair is equal the way
+  an `Object` key is equal: strictly by type (`1` and `1.0` are two
+  different keys) and through a field's own `eq`, never its `__eq__`.
+  That is what lets `@derive(Eq, Hash)` be a key at all — `eq` and `hash`
+  have to agree — and it is stricter than `==` on the same pair.
 * **`cmp` ordering** compares each field pair exactly as `<` does: equal
   fields (by `==`) move on to the next, and the first unequal pair decides.
   A pair `<` refuses to order — an Array, an Object, two different types —

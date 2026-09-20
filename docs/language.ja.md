@@ -3578,6 +3578,11 @@ fieldを走査する (methodと内部class tagは除外) ので、field変更に
   `enum`への`@derive`はSyntaxError。
 * **Nominal**: 派生`eq`は同じclass tagを要求するので、同一field
   を持つ別class同士は等しくならない。
+* **派生`eq`はfieldをキーとして比べる**。field対の等値は`Object`の
+  キーの等値と同じで、型は厳密（`1`と`1.0`は別のキー）、fieldが持つ
+  `eq`は使うが`__eq__`は読まない。`@derive(Eq, Hash)`がキーとして
+  使えるのはこのため（`eq`と`hash`は一致している必要がある）で、
+  同じ対に対する`==`より厳しい。
 * **`cmp`の順序**は各field対を`<`とまったく同じ規則で比較する。
   等しい (`==`) fieldは次へ進み、最初に等しくなかった対が結果を決める。
   `<`が順序を付けられない対 — Array、Object、型違い — はそこでも同じ

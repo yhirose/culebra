@@ -1190,6 +1190,15 @@ struct JitValueHash {
         culebra::format("unhashable type: '{}'", _culebra_tag_name(v.tag)));
   }
 };
+
+// Key equality: the one answer to "are these the same key?", and the second
+// of the two comparisons that mean equal. `==`'s door
+// (_culebra_value_equal) is the other, and this one is deliberately
+// stricter — it never crosses types (`1` and `1.0` are two keys), and the
+// user step it takes is `eq`, not `__eq__`, because a key's equality has to
+// agree with JitValueHash. Everything keyed asks it: an Object's non-String
+// keys, a Set's members, an iterator's dedup, and a derived `eq`, whose
+// fields are compared the way the class's own key would be.
 struct JitValueEq {
   bool operator()(const JitValue& a, const JitValue& b) const {
     bool a_str = a.tag == TAG_STRING || a.tag == TAG_STRINGVIEW;

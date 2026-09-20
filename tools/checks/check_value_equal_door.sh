@@ -16,9 +16,12 @@
 # So nothing outside the walk may name the walk: a caller that does compares
 # by structure what the language compares by `==`.
 #
-# Key equality (JitValueEq: a Set's members, an Object's non-String keys) is a
-# second comparison, deliberately stricter — `hash` and `eq`, no `__eq__` and
-# no cross-type — and is not this gate's subject.
+# Key equality is the second comparison that means equal, and it has a door of
+# its own: JitValueEq. It is deliberately stricter — `eq` and not `__eq__`, no
+# cross-type — because a key's equality has to agree with JitValueHash. What
+# this gate holds for it is the same shape: one definition, and the places
+# keyed on it (a Set's members, a derived `eq`'s fields) asking it rather than
+# writing the comparison again.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -61,6 +64,14 @@ population = [
      text['include/rt/iter.inc.h'].count('_culebra_value_equal(') >= 3),
     ('a derived cmp asks the door',
      text['include/rt/dispatch.inc.h'].count('_culebra_value_equal(') >= 1),
+    # Key equality: the other door, held to the same shape.
+    ('JitValueEq defined once',
+     defined_once(r'struct JitValueEq\s*\{')),
+    ('a Set compares its members through its index',
+     re.search(r'case TAG_SET: \{(?:(?!case TAG_)[\s\S])*?index->contains\(',
+               text[HOME]) is not None),
+    ('a derived eq compares its fields as keys',
+     text['include/rt/dispatch.inc.h'].count('JitValueEq{}(') >= 1),
 ]
 
 door_gate.report(
