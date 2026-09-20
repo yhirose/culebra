@@ -1464,8 +1464,8 @@ _run-tests BACKEND:
       "run_leak_fuzz|leak-fuzz (corpus RC-leak regression)|binary||diff|-|146"
       "run_leak_abort|leak-abort (GAP5 loud detector smoke)|binary|test|light|-|1"
       "run_leak_abort_suite|leak-abort-suite (corpus inflated-RC, throw-paths)|binary|test|leak|heavy|139"
-      "run_gc_stress|gc-stress (collect every alloc; jit conservative, vm + jit refcount-seeded)|binary|test|leak|heavy|227"
-      "run_leak_battery|rc-leak battery (quiescent audit per pattern)|binary|test|leak|heavy|31"
+      "run_gc_stress|gc-stress (collect every alloc; jit conservative, vm + jit refcount-seeded)|binary|test|gc|heavy|227"
+      "run_leak_battery|rc-leak battery (quiescent audit per pattern)|binary|test|gc|heavy|31"
       "run_embed_cli|ctest (CLI entries, binary only)|tree|dev|-|local|20"
       "run_embed|ctest (embedding smokes)|tree|test|buildtree|-|60"
       "run_languages|languages (front ends vs their oracles)|binary|dev,test|light|-|13"
@@ -1597,17 +1597,17 @@ _run-tests BACKEND:
       languages) run_languages ;;
       # CI shards: ci.yml splits the full gate across parallel Ubuntu jobs —
       # the build job runs ci-buildtree against its build tree, and the lane
-      # matrix runs ci-light/ci-diff/ci-leak/aot/wrap against the downloaded
+      # matrix runs ci-light/ci-diff/ci-leak/ci-gc/aot/wrap against the downloaded
       # binary. The `ci` column of the table decides membership, and
       # gate_table_selftest fails a full-gate phase that reaches no shard, so
       # the union can no longer drift away from the gate by hand.
       # ci-buildtree is where the build-tree phases (runtime archives, driver
       # objects, ctest executables) and the source-only ratchets meet.
-      aot|wrap|ci-buildtree|ci-light|ci-diff|ci-leak)
+      aot|wrap|ci-buildtree|ci-light|ci-diff|ci-leak|ci-gc)
         run_lane "${backend#ci-}"
         phase "done"; echo "test OK ({{BACKEND}})"
         ;;
-      *) echo "test: unknown backend '{{BACKEND}}' (expected: all|check|fast|jit|aot|embed|isolate|languages|wrap|ci-buildtree|ci-light|ci-diff|ci-leak)" >&2; exit 2 ;;
+      *) echo "test: unknown backend '{{BACKEND}}' (expected: all|check|fast|jit|aot|embed|isolate|languages|wrap|ci-buildtree|ci-light|ci-diff|ci-leak|ci-gc)" >&2; exit 2 ;;
     esac
 
 # Run the doctest examples in the public docs on both engines. Both en

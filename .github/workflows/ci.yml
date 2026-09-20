@@ -176,7 +176,7 @@ jobs:
   # linked into it) plus the checkout; the aot and wrap lanes additionally
   # compile and link, so they install the toolchain, and wrap reuses
   # build-ubuntu's ccache. The lane groups live in justfile's `_run-tests`
-  # (ci-light/ci-diff/ci-leak); their union with the aot and wrap lanes and
+  # (ci-light/ci-diff/ci-leak/ci-gc); their union with the aot and wrap lanes and
   # build-ubuntu's ci-buildtree equals what `_run-tests all` runs locally
   # (with the wrap lane opted in).
   test-ubuntu:
@@ -194,9 +194,16 @@ jobs:
           - lane: ci-light
           # generated difftest corpus + the corpus RC-leak regression gate
           - lane: ci-diff
-          # refcount-lane difftest + corpus inflated-RC audit + gc-stress
-          # (conservative jit; refcount-seeded vm + jit) + rc-leak battery
+          # refcount-lane difftest + corpus inflated-RC audit: the two passes
+          # over the generated corpus that audit refcounts rather than results
           - lane: ci-leak
+          # the collector's own axes on the tests/*.cul corpus: gc-stress
+          # (conservative jit; refcount-seeded vm + jit) + rc-leak battery.
+          # Split from ci-leak because the four together were 1007s and the
+          # slowest lane decides when build-ubuntu's chain finishes; the two
+          # halves are 285s and 258s of local budget, which is as even as the
+          # phases divide.
+          - lane: ci-gc
           # per-test AOT builds: `culebra build` shells out to the stock
           # `cc`/`c++` (never $CC/$CXX or LLVM tools — LLVM is statically
           # linked into the binary), so the preinstalled runner compiler is
@@ -468,13 +475,6 @@ jobs:
           # test so a frozen macOS VM fails the phase fast instead of hanging
           # the job (macOS has no native `timeout`).
           brew install llvm just ccache coreutils
-          # brew's llvm is keg-only, so llvm-config is not on PATH and anything
-          # that looks it up rather than reading the cmake path was falling
-          # through to a hardcoded guess at brew's prefix — name it instead,
-          # the way the linux toolchain action does. Without this
-          # check_docs_cpp.sh silently stopped compiling the docs' JIT blocks
-          # whenever that guess went stale.
-          echo "LLVM_CONFIG=$(brew --prefix llvm)/bin/llvm-config" >> "$GITHUB_ENV"
 
       # Compiler cache for incremental CI builds. Without it every PR push
       # re-compiles culebra from scratch (~4 min, dominated by
@@ -514,14 +514,6 @@ jobs:
       - name: Doctest (docs examples, VM + JIT)
         run: BIN=./build/culebra just _doctest all
 
-      # Worth its own run here: the headers a host includes carry per-platform
-      # branches, so a macOS-only break in them shows up nowhere else — which
-      # is exactly why this lane must not be the one that quietly skips a
-      # stage. The Install step above names the llvm-config that would have
-      # been the missing piece.
-      - name: Doctest (embedding examples compile)
-        run: just check-docs-cpp
-
       - name: Smoke test microgpt (5 steps, both backends)
         run: just smoke-microgpt
 
@@ -557,6 +549,57 @@ jobs:
           EOF
           ./build/culebra build aot_smoke.cul -o aot_smoke
           test "$(./aot_smoke)" = 'HI, A|hi, b|greet|String|3truetrue|12'
+
+  # The macOS half of what doctest-ubuntu does, and here for the same reason it
+  # is there: the step was ~340s of test-macos, the longest job in the run, so
+  # everything waiting on the run waited on it. The headers a host includes
+  # carry per-platform branches, so a macOS-only break in them surfaces nowhere
+  # else — which is also why this job must not be the one that quietly skips a
+  # stage (CULEBRA_REQUIRE_DOCS_CPP, set for Actions by the gate itself).
+  #
+  # It builds its own driver rather than downloading one: the artifact is Linux,
+  # and the gate's last stage asks the binary to print the flags a host needs
+  # (`culebra embed-flags`), which any driver beside the checkout can do — so
+  # `just dev` (no LTO, -O1, runtime archives skipped) is enough, and cheaper
+  # than the LTO build test-macos needs.
+  docs-cpp-macos:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    env:
+      CULEBRA_BUILD_JOBS: "2"
+      CULEBRA_CANVAS_WINDOW_DEFAULT: OFF
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+    steps:
+      # Recursive: the cpp half compiles and links against seven vendored
+      # submodules (the INC list in tools/checks/check_docs_cpp.sh).
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          brew install llvm just ccache
+          # Keg-only, so llvm-config is not on PATH; name it rather than let
+          # the gate fall through to a guess at brew's prefix.
+          echo "LLVM_CONFIG=$(brew --prefix llvm)/bin/llvm-config" >> "$GITHUB_ENV"
+
+      # Its own key: the dev build's flags (-O1, no LTO, DEV_NO_RT) hash
+      # differently from test-macos's, so sharing that cache would hit nothing.
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ${{ runner.os }}-ccache-docscpp-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-docscpp-
+
+      - name: Build a driver (dev — no LTO, -O1)
+        run: just dev
+
+      - name: Doctest (embedding examples compile)
+        run: just check-docs-cpp
 
   # The Canvas desktop window backend is the one part of the tree no other job
   # builds: the build/test jobs above pin CULEBRA_CANVAS_WINDOW_DEFAULT=OFF, and
