@@ -10,7 +10,9 @@
 
 # The corpus every engine lane sweeps. The expensive one: a full --jit sweep is
 # 610 CPU seconds, an AOT sweep more, and three lanes of the full gate sweep it.
-tests.cul 279
+# 281 since test_size_too_large.cul (a size no machine can satisfy is a
+# ValueError) and test_tensor_ops_window.cul (the im2col window ops' duals).
+tests.cul 281
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 tests.isolate 20
