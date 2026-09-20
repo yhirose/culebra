@@ -1,0 +1,205 @@
+# A convolutional net on MNIST, trained by Tensor's own autograd — no
+# framework layer, no hand-written backward pass anywhere in this file.
+#
+# The convolution is im2col: `.pad()` widens the image, `.unfold()` takes the
+# sliding windows, a `.reshape()` lays each window out as a row, and one
+# `.dot()` applies every filter at once. Pooling averages over two more
+# unfolded axes. All of those differentiate natively — `.pad()`'s VJP is the
+# crop and `.unfold()`'s is `.fold()`, so `loss.backward()` reaches the
+# kernel and the image alike, and the optimizer is `Tensor.adam_step`.
+#
+# NHWC throughout ([batch, height, width, channel]), because that is the
+# layout im2col's two unfolds want: unfolding H then W leaves the window's
+# own axes innermost, which is exactly a patch per row after the reshape.
+#
+#   just fetch-mnist                                  # IDX files
+#   culebra --jit examples/tensor/mnist_conv.cul [n_train]
+
+let DATA = 'benchmarks/mnist/data'
+let BATCH = 64
+let EPOCHS = 3
+let LR = 0.002
+let K = 3    # kernel is K x K
+let PAD = 1  # so the convolution keeps 28 x 28
+let FILTERS = 8
+let POOL = 2
+let SIDE = 28
+let PSIDE = SIDE / POOL
+
+for f in ['train-images-idx3-ubyte.gz', 'train-labels-idx1-ubyte.gz', 't10k-images-idx3-ubyte.gz', 't10k-labels-idx1-ubyte.gz'] {
+  if !FS.exists("{DATA}/{f}") {
+    println("missing {DATA}/{f}; run `just fetch-mnist` first")
+    Sys.exit(1)
+  }
+}
+
+Random.seed(7)
+
+# === IDX loading (images arrive already flattened to [N, 784]) ===
+
+let load_images = fn (path, order) {
+  let raw = Compress.gunzip(FS.read(path))
+  mut chunks = []
+  mut rows = []
+  for idx in order {
+    let off = 16 + idx * 784
+    rows.push(raw
+      .slice(off, off + 784)
+      .bytes()
+      .map(|b| to_float(b) / 255.0)
+      .collect())
+    if rows.size() == 2000 {
+      chunks.push(Tensor.from(rows))
+      rows = []
+    }
+  }
+  chunks.push(Tensor.from(rows)) if !rows.empty()
+  Tensor.concat(chunks)
+}
+
+let load_labels = fn (path) {
+  let raw = Compress.gunzip(FS.read(path))
+  raw.slice(8, raw.size()).bytes().collect()
+}
+
+let n_train = !Sys.argv.empty() ? to_long(Sys.argv[0]) : 6000
+
+let labels_all = load_labels("{DATA}/train-labels-idx1-ubyte.gz")
+mut order = range(labels_all.size()).collect()
+Random.shuffle(order)
+order = order.slice(0, n_train)
+
+mut y = []
+for idx in order {
+  y.push(to_float(labels_all[idx]))
+}
+
+let load_t0 = Sys.time()
+let X = load_images("{DATA}/train-images-idx3-ubyte.gz", order)
+let Y = Tensor.from(y)
+let yt = load_labels("{DATA}/t10k-labels-idx1-ubyte.gz")
+let Xt = load_images("{DATA}/t10k-images-idx3-ubyte.gz", range(yt.size()))
+println("loaded train={n_train} test={yt.size()} in {Sys.time() - load_t0}s")
+
+# === Parameters ===
+
+class Param {
+  new(t) {
+    self.t = t
+  }
+}
+
+let leaf = fn (t) {
+  Tensor.eval(t)
+  Param.new(t.detach().requires_grad())
+}
+
+# He initialization: fan-in is the whole patch for the kernel, the flattened
+# feature map for the head.
+let fan_in_kernel = K * K
+let fan_in_head = PSIDE * PSIDE * FILTERS
+let wk = leaf(Tensor.randn(fan_in_kernel, FILTERS) *
+  Math.sqrt(2.0 / to_float(fan_in_kernel)))
+let bk = leaf(Tensor.zeros(1, FILTERS))
+let wh = leaf(Tensor.randn(fan_in_head, 10) *
+  Math.sqrt(2.0 / to_float(fan_in_head)))
+let bh = leaf(Tensor.zeros(1, 10))
+let params = [wk, bk, wh, bh]
+
+# === Model ===
+
+# One patch per row: [B, 28, 28, 1] -> [B*28*28, K*K]. The two pads add the
+# border the windows overhang, the two unfolds slide over H then W, and the
+# reshape flattens (batch, row, column) down the rows and the window across.
+let im2col = fn (images) {
+  images
+    .pad([1, PAD, PAD])
+    .pad([2, PAD, PAD])
+    .unfold([1, K, 1])
+    .unfold([2, K, 1])
+    .reshape([images.shape()[0] * SIDE * SIDE, K * K])
+}
+
+# Average over each POOL x POOL window: unfold both spatial axes, then mean
+# away the two window axes they appended.
+let avg_pool = fn (maps) {
+  maps.unfold([1, POOL, POOL]).unfold([2, POOL, POOL]).mean(5).mean(4)
+}
+
+let forward = fn (flat) {
+  let b = flat.shape()[0]
+  let images = flat.reshape([b, SIDE, SIDE, 1])
+  let maps = (im2col(images).dot(wk.t) + bk.t)
+    .reshape([b, SIDE, SIDE, FILTERS])
+    .relu()
+  avg_pool(maps).reshape([b, fan_in_head]).dot(wh.t) + bh.t
+}
+
+# === Adam ===
+
+mut m = []
+mut v = []
+for p in params {
+  m.push(Tensor.zeros(p.t.shape()))
+  v.push(Tensor.zeros(p.t.shape()))
+}
+
+let adam = fn (step) {
+  for i in range(params.size()) {
+    Tensor.adam_step(
+      params[i].t,
+      m[i],
+      v[i],
+      params[i].t.grad(),
+      lr: LR,
+      beta1: 0.9,
+      beta2: 0.999,
+      eps: 1.0e-8,
+      step: step,
+    )
+  }
+}
+
+# === Accuracy on the 10k test set, in chunks so one forward stays small ===
+
+let accuracy = fn () {
+  Tensor.no_grad(fn () {
+    mut correct = 0
+    for s in 0..yt.size() by 500 {
+      let e = Math.min(s + 500, yt.size())
+      let preds = forward(Xt.slice(s, e)).argmax(1)
+      Tensor.eval(preds)
+      let p = preds.to_array()
+      for k in range(e - s) {
+        correct += 1 if to_long(p[k]) == yt[s + k]
+      }
+    }
+    to_float(correct) / to_float(yt.size())
+  })
+}
+
+# === Training ===
+
+println("conv {K}x{K}x{FILTERS} -> relu -> avg pool {POOL} -> linear 10 | device {Tensor.device()}")
+let train_t0 = Sys.time()
+mut step = 0
+for epoch in 0..EPOCHS {
+  mut loss_sum = 0.0
+  mut batches = 0
+  for s in 0..n_train by BATCH {
+    let e = Math.min(s + BATCH, n_train)
+    for p in params {
+      p.t.zero_grad()
+    }
+    let loss = forward(X.slice(s, e))
+      .softmax_cross_entropy(Y.slice(s, e))
+      .mean(0)
+    loss.backward()
+    step += 1
+    adam(step)
+    loss_sum += loss.item()
+    batches += 1
+  }
+  println("epoch {epoch + 1}/{EPOCHS} | loss {loss_sum / to_float(batches)} | test acc {accuracy()}")
+}
+println("trained in {Sys.time() - train_t0}s")

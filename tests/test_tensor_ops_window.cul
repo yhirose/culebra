@@ -1,0 +1,127 @@
+# Conformance: stdlib §7 (Tensor). See docs/stdlib.md and docs/language.md §25.
+#
+# The sliding-window trio `.unfold()` / `.pad()` / `.fold()` — im2col's own
+# building blocks — forward and backward. Split out rather than added to
+# test_tensor_ops.cul, which is already at the size where one more JIT
+# function costs compile time superlinearly (see that file's header).
+#
+# Every gradient here is hand-derived rather than finite-differenced: the
+# upstream weight is 1..N in order, so each input element's gradient is a
+# distinct sum of the positions it reaches, and a wrong axis, step or window
+# cannot land on the right answer by symmetry.
+#
+# Run with:  ./build/culebra tests/test_tensor_ops_window.cul
+#            ./build/culebra --jit tests/test_tensor_ops_window.cul
+
+fn seq(n) {
+  Tensor.from(range(n).map(|i| to_float(i) + 1.0).collect())
+}
+
+# sum(t * w) as a scalar, reducing every axis — `.sum()`'s own axis-less form
+# returns a Float, which has no `.backward()`.
+fn weighted_sum(t, w) {
+  mut s = t * w
+  for axis in range(t.shape().size()) {
+    s = s.sum(t.shape().size() - 1 - axis)
+  }
+  s
+}
+
+# --- .unfold([axis, win, step]): sliding window ----------------------------
+#
+# [2, 6] unfolded on axis 1 with win=3, step=2 gives [2, 2, 3]: windows start
+# at 0 and 2, so column 2 belongs to both and column 5 to neither.
+
+let uf_x = seq(12).reshape([2, 6])
+let uf_view = uf_x.unfold([1, 3, 2])
+assert_eq(to_string(uf_view.shape()), "[2, 2, 3]")
+assert_eq(
+  uf_view.reshape([4, 3]).to_array(),
+  [[1.0, 2.0, 3.0], [3.0, 4.0, 5.0], [7.0, 8.0, 9.0], [9.0, 10.0, 11.0]],
+)
+
+# VJP: fold, which sums the windows an element belongs to — column 2 gets
+# both windows' weights (3 + 4 and 9 + 10), column 5 gets none.
+let uf_g = seq(12).reshape([2, 6]).requires_grad()
+weighted_sum(uf_g.unfold([1, 3, 2]), seq(12).reshape([2, 2, 3])).backward()
+assert_eq(
+  uf_g.grad().to_array(),
+  [[1.0, 2.0, 7.0, 5.0, 6.0, 0.0], [7.0, 8.0, 19.0, 11.0, 12.0, 0.0]],
+)
+
+# --- .pad([axis, before, after]): zero-pad ---------------------------------
+
+let pd_x = seq(6).reshape([2, 3])
+assert_eq(
+  pd_x.pad([1, 1, 2]).to_array(),
+  [[0.0, 1.0, 2.0, 3.0, 0.0, 0.0], [0.0, 4.0, 5.0, 6.0, 0.0, 0.0]],
+)
+
+# VJP: the crop back out — the zeros pad wrote carry no gradient, so each
+# input element takes the weight of the column it was shifted into.
+let pd_g = seq(6).reshape([2, 3]).requires_grad()
+weighted_sum(pd_g.pad([1, 1, 2]), seq(12).reshape([2, 6])).backward()
+assert_eq(pd_g.grad().to_array(), [[2.0, 3.0, 4.0], [8.0, 9.0, 10.0]])
+
+# --- .fold([axis, orig_size, step]): unfold's inverse ----------------------
+
+let fd_x = seq(12).reshape([2, 2, 3])
+assert_eq(
+  fd_x.fold([1, 6, 2]).to_array(),
+  [[1.0, 2.0, 7.0, 5.0, 6.0, 0.0], [7.0, 8.0, 19.0, 11.0, 12.0, 0.0]],
+)
+
+# VJP: unfold, so each window position reads back the one output column it
+# was added into — the two windows overlap on column 2, hence the repeat.
+let fd_g = seq(12).reshape([2, 2, 3]).requires_grad()
+weighted_sum(fd_g.fold([1, 6, 2]), seq(12).reshape([2, 6])).backward()
+assert_eq(
+  fd_g.grad().reshape([4, 3]).to_array(),
+  [[1.0, 2.0, 3.0], [3.0, 4.0, 5.0], [7.0, 8.0, 9.0], [9.0, 10.0, 11.0]],
+)
+
+# fold(unfold(x)) is not the identity where windows overlap — it is unfold's
+# transpose, so it scales each column by the number of windows covering it
+# (2 on the shared column, 0 on the one no window reaches). The gradient of a
+# diagonal scaling is that same scaling, which is what the pair composing
+# correctly looks like.
+let rt_g = seq(12).reshape([2, 6]).requires_grad()
+weighted_sum(
+  rt_g.unfold([1, 3, 2]).fold([1, 6, 2]),
+  seq(12).reshape([2, 6]),
+).backward()
+assert_eq(
+  rt_g.grad().to_array(),
+  [[1.0, 2.0, 6.0, 4.0, 5.0, 0.0], [7.0, 8.0, 18.0, 10.0, 11.0, 0.0]],
+)
+
+# --- Tensor.scatter_to_axis's VJP: the gather back out ---------------------
+#
+# Each value lands in exactly one slot of the new trailing axis, so its
+# gradient is that slot's weight and nothing else: W[i][indices[i]].
+
+let sc_g = Tensor.from([5.0, 7.0, 9.0]).requires_grad()
+weighted_sum(
+  Tensor.scatter_to_axis(Tensor.from([2.0, 0.0, 1.0]), sc_g, 4),
+  seq(12).reshape([3, 4]),
+).backward()
+assert_eq(sc_g.grad().to_array(), [3.0, 5.0, 10.0])
+
+# --- the composition that makes an im2col conv differentiable --------------
+#
+# im2col itself: pad the border a 3-wide window overhangs, then slide. The
+# loss stands in for the matmul a real conv applies to the windows, so the
+# gradient has to come back through the unfold AND the pad it sits on.
+
+let im_g = seq(8).reshape([2, 4]).requires_grad()
+let im_windows = im_g.pad([1, 1, 1]).unfold([1, 3, 1])
+assert_eq(to_string(im_windows.shape()), "[2, 4, 3]")
+weighted_sum(im_windows, seq(24).reshape([2, 4, 3])).backward()
+# x[r][j] is padded column j+1, which windows j-1, j and j+1 cover at their
+# local positions 2, 1 and 0 — so d/dx[0][0] = W[0][0][1] + W[0][1][0] =
+# 2 + 4 = 6, and d/dx[0][1] = W[0][0][2] + W[0][1][1] + W[0][2][0] = 15.
+# The end columns see fewer windows, since the pad absorbs the rest.
+assert_eq(
+  im_g.grad().to_array(),
+  [[6.0, 15.0, 24.0, 20.0], [30.0, 51.0, 60.0, 44.0]],
+)

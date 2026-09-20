@@ -129,10 +129,11 @@ fn strip_padding(padded, n, c, h, w, ph, pw) {
 #
 # `.permute()` is called inline here rather than through the `nhwc_to_nchw`/
 # `nchw_to_nhwc` dz.Function wrappers `conv2d`/`deconv2d` use for their own
-# axis move: `Im2col`/`Col2im` already hand-write their own `backward()`
-# (dezero's autograd doesn't reach through `.pad()`/`.unfold()`/`.fold()`/
-# `.permute()` yet either), so there is no outer graph for a separate
-# wrapper Function to register itself into.
+# axis move: `Im2col`/`Col2im` already hand-write their own `backward()`, so
+# there is no outer graph for a separate wrapper Function to register itself
+# into. (Tensor's own autograd now differentiates all four natively — see
+# examples/tensor/mnist_conv.cul for a conv written that way instead. This
+# file stays on dezero's graph, which is a separate tape.)
 
 class Im2col {
   generation = 0
@@ -152,7 +153,8 @@ class Im2col {
     ow = get_conv_outsize(w, kw, sw, pw)
     self.x_shape = s
 
-    windows = x.permute([0, 2, 3, 1])
+    windows = x
+      .permute([0, 2, 3, 1])
       .pad([1, ph, ph])
       .pad([2, pw, pw])
       .unfold([1, kh, sh])
@@ -218,10 +220,9 @@ fn col2im(x, input_shape, kernel_size, stride = 1, pad = 0) {
 # --- the one 4-D axis move conv2d/deconv2d need -----------------------------
 #
 # Both directions are now a single native `.permute()` call (a view, free on
-# any backend) — each still wrapped in its own dz.Function, since native
-# `.permute()` has no `.backward()` yet (see tensor.h): the VJP of a
-# permutation is the inverse permutation, which for `[0,2,3,1]`/`[0,3,1,2]`
-# is simply the other one.
+# any backend) — each still wrapped in its own dz.Function, since dezero's
+# own tape is not Tensor's: the VJP of a permutation is the inverse
+# permutation, which for `[0,2,3,1]`/`[0,3,1,2]` is simply the other one.
 
 class NhwcToNchw {
   generation = 0

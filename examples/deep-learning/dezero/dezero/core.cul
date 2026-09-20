@@ -749,11 +749,10 @@ fn min_(x, axis = nil, keepdims = false) {
 
 # --- narrow (any-axis slice) -------------------------------------------------
 #
-# `.slice()` (axis 0 only) already has a native VJP; `.narrow()` (any axis)
-# doesn't (see stdlib.md's forward-only list), so this hand-derives one.
-# The gradient scatters gy back into a zero buffer of the input's own shape
-# at the same window -- exactly `.pad()`'s job. `.pad()` is itself
-# forward-only, but that's fine here: backward only needs to produce a raw
+# Tensor's own autograd differentiates `.narrow()`, but dezero's tape is a
+# separate one, so this registers the same rule on its side: the gradient
+# scatters gy back into a zero buffer of the input's own shape at the same
+# window -- exactly `.pad()`'s job. Backward only needs to produce a raw
 # gradient *value*, not a further differentiable node, same reasoning as
 # Max/Min's backward above calling raw Tensor ops directly.
 

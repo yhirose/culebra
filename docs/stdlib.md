@@ -1638,7 +1638,8 @@ share the same shape. The native primitive a pooling layer's own
 hand-derived backward composes with `.fold()` to reconstruct a padded
 input gradient — `.max(axis)`/`.argmax(axis)` pick one element out of a
 window; this scatters a gradient back into that same window shape.
-Forward-only for now (no native `.backward()` through it).
+Differentiable w.r.t. `values`: each one reaches exactly one slot, so the
+gradient picks that slot back out. `indices` gets no gradient.
 
 ```culebra
 let idx = Tensor.from([2.0, 0.0, 1.0])
@@ -1835,10 +1836,10 @@ produces a grad-tracking output. Differentiable ops include `+ - * /`,
 `.pow()` (w.r.t. the base), `.dot()`, axis `.sum()` / `.mean()`,
 `.relu()`, `.sigmoid()`, `.softmax()`, `.log()`, `.tanh()`, `.sin()`,
 `.cos()`, `.clamp()`, `.transpose()`, `.permute()`, `.reshape()`,
-`.slice()`, `.narrow()`, `.rope()`, `.causal_attention()`,
-`.layer_norm()`, `.softmax_cross_entropy()`,
-`Tensor.concat()`, `Tensor.where()`, and `.index_select()` /
-`Tensor.index_add()` (each other's own VJP). Gradients
+`.slice()`, `.narrow()`, `.pad()`, `.unfold()`, `.fold()`, `.rope()`,
+`.causal_attention()`, `.layer_norm()`, `.softmax_cross_entropy()`,
+`Tensor.concat()`, `Tensor.where()`, `Tensor.scatter_to_axis()`, and
+`.index_select()` / `Tensor.index_add()` (each other's own VJP). Gradients
 un-broadcast automatically, so a bias added across a batch sums back to its
 shape. `.permute()`'s own VJP is the inverse permutation, which is what
 lets an attention head split (`[B, C, H, D]` to `[B, H, C, D]`) train:
@@ -1850,10 +1851,14 @@ of rank 16 or more raises rather than storing one it has truncated.
 transpose for an inverse, and negating the second half of the head
 dimension before and after turns the forward rotation into that transpose
 — so the backward re-runs the forward rather than keeping the cosines it
-used. `.unfold()`, `.pad()`, `.fold()`, and `Tensor.scatter_to_axis()` are
-forward-only so far — `.backward()` through them raises; a training loop
-that uses them (an im2col-style conv, or a pooling layer) writes its own
-backward pass around them for now.
+used. The im2col trio differentiates as two dual pairs: `.pad()`'s VJP is the
+crop `.narrow()` performs and `.narrow()`'s is that pad, `.unfold()`'s is
+`.fold()` and `.fold()`'s is `.unfold()`. Each stores only its axis and its
+step; the window and the length to restore come off the shapes either side.
+So a convolution written as pad -> unfold -> reshape -> `.dot()` trains
+under `.backward()` with no hand-written backward pass anywhere — see
+`examples/tensor/mnist_conv.cul`. Where windows overlap, `.fold()` sums the
+copies, which is what makes it the transpose rather than the inverse.
 `.gt()` / `.lt()` / `.ge()` / `.le()` / `.eq()` / `.ne()` (and `.max()` /
 `.argmax()`) are never differentiable — `.backward()` through a comparison
 always raises, the same as PyTorch/numpy: compose the 0/1 mask with `*`

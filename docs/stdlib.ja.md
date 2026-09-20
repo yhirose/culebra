@@ -1598,8 +1598,9 @@ let grad = Tensor.index_add(idx, values, [4, 2])  # [[1,2],[40,60],[0,0],[0,0]]
 である必要があります。poolingレイヤー自身の手書きbackwardが`.fold()`と
 組み合わせてpadded input勾配を再構築するネイティブプリミティブです
 ——`.max(axis)`/`.argmax(axis)`がwindowから1要素選ぶのに対し、これは
-勾配を同じwindow形状へscatterして戻します。今のところforward-only
-（ネイティブ`.backward()`は未対応）。
+勾配を同じwindow形状へscatterして戻します。`values`について微分可能:
+各値はちょうど1つのスロットに入るので、勾配はそのスロットから取り出す
+だけです。`indices`には勾配が付きません。
 
 ```culebra
 let idx = Tensor.from([2.0, 0.0, 1.0])
@@ -1792,8 +1793,9 @@ op自身がvector-Jacobian productを知っています。tapeが記録される
 ついて）、`.dot()`、軸`.sum()` / `.mean()`、`.relu()`、`.sigmoid()`、
 `.softmax()`、`.log()`、`.tanh()`、`.sin()`、`.cos()`、`.clamp()`、
 `.transpose()`、`.permute()`、`.reshape()`、`.slice()`、`.narrow()`、
+`.pad()`、`.unfold()`、`.fold()`、
 `.rope()`、`.causal_attention()`、`.layer_norm()`、`.softmax_cross_entropy()`、
-`Tensor.concat()`、`Tensor.where()`、
+`Tensor.concat()`、`Tensor.where()`、`Tensor.scatter_to_axis()`、
 `.index_select()` /
 `Tensor.index_add()`（互いが相手のVJP）。勾配は自動でun-broadcastされる
 ので、バッチ越しに加えたbiasは元の形状に和を取って戻ります。
@@ -1806,10 +1808,14 @@ rank 16以上の`.permute()`を通した`.backward()`は、切り詰めた置換
 回転行列の逆は自身の転置であり、head次元の後ろ半分の符号を反転して
 から回して戻せばその転置になるので、backwardは順方向をもう一度
 走らせるだけで済みます——使ったcos/sinの表を持ち回る必要がありません。
-`.unfold()`、`.pad()`、`.fold()`、
-`Tensor.scatter_to_axis()`は今のところforward-onlyです——これらを通した
-`.backward()`は例外を投げます。im2col方式のconvやpoolingレイヤーなど
-これらを使う学習ループは、今のところ自前でbackwardを書きます。
+im2colの3つは2組の双対として微分されます: `.pad()`のVJPは`.narrow()`が
+行うcropで、`.narrow()`のVJPがそのpad。`.unfold()`のVJPは`.fold()`で、
+`.fold()`のVJPは`.unfold()`です。各ノードが持つのは軸とstepだけで、
+windowサイズと復元する長さは前後の形状から取れます。つまりpad -> unfold
+-> reshape -> `.dot()`と書いた畳み込みは、backwardを一行も書かずに
+`.backward()`で学習できます——`examples/tensor/mnist_conv.cul`を参照。
+windowが重なる位置では`.fold()`がコピーを足し合わせるので、これは逆関数
+ではなく転置です。
 `.gt()` / `.lt()` / `.ge()` / `.le()` / `.eq()` / `.ne()`（および`.max()` /
 `.argmax()`）は恒久的に微分不可能です——比較を通した`.backward()`は常に
 例外を投げます（PyTorch/numpyと同じ）。0/1マスクは`*`で合成してください

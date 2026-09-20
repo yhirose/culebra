@@ -96,8 +96,8 @@ enum class Op {
   Sigmoid, Relu, Softmax, Log,
   Tanh, Sin, Cos,
   // clip(x, lo, hi). Forward-only (see the VJP switch) -- dezero's own
-  // Clip class writes its own backward from Tensor.ge/le/*, the same
-  // reason Unfold/Pad/Fold/Permute/Narrow/ScatterAxis are forward-only.
+  // Clip class writes its own backward from Tensor.ge/le/*, which is where
+  // the gate belongs; nothing differentiates a clip directly.
   Clip,
   LinearSigmoid,
   // Fused softmax + cross-entropy, one row-loss per row of a [N, C] logits
@@ -113,14 +113,15 @@ enum class Op {
   // graph is walked uniformly through `inputs`.
   Transpose, Reshape, Slice,
   Unfold,  // also zero-copy (shares storage), grouped with the views above
-           // in spirit; backward not implemented yet (see the VJP switch).
+           // in spirit; its VJP is Fold, the im2col pair below.
   Permute,  // general axis reorder — Transpose above is the "reverse every
-            // axis" special case; this is any permutation. Also zero-copy,
-            // also no backward yet (the inverse needs the axes back, which
-            // nothing stores today — see the VJP switch).
-  // im2col's own ops: both materialize a new buffer (never a view). No VJP
-  // yet either — dezero's own conv layer (examples/deep-learning/dezero) runs its own
-  // autograd around these rather than native .backward().
+            // axis" special case; this is any permutation. Also zero-copy;
+            // its VJP is the inverse permutation, off the axes op_param
+            // packs (see the VJP switch).
+  // im2col's own ops: both materialize a new buffer (never a view). Pad's
+  // VJP is Narrow's forward and Narrow's is Pad's, and Fold's is Unfold's
+  // and Unfold's is Fold's — two dual pairs, so an im2col written from
+  // these differentiates natively.
   Pad, Fold,
   // Elementwise select: y = cond != 0 ? a : b. Has a real VJP (da = g*cond,
   // db = g*(1-cond); cond itself gets no gradient, matching numpy/PyTorch's
@@ -129,8 +130,9 @@ enum class Op {
   Where,
   // Row gather/scatter along axis 0 (embedding-table lookup) and one-hot
   // scatter into a new trailing axis (a pooling-style backward's native
-  // primitive). IndexSelect/IndexAdd are exact duals with real VJPs;
-  // ScatterAxis is forward-only (see the VJP switch).
+  // primitive). IndexSelect/IndexAdd are exact duals; ScatterAxis's own dual
+  // is tl's gather_from_axis, which its VJP calls directly — there is no
+  // Tensor-level gather for it to be the forward of.
   IndexSelect, IndexAdd, ScatterAxis,
   Narrow,  // `.slice()` generalized to any axis. Zero-copy view; its VJP
            // is the zero-pad back out (see the VJP switch).
@@ -1031,9 +1033,14 @@ inline TensorPtr tensor_unfold(TensorPtr t, int64_t axis, int64_t win,
                                int64_t step) {
   auto v = _tl_guard([&] { return t->value.unfold(axis, win, step); });
   auto dtype = t->dtype;
-  return tensor_make_op(Op::Unfold, std::move(v), dtype,
-                        std::vector<TensorPtr>{std::move(t)},
-                        /*op_param=*/0, /*is_view=*/true);
+  // op_param/extra0 keep axis/step for the VJP, which is fold with those same
+  // params — the window size comes off this node's own trailing axis and the
+  // length to fold back to off the input's shape, so neither needs a slot.
+  auto out = tensor_make_op(Op::Unfold, std::move(v), dtype,
+                            std::vector<TensorPtr>{std::move(t)},
+                            /*op_param=*/axis, /*is_view=*/true);
+  out->extra0 = static_cast<float>(step);
+  return out;
 }
 
 // Places `t` into a zero buffer, shifted by `before` along `axis` — im2col's
@@ -1042,8 +1049,13 @@ inline TensorPtr tensor_pad(TensorPtr t, int64_t axis, int64_t before,
                             int64_t after) {
   auto v = _tl_guard([&] { return t->value.pad(axis, before, after); });
   auto dtype = t->dtype;
-  return tensor_make_op(Op::Pad, std::move(v), dtype,
-                        std::vector<TensorPtr>{std::move(t)});
+  // op_param/extra0 keep axis/before for the VJP, which is the crop back out
+  // (`after` follows from the input's own length along the axis).
+  auto out = tensor_make_op(Op::Pad, std::move(v), dtype,
+                            std::vector<TensorPtr>{std::move(t)},
+                            /*op_param=*/axis);
+  out->extra0 = static_cast<float>(before);
+  return out;
 }
 
 // unfold's inverse: scatter-add `t` (shaped like some x.unfold(axis, win,
@@ -1053,8 +1065,13 @@ inline TensorPtr tensor_fold(TensorPtr t, int64_t axis, int64_t orig_size,
                              int64_t step) {
   auto v = _tl_guard([&] { return t->value.fold(axis, orig_size, step); });
   auto dtype = t->dtype;
-  return tensor_make_op(Op::Fold, std::move(v), dtype,
-                        std::vector<TensorPtr>{std::move(t)});
+  // op_param/extra0 keep axis/step, the mirror of unfold's: the VJP is unfold
+  // with the window size read back off the input's trailing axis.
+  auto out = tensor_make_op(Op::Fold, std::move(v), dtype,
+                            std::vector<TensorPtr>{std::move(t)},
+                            /*op_param=*/axis);
+  out->extra0 = static_cast<float>(step);
+  return out;
 }
 
 // Elementwise select, broadcasting `cond`/`a`/`b` against each other the
@@ -1441,18 +1458,15 @@ inline TensorPtr _tensor_relu_backward(const TensorPtr& g, const TensorPtr& x) {
 // The VJP of taking the window [start, start+len) of one axis: zero-pad `g`
 // back out to the source's length on that axis. `.slice()` is `.narrow()` on
 // axis 0, so both arms of the switch route here — one pass through tl's pad
-// rather than a zero buffer plus an in-place add through a view.
-//
-// `.pad()` is forward-only itself, but that guards *its* callers going
-// through .backward(); used here as a plain value-builder inside another
-// op's VJP it is fine, the same way Concat's VJP uses tensor_narrow.
+// rather than a zero buffer plus an in-place add through a view. It is the
+// Pad op itself, whose own VJP is this crop, so the pair closes and a
+// gradient through either stays differentiable.
 inline TensorPtr _tensor_window_backward(const TensorPtr& g, int64_t axis,
                                          int64_t start, int64_t src_len,
                                          Dtype dt) {
+  (void)dt;  // the op carries g's own dtype
   int64_t after = src_len - start - g->shape.dims[axis];
-  auto v = _tl_guard(
-      [&] { return g->value.pad(static_cast<int>(axis), start, after); });
-  return _tensor_wrap_const(std::move(v), dt);
+  return tensor_pad(g, axis, start, after);
 }
 
 // The sign flip that turns rope's rotation into its own transpose: +1 over
@@ -1762,9 +1776,7 @@ inline void _tensor_vjp(const TensorPtr& n) {
     case Op::Concat: {
       // Each part owns a contiguous window of the output along op_param
       // (the concat axis); route that window of the upstream grad straight
-      // back to it. tensor_narrow's own VJP is forward-only, but that
-      // guards *its* callers going through .backward() — used here as a
-      // plain extraction tool inside Concat's own VJP, it's fine.
+      // back to it.
       int64_t axis = n->op_param;
       int64_t off = 0;
       for (const auto& part : n->inputs) {
@@ -1819,16 +1831,36 @@ inline void _tensor_vjp(const TensorPtr& n) {
                                        _tensor_wrap_const(std::move(mask), dt)));
       break;
     }
-    case Op::Unfold:
-    case Op::Pad:
-    case Op::Fold:
-      // unfold's VJP is fold with the same params (and vice versa); pad's is
-      // a crop. Not yet wired up: examples/deep-learning/dezero's own conv layer runs its
-      // own autograd around these rather than native .backward(), so this
-      // arm is unreached today — thrown rather than silently wrong once
-      // something does reach it.
-      throw CulebraError("ValueError",
-          "Tensor.backward: unfold / pad / fold are not differentiable yet.");
+    case Op::Unfold: {
+      // y = x.unfold(axis, win, step): each window of `axis` becomes a row and
+      // `win` a new trailing axis. Every input element lands in as many
+      // windows as overlap it, so the transpose sums those copies back — which
+      // is exactly fold, with the window size read off g's trailing axis.
+      const auto& x = n->inputs[0];
+      int64_t axis = n->op_param;
+      _tensor_grad_add(x, tensor_fold(g, axis, x->shape.dims[axis],
+                                      static_cast<int64_t>(n->extra0)));
+      break;
+    }
+    case Op::Fold: {
+      // fold's own transpose is the unfold it undoes: a scatter-add reads each
+      // output element once per window, so the gradient gathers them back.
+      const auto& x = n->inputs[0];
+      _tensor_grad_add(x, tensor_unfold(g, n->op_param, x->shape.dims.back(),
+                                        static_cast<int64_t>(n->extra0)));
+      break;
+    }
+    case Op::Pad: {
+      // The zeros pad wrote carry no gradient; the rest maps one to one, so
+      // the VJP is the crop back out — Narrow's forward, whose own VJP is this
+      // pad, so the pair closes.
+      const auto& x = n->inputs[0];
+      int64_t axis = n->op_param;
+      int64_t before = static_cast<int64_t>(n->extra0);
+      _tensor_grad_add(x, tensor_narrow(g, axis, before,
+                                        before + x->shape.dims[axis]));
+      break;
+    }
     case Op::Permute: {
       // y = x.permute(axes); dx = g.permute(axes^-1), where the inverse
       // sends axis `axes[i]` back to position `i`. The forward packed those
@@ -1889,13 +1921,20 @@ inline void _tensor_vjp(const TensorPtr& n) {
       _tensor_grad_add(values, tensor_index_select(g, indices));
       break;
     }
-    case Op::ScatterAxis:
-      // The VJP is scatter_to_axis's own dual (gather one element back out
-      // of the window axis by the same indices), which nothing builds yet
-      // — no caller needs it (a pooling layer's own backward uses this op
-      // forward-only, writing its own gradient by hand around it).
-      throw CulebraError("ValueError",
-          "Tensor.backward: scatter_to_axis is not differentiable yet.");
+    case Op::ScatterAxis: {
+      // y[..., k] = values[...] where indices[...] == k, else 0. Each value
+      // reaches exactly one output slot, so the VJP picks that slot back out:
+      // scatter_to_axis's own dual, gather_from_axis. Indices get no gradient.
+      // Taken straight off tl (like the cross-entropy's own gather) rather
+      // than through a Tensor op — there is no Tensor-level gather to be the
+      // forward of, and this is the only place that wants one.
+      const auto& indices = n->inputs[0];
+      const auto& values = n->inputs[1];
+      auto dv = _tl_guard(
+          [&] { return tl::gather_from_axis(g->value, indices->value); });
+      _tensor_grad_add(values, _tensor_wrap_const(std::move(dv), dt));
+      break;
+    }
     case Op::Rope: {
       // y = R x, where R rotates each pair (j, j+D/2) of the last axis by
       // that row's angle: [[c, -s], [s, c]] over the two halves. So dx =
