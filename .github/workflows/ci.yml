@@ -22,9 +22,13 @@ on:
 
 # Coalesce runs per ref: a new push to the same branch cancels its still-running
 # CI (a branch + its PR would otherwise double-run, and rapid re-pushes pile up).
-# master is exempt — every landed commit keeps its own gate result.
+# master is exempt — every landed commit keeps its own gate result. Exempting it
+# takes a group per commit, not just cancel-in-progress: false: one group admits
+# one *running* run, so sharing a group made each master push sit pending until
+# the previous one finished (measured 2026-09-19: up to 26 min of pure queueing,
+# while the runners were free — phase 1's 13 jobs all start at once).
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}${{ github.ref == 'refs/heads/master' && format('-{0}', github.sha) || '' }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 # Every step that launches culebra must name the engine it means. A bare
