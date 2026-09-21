@@ -84,4 +84,68 @@ class Tagged {
 assert_eq(Tagged.new(5) == Tagged.new(5), true)  // __eq__ used, not eq
 assert_eq(Tagged.new(1) < Tagged.new(2), true)   // __lt__ used, not cmp
 
+// `<=` is `__le__`, or else `a < b or a == b` with `==` whole. `__eq__` alone
+// orders nothing, so `<=` falls to `cmp` as `<` does; it used to be answered
+// by `__eq__`, which read an unequal pair as out of order both ways -- `a < b`
+// true beside `a <= b` false and `a > b` true.
+class EqAndCmp {
+  new(v) {
+    self.v = v
+  }
+  __eq__(o) {
+    self.v == o.v
+  }
+  cmp(o) {
+    self.v - o.v
+  }
+}
+let lo = EqAndCmp.new(1)
+let hi = EqAndCmp.new(2)
+assert_eq(lo < hi, true)
+assert_eq(lo <= hi, true)
+assert_eq(lo > hi, false)
+assert_eq(lo >= hi, false)
+assert_eq(hi > lo, true)
+assert_eq(lo <= lo, true)
+assert_eq(lo > lo, false)
+
+// ...and with `__lt__` but no `__eq__`, the equal half is `==`'s own answer,
+// structure here, not a missing dunder read as "unequal".
+class LtOnly {
+  new(v) {
+    self.v = v
+  }
+  __lt__(o) {
+    self.v < o.v
+  }
+}
+let same_a = LtOnly.new(1)
+let same_b = LtOnly.new(1)
+assert_eq(same_a == same_b, true)
+assert_eq(same_a <= same_b, true)
+assert_eq(same_a > same_b, false)
+assert_eq(same_a >= same_b, true)
+assert_eq(LtOnly.new(1) <= LtOnly.new(2), true)
+assert_eq(LtOnly.new(2) <= LtOnly.new(1), false)
+
+// ...a stated `eq` counts as `==` does.
+class LtAndEq {
+  new(id, label) {
+    self.id = id
+    self.label = label
+  }
+  __lt__(o) {
+    self.id < o.id
+  }
+  eq(o) {
+    self.id == o.id
+  }
+  hash() {
+    self.id
+  }
+}
+assert_eq(LtAndEq.new(1, 'a') == LtAndEq.new(1, 'b'), true)
+assert_eq(LtAndEq.new(1, 'a') <= LtAndEq.new(1, 'b'), true)
+assert_eq(LtAndEq.new(1, 'a') > LtAndEq.new(1, 'b'), false)
+
 inspect("test_operator_trait ok")

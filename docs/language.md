@@ -1787,7 +1787,7 @@ their instances are plain `Object`s with methods attached.
 | `-a`         | `__neg__`      | 0-arg method on `a`                   |
 | `a == b`     | `__eq__`       | `!=` derives by negation              |
 | `a < b`      | `__lt__`       | `>=` derives by negation              |
-| `a <= b`     | `__le__`       | If missing, derived as `__lt__` or `__eq__`; `>` derives by negation |
+| `a <= b`     | `__le__`       | If missing and `__lt__` exists, derived as `a < b or a == b`; `>` derives by negation |
 
 Example:
 

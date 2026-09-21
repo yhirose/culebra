@@ -1964,32 +1964,18 @@ inline std::optional<int64_t> _special_cmp(int8_t t1, int64_t d1,
   return std::nullopt;
 }
 
-// Try `lhs.__le__(rhs)`, falling back to `__lt__` || `__eq__` to match
-// the interpreter's derivation when a class only defines `__lt__`.
+// `lhs <= rhs` from the class's own dunders: `__le__`, or else `a < b or
+// a == b` — `==` whole, so `<=` agrees with it for every pair, where the
+// `__eq__` dunder alone left a class without one reading every pair as
+// unequal. With neither dunder the class has no say here, and `cmp`, which
+// the caller asks next, answers.
 inline std::optional<bool> _special_le(int8_t t1, int64_t d1,
                                       int8_t t2, int64_t d2) {
   if (auto r = _try_special_binop(t1, d1, t2, d2, Special::Le))
     return _extract_bool_and_release(*r);
-  // Both dunders run before either return is coerced (interp's le_as_bool does
-  // the same, so the side-effect order matches). That leaves one `+1` result
-  // in flight across the next step, and only _extract_bool_and_release
-  // consumes one — so each waiting result gets a guard until its own coercion
-  // takes it over. A dunder returning a non-Bool heap value strands it
-  // otherwise.
   auto lt = _try_special_binop(t1, d1, t2, d2, Special::Lt);
-  std::optional<JitValue> eq;
-  {
-    JitUnwindRelease g{lt ? *lt : JitValue{TAG_NIL, 0}};
-    eq = _try_special_binop(t1, d1, t2, d2, Special::Eq);
-  }
-  if (!lt && !eq) return std::nullopt;
-  bool l;
-  {
-    JitUnwindRelease g{eq ? *eq : JitValue{TAG_NIL, 0}};
-    l = lt && _extract_bool_and_release(*lt);
-  }
-  bool e = eq && _extract_bool_and_release(*eq);
-  return l || e;
+  if (!lt) return std::nullopt;
+  return _extract_bool_and_release(*lt) || _culebra_value_equal(t1, d1, t2, d2);
 }
 
 // Each ordering operator expands to a borrow-contract core plus its named
