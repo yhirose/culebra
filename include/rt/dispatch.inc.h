@@ -222,8 +222,10 @@ inline std::optional<int64_t> _jit_enum_variant_hash(JitObject* obj) {
   if (!_jit_enum_name(obj)) return std::nullopt;
   return culebra_runtime_derived_hash(obj);
 }
-inline std::optional<bool> _jit_enum_variant_eq(JitObject* a, JitObject* b) {
-  if (!_jit_enum_name(a)) return std::nullopt;
+// Key equality for what matches by its fields — a variant, or a class that
+// derives Eq — and nullopt for anything else.
+inline std::optional<bool> _jit_eq_by_fields(JitObject* a, JitObject* b) {
+  if (!_jit_meta_eq_by_fields(a)) return std::nullopt;
   return culebra_runtime_derived_eq(a, {TAG_OBJECT, reinterpret_cast<int64_t>(b)})
              .data != 0;
 }
@@ -358,7 +360,8 @@ culebra_runtime_make_derived_method(int64_t kind) {
     case 3: thunk = reinterpret_cast<void*>(&_jit_derived_cmp_thunk); arity = 1; break;
   }
   return culebra_runtime_closure_new(thunk, /*n_captures=*/0, arity,
-                                     JIT_CLOSURE_NATIVE, /*meta=*/nullptr);
+                                     JIT_CLOSURE_NATIVE | JIT_CLOSURE_DERIVED,
+                                     /*meta=*/nullptr);
 }
 
 // What a function body declares, in the form the runtime reads it back: one

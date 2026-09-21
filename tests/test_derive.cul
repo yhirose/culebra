@@ -146,4 +146,78 @@ assert_eq(cmp_mixed, "TypeError: type error: cannot compare Long and String")
 // Equal fields never reach the ordering, so a same-valued Array pair is fine.
 assert_eq(Holder.new([1]).cmp(Holder.new([1])), 0)
 
+// --- A derived `eq` states no equality -------------------------------------
+// It says the instances match by their fields, as an enum variant's do: as
+// keys (type-strict, agreeing with `hash`) in hash containers, and by
+// structure under `==`, exactly as for a class with no `eq` at all. Deriving
+// Eq to become a key does not narrow `==` on the way.
+@derive(Eq, Hash, Comparable)
+class Num {
+  new(v) {
+    self.v = v
+  }
+}
+class NoEq {
+  new(v) {
+    self.v = v
+  }
+}
+assert_eq(NoEq.new(1) == NoEq.new(1.0), true)
+assert_eq(Num.new(1) == Num.new(1.0), true)
+assert_eq([Num.new(1)] == [Num.new(1.0)], true)
+assert_eq([Num.new(1)].contains(Num.new(1.0)), true)
+assert_eq(Num.new(1).eq(Num.new(1.0)), false)
+mut keyed = {}
+keyed[Num.new(1)] = "long"
+keyed[Num.new(1.0)] = "float"
+assert_eq(keyed.size(), 2)
+// ...so `==` and the derived `cmp` answer the same pair the same way.
+assert_eq(Num.new(1).cmp(Num.new(1.0)), 0)
+assert_eq(Num.new(1) == Num.new(1.0), Num.new(1).cmp(Num.new(1.0)) == 0)
+// Nominal either way.
+@derive(Eq, Hash)
+class OtherNum {
+  new(v) {
+    self.v = v
+  }
+}
+assert_eq(Num.new(1) == OtherNum.new(1), false)
+
+// An equality the class writes itself is stated, and governs `==` as before:
+// a hand-written `eq` (the derived one is skipped for it) or `__eq__`.
+@derive(Eq, Hash)
+class OwnEq {
+  new(v) {
+    self.v = v
+  }
+  eq(o) {
+    true
+  }
+}
+assert_eq(OwnEq.new(1) == OwnEq.new(2), true)
+@derive(Eq, Hash)
+class OwnDunder {
+  new(v) {
+    self.v = v
+  }
+  __eq__(o) {
+    true
+  }
+}
+assert_eq(OwnDunder.new(1) == OwnDunder.new(2), true)
+assert_eq(OwnDunder.new(1).eq(OwnDunder.new(2)), false)
+
+// `==` stays commutative: a derived class has no `__eq__` of its own, so the
+// other side's answers from either side.
+class Anything {
+  new(v) {
+    self.v = v
+  }
+  __eq__(o) {
+    true
+  }
+}
+assert_eq(Anything.new(0) == Num.new(1), true)
+assert_eq(Num.new(1) == Anything.new(0), true)
+
 IO.inspect("test_derive OK")

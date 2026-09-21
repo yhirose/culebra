@@ -1918,8 +1918,8 @@ inline std::optional<bool> _culebra_user_equal(int8_t t1, int64_t d1,
   // `==` is commutative, so try either side's `__eq__`.
   if (auto* f = a(Special::Eq)) return _culebra_ask_equal(f, {t1, d1}, {t2, d2});
   if (auto* f = b(Special::Eq)) return _culebra_ask_equal(f, {t2, d2}, {t1, d1});
-  // Eq-trait fallback: both sides carry `eq`, so the operator agrees with
-  // key equality (JitValueEq dispatches `eq` too, through the same step).
+  // An `eq` the class states — a derived one takes no slot — on both sides:
+  // the operator then agrees with key equality, which asks the same `eq`.
   if (auto* f = a(Special::EqTrait); f && b(Special::EqTrait))
     return _culebra_ask_equal(f, {t1, d1}, {t2, d2});
   return std::nullopt;

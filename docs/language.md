@@ -1803,15 +1803,18 @@ Example:
 
 **Trait-method fallback.** When a class does not define the explicit
 `__eq__` / `__lt__` dunders, the comparison operators fall back to the
-`Eq` and `Comparable` trait methods: `==` / `!=` route through
-`eq(other)`, and `<` / `<=` / `>` / `>=` derive from `cmp(other)` (the
-canonical `Comparable` method). This is what makes a `@derive(Eq,
-Comparable)` (or hand-written `eq` / `cmp`) class usable with operators
-directly — `a == b` and `a < b` work without writing `__eq__` / `__lt__`.
+`Eq` and `Comparable` trait methods: `==` / `!=` route through an
+`eq(other)` the class writes, and `<` / `<=` / `>` / `>=` derive from
+`cmp(other)` (the canonical `Comparable` method). This is what makes a
+hand-written `eq` / `cmp` class usable with operators directly —
+`a == b` and `a < b` work without writing `__eq__` / `__lt__`.
 Precedence is **explicit dunder > trait method > default** (structural
 equality for `==`; a `type error` for ordering an `Object` with neither).
-Routing `==` through `eq` also keeps the operator consistent with the
-key equality used by `Object` / `Set` lookups.
+Routing `==` through a written `eq` also keeps the operator consistent
+with the key equality used by `Object` / `Set` lookups, which asks the
+same `eq`. A *derived* `eq` is not written: it only says the instances
+match by their fields, so `==` compares such a class by structure — the
+default — as it does an enum variant (see *Deriving methods*).
 
 The same precedence holds for every comparison that means "equal", not
 the operator alone: the elements of two containers under `==`, and the
@@ -3787,7 +3790,7 @@ each mapping to one method:
 
 | Derive | Generated method | Behavior |
 |---|---|---|
-| `Eq` | `eq(other)` | true when `other` is the same class and every data field is equal |
+| `Eq` | `eq(other)` | true when `other` is the same class and every data field is equal as a key |
 | `Hash` | `hash()` | combines the class name and each data field's hash |
 | `Show` | `to_s()` | `"ClassName(f1, f2, ...)"` with each field's value repr |
 | `Comparable` | `cmp(other)` | lexicographic over data fields, in declaration order |
@@ -3824,24 +3827,24 @@ tag), so they stay correct as fields change. Details:
   construction, so `@derive` on an `enum` is a SyntaxError.
 * **Nominal:** derived `eq` requires the same class tag, so two classes
   with identical fields never compare equal.
-* **Derived `eq` compares fields as keys.** A field pair is equal the way
-  an `Object` key is equal: strictly by type (`1` and `1.0` are two
-  different keys) and through a field's own `eq`, never its `__eq__`.
-  That is what lets `@derive(Eq, Hash)` be a key at all — `eq` and `hash`
-  have to agree — and it is stricter than `==` on the same pair.
+* **A derived `eq` states no equality.** It says the instances match
+  by their fields, the way an enum variant's do. As keys they match
+  strictly by type (`1` and `1.0` are two different keys), which is
+  what lets `eq` agree with `hash` and the class be a key at all. Under
+  `==` they compare by structure — fields by `==`, which mixes `Long`
+  and `Float` by value — exactly as a class with no `eq` does, so
+  deriving `Eq` to become a key does not narrow `==`. The two differ
+  only for such a mixed pair: `P(1) == P(1.0)` is true while `P(1)` and
+  `P(1.0)` stay two keys. An `eq` or `__eq__` the class writes is
+  stated, and `==` follows it as usual.
 * **`cmp` ordering** compares each field pair exactly as `<` does: equal
   fields (by `==`) move on to the next, and the first unequal pair decides.
   A pair `<` refuses to order — an Array, an Object, two different types —
   is the same `cannot compare` TypeError there, so `cmp` orders the numeric
   and string fields and no others.
-* **A derived `cmp` of `0` does not imply a derived `eq`.** The two walk
-  the fields by different rules: `cmp` compares each pair with `==`, which
-  mixes `Long` and `Float` by value, while `eq` matches them as keys, which
-  does not cross types. A class holding `1` in one instance and `1.0` in
-  another answers `cmp(other)` `0` and `eq(other)` `false`. `eq` has to
-  match `hash` — that is what makes the class a key at all — so it is the
-  one with no freedom; where a class needs the two to agree, hand-write
-  whichever of them it needs and derive the rest.
+* **A derived `cmp` agrees with `==`.** Both walk the fields by `==`,
+  so `cmp(other)` is `0` exactly when `==` holds. It is the key
+  relation `eq` that is stricter, for the reason above.
 * **`eq` and `cmp` take `other`**, `hash` and `to_s` take nothing; calling
   one without its argument is the ordinary missing-required ArityError.
 
@@ -6231,11 +6234,14 @@ v.remove('x')    # ImmutableError: cannot remove property 'x' from a @value inst
 ```
 
 A `@value` class gets `eq` and `hash` derived from its fields — the same
-pair `@derive(Eq, Hash)` generates — so `Set` membership and Object keys
-agree with `==`. `hash` is the half an ordinary class does not have:
-without it an instance is unhashable, so it cannot be a `Set` member or an
-Object key at all. A class that writes its own `__eq__` or `eq` keeps it
-and opts out of both, which is what keeps the pair consistent.
+pair `@derive(Eq, Hash)` generates — so it is a key matched by its fields
+and `==` compares it by structure. Its fields are declared scalars, each
+of one type, so the two never part the way they can for a derived class
+holding `1` beside `1.0`: `Set` membership and Object keys agree with
+`==`. `hash` is the half an ordinary class does not have: without it an
+instance is unhashable, so it cannot be a `Set` member or an Object key at
+all. A class that writes its own `__eq__` or `eq` keeps it and opts out of
+both, which is what keeps the pair consistent.
 
 Nothing else about the class changes: methods, operators, getters,
 statics, `match` type patterns, `keys()` and display all behave as they do

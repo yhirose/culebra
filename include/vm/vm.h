@@ -7431,10 +7431,9 @@ class Compiler {
       }
     }
     // A value compares by its fields, not by identity, so `@value` implies
-    // the Eq the user would otherwise write out. Synthesized as @derive(Eq,
-    // Hash)'s methods so `==` (which falls back to `eq`) and key equality see
-    // the same one — and the two stay a consistent pair, which is why writing
-    // an equality of your own opts out of both.
+    // the Eq the user would otherwise write out: @derive(Eq, Hash)'s methods,
+    // which make it a key matched by its fields while `==` compares it by
+    // structure. Writing an equality of your own opts out of both.
     if (is_value && !declares("eq") && !declares("__eq__")) {
       if (!derives("eq")) derive_methods.emplace_back("eq", 0);
       if (!declares("hash") && !derives("hash"))

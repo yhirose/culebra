@@ -336,6 +336,12 @@ struct JitSpecialTable {
   // every handle — which is also what lets a consumer holding only a
   // JitValue find the C++ type behind it in one load.
   int64_t foreign_state_fn = -1;
+  // The class's `eq` is `@derive`d: it states no equality of its own, only
+  // that its instances match by their fields — what an enum variant is by
+  // construction. So `==` compares it by structure, as it would a class
+  // with no `eq`, and the key relation matches its fields as keys.
+  // _jit_fill_specials sets it, from the closure's JIT_CLOSURE_DERIVED.
+  bool eq_by_fields = false;
 };
 
 // All refcounted heap types share the same first field: i64 refcount.
@@ -754,6 +760,12 @@ inline const char* _jit_meta_enum_name(JitObject* obj) {
   auto* sp = _jit_meta_specials(obj);
   return sp ? sp->enum_name : nullptr;
 }
+// Whether instances match by their fields rather than by an `eq` of their
+// own: an enum variant, or a class that derives Eq.
+inline bool _jit_meta_eq_by_fields(JitObject* obj) {
+  auto* sp = _jit_meta_specials(obj);
+  return sp && (sp->enum_name || sp->eq_by_fields);
+}
 // The enum object that declared a variant, or null: not a variant, no
 // declaration behind it, or its enum already freed.
 inline JitObject* _jit_variant_enum(JitObject* obj) {
@@ -896,6 +908,10 @@ static_assert(sizeof(JitClosure) <= 48 && !std::is_polymorphic_v<JitClosure>);
 // would silently cross the heap boundary. The interp's body == nullptr.
 inline constexpr uint64_t JIT_CLOSURE_GETTER = 1ull << 0;
 inline constexpr uint64_t JIT_CLOSURE_NATIVE = 1ull << 1;
+// DERIVED — a method `@derive` supplied rather than one the class wrote. A
+// derived `eq` states no equality, so the class meta records that instead of
+// filling its `eq` slot (see JitSpecialTable::eq_by_fields).
+inline constexpr uint64_t JIT_CLOSURE_DERIVED = 1ull << 2;
 
 // Sentinel `arity` for a variadic closure (a builtin ns-method that accepts a
 // range of arg counts, e.g. range/iota/Math.min). Higher-order callback
@@ -1134,7 +1150,7 @@ extern "C" {
 inline std::optional<int64_t> _jit_object_user_hash(JitObject* obj);
 inline std::optional<bool> _jit_object_user_eq(JitObject* a, JitObject* b);
 inline std::optional<int64_t> _jit_enum_variant_hash(JitObject* obj);
-inline std::optional<bool> _jit_enum_variant_eq(JitObject* a, JitObject* b);
+inline std::optional<bool> _jit_eq_by_fields(JitObject* a, JitObject* b);
 inline bool _extract_bool_and_release(JitValue v);
 }
 extern "C" inline const char* _culebra_tag_name(int8_t tag);  // defined below
@@ -1234,7 +1250,7 @@ struct JitValueEq {
         auto* oa = reinterpret_cast<JitObject*>(a.data);
         auto* ob = reinterpret_cast<JitObject*>(b.data);
         if (auto e = _jit_object_user_eq(oa, ob)) return *e;
-        if (auto e = _jit_enum_variant_eq(oa, ob)) return *e;
+        if (auto e = _jit_eq_by_fields(oa, ob)) return *e;
         return false;
       }
     }
