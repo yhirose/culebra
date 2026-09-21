@@ -1328,9 +1328,11 @@ A method call `receiver.name(args)` resolves in this order:
    through to UFCS. When the resolved value is a `Function`, `self`
    is bound to `receiver` for the duration of the call.
 2. Otherwise, if a free function named `name` is visible in the
-   enclosing scope, call it with `receiver` as the first argument and
-   the remaining arguments as-is. This is **Uniform Function Call
-   Syntax (UFCS)**, matching the D / Nim convention.
+   enclosing scope **and its first parameter accepts `receiver`**, call
+   it with `receiver` as the first argument and the remaining arguments
+   as-is. This is **Uniform Function Call Syntax (UFCS)**, matching the
+   D / Nim convention. See
+   [The first parameter decides](#the-first-parameter-decides) below.
 3. Otherwise the property lookup returns `nil`; the subsequent call
    fails with a type error.
 
@@ -1369,11 +1371,44 @@ Two names dispatch outside the built-in tables and still follow this
 order. A class instance's synthesized `parameters()` (§10) is a property
 for step 1, so a global `parameters` never claims one. The explicit-drop
 form `x.drop()` (§17) sits *below* step 2 instead: a receiver carrying
-no `drop` of its own hands the call to a free `drop` in scope, and only
-a receiver that resolves the name — a handle with its own `drop`, or no
-candidate in scope at all — reaches the at-most-once guard. A class
+no `drop` of its own hands the call to a free `drop` in scope that
+accepts it, and only a receiver that resolves the name — a handle with
+its own `drop`, or no such candidate in scope at all — reaches the
+at-most-once guard. A class
 object, an enum or a namespace never does: `C.drop()` is an ordinary
 call of the static `drop`.
+
+#### The first parameter decides
+
+A free function is a UFCS candidate for a receiver only when its first
+parameter accepts that receiver. An unannotated first parameter accepts
+everything; an annotated one accepts what the annotation would accept as
+an ordinary argument (§14) — a union, a trait the receiver's class
+conforms to, an enum at any of its three levels. A function with no
+leading positional parameter (none at all, or only `*args`) declares
+nothing to fail and stays a candidate. For a multimethod, one overload
+whose first parameter accepts the receiver is enough; which overload
+runs is then the ordinary dispatch over all the arguments (§20).
+
+A function that does not accept the receiver is not there as far as the
+call is concerned, so a mistyped method name does not turn into a
+complaint about some unrelated function's parameter:
+
+```culebra
+# doctest: skip
+let g = fn (p: Long) {}
+
+class C {
+  new() {}
+  f() { self.g(0) }  # C has no `g`, and the free `g` takes a Long
+}
+C().f()      # TypeError: expected Function, got Nil
+7.g()        # UFCS → g(7)
+```
+
+The question is asked of the receiver alone, before any argument runs —
+the other arguments are checked where they always were, by the callee's
+own binder.
 
 #### Built-in methods bind positionally
 
@@ -1487,8 +1522,9 @@ receiver.
 
 **JIT**: UFCS is supported under `--jit`. Resolution happens at
 runtime: if the receiver carries a property by that name the method
-path wins, otherwise the name is looked up as a free function and
-invoked with the receiver as its first argument.
+path wins, otherwise the name is looked up as a free function and — if
+its first parameter accepts the receiver — invoked with the receiver as
+its first argument.
 
 ### `class` sugar
 

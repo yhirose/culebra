@@ -1359,8 +1359,8 @@ inspect('exit')
 ### 10.1 UFCS 解決順
 
 `x.name(args)`では、既存のプロパティ/メソッド`name`が常に優先
-され、無ければスコープ内の自由関数`name`が`name(x, args)`として
-呼ばれる。完全な解決順序 (`DOT` + 呼び出しリストの要件を含む) は
+され、無ければスコープ内の自由関数`name`のうち第一引数が`x`を
+受け取れるものが`name(x, args)`として呼ばれる。完全な解決順序 (`DOT` + 呼び出しリストの要件を含む) は
 [language.ja.md §10](language.ja.md) (Methods and UFCS)。
 
 ```culebra

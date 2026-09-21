@@ -1632,6 +1632,22 @@ struct Lowering {
           b.CreateStore(j.make_nil(), slots[in.a]);
           break;
         }
+        case Op::UfcsTakes: {
+          // The candidate's half of the UFCS gate, asked of the runtime: the
+          // answer is in the closure's metadata (or a multimethod's table).
+          auto cand = load_slot(in.b);
+          auto recv = load_slot(in.c);
+          b.CreateStore(
+              j.make_bool(j.emit_call(
+                  j.module_->getOrInsertFunction(rt::ufcs_takes, b.getInt1Ty(),
+                                                 b.getInt8Ty(), i64Ty,
+                                                 b.getInt8Ty(), i64Ty),
+                  {j.extract_tag(cand), j.extract_data(cand),
+                   j.extract_tag(recv), j.extract_data(recv)},
+                  "vut.takes")),
+              slots[in.a]);
+          break;
+        }
         case Op::DropChk: {
           auto recv = load_slot(in.b);
           b.CreateStore(

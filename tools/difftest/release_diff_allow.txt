@@ -146,3 +146,11 @@ iterthrow|let it = { iter: fn () { self }, next: 1 }; it.reduce(*
 ufcsshadow|drop|*|Math
 ufcsshadownest|drop|*|Math
 ufcsshadowform|drop|*|Math
+
+# A free function is a UFCS candidate only when its first parameter accepts
+# the receiver (docs/language.md §10, issue #23). `"x".f(1)` against
+# `f = fn (n: Long, m: Long)` is the ordinary method miss now — "expected
+# Function, got Nil" at the receiver — where the baseline called `f` anyway and
+# reported its parameter 'n' at the method name.
+typos|let f = fn (n: Long, m: Long) { n }; "x".f(1)
+typos|let f = fn (n: Long, m: Long) { n }; "x".f(m: 1)

@@ -1383,8 +1383,8 @@ identity (the `class:` tag, used by `match` and debug output).
 ### 10.1 UFCS resolution order
 
 For `x.name(args)`, an existing property/method named `name` always
-wins; otherwise a free function `name` in scope is called as
-`name(x, args)`. Full resolution order (incl. the `DOT` + call-list
+wins; otherwise a free function `name` in scope whose first parameter
+accepts `x` is called as `name(x, args)`. Full resolution order (incl. the `DOT` + call-list
 requirement): [language.md §10](language.md) (Methods and UFCS).
 
 ```culebra

@@ -34,6 +34,7 @@ smokeを1度に回します。AOT差分のみなら`just test aot`。下表
 | `tests/test_set.cul` | §10 (Set) |
 | `tests/test_tuple.cul` | §10 (Tuple、destructuring) |
 | `tests/test_ufcs.cul` | §10 (メソッド、UFCS)、§19 (`__ARGS__`) |
+| `tests/test_ufcs_first_param.cul` | §10 (UFCS: 第一引数が決める) |
 | `tests/test_args.cul` | stdlib §10 (`Args`) |
 | `tests/test_fs.cul` | stdlib §3 (`FS`) |
 | `tests/test_json.cul` | stdlib §9 (`JSON`) |

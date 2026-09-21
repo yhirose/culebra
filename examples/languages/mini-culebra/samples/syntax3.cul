@@ -180,7 +180,7 @@ let t3 = fn (a: Long, b: Long = 'x') { a }
 show_at('bad default', || t3(1))
 let o1 = {m: fn (n: Long) { n }}
 show_at('property method', || o1.m('x'))
-show_at('ufcs receiver', || 'x'.t2(1))
+show_at('ufcs candidate refused', || 'x'.t2(1))
 show_at('hof callback', || [1, 'x'].for_each(t1))
 show_at('string arg', || 'abc'.contains(0))
 show_at('sort_by positional', || ([3, 1]).sort_by(1, 2))

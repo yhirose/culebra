@@ -13,7 +13,9 @@
 # 282 since test_size_too_large.cul (a size no machine can satisfy is a
 # ValueError), test_tensor_ops_window.cul (the im2col window ops' duals) and
 # test_container_eq.cul (a container compares its elements by `==`'s rule).
-tests.cul 282
+# 283 since test_ufcs_first_param.cul (a free function is a UFCS candidate only
+# when its first parameter accepts the receiver).
+tests.cul 283
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 tests.isolate 20
@@ -31,8 +33,9 @@ ctest.entries 34
 # 946 since §21 shows what `@value` changes instead of asserting it: the loop
 # that builds no instance, and the alias write an ordinary class accepts beside
 # the one a value class refuses — two blocks, in en and ja. 952 since the three
-# spec changes each showed their new rule in language.md and its ja pair.
-docs.blocks 952
+# spec changes each showed their new rule in language.md and its ja pair. 954
+# since §10 shows the UFCS candidate its first parameter rules out, in en and ja.
+docs.blocks 954
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

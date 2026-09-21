@@ -34,6 +34,7 @@ touch multiple sections, marked "(broad)".
 | `tests/test_set.cul` | §10 (sets) |
 | `tests/test_tuple.cul` | §10 (tuples, destructuring) |
 | `tests/test_ufcs.cul` | §10 (methods, UFCS), §19 (`__ARGS__`) |
+| `tests/test_ufcs_first_param.cul` | §10 (UFCS: the first parameter decides) |
 | `tests/test_args.cul` | stdlib §10 (`Args`) |
 | `tests/test_fs.cul` | stdlib §3 (`FS`) |
 | `tests/test_json.cul` | stdlib §9 (`JSON`) |

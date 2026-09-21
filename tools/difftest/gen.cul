@@ -1227,7 +1227,8 @@ for f in fns {
 # slot at the call site. The JIT once baked the fn-definition (or call)
 # position; the prologue now resolves it per call via the argpos/call-site
 # thread-locals. One case per call shape that threads positions: direct,
-# kwargs (static + splat), property method, UFCS receiver/arg, add-dispatch,
+# kwargs (static + splat), property method, UFCS arg (a receiver the first
+# parameter refuses is the method miss instead — §10), add-dispatch,
 # and the parenthesized-receiver builtin rich errors. These are single-line
 # cases, so the probe's e.col is what makes them load-bearing.
 let tps = [

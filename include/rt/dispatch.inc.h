@@ -1032,6 +1032,36 @@ inline JitClosure* _jit_dispatcher_mono_body(JitClosure* c) {
       c->captures[kMultifnMonoCapture]->value.data);
 }
 
+// The candidate's half of the UFCS gate (§10 step 2): is `cand` a Function
+// whose first parameter accepts `recv`? The test is the one the callee's own
+// entry check applies to that argument, so the gate declines exactly the
+// calls that could only have failed there. A multimethod takes the receiver
+// when any overload does — which one runs stays the picker's business. A
+// function with no leading positional parameter, or with no metadata at all
+// (a native body), declares nothing the receiver could fail. Nothrow.
+extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_ufcs_takes(
+    int8_t cand_tag, int64_t cand_data, int8_t recv_tag, int64_t recv_data) {
+  if (cand_tag != TAG_FUNC) return false;
+  auto* cls = reinterpret_cast<JitClosure*>(cand_data);
+  if (const auto* rec = _jit_dispatcher_record(cls)) {
+    // The lone unannotated overload — the plain `fn name` — asks no table.
+    if (rec->mono && rec->mono_tags.empty()) return true;
+    auto& tbl = _jit_multimethods();
+    auto it = tbl.find(rec->name);
+    if (it == tbl.end() || it->second.empty()) return true;
+    for (const auto& m : it->second)
+      if (m.param_types.empty() ||
+          _culebra_value_matches_type(recv_tag, recv_data, m.param_types[0]))
+        return true;
+    return false;
+  }
+  const JitParamMeta* meta = cls->meta;
+  if (!meta || meta->n_params == 0 || !meta->type_names ||
+      meta->first_kw_only_idx == 0 || meta->kwargs_rest_idx == 0)
+    return true;
+  return _culebra_value_matches_type(recv_tag, recv_data, meta->type_names[0]);
+}
+
 // Mint a dispatcher over `name`'s table: the closure, its record, and the
 // cells that tie them. Both places a dispatcher comes into existence use it
 // — a `fn name` declaration executing, and one rebuilt from an isolate

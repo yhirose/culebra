@@ -1389,6 +1389,34 @@ fn __ufcs_call(fnv, recv, rl, rc, pos, kws, apos, line, col) {
   __call_nk(fnv, __concat([recv], pos), kws, apos2, line, col)
 }
 
+# UFCS's second question: does the callable's first parameter accept the
+# receiver? One that does not is no candidate, and the call is the ordinary
+# method miss. A family takes it when any overload does.
+fn __spec_takes(spec2, recv) {
+  let spec = spec2[0]
+  if spec2[1] == 0 || __len(spec) == 0 { return true }
+  let rec = spec[0]
+  if rec[4] != 'p' { return true }
+  __ty_ok(recv, rec[1])
+}
+
+fn __ufcs_takes(fnv, recv) {
+  if __is_family(fnv) {
+    let ovs = fnv['ov']
+    mut i = 0
+    while i < __len(ovs) {
+      if __spec_takes(ovs[i][1], recv) { return true }
+      i = i + 1
+    }
+    return __len(ovs) == 0
+  }
+  if __is_marker(fnv) {
+    if __objecthas(fnv, "\zspec") { return __spec_takes(fnv["\zspec"], recv) }
+    return __ufcs_takes(fnv["\zb"], recv)
+  }
+  true
+}
+
 # A class object called as a function constructs, at the call's own shape.
 fn __class_fn(cls, line, col) {
   fn (a = nil, b = nil, c = nil, d = nil) {
@@ -9480,6 +9508,21 @@ fn emit_postfix_step(m, f, value, step, at) {
             ],
             step,
           )
+          # the candidate as a value, for the gate below (a fresh node per use)
+          fn candidate() {
+            cond {
+              r.kind == 'fn' => emit_family(m, f, name.token, r.funcs, 0, step),
+              r.kind == 'bval' => call_pre(m, f, '__fnval_' + r.name, [], name),
+              _ => rs.read(ir, f, r.v, name),
+            }
+          }
+          let takes = call_pre(
+            m,
+            f,
+            '__ufcs_takes',
+            [candidate(), sref()],
+            step,
+          )
           let via_ufcs = cond {
             r.kind == 'fn' &&
               !has_splat(step.nodes[1].nodes) => emit_dispatch(
@@ -9548,10 +9591,10 @@ fn emit_postfix_step(m, f, value, step, at) {
               )
             },
           }
-          ir.block(
-            [store, ir.make_if_else(own, via_method, via_ufcs, step)],
-            step,
-          )
+          # a candidate whose first parameter refuses the receiver is not
+          # one: the method arm reports the miss
+          let gated = ir.make_if_else(takes, via_ufcs, via_method, step)
+          ir.block([store, ir.make_if_else(own, via_method, gated, step)], step)
         },
         _ => {
           let [

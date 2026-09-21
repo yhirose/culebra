@@ -176,13 +176,14 @@ assert_throws('TypeError', fn () {
   [1, 2].insert(at: 3)
 })
 
-# The receiver is positional[0], so a typed first param rejects it exactly
-# as a direct `windows("ab", 2)` would.
+# The receiver is positional[0], and a typed first param that refuses it
+# takes the function out of the running: the String resolves no `windows`
+# and no candidate accepts it, so this is the ordinary method miss.
 fn windows(o: Long, n) {
   o + n
 }
 assert_eq(5.windows(2), 7)
-assert_throws('DispatchError', fn () {
+assert_throws('TypeError', fn () {
   "ab".windows(2)
 })
 

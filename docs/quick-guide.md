@@ -481,7 +481,8 @@ Operators map to dunder methods (`__add__`, `__eq__`, `__lt__`,
 operation.
 
 Any free function `f(x, ...)` can be called as `x.f(...)`, but an
-existing property or method always wins:
+existing property or method always wins, and a first parameter whose
+annotation rejects `x` takes `f` out of the running:
 
 ```culebra
 double = fn (x) {

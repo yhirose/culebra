@@ -345,6 +345,11 @@ enum class Op : uint8_t {
                // arm is probed here: an own/proto slot, a conforming
                // instance's trait default, or a closed namespace (which
                // answers every name itself). Nothrow.
+  UfcsTakes,   // regs[a] = Bool: is regs[b] a Function whose first parameter
+               // accepts regs[c]? The second half of the UFCS gate
+               // (culebra_runtime_ufcs_takes): a free function whose
+               // annotation rejects the receiver is no candidate, so the
+               // call is the ordinary method miss. Nothrow.
   Drop,        // regs[a] = nil, running regs[b]'s `drop` through the
                // at-most-once guard (culebra_runtime_explicit_drop). The
                // receiver is borrowed; a receiver with no `drop` is a no-op.
@@ -3654,6 +3659,7 @@ inline void rc_apply(const Chunk& c, const Insn& in, RcWords& out,
     case Op::Gt:
     case Op::Ge:
     case Op::HasProp:
+    case Op::UfcsTakes:
     case Op::BitAnd:
     case Op::BitOr:
     case Op::BitXor:
@@ -3800,6 +3806,7 @@ inline void rc_reads(const Insn& in, Read read, ReadAll read_all) {
     case Op::Shl:
     case Op::Shr: read(in.b), read(in.c); break;
     case Op::HasProp: read(in.b); break;
+    case Op::UfcsTakes: read(in.b), read(in.c); break;
     case Op::JumpIfSame: read(in.a), read(in.c); break;
     case Op::PosSnap: break;
     case Op::ForOpen:
@@ -3836,6 +3843,7 @@ inline int32_t rc_single_write(const Insn& in) {
     case Op::Gt:
     case Op::Ge:
     case Op::HasProp:
+    case Op::UfcsTakes:
     case Op::BitAnd:
     case Op::BitOr:
     case Op::BitXor:
@@ -3895,6 +3903,7 @@ inline bool coalesce_dest_is_a(Op op) {
     case Op::Shl:
     case Op::Shr:
     case Op::HasProp:
+    case Op::UfcsTakes:
     case Op::CellGet:
     case Op::NsGet:
     case Op::Call:
@@ -4232,6 +4241,7 @@ inline bool owned_registers(Op op) {
     case Op::Gt:
     case Op::Ge:
     case Op::HasProp:
+    case Op::UfcsTakes:
     case Op::BitAnd:
     case Op::BitOr:
     case Op::BitXor:
@@ -12116,13 +12126,17 @@ class Compiler {
       emit(Op::NsGet, candv.slot, kconst_str(post.token));
       patch_to_here(over);
     }
-    size_t to_call = emit(Op::JumpIfTag, candv.slot, 0, TAG_FUNC);
-    // A non-Function candidate declines, and the gate already said this
-    // receiver does not resolve the name — so what is left is the ordinary
-    // property read and its own errors (a scalar's member TypeError before
-    // the arguments run, an object-ish miss after). NOT resolved_call: a
-    // built-in with no receiver gate at all (`to_string`) would answer here
-    // over a receiver the gate just ruled out.
+    // The candidate's half of the gate: a Function whose first parameter
+    // accepts this receiver. Asked before any argument runs, like HasProp.
+    int32_t takes = alloc_temp(at);
+    emit(Op::UfcsTakes, takes, candv.slot, recv.slot);
+    size_t to_call = emit(Op::JumpIfTrue, takes);
+    // Anything else declines, and the gate already said this receiver does
+    // not resolve the name — so what is left is the ordinary property read
+    // and its own errors (a scalar's member TypeError before the arguments
+    // run, an object-ish miss after). NOT resolved_call: a built-in with no
+    // receiver gate at all (`to_string`) would answer here over a receiver
+    // the gate just ruled out.
     store_into(out, declined_call(recv), /*dst_is_fresh=*/true);
     size_t done_miss = emit(Op::Jump);
     patch_to_here(to_call);
@@ -13876,7 +13890,7 @@ inline std::string dump(const Chunk& c) {
       "CbType",
       "ArityChk",  "BMeth",
       "PropRaw",
-      "HasProp",   "Drop",      "DropChk",    "ClsParamsChk", "ClsParamsWalk",
+      "HasProp",   "UfcsTakes", "Drop",      "DropChk",    "ClsParamsChk", "ClsParamsWalk",
       "SeqChk",    "SeqGet",    "SeqRest",    "ObjGet",       "DestrErr",
       "Jump",      "JumpIfFalse", "JumpIfTrue", "JumpIfNotNil", "JumpIfNil",
       "JumpIfTag",
@@ -14886,7 +14900,7 @@ struct Exec {
         &&L_IndexCo, &&L_IndexSet, &&L_PropSet, &&L_PropWr, &&L_PropCo,
         &&L_NsWrChk, &&L_PropVal, &&L_BareMethChk, &&L_MethGate, &&L_ChkParam,
         &&L_CallRecv, &&L_CbType, &&L_ArityChk, &&L_BMeth, &&L_PropRaw,
-        &&L_HasProp, &&L_Drop, &&L_DropChk, &&L_ClsParamsChk,
+        &&L_HasProp, &&L_UfcsTakes, &&L_Drop, &&L_DropChk, &&L_ClsParamsChk,
         &&L_ClsParamsWalk,
         &&L_SeqChk, &&L_SeqGet, &&L_SeqRest, &&L_ObjGet, &&L_DestrErr,
         &&L_Jump, &&L_JumpIfFalse, &&L_JumpIfTrue, &&L_JumpIfNotNil,
@@ -15712,6 +15726,21 @@ struct Exec {
           const char* key = reinterpret_cast<const char*>(c.consts[in.c].data);
           regs[in.a] = JitValue{
               TAG_BOOL, has_prop_apply(in.d, regs[in.b], key) ? 1 : 0};
+          ++ip;
+          break;
+        } while (0);
+        VM_NEXT();
+      L_UfcsTakes:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
+          const JitValue& cand = regs[in.b];
+          const JitValue& recv = regs[in.c];
+          regs[in.a] = JitValue{
+              TAG_BOOL, culebra_runtime_ufcs_takes(
+                            static_cast<int8_t>(cand.tag), cand.data,
+                            static_cast<int8_t>(recv.tag), recv.data)
+                            ? 1
+                            : 0};
           ++ip;
           break;
         } while (0);
