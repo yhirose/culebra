@@ -78,6 +78,7 @@
 
 #include <base/id_registry.h>  // IdRegistry<T> (slot+generation handle table)
 #include <base/shared.h>  // throw_if_interrupted / culebra_g_sigint (Ctrl+C wiring)
+#include <stdlib/port.h>  // Port (a checked port number)
 
 namespace culebra::net {
 
@@ -598,7 +599,7 @@ inline bool resolve(const std::string& host, std::vector<std::string>& out,
 // Connect to host:port, trying each resolved address in turn. `timeout_ms`
 // bounds each attempt (0 = wait forever) and becomes the handle's I/O timeout.
 // Returns a Tcp handle id, or -1 with *err set.
-inline int64_t connect(const std::string& host, int port,
+inline int64_t connect(const std::string& host, Port port,
                        int64_t timeout_ms,
                        std::string* err) {
   if (detail::unavailable(err)) return -1;
@@ -607,7 +608,7 @@ inline int64_t connect(const std::string& host, int port,
   hints.ai_family = AF_UNSPEC;
   hints.ai_socktype = SOCK_STREAM;
   detail::AddrInfoGuard res;
-  std::string service = std::to_string(port);
+  std::string service = std::to_string(port.value());
   int rc = ::getaddrinfo(host.c_str(), service.c_str(), &hints, &res.p);
   if (rc != 0) {
     if (err) *err = detail::gai_message(rc);
@@ -662,7 +663,7 @@ namespace detail {
 // for the next one. Returns a `kind` handle id, or -1 with *err set to the last
 // failure. Shared by listen() and udp_open().
 template <typename Ready>
-inline int64_t bind_and_intern(const std::string& host, int port, int socktype,
+inline int64_t bind_and_intern(const std::string& host, Port port, int socktype,
                                Kind kind, std::string* err, Ready&& ready) {
   if (unavailable(err)) return -1;
   platform_init();
@@ -671,7 +672,7 @@ inline int64_t bind_and_intern(const std::string& host, int port, int socktype,
   hints.ai_socktype = socktype;
   hints.ai_flags = AI_PASSIVE;
   AddrInfoGuard res;
-  std::string service = std::to_string(port);
+  std::string service = std::to_string(port.value());
   const char* node = host.empty() ? nullptr : host.c_str();
   int rc = ::getaddrinfo(node, service.c_str(), &hints, &res.p);
   if (rc != 0) {
@@ -710,7 +711,7 @@ inline int64_t bind_and_intern(const std::string& host, int port, int socktype,
 // Bind and listen on host:port. `port` 0 asks the OS for an ephemeral port
 // (read it back with local_addr). Returns a Listener handle id, or -1 with
 // *err set.
-inline int64_t listen(const std::string& host, int port, int backlog,
+inline int64_t listen(const std::string& host, Port port, int backlog,
                       std::string* err) {
   return detail::bind_and_intern(
       host, port, SOCK_STREAM, Kind::Listener, err, [&](socket_t fd) {
@@ -1006,7 +1007,7 @@ inline bool serve(int64_t lid, int n_workers, const ServeHooks& hooks,
 
 // Open a datagram socket bound to host:port (port 0 = ephemeral, host empty =
 // all interfaces). Returns a Udp handle id, or -1 with *err set.
-inline int64_t udp_open(const std::string& host, int port, std::string* err) {
+inline int64_t udp_open(const std::string& host, Port port, std::string* err) {
   return detail::bind_and_intern(host, port, SOCK_DGRAM, Kind::Udp, err,
                                  [](socket_t fd) {
                                    detail::suppress_sigpipe(fd);
@@ -1018,14 +1019,14 @@ inline int64_t udp_open(const std::string& host, int port, std::string* err) {
 // Send one datagram to host:port. A datagram is sent whole or not at all, so
 // there is no partial-write loop here.
 inline bool udp_send_to(int64_t id, const char* data, size_t n,
-                        const std::string& host, int port, std::string* err) {
+                        const std::string& host, Port port, std::string* err) {
   detail::Sock* s = detail::get(id, Kind::Udp, err);
   if (!s) return false;
   addrinfo hints{};
   hints.ai_family = AF_UNSPEC;
   hints.ai_socktype = SOCK_DGRAM;
   detail::AddrInfoGuard res;
-  std::string service = std::to_string(port);
+  std::string service = std::to_string(port.value());
   int rc = ::getaddrinfo(host.c_str(), service.c_str(), &hints, &res.p);
   if (rc != 0) {
     if (err) *err = detail::gai_message(rc);

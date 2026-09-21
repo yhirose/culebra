@@ -166,6 +166,30 @@ assert_eq(ukind, "NetError")
 u1.close()
 u2.close()
 
+// --- a port outside 0..65535 is a ValueError at every entry, never a port the
+// socket layer wrapped it to (70000 would bind 4464, 1 << 32 an ephemeral one) ---
+let u3 = Net.udp(0, host: "127.0.0.1")
+for p in [-1, 65536, 70000, 1 << 32, (1 << 32) + 8080] {
+  let want = "port must be between 0 and 65535, got {p}"
+  for [name, f] in [
+    ["Net.listen", fn () { Net.listen(p, host: "127.0.0.1") }],
+    ["Net.udp", fn () { Net.udp(p, host: "127.0.0.1") }],
+    ["Net.connect", fn () { Net.connect("127.0.0.1", p, timeout: 2000) }],
+    ["Net.send_to", fn () { u3.send_to("x", "127.0.0.1", p) }],
+  ] {
+    let mut msg = ""
+    try {
+      f()
+    } catch e {
+      assert_eq(e.kind, "ValueError")
+      msg = e.message
+    }
+    assert_eq(msg, "{name}: {want}")
+  }
+}
+u3.send_to("edge", "127.0.0.1", 65535)  // the top of the range is a port
+u3.close()
+
 // --- DNS: a numeric address resolves to itself (no lookup, so offline-safe) ---
 assert_eq(Net.resolve("127.0.0.1"), ["127.0.0.1"])
 assert_true(Net.resolve("::1").size() > 0)

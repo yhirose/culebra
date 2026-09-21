@@ -23,6 +23,12 @@
 
 namespace nt = culebra::net;
 
+// The core takes a checked Port; a port the OS reported back (local_addr,
+// recv_from) goes through the same check the bindings use.
+static culebra::Port port_of(int v) {
+  return culebra::Port::checked(v, "net_test", 0, 0);
+}
+
 static int g_failures = 0;
 
 #define CHECK(cond)                                                       \
@@ -54,14 +60,14 @@ struct Pair {
 
 static bool make_pair(Pair& p, long timeout_ms = 2000) {
   std::string err;
-  p.listener = nt::listen("127.0.0.1", 0, 0, &err);
+  p.listener = nt::listen("127.0.0.1", culebra::Port::any(), 0, &err);
   CHECK_OK(p.listener >= 0, err);
   if (p.listener < 0) return false;
   nt::set_timeout(p.listener, timeout_ms, &err);
   std::string host;
   CHECK_OK(nt::local_addr(p.listener, host, p.port, &err), err);
   CHECK(p.port > 0);
-  p.client = nt::connect("127.0.0.1", p.port, timeout_ms, &err);
+  p.client = nt::connect("127.0.0.1", port_of(p.port), timeout_ms, &err);
   CHECK_OK(p.client >= 0, err);
   if (p.client < 0) return false;
   CHECK_OK(nt::accept(p.listener, &p.server, &err) == nt::IoStatus::Ok, err);
@@ -79,7 +85,7 @@ static void close_pair(Pair& p) {
 static int free_port() {
   std::string err, host;
   int port = 0;
-  int64_t l = nt::listen("127.0.0.1", 0, 0, &err);
+  int64_t l = nt::listen("127.0.0.1", culebra::Port::any(), 0, &err);
   if (l < 0) return 0;
   nt::local_addr(l, host, port, &err);
   nt::close_handle(l);
@@ -187,7 +193,7 @@ static void test_timeouts() {
   std::string err, out;
 
   // accept with nothing connecting.
-  int64_t l = nt::listen("127.0.0.1", 0, 0, &err);
+  int64_t l = nt::listen("127.0.0.1", culebra::Port::any(), 0, &err);
   CHECK_OK(l >= 0, err);
   nt::set_timeout(l, 120, &err);
   int64_t accepted = -1;
@@ -241,12 +247,12 @@ static void test_errors() {
   int port = free_port();
   CHECK(port > 0);
   err.clear();
-  CHECK(nt::connect("127.0.0.1", port, 2000, &err) < 0);
+  CHECK(nt::connect("127.0.0.1", port_of(port), 2000, &err) < 0);
   CHECK(!err.empty());
 
   // Unresolvable host (RFC 2606 reserves .invalid).
   err.clear();
-  CHECK(nt::connect("no-such-host.invalid", 80, 2000, &err) < 0);
+  CHECK(nt::connect("no-such-host.invalid", port_of(80), 2000, &err) < 0);
   CHECK(!err.empty());
 
   // Closed handle: graceful error, never a dereference.
@@ -266,7 +272,7 @@ static void test_errors() {
   CHECK(err == "operation on a closed socket");
 
   // Wrong kind: a listener is not a stream.
-  int64_t l = nt::listen("127.0.0.1", 0, 0, &err);
+  int64_t l = nt::listen("127.0.0.1", culebra::Port::any(), 0, &err);
   CHECK_OK(l >= 0, err);
   err.clear();
   CHECK(nt::read(l, 4, out, &err) == nt::IoStatus::Error);
@@ -291,9 +297,9 @@ static void test_udp() {
   std::string err, out, host;
   int port = 0;
 
-  int64_t a = nt::udp_open("127.0.0.1", 0, &err);
+  int64_t a = nt::udp_open("127.0.0.1", culebra::Port::any(), &err);
   CHECK_OK(a >= 0, err);
-  int64_t b = nt::udp_open("127.0.0.1", 0, &err);
+  int64_t b = nt::udp_open("127.0.0.1", culebra::Port::any(), &err);
   CHECK_OK(b >= 0, err);
   if (a < 0 || b < 0) return;
 
@@ -302,7 +308,7 @@ static void test_udp() {
   CHECK_OK(nt::local_addr(a, ahost, aport, &err), err);
   CHECK_OK(nt::local_addr(b, bhost, bport, &err), err);
 
-  CHECK_OK(nt::udp_send_to(a, "ping", 4, "127.0.0.1", bport, &err), err);
+  CHECK_OK(nt::udp_send_to(a, "ping", 4, "127.0.0.1", port_of(bport), &err), err);
   nt::set_timeout(b, 2000, &err);
   CHECK_OK(nt::udp_recv_from(b, 1500, out, host, port, &err) == nt::IoStatus::Ok,
            err);
@@ -311,21 +317,21 @@ static void test_udp() {
   CHECK(port == aport);  // the sender's bound port
 
   // Reply to the reported sender.
-  CHECK_OK(nt::udp_send_to(b, "pong", 4, host, port, &err), err);
+  CHECK_OK(nt::udp_send_to(b, "pong", 4, host, port_of(port), &err), err);
   nt::set_timeout(a, 2000, &err);
   CHECK_OK(nt::udp_recv_from(a, 1500, out, host, port, &err) == nt::IoStatus::Ok,
            err);
   CHECK(out == "pong");
 
   // An empty datagram is data, not EOF (UDP has no EOF).
-  CHECK_OK(nt::udp_send_to(a, "", 0, "127.0.0.1", bport, &err), err);
+  CHECK_OK(nt::udp_send_to(a, "", 0, "127.0.0.1", port_of(bport), &err), err);
   CHECK_OK(nt::udp_recv_from(b, 1500, out, host, port, &err) == nt::IoStatus::Ok,
            err);
   CHECK(out.empty());
 
   // Oversized datagram is truncated to `max`, not an error.
   std::string big(2000, 'z');
-  CHECK_OK(nt::udp_send_to(a, big.data(), big.size(), "127.0.0.1", bport, &err),
+  CHECK_OK(nt::udp_send_to(a, big.data(), big.size(), "127.0.0.1", port_of(bport), &err),
            err);
   CHECK_OK(nt::udp_recv_from(b, 100, out, host, port, &err) == nt::IoStatus::Ok,
            err);
@@ -399,7 +405,7 @@ static void test_no_fd_leak() {
   int port = free_port();
   for (int i = 0; i < 600; i++) {
     err.clear();
-    if (nt::connect("127.0.0.1", port, 2000, &err) >= 0) {
+    if (nt::connect("127.0.0.1", port_of(port), 2000, &err) >= 0) {
       CHECK(false);  // nothing is listening there
       return;
     }
@@ -429,7 +435,7 @@ static void test_serve() {
     rt.interrupt_flag = &cancel;  // the "Ctrl+C" that stops the accept loop
 
     std::string err;
-    int64_t lid = nt::listen("127.0.0.1", 0, 0, &err);
+    int64_t lid = nt::listen("127.0.0.1", culebra::Port::any(), 0, &err);
     if (lid < 0) {
       port_promise.set_value(-1);
       return;
@@ -461,7 +467,7 @@ static void test_serve() {
     std::string err, out;
     // Several connections in a row, each echoed by some worker.
     for (int i = 0; i < 6; i++) {
-      int64_t c = nt::connect("127.0.0.1", port, 3000, &err);
+      int64_t c = nt::connect("127.0.0.1", port_of(port), 3000, &err);
       CHECK_OK(c >= 0, err);
       if (c < 0) break;
       std::string msg = "msg" + std::to_string(i) + "\n";
@@ -475,7 +481,7 @@ static void test_serve() {
 
     // A throwing handler drops its connection (EOF, no reply) but leaves the
     // server serving.
-    int64_t bad = nt::connect("127.0.0.1", port, 3000, &err);
+    int64_t bad = nt::connect("127.0.0.1", port_of(port), 3000, &err);
     CHECK_OK(bad >= 0, err);
     if (bad >= 0) {
       nt::write_all(bad, "boom\n", 5, &err);
@@ -483,7 +489,7 @@ static void test_serve() {
       CHECK(nt::read_line(bad, out, &err) == nt::IoStatus::Eof);
       nt::close_handle(bad);
     }
-    int64_t after = nt::connect("127.0.0.1", port, 3000, &err);
+    int64_t after = nt::connect("127.0.0.1", port_of(port), 3000, &err);
     CHECK_OK(after >= 0, err);
     if (after >= 0) {
       nt::write_all(after, "still-here\n", 11, &err);
@@ -505,10 +511,10 @@ static void test_serve() {
 // to whatever new socket lands on the same slot (no ABA).
 static void test_slot_reuse() {
   std::string err;
-  int64_t first = nt::listen("127.0.0.1", 0, 0, &err);
+  int64_t first = nt::listen("127.0.0.1", culebra::Port::any(), 0, &err);
   CHECK_OK(first >= 0, err);
   nt::close_handle(first);
-  int64_t second = nt::listen("127.0.0.1", 0, 0, &err);
+  int64_t second = nt::listen("127.0.0.1", culebra::Port::any(), 0, &err);
   CHECK_OK(second >= 0, err);
   CHECK(second != first);  // likely reuses first's slot, but the id itself differs
   CHECK(!nt::is_open(first));  // old id: dead

@@ -3863,12 +3863,15 @@ inline void _jit_net_udp_send_to(JitValue* __ret, JitClosure*, int8_t self_tag, 
   if (args[2].tag != TAG_LONG)
     _jit_file_param_type_error(self, "port", "Long", 2);
   _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  auto port = culebra::Port::checked(args[2].data, "Net.send_to",
+                                     _jit_thread.call_line,
+                                     _jit_thread.call_col);
   std::string_view data = _culebra_str_view(args[0].tag, args[0].data);
   std::string err;
   if (!culebra::net::udp_send_to(
           _jit_net_id(self), data.data(), data.size(),
-          std::string(_culebra_str_view(args[1].tag, args[1].data)),
-          static_cast<int>(args[2].data), &err))
+          std::string(_culebra_str_view(args[1].tag, args[1].data)), port,
+          &err))
     _jit_net_throw("Net.send_to", err, _jit_thread.call_line, _jit_thread.call_col);
   { *__ret = {TAG_NIL, 0}; return; }
 }
@@ -5497,13 +5500,14 @@ inline bool inherit_env_slot(JitValue v) {
 
 inline JitValue _ns_net_connect(JitValue* a, int64_t n) {
   std::string host(_ns_adapt::require_sv(a[0], "host"));
-  int64_t port = _ns_adapt::require_long(_proc_adapt::at(a, n, 1), "port");
+  auto port = culebra::Port::checked(
+      _ns_adapt::require_long(_proc_adapt::at(a, n, 1), "port"), "Net.connect",
+      0, 0);
   JitValue tv = _proc_adapt::at(a, n, 2);
   int64_t timeout =
       tv.tag == TAG_NIL ? 0 : _ns_adapt::require_long(tv, "timeout");
   std::string err;
-  int64_t id =
-      culebra::net::connect(host, static_cast<int>(port), timeout, &err);
+  int64_t id = culebra::net::connect(host, port, timeout, &err);
   if (id < 0) _jit_net_throw("Net.connect", err, 0, 0);
   return _culebra_net_build_socket_handle(id);
 }
@@ -5521,7 +5525,8 @@ inline void _ns_net_bound_addr(int64_t id, const char* ctx, std::string& host,
 }
 
 inline JitValue _ns_net_listen(JitValue* a, int64_t n) {
-  int64_t port = _ns_adapt::require_long(a[0], "port");
+  auto port = culebra::Port::checked(_ns_adapt::require_long(a[0], "port"),
+                                     "Net.listen", 0, 0);
   JitValue hv = _proc_adapt::at(a, n, 1);
   std::string host = hv.tag == TAG_NIL
                          ? std::string("0.0.0.0")
@@ -5530,8 +5535,8 @@ inline JitValue _ns_net_listen(JitValue* a, int64_t n) {
   int64_t backlog =
       bv.tag == TAG_NIL ? 0 : _ns_adapt::require_long(bv, "backlog");
   std::string err;
-  int64_t id = culebra::net::listen(host, static_cast<int>(port),
-                                    static_cast<int>(backlog), &err);
+  int64_t id =
+      culebra::net::listen(host, port, static_cast<int>(backlog), &err);
   if (id < 0) _jit_net_throw("Net.listen", err, 0, 0);
   std::string bound_host;
   int bound_port = 0;
@@ -5541,13 +5546,16 @@ inline JitValue _ns_net_listen(JitValue* a, int64_t n) {
 
 inline JitValue _ns_net_udp(JitValue* a, int64_t n) {
   JitValue pv = _proc_adapt::at(a, n, 0);
-  int64_t port = pv.tag == TAG_NIL ? 0 : _ns_adapt::require_long(pv, "port");
+  auto port = pv.tag == TAG_NIL
+                  ? culebra::Port::any()
+                  : culebra::Port::checked(_ns_adapt::require_long(pv, "port"),
+                                           "Net.udp", 0, 0);
   JitValue hv = _proc_adapt::at(a, n, 1);
   std::string host = hv.tag == TAG_NIL
                          ? std::string("0.0.0.0")
                          : std::string(_ns_adapt::require_sv(hv, "host"));
   std::string err;
-  int64_t id = culebra::net::udp_open(host, static_cast<int>(port), &err);
+  int64_t id = culebra::net::udp_open(host, port, &err);
   if (id < 0) _jit_net_throw("Net.udp", err, 0, 0);
   std::string bound_host;
   int bound_port = 0;
@@ -6581,12 +6589,12 @@ inline int64_t _jit_http_server_bind_args(int64_t id, int64_t n, JitValue* args,
                                           const char* ctx) {
   if (args[0].tag != TAG_LONG)
     culebra::throw_type_mismatch("Long", _culebra_tag_name(args[0].tag), 0, 0);
+  auto port = culebra::Port::checked(args[0].data, ctx, 0, 0);
   std::string host = "0.0.0.0";
   if (_jit_file_arg_present(n, args, 1) && args[1].tag != TAG_NIL)
     host = std::string(_culebra_str_view(args[1].tag, args[1].data));
   std::string err;
-  int bound = culebra::http::http_server_bind(
-      id, host, static_cast<int>(args[0].data), err);
+  int bound = culebra::http::http_server_bind(id, host, port, err);
   if (bound < 0)
     throw culebra::CulebraError("HttpError", culebra::format("{}: {}", ctx, err), 0,
                                 0);

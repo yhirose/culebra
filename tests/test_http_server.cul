@@ -589,4 +589,28 @@ inspect("listen-missing -> " + error_kind(fn () {
 inspect("workers-type -> " + error_kind(fn () {
   esrv.serve_async(workers: "4")
 }))
+
+# A port outside 0..65535 is a ValueError on bind / listen / listen_async, not
+# a port the socket layer wrapped it to (bind(70000) used to bind 4464 and
+# still return 70000). It is refused before any bind, so the server stays usable.
+fn error_message(f) {
+  return try {
+    f()
+    "none"
+  } catch e {
+    e.kind + ": " + e.message
+  }
+}
+for p in [-1, 65536, 70000, 1 << 32] {
+  inspect(error_message(fn () {
+    esrv.bind(p)
+  }))
+  inspect(error_message(fn () {
+    esrv.listen(p)
+  }))
+  inspect(error_message(fn () {
+    esrv.listen_async(p)
+  }))
+}
+inspect("bind after out-of-range -> " + (esrv.bind(0) > 0).to_string())
 esrv.close()

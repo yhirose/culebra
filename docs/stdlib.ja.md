@@ -3917,7 +3917,7 @@ srv.listen(8080)  # ブロックする。Ctrl+C で停止
 | `get/post/put/delete/patch/options(pattern, handler)` | そのメソッドとルート`pattern`に`handler`（`fn(req)->response`）を登録。サーバを返す（チェーン可） |
 | `static(mount, dir)` | URLプレフィックス`mount`で静的ファイルを配信。`dir`はStringパス（ディスク上のディレクトリをライブ配信）または`Embed.dir(...)`ハンドル（AOTではバイナリに焼き込み — [Embed](#embed) 参照） |
 | `sink.write(chunk)` | （`stream:`クロージャ内）1チャンクを送出。クライアント切断時は`false`を返す |
-| `bind(port, host="0.0.0.0") -> Long` | listenソケットを開き、実際に取れたポートを返す。`port=0`はOS任せのephemeral port。1回だけ、かつ配信開始後は不可 |
+| `bind(port, host="0.0.0.0") -> Long` | listenソケットを開き、実際に取れたポートを返す。`port=0`はOS任せのephemeral port。0〜65535の外の`port`は`ValueError`（`listen` / `listen_async`も同じ）。1回だけ、かつ配信開始後は不可 |
 | `serve(workers=0)` | バインド済みソケットでacceptループを回す（中断まで呼び出しスレッドをブロック）。ハンドラはacceptループでなくworkerプールで動くので、遅いハンドラが新規接続の受付を止めない — ハンドラは **Sendable** 必須。`workers=0`（既定）はCPU連動のプールサイズ、正の数で固定 |
 | `serve_async(workers=0)` | 同上を背後プールで行い即return。停止は`stop()` |
 | `listen(port, host="0.0.0.0", workers=0)` | `bind` + `serve`を1回で。停止するまで返らない |
@@ -5884,6 +5884,10 @@ view.drop()
 送出する。メッセージはOSの文言をそのまま使うが、タイムアウトだけは常に
 `timed out`。ブロック中の`read` / `accept` / `recv_from`は割り込み可能で、
 Ctrl+C一回で`Interrupted`になる（ハングしない）。
+
+ポートを受け取る入口（`connect` / `listen` / `udp` / `send_to`）はすべて
+0〜65535だけを受け付ける。範囲外のポートはソケットを開く前に`ValueError`
+（`Net.listen: port must be between 0 and 65535, got 70000`）になる。
 
 ソケットハンドルは **Sendableではない** — ソケットはそれを開いたスレッドに
 属する。別スレッドで待ち受けるなら、そのアイソレートの中で開くこと。

@@ -58,6 +58,7 @@
 
 #include <base/id_registry.h>    // IdRegistry<T> (slot+generation handle table)
 #include <base/shared.h>  // throw_if_interrupted / culebra_g_sigint (Ctrl+C wiring)
+#include <stdlib/port.h>    // Port (a checked port number)
 #include <stdlib/vfs.h>     // Dir / DiskDir / EmbeddedDir / serve_static (static assets)
 
 namespace culebra::http {
@@ -1404,7 +1405,7 @@ CULEBRA_RT_HTTP_LINKAGE void http_server_serve_embed(int64_t id,
 // one. Returns the port actually bound, or -1 with `err` set — on which the
 // handle stays reusable, so a caller can try another port.
 CULEBRA_RT_HTTP_LINKAGE int http_server_bind(int64_t id,
-                                             const std::string& host, int port,
+                                             const std::string& host, Port port,
                                              std::string& err) {
 #if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
   (void)id; (void)host; (void)port;
@@ -1417,10 +1418,11 @@ CULEBRA_RT_HTTP_LINKAGE int http_server_bind(int64_t id,
     err = "Http: server already bound";
     return -1;
   }
-  int bound = port == 0 ? s->svr.bind_to_any_port(host)
-                        : (s->svr.bind_to_port(host, port) ? port : -1);
+  int bound = port.value() == 0
+                  ? s->svr.bind_to_any_port(host)
+                  : (s->svr.bind_to_port(host, port.value()) ? port.value() : -1);
   if (bound < 0) {
-    err = "Http: failed to bind " + host + ":" + std::to_string(port);
+    err = "Http: failed to bind " + host + ":" + std::to_string(port.value());
     // A failed bind decommissions the httplib server, and a decommissioned one
     // refuses every later bind. stop() is the only public way to clear that; on
     // a server that never ran it does nothing else. Without it "try the next

@@ -588,7 +588,7 @@ int main() {
     for (int i = 0; i < 20; i++) {
       int64_t id = culebra::http::http_server_open();
       std::string err;
-      CHECK(culebra::http::http_server_bind(id, "127.0.0.1", 0, err) > 0);
+      CHECK(culebra::http::http_server_bind(id, "127.0.0.1", culebra::Port::any(), err) > 0);
       culebra::http::http_server_close(id);
     }
     CHECK(open_fds() == before);

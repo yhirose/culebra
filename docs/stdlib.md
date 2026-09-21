@@ -4032,7 +4032,7 @@ srv.listen(8080)  # blocks; Ctrl+C to stop
 | `get/post/put/delete/patch/options(pattern, handler)` | register `handler` (a `fn(req)->response`) for that method and route `pattern`; returns the server (so calls chain) |
 | `static(mount, dir)` | serve static files at the URL prefix `mount`; `dir` is a String path (a live on-disk directory) or an `Embed.dir(...)` handle (baked into the binary under AOT — see [Embed](#embed)) |
 | `sink.write(chunk)` | (inside a `stream:` closure) push one chunk; returns `false` if the client has disconnected |
-| `bind(port, host="0.0.0.0") -> Long` | open the listening socket and return the port it got; `port=0` asks the OS for an ephemeral one. Once only, and not after the server has served |
+| `bind(port, host="0.0.0.0") -> Long` | open the listening socket and return the port it got; `port=0` asks the OS for an ephemeral one; a `port` outside 0..65535 is a `ValueError` (on `listen` / `listen_async` too). Once only, and not after the server has served |
 | `serve(workers=0)` | run the accept loop on a bound socket until interrupted (blocks the calling thread). Handlers run on a worker pool, never on the accept loop, so a slow handler can't block accepting new connections — and handlers must be **Sendable**. `workers=0` (default) picks a CPU-scaled pool size; pass a positive count to fix it |
 | `serve_async(workers=0)` | same, but serve on a background pool and return immediately; stop with `stop()` |
 | `listen(port, host="0.0.0.0", workers=0)` | `bind` + `serve` in one call. Returns only once stopped |
@@ -6071,6 +6071,11 @@ A transport failure — refused connect, unresolvable host, reset peer, timeout 
 raises `NetError`. The message is the OS's own wording, except a timeout, which
 always reads `timed out`. A blocked `read` / `accept` / `recv_from` stays
 interruptible: one Ctrl+C raises `Interrupted` rather than hanging.
+
+Every entry that takes a port (`connect`, `listen`, `udp`, `send_to`) accepts
+0 to 65535 and nothing else. A port outside that range raises `ValueError`
+(`Net.listen: port must be between 0 and 65535, got 70000`) before any socket
+is opened.
 
 Socket handles are **not Sendable** — a socket belongs to the thread that opened
 it. To serve from another thread, open it inside that isolate.
