@@ -48,12 +48,8 @@ class Caller {
     self.lam(0)
   }
 }
-assert_eq(message_of(fn () {
-  Caller().f()
-}), kMiss)
-assert_eq(message_of(fn () {
-  'abc'.lam()
-}), kMiss)
+assert_eq(message_of(|| Caller().f()), kMiss)
+assert_eq(message_of(|| 'abc'.lam()), kMiss)
 assert_eq(7.lam(), 'lam')
 
 # An untyped first parameter accepts everything, and so does `Any`.
@@ -71,9 +67,7 @@ fn one(p: Long) {
   'one'
 }
 assert_eq(7.one(), 'one')
-assert_eq(message_of(fn () {
-  C().one()
-}), kMiss)
+assert_eq(message_of(|| C().one()), kMiss)
 
 # One accepting overload is enough; the pick over all the arguments follows.
 fn two(p: Long) {
@@ -84,9 +78,7 @@ fn two(p: String) {
 }
 assert_eq(7.two(), 'two-long')
 assert_eq('s'.two(), 'two-string')
-assert_eq(message_of(fn () {
-  C().two()
-}), kMiss)
+assert_eq(message_of(|| C().two()), kMiss)
 # The gate reads the receiver alone: a later argument no overload takes is
 # still the dispatch's own error.
 fn pair(p: Long, q: Long) {
@@ -118,26 +110,16 @@ fn ob(x: Object) {
 }
 assert_eq(5.un(), 'union')
 assert_eq('s'.un(), 'union')
-assert_eq(message_of(fn () {
-  C().un()
-}), kMiss)
+assert_eq(message_of(|| C().un()), kMiss)
 assert_eq(Bob().tr(), 'trait')
-assert_eq(message_of(fn () {
-  C().tr()
-}), kMiss)
+assert_eq(message_of(|| C().tr()), kMiss)
 assert_eq(Shape.Origin.en(), 'enum')
 assert_eq(Shape.Circle(1.0).en(), 'enum')
 assert_eq(Shape.Circle(1.0).va(), 'variant')
-assert_eq(message_of(fn () {
-  Shape.Origin.va()
-}), kMiss)
-assert_eq(message_of(fn () {
-  Other.Thing.en()
-}), kMiss)
+assert_eq(message_of(|| Shape.Origin.va()), kMiss)
+assert_eq(message_of(|| Other.Thing.en()), kMiss)
 assert_eq(C().cc(), 'class')
-assert_eq(message_of(fn () {
-  Bob().cc()
-}), kMiss)
+assert_eq(message_of(|| Bob().cc()), kMiss)
 assert_eq(C().ob(), 'object')
 assert_eq({a: 1}.ob(), 'object')
 
@@ -156,18 +138,14 @@ fn df(p: Long = 1) {
   p
 }
 assert_eq(7.df(), 7)
-assert_eq(message_of(fn () {
-  C().df()
-}), kMiss)
+assert_eq(message_of(|| C().df()), kMiss)
 
 # The keyword arm sits behind the same gate.
 fn kw(p: Long, k = 0) {
   p + k
 }
 assert_eq(5.kw(k: 1), 6)
-assert_eq(message_of(fn () {
-  C().kw(k: 1)
-}), kMiss)
+assert_eq(message_of(|| C().kw(k: 1)), kMiss)
 
 # Asked before any argument runs. An object-ish miss reports after the
 # argument list; a scalar has no members at all and fails at the read.
@@ -179,15 +157,27 @@ fn loud(tag) {
 fn takes_string(s: String, n) {
   n
 }
-assert_eq(message_of(fn () {
-  C().takes_string(loud('object'))
-}), kMiss)
+assert_eq(message_of(|| C().takes_string(loud('object'))), kMiss)
 assert_throws('TypeError', fn () {
   5.takes_string(loud('scalar'))
 })
 assert_eq(ran, ['object'])
 assert_eq('s'.takes_string(loud('taken')), 0)
 assert_eq(ran, ['object', 'taken'])
+
+# The question is asked of the signature the callable presents: a bound
+# method's underlying method, a native function's declared one.
+class K {
+  new() {}
+  m(p: Long) {
+    p
+  }
+}
+let bound = K().m
+assert_eq(7.bound(), 7)
+assert_eq(message_of(|| C().bound()), kMiss)
+assert_eq(2.repeat('x'), ['x', 'x'])
+assert_eq(message_of(|| C().repeat('x')), kMiss)
 
 # The receiver's own method still wins over any candidate.
 class Own {

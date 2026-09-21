@@ -491,6 +491,14 @@ inline const char* _jit_first_mut_capture_of(JitClosure* c) {
 // VM run reaches native closures too).
 inline const JitParamMeta* (*_jit_native_meta_hook)(JitClosure*) = nullptr;
 
+// The parameter metadata a closure presents: its own, or — for a native
+// stdlib closure, which has none of its own — what the hook above derives.
+inline const JitParamMeta* _jit_presented_meta(JitClosure* c) {
+  if (!c) return nullptr;
+  if (c->meta) return c->meta;
+  return _jit_native_meta_hook ? _jit_native_meta_hook(c) : nullptr;
+}
+
 // The other half of the same seam: which capture cell carries the chunk a
 // closure runs, for the one place that has to REBUILD a closure from what it
 // recorded rather than call the one it was handed — the lazy-namespace
@@ -897,15 +905,7 @@ culebra_runtime_fn_introspect_get(JitClosure* cls, const char* prop) {
   // through to the captured method before resolving the metadata.
   if (cls && cls->fn_ptr == reinterpret_cast<void*>(&_jit_bound_method_thunk))
     cls = reinterpret_cast<JitClosure*>(cls->captures[1]->value.data);
-  auto meta_of = [](JitClosure* c) -> const JitParamMeta* {
-    if (!c) return nullptr;
-    if (c->meta) return c->meta;
-    // Every stdlib namespace method shares one trampoline, so its signature
-    // is derived from the NsMethod its capture carries rather than built per
-    // closure. stdlib/bindings.h installs the derivation.
-    return _jit_native_meta_hook ? _jit_native_meta_hook(c) : nullptr;
-  };
-  const JitParamMeta* meta = meta_of(cls);
+  const JitParamMeta* meta = _jit_presented_meta(cls);
   // Multifn dispatcher fallback: a dispatcher declares no parameters of its
   // own. Go through its record to its table and take the body's meta —
   // surfaces the first registered method's signature (interp parity with the
@@ -915,7 +915,7 @@ culebra_runtime_fn_introspect_get(JitClosure* cls, const char* prop) {
       auto& tbl = _jit_multimethods();
       auto method_it = tbl.find(rec->name);
       if (method_it != tbl.end() && !method_it->second.empty()) {
-        meta = meta_of(method_it->second.front().body);
+        meta = _jit_presented_meta(method_it->second.front().body);
       }
     }
   }
@@ -1030,36 +1030,6 @@ inline JitClosure* _jit_dispatcher_mono_body(JitClosure* c) {
   assert(_jit_is_multifn_dispatcher(c) && c->captures[kMultifnMonoCapture]);
   return reinterpret_cast<JitClosure*>(
       c->captures[kMultifnMonoCapture]->value.data);
-}
-
-// The candidate's half of the UFCS gate (§10 step 2): is `cand` a Function
-// whose first parameter accepts `recv`? The test is the one the callee's own
-// entry check applies to that argument, so the gate declines exactly the
-// calls that could only have failed there. A multimethod takes the receiver
-// when any overload does — which one runs stays the picker's business. A
-// function with no leading positional parameter, or with no metadata at all
-// (a native body), declares nothing the receiver could fail. Nothrow.
-extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_ufcs_takes(
-    int8_t cand_tag, int64_t cand_data, int8_t recv_tag, int64_t recv_data) {
-  if (cand_tag != TAG_FUNC) return false;
-  auto* cls = reinterpret_cast<JitClosure*>(cand_data);
-  if (const auto* rec = _jit_dispatcher_record(cls)) {
-    // The lone unannotated overload — the plain `fn name` — asks no table.
-    if (rec->mono && rec->mono_tags.empty()) return true;
-    auto& tbl = _jit_multimethods();
-    auto it = tbl.find(rec->name);
-    if (it == tbl.end() || it->second.empty()) return true;
-    for (const auto& m : it->second)
-      if (m.param_types.empty() ||
-          _culebra_value_matches_type(recv_tag, recv_data, m.param_types[0]))
-        return true;
-    return false;
-  }
-  const JitParamMeta* meta = cls->meta;
-  if (!meta || meta->n_params == 0 || !meta->type_names ||
-      meta->first_kw_only_idx == 0 || meta->kwargs_rest_idx == 0)
-    return true;
-  return _culebra_value_matches_type(recv_tag, recv_data, meta->type_names[0]);
 }
 
 // Mint a dispatcher over `name`'s table: the closure, its record, and the
@@ -1831,6 +1801,44 @@ inline JitClosure* _jit_unwrap_bound_method(JitClosure* cls) {
     cls = reinterpret_cast<JitClosure*>(cls->captures[1]->value.data);
   }
   return cls;
+}
+
+// The candidate's half of the UFCS gate (§10 step 2): is `cand` a Function
+// whose first parameter accepts `recv`? The test is the one the callee's own
+// entry check applies to that argument, so the gate declines exactly the
+// calls that could only have failed there. It is asked of the signature the
+// callable presents — a bound method's underlying method, a native's derived
+// one. A multimethod takes the receiver when any overload does; which one
+// runs stays the picker's business. A function with no leading positional
+// parameter, or with no metadata at all, declares nothing the receiver could
+// fail. Nothrow.
+extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_ufcs_takes(
+    int8_t cand_tag, int64_t cand_data, int8_t recv_tag, int64_t recv_data) {
+  if (cand_tag != TAG_FUNC) return false;
+  auto takes = [&](std::string_view type) {
+    return _culebra_value_matches_type(recv_tag, recv_data, type);
+  };
+  auto* cls =
+      _jit_unwrap_bound_method(reinterpret_cast<JitClosure*>(cand_data));
+  if (const auto* rec = _jit_dispatcher_record(cls)) {
+    // The lone overload — the plain `fn name` — asks no table, and one whose
+    // annotation names this very tag asks no matcher either.
+    if (const auto* m = rec->mono) {
+      if (!rec->mono_tags.empty() && rec->mono_tags[0] == recv_tag) return true;
+      return m->param_types.empty() || takes(m->param_types[0]);
+    }
+    auto& tbl = _jit_multimethods();
+    auto it = tbl.find(rec->name);
+    if (it == tbl.end()) return true;
+    for (const auto& m : it->second)
+      if (m.param_types.empty() || takes(m.param_types[0])) return true;
+    return false;
+  }
+  const JitParamMeta* meta = _jit_presented_meta(cls);
+  if (!meta || meta->n_params == 0 || !meta->type_names ||
+      meta->first_kw_only_idx == 0 || meta->kwargs_rest_idx == 0)
+    return true;
+  return takes(meta->type_names[0]);
 }
 
 // Resolve a property read AS A VALUE (`obj.name`, not `obj.name(...)`). When it

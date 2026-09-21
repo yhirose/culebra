@@ -3804,9 +3804,9 @@ inline void rc_reads(const Insn& in, Read read, ReadAll read_all) {
     case Op::BitOr:
     case Op::BitXor:
     case Op::Shl:
-    case Op::Shr: read(in.b), read(in.c); break;
-    case Op::HasProp: read(in.b); break;
+    case Op::Shr:
     case Op::UfcsTakes: read(in.b), read(in.c); break;
+    case Op::HasProp: read(in.b); break;
     case Op::JumpIfSame: read(in.a), read(in.c); break;
     case Op::PosSnap: break;
     case Op::ForOpen:
@@ -12104,9 +12104,9 @@ class Compiler {
     store_into(out, resolved_call(recv), /*dst_is_fresh=*/true);
     size_t done_hit = emit(Op::Jump);
     patch_to_here(to_ufcs);
-    // The candidate load. A lazy dispatcher cell's sentinel declines the
-    // Function test below like interp's pre-decl env miss (no UnboundErr);
-    // NsGet is the resolver's cached closure, always a Function.
+    // The candidate load. A lazy dispatcher cell's sentinel is no Function,
+    // so UfcsTakes below declines it like interp's pre-decl env miss (no
+    // UnboundErr); NsGet is the resolver's cached closure, always a Function.
     const Binding* cb =
         cand == UfcsCand::Binding ? lookup(post.token) : nullptr;
     ExprResult candv = cb ? read_binding(post, *cb, /*unbound_guard=*/false)

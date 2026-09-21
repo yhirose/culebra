@@ -1408,7 +1408,7 @@ fn __ufcs_takes(fnv, recv) {
       if __spec_takes(ovs[i][1], recv) { return true }
       i = i + 1
     }
-    return __len(ovs) == 0
+    return false
   }
   if __is_marker(fnv) {
     if __objecthas(fnv, "\zspec") { return __spec_takes(fnv["\zspec"], recv) }
@@ -9508,7 +9508,8 @@ fn emit_postfix_step(m, f, value, step, at) {
             ],
             step,
           )
-          # the candidate as a value, for the gate below (a fresh node per use)
+          # the candidate as a value: the gate asks it, the dynamic arm calls
+          # it (a fresh node per use)
           fn candidate() {
             cond {
               r.kind == 'fn' => emit_family(m, f, name.token, r.funcs, 0, step),
@@ -9534,67 +9535,27 @@ fn emit_postfix_step(m, f, value, step, at) {
               {slot: slot, value: sref()},
               step,
             ),
-            r.kind ==
-              'fn' => call_pre(
+            _ => call_pre(
               m,
               f,
               '__ufcs_call',
-              [
-                emit_family(m, f, name.token, r.funcs, 0, step),
-                sref(),
-                nl_,
-                nc_,
-                posv,
-                kwsv,
-                aposv,
-                pl,
-                pc,
-              ],
+              [candidate(), sref(), nl_, nc_, posv, kwsv, aposv, pl, pc],
               step,
             ),
-            r.kind ==
-              'bval' => call_pre(
-              m,
-              f,
-              '__ufcs_call',
-              [
-                call_pre(m, f, '__fnval_' + r.name, [], name),
-                sref(),
-                nl_,
-                nc_,
-                posv,
-                kwsv,
-                aposv,
-                pl,
-                pc,
-              ],
-              step,
-            ),
-            _ => {
-              # a callable variable: the receiver goes first
-              call_pre(
-                m,
-                f,
-                '__ufcs_call',
-                [
-                  rs.read(ir, f, r.v, name),
-                  sref(),
-                  nl_,
-                  nc_,
-                  posv,
-                  kwsv,
-                  aposv,
-                  pl,
-                  pc,
-                ],
-                step,
-              )
-            },
           }
-          # a candidate whose first parameter refuses the receiver is not
-          # one: the method arm reports the miss
-          let gated = ir.make_if_else(takes, via_ufcs, via_method, step)
-          ir.block([store, ir.make_if_else(own, via_method, gated, step)], step)
+          # UFCS needs both answers: the receiver has no method of that name,
+          # and the candidate's first parameter accepts it. Anything else is
+          # the method arm, which reports the miss.
+          let ufcs = ir.make_if_else(
+            own,
+            ir.bool_literal(false, step),
+            takes,
+            step,
+          )
+          ir.block(
+            [store, ir.make_if_else(ufcs, via_ufcs, via_method, step)],
+            step,
+          )
         },
         _ => {
           let [
