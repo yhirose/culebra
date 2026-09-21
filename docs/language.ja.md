@@ -3591,6 +3591,13 @@ fieldを走査する (methodと内部class tagは除外) ので、field変更に
   `<`が順序を付けられない対 — Array、Object、型違い — はそこでも同じ
   `cannot compare` TypeErrorになるので、`cmp`が順序を課すのは数値と
   文字列のfieldだけ。
+* **派生`cmp`が`0`でも派生`eq`が真とは限らない**。2つはfieldを別の規則で
+  辿ります。`cmp`は各対を`==`で比べるので`Long`と`Float`が値として混ざり、
+  `eq`はキーとして照合するので型をまたぎません。あるインスタンスが`1`、
+  別のインスタンスが`1.0`を持つclassでは、`cmp(other)`は`0`、`eq(other)`は
+  `false`になります。`eq`は`hash`と一致している必要があり（そうでないと
+  そもそもキーにできない）、自由度が無いのはこちらです。2つを一致させたい
+  場合は、必要な側を手書きし、残りをderiveしてください。
 * **`eq`と`cmp`は`other`を取り**、`hash`と`to_s`は引数を取らない。
   引数なしで呼べば通常のmissing required argumentのArityError。
 

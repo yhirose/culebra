@@ -3798,6 +3798,14 @@ tag), so they stay correct as fields change. Details:
   A pair `<` refuses to order — an Array, an Object, two different types —
   is the same `cannot compare` TypeError there, so `cmp` orders the numeric
   and string fields and no others.
+* **A derived `cmp` of `0` does not imply a derived `eq`.** The two walk
+  the fields by different rules: `cmp` compares each pair with `==`, which
+  mixes `Long` and `Float` by value, while `eq` matches them as keys, which
+  does not cross types. A class holding `1` in one instance and `1.0` in
+  another answers `cmp(other)` `0` and `eq(other)` `false`. `eq` has to
+  match `hash` — that is what makes the class a key at all — so it is the
+  one with no freedom; where a class needs the two to agree, hand-write
+  whichever of them it needs and derive the rest.
 * **`eq` and `cmp` take `other`**, `hash` and `to_s` take nothing; calling
   one without its argument is the ordinary missing-required ArityError.
 
