@@ -154,3 +154,18 @@ ufcsshadowform|drop|*|Math
 # reported its parameter 'n' at the method name.
 typos|let f = fn (n: Long, m: Long) { n }; "x".f(1)
 typos|let f = fn (n: Long, m: Long) { n }; "x".f(m: 1)
+
+# The same rule reaches a native global through the signature it presents:
+# the global `repeat(n: Long, value)` takes only a Long receiver now, so on
+# any other receiver with no `repeat` of its own the call is the method miss
+# where the baseline called `repeat` and reported `n` or the arity. A String
+# answers with its own `repeat` and a Long is accepted; both are unchanged,
+# which is why the receivers are named rather than globbed.
+m|1.5|repeat|*
+m|true|repeat|*
+m|nil|repeat|*
+m|[1, 2, 3]|repeat|*
+m|{a: 1, b: 2}|repeat|*
+m|(1, 2, 3)|repeat|*
+m|{1, 2, 3}|repeat|*
+m|fn (x) { x }|repeat|*
