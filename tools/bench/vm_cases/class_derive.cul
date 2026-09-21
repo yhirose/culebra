@@ -22,7 +22,8 @@ println(a.cmp(c))
 println(c.cmp(a))
 println(a.cmp(b))
 
-# The operators route through the derived methods.
+# The ordering operators route through the derived `cmp`; `==` compares by
+# structure, since a derived `eq` states no equality of its own.
 println(a == b)
 println(a == c)
 println(a != c)

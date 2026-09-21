@@ -5,7 +5,8 @@
 // Precedence: explicit dunder > trait method > default (structural eq /
 // TypeError for ordering).
 
-// --- @derive(Eq) makes `==` / `!=` work (was structural-only before) ---
+// --- `==` / `!=` on a derived class: by structure (a derived eq states no
+// equality of its own; test_derive.cul pins where the two relations part) ---
 @derive(Eq, Hash, Comparable)
 class Point {
   new(x, y) {
@@ -31,11 +32,10 @@ assert_eq(a >= b, true)
 assert_eq(c > a, true)
 assert_eq(a > c, false)
 
-// --- `==` operator and key-equality now agree (no divergence) ---
+// --- ...and as a key, by its fields: equal Long fields, one key ---
 mut bag = {}
 mut bag[a] = "hit"
-assert_eq(bag[b], "hit")  // key lookup uses eq
-assert_eq(a == b, true)   // operator now uses eq too
+assert_eq(bag[b], "hit")  // key lookup matches the fields
 
 // --- Hand-written eq: `==` routes through it ---
 class Mod3 {
@@ -84,10 +84,8 @@ class Tagged {
 assert_eq(Tagged.new(5) == Tagged.new(5), true)  // __eq__ used, not eq
 assert_eq(Tagged.new(1) < Tagged.new(2), true)   // __lt__ used, not cmp
 
-// `<=` is `__le__`, or else `a < b or a == b` with `==` whole. `__eq__` alone
-// orders nothing, so `<=` falls to `cmp` as `<` does; it used to be answered
-// by `__eq__`, which read an unequal pair as out of order both ways -- `a < b`
-// true beside `a <= b` false and `a > b` true.
+// `<=` is `__le__`, or else `a < b or a == b` with `==` whole; `__eq__` alone
+// orders nothing, so `<=` falls to `cmp` as `<` does.
 class EqAndCmp {
   new(v) {
     self.v = v

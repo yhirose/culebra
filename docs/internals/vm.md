@@ -1121,7 +1121,7 @@ the instruction already says, and both engines call the same helpers.
 decided.
 
 **`==` has one rule and one function that answers it.** `__eq__` on
-either side, then an `eq` both sides carry, then structure:
+either side, then an `eq` both sides state, then structure:
 `_culebra_value_equal`. The operator asks it, and so does everything else
 that means "equal" — `contains`, `index_of`, a derived `cmp`, `chunk_by`'s
 run boundaries — and so does the structural walk behind it, for each pair

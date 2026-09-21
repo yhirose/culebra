@@ -3639,11 +3639,11 @@ fieldを走査する (methodと内部class tagは除外) ので、field変更に
 
 * `impl Foo for Bar` blockは未対応 — 構造的のみ。 (Phase 4+ で
   明示宣言を再検討)
-* **演算子オーバーロードはtrait defaultをbypassする**: `<` /
-  `==`等はclassの`__lt__` / `__eq__`を直接呼ぶ。Comparableの
-  default `lt` / `le`等は`x.lt(y)`のformのみ動作。`cmp`を持つ
-  classで`lo < hi`を使うには別途`__lt__` (特殊method) も書くか、
-  `.lt()`を明示。
+* **演算子はtrait defaultを呼ばない**: `<` / `<=` / `>` / `>=`は
+  `__lt__` / `__le__`、次に`cmp`を、`==`は`__eq__`、次に宣言された
+  `eq`を使う（*traitメソッドへのフォールバック*）。Comparableの
+  default `lt` / `le` — classが自分で上書きしたものも — は
+  `x.lt(y)`の形で呼んだときだけ動く。
 * **複数trait同名defaultの選択は非決定**: 2つのtraitが
   同名default (`to_s`等) を持ちinstanceが両方にconformするとき、
   dispatchは内部hash mapのiteration順で勝者決定。同名default

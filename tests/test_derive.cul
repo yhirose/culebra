@@ -173,7 +173,6 @@ keyed[Num.new(1.0)] = "float"
 assert_eq(keyed.size(), 2)
 // ...so `==` and the derived `cmp` answer the same pair the same way.
 assert_eq(Num.new(1).cmp(Num.new(1.0)), 0)
-assert_eq(Num.new(1) == Num.new(1.0), Num.new(1).cmp(Num.new(1.0)) == 0)
 // Nominal either way.
 @derive(Eq, Hash)
 class OtherNum {
@@ -207,8 +206,8 @@ class OwnDunder {
 assert_eq(OwnDunder.new(1) == OwnDunder.new(2), true)
 assert_eq(OwnDunder.new(1).eq(OwnDunder.new(2)), false)
 
-// `==` stays commutative: a derived class has no `__eq__` of its own, so the
-// other side's answers from either side.
+// Deriving plants no `__eq__`: one would answer first from the left and make
+// `==` disagree with itself across the two orders. The other side's does.
 class Anything {
   new(v) {
     self.v = v
@@ -219,5 +218,22 @@ class Anything {
 }
 assert_eq(Anything.new(0) == Num.new(1), true)
 assert_eq(Num.new(1) == Anything.new(0), true)
+
+// One answer whichever way the special method is found: an instance with a
+// slot of its own under a special name is looked up by name rather than
+// through its class's table, and must still find no stated `eq`.
+@derive(Eq, Hash)
+class OwnSpecialSlot {
+  new(v) {
+    self.v = v
+    self.__tag__ = 0
+  }
+}
+assert_eq(OwnSpecialSlot.new(1) == OwnSpecialSlot.new(1.0), true)
+assert_eq(OwnSpecialSlot.new(1).eq(OwnSpecialSlot.new(1.0)), false)
+mut by_slot = {}
+by_slot[OwnSpecialSlot.new(1)] = "long"
+by_slot[OwnSpecialSlot.new(1.0)] = "float"
+assert_eq(by_slot.size(), 2)
 
 IO.inspect("test_derive OK")

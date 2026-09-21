@@ -222,8 +222,7 @@ inline std::optional<int64_t> _jit_enum_variant_hash(JitObject* obj) {
   if (!_jit_enum_name(obj)) return std::nullopt;
   return culebra_runtime_derived_hash(obj);
 }
-// Key equality for what matches by its fields — a variant, or a class that
-// derives Eq — and nullopt for anything else.
+// Key equality by fields (_jit_meta_eq_by_fields), else nullopt.
 inline std::optional<bool> _jit_eq_by_fields(JitObject* a, JitObject* b) {
   if (!_jit_meta_eq_by_fields(a)) return std::nullopt;
   return culebra_runtime_derived_eq(a, {TAG_OBJECT, reinterpret_cast<int64_t>(b)})

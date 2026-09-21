@@ -1,4 +1,4 @@
-# `==` has one rule — `__eq__` on either side, then an `eq` both sides carry,
+# `==` has one rule — `__eq__` on either side, then an `eq` both sides state,
 # then structure — and a container compares its elements by that same rule.
 # It used to compare them by structure alone, so `a == b` held while
 # `[a] == [b]` did not, though `a` and `b` were one Set member and one Object

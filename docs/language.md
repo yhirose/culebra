@@ -3852,11 +3852,11 @@ tag), so they stay correct as fields change. Details:
 
 * `impl Foo for Bar` block is unsupported — conformance is purely
   structural. (Phase 4+: revisit if explicit conformance is wanted.)
-* **Operator overloads bypass trait defaults**: `<` / `==` etc.
-  invoke `__lt__` / `__eq__` directly on the class; Comparable's
-  default `lt` / `le` etc. only fire when called as `x.lt(y)`. A
-  class that defines `cmp` and uses `lo < hi` must also define
-  `__lt__` (the special-method path), or call `.lt()` explicitly.
+* **Operators do not call trait defaults**: `<` / `<=` / `>` / `>=`
+  reach `__lt__` / `__le__` and then `cmp`, and `==` reaches `__eq__`
+  and then a stated `eq` (*Trait-method fallback*). Comparable's
+  default `lt` / `le` — and a class's own override of them — fire only
+  when called as `x.lt(y)`.
 * **Same-name defaults across traits are non-deterministic**: if
   two registered traits both provide a `to_s` default and an
   instance conforms to both, the dispatch picks the one the

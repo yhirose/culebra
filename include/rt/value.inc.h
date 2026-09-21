@@ -336,11 +336,9 @@ struct JitSpecialTable {
   // every handle — which is also what lets a consumer holding only a
   // JitValue find the C++ type behind it in one load.
   int64_t foreign_state_fn = -1;
-  // The class's `eq` is `@derive`d: it states no equality of its own, only
-  // that its instances match by their fields — what an enum variant is by
-  // construction. So `==` compares it by structure, as it would a class
-  // with no `eq`, and the key relation matches its fields as keys.
-  // _jit_fill_specials sets it, from the closure's JIT_CLOSURE_DERIVED.
+  // The class's `eq` is `@derive`d, which states no equality: its instances
+  // match by their fields, as an enum variant's do — `==` by structure, keys
+  // field by field. The derived `eq` fills no slot (_special_closure).
   bool eq_by_fields = false;
 };
 
@@ -760,8 +758,7 @@ inline const char* _jit_meta_enum_name(JitObject* obj) {
   auto* sp = _jit_meta_specials(obj);
   return sp ? sp->enum_name : nullptr;
 }
-// Whether instances match by their fields rather than by an `eq` of their
-// own: an enum variant, or a class that derives Eq.
+// Whether instances match by their fields: a variant, or a class deriving Eq.
 inline bool _jit_meta_eq_by_fields(JitObject* obj) {
   auto* sp = _jit_meta_specials(obj);
   return sp && (sp->enum_name || sp->eq_by_fields);
@@ -908,9 +905,7 @@ static_assert(sizeof(JitClosure) <= 48 && !std::is_polymorphic_v<JitClosure>);
 // would silently cross the heap boundary. The interp's body == nullptr.
 inline constexpr uint64_t JIT_CLOSURE_GETTER = 1ull << 0;
 inline constexpr uint64_t JIT_CLOSURE_NATIVE = 1ull << 1;
-// DERIVED — a method `@derive` supplied rather than one the class wrote. A
-// derived `eq` states no equality, so the class meta records that instead of
-// filling its `eq` slot (see JitSpecialTable::eq_by_fields).
+// DERIVED — a method `@derive` supplied rather than one the class wrote.
 inline constexpr uint64_t JIT_CLOSURE_DERIVED = 1ull << 2;
 
 // Sentinel `arity` for a variadic closure (a builtin ns-method that accepts a
@@ -1160,9 +1155,10 @@ extern "C" inline const char* _culebra_tag_name(int8_t tag);  // defined below
 // different types are never equal, so `1`, `1.0`, and `true` are three
 // distinct keys even though `1 == 1.0` is true. Hash collisions across types
 // are harmless (eq separates them), so the hash keeps its simple form.
-// Object keys route through user-defined `hash()` / `eq()` when present
-// (Hashable + Eq structural conformance), an enum variant through its
-// derived-style structural hash / eq; otherwise reference identity.
+// Object keys route through the `hash()` / `eq()` a class states when present
+// (Hashable + Eq structural conformance); what matches by its fields — an
+// enum variant, a class deriving Eq — through the field walk; otherwise
+// reference identity.
 struct JitValueHash {
   size_t operator()(const JitValue& v) const {
     switch (v.tag) {

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Value-equality door gate.
 #
-# `==` has one rule — `__eq__` on either side, then an `eq` both sides carry,
+# `==` has one rule — `__eq__` on either side, then an `eq` both sides state,
 # then structure — and one place that answers it:
 #
 #   _culebra_value_equal(t1, d1, t2, d2)       include/rt/runtime.inc.h
@@ -22,6 +22,13 @@
 # this gate holds for it is the same shape: one definition, and the places
 # keyed on it (a Set's members, a derived `eq`'s fields) asking it rather than
 # writing the comparison again.
+#
+# A derived `eq` states no equality: it says the instances match by their
+# fields, as an enum variant's do, so `==` reaches structure and keys go field
+# by field. Whether an `eq` is derived is decided once (_special_closure), for
+# the class table and the by-name lookup both — two places deciding it is how
+# an instance with a special-named slot of its own once answered `==` by the
+# derived `eq` while its classmates answered by structure.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -45,6 +52,20 @@ text = door_gate.sources()
 bad = [(p, n, s) for p in text if p != HOME
        for n, s in door_gate.sites(text[p], match)]
 home_sites = door_gate.sites(text[HOME], match)
+
+# Whether an `eq` is derived is read in one place: every read of the flag is
+# a site, and a second one is reported where it stands.
+FILL = 'include/rt/fixed.inc.h'
+derived_read = lambda stmt: re.search(r'&\s*JIT_CLOSURE_DERIVED\b', stmt)
+door_gate.require_scanner(
+    LABEL, derived_read,
+    'if (e &&\n    (fn->flags &\n     JIT_CLOSURE_DERIVED)) return nullptr;')
+derived_reads = [(p, n, s) for p in text
+                 for n, s in door_gate.sites(text[p], derived_read)]
+if len(derived_reads) > 1:
+    bad += derived_reads
+asks = lambda path, name: any(
+    True for _ in door_gate.sites(text[path], lambda st: name in st))
 
 # ...and it has to be looking at the real thing: the door exists once, the
 # walk sits behind it, and the comparisons that mean "equal" ask the door.
@@ -72,6 +93,20 @@ population = [
                text[HOME]) is not None),
     ('a derived eq compares its fields as keys',
      text['include/rt/dispatch.inc.h'].count('JitValueEq{}(') >= 1),
+    # A derived `eq` states nothing, decided in one place.
+    (f'JIT_CLOSURE_DERIVED read once, in _derived_method (found '
+     f'{len(derived_reads)})',
+     len(derived_reads) == 1 and derived_reads[0][0] == HOME and
+     re.search(r'inline bool _derived_method\([^)]*\)\s*\{[^}]*'
+               r'JIT_CLOSURE_DERIVED', text[HOME]) is not None),
+    ('the class table and the by-name lookup both ask _special_closure',
+     asks(FILL, '_special_closure(') and
+     re.search(r'struct SpecialLookup\s*\{(?:(?!\n\};)[\s\S])*?'
+               r'_special_closure\(', text[HOME]) is not None),
+    ('JitValueEq matches by fields through _jit_eq_by_fields',
+     re.search(r'struct JitValueEq\s*\{(?:(?!\n\};)[\s\S])*?'
+               r'_jit_eq_by_fields\(', text['include/rt/value.inc.h'])
+     is not None),
 ]
 
 door_gate.report(

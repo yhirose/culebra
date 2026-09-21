@@ -1706,20 +1706,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has_value(
 // from a deserialized Object (jit_deserialize, conc/sendable.h), whose
 // properties are already in place by the time this runs.
 inline void _jit_fill_specials(JitObject* meta) {
-  for (size_t s = 0; s < static_cast<size_t>(Special::Count); s++) {
-    auto* e = _find_property(meta, kSpecialNames[s]);
-    if (!e || e->value.tag != TAG_FUNC) continue;
-    auto* fn = reinterpret_cast<JitClosure*>(e->value.data);
-    // A derived `eq` is not an equality the class states: `==` compares
-    // such a class by structure and keys match its fields, so it takes no
-    // slot either one would read. It stays a method, callable by name.
-    if (static_cast<Special>(s) == Special::EqTrait &&
-        (fn->flags & JIT_CLOSURE_DERIVED)) {
-      meta->specials->eq_by_fields = true;
-      continue;
-    }
-    meta->specials->fn[s] = fn;
-  }
+  for (size_t s = 0; s < static_cast<size_t>(Special::Count); s++)
+    meta->specials->fn[s] = _special_closure(meta, static_cast<Special>(s));
+  // An `eq` that fills no slot is a derived one: the class matches by fields.
+  meta->specials->eq_by_fields =
+      _protocol_member(meta, special_name(Special::EqTrait)) &&
+      !meta->specials->fn[static_cast<size_t>(Special::EqTrait)];
   meta->methods_drop = _protocol_member(meta, "drop") != nullptr;
 }
 

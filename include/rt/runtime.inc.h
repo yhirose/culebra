@@ -816,8 +816,8 @@ inline auto _jit_at_call_site(F&& op) -> decltype(op()) {
 
 // Publish a call site for a method the runtime reaches on its own, rather
 // than from a codegen call site: the operator forms of `==` / `!=` and the
-// ordering ops dispatch to a user or derived `__eq__` / `eq` / `__lt__` /
-// `__le__` / `cmp` from inside the comparison helper, so nothing set one.
+// ordering ops dispatch to a class's `__eq__` / `eq` / `__lt__` / `__le__` /
+// `cmp` from inside the comparison helper, so nothing set one.
 // Explicit errors raised by that method's binder — an overload set's
 // DispatchError, an ArityError, a typed-param TypeError — read the call site
 // and would otherwise report wherever the last real call was. The operator's
@@ -1482,9 +1482,8 @@ inline bool _culebra_ask_equal(JitClosure* cls, JitValue self, JitValue other) {
   return _extract_bool_and_release(_culebra_invoke_method1(cls, self, other));
 }
 
-// Resolve user-defined `eq(other)` on a pair of Objects (Eq structural
-// conformance). Both sides must expose `eq`; otherwise nullopt so the caller
-// keeps reference equality.
+// The `eq` both Objects state (a derived one states none), asked of the
+// pair; nullopt when either has none.
 inline std::optional<bool> _jit_object_user_eq(JitObject* a, JitObject* b) {
   // Through the special table: this runs for every pair of Objects a
   // container comparison or a key probe meets, most of which carry no `eq`.
@@ -1526,6 +1525,22 @@ inline JitClosure* _protocol_member(JitObject* obj, const char* name) {
   return reinterpret_cast<JitClosure*>(entry->value.data);
 }
 
+// Whether a method is one `@derive` supplied. The one reader of
+// JIT_CLOSURE_DERIVED.
+inline bool _derived_method(const JitClosure* fn) {
+  return fn->flags & JIT_CLOSURE_DERIVED;
+}
+
+// The closure that fills special slot `s` on `obj`, or null — one answer for
+// the class table (_jit_fill_specials) and for the by-name lookup an instance
+// with a special-named slot of its own takes. A derived `eq` fills none: it
+// states no equality (JitSpecialTable::eq_by_fields).
+inline JitClosure* _special_closure(JitObject* obj, Special s) {
+  auto* fn = _protocol_member(obj, special_name(s));
+  if (fn && s == Special::EqTrait && _derived_method(fn)) return nullptr;
+  return fn;
+}
+
 // The two questions the executor and compiled code ask about an Object's
 // shape, by name — so no well-known key is spelled outside this file's
 // protocol code. `next` is what shapes an iterator (it resolves the lazy
@@ -1552,9 +1567,7 @@ struct SpecialLookup {
   JitClosure* operator()(Special s) const {
     if (table) return table->fn[static_cast<size_t>(s)];
     if (!obj) return nullptr;
-    auto* entry = _find_property(obj, special_name(s));
-    if (!entry || entry->value.tag != TAG_FUNC) return nullptr;
-    return reinterpret_cast<JitClosure*>(entry->value.data);
+    return _special_closure(obj, s);
   }
 };
 
@@ -1773,7 +1786,7 @@ inline bool _extract_bool_and_release(JitValue v) {
 // --- `==` ---
 //
 // One rule, answered in one place: `__eq__` on either side, then an `eq` both
-// sides carry, then structure. Every comparison that means "equal" asks
+// sides state, then structure. Every comparison that means "equal" asks
 // _culebra_value_equal — the operator, `contains`, `index_of`, a derived
 // `cmp` — and so does the structural walk for each pair of elements, which is
 // what makes `[a] == [b]` agree with `a == b` (and with `a` and `b` being one
@@ -1908,7 +1921,7 @@ inline bool _culebra_structure_equal(int8_t t1, int64_t d1, int8_t t2,
 }
 
 // The first two steps of `==`, which only an Object can take: `__eq__` on
-// either side, then the `eq` an Eq-conforming class carries on both. Most of
+// either side, then an `eq` stated on both (not a derived one). Most of
 // what a container holds has neither, so each name is looked up only once the
 // step before it has not answered — a dict pays a hash probe per name. Nullopt
 // when neither side answers, and structure decides.
@@ -1918,8 +1931,8 @@ inline std::optional<bool> _culebra_user_equal(int8_t t1, int64_t d1,
   // `==` is commutative, so try either side's `__eq__`.
   if (auto* f = a(Special::Eq)) return _culebra_ask_equal(f, {t1, d1}, {t2, d2});
   if (auto* f = b(Special::Eq)) return _culebra_ask_equal(f, {t2, d2}, {t1, d1});
-  // An `eq` the class states — a derived one takes no slot — on both sides:
-  // the operator then agrees with key equality, which asks the same `eq`.
+  // A stated `eq` on both sides: the operator then agrees with key equality,
+  // which asks the same `eq`.
   if (auto* f = a(Special::EqTrait); f && b(Special::EqTrait))
     return _culebra_ask_equal(f, {t1, d1}, {t2, d2});
   return std::nullopt;
@@ -1964,11 +1977,8 @@ inline std::optional<int64_t> _special_cmp(int8_t t1, int64_t d1,
   return std::nullopt;
 }
 
-// `lhs <= rhs` from the class's own dunders: `__le__`, or else `a < b or
-// a == b` — `==` whole, so `<=` agrees with it for every pair, where the
-// `__eq__` dunder alone left a class without one reading every pair as
-// unequal. With neither dunder the class has no say here, and `cmp`, which
-// the caller asks next, answers.
+// `__le__`, else `a < b or a == b` with `==` whole; nullopt without `__lt__`,
+// so `cmp` answers.
 inline std::optional<bool> _special_le(int8_t t1, int64_t d1,
                                       int8_t t2, int64_t d2) {
   if (auto r = _try_special_binop(t1, d1, t2, d2, Special::Le))
