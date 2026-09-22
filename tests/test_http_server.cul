@@ -632,6 +632,9 @@ msrv.get("/", fn (req) {
 msrv.get("/smuggled", fn (req) {
   {status: 418, body: "smuggled"}
 })
+msrv.get("/badheader", fn (req) {
+  {status: 200, headers: {"X-Foo": "bar\r\nX-Injected: evil"}, body: "hi"}
+})
 MPORT = msrv.listen_async(0, "127.0.0.1", workers: 1)
 MURL = "http://127.0.0.1:" + MPORT.to_string()
 SMUGGLE = "GET /smuggled HTTP/1.1\r\nHost: x\r\n\r\nGET"
@@ -666,6 +669,21 @@ assert_eq(error_message(fn () {
 assert_eq(error_kind(fn () {
   Http.request("get", MURL + "/")
 }), "none")
+
+# A response header goes out verbatim too: httplib used to accept it and
+# silently drop the header (still answering 200), which read to a handler as
+# "the header I set is just missing" rather than as a rejected value. Setting
+# one is now checked before it ever reaches httplib, turning the handler's
+# return into the same 500 a thrown error gets -- so nothing gets smuggled and
+# nothing looks like it merely went missing.
+hres = mapi.get("/badheader")
+assert_eq(hres.status, 500)
+assert_eq(hres.body,
+  "Http.server: header \"X-Foo\" must not contain control characters, got " +
+  "\"bar\\r\\nX-Injected: evil\"")
+assert_true(!hres.headers.has("X-Foo"))
+assert_true(!hres.headers.has("X-Injected"))
+
 mapi.close()
 msrv.stop()
 inspect("CR/LF in a method or a header -> refused at once, nothing smuggled")

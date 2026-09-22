@@ -19,13 +19,28 @@
 
 namespace culebra {
 
+// RFC 9110 §5.6.2: tchar is ALPHA, DIGIT, or one of !#$%&'*+-.^_`|~. `token`
+// is this method's grammar, and also a header field-name's (§5.1) — shared
+// here rather than duplicated in the header-name check http.h adds.
+inline bool is_http_token(std::string_view s) {
+  if (s.empty()) return false;
+  for (unsigned char c : s) {
+    bool alnum = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                 (c >= '0' && c <= '9');
+    if (!alnum && std::string_view("!#$%&'*+-.^_`|~").find(c) ==
+                      std::string_view::npos)
+      return false;
+  }
+  return true;
+}
+
 class HttpMethod {
  public:
   // `ctx` names the entry (`Http.request`), as its other errors do. Case is
   // kept: a method is case-sensitive, and `get` is a token of its own.
   static HttpMethod checked(std::string_view m, std::string_view ctx,
                             int64_t line, int64_t col) {
-    if (m.empty() || !is_token(m))
+    if (!is_http_token(m))
       throw CulebraError(
           "ValueError",
           culebra::format("{}: method must be an HTTP token, got {}", ctx,
@@ -43,18 +58,6 @@ class HttpMethod {
 
  private:
   explicit HttpMethod(std::string m) : m_(std::move(m)) {}
-
-  // RFC 9110 §5.6.2: tchar is ALPHA, DIGIT, or one of !#$%&'*+-.^_`|~.
-  static bool is_token(std::string_view m) {
-    for (unsigned char c : m) {
-      bool alnum = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                   (c >= '0' && c <= '9');
-      if (!alnum && std::string_view("!#$%&'*+-.^_`|~").find(c) ==
-                        std::string_view::npos)
-        return false;
-    }
-    return true;
-  }
 
   std::string m_;
 };

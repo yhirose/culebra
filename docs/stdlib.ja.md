@@ -3935,7 +3935,9 @@ srv.listen(8080)  # ブロックする。Ctrl+C で停止
 
 - `String` → `200`・`text/plain`・その文字列をbodyに;
 - `Object` `{status?, body?, headers?, content_type?}` → 全制御（省略時は`200` /
-  `""` / `text/plain`）。`headers`はStringのObject;
+  `""` / `text/plain`）。`headers`はStringのObject。名前はHTTPのtoken、値は制御文字を
+  含まない文字列である必要があり、いずれかに違反するとそれを示す`ValueError`が送信前に
+  送出されます（例外を投げた場合と同じ`500`になります）;
 - `stream:`フィールドにFunctionを持つ`Object` → chunked（ストリーミング）応答（後述）;
 - `nil` → `200`・空body。
 

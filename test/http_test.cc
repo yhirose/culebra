@@ -90,6 +90,48 @@ int main() {
     }
   }
 
+  // Response headers go onto the wire the same way a request method does:
+  // http_res_set_header (http.h) validates before ever touching the real
+  // httplib::Response, instead of httplib::Response::set_header silently
+  // dropping an invalid header (see write_headers in vendor/cpp-httplib) --
+  // which read to a handler as "the header I set is just missing".
+  {
+    CHECK(first_byte_mismatch(culebra::http::is_header_value,
+                               httplib::detail::fields::is_field_content) == -1);
+    // The RFC 9110 field-content grammar anchors on the first/last octet: a
+    // space is fine strictly between two visible octets but not at a 1- or
+    // 2-byte edge, where there is no "between".
+    CHECK(culebra::http::is_header_value(""));
+    CHECK(culebra::http::is_header_value("a"));
+    CHECK(!culebra::http::is_header_value(" "));
+    CHECK(!culebra::http::is_header_value("  "));
+    CHECK(culebra::http::is_header_value("a b"));
+    CHECK(culebra::http::is_header_value("a\tb"));
+    CHECK(!culebra::http::is_header_value("a\r\nb"));
+
+    httplib::Response res;
+    culebra::http::ServerResponse sr{&res};
+    culebra::http::http_res_set_header(sr, "X-Ok", "fine");
+    CHECK(res.get_header_value("X-Ok") == "fine");
+    try {
+      culebra::http::http_res_set_header(sr, "X-Bad", "v\r\nInjected: x");
+      CHECK(false);
+    } catch (const culebra::CulebraError& e) {
+      CHECK(e.kind == "ValueError");
+      CHECK(std::string(e.what()) ==
+            "Http.server: header \"X-Bad\" must not contain control "
+            "characters, got \"v\\r\\nInjected: x\"");
+    }
+    try {
+      culebra::http::http_res_set_header(sr, "X Bad", "v");
+      CHECK(false);
+    } catch (const culebra::CulebraError& e) {
+      CHECK(e.kind == "ValueError");
+      CHECK(std::string(e.what()) ==
+            "Http.server: header name must be an HTTP token, got \"X Bad\"");
+    }
+  }
+
   // percent_encode_component is self-hosted rather than gated on
   // CULEBRA_RT_HTTP_REQUEST_WEAK (see http.h) precisely so it does not depend
   // on httplib at all -- but that only holds if it stays byte-for-byte

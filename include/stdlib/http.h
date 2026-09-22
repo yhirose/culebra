@@ -1001,6 +1001,34 @@ CULEBRA_RT_HTTP_LINKAGE bool http_sink_write(int64_t id, const char* data,
 // closure threw — the connection is then aborted without a terminating chunk.
 using StreamRunner = std::function<bool(int64_t sink_id)>;
 
+// RFC 9110 §5.5: field-value is *field-content, and field-content is a single
+// visible/obs-text octet (`field-vchar`) at 0-2 bytes, or — once there's a
+// field-vchar on both ends — a run that may also hold SP/HTAB strictly
+// between them. That end-anchoring is what excludes CR/LF and other control
+// octets. Reimplemented here rather than gated on CULEBRA_RT_HTTP_REQUEST_WEAK
+// for the same reason as percent_encode_component: http_res_set_header below
+// runs through this even in the weak-stub build, so it can't depend on
+// httplib being linked. Byte-for-byte equivalence with httplib's
+// detail::fields::is_field_value is asserted in test/http_test.cc.
+inline bool is_header_value_vchar(unsigned char c) {
+  return (c >= 33 && c <= 126) || c >= 128;
+}
+inline bool is_header_value(std::string_view s) {
+  if (s.size() <= 2) {
+    for (unsigned char c : s)
+      if (!is_header_value_vchar(c)) return false;
+    return true;
+  }
+  if (!is_header_value_vchar(static_cast<unsigned char>(s.front())) ||
+      !is_header_value_vchar(static_cast<unsigned char>(s.back())))
+    return false;
+  for (size_t i = 1; i + 1 < s.size(); i++) {
+    unsigned char c = s[i];
+    if (c != ' ' && c != '\t' && !is_header_value_vchar(c)) return false;
+  }
+  return true;
+}
+
 // http_res_set_status/header/content are the response half of the same choke
 // as http_request (above): the only code that touches a real httplib::Response
 // is here, linkage-split like every other server entry point. The WEAK stub in
@@ -1017,6 +1045,13 @@ CULEBRA_RT_HTTP_LINKAGE void http_res_set_status(ServerResponse& res,
 #endif
 }
 
+// A response header goes onto the wire verbatim, same as a request method
+// (http_method.h): CR/LF in a name or value would end the status line or a
+// prior header early and splice in an attacker-controlled one (response
+// splitting). httplib's set_header silently drops such a header instead of
+// failing loudly (see write_headers in vendor/cpp-httplib), which reads to a
+// handler as "the header I set is just missing" — so this validates before
+// that ever happens, the same way HttpMethod::checked front-runs a request.
 CULEBRA_RT_HTTP_LINKAGE void http_res_set_header(ServerResponse& res,
                                                  const std::string& k,
                                                  const std::string& v) {
@@ -1025,6 +1060,19 @@ CULEBRA_RT_HTTP_LINKAGE void http_res_set_header(ServerResponse& res,
   (void)k;
   (void)v;
 #else
+  if (!is_http_token(k))
+    throw CulebraError(
+        "ValueError",
+        culebra::format("Http.server: header name must be an HTTP token, got {}",
+                        json_escape(k)),
+        0, 0);
+  if (!is_header_value(v))
+    throw CulebraError(
+        "ValueError",
+        culebra::format(
+            "Http.server: header {} must not contain control characters, got {}",
+            json_escape(k), json_escape(v)),
+        0, 0);
   static_cast<httplib::Response*>(res.h)->set_header(k, v);
 #endif
 }

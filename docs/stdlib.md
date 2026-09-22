@@ -4050,7 +4050,10 @@ names. A missing key reads as `nil`.
 
 - a `String` → `200`, `text/plain`, that string as the body;
 - an `Object` `{status?, body?, headers?, content_type?}` → full control (absent
-  fields default to `200` / `""` / `text/plain`); `headers` is an object of String;
+  fields default to `200` / `""` / `text/plain`); `headers` is an object of String.
+  A name must be an HTTP token and a value free of control characters (RFC 9110
+  §5); either failing is a `ValueError` naming it, raised before the response is
+  sent — the same `500` a raised error gets;
 - an `Object` with a `stream:` Function → a chunked (streaming) response — see below;
 - `nil` → `200` with an empty body.
 
