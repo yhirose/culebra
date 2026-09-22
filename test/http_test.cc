@@ -48,6 +48,43 @@ int main() {
         "a=b%20c&x=1%262");
   CHECK(culebra::http::encode_query({}) == "");
 
+  // HttpMethod: a method reaches a request only as an RFC 9110 token. Its
+  // set has to be httplib's own, byte for byte: a byte culebra passed and
+  // httplib refused would come back as a failed write again, and one culebra
+  // refused and httplib took would refuse a method the wire allows.
+  {
+    auto accepts = [](std::string_view m) {
+      try {
+        culebra::HttpMethod::checked(m, "http_test", 0, 0);
+        return true;
+      } catch (const culebra::CulebraError&) {
+        return false;
+      }
+    };
+    int first_mismatch = -1;
+    for (int b = 0; b < 256 && first_mismatch < 0; b++) {
+      std::string s(1, static_cast<char>(b));
+      if (accepts(s) != httplib::detail::fields::is_token(s)) first_mismatch = b;
+    }
+    CHECK(first_mismatch == -1);
+    CHECK(accepts("GET"));
+    CHECK(accepts("get"));  // case is kept, not folded
+    CHECK(accepts("PROPFIND"));
+    CHECK(!accepts(""));
+    CHECK(!accepts("GE T"));
+    CHECK(!accepts("GET\r\nX: y"));
+    CHECK(culebra::HttpMethod::checked("get", "http_test", 0, 0).str() == "get");
+    try {
+      culebra::HttpMethod::checked("GET\r\n", "Http.request", 0, 0);
+      CHECK(false);
+    } catch (const culebra::CulebraError& e) {
+      CHECK(e.kind == "ValueError");
+      CHECK(std::string(e.what()).find(
+                "Http.request: method must be an HTTP token, got \"GET\\r\\n\"") !=
+            std::string::npos);
+    }
+  }
+
   // percent_encode_component is self-hosted rather than gated on
   // CULEBRA_RT_HTTP_REQUEST_WEAK (see http.h) precisely so it does not depend
   // on httplib at all -- but that only holds if it stays byte-for-byte
@@ -199,7 +236,7 @@ int main() {
   // POST echo — body round-trips, content_type applied.
   {
     HttpRequest req;
-    req.method = "POST";
+    req.method = culebra::HttpMethod::post();
     req.url = base + "/echo";
     req.body = "{\"a\":1}";
     req.content_type = "application/json";
@@ -214,7 +251,7 @@ int main() {
   // Http.post(..., body: fn(){...}) rides on.
   {
     HttpRequest req;
-    req.method = "POST";
+    req.method = culebra::HttpMethod::post();
     req.url = base + "/echo";
     req.content_type = "text/plain";
     const char* parts[] = {"hello ", "streamed ", "upload"};
@@ -245,7 +282,7 @@ int main() {
   // known Content-Length (no streaming); the server parses it into fields/files.
   {
     HttpRequest req;
-    req.method = "POST";
+    req.method = culebra::HttpMethod::post();
     req.url = base + "/mp";
     req.multipart.push_back({"title", "", "", "My report", nullptr});
     req.multipart.push_back(
@@ -262,7 +299,7 @@ int main() {
   // reassembles the part. This is what files: {stream: fn(){...}} rides on.
   {
     HttpRequest req;
-    req.method = "POST";
+    req.method = culebra::HttpMethod::post();
     req.url = base + "/mp";
     const char* chunks[] = {"row0\n", "row1\n", "row2\n"};
     size_t i = 0;
@@ -302,7 +339,7 @@ int main() {
   // (204 is in [200,300)).
   {
     HttpRequest req;
-    req.method = "DELETE";
+    req.method = culebra::HttpMethod::del();
     req.url = base + "/gone";
     auto r = http_request(req);
     CHECK(r.ok);
@@ -328,14 +365,14 @@ int main() {
     CHECK(err.empty());
     // relative path joins under /api; the default X-Auth header rides along.
     HttpRequest r1;
-    r1.method = "GET";
+    r1.method = culebra::HttpMethod::get();
     r1.url = "/echo";
     auto a = culebra::http::http_client_request(cid, r1);
     CHECK(a.ok);
     CHECK(a.body == "/api/echo|k|");
     // a per-request header adds X-Extra and overrides the default X-Auth.
     HttpRequest r2;
-    r2.method = "GET";
+    r2.method = culebra::HttpMethod::get();
     r2.url = "/echo";
     r2.headers = {{"X-Extra", "e"}, {"X-Auth", "z"}};
     auto b = culebra::http::http_client_request(cid, r2);
@@ -364,7 +401,7 @@ int main() {
         culebra::http::http_client_open(base + "/api", {}, 0, true, err);
     CHECK(cid1 != cid2);  // likely reuses cid1's slot, but the id itself differs
     HttpRequest r1;
-    r1.method = "GET";
+    r1.method = culebra::HttpMethod::get();
     r1.url = "/echo";
     auto a = culebra::http::http_client_request(cid1, r1);
     CHECK(!a.ok && a.error.find("closed") != std::string::npos);  // old id: dead

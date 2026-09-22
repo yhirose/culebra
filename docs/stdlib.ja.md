@@ -3613,7 +3613,7 @@ inspect(Regex.escape("a.b(c)"))                         # => 'a\.b\(c\)'
 | `Http.head(url, headers=nil, timeout=0, follow_redirects=true)` | レスポンスObject |
 | `Http.post(url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | レスポンスObject |
 | `Http.put(url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | レスポンスObject |
-| `Http.request(method, url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | レスポンスObject — 任意のメソッド（PATCH、OPTIONS …） |
+| `Http.request(method, url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | レスポンスObject — 任意のメソッド（PATCH、OPTIONS …）を書いたとおりに送る。メソッドはHTTPのtoken（英数字と``!#$%&'*+-.^_`\|~``）で、それ以外 — 空白・CR/LF・空文字 — は送る前にその値を示す`ValueError` |
 | `Http.sse(url, on_event, headers=nil, timeout=0, follow_redirects=true)` | レスポンスObject — `GET`を開いてServer-Sent Eventsを`on_event`にストリーム（後述） |
 | `Http.client(base_url, headers=nil, timeout=0, follow_redirects=true)` | 永続クライアントハンドル（ベースURL + デフォルトヘッダ + 接続再利用、後述） |
 | `Http.server()` | HTTPサーバハンドル（ルート + `static` + `ws`を登録して`listen`、後述） |
@@ -3858,7 +3858,8 @@ api.get("/items", headers: {"Idempotency-Key": k})  # 既定の上にマージ
 api.close()                                         # 接続を解放
 ```
 
-リクエストメソッドの第1引数はパスです。先頭スラッシュor素の相対パスは`base_url`に
+リクエストメソッドの第1引数はパスです（`request`ではメソッドの次の第2引数で、そのメソッドは
+`Http.request`と同じ規則で検査されます）。先頭スラッシュor素の相対パスは`base_url`に
 連結され（`/me` → `…/v1/me`）、スキーム付きの絶対URLは`base_url`を無視しますが
 デフォルトヘッダは付きます。リクエストごとの`headers`はクライアント既定の上に
 マージされます（同名キーは上書き）。`close()`で接続を解放します（スコープを抜けた

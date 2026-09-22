@@ -58,6 +58,7 @@
 
 #include <base/id_registry.h>    // IdRegistry<T> (slot+generation handle table)
 #include <base/shared.h>  // throw_if_interrupted / culebra_g_sigint (Ctrl+C wiring)
+#include <stdlib/http_method.h>  // HttpMethod (a checked method)
 #include <stdlib/port.h>    // Port (a checked port number)
 #include <stdlib/vfs.h>     // Dir / DiskDir / EmbeddedDir / serve_static (static assets)
 
@@ -180,7 +181,7 @@ struct SseDecoder {
 };
 
 struct HttpRequest {
-  std::string method = "GET";      // "GET" / "POST" / "PUT" / "DELETE" / ...
+  HttpMethod method = HttpMethod::get();  // a token, checked on the way in
   std::string url;                 // full URL including scheme (http/https).
   HeaderList params;               // query params, appended to the URL
                                    // (percent-encoded) as ?k=v&...
@@ -404,7 +405,7 @@ inline std::string _http_join_path(const std::string& base_path,
 inline void _http_build_request(const HttpRequest& req, const std::string& path,
                                 const HeaderList& headers,
                                 httplib::Request& hreq) {
-  hreq.method = req.method;
+  hreq.method = req.method.str();
   hreq.path = path;
   bool has_ct = false;
   for (const auto& [k, v] : headers) {

@@ -3720,7 +3720,7 @@ throws `HttpError`; a bad `headers` value throws `TypeError`.
 | `Http.head(url, headers=nil, timeout=0, follow_redirects=true)` | response Object |
 | `Http.post(url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | response Object |
 | `Http.put(url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | response Object |
-| `Http.request(method, url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | response Object — any method (PATCH, OPTIONS, …) |
+| `Http.request(method, url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true)` | response Object — any method (PATCH, OPTIONS, …), sent as written. A method is an HTTP token (letters, digits, and ``!#$%&'*+-.^_`\|~``); anything else — a space, CR/LF, the empty string — is a `ValueError` naming it, before anything is sent |
 | `Http.sse(url, on_event, headers=nil, timeout=0, follow_redirects=true)` | response Object — opens a `GET` and streams Server-Sent Events to `on_event`; see below |
 | `Http.client(base_url, headers=nil, timeout=0, follow_redirects=true)` | a persistent client handle (base URL + default headers + connection reuse); see below |
 | `Http.server()` | an HTTP server handle (register routes + `static` + `ws`, then `listen`); see below |
@@ -3972,7 +3972,8 @@ api.get("/items", headers: {"Idempotency-Key": k})  # merged over the defaults
 api.close()                                         # release the connection
 ```
 
-A request method's first argument is a path: a leading-slash or bare relative
+A request method's first argument is a path (for `request`, the second, after
+the method — which is held to the same rule as `Http.request`'s): a leading-slash or bare relative
 path is joined onto `base_url` (`/me` → `…/v1/me`); an absolute URL (with its own
 scheme) bypasses `base_url` but still gets the default headers. Per-request
 `headers` are merged over the client's defaults (a per-key match overrides).

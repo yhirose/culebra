@@ -5686,10 +5686,10 @@ inline void common(JitValue* a, int64_t n, int base,
 }  // namespace _http_adapt
 
 // get/delete/head — slab: url, headers, timeout, follow_redirects, into.
-inline JitValue _ns_http_bodyless(JitValue* a, int64_t n, const char* method,
-                                  const char* ctx) {
+inline JitValue _ns_http_bodyless(JitValue* a, int64_t n,
+                                  culebra::HttpMethod method, const char* ctx) {
   culebra::http::HttpRequest req;
-  req.method = method;
+  req.method = std::move(method);
   req.url = _ns_adapt::require_sv(a[0], "url");
   _http_adapt::common(a, n, 1, req, ctx);
   JitHttpInto st;
@@ -5697,21 +5697,21 @@ inline JitValue _ns_http_bodyless(JitValue* a, int64_t n, const char* method,
   return _http_run_into(req, st, ctx);
 }
 inline JitValue _ns_http_get(JitValue* a, int64_t n) {
-  return _ns_http_bodyless(a, n, "GET", "Http.get");
+  return _ns_http_bodyless(a, n, culebra::HttpMethod::get(), "Http.get");
 }
 inline JitValue _ns_http_delete(JitValue* a, int64_t n) {
-  return _ns_http_bodyless(a, n, "DELETE", "Http.delete");
+  return _ns_http_bodyless(a, n, culebra::HttpMethod::del(), "Http.delete");
 }
 inline JitValue _ns_http_head(JitValue* a, int64_t n) {
-  return _ns_http_bodyless(a, n, "HEAD", "Http.head");
+  return _ns_http_bodyless(a, n, culebra::HttpMethod::head(), "Http.head");
 }
 
 // post/put — slab: url, body, content_type, headers, timeout,
 // follow_redirects, into.
-inline JitValue _ns_http_withbody(JitValue* a, int64_t n, const char* method,
-                                  const char* ctx) {
+inline JitValue _ns_http_withbody(JitValue* a, int64_t n,
+                                  culebra::HttpMethod method, const char* ctx) {
   culebra::http::HttpRequest req;
-  req.method = method;
+  req.method = std::move(method);
   req.url = _ns_adapt::require_sv(a[0], "url");
   _http_adapt::common(a, n, 3, req, ctx);
   JitHttpInto st;
@@ -5722,17 +5722,18 @@ inline JitValue _ns_http_withbody(JitValue* a, int64_t n, const char* method,
   return _http_run_into(req, st, ctx);
 }
 inline JitValue _ns_http_post(JitValue* a, int64_t n) {
-  return _ns_http_withbody(a, n, "POST", "Http.post");
+  return _ns_http_withbody(a, n, culebra::HttpMethod::post(), "Http.post");
 }
 inline JitValue _ns_http_put(JitValue* a, int64_t n) {
-  return _ns_http_withbody(a, n, "PUT", "Http.put");
+  return _ns_http_withbody(a, n, culebra::HttpMethod::put(), "Http.put");
 }
 
 // request — slab: method, url, body, content_type, headers, timeout,
 // follow_redirects, into.
 inline JitValue _ns_http_request(JitValue* a, int64_t n) {
   culebra::http::HttpRequest req;
-  req.method = _ns_adapt::require_sv(a[0], "method");
+  req.method = culebra::HttpMethod::checked(
+      _ns_adapt::require_sv(a[0], "method"), "Http.request", 0, 0);
   req.url = _ns_adapt::require_sv(a[1], "url");
   _http_adapt::common(a, n, 4, req, "Http.request");
   JitHttpInto st;
@@ -5749,8 +5750,7 @@ inline JitValue _ns_http_request(JitValue* a, int64_t n) {
 // headers@2/timeout@3/follow@4 (its params@base+4 lands out of slab → nil).
 inline JitValue _ns_http_sse(JitValue* a, int64_t n) {
   const char* ctx = "Http.sse";
-  culebra::http::HttpRequest req;
-  req.method = "GET";
+  culebra::http::HttpRequest req;  // GET, the HttpRequest default
   req.url = _ns_adapt::require_sv(a[0], "url");
   // interp's on_event is a typed Function param
   auto* cb = _ns_adapt::require_func(a[1], "on_event");
@@ -5819,7 +5819,8 @@ inline void _jit_http_client_strobj(JitValue v, culebra::http::HeaderList& out,
 }
 
 inline JitValue _jit_http_client_bodyless(JitValue self, int64_t n,
-                                          JitValue* args, const char* method,
+                                          JitValue* args,
+                                          culebra::HttpMethod method,
                                           const char* ctx) {
   int64_t id = _jit_http_client_id(self);
   if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "path");
@@ -5844,7 +5845,8 @@ inline JitValue _jit_http_client_bodyless(JitValue self, int64_t n,
 }
 
 inline JitValue _jit_http_client_withbody(JitValue self, int64_t n,
-                                          JitValue* args, const char* method,
+                                          JitValue* args,
+                                          culebra::HttpMethod method,
                                           const char* ctx) {
   int64_t id = _jit_http_client_id(self);
   if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "path");
@@ -5872,27 +5874,27 @@ inline JitValue _jit_http_client_withbody(JitValue self, int64_t n,
 inline void _jit_http_client_get(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                 int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
-  { *__ret = _jit_http_client_bodyless(self, n, args, "GET", "client.get"); return; }
+  { *__ret = _jit_http_client_bodyless(self, n, args, culebra::HttpMethod::get(), "client.get"); return; }
 }
 inline void _jit_http_client_delete(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                    int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
-  { *__ret = _jit_http_client_bodyless(self, n, args, "DELETE", "client.delete"); return; }
+  { *__ret = _jit_http_client_bodyless(self, n, args, culebra::HttpMethod::del(), "client.delete"); return; }
 }
 inline void _jit_http_client_head(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                  int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
-  { *__ret = _jit_http_client_bodyless(self, n, args, "HEAD", "client.head"); return; }
+  { *__ret = _jit_http_client_bodyless(self, n, args, culebra::HttpMethod::head(), "client.head"); return; }
 }
 inline void _jit_http_client_post(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                  int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
-  { *__ret = _jit_http_client_withbody(self, n, args, "POST", "client.post"); return; }
+  { *__ret = _jit_http_client_withbody(self, n, args, culebra::HttpMethod::post(), "client.post"); return; }
 }
 inline void _jit_http_client_put(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                 int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
-  { *__ret = _jit_http_client_withbody(self, n, args, "PUT", "client.put"); return; }
+  { *__ret = _jit_http_client_withbody(self, n, args, culebra::HttpMethod::put(), "client.put"); return; }
 }
 inline void _jit_http_client_request(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                     int64_t n, JitValue* args) {
@@ -5911,7 +5913,8 @@ inline void _jit_http_client_request(JitValue* __ret, JitClosure*, int8_t self_t
   };
   *__ret = _jit_at_call_site([&] {
     culebra::http::HttpRequest req;
-    req.method = std::string(_culebra_str_view(args[0].tag, args[0].data));
+    req.method = culebra::HttpMethod::checked(
+        _culebra_str_view(args[0].tag, args[0].data), "client.request", 0, 0);
     req.url = std::string(_culebra_str_view(args[1].tag, args[1].data));
     _jit_http_client_strobj(at(4), req.headers, "client.request", "headers",
                             "header");
