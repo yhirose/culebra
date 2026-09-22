@@ -2321,6 +2321,14 @@ throw値の`kind`は次のいずれか:
 シェルを介さないのでクォートやインジェクションの心配がありません
 （`["git", "commit", "-m", msg]`は`msg`をそのまま渡します）。
 
+`Proc`が起動するコマンドはそれぞれ自分専用のプロセスグループ（POSIX）／
+ジョブオブジェクト（Windows）を持つので、この名前空間が行うkillは全て
+（`timeout:`、`Proc.all`の`fail_fast:`、`Proc.race`の敗者、`h.kill()`、
+未`wait()`の`Proc.spawn`ハンドルへのGCの`SIGKILL`）、直接の子だけでなく
+そのプロセスが生んだツリー全体に届きます。自分自身のグループ／ジョブを
+新たに作る子孫（デーモン化するサーバなど）はそこから抜けるので、別の
+手段で届かせる必要があります。
+
 ### `Proc.run(cmd: Array<String>, cwd=nil, env=nil, stdin="", check=false, timeout=0, share=nil, inherit_env=true) -> Object`
 
 `cmd`を完了まで実行し、結果Objectを返します:
@@ -2360,9 +2368,10 @@ throw値の`kind`は次のいずれか:
   返す代わりに`ProcessError`をthrowします（既定: `false`）。
 - `timeout: Long` — ミリ秒。これを超えて走るとコマンドはkillされ（`SIGTERM` →
   短い猶予の後`SIGKILL`）、結果は`ok: false` / `timed_out: true`になります
-  （既定: `0` = 無制限）。**直接の子だけをkill**し、その子が生んだ孫はkillしません。
-  stdout/stderrを早期に閉じて走り続けるプロセスには
-  timeoutが届かないことがあります。
+  （既定: `0` = 無制限）。**プロセスツリー全体**がkillされます — コマンドは
+  自分専用のプロセスグループ（POSIX）／ジョブオブジェクト（Windows）の中で
+  走るので、そこから抜けていない子孫も道連れになります。stdout/stderrを
+  早期に閉じて走り続けるプロセスにはtimeoutが届かないことがあります。
 
 **非0終了**や**シグナル死**はエラーではなく通常の結果です — `ok` / `code` /
 `signal`で分岐してください。**起動失敗**（実行ファイルが存在しない等）や
@@ -2471,8 +2480,9 @@ Object（通常の`{code, stdout, stderr, ok, signal, error, timed_out}`）を�
 起動失敗は`Proc.run`と同様`ProcessError`をthrowし、`cwd` / `env` / `stdin` /
 `share` / `inherit_env`の意味も`Proc.run`と同じです。一度もwaitされずに
 捨てられたハンドルはGCがreapし（子を`SIGKILL`）、ゾンビとして残りません — ただし
-明示的に`wait()` / `kill()`する方が明快です。他のverbと同様、シグナルは直接の子
-にのみ送られます（孫には届きません）。
+明示的に`wait()` / `kill()`する方が明快です。`Proc.run`の`timeout:`と同様、
+`kill()`（およびGC自身の`SIGKILL`）はプロセスツリー全体に届きます — 詳細は
+本節冒頭を参照。
 
 ```culebra
 # doctest: skip — 外部プログラムを起こす

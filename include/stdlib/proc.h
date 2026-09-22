@@ -84,6 +84,7 @@ struct SpawnResult {
   int out_fd = -1, err_fd = -1;
   int err_no = 0;            // errno when !spawned.
   std::string err_what;     // failing step when !spawned.
+  bool own_pgroup = false;  // POSIX: pid leads its own group — see Child.
 };
 
 // What environment a child gets. Two independent facts, kept together because
@@ -344,6 +345,9 @@ struct Child {
   long deadline_ms = 0;       // absolute now_ms() deadline; 0 == no timeout.
   long kill_deadline_ms = 0;  // SIGKILL-after-SIGTERM deadline; 0 == not yet sent.
   bool timed_out = false;     // killed for exceeding deadline_ms.
+  // True when `pid` leads its own process group (== pid), so a kill can
+  // reach any grandchildren it spawned via killpg — see spawn_child.
+  bool own_pgroup = false;
 
   Child() = default;
   Child(Child&& o) noexcept { *this = std::move(o); }
@@ -355,7 +359,7 @@ struct Child {
       out = std::move(o.out); err = std::move(o.err);
       outcome = std::move(o.outcome); done = o.done;
       deadline_ms = o.deadline_ms; kill_deadline_ms = o.kill_deadline_ms;
-      timed_out = o.timed_out;
+      timed_out = o.timed_out; own_pgroup = o.own_pgroup;
       o.pid = -1; o.in_fd = o.out_fd = o.err_fd = -1;
       o.in_open = o.out_open = o.err_open = false;
     }
@@ -463,6 +467,11 @@ inline Child spawn_child(
 
   if (pid == 0) {
     // ---- child: only async-signal-safe calls between fork and exec ----
+    // Its own process group (pgid == its own pid), so a kill can reach any
+    // grandchildren it spawns via killpg — the parent makes the matching call
+    // below too (setpgid is async-signal-safe either side of the race; the
+    // parent's return value is the one spawn_child trusts, see below).
+    setpgid(0, 0);
     dup2(in_pipe[0], STDIN_FILENO);
     dup2(out_pipe[1], STDOUT_FILENO);
     dup2(err_pipe[1], STDERR_FILENO);
@@ -496,6 +505,13 @@ inline Child spawn_child(
 
   // ---- parent ----
   c.pid = pid;
+  // Race-free the standard way (matches shell job control): both sides call
+  // setpgid, and whichever runs first wins. EACCES means the child already
+  // exec'd — i.e. its own call already won — so that counts as success too;
+  // anything else (EPERM from a sandbox that forbids process groups, ESRCH
+  // because the child already died) falls back to signalling `pid` alone,
+  // the pre-existing behavior, rather than trust a pgid that may not exist.
+  c.own_pgroup = (setpgid(pid, pid) == 0) || errno == EACCES;
   close(in_pipe[0]);
   close(out_pipe[1]);
   close(err_pipe[1]);
@@ -619,6 +635,15 @@ inline bool poll_step(std::vector<Child>& running, char* buf, size_t buflen,
   return true;
 }
 
+// Signal `c`: the whole process group (reaching any grandchildren it spawned)
+// when spawn_child won it one, else just the child itself — the one place
+// that answers "how do I signal this child", so enforce_deadlines and
+// kill_and_reap can't drift into signalling the pid directly again.
+inline void signal_child(const Child& c, int sig) {
+  if (c.own_pgroup) killpg(c.pid, sig);
+  else kill(c.pid, sig);
+}
+
 // Enforces per-child timeouts: SIGTERM a child past its deadline, escalate to
 // SIGKILL after a grace period. Marks timed_out. Returns the earliest absolute
 // wake time across pending deadlines (-1 if none) so the caller can size its
@@ -631,11 +656,11 @@ inline int64_t enforce_deadlines(std::vector<Child>& running, int64_t now) {
   for (auto& c : running) {
     if (c.pid <= 0) continue;
     if (c.kill_deadline_ms > 0) {
-      if (now >= c.kill_deadline_ms) kill(c.pid, SIGKILL);
+      if (now >= c.kill_deadline_ms) signal_child(c, SIGKILL);
       else consider(c.kill_deadline_ms);
     } else if (c.deadline_ms > 0) {
       if (now >= c.deadline_ms) {
-        kill(c.pid, SIGTERM);
+        signal_child(c, SIGTERM);
         c.timed_out = true;
         c.kill_deadline_ms = now + kKillGraceMs;
         consider(c.kill_deadline_ms);
@@ -677,7 +702,7 @@ inline RunOutcome reap_child(Child& c) {
 // parallel rather than serially.
 inline void kill_and_reap(std::vector<Child>& cs) {
   for (auto& c : cs) {
-    if (c.pid > 0) kill(c.pid, SIGKILL);
+    if (c.pid > 0) signal_child(c, SIGKILL);
     if (c.in_fd >= 0)  { close(c.in_fd);  c.in_fd = -1; }
     if (c.out_fd >= 0) { close(c.out_fd); c.out_fd = -1; }
     if (c.err_fd >= 0) { close(c.err_fd); c.err_fd = -1; }
@@ -989,6 +1014,13 @@ inline std::string build_env_block(const EnvSpec* spec) {
 // registry entry). ok=false with err_no/err_what on any failure.
 struct SpawnHandles {
   HANDLE hProcess = nullptr, out_rd = nullptr, err_rd = nullptr, in_wr = nullptr;
+  // A Job Object the child (and, transitively, any grandchildren it spawns —
+  // a child of a job is itself in the job unless it opts out) belongs to, so
+  // TerminateJobObject can reach the whole tree the way killpg does on POSIX.
+  // Null when CreateJobObject/AssignProcessToJobObject failed: the caller
+  // then falls back to TerminateProcess on hProcess alone, same as before
+  // this existed.
+  HANDLE hJob = nullptr;
   bool ok = false;
   int err_no = 0;
   const char* err_what = "";
@@ -1051,18 +1083,35 @@ inline SpawnHandles spawn_process(
   si.StartupInfo.hStdError = err_wr;
   si.lpAttributeList = attr_list;
   PROCESS_INFORMATION pi{};
+  // CREATE_SUSPENDED: the child must not run a single instruction — let alone
+  // spawn a grandchild — before AssignProcessToJobObject below places it (and
+  // so far only it) in the job. Assigning after an unsuspended CreateProcess
+  // would race a fast-exiting or fast-forking child.
   BOOL ok = CreateProcessA(nullptr, cmdline.data(), nullptr, nullptr, TRUE,
-                           CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT,
+                           CREATE_NO_WINDOW | CREATE_SUSPENDED |
+                               EXTENDED_STARTUPINFO_PRESENT,
                            envblock.empty() ? nullptr : envblock.data(),
                            cwds.empty() ? nullptr : cwds.c_str(),
                            &si.StartupInfo, &pi);
   DeleteProcThreadAttributeList(attr_list);
   if (!ok) return fail("CreateProcess");
-  CloseHandle(pi.hThread);
   close_handle(out_wr); close_handle(err_wr);
   close_handle(in_rd);  // child's ends, in the parent.
 
+  // Best-effort: a job we can't create or assign to just means killing this
+  // child later won't reach its grandchildren (h.hJob stays null, matching
+  // the pre-Job-Object behavior) — not a spawn failure, so still resume and
+  // hand back a live child either way.
+  HANDLE job = CreateJobObjectA(nullptr, nullptr);
+  if (job && !AssignProcessToJobObject(job, pi.hProcess)) {
+    CloseHandle(job);
+    job = nullptr;
+  }
+  ResumeThread(pi.hThread);
+  CloseHandle(pi.hThread);
+
   h.hProcess = pi.hProcess; h.out_rd = out_rd; h.err_rd = err_rd; h.in_wr = in_wr;
+  h.hJob = job;
   h.ok = true;
   return h;
 }
@@ -1097,6 +1146,7 @@ inline void feed_and_close_stdin(HANDLE in_wr, const std::string* sd) {
 // Move-only; the dtor joins the readers and closes the handles.
 struct WinChild {
   HANDLE hProcess = nullptr, out_rd = nullptr, err_rd = nullptr;
+  HANDLE hJob = nullptr;  // see SpawnHandles::hJob; null == no job (fallback).
   std::unique_ptr<std::string> out = std::make_unique<std::string>();
   std::unique_ptr<std::string> err = std::make_unique<std::string>();
   std::thread out_th, err_th;
@@ -1117,12 +1167,12 @@ struct WinChild {
     if (this != &o) {
       join_readers();   // our threads must be non-joinable before overwriting
       close_handles();  // and our handles released before taking o's
-      hProcess = o.hProcess; out_rd = o.out_rd; err_rd = o.err_rd;
+      hProcess = o.hProcess; out_rd = o.out_rd; err_rd = o.err_rd; hJob = o.hJob;
       out = std::move(o.out); err = std::move(o.err);
       out_th = std::move(o.out_th); err_th = std::move(o.err_th);
       index = o.index; deadline_ms = o.deadline_ms;
       timed_out = o.timed_out; done = o.done; outcome = std::move(o.outcome);
-      o.hProcess = o.out_rd = o.err_rd = nullptr;
+      o.hProcess = o.out_rd = o.err_rd = o.hJob = nullptr;
     }
     return *this;
   }
@@ -1133,6 +1183,7 @@ struct WinChild {
   void join_readers() { _detail::join_readers(out_th, err_th); }
   void close_handles() {
     close_handle(out_rd); close_handle(err_rd); close_handle(hProcess);
+    close_handle(hJob);
   }
 };
 
@@ -1148,10 +1199,21 @@ inline WinChild spawn_child(
     return c;
   }
   c.hProcess = h.hProcess; c.out_rd = h.out_rd; c.err_rd = h.err_rd;
+  c.hJob = h.hJob;
   c.out_th = std::thread(drain_pipe, h.out_rd, c.out.get());
   c.err_th = std::thread(drain_pipe, h.err_rd, c.err.get());
   feed_and_close_stdin(h.in_wr, stdin_data);
   return c;
+}
+
+// Terminate `c` (a WinChild or, once WinLive is declared below, a live-handle
+// registry entry — both carry hProcess + hJob): the whole job (reaching any
+// grandchildren) when spawn_process won it one, else just the process itself
+// — the Windows analogue of the POSIX side's signal_child.
+template <typename T>
+inline void terminate_with_job(const T& c, UINT exit_code) {
+  if (c.hJob) TerminateJobObject(c.hJob, exit_code);
+  else if (c.hProcess) TerminateProcess(c.hProcess, exit_code);
 }
 
 inline ProcResult decode_child(WinChild& c) {
@@ -1184,19 +1246,18 @@ inline RunOutcome reap_child(WinChild& c) {
 }
 
 inline void kill_and_reap(std::vector<WinChild>& cs) {
-  for (auto& c : cs)
-    if (c.hProcess) TerminateProcess(c.hProcess, 1);
+  for (auto& c : cs) terminate_with_job(c, 1);
   for (auto& c : cs) c.join_readers();  // dtor closes handles.
 }
 
-// TerminateProcess any child past its deadline (flagging it timed_out); return
+// Terminate any child past its deadline (flagging it timed_out); return
 // the ms until the nearest remaining deadline, or -1 when none is pending.
 inline long long enforce_deadlines(std::vector<WinChild>& running, long long now) {
   long long nearest = -1;
   for (auto& c : running) {
     if (c.deadline_ms == 0 || c.timed_out) continue;
     if (now >= c.deadline_ms) {
-      if (c.hProcess) TerminateProcess(c.hProcess, 1);
+      terminate_with_job(c, 1);
       c.timed_out = true;
     } else {
       long long rem = c.deadline_ms - now;
@@ -1410,6 +1471,7 @@ inline SpawnResult spawn_detached(
   sr.pid = c.pid;
   sr.out_fd = c.out_fd;
   sr.err_fd = c.err_fd;
+  sr.own_pgroup = c.own_pgroup;
   // Detach fds + pid from the Child so its destructor leaves them to the handle.
   c.out_fd = c.err_fd = -1;
   c.out_open = c.err_open = false;
@@ -1417,8 +1479,10 @@ inline SpawnResult spawn_detached(
   return sr;
 }
 
-inline void kill_pid(int64_t pid, int sig) {
-  if (pid > 0) kill(static_cast<pid_t>(pid), sig);
+inline void kill_pid(int64_t pid, int sig, bool own_pgroup) {
+  if (pid <= 0) return;
+  if (own_pgroup) killpg(static_cast<pid_t>(pid), sig);
+  else kill(static_cast<pid_t>(pid), sig);
 }
 
 // Non-blocking: returns true and fills `status` if the child has exited (and
@@ -1432,27 +1496,42 @@ inline bool try_reap(int64_t pid, int& status) {
 }
 
 // Adopts pid + out/err fds into a Child to reuse the drain+reap machinery.
-inline _detail::Child _adopt(int64_t pid, int& out_fd, int& err_fd) {
+inline _detail::Child _adopt(int64_t pid, int& out_fd, int& err_fd,
+                             bool own_pgroup = false) {
   _detail::Child c;
   c.pid = static_cast<pid_t>(pid);
   c.out_fd = out_fd;
   c.err_fd = err_fd;
   c.out_open = out_fd >= 0;
   c.err_open = err_fd >= 0;
+  c.own_pgroup = own_pgroup;
   out_fd = err_fd = -1;  // ownership moves into the Child.
   return c;
 }
 
 // Blocking: drains out/err to EOF and waitpid()s -> full ProcResult. Consumes
-// the fds (sets them to -1).
-inline ProcResult wait_handle(int64_t pid, int& out_fd, int& err_fd) {
+// the fds (sets them to -1). Interruptible like run_command: a pending
+// Ctrl+C / isolate cancel SIGKILLs the child (the same ScopeKiller unwind
+// run_command uses — reaching any grandchildren too when `own_pgroup`), so
+// the wait always finishes its own reap before the cooperative Interrupted
+// reaches the caller — the pid is never left half reaped for a later
+// wait()/poll()/drop() to stumble over.
+inline ProcResult wait_handle(int64_t pid, int& out_fd, int& err_fd,
+                              bool own_pgroup) {
   std::vector<_detail::Child> running;
-  running.push_back(_adopt(pid, out_fd, err_fd));
+  running.push_back(_adopt(pid, out_fd, err_fd, own_pgroup));
+  _detail::ScopeKiller killer(running);
   char buf[65536];
   while (running[0].out_open || running[0].err_open) {
-    if (!_detail::poll_step(running, buf, sizeof(buf), -1)) break;
+    if (interrupt_pending()) throw_if_interrupted();  // killer reaps
+    if (!_detail::poll_step(running, buf, sizeof(buf),
+                            _detail::clamp_interrupt_timeout(-1)))
+      break;
   }
-  return std::move(_detail::reap_child(running[0]).result);
+  ProcResult r = std::move(_detail::reap_child(running[0]).result);
+  killer.disarm();
+  throw_if_interrupted();  // a Ctrl+C that landed as the child finished
+  return r;
 }
 
 // After try_reap() has reaped the child: drain remaining buffered out/err and
@@ -1477,6 +1556,7 @@ namespace _detail {
 // node-allocated), so the reader threads keep a valid pointer to them.
 struct WinLive {
   HANDLE hProcess = nullptr, out_rd = nullptr, err_rd = nullptr;
+  HANDLE hJob = nullptr;  // see SpawnHandles::hJob; null == no job (fallback).
   std::string out, err;
   std::thread out_th, err_th;
 };
@@ -1501,6 +1581,7 @@ inline std::mutex& live_mutex() {
 inline void live_join_close(WinLive& lv) {
   join_readers(lv.out_th, lv.err_th);
   close_handle(lv.out_rd); close_handle(lv.err_rd); close_handle(lv.hProcess);
+  close_handle(lv.hJob);
 }
 }  // namespace _detail
 
@@ -1522,6 +1603,7 @@ inline SpawnResult spawn_detached(
     lv = &_detail::live_registry()[id];  // address-stable map node
   }
   lv->hProcess = h.hProcess; lv->out_rd = h.out_rd; lv->err_rd = h.err_rd;
+  lv->hJob = h.hJob;
   lv->out_th = std::thread(_detail::drain_pipe, h.out_rd, &lv->out);
   lv->err_th = std::thread(_detail::drain_pipe, h.err_rd, &lv->err);
   const std::string* sp = stdin_data.empty() ? nullptr : &stdin_data;
@@ -1530,15 +1612,18 @@ inline SpawnResult spawn_detached(
   sr.pid = id;
   sr.out_fd = (int)id;  // drain_reaped keys off the fd; err_fd is unused.
   sr.err_fd = -1;
+  sr.own_pgroup = h.hJob != nullptr;
   return sr;
 }
 
-inline void kill_pid(int64_t id, int /*sig*/) {
+// `own_pgroup` is unused here (Windows already knows from the registry
+// entry's own hJob, looked up by `id`) — kept so bindings.h can call this
+// with the same argument list on both platforms.
+inline void kill_pid(int64_t id, int /*sig*/, bool /*own_pgroup*/) {
   std::lock_guard<std::mutex> g(_detail::live_mutex());
   auto& reg = _detail::live_registry();
   auto it = reg.find(id);
-  if (it != reg.end() && it->second.hProcess)
-    TerminateProcess(it->second.hProcess, 1);
+  if (it != reg.end()) _detail::terminate_with_job(it->second, 1);
 }
 
 // Non-blocking: true (and fills `status` with the exit code) once the child has
@@ -1556,9 +1641,14 @@ inline bool try_reap(int64_t id, int& status) {
 }
 
 // Blocking: wait for exit, drain out/err to EOF, decode, and drop the entry.
-// `id` arrives as pid. The lock is dropped across the INFINITE wait so other
-// handle ops make progress; the map node stays valid (single-owner id).
-inline ProcResult wait_handle(int64_t id, int&, int&) {
+// `id` arrives as pid. The lock is dropped across the wait so other handle
+// ops make progress; the map node stays valid (single-owner id). Interruptible
+// like the POSIX side's run_command: the wait wakes every kInterruptPollMs,
+// and a pending Ctrl+C / isolate cancel terminates the child (its whole job,
+// reaching grandchildren, when it has one) so the loop still finishes
+// (registry entry erased, output drained) before the cooperative Interrupted
+// reaches the caller. `own_pgroup` is unused (see kill_pid above).
+inline ProcResult wait_handle(int64_t id, int&, int&, bool /*own_pgroup*/) {
   ProcResult r;
   _detail::WinLive* lv = nullptr;
   {
@@ -1570,7 +1660,16 @@ inline ProcResult wait_handle(int64_t id, int&, int&) {
   }
   DWORD code = 0;
   if (lv->hProcess) {
-    WaitForSingleObject(lv->hProcess, INFINITE);
+    bool terminated = false;
+    for (;;) {
+      if (interrupt_pending() && !terminated) {
+        _detail::terminate_with_job(*lv, 1);
+        terminated = true;
+      }
+      if (WaitForSingleObject(lv->hProcess, (DWORD)_detail::kInterruptPollMs) ==
+          WAIT_OBJECT_0)
+        break;
+    }
     GetExitCodeProcess(lv->hProcess, &code);
   }
   _detail::live_join_close(*lv);
@@ -1582,6 +1681,7 @@ inline ProcResult wait_handle(int64_t id, int&, int&) {
     std::lock_guard<std::mutex> g(_detail::live_mutex());
     _detail::live_registry().erase(id);
   }
+  throw_if_interrupted();  // a Ctrl+C that landed as the child finished
   return r;
 }
 

@@ -224,6 +224,22 @@ assert_eq(tos[1].stdout.trim(), "ok")
 // timed_out is false on every non-timeout result (uniform shape).
 assert_eq(Proc.run(["echo", "x"]).timed_out, false)
 
+// --- timeout reaches the whole process tree, not just the direct child ---
+// The child is a shell that backgrounds a grandchild and waits on it, so a
+// kill that reached only the direct child (the shell) would leave the
+// grandchild running. It writes a marker after a short sleep; if the kill
+// missed it, the marker shows up well within the check window below.
+let gc_scratch = FS.mkdtemp("culebra_proc_grandchild_test_")
+let gc_marker = FS.join(gc_scratch, "marker")
+let gc = Proc.run(
+  ["sh", "-c", "sleep 0.2 && echo done > " + gc_marker + " & wait"],
+  timeout: 50,
+)
+assert_true(gc.timed_out)
+Time.sleep(0.5)
+assert_false(FS.exists(gc_marker))
+FS.remove(gc_scratch, recursive: true)
+
 // --- fail_fast: first failure throws ProcessError, the rest are killed ---
 let ff = try {
   Proc.all([["sleep", "5"], ["false"], ["sleep", "5"]], fail_fast: true)
@@ -291,6 +307,19 @@ doomed.kill()
 let dr = doomed.wait()
 assert_eq(dr.ok, false)
 assert_true(dr.signal != nil)
+
+// h.kill() reaches the whole process tree too (same shape as the timeout
+// case above).
+let hk_scratch = FS.mkdtemp("culebra_proc_grandchild_test_")
+let hk_marker = FS.join(hk_scratch, "marker")
+let hk = Proc.spawn(
+  ["sh", "-c", "sleep 0.2 && echo done > " + hk_marker + " & wait"])
+Time.sleep(0.05)
+hk.kill()
+hk.wait()
+Time.sleep(0.5)
+assert_false(FS.exists(hk_marker))
+FS.remove(hk_scratch, recursive: true)
 
 // stdin is fed at spawn time.
 let pipe = Proc.spawn(["cat"], stdin: "fed\n")

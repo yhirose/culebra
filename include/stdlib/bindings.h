@@ -2609,6 +2609,9 @@ inline bool _jit_handle_done(JitObject* h) {
   return i != static_cast<size_t>(-1) &&
          h->slots[i].value.tag == TAG_BOOL && h->slots[i].value.data;
 }
+inline bool _jit_handle_own_pgroup(JitObject* h) {
+  return _jit_handle_long(h, "_pg") != 0;
+}
 // Returns the cached _result with a +1 for the caller.
 inline JitValue _jit_handle_cached(JitObject* h) {
   size_t i = h->find_slot("_result");
@@ -2636,18 +2639,28 @@ inline void _jit_handle_wait(JitValue* __ret, JitClosure*, int8_t self_tag, int6
                                             int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   auto* h = reinterpret_cast<JitObject*>(self.data);
+  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
   JitValue ret;
   if (_jit_handle_done(h)) {
     ret = _jit_handle_cached(h);
   } else {
     int out_fd = static_cast<int>(_jit_handle_long(h, "_out"));
     int err_fd = static_cast<int>(_jit_handle_long(h, "_err"));
-    auto pr = culebra::proc::wait_handle(_jit_handle_long(h, "_pid"), out_fd,
-                                         err_fd);
-    ret = _jit_handle_finish(
-        h, _culebra_proc_result_to_object(std::move(pr), 0, 0));
+    int64_t pid = _jit_handle_long(h, "_pid");
+    bool own_pgroup = _jit_handle_own_pgroup(h);
+    try {
+      auto pr = culebra::proc::wait_handle(pid, out_fd, err_fd, own_pgroup);
+      ret = _jit_handle_finish(
+          h, _culebra_proc_result_to_object(std::move(pr), 0, 0));
+    } catch (const culebra::Interrupted&) {
+      // wait_handle always SIGKILLs + fully reaps the child before throwing:
+      // the pid/fds are already gone, so mark done (no cached result) —
+      // otherwise a later wait()/poll()/drop() would retry against a pid the
+      // OS may since have reused for an unrelated process.
+      h->set_or_append("_done", JitValue{TAG_BOOL, 1}, true);
+      throw;
+    }
   }
-  culebra_runtime_value_release(self.tag, self.data);
   { *__ret = ret; return; }
 }
 inline void _jit_handle_poll(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
@@ -2679,7 +2692,8 @@ inline void _jit_handle_kill(JitValue* __ret, JitClosure*, int8_t self_tag, int6
   int sig = (n >= 1 && args[0].tag == TAG_LONG)
                 ? static_cast<int>(args[0].data) : 15;
   if (!_jit_handle_done(h)) {
-    culebra::proc::kill_pid(_jit_handle_long(h, "_pid"), sig);
+    culebra::proc::kill_pid(_jit_handle_long(h, "_pid"), sig,
+                            _jit_handle_own_pgroup(h));
   }
   culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_NIL, 0}; return; }
@@ -2692,18 +2706,21 @@ inline void _jit_handle_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int6
   int out_fd = static_cast<int>(_jit_handle_long(h, "_out"));
   int err_fd = static_cast<int>(_jit_handle_long(h, "_err"));
   int64_t pid = _jit_handle_long(h, "_pid");
-  culebra::proc::kill_pid(pid, SIGKILL);
-  culebra::proc::wait_handle(pid, out_fd, err_fd);
+  bool own_pgroup = _jit_handle_own_pgroup(h);
+  culebra::proc::kill_pid(pid, SIGKILL, own_pgroup);
+  culebra::proc::wait_handle(pid, out_fd, err_fd, own_pgroup);
   h->set_or_append("_done", JitValue{TAG_BOOL, 1}, true);
   { *__ret = {TAG_NIL, 0}; return; }
 }
 
 inline JitValue _culebra_proc_build_handle(int64_t pid, int out_fd,
-                                                      int err_fd) {
+                                                      int err_fd,
+                                                      bool own_pgroup) {
   auto* h = culebra_runtime_object_new();
   h->set_or_append("_pid", JitValue{TAG_LONG, pid}, true);
   h->set_or_append("_out", JitValue{TAG_LONG, out_fd}, true);
   h->set_or_append("_err", JitValue{TAG_LONG, err_fd}, true);
+  h->set_or_append("_pg", JitValue{TAG_BOOL, own_pgroup ? 1 : 0}, true);
   h->set_or_append("_done", JitValue{TAG_BOOL, 0}, true);
   h->set_or_append("_result", JitValue{TAG_NIL, 0}, true);
   // A native handle is not Sendable — reject it at the serialize boundary
@@ -3963,7 +3980,7 @@ inline JitValue _culebra_proc_spawn_build(
                         std::system_category().message(sr.err_no)),
         line, col);
   }
-  return _culebra_proc_build_handle(sr.pid, sr.out_fd, sr.err_fd);
+  return _culebra_proc_build_handle(sr.pid, sr.out_fd, sr.err_fd, sr.own_pgroup);
 }
 
 // Positional Proc.spawn(cmd) (no kwargs) — trampoline / AOT.

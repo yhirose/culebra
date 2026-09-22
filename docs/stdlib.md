@@ -2383,6 +2383,14 @@ output. The command is an `Array<String>` — `cmd[0]` is the executable
 quoting or injection concerns: `["git", "commit", "-m", msg]` passes
 `msg` verbatim however it's spelled.
 
+Every command spawned by `Proc` starts its own process group (POSIX) or
+job object (Windows), so every kill this namespace does — `timeout:`,
+`Proc.all`'s `fail_fast:`, `Proc.race`'s losers, `h.kill()`, and the GC's
+`SIGKILL` of an unreaped `Proc.spawn` handle — reaches the whole tree it
+spawned, not just the direct child. A descendant that starts its own group
+or job (a daemonizing server, for instance) opts itself back out and has to
+be reached another way.
+
 ### `Proc.run(cmd: Array<String>, cwd=nil, env=nil, stdin="", check=false, timeout=0, share=nil, inherit_env=true) -> Object`
 
 Runs `cmd` to completion and returns a result Object:
@@ -2424,10 +2432,11 @@ Keyword arguments:
   throws `ProcessError` instead of returning a `{ok: false}` result (default: `false`).
 - `timeout: Long` — milliseconds; if the command runs longer it is killed
   (`SIGTERM`, then `SIGKILL` after a short grace) and the result has
-  `ok: false` and `timed_out: true` (default: `0` = no limit). Only the
-  command itself is killed, not any grandchildren it spawned. A process
-  that closes stdout/stderr but keeps
-  running may not be reached by the timeout.
+  `ok: false` and `timed_out: true` (default: `0` = no limit). The whole
+  process tree is killed — the command runs in its own process group
+  (POSIX) or job object (Windows), and any descendant that hasn't broken
+  out of it (by starting its own group/job) dies too. A process that closes
+  stdout/stderr but keeps running may not be reached by the timeout.
 
 A **non-zero exit** or **signal death** is a normal result, not an error —
 branch on `ok` / `code` / `signal`. Only a **spawn failure** (e.g. the
@@ -2546,8 +2555,9 @@ signal, error, timed_out}`). A spawn failure throws `ProcessError`, like
 `Proc.run`, whose `cwd` / `env` / `stdin` / `share` / `inherit_env` mean the
 same here. A handle that is dropped without ever being waited on is reaped by
 the GC (the child is `SIGKILL`ed), so it won't linger as a zombie — but
-explicitly `wait()`ing or `kill()`ing is clearer. As with the other verbs, only
-the direct child is signalled, not any grandchildren.
+explicitly `wait()`ing or `kill()`ing is clearer. As with `Proc.run`'s
+`timeout:`, `kill()` (and the GC's own `SIGKILL`) reaches the whole process
+tree, not just the direct child — see the note at the top of this section.
 
 ```culebra
 # doctest: skip — spawns external programs

@@ -186,6 +186,18 @@ Proc.run(["sh", "-c", "trap '' INT; sleep 30"])
 IO.eprint("GOT\n")
 EOF
 
+# A program blocked in a live Proc.spawn handle's h.wait() is interruptible the
+# same way: wait_handle's own poll loop wakes periodically, SIGKILLs the child
+# (via its process group, so the child's SIGINT trap below can't save it), and
+# raises the cooperative Interrupted. Before the fix wait_handle polled with an
+# unconditional -1 (block forever) timeout and never checked the flag at all.
+cat > "$TMP/proc_spawn.cul" <<'EOF'
+defer { IO.eprint("DEFER\n") }
+let h = Proc.spawn(["sh", "-c", "trap '' INT; sleep 30"])
+h.wait()
+IO.eprint("GOT\n")
+EOF
+
 # check_proc <desc> -- <command...>
 # Runs a program blocked in Proc.run on a SIGINT-ignoring child, sends one
 # SIGINT, and expects an uncaught Interrupted: the defer runs and it exits 130
@@ -369,6 +381,7 @@ run_vm_group() {
   check_stdin "vm stdin" -- "$CULEBRA" --vm "$TMP/stdin.cul"
   check_http  "vm http"  -- "$CULEBRA" --vm "$TMP/http.cul"
   check_proc  "vm proc"  -- "$CULEBRA" --vm "$TMP/proc.cul"
+  check_proc  "vm proc_spawn" -- "$CULEBRA" --vm "$TMP/proc_spawn.cul"
   check_signotify "vm signotify" -- "$CULEBRA" --vm "$TMP/signotify.cul"
   check_repl  "vm repl" 1.5 -- "$CULEBRA" --vm
   exit $fail
@@ -383,6 +396,7 @@ run_jit_group() {
   check_stdin "jit stdin" -- "$CULEBRA" --jit "$TMP/stdin.cul"
   check_http  "jit http"  -- "$CULEBRA" --jit "$TMP/http.cul"
   check_proc  "jit proc"  -- "$CULEBRA" --jit "$TMP/proc.cul"
+  check_proc  "jit proc_spawn" -- "$CULEBRA" --jit "$TMP/proc_spawn.cul"
   check_signotify "jit signotify" -- "$CULEBRA" --jit "$TMP/signotify.cul"
   # No JIT REPL case: `--jit` with no script runs the VM REPL, so the vm
   # group's `check_repl` above already covers it.
@@ -390,7 +404,7 @@ run_jit_group() {
 }
 
 # --- AOT (skip if this build can't produce binaries) ---
-# (REPL has no AOT form; it is an interp/JIT driver only.) The six binaries are
+# (REPL has no AOT form; it is an interp/JIT driver only.) The seven binaries are
 # built here, serially, before the concurrent phase — see the note above.
 aot_ok=0
 if "$CULEBRA" build "$TMP/uncaught.cul" -o "$TMP/uncaught_aot" >/dev/null 2>&1 \
@@ -399,6 +413,7 @@ if "$CULEBRA" build "$TMP/uncaught.cul" -o "$TMP/uncaught_aot" >/dev/null 2>&1 \
    && "$CULEBRA" build "$TMP/stdin.cul" -o "$TMP/stdin_aot" >/dev/null 2>&1 \
    && "$CULEBRA" build "$TMP/http.cul" -o "$TMP/http_aot" >/dev/null 2>&1 \
    && "$CULEBRA" build "$TMP/proc.cul" -o "$TMP/proc_aot" >/dev/null 2>&1 \
+   && "$CULEBRA" build "$TMP/proc_spawn.cul" -o "$TMP/proc_spawn_aot" >/dev/null 2>&1 \
    && "$CULEBRA" build "$TMP/signotify.cul" -o "$TMP/signotify_aot" >/dev/null 2>&1; then
   aot_ok=1
 fi
@@ -411,6 +426,7 @@ run_aot_group() {
     check_stdin "aot stdin" -- "$TMP/stdin_aot"
     check_http  "aot http"  -- "$TMP/http_aot"
     check_proc  "aot proc"  -- "$TMP/proc_aot"
+    check_proc  "aot proc_spawn" -- "$TMP/proc_spawn_aot"
     check_signotify "aot signotify" -- "$TMP/signotify_aot"
   else
     echo "skip [aot] (culebra build unavailable)"
