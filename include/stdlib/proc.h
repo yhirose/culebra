@@ -262,10 +262,12 @@ inline void close_unlisted_fds(const std::vector<int>& keep) {
     unsigned last = hi < 0 ? ~0u : static_cast<unsigned>(hi - 1);
     if (::syscall(SYS_close_range, static_cast<unsigned>(lo), last, 0) == 0)
       return;
-#elif defined(__APPLE__)
-    if (hi < 0) { ::closefrom(lo); return; }
 #endif
-    // Only reached without close_range/closefrom (old kernel, or a sandbox
+    // macOS has no fast path here: closefrom() exists in libSystem on modern
+    // Darwin but isn't declared in every SDK/deployment-target combination
+    // (seen breaking CI with "no type named 'closefrom'"), and there's no
+    // macOS hardware in this session to verify a guarded declaration against.
+    // Reached on Linux too without close_range (old kernel, or a sandbox
     // that blocks the syscall): a plain close() loop, capped well above any
     // fd count a script legitimately has open even if RLIMIT_NOFILE itself is
     // raised into the millions (containers commonly do this) — otherwise this
