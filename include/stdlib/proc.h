@@ -35,10 +35,14 @@
 // The POSIX path uses fork/exec/pipe/poll; the Windows path (below the _WIN32
 // branches) uses CreateProcess/CreatePipe with per-child reader threads.
 #if !defined(_WIN32)
+#include <algorithm>  // std::sort (close_unlisted_fds' keep-list)
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <sys/syscall.h>  // SYS_close_range (spelled literally, see close_unlisted_fds)
+#endif
 #else
 #include <algorithm>  // std::min
 #include <cctype>     // std::tolower (case-insensitive env-key match)
@@ -241,6 +245,44 @@ inline void set_nonblocking(int fd) {
   if (fl != -1) fcntl(fd, F_SETFL, fl | O_NONBLOCK);
 }
 
+// Close every fd >= 3 not in `keep` (sorted ascending), so a freshly forked
+// child never inherits a file/socket/pipe some unrelated part of the process
+// happened to have open. spawn_child is the process's one fork() site, so this
+// is the one place that can promise that without CLOEXEC at every opener — a
+// promise std::fstream in particular cannot keep (no portable way to reach its
+// fd before C++26). No malloc: `keep` is built before fork(), and this runs
+// after fork() with only the calling thread alive in the child.
+inline void close_unlisted_fds(const std::vector<int>& keep) {
+  auto close_span = [](int lo, int hi) {  // [lo, hi); hi < 0 means open-ended
+#if defined(__linux__)
+    // close_range() is Linux 5.9 / glibc 2.34; the syscall is called directly
+    // (as make_anon_shm_fd calls memfd_create) so an older libc header still
+    // builds, falling back to the manual loop below if the kernel lacks it.
+    unsigned last = hi < 0 ? ~0u : static_cast<unsigned>(hi - 1);
+    if (::syscall(SYS_close_range, static_cast<unsigned>(lo), last, 0) == 0)
+      return;
+#elif defined(__APPLE__)
+    if (hi < 0) { ::closefrom(lo); return; }
+#endif
+    // Only reached without close_range/closefrom (old kernel, or a sandbox
+    // that blocks the syscall): a plain close() loop, capped well above any
+    // fd count a script legitimately has open even if RLIMIT_NOFILE itself is
+    // raised into the millions (containers commonly do this) — otherwise this
+    // fallback would scan the whole limit on every single Proc.run/spawn call.
+    constexpr long kFallbackScanCap = 65536;
+    long end = hi >= 0 ? hi : ::sysconf(_SC_OPEN_MAX);
+    if (end < 0 || end > kFallbackScanCap) end = kFallbackScanCap;
+    for (int f = lo; f < end; f++) ::close(f);
+  };
+  int from = 3;
+  for (int fd : keep) {
+    if (fd < from) continue;  // out of order (shouldn't happen) or a repeat
+    close_span(from, fd);
+    from = fd + 1;
+  }
+  close_span(from, -1);
+}
+
 // Monotonic milliseconds, for per-child timeout deadlines.
 inline int64_t now_ms() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -405,6 +447,14 @@ inline Child spawn_child(
   fcntl(exec_pipe[0], F_SETFD, FD_CLOEXEC);
   fcntl(exec_pipe[1], F_SETFD, FD_CLOEXEC);
 
+  // Everything execvp() should NOT see beyond stdin/stdout/stderr: exec_pipe[1]
+  // (still needed in the child to report an exec/chdir failure) and whatever
+  // the caller opted to share. Built before fork() so the child can read it
+  // without malloc.
+  std::vector<int> keep_fds{exec_pipe[1]};
+  if (inherit_fds) keep_fds.insert(keep_fds.end(), inherit_fds->begin(), inherit_fds->end());
+  std::sort(keep_fds.begin(), keep_fds.end());
+
   pid_t pid = fork();
   if (pid < 0) return fail("fork");
 
@@ -413,10 +463,10 @@ inline Child spawn_child(
     dup2(in_pipe[0], STDIN_FILENO);
     dup2(out_pipe[1], STDOUT_FILENO);
     dup2(err_pipe[1], STDERR_FILENO);
-    close(in_pipe[0]);  close(in_pipe[1]);
-    close(out_pipe[0]); close(out_pipe[1]);
-    close(err_pipe[0]); close(err_pipe[1]);
-    close(exec_pipe[0]);
+    // Closes the pipe fds above (dup2 already gave the child its own copy at
+    // 0/1/2, so the originals are unlisted) and anything unrelated the process
+    // had open — see close_unlisted_fds.
+    close_unlisted_fds(keep_fds);
     if (cwd && !cwd->empty()) {
       if (chdir(cwd->c_str()) != 0) {
         int e = errno;
@@ -970,15 +1020,40 @@ inline SpawnHandles spawn_process(
   std::string envblock = build_env_block(env);
   std::string cwds = cwd ? *cwd : std::string();
 
-  STARTUPINFOA si{};
-  si.cb = sizeof(si);
-  si.dwFlags = STARTF_USESTDHANDLES;
-  si.hStdInput = in_rd; si.hStdOutput = out_wr; si.hStdError = err_wr;
+  // bInheritHandles=TRUE below hands the child every inheritable handle in the
+  // process (any File.open/Net socket a script left open, not just these three
+  // pipe ends), unless an explicit handle list says otherwise —
+  // PROC_THREAD_ATTRIBUTE_HANDLE_LIST is that list, and it is the race-free way
+  // to narrow inheritance: marking handles non-inheritable one at a time after
+  // the fact can never fully close the window against another thread creating
+  // one in between.
+  HANDLE inherit[] = {in_rd, out_wr, err_wr};
+  SIZE_T attr_size = 0;
+  InitializeProcThreadAttributeList(nullptr, 1, 0, &attr_size);
+  std::vector<char> attr_buf(attr_size);
+  auto* attr_list = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attr_buf.data());
+  if (!InitializeProcThreadAttributeList(attr_list, 1, 0, &attr_size))
+    return fail("ProcThreadAttributeList");
+  if (!UpdateProcThreadAttribute(attr_list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                 inherit, sizeof(inherit), nullptr, nullptr)) {
+    DeleteProcThreadAttributeList(attr_list);
+    return fail("ProcThreadAttributeList");
+  }
+
+  STARTUPINFOEXA si{};
+  si.StartupInfo.cb = sizeof(si);
+  si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+  si.StartupInfo.hStdInput = in_rd;
+  si.StartupInfo.hStdOutput = out_wr;
+  si.StartupInfo.hStdError = err_wr;
+  si.lpAttributeList = attr_list;
   PROCESS_INFORMATION pi{};
   BOOL ok = CreateProcessA(nullptr, cmdline.data(), nullptr, nullptr, TRUE,
-                           CREATE_NO_WINDOW,
+                           CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT,
                            envblock.empty() ? nullptr : envblock.data(),
-                           cwds.empty() ? nullptr : cwds.c_str(), &si, &pi);
+                           cwds.empty() ? nullptr : cwds.c_str(),
+                           &si.StartupInfo, &pi);
+  DeleteProcThreadAttributeList(attr_list);
   if (!ok) return fail("CreateProcess");
   CloseHandle(pi.hThread);
   close_handle(out_wr); close_handle(err_wr);
