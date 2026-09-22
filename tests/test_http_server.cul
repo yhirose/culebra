@@ -614,3 +614,40 @@ for p in [-1, 65536, 70000, 1 << 32] {
 }
 inspect("bind after out-of-range -> " + (esrv.bind(0) > 0).to_string())
 esrv.close()
+
+# A method is a token. CR/LF in one ended the request line early and smuggled
+# a second request onto the connection: the server answered it, and the client
+# read that answer as its own. It is refused before a byte of the request is
+# sent, and without then waiting on a response that is never coming (that wait
+# was the server's idle close, about five seconds). The refusal does no I/O
+# past the connect, so the bound below has three orders of magnitude of slack.
+# /smuggled answers 418, so a smuggled request would show as "none" below.
+msrv = Http.server()
+msrv.get("/", fn (req) {
+  "ok"
+})
+msrv.get("/smuggled", fn (req) {
+  {status: 418, body: "smuggled"}
+})
+MPORT = msrv.listen_async(0, "127.0.0.1", workers: 1)
+MURL = "http://127.0.0.1:" + MPORT.to_string()
+SMUGGLE = "GET /smuggled HTTP/1.1\r\nHost: x\r\n\r\nGET"
+fn refused_at_once(f) {
+  let t0 = Time.monotonic()
+  assert_eq(error_kind(f), "HttpError")
+  assert_true(Time.monotonic() - t0 < 2.0)
+}
+refused_at_once(fn () {
+  Http.request(SMUGGLE, MURL + "/")
+})
+refused_at_once(fn () {
+  Http.get(MURL + "/", headers: {"X-Bad": "a\r\nInjected: b"})
+})
+mapi = Http.client(MURL)
+refused_at_once(fn () {
+  mapi.request(SMUGGLE, "/")
+})
+assert_eq(mapi.get("/").body, "ok")
+mapi.close()
+msrv.stop()
+inspect("CR/LF in a method or a header -> refused at once, nothing smuggled")
