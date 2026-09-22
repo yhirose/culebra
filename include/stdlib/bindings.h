@@ -5834,7 +5834,7 @@ inline JitValue _jit_http_client_bodyless(JitValue self, int64_t n,
   };
   return _jit_at_call_site([&] {
     culebra::http::HttpRequest req;
-    req.method = method;
+    req.method = std::move(method);
     req.url = std::string(_culebra_str_view(args[0].tag, args[0].data));
     _jit_http_client_strobj(at(1), req.headers, ctx, "headers", "header");
     _jit_http_client_strobj(at(2), req.params, ctx, "params", "param");
@@ -5860,7 +5860,7 @@ inline JitValue _jit_http_client_withbody(JitValue self, int64_t n,
   };
   return _jit_at_call_site([&] {
     culebra::http::HttpRequest req;
-    req.method = method;
+    req.method = std::move(method);
     req.url = std::string(_culebra_str_view(args[0].tag, args[0].data));
     _jit_http_client_strobj(at(3), req.headers, ctx, "headers", "header");
     _jit_http_client_strobj(at(4), req.params, ctx, "params", "param");

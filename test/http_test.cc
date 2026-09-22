@@ -37,6 +37,16 @@ void check(bool cond, const char* expr, int line) {
 
 #define CHECK(cond) check(static_cast<bool>(cond), #cond, __LINE__)
 
+// Returns the first byte in [0, 256) where f and g disagree, or -1 if none.
+template <class F, class G>
+int first_byte_mismatch(F f, G g) {
+  for (int b = 0; b < 256; b++) {
+    std::string s(1, static_cast<char>(b));
+    if (f(s) != g(s)) return b;
+  }
+  return -1;
+}
+
 using culebra::http::http_request;
 using culebra::http::HttpRequest;
 
@@ -61,12 +71,7 @@ int main() {
         return false;
       }
     };
-    int first_mismatch = -1;
-    for (int b = 0; b < 256 && first_mismatch < 0; b++) {
-      std::string s(1, static_cast<char>(b));
-      if (accepts(s) != httplib::detail::fields::is_token(s)) first_mismatch = b;
-    }
-    CHECK(first_mismatch == -1);
+    CHECK(first_byte_mismatch(accepts, httplib::detail::fields::is_token) == -1);
     CHECK(accepts("GET"));
     CHECK(accepts("get"));  // case is kept, not folded
     CHECK(accepts("PROPFIND"));
@@ -91,15 +96,8 @@ int main() {
   // equivalent to httplib::encode_uri_component. Assert that over every byte
   // value here, where httplib is linked in.
   {
-    int first_mismatch = -1;
-    for (int b = 0; b < 256 && first_mismatch < 0; b++) {
-      std::string s(1, static_cast<char>(b));
-      if (culebra::http::percent_encode_component(s) !=
-          httplib::encode_uri_component(s)) {
-        first_mismatch = b;
-      }
-    }
-    CHECK(first_mismatch == -1);  // reports the byte via the value on failure
+    CHECK(first_byte_mismatch(culebra::http::percent_encode_component,
+                               httplib::encode_uri_component) == -1);
   }
 
   // SseDecoder: parse a text/event-stream, including a comment, a typed event
