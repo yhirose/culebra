@@ -1014,11 +1014,7 @@ inline bool is_header_value_vchar(unsigned char c) {
   return (c >= 33 && c <= 126) || c >= 128;
 }
 inline bool is_header_value(std::string_view s) {
-  if (s.size() <= 2) {
-    for (unsigned char c : s)
-      if (!is_header_value_vchar(c)) return false;
-    return true;
-  }
+  if (s.empty()) return true;
   if (!is_header_value_vchar(static_cast<unsigned char>(s.front())) ||
       !is_header_value_vchar(static_cast<unsigned char>(s.back())))
     return false;
@@ -1027,6 +1023,36 @@ inline bool is_header_value(std::string_view s) {
     if (c != ' ' && c != '\t' && !is_header_value_vchar(c)) return false;
   }
   return true;
+}
+
+// A response header goes onto the wire verbatim, same as a request method
+// (http_method.h): CR/LF in a name or value would end the status line or a
+// prior header early and splice in an attacker-controlled one (response
+// splitting). httplib's set_header silently drops such a header instead of
+// failing loudly (see write_headers in vendor/cpp-httplib), which reads to a
+// handler as "the header I set is just missing" — so this validates before
+// that ever happens, the same way HttpMethod::checked front-runs a request.
+// Shared by http_res_set_header and, for Content-Type specifically,
+// http_res_set_content/http_res_set_stream below: both hand it straight to
+// httplib's own set_content/set_content_provider, which set the header
+// themselves (Response::set_content, vendor/cpp-httplib/httplib.h), a second
+// path onto the same real httplib::Response that would otherwise bypass this
+// check entirely.
+inline void check_response_header(std::string_view name,
+                                  std::string_view value) {
+  if (!is_http_token(name))
+    throw CulebraError(
+        "ValueError",
+        culebra::format("Http.server: header name must be an HTTP token, got {}",
+                        json_escape(name)),
+        0, 0);
+  if (!is_header_value(value))
+    throw CulebraError(
+        "ValueError",
+        culebra::format(
+            "Http.server: header {} must not contain control characters, got {}",
+            json_escape(name), json_escape(value)),
+        0, 0);
 }
 
 // http_res_set_status/header/content are the response half of the same choke
@@ -1045,13 +1071,6 @@ CULEBRA_RT_HTTP_LINKAGE void http_res_set_status(ServerResponse& res,
 #endif
 }
 
-// A response header goes onto the wire verbatim, same as a request method
-// (http_method.h): CR/LF in a name or value would end the status line or a
-// prior header early and splice in an attacker-controlled one (response
-// splitting). httplib's set_header silently drops such a header instead of
-// failing loudly (see write_headers in vendor/cpp-httplib), which reads to a
-// handler as "the header I set is just missing" — so this validates before
-// that ever happens, the same way HttpMethod::checked front-runs a request.
 CULEBRA_RT_HTTP_LINKAGE void http_res_set_header(ServerResponse& res,
                                                  const std::string& k,
                                                  const std::string& v) {
@@ -1060,19 +1079,7 @@ CULEBRA_RT_HTTP_LINKAGE void http_res_set_header(ServerResponse& res,
   (void)k;
   (void)v;
 #else
-  if (!is_http_token(k))
-    throw CulebraError(
-        "ValueError",
-        culebra::format("Http.server: header name must be an HTTP token, got {}",
-                        json_escape(k)),
-        0, 0);
-  if (!is_header_value(v))
-    throw CulebraError(
-        "ValueError",
-        culebra::format(
-            "Http.server: header {} must not contain control characters, got {}",
-            json_escape(k), json_escape(v)),
-        0, 0);
+  check_response_header(k, v);
   static_cast<httplib::Response*>(res.h)->set_header(k, v);
 #endif
 }
@@ -1088,6 +1095,7 @@ CULEBRA_RT_HTTP_LINKAGE void http_res_set_content(
   (void)body;
   (void)content_type;
 #else
+  check_response_header("Content-Type", content_type);
   static_cast<httplib::Response*>(res.h)->set_content(std::move(body),
                                                        content_type);
 #endif
@@ -1105,6 +1113,7 @@ CULEBRA_RT_HTTP_LINKAGE void http_res_set_stream(ServerResponse& res,
   (void)content_type;
   (void)run;
 #else
+  check_response_header("Content-Type", content_type);
   static_cast<httplib::Response*>(res.h)->set_chunked_content_provider(
       content_type,
       [run = std::move(run)](size_t /*offset*/,

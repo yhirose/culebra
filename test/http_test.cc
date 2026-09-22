@@ -130,6 +130,31 @@ int main() {
       CHECK(std::string(e.what()) ==
             "Http.server: header name must be an HTTP token, got \"X Bad\"");
     }
+
+    // Content-Type reaches the same real httplib::Response through a second
+    // path -- httplib's own Response::set_content/set_content_provider set it
+    // internally (vendor/cpp-httplib/httplib.h) -- so http_res_set_content and
+    // http_res_set_stream must check it too, not just http_res_set_header.
+    try {
+      culebra::http::http_res_set_content(sr, "hi", "text/plain\r\nX: y");
+      CHECK(false);
+    } catch (const culebra::CulebraError& e) {
+      CHECK(e.kind == "ValueError");
+      CHECK(std::string(e.what()) ==
+            "Http.server: header \"Content-Type\" must not contain control "
+            "characters, got \"text/plain\\r\\nX: y\"");
+    }
+    try {
+      culebra::http::http_res_set_stream(
+          sr, "text/event-stream\r\nX: y",
+          [](int64_t) { return true; });
+      CHECK(false);
+    } catch (const culebra::CulebraError& e) {
+      CHECK(e.kind == "ValueError");
+      CHECK(std::string(e.what()) ==
+            "Http.server: header \"Content-Type\" must not contain control "
+            "characters, got \"text/event-stream\\r\\nX: y\"");
+    }
   }
 
   // percent_encode_component is self-hosted rather than gated on

@@ -635,6 +635,9 @@ msrv.get("/smuggled", fn (req) {
 msrv.get("/badheader", fn (req) {
   {status: 200, headers: {"X-Foo": "bar\r\nX-Injected: evil"}, body: "hi"}
 })
+msrv.get("/badcontenttype", fn (req) {
+  {status: 200, content_type: "text/plain\r\nX-Injected: evil", body: "hi"}
+})
 MPORT = msrv.listen_async(0, "127.0.0.1", workers: 1)
 MURL = "http://127.0.0.1:" + MPORT.to_string()
 SMUGGLE = "GET /smuggled HTTP/1.1\r\nHost: x\r\n\r\nGET"
@@ -683,6 +686,16 @@ assert_eq(hres.body,
   "\"bar\\r\\nX-Injected: evil\"")
 assert_true(!hres.headers.has("X-Foo"))
 assert_true(!hres.headers.has("X-Injected"))
+
+# content_type reaches the response through a second path -- httplib's own
+# set_content sets the Content-Type header internally -- so it is checked the
+# same way, not left as a gap the headers: field's check doesn't reach.
+ctres = mapi.get("/badcontenttype")
+assert_eq(ctres.status, 500)
+assert_eq(ctres.body,
+  "Http.server: header \"Content-Type\" must not contain control characters, " +
+  "got \"text/plain\\r\\nX-Injected: evil\"")
+assert_true(!ctres.headers.has("X-Injected"))
 
 mapi.close()
 msrv.stop()
