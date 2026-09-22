@@ -269,9 +269,12 @@ inline void close_unlisted_fds(const std::vector<int>& keep) {
     // fd count a script legitimately has open even if RLIMIT_NOFILE itself is
     // raised into the millions (containers commonly do this) — otherwise this
     // fallback would scan the whole limit on every single Proc.run/spawn call.
-    constexpr long kFallbackScanCap = 65536;
-    long end = hi >= 0 ? hi : ::sysconf(_SC_OPEN_MAX);
-    if (end < 0 || end > kFallbackScanCap) end = kFallbackScanCap;
+    long end = hi;
+    if (hi < 0) {
+      constexpr long kFallbackScanCap = 65536;
+      end = ::sysconf(_SC_OPEN_MAX);
+      if (end < 0 || end > kFallbackScanCap) end = kFallbackScanCap;
+    }
     for (int f = lo; f < end; f++) ::close(f);
   };
   int from = 3;
