@@ -1087,6 +1087,26 @@ class EffectsLowerer {
     return cps_seq(st, body_stmts(block), cont, tail, rw);
   }
 
+  // Entering `block` again gives the boxed names it declares a fresh box, so
+  // a closure made on one pass keeps that pass's binding; each state binds
+  // its boxes on entry (build_dispatch), so the swap is a state of its own.
+  int cps_fresh_boxes(CpsState& st, const peg::Ast& block, int entry,
+                      const PromotedLocals& rw) const {
+    std::set<std::string> names;
+    for (const auto* s : body_stmts(block)) declared_at_level(*s, names);
+    std::string boxes;
+    for (const auto& n : names) {
+      if (rw.boxed.contains(n))
+        boxes += std::format("      self.{} = {{mut v: nil}}\n",
+                             instance_field(n));
+    }
+    if (boxes.empty()) return entry;
+    int r = st.fresh();
+    st.states[r] = boxes + std::format(
+        "      self._eff_state = {}\n      continue\n", entry);
+    return r;
+  }
+
   int cps_while(CpsState& st, const peg::Ast* w, int cont,
                 const PromotedLocals& rw) const {
     if (w->nodes.size() < 2) { st.failed = true; return -1; }
@@ -1104,6 +1124,7 @@ class EffectsLowerer {
     int body_entry = cps_block_seq(st, *wv.body, h, /*tail=*/false, rw);
     st.loop_stack.pop_back();
     if (st.failed) return -1;
+    body_entry = cps_fresh_boxes(st, *wv.body, body_entry, rw);
     st.states[h] = std::format(
         "      if {} {{ self._eff_state = {} }} else {{ self._eff_state = {} }}{}\n"
         "      continue\n",
@@ -1178,9 +1199,12 @@ class EffectsLowerer {
       if (!target) { st.failed = true; return -1; }
       return cps_jump(st, u->tag == "BREAK"_ ? target->exit : target->header);
     }
-    if (u->tag == "LEXICAL_SCOPE"_ || u->tag == "STATEMENTS"_) {
-      return cps_block_seq(st, *u, cont, tail, rw);
+    if (u->tag == "LEXICAL_SCOPE"_) {
+      int entry = cps_block_seq(st, *u, cont, tail, rw);
+      if (st.failed) return -1;
+      return cps_fresh_boxes(st, *u->nodes[0], entry, rw);
     }
+    if (u->tag == "STATEMENTS"_) return cps_block_seq(st, *u, cont, tail, rw);
     // Leaf statement: a statement-level suspension (post-ANF) or a rejected
     // hidden one.
     EffStmtClass c = classify(u, rw);
@@ -1213,7 +1237,7 @@ class EffectsLowerer {
       return e;
     }
     if (u->tag == "LEXICAL_SCOPE"_ || u->tag == "STATEMENTS"_)
-      return cps_block_seq(st, *u, cont, /*tail=*/true, rw);
+      return cps_stmt(st, u, cont, /*tail=*/true, rw);
     if (has_suspension(*u)) {
       EffStmtClass c = classify(u, rw);
       if (c.kind == EffStmtClass::Suspend)
@@ -1315,10 +1339,14 @@ class EffectsLowerer {
                                std::format("      return {}\n", EFF_DONE);
     }
 
+    // Each state binds the boxes it names on entry, not `_step` once: a scope
+    // entered again swaps its boxes (cps_fresh_boxes), and a closure made in
+    // a state keeps the box of the pass that made it.
     std::string dispatch = "      while true {\n";
     for (size_t i = 0; i < st.states.size(); i++) {
-      dispatch += std::format("        if self._eff_state == {} {{\n{}        }}\n",
-                              i, st.states[i]);
+      dispatch += std::format(
+          "        if self._eff_state == {} {{\n{}{}        }}\n", i,
+          emit_box_prologue(rewrite, st.states[i]), st.states[i]);
     }
     dispatch += "      }\n";
 
@@ -1613,8 +1641,8 @@ class EffectsLowerer {
     emit_ctor_param_and_local_inits(param_names, locals, rewrite,
                                     ctor_params, ctor_call_args, ctor_inits);
 
-    // Each method that carries body source binds the boxes that source names.
-    auto step_prologue = emit_box_prologue(rewrite, disp.step);
+    // _eff_finalize() binds the boxes its defers name (_step's states bind
+    // their own).
     auto finalize_body =
         emit_box_prologue(rewrite, disp.finalize_body) + disp.finalize_body;
 
@@ -1633,12 +1661,12 @@ class EffectsLowerer {
     return std::format(
         "  class {0} {{\n"
         "    new({1}) {{\n{2}    }}\n"
-        "    _step({3}) {{\n{6}{4}    }}\n"
+        "    _step({3}) {{\n{4}    }}\n"
         "    _eff_finalize() {{\n{5}    }}\n"
-        "    _eff_refork() {{\n{7}    }}\n"
+        "    _eff_refork() {{\n{6}    }}\n"
         "  }}\n",
         class_name, ctor_params, ctor_inits, rv_name, disp.step,
-        finalize_body, step_prologue, refork_body);
+        finalize_body, refork_body);
   }
 
   // `effect fn f(params) { BODY }` -> `fn f(params) { class …; ….new(args) }`

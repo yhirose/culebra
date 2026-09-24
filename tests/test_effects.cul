@@ -560,3 +560,20 @@ let eff_ds_tail = handle {
   resume(1)
 }
 assert_eq(eff_ds_tail, [1, 2])
+// A closure made on one pass of a loop keeps that pass's binding - of the
+// loop variable and of a local the body declares - across a perform; one
+// declared outside the loop stays one binding.
+let eff_iter = handle {
+  mut fs = []
+  mut total = 0
+  for x in [1, 2] {
+    let k = x * 10
+    fs.push(|| x + k)
+    fs.push(fn () { total += x })
+    perform anf_ask()
+  }
+  fs.map(|f| f()) + [total]
+} with anf_ask(resume) {
+  resume(nil)
+}
+assert_eq(eff_iter, [11, 1, 22, 3, 3])
