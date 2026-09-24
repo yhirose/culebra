@@ -524,13 +524,19 @@ fn g_ds_object(o) {
   yield [x, y, q]
 }
 assert_eq(g_ds_object({p: [1, 2], q: 3}).collect(), [0, [1, 2, 3]])
+mut g_ds_calls = 0
+fn g_ds_five() {
+  g_ds_calls += 1
+  [5]
+}
 fn g_ds_modifier(c) {
   mut a = 0
-  [a] = [5] unless c
+  [a] = g_ds_five() unless c
   yield a
 }
 assert_eq(g_ds_modifier(false).collect(), [5])
 assert_eq(g_ds_modifier(true).collect(), [0])
+assert_eq(g_ds_calls, 1)
 fn g_ds_init(xs) {
   if let [a, b] = xs; a < b {
     yield 0

@@ -856,24 +856,31 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
     const auto& key = *n.nodes[1];
     out.push_back({at(key) + key.token.size(), 0, ": " + slot(key)});
     return;
-  } else if (n.tag == "STATEMENT"_ && n.nodes.size() == 2 &&
-             n.nodes[0]->tag == "DESTRUCTURE_ASSIGN"_) {
-    // `<destructure> if c`: the copies must stay under the condition, so the
-    // statement becomes `if c { <destructure>; <copies> }`.
-    const auto& base = *n.nodes[0];
-    const auto& mod = *n.nodes[1];
+  } else if (n.tag == "IF"_ && n.nodes.size() == 2 &&
+             n.nodes[1]->tag == "DESTRUCTURE_ASSIGN"_ &&
+             n.nodes[1]->original_tag == "STATEMENT"_) {
+    // `<destructure> if c` / `unless c`, which the parser turned into this
+    // IF while its source still reads that way (make_postfix_if). The copies
+    // must stay under the condition, so it is written as the IF it is.
+    const auto& base = *n.nodes[1];
     std::vector<SourceEdit> inner;
     collect_promoted_edits(base, src, promoted, inner, EditSite::Stmt);
     if (!inner.empty()) {
+      size_t base_end = base.position + base.length;
+      auto modifier = std::string_view(src).substr(
+          base_end, n.position + n.length - base_end);
+      bool unless = modifier.substr(modifier.find_first_not_of(" \t"))
+                        .starts_with("unless");
+      // `unless c` became UNARY_NOT[!, c]; `c` is the node the source holds.
+      const auto& cond = unless ? *n.nodes[0]->nodes[1] : *n.nodes[0];
       std::vector<SourceEdit> cond_edits;
-      collect_promoted_edits(mod, src, promoted, cond_edits, EditSite::Expr);
-      auto cond = rewrite_edits(mod, src, cond_edits);
-      auto head = cond.starts_with("unless")
-                      ? std::format("if !({}) {{ ", cond.substr(6))
-                      : cond + " { ";
-      out.push_back({base.position, 0, head});
+      collect_promoted_edits(cond, src, promoted, cond_edits, EditSite::Expr);
+      auto cond_src = rewrite_edits(cond, src, std::move(cond_edits));
+      out.push_back({base.position, 0,
+                     unless ? std::format("if !({}) {{ ", cond_src)
+                            : std::format("if {} {{ ", cond_src)});
       out.insert(out.end(), inner.begin(), inner.end());
-      out.push_back({mod.position, mod.length, "}"});
+      out.push_back({base_end, modifier.size(), " }"});
       return;
     }
   }
