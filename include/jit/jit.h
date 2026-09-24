@@ -5138,29 +5138,6 @@ struct JIT {
         "entry.p");
   }
 
-  // `_jit_tag_fits_field_type` as IR, over a culebra::FieldType byte.
-  llvm::Value* emit_tag_fits_field_type(llvm::Value* tag,
-                                        llvm::Value* declared) {
-    using culebra::FieldType;
-    // The runtime's enum, value for value: the selects below name each one.
-    static_assert(static_cast<int>(FieldType::Any) == 0 &&
-                  static_cast<int>(FieldType::Float) == 1 &&
-                  static_cast<int>(FieldType::Long) == 2 &&
-                  static_cast<int>(FieldType::Bool) == 3 &&
-                  static_cast<int>(FieldType::Count) == 4);
-    auto is = [&](FieldType t) {
-      return builder_.CreateICmpEQ(
-          declared, builder_.getInt8(static_cast<uint8_t>(t)));
-    };
-    auto want = builder_.CreateSelect(
-        is(FieldType::Float), builder_.getInt8(TAG_FLOAT),
-        builder_.CreateSelect(is(FieldType::Long), builder_.getInt8(TAG_LONG),
-                              builder_.getInt8(TAG_BOOL)),
-        "field.want");
-    return builder_.CreateOr(is(FieldType::Any),
-                             builder_.CreateICmpEQ(tag, want), "field.fits");
-  }
-
   // The borrowed value at an element address from emit_array_elem_ptr.
   llvm::Value* emit_load_elem(llvm::Value* elemPtr) {
     auto i8Ty = builder_.getInt8Ty();

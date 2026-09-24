@@ -3741,18 +3741,21 @@ struct Lowering {
           // cold cache can't spuriously match a freshly-allocated
           // instance's shape == nullptr (JitPropIC's own convention).
           auto icTy = llvm::StructType::get(
-              j.ctx_, {ptrTy, ptrTy, i64Ty, i8Ty, i8Ty});
-          enum : unsigned { kExpected, kResult, kOffset, kPropMut, kDeclared };
+              j.ctx_, {ptrTy, ptrTy, i64Ty, i8Ty, i8Ty, i8Ty});
+          enum : unsigned {
+            kExpected, kResult, kOffset, kPropMut, kDeclared, kWantTag
+          };
           static_assert(offsetof(JitPropSetIC, result_shape) == 8 &&
                         offsetof(JitPropSetIC, offset) == 16 &&
                         offsetof(JitPropSetIC, prop_mut) == 24 &&
-                        offsetof(JitPropSetIC, declared) == 25);
+                        offsetof(JitPropSetIC, declared) == 25 &&
+                        offsetof(JitPropSetIC, want_tag) == 26);
           auto* sentinelPtr = llvm::ConstantExpr::getIntToPtr(
               llvm::ConstantInt::get(i64Ty, 1), ptrTy);
           auto* icInit = llvm::ConstantStruct::get(
               icTy, {sentinelPtr, sentinelPtr,
                      llvm::ConstantInt::get(i64Ty, 0), b.getInt8(0),
-                     b.getInt8(0)});
+                     b.getInt8(0), b.getInt8(kPropSetICNoUpdate)});
           auto* icGlobal = new llvm::GlobalVariable(
               *j.module_, icTy, /*isConstant=*/false,
               llvm::GlobalValue::PrivateLinkage, icInit,
@@ -3780,19 +3783,23 @@ struct Lowering {
             // An update of a mutable slot whose declared type the value
             // fits is object_set_fast's whole work at a site owing neither
             // check, so it is emitted here. A transition and every refusal
-            // still take the call, which words the error.
+            // still take the call, which words the error. The cache's
+            // want_tag answers both "an update?" and "does the value fit?":
+            // 0 admits any tag, and a transition's byte admits none — so the
+            // entry, which a transition's offset is past the end of, is read
+            // only once it is known to exist.
             auto callBB = BasicBlock::Create(j.ctx_, "pset.call", fn);
             auto updBB = BasicBlock::Create(j.ctx_, "pset.update", fn);
             auto storeBB = BasicBlock::Create(j.ctx_, "pset.store", fn);
-            auto icResult = b.CreateLoad(
-                ptrTy, b.CreateStructGEP(icTy, icGlobal, kResult, "pset.ic.res.p"),
-                "pset.ic.res");
-            b.CreateCondBr(b.CreateICmpEQ(icResult, icExpected), updBB,
-                           callBB);
+            auto want = b.CreateLoad(
+                i8Ty, b.CreateStructGEP(icTy, icGlobal, kWantTag, "pset.want.p"),
+                "pset.want");
+            b.CreateCondBr(
+                b.CreateOr(b.CreateICmpEQ(want, b.getInt8(0)),
+                           b.CreateICmpEQ(want, j.extract_tag(val)),
+                           "pset.fits"),
+                updBB, callBB);
             b.SetInsertPoint(updBB);
-            auto declared = b.CreateLoad(
-                i8Ty, b.CreateStructGEP(icTy, icGlobal, kDeclared, "pset.ic.decl.p"),
-                "pset.ic.decl");
             auto offset = b.CreateLoad(
                 i64Ty, b.CreateStructGEP(icTy, icGlobal, kOffset, "pset.ic.off.p"),
                 "pset.ic.off");
@@ -3804,9 +3811,7 @@ struct Lowering {
                                  "pset.mut.p"),
                              "pset.mut"),
                 b.getInt8(0));
-            auto fits = j.emit_tag_fits_field_type(j.extract_tag(val),
-                                                   declared);
-            b.CreateCondBr(b.CreateAnd(isMut, fits), storeBB, callBB);
+            b.CreateCondBr(isMut, storeBB, callBB);
             b.SetInsertPoint(storeBB);
             j.emit_replace_value(entryPtr, val);
             b.CreateBr(mergeBB);

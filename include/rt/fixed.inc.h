@@ -1314,6 +1314,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_ic(
       ic->offset = idx;
       ic->prop_mut = mut ? 1 : 0;
       ic->declared = static_cast<uint8_t>(culebra::FieldType::Any);
+      ic->want_tag = kPropSetICNoUpdate;
     }
   } else {
     auto declared = before ? before->type_at(idx) : culebra::FieldType::Any;
@@ -1327,6 +1328,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_ic(
       ic->offset = idx;
       ic->prop_mut = obj->slots[idx].mut ? 1 : 0;
       ic->declared = static_cast<uint8_t>(declared);
+      ic->want_tag = _jit_prop_set_ic_want(declared);
     }
   }
   if (std::string_view(key) == "drop") _jit_owned_bind_drop(obj);
