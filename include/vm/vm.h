@@ -16570,11 +16570,9 @@ struct Exec {
         do {
           [[maybe_unused]] const Insn& in = *ip;
           auto* cell = reinterpret_cast<JitCell*>(regs[in.a].data);
-          JitValue old = cell->value;
-          cell->value = regs[in.b];
+          JitValue v = regs[in.b];
           regs[in.b] = JitValue{TAG_NIL, 0};
-          _culebra_value_release_impl(static_cast<int8_t>(old.tag),
-                                        old.data);
+          _jit_replace_value(cell->value, static_cast<int8_t>(v.tag), v.data);
           ++ip;
           break;
         } while (0);

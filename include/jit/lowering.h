@@ -1392,16 +1392,12 @@ struct Lowering {
           // position: a pattern test cannot throw.
           auto v = load_slot(in.a);
           auto tag = j.extract_tag(v);
-          auto isSeq = b.CreateOr(
-              b.CreateICmpEQ(tag, b.getInt8(TAG_ARRAY)),
-              b.CreateICmpEQ(tag, b.getInt8(TAG_TUPLE)), "vseq.is_seq");
           auto sizeBB = BasicBlock::Create(j.ctx_, "vseq.size", fn);
           auto* fall = blocks.at(static_cast<int32_t>(i) + 1);
-          b.CreateCondBr(isSeq, sizeBB, blocks.at(in.b));
+          b.CreateCondBr(j.emit_is_seq(tag), sizeBB, blocks.at(in.b));
           b.SetInsertPoint(sizeBB);
-          auto n = j.emit_call(
-              j.module_->getOrInsertFunction(rt::array_size, i64Ty, ptrTy),
-              {b.CreateIntToPtr(j.extract_data(v), ptrTy)}, "vseq.n");
+          auto n = j.emit_array_size(
+              b.CreateIntToPtr(j.extract_data(v), ptrTy));
           auto want = b.getInt64(in.c);
           b.CreateCondBr(in.d ? b.CreateICmpSGE(n, want)
                               : b.CreateICmpEQ(n, want),
@@ -1420,9 +1416,7 @@ struct Lowering {
         }
         case Op::SeqRest: {
           auto arr = b.CreateIntToPtr(j.extract_data(load_slot(in.b)), ptrTy);
-          auto n = j.emit_call(
-              j.module_->getOrInsertFunction(rt::array_size, i64Ty, ptrTy),
-              {arr}, "vrest.n");
+          auto n = j.emit_array_size(arr);
           auto out = j.emit_call(
               j.module_->getOrInsertFunction(rt::array_slice, ptrTy, ptrTy,
                                              i64Ty, i64Ty),
@@ -1503,13 +1497,7 @@ struct Lowering {
           break;
         }
         case Op::Index: {
-          // emit_point_index consumes the key on its returning paths and
-          // releases both operands on its throw edges — and the slice arm's
-          // emit_slice_value releases both on its throw edge; the registers
-          // must stay slot-owned (the handler ladder is the sole slot
-          // releaser), so retain both up front — the emitters' releases
-          // cancel the retains, and the surviving +1s are dropped on the
-          // normal paths. The result is +1 on both arms.
+          // The result is +1 on every arm.
           auto recv = load_slot(in.b);
           auto key = load_slot(in.c);
           auto sliceBB = BasicBlock::Create(j.ctx_, "vidx.slice", fn);
@@ -1518,10 +1506,7 @@ struct Lowering {
           // An Array or Tuple by a Long: the element read inline. Nothing
           // here consumes an operand, so the registers need no minted +1s.
           {
-            auto rtag = j.extract_tag(recv);
-            auto isSeq = b.CreateOr(
-                b.CreateICmpEQ(rtag, b.getInt8(TAG_ARRAY)),
-                b.CreateICmpEQ(rtag, b.getInt8(TAG_TUPLE)), "vidx.is_seq");
+            auto isSeq = j.emit_is_seq(j.extract_tag(recv));
             auto isLong = b.CreateICmpEQ(j.extract_tag(key),
                                          b.getInt8(TAG_LONG), "vidx.is_long");
             auto seqBB = BasicBlock::Create(j.ctx_, "vidx.seq", fn);
@@ -1536,6 +1521,13 @@ struct Lowering {
             b.CreateBr(mergeBB);
             b.SetInsertPoint(genBB);
           }
+          // emit_point_index consumes the key on its returning paths and
+          // releases both operands on its throw edges — and the slice arm's
+          // emit_slice_value releases both on its throw edge; the registers
+          // must stay slot-owned (the handler ladder is the sole slot
+          // releaser), so retain both here — the emitters' releases cancel
+          // the retains, and the surviving +1s are dropped on the normal
+          // paths.
           j.emit_value_retain(recv);
           j.emit_value_retain(key);
           b.CreateCondBr(j.emit_is_range(key), sliceBB, pointBB);
@@ -3669,10 +3661,8 @@ struct Lowering {
             auto idx = j.value_to_long(key);
             auto arrPtr = b.CreateIntToPtr(j.extract_data(recv), ptrTy);
             auto elemPtr = j.emit_array_elem_ptr(arrPtr, idx, false);
-            auto old = j.emit_load_elem(elemPtr);
             j.emit_value_retain(val);
-            j.emit_store_elem(elemPtr, val);
-            j.emit_value_release(old);
+            j.emit_replace_value(elemPtr, val);
             b.CreateBr(mergeBB);
           }
           b.SetInsertPoint(objBB);
@@ -3736,6 +3726,11 @@ struct Lowering {
           // instance's shape == nullptr (JitPropIC's own convention).
           auto icTy = llvm::StructType::get(
               j.ctx_, {ptrTy, ptrTy, i64Ty, i8Ty, i8Ty});
+          enum : unsigned { kExpected, kResult, kOffset, kPropMut, kDeclared };
+          static_assert(offsetof(JitPropSetIC, result_shape) == 8 &&
+                        offsetof(JitPropSetIC, offset) == 16 &&
+                        offsetof(JitPropSetIC, prop_mut) == 24 &&
+                        offsetof(JitPropSetIC, declared) == 25);
           auto* sentinelPtr = llvm::ConstantExpr::getIntToPtr(
               llvm::ConstantInt::get(i64Ty, 1), ptrTy);
           auto* icInit = llvm::ConstantStruct::get(
@@ -3751,7 +3746,7 @@ struct Lowering {
               i8Ty, objPtr, offsetof(JitObject, shape), "pset.shape.fieldp");
           auto objShape = b.CreateLoad(ptrTy, shapeFieldPtr, "pset.obj.shape");
           auto icExpectedPtr =
-              b.CreateStructGEP(icTy, icGlobal, 0, "pset.ic.exp.p");
+              b.CreateStructGEP(icTy, icGlobal, kExpected, "pset.ic.exp.p");
           auto icExpected = b.CreateLoad(ptrTy, icExpectedPtr, "pset.ic.exp");
           auto shapeMatch =
               b.CreateICmpEQ(objShape, icExpected, "pset.shape.match");
@@ -3774,16 +3769,16 @@ struct Lowering {
             auto updBB = BasicBlock::Create(j.ctx_, "pset.update", fn);
             auto storeBB = BasicBlock::Create(j.ctx_, "pset.store", fn);
             auto icResult = b.CreateLoad(
-                ptrTy, b.CreateStructGEP(icTy, icGlobal, 1, "pset.ic.res.p"),
+                ptrTy, b.CreateStructGEP(icTy, icGlobal, kResult, "pset.ic.res.p"),
                 "pset.ic.res");
             b.CreateCondBr(b.CreateICmpEQ(icResult, icExpected), updBB,
                            callBB);
             b.SetInsertPoint(updBB);
             auto declared = b.CreateLoad(
-                i8Ty, b.CreateStructGEP(icTy, icGlobal, 4, "pset.ic.decl.p"),
+                i8Ty, b.CreateStructGEP(icTy, icGlobal, kDeclared, "pset.ic.decl.p"),
                 "pset.ic.decl");
             auto offset = b.CreateLoad(
-                i64Ty, b.CreateStructGEP(icTy, icGlobal, 2, "pset.ic.off.p"),
+                i64Ty, b.CreateStructGEP(icTy, icGlobal, kOffset, "pset.ic.off.p"),
                 "pset.ic.off");
             auto entryPtr = j.emit_object_entry_ptr(objPtr, offset);
             auto isMut = b.CreateICmpNE(
@@ -3797,10 +3792,7 @@ struct Lowering {
                                                    declared);
             b.CreateCondBr(b.CreateAnd(isMut, fits), storeBB, callBB);
             b.SetInsertPoint(storeBB);
-            // Store, then release what it replaced (_jit_replace_value).
-            auto old = j.emit_load_elem(entryPtr);
-            j.emit_store_elem(entryPtr, val);
-            j.emit_value_release(old);
+            j.emit_replace_value(entryPtr, val);
             b.CreateBr(mergeBB);
             b.SetInsertPoint(callBB);
           }
@@ -4185,13 +4177,11 @@ struct Lowering {
           break;
         }
         case Op::CellSet: {
-          // store_slot's order: read old, store new, release old.
           auto cellPtr =
               b.CreateIntToPtr(j.extract_data(load_slot(in.a)), ptrTy);
-          auto valPtr = b.CreateStructGEP(j.cellType_, cellPtr, 1, "cell.vp");
-          auto old = b.CreateLoad(j.valueType_, valPtr, "cell.old");
-          b.CreateStore(load_slot(in.b), valPtr);
-          j.emit_value_release(old);
+          j.emit_replace_value(
+              b.CreateStructGEP(j.cellType_, cellPtr, 1, "cell.vp"),
+              load_slot(in.b));
           b.CreateStore(j.make_nil(), slots[in.b]);
           break;
         }

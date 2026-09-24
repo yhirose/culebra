@@ -2853,17 +2853,6 @@ struct JIT {
         rt::array_resize, builder_.getVoidTy(), ptrTy,
         builder_.getInt64Ty(), builder_.getInt8Ty(), builder_.getInt64Ty(),
         builder_.getInt64Ty(), builder_.getInt64Ty());
-    module_->getOrInsertFunction(rt::array_get,
-                                 builder_.getVoidTy(), ptrTy,
-                                 builder_.getInt64Ty(), ptrTy, ptrTy,
-                                 builder_.getInt64Ty(),
-                                 builder_.getInt64Ty());
-    module_->getOrInsertFunction(
-        rt::array_set, builder_.getVoidTy(), ptrTy,
-        builder_.getInt64Ty(), builder_.getInt8Ty(), builder_.getInt64Ty(),
-        builder_.getInt64Ty(), builder_.getInt64Ty());
-    module_->getOrInsertFunction(rt::array_size,
-                                 builder_.getInt64Ty(), ptrTy);
     module_->getOrInsertFunction(
         rt::array_set_or_push, builder_.getVoidTy(), ptrTy,
         builder_.getInt64Ty(), builder_.getInt8Ty(), builder_.getInt64Ty());
@@ -4068,11 +4057,7 @@ struct JIT {
   }
 
   void emit_for_open_array(const ForCursor& c, llvm::Value* arrPtr) {
-    auto ptrTy = llvm::PointerType::get(ctx_, 0);
-    auto size = emit_call(
-        module_->getOrInsertFunction(rt::array_size, builder_.getInt64Ty(),
-                                     ptrTy),
-        {arrPtr}, "for.size");
+    auto size = emit_array_size(arrPtr);
     // The array advance re-reads the size rather than reading `c.count`
     // back (the body can resize the receiver); only the string walk, whose
     // subject cannot change under it, consumes the stored count.
@@ -4884,22 +4869,16 @@ struct JIT {
     builder_.CreateCondBr(shapeMatch, fastBB, protoBB);
 
     // `slots[offset].value` of `holder`, the tagged pair the merge takes.
-    auto load_entry = [&](llvm::Value* holder, llvm::Value* offset,
-                          const char* what) {
-      auto entryPtr = emit_object_entry_ptr(holder, offset);
-      auto t = builder_.CreateLoad(i8Ty, entryPtr, std::string(what) + ".tag");
-      auto entryDataPtr = builder_.CreateConstInBoundsGEP1_64(
-          i8Ty, entryPtr, offsetof(JitValue, data), "entry.data.p");
-      auto d = builder_.CreateLoad(i64Ty, entryDataPtr,
-                                   std::string(what) + ".data");
-      return std::pair{t, d};
+    auto load_entry = [&](llvm::Value* holder, llvm::Value* offset) {
+      auto v = emit_load_elem(emit_object_entry_ptr(holder, offset));
+      return std::pair{extract_tag(v), extract_data(v)};
     };
 
     builder_.SetInsertPoint(fastBB);
     auto icOffsetPtr =
         builder_.CreateStructGEP(icTy, icGlobal, 1, "ic.off.p");
     auto icOffset = builder_.CreateLoad(i64Ty, icOffsetPtr, "ic.off");
-    auto [fastTag, fastData] = load_entry(objPtr, icOffset, "fast");
+    auto [fastTag, fastData] = load_entry(objPtr, icOffset);
     builder_.CreateBr(mergeBB);
     auto fastEnd = builder_.GetInsertBlock();
 
@@ -4954,7 +4933,7 @@ struct JIT {
     auto icProtoOffset = builder_.CreateLoad(
         i64Ty, builder_.CreateStructGEP(icTy, icGlobal, 4, "ic.poff.p"),
         "ic.poff");
-    auto [protoTag, protoData] = load_entry(protoPtr, icProtoOffset, "proto");
+    auto [protoTag, protoData] = load_entry(protoPtr, icProtoOffset);
     builder_.CreateBr(mergeBB);
     auto protoEnd = builder_.GetInsertBlock();
 
@@ -5006,6 +4985,13 @@ struct JIT {
       return finalMerge->finish(finalMergeBB).consume();
     }
     return result;
+  }
+
+  // Array or Tuple: the two tags backed by a JitArray.
+  llvm::Value* emit_is_seq(llvm::Value* tag) {
+    return builder_.CreateOr(
+        builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_ARRAY)),
+        builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_TUPLE)), "is_seq");
   }
 
   // `&arr->items[idx]` with array_get's bounds rule inlined, so an in-range
@@ -5085,7 +5071,11 @@ struct JIT {
   llvm::Value* emit_tag_fits_field_type(llvm::Value* tag,
                                         llvm::Value* declared) {
     using culebra::FieldType;
+    // The runtime's enum, value for value: the selects below name each one.
     static_assert(static_cast<int>(FieldType::Any) == 0 &&
+                  static_cast<int>(FieldType::Float) == 1 &&
+                  static_cast<int>(FieldType::Long) == 2 &&
+                  static_cast<int>(FieldType::Bool) == 3 &&
                   static_cast<int>(FieldType::Count) == 4);
     auto is = [&](FieldType t) {
       return builder_.CreateICmpEQ(
@@ -5126,10 +5116,18 @@ struct JIT {
                                             "elem.data.p"));
   }
 
-  // Point index `arr[key]` — Array/Tuple by Long, Object by Value key.
-  // Returns a borrowed slot value (the caller promotes it). The Object path
-  // (object_get_any) consumes `key`; the Array/Tuple path takes a Long
-  // (non-refcounted), so callers must NOT release `key` themselves.
+  // _jit_replace_value as IR: store `val` (its +1 absorbed) at `ptr`, then
+  // release what it replaced — a drop that release runs finds `val` there.
+  void emit_replace_value(llvm::Value* ptr, llvm::Value* val) {
+    auto old = emit_load_elem(ptr);
+    emit_store_elem(ptr, val);
+    emit_value_release(old);
+  }
+
+  // Point index `arr[key]` past Op::Index's inline Array/Tuple-by-Long read:
+  // an Object by Value key, or the type error an Array/Tuple key that is not
+  // a Long raises. Returns a +1 value. The Object path (object_get_any)
+  // consumes `key`, so callers must NOT release `key` themselves.
   llvm::Value* emit_point_index(llvm::Value* arr, llvm::Value* key) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto i8Ty = builder_.getInt8Ty();
@@ -5142,15 +5140,8 @@ struct JIT {
     auto errBB    = llvm::BasicBlock::Create(ctx_, "idx.err", fn);
     auto mergeBB  = llvm::BasicBlock::Create(ctx_, "idx.merge", fn);
 
-    // Both Array and Tuple share JitArray storage and the array_get
-    // runtime helper indexes by Long for either.
-    auto isArr = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_ARRAY));
-    auto chkTupBB = llvm::BasicBlock::Create(ctx_, "idx.chk_tup", fn);
     auto chkObjBB = llvm::BasicBlock::Create(ctx_, "idx.chk_obj", fn);
-    builder_.CreateCondBr(isArr, arrBB, chkTupBB);
-    builder_.SetInsertPoint(chkTupBB);
-    auto isTup = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_TUPLE));
-    builder_.CreateCondBr(isTup, arrBB, chkObjBB);
+    builder_.CreateCondBr(emit_is_seq(tag), arrBB, chkObjBB);
     builder_.SetInsertPoint(chkObjBB);
     auto isObj = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT));
     builder_.CreateCondBr(isObj, objBB, errBB);
@@ -5173,30 +5164,16 @@ struct JIT {
     auto outTag = entryB.CreateAlloca(i8Ty, nullptr, "idx.out.tag");
     auto outData = entryB.CreateAlloca(i64Ty, nullptr, "idx.out.data");
 
-    // Array path: index by Long. value_to_long (non-Long key) and array_get
-    // (out-of-bounds) both raise a *direct* error — no user dispatch — so the
-    // borrowed receiver strands on the unwind edge. Guard it there; the caller
-    // releases it on the normal path (swap_owned), so it frees exactly once.
-    // `key` is guarded too: the Array/Tuple path never releases it (a valid
-    // index is a non-refcounted Long — a no-op), but a heap key (`arr[[9]]`)
-    // that trips value_to_long's type error would otherwise strand.
+    // Array/Tuple: the key is not a Long, so value_to_long raises its type
+    // error — a *direct* error, no user dispatch — and the borrowed receiver
+    // and a heap key (`arr[[9]]`) would strand on the unwind edge. Guard both
+    // there; nothing continues past the throw.
     builder_.SetInsertPoint(arrBB);
-    llvm::Value* elem;
     {
       ThrowGuard arr_guard(this, {arr, key});
-      auto arrPtr = builder_.CreateIntToPtr(extract_data(arr), ptrTy);
-      auto idx = value_to_long(key);
-      elem = emit_load_elem(emit_array_elem_ptr(arrPtr, idx, true));
+      value_to_long(key);
+      builder_.CreateUnreachable();
     }
-    // The element is borrowed; retain so emit_point_index returns a
-    // uniformly +1-owned result (the object path's object_get_any already does).
-    // Callers then just release the receiver, never re-retaining — the old
-    // "promote borrowed via retain" model double-counted the object path (a
-    // fresh SharedBuffer view leaked, a dict slot's refcount inflated).
-    emit_value_retain(elem);
-    builder_.CreateStore(extract_tag(elem), outTag);
-    builder_.CreateStore(extract_data(elem), outData);
-    builder_.CreateBr(mergeBB);
 
     // Object path: look up by Value key in the non-String sidecar. object_get_any
     // owns the receiver on its *direct* KeyError edge (own_receiver=true) — a
@@ -5359,7 +5336,7 @@ struct JIT {
     };
 
     arm(arrBB, [&](llvm::Value* p) {
-      return emit_call(module_->getFunction(rt::array_size), {p}, "asz");
+      return emit_array_size(p);
     });
     arm(objBB, [&](llvm::Value* p) {
       return emit_call(module_->getFunction(rt::object_size), {p}, "osz");

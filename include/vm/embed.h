@@ -774,8 +774,7 @@ class Embed {
         JIT_CLOSURE_NATIVE, /*meta=*/nullptr);
     cls->captures[0] = culebra_runtime_cell_new(TAG_LONG, idx);
     auto* cell = cells_.cell(name);
-    _culebra_value_release_impl(cell->value.tag, cell->value.data);
-    cell->value = JitValue{TAG_FUNC, reinterpret_cast<int64_t>(cls)};
+    _jit_replace_value(cell->value, TAG_FUNC, reinterpret_cast<int64_t>(cls));
     cells_.set_mut(name, false);
   }
 

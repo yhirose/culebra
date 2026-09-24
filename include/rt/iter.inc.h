@@ -2412,8 +2412,9 @@ inline void _iter_scan_fast_fn(JitClosure* cls, JitValue, bool* done,
   auto acc = acc_cell->value;
   culebra_runtime_value_retain(acc.tag, acc.data);  // the call consumes one
   auto next_acc = _culebra_invoke2(fn_cls, acc, {tag, data});
-  _culebra_value_release_impl(acc.tag, acc.data);   // drop the old running value
-  acc_cell->value = next_acc;                       // cell takes the +1
+  // The cell takes the +1 and drops the old running value.
+  _jit_replace_value(acc_cell->value, static_cast<int8_t>(next_acc.tag),
+                     next_acc.data);
   culebra_runtime_value_retain(next_acc.tag, next_acc.data);  // +1 for the yield
   *done = false;
   *out_tag = next_acc.tag;
