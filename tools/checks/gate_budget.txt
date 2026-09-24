@@ -35,7 +35,8 @@ ctest.entries 34
 # the one a value class refuses — two blocks, in en and ja. 952 since the three
 # spec changes each showed their new rule in language.md and its ja pair. 954
 # since §10 shows the UFCS candidate its first parameter rules out, in en and ja.
-docs.blocks 954
+# 956 since §11's generators show a loop body's defer running per iteration.
+docs.blocks 956
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130
