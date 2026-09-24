@@ -511,5 +511,45 @@ fn g_nest_outer(n) {
   yield n
 }
 assert_eq(g_nest_outer(10).collect(), [[10, 20], 10])
+// Destructured locals live across a yield, whatever the pattern.
+fn g_ds_array(xs) {
+  let [h, ...t] = xs
+  yield 0
+  yield [h, t]
+}
+assert_eq(g_ds_array([1, 2, 3]).collect(), [0, [1, [2, 3]]])
+fn g_ds_object(o) {
+  let {p: [x, y], q} = o
+  yield 0
+  yield [x, y, q]
+}
+assert_eq(g_ds_object({p: [1, 2], q: 3}).collect(), [0, [1, 2, 3]])
+fn g_ds_modifier(c) {
+  mut a = 0
+  [a] = [5] unless c
+  yield a
+}
+assert_eq(g_ds_modifier(false).collect(), [5])
+assert_eq(g_ds_modifier(true).collect(), [0])
+fn g_ds_init(xs) {
+  if let [a, b] = xs; a < b {
+    yield 0
+    yield a + b
+  }
+}
+assert_eq(g_ds_init([1, 2]).collect(), [0, 3])
+fn g_ds_for(ps) {
+  for (a, b) in ps { yield a + b }
+  for [c, d] in ps { yield c * d }
+  for k, v in {m: 1} { yield "{k}={v}" }
+}
+assert_eq(g_ds_for([(1, 2), (3, 4)]).collect(), [3, 7, 2, 12, 'm=1'])
+mut g_ds_outer = 0
+fn g_ds_reassign() {
+  [g_ds_outer] = [9]
+  yield g_ds_outer
+}
+assert_eq(g_ds_reassign().collect(), [9])
+assert_eq(g_ds_outer, 9)
 
 IO.inspect('test_generator OK')

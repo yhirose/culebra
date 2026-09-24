@@ -543,3 +543,20 @@ let eff_labels = handle {
   resume(7)
 }
 assert_eq(eff_labels, [{x: 1}, 2, {x: 7}])
+// A destructured local lives across a perform, and a destructure in tail
+// position is still the body's value (its right-hand side).
+let eff_ds = handle {
+  let [a, {b}] = [1, {b: 2}]
+  let x = perform anf_ask()
+  a + b + x
+} with anf_ask(resume) {
+  resume(10)
+}
+assert_eq(eff_ds, 13)
+let eff_ds_tail = handle {
+  let x = perform anf_ask()
+  let [a, b] = [x, 2]
+} with anf_ask(resume) {
+  resume(1)
+}
+assert_eq(eff_ds_tail, [1, 2])

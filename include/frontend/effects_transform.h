@@ -916,7 +916,7 @@ class EffectsLowerer {
           "body is not supported — define it at the body's statement level.",
           err_line(*fd), static_cast<long>(fd->column));
     }
-    return cps_rw(s, rw);
+    return rewrite_locals_to_self(s, src_, rw, EditSite::Stmt);
   }
   bool cps_needs_split(const peg::Ast& s) const {
     using namespace peg::udl;
@@ -1046,6 +1046,16 @@ class EffectsLowerer {
           body += std::format("      self._eff_val = {}\n",
                               promoted_slot(rw, std::string(lval.token)));
       }
+    } else if (u->tag == "DESTRUCTURE_ASSIGN"_) {
+      // A destructure evaluates to its right-hand side. The statement may end
+      // in the copies into the slots, so the value is taken on the way in.
+      const auto& rhs = *u->nodes[3];
+      std::vector<SourceEdit> edits{
+          {rhs.position, 0, "(self._eff_val = "},
+          {rhs.position + rhs.length, 0, ")"}};
+      collect_promoted_edits(*u, src_, rw, edits, EditSite::Stmt);
+      body = "      " + rewrite_edits(*u, src_, std::move(edits)) + mk(*u) +
+             "\n";
     } else {
       body = std::format("      self._eff_val = ({}){}\n", stmt_src(*u, rw),
                          mk(*u));

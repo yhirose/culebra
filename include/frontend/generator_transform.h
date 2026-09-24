@@ -731,6 +731,38 @@ struct SourceEdit {
   std::string text;
 };
 
+// Where a node sits, as far as appending to it goes: a statement can be
+// followed by `; <stmt>`, an init-clause binding by `, <binding>`, and an
+// expression by nothing.
+enum class EditSite { Expr, Stmt, InitBinding };
+
+// The plain local a promoted leaf of a destructuring pattern binds first, to
+// be copied into its slot (only a flat tuple can bind slots directly).
+inline std::string destructure_temp(std::string_view name) {
+  return "_g_d_" + std::string(name);
+}
+
+// `n`'s source from `src` with `edits` applied.
+inline std::string rewrite_edits(const peg::Ast& n, const std::string& src,
+                                 std::vector<SourceEdit> edits) {
+  std::stable_sort(edits.begin(), edits.end(),
+                   [](const auto& a, const auto& b) { return a.pos < b.pos; });
+  std::string out;
+  size_t at = n.position;
+  for (const auto& e : edits) {
+    if (e.pos < at || e.pos + e.len > n.position + n.length) {
+      throw CulebraError("InternalError",
+                         "locals rewrite produced an overlapping edit",
+                         static_cast<long>(n.line), static_cast<long>(n.column));
+    }
+    out.append(src, at, e.pos - at);
+    out += e.text;
+    at = e.pos + e.len;
+  }
+  out.append(src, at, n.position + n.length - at);
+  return out;
+}
+
 // The edits that move every promoted local under `n` to where it lives
 // (promoted_slot). Only references are touched — a member name (`o.x`) and a
 // label (`{x: v}`, `f(x: v)`) are not the local — and a shorthand `{x}` is
@@ -746,9 +778,16 @@ struct SourceEdit {
 // (transform_generators_in is top-down, and neither pass enters the other's
 // constructs), so a subtree spliced in from another fragment here is a broken
 // invariant, not a shape to tolerate.
+//
+// Any other destructuring pattern binds its promoted leaves to temporaries
+// (destructure_temp) and is followed by the copies into their slots, so the
+// pattern keeps its own matching and errors. That needs somewhere to put the
+// copies: a statement (one with a trailing `if` / `unless` is wrapped in the
+// `if` it means) or an init-clause binding.
 inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
                                    const PromotedLocals& promoted,
-                                   std::vector<SourceEdit>& out) {
+                                   std::vector<SourceEdit>& out,
+                                   EditSite site) {
   using namespace peg::udl;
   auto at = [&](const peg::Ast& t) {
     return static_cast<size_t>(t.token.data() - src.data());
@@ -777,21 +816,70 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
     const auto* t = assign_name_target(n, av);
     if ((av.is_let || av.is_mut) && t && is_promoted(*t))
       drop_keywords(n, at(*t));
-  } else if (n.tag == "DESTRUCTURE_ASSIGN"_ && n.nodes.size() >= 3 &&
-             is_flat_tuple_pattern(*n.nodes[2])) {
-    // [LET, MUTABLE, PATTERN, EXPRESSION]: dropping the keyword leaves the
-    // PLACE_ASSIGN `(<slot>, <slot>) = …`.
+  } else if (n.tag == "DESTRUCTURE_ASSIGN"_ && n.nodes.size() == 4) {
+    // [LET, MUTABLE, PATTERN, EXPRESSION]
     const auto& pat = *n.nodes[2];
-    bool declared = n.nodes[0]->token == "let" || n.nodes[1]->token == "mut";
-    if (declared && std::any_of(pat.nodes.begin(), pat.nodes.end(),
-                                [&](auto& l) { return is_promoted(*l); }))
-      drop_keywords(n, pat.position);
+    bool any = false;
+    for_each_pattern_leaf(pat, [&](const peg::Ast& id, bool) {
+      any = any || is_promoted(id);
+    });
+    if (any && is_flat_tuple_pattern(pat)) {
+      // Dropping the keyword leaves the PLACE_ASSIGN `(<slot>, <slot>) = …`.
+      if (n.nodes[0]->token == "let" || n.nodes[1]->token == "mut")
+        drop_keywords(n, pat.position);
+    } else if (any) {
+      if (site == EditSite::Expr) {
+        throw CulebraError(
+            "SyntaxError",
+            "a destructuring assignment that binds a local of a generator or "
+            "effect body must be a statement of its own.",
+            static_cast<long>(pat.line), static_cast<long>(pat.column));
+      }
+      std::string copies;
+      for_each_pattern_leaf(pat, [&](const peg::Ast& id, bool shorthand) {
+        if (!is_promoted(id)) return;
+        auto temp = destructure_temp(id.token);
+        out.push_back({at(id), id.token.size(),
+                       shorthand ? std::format("{}: {}", id.token, temp)
+                                 : temp});
+        copies += std::format("{} {} = {}",
+                              site == EditSite::Stmt ? ";" : ",", slot(id),
+                              temp);
+      });
+      const auto& rhs = *n.nodes[3];
+      out.push_back({rhs.position + rhs.length, 0, copies});
+      collect_promoted_edits(rhs, src, promoted, out, EditSite::Expr);
+      return;
+    }
   } else if (n.tag == "OBJECT_PROPERTY"_ && n.nodes.size() == 2 &&
              is_promoted(*n.nodes[1])) {
     const auto& key = *n.nodes[1];
     out.push_back({at(key) + key.token.size(), 0, ": " + slot(key)});
     return;
+  } else if (n.tag == "STATEMENT"_ && n.nodes.size() == 2 &&
+             n.nodes[0]->tag == "DESTRUCTURE_ASSIGN"_) {
+    // `<destructure> if c`: the copies must stay under the condition, so the
+    // statement becomes `if c { <destructure>; <copies> }`.
+    const auto& base = *n.nodes[0];
+    const auto& mod = *n.nodes[1];
+    std::vector<SourceEdit> inner;
+    collect_promoted_edits(base, src, promoted, inner, EditSite::Stmt);
+    if (!inner.empty()) {
+      std::vector<SourceEdit> cond_edits;
+      collect_promoted_edits(mod, src, promoted, cond_edits, EditSite::Expr);
+      auto cond = rewrite_edits(mod, src, cond_edits);
+      auto head = cond.starts_with("unless")
+                      ? std::format("if !({}) {{ ", cond.substr(6))
+                      : cond + " { ";
+      out.push_back({base.position, 0, head});
+      out.insert(out.end(), inner.begin(), inner.end());
+      out.push_back({mod.position, mod.length, "}"});
+      return;
+    }
   }
+  auto contains = [](unsigned int tag) {
+    return tag == "STATEMENTS"_ || tag == "BLOCK"_ || tag == "LEXICAL_SCOPE"_;
+  };
   for (size_t i = 0; i < n.nodes.size(); i++) {
     const auto& c = *n.nodes[i];
     if (c.path != n.path) {
@@ -801,7 +889,15 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
           static_cast<long>(c.line), static_cast<long>(c.column));
     }
     if (is_label_position(n, i)) continue;
-    collect_promoted_edits(c, src, promoted, out);
+    // A block collapsed into its lone statement keeps the block's tag in
+    // original_tag.
+    EditSite cs = EditSite::Expr;
+    if (contains(n.tag) || contains(c.original_tag) ||
+        c.original_tag == "STATEMENT"_ || (n.tag == "STATEMENT"_ && i == 0))
+      cs = EditSite::Stmt;
+    else if (n.tag == "INIT_CLAUSE"_)
+      cs = EditSite::InitBinding;
+    collect_promoted_edits(c, src, promoted, out, cs);
   }
 }
 
@@ -810,28 +906,15 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
 // one hands back the value and calling one passes no receiver, though both are
 // spelled `self.<name>` now — both backends check the slot's owner
 // (culebra::is_lowered_state_class), the one place that sees every spelling.
+// `site` is where `n` itself sits (see EditSite).
 inline std::string rewrite_locals_to_self(const peg::Ast& n,
                                           const std::string& src,
-                                          const PromotedLocals& promoted) {
+                                          const PromotedLocals& promoted,
+                                          EditSite site = EditSite::Expr) {
   if (ast_source_slice(n, src).empty()) return {};
   std::vector<SourceEdit> edits;
-  collect_promoted_edits(n, src, promoted, edits);
-  std::sort(edits.begin(), edits.end(),
-            [](const auto& a, const auto& b) { return a.pos < b.pos; });
-  std::string out;
-  size_t at = n.position;
-  for (const auto& e : edits) {
-    if (e.pos < at || e.pos + e.len > n.position + n.length) {
-      throw CulebraError("InternalError",
-                         "locals rewrite produced an overlapping edit",
-                         static_cast<long>(n.line), static_cast<long>(n.column));
-    }
-    out.append(src, at, e.pos - at);
-    out += e.text;
-    at = e.pos + e.len;
-  }
-  out.append(src, at, n.position + n.length - at);
-  return out;
+  collect_promoted_edits(n, src, promoted, edits, site);
+  return rewrite_edits(n, src, std::move(edits));
 }
 
 // Whether a node opens a variable scope of its own — the engines' sites, as
@@ -970,12 +1053,8 @@ inline std::set<std::string> collect_local_names(
         if (const auto* t = assign_name_target(n, av))
           declare(t->token, av.is_let || av.is_mut);
       }
-    } else if (n.tag == "DESTRUCTURE_ASSIGN"_ && n.nodes.size() >= 3 &&
-               is_flat_tuple_pattern(*n.nodes[2])) {
-      // [LET, MUTABLE, PATTERN, EXPRESSION]. Only a flat tuple pattern:
-      // the promoted leaves are written back as `(self.a, self.b) = …`,
-      // and PLACE_ASSIGN takes exactly that shape (no array / object /
-      // nested pattern), so the other forms stay as they were.
+    } else if (n.tag == "DESTRUCTURE_ASSIGN"_ && n.nodes.size() >= 3) {
+      // [LET, MUTABLE, PATTERN, EXPRESSION]
       bool declared =
           n.nodes[0]->token == "let" || n.nodes[1]->token == "mut";
       for_each_pattern_binding(
@@ -1140,6 +1219,10 @@ inline std::optional<std::string> rewrite_yielding_fors_to_while(
       nobreak_suffix =
           std::string(" ") + std::string(ast_source_slice(*nc, src));
     }
+    // A multi-target binding (`for k, v in …`) binds the tuple each step
+    // yields, so it is written as that tuple's pattern.
+    std::string binding(ast_source_slice(var_node, src));
+    if (var_node.tag == "FOR_BINDING"_) binding = "(" + binding + ")";
     // A label belongs to the loop, not to the iterator binding: it moves onto
     // the desugared `while`, after the `let` that opens the iterator.
     auto replacement = std::format(
@@ -1148,8 +1231,7 @@ inline std::optional<std::string> rewrite_yielding_fors_to_while(
         "  let {2} = {0}.next(){4}\n"
         "  {3}\n"
         "}}{5}",
-        iter_var, std::string(expr_sv),
-        std::string(var_node.token), body_text, line_marker(orig),
+        iter_var, std::string(expr_sv), binding, body_text, line_marker(orig),
         nobreak_suffix, loop_label_prefix(fv.label));
     out.replace(f->position - base, f->length, replacement);
   }
@@ -1423,7 +1505,9 @@ struct CpsBuilder {
     for (size_t idx = stmts.size(); idx-- > 0;) {
       const peg::Ast* s = stmts[idx];
       if (!needs_split(*s)) {
-        pending = "      " + rw(*s) + mk(*s) + "\n" + pending;
+        pending = "      " +
+                  rewrite_locals_to_self(*s, src, rewrite_set, EditSite::Stmt) +
+                  mk(*s) + "\n" + pending;
       } else {
         flush();
         k = compile_stmt(s, k);
