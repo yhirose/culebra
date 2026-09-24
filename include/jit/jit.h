@@ -4026,7 +4026,7 @@ struct JIT {
     // releases this slot; the nil outside the window is what makes that
     // release unconditional and exactly-once.
     llvm::Value* elem;      // Value — this iteration's element, +1 | nil
-    llvm::Value* out_tag;   // i8    — array_get / iter_advance scratch
+    llvm::Value* out_tag;   // i8    — iter_advance scratch
     llvm::Value* out_data;  // i64
   };
 
@@ -4093,25 +4093,17 @@ struct JIT {
     // body may shrink the receiver, and the walk has to end where the live
     // array ends (interp's rule). Tuples are immutable and the Set branch
     // walks a private materialized copy, so only Array can actually move.
-    auto size = emit_call(
-        module_->getOrInsertFunction(rt::array_size, builder_.getInt64Ty(),
-                                     ptrTy),
-        {builder_.CreateLoad(ptrTy, c.src)}, "for.n");
+    auto size = emit_array_size(builder_.CreateLoad(ptrTy, c.src));
     builder_.CreateCondBr(builder_.CreateICmpSGE(idx, size), exitBB, stepBB);
 
     builder_.SetInsertPoint(stepBB);
     builder_.CreateStore(builder_.CreateAdd(idx, builder_.getInt64(1)), c.pos);
-    emit_call(
-        module_->getOrInsertFunction(
-            rt::array_get, builder_.getVoidTy(), ptrTy, i64Ty, ptrTy, ptrTy,
-            i64Ty, i64Ty),
-        {builder_.CreateLoad(ptrTy, c.src), idx, c.out_tag, c.out_data,
-         current_line_val(), current_column_val()});
-    auto t = builder_.CreateLoad(builder_.getInt8Ty(), c.out_tag);
-    auto d = builder_.CreateLoad(i64Ty, c.out_data);
-    // The element is read straight out of the container (a borrow); the body
-    // slot releases on scope exit, so hand it a matching +1.
-    builder_.CreateStore(emit_borrow_to_owned(make_value(t, d)), c.elem);
+    // In range by the compare above. The element is read straight out of the
+    // container (a borrow); the body slot releases on scope exit, so hand it
+    // a matching +1.
+    auto elem = emit_load_elem(
+        emit_array_slot(builder_.CreateLoad(ptrTy, c.src), idx));
+    builder_.CreateStore(emit_borrow_to_owned(elem), c.elem);
     builder_.CreateBr(bodyBB);
   }
 
@@ -5024,6 +5016,86 @@ struct JIT {
     return result;
   }
 
+  // `&arr->items[idx]` with array_get's bounds rule inlined, so an in-range
+  // subscript is a load and a compare rather than a runtime call. A negative
+  // `idx` counts from the end when `from_end`; a write context passes false
+  // and a negative index is out of range, as array_set has it. A miss raises
+  // the IndexError the runtime helpers raise, at the same position.
+  llvm::Value* emit_array_elem_ptr(llvm::Value* arrPtr, llvm::Value* idx,
+                                   bool from_end) {
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto size = emit_array_size(arrPtr);
+    auto at = idx;
+    if (from_end) {
+      at = builder_.CreateSelect(
+          builder_.CreateICmpSLT(idx, builder_.getInt64(0)),
+          builder_.CreateAdd(size, idx), idx, "arr.at");
+    }
+    // Unsigned, so an index still negative wraps above every size.
+    auto hitBB = llvm::BasicBlock::Create(ctx_, "arr.hit", fn);
+    auto missBB = llvm::BasicBlock::Create(ctx_, "arr.miss", fn);
+    llvm::MDBuilder mdb(ctx_);
+    builder_.CreateCondBr(builder_.CreateICmpULT(at, size, "arr.in_range"),
+                          hitBB, missBB, mdb.createBranchWeights(1u << 20, 1));
+    builder_.SetInsertPoint(missBB);
+    emit_throw_error("IndexError", "index out of range", current_line_,
+                     current_column_);
+    close_block_unreachable();
+    builder_.SetInsertPoint(hitBB);
+    return emit_array_slot(arrPtr, at);
+  }
+
+  // `arr->size`, the live element count of an Array or Tuple.
+  llvm::Value* emit_array_size(llvm::Value* arrPtr) {
+    return builder_.CreateLoad(
+        builder_.getInt64Ty(),
+        builder_.CreateConstInBoundsGEP1_64(builder_.getInt8Ty(), arrPtr,
+                                            offsetof(JitArray, size),
+                                            "arr.size.p"),
+        "arr.size");
+  }
+
+  // `&arr->items[at]` for an `at` the caller has already bounds-checked.
+  llvm::Value* emit_array_slot(llvm::Value* arrPtr, llvm::Value* at) {
+    auto i8Ty = builder_.getInt8Ty();
+    auto items = builder_.CreateLoad(
+        llvm::PointerType::get(ctx_, 0),
+        builder_.CreateConstInBoundsGEP1_64(i8Ty, arrPtr,
+                                            offsetof(JitArray, items),
+                                            "arr.items.p"),
+        "arr.items");
+    return builder_.CreateInBoundsGEP(
+        i8Ty, items,
+        builder_.CreateMul(at, builder_.getInt64(sizeof(JitValue))),
+        "arr.elem.p");
+  }
+
+  // The borrowed value at an element address from emit_array_elem_ptr.
+  llvm::Value* emit_load_elem(llvm::Value* elemPtr) {
+    auto i8Ty = builder_.getInt8Ty();
+    auto i64Ty = builder_.getInt64Ty();
+    auto t = builder_.CreateLoad(i8Ty, elemPtr, "elem.tag");
+    auto d = builder_.CreateLoad(
+        i64Ty,
+        builder_.CreateConstInBoundsGEP1_64(i8Ty, elemPtr,
+                                            offsetof(JitValue, data),
+                                            "elem.data.p"),
+        "elem.data");
+    return make_value(t, d);
+  }
+
+  // Store `val` at an element address, the tag widened to JitValue's i64.
+  void emit_store_elem(llvm::Value* elemPtr, llvm::Value* val) {
+    auto i8Ty = builder_.getInt8Ty();
+    builder_.CreateStore(
+        builder_.CreateZExt(extract_tag(val), builder_.getInt64Ty()), elemPtr);
+    builder_.CreateStore(
+        extract_data(val),
+        builder_.CreateConstInBoundsGEP1_64(i8Ty, elemPtr,
+                                            offsetof(JitValue, data),
+                                            "elem.data.p"));
+  }
+
   // Point index `arr[key]` — Array/Tuple by Long, Object by Value key.
   // Returns a borrowed slot value (the caller promotes it). The Object path
   // (object_get_any) consumes `key`; the Array/Tuple path takes a Long
@@ -5079,24 +5151,21 @@ struct JIT {
     // index is a non-refcounted Long — a no-op), but a heap key (`arr[[9]]`)
     // that trips value_to_long's type error would otherwise strand.
     builder_.SetInsertPoint(arrBB);
+    llvm::Value* elem;
     {
       ThrowGuard arr_guard(this, {arr, key});
       auto arrPtr = builder_.CreateIntToPtr(extract_data(arr), ptrTy);
       auto idx = value_to_long(key);
-      emit_call(
-          module_->getOrInsertFunction(
-              rt::array_get, builder_.getVoidTy(), ptrTy, i64Ty, ptrTy,
-              ptrTy, i64Ty, i64Ty),
-          {arrPtr, idx, outTag, outData, current_line_val(),
-           current_column_val()});
+      elem = emit_load_elem(emit_array_elem_ptr(arrPtr, idx, true));
     }
-    // array_get borrows the element slot; retain so emit_point_index returns a
+    // The element is borrowed; retain so emit_point_index returns a
     // uniformly +1-owned result (the object path's object_get_any already does).
     // Callers then just release the receiver, never re-retaining — the old
     // "promote borrowed via retain" model double-counted the object path (a
     // fresh SharedBuffer view leaked, a dict slot's refcount inflated).
-    emit_value_retain(make_value(builder_.CreateLoad(i8Ty, outTag),
-                                 builder_.CreateLoad(i64Ty, outData)));
+    emit_value_retain(elem);
+    builder_.CreateStore(extract_tag(elem), outTag);
+    builder_.CreateStore(extract_data(elem), outData);
     builder_.CreateBr(mergeBB);
 
     // Object path: look up by Value key in the non-String sidecar. object_get_any

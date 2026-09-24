@@ -1409,29 +1409,11 @@ struct Lowering {
           break;
         }
         case Op::SeqGet: {
-          // array_get hands back a borrowed element; the register owns what
-          // it holds, so mint the slot's own reference.
+          // The element is borrowed; the register owns what it holds, so
+          // mint the slot's own reference.
           auto arr = b.CreateIntToPtr(j.extract_data(load_slot(in.b)), ptrTy);
-          llvm::Value* at = b.getInt64(in.c);
-          if (in.c < 0) {
-            auto n = j.emit_call(
-                j.module_->getOrInsertFunction(rt::array_size, i64Ty, ptrTy),
-                {arr}, "vseq.n");
-            at = b.CreateAdd(n, at, "vseq.from_end");
-          }
-          // Entry-block allocas: this arm can sit inside a loop body, and a
-          // current-block alloca would grow the stack every iteration.
-          IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
-          auto outTag = eb.CreateAlloca(b.getInt8Ty(), nullptr, "vseq.tag");
-          auto outData = eb.CreateAlloca(i64Ty, nullptr, "vseq.data");
-          j.emit_call(
-              j.module_->getOrInsertFunction(rt::array_get, b.getVoidTy(),
-                                             ptrTy, i64Ty, ptrTy, ptrTy, i64Ty,
-                                             i64Ty),
-              {arr, at, outTag, outData, j.current_line_val(),
-               j.current_column_val()});
-          auto v = j.make_value(b.CreateLoad(b.getInt8Ty(), outTag),
-                                b.CreateLoad(i64Ty, outData));
+          auto v = j.emit_load_elem(
+              j.emit_array_elem_ptr(arr, b.getInt64(in.c), true));
           j.emit_value_retain(v);
           b.CreateStore(v, slots[in.a]);
           break;
@@ -1530,13 +1512,33 @@ struct Lowering {
           // normal paths. The result is +1 on both arms.
           auto recv = load_slot(in.b);
           auto key = load_slot(in.c);
-          j.emit_value_retain(recv);
-          j.emit_value_retain(key);
-          auto cond = j.emit_is_range(key);
           auto sliceBB = BasicBlock::Create(j.ctx_, "vidx.slice", fn);
           auto pointBB = BasicBlock::Create(j.ctx_, "vidx.point", fn);
           auto mergeBB = BasicBlock::Create(j.ctx_, "vidx.merge", fn);
-          b.CreateCondBr(cond, sliceBB, pointBB);
+          // An Array or Tuple by a Long: the element read inline. Nothing
+          // here consumes an operand, so the registers need no minted +1s.
+          {
+            auto rtag = j.extract_tag(recv);
+            auto isSeq = b.CreateOr(
+                b.CreateICmpEQ(rtag, b.getInt8(TAG_ARRAY)),
+                b.CreateICmpEQ(rtag, b.getInt8(TAG_TUPLE)), "vidx.is_seq");
+            auto isLong = b.CreateICmpEQ(j.extract_tag(key),
+                                         b.getInt8(TAG_LONG), "vidx.is_long");
+            auto seqBB = BasicBlock::Create(j.ctx_, "vidx.seq", fn);
+            auto genBB = BasicBlock::Create(j.ctx_, "vidx.generic", fn);
+            b.CreateCondBr(b.CreateAnd(isSeq, isLong), seqBB, genBB);
+            b.SetInsertPoint(seqBB);
+            auto arrPtr = b.CreateIntToPtr(j.extract_data(recv), ptrTy);
+            auto v = j.emit_load_elem(
+                j.emit_array_elem_ptr(arrPtr, j.extract_data(key), true));
+            j.emit_value_retain(v);
+            b.CreateStore(v, slots[in.a]);
+            b.CreateBr(mergeBB);
+            b.SetInsertPoint(genBB);
+          }
+          j.emit_value_retain(recv);
+          j.emit_value_retain(key);
+          b.CreateCondBr(j.emit_is_range(key), sliceBB, pointBB);
           b.SetInsertPoint(sliceBB);
           {
             // Slice reads both operands; drop both minted +1s here.
@@ -3559,29 +3561,16 @@ struct Lowering {
           b.CreateUnreachable();
 
           // Array arm: array_set's bounds rule (a negative index is
-          // IndexError — guard_write_index), then array_get; the borrowed
-          // element is retained for the register.
+          // IndexError); the borrowed element is retained for the register.
           b.SetInsertPoint(arrBB);
           {
             auto idx = j.value_to_long(key);
-            auto negBB = BasicBlock::Create(j.ctx_, "iwr.neg", fn);
-            auto okBB = BasicBlock::Create(j.ctx_, "iwr.ok", fn);
-            b.CreateCondBr(b.CreateICmpSLT(idx, b.getInt64(0)), negBB, okBB);
-            b.SetInsertPoint(negBB);
-            j.emit_throw_error("IndexError", "index out of range",
-                               j.current_line_, j.current_column_);
-            b.CreateUnreachable();
-            b.SetInsertPoint(okBB);
             auto arrPtr = b.CreateIntToPtr(j.extract_data(recv), ptrTy);
-            j.emit_call(
-                j.module_->getOrInsertFunction(rt::array_get, b.getVoidTy(),
-                                               ptrTy, i64Ty, ptrTy, ptrTy,
-                                               i64Ty, i64Ty),
-                {arrPtr, idx, outTag, outData, j.current_line_val(),
-                 j.current_column_val()});
-            j.emit_value_retain(
-                j.make_value(b.CreateLoad(b.getInt8Ty(), outTag),
-                             b.CreateLoad(i64Ty, outData)));
+            auto v =
+                j.emit_load_elem(j.emit_array_elem_ptr(arrPtr, idx, false));
+            j.emit_value_retain(v);
+            b.CreateStore(j.extract_tag(v), outTag);
+            b.CreateStore(j.extract_data(v), outData);
             b.CreateBr(mergeBB);
           }
 
@@ -3672,20 +3661,19 @@ struct Lowering {
 
           // The stores consume a +1 of the value (and, for the Object arm,
           // of the key); the registers keep their own — the assignment
-          // expression still reads the value slot afterwards. On array_set's
-          // OOB throw the minted +1 strands to the GC backstop, like the
-          // JIT's rval.
+          // expression still reads the value slot afterwards. The Array arm
+          // mints its +1 only past the bounds check, then releases what it
+          // replaces before storing, as array_set does; a drop that release
+          // runs can grow the array, so the slot is re-derived after it.
           b.SetInsertPoint(arrBB);
           {
             auto idx = j.value_to_long(key);
             auto arrPtr = b.CreateIntToPtr(j.extract_data(recv), ptrTy);
+            auto old =
+                j.emit_load_elem(j.emit_array_elem_ptr(arrPtr, idx, false));
             j.emit_value_retain(val);
-            j.emit_call(
-                j.module_->getOrInsertFunction(rt::array_set, b.getVoidTy(),
-                                               ptrTy, i64Ty, b.getInt8Ty(),
-                                               i64Ty, i64Ty, i64Ty),
-                {arrPtr, idx, j.extract_tag(val), j.extract_data(val),
-                 j.current_line_val(), j.current_column_val()});
+            j.emit_value_release(old);
+            j.emit_store_elem(j.emit_array_slot(arrPtr, idx), val);
             b.CreateBr(mergeBB);
           }
           b.SetInsertPoint(objBB);
