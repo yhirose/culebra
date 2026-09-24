@@ -158,6 +158,25 @@ let nofont = try {
 }
 println("missing font: {nofont}")
 
+# --- culling that changes nothing visible ---
+# Before the fullscreen toggle below: leaving fullscreen is asynchronous under
+# a compositor, and a shot taken while it lands is at the wrong size.
+view.add_box(1.0, 1.0, 1.0).move(1000.0, 0.0, 0.0)   # off screen: culled, or drawn to nothing
+let bumps = Scene.Image.new(8, 8).fill(128, 128, 128).noise(1, 2.0, 255).to_normal(2.0)
+let bumpy = view.add_material().rgb(180, 180, 180).normal_map(view.texture(bumps), 1.0)
+view.add_box(1.0, 1.0, 1.0).move(-3.0, 2.0, 0.0).material(bumpy)
+view.camera(4.0, 3.0, 5.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 55.0)
+view.culling(true)
+view.render_3d()
+view.screenshot("cull_on.png")
+view.present()
+view.culling(false)
+view.render_3d()
+view.screenshot("cull_off.png")
+view.present()
+view.culling(true)
+println("culling invisible: {FS.read("cull_on.png") == FS.read("cull_off.png")}")
+
 view.supersample(1)
 view.clip_planes(0.5, 500.0)
 view.render_3d()
@@ -175,9 +194,11 @@ view.mouse_capture(false)
 println("fullscreen-was {fs == true || fs == false}")
 let mx = view.mouse_x()
 let mwheel = view.mouse_wheel()
-println("mouse {mx >= 0.0 || mx < 0.0} dx {view.mouse_dx()} wheel {mwheel} {view.mouse("left")} {view.mouse_pressed("right")} {view.mouse("wheel")}")
+# On a real display dx is wherever the pointer happened to be; only Xvfb pins it.
+let mdx = view.mouse_dx()
+println("mouse {mx >= 0.0 || mx < 0.0} dx {mdx >= 0.0 || mdx < 0.0} wheel {mwheel} {view.mouse("left")} {view.mouse_pressed("right")} {view.mouse("wheel")}")
 
-# --- the graph as data, and culling that changes nothing visible ---
+# --- the graph as data ---
 let tree = view.add_node().move(1.0, 2.0, 3.0).name("tree")
 let leaf = tree.add_box(0.2, 0.2, 0.2).move(1.0, 0.0, 0.0).name("leaf")
 leaf.add_sphere(0.1).name("fruit")
@@ -200,21 +221,6 @@ leaf.remove()
 println("removed {tree.child_count()} {view.has("fruit")}")
 view.remove(tree)
 println("root removed {view.has("tree")}")
-view.add_box(1.0, 1.0, 1.0).move(1000.0, 0.0, 0.0)   # off screen: culled, or drawn to nothing
-let bumps = Scene.Image.new(8, 8).fill(128, 128, 128).noise(1, 2.0, 255).to_normal(2.0)
-let bumpy = view.add_material().rgb(180, 180, 180).normal_map(view.texture(bumps), 1.0)
-view.add_box(1.0, 1.0, 1.0).move(-3.0, 2.0, 0.0).material(bumpy)
-view.camera(4.0, 3.0, 5.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 55.0)
-view.culling(true)
-view.render_3d()
-view.screenshot("cull_on.png")
-view.present()
-view.culling(false)
-view.render_3d()
-view.screenshot("cull_off.png")
-view.present()
-view.culling(true)
-println("culling invisible: {FS.read("cull_on.png") == FS.read("cull_off.png")}")
 
 # --- input: nothing is pressed on a machine nobody is touching ---
 let k1 = view.key("escape")
@@ -623,9 +629,9 @@ fi
 echo "OK: Scene.Image agrees on both engines, with no display ($(wc -l < img--vm.txt | tr -d ' ') lines)"
 
 for engine in "--vm" "--jit"; do
-  if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" scene_alpha.cul > "alpha${engine}.txt" 2>&1; then
+  if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" scene_alpha.cul > "alpha${engine}.txt" 2> "alpha${engine}.err"; then
     echo "${prefix}scene_api_test: transparency program $engine exited non-zero:" >&2
-    cat "alpha${engine}.txt" >&2
+    cat "alpha${engine}.txt" "alpha${engine}.err" >&2
     fail=1
   fi
 done
@@ -646,9 +652,9 @@ done
 echo "OK: transparency blends, leaves the depth channel alone, and honours order"
 
 for engine in "--vm" "--jit"; do
-  if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" scene_mirror.cul > "mirror${engine}.txt" 2>&1; then
+  if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" scene_mirror.cul > "mirror${engine}.txt" 2> "mirror${engine}.err"; then
     echo "${prefix}scene_api_test: mirror program $engine exited non-zero:" >&2
-    cat "mirror${engine}.txt" >&2
+    cat "mirror${engine}.txt" "mirror${engine}.err" >&2
     fail=1
   fi
 done
@@ -673,9 +679,9 @@ done
 echo "OK: a second camera renders into a texture, upright, and uv(-1) mirrors it"
 
 for engine in "--vm" "--jit"; do
-  if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" scene_lut.cul > "lut${engine}.txt" 2>&1; then
+  if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" scene_lut.cul > "lut${engine}.txt" 2> "lut${engine}.err"; then
     echo "${prefix}scene_api_test: LUT program $engine exited non-zero:" >&2
-    cat "lut${engine}.txt" >&2
+    cat "lut${engine}.txt" "lut${engine}.err" >&2
     fail=1
   fi
 done
@@ -726,9 +732,9 @@ done
 echo "OK: Scene.Audio binds and behaves with or without a device"
 
 for engine in "--vm" "--jit"; do
-  if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" scene_api.cul "$TTF" > "out${engine}.txt" 2>&1; then
+  if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" scene_api.cul "$TTF" > "out${engine}.txt" 2> "out${engine}.err"; then
     echo "${prefix}scene_api_test: $engine exited non-zero:" >&2
-    cat "out${engine}.txt" >&2
+    cat "out${engine}.txt" "out${engine}.err" >&2
     fail=1
   fi
 done
@@ -755,7 +761,7 @@ expect "closing false -> true"
 expect "screenshot true"
 expect "window 320.0x240.0 fps>=0 true time>0 true resized true clipboard 'scene'"
 expect "fullscreen-was true"
-expect "mouse true dx 0.0 wheel 0.0 false false false"
+expect "mouse true dx true wheel 0.0 false false false"
 expect "resized frame drew: true"
 expect "font 24.0 glyphs 12 bytes-form 24.0 12"
 expect "text_width grows true default true height true"
