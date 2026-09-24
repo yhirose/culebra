@@ -554,8 +554,8 @@ inline std::string loop_label_name(const peg::Ast* label) {
 }
 
 // The `label: ` prefix a desugared loop carries over from the `for` it
-// replaces, or nothing. Both FOR→WHILE rewrites emit it ahead of the `while`
-// they synthesize, so a `break outer` in the body still names the loop.
+// replaces, or nothing. The effects FOR→WHILE rewrite emits it ahead of the
+// `while` it synthesizes, so a `break outer` in the body still names the loop.
 inline std::string loop_label_prefix(const peg::Ast* label) {
   return label ? loop_label_name(label) + ": " : std::string();
 }
@@ -2290,7 +2290,8 @@ inline std::shared_ptr<peg::Ast> make_postfix_if(const peg::Ast& stmt) {
   if (is_unless) {
     auto bang = tok("UNARY_NOT_OPERATOR", "UNARY_NOT_OPERATOR",
                     std::string_view("!"), cond->line, cond->column);
-    cond = grp("UNARY_NOT", "UNARY_NOT", {bang, cond});
+    // Named for what it was written as, so view_postfix_if can tell.
+    cond = grp("UNARY_NOT", "STMT_MODIFIER_UNLESS", {bang, cond});
   }
 
   // The whole IF node's span mirrors `stmt`'s (start of the base statement
@@ -2298,6 +2299,26 @@ inline std::shared_ptr<peg::Ast> make_postfix_if(const peg::Ast& stmt) {
   // synthesized tree shape, but the slice is still the original, valid
   // `stmt if cond` / `stmt unless cond` text, byte for byte.
   return grp("IF", "IF", {cond, then_body}, stmt.position, stmt.length);
+}
+
+// An IF make_postfix_if built, seen as it was written — `stmt if cond` /
+// `stmt unless cond` — or nullopt for any other node. A consumer that
+// re-emits source needs this: the IF's source still reads that way.
+struct PostfixIfView {
+  const peg::Ast* stmt;
+  const peg::Ast* cond;  // as written: `c` of `unless c`, not the `!c` it runs
+  bool is_unless;
+};
+
+inline std::optional<PostfixIfView> view_postfix_if(const peg::Ast& n) {
+  using namespace peg::udl;
+  if (n.tag != "IF"_ || n.nodes.size() != 2 ||
+      n.nodes[1]->original_tag != "STATEMENT"_)
+    return std::nullopt;
+  const auto& cond = *n.nodes[0];
+  bool unless = cond.original_tag == "STMT_MODIFIER_UNLESS"_;
+  return PostfixIfView{n.nodes[1].get(),
+                       unless ? cond.nodes[1].get() : &cond, unless};
 }
 
 // Walk the optimized AST, replacing every postfix-modifier STATEMENT with
@@ -2556,6 +2577,31 @@ inline void for_each_pattern_binding(const peg::Ast& pattern, F&& f) {
   for_each_pattern_leaf(pattern, [&](const peg::Ast& id, bool) {
     f(id.token, id.line, id.column);
   });
+}
+
+// Add the names `pattern` binds to `out`.
+inline void pattern_binding_names(const peg::Ast& pattern,
+                                  std::set<std::string>& out) {
+  for_each_pattern_leaf(pattern, [&](const peg::Ast& id, bool) {
+    out.insert(std::string(id.token));
+  });
+}
+
+// View of a DESTRUCTURE_ASSIGN AST node — see grammar:
+//   DESTRUCTURE_ASSIGN <- LET _ MUTABLE _ (OBJECT_PATTERN / ARRAY_PATTERN /
+//                         TUPLE_PATTERN) _ '=' _ EXPRESSION
+// Children are always [LET, MUTABLE, PATTERN, EXPRESSION]; LET / MUTABLE are
+// empty tokens when absent.
+struct DestructureView {
+  bool declares;            // `let` or `mut` in front
+  const peg::Ast* pattern;
+  const peg::Ast* rhs;
+};
+
+inline DestructureView view_destructure(const peg::Ast& d) {
+  return DestructureView{
+      d.nodes[0]->token == "let" || d.nodes[1]->token == "mut",
+      d.nodes[2].get(), d.nodes[3].get()};
 }
 
 }  // namespace culebra

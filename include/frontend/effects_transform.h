@@ -1050,13 +1050,13 @@ class EffectsLowerer {
     } else if (u->tag == "DESTRUCTURE_ASSIGN"_) {
       // A destructure evaluates to its right-hand side. The statement may end
       // in the copies into the slots, so the value is taken on the way in.
-      const auto& rhs = *u->nodes[3];
-      std::vector<SourceEdit> edits{
-          {rhs.position, 0, "(self._eff_val = "},
-          {rhs.position + rhs.length, 0, ")"}};
-      collect_promoted_edits(*u, src_, rw, edits, EditSite::Stmt);
-      body = "      " + rewrite_edits(*u, src_, std::move(edits)) + mk(*u) +
-             "\n";
+      const auto& rhs = *view_destructure(*u).rhs;
+      body = "      " +
+             rewrite_locals_to_self(
+                 *u, src_, rw, EditSite::Stmt,
+                 {{rhs.position, 0, "(self._eff_val = "},
+                  {rhs.position + rhs.length, 0, ")"}}) +
+             mk(*u) + "\n";
     } else {
       body = std::format("      self._eff_val = ({}){}\n", stmt_src(*u, rw),
                          mk(*u));
@@ -1087,19 +1087,10 @@ class EffectsLowerer {
     return cps_seq(st, body_stmts(block), cont, tail, rw);
   }
 
-  // Entering `block` again gives the boxed names it declares a fresh box, so
-  // a closure made on one pass keeps that pass's binding; each state binds
-  // its boxes on entry (build_dispatch), so the swap is a state of its own.
+  // Entering `block` again swaps its boxes first (emit_fresh_boxes).
   int cps_fresh_boxes(CpsState& st, const peg::Ast& block, int entry,
                       const PromotedLocals& rw) const {
-    std::set<std::string> names;
-    for (const auto* s : body_stmts(block)) declared_at_level(*s, names);
-    std::string boxes;
-    for (const auto& n : names) {
-      if (rw.boxed.contains(n))
-        boxes += std::format("      self.{} = {{mut v: nil}}\n",
-                             instance_field(n));
-    }
+    auto boxes = emit_fresh_boxes(rw, body_stmts(block));
     if (boxes.empty()) return entry;
     int r = st.fresh();
     st.states[r] = boxes + std::format(
@@ -1651,9 +1642,11 @@ class EffectsLowerer {
     // so a boxed local stays as fork-private as the scalar it replaced (see the
     // driver's `_fork`).
     std::string refork_body;
-    for (const auto& n : rewrite.boxed)
-      refork_body += std::format("      self.{0} = {{mut v: self.{0}.v}}\n",
-                                 instance_field(n));
+    for (const auto& n : rewrite.boxed) {
+      auto field = instance_field(n);
+      refork_body += std::format("      self.{} = {}\n", field,
+                                 box_literal("self." + field + ".v"));
+    }
 
     // Every computation exposes `_eff_finalize()` so the driver can call it
     // uniformly on the abort path; it is empty when the body has no defers,

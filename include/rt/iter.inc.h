@@ -368,8 +368,8 @@ inline void _iter_trampoline_has_next_fn(JitValue* __ret, JitClosure* cls, int8_
   // +1-owned (callee-consumes, like _iter_self_iter_fn and the retain-before-
   // call in _iter_advance_raw's slow path). This releases it on every exit —
   // after the body's use of `cls` (whose captures `iv` keeps alive) — so an
-  // explicit `it.has_next()` / `it.next()` (or the for-in-with-yield desugar's
-  // `while _g_it.has_next()`) doesn't strand the iterator. Without it the
+  // explicit `it.has_next()` / `it.next()` (or a generator's for-in, which
+  // drives its iterator that way) doesn't strand the iterator. Without it the
   // iterator (and its transitively-held source + closures) leaked once per
   // drained iterator.
   JitOwnedVal self_guard(iv);
