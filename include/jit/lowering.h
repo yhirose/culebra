@@ -3765,6 +3765,45 @@ struct Lowering {
           // The two name-keyed contract checks object_set_fast owes, answered
           // here where the name is a literal.
           int8_t key_kind = culebra::prop_key_kind(nm);
+          if (key_kind == 0) {
+            // An update of a mutable slot whose declared type the value
+            // fits is object_set_fast's whole work at a site owing neither
+            // check, so it is emitted here. A transition and every refusal
+            // still take the call, which words the error.
+            auto callBB = BasicBlock::Create(j.ctx_, "pset.call", fn);
+            auto updBB = BasicBlock::Create(j.ctx_, "pset.update", fn);
+            auto storeBB = BasicBlock::Create(j.ctx_, "pset.store", fn);
+            auto icResult = b.CreateLoad(
+                ptrTy, b.CreateStructGEP(icTy, icGlobal, 1, "pset.ic.res.p"),
+                "pset.ic.res");
+            b.CreateCondBr(b.CreateICmpEQ(icResult, icExpected), updBB,
+                           callBB);
+            b.SetInsertPoint(updBB);
+            auto declared = b.CreateLoad(
+                i8Ty, b.CreateStructGEP(icTy, icGlobal, 4, "pset.ic.decl.p"),
+                "pset.ic.decl");
+            auto offset = b.CreateLoad(
+                i64Ty, b.CreateStructGEP(icTy, icGlobal, 2, "pset.ic.off.p"),
+                "pset.ic.off");
+            auto entryPtr = j.emit_object_entry_ptr(objPtr, offset);
+            auto isMut = b.CreateICmpNE(
+                b.CreateLoad(i8Ty,
+                             b.CreateConstInBoundsGEP1_64(
+                                 i8Ty, entryPtr, offsetof(JitObjectEntry, mut),
+                                 "pset.mut.p"),
+                             "pset.mut"),
+                b.getInt8(0));
+            auto fits = j.emit_tag_fits_field_type(j.extract_tag(val),
+                                                   declared);
+            b.CreateCondBr(b.CreateAnd(isMut, fits), storeBB, callBB);
+            b.SetInsertPoint(storeBB);
+            // Store, then release what it replaced (_jit_replace_value).
+            auto old = j.emit_load_elem(entryPtr);
+            j.emit_store_elem(entryPtr, val);
+            j.emit_value_release(old);
+            b.CreateBr(mergeBB);
+            b.SetInsertPoint(callBB);
+          }
           j.emit_call(
               j.module_->getOrInsertFunction(
                   rt::object_set_fast, b.getVoidTy(), ptrTy, ptrTy, ptrTy,

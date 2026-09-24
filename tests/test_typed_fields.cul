@@ -461,4 +461,29 @@ assert_throws('TypeError', fn () {
   forged.x
 })
 
+# --- a write site that has already succeeded still checks the next one ---
+
+let warm = Fields()
+let set_n = fn (x) {
+  warm.n = x
+}
+for k in 0..3 {
+  set_n(k)
+}
+assert_eq(warm.n, 2)
+assert_throws('TypeError', fn () {
+  set_n(1.5)
+})
+assert_eq(warm.n, 2)
+let frozen = {n: 1}
+let set_frozen = fn (o) {
+  o.n = 2
+}
+for _ in 0..3 {
+  assert_throws('ImmutableError', fn () {
+    set_frozen(frozen)
+  })
+}
+assert_eq(frozen.n, 1)
+
 println('typed fields OK')

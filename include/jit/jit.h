@@ -4886,15 +4886,7 @@ struct JIT {
     // `slots[offset].value` of `holder`, the tagged pair the merge takes.
     auto load_entry = [&](llvm::Value* holder, llvm::Value* offset,
                           const char* what) {
-      auto slotsFieldPtr = builder_.CreateConstInBoundsGEP1_64(
-          i8Ty, holder, offsetof(JitObject, slots), "slots.vec.p");
-      auto slotsData =
-          builder_.CreateLoad(ptrTy, slotsFieldPtr, "slots.data");
-      auto byteOffset = builder_.CreateMul(
-          offset, llvm::ConstantInt::get(i64Ty, sizeof(JitObjectEntry)),
-          "entry.byte.off");
-      auto entryPtr =
-          builder_.CreateInBoundsGEP(i8Ty, slotsData, byteOffset, "entry.p");
+      auto entryPtr = emit_object_entry_ptr(holder, offset);
       auto t = builder_.CreateLoad(i8Ty, entryPtr, std::string(what) + ".tag");
       auto entryDataPtr = builder_.CreateConstInBoundsGEP1_64(
           i8Ty, entryPtr, offsetof(JitValue, data), "entry.data.p");
@@ -5068,6 +5060,44 @@ struct JIT {
         i8Ty, items,
         builder_.CreateMul(at, builder_.getInt64(sizeof(JitValue))),
         "arr.elem.p");
+  }
+
+  // `&obj->slots[offset]`, an own property's entry. Its value sits at the
+  // entry's start, so emit_load_elem / emit_store_elem read and write it.
+  llvm::Value* emit_object_entry_ptr(llvm::Value* objPtr,
+                                     llvm::Value* offset) {
+    static_assert(offsetof(JitObjectEntry, value) == 0);
+    auto i8Ty = builder_.getInt8Ty();
+    auto slotsData = builder_.CreateLoad(
+        llvm::PointerType::get(ctx_, 0),
+        builder_.CreateConstInBoundsGEP1_64(i8Ty, objPtr,
+                                            offsetof(JitObject, slots),
+                                            "slots.vec.p"),
+        "slots.data");
+    return builder_.CreateInBoundsGEP(
+        i8Ty, slotsData,
+        builder_.CreateMul(offset,
+                           builder_.getInt64(sizeof(JitObjectEntry))),
+        "entry.p");
+  }
+
+  // `_jit_tag_fits_field_type` as IR, over a culebra::FieldType byte.
+  llvm::Value* emit_tag_fits_field_type(llvm::Value* tag,
+                                        llvm::Value* declared) {
+    using culebra::FieldType;
+    static_assert(static_cast<int>(FieldType::Any) == 0 &&
+                  static_cast<int>(FieldType::Count) == 4);
+    auto is = [&](FieldType t) {
+      return builder_.CreateICmpEQ(
+          declared, builder_.getInt8(static_cast<uint8_t>(t)));
+    };
+    auto want = builder_.CreateSelect(
+        is(FieldType::Float), builder_.getInt8(TAG_FLOAT),
+        builder_.CreateSelect(is(FieldType::Long), builder_.getInt8(TAG_LONG),
+                              builder_.getInt8(TAG_BOOL)),
+        "field.want");
+    return builder_.CreateOr(is(FieldType::Any),
+                             builder_.CreateICmpEQ(tag, want), "field.fits");
   }
 
   // The borrowed value at an element address from emit_array_elem_ptr.
