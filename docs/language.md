@@ -4439,8 +4439,8 @@ inspect(doubled().collect())  # => [20, 7]
   method-chain receiver, or a control-flow condition is rejected at parse
   time (symmetrically on every backend). In a **plain fn**, a `perform` is an
   ordinary expression with no positional restrictions.
-* Errors inside an effect body report the **original source line**; the
-  column is approximate (the lowering shifts it). An unhandled `perform`'s
+* Errors inside an effect body report the line and column where the failing
+  code was written, as in a plain fn. An unhandled `perform`'s
   `EffectError` carries the perform's line as `e.line`.
 * Effects and generators **compose**: a named generator fn declared in an
   `effect fn` / `handle` body works (and may read the body's locals), a

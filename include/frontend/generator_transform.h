@@ -23,6 +23,7 @@
 
 #pragma once
 
+#include "frontend/fragments.h"
 #include "frontend/parser.h"
 
 #include <algorithm>
@@ -42,54 +43,6 @@
 #include <vector>
 
 namespace culebra {
-
-// Storage for synthesized generator source fragments. peg::Ast holds
-// `string_view`s into the parsed source, so anything the transform
-// re-parses needs backing that outlives the AST: the process by default —
-// the same fix the lazy-module path uses — or a caller-owned FragmentLedger.
-//
-// Process-global, and written from several threads at once: every isolate
-// resolves the lazy stdlib modules on its own thread and those modules contain
-// generators, so N children can be inside the transform together. (It cannot
-// be thread_local either — the builtin-traits preamble is parsed once and its
-// AST is shared by every thread, so the buffers it views must outlive the
-// thread that made them.) Hence the lock, and hence accessors that do the work
-// rather than hand out a reference a caller could touch unlocked: two
-// unsynchronised push_backs reallocating at once free the same buffer twice.
-// Never held across `parse`, which re-enters here for nested lowering.
-inline std::mutex& fragment_ledger_mutex() {
-  static std::mutex m;
-  return m;
-}
-// The synthesized buffers a lowering's AST views, and the parse label each was
-// read under. `by_label` lets a transform that walks a tree with spliced-in
-// subtrees (identified by a different `node->path`) resolve the right slice
-// base — e.g. the effects pass reaching a construct inside a generator-lowered
-// body. Non-unique labels (internal re-parses that never splice nodes into the
-// final AST) may overwrite each other; only `next_fragment_label` labels are
-// ever looked up.
-struct FragmentLedger {
-  std::vector<std::shared_ptr<std::string>> sources;
-  std::map<std::string, std::shared_ptr<std::string>, std::less<>> by_label;
-};
-
-// The default owner, for every AST that may be cached or shared across threads.
-inline FragmentLedger& _process_fragment_ledger() {
-  static FragmentLedger ledger;
-  return ledger;
-}
-
-// Non-null only for the span of one `parse_with_transforms(..., FragmentLedger&)`
-// call, so a caller that owns its ASTs frees their fragments with them (an
-// editor re-analysing a buffer on every keystroke). Nothing but that one
-// lowering runs inside the span, so no process-lifetime AST can come to view a
-// buffer this ledger frees.
-inline thread_local FragmentLedger* _scoped_fragment_ledger = nullptr;
-
-inline FragmentLedger& _active_fragment_ledger() {
-  return _scoped_fragment_ledger ? *_scoped_fragment_ledger
-                                 : _process_fragment_ledger();
-}
 
 // These tag types open a fresh fn-body scope: anything found inside (a
 // yield, a local, a class decl) belongs to the *inner* function, not the
@@ -282,79 +235,42 @@ inline std::string_view strip_block_braces(std::string_view s) {
   return s;
 }
 
-// `"""` starts at `i`.
-inline bool is_triple_quote(std::string_view s, size_t i) {
-  return i + 2 < s.size() && s[i] == '"' && s[i + 1] == '"' && s[i + 2] == '"';
-}
-
-// Index just past the string literal starting at `i` (`'…'` / `` `…` `` raw,
-// `"…"` / `"""…"""` interpolated). Escapes (`\`) are honoured in the
-// double-quoted forms; the raw forms end at the first closing delimiter.
-inline size_t skip_string_literal(std::string_view s, size_t i) {
-  size_t n = s.size();
-  char q = s[i];
-  if (q == '\'' || q == '`') {
-    for (i++; i < n && s[i] != q; i++) {}
-    return i < n ? i + 1 : i;
-  }
-  bool triple = is_triple_quote(s, i);
-  i += triple ? 3 : 1;
-  while (i < n) {
-    if (s[i] == '\\' && i + 1 < n) { i += 2; continue; }
-    if (triple) {
-      if (is_triple_quote(s, i)) return i + 3;
-    } else if (s[i] == '"') {
-      return i + 1;
-    }
-    i++;
-  }
-  return i;
-}
-
-// Apply `rewrite` to `src`, but only to its *code* — the literal content of
-// string constants and comments (line `#`/`//`, block `/* … */`) is copied
-// verbatim so an identifier that happens to appear as literal text is never
-// touched. Interpolation `{expr}` inside a `"…"` / `"""…"""` string IS code and
-// is rewritten (recursively, as an expr may embed further strings). Only the
+// The code of `s`, as [begin, end) spans offset by `base`: everything but the
+// literal content of string constants and comments (line `#`/`//`, block
+// `/* … */`), so an identifier that happens to appear as literal text is never
+// taken for code. Interpolation `{expr}` inside a `"…"` / `"""…"""` string IS
+// code (recursively, as an expr may embed further strings). Only the
 // double-quoted forms interpolate; `'…'` / `` `…` `` are fully raw.
-inline std::string rewrite_outside_strings(
-    std::string_view s,
-    const std::function<std::string(std::string_view)>& rewrite) {
-  std::string out;
+inline std::vector<std::pair<size_t, size_t>> code_spans(std::string_view s,
+                                                         size_t base = 0) {
+  std::vector<std::pair<size_t, size_t>> out;
   size_t i = 0, n = s.size(), code0 = 0;
   auto flush = [&](size_t end) {
-    if (end > code0) out += rewrite(s.substr(code0, end - code0));
-  };
-  auto copy_verbatim = [&](size_t j) {
-    out.append(s.substr(i, j - i));
-    i = code0 = j;
+    if (end > code0) out.push_back({base + code0, base + end});
   };
   while (i < n) {
     char c = s[i];
     bool line_comment = c == '#' || (c == '/' && i + 1 < n && s[i + 1] == '/');
     if (line_comment) {
       flush(i);
-      size_t j = i;
-      while (j < n && s[j] != '\n') j++;
-      copy_verbatim(j);
+      while (i < n && s[i] != '\n') i++;
+      code0 = i;
     } else if (c == '/' && i + 1 < n && s[i + 1] == '*') {  // block comment
       flush(i);
       size_t j = i + 2;
       while (j + 1 < n && !(s[j] == '*' && s[j + 1] == '/')) j++;
-      copy_verbatim(j + 1 < n ? j + 2 : n);
+      i = code0 = j + 1 < n ? j + 2 : n;
     } else if (c == '\'' || c == '`') {  // raw string, no interpolation
       flush(i);
-      copy_verbatim(skip_string_literal(s, i));
+      i = code0 = skip_string_literal(s, i);
     } else if (c == '"') {  // interpolated (or triple) string
       flush(i);
       bool triple = is_triple_quote(s, i);
-      size_t open = triple ? 3 : 1;
-      out.append(s.substr(i, open));
-      i += open;
+      i += triple ? 3 : 1;
       while (i < n) {
-        if (!triple && s[i] == '"') { out += '"'; i++; break; }
-        if (triple && is_triple_quote(s, i)) { out.append("\"\"\""); i += 3; break; }
-        if (s[i] == '\\' && i + 1 < n) { out.append(s.substr(i, 2)); i += 2; continue; }
+        if (!triple && s[i] == '"') { i++; break; }
+        if (triple && is_triple_quote(s, i)) { i += 3; break; }
+        if (s[i] == '\\' && i + 1 < n) { i += 2; continue; }
         if (s[i] == '{') {  // interpolation expr — code, may embed strings
           size_t k = i + 1, depth = 1;
           while (k < n && depth > 0) {
@@ -364,11 +280,12 @@ inline std::string rewrite_outside_strings(
             else if (d == '"' || d == '\'' || d == '`') k = skip_string_literal(s, k);
             else k++;
           }
-          out += '{';
-          out += rewrite_outside_strings(s.substr(i + 1, k - (i + 1)), rewrite);
-          if (k < n) { out += '}'; k++; }
-          i = k;
-        } else { out += s[i]; i++; }
+          auto hole = code_spans(s.substr(i + 1, k - (i + 1)), base + i + 1);
+          out.insert(out.end(), hole.begin(), hole.end());
+          i = k < n ? k + 1 : k;
+        } else {
+          i++;
+        }
       }
       code0 = i;
     } else {
@@ -391,9 +308,10 @@ inline std::string rewrite_outside_strings(
 // re-lowering) for free —
 // verbatim slices carry it, synthesized lines simply lack one. After the FINAL
 // fragment parse, `marker_line_map` reads the markers back and
-// `reposition_ast` rebuilds the AST with original line numbers (columns stay
-// fragment-relative — approximate, since `self.` insertion shifts them).
-// Synthesized machinery lines fall back to the construct's declaration line.
+// `reposition_ast` rebuilds the AST with original line numbers. A node copied
+// from user code gets its exact line and column from the anchors instead
+// (fragments.h); the markers serve the machinery nodes around it, and those
+// on a synthesized line fall back to the construct's declaration line.
 
 // The marker token. Deliberately verbose so a user comment ending in a bare
 // `#@123` can't be mistaken for provenance.
@@ -418,9 +336,8 @@ inline int64_t line_of_offset(std::string_view s, size_t pos) {
 // or EOF for the last line) sits in code / comment context — i.e. a trailing
 // `#@culebra:N` marker comment may be placed or read there. A line ending inside a
 // string literal (multi-line triple string) or an interpolation hole is
-// unsafe. This walk mirrors `rewrite_outside_strings`' lane logic at line
-// granularity; the two are kept as documented twins (unifying them under one
-// lane scanner is deferred until a third consumer appears).
+// unsafe. This walk mirrors `code_spans`' lane logic at line granularity; the
+// two are kept as documented twins.
 inline std::vector<bool> safe_line_ends(std::string_view s) {
   std::vector<bool> safe;
   safe.push_back(false);  // index 0 unused
@@ -493,27 +410,28 @@ inline bool text_has_line_marker(std::string_view text) {
   return false;
 }
 
-// Append ` #@culebra:<first_line + i>` to each marker-safe line of `text` — the
-// entry-point annotation for a body sliced verbatim out of the ORIGINAL file
-// (so line numbering is contiguous). Lines that already carry a marker (a body
-// re-sliced from an annotated fragment never reaches here, but a user comment
-// could imitate one) keep the existing value.
-inline std::string annotate_line_markers(std::string_view text,
-                                         int64_t first_line) {
+// The edits that append ` #@culebra:<line>` to each marker-safe line of
+// bytes [begin, end) of `src` — the entry-point annotation for a body sliced
+// out of the ORIGINAL file, so `line` is the line in `src`. Lines that already
+// carry a marker (a body re-sliced from an annotated fragment never reaches
+// here, but a user comment could imitate one) keep the existing value.
+inline std::vector<SourceEdit> line_marker_edits(const std::string& src,
+                                                 size_t begin, size_t end) {
+  auto text = std::string_view(src).substr(begin, end - begin);
+  auto first_line = line_of_offset(src, begin);
   auto safe = safe_line_ends(text);
-  std::string out;
+  std::vector<SourceEdit> out;
   size_t start = 0, idx = 0;
   while (start <= text.size()) {
     size_t nl = text.find('\n', start);
-    size_t end = (nl == std::string_view::npos) ? text.size() : nl;
-    std::string_view line = text.substr(start, end - start);
-    out += line;
+    size_t stop = (nl == std::string_view::npos) ? text.size() : nl;
+    std::string_view line = text.substr(start, stop - start);
     bool ok = (idx + 1) < safe.size() && safe[idx + 1];
     if (ok && !line.empty() && !line_has_marker(line)) {
-      out += line_marker(first_line + static_cast<long>(idx));
+      out.push_back({begin + stop, 0,
+                     line_marker(first_line + static_cast<long>(idx))});
     }
     if (nl == std::string_view::npos) break;
-    out += '\n';
     start = nl + 1;
     idx++;
   }
@@ -585,22 +503,29 @@ struct LineMarkers {
   }
 };
 
-// Rebuild `n`'s subtree with original line numbers: a node's line maps through
-// `map`, or `fallback` (the construct's declaration line) when its line is
-// synthesized. Subtrees spliced in from other fragments — identified by a
-// different parse `path` label — are already repositioned and returned as-is.
-// peg::Ast's line is const, so nodes are recreated via the two-step ctor pair
-// (full ctor sets name; the copy ctor restores original_name / original_tag).
+// Rebuild `n`'s subtree with original positions. A node copied from user code
+// takes the line and column its anchor leads back to; any other maps its line
+// through `map`, or `fallback` (the construct's declaration line) when its
+// line is synthesized. Subtrees spliced in from other fragments — identified by
+// a different parse `path` label — are already repositioned and returned
+// as-is. peg::Ast's line is const, so nodes are recreated via the two-step
+// ctor pair (full ctor sets name; the copy ctor restores original_name /
+// original_tag).
 inline std::shared_ptr<peg::Ast> reposition_ast(
-    const std::shared_ptr<peg::Ast>& n, const std::vector<int64_t>& map,
-    int64_t fallback, const std::string& label) {
+    const std::shared_ptr<peg::Ast>& n, const std::string& text,
+    const std::vector<int64_t>& map, int64_t fallback,
+    const std::string& label, SourceResolver& resolver) {
   if (n->path != label) return n;
-  int64_t line = (n->line < map.size() && map[n->line])
-                  ? map[n->line]
-                  : fallback;
+  size_t line = static_cast<size_t>(
+      (n->line < map.size() && map[n->line]) ? map[n->line] : fallback);
+  size_t column = n->column;
+  if (auto at = resolver.resolve(text, *n)) {
+    line = static_cast<size_t>(at->line);
+    column = static_cast<size_t>(at->col);
+  }
   std::shared_ptr<peg::Ast> out;
   if (n->is_token) {
-    peg::Ast tmp(n->path.c_str(), static_cast<size_t>(line), n->column,
+    peg::Ast tmp(n->path.c_str(), line, column,
                  n->name.c_str(), n->token, n->position, n->length,
                  n->choice_count, n->choice, n->preserve_position);
     out = std::make_shared<peg::Ast>(tmp, n->original_name.c_str(),
@@ -611,9 +536,9 @@ inline std::shared_ptr<peg::Ast> reposition_ast(
     std::vector<std::shared_ptr<peg::Ast>> kids;
     kids.reserve(n->nodes.size());
     for (auto& c : n->nodes) {
-      kids.push_back(reposition_ast(c, map, fallback, label));
+      kids.push_back(reposition_ast(c, text, map, fallback, label, resolver));
     }
-    peg::Ast tmp(n->path.c_str(), static_cast<size_t>(line), n->column,
+    peg::Ast tmp(n->path.c_str(), line, column,
                  n->name.c_str(), kids, n->position, n->length,
                  n->choice_count, n->choice, n->preserve_position);
     out = std::make_shared<peg::Ast>(tmp, n->original_name.c_str(),
@@ -623,6 +548,16 @@ inline std::shared_ptr<peg::Ast> reposition_ast(
   }
   for (auto& c : out->nodes) c->parent = out;
   return out;
+}
+
+// Reposition a fragment's final parse, `n` being parsed from `text` under
+// `label`.
+inline std::shared_ptr<peg::Ast> reposition_fragment(
+    const std::shared_ptr<peg::Ast>& n, const std::string& text,
+    int64_t fallback, const std::string& label) {
+  SourceResolver resolver;
+  return reposition_ast(n, text, marker_line_map(text), fallback, label,
+                        resolver);
 }
 
 // Unique per-fragment parse label, so `reposition_ast` can tell this
@@ -711,14 +646,6 @@ inline bool is_flat_tuple_pattern(const peg::Ast& pattern) {
   return true;
 }
 
-// One splice into a node's source: `len` bytes at buffer offset `pos` become
-// `text`.
-struct SourceEdit {
-  size_t pos;
-  size_t len;
-  std::string text;
-};
-
 // Where a node sits, as far as appending to it goes: a statement can be
 // followed by `; <stmt>`, an init-clause binding by `, <binding>`, and an
 // expression by nothing.
@@ -733,44 +660,25 @@ inline std::string destructure_temp(std::string_view name) {
 // Bind `pat`'s promoted leaves to temporaries (destructure_temp): push the
 // edits that rename them, and return the copies into their slots, each after
 // `sep`.
-inline std::string rename_pattern_leaves(const peg::Ast& pat,
+inline MappedSource rename_pattern_leaves(const peg::Ast& pat,
                                          const std::string& src,
                                          const PromotedLocals& promoted,
                                          std::vector<SourceEdit>& out,
                                          std::string_view sep) {
-  std::string copies;
+  MappedSource copies;
   for_each_pattern_leaf(pat, [&](const peg::Ast& id, bool shorthand) {
     auto name = std::string(id.token);
     if (!promoted.names.contains(name)) return;
     auto temp = destructure_temp(name);
-    out.push_back({static_cast<size_t>(id.token.data() - src.data()),
-                   id.token.size(),
+    auto pos = static_cast<size_t>(id.token.data() - src.data());
+    out.push_back({pos, id.token.size(),
                    shorthand ? std::format("{}: {}", name, temp) : temp});
-    copies += std::format("{} {} = {}", sep, promoted_slot(promoted, name),
-                          temp);
+    // A copy that fails (a slot that cannot take the value) is the leaf's.
+    copies += std::format("{} ", sep);
+    copies += MappedSource::standing_for(
+        std::format("{} = {}", promoted_slot(promoted, name), temp), src, pos);
   });
   return copies;
-}
-
-// `n`'s source from `src` with `edits` applied.
-inline std::string rewrite_edits(const peg::Ast& n, const std::string& src,
-                                 std::vector<SourceEdit> edits) {
-  std::stable_sort(edits.begin(), edits.end(),
-                   [](const auto& a, const auto& b) { return a.pos < b.pos; });
-  std::string out;
-  size_t at = n.position;
-  for (const auto& e : edits) {
-    if (e.pos < at || e.pos + e.len > n.position + n.length) {
-      throw CulebraError("InternalError",
-                         "locals rewrite produced an overlapping edit",
-                         static_cast<long>(n.line), static_cast<long>(n.column));
-    }
-    out.append(src, at, e.pos - at);
-    out += e.text;
-    at = e.pos + e.len;
-  }
-  out.append(src, at, n.position + n.length - at);
-  return out;
 }
 
 // The edits that move every promoted local under `n` to where it lives
@@ -838,11 +746,12 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
       if (dv.declares) drop_keywords(n, pat.position);
     } else if (any) {
       if (site == EditSite::Expr) {
+        auto p = source_pos(pat, src);
         throw CulebraError(
             "SyntaxError",
             "a destructuring assignment that binds a local of a generator or "
             "effect body must be a statement of its own.",
-            static_cast<long>(pat.line), static_cast<long>(pat.column));
+            p.line, p.col);
       }
       auto copies = rename_pattern_leaves(
           pat, src, promoted, out, site == EditSite::Stmt ? ";" : ",");
@@ -868,8 +777,8 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
                              EditSite::Expr);
       auto cond = rewrite_edits(*pv->cond, src, std::move(cond_edits));
       out.push_back({base.position, 0,
-                     pv->is_unless ? std::format("if !({}) {{ ", cond)
-                                   : std::format("if {} {{ ", cond)});
+                     pv->is_unless ? "if !(" + cond + ") { "
+                                   : "if " + cond + " { "});
       out.insert(out.end(), inner.begin(), inner.end());
       size_t base_end = base.position + base.length;
       out.push_back({base_end, n.position + n.length - base_end, " }"});
@@ -907,14 +816,35 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
 // (culebra::is_lowered_state_class), the one place that sees every spelling.
 // `site` is where `n` itself sits (see EditSite); `edits` are the caller's
 // own, applied along with the rewrite (ahead of any at the same offset).
-inline std::string rewrite_locals_to_self(const peg::Ast& n,
-                                          const std::string& src,
-                                          const PromotedLocals& promoted,
-                                          EditSite site = EditSite::Expr,
-                                          std::vector<SourceEdit> edits = {}) {
+inline MappedSource rewrite_locals_to_self(const peg::Ast& n,
+                                           const std::string& src,
+                                           const PromotedLocals& promoted,
+                                           EditSite site = EditSite::Expr,
+                                           std::vector<SourceEdit> edits = {}) {
   if (ast_source_slice(n, src).empty()) return {};
   collect_promoted_edits(n, src, promoted, edits, site);
   return rewrite_edits(n, src, std::move(edits));
+}
+
+// The [begin, end) offsets of a block's statements in `src`: its span inside
+// the braces (strip_block_braces).
+inline std::pair<size_t, size_t> block_inner_span(const peg::Ast& block,
+                                                  const std::string& src) {
+  auto whole = ast_source_slice(block, src);
+  size_t trim = strip_block_braces(whole).size() == whole.size() ? 0 : 1;
+  return {block.position + trim, block.position + block.length - trim};
+}
+
+// The same over a block's statements: its source inside the braces.
+inline MappedSource rewrite_block_inner(const peg::Ast& block,
+                                        const std::string& src,
+                                        const PromotedLocals& promoted,
+                                        std::vector<SourceEdit> edits = {}) {
+  collect_promoted_edits(block, src, promoted, edits, EditSite::Stmt);
+  auto [begin, end] = block_inner_span(block, src);
+  return splice_source(src, begin, end, std::move(edits),
+                       static_cast<long>(block.line),
+                       static_cast<long>(block.column));
 }
 
 // Whether a node opens a variable scope of its own — the engines' sites, as
@@ -1140,43 +1070,8 @@ inline std::vector<const peg::Ast*> body_stmts(const peg::Ast& body) {
 
 // --- Transformation entry points -----------------------------------------
 
-// Re-parse a `fn __gen_wrapper__(...) { ... }` source fragment and return
-// its MULTIFN_DECL node, after registering the source for lifetime. peg::Ast
-// holds string_views into the source, so the synthesized buffer must stay
-// alive until the AST is discarded — the fragment ledger owns it.
-// Parse a synthesized buffer after registering it for process lifetime (the
-// resulting AST's string_views point into it). The single place that pairs the
-// lifetime store with `parse` — used by both the generator wrapper parse and
-// the effects transform's body re-parse, so the "register before parse" rule
-// lives in one spot.
-// The buffer a spliced-in subtree was parsed from, or null. A copy of the
-// shared_ptr, so the caller reads the buffer without holding the lock.
-inline std::shared_ptr<std::string> fragment_source_for(
-    std::string_view label) {
-  std::lock_guard<std::mutex> lk(fragment_ledger_mutex());
-  auto& reg = _active_fragment_ledger().by_label;
-  auto it = reg.find(label);
-  return it == reg.end() ? nullptr : it->second;
-}
-
-// Every fragment the active ledger holds (CULEBRA_TRANSFORM_STATS reporting).
-inline std::vector<std::shared_ptr<std::string>> fragment_sources_snapshot() {
-  std::lock_guard<std::mutex> lk(fragment_ledger_mutex());
-  return _active_fragment_ledger().sources;
-}
-
-inline std::shared_ptr<peg::Ast> parse_registered_source(
-    const char* label, std::shared_ptr<std::string> synthesized) {
-  {
-    std::lock_guard<std::mutex> lk(fragment_ledger_mutex());
-    auto& ledger = _active_fragment_ledger();
-    ledger.sources.push_back(synthesized);
-    ledger.by_label[label] = synthesized;
-  }
-  std::vector<std::string> msgs;
-  return parse(label, *synthesized, msgs);
-}
-
+// Re-parse a `fn __gen_wrapper__(...) { ... }` source fragment (registered
+// for lifetime, see parse_registered_source) and return its MULTIFN_DECL.
 inline std::shared_ptr<peg::Ast> parse_wrapper_fn(
     std::shared_ptr<std::string> synthesized,
     const char* label = "<generator-transform>") {
@@ -1433,8 +1328,10 @@ struct CpsBuilder {
     states.emplace_back();
     return static_cast<int>(states.size()) - 1;
   }
+  // `n` rewritten (rewrite_locals_to_self), anchored to where it was written:
+  // placed only where a statement or a parenthesized expression starts.
   std::string rw(const peg::Ast& n, EditSite site = EditSite::Expr) {
-    return rewrite_locals_to_self(n, src, rewrite_set, site);
+    return anchored(rewrite_locals_to_self(n, src, rewrite_set, site));
   }
   LineMarkers markers{src};
   std::string mk(const peg::Ast& n) { return markers.mk(n); }
@@ -1598,7 +1495,7 @@ struct CpsBuilder {
     auto copies = rename_pattern_leaves(binding, src, rewrite_set, edits, ";");
     auto pat = rewrite_edits(binding, src, std::move(edits));
     if (binding.tag == "FOR_BINDING"_) pat = "(" + pat + ")";
-    return "let " + pat + " = " + value + copies;
+    return anchored("let " + pat + " = " + value + copies);
   }
 
   int compile_stmt(const peg::Ast* s, int cont) {
@@ -1633,8 +1530,9 @@ struct CpsBuilder {
       return exit_to(open_from(0), terminal);
     }
     if (u->tag == "DEFER"_ && !u->nodes.empty()) {
-      return reach_defer(std::string(strip_block_braces(rw(*u->nodes[0]))),
-                         u->position, cont);
+      return reach_defer(
+          anchored(rewrite_block_inner(*u->nodes[0], src, rewrite_set)),
+          u->position, cont);
     }
     if (u->tag == "IF"_) return compile_if(u, cont);
     if (u->tag == "WHILE"_ && u->nodes.size() >= 2) {
@@ -1898,8 +1796,8 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
   inner.nodes.push_back(ast.get());
   auto body =
       transform_generators_in(wrapper_fn->nodes.back(), *synthesized, inner);
-  auto map = marker_line_map(*synthesized);
-  ast->nodes.back() = reposition_ast(body, map, decl_fallback, label);
+  ast->nodes.back() =
+      reposition_fragment(body, *synthesized, decl_fallback, label);
   return ast;
 }
 
@@ -1997,12 +1895,13 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
     auto inner = strip_block_braces(
         ast_source_slice(*ast->nodes.back(), *cur));
     if (!text_has_line_marker(inner)) {
-      int64_t first = line_of_offset(
-          *cur, static_cast<size_t>(inner.data() - cur->data()));
-      auto params_sv = ast_source_slice(*ast->nodes[i + 1], *cur);
+      auto begin = static_cast<size_t>(inner.data() - cur->data());
+      auto end = begin + inner.size();
       auto annotated = std::make_shared<std::string>(std::format(
-          "fn __gen_wrapper__{} {{\n{}\n}}\n", std::string(params_sv),
-          annotate_line_markers(inner, first)));
+          "fn __gen_wrapper__{} {{\n{}\n}}\n",
+          anchored(node_source(*ast->nodes[i + 1], *cur)),
+          anchored(splice_source(*cur, begin, end,
+                                 line_marker_edits(*cur, begin, end)))));
       if (!swap_body_with_wrapper_params(ast, annotated, i)) return ast;
       cur = annotated.get();
     } else {

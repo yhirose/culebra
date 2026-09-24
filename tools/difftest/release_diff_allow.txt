@@ -101,15 +101,14 @@ tensor|Tensor.from(5)
 # it was handed.
 tensor|*Tensor.no_grad(C.new())
 
-# A generator's promoted locals live under `self._l_<name>` since v0.6.0
-# (`self.<name>` before), so a body local can no longer collide with the
-# state machine's own fields. The column of an error raised inside a
-# generator body is counted in the lowered text when a rewritten name
-# precedes it on the same line — it was already off in the baseline (the
-# true column here is 43) and the three extra characters move it from 24 to
-# 27. Written over several lines the same program reports the true position
-# in both. The kind, message and line are unchanged.
+# An error raised inside a generator or effect body reports the column where
+# it was written. The lowering re-parses a copy of the body, and the column
+# used to be counted in that copy — past the rewritten names ahead of it on
+# the line (a promoted local is spelled `self._l_<name>`) and the machinery
+# the copy was placed behind: 24, then 27, where the true column is 43, and
+# 21 where it is 109. The kind, message and line are unchanged.
 iterthrow|fn g() { for v in * { if v == 2 { [1][9] }; yield *
+gen|fn gg() { yield 1; yield to_long("x"); yield 3 }; gg().collect()
 
 # The well-known property contract constrains Functions alone since v0.6.0: a
 # Function bound to `drop` / `iter` / `has_next` / `next` must still take no

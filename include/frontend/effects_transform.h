@@ -101,8 +101,8 @@ struct EffSuspension {
   std::string target;      // local bound to the result (empty = discarded)
   bool binds = false;      // true when the statement was `let target = …`
   std::string op;          // Perform: operation name
-  std::string args_array;  // Perform: `[a, b, …]` source (rewritten)
-  std::string call_src;    // Delegate: the effect-fn call source (rewritten)
+  std::string args_array;  // Perform: `[a, b, …]` source (rewritten, anchored)
+  std::string call_src;    // Delegate: the effect-fn call source (rewritten, anchored)
   std::string prov;        // ` #@culebra:N` marker for the emitted line ("" = none)
   int64_t line = 0;           // Perform: original source line (for EffectError)
 };
@@ -159,7 +159,7 @@ class EffectsLowerer {
       // The sub-lower inside reparse_expr recursively handles effect
       // constructs nested in the argument expressions.
       std::string op = std::string(ast->nodes[0]->token);
-      std::string args = perform_args_array(*ast->nodes[1], {});
+      std::string args = anchored(perform_args_array(*ast->nodes[1], {}));
       int64_t line = err_line(*ast);
       auto synth = std::make_shared<std::string>(std::format(
           "fn __eff_perform_wrapper__() {{\n"
@@ -193,11 +193,16 @@ class EffectsLowerer {
     return sub;
   }
 
-  // Error-position line: provenance when known, else the raw (fragment) line.
-  int64_t err_line(const peg::Ast& n) const {
-    int64_t p = markers_.orig_line(n);
-    return p ? p : static_cast<long>(n.line);
+  // Error position: where the node was written when it was copied from user
+  // code, else its line's provenance marker (or its raw fragment line) and its
+  // fragment column.
+  SourcePos err_pos(const peg::Ast& n) const {
+    SourceResolver resolver;
+    if (auto p = resolver.resolve(src_, n)) return *p;
+    int64_t m = markers_.orig_line(n);
+    return {m ? m : static_cast<long>(n.line), static_cast<long>(n.column)};
   }
+  int64_t err_line(const peg::Ast& n) const { return err_pos(n).line; }
   std::string mk(const peg::Ast& n) const { return markers_.mk(n); }
   // Re-attach `n`'s marker when `x` is a single-line slice (the trailing
   // marker sits outside the node span, so the slice dropped it).
@@ -207,6 +212,10 @@ class EffectsLowerer {
 
   std::string_view slice(const peg::Ast& n) const {
     return ast_source_slice(n, src_);
+  }
+  // `n`'s source, to emit (see MappedSource).
+  MappedSource source_of(const peg::Ast& n) const {
+    return node_source(n, src_);
   }
 
   // First CLASS_DECL anywhere under `n` (including nested fn values — the
@@ -250,17 +259,17 @@ class EffectsLowerer {
 
   // Build the `[a, b, …]` array source for a perform's arguments, rewriting
   // locals per `rewrite`. Rejects kwargs / `**` splat (thin slice).
-  std::string perform_args_array(const peg::Ast& arguments,
-                                 const PromotedLocals& rewrite) const {
+  MappedSource perform_args_array(const peg::Ast& arguments,
+                                  const PromotedLocals& rewrite) const {
     using namespace peg::udl;
-    std::string out = "[";
+    MappedSource out = "[";
     for (size_t i = 0; i < arguments.nodes.size(); i++) {
       const auto& item = *arguments.nodes[i];
       if (item.tag == "KWARG"_ || item.tag == "KWARG_SPLAT"_) {
         throw CulebraError(
             "SyntaxError",
             "keyword / splat arguments are not supported in `perform` yet.",
-            static_cast<long>(item.line), static_cast<long>(item.column));
+            err_pos(item).line, err_pos(item).col);
       }
       if (i > 0) out += ", ";
       out += rewrite_locals_to_self(item, src_, rewrite);
@@ -293,7 +302,7 @@ class EffectsLowerer {
               "SyntaxError",
               "`perform` can only bind to a fresh `let x = perform …` in this "
               "slice (no compound / destructuring / re-assignment targets).",
-              err_line(*s), static_cast<long>(s->column));
+              err_pos(*s).line, err_pos(*s).col);
         }
         return EffStmtClass{EffStmtClass::Suspend,
                             make_perform(*rhs, target, /*binds=*/true, rewrite)};
@@ -304,7 +313,7 @@ class EffectsLowerer {
               "SyntaxError",
               "an effect-fn call can only bind to a fresh `let x = f(…)` in "
               "this slice.",
-              err_line(*s), static_cast<long>(s->column));
+              err_pos(*s).line, err_pos(*s).col);
         }
         return EffStmtClass{EffStmtClass::Suspend,
                             make_delegate(*rhs, target, /*binds=*/true, rewrite)};
@@ -335,7 +344,7 @@ class EffectsLowerer {
         "SyntaxError",
         "a `perform` / effect-fn call is only supported at statement level "
         "here — bind it first (`let x = perform …`).",
-        err_line(s), static_cast<long>(s.column));
+        err_pos(s).line, err_pos(s).col);
   }
 
   EffSuspension make_perform(const peg::Ast& perform, std::string target,
@@ -346,7 +355,7 @@ class EffectsLowerer {
     su.target = std::move(target);
     su.binds = binds;
     su.op = std::string(perform.nodes[0]->token);
-    su.args_array = perform_args_array(*perform.nodes[1], rewrite);
+    su.args_array = anchored(perform_args_array(*perform.nodes[1], rewrite));
     su.prov = mk(perform);
     su.line = err_line(perform);
     return su;
@@ -374,13 +383,15 @@ class EffectsLowerer {
           std::format("a local binding shadows effect fn '{}' at a call site "
                       "inside an effect body.",
                       callee),
-          err_line(call), static_cast<long>(call.column));
+          err_pos(call).line, err_pos(call).col);
     }
-    std::string cs = rewrite_locals_to_self(call, src_, rewrite);
-    if (auto p = cs.find_first_not_of(" \t\r\n"); p != std::string::npos) {
-      cs.erase(0, p);
-    }
-    su.call_src = "__eff_comp_" + cs;
+    // From the callee on, which is renamed in place.
+    std::vector<SourceEdit> edits;
+    collect_promoted_edits(call, src_, rewrite, edits, EditSite::Expr);
+    auto name_at = static_cast<size_t>(call.nodes[0]->token.data() - src_.data());
+    edits.push_back({name_at, callee.size(), "__eff_comp_" + callee});
+    su.call_src = anchored(splice_source(
+        src_, name_at, call.position + call.length, std::move(edits)));
     su.prov = mk(call);
     return su;
   }
@@ -458,15 +469,18 @@ class EffectsLowerer {
     return std::format("_anf_{}", ctr++);
   }
 
-  // Strip the enclosing `[ … ]` from a (pos/len-polluted) subscript slice.
-  static std::string strip_index_brackets(std::string_view s) {
+  // The source inside the enclosing `[ … ]` of a (pos/len-polluted)
+  // subscript node.
+  MappedSource index_source(const peg::Ast& post) const {
+    auto s = slice(post);
     size_t lb = s.find('[');
     size_t rb = s.rfind(']');
     if (lb != std::string_view::npos && rb != std::string_view::npos &&
         rb > lb) {
-      return std::string(s.substr(lb + 1, rb - lb - 1));
+      return splice_source(src_, post.position + lb + 1, post.position + rb,
+                           {});
     }
-    return std::string(s);
+    return source_of(post);
   }
 
   // ANF an expression given as source text (used to sidestep pos/len
@@ -474,11 +488,12 @@ class EffectsLowerer {
   // `let`, then ANF that clean subtree — hoists and the temp counter thread
   // through the caller's. `context` only supplies a position for a parse-error
   // rejection.
-  std::string anf_reparsed(const std::string& expr_src,
-                           const peg::Ast& context, int& ctr,
-                           std::vector<std::string>& hoists) const {
+  MappedSource anf_reparsed(const MappedSource& expr_src,
+                            const peg::Ast& context, int& ctr,
+                            std::vector<MappedSource>& hoists) const {
     using namespace peg::udl;
-    auto buf = std::make_shared<std::string>("let __anf_e = " + expr_src + "\n");
+    auto buf = std::make_shared<std::string>("let __anf_e = " +
+                                             anchored(expr_src) + "\n");
     auto prog = parse_registered_source("<eff-anf-expr>", buf);
     const peg::Ast* expr = nullptr;
     if (prog) {
@@ -503,7 +518,7 @@ class EffectsLowerer {
         "a `perform` in a short-circuit (`&&` / `||` / `??`) or ternary "
         "(`? :`) operand is not supported yet — bind it first "
         "(`let x = perform …`).",
-        err_line(n), static_cast<long>(n.column));
+        err_pos(n).line, err_pos(n).col);
   }
   [[noreturn]] void reject_complex_callee(const peg::Ast& n) const {
     throw CulebraError(
@@ -511,37 +526,35 @@ class EffectsLowerer {
         "a `perform` behind a method chain / computed callee is not supported "
         "yet — bind the receiver or the argument first "
         "(`let r = obj.foo(); let a = perform …`).",
-        err_line(n), static_cast<long>(n.column));
+        err_pos(n).line, err_pos(n).col);
   }
   [[noreturn]] void reject_unsupported_expr(const peg::Ast& n) const {
     throw CulebraError(
         "SyntaxError",
         "a `perform` in this expression position is not supported yet — bind "
         "it first (`let x = perform …`).",
-        err_line(n), static_cast<long>(n.column));
+        err_pos(n).line, err_pos(n).col);
   }
   [[noreturn]] void reject_control_expr(const peg::Ast& n) const {
     throw CulebraError(
         "SyntaxError",
         "a `perform` in a control-flow condition / iterable is not supported "
         "yet — bind it first (`let c = perform …; while c { … }`).",
-        err_line(n), static_cast<long>(n.column));
+        err_pos(n).line, err_pos(n).col);
   }
 
   // Replace, in `node`'s source, each of `operands`' spans with the aligned
   // residual text, keeping every byte in between (operators, delimiters,
   // parentheses) verbatim. Operands are siblings in source order, so editing
   // right-to-left keeps earlier offsets valid.
-  std::string splice_operands(const peg::Ast& node,
-                              const std::vector<const peg::Ast*>& operands,
-                              const std::vector<std::string>& residuals) const {
-    std::string out(slice(node));
-    size_t base = node.position;
-    for (size_t i = operands.size(); i-- > 0;) {
-      size_t off = operands[i]->position - base;
-      out.replace(off, operands[i]->length, residuals[i]);
-    }
-    return out;
+  MappedSource splice_operands(
+      const peg::Ast& node, const std::vector<const peg::Ast*>& operands,
+      const std::vector<MappedSource>& residuals) const {
+    std::vector<SourceEdit> edits;
+    for (size_t i = 0; i < operands.size(); i++)
+      edits.push_back(
+          {operands[i]->position, operands[i]->length, residuals[i]});
+    return rewrite_edits(node, src_, std::move(edits));
   }
 
   // Normalize an ordered operand list. Every operand left of the rightmost
@@ -550,30 +563,30 @@ class EffectsLowerer {
   // suspension. The rightmost suspending operand is hoisted but its residual
   // may stay in place; operands to its right are emitted verbatim (nothing
   // after them suspends).
-  std::vector<std::string> anf_operands(
+  std::vector<MappedSource> anf_operands(
       const std::vector<const peg::Ast*>& operands, int& ctr,
-      std::vector<std::string>& hoists) const {
+      std::vector<MappedSource>& hoists) const {
     int k = -1;
     for (int i = 0; i < static_cast<int>(operands.size()); i++) {
       if (has_suspension(*operands[i])) k = i;
     }
-    std::vector<std::string> out(operands.size());
+    std::vector<MappedSource> out(operands.size());
     for (int i = 0; i < static_cast<int>(operands.size()); i++) {
       const peg::Ast& op = *operands[i];
       if (i < k) {
-        std::string r = has_suspension(op) ? anf(op, ctr, hoists)
-                                           : std::string(slice(op));
+        MappedSource r = has_suspension(op) ? anf(op, ctr, hoists)
+                                            : source_of(op);
         if (is_atom(op) && !has_suspension(op)) {
           out[i] = std::move(r);
         } else {
           std::string t = fresh_temp(ctr);
-          hoists.push_back(std::format("let {} = ({})", t, r));
+          hoists.push_back("let " + t + " = (" + r + ")");
           out[i] = std::move(t);
         }
       } else if (i == k) {
         out[i] = anf(op, ctr, hoists);
       } else {
-        out[i] = std::string(slice(op));
+        out[i] = source_of(op);
       }
     }
     return out;
@@ -591,7 +604,7 @@ class EffectsLowerer {
             "SyntaxError",
             "keyword / splat arguments are not supported alongside a nested "
             "`perform` yet.",
-            static_cast<long>(c->line), static_cast<long>(c->column));
+            err_pos(*c).line, err_pos(*c).col);
       }
       ops.push_back(c.get());
     }
@@ -601,17 +614,17 @@ class EffectsLowerer {
   // Expression-mode ANF: append hoist statements to `hoists`, return the
   // suspension-free residual source for `node`. Any perform / effect-fn call,
   // including the outermost, becomes a fresh temp.
-  std::string anf(const peg::Ast& node, int& ctr,
-                  std::vector<std::string>& hoists) const {
+  MappedSource anf(const peg::Ast& node, int& ctr,
+                   std::vector<MappedSource>& hoists) const {
     using namespace peg::udl;
-    if (!has_suspension(node)) return std::string(slice(node));
+    if (!has_suspension(node)) return source_of(node);
 
     if (node.tag == "PERFORM"_ || is_effect_call(node)) {
       // A suspending call in expression position: normalize its args in place
       // (`anf_keep_call`), then hoist the whole call into a fresh temp.
-      std::string call = anf_keep_call(node, ctr, hoists);
+      MappedSource call = anf_keep_call(node, ctr, hoists);
       std::string t = fresh_temp(ctr);
-      hoists.push_back(std::format("let {} = {}", t, call));
+      hoists.push_back("let " + t + " = " + call);
       return t;
     }
     if (is_eager_chain(node.tag)) {
@@ -649,9 +662,9 @@ class EffectsLowerer {
         // eat the brackets. Re-parse the bracket-trimmed index as a
         // standalone expression for clean positions, ANF it, and rebuild
         // `base[<residual>]`.
-        std::string idx_res = anf_reparsed(strip_index_brackets(slice(post)),
-                                           node, ctr, hoists);
-        return std::string(slice(*node.nodes[0])) + "[" + idx_res + "]";
+        MappedSource idx_res =
+            anf_reparsed(index_source(post), node, ctr, hoists);
+        return source_of(*node.nodes[0]) + "[" + idx_res + "]";
       }
       reject_complex_callee(node);  // member (DOT) / computed callee
     }
@@ -678,8 +691,8 @@ class EffectsLowerer {
   // at statement level (a bare call, or a `let x = perform …` RHS) is KEPT
   // there — only its nested arguments are hoisted — so `build_step` still sees
   // the clean statement-level shape it lowers directly.
-  std::string anf_keep_call(const peg::Ast& call, int& ctr,
-                            std::vector<std::string>& hoists) const {
+  MappedSource anf_keep_call(const peg::Ast& call, int& ctr,
+                             std::vector<MappedSource>& hoists) const {
     auto ops = call_operands(*call.nodes[1]);
     auto res = anf_operands(ops, ctr, hoists);
     return splice_operands(call, ops, res);
@@ -694,12 +707,12 @@ class EffectsLowerer {
   // Normalize one body statement. Returns nullopt when nothing needed hoisting
   // (the caller emits the statement verbatim); otherwise the returned source is
   // the hoist lines followed by the residual statement.
-  std::optional<std::string> anf_statement(const peg::Ast* stmt,
-                                           int& ctr) const {
+  std::optional<MappedSource> anf_statement(const peg::Ast* stmt,
+                                            int& ctr) const {
     using namespace peg::udl;
     const peg::Ast* s = unwrap_stmt(stmt);
-    std::vector<std::string> hoists;
-    std::string residual_stmt;
+    std::vector<MappedSource> hoists;
+    MappedSource residual_stmt;
 
     // Control-flow statement carrying a suspension: recurse ANF into each
     // block body (hoists stay inside the block so a loop re-evaluates them),
@@ -712,13 +725,13 @@ class EffectsLowerer {
 
     if (s->tag == "RETURN"_) {
       if (s->nodes.empty() || !has_suspension(*s->nodes[0])) return std::nullopt;
-      std::string r = anf(*s->nodes[0], ctr, hoists);
+      MappedSource r = anf(*s->nodes[0], ctr, hoists);
       residual_stmt = splice_operands(*s, {s->nodes[0].get()}, {r});
     } else if (s->tag == "ASSIGNMENT"_) {
       auto av = view_assignment(*s);
       const peg::Ast* rhs = av.rhs;
       if (!has_suspension(*rhs)) return std::nullopt;
-      std::string r;
+      MappedSource r;
       if (rhs->tag == "PERFORM"_ || is_effect_call(*rhs)) {
         if (!args_have_suspension(*rhs)) return std::nullopt;  // already clean
         r = anf_keep_call(*rhs, ctr, hoists);
@@ -737,18 +750,22 @@ class EffectsLowerer {
       }
     }
 
-    std::string out;
+    MappedSource out;
     auto prov = mk(*s);
-    for (auto& h : hoists) out += h + prov + "\n";
-    out += residual_stmt + prov;
+    for (auto& h : hoists) {
+      out += h;
+      out += prov + "\n";
+    }
+    out += residual_stmt;
+    out += prov;
     return out;
   }
 
   // ANF a control-flow statement's block bodies in place. `ctr` threads through
   // so hoist temps stay unique across nesting levels (a per-block reset would
   // alias `_anf_0` across blocks, and every temp becomes a shared `self.` field).
-  std::optional<std::string> anf_control_flow(const peg::Ast* s,
-                                              int& ctr) const {
+  std::optional<MappedSource> anf_control_flow(const peg::Ast* s,
+                                               int& ctr) const {
     using namespace peg::udl;
     std::vector<const peg::Ast*> blocks;
     if (s->tag == "WHILE"_) {
@@ -786,16 +803,17 @@ class EffectsLowerer {
       }
       if ((n - off) % 2 == 1) blocks.push_back(s->nodes[n - 1].get());
     }
-    std::vector<std::string> new_blocks;
+    std::vector<MappedSource> new_blocks;
     for (auto* b : blocks) new_blocks.push_back(anf_block(*b, ctr));
     return splice_operands(*s, blocks, new_blocks);
   }
 
   // ANF a `{ … }` block: re-parse its inner (for clean positions), ANF the
   // statements, and re-brace. Returns the block verbatim when nothing hoisted.
-  std::string anf_block(const peg::Ast& block, int& ctr) const {
-    auto inner = std::string(strip_block_braces(slice(block)));
-    auto buf = std::make_shared<std::string>(inner + "\n");
+  MappedSource anf_block(const peg::Ast& block, int& ctr) const {
+    auto [begin, end] = block_inner_span(block, src_);
+    auto inner = splice_source(src_, begin, end, {});
+    auto buf = std::make_shared<std::string>(anchored(inner) + "\n");
     auto prog = parse_registered_source("<eff-anf-block>", buf);
     if (!prog) {
       throw CulebraError("InternalError",
@@ -810,21 +828,23 @@ class EffectsLowerer {
   // needed hoisting, else nullopt (so the proven straight-line path runs
   // unchanged for bodies with no expression-nested performs). `ctr` threads
   // the fresh-temp counter through nested block recursion.
-  std::optional<std::string> anf_program(const peg::Ast& program,
-                                         int& ctr) const {
+  std::optional<MappedSource> anf_program(const peg::Ast& program,
+                                          int& ctr) const {
     auto stmts = body_stmts(program);
     bool changed = false;
-    std::string out;
+    MappedSource out;
     for (auto* st : stmts) {
       if (auto expanded = anf_statement(st, ctr)) {
         changed = true;
         out += *expanded;
       } else {
-        out += std::string(slice(*st)) + mk(*st);
+        out += source_of(*st);
+        out += mk(*st);
       }
-      if (out.empty() || out.back() != '\n') out += "\n";
+      if (out.empty() || out.text().back() != '\n') out += "\n";
     }
-    return changed ? std::optional<std::string>(std::move(out)) : std::nullopt;
+    return changed ? std::optional<MappedSource>(std::move(out))
+                   : std::nullopt;
   }
 
   // --- CPS: flat-dispatch state machine over control flow ----------------
@@ -855,9 +875,11 @@ class EffectsLowerer {
     }
   };
 
+  // `n` rewritten and anchored (see CpsBuilder::rw), placed only where a
+  // statement or a parenthesized expression starts.
   std::string cps_rw(const peg::Ast& n,
                      const PromotedLocals& rw) const {
-    return rewrite_locals_to_self(n, src_, rw);
+    return anchored(rewrite_locals_to_self(n, src_, rw));
   }
 
   // A named fn declared at statement level in an effect body stays a real
@@ -876,7 +898,7 @@ class EffectsLowerer {
           "SyntaxError",
           "a decorated named fn is not supported inside an `effect fn` or "
           "`handle` body — define it outside.",
-          err_line(decl), static_cast<long>(decl.column));
+          err_pos(decl).line, err_pos(decl).col);
     }
     // The locals rewrite below is textual over the whole decl, so a class
     // declared anywhere inside would have its methods' bodies rewritten too —
@@ -886,19 +908,21 @@ class EffectsLowerer {
           "SyntaxError",
           "a class declaration inside a named fn of an `effect fn` / `handle` "
           "body is not supported — define the class outside.",
-          err_line(*cd), static_cast<long>(cd->column));
+          err_pos(*cd).line, err_pos(*cd).col);
     }
     std::string name(decl.nodes[k]->token);
     // Rewrite only past the name token so the header keeps a plain inner name
     // (the locals rewrite would turn it into `fn <promoted spelling>(`).
-    size_t after = decl.nodes[k]->position + decl.nodes[k]->length -
-                   decl.position;
+    size_t after = decl.nodes[k]->position + decl.nodes[k]->length;
     // `rewrite_locals_to_self` only asks `boxed` about a name it is
     // rewriting, so dropping it from `names` is the whole exclusion.
     PromotedLocals inner = rw;
     inner.names.erase(name);
-    return "fn " + name +
-           rewrite_locals_to_self(decl, src_, inner).substr(after) +
+    std::vector<SourceEdit> edits;
+    collect_promoted_edits(decl, src_, inner, edits, EditSite::Stmt);
+    return anchored("fn " + name +
+                    splice_source(src_, after, decl.position + decl.length,
+                                  std::move(edits))) +
            "\n      " + promoted_slot(rw, name) + " = " + name;
   }
 
@@ -915,9 +939,9 @@ class EffectsLowerer {
           "SyntaxError",
           "a named fn inside nested control flow of an `effect fn` / `handle` "
           "body is not supported — define it at the body's statement level.",
-          err_line(*fd), static_cast<long>(fd->column));
+          err_pos(*fd).line, err_pos(*fd).col);
     }
-    return rewrite_locals_to_self(s, src_, rw, EditSite::Stmt);
+    return anchored(rewrite_locals_to_self(s, src_, rw, EditSite::Stmt));
   }
   bool cps_needs_split(const peg::Ast& s) const {
     using namespace peg::udl;
@@ -1010,10 +1034,9 @@ class EffectsLowerer {
           "SyntaxError",
           "a `perform` inside a `defer` of an `effect fn` / `handle` body is "
           "not supported — the deferred body runs outside the effect engine.",
-          err_line(*u), static_cast<long>(u->column));
+          err_pos(*u).line, err_pos(*u).col);
     int k = static_cast<int>(st.defer_bodies.size());
-    std::string body_src(
-        strip_block_braces(rewrite_locals_to_self(block, src_, rw)));
+    std::string body_src = anchored(rewrite_block_inner(block, src_, rw));
     reattach_marker(body_src, block);  // single-line body: keep provenance
     st.defer_bodies.push_back(std::move(body_src));
     int s = st.fresh();
@@ -1052,10 +1075,10 @@ class EffectsLowerer {
       // in the copies into the slots, so the value is taken on the way in.
       const auto& rhs = *view_destructure(*u).rhs;
       body = "      " +
-             rewrite_locals_to_self(
+             anchored(rewrite_locals_to_self(
                  *u, src_, rw, EditSite::Stmt,
                  {{rhs.position, 0, "(self._eff_val = "},
-                  {rhs.position + rhs.length, 0, ")"}}) +
+                  {rhs.position + rhs.length, 0, ")"}})) +
              mk(*u) + "\n";
     } else {
       body = std::format("      self._eff_val = ({}){}\n", stmt_src(*u, rw),
@@ -1076,7 +1099,8 @@ class EffectsLowerer {
                     const PromotedLocals& rw) const {
     auto sv = slice(block);
     if (sv.size() >= 2 && sv.front() == '{') {
-      auto inner = std::string(strip_block_braces(sv));
+      auto [begin, end] = block_inner_span(block, src_);
+      auto inner = anchored(splice_source(src_, begin, end, {}));
       reattach_marker(inner, block);
       auto buf = std::make_shared<std::string>(inner + "\n");
       auto prog = parse_registered_source("<eff-block>", buf);
@@ -1305,7 +1329,7 @@ class EffectsLowerer {
           "SyntaxError",
           "unsupported control flow in an effect body (a `perform` reachable "
           "through a construct the effects transform can't lower).",
-          static_cast<long>(body.line), static_cast<long>(body.column));
+          err_pos(body).line, err_pos(body).col);
     }
     int n_defers = static_cast<int>(st.defer_bodies.size());
 
@@ -1367,7 +1391,7 @@ class EffectsLowerer {
             "SyntaxError",
             "a `defer` nested in control flow of an `effect fn` / `handle` "
             "body is not supported — place it at the body's top level.",
-            err_line(*d), static_cast<long>(d->column));
+            err_pos(*d).line, err_pos(*d).col);
     }
   }
   const peg::Ast* find_nested_defer(const peg::Ast& n) const {
@@ -1399,13 +1423,12 @@ class EffectsLowerer {
     walk(body);
     return out;
   }
-  std::optional<std::string> rewrite_suspending_fors(
+  std::optional<MappedSource> rewrite_suspending_fors(
       const peg::Ast& body) const {
     using namespace peg::udl;
     auto fors = collect_outermost_suspending_fors(body);
     if (fors.empty()) return std::nullopt;
-    std::string out(slice(body));
-    size_t base = body.position;
+    std::vector<SourceEdit> edits;
     for (auto it = fors.rbegin(); it != fors.rend(); ++it) {
       auto* f = *it;
       if (f->nodes.size() < 3) continue;
@@ -1418,34 +1441,35 @@ class EffectsLowerer {
             "SyntaxError",
             "a destructuring `for k, v in …` with a `perform` inside is not "
             "supported yet — iterate a single value.",
-            err_line(*f), static_cast<long>(f->column));
+            err_pos(*f).line, err_pos(*f).col);
       }
       if (has_suspension(expr_node)) reject_control_expr(expr_node);
       auto iter_var = std::format("_eff_it_{}", f->position);
       auto prov = mk(*f);
-      std::string body_text(strip_block_braces(slice(blk_node)));
-      reattach_marker(body_text, *f);
+      auto [body_begin, body_end] = block_inner_span(blk_node, src_);
+      MappedSource body_text = splice_source(src_, body_begin, body_end, {});
+      if (body_text.text().find('\n') == std::string::npos) body_text += prov;
       // Preserve a trailing `nobreak { … }` (a FOR child inside f->length that
       // the whole-node replacement would otherwise drop): re-attach it to the
       // desugared while verbatim.
-      std::string nobreak_suffix;
+      MappedSource nobreak_suffix;
       if (const peg::Ast* nc = culebra::nobreak_clause_of(*f)) {
-        nobreak_suffix = std::string(" ") + std::string(slice(*nc));
+        nobreak_suffix = " " + source_of(*nc);
       }
       // A label belongs to the loop, not to the iterator binding: it moves
       // onto the desugared `while`, after the `let` that opens the iterator.
-      auto replacement = std::format(
-          "let {0} = ({1}).iter(){4}\n"
-          "{6}while {0}.has_next() {{{4}\n"
-          "  let {2} = {0}.next(){4}\n"
-          "  {3}\n"
-          "}}{5}",
-          iter_var, std::string(slice(expr_node)),
-          std::string(var_node.token), body_text, prov, nobreak_suffix,
-          loop_label_prefix(fv.label));
-      out.replace(f->position - base, f->length, replacement);
+      MappedSource replacement =
+          std::format("let {} = (", iter_var) + source_of(expr_node) +
+          std::format(").iter(){1}\n"
+                      "{3}while {0}.has_next() {{{1}\n"
+                      "  let {2} = {0}.next(){1}\n"
+                      "  ",
+                      iter_var, prov, std::string(var_node.token),
+                      loop_label_prefix(fv.label)) +
+          body_text + "\n}" + nobreak_suffix;
+      edits.push_back({f->position, f->length, std::move(replacement)});
     }
-    return out;
+    return rewrite_edits(body, src_, std::move(edits));
   }
 
   // A `self.` field access, boundary-guarded so `foo.self.` / `aself.` don't
@@ -1455,27 +1479,47 @@ class EffectsLowerer {
     static const std::regex pat(R"((^|[^.A-Za-z0-9_])self\.)");
     return pat;
   }
+  // The offset of each `self` of a `self.` field access in the code of bytes
+  // [begin, end) of `src`.
+  static std::vector<size_t> self_accesses(const std::string& src,
+                                           size_t begin, size_t end) {
+    std::vector<size_t> out;
+    auto text = std::string_view(src).substr(begin, end - begin);
+    for (auto [b, e] : code_spans(text, begin)) {
+      auto code = std::string_view(src).substr(b, e - b);
+      using It = std::string_view::const_iterator;
+      for (std::regex_iterator<It> m(code.begin(), code.end(),
+                                     self_field_access()),
+           done;
+           m != done; ++m)
+        out.push_back(b + static_cast<size_t>(m->position(0) + m->length(1)));
+    }
+    return out;
+  }
   // Redirect an enclosing-computation field access `self.x` to `self._eff_outer.x`
   // so a nested handle's own computation reaches the captured binding through the
   // outer instance passed to its ctor. Idempotent per nesting level: a second
   // pass over `self._eff_outer.x` lengthens the chain (`self._eff_outer._eff_outer.x`),
   // which is exactly the walk a doubly-nested capture needs.
-  static std::string redirect_self_to_outer(std::string_view src) {
-    return rewrite_outside_strings(src, [](std::string_view code) {
-      return std::regex_replace(std::string(code), self_field_access(),
-                                "$1self._eff_outer.");
-    });
+  static std::vector<SourceEdit> redirect_self_to_outer(const std::string& src,
+                                                        size_t begin,
+                                                        size_t end) {
+    std::vector<SourceEdit> out;
+    for (size_t at : self_accesses(src, begin, end))
+      out.push_back({at + 5, 0, "_eff_outer."});
+    return out;
   }
   // Redirect `self.x` to `<self>.x` for a handler-clause body: the adapter is a
   // closure inside the `<self>` IIFE, so it captures the enclosing instance as a
   // plain local (both backends), not via lexical `self`. `<self>` is unique per
   // handle so nested handles' IIFE params don't shadow one another.
-  static std::string redirect_self_to_local(std::string_view src,
-                                            const std::string& local) {
-    return rewrite_outside_strings(src, [&](std::string_view code) {
-      return std::regex_replace(std::string(code), self_field_access(),
-                                "$1" + local + ".");
-    });
+  static std::vector<SourceEdit> redirect_self_to_local(
+      const std::string& src, size_t begin, size_t end,
+      const std::string& local) {
+    std::vector<SourceEdit> out;
+    for (size_t at : self_accesses(src, begin, end))
+      out.push_back({at, 4, local});
+    return out;
   }
   // True when the handle reads an enclosing-computation binding: a genuine
   // `self` receiver node somewhere in its subtree. Walk the AST (not the raw
@@ -1519,20 +1563,22 @@ class EffectsLowerer {
           "SyntaxError",
           "`yield` cannot appear directly in an `effect fn` or `handle` body "
           "— wrap it in a generator fn defined in (or outside) the body.",
-          err_line(*y), static_cast<long>(y->column));
+          err_pos(*y).line, err_pos(*y).col);
     }
     // Parse the brace-stripped inner source so a single-statement BLOCK's
     // pos/len doesn't span the enclosing braces (the AstOptimizer trap);
     // uniform for single/multi-statement bodies.
-    auto inner_sv = strip_block_braces(slice(body_node));
-    std::string inner(inner_sv);
-    if (src_is_original_) {
-      int64_t first = line_of_offset(
-          src_, static_cast<size_t>(inner_sv.data() - src_.data()));
-      inner = annotate_line_markers(inner, first);
-      inner += '\n';  // a trailing marker comment needs a newline to parse
+    auto [begin, end] = block_inner_span(body_node, src_);
+    std::vector<SourceEdit> edits;
+    if (src_is_original_) edits = line_marker_edits(src_, begin, end);
+    if (capture_outer) {
+      auto redirect = redirect_self_to_outer(src_, begin, end);
+      edits.insert(edits.end(), redirect.begin(), redirect.end());
     }
-    if (capture_outer) inner = redirect_self_to_outer(inner);
+    std::string inner =
+        anchored(splice_source(src_, begin, end, std::move(edits)));
+    // A trailing marker comment needs a newline to parse.
+    if (src_is_original_) inner += '\n';
     std::shared_ptr<std::string> src =
         std::make_shared<std::string>(std::move(inner));
     std::shared_ptr<peg::Ast> prog = parse_registered_source("<eff-body>", src);
@@ -1547,7 +1593,7 @@ class EffectsLowerer {
       EffectsLowerer fl(*src, effect_fns_);
       auto desugared = fl.rewrite_suspending_fors(*prog);
       if (!desugared) break;
-      src = std::make_shared<std::string>(std::move(*desugared));
+      src = std::make_shared<std::string>(anchored(*desugared));
       prog = parse_registered_source("<eff-for>", src);
       if (!prog) {
         throw CulebraError(
@@ -1560,7 +1606,7 @@ class EffectsLowerer {
     EffectsLowerer anf_pass(*src, effect_fns_);
     int ctr = 0;
     if (auto normalized = anf_pass.anf_program(*prog, ctr)) {
-      auto src2 = std::make_shared<std::string>(std::move(*normalized));
+      auto src2 = std::make_shared<std::string>(anchored(*normalized));
       auto prog2 = parse_registered_source("<eff-anf>", src2);
       if (!prog2) {
         throw CulebraError(
@@ -1594,7 +1640,7 @@ class EffectsLowerer {
                           "inside an `effect fn` / `handle` body — define the "
                           "multimethod outside.",
                           name),
-              err_line(n), static_cast<long>(n.column));
+              err_pos(n).line, err_pos(n).col);
         }
         return;
       }
@@ -1670,11 +1716,10 @@ class EffectsLowerer {
 
     if (!effect_fn_has_body(*ast)) {
       // Operation declaration: a stub that rejects a direct call.
-      auto params_sv = slice(*ast->nodes[1]);
       auto synth = std::make_shared<std::string>(std::format(
           "fn {0}{1} {{ throw {{ kind: \"EffectError\", message: \"effect "
           "operation '{0}' must be invoked via `perform`\" }} }}\n",
-          name, std::string(params_sv)));
+          name, anchored(source_of(*ast->nodes[1]))));
       return reparse_decl(synth, err_line(*ast));
     }
 
@@ -1712,13 +1757,14 @@ class EffectsLowerer {
     // there (tail/abort dispatch; a full-control clause raises), which is
     // what lets ordinary code call an effect fn — including through
     // first-class uses like `.map(f)`.
-    auto params_sv = slice(params_ast);
+    auto params = source_of(params_ast);
     auto synth = std::make_shared<std::string>(std::format(
         "fn __eff_decls__() {{\n"
         "fn __eff_comp_{0}{1} {{\n{2}  {3}.new({4})\n}}\n"
-        "fn {0}{1} {{ __Eff.run_comp(__eff_comp_{0}({4})) }}\n"
+        "fn {0}{5} {{ __Eff.run_comp(__eff_comp_{0}({4})) }}\n"
         "}}\n",
-        name, std::string(params_sv), cls, class_name, call_args));
+        name, anchored(params), cls, class_name, call_args,
+        anchored(params)));
     return reparse_stmts(synth, err_line(*ast));
   }
 
@@ -1755,6 +1801,18 @@ class EffectsLowerer {
             last->nodes[0].get() == uses[0])
                ? "t"
                : "f";
+  }
+
+  // A handler clause's statements, anchored, reading a captured enclosing
+  // binding through `self_name` (redirect_self_to_local).
+  std::string clause_source(const peg::Ast& block, bool captures,
+                            const std::string& self_name) const {
+    auto [begin, end] = block_inner_span(block, src_);
+    std::vector<SourceEdit> edits;
+    if (captures) edits = redirect_self_to_local(src_, begin, end, self_name);
+    auto out = anchored(splice_source(src_, begin, end, std::move(edits)));
+    reattach_marker(out, block);
+    return out;
   }
 
   // `handle { BODY } with op1(params) { H1 } … with return(v) { R }` ->
@@ -1809,7 +1867,7 @@ class EffectsLowerer {
           throw CulebraError(
               "SyntaxError",
               "a `handle` may have only one `return` clause.",
-              err_line(clause), static_cast<long>(clause.column));
+              err_pos(clause).line, err_pos(clause).col);
         }
         const auto& params = *clause.nodes[0];
         if (params.nodes.size() != 1) {
@@ -1817,12 +1875,10 @@ class EffectsLowerer {
               "SyntaxError",
               "a `return` clause takes exactly one parameter "
               "(`with return(value) { … }`).",
-              err_line(clause), static_cast<long>(clause.column));
+              err_pos(clause).line, err_pos(clause).col);
         }
         auto vn = view_parameter(*params.nodes[0]).name;
-        std::string ret_src(strip_block_braces(slice(*clause.nodes[1])));
-        if (captures) ret_src = redirect_self_to_local(ret_src, self_name);
-        reattach_marker(ret_src, *clause.nodes[1]);
+        std::string ret_src = clause_source(*clause.nodes[1], captures, self_name);
         return_fn = std::format(
             "fn(_eh_val) {{\n      let {} = _eh_val\n      {}\n    }}",
             std::string(vn), ret_src);
@@ -1836,7 +1892,7 @@ class EffectsLowerer {
             "SyntaxError",
             std::format("duplicate handler clause for effect '{}' in one "
                         "`handle`.", op),
-            err_line(clause), static_cast<long>(clause.column));
+            err_pos(clause).line, err_pos(clause).col);
       }
       const auto& params = *clause.nodes[1];
       const auto& handler_body = *clause.nodes[2];
@@ -1845,7 +1901,7 @@ class EffectsLowerer {
             "SyntaxError",
             "a handler clause needs a `resume` parameter (`with op(resume) "
             "{ … }`).",
-            err_line(clause), static_cast<long>(clause.column));
+            err_pos(clause).line, err_pos(clause).col);
       }
       std::string binds;
       size_t nparams = params.nodes.size();
@@ -1855,9 +1911,7 @@ class EffectsLowerer {
       }
       auto resume_name = view_parameter(*params.nodes[nparams - 1]).name;
       binds += std::format("      let {} = _eh_resume\n", std::string(resume_name));
-      std::string handler_src(strip_block_braces(slice(handler_body)));
-      if (captures) handler_src = redirect_self_to_local(handler_src, self_name);
-      reattach_marker(handler_src, handler_body);
+      std::string handler_src = clause_source(handler_body, captures, self_name);
       if (!first_op) frame += ",";
       first_op = false;
       frame += std::format(
@@ -1912,10 +1966,11 @@ class EffectsLowerer {
     ScopeChain chain = scopes_;
     fn = transform_generators_in(fn, *synth, chain);
     auto out = sub_lowerer(*synth, false, label).transform(fn);
-    // Restore original line numbers from the provenance markers; machinery
-    // lines fall back to the declaration's line. Subtrees spliced in by the
-    // nested lowering above carry other labels and are already repositioned.
-    return reposition_ast(out, marker_line_map(*synth), fallback_line, label);
+    // Restore original positions (anchors, then the provenance markers);
+    // machinery lines fall back to the declaration's line. Subtrees spliced
+    // in by the nested lowering above carry other labels and are already
+    // repositioned.
+    return reposition_fragment(out, *synth, fallback_line, label);
   }
 
   // Re-parse a synthesized `fn __wrapper__() { <stmts> }` and return its whole
@@ -1935,7 +1990,7 @@ class EffectsLowerer {
     fn = transform_generators_in(fn, *synth, chain);
     auto body = fn->nodes.back();
     auto out = sub_lowerer(*synth, false, label).transform(body);
-    return reposition_ast(out, marker_line_map(*synth), fallback_line, label);
+    return reposition_fragment(out, *synth, fallback_line, label);
   }
 
   // Re-parse a synthesized `fn __wrapper__() { <expr> }` and return the single
