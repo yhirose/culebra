@@ -184,6 +184,7 @@ class EffectsLowerer {
   std::string path_;
   ScopeChain scopes_;
   mutable LineMarkers markers_;
+  mutable SourceResolver resolver_;
 
   // A lowerer over another buffer, at the same place in the program.
   EffectsLowerer sub_lowerer(const std::string& src, bool src_is_original = false,
@@ -197,8 +198,7 @@ class EffectsLowerer {
   // code, else its line's provenance marker (or its raw fragment line) and its
   // fragment column.
   SourcePos err_pos(const peg::Ast& n) const {
-    SourceResolver resolver;
-    if (auto p = resolver.resolve(src_, n)) return *p;
+    if (auto p = resolver_.resolve(src_, n)) return *p;
     int64_t m = markers_.orig_line(n);
     return {m ? m : static_cast<long>(n.line), static_cast<long>(n.column)};
   }
@@ -206,8 +206,8 @@ class EffectsLowerer {
   std::string mk(const peg::Ast& n) const { return markers_.mk(n); }
   // Re-attach `n`'s marker when `x` is a single-line slice (the trailing
   // marker sits outside the node span, so the slice dropped it).
-  void reattach_marker(std::string& x, const peg::Ast& n) const {
-    if (x.find('\n') == std::string::npos) x += mk(n);
+  void reattach_marker(MappedSource& x, const peg::Ast& n) const {
+    if (x.text().find('\n') == std::string::npos) x += mk(n);
   }
 
   std::string_view slice(const peg::Ast& n) const {
@@ -216,6 +216,12 @@ class EffectsLowerer {
   // `n`'s source, to emit (see MappedSource).
   MappedSource source_of(const peg::Ast& n) const {
     return node_source(n, src_);
+  }
+  // A block's statements (block_inner_span), with `edits`.
+  MappedSource inner_source(const peg::Ast& block,
+                            std::vector<SourceEdit> edits = {}) const {
+    auto [begin, end] = block_inner_span(block, src_);
+    return splice_source(src_, begin, end, std::move(edits));
   }
 
   // First CLASS_DECL anywhere under `n` (including nested fn values — the
@@ -811,8 +817,7 @@ class EffectsLowerer {
   // ANF a `{ … }` block: re-parse its inner (for clean positions), ANF the
   // statements, and re-brace. Returns the block verbatim when nothing hoisted.
   MappedSource anf_block(const peg::Ast& block, int& ctr) const {
-    auto [begin, end] = block_inner_span(block, src_);
-    auto inner = splice_source(src_, begin, end, {});
+    auto inner = inner_source(block);
     auto buf = std::make_shared<std::string>(anchored(inner) + "\n");
     auto prog = parse_registered_source("<eff-anf-block>", buf);
     if (!prog) {
@@ -1036,9 +1041,9 @@ class EffectsLowerer {
           "not supported — the deferred body runs outside the effect engine.",
           err_pos(*u).line, err_pos(*u).col);
     int k = static_cast<int>(st.defer_bodies.size());
-    std::string body_src = anchored(rewrite_block_inner(block, src_, rw));
+    auto body_src = rewrite_block_inner(block, src_, rw);
     reattach_marker(body_src, block);  // single-line body: keep provenance
-    st.defer_bodies.push_back(std::move(body_src));
+    st.defer_bodies.push_back(anchored(body_src));
     int s = st.fresh();
     st.states[s] = std::format(
         "      self._eff_defer_{} = true\n      self._eff_state = {}\n"
@@ -1097,12 +1102,10 @@ class EffectsLowerer {
   // re-parse too — uniform and cheap.
   int cps_block_seq(CpsState& st, const peg::Ast& block, int cont, bool tail,
                     const PromotedLocals& rw) const {
-    auto sv = slice(block);
-    if (sv.size() >= 2 && sv.front() == '{') {
-      auto [begin, end] = block_inner_span(block, src_);
-      auto inner = anchored(splice_source(src_, begin, end, {}));
+    if (block_inner_span(block, src_).first != block.position) {  // braced
+      auto inner = inner_source(block);
       reattach_marker(inner, block);
-      auto buf = std::make_shared<std::string>(inner + "\n");
+      auto buf = std::make_shared<std::string>(anchored(inner) + "\n");
       auto prog = parse_registered_source("<eff-block>", buf);
       if (!prog) { st.failed = true; return -1; }
       EffectsLowerer sub(*buf, effect_fns_);
@@ -1446,9 +1449,8 @@ class EffectsLowerer {
       if (has_suspension(expr_node)) reject_control_expr(expr_node);
       auto iter_var = std::format("_eff_it_{}", f->position);
       auto prov = mk(*f);
-      auto [body_begin, body_end] = block_inner_span(blk_node, src_);
-      MappedSource body_text = splice_source(src_, body_begin, body_end, {});
-      if (body_text.text().find('\n') == std::string::npos) body_text += prov;
+      auto body_text = inner_source(blk_node);
+      reattach_marker(body_text, *f);
       // Preserve a trailing `nobreak { … }` (a FOR child inside f->length that
       // the whole-node replacement would otherwise drop): re-attach it to the
       // desugared while verbatim.
@@ -1575,12 +1577,9 @@ class EffectsLowerer {
       auto redirect = redirect_self_to_outer(src_, begin, end);
       edits.insert(edits.end(), redirect.begin(), redirect.end());
     }
-    std::string inner =
-        anchored(splice_source(src_, begin, end, std::move(edits)));
-    // A trailing marker comment needs a newline to parse.
-    if (src_is_original_) inner += '\n';
-    std::shared_ptr<std::string> src =
-        std::make_shared<std::string>(std::move(inner));
+    // The trailing newline ends a line marker comment the body may end in.
+    std::shared_ptr<std::string> src = std::make_shared<std::string>(
+        anchored(inner_source(body_node, std::move(edits))) + '\n');
     std::shared_ptr<peg::Ast> prog = parse_registered_source("<eff-body>", src);
     if (!prog) {
       throw CulebraError("InternalError",
@@ -1733,7 +1732,7 @@ class EffectsLowerer {
     // an enclosing method's receiver, and `handle { self.v + perform … }`
     // inside a method is ordinary code. (A handle written INSIDE an effect fn
     // body IS covered, by this walk: no receiver survives there either.)
-    reject_self_in_lowered_body(body, "an effect fn body");
+    reject_self_in_lowered_body(body, src_, "an effect fn body");
 
     auto param_names = collect_positional_param_names(params_ast);
     // Prefix from the shared constant: both backends recognize the state
@@ -1757,14 +1756,13 @@ class EffectsLowerer {
     // there (tail/abort dispatch; a full-control clause raises), which is
     // what lets ordinary code call an effect fn — including through
     // first-class uses like `.map(f)`.
-    auto params = source_of(params_ast);
+    auto params = anchored(source_of(params_ast));
     auto synth = std::make_shared<std::string>(std::format(
         "fn __eff_decls__() {{\n"
         "fn __eff_comp_{0}{1} {{\n{2}  {3}.new({4})\n}}\n"
-        "fn {0}{5} {{ __Eff.run_comp(__eff_comp_{0}({4})) }}\n"
+        "fn {0}{1} {{ __Eff.run_comp(__eff_comp_{0}({4})) }}\n"
         "}}\n",
-        name, anchored(params), cls, class_name, call_args,
-        anchored(params)));
+        name, params, cls, class_name, call_args));
     return reparse_stmts(synth, err_line(*ast));
   }
 
@@ -1810,9 +1808,9 @@ class EffectsLowerer {
     auto [begin, end] = block_inner_span(block, src_);
     std::vector<SourceEdit> edits;
     if (captures) edits = redirect_self_to_local(src_, begin, end, self_name);
-    auto out = anchored(splice_source(src_, begin, end, std::move(edits)));
+    auto out = inner_source(block, std::move(edits));
     reattach_marker(out, block);
-    return out;
+    return anchored(out);
   }
 
   // `handle { BODY } with op1(params) { H1 } … with return(v) { R }` ->

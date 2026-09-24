@@ -266,6 +266,7 @@ struct FoundAnchor {
 // so user text that merely spells an anchor is left alone.
 inline std::vector<FoundAnchor> find_anchors(std::string_view s) {
   std::vector<FoundAnchor> out;
+  if (s.find(kSourceAnchor) == std::string_view::npos) return out;
   size_t i = 0, n = s.size();
   while (i < n) {
     char c = s[i];
@@ -345,9 +346,9 @@ struct SourcePos {
   long col;
 };
 
-// Where a byte of a synthesized buffer came from in the user's source. One
-// per repositioning: it caches, per buffer it visits, the anchors found in it
-// and (for the user's source) its line starts — both fixed once parsed.
+// Where a byte of a synthesized buffer came from in the user's source. It
+// caches, per buffer it visits, the anchors found in it and its line starts —
+// both fixed once the buffer is parsed — so one serves a whole lowering.
 class SourceResolver {
  public:
   // The user-source line and column (as the parser counts them: 1-based,
@@ -360,20 +361,24 @@ class SourceResolver {
     for (int hops = 0; hops < 64; hops++) {
       auto& b = buffer(*at);
       if (!b.fragment) return position_in(b, *at, off);
-      // The innermost anchor whose text covers `off`.
-      const Anchor* hit = nullptr;
-      for (auto& a : b.anchors) {
-        if (a.start > off) break;
-        if (off < a.start + a.len) hit = &a;
-      }
-      if (!hit) return std::nullopt;
-      size_t rel = off - hit->start;
-      const SourceRun* run = nullptr;
-      for (auto& r : hit->runs)
-        if (r.at <= rel && rel < r.at + r.len) run = &r;
-      if (!run) return std::nullopt;
-      off = run->point ? run->src_pos : run->src_pos + (rel - run->at);
-      at = run->src;
+      // The anchor whose text covers `off`: the last to start at or before
+      // it (anchored text is placed side by side, never inside another's).
+      auto a = std::upper_bound(
+          b.anchors.begin(), b.anchors.end(), off,
+          [](size_t o, const Anchor& x) { return o < x.start; });
+      if (a == b.anchors.begin()) return std::nullopt;
+      const auto& hit = *std::prev(a);
+      if (off >= hit.start + hit.rec->len) return std::nullopt;
+      size_t rel = off - hit.start;
+      const auto& runs = hit.rec->runs;  // in `at` order, disjoint
+      auto r = std::upper_bound(
+          runs.begin(), runs.end(), rel,
+          [](size_t o, const SourceRun& x) { return o < x.at; });
+      if (r == runs.begin() || rel >= std::prev(r)->at + std::prev(r)->len)
+        return std::nullopt;
+      const auto& run = *std::prev(r);
+      off = run.point ? run.src_pos : run.src_pos + (rel - run.at);
+      at = run.src;
     }
     return std::nullopt;
   }
@@ -387,20 +392,19 @@ class SourceResolver {
     index_lines(b, buf);
     if (n.line == 0 || n.line > b.line_starts.size()) return std::nullopt;
     size_t off = b.line_starts[n.line - 1];
-    for (size_t cp = 1; cp < n.column && off < buf.size(); cp++) {
-      off++;  // past one code point: its lead byte, then its continuations
-      while (off < buf.size() &&
-             (static_cast<unsigned char>(buf[off]) & 0xC0) == 0x80)
-        off++;
-    }
+    // Past `column - 1` code points, counted as peg::codepoint_count does.
+    for (size_t cp = 1; cp < n.column && off < buf.size(); cp++)
+      off += std::max<size_t>(
+          1, peg::codepoint_length(buf.data() + off, buf.size() - off));
     return resolve(buf, off);
   }
 
  private:
+  // An anchor in a buffer: where its text starts, and its record. The ledger
+  // is a deque that only grows, so the record stays put.
   struct Anchor {
     size_t start;
-    size_t len;
-    std::vector<SourceRun> runs;
+    const SourceAnchor* rec;
   };
   struct Buffer {
     bool fragment = false;
@@ -413,19 +417,14 @@ class SourceResolver {
     auto [it, fresh] = buffers_.try_emplace(&buf);
     if (!fresh) return it->second;
     auto& b = it->second;
-    {
-      std::lock_guard<std::mutex> lk(fragment_ledger_mutex());
-      b.fragment = _active_fragment_ledger().held.contains(&buf);
-    }
-    if (!b.fragment) return b;  // the user's source: nothing to follow
     auto found = find_anchors(buf);
     std::lock_guard<std::mutex> lk(fragment_ledger_mutex());
-    auto& anchors = _active_fragment_ledger().anchors;
-    for (auto& a : found) {
-      if (a.id >= anchors.size()) continue;
-      const auto& rec = anchors[a.id];
-      b.anchors.push_back({a.end, rec.len, rec.runs});
-    }
+    auto& ledger = _active_fragment_ledger();
+    b.fragment = ledger.held.contains(&buf);
+    if (!b.fragment) return b;  // the user's source: nothing to follow
+    for (auto& a : found)
+      if (a.id < ledger.anchors.size())
+        b.anchors.push_back({a.end, &ledger.anchors[a.id]});
     return b;
   }
 

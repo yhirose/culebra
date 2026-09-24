@@ -117,16 +117,19 @@ inline const peg::Ast* find_self_ref_in_fn_body(const peg::Ast& node) {
 
 // The refusal both lowerings share. `what` names the body in the message; the
 // rest of the sentence — and so the workaround a user is told — is one string,
-// because the two bodies obey one rule for one reason.
+// because the two bodies obey one rule for one reason. `body` is parsed from
+// `src`.
 inline void reject_self_in_lowered_body(const peg::Ast& body,
+                                        const std::string& src,
                                         std::string_view what) {
   if (auto* s = find_self_ref_in_fn_body(body)) {
+    auto p = source_pos(*s, src);
     throw CulebraError(
         "SyntaxError",
         std::format("self is not available inside {} — bind it outside first "
                     "(let me = self) and use that variable, or pass it as a "
                     "parameter.", what),
-        static_cast<long>(s->line), static_cast<long>(s->column));
+        p.line, p.col);
   }
 }
 
@@ -224,16 +227,6 @@ inline std::string_view ast_source_slice(const peg::Ast& node,
 }
 
 // --- Source-text helpers -------------------------------------------------
-
-// Drop the enclosing `{` / `}` from a BLOCK source slice. A BLOCK that's
-// been parsed will always be wrapped in braces, but the check stays
-// defensive in case the slice is already brace-stripped or empty.
-inline std::string_view strip_block_braces(std::string_view s) {
-  if (s.size() >= 2 && s.front() == '{' && s.back() == '}') {
-    return s.substr(1, s.size() - 2);
-  }
-  return s;
-}
 
 // The code of `s`, as [begin, end) spans offset by `base`: everything but the
 // literal content of string constants and comments (line `#`/`//`, block
@@ -827,11 +820,11 @@ inline MappedSource rewrite_locals_to_self(const peg::Ast& n,
 }
 
 // The [begin, end) offsets of a block's statements in `src`: its span inside
-// the braces (strip_block_braces).
+// the braces. A block collapsed into its lone statement may have none.
 inline std::pair<size_t, size_t> block_inner_span(const peg::Ast& block,
                                                   const std::string& src) {
   auto whole = ast_source_slice(block, src);
-  size_t trim = strip_block_braces(whole).size() == whole.size() ? 0 : 1;
+  size_t trim = whole.size() >= 2 && whole.front() == '{' && whole.back() == '}';
   return {block.position + trim, block.position + block.length - trim};
 }
 
@@ -1826,8 +1819,7 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
         "yield cannot appear inside a try-catch or defer block. Move "
         "the try to the yielded expression value (yield try { ... } "
         "catch e { ... }) or use a top-level `defer { ... }` for cleanup.",
-        static_cast<long>(bad->line),
-        static_cast<long>(bad->column));
+        source_pos(*bad, src).line, source_pos(*bad, src).col);
   }
 
   // A self-contained `handle { … }` expression inside a generator body is
@@ -1851,7 +1843,7 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
           "SyntaxError",
           "an `effect fn` declaration cannot appear inside a generator body — "
           "define it outside the generator.",
-          static_cast<long>(e->line), static_cast<long>(e->column));
+          source_pos(*e, src).line, source_pos(*e, src).col);
     }
   }
 
@@ -1867,8 +1859,7 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
         "(a function that uses yield). Bind a lambda instead (let f = |x| ... "
         "/ let f = fn (x) { ... }) or define the function outside the "
         "generator.",
-        static_cast<long>(fd->line),
-        static_cast<long>(fd->column));
+        source_pos(*fd, src).line, source_pos(*fd, src).col);
   }
 
   // `self` in a generator body would resolve to the synthesized state
@@ -1876,7 +1867,7 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
   // can mean — a generator is a named fn, so no receiver survives the
   // lowering. Reject it uniformly (like the rules above); the enclosing
   // value is one binding away.
-  reject_self_in_lowered_body(*ast->nodes.back(),
+  reject_self_in_lowered_body(*ast->nodes.back(), src,
                               "a generator body (a function that uses yield)");
 
   // Annotate every body line with a `#@culebra:<original-line>` provenance marker
@@ -1892,11 +1883,9 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
   // parse_registered_source), or `src` itself when there was nothing to add.
   const std::string* cur = &src;
   {
-    auto inner = strip_block_braces(
-        ast_source_slice(*ast->nodes.back(), *cur));
-    if (!text_has_line_marker(inner)) {
-      auto begin = static_cast<size_t>(inner.data() - cur->data());
-      auto end = begin + inner.size();
+    auto [begin, end] = block_inner_span(*ast->nodes.back(), *cur);
+    if (!text_has_line_marker(
+            std::string_view(*cur).substr(begin, end - begin))) {
       auto annotated = std::make_shared<std::string>(std::format(
           "fn __gen_wrapper__{} {{\n{}\n}}\n",
           anchored(node_source(*ast->nodes[i + 1], *cur)),
@@ -1925,8 +1914,7 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
       "SyntaxError",
       "unsupported control flow in a generator body (yield reachable "
       "through a construct the generator transform can't lower).",
-      static_cast<long>(name_ast.line),
-      static_cast<long>(name_ast.column));
+      source_pos(name_ast, src).line, source_pos(name_ast, src).col);
 }
 
 // Walk the AST, transforming every yield-carrying MULTIFN_DECL. The
