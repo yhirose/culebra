@@ -2450,13 +2450,37 @@ The body starts on the first `has_next()`, not at the call. A generator
 is **one-shot**: once drained it stays exhausted, and iterating the same
 object again produces nothing. Call the function again for a fresh run.
 
-**Inside the body**, `yield` may appear at any depth in `while`, `for`
-and `if` bodies, and `break` / `continue` / `return` behave as they do
-in a normal function — `return` ends the generation. A `defer`
-registered before a suspension point runs when the generator is
-**disposed**: loop exit, `break`, an early `return`, an exception, or a
-terminal method finishing the drain (§18.5). Cleanup is therefore tied
-to the consumer's exit path, not to the body reaching its end.
+**Inside the body**, `yield` may appear at any depth in `while`, `for`,
+`if` and `{ }` bodies, and `break` / `continue` / `return` behave as they
+do in a normal function — `return` ends the generation. A `defer` runs
+when its scope is left, as in a normal function (§15): a loop body's
+defer on every iteration, the body's own when the body finishes. A
+`for`-in in the body closes its iterator the same way.
+
+```culebra
+fn rows() {
+  for id in [1, 2] {
+    defer {
+      inspect("close {id}")
+    }
+    yield id
+  }
+}
+for r in rows() {
+  inspect(r)
+}
+# => |
+# 1
+# 'close 1'
+# 2
+# 'close 2'
+```
+
+A generator can also stop while suspended: the consumer leaves its
+`for`-in by `break`, `return` or an exception, a terminal method
+finishes early (§18.5), `dispose()` is called, or the last reference to
+the generator goes away. The defers still pending run then, innermost
+first — cleanup does not depend on the body reaching its end.
 
 ```culebra
 fn two() {
@@ -2481,7 +2505,7 @@ for v in two() {
   The parser rejects it with `SyntaxError: yield cannot appear inside a
   try-catch or defer block.` To guard a yielded value, put the `try`
   in the expression (`yield try { ... } catch e { ... }`); to clean up,
-  use a `defer` at the top level of the body as above.
+  use a `defer` as above.
 * Only `fn name(...) { ... }` **declarations** are transformed into
   generators — at the top level or nested inside another function. A
   `yield` anywhere else — in a class method, in an object property's

@@ -78,4 +78,22 @@ try {
 } catch e {
   println('caught inner')
 }
+
+# a defer in a loop body runs on every iteration
+fn gl() {
+  mut i = 0
+  while i < 2 {
+    defer { println("loop-cleanup {i}") }
+    yield i
+    i += 1
+  }
+}
+for v in gl() { println(v) }
+
+# a generator dropped half-way still runs its defers
+{
+  let it3 = gd().iter()
+  println(it3.next())
+}
+println('after drop')
 println('done')

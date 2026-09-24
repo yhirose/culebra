@@ -573,4 +573,119 @@ assert_eq(caught_t, 'original')
 // Array-sourced chains stay dispose-free: nothing to close, nothing thrown.
 assert_eq([1, 2, 3].iter().map(|x| x).collect().size(), 3)
 
+// --- a defer runs when its own scope is left, as in a plain fn ---
+mut log_s = ''
+fn gen_scoped() {
+  defer {
+    log_s = "{log_s}fn;"
+  }
+  mut i = 0
+  while i < 2 {
+    defer {
+      log_s = "{log_s}loop{i};"
+    }
+    yield i
+    i += 1
+  }
+  {
+    defer {
+      log_s = "{log_s}block;"
+    }
+    yield 9
+  }
+  log_s = "{log_s}end;"
+}
+for v in gen_scoped() {
+  log_s = "{log_s}{v};"
+}
+assert_eq(log_s, '0;loop1;1;loop2;9;block;end;fn;')
+
+// --- a for-in closes its iterator on leaving the loop, before `nobreak` ---
+mut log_i = ''
+fn gen_inner_closes() {
+  defer {
+    log_i = "{log_i}inner-closed;"
+  }
+  yield 1
+  yield 2
+}
+fn gen_outer_breaks() {
+  for v in gen_inner_closes() {
+    break if v == 2
+    yield v
+  }
+  log_i = "{log_i}after;"
+}
+for v in gen_outer_breaks() {}
+assert_eq(log_i, 'inner-closed;after;')
+log_i = ''
+fn gen_outer_drains() {
+  for v in gen_inner_closes() {
+    yield v
+  } nobreak {
+    log_i = "{log_i}nobreak;"
+  }
+}
+for v in gen_outer_drains() {}
+assert_eq(log_i, 'inner-closed;nobreak;')
+log_i = ''
+for v in gen_outer_drains() {
+  break
+}
+assert_eq(log_i, 'inner-closed;')
+
+// --- drained by hand, or dropped half-way, a generator still runs its
+// defers (no dispose() call anywhere) ---
+mut log_d = ''
+fn gen_by_hand() {
+  defer {
+    log_d = "{log_d}closed;"
+  }
+  yield 1
+  yield 2
+}
+{
+  let it = gen_by_hand()
+  while it.has_next() {
+    it.next()
+  }
+  assert_eq(log_d, 'closed;')
+}
+log_d = ''
+{
+  let it = gen_by_hand()
+  it.next()
+}
+assert_eq(log_d, 'closed;')
+
+// --- control flow the machine used to refuse: a `return` in a yield-free
+// for-in, a defer in a yield-free try / loop ---
+fn gen_for_return(xs) {
+  yield 0
+  for x in xs {
+    return if x == 2
+  }
+  yield 1
+}
+assert_eq(gen_for_return([1, 2]).collect(), [0])
+assert_eq(gen_for_return([1, 3]).collect(), [0, 1])
+mut log_n = ''
+fn gen_native_defers() {
+  try {
+    defer {
+      log_n = "{log_n}try;"
+    }
+  } catch e {}
+  mut i = 0
+  while i < 2 {
+    defer {
+      log_n = "{log_n}loop;"
+    }
+    i += 1
+  }
+  yield 1
+}
+assert_eq(gen_native_defers().collect(), [1])
+assert_eq(log_n, 'try;loop;loop;')
+
 IO.inspect('test_generator_resource OK')

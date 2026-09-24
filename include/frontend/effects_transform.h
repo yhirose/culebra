@@ -47,6 +47,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <regex>
 #include <set>
 #include <string>
 #include <string_view>

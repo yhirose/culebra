@@ -18,9 +18,8 @@
 // `CpsBuilder`): each basic block becomes a state, control flow becomes
 // `self._g_state = K; continue` jumps over one `while true` dispatch
 // loop, and every local lives on the instance (all-locals-on-heap, so no
-// liveness analysis). Two source-level pre-passes run first: the C# rule
-// rejects yield inside try-catch/defer, and yielding for-in loops are
-// desugared to `while it.has_next()` form.
+// liveness analysis). The C# rule runs first: yield is rejected inside
+// try-catch/defer.
 
 #pragma once
 
@@ -35,8 +34,8 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <numeric>
 #include <optional>
-#include <regex>
 #include <set>
 #include <string>
 #include <string_view>
@@ -102,8 +101,7 @@ inline bool is_fn_boundary(unsigned int tag) {
 
 // First YIELD or YIELD_FROM belonging to this fn body, stopping at fn
 // boundaries (see `is_fn_boundary`) — a nested generator's yields are its
-// own. Treating the two as equivalent here lets Stage 5's for-in desugar
-// fire even when the only yield-shaped node inside is a `yield from`.
+// own. A `yield from` suspends like a `yield`, so it counts the same.
 // nullptr when absent.
 inline const peg::Ast* find_yield_in_fn_body(const peg::Ast& node) {
   using namespace peg::udl;
@@ -177,23 +175,6 @@ inline void reject_self_in_lowered_body(const peg::Ast& body,
                     "parameter.", what),
         static_cast<long>(s->line), static_cast<long>(s->column));
   }
-}
-
-// Collect every DEFER node in a fn body in source order, stopping at
-// inner fn boundaries. Used by the dispatcher to verify that all defers
-// live at the body's top level (where Stage 3 emits them into the
-// generator's defer registry); defers buried inside loop/if bodies have
-// no good translation today and surface as a SyntaxError.
-inline std::vector<const peg::Ast*> collect_defers(const peg::Ast& body) {
-  using namespace peg::udl;
-  std::vector<const peg::Ast*> out;
-  std::function<void(const peg::Ast&)> walk = [&](const peg::Ast& n) {
-    if (is_fn_boundary(n.tag)) return;
-    if (n.tag == "DEFER"_) { out.push_back(&n); return; }
-    for (auto& c : n.nodes) walk(*c);
-  };
-  walk(body);
-  return out;
 }
 
 // First YIELD or YIELD_FROM anywhere in the tree, crossing fn boundaries.
@@ -742,6 +723,28 @@ inline std::string destructure_temp(std::string_view name) {
   return "_g_d_" + std::string(name);
 }
 
+// Bind `pat`'s promoted leaves to temporaries (destructure_temp): push the
+// edits that rename them, and return the copies into their slots, each after
+// `sep`.
+inline std::string rename_pattern_leaves(const peg::Ast& pat,
+                                         const std::string& src,
+                                         const PromotedLocals& promoted,
+                                         std::vector<SourceEdit>& out,
+                                         std::string_view sep) {
+  std::string copies;
+  for_each_pattern_leaf(pat, [&](const peg::Ast& id, bool shorthand) {
+    auto name = std::string(id.token);
+    if (!promoted.names.contains(name)) return;
+    auto temp = destructure_temp(name);
+    out.push_back({static_cast<size_t>(id.token.data() - src.data()),
+                   id.token.size(),
+                   shorthand ? std::format("{}: {}", name, temp) : temp});
+    copies += std::format("{} {} = {}", sep, promoted_slot(promoted, name),
+                          temp);
+  });
+  return copies;
+}
+
 // `n`'s source from `src` with `edits` applied.
 inline std::string rewrite_edits(const peg::Ast& n, const std::string& src,
                                  std::vector<SourceEdit> edits) {
@@ -835,17 +838,8 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
             "effect body must be a statement of its own.",
             static_cast<long>(pat.line), static_cast<long>(pat.column));
       }
-      std::string copies;
-      for_each_pattern_leaf(pat, [&](const peg::Ast& id, bool shorthand) {
-        if (!is_promoted(id)) return;
-        auto temp = destructure_temp(id.token);
-        out.push_back({at(id), id.token.size(),
-                       shorthand ? std::format("{}: {}", id.token, temp)
-                                 : temp});
-        copies += std::format("{} {} = {}",
-                              site == EditSite::Stmt ? ";" : ",", slot(id),
-                              temp);
-      });
+      auto copies = rename_pattern_leaves(
+          pat, src, promoted, out, site == EditSite::Stmt ? ";" : ",");
       const auto& rhs = *n.nodes[3];
       out.push_back({rhs.position + rhs.length, 0, copies});
       collect_promoted_edits(rhs, src, promoted, out, EditSite::Expr);
@@ -1154,97 +1148,6 @@ inline std::vector<const peg::Ast*> body_stmts(const peg::Ast& body) {
   return out;
 }
 
-// --- Stage 5: for-in desugar to while + iterator -------------------------
-
-// Outermost FOR nodes (within a single fn) that contain at least one YIELD
-// somewhere in their subtree. Stops at fn boundaries and does NOT descend
-// into yielding FORs — those are rewritten as a unit, so any inner FOR
-// nested within them is left alone for a follow-up pass. The walker only
-// surfaces FORs whose yields belong to *this* generator.
-inline std::vector<const peg::Ast*> collect_outermost_yielding_fors(
-    const peg::Ast& body) {
-  using namespace peg::udl;
-  std::vector<const peg::Ast*> out;
-  std::function<void(const peg::Ast&)> walk = [&](const peg::Ast& n) {
-    if (is_fn_boundary(n.tag)) return;
-    if (n.tag == "FOR"_ && fn_body_has_yield(n)) {
-      out.push_back(&n);
-      return;
-    }
-    for (auto& c : n.nodes) walk(*c);
-  };
-  walk(body);
-  return out;
-}
-
-// Source-level rewrite: each outermost yielding `for x in expr BODY` becomes
-// `let _g_it_<pos> = (expr).iter()
-//  while _g_it_<pos>.has_next() {
-//    let x = _g_it_<pos>.next()
-//    BODY_inner
-//  }`
-// Returns the rewritten body source, or `nullopt` when there were no
-// yielding FORs to rewrite (so callers can gate the desugar pipeline on a
-// single walk). Iterator variable names use the FOR's source position to
-// stay unique. The result has fresh source positions once re-parsed;
-// callers must re-parse before walking the AST again.
-inline std::optional<std::string> rewrite_yielding_fors_to_while(
-    const peg::Ast& body, const std::string& src) {
-  using namespace peg::udl;
-  auto fors = collect_outermost_yielding_fors(body);
-  if (fors.empty()) return std::nullopt;
-  std::string out(ast_source_slice(body, src));
-  size_t base = body.position;
-  auto marker_map = marker_line_map(src);  // loop-invariant
-  for (auto it = fors.rbegin(); it != fors.rend(); ++it) {
-    auto* f = *it;
-    if (f->nodes.size() < 3) continue;
-    auto fv = culebra::view_for(*f);
-    const auto& var_node = *fv.binding;
-    const auto& expr_node = *fv.iter;
-    const auto& blk_node = *fv.body;
-    auto expr_sv = ast_source_slice(expr_node, src);
-    auto blk_inner = strip_block_braces(
-        ast_source_slice(blk_node, src));
-    auto iter_var = std::format("_g_it_{}", f->position);
-    // The three synthesized lines carry the `for`'s provenance marker so an
-    // error in the loop machinery (e.g. `.iter()` on a non-iterable) reports
-    // the for-in's original line.
-    int64_t orig = (f->line < marker_map.size() && marker_map[f->line])
-                    ? marker_map[f->line]
-                    : static_cast<long>(f->line);
-    std::string body_text(blk_inner);
-    // A single-line body's trailing marker sits outside the for's span —
-    // re-attach it so the loop body keeps its provenance.
-    if (body_text.find('\n') == std::string::npos)
-      body_text += line_marker(orig);
-    // Preserve a trailing `nobreak { … }`: it spans inside f->length (a FOR
-    // child), so the whole-node replacement would otherwise drop it. Re-attach
-    // it verbatim to the desugared while, which carries the same semantics.
-    std::string nobreak_suffix;
-    if (const peg::Ast* nc = culebra::nobreak_clause_of(*f)) {
-      nobreak_suffix =
-          std::string(" ") + std::string(ast_source_slice(*nc, src));
-    }
-    // A multi-target binding (`for k, v in …`) binds the tuple each step
-    // yields, so it is written as that tuple's pattern.
-    std::string binding(ast_source_slice(var_node, src));
-    if (var_node.tag == "FOR_BINDING"_) binding = "(" + binding + ")";
-    // A label belongs to the loop, not to the iterator binding: it moves onto
-    // the desugared `while`, after the `let` that opens the iterator.
-    auto replacement = std::format(
-        "let {0} = ({1}).iter(){4}\n"
-        "{6}while {0}.has_next() {{{4}\n"
-        "  let {2} = {0}.next(){4}\n"
-        "  {3}\n"
-        "}}{5}",
-        iter_var, std::string(expr_sv), binding, body_text, line_marker(orig),
-        nobreak_suffix, loop_label_prefix(fv.label));
-    out.replace(f->position - base, f->length, replacement);
-  }
-  return out;
-}
-
 // --- Transformation entry points -----------------------------------------
 
 // Re-parse a `fn __gen_wrapper__(...) { ... }` source fragment and return
@@ -1301,22 +1204,10 @@ inline std::shared_ptr<peg::Ast> parse_wrapper_fn(
   return wrapper_fn;
 }
 
-// Replace `ast->nodes.back()` (the original body BLOCK) with the BLOCK
-// from a freshly-parsed `fn __gen_wrapper__() { ... }` source fragment.
-// Shared by Stage 1 and Stage 2 — both end with "now swap the body".
-inline bool swap_body_from_wrapper(std::shared_ptr<peg::Ast> ast,
-                                   std::shared_ptr<std::string> synthesized) {
-  auto wrapper_fn = parse_wrapper_fn(synthesized);
-  if (!wrapper_fn) return false;
-  ast->nodes.back() = wrapper_fn->nodes.back();
-  return true;
-}
-
 // Replace `ast`'s PARAMETERS (at `params_idx`) and body with those from a
 // freshly-parsed `fn __gen_wrapper__(<params>) { <body> }` source. Keeps the
 // original name (and decorators) intact, while giving downstream stages an
-// AST whose param + body positions point into the synthesized source — the
-// shape Stage 3 needs after the Stage 5 for-in desugar rewrites the body.
+// AST whose param + body positions point into the synthesized source.
 inline bool swap_body_with_wrapper_params(
     std::shared_ptr<peg::Ast> ast,
     std::shared_ptr<std::string> synthesized,
@@ -1382,9 +1273,9 @@ inline void emit_ctor_param_and_local_inits(
 // basic block is a state, edges set a counter) sidesteps the relooper
 // problem of reconstructing structured loops.
 //
-// Handles plain stmts / yield / yield from / if-elseif-else / while
-// (incl. nested) / break / continue / return / defer. for-in is
-// desugared to while by an upstream pre-pass. A yielding `match` arm is
+// Handles plain stmts / yield / yield from / if-elseif-else / while / for-in
+// (incl. nested) / `{ }` blocks / break / continue / return / defer, with a
+// defer running when its scope is left, as in plain code. A yielding `match` arm is
 // grammatically impossible (yield is a statement, match arms are
 // expressions), so match never carries a yield to lower.
 
@@ -1440,6 +1331,12 @@ struct CpsLoop {
   int header;
   int exit;
   std::string label;
+  // How many scopes enclose the loop, as the generator's CpsBuilder counts
+  // them: `break` leaves every scope deeper than `break_depth`, `continue`
+  // every one deeper than `continue_depth` (a for-in's hold on its iterator
+  // sits between the two).
+  size_t break_depth = 0;
+  size_t continue_depth = 0;
 };
 
 // The enclosing loop a break/continue targets, innermost last, or nullptr
@@ -1456,43 +1353,163 @@ inline const CpsLoop* target_loop(const std::vector<CpsLoop>& stack,
   return nullptr;
 }
 
+// A defer that belongs to the scope being compiled: reached through no node
+// that opens a scope of its own. An `if` arm opens none, so its defers belong
+// to the scope around it, as in plain code. A defer anywhere deeper sits in a
+// scope that runs start to finish inside one state, where the backends' own
+// defer does the work.
+inline bool has_scope_level_defer(const peg::Ast& n) {
+  using namespace peg::udl;
+  if (n.tag == "DEFER"_) return true;
+  if (opens_scope(n.tag)) return false;
+  for (auto& c : n.nodes)
+    if (has_scope_level_defer(*c)) return true;
+  return false;
+}
+
 struct CpsBuilder {
   const std::string& src;
   const PromotedLocals& rewrite_set;
   std::vector<std::string> states;
   int terminal = -1;  // state that sets drained + returns false
   std::vector<CpsLoop> loop_stack;
-  // `defer { B }` bodies, in source order. Each is registered (a
-  // `_g_defer_K` flag set true) when its state is reached and run at
-  // dispose in reverse (LIFO).
-  std::vector<std::string> defer_bodies;
+  // A `defer { B }` the machine runs itself, and the offset it was written
+  // at. Reaching it sets its `_g_defer_K` flag; leaving its scope by any path
+  // runs it and clears the flag; dispose runs whatever is still set.
+  struct Defer {
+    std::string body;
+    size_t pos;
+  };
+  std::vector<Defer> defers;
+  // The scopes the machine carries across a suspension — the body, a loop
+  // body, a `{ }` block, a for-in's hold on its iterator — by id: the defers
+  // registered directly in each. `open` is the ids enclosing the statement
+  // being compiled, innermost last.
+  std::vector<std::vector<int>> scope_defers;
+  std::vector<int> open;
+  // A state that leaves `scopes` (innermost first) and goes to `target`. Its
+  // text is written last: compile_seq walks back to front, so a defer ahead
+  // of an exit in its scope is registered after the exit is made.
+  struct Exit {
+    int state;
+    std::vector<int> scopes;
+    int target;
+  };
+  std::vector<Exit> exits;
+  // The iterator field of each for-in the machine drives.
+  std::vector<std::string> iterators;
   bool failed = false;
 
   int fresh() {
     states.emplace_back();
     return static_cast<int>(states.size()) - 1;
   }
-  std::string rw(const peg::Ast& n) {
-    return rewrite_locals_to_self(n, src, rewrite_set);
+  std::string rw(const peg::Ast& n, EditSite site = EditSite::Expr) {
+    return rewrite_locals_to_self(n, src, rewrite_set, site);
   }
   LineMarkers markers{src};
   std::string mk(const peg::Ast& n) { return markers.mk(n); }
-  // A fresh state that just jumps to `target` (break/continue/return).
-  int jump_state(int target) {
+  static std::string jump(int target) {
+    return std::format("      self._g_state = {}\n      continue\n", target);
+  }
+
+  int exit_to(std::vector<int> scopes, int target) {
     int e = fresh();
-    states[e] = std::format("      self._g_state = {}\n      continue\n",
-                            target);
+    exits.push_back({e, std::move(scopes), target});
     return e;
+  }
+  // The open scopes deeper than `depth`, innermost first.
+  std::vector<int> open_from(size_t depth) const {
+    return {open.rbegin(), open.rend() - static_cast<long>(depth)};
+  }
+  int push_scope() {
+    int id = static_cast<int>(scope_defers.size());
+    scope_defers.emplace_back();
+    open.push_back(id);
+    return id;
+  }
+  // `stmts` as a scope of their own, left through its exit into `cont`.
+  int compile_scope(const std::vector<const peg::Ast*>& stmts, int cont) {
+    int id = push_scope();
+    int entry = compile_seq(stmts, exit_to({id}, cont));
+    open.pop_back();
+    return entry;
+  }
+  // Register `body` in the innermost open scope; the state that marks it
+  // reached, then goes on to `cont`.
+  int reach_defer(std::string body, size_t pos, int cont) {
+    int k = static_cast<int>(defers.size());
+    defers.push_back({std::move(body), pos});
+    scope_defers[open.back()].push_back(k);
+    int e = fresh();
+    states[e] = std::format("      self._g_defer_{} = true\n", k) + jump(cont);
+    return e;
+  }
+
+  // Run the reached defers among `ids`, in order, each once. All of them run
+  // even when one throws, and the last throw is the one that leaves — the
+  // rule a plain scope's defers follow.
+  std::string run_defers(const std::vector<int>& ids) const {
+    std::string out;
+    for (int k : ids) {
+      const auto& body = defers[static_cast<size_t>(k)].body;
+      out += ids.size() == 1
+                 ? std::format("      if self._g_defer_{0} {{\n"
+                               "        self._g_defer_{0} = false\n"
+                               "{1}\n"
+                               "      }}\n",
+                               k, body)
+                 : std::format("      if self._g_defer_{0} {{\n"
+                               "        self._g_defer_{0} = false\n"
+                               "        try {{\n{1}\n"
+                               "        }} catch _g_e {{ self._g_err = [_g_e] }}\n"
+                               "      }}\n",
+                               k, body);
+    }
+    if (ids.size() > 1) {
+      out += "      if self._g_err != nil {\n"
+             "        let _g_e = self._g_err[0]\n"
+             "        self._g_err = nil\n"
+             "        throw _g_e\n"
+             "      }\n";
+    }
+    return out;
+  }
+  // `ids`, last written first.
+  std::vector<int> latest_first(std::vector<int> ids) const {
+    std::sort(ids.begin(), ids.end(), [&](int a, int b) {
+      return defers[static_cast<size_t>(a)].pos >
+             defers[static_cast<size_t>(b)].pos;
+    });
+    return ids;
+  }
+  // Write every exit now that each scope's defers are known.
+  void finish_exits() {
+    for (const auto& e : exits) {
+      std::vector<int> ids;
+      for (int s : e.scopes) {
+        auto own = latest_first(scope_defers[static_cast<size_t>(s)]);
+        ids.insert(ids.end(), own.begin(), own.end());
+      }
+      states[e.state] = run_defers(ids) + jump(e.target);
+    }
+  }
+  // What dispose owes: every defer still reached, innermost first — the
+  // scopes open at a suspension nest in source order.
+  std::string pending_defers() const {
+    std::vector<int> ids(defers.size());
+    std::iota(ids.begin(), ids.end(), 0);
+    return run_defers(latest_first(std::move(ids)));
   }
 
   // True if this statement needs structural compilation: it contains a
   // yield anywhere, a break/continue/return escaping to an enclosing loop
-  // / the generator, or a defer (which must register into the dispose
-  // registry, not fire as a has_next-scope defer). Everything else is
-  // verbatim-safe.
+  // / the generator, or a defer of the scope being compiled (which must
+  // register with the machine, not fire when the state's method returns).
+  // Everything else is verbatim-safe.
   static bool needs_split(const peg::Ast& s) {
     return fn_body_has_yield(s) || has_escaping_loop_ctrl(s) ||
-           !collect_defers(s).empty();
+           has_scope_level_defer(s);
   }
 
   // Linearize `stmts`, returning the entry state. `cont` is the state to
@@ -1504,17 +1521,14 @@ struct CpsBuilder {
     auto flush = [&]() {
       if (pending.empty()) return;
       int s = fresh();
-      states[s] = pending +
-                  std::format("      self._g_state = {}\n      continue\n", k);
+      states[s] = pending + jump(k);
       k = s;
       pending.clear();
     };
     for (size_t idx = stmts.size(); idx-- > 0;) {
       const peg::Ast* s = stmts[idx];
       if (!needs_split(*s)) {
-        pending = "      " +
-                  rewrite_locals_to_self(*s, src, rewrite_set, EditSite::Stmt) +
-                  mk(*s) + "\n" + pending;
+        pending = "      " + rw(*s, EditSite::Stmt) + mk(*s) + "\n" + pending;
       } else {
         flush();
         k = compile_stmt(s, k);
@@ -1523,6 +1537,21 @@ struct CpsBuilder {
     }
     flush();
     return k;
+  }
+
+  // A for-in's binding of `value`: a name stores into its slot, a pattern
+  // binds temporaries and copies them (rename_pattern_leaves). A
+  // multi-target binding (`for k, v in …`) is the tuple each step yields.
+  std::string bind_src(const peg::Ast& binding, const std::string& value) {
+    using namespace peg::udl;
+    if (binding.tag == "IDENTIFIER"_)
+      return promoted_slot(rewrite_set, std::string(binding.token)) + " = " +
+             value;
+    std::vector<SourceEdit> edits;
+    auto copies = rename_pattern_leaves(binding, src, rewrite_set, edits, ";");
+    auto pat = rewrite_edits(binding, src, std::move(edits));
+    if (binding.tag == "FOR_BINDING"_) pat = "(" + pat + ")";
+    return "let " + pat + " = " + value + copies;
   }
 
   int compile_stmt(const peg::Ast* s, int cont) {
@@ -1540,33 +1569,25 @@ struct CpsBuilder {
     }
     if (u->tag == "YIELD_FROM"_ && !u->nodes.empty()) {
       int e = fresh();
-      states[e] = std::format(
-          "      self._g_delegate = ({}).iter(){}\n"
-          "      self._g_state = {}\n"
-          "      continue\n",
-          rw(*u->nodes[0]), mk(*u->nodes[0]), cont);
+      states[e] = std::format("      self._g_delegate = ({}).iter(){}\n",
+                              rw(*u->nodes[0]), mk(*u->nodes[0])) +
+                  jump(cont);
       return e;
     }
     if (u->tag == "BREAK"_ || u->tag == "CONTINUE"_) {
       const CpsLoop* target = culebra::target_loop(loop_stack, *u);
       if (!target) { failed = true; return -1; }
-      return jump_state(u->tag == "BREAK"_ ? target->exit : target->header);
+      return u->tag == "BREAK"_
+                 ? exit_to(open_from(target->break_depth), target->exit)
+                 : exit_to(open_from(target->continue_depth), target->header);
     }
     if (u->tag == "RETURN"_) {
       // Generators ignore a return value; `return` just ends iteration.
-      return jump_state(terminal);
+      return exit_to(open_from(0), terminal);
     }
     if (u->tag == "DEFER"_ && !u->nodes.empty()) {
-      // Register the defer body when reached; dispose runs it (LIFO).
-      int k = static_cast<int>(defer_bodies.size());
-      defer_bodies.push_back(
-          std::string(strip_block_braces(rw(*u->nodes[0]))));
-      int e = fresh();
-      states[e] = std::format(
-          "      self._g_defer_{} = true\n      self._g_state = {}\n"
-          "      continue\n",
-          k, cont);
-      return e;
+      return reach_defer(std::string(strip_block_braces(rw(*u->nodes[0]))),
+                         u->position, cont);
     }
     if (u->tag == "IF"_) return compile_if(u, cont);
     if (u->tag == "WHILE"_ && u->nodes.size() >= 2) {
@@ -1580,8 +1601,9 @@ struct CpsBuilder {
         normal_exit = compile_seq(body_stmts(*wv.nobreak), cont);
         if (failed) return -1;
       }
-      loop_stack.push_back({h, cont, loop_label_name(wv.label)});
-      int body_entry = compile_seq(body_stmts(*wv.body), h);
+      loop_stack.push_back(
+          {h, cont, loop_label_name(wv.label), open.size(), open.size()});
+      int body_entry = compile_scope(body_stmts(*wv.body), h);
       loop_stack.pop_back();
       if (failed) return -1;
       states[h] = std::format(
@@ -1591,21 +1613,68 @@ struct CpsBuilder {
       if (!wv.init) return h;
       // The init clause runs its bindings once, then enters the condition
       // state. They are yield-free declarations, so compile_seq emits them
-      // verbatim (locals rewritten to self._g_*) in a state that jumps to h.
+      // verbatim (locals rewritten to their slots) in a state that jumps to h.
       std::vector<const peg::Ast*> init_stmts;
       for (auto& b : wv.init->nodes) init_stmts.push_back(b.get());
       return compile_seq(init_stmts, h);
     }
-    if (u->tag == "LEXICAL_SCOPE"_ || u->tag == "STATEMENTS"_) {
-      return compile_seq(body_stmts(*u), cont);
+    if (u->tag == "FOR"_) return compile_for(u, cont);
+    if (u->tag == "LEXICAL_SCOPE"_ && !u->nodes.empty()) {
+      return compile_scope(body_stmts(*u->nodes[0]), cont);
     }
+    if (u->tag == "STATEMENTS"_) return compile_seq(body_stmts(*u), cont);
     failed = true;  // anything unexpected
     return -1;
+  }
+
+  // for-in: the loop holds its iterator in a scope of its own around the
+  // body scope, and that scope's one defer closes it — so a drained loop, a
+  // `break`, a `return` and a dispose while suspended inside all close it
+  // once, and a drained loop does so before its `nobreak` block, as the
+  // backends' for-in does.
+  int compile_for(const peg::Ast* u, int cont) {
+    auto fv = culebra::view_for(*u);
+    auto it = std::format("self._g_it_{}", iterators.size());
+    iterators.push_back(it.substr(5));
+    int after = cont;
+    if (fv.nobreak) {
+      after = compile_seq(body_stmts(*fv.nobreak), cont);
+      if (failed) return -1;
+    }
+    size_t outer = open.size();
+    int hold = push_scope();
+    int drained = exit_to({hold}, after);
+    int h = fresh();
+    loop_stack.push_back(
+        {h, cont, loop_label_name(fv.label), outer, open.size()});
+    int body_entry = compile_scope(body_stmts(*fv.body), h);
+    loop_stack.pop_back();
+    if (failed) return -1;
+    int bind = fresh();
+    states[bind] = "      " +
+                   bind_src(*fv.binding, it + ".next()") + mk(*fv.binding) +
+                   "\n" + jump(body_entry);
+    states[h] = std::format(
+        "      if {}.has_next() {{ self._g_state = {} }} else {{ self._g_state = {} }}{}\n"
+        "      continue\n",
+        it, bind, drained, mk(*u));
+    int reach = reach_defer(
+        std::format("        if {0}.has('dispose') {{ {0}.dispose() }}\n"
+                    "        {0} = nil",
+                    it),
+        u->position, h);
+    open.pop_back();
+    int e = fresh();
+    states[e] = std::format("      {} = ({}).iter(){}\n", it, rw(*fv.iter),
+                            mk(*fv.iter)) +
+                jump(reach);
+    return e;
   }
 
   // if / else-if / else chain. IF nodes are [(INIT_CLAUSE)?, cond, block, cond,
   // block, ..., elseblock?]; a trailing odd arm (past the init) is the bare
   // `else` block. An init clause runs its bindings once before the chain.
+  // An arm is no scope of its own, so its defers join the enclosing one.
   int compile_if(const peg::Ast* ifnode, int cont) {
     auto iv = culebra::view_if(*ifnode);
     const auto& nodes = ifnode->nodes;
@@ -1640,12 +1709,26 @@ struct CpsBuilder {
   }
 };
 
-// CPS transform entry. Returns the transformed ast on success, or the
-// original ast unchanged when the body uses a construct outside the
-// engine's scope (caller then reports / falls back).
+// The bindings of the for-in loops the machine drives (compile_for): each
+// holds across a suspension like any other local.
+inline void add_driven_loop_bindings(const peg::Ast& n,
+                                     std::set<std::string>& out) {
+  using namespace peg::udl;
+  if (is_fn_boundary(n.tag) || n.tag == "HANDLE"_) return;
+  if (n.tag == "FOR"_ && CpsBuilder::needs_split(n)) {
+    for_each_pattern_binding(
+        *culebra::view_for(n).binding,
+        [&](std::string_view nm, size_t, size_t) { out.insert(std::string(nm)); });
+  }
+  for (auto& c : n.nodes) add_driven_loop_bindings(*c, out);
+}
+
 inline std::shared_ptr<peg::Ast> transform_generators_in(
     std::shared_ptr<peg::Ast> ast, const std::string& src, ScopeChain& chain);
 
+// CPS transform entry. Returns the transformed ast on success, or the
+// original ast unchanged when the body uses a construct outside the
+// engine's scope (caller then reports / falls back).
 inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
     std::shared_ptr<peg::Ast> ast, const std::string& src,
     const peg::Ast& name_ast, const peg::Ast& params_ast,
@@ -1662,6 +1745,7 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
 
   auto param_names = collect_positional_param_names(params_ast);
   auto locals = collect_local_names(*ast->nodes.back(), outer);
+  add_driven_loop_bindings(*ast->nodes.back(), locals);
   auto rewrite_set =
       make_promoted_locals(*ast->nodes.back(), locals, param_names);
 
@@ -1669,8 +1753,10 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
   b.terminal = b.fresh();
   b.states[b.terminal] =
       "      self._g_drained = true\n      return false\n";
-  int entry = b.compile_seq(body_stmts(*ast->nodes.back()), b.terminal);
+  // The body is a scope like any other: finishing it runs its defers.
+  int entry = b.compile_scope(body_stmts(*ast->nodes.back()), b.terminal);
   if (b.failed || entry < 0) return ast;  // unsupported shape
+  b.finish_exits();
 
   std::string ctor_params;
   std::string ctor_call_args;
@@ -1680,10 +1766,14 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
       "      self._g_la = nil\n"
       "      self._g_disposed = false\n"
       "      self._g_delegate = nil\n"
+      "      self._g_err = nil\n"
       "      self._g_state = {}\n",
       entry);
-  for (size_t k = 0; k < b.defer_bodies.size(); k++) {
+  for (size_t k = 0; k < b.defers.size(); k++) {
     ctor_inits += std::format("      self._g_defer_{} = false\n", k);
+  }
+  for (const auto& it : b.iterators) {
+    ctor_inits += std::format("      self.{} = nil\n", it);
   }
   emit_ctor_param_and_local_inits(param_names, locals, rewrite_set,
                                   ctor_params, ctor_call_args, ctor_inits);
@@ -1694,14 +1784,7 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
         "      if self._g_state == {} {{\n{}      }}\n", id, b.states[id]);
   }
 
-  // Registered defers run LIFO at dispose, each gated on its reach flag.
-  // `defer_bodies` is already in reverse source order (compile_seq walks
-  // statements back-to-front), so iterating it forward IS the LIFO order.
-  std::string defer_runs;
-  for (size_t k = 0; k < b.defer_bodies.size(); k++) {
-    defer_runs += std::format(
-        "      if self._g_defer_{} {{ {} }}\n", k, b.defer_bodies[k]);
-  }
+  std::string defer_runs = b.pending_defers();
   // Each method that carries body source binds the boxes that source names.
   defer_runs = emit_box_prologue(rewrite_set, defer_runs) + defer_runs;
   auto box_prologue = emit_box_prologue(rewrite_set, dispatch);
@@ -1745,6 +1828,9 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
       "      }}\n"
       "{5}"
       "    }}\n"
+      // Released without being drained or disposed, a generator still owes
+      // its pending defers, as a plain call's frame would.
+      "    drop() {{ self.dispose() }}\n"
       "  }}\n"
       "  {0}.new({4})\n"
       "}}\n",
@@ -1767,13 +1853,10 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
 }
 
 // Dispatcher: lower a yield-carrying fn to the flat-dispatch CPS state
-// machine. Two source-level pre-passes run first: the C# rule rejects
-// yield inside try-catch/defer, and the for-in desugar rewrites every
-// yielding `for x in e` to `while it.has_next()` form (to a fixpoint so
-// nested for-ins are covered) since the CPS engine works over while.
-// Everything else — straight-line yields, while/if branching, multiple
-// yields per iteration, post-loop tails, break/continue/return, defer,
-// yield from — is handled by the one engine.
+// machine. The C# rule runs first (no yield inside try-catch/defer);
+// everything else — straight-line yields, while / for-in / if branching,
+// multiple yields per iteration, post-loop tails, break/continue/return,
+// defer, yield from — is handled by the one engine.
 inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
     std::shared_ptr<peg::Ast> ast, const std::string& src,
     const ScopeChain& chain) {
@@ -1848,18 +1931,16 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
                               "a generator body (a function that uses yield)");
 
   // Annotate every body line with a `#@culebra:<original-line>` provenance marker
-  // before any rewriting stage. Markers are comments, so each later stage
-  // (for-desugar, CPS state emission) carries them for free, and the final
-  // fragment parse can restore original line numbers (see reposition below).
+  // before the CPS state emission. Markers are comments, so the emitted
+  // states carry them for free, and the final fragment parse can restore
+  // original line numbers (see reposition below).
   // A body sliced out of an already-annotated fragment (a generator fn nested
   // in an effect body) keeps its markers as-is: re-annotating would stamp
   // fragment-relative numbers onto the marker-less machinery lines.
   int64_t decl_fallback = static_cast<int64_t>(ast->nodes[i]->line);
-  // The synthesized fragments below re-parse into fresh buffers as the
-  // pre-passes rewrite the body; `cur` tracks whichever one currently backs
-  // `ast`'s positions. Each buffer is registered for process lifetime by
-  // swap_body_with_wrapper_params (via parse_registered_source), so `cur`
-  // stays valid across the rebinds below.
+  // `cur` is the buffer backing `ast`'s positions: the annotated fragment,
+  // registered for process lifetime by swap_body_with_wrapper_params (via
+  // parse_registered_source), or `src` itself when there was nothing to add.
   const std::string* cur = &src;
   {
     auto inner = strip_block_braces(
@@ -1878,22 +1959,6 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
       // while `cur` is still the buffer the name node indexes.
       decl_fallback = marker_orig_line(*cur, ast->nodes[i]->line);
     }
-  }
-
-  // Desugar yielding for-in loops to while + iterator, re-parsing each
-  // time, until none remain (nested for-ins surface as outermost on the
-  // next pass). After the swap, params/body positions point into the
-  // synthesized source, so `cur` tracks it.
-  while (auto rewritten = rewrite_yielding_fors_to_while(
-             *ast->nodes.back(), *cur)) {
-    auto params_sv = ast_source_slice(*ast->nodes[i + 1], *cur);
-    auto body_inner = strip_block_braces(*rewritten);
-    auto desugared = std::make_shared<std::string>(std::format(
-        "fn __gen_wrapper__{} {{\n{}\n}}\n",
-        std::string(params_sv), std::string(body_inner)));
-    if (!swap_body_with_wrapper_params(ast, desugared, i)) return ast;
-    cur = desugared.get();
-    if (!fn_body_has_yield(*ast->nodes.back())) return ast;
   }
 
   const auto& name_ast = *ast->nodes[i];

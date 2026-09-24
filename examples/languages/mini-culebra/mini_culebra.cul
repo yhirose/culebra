@@ -2084,12 +2084,10 @@ fn __gen_wrap(raw) {
   mut obj = {}
   fn advance() {
     let r = __genresume(raw, nil)
-    let v = r['value']
     cond {
       r['done'] => { done = true },
-      __typeof(v) == 'string' && v == "\zgend" => { done = true },
       _ => {
-        la = v
+        la = r['value']
         has_la = true
       },
     }
@@ -2122,6 +2120,9 @@ fn __gen_wrap(raw) {
       nil
     }
   }
+  # released half-way, a generator still runs its pending defers
+  let dispose = obj['dispose']
+  obj["\zdrop"] = fn (o) { __drop_once(o, dispose) }
   obj
 }
 
@@ -5805,11 +5806,6 @@ let builtin_methods = [
 let missing_marker = String.from_code_point(1) + 'missing'
 # every byte value in order: the prelude's byte<->string conversions index it
 let allbytes_str = String.from_bytes(range(256).collect())
-# What a raw generator yields instead of ever completing: culebra runs a
-# generator body's defers only through dispose, never at the body's own
-# end, so the raw frame must stay suspended -- pending defers intact --
-# until a genreturn (or never). The wrapper treats this value as "done".
-let gen_end_marker = String.from_code_point(1) + 'gend'
 let exit_marker = String.from_code_point(1) + 'exit'
 let class_marker = String.from_code_point(1) + 'k'
 let family_marker = String.from_code_point(1) + 'f'
@@ -10836,17 +10832,15 @@ fn emit_stmt(m, node, f) {
     },
     {name: 'return_s'} => {
       cond {
-        # In a raw generator body a return finishes the iteration without
-        # running the frame's defers (culebra's rule: only dispose runs
-        # them), so it suspends at the end sentinel instead of returning.
-        # The returned expression still evaluates; its value is discarded,
-        # as culebra discards it.
+        # In a generator a return ends the iteration: the returned
+        # expression still evaluates, and its value is discarded, as
+        # culebra discards it.
         funcs[f].is_gen == true => {
           mut ids = []
           if node.nodes.size() == 1 {
             ids.push(emit_expr(m, node.nodes[0], f))
           }
-          ids.push(ir.make_yield(ir.str_literal(gen_end_marker, node), node))
+          ids.push(ir.make_return(ir.nil_literal(node), node))
           ir.block(ids, node)
         },
         _ => {
@@ -11255,13 +11249,6 @@ fn emit_funcs(m) {
           1] = emit_ret_check(m, f, ids[ids.size() - 1], last),
         _ => ids.push(emit_ret_check(m, f, ir.nil_literal(ORIGIN), last)),
       }
-    }
-    if fi.is_gen == true {
-      # The end sentinel: falling off the body suspends here forever
-      # instead of returning, keeping the frame's defers pending for a
-      # dispose. It sits inside the body's own Scope, so nothing has run
-      # its exit yet.
-      ids.push(ir.make_yield(ir.str_literal(gen_end_marker, ORIGIN), ORIGIN))
     }
     mut body = ir.block(ids, ORIGIN)
     let info = block_info[fi.body_key]
