@@ -897,12 +897,11 @@ struct Lowering {
       auto fnPtr = b.CreateLoad(ptrTy, fnFieldPtr, "fn");
       // A keyword-only parameter cannot be filled positionally, and the
       // callee is only known here — the JIT's own guard, at the same point
-      // in its call.
-      j.emit_call(j.module_->getOrInsertFunction(rt::check_pos_count_cls,
-                                                 b.getVoidTy(), ptrTy, i64Ty,
-                                                 i64Ty, i64Ty),
-                  {clsPtr, b.getInt64(argc), b.getInt64(line),
-                   b.getInt64(col)});
+      // in its call. check_pos_count_cls throws only for a closure whose
+      // meta puts the keyword-only run within this site's count, so that is
+      // tested here and the call made only then; no count reaches past a
+      // run that does not exist, nor any run at all when there is none.
+      if (argc > 0) j.emit_pos_count_check(clsPtr, argc, line, col);
       // On the probe arms the called value becomes the receiver: mint the +1
       // its frame consumes, and release and nil the receiver this call
       // started with — nothing else takes it now, and a slot left holding
@@ -1787,8 +1786,23 @@ struct Lowering {
           break;
         }
         case Op::CallRecv: {
+          // call_receiver answers differently only for an Object whose
+          // proto is a lowering's state class, so that is asked here and
+          // the call made only then.
           auto recv = load_slot(in.a);
           auto key = vm_str_const(in.c, ".vm.callrecv.key");
+          auto askBB = BasicBlock::Create(j.ctx_, "vm.callrecv.ask", fn);
+          auto callBB = BasicBlock::Create(j.ctx_, "vm.callrecv.call", fn);
+          auto contBB = BasicBlock::Create(j.ctx_, "vm.callrecv.cont", fn);
+          b.CreateCondBr(
+              b.CreateICmpEQ(j.extract_tag(recv), b.getInt8(TAG_OBJECT)),
+              askBB, contBB);
+          b.SetInsertPoint(askBB);
+          b.CreateCondBr(
+              j.emit_proto_is_lowered_state(
+                  b.CreateIntToPtr(j.extract_data(recv), ptrTy)),
+              callBB, contBB);
+          b.SetInsertPoint(callBB);
           b.CreateStore(
               j.emit_value_call(
                   j.module_->getOrInsertFunction(rt::call_receiver,
@@ -1797,6 +1811,8 @@ struct Lowering {
                   {j.extract_tag(recv), j.extract_data(recv), key},
                   "vm.callrecv"),
               slots[in.a]);
+          b.CreateBr(contBB);
+          b.SetInsertPoint(contBB);
           break;
         }
         case Op::CbType: {

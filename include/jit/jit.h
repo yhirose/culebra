@@ -4894,28 +4894,8 @@ struct JIT {
         "ic.owner");
     auto ownerMatch =
         builder_.CreateICmpEQ(objShape, icOwnerShape, "owner.match");
-    auto isDict = builder_.CreateICmpNE(
-        builder_.CreateLoad(i8Ty,
-                            builder_.CreateConstInBoundsGEP1_64(
-                                i8Ty, objPtr, offsetof(JitObject, is_dict),
-                                "is_dict.p"),
-                            "is_dict"),
-        builder_.getInt8(0));
-    auto protoPtr = builder_.CreateLoad(
-        ptrTy,
-        builder_.CreateConstInBoundsGEP1_64(
-            i8Ty, objPtr, offsetof(JitObject, proto_), "proto.p"),
-        "proto");
-    auto hasProto = builder_.CreateAnd(
-        builder_.CreateNot(isDict),
-        builder_.CreateICmpNE(protoPtr,
-                              llvm::ConstantPointerNull::get(ptrTy)),
-        "has.proto");
-    // One block, not two: the proto's shape is read through a pointer that
-    // is the receiver's own when there is no proto to read (a JitObject
-    // either way), so the three tests fold into one condition.
-    auto shapeHolder = builder_.CreateSelect(hasProto, protoPtr, objPtr,
-                                             "proto.or.self");
+    // One block, not two: the three tests fold into one condition.
+    auto [hasProto, shapeHolder] = emit_proto_or_self(objPtr);
     auto protoShape = builder_.CreateLoad(
         ptrTy,
         builder_.CreateConstInBoundsGEP1_64(
@@ -4933,7 +4913,7 @@ struct JIT {
     auto icProtoOffset = builder_.CreateLoad(
         i64Ty, builder_.CreateStructGEP(icTy, icGlobal, 4, "ic.poff.p"),
         "ic.poff");
-    auto [protoTag, protoData] = load_entry(protoPtr, icProtoOffset);
+    auto [protoTag, protoData] = load_entry(shapeHolder, icProtoOffset);
     builder_.CreateBr(mergeBB);
     auto protoEnd = builder_.GetInsertBlock();
 
@@ -4985,6 +4965,97 @@ struct JIT {
       return finalMerge->finish(finalMergeBB).consume();
     }
     return result;
+  }
+
+  // Whether an Object has a proto (JitObject::proto(): a dictionary keeps its
+  // index in that word, so its flag is checked first), and a pointer to read
+  // proto fields through — the object itself when there is none, a JitObject
+  // either way, so a caller tests the flag and reads without a second block.
+  std::pair<llvm::Value*, llvm::Value*> emit_proto_or_self(
+      llvm::Value* objPtr) {
+    auto i8Ty = builder_.getInt8Ty();
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto isDict = builder_.CreateICmpNE(
+        builder_.CreateLoad(i8Ty,
+                            builder_.CreateConstInBoundsGEP1_64(
+                                i8Ty, objPtr, offsetof(JitObject, is_dict),
+                                "is_dict.p"),
+                            "is_dict"),
+        builder_.getInt8(0));
+    auto protoPtr = builder_.CreateLoad(
+        ptrTy,
+        builder_.CreateConstInBoundsGEP1_64(
+            i8Ty, objPtr, offsetof(JitObject, proto_), "proto.p"),
+        "proto");
+    auto hasProto = builder_.CreateAnd(
+        builder_.CreateNot(isDict),
+        builder_.CreateICmpNE(protoPtr,
+                              llvm::ConstantPointerNull::get(ptrTy)),
+        "has.proto");
+    return {hasProto, builder_.CreateSelect(hasProto, protoPtr, objPtr,
+                                            "proto.or.self")};
+  }
+
+  // Is this Object an instance of a class a lowering synthesized (its
+  // proto's is_lowered_state)? A class meta is never an instance, and an
+  // instance never carries the flag itself, so reading it off the object
+  // when there is no proto answers no.
+  llvm::Value* emit_proto_is_lowered_state(llvm::Value* objPtr) {
+    auto i8Ty = builder_.getInt8Ty();
+    auto [hasProto, holder] = emit_proto_or_self(objPtr);
+    auto flag = builder_.CreateLoad(
+        i8Ty,
+        builder_.CreateConstInBoundsGEP1_64(
+            i8Ty, holder, offsetof(JitObject, is_lowered_state),
+            "lowered.p"),
+        "lowered");
+    return builder_.CreateAnd(
+        hasProto, builder_.CreateICmpNE(flag, builder_.getInt8(0)),
+        "is.lowered.state");
+  }
+
+  // check_pos_count_cls at a site passing `argc` (> 0) positionals to the
+  // closure at `clsPtr`, called only when it would throw: the closure has a
+  // meta and its keyword-only run starts below `argc`. Unsigned, so a
+  // first_kw_only_idx of -1 (no run) is never below it. A dispatcher has no
+  // meta, so the helper's own dispatcher exemption is never needed here.
+  void emit_pos_count_check(llvm::Value* clsPtr, int64_t argc, int64_t line,
+                            int64_t col) {
+    auto i8Ty = builder_.getInt8Ty();
+    auto i64Ty = builder_.getInt64Ty();
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto fn = builder_.GetInsertBlock()->getParent();
+    auto metaBB = llvm::BasicBlock::Create(ctx_, "kwonly.meta", fn);
+    auto callBB = llvm::BasicBlock::Create(ctx_, "kwonly.call", fn);
+    auto contBB = llvm::BasicBlock::Create(ctx_, "kwonly.cont", fn);
+    auto meta = builder_.CreateLoad(
+        ptrTy,
+        builder_.CreateConstInBoundsGEP1_64(i8Ty, clsPtr,
+                                            offsetof(JitClosure, meta),
+                                            "cls.meta.p"),
+        "cls.meta");
+    builder_.CreateCondBr(
+        builder_.CreateICmpNE(meta, llvm::ConstantPointerNull::get(ptrTy)),
+        metaBB, contBB);
+    builder_.SetInsertPoint(metaBB);
+    auto cap = builder_.CreateLoad(
+        i64Ty,
+        builder_.CreateConstInBoundsGEP1_64(
+            i8Ty, meta, offsetof(JitParamMeta, first_kw_only_idx),
+            "kwonly.idx.p"),
+        "kwonly.idx");
+    llvm::MDBuilder mdb(ctx_);
+    builder_.CreateCondBr(
+        builder_.CreateICmpULT(cap, builder_.getInt64(argc), "kwonly.over"),
+        callBB, contBB, mdb.createBranchWeights(1, 1u << 20));
+    builder_.SetInsertPoint(callBB);
+    emit_call(module_->getOrInsertFunction(rt::check_pos_count_cls,
+                                           builder_.getVoidTy(), ptrTy, i64Ty,
+                                           i64Ty, i64Ty),
+              {clsPtr, builder_.getInt64(argc), builder_.getInt64(line),
+               builder_.getInt64(col)});
+    builder_.CreateBr(contBB);
+    builder_.SetInsertPoint(contBB);
   }
 
   // Array or Tuple: the two tags backed by a JitArray.
@@ -5541,16 +5612,10 @@ struct JIT {
         builder_.CreateStructGEP(closureType_, clsPtr, 1, "fn.ptr");
     auto fnPtr = builder_.CreateLoad(ptrTy, fnFieldPtr, "fn");
 
-    if (check_kw_only) {
-      emit_call(
-          module_->getOrInsertFunction(rt::check_pos_count_cls,
-                                       builder_.getVoidTy(), ptrTy,
-                                       builder_.getInt64Ty(),
-                                       builder_.getInt64Ty(),
-                                       builder_.getInt64Ty()),
-          {clsPtr,
-           builder_.getInt64(static_cast<int64_t>(userArgs.size())),
-           current_line_val(), current_column_val()});
+    if (check_kw_only && !userArgs.empty()) {
+      emit_pos_count_check(clsPtr, static_cast<int64_t>(userArgs.size()),
+                           static_cast<int64_t>(current_line_),
+                           static_cast<int64_t>(current_column_));
     }
 
     // Build the args slab in the entry block (hoisted) so repeated
