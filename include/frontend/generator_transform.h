@@ -647,8 +647,9 @@ struct PromotedLocals {
 };
 
 // The plain local a boxed name is reached through. `emit_box_prologue` binds
-// it once at each state-machine method's entry, so one spelling serves both
-// inside a closure (which captures this local) and outside it.
+// it on entry to each piece of emitted code — an effects method, a generator
+// state — so one spelling serves both inside a closure (which captures this
+// local) and outside it.
 inline std::string box_local(std::string_view name) {
   return "_bx_" + std::string(name);
 }
@@ -1367,6 +1368,27 @@ inline bool has_scope_level_defer(const peg::Ast& n) {
   return false;
 }
 
+// The names `s` declares (`let` / `mut`, a declaring destructure) in the
+// scope it sits in: through `if` arms, which open none, but not into a
+// nested scope or fn.
+inline void declared_at_level(const peg::Ast& s, std::set<std::string>& out) {
+  using namespace peg::udl;
+  if (opens_scope(s.tag)) return;
+  if (s.tag == "ASSIGNMENT"_) {
+    auto av = view_assignment(s);
+    if (const auto* t = assign_name_target(s, av);
+        t && (av.is_let || av.is_mut) && !av.compound)
+      out.insert(std::string(t->token));
+  } else if (s.tag == "DESTRUCTURE_ASSIGN"_ && s.nodes.size() == 4 &&
+             (s.nodes[0]->token == "let" || s.nodes[1]->token == "mut")) {
+    for_each_pattern_binding(*s.nodes[2], [&](std::string_view nm, size_t,
+                                              size_t) {
+      out.insert(std::string(nm));
+    });
+  }
+  for (auto& c : s.nodes) declared_at_level(*c, out);
+}
+
 struct CpsBuilder {
   const std::string& src;
   const PromotedLocals& rewrite_set;
@@ -1429,11 +1451,34 @@ struct CpsBuilder {
     return id;
   }
   // `stmts` as a scope of their own, left through its exit into `cont`.
-  int compile_scope(const std::vector<const peg::Ast*>& stmts, int cont) {
+  // `binds` names what the scope binds on entry (a for-in's loop variable)
+  // and `first` is the source that binds it. Each entry gives the boxed names
+  // the scope declares a fresh box, so a closure made in one iteration keeps
+  // that iteration's binding; a state binds its boxes on entry
+  // (emit_box_prologue), so the box is swapped in a state of its own.
+  int compile_scope(const std::vector<const peg::Ast*>& stmts, int cont,
+                    std::set<std::string> binds = {},
+                    const std::string& first = "") {
     int id = push_scope();
     int entry = compile_seq(stmts, exit_to({id}, cont));
     open.pop_back();
-    return entry;
+    if (failed) return -1;
+    if (!first.empty()) {
+      int f = fresh();
+      states[f] = first + jump(entry);
+      entry = f;
+    }
+    for (const auto* s : stmts) declared_at_level(*s, binds);
+    std::string fresh_boxes;
+    for (const auto& n : binds) {
+      if (rewrite_set.boxed.contains(n))
+        fresh_boxes += std::format("      self.{} = {{mut v: nil}}\n",
+                                   instance_field(n));
+    }
+    if (fresh_boxes.empty()) return entry;
+    int r = fresh();
+    states[r] = fresh_boxes + jump(entry);
+    return r;
   }
   // Register `body` in the innermost open scope; the state that marks it
   // reached, then goes on to `cont`.
@@ -1647,17 +1692,22 @@ struct CpsBuilder {
     int h = fresh();
     loop_stack.push_back(
         {h, cont, loop_label_name(fv.label), outer, open.size()});
-    int body_entry = compile_scope(body_stmts(*fv.body), h);
+    // The loop variable is the body scope's own, bound first on each entry.
+    std::set<std::string> loop_vars;
+    for_each_pattern_binding(*fv.binding, [&](std::string_view nm, size_t,
+                                              size_t) {
+      loop_vars.insert(std::string(nm));
+    });
+    int body_entry = compile_scope(
+        body_stmts(*fv.body), h, std::move(loop_vars),
+        "      " + bind_src(*fv.binding, it + ".next()") + mk(*fv.binding) +
+            "\n");
     loop_stack.pop_back();
     if (failed) return -1;
-    int bind = fresh();
-    states[bind] = "      " +
-                   bind_src(*fv.binding, it + ".next()") + mk(*fv.binding) +
-                   "\n" + jump(body_entry);
     states[h] = std::format(
         "      if {}.has_next() {{ self._g_state = {} }} else {{ self._g_state = {} }}{}\n"
         "      continue\n",
-        it, bind, drained, mk(*u));
+        it, body_entry, drained, mk(*u));
     int reach = reach_defer(
         std::format("        if {0}.has('dispose') {{ {0}.dispose() }}\n"
                     "        {0} = nil",
@@ -1778,16 +1828,19 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
   emit_ctor_param_and_local_inits(param_names, locals, rewrite_set,
                                   ctor_params, ctor_call_args, ctor_inits);
 
+  // Each state binds the boxes it names on entry, not has_next() once: a
+  // scope entered again swaps its boxes (compile_scope), and a closure made
+  // in a state keeps the box of the pass that made it.
   std::string dispatch;
   for (size_t id = 0; id < b.states.size(); id++) {
-    dispatch += std::format(
-        "      if self._g_state == {} {{\n{}      }}\n", id, b.states[id]);
+    const auto& st = b.states[id];
+    dispatch += std::format("      if self._g_state == {} {{\n{}{}      }}\n",
+                            id, emit_box_prologue(rewrite_set, st), st);
   }
 
   std::string defer_runs = b.pending_defers();
-  // Each method that carries body source binds the boxes that source names.
+  // dispose() binds the boxes its defers name.
   defer_runs = emit_box_prologue(rewrite_set, defer_runs) + defer_runs;
-  auto box_prologue = emit_box_prologue(rewrite_set, dispatch);
 
   auto synthesized = std::make_shared<std::string>(std::format(
       "fn __gen_wrapper__() {{\n"
@@ -1795,7 +1848,6 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
       "    new({1}) {{\n{2}    }}\n"
       "    iter() {{ self }}\n"
       "    has_next() {{\n"
-      "{6}"
       "      while true {{\n"
       "        if self._g_drained {{ return false }}\n"
       "        if self._g_has_la {{ return true }}\n"
@@ -1835,7 +1887,7 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
       "  {0}.new({4})\n"
       "}}\n",
       gen_name, ctor_params, ctor_inits, dispatch, ctor_call_args,
-      defer_runs, box_prologue));
+      defer_runs));
   // Final parse: read the provenance markers back and rebuild the body with
   // original line numbers (machinery lines fall back to the fn's decl line).
   auto label = next_fragment_label("gen");

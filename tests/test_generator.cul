@@ -317,6 +317,23 @@ fn cl_later(n) {
 }
 assert_eq(cl_later(4).collect(), [8, 9])
 
+// a closure made in one iteration keeps that iteration's binding, of the
+// loop variable and of a local the body declares; one declared outside the
+// loop stays one binding
+fn cl_iter() {
+  mut fs = []
+  mut total = 0
+  for x in [1, 2] {
+    let k = x * 10
+    fs.push(|| x + k)
+    fs.push(fn () { total += x })
+    yield 0
+  }
+  yield fs.map(|f| f())
+  yield total
+}
+assert_eq(cl_iter().collect(), [0, 0, [11, 1, 22, 3], 3])
+
 // --- generator-internal break/continue: baseline (unlabeled), ahead of
 // labeled break/continue landing on the CPS `loop_stack` these share ---
 
