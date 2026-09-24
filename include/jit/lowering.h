@@ -3662,18 +3662,17 @@ struct Lowering {
           // The stores consume a +1 of the value (and, for the Object arm,
           // of the key); the registers keep their own — the assignment
           // expression still reads the value slot afterwards. The Array arm
-          // mints its +1 only past the bounds check, then releases what it
-          // replaces before storing, as array_set does; a drop that release
-          // runs can grow the array, so the slot is re-derived after it.
+          // mints its +1 only past the bounds check, and stores before it
+          // releases what it replaced (_jit_replace_value's order).
           b.SetInsertPoint(arrBB);
           {
             auto idx = j.value_to_long(key);
             auto arrPtr = b.CreateIntToPtr(j.extract_data(recv), ptrTy);
-            auto old =
-                j.emit_load_elem(j.emit_array_elem_ptr(arrPtr, idx, false));
+            auto elemPtr = j.emit_array_elem_ptr(arrPtr, idx, false);
+            auto old = j.emit_load_elem(elemPtr);
             j.emit_value_retain(val);
+            j.emit_store_elem(elemPtr, val);
             j.emit_value_release(old);
-            j.emit_store_elem(j.emit_array_slot(arrPtr, idx), val);
             b.CreateBr(mergeBB);
           }
           b.SetInsertPoint(objBB);

@@ -1,0 +1,85 @@
+# Replacing what a container holds stores the new value before it releases
+# the old one (docs/language.md §17), the order a variable's reassignment
+# already had. A `drop` run by that release finds the new value in place,
+# and one that grows or rewrites the container cannot aim the store at
+# memory it moved.
+
+mut seen = []
+let tracked = fn (id, look) {
+  {id: id, drop: fn () {
+    seen.push("{id}:{look()}")
+  }}
+}
+
+# --- the drop sees the replacement, whatever the container ---
+
+mut arr = [nil]
+arr[0] = tracked('a', || arr[0].id)
+arr[0] = tracked('b', || arr[0].id)
+assert_eq(seen, ['a:b'])
+
+seen = []
+class Box {
+  v = nil
+}
+let box = Box()
+box.v = tracked('a', || box.v.id)
+box.v = tracked('b', || box.v.id)
+assert_eq(seen, ['a:b'])
+
+seen = []
+mut lit = {mut v: nil}
+lit.v = tracked('a', || lit.v.id)
+lit.v = tracked('b', || lit.v.id)
+assert_eq(seen, ['a:b'])
+
+seen = []
+mut named = {}
+named['k'] = tracked('a', || named['k'].id)
+named['k'] = tracked('b', || named['k'].id)
+assert_eq(seen, ['a:b'])
+
+seen = []
+mut keyed = {}
+keyed[1] = tracked('a', || keyed[1].id)
+keyed[1] = tracked('b', || keyed[1].id)
+assert_eq(seen, ['a:b'])
+
+# --- a drop that grows the container ---
+
+mut grown = [nil]
+let grow_arr = fn (id) {
+  {id: id, drop: fn () {
+    for n in 0..1000 {
+      grown.push(n)
+    }
+  }}
+}
+grown[0] = grow_arr('a')
+grown[0] = grow_arr('b')
+assert_eq([grown[0].id, grown.size()], ['b', 1001])
+
+mut wide = {mut v: nil}
+let grow_obj = fn (id) {
+  {id: id, drop: fn () {
+    for n in 0..50 {
+      wide["k{n}"] = n
+    }
+  }}
+}
+let set_wide = fn (x) {
+  wide.v = x
+}
+set_wide(grow_obj('a'))
+set_wide(grow_obj('b'))
+set_wide(grow_obj('c'))
+assert_eq([wide.v.id, wide.k49], ['c', 49])
+
+# --- a drop that rewrites the slot being replaced keeps its own write ---
+
+mut again = [nil]
+again[0] = {drop: fn () {
+  again[0] = 'from drop'
+}}
+again[0] = 'replacement'
+assert_eq(again[0], 'from drop')

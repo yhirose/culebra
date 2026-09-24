@@ -2525,9 +2525,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_set(JitArray* arr,
   if (idx < 0 || static_cast<size_t>(idx) >= arr->size) {
     throw culebra::CulebraError("IndexError", "index out of range", line, col);
   }
-  _culebra_value_release_impl(arr->items[idx].tag, arr->items[idx].data);
-  arr->items[idx].tag = tag;
-  arr->items[idx].data = data;
+  _jit_replace_value(arr->items[idx], tag, data);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_array_size(JitArray* arr) {
@@ -2651,9 +2649,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_slice(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_set_or_push(
     JitArray* arr, int64_t idx, int8_t tag, int64_t data) {
   if (static_cast<size_t>(idx) < arr->size) {
-    _culebra_value_release_impl(arr->items[idx].tag, arr->items[idx].data);
-    arr->items[idx].tag = tag;
-    arr->items[idx].data = data;
+    _jit_replace_value(arr->items[idx], tag, data);
   } else {
     culebra_runtime_array_push(arr, tag, data);
   }
@@ -3448,10 +3444,8 @@ inline void _jit_overwrite_slot(JitObjectEntry& entry,
         "immutable property '{}'", key), line, col);
   }
   if (check_wk) _culebra_check_well_known_prop(key, tag, data);
-  _culebra_value_release_impl(entry.value.tag, entry.value.data);
-  entry.value.tag = tag;
-  entry.value.data = data;
   if (is_init) entry.mut = mut;
+  _jit_replace_value(entry.value, tag, data);
 }
 
 // A `@value` instance is frozen once its constructor returns: the fields it

@@ -4568,6 +4568,21 @@ safe — it cannot cause `drop` to fire a second time or corrupt the
 cascade; `drop` runs exactly once no matter what its own body
 releases.
 
+**Replacement order**: overwriting what a slot holds — `a[i] = v`,
+`o.x = v`, `o[k] = v`, or reassigning a variable — stores the new
+value first and releases the old one after. A `drop` that the release
+runs therefore finds the new value in that slot, never the value being
+dropped, and it may grow or rewrite the container freely: if it assigns
+to the same slot, its own write is the one that stays.
+
+```culebra
+mut box = [nil]
+box[0] = {drop: fn () {
+  inspect(box[0])
+}}
+box[0] = 'next'  # => 'next'
+```
+
 **Cycles**: a reference cycle does not block `drop`. A cycle whose
 members are owned by a scope — created under it and unreachable from
 outside when it exits — is dropped **at that scope's exit**, newest

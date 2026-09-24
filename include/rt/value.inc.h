@@ -988,6 +988,19 @@ inline JitValue _culebra_invoke2(JitClosure* fn, JitValue a, JitValue b) {
 // periodically and on program exit.
 
 inline void _culebra_value_release_impl(int8_t tag, int64_t data);
+
+// Overwrite a container's slot, then release what it held — in that order,
+// as Swift's ARC and CPython's Py_SETREF do. The release can run a `drop`,
+// and a drop that reaches the container must find the new value in place:
+// released first, it saw a dying value there, and a drop that grew the
+// container left the store aimed at freed memory. The caller must not touch
+// `slot` afterwards; the drop may have moved it.
+inline void _jit_replace_value(JitValue& slot, int8_t tag, int64_t data) {
+  JitValue old = slot;
+  slot = JitValue{tag, data};
+  _culebra_value_release_impl(old.tag, old.data);
+}
+
 inline void _culebra_cell_release(JitCell* c);
 inline void _culebra_call_drop_if_present(JitObject* o);
 // Raised only around `__culebra_main`'s top-level scope release at

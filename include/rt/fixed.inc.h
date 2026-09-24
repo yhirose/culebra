@@ -919,10 +919,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
   if (!is_init && !it->second.mut)
     throw culebra::CulebraError("ImmutableError",
                                 "immutable entry on non-String key", line, col);
-  _culebra_value_release_impl(it->second.value.tag, it->second.value.data);
-  it->second.value.tag = val_tag;
-  it->second.value.data = val_data;
   if (is_init) it->second.mut = mut;
+  _jit_replace_value(it->second.value, val_tag, val_data);
   _culebra_value_release_impl(key_tag, key_data);
 }
 
@@ -1202,9 +1200,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_slot_init(
     int64_t data, int8_t key_kind) {
   if (key_kind & 1) _culebra_check_well_known_prop(key, tag, data);
   auto& e = obj->slots[static_cast<size_t>(idx)];
-  _culebra_value_release_impl(e.value.tag, e.value.data);
-  e.value = {tag, data};
   e.mut = mut;
+  _jit_replace_value(e.value, tag, data);
   if (key_kind & 2) _jit_owned_bind_drop(obj);
 }
 
