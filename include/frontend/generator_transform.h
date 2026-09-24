@@ -135,14 +135,18 @@ inline bool fn_body_has_yield(const peg::Ast& node) {
 // property names (`x.self`) and the label positions `is_label_position` names.
 // A plain-identifier child that is a label, not a reference: OBJECT_PROPERTY
 // `{name: v}` (key at 1, after MUTABLE; the 2-child shorthand `{name}` IS a
-// reference and falls through) and KWARG `f(name: v)` (key at 0). Every walk
-// that asks "is this name read here" has to skip these.
+// reference and falls through), KWARG `f(name: v)` (key at 0) and
+// OBJECT_PAT_ENTRY `{name: pat}` (key at 0; the bare `{name}` collapses to its
+// IDENTIFIER, a binding). Every walk that asks "is this name read here" has to
+// skip these.
 inline bool is_label_position(const peg::Ast& parent, size_t i) {
   using namespace peg::udl;
   if (parent.nodes[i]->tag != "IDENTIFIER"_) return false;
   return (parent.tag == "OBJECT_PROPERTY"_ && i == 1 &&
           parent.nodes.size() >= 3) ||
-         (parent.tag == "KWARG"_ && i == 0);
+         (parent.tag == "KWARG"_ && i == 0) ||
+         (parent.tag == "OBJECT_PAT_ENTRY"_ && i == 0 &&
+          parent.nodes.size() >= 2);
 }
 
 inline const peg::Ast* find_self_ref_in_fn_body(const peg::Ast& node) {
@@ -297,24 +301,6 @@ inline std::string_view strip_block_braces(std::string_view s) {
   return s;
 }
 
-// Rewrite every standalone `<name>` in `src` to where that promoted local
-// lives — `self.<name>`, or `_bx_<name>.v` for a boxed one (`promoted_slot`)
-// — then strip the `let `/`mut ` prefixes that now sit in front of an
-// assignment rather than a declaration.
-//
-// The match requires the identifier NOT be preceded by `.` — so a
-// member access like `arr.size()` is left alone even when a local/param
-// is named `size`. Without this, `\bsize\b` rewrote the `.size()` method
-// name to `arr.self.size()`, producing malformed source (a parser crash
-// for any generator whose binding collides with a builtin method like
-// size / push / keys). The same `.`-exclusion also prevents re-rewriting
-// the `self.` prefixes this pass just inserted. The `..` range operator is
-// exempted from that exclusion: `0..n`'s `n` is an operand, not a member,
-// so a range bound naming a local/param (`for i in 0..n`, desugared to
-// `(0..n).iter()`) must still be rewritten to `0..self.n`. String-literal
-// content and comments (line `#`/`//`, block `/* … */`) are skipped by
-// `rewrite_outside_strings` below, so a local name appearing there as literal
-// text is never rewritten.
 // `"""` starts at `i`.
 inline bool is_triple_quote(std::string_view s, size_t i) {
   return i + 2 < s.size() && s[i] == '"' && s[i + 1] == '"' && s[i + 2] == '"';
@@ -726,65 +712,126 @@ inline std::string emit_box_prologue(const PromotedLocals& promoted,
   return out;
 }
 
-inline std::string rewrite_locals_to_self(std::string_view src,
-                                          const PromotedLocals& promoted) {
-  const auto& names = promoted.names;
-  // The declaration-strip patterns are name-independent — hoist
-  // them to file scope so each Stage 2 transform doesn't recompile
-  // them. `std::regex` construction is the famously expensive part.
-  static const std::regex strip_let_self(R"(\blet\s+self\.)");
-  static const std::regex strip_mut_self(R"(\bmut\s+self\.)");
-  // A promoted flat tuple destructure (is_flat_tuple_pattern): its leaves
-  // now read `self.<name>` (or `_`), and dropping the keyword leaves the
-  // PLACE_ASSIGN `(self.a, self.b) = …`.
-  static const std::regex strip_decl_tuple(
-      R"(\b(?:let|mut)\s+(?=\(\s*(?:self\.|_\b)))");
-  std::vector<std::string> sorted(names.begin(), names.end());
-  std::sort(sorted.begin(), sorted.end(),
-            [](const auto& a, const auto& b) { return a.size() > b.size(); });
-  // Build each name's pattern once per call and reuse it across code spans —
-  // `std::regex` construction is the expensive part (see the two static strips
-  // above); the patterns are name-dependent so they can't be file-scope static.
-  // Group 1 captures the boundary (start-of-string, the `..` range operator, or
-  // any byte that is neither `.` nor an identifier char) so it can be restored
-  // ahead of the inserted `self.`. `..` is listed before the single-char class
-  // so a range bound is matched as an operand rather than a member access on
-  // its second dot.
-  // A promoted local stays a plain variable: reading one hands back the value
-  // and CALLING one passes no receiver, even though both are spelled
-  // `self.<name>` after this. Neither is decided here — both backends check
-  // the slot's owner (culebra::is_lowered_state_class), which is the only
-  // place that sees every spelling a call can take.
-  // A boxed name absorbs a `let` / `mut` in front of it in the same pass: its
-  // declaration is a store into the box the ctor already made. Stripping the
-  // keyword by prefix instead (the way the two statics above do it for
-  // `self.`) would also strip it from a local a closure declares under a
-  // `_bx_`-shaped name of its own, which this pass never rewrote.
-  // The replacement is built here too, so the span loop below does no per-name
-  // work — the same reason the patterns are.
-  std::vector<std::regex> pats;
-  std::vector<std::string> reps;
-  pats.reserve(sorted.size());
-  reps.reserve(sorted.size());
-  for (const auto& name : sorted) {
-    std::string decl =
-        promoted.boxed.contains(name) ? "(?:let\\s+|mut\\s+)?" : "";
-    pats.emplace_back("(^|\\.\\.|[^.A-Za-z0-9_])" + decl + name + "\\b");
-    reps.emplace_back("$1" + promoted_slot(promoted, name));
+// `(a, b, _)`: every leaf a plain name — the one destructuring shape that
+// also reads as a PLACE_ASSIGN once its leaves are spelled `self.<name>`.
+inline bool is_flat_tuple_pattern(const peg::Ast& pattern) {
+  using namespace peg::udl;
+  if (pattern.tag != "TUPLE_PATTERN"_) return false;
+  for (const auto& leaf : pattern.nodes) {
+    if (leaf->tag != "IDENTIFIER"_) return false;
   }
-  // Rewrite only the code spans (see rewrite_outside_strings): an identifier
-  // that appears as literal text inside a string / comment is left untouched.
-  auto rewrite_code = [&](std::string_view code) -> std::string {
-    std::string out(code);
-    for (size_t k = 0; k < sorted.size(); k++) {
-      out = std::regex_replace(out, pats[k], reps[k]);
-    }
-    out = std::regex_replace(out, strip_let_self, "self.");
-    out = std::regex_replace(out, strip_mut_self, "self.");
-    out = std::regex_replace(out, strip_decl_tuple, "");
-    return out;
+  return true;
+}
+
+// One splice into a node's source: `len` bytes at buffer offset `pos` become
+// `text`.
+struct SourceEdit {
+  size_t pos;
+  size_t len;
+  std::string text;
+};
+
+// The edits that move every promoted local under `n` to where it lives
+// (promoted_slot). Only references are touched — a member name (`o.x`) and a
+// label (`{x: v}`, `f(x: v)`) are not the local — and a shorthand `{x}` is
+// both, so it keeps its key and gains the value (`{x: <slot>}`). A `let` /
+// `mut` in front of a promoted target goes: that declaration is now a store
+// into a slot the ctor made.
+//
+// Offsets come from the token views, not from `position`: a node the
+// AstOptimizer collapsed into its lone child keeps the parent's span (`{ x }`
+// read as an IDENTIFIER spans the braces). They index the one buffer `n` was
+// parsed from, so every node below must come from that parse. A lowering
+// always rewrites a body before any nested construct in it is lowered
+// (transform_generators_in is top-down, and neither pass enters the other's
+// constructs), so a subtree spliced in from another fragment here is a broken
+// invariant, not a shape to tolerate.
+inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
+                                   const PromotedLocals& promoted,
+                                   std::vector<SourceEdit>& out) {
+  using namespace peg::udl;
+  auto at = [&](const peg::Ast& t) {
+    return static_cast<size_t>(t.token.data() - src.data());
   };
-  return rewrite_outside_strings(src, rewrite_code);
+  auto is_promoted = [&](const peg::Ast& id) {
+    return id.tag == "IDENTIFIER"_ && id.is_token &&
+           promoted.names.contains(std::string(id.token));
+  };
+  auto slot = [&](const peg::Ast& id) {
+    return promoted_slot(promoted, std::string(id.token));
+  };
+  // The `let` / `mut` keyword(s) of a declaration, up to its first target.
+  auto drop_keywords = [&](const peg::Ast& decl, size_t target) {
+    const auto& kw = decl.nodes[0]->token.empty() ? *decl.nodes[1]
+                                                  : *decl.nodes[0];
+    out.push_back({at(kw), target - at(kw), ""});
+  };
+  if (n.tag == "IDENTIFIER"_) {
+    if (n.original_tag != "DOT"_ && n.original_tag != "SAFE_DOT"_ &&
+        is_promoted(n))
+      out.push_back({at(n), n.token.size(), slot(n)});
+    return;
+  }
+  if (n.tag == "ASSIGNMENT"_) {
+    auto av = view_assignment(n);
+    const auto* t = assign_name_target(n, av);
+    if ((av.is_let || av.is_mut) && t && is_promoted(*t))
+      drop_keywords(n, at(*t));
+  } else if (n.tag == "DESTRUCTURE_ASSIGN"_ && n.nodes.size() >= 3 &&
+             is_flat_tuple_pattern(*n.nodes[2])) {
+    // [LET, MUTABLE, PATTERN, EXPRESSION]: dropping the keyword leaves the
+    // PLACE_ASSIGN `(<slot>, <slot>) = …`.
+    const auto& pat = *n.nodes[2];
+    bool declared = n.nodes[0]->token == "let" || n.nodes[1]->token == "mut";
+    if (declared && std::any_of(pat.nodes.begin(), pat.nodes.end(),
+                                [&](auto& l) { return is_promoted(*l); }))
+      drop_keywords(n, pat.position);
+  } else if (n.tag == "OBJECT_PROPERTY"_ && n.nodes.size() == 2 &&
+             is_promoted(*n.nodes[1])) {
+    const auto& key = *n.nodes[1];
+    out.push_back({at(key) + key.token.size(), 0, ": " + slot(key)});
+    return;
+  }
+  for (size_t i = 0; i < n.nodes.size(); i++) {
+    const auto& c = *n.nodes[i];
+    if (c.path != n.path) {
+      throw CulebraError(
+          "InternalError",
+          "locals rewrite reached a subtree lowered from another fragment",
+          static_cast<long>(c.line), static_cast<long>(c.column));
+    }
+    if (is_label_position(n, i)) continue;
+    collect_promoted_edits(c, src, promoted, out);
+  }
+}
+
+// `n`'s source from `src` with every promoted local moved to its slot (see
+// collect_promoted_edits). A promoted local stays a plain variable: reading
+// one hands back the value and calling one passes no receiver, though both are
+// spelled `self.<name>` now — both backends check the slot's owner
+// (culebra::is_lowered_state_class), the one place that sees every spelling.
+inline std::string rewrite_locals_to_self(const peg::Ast& n,
+                                          const std::string& src,
+                                          const PromotedLocals& promoted) {
+  if (ast_source_slice(n, src).empty()) return {};
+  std::vector<SourceEdit> edits;
+  collect_promoted_edits(n, src, promoted, edits);
+  std::sort(edits.begin(), edits.end(),
+            [](const auto& a, const auto& b) { return a.pos < b.pos; });
+  std::string out;
+  size_t at = n.position;
+  for (const auto& e : edits) {
+    if (e.pos < at || e.pos + e.len > n.position + n.length) {
+      throw CulebraError("InternalError",
+                         "locals rewrite produced an overlapping edit",
+                         static_cast<long>(n.line), static_cast<long>(n.column));
+    }
+    out.append(src, at, e.pos - at);
+    out += e.text;
+    at = e.pos + e.len;
+  }
+  out.append(src, at, n.position + n.length - at);
+  return out;
 }
 
 // Whether a node opens a variable scope of its own — the engines' sites, as
@@ -894,17 +941,6 @@ inline std::set<std::string> names_in_scope(const ScopeChain& chain) {
   }
   for (const auto* n : chain.nodes) add_scope_names(*n, names);
   return names;
-}
-
-// `(a, b, _)`: every leaf a plain name — the one destructuring shape that
-// also reads as a PLACE_ASSIGN once its leaves are spelled `self.<name>`.
-inline bool is_flat_tuple_pattern(const peg::Ast& pattern) {
-  using namespace peg::udl;
-  if (pattern.tag != "TUPLE_PATTERN"_) return false;
-  for (const auto& leaf : pattern.nodes) {
-    if (leaf->tag != "IDENTIFIER"_) return false;
-  }
-  return true;
 }
 
 // Collect every name a lowered body declares — the locals the state object
@@ -1348,8 +1384,7 @@ struct CpsBuilder {
     return static_cast<int>(states.size()) - 1;
   }
   std::string rw(const peg::Ast& n) {
-    return rewrite_locals_to_self(ast_source_slice(n, src),
-                                  rewrite_set);
+    return rewrite_locals_to_self(n, src, rewrite_set);
   }
   LineMarkers markers{src};
   std::string mk(const peg::Ast& n) { return markers.mk(n); }
@@ -1433,9 +1468,8 @@ struct CpsBuilder {
     if (u->tag == "DEFER"_ && !u->nodes.empty()) {
       // Register the defer body when reached; dispose runs it (LIFO).
       int k = static_cast<int>(defer_bodies.size());
-      defer_bodies.push_back(rewrite_locals_to_self(
-          strip_block_braces(ast_source_slice(*u->nodes[0], src)),
-          rewrite_set));
+      defer_bodies.push_back(
+          std::string(strip_block_braces(rw(*u->nodes[0]))));
       int e = fresh();
       states[e] = std::format(
           "      self._g_defer_{} = true\n      self._g_state = {}\n"
@@ -1518,11 +1552,15 @@ struct CpsBuilder {
 // CPS transform entry. Returns the transformed ast on success, or the
 // original ast unchanged when the body uses a construct outside the
 // engine's scope (caller then reports / falls back).
+inline std::shared_ptr<peg::Ast> transform_generators_in(
+    std::shared_ptr<peg::Ast> ast, const std::string& src, ScopeChain& chain);
+
 inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
     std::shared_ptr<peg::Ast> ast, const std::string& src,
     const peg::Ast& name_ast, const peg::Ast& params_ast,
-    int64_t decl_fallback, const std::set<std::string>& outer) {
+    int64_t decl_fallback, const ScopeChain& chain) {
   using namespace peg::udl;
+  auto outer = names_in_scope(chain);
 
   // Prefix from the shared constant: both backends recognize the state class
   // by it (culebra::is_lowered_state_class).
@@ -1626,9 +1664,14 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
   auto label = next_fragment_label("gen");
   auto wrapper_fn = parse_wrapper_fn(synthesized, label.c_str());
   if (!wrapper_fn) return ast;
+  // A generator declared inside this body (in a closure) came through as
+  // text, so it is lowered here, from the fragment it now lives in.
+  ScopeChain inner = chain;
+  inner.nodes.push_back(ast.get());
+  auto body =
+      transform_generators_in(wrapper_fn->nodes.back(), *synthesized, inner);
   auto map = marker_line_map(*synthesized);
-  ast->nodes.back() = reposition_ast(wrapper_fn->nodes.back(), map,
-                                     decl_fallback, label);
+  ast->nodes.back() = reposition_ast(body, map, decl_fallback, label);
   return ast;
 }
 
@@ -1642,7 +1685,7 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
 // yield from — is handled by the one engine.
 inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
     std::shared_ptr<peg::Ast> ast, const std::string& src,
-    const std::set<std::string>& outer) {
+    const ScopeChain& chain) {
   using namespace peg::udl;
   size_t i = 0;
   while (i < ast->nodes.size() && ast->nodes[i]->tag == "DECORATOR"_) i++;
@@ -1766,7 +1809,7 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
   const auto& params_ast = *ast->nodes[i + 1];
   auto orig_body = ast->nodes.back();
   auto out = transform_one_generator_fn_cps(ast, *cur, name_ast,
-                                            params_ast, decl_fallback, outer);
+                                            params_ast, decl_fallback, chain);
   if (out->nodes.back().get() != orig_body.get()) return out;
 
   // CPS left the body untouched — it hit a construct it can't lower
@@ -1784,21 +1827,24 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
 // walk visits every node — yield-free modules pay one whole-tree
 // pointer pass (dwarfed by the PEG parse already run). `chain` is where
 // `ast` sits; a scope-opening node is on it while its children are walked.
+//
+// Top-down: a generator is lowered from its body as written, and one declared
+// inside it is lowered from the fragment that lowering emits. `handle` and
+// `effect fn` are left to the effects pass, which runs this walk over what it
+// emits for them. Either way no lowering rewrites a body another has already
+// replaced part of (collect_promoted_edits relies on it).
 inline std::shared_ptr<peg::Ast> transform_generators_in(
     std::shared_ptr<peg::Ast> ast, const std::string& src, ScopeChain& chain) {
   using namespace peg::udl;
+  if (ast->tag == "MULTIFN_DECL"_ && fn_body_has_yield(*ast->nodes.back()))
+    return transform_one_generator_fn(ast, src, chain);
+  if (ast->tag == "HANDLE"_ || ast->tag == "EFFECT_FN_DECL"_) return ast;
   bool opens = opens_scope(ast->tag);
   if (opens) chain.nodes.push_back(ast.get());
   for (auto& child : ast->nodes) {
     child = transform_generators_in(child, src, chain);
   }
   if (opens) chain.nodes.pop_back();
-  if (ast->tag == "MULTIFN_DECL"_) {
-    auto& body = ast->nodes.back();
-    if (fn_body_has_yield(*body)) {
-      return transform_one_generator_fn(ast, src, names_in_scope(chain));
-    }
-  }
   return ast;
 }
 

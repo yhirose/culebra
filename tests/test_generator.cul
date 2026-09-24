@@ -488,5 +488,28 @@ for v in g_dispose() {
   break
 }
 assert_true(g_closed)
+// A local's name as a label is not the local: an object key, a keyword
+// argument, and the key of a shorthand property keep their spelling.
+fn g_label_kw(*, x = 0) { x }
+fn g_labels() {
+  let x = 5
+  yield {x: 1}
+  yield g_label_kw(x: 2)
+  yield {x}
+}
+assert_eq(g_labels().collect(), [{x: 1}, 2, {x: 5}])
+// A generator declared inside a generator's body (in a closure).
+fn g_nest_outer(n) {
+  let mk = fn () {
+    fn g_nest_inner(k) {
+      yield k
+      yield k + n
+    }
+    g_nest_inner(n)
+  }
+  yield mk().collect()
+  yield n
+}
+assert_eq(g_nest_outer(10).collect(), [[10, 20], 10])
 
 IO.inspect('test_generator OK')

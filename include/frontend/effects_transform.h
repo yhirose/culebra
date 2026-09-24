@@ -262,7 +262,7 @@ class EffectsLowerer {
             static_cast<long>(item.line), static_cast<long>(item.column));
       }
       if (i > 0) out += ", ";
-      out += rewrite_locals_to_self(slice(item), rewrite);
+      out += rewrite_locals_to_self(item, src_, rewrite);
     }
     out += "]";
     return out;
@@ -375,12 +375,11 @@ class EffectsLowerer {
                       callee),
           err_line(call), static_cast<long>(call.column));
     }
-    std::string_view cs = slice(call);
-    if (auto p = cs.find_first_not_of(" \t\r\n"); p != std::string_view::npos) {
-      cs = cs.substr(p);
+    std::string cs = rewrite_locals_to_self(call, src_, rewrite);
+    if (auto p = cs.find_first_not_of(" \t\r\n"); p != std::string::npos) {
+      cs.erase(0, p);
     }
-    su.call_src =
-        rewrite_locals_to_self("__eff_comp_" + std::string(cs), rewrite);
+    su.call_src = "__eff_comp_" + cs;
     su.prov = mk(call);
     return su;
   }
@@ -857,7 +856,7 @@ class EffectsLowerer {
 
   std::string cps_rw(const peg::Ast& n,
                      const PromotedLocals& rw) const {
-    return rewrite_locals_to_self(slice(n), rw);
+    return rewrite_locals_to_self(n, src_, rw);
   }
 
   // A named fn declared at statement level in an effect body stays a real
@@ -898,7 +897,7 @@ class EffectsLowerer {
     PromotedLocals inner = rw;
     inner.names.erase(name);
     return "fn " + name +
-           rewrite_locals_to_self(slice(decl).substr(after), inner) +
+           rewrite_locals_to_self(decl, src_, inner).substr(after) +
            "\n      " + promoted_slot(rw, name) + " = " + name;
   }
 
@@ -1012,9 +1011,8 @@ class EffectsLowerer {
           "not supported — the deferred body runs outside the effect engine.",
           err_line(*u), static_cast<long>(u->column));
     int k = static_cast<int>(st.defer_bodies.size());
-    std::string body_src =
-        rewrite_locals_to_self(std::string(strip_block_braces(slice(block))),
-                               rw);
+    std::string body_src(
+        strip_block_braces(rewrite_locals_to_self(block, src_, rw)));
     reattach_marker(body_src, block);  // single-line body: keep provenance
     st.defer_bodies.push_back(std::move(body_src));
     int s = st.fresh();

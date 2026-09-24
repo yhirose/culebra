@@ -533,3 +533,13 @@ let eff_wrote = handle {
 }
 assert_eq(eff_wrote, 6)
 assert_eq(eff_outer, 5)
+// A promoted local's name as a label (object key, keyword argument,
+// shorthand key) is not the local.
+fn eff_label_kw(*, x = 0) { x }
+let eff_labels = handle {
+  let x = perform anf_ask()
+  [{x: 1}, eff_label_kw(x: 2), {x}]
+} with anf_ask(resume) {
+  resume(7)
+}
+assert_eq(eff_labels, [{x: 1}, 2, {x: 7}])
