@@ -384,7 +384,16 @@ inline void _jit_release_one(JitValue& v) {
 
 using JitReleaseTrashcan = culebra::Trashcan<JitValue, &_jit_release_one>;
 
-inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
+// The last reference going: the teardown, kept out of line so that
+// _culebra_value_release_impl's two cheap answers inline into every caller,
+// as Py_DECREF's do (GCC declines the whole at this many callers).
+[[gnu::noinline]] inline void _culebra_value_release_last(int8_t tag,
+                                                          int64_t data) {
+  JitReleaseTrashcan::release(JitValue{tag, data});
+}
+
+[[gnu::always_inline]] inline void _culebra_value_release_impl(
+    int8_t tag, int64_t data) {
   // Non-refcounted tags are a no-op in the release switch, so they skip
   // the trashcan bookkeeping entirely (this is the hottest release path).
   if (!_is_refcounted_value(tag, data)) return;
@@ -398,7 +407,7 @@ inline void _culebra_value_release_impl(int8_t tag, int64_t data) {
     --*refcount;
     return;
   }
-  JitReleaseTrashcan::release(JitValue{tag, data});
+  _culebra_value_release_last(tag, data);
 }
 
 inline void _culebra_value_release_node(int8_t tag, int64_t data) {

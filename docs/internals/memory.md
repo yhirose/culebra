@@ -115,7 +115,9 @@ the C stack), whose depth bookkeeping is thread-local state — a
 `_tlv_get_addr` call on macOS. Paying that on every release of a live
 object was a measurable share of a field-heavy loop. Every refcounted
 type keeps its count at offset 0, the same invariant the collector reads
-through, so the question needs no dispatch on the tag.
+through, so the question needs no dispatch on the tag. Those two answers
+are inlined into every C++ caller; only the teardown,
+`_culebra_value_release_last`, is a call.
 
 The lowering makes the first of those answers in IR
 (`emit_value_retain`): behind the tag test it already hoisted, a retain
