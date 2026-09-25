@@ -146,9 +146,9 @@ inline coreir::Value cross_thrown(JitValue thrown, coreir::SrcPos pos) {
     case TAG_STRINGVIEW:
       return marshal_out(thrown, [] { return std::string(); });
     default: {
-      std::string kind, message;
-      describe_thrown_value(thrown, kind, message);
-      return make_error(kind.empty() ? "RuntimeError" : kind, message, pos);
+      auto r = describe_thrown_value(thrown);
+      return make_error(r.kind.empty() ? "RuntimeError" : r.kind, r.message,
+                        pos);
     }
   }
 }

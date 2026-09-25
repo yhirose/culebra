@@ -70,11 +70,12 @@ class TestHost {
   virtual ValueRef call(ValueRef fn, const std::vector<ValueRef>& args) = 0;
 
   // Called from inside a `catch (...)`: if the in-flight exception is this
-  // engine's "a program threw a value", fill kind / message and return true.
-  // The engines disagree on the type — the interpreter throws the value, the
+  // engine's "a program threw a value", fill kind / message (and line / col
+  // when the value is a caught error thrown again) and return true. The
+  // engines disagree on the type — the interpreter throws the value, the
   // compiled lanes wrap it — and only they can rethrow to inspect it.
-  virtual bool describe_current_throw(std::string& kind,
-                                      std::string& message) = 0;
+  virtual bool describe_current_throw(std::string& kind, std::string& message,
+                                      int64_t& line, int64_t& col) = 0;
 
   virtual size_t mark() = 0;
   virtual void release_to(size_t mark) = 0;
@@ -363,7 +364,8 @@ inline void run_cases(TestHost& host, std::vector<TestCase>& cases,
       failed = true;
       // A program's own `throw <value>`, in whichever shape this engine
       // raises it; anything else is ours.
-      if (host.describe_current_throw(err_kind, err_what)) {
+      if (host.describe_current_throw(err_kind, err_what, err_line,
+                                      err_col)) {
         if (err_kind.empty()) err_kind = "UserThrow";
       } else {
         try {

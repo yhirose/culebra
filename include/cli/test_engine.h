@@ -155,12 +155,16 @@ class VmTestHost : public TestHost {
                              vals.empty() ? nullptr : vals.data()));
   }
 
-  bool describe_current_throw(std::string& kind,
-                              std::string& message) override {
+  bool describe_current_throw(std::string& kind, std::string& message,
+                              int64_t& line, int64_t& col) override {
     try {
       throw;
     } catch (const CulebraException& e) {
-      describe_thrown_value({e.tag, e.data}, kind, message);
+      auto r = describe_thrown_value({e.tag, e.data});
+      kind = std::move(r.kind);
+      message = std::move(r.message);
+      line = r.line;
+      col = r.col;
       return true;
     } catch (...) {
       // interrupt: re-inspection from inside test_runner's own `catch (...)`,

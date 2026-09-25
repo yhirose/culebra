@@ -580,12 +580,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_format_value(
 }
 
 // A String-valued own slot, or nullopt when absent / not a String.
-inline std::optional<std::string_view> _jit_string_slot(JitObject* obj,
+inline std::optional<std::string_view> _jit_string_slot(const JitObject* obj,
                                                         const char* name) {
-  auto idx = obj->find_slot(name);
-  if (idx == static_cast<size_t>(-1)) return std::nullopt;
-  const auto& v = obj->slots[idx].value;
-  if (v.tag != TAG_STRING) return std::nullopt;
+  auto v = _jit_slot_or_nil(obj, name);
+  if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW) return std::nullopt;
   return _culebra_str_view(v.tag, v.data);
 }
 // The two names an instance answers to, both read from the meta it reaches
@@ -919,64 +917,45 @@ class CulebraException : public std::exception {
   const char* what() const noexcept override { return "CulebraException"; }
 };
 
+// A script-thrown value as a host reports it: an Object's `kind`/`message`
+// slots when present, the display form otherwise. The Error Object a catch
+// built for a runtime error (is_error), thrown again, is that error, so it
+// also brings the position it was raised at (its slots are immutable); any
+// other value leaves line/col 0 for the host to fill. The one reading of a
+// thrown value — the uncaught printer below, the test host (test_engine.h),
+// the embedding API (vm/embed.h) and a guest crossing (codegen.h).
+struct ThrownReport {
+  std::string kind, message;
+  int64_t line = 0, col = 0;
+};
+inline ThrownReport describe_thrown_value(JitValue v) {
+  ThrownReport r;
+  if (v.tag == TAG_OBJECT) {
+    auto* o = reinterpret_cast<const JitObject*>(v.data);
+    r.kind = _jit_string_slot(o, "kind").value_or("");
+    r.message = _jit_string_slot(o, "message").value_or("");
+    if (o->is_error) {
+      r.line = _jit_slot_or_nil(o, "line").data;
+      r.col = _jit_slot_or_nil(o, "col").data;
+    }
+  }
+  if (r.message.empty()) r.message = _culebra_uncaught_display(v.tag, v.data);
+  return r;
+}
+
 // The one spelling of an uncaught user throw. The three engine boundaries
 // (JIT::exec, the VM's run_prepared, the AOT bootstrap) each print this, and
 // used to compose it by hand with a comment asking the next editor to keep
 // them identical. The caller consumes the carrier's reference AFTER calling
 // this — formatting reads the payload.
-// Slot `k` of `o` when it holds a String / a Long.
-inline std::optional<std::string_view> _string_slot(const JitObject* o,
-                                                    const char* k) {
-  size_t i = o->find_slot(k);
-  if (i == static_cast<size_t>(-1)) return std::nullopt;
-  auto v = o->slots[i].value;
-  if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW) return std::nullopt;
-  return _str_sv(reinterpret_cast<const char*>(v.data));
-}
-inline std::optional<int64_t> _long_slot(const JitObject* o, const char* k) {
-  size_t i = o->find_slot(k);
-  if (i == static_cast<size_t>(-1) || o->slots[i].value.tag != TAG_LONG)
-    return std::nullopt;
-  return o->slots[i].value.data;
-}
-
 inline std::string format_uncaught_throw(const CulebraException& e) {
-  // The Error Object a catch built for a runtime error, thrown again, is that
-  // error — reported as it would have been had nothing caught it, at the
-  // position it was raised (its slots are immutable), not the re-throw's.
   if (e.tag == TAG_OBJECT &&
       reinterpret_cast<const JitObject*>(e.data)->is_error) {
-    auto* o = reinterpret_cast<const JitObject*>(e.data);
-    return culebra::format_error_message(
-        _string_slot(o, "kind").value_or("Error"),
-        _string_slot(o, "message").value_or(""),
-        _long_slot(o, "line").value_or(e.line),
-        _long_slot(o, "col").value_or(e.col));
+    auto r = describe_thrown_value({e.tag, e.data});
+    return culebra::format_error_message(r.kind, r.message, r.line, r.col);
   }
-  std::string s = _culebra_uncaught_display(e.tag, e.data);
-  if (e.line <= 0 && e.col <= 0) return culebra::format("uncaught: {}", s);
-  // Same rule as format_error_message: a value that runs to several lines
-  // would bury the position at the end of its last one.
-  if (s.find('\n') != std::string::npos)
-    return culebra::format("uncaught at {}:{}: {}", e.line, e.col, s);
-  return culebra::format("uncaught: {} at {}:{}.", s, e.line, e.col);
-}
-
-// Unpack a script-thrown value for a host-facing report: an Object's
-// `kind`/`message` slots when present, the display form otherwise. The one
-// shape both the test host (test_engine.h) and the embedding API
-// (vm_embed.h) surface a raw CulebraException through.
-inline void describe_thrown_value(JitValue v, std::string& kind,
-                                  std::string& message) {
-  auto str_slot = [&](JitObject* o, const char* k) {
-    return std::string(_string_slot(o, k).value_or(""));
-  };
-  if (v.tag == TAG_OBJECT) {
-    auto* o = reinterpret_cast<JitObject*>(v.data);
-    if (auto k = str_slot(o, "kind"); !k.empty()) kind = k;
-    message = str_slot(o, "message");
-  }
-  if (message.empty()) message = _culebra_uncaught_display(v.tag, v.data);
+  return culebra::format_error_message(
+      "uncaught", _culebra_uncaught_display(e.tag, e.data), e.line, e.col);
 }
 
 CULEBRA_RT_KEEP void culebra_runtime_value_retain(int8_t tag,

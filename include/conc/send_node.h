@@ -47,9 +47,6 @@ struct SendNode {
   // incomplete SendNode, but a vector of std::pair<SendNode,SendNode> is fine.
   std::vector<std::pair<SendNode, SendNode>> entries;
   std::vector<bool> entry_mut;
-  // Object: the Error Object a catch built (JitObject::is_error), which a
-  // re-throw on the receiving side still reports as that error.
-  bool is_error = false;
 
   // Closure — interp form: defining AST + named free-var captures.
   const peg::Ast* params_ast = nullptr;            // borrowed, process-lifetime
@@ -80,6 +77,9 @@ struct SendNode {
   std::vector<size_t> mf_min_params;
   int ref_id = -1;          // closure identity (for back-references)
   bool is_backref = false;  // true ⇒ this node is just a ref to ref_id
+  // Object: the Error Object a catch built (JitObject::is_error), which a
+  // re-throw on the receiving side still reports as that error.
+  bool is_error = false;
 
   // Declared here, defaulted below the class, for the reason toml::Node's are
   // (toml.h): the self-referential vector<pair<SendNode, SendNode>> makes
