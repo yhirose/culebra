@@ -217,8 +217,10 @@ The heap objects a VM needs are the runtime's existing ones:
   the own slot, and — for a method read on a class instance, whose data
   is in own slots and whose methods sit on the shared meta behind
   `proto` — the proto slot, cached as the pair (receiver shape, proto
-  shape) the runtime helper's miss path fills; before the second arm
-  was in the IR every `obj.f()` reached the helper.
+  shape) the runtime helper's miss path fills. A write site's IC
+  (`JitPropSetIC`) settles a warm update in one call,
+  `object_set_update`, which answers false for a transition or a
+  refusal; the site then calls `object_set_fast`, which words the error.
 - `JitArray`, `JitSet`, tuples, `JitTensor`.
 
 Objects are allocated from a per-`Runtime` slab allocator
@@ -1491,14 +1493,7 @@ against the whole interval. `JIT::tune_backend` bounds that with LLVM's
 first. The bound is sensitive to the shape of the refcount guards:
 folding the sentinel tags under `& 31` in `emit_tag_is_refcounted` — two
 instructions fewer per site, a 5% smaller module — took the same file's
-coalescer from 1.2 s back to 9.2 s, so the range test stays. It is as
-sensitive to a slot written on only one arm: asking `Op::CallRecv`'s
-question inline — the receiver's proto is a lowering's state class —
-and calling `call_receiver` only then made the slot a three-way merge at
-every method call. On a large flat test file that cost 0.57 s
-of optimize and codegen, while the method call it spared the helper ran
-no faster (9.3 ns against 9.4), so `CallRecv` stays one unconditional
-call.
+coalescer from 1.2 s back to 9.2 s, so the range test stays.
 
 One pass of that pipeline is the lowering's own. The four refcount
 helpers each open with a guard — the value pair against

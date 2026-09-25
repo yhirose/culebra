@@ -1187,6 +1187,23 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_fast(
   if (key_kind & 2) _jit_owned_bind_drop(obj);
 }
 
+// object_set_fast's update alone, for a site owing neither contract check:
+// true after the store (its +1 absorbed), false and nothing touched for a
+// transition, a refused tag or an immutable slot — the caller then takes
+// object_set_fast, which words the error. The shape test comes first: a
+// transition's offset is past the end of slots. Never throws.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_set_update(
+    JitObject* obj, JitPropSetIC* ic, int8_t tag, int64_t data) {
+  if (ic->expected_shape != ic->result_shape) return false;
+  if (!_jit_tag_fits_field_type(tag,
+                                static_cast<culebra::FieldType>(ic->declared)))
+    return false;
+  auto& e = obj->slots[ic->offset];
+  if (!e.mut) return false;
+  _jit_replace_value(e.value, tag, data);
+  return true;
+}
+
 // One property of an object literal whose whole key set is static
 // (ObjectNewShaped): the slot is already there, at an index the compiler
 // resolved from the same key list, so the store is an indexed overwrite with
@@ -1314,7 +1331,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_ic(
       ic->offset = idx;
       ic->prop_mut = mut ? 1 : 0;
       ic->declared = static_cast<uint8_t>(culebra::FieldType::Any);
-      ic->want_tag = kPropSetICNoUpdate;
     }
   } else {
     auto declared = before ? before->type_at(idx) : culebra::FieldType::Any;
@@ -1328,7 +1344,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_ic(
       ic->offset = idx;
       ic->prop_mut = obj->slots[idx].mut ? 1 : 0;
       ic->declared = static_cast<uint8_t>(declared);
-      ic->want_tag = _jit_prop_set_ic_want(declared);
     }
   }
   if (std::string_view(key) == "drop") _jit_owned_bind_drop(obj);

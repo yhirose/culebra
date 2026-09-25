@@ -216,9 +216,11 @@ VMが必要とするヒープオブジェクトはランタイムの既存のも
   への`+1`を持つ（`JitObject::cls`）。読みサイトのICはヒットの2つの形を
   インラインで答える: 自分のslotと、クラスインスタンスでのメソッド読み
   （データは自分のslot、メソッドは`proto`の先の共有metaにある）で使う
-  protoのslot。後者は（受け手のshape、protoのshape）の対としてランタイム
-  helperのmiss経路が埋めていたが、IRにこの腕が入るまでは`obj.f()`が毎回
-  helperに達していた。
+  protoのslot。後者は（受け手のshape、protoのshape）の対としてキャッシュ
+  され、ランタイムhelperのmiss経路が埋める。書きサイトのIC
+  （`JitPropSetIC`）は温まった更新を呼び出し1つ、`object_set_update`で
+  済ませる。これはtransitionや拒否にはfalseを返し、サイトはそのとき
+  `object_set_fast`を呼んでエラーを組み立てさせる。
 - `JitArray`、`JitSet`、タプル、`JitTensor`。
 
 オブジェクトはper-`Runtime`のスラブアロケータ（`rt_slab.h`）から
@@ -1462,14 +1464,7 @@ loweringするIRは6,167行ではなく758行、起動は82msではなく7msに�
 されるからである。この上限はrefcountガードの形に敏感で、
 `emit_tag_is_refcounted`でsentinelタグを`& 31`で畳む形（サイトごとに
 2命令少なく、モジュールは5%小さい）にすると同じファイルのcoalescerが
-1.2sから9.2sに戻る。範囲テストはそのために残している。片方の腕でだけ
-書かれるスロットにも同じくらい敏感である。`Op::CallRecv`の問い —
-受け手のprotoがloweringの状態クラスか — をインラインで尋ね、その
-ときだけ`call_receiver`を呼ぶ形にすると、メソッド呼び出しのたびに
-スロットが3方向の合流になった。大きなフラットなテストファイルでは
-optimizeとcodegenで0.57sかかり、ヘルパーを省いたメソッド呼び出しは
-速くならなかった（9.3nsと9.4ns）。そのため`CallRecv`は無条件の呼び出し
-1つのままにしている。
+1.2sから9.2sに戻る。範囲テストはそのために残している。
 
 このパイプラインのうち1つのパスはlowering自身のものである。
 4つのrefcountヘルパーはそれぞれガードで始まる — 値の2つは

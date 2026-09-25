@@ -3118,10 +3118,15 @@ struct JIT {
                                  builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
 
-    // RC primitives never raise a culebra exception, so mark them nounwind:
-    // emit_call then drops the invoke/landing-pad edge at every RC site.
+    module_->getOrInsertFunction(rt::object_set_update, builder_.getInt1Ty(),
+                                 ptrTy, ptrTy, builder_.getInt8Ty(),
+                                 builder_.getInt64Ty());
+
+    // These never raise a culebra exception (object_set_update refuses by
+    // answering false), so mark them nounwind: emit_call then drops the
+    // invoke/landing-pad edge at every site.
     for (auto name : {rt::value_retain, rt::value_release, rt::cell_retain,
-                      rt::cell_release}) {
+                      rt::cell_release, rt::object_set_update}) {
       if (auto* f = module_->getFunction(name)) f->setDoesNotThrow();
     }
 

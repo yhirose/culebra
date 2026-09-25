@@ -853,13 +853,7 @@ struct JitPropSetIC {
   // checks it without reading the Shape again. Settled with the rest of the
   // entry: the shape the site guards on decides it.
   uint8_t declared;
-  // What the emitted update path tests a value's tag against, settled when
-  // the cache is filled so a site asks one byte: 0 for an untyped slot, the
-  // tag the declared type requires, or kPropSetICNoUpdate for a transition,
-  // which no tag matches (see _jit_prop_set_ic_want).
-  uint8_t want_tag;
 };
-inline constexpr uint8_t kPropSetICNoUpdate = 0xFF;
 
 
 struct JitCell {

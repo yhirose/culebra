@@ -3536,23 +3536,6 @@ inline culebra::FieldType _jit_field_type_of_tag(int8_t tag) {
   return culebra::FieldType::Any;
 }
 
-// The tag a declared type admits, or 0 for one that admits any: the byte a
-// JitPropSetIC update carries (want_tag), so `tag == want || want == 0` is
-// _jit_tag_fits_field_type. No admitted tag is TAG_NIL, which is what lets
-// 0 mean "any".
-inline uint8_t _jit_prop_set_ic_want(culebra::FieldType t) {
-  switch (t) {
-    case culebra::FieldType::Float: return TAG_FLOAT;
-    case culebra::FieldType::Long: return TAG_LONG;
-    case culebra::FieldType::Bool: return TAG_BOOL;
-    case culebra::FieldType::Any:
-    case culebra::FieldType::Count: break;
-  }
-  return 0;
-}
-static_assert(TAG_NIL == 0 && TAG_FLOAT != 0 && TAG_LONG != 0 &&
-              TAG_BOOL != 0);
-
 inline bool _jit_tag_fits_field_type(int8_t tag, culebra::FieldType t) {
   switch (t) {
     case culebra::FieldType::Float: return tag == TAG_FLOAT;

@@ -1787,10 +1787,8 @@ struct Lowering {
         }
         case Op::CallRecv: {
           // Always the call, though it answers differently only for an
-          // Object whose proto is a lowering's state class: asking that
-          // inline made the slot a three-way merge at every method call, and
-          // a flat script's register coalescer paid more for those than the
-          // call costs (measured, docs/internals/vm.md §7).
+          // Object whose proto is a lowering's state class: asking inline
+          // would make the slot a three-way merge at every method call.
           auto recv = load_slot(in.a);
           auto key = vm_str_const(in.c, ".vm.callrecv.key");
           b.CreateStore(
@@ -3711,6 +3709,8 @@ struct Lowering {
         case Op::PropSet: {
           auto recv = load_slot(in.a);
           auto val = load_slot(in.b);
+          auto valTag = j.extract_tag(val);
+          auto valData = j.extract_data(val);
           auto tag = j.extract_tag(recv);
           require_object_recv(tag, "pset");
           // The retain feeds object_set's consuming store; the slot keeps
@@ -3729,21 +3729,18 @@ struct Lowering {
           // cold cache can't spuriously match a freshly-allocated
           // instance's shape == nullptr (JitPropIC's own convention).
           auto icTy = llvm::StructType::get(
-              j.ctx_, {ptrTy, ptrTy, i64Ty, i8Ty, i8Ty, i8Ty});
-          enum : unsigned {
-            kExpected, kResult, kOffset, kPropMut, kDeclared, kWantTag
-          };
+              j.ctx_, {ptrTy, ptrTy, i64Ty, i8Ty, i8Ty});
+          enum : unsigned { kExpected };
           static_assert(offsetof(JitPropSetIC, result_shape) == 8 &&
                         offsetof(JitPropSetIC, offset) == 16 &&
                         offsetof(JitPropSetIC, prop_mut) == 24 &&
-                        offsetof(JitPropSetIC, declared) == 25 &&
-                        offsetof(JitPropSetIC, want_tag) == 26);
+                        offsetof(JitPropSetIC, declared) == 25);
           auto* sentinelPtr = llvm::ConstantExpr::getIntToPtr(
               llvm::ConstantInt::get(i64Ty, 1), ptrTy);
           auto* icInit = llvm::ConstantStruct::get(
               icTy, {sentinelPtr, sentinelPtr,
                      llvm::ConstantInt::get(i64Ty, 0), b.getInt8(0),
-                     b.getInt8(0), b.getInt8(kPropSetICNoUpdate)});
+                     b.getInt8(0)});
           auto* icGlobal = new llvm::GlobalVariable(
               *j.module_, icTy, /*isConstant=*/false,
               llvm::GlobalValue::PrivateLinkage, icInit,
@@ -3768,41 +3765,14 @@ struct Lowering {
           // here where the name is a literal.
           int8_t key_kind = culebra::prop_key_kind(nm);
           if (key_kind == 0) {
-            // An update of a mutable slot whose declared type the value
-            // fits is object_set_fast's whole work at a site owing neither
-            // check, so it is emitted here. A transition and every refusal
-            // still take the call, which words the error. The cache's
-            // want_tag answers both "an update?" and "does the value fit?":
-            // 0 admits any tag, and a transition's byte admits none — so the
-            // entry, which a transition's offset is past the end of, is read
-            // only once it is known to exist.
+            // One nounwind call settles the warm update; false (a transition
+            // or a refusal) falls to object_set_fast, which words the error.
+            // A call, not IR: a state class has thousands of these sites.
             auto callBB = BasicBlock::Create(j.ctx_, "pset.call", fn);
-            auto updBB = BasicBlock::Create(j.ctx_, "pset.update", fn);
-            auto storeBB = BasicBlock::Create(j.ctx_, "pset.store", fn);
-            auto want = b.CreateLoad(
-                i8Ty, b.CreateStructGEP(icTy, icGlobal, kWantTag, "pset.want.p"),
-                "pset.want");
-            b.CreateCondBr(
-                b.CreateOr(b.CreateICmpEQ(want, b.getInt8(0)),
-                           b.CreateICmpEQ(want, j.extract_tag(val)),
-                           "pset.fits"),
-                updBB, callBB);
-            b.SetInsertPoint(updBB);
-            auto offset = b.CreateLoad(
-                i64Ty, b.CreateStructGEP(icTy, icGlobal, kOffset, "pset.ic.off.p"),
-                "pset.ic.off");
-            auto entryPtr = j.emit_object_entry_ptr(objPtr, offset);
-            auto isMut = b.CreateICmpNE(
-                b.CreateLoad(i8Ty,
-                             b.CreateConstInBoundsGEP1_64(
-                                 i8Ty, entryPtr, offsetof(JitObjectEntry, mut),
-                                 "pset.mut.p"),
-                             "pset.mut"),
-                b.getInt8(0));
-            b.CreateCondBr(isMut, storeBB, callBB);
-            b.SetInsertPoint(storeBB);
-            j.emit_replace_value(entryPtr, val);
-            b.CreateBr(mergeBB);
+            auto updated = j.emit_call(
+                j.module_->getFunction(rt::object_set_update),
+                {objPtr, icGlobal, valTag, valData}, "pset.updated");
+            b.CreateCondBr(updated, mergeBB, callBB);
             b.SetInsertPoint(callBB);
           }
           j.emit_call(
@@ -3810,8 +3780,8 @@ struct Lowering {
                   rt::object_set_fast, b.getVoidTy(), ptrTy, ptrTy, ptrTy,
                   i8Ty, i64Ty, i64Ty, i64Ty, b.getInt1Ty(), b.getInt1Ty(),
                   i8Ty),
-              {objPtr, keyPtr, icGlobal, j.extract_tag(val),
-               j.extract_data(val), j.current_line_val(),
+              {objPtr, keyPtr, icGlobal, valTag, valData,
+               j.current_line_val(),
                j.current_column_val(), b.getInt1(true), b.getInt1(false),
                b.getInt8(key_kind)});
           b.CreateBr(mergeBB);
@@ -3822,8 +3792,8 @@ struct Lowering {
                   rt::object_set_ic, b.getVoidTy(), ptrTy, ptrTy, ptrTy,
                   b.getInt1Ty(), i8Ty, i64Ty, i64Ty, i64Ty, b.getInt1Ty(),
                   i64Ty, i64Ty),
-              {objPtr, keyPtr, icGlobal, b.getInt1(true), j.extract_tag(val),
-               j.extract_data(val), j.current_line_val(),
+              {objPtr, keyPtr, icGlobal, b.getInt1(true), valTag, valData,
+               j.current_line_val(),
                j.current_column_val(), b.getInt1(false),
                b.getInt64(c.consts[in.d].data >> 32),
                b.getInt64(c.consts[in.d].data & 0xffffffff)});
