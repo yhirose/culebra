@@ -1596,24 +1596,24 @@ inline void reject_or_pattern_binding(const peg::Ast& ast) {
 // return type could only ever fail.
 inline void reject_invalid_new(const peg::Ast& ast) {
   using namespace peg::udl;
-  if (ast.tag == "METHOD"_ && ast.nodes[0]->token == "static" &&
-      ast.nodes[1]->token == "new" && ast.nodes.size() > 2 &&
-      ast.nodes[2]->tag == "PARAMETERS"_) {
-    const auto& id = *ast.nodes[1];
-    throw CulebraError(
-        "SyntaxError",
-        "`new` cannot be static — the constructor always builds an instance; "
-        "give the factory another name",
-        static_cast<long>(id.line), static_cast<long>(id.column));
-  }
-  if (ast.tag == "METHOD"_ && ast.nodes[1]->token == "new" &&
-      !view_method(ast).return_type.empty()) {
-    const auto& rt = *ast.nodes[3];
-    throw CulebraError(
-        "SyntaxError",
-        "`new` cannot declare a return type — the constructor always returns "
-        "the instance it builds",
-        static_cast<long>(rt.line), static_cast<long>(rt.column));
+  if (ast.tag == "METHOD"_) {
+    auto v = view_method(ast);
+    if (v.name == "new" && v.params) {
+      if (v.is_static)
+        throw CulebraError(
+            "SyntaxError",
+            "`new` cannot be static — the constructor always builds an "
+            "instance; give the factory another name",
+            static_cast<long>(v.name_line), static_cast<long>(v.name_col));
+      if (!v.return_type.empty()) {
+        const auto& rt = *ast.nodes[3];  // RETURN_TYPE; the view keeps its token only
+        throw CulebraError(
+            "SyntaxError",
+            "`new` cannot declare a return type — the constructor always "
+            "returns the instance it builds",
+            static_cast<long>(rt.line), static_cast<long>(rt.column));
+      }
+    }
   }
   for (const auto& n : ast.nodes) reject_invalid_new(*n);
 }

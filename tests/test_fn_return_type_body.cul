@@ -80,26 +80,17 @@ class Acc {
   add(n: Long) -> Long { self.x + n }
   wrong() -> String { self.x }
   early(n) -> Long {
-    if n > 0 { return 'pos' }
+    return 'pos' if n > 0
     n
   }
   get half() -> Float { self.x / 2.0 }
   get bad_half() -> String { self.x / 2.0 }
   static make() -> Acc { Acc.new(7) }
-  maybe(flag) -> Long? { if flag { 1 } else { nil } }
-  # a comment between the annotation and the body
-  adder() -> Object {
+  maybe(flag) -> Long? { flag ? 1 : nil }
+  adder() -> Object  # a comment between the annotation and the body
+  {
     let base = self.x
     {apply: fn (n) { base + n }}
-  }
-}
-
-fn kind_of(f) {
-  try {
-    f()
-    'no error'
-  } catch e {
-    e.kind
   }
 }
 
@@ -115,9 +106,9 @@ test_method_return_type_passes = fn () {
 
 test_method_return_type_enforced = fn () {
   let a = Acc.new(4)
-  assert_eq(kind_of(|| a.wrong()), 'TypeError')
-  assert_eq(kind_of(|| a.early(1)), 'TypeError')
-  assert_eq(kind_of(|| a.bad_half), 'TypeError')
+  assert_throws('TypeError', || a.wrong())
+  assert_throws('TypeError', || a.early(1))
+  assert_throws('TypeError', || a.bad_half)
 }
 
 test_method_return_type_reported = fn () {
