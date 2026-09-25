@@ -1096,7 +1096,7 @@ _run-tests BACKEND:
         out=$(cul test --vm --reporter json tests/*.cul 2>&1 < /dev/null) || rc=$?
         if [[ "$rc" != 0 ]]; then
             echo "culebra test: the tests/*.cul sweep failed (rc $rc)" >&2
-            printf '%s\n' "$out" | grep '"event":"file_error"' | tail -20 >&2
+            printf '%s\n' "$out" | grep -E '"event":"(file_error|test_fail)"' | tail -20 >&2 || true
             printf '%s\n' "$out" | tail -3 >&2
             exit 1
         fi
@@ -1120,7 +1120,7 @@ _run-tests BACKEND:
         out=$(cul test --vm --reporter json examples 2>&1 < /dev/null) || rc=$?
         if [[ "$rc" != 0 ]]; then
             echo "culebra test: the examples/ sweep failed (rc $rc)" >&2
-            printf '%s\n' "$out" | grep '"event":"file_error"' | tail -20 >&2
+            printf '%s\n' "$out" | grep -E '"event":"(file_error|test_fail)"' | tail -20 >&2 || true
             printf '%s\n' "$out" | tail -3 >&2
             exit 1
         fi
