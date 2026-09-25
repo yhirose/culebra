@@ -1,0 +1,10 @@
+# A caught runtime error thrown again reports as that error, at the position
+# it was raised, not as a thrown Object at the re-throw.
+fn load() {
+  try {
+    [1][9]
+  } catch e {
+    throw e
+  }
+}
+load()

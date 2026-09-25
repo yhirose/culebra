@@ -3724,7 +3724,9 @@ Culebraは`throw`で例外を発生させ、`try`/`catch`で受けます。
   実行されたブロックの最後の値を返します
 * トップレベルまで到達した未catchの`throw`は
   `uncaught: ... at LINE:COL.`（`throw`自身の位置）と表示され、
-  プログラムは非ゼロ終了します
+  プログラムは非ゼロ終了します。例外はcatchした実行時エラーを
+  そのまま投げ直した場合（`catch e { throw e }`）で、そのエラー自身として
+  `Kind: message at LINE:COL.`の形で、エラーが起きた位置で表示されます
 * `throw`は`return`と別: `return`は自分の関数だけを抜け、
   `throw`は外側の関数も貫通します
 * `throw`は式なので (§12)、ブロックで包まずに`match`のアーム全体に
@@ -3913,7 +3915,9 @@ shutdownパターン）は、`Signal.notify`でチャネルを登録します（
 
 未catchのエラーは`Kind: message at LINE:COL.`形式で表示し非ゼロ終了
 します。ユーザが`throw expr`で投げた値は`uncaught: {value} at LINE:COL.`
-で表示され、位置は`throw`自身のものです。isolate境界を越えて再raise
+で表示され、位置は`throw`自身のものです。ただし`catch`が実行時エラーと
+して受け取った値を投げた場合は、isolate境界を越えた後でも、そのエラー
+自身としてエラーが起きた位置で表示されます。isolate境界を越えて再raise
 された値は位置を持ちません（それを投げた`throw`は別スレッドで走った
 ため）。複数行にわたるmessageは位置を先頭に置く形
 （`Kind at LINE:COL: message`）になり、最終行の値の一部と読めてしまう

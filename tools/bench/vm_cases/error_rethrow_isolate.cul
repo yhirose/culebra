@@ -1,0 +1,10 @@
+# A caught runtime error thrown again inside an isolate crosses join as a
+# copy, and the copy still reports as that error.
+let h = Isolate.spawn(fn () {
+  try {
+    [1][9]
+  } catch e {
+    throw e
+  }
+})
+h.join()

@@ -89,6 +89,10 @@ error_prop_receiver	255
 error_prop_shared_coalesce	255
 error_property_receiver	255
 error_recursion	255
+error_rethrow	255
+error_rethrow_gen_defers	255
+error_rethrow_handle	255
+error_rethrow_isolate	255
 error_safe_index_oob	255
 error_safe_index_receiver	255
 error_set_unhashable	255

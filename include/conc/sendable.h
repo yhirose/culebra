@@ -136,6 +136,7 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
         sendable::send_error("a cyclic value cannot be sent");
       culebra::ValueWalkFrame walk;
       n.kind = K::Object;
+      n.is_error = o->is_error;
       if (o->shape) {
         for (size_t i = 0; i < o->prop_size(); i++) {
           sendable::SendNode key;
@@ -325,6 +326,7 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
         return {TAG_OBJECT,
                 reinterpret_cast<int64_t>(ctx.protos.at(n.ref_id))};
       auto* o = culebra_runtime_object_new();
+      o->is_error = n.is_error;
       // Register a shared class meta BEFORE filling entries so a backref
       // inside its own subtree (a method capturing another instance of
       // the same class) resolves — mirrors the closure memo above.

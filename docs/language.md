@@ -3944,7 +3944,9 @@ Semantics:
   expression yielding the value of whichever block ran last.
 * An uncaught `throw` at the top level is reported with
   `uncaught: ... at LINE:COL.` — the position of the `throw` itself — and
-  the program exits with a non-zero status.
+  the program exits with a non-zero status. The exception is a caught
+  runtime error thrown again (`catch e { throw e }`): it reports as that
+  error, `Kind: message at LINE:COL.` at the position it was raised.
 * `throw` is distinct from `return`: a function's early `return`
   unwinds only that function; a user `throw` travels past enclosing
   functions.
@@ -4136,7 +4138,10 @@ builds (unless noted).
 
 Uncaught errors print as `Kind: message at LINE:COL.` and exit with
 non-zero status. User-thrown values via `throw expr` print as
-`uncaught: {value} at LINE:COL.`, the position being the `throw`'s own.
+`uncaught: {value} at LINE:COL.`, the position being the `throw`'s own —
+unless the value is the error a `catch` received for a runtime error,
+which reports as that error at the position it was raised, even when it
+crossed an isolate boundary first.
 A value re-raised across an isolate boundary carries no position — the
 `throw` that produced it ran on another thread — and prints without one.
 A message that runs to several lines leads with the position instead

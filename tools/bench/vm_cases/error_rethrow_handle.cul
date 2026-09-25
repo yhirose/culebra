@@ -1,0 +1,9 @@
+# An error in a `handle` body passes through the effects driver, which catches
+# it to run the body's defers and throws it again: it still reports as itself.
+effect fn ask()
+effect fn body() {
+  defer { println("cleanup") }
+  let x = perform ask()
+  [1][9]
+}
+handle { body() } with ask(resume) { resume(1) }

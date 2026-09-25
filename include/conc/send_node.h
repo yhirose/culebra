@@ -47,6 +47,9 @@ struct SendNode {
   // incomplete SendNode, but a vector of std::pair<SendNode,SendNode> is fine.
   std::vector<std::pair<SendNode, SendNode>> entries;
   std::vector<bool> entry_mut;
+  // Object: the Error Object a catch built (JitObject::is_error), which a
+  // re-throw on the receiving side still reports as that error.
+  bool is_error = false;
 
   // Closure — interp form: defining AST + named free-var captures.
   const peg::Ast* params_ast = nullptr;            // borrowed, process-lifetime

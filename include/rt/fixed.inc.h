@@ -1363,6 +1363,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_try_translate() {
       reinterpret_cast<int64_t>(_culebra_heap_str(rt.pending_msg)), 0, 0);
   culebra_runtime_object_set(obj, "line", false, TAG_LONG, line, 0, 0);
   culebra_runtime_object_set(obj, "col", false, TAG_LONG, col, 0, 0);
+  obj->is_error = true;
   rt.thrown_tag = TAG_OBJECT;
   rt.thrown_data = reinterpret_cast<int64_t>(obj);
   rt.is_throw = 1;

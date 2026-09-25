@@ -399,6 +399,11 @@ struct JitObject {
   // neither path re-runs it: drop is an at-most-once operation. Mirrors the
   // interp's OrderedSymbolMap::dropped. See _culebra_call_drop_if_present.
   bool dropped = false;
+  // The Error Object a catch pad built for a runtime error
+  // (culebra_runtime_try_translate): thrown again, it reports as that error,
+  // not as a thrown value (format_uncaught_throw). In the padding before the
+  // pointer below, so JitObject stays inside its slab class. Never GEP'd.
+  bool is_error = false;
   JitIterFastFn fast_next_fn = nullptr;
   // Optional prototype pointer. When set, property lookup falls through
   // to `proto->slots` after this object's own slots are exhausted (one

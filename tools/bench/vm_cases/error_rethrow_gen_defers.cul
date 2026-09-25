@@ -1,0 +1,8 @@
+# A generator's pending defers all run, and the error one of them raised is
+# the one that leaves, reported as itself.
+fn g() {
+  defer { [1][9] }
+  defer { println("second") }
+  yield 1
+}
+for x in g() { println(x) }

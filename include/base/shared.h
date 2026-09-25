@@ -273,16 +273,19 @@ inline void culebra_note_pending_error(const CulebraError& e) {
 // the error carries a position. Every engine and runner prints this same
 // text — doctest `# !!` patterns match against it, so a reworded copy in one
 // lane would split doc-block results between engines.
-inline std::string format_error_message(const CulebraError& e) {
-  if (e.line <= 0 && e.col <= 0)
-    return culebra::format("{}: {}", e.kind, e.what());
+inline std::string format_error_message(std::string_view kind,
+                                        std::string_view msg, int64_t line,
+                                        int64_t col) {
+  if (line <= 0 && col <= 0) return culebra::format("{}: {}", kind, msg);
   // A message that runs to several lines — the matchers put each operand on
   // its own — would otherwise end "...  right: bar at 3:1.", where the
   // position reads as part of the last value. Lead with it instead.
-  std::string_view msg{e.what()};
   if (msg.find('\n') != std::string_view::npos)
-    return culebra::format("{} at {}:{}: {}", e.kind, e.line, e.col, msg);
-  return culebra::format("{}: {} at {}:{}.", e.kind, e.what(), e.line, e.col);
+    return culebra::format("{} at {}:{}: {}", kind, line, col, msg);
+  return culebra::format("{}: {} at {}:{}.", kind, msg, line, col);
+}
+inline std::string format_error_message(const CulebraError& e) {
+  return format_error_message(e.kind, e.what(), e.line, e.col);
 }
 
 // The same, for an interrupt a loop host reports rather than propagates.

@@ -924,7 +924,35 @@ class CulebraException : public std::exception {
 // used to compose it by hand with a comment asking the next editor to keep
 // them identical. The caller consumes the carrier's reference AFTER calling
 // this — formatting reads the payload.
+// Slot `k` of `o` when it holds a String / a Long.
+inline std::optional<std::string_view> _string_slot(const JitObject* o,
+                                                    const char* k) {
+  size_t i = o->find_slot(k);
+  if (i == static_cast<size_t>(-1)) return std::nullopt;
+  auto v = o->slots[i].value;
+  if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW) return std::nullopt;
+  return _str_sv(reinterpret_cast<const char*>(v.data));
+}
+inline std::optional<int64_t> _long_slot(const JitObject* o, const char* k) {
+  size_t i = o->find_slot(k);
+  if (i == static_cast<size_t>(-1) || o->slots[i].value.tag != TAG_LONG)
+    return std::nullopt;
+  return o->slots[i].value.data;
+}
+
 inline std::string format_uncaught_throw(const CulebraException& e) {
+  // The Error Object a catch built for a runtime error, thrown again, is that
+  // error — reported as it would have been had nothing caught it, at the
+  // position it was raised (its slots are immutable), not the re-throw's.
+  if (e.tag == TAG_OBJECT &&
+      reinterpret_cast<const JitObject*>(e.data)->is_error) {
+    auto* o = reinterpret_cast<const JitObject*>(e.data);
+    return culebra::format_error_message(
+        _string_slot(o, "kind").value_or("Error"),
+        _string_slot(o, "message").value_or(""),
+        _long_slot(o, "line").value_or(e.line),
+        _long_slot(o, "col").value_or(e.col));
+  }
   std::string s = _culebra_uncaught_display(e.tag, e.data);
   if (e.line <= 0 && e.col <= 0) return culebra::format("uncaught: {}", s);
   // Same rule as format_error_message: a value that runs to several lines
@@ -940,12 +968,8 @@ inline std::string format_uncaught_throw(const CulebraException& e) {
 // (vm_embed.h) surface a raw CulebraException through.
 inline void describe_thrown_value(JitValue v, std::string& kind,
                                   std::string& message) {
-  auto str_slot = [&](JitObject* o, const char* k) -> std::string {
-    size_t i = o->find_slot(k);
-    if (i == static_cast<size_t>(-1)) return {};
-    auto sv = o->slots[i].value;
-    if (sv.tag != TAG_STRING && sv.tag != TAG_STRINGVIEW) return {};
-    return std::string(_str_sv(reinterpret_cast<const char*>(sv.data)));
+  auto str_slot = [&](JitObject* o, const char* k) {
+    return std::string(_string_slot(o, k).value_or(""));
   };
   if (v.tag == TAG_OBJECT) {
     auto* o = reinterpret_cast<JitObject*>(v.data);
