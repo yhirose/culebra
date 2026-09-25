@@ -387,6 +387,10 @@ check_same "static new with ctor" 'class Z {
   new() { self.a = 1 }
   static new(x) { x }
 }'
+# `new(...) -> T` likewise: the constructor returns the instance, not its body.
+check_same "new with return type" 'class Z {
+  new() -> Z {}
+}'
 
 # A destructure's two throws both report the statement, not the leaf that
 # failed: the shape mismatch and a `let`-less leaf's ImmutableError.

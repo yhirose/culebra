@@ -1711,9 +1711,11 @@ class Printer {
       if (v.value) d = doc_concat({d, doc_text(" = "), print(*v.value)});
       return d;
     }
+    std::string ret = v.return_type.empty() ? "" : " -> " + std::string(v.return_type);
     return doc_concat({prefix, doc_text(std::string(v.name)), print_params(*v.params),
-                       doc_text(" "),
-                       print_block(**v.body, node_end(*v.params), /*empty_ok=*/true)});
+                       doc_text(ret + " "),
+                       print_block(**v.body, node_end(*m.nodes[m.nodes.size() - 2]),
+                                   /*empty_ok=*/true)});
   }
 
   DocP print_class(const peg::Ast& node) {

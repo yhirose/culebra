@@ -704,6 +704,7 @@ class Inference {
       case "METHOD"_: {
         auto mv = view_method(fn);
         if (mv.body) body = mv.body->get();
+        annotation = mv.return_type;
         break;
       }
       default:

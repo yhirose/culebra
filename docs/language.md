@@ -1569,6 +1569,12 @@ Semantics:
   instance — an explicit `return value` discards `value`. Identity-swap
   factories live as `static` methods (below) or as plain top-level
   functions.
+* A method's parameters and return value take the same annotations as a
+  `fn` (see *Return*), and they are checked the same way:
+  `area() -> Float { ... }` checks the returned value on fallthrough and
+  on `return`, and `c.area.return_type` reports `'Float'`. `static` and
+  `get` members take them too. `new` is the exception: its result is
+  always the instance, so `new(...) -> T` is a `SyntaxError`.
 * Methods prefixed with `static` live on the class object itself
   (not on instances), providing class-as-namespace for factories,
   constants-as-functions, and helpers. `Shape.create(...)` resolves

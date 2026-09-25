@@ -789,14 +789,15 @@ inline TraitMethodView view_trait_method(const peg::Ast& m) {
 // View of a METHOD AST node — see grammar:
 //   METHOD <- MEMBER_MOD _ IDENTIFIER _
 //               (TYPE_ANNOTATION (_ '=' _ EXPRESSION)? / '=' _ EXPRESSION
-//                / PARAMETERS _ BLOCK)
+//                / PARAMETERS (_ RETURN_TYPE)? _ BLOCK)
 // MEMBER_MOD (nodes[0]) holds at most one of `static` / `get`, so node
 // indices are unchanged; a `get` method (nodes[2] == PARAMETERS) is read
 // as a property. Three member forms, told apart by the tag of nodes[2]:
 //   - typed instance field (`x: Float32`, `x: Float32 = 0.0`): nodes[2]
 //     is TYPE_ANNOTATION; an optional default expression is nodes[3].
 //   - static field (`static x = expr`): nodes[2] is the value expression.
-//   - method (`f(a) { ... }`): nodes[2] is PARAMETERS, body is nodes[3].
+//   - method (`f(a) -> T { ... }`): nodes[2] is PARAMETERS, an optional
+//     RETURN_TYPE is nodes[3], and the body is the last node.
 // One central accessor avoids walker drift when the rule changes again.
 struct MethodView {
   bool is_static;
@@ -807,6 +808,7 @@ struct MethodView {
   bool is_field;                  // static field: `static x = expr`
   bool is_typed_field;            // typed instance field: `x: Type [= expr]`
   std::string_view type_annotation;  // typed field's type token; else empty
+  std::string_view return_type;   // method's `-> T` token; else empty
   const peg::Ast* params;         // nullptr unless method
   const std::shared_ptr<peg::Ast>* body;  // nullptr unless method
   const peg::Ast* value;          // static field value OR typed field
@@ -836,7 +838,7 @@ inline MethodView view_method(const peg::Ast& m) {
     return MethodView{
         /*is_static=*/false, /*is_getter=*/false, id.token, id.line, id.column,
         /*is_field=*/type.empty(), /*is_typed_field=*/!type.empty(), type,
-        /*params=*/nullptr, /*body=*/nullptr, /*value=*/nullptr,
+        /*return_type=*/{}, /*params=*/nullptr, /*body=*/nullptr, /*value=*/nullptr,
         /*value_sp=*/nullptr,
     };
   }
@@ -850,17 +852,19 @@ inline MethodView view_method(const peg::Ast& m) {
     return MethodView{
         is_static, is_getter, ident.token, ident.line, ident.column,
         /*is_field=*/false, /*is_typed_field=*/true,
-        /*type_annotation=*/third.token,
+        /*type_annotation=*/third.token, /*return_type=*/{},
         /*params=*/nullptr, /*body=*/nullptr,
         /*value=*/has_default ? m.nodes[3].get() : nullptr,
         /*value_sp=*/has_default ? &m.nodes[3] : nullptr,
     };
   }
   if (third.tag == "PARAMETERS"_) {
+    bool typed = m.nodes[3]->tag == "RETURN_TYPE"_;
     return MethodView{
         is_static, is_getter, ident.token, ident.line, ident.column,
         /*is_field=*/false, /*is_typed_field=*/false, /*type_annotation=*/{},
-        /*params=*/m.nodes[2].get(), /*body=*/&m.nodes[3], /*value=*/nullptr,
+        /*return_type=*/typed ? m.nodes[3]->token : std::string_view{},
+        /*params=*/m.nodes[2].get(), /*body=*/&m.nodes.back(), /*value=*/nullptr,
         /*value_sp=*/nullptr,
     };
   }
@@ -868,7 +872,8 @@ inline MethodView view_method(const peg::Ast& m) {
   return MethodView{
       is_static, is_getter, ident.token, ident.line, ident.column,
       /*is_field=*/true, /*is_typed_field=*/false, /*type_annotation=*/{},
-      /*params=*/nullptr, /*body=*/nullptr, /*value=*/m.nodes[2].get(),
+      /*return_type=*/{}, /*params=*/nullptr, /*body=*/nullptr,
+      /*value=*/m.nodes[2].get(),
       /*value_sp=*/&m.nodes[2],
   };
 }
@@ -1586,7 +1591,10 @@ inline void reject_or_pattern_binding(const peg::Ast& ast) {
 // kept the synthesized constructor, the JIT let the static overwrite it), so
 // the form has never meant one thing. Rejected at parse time on every
 // backend rather than picking a winner for code nobody can have relied on.
-inline void reject_static_new(const peg::Ast& ast) {
+// `new(...) -> T` is rejected for the same reason in miniature: the
+// constructor's result is the instance, never its body's value, so a declared
+// return type could only ever fail.
+inline void reject_invalid_new(const peg::Ast& ast) {
   using namespace peg::udl;
   if (ast.tag == "METHOD"_ && ast.nodes[0]->token == "static" &&
       ast.nodes[1]->token == "new" && ast.nodes.size() > 2 &&
@@ -1598,7 +1606,16 @@ inline void reject_static_new(const peg::Ast& ast) {
         "give the factory another name",
         static_cast<long>(id.line), static_cast<long>(id.column));
   }
-  for (const auto& n : ast.nodes) reject_static_new(*n);
+  if (ast.tag == "METHOD"_ && ast.nodes[1]->token == "new" &&
+      !view_method(ast).return_type.empty()) {
+    const auto& rt = *ast.nodes[3];
+    throw CulebraError(
+        "SyntaxError",
+        "`new` cannot declare a return type — the constructor always returns "
+        "the instance it builds",
+        static_cast<long>(rt.line), static_cast<long>(rt.column));
+  }
+  for (const auto& n : ast.nodes) reject_invalid_new(*n);
 }
 
 inline bool is_kw_only_sep(const peg::Ast& node) {

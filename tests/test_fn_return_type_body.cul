@@ -70,10 +70,73 @@ test_statement_form = fn () {
   assert_eq(named(), 1)
 }
 
+# --- a class method takes `-> T` too ---
+# METHOD is [MEMBER_MOD, IDENTIFIER, PARAMETERS, (RETURN_TYPE)?, BLOCK], so
+# the same slip would take nodes[3] (the RETURN_TYPE) as the body; the check
+# runs on fallthrough and on `return`, as for a `fn`.
+class Acc {
+  x: Long
+  new(.x) {}
+  add(n: Long) -> Long { self.x + n }
+  wrong() -> String { self.x }
+  early(n) -> Long {
+    if n > 0 { return 'pos' }
+    n
+  }
+  get half() -> Float { self.x / 2.0 }
+  get bad_half() -> String { self.x / 2.0 }
+  static make() -> Acc { Acc.new(7) }
+  maybe(flag) -> Long? { if flag { 1 } else { nil } }
+  # a comment between the annotation and the body
+  adder() -> Object {
+    let base = self.x
+    {apply: fn (n) { base + n }}
+  }
+}
+
+fn kind_of(f) {
+  try {
+    f()
+    'no error'
+  } catch e {
+    e.kind
+  }
+}
+
+test_method_return_type_passes = fn () {
+  let a = Acc.new(4)
+  assert_eq(a.add(1), 5)
+  assert_eq(a.half, 2.0)
+  assert_eq(Acc.make().x, 7)
+  assert_eq(a.maybe(true), 1)
+  assert_eq(a.maybe(false), nil)
+  assert_eq(a.early(-1), -1)
+}
+
+test_method_return_type_enforced = fn () {
+  let a = Acc.new(4)
+  assert_eq(kind_of(|| a.wrong()), 'TypeError')
+  assert_eq(kind_of(|| a.early(1)), 'TypeError')
+  assert_eq(kind_of(|| a.bad_half), 'TypeError')
+}
+
+test_method_return_type_reported = fn () {
+  let a = Acc.new(4)
+  assert_eq(a.add.return_type, 'Long')
+}
+
+test_annotated_method_body_captures = fn () {
+  assert_eq(Acc.new(10).adder().apply(5), 15)
+}
+
 test_nested_fn_in_annotated_expr()
 test_annotated_expr_captures()
 test_annotated_nested_in_annotated()
 test_annotated_expr_returns_closure()
 test_return_type_still_enforced()
 test_statement_form()
+test_method_return_type_passes()
+test_method_return_type_enforced()
+test_method_return_type_reported()
+test_annotated_method_body_captures()
 inspect('fn-return-type-body OK')

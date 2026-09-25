@@ -1255,8 +1255,8 @@ inline void descend_into_nested(const peg::Ast& node, const NameSet& my_locals,
 
   if (node.tag == "CLASS_DECL"_) {
     // [DECORATOR*, CLASS_HEAD, METHOD ...]. Each METHOD is viewed
-    // through `view_method` so size 3 (static field) and size 4
-    // (method) share the same handling.
+    // through `view_method` so size 3 (static field) and size 4-5
+    // (method, with an optional RETURN_TYPE) share the same handling.
     size_t i = 0;
     while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
       descend_into_nested(*node.nodes[i], my_locals, outer);

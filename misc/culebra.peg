@@ -86,7 +86,7 @@
   # invoked without parens as `obj.name`), or a plain method (`f(a) { ... }`).
   # The typed field alternative must come first so its `: Type` is matched
   # before the bare-`=` static field. See MethodView / view_method.
-  METHOD                   <-  MEMBER_MOD _ IDENTIFIER _ (TYPE_ANNOTATION (_ '=' _ EXPRESSION)? / '=' _ EXPRESSION / PARAMETERS _ BLOCK)
+  METHOD                   <-  MEMBER_MOD _ IDENTIFIER _ (TYPE_ANNOTATION (_ '=' _ EXPRESSION)? / '=' _ EXPRESSION / PARAMETERS (_ RETURN_TYPE)? _ BLOCK)
   # A single leading modifier: `static` (field/method) or `get` (getter).
   # `static` and `get` never combine, so one slot keeps METHOD's node
   # layout unchanged; the `< >` capture puts the matched keyword in the

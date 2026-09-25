@@ -199,6 +199,10 @@ void test_classes() {
     check(has_member(members_of_last(*a, "me_box"), "size", MemberKind::Field),
           "and has the fields its methods set");
   }
+  if (auto a = analyse("class Box {\n  new(v) { self.v = v }\n  label() -> String { self.v }\n}\n"
+                       "let text = Box(1).label()\ntext\n")) {
+    eq(type_of_last(*a, "text"), "String", "a method's declared return type wins over its body");
+  }
 }
 
 void test_catalog_and_scope() {
