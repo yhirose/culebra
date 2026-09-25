@@ -199,7 +199,7 @@ class EffectsLowerer {
   // fragment column.
   SourcePos err_pos(const peg::Ast& n) const {
     if (auto p = resolver_.resolve(src_, n)) return *p;
-    int64_t m = markers_.orig_line(n);
+    long m = static_cast<long>(markers_.orig_line(n));
     return {m ? m : static_cast<long>(n.line), static_cast<long>(n.column)};
   }
   int64_t err_line(const peg::Ast& n) const { return err_pos(n).line; }
