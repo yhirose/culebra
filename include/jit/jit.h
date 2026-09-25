@@ -4996,24 +4996,6 @@ struct JIT {
                                             "proto.or.self")};
   }
 
-  // Is this Object an instance of a class a lowering synthesized (its
-  // proto's is_lowered_state)? A class meta is never an instance, and an
-  // instance never carries the flag itself, so reading it off the object
-  // when there is no proto answers no.
-  llvm::Value* emit_proto_is_lowered_state(llvm::Value* objPtr) {
-    auto i8Ty = builder_.getInt8Ty();
-    auto [hasProto, holder] = emit_proto_or_self(objPtr);
-    auto flag = builder_.CreateLoad(
-        i8Ty,
-        builder_.CreateConstInBoundsGEP1_64(
-            i8Ty, holder, offsetof(JitObject, is_lowered_state),
-            "lowered.p"),
-        "lowered");
-    return builder_.CreateAnd(
-        hasProto, builder_.CreateICmpNE(flag, builder_.getInt8(0)),
-        "is.lowered.state");
-  }
-
   // check_pos_count_cls at a site passing `argc` (> 0) positionals to the
   // closure at `clsPtr`, called only when it would throw: the closure has a
   // meta and its keyword-only run starts below `argc`. Unsigned, so a

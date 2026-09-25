@@ -492,8 +492,7 @@ struct JitObject {
   // Set on a CLASS META (never an instance) whose class a lowering
   // synthesized — see culebra::is_lowered_state_class. An instance reaches it
   // through `proto`, which is how bind_method_value knows its own slots are
-  // compiler storage. Passed to build_class_meta; codegen reads it through the
-  // proto (emit_proto_is_lowered_state) to skip call_receiver.
+  // compiler storage. Passed to build_class_meta, never GEP'd by codegen.
   bool is_lowered_state = false;
   // Set on a CLASS META whose methods name their class (FuncInfo::own_name
   // read through the receiver): the send path ships the class object with

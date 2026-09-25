@@ -1786,23 +1786,13 @@ struct Lowering {
           break;
         }
         case Op::CallRecv: {
-          // call_receiver answers differently only for an Object whose
-          // proto is a lowering's state class, so that is asked here and
-          // the call made only then.
+          // Always the call, though it answers differently only for an
+          // Object whose proto is a lowering's state class: asking that
+          // inline made the slot a three-way merge at every method call, and
+          // a flat script's register coalescer paid more for those than the
+          // call costs (measured, docs/internals/vm.md §7).
           auto recv = load_slot(in.a);
           auto key = vm_str_const(in.c, ".vm.callrecv.key");
-          auto askBB = BasicBlock::Create(j.ctx_, "vm.callrecv.ask", fn);
-          auto callBB = BasicBlock::Create(j.ctx_, "vm.callrecv.call", fn);
-          auto contBB = BasicBlock::Create(j.ctx_, "vm.callrecv.cont", fn);
-          b.CreateCondBr(
-              b.CreateICmpEQ(j.extract_tag(recv), b.getInt8(TAG_OBJECT)),
-              askBB, contBB);
-          b.SetInsertPoint(askBB);
-          b.CreateCondBr(
-              j.emit_proto_is_lowered_state(
-                  b.CreateIntToPtr(j.extract_data(recv), ptrTy)),
-              callBB, contBB);
-          b.SetInsertPoint(callBB);
           b.CreateStore(
               j.emit_value_call(
                   j.module_->getOrInsertFunction(rt::call_receiver,
@@ -1811,8 +1801,6 @@ struct Lowering {
                   {j.extract_tag(recv), j.extract_data(recv), key},
                   "vm.callrecv"),
               slots[in.a]);
-          b.CreateBr(contBB);
-          b.SetInsertPoint(contBB);
           break;
         }
         case Op::CbType: {

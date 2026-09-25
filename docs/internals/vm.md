@@ -1491,7 +1491,14 @@ against the whole interval. `JIT::tune_backend` bounds that with LLVM's
 first. The bound is sensitive to the shape of the refcount guards:
 folding the sentinel tags under `& 31` in `emit_tag_is_refcounted` — two
 instructions fewer per site, a 5% smaller module — took the same file's
-coalescer from 1.2 s back to 9.2 s, so the range test stays.
+coalescer from 1.2 s back to 9.2 s, so the range test stays. It is as
+sensitive to a slot written on only one arm: asking `Op::CallRecv`'s
+question inline — the receiver's proto is a lowering's state class —
+and calling `call_receiver` only then made the slot a three-way merge at
+every method call. On a large flat test file that cost 0.57 s
+of optimize and codegen, while the method call it spared the helper ran
+no faster (9.3 ns against 9.4), so `CallRecv` stays one unconditional
+call.
 
 One pass of that pipeline is the lowering's own. The four refcount
 helpers each open with a guard — the value pair against
