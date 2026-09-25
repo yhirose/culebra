@@ -536,7 +536,7 @@ inline void run_isolate_child_jit(std::shared_ptr<IsolateCore> core,
     tv.data = e.data;
     JitSerCtx sc;
     sendable::SendNode tn = jit_serialize(tv, sc);
-    culebra_runtime_value_release(e.tag, e.data);  // balance the throw's retain
+    culebra_runtime_consume_throw(e);
     std::lock_guard<std::mutex> lk(core->m);
     core->thrown = std::move(tn);
     core->finished = true;
@@ -1561,7 +1561,7 @@ inline void _jit_merged_join(JitValue* __ret, JitClosure*, int8_t self_tag, int6
       // We are the matching catch, so we owe the throw's balancing release
       // (a compiled `catch` would do it). Keep the first value's origin ref for
       // the re-raise below; drop any later ones fully.
-      culebra_runtime_value_release(e.tag, e.data);
+      culebra_runtime_consume_throw(e);
       if (!first_err && !have_thrown && !interrupted) {
         have_thrown = true;
         tt = e.tag;

@@ -5751,7 +5751,7 @@ struct JIT {
       // Format first, then consume the carrier's reference (the payload's
       // final +1 — releasing first would free it under the formatter).
       auto s = format_uncaught_throw(e);
-      _culebra_value_release_impl(e.tag, e.data);
+      culebra_runtime_consume_throw(e);
       // Run (best-effort) any top-level defers the uncaught throw
       // skipped, so the global defer stack is drained between runs.
       try {

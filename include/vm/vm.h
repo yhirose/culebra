@@ -14031,7 +14031,7 @@ struct Exec {
       // reference — JIT::exec's boundary, so main.cc prints the same
       // "uncaught: ..." on every lane.
       auto s = format_uncaught_throw(e);
-      _culebra_value_release_impl(e.tag, e.data);
+      culebra_runtime_consume_throw(e);
       throw std::runtime_error(std::move(s));
     } catch (CulebraError& e) {
       // Backfill a positionless error from the published op position at

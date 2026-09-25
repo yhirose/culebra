@@ -161,6 +161,7 @@ class VmTestHost : public TestHost {
       throw;
     } catch (const CulebraException& e) {
       auto r = describe_thrown_value({e.tag, e.data});
+      culebra_runtime_consume_throw(e);
       kind = std::move(r.kind);
       message = std::move(r.message);
       line = r.line;

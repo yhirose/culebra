@@ -55,7 +55,7 @@ extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE int culebra_aot_bootstrap(
     // final +1). The shared formatter is what keeps this identical to
     // `JIT::exec` and the VM's boundary.
     auto s = format_uncaught_throw(e);
-    _culebra_value_release_impl(e.tag, e.data);
+    culebra_runtime_consume_throw(e);
     try {
       culebra_runtime_defer_run_to(0);
     } catch (...) {

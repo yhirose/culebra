@@ -981,6 +981,16 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_get_thrown_data() {
   return culebra::current_runtime().thrown_data;
 }
 
+// A host boundary that stops a user throw is its catch: it takes over the
+// reference the carrier holds (culebra_runtime_throw) and empties the carrier,
+// as a compiled `catch` does. Left set, the next catch pad to run — a top-level
+// defer's, or the next call into the same Runtime — would bind this spent
+// payload instead of translating its own error.
+inline void culebra_runtime_consume_throw(const CulebraException& e) {
+  culebra::current_runtime().is_throw = 0;
+  _culebra_value_release_impl(e.tag, e.data);
+}
+
 // Save / restore the thrown-value carrier across a cleanup call whose own
 // exception is swallowed (a for-in iterator's dispose() on the unwind /
 // early-return paths). The carrier is a plain global, so a culebra throw from

@@ -161,6 +161,23 @@ int run() {
     ok &= check(embed.call("sum", std::move(args)).as<int64_t>() == 9,
                 "the explicit vector form is unchanged");
   }
+  {  // a caught runtime error thrown again arrives as that error
+    embed.eval("fn rethrow() {\n  try { [1][9] } catch e { throw e }\n}");
+    std::string kind;
+    int64_t line = 0;
+    try {
+      embed.call("rethrow");
+    } catch (const culebra::CulebraError& e) {
+      kind = e.kind;
+      line = e.line;
+    }
+    ok &= check(kind == "IndexError" && line == 2,
+                "a re-thrown error keeps its kind and position through call");
+    // call was that throw's catch, so the next one binds its own error.
+    ok &= check(embed.eval("try { [1][9] } catch e { e.kind }")
+                        .as<std::string>() == "IndexError",
+                "a throw out of call leaves the carrier empty");
+  }
 
   // (6) define()'s container types, both directions.
   embed.define("host_total", [](std::vector<int64_t> xs) -> int64_t {

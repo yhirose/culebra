@@ -1050,6 +1050,13 @@ _run-tests BACKEND:
             *) echo "runner did not catch raw user throw:" >&2;
                echo "$throw_json" >&2; exit 1 ;;
         esac
+        # ...and the run goes on with an empty carrier: the next test's catch
+        # binds its own error.
+        case "$throw_json" in
+            *'"event":"test_pass","name":"later_catch_gets_its_own_error"'*) ;;
+            *) echo "a raw user throw leaked into the next test's catch:" >&2;
+               echo "$throw_json" >&2; exit 1 ;;
+        esac
         # `--doc --jobs n` splits the block list across n child processes; the
         # report has to come back identical to the serial one, same order and
         # all. The fixture is one small file, and `just test` has no other

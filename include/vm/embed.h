@@ -797,7 +797,7 @@ class Embed {
       // A script `throw v` crosses the compiled boundary as a tagged pair;
       // surface it structured.
       auto r = describe_thrown_value({e.tag, e.data});
-      _culebra_value_release_impl(e.tag, e.data);
+      culebra_runtime_consume_throw(e);
       throw culebra::CulebraError(r.kind.empty() ? "RuntimeError" : r.kind,
                                   r.message, r.line, r.col);
     }

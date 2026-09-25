@@ -71,7 +71,8 @@ class TestHost {
 
   // Called from inside a `catch (...)`: if the in-flight exception is this
   // engine's "a program threw a value", fill kind / message (and line / col
-  // when the value is a caught error thrown again) and return true. The
+  // when the value is a caught error thrown again), take over the value as
+  // its catch, and return true. The
   // engines disagree on the type — the interpreter throws the value, the
   // compiled lanes wrap it — and only they can rethrow to inspect it.
   virtual bool describe_current_throw(std::string& kind, std::string& message,

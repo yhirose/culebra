@@ -10,3 +10,11 @@
 fn raw_throw_escapes_to_runner() {
   throw {kind: "RawThrowKind", message: "expected payload"}
 }
+
+# The runner is that throw's catch: the next test's own error must reach its
+# catch, not the spent payload above (the carrier used to be left set).
+@test
+fn later_catch_gets_its_own_error() {
+  let k = try { [1][9] } catch e { e.kind }
+  assert_eq(k, 'IndexError')
+}
