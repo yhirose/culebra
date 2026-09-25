@@ -3944,7 +3944,7 @@ Semantics:
   expression yielding the value of whichever block ran last.
 * An uncaught `throw` at the top level is reported with
   `uncaught: ... at LINE:COL.` — the position of the `throw` itself — and
-  the program exits with a non-zero status. The exception is a caught
+  the program exits with status 1. The exception is a caught
   runtime error thrown again (`catch e { throw e }`): it reports as that
   error, `Kind: message at LINE:COL.` at the position it was raised.
 * `throw` is distinct from `return`: a function's early `return`
@@ -4137,7 +4137,9 @@ builds (unless noted).
 | `RuntimeError` | Fallback when the engine catches an unconverted `std::runtime_error` from a not-yet-migrated throw site. `e.line == 0` and `e.col == 0` are possible in this case only. | yes |
 
 Uncaught errors print as `Kind: message at LINE:COL.` and exit with
-non-zero status. User-thrown values via `throw expr` print as
+status 1 (an uncaught Ctrl+C prints `interrupted` and exits with 130),
+from `culebra` and from a `culebra build` binary alike. User-thrown
+values via `throw expr` print as
 `uncaught: {value} at LINE:COL.`, the position being the `throw`'s own —
 unless the value is the error a `catch` received for a runtime error,
 which reports as that error at the position it was raised, even when it

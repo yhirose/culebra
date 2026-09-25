@@ -3724,7 +3724,7 @@ Culebraは`throw`で例外を発生させ、`try`/`catch`で受けます。
   実行されたブロックの最後の値を返します
 * トップレベルまで到達した未catchの`throw`は
   `uncaught: ... at LINE:COL.`（`throw`自身の位置）と表示され、
-  プログラムは非ゼロ終了します。例外はcatchした実行時エラーを
+  プログラムは終了コード1で終了します。例外はcatchした実行時エラーを
   そのまま投げ直した場合（`catch e { throw e }`）で、そのエラー自身として
   `Kind: message at LINE:COL.`の形で、エラーが起きた位置で表示されます
 * `throw`は`return`と別: `return`は自分の関数だけを抜け、
@@ -3913,8 +3913,10 @@ shutdownパターン）は、`Signal.notify`でチャネルを登録します（
 | `RecursionError` | 関数呼び出しの深さが固定上限1000フレームを超えた。ユーザ関数の入口（fn・lambda・メソッド・コンストラクタ — フィールド初期化子はコンストラクタのフレーム内で走る）が1フレームで、組み込みヘルパーやマルチメソッドのディスパッチは数えない。上限と報告される深さは全backendで同一、位置はcall site。カウントは`throw`とともに巻き戻るので、`catch`後は全予算を使い直せる | はい |
 | `RuntimeError` | 未変換throw siteから伝播した`std::runtime_error`をエンジンが拾うフォールバック。この場合のみ`e.line == 0` / `e.col == 0`がありうる | はい |
 
-未catchのエラーは`Kind: message at LINE:COL.`形式で表示し非ゼロ終了
-します。ユーザが`throw expr`で投げた値は`uncaught: {value} at LINE:COL.`
+未catchのエラーは`Kind: message at LINE:COL.`形式で表示し終了コード1で
+終了します（未catchのCtrl+Cは`interrupted`を表示して130）。`culebra`でも
+`culebra build`で作ったバイナリでも同じです。ユーザが`throw expr`で投げた
+値は`uncaught: {value} at LINE:COL.`
 で表示され、位置は`throw`自身のものです。ただし`catch`が実行時エラーと
 して受け取った値を投げた場合は、isolate境界を越えた後でも、そのエラー
 自身としてエラーが起きた位置で表示されます。isolate境界を越えて再raise

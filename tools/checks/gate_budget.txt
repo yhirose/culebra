@@ -23,8 +23,8 @@ tests.cul 284
 tests.isolate 20
 
 # The curated bytecode cases held to frozen expected outputs, x2 lanes x3 GC
-# axes in the full gate.
-vm_cases 185
+# axes in the full gate, and built by `culebra build` in the aot lane.
+vm_cases 186
 
 # ctest entries. The shell-driven ones also make up the landing gate's CLI
 # phase (tools/checks/ctest_shell_driven.py names them).

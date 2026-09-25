@@ -1211,19 +1211,25 @@ _run-tests BACKEND:
     # the plain lane's 18s and re-apply to these 181 cases exactly what
     # run_gc_stress applies to the whole corpus, so the landing gate takes the
     # plain lane and the full gate — where run_gc_stress runs too — takes all
-    # three.
+    # three. The aot axis builds each case with `culebra build` and holds the
+    # binary to the same expectation: the AOT sweep compares stdout only, and
+    # every tests/*.cul exits 0, so this is where an AOT binary's uncaught-error
+    # line and exit code are read.
     run_vm_cases() {
-        local axes="${1:-gc}" out mode modes=("")
-        [[ "$axes" == plain ]] || modes=("" "STRESS=1" "REFS=1 STRESS=1")
+        local axes="${1:-gc}" out mode lane="" modes=("")
+        case "$axes" in
+            gc) modes=("" "STRESS=1" "REFS=1 STRESS=1") ;;
+            aot) lane=--aot ;;
+        esac
         for mode in "${modes[@]}"; do
-            out="$(env $mode ${TIMEOUT_BIN:+$TIMEOUT_BIN 300} tools/bench/vm_cases/compare.sh "$BIN" 2>&1)" \
+            out="$(env $mode ${TIMEOUT_BIN:+$TIMEOUT_BIN 300} tools/bench/vm_cases/compare.sh "$BIN" $lane 2>&1)" \
                 || { printf '%s\n' "$out"; exit 1; }
         done
-        if [[ "$axes" == plain ]]; then
-            echo "vm_cases OK (both lanes == frozen expected)"
-        else
-            echo "vm_cases OK (both lanes == frozen expected, + GC_STRESS, + GC_REFS GC_STRESS)"
-        fi
+        case "$axes" in
+            plain) echo "vm_cases OK (both lanes == frozen expected)" ;;
+            gc) echo "vm_cases OK (both lanes == frozen expected, + GC_STRESS, + GC_REFS GC_STRESS)" ;;
+            aot) echo "vm_cases OK (AOT binaries == frozen expected, stderr and exit code)" ;;
+        esac
     }
 
     # The ctest entries that drive the built binary through a shell script.
@@ -1499,6 +1505,7 @@ _run-tests BACKEND:
       "run_aot_hygiene|AOT hygiene (CULEBRA_HOME, cache prune, TMPDIR, webview link)|binary|test|aot|-|6"
       "run_aot_sweep sample|AOT (== vm, every tenth file)|binary|test|-|local|25"
       "run_aot_sweep full|AOT (== vm, every file)|binary||aot|-|154"
+      "run_vm_cases aot|AOT vm_cases (frozen expected, stderr and exit code)|binary|test|aot|-|14"
       "run_aot_axes|AOT axes (arguments, feature axes, link portability, baked preamble)|binary|test|aot|-|20"
       "run_wrap_test|wrap (extended binary, 3 backends)|tree|test|wrap|wrap|0"
     )

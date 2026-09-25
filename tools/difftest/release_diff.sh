@@ -74,9 +74,9 @@ run_one() {
 # and tells the report exactly what the older binary could not express.
 #
 # The per-case command swallows its status, and that is what isolates the cases
-# from one another: a failure to parse leaves the binary at 255, and 255 is the
-# one status xargs treats as `stop everything`. Left to propagate it aborts the
-# batch mid-flight, so the cases that had not started yet are read as
+# from one another: a failure to parse leaves a baseline of v0.7.0 or older at
+# 255, the one status xargs treats as `stop everything`. Left to propagate it
+# aborts the batch mid-flight, so the cases that had not started yet are read as
 # `unsupported` too — a set that depends on how far the parallel run had got,
 # which is how one unparseable case turned into 70-odd phantom differences.
 fallback_chunk() {

@@ -124,6 +124,11 @@ EMSCRIPTEN_KEEPALIVE int run_culebra(const char* src_c, const char* path_c,
   culebra::RuntimeScope scope(rt);
 
   int rc = 0;
+  auto exit_with = [](const auto& e) {
+    auto r = culebra::uncaught_report(e);
+    std::cerr << r.line << "\n";
+    return r.status;
+  };
   std::vector<std::string> msgs;
   culebra::ModuleLoader loader;
   std::vector<culebra::LoadedModule> modules;
@@ -131,7 +136,7 @@ EMSCRIPTEN_KEEPALIVE int run_culebra(const char* src_c, const char* path_c,
     modules = loader.load_program(path, src_c, msgs);
     if (modules.empty()) {
       for (auto& m : msgs) std::cerr << m << "\n";
-      rc = 1;
+      rc = culebra::kUncaughtExitStatus;
     } else {
       culebra::sys_argv() = argv;
       // The preamble declares the lazy stdlib's builders; the compiled lanes
@@ -141,11 +146,9 @@ EMSCRIPTEN_KEEPALIVE int run_culebra(const char* src_c, const char* path_c,
       culebra::vm::run_modules(modules);
     }
   } catch (const culebra::CulebraError& e) {
-    std::cerr << culebra::format_error_message(e) << "\n";
-    rc = 1;
+    rc = exit_with(e);
   } catch (const std::exception& e) {
-    std::cerr << "error: " << e.what() << "\n";
-    rc = 1;
+    rc = exit_with(e);
   }
 
   std::cout.flush();

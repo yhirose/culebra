@@ -2599,7 +2599,7 @@ int run_main(int argc, const char** argv) {
   culebra::sys_argv() = options.script_argv;
 
   if (!run_scripts(options)) {
-    return -1;
+    return culebra::kUncaughtExitStatus;
   }
 
   if (options.shell) {
@@ -2625,17 +2625,18 @@ int run_main(int argc, const char** argv) {
 int main(int argc, const char** argv) {
   // The one catch that turns a thrown error into an exit code, for the
   // subcommands as well as the script lane.
+  auto exit_with = [](const auto& e) {
+    auto r = culebra::uncaught_report(e);
+    cerr << r.line << endl;
+    return r.status;
+  };
   try {
     return run_main(argc, argv);
-  } catch (const culebra::Interrupted&) {
-    // Uncaught Ctrl+C / cancel: exit with the conventional 128+SIGINT.
-    cerr << "interrupted" << endl;
-    return 130;
+  } catch (const culebra::Interrupted& e) {
+    return exit_with(e);
   } catch (const culebra::CulebraError& e) {
-    print_culebra_error(e);
-    return -1;
+    return exit_with(e);
   } catch (const exception& e) {
-    cerr << e.what() << endl;
-    return -1;
+    return exit_with(e);
   }
 }

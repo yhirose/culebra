@@ -1,0 +1,3 @@
+# A message that runs to several lines leads with the position, on every lane
+# (an AOT binary once composed its own line and put it after the last value).
+assert_eq("foo", "bar")

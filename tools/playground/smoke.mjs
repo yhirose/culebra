@@ -69,8 +69,8 @@ async function wasm(name, src) {
   const p = `/work/${name}`;
   Module.FS.writeFile(p, src);
   captured = "";
-  // run_culebra returns 0/1, not a process status — compare the verdict, not
-  // the number (an uncaught throw exits 255 natively).
+  // run_culebra's result is a verdict, not a process status — compare it as
+  // one.
   const rc = await Module.ccall("run_culebra", "number",
                                 ["string", "string", "string"],
                                 [src, p, ""], { async: true });

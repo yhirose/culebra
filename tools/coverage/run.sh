@@ -127,10 +127,10 @@ sweep() {
 # exit non-zero by design — 84 of 177 and 4 of 8 here — and where their exit
 # code matters it is checked properly: compare.sh holds all three lanes to the
 # same one. Suites like that are swept with NOTE_RUN_MAY_THROW, which accepts
-# exactly the status an uncaught throw leaves (255). Anything else is still a
+# exactly the status an uncaught throw leaves (1). Anything else is still a
 # failure, a signal included, because those are the runs that stopped early
 # and left the corpus-only set inflated by what they did not reach.
-THROW_STATUS=255
+THROW_STATUS=1
 note_run() {
   local what="$1" rc; shift
   durable_runs=$((durable_runs + 1))

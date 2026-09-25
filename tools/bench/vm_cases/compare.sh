@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Check the bytecode VM's consumers against the frozen expected outputs on
-# every case file: the executor (--vm) and, when present, the LLVM lowering
-# (--jit).
+# every case file: the executor (--vm), when present the LLVM lowering
+# (--jit), and with `--aot` the binary `culebra build` makes of the case.
 #
 # Usage: [STRESS=1] [REFS=1] compare.sh <culebra-binary> [lane-flag]
 #        compare.sh --freeze <culebra-binary> [case.cul ...]
@@ -91,7 +91,12 @@ check_one() {
   local -a gc_env=()
   [ -n "$STRESS" ] && gc_env+=(CULEBRA_GC_STRESS=1)
   [ -n "$REFS" ] && gc_env+=(CULEBRA_GC_REFS=1)
-  b="$(env ${gc_env[@]+"${gc_env[@]}"} "$BIN" "$lane" "$n.cul" 2>&1)"; b_rc=$?
+  if [ "$lane" = --aot ]; then
+    local exe="$work/$n.aot"
+    b="$("$BIN" build "$n.cul" -o "$exe" 2>&1 && env ${gc_env[@]+"${gc_env[@]}"} "$exe" 2>&1)"; b_rc=$?
+  else
+    b="$(env ${gc_env[@]+"${gc_env[@]}"} "$BIN" "$lane" "$n.cul" 2>&1)"; b_rc=$?
+  fi
   if [ "$b_rc" = "$want_rc" ] && printf '%s' "$b" | cmp -s - "expected/$n.out"; then
     echo "OK   $n.cul $lane$tag" > "$log"
   else

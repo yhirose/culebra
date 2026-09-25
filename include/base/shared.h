@@ -269,6 +269,11 @@ inline void culebra_note_pending_error(const CulebraError& e) {
   culebra_note_pending_error(e.kind, e.what(), e.line, e.col);
 }
 
+// The exit status of a program that ends on an uncaught error, and on an
+// uncaught Ctrl+C (128+SIGINT).
+inline constexpr int kUncaughtExitStatus = 1;
+inline constexpr int kInterruptedExitStatus = 130;
+
 // The one spelling of an uncaught error: "Kind: msg", plus " at L:C." when
 // the error carries a position. Every engine and runner prints this same
 // text — doctest `# !!` patterns match against it, so a reworded copy in one
@@ -291,6 +296,26 @@ inline std::string format_error_message(const CulebraError& e) {
 // The same, for an interrupt a loop host reports rather than propagates.
 inline std::string format_error_message(const Interrupted& e) {
   return culebra::format("Interrupted: {}", e.what());
+}
+
+// A host's last word on an uncaught error: the line it prints on its stderr
+// and the status it exits with, paired here so neither drifts between the
+// CLI, an AOT binary and the playground (whose stderr is not stdio's).
+struct UncaughtReport {
+  std::string line;
+  int status;
+};
+inline UncaughtReport uncaught_report(std::string line) {
+  return {std::move(line), kUncaughtExitStatus};
+}
+inline UncaughtReport uncaught_report(const CulebraError& e) {
+  return uncaught_report(format_error_message(e));
+}
+inline UncaughtReport uncaught_report(const std::exception& e) {
+  return uncaught_report(std::string(e.what()));
+}
+inline UncaughtReport uncaught_report(const Interrupted&) {
+  return {"interrupted", kInterruptedExitStatus};
 }
 
 // Diagnostics joined into one "; "-separated line — the text the doctest

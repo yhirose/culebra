@@ -48,6 +48,20 @@ extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE int culebra_aot_bootstrap(
     ~ScriptTeardownGuard() { culebra::fswatch::fs_watch_close_all(); }
   } script_teardown_guard;
 
+  // The top-level defers an uncaught exit skipped run before the report, as
+  // in JIT::exec.
+  auto drain_defers = [] {
+    try {
+      culebra_runtime_defer_run_to(0);
+    } catch (...) {
+      // interrupt: a press inside a defer is dropped; the process is already
+      // exiting on the error that started the drain, as JIT::exec's does.
+    }
+  };
+  auto exit_with = [](const culebra::UncaughtReport& r) {
+    std::fprintf(stderr, "%s\n", r.line.c_str());
+    return r.status;
+  };
   try {
     main_fn();
   } catch (const CulebraException& e) {
@@ -56,42 +70,19 @@ extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE int culebra_aot_bootstrap(
     // `JIT::exec` and the VM's boundary.
     auto s = format_uncaught_throw(e);
     culebra_runtime_consume_throw(e);
-    try {
-      culebra_runtime_defer_run_to(0);
-    } catch (...) {
-    }
-    std::fprintf(stderr, "%s\n", s.c_str());
-    return 1;
-  } catch (const culebra::Interrupted&) {
-    // Uncaught Ctrl+C / cancel: drain top-level defers, then the clean
-    // message + conventional 128+SIGINT.
-    try {
-      culebra_runtime_defer_run_to(0);
-    } catch (...) {
-    }
-    std::fprintf(stderr, "interrupted\n");
-    return 130;
+    drain_defers();
+    return exit_with(culebra::uncaught_report(std::move(s)));
+  } catch (const culebra::Interrupted& e) {
+    drain_defers();
+    return exit_with(culebra::uncaught_report(e));
   } catch (culebra::CulebraError& e) {
-    // Drain top-level defers the uncaught error skipped (mirrors JIT::exec).
-    try {
-      culebra_runtime_defer_run_to(0);
-    } catch (...) {
-    }
+    drain_defers();
     // Backfill a positionless runtime error from the published op position
-    // (JIT::exec does the same before main.cc formats it), then print
-    // `kind: msg at L:C.` so AOT matches `culebra --jit` / the interpreter.
+    // (JIT::exec does the same before main.cc reports it).
     _jit_backfill_op_pos(e);
-    if (e.line > 0 || e.col > 0) {
-      std::fprintf(stderr, "%s: %s at %lld:%lld.\n", e.kind.c_str(), e.what(),
-                   static_cast<long long>(e.line),
-                   static_cast<long long>(e.col));
-    } else {
-      std::fprintf(stderr, "%s: %s\n", e.kind.c_str(), e.what());
-    }
-    return 1;
+    return exit_with(culebra::uncaught_report(e));
   } catch (const std::exception& e) {
-    std::fprintf(stderr, "%s\n", e.what());
-    return 1;
+    return exit_with(culebra::uncaught_report(e));
   }
   return 0;
 }

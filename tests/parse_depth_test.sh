@@ -40,15 +40,15 @@ run_ok() {  # run_ok <label> <expected-stdout> <culebra-args...>
 # --- too deep: clean SyntaxError, process must not crash -------------------
 # `run`, `fmt` and `lint` all parse the file; parser.h converts the guard's
 # throw into the ordinary parse-error channel, so each reports and exits with
-# its usual error status. rc in 128..254 is a signal death — the SIGSEGV this
-# guard exists to prevent — and 134 is what an uncaught throw would be.
+# its usual error status. rc >= 128 is a signal death — the SIGSEGV this
+# guard exists to prevent.
 for shape in "[ ]" "{ }" "( )"; do
   set -- $shape
   deep "$1" "$2" 20000 > "$TMP/deep.cul"
   for cmd in "--vm" "fmt --check" "lint"; do
     out=$("$CULEBRA" $cmd "$TMP/deep.cul" 2>&1)
     rc=$?
-    if [ $rc -ge 128 ] && [ $rc -lt 255 ]; then
+    if [ $rc -ge 128 ]; then
       echo "FAIL $cmd deep '$1': died with signal (rc=$rc), expected a diagnostic"
       fail=1
     elif ! printf '%s' "$out" | grep -q "nesting too deep"; then
@@ -96,11 +96,8 @@ run_ok "100-deep tuple pattern" 1 --vm "$TMP/tuple.cul"
   printf '1\nIO.println(x)\n'
 } > "$TMP/wide.cul"
 out=$("$CULEBRA" --vm "$TMP/wide.cul" 2>&1); rc=$?
-# rc 255 is culebra's uncaught-throw exit (NOT a signal: those are 128+N,
-# e.g. 134 = SIGABRT — asserting `>= 128` here reads the clean reject as a
-# signal death, measured).
-if [ "$rc" -ne 255 ]; then
-  echo "FAIL 50k-term chain: expected the clean reject exit 255, got rc=$rc"; fail=1
+if [ "$rc" -ne 1 ]; then
+  echo "FAIL 50k-term chain: expected the clean reject exit 1, got rc=$rc"; fail=1
 elif ! printf '%s' "$out" | grep -q 'frame larger than'; then
   echo "FAIL 50k-term chain: expected the frame-slot reject, got: $out"; fail=1
 fi
