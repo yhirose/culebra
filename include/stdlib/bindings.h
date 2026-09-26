@@ -836,22 +836,32 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_fs_readlink(
   return _culebra_heap_str(out);
 }
 
-// `FS.walk(path)` -> Array<String>, recursive depth-first.
+// `FS.walk(path)` -> Array<String>, recursive depth-first. A directory it may
+// not read is listed but not entered, as FS.glob passes one by; any other
+// failure mid-walk throws rather than returning the part read so far.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_fs_walk(
     const char* path, int64_t line, int64_t col) {
+  // The directory asked for is opened once without the skip, so one it may
+  // not read raises instead of walking as empty.
   std::error_code ec;
-  std::filesystem::recursive_directory_iterator it(path ? path : "", ec);
+  { std::filesystem::directory_iterator probe(path ? path : "", ec); }
+  std::filesystem::recursive_directory_iterator it;
+  if (!ec)
+    it = std::filesystem::recursive_directory_iterator(
+        path ? path : "",
+        std::filesystem::directory_options::skip_permission_denied, ec);
   if (ec) _fs_throw_io(culebra::format("FS.walk('{}')", path ? path : ""),
                        line, col, ec);
-  auto* arr = culebra_runtime_array_new();
-  std::error_code iter_ec;
-  for (auto end = std::filesystem::recursive_directory_iterator();
-       it != end; it.increment(iter_ec)) {
-    if (iter_ec) break;
-    auto* s = _culebra_heap_str(it->path().string());
-    culebra_runtime_array_push(arr, TAG_STRING, reinterpret_cast<int64_t>(s));
+  JitOwnedVal owned{TAG_ARRAY, reinterpret_cast<int64_t>(culebra_runtime_array_new())};
+  auto* arr = reinterpret_cast<JitArray*>(owned.borrow().data);
+  for (auto end = std::filesystem::recursive_directory_iterator(); it != end;) {
+    std::string entry = it->path().string();
+    culebra_runtime_array_push(arr, TAG_STRING,
+                               reinterpret_cast<int64_t>(_culebra_heap_str(entry)));
+    it.increment(ec);
+    if (ec) _fs_throw_io(culebra::format("FS.walk('{}')", entry), line, col, ec);
   }
-  return arr;
+  return reinterpret_cast<JitArray*>(owned.consume().data);
 }
 
 // `FS.glob(pattern)` -> Array<String>, shares culebra::_fs_glob with interp.

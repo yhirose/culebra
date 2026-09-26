@@ -2081,8 +2081,11 @@ static vector<string> expand_cul_paths(const string& tool,
     std::error_code ec;
     if (!fs::is_directory(a, ec)) { out.push_back(a); continue; }
     vector<string> found;
-    for (fs::recursive_directory_iterator it(a, ec), end; it != end; it.increment(ec)) {
+    // The error check comes before the end test: a failed increment leaves the
+    // iterator equal to end (see the bundle walk above).
+    for (fs::recursive_directory_iterator it(a, ec), end;; it.increment(ec)) {
       if (ec) { std::println(stderr, "culebra {}: can't read '{}'", tool, a); ok = false; break; }
+      if (it == end) break;
       if (it->is_regular_file(ec) && it->path().extension() == ".cul")
         found.push_back(it->path().string());
     }

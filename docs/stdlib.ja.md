@@ -729,7 +729,9 @@ inspect(st.size)
 #### `FS.walk(path: String) -> Array<String>`
 
 `path`配下の全パスを再帰・深さ優先で。各要素はフルパス。
-ディレクトリでなければ`IOError`。
+読む権限の無いディレクトリは要素には入るが、その中へは降りない。
+`path`がディレクトリでないとき、`path`自体が読めないとき、配下の読み込みが
+それ以外の理由で失敗したときは`IOError`。
 
 #### `FS.glob(pattern: String) -> Array<String>`
 

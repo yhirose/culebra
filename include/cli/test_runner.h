@@ -181,16 +181,13 @@ inline std::vector<std::filesystem::path> discover_test_files(
                 << "'\n";
       continue;
     }
+    // A failed increment leaves the iterator at its end, so the loop stops
+    // there and the warning below says so; an unreadable directory is passed
+    // by instead of ending the walk.
     std::error_code walk_ec;
-    auto it = fs::recursive_directory_iterator(p, walk_ec);
+    auto it = fs::recursive_directory_iterator(
+        p, fs::directory_options::skip_permission_denied, walk_ec);
     for (; it != fs::end(it); it.increment(walk_ec)) {
-      if (walk_ec) {
-        std::cerr << "culebra test: warning: descent into '"
-                  << it->path().string() << "' failed: "
-                  << walk_ec.message() << "\n";
-        walk_ec.clear();
-        continue;
-      }
       std::error_code stat_ec;
       if (!it->is_regular_file(stat_ec)) continue;
       if (match(it->path())) {

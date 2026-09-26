@@ -60,6 +60,31 @@ assert_eq(try {
   e.kind
 }, "IOError")
 
+// FS.walk lists a directory it may not read but does not enter it, and walks
+// on past it — it used to stop there and return what it had so far. Walked
+// from a directory whose entries sort around the locked one, so the siblings
+// after it in either readdir order are checked. (Skipped when the process can
+// read a mode-000 directory anyway, as root can.)
+let wroot = FS.join(tmp_root, "walk")
+for d in ["a", "m/locked/inner", "z"] {
+  FS.mkdir(FS.join(wroot, d))
+}
+FS.write(FS.join(wroot, "a", "f"), "1")
+FS.write(FS.join(wroot, "z", "g"), "1")
+let locked = FS.join(wroot, "m", "locked")
+FS.chmod(locked, 0o000)
+let privileged = try {
+  FS.walk(locked)
+  true
+} catch e {
+  false
+}
+let walked = FS.walk(wroot).map(|p| p.replace(wroot, "")).sorted()
+FS.chmod(locked, 0o755)
+if !privileged {
+  assert_eq(walked, ["/a", "/a/f", "/m", "/m/locked", "/z", "/z/g"])
+}
+
 // symlink / readlink / is_symlink live in test_fs_symlink.cul — they work on
 // Windows (given the privilege it asks for), unlike everything above.
 

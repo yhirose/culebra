@@ -747,7 +747,9 @@ inspect(st.size)
 #### `FS.walk(path: String) -> Array<String>`
 
 Every path under `path`, recursive, depth-first. Each entry is a full
-path. Throws `IOError` if `path` isn't a directory.
+path. A directory the process may not read is listed but not entered.
+Throws `IOError` if `path` isn't a directory or can't be read, or if
+reading one under it fails for any other reason.
 
 #### `FS.glob(pattern: String) -> Array<String>`
 
