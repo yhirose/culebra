@@ -120,17 +120,27 @@ CULEBRA_RT_COMPRESS_LINKAGE Result gunzip(std::string_view data) {
   zs.avail_in = static_cast<uInt>(data.size());
   std::string out;
   unsigned char buf[16384];
-  int ret;
-  do {
-    zs.next_out = buf;
-    zs.avail_out = sizeof(buf);
-    ret = inflate(&zs, Z_NO_FLUSH);
-    if (ret != Z_OK && ret != Z_STREAM_END) {
+  for (;;) {
+    int ret;
+    do {
+      zs.next_out = buf;
+      zs.avail_out = sizeof(buf);
+      ret = inflate(&zs, Z_NO_FLUSH);
+      if (ret != Z_OK && ret != Z_STREAM_END) {
+        inflateEnd(&zs);
+        return {{}, "invalid gzip data"};
+      }
+      out.append(reinterpret_cast<char*>(buf), sizeof(buf) - zs.avail_out);
+    } while (ret != Z_STREAM_END);
+    if (zs.avail_in == 0) break;
+    // A gzip file may hold several members back to back (RFC 1952 §2.2), and
+    // `gunzip` reads them all; anything else after the stream is an error.
+    if (zs.avail_in < 2 || zs.next_in[0] != 0x1f || zs.next_in[1] != 0x8b) {
       inflateEnd(&zs);
-      return {{}, "invalid gzip data"};
+      return {{}, "trailing data after the compressed stream"};
     }
-    out.append(reinterpret_cast<char*>(buf), sizeof(buf) - zs.avail_out);
-  } while (ret != Z_STREAM_END);
+    inflateReset(&zs);
+  }
   inflateEnd(&zs);
   return {std::move(out), {}};
 #endif

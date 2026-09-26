@@ -4478,7 +4478,9 @@ gzip / deflate (de)compression, backed by zlib. Every function is binary-safe
 
 `gunzip` auto-detects the header, so it decompresses both `gzip` and
 `deflate` output with the one function — there is no separate `inflate`.
-A truncated or unrecognized input raises `ValueError`.
+Several gzip members back to back (as `cat a.gz b.gz` makes) decompress
+to their concatenation. A truncated or unrecognized input, or bytes after
+the compressed stream that start no gzip member, raise `ValueError`.
 
 ```culebra
 let original = "the quick brown fox the quick brown fox the quick brown fox the quick brown fox"

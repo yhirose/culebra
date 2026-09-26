@@ -4346,8 +4346,10 @@ NULも往復で保持）です。
 | `Compress.deflate(data: String, level: Long = -1) -> String` | zlib圧縮したバイト列（RFC 1950ラッパー）— `gzip`からgzip固有のヘッダを除いたもの |
 
 `gunzip`はヘッダを自動判別するので、`gzip`と`deflate`の出力をどちらも同じ
-1つの関数で展開します — 別に`inflate`はありません。切り詰められた入力や
-認識できない入力は`ValueError`。
+1つの関数で展開します — 別に`inflate`はありません。gzipのメンバーが
+複数並んでいれば（`cat a.gz b.gz`で作ったものなど）、展開結果はそれらを
+つないだものです。切り詰められた入力、認識できない入力、圧縮ストリームの
+後ろにgzipメンバーでないバイトが続く入力は`ValueError`。
 
 ```culebra
 let original = "the quick brown fox the quick brown fox the quick brown fox the quick brown fox"

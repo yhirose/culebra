@@ -95,4 +95,14 @@ let d = Compress.deflate
 assert_eq(Compress.gunzip(d(s)), s)
 assert_eq(parts.map(|p| Compress.gunzip(Compress.deflate(p, 9))), parts)
 
+// --- several gzip members back to back decompress to their concatenation
+//     (it used to stop after the first); other bytes after the stream raise ---
+assert_eq(Compress.gunzip(Compress.gzip("hello ") + Compress.gzip("world")), "hello world")
+assert_throws("ValueError", fn () {
+  Compress.gunzip(Compress.gzip("hello") + "garbage")
+})
+assert_throws("ValueError", fn () {
+  Compress.gunzip(Compress.deflate("hello") + Compress.deflate("world"))
+})
+
 inspect("compress tests passed")
