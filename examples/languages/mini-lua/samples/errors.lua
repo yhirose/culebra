@@ -13,6 +13,28 @@ print(pcall(function() return "fine", 2 end))
 local ok, e = pcall(function() error({code = 42}) end)
 print(ok, type(e), e.code)
 
+-- error's level: 1, the default, adds the position of the call; 0 adds
+-- none. Called through a value, as pcall does here, error has no Lua
+-- caller whose position it could add. With no argument the value is nil.
+print(pcall(function() error("one", 1) end))
+print(pcall(function() error("zero", 0) end))
+print(pcall(error, "via pcall"))
+print(pcall(function() error() end))
+
+-- `error` is a global like any other: a program may put its own function
+-- there, and a local of that name hides it. A call then gets exactly the
+-- arguments written and answers what the function answered.
+local builtin_error = error
+error = function(a, b) return "mine:" .. tostring(a) .. "," .. tostring(b), 2 end
+print(error("x"))
+print(error("y", 0), "|")
+error = builtin_error
+do
+  local error = function(m) return "local " .. m end
+  print(error("w"))
+end
+print(pcall(function() error("restored") end))
+
 -- A throw crosses as many frames as it has to.
 local function deep(n)
   if n == 0 then error("bottom") end

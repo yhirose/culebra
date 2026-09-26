@@ -38,3 +38,28 @@ repeat r = r + 1 until r == 3
 print(r)
 
 print(string.upper("abc"), ("xy"):rep(3), ("hello"):sub(2, 3), ("hello"):sub(-3))
+-- sub's end may be left off or negative, and both ends clamp to the string;
+-- rep takes an optional separator.
+print(("hello"):sub(2, -2), ("hello"):sub(0), ("hello"):sub(-10, 2), ("hello"):sub(3, 10))
+print("[" .. ("hello"):sub(4, 2) .. "]", ("ab"):rep(3, ","), ("ab"):rep(0, ","))
+
+-- An if chain is its condition and block, any elseif arms, then the else.
+local function sign(v)
+  if v > 0 then return "+" elseif v < 0 then return "-" else return "0" end
+end
+local function size(v)
+  if v < 10 then return "small" elseif v < 100 then return "medium"
+  elseif v < 1000 then return "large" end
+  return "huge"
+end
+print(sign(5), sign(-5), sign(0), size(1), size(50), size(500), size(5000))
+
+-- A lone string or table constructor may stand for the argument list.
+print "one\targ"
+local function cat(a) return function(b) return a .. b end end
+local o = {tag = "o"}
+function o:wrap(s) return self.tag .. "<" .. s .. ">" end
+function o:count(t) return #t end
+local function first(t) return t[1] end
+print(first{"f"}, o:count{1, 2, 3}, cat"x""y", o:wrap"s")
+print(pcall(function() error "boom" end))

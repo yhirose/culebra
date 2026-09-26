@@ -20,6 +20,17 @@ print(#a, table.concat(a, ","))
 table.insert(a, 36)
 print(#a, a[6])
 
+-- With a position, insert moves the rest up; the argument count, not a nil,
+-- is what picks that form. concat's separator and range are all optional.
+local l = {"b", "d"}
+table.insert(l, 1, "a")
+table.insert(l, 3, "c")
+table.insert(l, 5, nil)
+table.insert(l, #l + 1, "e")
+print(#l, table.concat(l), table.concat(l, "-", 2), table.concat(l, "-", 2, 3))
+print("[" .. table.concat(l, "-", 3, 2) .. "]", table.concat({1, 2.5, "x"}, " "))
+print((pcall(table.insert, l, 9, "x")), (pcall(table.insert, l, 1, 2, 3)), #l)
+
 -- Keys are values: 1 and 1.0 are the same slot, and a string key is not
 -- the same as the number that prints like it.
 local k = {}
