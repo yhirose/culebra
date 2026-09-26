@@ -5057,27 +5057,32 @@ inline JitValue _ns_audio_tone(JitValue* a, int64_t) {
       _ns_adapt::take_long(a[8]), _ns_adapt::take_long(a[9]));
   return _ns_adapt::v_nil();
 }
+struct _AudioBytes {
+  const uint8_t* p;
+  int64_t n;
+  const char* fmt;
+};
+inline _AudioBytes _ns_audio_bytes(JitValue v,
+                                   const char* (*sniff)(const uint8_t*, size_t),
+                                   const char* error) {
+  auto sv = _ns_adapt::require_sv(v, "data");
+  auto p = reinterpret_cast<const uint8_t*>(sv.data());
+  const char* fmt = sniff(p, sv.size());
+  if (fmt == nullptr) culebra::throw_runtime_error_at("ValueError", error, 0, 0);
+  return {p, static_cast<int64_t>(sv.size()), fmt};
+}
 inline JitValue _ns_audio_sound_load(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
-  auto sv = _culebra_str_view(a[0].tag, a[0].data);
-  auto p = reinterpret_cast<const uint8_t*>(sv.data());
-  const char* fmt = ad::sound_format(p, sv.size());
-  if (fmt == nullptr)
-    culebra::throw_runtime_error_at("ValueError", ad::kSoundFormatError, 0, 0);
+  auto b = _ns_audio_bytes(a[0], ad::sound_format, ad::kSoundFormatError);
   int64_t id = ad::alloc_id();
-  ad::sound_load(id, p, static_cast<int64_t>(sv.size()), fmt);
+  ad::sound_load(id, b.p, b.n, b.fmt);
   return _ns_adapt::v_long(id);
 }
 inline JitValue _ns_audio_music_load(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
-  auto sv = _culebra_str_view(a[0].tag, a[0].data);
-  auto p = reinterpret_cast<const uint8_t*>(sv.data());
-  const char* fmt = ad::music_format(p, sv.size());
-  if (fmt == nullptr)
-    culebra::throw_runtime_error_at("ValueError", ad::kMusicFormatError, 0, 0);
+  auto b = _ns_audio_bytes(a[0], ad::music_format, ad::kMusicFormatError);
   int64_t id = ad::alloc_id();
-  ad::music_load(id, p, static_cast<int64_t>(sv.size()), fmt,
-                 _ns_adapt::take_bool(a[1]) != 0);
+  ad::music_load(id, b.p, b.n, b.fmt, _ns_adapt::take_bool(a[1]) != 0);
   return _ns_adapt::v_long(id);
 }
 inline JitValue _ns_audio_stream_new(JitValue* a, int64_t) {

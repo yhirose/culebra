@@ -189,7 +189,7 @@ compared=0
 fail=0
 run_file() {
   local file=$1 out rc=0
-  out=$(CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" --vm "$file" 2>&1) || rc=$?
+  out=$(CULEBRA_CANVAS_HEADLESS=1 CULEBRA_AUDIO=off "$CULEBRA" --vm "$file" 2>&1) || rc=$?
   if [[ $rc -ne 0 ]]; then
     if [[ $file == */optional_* ]] && grep -q "NameError" <<<"$out"; then
       local ns=${file##*/optional_}

@@ -15,8 +15,6 @@
 #include "stdlib/keynames.h"
 
 #include <algorithm>
-#include <chrono>
-#include <cmath>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -24,7 +22,6 @@
 #include <deque>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 
 #include <unicodelib_encodings.h>  // unicode::utf8::encode_codepoint
 
@@ -129,8 +126,7 @@ bool forced_headless() {
   return h;
 }
 
-// Registers the exit teardown; defined with the audio state it tears down, at
-// the end of the audio section.
+// Registers the exit teardown; defined with the teardown, below the input code.
 void arm_exit_teardown();
 
 // raylib reports a graphics device it could not create with LOG_FATAL, and its
@@ -313,8 +309,7 @@ void drain_key_events() {
   }
 }
 
-// Hand the window back at process exit. It clears what guards it, so a second
-// registration (below) finds nothing left to do.
+// Hand the window back at process exit.
 void exit_teardown() {
   if (g_window_ready && IsWindowReady()) {
     UnloadTexture(g_tex);

@@ -13,9 +13,7 @@
 #include <frontend/parser.h>         // parse_with_transforms, peg::Ast
 #include <base/shared.h>         // LazyFnGroup, lazy_fn_groups, trim_ascii
 
-#include <cctype>
 #include <memory>
-#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -130,13 +128,14 @@ struct LazyNsModule {
   const char* name;
   const char* source;
   const char* builder;
+  const char* needs = nullptr;  // a module this one's own code names
 };
 
 inline std::span<const LazyNsModule> lazy_ns_modules() {
   static constexpr LazyNsModule kModules[] = {
       {"Time", TIME_MODULE_SOURCE, "_time_module"},
       {"Term", TERM_MODULE_SOURCE, "_term_module"},
-      {"Canvas", CANVAS_MODULE_SOURCE, "_canvas_module"},
+      {"Canvas", CANVAS_MODULE_SOURCE, "_canvas_module", "Audio"},
       {"Audio", AUDIO_MODULE_SOURCE, "_audio_module"},
       {"Args", ARGS_MODULE_SOURCE, "_args_module"},
       {"Regex", REGEX_MODULE_SOURCE, "_regex_module"},
@@ -229,60 +228,17 @@ struct StdlibSelection {
   std::vector<const LazyFnGroup*> groups;
 };
 
-// The other stdlib modules a module's own code names (Canvas forwards its sound
-// to Audio), so selecting one selects what it needs: the registry resolves a
-// name only if something registered it. Read once off each source, `#`
-// comments aside — a mention in prose must not pull a module in.
-inline bool lazy_ns_module_needs(const LazyNsModule& m, std::string_view other) {
-  static const auto needs = [] {
-    std::set<std::pair<std::string_view, std::string_view>> out;
-    for (const auto& a : lazy_ns_modules()) {
-      std::string_view src(a.source);
-      size_t i = 0;
-      while (i < src.size()) {
-        char c = src[i];
-        if (c == '#') {
-          i = src.find('\n', i);
-          if (i == std::string_view::npos) break;
-          continue;
-        }
-        if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
-          size_t j = i;
-          while (j < src.size() &&
-                 (std::isalnum(static_cast<unsigned char>(src[j])) || src[j] == '_'))
-            ++j;
-          std::string_view id = src.substr(i, j - i);
-          for (const auto& b : lazy_ns_modules())
-            if (id == b.name && id != a.name)
-              out.emplace(a.name, b.name);
-          i = j;
-          continue;
-        }
-        ++i;
-      }
-    }
-    return out;
-  }();
-  return needs.contains({m.name, other});
-}
-
 inline StdlibSelection select_stdlib_modules(
     const std::unordered_set<std::string_view>& names) {
   StdlibSelection sel;
+  // A module brings the one its own code names (`needs`): the registry
+  // resolves a name only if something registered it.
   std::unordered_set<std::string_view> chosen;
   for (const auto& m : lazy_ns_modules())
-    if (names.contains(m.name)) chosen.insert(m.name);
-  for (bool grew = true; grew;) {
-    grew = false;
-    for (const auto& a : lazy_ns_modules()) {
-      if (!chosen.contains(a.name)) continue;
-      for (const auto& b : lazy_ns_modules())
-        if (!chosen.contains(b.name) && lazy_ns_module_needs(a, b.name)) {
-          chosen.insert(b.name);
-          grew = true;
-        }
+    if (names.contains(m.name)) {
+      chosen.insert(m.name);
+      if (m.needs) chosen.insert(m.needs);
     }
-  }
   for (const auto& m : lazy_ns_modules())
     if (chosen.contains(m.name)) sel.modules.push_back(&m);
   for (const auto& g : lazy_fn_groups())
@@ -301,13 +257,15 @@ inline std::string stdlib_module_source(const LazyFnGroup& g) {
   return _wrap_lazy_fn_group(g);
 }
 
-inline std::string stdlib_preamble_for(
-    const std::unordered_set<std::string_view>& names) {
-  auto sel = select_stdlib_modules(names);
+inline std::string stdlib_preamble_for(const StdlibSelection& sel) {
   std::string preamble;
   for (const auto* m : sel.modules) preamble.append(stdlib_module_source(*m));
   for (const auto* g : sel.groups) preamble.append(stdlib_module_source(*g));
   return preamble;
+}
+inline std::string stdlib_preamble_for(
+    const std::unordered_set<std::string_view>& names) {
+  return stdlib_preamble_for(select_stdlib_modules(names));
 }
 
 // Which names in `names` made stdlib_preamble_for emit something — module
@@ -317,13 +275,16 @@ inline std::string stdlib_preamble_for(
 // registered twice would mint a second instance of the namespace, and values
 // an earlier line built would stop matching it.
 inline std::unordered_set<std::string_view> stdlib_preamble_triggers(
-    const std::unordered_set<std::string_view>& names) {
-  auto sel = select_stdlib_modules(names);
+    const StdlibSelection& sel) {
   std::unordered_set<std::string_view> out;
   for (const auto* m : sel.modules) out.insert(m->name);
   for (const auto* g : sel.groups)
     out.insert(g->members.begin(), g->members.end());
   return out;
+}
+inline std::unordered_set<std::string_view> stdlib_preamble_triggers(
+    const std::unordered_set<std::string_view>& names) {
+  return stdlib_preamble_triggers(select_stdlib_modules(names));
 }
 
 // --- Baked preamble (the JIT/AOT lanes) -------------------------------------

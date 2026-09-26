@@ -11,7 +11,6 @@
 #include "stdlib/audio.h"
 
 #include <algorithm>
-#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -312,15 +311,23 @@ std::thread g_feeder;
 std::condition_variable g_feeder_wake;
 bool g_feeder_stop = false;  // guarded by g_music_mutex
 
-// Every live track's buffers topped up every few milliseconds: a frame that
-// runs long, or a program with no frame loop at all, keeps its music.
+// Every playing track's buffers topped up every few milliseconds: a frame that
+// runs long, or a program with no frame loop at all, keeps its music. With
+// nothing playing it sleeps until play or resume wakes it.
 void feed_music() {
   std::unique_lock<std::mutex> lock(g_music_mutex);
   while (!g_feeder_stop) {
+    bool any = false;
     for (auto& [id, t] : g_tracks) {
-      if (IsMusicStreamPlaying(t.music)) UpdateMusicStream(t.music);
+      if (!IsMusicStreamPlaying(t.music)) continue;
+      UpdateMusicStream(t.music);
+      any = true;
     }
-    g_feeder_wake.wait_for(lock, std::chrono::milliseconds(5));
+    if (any) {
+      g_feeder_wake.wait_for(lock, std::chrono::milliseconds(5));
+    } else {
+      g_feeder_wake.wait(lock);
+    }
   }
 }
 
@@ -525,8 +532,9 @@ void music_load(int64_t id, const uint8_t* data, int64_t len, const char* fmt,
                 bool loop) {
   ensure_device();
   if (!g_ready) return;
-  std::lock_guard<std::mutex> lock(g_music_mutex);
-  Track& t = g_tracks[id];
+  // Decoded outside the lock (an MP3 is walked whole to count its frames), so
+  // the tracks already playing keep being fed; only the insert takes it.
+  Track t;
   t.bytes.assign(data, data + len);
   t.music = LoadMusicStreamFromMemory(fmt, t.bytes.data(),
                                       static_cast<int>(t.bytes.size()));
@@ -534,10 +542,11 @@ void music_load(int64_t id, const uint8_t* data, int64_t len, const char* fmt,
     // A null ctx means raylib already freed its partial state; a non-null one
     // (a decodable but empty stream) still owns a decoder to unload.
     unload_track(t);
-    g_tracks.erase(id);
     return;
   }
   t.music.looping = loop;
+  std::lock_guard<std::mutex> lock(g_music_mutex);
+  g_tracks.insert_or_assign(id, std::move(t));  // the bytes keep their address
   ensure_feeder();
 }
 void music_free(int64_t id) {
@@ -550,6 +559,7 @@ void music_free(int64_t id) {
 void music_play(int64_t id) {
   std::lock_guard<std::mutex> lock(g_music_mutex);
   if (auto* t = find_track(id)) PlayMusicStream(t->music);
+  g_feeder_wake.notify_one();
 }
 void music_stop(int64_t id) {
   std::lock_guard<std::mutex> lock(g_music_mutex);
@@ -562,6 +572,7 @@ void music_pause(int64_t id) {
 void music_resume(int64_t id) {
   std::lock_guard<std::mutex> lock(g_music_mutex);
   if (auto* t = find_track(id)) ResumeMusicStream(t->music);
+  g_feeder_wake.notify_one();
 }
 bool music_playing(int64_t id) {
   std::lock_guard<std::mutex> lock(g_music_mutex);

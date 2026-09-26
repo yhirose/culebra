@@ -1630,7 +1630,7 @@ let tick_ending = fn (dt) {
   ending_t += dt
   if ending_t < FADE_OUT {
     let gain = 1.0 - ending_t / FADE_OUT
-    if MUSIC_FILE == nil {
+    if music == nil {
       bgm_gain = gain
       tick_bgm()
     } else {
@@ -1931,7 +1931,7 @@ let update = fn (dt) {
       music?.play()
     }
   }
-  tick_bgm() if MUSIC_FILE == nil && music_on && !finished
+  tick_bgm() if music == nil && music_on && !finished
 }
 
 # --- render ----------------------------------------------------------------

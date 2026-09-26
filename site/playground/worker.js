@@ -294,13 +294,13 @@ onmessage = async (e) => {
     return;
   }
   if (type === "musicState") {
-    if (self.__musicPlaying) self.__musicPlaying[e.data.id] = e.data.playing;
+    self.__musicPlaying[e.data.id] = e.data.playing;
     return;
   }
   if (type === "soundState") {
     // A one-shot ended (or failed to decode) on the main thread; correct the
     // optimistic play-state the wasm side wrote.
-    if (self.__soundsPlaying) self.__soundsPlaying[e.data.id] = e.data.playing;
+    self.__soundsPlaying[e.data.id] = e.data.playing;
     return;
   }
   if (type === "canvasScreenScale") {

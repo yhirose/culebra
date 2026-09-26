@@ -51,14 +51,19 @@ class Session {
  private:
   bool run_stdlib_delta(const std::unordered_set<std::string_view>& tokens,
                         std::vector<std::string>& msgs) {
-    std::unordered_set<std::string_view> fresh;
-    for (auto t : tokens)
-      if (!registered_.contains(t)) fresh.insert(t);
-    auto triggers = stdlib_preamble_triggers(fresh);
-    if (triggers.empty()) return true;
-    for (auto t : triggers) registered_.emplace(t);
+    // Filtered after selection, not before: a module another one brings in
+    // (Canvas's Audio) may be registered already.
+    auto sel = select_stdlib_modules(tokens);
+    std::erase_if(sel.modules, [&](const LazyNsModule* m) {
+      return registered_.contains(m->name);
+    });
+    std::erase_if(sel.groups, [&](const LazyFnGroup* g) {
+      return registered_.contains(g->members.front());
+    });
+    if (sel.modules.empty() && sel.groups.empty()) return true;
+    for (auto t : stdlib_preamble_triggers(sel)) registered_.emplace(t);
     std::vector<std::string> parse_msgs;
-    auto pre = parse_preamble(stdlib_preamble_for(fresh), parse_msgs);
+    auto pre = parse_preamble(stdlib_preamble_for(sel), parse_msgs);
     if (!pre.ast) {  // the stdlib is trusted; a parse failure is a build bug
       msgs.insert(msgs.end(), parse_msgs.begin(), parse_msgs.end());
       return false;

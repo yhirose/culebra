@@ -24,8 +24,14 @@
 #include <cstdint>
 #include <unordered_map>
 
+// The table above, decided once.
 #if defined(__EMSCRIPTEN__)
+#define CULEBRA_AUDIO_BROWSER 1
 #include <emscripten.h>
+#elif defined(CULEBRA_AUDIO_NATIVE) && !defined(CULEBRA_RT_AUDIO_WEAK)
+#define CULEBRA_AUDIO_DEVICE 1
+#else
+#define CULEBRA_AUDIO_SILENT 1
 #endif
 
 namespace culebra {
@@ -69,12 +75,13 @@ inline int64_t alloc_id() {
   return ++n;
 }
 
-#if defined(__EMSCRIPTEN__)
+#if defined(CULEBRA_AUDIO_BROWSER)
 
-// The page owns WebAudio; these post commands to it (playground/app.js). The
-// playing flags a script reads back are kept here, optimistically and in step
-// with the call, and corrected by the page's "soundState" / "musicState"
-// messages when something ends on its own (playground/worker.js).
+// The page owns WebAudio and each handle's settings; these post commands to it
+// (playground/app.js), a setter's or seek's number as `value`. The playing
+// flags a script reads back are kept here, optimistically and in step with the
+// call, and corrected by the page's "soundState" / "musicState" messages when
+// something ends on its own (playground/worker.js).
 
 // A WASM-4-style tone: times in frames at ~60 fps, vol/peak 0..100.
 EM_JS(void, _wasm_audio_tone,
@@ -85,28 +92,29 @@ EM_JS(void, _wasm_audio_tone,
                 release: release, vol: vol, peak: peak, channel: channel,
                 duty: duty });
 });
-EM_JS(void, _wasm_audio_sound, (int cmd, int id, double a, double b, double c), {
-  const names = ["play", "stop", "free", "set"];
-  const flags = (self.__soundsPlaying = self.__soundsPlaying || {});
+EM_JS(void, _wasm_audio_sound, (int cmd, int id, double value), {
+  const names = ["play", "stop", "free", "volume", "pitch", "pan"];
+  const flags = self.__soundsPlaying;
   if (cmd === 0) flags[id] = true;
   else if (cmd === 1) flags[id] = false;
   else if (cmd === 2) delete flags[id];
-  postMessage({ type: "sound", cmd: names[cmd], id: id, vol: a, pitch: b, pan: c });
+  postMessage({ type: "sound", cmd: names[cmd], id: id, value: value });
 });
 EM_JS(void, _wasm_audio_sound_load, (int id, const uint8_t* buf, int len), {
   postMessage({ type: "sound", cmd: "load", id: id,
                 buf: HEAPU8.slice(buf, buf + len) });
 });
 EM_JS(int, _wasm_audio_sound_playing, (int id), {
-  return self.__soundsPlaying && self.__soundsPlaying[id] ? 1 : 0;
+  return self.__soundsPlaying[id] ? 1 : 0;
 });
-EM_JS(void, _wasm_audio_music, (int cmd, int id, double a, double b, double c), {
-  const names = ["play", "stop", "pause", "resume", "free", "seek", "set"];
-  const flags = (self.__musicPlaying = self.__musicPlaying || {});
+EM_JS(void, _wasm_audio_music, (int cmd, int id, double value), {
+  const names = ["play", "stop", "pause", "resume", "free", "seek",
+                 "volume", "pitch", "pan"];
+  const flags = self.__musicPlaying;
   if (cmd === 0 || cmd === 3) flags[id] = true;
   else if (cmd === 1 || cmd === 2) flags[id] = false;
   else if (cmd === 4) delete flags[id];
-  postMessage({ type: "music", cmd: names[cmd], id: id, a: a, b: b, c: c });
+  postMessage({ type: "music", cmd: names[cmd], id: id, value: value });
 });
 EM_JS(void, _wasm_audio_music_load,
       (int id, const uint8_t* buf, int len, int looping), {
@@ -114,18 +122,8 @@ EM_JS(void, _wasm_audio_music_load,
                 buf: HEAPU8.slice(buf, buf + len), loop: looping !== 0 });
 });
 EM_JS(int, _wasm_audio_music_playing, (int id), {
-  return self.__musicPlaying && self.__musicPlaying[id] ? 1 : 0;
+  return self.__musicPlaying[id] ? 1 : 0;
 });
-
-// What the page needs to (re)build a voice: the handle's settings, kept on
-// this side so play() carries them and set() can change a live voice.
-struct WasmVoice {
-  double volume = 1.0, pitch = 1.0, pan = 0.0;
-};
-inline std::unordered_map<int64_t, WasmVoice>& wasm_voices() {
-  static std::unordered_map<int64_t, WasmVoice> voices;
-  return voices;
-}
 
 inline bool available() { return true; }
 inline void tone(int64_t start_freq, int64_t end_freq, int64_t attack,
@@ -140,63 +138,39 @@ inline void tone(int64_t start_freq, int64_t end_freq, int64_t attack,
 // `fmt` is for raylib's decoder dispatch; the page decodes the bytes itself.
 inline void sound_load(int64_t id, const uint8_t* data, int64_t len,
                        const char* /*fmt*/) {
-  wasm_voices()[id];
   _wasm_audio_sound_load(static_cast<int>(id), data, static_cast<int>(len));
 }
-inline void sound_free(int64_t id) {
-  wasm_voices().erase(id);
-  _wasm_audio_sound(2, static_cast<int>(id), 0, 0, 0);
-}
-inline void sound_play(int64_t id) {
-  auto& v = wasm_voices()[id];
-  _wasm_audio_sound(0, static_cast<int>(id), v.volume, v.pitch, v.pan);
-}
-inline void sound_stop(int64_t id) {
-  _wasm_audio_sound(1, static_cast<int>(id), 0, 0, 0);
-}
+inline void sound_play(int64_t id) { _wasm_audio_sound(0, static_cast<int>(id), 0); }
+inline void sound_stop(int64_t id) { _wasm_audio_sound(1, static_cast<int>(id), 0); }
+inline void sound_free(int64_t id) { _wasm_audio_sound(2, static_cast<int>(id), 0); }
 inline bool sound_playing(int64_t id) {
   return _wasm_audio_sound_playing(static_cast<int>(id)) != 0;
 }
-inline void sound_set(int64_t id) {
-  auto& v = wasm_voices()[id];
-  _wasm_audio_sound(3, static_cast<int>(id), v.volume, v.pitch, v.pan);
-}
-inline void sound_volume(int64_t id, double x) { wasm_voices()[id].volume = x; sound_set(id); }
-inline void sound_pitch(int64_t id, double x) { wasm_voices()[id].pitch = x; sound_set(id); }
-inline void sound_pan(int64_t id, double x) { wasm_voices()[id].pan = x; sound_set(id); }
+inline void sound_volume(int64_t id, double x) { _wasm_audio_sound(3, static_cast<int>(id), x); }
+inline void sound_pitch(int64_t id, double x) { _wasm_audio_sound(4, static_cast<int>(id), x); }
+inline void sound_pan(int64_t id, double x) { _wasm_audio_sound(5, static_cast<int>(id), x); }
 
 inline void music_load(int64_t id, const uint8_t* data, int64_t len,
                        const char* /*fmt*/, bool loop) {
-  wasm_voices()[id];
   _wasm_audio_music_load(static_cast<int>(id), data, static_cast<int>(len),
                          loop ? 1 : 0);
 }
-inline void music_set(int64_t id) {
-  auto& v = wasm_voices()[id];
-  _wasm_audio_music(6, static_cast<int>(id), v.volume, v.pitch, v.pan);
-}
-inline void music_free(int64_t id) {
-  wasm_voices().erase(id);
-  _wasm_audio_music(4, static_cast<int>(id), 0, 0, 0);
-}
-inline void music_play(int64_t id) {
-  music_set(id);
-  _wasm_audio_music(0, static_cast<int>(id), 0, 0, 0);
-}
-inline void music_stop(int64_t id) { _wasm_audio_music(1, static_cast<int>(id), 0, 0, 0); }
-inline void music_pause(int64_t id) { _wasm_audio_music(2, static_cast<int>(id), 0, 0, 0); }
-inline void music_resume(int64_t id) { _wasm_audio_music(3, static_cast<int>(id), 0, 0, 0); }
+inline void music_play(int64_t id) { _wasm_audio_music(0, static_cast<int>(id), 0); }
+inline void music_stop(int64_t id) { _wasm_audio_music(1, static_cast<int>(id), 0); }
+inline void music_pause(int64_t id) { _wasm_audio_music(2, static_cast<int>(id), 0); }
+inline void music_resume(int64_t id) { _wasm_audio_music(3, static_cast<int>(id), 0); }
+inline void music_free(int64_t id) { _wasm_audio_music(4, static_cast<int>(id), 0); }
 inline bool music_playing(int64_t id) {
   return _wasm_audio_music_playing(static_cast<int>(id)) != 0;
 }
 inline void music_seek(int64_t id, double seconds) {
-  _wasm_audio_music(5, static_cast<int>(id), seconds, 0, 0);
+  _wasm_audio_music(5, static_cast<int>(id), seconds);
 }
-inline void music_volume(int64_t id, double x) { wasm_voices()[id].volume = x; music_set(id); }
-inline void music_pitch(int64_t id, double x) { wasm_voices()[id].pitch = x; music_set(id); }
-inline void music_pan(int64_t id, double x) { wasm_voices()[id].pan = x; music_set(id); }
+inline void music_volume(int64_t id, double x) { _wasm_audio_music(6, static_cast<int>(id), x); }
+inline void music_pitch(int64_t id, double x) { _wasm_audio_music(7, static_cast<int>(id), x); }
+inline void music_pan(int64_t id, double x) { _wasm_audio_music(8, static_cast<int>(id), x); }
 
-#elif defined(CULEBRA_AUDIO_NATIVE) && !defined(CULEBRA_RT_AUDIO_WEAK)
+#elif defined(CULEBRA_AUDIO_DEVICE)
 
 // Strong bodies in src/runtime/culebra_rt_audio.cc.
 bool available();
@@ -249,8 +223,7 @@ void stream_pan(int64_t id, double p);
 #define CULEBRA_RT_AUDIO_LINKAGE inline
 #endif
 
-#if !defined(__EMSCRIPTEN__) && \
-    (!defined(CULEBRA_AUDIO_NATIVE) || defined(CULEBRA_RT_AUDIO_WEAK))
+#if defined(CULEBRA_AUDIO_SILENT)
 CULEBRA_RT_AUDIO_LINKAGE bool available() { return false; }
 CULEBRA_RT_AUDIO_LINKAGE void tone(int64_t, int64_t, int64_t, int64_t, int64_t,
                                    int64_t, int64_t, int64_t, int64_t, int64_t) {}
@@ -277,8 +250,7 @@ CULEBRA_RT_AUDIO_LINKAGE void music_pitch(int64_t, double) {}
 CULEBRA_RT_AUDIO_LINKAGE void music_pan(int64_t, double) {}
 #endif
 
-#if !defined(CULEBRA_AUDIO_NATIVE) || defined(CULEBRA_RT_AUDIO_WEAK) || \
-    defined(__EMSCRIPTEN__)
+#if !defined(CULEBRA_AUDIO_DEVICE)
 // A Stream with nowhere to play: its block counts pushes and a submit empties
 // it, as a native stream with no device does.
 inline std::unordered_map<int64_t, rt::PcmBlock>& silent_streams() {

@@ -24,6 +24,7 @@ LIST="${LIST:-tools/checks/windows_known_failures.txt}"
 # The window backend is a build option; a test naming Canvas must not try to
 # open one here, exactly as the `just` recipes arrange for every other lane.
 export CULEBRA_CANVAS_HEADLESS="${CULEBRA_CANVAS_HEADLESS:-1}"
+export CULEBRA_AUDIO="${CULEBRA_AUDIO:-off}"
 
 known=$(grep -vE '^\s*(#|$)' "$LIST" | sort)
 failed=""

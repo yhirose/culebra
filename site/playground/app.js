@@ -1028,21 +1028,22 @@ function startVoice(buf, loop, s, offset) {
   return { src, gain, pan, startedAt: audioCtx.currentTime - at / s.pitch };
 }
 
-function stopVoice(v) {
+// Stop the entry's voice, clearing it first so its onended can't read as the
+// voice running out on its own.
+function stopVoice(entry) {
+  const v = entry.voice;
+  entry.voice = null;
   if (v) { try { v.src.stop(); } catch {} }
 }
 
-// A handle's settings arrive with every play and set; a live voice follows them.
-function applySettings(entry, m) {
-  entry.volume = m.vol ?? m.a ?? entry.volume;
-  entry.pitch = m.pitch ?? m.b ?? entry.pitch;
-  entry.pan = m.pan ?? m.c ?? entry.pan;
+// A handle's "volume" / "pitch" / "pan"; a live voice follows it.
+function applySetting(entry, key, value) {
+  entry[key] = value;
   const v = entry.voice;
-  if (v) {
-    v.gain.gain.value = Math.max(0, entry.volume);
-    v.src.playbackRate.value = entry.pitch;
-    v.pan.pan.value = Math.max(-1, Math.min(1, entry.pan));
-  }
+  if (!v) return;
+  if (key === "volume") v.gain.gain.value = Math.max(0, value);
+  else if (key === "pitch") v.src.playbackRate.value = value;
+  else v.pan.pan.value = Math.max(-1, Math.min(1, value));
 }
 
 const sounds = new Map();  // id -> { buf, voice, volume, pitch, pan }
@@ -1052,7 +1053,7 @@ function soundNotify(id, playing) {
 }
 
 function resetSounds() {
-  for (const e of sounds.values()) stopVoice(e.voice);
+  for (const e of sounds.values()) stopVoice(e);
   sounds.clear();
 }
 
@@ -1071,9 +1072,8 @@ function handleSound(m) {
       }
       case "play": {
         if (!e) return;
-        applySettings(e, m);
         if (!e.buf || !ensureAudio()) { soundNotify(m.id, false); break; }
-        stopVoice(e.voice);  // one voice per handle: play restarts it
+        stopVoice(e);  // one voice per handle: play restarts it
         const v = startVoice(e.buf, false, e, 0);
         v.src.onended = () => {
           if (e.voice === v) { e.voice = null; soundNotify(m.id, false); }
@@ -1082,13 +1082,15 @@ function handleSound(m) {
         break;
       }
       case "stop":
-        if (e) { const v = e.voice; e.voice = null; stopVoice(v); }
+        if (e) stopVoice(e);
         break;
-      case "set":
-        if (e) applySettings(e, m);
+      case "volume":
+      case "pitch":
+      case "pan":
+        if (e) applySetting(e, m.cmd, m.value);
         break;
       case "free":
-        if (e) { const v = e.voice; e.voice = null; stopVoice(v); }
+        if (e) stopVoice(e);
         sounds.delete(m.id);
         break;
     }
@@ -1116,9 +1118,7 @@ function trackPosition(t) {
 
 function startTrack(id, t, offset) {
   if (!t.buf || !ensureAudio()) { t.wantPlay = true; return; }
-  const old = t.voice;
-  t.voice = null;
-  stopVoice(old);
+  stopVoice(t);
   const v = startVoice(t.buf, t.loop, t, offset);
   v.src.onended = () => {
     if (t.voice === v) {  // ran out on its own (non-looping)
@@ -1133,7 +1133,7 @@ function startTrack(id, t, offset) {
 }
 
 function resetMusic() {
-  for (const t of tracks.values()) stopVoice(t.voice);
+  for (const t of tracks.values()) stopVoice(t);
   tracks.clear();
 }
 
@@ -1160,26 +1160,28 @@ function handleMusic(m) {
         if (t && !t.voice) startTrack(m.id, t, t.pausedAt ?? 0);
         break;
       case "stop":
-        if (t) { const v = t.voice; t.voice = null; stopVoice(v); t.pausedAt = null; t.wantPlay = false; }
+        if (t) { stopVoice(t); t.pausedAt = null; t.wantPlay = false; }
         break;
       case "pause":
-        if (t && t.voice) { t.pausedAt = trackPosition(t); const v = t.voice; t.voice = null; stopVoice(v); }
+        if (t && t.voice) { t.pausedAt = trackPosition(t); stopVoice(t); }
         break;
       case "resume":
         if (t && !t.voice && t.pausedAt !== null) startTrack(m.id, t, t.pausedAt);
         break;
       case "seek": {
         if (!t) break;
-        const s = Math.max(0, m.a || 0);
+        const s = Math.max(0, m.value || 0);
         if (t.voice) startTrack(m.id, t, s);
         else t.pausedAt = s;
         break;
       }
-      case "set":
-        if (t) applySettings(t, m);
+      case "volume":
+      case "pitch":
+      case "pan":
+        if (t) applySetting(t, m.cmd, m.value);
         break;
       case "free":
-        if (t) { const v = t.voice; t.voice = null; stopVoice(v); }
+        if (t) stopVoice(t);
         tracks.delete(m.id);
         break;
     }

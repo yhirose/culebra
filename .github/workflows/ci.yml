@@ -383,6 +383,7 @@ jobs:
       # build-ubuntu's artifact — does have the window backend compiled in, so
       # without the declaration its Canvas cases would all fail to open one.
       CULEBRA_CANVAS_HEADLESS: "1"
+      CULEBRA_AUDIO: "off"
     steps:
       - uses: actions/checkout@v5
 
@@ -696,6 +697,7 @@ jobs:
       - name: Canvas tests (headless inside the window build)
         env:
           CULEBRA_CANVAS_HEADLESS: "1"
+          CULEBRA_AUDIO: "off"
         run: |
           fail=0
           for t in tests/test_canvas.cul tests/test_canvas_module.cul; do
@@ -821,6 +823,7 @@ jobs:
       - name: Canvas tests (headless inside the window build)
         env:
           CULEBRA_CANVAS_HEADLESS: "1"
+          CULEBRA_AUDIO: "off"
         run: |
           fail=0
           for t in tests/test_canvas.cul tests/test_canvas_module.cul; do
@@ -1775,6 +1778,7 @@ jobs:
       - name: Smoke — Canvas window build (vm / JIT / AOT)
         env:
           CULEBRA_CANVAS_HEADLESS: "1"
+          CULEBRA_AUDIO: "off"
           CULEBRA_VERBOSE: "1"
         run: |
           misc/run_all_backends.sh ./build-win-aot/culebra.exe \

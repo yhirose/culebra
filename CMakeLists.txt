@@ -185,13 +185,16 @@ if(CULEBRA_ENABLE_AUDIO)
   add_library(culebra_raudio OBJECT ./src/runtime/culebra_raudio.c)
   target_include_directories(culebra_raudio PRIVATE ./src/runtime)
   target_compile_options(culebra_raudio PRIVATE -w -ffunction-sections -fdata-sections)
+  # One list for the driver's link and the AOT fragment, so they can't drift.
   if(APPLE)
-    set(_audio_link "-framework CoreAudio -framework AudioToolbox -framework CoreFoundation")
+    set(_audio_libs "-framework CoreAudio" "-framework AudioToolbox"
+                    "-framework CoreFoundation")
   elseif(WIN32)
-    set(_audio_link "-lwinmm -lole32")
-  elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    set(_audio_link "-lpthread -ldl -lm")
+    set(_audio_libs -lwinmm -lole32)
+  else()
+    set(_audio_libs -lpthread -ldl -lm)
   endif()
+  list(JOIN _audio_libs " " _audio_link)
 endif()
 
 # zlib (libz): the gzip choke for the Compress namespace (gzip/gunzip) and, when
@@ -1723,16 +1726,7 @@ if(CULEBRA_ENABLE_AUDIO)
   target_sources(culebra PRIVATE ./src/runtime/culebra_rt_audio.cc)
   target_include_directories(culebra PRIVATE ./src/runtime)
   target_compile_definitions(culebra PRIVATE CULEBRA_AUDIO_NATIVE=1)
-  target_link_libraries(culebra culebra_raudio)
-  if(APPLE)
-    target_link_libraries(culebra "-framework CoreAudio" "-framework AudioToolbox"
-                                  "-framework CoreFoundation")
-  elseif(WIN32)
-    target_link_libraries(culebra winmm ole32)
-  else()
-    find_package(Threads REQUIRED)
-    target_link_libraries(culebra Threads::Threads ${CMAKE_DL_LIBS} m)
-  endif()
+  target_link_libraries(culebra culebra_raudio ${_audio_libs})
 endif()
 if(CULEBRA_ENABLE_JIT)
   target_compile_definitions(culebra PRIVATE CULEBRA_AUDIO_LINK="${_audio_link}")
@@ -1770,7 +1764,8 @@ endif()
 # not on the list: those flags come from whoever ran `culebra wrap`, who is also
 # the one running the build.
 foreach(_frag _blas_link _ssl_link _zlib_link _sqlite_link _scene_link
-              _canvas_link _webview_link _foreign_link _codegen_link)
+              _canvas_link _webview_link _foreign_link _codegen_link
+              _audio_link)
   string(REPLACE " " ";" _frag_tokens "${${_frag}}")
   foreach(_tok IN LISTS _frag_tokens)
     if(_tok MATCHES "^[/\\]" OR _tok MATCHES "^[A-Za-z]:[/\\]")

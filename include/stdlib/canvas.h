@@ -39,7 +39,6 @@
 #include <memory>
 #include <mutex>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include <base/id_registry.h>  // IdRegistry<T> (slot+generation handle table)
