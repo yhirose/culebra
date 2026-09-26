@@ -1,0 +1,86 @@
+# Audio.Sound: a short sample, decoded once and played as often as you like.
+# It loads WAV, MP3 or Ogg bytes — usually `FS.read("jump.wav")` — but this
+# script makes its own: a plucked string (the Karplus-Strong algorithm)
+# written out as a 16-bit WAV file in memory. Then it plays that one sample
+# with different volume, pitch and pan.
+#
+#   culebra examples/audio/sound.cul
+
+let RATE = 44100
+
+# A plucked string: a burst of noise one period long, fed back through an
+# averaging filter, which rings at 1/period and dies away like a string.
+fn pluck(freq, secs) {
+  let period = Math.round(RATE / freq)
+  mut ring = iota(period).map(|_| Random.uniform(-1.0, 1.0))
+  mut out = []
+  for i in range(Math.round(RATE * secs)) {
+    let j = i % period
+    out.push(ring[j])
+    ring[j] = (ring[j] + ring[(j + 1) % period]) * 0.498
+  }
+  out
+}
+
+# `n` bytes of `v`, least significant first: the WAV header's byte order.
+fn le(v, n) {
+  iota(n).map(|i| v >> 8 * i & 255)
+}
+
+# Samples in -1.0..1.0 as a mono 16-bit PCM WAV file, as a String of bytes.
+fn wav(samples) {
+  let u16 = |v| String.from_bytes(le(v, 2))
+  let u32 = |v| String.from_bytes(le(v, 4))
+  mut pcm = []
+  for s in samples {
+    pcm.extend(le(Math.round(Math.clamp(s, -1.0, 1.0) * 32767) & 0xFFFF, 2))
+  }
+  let data = String.from_bytes(pcm)
+  [
+    "RIFF", u32(36 + data.size()), "WAVE",
+    "fmt ", u32(16), u16(1), u16(1),            # PCM, mono
+    u32(RATE), u32(RATE * 2), u16(2), u16(16),  # rate, bytes/s, bytes/frame, bits
+    "data", u32(data.size()), data,
+  ].join("")
+}
+
+let bytes = wav(pluck(220, 1.2))
+println("made a {bytes.size()}-byte WAV")
+
+# One Sound is one voice: play() while it is playing starts it over. For a
+# chord, load the same bytes into several Sounds.
+let note = Audio.Sound(bytes)
+
+fn hear(label, secs) {
+  println(label)
+  note.play()
+  Time.sleep(secs)
+}
+
+hear("as recorded", 0.8)
+
+note.pitch(1.5)  # a playback rate: 1.5 is a fifth up, 2.0 an octave
+hear("pitch 1.5", 0.8)
+note.pitch(1.0)
+
+for pan in [-1.0, 0.0, 1.0] {
+  note.pan(pan)  # -1 left, 0 centre, 1 right
+  hear("pan {pan}", 0.6)
+}
+note.pan(0.0)
+
+for volume in [1.0, 0.5, 0.2] {
+  note.volume(volume)  # 0.0..1.0
+  hear("volume {volume}", 0.6)
+}
+
+println("a chord: three Sounds from the same bytes")
+let chord = [1.0, 1.25, 1.5].map(fn (ratio) {
+  let s = Audio.Sound(bytes)
+  s.pitch(ratio)
+  s
+})
+for s in chord {
+  s.play()
+}
+Time.sleep(1.2)

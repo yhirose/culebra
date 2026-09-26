@@ -1057,32 +1057,46 @@ function resetSounds() {
   sounds.clear();
 }
 
+// Start the sample's one voice, restarting it if it is already playing.
+function playSound(id, e) {
+  stopVoice(e);
+  const v = startVoice(e.buf, false, e, 0);
+  v.src.onended = () => {
+    if (e.voice === v) { e.voice = null; soundNotify(id, false); }
+  };
+  e.voice = v;
+}
+
 function handleSound(m) {
   try {
     const e = sounds.get(m.id);
     switch (m.cmd) {
       case "load": {
-        const entry = { buf: null, voice: null, volume: 1, pitch: 1, pan: 0 };
+        const entry = { buf: null, voice: null, wantPlay: false,
+                        volume: 1, pitch: 1, pan: 0 };
         sounds.set(m.id, entry);
         if (!ensureAudio()) return;
+        // The decode is asynchronous, and a script plays a sample it has just
+        // made: a play asked for before it lands is honoured when it does,
+        // as a track's is.
         audioCtx.decodeAudioData(m.buf.buffer)
-          .then((buf) => { entry.buf = buf; })
+          .then((buf) => {
+            if (sounds.get(m.id) !== entry) return;  // freed while decoding
+            entry.buf = buf;
+            if (entry.wantPlay) { entry.wantPlay = false; playSound(m.id, entry); }
+          })
           .catch(() => soundNotify(m.id, false));
         break;
       }
       case "play": {
         if (!e) return;
-        if (!e.buf || !ensureAudio()) { soundNotify(m.id, false); break; }
-        stopVoice(e);  // one voice per handle: play restarts it
-        const v = startVoice(e.buf, false, e, 0);
-        v.src.onended = () => {
-          if (e.voice === v) { e.voice = null; soundNotify(m.id, false); }
-        };
-        e.voice = v;
+        if (!ensureAudio()) { soundNotify(m.id, false); break; }
+        if (!e.buf) { e.wantPlay = true; break; }
+        playSound(m.id, e);
         break;
       }
       case "stop":
-        if (e) stopVoice(e);
+        if (e) { e.wantPlay = false; stopVoice(e); }
         break;
       case "volume":
       case "pitch":

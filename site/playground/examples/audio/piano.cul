@@ -1,0 +1,56 @@
+# Canvas and Audio side by side: Canvas owns the window and the keyboard,
+# Audio makes the sound. Press A S D F G H J K for a C major scale, and
+# 1 2 3 to change the wave. Esc quits.
+#
+#   culebra examples/audio/piano.cul
+
+let W = 320
+let H = 160
+let KEYS = [
+  ("a", 262, "C"),
+  ("s", 294, "D"),
+  ("d", 330, "E"),
+  ("f", 349, "F"),
+  ("g", 392, "G"),
+  ("h", 440, "A"),
+  ("j", 494, "B"),
+  ("k", 523, "C"),
+]
+let WAVES = {
+  "1": (Audio.PULSE, "pulse"),
+  "2": (Audio.TRIANGLE, "triangle"),
+  "3": (Audio.SAWTOOTH, "sawtooth"),
+}
+
+let BG = Canvas.rgba(30, 30, 40)
+let WHITE = Canvas.rgba(240, 240, 235)
+let HELD = Canvas.rgba(250, 200, 90)
+let INK = Canvas.rgba(40, 40, 50)
+let LABEL = Canvas.rgba(200, 200, 210)
+
+mut wave = WAVES["1"]
+
+Canvas.title("piano")
+Canvas.run(W, H, fn () {
+  for k in Canvas.key_queue() {
+    match k {
+      "escape" => Canvas.quit(),
+      "1" | "2" | "3" => wave = WAVES[k],
+      _ => {
+        let hit = KEYS.find(|key| key[0] == k)
+        Audio.tone(hit[1], 20, vol: 60, wave: wave[0]) if hit != nil
+      },
+    }
+  }
+
+  Canvas.clear(BG)
+  let kw = W / KEYS.size()
+  for i, (key, _, note) in KEYS.enumerate() {
+    let x = i * kw
+    Canvas.rect(x + 2, 40, kw - 4, 100, Canvas.key(key) ? HELD : WHITE)
+    Canvas.text(note, x + kw / 2 - 4, 110, INK)
+    Canvas.text(key.upper(), x + kw / 2 - 4, 124, INK)
+  }
+  Canvas.text("wave: {wave[1]}  (1 2 3)", 8, 12, LABEL)
+  true
+})

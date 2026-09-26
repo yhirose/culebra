@@ -56,6 +56,14 @@
       ]
     },
     {
+      "name": "Audio",
+      "examples": [
+        { "title": "Tones and effects", "path": "examples/audio/tones.cul" },
+        { "title": "A sample, built in memory", "path": "examples/audio/sound.cul" },
+        { "title": "Canvas: Piano", "path": "examples/audio/piano.cul" }
+      ]
+    },
+    {
       "name": "Graphics",
       "examples": [
         { "title": "Canvas: Barnsley Fern", "path": "examples/graphics/barnsley_fern.cul" },

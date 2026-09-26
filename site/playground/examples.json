@@ -172,6 +172,26 @@
       ]
     },
     {
+      "name": "Audio",
+      "examples": [
+        {
+          "title": "Tones and effects",
+          "path": "examples/audio/tones.cul",
+          "assets": []
+        },
+        {
+          "title": "A sample, built in memory",
+          "path": "examples/audio/sound.cul",
+          "assets": []
+        },
+        {
+          "title": "Canvas: Piano",
+          "path": "examples/audio/piano.cul",
+          "assets": []
+        }
+      ]
+    },
+    {
       "name": "Graphics",
       "examples": [
         {
