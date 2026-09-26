@@ -782,7 +782,7 @@ inline bool _jit_try_object_setindex(JitObject* obj, int8_t key_tag,
   auto* cls = _lookup_special(TAG_OBJECT, reinterpret_cast<int64_t>(obj),
                               Special::SetIndex);
   if (!cls) return false;
-  _jit_set_op_pos(line, col);
+  culebra_runtime_set_op_pos(line, col);
   // Borrows the key and value: the caller consumes them on the normal path and
   // guards them over this call for the throw path.
   auto r = _culebra_invoke_method2(
@@ -862,6 +862,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
                                mut, val_tag, val_data, line, col, is_init);
     return;
   }
+  culebra_runtime_set_op_pos(line, col);  // a key's hash/eq entry site
   // Everything below consumes the key and value this helper was handed, and
   // both a user `hash()` (the sidecar probes below hash the key) and a user
   // `__setindex__` can throw in the middle — one guard releases them on every
@@ -938,7 +939,7 @@ inline bool _jit_try_object_index(JitObject* obj, int8_t key_tag,
   // Subscript overloading is a class-instance feature (matches interp's
   // class_tag gate); a plain dict never routes to __index__.
   if (!obj->proto()) return false;
-  _jit_set_op_pos(line, col);
+  culebra_runtime_set_op_pos(line, col);
   auto r = _try_special_binop(TAG_OBJECT, reinterpret_cast<int64_t>(obj),
                               key_tag, key_data, Special::Index);
   if (!r) return false;
@@ -1090,7 +1091,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
     return;
   }
   // Slot hit: String keys are unified with shape access (see object_set_any);
-  // other keys live in the non-String sidecar.
+  // other keys live in the non-String sidecar, whose probe hashes the key.
+  if (key_tag != TAG_STRING) culebra_runtime_set_op_pos(line, col);
   if (_jit_try_own_slot(obj, key_tag, key_data, out_tag, out_data)) return;
   // Miss → user `__index__` overload.
   if (_jit_try_object_index(obj, key_tag, key_data, out_tag, out_data, line,
@@ -1122,6 +1124,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_get_for_coalesce(
       ? JitValue{key_tag, key_data}
       : JitValue{TAG_NIL, 0};
   JitUnwindRelease g{key_guard};
+  if (key_tag != TAG_STRING) culebra_runtime_set_op_pos(line, col);
   if (_jit_try_own_slot(obj, key_tag, key_data, out_tag, out_data)) return true;
   // Miss → user `__index__` overload, else "not found" (nil for `??=`).
   if (_jit_try_object_index(obj, key_tag, key_data, out_tag, out_data, line,
@@ -1872,9 +1875,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
     auto* finit_cls = reinterpret_cast<JitClosure*>(finit_data);
     culebra_runtime_value_retain(self_val.tag, self_val.data);
     try {
-      // The field inits run at the constructor's call and hand it back
-      // untouched: the `new` body's prologue reads that site and its
-      // argument positions.
+      // Hand the `new` body the constructor's call site and argument positions.
       JitBorrowedCallSite site{_jit_thread.call_line, _jit_thread.call_col};
       auto r = _jit_invoke(finit_cls, self_val, 0, nullptr);
       _culebra_value_release_impl(r.tag, r.data);

@@ -15751,7 +15751,8 @@ struct Exec {
                                                 line, col);
             regs[in.a] = view;
           } else {
-            culebra_runtime_set_op_pos(line, col);  // a getter's entry site
+            if (view.tag == TAG_FUNC && recv.tag == TAG_OBJECT)
+              culebra_runtime_set_op_pos(line, col);  // a getter's entry site
             regs[in.a] = culebra_runtime_bind_method_value(
                 static_cast<int8_t>(recv.tag), recv.data,
                 static_cast<int8_t>(view.tag), view.data, key);
@@ -17086,9 +17087,9 @@ struct Exec {
       L_Disp:
         do {
           [[maybe_unused]] const Insn& in = *ip;
-          {
+          if (regs[in.b].tag == TAG_OBJECT) {  // a __str__'s entry site
             auto [line, col] = chunk_pos_at(c, VM_PC);
-            culebra_runtime_set_op_pos(line, col);  // a __str__'s entry site
+            culebra_runtime_set_op_pos(line, col);
           }
           regs[in.a] = JitValue{
               TAG_STRING,

@@ -9784,8 +9784,7 @@ inline void _jit_ns_method_trampoline(
   // no-op release.
   JitMethodSelf _s{JitValue{self_tag, self_data}};
   // A dunder the native calls enters at this call (JitBorrowedCallSite).
-  _jit_thread.op_line = _jit_thread.call_line;
-  _jit_thread.op_col = _jit_thread.call_col;
+  culebra_runtime_set_op_pos(_jit_thread.call_line, _jit_thread.call_col);
   const auto* m = reinterpret_cast<const NsMethod*>(
       cls->captures[0]->value.data);
   // As-value call (`let g = ns.method; g(...)`): the indirect-call codegen

@@ -393,6 +393,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitThreadState* culebra_runtime_thread_state()
   }
   return &ts;
 }
+
+// Publish the current op's source position: for the positionless-error
+// backfill (see `_jit_thread.op_line`), and as the site of a closure the
+// runtime enters on its own below it (JitBorrowedCallSite).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_op_pos(
+    int64_t line, int64_t col) {
+  _jit_thread.op_line = line;
+  _jit_thread.op_col = col;
+}
 }  // extern "C"
 
 // Stamp the published op position onto a positionless runtime error. Shared by
@@ -452,7 +461,8 @@ inline std::optional<std::string> _try_str_special(int8_t type, int64_t data);
 // `_jit_object_user_*` helpers (defined alongside the other special-
 // method helpers further down).
 inline std::optional<JitValue> _try_special_unary(int8_t t, int64_t d,
-                                                  Special s);
+                                                  Special s, int64_t line = 0,
+                                                  int64_t col = 0);
 inline const JitObjectEntry* _find_property(JitObject* obj,
                                             const char* key);
 
@@ -559,8 +569,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_eprintln(int8_t type,
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_format_value(
     int8_t type, int64_t data, const char* spec_cstr, int64_t line,
     int64_t col) {
-  _jit_thread.op_line = line;  // a __str__'s entry site
-  _jit_thread.op_col = col;
+  culebra_runtime_set_op_pos(line, col);  // a __str__'s entry site
   std::string_view spec(spec_cstr);
   if (spec.empty()) return culebra_runtime_value_to_display(type, data);
   if (type == TAG_LONG) {
@@ -611,8 +620,7 @@ inline std::optional<std::string_view> _jit_enum_name(JitObject* obj) {
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_hash_any(
     int8_t type, int64_t data, int64_t line, int64_t col) {
   if (type == TAG_OBJECT) {
-    _jit_thread.op_line = line;  // a `hash()`'s entry site
-    _jit_thread.op_col = col;
+    culebra_runtime_set_op_pos(line, col);  // a `hash()`'s entry site
     auto r = _try_special_unary(type, data, Special::Hash);
     if (!r) {
       if (auto h = _jit_enum_variant_hash(reinterpret_cast<JitObject*>(data)))
@@ -816,17 +824,11 @@ inline auto _jit_at_call_site(F&& op) -> decltype(op()) {
                      std::forward<F>(op));
 }
 
-// Publish a call site for a closure the runtime enters on its own rather than
-// from a codegen call site — an operator's dunder, a key's `hash`/`eq`, an
-// iterator's `next`, a defer body. The site is the published op position:
-// every door that can reach such an entry (an operator helper, a native's
-// trampoline, the ops that display, read a getter or iterate) sets it first.
-// What reads the call site — a binder's DispatchError / ArityError / typed-
-// param TypeError, a library frame's re-anchor (culebra_runtime_reanchor) —
-// would otherwise see wherever the last real call was. The per-argument
-// positions go with it: the operand is handed over by the runtime, not written
-// at a call. The op position is kept too, so a second entry after the first
-// one's body ran lends the same op. Restores on scope exit, throw included.
+// The call site of a closure the runtime enters on its own (a dunder, a key's
+// `hash`/`eq`, a getter, an iterator's `next`): by default the published op
+// position (docs/internals/vm.md §6.2). Argument positions are cleared, and
+// the op position is restored with the rest, so a second entry after the
+// first one's body ran lends the same op.
 struct JitBorrowedCallSite {
   int64_t line, col, bline, bcol, oline, ocol;
   int argn;
@@ -854,12 +856,6 @@ struct JitBorrowedCallSite {
   }
 };
 
-// An operator helper's door: its own position is the op an implicit entry
-// below it reports at (JitBorrowedCallSite).
-inline void _jit_set_op_pos(int64_t line, int64_t col) {
-  _jit_thread.op_line = line;
-  _jit_thread.op_col = col;
-}
 extern "C" {
 
 // Recursion guard, compiled-code side. The counter is `_jit_thread.depth`;
@@ -1662,18 +1658,24 @@ inline JitClosure* _lookup_special(int8_t tag, int64_t data, Special s) {
 
 // Invoke a special method `recv.<name>(arg)`. Returns the +1 result
 // or std::nullopt.
+// `line`, when given, is the operator's own position, published for the
+// dunder's entry (a caller with none has published it already).
 inline std::optional<JitValue> _try_special_binop(int8_t rt, int64_t rd,
                                                  int8_t at, int64_t ad,
-                                                 Special s) {
+                                                 Special s, int64_t line = 0,
+                                                 int64_t col = 0) {
   auto* cls = _lookup_special(rt, rd, s);
   if (!cls) return std::nullopt;
+  if (line) culebra_runtime_set_op_pos(line, col);
   return _culebra_invoke_method1(cls, {rt, rd}, {at, ad});
 }
 
 inline std::optional<JitValue> _try_special_unary(int8_t t, int64_t d,
-                                                 Special s) {
+                                                 Special s, int64_t line,
+                                                 int64_t col) {
   auto* cls = _lookup_special(t, d, s);
   if (!cls) return std::nullopt;
+  if (line) culebra_runtime_set_op_pos(line, col);
   return _culebra_invoke_method0(cls, {t, d});
 }
 
@@ -1697,12 +1699,12 @@ inline std::optional<std::string> _try_str_special(int8_t type, int64_t data) {
 // Arithmetic binop: try `lhs.__op__(rhs)`; if `reflect` is true and
 // nothing matched, try `rhs.__op__(lhs)` (commutative auto-reflection
 // for `+` and `*`). Callers fall back to the numeric path otherwise.
-inline std::optional<JitValue> _dispatch_arith_special(int8_t lt, int64_t ld,
-                                                     int8_t rt, int64_t rd,
-                                                     Special s, bool reflect) {
-  if (auto r = _try_special_binop(lt, ld, rt, rd, s)) return r;
+inline std::optional<JitValue> _dispatch_arith_special(
+    int8_t lt, int64_t ld, int8_t rt, int64_t rd, Special s, bool reflect,
+    int64_t line, int64_t col) {
+  if (auto r = _try_special_binop(lt, ld, rt, rd, s, line, col)) return r;
   if (reflect) {
-    if (auto r = _try_special_binop(rt, rd, lt, ld, s)) return r;
+    if (auto r = _try_special_binop(rt, rd, lt, ld, s, line, col)) return r;
   }
   return std::nullopt;
 }
@@ -1744,9 +1746,8 @@ inline std::optional<JitValue> _try_tensor_binop(
     if (auto r = _try_tensor_binop(lt, ld, rt, rd, op_id, opstr, line,  \
                                    col))                                \
       return *r;                                                        \
-    _jit_set_op_pos(line, col);                                         \
     if (auto r = _dispatch_arith_special(lt, ld, rt, rd, method,        \
-                                         reflect))                      \
+                                         reflect, line, col))           \
       return *r;                                                        \
     _arith_guard_numeric(opstr, lt, rt, line, col);                     \
     auto a = _culebra_coerce_num(lt, ld);                               \
@@ -1772,8 +1773,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_add_borrow(
                                   static_cast<int>(culebra::Op::Add), "+",
                                   line, col))
     return *r;
-  _jit_set_op_pos(line, col);
-  if (auto r = _dispatch_arith_special(lt, ld, rt, rd, Special::Add, true))
+  if (auto r = _dispatch_arith_special(lt, ld, rt, rd, Special::Add, true,
+                                       line, col))
     return *r;
   bool ls = (lt == TAG_STRING || lt == TAG_STRINGVIEW);
   bool rs = (rt == TAG_STRING || rt == TAG_STRINGVIEW);
@@ -1801,8 +1802,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_div_borrow(
                                   static_cast<int>(culebra::Op::Div), "/",
                                   line, col))
     return *r;
-  _jit_set_op_pos(line, col);
-  if (auto r = _dispatch_arith_special(lt, ld, rt, rd, Special::Div, false))
+  if (auto r = _dispatch_arith_special(lt, ld, rt, rd, Special::Div, false,
+                                       line, col))
     return *r;
   _arith_guard_numeric("/", lt, rt, line, col);
   auto a = _culebra_coerce_num(lt, ld);
@@ -1813,8 +1814,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_div_borrow(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_mod_borrow(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
-  _jit_set_op_pos(line, col);
-  if (auto r = _dispatch_arith_special(lt, ld, rt, rd, Special::Mod, false))
+  if (auto r = _dispatch_arith_special(lt, ld, rt, rd, Special::Mod, false,
+                                       line, col))
     return *r;
   _arith_guard_numeric("%", lt, rt, line, col);
   auto a = _culebra_coerce_num(lt, ld);
@@ -1827,8 +1828,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_mod_borrow(
 // `__matmul__`. Non-commutative, so no reflection.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_matmul_borrow(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
-  _jit_set_op_pos(line, col);
-  if (auto r = _try_special_binop(lt, ld, rt, rd, Special::Matmul)) return *r;
+  if (auto r = _try_special_binop(lt, ld, rt, rd, Special::Matmul, line, col))
+    return *r;
   culebra::throw_arith_type_error("@", _culebra_tag_name(lt),
                                   _culebra_tag_name(rt), line, col);
 }
@@ -2027,13 +2028,6 @@ inline std::optional<bool> _culebra_user_equal(int8_t t1, int64_t d1,
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_value_equal_borrow(
     int8_t t1, int64_t d1, int8_t t2, int64_t d2) {
-  // Two values neither of which is refcounted (scalars, nil, strings) can
-  // reach no user method below, so they need none of the site bookkeeping —
-  // which is thread-local state, and this is the `x == nil` of every guard.
-  if (!_is_refcounted_value_tag(t1) && !_is_refcounted_value_tag(t2))
-    return _culebra_value_equal(t1, d1, t2, d2);
-  // Both backends publish the operator's position before entering, which
-  // the method invokes below lend (JitBorrowedCallSite).
   return _culebra_value_equal(t1, d1, t2, d2);
 }
 
@@ -2078,7 +2072,7 @@ inline std::optional<bool> _special_le(int8_t t1, int64_t d1,
   inline bool _value_##name##_borrow(                                   \
       int8_t t1, int64_t d1, int8_t t2, int64_t d2,                     \
       int64_t line, int64_t col) {                                      \
-    { _jit_set_op_pos(line, col); fast_path }                           \
+    { culebra_runtime_set_op_pos(line, col); fast_path }                \
     return _culebra_value_ord(t1, d1, t2, d2,                           \
                               [](double a, double b) { return a cmp_op b; }, \
                               line, col);                               \
@@ -2165,8 +2159,8 @@ CUL_NUM_INPLACE(div, Op::Div)
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_pow_borrow(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
-  _jit_set_op_pos(line, col);
-  if (auto r = _try_special_binop(lt, ld, rt, rd, Special::Pow)) return *r;
+  if (auto r = _try_special_binop(lt, ld, rt, rd, Special::Pow, line, col))
+    return *r;
   if (lt == TAG_LONG && rt == TAG_LONG) {
     int64_t a = ld, e = rd;
     if (e >= 0) return {TAG_LONG, culebra::ipow_nonneg(a, e)};
@@ -2191,8 +2185,7 @@ CUL_NUM_INPLACE(pow, Op::Pow)
 // raises type error. Called only from the unary-minus slow path.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_neg_borrow(
     int8_t t, int64_t d, int64_t line, int64_t col) {
-  _jit_set_op_pos(line, col);
-  if (auto r = _try_special_unary(t, d, Special::Neg)) return *r;
+  if (auto r = _try_special_unary(t, d, Special::Neg, line, col)) return *r;
   if (t == TAG_LONG) return {TAG_LONG, -d};
   if (t == TAG_FLOAT) {
     auto v = _culebra_float_to_double(d);

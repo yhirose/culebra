@@ -1521,14 +1521,6 @@ inline JitValue _culebra_invoke2_at(JitClosure* fn, JitValue a, JitValue b,
   return _culebra_invoke2(fn, a, b);
 }
 
-// Publish the current op's source position for the positionless-error backfill
-// (see `_jit_thread.op_line`). Emitted just before a fallible runtime call; trivial so
-// it inlines to two stores on the cold-relative-to-the-call path.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_op_pos(
-    int64_t line, int64_t col) {
-  _jit_thread.op_line = line;
-  _jit_thread.op_col = col;
-}
 
 // Resolve the position a typed-parameter error should report for param `idx`,
 // interp-binder style: a positional argument reports at its own expression
