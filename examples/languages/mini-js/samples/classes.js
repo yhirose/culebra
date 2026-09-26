@@ -92,3 +92,8 @@ show('a name hidden on one function is not hidden on another', [Object.keys(plai
 const bare = () => {};
 bare.s = 4;
 show('nor on an arrow', [Object.keys(bare), bare.length, plain.length]);
+
+// a callee read off any reference keeps it as `this`, however it is spelled
+class Ref { constructor(v) { this.v = v; } m() { return this.v; } }
+class SubRef extends Ref { m() { return [super.m?.(), (super.m)(), super.nope?.()]; } }
+show('a reference keeps its receiver', [(new Ref(1).m)(), (new Ref(2)?.m)(), (new Ref(3).m)?.(), new SubRef(4).m()]);

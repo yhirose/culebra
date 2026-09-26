@@ -103,9 +103,11 @@ let grammar = `
   binding    <- arr_pat / obj_pat / ident
   arr_pat    <- '[' (pat_el (',' pat_el)*)? ','? ']'             { no_ast_opt }
   pat_el     <- rest_b / pat_dflt / pat_hole
-  pat_dflt   <- (arr_pat / obj_pat / postfix) ('=' !'=' aexpr)?
+  pat_dflt   <- ptarget ('=' !'=' aexpr)?
   pat_hole   <- &','
-  rest_b     <- '...' (arr_pat / obj_pat / postfix)              { no_ast_opt }
+  rest_b     <- '...' ptarget                                    { no_ast_opt }
+  # a member target is an assignment's alone (binding_idents refuses it)
+  ptarget    <- arr_pat / obj_pat / postfix
   obj_pat    <- '{' (opat_el (',' opat_el)*)? ','? '}'           { no_ast_opt }
   opat_el    <- rest_b / opat_kv / opat_short
   opat_kv    <- pkey ':' pat_dflt
@@ -124,7 +126,7 @@ let grammar = `
   arrow_p    <- '(' params ')' / arrow_one
   arrow_one  <- ident                                            { no_ast_opt }
   arrow_body <- block / aexpr
-  assign_e   <- (arr_pat / obj_pat / postfix) assign_op aexpr
+  assign_e   <- ptarget assign_op aexpr
   assign_op  <- < '=' !'=' / '+=' / '-=' / '*=' / '/=' / '%=' / '**=' / '??=' / '||=' / '&&=' >
   ternary    <- nullish ('?' aexpr ':' aexpr)?
   nullish    <- lor (nullish_op lor)*
@@ -2791,7 +2793,7 @@ fn collect_vars(node, f) {
       node.nodes[0].token == 'var' {
     mut i = 1
     while i < node.nodes.size() {
-      for id in pattern_idents(node.nodes[i].nodes[0], []) {
+      for id in pattern_idents(node.nodes[i].nodes[0]) {
         declare_fn_var(f, id.token, nil)
       }
       i = i + 1
@@ -2799,7 +2801,7 @@ fn collect_vars(node, f) {
   }
   if (node.name == 'for_of' || node.name == 'for_in') &&
       node.nodes[0].token == 'var' {
-    for id in pattern_idents(node.nodes[1], []) {
+    for id in pattern_idents(node.nodes[1]) {
       declare_fn_var(f, id.token, nil)
     }
   }
@@ -2817,39 +2819,30 @@ fn param_parts(p) {
   }
 }
 
-# The identifiers a binding pattern introduces, in source order.
-fn pattern_idents(pat, out) {
+# What a pattern assigns to, in source order: identifiers and, in an
+# assignment pattern, member expressions.
+fn pattern_leaves(pat, out) {
   cond {
-    pat.name == 'ident' => out.push(pat),
+    pat.name == 'ident' ||
+      pat.name == 'postfix' ||
+      pat.name == 'paren' => out.push(pat),
     pat.name == 'arr_pat' || pat.name == 'obj_pat' => {
       for el in pat.nodes {
-        pattern_idents(el, out)
+        pattern_leaves(el, out)
       }
     },
     pat.name == 'pat_dflt' ||
-      pat.name == 'rest_b' => pattern_idents(pat.nodes[0], out),
-    pat.name == 'opat_kv' => pattern_idents(pat.nodes[1], out),
+      pat.name == 'rest_b' => pattern_leaves(pat.nodes[0], out),
+    pat.name == 'opat_kv' => pattern_leaves(pat.nodes[1], out),
     pat.name == 'opat_short' => out.push(pat.nodes[0]),
     _ => nil,
   }
   out
 }
 
-# The member-expression targets a pattern assigns to (assignment only).
-fn pattern_targets(pat, out) {
-  cond {
-    pat.name == 'postfix' || pat.name == 'paren' => out.push(pat),
-    pat.name == 'arr_pat' || pat.name == 'obj_pat' => {
-      for el in pat.nodes {
-        pattern_targets(el, out)
-      }
-    },
-    pat.name == 'pat_dflt' ||
-      pat.name == 'rest_b' => pattern_targets(pat.nodes[0], out),
-    pat.name == 'opat_kv' => pattern_targets(pat.nodes[1], out),
-    _ => nil,
-  }
-  out
+# The identifiers a pattern introduces, in source order.
+fn pattern_idents(pat) {
+  pattern_leaves(pat, []).filter(|l| l.name == 'ident')
 }
 
 # The default expressions inside a pattern (scanned in the pattern's scope).
@@ -2878,16 +2871,20 @@ fn pattern_dflts(pat, out) {
 # The identifiers a declaration's pattern binds; a member target (which the
 # grammar shares with assignment patterns) is an assignment's alone.
 fn binding_idents(pat) {
-  for t in pattern_targets(pat, []) {
-    fail(t, 'Illegal property in declaration context')
+  let leaves = pattern_leaves(pat, [])
+  let member = leaves.find(|l| l.name != 'ident')
+  if member != nil {
+    fail(member, 'Illegal property in declaration context')
   }
-  pattern_idents(pat, [])
+  leaves
 }
 
+# A declaration's names; one hoist_block already declared is left as it is.
 fn declare_pattern(f, pat, kw) {
   for id in binding_idents(pat) {
     cond {
       kw == 'var' => declare_fn_var(f, id.token, id),
+      resolved.has(pkey(id)) => nil,
       _ => declare_var(f, id.token, id),
     }
   }
@@ -3145,13 +3142,7 @@ fn scan_decl(node, f) {
     let pat = d.nodes[0]
     # hoist_block declared the names when the block was entered; a for-init
     # or a var is declared here
-    for id in binding_idents(pat) {
-      cond {
-        kw == 'var' => declare_fn_var(f, id.token, id),
-        resolved.has(pkey(id)) => nil,
-        _ => declare_var(f, id.token, id),
-      }
-    }
+    declare_pattern(f, pat, kw)
     scan_pattern_dflts(pat, f)
     if d.nodes.size() > 1 {
       scan_expr(d.nodes[1], f)
@@ -3198,8 +3189,7 @@ fn wrap_member(f, mem, g, mname) {
 # emitter walks, for a postfix chain and for a new expression alike.
 fn scan_step(step, f) {
   cond {
-    step.name == 'call_p' ||
-      step.name == 'opt_call' => scan_args(step.nodes[0], f),
+    is_call(step) => scan_args(step.nodes[0], f),
     step.name == 'index_p' ||
       step.name == 'opt_index' => scan_expr(step.nodes[0], f),
     step.name == 'new_args' &&
@@ -3579,11 +3569,8 @@ fn scan_target(t0, f) {
     t.name == 'ident' => note_use(t, f),
     t.name == 'postfix' => scan_expr(t, f),
     t.name == 'arr_pat' || t.name == 'obj_pat' => {
-      for id in pattern_idents(t, []) {
-        note_use(id, f)
-      }
-      for tt in pattern_targets(t, []) {
-        scan_target(tt, f)
+      for leaf in pattern_leaves(t, []) {
+        scan_target(leaf, f)
       }
       scan_pattern_dflts(t, f)
     },
@@ -4015,24 +4002,11 @@ fn emit_raw_call(m, f, callee, arg_nodes, at) {
   ir.call_value(callee, ids, at)
 }
 
-fn emit_postfix(m, node, f) {
-  mut head = unparen(node.nodes[0])
-  mut steps = node.nodes.slice(1, node.nodes.size())
-  if head.name == 'postfix' {
-    cond {
-      # (o.m)() is o.m(): the chain continues the parenthesized one
-      !head.nodes.any(|s| s.name.starts_with('opt_')) => {
-        steps = head.nodes.slice(1, head.nodes.size()) + steps
-        head = head.nodes[0]
-      },
-      !in_prelude &&
-        is_call(steps[0]) &&
-        !is_call(head.nodes[head.nodes.size() - 1]) => {
-        return emit_paren_ref_call(m, f, head, steps, node)
-      },
-      _ => nil,
-    }
-  }
+# `sink`, when not nil, is the scratch a callee's receiver goes to (see
+# emit_ref); only the chain's last member or index step fills it.
+fn emit_postfix(m, node, f, sink) {
+  let head = unparen(node.nodes[0])
+  let steps = node.nodes.slice(1, node.nodes.size())
   # an intrinsic or raw op in the prelude is spelled as a call
   if in_prelude &&
       head.name == 'ident' &&
@@ -4061,8 +4035,8 @@ fn emit_postfix(m, node, f) {
       }
     }
   }
-  # super.m(args) keeps the receiver and starts the lookup at the parent
-  if head.name == 'super_mem' && steps.size() > 0 && steps[0].name == 'call_p' {
+  # super.m(args) has a runtime call of its own, as o.m(args) has __callm
+  if head.name == 'super_mem' && steps[0].name == 'call_p' {
     let r = resolved[pkey(head)]
     let cp = steps[0]
     let called = call_pre(
@@ -4078,9 +4052,22 @@ fn emit_postfix(m, node, f) {
       ],
       cp,
     )
-    return emit_steps(m, f, called, steps, 1)
+    return emit_steps(m, f, called, steps, 1, sink)
   }
-  emit_steps(m, f, emit_expr(m, head, f), steps, 0)
+  # (o.m)(), (new X().m)(), super.m?.(): a call of a reference keeps its
+  # receiver
+  if !in_prelude && ref_forms.has(head.name) && is_call(steps[0]) {
+    let recv = new_scratch(f)
+    let fnv = emit_ref(m, f, head, recv)
+    return ir.block(
+      [
+        store_local(recv, nil_l(m, node), node),
+        emit_call_ref(m, f, recv, fnv, steps, 0, sink, node),
+      ],
+      node,
+    )
+  }
+  emit_steps(m, f, emit_expr(m, head, f), steps, 0, sink)
 }
 
 fn home_ref(m, f, r, at) {
@@ -4094,6 +4081,23 @@ fn this_ref(m, f, node) {
     r.kind == 'var' => var_read(m, f, r, node),
     _ => nil_l(m, node),
   }
+}
+
+# super.key read with thisv as the receiver a getter sees
+fn emit_super_get(m, f, node, thisv) {
+  let r = resolved[pkey(node)]
+  call_pre(
+    m,
+    f,
+    '__super_get',
+    [
+      home_ref(m, f, r, node),
+      ir.bool_literal(r.is_static, node),
+      thisv,
+      str_l(m, node.nodes[0].token, node),
+    ],
+    node,
+  )
 }
 
 # The class value: the constructor function object, its prototype filled
@@ -4207,58 +4211,74 @@ fn is_call(step) {
   step.name == 'call_p' || step.name == 'opt_call'
 }
 
-# (a?.m)(): the parens end the short-circuit but keep the reference, so the
-# chain only fills in the receiver and function (both undefined when it
-# short-circuits, and calling that is the TypeError)
-fn emit_paren_ref_call(m, f, inner, steps, at) {
-  let recv = new_scratch(f)
-  let fnv = new_scratch(f)
-  mut rp = synth('ref_p', [], at)
-  rp['recv'] = recv
-  rp['fnv'] = fnv
-  let chain = emit_steps(
-    m,
-    f,
-    emit_expr(m, inner.nodes[0], f),
-    inner.nodes.slice(1, inner.nodes.size()) + [rp],
-    0,
-  )
+# The forms emit_ref evaluates as a Reference (the spec's); any other callee
+# has no receiver.
+let ref_forms = {postfix: true, new_e: true, super_mem: true}
+
+# A callee evaluated as a Reference: the function, with the object it was
+# read from stored in recv. A chain that short-circuits or ends in no
+# member read leaves recv alone.
+fn emit_ref(m, f, node, recv) {
+  match node {
+    {name: 'postfix'} => emit_postfix(m, node, f, recv),
+    {name: 'new_e'} => emit_new(m, node, f, recv),
+    _ => ir.block(
+      [
+        store_local(recv, this_ref(m, f, node), node),
+        emit_super_get(m, f, node, scratch_ref(m, recv, node)),
+      ],
+      node,
+    ),
+  }
+}
+
+# obj[key], with obj kept in recv
+fn emit_ref_get(m, f, recv, obj, key, at) {
   ir.block(
     [
-      store_local(recv, nil_l(m, at), at),
-      store_local(fnv, nil_l(m, at), at),
-      chain,
-      emit_call_ref(m, f, recv, fnv, steps, 0, at),
+      store_local(recv, obj, at),
+      emit_get(m, f, scratch_ref(m, recv, at), key, at),
     ],
     at,
   )
 }
 
-# The function in fnv called with recv as `this`, then the chain past
-# steps[i]; an opt_call runs all that only when there is a function.
-fn emit_call_ref(m, f, recv, fnv, steps, i, at) {
+# The function fnv called with recv as `this`, then the chain past steps[i];
+# an opt_call runs all that only when there is a function.
+fn emit_call_ref(m, f, recv, fnv, steps, i, sink, at) {
   let cp = steps[i]
-  let called = call_pre(
-    m,
-    f,
-    '__call',
-    [
-      scratch_ref(m, fnv, at),
-      scratch_ref(m, recv, at),
-      emit_arg_array(m, f, cp.nodes[0].nodes, cp),
-    ],
-    cp,
-  )
-  let rest_v = emit_steps(m, f, called, steps, i + 1)
+  let call = fn (callee) {
+    let called = call_pre(
+      m,
+      f,
+      '__call',
+      [
+        callee,
+        scratch_ref(m, recv, at),
+        emit_arg_array(m, f, cp.nodes[0].nodes, cp),
+      ],
+      cp,
+    )
+    emit_steps(m, f, called, steps, i + 1, sink)
+  }
   cond {
-    cp.name ==
-      'opt_call' => ir.make_if_else(
-      call_pre(m, f, '__isnullish', [scratch_ref(m, fnv, at)], at),
-      nil_l(m, at),
-      rest_v,
-      at,
-    ),
-    _ => rest_v,
+    cp.name == 'opt_call' => {
+      let tmp = new_scratch(f)
+      let rest_v = call(scratch_ref(m, tmp, at))
+      ir.block(
+        [
+          store_local(tmp, fnv, at),
+          ir.make_if_else(
+            call_pre(m, f, '__isnullish', [scratch_ref(m, tmp, at)], at),
+            nil_l(m, at),
+            rest_v,
+            at,
+          ),
+        ],
+        at,
+      )
+    },
+    _ => call(fnv),
   }
 }
 
@@ -4272,7 +4292,7 @@ fn plain_step(step) {
   synth(name, step.nodes, step)
 }
 
-fn emit_steps(m, f, value0, steps, start) {
+fn emit_steps(m, f, value0, steps, start, sink) {
   mut value = value0
   mut i = start
   while i < steps.size() {
@@ -4282,7 +4302,7 @@ fn emit_steps(m, f, value0, steps, start) {
       let tmp = new_scratch(f)
       let store = store_local(tmp, value, step)
       let rest = [plain_step(step)] + steps.slice(i + 1, steps.size())
-      let rest_v = emit_steps(m, f, scratch_ref(m, tmp, step), rest, 0)
+      let rest_v = emit_steps(m, f, scratch_ref(m, tmp, step), rest, 0, sink)
       let pick = ir.make_if_else(
         call_pre(m, f, '__isnullish', [scratch_ref(m, tmp, step)], step),
         nil_l(m, step),
@@ -4319,26 +4339,13 @@ fn emit_steps(m, f, value0, steps, start) {
           step.name == 'member_p' => str_l(m, step.nodes[0].token, step),
           _ => emit_expr(m, step.nodes[0], f),
         }
-        # a method call keeps the receiver: o.m(args)
+        let next = cond {
+          i + 1 < steps.size() => steps[i + 1].name,
+          _ => nil,
+        }
+        # a method call keeps the receiver: o.m(args), o.m?.(args)
         cond {
-          i + 1 < steps.size() && steps[i + 1].name == 'ref_p' => {
-            let rp = steps[i + 1]
-            value = ir.block(
-              [
-                store_local(rp.recv, value, step),
-                store_local(
-                  rp.fnv,
-                  emit_get(m, f, scratch_ref(m, rp.recv, step), key, step),
-                  step,
-                ),
-              ],
-              step,
-            )
-            i = i + 1
-          },
-          !in_prelude &&
-            i + 1 < steps.size() &&
-            steps[i + 1].name == 'call_p' => {
+          !in_prelude && next == 'call_p' => {
             let cp = steps[i + 1]
             value = call_pre(
               m,
@@ -4349,28 +4356,13 @@ fn emit_steps(m, f, value0, steps, start) {
             )
             i = i + 1
           },
-          !in_prelude &&
-            i + 1 < steps.size() &&
-            steps[i + 1].name == 'opt_call' => {
-            # o.m?.(args): the receiver is kept, and the rest of the chain
-            # runs only when the method is there
+          !in_prelude && next == 'opt_call' => {
             let recv = new_scratch(f)
-            let fnv = new_scratch(f)
-            let store_r = store_local(recv, value, step)
-            let store_f = store_local(
-              fnv,
-              emit_get(m, f, scratch_ref(m, recv, step), key, step),
-              step,
-            )
-            return ir.block(
-              [
-                store_r,
-                store_f,
-                emit_call_ref(m, f, recv, fnv, steps, i + 1, step),
-              ],
-              step,
-            )
+            let fnv = emit_ref_get(m, f, recv, value, key, step)
+            return emit_call_ref(m, f, recv, fnv, steps, i + 1, sink, step)
           },
+          sink != nil &&
+            next == nil => value = emit_ref_get(m, f, sink, value, key, step),
           _ => value = emit_get(m, f, value, key, step),
         }
       },
@@ -4384,7 +4376,7 @@ fn emit_steps(m, f, value0, steps, start) {
 # `new C.of[k](args).m()`: the grammar puts `new_args` after the steps that
 # name the constructor and before the ones applied to the object, so each
 # half is an ordinary postfix chain around one __new.
-fn emit_new(m, node, f) {
+fn emit_new(m, node, f, sink) {
   let steps = node.nodes
   mut cut = 1
   while steps[cut].name != 'new_args' {
@@ -4396,6 +4388,7 @@ fn emit_new(m, node, f) {
     emit_expr(m, steps[0], f),
     steps.slice(0, cut),
     1,
+    nil,
   )
   let arg_nodes = cond {
     steps[cut].nodes.size() > 0 => steps[cut].nodes[0].nodes,
@@ -4408,7 +4401,7 @@ fn emit_new(m, node, f) {
     [callee, emit_arg_array(m, f, arg_nodes, node)],
     node,
   )
-  emit_steps(m, f, obj, steps, cut + 1)
+  emit_steps(m, f, obj, steps, cut + 1, sink)
 }
 
 # --- assignment targets ---
@@ -4938,27 +4931,13 @@ fn emit_expr(m, node, f) {
         node,
       )
     },
-    {name: 'super_mem'} => {
-      let r = resolved[pkey(node)]
-      call_pre(
-        m,
-        f,
-        '__super_get',
-        [
-          home_ref(m, f, r, node),
-          ir.bool_literal(r.is_static, node),
-          this_ref(m, f, node),
-          str_l(m, node.nodes[0].token, node),
-        ],
-        node,
-      )
-    },
+    {name: 'super_mem'} => emit_super_get(m, f, node, this_ref(m, f, node)),
     {name: 'assign_e'} => emit_assign(m, node, f),
     {name: 'pre_inc'} => emit_update(m, node, f, true),
     {name: 'post_inc'} => emit_update(m, node, f, false),
     {name: 'unary'} => emit_unary(m, node, f),
-    {name: 'postfix'} => emit_postfix(m, node, f),
-    {name: 'new_e'} => emit_new(m, node, f),
+    {name: 'postfix'} => emit_postfix(m, node, f, nil),
+    {name: 'new_e'} => emit_new(m, node, f, nil),
     {name: 'array_lit'} => emit_arg_array(m, f, node.nodes, node),
     {name: 'object_lit'} => emit_object(m, node, f),
     {name: 'ternary'} => {
