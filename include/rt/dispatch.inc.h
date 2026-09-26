@@ -188,9 +188,14 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_derived_eq(
     return {TAG_BOOL, 0};
   if (_jit_meta_enum_name(lhs) != _jit_meta_enum_name(rhs))
     return {TAG_BOOL, 0};
+  // Every field of lhs found equal in rhs, and rhs holding no more of its
+  // own: a field added to one instance makes the pair unequal whichever
+  // side the call starts from.
   bool eq = true;
+  size_t fields = 0;
   lhs->for_each([&](std::string_view name, const JitObjectEntry& e) {
     if (!eq || e.value.tag == TAG_FUNC) return;
+    fields++;
     auto idx = rhs->find_slot(name);
     if (idx == static_cast<size_t>(-1)) {
       eq = false;
@@ -198,6 +203,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_derived_eq(
     }
     if (!JitValueEq{}(e.value, rhs->slots[idx].value)) eq = false;
   });
+  if (eq) {
+    size_t rhs_fields = 0;
+    rhs->for_each([&](std::string_view, const JitObjectEntry& e) {
+      if (e.value.tag != TAG_FUNC) rhs_fields++;
+    });
+    eq = rhs_fields == fields;
+  }
   return {TAG_BOOL, eq ? 1 : 0};
 }
 

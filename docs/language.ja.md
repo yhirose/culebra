@@ -3609,7 +3609,7 @@ table) なので、trait継承は **構造的 (class) conformanceのみ**に
 
 | derive | 生成method | 挙動 |
 |---|---|---|
-| `Eq` | `eq(other)` | `other`が同じclassで全data fieldがキーとして等しいときtrue |
+| `Eq` | `eq(other)` | `other`が同じclassで同じdata fieldを持ち、それぞれがキーとして等しいときtrue |
 | `Hash` | `hash()` | class名と各data fieldのhashを合成 |
 | `Show` | `to_s()` | `"ClassName(f1, f2, ...)"` (各fieldの値repr) |
 | `Comparable` | `cmp(other)` | data fieldを宣言順に辞書式比較 |

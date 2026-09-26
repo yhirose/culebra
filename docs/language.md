@@ -3820,7 +3820,7 @@ each mapping to one method:
 
 | Derive | Generated method | Behavior |
 |---|---|---|
-| `Eq` | `eq(other)` | true when `other` is the same class and every data field is equal as a key |
+| `Eq` | `eq(other)` | true when `other` is the same class with the same data fields, each equal as a key |
 | `Hash` | `hash()` | combines the class name and each data field's hash |
 | `Show` | `to_s()` | `"ClassName(f1, f2, ...)"` with each field's value repr |
 | `Comparable` | `cmp(other)` | lexicographic over data fields, in declaration order |

@@ -236,4 +236,18 @@ by_slot[OwnSpecialSlot.new(1)] = "long"
 by_slot[OwnSpecialSlot.new(1.0)] = "float"
 assert_eq(by_slot.size(), 2)
 
+// A field added to one instance makes the pair unequal whichever side the
+// derived `eq` starts from — it used to walk only the receiver's fields.
+@derive(Eq, Hash)
+class Grown {
+  new(x) {
+    self.x = x
+  }
+}
+let grown = Grown.new(1)
+grown.y = 2
+assert_eq(grown.eq(Grown.new(1)), false)
+assert_eq(Grown.new(1).eq(grown), false)
+assert_eq({Grown.new(1), grown}.size(), 2)
+
 IO.inspect("test_derive OK")
