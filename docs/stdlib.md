@@ -7802,7 +7802,10 @@ Each `Sound` is one voice, and the decoded sample is freed with the last
 reference, which also stops it: keep the handle for as long as it should be
 heard. Bytes that are none of the three formats raise
 `ValueError: not a valid WAV, MP3 or Ogg audio stream` on every backend; past
-that check, a stream that fails to decode stays silent.
+that check, a stream that fails to decode stays silent. In the browser the
+bytes are decoded by WebAudio in the background, so a `play()` made right
+after the `Sound` is built starts once the decode finishes, a moment later;
+natively the sample is decoded when the `Sound` is built.
 
 ```culebra
 let WAV = Encoding.hex.decode("524946462800000057415645666d7420100000000100010040" +
