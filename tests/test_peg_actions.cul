@@ -183,3 +183,16 @@ assert_eq(
   ),
   3,
 )
+
+// --- an action may run a tree-mode parse of the same grammar: it gets a
+// Tree, not the outer actions run again (which recursed to the depth limit),
+// and the outer parse carries on with its own actions ---
+let word = PEG.compile("S <- [a-z]+")
+assert_eq(word.parse("abc", actions: {S: fn (sv) { word.parse("xy").token }}), "xy")
+assert_eq(
+  PEG.parse("S <- [a-z]+", "abc", actions: {
+    S: fn (sv) { [PEG.parse("S <- [a-z]+", "xy").token, sv.token] },
+  }),
+  ["xy", "abc"],
+)
+assert_eq(word.parse("abc", actions: {S: fn (sv) { word.test("12") }}), false)

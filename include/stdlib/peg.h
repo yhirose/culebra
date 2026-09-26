@@ -156,6 +156,13 @@ struct Compiled {
   // touches the grammar's rules (see ActionScope); the stack itself always
   // reflects exactly whichever call is innermost right now.
   std::vector<ActionFrame> action_stack;
+  // What compile() built this from, and a second parser built from the same:
+  // a tree-mode parse a registered action starts goes there, since the rules
+  // here carry the reduce the outer parse installed -- swapping them back
+  // would destroy the action that is running.
+  std::string grammar;
+  Options opt;
+  std::shared_ptr<Compiled> tree_twin;
 };
 using Handle = std::shared_ptr<Compiled>;
 
@@ -179,18 +186,10 @@ inline std::string _fmt_err(std::string_view path, size_t ln, size_t col,
 
 // Load (or cache-hit) `grammar`. Throws CulebraError("PEGError") for a
 // malformed grammar, with the position inside the grammar text in the message.
-inline Handle compile(std::string_view grammar,
-                      const Options& opt) {
-  static thread_local std::unordered_map<std::string, Handle> cache;
-  std::string key;
-  key.reserve(grammar.size() + opt.start.size() + 2);
-  key += opt.packrat ? '1' : '0';
-  key += opt.start;
-  key += '\n';  // no rule name contains one, so the split is unambiguous
-  key += grammar;
-  if (auto it = cache.find(key); it != cache.end()) return it->second;
-
+inline Handle _build(std::string_view grammar, const Options& opt) {
   auto h = std::make_shared<Compiled>();
+  h->grammar.assign(grammar);
+  h->opt = opt;
   // Raw `this`: the parser is a member, so the callback cannot outlive it.
   auto* c = h.get();
   h->parser.set_logger([c](size_t ln, size_t col, const std::string& msg) {
@@ -224,10 +223,31 @@ inline Handle compile(std::string_view grammar,
     h->parser[rule_name.c_str()].enter = enter;
     h->parser[rule_name.c_str()].leave = leave;
   }
+  return h;
+}
 
+inline Handle compile(std::string_view grammar,
+                      const Options& opt) {
+  static thread_local std::unordered_map<std::string, Handle> cache;
+  std::string key;
+  key.reserve(grammar.size() + opt.start.size() + 2);
+  key += opt.packrat ? '1' : '0';
+  key += opt.start;
+  key += '\n';  // no rule name contains one, so the split is unambiguous
+  key += grammar;
+  if (auto it = cache.find(key); it != cache.end()) return it->second;
+  auto h = _build(grammar, opt);
   if (cache.size() > 64) cache.clear();  // bound growth (a grammar is big)
   cache.emplace(std::move(key), h);
   return h;
+}
+
+// The parser a tree-mode parse of `c` runs on: `c` itself, or its twin while
+// a parse_with_actions on `c` is in flight.
+inline Compiled& _tree_mode(Compiled& c) {
+  if (c.action_stack.empty()) return c;
+  if (!c.tree_twin) c.tree_twin = _build(c.grammar, c.opt);
+  return *c.tree_twin;
 }
 
 inline void _flatten(const ::peg::Ast& a, Tree& t, int64_t depth) {
@@ -253,20 +273,49 @@ inline void _flatten(const ::peg::Ast& a, Tree& t, int64_t depth) {
   t.children.insert(t.children.end(), kids.begin(), kids.end());
 }
 
+// A registered action parsing again (this grammar applied to itself, or just
+// to a substring it extracted) reuses this Compiled's err/err_line/err_col/
+// path, and the depth guard's counter is a single thread_local shared by every
+// parse. Each parse starts them fresh and puts back what it found on every
+// exit, a thrown one included, so a nested call's bookkeeping neither leaks
+// into the resuming outer one nor, for the counter, silently discounts it.
+struct _ParseState {
+  Compiled& c;
+  std::string err;
+  size_t line, col;
+  std::string path;
+  int64_t depth;
+  _ParseState(Compiled& compiled, std::string_view subject)
+      : c(compiled), err(std::move(compiled.err)), line(compiled.err_line),
+        col(compiled.err_col), path(compiled.path), depth(_peg_parse_depth) {
+    c.err.clear();
+    c.err_line = c.err_col = 0;
+    c.path.assign(subject);
+    _peg_parse_depth = 0;
+  }
+  ~_ParseState() {
+    c.err = std::move(err);
+    c.err_line = line;
+    c.err_col = col;
+    c.path = std::move(path);
+    _peg_parse_depth = depth;
+  }
+};
+
 // Parse `text`. Throws CulebraError("PEGError") on a syntax error, with the
 // position inside `text` in the message -- prefixed by `path` when the caller
 // named the subject (PEG.parse(..., path: "prog.pas")), the way cpp-peglib's
 // own parse_n() takes a path per call: one parser, many files.
 inline Tree parse(Compiled& c, std::string_view text,
                   bool optimize, std::string_view path) {
-  c.err.clear();
-  c.err_line = c.err_col = 0;
-  c.path.assign(path);
-  _peg_parse_depth = 0;
   std::shared_ptr<::peg::Ast> ast;
-  if (!c.parser.parse(text, ast)) {
-    _fail(_fmt_err(c.path, c.err_line, c.err_col,
-                  c.err.empty() ? "syntax error" : c.err));
+  {
+    Compiled& t = _tree_mode(c);
+    _ParseState state(t, path);
+    if (!t.parser.parse(text, ast)) {
+      _fail(_fmt_err(t.path, t.err_line, t.err_col,
+                    t.err.empty() ? "syntax error" : t.err));
+    }
   }
   if (optimize) ast = c.parser.optimize_ast(ast);
   Tree t;
@@ -277,11 +326,9 @@ inline Tree parse(Compiled& c, std::string_view text,
 }
 
 inline bool test(Compiled& c, std::string_view text) {
-  c.err.clear();
-  c.err_line = c.err_col = 0;
-  c.path.clear();
-  _peg_parse_depth = 0;
-  return c.parser.parse(text);
+  Compiled& t = _tree_mode(c);
+  _ParseState state(t, {});
+  return t.parser.parse(text);
 }
 
 // The rule this reduction belongs to, whatever action fires: default when
@@ -402,32 +449,7 @@ inline std::any parse_with_actions(Compiled& c,
       _fail(culebra::format("PEG: no such rule '{}'", name));
     }
   }
-  // A registered action recursively parsing the same Compiled (this grammar
-  // applied to itself, or just to a substring it extracted) reuses this same
-  // err/err_line/err_col/path state, and the depth guard's counter is a
-  // single thread_local shared by every parse. Restoring all of it to what
-  // THIS call found on entry, on every exit including a thrown one, is what
-  // keeps a reentrant call's own bookkeeping from leaking into -- or, for the
-  // depth counter, silently discounting -- the resuming outer call's.
-  struct Restore {
-    Compiled& c;
-    std::string err;
-    size_t line, col;
-    std::string path;
-    int64_t depth;
-    ~Restore() {
-      c.err = std::move(err);
-      c.err_line = line;
-      c.err_col = col;
-      c.path = std::move(path);
-      _peg_parse_depth = depth;
-    }
-  } restore{c, c.err, c.err_line, c.err_col, c.path, _peg_parse_depth};
-
-  c.err.clear();
-  c.err_line = c.err_col = 0;
-  c.path.assign(path);
-  _peg_parse_depth = 0;
+  _ParseState state(c, path);
   _AnyBox result;
   {
     ActionScope scope(c, actions, text.data());
