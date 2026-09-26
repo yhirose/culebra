@@ -91,7 +91,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_to_long_any(
   }
   if (tag == TAG_LONG) return {TAG_LONG, data};
   if (tag == TAG_FLOAT) {
-    return {TAG_LONG, static_cast<int64_t>(_culebra_float_to_double(data))};
+    return {TAG_LONG,
+            culebra::double_to_long(_culebra_float_to_double(data), line, col)};
   }
   if (str) {
     auto sv = _culebra_str_view(tag, data);
@@ -257,7 +258,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_math_atan2(
       int8_t tag, int64_t data, int64_t line, int64_t col) {            \
     return _math_out(culebra::math::f2l(                                \
         _math_num(tag, data, line, col),                                \
-        [](double x) { return fn(x); }));                               \
+        [](double x) { return fn(x); },                                 \
+        [&] { return std::pair(line, col); }));                         \
   }
 CUL_MATH_F2L(floor, std::floor)
 CUL_MATH_F2L(ceil,  std::ceil)

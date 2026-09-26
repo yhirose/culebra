@@ -248,6 +248,8 @@ inspect(Math.atan2(1.0, 1.0))  # => 0.7853981633974483
 Round a numeric value to an integer. `Long` input is returned
 unchanged. `Math.floor` rounds toward `-∞`, `Math.ceil` toward `+∞`,
 and `Math.round` uses **banker's rounding** (round half to even).
+A Float whose result has no Long — NaN, an infinity, past ±2⁶³ —
+raises `ValueError`.
 
 ```culebra
 inspect(Math.floor(-1.5))  # => -2

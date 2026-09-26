@@ -5194,7 +5194,8 @@ inspect(f(0, 10, step: 2).collect())  # => [0, 2, 4, 6, 8]
 
 * `Long` → そのまま。
 * `Float` → 0方向への切り捨て。
-  `to_long(3.7) == 3`、`to_long(-3.7) == -3`。
+  `to_long(3.7) == 3`、`to_long(-3.7) == -3`。NaN、無限大、Longの範囲
+  （±2⁶³）を超える値は`ValueError`。
 * `String` → `base`の符号付き整数としてパース。前後の空白は許容、
   それ以外は失敗。
 * 上記以外の型は`type error`。

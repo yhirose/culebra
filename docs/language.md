@@ -5451,7 +5451,8 @@ Convert `v` to `Long`:
 
 * `Long` → itself.
 * `Float` → truncated toward zero.
-  `to_long(3.7) == 3`, `to_long(-3.7) == -3`.
+  `to_long(3.7) == 3`, `to_long(-3.7) == -3`. NaN, an infinity, or a
+  value past the Long range (±2⁶³) raises `ValueError`.
 * `String` → parsed as a signed integer in `base`; leading/trailing
   whitespace is allowed, anything else fails.
 * Other types raise `type error`.

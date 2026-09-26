@@ -138,7 +138,7 @@ inline int64_t _jit_fa_self_long(JitValue self, const char* key) {
 }
 inline int64_t _jit_fa_arg_index(JitValue a) {
   return a.tag == TAG_LONG    ? a.data
-       : a.tag == TAG_FLOAT   ? static_cast<int64_t>(_culebra_float_to_double(a.data))
+       : a.tag == TAG_FLOAT   ? culebra::double_to_long(_culebra_float_to_double(a.data), 0, 0)
                               : 0;
 }
 // Releases the bound `self` (the native-method ABI passes it +1) on scope
@@ -819,7 +819,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
   if (obj->is_fixed_array_view) {
     int64_t i = (key_tag == TAG_LONG) ? key_data
            : (key_tag == TAG_FLOAT)
-               ? static_cast<int64_t>(_culebra_float_to_double(key_data))
+               ? culebra::double_to_long(_culebra_float_to_double(key_data), line, col)
                : throw culebra::CulebraError("TypeError",
                      "type error: expected Long or Float", line, col);
     _jit_fa_set(obj, i, val_tag, val_data, line, col);
@@ -1042,7 +1042,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
   if (obj->is_fixed_array_view) {
     int64_t i = (key_tag == TAG_LONG) ? key_data
            : (key_tag == TAG_FLOAT)
-               ? static_cast<int64_t>(_culebra_float_to_double(key_data))
+               ? culebra::double_to_long(_culebra_float_to_double(key_data), line, col)
                : throw culebra::CulebraError("TypeError",
                      "type error: expected Long or Float", line, col);
     JitValue r = _jit_fa_get(obj, i, line, col);
@@ -1054,7 +1054,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
   // (the index coerces Long/Float like the interp's `key.to_long()`).
   if (_jit_is_shared_buffer(obj)) {
     int64_t idx = (key_tag == TAG_LONG)    ? key_data
-             : (key_tag == TAG_FLOAT)   ? static_cast<int64_t>(_culebra_float_to_double(key_data))
+             : (key_tag == TAG_FLOAT)   ? culebra::double_to_long(_culebra_float_to_double(key_data), line, col)
              : throw culebra::CulebraError("TypeError",
                    "type error: expected Long or Float", line, col);
     auto* view = _jit_shared_buffer_index(obj, idx, line, col);

@@ -117,11 +117,17 @@ double f2f(const Num& x, Fn&& fn) {
 
 // The unary Long family (floor/ceil/round): Long passes through untouched
 // (coercing through Float would lose precision past 2^53); Float maps
-// through fn and truncates to Long.
-template <class Fn>
-Num f2l(const Num& x, Fn&& fn) {
+// through fn and truncates to Long — a ValueError when the result has no Long
+// (NaN, an infinity, past ±2^63).
+template <class Fn, class PosFn>
+Num f2l(const Num& x, Fn&& fn, PosFn&& pos) {
   if (!x.is_float) return x;
-  return num_long(static_cast<int64_t>(fn(x.d)));
+  double r = fn(x.d);
+  if (!double_fits_long(r)) {
+    auto [line, col] = pos();
+    return num_long(double_to_long(r, line, col));
+  }
+  return num_long(static_cast<int64_t>(r));
 }
 
 // atan2(y, x): two numerics -> Float (radians).

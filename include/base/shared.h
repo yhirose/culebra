@@ -740,6 +740,22 @@ inline std::string format_float_shortest(double d) {
   return s;
 }
 
+// Whether `d` truncates to a Long: the cast is undefined for NaN and past
+// ±2^63 (x86 answers INT64_MIN), so every Float-to-Long conversion asks first.
+inline bool double_fits_long(double d) {
+  return d >= -9223372036854775808.0 && d < 9223372036854775808.0;
+}
+
+// A Float as a Long, truncated toward zero, or ValueError when it has none.
+inline int64_t double_to_long(double d, int64_t line, int64_t col) {
+  if (!double_fits_long(d))
+    throw CulebraError(
+        "ValueError",
+        culebra::format("cannot convert {} to Long", format_float_shortest(d)),
+        line, col);
+  return static_cast<int64_t>(d);
+}
+
 // JSON.stringify quote escaping. Shared by both backends' stringify
 // implementations. Control bytes (<0x20) emit as `\u00xx`.
 inline std::string json_escape(std::string_view s) {
@@ -1319,9 +1335,9 @@ inline int64_t ipow_nonneg(int64_t base, int64_t exp) {
 // which is int64_t because that is what a culebra Long is.
 inline size_t hash_long(int64_t v) { return std::hash<int64_t>{}(v); }
 inline size_t hash_double(double d) {
-  int64_t as_long = static_cast<int64_t>(d);
-  if (std::isfinite(d) && static_cast<double>(as_long) == d) {
-    return hash_long(as_long);
+  if (double_fits_long(d)) {
+    int64_t as_long = static_cast<int64_t>(d);
+    if (static_cast<double>(as_long) == d) return hash_long(as_long);
   }
   return std::hash<double>{}(d);
 }

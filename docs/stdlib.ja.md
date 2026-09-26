@@ -240,7 +240,8 @@ inspect(Math.atan2(1.0, 1.0))  # => 0.7853981633974483
 
 整数への丸め。`Long`入力はそのまま返します。`Math.floor`は
 `-∞`方向、`Math.ceil`は`+∞`方向、`Math.round`は
-**偶数丸め（bankers' rounding）**。
+**偶数丸め（bankers' rounding）**。結果がLongに収まらないFloat
+（NaN、無限大、±2⁶³を超える値）は`ValueError`。
 
 ```culebra
 inspect(Math.floor(-1.5))  # => -2

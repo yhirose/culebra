@@ -583,7 +583,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_format_value(
     std::memcpy(&d, &data, sizeof d);
     if (culebra::format_spec_wants_int(spec))
       return _culebra_heap_str(culebra::format_value_long(
-          static_cast<int64_t>(d), spec, line, col));
+          culebra::double_to_long(d, line, col), spec, line, col));
     return _culebra_heap_str(culebra::format_value_double(d, spec, line, col));
   }
   return _culebra_heap_str(culebra::format_value_string(
@@ -3889,7 +3889,7 @@ inline void _jit_packable_write_field(uint8_t* base,
   };
   auto as_long = [&]() -> int64_t {
     if (tag == TAG_LONG) return data;
-    if (tag == TAG_FLOAT) return static_cast<int64_t>(_culebra_float_to_double(data));
+    if (tag == TAG_FLOAT) return culebra::double_to_long(_culebra_float_to_double(data), 0, 0);
     throw culebra::CulebraError("TypeError", "type error: expected Long");
   };
   if (f.type == "Float32") { float v = static_cast<float>(as_double()); std::memcpy(p, &v, 4); return; }

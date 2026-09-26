@@ -78,4 +78,22 @@ assert_eq(err(fn () {
 # separate instantiation, already reached above.)
 assert_eq(err(fn () { Math.max() }).kind, 'TypeError')
 
+# A Float with no Long — NaN, an infinity, past ±2^63 — raises where it used
+# to come back as -9223372036854775808. The edges that do fit convert.
+for f in [
+  || to_long(1e30),
+  || to_long(-1e30),
+  || to_long(Math.nan),
+  || Math.round(Math.inf),
+  || Math.floor(-1e300),
+  || Math.ceil(9.3e18),
+  || "{1e30:d}",
+] {
+  assert_eq(err(f).kind, 'ValueError')
+}
+assert_eq(err(|| to_long(Math.nan)).message, 'cannot convert nan to Long')
+assert_eq(to_long(-9223372036854775808.0), -9223372036854775807 - 1)
+assert_eq(to_long(9.2e18), 9200000000000000000)
+assert_eq(Math.round(-2.5), -2)
+
 inspect('math kernels: ok')
