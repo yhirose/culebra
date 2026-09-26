@@ -2138,107 +2138,130 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_enumerate_any(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject*
 culebra_runtime_object_iter_dispatch(JitObject* obj);
 
-// Presence check that does NOT consume the key (unlike object_has_value's
-// non-String path). Used by the object iterators to skip keys removed
-// mid-iteration without disturbing the snapshot array's reference.
-inline bool _jit_obj_has_key(JitObject* obj, JitValue key) {
-  if (key.tag == TAG_STRING) {
-    return _find_property(obj, reinterpret_cast<const char*>(key.data)) !=
-           nullptr;
+// JitKeySnapshot (rt_value.inc.h). An Object holding non-String keys lists
+// them all in key_order, so its keys and their hashes are read off the same
+// entries in one pass; any other Object's keys are culebra_runtime_object_keys'.
+inline JitKeySnapshot JitKeySnapshot::take(JitObject* obj) {
+  if (!obj->non_string_props || obj->non_string_props->empty() ||
+      _jit_meta_opaque(obj))
+    return {culebra_runtime_object_keys(obj), {TAG_NIL, 0}};
+  auto n = static_cast<int64_t>(obj->key_order->size());
+  auto* keys = culebra_runtime_array_new_reserved(n);
+  auto* hashes = culebra_runtime_array_new_reserved(n);
+  for (const auto& k : *obj->key_order) {
+    culebra_runtime_value_retain(k.value().tag, k.value().data);
+    culebra_runtime_array_push(keys, k.value().tag, k.value().data);
+    culebra_runtime_array_push(hashes, TAG_LONG, static_cast<int64_t>(k.hash()));
   }
-  return obj->non_string_props &&
-         obj->non_string_props->contains({key.tag, key.data});
+  return {keys, {TAG_ARRAY, reinterpret_cast<int64_t>(hashes)}};
 }
 
-// Object for-in / .iter() fast fn — yields `(key, value)` tuples over the
-// key snapshot. No structural-mutation guard: keys added during iteration
-// are not in the snapshot (not visited), keys removed are skipped, and the
-// value is read live. The key gets a fresh +1 for the tuple (the snapshot
-// array keeps its own); `object_get_any` returns the value +1 and consumes
-// refcounted keys, so retain once more for it.
+// A String key is looked up by name; any other by the hash it was stored
+// under, so `hashes` is read only for those (and is nil when there are none).
+inline bool JitKeySnapshot::value(JitObject* obj, JitArray* keys,
+                                  JitValue hashes, size_t i, int8_t* out_tag,
+                                  int64_t* out_data) {
+  auto key = keys->items[i];
+  if (key.tag == TAG_STRING) {
+    if (!_find_property(obj, reinterpret_cast<const char*>(key.data)))
+      return false;
+    culebra_runtime_object_get_any(obj, key.tag, key.data, out_tag, out_data,
+                                   0, 0, /*own_receiver=*/false);
+    return true;
+  }
+  auto* hs = reinterpret_cast<JitArray*>(hashes.data);
+  auto it = _jit_sidecar_at(
+      obj, JitHashedKey::restore(key, static_cast<size_t>(hs->items[i].data)));
+  if (!it) return false;
+  *out_tag = (*it)->second.value.tag;
+  *out_data = (*it)->second.value.data;
+  culebra_runtime_value_retain(*out_tag, *out_data);
+  return true;
+}
+
+// The step the Object iterators share: past the keys removed since the
+// snapshot to the next live entry — its key (borrowed from the snapshot) and
+// its value (+1) — or false at the end. No structural-mutation guard: keys
+// added during iteration are not in the snapshot (not visited), keys removed
+// are skipped, and the value is read live. Captures: the object, the keys,
+// the index, and — only when some key is not a String — the hashes.
+inline bool _jit_obj_snapshot_next(JitClosure* cls, JitValue* key,
+                                   int8_t* out_tag, int64_t* out_data) {
+  auto* obj = reinterpret_cast<JitObject*>(cls->captures[0]->value.data);
+  auto* arr = reinterpret_cast<JitArray*>(cls->captures[1]->value.data);
+  auto idx_cell = cls->captures[2];
+  while (static_cast<size_t>(idx_cell->value.data) < arr->size) {
+    size_t i = static_cast<size_t>(idx_cell->value.data++);
+    JitValue hashes = arr->items[i].tag == TAG_STRING ? JitValue{TAG_NIL, 0}
+                                                      : cls->captures[3]->value;
+    if (JitKeySnapshot::value(obj, arr, hashes, i, out_tag, out_data)) {
+      *key = arr->items[i];
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // extern "C" (close briefly for the template below)
+
+// An Object iterator stepping through `obj`'s key snapshot with `FastFn`.
+template <JitIterFastFn FastFn>
+inline JitObject* _jit_obj_snapshot_iter(JitObject* obj) {
+  auto snap = JitKeySnapshot::take(obj);
+  culebra_runtime_value_retain(TAG_OBJECT, reinterpret_cast<int64_t>(obj));
+  auto* obj_cell = culebra_runtime_cell_new(
+      TAG_OBJECT, reinterpret_cast<int64_t>(obj));
+  auto* arr_cell = culebra_runtime_cell_new(
+      TAG_ARRAY, reinterpret_cast<int64_t>(snap.keys));
+  auto* idx_cell = culebra_runtime_cell_new(TAG_LONG, 0);
+  if (snap.hashes.tag == TAG_NIL)
+    return _iter_wrap_fast<FastFn>({obj_cell, arr_cell, idx_cell});
+  return _iter_wrap_fast<FastFn>(
+      {obj_cell, arr_cell, idx_cell,
+       culebra_runtime_cell_new(snap.hashes.tag, snap.hashes.data)});
+}
+
+extern "C" {
+
+// Object for-in / .iter() fast fn — yields `(key, value)` tuples. The key
+// gets a fresh +1 for the tuple (the snapshot array keeps its own).
 inline void _iter_from_object_pairs_fast_fn(JitClosure* cls, JitValue,
                                             bool* done, int8_t* out_tag,
                                             int64_t* out_data) {
-  auto obj_cell = cls->captures[0];
-  auto arr_cell = cls->captures[1];
-  auto idx_cell = cls->captures[2];
-  auto* obj = reinterpret_cast<JitObject*>(obj_cell->value.data);
-  auto* arr = reinterpret_cast<JitArray*>(arr_cell->value.data);
-  while (static_cast<size_t>(idx_cell->value.data) < arr->size) {
-    auto key = arr->items[idx_cell->value.data];
-    idx_cell->value.data++;
-    if (!_jit_obj_has_key(obj, key)) continue;  // removed → skip
-    int8_t vt;
-    int64_t vd;
-    culebra_runtime_value_retain(key.tag, key.data);
-    culebra_runtime_object_get_any(obj, key.tag, key.data, &vt, &vd, 0, 0,
-                                   /*own_receiver=*/false);
-    culebra_runtime_value_retain(key.tag, key.data);
-    auto* pair = culebra_runtime_tuple_new();
-    culebra_runtime_tuple_push(pair, key.tag, key.data);
-    culebra_runtime_tuple_push(pair, vt, vd);
-    *done = false;
-    *out_tag = TAG_TUPLE;
-    *out_data = reinterpret_cast<int64_t>(pair);
-    return;
-  }
-  *done = true;
+  JitValue key;
+  int8_t vt;
+  int64_t vd;
+  *done = !_jit_obj_snapshot_next(cls, &key, &vt, &vd);
+  if (*done) return;
+  culebra_runtime_value_retain(key.tag, key.data);
+  auto* pair = culebra_runtime_tuple_new();
+  culebra_runtime_tuple_push(pair, key.tag, key.data);
+  culebra_runtime_tuple_push(pair, vt, vd);
+  *out_tag = TAG_TUPLE;
+  *out_data = reinterpret_cast<int64_t>(pair);
 }
 
 // Object.iter(): yield `(key, value)` pairs in insertion order (Ruby-style
-// entries view). Iterates a snapshot of the keys taken here; mutating the
-// object in the loop body is safe (adds not visited, removes skipped, value
-// read live).
+// entries view). Mutating the object in the loop body is safe (adds not
+// visited, removes skipped, value read live).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_iter(
     JitObject* obj) {
-  auto* keys = culebra_runtime_object_keys(obj);
-  culebra_runtime_value_retain(TAG_OBJECT, reinterpret_cast<int64_t>(obj));
-  auto* obj_cell = culebra_runtime_cell_new(
-      TAG_OBJECT, reinterpret_cast<int64_t>(obj));
-  auto* arr_cell = culebra_runtime_cell_new(
-      TAG_ARRAY, reinterpret_cast<int64_t>(keys));
-  auto* idx_cell = culebra_runtime_cell_new(TAG_LONG, 0);
-  return _iter_wrap_fast<&_iter_from_object_pairs_fast_fn>(
-      {obj_cell, arr_cell, idx_cell});
+  return _jit_obj_snapshot_iter<&_iter_from_object_pairs_fast_fn>(obj);
 }
 
 // Object.values() fast fn — the value-only view of the pairs iterator.
-// Same snapshot + skip-removed + live-read; yields the value directly.
 inline void _iter_from_object_values_fast_fn(JitClosure* cls, JitValue,
                                              bool* done, int8_t* out_tag,
                                              int64_t* out_data) {
-  auto obj_cell = cls->captures[0];
-  auto arr_cell = cls->captures[1];
-  auto idx_cell = cls->captures[2];
-  auto* obj = reinterpret_cast<JitObject*>(obj_cell->value.data);
-  auto* arr = reinterpret_cast<JitArray*>(arr_cell->value.data);
-  while (static_cast<size_t>(idx_cell->value.data) < arr->size) {
-    auto key = arr->items[idx_cell->value.data];
-    idx_cell->value.data++;
-    if (!_jit_obj_has_key(obj, key)) continue;  // removed → skip
-    culebra_runtime_value_retain(key.tag, key.data);
-    culebra_runtime_object_get_any(obj, key.tag, key.data, out_tag, out_data, 0,
-                                   0, /*own_receiver=*/false);
-    *done = false;
-    return;
-  }
-  *done = true;
+  JitValue key;
+  *done = !_jit_obj_snapshot_next(cls, &key, out_tag, out_data);
 }
 
-// Object.values(): lazy iterator over values in insertion order. Snapshots
-// the keys (so `next` is O(1) to advance) and reads each value live, with
-// the same structural-mutation guard as the key iterator.
+// Object.values(): lazy iterator over values in insertion order, read live
+// over the same key snapshot as the pairs iterator.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_values(
     JitObject* obj) {
-  auto* keys = culebra_runtime_object_keys(obj);
-  culebra_runtime_value_retain(TAG_OBJECT, reinterpret_cast<int64_t>(obj));
-  auto* obj_cell = culebra_runtime_cell_new(
-      TAG_OBJECT, reinterpret_cast<int64_t>(obj));
-  auto* arr_cell = culebra_runtime_cell_new(
-      TAG_ARRAY, reinterpret_cast<int64_t>(keys));
-  auto* idx_cell = culebra_runtime_cell_new(TAG_LONG, 0);
-  return _iter_wrap_fast<&_iter_from_object_values_fast_fn>(
-      {obj_cell, arr_cell, idx_cell});
+  return _jit_obj_snapshot_iter<&_iter_from_object_values_fast_fn>(obj);
 }
 
 // Dispatch helper: prefer the user `iter` method when present so an
@@ -2463,21 +2486,9 @@ inline void _iter_distinct_fast_fn(JitClosure* cls, JitValue, bool* done,
     }
     JitValue v = {tag, data};
     JitOwnedVal vg(v);
-    bool fresh =
-        _jit_at_pos(line, col, [&] { return !seen->index->contains(v); });
-    if (!fresh) continue;  // vg releases the duplicate
     culebra_runtime_value_retain(v.tag, v.data);  // one for the set
-    {
-      // set_add is callee-consumes, but it hashes on insert and an unhashable
-      // element throws from inside it — before it has taken the retain above.
-      // The throw-edge releaser is what the contract requires there;
-      // without it `[[1]].iter().distinct()` stranded one +1 per element.
-      JitUnwindRelease set_ref({v});
-      _jit_at_pos(line, col, [&] {
-        culebra_runtime_set_add(seen, v.tag, v.data);
-        return 0;
-      });
-    }
+    if (!culebra_runtime_set_add_method(seen, v.tag, v.data, line, col))
+      continue;  // vg releases the duplicate
     *done = false;
     auto kept = vg.consume();  // the original +1 goes to the caller
     *out_tag = kept.tag;
@@ -3784,8 +3795,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_object_keys(
   // for objects built via direct slot append (class instances).
   if (obj->key_order && !obj->key_order->empty()) {
     for (auto& k : *obj->key_order) {
-      culebra_runtime_value_retain(k.tag, k.data);
-      culebra_runtime_array_push(r, k.tag, k.data);
+      culebra_runtime_value_retain(k.value().tag, k.value().data);
+      culebra_runtime_array_push(r, k.value().tag, k.value().data);
     }
     return r;
   }
@@ -3878,31 +3889,26 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_remove(
   if (std::string_view(key) == "drop") _jit_owned_unbind_drop(obj);
 }
 
-// Drop a key from `key_order` if present. Matches by JitValueEq so
-// numerically-equivalent keys (e.g. `1`/`1.0`/`true`) all resolve to
-// the same slot — same rule the AnyKeyMap uses on insert.
+// Drop a key from `key_order` if present: a String key by its name, any
+// other by the very value the sidecar stored (the two hold the same key), so
+// no user `eq` runs.
 inline void _key_order_erase(JitObject* obj, const JitValue& key) {
   if (!obj->key_order) return;
-  JitValueEq eq;
   auto& ko = *obj->key_order;
   for (auto it = ko.begin(); it != ko.end(); ++it) {
-    if (eq(*it, key)) {
+    const JitValue& k = it->value();
+    bool same = key.tag == TAG_STRING ? JitValueEq{}(k, key)
+                                      : k.tag == key.tag && k.data == key.data;
+    if (same) {
       // Refcounted (Tuple) keys hold a +1 here — release before erasing.
-      if (_is_refcounted_value_tag(it->tag)) {
-        _culebra_value_release_impl(it->tag, it->data);
-      }
+      if (_is_refcounted_value_tag(k.tag))
+        _culebra_value_release_impl(k.tag, k.data);
       ko.erase(it);
       return;
     }
   }
 }
 
-// Generic remove. String keys go through the shape (TAG_STRING data
-// is a borrowed cstring, no refcount to manage); non-String keys go
-// through the sidecar where the caller's +1 to the lookup key is
-// consumed, and the stored map-entry key's +1 (transferred from the
-// original `object_set_any` insert) is also released before erase.
-// `_key_order_erase` drops the key_order entry's +1 separately.
 // dict.get(key, fallback): read-only. Returns the stored value (retained +1)
 // for `key`, else `fallback`. Never mutates the object. Consumes the key's +1
 // and, on a hit, the fallback's +1 — mirroring the interp builtin's ownership.
@@ -3926,10 +3932,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_default(
       stored = obj->slots[idx].value;
       found = true;
     }
-  } else if (obj->non_string_props) {
-    auto it = obj->non_string_props->find(JitValue{kt, kd});
-    if (it != obj->non_string_props->end()) {
-      stored = it->second.value;
+  } else {
+    // An unhashable key raises from the lookup; the key and the fallback
+    // are this call's to release on that exit too.
+    JitUnwindRelease guard{JitValue{kt, kd}, JitValue{ft, fd}};
+    if (auto it = _jit_sidecar_find(obj, {kt, kd})) {
+      stored = (*it)->second.value;
       found = true;
     }
   }
@@ -3960,16 +3968,20 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_or_put(
   _jit_normalize_str_key(kt, kd, kbuf);
   bool found = false;
   JitValue stored{TAG_NIL, 0};
+  std::optional<JitHashedKey> hashed;  // a non-String key, for the store too
   if (kt == TAG_STRING) {
     auto idx = obj->find_slot(reinterpret_cast<const char*>(kd));
     if (idx != static_cast<size_t>(-1)) {
       stored = obj->slots[idx].value;
       found = true;
     }
-  } else if (obj->non_string_props) {
-    auto iter = obj->non_string_props->find(JitValue{kt, kd});
-    if (iter != obj->non_string_props->end()) {
-      stored = iter->second.value;
+  } else {
+    // An unhashable key raises from the lookup; the key and the init are
+    // this call's to release on that exit too.
+    JitUnwindRelease guard{JitValue{kt, kd}, JitValue{it_tag, it_data}};
+    hashed = JitHashedKey::of({kt, kd});
+    if (auto iter = _jit_sidecar_at(obj, *hashed)) {
+      stored = (*iter)->second.value;
       found = true;
     }
   }
@@ -4006,18 +4018,17 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_or_put(
   JitOwnedVal ret_guard(v);
   culebra_runtime_value_retain(v.tag, v.data);
   key_guard.consume();
-  // The store's non-String-key path hashes through the map's Hasher, which
-  // raises "unhashable type" positionless (no line/col of its own) — same
-  // class as SetAdd / ObjectSetAny. A lazy `init` thunk invoked just above can
-  // itself publish (and so clobber) the op position, so re-publish this call's
-  // own (already-correct) position right before the one call that can raise
-  // it, rather than relying on whatever the JIT caller stamped earlier.
-  culebra_runtime_set_op_pos(line, col);
-  culebra_runtime_object_set_any(obj, kt, kd, /*mut*/ true, v.tag, v.data,
-                                 line, col, /*is_init*/ false);
+  // The store reuses the hash the lookup computed.
+  _jit_object_set_any(obj, kt, kd, hashed, /*mut*/ true, v.tag, v.data, line,
+                      col, /*is_init*/ false);
   return ret_guard.consume();
 }
 
+// Generic remove. String keys go through the shape (TAG_STRING data
+// is a borrowed cstring, no refcount to manage); non-String keys go
+// through the sidecar, where the caller's +1 to the lookup key is
+// consumed, and the entry is erased before the stored key's +1 and its
+// value's are released. `_key_order_erase` drops the key_order entry's +1.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_remove_any(
     JitObject* obj, int8_t tag, int64_t data, int64_t line, int64_t col) {
   if (obj->is_shared_val) {
@@ -4040,24 +4051,19 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_remove_any(
     return;
   }
   JitValue key{tag, data};
-  if (!obj->non_string_props) {
-    // No non-string keys stored yet, but the interpreter's sidecar still
-    // hashes the key on every remove — an unhashable key (Function, Array,
-    // ...) must raise here too rather than silently no-op.
-    _jit_at_pos(line, col, [&] { return JitValueHash{}(key); });
+  auto found =
+      _jit_at_pos(line, col, [&] { return _jit_sidecar_find(obj, key); });
+  if (!found) {
     _culebra_value_release_impl(tag, data);
     return;
   }
-  auto it =
-      _jit_at_pos(line, col, [&] { return obj->non_string_props->find(key); });
-  if (it == obj->non_string_props->end()) {
-    _culebra_value_release_impl(tag, data);
-    return;
-  }
-  _culebra_value_release_impl(it->second.value.tag, it->second.value.data);
-  _culebra_value_release_impl(it->first.tag, it->first.data);
+  auto it = *found;
+  JitValue stored = it->first.value();
+  JitValue value = it->second.value;
   obj->non_string_props->erase(it);
-  _key_order_erase(obj, key);
+  _key_order_erase(obj, stored);
+  _culebra_value_release_impl(value.tag, value.data);
+  _culebra_value_release_impl(stored.tag, stored.data);
   _culebra_value_release_impl(tag, data);
 }
 
@@ -4093,20 +4099,17 @@ inline void _each_of_jit_iter(JitIterDrive& drive, Emit emit) {
   drive.finish();
 }
 
-// Duplicates collapse; first-seen order is kept. set_add absorbs the +1 on
-// insert and releases it on a duplicate, so the guard only covers the throw
-// edge (an unhashable element).
+// Duplicates collapse; first-seen order is kept. set_add consumes each +1 on
+// every exit, an unhashable element's throw included.
 template <typename Each>
 inline JitSet* _collect_set_jit(Each each, int64_t line, int64_t col) {
   auto* out = culebra_runtime_set_new();
   JitOwnedVal out_guard(JitValue{TAG_SET, reinterpret_cast<int64_t>(out)});
   each([&](JitValue v) {
-    JitOwnedVal vg(v);
     _jit_at_pos(line, col, [&] {
       culebra_runtime_set_add(out, v.tag, v.data);
       return 0;
     });
-    vg.consume();
   });
   out_guard.consume();
   return out;
@@ -4132,8 +4135,8 @@ inline JitObject* _collect_to_object_jit(Each each, int64_t line, int64_t col) {
     }
     auto k = pair->items[0];
     auto val = pair->items[1];
-    _jit_at_pos(line, col, [&] { return JitValueHash{}(k); });
-    // set_any consumes one ref of each half; the tuple still holds its own.
+    // set_any consumes one ref of each half on every exit, an unhashable
+    // key's throw included; the tuple still holds its own.
     culebra_runtime_value_retain(k.tag, k.data);
     culebra_runtime_value_retain(val.tag, val.data);
     culebra_runtime_object_set_any(out, k.tag, k.data, /*mut*/ true,
@@ -4144,9 +4147,9 @@ inline JitObject* _collect_to_object_jit(Each each, int64_t line, int64_t col) {
   return out;
 }
 
-// Buckets are Arrays in first-seen key order. The key's hashability is
-// checked up front so an unhashable key reports at this call site (and so
-// neither the key nor the fresh bucket is stranded when it does).
+// Buckets are Arrays in first-seen key order. An unhashable key reports at
+// this call site; get_or_put consumes the key and the fresh bucket when it
+// does.
 template <typename Each>
 inline JitObject* _collect_group_by_jit(Each each, int8_t ft, int64_t fd,
                                         int64_t line, int64_t col) {
@@ -4159,15 +4162,14 @@ inline JitObject* _collect_group_by_jit(Each each, int8_t ft, int64_t fd,
     auto k = _culebra_invoke1_at(fn, v, line, col);
     JitOwnedVal kg(k);
     auto* fresh = culebra_runtime_array_new();
-    JitOwnedVal fg(JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(fresh)});
-    _jit_at_pos(line, col, [&] { return JitValueHash{}(k); });
     kg.consume();
-    fg.consume();
     // get_or_put consumes the key and the fresh bucket, and hands back the
     // stored bucket with a +1 (the fresh one when this key is new).
-    auto bucket = culebra_runtime_object_get_or_put(
-        out, k.tag, k.data, TAG_ARRAY, reinterpret_cast<int64_t>(fresh),
-        line, col);
+    auto bucket = _jit_at_pos(line, col, [&] {
+      return culebra_runtime_object_get_or_put(
+          out, k.tag, k.data, TAG_ARRAY, reinterpret_cast<int64_t>(fresh),
+          line, col);
+    });
     JitOwnedVal bg(bucket);
     auto owned = vg.consume();
     culebra_runtime_array_push(reinterpret_cast<JitArray*>(bucket.data),

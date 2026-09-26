@@ -102,6 +102,24 @@ int run() {
       joined += k.as<std::string>() + "=" + std::to_string(v.as<int64_t>()) + ";";
     ok &= check(joined == "rps=10;burst=20;", "items() in insertion order");
   }
+  {  // items() finds a stored key by the hash it carries, not by hashing again
+    Value d = embed.eval(R"(
+      class Id {
+        new(n) { self.n = n }
+        hash() { self.n }
+        eq(o) { self.n == o.n }
+      }
+      let k = Id.new(1)
+      mut d = {a: 0}
+      d[k] = 'one'
+      k.n = 2
+      d
+    )");
+    auto entries = d.items();
+    ok &= check(entries.size() == 2 &&
+                    entries[1].second.as<std::string>() == "one",
+                "items() keeps an entry whose key's hash changed");
+  }
 
   // (3) The reads that should fail, failing the way the script's do.
   ok &= check(kind_of([&] { cfg["nope"]; }) == "KeyError",

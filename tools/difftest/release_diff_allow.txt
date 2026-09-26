@@ -175,3 +175,8 @@ m|fn (x) { x }|repeat|*
 aumusic|*
 aumusicseek|*
 ausound|*
+
+# An unhashable key is a TypeError wherever a key is looked up, whatever the
+# Object holds: `has` on an Object with no non-String key answered false,
+# where the same call on one that has such a key raised.
+m|{a: 1, b: 2}|has|*

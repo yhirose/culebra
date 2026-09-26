@@ -1,15 +1,20 @@
 # The dict group: keys/has/get_or_put (Object-only) and get (Array-or-Object,
 # the two receivers reading unrelated interp tables — Array indexes by Long
-# with a typed `i`, Object looks up by any key with no check at all). All four
-# ride MethGate/ChkParam/BMeth; the runtime helpers consume the key's (and on
-# a hit the fallback/init's) `+1`, so the compiler nils the argument run.
+# with a typed `i`, Object looks up by any hashable key). All four ride
+# MethGate/ChkParam/BMeth; the runtime helpers consume the key's (and on a hit
+# the fallback/init's) `+1`, so the compiler nils the argument run.
 
 let d = {a: 1, b: 2}
 inspect(d.keys())
 inspect(({}).keys())
 inspect(d.has('a'))
 inspect(d.has('z'))
-inspect(d.has([1, 2]))
+# An unhashable key raises whether or not the Object holds a non-String key.
+try {
+    d.has([1, 2])
+} catch err {
+    println("{err.kind}: {err.message}")
+}
 
 # Non-string keys land in the sidecar; keys() interleaves them with the
 # string slots in insertion order.

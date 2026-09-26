@@ -1256,6 +1256,11 @@ Non-String keys live in a sidecar map and are read with `obj[k]`:
     grid[(0, 0)]   # 'origin'
     by_id[1]       # 'one'
 
+A key that cannot be hashed — an Array, a Set, a Function, an Object
+without `hash()` — raises `TypeError` wherever a key is looked up
+(`obj[k]`, `has`, `get`, `get_or_put`, `remove`), whatever the Object
+holds. A class's `__index__` still receives such a key on a read.
+
 Key identity is type-strict, deliberately *finer* than the `==`
 operator. Keys of different types are never the same key, so
 `1`, `1.0`, and `true` are three distinct keys even though `1 == 1.0`
@@ -2125,7 +2130,9 @@ comma) so it doesn't collide with the empty-Object literal `{}` or the
 Duplicate elements collapse on construction. Membership uses the same
 key identity as Object keys, which distinguishes types rather than
 numeric value — so `{1, 1.0, true}` keeps all three elements, exactly
-as those three are three distinct Object keys.
+as those three are three distinct Object keys. An element that cannot be
+hashed raises `TypeError` wherever one is looked up (`contains`,
+`remove`), however many members the Set has.
 
 Equality ignores order:
 
@@ -3732,6 +3739,37 @@ contract `Object` / `Set` keys check at insertion: a user class
 becomes a valid key by defining `hash()` (returning `Long`) and
 `eq(other)`. An enum variant conforms to `Eq` and `Hashable` without
 either — see "Sum types".
+
+A key's hash is taken as the key goes into an Object or a Set, and is
+stored with it. That puts two promises on a key's class: keys equal by
+`eq` return the same `hash()`, and a key's hash does not change while
+it is stored. From then on the container works from the stored hash —
+iterating, copying with `{...obj}`, `==`, display and the Set
+operations (`union`, `intersect`, `diff`, `sym_diff`, `subset`,
+`superset`) never call `hash()` on a stored key. A key changed while
+stored, so that its hash changes, keeps its entry: `size()`, `keys()`
+and `for` still see it. A lookup with that key (`obj[k]`, `has`,
+`contains`, `remove`) hashes it again, and no longer finds it:
+
+```culebra
+class Id {
+  new(n) {
+    self.n = n
+  }
+  hash() {
+    self.n
+  }
+  eq(o) {
+    self.n == o.n
+  }
+}
+let k = Id.new(1)
+mut d = {}
+d[k] = 'one'
+k.n = 2
+inspect(d.size())  # => 1
+inspect(d.has(k))  # => false
+```
 
 `Iterator` + `Iterable` formalize the for-in protocol. A class that
 exposes `iter() -> Iterator`,

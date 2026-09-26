@@ -1336,7 +1336,7 @@ inline int64_t ipow_nonneg(int64_t base, int64_t exp) {
 
 // The numeric hash rule both backends use: a Float holding an integral value
 // hashes as that Long, so 2 and 2.0 land in the same bucket. Single-sourced
-// here so ValueHash and JitValueHash cannot drift — including on the width,
+// here so every hash of a key cannot drift — including on the width,
 // which is int64_t because that is what a culebra Long is.
 inline size_t hash_long(int64_t v) { return std::hash<int64_t>{}(v); }
 inline size_t hash_double(double d) {
@@ -3171,7 +3171,7 @@ inline bool builtin_conforms_to_trait(std::string_view type_label,
     return type_label == "String" || type_label == "StringView";
   }
   if (trait_name == "Hashable") {
-    // Mirrors what ValueHash / JitValueHash actually hash: every value
+    // Mirrors what _jit_try_hash actually hashes: every value
     // primitive plus Tuple (hash combines element hashes). Mutable
     // containers (Array / Set / Object / Function / Tensor) stay out
     // — they throw at hash time today and shouldn't pretend otherwise.

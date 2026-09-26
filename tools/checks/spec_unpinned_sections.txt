@@ -53,7 +53,6 @@
 14. Optional type annotations > Recognized type names
 14. Optional type annotations > Sum types (`enum`)
 14. Optional type annotations > Syntax
-14. Optional type annotations > Traits and protocols
 14. Optional type annotations > Union types
 14. Optional type annotations > Where annotations are *not* checked
 15. Error handling > Assertion API

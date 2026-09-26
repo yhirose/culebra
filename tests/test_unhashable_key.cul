@@ -59,4 +59,83 @@ mut ok = {}
 mut ok[(1, 2)] = "a"
 assert_eq(ok[(1, 2)], "a")
 
+// --- As a lookup key: the same TypeError whatever the Object holds ---
+// An Object with no non-String key, one with one, and one whose last was
+// removed used to answer false / the fallback / KeyError for the first and
+// third, and raise only for the second.
+let kind_of = fn (f) {
+  try {
+    f()
+    "none"
+  } catch e {
+    e.kind
+  }
+}
+mut emptied = {a: 1, (1, 2): 'x'}
+emptied.remove((1, 2))
+for o in [{a: 1}, {a: 1, 2: 'two'}, emptied] {
+  assert_eq(kind_of(|| o.has([1])), "TypeError")
+  assert_eq(kind_of(|| o.get([1], 0)), "TypeError")
+  assert_eq(kind_of(|| o.get_or_put([1], 0)), "TypeError")
+  assert_eq(kind_of(|| o.remove([1])), "TypeError")
+  assert_eq(kind_of(|| o[[1]]), "TypeError")
+  assert_eq(kind_of(fn () { o[[1]] ??= 0 }), "TypeError")
+  // a hashable key that is absent is still just absent
+  assert_eq(o.has((9, 9)), false)
+  assert_eq(kind_of(|| o[(9, 9)]), "KeyError")
+}
+// A class's `__index__` still gets such a key first — also once the instance
+// holds a non-String key of its own.
+class Grid {
+  __index__(k) {
+    k.size()
+  }
+}
+mut grid = Grid.new()
+assert_eq(grid[[1, 2]], 2)
+grid[(0, 0)] = 'origin'
+assert_eq(grid[[1, 2]], 2)
+
+// A variant whose payload cannot be hashed is unhashable too (it still
+// reaches `__index__`), and a `hash()` that returns no Long is refused as the
+// `hash()` builtin refuses it — the same answer whatever the container holds.
+enum Maybe<T> {
+  Just(T),
+  Nothing,
+}
+class BadHash {
+  hash() {
+    "not a Long"
+  }
+}
+assert_eq(grid[Maybe.Just([1])], 1)
+// so does a class deriving Hash over such a field: one field walk decides
+@derive(Eq, Hash)
+class Holder {
+  new(v) {
+    self.v = v
+  }
+}
+assert_eq(grid[Holder.new([1, 2])], 1)
+for o in [{a: 1}, {a: 1, 2: 'two'}] {
+  assert_eq(kind_of(|| o.has(Maybe.Just([1]))), "TypeError")
+  assert_eq(kind_of(|| o.has((1, Maybe.Just([1])))), "TypeError")
+  assert_eq(o.has(Maybe.Just(3)), false)
+  let e = try {
+    o.has(BadHash.new())
+    nil
+  } catch e {
+    e
+  }
+  assert_eq(e.message, "hash() must return Long")
+}
+
+// A Set refuses one the same way, empty or not.
+let empty = {1, 2}.diff({1, 2})
+let pair = {1, 2}
+mut left = {1, 2}.diff({1, 2})
+assert_eq(kind_of(|| empty.contains([1])), "TypeError")
+assert_eq(kind_of(|| pair.contains([1])), "TypeError")
+assert_eq(kind_of(|| left.remove([1])), "TypeError")
+
 IO.inspect("test_unhashable_key OK")

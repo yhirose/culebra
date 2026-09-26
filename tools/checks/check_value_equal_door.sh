@@ -18,7 +18,7 @@
 #
 # Key equality is the second comparison that means equal, and it has a door of
 # its own: JitValueEq. It is deliberately stricter — `eq` and not `__eq__`, no
-# cross-type — because a key's equality has to agree with JitValueHash. What
+# cross-type — because a key's equality has to agree with its hash. What
 # this gate holds for it is the same shape: one definition, and the places
 # keyed on it (a Set's members, a derived `eq`'s fields) asking it rather than
 # writing the comparison again.

@@ -22,7 +22,9 @@
 # stdlib reports at the user's call into it, on every engine).
 # 287 since test_operand_rebind_order.cul (an operand keeps the value it was
 # evaluated to when a later operand rebinds its variable).
-tests.cul 287
+# 288 since test_key_hash_once.cul (a key is hashed once, entering a lookup or
+# a container; a stored key keeps its hash and is never hashed again).
+tests.cul 288
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 tests.isolate 20
@@ -46,7 +48,9 @@ ctest.entries 34
 # 958 since §17 shows the value a drop finds in the slot it was replaced from.
 # 964 since stdlib's Audio chapter shows tone, Sound, Music and Pcm, in en
 # and ja (Scene's own audio example went with Scene's audio).
-docs.blocks 964
+# 966 since §14 Traits and protocols shows a key changed while stored, in en
+# and ja.
+docs.blocks 966
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

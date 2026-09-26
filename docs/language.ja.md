@@ -1177,6 +1177,11 @@ Stringキー（`{name: 'alice'}`）に加え、Objectリテラルは`Long`,
     grid[(0, 0)]   # 'origin'
     by_id[1]       # 'one'
 
+ハッシュできないキー（Array、Set、Function、`hash()`を持たないObject）は、
+キーを引く所（`obj[k]`、`has`、`get`、`get_or_put`、`remove`）ではどこでも、
+Objectが何を持っていても`TypeError`になります。クラスの`__index__`は、
+読み出しのときには引き続きそうしたキーを受け取ります。
+
 キーの同一性は**型厳密**で、`==`演算子より意図的に細かい規則です。
 型が違うキーは決して同一キーになりません。よって`1 == 1.0`
 が`==`演算子では真でも、`1` / `1.0` / `true`は**別々のキー**です。
@@ -2006,6 +2011,8 @@ RHSは1度だけ評価され、`Array`または`Tuple`で、対象と同数の�
 重複要素は構築時に潰されます。メンバーの同一性はObjectキーと同じ規則で、
 数値としての値ではなく型を区別します。したがって`{1, 1.0, true}`は3要素
 とも残ります（この3つがObjectキーとしても別々のキーになるのと同じ）。
+ハッシュできない要素は、引く所（`contains`、`remove`）ではSetの要素数に
+関係なく`TypeError`になります。
 
 等価性は順序を無視:
 
@@ -3494,6 +3501,37 @@ runtimeはpreambleとして7つの基本traitをship — `import`不要
 user classは`hash()` (戻り値`Long`) と`eq(other)`を定義すれば
 keyとして使える。enum variantはどちらも無しで`Eq`と`Hashable`に
 conformする — 「Sum type」参照。
+
+keyのhashは、keyがObjectやSetに入るときに計算して、keyと一緒に
+保存する。そのためkeyにするclassは2つの約束を守る必要がある。
+`eq`で等しいkey同士は同じ`hash()`を返すこと、そして格納している
+間はhashが変わらないこと。格納した後は保存したhashを使うので、
+反復・`{...obj}`でのコピー・`==`・表示・Setの演算 (`union` /
+`intersect` / `diff` / `sym_diff` / `subset` / `superset`) は、
+格納済みのkeyの`hash()`を呼ばない。格納中のkeyを書き換えてhashが
+変わった場合、entryは残るので`size()`・`keys()`・`for`には現れる。
+一方、そのkeyで引く (`obj[k]` / `has` / `contains` / `remove`) と
+hashを計算し直すので、見つからない:
+
+```culebra
+class Id {
+  new(n) {
+    self.n = n
+  }
+  hash() {
+    self.n
+  }
+  eq(o) {
+    self.n == o.n
+  }
+}
+let k = Id.new(1)
+mut d = {}
+d[k] = 'one'
+k.n = 2
+inspect(d.size())  # => 1
+inspect(d.has(k))  # => false
+```
 
 `Iterator` + `Iterable`はfor-in protocolをformal化。
 `iter() -> Iterator` / `has_next() -> Bool` /

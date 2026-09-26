@@ -130,34 +130,32 @@ struct JitOwnedVal {
   }
 };
 
-// Whether a probe of this member for a Set can run a user `hash` / `eq`: an
-// Object can define them, and a container can hold one.
+// Whether comparing this value can run user code (a Set member's `eq`, an
+// entry value's `==`): an Object can define it, and a container can hold one.
 inline bool _member_reaches_user_code(int8_t tag) {
   return tag == TAG_OBJECT || tag == TAG_ARRAY || tag == TAG_TUPLE ||
          tag == TAG_SET;
 }
 
-// Whether `pred` holds for every member of `s`, stopping at the first that it
-// does not. The walk is by index, since a user `hash` / `eq` run by the probe
-// may grow the vector, and holds a member such a probe could drop the set's
-// own ref to.
+// Whether `pred` holds for every member of `s` (with the hash it is stored
+// under), stopping at the first that it does not. The walk is by index, since
+// a user `eq` run by the probe may grow the vector, and holds a member such a
+// probe could drop the set's own ref to.
 template <class Pred>
 inline bool _set_all(JitSet* s, Pred&& pred) {
   for (size_t i = 0; i < s->members.size(); i++) {
-    JitValue m = s->members[i];
-    if (!_member_reaches_user_code(m.tag)) {
-      if (!pred(m)) return false;
-      continue;
-    }
-    auto held = JitOwnedVal::from_borrowed(m);
-    if (!pred(held.borrow())) return false;
+    JitHashedKey m = s->members[i];
+    auto held = _member_reaches_user_code(m.value().tag)
+                    ? JitOwnedVal::from_borrowed(m.value())
+                    : JitOwnedVal(TAG_NIL, 0);
+    if (!pred(m)) return false;
   }
   return true;
 }
 
 template <class F>
 inline void _set_walk(JitSet* s, F&& f) {
-  _set_all(s, [&](JitValue m) {
+  _set_all(s, [&](const JitHashedKey& m) {
     f(m);
     return true;
   });
@@ -614,8 +612,8 @@ inline std::optional<std::string_view> _jit_enum_name(JitObject* obj) {
 
 // `hash(v)` builtin runtime entry. Routes Object to a user-defined
 // `hash()` method (Hashable + Eq structural conformance) or a variant's
-// derived hash; primitives go through JitValueHash — same path JitObject's
-// AnyKeyMap uses. Throws on unhashable inputs (Array / Set / Function /
+// derived hash; primitives go through JitHashedKey::of — the hash Object and
+// Set keys are stored with. Throws on unhashable inputs (Array / Set / Function /
 // Tensor, Object without `hash`). Returns a raw int64 (Long payload).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_hash_any(
     int8_t type, int64_t data, int64_t line, int64_t col) {
@@ -625,10 +623,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_hash_any(
     if (!r) {
       if (auto h = _jit_enum_variant_hash(reinterpret_cast<JitObject*>(data)))
         return *h;
-      throw culebra::CulebraError(
-          "TypeError",
-          "unhashable type: 'Object' (no hash() method)",
-          static_cast<int>(line), static_cast<int>(col));
+      _jit_throw_unhashable({type, data}, line, col);
     }
     if (r->tag != TAG_LONG) {
       _culebra_value_release_impl(r->tag, r->data);
@@ -645,7 +640,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_hash_any(
   // call-site line/col so `hash([1,2])` and `[1,2].hash()` carry a position
   // like the interp.
   return _jit_at_pos(line, col, [&] {
-    return static_cast<int64_t>(JitValueHash{}(JitValue{type, data}));
+    return static_cast<int64_t>(JitHashedKey::of(JitValue{type, data}).hash());
   });
 }
 
@@ -1470,6 +1465,8 @@ struct JitUnwindRelease {
   }
   JitUnwindRelease(const JitUnwindRelease&) = delete;
   JitUnwindRelease& operator=(const JitUnwindRelease&) = delete;
+  // The values are handed on to a callee that consumes them on every exit.
+  void disarm() { n = 0; }
   ~JitUnwindRelease() {
     if (n == 0 || std::uncaught_exceptions() <= exc) return;
     for (int i = 0; i < n; i++)
@@ -1516,21 +1513,18 @@ inline JitValue _culebra_invoke_method2(JitClosure* cls, JitValue self,
   return _jit_invoke(cls, self, 2, args);
 }
 
-// Resolve user-defined `hash()` on an Object (Hashable structural
-// conformance). Returns the Long payload on success; nullopt when the
-// method is absent or returns a non-Long value (caller falls back to
-// reference identity).
-inline std::optional<int64_t> _jit_object_user_hash(JitObject* obj) {
-  auto* entry = _find_property(obj, "hash");
-  if (!entry || entry->value.tag != TAG_FUNC) return std::nullopt;
-  auto* cls = reinterpret_cast<JitClosure*>(entry->value.data);
-  auto r = _culebra_invoke_method0(
-      cls, {TAG_OBJECT, reinterpret_cast<int64_t>(obj)});
-  if (r.tag != TAG_LONG) {
-    _culebra_value_release_impl(r.tag, r.data);
-    return std::nullopt;
-  }
-  return r.data;
+// The protocol member `obj` carries under one of the well-known names
+// (`drop` / `iter` / `has_next` / `next`), or null: a Function there is a
+// member, anything else is data that happens to use the name (a parsed
+// `{"next": "…"}`). The ONE place that question is answered — every
+// protocol consumer asks here (or one of the two named questions below)
+// rather than probing for the key, which is what lets the binding contract
+// constrain Functions alone (_culebra_check_well_known_prop);
+// check_protocol_member_door.sh holds it.
+inline JitClosure* _protocol_member(JitObject* obj, const char* name) {
+  auto* entry = _find_property(obj, name);
+  if (!entry || entry->value.tag != TAG_FUNC) return nullptr;
+  return reinterpret_cast<JitClosure*>(entry->value.data);
 }
 
 inline JitClosure* _lookup_special(int8_t tag, int64_t data, Special s);
@@ -1576,24 +1570,37 @@ inline const JitObjectEntry* _find_property(JitObject* obj,
   return nullptr;
 }
 
-// The protocol member `obj` carries under one of the well-known names
-// (`drop` / `iter` / `has_next` / `next`), or null: a Function there is a
-// member, anything else is data that happens to use the name (a parsed
-// `{"next": "…"}`). The ONE place that question is answered — every
-// protocol consumer asks here (or one of the two named questions below)
-// rather than probing for the key, which is what lets the binding contract
-// constrain Functions alone (_culebra_check_well_known_prop);
-// check_protocol_member_door.sh holds it.
-inline JitClosure* _protocol_member(JitObject* obj, const char* name) {
-  auto* entry = _find_property(obj, name);
-  if (!entry || entry->value.tag != TAG_FUNC) return nullptr;
-  return reinterpret_cast<JitClosure*>(entry->value.data);
-}
-
 // Whether a method is one `@derive` supplied. The one reader of
 // JIT_CLOSURE_DERIVED.
 inline bool _derived_method(const JitClosure* fn) {
   return fn->flags & JIT_CLOSURE_DERIVED;
+}
+
+// An Object key's hash (Hashable structural conformance): its hand-written
+// `hash()`, or the field walk a derived one and an enum variant share — so a
+// field with no hash answers nullopt, with it in `*unhashable`, rather than
+// raising. Nullopt with the object itself when it has neither. A `hash()`
+// that returns no Long raises as the builtin does (positionless: the
+// caller's op position anchors it).
+inline std::optional<size_t> _jit_try_object_hash(JitObject* obj,
+                                                  JitValue* unhashable) {
+  auto* cls = _protocol_member(obj, "hash");
+  if (cls && !_derived_method(cls)) {
+    auto r = _culebra_invoke_method0(
+        cls, {TAG_OBJECT, reinterpret_cast<int64_t>(obj)});
+    if (r.tag != TAG_LONG) {
+      _culebra_value_release_impl(r.tag, r.data);
+      throw culebra::CulebraError("TypeError", "hash() must return Long");
+    }
+    return std::hash<int64_t>{}(r.data);
+  }
+  if (cls || _jit_enum_name(obj)) {
+    auto h = _jit_try_derived_hash(obj, unhashable);
+    if (!h) return std::nullopt;
+    return std::hash<int64_t>{}(*h);
+  }
+  *unhashable = {TAG_OBJECT, reinterpret_cast<int64_t>(obj)};
+  return std::nullopt;
 }
 
 // The closure that fills special slot `s` on `obj`, or null — one answer for
@@ -1952,15 +1959,18 @@ inline bool _culebra_structure_equal(int8_t t1, int64_t d1, int8_t t2,
                                   reinterpret_cast<JitArray*>(d2));
     case TAG_SET: {
       // Set eq: same size and every element of `a` is present in `b`'s
-      // index. Membership is key equality (JitValueEq), and _set_all holds
-      // each member its probe could drop.
+      // index, looked up by the hash `a` stores it under. Membership is key
+      // equality (JitValueEq), and _set_all holds each member its probe
+      // could drop.
       auto* a = reinterpret_cast<JitSet*>(d1);
       auto* b = reinterpret_cast<JitSet*>(d2);
       if (a == b) return true;
       if (a->members.size() != b->members.size()) return false;
       if (!b->index) return false;
       JitEqWalk walk({t1, d1}, {t2, d2});
-      return _set_all(a, [&](JitValue m) { return b->index->contains(m); });
+      return _set_all(a, [&](const JitHashedKey& m) {
+        return b->index->contains(m);
+      });
     }
     case TAG_OBJECT: {
       // Nominal first, then structural: same class (and, for a variant, the
@@ -2303,24 +2313,38 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitSet* culebra_runtime_set_new() {
   return s;
 }
 
-// Add `value` to `set` unless already present. The set absorbs the
-// +1 reference on hit; on a duplicate we release it so the caller's
-// ownership transfer balances out.
+// Add `k` to `set` unless already present; whether it was added. The +1 is
+// consumed on every exit: absorbed on insert, released on a duplicate and
+// on a user `eq`'s throw.
+inline bool _jit_set_insert(JitSet* set, const JitHashedKey& k) {
+  JitUnwindRelease g{k.value()};
+  if (!set->index->insert(k).second) {
+    _culebra_value_release_impl(k.value().tag, k.value().data);
+    return false;
+  }
+  set->members.push_back(k);
+  return true;
+}
+
+// The same for a value not yet hashed: the unhashable throw consumes it too.
+inline bool _jit_set_add(JitSet* set, JitValue v) {
+  JitOwnedVal g(v);
+  auto k = JitHashedKey::of(v);
+  g.consume();
+  return _jit_set_insert(set, k);
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_add(JitSet* set,
                                                           int8_t tag,
                                                           int64_t data) {
-  JitValue v{tag, data};
-  if (!set->index->insert(v).second) {
-    _culebra_value_release_impl(tag, data);
-    return;
-  }
-  set->members.push_back(v);
+  _jit_set_add(set, {tag, data});
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_set_contains(
     JitSet* set, int8_t tag, int64_t data, int64_t line, int64_t col) {
   return _jit_at_pos(line, col, [&] {
-    return set->index && set->index->contains(JitValue{tag, data});
+    JitValue v{tag, data};
+    return set->index->contains(JitHashedKey::of(v));
   });
 }
 
@@ -2330,93 +2354,98 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_set_size(JitSet* set) 
 
 // Returns a fresh +1 Set whose members are the union / intersection /
 // (a - b) of `a` and `b`. Each member is retained once into the result.
-// Common tail for set_union/intersect/diff: take +1 ownership of `v`
+// Common tail for set_union/intersect/diff: take +1 ownership of `k`
 // into `out` if not already present. Source members are unique within
 // their own set, so the dedup check is only meaningful for `union`.
-inline void _set_take(JitSet* out, const JitValue& v) {
-  if (!out->index->insert(v).second) return;
-  culebra_runtime_value_retain(v.tag, v.data);
-  out->members.push_back(v);
+inline void _set_take(JitSet* out, const JitHashedKey& k) {
+  if (!out->index->insert(k).second) return;
+  culebra_runtime_value_retain(k.value().tag, k.value().data);
+  out->members.push_back(k);
+}
+
+// A fresh result Set with room for `n` members, so filling it does not
+// rehash the index or regrow the vector on the way.
+inline JitSet* _set_new_reserved(size_t n) {
+  auto* out = culebra_runtime_set_new();
+  out->index->reserve(n);
+  out->members.reserve(n);
+  return out;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitSet* culebra_runtime_set_union(JitSet* a,
                                                                JitSet* b) {
-  auto* out = culebra_runtime_set_new();
-  _set_walk(a, [&](JitValue v) { _set_take(out, v); });
-  _set_walk(b, [&](JitValue v) { _set_take(out, v); });
+  auto* out = _set_new_reserved(
+      std::max(a->members.size(), b->members.size()));
+  _set_walk(a, [&](const JitHashedKey& k) { _set_take(out, k); });
+  _set_walk(b, [&](const JitHashedKey& k) { _set_take(out, k); });
   return out;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitSet* culebra_runtime_set_intersect(JitSet* a,
                                                                    JitSet* b) {
   auto* out = culebra_runtime_set_new();
-  _set_walk(a, [&](JitValue v) {
-    if (b->index->contains(v)) _set_take(out, v);
+  _set_walk(a, [&](const JitHashedKey& k) {
+    if (b->index->contains(k)) _set_take(out, k);
   });
   return out;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitSet* culebra_runtime_set_diff(JitSet* a,
                                                               JitSet* b) {
-  auto* out = culebra_runtime_set_new();
-  _set_walk(a, [&](JitValue v) {
-    if (!b->index->contains(v)) _set_take(out, v);
+  auto* out = _set_new_reserved(a->members.size());
+  _set_walk(a, [&](const JitHashedKey& k) {
+    if (!b->index->contains(k)) _set_take(out, k);
   });
   return out;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitSet* culebra_runtime_set_sym_diff(JitSet* a,
                                                                   JitSet* b) {
-  auto* out = culebra_runtime_set_new();
-  _set_walk(a, [&](JitValue v) {
-    if (!b->index->contains(v)) _set_take(out, v);
+  auto* out = _set_new_reserved(
+      std::max(a->members.size(), b->members.size()));
+  _set_walk(a, [&](const JitHashedKey& k) {
+    if (!b->index->contains(k)) _set_take(out, k);
   });
-  _set_walk(b, [&](JitValue v) {
-    if (!a->index->contains(v)) _set_take(out, v);
+  _set_walk(b, [&](const JitHashedKey& k) {
+    if (!a->index->contains(k)) _set_take(out, k);
   });
   return out;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_set_subset(JitSet* a,
                                                                JitSet* b) {
-  return _set_all(a, [&](JitValue v) { return b->index->contains(v); });
+  return _set_all(a, [&](const JitHashedKey& k) { return b->index->contains(k); });
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_set_superset(JitSet* a,
                                                                  JitSet* b) {
-  return _set_all(b, [&](JitValue v) { return a->index->contains(v); });
+  return _set_all(b, [&](const JitHashedKey& k) { return a->index->contains(k); });
 }
 
-// Mutating add: returns 1 on insert, 0 if already present. Hands the
-// caller's +1 reference into the set on insert; releases it on dup.
+// Mutating add: returns 1 on insert, 0 if already present.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_set_add_method(
     JitSet* set, int8_t tag, int64_t data, int64_t line, int64_t col) {
-  JitValue v{tag, data};
-  // Hashing the element is where an unhashable one raises, and this helper
-  // owns the `+1` it was handed on every exit — so the throw path is the
-  // guard's (`({1, 2, 3}).add([1])` stranded the array otherwise).
-  JitUnwindRelease g{v};
-  bool inserted =
-      _jit_at_pos(line, col, [&] { return set->index->insert(v).second; });
-  if (!inserted) {
-    _culebra_value_release_impl(tag, data);
-    return 0;
-  }
-  set->members.push_back(v);
-  return 1;
+  return _jit_at_pos(line, col, [&] { return _jit_set_add(set, {tag, data}); });
 }
 
 // Mutating remove: returns 1 if removed, 0 if absent.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_set_remove(
     JitSet* set, int8_t tag, int64_t data, int64_t line, int64_t col) {
-  JitValue key{tag, data};
-  if (!_jit_at_pos(line, col, [&] { return set->index->erase(key); }))
-    return 0;
+  // The member the index stored, so the members vector below is searched by
+  // that value, running no user `eq`.
+  auto stored = _jit_at_pos(line, col, [&]() -> std::optional<JitValue> {
+    auto it = set->index->find(JitHashedKey::of({tag, data}));
+    if (it == set->index->end()) return std::nullopt;
+    JitValue v = it->value();
+    set->index->erase(it);
+    return v;
+  });
+  if (!stored) return 0;
   // Find and erase from the members vector (O(n) — same as the interp's
-  // OrderedSymbolMap erase pattern). By index: a user `eq` may grow it.
+  // OrderedSymbolMap erase pattern).
   for (size_t i = 0; i < set->members.size(); i++) {
-    JitValue m = set->members[i];
-    if (JitValueEq{}(m, key)) {
+    JitValue m = set->members[i].value();
+    if (m.tag == stored->tag && m.data == stored->data) {
       set->members.erase(set->members.begin() + static_cast<ptrdiff_t>(i));
       _culebra_value_release_impl(m.tag, m.data);
       return 1;
@@ -2429,9 +2458,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_set_remove(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_set_to_array(
     JitSet* set) {
   auto* arr = culebra_runtime_array_new();
-  for (auto& v : set->members) {
-    culebra_runtime_value_retain(v.tag, v.data);
-    culebra_runtime_array_push(arr, v.tag, v.data);
+  for (auto& m : set->members) {
+    culebra_runtime_value_retain(m.value().tag, m.value().data);
+    culebra_runtime_array_push(arr, m.value().tag, m.value().data);
   }
   return arr;
 }
@@ -3377,7 +3406,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_eff_copy(
     o->dict_ = d;
     o->is_dict = true;
     // Interned String keys carry no ref, so the order record copies flat.
-    if (src->key_order) o->key_order = new std::vector<JitValue>(*src->key_order);
+    if (src->key_order) o->key_order = new std::vector<JitHashedKey>(*src->key_order);
   }
   for (auto& e : o->slots) {
     culebra_runtime_value_retain(e.value.tag, e.value.data);

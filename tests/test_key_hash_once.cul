@@ -1,0 +1,212 @@
+// A key's hash is computed once, when it enters a lookup or a container.
+// A stored key keeps that hash: iterating, copying, comparing, displaying
+// and the Set operations never call its `hash()` again. The counts below
+// are culebra's own (a user `hash()` is not called by any library code),
+// so they are asserted exactly.
+
+mut calls = 0
+class K {
+  new(id) {
+    self.id = id
+  }
+  hash() {
+    calls += 1
+    self.id
+  }
+  eq(o) {
+    self.id == o.id
+  }
+}
+
+let hashes = fn (f) {
+  calls = 0
+  f()
+  calls
+}
+
+// --- A key entering a lookup or a container: once ---
+
+let k = K.new(1)
+mut d = {}
+assert_eq(hashes(|| d[k] = 0), 1)         // new key, empty Object
+assert_eq(hashes(|| d[K.new(2)] = 1), 1)  // new key
+assert_eq(hashes(|| d[k] = 5), 1)         // existing key
+assert_eq(hashes(|| d[k]), 1)
+assert_eq(hashes(|| d.has(k)), 1)
+assert_eq(hashes(|| d.has(K.new(77))), 1)
+assert_eq(hashes(|| d.get(k, 0)), 1)
+assert_eq(hashes(|| d.get(K.new(77), 0)), 1)
+assert_eq(hashes(|| d.get_or_put(K.new(3), 0)), 1)  // miss: stores it
+assert_eq(hashes(|| d.get_or_put(k, 0)), 1)         // hit
+assert_eq(hashes(fn () {
+  d[k] ??= 9
+}), 1)  // hit: a read
+assert_eq(d[k], 5)
+// A read, then a write: two lookups, each hashing the key it is handed.
+assert_eq(hashes(fn () {
+  d[K.new(4)] ??= 4
+}), 2)
+assert_eq(hashes(fn () {
+  d[k] += 1
+}), 2)
+assert_eq(hashes(fn () {
+  d[k] -= 1
+}), 2)
+assert_eq(hashes(|| d.remove(K.new(4))), 1)
+assert_eq(d.size(), 3)
+
+mut e = {}
+assert_eq(hashes(|| e.has(k)), 1)  // nothing stored yet
+assert_eq(hashes(|| e.get(k, 0)), 1)
+assert_eq(hashes(|| e.remove(k)), 1)
+
+// A dictionary-mode Object (past 64 String keys) holding a non-String key.
+mut big = {}
+for i in 0..70 {
+  big['f' + to_string(i)] = i
+}
+assert_eq(hashes(|| big[k] = 'k'), 1)
+assert_eq(hashes(|| big[k]), 1)
+
+// A class instance: a key it does not hold goes to `__index__` /
+// `__setindex__` after the one hash that found it absent.
+class Box {
+  new() {
+    self.log = []
+  }
+  __index__(key) {
+    self.log.push(key.id)
+    -1
+  }
+  __setindex__(key, v) {
+    self.log.push(key.id)
+  }
+}
+let b = Box.new()
+assert_eq(hashes(|| b[k]), 1)
+assert_eq(hashes(|| b[k] = 3), 1)
+assert_eq(b.log, [1, 1])
+
+// A class instance without them stores the key like a plain Object.
+class Bag {
+  new() {
+    self.n = 0
+  }
+}
+let bag = Bag.new()
+assert_eq(hashes(|| bag[k] = 'x'), 1)
+assert_eq(hashes(|| bag[k]), 1)
+
+mut s = [k].to_set()
+assert_eq(hashes(|| s.add(K.new(3))), 1)
+assert_eq(hashes(|| s.add(K.new(3))), 1)  // already present
+assert_eq(hashes(|| s.contains(k)), 1)
+assert_eq(hashes(|| s.contains(K.new(99))), 1)
+assert_eq(hashes(|| s.remove(K.new(3))), 1)
+assert_eq(hashes(|| s.remove(K.new(99))), 1)
+assert_eq(s.size(), 1)
+
+// Building from elements: once per element.
+assert_eq(hashes(|| {K.new(1), K.new(2), K.new(3)}), 3)
+assert_eq(hashes(|| [K.new(1), K.new(2), K.new(1)].to_set()), 3)
+assert_eq(hashes(|| [1, 2, 1].iter().map(|x| K.new(x)).distinct().collect()), 3)
+assert_eq(hashes(|| [1, 2, 1].group_by(|x| K.new(x))), 3)
+assert_eq(hashes(|| [(K.new(1), 'a'), (K.new(2), 'b')].to_object()), 2)
+assert_eq(hashes(|| [1, 2].iter().group_by(|x| K.new(x))), 2)
+assert_eq(hashes(|| [(K.new(1), 'a'), (K.new(1), 'b')].iter().to_object()), 2)
+
+// --- A stored key: never again ---
+
+mut d2 = {}
+d2[K.new(2)] = 1
+d2[K.new(1)] = 5
+d2[K.new(3)] = 0
+let two = d2.keys().size()
+assert_eq(hashes(fn () {
+  for (a, v) in d {
+  }
+}), 0)
+assert_eq(hashes(|| d.keys()), 0)
+assert_eq(hashes(|| d.values().collect()), 0)
+assert_eq(hashes(|| d.iter().collect()), 0)
+assert_eq(hashes(|| to_string(d)), 0)
+assert_eq(hashes(|| d == d2), 0)
+assert_eq(d == d2, true)
+assert_eq(hashes(|| d.size()), 0)
+mut copy = {}
+assert_eq(hashes(fn () {
+  copy = {...d}
+}), 0)
+assert_eq(copy.size(), 3)  // the non-String keys too
+assert_eq(copy == d, true)
+assert_eq(hashes(|| copy[k]), 1)  // found by its stored hash
+assert_eq(copy[k], 5)
+assert_eq(hashes(fn () {
+  for (a, v) in big {
+  }
+}), 0)
+assert_eq(hashes(|| to_string(big)), 0)
+
+let t = {K.new(9), K.new(10), K.new(1)}
+let u = {K.new(1), K.new(9), K.new(10)}
+assert_eq(hashes(fn () {
+  for x in t {
+  }
+}), 0)
+assert_eq(hashes(|| to_string(t)), 0)
+assert_eq(hashes(|| t.to_array()), 0)
+assert_eq(hashes(|| t == u), 0)
+assert_eq(t == u, true)
+assert_eq(hashes(|| s.union(t)), 0)
+assert_eq(hashes(|| s.intersect(t)), 0)
+assert_eq(hashes(|| s.diff(t)), 0)
+assert_eq(hashes(|| s.sym_diff(t)), 0)
+assert_eq(hashes(|| s.subset(t)), 0)
+assert_eq(hashes(|| t.superset(s)), 0)
+assert_eq(s.union(t).size(), 3)
+assert_eq(s.union(t).contains(K.new(10)), true)
+assert_eq(s.subset(t), true)
+assert_eq(hashes(|| [...t]), 0)
+
+// --- A key whose hash changes while stored ---
+// The entry stays: size, keys and iteration all still see it. A lookup
+// hashes the key again and so no longer finds it, by the old key or the new.
+
+class M {
+  new(id) {
+    self.id = id
+  }
+  hash() {
+    self.id
+  }
+  eq(o) {
+    self.id == o.id
+  }
+}
+let m = M.new(1)
+mut table = {}
+for i in 0..64 {
+  table[M.new(100 + i)] = i
+}
+table[m] = 'one'
+m.id = 2
+assert_eq(table.has(m), false)
+assert_eq(table.has(M.new(1)), false)
+assert_eq(table.has(M.new(2)), false)
+assert_eq(table.size(), 65)
+assert_eq(table.keys().size(), 65)
+mut seen = 0
+mut found = nil
+for (a, v) in table {
+  seen += 1
+  found = v if a.id == 2
+}
+assert_eq(seen, 65)
+assert_eq(found, 'one')
+
+let ms = {M.new(1), M.new(5)}
+let first = ms.to_array()[0]
+first.id = 7
+assert_eq(ms.contains(first), false)
+assert_eq(ms.size(), 2)
+assert_eq(ms.to_array().map(|x| x.id), [7, 5])

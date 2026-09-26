@@ -203,18 +203,22 @@ class Value {
   std::vector<std::pair<Value, Value>> items() const {
     if (v_.tag != TAG_OBJECT)
       culebra_runtime_type_error_typed(0, 0, "Object", v_.tag);
+    // The iterators' snapshot: a stored key is found by the hash it carries,
+    // not hashed again.
     auto* obj = reinterpret_cast<JitObject*>(v_.data);
+    auto snap = JitKeySnapshot::take(obj);
     Value keys = Value(
-        JitValue{TAG_ARRAY,
-                 reinterpret_cast<int64_t>(culebra_runtime_object_keys(obj))},
-        Adopt{});
-    const int64_t n = keys.size();
+        JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(snap.keys)}, Adopt{});
+    Value hashes = Value(snap.hashes, Adopt{});
     std::vector<std::pair<Value, Value>> out;
-    out.reserve(static_cast<size_t>(n));
-    for (int64_t i = 0; i < n; i++) {
-      Value k = keys[i];
-      Value v = at(k);
-      out.emplace_back(std::move(k), std::move(v));
+    out.reserve(snap.keys->size);
+    for (size_t i = 0; i < snap.keys->size; i++) {
+      int8_t t;
+      int64_t d;
+      if (!JitKeySnapshot::value(obj, snap.keys, snap.hashes, i, &t, &d))
+        continue;
+      out.emplace_back(keys[static_cast<int64_t>(i)],
+                       Value(JitValue{t, d}, Adopt{}));
     }
     return out;
   }

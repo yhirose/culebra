@@ -1218,14 +1218,15 @@ struct Lowering {
         }
         case Op::SetAdd: {
           // The SetOpPos lowered just before published the literal's
-          // position for the positionless unhashable throw.
+          // position for the positionless unhashable throw. set_add consumes
+          // the element on every exit, that throw included — nil it first.
           auto s = b.CreateIntToPtr(j.extract_data(load_slot(in.a)), ptrTy);
           auto v = load_slot(in.b);
+          b.CreateStore(j.make_nil(), slots[in.b]);
           j.emit_call(
               j.module_->getOrInsertFunction(rt::set_add, b.getVoidTy(),
                                              ptrTy, b.getInt8Ty(), i64Ty),
               {s, j.extract_tag(v), j.extract_data(v)});
-          b.CreateStore(j.make_nil(), slots[in.b]);
           break;
         }
         case Op::ObjectNew: {
@@ -1249,11 +1250,10 @@ struct Lowering {
           break;
         }
         case Op::ObjectSet: {
-          // Unlike set_add, object_set consumes the value on EVERY exit
-          // (including the positionless well-known-contract throw) — pull
-          // tag/data into locals and nil the slot BEFORE the call, so a
-          // throw into the landing pad never finds a stale value to
-          // double-release.
+          // object_set consumes the value on every exit, the positionless
+          // well-known-contract throw included — pull tag/data into locals
+          // and nil the slot BEFORE the call, so a throw into the landing pad
+          // never finds a stale value to double-release.
           auto obj = b.CreateIntToPtr(j.extract_data(load_slot(in.a)), ptrTy);
           auto v = load_slot(in.b);
           auto vt = j.extract_tag(v);

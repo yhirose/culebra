@@ -136,10 +136,18 @@ inline void _jit_view_method(
 inline int64_t _jit_fa_self_long(JitValue self, const char* key) {
   return _jit_fa_field_long(reinterpret_cast<JitObject*>(self.data), key);
 }
+// A packed view's index — FixedArray or SharedBuffer — which coerces a Long
+// or a Float as the interp's `key.to_long()` does.
+inline int64_t _jit_view_index(int8_t tag, int64_t data, int64_t line, int64_t col) {
+  if (tag == TAG_LONG) return data;
+  if (tag == TAG_FLOAT)
+    return culebra::double_to_long(_culebra_float_to_double(data), line, col);
+  throw culebra::CulebraError("TypeError", "type error: expected Long or Float",
+                              line, col);
+}
 inline int64_t _jit_fa_arg_index(JitValue a) {
-  return a.tag == TAG_LONG    ? a.data
-       : a.tag == TAG_FLOAT   ? culebra::double_to_long(_culebra_float_to_double(a.data), 0, 0)
-                              : 0;
+  return a.tag == TAG_LONG || a.tag == TAG_FLOAT ? _jit_view_index(a.tag, a.data, 0, 0)
+                                                 : 0;
 }
 // Releases the bound `self` (the native-method ABI passes it +1) on scope
 // exit — success or exception — so a throwing native method can't leak it.
@@ -719,8 +727,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_extend(
   } else if (tag == TAG_SET) {
     auto* s = reinterpret_cast<JitSet*>(data);
     for (auto& m : s->members) {
-      culebra_runtime_value_retain(m.tag, m.data);
-      culebra_runtime_array_push(arr, m.tag, m.data);
+      culebra_runtime_value_retain(m.value().tag, m.value().data);
+      culebra_runtime_array_push(arr, m.value().tag, m.value().data);
     }
   } else {
     throw culebra::CulebraError(
@@ -731,45 +739,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_extend(
   }
 }
 
-// `{...x}` object spread: merge another Object's string-keyed entries
-// into `dst` (later keys win). Merged keys are made mutable so explicit
-// properties after the spread can override them (matches interp). The
-// spread value's own reference is dropped by the caller.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_merge(
-    JitObject* dst, int8_t tag, int64_t data, int64_t line, int64_t col) {
-  if (tag != TAG_OBJECT) {
-    throw culebra::CulebraError(
-        "TypeError",
-        culebra::format("cannot spread {} into an object (Object only)",
-                        _culebra_tag_name(tag)),
-        line, col);
-  }
-  auto* src = reinterpret_cast<JitObject*>(data);
-  if (_jit_meta_opaque(src)) return;  // nothing of its own to spread
-  src->for_each([&](std::string_view name, const JitObjectEntry& e) {
-    culebra_runtime_value_retain(e.value.tag, e.value.data);
-    culebra_runtime_object_set(dst, std::string(name).c_str(), /*mut=*/true,
-                               e.value.tag, e.value.data, line, col,
-                               /*is_init=*/true);
-  });
-}
-
-// Hashable-key access into an Object. String keys unify with the
-// shape-based `obj.foo` path so `obj["x"] = v` and `obj.x = v` reach
-// the same slot; everything else (Long/Float/Bool/Nil/Tuple) lands in
-// the sidecar AnyKeyMap. Object-literal keys are pre-filtered by the
-// grammar (no String literal keys), so the TAG_STRING branch only
-// fires for runtime-keyed subscript ops.
-//
-// The shape-path call below passes 0/0 for the IC slot, so a String-
-// keyed subscript write never inline-caches. Hot loops should still
-// prefer `obj.x = v` over `obj["x"] = v` for that reason.
-//
-// Refcount contract: this helper consumes the caller's +1 to the key.
-// On insert, the +1 transfers to the map's stored alias; the helper
-// adds a second +1 for the key_order entry. On update / throw it
-// explicitly releases the caller's +1 since the existing stored alias
-// already covers the slot.
 // `obj[key] = value` fallback to a user-defined `__setindex__(key, value)`.
 // Returns true when the method exists (and was invoked), else false.
 inline bool _jit_try_object_setindex(JitObject* obj, int8_t key_tag,
@@ -808,20 +777,69 @@ inline void _jit_normalize_str_key(int8_t& key_tag, int64_t& key_data,
   }
 }
 
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
-    JitObject* obj, int8_t key_tag, int64_t key_data, bool mut,
-    int8_t val_tag, int64_t val_data, int64_t line, int64_t col,
-    bool is_init) {
+// The sidecar store for a key already hashed: insert, or overwrite the value
+// of an equal stored key. Consumes the key's +1 and the value's on every exit:
+// on insert the key's +1 becomes the map's, and key_order takes a second.
+inline void _jit_object_set_hashed(JitObject* obj, const JitHashedKey& key,
+                                   bool mut, JitValue val, int64_t line,
+                                   int64_t col, bool is_init) {
+  JitUnwindRelease g{key.value(), val};
+  if (!obj->non_string_props) {
+    obj->non_string_props = new JitObject::AnyKeyMap();
+    // First non-String key: activate key_order and back-fill with the
+    // String keys already present so interleaved order survives. A
+    // dictionary-mode object already keeps key_order eagerly.
+    if (!obj->key_order) {
+      obj->key_order = new std::vector<JitHashedKey>();
+      if (obj->shape) {
+        obj->key_order->reserve(obj->prop_size() + 1);
+        for (size_t i = 0; i < obj->prop_size(); i++)
+          obj->key_order->push_back(JitObject::name_key(obj->prop_name(i)));
+      }
+    }
+  }
+  auto [it, inserted] = obj->non_string_props->try_emplace(
+      key, JitObjectEntry{val, mut});
+  if (inserted) {
+    culebra_runtime_value_retain(key.value().tag, key.value().data);
+    obj->key_order->push_back(key);
+    return;
+  }
+  // Object-literal construction (`is_init`) overwrites a duplicate key
+  // last-wins like the interp's `initialize`; only a post-construction
+  // `o[k] = v` (is_init=false) honors the slot's immutable flag.
+  if (!is_init && !it->second.mut)
+    throw culebra::CulebraError("ImmutableError",
+                                "immutable entry on non-String key", line, col);
+  if (is_init) it->second.mut = mut;
+  _jit_replace_value(it->second.value, val.tag, val.data);
+  _culebra_value_release_impl(key.value().tag, key.value().data);
+}
+
+// Hashable-key access into an Object. String keys unify with the
+// shape-based `obj.foo` path so `obj["x"] = v` and `obj.x = v` reach
+// the same slot; everything else (Long/Float/Bool/Nil/Tuple) lands in
+// the sidecar AnyKeyMap. Object-literal keys are pre-filtered by the
+// grammar (no String literal keys), so the TAG_STRING branch only
+// fires for runtime-keyed subscript ops.
+//
+// The shape-path call below passes 0/0 for the IC slot, so a String-
+// keyed subscript write never inline-caches. Hot loops should still
+// prefer `obj.x = v` over `obj["x"] = v` for that reason.
+//
+// Consumes the caller's +1 to the key and the value on every exit. A caller
+// that has hashed the key already passes it as `hashed`.
+inline void _jit_object_set_any(JitObject* obj, int8_t key_tag,
+                                int64_t key_data,
+                                const std::optional<JitHashedKey>& hashed,
+                                bool mut, int8_t val_tag, int64_t val_data,
+                                int64_t line, int64_t col, bool is_init) {
   std::string _kbuf;
   _jit_normalize_str_key(key_tag, key_data, _kbuf);
   // `arr[i] = v` on a FixedArray view: write element i into the inline bytes
   // (the index coerces Long/Float like the interp).
   if (obj->is_fixed_array_view) {
-    int64_t i = (key_tag == TAG_LONG) ? key_data
-           : (key_tag == TAG_FLOAT)
-               ? culebra::double_to_long(_culebra_float_to_double(key_data), line, col)
-               : throw culebra::CulebraError("TypeError",
-                     "type error: expected Long or Float", line, col);
+    int64_t i = _jit_view_index(key_tag, key_data, line, col);
     _jit_fa_set(obj, i, val_tag, val_data, line, col);
     return;
   }
@@ -864,67 +882,89 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
   }
   culebra_runtime_set_op_pos(line, col);  // a key's hash/eq entry site
   // Everything below consumes the key and value this helper was handed, and
-  // both a user `hash()` (the sidecar probes below hash the key) and a user
-  // `__setindex__` can throw in the middle — one guard releases them on every
-  // such edge. The paths that hand the refs on return immediately.
+  // both a user `hash()` and a user `__setindex__` can throw in the middle —
+  // one guard releases them on every such edge. The paths that hand the refs
+  // on return immediately.
   JitUnwindRelease g{JitValue{key_tag, key_data}, JitValue{val_tag, val_data}};
+  JitValue unhashable;
+  auto key = hashed ? hashed
+                    : JitHashedKey::try_of({key_tag, key_data}, &unhashable);
   // A class instance may route a not-yet-stored key to __setindex__ before
   // the sidecar is activated (key + value are consumed by this helper's
   // contract). A plain dict skips this probe entirely.
-  if (obj->proto()) {
-    bool exists = obj->non_string_props &&
-                  obj->non_string_props->count(JitValue{key_tag, key_data});
-    if (!exists &&
-        _jit_try_object_setindex(obj, key_tag, key_data, val_tag, val_data, line, col)) {
-      _culebra_value_release_impl(key_tag, key_data);
-      _culebra_value_release_impl(val_tag, val_data);
-      return;
-    }
-  }
-  // The sidecar's half of the frozen field set — checked before the lazy
-  // activation below so a refused write leaves the instance untouched. A
-  // `@value` instance can never hold a non-String key (this is the only
-  // branch that mints one), so any write reaching here is an add. The guard
-  // above owns the key and the value on this edge; throw without releasing.
-  if (_jit_value_add_refused(obj, /*is_init=*/false))
-    _jit_throw_value_add(obj, nullptr, line, col);
-  if (!obj->non_string_props) {
-    obj->non_string_props = new JitObject::AnyKeyMap();
-    // First non-String key: activate key_order and back-fill with the
-    // String keys already present so interleaved order survives. A
-    // dictionary-mode object already keeps key_order eagerly.
-    if (!obj->key_order) {
-      obj->key_order = new std::vector<JitValue>();
-      if (obj->shape) {
-        obj->key_order->reserve(obj->prop_size() + 1);
-        for (size_t i = 0; i < obj->prop_size(); i++) {
-          obj->key_order->push_back(
-              {TAG_STRING,
-               reinterpret_cast<int64_t>(_intern_str(obj->prop_name(i)))});
-        }
-      }
-    }
-  }
-  JitValue key{key_tag, key_data};
-  auto& m = *obj->non_string_props;
-  auto it = m.find(key);
-  if (it == m.end()) {
-    m.emplace(key, JitObjectEntry{JitValue{val_tag, val_data}, mut});
-    // Caller's +1 transferred to the map's stored alias. Add a second
-    // +1 for the key_order entry.
-    culebra_runtime_value_retain(key_tag, key_data);
-    obj->key_order->push_back(key);
+  if (obj->proto() && !(key && _jit_sidecar_at(obj, *key)) &&
+      _jit_try_object_setindex(obj, key_tag, key_data, val_tag, val_data, line,
+                               col)) {
+    _culebra_value_release_impl(key_tag, key_data);
+    _culebra_value_release_impl(val_tag, val_data);
     return;
   }
-  // Object-literal construction (`is_init`) overwrites a duplicate key
-  // last-wins like the interp's `initialize`; only a post-construction
-  // `o[k] = v` (is_init=false) honors the slot's immutable flag.
-  if (!is_init && !it->second.mut)
-    throw culebra::CulebraError("ImmutableError",
-                                "immutable entry on non-String key", line, col);
-  if (is_init) it->second.mut = mut;
-  _jit_replace_value(it->second.value, val_tag, val_data);
-  _culebra_value_release_impl(key_tag, key_data);
+  // The sidecar's half of the frozen field set — checked before the store so
+  // a refused write leaves the instance untouched. A `@value` instance can
+  // never hold a non-String key (this is the only branch that mints one), so
+  // any write reaching here is an add. The guard above owns the key and the
+  // value on this edge; throw without releasing.
+  if (_jit_value_add_refused(obj, /*is_init=*/false))
+    _jit_throw_value_add(obj, nullptr, line, col);
+  if (!key) _jit_throw_unhashable(unhashable);
+  g.disarm();
+  _jit_object_set_hashed(obj, *key, mut, {val_tag, val_data}, line, col,
+                         is_init);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
+    JitObject* obj, int8_t key_tag, int64_t key_data, bool mut,
+    int8_t val_tag, int64_t val_data, int64_t line, int64_t col,
+    bool is_init) {
+  _jit_object_set_any(obj, key_tag, key_data, std::nullopt, mut, val_tag,
+                      val_data, line, col, is_init);
+}
+
+// `{...x}` object spread: merge another Object's own entries into `dst`, in
+// its insertion order (later keys win). Merged keys are made mutable so
+// explicit properties after the spread can override them. A non-String key
+// moves with the hash it is stored under. The spread value's own reference is
+// dropped by the caller.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_merge(
+    JitObject* dst, int8_t tag, int64_t data, int64_t line, int64_t col) {
+  if (tag != TAG_OBJECT) {
+    throw culebra::CulebraError(
+        "TypeError",
+        culebra::format("cannot spread {} into an object (Object only)",
+                        _culebra_tag_name(tag)),
+        line, col);
+  }
+  auto* src = reinterpret_cast<JitObject*>(data);
+  if (_jit_meta_opaque(src)) return;  // nothing of its own to spread
+  auto merge_name = [&](std::string_view name, JitValue v) {
+    culebra_runtime_value_retain(v.tag, v.data);
+    culebra_runtime_object_set(dst, std::string(name).c_str(), /*mut=*/true,
+                               v.tag, v.data, line, col, /*is_init=*/true);
+  };
+  if (!src->non_string_props) {
+    src->for_each([&](std::string_view name, const JitObjectEntry& e) {
+      merge_name(name, e.value);
+    });
+    return;
+  }
+  // Mixed keys: walk the insertion order, by index, since a user `eq` run by
+  // an insert may change it (the caller holds `src` itself).
+  for (size_t i = 0; i < src->key_order->size(); i++) {
+    JitHashedKey k = (*src->key_order)[i];
+    if (k.value().tag == TAG_STRING) {
+      auto name = reinterpret_cast<const char*>(k.value().data);
+      auto idx = src->find_slot(name);
+      if (idx != static_cast<size_t>(-1)) merge_name(name, src->slots[idx].value);
+      continue;
+    }
+    auto it = _jit_sidecar_at(src, k);
+    if (!it) continue;
+    JitValue v = (*it)->second.value;
+    culebra_runtime_value_retain(k.value().tag, k.value().data);
+    culebra_runtime_value_retain(v.tag, v.data);
+    _jit_object_set_hashed(dst, k, /*mut=*/true, v, line, col,
+                           /*is_init=*/true);
+  }
 }
 
 // Consumes the caller's +1 to the key on the refcounted (sidecar)
@@ -993,9 +1033,12 @@ inline JitValue _jit_match_index(JitObject* m, int8_t key_tag,
 // (`??=`, reports a miss as found=false instead) — same slot-lookup logic,
 // different miss policy. Consumes a non-String key's +1 on a hit; leaves it
 // untouched on a miss so each caller makes its own miss-path decision
-// (__index__ fallback, throw, or "not found") and handles the key itself.
+// (__index__ fallback, throw, or "not found") and handles the key itself. A
+// key that cannot be hashed is a miss, and `*unhashable` (nil otherwise)
+// names why, so the caller can raise once a class's `__index__` declines it.
 inline bool _jit_try_own_slot(JitObject* obj, int8_t key_tag, int64_t key_data,
-                              int8_t* out_tag, int64_t* out_data) {
+                              int8_t* out_tag, int64_t* out_data,
+                              JitValue* unhashable) {
   if (key_tag == TAG_STRING) {
     auto idx = obj->find_slot(reinterpret_cast<const char*>(key_data));
     if (idx != static_cast<size_t>(-1)) {
@@ -1004,15 +1047,12 @@ inline bool _jit_try_own_slot(JitObject* obj, int8_t key_tag, int64_t key_data,
       culebra_runtime_value_retain(*out_tag, *out_data);
       return true;
     }
-  } else if (obj->non_string_props) {
-    auto it = obj->non_string_props->find(JitValue{key_tag, key_data});
-    if (it != obj->non_string_props->end()) {
-      *out_tag = it->second.value.tag;
-      *out_data = it->second.value.data;
-      culebra_runtime_value_retain(*out_tag, *out_data);
-      _culebra_value_release_impl(key_tag, key_data);
-      return true;
-    }
+  } else if (auto it = _jit_sidecar_probe(obj, {key_tag, key_data}, unhashable)) {
+    *out_tag = (*it)->second.value.tag;
+    *out_data = (*it)->second.value.data;
+    culebra_runtime_value_retain(*out_tag, *out_data);
+    _culebra_value_release_impl(key_tag, key_data);
+    return true;
   }
   return false;
 }
@@ -1040,11 +1080,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
   JitUnwindRelease g{key_guard, recv_guard};
   // `arr[i]` on a FixedArray view: read element i from the inline bytes.
   if (obj->is_fixed_array_view) {
-    int64_t i = (key_tag == TAG_LONG) ? key_data
-           : (key_tag == TAG_FLOAT)
-               ? culebra::double_to_long(_culebra_float_to_double(key_data), line, col)
-               : throw culebra::CulebraError("TypeError",
-                     "type error: expected Long or Float", line, col);
+    int64_t i = _jit_view_index(key_tag, key_data, line, col);
     JitValue r = _jit_fa_get(obj, i, line, col);
     *out_tag = r.tag;
     *out_data = r.data;
@@ -1053,10 +1089,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
   // `buf[i]` on a SharedBuffer: hand back a packed view over element `i`
   // (the index coerces Long/Float like the interp's `key.to_long()`).
   if (_jit_is_shared_buffer(obj)) {
-    int64_t idx = (key_tag == TAG_LONG)    ? key_data
-             : (key_tag == TAG_FLOAT)   ? culebra::double_to_long(_culebra_float_to_double(key_data), line, col)
-             : throw culebra::CulebraError("TypeError",
-                   "type error: expected Long or Float", line, col);
+    int64_t idx = _jit_view_index(key_tag, key_data, line, col);
     auto* view = _jit_shared_buffer_index(obj, idx, line, col);
     *out_tag = TAG_OBJECT;
     *out_data = reinterpret_cast<int64_t>(view);
@@ -1093,13 +1126,17 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
   // Slot hit: String keys are unified with shape access (see object_set_any);
   // other keys live in the non-String sidecar, whose probe hashes the key.
   if (key_tag != TAG_STRING) culebra_runtime_set_op_pos(line, col);
-  if (_jit_try_own_slot(obj, key_tag, key_data, out_tag, out_data)) return;
+  JitValue unhashable{TAG_NIL, 0};
+  if (_jit_try_own_slot(obj, key_tag, key_data, out_tag, out_data, &unhashable))
+    return;
   // Miss → user `__index__` overload.
   if (_jit_try_object_index(obj, key_tag, key_data, out_tag, out_data, line,
                             col)) {
     if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
     return;
   }
+  // A key that could never be stored is a TypeError, not a missing key.
+  if (unhashable.tag != TAG_NIL) _jit_throw_unhashable(unhashable);
   throw culebra::CulebraError("KeyError", "key not present", line, col);
 }
 
@@ -1125,25 +1162,22 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_get_for_coalesce(
       : JitValue{TAG_NIL, 0};
   JitUnwindRelease g{key_guard};
   if (key_tag != TAG_STRING) culebra_runtime_set_op_pos(line, col);
-  if (_jit_try_own_slot(obj, key_tag, key_data, out_tag, out_data)) return true;
+  JitValue unhashable{TAG_NIL, 0};
+  if (_jit_try_own_slot(obj, key_tag, key_data, out_tag, out_data, &unhashable))
+    return true;
   // Miss → user `__index__` overload, else "not found" (nil for `??=`).
   if (_jit_try_object_index(obj, key_tag, key_data, out_tag, out_data, line,
                             col)) {
     if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
     return true;
   }
+  if (unhashable.tag != TAG_NIL) _jit_throw_unhashable(unhashable);  // as object_get_any's miss
   if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
   // Caller loads *out_tag/*out_data unconditionally before checking the
   // return value — always leave them well-defined.
   *out_tag = TAG_NIL;
   *out_data = 0;
   return false;
-}
-
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_object_has_any(
-    JitObject* obj, int8_t key_tag, int64_t key_data) {
-  if (!obj->non_string_props) return 0;
-  return obj->non_string_props->contains({key_tag, key_data}) ? 1 : 0;
 }
 
 // Fast path for the property-write IC. Caller (JIT-emitted IR) has
@@ -1187,11 +1221,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_fast(
     if (obj->slots.capacity() == 0) obj->slots.reserve(8);
     obj->slots.push_back({JitValue{tag, data}, ic->prop_mut != 0});
     obj->shape = static_cast<culebra::Shape*>(ic->result_shape);
-    if (obj->key_order) {
+    if (obj->key_order)
       obj->key_order->push_back(
-          {TAG_STRING,
-           reinterpret_cast<int64_t>(_intern_str(obj->prop_name(obj->prop_size() - 1)))});
-    }
+          JitObject::name_key(obj->prop_name(obj->prop_size() - 1)));
   }
   if (key_kind & 2) _jit_owned_bind_drop(obj);
 }
@@ -1716,9 +1748,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has_value(
     auto* cstr = reinterpret_cast<const char*>(data);
     return _find_property(obj, cstr) != nullptr;
   }
-  bool result = obj->non_string_props
-                    ? obj->non_string_props->contains({tag, data})
-                    : false;
+  // Hashing the key is where an unhashable one raises; the key is this
+  // call's to release on that exit as on the normal one.
+  JitUnwindRelease key_guard{JitValue{tag, data}};
+  bool result = _jit_sidecar_find(obj, {tag, data}).has_value();
   _culebra_value_release_impl(tag, data);
   return result;
 }

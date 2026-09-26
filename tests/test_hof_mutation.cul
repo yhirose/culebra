@@ -46,21 +46,22 @@ let least = ws.min_by(fn (x) {
 })
 assert_eq(least.n, 1)
 
-// Set operations: a `hash` that grows the set being walked.
+// Set operations: an `eq` that grows the set being walked. (A stored
+// member's `hash` is not called again, so only `eq` can run here.)
 mut grow = false
 mut seen = {0,}
 class H {
   new(.n) {}
   hash() {
+    self.n
+  }
+  eq(o) {
     if grow {
       grow = false
       for i in 1..500 {
         seen.add(100000 + i)
       }
     }
-    self.n
-  }
-  eq(o) {
     type_of(o) == 'H' && self.n == o.n
   }
 }

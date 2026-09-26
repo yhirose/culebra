@@ -106,4 +106,22 @@ assert_eq(held(fn (v) {
   assert_eq(typed_args(1, v, v), 2)
 }), 0)
 
+# --- an unhashable key or member raises from the hash: the fresh Array that
+#     raised is the helper's to release on that exit, as on the normal one.
+let dict = {1: 'one'}
+for work in [
+  fn (v) { {1, 2, [v]} },
+  fn (v) { dict.has([v]) },
+  fn (v) { dict.get([v], [v]) },
+  fn (v) { dict.get_or_put([v], [v]) },
+] {
+  assert_eq(held(fn (v) {
+    assert_eq(try {
+      work(v)
+    } catch e {
+      e.kind
+    }, 'TypeError')
+  }), 0)
+}
+
 inspect('gc leak [throw paths]: no leak')

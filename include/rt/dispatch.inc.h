@@ -188,9 +188,20 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_derived_eq(
     return {TAG_BOOL, 0};
   if (_jit_meta_enum_name(lhs) != _jit_meta_enum_name(rhs))
     return {TAG_BOOL, 0};
-  // Every field of lhs found equal in rhs, and rhs holding no more of its
-  // own: a field added to one instance makes the pair unequal whichever
-  // side the call starts from.
+  // One shape (not a dictionary's, which says nothing of its keys) holds the
+  // same names in the same slots, so the fields pair up by index.
+  if (lhs->shape && lhs->shape == rhs->shape && !lhs->is_dict) {
+    for (size_t i = 0; i < lhs->slots.size(); i++) {
+      const auto& a = lhs->slots[i].value;
+      const auto& b = rhs->slots[i].value;
+      if ((a.tag == TAG_FUNC) != (b.tag == TAG_FUNC)) return {TAG_BOOL, 0};
+      if (a.tag != TAG_FUNC && !JitValueEq{}(a, b)) return {TAG_BOOL, 0};
+    }
+    return {TAG_BOOL, 1};
+  }
+  // Otherwise every field of lhs found equal in rhs, and rhs holding no more
+  // of its own: a field added to one instance makes the pair unequal
+  // whichever side the call starts from.
   bool eq = true;
   size_t fields = 0;
   lhs->for_each([&](std::string_view name, const JitObjectEntry& e) {
@@ -214,18 +225,28 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_derived_eq(
 }
 
 // hash(): combine the class-name hash with each data field's hash
-// (JitValueHash composes nested user/derived hashes). The name comes from
-// the meta, so two enums that each declare an `Ok` still hash apart.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_derived_hash(
-    JitObject* obj) {
+// (_jit_try_hash composes nested user/derived hashes). The name comes from
+// the meta, so two enums that each declare an `Ok` still hash apart. Nullopt,
+// with the field in `*unhashable`, when a field has no hash.
+inline std::optional<int64_t> _jit_try_derived_hash(JitObject* obj,
+                                                    JitValue* unhashable) {
   size_t h = std::hash<std::string_view>{}(_jit_derived_class_tag(obj));
   if (const char* en = _jit_meta_enum_name(obj))
     h = h * 31 + std::hash<std::string_view>{}(std::string_view(en));
-  obj->for_each([&](std::string_view name, const JitObjectEntry& e) {
-    if (e.value.tag == TAG_FUNC) return;
-    h = h * 31 + JitValueHash{}(e.value);
+  bool ok = true;
+  obj->for_each([&](std::string_view, const JitObjectEntry& e) {
+    if (!ok || e.value.tag == TAG_FUNC) return;
+    if (auto f = _jit_try_hash(e.value, unhashable)) h = h * 31 + *f;
+    else ok = false;
   });
+  if (!ok) return std::nullopt;
   return static_cast<int64_t>(h);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_derived_hash(
+    JitObject* obj) {
+  JitValue unhashable;
+  if (auto h = _jit_try_derived_hash(obj, &unhashable)) return *h;
+  _jit_throw_unhashable(unhashable);
 }
 
 // An enum variant is the derived pair by construction (see
@@ -1154,7 +1175,7 @@ inline void _jit_gc_enumerate_children(void* obj, uint8_t tag,
     }
     case GC_TAG_SET: {
       auto* s = static_cast<JitSet*>(obj);
-      for (auto& m : s->members) _gc_push_value(out, m);
+      for (auto& m : s->members) _gc_push_value(out, m.value());
       break;
     }
     case GC_TAG_OBJECT: {
@@ -1170,10 +1191,10 @@ inline void _jit_gc_enumerate_children(void* obj, uint8_t tag,
       // Marking is set-based, so pushing a key from both sidecars is
       // harmless.
       if (o->key_order)
-        for (const auto& k : *o->key_order) _gc_push_value(out, k);
+        for (const auto& k : *o->key_order) _gc_push_value(out, k.value());
       if (o->non_string_props) {
         for (const auto& [k, e] : *o->non_string_props) {
-          _gc_push_value(out, k);
+          _gc_push_value(out, k.value());
           _gc_push_value(out, e.value);
         }
       }

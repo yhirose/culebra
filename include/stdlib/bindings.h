@@ -1553,7 +1553,8 @@ struct _JitJsonReader {
     return reinterpret_cast<JitArray*>(v.data)->size;
   }
   static const JitValue& seq_at(const JitValue& v, size_t i) {
-    if (v.tag == TAG_SET) return reinterpret_cast<JitSet*>(v.data)->members[i];
+    if (v.tag == TAG_SET)
+      return reinterpret_cast<JitSet*>(v.data)->members[i].value();
     return reinterpret_cast<JitArray*>(v.data)->items[i];
   }
   static bool object_has_non_string_keys(const JitValue& v) {
@@ -7403,8 +7404,8 @@ inline culebra::toml::Node _jit_to_toml_node(int8_t tag, int64_t data,
       auto* set = reinterpret_cast<JitSet*>(data);
       N a = N::array();
       for (const auto& m : set->members)
-        a.elems.push_back(_jit_to_toml_node(m.tag, m.data, line, col,
-                                            depth + 1));
+        a.elems.push_back(_jit_to_toml_node(m.value().tag, m.value().data, line,
+                                            col, depth + 1));
       return a;
     }
     case TAG_OBJECT: {
@@ -10813,7 +10814,7 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                jit.builder_.getInt64Ty());
   // `hash(v)` builtin: (tag, data, line, col) -> int64. The Object
   // path inside the runtime invokes a user `hash()` method; primitives
-  // share JitValueHash with the AnyKeyMap.
+  // share the hash the Object and Set keys are stored with.
   jit.module_->getOrInsertFunction(rt::hash_any, jit.builder_.getInt64Ty(),
                                jit.builder_.getInt8Ty(), jit.builder_.getInt64Ty(),
                                jit.builder_.getInt64Ty(), jit.builder_.getInt64Ty());

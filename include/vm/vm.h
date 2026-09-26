@@ -129,11 +129,10 @@ enum class Op : uint8_t {
   TuplePush,   // append regs[b] into tuple regs[a]; regs[b] = nil (absorbed)
   SetNew,      // regs[a] = fresh empty Set (+1)
   SetAdd,      // add regs[b] into set regs[a]; regs[b] = nil — set_add
-               // absorbs the +1 (releases it on a duplicate). Hashing an
-               // unhashable element throws positionless before the absorb:
-               // the register still owns the value (the handler ladder
-               // frees it) and the SetOpPos published just before (the
-               // literal's position, compile_set's emit order) anchors it.
+               // absorbs the +1 on every exit (releases it on a duplicate
+               // and on the positionless throw an unhashable element
+               // raises, which the SetOpPos published just before — the
+               // literal's position, compile_set's emit order — anchors).
   ObjectNew,   // regs[a] = fresh empty Object (+1)
   ObjectNewShaped, // regs[a] = fresh Object (+1) whose Shape and (nil,
                // immutable) slots are pre-built from
@@ -15637,13 +15636,13 @@ struct Exec {
       L_SetAdd:
         do {
           [[maybe_unused]] const Insn& in = *ip;
-          // On the unhashable throw the register still owns the +1 (the
-          // handler ladder frees it); the SetOpPos published just before
-          // anchors the positionless error at the literal.
-          culebra_runtime_set_add(reinterpret_cast<JitSet*>(regs[in.a].data),
-                                  static_cast<int8_t>(regs[in.b].tag),
-                                  regs[in.b].data);
+          // set_add consumes the element on every exit, the unhashable throw
+          // included — nil the register first. The SetOpPos published just
+          // before anchors that positionless error at the literal.
+          JitValue v = regs[in.b];
           regs[in.b] = JitValue{TAG_NIL, 0};
+          culebra_runtime_set_add(reinterpret_cast<JitSet*>(regs[in.a].data),
+                                  static_cast<int8_t>(v.tag), v.data);
           ++ip;
           break;
         } while (0);
@@ -15674,9 +15673,9 @@ struct Exec {
       L_ObjectSet:
         do {
           [[maybe_unused]] const Insn& in = *ip;
-          // Unlike set_add, object_set consumes the value on EVERY exit,
-          // including the positionless well-known-contract throw — nil the
-          // register first so the handler ladder never double-releases.
+          // object_set consumes the value on every exit, the positionless
+          // well-known-contract throw included — nil the register first so
+          // the handler ladder never double-releases.
           int8_t vt = static_cast<int8_t>(regs[in.b].tag);
           int64_t vd = regs[in.b].data;
           regs[in.b] = JitValue{TAG_NIL, 0};
@@ -15709,8 +15708,8 @@ struct Exec {
         do {
           [[maybe_unused]] const Insn& in = *ip;
           // object_set_any consumes both the key and the value on every
-          // exit (including the positionless unhashable/well-known throw,
-          // unlike set_add) — nil both registers first.
+          // exit (including the positionless unhashable/well-known throw)
+          // — nil both registers first.
           int8_t kt = static_cast<int8_t>(regs[in.b].tag);
           int64_t kd = regs[in.b].data;
           int8_t vt = static_cast<int8_t>(regs[in.c].tag);

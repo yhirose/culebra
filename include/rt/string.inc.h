@@ -142,8 +142,8 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
       std::string s = "{";
       for (size_t i = 0; i < set->members.size(); i++) {
         if (i > 0) s += ", ";
-        s += _culebra_value_to_str_impl(set->members[i].tag,
-                                        set->members[i].data);
+        s += _culebra_value_to_str_impl(set->members[i].value().tag,
+                                        set->members[i].value().data);
       }
       s += "}";
       return s;
@@ -215,8 +215,8 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
         // Mixed-key path: walk the unified vector so String and
         // non-String keys interleave in true insertion order.
         for (const auto& key : *obj->key_order) {
-          if (key.tag == TAG_STRING) {
-            auto name = reinterpret_cast<const char*>(key.data);
+          if (key.value().tag == TAG_STRING) {
+            auto name = reinterpret_cast<const char*>(key.value().data);
             auto idx = obj->shape ? obj->shape->offset(name)
                                   : static_cast<size_t>(-1);
             if (idx == static_cast<size_t>(-1)) continue;
@@ -235,7 +235,7 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
             if (!first) s += ", ";
             first = false;
             if (it->second.mut) s += "mut ";
-            s += _culebra_value_to_str_impl(key.tag, key.data);
+            s += _culebra_value_to_str_impl(key.value().tag, key.value().data);
             s += ": ";
             s += _culebra_value_to_str_impl(it->second.value.tag,
                                             it->second.value.data);

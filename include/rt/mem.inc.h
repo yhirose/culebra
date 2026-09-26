@@ -246,13 +246,13 @@ culebra_runtime_owned_scope_exit(int64_t mark_arg) {
         _jit_view_cache_each(o, [&](JitValue& v) { self(v, id, self); });
         if (o->key_order && o->non_string_props) {
           for (const auto& k : *o->key_order) {
-            self(k, id, self);
-            if (k.tag == TAG_STRING) continue;
+            self(k.value(), id, self);
+            if (k.value().tag == TAG_STRING) continue;
             auto it = o->non_string_props->find(k);
             if (it != o->non_string_props->end()) {
               // A refcounted key holds two refs: key_order's (walked
               // above) and the map's stored alias — explain both.
-              self(it->first, id, self);
+              self(it->first.value(), id, self);
               self(it->second.value, id, self);
             }
           }
@@ -278,7 +278,7 @@ culebra_runtime_owned_scope_exit(int64_t mark_arg) {
       }
       case TAG_SET: {
         auto* s = reinterpret_cast<JitSet*>(p);
-        for (auto& m : s->members) self(m, id, self);
+        for (auto& m : s->members) self(m.value(), id, self);
         break;
       }
       case TAG_FUNC: {
@@ -478,8 +478,8 @@ inline void _culebra_value_release_node(int8_t tag, int64_t data) {
         // refcount lands at zero for keys that go fully unreachable.
         if (o->key_order) {
           for (auto& k : *o->key_order) {
-            if (_is_refcounted_value_tag(k.tag)) {
-              _culebra_value_release_impl(k.tag, k.data);
+            if (_is_refcounted_value_tag(k.value().tag)) {
+              _culebra_value_release_impl(k.value().tag, k.value().data);
             }
           }
           delete o->key_order;
@@ -492,7 +492,7 @@ inline void _culebra_value_release_node(int8_t tag, int64_t data) {
           // its own +1 above, so the two stored refs are balanced.
           for (auto& [k, entry] : *o->non_string_props) {
             _culebra_value_release_impl(entry.value.tag, entry.value.data);
-            _culebra_value_release_impl(k.tag, k.data);
+            _culebra_value_release_impl(k.value().tag, k.value().data);
           }
           delete o->non_string_props;
           o->non_string_props = nullptr;
@@ -521,7 +521,7 @@ inline void _culebra_value_release_node(int8_t tag, int64_t data) {
       if (--s->refcount == 0) {
         auto& heap = _gc_note_teardown(s);
         for (auto& m : s->members) {
-          _culebra_value_release_impl(m.tag, m.data);
+          _culebra_value_release_impl(m.value().tag, m.value().data);
         }
         delete s->index;
         _gc_note_free(heap, s, GC_TAG_SET);
@@ -978,7 +978,6 @@ inline constexpr auto object_set_any      = "culebra_runtime_object_set_any";
 inline constexpr auto object_get_any      = "culebra_runtime_object_get_any";
 inline constexpr auto object_get_for_coalesce
     = "culebra_runtime_object_get_for_coalesce";
-inline constexpr auto object_has_any      = "culebra_runtime_object_has_any";
 inline constexpr auto register_packable   = "culebra_runtime_register_packable";
 inline constexpr auto register_packable_enum =
     "culebra_runtime_register_packable_enum";

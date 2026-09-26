@@ -253,6 +253,34 @@ struct JitObjectEntry {
   bool mut;
 };
 
+// A key with its hash. The hash is computed once, as the key enters a lookup
+// or a container, and a stored key carries it from then on: iterating,
+// copying, comparing and the Set operations reuse it and never hash again
+// (CPython's dict entry, Java's HashMap.Node.hash). The containers take
+// nothing else, and only the two doors below make one, so a lookup that
+// skips them does not compile.
+class JitHashedKey {
+ public:
+  static JitHashedKey of(JitValue v);  // raises for an unhashable one
+  // Without raising: nullopt, with what stops it in `*unhashable`.
+  static std::optional<JitHashedKey> try_of(JitValue v, JitValue* unhashable);
+  const JitValue& value() const { return value_; }
+  size_t hash() const { return hash_; }
+
+ private:
+  friend struct JitObject;
+  friend struct JitKeySnapshot;
+  JitHashedKey(JitValue v, size_t h) : value_(v), hash_(h) {}
+  // A String key's key_order entry. A String is found by its name, never by
+  // a hash, so none is computed.
+  static JitHashedKey name(JitValue v) { return JitHashedKey(v, 0); }
+  // A hash `of` / `try_of` computed earlier, carried apart from its key by an
+  // iterator's key snapshot.
+  static JitHashedKey restore(JitValue v, size_t h) { return JitHashedKey(v, h); }
+  JitValue value_;
+  size_t hash_;
+};
+
 // The special methods the runtime itself dispatches by name — an operator's
 // dunder, the protocol names `hash`/`cmp`/`eq`, and `__call__`/`__str__`. A class
 // meta resolves each of them once, at declaration (JitSpecialTable), so an
@@ -434,14 +462,19 @@ struct JitObject {
   struct AnyKeyMap;  // forward decl; full definition below
   AnyKeyMap* non_string_props = nullptr;
   // Unified key insertion order — every key (String and non-String)
-  // in the order it was first set. String keys are stored as
-  // TAG_STRING JitValues pointing into the shared shape name pool
-  // (no retain). Non-String keys are stored as their literal
-  // JitValue; Tuple keys hold a +1 retain so the cycle GC and
+  // in the order it was first set. String keys are stored as TAG_STRING
+  // JitValues pointing into the shared shape name pool (no retain, no hash).
+  // Non-String keys are stored as their literal JitValue with the hash the
+  // sidecar holds; Tuple keys hold a +1 retain so the cycle GC and
   // destruction paths can release them via this vector. The shape
   // (for String) and `non_string_props` (for non-String) remain for
   // O(1) lookup.
-  std::vector<JitValue>* key_order = nullptr;
+  std::vector<JitHashedKey>* key_order = nullptr;
+  // A String key's `key_order` entry: its name interned.
+  static JitHashedKey name_key(std::string_view name) {
+    return JitHashedKey::name(
+        {/*TAG_STRING*/ 4, reinterpret_cast<int64_t>(_intern_str(name))});
+  }
   int64_t gc_slot = -1;  // see JitArray::gc_slot
   // Bumps on add/delete (not value updates). object_iter snapshots
   // this and fails-fast on per-step mismatch — matches Python dict
@@ -605,12 +638,9 @@ struct JitObject {
     // `key_order` is the only insertion-order record once the shape stops
     // growing, so materialize it here if it is still lazy.
     if (!key_order) {
-      key_order = new std::vector<JitValue>();
+      key_order = new std::vector<JitHashedKey>();
       key_order->reserve(slots.size() + 1);
-      for (const auto& name : shape->names) {
-        key_order->push_back(
-            {/*TAG_STRING*/ 4, reinterpret_cast<int64_t>(_intern_str(name))});
-      }
+      for (const auto& name : shape->names) key_order->push_back(name_key(name));
     }
     dict_ = d;
     is_dict = true;
@@ -623,8 +653,7 @@ struct JitObject {
     if (slots.capacity() == 0) slots.reserve(8);
     slots.push_back({value, mut});
     ++mut_count;
-    key_order->push_back(
-        {/*TAG_STRING*/ 4, reinterpret_cast<int64_t>(_intern_str(key))});
+    key_order->push_back(name_key(key));
     return slots.size() - 1;
   }
 
@@ -639,13 +668,8 @@ struct JitObject {
     // `key_order` is lazy: String-only objects recover insertion
     // order from `shape->names` directly at str() time. Only after a
     // non-String key activates the vector do String inserts also push
-    // here (so the interleaved order survives). Tag literal 4 matches
-    // TAG_STRING (defined further down).
-    if (key_order) {
-      auto* name_cstr = _intern_str(shape->names.back());
-      key_order->push_back(
-          {/*TAG_STRING*/ 4, reinterpret_cast<int64_t>(name_cstr)});
-    }
+    // here (so the interleaved order survives).
+    if (key_order) key_order->push_back(name_key(shape->names.back()));
     return slots.size() - 1;
   }
 
@@ -1154,15 +1178,16 @@ inline std::optional<int8_t> _culebra_primitive_type_tag(std::string_view tn) {
 inline std::string_view _culebra_str_view(int8_t tag, int64_t data);
 
 // Forward decls: Object-side `hash()` / `eq()` dispatch used by
-// JitValueHash / JitValueEq. Defined further down once `_try_special_unary`
+// _jit_try_hash / JitValueEq. Defined further down once `_try_special_unary`
 // and `_culebra_invoke_method1` are complete (inside the runtime's
 // extern "C" block — match the linkage here). Returning nullopt means
 // "no user method, fall back to reference identity" so existing Object
 // keys without `hash()` keep their previous (identity-based) behavior.
 extern "C" {
-inline std::optional<int64_t> _jit_object_user_hash(JitObject* obj);
+inline std::optional<size_t> _jit_try_object_hash(JitObject* obj, JitValue* unhashable);
 inline std::optional<bool> _jit_object_user_eq(JitObject* a, JitObject* b);
 inline std::optional<int64_t> _jit_enum_variant_hash(JitObject* obj);
+inline std::optional<int64_t> _jit_try_derived_hash(JitObject* obj, JitValue* unhashable);
 inline std::optional<bool> _jit_eq_by_fields(JitObject* a, JitObject* b);
 inline bool _extract_bool_and_release(JitValue v);
 }
@@ -1177,56 +1202,76 @@ extern "C" inline const char* _culebra_tag_name(int8_t tag);  // defined below
 // (Hashable + Eq structural conformance); what matches by its fields — an
 // enum variant, a class deriving Eq — through the field walk; otherwise
 // reference identity.
-struct JitValueHash {
-  size_t operator()(const JitValue& v) const {
-    switch (v.tag) {
-      case TAG_NIL:  return 0;
-      case TAG_BOOL: return culebra::hash_long(v.data != 0 ? 1 : 0);
-      case TAG_LONG: return culebra::hash_long(v.data);
-      case TAG_FLOAT: {
-        double d;
-        std::memcpy(&d, &v.data, sizeof d);
-        return culebra::hash_double(d);
-      }
-      case TAG_STRING:
-      case TAG_STRINGVIEW:
-        return std::hash<std::string_view>{}(_culebra_str_view(v.tag, v.data));
-      case TAG_TUPLE: {
-        culebra::ValueWalkFrame walk;
-        auto* a = reinterpret_cast<JitArray*>(v.data);
-        size_t h = a->size;
-        for (size_t i = 0; i < a->size; i++) {
-          h = h * 31 + (*this)(a->items[i]);
-        }
-        return h;
-      }
-      case TAG_OBJECT: {
-        auto* obj = reinterpret_cast<JitObject*>(v.data);
-        if (auto h = _jit_object_user_hash(obj)) {
-          return std::hash<int64_t>{}(*h);
-        }
-        if (auto h = _jit_enum_variant_hash(obj)) {
-          return std::hash<int64_t>{}(*h);
-        }
-        throw culebra::CulebraError(
-            "TypeError",
-            "unhashable type: 'Object' (no hash() method)");
-      }
+//
+// `_jit_try_hash` is the rule, and answers without raising: nullopt, with the
+// value that stops it (the key, or a leaf inside it) in `*unhashable`, for a
+// key that has no hash — Array / Set / Function / Tensor, an Object with
+// neither a `hash()` nor the variant's field walk, a tuple or variant holding
+// one. A `hash()` that returns no Long still raises: that is the method's
+// error, not the key's kind.
+inline std::optional<size_t> _jit_try_hash(JitValue v, JitValue* unhashable) {
+  switch (v.tag) {
+    case TAG_NIL:  return 0;
+    case TAG_BOOL: return culebra::hash_long(v.data != 0 ? 1 : 0);
+    case TAG_LONG: return culebra::hash_long(v.data);
+    case TAG_FLOAT: {
+      double d;
+      std::memcpy(&d, &v.data, sizeof d);
+      return culebra::hash_double(d);
     }
-    // Array / Set / Function / Tensor have no value-hash; mirror interp's
-    // ValueHash, which throws rather than falling back to pointer identity.
-    throw culebra::CulebraError(
-        "TypeError",
-        culebra::format("unhashable type: '{}'", _culebra_tag_name(v.tag)));
+    case TAG_STRING:
+    case TAG_STRINGVIEW:
+      return std::hash<std::string_view>{}(_culebra_str_view(v.tag, v.data));
+    case TAG_TUPLE: {
+      culebra::ValueWalkFrame walk;
+      auto* a = reinterpret_cast<JitArray*>(v.data);
+      size_t h = a->size;
+      for (size_t i = 0; i < a->size; i++) {
+        auto e = _jit_try_hash(a->items[i], unhashable);
+        if (!e) return std::nullopt;
+        h = h * 31 + *e;
+      }
+      return h;
+    }
+    case TAG_OBJECT:
+      return _jit_try_object_hash(reinterpret_cast<JitObject*>(v.data), unhashable);
   }
-};
+  *unhashable = v;
+  return std::nullopt;
+}
+
+// The TypeError for a value `_jit_try_hash` could not hash (positionless: the
+// op position the caller published anchors it) — raised rather than falling
+// back to pointer identity.
+[[noreturn]] inline void _jit_throw_unhashable(JitValue v, int64_t line = 0,
+                                               int64_t col = 0) {
+  throw culebra::CulebraError(
+      "TypeError",
+      v.tag == TAG_OBJECT
+          ? std::string("unhashable type: 'Object' (no hash() method)")
+          : culebra::format("unhashable type: '{}'", _culebra_tag_name(v.tag)),
+      static_cast<int>(line), static_cast<int>(col));
+}
+
+inline std::optional<JitHashedKey> JitHashedKey::try_of(JitValue v,
+                                                        JitValue* unhashable) {
+  auto h = _jit_try_hash(v, unhashable);
+  if (!h) return std::nullopt;
+  return JitHashedKey(v, *h);
+}
+
+inline JitHashedKey JitHashedKey::of(JitValue v) {
+  JitValue unhashable;
+  if (auto k = try_of(v, &unhashable)) return *k;
+  _jit_throw_unhashable(unhashable);
+}
 
 // Key equality: the one answer to "are these the same key?", and the second
 // of the two comparisons that mean equal. `==`'s door
 // (_culebra_value_equal) is the other, and this one is deliberately
 // stricter — it never crosses types (`1` and `1.0` are two keys), and the
 // user step it takes is `eq`, not `__eq__`, because a key's equality has to
-// agree with JitValueHash. Everything keyed asks it: an Object's non-String
+// agree with the key's hash. Everything keyed asks it: an Object's non-String
 // keys, a Set's members, an iterator's dedup, and a derived `eq`, whose
 // fields are compared the way the class's own key would be.
 struct JitValueEq {
@@ -1268,22 +1313,73 @@ struct JitValueEq {
         return false;
       }
     }
-    return false;  // unhashable tags never reach here (JitValueHash throws)
+    return false;  // unhashable tags never reach here (JitHashedKey::of throws)
+  }
+};
+
+// The containers' hash and equality over stored keys. The hash is the one the
+// key carries, so a rehash runs no user code, and a hash that differs settles
+// "not the same key" before a user `eq` is asked.
+struct JitKeyHash {
+  size_t operator()(const JitHashedKey& k) const noexcept { return k.hash(); }
+};
+struct JitKeyEq {
+  bool operator()(const JitHashedKey& a, const JitHashedKey& b) const {
+    return a.hash() == b.hash() && JitValueEq{}(a.value(), b.value());
   }
 };
 
 struct JitObject::AnyKeyMap
-    : std::unordered_map<JitValue, JitObjectEntry, JitValueHash, JitValueEq> {};
+    : std::unordered_map<JitHashedKey, JitObjectEntry, JitKeyHash, JitKeyEq> {};
 
-// Set storage: insertion-ordered members + an O(1) sidecar index.
-// Membership/equality/hash use JitValueHash/JitValueEq (Python-style
-// numeric-key equivalence). Mirrors the interpreter's SetValue layout.
+inline std::optional<JitObject::AnyKeyMap::iterator> _jit_sidecar_at(
+    JitObject* obj, const JitHashedKey& key) {
+  auto* m = obj->non_string_props;
+  if (!m) return std::nullopt;
+  auto it = m->find(key);
+  if (it == m->end()) return std::nullopt;
+  return it;
+}
+
+// A non-String key's entry in `obj`'s sidecar, or nullopt; an unhashable key
+// is the dict builtins' TypeError.
+inline std::optional<JitObject::AnyKeyMap::iterator> _jit_sidecar_find(
+    JitObject* obj, JitValue key) {
+  return _jit_sidecar_at(obj, JitHashedKey::of(key));
+}
+
+// The same lookup for a key a class's `__index__` / `__setindex__` may still
+// take: one that cannot be hashed is absent (none is stored), with what stops
+// it in `*unhashable` for the caller to raise once the class declines it.
+inline std::optional<JitObject::AnyKeyMap::iterator> _jit_sidecar_probe(
+    JitObject* obj, JitValue key, JitValue* unhashable) {
+  auto k = JitHashedKey::try_of(key, unhashable);
+  if (!k) return std::nullopt;
+  return _jit_sidecar_at(obj, *k);
+}
+
+// An Object iterator's key snapshot: the keys in insertion order (an Array)
+// and, when some are not Strings, the hash each is stored under at the same
+// index (a Long Array), so a step finds its entry again without hashing the
+// key. The one place a hash travels apart from its key. Defined with the
+// iterators (rt_iter.inc.h).
+struct JitKeySnapshot {
+  JitArray* keys;   // +1
+  JitValue hashes;  // +1, or nil when every key is a String
+  static JitKeySnapshot take(JitObject* obj);
+  // The live value (+1) under entry `i`, or false once its key is removed.
+  static bool value(JitObject* obj, JitArray* keys, JitValue hashes, size_t i,
+                    int8_t* out_tag, int64_t* out_data);
+};
+
+// Set storage: insertion-ordered members + an O(1) sidecar index, each member
+// carrying the hash it was stored with.
 struct JitSetIndex
-    : std::unordered_set<JitValue, JitValueHash, JitValueEq> {};
+    : std::unordered_set<JitHashedKey, JitKeyHash, JitKeyEq> {};
 
 struct JitSet {
   int64_t refcount;
-  std::vector<JitValue> members;
+  std::vector<JitHashedKey> members;
   JitSetIndex* index = nullptr;
   int64_t gc_slot = -1;
 

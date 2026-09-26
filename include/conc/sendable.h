@@ -71,7 +71,8 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
       culebra::ValueWalkFrame walk;
       n.kind = K::Set;
       n.elems.reserve(s->members.size());
-      for (const auto& m : s->members) n.elems.push_back(jit_serialize(m, ctx));
+      for (const auto& m : s->members)
+        n.elems.push_back(jit_serialize(m.value(), ctx));
       ctx.visiting.erase(s);
       return n;
     }
@@ -205,7 +206,7 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
       // this). The key itself serializes as a value node.
       if (o->non_string_props) {
         for (const auto& [k, ent] : *o->non_string_props) {
-          n.entries.emplace_back(jit_serialize(k, ctx),
+          n.entries.emplace_back(jit_serialize(k.value(), ctx),
                                  jit_serialize(ent.value, ctx));
           n.entry_mut.push_back(ent.mut);
         }
@@ -1133,7 +1134,8 @@ inline JitValue _jit_shared_val_child(JitObject* view, int64_t id,
     default:
       return _jit_shared_val_read(id, core, child);  // primitive/string leaf
   }
-  JitValue key{TAG_LONG, static_cast<int64_t>(core.ids.at(&child))};
+  auto key = JitHashedKey::of(
+      {TAG_LONG, static_cast<int64_t>(core.ids.at(&child))});
   if (view->non_string_props) {
     auto it = view->non_string_props->find(key);
     if (it != view->non_string_props->end())
@@ -1142,7 +1144,7 @@ inline JitValue _jit_shared_val_child(JitObject* view, int64_t id,
   JitValue sub = _jit_shared_val_read(id, core, child);  // fresh +1
   if (!view->non_string_props) {
     view->non_string_props = new JitObject::AnyKeyMap();
-    view->key_order = new std::vector<JitValue>();
+    view->key_order = new std::vector<JitHashedKey>();
   }
   // Transfer the mint's +1 into the cache (no extra retain). key_order carries
   // the key so the GC child enumeration (which walks key_order ∩
