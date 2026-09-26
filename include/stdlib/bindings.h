@@ -5085,16 +5085,16 @@ inline JitValue _ns_audio_music_load(JitValue* a, int64_t) {
   ad::music_load(id, b.p, b.n, b.fmt, _ns_adapt::take_bool(a[1]) != 0);
   return _ns_adapt::v_long(id);
 }
-inline JitValue _ns_audio_stream_new(JitValue* a, int64_t) {
+inline JitValue _ns_audio_pcm_new(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
   int64_t id = ad::alloc_id();
-  ad::stream_new(id, _ns_adapt::take_long(a[0]), _ns_adapt::take_long(a[1]),
+  ad::pcm_new(id, _ns_adapt::take_long(a[0]), _ns_adapt::take_long(a[1]),
                  _ns_adapt::take_long(a[2]));
   return _ns_adapt::v_long(id);
 }
 // `samples` carry polygon's Long|Float contract, checked whole before any is
 // taken: a skipped element would shift every stereo pair after it.
-inline JitValue _ns_audio_stream_push(JitValue* a, int64_t) {
+inline JitValue _ns_audio_pcm_push(JitValue* a, int64_t) {
   thread_local std::vector<double> scratch;  // a block a frame: no allocation
   scratch.clear();
   auto* samples = _ns_adapt::take_array(a[1]);
@@ -5102,24 +5102,24 @@ inline JitValue _ns_audio_stream_push(JitValue* a, int64_t) {
     const auto& e = samples->items[i];
     if (e.tag != TAG_LONG && e.tag != TAG_FLOAT)
       culebra::throw_runtime_error_at(
-          "TypeError", culebra::_audio_detail::kStreamSamplesError, 0, 0);
+          "TypeError", culebra::_audio_detail::kPcmSamplesError, 0, 0);
     scratch.push_back(_culebra_coerce_num(e.tag, e.data));
   }
-  return _ns_adapt::v_long(culebra::_audio_detail::stream_push(
+  return _ns_adapt::v_long(culebra::_audio_detail::pcm_push(
       _ns_adapt::take_long(a[0]), scratch.data(),
       static_cast<int64_t>(scratch.size())));
 }
-inline JitValue _ns_audio_stream_needed(JitValue* a, int64_t) {
+inline JitValue _ns_audio_pcm_needed(JitValue* a, int64_t) {
   return _ns_adapt::v_long(
-      culebra::_audio_detail::stream_needed(_ns_adapt::take_long(a[0])));
+      culebra::_audio_detail::pcm_needed(_ns_adapt::take_long(a[0])));
 }
-inline JitValue _ns_audio_stream_submit(JitValue* a, int64_t) {
+inline JitValue _ns_audio_pcm_submit(JitValue* a, int64_t) {
   return _ns_adapt::v_long(
-      culebra::_audio_detail::stream_submit(_ns_adapt::take_long(a[0])));
+      culebra::_audio_detail::pcm_submit(_ns_adapt::take_long(a[0])));
 }
-inline JitValue _ns_audio_stream_latency(JitValue* a, int64_t) {
+inline JitValue _ns_audio_pcm_latency(JitValue* a, int64_t) {
   return _ns_adapt::v_float(
-      culebra::_audio_detail::stream_latency(_ns_adapt::take_long(a[0])));
+      culebra::_audio_detail::pcm_latency(_ns_adapt::take_long(a[0])));
 }
 
 inline JitValue _ns_canvas_width(JitValue*, int64_t) {
@@ -9322,21 +9322,21 @@ inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "music_volume",   2, &_ns_audio_set<culebra::_audio_detail::music_volume>},
   {"_Audio", "music_pitch",    2, &_ns_audio_set<culebra::_audio_detail::music_pitch>},
   {"_Audio", "music_pan",      2, &_ns_audio_set<culebra::_audio_detail::music_pan>},
-  {"_Audio", "stream_new",     3, &_ns_audio_stream_new},
-  {"_Audio", "stream_free",    1, &_ns_audio_on<culebra::_audio_detail::stream_free>},
-  {"_Audio", "stream_ready",   1, &_ns_audio_ask<culebra::_audio_detail::stream_ready>},
-  {"_Audio", "stream_needed",  1, &_ns_audio_stream_needed},
-  {"_Audio", "stream_push",    2, &_ns_audio_stream_push},
-  {"_Audio", "stream_submit",  1, &_ns_audio_stream_submit},
-  {"_Audio", "stream_latency", 1, &_ns_audio_stream_latency},
-  {"_Audio", "stream_play",    1, &_ns_audio_on<culebra::_audio_detail::stream_play>},
-  {"_Audio", "stream_stop",    1, &_ns_audio_on<culebra::_audio_detail::stream_stop>},
-  {"_Audio", "stream_pause",   1, &_ns_audio_on<culebra::_audio_detail::stream_pause>},
-  {"_Audio", "stream_resume",  1, &_ns_audio_on<culebra::_audio_detail::stream_resume>},
-  {"_Audio", "stream_playing", 1, &_ns_audio_ask<culebra::_audio_detail::stream_playing>},
-  {"_Audio", "stream_volume",  2, &_ns_audio_set<culebra::_audio_detail::stream_volume>},
-  {"_Audio", "stream_pitch",   2, &_ns_audio_set<culebra::_audio_detail::stream_pitch>},
-  {"_Audio", "stream_pan",     2, &_ns_audio_set<culebra::_audio_detail::stream_pan>},
+  {"_Audio", "pcm_new",        3, &_ns_audio_pcm_new},
+  {"_Audio", "pcm_free",       1, &_ns_audio_on<culebra::_audio_detail::pcm_free>},
+  {"_Audio", "pcm_ready",      1, &_ns_audio_ask<culebra::_audio_detail::pcm_ready>},
+  {"_Audio", "pcm_needed",     1, &_ns_audio_pcm_needed},
+  {"_Audio", "pcm_push",       2, &_ns_audio_pcm_push},
+  {"_Audio", "pcm_submit",     1, &_ns_audio_pcm_submit},
+  {"_Audio", "pcm_latency",    1, &_ns_audio_pcm_latency},
+  {"_Audio", "pcm_play",       1, &_ns_audio_on<culebra::_audio_detail::pcm_play>},
+  {"_Audio", "pcm_stop",       1, &_ns_audio_on<culebra::_audio_detail::pcm_stop>},
+  {"_Audio", "pcm_pause",      1, &_ns_audio_on<culebra::_audio_detail::pcm_pause>},
+  {"_Audio", "pcm_resume",     1, &_ns_audio_on<culebra::_audio_detail::pcm_resume>},
+  {"_Audio", "pcm_playing",    1, &_ns_audio_ask<culebra::_audio_detail::pcm_playing>},
+  {"_Audio", "pcm_volume",     2, &_ns_audio_set<culebra::_audio_detail::pcm_volume>},
+  {"_Audio", "pcm_pitch",      2, &_ns_audio_set<culebra::_audio_detail::pcm_pitch>},
+  {"_Audio", "pcm_pan",        2, &_ns_audio_set<culebra::_audio_detail::pcm_pan>},
 };
 inline const NsMethod kNsRows_Canvas_native[] = {
   {"_Canvas", "init",            2,  &_ns_canvas_init},

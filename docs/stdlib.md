@@ -123,7 +123,7 @@ Conventions used below:
 | Share variable-length read-only data across threads (no copy) | [§12 Shared](#shared--immutable-values-shared-by-reference) — `Shared.new(value)` |
 | Handle Ctrl+C / SIGINT gracefully | [§12 Signal](#signal--signalnotify--signalreset) — `Signal.notify(tx)` / `Signal.reset()` |
 | Desktop GUI (native WebView + local server) | [§29 Desktop](#29-desktop--webview) — `Desktop.run({title, assets, routes})` |
-| Play a tone, a sound effect or music; synthesise audio | [§39 Audio](#39-audio) — `Audio.tone(440, 10)` / `Audio.Sound.new(bytes).play()` / `Audio.Music.new(bytes)` / `Audio.Stream.new(44100, 1, 1024)` |
+| Play a tone, a sound effect or music; synthesise audio | [§39 Audio](#39-audio) — `Audio.tone(440, 10)` / `Audio.Sound.new(bytes).play()` / `Audio.Music.new(bytes)` / `Audio.Pcm.new(44100, 1, 1024)` |
 | Heap introspection / leak checks | [§7 GC](#gc--heap-introspection) — `GC.stat()` → `{live_objects, rc_objects, heap_bytes}` |
 | 2D/3D vector math (dot, length, normalize, distance) | [§30 `Vector2`](#30-vector2) / [§31 `Vector3`](#31-vector3) |
 | FIFO queue, sliding window, front+back stack | [§32 `Deque`](#32-deque) — `Deque.new()` — `push_back`/`pop_front` |
@@ -7742,7 +7742,7 @@ No device is not an error. On a machine without one (a server, CI), or in any
 run with `CULEBRA_AUDIO` set to `off` or `0` (as every `just` recipe sets it),
 `Audio.available()` is `false`, nothing plays, and every call answers as this
 section says: handles are made, controls do nothing, `playing()` is `false`,
-and a `Stream` still counts what it is given. The first call that wanted a
+and a `Pcm` still counts what it is given. The first call that wanted a
 missing device prints one warning.
 
 | Function | Effect |
@@ -7842,28 +7842,29 @@ bgm.volume(0.6)
 bgm.play()
 ```
 
-### Stream
+### Pcm
 
 `tone`, `Sound` and `Music` all play something already shaped as a note, a
-sample or a file. `Audio.Stream` is the fourth kind: a stream the script
-synthesises a block at a time — an emulator's own APU mixer, a chiptune
-resampled from its native rate, any signal a program builds itself.
-`Audio.Stream.new(rate, channels, buffer)` opens a stream of `rate` Hz, 1 or 2
-channels, fed `buffer` frames at a time (1024 is a reasonable default; below
-~512 is not supported).
+sample or a file. `Audio.Pcm` is the fourth kind: PCM (pulse-code modulation)
+— sound as a list of numbers, the height of the wave measured `rate` times a
+second — which the script synthesises a block at a time: an emulator's own APU
+mixer, a chiptune resampled from its native rate, any signal a program builds
+itself. `Audio.Pcm.new(rate, channels, buffer)` opens a stream of `rate` Hz, 1
+or 2 channels, fed `buffer` frames at a time (1024 is a reasonable default;
+below ~512 is not supported).
 
 | Method | Effect |
 | --- | --- |
-| `stream.ready() -> Bool` | `false` with no audio device: nothing plays, and the methods below still answer as they say |
-| `stream.needed() -> Long` | frames the stream can take now: `buffer` once a block has drained, `0` while both are still full, and always `0` with no device |
-| `stream.push(samples: Array) -> Long` | take the frames in `samples` (each value `-1.0..1.0`, clamped) into the pending block — mono is 1 value per frame, stereo is interleaved L,R pairs; answers how many frames it took, fewer than `samples` holds once the block is nearly full, so a caller that produced more than `needed()` keeps the rest for the next call; an element that is neither `Long` nor `Float` raises `TypeError` |
-| `stream.submit() -> Long` | hand the pending block to the stream and answer the frames handed: `0` when nothing was pending or the stream isn't ready for another block yet; with no device the block is emptied and the answer is `0` |
-| `stream.latency() -> Float` | seconds from a `submit` to the speaker: the two blocks ahead of it |
-| `stream.play()` / `stop()` / `pause()` / `resume()` / `playing() -> Bool` | transport |
-| `stream.volume(v)` / `stream.pitch(p)` / `stream.pan(p)` | as above |
+| `pcm.ready() -> Bool` | `false` with no audio device: nothing plays, and the methods below still answer as they say |
+| `pcm.needed() -> Long` | frames the stream can take now: `buffer` once a block has drained, `0` while both are still full, and always `0` with no device |
+| `pcm.push(samples: Array) -> Long` | take the frames in `samples` (each value `-1.0..1.0`, clamped) into the pending block — mono is 1 value per frame, stereo is interleaved L,R pairs; answers how many frames it took, fewer than `samples` holds once the block is nearly full, so a caller that produced more than `needed()` keeps the rest for the next call; an element that is neither `Long` nor `Float` raises `TypeError` |
+| `pcm.submit() -> Long` | hand the pending block to the stream and answer the frames handed: `0` when nothing was pending or the stream isn't ready for another block yet; with no device the block is emptied and the answer is `0` |
+| `pcm.latency() -> Float` | seconds from a `submit` to the speaker: the two blocks ahead of it |
+| `pcm.play()` / `stop()` / `pause()` / `resume()` / `playing() -> Bool` | transport |
+| `pcm.volume(v)` / `pcm.pitch(p)` / `pcm.pan(p)` | as above |
 
 ```culebra
-let pcm = Audio.Stream.new(44100, 1, 1024)
+let pcm = Audio.Pcm.new(44100, 1, 1024)
 pcm.play()
 mut phase = 0.0
 Canvas.run(160, 160, fn () {
@@ -7883,7 +7884,7 @@ Canvas.run(160, 160, fn () {
 
 At 60 fps a 44.1 kHz stream wants 735 frames a frame; producing and pushing a
 whole block at once (rather than one call per sample) is what keeps this
-affordable in a script's own per-frame budget. A stream is silent in the
+affordable in a script's own per-frame budget. A `Pcm` is silent in the
 browser, where it answers as a machine with no audio device does.
 
 ## 40. Design notes

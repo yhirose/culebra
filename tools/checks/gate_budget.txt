@@ -17,7 +17,7 @@
 # when its first parameter accepts the receiver). 284 since
 # test_drop_replace_order.cul (a replaced slot holds the new value before the
 # old one is released).
-# 285 since test_audio.cul (the Audio namespace: tone, Sound, Music, Stream).
+# 285 since test_audio.cul (the Audio namespace: tone, Sound, Music, Pcm).
 tests.cul 285
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
@@ -40,7 +40,7 @@ ctest.entries 34
 # since §10 shows the UFCS candidate its first parameter rules out, in en and ja.
 # 956 since §11's generators show a loop body's defer running per iteration.
 # 958 since §17 shows the value a drop finds in the slot it was replaced from.
-# 964 since stdlib's Audio chapter shows tone, Sound, Music and Stream, in en
+# 964 since stdlib's Audio chapter shows tone, Sound, Music and Pcm, in en
 # and ja (Scene's own audio example went with Scene's audio).
 docs.blocks 964
 

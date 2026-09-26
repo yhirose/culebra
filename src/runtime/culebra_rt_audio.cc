@@ -347,7 +347,7 @@ void unload_track(Track& t) {
   t.bytes.clear();
 }
 
-// --- Stream: PCM the script synthesises --------------------------------------
+// --- Pcm: the samples the script synthesises --------------------------------
 //
 // A block at a time: the script produces samples on the main thread and hands
 // them over (push / submit); the audio thread only copies a finished block. A
@@ -597,54 +597,54 @@ void music_pan(int64_t id, double p) {
   if (auto* t = find_track(id)) SetMusicPan(t->music, static_cast<float>(p));
 }
 
-void stream_new(int64_t id, int64_t rate, int64_t channels, int64_t buffer) {
+void pcm_new(int64_t id, int64_t rate, int64_t channels, int64_t buffer) {
   ensure_device();
   g_streams.try_emplace(id, rate, channels, buffer);
 }
-void stream_free(int64_t id) { g_streams.erase(id); }
-bool stream_ready(int64_t id) {
+void pcm_free(int64_t id) { g_streams.erase(id); }
+bool pcm_ready(int64_t id) {
   auto* s = find_stream(id);
   return s && s->ready();
 }
-int64_t stream_needed(int64_t id) {
+int64_t pcm_needed(int64_t id) {
   auto* s = find_stream(id);
   return s ? s->needed() : 0;
 }
-int64_t stream_push(int64_t id, const double* values, int64_t count) {
+int64_t pcm_push(int64_t id, const double* values, int64_t count) {
   auto* s = find_stream(id);
   return s ? s->push_block(values, count) : 0;
 }
-int64_t stream_submit(int64_t id) {
+int64_t pcm_submit(int64_t id) {
   auto* s = find_stream(id);
   return s ? s->submit() : 0;
 }
-double stream_latency(int64_t id) {
+double pcm_latency(int64_t id) {
   auto* s = find_stream(id);
   return s ? s->latency() : 0.0;
 }
-void stream_play(int64_t id) {
+void pcm_play(int64_t id) {
   if (auto* s = find_stream(id)) s->play();
 }
-void stream_stop(int64_t id) {
+void pcm_stop(int64_t id) {
   if (auto* s = find_stream(id)) s->stop();
 }
-void stream_pause(int64_t id) {
+void pcm_pause(int64_t id) {
   if (auto* s = find_stream(id)) s->pause();
 }
-void stream_resume(int64_t id) {
+void pcm_resume(int64_t id) {
   if (auto* s = find_stream(id)) s->resume();
 }
-bool stream_playing(int64_t id) {
+bool pcm_playing(int64_t id) {
   auto* s = find_stream(id);
   return s && s->playing();
 }
-void stream_volume(int64_t id, double v) {
+void pcm_volume(int64_t id, double v) {
   if (auto* s = find_stream(id)) s->volume(v);
 }
-void stream_pitch(int64_t id, double p) {
+void pcm_pitch(int64_t id, double p) {
   if (auto* s = find_stream(id)) s->pitch(p);
 }
-void stream_pan(int64_t id, double p) {
+void pcm_pan(int64_t id, double p) {
   if (auto* s = find_stream(id)) s->pan(p);
 }
 

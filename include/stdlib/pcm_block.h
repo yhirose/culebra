@@ -1,4 +1,4 @@
-// The block an Audio.Stream fills between submits: at most `buffer` frames of
+// The block an Audio.Pcm fills between submits: at most `buffer` frames of
 // interleaved floats, clamped to -1..1. Raylib-free, so a backend with no audio
 // built in counts a push exactly as a stream whose device is missing does.
 #pragma once

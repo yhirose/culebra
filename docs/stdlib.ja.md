@@ -120,7 +120,7 @@
 | 可変長のread-onlyデータをスレッド間で共有（コピーなし） | [§12 Shared](#shared--参照共有する-immutable-値) — `Shared.new(value)` |
 | Ctrl+C / SIGINTを綺麗に扱う | [§12 Signal](#signal--signalnotify--signalreset) — `Signal.notify(tx)` / `Signal.reset()` |
 | デスクトップGUI（ネイティブWebView + ローカルサーバ） | [§29 Desktop](#29-desktop--webview) — `Desktop.run({title, assets, routes})` |
-| 音を鳴らす（tone・効果音・音楽）、音を合成する | [§39 Audio](#39-audio) — `Audio.tone(440, 10)` / `Audio.Sound.new(bytes).play()` / `Audio.Music.new(bytes)` / `Audio.Stream.new(44100, 1, 1024)` |
+| 音を鳴らす（tone・効果音・音楽）、音を合成する | [§39 Audio](#39-audio) — `Audio.tone(440, 10)` / `Audio.Sound.new(bytes).play()` / `Audio.Music.new(bytes)` / `Audio.Pcm.new(44100, 1, 1024)` |
 | ヒープ情報・リークチェック | [§7 GC](#gc--ヒープ情報の取得) — `GC.stat()` → `{live_objects, rc_objects, heap_bytes}` |
 | 2D/3Dベクトル演算（dot、length、normalize、distance） | [§30 `Vector2`](#30-vector2) / [§31 `Vector3`](#31-vector3) |
 | FIFOキュー、スライディングウィンドウ、前後両端のスタック | [§32 `Deque`](#32-deque) — `Deque.new()` — `push_back`/`pop_front` |
@@ -7452,7 +7452,7 @@ isolateごとに別の索引を持たせる。
 デバイスが無いことはエラーではない。デバイスの無いマシン（サーバ、CI）や、
 `CULEBRA_AUDIO`を`off`か`0`にした実行（`just`の全レシピがそう設定する）では、
 `Audio.available()`は`false`で、何も鳴らないが、どの呼び出しもこの節のとおりに
-答える: ハンドルは作られ、操作は何もせず、`playing()`は`false`、`Stream`は
+答える: ハンドルは作られ、操作は何もせず、`playing()`は`false`、`Pcm`は
 渡されたものを数える。デバイスを求めた最初の呼び出しが、無いことを警告として
 1度だけ表示する。
 
@@ -7549,27 +7549,28 @@ bgm.volume(0.6)
 bgm.play()
 ```
 
-### Stream
+### Pcm
 
 `tone`・`Sound`・`Music`はどれも、音符・サンプル・ファイルとしてすでに形のある
-音を鳴らす。`Audio.Stream`は4つ目の種類で、スクリプトがブロック単位で自分で
-作る音の流れを鳴らす — エミュレータのAPUのミキサ、元のサンプルレートから変換
-したチップチューンなど、プログラム自身が組み立てる信号に使う。
-`Audio.Stream.new(rate, channels, buffer)`は`rate` Hz、1または2チャンネル、
+音を鳴らす。`Audio.Pcm`は4つ目の種類で、PCM（パルス符号変調）— 波の高さを1秒に
+`rate`回測って並べた数の列としての音 — をスクリプトがブロック単位で自分で作って
+鳴らす。エミュレータのAPUのミキサ、元のサンプルレートから変換したチップチューン
+など、プログラム自身が組み立てる信号に使う。
+`Audio.Pcm.new(rate, channels, buffer)`は`rate` Hz、1または2チャンネル、
 `buffer`フレームずつ供給するストリームを開く（1024が目安、約512未満は非対応）。
 
 | メソッド | 効果 |
 | --- | --- |
-| `stream.ready() -> Bool` | 音声デバイスが無ければ`false`: 何も鳴らないが、以下のメソッドは書かれたとおりに答える |
-| `stream.needed() -> Long` | いま受け取れるフレーム数: ブロックが1つ空けば`buffer`、2つとも埋まっている間は`0`。デバイスが無ければ常に`0` |
-| `stream.push(samples: Array) -> Long` | `samples`のフレームを保留中のブロックに入れる（各値は`-1.0..1.0`、範囲外はclamp）。モノラルは1フレーム1値、ステレオはL,Rの組を交互に並べる。受け取ったフレーム数を返す — ブロックがほぼ満杯なら`samples`にあるより少なくなるので、`needed()`より多く作った呼び出し側は残りを捨てずに次の呼び出しへ持ち越す。`Long`でも`Float`でもない要素は`TypeError` |
-| `stream.submit() -> Long` | 保留中のブロックをストリームに渡し、渡したフレーム数を返す。保留が無いか、ストリームがまだ次のブロックを受け取れないときは`0`。デバイスが無ければブロックを空にして`0` |
-| `stream.latency() -> Float` | `submit`からスピーカーまでの秒数: その前にある2ブロック分 |
-| `stream.play()` / `stop()` / `pause()` / `resume()` / `playing() -> Bool` | 再生の操作と状態 |
-| `stream.volume(v)` / `stream.pitch(p)` / `stream.pan(p)` | 上記の単位 |
+| `pcm.ready() -> Bool` | 音声デバイスが無ければ`false`: 何も鳴らないが、以下のメソッドは書かれたとおりに答える |
+| `pcm.needed() -> Long` | いま受け取れるフレーム数: ブロックが1つ空けば`buffer`、2つとも埋まっている間は`0`。デバイスが無ければ常に`0` |
+| `pcm.push(samples: Array) -> Long` | `samples`のフレームを保留中のブロックに入れる（各値は`-1.0..1.0`、範囲外はclamp）。モノラルは1フレーム1値、ステレオはL,Rの組を交互に並べる。受け取ったフレーム数を返す — ブロックがほぼ満杯なら`samples`にあるより少なくなるので、`needed()`より多く作った呼び出し側は残りを捨てずに次の呼び出しへ持ち越す。`Long`でも`Float`でもない要素は`TypeError` |
+| `pcm.submit() -> Long` | 保留中のブロックをストリームに渡し、渡したフレーム数を返す。保留が無いか、ストリームがまだ次のブロックを受け取れないときは`0`。デバイスが無ければブロックを空にして`0` |
+| `pcm.latency() -> Float` | `submit`からスピーカーまでの秒数: その前にある2ブロック分 |
+| `pcm.play()` / `stop()` / `pause()` / `resume()` / `playing() -> Bool` | 再生の操作と状態 |
+| `pcm.volume(v)` / `pcm.pitch(p)` / `pcm.pan(p)` | 上記の単位 |
 
 ```culebra
-let pcm = Audio.Stream.new(44100, 1, 1024)
+let pcm = Audio.Pcm.new(44100, 1, 1024)
 pcm.play()
 mut phase = 0.0
 Canvas.run(160, 160, fn () {
@@ -7589,7 +7590,7 @@ Canvas.run(160, 160, fn () {
 
 60fpsでは、44.1kHzのストリームは描画1フレームあたり735フレーム分のサンプルを
 必要とする。サンプルごとに呼ぶのでなく、ブロック全体をまとめて作って渡すことが、
-スクリプトの1フレームの予算に収めるための要点になる。ストリームはブラウザでは
+スクリプトの1フレームの予算に収めるための要点になる。`Pcm`はブラウザでは
 鳴らず、音声デバイスの無いマシンと同じように答える。
 
 ## 40. 設計上の注記

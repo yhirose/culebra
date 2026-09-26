@@ -1362,40 +1362,40 @@ inline constexpr CanonParam kCanonParams_Audio_native[] = {
   // 35: _Audio.music_pan
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
   {"p", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
-  // 37: _Audio.stream_new
+  // 37: _Audio.pcm_new
   {"rate", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
   {"channels", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
   {"buffer", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  // 40: _Audio.stream_free
+  // 40: _Audio.pcm_free
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  // 41: _Audio.stream_ready
+  // 41: _Audio.pcm_ready
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  // 42: _Audio.stream_needed
+  // 42: _Audio.pcm_needed
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  // 43: _Audio.stream_push
+  // 43: _Audio.pcm_push
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
   {"samples", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
-  // 45: _Audio.stream_submit
+  // 45: _Audio.pcm_submit
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  // 46: _Audio.stream_latency
+  // 46: _Audio.pcm_latency
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  // 47: _Audio.stream_play
+  // 47: _Audio.pcm_play
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  // 48: _Audio.stream_stop
+  // 48: _Audio.pcm_stop
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  // 49: _Audio.stream_pause
+  // 49: _Audio.pcm_pause
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  // 50: _Audio.stream_resume
+  // 50: _Audio.pcm_resume
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  // 51: _Audio.stream_playing
+  // 51: _Audio.pcm_playing
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  // 52: _Audio.stream_volume
+  // 52: _Audio.pcm_volume
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
   {"v", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
-  // 54: _Audio.stream_pitch
+  // 54: _Audio.pcm_pitch
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
   {"p", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
-  // 56: _Audio.stream_pan
+  // 56: _Audio.pcm_pan
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
   {"p", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
 };
@@ -1422,21 +1422,21 @@ inline constexpr CanonSig kCanonSigs_Audio_native[] = {
   {"_Audio", "", "music_volume", kCanonParams_Audio_native + 31, 2, "", 2, 2, false, -1, -1, -1},
   {"_Audio", "", "music_pitch", kCanonParams_Audio_native + 33, 2, "", 2, 2, false, -1, -1, -1},
   {"_Audio", "", "music_pan", kCanonParams_Audio_native + 35, 2, "", 2, 2, false, -1, -1, -1},
-  {"_Audio", "", "stream_new", kCanonParams_Audio_native + 37, 3, "Long", 3, 3, false, -1, -1, -1},
-  {"_Audio", "", "stream_free", kCanonParams_Audio_native + 40, 1, "", 1, 1, false, -1, -1, -1},
-  {"_Audio", "", "stream_ready", kCanonParams_Audio_native + 41, 1, "Bool", 1, 1, false, -1, -1, -1},
-  {"_Audio", "", "stream_needed", kCanonParams_Audio_native + 42, 1, "Long", 1, 1, false, -1, -1, -1},
-  {"_Audio", "", "stream_push", kCanonParams_Audio_native + 43, 2, "Long", 2, 2, false, -1, -1, -1},
-  {"_Audio", "", "stream_submit", kCanonParams_Audio_native + 45, 1, "Long", 1, 1, false, -1, -1, -1},
-  {"_Audio", "", "stream_latency", kCanonParams_Audio_native + 46, 1, "Float", 1, 1, false, -1, -1, -1},
-  {"_Audio", "", "stream_play", kCanonParams_Audio_native + 47, 1, "", 1, 1, false, -1, -1, -1},
-  {"_Audio", "", "stream_stop", kCanonParams_Audio_native + 48, 1, "", 1, 1, false, -1, -1, -1},
-  {"_Audio", "", "stream_pause", kCanonParams_Audio_native + 49, 1, "", 1, 1, false, -1, -1, -1},
-  {"_Audio", "", "stream_resume", kCanonParams_Audio_native + 50, 1, "", 1, 1, false, -1, -1, -1},
-  {"_Audio", "", "stream_playing", kCanonParams_Audio_native + 51, 1, "Bool", 1, 1, false, -1, -1, -1},
-  {"_Audio", "", "stream_volume", kCanonParams_Audio_native + 52, 2, "", 2, 2, false, -1, -1, -1},
-  {"_Audio", "", "stream_pitch", kCanonParams_Audio_native + 54, 2, "", 2, 2, false, -1, -1, -1},
-  {"_Audio", "", "stream_pan", kCanonParams_Audio_native + 56, 2, "", 2, 2, false, -1, -1, -1},
+  {"_Audio", "", "pcm_new", kCanonParams_Audio_native + 37, 3, "Long", 3, 3, false, -1, -1, -1},
+  {"_Audio", "", "pcm_free", kCanonParams_Audio_native + 40, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "pcm_ready", kCanonParams_Audio_native + 41, 1, "Bool", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "pcm_needed", kCanonParams_Audio_native + 42, 1, "Long", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "pcm_push", kCanonParams_Audio_native + 43, 2, "Long", 2, 2, false, -1, -1, -1},
+  {"_Audio", "", "pcm_submit", kCanonParams_Audio_native + 45, 1, "Long", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "pcm_latency", kCanonParams_Audio_native + 46, 1, "Float", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "pcm_play", kCanonParams_Audio_native + 47, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "pcm_stop", kCanonParams_Audio_native + 48, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "pcm_pause", kCanonParams_Audio_native + 49, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "pcm_resume", kCanonParams_Audio_native + 50, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "pcm_playing", kCanonParams_Audio_native + 51, 1, "Bool", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "pcm_volume", kCanonParams_Audio_native + 52, 2, "", 2, 2, false, -1, -1, -1},
+  {"_Audio", "", "pcm_pitch", kCanonParams_Audio_native + 54, 2, "", 2, 2, false, -1, -1, -1},
+  {"_Audio", "", "pcm_pan", kCanonParams_Audio_native + 56, 2, "", 2, 2, false, -1, -1, -1},
 };
 
 inline constexpr CanonParam kCanonParams_Bare[] = {

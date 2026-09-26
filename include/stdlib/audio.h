@@ -1,7 +1,7 @@
 #pragma once
 
 // The Audio namespace's backend choke: the one owner of the sound device and
-// of everything that plays through it (tone, Sound, Music, Stream). The
+// of everything that plays through it (tone, Sound, Music, Pcm). The
 // script-facing surface is src/preambles/audio.cul and the natives are in
 // stdlib/bindings.h; this header picks the backend.
 //
@@ -11,11 +11,11 @@
 //   base AOT archive of a native    weak silent bodies, overridden by the Audio
 //   build (CULEBRA_RT_AUDIO_WEAK)   feature archive when a program names Audio
 //   browser (__EMSCRIPTEN__)        WebAudio on the page (playground/app.js);
-//                                   Stream is silent there
+//                                   Pcm is silent there
 //   anything else                   silent, as a machine with no device is
 //
 // Silent means what a native build answers on a machine with no audio device:
-// nothing plays, and a Stream's block counts pushes all the same.
+// nothing plays, and a Pcm's block counts pushes all the same.
 
 #include <stdlib/pcm_block.h>
 
@@ -65,10 +65,10 @@ inline const char* sound_format(const uint8_t* p, size_t n) {
 inline constexpr auto kSoundFormatError =
     "not a valid WAV, MP3 or Ogg audio stream";
 
-inline constexpr auto kStreamSamplesError =
+inline constexpr auto kPcmSamplesError =
     "type error: parameter 'samples' expects an Array of Long|Float";
 
-// Sound, Music and Stream handles: one counter for every backend, so a
+// Sound, Music and Pcm handles: one counter for every backend, so a
 // handle's lifecycle reads the same whether or not a host can play it.
 inline int64_t alloc_id() {
   static int64_t n = 0;
@@ -197,21 +197,21 @@ void music_seek(int64_t id, double seconds);
 void music_volume(int64_t id, double v);
 void music_pitch(int64_t id, double p);
 void music_pan(int64_t id, double p);
-void stream_new(int64_t id, int64_t rate, int64_t channels, int64_t buffer);
-void stream_free(int64_t id);
-bool stream_ready(int64_t id);
-int64_t stream_needed(int64_t id);
-int64_t stream_push(int64_t id, const double* values, int64_t count);
-int64_t stream_submit(int64_t id);
-double stream_latency(int64_t id);
-void stream_play(int64_t id);
-void stream_stop(int64_t id);
-void stream_pause(int64_t id);
-void stream_resume(int64_t id);
-bool stream_playing(int64_t id);
-void stream_volume(int64_t id, double v);
-void stream_pitch(int64_t id, double p);
-void stream_pan(int64_t id, double p);
+void pcm_new(int64_t id, int64_t rate, int64_t channels, int64_t buffer);
+void pcm_free(int64_t id);
+bool pcm_ready(int64_t id);
+int64_t pcm_needed(int64_t id);
+int64_t pcm_push(int64_t id, const double* values, int64_t count);
+int64_t pcm_submit(int64_t id);
+double pcm_latency(int64_t id);
+void pcm_play(int64_t id);
+void pcm_stop(int64_t id);
+void pcm_pause(int64_t id);
+void pcm_resume(int64_t id);
+bool pcm_playing(int64_t id);
+void pcm_volume(int64_t id, double v);
+void pcm_pitch(int64_t id, double p);
+void pcm_pan(int64_t id, double p);
 
 #endif
 
@@ -251,7 +251,7 @@ CULEBRA_RT_AUDIO_LINKAGE void music_pan(int64_t, double) {}
 #endif
 
 #if !defined(CULEBRA_AUDIO_DEVICE)
-// A Stream with nowhere to play: its block counts pushes and a submit empties
+// A Pcm with nowhere to play: its block counts pushes and a submit empties
 // it, as a native stream with no device does.
 inline std::unordered_map<int64_t, rt::PcmBlock>& silent_streams() {
   static std::unordered_map<int64_t, rt::PcmBlock> streams;
@@ -261,36 +261,36 @@ inline rt::PcmBlock* silent_stream(int64_t id) {
   auto it = silent_streams().find(id);
   return it == silent_streams().end() ? nullptr : &it->second;
 }
-CULEBRA_RT_AUDIO_LINKAGE void stream_new(int64_t id, int64_t rate,
+CULEBRA_RT_AUDIO_LINKAGE void pcm_new(int64_t id, int64_t rate,
                                          int64_t channels, int64_t buffer) {
   silent_streams().try_emplace(id, rate, channels, buffer);
 }
-CULEBRA_RT_AUDIO_LINKAGE void stream_free(int64_t id) {
+CULEBRA_RT_AUDIO_LINKAGE void pcm_free(int64_t id) {
   silent_streams().erase(id);
 }
-CULEBRA_RT_AUDIO_LINKAGE bool stream_ready(int64_t) { return false; }
-CULEBRA_RT_AUDIO_LINKAGE int64_t stream_needed(int64_t) { return 0; }
-CULEBRA_RT_AUDIO_LINKAGE int64_t stream_push(int64_t id, const double* values,
+CULEBRA_RT_AUDIO_LINKAGE bool pcm_ready(int64_t) { return false; }
+CULEBRA_RT_AUDIO_LINKAGE int64_t pcm_needed(int64_t) { return 0; }
+CULEBRA_RT_AUDIO_LINKAGE int64_t pcm_push(int64_t id, const double* values,
                                              int64_t count) {
   auto* b = silent_stream(id);
   return b ? b->push_block(values, count) : 0;
 }
-CULEBRA_RT_AUDIO_LINKAGE int64_t stream_submit(int64_t id) {
+CULEBRA_RT_AUDIO_LINKAGE int64_t pcm_submit(int64_t id) {
   if (auto* b = silent_stream(id)) b->discard();
   return 0;
 }
-CULEBRA_RT_AUDIO_LINKAGE double stream_latency(int64_t id) {
+CULEBRA_RT_AUDIO_LINKAGE double pcm_latency(int64_t id) {
   auto* b = silent_stream(id);
   return b ? b->latency() : 0.0;
 }
-CULEBRA_RT_AUDIO_LINKAGE void stream_play(int64_t) {}
-CULEBRA_RT_AUDIO_LINKAGE void stream_stop(int64_t) {}
-CULEBRA_RT_AUDIO_LINKAGE void stream_pause(int64_t) {}
-CULEBRA_RT_AUDIO_LINKAGE void stream_resume(int64_t) {}
-CULEBRA_RT_AUDIO_LINKAGE bool stream_playing(int64_t) { return false; }
-CULEBRA_RT_AUDIO_LINKAGE void stream_volume(int64_t, double) {}
-CULEBRA_RT_AUDIO_LINKAGE void stream_pitch(int64_t, double) {}
-CULEBRA_RT_AUDIO_LINKAGE void stream_pan(int64_t, double) {}
+CULEBRA_RT_AUDIO_LINKAGE void pcm_play(int64_t) {}
+CULEBRA_RT_AUDIO_LINKAGE void pcm_stop(int64_t) {}
+CULEBRA_RT_AUDIO_LINKAGE void pcm_pause(int64_t) {}
+CULEBRA_RT_AUDIO_LINKAGE void pcm_resume(int64_t) {}
+CULEBRA_RT_AUDIO_LINKAGE bool pcm_playing(int64_t) { return false; }
+CULEBRA_RT_AUDIO_LINKAGE void pcm_volume(int64_t, double) {}
+CULEBRA_RT_AUDIO_LINKAGE void pcm_pitch(int64_t, double) {}
+CULEBRA_RT_AUDIO_LINKAGE void pcm_pan(int64_t, double) {}
 #endif
 
 #undef CULEBRA_RT_AUDIO_LINKAGE

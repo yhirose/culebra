@@ -1032,16 +1032,16 @@ music.playing() -> Bool
 music.volume(v)
 music.pitch(p)
 music.pan(p)
-stream.ready() -> Bool
-stream.needed() -> Long
-stream.push(samples: Array) -> Long
-stream.submit() -> Long
-stream.latency() -> Float
-stream.play()
+pcm.ready() -> Bool
+pcm.needed() -> Long
+pcm.push(samples: Array) -> Long
+pcm.submit() -> Long
+pcm.latency() -> Float
+pcm.play()
 stop()
 pause()
 resume()
 playing() -> Bool
-stream.volume(v)
-stream.pitch(p)
-stream.pan(p)
+pcm.volume(v)
+pcm.pitch(p)
+pcm.pan(p)

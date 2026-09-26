@@ -9,7 +9,7 @@
 A standalone stdlib namespace `Audio` that owns the audio device and
 everything that plays through it: `Audio.tone` (the WASM-4 style APU),
 `Audio.Sound` (a one-shot sample), `Audio.Music` (a streamed file) and
-`Audio.Stream` (PCM the script synthesises). Canvas and Scene stop
+`Audio.Pcm` (PCM the script synthesises). Canvas and Scene stop
 carrying audio of their own; a program that makes sound names `Audio`,
 whichever of the two it draws with, or neither.
 
@@ -114,7 +114,7 @@ m.play()  m.stop()  m.pause()  m.resume()  m.playing()
 m.seek(seconds)  m.volume(v)  m.pitch(p)  m.pan(p)
 
 # PCM the script synthesises, a block at a time.
-let st = Audio.Stream.new(rate, channels, buffer)
+let st = Audio.Pcm.new(rate, channels, buffer)
 st.ready()  st.needed()  st.push(samples)  st.submit()  st.latency()
 st.play()  st.stop()  st.pause()  st.resume()  st.playing()
 st.volume(v)  st.pitch(p)  st.pan(p)
@@ -159,7 +159,7 @@ music?.volume(MUSIC_VOL * gain)            # the fade-out, still every frame
 ep_voices[key] = Audio.Sound.new(pcm_wav(ep_samples(pitch, bark)))
 
 # the NES frontend
-let pcm = Audio.Stream.new(apu_mod.SAMPLE_RATE, 1, PCM_BUFFER)
+let pcm = Audio.Pcm.new(apu_mod.SAMPLE_RATE, 1, PCM_BUFFER)
 pcm.play()
 fn pump_audio() {
   pcm_pending.extend(sys.take_audio())
@@ -181,7 +181,7 @@ forward to it. This fixes the device hazards without an API change, but
 keeps two surfaces for one thing, keeps sound tied to a window under AOT,
 and leaves a windowless program no way to play anything.
 
-`Audio.Stream.push` takes an Array only. Scene's per-sample `push(s)` /
+`Audio.Pcm.push` takes an Array only. Scene's per-sample `push(s)` /
 `push2(l, r)` go: a stream is fed a block per frame (735 frames at 60 fps
 and 44.1 kHz), and one native call per sample is the cost the block form
 exists to avoid. Godot's generator keeps both (`push_frame`,
@@ -202,7 +202,7 @@ answers how many frames it took and never drops.
   as Canvas does today. If raylib's `raudio.c` builds standalone (see
   #8), Canvas and Scene stop carrying miniaudio, and an audio-only
   program stops carrying SDL and the window code.
-- `tone`, `Sound`, `Stream` and the per-frame calls cost what they cost
+- `tone`, `Sound`, `Pcm` and the per-frame calls cost what they cost
   now: the same natives behind a different namespace object.
 
 ## 6. Safety
@@ -216,11 +216,11 @@ answers how many frames it took and never drops.
   `UpdateMusicStream` go through one `Audio`-owned mutex; raylib's own
   lock covers only its mixer. The feeder stops and joins before
   teardown.
-- **No script code runs on an audio or feeder thread.** Streams stay
+- **No script code runs on an audio or feeder thread.** `Pcm` stays
   push-based, as today.
 - **No device is not an error.** With no device (CI, a server, a browser
   tab before its first click), `available()` is false, nothing plays,
-  and every call answers as it does today on such a machine. `Stream`
+  and every call answers as it does today on such a machine. `Pcm`
   keeps its no-device semantics from `PcmBlock`: `push` counts the same
   frames on every backend, so a program that holds back what `push` did
   not take behaves the same everywhere.
@@ -257,7 +257,7 @@ Large, but mostly moving code that exists.
   archive, the silent inline backend for builds without raylib, and the
   browser backend (the `EM_JS` WebAudio calls moved out of `canvas.h`).
 - `src/runtime/culebra_rt_audio.cc`: the device, `tone`'s synth and
-  mixer thread, the Sound / Music / Stream registries and the feeder,
+  mixer thread, the Sound / Music / Pcm registries and the feeder,
   moved from `culebra_rt_canvas.cc` and `culebra_rt_scene.cc`.
 - `include/stdlib/pcm_block.h` stays, raylib-free, for the silent backends;
   `PcmStream` moves into `culebra_rt_audio.cc`, its only user once Scene's
@@ -299,12 +299,12 @@ not; a program that used them moves to `Audio` in one edit per call.
 
 The executor, `--jit` and AOT call the same natives, so behaviour,
 errors and their timing match: the format sniff raises `ValueError`
-before any backend runs, `Stream.push` raises `TypeError` for a
+before any backend runs, `Pcm.push` raises `TypeError` for a
 non-number before taking a sample, and a missing device answers the
 same everywhere. AOT differs only in what it links, which the `Audio`
 axis settles by name as it does for Canvas. The browser is a host
 rather than a backend: `tone`, `Sound` and `Music` keep their WebAudio
-implementation, and `Stream` stays silent there until it has an
+implementation, and `Pcm` stays silent there until it has an
 AudioWorklet relay.
 
 ## Notes
