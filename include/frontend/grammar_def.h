@@ -300,7 +300,7 @@ const auto grammar_ = R"(
   # there is only one target (so `for x in xs` binds a single name), and
   # keeps it as a FOR_BINDING node for two-or-more. The pattern matcher in
   # both backends treats FOR_BINDING identically to TUPLE_PATTERN.
-  FOR                      <-  (LOOP_LABEL _ ':' _)? for _ FOR_BINDING _ in _ EXPRESSION _ BLOCK (_ NOBREAK_CLAUSE)?   { no_ast_opt }
+  FOR                      <-  (LOOP_LABEL _ ':' _)? for _ FOR_BINDING _ in _ EXPRESSION _ BLOCK (_ NOBREAK_CLAUSE)?
   FOR_BINDING              <-  FOR_PAT (_ ',' _ FOR_PAT)*
   FOR_PAT                  <-  TUPLE_PATTERN / ARRAY_PATTERN / OBJECT_PATTERN / IDENTIFIER
   # An optional init clause (`if mut x = f(); x > 0 { … }`, C++17-style) scopes
