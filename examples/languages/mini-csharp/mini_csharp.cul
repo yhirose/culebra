@@ -747,11 +747,10 @@ fn scan_stmt(f, node) {
       for c in nodes {
         match c.name {
           'catchpart' => {
+            let (_, id, body) = catch_parts(c)
             rs.push_scope()
-            if c.nodes.size() > 2 {
-              scan_declare(f, c.nodes[1])
-            }
-            scan_stmt(f, c.nodes[c.nodes.size() - 1])
+            scan_declare(f, id) if id != nil
+            scan_stmt(f, body)
             rs.pop_scope()
           },
           'finallypart' => {
@@ -1116,8 +1115,9 @@ mut class_var = {}
 mut deferred_fn = {}
 mut deferred_body = []
 # What a bare `throw;` rethrows: the slot the innermost enclosing catch holds
-# its exception in, or -1 inside a finally nested in that catch.
+# its exception in, or FINALLY inside a finally nested in that catch.
 mut handling = []
+let FINALLY = {finally: true}
 
 # --- calls and member access ------------------------------------------------
 #
@@ -1492,7 +1492,15 @@ fn emit_stmt(f, node) {
   }
 }
 
-# `x = v`, and the compound forms, which read the target first.
+# `catch (T e)`, `catch (T)` or `catch`; what a clause leaves out is nil
+fn catch_parts(c) {
+  match c.nodes {
+    [ty, id, body] => (ty, id, body),
+    [ty, body] => (ty, nil, body),
+    [body] => (nil, nil, body),
+  }
+}
+
 # A `try` is the IR's, with the catch clauses folded into one handler that
 # asks which of them the thrown value is for. `finally` is a Defer around
 # the whole thing, registered before the try, so it runs on the way out
@@ -1517,18 +1525,18 @@ fn emit_try(f, nodes, at) {
     mut i = catches.size()
     while i > 0 {
       i -= 1
-      let c = catches[i]
-      handling.push(caught)
-      let clause = emit_stmt(f, c.nodes[c.nodes.size() - 1])
+      let (ty, id, body) = catch_parts(catches[i])
+      handling.push({catch: caught})
+      let clause = emit_stmt(f, body)
       handling.pop()
       let bound = cond {
-        c.nodes.size() >
-          2 => m.block(
+        id == nil => clause,
+        _ => m.block(
           [
             rs.write(
               m,
               f,
-              decl_v[pkey(c.nodes[1])],
+              decl_v[pkey(id)],
               m.var_ref('local', caught, at),
               at,
             ),
@@ -1536,18 +1544,14 @@ fn emit_try(f, nodes, at) {
           ],
           at,
         ),
-        _ => clause,
       }
       handler = cond {
-        c.nodes.size() <= 1 => bound,
+        ty == nil => bound,
         _ => m.make_if_else(
           call_rt(
             f,
             '$isa',
-            [
-              m.var_ref('local', caught, at),
-              S(type_token(c.nodes[0].nodes[0])),
-            ],
+            [m.var_ref('local', caught, at), S(type_token(ty.nodes[0]))],
             at,
           ),
           bound,
@@ -1562,7 +1566,7 @@ fn emit_try(f, nodes, at) {
     fin == nil => out,
     _ => {
       let g = deferred_fn[pkey(fin)]
-      handling.push(-1)
+      handling.push(FINALLY)
       deferred_body.push((g, emit_stmt(g, fin.nodes[0])))
       handling.pop()
       let first = nslots[f]
@@ -1580,14 +1584,13 @@ fn emit_try(f, nodes, at) {
 # very value it caught; C# rejects it anywhere else, and so does this.
 fn rethrown(node) {
   # a finally that no catch encloses is simply outside one
-  if handling.all(|s| s == -1) {
+  if !handling.any(|h| h.has('catch')) {
     fail(node, 'throw; outside a catch clause')
   }
-  let slot = handling[handling.size() - 1]
-  if slot == -1 {
-    fail(node, 'throw; in a finally inside a catch clause')
+  match handling[handling.size() - 1] {
+    {catch: slot} => slot,
+    _ => fail(node, 'throw; in a finally inside a catch clause'),
   }
-  slot
 }
 
 # `x = v`, `o.f = v` and the compound forms. A target is one of three
