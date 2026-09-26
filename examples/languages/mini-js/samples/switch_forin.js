@@ -65,3 +65,17 @@ let seq = (1, 2, 3);
 show('comma', seq);
 for (let i = 0, j = 10; i < j; i += 3, j -= 3) seq = seq + i + j;
 show('comma in for', seq);
+let s1, s2;
+s1 = 'a', s2 = 'b';
+s1, s2;
+show('comma statement', [s1, s2]);
+const commaLog = [];
+function note(v) { commaLog.push(v); return v; }
+function commaReturn() { return note('r'), 'returned'; }
+show('comma return', commaReturn());
+show('comma throw', thrown(() => { throw note('t'), new TypeError('x'); }));
+if (note('i'), true) note('then');
+while (note('w'), false) note('never');
+switch (note('s'), 2) { case (note('c'), 1), 2: note('matched'); }
+show('comma index and template', [[10, 20][note('x'), 1], `${note('y'), 'tpl'}`]);
+show('comma in conditions', commaLog);

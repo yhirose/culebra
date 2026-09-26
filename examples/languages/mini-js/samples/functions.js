@@ -23,6 +23,8 @@ show('this', [obj.regular(), obj.arrow(), obj.nested()]);
 
 const detached = obj.regular;
 show('detached this', thrown(() => detached()));
+show('parenthesized method keeps this', [(obj.regular)(), ((obj['regular']))(), (0, obj.regular)() === 'obj']);
+show('typeof parenthesized unbound', [typeof (notDeclaredAnywhere), typeof ((obj).name)]);
 
 function greet(greeting, punct) { return greeting + ', ' + this.who + punct; }
 show('call', greet.call({ who: 'call' }, 'hi', '!'));

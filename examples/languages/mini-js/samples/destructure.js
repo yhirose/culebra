@@ -15,6 +15,9 @@ show('swap', [u, v]);
 let obj = {};
 ({ k1: obj.k, k2: v } = { k1: 'ok', k2: 'v2' });
 show('assign object', [obj.k, v]);
+[u, ...obj.rest] = [1, 2, 3];
+({ k1: u, ...obj.others } = { k1: 4, k2: 5, k3: 6 });
+show('assign rest to member', [u, obj.rest, obj.others]);
 function f({ name, age = 0 }, [head, ...tail] = [], last = 'L') { return [name, age, head, tail, last]; }
 show('params', [f({ name: 'N' }), f({ name: 'N', age: 3 }, [1, 2, 3], 'x')]);
 const g = ({ w = 'dw' } = {}) => w;

@@ -3,6 +3,7 @@ const deep = { a: { b: { c: 1, f() { return this.c; } } }, arr: [1, 2] };
 show('optional', [deep?.a?.b?.c, deep.x?.y?.z, deep?.arr?.[1], deep.nope?.[0], deep.a.b.f?.(), deep.missing?.()]);
 show('optional on null', [null?.x, undefined?.[0], (null)?.()]);
 show('optional short-circuits', (function () { let calls = 0; const r = undefined?.[calls++]; return [r, calls]; })());
+show('parenthesized optional call keeps this', [(deep?.a.b.f)(), (deep.a?.b?.['f'])(), (deep.nope?.f)?.(), thrown(() => (deep.nope?.f)())]);
 
 const temp = {
   celsius: 25,

@@ -62,25 +62,25 @@ let grammar = `
   label_s    <- ident ':' (label_s / while_s / do_s / for_of / for_in / for_s / switch_s)
   var_decl   <- decl_kw declr (',' declr)* ';'?
   decl_kw    <- < 'var' / 'let' / 'const' >
-  declr      <- binding ('=' !'=' expr)?                         { no_ast_opt }
+  declr      <- binding ('=' !'=' aexpr)?                        { no_ast_opt }
   fn_decl    <- 'function' ident '(' params ')' block
   gen_decl   <- 'function' '*' ident '(' params ')' block
   async_decl <- 'async' 'function' ident '(' params ')' block
   params     <- (param (',' param)*)? ','?                        { no_ast_opt }
   param      <- rest_p / dflt_p / binding
   rest_p     <- '...' ident                                      { no_ast_opt }
-  dflt_p     <- binding '=' !'=' expr
+  dflt_p     <- binding '=' !'=' aexpr
   if_s       <- 'if' '(' expr ')' stmt else_c?
   else_c     <- 'else' stmt                                      { no_ast_opt }
   while_s    <- 'while' '(' expr ')' stmt
   do_s       <- 'do' stmt 'while' '(' expr ')' ';'?
-  for_of     <- 'for' '(' decl_kw binding 'of' expr ')' stmt
+  for_of     <- 'for' '(' decl_kw binding 'of' aexpr ')' stmt
   for_in     <- 'for' '(' decl_kw binding 'in' expr ')' stmt
   for_s      <- 'for' '(' for_init ';' for_cond ';' for_step ')' stmt
-  for_init   <- (var_decl_ns / seq_e)?                           { no_ast_opt }
+  for_init   <- (var_decl_ns / expr)?                            { no_ast_opt }
   var_decl_ns <- decl_kw declr (',' declr)*
   for_cond   <- expr?                                            { no_ast_opt }
-  for_step   <- seq_e?                                           { no_ast_opt }
+  for_step   <- expr?                                            { no_ast_opt }
   return_s   <- 'return' ret_val ';'?                            { no_ast_opt }
   ret_val    <- expr?                                            { no_ast_opt }
   # The no-line-terminator-before-label restriction real JS has isn't
@@ -103,27 +103,30 @@ let grammar = `
   binding    <- arr_pat / obj_pat / ident
   arr_pat    <- '[' (pat_el (',' pat_el)*)? ','? ']'             { no_ast_opt }
   pat_el     <- rest_b / pat_dflt / pat_hole
-  pat_dflt   <- (arr_pat / obj_pat / postfix) ('=' !'=' expr)?
+  pat_dflt   <- (arr_pat / obj_pat / postfix) ('=' !'=' aexpr)?
   pat_hole   <- &','
-  rest_b     <- '...' binding                                    { no_ast_opt }
+  rest_b     <- '...' (arr_pat / obj_pat / postfix)              { no_ast_opt }
   obj_pat    <- '{' (opat_el (',' opat_el)*)? ','? '}'           { no_ast_opt }
   opat_el    <- rest_b / opat_kv / opat_short
   opat_kv    <- pkey ':' pat_dflt
-  opat_short <- ident ('=' !'=' expr)?                           { no_ast_opt }
-  seq_e      <- expr (',' expr)*
+  opat_short <- ident ('=' !'=' aexpr)?                          { no_ast_opt }
+  # expr is ECMAScript's Expression, the comma form; aexpr is its
+  # AssignmentExpression, which is all an argument, an element, an
+  # initializer, a computed key or an arrow body may be.
+  expr       <- aexpr (',' aexpr)*
 
-  expr       <- async_arrow / arrow / yield_from / yield_e / assign_e / ternary
+  aexpr      <- async_arrow / arrow / yield_from / yield_e / assign_e / ternary
   async_arrow <- 'async' arrow_p '=>' arrow_body
-  yield_from <- 'yield' '*' expr                                 { no_ast_opt }
+  yield_from <- 'yield' '*' aexpr                                { no_ast_opt }
   yield_e    <- 'yield' yield_val                                { no_ast_opt }
-  yield_val  <- expr?                                            { no_ast_opt }
+  yield_val  <- aexpr?                                           { no_ast_opt }
   arrow      <- arrow_p '=>' arrow_body
   arrow_p    <- '(' params ')' / arrow_one
   arrow_one  <- ident                                            { no_ast_opt }
-  arrow_body <- block / expr
-  assign_e   <- (arr_pat / obj_pat / postfix) assign_op expr
+  arrow_body <- block / aexpr
+  assign_e   <- (arr_pat / obj_pat / postfix) assign_op aexpr
   assign_op  <- < '=' !'=' / '+=' / '-=' / '*=' / '/=' / '%=' / '**=' / '??=' / '||=' / '&&=' >
-  ternary    <- nullish ('?' expr ':' expr)?
+  ternary    <- nullish ('?' aexpr ':' aexpr)?
   nullish    <- lor (nullish_op lor)*
   nullish_op <- < '??' >
   lor        <- land (lor_op land)*
@@ -163,8 +166,8 @@ let grammar = `
   new_args   <- ('(' args ')')?                                  { no_ast_opt }
   call_p     <- '(' args ')'                                     { no_ast_opt }
   args       <- (arg (',' arg)*)? ','?                           { no_ast_opt }
-  arg        <- spread / expr
-  spread     <- '...' expr                                       { no_ast_opt }
+  arg        <- spread / aexpr
+  spread     <- '...' aexpr                                      { no_ast_opt }
   index_p    <- '[' expr ']'                                     { no_ast_opt }
   member_p   <- '.' pname                                        { no_ast_opt }
   pname      <- < [a-zA-Z_$][a-zA-Z0-9_$]* >
@@ -187,10 +190,10 @@ let grammar = `
   getter_c   <- 'get' mkey '(' ')' block
   setter_c   <- 'set' mkey '(' ident ')' block
   method_c   <- mkey '(' params ')' block
-  field_c    <- mkey ('=' !'=' expr)? ';'?                       { no_ast_opt }
+  field_c    <- mkey ('=' !'=' aexpr)? ';'?                      { no_ast_opt }
   mkey       <- computed_k / pkey
   pkey       <- pname / string / number
-  computed_k <- '[' expr ']'                                     { no_ast_opt }
+  computed_k <- '[' aexpr ']'                                    { no_ast_opt }
   true_l     <- 'true'
   false_l    <- 'false'
   null_l     <- 'null'
@@ -206,13 +209,13 @@ let grammar = `
   amethod_p  <- 'async' mkey '(' params ')' block
   getter_p   <- 'get' mkey '(' ')' block
   setter_p   <- 'set' mkey '(' ident ')' block
-  kv_p       <- mkey ':' expr
+  kv_p       <- mkey ':' aexpr
   method_p   <- mkey '(' params ')' block
   short_p    <- ident                                            { no_ast_opt }
-  ospread    <- '...' expr                                       { no_ast_opt }
+  ospread    <- '...' aexpr                                      { no_ast_opt }
   fn_expr    <- 'function' fn_name '(' params ')' block
   fn_name    <- ident?                                           { no_ast_opt }
-  paren      <- '(' seq_e ')'                                    { no_ast_opt }
+  paren      <- '(' expr ')'                                     { no_ast_opt }
   ident      <- !keyword < [a-zA-Z_$][a-zA-Z0-9_$]* >
   keyword    <- ('if' / 'else' / 'while' / 'for' / 'function' / 'return' /
                  'let' / 'const' / 'var' / 'true' / 'false' / 'null' / 'this' /
@@ -2872,8 +2875,17 @@ fn pattern_dflts(pat, out) {
   out
 }
 
+# The identifiers a declaration's pattern binds; a member target (which the
+# grammar shares with assignment patterns) is an assignment's alone.
+fn binding_idents(pat) {
+  for t in pattern_targets(pat, []) {
+    fail(t, 'Illegal property in declaration context')
+  }
+  pattern_idents(pat, [])
+}
+
 fn declare_pattern(f, pat, kw) {
-  for id in pattern_idents(pat, []) {
+  for id in binding_idents(pat) {
     cond {
       kw == 'var' => declare_fn_var(f, id.token, id),
       _ => declare_var(f, id.token, id),
@@ -3133,7 +3145,7 @@ fn scan_decl(node, f) {
     let pat = d.nodes[0]
     # hoist_block declared the names when the block was entered; a for-init
     # or a var is declared here
-    for id in pattern_idents(pat, []) {
+    for id in binding_idents(pat) {
       cond {
         kw == 'var' => declare_fn_var(f, id.token, id),
         resolved.has(pkey(id)) => nil,
@@ -3443,7 +3455,7 @@ fn scan_expr(node, f) {
       scan_target(node.nodes[0], f)
       scan_expr(node.nodes[2], f)
     },
-    {name: 'seq_e'} => {
+    {name: 'expr'} => {
       for c in node.nodes {
         scan_expr(c, f)
       }
@@ -3537,6 +3549,17 @@ fn scan_expr(node, f) {
   nil
 }
 
+# Parens around a reference leave it a reference (the spec's
+# ParenthesizedExpression passes it through): what consumes one -- a call's
+# receiver, typeof, an assignment or delete target -- looks through them.
+fn unparen(node) {
+  mut n = node
+  while n.name == 'paren' {
+    n = n.nodes[0]
+  }
+  n
+}
+
 fn arg_val(a) {
   cond {
     a.name == 'spread' => a.nodes[0],
@@ -3550,11 +3573,11 @@ fn scan_args(args, f) {
   }
 }
 
-fn scan_target(t, f) {
+fn scan_target(t0, f) {
+  let t = unparen(t0)
   cond {
     t.name == 'ident' => note_use(t, f),
     t.name == 'postfix' => scan_expr(t, f),
-    t.name == 'paren' => scan_target(t.nodes[0], f),
     t.name == 'arr_pat' || t.name == 'obj_pat' => {
       for id in pattern_idents(t, []) {
         note_use(id, f)
@@ -3993,8 +4016,23 @@ fn emit_raw_call(m, f, callee, arg_nodes, at) {
 }
 
 fn emit_postfix(m, node, f) {
-  let head = node.nodes[0]
-  let steps = node.nodes.slice(1, node.nodes.size())
+  mut head = unparen(node.nodes[0])
+  mut steps = node.nodes.slice(1, node.nodes.size())
+  if head.name == 'postfix' {
+    cond {
+      # (o.m)() is o.m(): the chain continues the parenthesized one
+      !head.nodes.any(|s| s.name.starts_with('opt_')) => {
+        steps = head.nodes.slice(1, head.nodes.size()) + steps
+        head = head.nodes[0]
+      },
+      !in_prelude &&
+        is_call(steps[0]) &&
+        !is_call(head.nodes[head.nodes.size() - 1]) => {
+        return emit_paren_ref_call(m, f, head, steps, node)
+      },
+      _ => nil,
+    }
+  }
   # an intrinsic or raw op in the prelude is spelled as a call
   if in_prelude &&
       head.name == 'ident' &&
@@ -4165,6 +4203,65 @@ fn emit_class(m, node, f) {
   ir.block(ids, node)
 }
 
+fn is_call(step) {
+  step.name == 'call_p' || step.name == 'opt_call'
+}
+
+# (a?.m)(): the parens end the short-circuit but keep the reference, so the
+# chain only fills in the receiver and function (both undefined when it
+# short-circuits, and calling that is the TypeError)
+fn emit_paren_ref_call(m, f, inner, steps, at) {
+  let recv = new_scratch(f)
+  let fnv = new_scratch(f)
+  mut rp = synth('ref_p', [], at)
+  rp['recv'] = recv
+  rp['fnv'] = fnv
+  let chain = emit_steps(
+    m,
+    f,
+    emit_expr(m, inner.nodes[0], f),
+    inner.nodes.slice(1, inner.nodes.size()) + [rp],
+    0,
+  )
+  ir.block(
+    [
+      store_local(recv, nil_l(m, at), at),
+      store_local(fnv, nil_l(m, at), at),
+      chain,
+      emit_call_ref(m, f, recv, fnv, steps, 0, at),
+    ],
+    at,
+  )
+}
+
+# The function in fnv called with recv as `this`, then the chain past
+# steps[i]; an opt_call runs all that only when there is a function.
+fn emit_call_ref(m, f, recv, fnv, steps, i, at) {
+  let cp = steps[i]
+  let called = call_pre(
+    m,
+    f,
+    '__call',
+    [
+      scratch_ref(m, fnv, at),
+      scratch_ref(m, recv, at),
+      emit_arg_array(m, f, cp.nodes[0].nodes, cp),
+    ],
+    cp,
+  )
+  let rest_v = emit_steps(m, f, called, steps, i + 1)
+  cond {
+    cp.name ==
+      'opt_call' => ir.make_if_else(
+      call_pre(m, f, '__isnullish', [scratch_ref(m, fnv, at)], at),
+      nil_l(m, at),
+      rest_v,
+      at,
+    ),
+    _ => rest_v,
+  }
+}
+
 # an optional step, as the plain step it stands for
 fn plain_step(step) {
   let name = cond {
@@ -4224,6 +4321,21 @@ fn emit_steps(m, f, value0, steps, start) {
         }
         # a method call keeps the receiver: o.m(args)
         cond {
+          i + 1 < steps.size() && steps[i + 1].name == 'ref_p' => {
+            let rp = steps[i + 1]
+            value = ir.block(
+              [
+                store_local(rp.recv, value, step),
+                store_local(
+                  rp.fnv,
+                  emit_get(m, f, scratch_ref(m, rp.recv, step), key, step),
+                  step,
+                ),
+              ],
+              step,
+            )
+            i = i + 1
+          },
           !in_prelude &&
             i + 1 < steps.size() &&
             steps[i + 1].name == 'call_p' => {
@@ -4242,7 +4354,6 @@ fn emit_steps(m, f, value0, steps, start) {
             steps[i + 1].name == 'opt_call' => {
             # o.m?.(args): the receiver is kept, and the rest of the chain
             # runs only when the method is there
-            let cp = steps[i + 1]
             let recv = new_scratch(f)
             let fnv = new_scratch(f)
             let store_r = store_local(recv, value, step)
@@ -4251,25 +4362,14 @@ fn emit_steps(m, f, value0, steps, start) {
               emit_get(m, f, scratch_ref(m, recv, step), key, step),
               step,
             )
-            let called = call_pre(
-              m,
-              f,
-              '__call',
+            return ir.block(
               [
-                scratch_ref(m, fnv, step),
-                scratch_ref(m, recv, step),
-                emit_arg_array(m, f, cp.nodes[0].nodes, cp),
+                store_r,
+                store_f,
+                emit_call_ref(m, f, recv, fnv, steps, i + 1, step),
               ],
-              cp,
-            )
-            let rest_v = emit_steps(m, f, called, steps, i + 2)
-            let pick = ir.make_if_else(
-              call_pre(m, f, '__isnullish', [scratch_ref(m, fnv, step)], step),
-              nil_l(m, step),
-              rest_v,
               step,
             )
-            return ir.block([store_r, store_f, pick], step)
           },
           _ => value = emit_get(m, f, value, key, step),
         }
@@ -4315,9 +4415,9 @@ fn emit_new(m, node, f) {
 
 # {kind: 'var', r} | {kind: 'global', name} | {kind: 'prop', obj_id, key_id}
 # with the object and key already evaluated into temps
-fn emit_target(m, f, t) {
+fn emit_target(m, f, t0) {
+  let t = unparen(t0)
   cond {
-    t.name == 'paren' => emit_target(m, f, t.nodes[0]),
     t.name == 'ident' => {
       let r = resolved[pkey(t)]
       cond {
@@ -4493,7 +4593,8 @@ fn emit_unary(m, node, f) {
   if node.nodes.size() == 1 {
     return emit_expr(m, node.nodes[0], f)
   }
-  let [op, operand] = node.nodes
+  let [op, operand0] = node.nodes
+  let operand = unparen(operand0)
   let tok = op.token
   cond {
     tok == 'typeof' => {
@@ -4874,7 +4975,7 @@ fn emit_expr(m, node, f) {
       let r = emit_expr(m, node.nodes[1], f)
       emit_binop(m, f, '**', l, r, node)
     },
-    {name: 'seq_e'} => {
+    {name: 'expr'} => {
       mut ids = []
       for c in node.nodes {
         ids.push(emit_expr(m, c, f))
