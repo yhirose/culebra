@@ -36,6 +36,11 @@ struct LoadedModule {
 // apart from a real dependency needs it — the bytecode compiler among them.
 inline constexpr const char* kStdlibPreamblePath = "<stdlib>";
 
+// The library's own source: the stdlib preamble and the built-in traits.
+inline bool is_library_path(std::string_view path) {
+  return path == kStdlibPreamblePath || path == kBuiltinTraitsPath;
+}
+
 // `culebra test`'s ambient bindings (src/preambles/test_ambient.cul), by the
 // path their diagnostics carry. Same reason as above: both engines run it.
 inline constexpr const char* kTestAmbientPath = "<test>";
@@ -50,7 +55,7 @@ inline std::vector<LoadedModule> with_builtin_traits(
   modules.reserve(orig_modules.size() + 1);
   if (auto pre_ast = parse_builtin_traits_preamble()) {
     LoadedModule preamble;
-    preamble.abs_path = "<builtin>";
+    preamble.abs_path = kBuiltinTraitsPath;
     preamble.source = std::make_shared<std::string>(
         std::string(builtin_traits_preamble()));
     preamble.ast = pre_ast;

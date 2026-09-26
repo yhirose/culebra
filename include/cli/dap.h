@@ -430,11 +430,10 @@ class DapServer {
   // Per-statement hook (runs on the debuggee thread).
   void on_statement(const std::string& path, int64_t line, bool force,
                     size_t depth) {
-    // The lazy stdlib preamble (Time/Args/Log/...) evaluates as statements with
-    // a synthetic `<builtin>` path. Never stop there — the debugger only stops
-    // in user source. (Breakpoints are file:line-keyed so they were already
-    // immune; entry/step are not.)
-    if (path.empty() || path == "<builtin>") return;
+    // Never stop in library source — the debugger only stops in user source.
+    // (Breakpoints are file:line-keyed so they were already immune; entry/step
+    // are not.)
+    if (path.empty() || culebra::is_library_path(path)) return;
 
     bool hit = force;  // `debugger` statement
     const char* reason = "breakpoint";

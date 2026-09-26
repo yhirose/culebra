@@ -2805,9 +2805,7 @@ struct Chunk {
     // so the iteration's bindings — released by the inner steps already
     // walked — die before it, as they do on every other exit.
     int32_t dispose_base = -1;
-    // A library frame's step: the slot holding the call site that entered it
-    // (packed line << 32 | col), which an error leaving the frame with a
-    // library position takes on (culebra_runtime_reanchor). -1 elsewhere.
+    // A library frame's step: its entering call site (vm.md §6.2), or -1.
     int32_t site_slot = -1;
   };
   std::vector<Cleanup> cleanups;
@@ -4703,6 +4701,7 @@ class Compiler {
     FuncInfo top_info = analysis.analyze_program(ast, opts.repl);
     prog.chunks.emplace_back();  // reserve index 0 for the top level
     Compiler main(prog, analysis, /*in_function=*/false, &top_info);
+    main.library_ = culebra::is_library_path(ast.path);  // a baked module
     main.repl_ = opts.repl;
     // A statement carries a debug instruction only when it comes from the
     // entry module: the prologues below are the stdlib's, and a debugger
@@ -4723,14 +4722,15 @@ class Compiler {
       main.push_scope(ast, /*owned_mark=*/false);
       auto run_prologue = [&](const peg::Ast* p) {
         if (!p) return;
-        main.library_ = culebra::is_library_path(p->path);
+        bool entry_library = std::exchange(
+            main.library_, culebra::is_library_path(p->path));
         main.predeclare_forward_refs(*p);
         if (p->tag == "STATEMENTS"_) {
           for (const auto& n : p->nodes) main.compile_statement(*n);
         } else {
           main.compile_statement(*p);
         }
-        main.library_ = false;
+        main.library_ = entry_library;
       };
       main.predeclare_forward_refs(ast);
       run_prologue(preamble);
@@ -5189,17 +5189,17 @@ class Compiler {
                                sc.site_slot});
   }
   uint32_t pend_line_ = 0, pend_col_ = 0;
-  // Compiling the library's own source (culebra::is_library_path): every
-  // position this compiler stamps carries kLibraryLineBit.
+  // Compiling library source: every position it stamps carries
+  // kLibraryLineBit. Decided per unit and inherited by the functions nested in
+  // it, not read off each node — a transform re-parses a body under a path of
+  // its own (a generator's `<gen#N>`).
   bool library_ = false;
 
-  // The line an error at `at` reports, marked when `at` is library source.
-  static int64_t pos_line(const peg::Ast& at) {
-    return static_cast<int64_t>(at.line) |
-           (culebra::is_library_path(at.path) ? culebra::kLibraryLineBit : 0);
+  int64_t pos_line(size_t line) const {
+    return static_cast<int64_t>(line) | (library_ ? culebra::kLibraryLineBit : 0);
   }
-  static int64_t packed_pos(const peg::Ast& at) {
-    return (pos_line(at) << 32) | static_cast<int64_t>(at.column);
+  int64_t packed_pos(const peg::Ast& at) const {
+    return _jit_pack_pos(pos_line(at.line), static_cast<int64_t>(at.column));
   }
 
   [[noreturn]] static void reject(const peg::Ast& ast, const std::string& what) {
@@ -5208,7 +5208,7 @@ class Compiler {
 
   void stamp(const peg::Ast& ast) {
     if (ast.line) {
-      pend_line_ = static_cast<uint32_t>(pos_line(ast));
+      pend_line_ = static_cast<uint32_t>(pos_line(ast.line));
       pend_col_ = static_cast<uint32_t>(ast.column);
     }
   }
@@ -5216,8 +5216,7 @@ class Compiler {
   // The same, from a position an analysis produced rather than a node.
   void stamp_at(size_t line, size_t col) {
     if (line) {
-      pend_line_ = static_cast<uint32_t>(
-          library_ ? line | culebra::kLibraryLineBit : line);
+      pend_line_ = static_cast<uint32_t>(pos_line(line));
       pend_col_ = static_cast<uint32_t>(col);
     }
   }
@@ -8117,7 +8116,7 @@ class Compiler {
     fc.self_field_classes_ = mo.owner_field_classes;
     fc.repl_ = repl_;
     fc.debug_ = debug_;
-    fc.library_ = culebra::is_library_path(ast.path);
+    fc.library_ = library_;
     fc.stamp(ast);
     // The frame scope: params + captures + the `fn` handle. Its owned mark
     // waits until the ABI slots are laid out (establish_frame_owned_mark).
@@ -8341,13 +8340,13 @@ class Compiler {
     }
     fc.establish_frame_defer_mark(ast, info);
     fc.establish_frame_owned_mark(ast);
-    // A library function keeps the call site that entered it, for its frame
-    // step to hand an error from inside it (Cleanup::site_slot). Snapshotted
-    // before any default expression's own calls clobber it, as PosSnap does.
+    // A library function keeps its entering call site (vm.md §6.2), taken
+    // before a default expression's own calls clobber it. The slot reads nil
+    // until then, which the frame step skips.
+    int32_t site = -1;
     if (fc.library_) {
-      int32_t site = fc.alloc_slot(ast, "(site)");
+      site = fc.alloc_slot(ast, "(site)");
       fc.emit(Op::PosSnap, site, fc.def_pos_const(ast), -1);
-      fc.split_cleanup_segments();
       fc.scopes_.front().site_slot = site;
     }
     // Where a return-value type error reports: resolved once here, as the
@@ -8362,8 +8361,11 @@ class Compiler {
               ? culebra::lower_type_params(return_type, *mo.type_params)
               : std::string(return_type);
       fc.ret_type_ = fc.kconst_str(fc.ret_type_str_);
-      fc.ret_pos_slot_ = fc.alloc_slot(ast, "(ret.pos)");
-      fc.emit(Op::PosSnap, fc.ret_pos_slot_, fc.def_pos_const(ast), -1);
+      fc.ret_pos_slot_ = site;  // the same snapshot, when there is one
+      if (site < 0) {
+        fc.ret_pos_slot_ = fc.alloc_slot(ast, "(ret.pos)");
+        fc.emit(Op::PosSnap, fc.ret_pos_slot_, fc.def_pos_const(ast), -1);
+      }
     }
     // The body's own name: delivered by the frame rather than captured —
     // the capture would ring cell → dispatcher/closure/class → body → cell
@@ -14487,8 +14489,7 @@ struct Exec {
       // for the frame here too. Suppressed at program exit.
       if (frame && !hush && c.owned_frame_depth >= 0)
         culebra_runtime_owned_scope_exit(marks[c.owned_frame_depth]);
-      // A library frame hands an error that is still at a library position to
-      // the call that entered it; the replacement goes on as a defer's does.
+      // The library-frame step; a replacement goes on as a defer's does.
       if (site != 0) {
         try {
           culebra_runtime_reanchor(site);

@@ -2523,13 +2523,15 @@ inline std::shared_ptr<peg::Ast> parse_for_format(
   return opt.optimize(ast);
 }
 
+inline constexpr const char* kBuiltinTraitsPath = "<builtin>";
+
 inline std::shared_ptr<peg::Ast> parse_builtin_traits_preamble() {
   // `cached`'s AST holds string_view tokens into this buffer, so it must
   // outlive `cached` itself — static, not a lambda-local temporary.
   static std::string src{builtin_traits_preamble()};
   static auto cached = [] {
     std::vector<std::string> ignore;
-    return parse("<builtin>", src, ignore);
+    return parse(kBuiltinTraitsPath, src, ignore);
   }();
   return cached;
 }

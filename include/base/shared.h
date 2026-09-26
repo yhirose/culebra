@@ -274,21 +274,13 @@ inline void culebra_note_pending_error(const CulebraError& e) {
 inline constexpr int kUncaughtExitStatus = 1;
 inline constexpr int kInterruptedExitStatus = 130;
 
-// A position in the library's own source (the stdlib preamble, the built-in
-// traits) carries this bit on its line. The library's frames hand an error
-// that carries it to the user call that entered them (culebra_runtime_reanchor),
-// so a user sees their own line, never one of a source they cannot open. A
-// position the bit survives on (a throw with no user frame between it and the
-// boundary) prints without it.
+// Set on the line of a position in library source (docs/internals/vm.md §6.2).
 inline constexpr int64_t kLibraryLineBit = int64_t{1} << 30;
 inline constexpr bool is_library_line(int64_t line) {
   return (line & kLibraryLineBit) != 0;
 }
 inline constexpr int64_t user_line(int64_t line) {
   return line & ~kLibraryLineBit;
-}
-inline bool is_library_path(std::string_view path) {
-  return path == "<stdlib>" || path == "<builtin>";
 }
 
 // The one spelling of an uncaught error: "Kind: msg", plus " at L:C." when
@@ -2407,9 +2399,7 @@ struct Runtime {
   int8_t thrown_tag = 0;
   int64_t thrown_data = 0;
   int8_t is_throw = 0;
-  // Where that throw was written — the CulebraException's own line/col, kept
-  // here for the frame step that re-anchors it (culebra_runtime_reanchor),
-  // which reads carriers, never the C++ object.
+  // The CulebraException's line/col, for culebra_runtime_reanchor.
   int64_t thrown_line = 0;
   int64_t thrown_col = 0;
 

@@ -34,8 +34,9 @@ check_same() {
 
 # Like check_same but without the position requirement — for diagnostics that
 # carry no `at L:C.` (e.g. an uncaught top-level `throw`).
+# An optional third argument is the exact diagnostic both must print.
 check_eq() {
-  local name="$1" prog="$2"
+  local name="$1" prog="$2" want="${3-}"
   printf '%s\n' "$prog" > "$TMP/t.cul"
   local out_i out_j
   out_i=$("$CULEBRA" --vm "$TMP/t.cul" 2>&1)
@@ -44,6 +45,10 @@ check_eq() {
     echo "FAIL [$name]: vm/jit diverge"
     echo "  vm:  $out_i"
     echo "  jit:    $out_j"
+    fail=1
+  elif [[ -n "$want" && "$out_i" != "$want" ]]; then
+    echo "FAIL [$name]: want $want"
+    echo "  got: $out_i"
     fail=1
   fi
 }
@@ -782,27 +787,15 @@ A.new(1, '"'"'nope'"'"').y"
 # An error the stdlib raises, uncaught: at the user's call into it, never at a
 # line of the preamble — whose numbering differs between the executor (the
 # spliced modules) and the baked JIT modules (each on its own), so a leak
-# would diverge as well as mislead. Both engines, and the exact position.
-check_at() {
-  local name="$1" prog="$2" want="$3"
-  printf '%s\n' "$prog" > "$TMP/t.cul"
-  local out_i out_j
-  out_i=$(CULEBRA_AUDIO=off CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" --vm "$TMP/t.cul" 2>&1)
-  out_j=$(CULEBRA_AUDIO=off CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" --jit "$TMP/t.cul" 2>&1)
-  if [[ "$out_i" != "$want" || "$out_j" != "$want" ]]; then
-    echo "FAIL [$name]: want $want"
-    echo "  vm:  $out_i"
-    echo "  jit: $out_j"
-    fail=1
-  fi
-}
-check_at "stdlib native, uncaught" 'let ok = 1
+# would diverge as well as mislead.
+export CULEBRA_AUDIO=off CULEBRA_CANVAS_HEADLESS=1
+check_eq "stdlib native, uncaught" 'let ok = 1
 let s = Audio.Sound("not audio")' \
   'ValueError: not a valid WAV, MP3 or Ogg audio stream at 2:9.'
-check_at "stdlib native, two modules" 'Canvas.init(4, 4)
+check_eq "stdlib native, two modules" 'Canvas.init(4, 4)
 let s = Audio.Sound("not audio")' \
   'ValueError: not a valid WAV, MP3 or Ogg audio stream at 2:9.'
-check_at "stdlib throw, uncaught" 'let ok = 1
+check_eq "stdlib throw, uncaught" 'let ok = 1
 let m = StateMachine.new({initial: "a", states: {a: 1}})' \
   "uncaught: {kind: 'TypeError', message: 'type error: expected Object for state 'initial', got String'} at 2:9."
 

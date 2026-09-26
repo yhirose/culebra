@@ -4517,10 +4517,8 @@ struct Lowering {
         case Op::PosSnap: {
           int64_t def = c.consts[in.b].data;
           if (in.c < 0) {
-            // No argument index: param_pos is the published call site, or
-            // the def position when none was published — two loads off the
-            // frame's thread state, not a call, since every library
-            // function's prologue runs this one (its Cleanup::site_slot).
+            // param_pos without an argument index, inlined: every library
+            // function's prologue runs it (Cleanup::site_slot).
             auto i8Ty = b.getInt8Ty();
             auto ts = j.thread_state_ptr();
             auto line = b.CreateLoad(
@@ -5085,8 +5083,7 @@ struct Lowering {
       // executor's own unwind for why only here.
       if (frame && !hush && c.owned_frame_depth >= 0)
         j.emit_owned_scope_exit(load_owned_mark(c.owned_frame_depth));
-      // Exec::unwind's library-frame step: the re-anchored error, when there
-      // is one, replaces the carried exception through a relay.
+      // Exec::unwind's library-frame step; a replacement rides the relay.
       if (site) {
         auto doneBB = BasicBlock::Create(j.ctx_, "vm.scope.anchored", fn);
         auto relayBB = BasicBlock::Create(j.ctx_, "vm.scope.anchor.exc", fn);

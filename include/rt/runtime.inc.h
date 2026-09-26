@@ -1094,20 +1094,25 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_throw(int8_t tag,
   throw CulebraException(tag, data, line, col);
 }
 
-// A library frame's exit step (Chunk::Cleanup::site_slot, packed line << 32 |
-// col). An error leaving the frame that still carries a library position
-// (kLibraryLineBit) moves to the call that entered the frame, when that call
-// is the user's — so what the stdlib raises, itself or through a native it
-// wraps, reports at the user's line, alike on every engine. A site that is
-// library code leaves it to the frame that site belongs to. The in-flight
-// exception is replaced, as a throwing defer replaces it, rather than edited:
-// a JIT pad reads the carriers, never the C++ object. The thrown payload's
-// reference stays with the carrier, which the replacement hands on unchanged.
+// A library frame's exit step (docs/internals/vm.md §6.2): an error still at
+// a library position moves to the user site that entered the frame, by
+// replacing the in-flight exception from the carriers, as a throwing defer
+// does. The thrown payload's reference stays with the carrier.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_reanchor(int64_t site) {
-  int64_t line = site >> 32, col = site & 0xffffffff;
+  auto [line, col] = _jit_unpack_pos(site);
   if (line == 0 || culebra::is_library_line(line)) return;
   auto& rt = culebra::current_runtime();
   if (rt.is_throw) {
+    // A caught error thrown again by library code carries its position in
+    // the Object too, which is what a report of it reads.
+    if (rt.thrown_tag == TAG_OBJECT) {
+      auto* o = reinterpret_cast<JitObject*>(rt.thrown_data);
+      if (o->is_error &&
+          culebra::is_library_line(_jit_slot_or_nil(o, "line").data)) {
+        o->slots[o->find_slot("line")].value = JitValue{TAG_LONG, line};
+        o->slots[o->find_slot("col")].value = JitValue{TAG_LONG, col};
+      }
+    }
     if (culebra::is_library_line(rt.thrown_line))
       culebra_runtime_throw(rt.thrown_tag, rt.thrown_data, line, col);
     return;
