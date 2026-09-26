@@ -1016,7 +1016,8 @@ for line in File.open('access.log').lines() {
 Wall-clock + monotonic時刻、ISO 8601入出力、カレンダー算術。
 モジュールが提供する2つのクラス — `Instant`（時点）と
 `Duration`（時間幅）— 内部表現はUnix epoch起点の`i64`
-ナノ秒（範囲 ±292年、完全ナノ秒精度）。
+ナノ秒（範囲 ±292年、完全ナノ秒精度）。この範囲を超える結果は
+桁あふれせず`ValueError`になる。
 
 タイムゾーンは **UTC + localのみ**（`Asia/Tokyo`等の名前付き
 ゾーンは将来対応）。各methodはkw-only `utc:`フラグを取り、
@@ -1061,18 +1062,22 @@ ISO 8601タイムスタンプをparse。受け付けるvariant:
 - `2026-05-20`（日付のみ — UTC 0:00として扱う）
 - `2026-05-20T15:30`（秒省略）
 
-不正な入力は`ValueError`をthrow。
+不正な入力は`ValueError`をthrow。暦の範囲外の値（`2026-13-01`、
+`2025-02-29`、`T25:00`）も不正な入力で、翌月や翌日へ繰り上げはしない。
 
 #### `Time.from_unix(secs: Long|Float) -> Instant`
 
-Unix epoch秒から構築（Floatならsub-秒精度）。
+Unix epoch秒から構築。Longなら正確に、Floatならsub-秒精度で、
+最も近いナノ秒に丸める。
 
 #### `Time.from_parts(p: Object, utc: Bool = false) -> Instant`
 
 parts dictからtimestampを組み立て — `Instant.parts`の逆操作。
 認識キー: `year`、`month`、`day`、`hour`、`minute`、`second`、
 `nanosecond`（デフォルト: `month=1`、`day=1`、その他0）。それ
-以外のキーは無視。
+以外のキーは無視。認識キーの値はLongでなければ`TypeError`、暦の範囲
+（`month`は1〜12、`day`はその月の日数まで、`hour`は0〜23、`minute`と
+`second`は0〜59、`nanosecond`は10⁹未満）を外れると`ValueError`。
 
 #### `Time.parse(s: String, fmt: String) -> Instant`
 
@@ -1159,7 +1164,8 @@ Time.hours(n)
 Time.days(n)
 ```
 
-`n`はLongでもFloatでも可 — 小数単位はナノ秒に丸める。
+`n`はLongでもFloatでも可 — Longは正確に換算し、小数単位は最も近い
+ナノ秒に丸める。
 
 ### `Duration` method
 
@@ -1183,8 +1189,8 @@ t - one_hour            # Instant - Duration → Instant
 t1 - t2                 # Instant - Instant → Duration
 
 Time.minutes(1) + Time.seconds(30)   # → Duration (90s)
-one_hour * 2                          # → Duration
-one_hour / 2                          # → Duration
+one_hour * 2                          # → Duration（Longは正確）
+one_hour / 2                          # → Duration（Longは切り捨て）
 -one_hour                             # → Duration
 
 a < b, a <= b, a == b                 # 両クラスで自然な順序

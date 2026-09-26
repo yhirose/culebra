@@ -1298,7 +1298,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_time_from_iso_nanos(
   auto r = culebra::_time_detail::parse_iso_nanos(s ? s : "");
   if (!r) {
     throw culebra::CulebraError("ValueError",
-        culebra::format("_Time.from_iso_nanos: invalid ISO 8601 '{}'",
+        culebra::format("Time.from_iso: invalid ISO 8601 '{}'",
                         s ? s : ""),
         line, col);
   }
@@ -1310,7 +1310,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_time_parse_nanos(
   std::tm tm{};
   if (!culebra::os_strptime(s ? s : "", fmt ? fmt : "", &tm)) {
     throw culebra::CulebraError("ValueError",
-        culebra::format("_Time.parse_nanos: '{}' does not match '{}'",
+        culebra::format("Time.parse: '{}' does not match '{}'",
                         s ? s : "", fmt ? fmt : ""),
         line, col);
   }
@@ -1358,19 +1358,39 @@ culebra_runtime_time_parts_nanos(int64_t nanos, int64_t utc) {
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_time_from_parts_nanos(
     JitObject* o, int64_t utc) {
-  auto get_long = [&](const char* k, int64_t fallback) -> int64_t {
+  // Each part is a Long in its calendar range — mktime would carry month 13
+  // into the next year, and the inverse of `parts` names one date.
+  auto get_long = [&](const char* k, int64_t fallback, int64_t lo,
+                      int64_t hi) -> int64_t {
     auto* entry = _find_property(o, k);
     if (!entry) return fallback;
-    return entry->value.tag == TAG_LONG ? entry->value.data : fallback;
+    if (entry->value.tag != TAG_LONG)
+      throw culebra::CulebraError(
+          "TypeError",
+          culebra::format("Time.from_parts: '{}' must be a Long, got {}", k,
+                          culebra_runtime_type_of(entry->value.tag)),
+          0, 0);
+    int64_t v = entry->value.data;
+    if (v < lo || v > hi)
+      culebra::_time_detail::throw_value(
+          culebra::format("Time.from_parts: '{}' must be between {} and {}, got {}",
+                          k, lo, hi, v),
+          0, 0);
+    return v;
   };
+  auto year = get_long("year", 1970, 1, 9999);
+  auto month = get_long("month", 1, 1, 12);
   std::tm tm{};
-  tm.tm_year = static_cast<int>(get_long("year", 1970) - 1900);
-  tm.tm_mon  = static_cast<int>(get_long("month", 1) - 1);
-  tm.tm_mday = static_cast<int>(get_long("day", 1));
-  tm.tm_hour = static_cast<int>(get_long("hour", 0));
-  tm.tm_min  = static_cast<int>(get_long("minute", 0));
-  tm.tm_sec  = static_cast<int>(get_long("second", 0));
-  auto sub_ns = get_long("nanosecond", 0);
+  tm.tm_year = static_cast<int>(year - 1900);
+  tm.tm_mon  = static_cast<int>(month - 1);
+  tm.tm_mday = static_cast<int>(get_long(
+      "day", 1, 1,
+      culebra::_time_detail::days_in_month(static_cast<int>(year),
+                                           static_cast<int>(month))));
+  tm.tm_hour = static_cast<int>(get_long("hour", 0, 0, 23));
+  tm.tm_min  = static_cast<int>(get_long("minute", 0, 0, 59));
+  tm.tm_sec  = static_cast<int>(get_long("second", 0, 0, 59));
+  auto sub_ns = get_long("nanosecond", 0, 0, culebra::_time_detail::NS_PER_SEC - 1);
   return culebra::_time_detail::from_tm_nanos(tm, sub_ns, utc != 0);
 }
 
@@ -1378,6 +1398,18 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_time_add_nanos(
     int64_t nanos, int64_t years, int64_t months,
     int64_t days, int64_t hours, int64_t minutes, int64_t seconds,
     int64_t utc) {
+  // The fields are Longs but std::tm's are ints: fold the sub-day ones into
+  // whole days plus a remainder, and refuse anything past the ±292-year range
+  // (a span of under 600 years, 220000 days) before narrowing.
+  auto beyond = [](int64_t v, int64_t limit) { return v < -limit || v > limit; };
+  int64_t clock, minute_secs, whole_days;
+  if (__builtin_mul_overflow(hours, int64_t{3600}, &clock) ||
+      __builtin_mul_overflow(minutes, int64_t{60}, &minute_secs) ||
+      __builtin_add_overflow(clock, minute_secs, &clock) ||
+      __builtin_add_overflow(clock, seconds, &clock) ||
+      __builtin_add_overflow(days, clock / 86400, &whole_days) ||
+      beyond(years, 600) || beyond(months, 600 * 12) || beyond(whole_days, 220000))
+    culebra::_time_detail::throw_out_of_range();
   auto tm = culebra::_time_detail::to_tm_nanos(nanos, utc != 0);
   auto sub = culebra::_time_detail::split_nanos(nanos).second;
   if (years || months) {
@@ -1392,10 +1424,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_time_add_nanos(
     tm.tm_mon = target_month;
     tm.tm_mday = target_day;
   }
-  tm.tm_mday += static_cast<int>(days);
-  tm.tm_hour += static_cast<int>(hours);
-  tm.tm_min  += static_cast<int>(minutes);
-  tm.tm_sec  += static_cast<int>(seconds);
+  tm.tm_mday += static_cast<int>(whole_days);
+  tm.tm_sec  += static_cast<int>(clock % 86400);
   return culebra::_time_detail::from_tm_nanos(tm, sub, utc != 0);
 }
 
@@ -1411,7 +1441,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_time_start_of_nanos(
   else {
     throw culebra::CulebraError(
         "ValueError",
-        culebra::format("_Time.start_of_nanos: unknown unit '{}' "
+        culebra::format("Instant.start_of: unknown unit '{}' "
                         "(year/month/day/hour/minute)",
                         std::string(u)),
         line, col);

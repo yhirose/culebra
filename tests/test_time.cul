@@ -170,3 +170,51 @@ assert_eq(Time.Instant.new(1000000000) == Time.seconds(1), false)
 assert_eq(Time.seconds(1) == 1000000000, false)
 assert_eq(Time.seconds(1) == "1s", false)
 assert_eq(t1 == nil, false)
+
+# --- Nanosecond counts ---
+# A Long count scales exactly; a Float rounds to the nearest nanosecond (it
+# used to truncate, so 1.005 s was 1004999999 ns).
+assert_eq(Time.Instant.new(0).unix_nanos(), 0)
+assert_eq((Time.seconds(1.005) + Time.seconds(0)).milliseconds(), 1005.0)
+assert_eq(Time.from_unix(1.005).unix_nanos(), 1005000000)
+assert_eq(Time.from_unix(1700000000).unix_nanos(), 1700000000000000000)
+let big = Time.from_unix(0) + Time.days(1)
+assert_eq((big - Time.from_unix(0)) * 1, Time.days(1))
+# Long operands stay Long: a count past 2^53 survives `* 1` and `/ 1`.
+let exact = Time.Instant.new(123456789012345678) - Time.Instant.new(0)
+assert_eq((exact * 1) == exact, true)
+assert_eq((exact / 1) == exact, true)
+assert_eq((Time.seconds(7) / 2).milliseconds(), 3500.0)
+assert_eq((Time.seconds(1) * 1.5).seconds(), 1.5)
+assert_throws("TypeError", || Time.seconds("1"))
+assert_throws("TypeError", || Time.seconds(1) * "2")
+# Past the ±292-year range of a Long count, every step raises rather than
+# wrapping around.
+assert_throws("ValueError", || Time.seconds(10000000000000))
+assert_throws("ValueError", || Time.seconds(1e30))
+assert_throws("ValueError", || Time.seconds(Math.nan))
+assert_throws("ValueError", || Time.days(100000) * 2)
+assert_throws("ValueError", || Time.from_unix(0) + Time.days(106000) + Time.days(106000))
+assert_throws("ValueError", || Time.from_iso("9999-01-01"))
+assert_throws("ValueError", || t1.add(days: 5000000000))
+# Sub-day fields are Longs, not ints: 2^32 seconds is 136 years, not zero.
+let t0 = Time.from_iso("2024-01-01T00:00:00Z")
+assert_eq(t0.add(seconds: 4294967296, utc: true).iso(), "2160-02-07T06:28:16Z")
+assert_eq(t0.add(hours: -25, utc: true).iso(), "2023-12-30T23:00:00Z")
+assert_eq(t0.add(minutes: 1500, seconds: 61, utc: true).iso(), "2024-01-02T01:01:01Z")
+
+# --- Calendar fields name one date ---
+# timegm would carry month 13 into the next year; the date is refused instead.
+assert_throws("ValueError", || Time.from_iso("2024-13-01"))
+assert_throws("ValueError", || Time.from_iso("2023-02-29"))
+assert_throws("ValueError", || Time.from_iso("2024-01-01T25:00Z"))
+assert_eq(Time.from_iso("2024-02-29T23:59:59.5+09:00").iso(), "2024-02-29T14:59:59.500000000Z")
+assert_throws("ValueError", || Time.from_parts({year: 2024, month: 13}))
+assert_throws("ValueError", || Time.from_parts({year: 2023, month: 2, day: 29}))
+assert_throws("ValueError", || Time.from_parts({year: 2024, nanosecond: 1000000000}))
+# A non-Long part used to fall back to its default silently (year 1970).
+assert_throws("TypeError", || Time.from_parts({year: 2024.0}))
+assert_eq(Time.from_parts({year: 2024, month: 2, day: 29}, utc: true).iso(), "2024-02-29T00:00:00Z")
+
+# A strftime result past 256 bytes used to come back empty.
+assert_eq(t0.format("%Y-%m-%d ".repeat(100), utc: true).size(), 1100)

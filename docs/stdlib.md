@@ -1041,7 +1041,8 @@ Wall-clock + monotonic time, ISO 8601 round-trip, calendar
 arithmetic. The module exposes two classes — `Instant` (a point in
 time) and `Duration` (an interval) — backed internally by `i64`
 nanoseconds since the Unix epoch (range ±292 years, full nanosecond
-precision).
+precision). A result past that range raises `ValueError` instead of
+wrapping around.
 
 Timezone handling is **UTC + local only** (named zones like
 `Asia/Tokyo` are deferred). Methods accept a kw-only `utc:` flag;
@@ -1087,18 +1088,24 @@ Parse an ISO 8601 timestamp. Accepted variants:
 - `2026-05-20` (date only — UTC midnight)
 - `2026-05-20T15:30` (seconds omitted)
 
-Throws `ValueError` on a malformed input.
+Throws `ValueError` on a malformed input, including a field outside its
+calendar range (`2026-13-01`, `2025-02-29`, `T25:00`) — it is not carried
+into the next month or day.
 
 #### `Time.from_unix(secs: Long|Float) -> Instant`
 
-From Unix epoch seconds (Float gives sub-second precision).
+From Unix epoch seconds. A Long is exact; a Float gives sub-second
+precision, rounded to the nearest nanosecond.
 
 #### `Time.from_parts(p: Object, utc: Bool = false) -> Instant`
 
 Compose from a parts dict — the inverse of `Instant.parts`.
 Recognised keys: `year`, `month`, `day`, `hour`, `minute`, `second`,
 `nanosecond` (defaults: `month=1`, `day=1`, others 0). Extra keys
-are ignored.
+are ignored. Each recognised key must be a Long (`TypeError`
+otherwise) within its calendar range — `month` 1–12, `day` up to that
+month's length, `hour` 0–23, `minute` and `second` 0–59, `nanosecond`
+below 10⁹ — or it raises `ValueError`.
 
 #### `Time.parse(s: String, fmt: String) -> Instant`
 
@@ -1187,8 +1194,8 @@ Time.hours(n)
 Time.days(n)
 ```
 
-`n` may be Long or Float — fractional units round to the nearest
-nanosecond.
+`n` may be Long or Float — a Long scales exactly, and fractional units
+round to the nearest nanosecond.
 
 ### `Duration` methods
 
@@ -1213,8 +1220,8 @@ t - one_hour            # Instant - Duration → Instant
 t1 - t2                 # Instant - Instant → Duration
 
 Time.minutes(1) + Time.seconds(30)   # → Duration (90s)
-one_hour * 2                          # → Duration
-one_hour / 2                          # → Duration
+one_hour * 2                          # → Duration (Long: exact)
+one_hour / 2                          # → Duration (Long: truncates)
 -one_hour                             # → Duration
 
 a < b, a <= b, a == b                 # natural ordering on both types

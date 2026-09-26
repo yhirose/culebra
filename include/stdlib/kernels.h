@@ -528,8 +528,17 @@ inline std::pair<std::time_t, int64_t> split_nanos(int64_t nanos) {
   return {static_cast<std::time_t>(secs), sub};
 }
 
+[[noreturn]] inline void throw_out_of_range() {
+  throw_value("Time: out of range (a Long count of nanoseconds, about ±292 years)",
+              0, 0);
+}
+
 inline int64_t combine_nanos(std::time_t secs, int64_t sub_nanos) {
-  return static_cast<int64_t>(secs) * NS_PER_SEC + sub_nanos;
+  int64_t r;
+  if (__builtin_mul_overflow(static_cast<int64_t>(secs), NS_PER_SEC, &r) ||
+      __builtin_add_overflow(r, sub_nanos, &r))
+    throw_out_of_range();
+  return r;
 }
 
 inline std::tm to_tm_nanos(int64_t nanos, bool utc) {
@@ -618,6 +627,10 @@ inline std::optional<int64_t> parse_iso_nanos(std::string_view s) {
     }
   }
   if (i != s.size()) return std::nullopt;
+  // timegm would carry `2026-13-45T25:61` into a later date; ISO names one.
+  if (mo < 1 || mo > 12 || d < 1 || d > days_in_month(y, mo) || h > 23 ||
+      mi > 59 || se > 59 || std::abs(offset_seconds) >= 24 * 3600)
+    return std::nullopt;
   tm.tm_hour = h;
   tm.tm_min = mi;
   tm.tm_sec = se;
@@ -658,9 +671,17 @@ inline std::string format_strftime_nanos(int64_t nanos,
   auto t = split_nanos(nanos).first;
   std::tm tm{};
   if (utc) os_gmtime_r(&t, &tm); else os_localtime_r(&t, &tm);
-  char buf[256];
-  auto n = std::strftime(buf, sizeof(buf), fmt.c_str(), &tm);
-  return std::string(buf, n);
+  // strftime answers 0 both for a buffer too small and for an empty result,
+  // so grow until the output fits or the size no empty result could need.
+  std::string buf(256, '\0');
+  for (;;) {
+    auto n = std::strftime(buf.data(), buf.size(), fmt.c_str(), &tm);
+    if (n > 0 || buf.size() > 16 * (fmt.size() + 16)) {
+      buf.resize(n);
+      return buf;
+    }
+    buf.resize(buf.size() * 2);
+  }
 }
 
 }  // namespace _time_detail
