@@ -2805,6 +2805,10 @@ struct Chunk {
     // so the iteration's bindings — released by the inner steps already
     // walked — die before it, as they do on every other exit.
     int32_t dispose_base = -1;
+    // A library frame's step: the slot holding the call site that entered it
+    // (packed line << 32 | col), which an error leaving the frame with a
+    // library position takes on (culebra_runtime_reanchor). -1 elsewhere.
+    int32_t site_slot = -1;
   };
   std::vector<Cleanup> cleanups;
   // The statement temporaries live at each pc, delta-coded (an entry only
@@ -4719,12 +4723,14 @@ class Compiler {
       main.push_scope(ast, /*owned_mark=*/false);
       auto run_prologue = [&](const peg::Ast* p) {
         if (!p) return;
+        main.library_ = culebra::is_library_path(p->path);
         main.predeclare_forward_refs(*p);
         if (p->tag == "STATEMENTS"_) {
           for (const auto& n : p->nodes) main.compile_statement(*n);
         } else {
           main.compile_statement(*p);
         }
+        main.library_ = false;
       };
       main.predeclare_forward_refs(ast);
       run_prologue(preamble);
@@ -4943,6 +4949,8 @@ class Compiler {
     // A generic for-in's cursor base when this is that loop's own scope
     // (Chunk::Cleanup::dispose_base); -1 for every other scope.
     int32_t dispose_base = -1;
+    // The frame scope of a library chunk: its Cleanup::site_slot.
+    int32_t site_slot = -1;
     // `fn name`s already declared directly in this scope. A later
     // same-scope overload appends to the dispatcher the binding already
     // holds; the first one mints a fresh dispatcher + table, so neither an
@@ -5177,9 +5185,22 @@ class Compiler {
     sc.segments.push_back(chunk_.cleanups.size());
     chunk_.cleanups.push_back({sc.start_pc, end, /*parent=*/-1, sc.defer_mark,
                                sc.slot_watermark, named_top_, n_cells_,
-                               Chunk::kNoHandler, -1, sc.dispose_base});
+                               Chunk::kNoHandler, -1, sc.dispose_base,
+                               sc.site_slot});
   }
   uint32_t pend_line_ = 0, pend_col_ = 0;
+  // Compiling the library's own source (culebra::is_library_path): every
+  // position this compiler stamps carries kLibraryLineBit.
+  bool library_ = false;
+
+  // The line an error at `at` reports, marked when `at` is library source.
+  static int64_t pos_line(const peg::Ast& at) {
+    return static_cast<int64_t>(at.line) |
+           (culebra::is_library_path(at.path) ? culebra::kLibraryLineBit : 0);
+  }
+  static int64_t packed_pos(const peg::Ast& at) {
+    return (pos_line(at) << 32) | static_cast<int64_t>(at.column);
+  }
 
   [[noreturn]] static void reject(const peg::Ast& ast, const std::string& what) {
     throw Unsupported{what, ast.line, ast.column};
@@ -5187,7 +5208,7 @@ class Compiler {
 
   void stamp(const peg::Ast& ast) {
     if (ast.line) {
-      pend_line_ = static_cast<uint32_t>(ast.line);
+      pend_line_ = static_cast<uint32_t>(pos_line(ast));
       pend_col_ = static_cast<uint32_t>(ast.column);
     }
   }
@@ -5195,7 +5216,8 @@ class Compiler {
   // The same, from a position an analysis produced rather than a node.
   void stamp_at(size_t line, size_t col) {
     if (line) {
-      pend_line_ = static_cast<uint32_t>(line);
+      pend_line_ = static_cast<uint32_t>(
+          library_ ? line | culebra::kLibraryLineBit : line);
       pend_col_ = static_cast<uint32_t>(col);
     }
   }
@@ -5302,10 +5324,7 @@ class Compiler {
 
   // A declaration position packed for PosSnap's last-resort argument (the
   // JIT bakes the same current_line_/column_ pair into its prologue call).
-  int32_t def_pos_const(const peg::Ast& at) {
-    return kconst_long((static_cast<int64_t>(at.line) << 32) |
-                       static_cast<int64_t>(at.column));
-  }
+  int32_t def_pos_const(const peg::Ast& at) { return kconst_long(packed_pos(at)); }
 
   // Record where the just-emitted call's arguments were written, so a
   // typed-parameter error in the callee reports at the argument expression
@@ -5318,9 +5337,7 @@ class Compiler {
     std::vector<int64_t> packed;
     packed.reserve(arg_asts.size());
     for (const auto* a : arg_asts) {
-      const peg::Ast& n = a ? *a : at;
-      packed.push_back((static_cast<int64_t>(n.line) << 32) |
-                       static_cast<int64_t>(n.column));
+      packed.push_back(packed_pos(a ? *a : at));
     }
     chunk_.call_argpos.emplace_back(static_cast<uint32_t>(ix),
                                     std::move(packed));
@@ -8100,6 +8117,7 @@ class Compiler {
     fc.self_field_classes_ = mo.owner_field_classes;
     fc.repl_ = repl_;
     fc.debug_ = debug_;
+    fc.library_ = culebra::is_library_path(ast.path);
     fc.stamp(ast);
     // The frame scope: params + captures + the `fn` handle. Its owned mark
     // waits until the ABI slots are laid out (establish_frame_owned_mark).
@@ -8323,6 +8341,15 @@ class Compiler {
     }
     fc.establish_frame_defer_mark(ast, info);
     fc.establish_frame_owned_mark(ast);
+    // A library function keeps the call site that entered it, for its frame
+    // step to hand an error from inside it (Cleanup::site_slot). Snapshotted
+    // before any default expression's own calls clobber it, as PosSnap does.
+    if (fc.library_) {
+      int32_t site = fc.alloc_slot(ast, "(site)");
+      fc.emit(Op::PosSnap, site, fc.def_pos_const(ast), -1);
+      fc.split_cleanup_segments();
+      fc.scopes_.front().site_slot = site;
+    }
     // Where a return-value type error reports: resolved once here, as the
     // JIT's prologue snapshot does (see PosSnap).
     if (!return_type.empty()) {
@@ -9124,8 +9151,7 @@ class Compiler {
       // namespace typo and the compound miss), packed into a Long const
       // for the ops that need both positions.
       int32_t name = kconst_str(fin.token);
-      int32_t dotpos = kconst_long((static_cast<int64_t>(fin.line) << 32) |
-                                   static_cast<int64_t>(fin.column));
+      int32_t dotpos = kconst_long(packed_pos(fin));
       if (av.compound && av.op_base == "??") {
         auto recv = chain_prefix();
         int32_t cur = alloc_temp(ast);
@@ -9259,8 +9285,7 @@ class Compiler {
   void emit_prop_set(const peg::Ast& dot, int32_t recv, int32_t val,
                      bool ns_check) {
     int32_t name = kconst_str(dot.token);
-    int32_t dotpos = kconst_long((static_cast<int64_t>(dot.line) << 32) |
-                                 static_cast<int64_t>(dot.column));
+    int32_t dotpos = kconst_long(packed_pos(dot));
     if (ns_check) {
       StampGuard dp(*this, dot);
       emit(Op::NsWrChk, recv, 0, name);
@@ -14431,6 +14456,8 @@ struct Exec {
     for (int32_t k = chunk_innermost_cleanup(c, pc); k >= 0;) {
       const auto& cu = c.cleanups[static_cast<size_t>(k)];
       bool frame = cu.parent < 0;
+      // Read before the releases below, which nil the slot.
+      int64_t site = frame && cu.site_slot >= 0 ? regs[cu.site_slot].data : 0;
       // The tag check is belt-and-braces: a scope's DeferMark runs before
       // any instruction its range covers.
       bool own_defer_threw = false;
@@ -14460,6 +14487,15 @@ struct Exec {
       // for the frame here too. Suppressed at program exit.
       if (frame && !hush && c.owned_frame_depth >= 0)
         culebra_runtime_owned_scope_exit(marks[c.owned_frame_depth]);
+      // A library frame hands an error that is still at a library position to
+      // the call that entered it; the replacement goes on as a defer's does.
+      if (site != 0) {
+        try {
+          culebra_runtime_reanchor(site);
+        } catch (...) {
+          replaced = std::current_exception();
+        }
+      }
       if (cu.handler != Chunk::kNoHandler && !own_defer_threw) {
         culebra_runtime_try_translate();
         if (culebra_runtime_get_is_throw()) {

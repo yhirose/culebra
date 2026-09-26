@@ -274,6 +274,23 @@ inline void culebra_note_pending_error(const CulebraError& e) {
 inline constexpr int kUncaughtExitStatus = 1;
 inline constexpr int kInterruptedExitStatus = 130;
 
+// A position in the library's own source (the stdlib preamble, the built-in
+// traits) carries this bit on its line. The library's frames hand an error
+// that carries it to the user call that entered them (culebra_runtime_reanchor),
+// so a user sees their own line, never one of a source they cannot open. A
+// position the bit survives on (a throw with no user frame between it and the
+// boundary) prints without it.
+inline constexpr int64_t kLibraryLineBit = int64_t{1} << 30;
+inline constexpr bool is_library_line(int64_t line) {
+  return (line & kLibraryLineBit) != 0;
+}
+inline constexpr int64_t user_line(int64_t line) {
+  return line & ~kLibraryLineBit;
+}
+inline bool is_library_path(std::string_view path) {
+  return path == "<stdlib>" || path == "<builtin>";
+}
+
 // The one spelling of an uncaught error: "Kind: msg", plus " at L:C." when
 // the error carries a position. Every engine and runner prints this same
 // text — doctest `# !!` patterns match against it, so a reworded copy in one
@@ -281,6 +298,7 @@ inline constexpr int kInterruptedExitStatus = 130;
 inline std::string format_error_message(std::string_view kind,
                                         std::string_view msg, int64_t line,
                                         int64_t col) {
+  line = user_line(line);
   if (line <= 0 && col <= 0) return culebra::format("{}: {}", kind, msg);
   // A message that runs to several lines — the matchers put each operand on
   // its own — would otherwise end "...  right: bar at 3:1.", where the
@@ -2389,6 +2407,11 @@ struct Runtime {
   int8_t thrown_tag = 0;
   int64_t thrown_data = 0;
   int8_t is_throw = 0;
+  // Where that throw was written — the CulebraException's own line/col, kept
+  // here for the frame step that re-anchors it (culebra_runtime_reanchor),
+  // which reads carriers, never the C++ object.
+  int64_t thrown_line = 0;
+  int64_t thrown_col = 0;
 
   // Pending runtime-error carrier (backend-neutral: kind/msg/line/col, no
   // Value). Every CulebraError records itself here at construction; the JIT

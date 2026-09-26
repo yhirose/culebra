@@ -1415,6 +1415,22 @@ handler written to report errors cannot name a type that catches one. It
 still reaches script code the same way — the pads classify through the
 pending carrier (§5.5), never through the C++ type.
 
+An error from inside the library reports at the user's call into it. The
+compiler sets `kLibraryLineBit` on the line of every position it takes
+from library source (the `<stdlib>` preamble, the `<builtin>` traits), so
+the mark rides every existing path unchanged: chunk positions, lowered
+constants, published call sites, argument positions, the carriers. A
+library function's prologue snapshots the call site that entered it
+(`PosSnap` into `Cleanup::site_slot`), and its frame step hands
+`culebra_runtime_reanchor` that site: an error leaving the frame still at a
+marked position is replaced — as a throwing `defer` replaces one — by the
+same error at the site, when the site is the user's; a marked site leaves
+it to the library frame that site belongs to. The executor's `unwind` and
+the lowering's frame pad call the same helper at the same step, and the
+helper reads only the carriers, so the JIT pad needs no C++ re-inspection.
+A mark that survives to a formatter (a throw with no user frame above it)
+prints without the bit.
+
 ### 6.3 Safepoints
 
 Loops emit `Safepoint`, which polls the process-wide wake flag (Ctrl-C

@@ -1,0 +1,53 @@
+// Conformance: an error the stdlib raises — itself, or through a native one
+// of its preamble functions wraps — reports at the user's call into it, not
+// at a line of the preamble, alike on every engine. An error raised in a
+// user callback the stdlib calls keeps its own position.
+//
+// NOTE: the expected values below are POSITIONS IN THIS FILE — editing the
+// file shifts them. Keep additions at the bottom.
+
+fn check(label, expect, thunk) {
+  let got = try {
+    thunk()
+    -1
+  } catch e {
+    [e.line, e.col]
+  }
+  assert_eq("{label}:{got}", "{label}:{expect}")
+}
+
+Canvas.init(4, 4)
+let sprite = Canvas.Sprite.blank(2, 2, 0)
+
+// A native the preamble wraps: the format check behind Audio's constructors.
+check("sound", [23, 34], fn () { Audio.Sound("not audio") })
+check("music", [24, 34], fn () { Audio.Music("not audio") })
+
+// A Canvas preamble function's native: polygon's point list.
+check("polygon", [27, 36], fn () { Canvas.polygon([1, nil], 0) })
+
+// A method of a preamble class.
+check("pcm push", [30, 37], fn () { Audio.Pcm(44100, 1, 1024).push(["a"]) })
+
+// The user's callback, called by the preamble, keeps its own line; a throw
+// after it returns is the preamble's again, so the call site — however much
+// the callback's own calls moved the published position in between.
+check("callback", [37, 13], fn () {
+  Canvas.draw_to(sprite, fn () {
+    let x = 1 + "s"
+  })
+})
+check("after callback", [46, 3], fn () {
+  let pq = PriorityQueue.new(key: fn (x) {
+    let y = [x].map(|v| v)
+    y[0]
+  })
+  pq.push(1)
+  pq.push("a")
+})
+
+// Called from a user function: the site is that function's call.
+fn load_music() {
+  Audio.Music("not audio")
+}
+check("in user fn", [51, 3], fn () { load_music() })

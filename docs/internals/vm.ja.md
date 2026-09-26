@@ -1379,6 +1379,20 @@ chunkのすべてのクロージャで1つのcellを共有する方式も試さ�
 捕まえる型を名指せない。スクリプト側への届き方は変わらない —
 padの分類はC++の型ではなくpending carrier（§5.5）を通す。
 
+ライブラリの中で起きたエラーは、ユーザーがそのライブラリを呼んだ位置を
+報告する。コンパイラはライブラリのソース（`<stdlib>`のpreambleと
+`<builtin>`のtrait）から取る位置すべての行に`kLibraryLineBit`を立てる
+ので、印は既存の経路を変更なしで運ばれる: chunkの位置、loweringの定数、
+公開される呼び出し位置、引数位置、carrier。ライブラリの関数はprologueで
+自分を呼んだ位置を控え（`PosSnap`で`Cleanup::site_slot`へ）、フレームの
+段でその位置を`culebra_runtime_reanchor`に渡す: 印の付いた位置のまま
+フレームを抜けるエラーは、控えた位置がユーザーのものなら、その位置の
+同じエラーに置き換わる（throwする`defer`が置き換えるのと同じ）。控えた
+位置に印があれば、その位置が属するライブラリのフレームに任せる。executorの
+`unwind`とloweringのframe padは同じ段で同じヘルパーを呼び、ヘルパーは
+carrierしか読まないので、JITのpadにC++の再検査は要らない。フォーマッタまで
+印が残った位置（上にユーザーのフレームが無いthrow）は、印を外して表示する。
+
 ### 6.3 safepoint
 
 ループは`Safepoint`をemitする。これはプロセス全体のwakeフラグ

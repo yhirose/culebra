@@ -18,7 +18,9 @@
 # test_drop_replace_order.cul (a replaced slot holds the new value before the
 # old one is released).
 # 285 since test_audio.cul (the Audio namespace: tone, Sound, Music, Pcm).
-tests.cul 285
+# 286 since test_library_error_positions.cul (an error raised inside the
+# stdlib reports at the user's call into it, on every engine).
+tests.cul 286
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 tests.isolate 20

@@ -1010,6 +1010,7 @@ struct _PendingSnapshot {
   int8_t error;
   std::string kind, msg;
   int64_t line, col;
+  int64_t thrown_line, thrown_col;
 };
 // A Runtime substate (not an independent thread_local): a drop() body can
 // still push here while ~Runtime itself is tearing down the module table,
@@ -1030,7 +1031,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_save_thrown(
   if (rt.is_throw) culebra_runtime_value_retain(rt.thrown_tag, rt.thrown_data);
   _pending_save_stack().push_back({rt.pending_error, rt.pending_kind,
                                    rt.pending_msg, rt.pending_line,
-                                   rt.pending_col});
+                                   rt.pending_col, rt.thrown_line,
+                                   rt.thrown_col});
   // The guarded call runs over an *empty* carrier. A stale is_throw makes
   // try_translate hand a handler inside the callee the in-flight payload
   // instead of the callee's own trap; a stale pending_error leaks the outer
@@ -1066,6 +1068,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_restore_thrown(
     rt.pending_msg = std::move(s.msg);
     rt.pending_line = s.line;
     rt.pending_col = s.col;
+    rt.thrown_line = s.thrown_line;
+    rt.thrown_col = s.thrown_col;
     pending_stack.pop_back();
   }
 }
@@ -1085,7 +1089,31 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_throw(int8_t tag,
   rt.thrown_tag = tag;
   rt.thrown_data = data;
   rt.is_throw = 1;
+  rt.thrown_line = line;
+  rt.thrown_col = col;
   throw CulebraException(tag, data, line, col);
+}
+
+// A library frame's exit step (Chunk::Cleanup::site_slot, packed line << 32 |
+// col). An error leaving the frame that still carries a library position
+// (kLibraryLineBit) moves to the call that entered the frame, when that call
+// is the user's — so what the stdlib raises, itself or through a native it
+// wraps, reports at the user's line, alike on every engine. A site that is
+// library code leaves it to the frame that site belongs to. The in-flight
+// exception is replaced, as a throwing defer replaces it, rather than edited:
+// a JIT pad reads the carriers, never the C++ object. The thrown payload's
+// reference stays with the carrier, which the replacement hands on unchanged.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_reanchor(int64_t site) {
+  int64_t line = site >> 32, col = site & 0xffffffff;
+  if (line == 0 || culebra::is_library_line(line)) return;
+  auto& rt = culebra::current_runtime();
+  if (rt.is_throw) {
+    if (culebra::is_library_line(rt.thrown_line))
+      culebra_runtime_throw(rt.thrown_tag, rt.thrown_data, line, col);
+    return;
+  }
+  if (rt.pending_error && culebra::is_library_line(rt.pending_line))
+    throw culebra::CulebraError(rt.pending_kind, rt.pending_msg, line, col);
 }
 
 // Re-throw the currently-in-flight exception. Used by cleanup

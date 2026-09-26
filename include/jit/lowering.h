@@ -4516,6 +4516,31 @@ struct Lowering {
           break;
         case Op::PosSnap: {
           int64_t def = c.consts[in.b].data;
+          if (in.c < 0) {
+            // No argument index: param_pos is the published call site, or
+            // the def position when none was published — two loads off the
+            // frame's thread state, not a call, since every library
+            // function's prologue runs this one (its Cleanup::site_slot).
+            auto i8Ty = b.getInt8Ty();
+            auto ts = j.thread_state_ptr();
+            auto line = b.CreateLoad(
+                i64Ty, b.CreateConstInBoundsGEP1_64(
+                           i8Ty, ts, offsetof(JitThreadState, call_line)),
+                "call.line");
+            auto col = b.CreateLoad(
+                i64Ty, b.CreateConstInBoundsGEP1_64(
+                           i8Ty, ts, offsetof(JitThreadState, call_col)),
+                "call.col");
+            auto site = b.CreateOr(
+                b.CreateShl(line, 32),
+                b.CreateAnd(col, b.getInt64(0xffffffff)), "call.site");
+            auto packed = b.CreateSelect(
+                b.CreateICmpNE(line, b.getInt64(0)), site, b.getInt64(def),
+                "vm.errpos");
+            b.CreateStore(j.make_value(b.getInt8(TAG_LONG), packed),
+                          slots[in.a]);
+            break;
+          }
           auto packed = j.emit_call(
               j.module_->getOrInsertFunction(rt::param_pos, i64Ty, i64Ty,
                                              i64Ty, i64Ty),
@@ -4999,6 +5024,11 @@ struct Lowering {
       JIT::CleanupPad pad(
           j, frame ? nullptr : pads[static_cast<size_t>(cu.parent)]);
       if (!pad.open(pads[k], "vm.scope.exc")) continue;
+      // Read before the releases below, which nil the slot.
+      llvm::Value* site =
+          frame && cu.site_slot >= 0
+              ? j.extract_data(b.CreateLoad(j.valueType_, slots[cu.site_slot]))
+              : nullptr;
       auto d = b.CreateLoad(i64Ty, depthSlot, "rec.d");
       b.CreateCall(restoreFn, {d});
       // Drain the JIT's own unwind-temp pool too. A shared emitter called from
@@ -5055,6 +5085,19 @@ struct Lowering {
       // executor's own unwind for why only here.
       if (frame && !hush && c.owned_frame_depth >= 0)
         j.emit_owned_scope_exit(load_owned_mark(c.owned_frame_depth));
+      // Exec::unwind's library-frame step: the re-anchored error, when there
+      // is one, replaces the carried exception through a relay.
+      if (site) {
+        auto doneBB = BasicBlock::Create(j.ctx_, "vm.scope.anchored", fn);
+        auto relayBB = BasicBlock::Create(j.ctx_, "vm.scope.anchor.exc", fn);
+        b.CreateInvoke(j.module_->getOrInsertFunction(
+                           rt::reanchor, b.getVoidTy(), i64Ty),
+                       doneBB, relayBB, {site});
+        j.emit_landingpad(relayBB, "anchor.exc", /*open=*/false,
+                          /*replaces=*/true);
+        b.CreateBr(doneBB);
+        b.SetInsertPoint(doneBB);
+      }
       if (frame && chunk_idx != 0)
         b.CreateCall(restoreFn, {b.CreateSub(d, b.getInt64(1), "rec.d1")});
       if (cu.handler == Chunk::kNoHandler) continue;  // pad dtor re-raises

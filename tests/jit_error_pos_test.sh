@@ -779,5 +779,32 @@ check_same "value inline typed param 2nd" "@value class A {
 }
 A.new(1, '"'"'nope'"'"').y"
 
+# An error the stdlib raises, uncaught: at the user's call into it, never at a
+# line of the preamble — whose numbering differs between the executor (the
+# spliced modules) and the baked JIT modules (each on its own), so a leak
+# would diverge as well as mislead. Both engines, and the exact position.
+check_at() {
+  local name="$1" prog="$2" want="$3"
+  printf '%s\n' "$prog" > "$TMP/t.cul"
+  local out_i out_j
+  out_i=$(CULEBRA_AUDIO=off CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" --vm "$TMP/t.cul" 2>&1)
+  out_j=$(CULEBRA_AUDIO=off CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" --jit "$TMP/t.cul" 2>&1)
+  if [[ "$out_i" != "$want" || "$out_j" != "$want" ]]; then
+    echo "FAIL [$name]: want $want"
+    echo "  vm:  $out_i"
+    echo "  jit: $out_j"
+    fail=1
+  fi
+}
+check_at "stdlib native, uncaught" 'let ok = 1
+let s = Audio.Sound("not audio")' \
+  'ValueError: not a valid WAV, MP3 or Ogg audio stream at 2:9.'
+check_at "stdlib native, two modules" 'Canvas.init(4, 4)
+let s = Audio.Sound("not audio")' \
+  'ValueError: not a valid WAV, MP3 or Ogg audio stream at 2:9.'
+check_at "stdlib throw, uncaught" 'let ok = 1
+let m = StateMachine.new({initial: "a", states: {a: 1}})' \
+  "uncaught: {kind: 'TypeError', message: 'type error: expected Object for state 'initial', got String'} at 2:9."
+
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1

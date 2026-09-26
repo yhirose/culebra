@@ -758,6 +758,7 @@ inline constexpr auto debugger_break      = "culebra_runtime_debugger_break";
 inline constexpr auto defer_mark          = "culebra_runtime_defer_mark";
 inline constexpr auto defer_push          = "culebra_runtime_defer_push";
 inline constexpr auto defer_run_to        = "culebra_runtime_defer_run_to";
+inline constexpr auto reanchor            = "culebra_runtime_reanchor";
 inline constexpr auto set_drop_suppressed = "culebra_runtime_set_drop_suppressed";
 inline constexpr auto div_zero            = "culebra_runtime_div_zero";
 inline constexpr auto input               = "culebra_runtime_input";

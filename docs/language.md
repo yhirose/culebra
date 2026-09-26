@@ -4099,6 +4099,12 @@ Objects** with four properties:
 | `line` | `Long` | 1-based source line of the offending AST node, `0` if unknown. |
 | `col` | `Long` | 1-based source column, `0` if unknown. |
 
+An error raised inside the standard library — by a function it writes in
+Culebra, or by a native function one of those calls — reports the position
+of your call into the library: `line` and `col` never point into library
+source. An error raised in a function of yours that the library calls keeps
+its own position.
+
 User code can branch on `e.kind`:
 
     try { let x = arr[100] }
