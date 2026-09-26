@@ -63,7 +63,7 @@
 23. [`Log`](#23-log) — stderrへのレベル付き構造化ログ（text / JSON、child logger）
 24. [`TOML`](#24-toml) — TOML設定をparse / stringify
 25. [`SQLite`](#25-sqlite) — 組み込みSQLデータベース（query / execute / プリペアド文 / トランザクション）
-26. [`Canvas`](#26-canvas) — ゲーム向けイミディエイトモード2Dフレームバッファ（図形 / スプライト / オフスクリーン描画先 / テキスト / キー・マウス・ゲームパッド / ウィンドウ制御 / tone / 効果音 / music）
+26. [`Canvas`](#26-canvas) — ゲーム向けイミディエイトモード2Dフレームバッファ（図形 / スプライト / オフスクリーン描画先 / テキスト / キー・マウス・ゲームパッド / ウィンドウ制御）
 27. [`Scene`](#27-scene) — 手続きジオメトリ向けのretained-mode 3Dレンダラ
 28. [`Net`](#28-net) — 生のTCP / UDPソケットと名前解決（`Http`の下位レイヤ）
 29. [`Desktop` / `Webview`](#29-desktop--webview) — ネイティブWebViewのデスクトップアプリ: ローカルHTTPサーバ + ウィンドウを1呼び出しで
@@ -76,8 +76,9 @@
 36. [`StateMachine`](#36-statemachine) — 入れ子にできる状態機械。テキストでも書ける
 37. [`FST`](#37-fst) — 書き換えない辞書を圧縮して持つ。前方一致・補完・あいまい検索
 38. [`Search`](#38-search) — 自分の文書を全文検索して順位をつける
-39. [設計上の注記](#39-設計上の注記)
-40. [未収録（将来検討）](#40-未収録将来検討)
+39. [`Audio`](#39-audio) — ウィンドウの有無によらず使える音: WASM-4のtone、効果音、ストリーム再生の音楽、合成するPCM
+40. [設計上の注記](#40-設計上の注記)
+41. [未収録（将来検討）](#41-未収録将来検討)
 
 **目的別索引**
 
@@ -119,6 +120,7 @@
 | 可変長のread-onlyデータをスレッド間で共有（コピーなし） | [§12 Shared](#shared--参照共有する-immutable-値) — `Shared.new(value)` |
 | Ctrl+C / SIGINTを綺麗に扱う | [§12 Signal](#signal--signalnotify--signalreset) — `Signal.notify(tx)` / `Signal.reset()` |
 | デスクトップGUI（ネイティブWebView + ローカルサーバ） | [§29 Desktop](#29-desktop--webview) — `Desktop.run({title, assets, routes})` |
+| 音を鳴らす（tone・効果音・音楽）、音を合成する | [§39 Audio](#39-audio) — `Audio.tone(440, 10)` / `Audio.Sound.new(bytes).play()` / `Audio.Music.new(bytes)` / `Audio.Stream.new(44100, 1, 1024)` |
 | ヒープ情報・リークチェック | [§7 GC](#gc--ヒープ情報の取得) — `GC.stat()` → `{live_objects, rc_objects, heap_bytes}` |
 | 2D/3Dベクトル演算（dot、length、normalize、distance） | [§30 `Vector2`](#30-vector2) / [§31 `Vector3`](#31-vector3) |
 | FIFOキュー、スライディングウィンドウ、前後両端のスタック | [§32 `Deque`](#32-deque) — `Deque.new()` — `push_back`/`pop_front` |
@@ -4203,9 +4205,8 @@ while running {
 # doctest: skip
 let art = Embed.dir("assets")
 let sheet = Canvas.Sprite.from_png(art.read("sprites.png"))
-if art.exists("music.ogg") {
-  Canvas.music(art.read("music.ogg"))
-}
+let music = art.exists("music.ogg") ? Audio.Music.new(art.read("music.ogg")) : nil
+music?.play()
 ```
 
 同じハンドルでディレクトリ全体をHTTP配信できる:
@@ -4925,8 +4926,8 @@ Database / Statementハンドルは生成したスレッド（isolate）に紐�
 バッファ。フレームを描き、`present`で提示し、入力をポーリングして繰り返す。
 色はpacked RGBA `Long`、バッファは任意サイズ（WASM-4流の160×160が典型）。
 WASM PlaygroundではCanvasプログラムは **Canvasタブ**で動く — フレームは
-`<canvas>`に表示され、キーボード / ポインタが入力になり、`tone`はWebAudioで
-鳴る。ネイティブではmacOS・Linux・Windowsで（`Scene`と同じvendored静的
+`<canvas>`に表示され、キーボード / ポインタが入力になり、音（[`Audio`](#39-audio)）は
+WebAudioで鳴る。ネイティブではmacOS・Linux・Windowsで（`Scene`と同じvendored静的
 raylib + SDL3を使い）**実際のデスクトップウィンドウを開く**。Linuxでの
 ビルドにはSDL3が挙げるビルド依存が必要で、探索するX11 / 音声のヘッダが
 無いとSDL3のconfigureが失敗するので、入っていないマシンでは
@@ -4945,15 +4946,13 @@ raylib + SDL3を使い）**実際のデスクトップウィンドウを開く**
 ウィンドウバックエンド無しのビルド、および`CULEBRA_CANVAS_HEADLESS`が
 `0` / `off`以外に設定された実行では**ヘッドレス**: ピクセル / スプライト操作は同一に
 動く（振る舞いはVM / JIT / AOTで一致し`Canvas.get_pixel`で検証可能）が、
-何も表示されず、入力は「ボタンなし」を返し、`tone`は無音。この環境変数が、
+何も表示されず、入力は「ボタンなし」を返す。この環境変数が、
 ディスプレイの無いサーバや（`just`の全レシピがexportするので）テストスイートが
 ウィンドウ対応バイナリを走らせる方法。`-DCULEBRA_ENABLE_CANVAS_WINDOW=OFF`は
 さらに踏み込んでraylib自体をビルドから外す。どちらも宣言していないウィンドウ
 ビルドがウィンドウを開けない場合（ディスプレイ無し・使えるGL無し）は、黙って
 ヘッドレスのふりをするのではなく、最初の`present`でこの環境変数を案内する
-`RuntimeError`を送出する。ヘッドレスでなければネイティブ`tone`も
-小さなソフトウェアAPU（下記音声参照）をraylibのオーディオスレッドで鳴らし、
-音声デバイスは初回使用時に遅延で開く。
+`RuntimeError`を送出する。
 
 ### 色
 
@@ -5342,81 +5341,15 @@ raylib自身の`GamepadButton` / `GamepadAxis`の値で、スクリプトがそ�
 
 ### 音声
 
-`Canvas.tone(freq, dur, vol = 100, wave = 0, end_freq = nil, attack = 0,
-decay = 0, release = 0, peak = nil, duty = 2)`はWASM-4流の小さなAPUで音を
-鳴らす。最も簡単な形`Canvas.tone(freq, dur)`は`freq` Hzの`dur`フレーム
-（~60fps）の音。オプション引数でエンベロープ全体を扱える: 音程は`freq → end_freq`
-にスライドし、ADSRエンベロープ（`attack`/`decay`/`release`はフレーム数、`dur`
-はサステイン長）が音量を0 → `peak` → サステインの`vol`（0–100）→ 0と整形する。
-`wave`はチャンネルを選ぶ — `Canvas.PULSE` / `PULSE2`（`duty`サイクル付き:
-`Canvas.DUTY_EIGHTH` / `DUTY_QUARTER` / `DUTY_HALF` / `DUTY_THREE_QUARTER`）、
-`Canvas.TRIANGLE`、`Canvas.NOISE`、またはculebra拡張の`Canvas.SAWTOOTH`。各
-チャンネルはモノフォニック（新しい音が前の音を止める）。合成波形は生で、4
-チャンネルが同時に鳴りうるので、`tone`は0–100をフルスケールよりかなり低く
-ミックスする — ファイル音源（`Sound`・`music`）はすでにミックス済みなので
-`vol = 100`はファイル自身のレベルで鳴る。
-
-ブラウザでは`tone`はWebAudioで鳴る（チャンネルごとのオシレータ、pulseのduty
-サイクル用`PeriodicWave`、フィルタ済みノイズバッファ）。ネイティブではraylibの
-オーディオスレッドで鳴らす小さなソフトウェアシンセ（帯域制限していない素朴な
-オシレータ、noiseはフィルタ済みPRNG）で、初回使用時に遅延初期化するので
-`tone`を一度も呼ばないプログラムは音声デバイスを開かない。どちらの実装でも
-ノートはデバイスが埋めていたバッファの境界ではなくオーディオストリーム自身の
-サンプルクロック上に置かれるので、デバイスが選んだバッファ長によらず
-シーケンサの音符間隔は保たれる。ヘッドレスなネイティブ
-では無音、音声デバイスの無いマシンでも無音のまま（デバイスを開かず、クラッシュも
-しない）。ネイティブ音声とWebAudioは**似た音になるよう調整した別実装**であって
-サンプル単位で同一ではない — ピクセル操作と違い`tone`はbackend間でビット完全一致
-である必要はない。
-
-### 効果音
-
-`Canvas.Sound.new(data)`はワンショットのサンプルをバイト列 — WAV / MP3 /
-Ogg Vorbis、`Sprite.from_png`と同じバイト列渡しの流儀 — からデコードし、
-呼び出しごとに再生する。`tone`の合成に対する録音サンプル側の対応物
-（スイープする矩形波でなくファイルの爆発音）。
-
-| メソッド | 効果 |
-| --- | --- |
-| `sound.play(vol = 100)` | 先頭から再生（再生中なら先頭からやり直し） |
-| `sound.stop()` | 停止 |
-| `sound.playing() -> Bool` | まだ鳴っているか |
-
-各`Sound`は1ボイス — 再生中の`play`はやり直しになる。下にいるホストの
-サンプラーと同じ挙動 — で、デコード済みサンプルは最後の参照とともに解放される。
-3形式のどれでもないバイト列はどのbackendでも
-`ValueError: not a valid WAV, MP3 or Ogg audio stream`を投げる。検査を通った
-のにデコードできないストリームは無音のまま。ヘッドレス（および音声デバイスの
-無いマシン）ではすべてno-opで`playing()`はfalse — `music`と同じ。
-
-### 音楽
-
-`Canvas.music(data, loop = true, vol = 100, start = 0.0)`はMP3 / Ogg Vorbis
-ファイルをそのバイト列（`String`、例えば`FS.read`の結果 — `Sprite.from_png`と
-同じバイト列渡しの流儀）から再生する。スロットはpygameの`mixer.music`と同じく
-**1つだけ**: 新しいファイルを再生すると前のものは置き換わり、ハンドルは
-スクリプトに渡らない。`vol`は0–100で`100`がファイル自身のレベル、`start`は
-ファイル内の秒位置。MP3でもOggでもないバイト列はどのbackendでも
-`ValueError: not a valid MP3 or Ogg audio stream`を投げ、この検査を通ったのに
-デコードに失敗したストリームは無音のままになる。
-
-| 関数 | 効果 |
-| --- | --- |
-| `Canvas.music(data, loop = true, vol = 100, start = 0.0)` | デコードして再生（再生中のファイルは置換） |
-| `Canvas.music_stop()` | 停止してアンロード |
-| `Canvas.music_pause()` / `Canvas.music_resume()` | 一時停止 / 停止位置から再開 |
-| `Canvas.music_volume(vol)` | 音量変更（0–100） |
-| `Canvas.music_seek(seconds)` | 位置ジャンプ |
-| `Canvas.music_playing() -> Bool` | いま鳴っているか |
-
-何もロードされていないときの各操作はno-opで`music_playing()`は`false` —
-`tone`の「clampして投げない」流儀に合わせ、フォーマット検査だけが唯一の
-エラー。ネイティブではストリームを逐次デコードし、そのバッファは`present()`
-から補充されるので、**音楽はフレームをpresentしている間だけ進む** — present
-しなくなったプログラムは音楽も一緒に止まる。ヘッドレス（および音声デバイスの
-無いマシン）ではすべてno-op。ブラウザではファイルのデコードはWebAudioが行い、
-Ogg対応はブラウザ依存（Safariは歴史的にMP3のみ）である点に注意。ネイティブは
-両フォーマットとも常に再生できる。
+音はウィンドウを必要としない独立した名前空間[`Audio`](#39-audio)にある。
+Canvasは1リリースの間だけ、以前の音声のメンバーをAudioへの転送として残す:
+`Canvas.tone`とチャンネル・デューティ比の定数（`Canvas.PULSE`、…、
+`Canvas.DUTY_THREE_QUARTER`）はAudioのものそのもの、`Canvas.Sound.new(data)`は
+`play(vol = 100)`がCanvasの`0..100`を受け取る`Audio.Sound`、
+`Canvas.music(data, loop = true, vol = 100, start = 0.0)`と`music_stop` /
+`music_pause` / `music_resume` / `music_volume(vol)` / `music_seek(seconds)` /
+`music_playing()`は`Audio.Music`の上に音楽の枠を1つ持つ（`vol`はやはり`0..100`）。
+新しいコードは`Audio`を使う。
 
 ### ゲームループ
 
@@ -5811,52 +5744,8 @@ ASCII）: 数字と数語のHUDはそれだけ列挙して小さなアトラス�
 
 ### 音声
 
-`Scene.Sound.new(path)`はワンショット効果音、`Scene.Music.new(path)`は
-ストリーム再生トラック。どちらもファイルパスを取り、`volume(v)`・`pitch(p)`・
-`pan(p)`を持つ。`Sound`は`play` / `stop` / `playing`、`Music`は`pause` /
-`resume` / `looping(on)`を加え、バッファを供給し続けるため毎フレーム
-`update()`を呼ぶ必要がある。
-
-`Scene.Audio.new(rate, channels, buffer)`はスクリプト自身がサンプル単位で合成する
-ストリーム — 回転数に追従するエンジン音、ブレーキノイズ、ビープ — 音声ファイルを
-持たないゲームが音を作る方法。サンプルはメインスレッドで作ってブロック単位で
-渡す。スクリプトの一部がオーディオスレッドで走ることは無い: そこでのGC停止は
-可聴のドロップアウトになる。
-
-| メソッド | 効果 |
-| --- | --- |
-| `Scene.Audio.new(rate, channels, buffer) -> Audio` | `rate` Hz、1または2チャンネル、`buffer`フレームずつ供給するストリーム（1024が妥当な既定。〜512未満は非対応） |
-| `audio.ready() -> Bool` | オーディオデバイスの無いマシンではfalse。以下はすべて何もしなくなる |
-| `audio.needed() -> Long` | 今受け取れるフレーム数: 1ブロック消費されたら`buffer`、両方満杯なら0 |
-| `audio.push(s)` / `audio.push2(l, r)` | モノラル1サンプル / ステレオ1フレーム（−1..1）を保留ブロックへ |
-| `audio.pending() -> Long` | pushしたがまだ渡していないフレーム数 |
-| `audio.submit() -> Long` | 保留ブロックをストリームに渡す。書き込んだフレーム数 |
-| `audio.dropped() -> Long` | 満杯のブロックを越えてpushされ捨てられたサンプル数（作りすぎ） |
-| `audio.latency() -> Float` | `submit()`からスピーカーまでの秒数: 2ブロック分 |
-| `audio.play()` / `stop()` / `pause()` / `resume()` / `playing() -> Bool` | 再生制御 |
-| `audio.volume(v)` / `pitch(p)` / `pan(p)` | `Sound`と同じ |
-
-```culebra
-# doctest: skip
-let engine = Scene.Audio.new(44100, 1, 1024)
-engine.play()
-mut phase = 0.0
-while !view.closing() {
-  while engine.needed() > 0 {
-    for i in 0..engine.needed() {
-      phase += (48.0 + 165.0 * rpm_frac) / 44100.0
-      if phase >= 1.0 { phase -= 1.0 }
-      engine.push((phase * 2.0 - 1.0) * (0.03 + 0.13 * rpm_frac))
-    }
-    engine.submit()
-  }
-  # … 描画 …
-}
-```
-
-60 fpsなら44.1 kHzのストリームは1フレームに735フレームを求める。合成は算術で、
-JITなら余裕。`needed()`がフレームをまたいで高いままなら、スクリプトが追いついて
-いない — ストリームは1ブロックを繰り返すか無音にする。
+Sceneは音声を持たない。音は名前空間[`Audio`](#39-audio)で、Sceneのプログラムも
+ほかのプログラムと同じようにそれを使う。
 
 ### 最小のシーン
 
@@ -7559,7 +7448,158 @@ let idx = Search.Index.load("notes.idx", readonly: true)
 索引は`Sendable`ではない。結果が索引を参照しているので、作ったスレッドから出せない。
 isolateごとに別の索引を持たせる。
 
-## 39. 設計上の注記
+## 39. `Audio`
+
+どのプログラムでも使える音: WASM-4流のtone、ワンショットのサンプル、ストリーム
+再生の音楽、スクリプトが合成するPCM。`Audio`は音声デバイスを単独で持ち、
+ウィンドウを必要としないので、`Canvas`で描くプログラムでも、`Scene`で描く
+プログラムでも、何も描かないプログラムでも同じように動く。デバイスは初回使用時に
+開き、何も鳴らさないプログラムはデバイスを開かない。
+
+デバイスが無いことはエラーではない。デバイスの無いマシン（サーバ、CI）や、
+`CULEBRA_AUDIO`を`off`か`0`にした実行（`just`の全レシピがそう設定する）では、
+`Audio.available()`は`false`で、何も鳴らないが、どの呼び出しもこの節のとおりに
+答える: ハンドルは作られ、操作は何もせず、`playing()`は`false`、`Stream`は
+渡されたものを数える。デバイスを求めた最初の呼び出しが、無いことを警告として
+1度だけ表示する。
+
+| 関数 | 効果 |
+| --- | --- |
+| `Audio.available() -> Bool` | 音声デバイスが開いているか（まだ誰も開いていなければ開く） |
+
+音量は`0.0..1.0`で、`1.0`が元の音量。pitchは再生速度で`1.0`が元のまま。panは
+`-1.0`（左）から`0.0`を経て`1.0`（右）。WASM-4の単位を保つのは下の`tone`だけ。
+
+### tone
+
+`Audio.tone(freq, dur, vol = 100, wave = 0, end_freq = nil, attack = 0,
+decay = 0, release = 0, peak = nil, duty = 2)`はWASM-4流の小さなAPUで音を
+鳴らす。単位はWASM-4自身のものなので、WASM-4のプログラムの呼び出しは
+そのまま使える。最も簡単な形`Audio.tone(freq, dur)`は`freq` Hzの`dur`ティック
+（1ティックは1/60秒）の音。オプション引数でエンベロープ全体を扱える: 音程は
+`freq → end_freq`にスライドし、ADSRエンベロープ（`attack`/`decay`/`release`は
+ティック数、`dur`はサステイン長）が音量を0 → `peak` → サステインの`vol`
+（どちらも`0..100`）→ 0と整形する。`wave`はチャンネルを選ぶ — `Audio.PULSE` /
+`PULSE2`（`duty`サイクル付き: `Audio.DUTY_EIGHTH` / `DUTY_QUARTER` /
+`DUTY_HALF` / `DUTY_THREE_QUARTER`）、`Audio.TRIANGLE`、`Audio.NOISE`、
+またはculebra拡張の`Audio.SAWTOOTH`。各チャンネルはモノフォニック（新しい音が
+前の音を止める）。合成波形は生で、4チャンネルが同時に鳴りうるので、`tone`は
+`0..100`をフルスケールよりかなり低くミックスする。
+
+ブラウザでは`tone`はWebAudioで鳴る（チャンネルごとのオシレータ、pulseのduty
+サイクル用`PeriodicWave`、フィルタ済みノイズバッファ）。ネイティブでは
+オーディオスレッドで鳴らす小さなソフトウェアシンセ（帯域制限していない素朴な
+オシレータ、noiseはフィルタ済みPRNG）。どちらの実装でもノートはデバイスが
+埋めていたバッファの境界ではなくオーディオストリーム自身のサンプルクロック上に
+置かれるので、デバイスが選んだバッファ長によらずシーケンサの音符間隔は保たれる。
+2つは**似た音になるよう調整した別実装**であってサンプル単位で同一ではない —
+ピクセル操作と違い`tone`はbackend間でビット完全一致である必要はない。
+
+```culebra
+Audio.tone(440, 8)
+Audio.tone(700, 0, 10, Audio.PULSE, 870, 10, 5, 3, 20, Audio.DUTY_QUARTER)
+```
+
+### Sound
+
+`Audio.Sound.new(data)`はワンショットのサンプルをバイト列（WAV / MP3 /
+Ogg Vorbisの`String`。`FS.read`や`Embed`から、あるいはプログラムが組み立てた
+もの）からデコードし、呼び出しごとに再生する。`tone`の合成に対する録音サンプル
+側の対応物。
+
+| メソッド | 効果 |
+| --- | --- |
+| `sound.play()` | 先頭から再生（再生中なら先頭からやり直し） |
+| `sound.stop()` | 停止 |
+| `sound.playing() -> Bool` | まだ鳴っているか |
+| `sound.volume(v)` / `sound.pitch(p)` / `sound.pan(p)` | 上記の単位。次の`play`から、および鳴っている音にも効く |
+
+各`Sound`は1ボイスで、デコード済みサンプルは最後の参照とともに解放され、
+そのとき音も止まる: 鳴らしたい間はハンドルを持ち続ける。3形式のどれでもない
+バイト列はどのbackendでも`ValueError: not a valid WAV, MP3 or Ogg audio stream`を
+投げる。検査を通ったのにデコードできないストリームは無音のまま。
+
+```culebra
+let WAV = Encoding.hex.decode("524946462800000057415645666d7420100000000100010040" +
+  "1f0000401f000001000800646174610400000080c8803c")
+let blip = Audio.Sound.new(WAV)
+blip.volume(0.5)
+blip.play()
+```
+
+### Music
+
+`Audio.Music.new(data, loop = true)`はMP3 / Ogg Vorbisのファイルをバイト列から
+ストリーム再生する。複数を同時に鳴らせ（ループの上に短いジングルなど）、
+runtimeが専用のスレッドから供給し続けるので、長引いたフレームの間も、
+ロード画面の間も、フレームループの無いプログラムでも音楽は止まらない。
+
+| メソッド | 効果 |
+| --- | --- |
+| `music.play()` | 再生を始める |
+| `music.stop()` | 停止して先頭に戻す |
+| `music.pause()` / `music.resume()` | 一時停止 / 停止位置から再開 |
+| `music.seek(seconds)` | 位置ジャンプ（負の値とNaNは先頭） |
+| `music.playing() -> Bool` | いま鳴っているか |
+| `music.volume(v)` / `music.pitch(p)` / `music.pan(p)` | 上記の単位 |
+
+`Sound`と同じく、`Music`も最後の参照が消えると止まる。MP3でもOggでもない
+バイト列はどのbackendでも`ValueError: not a valid MP3 or Ogg audio stream`を
+投げ、この検査を通ったのにデコードに失敗したストリームは無音のまま。ブラウザでは
+ファイルのデコードはWebAudioが行い、Ogg対応はブラウザ依存（Safariは歴史的に
+MP3のみ）である点に注意。ネイティブは両フォーマットとも常に再生できる。
+
+```culebra
+# doctest: skip
+let bgm = Audio.Music.new(FS.read("music.ogg"))
+bgm.volume(0.6)
+bgm.play()
+```
+
+### Stream
+
+`tone`・`Sound`・`Music`はどれも、音符・サンプル・ファイルとしてすでに形のある
+音を鳴らす。`Audio.Stream`は4つ目の種類で、スクリプトがブロック単位で自分で
+作る音の流れを鳴らす — エミュレータのAPUのミキサ、元のサンプルレートから変換
+したチップチューンなど、プログラム自身が組み立てる信号に使う。
+`Audio.Stream.new(rate, channels, buffer)`は`rate` Hz、1または2チャンネル、
+`buffer`フレームずつ供給するストリームを開く（1024が目安、約512未満は非対応）。
+
+| メソッド | 効果 |
+| --- | --- |
+| `stream.ready() -> Bool` | 音声デバイスが無ければ`false`: 何も鳴らないが、以下のメソッドは書かれたとおりに答える |
+| `stream.needed() -> Long` | いま受け取れるフレーム数: ブロックが1つ空けば`buffer`、2つとも埋まっている間は`0`。デバイスが無ければ常に`0` |
+| `stream.push(samples: Array) -> Long` | `samples`のフレームを保留中のブロックに入れる（各値は`-1.0..1.0`、範囲外はclamp）。モノラルは1フレーム1値、ステレオはL,Rの組を交互に並べる。受け取ったフレーム数を返す — ブロックがほぼ満杯なら`samples`にあるより少なくなるので、`needed()`より多く作った呼び出し側は残りを捨てずに次の呼び出しへ持ち越す。`Long`でも`Float`でもない要素は`TypeError` |
+| `stream.submit() -> Long` | 保留中のブロックをストリームに渡し、渡したフレーム数を返す。保留が無いか、ストリームがまだ次のブロックを受け取れないときは`0`。デバイスが無ければブロックを空にして`0` |
+| `stream.latency() -> Float` | `submit`からスピーカーまでの秒数: その前にある2ブロック分 |
+| `stream.play()` / `stop()` / `pause()` / `resume()` / `playing() -> Bool` | 再生の操作と状態 |
+| `stream.volume(v)` / `stream.pitch(p)` / `stream.pan(p)` | 上記の単位 |
+
+```culebra
+let pcm = Audio.Stream.new(44100, 1, 1024)
+pcm.play()
+mut phase = 0.0
+Canvas.run(160, 160, fn () {
+  while pcm.needed() > 0 {
+    let block = iota(pcm.needed()).map(fn (_) {
+      phase += 440.0 / 44100.0
+      phase -= Math.floor(phase)
+      phase < 0.5 ? 0.2 : -0.2
+    })
+    pcm.push(block)
+    pcm.submit()
+  }
+  # … 描画 …
+  true
+})
+```
+
+60fpsでは、44.1kHzのストリームは描画1フレームあたり735フレーム分のサンプルを
+必要とする。サンプルごとに呼ぶのでなく、ブロック全体をまとめて作って渡すことが、
+スクリプトの1フレームの予算に収めるための要点になる。ストリームはブラウザでは
+鳴らず、音声デバイスの無いマシンと同じように答える。
+
+## 40. 設計上の注記
 
 ### 名前空間ファースト、グローバルは出力の3つだけ
 
@@ -7616,7 +7656,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 40. 未収録（将来検討）
+## 41. 未収録（将来検討）
 
 ### 重量級データ構造
 

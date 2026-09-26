@@ -43,7 +43,7 @@
 #include "raylib.h"     // vendored: vendor/raylib/src (added to include path by CMake)
 #include "raymath.h"
 #include "rlgl.h"       // FBO / shader / matrix stack for shadows
-#include "stdlib/keynames.h"   // key / pad names, shared with the Canvas backend
+#include "stdlib/keynames.h"    // key / pad names, shared with the Canvas backend
 
 namespace gfx {
 
@@ -63,21 +63,6 @@ static Color col(int64_t r, int64_t g, int64_t b, int64_t a = 255) {
 static Vector3 rgb01(int64_t r, int64_t g, int64_t b, double k = 1.0) {
   return Vector3{(float)(chan(r) / 255.0 * k), (float)(chan(g) / 255.0 * k),
                  (float)(chan(b) / 255.0 * k)};
-}
-
-// Bring the audio device up on first use (a View, Sound or Music) so scripts
-// don't have to manage it. Idempotent; a failure is latched so a device-less
-// machine doesn't re-probe (and re-log) on every Sound/Music construction.
-static void ensure_audio() {
-  static bool failed = false;
-  if (failed || IsAudioDeviceReady()) return;
-  InitAudioDevice();
-  if (!IsAudioDeviceReady()) {
-    failed = true;
-    // Sound is decorative, so no error — but say it once, past the ctor's
-    // LOG_ERROR filter (a latched silence reads as "my sounds are broken").
-    std::fprintf(stderr, "Scene: no audio device -- sound stays off\n");
-  }
 }
 
 // raylib reports a graphics device it could not create with LOG_FATAL, and its
@@ -1220,7 +1205,6 @@ class View {
     // late for a script to ask "are you sure?" — a pause menu cannot exist.
     // Esc is an ordinary key here (view.key("escape")); quit() is the exit.
     SetExitKey(KEY_NULL);
-    ensure_audio();
     cam_.up = Vector3{0, 1, 0};
     cam_.fovy = 55;
     cam_.projection = CAMERA_PERSPECTIVE;
@@ -1298,10 +1282,6 @@ class View {
       UnloadShader(lit_);
       UnloadShader(depth_);
       UnloadShader(post_);
-      // NB: do NOT CloseAudioDevice() here. The device is a process-global
-      // singleton (ensure_audio) shared with Sound/Music, which may outlive this
-      // View; closing it would silence and leak still-live handles. It is
-      // reclaimed at process exit. Sound/Music unload their own buffers.
       CloseWindow();
     }
     // Plain heap (raylib allocates one MaterialMap array per material), so it
@@ -2209,122 +2189,6 @@ class View {
   float fogend_ = 2.0e9f;
 };
 
-// A short fully-decoded sound effect (WAV/OGG/MP3/FLAC) for one-shot playback —
-// collisions, kerb strikes, UI blips. Cheap to fire repeatedly.
-class SoundFx {
- public:
-  SoundFx(std::string path) { ensure_audio(); snd_ = LoadSound(path.c_str()); }
-  ~SoundFx() { if (IsAudioDeviceReady()) UnloadSound(snd_); }
-  void play() { PlaySound(snd_); }
-  void stop() { StopSound(snd_); }
-  bool playing() const { return IsSoundPlaying(snd_); }
-  void volume(double v) { SetSoundVolume(snd_, (float)v); }       // 0..1
-  void pitch(double p) { SetSoundPitch(snd_, (float)p); }         // 1.0 = normal
-  void pan(double p) { SetSoundPan(snd_, (float)p); }             // 0 left .. 1 right (0.5 center)
- private:
-  Sound snd_{};
-};
-
-// A streamed audio track for int64_t / looping audio — engine note, ambience, BGM.
-// Needs update() called each frame to keep the stream fed. Pitch drives the
-// engine RPM effect; looping by default.
-class MusicTrack {
- public:
-  MusicTrack(std::string path) {
-    ensure_audio();
-    mus_ = LoadMusicStream(path.c_str());
-    mus_.looping = true;
-  }
-  ~MusicTrack() { if (IsAudioDeviceReady()) UnloadMusicStream(mus_); }
-  void play() { PlayMusicStream(mus_); }
-  void stop() { StopMusicStream(mus_); }
-  void pause() { PauseMusicStream(mus_); }
-  void resume() { ResumeMusicStream(mus_); }
-  void update() { UpdateMusicStream(mus_); }     // call once per frame
-  bool playing() const { return IsMusicStreamPlaying(mus_); }
-  void looping(bool on) { mus_.looping = on; }
-  void volume(double v) { SetMusicVolume(mus_, (float)v); }       // 0..1
-  void pitch(double p) { SetMusicPitch(mus_, (float)p); }         // 1.0 = normal (RPM)
-  void pan(double p) { SetMusicPan(mus_, (float)p); }
- private:
-  Music mus_{};
-};
-
-// A PCM stream the script synthesises itself: an engine note that follows
-// the revs, brake noise, a beep — the sound of a game with no sound files.
-//
-// The script produces samples on the main thread and hands them over a
-// block at a time (push / submit); the audio thread only ever copies a
-// finished block. A script callback on that thread was never an option:
-// wrap.h marshals no callables, the runtime is not reentrant from a foreign
-// thread, and — had both been solved — a collector's pause inside a ~10 ms
-// audio period is an audible dropout. raylib's own double-buffered stream
-// is the right shape for this: needed() says when a block has drained.
-//
-// A machine with no audio device (CI) constructs one all the same: ready()
-// is false and every call is a no-op, so a game runs silent rather than not.
-class Audio {
- public:
-  Audio(int64_t rate, int64_t channels, int64_t buffer)
-      : rate_((int)(rate < 1 ? 1 : rate)),
-        channels_(channels == 2 ? 2 : 1),
-        buffer_((int)(buffer < 1 ? 1 : buffer)) {
-    ensure_audio();
-    if (!IsAudioDeviceReady()) return;
-    // The device period (~10 ms) is the floor raylib clamps a sub-buffer up
-    // to; below it, needed() would understate what a block holds and the
-    // remainder would play as silence — hence the documented ~512 minimum.
-    SetAudioStreamBufferSizeDefault(buffer_);
-    stream_ = LoadAudioStream((unsigned)rate_, 32, (unsigned)channels_);   // 32-bit float
-    ready_ = IsAudioStreamValid(stream_);
-  }
-  ~Audio() { if (ready_ && IsAudioDeviceReady()) UnloadAudioStream(stream_); }
-  Audio(const Audio&) = delete;
-  Audio& operator=(const Audio&) = delete;
-
-  bool ready() const { return ready_; }
-  // Frames the stream can take now: a whole block once one has drained.
-  int64_t needed() const { return ready_ && IsAudioStreamProcessed(stream_) ? buffer_ : 0; }
-  void push(double s) { add(s); }
-  void push2(double l, double r) { add(l); if (channels_ == 2) add(r); }
-  int64_t pending() const { return (int64_t)pend_.size() / channels_; }
-  // Hand the pending block over. Nothing to hand, or nowhere to put it yet
-  // (both blocks still full): 0, and the samples wait for the next call.
-  int64_t submit() {
-    int frames = (int)(pend_.size() / channels_);
-    if (frames == 0) return 0;
-    if (!ready_) { pend_.clear(); return 0; }
-    if (!IsAudioStreamProcessed(stream_)) return 0;
-    UpdateAudioStream(stream_, pend_.data(), frames);
-    pend_.clear();
-    return frames;
-  }
-  int64_t dropped() const { return dropped_; }
-  double latency() const { return 2.0 * buffer_ / rate_; }
-
-  void play() { if (ready_) PlayAudioStream(stream_); }
-  void stop() { if (ready_) StopAudioStream(stream_); }
-  void pause() { if (ready_) PauseAudioStream(stream_); }
-  void resume() { if (ready_) ResumeAudioStream(stream_); }
-  bool playing() const { return ready_ && IsAudioStreamPlaying(stream_); }
-  void volume(double v) { if (ready_) SetAudioStreamVolume(stream_, (float)v); }
-  void pitch(double p) { if (ready_) SetAudioStreamPitch(stream_, (float)p); }
-  void pan(double p) { if (ready_) SetAudioStreamPan(stream_, (float)p); }
-
- private:
-  // The pending block is capped at one block: a script that produces more
-  // than the stream can take loses the surplus and can see that it did.
-  void add(double s) {
-    if ((int64_t)pend_.size() >= (int64_t)buffer_ * channels_) { dropped_++; return; }
-    pend_.push_back((float)(s < -1.0 ? -1.0 : s > 1.0 ? 1.0 : s));
-  }
-  int rate_, channels_, buffer_;
-  AudioStream stream_{};
-  bool ready_ = false;
-  std::vector<float> pend_;
-  int64_t dropped_ = 0;
-};
-
 }  // namespace gfx
 
 namespace {
@@ -2557,47 +2421,6 @@ const bool registered = [] {
       .method<&gfx::View::path_strip>("path_strip", {"r", "g", "b"})
       .method<&gfx::View::path_stroke>("path_stroke", {"thick", "r", "g", "b"})
       .method<&gfx::View::path_spline>("path_spline", {"thick", "r", "g", "b"});
-
-  culebra::wrap<gfx::SoundFx>("Scene", "Sound")
-      .ctor<std::string>({"path"})
-      .method<&gfx::SoundFx::play>("play")
-      .method<&gfx::SoundFx::stop>("stop")
-      .method<&gfx::SoundFx::playing>("playing")
-      .method<&gfx::SoundFx::volume>("volume", {"v"})
-      .method<&gfx::SoundFx::pitch>("pitch", {"p"})
-      .method<&gfx::SoundFx::pan>("pan", {"p"});
-
-  culebra::wrap<gfx::MusicTrack>("Scene", "Music")
-      .ctor<std::string>({"path"})
-      .method<&gfx::MusicTrack::play>("play")
-      .method<&gfx::MusicTrack::stop>("stop")
-      .method<&gfx::MusicTrack::pause>("pause")
-      .method<&gfx::MusicTrack::resume>("resume")
-      .method<&gfx::MusicTrack::update>("update")
-      .method<&gfx::MusicTrack::playing>("playing")
-      .method<&gfx::MusicTrack::looping>("looping", {"on"})
-      .method<&gfx::MusicTrack::volume>("volume", {"v"})
-      .method<&gfx::MusicTrack::pitch>("pitch", {"p"})
-      .method<&gfx::MusicTrack::pan>("pan", {"p"});
-
-  culebra::wrap<gfx::Audio>("Scene", "Audio")
-      .ctor<long, long, long>({"rate", "channels", "buffer"})
-      .method<&gfx::Audio::ready>("ready")
-      .method<&gfx::Audio::needed>("needed")
-      .method<&gfx::Audio::push>("push", {"s"})
-      .method<&gfx::Audio::push2>("push2", {"l", "r"})
-      .method<&gfx::Audio::pending>("pending")
-      .method<&gfx::Audio::submit>("submit")
-      .method<&gfx::Audio::dropped>("dropped")
-      .method<&gfx::Audio::latency>("latency")
-      .method<&gfx::Audio::play>("play")
-      .method<&gfx::Audio::stop>("stop")
-      .method<&gfx::Audio::pause>("pause")
-      .method<&gfx::Audio::resume>("resume")
-      .method<&gfx::Audio::playing>("playing")
-      .method<&gfx::Audio::volume>("volume", {"v"})
-      .method<&gfx::Audio::pitch>("pitch", {"p"})
-      .method<&gfx::Audio::pan>("pan", {"p"});
   return true;
 }();
 }  // namespace

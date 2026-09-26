@@ -1321,6 +1321,7 @@ emits it as a base archive plus one small archive per heavy feature
 | `libculebra_rt_search_segmenter.a` | strong segmenter choke (cpp-segmentlib, the model backends behind `Search.segmenter`, ~140 KB); force-loaded when the program names `segmenter`, so a program that searches without a model carries none of it |
 | `libculebra_rt_foreign.a` | the `__Foreign` wrap fixture the foreign-object tests are written against (a static `wrap<T>` registrar, so it needs its own archive) |
 | `libculebra_rt_canvas.a` | the raylib window backend (window builds only; the base carries headless stubs) |
+| `libculebra_rt_audio.a` | the Audio backend: raylib's audio module built on its own, so no window code and no SDL (the base carries silent stubs) |
 | `libculebra_rt_scene.a` | Scene's wrap registrar (pulls raylib; not in the base at all) |
 | `libculebra_rt_webview.a` | Webview's wrap registrar (the OS WebView framework; not in the base at all) |
 | `libculebra_rt_wrap.a` | `culebra wrap` bindings |
@@ -1328,7 +1329,7 @@ emits it as a base archive plus one small archive per heavy feature
 `culebra build` (and extended `ext-culebra build` binaries) always
 link the base archive, then **force-load** a feature archive only when
 the source AST references its namespace (`Tensor` / `Http` /
-`Compress` / `SQLite` / `Regex` / `Canvas` / `Scene` / `Webview`, or a
+`Compress` / `SQLite` / `Regex` / `Canvas` / `Audio` / `Scene` / `Webview`, or a
 wrapped namespace), appending that feature's external
 libraries (BLAS / OpenSSL / zlib / …) on the same condition. The strong
 choke overrides the base's weak stub, so a program that uses none of

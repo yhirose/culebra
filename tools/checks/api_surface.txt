@@ -573,16 +573,6 @@ Canvas.rect_overlap(x1, y1, w1, h1, x2, y2, w2, h2) -> Bool
 Canvas.circle_overlap(x1, y1, r1, x2, y2, r2) -> Bool
 Canvas.point_in_rect(px, py, x, y, w, h) -> Bool
 Canvas.point_in_circle(px, py, cx, cy, r) -> Bool
-sound.play(vol = 100)
-sound.stop()
-sound.playing() -> Bool
-Canvas.music(data, loop = true, vol = 100, start = 0.0)
-Canvas.music_stop()
-Canvas.music_pause()
-Canvas.music_resume()
-Canvas.music_volume(vol)
-Canvas.music_seek(seconds)
-Canvas.music_playing() -> Bool
 Canvas.dt() -> Float
 Canvas.target_fps(n)
 Canvas.fps() -> Long
@@ -764,23 +754,6 @@ mouse_dy() -> Float
 view.mouse_wheel() -> Float
 view.mouse(button) -> Bool
 mouse_pressed(button) -> Bool
-Scene.Audio.new(rate, channels, buffer) -> Audio
-audio.ready() -> Bool
-audio.needed() -> Long
-audio.push(s)
-audio.push2(l, r)
-audio.pending() -> Long
-audio.submit() -> Long
-audio.dropped() -> Long
-audio.latency() -> Float
-audio.play()
-stop()
-pause()
-resume()
-playing() -> Bool
-audio.volume(v)
-pitch(p)
-pan(p)
 Net.connect(host: String, port: Long, timeout: Long = 0) -> Socket
 read(n = nil)
 read_line()
@@ -1043,3 +1016,32 @@ idx.save(path: String) -> Nil
 idx.close() -> Nil
 Search.segmenter(model: String) -> Segmenter
 seg.close() -> Nil
+Audio.available() -> Bool
+sound.play()
+sound.stop()
+sound.playing() -> Bool
+sound.volume(v)
+sound.pitch(p)
+sound.pan(p)
+music.play()
+music.stop()
+music.pause()
+music.resume()
+music.seek(seconds)
+music.playing() -> Bool
+music.volume(v)
+music.pitch(p)
+music.pan(p)
+stream.ready() -> Bool
+stream.needed() -> Long
+stream.push(samples: Array) -> Long
+stream.submit() -> Long
+stream.latency() -> Float
+stream.play()
+stop()
+pause()
+resume()
+playing() -> Bool
+stream.volume(v)
+stream.pitch(p)
+stream.pan(p)

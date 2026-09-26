@@ -81,41 +81,41 @@ let PLANT_TYPES = 30
 
 # --- tones (exact WASM-4 parameters) ---------------------------------------
 # tone(freq, sustain, vol, wave, end_freq, attack, decay, release, peak, duty)
-let flap_tone = || Canvas.tone(
+let flap_tone = || Audio.tone(
   700,
   0,
   10,
-  Canvas.PULSE,
+  Audio.PULSE,
   870,
   10,
   5,
   3,
   20,
-  Canvas.DUTY_QUARTER,
+  Audio.DUTY_QUARTER,
 )
-let point_tone = || Canvas.tone(
+let point_tone = || Audio.tone(
   995,
   0,
   25,
-  Canvas.PULSE2,
+  Audio.PULSE2,
   1000,
   0,
   10,
   10,
   75,
-  Canvas.DUTY_HALF,
+  Audio.DUTY_HALF,
 )
-let death_tone = || Canvas.tone(
+let death_tone = || Audio.tone(
   170,
   20,
   100,
-  Canvas.NOISE,
+  Audio.NOISE,
   40,
   0,
   40,
   0,
   0,
-  Canvas.DUTY_HALF,
+  Audio.DUTY_HALF,
 )
 
 # --- animation -------------------------------------------------------------

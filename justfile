@@ -30,6 +30,10 @@ export CCACHE_BASEDIR := justfile_directory()
 # bytes (PPM md5), and no test should steal focus mid-run. Run a game with its
 # window by invoking the binary directly, or with CULEBRA_CANVAS_HEADLESS=0.
 export CULEBRA_CANVAS_HEADLESS := env_var_or_default("CULEBRA_CANVAS_HEADLESS", "1")
+# The same for sound: every recipe keeps the audio device closed, so a test run
+# plays nothing and a machine without a device prints nothing about it. A run
+# that should be heard sets CULEBRA_AUDIO=on.
+export CULEBRA_AUDIO := env_var_or_default("CULEBRA_AUDIO", "off")
 
 # Make every recipe name the engine it runs on: a lane that launches culebra
 # bare picks one by accident, and a future default switch would silently move

@@ -445,7 +445,7 @@ function spawnWorker() {
       running = false;
       previewing = false;
       stopRafPump();
-      resetMusic();   // the native analogue: process exit silences the slot
+      resetMusic();   // the native analogue: process exit silences every track
       resetSounds();
       stopBtn.disabled = true;
       runBtn.disabled = false;
@@ -885,7 +885,7 @@ function stopRafPump() {
   }
 }
 
-// WebAudio implementation of Canvas.tone — a small WASM-4-style APU. A note
+// WebAudio implementation of Audio.tone — a small WASM-4-style APU. A note
 // slides start->end frequency under an ADSR envelope on one of four channels:
 // two pulse waves with a selectable duty cycle (via a cached PeriodicWave), a
 // triangle, and noise (white noise through a sweeping lowpass, which reads as a
@@ -940,9 +940,8 @@ function whiteNoise() {
   return buf;
 }
 
-// vol/peak arrive as 0..100. File-backed audio (music, Sound) is already
-// mixed, so 100 is the file's own level; tone scales this down (below).
-const fileG = (v) => Math.max(0, Math.min(1, v / 100));
+// tone's vol/peak arrive as WASM-4's 0..100.
+const toneLevel = (v) => Math.max(0, Math.min(1, v / 100));
 
 function playTone(m) {
   try {
@@ -955,7 +954,7 @@ function playTone(m) {
     if (total <= 0) total = 1 / 60;  // guarantee an audible blip
     const startF = Math.max(1, m.startFreq);
     const endF = Math.max(1, m.endFreq);
-    const G = (v) => fileG(v) * 0.2;  // raw waveforms stack: keep it gentle
+    const G = (v) => toneLevel(v) * 0.2;  // raw waveforms stack: keep it gentle
     const peakG = G(m.peak), susG = G(m.vol);
     const channel = m.channel | 0;
 
@@ -1004,178 +1003,184 @@ function playTone(m) {
   }
 }
 
-// --- Canvas.music: one streamed-file slot, decoded and driven here ----------
-// The worker posts play/stop/pause/resume/volume/seek commands (canvas.h's
-// EM_JS side keeps the script-visible playing flags optimistically, in sync
-// with the call); this side owns the decoded AudioBuffer and the live source
-// node. What only this side can observe — a failed decode, a non-looping file
-// running out — is pushed back as a "musicState" correction. A paused voice is
-// just a remembered offset: an AudioBufferSourceNode can't restart, so resume
-// builds a fresh one, which is also how seek works.
-let musicBuffer = null;   // decoded audio, while a file is loaded
-let musicVoice = null;    // { src, gain, startedAt } while audible
-let musicLoop = true;
-let musicGain = 1;
-let musicPausedAt = null; // seconds into the buffer, while paused
-let musicSeq = 0;         // play generation: a stale decode must not resurrect
+// --- Audio.Sound / Audio.Music: decoded and driven here ----------------------
+// The worker posts commands keyed by the wasm-side handle (stdlib/audio.h keeps
+// the script-visible playing flags optimistically, in step with the call);
+// this side owns the decoded AudioBuffers and the live source nodes. What only
+// this side can observe — a failed decode, a one-shot or a non-looping track
+// running out — goes back as a "soundState" / "musicState" correction. A voice
+// is source -> gain (volume) -> stereo panner (pan), and pitch is the source's
+// playbackRate; volume and pitch are 0.0..1.0 and 1.0-based, pan -1..1.
 
-function musicNotify(playing, loaded) {
-  if (worker) worker.postMessage({ type: "musicState", playing, loaded });
-}
-
-function stopMusicVoice() {
-  if (!musicVoice) return;
-  const v = musicVoice;
-  musicVoice = null;               // cleared first: onended sees it was told to
-  try { v.src.stop(); } catch {}
-}
-
-function startMusicVoice(offset) {
-  if (!musicBuffer || !ensureAudio()) return;
-  stopMusicVoice();
+// Build a voice for `buf` with the handle's settings, started at `offset`.
+function startVoice(buf, loop, s, offset) {
   const src = audioCtx.createBufferSource();
-  src.buffer = musicBuffer;
-  src.loop = musicLoop;
+  src.buffer = buf;
+  src.loop = loop;
+  src.playbackRate.value = s.pitch;
   const gain = audioCtx.createGain();
-  gain.gain.value = musicGain;
-  src.connect(gain).connect(audioCtx.destination);
-  const at = musicBuffer.duration > 0 ? offset % musicBuffer.duration : 0;
-  const v = { src, gain, startedAt: audioCtx.currentTime - at };
-  src.onended = () => {
-    if (musicVoice === v) {        // ran out on its own (non-looping)
-      musicVoice = null;
-      musicBuffer = null;
-      musicNotify(false, false);
-    }
-  };
+  gain.gain.value = Math.max(0, s.volume);
+  const pan = audioCtx.createStereoPanner();
+  pan.pan.value = Math.max(-1, Math.min(1, s.pan));
+  src.connect(gain).connect(pan).connect(audioCtx.destination);
+  const at = buf.duration > 0 ? offset % buf.duration : 0;
   src.start(0, at);
-  musicVoice = v;
-  musicPausedAt = null;
+  return { src, gain, pan, startedAt: audioCtx.currentTime - at / s.pitch };
 }
 
-function musicPosition() {
-  if (musicVoice && musicBuffer && musicBuffer.duration > 0) {
-    return (audioCtx.currentTime - musicVoice.startedAt) % musicBuffer.duration;
+function stopVoice(v) {
+  if (v) { try { v.src.stop(); } catch {} }
+}
+
+// A handle's settings arrive with every play and set; a live voice follows them.
+function applySettings(entry, m) {
+  entry.volume = m.vol ?? m.a ?? entry.volume;
+  entry.pitch = m.pitch ?? m.b ?? entry.pitch;
+  entry.pan = m.pan ?? m.c ?? entry.pan;
+  const v = entry.voice;
+  if (v) {
+    v.gain.gain.value = Math.max(0, entry.volume);
+    v.src.playbackRate.value = entry.pitch;
+    v.pan.pan.value = Math.max(-1, Math.min(1, entry.pan));
   }
-  return musicPausedAt ?? 0;
 }
 
-function resetMusic() {
-  stopMusicVoice();
-  musicBuffer = null;
-  musicPausedAt = null;
-  musicSeq++;
+const sounds = new Map();  // id -> { buf, voice, volume, pitch, pan }
+
+function soundNotify(id, playing) {
+  if (worker) worker.postMessage({ type: "soundState", id, playing });
 }
 
-function handleMusic(m) {
+function resetSounds() {
+  for (const e of sounds.values()) stopVoice(e.voice);
+  sounds.clear();
+}
+
+function handleSound(m) {
   try {
+    const e = sounds.get(m.id);
     switch (m.cmd) {
+      case "load": {
+        const entry = { buf: null, voice: null, volume: 1, pitch: 1, pan: 0 };
+        sounds.set(m.id, entry);
+        if (!ensureAudio()) return;
+        audioCtx.decodeAudioData(m.buf.buffer)
+          .then((buf) => { entry.buf = buf; })
+          .catch(() => soundNotify(m.id, false));
+        break;
+      }
       case "play": {
-        resetMusic();
-        musicLoop = !!m.loop;
-        musicGain = fileG(m.vol);
-        if (!ensureAudio()) { musicNotify(false, false); return; }
-        // If the context is still suspended (no gesture yet) the voice is
-        // created anyway: currentTime is frozen, so playback simply begins
-        // when the first click/keydown resumes the context.
-        const seq = musicSeq;
-        audioCtx.decodeAudioData(m.buf.buffer).then((buf) => {
-          if (seq !== musicSeq) return;   // superseded while decoding
-          musicBuffer = buf;
-          startMusicVoice(Math.max(0, m.start || 0));
-        }).catch(() => {
-          if (seq === musicSeq) musicNotify(false, false);
-        });
+        if (!e) return;
+        applySettings(e, m);
+        if (!e.buf || !ensureAudio()) { soundNotify(m.id, false); break; }
+        stopVoice(e.voice);  // one voice per handle: play restarts it
+        const v = startVoice(e.buf, false, e, 0);
+        v.src.onended = () => {
+          if (e.voice === v) { e.voice = null; soundNotify(m.id, false); }
+        };
+        e.voice = v;
         break;
       }
       case "stop":
-        resetMusic();
+        if (e) { const v = e.voice; e.voice = null; stopVoice(v); }
         break;
-      case "pause":
-        if (musicVoice) {
-          musicPausedAt = musicPosition();
-          stopMusicVoice();
-        }
+      case "set":
+        if (e) applySettings(e, m);
         break;
-      case "resume":
-        if (!musicVoice && musicBuffer && musicPausedAt !== null) {
-          startMusicVoice(musicPausedAt);
-        }
+      case "free":
+        if (e) { const v = e.voice; e.voice = null; stopVoice(v); }
+        sounds.delete(m.id);
         break;
-      case "volume":
-        musicGain = fileG(m.vol);
-        if (musicVoice) musicVoice.gain.gain.value = musicGain;
-        break;
-      case "seek": {
-        const s = Math.max(0, m.seconds || 0);
-        if (musicVoice) startMusicVoice(s);
-        else if (musicBuffer) musicPausedAt = s;
-        break;
-      }
     }
   } catch {
     // Audio unavailable (autoplay policy, no device) — a game stays playable.
   }
 }
 
-// Sound effects: many decoded buffers keyed by the wasm-side handle, one live
-// voice per handle (play restarts it, like raylib's PlaySound). Only what
-// this side can observe — a one-shot running out, a failed decode — goes back
-// as a "soundState" correction.
-const soundBuffers = new Map();  // id -> AudioBuffer
-const soundVoices = new Map();   // id -> { src } while audible
+// A track: its buffer arrives asynchronously, so a play asked for before the
+// decode finished is remembered and honoured when it does. A paused track is
+// just a remembered offset: a source node can't restart, so resume builds a
+// fresh one, which is also how seek works.
+const tracks = new Map();  // id -> { buf, loop, voice, pausedAt, wantPlay, volume, pitch, pan }
 
-function soundNotify(id, playing) {
-  if (worker) worker.postMessage({ type: "soundState", id, playing });
+function musicNotify(id, playing) {
+  if (worker) worker.postMessage({ type: "musicState", id, playing });
 }
 
-function stopSoundVoice(id) {
-  const v = soundVoices.get(id);
-  if (!v) return;
-  soundVoices.delete(id);          // cleared first: onended sees it was told to
-  try { v.src.stop(); } catch {}
+function trackPosition(t) {
+  if (t.voice && t.buf && t.buf.duration > 0) {
+    return ((audioCtx.currentTime - t.voice.startedAt) * t.pitch) % t.buf.duration;
+  }
+  return t.pausedAt ?? 0;
 }
 
-function resetSounds() {
-  for (const id of [...soundVoices.keys()]) stopSoundVoice(id);
-  soundBuffers.clear();
+function startTrack(id, t, offset) {
+  if (!t.buf || !ensureAudio()) { t.wantPlay = true; return; }
+  const old = t.voice;
+  t.voice = null;
+  stopVoice(old);
+  const v = startVoice(t.buf, t.loop, t, offset);
+  v.src.onended = () => {
+    if (t.voice === v) {  // ran out on its own (non-looping)
+      t.voice = null;
+      t.pausedAt = null;
+      musicNotify(id, false);
+    }
+  };
+  t.voice = v;
+  t.pausedAt = null;
+  t.wantPlay = false;
 }
 
-function handleSound(m) {
+function resetMusic() {
+  for (const t of tracks.values()) stopVoice(t.voice);
+  tracks.clear();
+}
+
+function handleMusic(m) {
   try {
+    const t = tracks.get(m.id);
     switch (m.cmd) {
-      case "load":
-        if (!ensureAudio()) return;
-        audioCtx.decodeAudioData(m.buf.buffer)
-          .then((buf) => soundBuffers.set(m.id, buf))
-          .catch(() => soundNotify(m.id, false));
-        break;
-      case "play": {
-        const buf = soundBuffers.get(m.id);
-        if (!buf || !ensureAudio()) { soundNotify(m.id, false); break; }
-        stopSoundVoice(m.id);
-        const src = audioCtx.createBufferSource();
-        src.buffer = buf;
-        const gain = audioCtx.createGain();
-        gain.gain.value = fileG(m.vol);    // 0..100, the sample's own level
-        src.connect(gain).connect(audioCtx.destination);
-        const v = { src };
-        src.onended = () => {
-          if (soundVoices.get(m.id) === v) {   // ran out on its own
-            soundVoices.delete(m.id);
-            soundNotify(m.id, false);
-          }
-        };
-        src.start();
-        soundVoices.set(m.id, v);
+      case "load": {
+        const entry = { buf: null, loop: !!m.loop, voice: null, pausedAt: null,
+                        wantPlay: false, volume: 1, pitch: 1, pan: 0 };
+        tracks.set(m.id, entry);
+        if (!ensureAudio()) { musicNotify(m.id, false); return; }
+        // If the context is still suspended (no gesture yet) the voice is
+        // created anyway: currentTime is frozen, so playback simply begins
+        // when the first click/keydown resumes the context.
+        audioCtx.decodeAudioData(m.buf.buffer).then((buf) => {
+          if (tracks.get(m.id) !== entry) return;  // freed while decoding
+          entry.buf = buf;
+          if (entry.wantPlay) startTrack(m.id, entry, entry.pausedAt ?? 0);
+        }).catch(() => musicNotify(m.id, false));
         break;
       }
+      case "play":
+        if (t && !t.voice) startTrack(m.id, t, t.pausedAt ?? 0);
+        break;
       case "stop":
-        stopSoundVoice(m.id);
+        if (t) { const v = t.voice; t.voice = null; stopVoice(v); t.pausedAt = null; t.wantPlay = false; }
+        break;
+      case "pause":
+        if (t && t.voice) { t.pausedAt = trackPosition(t); const v = t.voice; t.voice = null; stopVoice(v); }
+        break;
+      case "resume":
+        if (t && !t.voice && t.pausedAt !== null) startTrack(m.id, t, t.pausedAt);
+        break;
+      case "seek": {
+        if (!t) break;
+        const s = Math.max(0, m.a || 0);
+        if (t.voice) startTrack(m.id, t, s);
+        else t.pausedAt = s;
+        break;
+      }
+      case "set":
+        if (t) applySettings(t, m);
         break;
       case "free":
-        stopSoundVoice(m.id);
-        soundBuffers.delete(m.id);
+        if (t) { const v = t.voice; t.voice = null; stopVoice(v); }
+        tracks.delete(m.id);
         break;
     }
   } catch {

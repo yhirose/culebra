@@ -512,6 +512,12 @@ static constexpr bool kEmbedsCanvas =
 #else
     false;
 #endif
+static constexpr bool kEmbedsAudio =
+#if defined(CULEBRA_AUDIO_NATIVE)
+    true;
+#else
+    false;
+#endif
 static constexpr bool kEmbedsWebview =
 #if defined(CULEBRA_ENABLE_WEBVIEW)
     true;
@@ -564,6 +570,9 @@ static constexpr FeatureAxis kFeatureAxes[] = {
     // Canvas does have a weak choke: the headless present/input stubs in the
     // core archive, overridden by the raylib bodies in this archive.
     {{"Canvas"}, "libculebra_rt_canvas.a", CULEBRA_CANVAS_LINK, kEmbedsCanvas},
+    // Audio has the same weak choke: silent bodies in the core archive,
+    // overridden by the raudio-backed ones here.
+    {{"Audio"}, "libculebra_rt_audio.a", CULEBRA_AUDIO_LINK, kEmbedsAudio},
     // `Desktop` is the facade that drives Webview, so naming it has to trigger
     // the axis even when the program never says `Webview`.
     {{"Webview", "Desktop"}, "libculebra_rt_webview.a", CULEBRA_WEBVIEW_LINK,

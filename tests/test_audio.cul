@@ -1,0 +1,126 @@
+// The Audio namespace. The test harness keeps the device closed
+// (CULEBRA_AUDIO=off), so every lane answers as a machine with no audio
+// device: nothing plays and every handle still behaves. What reaches a device
+// branches on Audio.available(), so a direct run on a machine with one passes
+// too.
+let live = Audio.available()
+
+// Fixtures. A self-made 0.2 s sine MP3 (MPEG 2.5 mono: its 0xff 0xe3 frame
+// sync is the header the format sniff must accept beyond the common 0xff 0xfb)
+// and a 4-sample PCM WAV with a hand-assembled header.
+let MP3 = Encoding.hex.decode("ffe318c4000d38be802158000127fffffffffeb0c30c30c30a7a7a7a7cfbb74d09" +
+  "664116b1d52e799526b59a4a5d3808b865c753777e5f6f3cf3b180000002be1e1e" +
+  "5b2cbdfe9918ffe318c4060e00b2800195c00039a31d552f06813030b8e00f84e8" +
+  "03478588685bc01fdd640286880b81c0f71890315804d6e656fc46655765378779" +
+  "20690afffe976ef0301682f8ffe318c4090f80ca2c019738000353b61a6030cf81" +
+  "e88180d01bb81946931081837a0f4c0c1010e400c7fe99f00c0bf06c201df02bf0" +
+  "4ffffd1eaf5fffffecfd9f92ffa531fc9f37ffe318c4060df0da8c019580003591" +
+  "c38a0381206c1b680d004b80040c037e3c0028ee2fc800184c6006310a7e01f90a" +
+  "c689b837e1cf1c26270dbca3b0a84e48eb115ff1d44b86a4ffe318c4090ee14a18" +
+  "0195a8000480ffe0638348186862108480c4c85ff03202041ca40141309b858863" +
+  "7ffcc49d21c91b14568ffff9929231241402ffe498ba4c414d45332e3130")
+let WAV = Encoding.hex.decode("524946462800000057415645666d7420100000000100010040" +
+  "1f0000401f000001000800646174610400000080c8803c")
+
+// tone: WASM-4's APU and its constants.
+assert_eq([Audio.PULSE, Audio.PULSE2, Audio.TRIANGLE, Audio.NOISE, Audio.SAWTOOTH], [0, 1, 2, 3, 4])
+assert_eq([Audio.DUTY_EIGHTH, Audio.DUTY_QUARTER, Audio.DUTY_HALF, Audio.DUTY_THREE_QUARTER], [0, 1, 2, 3])
+Audio.tone(440, 8)
+Audio.tone(700, 0, 10, Audio.PULSE, 870, 10, 5, 3, 20, Audio.DUTY_QUARTER)
+Audio.tone(170, 20, vol: 100, wave: Audio.NOISE, end_freq: 40, decay: 40)
+
+// Sound: WAV, MP3 or Ogg bytes, one voice per handle.
+let snd = Audio.Sound.new(WAV)
+snd.volume(0.3)
+snd.pitch(1.5)
+snd.pan(-1)
+snd.play()
+snd.play()                       // restarts the voice
+assert_eq(snd.playing(), live && snd.playing())
+snd.stop()
+assert_eq(snd.playing(), false)
+Audio.Sound.new(MP3).play()      // Music's formats work too
+assert_throws("ValueError", fn () {
+  Audio.Sound.new("not audio")
+})
+assert_throws("ValueError", fn () {
+  Audio.Sound.new("")
+})
+assert_throws("TypeError", fn () {
+  Audio.Sound.new(42)
+})
+assert_throws("TypeError", fn () {
+  snd.volume("loud")
+})
+
+// Music: MP3 or Ogg bytes, a handle per track, fed by the runtime.
+let bgm = Audio.Music.new(MP3)
+let sting = Audio.Music.new(MP3, loop: false)  // two tracks at once
+bgm.volume(0.5)
+bgm.pitch(1)
+bgm.pan(0.25)
+bgm.play()
+sting.play()
+bgm.seek(0.05)
+bgm.seek(1)                      // Long seconds too
+bgm.pause()
+assert_eq(bgm.playing(), false)
+bgm.resume()
+assert_eq(bgm.playing(), live)
+bgm.stop()                       // rewinds; the handle stays usable
+assert_eq(bgm.playing(), false)
+bgm.play()
+bgm.stop()
+assert_throws("ValueError", fn () {
+  Audio.Music.new(WAV)           // a WAV is a Sound, not a Music
+})
+assert_throws("ValueError", fn () {
+  Audio.Music.new("")
+})
+assert_throws("TypeError", fn () {
+  Audio.Music.new(MP3, loop: 1)
+})
+
+// Stream: PCM the script synthesises. The block counts the same with or
+// without a device; only what reaches one branches on ready().
+let st = Audio.Stream.new(44100, 1, 1024)
+assert_eq(st.ready(), live)
+assert_eq(st.needed(), live ? 1024 : 0)
+assert_eq(st.latency(), 2.0 * 1024 / 44100)
+// Samples carry polygon's Long|Float contract, and raise the same way.
+assert_eq(st.push([0, 0.5, -1, 0.25]), 4)
+assert_throws("TypeError", fn () {
+  st.push([0.5, nil])
+})
+// submit() hands over whatever is pending, not only a full block.
+assert_eq(st.submit(), live ? 4 : 0)
+st.volume(0.5)
+st.pitch(1)
+st.pan(0)
+st.play()
+assert_eq(st.playing(), live)
+st.pause()
+st.resume()
+st.stop()
+assert_eq(st.playing(), false)
+assert_throws("TypeError", fn () {
+  Audio.Stream.new("44100", 1, 1024)
+})
+assert_throws("TypeError", fn () {
+  st.push(0.5)
+})
+// More than the buffer holds: taken up to capacity, the caller keeps the rest.
+assert_eq(Audio.Stream.new(44100, 1, 4).push(iota(10).map(|i| to_float(i) / 10.0)), 4)
+// Stereo: interleaved L,R, and the answer counts frames, not values.
+let stereo = Audio.Stream.new(44100, 2, 8)
+assert_eq(stereo.push([0.1, 0.1, 0.2, 0.2, 0.3, 0.3]), 3)
+assert_eq(stereo.push([0.4, 0.4, 0.5]), 1)  // a trailing half frame is not taken
+// Each handle is its own stream: filling one leaves another empty.
+assert_eq(Audio.Stream.new(44100, 2, 8).push(iota(16).map(|_| 0.0)), 8)
+
+// Closed like the C++ namespaces: an unknown member raises.
+assert_throws("AttributeError", fn () {
+  Audio.typo
+})
+
+print("audio ok\n")

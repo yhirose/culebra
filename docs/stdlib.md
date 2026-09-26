@@ -65,7 +65,7 @@ Conventions used below:
 23. [`Log`](#23-log) — leveled, structured logging to stderr (text / JSON, child loggers)
 24. [`TOML`](#24-toml) — parse / stringify TOML configuration
 25. [`SQLite`](#25-sqlite) — embedded SQL database (query / execute / prepared statements / transactions)
-26. [`Canvas`](#26-canvas) — immediate-mode 2D framebuffer for games (shapes, sprites, offscreen targets, text, keys/mouse/gamepad, window controls, tone, sound, music)
+26. [`Canvas`](#26-canvas) — immediate-mode 2D framebuffer for games (shapes, sprites, offscreen targets, text, keys/mouse/gamepad, window controls)
 27. [`Scene`](#27-scene) — retained-mode 3D renderer for procedural geometry
 28. [`Net`](#28-net) — raw TCP / UDP sockets and name resolution (the layer under `Http`)
 29. [`Desktop` / `Webview`](#29-desktop--webview) — native WebView desktop app: local HTTP server + window, one call
@@ -78,8 +78,9 @@ Conventions used below:
 36. [`StateMachine`](#36-statemachine) — hierarchical state machine, with a text DSL
 37. [`FST`](#37-fst) — compiled read-only dictionary: prefix, predictive and fuzzy search
 38. [`Search`](#38-search) — full-text index over your own documents, ranked
-39. [Design notes](#39-design-notes)
-40. [Not included (yet)](#40-not-included-yet)
+39. [`Audio`](#39-audio) — sound for any program, with or without a window: WASM-4 tones, samples, streamed music, synthesised PCM
+40. [Design notes](#40-design-notes)
+41. [Not included (yet)](#41-not-included-yet)
 
 **Where to find what**
 
@@ -122,6 +123,7 @@ Conventions used below:
 | Share variable-length read-only data across threads (no copy) | [§12 Shared](#shared--immutable-values-shared-by-reference) — `Shared.new(value)` |
 | Handle Ctrl+C / SIGINT gracefully | [§12 Signal](#signal--signalnotify--signalreset) — `Signal.notify(tx)` / `Signal.reset()` |
 | Desktop GUI (native WebView + local server) | [§29 Desktop](#29-desktop--webview) — `Desktop.run({title, assets, routes})` |
+| Play a tone, a sound effect or music; synthesise audio | [§39 Audio](#39-audio) — `Audio.tone(440, 10)` / `Audio.Sound.new(bytes).play()` / `Audio.Music.new(bytes)` / `Audio.Stream.new(44100, 1, 1024)` |
 | Heap introspection / leak checks | [§7 GC](#gc--heap-introspection) — `GC.stat()` → `{live_objects, rc_objects, heap_bytes}` |
 | 2D/3D vector math (dot, length, normalize, distance) | [§30 `Vector2`](#30-vector2) / [§31 `Vector3`](#31-vector3) |
 | FIFO queue, sliding window, front+back stack | [§32 `Deque`](#32-deque) — `Deque.new()` — `push_back`/`pop_front` |
@@ -4330,9 +4332,8 @@ absolute path or one containing `..` is not found rather than escaping.
 # doctest: skip
 let art = Embed.dir("assets")
 let sheet = Canvas.Sprite.from_png(art.read("sprites.png"))
-if art.exists("music.ogg") {
-  Canvas.music(art.read("music.ogg"))
-}
+let music = art.exists("music.ogg") ? Audio.Music.new(art.read("music.ogg")) : nil
+music?.play()
 ```
 
 The same handle serves a whole directory over HTTP:
@@ -5078,7 +5079,7 @@ An immediate-mode 2D framebuffer for little games and pixel graphics: draw a
 frame, `present` it, poll input, repeat. Colors are packed RGBA `Long`s and
 the buffer can be any size (a WASM-4-style 160×160 is typical). In the WASM
 Playground a Canvas program runs in the **Canvas tab** — frames are shown on a
-`<canvas>`, keyboard/pointer feed the input, and `tone` plays through WebAudio.
+`<canvas>`, keyboard/pointer feed the input, and sound ([`Audio`](#39-audio)) plays through WebAudio.
 Natively a build **opens a real desktop window** on macOS, Linux and Windows,
 using vendored static raylib + SDL3, the same backend the
 `Scene` namespace links. Building it on Linux needs SDL3's documented build
@@ -5099,15 +5100,13 @@ in a build without the window backend — or in any run with
 `CULEBRA_CANVAS_HEADLESS` set to anything but `0`/`off` — the backend is
 **headless**: the pixel and sprite ops run identically (so behaviour is the same
 across VM / JIT / AOT and testable via `Canvas.get_pixel`), but nothing
-is displayed, input reads as "no button", and `tone` is silent. That variable is
+is displayed and input reads as "no button". That variable is
 how a displayless server — or the test suite, since every `just` recipe exports
 it — runs a window-capable binary; `-DCULEBRA_ENABLE_CANVAS_WINDOW=OFF` goes
 further and leaves raylib out of the build entirely. A window build that
 declared neither and cannot open a window (no display, no usable GL) raises a
 `RuntimeError` at the first `present` naming the variable, rather than
-guessing that a silent headless run is what was wanted. Outside headless, native
-`tone` plays through a small software APU mixed on raylib's audio thread (see
-Audio below), lazily opening the audio device on first use.
+guessing that a silent headless run is what was wanted.
 
 ### Color
 
@@ -5512,84 +5511,15 @@ share the same numbers.
 
 ### Audio
 
-`Canvas.tone(freq, dur, vol = 100, wave = 0, end_freq = nil, attack = 0,
-decay = 0, release = 0, peak = nil, duty = 2)` plays a note through a small
-WASM-4-style APU. In its simplest form `Canvas.tone(freq, dur)` is a `dur`-frame
-note (frames at ~60fps) at `freq` Hz. The optional arguments expose the full
-envelope: the pitch slides `freq → end_freq` while an ADSR envelope
-(`attack`/`decay`/`release` in frames, `dur` as the sustain length) shapes the
-volume from 0 up to `peak`, down to the sustain `vol` (0–100), and back to 0.
-`wave` selects the channel — `Canvas.PULSE` / `PULSE2` (with a `duty` cycle:
-`Canvas.DUTY_EIGHTH` / `DUTY_QUARTER` / `DUTY_HALF` / `DUTY_THREE_QUARTER`),
-`Canvas.TRIANGLE`, `Canvas.NOISE`, or the culebra extension `Canvas.SAWTOOTH`.
-Each channel is monophonic (a new note cuts the previous one). A synthesized
-waveform is raw and four channels can sound at once, so `tone` mixes its
-0–100 well under full scale — file-backed audio (`Sound`, `music`) is already
-mixed and plays at the file's own level for `vol = 100`.
-
-In the browser, `tone` plays through WebAudio (an oscillator per channel, a
-`PeriodicWave` for the pulse duty cycle, a filtered noise buffer). Natively it
-plays through a small software synth mixed on raylib's audio thread (naive —
-not band-limited — oscillators; noise is a filtered PRNG), started lazily on
-first use so a program that never calls `tone` never opens an audio device.
-Either way a note is placed on the audio stream's own sample clock rather than
-at the edge of whatever buffer the device was filling, so a sequencer keeps its
-spacing whatever buffer length the device chose. Audio is silent on the
-headless native backend, and stays silent (no device opened, no crash) on a
-machine with no audio hardware. Native audio and WebAudio are independent
-implementations tuned to sound similar, not sample-identical — unlike the pixel
-ops, `tone` isn't required to produce bit-identical output across backends.
-
-### Sound effects
-
-`Canvas.Sound.new(data)` decodes a one-shot sample from its bytes — WAV, MP3
-or Ogg Vorbis, the bytes-in convention of `Sprite.from_png` — and plays it
-per call, which is the recorded-sample counterpart to `tone`'s synthesis (an
-explosion from a file rather than a swept square wave).
-
-| Method | Effect |
-| --- | --- |
-| `sound.play(vol = 100)` | play from the start (restarts if still playing) |
-| `sound.stop()` | stop the voice |
-| `sound.playing() -> Bool` | still audible? |
-
-Each `Sound` is one voice — `play` while playing restarts it, like the host
-samplers underneath — and the decoded sample is freed with the last
-reference. Bytes that are none of the three formats raise
-`ValueError: not a valid WAV, MP3 or Ogg audio stream` on every backend;
-past that check, an undecodable stream stays silent, and headless (or with no
-audio device) everything no-ops with `playing()` false, exactly like
-`music`.
-
-### Music
-
-`Canvas.music(data, loop = true, vol = 100, start = 0.0)` plays an MP3 or Ogg
-Vorbis file from its bytes (a `String`, e.g. from `FS.read` — the same
-bytes-in convention as `Sprite.from_png`). There is **one slot**, in the
-manner of pygame's `mixer.music`: playing a new file replaces the old one, and
-no handle reaches the script. `vol` is 0–100, `100` being the file's own
-level; `start` is seconds into the file. Bytes that are neither MP3 nor Ogg raise
-`ValueError: not a valid MP3 or Ogg audio stream` on every backend; a stream
-that passes that check but fails to decode stays silent.
-
-| Function | Effect |
-| --- | --- |
-| `Canvas.music(data, loop = true, vol = 100, start = 0.0)` | decode and play (replaces the current file) |
-| `Canvas.music_stop()` | stop and unload |
-| `Canvas.music_pause()` / `Canvas.music_resume()` | pause / pick up where it left off |
-| `Canvas.music_volume(vol)` | change the volume (0–100) |
-| `Canvas.music_seek(seconds)` | jump to a position |
-| `Canvas.music_playing() -> Bool` | is anything audible right now |
-
-With nothing loaded, the controls are no-ops and `music_playing()` is `false`
-— matching `tone`'s clamp-don't-throw convention, the format check is the one
-error. Natively the stream is decoded incrementally and its buffers are
-refilled from `present()`, so music only advances while frames are being
-presented — a program that stops presenting pauses its music with it.
-Headless (and on a machine with no audio device) everything no-ops. In the
-browser the file is decoded by WebAudio; note Ogg support there depends on
-the browser (Safari historically decodes only MP3), while natively both
-formats always work.
+Sound lives in its own namespace, [`Audio`](#39-audio), which needs no
+window. For one release Canvas keeps its earlier audio members, forwarding to
+it: `Canvas.tone` and the channel and duty constants (`Canvas.PULSE`, …,
+`Canvas.DUTY_THREE_QUARTER`) are `Audio`'s own; `Canvas.Sound.new(data)` is an
+`Audio.Sound` whose `play(vol = 100)` takes Canvas's `0..100`; and
+`Canvas.music(data, loop = true, vol = 100, start = 0.0)` with `music_stop` /
+`music_pause` / `music_resume` / `music_volume(vol)` / `music_seek(seconds)` /
+`music_playing()` keeps one music slot on top of an `Audio.Music`, `vol` again
+`0..100`. New code uses `Audio`.
 
 ### The game loop
 
@@ -5998,53 +5928,8 @@ The mouse reports in window points; its buttons are `"left"`, `"right"` and
 
 ### Audio
 
-`Scene.Sound.new(path)` is a one-shot effect; `Scene.Music.new(path)` is a
-streamed track. Both take a file path and support `volume(v)`, `pitch(p)`, and
-`pan(p)`. `Sound` adds `play` / `stop` / `playing`; `Music` adds `pause` /
-`resume` / `looping(on)` and needs `update()` called each frame to keep its
-buffer fed.
-
-`Scene.Audio.new(rate, channels, buffer)` is a stream the script synthesises
-itself, sample by sample — an engine note following the revs, brake noise,
-a beep — the way a game with no sound files makes its sound. The samples are
-produced on the main thread and handed over in blocks; nothing of the script
-runs on the audio thread, where a garbage collector's pause would be an
-audible dropout.
-
-| Method | Effect |
-| --- | --- |
-| `Scene.Audio.new(rate, channels, buffer) -> Audio` | a stream at `rate` Hz, 1 or 2 channels, fed `buffer` frames at a time (1024 is a sound default; below ~512 is not supported) |
-| `audio.ready() -> Bool` | false on a machine with no audio device — every call below is then a no-op |
-| `audio.needed() -> Long` | frames the stream can take now: `buffer` when a block has drained, 0 while both are full |
-| `audio.push(s)` / `audio.push2(l, r)` | one mono sample / one stereo frame, in −1..1, into the pending block |
-| `audio.pending() -> Long` | frames pushed and not yet handed over |
-| `audio.submit() -> Long` | hand the pending block to the stream; the frames written |
-| `audio.dropped() -> Long` | samples pushed beyond a full block and lost (the script produced too much) |
-| `audio.latency() -> Float` | seconds from `submit()` to the speaker: two blocks |
-| `audio.play()` / `stop()` / `pause()` / `resume()` / `playing() -> Bool` | transport |
-| `audio.volume(v)` / `pitch(p)` / `pan(p)` | as `Sound` |
-
-```culebra
-# doctest: skip
-let engine = Scene.Audio.new(44100, 1, 1024)
-engine.play()
-mut phase = 0.0
-while !view.closing() {
-  while engine.needed() > 0 {
-    for i in 0..engine.needed() {
-      phase += (48.0 + 165.0 * rpm_frac) / 44100.0
-      if phase >= 1.0 { phase -= 1.0 }
-      engine.push((phase * 2.0 - 1.0) * (0.03 + 0.13 * rpm_frac))
-    }
-    engine.submit()
-  }
-  # … render …
-}
-```
-
-At 60 fps a 44.1 kHz stream wants 735 frames a frame; the synthesis is
-arithmetic the JIT does comfortably. If `needed()` stays high across frames,
-the script is not keeping up — the stream then repeats or silences a block.
+Scene carries no audio of its own: sound is the [`Audio`](#39-audio)
+namespace, which a Scene program uses as any other program does.
 
 ### A minimal scene
 
@@ -7852,7 +7737,163 @@ times, or one that keeps adding to it.
 An index is not `Sendable`: results alias it, so it stays on the thread that
 built it. Give each isolate its own.
 
-## 39. Design notes
+## 39. `Audio`
+
+Sound for any program: WASM-4-style tones, one-shot samples, streamed music,
+and PCM the script synthesises. `Audio` owns the sound device on its own and
+needs no window, so it works the same whether a program draws with `Canvas`,
+with `Scene`, or not at all. The device opens on first use; a program that
+never plays anything never opens it.
+
+No device is not an error. On a machine without one (a server, CI), or in any
+run with `CULEBRA_AUDIO` set to `off` or `0` (as every `just` recipe sets it),
+`Audio.available()` is `false`, nothing plays, and every call answers as this
+section says: handles are made, controls do nothing, `playing()` is `false`,
+and a `Stream` still counts what it is given. The first call that wanted a
+missing device prints one warning.
+
+| Function | Effect |
+| --- | --- |
+| `Audio.available() -> Bool` | whether an audio device is open (opening it if nothing has yet) |
+
+Volumes are `0.0..1.0`, `1.0` being the source's own level; pitch is a
+playback rate, `1.0` unchanged; pan runs from `-1.0` (left) through `0.0` to
+`1.0` (right). `tone` alone keeps WASM-4's units, below.
+
+### Tones
+
+`Audio.tone(freq, dur, vol = 100, wave = 0, end_freq = nil, attack = 0,
+decay = 0, release = 0, peak = nil, duty = 2)` plays a note through a small
+WASM-4-style APU, in WASM-4's own units, so a WASM-4 program's calls carry
+over unchanged. In its simplest form `Audio.tone(freq, dur)` is a `dur`-tick
+note (a tick is 1/60 s) at `freq` Hz. The optional arguments expose the full
+envelope: the pitch slides `freq → end_freq` while an ADSR envelope
+(`attack`/`decay`/`release` in ticks, `dur` as the sustain length) shapes the
+level from 0 up to `peak`, down to the sustain `vol` (both `0..100`), and back
+to 0. `wave` selects the channel — `Audio.PULSE` / `PULSE2` (with a `duty`
+cycle: `Audio.DUTY_EIGHTH` / `DUTY_QUARTER` / `DUTY_HALF` /
+`DUTY_THREE_QUARTER`), `Audio.TRIANGLE`, `Audio.NOISE`, or the culebra
+extension `Audio.SAWTOOTH`. Each channel is monophonic (a new note cuts the
+previous one). A synthesised waveform is raw and four channels can sound at
+once, so `tone` mixes its `0..100` well under full scale.
+
+In the browser, `tone` plays through WebAudio (an oscillator per channel, a
+`PeriodicWave` for the pulse duty cycle, a filtered noise buffer). Natively it
+plays through a small software synth mixed on the audio thread (naive, not
+band-limited, oscillators; noise is a filtered PRNG). Either way a note is
+placed on the audio stream's own sample clock rather than at the edge of
+whatever buffer the device was filling, so a sequencer keeps its spacing
+whatever buffer length the device chose. The two are independent
+implementations tuned to sound alike, not sample-identical: unlike pixel ops,
+`tone` isn't required to produce bit-identical output across backends.
+
+```culebra
+Audio.tone(440, 8)
+Audio.tone(700, 0, 10, Audio.PULSE, 870, 10, 5, 3, 20, Audio.DUTY_QUARTER)
+```
+
+### Sound
+
+`Audio.Sound.new(data)` decodes a one-shot sample from its bytes (WAV, MP3 or
+Ogg Vorbis, a `String` from `FS.read`, `Embed` or built by the program) and
+plays it per call: the recorded-sample counterpart to `tone`'s synthesis.
+
+| Method | Effect |
+| --- | --- |
+| `sound.play()` | play from the start (restarts if still playing) |
+| `sound.stop()` | stop the voice |
+| `sound.playing() -> Bool` | still audible? |
+| `sound.volume(v)` / `sound.pitch(p)` / `sound.pan(p)` | as above; they apply from the next `play` and to the voice now sounding |
+
+Each `Sound` is one voice, and the decoded sample is freed with the last
+reference, which also stops it: keep the handle for as long as it should be
+heard. Bytes that are none of the three formats raise
+`ValueError: not a valid WAV, MP3 or Ogg audio stream` on every backend; past
+that check, a stream that fails to decode stays silent.
+
+```culebra
+let WAV = Encoding.hex.decode("524946462800000057415645666d7420100000000100010040" +
+  "1f0000401f000001000800646174610400000080c8803c")
+let blip = Audio.Sound.new(WAV)
+blip.volume(0.5)
+blip.play()
+```
+
+### Music
+
+`Audio.Music.new(data, loop = true)` streams an MP3 or Ogg Vorbis file from
+its bytes. Several can play at once (a loop under a sting), and the runtime
+keeps each one fed from a thread of its own, so music plays on through a long
+frame, a loading screen, or a program with no frame loop at all.
+
+| Method | Effect |
+| --- | --- |
+| `music.play()` | start playing |
+| `music.stop()` | stop and rewind to the start |
+| `music.pause()` / `music.resume()` | pause, and pick up where it left off |
+| `music.seek(seconds)` | jump to a position (negative and NaN mean the start) |
+| `music.playing() -> Bool` | audible right now? |
+| `music.volume(v)` / `music.pitch(p)` / `music.pan(p)` | as above |
+
+Like a `Sound`, a `Music` stops when its last reference goes. Bytes that are
+neither MP3 nor Ogg raise `ValueError: not a valid MP3 or Ogg audio stream` on
+every backend; a stream that passes that check but fails to decode stays
+silent. In the browser the file is decoded by WebAudio, and Ogg support there
+depends on the browser (Safari historically decodes only MP3); natively both
+formats always work.
+
+```culebra
+# doctest: skip
+let bgm = Audio.Music.new(FS.read("music.ogg"))
+bgm.volume(0.6)
+bgm.play()
+```
+
+### Stream
+
+`tone`, `Sound` and `Music` all play something already shaped as a note, a
+sample or a file. `Audio.Stream` is the fourth kind: a stream the script
+synthesises a block at a time — an emulator's own APU mixer, a chiptune
+resampled from its native rate, any signal a program builds itself.
+`Audio.Stream.new(rate, channels, buffer)` opens a stream of `rate` Hz, 1 or 2
+channels, fed `buffer` frames at a time (1024 is a reasonable default; below
+~512 is not supported).
+
+| Method | Effect |
+| --- | --- |
+| `stream.ready() -> Bool` | `false` with no audio device: nothing plays, and the methods below still answer as they say |
+| `stream.needed() -> Long` | frames the stream can take now: `buffer` once a block has drained, `0` while both are still full, and always `0` with no device |
+| `stream.push(samples: Array) -> Long` | take the frames in `samples` (each value `-1.0..1.0`, clamped) into the pending block — mono is 1 value per frame, stereo is interleaved L,R pairs; answers how many frames it took, fewer than `samples` holds once the block is nearly full, so a caller that produced more than `needed()` keeps the rest for the next call; an element that is neither `Long` nor `Float` raises `TypeError` |
+| `stream.submit() -> Long` | hand the pending block to the stream and answer the frames handed: `0` when nothing was pending or the stream isn't ready for another block yet; with no device the block is emptied and the answer is `0` |
+| `stream.latency() -> Float` | seconds from a `submit` to the speaker: the two blocks ahead of it |
+| `stream.play()` / `stop()` / `pause()` / `resume()` / `playing() -> Bool` | transport |
+| `stream.volume(v)` / `stream.pitch(p)` / `stream.pan(p)` | as above |
+
+```culebra
+let pcm = Audio.Stream.new(44100, 1, 1024)
+pcm.play()
+mut phase = 0.0
+Canvas.run(160, 160, fn () {
+  while pcm.needed() > 0 {
+    let block = iota(pcm.needed()).map(fn (_) {
+      phase += 440.0 / 44100.0
+      phase -= Math.floor(phase)
+      phase < 0.5 ? 0.2 : -0.2
+    })
+    pcm.push(block)
+    pcm.submit()
+  }
+  # … render …
+  true
+})
+```
+
+At 60 fps a 44.1 kHz stream wants 735 frames a frame; producing and pushing a
+whole block at once (rather than one call per sample) is what keeps this
+affordable in a script's own per-frame budget. A stream is silent in the
+browser, where it answers as a machine with no audio device does.
+
+## 40. Design notes
 
 ### Namespace-first, with three global shortcuts
 
@@ -7908,7 +7949,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 40. Not included (yet)
+## 41. Not included (yet)
 
 ### Heavier data structures
 

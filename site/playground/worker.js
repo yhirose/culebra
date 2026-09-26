@@ -176,11 +176,11 @@ self.__canvasButtons = 0;
 self.__canvasMouseX = 0;
 self.__canvasMouseY = 0;
 self.__canvasMouseButtons = 0;
-// Music playback state: set optimistically by canvas.h's music EM_JS calls,
-// corrected by the main thread's "musicState" messages (failed decode, a
-// non-looping file ending).
-self.__musicLoaded = false;
-self.__musicPlaying = false;
+// Audio playback state, per handle: set optimistically by stdlib/audio.h's
+// EM_JS calls, corrected by the main thread's "soundState" / "musicState"
+// messages (a failed decode, a one-shot or a non-looping track ending).
+self.__musicPlaying = {};
+self.__soundsPlaying = {};
 
 // Two independent facts now, so the page reports them separately: `backend`
 // is whether waits work (TUI keys, Canvas frames), `gpu` is where Tensor runs.
@@ -294,8 +294,7 @@ onmessage = async (e) => {
     return;
   }
   if (type === "musicState") {
-    self.__musicPlaying = e.data.playing;
-    self.__musicLoaded = e.data.loaded;
+    if (self.__musicPlaying) self.__musicPlaying[e.data.id] = e.data.playing;
     return;
   }
   if (type === "soundState") {
@@ -339,8 +338,7 @@ onmessage = async (e) => {
   self.__canvasKeysHeld = new Set();
   self.__canvasKeyQueue = [];
   self.__canvasCharQueue = [];
-  self.__musicLoaded = false;
-  self.__musicPlaying = false;
+  self.__musicPlaying = {};
   self.__soundsPlaying = {};
 
   const t0 = performance.now();

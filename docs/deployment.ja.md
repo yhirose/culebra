@@ -1286,13 +1286,14 @@ CMakeは`-DCULEBRA_ENABLE_JIT=ON`で、base archive＋ 重い機能ごとに
 | `libculebra_rt_search_segmenter.a` | 強いsegmenter choke（`Search.segmenter`の背後にあるcpp-segmentlibのモデルバックエンド、約140 KB）。プログラムが`segmenter`を名指したときだけforce-loadされるので、モデルを読まない検索プログラムはこれを運ばない |
 | `libculebra_rt_foreign.a` | foreign objectのテストが書かれている`__Foreign` wrapフィクスチャ（静的な`wrap<T>`レジストラなので専用archiveが要る） |
 | `libculebra_rt_canvas.a` | raylibのwindowバックエンド（windowビルドのみ。baseはheadlessスタブを持つ） |
+| `libculebra_rt_audio.a` | Audioのバックエンド: raylibの音声モジュールを単独でビルドしたもの。windowのコードもSDLも引かない（baseは無音のスタブを持つ） |
 | `libculebra_rt_scene.a` | Sceneのwrap registrar（raylibを引く。baseには一切入っていない） |
 | `libculebra_rt_webview.a` | Webviewのwrap registrar（OSのWebViewフレームワーク。baseには一切入っていない） |
 | `libculebra_rt_wrap.a` | `culebra wrap`のバインディング |
 
 `culebra build`（および拡張された`ext-culebra build`バイナリ）は
 常にbaseをlinkし、ソースASTがそのnamespace（`Tensor` / `Http` /
-`Compress` / `SQLite` / `Regex` / `Canvas` / `Scene` /
+`Compress` / `SQLite` / `Regex` / `Canvas` / `Audio` / `Scene` /
 `Webview`、あるいはラップされたnamespace）を参照する時だけ機能
 archiveを **force-load** し、同じ条件でその外部ライブラリ（BLAS /
 OpenSSL / zlib / …）を付けます。強いchokeがbaseの弱スタブを上書きする

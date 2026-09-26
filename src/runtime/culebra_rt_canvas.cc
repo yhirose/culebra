@@ -22,8 +22,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
-#include <mutex>
-#include <numbers>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -315,277 +313,9 @@ void drain_key_events() {
   }
 }
 
-// --- audio: a small WASM-4-style APU, mixed in software ---------------------
-//
-// The browser side (playground/app.js's playTone) hands each note to
-// WebAudio, which owns its own envelope/oscillator machinery; native has none
-// of that; the callback below IS the synth. Five channels (two pulse, a
-// triangle, noise, and the culebra-only sawtooth), one note at a time each —
-// a new tone() call on a channel cuts whatever was still playing there, like
-// the real APU. Times arrive in frames at ~60fps; this converts them to
-// sample counts once, at note-start, using the stream's own sample rate.
-constexpr int kSampleRate = 44100;
-// Channel numbers match src/preambles/canvas.cul's PULSE/PULSE2/TRIANGLE/
-// NOISE/SAWTOOTH constants. 0 and 1 (the two pulse channels) fall to
-// oscillate()'s default case — only their duty cycle differs, not their shape.
-constexpr int kTriangle = 2, kNoise = 3, kSawtooth = 4;
-
-struct Note {
-  bool active = false;
-  double start_freq = 0, end_freq = 0;
-  int64_t attack = 0, decay = 0, sustain = 0, release = 0;  // samples
-  int64_t total = 0;                                        // samples
-  double vol = 0, peak = 0;   // 0..1 gain, already scaled and headroom-capped
-  double duty = 0.5;          // pulse only
-  int64_t elapsed = 0;        // samples into the note; audio thread owns this
-  double phase = 0;           // 0..1, oscillator channels
-  double lp_state = 0;        // noise channel's one-pole lowpass
-};
-
-// A note carries where it starts, on the stream's own sample clock. tone()
-// runs on the main thread while the mixer renders whole buffers at once, so
-// writing straight to the sounding voice keeps only the last note a buffer
-// spans and pins every onset to a buffer edge — invisible at the 10 ms device
-// default, a third of the tune gone once a period outlasts the gap between
-// notes. This is what WebAudio's own src.start(now) gives the browser side.
-struct Queued {
-  int64_t start = 0;   // absolute position in the stream, in samples
-  int channel = 0;
-  Note note;
-};
-
-// Bounded on both sides of the handover: a device that stalls must not grow
-// these without limit, and the oldest note is the one to lose, being the one a
-// monophonic channel would have cut anyway.
-constexpr int kQueueCap = 64;
-
-std::mutex g_audio_mutex;
-Queued g_inbox[kQueueCap];   // handed over by tone(), drained once per buffer
-int g_inbox_count = 0;
-// Where the stream stands once the buffer being rendered is done, and the
-// instant that was. tone() dates itself against this pair, so notes keep their
-// spacing however long a buffer is.
-int64_t g_stream_next = 0;
-std::chrono::steady_clock::time_point g_stream_at{};
-int64_t g_last_start = 0;    // notes are queued in order, never behind
-
-// The mixer's own state: the voice sounding on each channel, and the notes
-// still waiting for their sample. Read and written only on the audio thread.
-Note g_voice[5];
-Queued g_pending[kQueueCap];
-int g_pending_count = 0;
-int64_t g_pos = 0;           // samples rendered so far
-
-AudioStream g_stream;
-bool g_audio_ready = false;
-bool g_audio_failed = false;  // latch: don't retry InitAudioDevice every call
-
-// vol/peak arrive as 0..100. File-backed audio (music, Sound) is already
-// mixed, so 100 is the file's own level.
-double gain_of(int64_t v) { return std::clamp(v, int64_t{0}, int64_t{100}) / 100.0; }
-
-// A synthesized waveform is raw and up to four channels stack, so tone keeps a
-// headroom the file paths don't need — the browser's "keep it gentle" 0.2.
-double tone_gain_of(int64_t v) { return gain_of(v) * 0.2; }
-
-// The ADSR envelope's gain at `elapsed` samples into a note of the given
-// phase lengths (all in samples). Attack ramps 0->peak, decay ramps
-// peak->sustain, sustain holds, release ramps sustain->0.
-double envelope(int64_t elapsed, int64_t attack, int64_t decay, int64_t sustain,
-                int64_t release, double peak, double sustain_gain) {
-  if (elapsed < attack) {
-    return attack > 0 ? peak * (static_cast<double>(elapsed) / attack) : peak;
-  }
-  elapsed -= attack;
-  if (elapsed < decay) {
-    double t = decay > 0 ? static_cast<double>(elapsed) / decay : 1.0;
-    return peak + (sustain_gain - peak) * t;
-  }
-  elapsed -= decay;
-  if (elapsed < sustain) return sustain_gain;
-  elapsed -= sustain;
-  if (elapsed < release) {
-    double t = release > 0 ? static_cast<double>(elapsed) / release : 1.0;
-    return sustain_gain * (1.0 - t);
-  }
-  return 0.0;
-}
-
-// One sample of a channel's raw waveform at its current phase (-1..1),
-// advancing the phase by one sample's worth of its (linearly swept)
-// frequency. Naive (non-band-limited) waves — fine at chiptune-bleep
-// durations and volumes, and it keeps the mixer simple.
-double oscillate(Note& n, int channel, double freq) {
-  double out;
-  switch (channel) {
-    case kTriangle:
-      out = 4.0 * std::abs(n.phase - std::floor(n.phase + 0.5)) - 1.0;
-      break;
-    case kSawtooth:
-      out = 2.0 * n.phase - 1.0;
-      break;
-    default:  // pulse / pulse2
-      out = n.phase < n.duty ? 1.0 : -1.0;
-      break;
-  }
-  n.phase += freq / kSampleRate;
-  if (n.phase >= 1.0) n.phase -= std::floor(n.phase);
-  return out;
-}
-
-// Noise: a cheap xorshift PRNG through a one-pole lowpass that sweeps
-// start->end (times 8, matching the browser's filter sweep), so it reads as
-// a pitched hiss rather than flat static.
-double noise_sample(Note& n, double cutoff) {
-  static thread_local uint32_t rng = 0x9e3779b9u;
-  rng ^= rng << 13;
-  rng ^= rng >> 17;
-  rng ^= rng << 5;
-  double white = (static_cast<double>(rng) / static_cast<double>(0xffffffffu)) * 2.0 - 1.0;
-  double nyq = kSampleRate / 2.0;
-  double alpha = 1.0 - std::exp(-2.0 * std::numbers::pi * std::min(cutoff, nyq * 0.99) / kSampleRate);
-  n.lp_state += alpha * (white - n.lp_state);
-  return n.lp_state;
-}
-
-// raylib's audio thread callback: fill `frames` mono float samples. The lock
-// is held only to take the handover, never across the render, so a long buffer
-// cannot delay tone() on the main thread. Everything the render touches after
-// that belongs to this thread alone.
-void audio_callback(void* buffer_data, unsigned int frames) {
-  float* out = static_cast<float*>(buffer_data);
-  {
-    std::lock_guard<std::mutex> lock(g_audio_mutex);
-    // Losing the oldest keeps the newest, which is what a channel would be
-    // sounding by the time the queue drained anyway.
-    int drop = g_pending_count + g_inbox_count - kQueueCap;
-    if (drop > 0) {
-      drop = std::min(drop, g_pending_count);
-      std::move(g_pending + drop, g_pending + g_pending_count, g_pending);
-      g_pending_count -= drop;
-    }
-    for (int i = 0; i < g_inbox_count && g_pending_count < kQueueCap; i++) {
-      g_pending[g_pending_count++] = g_inbox[i];
-    }
-    g_inbox_count = 0;
-    g_stream_next = g_pos + frames;
-    g_stream_at = std::chrono::steady_clock::now();
-  }
-
-  int head = 0;   // g_pending is ordered by start, so only the head can be due
-  for (unsigned int i = 0; i < frames; i++) {
-    int64_t p = g_pos + static_cast<int64_t>(i);
-    // A note whose sample has come round takes its channel, cutting whatever
-    // was sounding there. One already behind (the device fell back) starts
-    // here rather than being dropped.
-    while (head < g_pending_count && g_pending[head].start <= p) {
-      g_voice[g_pending[head].channel] = g_pending[head].note;
-      head++;
-    }
-    double mixed = 0.0;
-    for (int c = 0; c < 5; c++) {
-      Note& n = g_voice[c];
-      if (!n.active || n.elapsed >= n.total) {
-        n.active = false;
-        continue;
-      }
-      double t = n.total > 0 ? static_cast<double>(n.elapsed) / n.total : 1.0;
-      double freq = n.start_freq + (n.end_freq - n.start_freq) * t;
-      double g = envelope(n.elapsed, n.attack, n.decay, n.sustain, n.release, n.peak, n.vol);
-      double raw = c == kNoise ? noise_sample(n, std::max(1.0, freq * 8.0))
-                                : oscillate(n, c, std::max(1.0, freq));
-      mixed += raw * g;
-      n.elapsed++;
-    }
-    out[i] = static_cast<float>(std::clamp(mixed, -1.0, 1.0));
-  }
-
-  std::move(g_pending + head, g_pending + g_pending_count, g_pending);
-  g_pending_count -= head;
-  g_pos += frames;
-}
-
-void ensure_audio() {
-  if (forced_headless() || g_audio_failed) return;
-  if (g_audio_ready) return;
-  SetTraceLogLevel(LOG_WARNING);  // audio may come up before any window does
-  InitAudioDevice();
-  if (!IsAudioDeviceReady()) {
-    g_audio_failed = true;  // no device (headless server/CI)
-    // Sound is decorative, so no error — but say it once. A silent latch
-    // reads as "my tone() calls are broken" on a machine without a device.
-    TraceLog(LOG_WARNING, "Canvas: no audio device -- sound stays off");
-    return;
-  }
-  g_stream = LoadAudioStream(kSampleRate, 32, 1);  // 32-bit float, mono
-  SetAudioStreamCallback(g_stream, audio_callback);
-  // Date the stream clock before the device can call back: a tone() issued
-  // ahead of the first buffer would otherwise be measured from the epoch and
-  // scheduled past any sample this process will ever render.
-  {
-    std::lock_guard<std::mutex> lock(g_audio_mutex);
-    g_stream_at = std::chrono::steady_clock::now();
-  }
-  PlayAudioStream(g_stream);
-  g_audio_ready = true;
-  arm_exit_teardown();
-}
-
-// --- music: one streamed-file slot ------------------------------------------
-//
-// A single Music at a time, pygame-mixer style: music_play replaces whatever
-// was playing, music_stop unloads it, process exit reclaims the slot. No
-// handle ever reaches the script, so there is no lifetime to manage there.
-// raylib's memory decoders (drmp3 / stb_vorbis) keep POINTERS into the byte
-// buffer they were opened on rather than copying it, so the slot owns the
-// bytes and the Music together and releases them together — separating them
-// is a use-after-free that only surfaces once playback reads the freed pages.
-// Everything here runs on the main thread (decoding happens in the
-// UpdateMusicStream pump, not the audio callback), so no lock of ours needed.
-struct MusicSlot {
-  Music music{};
-  std::vector<uint8_t> bytes;
-  bool loaded = false;
-
-  void unload() {
-    if (!loaded) return;
-    UnloadMusicStream(music);
-    music = Music{};
-    bytes.clear();
-    bytes.shrink_to_fit();
-    loaded = false;
-  }
-  ~MusicSlot() { unload(); }
-};
-MusicSlot g_music;
-
-// Loaded sound effects, keyed by the canvas.h-allocated handle. One live
-// instance per handle (raylib PlaySound restarts the sound), matching the
-// browser side.
-struct SoundRegistry {
-  std::unordered_map<int64_t, Sound> sounds;
-
-  void unload_all() {
-    for (auto& [id, s] : sounds) UnloadSound(s);
-    sounds.clear();
-  }
-  ~SoundRegistry() { unload_all(); }
-};
-SoundRegistry g_sounds;
-
-// Hand the window and the audio device back at process exit, in the order
-// raylib wants: every sound and the music stream go back before the device they
-// were decoded for, and the device before the window. Each step clears what
-// guards it, so the owning statics above find nothing left to do when their own
-// destructors run afterwards.
+// Hand the window back at process exit. It clears what guards it, so a second
+// registration (below) finds nothing left to do.
 void exit_teardown() {
-  g_sounds.unload_all();
-  g_music.unload();
-  if (g_audio_ready) {
-    UnloadAudioStream(g_stream);
-    CloseAudioDevice();
-    g_audio_ready = false;
-  }
   if (g_window_ready && IsWindowReady()) {
     UnloadTexture(g_tex);
     if (g_screen_tex_w > 0) UnloadTexture(g_screen_tex);
@@ -594,8 +324,8 @@ void exit_teardown() {
   }
 }
 
-// Armed once the window or the audio device exists, rather than run from a
-// file-scope object's destructor. A static object registers its destructor with
+// Armed once the window exists, rather than run from a file-scope object's
+// destructor. A static object registers its destructor with
 // __cxa_atexit when it is CONSTRUCTED — before main for a file-scope one — and
 // exit runs those registrations in reverse, so a file-scope closer runs last:
 // after the GL and audio drivers dlopen'd along the way have torn themselves
@@ -603,19 +333,10 @@ void exit_teardown() {
 // Linux did on the way out. Registering once the resource exists nests our
 // teardown inside the lifetime of the libraries it calls into.
 //
-// Re-registered per resource rather than latched to the first one: only a
-// registration made after a driver was dlopen'd runs before that driver tears
-// itself down. A tone() on the first frame brings audio up before the window,
-// which latched the registration ahead of Mesa and put CloseWindow() back after
-// Mesa was gone. exit_teardown clears what guards each step, so the second run
-// finds nothing to do and the duplicate registration costs only its slot.
+// Only a registration made after a driver was dlopen'd runs before that driver
+// tears itself down, so it is made where the window comes up (the Audio
+// namespace registers its own, for the same reason, when its device does).
 void arm_exit_teardown() { std::atexit(exit_teardown); }
-
-// Refill the stream's buffers — called from present(), the one place every
-// frame loop passes through, so no pump API needs exposing.
-void music_pump() {
-  if (g_music.loaded) UpdateMusicStream(g_music.music);
-}
 
 // (Re)create the screen layer's texture when its size changes, the same shape
 // ensure_window() uses for g_tex. No filter is set: this one is blitted 1:1,
@@ -642,9 +363,6 @@ void ensure_screen_texture() {
 }  // namespace
 
 void present() {
-  // Pump the music stream before anything window-related: a display-less (but
-  // audible) run degrades to no window, and must still keep playing.
-  music_pump();
   ensure_window();
   if (!g_window_ready) {
     screen_buffer_reset();
@@ -962,145 +680,6 @@ void set_title(const char* title) {
   if (g_title == title) return;  // a per-frame rename that isn't one
   g_title = title;
   if (g_window_ready) SetWindowTitle(g_title.c_str());
-}
-
-// Frames (at ~60fps) to samples (at kSampleRate), matching the browser's own
-// `frames / 60` -> seconds conversion (playground/app.js's F()).
-int64_t frames_to_samples(int64_t frames) {
-  return static_cast<int64_t>(std::max<int64_t>(0, frames) *
-                              (static_cast<double>(kSampleRate) / 60.0));
-}
-
-void tone(int64_t start_freq, int64_t end_freq, int64_t attack, int64_t decay,
-          int64_t sustain, int64_t release, int64_t vol, int64_t peak,
-          int64_t channel, int64_t duty) {
-  ensure_audio();
-  if (!g_audio_ready) return;
-  if (channel < 0 || channel > 4) return;
-
-  Note n;
-  n.active = true;
-  n.start_freq = std::max<int64_t>(1, start_freq);
-  n.end_freq = std::max<int64_t>(1, end_freq);
-  n.attack = frames_to_samples(attack);
-  n.decay = frames_to_samples(decay);
-  n.sustain = frames_to_samples(sustain);
-  n.release = frames_to_samples(release);
-  n.total = n.attack + n.decay + n.sustain + n.release;
-  if (n.total <= 0) n.total = 1;  // guarantee an audible blip, like the browser
-  n.vol = tone_gain_of(vol);
-  n.peak = tone_gain_of(peak);
-  static constexpr double kDutyCycles[4] = {0.125, 0.25, 0.5, 0.75};
-  n.duty = kDutyCycles[std::clamp<int64_t>(duty, 0, 3)];
-  n.elapsed = 0;
-  n.phase = 0.0;
-  n.lp_state = 0.0;
-
-  std::lock_guard<std::mutex> lock(g_audio_mutex);
-  if (g_inbox_count == kQueueCap) {   // see kQueueCap: the oldest is the loss
-    std::move(g_inbox + 1, g_inbox + kQueueCap, g_inbox);
-    g_inbox_count--;
-  }
-  double ahead = std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                               g_stream_at).count();
-  int64_t start = g_stream_next + static_cast<int64_t>(ahead * kSampleRate);
-  // The queue is walked head-first, and a sequencer never means to place a
-  // note behind one it has already asked for, so clock jitter across a buffer
-  // edge settles in favour of the order the calls came in.
-  start = std::max(start, g_last_start);
-  g_last_start = start;
-  g_inbox[g_inbox_count++] = Queued{start, static_cast<int>(channel), n};
-}
-
-// The format sniff (and its ValueError) has already run in the caller's
-// backend-neutral shim; `fmt` is its verdict. A stream the sniff accepted but
-// the decoder rejects stays silent, like the browser's failed decodeAudioData.
-void music_play(const uint8_t* data, int64_t len, const char* fmt,
-                int64_t looping, int64_t vol, double start) {
-  ensure_audio();
-  if (!g_audio_ready) return;
-  g_music.unload();
-  g_music.bytes.assign(data, data + len);
-  Music m = LoadMusicStreamFromMemory(fmt, g_music.bytes.data(),
-                                      static_cast<int>(g_music.bytes.size()));
-  if (!IsMusicValid(m)) {
-    // A null ctx means raylib already freed its partial state; a non-null one
-    // (a decodable but empty stream) still owns a decoder to unload.
-    if (m.ctxData != nullptr) UnloadMusicStream(m);
-    g_music.bytes.clear();
-    g_music.bytes.shrink_to_fit();
-    return;
-  }
-  m.looping = looping != 0;
-  SetMusicVolume(m, static_cast<float>(gain_of(vol)));
-  PlayMusicStream(m);
-  if (start > 0) SeekMusicStream(m, static_cast<float>(start));
-  g_music.music = m;
-  g_music.loaded = true;
-}
-
-void music_stop() { g_music.unload(); }
-
-void music_pause() {
-  if (g_music.loaded) PauseMusicStream(g_music.music);
-}
-
-void music_resume() {
-  if (g_music.loaded) ResumeMusicStream(g_music.music);
-}
-
-void music_volume(int64_t vol) {
-  if (g_music.loaded)
-    SetMusicVolume(g_music.music, static_cast<float>(gain_of(vol)));
-}
-
-void music_seek(double seconds) {
-  if (!g_music.loaded) return;
-  if (!(seconds > 0)) seconds = 0;  // NaN and negatives land at the start
-  SeekMusicStream(g_music.music, static_cast<float>(seconds));
-}
-
-bool music_playing() {
-  return g_music.loaded && IsMusicStreamPlaying(g_music.music);
-}
-
-// --- sound effects: decoded once, played per call ---------------------------
-
-void sound_load(int64_t id, const uint8_t* data, int64_t len, const char* fmt) {
-  ensure_audio();
-  if (!g_audio_ready) return;
-  // Past the sniff but undecodable: the handle stays silent, the music-slot
-  // convention for a stream that fails to decode.
-  Wave w = LoadWaveFromMemory(fmt, data, static_cast<int>(len));
-  if (w.data == nullptr) return;
-  Sound s = LoadSoundFromWave(w);
-  UnloadWave(w);
-  g_sounds.sounds[id] = s;
-}
-
-void sound_play(int64_t id, int64_t vol) {
-  auto it = g_sounds.sounds.find(id);
-  if (it == g_sounds.sounds.end()) return;
-  SetSoundVolume(it->second, static_cast<float>(gain_of(vol)));
-  PlaySound(it->second);  // restarts if already playing
-}
-
-void sound_stop(int64_t id) {
-  auto it = g_sounds.sounds.find(id);
-  if (it != g_sounds.sounds.end()) StopSound(it->second);
-}
-
-bool sound_playing(int64_t id) {
-  auto it = g_sounds.sounds.find(id);
-  return it != g_sounds.sounds.end() && IsSoundPlaying(it->second);
-}
-
-void sound_free(int64_t id) {
-  auto it = g_sounds.sounds.find(id);
-  if (it == g_sounds.sounds.end()) return;
-  StopSound(it->second);
-  UnloadSound(it->second);
-  g_sounds.sounds.erase(it);
 }
 
 }  // namespace _canvas_detail

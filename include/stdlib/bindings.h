@@ -22,6 +22,7 @@
 #include <rt/rt.h>
 #include <stdlib/net.h>
 #include <stdlib/proc.h>
+#include <stdlib/audio.h>
 #include <stdlib/canvas.h>
 #include <stdlib/font_ttf.h>
 #include <stdlib/image.h>
@@ -1284,76 +1285,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_quit() {
 }
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_canvas_can_quit() {
   return culebra::_canvas_detail::can_quit();
-}
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_tone(
-    int64_t start_freq, int64_t end_freq, int64_t attack, int64_t decay,
-    int64_t sustain, int64_t release, int64_t vol, int64_t peak,
-    int64_t channel, int64_t duty) {
-  culebra::_canvas_detail::tone(start_freq, end_freq, attack, decay, sustain,
-                                release, vol, peak, channel, duty);
-}
-// The MP3/Ogg sniff runs here, before the backend branch, mirroring interp —
-// same ValueError, same site, on every backend.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_music_play(
-    uint8_t tag, int64_t data, int64_t looping, int64_t vol, double start,
-    int64_t line, int64_t col) {
-  auto sv = _culebra_str_view(tag, data);
-  auto p = reinterpret_cast<const uint8_t*>(sv.data());
-  const char* fmt = culebra::_canvas_detail::music_format(p, sv.size());
-  if (fmt == nullptr)
-    throw culebra::CulebraError(
-        "ValueError", culebra::_canvas_detail::kMusicFormatError, line, col);
-  culebra::_canvas_detail::music_play(p, static_cast<int64_t>(sv.size()), fmt,
-                                      looping, vol, start);
-}
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_music_stop() {
-  culebra::_canvas_detail::music_stop();
-}
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_music_pause() {
-  culebra::_canvas_detail::music_pause();
-}
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_music_resume() {
-  culebra::_canvas_detail::music_resume();
-}
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_music_volume(
-    int64_t vol) {
-  culebra::_canvas_detail::music_volume(vol);
-}
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_music_seek(
-    double seconds) {
-  culebra::_canvas_detail::music_seek(seconds);
-}
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_canvas_music_playing() {
-  return culebra::_canvas_detail::music_playing();
-}
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_sound_load(
-    uint8_t tag, int64_t data, int64_t line, int64_t col) {
-  auto sv = _culebra_str_view(tag, data);
-  auto p = reinterpret_cast<const uint8_t*>(sv.data());
-  const char* fmt = culebra::_canvas_detail::sound_format(p, sv.size());
-  if (fmt == nullptr)
-    throw culebra::CulebraError(
-        "ValueError", culebra::_canvas_detail::kSoundFormatError, line, col);
-  int64_t id = culebra::_canvas_detail::sound_alloc_id();
-  culebra::_canvas_detail::sound_load(id, p, static_cast<int64_t>(sv.size()),
-                                      fmt);
-  return id;
-}
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_sound_play(
-    int64_t id, int64_t vol) {
-  culebra::_canvas_detail::sound_play(id, vol);
-}
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_sound_stop(
-    int64_t id) {
-  culebra::_canvas_detail::sound_stop(id);
-}
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_canvas_sound_playing(
-    int64_t id) {
-  return culebra::_canvas_detail::sound_playing(id);
-}
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_sound_free(
-    int64_t id) {
-  culebra::_canvas_detail::sound_free(id);
 }
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_width() {
   return culebra::_canvas_detail::width();
@@ -5096,8 +5027,29 @@ inline JitValue _ns_canvas_title(JitValue* a, int64_t) {
   culebra_runtime_canvas_title(static_cast<uint8_t>(a[0].tag), a[0].data);
   return _ns_adapt::v_nil();
 }
-inline JitValue _ns_canvas_tone(JitValue* a, int64_t) {
-  culebra_runtime_canvas_tone(
+// --- Audio: the natives behind src/preambles/audio.cul ----------------------
+// Every handle method is one of three shapes, so those are one template each.
+// The bytes-taking constructors sniff the format here, before any backend, so
+// a bad file is the same ValueError on every one (stdlib/audio.h).
+template <void (*F)(int64_t)>
+inline JitValue _ns_audio_on(JitValue* a, int64_t) {
+  F(_ns_adapt::take_long(a[0]));
+  return _ns_adapt::v_nil();
+}
+template <bool (*F)(int64_t)>
+inline JitValue _ns_audio_ask(JitValue* a, int64_t) {
+  return _ns_adapt::v_bool(F(_ns_adapt::take_long(a[0])));
+}
+template <void (*F)(int64_t, double)>
+inline JitValue _ns_audio_set(JitValue* a, int64_t) {
+  F(_ns_adapt::take_long(a[0]), _ns_adapt::take_double(a[1]));
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_audio_available(JitValue*, int64_t) {
+  return _ns_adapt::v_bool(culebra::_audio_detail::available());
+}
+inline JitValue _ns_audio_tone(JitValue* a, int64_t) {
+  culebra::_audio_detail::tone(
       _ns_adapt::take_long(a[0]), _ns_adapt::take_long(a[1]),
       _ns_adapt::take_long(a[2]), _ns_adapt::take_long(a[3]),
       _ns_adapt::take_long(a[4]), _ns_adapt::take_long(a[5]),
@@ -5105,56 +5057,66 @@ inline JitValue _ns_canvas_tone(JitValue* a, int64_t) {
       _ns_adapt::take_long(a[8]), _ns_adapt::take_long(a[9]));
   return _ns_adapt::v_nil();
 }
-inline JitValue _ns_canvas_music_play(JitValue* a, int64_t) {
-  culebra_runtime_canvas_music_play(
-      static_cast<uint8_t>(a[0].tag), a[0].data, _ns_adapt::take_long(a[1]),
-      _ns_adapt::take_long(a[2]), _ns_adapt::take_double(a[3]), 0, 0);
-  return _ns_adapt::v_nil();
+inline JitValue _ns_audio_sound_load(JitValue* a, int64_t) {
+  namespace ad = culebra::_audio_detail;
+  auto sv = _culebra_str_view(a[0].tag, a[0].data);
+  auto p = reinterpret_cast<const uint8_t*>(sv.data());
+  const char* fmt = ad::sound_format(p, sv.size());
+  if (fmt == nullptr)
+    culebra::throw_runtime_error_at("ValueError", ad::kSoundFormatError, 0, 0);
+  int64_t id = ad::alloc_id();
+  ad::sound_load(id, p, static_cast<int64_t>(sv.size()), fmt);
+  return _ns_adapt::v_long(id);
 }
-inline JitValue _ns_canvas_music_stop(JitValue*, int64_t) {
-  culebra_runtime_canvas_music_stop();
-  return _ns_adapt::v_nil();
+inline JitValue _ns_audio_music_load(JitValue* a, int64_t) {
+  namespace ad = culebra::_audio_detail;
+  auto sv = _culebra_str_view(a[0].tag, a[0].data);
+  auto p = reinterpret_cast<const uint8_t*>(sv.data());
+  const char* fmt = ad::music_format(p, sv.size());
+  if (fmt == nullptr)
+    culebra::throw_runtime_error_at("ValueError", ad::kMusicFormatError, 0, 0);
+  int64_t id = ad::alloc_id();
+  ad::music_load(id, p, static_cast<int64_t>(sv.size()), fmt,
+                 _ns_adapt::take_bool(a[1]) != 0);
+  return _ns_adapt::v_long(id);
 }
-inline JitValue _ns_canvas_music_pause(JitValue*, int64_t) {
-  culebra_runtime_canvas_music_pause();
-  return _ns_adapt::v_nil();
+inline JitValue _ns_audio_stream_new(JitValue* a, int64_t) {
+  namespace ad = culebra::_audio_detail;
+  int64_t id = ad::alloc_id();
+  ad::stream_new(id, _ns_adapt::take_long(a[0]), _ns_adapt::take_long(a[1]),
+                 _ns_adapt::take_long(a[2]));
+  return _ns_adapt::v_long(id);
 }
-inline JitValue _ns_canvas_music_resume(JitValue*, int64_t) {
-  culebra_runtime_canvas_music_resume();
-  return _ns_adapt::v_nil();
+// `samples` carry polygon's Long|Float contract, checked whole before any is
+// taken: a skipped element would shift every stereo pair after it.
+inline JitValue _ns_audio_stream_push(JitValue* a, int64_t) {
+  thread_local std::vector<double> scratch;  // a block a frame: no allocation
+  scratch.clear();
+  auto* samples = _ns_adapt::take_array(a[1]);
+  for (size_t i = 0; samples && i < samples->size; i++) {
+    const auto& e = samples->items[i];
+    if (e.tag != TAG_LONG && e.tag != TAG_FLOAT)
+      culebra::throw_runtime_error_at(
+          "TypeError", culebra::_audio_detail::kStreamSamplesError, 0, 0);
+    scratch.push_back(_culebra_coerce_num(e.tag, e.data));
+  }
+  return _ns_adapt::v_long(culebra::_audio_detail::stream_push(
+      _ns_adapt::take_long(a[0]), scratch.data(),
+      static_cast<int64_t>(scratch.size())));
 }
-inline JitValue _ns_canvas_music_volume(JitValue* a, int64_t) {
-  culebra_runtime_canvas_music_volume(_ns_adapt::take_long(a[0]));
-  return _ns_adapt::v_nil();
+inline JitValue _ns_audio_stream_needed(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(
+      culebra::_audio_detail::stream_needed(_ns_adapt::take_long(a[0])));
 }
-inline JitValue _ns_canvas_music_seek(JitValue* a, int64_t) {
-  culebra_runtime_canvas_music_seek(_ns_adapt::take_double(a[0]));
-  return _ns_adapt::v_nil();
+inline JitValue _ns_audio_stream_submit(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(
+      culebra::_audio_detail::stream_submit(_ns_adapt::take_long(a[0])));
 }
-inline JitValue _ns_canvas_music_playing(JitValue*, int64_t) {
-  return _ns_adapt::v_bool(culebra_runtime_canvas_music_playing());
+inline JitValue _ns_audio_stream_latency(JitValue* a, int64_t) {
+  return _ns_adapt::v_float(
+      culebra::_audio_detail::stream_latency(_ns_adapt::take_long(a[0])));
 }
-inline JitValue _ns_canvas_sound_load(JitValue* a, int64_t) {
-  return _ns_adapt::v_long(culebra_runtime_canvas_sound_load(
-      static_cast<uint8_t>(a[0].tag), a[0].data, 0, 0));
-}
-inline JitValue _ns_canvas_sound_play(JitValue* a, int64_t) {
-  culebra_runtime_canvas_sound_play(_ns_adapt::take_long(a[0]),
-                                    _ns_adapt::take_long(a[1]));
-  return _ns_adapt::v_nil();
-}
-inline JitValue _ns_canvas_sound_stop(JitValue* a, int64_t) {
-  culebra_runtime_canvas_sound_stop(_ns_adapt::take_long(a[0]));
-  return _ns_adapt::v_nil();
-}
-inline JitValue _ns_canvas_sound_playing(JitValue* a, int64_t) {
-  return _ns_adapt::v_bool(
-      culebra_runtime_canvas_sound_playing(_ns_adapt::take_long(a[0])));
-}
-inline JitValue _ns_canvas_sound_free(JitValue* a, int64_t) {
-  culebra_runtime_canvas_sound_free(_ns_adapt::take_long(a[0]));
-  return _ns_adapt::v_nil();
-}
+
 inline JitValue _ns_canvas_width(JitValue*, int64_t) {
   return _ns_adapt::v_long(culebra_runtime_canvas_width());
 }
@@ -9333,6 +9295,44 @@ inline const NsMethod kNsRows_Term_native[] = {
   {"_Term",  "read_key",    1, &_ns_term_read_key},
   {"_Term",  "attach_tty",  0, &_ns_term_attach_tty},
 };
+inline const NsMethod kNsRows_Audio_native[] = {
+  {"_Audio", "available",      0, &_ns_audio_available},
+  {"_Audio", "tone",          10, &_ns_audio_tone},
+  {"_Audio", "sound_load",     1, &_ns_audio_sound_load},
+  {"_Audio", "sound_free",     1, &_ns_audio_on<culebra::_audio_detail::sound_free>},
+  {"_Audio", "sound_play",     1, &_ns_audio_on<culebra::_audio_detail::sound_play>},
+  {"_Audio", "sound_stop",     1, &_ns_audio_on<culebra::_audio_detail::sound_stop>},
+  {"_Audio", "sound_playing",  1, &_ns_audio_ask<culebra::_audio_detail::sound_playing>},
+  {"_Audio", "sound_volume",   2, &_ns_audio_set<culebra::_audio_detail::sound_volume>},
+  {"_Audio", "sound_pitch",    2, &_ns_audio_set<culebra::_audio_detail::sound_pitch>},
+  {"_Audio", "sound_pan",      2, &_ns_audio_set<culebra::_audio_detail::sound_pan>},
+  {"_Audio", "music_load",     2, &_ns_audio_music_load},
+  {"_Audio", "music_free",     1, &_ns_audio_on<culebra::_audio_detail::music_free>},
+  {"_Audio", "music_play",     1, &_ns_audio_on<culebra::_audio_detail::music_play>},
+  {"_Audio", "music_stop",     1, &_ns_audio_on<culebra::_audio_detail::music_stop>},
+  {"_Audio", "music_pause",    1, &_ns_audio_on<culebra::_audio_detail::music_pause>},
+  {"_Audio", "music_resume",   1, &_ns_audio_on<culebra::_audio_detail::music_resume>},
+  {"_Audio", "music_playing",  1, &_ns_audio_ask<culebra::_audio_detail::music_playing>},
+  {"_Audio", "music_seek",     2, &_ns_audio_set<culebra::_audio_detail::music_seek>},
+  {"_Audio", "music_volume",   2, &_ns_audio_set<culebra::_audio_detail::music_volume>},
+  {"_Audio", "music_pitch",    2, &_ns_audio_set<culebra::_audio_detail::music_pitch>},
+  {"_Audio", "music_pan",      2, &_ns_audio_set<culebra::_audio_detail::music_pan>},
+  {"_Audio", "stream_new",     3, &_ns_audio_stream_new},
+  {"_Audio", "stream_free",    1, &_ns_audio_on<culebra::_audio_detail::stream_free>},
+  {"_Audio", "stream_ready",   1, &_ns_audio_ask<culebra::_audio_detail::stream_ready>},
+  {"_Audio", "stream_needed",  1, &_ns_audio_stream_needed},
+  {"_Audio", "stream_push",    2, &_ns_audio_stream_push},
+  {"_Audio", "stream_submit",  1, &_ns_audio_stream_submit},
+  {"_Audio", "stream_latency", 1, &_ns_audio_stream_latency},
+  {"_Audio", "stream_play",    1, &_ns_audio_on<culebra::_audio_detail::stream_play>},
+  {"_Audio", "stream_stop",    1, &_ns_audio_on<culebra::_audio_detail::stream_stop>},
+  {"_Audio", "stream_pause",   1, &_ns_audio_on<culebra::_audio_detail::stream_pause>},
+  {"_Audio", "stream_resume",  1, &_ns_audio_on<culebra::_audio_detail::stream_resume>},
+  {"_Audio", "stream_playing", 1, &_ns_audio_ask<culebra::_audio_detail::stream_playing>},
+  {"_Audio", "stream_volume",  2, &_ns_audio_set<culebra::_audio_detail::stream_volume>},
+  {"_Audio", "stream_pitch",   2, &_ns_audio_set<culebra::_audio_detail::stream_pitch>},
+  {"_Audio", "stream_pan",     2, &_ns_audio_set<culebra::_audio_detail::stream_pan>},
+};
 inline const NsMethod kNsRows_Canvas_native[] = {
   {"_Canvas", "init",            2,  &_ns_canvas_init},
   {"_Canvas", "ttf_load",        1,  &_ns_canvas_ttf_load},
@@ -9376,19 +9376,6 @@ inline const NsMethod kNsRows_Canvas_native[] = {
   {"_Canvas", "closing",         0,  &_ns_canvas_closing},
   {"_Canvas", "windowed",        0,  &_ns_canvas_windowed},
   {"_Canvas", "title",           1,  &_ns_canvas_title},
-  {"_Canvas", "tone",            10, &_ns_canvas_tone},
-  {"_Canvas", "music_play",      4,  &_ns_canvas_music_play},
-  {"_Canvas", "music_stop",      0,  &_ns_canvas_music_stop},
-  {"_Canvas", "music_pause",     0,  &_ns_canvas_music_pause},
-  {"_Canvas", "music_resume",    0,  &_ns_canvas_music_resume},
-  {"_Canvas", "music_volume",    1,  &_ns_canvas_music_volume},
-  {"_Canvas", "music_seek",      1,  &_ns_canvas_music_seek},
-  {"_Canvas", "music_playing",   0,  &_ns_canvas_music_playing},
-  {"_Canvas", "sound_load",      1,  &_ns_canvas_sound_load},
-  {"_Canvas", "sound_play",      2,  &_ns_canvas_sound_play},
-  {"_Canvas", "sound_stop",      1,  &_ns_canvas_sound_stop},
-  {"_Canvas", "sound_playing",   1,  &_ns_canvas_sound_playing},
-  {"_Canvas", "sound_free",      1,  &_ns_canvas_sound_free},
   {"_Canvas", "width",           0,  &_ns_canvas_width},
   {"_Canvas", "height",          0,  &_ns_canvas_height},
   {"_Canvas", "toggle_fullscreen", 0, &_ns_canvas_toggle_fullscreen},
@@ -9515,6 +9502,8 @@ CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Term_native{
     kNsRows_Term_native, kCanonSigs_Term_native};
 CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Canvas_native{
     kNsRows_Canvas_native, kCanonSigs_Canvas_native};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Audio_native{
+    kNsRows_Audio_native, kCanonSigs_Audio_native};
 
 // Every group, for the lanes that run in this process (the JIT, the VM) and
 // for `culebra build`'s emitter. An AOT binary reads the list its program
@@ -9562,6 +9551,7 @@ inline const NsGroupRef kNsGroups[] = {
   {"_Time", &culebra_ns_group_Time_native},
   {"_Term", &culebra_ns_group_Term_native},
   {"_Canvas", &culebra_ns_group_Canvas_native},
+  {"_Audio", &culebra_ns_group_Audio_native},
 };
 
 #if defined(CULEBRA_RT_DEFINE_RUNTIME) || defined(CULEBRA_RT_FEATURE_ARCHIVE)
@@ -11022,26 +11012,6 @@ inline void JitExtension::declare_runtime(JIT& jit) {
   jit.module_->getOrInsertFunction(rt::canvas_closing, jit.builder_.getInt1Ty());
   jit.module_->getOrInsertFunction(rt::canvas_windowed,
                                    jit.builder_.getInt1Ty());
-  jit.module_->getOrInsertFunction(rt::canvas_tone, vt, i64, i64, i64, i64, i64,
-                                   i64, i64, i64, i64, i64);
-  jit.module_->getOrInsertFunction(rt::canvas_music_play, vt,
-                                   jit.builder_.getInt8Ty(), i64, i64, i64,
-                                   jit.builder_.getDoubleTy(), i64, i64);
-  jit.module_->getOrInsertFunction(rt::canvas_music_stop, vt);
-  jit.module_->getOrInsertFunction(rt::canvas_music_pause, vt);
-  jit.module_->getOrInsertFunction(rt::canvas_music_resume, vt);
-  jit.module_->getOrInsertFunction(rt::canvas_music_volume, vt, i64);
-  jit.module_->getOrInsertFunction(rt::canvas_music_seek, vt,
-                                   jit.builder_.getDoubleTy());
-  jit.module_->getOrInsertFunction(rt::canvas_music_playing,
-                                   jit.builder_.getInt1Ty());
-  jit.module_->getOrInsertFunction(rt::canvas_sound_load, i64,
-                                   jit.builder_.getInt8Ty(), i64, i64, i64);
-  jit.module_->getOrInsertFunction(rt::canvas_sound_play, vt, i64, i64);
-  jit.module_->getOrInsertFunction(rt::canvas_sound_stop, vt, i64);
-  jit.module_->getOrInsertFunction(rt::canvas_sound_playing,
-                                   jit.builder_.getInt1Ty(), i64);
-  jit.module_->getOrInsertFunction(rt::canvas_sound_free, vt, i64);
   jit.module_->getOrInsertFunction(rt::canvas_width, i64);
   jit.module_->getOrInsertFunction(rt::canvas_height, i64);
   }
@@ -11251,7 +11221,7 @@ inline const std::unordered_set<std::string_view>& builtin_var_names() {
       "Parallel",
       "Signal",  "Encoding", "Compress",  "SharedBuffer", "Shared",
       "Hash",    "CSV",       "TOML",      "Env",       "UUID",       "String",
-      "_Term",   "_Canvas",
+      "_Term",   "_Canvas",   "_Audio",
 #if defined(CULEBRA_SQLITE_ENABLED)
       "SQLite",
 #endif
@@ -11261,7 +11231,8 @@ inline const std::unordered_set<std::string_view>& builtin_var_names() {
       // interp's builtin_names skip. See _jit_namespace_get_or_build.
       "Time",    "Args",      "Regex",     "PEG",       "FST",      "Term",
       "Log",
-      "Path",    "Canvas",    "__Eff",     "Vector2",   "Vector3",  "Deque",
+      "Path",    "Canvas",    "Audio",     "__Eff",     "Vector2",   "Vector3",
+      "Deque",
       "PriorityQueue", "StateMachine",
       // The bare function globals from those same source modules (assert_*,
       // `replace`) are listed by lazy_fn_group_of below, not here.

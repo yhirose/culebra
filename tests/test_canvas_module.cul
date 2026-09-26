@@ -591,12 +591,10 @@ Canvas.tone(440, 8, 100, Canvas.PULSE)
 let m = Canvas.mouse()
 assert_eq(m.x, 0)
 
-// Music: a self-made 0.2 s sine MP3 (Python wave + lame, MPEG 2.5 mono — its
-// 0xff 0xe3 frame sync is exactly the header the format sniff must accept
-// beyond the common 0xff 0xfb). Under the test harness the backend is headless
-// (CULEBRA_CANVAS_HEADLESS), so playback state stays false and every control
-// is a no-op — what this pins is the sniff, the argument contracts and the
-// unloaded/no-op behaviour, identically on both backends.
+// Canvas's audio members forward to the Audio namespace (tests/test_audio.cul
+// has the rest), keeping Canvas's one music slot and 0..100 volume. Music: a
+// self-made 0.2 s sine MP3 (MPEG 2.5 mono, 0xff 0xe3 frame sync). Under the
+// test harness the device stays closed, so playback state stays false.
 let MP3 = Encoding.hex.decode("ffe318c4000d38be802158000127fffffffffeb0c30c30c30a7a7a7a7cfbb74d09" +
   "664116b1d52e799526b59a4a5d3808b865c753777e5f6f3cf3b180000002be1e1e" +
   "5b2cbdfe9918ffe318c4060e00b2800195c00039a31d552f06813030b8e00f84e8" +
@@ -631,10 +629,7 @@ assert_throws("ValueError", fn () {
   Canvas.music("")
 })
 
-// Sound effects: a 4-sample PCM WAV (hand-assembled header). Headless the
-// backend never plays, so what this pins is the sniff (WAV joins music's
-// MP3/Ogg), the handle lifecycle and the argument contracts, identically on
-// both backends.
+// Sound effects: a 4-sample PCM WAV (hand-assembled header).
 let WAV = Encoding.hex.decode("524946462800000057415645666d7420100000000100010040" +
   "1f0000401f000001000800646174610400000080c8803c")
 let snd = Canvas.Sound.new(WAV)

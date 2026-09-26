@@ -26,7 +26,7 @@
 // but `present` shows nothing and input reads as "no button". With the window
 // enabled a real raylib desktop window is linked instead (present shows the
 // frame and blocks to vsync, input polls the keyboard/mouse) — the
-// backend-specific present/input/tone/closing are then declarations here,
+// backend-specific present/input/closing are then declarations here,
 // defined in src/runtime/culebra_rt_canvas.cc, so this widely-included
 // framebuffer header still pulls in no raylib either way.
 
@@ -39,6 +39,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <base/id_registry.h>  // IdRegistry<T> (slot+generation handle table)
@@ -869,52 +870,12 @@ inline bool blit_scaled(int64_t id, int64_t dx, int64_t dy, int64_t dw,
   return true;
 }
 
-// The audio container `data` opens with, named as the extension string
-// raylib's decoder dispatch keys on: an ID3v2 tag or an MPEG frame sync
-// (0xFF then the top three bits set — MPEG2/mono encodes don't start 0xFF
-// 0xFB) is MP3, an "OggS" capture pattern is Ogg, anything else (or a byte
-// count past raylib's int size) is nullptr. This sniff runs before any
-// backend branch: the browser's own decodeAudioData is asynchronous, so
-// leaving detection to it would give wasm a different error site than the
-// other backends.
-inline const char* music_format(const uint8_t* p, size_t n) {
-  if (p == nullptr || n < 4 || n > static_cast<size_t>(INT32_MAX))
-    return nullptr;
-  if (p[0] == 'O' && p[1] == 'g' && p[2] == 'g' && p[3] == 'S') return ".ogg";
-  if (p[0] == 'I' && p[1] == 'D' && p[2] == '3') return ".mp3";
-  if (p[0] == 0xff && (p[1] & 0xe0) == 0xe0) return ".mp3";
-  return nullptr;
-}
-
-// The one message both backends raise for bytes that are neither MP3 nor Ogg,
-// the music analogue of Sprite.from_png's ValueError.
-inline constexpr auto kMusicFormatError = "not a valid MP3 or Ogg audio stream";
-
-// Sound effects (Canvas.Sound) accept WAV on top of music's MP3/Ogg — the
-// natural container for a one-shot sample. Same sniff-before-backend shape.
-inline const char* sound_format(const uint8_t* p, size_t n) {
-  if (p != nullptr && n >= 12 && p[0] == 'R' && p[1] == 'I' && p[2] == 'F' &&
-      p[3] == 'F' && p[8] == 'W' && p[9] == 'A' && p[10] == 'V' && p[11] == 'E')
-    return ".wav";
-  return music_format(p, n);
-}
-inline constexpr auto kSoundFormatError =
-    "not a valid WAV, MP3 or Ogg audio stream";
-
-// Sound handles are allocated here, one counter for every backend, so the
-// script-visible lifecycle (load -> play/stop -> free) reads identically
-// whether or not a host can actually decode and play the bytes.
-inline int64_t sound_alloc_id() {
-  static int64_t n = 0;
-  return ++n;
-}
-
 #if defined(__EMSCRIPTEN__)
 
 // Browser backend for the Playground. present posts the framebuffer to the
 // page (main thread turns it into putImageData) and, with JSPI, suspends the
 // wasm call until the next animation-frame tick — the frame-driven analogue of
-// the TUI backend's read_key wait. Input and tone read/notify JS-side state
+// the TUI backend's read_key wait. Input reads JS-side state
 // the frontend maintains; see playground/worker.js and app.js.
 
 // The screen layer rides along in the same message as the frame: one copy, one
@@ -983,75 +944,6 @@ EM_JS(char*, _wasm_canvas_char_pop, (), {
   stringToUTF8(s, ptr, len);
   return ptr;
 });
-// A WASM-4-style tone: a note that slides start->end frequency over its life
-// under an ADSR envelope, on one of four channels (two pulse waves with a duty
-// cycle, a triangle, and noise). Times are in frames at ~60fps; volume/peak are
-// 0..100. The frontend (app.js playTone) turns this into WebAudio nodes.
-EM_JS(void, _wasm_canvas_tone,
-      (int start_freq, int end_freq, int attack, int decay, int sustain,
-       int release, int vol, int peak, int channel, int duty), {
-  postMessage({ type: "tone", startFreq: start_freq, endFreq: end_freq,
-                attack: attack, decay: decay, sustain: sustain,
-                release: release, vol: vol, peak: peak, channel: channel,
-                duty: duty });
-});
-// Music playback lives on the main thread (app.js decodes and drives WebAudio);
-// these post the commands over. __musicLoaded/__musicPlaying are updated
-// optimistically here, synchronously with the call — the state a script reads
-// right back — and the main thread pushes corrections (a failed decode, a
-// non-looping file ending) as "musicState" messages worker.js applies.
-EM_JS(void, _wasm_canvas_music_play,
-      (const uint8_t* buf, int len, int looping, int vol, double start), {
-  self.__musicLoaded = true;
-  self.__musicPlaying = true;
-  postMessage({ type: "music", cmd: "play", buf: HEAPU8.slice(buf, buf + len),
-                loop: looping !== 0, vol: vol, start: start });
-});
-EM_JS(void, _wasm_canvas_music_stop, (), {
-  self.__musicLoaded = false;
-  self.__musicPlaying = false;
-  postMessage({ type: "music", cmd: "stop" });
-});
-EM_JS(void, _wasm_canvas_music_pause, (), {
-  self.__musicPlaying = false;
-  postMessage({ type: "music", cmd: "pause" });
-});
-EM_JS(void, _wasm_canvas_music_resume, (), {
-  if (self.__musicLoaded) self.__musicPlaying = true;
-  postMessage({ type: "music", cmd: "resume" });
-});
-EM_JS(void, _wasm_canvas_music_volume, (int vol), {
-  postMessage({ type: "music", cmd: "volume", vol: vol });
-});
-EM_JS(void, _wasm_canvas_music_seek, (double seconds), {
-  postMessage({ type: "music", cmd: "seek", seconds: seconds });
-});
-EM_JS(int, _wasm_canvas_music_playing, (), {
-  return self.__musicPlaying ? 1 : 0;
-});
-// Sound effects: decoded and played on the main thread like music, but many
-// slots keyed by the wasm-side handle. __soundsPlaying is optimistic on play
-// (the state a script reads right back) and corrected by "soundState"
-// messages when a one-shot ends.
-EM_JS(void, _wasm_canvas_sound_load, (int id, const uint8_t* buf, int len), {
-  postMessage({ type: "sound", cmd: "load", id: id,
-                buf: HEAPU8.slice(buf, buf + len) });
-});
-EM_JS(void, _wasm_canvas_sound_play, (int id, int vol), {
-  (self.__soundsPlaying = self.__soundsPlaying || {})[id] = true;
-  postMessage({ type: "sound", cmd: "play", id: id, vol: vol });
-});
-EM_JS(void, _wasm_canvas_sound_stop, (int id), {
-  if (self.__soundsPlaying) self.__soundsPlaying[id] = false;
-  postMessage({ type: "sound", cmd: "stop", id: id });
-});
-EM_JS(int, _wasm_canvas_sound_playing, (int id), {
-  return self.__soundsPlaying && self.__soundsPlaying[id] ? 1 : 0;
-});
-EM_JS(void, _wasm_canvas_sound_free, (int id), {
-  if (self.__soundsPlaying) delete self.__soundsPlaying[id];
-  postMessage({ type: "sound", cmd: "free", id: id });
-});
 
 inline double screen_scale() { return _wasm_canvas_screen_scale(); }
 inline void present() {
@@ -1091,47 +983,6 @@ inline const char* window_error() { return nullptr; }
 // Deliberate: the tab's title belongs to the page hosting the canvas, not to
 // the program drawing on it.
 inline void set_title(const char*) {}
-inline void tone(int64_t start_freq, int64_t end_freq, int64_t attack,
-                 int64_t decay, int64_t sustain, int64_t release, int64_t vol,
-                 int64_t peak, int64_t channel, int64_t duty) {
-  _wasm_canvas_tone(static_cast<int>(start_freq), static_cast<int>(end_freq),
-                    static_cast<int>(attack), static_cast<int>(decay),
-                    static_cast<int>(sustain), static_cast<int>(release),
-                    static_cast<int>(vol), static_cast<int>(peak),
-                    static_cast<int>(channel), static_cast<int>(duty));
-}
-// `fmt` is for raylib's decoder dispatch; the browser sniffs the bytes itself.
-inline void music_play(const uint8_t* data, int64_t len, const char* /*fmt*/,
-                       int64_t looping, int64_t vol, double start) {
-  _wasm_canvas_music_play(data, static_cast<int>(len),
-                          static_cast<int>(looping), static_cast<int>(vol),
-                          start);
-}
-inline void music_stop() { _wasm_canvas_music_stop(); }
-inline void music_pause() { _wasm_canvas_music_pause(); }
-inline void music_resume() { _wasm_canvas_music_resume(); }
-inline void music_volume(int64_t vol) {
-  _wasm_canvas_music_volume(static_cast<int>(vol));
-}
-inline void music_seek(double seconds) { _wasm_canvas_music_seek(seconds); }
-inline bool music_playing() { return _wasm_canvas_music_playing() != 0; }
-// `fmt` is for raylib's decoder dispatch; the browser sniffs the bytes itself.
-inline void sound_load(int64_t id, const uint8_t* data, int64_t len,
-                       const char* /*fmt*/) {
-  _wasm_canvas_sound_load(static_cast<int>(id), data, static_cast<int>(len));
-}
-inline void sound_play(int64_t id, int64_t vol) {
-  _wasm_canvas_sound_play(static_cast<int>(id), static_cast<int>(vol));
-}
-inline void sound_stop(int64_t id) {
-  _wasm_canvas_sound_stop(static_cast<int>(id));
-}
-inline bool sound_playing(int64_t id) {
-  return _wasm_canvas_sound_playing(static_cast<int>(id)) != 0;
-}
-inline void sound_free(int64_t id) {
-  _wasm_canvas_sound_free(static_cast<int>(id));
-}
 
 // Fullscreen/cursor/clipboard/resize/dt/fps/wheel/gamepad have no browser
 // wiring yet: the docs/index.html-style host page already owns fullscreen,
@@ -1188,22 +1039,6 @@ __attribute__((weak)) bool windowed() { return false; }
 __attribute__((weak)) double screen_scale() { return 1.0; }
 __attribute__((weak)) const char* window_error() { return nullptr; }
 __attribute__((weak)) void set_title(const char*) {}
-__attribute__((weak)) void tone(int64_t, int64_t, int64_t, int64_t, int64_t,
-                                int64_t, int64_t, int64_t, int64_t, int64_t) {}
-__attribute__((weak)) void music_play(const uint8_t*, int64_t, const char*,
-                                      int64_t, int64_t, double) {}
-__attribute__((weak)) void music_stop() {}
-__attribute__((weak)) void music_pause() {}
-__attribute__((weak)) void music_resume() {}
-__attribute__((weak)) void music_volume(int64_t) {}
-__attribute__((weak)) void music_seek(double) {}
-__attribute__((weak)) bool music_playing() { return false; }
-__attribute__((weak)) void sound_load(int64_t, const uint8_t*, int64_t,
-                                      const char*) {}
-__attribute__((weak)) void sound_play(int64_t, int64_t) {}
-__attribute__((weak)) void sound_stop(int64_t) {}
-__attribute__((weak)) bool sound_playing(int64_t) { return false; }
-__attribute__((weak)) void sound_free(int64_t) {}
 __attribute__((weak)) void toggle_fullscreen() {}
 __attribute__((weak)) bool is_fullscreen() { return false; }
 __attribute__((weak)) void show_cursor() {}
@@ -1248,21 +1083,6 @@ bool windowed();
 // is up, before anything asked for one, and in every declared-headless mode.
 const char* window_error();
 void set_title(const char* title);
-void tone(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t,
-          int64_t, int64_t, int64_t);
-void music_play(const uint8_t* data, int64_t len, const char* fmt,
-                int64_t looping, int64_t vol, double start);
-void music_stop();
-void music_pause();
-void music_resume();
-void music_volume(int64_t vol);
-void music_seek(double seconds);
-bool music_playing();
-void sound_load(int64_t id, const uint8_t* data, int64_t len, const char* fmt);
-void sound_play(int64_t id, int64_t vol);
-void sound_stop(int64_t id);
-bool sound_playing(int64_t id);
-void sound_free(int64_t id);
 void toggle_fullscreen();
 bool is_fullscreen();
 void show_cursor();
@@ -1306,21 +1126,6 @@ inline bool windowed() { return false; }  // no window to show frames in
 inline double screen_scale() { return 1.0; }  // ...and none to stretch into
 inline const char* window_error() { return nullptr; }  // ...by declaration
 inline void set_title(const char*) {}  // ...and none to title
-inline void tone(int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t,
-                 int64_t, int64_t, int64_t) {}
-inline void music_play(const uint8_t*, int64_t, const char*, int64_t, int64_t,
-                       double) {}
-inline void music_stop() {}
-inline void music_pause() {}
-inline void music_resume() {}
-inline void music_volume(int64_t) {}
-inline void music_seek(double) {}
-inline bool music_playing() { return false; }
-inline void sound_load(int64_t, const uint8_t*, int64_t, const char*) {}
-inline void sound_play(int64_t, int64_t) {}
-inline void sound_stop(int64_t) {}
-inline bool sound_playing(int64_t) { return false; }
-inline void sound_free(int64_t) {}
 inline void toggle_fullscreen() {}
 inline bool is_fullscreen() { return false; }
 inline void show_cursor() {}

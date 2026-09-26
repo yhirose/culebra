@@ -235,6 +235,12 @@ tensor_device_clone='tl::detail::device_clone_[(]'
 # else would report.
 openssl_syms='SSL_CTX_new|ecp_sm2p256_precomputed'
 
+# Audio: a weak/strong axis like Regex, whose strong archive carries raylib's
+# audio module built on its own (raudio + miniaudio, without raylib's core), so
+# naming Audio brings the device code and nothing of the window's.
+audio_syms=' _?InitAudioDevice$| _?ma_device_init$'
+window_syms=' _?InitWindow$| _?SDL_Init$'
+
 # 1. Names none of them: Regex stubbed, Proc/Canvas/PEG engines entirely absent.
 build none 'IO.print("none")'
 expect_class none "$regex_choke" "W?" "expected 'W' or absent" "no Regex use"
@@ -265,6 +271,7 @@ expect_absent none "$fmt_machinery" "libstdc++'s formatter, a program that forma
 expect_absent none "$tensor_kernels" "cpp-tensorlib's elementwise kernels"
 expect_absent none "$tensor_device_clone" "clone()'s device arm"
 expect_absent none "$openssl_syms" "OpenSSL"
+expect_absent none "$audio_syms" "raylib's audio module"
 expect_output none "none"
 # The namespace groups (stdlib_rt.h ns_groups()): a namespace's dispatch rows
 # and adapters link only when the program names it. No axis, no choke — the
@@ -350,6 +357,15 @@ expect_class canvas "$regex_choke" "W?" "expected 'W' or absent" "Canvas only"
 expect_class canvas "$search_choke" "W?" "expected 'W' or absent" "Canvas only"
 expect_absent canvas "$fmt_machinery" "libstdc++'s formatter, Canvas"
 expect_output canvas "32"
+
+# Naming Audio force-loads its archive: the device code, and no window or SDL.
+# The harness keeps the device closed (CULEBRA_AUDIO=off), so it reports none.
+build audio 'Audio.tone(440, 1)
+IO.print(Audio.available())'
+expect_present audio "$audio_syms" "Audio named"
+expect_absent audio "$window_syms" "the window and SDL, for Audio alone"
+expect_absent audio "$fmt_machinery" "libstdc++'s formatter, Audio"
+expect_output audio "false"
 
 # The wrap fixture: naming __Foreign force-loads its archive, and the
 # registrar has to have run for the namespace to resolve at all.
@@ -491,4 +507,4 @@ if (( fail )); then
 EOF
   exit 1
 fi
-echo "aot-feature-axes OK (Regex / Search / Tensor / Http+TLS / __Foreign / CodeGen by axis; Proc/Canvas/PEG/Shared by namespace group; PEG's fixed RTTI residue accepted; groups linked only when named; no libstdc++ formatter)"
+echo "aot-feature-axes OK (Regex / Search / Tensor / Http+TLS / Audio / __Foreign / CodeGen by axis; Proc/Canvas/PEG/Shared by namespace group; PEG's fixed RTTI residue accepted; groups linked only when named; no libstdc++ formatter)"

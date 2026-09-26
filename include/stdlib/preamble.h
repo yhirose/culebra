@@ -13,7 +13,9 @@
 #include <frontend/parser.h>         // parse_with_transforms, peg::Ast
 #include <base/shared.h>         // LazyFnGroup, lazy_fn_groups, trim_ascii
 
+#include <cctype>
 #include <memory>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -135,6 +137,7 @@ inline std::span<const LazyNsModule> lazy_ns_modules() {
       {"Time", TIME_MODULE_SOURCE, "_time_module"},
       {"Term", TERM_MODULE_SOURCE, "_term_module"},
       {"Canvas", CANVAS_MODULE_SOURCE, "_canvas_module"},
+      {"Audio", AUDIO_MODULE_SOURCE, "_audio_module"},
       {"Args", ARGS_MODULE_SOURCE, "_args_module"},
       {"Regex", REGEX_MODULE_SOURCE, "_regex_module"},
       {"PEG", PEG_MODULE_SOURCE, "_peg_module"},
@@ -225,11 +228,63 @@ struct StdlibSelection {
   std::vector<const LazyNsModule*> modules;
   std::vector<const LazyFnGroup*> groups;
 };
+
+// The other stdlib modules a module's own code names (Canvas forwards its sound
+// to Audio), so selecting one selects what it needs: the registry resolves a
+// name only if something registered it. Read once off each source, `#`
+// comments aside — a mention in prose must not pull a module in.
+inline bool lazy_ns_module_needs(const LazyNsModule& m, std::string_view other) {
+  static const auto needs = [] {
+    std::set<std::pair<std::string_view, std::string_view>> out;
+    for (const auto& a : lazy_ns_modules()) {
+      std::string_view src(a.source);
+      size_t i = 0;
+      while (i < src.size()) {
+        char c = src[i];
+        if (c == '#') {
+          i = src.find('\n', i);
+          if (i == std::string_view::npos) break;
+          continue;
+        }
+        if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
+          size_t j = i;
+          while (j < src.size() &&
+                 (std::isalnum(static_cast<unsigned char>(src[j])) || src[j] == '_'))
+            ++j;
+          std::string_view id = src.substr(i, j - i);
+          for (const auto& b : lazy_ns_modules())
+            if (id == b.name && id != a.name)
+              out.emplace(a.name, b.name);
+          i = j;
+          continue;
+        }
+        ++i;
+      }
+    }
+    return out;
+  }();
+  return needs.contains({m.name, other});
+}
+
 inline StdlibSelection select_stdlib_modules(
     const std::unordered_set<std::string_view>& names) {
   StdlibSelection sel;
+  std::unordered_set<std::string_view> chosen;
   for (const auto& m : lazy_ns_modules())
-    if (names.contains(m.name)) sel.modules.push_back(&m);
+    if (names.contains(m.name)) chosen.insert(m.name);
+  for (bool grew = true; grew;) {
+    grew = false;
+    for (const auto& a : lazy_ns_modules()) {
+      if (!chosen.contains(a.name)) continue;
+      for (const auto& b : lazy_ns_modules())
+        if (!chosen.contains(b.name) && lazy_ns_module_needs(a, b.name)) {
+          chosen.insert(b.name);
+          grew = true;
+        }
+    }
+  }
+  for (const auto& m : lazy_ns_modules())
+    if (chosen.contains(m.name)) sel.modules.push_back(&m);
   for (const auto& g : lazy_fn_groups())
     if (std::any_of(g.members.begin(), g.members.end(),
                     [&](std::string_view n) { return names.contains(n); }))

@@ -1419,94 +1419,37 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
     dx * dx + dy * dy < r * r
   }
 
-  # --- audio --------------------------------------------------------------
-  # Channels, matching WASM-4's APU. The two pulse channels take a duty cycle;
-  # SAWTOOTH is a culebra extension (not a WASM-4 channel). These values are the
-  # channel codes passed straight through to the host.
-  let PULSE = 0   # pulse 1
-  let PULSE2 = 1  # pulse 2
-  let TRIANGLE = 2
-  let NOISE = 3
-  let SAWTOOTH = 4
-  # Duty cycles for the pulse channels.
-  let DUTY_EIGHTH = 0
-  let DUTY_QUARTER = 1
-  let DUTY_HALF = 2
-  let DUTY_THREE_QUARTER = 3
-
-  # Play a tone. In the simple form, tone(freq, dur) is a `dur`-frame note at
-  # `freq`. The optional args expose the full WASM-4 envelope: the note slides
-  # `freq` -> `end_freq` while an ADSR envelope (attack/decay/release in frames,
-  # `dur` is the sustain length) shapes the amplitude from 0 up to `peak`, down
-  # to the sustain `vol`, and back to 0. `wave` picks the channel and `duty` the
-  # pulse shape. No-op on the headless native backend.
-  let tone = fn (
-    freq,
-    dur,
-    vol = 100,
-    wave = 0,
-    end_freq = nil,
-    attack = 0,
-    decay = 0,
-    release = 0,
-    peak = nil,
-    duty = 2,
-  ) {
-    let ef = if end_freq == nil {
-      freq
-    } else {
-      end_freq
-    }
-    let pk = if peak == nil {
-      vol
-    } else {
-      peak
-    }
-    _Canvas.tone(freq, ef, attack, decay, dur, release, vol, pk, wave, duty)
+  # --- audio: forwarded to the Audio namespace, kept for one release ---------
+  # tone and its constants are Audio's own. Sound and music keep Canvas's
+  # 0..100 volume on top of Audio's 0.0..1.0, and music keeps its one slot.
+  let level = fn (vol) {
+    Math.clamp(vol, 0, 100) / 100.0
   }
 
-  # --- sound effects -------------------------------------------------------
-  # A one-shot sample decoded once from its bytes (WAV, MP3 or Ogg — a String,
-  # e.g. from FS.read) and played per call. Each Sound is one voice: play()
-  # restarts it, like the underlying host samplers. Raises ValueError when the
-  # bytes are none of the three formats; silent on the headless backend.
   class Sound {
     new(data: String) {
-      self._id = _Canvas.sound_load(data)
+      self._sound = Audio.Sound.new(data)
     }
     play(vol = 100) {
-      _Canvas.sound_play(self._id, vol)
+      self._sound.volume(level(vol))
+      self._sound.play()
     }
     stop() {
-      _Canvas.sound_stop(self._id)
+      self._sound.stop()
     }
     playing() {
-      _Canvas.sound_playing(self._id)
-    }
-    # Free the decoded sample with the last reference (a constructor that
-    # threw drops before _id was ever set).
-    drop() {
-      _Canvas.sound_free(self._id) if self._id != nil
+      self._sound.playing()
     }
   }
 
-  # --- music ---------------------------------------------------------------
-  # Play an MP3 or Ogg Vorbis file from its bytes (a String, e.g. from
-  # FS.read) — one slot, so a new call replaces whatever was playing. `vol` is
-  # 0..100 on the same scale as tone; `start` is seconds into the file. The
-  # stream is fed from present(), so it only advances while frames are shown.
-  # Raises ValueError when the bytes are neither MP3 nor Ogg.
+  mut slot = nil
   let music = fn (data, loop = true, vol = 100, start = 0.0) {
-    _Canvas.music_play(
-      data,
-      if loop {
-        1
-      } else {
-        0
-      },
-      vol,
-      start,
-    )
+    let m = Audio.Music.new(data, loop)  # raises before the slot changes
+    slot?.stop()
+    slot = m
+    m.volume(level(vol))
+    m.play()
+    m.seek(start) if start > 0
   }
 
   # --- offscreen drawing --------------------------------------------------
@@ -1638,26 +1581,27 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
     key_queue: key_queue,
     typed: typed,
     Input: Input,
-    tone: tone,
+    tone: Audio.tone,
     Sound: Sound,
     music: music,
     music_stop: fn () {
-      _Canvas.music_stop()
+      slot?.stop()
+      slot = nil
     },
     music_pause: fn () {
-      _Canvas.music_pause()
+      slot?.pause()
     },
     music_resume: fn () {
-      _Canvas.music_resume()
+      slot?.resume()
     },
     music_volume: fn (vol) {
-      _Canvas.music_volume(vol)
+      slot?.volume(level(vol))
     },
     music_seek: fn (seconds) {
-      _Canvas.music_seek(seconds)
+      slot?.seek(seconds)
     },
     music_playing: fn () {
-      _Canvas.music_playing()
+      slot != nil && slot.playing()
     },
     run: run,
     LEFT: LEFT,
@@ -1666,15 +1610,15 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
     DOWN: DOWN,
     A: A,
     B: B,
-    PULSE: PULSE,
-    PULSE2: PULSE2,
-    TRIANGLE: TRIANGLE,
-    SAWTOOTH: SAWTOOTH,
-    NOISE: NOISE,
-    DUTY_EIGHTH: DUTY_EIGHTH,
-    DUTY_QUARTER: DUTY_QUARTER,
-    DUTY_HALF: DUTY_HALF,
-    DUTY_THREE_QUARTER: DUTY_THREE_QUARTER,
+    PULSE: Audio.PULSE,
+    PULSE2: Audio.PULSE2,
+    TRIANGLE: Audio.TRIANGLE,
+    SAWTOOTH: Audio.SAWTOOTH,
+    NOISE: Audio.NOISE,
+    DUTY_EIGHTH: Audio.DUTY_EIGHTH,
+    DUTY_QUARTER: Audio.DUTY_QUARTER,
+    DUTY_HALF: Audio.DUTY_HALF,
+    DUTY_THREE_QUARTER: Audio.DUTY_THREE_QUARTER,
     toggle_fullscreen: toggle_fullscreen,
     fullscreen: fullscreen,
     show_cursor: show_cursor,
@@ -1727,6 +1671,195 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
   }
 }
 let Canvas = _canvas_module()
+)=culpre=";
+
+inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module = fn () {
+  # tone's channels: WASM-4's two pulse waves, triangle and noise, plus the
+  # culebra-only sawtooth. The values pass straight through to the host.
+  let PULSE = 0   # pulse 1
+  let PULSE2 = 1  # pulse 2
+  let TRIANGLE = 2
+  let NOISE = 3
+  let SAWTOOTH = 4
+  # Duty cycles for the pulse channels.
+  let DUTY_EIGHTH = 0
+  let DUTY_QUARTER = 1
+  let DUTY_HALF = 2
+  let DUTY_THREE_QUARTER = 3
+
+  # Play a tone: WASM-4's APU, in WASM-4's units. tone(freq, dur) is a
+  # `dur`-tick note at `freq` (a tick is 1/60 s). The optional args expose the
+  # full envelope: the note slides `freq` -> `end_freq` while an ADSR envelope
+  # (attack/decay/release in ticks, `dur` the sustain) shapes the level from 0
+  # up to `peak`, down to the sustain `vol`, and back to 0 (both 0..100).
+  # `wave` picks the channel and `duty` the pulse shape.
+  let tone = fn (
+    freq,
+    dur,
+    vol = 100,
+    wave = 0,
+    end_freq = nil,
+    attack = 0,
+    decay = 0,
+    release = 0,
+    peak = nil,
+    duty = 2,
+  ) {
+    let ef = if end_freq == nil {
+      freq
+    } else {
+      end_freq
+    }
+    let pk = if peak == nil {
+      vol
+    } else {
+      peak
+    }
+    _Audio.tone(freq, ef, attack, decay, dur, release, vol, pk, wave, duty)
+  }
+
+  # A one-shot sample decoded once from WAV, MP3 or Ogg bytes (a String, e.g.
+  # from FS.read or Embed) and played per call. One voice: play() restarts
+  # it. Raises ValueError when the bytes are none of the three formats.
+  class Sound {
+    new(data: String) {
+      self._id = _Audio.sound_load(data)
+    }
+    play() {
+      _Audio.sound_play(self._id)
+    }
+    stop() {
+      _Audio.sound_stop(self._id)
+    }
+    playing() {
+      _Audio.sound_playing(self._id)
+    }
+    volume(v: Long | Float) {
+      _Audio.sound_volume(self._id, v)
+    }
+    pitch(p: Long | Float) {
+      _Audio.sound_pitch(self._id, p)
+    }
+    pan(p: Long | Float) {
+      _Audio.sound_pan(self._id, p)
+    }
+    # Free the decoded sample with the last reference (a constructor that
+    # threw drops before _id was ever set).
+    drop() {
+      _Audio.sound_free(self._id) if self._id != nil
+    }
+  }
+
+  # A streamed file from MP3 or Ogg bytes. The runtime keeps it fed, so a
+  # program with no frame loop keeps its music. stop() rewinds; pause() holds
+  # the position. Raises ValueError when the bytes are neither format.
+  class Music {
+    new(data: String, loop: Bool = true) {
+      self._id = _Audio.music_load(data, loop)
+    }
+    play() {
+      _Audio.music_play(self._id)
+    }
+    stop() {
+      _Audio.music_stop(self._id)
+    }
+    pause() {
+      _Audio.music_pause(self._id)
+    }
+    resume() {
+      _Audio.music_resume(self._id)
+    }
+    playing() {
+      _Audio.music_playing(self._id)
+    }
+    seek(seconds: Long | Float) {
+      _Audio.music_seek(self._id, seconds)
+    }
+    volume(v: Long | Float) {
+      _Audio.music_volume(self._id, v)
+    }
+    pitch(p: Long | Float) {
+      _Audio.music_pitch(self._id, p)
+    }
+    pan(p: Long | Float) {
+      _Audio.music_pan(self._id, p)
+    }
+    drop() {
+      _Audio.music_free(self._id) if self._id != nil
+    }
+  }
+
+  # PCM the script synthesises, a block at a time. push takes the whole frames
+  # in `samples` (stereo: interleaved L,R) and answers how many it took; with
+  # no audio device nothing plays, and the block still counts.
+  class Stream {
+    new(rate: Long, channels: Long, buffer: Long) {
+      self._id = _Audio.stream_new(rate, channels, buffer)
+    }
+    ready() {
+      _Audio.stream_ready(self._id)
+    }
+    needed() {
+      _Audio.stream_needed(self._id)
+    }
+    push(samples: Array) {
+      _Audio.stream_push(self._id, samples)
+    }
+    submit() {
+      _Audio.stream_submit(self._id)
+    }
+    latency() {
+      _Audio.stream_latency(self._id)
+    }
+    play() {
+      _Audio.stream_play(self._id)
+    }
+    stop() {
+      _Audio.stream_stop(self._id)
+    }
+    pause() {
+      _Audio.stream_pause(self._id)
+    }
+    resume() {
+      _Audio.stream_resume(self._id)
+    }
+    playing() {
+      _Audio.stream_playing(self._id)
+    }
+    volume(v: Long | Float) {
+      _Audio.stream_volume(self._id, v)
+    }
+    pitch(p: Long | Float) {
+      _Audio.stream_pitch(self._id, p)
+    }
+    pan(p: Long | Float) {
+      _Audio.stream_pan(self._id, p)
+    }
+    drop() {
+      _Audio.stream_free(self._id) if self._id != nil
+    }
+  }
+
+  {
+    available: fn () {
+      _Audio.available()
+    },
+    tone: tone,
+    Sound: Sound,
+    Music: Music,
+    Stream: Stream,
+    PULSE: PULSE,
+    PULSE2: PULSE2,
+    TRIANGLE: TRIANGLE,
+    NOISE: NOISE,
+    SAWTOOTH: SAWTOOTH,
+    DUTY_EIGHTH: DUTY_EIGHTH,
+    DUTY_QUARTER: DUTY_QUARTER,
+    DUTY_HALF: DUTY_HALF,
+    DUTY_THREE_QUARTER: DUTY_THREE_QUARTER,
+  }
+}
+let Audio = _audio_module()
 )=culpre=";
 
 inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = fn () {

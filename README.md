@@ -204,7 +204,8 @@ Desktop.run({
 ### 2D Canvas
 
 An immediate-mode 2D framebuffer — draw, `present`, poll input,
-repeat — with sprites, text, and tone/music. It opens a real window on
+repeat — with sprites and text; sound is the `Audio` namespace (tones,
+samples, music, synthesised PCM), which needs no window. It opens a real window on
 macOS, Linux and Windows; a run that declares itself headless does the
 same pixel work and displays nothing, which is how the tests and a
 displayless server run it.

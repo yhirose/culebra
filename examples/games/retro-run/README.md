@@ -66,8 +66,8 @@ at its art leaves the day cycle to the road, fog and sky colours while the
 picture behind them stays put.
 
 A `music.ogg` or `music.mp3` in the directory (looked for in that order) loops
-under the run via `Canvas.music`, replacing the built-in chiptune —
-upstream's own soundtrack, if you have it. It plays at `MUSIC_VOL` (60), under
+under the run as an `Audio.Music`, replacing the built-in chiptune —
+upstream's own soundtrack, if you have it. It plays at `MUSIC_VOL` (0.6), under
 the engine but clearly audible; edit the constant to taste. The generated set
 ships no music, so the chiptune is the default: a tune a lap, breezy for the
 first and a sprint for the second.

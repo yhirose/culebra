@@ -804,13 +804,15 @@ run.
 
 **PriorityQueue** — PriorityQueue.new(*, key: Function | Nil = nil, reverse: Bool = false); pq.push(x); pq.pop() -> Any; pq.peek() -> Any; pq.size(); pq.empty(); to_string(pq) -> String
 
+**Audio** — Audio.available() -> Bool; sound.play(); sound.stop(); sound.playing() -> Bool; sound.volume(v); sound.pitch(p); sound.pan(p); music.play(); music.stop(); music.pause(); music.resume(); music.seek(seconds); music.playing() -> Bool; music.volume(v); music.pitch(p); music.pan(p); stream.ready() -> Bool; stream.needed() -> Long; stream.push(samples: Array) -> Long; stream.submit() -> Long; stream.latency() -> Float; stream.play(); stop(); pause(); resume(); playing() -> Bool; stream.volume(v); stream.pitch(p); stream.pan(p)
+
 ### Read the chapter for these
 
 | Namespace | Signatures | What it is |
 |---|---:|---|
 | `SQLite` | 10 | embedded SQL database (query / execute / prepared statements / transactions) |
-| `Canvas` | 71 | immediate-mode 2D framebuffer for games (shapes, sprites, offscreen targets, text, keys/mouse/gamepad, window controls, tone, sound, music) |
-| `Scene` | 195 | retained-mode 3D renderer for procedural geometry |
+| `Canvas` | 61 | immediate-mode 2D framebuffer for games (shapes, sprites, offscreen targets, text, keys/mouse/gamepad, window controls) |
+| `Scene` | 178 | retained-mode 3D renderer for procedural geometry |
 | `Net` | 22 | raw TCP / UDP sockets and name resolution (the layer under `Http`) |
 | `Desktop` / `Webview` | 10 | native WebView desktop app: local HTTP server + window, one call |
 | `PEG` | 18 | PEG parser generator: write a grammar, get a syntax tree |

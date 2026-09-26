@@ -168,3 +168,10 @@ m|{a: 1, b: 2}|repeat|*
 m|(1, 2, 3)|repeat|*
 m|{1, 2, 3}|repeat|*
 m|fn (x) { x }|repeat|*
+
+# The Audio namespace is new: the baseline has no `_Audio` and raises a
+# NameError, where this build answers. Canvas's audio natives it replaces
+# (`cvmusic*`) are gone from the corpus with them.
+aumusic|*
+aumusicseek|*
+ausound|*

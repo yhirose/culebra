@@ -170,6 +170,30 @@ add_library(culebra_sqlite3 OBJECT ./src/runtime/culebra_sqlite3.c)
 target_compile_options(culebra_sqlite3 PRIVATE -w -ffunction-sections -fdata-sections)
 endif()
 
+# Audio: raylib's audio module built on its own (the wrapper TU
+# src/runtime/culebra_raudio.c, which includes vendor/raylib/src/raudio.c), so
+# the Audio namespace needs neither raylib's core nor SDL and has a native
+# backend in every desktop build, window or not. raylib itself is built with
+# the module off (raylib_ext below), which leaves this the one copy of it.
+# Like the SQLite object, compiled once and shared by the driver and the gated
+# culebra_rt_audio feature archive. miniaudio loads the platform's audio
+# library at run time; the link fragment is what it still needs at link time.
+option(CULEBRA_ENABLE_AUDIO
+  "Enable the Audio namespace's native backend (raylib's raudio, standalone)" ON)
+set(_audio_link "")
+if(CULEBRA_ENABLE_AUDIO)
+  add_library(culebra_raudio OBJECT ./src/runtime/culebra_raudio.c)
+  target_include_directories(culebra_raudio PRIVATE ./src/runtime)
+  target_compile_options(culebra_raudio PRIVATE -w -ffunction-sections -fdata-sections)
+  if(APPLE)
+    set(_audio_link "-framework CoreAudio -framework AudioToolbox -framework CoreFoundation")
+  elseif(WIN32)
+    set(_audio_link "-lwinmm -lole32")
+  elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(_audio_link "-lpthread -ldl -lm")
+  endif()
+endif()
+
 # zlib (libz): the gzip choke for the Compress namespace (gzip/gunzip) and, when
 # Http is enabled, cpp-httplib's transparent response gzip. Found unconditionally
 # so Compress works in builds without Http. System libz is ubiquitous on
@@ -746,7 +770,7 @@ if(CULEBRA_ENABLE_SCENE OR CULEBRA_ENABLE_CANVAS_WINDOW)
     if(CMAKE_OSX_DEPLOYMENT_TARGET)
       list(APPEND _deps_key "macos${CMAKE_OSX_DEPLOYMENT_TARGET}")
     endif()
-    list(APPEND _deps_key "sdl${_sdl_rev}" "raylib${_raylib_rev}")
+    list(APPEND _deps_key "sdl${_sdl_rev}" "raylib${_raylib_rev}" "noaudio")
     string(REPLACE ";" "-" _deps_key "${_deps_key}")
     set(_sdl_install "${_deps_root}/${_deps_key}/sdl")
     set(_raylib_install "${_deps_root}/${_deps_key}/raylib")
@@ -1132,6 +1156,12 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
     target_compile_definitions(culebra_rt PRIVATE
       CULEBRA_CANVAS_WINDOW=1 CULEBRA_RT_CANVAS_WEAK=1)
   endif()
+  # The same for Audio: weak silent bodies here (stdlib/audio.h), overridden by
+  # culebra_rt_audio on Audio use.
+  if(CULEBRA_ENABLE_AUDIO)
+    target_compile_definitions(culebra_rt PRIVATE
+      CULEBRA_AUDIO_NATIVE=1 CULEBRA_RT_AUDIO_WEAK=1)
+  endif()
   # One section per function/data so the AOT link can `-dead_strip`
   # the ~200 `culebra_runtime_*` helpers a typical program doesn't
   # touch. Without this every runtime helper is in the same .text /
@@ -1344,6 +1374,21 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
       "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_canvas${CMAKE_STATIC_LIBRARY_SUFFIX}")
     list(APPEND _rt_embed_deps culebra_rt_canvas)
   endif()
+  # Audio feature archive: the strong bodies (culebra_rt_audio.cc) plus the
+  # standalone raudio object, so a force-loaded culebra_rt_audio is
+  # self-contained, as culebra_rt_sqlite is. Force-loaded when the AST scan
+  # reports Audio use; the flags are CULEBRA_AUDIO_LINK below.
+  if(CULEBRA_ENABLE_AUDIO)
+    add_library(culebra_rt_audio STATIC ./src/runtime/culebra_rt_audio.cc
+      $<TARGET_OBJECTS:culebra_raudio>)
+    target_compile_features(culebra_rt_audio PRIVATE cxx_std_23)
+    target_include_directories(culebra_rt_audio PRIVATE ./src/runtime)
+    target_compile_definitions(culebra_rt_audio PRIVATE CULEBRA_AUDIO_NATIVE=1)
+    target_compile_options(culebra_rt_audio PRIVATE -ffunction-sections -fdata-sections)
+    list(APPEND _rt_embed_files
+      "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_audio${CMAKE_STATIC_LIBRARY_SUFFIX}")
+    list(APPEND _rt_embed_deps culebra_rt_audio)
+  endif()
   # Webview feature archive: same usage-gating as Scene (force-loaded into an
   # AOT binary only when the AST scan reports Webview use; the OS WebView
   # framework comes from CULEBRA_WEBVIEW_LINK). The vendored single header is
@@ -1395,7 +1440,7 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
                       culebra_rt_search_segmenter culebra_rt_foreign
                       culebra_rt_codegen
                       culebra_rt_sqlite culebra_rt_scene culebra_rt_canvas
-                      culebra_rt_webview culebra_rt_wrap)
+                      culebra_rt_audio culebra_rt_webview culebra_rt_wrap)
     if(TARGET ${_rt_feature})
       target_compile_definitions(${_rt_feature} PRIVATE
         CULEBRA_RT_FEATURE_ARCHIVE=1)
@@ -1672,6 +1717,27 @@ if(CULEBRA_ENABLE_JIT)
   target_compile_definitions(culebra PRIVATE CULEBRA_CANVAS_LINK="${_canvas_link}")
 endif()
 
+# The Audio backend compiled into the driver, and what `culebra build` appends
+# when the program references Audio (see aot_scan). "" when Audio is off.
+if(CULEBRA_ENABLE_AUDIO)
+  target_sources(culebra PRIVATE ./src/runtime/culebra_rt_audio.cc)
+  target_include_directories(culebra PRIVATE ./src/runtime)
+  target_compile_definitions(culebra PRIVATE CULEBRA_AUDIO_NATIVE=1)
+  target_link_libraries(culebra culebra_raudio)
+  if(APPLE)
+    target_link_libraries(culebra "-framework CoreAudio" "-framework AudioToolbox"
+                                  "-framework CoreFoundation")
+  elseif(WIN32)
+    target_link_libraries(culebra winmm ole32)
+  else()
+    find_package(Threads REQUIRED)
+    target_link_libraries(culebra Threads::Threads ${CMAKE_DL_LIBS} m)
+  endif()
+endif()
+if(CULEBRA_ENABLE_JIT)
+  target_compile_definitions(culebra PRIVATE CULEBRA_AUDIO_LINK="${_audio_link}")
+endif()
+
 # `culebra build` appends the OS WebView framework only when the program
 # references Webview (see aot_scan). Gated on JIT like the peers so the
 # CULEBRA_DEV_NO_RT inner-loop build still compiles the driver. "" when off.
@@ -1780,6 +1846,9 @@ if(CULEBRA_ENABLE_SCENE OR CULEBRA_ENABLE_CANVAS_WINDOW)
       CMAKE_ARGS
         -DPLATFORM=SDL -DBUILD_EXAMPLES=OFF -DBUILD_SHARED_LIBS=OFF
         -DCMAKE_BUILD_TYPE=Release
+        # Audio lives in culebra_raudio, built standalone; a second copy of
+        # raudio here would collide with it.
+        -DCUSTOMIZE_BUILD=ON -DSUPPORT_MODULE_RAUDIO=OFF
         # SDL3_DIR pins raylib's find_package(SDL3) to the vendored install. A
         # system/homebrew SDL3 would otherwise be a candidate, and linking one
         # SDL's headers against another's static archive fails at the final link.
@@ -2231,7 +2300,8 @@ if(CULEBRA_ENABLE_JIT)
   # which every program registers rather than naming — so unlike the rest it
   # is linked into every built binary, not only the ones that use it.
   set(_baked_names __Traits
-                   Time Term Canvas Args Regex PEG FST Log Path Vector2 Vector3
+                   Time Term Canvas Audio Args Regex PEG FST Log Path Vector2
+                   Vector3
                    Deque PriorityQueue StateMachine __Eff __Matchers
                    __StringFns)
   if(CULEBRA_ENABLE_WEBVIEW)

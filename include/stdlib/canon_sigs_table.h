@@ -1207,62 +1207,31 @@ inline constexpr CanonParam kCanonParams_Canvas_native[] = {
   {"name", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
   // 96: _Canvas.title
   {"name", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
-  // 97: _Canvas.tone
-  {"start_freq", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  {"end_freq", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  {"attack", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  {"decay", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  {"sustain", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  {"release", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  {"vol", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  {"peak", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  {"channel", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  {"duty", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  // 107: _Canvas.music_play
-  {"data", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
-  {"loop", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  {"vol", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  {"start", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
-  // 111: _Canvas.music_volume
-  {"vol", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  // 112: _Canvas.music_seek
-  {"seconds", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
-  // 113: _Canvas.sound_load
-  {"data", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
-  // 114: _Canvas.sound_play
-  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  {"vol", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  // 116: _Canvas.sound_stop
-  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  // 117: _Canvas.sound_playing
-  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  // 118: _Canvas.sound_free
-  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  // 119: _Canvas.clipboard_set
+  // 97: _Canvas.clipboard_set
   {"text", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
-  // 120: _Canvas.set_resizable
+  // 98: _Canvas.set_resizable
   {"enabled", false, false, false, false, false, "Bool", CanonDefault::None, 0, {}},
-  // 121: _Canvas.set_target_fps
+  // 99: _Canvas.set_target_fps
   {"fps", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  // 122: _Canvas.pad_available
+  // 100: _Canvas.pad_available
   {"index", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  // 123: _Canvas.pad_axis
+  // 101: _Canvas.pad_axis
   {"index", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
   {"axis", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  // 125: _Canvas.pad_button
+  // 103: _Canvas.pad_button
   {"index", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
   {"button", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  // 127: _Canvas.pad_pressed
+  // 105: _Canvas.pad_pressed
   {"index", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
   {"button", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  // 129: _Canvas.pad_name
+  // 107: _Canvas.pad_name
   {"index", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  // 130: _Canvas.pad_rumble
+  // 108: _Canvas.pad_rumble
   {"index", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
   {"left", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
   {"right", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
   {"sec", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
-  // 134: _Canvas.pad_mappings
+  // 112: _Canvas.pad_mappings
   {"db", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
 };
 
@@ -1309,19 +1278,6 @@ inline constexpr CanonSig kCanonSigs_Canvas_native[] = {
   {"_Canvas", "", "closing", nullptr, 0, "Bool", 0, 0, false, -1, -1, -1},
   {"_Canvas", "", "windowed", nullptr, 0, "Bool", 0, 0, false, -1, -1, -1},
   {"_Canvas", "", "title", kCanonParams_Canvas_native + 96, 1, "", 1, 1, false, -1, -1, -1},
-  {"_Canvas", "", "tone", kCanonParams_Canvas_native + 97, 10, "", 10, 10, false, -1, -1, -1},
-  {"_Canvas", "", "music_play", kCanonParams_Canvas_native + 107, 4, "", 4, 4, false, -1, -1, -1},
-  {"_Canvas", "", "music_stop", nullptr, 0, "", 0, 0, false, -1, -1, -1},
-  {"_Canvas", "", "music_pause", nullptr, 0, "", 0, 0, false, -1, -1, -1},
-  {"_Canvas", "", "music_resume", nullptr, 0, "", 0, 0, false, -1, -1, -1},
-  {"_Canvas", "", "music_volume", kCanonParams_Canvas_native + 111, 1, "", 1, 1, false, -1, -1, -1},
-  {"_Canvas", "", "music_seek", kCanonParams_Canvas_native + 112, 1, "", 1, 1, false, -1, -1, -1},
-  {"_Canvas", "", "music_playing", nullptr, 0, "Bool", 0, 0, false, -1, -1, -1},
-  {"_Canvas", "", "sound_load", kCanonParams_Canvas_native + 113, 1, "Long", 1, 1, false, -1, -1, -1},
-  {"_Canvas", "", "sound_play", kCanonParams_Canvas_native + 114, 2, "", 2, 2, false, -1, -1, -1},
-  {"_Canvas", "", "sound_stop", kCanonParams_Canvas_native + 116, 1, "", 1, 1, false, -1, -1, -1},
-  {"_Canvas", "", "sound_playing", kCanonParams_Canvas_native + 117, 1, "Bool", 1, 1, false, -1, -1, -1},
-  {"_Canvas", "", "sound_free", kCanonParams_Canvas_native + 118, 1, "", 1, 1, false, -1, -1, -1},
   {"_Canvas", "", "width", nullptr, 0, "Long", 0, 0, false, -1, -1, -1},
   {"_Canvas", "", "height", nullptr, 0, "Long", 0, 0, false, -1, -1, -1},
   {"_Canvas", "", "toggle_fullscreen", nullptr, 0, "", 0, 0, false, -1, -1, -1},
@@ -1330,22 +1286,157 @@ inline constexpr CanonSig kCanonSigs_Canvas_native[] = {
   {"_Canvas", "", "hide_cursor", nullptr, 0, "", 0, 0, false, -1, -1, -1},
   {"_Canvas", "", "cursor_hidden", nullptr, 0, "Bool", 0, 0, false, -1, -1, -1},
   {"_Canvas", "", "clipboard_get", nullptr, 0, "String", 0, 0, false, -1, -1, -1},
-  {"_Canvas", "", "clipboard_set", kCanonParams_Canvas_native + 119, 1, "", 1, 1, false, -1, -1, -1},
-  {"_Canvas", "", "set_resizable", kCanonParams_Canvas_native + 120, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Canvas", "", "clipboard_set", kCanonParams_Canvas_native + 97, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Canvas", "", "set_resizable", kCanonParams_Canvas_native + 98, 1, "", 1, 1, false, -1, -1, -1},
   {"_Canvas", "", "window_resized", nullptr, 0, "Bool", 0, 0, false, -1, -1, -1},
   {"_Canvas", "", "dt", nullptr, 0, "Float", 0, 0, false, -1, -1, -1},
-  {"_Canvas", "", "set_target_fps", kCanonParams_Canvas_native + 121, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Canvas", "", "set_target_fps", kCanonParams_Canvas_native + 99, 1, "", 1, 1, false, -1, -1, -1},
   {"_Canvas", "", "fps", nullptr, 0, "Long", 0, 0, false, -1, -1, -1},
   {"_Canvas", "", "mouse_wheel", nullptr, 0, "Float", 0, 0, false, -1, -1, -1},
-  {"_Canvas", "", "pad_available", kCanonParams_Canvas_native + 122, 1, "Bool", 1, 1, false, -1, -1, -1},
-  {"_Canvas", "", "pad_axis", kCanonParams_Canvas_native + 123, 2, "Float", 2, 2, false, -1, -1, -1},
-  {"_Canvas", "", "pad_button", kCanonParams_Canvas_native + 125, 2, "Bool", 2, 2, false, -1, -1, -1},
-  {"_Canvas", "", "pad_pressed", kCanonParams_Canvas_native + 127, 2, "Bool", 2, 2, false, -1, -1, -1},
-  {"_Canvas", "", "pad_name", kCanonParams_Canvas_native + 129, 1, "String", 1, 1, false, -1, -1, -1},
-  {"_Canvas", "", "pad_rumble", kCanonParams_Canvas_native + 130, 4, "", 4, 4, false, -1, -1, -1},
-  {"_Canvas", "", "pad_mappings", kCanonParams_Canvas_native + 134, 1, "Long", 1, 1, false, -1, -1, -1},
+  {"_Canvas", "", "pad_available", kCanonParams_Canvas_native + 100, 1, "Bool", 1, 1, false, -1, -1, -1},
+  {"_Canvas", "", "pad_axis", kCanonParams_Canvas_native + 101, 2, "Float", 2, 2, false, -1, -1, -1},
+  {"_Canvas", "", "pad_button", kCanonParams_Canvas_native + 103, 2, "Bool", 2, 2, false, -1, -1, -1},
+  {"_Canvas", "", "pad_pressed", kCanonParams_Canvas_native + 105, 2, "Bool", 2, 2, false, -1, -1, -1},
+  {"_Canvas", "", "pad_name", kCanonParams_Canvas_native + 107, 1, "String", 1, 1, false, -1, -1, -1},
+  {"_Canvas", "", "pad_rumble", kCanonParams_Canvas_native + 108, 4, "", 4, 4, false, -1, -1, -1},
+  {"_Canvas", "", "pad_mappings", kCanonParams_Canvas_native + 112, 1, "Long", 1, 1, false, -1, -1, -1},
   {"_Canvas", "", "quit", nullptr, 0, "", 0, 0, false, -1, -1, -1},
   {"_Canvas", "", "can_quit", nullptr, 0, "Bool", 0, 0, false, -1, -1, -1},
+};
+
+inline constexpr CanonParam kCanonParams_Audio_native[] = {
+  // 0: _Audio.tone
+  {"start_freq", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"end_freq", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"attack", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"decay", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"sustain", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"release", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"vol", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"peak", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"channel", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"duty", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 10: _Audio.sound_load
+  {"data", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
+  // 11: _Audio.sound_free
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 12: _Audio.sound_play
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 13: _Audio.sound_stop
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 14: _Audio.sound_playing
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 15: _Audio.sound_volume
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"v", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
+  // 17: _Audio.sound_pitch
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"p", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
+  // 19: _Audio.sound_pan
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"p", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
+  // 21: _Audio.music_load
+  {"data", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
+  {"loop", false, false, false, false, false, "Bool", CanonDefault::None, 0, {}},
+  // 23: _Audio.music_free
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 24: _Audio.music_play
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 25: _Audio.music_stop
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 26: _Audio.music_pause
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 27: _Audio.music_resume
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 28: _Audio.music_playing
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 29: _Audio.music_seek
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"seconds", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
+  // 31: _Audio.music_volume
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"v", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
+  // 33: _Audio.music_pitch
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"p", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
+  // 35: _Audio.music_pan
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"p", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
+  // 37: _Audio.stream_new
+  {"rate", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"channels", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"buffer", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 40: _Audio.stream_free
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 41: _Audio.stream_ready
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 42: _Audio.stream_needed
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 43: _Audio.stream_push
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"samples", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
+  // 45: _Audio.stream_submit
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 46: _Audio.stream_latency
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 47: _Audio.stream_play
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 48: _Audio.stream_stop
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 49: _Audio.stream_pause
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 50: _Audio.stream_resume
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 51: _Audio.stream_playing
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 52: _Audio.stream_volume
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"v", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
+  // 54: _Audio.stream_pitch
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"p", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
+  // 56: _Audio.stream_pan
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"p", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
+};
+
+inline constexpr CanonSig kCanonSigs_Audio_native[] = {
+  {"_Audio", "", "available", nullptr, 0, "Bool", 0, 0, false, -1, -1, -1},
+  {"_Audio", "", "tone", kCanonParams_Audio_native + 0, 10, "", 10, 10, false, -1, -1, -1},
+  {"_Audio", "", "sound_load", kCanonParams_Audio_native + 10, 1, "Long", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "sound_free", kCanonParams_Audio_native + 11, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "sound_play", kCanonParams_Audio_native + 12, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "sound_stop", kCanonParams_Audio_native + 13, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "sound_playing", kCanonParams_Audio_native + 14, 1, "Bool", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "sound_volume", kCanonParams_Audio_native + 15, 2, "", 2, 2, false, -1, -1, -1},
+  {"_Audio", "", "sound_pitch", kCanonParams_Audio_native + 17, 2, "", 2, 2, false, -1, -1, -1},
+  {"_Audio", "", "sound_pan", kCanonParams_Audio_native + 19, 2, "", 2, 2, false, -1, -1, -1},
+  {"_Audio", "", "music_load", kCanonParams_Audio_native + 21, 2, "Long", 2, 2, false, -1, -1, -1},
+  {"_Audio", "", "music_free", kCanonParams_Audio_native + 23, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "music_play", kCanonParams_Audio_native + 24, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "music_stop", kCanonParams_Audio_native + 25, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "music_pause", kCanonParams_Audio_native + 26, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "music_resume", kCanonParams_Audio_native + 27, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "music_playing", kCanonParams_Audio_native + 28, 1, "Bool", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "music_seek", kCanonParams_Audio_native + 29, 2, "", 2, 2, false, -1, -1, -1},
+  {"_Audio", "", "music_volume", kCanonParams_Audio_native + 31, 2, "", 2, 2, false, -1, -1, -1},
+  {"_Audio", "", "music_pitch", kCanonParams_Audio_native + 33, 2, "", 2, 2, false, -1, -1, -1},
+  {"_Audio", "", "music_pan", kCanonParams_Audio_native + 35, 2, "", 2, 2, false, -1, -1, -1},
+  {"_Audio", "", "stream_new", kCanonParams_Audio_native + 37, 3, "Long", 3, 3, false, -1, -1, -1},
+  {"_Audio", "", "stream_free", kCanonParams_Audio_native + 40, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "stream_ready", kCanonParams_Audio_native + 41, 1, "Bool", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "stream_needed", kCanonParams_Audio_native + 42, 1, "Long", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "stream_push", kCanonParams_Audio_native + 43, 2, "Long", 2, 2, false, -1, -1, -1},
+  {"_Audio", "", "stream_submit", kCanonParams_Audio_native + 45, 1, "Long", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "stream_latency", kCanonParams_Audio_native + 46, 1, "Float", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "stream_play", kCanonParams_Audio_native + 47, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "stream_stop", kCanonParams_Audio_native + 48, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "stream_pause", kCanonParams_Audio_native + 49, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "stream_resume", kCanonParams_Audio_native + 50, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "stream_playing", kCanonParams_Audio_native + 51, 1, "Bool", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "stream_volume", kCanonParams_Audio_native + 52, 2, "", 2, 2, false, -1, -1, -1},
+  {"_Audio", "", "stream_pitch", kCanonParams_Audio_native + 54, 2, "", 2, 2, false, -1, -1, -1},
+  {"_Audio", "", "stream_pan", kCanonParams_Audio_native + 56, 2, "", 2, 2, false, -1, -1, -1},
 };
 
 inline constexpr CanonParam kCanonParams_Bare[] = {

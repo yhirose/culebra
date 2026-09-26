@@ -592,7 +592,12 @@ mut finished = false
 # music, so the riff below is the default. It sits under the engine and the
 # chiptune's own level, loud enough to carry on laptop speakers.
 let MUSIC_FILE = ["music.ogg", "music.mp3"].find(|n| ART.exists(n))
-let MUSIC_VOL = 60
+let MUSIC_VOL = 0.6
+let music = if MUSIC_FILE == nil {
+  nil
+} else {
+  Audio.Music.new(art(MUSIC_FILE))
+}
 # Whichever it is starts a second after the GO beep has sounded, not during
 # the count-in.
 let MUSIC_DELAY = GO_BEEP + FPS  # frames from the green light to the music
@@ -811,7 +816,7 @@ let tune = fn (score) {
 }
 
 # An instrument: the channel, its sustain level and envelope in frames.
-let voice = fn (wave, vol, attack, decay, release, duty = Canvas.DUTY_HALF) {
+let voice = fn (wave, vol, attack, decay, release, duty = Audio.DUTY_HALF) {
   {
     wave: wave,
     vol: vol,
@@ -823,7 +828,7 @@ let voice = fn (wave, vol, attack, decay, release, duty = Canvas.DUTY_HALF) {
 }
 
 let sound = fn (v, pitch, frames, gain) {
-  Canvas.tone(
+  Audio.tone(
     HZ[pitch],
     frames,
     vol: Math.round(v.vol * gain),
@@ -837,11 +842,11 @@ let sound = fn (v, pitch, frames, gain) {
 
 # One hit of a kit's drum on the noise channel.
 let drum = fn (d, gain) {
-  Canvas.tone(
+  Audio.tone(
     d.freq,
     d.dur,
     vol: Math.round(d.vol * gain),
-    wave: Canvas.NOISE,
+    wave: Audio.NOISE,
     end_freq: d.end_freq ?? d.freq,
     decay: d.decay ?? 0,
     release: d.release ?? 0,
@@ -876,10 +881,10 @@ let play_step = fn (t, step, gain) {
 # bass, soft triangle arpeggios. The kit: kick, snare, closed and open hat,
 # crash, high and low tom.
 let RUN_VOICES = {
-  lead: voice(Canvas.PULSE, 15, 1, 2, 4, Canvas.DUTY_QUARTER),
-  second: voice(Canvas.PULSE2, 9, 1, 2, 6, Canvas.DUTY_EIGHTH),
-  bass: voice(Canvas.SAWTOOTH, 18, 0, 3, 3),
-  arp: voice(Canvas.TRIANGLE, 7, 1, 4, 6),
+  lead: voice(Audio.PULSE, 15, 1, 2, 4, Audio.DUTY_QUARTER),
+  second: voice(Audio.PULSE2, 9, 1, 2, 6, Audio.DUTY_EIGHTH),
+  bass: voice(Audio.SAWTOOTH, 18, 0, 3, 3),
+  arp: voice(Audio.TRIANGLE, 7, 1, 4, 6),
 }
 let RUN_KIT = {
   k: {freq: 120, dur: 1, vol: 20, decay: 3, release: 2},
@@ -1555,9 +1560,9 @@ let BALLAD = ballad({
 
 # Loudness against the APU: a `Sound` plays at `vol`% of its own level, a
 # tone at a fifth of that.
-let EP_MELODY_VOL = 46
-let EP_COMP_VOL = 26
-let BALLAD_BASS = voice(Canvas.TRIANGLE, 34, 3, 0, 14)
+let EP_MELODY_VOL = 0.46
+let EP_COMP_VOL = 0.26
+let BALLAD_BASS = voice(Audio.TRIANGLE, 34, 3, 0, 14)
 
 mut ep_voices = {}
 let ep_ready = fn () {
@@ -1570,18 +1575,23 @@ let build_ep_voice = fn () {
   let missing = BALLAD.voices.find(|v| !ep_voices.has(v[0]))
   if missing != nil {
     let (key, pitch, bark) = missing
-    ep_voices[key] = Canvas.Sound.new(pcm_wav(ep_samples(pitch, bark)))
+    ep_voices[key] = Audio.Sound.new(pcm_wav(ep_samples(pitch, bark)))
   }
+}
+
+let ring = fn (voice, vol) {
+  voice.volume(vol)
+  voice.play()
 }
 
 let play_ballad_step = fn (b, step) {
   let sung = b.melody[step]
   if sung != nil {
     let (sung_pitch, _) = sung
-    ep_voices["m{sung_pitch}"].play(EP_MELODY_VOL)
+    ring(ep_voices["m{sung_pitch}"], EP_MELODY_VOL)
   }
   for p in b.comp[step] ?? [] {
-    ep_voices["c{p}"].play(EP_COMP_VOL)
+    ring(ep_voices["c{p}"], EP_COMP_VOL)
   }
   let low = b.bass[step]
   if low != nil {
@@ -1599,11 +1609,11 @@ mut wave_wait = 0
 let tick_waves = fn () {
   if wave_wait == 0 {
     let swell = Random.int(30, 60)
-    Canvas.tone(
+    Audio.tone(
       Random.int(200, 400),
       swell * 2,
       vol: Random.int(3, 6),
-      wave: Canvas.NOISE,
+      wave: Audio.NOISE,
       end_freq: Random.int(800, 1600),
       attack: swell,
       decay: swell,
@@ -1624,10 +1634,10 @@ let tick_ending = fn (dt) {
       bgm_gain = gain
       tick_bgm()
     } else {
-      Canvas.music_volume(Math.round(MUSIC_VOL * gain))
+      music.volume(MUSIC_VOL * gain)
     }
   } else if ending_t < FADE_OUT + ENDING_REST || !ep_ready() {
-    Canvas.music_stop() if MUSIC_FILE != nil && Canvas.music_playing()
+    music?.stop()
     build_ep_voice()
   } else if end_frame < BALLAD.length {
     play_ballad_step(
@@ -1648,11 +1658,11 @@ let tick_count_in = fn (dt) {
   let n = Math.ceil(count_in)
   if n < counted {
     counted = n
-    Canvas.tone(
+    Audio.tone(
       n > 0 ? 660 : 990,
       n > 0 ? 8 : GO_BEEP,
       vol: 25,
-      wave: Canvas.PULSE,
+      wave: Audio.PULSE,
       decay: 2,
       release: 4,
     )
@@ -1741,6 +1751,7 @@ let restart_race = fn () {
   start_tune(1)
   music_on = false
   music_wait = MUSIC_DELAY
+  music?.stop()
 }
 
 # --- update ----------------------------------------------------------------
@@ -1916,7 +1927,8 @@ let update = fn (dt) {
     music_wait -= 1
     if music_wait <= 0 {
       music_on = true
-      Canvas.music(art(MUSIC_FILE), vol: MUSIC_VOL) if MUSIC_FILE != nil
+      music?.volume(MUSIC_VOL)
+      music?.play()
     }
   }
   tick_bgm() if MUSIC_FILE == nil && music_on && !finished

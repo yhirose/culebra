@@ -790,13 +790,15 @@ inspect(match 9 {
 
 **PriorityQueue** — PriorityQueue.new(*, key: Function | Nil = nil, reverse: Bool = false); pq.push(x); pq.pop() -> Any; pq.peek() -> Any; pq.size(); pq.empty(); to_string(pq) -> String
 
+**Audio** — Audio.available() -> Bool; sound.play(); sound.stop(); sound.playing() -> Bool; sound.volume(v); sound.pitch(p); sound.pan(p); music.play(); music.stop(); music.pause(); music.resume(); music.seek(seconds); music.playing() -> Bool; music.volume(v); music.pitch(p); music.pan(p); stream.ready() -> Bool; stream.needed() -> Long; stream.push(samples: Array) -> Long; stream.submit() -> Long; stream.latency() -> Float; stream.play(); stop(); pause(); resume(); playing() -> Bool; stream.volume(v); stream.pitch(p); stream.pan(p)
+
 ### 一覧ではなく章を読むもの
 
 | 名前空間 | 署名 | 何をするもの |
 |---|---:|---|
 | `SQLite` | 10 | 組み込みSQLデータベース（query / execute / プリペアド文 / トランザクション） |
-| `Canvas` | 71 | ゲーム向けイミディエイトモード2Dフレームバッファ（図形 / スプライト / オフスクリーン描画先 / テキスト / キー・マウス・ゲームパッド / ウィンドウ制御 / tone / 効果音 / music） |
-| `Scene` | 195 | 手続きジオメトリ向けのretained-mode 3Dレンダラ |
+| `Canvas` | 61 | ゲーム向けイミディエイトモード2Dフレームバッファ（図形 / スプライト / オフスクリーン描画先 / テキスト / キー・マウス・ゲームパッド / ウィンドウ制御） |
+| `Scene` | 178 | 手続きジオメトリ向けのretained-mode 3Dレンダラ |
 | `Net` | 22 | 生のTCP / UDPソケットと名前解決（`Http`の下位レイヤ） |
 | `Desktop` / `Webview` | 10 | ネイティブWebViewのデスクトップアプリ: ローカルHTTPサーバ + ウィンドウを1呼び出しで |
 | `PEG` | 18 | PEGパーサジェネレータ。文法を書くと構文木が返る |
