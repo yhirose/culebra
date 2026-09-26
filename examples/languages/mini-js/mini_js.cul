@@ -59,26 +59,26 @@ let grammar = `
   # A label names only an enclosing iteration statement or switch (not an
   # arbitrary block, which real JS allows but this subset does not) --
   # break_s/continue_s read it back as the depth to unwind to.
-  label_s    <- ident ':' (label_s / while_s / do_s / for_of / for_in / for_s / switch_s) { no_ast_opt }
-  var_decl   <- decl_kw declr (',' declr)* ';'?                  { no_ast_opt }
+  label_s    <- ident ':' (label_s / while_s / do_s / for_of / for_in / for_s / switch_s)
+  var_decl   <- decl_kw declr (',' declr)* ';'?
   decl_kw    <- < 'var' / 'let' / 'const' >
   declr      <- binding ('=' !'=' expr)?                         { no_ast_opt }
-  fn_decl    <- 'function' ident '(' params ')' block             { no_ast_opt }
-  gen_decl   <- 'function' '*' ident '(' params ')' block         { no_ast_opt }
-  async_decl <- 'async' 'function' ident '(' params ')' block     { no_ast_opt }
+  fn_decl    <- 'function' ident '(' params ')' block
+  gen_decl   <- 'function' '*' ident '(' params ')' block
+  async_decl <- 'async' 'function' ident '(' params ')' block
   params     <- (param (',' param)*)? ','?                        { no_ast_opt }
   param      <- rest_p / dflt_p / binding
   rest_p     <- '...' ident                                      { no_ast_opt }
-  dflt_p     <- binding '=' !'=' expr                            { no_ast_opt }
-  if_s       <- 'if' '(' expr ')' stmt else_c?                   { no_ast_opt }
+  dflt_p     <- binding '=' !'=' expr
+  if_s       <- 'if' '(' expr ')' stmt else_c?
   else_c     <- 'else' stmt                                      { no_ast_opt }
-  while_s    <- 'while' '(' expr ')' stmt                        { no_ast_opt }
-  do_s       <- 'do' stmt 'while' '(' expr ')' ';'?              { no_ast_opt }
-  for_of     <- 'for' '(' decl_kw binding 'of' expr ')' stmt     { no_ast_opt }
-  for_in     <- 'for' '(' decl_kw binding 'in' expr ')' stmt     { no_ast_opt }
-  for_s      <- 'for' '(' for_init ';' for_cond ';' for_step ')' stmt { no_ast_opt }
+  while_s    <- 'while' '(' expr ')' stmt
+  do_s       <- 'do' stmt 'while' '(' expr ')' ';'?
+  for_of     <- 'for' '(' decl_kw binding 'of' expr ')' stmt
+  for_in     <- 'for' '(' decl_kw binding 'in' expr ')' stmt
+  for_s      <- 'for' '(' for_init ';' for_cond ';' for_step ')' stmt
   for_init   <- (var_decl_ns / seq_e)?                           { no_ast_opt }
-  var_decl_ns <- decl_kw declr (',' declr)*                      { no_ast_opt }
+  var_decl_ns <- decl_kw declr (',' declr)*
   for_cond   <- expr?                                            { no_ast_opt }
   for_step   <- seq_e?                                           { no_ast_opt }
   return_s   <- 'return' ret_val ';'?                            { no_ast_opt }
@@ -89,39 +89,39 @@ let grammar = `
   continue_s <- 'continue' ident? ';'?                           { no_ast_opt }
   throw_s    <- 'throw' expr ';'?                                { no_ast_opt }
   try_s      <- 'try' block catch_c? finally_c?                  { no_ast_opt }
-  catch_c    <- 'catch' catch_p block                            { no_ast_opt }
+  catch_c    <- 'catch' catch_p block
   catch_p    <- ('(' ident ')')?                                 { no_ast_opt }
   finally_c  <- 'finally' block                                  { no_ast_opt }
   block      <- '{' stmt* '}'                                    { no_ast_opt }
-  empty_s    <- ';'                                              { no_ast_opt }
-  expr_s     <- expr ';'?                                        { no_ast_opt }
+  empty_s    <- ';'
+  expr_s     <- expr ';'?
   switch_s   <- 'switch' '(' expr ')' '{' (case_c / default_c)* '}' { no_ast_opt }
-  case_c     <- 'case' expr ':' case_body                         { no_ast_opt }
+  case_c     <- 'case' expr ':' case_body
   default_c  <- 'default' ':' case_body                           { no_ast_opt }
   case_body  <- (!('case' / 'default') stmt)*                     { no_ast_opt }
 
   binding    <- arr_pat / obj_pat / ident
   arr_pat    <- '[' (pat_el (',' pat_el)*)? ','? ']'             { no_ast_opt }
   pat_el     <- rest_b / pat_dflt / pat_hole
-  pat_dflt   <- (arr_pat / obj_pat / postfix) ('=' !'=' expr)?  { no_ast_opt }
-  pat_hole   <- &','                                             { no_ast_opt }
+  pat_dflt   <- (arr_pat / obj_pat / postfix) ('=' !'=' expr)?
+  pat_hole   <- &','
   rest_b     <- '...' binding                                    { no_ast_opt }
   obj_pat    <- '{' (opat_el (',' opat_el)*)? ','? '}'           { no_ast_opt }
   opat_el    <- rest_b / opat_kv / opat_short
-  opat_kv    <- pkey ':' pat_dflt                                { no_ast_opt }
+  opat_kv    <- pkey ':' pat_dflt
   opat_short <- ident ('=' !'=' expr)?                           { no_ast_opt }
   seq_e      <- expr (',' expr)*
 
   expr       <- async_arrow / arrow / yield_from / yield_e / assign_e / ternary
-  async_arrow <- 'async' arrow_p '=>' arrow_body                  { no_ast_opt }
+  async_arrow <- 'async' arrow_p '=>' arrow_body
   yield_from <- 'yield' '*' expr                                 { no_ast_opt }
   yield_e    <- 'yield' yield_val                                { no_ast_opt }
   yield_val  <- expr?                                            { no_ast_opt }
-  arrow      <- arrow_p '=>' arrow_body                          { no_ast_opt }
+  arrow      <- arrow_p '=>' arrow_body
   arrow_p    <- '(' params ')' / arrow_one
   arrow_one  <- ident                                            { no_ast_opt }
   arrow_body <- block / expr
-  assign_e   <- (arr_pat / obj_pat / postfix) assign_op expr     { no_ast_opt }
+  assign_e   <- (arr_pat / obj_pat / postfix) assign_op expr
   assign_op  <- < '=' !'=' / '+=' / '-=' / '*=' / '/=' / '%=' / '**=' / '??=' / '||=' / '&&=' >
   ternary    <- nullish ('?' expr ':' expr)?
   nullish    <- lor (nullish_op lor)*
@@ -151,15 +151,15 @@ let grammar = `
   await_e    <- 'await' unary                                    { no_ast_opt }
   unary_op   <- < '!' !'=' / '-' ![-=] / '+' ![+=] / '~' / 'typeof' / 'void' / 'delete' >
   update     <- pre_inc / post_inc / postfix
-  pre_inc    <- inc_op postfix                                   { no_ast_opt }
-  post_inc   <- postfix inc_op                                   { no_ast_opt }
+  pre_inc    <- inc_op postfix
+  post_inc   <- postfix inc_op
   inc_op     <- < '++' / '--' >
   postfix    <- new_e / primary (call_p / index_p / member_p / opt_call / opt_index / opt_member)*
   opt_member <- '?.' pname                                       { no_ast_opt }
   opt_index  <- '?.' '[' expr ']'                                { no_ast_opt }
   opt_call   <- '?.' '(' args ')'                                { no_ast_opt }
   new_e      <- 'new' primary (index_p / member_p)* new_args
-                (call_p / index_p / member_p / opt_call / opt_index / opt_member)* { no_ast_opt }
+                (call_p / index_p / member_p / opt_call / opt_index / opt_member)*
   new_args   <- ('(' args ')')?                                  { no_ast_opt }
   call_p     <- '(' args ')'                                     { no_ast_opt }
   args       <- (arg (',' arg)*)? ','?                           { no_ast_opt }
@@ -171,30 +171,30 @@ let grammar = `
   primary    <- number / string / template / true_l / false_l / null_l /
                 this_e / super_call / super_mem / array_lit / object_lit /
                 gen_expr / async_expr / fn_expr / class_e / paren / ident
-  gen_expr   <- 'function' '*' fn_name '(' params ')' block      { no_ast_opt }
-  async_expr <- 'async' 'function' fn_name '(' params ')' block  { no_ast_opt }
+  gen_expr   <- 'function' '*' fn_name '(' params ')' block
+  async_expr <- 'async' 'function' fn_name '(' params ')' block
   super_call <- 'super' '(' args ')'                             { no_ast_opt }
   super_mem  <- 'super' '.' pname                                { no_ast_opt }
-  class_d    <- 'class' ident class_tail                         { no_ast_opt }
-  class_e    <- 'class' class_name class_tail                    { no_ast_opt }
+  class_d    <- 'class' ident class_tail
+  class_e    <- 'class' class_name class_tail
   class_name <- ident?                                           { no_ast_opt }
   class_tail <- extends_c '{' (cmember / ';')* '}'               { no_ast_opt }
   extends_c  <- ('extends' postfix)?                             { no_ast_opt }
   cmember    <- static_c / getter_c / setter_c / gmethod_c / amethod_c / method_c / field_c
-  amethod_c  <- 'async' mkey '(' params ')' block                { no_ast_opt }
-  gmethod_c  <- '*' mkey '(' params ')' block                    { no_ast_opt }
+  amethod_c  <- 'async' mkey '(' params ')' block
+  gmethod_c  <- '*' mkey '(' params ')' block
   static_c   <- 'static' (getter_c / setter_c / gmethod_c / amethod_c / method_c / field_c) { no_ast_opt }
-  getter_c   <- 'get' mkey '(' ')' block                         { no_ast_opt }
-  setter_c   <- 'set' mkey '(' ident ')' block                   { no_ast_opt }
-  method_c   <- mkey '(' params ')' block                        { no_ast_opt }
+  getter_c   <- 'get' mkey '(' ')' block
+  setter_c   <- 'set' mkey '(' ident ')' block
+  method_c   <- mkey '(' params ')' block
   field_c    <- mkey ('=' !'=' expr)? ';'?                       { no_ast_opt }
   mkey       <- computed_k / pkey
   pkey       <- pname / string / number
   computed_k <- '[' expr ']'                                     { no_ast_opt }
-  true_l     <- 'true'                                           { no_ast_opt }
-  false_l    <- 'false'                                          { no_ast_opt }
-  null_l     <- 'null'                                           { no_ast_opt }
-  this_e     <- 'this'                                           { no_ast_opt }
+  true_l     <- 'true'
+  false_l    <- 'false'
+  null_l     <- 'null'
+  this_e     <- 'this'
   number     <- < '0x' [0-9a-fA-F]+ / '0b' [01]+ / '0o' [0-7]+ /
                   [0-9]+ ('.' [0-9]*)? exp? / '.' [0-9]+ exp? >
   exp        <- [eE] [-+]? [0-9]+
@@ -202,15 +202,15 @@ let grammar = `
   array_lit  <- '[' (arg (',' arg)*)? ','? ']'                   { no_ast_opt }
   object_lit <- '{' (oprop (',' oprop)*)? ','? '}'               { no_ast_opt }
   oprop      <- getter_p / setter_p / gmethod_p / amethod_p / method_p / kv_p / ospread / short_p
-  gmethod_p  <- '*' mkey '(' params ')' block                    { no_ast_opt }
-  amethod_p  <- 'async' mkey '(' params ')' block                { no_ast_opt }
-  getter_p   <- 'get' mkey '(' ')' block                         { no_ast_opt }
-  setter_p   <- 'set' mkey '(' ident ')' block                   { no_ast_opt }
-  kv_p       <- mkey ':' expr                                    { no_ast_opt }
-  method_p   <- mkey '(' params ')' block                        { no_ast_opt }
+  gmethod_p  <- '*' mkey '(' params ')' block
+  amethod_p  <- 'async' mkey '(' params ')' block
+  getter_p   <- 'get' mkey '(' ')' block
+  setter_p   <- 'set' mkey '(' ident ')' block
+  kv_p       <- mkey ':' expr
+  method_p   <- mkey '(' params ')' block
   short_p    <- ident                                            { no_ast_opt }
   ospread    <- '...' expr                                       { no_ast_opt }
-  fn_expr    <- 'function' fn_name '(' params ')' block          { no_ast_opt }
+  fn_expr    <- 'function' fn_name '(' params ')' block
   fn_name    <- ident?                                           { no_ast_opt }
   paren      <- '(' seq_e ')'                                    { no_ast_opt }
   ident      <- !keyword < [a-zA-Z_$][a-zA-Z0-9_$]* >
@@ -3100,7 +3100,6 @@ fn scan_stmt(node, f) {
     },
     {name: 'block'} => scan_block(node, f),
     {name: 'empty_s'} => nil,
-    {name: 'expr_s'} => scan_expr(node.nodes[0], f),
     _ => scan_expr(node, f),
   }
 }
@@ -5360,7 +5359,6 @@ fn emit_stmt(m, node, f) {
     {name: 'try_s'} => emit_try(m, node, f),
     {name: 'block'} => emit_block(m, node, f),
     {name: 'empty_s'} => nil,
-    {name: 'expr_s'} => emit_expr(m, node.nodes[0], f),
     _ => emit_expr(m, node, f),
   }
 }

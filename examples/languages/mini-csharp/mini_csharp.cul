@@ -24,8 +24,8 @@
 
 let grammar = `
   program    <- _ usingdir* typedecl+ !.                     { no_ast_opt }
-  usingdir   <- 'using' __ qname ';' _                       { no_ast_opt }
-  qname      <- ident ('.' _ ident)*                         { no_ast_opt }
+  usingdir   <- 'using' __ qname ';' _
+  qname      <- ident ('.' _ ident)*
 
   typedecl   <- classdecl
   classdecl  <- modifier* 'class' __ ident typarams? baselist? '{' _
@@ -37,49 +37,48 @@ let grammar = `
 
   member     <- ctordecl / methoddecl / fielddecl
   ctordecl   <- modifier* ident '(' _ params ')' _ ctorinit? block
-                                                             { no_ast_opt }
   ctorinit   <- ':' _ 'base' _ '(' _ args ')' _              { no_ast_opt }
-  methoddecl <- modifier* typeref _ ident typarams? '(' _ params ')' _ block   { no_ast_opt }
-  fielddecl  <- modifier* typeref _ ident ('=' ![=] _ expr)? ';' _   { no_ast_opt }
+  methoddecl <- modifier* typeref _ ident typarams? '(' _ params ')' _ block
+  fielddecl  <- modifier* typeref _ ident ('=' ![=] _ expr)? ';' _
   params     <- (param (',' _ param)*)? _                    { no_ast_opt }
-  param      <- typeref _ ident   { no_ast_opt }
+  param      <- typeref _ ident
 
   # A type never consumes the space after it, because what follows is an
   # ident and the two would run together. int and intAdd do not collide even
   # so: the ident inside is greedy, so intAdd is one name.
-  typename   <- < ident ('.' ident)* > typeargs?              { no_ast_opt }
+  typename   <- < ident ('.' ident)* > typeargs?
   typeref    <- typename arraysfx*                            { no_ast_opt }
-  typeargs   <- '<' _ typeref (',' _ typeref)* '>'            { no_ast_opt }
-  arraysfx   <- '[' _ ']'                                     { no_ast_opt }
+  typeargs   <- '<' _ typeref (',' _ typeref)* '>'
+  arraysfx   <- '[' _ ']'
 
   block      <- '{' _ stmt* '}' _                            { no_ast_opt }
   stmt       <- block / localdecl / ifstmt / whilestmt / forstmt / foreachstmt
               / trystmt / usingstmt / returnstmt / throwstmt / breakstmt
               / continuestmt / emptystmt / exprstmt
-  localdecl  <- typeref _ ident ('=' ![=] _ expr)? ';' _   { no_ast_opt }
-  ifstmt     <- 'if' _ '(' _ expr ')' _ stmt elsepart?   { no_ast_opt }
+  localdecl  <- typeref _ ident ('=' ![=] _ expr)? ';' _
+  ifstmt     <- 'if' _ '(' _ expr ')' _ stmt elsepart?
   elsepart   <- 'else' __ stmt                               { no_ast_opt }
-  whilestmt  <- 'while' _ '(' _ expr ')' _ stmt   { no_ast_opt }
-  forstmt    <- 'for' _ '(' _ forinit ';' _ forcond ';' _ forstep ')' _ stmt   { no_ast_opt }
+  whilestmt  <- 'while' _ '(' _ expr ')' _ stmt
+  forstmt    <- 'for' _ '(' _ forinit ';' _ forcond ';' _ forstep ')' _ stmt
   forinit    <- (localdecl_h / exprnosemi)?                  { no_ast_opt }
-  localdecl_h <- typeref _ ident '=' ![=] _ expr            { no_ast_opt }
+  localdecl_h <- typeref _ ident '=' ![=] _ expr
   forcond    <- expr?                                        { no_ast_opt }
   forstep    <- exprnosemi?                                  { no_ast_opt }
   exprnosemi <- expr                                         { no_ast_opt }
-  foreachstmt <- 'foreach' _ '(' _ typeref _ ident 'in' __ expr ')' _ stmt   { no_ast_opt }
-  trystmt    <- 'try' __ block catchpart* finallypart?   { no_ast_opt }
+  foreachstmt <- 'foreach' _ '(' _ typeref _ ident 'in' __ expr ')' _ stmt
+  trystmt    <- 'try' __ block catchpart* finallypart?
   catchpart  <- 'catch' _ ('(' _ typeref _ ident ')' _)? block   { no_ast_opt }
   finallypart <- 'finally' __ block                          { no_ast_opt }
-  usingstmt  <- 'using' _ '(' _ typeref _ ident '=' ![=] _ expr ')' _ stmt   { no_ast_opt }
+  usingstmt  <- 'using' _ '(' _ typeref _ ident '=' ![=] _ expr ')' _ stmt
   returnstmt <- 'return' __ expr? ';' _   { no_ast_opt }
   throwstmt  <- 'throw' __ expr? ';' _   { no_ast_opt }
-  breakstmt  <- 'break' __ ';' _                             { no_ast_opt }
-  continuestmt <- 'continue' __ ';' _                        { no_ast_opt }
-  emptystmt  <- ';' _                                        { no_ast_opt }
+  breakstmt  <- 'break' __ ';' _
+  continuestmt <- 'continue' __ ';' _
+  emptystmt  <- ';' _
   exprstmt   <- expr ';' _                                   { no_ast_opt }
 
   expr       <- assign / ternary
-  assign     <- suffixed assignop expr                       { no_ast_opt }
+  assign     <- suffixed assignop expr
   assignop   <- < '=' ![=] / '+=' / '-=' / '*=' / '/=' > _
   ternary    <- orexp ('?' _ expr ':' _ expr)?
   orexp      <- andexp ('||' _ andexp)*
@@ -109,14 +108,14 @@ let grammar = `
               / boollit / nulllit / thisref / baseref / paren / ident
   newarray   <- 'new' __ typename '[' _ expr? ']' _ arrayinit?   { no_ast_opt }
   arrayinit  <- '{' _ (expr (',' _ expr)*)? ','? _ '}' _     { no_ast_opt }
-  newobj     <- 'new' __ typename _ '(' _ args ')' _   { no_ast_opt }
+  newobj     <- 'new' __ typename _ '(' _ args ')' _
   paren      <- '(' _ expr ')' _                             { no_ast_opt }
   thisref    <- < 'this' > ![a-zA-Z0-9_] _
   baseref    <- < 'base' > ![a-zA-Z0-9_] _
 
   interp     <- '$"' interppart* '"' _                       { no_ast_opt }
   interppart <- '{' _ expr '}' / interptext
-  interptext <- < ('\\\\' . / !["{] .)+ >                       { no_ast_opt }
+  interptext <- < ('\\\\' . / !["{] .)+ >
 
   real       <- < [0-9]+ '.' [0-9]+ ([eE] [-+]? [0-9]+)? > _
   integer    <- < [0-9]+ > _

@@ -160,40 +160,40 @@
 let grammar = `
   program    <- nl (stmt nl)*                               { no_ast_opt }
   stmt       <- mod_stmt / core_stmt
-  mod_stmt   <- core_stmt mod_kw expr                        { no_ast_opt }
+  mod_stmt   <- core_stmt mod_kw expr
   mod_kw     <- < 'if' / 'unless' > kw_end
   core_stmt  <- class_d / trait_d / fn_decl / decl / pdecl / mut_store / while /
                 for / if / try / match / cond_e / return_s / break_s /
                 continue_s / throw_s / defer_s / yield_f / yield_v / bare_block /
                 passign / assign / expr
-  mut_store  <- 'mut' __ postfix assign_op nl expr                { no_ast_opt }
-  passign    <- tpat assign_op nl expr                            { no_ast_opt }
+  mut_store  <- 'mut' __ postfix assign_op nl expr
+  passign    <- tpat assign_op nl expr
   tpat       <- arr_t / tup_t / obj_t
   arr_t      <- '[' nl (telem (nl ',' nl telem)* (nl ',')?)? nl ']' _ { no_ast_opt }
-  tup_t      <- '(' nl telem (nl ',' nl telem)+ (nl ',')? nl ')' _ { no_ast_opt }
+  tup_t      <- '(' nl telem (nl ',' nl telem)+ (nl ',')? nl ')' _
   obj_t      <- '{' nl tentry (nl ',' nl tentry)* (nl ',')? nl '}' _ { no_ast_opt }
   tentry     <- pname ':' nl telem / ident                        { no_ast_opt }
   telem      <- rest_pt / typed_t / arr_t / tup_t / obj_t / expr
-  typed_t    <- ident ':' _ tyexpr                                { no_ast_opt }
+  typed_t    <- ident ':' _ tyexpr
   class_d    <- deco* 'class' __ ident tparams? '{' nl (cmember nl)* '}' _
   tparams    <- '<' nl tparam (nl ',' nl tparam)* nl '>' _  { no_ast_opt }
   tparam     <- ident (':' _ ident ('+' _ ident)*)?         { no_ast_opt }
   cmember    <- static_f / static_m / getter / method / field
-  static_f   <- 'static' __ ident '=' !'=' nl expr           { no_ast_opt }
+  static_f   <- 'static' __ ident '=' !'=' nl expr
   static_m   <- 'static' __ method                          { no_ast_opt }
   getter     <- 'get' __ method                             { no_ast_opt }
-  method     <- ident '(' nl fparams nl ')' _ ret_ann? nl block { no_ast_opt }
+  method     <- ident '(' nl fparams nl ')' _ ret_ann? nl block
   field      <- ident ftype? finit?                          { no_ast_opt }
   ftype      <- ':' _ tyexpr                                { no_ast_opt }
   finit      <- '=' !'=' nl expr                            { no_ast_opt }
   trait_d    <- 'trait' __ ident tparams? '{' nl (titem nl)* '}' _
-  titem      <- ident '(' nl fparams nl ')' _ ret_ann? (nl block)? { no_ast_opt }
+  titem      <- ident '(' nl fparams nl ')' _ ret_ann? (nl block)?
   ret_ann    <- '->' _ tyexpr                               { no_ast_opt }
   tyexpr     <- tyatom tyor* tyopt?
   tyor       <- '|' _ tyatom                                { no_ast_opt }
-  tyopt      <- < '?' > _                                   { no_ast_opt }
+  tyopt      <- < '?' > _
   tyatom     <- fn_ty / gen_ty / ident
-  gen_ty     <- ident '<' nl targ (nl ',' nl targ)* nl '>' _ { no_ast_opt }
+  gen_ty     <- ident '<' nl targ (nl ',' nl targ)* nl '>' _
   targ       <- tyexpr / number
   fn_ty      <- 'fn' _ '(' nl (tyexpr (nl ',' nl tyexpr)*)? nl ')' _ ('->' _ tyexpr)? { no_ast_opt }
 
@@ -203,19 +203,19 @@ let grammar = `
   fparam     <- kwrest_p / rest_p / kwonly_p / tydef_p / typed_p / def_p / dparam / ident
   kwrest_p   <- '**' _ ident                                { no_ast_opt }
   rest_p     <- '*' ident                                   { no_ast_opt }
-  kwonly_p   <- '*' !'*' _                                  { no_ast_opt }
-  tydef_p    <- ident ':' _ tyexpr '=' !'=' nl expr         { no_ast_opt }
-  typed_p    <- ident ':' _ tyexpr                          { no_ast_opt }
+  kwonly_p   <- '*' !'*' _
+  tydef_p    <- ident ':' _ tyexpr '=' !'=' nl expr
+  typed_p    <- ident ':' _ tyexpr
   dparam     <- tup_pat                                     { no_ast_opt }
-  def_p      <- ident '=' !'=' nl expr                      { no_ast_opt }
+  def_p      <- ident '=' !'=' nl expr
   params     <- (lparam (nl ',' nl lparam)*)?               { no_ast_opt }
   lparam     <- dparam / ident
   decl       <- decl_kw decl_pat '=' !'=' nl expr
-  pdecl      <- decl_kw pattern '=' !'=' nl expr             { no_ast_opt }
+  pdecl      <- decl_kw pattern '=' !'=' nl expr
   decl_pat   <- typed_pat / tup_pat / arr_pat / ident
-  typed_pat  <- ident ':' _ tyexpr                          { no_ast_opt }
-  tup_pat    <- '(' nl ident (nl ',' nl ident)+ nl ')' _    { no_ast_opt }
-  bare_tup   <- ident (',' _ ident)+                        { no_ast_opt }
+  typed_pat  <- ident ':' _ tyexpr
+  tup_pat    <- '(' nl ident (nl ',' nl ident)+ nl ')' _
+  bare_tup   <- ident (',' _ ident)+
   arr_pat    <- '[' nl ident (nl ',' nl ident)* nl ']' _    { no_ast_opt }
   decl_kw    <- < 'let' __ 'mut' ![a-zA-Z0-9_] / 'let' / 'mut' > __
   while      <- 'while' __ expr nl block
@@ -224,8 +224,8 @@ let grammar = `
   if         <- 'if' __ expr nl block (nl 'else' __ (if / block))?
   try        <- 'try' _ nl block nl 'catch' __ ident nl block
   return_s   <- 'return' kw_end (!stmt_kw expr)?            { no_ast_opt }
-  break_s    <- 'break' kw_end                              { no_ast_opt }
-  continue_s <- 'continue' kw_end                           { no_ast_opt }
+  break_s    <- 'break' kw_end
+  continue_s <- 'continue' kw_end
   throw_s    <- 'throw' __ expr                             { no_ast_opt }
   defer_s    <- 'defer' _ nl block                          { no_ast_opt }
   yield_f    <- 'yield' kw_end 'from' kw_end expr           { no_ast_opt }
@@ -238,7 +238,7 @@ let grammar = `
                  'throw' / 'defer') ![a-zA-Z0-9_]
 
   expr       <- assign_e / ternary
-  assign_e   <- postfix assign_op nl expr                         { no_ast_opt }
+  assign_e   <- postfix assign_op nl expr
   ternary    <- nilco (nl '?' !'?' nl expr nl ':' nl expr)?
   rangee     <- range_lit / add
   range_lit  <- add range_op add? step? / range_op add? step? { no_ast_opt }
@@ -247,27 +247,27 @@ let grammar = `
   nilco      <- lor (nilco_op lor)*
   nilco_op   <- < '??' > nl
   match      <- 'match' __ expr nl '{' nl arm (nl ',' nl arm)* (nl ',')? nl '}' _
-  arm        <- pattern guard? '=>' nl arm_body             { no_ast_opt }
+  arm        <- pattern guard? '=>' nl arm_body
   guard      <- 'if' __ expr                                { no_ast_opt }
   arm_body   <- expr / block
   cond_e     <- 'cond' _ '{' nl carm (nl ',' nl carm)* (nl ',')? nl '}' _
-  carm       <- (wild_p / expr) '=>' nl arm_body            { no_ast_opt }
+  carm       <- (wild_p / expr) '=>' nl arm_body
   pattern    <- nil_p / true_p / false_p / float_p / num_p / str_p /
                 obj_p / arr_p / tup_p / wild_p / typed_pt / bind_p
-  typed_pt   <- ident ':' _ ident                           { no_ast_opt }
+  typed_pt   <- ident ':' _ ident
   rest_pt    <- '...' ident                                 { no_ast_opt }
   apat       <- rest_pt / pattern
-  nil_p      <- 'nil' kw_end                                { no_ast_opt }
-  true_p     <- 'true' kw_end                               { no_ast_opt }
-  false_p    <- 'false' kw_end                              { no_ast_opt }
+  nil_p      <- 'nil' kw_end
+  true_p     <- 'true' kw_end
+  false_p    <- 'false' kw_end
   float_p    <- float                                       { no_ast_opt }
   num_p      <- number                                      { no_ast_opt }
   str_p      <- str_sq                                      { no_ast_opt }
   obj_p      <- '{' nl (opat (nl ',' nl opat)*)? nl '}' _   { no_ast_opt }
   opat       <- pname (':' nl pattern)?                     { no_ast_opt }
   arr_p      <- '[' nl (apat (nl ',' nl apat)*)? nl ']' _   { no_ast_opt }
-  tup_p      <- '(' nl pattern (nl ',' nl pattern)+ nl ')' _ { no_ast_opt }
-  wild_p     <- '_' ![a-zA-Z0-9_] _                         { no_ast_opt }
+  tup_p      <- '(' nl pattern (nl ',' nl pattern)+ nl ')' _
+  wild_p     <- '_' ![a-zA-Z0-9_] _
   bind_p     <- ident                                       { no_ast_opt }
   lor        <- land (lor_op land)*
   lor_op     <- < '||' > nl
@@ -294,17 +294,17 @@ let grammar = `
   power      <- postfix (pow_op unary)?
   pow_op     <- < '**' > nl
   postfix    <- primary (nmcall / nprop / mcall / pcall / prop / subscript)*
-  nmcall     <- nl '?.' pname '(' nl args nl ')' _          { no_ast_opt }
+  nmcall     <- nl '?.' pname '(' nl args nl ')' _
   nprop      <- nl '?.' pname                               { no_ast_opt }
   pcall      <- '(' nl args nl ')' _                        { no_ast_opt }
-  mcall      <- nl '.' pname '(' nl args nl ')' _           { no_ast_opt }
+  mcall      <- nl '.' pname '(' nl args nl ')' _
   prop       <- nl '.' pname                                { no_ast_opt }
   subscript  <- '[' nl expr nl ']' _                        { no_ast_opt }
   primary    <- float / number / str_dq / str_sq / true_l / false_l /
                 nil_l / closure / lambda / call / if / try / match / cond_e /
                 ident / array_lit / object_lit / shorthand / set_lit /
                 tuple / fnself / paren
-  fnself     <- 'fn' kw_end                                 { no_ast_opt }
+  fnself     <- 'fn' kw_end
   array_lit  <- '[' nl (aitem (nl ',' nl aitem)* (nl ',')?)? nl ']' _ { no_ast_opt }
   aitem      <- spread / expr
   spread     <- '...' _ expr                                { no_ast_opt }
@@ -312,8 +312,8 @@ let grammar = `
   object_lit <- '{' nl (obj_pair (nl ',' nl obj_pair)* (nl ',')?)? nl '}' _ { no_ast_opt }
   obj_pair   <- mut_pair / plain_pair / ospread
   ospread    <- '...' _ expr                                { no_ast_opt }
-  mut_pair   <- 'mut' __ okey ':' nl expr                   { no_ast_opt }
-  plain_pair <- okey ':' nl expr                            { no_ast_opt }
+  mut_pair   <- 'mut' __ okey ':' nl expr
+  plain_pair <- okey ':' nl expr
   okey       <- pname / str_sq / dq_key / nskey
   dq_key     <- '"' < [^"{\\]* > '"' _
   nskey      <- float / number / true_l / false_l / nil_l / tuple
@@ -321,18 +321,18 @@ let grammar = `
                 '{' nl expr nl ',' nl '}' _                 { no_ast_opt }
   tuple      <- '(' nl expr (nl ',' nl expr)+ (nl ',')? nl ')' _ /
                 '(' nl expr nl ',' nl ')' _                 { no_ast_opt }
-  lambda     <- '|' _ params '|' nl expr                    { no_ast_opt }
+  lambda     <- '|' _ params '|' nl expr
   paren      <- '(' nl expr nl ')' _
   closure    <- 'fn' _ '(' nl fparams nl ')' _ ret_ann? nl block
   call       <- ident '(' nl args nl ')' _
   args       <- (argx (nl ',' nl argx)* (nl ',')?)?         { no_ast_opt }
   argx       <- kwsplat / kwarg / expr
   kwsplat    <- '**' _ expr                                 { no_ast_opt }
-  kwarg      <- ident ':' !':' nl expr                      { no_ast_opt }
+  kwarg      <- ident ':' !':' nl expr
 
-  true_l     <- 'true' kw_end                               { no_ast_opt }
-  false_l    <- 'false' kw_end                              { no_ast_opt }
-  nil_l      <- 'nil' kw_end                                { no_ast_opt }
+  true_l     <- 'true' kw_end
+  false_l    <- 'false' kw_end
+  nil_l      <- 'nil' kw_end
   str_sq     <- "'" < [^']* > "'" _
   str_dq     <- '"' dq_part* '"' _                          { no_ast_opt }
   dq_part    <- interp / dq_chars

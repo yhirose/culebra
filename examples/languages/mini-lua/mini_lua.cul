@@ -45,7 +45,7 @@ let grammar = `
               / repeatstat / fornum / forin / dostat / breakstat / retstat
               / assign / callstmt
 
-  emptystmt  <- ';' _                                       { no_ast_opt }
+  emptystmt  <- ';' _
   localfn    <- 'local' __ 'function' __ ident funcbody
   localdecl  <- 'local' __ namelist ('=' ![=] _ exprlist)?   { no_ast_opt }
   namelist   <- ident (',' _ ident)*                         { no_ast_opt }
@@ -60,7 +60,7 @@ let grammar = `
 
   ifstat     <- 'if' __ expr 'then' __ block elseifpart* elsepart? 'end' __
   elseifpart <- 'elseif' __ expr 'then' __ block
-  elsepart   <- 'else' __ block                              { no_ast_opt }
+  elsepart   <- 'else' __ block
   whilestat  <- 'while' __ expr 'do' __ block 'end' __
   repeatstat <- 'repeat' __ block 'until' __ expr
   fornum     <- 'for' __ ident '=' ![=] _ expr ',' _ expr forstep? 'do' __
@@ -68,7 +68,7 @@ let grammar = `
   forstep    <- ',' _ expr                                   { no_ast_opt }
   forin      <- 'for' __ namelist 'in' __ exprlist 'do' __ block 'end' __
   dostat     <- 'do' __ block 'end' __                       { no_ast_opt }
-  breakstat  <- 'break' __                                   { no_ast_opt }
+  breakstat  <- 'break' __
   retstat    <- 'return' __ exprlist? ';'? _                 { no_ast_opt }
   assign     <- varlist '=' ![=] _ exprlist
   varlist    <- suffixedexp (',' _ suffixedexp)*             { no_ast_opt }
@@ -97,7 +97,7 @@ let grammar = `
   callsfx    <- '(' _ args ')' _ / strargsfx                 { no_ast_opt }
   strargsfx  <- string                                       { no_ast_opt }
   args       <- (expr (',' _ expr)*)? ','? _                 { no_ast_opt }
-  methodsfx  <- ':' _ ident '(' _ args ')' _                 { no_ast_opt }
+  methodsfx  <- ':' _ ident '(' _ args ')' _
   dotsfx     <- '.' _ ident                                  { no_ast_opt }
   indexsfx   <- '[' _ expr ']' _                             { no_ast_opt }
 
@@ -1756,7 +1756,7 @@ fn scan_stmt(f, node) {
 
 fn scan_if(f, nodes, i) {
   cond {
-    i + 1 < nodes.size() && nodes[i].name != 'elsepart' => {
+    i + 1 < nodes.size() => {
       scan_expr(f, nodes[i])
       scan_emit_block(f, nodes[i + 1])
       if i + 2 < nodes.size() {
@@ -1764,7 +1764,7 @@ fn scan_if(f, nodes, i) {
       }
     },
     nodes[i].name == 'elseifpart' => scan_if(f, nodes[i].nodes, 0),
-    nodes[i].name == 'elsepart' => scan_emit_block(f, nodes[i].nodes[0]),
+    # `else` folds to its block
     _ => scan_emit_block(f, nodes[i]),
   }
 }
@@ -2419,7 +2419,7 @@ fn values_slot(f, nodes, at, ids) {
 
 fn emit_if(f, nodes, i, at) {
   cond {
-    i + 1 < nodes.size() && nodes[i].name != 'elsepart' => {
+    i + 1 < nodes.size() => {
       let c = call_rt(f, '__truthy', [emit_expr(f, nodes[i])], at)
       let then_b = emit_block(f, nodes[i + 1])
       let rest = i + 2
@@ -2429,7 +2429,7 @@ fn emit_if(f, nodes, i, at) {
       }
     },
     nodes[i].name == 'elseifpart' => emit_if(f, nodes[i].nodes, 0, at),
-    nodes[i].name == 'elsepart' => emit_block(f, nodes[i].nodes[0]),
+    # `else` folds to its block
     _ => emit_block(f, nodes[i]),
   }
 }
