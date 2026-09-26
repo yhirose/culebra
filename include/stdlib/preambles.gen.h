@@ -19,12 +19,12 @@ inline constexpr const char* TIME_MODULE_SOURCE = R"=culpre=(let _time_module = 
   }
   let _add_ns = fn (a, b) {
     let r = a + b
-    _out_of_range() if (a >= 0) == (b >= 0) && (r >= 0) != (a >= 0)
+    _out_of_range() if ((a ^ r) & (b ^ r)) < 0
     r
   }
   let _sub_ns = fn (a, b) {
     let r = a - b
-    _out_of_range() if (a >= 0) != (b >= 0) && (r >= 0) != (a >= 0)
+    _out_of_range() if ((a ^ b) & (a ^ r)) < 0
     r
   }
   let _float_ns = fn (x) {
@@ -34,9 +34,9 @@ inline constexpr const char* TIME_MODULE_SOURCE = R"=culpre=(let _time_module = 
   let _scale_ns = fn (n, unit) {
     match n {
       i: Long => {
-        let limit = 9223372036854775807 / unit
-        _out_of_range() if i > limit || i < -limit
-        i * unit
+        let p = i * unit
+        _out_of_range() if (i == -1 && unit == -9223372036854775807 - 1) || (i != 0 && p / i != unit)
+        p
       },
       f: Float => _float_ns(f * to_float(unit)),
       _ => _type_error("Long or Float", n),
@@ -63,7 +63,7 @@ inline constexpr const char* TIME_MODULE_SOURCE = R"=culpre=(let _time_module = 
     }
     abs() {
       if self._nanos < 0 {
-        Duration.new(-self._nanos)
+        -self
       } else {
         Duration.new(self._nanos)
       }
@@ -83,27 +83,17 @@ inline constexpr const char* TIME_MODULE_SOURCE = R"=culpre=(let _time_module = 
       Duration.new(_sub_ns(self._nanos, n))
     }
     __mul__(n) {
-      let r = match n {
-        i: Long => {
-          let p = self._nanos * i
-          _out_of_range() if (i == -1 && self._nanos == -9223372036854775807 - 1) || (i != 0 && p / i != self._nanos)
-          p
-        },
-        f: Float => _float_ns(to_float(self._nanos) * f),
-      }
-      _type_error("Long or Float", n) if r == nil
-      Duration.new(r)
+      Duration.new(_scale_ns(n, self._nanos))
     }
     __div__(n) {
-      let r = match n {
+      Duration.new(match n {
         i: Long => {
           _out_of_range() if i == -1 && self._nanos == -9223372036854775807 - 1
           self._nanos / i
         },
         f: Float => _float_ns(to_float(self._nanos) / f),
-      }
-      _type_error("Long or Float", n) if r == nil
-      Duration.new(r)
+        _ => _type_error("Long or Float", n),
+      })
     }
     __neg__() {
       Duration.new(_sub_ns(0, self._nanos))

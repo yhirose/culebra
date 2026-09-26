@@ -843,15 +843,14 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_fs_walk(
     const char* path, int64_t line, int64_t col) {
   // The directory asked for is opened once without the skip, so one it may
   // not read raises instead of walking as empty.
+  const char* root = path ? path : "";
   std::error_code ec;
-  { std::filesystem::directory_iterator probe(path ? path : "", ec); }
+  { std::filesystem::directory_iterator probe(root, ec); }
   std::filesystem::recursive_directory_iterator it;
   if (!ec)
     it = std::filesystem::recursive_directory_iterator(
-        path ? path : "",
-        std::filesystem::directory_options::skip_permission_denied, ec);
-  if (ec) _fs_throw_io(culebra::format("FS.walk('{}')", path ? path : ""),
-                       line, col, ec);
+        root, std::filesystem::directory_options::skip_permission_denied, ec);
+  if (ec) _fs_throw_io(culebra::format("FS.walk('{}')", root), line, col, ec);
   JitOwnedVal owned{TAG_ARRAY, reinterpret_cast<int64_t>(culebra_runtime_array_new())};
   auto* arr = reinterpret_cast<JitArray*>(owned.borrow().data);
   for (auto end = std::filesystem::recursive_directory_iterator(); it != end;) {

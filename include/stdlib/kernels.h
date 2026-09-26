@@ -671,16 +671,17 @@ inline std::string format_strftime_nanos(int64_t nanos,
   auto t = split_nanos(nanos).first;
   std::tm tm{};
   if (utc) os_gmtime_r(&t, &tm); else os_localtime_r(&t, &tm);
+  char small[256];
+  if (auto n = std::strftime(small, sizeof(small), fmt.c_str(), &tm))
+    return std::string(small, n);
   // strftime answers 0 both for a buffer too small and for an empty result,
   // so grow until the output fits or the size no empty result could need.
-  std::string buf(256, '\0');
-  for (;;) {
+  for (std::string buf(1024, '\0');; buf.resize(buf.size() * 2)) {
     auto n = std::strftime(buf.data(), buf.size(), fmt.c_str(), &tm);
     if (n > 0 || buf.size() > 16 * (fmt.size() + 16)) {
       buf.resize(n);
       return buf;
     }
-    buf.resize(buf.size() * 2);
   }
 }
 

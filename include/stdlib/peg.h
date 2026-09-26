@@ -287,7 +287,7 @@ struct _ParseState {
   int64_t depth;
   _ParseState(Compiled& compiled, std::string_view subject)
       : c(compiled), err(std::move(compiled.err)), line(compiled.err_line),
-        col(compiled.err_col), path(compiled.path), depth(_peg_parse_depth) {
+        col(compiled.err_col), path(std::move(compiled.path)), depth(_peg_parse_depth) {
     c.err.clear();
     c.err_line = c.err_col = 0;
     c.path.assign(subject);

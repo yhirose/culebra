@@ -7082,21 +7082,11 @@ class Compiler {
   // callable, and are the reason the loops can skip an entry. Returns the slot
   // holding the outermost result (+1).
   int32_t apply_decorators(const peg::Ast& ast, size_t dec_end, int32_t val) {
-    size_t runtime = 0;
-    for (size_t i = 0; i < dec_end; ++i)
-      if (!culebra::is_compile_time_decorator(*ast.nodes[i])) runtime++;
     std::vector<std::pair<const peg::Ast*, int32_t>> callees;
     for (size_t i = 0; i < dec_end; ++i) {
       const auto& dec = *ast.nodes[i];
       if (culebra::is_compile_time_decorator(dec)) continue;
-      auto r = compile_expr(*dec.nodes[0]);
-      // A later factory call may reassign the variable this one named.
-      if (!r.owned && runtime > 1) {
-        int32_t pinned = alloc_temp(ast);
-        store_into(pinned, r, /*dst_is_fresh=*/true);
-        r = {pinned, true};
-      }
-      callees.emplace_back(dec.nodes[0].get(), r.slot);
+      callees.emplace_back(dec.nodes[0].get(), compile_expr(*dec.nodes[0]).slot);
     }
     for (auto it = callees.rbegin(); it != callees.rend(); ++it) {
       int32_t arg = alloc_temp(ast);  // the one-argument run
