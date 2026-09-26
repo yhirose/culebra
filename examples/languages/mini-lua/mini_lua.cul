@@ -238,13 +238,21 @@ fn ret(v) {
   m.make_return(v, AT)
 }
 
-# A parameter the call left off arrives as nil; this gives it Lua's default.
-fn default_arg(i, v) {
-  m.make_if(is_type(L(i), 'nil'), m.assign('local', i, v, AT), AT)
+fn assign_if(c, i, v) {
+  m.make_if(c, m.assign('local', i, v, AT), AT)
 }
 
-fn bump(i) {
-  m.assign('local', i, m.binary('add', L(i), m.literal(1, AT), AT), AT)
+# A parameter the call left off arrives as nil; this gives it Lua's default.
+fn default_arg(i, v) {
+  assign_if(is_type(L(i), 'nil'), i, v)
+}
+
+fn plus(i, d) {
+  m.binary('add', L(i), m.literal(d, AT), AT)
+}
+
+fn bump(i, d = 1) {
+  m.assign('local', i, plus(i, d), AT)
 }
 
 fn runtime() {
@@ -635,18 +643,10 @@ fn runtime() {
         m.make_while(
           m.intrinsic(
             'objecthas',
-            [
-              L(0),
-              call_rt(
-                f,
-                '__key',
-                [m.binary('add', L(1), m.literal(1, AT), AT)],
-                AT,
-              ),
-            ],
+            [L(0), call_rt(f, '__key', [plus(1, 1)], AT)],
             AT,
           ),
-          m.assign('local', 1, m.binary('add', L(1), m.literal(1, AT), AT), AT),
+          bump(1),
           AT,
         ),
         ret(L(1)),
@@ -740,12 +740,7 @@ fn runtime() {
                 ],
                 AT,
               ),
-              m.assign(
-                'local',
-                3,
-                m.binary('add', L(3), m.literal(1, AT), AT),
-                AT,
-              ),
+              bump(3),
             ],
             AT,
           ),
@@ -777,62 +772,39 @@ fn runtime() {
       m.literal(1, AT),
       AT,
     )
+    let lt = |i, n| m.binary('lt', L(i), m.literal(n, AT), AT)
     m.block(
       [
         m.assign('local', 3, m.intrinsic('len', [L(0)], AT), AT),
         default_arg(2, m.literal(-1, AT)),
-        m.make_if(
-          m.binary('lt', L(1), m.literal(0, AT), AT),
-          m.assign('local', 1, from_end(1), AT),
-          AT,
-        ),
-        m.make_if(
-          m.binary('lt', L(1), m.literal(1, AT), AT),
-          m.assign('local', 1, m.literal(1, AT), AT),
-          AT,
-        ),
-        m.make_if(
-          m.binary('lt', L(2), m.literal(0, AT), AT),
-          m.assign('local', 2, from_end(2), AT),
-          AT,
-        ),
-        m.make_if(
-          m.binary('lt', L(2), m.literal(0, AT), AT),
-          m.assign('local', 2, m.literal(0, AT), AT),
-          AT,
-        ),
-        m.make_if(
-          m.binary('gt', L(2), L(3), AT),
-          m.assign('local', 2, L(3), AT),
-          AT,
-        ),
+        # the start: from the end if negative, then at least 1
+        assign_if(lt(1, 0), 1, from_end(1)),
+        assign_if(lt(1, 1), 1, m.literal(1, AT)),
+        # the end: from the end if negative, then within 0..len
+        assign_if(lt(2, 0), 2, from_end(2)),
+        assign_if(lt(2, 0), 2, m.literal(0, AT)),
+        assign_if(m.binary('gt', L(2), L(3), AT), 2, L(3)),
         m.make_if(m.binary('gt', L(1), L(2), AT), ret(S('')), AT),
-        ret(m.intrinsic(
-          'strslice',
-          [L(0), m.binary('sub', L(1), m.literal(1, AT), AT), L(2)],
-          AT,
-        )),
+        ret(m.intrinsic('strslice', [L(0), plus(1, -1), L(2)], AT)),
       ],
       AT,
     )
   })
-  # string.rep(s, n, sep) puts sep between the copies
+  # string.rep(s, n, sep) puts sep between the copies: the first copy, then
+  # sep..s appended once per further copy
   rt_func('__strrep', 3, 5, fn (f) {
     m.block(
       [
         default_arg(2, S('')),
-        m.assign('local', 3, S(''), AT),
-        m.assign('local', 4, m.literal(0, AT), AT),
+        m.make_if(m.binary('le', L(1), m.literal(0, AT), AT), ret(S('')), AT),
+        m.assign('local', 3, L(0), AT),
+        m.assign('local', 2, m.binary('add', L(2), L(0), AT), AT),
+        m.assign('local', 4, m.literal(1, AT), AT),
         m.make_while(
           m.binary('lt', L(4), L(1), AT),
           m.block(
             [
-              m.make_if(
-                m.binary('gt', L(4), m.literal(0, AT), AT),
-                m.assign('local', 3, m.binary('add', L(3), L(2), AT), AT),
-                AT,
-              ),
-              m.assign('local', 3, m.binary('add', L(3), L(0), AT), AT),
+              m.assign('local', 3, m.binary('add', L(3), L(2), AT), AT),
               bump(4),
             ],
             AT,
@@ -844,14 +816,23 @@ fn runtime() {
       AT,
     )
   })
-  # table.concat(t, sep, i, j) joins t[i..j], 1..#t by default
+  # table.concat(t, sep, i, j) joins t[i..j], 1..#t by default, with sep
+  # ahead of every element but the first -- the way __strrep places it
   rt_func('__tabconcat', 4, 5, fn (f) {
+    let elem = || call_rt(
+      f,
+      '__str',
+      [call_rt(f, '__get', [L(0), L(2)], AT)],
+      AT,
+    )
     m.block(
       [
         default_arg(1, S('')),
         default_arg(2, m.literal(1, AT)),
         default_arg(3, call_rt(f, '__len', [L(0)], AT)),
-        m.assign('local', 4, S(''), AT),
+        m.make_if(m.binary('gt', L(2), L(3), AT), ret(S('')), AT),
+        m.assign('local', 4, elem(), AT),
+        bump(2),
         m.make_while(
           m.binary('le', L(2), L(3), AT),
           m.block(
@@ -859,22 +840,7 @@ fn runtime() {
               m.assign(
                 'local',
                 4,
-                m.binary(
-                  'add',
-                  L(4),
-                  call_rt(
-                    f,
-                    '__str',
-                    [call_rt(f, '__get', [L(0), L(2)], AT)],
-                    AT,
-                  ),
-                  AT,
-                ),
-                AT,
-              ),
-              m.make_if(
-                m.binary('lt', L(2), L(3), AT),
-                m.assign('local', 4, m.binary('add', L(4), L(1), AT), AT),
+                m.binary('add', L(4), m.binary('add', L(1), elem(), AT), AT),
                 AT,
               ),
               bump(2),
@@ -1020,12 +986,7 @@ fn register_iterators() {
                 m.intrinsic('arraypush', [L(1), m.index(L(2), L(3), AT)], AT),
                 AT,
               ),
-              m.assign(
-                'local',
-                3,
-                m.binary('add', L(3), m.literal(1, AT), AT),
-                AT,
-              ),
+              bump(3),
             ],
             AT,
           ),
@@ -1038,38 +999,36 @@ fn register_iterators() {
   })
 
   # `error(v, level)` raises v. At level 1, the default, a string is
-  # prefixed with where error was called: the binder is the only thing here
-  # that knows it, so a direct call comes to $error with that position ahead
-  # of its own arguments. Any other level is raised bare -- 0 by definition,
-  # 2 and up because the caller's position is not known here.
-  luafn('$error', 3, fn (f) {
+  # prefixed with where error was called: only the binder knows that, so a
+  # direct call passes the position in and a call through a value passes
+  # nil. Any other level is raised bare -- 0 by definition, 2 and up because
+  # the caller's position is not known here.
+  rt_func('__error', 2, 4, fn (f) {
     m.block(
       [
-        m.assign('local', 1, nth(f, L(0), 1, AT), AT),
-        m.assign('local', 2, nth(f, L(0), 2, AT), AT),
-        default_arg(2, m.literal(1, AT)),
+        m.assign('local', 2, nth(f, L(1), 0, AT), AT),
+        m.assign('local', 3, nth(f, L(1), 1, AT), AT),
+        default_arg(3, m.literal(1, AT)),
         m.make_if(
-          is_type(L(1), 'string'),
+          is_type(L(2), 'string'),
           m.make_if(
-            m.binary('eq', L(2), m.literal(1, AT), AT),
-            m.assign(
-              'local',
-              1,
-              m.binary('add', nth(f, L(0), 0, AT), L(1), AT),
-              AT,
+            m.binary('eq', L(3), m.literal(1, AT), AT),
+            assign_if(
+              not_of(is_type(L(0), 'nil')),
+              2,
+              m.binary('add', L(0), L(2), AT),
             ),
             AT,
           ),
           AT,
         ),
-        m.make_throw(L(1), AT),
+        m.make_throw(L(2), AT),
       ],
       AT,
     )
   })
-  # the global `error`, reached through a value: no position to add
   luafn('error', 1, fn (f) {
-    m.make_throw(nth(f, L(0), 0, AT), AT)
+    call_rt(f, '__error', [m.nil_literal(AT), L(0)], AT)
   })
   # `pcall(f, ...)` is a try: true and everything f answered, or false and
   # whatever was raised -- a value, not a class, so it comes back unchanged.
@@ -1155,24 +1114,10 @@ fn register_iterators() {
               call_rt(
                 f,
                 '__set',
-                [
-                  L(2),
-                  L(3),
-                  call_rt(
-                    f,
-                    '__get',
-                    [L(2), m.binary('sub', L(3), m.literal(1, AT), AT)],
-                    AT,
-                  ),
-                ],
+                [L(2), L(3), call_rt(f, '__get', [L(2), plus(3, -1)], AT)],
                 AT,
               ),
-              m.assign(
-                'local',
-                3,
-                m.binary('sub', L(3), m.literal(1, AT), AT),
-                AT,
-              ),
+              bump(3, -1),
             ],
             AT,
           ),
@@ -1365,12 +1310,7 @@ fn register_iterators() {
           AT,
         ),
         m.assign('local', 4, m.index(L(2), L(3), AT), AT),
-        m.set_index(
-          L(1),
-          S('i'),
-          m.binary('add', L(3), m.literal(1, AT), AT),
-          AT,
-        ),
+        m.set_index(L(1), S('i'), plus(3, 1), AT),
         m.make_return(
           m.array_lit([L(4), m.index(m.index(L(1), S('t'), AT), L(4), AT)], AT),
           AT,
@@ -1457,7 +1397,7 @@ let lib_globals = [
   ('rawset', '__rawset', 3),
 ]
 
-let lua_raw = ['ipairs', 'pairs', 'pcall']
+let lua_raw = ['error', 'ipairs', 'pairs', 'pcall']
 
 fn register_library() {
   register_iterators()
@@ -1508,12 +1448,7 @@ fn emit_library() {
               [call_rt(pf, '__str', [m.index(L(0), L(1), AT)], AT)],
               AT,
             ),
-            m.assign(
-              'local',
-              1,
-              m.binary('add', L(1), m.literal(1, AT), AT),
-              AT,
-            ),
+            bump(1),
           ],
           AT,
         ),
@@ -1538,12 +1473,6 @@ fn emit_library() {
     genv(root_fn, AT),
     S('print'),
     rs.closure(m, root_fn, pf, AT),
-    AT,
-  ))
-  ids.push(m.set_index(
-    genv(root_fn, AT),
-    S('error'),
-    rs.closure(m, root_fn, globals_fn['lua:error'], AT),
     AT,
   ))
   for gname in lua_raw {
@@ -2033,10 +1962,10 @@ fn genv(f, node) {
 # value -- the one place the caller's context changes what a call means.
 # `error(msg)` prefixes a string with the position of the call, which Lua
 # takes off the stack and this front end takes off the source. A direct call
-# to the global name goes to $error with the prefix as its first argument
-# while the global still holds the built-in -- a singleton, so `same` tells --
-# and is an ordinary call once a program has put its own function there.
-# `error` reached any other way raises the value unchanged.
+# to the global name hands that prefix to __error while the global still
+# holds the built-in -- a singleton, so `same` tells -- and is an ordinary
+# call once a program has put its own function there. `error` reached any
+# other way adds no position.
 fn is_error_call(nodes) {
   nodes.size() == 2 &&
     nodes[0].name == 'ident' &&
@@ -2068,17 +1997,7 @@ fn emit_suffixed(f, nodes, at, all) {
               [fnv, rs.closure(m, f, globals_fn['lua:error'], at)],
               at,
             ),
-            call_rt(
-              f,
-              'lua:$error',
-              [call_rt(
-                f,
-                '__append',
-                [m.array_lit([S("{chunk}:{at.line}: ")], at), argv],
-                at,
-              )],
-              at,
-            ),
+            call_rt(f, '__error', [S("{chunk}:{at.line}: "), argv], at),
             call_rt(f, '__callv', [fnv, argv], at),
             at,
           ),
