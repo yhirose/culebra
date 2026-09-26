@@ -217,13 +217,11 @@ inline int repl_loop(bool print_ast, const ReplEval& eval) {
 
     if (line.empty() && !continuing) continue;
 
-    // Empty line in continuation mode acts as "force-submit": let
-    // the parser surface whatever error it would for the accumulated
-    // text, so an accidentally-stuck session has an escape hatch.
-    if (!line.empty()) {
-      if (!accum.empty()) accum.push_back('\n');
-      accum += line;
-    }
+    // An empty line inside an open construct is part of it — a blank line
+    // in a multi-line string, or between the statements of a block, whose
+    // line numbers the errors report.
+    if (continuing) accum.push_back('\n');
+    accum += line;
     if (!repl_input_is_complete(accum)) continue;
 
     auto full_line = std::move(accum);

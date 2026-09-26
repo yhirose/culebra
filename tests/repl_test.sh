@@ -30,6 +30,12 @@ out=$(session "println('hello')" "nil" "if false { 1 }" "1 + 2" "'str'" \
 out=$(session "fn g(a) {" "  a + 1" "}" "g(1)")
 [[ "$out" == "2" ]] || { echo "FAIL continuation: $out"; fail=1; }
 
+# An empty line inside an open construct is part of it: a multi-line string
+# keeps it, and an error below it reports its own line.
+out=$(session 'let s = "a' '' 'b"' "s.size()" "fn k() {" "" "  throw 'x'" "}" "k()")
+[[ "$out" == *$'\n'"4"$'\n'*"at 3:3."* ]] ||
+  { echo "FAIL blank line in continuation: $out"; fail=1; }
+
 # Bindings outlive the line they were made on.
 out=$(session "let x = 1" "x + 1" "mut m = 5" "m = m + 1" "m")
 [[ "$out" == "1"$'\n'"2"$'\n'"5"$'\n'"6"$'\n'"6" ]] ||
