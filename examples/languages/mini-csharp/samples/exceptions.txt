@@ -13,4 +13,8 @@ deep threw bottom
 inner caught inner
 outer continued
 re: first
+logged not found: key
+finally before the outer catch
+still not found: key
+rethrown twice: unnamed
 right clause: passes NotFound

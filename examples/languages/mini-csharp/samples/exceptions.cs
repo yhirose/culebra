@@ -86,6 +86,37 @@ class Program {
             Console.WriteLine(e.Message);
         }
 
+        // A bare `throw;` rethrows the exception being handled, the same
+        // object: the outer clause still sees its type, and the finally
+        // between the two runs on the way.
+        try {
+            try {
+                throw new NotFoundException("key");
+            } catch (AppException e) {
+                Console.WriteLine("logged " + e.Message);
+                throw;
+            } finally {
+                Console.WriteLine("finally before the outer catch");
+            }
+        } catch (NotFoundException e) {
+            Console.WriteLine("still " + e.Message);
+        }
+
+        // A clause that names no variable, or no type, can rethrow too.
+        try {
+            try {
+                try {
+                    throw new AppException("unnamed");
+                } catch (AppException) {
+                    throw;
+                }
+            } catch {
+                throw;
+            }
+        } catch (Exception e) {
+            Console.WriteLine("rethrown twice: " + e.Message);
+        }
+
         // A catch clause whose type does not match lets it past.
         try {
             throw new AppException("passes NotFound");

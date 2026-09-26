@@ -67,7 +67,7 @@ let grammar = `
   exprnosemi <- expr                                         { no_ast_opt }
   foreachstmt <- 'foreach' _ '(' _ typeref _ ident 'in' __ expr ')' _ stmt
   trystmt    <- 'try' __ block catchpart* finallypart?
-  catchpart  <- 'catch' _ ('(' _ typeref _ ident ')' _)? block   { no_ast_opt }
+  catchpart  <- 'catch' _ ('(' _ typeref _ ident? ')' _)? block  { no_ast_opt }
   finallypart <- 'finally' __ block                          { no_ast_opt }
   usingstmt  <- 'using' _ '(' _ typeref _ ident '=' ![=] _ expr ')' _ stmt
   returnstmt <- 'return' __ expr? ';' _   { no_ast_opt }
@@ -748,7 +748,7 @@ fn scan_stmt(f, node) {
         match c.name {
           'catchpart' => {
             rs.push_scope()
-            if c.nodes.size() > 1 {
+            if c.nodes.size() > 2 {
               scan_declare(f, c.nodes[1])
             }
             scan_stmt(f, c.nodes[c.nodes.size() - 1])
@@ -1115,6 +1115,9 @@ mut class_var = {}
 # bodies are built after the numbering, with the rest.
 mut deferred_fn = {}
 mut deferred_body = []
+# What a bare `throw;` rethrows: the slot the innermost enclosing catch holds
+# its exception in, or -1 inside a finally nested in that catch.
+mut handling = []
 
 # --- calls and member access ------------------------------------------------
 #
@@ -1378,7 +1381,10 @@ fn emit_stmt(f, node) {
       name: 'whilestmt',
       nodes: [c, b],
     } => m.make_while(emit_expr(f, c), emit_stmt(f, b), node),
-    {name: 'throwstmt', nodes} => m.make_throw(emit_expr(f, nodes[0]), node),
+    {name: 'throwstmt', nodes} => m.make_throw(cond {
+      !nodes.empty() => emit_expr(f, nodes[0]),
+      _ => m.var_ref('local', rethrown(node), node),
+    }, node),
     {name: 'trystmt', nodes} => emit_try(f, nodes, node),
     # `using (T x = e) body`: the binding, and a Dispose registered at the
     # scope so it runs whichever way the block leaves. That is deterministic
@@ -1512,10 +1518,12 @@ fn emit_try(f, nodes, at) {
     while i > 0 {
       i -= 1
       let c = catches[i]
+      handling.push(caught)
       let clause = emit_stmt(f, c.nodes[c.nodes.size() - 1])
+      handling.pop()
       let bound = cond {
         c.nodes.size() >
-          1 => m.block(
+          2 => m.block(
           [
             rs.write(
               m,
@@ -1554,7 +1562,9 @@ fn emit_try(f, nodes, at) {
     fin == nil => out,
     _ => {
       let g = deferred_fn[pkey(fin)]
+      handling.push(-1)
       deferred_body.push((g, emit_stmt(g, fin.nodes[0])))
+      handling.pop()
       let first = nslots[f]
       m.scope(
         first,
@@ -1564,6 +1574,20 @@ fn emit_try(f, nodes, at) {
       )
     },
   }
+}
+
+# `throw;` is the exception the innermost enclosing catch is handling, the
+# very value it caught; C# rejects it anywhere else, and so does this.
+fn rethrown(node) {
+  # a finally that no catch encloses is simply outside one
+  if handling.all(|s| s == -1) {
+    fail(node, 'throw; outside a catch clause')
+  }
+  let slot = handling[handling.size() - 1]
+  if slot == -1 {
+    fail(node, 'throw; in a finally inside a catch clause')
+  }
+  slot
 }
 
 # `x = v`, `o.f = v` and the compound forms. A target is one of three
