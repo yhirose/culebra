@@ -1,0 +1,88 @@
+# Audio.Pcm: play sound the script computes itself, one sample at a time.
+# PCM is sound as a list of numbers — the height of the wave, measured
+# `RATE` times a second, each in -1.0..1.0. This script is a tiny synthesiser:
+# it turns a melody into those numbers and hands them over a block at a time.
+#
+#   culebra examples/audio/pcm_synth.cul
+
+let RATE = 44100
+let BPM = 132
+let BEAT = 60.0 / BPM
+
+# The melody: (MIDI note, beats); nil is a rest.
+let SONG = [
+  (67, 0.5),
+  (72, 0.5),
+  (76, 0.5),
+  (79, 1.5),
+  (76, 0.5),
+  (79, 2.0),
+  (nil, 0.5),
+  (74, 0.5),
+  (77, 0.5),
+  (81, 1.5),
+  (77, 0.5),
+  (74, 2.0),
+  (nil, 0.5),
+  (72, 0.5),
+  (76, 0.5),
+  (79, 0.5),
+  (84, 1.0),
+  (79, 0.5),
+  (76, 0.5),
+  (72, 2.0),
+]
+
+fn hz(midi) {
+  440.0 * 2.0 ** ((midi - 69) / 12.0)
+}
+
+# Each note becomes a start sample, a length and a frequency.
+mut notes = []
+mut at = 0
+for (midi, beats) in SONG {
+  let len = Math.round(beats * BEAT * RATE)
+  notes.push({start: at, len: len, freq: midi == nil ? 0.0 : hz(midi)})
+  at += len
+}
+let total = at
+
+# The synthesiser's state: which note is sounding, and where in its wave.
+mut index = 0
+mut phase = 0.0
+mut pos = 0  # samples produced so far
+
+# One sample: a sine plus a quieter octave, with a quick attack and a
+# decay, so each note is a soft bell rather than a click-edged beep.
+fn next_sample() {
+  while index < notes.size() - 1 && pos >= notes[index + 1].start {
+    index += 1
+  }
+  let n = notes[index]
+  pos += 1
+  if n.freq == 0.0 || pos > total {
+    return 0.0
+  }
+  phase = (phase + n.freq / RATE) % 1.0
+  let t = (pos - n.start) / RATE
+  let env = Math.min(t * 200.0, 1.0) * Math.exp(-3.0 * t)
+  let wave = Math.sin(2 * Math.pi * phase) + 0.3 * Math.sin(4 * Math.pi * phase)
+  0.3 * env * wave
+}
+
+# 1 channel, fed 1024 frames at a time. needed() says how many frames the
+# stream can take now; push() copies them in and submit() sends the block.
+let pcm = Audio.Pcm(RATE, 1, 1024)
+pcm.play()
+println("{notes.size()} notes, {total / RATE:.1f} s; heard {pcm.latency():.3f} s after each submit")
+
+let t0 = Time.monotonic()
+while Time.monotonic() - t0 < total / RATE + 0.5 {
+  while pcm.needed() > 0 {
+    pcm.push(iota(pcm.needed()).map(|_| next_sample()))
+    pcm.submit()
+  }
+  Time.sleep(0.005)  # a game would draw its frame here instead
+}
+pcm.stop()
+println("done")

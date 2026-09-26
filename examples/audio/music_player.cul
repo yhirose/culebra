@@ -1,0 +1,48 @@
+# Audio.Music: a long track (MP3 or Ogg Vorbis), decoded a little at a time
+# while it plays, so a whole song never sits in memory as samples. The
+# runtime keeps it fed from its own thread: nothing here has to call an
+# update in a loop, and the music goes on while the script sleeps.
+#
+#   culebra examples/audio/music_player.cul song.ogg
+
+fn fade(music, from, to, secs) {
+  let steps = 20
+  for i in 1..=steps {
+    music.volume(from + (to - from) * i / steps)
+    Time.sleep(secs / steps)
+  }
+}
+
+if Sys.argv.empty() {
+  println("usage: culebra examples/audio/music_player.cul <file.mp3|file.ogg>")
+} else {
+  let path = Sys.argv[0]
+  # The bytes, not the path: the same call takes Embed data in a built binary.
+  # Bytes that are neither MP3 nor Ogg raise ValueError here.
+  let music = Audio.Music(FS.read(path), loop: false)
+
+  println("fading in {path}")
+  music.volume(0.0)
+  music.play()
+  fade(music, 0.0, 1.0, 2.0)
+  Time.sleep(3.0)
+
+  println("pause for a second (pause keeps the position)")
+  music.pause()
+  Time.sleep(1.0)
+  music.resume()
+  Time.sleep(3.0)
+
+  println("jump back to the start with seek")
+  music.seek(0.0)
+  Time.sleep(3.0)
+
+  println("pitch 0.8: slower and lower")
+  music.pitch(0.8)
+  Time.sleep(3.0)
+  music.pitch(1.0)
+
+  println("fading out")
+  fade(music, 1.0, 0.0, 2.0)
+  music.stop()  # stop rewinds to the start
+}

@@ -1,0 +1,100 @@
+# Audio.tone: sound with no files at all. The runtime synthesises WASM-4's
+# channels (two pulse waves, a triangle and noise, plus a sawtooth) in
+# WASM-4's units: `dur` in ticks of 1/60 s, volumes 0..100.
+#
+# A tone is fire-and-forget: the call returns at once and the note plays on
+# its own, so this script sleeps to space the notes out.
+#
+#   culebra examples/audio/tones.cul
+
+let TICK = 1.0 / 60
+
+fn wait(ticks) {
+  Time.sleep(ticks * TICK)
+}
+
+let device = Audio.available()
+  ? "an audio device"
+  : "no audio device (a silent run)"
+println("Playing on {device}.")
+
+# The same scale on three waves: the timbre changes, the pitch does not.
+let C_MAJOR = [262, 294, 330, 349, 392, 440, 494, 523]
+let WAVES = [
+  ("pulse", Audio.PULSE),
+  ("triangle", Audio.TRIANGLE),
+  ("sawtooth", Audio.SAWTOOTH),
+]
+for (name, wave) in WAVES {
+  println("C major on {name}")
+  for freq in C_MAJOR {
+    Audio.tone(freq, 8, vol: 60, wave: wave)
+    wait(10)
+  }
+  wait(20)
+}
+
+# A pulse wave's duty cycle is its shape: thin (1/8) is nasal, half is hollow.
+println("one note, four duty cycles")
+for duty in [Audio.DUTY_EIGHTH, Audio.DUTY_QUARTER, Audio.DUTY_HALF, Audio.DUTY_THREE_QUARTER] {
+  Audio.tone(330, 16, vol: 60, duty: duty)
+  wait(20)
+}
+wait(20)
+
+# Game effects are a slide (`end_freq`) plus an envelope (attack, decay,
+# release in ticks; `peak` is the level the attack climbs to before the
+# decay settles at `vol`).
+fn coin() {
+  Audio.tone(988, 4, vol: 50, duty: Audio.DUTY_QUARTER)
+  wait(4)
+  Audio.tone(1319, 12, vol: 50, duty: Audio.DUTY_QUARTER, release: 10)
+}
+
+fn jump() {
+  Audio.tone(300, 10, vol: 60, end_freq: 700, duty: Audio.DUTY_HALF)
+}
+
+fn laser() {
+  Audio.tone(
+    1500,
+    12,
+    vol: 50,
+    wave: Audio.PULSE2,
+    end_freq: 200,
+    duty: Audio.DUTY_EIGHTH,
+  )
+}
+
+fn explosion() {
+  Audio.tone(
+    200,
+    10,
+    vol: 40,
+    wave: Audio.NOISE,
+    end_freq: 40,
+    peak: 100,
+    decay: 20,
+    release: 30,
+  )
+}
+
+fn power_up() {
+  for freq in [262, 330, 392, 523, 659, 784, 1047] {
+    Audio.tone(freq, 3, vol: 60, wave: Audio.TRIANGLE)
+    wait(3)
+  }
+}
+
+let EFFECTS = [
+  ("coin", coin),
+  ("jump", jump),
+  ("laser", laser),
+  ("explosion", explosion),
+  ("power-up", power_up),
+]
+for (name, effect) in EFFECTS {
+  println(name)
+  effect()
+  wait(50)
+}
