@@ -35,6 +35,11 @@ got() { "$CULEBRA" "$ENGINE" "$FRONT_END" "$1"; }
 # And two of them believe a recorded transcript rather than re-running an
 # oracle that costs seconds a sample.
 frozen() { cat "${1%.*}.txt"; }
+# An arm whose front end takes many programs in one run defines batch():
+# its own start (the grammar, the prelude, a whole compile of itself) is
+# most of what a sample costs, so it is paid once and the output split at
+# the marker line the front end prints before each program.
+MARK='-----8<----- '
 
 arm=${1:-}
 shift
@@ -66,10 +71,12 @@ case "$arm" in
     LIB=${LIB:-examples/languages/mini-js/fmt.js}
     export LIB
     got() { "$CULEBRA" "$ENGINE" "$FRONT_END" --lib "$LIB" "$1"; }
+    batch() { "$CULEBRA" "$ENGINE" "$FRONT_END" --lib "$LIB" "$@"; }
     want() { node -e "$(cat "$LIB"; cat "$1")"; }
     ;;
   mini-culebra)
     set -- examples/languages/mini-culebra/samples/*.cul
+    batch() { "$CULEBRA" "$ENGINE" "$FRONT_END" "$@"; }
     want() { "$CULEBRA" "$ENGINE" "$1"; }
     ;;
   mini-go)
@@ -119,6 +126,24 @@ fi
 if [ "$count_only" = --count ]; then
   echo "$#"
   exit 0
+fi
+
+# A front end prints no marker for a lone program, so one sample runs as
+# the other arms do.
+if declare -F batch >/dev/null && (( $# > 1 )); then
+  CHUNKS=$(mktemp -d)
+  trap 'rm -rf "$CHUNKS"' EXIT
+  export CHUNKS
+  # One batch, in glob order: the front ends reset their state between
+  # programs, but that reset is only proven for the order ctest runs.
+  batch "$@" 2>&1 | awk -v mark="$MARK" -v dir="$CHUNKS" '
+    index($0, mark) == 1 { out = dir "/" substr($0, length(mark) + 1); next }
+    out != "" { print > out; next }
+    { print > "/dev/stderr" }'
+  for f; do
+    touch "$CHUNKS/$(basename "$f")"
+  done
+  got() { cat "$CHUNKS/$(basename "$1")"; }
 fi
 
 one() {
