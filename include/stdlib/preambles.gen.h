@@ -1419,39 +1419,6 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
     dx * dx + dy * dy < r * r
   }
 
-  # --- audio: forwarded to the Audio namespace, kept for one release ---------
-  # tone and its constants are Audio's own. Sound and music keep Canvas's
-  # 0..100 volume on top of Audio's 0.0..1.0, and music keeps its one slot.
-  let level = fn (vol) {
-    Math.clamp(vol, 0, 100) / 100.0
-  }
-
-  class Sound {
-    new(data: String) {
-      self._sound = Audio.Sound.new(data)
-    }
-    play(vol = 100) {
-      self._sound.volume(level(vol))
-      self._sound.play()
-    }
-    stop() {
-      self._sound.stop()
-    }
-    playing() {
-      self._sound.playing()
-    }
-  }
-
-  mut slot = nil
-  let music = fn (data, loop = true, vol = 100, start = 0.0) {
-    let m = Audio.Music.new(data, loop)  # raises before the slot changes
-    slot?.stop()
-    slot = m
-    m.volume(level(vol))
-    m.play()
-    m.seek(start) if start > 0
-  }
-
   # --- offscreen drawing --------------------------------------------------
   # Redirect drawing into `sprite` for the duration of `f`: the drawing calls,
   # width()/height() and get_pixel all address the sprite; present() still
@@ -1581,28 +1548,6 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
     key_queue: key_queue,
     typed: typed,
     Input: Input,
-    tone: Audio.tone,
-    Sound: Sound,
-    music: music,
-    music_stop: fn () {
-      slot?.stop()
-      slot = nil
-    },
-    music_pause: fn () {
-      slot?.pause()
-    },
-    music_resume: fn () {
-      slot?.resume()
-    },
-    music_volume: fn (vol) {
-      slot?.volume(level(vol))
-    },
-    music_seek: fn (seconds) {
-      slot?.seek(seconds)
-    },
-    music_playing: fn () {
-      slot != nil && slot.playing()
-    },
     run: run,
     LEFT: LEFT,
     RIGHT: RIGHT,
@@ -1610,15 +1555,6 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
     DOWN: DOWN,
     A: A,
     B: B,
-    PULSE: Audio.PULSE,
-    PULSE2: Audio.PULSE2,
-    TRIANGLE: Audio.TRIANGLE,
-    SAWTOOTH: Audio.SAWTOOTH,
-    NOISE: Audio.NOISE,
-    DUTY_EIGHTH: Audio.DUTY_EIGHTH,
-    DUTY_QUARTER: Audio.DUTY_QUARTER,
-    DUTY_HALF: Audio.DUTY_HALF,
-    DUTY_THREE_QUARTER: Audio.DUTY_THREE_QUARTER,
     toggle_fullscreen: toggle_fullscreen,
     fullscreen: fullscreen,
     show_cursor: show_cursor,

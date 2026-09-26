@@ -5341,15 +5341,8 @@ raylib自身の`GamepadButton` / `GamepadAxis`の値で、スクリプトがそ�
 
 ### 音声
 
-音はウィンドウを必要としない独立した名前空間[`Audio`](#39-audio)にある。
-Canvasは1リリースの間だけ、以前の音声のメンバーをAudioへの転送として残す:
-`Canvas.tone`とチャンネル・デューティ比の定数（`Canvas.PULSE`、…、
-`Canvas.DUTY_THREE_QUARTER`）はAudioのものそのもの、`Canvas.Sound.new(data)`は
-`play(vol = 100)`がCanvasの`0..100`を受け取る`Audio.Sound`、
-`Canvas.music(data, loop = true, vol = 100, start = 0.0)`と`music_stop` /
-`music_pause` / `music_resume` / `music_volume(vol)` / `music_seek(seconds)` /
-`music_playing()`は`Audio.Music`の上に音楽の枠を1つ持つ（`vol`はやはり`0..100`）。
-新しいコードは`Audio`を使う。
+Canvasは音声を持たない。音は名前空間[`Audio`](#39-audio)で、Canvasのプログラムも
+ほかのプログラムと同じようにそれを使う。
 
 ### ゲームループ
 

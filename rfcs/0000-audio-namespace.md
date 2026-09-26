@@ -288,12 +288,12 @@ Large, but mostly moving code that exists.
   handbook and README mentions.
 - Outside this repository: the NES frontend's four `pcm` calls.
 
-**Phase 3, removal.** Scene's `Sound`, `Music` and `Audio` go when
-`Audio` lands (Scene is experimental). `Canvas.Pcm` never shipped and
-goes too. Canvas's `tone`, constants, `Sound` and `music*` shipped in
-releases, so they stay one release as documented aliases that forward to
-`Audio` (with `music` keeping its one-slot behaviour on top of a
-`Music` handle), then go.
+**Phase 3, removal.** Everything goes when `Audio` lands: Scene's
+`Sound`, `Music` and `Audio` (Scene is experimental), `Canvas.Pcm`
+(never shipped), and Canvas's `tone`, constants, `Sound` and `music*`.
+Forwarding aliases would make Canvas's module name `Audio`, so every
+Canvas program would build and link `Audio` whether it plays a sound or
+not; a program that used them moves to `Audio` in one edit per call.
 
 ## 9. Backend symmetry
 
@@ -313,9 +313,8 @@ Decisions, taken 2026-09-25 (the proposed option in each case):
 
 1. Handle volumes are `0.0..1.0` (Option A).
 2. `tone` keeps WASM-4's units: `0..100` and 1/60 s ticks.
-3. Canvas's shipped audio stays one release as aliases forwarding to
-   `Audio`, then goes. Scene's audio and `Canvas.Pcm` go when `Audio`
-   lands.
+3. Canvas's and Scene's audio and `Canvas.Pcm` go when `Audio` lands,
+   with no forwarding aliases.
 4. `Sound` and `Music` load bytes only.
 5. Music is fed by a runtime feeder thread, subject to spike 2.
 

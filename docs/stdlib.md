@@ -5511,15 +5511,8 @@ share the same numbers.
 
 ### Audio
 
-Sound lives in its own namespace, [`Audio`](#39-audio), which needs no
-window. For one release Canvas keeps its earlier audio members, forwarding to
-it: `Canvas.tone` and the channel and duty constants (`Canvas.PULSE`, …,
-`Canvas.DUTY_THREE_QUARTER`) are `Audio`'s own; `Canvas.Sound.new(data)` is an
-`Audio.Sound` whose `play(vol = 100)` takes Canvas's `0..100`; and
-`Canvas.music(data, loop = true, vol = 100, start = 0.0)` with `music_stop` /
-`music_pause` / `music_resume` / `music_volume(vol)` / `music_seek(seconds)` /
-`music_playing()` keeps one music slot on top of an `Audio.Music`, `vol` again
-`0..100`. New code uses `Audio`.
+Canvas carries no audio of its own: sound is the [`Audio`](#39-audio)
+namespace, which a Canvas program uses as any other program does.
 
 ### The game loop
 

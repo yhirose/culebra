@@ -356,6 +356,7 @@ expect_class canvas "$ttf_choke" ".+" "expected defined" "Canvas named"
 expect_class canvas "$regex_choke" "W?" "expected 'W' or absent" "Canvas only"
 expect_class canvas "$search_choke" "W?" "expected 'W' or absent" "Canvas only"
 expect_absent canvas "$fmt_machinery" "libstdc++'s formatter, Canvas"
+expect_absent canvas "$audio_syms" "raylib's audio module, Canvas with no sound"
 expect_output canvas "32"
 
 # Naming Audio force-loads its archive: the device code, and no window or SDL.

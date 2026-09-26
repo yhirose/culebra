@@ -1,8 +1,8 @@
 // _Canvas: the value-neutral framebuffer primitives (canvas.h). The Canvas
 // preamble (colours, Sprite, font, run loop) is exercised via its own surface;
 // here we pin the raw pixel ops so interp and JIT agree byte for byte. present
-// / input / tone are host-driven (headless returns nothing), so they are
-// smoke-called for symmetry, not asserted.
+// / input are host-driven (headless returns nothing), so they are smoke-called
+// for symmetry, not asserted.
 
 // A packed RGBA colour: r | g<<8 | b<<16 | a<<24 — the byte order putImageData
 // consumes. Built with arithmetic so the test needs nothing from the preamble.
@@ -790,10 +790,6 @@ assert_eq(_Canvas.buttons(), 0)
 assert_eq(_Canvas.mouse_x(), 0)
 assert_eq(_Canvas.mouse_y(), 0)
 assert_eq(_Canvas.mouse_buttons(), 0)
-// tone(start_freq, end_freq, attack, decay, sustain, release, vol, peak,
-// channel, duty) — 10 Longs, now Audio's; silent here, but the arity/types
-// must match.
-_Audio.tone(700, 870, 10, 5, 0, 3, 10, 20, 0, 1)
 _Canvas.present()
 _Canvas.title("some window")
 // False in a headless build, and in a window build too: every `just` recipe
