@@ -116,3 +116,22 @@ fn middle() {
 }
 
 assert_eq(middle(), 111)
+
+# --- 8. Stacked decorators: `@a @b fn f` is `a(b(f))`, so the decorator
+#        expressions evaluate top-down before any of them applies ---
+mut trail = []
+let tag = fn (name) {
+  trail.push("eval {name}")
+  fn (f) {
+    trail.push("apply {name}")
+    f
+  }
+}
+
+@tag("outer")
+@tag("inner")
+fn stacked() {
+  1
+}
+
+assert_eq(trail, ["eval outer", "eval inner", "apply inner", "apply outer"])

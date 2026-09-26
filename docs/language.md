@@ -6110,6 +6110,8 @@ fn foo() { ... }
 ```
 
 is sugar for `foo = a(b(<original fn value>))`.
+As in that call, the decorator expressions themselves evaluate top-down
+— `a`, then `b` — before either is applied.
 
 ### Decorator expression
 

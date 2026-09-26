@@ -7076,20 +7076,34 @@ class Compiler {
 
   // Feed `val` through the declaration's decorators, innermost first: the one
   // nearest the declaration sees the raw value, and each above wraps what the
-  // one below returned. `@packable`, `@value` and `@derive(...)` are compiler
-  // directives, not callable, and are the reason the loop can skip an entry.
-  // Returns the slot holding the outermost result (+1).
+  // one below returned — `@a @b fn f` is `a(b(f))`, so the expressions
+  // themselves evaluate top-down first, as that call's callees would.
+  // `@packable`, `@value` and `@derive(...)` are compiler directives, not
+  // callable, and are the reason the loops can skip an entry. Returns the slot
+  // holding the outermost result (+1).
   int32_t apply_decorators(const peg::Ast& ast, size_t dec_end, int32_t val) {
-    for (size_t i = dec_end; i > 0; --i) {
-      const auto& dec = *ast.nodes[i - 1];
+    size_t runtime = 0;
+    for (size_t i = 0; i < dec_end; ++i)
+      if (!culebra::is_compile_time_decorator(*ast.nodes[i])) runtime++;
+    std::vector<std::pair<const peg::Ast*, int32_t>> callees;
+    for (size_t i = 0; i < dec_end; ++i) {
+      const auto& dec = *ast.nodes[i];
       if (culebra::is_compile_time_decorator(dec)) continue;
-      const auto& dec_expr = *dec.nodes[0];
-      auto callee = compile_expr(dec_expr);
+      auto r = compile_expr(*dec.nodes[0]);
+      // A later factory call may reassign the variable this one named.
+      if (!r.owned && runtime > 1) {
+        int32_t pinned = alloc_temp(ast);
+        store_into(pinned, r, /*dst_is_fresh=*/true);
+        r = {pinned, true};
+      }
+      callees.emplace_back(dec.nodes[0].get(), r.slot);
+    }
+    for (auto it = callees.rbegin(); it != callees.rend(); ++it) {
       int32_t arg = alloc_temp(ast);  // the one-argument run
       store_into(arg, {val, true}, /*dst_is_fresh=*/true);
       int32_t out = alloc_temp(ast);
-      StampGuard pos(*this, dec_expr);
-      emit(Op::Call, out, callee.slot, arg, 1);
+      StampGuard pos(*this, *it->first);
+      emit(Op::Call, out, it->second, arg, 1);
       val = out;
     }
     return val;
