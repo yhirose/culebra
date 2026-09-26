@@ -1,4 +1,4 @@
--- The metamethods examples/mini-lua/samples/metatables.lua does not
+-- The metamethods examples/languages/mini-lua/samples/metatables.lua does not
 -- reach: `__add`, `__sub`, `__mul`, `__eq`, `__tostring` and `__call`,
 -- plus the real generic-`for` protocol (an iterator function, a state
 -- and a control value), which `ipairs`/`pairs` are two fast-path callers

@@ -1,5 +1,5 @@
 # Regression tests for hm.cul, against the sample programs in
-# examples/hm/samples/*.hm.
+# examples/languages/hm/samples/*.hm.
 
 import hm from './hm.cul'
 

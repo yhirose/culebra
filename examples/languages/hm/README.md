@@ -1,7 +1,7 @@
 # hm — Algorithm W, next to linz
 
 This example exists to answer a specific question: after writing
-`examples/linz/lin.cul` (a type *checker* — every type is already written
+`examples/languages/linz/lin.cul` (a type *checker* — every type is already written
 down; the job is confirming it), would `examples/linz`'s `typing.cul` shape
 generalize into a reusable "type system toolkit" for a second, differently
 shaped language? `hm.cul` is a type *reconstructor* — Hindley-Milner
@@ -78,6 +78,6 @@ driver skeleton) is either already established convention or too small to
 be worth a library function: the ~80% that's actual type-system logic is
 irreducibly specific to which type system you're building. `PEG` (grammar
 → tree) and `CodeGen` (IR → VM/AOT) already are the reusable, stdlib-level
-pieces of "write your own language" — see `examples/pl0/pl0_codegen.cul`.
+pieces of "write your own language" — see `examples/languages/pl0/pl0_codegen.cul`.
 The type system in between is the part every language author has always
 had to write for themselves, and that isn't specific to culebra.

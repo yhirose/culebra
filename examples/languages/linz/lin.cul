@@ -9,8 +9,8 @@
 # through as an ordinary return value — see "Why an immutable environment"
 # below for what that buys.
 #
-# Run it:  culebra examples/linz/linz.cul examples/linz/samples/ex1.lin
-#          culebra examples/linz/linz.cul --ast examples/linz/samples/ex1.lin
+# Run it:  culebra examples/languages/linz/linz.cul examples/languages/linz/samples/ex1.lin
+#          culebra examples/languages/linz/linz.cul --ast examples/languages/linz/samples/ex1.lin
 #
 # `ex*.lin` type-check; `err*.lin` are rejected for a linearity or type
 # reason; `parse_err.lin` doesn't even parse.

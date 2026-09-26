@@ -4,7 +4,7 @@
 # Every samples/*.cul runs unchanged under the real `culebra` binary, which
 # is what makes the oracle work: tests/mini_culebra_test.sh diffs this
 # compiler's stdout against the real implementation's for every sample.
-# Where PL/0 (examples/pl0/) proved the backend carries a static language,
+# Where PL/0 (examples/languages/pl0/) proved the backend carries a static language,
 # this proves it carries a dynamic one.
 #
 # What's in: all scalars (Long incl. hex/binary literals, Float, String
@@ -153,9 +153,9 @@
 # `[`, or an operator starts a new statement, while a line that ends
 # with an operator, a comma, or an opening bracket continues.
 #
-# Run it:  culebra examples/mini-culebra/mini_culebra.cul prog.cul
-#          culebra examples/mini-culebra/mini_culebra.cul --ir prog.cul
-#          culebra examples/mini-culebra/mini_culebra.cul --bc prog.cul
+# Run it:  culebra examples/languages/mini-culebra/mini_culebra.cul prog.cul
+#          culebra examples/languages/mini-culebra/mini_culebra.cul --ir prog.cul
+#          culebra examples/languages/mini-culebra/mini_culebra.cul --bc prog.cul
 
 let grammar = `
   program    <- nl (stmt nl)*                               { no_ast_opt }

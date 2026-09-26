@@ -14,10 +14,10 @@
 #
 # so the code reads like the grammar it implements. See docs/stdlib.md §34.
 #
-# Run it:  culebra examples/pl0/pl0.cul examples/pl0/samples/square.pas
-#          culebra examples/pl0/pl0.cul examples/pl0/samples/gcd.pas
-#          culebra examples/pl0/pl0.cul examples/pl0/samples/fib.pas
-#          culebra examples/pl0/pl0.cul --ast examples/pl0/samples/square.pas
+# Run it:  culebra examples/languages/pl0/pl0.cul examples/languages/pl0/samples/square.pas
+#          culebra examples/languages/pl0/pl0.cul examples/languages/pl0/samples/gcd.pas
+#          culebra examples/languages/pl0/pl0.cul examples/languages/pl0/samples/fib.pas
+#          culebra examples/languages/pl0/pl0.cul --ast examples/languages/pl0/samples/square.pas
 #
 # square and gcd finish immediately. fib.pas computes fib(0..19) by naive
 # recursion — tens of thousands of PL/0 procedure calls through this
@@ -75,7 +75,7 @@ let grammar = `
 
   # %word makes 'CALL' etc. self-boundary-checking (it won't match a
   # prefix of a longer word), so the grammar doesn't need to hand-roll a
-  # _/__ whitespace/boundary pair. See examples/linz/lin.cul for the same
+  # _/__ whitespace/boundary pair. See examples/languages/linz/lin.cul for the same
   # simplification and the %whitespace-defeats-a-manual-lookahead pitfall
   # it sidesteps.
   %whitespace <- [ \t\r\n]*

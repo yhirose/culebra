@@ -1,6 +1,6 @@
 # Regression tests for lin.cul, run against the same 16 programs the
 # original rust_zero/linz ships as its own worked examples and error cases
-# (examples/linz/samples/*.lin).
+# (examples/languages/linz/samples/*.lin).
 
 import lin from './lin.cul'
 

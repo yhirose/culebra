@@ -13,14 +13,14 @@
 # self-application is rejected as an infinite type rather than silently
 # generalized away.
 #
-# Companion to examples/linz/lin.cul, written to answer the same question a
+# Companion to examples/languages/linz/lin.cul, written to answer the same question a
 # different way: linz *checks* a type an author already wrote down; this
 # *reconstructs* one from nothing. See that file's "Why an immutable
 # environment" for the parts that carry over (env threaded as a return
 # value, not mutated) and README.md in this directory for what didn't.
 #
-# Run it:  culebra examples/hm/hm.cul examples/hm/samples/poly_id.hm
-#          culebra examples/hm/hm.cul --ast examples/hm/samples/poly_id.hm
+# Run it:  culebra examples/languages/hm/hm.cul examples/languages/hm/samples/poly_id.hm
+#          culebra examples/languages/hm/hm.cul --ast examples/languages/hm/samples/poly_id.hm
 
 let grammar = `
   PROGRAM <- EXPR

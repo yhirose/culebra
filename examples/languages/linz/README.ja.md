@@ -13,8 +13,8 @@
 実行方法:
 
 ```
-culebra examples/linz/linz.cul examples/linz/samples/ex1.lin
-culebra examples/linz/linz.cul --ast examples/linz/samples/ex1.lin
+culebra examples/languages/linz/linz.cul examples/languages/linz/samples/ex1.lin
+culebra examples/languages/linz/linz.cul --ast examples/languages/linz/samples/ex1.lin
 ```
 
 `samples/ex*.lin`は型が付き、`err*.lin`は線形性か型のどちらかの理由で
@@ -27,7 +27,7 @@ culebra examples/linz/linz.cul --ast examples/linz/samples/ex1.lin
 - **手書きパーサの代わりにPEGを使った。** 元の`parser.rs`のdocコメントに
   書かれたBNFは、ほぼそのまま`PEG`の文法に写せる（`docs/stdlib.md`の
   §34参照）。本当の違いはキーワードの語境界の扱いだけ——`%word`
-  （`PEG`／cpp-peglibのディレクティブ。同じ手法は`examples/pl0/pl0.cul`
+  （`PEG`／cpp-peglibのディレクティブ。同じ手法は`examples/languages/pl0/pl0.cul`
   の文法にもある）を使うと、文法中の引用リテラルはすべて、自分を接頭辞
   に持つ長い識別子にはマッチしなくなる。元のRust版は「1語読んでから
   文字列比較する」という組み方でこれを自然に得ていた。
@@ -39,7 +39,7 @@ culebra examples/linz/linz.cul --ast examples/linz/samples/ex1.lin
   `typing(node, env) -> (type, env')`は、環境を受け取って、書き換え
   ずに「出てきた後の環境」を返す形にした——この設計が構造的に何を
   もたらすかは`lin.cul`内の「`Why an immutable environment`」に書いた。
-  `examples/hm/README.md`では、同じ問いを別の形の型システム
+  `examples/languages/hm/README.md`では、同じ問いを別の形の型システム
   （検査ではなくHindley-Milner推論）に対しても立てていて、「この形が
   どこまで一般化するか」は「見た目ほどには一般化しない」という結果に
   なった。

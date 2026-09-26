@@ -1,7 +1,7 @@
 # CLI driver for lin.cul — see that file for the checker itself.
 #
-# Run it:  culebra examples/linz/linz.cul examples/linz/samples/ex1.lin
-#          culebra examples/linz/linz.cul --ast examples/linz/samples/ex1.lin
+# Run it:  culebra examples/languages/linz/linz.cul examples/languages/linz/samples/ex1.lin
+#          culebra examples/languages/linz/linz.cul --ast examples/languages/linz/samples/ex1.lin
 
 import lin from './lin.cul'
 

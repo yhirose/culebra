@@ -13,8 +13,8 @@ algorithm; this file is about what changed in the port.
 Run it:
 
 ```
-culebra examples/linz/linz.cul examples/linz/samples/ex1.lin
-culebra examples/linz/linz.cul --ast examples/linz/samples/ex1.lin
+culebra examples/languages/linz/linz.cul examples/languages/linz/samples/ex1.lin
+culebra examples/languages/linz/linz.cul --ast examples/languages/linz/samples/ex1.lin
 ```
 
 `samples/ex*.lin` type-check; `err*.lin` are rejected for a linearity or
@@ -28,7 +28,7 @@ ported checker against all of them.
   `parser.rs`'s doc comment translates almost directly into a `PEG`
   grammar — see `docs/stdlib.md` §34. The one real difference is keyword
   boundaries: `%word` (a `PEG`/cpp-peglib directive — see
-  `examples/pl0/pl0.cul`'s grammar for the same technique) makes every
+  `examples/languages/pl0/pl0.cul`'s grammar for the same technique) makes every
   quoted literal in the grammar reject a longer identifier sharing its
   prefix, which the original's read-a-word-then-compare-strings dispatch
   gets for free.
@@ -38,7 +38,7 @@ ported checker against all of them.
   closure's restricted view. `lin.cul`'s `typing(node, env) -> (type,
   env')` instead takes an environment and returns the one that comes out
   the other side, unmutated — see "Why an immutable environment" in
-  `lin.cul` for what that buys structurally. `examples/hm/README.md` is
+  `lin.cul` for what that buys structurally. `examples/languages/hm/README.md` is
   the same question asked about a second, differently-shaped type system
   (Hindley-Milner inference instead of checking): how much of this
   generalizes turned out to be "less than it looks like."
