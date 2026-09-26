@@ -1953,6 +1953,7 @@ struct Lowering {
           b.CreateBr(mergeBB);
 
           b.SetInsertPoint(biBB);
+          j.emit_set_op_pos();  // the entry site of a dunder the built-in calls
           // Receiver and arguments stay slot-owned (borrowed by the built-in),
           // so nothing here consumes a slot and the ladder keeps releasing
           // them; the result is a fresh +1.
@@ -4663,6 +4664,7 @@ struct Lowering {
           break;
         case Op::Disp: {
           auto v = load_slot(in.b);
+          j.emit_set_op_pos();  // a __str__'s entry site
           auto s = j.emit_call(
               j.module_->getOrInsertFunction(rt::value_to_display, ptrTy,
                                              b.getInt8Ty(), i64Ty),

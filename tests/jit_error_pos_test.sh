@@ -799,5 +799,10 @@ check_eq "stdlib throw, uncaught" 'let ok = 1
 let m = StateMachine.new({initial: "a", states: {a: 1}})' \
   "uncaught: {kind: 'TypeError', message: 'type error: expected Object for state 'initial', got String'} at 2:9."
 
+check_eq "stdlib dunder, uncaught" 'let d = Time.seconds(1)
+let n = "x".size()
+let e = d + 5' \
+  "uncaught: {kind: 'TypeError', message: 'type error: expected Duration, got Long'} at 3:9."
+
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1

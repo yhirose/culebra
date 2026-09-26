@@ -774,13 +774,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_merge(
 // Returns true when the method exists (and was invoked), else false.
 inline bool _jit_try_object_setindex(JitObject* obj, int8_t key_tag,
                                      int64_t key_data, int8_t val_tag,
-                                     int64_t val_data) {
+                                     int64_t val_data, int64_t line,
+                                     int64_t col) {
   // Class-instance feature only (the call sites also gate on `proto` to
   // skip the slot probe for plain dicts; this keeps the helper self-safe).
   if (!obj->proto()) return false;
   auto* cls = _lookup_special(TAG_OBJECT, reinterpret_cast<int64_t>(obj),
                               Special::SetIndex);
   if (!cls) return false;
+  _jit_set_op_pos(line, col);
   // Borrows the key and value: the caller consumes them on the normal path and
   // guards them over this call for the throw path.
   auto r = _culebra_invoke_method2(
@@ -851,7 +853,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
       // A user `__setindex__` body's throw unwinds past the release below, so
       // guard the value's +1 across the dispatch.
       JitUnwindRelease g{JitValue{val_tag, val_data}};
-      if (_jit_try_object_setindex(obj, key_tag, key_data, val_tag, val_data)) {
+      if (_jit_try_object_setindex(obj, key_tag, key_data, val_tag, val_data, line, col)) {
         _culebra_value_release_impl(val_tag, val_data);
         return;
       }
@@ -872,7 +874,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
     bool exists = obj->non_string_props &&
                   obj->non_string_props->count(JitValue{key_tag, key_data});
     if (!exists &&
-        _jit_try_object_setindex(obj, key_tag, key_data, val_tag, val_data)) {
+        _jit_try_object_setindex(obj, key_tag, key_data, val_tag, val_data, line, col)) {
       _culebra_value_release_impl(key_tag, key_data);
       _culebra_value_release_impl(val_tag, val_data);
       return;
@@ -931,10 +933,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
 // writes the (+1 owned) result to out when the method exists, else false.
 inline bool _jit_try_object_index(JitObject* obj, int8_t key_tag,
                                   int64_t key_data, int8_t* out_tag,
-                                  int64_t* out_data) {
+                                  int64_t* out_data, int64_t line,
+                                  int64_t col) {
   // Subscript overloading is a class-instance feature (matches interp's
   // class_tag gate); a plain dict never routes to __index__.
   if (!obj->proto()) return false;
+  _jit_set_op_pos(line, col);
   auto r = _try_special_binop(TAG_OBJECT, reinterpret_cast<int64_t>(obj),
                               key_tag, key_data, Special::Index);
   if (!r) return false;
@@ -1089,7 +1093,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
   // other keys live in the non-String sidecar.
   if (_jit_try_own_slot(obj, key_tag, key_data, out_tag, out_data)) return;
   // Miss → user `__index__` overload.
-  if (_jit_try_object_index(obj, key_tag, key_data, out_tag, out_data)) {
+  if (_jit_try_object_index(obj, key_tag, key_data, out_tag, out_data, line,
+                            col)) {
     if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
     return;
   }
@@ -1119,7 +1124,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_get_for_coalesce(
   JitUnwindRelease g{key_guard};
   if (_jit_try_own_slot(obj, key_tag, key_data, out_tag, out_data)) return true;
   // Miss → user `__index__` overload, else "not found" (nil for `??=`).
-  if (_jit_try_object_index(obj, key_tag, key_data, out_tag, out_data)) {
+  if (_jit_try_object_index(obj, key_tag, key_data, out_tag, out_data, line,
+                            col)) {
     if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
     return true;
   }
@@ -1866,6 +1872,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
     auto* finit_cls = reinterpret_cast<JitClosure*>(finit_data);
     culebra_runtime_value_retain(self_val.tag, self_val.data);
     try {
+      // The field inits run at the constructor's call and hand it back
+      // untouched: the `new` body's prologue reads that site and its
+      // argument positions.
+      JitBorrowedCallSite site{_jit_thread.call_line, _jit_thread.call_col};
       auto r = _jit_invoke(finit_cls, self_val, 0, nullptr);
       _culebra_value_release_impl(r.tag, r.data);
     } catch (...) {

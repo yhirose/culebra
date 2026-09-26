@@ -1391,7 +1391,17 @@ padの分類はC++の型ではなくpending carrier（§5.5）を通す。
 位置に印があれば、その位置が属するライブラリのフレームに任せる。executorの
 `unwind`とloweringのframe padは同じ段で同じヘルパーを呼び、ヘルパーは
 carrierしか読まないので、JITのpadにC++の再検査は要らない。フォーマッタまで
-印が残った位置（上にユーザーのフレームが無いthrow）は、印を外して表示する。
+印が残った位置（上にユーザーのフレームが無いthrow）は、位置なしで表示する。
+
+控える位置は、読む呼び出し位置が正しい限りでしか正しくない。runtimeは
+自分でもclosureを起動する: 演算子のdunder、キーの`hash`/`eq`、getter、
+`__str__`、イテレータの`next`。そうした起動はどれも、公開されたop位置を
+呼び出し位置として貸し（`JitBorrowedCallSite`、`_culebra_invoke_method*`と
+反復の起動のすべての周り）、そこへ到達しうる入口はどれも先に自分のop位置を
+公開する — 演算子と添字のヘルパーは自分の`line`/`col`から、ネイティブの
+trampolineと組み込みメソッドの腕は呼び出しから、`Disp`・getterの読み出し・
+`ForNext`は命令から。deferの本体と`drop`は位置を貸さない: それを囲む
+ライブラリのフレームが付け替える。
 
 ### 6.3 safepoint
 

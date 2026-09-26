@@ -128,6 +128,7 @@ inline void _iter_dispose_upstreams_fn(JitValue* __ret, JitClosure* cls,
     if (!dispose_cls || dispose_cls->arity != 0) continue;
     try {
       culebra_runtime_value_retain(up.tag, up.data);  // the callee consumes it
+      JitBorrowedCallSite site;  // an implicit entry, at the op
       auto r = _jit_invoke(dispose_cls, up, 0, nullptr);
       _culebra_value_release_impl(r.tag, r.data);
     } catch (const culebra::Interrupted&) {
@@ -229,6 +230,7 @@ inline bool _iter_advance_raw(JitClosure* has_next_cls, JitClosure* next_cls,
   // interp does not do). Positionless: the op-position backfill reports it
   // at the advance that hit it, like the interp's own throw here.
   if (!has_next_cls || !next_cls) culebra::throw_iter_missing_protocol();
+  JitBorrowedCallSite site;  // an implicit entry, at the advancing op
   culebra_runtime_value_retain(iter_val.tag, iter_val.data);
   auto hn = _jit_invoke(has_next_cls, iter_val, 0, nullptr);
   // docs §18.5: `next()` runs when `has_next()` was *truthy*, so a Long/Float
@@ -529,6 +531,7 @@ class JitIterDrive {
     auto* dispose_cls = _iter_method_closure(iter_, "dispose");
     if (!dispose_cls || dispose_cls->arity != 0) return;
     culebra_runtime_value_retain(iter_.tag, iter_.data);  // callee consumes
+    JitBorrowedCallSite site;  // an implicit entry, at the op
     auto r = _jit_invoke(dispose_cls, iter_, 0, nullptr);
     _culebra_value_release_impl(r.tag, r.data);
   }
@@ -1545,6 +1548,7 @@ inline JitValue _iter_coerce_iterable(int8_t t, int64_t d, int64_t line,
     if (auto* iv_cls =
             _protocol_member(reinterpret_cast<JitObject*>(d), "iter")) {
       culebra_runtime_value_retain(t, d);
+      JitBorrowedCallSite site;  // an implicit entry, at the op
       return _jit_invoke(iv_cls, JitValue{t, d}, 0, nullptr);
     }
     // No `iter` of its own: the dict builtin answers, walking (key, value)
@@ -2625,6 +2629,7 @@ inline void _iter_chunk_by_fast_fn(JitClosure* cls, JitValue, bool* done,
     }
     JitOwnedVal cand(JitValue{nt, nd});  // the pulled +1
     culebra_runtime_value_retain(nt, nd);  // an extra one for the key call
+    _iter_publish_call_site(cls);  // the previous key's body moved it
     auto k2 = _culebra_invoke1(fn_cls, {nt, nd});
     JitOwnedVal k2_guard(k2);
     if (!_culebra_value_equal(k2.tag, k2.data, key.tag, key.data)) {

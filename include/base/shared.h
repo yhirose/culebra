@@ -290,7 +290,8 @@ inline constexpr int64_t user_line(int64_t line) {
 inline std::string format_error_message(std::string_view kind,
                                         std::string_view msg, int64_t line,
                                         int64_t col) {
-  line = user_line(line);
+  // A position still marked has no user line (vm.md §6.2).
+  if (is_library_line(line)) line = col = 0;
   if (line <= 0 && col <= 0) return culebra::format("{}: {}", kind, msg);
   // A message that runs to several lines — the matchers put each operand on
   // its own — would otherwise end "...  right: bar at 3:1.", where the

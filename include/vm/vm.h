@@ -14479,7 +14479,7 @@ struct Exec {
         // already released the element, and this one releases the iterator
         // itself. The dispose is swallowed — an exception is in flight.
         if (cu.dispose_base >= 0 && s == cu.dispose_base + kForIter)
-          for_dispose(regs + cu.dispose_base, /*swallow=*/true);
+          for_dispose(regs + cu.dispose_base, /*swallow=*/true, 0, 0);
         release_slot(c, regs, s, chunk_slot_is_cell(c, s, cu.cells_before));
       }
       if (hush) culebra_runtime_set_drop_suppressed(0);
@@ -14554,6 +14554,7 @@ struct Exec {
                                          static_cast<int8_t>(iter_fn.tag));
       }
       _culebra_value_retain_impl(static_cast<int8_t>(src.tag), src.data);
+      culebra_runtime_set_call_site(line, col);  // the lowering's call publishes
       JitValue iter = _jit_invoke(reinterpret_cast<JitClosure*>(iter_fn.data),
                                   src, 0, nullptr);
       JitClosure* has_next = nullptr;
@@ -14677,7 +14678,8 @@ struct Exec {
   // Close the iterator if it carries `dispose`, once. The slot keeps its own
   // ref throughout — the ladder that runs this frees it a rung later — so a
   // throwing dispose strands nothing (emit_iter_dispose_if_active).
-  static void for_dispose(JitValue* cur, bool swallow) {
+  static void for_dispose(JitValue* cur, bool swallow, int64_t line,
+                          int64_t col) {
     if (cur[kForDisposed].data) return;
     cur[kForDisposed] = JitValue{TAG_LONG, 1};
     JitValue iter = cur[kForIter];
@@ -14692,6 +14694,7 @@ struct Exec {
     // The frame gets its own `+1` for `self`, as the iter() call above did.
     auto call = [&] {
       _culebra_value_retain_impl(static_cast<int8_t>(iter.tag), iter.data);
+      culebra_runtime_set_call_site(line, col);  // as the lowering's call does
       JitValue r = _jit_invoke(reinterpret_cast<JitClosure*>(fn.data), iter, 0,
                                nullptr);
       _culebra_value_release_impl(static_cast<int8_t>(r.tag), r.data);
@@ -15748,6 +15751,7 @@ struct Exec {
                                                 line, col);
             regs[in.a] = view;
           } else {
+            culebra_runtime_set_op_pos(line, col);  // a getter's entry site
             regs[in.a] = culebra_runtime_bind_method_value(
                 static_cast<int8_t>(recv.tag), recv.data,
                 static_cast<int8_t>(view.tag), view.data, key);
@@ -16012,6 +16016,7 @@ struct Exec {
             argv[k] = regs[in.b + 2 + k];
             regs[in.b + 2 + k] = JitValue{TAG_NIL, 0};
           }
+          culebra_runtime_set_op_pos(line, col);  // as the lowering's arm
           regs[in.a] = bmeth_apply(id, regs[in.b + 1],
                                    consumes ? argv : &regs[in.b + 2], line,
                                    col);
@@ -17081,6 +17086,10 @@ struct Exec {
       L_Disp:
         do {
           [[maybe_unused]] const Insn& in = *ip;
+          {
+            auto [line, col] = chunk_pos_at(c, VM_PC);
+            culebra_runtime_set_op_pos(line, col);  // a __str__'s entry site
+          }
           regs[in.a] = JitValue{
               TAG_STRING,
               reinterpret_cast<int64_t>(culebra_runtime_value_to_display(
@@ -17178,7 +17187,8 @@ struct Exec {
       L_ForDispose:
         do {
           [[maybe_unused]] const Insn& in = *ip;
-          for_dispose(regs + in.a, in.d != 0);
+          auto [line, col] = chunk_pos_at(c, VM_PC);
+          for_dispose(regs + in.a, in.d != 0, line, col);
           ++ip;
           break;
         } while (0);

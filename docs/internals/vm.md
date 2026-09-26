@@ -1429,7 +1429,18 @@ it to the library frame that site belongs to. The executor's `unwind` and
 the lowering's frame pad call the same helper at the same step, and the
 helper reads only the carriers, so the JIT pad needs no C++ re-inspection.
 A mark that survives to a formatter (a throw with no user frame above it)
-prints without the bit.
+prints with no position.
+
+The snapshot is only as good as the call site it reads, and the runtime
+enters closures on its own too: an operator's dunder, a key's `hash`/`eq`,
+a getter, `__str__`, an iterator's `next`. Each such entry lends the
+published op position as the call site (`JitBorrowedCallSite`, around every
+`_culebra_invoke_method*` and the protocol invokes), and every door that can
+reach one publishes its op first — the operator and subscript helpers from
+their own `line`/`col`, a native's trampoline and the built-in-method arm
+from the call, and `Disp`, a getter read and `ForNext` from the instruction.
+A defer body or a `drop` lends no site: the library frame around it
+re-anchors.
 
 ### 6.3 Safepoints
 

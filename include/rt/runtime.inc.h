@@ -559,6 +559,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_eprintln(int8_t type,
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_format_value(
     int8_t type, int64_t data, const char* spec_cstr, int64_t line,
     int64_t col) {
+  _jit_thread.op_line = line;  // a __str__'s entry site
+  _jit_thread.op_col = col;
   std::string_view spec(spec_cstr);
   if (spec.empty()) return culebra_runtime_value_to_display(type, data);
   if (type == TAG_LONG) {
@@ -609,6 +611,8 @@ inline std::optional<std::string_view> _jit_enum_name(JitObject* obj) {
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_hash_any(
     int8_t type, int64_t data, int64_t line, int64_t col) {
   if (type == TAG_OBJECT) {
+    _jit_thread.op_line = line;  // a `hash()`'s entry site
+    _jit_thread.op_col = col;
     auto r = _try_special_unary(type, data, Special::Hash);
     if (!r) {
       if (auto h = _jit_enum_variant_hash(reinterpret_cast<JitObject*>(data)))
@@ -812,25 +816,26 @@ inline auto _jit_at_call_site(F&& op) -> decltype(op()) {
                      std::forward<F>(op));
 }
 
-// Publish a call site for a method the runtime reaches on its own, rather
-// than from a codegen call site: the operator forms of `==` / `!=` and the
-// ordering ops dispatch to a class's `__eq__` / `eq` / `__lt__` / `__le__` /
-// `cmp` from inside the comparison helper, so nothing set one.
-// Explicit errors raised by that method's binder — an overload set's
-// DispatchError, an ArityError, a typed-param TypeError — read the call site
-// and would otherwise report wherever the last real call was. The operator's
-// own position is where the interp anchors them (its binary-expression node).
-// The per-argument positions go with it: the operand is handed over by the
-// runtime, not written at a call, so there is no argument expression to point
-// at — leaving the previous call's array live would report a typed-param
-// error somewhere else entirely. Restores on scope exit, throw included, so
-// an outer call site is unaffected.
+// Publish a call site for a closure the runtime enters on its own rather than
+// from a codegen call site — an operator's dunder, a key's `hash`/`eq`, an
+// iterator's `next`, a defer body. The site is the published op position:
+// every door that can reach such an entry (an operator helper, a native's
+// trampoline, the ops that display, read a getter or iterate) sets it first.
+// What reads the call site — a binder's DispatchError / ArityError / typed-
+// param TypeError, a library frame's re-anchor (culebra_runtime_reanchor) —
+// would otherwise see wherever the last real call was. The per-argument
+// positions go with it: the operand is handed over by the runtime, not written
+// at a call. The op position is kept too, so a second entry after the first
+// one's body ran lends the same op. Restores on scope exit, throw included.
 struct JitBorrowedCallSite {
-  int64_t line, col, bline, bcol;
+  int64_t line, col, bline, bcol, oline, ocol;
   int argn;
+  JitBorrowedCallSite()
+      : JitBorrowedCallSite(_jit_thread.op_line, _jit_thread.op_col) {}
   JitBorrowedCallSite(int64_t l, int64_t c)
       : line(_jit_thread.call_line), col(_jit_thread.call_col),
         bline(_jit_thread.boundary_line), bcol(_jit_thread.boundary_col),
+        oline(_jit_thread.op_line), ocol(_jit_thread.op_col),
         argn(_jit_thread.argpos_n) {
     _jit_thread.call_line = l;
     _jit_thread.call_col = c;
@@ -843,9 +848,18 @@ struct JitBorrowedCallSite {
     _jit_thread.call_col = col;
     _jit_thread.boundary_line = bline;
     _jit_thread.boundary_col = bcol;
+    _jit_thread.op_line = oline;
+    _jit_thread.op_col = ocol;
     _jit_thread.argpos_n = argn;
   }
 };
+
+// An operator helper's door: its own position is the op an implicit entry
+// below it reports at (JitBorrowedCallSite).
+inline void _jit_set_op_pos(int64_t line, int64_t col) {
+  _jit_thread.op_line = line;
+  _jit_thread.op_col = col;
+}
 extern "C" {
 
 // Recursion guard, compiled-code side. The counter is `_jit_thread.depth`;
@@ -1175,6 +1189,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_defer_run_to(int64_t mark
     s.pop_back();
     auto* c = reinterpret_cast<JitClosure*>(v.data);
     try {
+      // No site of its own: an error leaving a library defer is re-anchored
+      // by the library frame that declared it.
+      JitBorrowedCallSite site{0, 0};
       auto r = _culebra_invoke0(c);
       _culebra_value_release_impl(r.tag, r.data);
     } catch (const culebra::Interrupted&) {
@@ -1475,16 +1492,21 @@ struct JitUnwindRelease {
 // during a sort, a dict's stored keys during a lookup) without the user body's
 // throw corrupting the owner's refcounts. A caller holding a `+1` temp of its
 // own releases that temp itself on the unwind edge.
+//
+// Each is an implicit entry (a dunder, a protocol method), so it lends the
+// published op position as the call site (JitBorrowedCallSite).
 inline JitValue _culebra_invoke_method1(JitClosure* cls, JitValue self,
                                         JitValue arg) {
   culebra_runtime_value_retain(self.tag, self.data);
   culebra_runtime_value_retain(arg.tag, arg.data);
   JitValue args[1] = {arg};
+  JitBorrowedCallSite site;
   return _jit_invoke(cls, self, 1, args);
 }
 
 inline JitValue _culebra_invoke_method0(JitClosure* cls, JitValue self) {
   culebra_runtime_value_retain(self.tag, self.data);
+  JitBorrowedCallSite site;
   return _jit_invoke(cls, self, 0, nullptr);
 }
 
@@ -1494,6 +1516,7 @@ inline JitValue _culebra_invoke_method2(JitClosure* cls, JitValue self,
   culebra_runtime_value_retain(a1.tag, a1.data);
   culebra_runtime_value_retain(a2.tag, a2.data);
   JitValue args[2] = {a1, a2};
+  JitBorrowedCallSite site;
   return _jit_invoke(cls, self, 2, args);
 }
 
@@ -1721,6 +1744,7 @@ inline std::optional<JitValue> _try_tensor_binop(
     if (auto r = _try_tensor_binop(lt, ld, rt, rd, op_id, opstr, line,  \
                                    col))                                \
       return *r;                                                        \
+    _jit_set_op_pos(line, col);                                         \
     if (auto r = _dispatch_arith_special(lt, ld, rt, rd, method,        \
                                          reflect))                      \
       return *r;                                                        \
@@ -1748,6 +1772,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_add_borrow(
                                   static_cast<int>(culebra::Op::Add), "+",
                                   line, col))
     return *r;
+  _jit_set_op_pos(line, col);
   if (auto r = _dispatch_arith_special(lt, ld, rt, rd, Special::Add, true))
     return *r;
   bool ls = (lt == TAG_STRING || lt == TAG_STRINGVIEW);
@@ -1776,6 +1801,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_div_borrow(
                                   static_cast<int>(culebra::Op::Div), "/",
                                   line, col))
     return *r;
+  _jit_set_op_pos(line, col);
   if (auto r = _dispatch_arith_special(lt, ld, rt, rd, Special::Div, false))
     return *r;
   _arith_guard_numeric("/", lt, rt, line, col);
@@ -1787,6 +1813,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_div_borrow(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_mod_borrow(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
+  _jit_set_op_pos(line, col);
   if (auto r = _dispatch_arith_special(lt, ld, rt, rd, Special::Mod, false))
     return *r;
   _arith_guard_numeric("%", lt, rt, line, col);
@@ -1800,6 +1827,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_mod_borrow(
 // `__matmul__`. Non-commutative, so no reflection.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_matmul_borrow(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
+  _jit_set_op_pos(line, col);
   if (auto r = _try_special_binop(lt, ld, rt, rd, Special::Matmul)) return *r;
   culebra::throw_arith_type_error("@", _culebra_tag_name(lt),
                                   _culebra_tag_name(rt), line, col);
@@ -2004,10 +2032,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_value_equal_borrow(
   // which is thread-local state, and this is the `x == nil` of every guard.
   if (!_is_refcounted_value_tag(t1) && !_is_refcounted_value_tag(t2))
     return _culebra_value_equal(t1, d1, t2, d2);
-  // The dispatches behind `==` are calls with no codegen call site; both
-  // backends publish the operator's position here before entering (the same
-  // hook the positionless backfill reads), so lend it to them.
-  JitBorrowedCallSite site{_jit_thread.op_line, _jit_thread.op_col};
+  // Both backends publish the operator's position before entering, which
+  // the method invokes below lend (JitBorrowedCallSite).
   return _culebra_value_equal(t1, d1, t2, d2);
 }
 
@@ -2047,12 +2073,12 @@ inline std::optional<bool> _special_le(int8_t t1, int64_t d1,
 //   culebra_runtime_value_<name>_borrow  — the same core under the extern name
 //     the lowering emits calls to.
 // The `fast_path` dispatches to a user method with no codegen call site, so
-// each expansion lends it the operator's own position (JitBorrowedCallSite).
+// each expansion publishes the operator's own position for it to lend.
 #define CUL_DEF_ORD_OP(name, cmp_op, fast_path)                         \
   inline bool _value_##name##_borrow(                                   \
       int8_t t1, int64_t d1, int8_t t2, int64_t d2,                     \
       int64_t line, int64_t col) {                                      \
-    { JitBorrowedCallSite site{line, col}; fast_path }                  \
+    { _jit_set_op_pos(line, col); fast_path }                           \
     return _culebra_value_ord(t1, d1, t2, d2,                           \
                               [](double a, double b) { return a cmp_op b; }, \
                               line, col);                               \
@@ -2139,6 +2165,7 @@ CUL_NUM_INPLACE(div, Op::Div)
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_pow_borrow(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
+  _jit_set_op_pos(line, col);
   if (auto r = _try_special_binop(lt, ld, rt, rd, Special::Pow)) return *r;
   if (lt == TAG_LONG && rt == TAG_LONG) {
     int64_t a = ld, e = rd;
@@ -2164,6 +2191,7 @@ CUL_NUM_INPLACE(pow, Op::Pow)
 // raises type error. Called only from the unary-minus slow path.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_neg_borrow(
     int8_t t, int64_t d, int64_t line, int64_t col) {
+  _jit_set_op_pos(line, col);
   if (auto r = _try_special_unary(t, d, Special::Neg)) return *r;
   if (t == TAG_LONG) return {TAG_LONG, -d};
   if (t == TAG_FLOAT) {

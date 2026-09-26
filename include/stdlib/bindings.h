@@ -9783,6 +9783,9 @@ inline void _jit_ns_method_trampoline(
   // wrapped static): the `Ns.fn(...)` peephole passes none, and a nil is a
   // no-op release.
   JitMethodSelf _s{JitValue{self_tag, self_data}};
+  // A dunder the native calls enters at this call (JitBorrowedCallSite).
+  _jit_thread.op_line = _jit_thread.call_line;
+  _jit_thread.op_col = _jit_thread.call_col;
   const auto* m = reinterpret_cast<const NsMethod*>(
       cls->captures[0]->value.data);
   // As-value call (`let g = ns.method; g(...)`): the indirect-call codegen

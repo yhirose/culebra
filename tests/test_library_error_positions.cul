@@ -51,3 +51,17 @@ fn load_music() {
   Audio.Music("not audio")
 }
 check("in user fn", [51, 3], fn () { load_music() })
+
+// Entered by the runtime, not a call: an operator's dunder, and a library
+// generator a `for` steps. The site is the operator or the loop, however far
+// the last real call was.
+let v = Vector2(1, 2)
+print("")
+check("dunder", [60, 35], fn () { v + 5 })
+check("generator step", [64, 3], fn () {
+  let re = Regex.compile("a")
+  print("")
+  for m in re.find_iter(5) {
+    nil
+  }
+})

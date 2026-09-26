@@ -4687,6 +4687,7 @@ struct JIT {
     // emit_value_call so the Win64 sret ABI matches the C++ side (no-op on
     // SysV). See the emit_value_call rationale at its definition.
     auto call_helper = [&] {
+      emit_set_op_pos();  // a getter's entry site
       return emit_value_call(
           module_->getOrInsertFunction(
               intro ? rt::getter_or_value : rt::bind_method_value, valueType_,

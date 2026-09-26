@@ -67,6 +67,7 @@ inline void _culebra_call_drop_if_present(JitObject* o) {
   int64_t saved_data;
   culebra_runtime_save_thrown(&saved_flag, &saved_tag, &saved_data);
   try {
+    JitBorrowedCallSite site{0, 0};  // a release, not a call: no site
     auto r = _jit_invoke(cls, self_val, 0, nullptr);
     _culebra_value_release_impl(r.tag, r.data);
   } catch (const culebra::Interrupted&) {
