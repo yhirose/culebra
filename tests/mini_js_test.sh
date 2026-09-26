@@ -2,13 +2,13 @@
 # examples/languages/mini-js/mini_js.cul against Node: every samples/*.js is an ES6
 # program both run, so Node is the compiler's oracle. Each sample prints
 # through examples/languages/mini-js/fmt.js (prepended on both sides), and its stdout
-# must be identical under the executor and --jit-faststart (why not --jit:
-# see mini_culebra_test.sh).
+# must be identical under --jit-faststart (why not --jit: see
+# mini_culebra_test.sh; the executor's half is the languages phase).
 #
-# As in mini_culebra_test.sh, all samples go through one mini invocation per
-# lane (the compiler's own parse and, under the JIT, its compile are paid once
-# per lane), with a marker line before each program; the oracle side is the
-# per-sample Node runs joined by the same markers. A sample that exits
+# As in mini_culebra_test.sh, all samples go through one mini invocation (the
+# compiler's own parse and compile are paid once), with a marker line before
+# each program; the oracle side is the per-sample Node runs joined by the
+# same markers. A sample that exits
 # non-zero under Node is a test bug, not a difference.
 #
 # Usage: mini_js_test.sh <path-to-culebra>
@@ -39,16 +39,15 @@ for path in "$SAMPLES"/*.js; do
 done
 
 fail=0
-for flag in --vm --jit-faststart; do
-  "$CULEBRA" "$flag" "$MINI" --lib "$FMT" "$SAMPLES"/*.js >"$TMP/got$flag" 2>"$TMP/err$flag"
-  if ! diff -u "$TMP/want" "$TMP/got$flag" >"$TMP/diff$flag"; then
-    echo "FAIL [$flag]: mini_js differs from node"
-    head -40 "$TMP/diff$flag"
-    head -5 "$TMP/err$flag"
-    fail=1
-  else
-    echo "ok [$flag] ($(ls "$SAMPLES"/*.js | wc -l | tr -d ' ') samples)"
-  fi
-done
+flag=--jit-faststart
+"$CULEBRA" "$flag" "$MINI" --lib "$FMT" "$SAMPLES"/*.js >"$TMP/got" 2>"$TMP/err"
+if ! diff -u "$TMP/want" "$TMP/got" >"$TMP/diff"; then
+  echo "FAIL [$flag]: mini_js differs from node"
+  head -40 "$TMP/diff"
+  head -5 "$TMP/err"
+  fail=1
+else
+  echo "ok [$flag] ($(ls "$SAMPLES"/*.js | wc -l | tr -d ' ') samples)"
+fi
 
 exit $fail

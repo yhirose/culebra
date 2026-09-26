@@ -18,7 +18,9 @@
 #                 A run costs several seconds, which is why it is recorded.
 #
 # `--count` answers how many samples the arm has and exits, which is how the
-# caller divides a job budget between arms of very different sizes.
+# caller divides a job budget between arms of very different sizes. Sample
+# names after the arm run only those, which is how the landing gate's smoke
+# picks a few.
 set -u
 cd "$(dirname "$0")/.."
 CULEBRA=${CULEBRA:-./build-dev/culebra}
@@ -35,8 +37,14 @@ got() { "$CULEBRA" "$ENGINE" "$FRONT_END" "$1"; }
 frozen() { cat "${1%.*}.txt"; }
 
 arm=${1:-}
+shift
 # read before the arm replaces the positional parameters with its samples
-count_only=${2:-}
+count_only=
+picks=()
+case "${1:-}" in
+  --count) count_only=--count ;;
+  *) picks=("$@") ;;
+esac
 FRONT_END=examples/languages/$arm/${arm//-/_}.cul
 export FRONT_END
 
@@ -98,6 +106,14 @@ esac
 if [ ! -e "$1" ]; then
   echo "$0: $1 matched no samples" >&2
   exit 2
+fi
+
+if (( ${#picks[@]} )); then
+  dir=$(dirname "$1")
+  set -- "${picks[@]/#/$dir/}"
+  for f; do
+    [ -e "$f" ] || { echo "$0: no sample $f" >&2; exit 2; }
+  done
 fi
 
 if [ "$count_only" = --count ]; then

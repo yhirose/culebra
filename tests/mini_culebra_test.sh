@@ -2,7 +2,8 @@
 # examples/languages/mini-culebra/mini_culebra.cul against the real culebra binary:
 # every samples/*.cul is written in the subset both implement, so the real
 # implementation is the compiler's oracle. Each sample must produce
-# identical stdout from both, under the executor and --jit-faststart.
+# identical stdout from both under --jit-faststart; the executor's half is
+# the languages phase of `just test` (misc/check_language_samples.sh).
 #
 # Not --jit: at O2 the front end's own compile takes minutes and the samples a
 # second; optimized JIT output is the tests/*.cul sweep's job.
@@ -25,35 +26,24 @@ trap 'rm -rf "$TMP"' EXIT
 
 fail=0
 
-# All samples go through one mini invocation per engine, so the compiler's
-# own parse (and, under --jit, its compile) is paid once per lane instead
-# of once per sample -- per-sample invocation blew CI's ctest budget. The
-# batch driver prints a marker line before each program; the oracle side
-# is the per-sample culebra runs joined by the same markers.
-lane() {
-  local flag="$1"
-  : >"$TMP/want$flag"
-  local path
-  for path in "$SAMPLES"/*.cul; do
-    {
-      echo "-----8<----- $(basename "$path")"
-      "$CULEBRA" "$flag" "$path" 2>&1
-    } >>"$TMP/want$flag"
-  done
-  "$CULEBRA" "$flag" "$MINI" "$SAMPLES"/*.cul >"$TMP/got$flag" 2>&1
-}
-lane --vm &
-lane --jit-faststart &
-wait
-for flag in --vm --jit-faststart; do
-  if ! diff -u "$TMP/want$flag" "$TMP/got$flag" >"$TMP/diff$flag"; then
-    echo "FAIL [$flag]: mini_culebra differs from culebra itself" >&2
-    cat "$TMP/diff$flag" >&2
-    fail=1
-  else
-    echo "ok   [$flag $(ls "$SAMPLES"/*.cul | wc -l | tr -d ' ') samples]"
-  fi
-done
+# All samples go through one mini invocation, so the compiler's
+# own parse and compile is paid once instead of once per sample --
+# per-sample invocation blew CI's ctest budget. The batch driver prints a
+# marker line before each program; the oracle side is the per-sample
+# culebra runs joined by the same markers.
+flag=--jit-faststart
+for path in "$SAMPLES"/*.cul; do
+  echo "-----8<----- $(basename "$path")"
+  "$CULEBRA" "$flag" "$path" 2>&1
+done >"$TMP/want"
+"$CULEBRA" "$flag" "$MINI" "$SAMPLES"/*.cul >"$TMP/got" 2>&1
+if ! diff -u "$TMP/want" "$TMP/got" >"$TMP/diff"; then
+  echo "FAIL [$flag]: mini_culebra differs from culebra itself" >&2
+  cat "$TMP/diff" >&2
+  fail=1
+else
+  echo "ok   [$flag $(ls "$SAMPLES"/*.cul | wc -l | tr -d ' ') samples]"
+fi
 
 # --- Diagnostics: the binder's own rejections, checked directly (the
 # restrictions are deliberate -- see mini_culebra.cul's header). ---

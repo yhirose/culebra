@@ -955,18 +955,18 @@ _run-tests BACKEND:
     }
 
     # The Core-IR front ends in examples/languages/, each against the oracle
-    # for its language: PL/0 against the tree-walking interpreter beside it,
-    # mini-js against `node`, mini-culebra against culebra itself, mini-go
-    # against a frozen `go run`, mini-lua against `lua`. In every lane
-    # including `fast`, which is what `just land` runs: they are the largest
-    # culebra programs in the tree as well as the only CodeGen consumers at
-    # the size a real front end uses it. An arm whose oracle is not
-    # installed is skipped rather than failing the lane.
+    # for its language: mini-js against `node`, mini-culebra against culebra
+    # itself, mini-go against a frozen `go run`, mini-lua against `lua`. What
+    # a mismatch mostly finds is a front end's own bug, and the front ends are
+    # culebra code that runs the same on every OS, so this is heavy: one
+    # Linux shard runs it, and the landing gate runs run_languages_smoke.
+    # PL/0 is not here because pl0_codegen_test runs it on every engine.
+    # An arm whose oracle is not installed is skipped rather than failing.
     run_languages() {
         # The arms in parallel, not one after another: each alone
-        # under-fills the box (pl0's eight samples cannot use twenty cores),
-        # and the whole phase then costs about what its longest arm does.
-        local arms=(pl0 mini-culebra mini-go mini-csharp)
+        # under-fills the box, and the whole phase then costs about what its
+        # longest arm does.
+        local arms=(mini-culebra mini-go mini-csharp)
         # An arm whose oracle is a separate program is skipped where that
         # program is absent, rather than failing the lane.
         local need a oracle
@@ -995,6 +995,22 @@ _run-tests BACKEND:
             pids+=($!); i=$(( i + 1 ))
         done
         for p in "${pids[@]}"; do wait "$p" || rc=1; done
+        return $rc
+    }
+
+    # What the landing gate keeps of the above: that CodeGen still carries a
+    # whole front end. PL/0 end to end, and mini-culebra, the largest CodeGen
+    # consumer, over a sample each for closures, generators, classes and
+    # throw; most of a mini-culebra sample's second is the front end's own
+    # start, so a few say what all 49 would.
+    run_languages_smoke() {
+        CULEBRA="$BIN" misc/check_language_samples.sh pl0 &
+        local p1=$!
+        CULEBRA="$BIN" misc/check_language_samples.sh mini-culebra \
+            closures2.cul generators.cul classes.cul errors.cul &
+        local p2=$! rc=0
+        wait "$p1" || rc=1
+        wait "$p2" || rc=1
         return $rc
     }
 
@@ -1243,9 +1259,8 @@ _run-tests BACKEND:
     # ctest at all (jit_error_pos_test, search_model_test). Membership is read
     # off ctest's own listing rather than kept as a list here, so a new CLI
     # test joins by existing; the three language front ends are left out
-    # because run_languages covers their samples in this tier and their ctest
-    # entries (which add the faststart and AOT legs) cost 152 of the suite's
-    # 310 CPU seconds.
+    # because run_languages_smoke stands for them in this tier and their
+    # ctest entries (the faststart and AOT legs) cost most of the suite.
     run_embed_cli() {
         local dir names
         dir="$(dirname "$BIN")"
@@ -1501,7 +1516,8 @@ _run-tests BACKEND:
       "run_leak_battery|rc-leak battery (quiescent audit per pattern)|binary|test|gc|heavy|31"
       "run_embed_cli|ctest (CLI entries, binary only)|tree|dev|-|local|20"
       "run_embed|ctest (embedding smokes)|tree|test|buildtree|-|60"
-      "run_languages|languages (front ends vs their oracles)|binary|dev,test|light|-|13"
+      "run_languages_smoke|languages smoke (pl0, a few mini-culebra samples)|binary|dev|-|-|2"
+      "run_languages|languages (front ends vs their oracles)|binary|test|light|heavy|13"
       "run_culebra_test_self|culebra-test self|binary|check,dev,test|light|-|0"
       "run_unit_runner_sweep|culebra-test sweep (tests/*.cul as session units)|binary|check,dev,test|light|-|11"
       "run_examples_sweep|examples sweep (the suites under examples/)|binary|check,dev,test|light|-|3"

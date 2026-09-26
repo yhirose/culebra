@@ -2209,20 +2209,21 @@ set_tests_properties(pl0_codegen_test PROPERTIES TIMEOUT 900)
 
 # examples/languages/mini-culebra/mini_culebra.cul against the culebra binary itself —
 # the samples are written in the subset both implement, so the real
-# implementation is the compiler's oracle — under interp and JIT (it has to
-# run two whole top-level scripts as subprocesses, like pl0_codegen_test).
+# implementation is the compiler's oracle — under the JIT (the executor's half
+# is the languages phase of `just test`; it has to run two whole top-level
+# scripts as subprocesses, like pl0_codegen_test).
 add_test(NAME mini_culebra_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/mini_culebra_test.sh
                  $<TARGET_FILE:culebra>)
 # Every sample compiles through a whole top-level script (grammar parse +
-# prelude), four runs each (mini and oracle, both engines) -- well past the
-# lane's blanket --timeout 300 as the sample set grows.
+# prelude), mini and oracle each -- well past the lane's blanket --timeout
+# 300 as the sample set grows.
 set_tests_properties(mini_culebra_test PROPERTIES TIMEOUT 900)
 
 # examples/languages/mini-js/mini_js.cul against Node (the oracle; skipped where node is
 # not installed): the samples are ES6 programs both run, printing through the
-# shared fmt.js, under the executor and JIT -- two whole top-level scripts as
-# subprocesses again.
+# shared fmt.js, under the JIT (the executor's half is the languages phase)
+# -- two whole top-level scripts as subprocesses again.
 add_test(NAME mini_js_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/mini_js_test.sh
                  $<TARGET_FILE:culebra>)
