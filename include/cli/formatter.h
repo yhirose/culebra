@@ -421,6 +421,9 @@ class Printer {
   // Object and set literals open a pair of their own, so their interior
   // comments are never mistaken for a statement's.
   std::vector<size_t> owner_;
+  // The brace literal that opens the statement being printed (see
+  // print_statement); print() wraps it in parentheses.
+  const peg::Ast* brace_head_ = nullptr;
   static constexpr int kIndent = 2;
 
   // A comment byte is never code (the scanner clears the mask over it), so
@@ -674,7 +677,47 @@ class Printer {
   // belong to whichever printer recurses into it; any comment nobody emits is
   // caught by the comment-preservation check.
   DocP print_statement_list(const std::vector<const peg::Ast*>& stmts, size_t lo) {
-    return print_items(stmts, lo, "", [&](size_t k) { return print(*stmts[k]); });
+    return print_items(stmts, lo, "", [&](size_t k) { return print_statement(*stmts[k]); });
+  }
+
+  // A statement tries a bare block before an expression, so an object literal
+  // that opens a statement and also reads as a block keeps its parentheses:
+  // `({}).keys()` and `({}).x = 1` without them are `{}` then a stray `.`.
+  DocP print_statement(const peg::Ast& s) {
+    brace_head_ = leading_object(s);
+    DocP d = print(s);
+    brace_head_ = nullptr;
+    return d;
+  }
+
+  // Whether the grammar takes `text` (a printed literal) as a bare block at a
+  // statement's head: `{}`, `{a}`, `{a: while c {}}`, `{a: T = v}` do; any
+  // literal with a `,` between properties does not. Asked of the grammar
+  // rather than listed here, so a new statement form cannot slip past.
+  static bool reads_as_block(const std::string& text) {
+    auto r = culebra::get_parser()["LEXICAL_SCOPE"].parse(text.data(), text.size());
+    return r.ret && r.len == text.size();
+  }
+
+  // The OBJECT whose `{` is the first token printed for `s`, or nullptr. Only
+  // nodes that print their first child first are descended.
+  static const peg::Ast* leading_object(const peg::Ast& s) {
+    const peg::Ast* n = &s;
+    for (;;) {
+      const std::string& name = n->name;
+      if (name == "OBJECT") return n;
+      if (name == "STATEMENT") {
+        n = culebra::view_postfix_modifier(*n).base;
+      } else if (name == "ASSIGNMENT") {
+        auto v = view_assignment(*n);
+        if (v.is_let || v.is_mut) return nullptr;
+        n = n->nodes[v.lvaloff].get();
+      } else if (name == "CALL" || name == "RANGE" || is_bare_chain(name)) {
+        n = n->nodes[0].get();
+      } else {
+        return nullptr;
+      }
+    }
   }
 
   // Render a comma/blank-separated list of member nodes whose brace interior
@@ -861,7 +904,7 @@ class Printer {
   DocP print_block(const peg::Ast& body, size_t after_pos, bool empty_ok) {
     auto stmts = stmt_children(body);
     return print_braced(stmts, after_pos, "", empty_ok,
-                        [&](size_t k) { return print(*stmts[k]); });
+                        [&](size_t k) { return print_statement(*stmts[k]); });
   }
 
   // A bare `{ ... }` statement block. The optimizer keeps LEXICAL_SCOPE as a
@@ -1782,7 +1825,6 @@ class Printer {
  public:
   DocP print(const peg::Ast& node) {
     const std::string& n = node.name;
-
     // Statements / control flow
     if (n == "STATEMENTS") return print_block(node, node.position, false);
     if (n == "LEXICAL_SCOPE") return print_lexical_scope(node);
@@ -1826,7 +1868,13 @@ class Printer {
     if (is_unary(n)) return print_unary(node);
     if (is_binary_explicit(n) || is_binary_implicit(n)) return print_binary(node);
     if (n == "ARRAY") return print_array(node);
-    if (n == "OBJECT") return print_object(node);
+    if (n == "OBJECT") {
+      DocP d = print_object(node);
+      if (&node != brace_head_) return d;
+      brace_head_ = nullptr;
+      if (!reads_as_block(doc_render(d, /*width=*/1 << 20))) return d;
+      return doc_concat({doc_text("("), d, doc_text(")")});
+    }
     if (n == "TUPLE") return print_tuple(node);
     if (n == "SET") return print_set(node);
 

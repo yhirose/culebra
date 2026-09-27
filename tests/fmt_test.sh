@@ -780,6 +780,64 @@ if ! diff -u "$TMP/lam_want.cul" "$TMP/lam_got.cul" > "$TMP/lam_diff" 2>&1; then
   fail=1
 fi
 
+# --- 1p2. Golden fixture: a brace literal that opens a statement -----------
+# A statement tries a bare block first, so `({}).keys()` reprinted as
+# `{}.keys()` is an empty block and a stray `.`. Only a literal that also reads
+# as a block (`{}`, `{a}`, a labelled loop, a typed assignment) keeps its
+# parentheses, and only at a statement's head — an arm or a lambda body tries
+# an expression first.
+cat > "$TMP/head_in.cul" <<'EOF'
+let x=1
+({}).keys() if true
+({}).x=1
+({})
+({x}).keys()
+({a: Int=3}).keys()
+({a:1}).keys()
+({1,2}).contains(1)?1:2
+({})==x
+fn f() {
+  ({}).keys()
+}
+let g=|q| ({}).keys()
+match x {
+  1 => ({}).keys(),
+  _ => {
+    ({}).x=2
+  },
+}
+println(({}).keys())
+EOF
+cat > "$TMP/head_want.cul" <<'EOF'
+let x = 1
+({}).keys() if true
+({}).x = 1
+({})
+({x}).keys()
+({a: Int = 3}).keys()
+{a: 1}.keys()
+{1, 2}.contains(1) ? 1 : 2
+({}) == x
+fn f() {
+  ({}).keys()
+}
+let g = |q| {}.keys()
+match x {
+  1 => {}.keys(),
+  _ => {
+    ({}).x = 2
+  },
+}
+println({}.keys())
+EOF
+"$CULEBRA" fmt "$TMP/head_in.cul" > "$TMP/head_got.cul" 2>"$TMP/head_err"
+if ! diff -u "$TMP/head_want.cul" "$TMP/head_got.cul" > "$TMP/head_diff" 2>&1; then
+  echo "FAIL golden (statement-head brace literal): formatted output differs from expected"
+  cat "$TMP/head_diff"
+  cat "$TMP/head_err"
+  fail=1
+fi
+
 # --- 1q. Golden fixture: how a condition wraps -----------------------------
 # An `if` / `while` / `match` head has no brackets around it, so a break inside
 # it lands between two operands and reads as a mistake. It wraps only at the
