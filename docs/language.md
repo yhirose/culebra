@@ -768,7 +768,10 @@ intermediate IR but must preserve the observable effect order.
   `v1` then `v2`. For `[n; default]` (the size-prefixed form) the
   count expression evaluates before the default expression.
 * **Binary operators `+`, `-`, `*`, `/`, `%`, `==`, etc.** Left
-  operand first, then right operand, then the operation.
+  operand first, then right operand, then the operation. An operand
+  keeps the value it had when it was evaluated, even if a later operand
+  rebinds its variable: with `n = 1`, `n + (n = 10)` is `11`. The same
+  holds for a callee or receiver and the arguments after it.
 * **`||`, `&&`, `??`.** Short-circuit at the first decisive operand
   — `||` stops at the first truthy value, `&&` at the first falsy,
   `??` at the first non-`nil`. The trailing operands are not

@@ -1,0 +1,110 @@
+# An operand keeps the value it had when it was evaluated, even when a later
+# operand rebinds its variable: left to right means `n + (n = 10)` adds the 1
+# that was read first. A local read in place used to see the later write
+# (20 here), and a call head held in a cell was read only when the call ran.
+
+mut n = 1
+assert_eq(n + (n = 10), 11)
+n = 1
+assert_eq(n * (n = 10) + n, 20)
+n = 2
+assert_eq(n ** (n = 3), 8)
+n = 1
+assert_eq(n < (n = 10), true)
+n = 5
+assert_eq(1 < n < (n = 3), false)
+
+# the callee, a receiver, and an index base are read before the rest of the
+# chain runs
+mut f = |x| x + 1
+assert_eq(f((f = |x| x * 100)(2)), 201)
+mut a = [1, 2]
+assert_eq(a[(a = [7, 8, 9]).size() - 2], 2)
+mut s = "ab"
+assert_eq(s.size() + (s = "abcdef").size(), 8)
+
+# inside a function, with a compound assignment, and through a captured cell
+let local = fn () {
+  mut m = 1
+  m + (m += 5)
+}
+assert_eq(local(), 7)
+mut h = |x| x + 1
+let call_captured = fn () {
+  h((h = |x| x * 100)(2))
+}
+assert_eq(call_captured(), 201)
+
+# a rebinding on one branch only: the other path still reads the variable
+mut d = 1
+assert_eq(d + (if true { d = 9 } else { 0 }), 10)
+mut e = 1
+assert_eq(e + (if false { e = 9 } else { 0 }), 1)
+
+# an assignment's right side runs first, so it holds the value from before
+# the target chain rebinds it; the target's own receiver is read before its key
+n = 0
+mut xs = [0, 0]
+xs[(n = 1)] = n
+assert_eq(xs, [0, 0])
+n = 0
+xs[(n = 1)] += n
+assert_eq(xs, [0, 0])
+mut c = [0, 0]
+let before = c
+c[(c = [7, 7]).size() - 2] = 5
+assert_eq([before, c], [[5, 0], [7, 7]])
+
+# a sized array's count, and a value whose format spec rebinds it
+n = 2
+assert_eq([0](n, (n = 5)), [0, 5])
+n = 1
+assert_eq("[{n:>{(n = 5)}}]", "[    1]")
+
+# inside an arm, and as a block's last statement
+let in_arm = fn () {
+  mut m = 1
+  if true { m = m + (m = 3) } else { 0 }
+  m
+}
+assert_eq(in_arm(), 4)
+let block_last = fn () {
+  mut m = 1
+  let v = if true {
+    let z = 0
+    m + (m = 7) + z
+  } else {
+    0
+  }
+  v
+}
+assert_eq(block_last(), 8)
+
+# a `@value` local, read in place from its fields, is not kept unboxed when
+# an expression rebinds it
+@value
+class V {
+  x: Float
+  y: Float
+
+  new(x: Long | Float, y: Long | Float) {
+    self.x = to_float(x)
+    self.y = to_float(y)
+  }
+
+  __add__(o) {
+    V.new(self.x + o.x, self.y + o.y)
+  }
+}
+let values = fn () {
+  mut p = V.new(1, 0)
+  let r1 = p.x + (p = V.new(10, 0)).x
+  p = V.new(2, 0)
+  let r2 = p.x ** (p = V.new(3, 0)).x
+  mut a = V.new(1, 1)
+  let r3 = a + (a = V.new(10, 10))
+  [r1, r2, r3.x]
+}
+assert_eq(values(), [11.0, 8.0, 11.0])
+
+inspect('operand rebind order: ok')

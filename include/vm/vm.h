@@ -6342,6 +6342,145 @@ class Compiler {
     return read_binding(tgt, b);
   }
 
+  // Structure of a statement rather than an operand of it: an arm list, an
+  // arm, a nobreak clause — whatever runs from it is one of its steps.
+  static bool is_clause(const peg::Ast& t) {
+    using namespace peg::udl;
+    return t.tag == "MATCH_ARMS"_ || t.tag == "MATCH_ARM"_ ||
+           t.tag == "COND_ARM"_ || t.tag == "NOBREAK_CLAUSE"_;
+  }
+
+  // Whether `parent.nodes[i]` is a step the statement runs as a statement of
+  // its own (compile_statement / compile_value_into): a block, a member of a
+  // statement list or an init clause, an arm's body.
+  static bool is_body(const peg::Ast& parent, size_t i) {
+    using namespace peg::udl;
+    const auto& c = *parent.nodes[i];
+    return parent.tag == "STATEMENTS"_ || parent.tag == "INIT_CLAUSE"_ ||
+           c.tag == "STATEMENTS"_ || c.tag == "INIT_CLAUSE"_ ||
+           c.tag == "LEXICAL_SCOPE"_ || c.tag == "BLOCK"_ ||
+           c.original_tag == "BLOCK"_ ||
+           ((parent.tag == "MATCH_ARM"_ || parent.tag == "COND_ARM"_) &&
+            i + 1 == parent.nodes.size());
+  }
+
+  // A name an assignment binds, and the source offset standing for when that
+  // takes effect in evaluation order: a read placed before it may still be
+  // held, as an operand, when the write lands.
+  struct Rebind {
+    std::string_view name;
+    size_t at;
+  };
+  static constexpr size_t kUnpinned = static_cast<size_t>(-1);
+
+  // When what `t.nodes[i]` assigns takes effect, if not at its own offset.
+  // A block runs after the rest of its parent, whose parts are consumed by
+  // then, so for anything outside it lands when the parent starts; an
+  // assignment's right side runs before its target chain, so what the chain
+  // assigns lands when the assignment ends. An outer pin holds.
+  static size_t child_pin(const peg::Ast& t, size_t i, size_t pin) {
+    using namespace peg::udl;
+    if (pin != kUnpinned) return pin;
+    if (is_body(t, i)) return t.position;
+    size_t chain_from = 0, chain_to = 0;
+    if (t.tag == "ASSIGNMENT"_) {
+      auto av = culebra::view_assignment(t);
+      if (av.lvalcnt > 1) chain_from = av.lvaloff, chain_to = av.lvaloff + av.lvalcnt;
+    } else if (t.tag == "PLACE_ASSIGN"_) {
+      chain_to = culebra::view_place_assign(t).count;
+    }
+    return i >= chain_from && i < chain_to ? t.position + t.length : kUnpinned;
+  }
+
+  // A function, method or type declaration: its bodies compile in a Compiler
+  // of their own, and what they assign of ours is a cell, read by copy anyway.
+  static bool compiles_apart(const peg::Ast& t) {
+    using namespace peg::udl;
+    switch (t.tag) {
+      case "FUNCTION"_: case "LAMBDA"_: case "MULTIFN_DECL"_: case "METHOD"_:
+      case "TRAIT_METHOD"_: case "CLASS_DECL"_: case "TRAIT_DECL"_: case "ENUM_DECL"_:
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  // Every assignment inside `t`, with when it takes effect: its own offset,
+  // or `pin`.
+  static void assigned_names(const peg::Ast& t, std::vector<Rebind>& out,
+                             size_t pin = kUnpinned) {
+    using namespace peg::udl;
+    if (compiles_apart(t)) return;
+    size_t at = pin != kUnpinned ? pin : t.position;
+    switch (t.tag) {
+      case "ASSIGNMENT"_:
+        if (auto* tgt = culebra::assign_name_target(t, culebra::view_assignment(t)))
+          out.push_back({tgt->token, at});
+        break;
+      case "DESTRUCTURE_ASSIGN"_:
+        culebra::for_each_pattern_binding(
+            *culebra::view_destructure(t).pattern,
+            [&](std::string_view n, auto, auto) { out.push_back({n, at}); });
+        break;
+      case "PLACE_ASSIGN"_:
+        culebra::for_each_place_target(
+            t, [](const peg::Ast&) {}, [&](const peg::Ast& n) { out.push_back({n.token, at}); });
+        break;
+      default: break;
+    }
+    for (size_t i = 0; i < t.nodes.size(); ++i)
+      assigned_names(*t.nodes[i], out, child_pin(t, i, pin));
+  }
+
+  // What a statement may rebind while its evaluation still holds an operand
+  // that reads it in place: what its parts assign. Not its own target
+  // (stored after every read), and not its steps, which compile as
+  // statements with lists of their own — `deep` adds those lists too.
+  static void statement_writes(const peg::Ast& stmt, std::vector<Rebind>& out,
+                               bool deep = false) {
+    using namespace peg::udl;
+    // A declaration's decorators are its only parts compiled here; the rest
+    // (bodies, default parameters) compiles apart.
+    if (compiles_apart(stmt)) {
+      for (const auto& c : stmt.nodes)
+        if (c->tag == "DECORATOR"_) assigned_names(*c, out);
+      return;
+    }
+    for (size_t i = 0; i < stmt.nodes.size(); ++i) {
+      const auto& c = *stmt.nodes[i];
+      if (is_body(stmt, i)) {
+        if (deep) statement_writes(c, out, true);
+      } else if (is_clause(c)) {
+        statement_writes(c, out, deep);
+      } else {
+        assigned_names(c, out, child_pin(stmt, i, kUnpinned));
+      }
+    }
+  }
+
+  // The statement_writes of the statement being compiled. A statement in a
+  // block an expression runs has its own list — what it assigns is already
+  // in the enclosing statement's, pinned to where the block's parent starts.
+  std::vector<Rebind> rebound_;
+  struct StatementWrites {
+    Compiler& c;
+    std::vector<Rebind> outer;
+    StatementWrites(Compiler& compiler, const peg::Ast& stmt)
+        : c(compiler), outer(std::exchange(compiler.rebound_, {})) {
+      statement_writes(stmt, c.rebound_);
+    }
+    ~StatementWrites() { c.rebound_ = std::move(outer); }
+    StatementWrites(const StatementWrites&) = delete;
+    StatementWrites& operator=(const StatementWrites&) = delete;
+  };
+  // Whether a read of `name` at `at` comes before a write to it that its
+  // statement makes while the read may still be held.
+  bool rebound_after(std::string_view name, const peg::Ast& at) const {
+    return std::any_of(rebound_.begin(), rebound_.end(), [&](const Rebind& r) {
+      return r.name == name && at.position < r.at;
+    });
+  }
+
   ExprResult read_binding(const peg::Ast& at, const Binding& b,
                           bool unbound_guard = true) {
     ensure_session_slot(b);
@@ -6354,6 +6493,10 @@ class Compiler {
       // NameError.
       if (b.lazy && unbound_guard)
         emit(Op::UnboundErr, b.slot, kconst_str(b.name));
+      // Operands evaluate left to right: a read that a later assignment in
+      // the same expression could overwrite is taken by value, now —
+      // `n + (n = 10)` adds the 1 it read.
+      if (rebound_after(b.name, at)) return {owned_src(at, {b.slot, false}), true};
       return {b.slot, false};
     }
     int32_t t = alloc_temp(at);
@@ -6507,6 +6650,7 @@ class Compiler {
     stamp(ast);
     emit_dbg_stmt(ast);
     TempScope ts(*this);
+    StatementWrites sw(*this, ast);
     switch (ast.tag) {
       case "STATEMENTS"_:
         compile_block_into(ast, dst);
@@ -6554,6 +6698,7 @@ class Compiler {
     stamp(ast);
     emit_dbg_stmt(ast);
     TempScope ts(*this);
+    StatementWrites sw(*this, ast);
     compile_statement_inner(ast);
   }
 
@@ -7079,7 +7224,7 @@ class Compiler {
   // one below returned — `@a @b fn f` is `a(b(f))`, so the expressions
   // themselves evaluate top-down first, as that call's callees would.
   // `@packable`, `@value` and `@derive(...)` are compiler directives, not
-  // callable, and are the reason the loops can skip an entry. Returns the slot
+  // callable, and are the reason the first loop skips an entry. Returns the slot
   // holding the outermost result (+1).
   int32_t apply_decorators(const peg::Ast& ast, size_t dec_end, int32_t val) {
     std::vector<std::pair<const peg::Ast*, int32_t>> callees;
@@ -10843,6 +10988,20 @@ class Compiler {
       cands.push_back(*c);
     }
     for (const auto& n : repeated) live.erase(n);
+    // An unboxed local is read in place from its home slots, so one that an
+    // expression rebinds while an operand still holds it stays boxed.
+    if (!cands.empty()) {
+      std::unordered_map<std::string_view, size_t> last_write;
+      std::vector<Rebind> w;
+      for (size_t j = cands.front().index + 1; j < stmts.size(); j++) {
+        w.clear();
+        statement_writes(*stmts[j], w, /*deep=*/true);
+        for (const auto& r : w) last_write[r.name] = j;
+      }
+      for (const auto& c : cands)
+        if (auto it = last_write.find(c.name); it != last_write.end() && it->second > c.index)
+          live.erase(c.name);
+    }
     SpliceCache splices;
     for (bool changed = true; changed;) {
       changed = false;

@@ -20,7 +20,9 @@
 # 285 since test_audio.cul (the Audio namespace: tone, Sound, Music, Pcm).
 # 286 since test_library_error_positions.cul (an error raised inside the
 # stdlib reports at the user's call into it, on every engine).
-tests.cul 286
+# 287 since test_operand_rebind_order.cul (an operand keeps the value it was
+# evaluated to when a later operand rebinds its variable).
+tests.cul 287
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 tests.isolate 20
