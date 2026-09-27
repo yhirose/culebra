@@ -540,8 +540,11 @@ class Printer {
     // and needs parentheses as an operand of anything -- `(|q| f(q))(x)`
     // reprinted without them is a lambda whose body is `f(q)(x)`. The
     // default below is 16 (binds tightest), which is the wrong answer here.
-    // So does an assignment's right side: `(let q = x + y) > 100`.
-    if (name == "LAMBDA" || name == "ASSIGNMENT") return 0;
+    // So does every form EXPRESSION tries before CONDITIONAL — the three
+    // assignments' right sides and a try's catch body: `(let q = x + y) > 100`.
+    if (name == "LAMBDA" || name == "ASSIGNMENT" || name == "DESTRUCTURE_ASSIGN" ||
+        name == "PLACE_ASSIGN" || name == "TRY")
+      return 0;
     if (name == "CONDITIONAL") return 1;
     if (name == "NIL_COALESCE") return 2;
     if (name == "LOGICAL_OR") return 3;
@@ -927,7 +930,7 @@ class Printer {
 
   // Print `node` as an operand of a binary/unary context, parenthesizing when
   // its own precedence would otherwise re-associate against `parent_prec`.
-  // `parent_name` is the enclosing binary rule, when there is one.
+  // `parent_name` is the enclosing rule (binary, or CALL for a receiver).
   DocP print_operand(const peg::Ast& node, int parent_prec, bool assoc_safe,
                      std::string_view parent_name = {},
                      bool flat_when_bare = false) {

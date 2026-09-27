@@ -165,28 +165,33 @@ if ! diff -u "$TMP/par_want.cul" "$TMP/par_got.cul" > "$TMP/par_diff" 2>&1; then
   fail=1
 fi
 
-# --- 1c'. Golden fixture: parentheses that carry meaning -------------------
-# `(n?[0])[5]` stops the nil collapse where `n?[0][5]` doesn't, and an
-# assignment runs as far right as it can.
+# --- 1c2. Golden fixture: parentheses that carry meaning ------------------
+# `(v?[0])[5]` stops the nil collapse where `v?[0][5]` doesn't, and every form
+# EXPRESSION tries before CONDITIONAL (the assignments, a try) runs as far
+# right as it can.
 cat > "$TMP/mpar_in.cul" <<'EOF'
-let n = nil
-let x = 1
-try { (n?[0])[5] } catch e { nil }
+let u = (v?[0])[5]
 let w = (x.to_string()).size()
 if (let q = x + 1) > 1 { q }
+if (let (p, q) = t) == nil { p }
+let s = ((a, b) = (3, 4)).size()
+let r = (try { 1 } catch e { 2 }) + 1
 EOF
 cat > "$TMP/mpar_want.cul" <<'EOF'
-let n = nil
-let x = 1
-try {
-  (n?[0])[5]
-} catch e {
-  nil
-}
+let u = (v?[0])[5]
 let w = (x.to_string()).size()
 if (let q = x + 1) > 1 {
   q
 }
+if (let (p, q) = t) == nil {
+  p
+}
+let s = ((a, b) = (3, 4)).size()
+let r = (try {
+  1
+} catch e {
+  2
+}) + 1
 EOF
 "$CULEBRA" fmt "$TMP/mpar_in.cul" > "$TMP/mpar_got.cul" 2>"$TMP/mpar_err"
 if ! diff -u "$TMP/mpar_want.cul" "$TMP/mpar_got.cul" > "$TMP/mpar_diff" 2>&1; then
