@@ -48,6 +48,18 @@ let t_parsed = Time.parse("2026-05-21 15:30:45", "%Y-%m-%d %H:%M:%S")
 let p_local = t_parsed.parts()
 assert_true(p_local.year == 2026 && p_local.month == 5 && p_local.day == 21)
 assert_true(p_local.hour == 15 && p_local.minute == 30 && p_local.second == 45)
+# Strict: the fields name one date (no carry into March), the whole string is
+# read, and a field the format leaves out defaults as in `from_parts`.
+assert_throws("ValueError", || Time.parse("2026-02-30", "%Y-%m-%d"))
+assert_throws("ValueError", || Time.parse("2026-02-03 junk", "%Y-%m-%d"))
+assert_throws("ValueError", || Time.parse("2026-02-03 ", "%Y-%m-%d"))
+assert_throws("ValueError", || Time.parse("2026-05-21 23:59:60", "%Y-%m-%d %H:%M:%S"))
+let bad_day = try { Time.parse("2026-02-30", "%Y-%m-%d"); "" } catch e { e.message }
+assert_eq(bad_day, "Time.parse: 'day' must be between 1 and 28, got 30")
+assert_eq(Time.parse("2024-02-29", "%Y-%m-%d").parts().day, 29)
+let clock_only = Time.parse("12:30", "%H:%M").parts()
+assert_true(clock_only.year == 1970 && clock_only.month == 1 && clock_only.day == 1)
+assert_true(clock_only.hour == 12 && clock_only.minute == 30)
 
 # --- Instant methods ---
 let p = t.parts(utc: true)

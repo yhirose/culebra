@@ -1318,13 +1318,25 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_time_from_iso_nanos(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_time_parse_nanos(
     const char* s, const char* fmt, int64_t line, int64_t col) {
+  // A field `fmt` leaves out defaults as in `from_parts`; the whole of `s` must
+  // be read, and the fields must name one date rather than carry into the next.
   std::tm tm{};
-  if (!culebra::os_strptime(s ? s : "", fmt ? fmt : "", &tm)) {
+  tm.tm_year = 70;
+  tm.tm_mday = 1;
+  auto* end = culebra::os_strptime(s ? s : "", fmt ? fmt : "", &tm);
+  if (!end || *end) {
     throw culebra::CulebraError("ValueError",
         culebra::format("Time.parse: '{}' does not match '{}'",
                         s ? s : "", fmt ? fmt : ""),
         line, col);
   }
+  if (auto bad = culebra::_time_detail::civil_out_of_range(
+          tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min,
+          tm.tm_sec, 0))
+    culebra::_time_detail::throw_value(
+        culebra::format("Time.parse: '{}' must be between {} and {}, got {}",
+                        bad->name, bad->lo, bad->hi, bad->got),
+        line, col);
   return culebra::_time_detail::from_tm_nanos(tm, 0, /*utc=*/false);
 }
 

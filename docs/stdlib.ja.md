@@ -1077,7 +1077,7 @@ Unix epoch秒から構築。Longなら正確に、Floatならsub-秒精度で、
 
 parts dictからtimestampを組み立て — `Instant.parts`の逆操作。
 認識キー: `year`、`month`、`day`、`hour`、`minute`、`second`、
-`nanosecond`（デフォルト: `month=1`、`day=1`、その他0）。それ
+`nanosecond`（デフォルト: `year=1970`、`month=1`、`day=1`、その他0）。それ
 以外のキーは無視。認識キーの値はLongでなければ`TypeError`、暦の範囲
 （`month`は1〜12、`day`はその月の日数まで、`hour`は0〜23、`minute`と
 `second`は0〜59、`nanosecond`は10⁹未満）を外れると`ValueError`。
@@ -1085,8 +1085,11 @@ parts dictからtimestampを組み立て — `Instant.parts`の逆操作。
 #### `Time.parse(s: String, fmt: String) -> Instant`
 
 非ISO入力向けの厳格strftime parse。formatはPOSIX `strptime`
-準拠。`s`が`fmt`に一致しなければ`ValueError`をthrow。結果は
-local timeとして解釈。
+準拠。`s`が`fmt`に一致しないとき、`fmt`を読み終えても文字が
+残るとき、項目が暦の範囲（`Time.from_parts`と同じ）を外れるときは
+`ValueError`をthrow（`2026-02-30`は3月に繰り上げずに拒否）。`fmt`に
+ない項目は`Time.from_parts`と同じ既定値（`year=1970`、`month=1`、
+`day=1`、その他0）。結果はlocal timeとして解釈。
 
 ```culebra
 Time.parse("2026/05/20 15:30:00", "%Y/%m/%d %H:%M:%S")

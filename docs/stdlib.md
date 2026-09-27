@@ -1105,7 +1105,7 @@ precision, rounded to the nearest nanosecond.
 
 Compose from a parts dict — the inverse of `Instant.parts`.
 Recognised keys: `year`, `month`, `day`, `hour`, `minute`, `second`,
-`nanosecond` (defaults: `month=1`, `day=1`, others 0). Extra keys
+`nanosecond` (defaults: `year=1970`, `month=1`, `day=1`, others 0). Extra keys
 are ignored. Each recognised key must be a Long (`TypeError`
 otherwise) within its calendar range — `month` 1–12, `day` up to that
 month's length, `hour` 0–23, `minute` and `second` 0–59, `nanosecond`
@@ -1114,8 +1114,12 @@ below 10⁹ — or it raises `ValueError`.
 #### `Time.parse(s: String, fmt: String) -> Instant`
 
 Strict strftime parse for non-ISO inputs. The format follows POSIX
-`strptime`. Throws `ValueError` if `s` doesn't match `fmt`. Result
-is interpreted as local time.
+`strptime`. Throws `ValueError` if `s` doesn't match `fmt`, if
+characters are left over after `fmt` is used up, or if a field is
+outside its calendar range (the ranges of `Time.from_parts` —
+`2026-02-30` is refused, not carried into March). A field `fmt` does
+not mention defaults as in `Time.from_parts` (`year=1970`, `month=1`,
+`day=1`, others 0). Result is interpreted as local time.
 
 ```culebra
 Time.parse("2026/05/20 15:30:00", "%Y/%m/%d %H:%M:%S")

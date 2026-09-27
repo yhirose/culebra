@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <ctime>
 #if defined(_WIN32)
+#include <cstring>  // std::strlen
 #include <iomanip>  // std::get_time (strptime replacement)
 #include <sstream>  // std::istringstream
 #endif
@@ -124,13 +125,15 @@ inline std::tm* os_localtime_r(const std::time_t* t, std::tm* out) {
 #endif
 }
 
-// Parse `s` per strftime-style `fmt` into `*tm`. Returns non-null on success,
-// nullptr on mismatch (callers only test null/non-null, not the end pointer).
+// Parse `s` per strftime-style `fmt` into `*tm`. Returns the first character
+// not consumed, or nullptr on mismatch.
 inline const char* os_strptime(const char* s, const char* fmt, std::tm* tm) {
 #if defined(_WIN32)
   std::istringstream in{std::string(s)};
   in >> std::get_time(tm, fmt);
-  return in.fail() ? nullptr : s;
+  if (in.fail()) return nullptr;
+  // tellg() answers -1 once eofbit is set, so a fully read `s` is its end.
+  return in.eof() ? s + std::strlen(s) : s + static_cast<std::streamoff>(in.tellg());
 #else
   return strptime(s, fmt, tm);
 #endif
