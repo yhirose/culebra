@@ -11,7 +11,6 @@
 #include <cstdlib>
 #include <ctime>
 #if defined(_WIN32)
-#include <cstring>  // std::strlen (os_strptime end pointer)
 #include <iomanip>  // std::get_time (strptime replacement)
 #include <sstream>  // std::istringstream
 #endif
@@ -134,18 +133,6 @@ inline const char* os_strptime(const char* s, const char* fmt, std::tm* tm) {
   return in.fail() ? nullptr : s;
 #else
   return strptime(s, fmt, tm);
-#endif
-}
-
-// Mark a broken-down time computed by hand as UTC, the way gmtime does, for
-// strftime's %Z / %z: POSIX reads the zone off the struct. Windows' struct
-// has no such field (its %Z names the local zone, as it always has).
-inline void os_mark_utc(std::tm& tm) {
-#if defined(_WIN32)
-  (void)tm;
-#else
-  tm.tm_gmtoff = 0;
-  tm.tm_zone = const_cast<char*>("UTC");
 #endif
 }
 

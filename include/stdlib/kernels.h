@@ -505,7 +505,7 @@ inline int days_in_month(int year, int month) {
 inline constexpr int64_t NS_PER_SEC = 1'000'000'000;
 
 // The first calendar field outside its range, and that range — nullopt when
-// the fields name one date and time. timegm / mktime would carry month 13 or
+// the fields name one date and time. utc_seconds / mktime would carry month 13 or
 // hour 25 into the next unit instead; ISO parsing and `from_parts` refuse it.
 struct CivilField {
   const char* name;
@@ -578,13 +578,16 @@ inline int64_t days_from_civil(int64_t y, int64_t m, int64_t d) {
   return era * 146097 + doe - 719468;
 }
 
-// UTC seconds of broken-down fields: tm_mon in 0..11, the day and clock
+// UTC seconds of a date (month 1..12) and a wall clock, the day and clock
 // fields carried past their ranges (hour -25, second 86400) as timegm does.
+inline std::time_t utc_seconds(int64_t y, int64_t mo, int64_t d, int64_t h,
+                               int64_t mi, int64_t se) {
+  return static_cast<std::time_t>(days_from_civil(y, mo, d) * 86400 +
+                                  h * 3600 + mi * 60 + se);
+}
 inline std::time_t utc_seconds(const std::tm& tm) {
-  return static_cast<std::time_t>(
-      days_from_civil(int64_t{tm.tm_year} + 1900, tm.tm_mon + 1, tm.tm_mday) *
-          86400 +
-      int64_t{tm.tm_hour} * 3600 + int64_t{tm.tm_min} * 60 + tm.tm_sec);
+  return utc_seconds(int64_t{tm.tm_year} + 1900, tm.tm_mon + 1, tm.tm_mday,
+                     tm.tm_hour, tm.tm_min, tm.tm_sec);
 }
 
 // UTC broken-down time of `t`, weekday and day of the year included.
@@ -610,7 +613,6 @@ inline std::tm utc_tm(std::time_t t) {
   tm.tm_mon = static_cast<int>(m - 1);
   tm.tm_mday = static_cast<int>(d);
   tm.tm_yday = static_cast<int>(z - days_from_civil(y, 1, 1));
-  os_mark_utc(tm);
   return tm;
 }
 
@@ -622,9 +624,18 @@ inline std::tm local_tm(std::time_t t) {
   return tm;
 }
 
-inline std::tm to_tm_nanos(int64_t nanos, bool utc) {
-  auto t = split_nanos(nanos).first;
+inline std::tm to_tm(std::time_t t, bool utc) {
   return utc ? utc_tm(t) : local_tm(t);
+}
+
+inline std::tm to_tm_nanos(int64_t nanos, bool utc) {
+  return to_tm(split_nanos(nanos).first, utc);
+}
+
+// Seconds east of UTC of `tm`, the broken-down form of `t`: its wall clock
+// read as UTC, less the instant (0 for a UTC one).
+inline int64_t utc_offset(const std::tm& tm, std::time_t t) {
+  return utc_seconds(tm) - t;
 }
 
 inline int64_t from_tm_nanos(std::tm tm, int64_t sub_nanos, bool utc) {
@@ -640,8 +651,8 @@ inline int64_t from_tm_nanos(std::tm tm, int64_t sub_nanos, bool utc) {
 }
 
 inline std::optional<int64_t> parse_iso_nanos(std::string_view s) {
-  // Mirror parse_iso() but accumulate sub-second as i64 nanos with up to
-  // 9 digits of precision (trailing digits past 9 are discarded).
+  // Sub-second digits accumulate as i64 nanos, up to 9 of them (any past
+  // the ninth are discarded).
   if (s.size() < 10) return std::nullopt;
   auto parse_int = [&](size_t off, int n, int& out) -> bool {
     if (off + n > s.size()) return false;
@@ -712,22 +723,19 @@ inline std::optional<int64_t> parse_iso_nanos(std::string_view s) {
       std::abs(offset_seconds) >= 24 * 3600)
     return std::nullopt;
   // Date-only / tz-less → treat as UTC (deterministic across hosts).
-  std::time_t t = days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + se;
+  std::time_t t = utc_seconds(y, mo, d, h, mi, se);
   if (has_tz) t -= offset_seconds;
   return combine_nanos(t, sub_ns);
 }
 
 inline std::string format_iso_nanos(int64_t nanos, bool utc) {
   auto [t, sub] = split_nanos(nanos);
-  auto tm = to_tm_nanos(nanos, utc);
+  auto tm = to_tm(t, utc);
   std::string tz_str = "Z";
   if (!utc) {
-    // The local wall clock read as UTC, less the instant: seconds east of UTC.
-    auto offset = utc_seconds(tm) - t;
-    int sign = offset < 0 ? -1 : 1;
-    int64_t abs_off = std::abs(static_cast<long>(offset));
-    tz_str = culebra::format("{}{:02d}:{:02d}",
-                             sign < 0 ? '-' : '+',
+    auto offset = utc_offset(tm, t);
+    int64_t abs_off = offset < 0 ? -offset : offset;
+    tz_str = culebra::format("{}{:02d}:{:02d}", offset < 0 ? '-' : '+',
                              static_cast<int>(abs_off / 3600),
                              static_cast<int>((abs_off % 3600) / 60));
   }
@@ -743,8 +751,34 @@ inline std::string format_iso_nanos(int64_t nanos, bool utc) {
 }
 
 inline std::string format_strftime_nanos(int64_t nanos,
-                                         const std::string& fmt, bool utc) {
-  auto tm = to_tm_nanos(nanos, utc);
+                                         const std::string& spec, bool utc) {
+  auto t = split_nanos(nanos).first;
+  auto tm = to_tm(t, utc);
+  // The zone is culebra's to write, not the C library's: on Windows its %z
+  // and %Z read the process's local zone whatever `tm` holds. %z is the
+  // offset iso() prints, and %Z of a UTC time is "UTC"; only a local zone's
+  // name is left to strftime.
+  std::string fmt;
+  fmt.reserve(spec.size());
+  for (size_t i = 0; i < spec.size(); i++) {
+    if (spec[i] != '%' || i + 1 == spec.size()) {
+      fmt += spec[i];
+      continue;
+    }
+    char c = spec[++i];
+    if (c == 'z') {
+      auto offset = utc ? 0 : utc_offset(tm, t);
+      int64_t abs_off = offset < 0 ? -offset : offset;
+      fmt += culebra::format("{}{:02d}{:02d}", offset < 0 ? '-' : '+',
+                             static_cast<int>(abs_off / 3600),
+                             static_cast<int>((abs_off % 3600) / 60));
+    } else if (c == 'Z' && utc) {
+      fmt += "UTC";
+    } else {
+      fmt += '%';
+      fmt += c;
+    }
+  }
   char small[256];
   if (auto n = std::strftime(small, sizeof(small), fmt.c_str(), &tm))
     return std::string(small, n);
