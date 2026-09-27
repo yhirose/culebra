@@ -19,14 +19,18 @@ name: Bump winget manifest
 # before re-enabling this workflow.
 #
 # WINGET_TOKEN must be a classic PAT (fine-grained PATs aren't supported
-# by this action) with the public_repo scope, from an account that has
-# forked microsoft/winget-pkgs — see the action's README for the fork
-# step. Default fork-user is the repo owner (yhirose), which matches.
+# by this action) with the public_repo and workflow scopes, from an
+# account that has forked microsoft/winget-pkgs — see the action's README
+# for the fork step. Default fork-user is the repo owner (yhirose), which
+# matches. workflow is needed because the action branches the fork off
+# upstream's HEAD, and GitHub refuses that CreateRef without it whenever
+# upstream has changed .github/workflows since the fork last synced.
 #
-# WINGET_TOKEN's public_repo scope reaches every public repo the account
-# can write to, not just winget-pkgs, so pinned to a commit rather than
-# the mutable v2 tag: a compromised or malicious update to the action
-# would otherwise run with that token on the next release, unreviewed.
+# WINGET_TOKEN's scopes reach every public repo the account can write
+# to (workflow files included), not just winget-pkgs, so pinned to a
+# commit rather than the mutable v2 tag: a compromised or malicious
+# update to the action would otherwise run with that token on the next
+# release, unreviewed.
 on:
   release:
     types: [published]
