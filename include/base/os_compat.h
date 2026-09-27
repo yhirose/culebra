@@ -8,6 +8,7 @@
 // their own `#if defined(_WIN32)` split in-file, so this header stays small and
 // is the single place the trivial per-call shims live.
 
+#include <cstdint>
 #include <cstdlib>
 #include <ctime>
 #if defined(_WIN32)
@@ -133,13 +134,29 @@ inline std::tm* os_localtime_r(const std::time_t* t, std::tm* out) {
 #endif
 }
 
-// Inverse of gmtime: broken-down UTC time -> time_t.
-inline std::time_t os_timegm(std::tm* tm) {
-#if defined(_WIN32)
-  return _mkgmtime(tm);
-#else
-  return timegm(tm);
-#endif
+// Inverse of gmtime: broken-down UTC time -> time_t, fields out of their
+// range carried as timegm does (month 13, hour -25). Computed from the civil
+// calendar (Howard Hinnant's days_from_civil) rather than asked of the
+// platform: Windows' _mkgmtime gives up past the year 3000 and answers -1,
+// which is also a valid instant. `tm` itself is left as it was.
+inline std::time_t os_timegm(const std::tm* tm) {
+  int64_t y = int64_t{tm->tm_year} + 1900;
+  int64_t m = tm->tm_mon;
+  y += m / 12;
+  m %= 12;
+  if (m < 0) {
+    m += 12;
+    --y;
+  }
+  int64_t mm = m + 1;  // 1..12, the year starting in March
+  y -= mm <= 2;
+  int64_t era = (y >= 0 ? y : y - 399) / 400;
+  int64_t yoe = y - era * 400;
+  int64_t doy = (153 * (mm > 2 ? mm - 3 : mm + 9) + 2) / 5 + tm->tm_mday - 1;
+  int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  int64_t days = era * 146097 + doe - 719468;
+  return static_cast<std::time_t>(days * 86400 + int64_t{tm->tm_hour} * 3600 +
+                                  int64_t{tm->tm_min} * 60 + tm->tm_sec);
 }
 
 // Parse `s` per strftime-style `fmt` into `*tm`. Returns non-null on success,

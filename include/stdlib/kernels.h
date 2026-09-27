@@ -570,8 +570,14 @@ inline std::tm to_tm_nanos(int64_t nanos, bool utc) {
 }
 
 inline int64_t from_tm_nanos(std::tm& tm, int64_t sub_nanos, bool utc) {
+  if (utc) return combine_nanos(os_timegm(&tm), sub_nanos);
+  // mktime answers -1 both for a time it cannot represent (on Windows, past
+  // the year 3000) and for one second before the epoch; only a success fills
+  // in the weekday.
   tm.tm_isdst = -1;
-  auto t = utc ? os_timegm(&tm) : std::mktime(&tm);
+  tm.tm_wday = -1;
+  auto t = std::mktime(&tm);
+  if (t == -1 && tm.tm_wday == -1) throw_out_of_range();
   return combine_nanos(t, sub_nanos);
 }
 
