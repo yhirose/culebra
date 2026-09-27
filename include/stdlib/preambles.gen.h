@@ -17,6 +17,7 @@ inline constexpr const char* TIME_MODULE_SOURCE = R"=culpre=(let _time_module = 
       message: "Time: out of range (a Long count of nanoseconds, about ±292 years)",
     }
   }
+  let _long_min = -9223372036854775807 - 1
   let _add_ns = fn (a, b) {
     let r = a + b
     _out_of_range() if ((a ^ r) & (b ^ r)) < 0
@@ -27,15 +28,19 @@ inline constexpr const char* TIME_MODULE_SOURCE = R"=culpre=(let _time_module = 
     _out_of_range() if ((a ^ b) & (a ^ r)) < 0
     r
   }
+  # Math.round raises for a Float with no Long; that is Time's range too.
   let _float_ns = fn (x) {
-    _out_of_range() unless x >= -9223372036854775808.0 && x < 9223372036854775808.0
-    Math.round(x)
+    try {
+      Math.round(x)
+    } catch e {
+      _out_of_range()
+    }
   }
   let _scale_ns = fn (n, unit) {
     match n {
       i: Long => {
         let p = i * unit
-        _out_of_range() if (i == -1 && unit == -9223372036854775807 - 1) || (i != 0 && p / i != unit)
+        _out_of_range() if (i == -1 && unit == _long_min) || (i != 0 && p / i != unit)
         p
       },
       f: Float => _float_ns(f * to_float(unit)),
@@ -88,7 +93,7 @@ inline constexpr const char* TIME_MODULE_SOURCE = R"=culpre=(let _time_module = 
     __div__(n) {
       Duration.new(match n {
         i: Long => {
-          _out_of_range() if i == -1 && self._nanos == -9223372036854775807 - 1
+          _out_of_range() if i == -1 && self._nanos == _long_min
           self._nanos / i
         },
         f: Float => _float_ns(to_float(self._nanos) / f),

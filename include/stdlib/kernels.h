@@ -502,6 +502,29 @@ inline int days_in_month(int year, int month) {
   return days[month - 1];
 }
 
+inline constexpr int64_t NS_PER_SEC = 1'000'000'000;
+
+// The first calendar field outside its range, and that range — nullopt when
+// the fields name one date and time. timegm / mktime would carry month 13 or
+// hour 25 into the next unit instead; ISO parsing and `from_parts` refuse it.
+struct CivilField {
+  const char* name;
+  int64_t lo, hi, got;
+};
+inline std::optional<CivilField> civil_out_of_range(int64_t y, int64_t mo, int64_t d,
+                                                    int64_t h, int64_t mi, int64_t se,
+                                                    int64_t ns) {
+  if (y < 0 || y > 9999) return CivilField{"year", 0, 9999, y};
+  if (mo < 1 || mo > 12) return CivilField{"month", 1, 12, mo};
+  int64_t dim = days_in_month(static_cast<int>(y), static_cast<int>(mo));
+  if (d < 1 || d > dim) return CivilField{"day", 1, dim, d};
+  if (h < 0 || h > 23) return CivilField{"hour", 0, 23, h};
+  if (mi < 0 || mi > 59) return CivilField{"minute", 0, 59, mi};
+  if (se < 0 || se > 59) return CivilField{"second", 0, 59, se};
+  if (ns < 0 || ns >= NS_PER_SEC) return CivilField{"nanosecond", 0, NS_PER_SEC - 1, ns};
+  return std::nullopt;
+}
+
 [[noreturn]] inline void throw_value(const std::string& msg, int64_t line, int64_t col) {
   throw CulebraError("ValueError", msg, line, col);
 }
@@ -516,8 +539,6 @@ inline int64_t iso_weekday(const std::tm& tm) {
 // i64 nanoseconds since Unix epoch, covers ±292 years from 1970 — ample
 // for any practical use, and preserves full nanosecond precision (Float
 // Unix seconds only get ~400ns near current epoch).
-
-inline constexpr int64_t NS_PER_SEC = 1'000'000'000;
 
 // Floor-divide nanos into (whole_seconds, sub_seconds_nanos in [0, 1e9)).
 // Truncating `%` in C++ misbehaves for negative `nanos`, hence the fixup.
@@ -627,9 +648,8 @@ inline std::optional<int64_t> parse_iso_nanos(std::string_view s) {
     }
   }
   if (i != s.size()) return std::nullopt;
-  // timegm would carry `2026-13-45T25:61` into a later date; ISO names one.
-  if (mo < 1 || mo > 12 || d < 1 || d > days_in_month(y, mo) || h > 23 ||
-      mi > 59 || se > 59 || std::abs(offset_seconds) >= 24 * 3600)
+  if (civil_out_of_range(y, mo, d, h, mi, se, sub_ns) ||
+      std::abs(offset_seconds) >= 24 * 3600)
     return std::nullopt;
   tm.tm_hour = h;
   tm.tm_min = mi;

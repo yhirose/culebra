@@ -316,8 +316,8 @@ inline Tree parse(Compiled& c, std::string_view text,
       _fail(_fmt_err(t.path, t.err_line, t.err_col,
                     t.err.empty() ? "syntax error" : t.err));
     }
+    if (optimize) ast = t.parser.optimize_ast(ast);
   }
-  if (optimize) ast = c.parser.optimize_ast(ast);
   Tree t;
   t.nodes.reserve(64);
   _flatten(*ast, t, 0);
