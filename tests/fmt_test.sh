@@ -165,6 +165,36 @@ if ! diff -u "$TMP/par_want.cul" "$TMP/par_got.cul" > "$TMP/par_diff" 2>&1; then
   fail=1
 fi
 
+# --- 1c'. Golden fixture: parentheses that carry meaning -------------------
+# `(n?[0])[5]` stops the nil collapse where `n?[0][5]` doesn't, and an
+# assignment runs as far right as it can.
+cat > "$TMP/mpar_in.cul" <<'EOF'
+let n = nil
+let x = 1
+try { (n?[0])[5] } catch e { nil }
+let w = (x.to_string()).size()
+if (let q = x + 1) > 1 { q }
+EOF
+cat > "$TMP/mpar_want.cul" <<'EOF'
+let n = nil
+let x = 1
+try {
+  (n?[0])[5]
+} catch e {
+  nil
+}
+let w = (x.to_string()).size()
+if (let q = x + 1) > 1 {
+  q
+}
+EOF
+"$CULEBRA" fmt "$TMP/mpar_in.cul" > "$TMP/mpar_got.cul" 2>"$TMP/mpar_err"
+if ! diff -u "$TMP/mpar_want.cul" "$TMP/mpar_got.cul" > "$TMP/mpar_diff" 2>&1; then
+  echo "FAIL golden (meaningful parens): formatted output differs from expected"
+  cat "$TMP/mpar_diff" "$TMP/mpar_err"
+  fail=1
+fi
+
 # --- 1d. Golden fixture: comments inside brace literals --------------------
 # An object / set literal opens a brace pair of its own, so a comment written
 # inside one belongs to that pair — not to the statement around it, which has
@@ -893,7 +923,8 @@ JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null |
 export CULEBRA CORPUS
 # Enumerate the corpus once (NUL-delimited) so the worker fan-out and the file
 # count `n` can't drift apart if the roots/pattern are ever edited.
-find "$ROOT/tests" "$ROOT/examples" -name '*.cul' -print0 > "$CORPUS/files.z"
+find "$ROOT/tests" "$ROOT/examples" "$ROOT/tools/bench/vm_cases" -name '*.cul' \
+  -print0 > "$CORPUS/files.z"
 n=$(tr -dc '\0' < "$CORPUS/files.z" | wc -c | tr -d ' ')
 xargs -0 -n1 -P "$JOBS" bash -c '
       f="$1"

@@ -540,7 +540,8 @@ class Printer {
     // and needs parentheses as an operand of anything -- `(|q| f(q))(x)`
     // reprinted without them is a lambda whose body is `f(q)(x)`. The
     // default below is 16 (binds tightest), which is the wrong answer here.
-    if (name == "LAMBDA") return 0;
+    // So does an assignment's right side: `(let q = x + y) > 100`.
+    if (name == "LAMBDA" || name == "ASSIGNMENT") return 0;
     if (name == "CONDITIONAL") return 1;
     if (name == "NIL_COALESCE") return 2;
     if (name == "LOGICAL_OR") return 3;
@@ -1191,9 +1192,11 @@ class Printer {
   DocP print_call(const peg::Ast& node) {
     // The receiver must keep parens when it binds looser than a postfix op, so
     // `(-3).double()` / `(a + b).x` don't collapse to `-3.double()` (which
-    // parses as `-(3.double())`) or `a + b.x`.
+    // parses as `-(3.double())`) or `a + b.x`. A parenthesised chain is a
+    // nested CALL, and `(n?[0])[5]` stops the nil collapse where `n?[0][5]`
+    // doesn't, so that one keeps them too.
     DocP receiver = print_operand(*node.nodes[0], /*parent_prec=*/prec("CALL"),
-                                  /*assoc_safe=*/true);
+                                  /*assoc_safe=*/true, /*parent_name=*/"CALL");
     auto is_dot = [](const peg::Ast& s) {
       return s.original_name == "DOT" || s.original_name == "SAFE_DOT";
     };
