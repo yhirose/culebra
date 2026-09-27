@@ -122,12 +122,7 @@ double f2f(const Num& x, Fn&& fn) {
 template <class Fn, class PosFn>
 Num f2l(const Num& x, Fn&& fn, PosFn&& pos) {
   if (!x.is_float) return x;
-  double r = fn(x.d);
-  if (!double_fits_long(r)) {
-    auto [line, col] = pos();
-    return num_long(double_to_long(r, line, col));
-  }
-  return num_long(static_cast<int64_t>(r));
+  return num_long(double_to_long(fn(x.d), pos));
 }
 
 // atan2(y, x): two numerics -> Float (radians).

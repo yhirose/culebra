@@ -56,7 +56,7 @@ inline bool _culebra_promotion_exact(int8_t t1, int64_t d1, int8_t t2,
 // tell two Longs apart, which costs `==` its transitivity -- 2^53 and 2^53+1
 // promote onto the same double, so both equal it while differing.
 inline double _culebra_long_cmp_double(int64_t i, double d) {
-  if (d >= -9223372036854775808.0 && d < 9223372036854775808.0) {
+  if (culebra::double_fits_long(d)) {
     const int64_t ti = static_cast<int64_t>(d);  // toward zero; in range: exact
     if (i != ti) return i < ti ? -1.0 : 1.0;
     const double td = static_cast<double>(ti);  // past 2^53 d has no fraction

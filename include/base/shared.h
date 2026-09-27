@@ -746,14 +746,19 @@ inline bool double_fits_long(double d) {
   return d >= -9223372036854775808.0 && d < 9223372036854775808.0;
 }
 
-// A Float as a Long, truncated toward zero, or ValueError when it has none.
+// A Float as a Long, truncated toward zero, or ValueError when it has none;
+// `pos` supplies the {line, col} only then.
+template <class PosFn>
+int64_t double_to_long(double d, PosFn&& pos) {
+  if (double_fits_long(d)) return static_cast<int64_t>(d);
+  auto [line, col] = pos();
+  throw CulebraError(
+      "ValueError",
+      culebra::format("cannot convert {} to Long", format_float_shortest(d)),
+      line, col);
+}
 inline int64_t double_to_long(double d, int64_t line, int64_t col) {
-  if (!double_fits_long(d))
-    throw CulebraError(
-        "ValueError",
-        culebra::format("cannot convert {} to Long", format_float_shortest(d)),
-        line, col);
-  return static_cast<int64_t>(d);
+  return double_to_long(d, [&] { return std::pair(line, col); });
 }
 
 // JSON.stringify quote escaping. Shared by both backends' stringify
