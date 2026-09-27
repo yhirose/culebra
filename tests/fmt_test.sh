@@ -167,8 +167,8 @@ fi
 
 # --- 1c2. Golden fixture: parentheses that carry meaning ------------------
 # `(v?[0])[5]` stops the nil collapse where `v?[0][5]` doesn't, and every form
-# EXPRESSION tries before CONDITIONAL (the assignments, a try) runs as far
-# right as it can.
+# that ends in an open EXPRESSION (the assignments, a try, a throw) runs as
+# far right as it can.
 cat > "$TMP/mpar_in.cul" <<'EOF'
 let u = (v?[0])[5]
 let w = (x.to_string()).size()
@@ -176,6 +176,7 @@ if (let q = x + 1) > 1 { q }
 if (let (p, q) = t) == nil { p }
 let s = ((a, b) = (3, 4)).size()
 let r = (try { 1 } catch e { 2 }) + 1
+let t = (throw e) ?? 1
 EOF
 cat > "$TMP/mpar_want.cul" <<'EOF'
 let u = (v?[0])[5]
@@ -192,6 +193,7 @@ let r = (try {
 } catch e {
   2
 }) + 1
+let t = (throw e) ?? 1
 EOF
 "$CULEBRA" fmt "$TMP/mpar_in.cul" > "$TMP/mpar_got.cul" 2>"$TMP/mpar_err"
 if ! diff -u "$TMP/mpar_want.cul" "$TMP/mpar_got.cul" > "$TMP/mpar_diff" 2>&1; then

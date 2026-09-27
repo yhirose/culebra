@@ -540,10 +540,11 @@ class Printer {
     // and needs parentheses as an operand of anything -- `(|q| f(q))(x)`
     // reprinted without them is a lambda whose body is `f(q)(x)`. The
     // default below is 16 (binds tightest), which is the wrong answer here.
-    // So does every form EXPRESSION tries before CONDITIONAL — the three
-    // assignments' right sides and a try's catch body: `(let q = x + y) > 100`.
+    // So does every form that ends in an open EXPRESSION: the ones EXPRESSION
+    // tries before CONDITIONAL (the three assignments, a try) and a throw or
+    // return's operand — `(let q = x + y) > 100`, `(throw e) ?? 1`.
     if (name == "LAMBDA" || name == "ASSIGNMENT" || name == "DESTRUCTURE_ASSIGN" ||
-        name == "PLACE_ASSIGN" || name == "TRY")
+        name == "PLACE_ASSIGN" || name == "TRY" || name == "THROW" || name == "RETURN")
       return 0;
     if (name == "CONDITIONAL") return 1;
     if (name == "NIL_COALESCE") return 2;
