@@ -562,15 +562,73 @@ inline int64_t combine_nanos(std::time_t secs, int64_t sub_nanos) {
   return r;
 }
 
-inline std::tm to_tm_nanos(int64_t nanos, bool utc) {
-  auto t = split_nanos(nanos).first;
+// UTC in both directions is the proleptic Gregorian calendar computed (Howard
+// Hinnant's days_from_civil / civil_from_days), not asked of the platform:
+// Windows' _mkgmtime gives up past the year 3000 with -1, which is also a
+// valid instant, and its gmtime_s refuses any time before 1970.
+
+// Days since 1970-01-01 of year `y`, month `m` (1..12), day `d` (which may
+// run past the month).
+inline int64_t days_from_civil(int64_t y, int64_t m, int64_t d) {
+  y -= m <= 2;
+  int64_t era = (y >= 0 ? y : y - 399) / 400;
+  int64_t yoe = y - era * 400;
+  int64_t doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1;
+  int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097 + doe - 719468;
+}
+
+// UTC seconds of broken-down fields: tm_mon in 0..11, the day and clock
+// fields carried past their ranges (hour -25, second 86400) as timegm does.
+inline std::time_t utc_seconds(const std::tm& tm) {
+  return static_cast<std::time_t>(
+      days_from_civil(int64_t{tm.tm_year} + 1900, tm.tm_mon + 1, tm.tm_mday) *
+          86400 +
+      int64_t{tm.tm_hour} * 3600 + int64_t{tm.tm_min} * 60 + tm.tm_sec);
+}
+
+// UTC broken-down time of `t`, weekday and day of the year included.
+inline std::tm utc_tm(std::time_t t) {
+  int64_t s = t;
+  int64_t z = (s >= 0 ? s : s - 86399) / 86400;  // whole days, floored
+  int64_t sod = s - z * 86400;
   std::tm tm{};
-  if (utc) os_gmtime_r(&t, &tm); else os_localtime_r(&t, &tm);
+  tm.tm_hour = static_cast<int>(sod / 3600);
+  tm.tm_min = static_cast<int>(sod % 3600 / 60);
+  tm.tm_sec = static_cast<int>(sod % 60);
+  tm.tm_wday = static_cast<int>(((z + 4) % 7 + 7) % 7);  // 1970-01-01: Thu
+  int64_t shifted = z + 719468;  // days since 0000-03-01
+  int64_t era = (shifted >= 0 ? shifted : shifted - 146096) / 146097;
+  int64_t doe = shifted - era * 146097;
+  int64_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  int64_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  int64_t mp = (5 * doy + 2) / 153;
+  int64_t m = mp < 10 ? mp + 3 : mp - 9;
+  int64_t y = yoe + era * 400 + (m <= 2);
+  int64_t d = doy - (153 * mp + 2) / 5 + 1;
+  tm.tm_year = static_cast<int>(y - 1900);
+  tm.tm_mon = static_cast<int>(m - 1);
+  tm.tm_mday = static_cast<int>(d);
+  tm.tm_yday = static_cast<int>(z - days_from_civil(y, 1, 1));
+  os_mark_utc(tm);
   return tm;
 }
 
-inline int64_t from_tm_nanos(std::tm& tm, int64_t sub_nanos, bool utc) {
-  if (utc) return combine_nanos(os_timegm(&tm), sub_nanos);
+// Local broken-down time of `t`; one the platform cannot represent (Windows
+// refuses any time before 1970) is out of range.
+inline std::tm local_tm(std::time_t t) {
+  std::tm tm{};
+  if (!os_localtime_r(&t, &tm)) throw_out_of_range();
+  return tm;
+}
+
+inline std::tm to_tm_nanos(int64_t nanos, bool utc) {
+  auto t = split_nanos(nanos).first;
+  return utc ? utc_tm(t) : local_tm(t);
+}
+
+inline int64_t from_tm_nanos(std::tm tm, int64_t sub_nanos, bool utc) {
+  if (utc) return combine_nanos(utc_seconds(tm), sub_nanos);
   // mktime answers -1 both for a time it cannot represent (on Windows, past
   // the year 3000) and for one second before the epoch; only a success fills
   // in the weekday.
@@ -585,7 +643,6 @@ inline std::optional<int64_t> parse_iso_nanos(std::string_view s) {
   // Mirror parse_iso() but accumulate sub-second as i64 nanos with up to
   // 9 digits of precision (trailing digits past 9 are discarded).
   if (s.size() < 10) return std::nullopt;
-  std::tm tm{};
   auto parse_int = [&](size_t off, int n, int& out) -> bool {
     if (off + n > s.size()) return false;
     int v = 0;
@@ -602,9 +659,6 @@ inline std::optional<int64_t> parse_iso_nanos(std::string_view s) {
       s[7] != '-' || !parse_int(8, 2, d)) {
     return std::nullopt;
   }
-  tm.tm_year = y - 1900;
-  tm.tm_mon = mo - 1;
-  tm.tm_mday = d;
   int64_t sub_ns = 0;
   long offset_seconds = 0;
   bool has_tz = false;
@@ -657,23 +711,19 @@ inline std::optional<int64_t> parse_iso_nanos(std::string_view s) {
   if (civil_out_of_range(y, mo, d, h, mi, se, sub_ns) ||
       std::abs(offset_seconds) >= 24 * 3600)
     return std::nullopt;
-  tm.tm_hour = h;
-  tm.tm_min = mi;
-  tm.tm_sec = se;
-  tm.tm_isdst = 0;
   // Date-only / tz-less → treat as UTC (deterministic across hosts).
-  std::time_t t = os_timegm(&tm);
+  std::time_t t = days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + se;
   if (has_tz) t -= offset_seconds;
   return combine_nanos(t, sub_ns);
 }
 
 inline std::string format_iso_nanos(int64_t nanos, bool utc) {
   auto [t, sub] = split_nanos(nanos);
-  std::tm tm{};
-  if (utc) os_gmtime_r(&t, &tm); else os_localtime_r(&t, &tm);
+  auto tm = to_tm_nanos(nanos, utc);
   std::string tz_str = "Z";
   if (!utc) {
-    auto offset = os_gmtoff(tm, t);
+    // The local wall clock read as UTC, less the instant: seconds east of UTC.
+    auto offset = utc_seconds(tm) - t;
     int sign = offset < 0 ? -1 : 1;
     int64_t abs_off = std::abs(static_cast<long>(offset));
     tz_str = culebra::format("{}{:02d}:{:02d}",
@@ -694,9 +744,7 @@ inline std::string format_iso_nanos(int64_t nanos, bool utc) {
 
 inline std::string format_strftime_nanos(int64_t nanos,
                                          const std::string& fmt, bool utc) {
-  auto t = split_nanos(nanos).first;
-  std::tm tm{};
-  if (utc) os_gmtime_r(&t, &tm); else os_localtime_r(&t, &tm);
+  auto tm = to_tm_nanos(nanos, utc);
   char small[256];
   if (auto n = std::strftime(small, sizeof(small), fmt.c_str(), &tm))
     return std::string(small, n);

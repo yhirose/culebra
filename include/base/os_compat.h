@@ -8,7 +8,6 @@
 // their own `#if defined(_WIN32)` split in-file, so this header stays small and
 // is the single place the trivial per-call shims live.
 
-#include <cstdint>
 #include <cstdlib>
 #include <ctime>
 #if defined(_WIN32)
@@ -111,19 +110,11 @@ inline int os_setenv(const char* name, const char* value, int overwrite) {
 }
 
 // --- Time: POSIX reentrant/parse helpers with Windows equivalents ----------
-// The POSIX `*_r` variants and `timegm`/`strptime` have no direct Windows
-// spelling (MSVC ships `gmtime_s`/`localtime_s` with swapped arguments,
-// `_mkgmtime`, and no strptime). These thin wrappers unify them so the Time
-// namespace stays single-sourced across platforms.
-
-// UTC broken-down time. Returns `out` on success, nullptr on failure.
-inline std::tm* os_gmtime_r(const std::time_t* t, std::tm* out) {
-#if defined(_WIN32)
-  return gmtime_s(out, t) == 0 ? out : nullptr;
-#else
-  return gmtime_r(t, out);
-#endif
-}
+// The POSIX `localtime_r` and `strptime` have no direct Windows spelling
+// (MSVC ships `localtime_s` with swapped arguments, and no strptime). These
+// thin wrappers unify them so the Time namespace stays single-sourced across
+// platforms. UTC is not asked of the platform at all (_time_detail computes
+// it from the calendar).
 
 // Local broken-down time. Returns `out` on success, nullptr on failure.
 inline std::tm* os_localtime_r(const std::time_t* t, std::tm* out) {
@@ -132,31 +123,6 @@ inline std::tm* os_localtime_r(const std::time_t* t, std::tm* out) {
 #else
   return localtime_r(t, out);
 #endif
-}
-
-// Inverse of gmtime: broken-down UTC time -> time_t, fields out of their
-// range carried as timegm does (month 13, hour -25). Computed from the civil
-// calendar (Howard Hinnant's days_from_civil) rather than asked of the
-// platform: Windows' _mkgmtime gives up past the year 3000 and answers -1,
-// which is also a valid instant. `tm` itself is left as it was.
-inline std::time_t os_timegm(const std::tm* tm) {
-  int64_t y = int64_t{tm->tm_year} + 1900;
-  int64_t m = tm->tm_mon;
-  y += m / 12;
-  m %= 12;
-  if (m < 0) {
-    m += 12;
-    --y;
-  }
-  int64_t mm = m + 1;  // 1..12, the year starting in March
-  y -= mm <= 2;
-  int64_t era = (y >= 0 ? y : y - 399) / 400;
-  int64_t yoe = y - era * 400;
-  int64_t doy = (153 * (mm > 2 ? mm - 3 : mm + 9) + 2) / 5 + tm->tm_mday - 1;
-  int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-  int64_t days = era * 146097 + doe - 719468;
-  return static_cast<std::time_t>(days * 86400 + int64_t{tm->tm_hour} * 3600 +
-                                  int64_t{tm->tm_min} * 60 + tm->tm_sec);
 }
 
 // Parse `s` per strftime-style `fmt` into `*tm`. Returns non-null on success,
@@ -171,16 +137,15 @@ inline const char* os_strptime(const char* s, const char* fmt, std::tm* tm) {
 #endif
 }
 
-// Seconds east of UTC for a local broken-down time. POSIX carries this on
-// `tm_gmtoff`; the Windows `struct tm` has no such field, so reconstruct it —
-// interpreting the local wall-clock fields as if they were UTC yields
-// `utc + offset`, and subtracting the original time_t leaves the offset.
-inline long os_gmtoff(const std::tm& local, std::time_t utc) {
+// Mark a broken-down time computed by hand as UTC, the way gmtime does, for
+// strftime's %Z / %z: POSIX reads the zone off the struct. Windows' struct
+// has no such field (its %Z names the local zone, as it always has).
+inline void os_mark_utc(std::tm& tm) {
 #if defined(_WIN32)
-  std::tm copy = local;
-  return static_cast<long>(os_timegm(&copy) - utc);
+  (void)tm;
 #else
-  return static_cast<long>(local.tm_gmtoff);
+  tm.tm_gmtoff = 0;
+  tm.tm_zone = const_cast<char*>("UTC");
 #endif
 }
 

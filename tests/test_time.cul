@@ -201,6 +201,16 @@ assert_throws("ValueError", || Time.from_parts({year: 9999}))
 assert_throws("ValueError", || Time.from_parts({year: 9999}, utc: true))
 assert_eq(Time.from_iso("2262-01-01T00:00:00Z").iso(), "2262-01-01T00:00:00Z")
 assert_eq(Time.from_iso("1969-12-31T23:59:59Z").unix(), -1.0)
+assert_throws("ValueError", || Time.parse("9999-01-01", "%Y-%m-%d"))
+# UTC is computed, not asked of the platform: a time before 1970 reads back
+# field for field.
+let early = Time.from_iso("1900-03-01T12:34:56Z")
+assert_eq(early.iso(utc: true), "1900-03-01T12:34:56Z")
+assert_eq(early.format("%Y-%m-%d %H:%M:%S %j %a", utc: true), "1900-03-01 12:34:56 060 Thu")
+assert_eq(early.weekday(utc: true), 3)
+assert_eq(early.parts(utc: true).year, 1900)
+assert_eq(Time.from_parts(early.parts(utc: true), utc: true) == early, true)
+assert_eq(early.add(months: 1, utc: true).iso(utc: true), "1900-04-01T12:34:56Z")
 assert_throws("ValueError", || t1.add(days: 5000000000))
 # Sub-day fields are Longs, not ints: 2^32 seconds is 136 years, not zero.
 let t0 = Time.from_iso("2024-01-01T00:00:00Z")

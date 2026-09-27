@@ -1325,9 +1325,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_time_parse_nanos(
                         s ? s : "", fmt ? fmt : ""),
         line, col);
   }
-  tm.tm_isdst = -1;
-  auto t = std::mktime(&tm);
-  return culebra::_time_detail::combine_nanos(t, 0);
+  return culebra::_time_detail::from_tm_nanos(tm, 0, /*utc=*/false);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_time_iso_nanos(
