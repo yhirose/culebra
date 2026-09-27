@@ -57,7 +57,9 @@ build *extra:
     # CULEBRA_BUILD_JOBS overrides the parallel job count (defaults to all
     # cores). CI sets it to cap RAM on the memory-tight macOS runner — an
     # LLVM-header-heavy TU peaks at ~3 GB, so too many at once swap.
-    cd build && {{lock_cmd}} {{nice_cmd}} make -j${CULEBRA_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)}
+    # make.log keeps the whole output: a parallel failure's own error line
+    # sits far above the "Error 2" it ends on.
+    cd build && set -o pipefail && {{lock_cmd}} {{nice_cmd}} make -j${CULEBRA_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)} 2>&1 | tee make.log
 
 # Fast dev build: LTO off and -O1, still Release + JIT,
 # uses a separate `build-dev/` so it doesn't fight `just build`'s cache.
@@ -86,7 +88,7 @@ dev *extra:
 build-gate *extra:
     mkdir -p build-gate
     cd build-gate && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF {{extra}} .. > /dev/null
-    cd build-gate && {{lock_cmd}} {{nice_cmd}} make -j${CULEBRA_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)}
+    cd build-gate && set -o pipefail && {{lock_cmd}} {{nice_cmd}} make -j${CULEBRA_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)} 2>&1 | tee make.log
 
 # Compile and link separately: ccache passes a combined compile+link command
 # through uncached (`called_for_link`). Keying on the preprocessed source also
