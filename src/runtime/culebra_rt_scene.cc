@@ -1635,13 +1635,13 @@ class View {
   std::shared_ptr<Font> font(std::string path, int64_t size, std::string chars) {
     return adopt_font([&](int* cps, int n) {
       return LoadFontEx(path.c_str(), (int)size, cps, n);
-    }, chars, "font '" + path + "'");
+    }, chars, size, "view.font", "font '" + path + "'");
   }
   std::shared_ptr<Font> font_bytes(std::string data, int64_t size, std::string chars) {
     return adopt_font([&](int* cps, int n) {
       return LoadFontFromMemory(".ttf", reinterpret_cast<const unsigned char*>(data.data()),
                                 (int)data.size(), (int)size, cps, n);
-    }, chars, "font from bytes");
+    }, chars, size, "view.font_bytes", "font from bytes");
   }
 
   std::shared_ptr<Node> add_node() { return push(std::make_shared<Node>()); }
@@ -2096,15 +2096,32 @@ class View {
     if (!font_live(font) && spacing == 0.0) spacing = (double)size / 10.0;
     return MeasureTextEx(font_of(font), s.c_str(), (float)size, (float)spacing);
   }
+  // raylib packs a font's glyphs into one atlas it sizes and counts in int, so
+  // past some size times glyph count that count wraps — and rasterizing the
+  // glyphs first is where the memory goes. Before either, each glyph is taken
+  // as a padded square of `size` (raylib's padding 4, its 1.2 packing slack)
+  // and the whole must fit an 8192-pixel square: a glyph four times wider
+  // than that still leaves raylib's arithmetic in range.
+  static bool atlas_fits(int64_t size, int glyphs) {
+    const double side = (double)std::max<int64_t>(size, 0) + 2 * 4;
+    return side * side * 1.2 * glyphs <= 8192.0 * 8192.0;
+  }
   // Load a font through `load(codepoints, count)`: `chars` empty = raylib's
   // printable-ASCII default. A failed load in raylib is not an error but a
   // font that is not the one asked for — the built-in one, or an empty
   // struct — which would silently give a HUD the wrong metrics. So both
   // shapes of "not ours" are the error here.
   template <class L>
-  std::shared_ptr<Font> adopt_font(L load, const std::string& chars, const std::string& what) {
+  std::shared_ptr<Font> adopt_font(L load, const std::string& chars, int64_t size,
+                                   std::string_view ctx, const std::string& what) {
     int n = 0;
     int* cps = chars.empty() ? nullptr : LoadCodepoints(chars.c_str(), &n);
+    const int glyphs = cps ? n : 95;  // raylib's printable-ASCII default
+    if (!atlas_fits(size, glyphs)) {
+      if (cps) UnloadCodepoints(cps);
+      culebra::throw_too_large(
+          culebra::format("{}: {} glyphs at size {}", ctx, glyphs, size), 0, 0);
+    }
     auto f = std::make_shared<Font>();
     f->font = load(cps, n);
     if (cps) UnloadCodepoints(cps);

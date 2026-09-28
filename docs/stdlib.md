@@ -5913,7 +5913,11 @@ game ships its font inside itself. `chars` names the glyphs to include (`""`
 is printable ASCII): a HUD lists its digits and words and gets a small atlas,
 one with Japanese lists the characters it uses. A font that cannot be loaded
 is a `RuntimeError`, not a silent fall back to the built-in font with the
-wrong metrics. `font.size() -> Float` and `font.glyphs() -> Long` read back
+wrong metrics. The atlas must fit an 8192-pixel square, counting each glyph as
+a square of `size`: past that — about 750 for printable ASCII, about 160 for
+2000 characters — the call is a `ValueError` (`view.font: 2000 glyphs at size
+300 is too large`) before anything is rasterized; list fewer characters or
+use a smaller size. `font.size() -> Float` and `font.glyphs() -> Long` read back
 what was made. Like a texture, a font belongs to the view that made it.
 
 ### Input
