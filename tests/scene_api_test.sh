@@ -128,6 +128,14 @@ let many_glyphs = size_err(fn () {
   view.font_bytes(FS.read(ttf), 1024)
 })
 println("font sizes: {big_font} | {many_glyphs}")
+# raylib renders text into an image of its own, sized by the text and `size`
+let big_text = try {
+  Scene.Image.new(16, 16).text("7", 0, 0, 1000000, 255, 255, 255, 255, digits)
+  'accepted'
+} catch e {
+  "{e.kind} {e.message.starts_with('img.text: ')} {e.message.ends_with(' is too large')}"
+}
+println("image text too large: {big_text}")
 let stamped = Scene.Image.new(16, 16).fill(0, 0, 0).text("7", 4, 2, 12, 255, 255, 255, 255, digits)
 println("image text with a font drew: {stamped.get(8, 8) != stamped.get(0, 0) || stamped.get(7, 6) != stamped.get(0, 0) || stamped.get(9, 9) != stamped.get(0, 0)}")
 let w20 = view.text_width("01:23.456", 20, digits)
@@ -775,6 +783,7 @@ expect "resized frame drew: true"
 expect "font 24.0 glyphs 12 bytes-form 24.0 12"
 expect "font sizes: ValueError: view.font: 12 glyphs at size 100000 is too large | ValueError: view.font_bytes: 95 glyphs at size 1024 is too large"
 expect "text_width grows true default true height true"
+expect "image text too large: ValueError true true"
 expect "image text with a font drew: true"
 expect "graph 1 2.0 3.0 true false 0 3"
 expect "find/child_at errors: RuntimeError RuntimeError"

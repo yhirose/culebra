@@ -628,15 +628,27 @@ class Image {
                       Vector2{(float)x2, (float)y2}, col(r, g, b, a));
     return *this;
   }
+  // raylib draws text into an image of its own — at the font's base size,
+  // then scaled to `size` — and both are image sizes the text and the number
+  // choose, so both go through PixelSize first.
+  static void text_fits(const ::Font& f, const std::string& s, float size, float spacing) {
+    for (float at : {(float)f.baseSize, size}) {
+      Vector2 m = MeasureTextEx(f, s.c_str(), at, spacing);
+      culebra::PixelSize::checked((int64_t)std::min(m.x, 1e18f) + 1,
+                                  (int64_t)std::min(m.y, 1e18f) + 1, "img.text", 0, 0);
+    }
+  }
   // Text: in a Font, or raylib's built-in font — which exists only once a
   // window does, so a nil font before any View draws nothing and says so.
   Image& text(std::string s, int64_t x, int64_t y, int64_t size, int64_t r, int64_t g, int64_t b, int64_t a,
               const Font* font, double spacing) {
     Color c = col(r, g, b, a);
     if (font && font->live()) {
+      text_fits(font->font, s, (float)size, (float)spacing);
       ImageDrawTextEx(&im, font->font, s.c_str(), Vector2{(float)x, (float)y}, (float)size,
                       (float)spacing, c);
     } else if (IsWindowReady()) {
+      text_fits(GetFontDefault(), s, (float)size, 1.0f);  // ImageDrawText's own spacing
       ImageDrawText(&im, s.c_str(), (int)x, (int)y, (int)size, c);
     } else {
       TraceLog(LOG_ERROR, "Scene.Image.text: the built-in font needs a window; pass a Font");
@@ -2096,15 +2108,21 @@ class View {
     if (!font_live(font) && spacing == 0.0) spacing = (double)size / 10.0;
     return MeasureTextEx(font_of(font), s.c_str(), (float)size, (float)spacing);
   }
+  // raylib's defaults, from rtext.c (its macros are not in a header).
+  static constexpr int kRaylibAsciiGlyphs = 95;  // FONT_TTF_DEFAULT_NUMCHARS
+  static constexpr int kRaylibGlyphPadding = 4;  // FONT_TTF_DEFAULT_CHARS_PADDING
+  static constexpr double kRaylibPackSlack = 1.2;  // GenImageFontAtlas's area estimate
+  // Not PixelSize's limit: the atlas is 8-bit, raylib may double its height
+  // and then widens it to gray+alpha, all in int — this side leaves room for
+  // that and for glyphs up to four times wider than `size`.
+  static constexpr double kFontAtlasSide = 8192;
   // raylib packs a font's glyphs into one atlas it sizes and counts in int, so
   // past some size times glyph count that count wraps — and rasterizing the
   // glyphs first is where the memory goes. Before either, each glyph is taken
-  // as a padded square of `size` (raylib's padding 4, its 1.2 packing slack)
-  // and the whole must fit an 8192-pixel square: a glyph four times wider
-  // than that still leaves raylib's arithmetic in range.
+  // as a padded square of `size`.
   static bool atlas_fits(int64_t size, int glyphs) {
-    const double side = (double)std::max<int64_t>(size, 0) + 2 * 4;
-    return side * side * 1.2 * glyphs <= 8192.0 * 8192.0;
+    const double side = (double)std::max<int64_t>(size, 0) + 2 * kRaylibGlyphPadding;
+    return side * side * kRaylibPackSlack * glyphs <= kFontAtlasSide * kFontAtlasSide;
   }
   // Load a font through `load(codepoints, count)`: `chars` empty = raylib's
   // printable-ASCII default. A failed load in raylib is not an error but a
@@ -2114,14 +2132,12 @@ class View {
   template <class L>
   std::shared_ptr<Font> adopt_font(L load, const std::string& chars, int64_t size,
                                    std::string_view ctx, const std::string& what) {
-    int n = 0;
-    int* cps = chars.empty() ? nullptr : LoadCodepoints(chars.c_str(), &n);
-    const int glyphs = cps ? n : 95;  // raylib's printable-ASCII default
-    if (!atlas_fits(size, glyphs)) {
-      if (cps) UnloadCodepoints(cps);
+    const int glyphs = chars.empty() ? kRaylibAsciiGlyphs : GetCodepointCount(chars.c_str());
+    if (!atlas_fits(size, glyphs))
       culebra::throw_too_large(
           culebra::format("{}: {} glyphs at size {}", ctx, glyphs, size), 0, 0);
-    }
+    int n = 0;
+    int* cps = chars.empty() ? nullptr : LoadCodepoints(chars.c_str(), &n);
     auto f = std::make_shared<Font>();
     f->font = load(cps, n);
     if (cps) UnloadCodepoints(cps);

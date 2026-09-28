@@ -5823,8 +5823,9 @@ what makes it the one part of `Scene` a test runs without a display. Always
 RGBA, coordinates in pixels, every colour with its own alpha (default 255).
 `Scene.Image.new(w, h)` and `img.resize(w, h)` raise `ValueError` for a
 negative side, and for a size past what an image holds — `w * h * 4` bytes of
-2 GiB or more (`Scene.Image.new: 24000x24000 is too large`); so does
-`img.rotate(degrees)` when the rotated image would be past it.
+2 GiB or more (`Scene.Image.new: 24000x24000 is too large`); so do
+`img.rotate(degrees)` when the rotated image would be past it, and `img.text`
+when the text drawn at its `size` would be.
 
 | Method | Result |
 | --- | --- |

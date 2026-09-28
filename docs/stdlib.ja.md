@@ -5639,7 +5639,7 @@ canvasはGPUでテクスチャを描く方法（`canvas()`と`canvas_end()`の�
 `Scene.Image.new(w, h)`と`img.resize(w, h)`は、負の辺と、画像に収まらない大きさ
 （`w * h * 4`バイトが2 GiB以上）を`ValueError`にする
 （`Scene.Image.new: 24000x24000 is too large`）。回転後の画像がこの大きさを超える
-`img.rotate(degrees)`も`ValueError`。
+`img.rotate(degrees)`と、`size`で描いた文字列がこの大きさを超える`img.text`も`ValueError`。
 
 | メソッド | 結果 |
 | --- | --- |
