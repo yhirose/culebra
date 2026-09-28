@@ -135,10 +135,7 @@ inline PixelSize canvas_size(int64_t w, int64_t h, std::string_view ctx,
 // False when another isolate owns the canvas (the caller raises kBusyError).
 inline bool init(PixelSize size) {
   if (!own_canvas()) return false;
-  size.alloc([&] {
-    _fb().assign(size.count(), 0u);
-    return 0;
-  });
+  size.alloc([&] { _fb().assign(size.count(), 0u); });
   _fb_w() = size.w();
   _fb_h() = size.h();
   return true;
@@ -641,10 +638,7 @@ inline int64_t sprite_adopt(std::vector<uint32_t>&& px, PixelSize size) {
   s->w = size.w();
   s->h = size.h();
   s->px = std::move(px);
-  size.alloc([&] {
-    s->px.resize(size.count(), 0u);
-    return 0;
-  });
+  size.alloc([&] { s->px.resize(size.count(), 0u); });
   // s stays owning until add() has placed the pointer, so a growth-triggered
   // bad_alloc inside add() doesn't leak the pixels (same order as net.h).
   int64_t id = _sprites().add(s.get());

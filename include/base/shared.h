@@ -12,6 +12,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstdint>
+#include <climits>
 #include <cstdlib>
 #include <format>
 #include <functional>
@@ -1487,16 +1488,34 @@ inline std::string str_tr(std::string_view s, std::string_view from,
 // nothing in the language can catch, ending the program with the C++ name of
 // the exception. For sizes only: an allocation no user number bounds is the
 // machine running out, which this does not pretend to recover from.
-template <class F>
-inline auto alloc_or_too_large(std::string_view what, int64_t line,
-                               int64_t col, F&& alloc) -> decltype(alloc()) {
+[[noreturn]] inline void throw_too_large(std::string_view what, int64_t line,
+                                         int64_t col) {
+  throw CulebraError("ValueError", culebra::format("{} is too large", what),
+                     line, col);
+}
+
+// `what` is the name, or a callable that builds it only on failure.
+template <class What, class F>
+inline auto alloc_or_too_large(What&& what, int64_t line, int64_t col,
+                               F&& alloc) -> decltype(alloc()) {
   try {
     return alloc();
   } catch (const std::bad_alloc&) {  // bad_array_new_length derives from it
   } catch (const std::length_error&) {
   }
-  throw CulebraError("ValueError", culebra::format("{} is too large", what),
-                     line, col);
+  if constexpr (std::is_invocable_v<What>) {
+    throw_too_large(what(), line, col);
+  } else {
+    throw_too_large(what, line, col);
+  }
+}
+
+// A count the program supplied, already floored by the caller's own rule,
+// handed to an API that counts in int: past INT_MAX it is refused, not wrapped.
+inline int narrow_or_too_large(int64_t v, std::string_view what, int64_t line,
+                               int64_t col) {
+  if (v > INT_MAX) throw_too_large(what, line, col);
+  return static_cast<int>(v);
 }
 
 // `s.repeat(n)` — `n` copies of `s` concatenated. `n == 0` is the empty
@@ -1514,7 +1533,7 @@ inline std::string str_repeat(std::string_view s, int64_t n, int64_t line = 0,
   // a result past max_size would otherwise reach reserve() and escape as a
   // std::length_error instead of a catchable culebra error.
   if (static_cast<uint64_t>(n) > std::string().max_size() / s.size()) {
-    throw CulebraError("ValueError", "repeat() result is too large", line, col);
+    throw_too_large("repeat() result", line, col);
   }
   std::string out;
   out.reserve(s.size() * static_cast<size_t>(n));

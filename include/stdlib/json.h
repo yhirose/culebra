@@ -379,14 +379,17 @@ typename B::Value parse_lines(std::string_view s,
 template <class R>
 std::string stringify(const typename R::Value& v, int64_t indent = 0,
                       bool sort_keys = false, int depth = 0) {
-  auto sep = [&](int level) -> std::string {
-    if (indent <= 0) return "";
-    // A product past what size_t holds asks for more than a String can,
-    // which std::string refuses as it would the product itself.
+  // The one allocation the program's `indent` sizes. A product past what
+  // size_t holds asks for more than a String can, which std::string refuses
+  // as it would the product itself.
+  auto sep = [&](std::string& s, int level) {
+    if (indent <= 0) return;
     const auto per = static_cast<size_t>(indent);
     const size_t n =
         level != 0 && per > SIZE_MAX / level ? SIZE_MAX : per * level;
-    return std::string("\n") + std::string(n, ' ');
+    s += '\n';
+    alloc_or_too_large("JSON.stringify() result", 0, 0,
+                       [&] { s.append(n, ' '); });
   };
   auto kind = R::kind(v);
   if (depth >= kJsonDepthLimit && (kind == Kind::Seq || kind == Kind::Object)) {
@@ -413,10 +416,10 @@ std::string stringify(const typename R::Value& v, int64_t indent = 0,
       std::string s = "[";
       for (size_t i = 0; i < n; i++) {
         if (i) s += ",";
-        s += sep(depth + 1);
+        sep(s, depth + 1);
         s += stringify<R>(R::seq_at(v, i), indent, sort_keys, depth + 1);
       }
-      s += sep(depth);
+      sep(s, depth);
       return s + "]";
     }
     case Kind::Object: {
@@ -438,11 +441,11 @@ std::string stringify(const typename R::Value& v, int64_t indent = 0,
       for (const auto& [k, val_ptr] : entries) {
         if (!first) s += ",";
         first = false;
-        s += sep(depth + 1);
+        sep(s, depth + 1);
         s += json_escape(k) + colon +
              stringify<R>(*val_ptr, indent, sort_keys, depth + 1);
       }
-      s += sep(depth);
+      sep(s, depth);
       return s + "}";
     }
     case Kind::Other: break;

@@ -784,8 +784,7 @@ inline size_t shared_buffer_bytes(const PackableLayout& layout, size_t count,
   constexpr size_t kMax =
       static_cast<size_t>(std::numeric_limits<std::ptrdiff_t>::max());
   if (layout.stride != 0 && count > (kMax - header) / layout.stride)
-    throw CulebraError("ValueError",
-                       culebra::format("{}: count is too large", what));
+    throw_too_large(culebra::format("{}: count", what), 0, 0);
   return header + layout.stride * count;
 }
 

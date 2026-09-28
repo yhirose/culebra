@@ -2497,6 +2497,16 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_tuple_contains(
 // Forward declaration for runtime helpers that need refcount logic
 inline void _culebra_value_release_impl(int8_t tag, int64_t data);
 
+// Move `arr`'s elements into `items`, a block of `cap` slots, and own it.
+inline void _jit_array_adopt_items(JitArray* arr, JitValue* items, size_t cap) {
+  if (arr->items) {
+    std::memcpy(items, arr->items, arr->size * sizeof(JitValue));
+    delete[] arr->items;
+  }
+  arr->items = items;
+  arr->capacity = cap;
+}
+
 extern "C" {
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_push(JitArray* arr,
@@ -2505,13 +2515,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_push(JitArray* arr,
   if (arr->size >= arr->capacity) {
     size_t new_cap = arr->capacity * 2;
     if (new_cap < 8) new_cap = 8;
-    auto* new_items = new JitValue[new_cap];
-    if (arr->items) {
-      std::memcpy(new_items, arr->items, arr->size * sizeof(JitValue));
-      delete[] arr->items;
-    }
-    arr->items = new_items;
-    arr->capacity = new_cap;
+    _jit_array_adopt_items(arr, new JitValue[new_cap], new_cap);
   }
   // Array absorbs ownership of the pushed value (+1).
   arr->items[arr->size].tag = tag;
@@ -2569,16 +2573,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_resize(
   }
   // Grown in one step, so a count no machine holds is refused rather than
   // doubled toward.
-  if (static_cast<size_t>(count) > arr->capacity) {
-    JitValue* items =
-        _jit_alloc_items(static_cast<size_t>(count), "array size", line, col);
-    if (arr->items) {
-      std::memcpy(items, arr->items, arr->size * sizeof(JitValue));
-      delete[] arr->items;
-    }
-    arr->items = items;
-    arr->capacity = static_cast<size_t>(count);
-  }
+  const auto want = static_cast<size_t>(count);
+  if (want > arr->capacity)
+    _jit_array_adopt_items(
+        arr, _jit_alloc_items(want, "array size", line, col), want);
   // The default is BORROWED: every filled slot aliases it (interp shares the
   // same object too) and must own its own ref — array free releases each
   // slot, so an unretained alias over-releases (SIGSEGV with a heap default).

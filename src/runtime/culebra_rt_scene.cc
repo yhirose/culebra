@@ -567,13 +567,11 @@ class Image {
   ~Image() { UnloadImage(im); }
 
   // A transparent image of `size`. raylib answers an allocation it could not
-  // make with no pixels, which is the refusal `checked` gives.
+  // make with no pixels.
   static ::Image generate(culebra::PixelSize size) {
-    return size.alloc([&] {
-      ::Image i = GenImageColor(size.w(), size.h(), BLANK);
-      if (i.data == nullptr && size.count() != 0) throw std::bad_alloc();
-      return i;
-    });
+    ::Image i = GenImageColor(size.w(), size.h(), BLANK);
+    if (i.data == nullptr && size.count() != 0) size.refuse();
+    return i;
   }
 
   static std::shared_ptr<Image> from_png(std::string bytes) {
@@ -690,15 +688,12 @@ class Image {
   Image& rotate(int64_t degrees) { ImageRotate(&im, (int)degrees); return *this; }
   Image& resize(int64_t w, int64_t h) {
     auto size = culebra::PixelSize::checked(w, h, "img.resize", 0, 0);
-    size.alloc([&] {
-      ImageResize(&im, size.w(), size.h());
-      // raylib frees the old pixels before it knows the new ones failed.
-      if (im.data == nullptr && im.width != 0 && im.height != 0) {
-        im = ::Image{nullptr, 0, 0, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8};
-        throw std::bad_alloc();
-      }
-      return 0;
-    });
+    ImageResize(&im, size.w(), size.h());
+    // raylib frees the old pixels before it knows the new ones failed.
+    if (im.data == nullptr && im.width != 0 && im.height != 0) {
+      im = ::Image{nullptr, 0, 0, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8};
+      size.refuse();
+    }
     return *this;
   }
   Image& crop(int64_t x, int64_t y, int64_t w, int64_t h) {

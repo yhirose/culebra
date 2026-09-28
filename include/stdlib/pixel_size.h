@@ -31,9 +31,7 @@ class PixelSize {
                           ctx, w, h),
           line, col);
     if (w > kMaxPixels || h > kMaxPixels || (w != 0 && h > kMaxPixels / w))
-      throw CulebraError("ValueError",
-                         culebra::format("{}: {}x{} is too large", ctx, w, h),
-                         line, col);
+      throw_too_large(name(ctx, w, h), line, col);
     return PixelSize(static_cast<int>(w), static_cast<int>(h), ctx, line, col);
   }
 
@@ -41,17 +39,24 @@ class PixelSize {
   int h() const { return h_; }
   size_t count() const { return static_cast<size_t>(w_) * h_; }
 
-  // Run the allocation of these pixels: failing it is the refusal `checked`
-  // gives, at the same call, not a C++ exception the program cannot catch.
+  // The refusal `checked` gives, at the same call, for an allocation of these
+  // pixels that failed.
+  [[noreturn]] void refuse() const {
+    throw_too_large(name(ctx_, w_, h_), line_, col_);
+  }
+  // Run a C++ allocation of these pixels, refusing as above if it fails.
   template <class F>
   auto alloc(F&& f) const -> decltype(f()) {
-    return alloc_or_too_large(culebra::format("{}: {}x{}", ctx_, w_, h_),
-                              line_, col_, std::forward<F>(f));
+    return alloc_or_too_large([&] { return name(ctx_, w_, h_); }, line_, col_,
+                              std::forward<F>(f));
   }
 
  private:
   PixelSize(int w, int h, std::string_view ctx, int64_t line, int64_t col)
       : w_(w), h_(h), ctx_(ctx), line_(line), col_(col) {}
+  static std::string name(std::string_view ctx, int64_t w, int64_t h) {
+    return culebra::format("{}: {}x{}", ctx, w, h);
+  }
   int w_, h_;
   std::string_view ctx_;  // a literal naming the entry
   int64_t line_, col_;

@@ -953,8 +953,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_coord(
 }
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_init(
     int64_t w, int64_t h, int64_t line, int64_t col) {
-  namespace cd = culebra::_canvas_detail;
-  if (!cd::init(cd::canvas_size(w, h, "Canvas.init", line, col)))
+  if (!culebra::_canvas_detail::init(
+          culebra::_canvas_detail::canvas_size(w, h, "Canvas.init", line, col)))
     throw culebra::CulebraError("RuntimeError",
                                 culebra::_canvas_detail::kBusyError, line, col);
 }
@@ -1049,10 +1049,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_glyph(
 }
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_sprite_load(
     JitArray* pixels, int64_t w, int64_t h) {
-  namespace cd = culebra::_canvas_detail;
-  auto size = cd::canvas_size(w, h, "Canvas.Sprite", 0, 0);
+  auto size = culebra::_canvas_detail::canvas_size(w, h, "Canvas.Sprite", 0, 0);
   auto px = _jit_canvas_int_array<uint32_t>(pixels);
-  return cd::sprite_load(px.data(), static_cast<int64_t>(px.size()), size);
+  return culebra::_canvas_detail::sprite_load(
+      px.data(), static_cast<int64_t>(px.size()), size);
 }
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t
 culebra_runtime_canvas_sprite_from_png(uint8_t tag, int64_t data, int64_t line,
@@ -1078,9 +1078,9 @@ culebra_runtime_canvas_sprite_to_png(
 }
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_sprite_blank(
     int64_t w, int64_t h, int64_t rgba) {
-  namespace cd = culebra::_canvas_detail;
-  return cd::sprite_blank(cd::canvas_size(w, h, "Canvas.Sprite", 0, 0),
-                          static_cast<uint32_t>(rgba));
+  return culebra::_canvas_detail::sprite_blank(
+      culebra::_canvas_detail::canvas_size(w, h, "Canvas.Sprite", 0, 0),
+      static_cast<uint32_t>(rgba));
 }
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_sprite_free(
     int64_t id, int64_t line, int64_t col) {
@@ -1913,11 +1913,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_json_stringify(
     int8_t tag, int64_t data, int64_t indent, int8_t sort_keys,
     int8_t lines) {
   if (!lines) {
-    return _culebra_heap_str(culebra::alloc_or_too_large(
-        "JSON.stringify() result", 0, 0, [&] {
-          return culebra::json::stringify<_JitJsonReader>({tag, data}, indent,
-                                                          sort_keys != 0);
-        }));
+    return _culebra_heap_str(culebra::json::stringify<_JitJsonReader>(
+        {tag, data}, indent, sort_keys != 0));
   }
   if (indent > 0) {
     throw culebra::CulebraError("TypeError",
