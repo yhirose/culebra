@@ -5801,6 +5801,10 @@ a dropped handle a `ClosedError`.
 | `tex.filter(name) -> Texture` | sampling: `"point"` (pixel art, a LUT's exact cells), `"bilinear"`, `"trilinear"` |
 | `tex.wrap(name) -> Texture` | past the edge: `"repeat"`, `"clamp"`, `"mirror"` |
 
+The sizes `checker`, `grain`, `canvas` and `render_target` take follow the
+image rule below: a negative side, or `w * h * 4` bytes of 2 GiB or more, is a
+`ValueError`.
+
 A canvas is how a texture gets drawn with the GPU (`rect`/`text`/… between
 `canvas()` and `canvas_end()`), the way a racing demo paints liveries and
 signage. One is open at a time: a second `canvas()` before the close is a
@@ -5819,7 +5823,8 @@ what makes it the one part of `Scene` a test runs without a display. Always
 RGBA, coordinates in pixels, every colour with its own alpha (default 255).
 `Scene.Image.new(w, h)` and `img.resize(w, h)` raise `ValueError` for a
 negative side, and for a size past what an image holds — `w * h * 4` bytes of
-2 GiB or more (`Scene.Image.new: 24000x24000 is too large`).
+2 GiB or more (`Scene.Image.new: 24000x24000 is too large`); so does
+`img.rotate(degrees)` when the rotated image would be past it.
 
 | Method | Result |
 | --- | --- |
@@ -6854,7 +6859,7 @@ what a front end wants for code no source line produced.
 | `m.set_entry_frame_drops(on:)` | whether the entry function's own bindings run their drop hooks when the program ends (on by default). A front end whose top-level scope is released without destructors turns it off; the entry function's defers still run, and every nested scope still drops as usual |
 | `m.list_new()` | a staging list, for `stmts:`/`args:` above |
 | `m.list_push(list:, value:)` | appends a node id to a staging list |
-| `m.add_func(name:, num_locals:, num_captures:, num_cells:, num_params:, body:)` | a function; returns its index (`funcs[0]` is the entry point) |
+| `m.add_func(name:, num_locals:, num_captures:, num_cells:, num_params:, body:)` | a function; returns its index (`funcs[0]` is the entry point). A negative count, or one past 2^31 − 1, is a `ValueError` |
 | `m.set_local_name(func:, index:, name:)` | names a local, for diagnostics only |
 | `m.set_capture_name(func:, index:, name:)` | names a capture, for diagnostics only |
 | `m.capture_map_new()` | a staging capture map |

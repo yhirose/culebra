@@ -685,7 +685,17 @@ class Image {
   Image& brightness(int64_t k) { ImageColorBrightness(&im, (int)k); return *this; }
   Image& flip_v() { ImageFlipVertical(&im); return *this; }
   Image& flip_h() { ImageFlipHorizontal(&im); return *this; }
-  Image& rotate(int64_t degrees) { ImageRotate(&im, (int)degrees); return *this; }
+  Image& rotate(int64_t degrees) {
+    // The rotated size is raylib's, by its own formula; one more pixel each
+    // way covers the float rounding of a copy compiled apart from it.
+    const float rad = (int)degrees * PI / 180.0f;
+    const float s = fabsf(sinf(rad)), c = fabsf(cosf(rad));
+    culebra::PixelSize::checked((int64_t)(im.width * c + im.height * s) + 1,
+                                (int64_t)(im.height * c + im.width * s) + 1,
+                                "img.rotate", 0, 0);
+    ImageRotate(&im, (int)degrees);
+    return *this;
+  }
   Image& resize(int64_t w, int64_t h) {
     auto size = culebra::PixelSize::checked(w, h, "img.resize", 0, 0);
     ImageResize(&im, size.w(), size.h());
@@ -1527,16 +1537,18 @@ class View {
   // a checkerboard texture (px square, `checks` cells per side)
   std::shared_ptr<Texture> checker(int64_t px, int64_t checks, int64_t r1, int64_t g1, int64_t b1,
                                    int64_t r2, int64_t g2, int64_t b2) {
+    auto size = culebra::PixelSize::checked(px, px, "view.checker", 0, 0);
     int64_t n = checks > 0 ? checks : 1;          // guard: avoid div-by-zero / 0-size cells
     int cell = (int)(px / n);
     if (cell < 1) cell = 1;
-    return register_texture(GenImageChecked((int)px, (int)px, cell, cell,
+    return register_texture(GenImageChecked(size.w(), size.h(), cell, cell,
                                             col(r1, g1, b1), col(r2, g2, b2)));
   }
   // a flat colour with white-noise grain mixed in (asphalt / grass grain)
   std::shared_ptr<Texture> grain(int64_t px, int64_t r, int64_t g, int64_t b, int64_t amt) {
-    ::Image im = GenImageColor((int)px, (int)px, col(r, g, b));
-    ::Image noise = GenImageWhiteNoise((int)px, (int)px, 0.5f);
+    auto size = culebra::PixelSize::checked(px, px, "view.grain", 0, 0);
+    ::Image im = GenImageColor(size.w(), size.h(), col(r, g, b));
+    ::Image noise = GenImageWhiteNoise(size.w(), size.h(), 0.5f);
     ImageColorTint(&noise, col(amt, amt, amt));
     ImageDrawImage(&im, noise, 0, 0, Color{255, 255, 255, 60});
     UnloadImage(noise);
@@ -1548,7 +1560,7 @@ class View {
   // it every frame. Clamped, not repeating — a target's edge pixels have no
   // business wrapping round.
   std::shared_ptr<Texture> render_target(int64_t w, int64_t h) {
-    auto t = make_target(w, h);
+    auto t = make_target(culebra::PixelSize::checked(w, h, "view.render_target", 0, 0));
     SetTextureWrap(t->tex, TEXTURE_WRAP_CLAMP);
     return t;
   }
@@ -1564,7 +1576,7 @@ class View {
     if (open_canvas_)
       throw std::runtime_error(
           "Scene: canvas() while a canvas is still open — call canvas_end() first");
-    auto t = make_target(w, h);
+    auto t = make_target(culebra::PixelSize::checked(w, h, "view.canvas", 0, 0));
     SetTextureWrap(t->tex, TEXTURE_WRAP_REPEAT);
     open_canvas_ = t;
     BeginTextureMode(t->rt);
@@ -2056,9 +2068,9 @@ class View {
     return rec(x, tex.tex.height - y - h, w, -h);
   }
   // A render target sized w x h: colour + depth, bilinear, bottom-up (flip_v).
-  static std::shared_ptr<Texture> make_target(int64_t w, int64_t h) {
+  static std::shared_ptr<Texture> make_target(culebra::PixelSize size) {
     auto t = std::make_shared<Texture>();
-    t->rt = LoadRenderTexture((int)w, (int)h);
+    t->rt = LoadRenderTexture(size.w(), size.h());
     t->tex = t->rt.texture;
     t->is_rt = true;
     t->flip_v = true;

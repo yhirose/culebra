@@ -623,13 +623,17 @@ class Module {
                    int64_t body) {
     coreir::Func f;
     f.name = std::string(name);
-    f.num_locals = idx32(num_locals);
-    f.num_captures = idx32(num_captures);
-    f.num_cells = idx32(num_cells);
-    f.num_params = idx32(num_params);
+    f.num_locals = count32(num_locals, "CodeGen: num_locals");
+    f.num_captures = count32(num_captures, "CodeGen: num_captures");
+    f.num_cells = count32(num_cells, "CodeGen: num_cells");
+    f.num_params = count32(num_params, "CodeGen: num_params");
     f.body = node(body);
-    f.local_names.resize(static_cast<size_t>(f.num_locals));
-    f.capture_names.resize(static_cast<size_t>(f.num_captures));
+    culebra::alloc_or_too_large("CodeGen: num_locals", 0, 0, [&] {
+      f.local_names.resize(static_cast<size_t>(f.num_locals));
+    });
+    culebra::alloc_or_too_large("CodeGen: num_captures", 0, 0, [&] {
+      f.capture_names.resize(static_cast<size_t>(f.num_captures));
+    });
     m_.funcs.push_back(std::move(f));
     return static_cast<int64_t>(m_.funcs.size() - 1);
   }
@@ -988,6 +992,15 @@ class Module {
   }
   static int64_t id(coreir::NodeId n) { return static_cast<int64_t>(n.v); }
   static int32_t idx32(int64_t v) { return static_cast<int32_t>(v); }
+  // A count the program chose, which sizes the function's slots: negative, or
+  // past what the IR counts in, is refused rather than wrapped into one.
+  static int32_t count32(int64_t v, std::string_view what) {
+    if (v < 0)
+      throw culebra::CulebraError(
+          "ValueError",
+          culebra::format("{} must not be negative, got {}", what, v), 0, 0);
+    return culebra::narrow_or_too_large(v, what, 0, 0);
+  }
   static coreir::SrcPos pos(int64_t line, int64_t col) {
     return {static_cast<uint32_t>(line), static_cast<uint32_t>(col)};
   }

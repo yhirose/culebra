@@ -5618,6 +5618,9 @@ while !view.closing() {
 | `tex.filter(name) -> Texture` | サンプリング: `"point"`（ピクセルアート、LUTのセルそのまま）、`"bilinear"`、`"trilinear"` |
 | `tex.wrap(name) -> Texture` | 端の外側: `"repeat"`、`"clamp"`、`"mirror"` |
 
+`checker`・`grain`・`canvas`・`render_target`に渡す大きさも、下の画像の規則に従う。
+負の辺と、`w * h * 4`バイトが2 GiB以上になる大きさは`ValueError`。
+
 canvasはGPUでテクスチャを描く方法（`canvas()`と`canvas_end()`の間の
 `rect` / `text` …）で、レーシングデモがリバリーや看板を塗るやり方。同時に1枚だけ:
 閉じる前の2枚目の`canvas()`は`RuntimeError`、開いたままフレームを開くと先に
@@ -5635,7 +5638,8 @@ canvasはGPUでテクスチャを描く方法（`canvas()`と`canvas_end()`の�
 ある理由がこれ。常にRGBA、座標はピクセル、色はそれぞれ自分のalpha（既定255）を持つ。
 `Scene.Image.new(w, h)`と`img.resize(w, h)`は、負の辺と、画像に収まらない大きさ
 （`w * h * 4`バイトが2 GiB以上）を`ValueError`にする
-（`Scene.Image.new: 24000x24000 is too large`）。
+（`Scene.Image.new: 24000x24000 is too large`）。回転後の画像がこの大きさを超える
+`img.rotate(degrees)`も`ValueError`。
 
 | メソッド | 結果 |
 | --- | --- |
@@ -6644,7 +6648,7 @@ inspect(m.node_col(sum))  # => 3
 | `m.set_entry_frame_drops(on:)` | プログラム終了時に、入口関数自身の束縛のdrop hookを走らせるかどうか(既定は走らせる)。トップレベルのスコープをデストラクタなしで解放する言語のフロントエンドは切る。入口関数のdeferは変わらず走り、内側のスコープも通常どおりdropする |
 | `m.list_new()` | ステージング用list。`stmts:`/`args:`に渡す |
 | `m.list_push(list:, value:)` | ステージング用listにノードidを追加する |
-| `m.add_func(name:, num_locals:, num_captures:, num_cells:, num_params:, body:)` | 関数。indexを返す(`funcs[0]`が`run()`の開始点) |
+| `m.add_func(name:, num_locals:, num_captures:, num_cells:, num_params:, body:)` | 関数。indexを返す(`funcs[0]`が`run()`の開始点)。負の個数と2^31 − 1を超える個数は`ValueError` |
 | `m.set_local_name(func:, index:, name:)` | localに名前を付ける(診断用のみ) |
 | `m.set_capture_name(func:, index:, name:)` | captureに名前を付ける(診断用のみ) |
 | `m.capture_map_new()` | ステージング用capture map |

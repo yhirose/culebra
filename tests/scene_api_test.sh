@@ -41,6 +41,28 @@ view.line(0.0, 31.0, 31.0, 0.0, 2.0, 0, 255, 0)
 view.text("x", 2.0, 2.0, 8, 0, 0, 0)
 view.canvas_end()
 println("checker {checks.width()}x{checks.height()} grain {grain.width()} canvas {painted.width()}x{painted.height()}")
+# a size no image holds is refused before raylib counts it in int
+fn size_err(f) {
+  try {
+    f()
+    'accepted'
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+let big_checker = size_err(fn () {
+  view.checker(1 << 16, 4, 0, 0, 0, 255, 255, 255)
+})
+let big_grain = size_err(fn () {
+  view.grain(1 << 16, 90, 100, 80, 40)
+})
+let big_target = size_err(fn () {
+  view.render_target(1 << 16, 1 << 16)
+})
+let neg_canvas = size_err(fn () {
+  view.canvas(-1, 8)
+})
+println("sizes: {big_checker} | {big_grain} | {big_target} | {neg_canvas}")
 
 # --- materials: fluent handles, a texture by handle or nil ---
 let gold = view.add_material().rgb(230, 180, 60).pbr(0.9, 0.3)
@@ -733,6 +755,7 @@ expect() {
   fi
 }
 expect "checker 64.0x64.0 grain 32.0 canvas 32.0x32.0"
+expect "sizes: ValueError: view.checker: 65536x65536 is too large | ValueError: view.grain: 65536x65536 is too large | ValueError: view.render_target: 65536x65536 is too large | ValueError: view.canvas: width and height must not be negative, got -1x8"
 expect "ball 3.0 0.5 0.0"
 expect "keys false false false false"
 expect "closing false -> true"

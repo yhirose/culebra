@@ -67,6 +67,30 @@ assert_eq(too_large(fn () {
   Audio.Pcm.new(1 << 31, 1, 1024)
 }), 'ValueError: Audio.Pcm: rate is too large')
 
+# --- CodeGen: a function's slot counts size its name tables ---
+let cg = CodeGen.Module.new()
+let cg_body = cg.block(stmts: cg.list_new(), line: 1, col: 1)
+assert_eq(too_large(fn () {
+  cg.add_func(
+    name: 'f',
+    num_locals: -1,
+    num_captures: 0,
+    num_cells: 0,
+    num_params: 0,
+    body: cg_body,
+  )
+}), 'ValueError: CodeGen: num_locals must not be negative, got -1')
+assert_eq(too_large(fn () {
+  cg.add_func(
+    name: 'f',
+    num_locals: 0,
+    num_captures: (1 << 32) + 1,
+    num_cells: 0,
+    num_params: 0,
+    body: cg_body,
+  )
+}), 'ValueError: CodeGen: num_captures is too large')
+
 # --- Tensor: a buffer the shape asks for, now or when a lazy op runs ---
 assert_eq(too_large(fn () {
   Tensor.zeros(1 << 40, 1 << 20)

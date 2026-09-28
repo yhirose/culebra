@@ -2823,8 +2823,9 @@ inline std::string read_stdin_all_interruptible() {
 // with the line reader, so the two interleave correctly.
 inline std::string read_stdin_n_interruptible(size_t n) {
 #if defined(_WIN32)
+  // `n` is a ceiling, not a size to reserve: the String grows with what
+  // arrives, as it does below.
   std::string out;
-  out.reserve(n);
   int c;
   while (out.size() < n && (c = std::fgetc(stdin)) != EOF)
     out.push_back(static_cast<char>(c));
