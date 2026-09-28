@@ -377,11 +377,16 @@ typename B::Value parse_lines(std::string_view s,
 // diffs / hashing). `depth` tracks recursion for indentation and for the
 // kJsonDepthLimit guard (a loop can build a value deeper than any parse).
 template <class R>
-std::string stringify(const typename R::Value& v, int indent = 0,
+std::string stringify(const typename R::Value& v, int64_t indent = 0,
                       bool sort_keys = false, int depth = 0) {
   auto sep = [&](int level) -> std::string {
     if (indent <= 0) return "";
-    return std::string("\n") + std::string(indent * level, ' ');
+    // A product past what size_t holds asks for more than a String can,
+    // which std::string refuses as it would the product itself.
+    const auto per = static_cast<size_t>(indent);
+    const size_t n =
+        level != 0 && per > SIZE_MAX / level ? SIZE_MAX : per * level;
+    return std::string("\n") + std::string(n, ' ');
   };
   auto kind = R::kind(v);
   if (depth >= kJsonDepthLimit && (kind == Kind::Seq || kind == Kind::Object)) {

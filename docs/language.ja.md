@@ -985,7 +985,8 @@ ownedな`String`です。文字列と非文字列の連結（`'n: ' + 1`）は
 
 オプションの`(count, default)`指定は、まず`count`個の`default`
 要素で埋め、次にリテラルで先頭位置を上書きします。`default`を省略
-すると`nil`で埋められます。
+すると`nil`で埋められます。負の`count`は`ValueError`で、確保できない
+ほど大きい`count`も`ValueError`（`array size is too large`）です。
 
 **スプレッド。** `...iterable`要素は別コレクションの要素を展開する:
 

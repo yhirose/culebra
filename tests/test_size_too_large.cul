@@ -26,8 +26,56 @@ assert_eq(too_large(fn () {
 assert_eq(too_large(fn () {
   'ab'.repeat(huge)
 }), 'ValueError: repeat() result is too large')
+assert_eq(too_large(fn () {
+  let a = [0](huge)
+  a
+}), 'ValueError: array size is too large')
 assert_eq(repeat(3, 'x'), ['x', 'x', 'x'])
 assert_eq(iota(3), [0, 1, 2])
+assert_eq([](3, 7), [7, 7, 7])
+
+# --- images: a size the pixel buffer cannot count is refused, not wrapped ---
+# Past 2^31 a side used to wrap to a negative int and give a 0x0 sprite that
+# still reported the width asked for; 24000x24000 is past the 2 GiB an image
+# may hold, the limit its drawing code counts in.
+assert_eq(too_large(fn () {
+  Canvas.Sprite.blank(1 << 31, 3)
+}), 'ValueError: Canvas.Sprite: 2147483648x3 is too large')
+assert_eq(too_large(fn () {
+  Canvas.Sprite.blank(24000, 24000)
+}), 'ValueError: Canvas.Sprite: 24000x24000 is too large')
+assert_eq(too_large(fn () {
+  Canvas.Sprite([1], (1 << 32) + 1, 1)
+}), 'ValueError: Canvas.Sprite: 4294967297x1 is too large')
+assert_eq(too_large(fn () {
+  Canvas.init(1 << 32, 1)
+}), 'ValueError: Canvas.init: 4294967296x1 is too large')
+# a negative side is a sprite with no pixels, and says so
+let none = Canvas.Sprite.blank(-1, 3)
+assert_eq([none.width(), none.height()], [0, 3])
+
+# --- JSON: the indent is a count of spaces per level, not an int to wrap ---
+assert_eq(too_large(fn () {
+  JSON.stringify([[1]], huge)
+}), 'ValueError: JSON.stringify() result is too large')
+assert_eq(JSON.stringify([1], 1), "[\n 1\n]")
+
+# --- Audio.Pcm: the block is `buffer` frames, counted in int ---
+assert_eq(too_large(fn () {
+  Audio.Pcm.new(44100, 1, 1 << 31)
+}), 'ValueError: Audio.Pcm: buffer is too large')
+assert_eq(too_large(fn () {
+  Audio.Pcm.new(1 << 31, 1, 1024)
+}), 'ValueError: Audio.Pcm: rate is too large')
+
+# --- Tensor: a buffer the shape asks for, now or when a lazy op runs ---
+assert_eq(too_large(fn () {
+  Tensor.zeros(1 << 40, 1 << 20)
+}), 'ValueError: Tensor: shape is too large')
+let padded = Tensor.zeros(2).pad([0, 0, 1 << 60])
+assert_eq(too_large(fn () {
+  Tensor.eval(padded)
+}), 'ValueError: Tensor: shape is too large')
 
 # --- SharedBuffer: the product is checked, not just the allocation ---
 @packable

@@ -2040,7 +2040,8 @@ Culebraの値とJSONテキストの相互変換。両バックエンドで同じ
 
 * `indent > 0`でそのスペース数でインデントしpretty-printします
   （カンマの後に改行、`":"`の代わりに`": "`）。`indent <= 0`は
-  コンパクト出力。
+  コンパクト出力。結果が確保できないほど大きくなる`indent`は
+  `ValueError`（`JSON.stringify() result is too large`）。
 * `sort_keys=true`で`Object`のキーを挿入順ではなく辞書順で
   出力します。diff / ハッシュ向けの決定論的出力に有用。
 * `lines=true`で **JSON Lines** を出力します。`Array` / `Tuple` /
@@ -5127,6 +5128,11 @@ packed RGBA `Long`、または`palette`を与えたときはそのパレット�
 される。完全透過のソースピクセルは直接サンプルされてもボックス平均されても
 スキップされ、寄与しない。転送先・転送元の矩形の辺が非正なら何も描かない。
 
+スプライトとフレームバッファの負の辺は0として扱う。画像に収まらない大きさ
+（`w * h * 4`バイトが2 GiB以上）は`ValueError`
+（`Canvas.Sprite: 24000x24000 is too large`。`Canvas.init` / `Canvas.run`では
+`Canvas.init: …`）。
+
 ### オフスクリーン描画
 
 `Canvas.Sprite.blank(w, h, color = 0)`は空のスプライトを作り、
@@ -5627,6 +5633,9 @@ canvasはGPUでテクスチャを描く方法（`canvas()`と`canvas_end()`の�
 ウィンドウを必要としない: `View`が1つも無い段階で画像を組み、ピクセル単位で
 読み戻し、書き出せる。`Scene`のうちディスプレイ無しでテストが回る唯一の部分で
 ある理由がこれ。常にRGBA、座標はピクセル、色はそれぞれ自分のalpha（既定255）を持つ。
+`Scene.Image.new(w, h)`と`img.resize(w, h)`は、負の辺と、画像に収まらない大きさ
+（`w * h * 4`バイトが2 GiB以上）を`ValueError`にする
+（`Scene.Image.new: 24000x24000 is too large`）。
 
 | メソッド | 結果 |
 | --- | --- |
@@ -7575,6 +7584,8 @@ bgm.play()
 など、プログラム自身が組み立てる信号に使う。
 `Audio.Pcm.new(rate, channels, buffer)`は`rate` Hz、1または2チャンネル、
 `buffer`フレームずつ供給するストリームを開く（1024が目安、約512未満は非対応）。
+2^31 − 1を超える`rate`・`buffer`と、確保できないほど大きい`buffer`は`ValueError`
+（`Audio.Pcm: buffer is too large`）。
 
 | メソッド | 効果 |
 | --- | --- |

@@ -2095,7 +2095,8 @@ Serialize `v` to a JSON string.
 
 * `indent > 0` pretty-prints with that many spaces per nesting level
   (newline after each comma, `": "` separator). `indent <= 0` is the
-  compact form.
+  compact form. An `indent` whose result is too large to allocate raises
+  `ValueError` (`JSON.stringify() result is too large`).
 * `sort_keys=true` walks `Object` keys alphabetically instead of
   insertion order — useful for deterministic diff / hash output.
 * `lines=true` emits **JSON Lines**: each element of an `Array` /
@@ -5294,6 +5295,11 @@ source pixel is skipped and never contributes, whether it is sampled directly
 or averaged over. A destination or source rectangle with a non-positive side
 draws nothing.
 
+A sprite's or the framebuffer's side below 0 is 0. A size past what an image
+holds — `w * h * 4` bytes of 2 GiB or more — raises `ValueError`
+(`Canvas.Sprite: 24000x24000 is too large`, or `Canvas.init: …` from
+`Canvas.init` / `Canvas.run`).
+
 ### Offscreen drawing
 
 `Canvas.Sprite.blank(w, h, color = 0)` creates an empty sprite, and
@@ -5811,6 +5817,9 @@ and the way a PNG's pixels come in. It needs no window: an image can be built,
 read back pixel by pixel, or written out before any `View` exists, which is
 what makes it the one part of `Scene` a test runs without a display. Always
 RGBA, coordinates in pixels, every colour with its own alpha (default 255).
+`Scene.Image.new(w, h)` and `img.resize(w, h)` raise `ValueError` for a
+negative side, and for a size past what an image holds — `w * h * 4` bytes of
+2 GiB or more (`Scene.Image.new: 24000x24000 is too large`).
 
 | Method | Result |
 | --- | --- |
@@ -7871,7 +7880,9 @@ second — which the script synthesises a block at a time: an emulator's own APU
 mixer, a chiptune resampled from its native rate, any signal a program builds
 itself. `Audio.Pcm.new(rate, channels, buffer)` opens a stream of `rate` Hz, 1
 or 2 channels, fed `buffer` frames at a time (1024 is a reasonable default;
-below ~512 is not supported).
+below ~512 is not supported). A `rate` or `buffer` past 2^31 − 1, or a
+`buffer` too large to allocate, raises `ValueError` (`Audio.Pcm: buffer is
+too large`).
 
 | Method | Effect |
 | --- | --- |

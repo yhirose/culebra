@@ -42,6 +42,7 @@
 #include <vector>
 
 #include <base/id_registry.h>  // IdRegistry<T> (slot+generation handle table)
+#include <stdlib/pixel_size.h>
 #if defined(__EMSCRIPTEN__)
 #include <emscripten.h>
 #endif
@@ -118,19 +119,28 @@ inline Sprite* sprite_of(int64_t id) {
   return _sprites().get(id);
 }
 
+// The size a Canvas entry was given: a negative side is an image with no
+// pixels, and past that the rule every image follows.
+inline PixelSize canvas_size(int64_t w, int64_t h, std::string_view ctx,
+                             int64_t line, int64_t col) {
+  return PixelSize::checked(std::max<int64_t>(w, 0), std::max<int64_t>(h, 0),
+                            ctx, line, col);
+}
+
 // (Re)allocate the framebuffer to w*h transparent pixels. The sprite registry
 // is deliberately NOT cleared: sprites are typically registered once at top
 // level before the loop first calls init(), so clearing here would invalidate
 // their handles. It is process-lifetime state, reclaimed at process exit (or,
 // in the Playground, when Stop respawns the worker).
 // False when another isolate owns the canvas (the caller raises kBusyError).
-inline bool init(int w, int h) {
+inline bool init(PixelSize size) {
   if (!own_canvas()) return false;
-  if (w < 0) w = 0;
-  if (h < 0) h = 0;
-  _fb_w() = w;
-  _fb_h() = h;
-  _fb().assign(static_cast<size_t>(w) * static_cast<size_t>(h), 0u);
+  size.alloc([&] {
+    _fb().assign(size.count(), 0u);
+    return 0;
+  });
+  _fb_w() = size.w();
+  _fb_h() = size.h();
   return true;
 }
 
@@ -625,13 +635,16 @@ inline void glyph(int64_t id, int64_t index, int x, int y, uint32_t rgba,
 
 // Register a sprite from already-decoded pixels, taking ownership of the
 // buffer.
-inline int64_t sprite_adopt(std::vector<uint32_t>&& px, int w, int h) {
+inline int64_t sprite_adopt(std::vector<uint32_t>&& px, PixelSize size) {
   if (!own_canvas()) return 0;
   auto s = std::make_unique<Sprite>();
-  s->w = w < 0 ? 0 : w;
-  s->h = h < 0 ? 0 : h;
+  s->w = size.w();
+  s->h = size.h();
   s->px = std::move(px);
-  s->px.resize(static_cast<size_t>(s->w) * static_cast<size_t>(s->h), 0u);
+  size.alloc([&] {
+    s->px.resize(size.count(), 0u);
+    return 0;
+  });
   // s stays owning until add() has placed the pointer, so a growth-triggered
   // bad_alloc inside add() doesn't leak the pixels (same order as net.h).
   int64_t id = _sprites().add(s.get());
@@ -643,20 +656,18 @@ inline int64_t sprite_adopt(std::vector<uint32_t>&& px, int w, int h) {
 // Returns its handle. The pixel count is normalised to w*h (padded with
 // transparent / truncated) so a short or long array can't read out of bounds
 // at blit time.
-inline int64_t sprite_load(const uint32_t* px, int64_t n, int w, int h) {
+inline int64_t sprite_load(const uint32_t* px, int64_t n, PixelSize size) {
   if (n < 0) n = 0;
-  return sprite_adopt(std::vector<uint32_t>(px, px + n), w, h);
+  return sprite_adopt(std::vector<uint32_t>(px, px + n), size);
 }
 
 // A blank sprite filled with one colour — the raw material of an offscreen
 // draw target (Canvas.Sprite.blank + Canvas.draw_to).
-inline int64_t sprite_blank(int w, int h, uint32_t rgba) {
-  if (w < 0) w = 0;
-  if (h < 0) h = 0;
-  return sprite_adopt(
-      std::vector<uint32_t>(static_cast<size_t>(w) * static_cast<size_t>(h),
-                            rgba),
-      w, h);
+inline int64_t sprite_blank(PixelSize size, uint32_t rgba) {
+  auto px = size.alloc([&] {
+    return std::vector<uint32_t>(size.count(), rgba);
+  });
+  return sprite_adopt(std::move(px), size);
 }
 
 // Free a sprite's pixels and retire its handle. Returns false when `id` is

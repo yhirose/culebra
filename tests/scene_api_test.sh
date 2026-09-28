@@ -553,6 +553,34 @@ let bad = try {
   e.kind
 }
 println("bad png: {bad}")
+# A size raylib cannot count in int is refused before raylib sees it: past
+# that, it allocated a few bytes and filled all w*h pixels into them.
+fn refused(f) {
+  try {
+    f()
+    'accepted'
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+let past_raylib = refused(fn () {
+  Scene.Image.new(24000, 24000)
+})
+println("image 24000x24000: {past_raylib}")
+let past_int = refused(fn () {
+  Scene.Image.new((1 << 32) + 4, 3)
+})
+println("image past int: {past_int}")
+let negative = refused(fn () {
+  Scene.Image.new(-1, 3)
+})
+println("image negative: {negative}")
+let kept = Scene.Image.new(4, 4).fill(1, 2, 3)
+let resized = refused(fn () {
+  kept.resize(40000, 40000)
+})
+println("resize 40000x40000: {resized}")
+println("refused resize keeps {kept.width()}x{kept.height()} {kept.get(0, 0)}")
 EOF
 
 [ -n "${GITHUB_ACTIONS:-}" ] && prefix="::error::" || prefix="ERROR: "
@@ -586,7 +614,12 @@ for want in "px 4278190335 255 16711935 size 8.0x8.0" \
             "shapes 151587327 16711935" \
             "blit 65535 255" \
             "text without a window: 0" \
-            "bad png: RuntimeError"; do
+            "bad png: RuntimeError" \
+            "image 24000x24000: ValueError: Scene.Image.new: 24000x24000 is too large" \
+            "image past int: ValueError: Scene.Image.new: 4294967300x3 is too large" \
+            "image negative: ValueError: Scene.Image.new: width and height must not be negative, got -1x3" \
+            "resize 40000x40000: ValueError: img.resize: 40000x40000 is too large" \
+            "refused resize keeps 4.0x4.0 16909311"; do
   if ! grep -qxF "$want" "img--vm.txt"; then
     echo "${prefix}scene_api_test: Image line missing: $want" >&2
     cat "img--vm.txt" >&2

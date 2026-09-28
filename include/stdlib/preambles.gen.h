@@ -1001,8 +1001,8 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
     # draw target (see Canvas.draw_to).
     new(w: Long, h: Long, color = 0) {
       self._id = _Canvas.sprite_blank(w, h, color)
-      self._w = w
-      self._h = h
+      self._w = _Canvas.sprite_width(self._id)
+      self._h = _Canvas.sprite_height(self._id)
     }
     # Named form of the String constructor, for call sites where `Sprite(data)`
     # would not read as "this is a PNG".

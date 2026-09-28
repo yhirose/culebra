@@ -4,18 +4,27 @@
 #pragma once
 
 #include <algorithm>
+#include <climits>
 #include <cstdint>
+#include <string_view>
 #include <vector>
+
+#include <base/shared.h>  // CulebraError / alloc_or_too_large
 
 namespace culebra::rt {
 
 class PcmBlock {
  public:
   PcmBlock(int64_t rate, int64_t channels, int64_t buffer)
-      : rate_((int)(rate < 1 ? 1 : rate)),
+      : rate_(to_int(rate, "Audio.Pcm: rate")),
         channels_(channels == 2 ? 2 : 1),
-        buffer_((int)(buffer < 1 ? 1 : buffer)) {
-    pend_.reserve((size_t)cap());  // steady-state size; skips early regrowth
+        buffer_(to_int(buffer, "Audio.Pcm: buffer")) {
+    // Steady-state size, which skips early regrowth; a buffer no machine
+    // holds fails here.
+    culebra::alloc_or_too_large("Audio.Pcm: buffer", 0, 0, [&] {
+      pend_.reserve((size_t)cap());
+      return 0;
+    });
   }
 
   // The whole frames among `count` values (stereo: interleaved L,R), as many
@@ -39,6 +48,13 @@ class PcmBlock {
 
  private:
   int64_t cap() const { return (int64_t)buffer_ * channels_; }
+  // Below 1 is 1; past what the device API counts in is refused, not wrapped.
+  static int to_int(int64_t v, std::string_view what) {
+    if (v > INT_MAX)
+      throw culebra::CulebraError(
+          "ValueError", culebra::format("{} is too large", what), 0, 0);
+    return v < 1 ? 1 : static_cast<int>(v);
+  }
 };
 
 }  // namespace culebra::rt

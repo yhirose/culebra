@@ -1047,7 +1047,8 @@ Arrays concatenate the same way (§9); no other type does.
 The optional `(count, default)` tail first fills the array to `count`
 elements with `default`, then overwrites the first positions with any
 literal values. Only the default form is available; omit `default` to
-get `nil` fill.
+get `nil` fill. A negative `count` raises `ValueError`, and so does one
+too large to allocate (`array size is too large`).
 
 **Spread.** A `...iterable` element splices another collection's
 elements into the literal:

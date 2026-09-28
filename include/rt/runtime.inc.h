@@ -2247,20 +2247,25 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_new() {
   return arr;
 }
 
+// An element block of `cap` slots, a count the program chose: one it cannot
+// have is `<what> is too large`.
+inline JitValue* _jit_alloc_items(size_t cap, std::string_view what,
+                                  int64_t line, int64_t col) {
+  if (cap == 0) return nullptr;
+  return culebra::alloc_or_too_large(what, line, col,
+                                     [&] { return new JitValue[cap]; });
+}
+
 // Allocate an Array with `capacity` slots already reserved. Used by
 // inlined HOF loops (see emit_inlined_array_map) so per-iteration
 // `array_push` doesn't re-grow the buffer log(N) times. `size`
 // stays 0 — push fills it as elements arrive.
 // An empty Array with room for `capacity` elements. The element block comes
-// first: a capacity the program asked for and no machine has fails there, as
-// `<what> is too large`, before there is an Array for the failure to strand.
+// first, so a failure has no Array to strand.
 inline JitArray* _jit_array_new_reserved(int64_t capacity,
                                          std::string_view what) {
   const size_t cap = capacity > 0 ? static_cast<size_t>(capacity) : 0;
-  JitValue* items = cap == 0 ? nullptr
-                             : culebra::alloc_or_too_large(what, 0, 0, [&] {
-                                 return new JitValue[cap];
-                               });
+  JitValue* items = _jit_alloc_items(cap, what, 0, 0);
   auto* arr = new JitArray();
   arr->refcount = 1;
   arr->size = 0;
@@ -2561,6 +2566,18 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_resize(
   if (count < 0) {
     throw culebra::CulebraError("ValueError", "array size must not be negative",
                                 line, col);
+  }
+  // Grown in one step, so a count no machine holds is refused rather than
+  // doubled toward.
+  if (static_cast<size_t>(count) > arr->capacity) {
+    JitValue* items =
+        _jit_alloc_items(static_cast<size_t>(count), "array size", line, col);
+    if (arr->items) {
+      std::memcpy(items, arr->items, arr->size * sizeof(JitValue));
+      delete[] arr->items;
+    }
+    arr->items = items;
+    arr->capacity = static_cast<size_t>(count);
   }
   // The default is BORROWED: every filled slot aliases it (interp shares the
   // same object too) and must own its own ref — array free releases each

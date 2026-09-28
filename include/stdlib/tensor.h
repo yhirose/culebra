@@ -176,7 +176,7 @@ struct TensorShape {
       // A wrapped product sized a 0-element buffer for a shape whose views
       // then indexed past it.
       if (m != 0 && n > SIZE_MAX / m) {
-        throw CulebraError("ValueError", "Tensor: shape too large.");
+        throw CulebraError("ValueError", "Tensor: shape is too large");
       }
       n *= m;
     }
@@ -198,12 +198,13 @@ inline std::vector<int64_t> tensor_contiguous_strides(const TensorShape& s) {
 
 // Translate tensorlib exceptions to culebra error kinds. The agreed split:
 // std::invalid_argument = user-reachable (shape/broadcast/axis) →
-// ValueError; anything else escaping tl is a bug in tensor.h or tensorlib →
-// InternalError.
+// ValueError; a buffer the program's shapes ask for and no machine has →
+// the ValueError the element-count check gives; anything else escaping tl
+// is a bug in tensor.h or tensorlib → InternalError.
 template <typename F>
 inline auto _tl_guard(F&& f) -> decltype(f()) {
   try {
-    return f();
+    return alloc_or_too_large("Tensor: shape", 0, 0, std::forward<F>(f));
   } catch (const std::invalid_argument& e) {
     throw CulebraError("ValueError", std::string("Tensor: ") + e.what());
   } catch (const std::logic_error& e) {
