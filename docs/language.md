@@ -5017,7 +5017,7 @@ inspect(seen)  # => [1, 2]
 | `a.min_by(f: Function) -> Any`              | Element whose key `f(x)` is smallest; `f` must take one parameter and return a `Long` or `Float`. Each key is computed once, and ties keep the earlier element. Throws on empty. |
 | `a.max_by(f: Function) -> Any`              | Element whose key `f(x)` is largest. Same rules as `min_by`. |
 | `a.to_set() -> Set`                         | Fresh `Set` of the elements in first-seen order, duplicates dropped. Set literals aside, this is how a `Set` is built from a collection. Unhashable elements throw. |
-| `a.to_object() -> Object`                   | Fresh `Object` from `(key, value)` tuples — the inverse of `Object.iter()`, so a table can be built as an expression instead of a `mut` + loop. Keys keep first-seen order and a repeat overwrites in place (last value, first position). Entries are **immutable**, like `group_by`'s; `{...built}` is the mutable copy. An element that is not a 2-tuple raises `TypeError`; an unhashable key throws like any other. |
+| `a.to_object() -> Object`                   | Fresh `Object` from `(key, value)` tuples — the inverse of `Object.iter()`, so a table can be built as an expression instead of a `mut` + loop. Keys keep first-seen order and a repeat overwrites in place (last value, first position). Entries are **mutable**, like `group_by`'s and any other key inserted at runtime. An element that is not a 2-tuple raises `TypeError`; an unhashable key throws like any other. |
 | `a.group_by(f: Function) -> Object`         | Buckets elements into Arrays keyed by `f(x)`, in first-seen key order; `f` must take one parameter and return a hashable key. |
 | `a.partition(p: Function) -> Tuple`         | One-pass split into `(matching, non_matching)`, order preserved in both halves. `p` must take one parameter. Destructures: `let (yes, no) = xs.partition(p)`. |
 | `a.unzip() -> Tuple`                        | Split `(a, b)` pairs into `(Array, Array)` — the inverse of `zip`. Each element must be a 2-element `Tuple` or a `{first, second}` Object (either pair spelling is accepted); anything else raises `TypeError`. Destructures: `let (xs, ys) = pairs.unzip()`. |
@@ -5368,7 +5368,7 @@ inspect(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())  # => [20, 40]
 | `it.min_by(f)` | Any | element with the smallest key `f(x)`; ties keep the earlier one. Throws on empty |
 | `it.max_by(f)` | Any | element with the largest key `f(x)`; ties keep the earlier one. Throws on empty |
 | `it.to_set()` | `Set` | members in first-seen order, duplicates dropped |
-| `it.to_object()` | `Object` | `(key, value)` tuples into an Object — the inverse of `Object.iter()`. Keys in first-seen order, a repeat overwriting in place; entries immutable. A non-2-tuple element raises `TypeError` |
+| `it.to_object()` | `Object` | `(key, value)` tuples into an Object — the inverse of `Object.iter()`. Keys in first-seen order, a repeat overwriting in place; entries mutable. A non-2-tuple element raises `TypeError` |
 | `it.group_by(f)` | `Object` | buckets elements into Arrays keyed by `f(x)`, in first-seen key order |
 | `it.partition(p)` | `Tuple` | `(matching, non_matching)` in one pass, order preserved in both halves |
 | `it.unzip()` | `Tuple` | `(Array, Array)` — the inverse of `zip`. Each element must be a 2-element `Tuple` or a `{first, second}` Object (either pair spelling is accepted); anything else raises `TypeError` |

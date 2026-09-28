@@ -4765,7 +4765,7 @@ inspect(seen)  # => [1, 2]
 | `a.min_by(f: Function) -> Any`              | キー`f(x)`が最小の要素。`f`は1引数を受け取り`Long`か`Float`を返す必要あり。キーは各要素につき1回だけ計算し、同値なら先に現れた方を返す。空配列では例外 |
 | `a.max_by(f: Function) -> Any`              | キー`f(x)`が最大の要素。規則は`min_by`と同じ |
 | `a.to_set() -> Set`                         | 要素を初出順に持つ新しい`Set`（重複は除去）。Setリテラル以外でコレクションから`Set`を作る唯一の手段。ハッシュ不可の要素は例外 |
-| `a.to_object() -> Object`                   | `(key, value)`タプル列から新しい`Object`を作る。`Object.iter()`の逆なので、テーブルを`mut` + ループでなく式として組める。キーは初出順を保ち、重複したキーはその位置のまま値だけ上書き（後勝ち）。エントリは`group_by`と同じく **immutable**（可変コピーが要るなら`{...built}`）。要素が2要素タプルでなければ`TypeError`、ハッシュ不可のキーは通常どおり例外 |
+| `a.to_object() -> Object`                   | `(key, value)`タプル列から新しい`Object`を作る。`Object.iter()`の逆なので、テーブルを`mut` + ループでなく式として組める。キーは初出順を保ち、重複したキーはその位置のまま値だけ上書き（後勝ち）。エントリは`group_by`と同じく **mutable**（実行時に挿入したキーの既定）。要素が2要素タプルでなければ`TypeError`、ハッシュ不可のキーは通常どおり例外 |
 | `a.group_by(f: Function) -> Object`         | `f(x)`をキーに要素をArrayへ振り分ける（キーは初出順）。`f`は1引数を受け取り、ハッシュ可能なキーを返す必要あり |
 | `a.partition(p: Function) -> Tuple`         | 1パスで`(条件を満たす, 満たさない)`に分割し、両方とも順序を保つ。`p`は1引数を受け取る。分配束縛できる: `let (yes, no) = xs.partition(p)` |
 | `a.unzip() -> Tuple`                        | `(a, b)`ペアを`(Array, Array)`に分割する — `zip`の逆。各要素は2要素タプルか`{first, second}`形のObjectのどちらかを受け付け、それ以外は`TypeError`。分配束縛できる: `let (xs, ys) = pairs.unzip()` |
@@ -5112,7 +5112,7 @@ inspect(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())  # => [20, 40]
 | `it.min_by(f)` | Any | キー`f(x)`が最小の要素。同値なら先に現れた方。空では例外 |
 | `it.max_by(f)` | Any | キー`f(x)`が最大の要素。同値なら先に現れた方。空では例外 |
 | `it.to_set()` | `Set` | 初出順のメンバー、重複は除去 |
-| `it.to_object()` | `Object` | `(key, value)`タプルをObjectへ — `Object.iter()`の逆。キーは初出順、重複はその位置で上書き、エントリはimmutable。2要素タプルでない要素は`TypeError` |
+| `it.to_object()` | `Object` | `(key, value)`タプルをObjectへ — `Object.iter()`の逆。キーは初出順、重複はその位置で上書き、エントリはmutable。2要素タプルでない要素は`TypeError` |
 | `it.group_by(f)` | `Object` | `f(x)`をキーに要素をArrayへ振り分ける。キーは初出順 |
 | `it.partition(p)` | `Tuple` | 1パスで`(条件を満たす, 満たさない)`に分割。両方とも順序を保つ |
 | `it.unzip()` | `Tuple` | `(Array, Array)` — `zip`の逆。各要素は2要素タプルか`{first, second}`形のObjectのどちらかを受け付け、それ以外は`TypeError` |
