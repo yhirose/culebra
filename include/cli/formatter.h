@@ -1259,7 +1259,7 @@ class Printer {
     // empty. A trailing `(rows, cols)` tensor-shape form is rare -> verbatim.
     if (node.nodes.empty()) return doc_text("[]");
     if (node.nodes.size() != 1 || node.nodes[0]->name != "SEQUENCE")
-      return verbatim(node);
+      return own_source(node);
     std::vector<DocP> items;
     for (auto& e : node.nodes[0]->nodes) items.push_back(print_elem(*e));
     return print_delimited("[", std::move(items), "]");
@@ -1885,13 +1885,17 @@ class Printer {
     if (n == "TUPLE") return print_tuple(node);
     if (n == "SET") return print_set(node);
 
-    // Everything not yet handled: emit the node's source verbatim, keeping it
-    // exact. Leaf atoms and wrapper-collapsed nodes (a string as a lone block
-    // statement, an indexed atom) shed the stray `{}` / `[]` / `()` the
-    // optimizer folded into their span; genuine constructs whose span legibly
-    // begins/ends with a bracket but is not a wrapper (a destructuring assign
-    // `(a, b) = ...`, a match) slice exactly. The safety re-parse guards any
-    // residual mistake.
+    return own_source(node);
+  }
+
+  // A node printed as written, keeping it exact. Leaf atoms and
+  // wrapper-collapsed nodes (a string or a sized array `[v](n)` as a lone
+  // block statement, an indexed atom) shed the stray `{}` / `[]` / `()` the
+  // optimizer folded into their span; genuine constructs whose span legibly
+  // begins/ends with a bracket but is not a wrapper (a destructuring assign
+  // `(a, b) = ...`, a match) slice exactly. The safety re-parse guards any
+  // residual mistake.
+  DocP own_source(const peg::Ast& node) const {
     if (node.is_token || is_wrapper_collapsed(node))
       return doc_text(std::string(tight_span(node)));
     return verbatim(node);

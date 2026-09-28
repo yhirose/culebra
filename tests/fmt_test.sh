@@ -919,6 +919,34 @@ if ! diff -u "$TMP/cond_want.cul" "$TMP/cond_got.cul" > "$TMP/cond_diff" 2>&1; t
   fail=1
 fi
 
+# --- 1r. Golden fixture: a sized array as a block's only statement ---------
+# `[v](n)` prints as written, and the optimizer folds a lone statement's block
+# onto it, so its span starts at the block's `{`. Copying that span nested the
+# block inside itself and the safety net refused the file.
+# See include/cli/formatter.h own_source.
+cat > "$TMP/sized_in.cul" <<'EOF'
+let f = fn () { [0](5) }
+let g = fn () {
+  [](3, 7)
+}
+inspect([f(), g()])
+EOF
+cat > "$TMP/sized_want.cul" <<'EOF'
+let f = fn () {
+  [0](5)
+}
+let g = fn () {
+  [](3, 7)
+}
+inspect([f(), g()])
+EOF
+"$CULEBRA" fmt "$TMP/sized_in.cul" > "$TMP/sized_got.cul" 2>"$TMP/sized_err"
+if ! diff -u "$TMP/sized_want.cul" "$TMP/sized_got.cul" > "$TMP/sized_diff" 2>&1; then
+  echo "FAIL golden (sized array as a block's only statement): output differs"
+  cat "$TMP/sized_diff" "$TMP/sized_err"
+  fail=1
+fi
+
 # --- 2 + 3. Corpus safety + idempotency (parallel) ------------------------
 # Format every corpus file twice — once to check the re-parse/comment safety
 # net doesn't refuse (exit 2), once more to assert idempotency. The files are

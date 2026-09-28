@@ -27,8 +27,7 @@ assert_eq(too_large(fn () {
   'ab'.repeat(huge)
 }), 'ValueError: repeat() result is too large')
 assert_eq(too_large(fn () {
-  let a = [0](huge)
-  a
+  [0](huge)
 }), 'ValueError: array size is too large')
 assert_eq(repeat(3, 'x'), ['x', 'x', 'x'])
 assert_eq(iota(3), [0, 1, 2])
