@@ -55,7 +55,9 @@ ctest.entries 34
 # and ja.
 # 980 since stdlib's XML chapter shows parse, errors, events, paths with and
 # without namespaces, text and stringify: seven blocks, in en and ja.
-docs.blocks 980
+# 982 since the Kauai spec shows its planned Audio.Kauai API, skipped, in en
+# and ja.
+docs.blocks 982
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130
