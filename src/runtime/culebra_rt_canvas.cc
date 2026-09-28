@@ -11,6 +11,14 @@
 // raylib + SDL3 are the same vendored statics Scene links; CMake shares one
 // build between the two knobs.
 
+// canvas.h reaches <windows.h> (through PixelSize's error type), whose GDI
+// Rectangle() and USER32 CloseWindow()/ShowCursor() collide with raylib's —
+// cut the same way culebra_rt_scene.cc and raylib's raudio.c do.
+#if defined(_WIN32)
+#define NOGDI
+#define NOUSER
+#endif
+
 #include "stdlib/canvas.h"
 #include "stdlib/keynames.h"
 
