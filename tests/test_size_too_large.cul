@@ -72,6 +72,11 @@ assert_eq(too_large(fn () {
 assert_eq(too_large(fn () {
   Tensor.zeros(1 << 40, 1 << 20)
 }), 'ValueError: Tensor: shape is too large')
+# 2^62 elements are 2^64 bytes: the byte count used to wrap to a 0-byte buffer
+# every element was then written into
+assert_eq(too_large(fn () {
+  Tensor.zeros(1 << 40, 1 << 22)
+}), 'ValueError: Tensor: shape is too large')
 let padded = Tensor.zeros(2).pad([0, 0, 1 << 60])
 assert_eq(too_large(fn () {
   Tensor.eval(padded)
