@@ -1712,20 +1712,25 @@ struct Lowering {
           b.SetInsertPoint(objBB);
           // own_receiver=false: the register keeps its +1 across the read.
           auto view = j.emit_property_get(recv, key);
-          auto toUser = b.CreateOr(
-              b.CreateICmpEQ(j.extract_tag(view), b.getInt8(TAG_FUNC)),
-              j.emit_has_own_field(recv, key));
+          // The user's own: a Function, an own slot, or (dict builtins) a
+          // Shared view. The scan and the call run only when the cheaper
+          // tests miss, so a user method reaches userBB with neither.
+          auto orUser = [&](llvm::Value* c) {
+            auto next = BasicBlock::Create(j.ctx_, "vbm.next", fn);
+            b.CreateCondBr(c, userBB, next);
+            b.SetInsertPoint(next);
+          };
+          orUser(b.CreateICmpEQ(j.extract_tag(view), b.getInt8(TAG_FUNC)));
+          orUser(j.emit_has_own_field(recv, key));
           if (culebra::is_object_builtin_method_name(key)) {
             // A Shared view carries no dict builtins: every name it lacks is
             // a frozen-tree read, not the dict table's.
-            toUser = b.CreateOr(
-                toUser,
-                b.CreateICmpNE(
-                    j.emit_call(j.module_->getFunction(rt::is_shared_val),
-                                {j.extract_data(recv)}, "vbm.isview"),
-                    b.getInt8(0)));
+            orUser(b.CreateICmpNE(
+                j.emit_call(j.module_->getFunction(rt::is_shared_val),
+                            {j.extract_data(recv)}, "vbm.isview"),
+                b.getInt8(0)));
           }
-          b.CreateCondBr(toUser, userBB, gateBB);
+          b.CreateBr(gateBB);
 
           b.SetInsertPoint(userBB);
           j.emit_value_retain(view);  // the slot owns what it holds
@@ -3523,9 +3528,8 @@ struct Lowering {
           // receiver's register is live until the statement sweep, so no
           // "receiver died between the two reads" window exists to protect
           // against.
-          j.emit_reject_bare_builtin_method(load_slot(in.a),
-                                            j.emit_has_own_field(recv, key),
-                                            recv, key, line, col);
+          j.emit_reject_bare_builtin_method(load_slot(in.a), recv, key, line,
+                                            col);
           break;
         }
         case Op::IndexWr:

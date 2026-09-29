@@ -2307,11 +2307,10 @@ struct JIT {
   }
 
 
-  // Compute "receiver has an own slot `name`" as an i1, while the receiver
-  // value is still live (before any swap/release at the call site). A cheap
-  // compile-time short-circuit: only built-in method names can ever trigger
-  // the reject, so for any other property this is a constant false and emits
-  // no runtime call. See emit_reject_bare_builtin_method for why this matters.
+  // "Receiver has an own slot `name`" as an i1, while the receiver value is
+  // still live (before any swap/release at the call site). A name scan, so a
+  // caller runs it only after the cheaper tests miss. Constant false for a
+  // name that is no built-in's.
   llvm::Value* emit_has_own_field(llvm::Value* receiver,
                                    const std::string& name) {
     if (!culebra::is_builtin_method_name(name)) return builder_.getFalse();
@@ -2329,15 +2328,14 @@ struct JIT {
   // it is dispatched inline with no closure to hand back, so it's not a
   // first-class value on either backend. `propResult` is the property-get
   // result — Nil for such a method (and for any receiver simply lacking the
-  // property); a user-defined own property resolves to a non-Nil value (or,
-  // when nil-valued, is caught by `hasOwnField`) and stays first-class. The
-  // Nil-and-absent case branches to a cold runtime check that consults the
-  // receiver's actual builtin table (the interp's reject fires per receiver
-  // type): it throws only when the interp would, so `C.join` / `{}.map` read
-  // as nil like every other miss. `receiver` must still be owned-live at this
+  // property); a user-defined property resolves to a non-Nil value (or, when
+  // nil-valued, is found by the cold helper) and stays first-class. A Nil
+  // result branches to a cold runtime check that consults the receiver's
+  // actual builtin table (the interp's reject fires per receiver type): it
+  // throws only when the interp would, so `C.join` / `{}.map` read as nil
+  // like every other miss. `receiver` must still be owned-live at this
   // point. No-op when `name` isn't a built-in method name.
   void emit_reject_bare_builtin_method(llvm::Value* propResult,
-                                       llvm::Value* hasOwnField,
                                        llvm::Value* receiver,
                                        const std::string& name,
                                        int64_t line, int64_t col) {
@@ -2345,15 +2343,12 @@ struct JIT {
     auto fn = builder_.GetInsertBlock()->getParent();
     auto isNil = builder_.CreateICmpEQ(extract_tag(propResult),
                                        builder_.getInt8(TAG_NIL));
-    // A user Object with an own property of this name — even nil-valued — is a
-    // first-class field, not a built-in method handle (interp returns it via
-    // `obj.has` precedence). Check only a genuinely absent property: Nil
-    // result AND no own slot (non-Object receivers never have own slots).
-    auto reject = builder_.CreateAnd(
-        isNil, builder_.CreateNot(hasOwnField), "bm.reject");
+    // Only a Nil result can be a miss; the helper finds a user property of
+    // this name (own or proto, even nil-valued) and lets it stand, so a field
+    // that shares a built-in's name (`dot`) reads at no extra cost.
     auto coldBB = llvm::BasicBlock::Create(ctx_, "bm.check", fn);
     auto contBB = llvm::BasicBlock::Create(ctx_, "bm.cont", fn);
-    builder_.CreateCondBr(reject, coldBB, contBB);
+    builder_.CreateCondBr(isNil, coldBB, contBB);
     builder_.SetInsertPoint(coldBB);
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto keyPtr = get_or_create_global_str(name, ".bm.key");

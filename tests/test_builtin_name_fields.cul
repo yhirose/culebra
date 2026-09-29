@@ -62,4 +62,49 @@ let k = gen_keys().collect()
 assert_eq(k.size(), 3)
 assert_eq(k[2], 2)
 
+// --- a bare read of a builtin-named property, whatever the receiver ---
+// A nil-valued own field is a field; an absent name reads as nil except on a
+// receiver whose builtin table has it; a warmed site keeps answering every
+// receiver kind as a cold one does.
+class Probe {
+  dot = nil
+  count = 3
+  pop() {
+    'popped'
+  }
+  all() {
+    [self.dot, self.count, self.pop()]
+  }
+}
+let probe = Probe.new()
+fn read_dot(o) {
+  o.dot
+}
+fn read_map(o) {
+  o.map
+}
+assert_eq(read_dot(probe), nil)
+assert_eq(probe.all(), [nil, 3, 'popped'])
+assert_eq(read_map(probe), nil)
+assert_eq(read_map({a: 1}), nil)
+assert_throws('TypeError', fn () {
+  read_map([1, 2])
+})
+for _ in 0..3 {
+  read_dot(probe)
+}
+assert_eq(read_dot({a: 1}), nil)
+assert_eq(read_dot({mut dot: 7}), 7)
+
+// a declared scalar field is never nil, so its bare read needs no check
+class Counted {
+  count: Long = 5
+  bump() {
+    self.count = self.count + 1
+  }
+}
+let counted = Counted.new()
+counted.bump()
+assert_eq(counted.count, 6)
+
 IO.inspect('test_builtin_name_fields OK')

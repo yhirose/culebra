@@ -266,15 +266,16 @@ enum class Op : uint8_t {
                // property comes back bound to its receiver, a getter fires.
                // Stamped at the chain head, both backends' anchor for the
                // read's errors.
-  BareMethChk, // the bare built-in method reject: when regs[a] is nil and
-               // regs[b] has no own field consts[c], let
+  BareMethChk, // the bare built-in method reject: when regs[a] is nil, let
                // culebra_runtime_bare_builtin_reject decide from the interp's
-               // own tables whether that receiver would have dispatched
-               // consts[c] as a built-in method — `let m = 'ab'.size` is a
-               // TypeError on every backend, any other miss stays nil.
-               // Emitted only for a built-in method name (the JIT's
-               // compile-time filter) and stamped at the DOT node: the
-               // method name's own position, NOT the chain head.
+               // own tables whether regs[b] would have dispatched consts[c]
+               // as a built-in method — `let m = 'ab'.size` is a TypeError
+               // on every backend, any other miss (a property of that name
+               // included, even nil-valued) stays nil.
+               // Emitted only for a built-in method name, and not for a
+               // declared scalar field, which is never nil; stamped at the
+               // DOT node: the method name's own position, NOT the chain
+               // head.
   MethGate,    // the gate a built-in method call passes before any argument
                // evaluates: regs[a] = the user-defined method shadowing the
                // built-in, or the TAG_NO_SELF sentinel when the built-in
@@ -12005,7 +12006,7 @@ class Compiler {
       t = alloc_temp(at);
       emit(Op::PropVal, t, recv.slot, kconst_str(post.token), known_tag);
     }
-    if (culebra::is_builtin_method_name(post.token)) {
+    if (known_tag == 0 && culebra::is_builtin_method_name(post.token)) {
       StampGuard pos(*this, post);  // the method name's own position
       emit(Op::BareMethChk, t, recv.slot, kconst_str(post.token));
     }
@@ -16211,9 +16212,7 @@ struct Exec {
           [[maybe_unused]] const Insn& in = *ip;
           const JitValue& recv = regs[in.b];
           const char* key = reinterpret_cast<const char*>(c.consts[in.c].data);
-          if (regs[in.a].tag == TAG_NIL &&
-              !culebra_runtime_object_has_own_field(
-                  static_cast<int8_t>(recv.tag), recv.data, key)) {
+          if (regs[in.a].tag == TAG_NIL) {
             auto [line, col] = chunk_pos_at(c, VM_PC);
             culebra_runtime_bare_builtin_reject(static_cast<int8_t>(recv.tag),
                                                 recv.data, key, line, col);
