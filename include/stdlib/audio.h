@@ -1,7 +1,7 @@
 #pragma once
 
 // The Audio namespace's backend choke: the one owner of the sound device and
-// of everything that plays through it (tone, Sound, Music, Pcm). The
+// of everything that plays through it (tone, Sound, Music, PCM). The
 // script-facing surface is src/preambles/audio.cul and the natives are in
 // stdlib/bindings.h; this header picks the backend.
 //
@@ -11,11 +11,11 @@
 //   base AOT archive of a native    weak silent bodies, overridden by the Audio
 //   build (CULEBRA_RT_AUDIO_WEAK)   feature archive when a program names Audio
 //   browser (__EMSCRIPTEN__)        WebAudio on the page (playground/app.js);
-//                                   Pcm is silent there
+//                                   PCM is silent there
 //   anything else                   silent, as a machine with no device is
 //
 // Silent means what a native build answers on a machine with no audio device:
-// nothing plays, and a Pcm's block counts pushes all the same.
+// nothing plays, and a PCM's block counts pushes all the same.
 
 #include <stdlib/pcm_block.h>
 
@@ -68,7 +68,7 @@ inline constexpr auto kSoundFormatError =
 inline constexpr auto kPcmSamplesError =
     "type error: parameter 'samples' expects an Array of Long|Float";
 
-// Sound, Music and Pcm handles: one counter for every backend, so a
+// Sound, Music and PCM handles: one counter for every backend, so a
 // handle's lifecycle reads the same whether or not a host can play it.
 inline int64_t alloc_id() {
   static int64_t n = 0;
@@ -251,7 +251,7 @@ CULEBRA_RT_AUDIO_LINKAGE void music_pan(int64_t, double) {}
 #endif
 
 #if !defined(CULEBRA_AUDIO_DEVICE)
-// A Pcm with nowhere to play: its block counts pushes and a submit empties
+// A PCM with nowhere to play: its block counts pushes and a submit empties
 // it, as a native stream with no device does.
 inline std::unordered_map<int64_t, rt::PcmBlock>& silent_streams() {
   static std::unordered_map<int64_t, rt::PcmBlock> streams;

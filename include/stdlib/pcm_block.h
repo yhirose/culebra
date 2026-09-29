@@ -1,4 +1,4 @@
-// The block an Audio.Pcm fills between submits: at most `buffer` frames of
+// The block an Audio.PCM fills between submits: at most `buffer` frames of
 // interleaved floats, clamped to -1..1. Raylib-free, so a backend with no audio
 // built in counts a push exactly as a stream whose device is missing does.
 #pragma once
@@ -15,7 +15,7 @@ namespace culebra::rt {
 class PcmBlock {
  public:
   PcmBlock(int64_t rate, int64_t channels, int64_t buffer)
-      : rate_(to_int(rate, "Audio.Pcm: rate")),
+      : rate_(to_int(rate, "Audio.PCM: rate")),
         channels_(channels == 2 ? 2 : 1),
         buffer_(to_int(buffer, kBuffer)) {
     // Steady-state size, which skips early regrowth; a buffer no machine
@@ -44,7 +44,7 @@ class PcmBlock {
   std::vector<float> pend_;
 
  private:
-  static constexpr std::string_view kBuffer = "Audio.Pcm: buffer";
+  static constexpr std::string_view kBuffer = "Audio.PCM: buffer";
   int64_t cap() const { return (int64_t)buffer_ * channels_; }
   // Below 1 is 1; past what the device API counts in is refused.
   static int to_int(int64_t v, std::string_view what) {

@@ -1773,7 +1773,7 @@ inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module 
   # PCM the script synthesises, a block at a time. push takes the whole frames
   # in `samples` (stereo: interleaved L,R) and answers how many it took; with
   # no audio device nothing plays, and the block still counts.
-  class Pcm {
+  class PCM {
     new(rate: Long, channels: Long, buffer: Long) {
       self._id = _Audio.pcm_new(rate, channels, buffer)
     }
@@ -1828,7 +1828,7 @@ inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module 
     tone: tone,
     Sound: Sound,
     Music: Music,
-    Pcm: Pcm,
+    PCM: PCM,
     PULSE: PULSE,
     PULSE2: PULSE2,
     TRIANGLE: TRIANGLE,

@@ -1,4 +1,4 @@
-# Audio.Pcm: play sound the script computes itself, one sample at a time.
+# Audio.PCM: play sound the script computes itself, one sample at a time.
 # PCM is sound as a list of numbers — the height of the wave, measured
 # `RATE` times a second, each in -1.0..1.0. This script is a tiny synthesiser:
 # it turns a melody into those numbers and hands them over a block at a time.
@@ -72,7 +72,7 @@ fn next_sample() {
 
 # 1 channel, fed 1024 frames at a time. needed() says how many frames the
 # stream can take now; push() copies them in and submit() sends the block.
-let pcm = Audio.Pcm(RATE, 1, 1024)
+let pcm = Audio.PCM(RATE, 1, 1024)
 pcm.play()
 println("{notes.size()} notes, {total / RATE:.1f} s; heard {pcm.latency():.3f} s after each submit")
 

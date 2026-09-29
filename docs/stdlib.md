@@ -125,7 +125,7 @@ Conventions used below:
 | Share variable-length read-only data across threads (no copy) | [§12 Shared](#shared--immutable-values-shared-by-reference) — `Shared.new(value)` |
 | Handle Ctrl+C / SIGINT gracefully | [§12 Signal](#signal--signalnotify--signalreset) — `Signal.notify(tx)` / `Signal.reset()` |
 | Desktop GUI (native WebView + local server) | [§30 Desktop](#30-desktop--webview) — `Desktop.run({title, assets, routes})` |
-| Play a tone, a sound effect or music; synthesise audio | [§40 Audio](#40-audio) — `Audio.tone(440, 10)` / `Audio.Sound.new(bytes).play()` / `Audio.Music.new(bytes)` / `Audio.Pcm.new(44100, 1, 1024)` |
+| Play a tone, a sound effect or music; synthesise audio | [§40 Audio](#40-audio) — `Audio.tone(440, 10)` / `Audio.Sound.new(bytes).play()` / `Audio.Music.new(bytes)` / `Audio.PCM.new(44100, 1, 1024)` |
 | Heap introspection / leak checks | [§7 GC](#gc--heap-introspection) — `GC.stat()` → `{live_objects, rc_objects, heap_bytes}` |
 | 2D/3D vector math (dot, length, normalize, distance) | [§31 `Vector2`](#31-vector2) / [§32 `Vector3`](#32-vector3) |
 | FIFO queue, sliding window, front+back stack | [§33 `Deque`](#33-deque) — `Deque.new()` — `push_back`/`pop_front` |
@@ -8071,7 +8071,7 @@ No device is not an error. On a machine without one (a server, CI), or in any
 run with `CULEBRA_AUDIO` set to `off` or `0` (as every `just` recipe sets it),
 `Audio.available()` is `false`, nothing plays, and every call answers as this
 section says: handles are made, controls do nothing, `playing()` is `false`,
-and a `Pcm` still counts what it is given. The first call that wanted a
+and a `PCM` still counts what it is given. The first call that wanted a
 missing device prints one warning.
 
 | Function | Effect |
@@ -8174,17 +8174,17 @@ bgm.volume(0.6)
 bgm.play()
 ```
 
-### Pcm
+### PCM
 
 `tone`, `Sound` and `Music` all play something already shaped as a note, a
-sample or a file. `Audio.Pcm` is the fourth kind: PCM (pulse-code modulation)
+sample or a file. `Audio.PCM` is the fourth kind: PCM (pulse-code modulation)
 — sound as a list of numbers, the height of the wave measured `rate` times a
 second — which the script synthesises a block at a time: an emulator's own APU
 mixer, a chiptune resampled from its native rate, any signal a program builds
-itself. `Audio.Pcm.new(rate, channels, buffer)` opens a stream of `rate` Hz, 1
+itself. `Audio.PCM.new(rate, channels, buffer)` opens a stream of `rate` Hz, 1
 or 2 channels, fed `buffer` frames at a time (1024 is a reasonable default;
 below ~512 is not supported). A `rate` or `buffer` past 2^31 − 1, or a
-`buffer` too large to allocate, raises `ValueError` (`Audio.Pcm: buffer is
+`buffer` too large to allocate, raises `ValueError` (`Audio.PCM: buffer is
 too large`).
 
 | Method | Effect |
@@ -8198,7 +8198,7 @@ too large`).
 | `pcm.volume(v)` / `pcm.pitch(p)` / `pcm.pan(p)` | as above |
 
 ```culebra
-let pcm = Audio.Pcm.new(44100, 1, 1024)
+let pcm = Audio.PCM.new(44100, 1, 1024)
 pcm.play()
 mut phase = 0.0
 Canvas.run(160, 160, fn () {
@@ -8218,7 +8218,7 @@ Canvas.run(160, 160, fn () {
 
 At 60 fps a 44.1 kHz stream wants 735 frames a frame; producing and pushing a
 whole block at once (rather than one call per sample) is what keeps this
-affordable in a script's own per-frame budget. A `Pcm` is silent in the
+affordable in a script's own per-frame budget. A `PCM` is silent in the
 browser, where it answers as a machine with no audio device does.
 
 ## 41. Design notes

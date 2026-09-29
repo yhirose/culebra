@@ -27,7 +27,7 @@ check("music", [24, 34], fn () { Audio.Music("not audio") })
 check("polygon", [27, 36], fn () { Canvas.polygon([1, nil], 0) })
 
 // A method of a preamble class.
-check("pcm push", [30, 37], fn () { Audio.Pcm(44100, 1, 1024).push(["a"]) })
+check("pcm push", [30, 37], fn () { Audio.PCM(44100, 1, 1024).push(["a"]) })
 
 // The user's callback, called by the preamble, keeps its own line; a throw
 // after it returns is the preamble's again, so the call site — however much

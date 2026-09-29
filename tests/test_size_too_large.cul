@@ -59,13 +59,13 @@ assert_eq(too_large(fn () {
 }), 'ValueError: JSON.stringify() result is too large')
 assert_eq(JSON.stringify([1], 1), "[\n 1\n]")
 
-# --- Audio.Pcm: the block is `buffer` frames, counted in int ---
+# --- Audio.PCM: the block is `buffer` frames, counted in int ---
 assert_eq(too_large(fn () {
-  Audio.Pcm.new(44100, 1, 1 << 31)
-}), 'ValueError: Audio.Pcm: buffer is too large')
+  Audio.PCM.new(44100, 1, 1 << 31)
+}), 'ValueError: Audio.PCM: buffer is too large')
 assert_eq(too_large(fn () {
-  Audio.Pcm.new(1 << 31, 1, 1024)
-}), 'ValueError: Audio.Pcm: rate is too large')
+  Audio.PCM.new(1 << 31, 1, 1024)
+}), 'ValueError: Audio.PCM: rate is too large')
 
 # --- CodeGen: a function's slot counts size its name tables ---
 let cg = CodeGen.Module.new()
