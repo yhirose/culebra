@@ -5165,8 +5165,9 @@ relative to `el`; steps are separated by `/`.
 | --- | --- |
 | `[@attr]` | has attribute `attr` |
 | `[@attr='v']` | has `attr` equal to `v` (`"v"` works too) |
-| `[tag]` | has a child element `tag` |
-| `[tag='v']` | has a child element `tag` whose text is `v` |
+| `[p]` | has an element the relative path `p` selects from it (`[title]`, `[pitch/step]`, `[.//b]`, `[../note]`) |
+| `[p='v']` | has an element `p` selects whose text is `v` (`[title='B']`) |
+| `[p/@attr]`, `[p/@attr='v']` | has an element `p` selects with attribute `attr` (equal to `v`); `p//@attr` looks at those elements and every element below them |
 | `[n]` | is the `n`th of the candidates (1-based) |
 | `[last()]`, `[last()-n]` | is the last candidate, or `n` before it |
 
@@ -5175,6 +5176,12 @@ kept. As in XPath, a position counts among the children of one parent:
 `book[1]` is the first `book` of every parent that has one, and `.//book[1]`
 the first `book` child of `el` and of each element under it. Attribute names in
 predicates are matched as written in the document (`[@xlink:href]`).
+
+A path in a predicate starts from the candidate element and takes every step
+the outer path takes, `.` and `..` included, with predicates of its own
+(`note[pitch[step='C']]`); its `..` reaches up to `el` and no further. Its
+names resolve as in the outer path. As in XPath, `[p='v']` holds when any one
+of the elements `p` selects has text `v`. Predicates nest at most 1000 deep.
 
 **Names and namespaces.** A prefix in a path is looked up in `namespaces:`
 first, then in the `xmlns:p` declarations on `el` itself (not its ancestors,
@@ -5185,10 +5192,11 @@ URI (XPath 2.0's default element namespace), or write `Q{uri}tag` or `*:tag`.
 
 Everything else is rejected with a `ValueError` naming the construct and its
 column: axes (`following-sibling::`), functions other than `last()`, `and`,
-`or`, comparisons other than `=`, unions (`|`), attribute steps (`a/@href`),
-and absolute paths (`/a`, `//a`: "a path is relative to the element"). A
-name in braces without the `Q` (`{uri}tag`, `{*}tag`) is not XPath either; its
-error gives the XPath spelling (`Q{uri}tag`, `*:tag`).
+`or`, comparisons other than `=` or with anything but a literal, unions (`|`),
+attribute steps (`a/@href`) other than at the end of a predicate's path, and
+absolute paths (`/a`, `//a`, in a predicate too: "a path is relative to the
+element"). A name in braces without the `Q` (`{uri}tag`, `{*}tag`) is not XPath
+either; its error gives the XPath spelling (`Q{uri}tag`, `*:tag`).
 
 ```culebra
 let lib = XML.parse('<lib><shelf><book lang="en"><title>A</title></book><book lang="fr"><title>B</title></book></shelf><shelf><book lang="en"><title>C</title></book></shelf></lib>')
@@ -5200,6 +5208,10 @@ inspect(titles(lib.find_all('shelf/book[last()]')))   # => ['B', 'C']
 inspect(lib.find_all(".//book[title='B']/..").size()) # => 1
 inspect(lib.find_iter('.//title').count())            # => 3
 lib.find('shelf/following-sibling::shelf')  # !! unsupported path syntax 'following-sibling::' at column 7
+
+inspect(lib.find_all("shelf[book/@lang='fr']").size())             # => 1
+inspect(titles(lib.find_all(".//book[../book/title='B']")))        # => ['A', 'B']
+inspect(lib.find_all("shelf[book[title='C']/@lang='en']").size())  # => 1
 ```
 
 With namespaces:

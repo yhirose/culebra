@@ -4998,8 +4998,9 @@ XPathでの意味と同じ。パスは`el`からの相対で、ステップは`/
 | --- | --- |
 | `[@attr]` | 属性`attr`を持つ |
 | `[@attr='v']` | 属性`attr`が`v`に等しい（`"v"`も可） |
-| `[tag]` | 子要素`tag`を持つ |
-| `[tag='v']` | テキストが`v`の子要素`tag`を持つ |
+| `[p]` | 相対パス`p`がその要素から選ぶ要素がある（`[title]`、`[pitch/step]`、`[.//b]`、`[../note]`） |
+| `[p='v']` | `p`が選ぶ要素のうちテキストが`v`のものがある（`[title='B']`） |
+| `[p/@attr]`、`[p/@attr='v']` | `p`が選ぶ要素のうち属性`attr`を持つ（`v`に等しい）ものがある。`p//@attr`はそれらの要素とその下のすべての要素を見る |
 | `[n]` | 候補の`n`番目（1始まり） |
 | `[last()]`、`[last()-n]` | 最後の候補、またはその`n`個前 |
 
@@ -5008,6 +5009,11 @@ XPathでの意味と同じ。パスは`el`からの相対で、ステップは`/
 最初の`book`で、`.//book[1]`は`el`自身と、その下の各要素の最初の`book`子要素。
 述語中の属性名は文書に書かれたとおりの名前で照合する（`[@xlink:href]`）。
 
+述語中のパスは候補の要素から始まり、外側のパスと同じステップを`.`と`..`も含めて使え、
+自身の述語も持てる（`note[pitch[step='C']]`）。その`..`は`el`まで上がり、それより上へは
+行かない。名前は外側のパスと同じく解決する。XPathと同じく、`[p='v']`は`p`が選ぶ要素の
+どれか1つのテキストが`v`なら成り立つ。述語の入れ子は1000段まで。
+
 **名前と名前空間。** パス中の接頭辞はまず`namespaces:`で引き、無ければ`el`自身の
 `xmlns:p`宣言で引く（祖先の宣言は見ない。要素は祖先を記録していない）。どちらにも
 無い接頭辞は`ValueError`。接頭辞の無い名前は、既定の`xmlns=`の下にあっても名前空間の
@@ -5015,8 +5021,9 @@ XPathでの意味と同じ。パスは`el`からの相対で、ステップは`/
 対応させる（XPath 2.0の既定要素名前空間）か、`Q{uri}tag`か`*:tag`と書く。
 
 それ以外はすべて、その構文と桁を示す`ValueError`で拒否する: 軸（`following-sibling::`）、
-`last()`以外の関数、`and`、`or`、`=`以外の比較、和集合（`|`）、属性ステップ
-（`a/@href`）、絶対パス（`/a`、`//a`: "a path is relative to the element"）。
+`last()`以外の関数、`and`、`or`、`=`以外の比較とリテラル以外との比較、和集合（`|`）、
+述語中のパスの末尾以外にある属性ステップ（`a/@href`）、絶対パス（`/a`、`//a`。述語中でも
+同じ: "a path is relative to the element"）。
 `Q`の無い波括弧の名前（`{uri}tag`、`{*}tag`）もXPathではなく、そのエラーはXPathでの
 書き方（`Q{uri}tag`、`*:tag`）を示す。
 
@@ -5030,6 +5037,10 @@ inspect(titles(lib.find_all('shelf/book[last()]')))   # => ['B', 'C']
 inspect(lib.find_all(".//book[title='B']/..").size()) # => 1
 inspect(lib.find_iter('.//title').count())            # => 3
 lib.find('shelf/following-sibling::shelf')  # !! unsupported path syntax 'following-sibling::' at column 7
+
+inspect(lib.find_all("shelf[book/@lang='fr']").size())             # => 1
+inspect(titles(lib.find_all(".//book[../book/title='B']")))        # => ['A', 'B']
+inspect(lib.find_all("shelf[book[title='C']/@lang='en']").size())  # => 1
 ```
 
 名前空間を使う場合:

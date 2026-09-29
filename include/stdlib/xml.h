@@ -36,6 +36,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -843,11 +844,15 @@ struct NameTest {
   std::string local;
 };
 
+struct Step;
+
+// `[n]`, `[last()-n]`, or a test on what a relative path selects from the
+// candidate: `[p]`, `[p='v']`, `[p/@a]`, `[p/@a='v']`, and `[@a]` (no path).
 struct Pred {
-  enum Kind { HasAttr, AttrEq, HasChild, ChildEq, Pos, Last } kind;
-  std::string attr;
-  NameTest child;
-  std::string lit;
+  enum Kind { Test, Pos, Last } kind = Test;
+  std::vector<Step> path;  // Test: empty means the candidate itself
+  std::string attr;        // Test: the trailing `@attr`; empty tests the node
+  std::optional<std::string> lit;  // Test: the `= 'lit'`, if any
   int64_t n = 0;  // Pos: the position; Last: the offset back from last()
 };
 
@@ -866,21 +871,11 @@ class PathCompiler {
       : s_(s), ns_(ns), fn_(fn) {}
 
   std::vector<Step> compile() {
-    std::vector<Step> steps;
     skip_ws();
     if (i_ >= s_.size()) fail("empty path");
-    if (s_[i_] == '/') fail("a path is relative to the element");
-    bool descendant = false;
-    for (;;) {
-      steps.push_back(step(descendant));
-      skip_ws();
-      if (i_ >= s_.size()) break;
-      if (s_.substr(i_, 2) == "//") { descendant = true; i_ += 2; }
-      else if (s_[i_] == '/') { descendant = false; i_ += 1; }
-      else unsupported(i_);
-      skip_ws();
-      if (i_ >= s_.size()) unsupported(i_);
-    }
+    auto steps = rel_path(nullptr);
+    skip_ws();
+    if (i_ < s_.size()) unsupported(i_);
     return steps;
   }
 
@@ -889,6 +884,44 @@ class PathCompiler {
   const NsMap& ns_;
   std::string_view fn_;
   size_t i_ = 0;
+  int64_t pred_depth_ = 0;
+
+  // Steps joined by `/` or `//`, up to the first token that joins no step.
+  // Given `attr` (in a predicate), a `/@` or `//@` also ends the path: `attr`
+  // is set and i_ left at the `@`.
+  std::vector<Step> rel_path(bool* attr) {
+    if (s_[i_] == '/') fail("a path is relative to the element");
+    std::vector<Step> steps;
+    bool descendant = false;
+    for (;;) {
+      steps.push_back(step(descendant));
+      size_t end = i_;
+      skip_ws();
+      bool dbl = s_.substr(i_, 2) == "//";
+      if (!dbl && (i_ >= s_.size() || s_[i_] != '/')) {
+        i_ = end;
+        break;
+      }
+      size_t j = i_ + (dbl ? 2 : 1);
+      while (j < s_.size() && is_space(s_[j])) j++;
+      if (attr && j < s_.size() && s_[j] == '@') {
+        // `p//@a` is `p//.` then `/@a`, as XPath abbreviates `//`.
+        if (dbl) {
+          Step self;
+          self.kind = Step::Self;
+          self.descendant = true;
+          steps.push_back(std::move(self));
+        }
+        *attr = true;
+        i_ = j;
+        break;
+      }
+      descendant = dbl;
+      i_ = j;
+      if (i_ >= s_.size()) unsupported(i_);
+    }
+    return steps;
+  }
 
   [[noreturn]] void fail(const std::string& msg) {
     throw CulebraError("ValueError", culebra::format("{}: {}", fn_, msg));
@@ -1091,15 +1124,14 @@ class PathCompiler {
     return n;
   }
 
-  // `= 'lit'` after a predicate's name: true with the literal read into
-  // `lit`, false when the name stands alone as a presence test.
-  bool eq_literal(std::string& lit) {
+  // `= 'lit'` after a predicate's operand, read into `lit`; without one the
+  // operand stands alone as a presence test.
+  void eq_literal(std::optional<std::string>& lit) {
     skip_ws();
-    if (i_ >= s_.size() || s_[i_] != '=') return false;
+    if (i_ >= s_.size() || s_[i_] != '=') return;
     i_++;
     skip_ws();
     lit = literal();
-    return true;
   }
 
   // `last` followed by `(`; a bare `last` is a child named last.
@@ -1111,24 +1143,31 @@ class PathCompiler {
     return j < s_.size() && s_[j] == '(';
   }
 
+  // `@name` at i_, the name as written: `@xlink:href`.
+  std::string attr_name() {
+    i_++;  // '@'
+    size_t b = i_;
+    checked_ncname();
+    if (i_ < s_.size() && s_[i_] == ':') {
+      i_++;
+      if (!ncname_len(i_, true)) unsupported(i_);
+      ncname();
+    }
+    return std::string(s_.substr(b, i_ - b));
+  }
+
   Pred pred() {
     size_t open = i_;
     i_++;  // '['
+    // Compiling and evaluating a nested predicate both recurse.
+    if (++pred_depth_ > kXmlDepthLimit) throw_too_deep(fn_);
     skip_ws();
     if (i_ >= s_.size()) unsupported(i_);
     Pred p{};
     char c = s_[i_];
     if (c == '@') {
-      i_++;
-      size_t b = i_;
-      checked_ncname();
-      if (i_ < s_.size() && s_[i_] == ':') {  // matched as written: `@xlink:href`
-        i_++;
-        if (!ncname_len(i_, true)) unsupported(i_);
-        ncname();
-      }
-      p.attr = std::string(s_.substr(b, i_ - b));
-      p.kind = eq_literal(p.lit) ? Pred::AttrEq : Pred::HasAttr;
+      p.attr = attr_name();
+      eq_literal(p.lit);
     } else if (c >= '0' && c <= '9') {
       p.kind = Pred::Pos;
       p.n = integer();
@@ -1144,9 +1183,12 @@ class PathCompiler {
         skip_ws();
         p.n = integer();
       }
-    } else if (c == '*' || c == '{' || ncname_len(i_, true)) {
-      p.child = name_test();
-      p.kind = eq_literal(p.lit) ? Pred::ChildEq : Pred::HasChild;
+    } else if (c == '.' || c == '*' || c == '{' || c == '/' ||
+               ncname_len(i_, true)) {
+      bool attr = false;
+      p.path = rel_path(&attr);
+      if (attr) p.attr = attr_name();
+      eq_literal(p.lit);
     } else {
       unsupported(i_);
     }
@@ -1156,6 +1198,7 @@ class PathCompiler {
     }
     if (s_[i_] != ']') unsupported(i_);
     i_++;
+    pred_depth_--;
     return p;
   }
 };
@@ -1185,7 +1228,23 @@ template <class R>
 struct PathNode {
   std::vector<const typename R::Value*> chain;
   std::vector<size_t> index;
+
+  // Extends the node to its `i`th child `c`, in place; pop() undoes it.
+  void push(const typename R::Value* c, size_t i, std::string_view fn) {
+    if (static_cast<int64_t>(index.size()) >= kXmlDepthLimit) {
+      throw_too_deep(fn);
+    }
+    chain.push_back(c);
+    index.push_back(i);
+  }
+  void pop() {
+    chain.pop_back();
+    index.pop_back();
+  }
 };
+
+template <class R>
+using NodeSpan = std::span<PathNode<R>>;
 
 // `n` extended by its child `c`, the `i`th of its children.
 template <class R>
@@ -1213,100 +1272,318 @@ void path_normalize(std::vector<PathNode<R>>& set) {
             set.end());
 }
 
-template <class R>
-bool pred_holds(const Pred& p, const typename R::Value& el, size_t pos,
-                size_t size, std::string_view fn) {
-  switch (p.kind) {
-    case Pred::HasAttr: return elem_attr<R>(el, p.attr) != nullptr;
-    case Pred::AttrEq: {
-      const auto* v = elem_attr<R>(el, p.attr);
-      if (!v) return false;
-      auto text = attr_text<R>(*v);
-      return text && *text == p.lit;
+// Visits `n` and every element below it in document order, extending `n` in
+// place to each one (restored on return); true once a visit returns true.
+template <class R, class F>
+bool walk(PathNode<R>& n, F& visit, std::string_view fn) {
+  using V = typename R::Value;
+  if (visit(n)) return true;
+  struct Frame { const V* kids; size_t i; };
+  std::vector<Frame> st;
+  size_t base = n.index.size();
+  bool stopped = false;
+  if (const auto* k = elem_children<R>(*n.chain.back())) st.push_back({k, 0});
+  while (!st.empty()) {
+    auto& f = st.back();
+    if (f.i >= R::array_size(*f.kids)) {
+      st.pop_back();
+      if (n.index.size() > base) n.pop();
+      continue;
     }
-    case Pred::HasChild:
-    case Pred::ChildEq: {
-      const auto* kids = elem_children<R>(el);
-      if (!kids) return false;
-      for (size_t i = 0; i < R::array_size(*kids); i++) {
-        const auto& c = R::array_at(*kids, i);
-        if (!name_matches<R>(p.child, c)) continue;
-        if (p.kind == Pred::HasChild || string_value<R>(c, fn) == p.lit) {
-          return true;
-        }
-      }
-      return false;
+    size_t i = f.i++;
+    const V& c = R::array_at(*f.kids, i);
+    if (R::kind(c) != VKind::Object) continue;
+    n.push(&c, i, fn);
+    if (visit(n)) {
+      stopped = true;
+      break;
     }
-    case Pred::Pos: return static_cast<int64_t>(pos) == p.n;
-    case Pred::Last: return static_cast<int64_t>(pos) == static_cast<int64_t>(size) - p.n;
+    if (const auto* k = elem_children<R>(c)) {
+      st.push_back({k, 0});
+    } else {
+      n.pop();
+    }
   }
-  return false;
+  n.chain.resize(base + 1);
+  n.index.resize(base);
+  return stopped;
 }
 
-// `//`: every node of `set` and every element below it. `set` is in document
-// order without duplicates, so a node below the last one walked was walked
-// with it: skipping it keeps the output in that order, without duplicates.
-template <class R>
-std::vector<PathNode<R>> descendant_or_self(const std::vector<PathNode<R>>& set,
-                                            std::string_view fn) {
-  using Node = PathNode<R>;
-  std::vector<Node> all;
-  const Node* walked = nullptr;
-  for (const auto& n : set) {
+// `//`: walks every node of `set` and every element below it. `set` is in
+// document order without duplicates, so a node below the last one walked was
+// walked with it: skipping it visits each node once, in document order.
+template <class R, class F>
+bool walk_each(NodeSpan<R> set, F& visit, std::string_view fn) {
+  const PathNode<R>* walked = nullptr;
+  for (auto& n : set) {
     if (walked && n.index.size() > walked->index.size() &&
         std::equal(walked->index.begin(), walked->index.end(),
                    n.index.begin())) {
       continue;
     }
     walked = &n;
-    std::vector<Node> work{n};
-    while (!work.empty()) {
-      Node cur = std::move(work.back());
-      work.pop_back();
-      if (static_cast<int64_t>(cur.index.size()) > kXmlDepthLimit) {
-        throw_too_deep(fn);
-      }
-      if (const auto* kids = elem_children<R>(*cur.chain.back())) {
-        for (size_t i = R::array_size(*kids); i-- > 0;) {
-          const auto& c = R::array_at(*kids, i);
-          if (R::kind(c) == VKind::Object) work.push_back(path_child<R>(cur, &c, i));
-        }
-      }
-      all.push_back(std::move(cur));
-    }
+    if (walk<R>(n, visit, fn)) return true;
   }
+  return false;
+}
+
+template <class R>
+std::vector<PathNode<R>> descendant_or_self(NodeSpan<R> set,
+                                            std::string_view fn) {
+  std::vector<PathNode<R>> all;
+  auto keep = [&](const PathNode<R>& n) {
+    all.push_back(n);
+    return false;
+  };
+  walk_each<R>(set, keep, fn);
   return all;
+}
+
+// A predicate's test on one node its path selects: the node itself (present,
+// or its string-value equal to the literal), or its trailing `@attr`.
+template <class R>
+bool test_holds(const Pred& p, const typename R::Value& el,
+                std::string_view fn) {
+  if (!p.attr.empty()) {
+    const auto* v = elem_attr<R>(el, p.attr);
+    if (!v) return false;
+    if (!p.lit) return true;
+    auto text = attr_text<R>(*v);
+    return text && *text == *p.lit;
+  }
+  return !p.lit || string_value<R>(el, fn) == *p.lit;
+}
+
+// Kept across the candidates one step's predicates test, so their buffers
+// are reused: each tail step's candidate list, and the tail walk's frames.
+template <class R>
+struct PredScratch {
+  struct Frame {
+    size_t k;  // the step
+    const typename R::Value* kids;
+    size_t pos;  // into `kids`, or into cands[k] when the step has predicates
+  };
+  std::vector<std::vector<size_t>> cands;
+  std::vector<Frame> frames;
+};
+
+template <class R>
+bool pred_holds(const Pred& p, PathNode<R>& n, const typename R::Value& kids,
+                size_t i, size_t pos, size_t size, PredScratch<R>& scratch,
+                std::string_view fn);
+
+// The indexes of the children of the node `n` ends at that pass `st`'s name
+// test and predicates, into `cand`; returns those children (null if none).
+template <class R>
+const typename R::Value* step_kids(PathNode<R>& n, const Step& st,
+                                   std::vector<size_t>& cand,
+                                   std::string_view fn) {
+  cand.clear();
+  if (static_cast<int64_t>(n.index.size()) >= kXmlDepthLimit) throw_too_deep(fn);
+  const auto* kids = elem_children<R>(*n.chain.back());
+  if (!kids) return nullptr;
+  for (size_t i = 0; i < R::array_size(*kids); i++) {
+    if (name_matches<R>(st.test, R::array_at(*kids, i))) cand.push_back(i);
+  }
+  // Each predicate filters the survivors of the one before, and positions
+  // count within that list (per parent, as in XPath).
+  PredScratch<R> scratch;
+  for (const auto& p : st.preds) {
+    size_t size = cand.size(), kept = 0;
+    for (size_t k = 0; k < size; k++) {
+      if (pred_holds<R>(p, n, *kids, cand[k], k + 1, size, scratch, fn)) {
+        cand[kept++] = cand[k];
+      }
+    }
+    cand.resize(kept);
+  }
+  return kids;
 }
 
 // A name-test step with its predicates, applied to each node of `set`.
 template <class R>
-std::vector<PathNode<R>> child_step(const std::vector<PathNode<R>>& set,
-                                    const Step& st, std::string_view fn) {
+std::vector<PathNode<R>> child_step(NodeSpan<R> set, const Step& st,
+                                    std::string_view fn) {
   std::vector<PathNode<R>> next;
-  std::vector<size_t> cand, kept;
-  for (const auto& n : set) {
-    if (static_cast<int64_t>(n.index.size()) >= kXmlDepthLimit) throw_too_deep(fn);
-    const auto* kids = elem_children<R>(*n.chain.back());
-    if (!kids) continue;
-    cand.clear();
-    for (size_t i = 0; i < R::array_size(*kids); i++) {
-      if (name_matches<R>(st.test, R::array_at(*kids, i))) cand.push_back(i);
+  std::vector<size_t> cand;
+  for (auto& n : set) {
+    const auto* kids = step_kids<R>(n, st, cand, fn);
+    for (size_t i : cand) {
+      next.push_back(path_child<R>(n, &R::array_at(*kids, i), i));
     }
-    // Each predicate filters the survivors of the one before, and positions
-    // count within that list (per parent, as in XPath).
-    for (const auto& p : st.preds) {
-      kept.clear();
-      for (size_t k = 0; k < cand.size(); k++) {
-        if (pred_holds<R>(p, R::array_at(*kids, cand[k]), k + 1, cand.size(),
-                          fn)) {
-          kept.push_back(cand[k]);
-        }
-      }
-      cand.swap(kept);
-    }
-    for (size_t i : cand) next.push_back(path_child<R>(n, &R::array_at(*kids, i), i));
   }
   return next;
+}
+
+// `.` without `//` leaves a node set as it is.
+inline bool step_is_identity(const Step& st) {
+  return st.kind == Step::Self && !st.descendant;
+}
+
+// One step applied to `set` (document order, no duplicates), giving the same.
+// An `owned` set may give its nodes up to the result.
+template <class R>
+std::vector<PathNode<R>> path_step(NodeSpan<R> set, const Step& st,
+                                   std::string_view fn, bool owned) {
+  using Node = PathNode<R>;
+  std::vector<Node> all;
+  if (st.descendant) {
+    all = descendant_or_self<R>(set, fn);
+    set = all;
+    owned = true;
+  }
+  // From a single node every step's result is already in document order.
+  bool one = set.size() == 1;
+  std::vector<Node> next;
+  switch (st.kind) {
+    case Step::Self:
+      if (!st.descendant) all.assign(set.begin(), set.end());
+      return all;
+    case Step::Parent:
+      for (auto& n : set) {
+        if (n.index.empty()) continue;  // above the context element
+        if (owned) {
+          next.push_back(std::move(n));
+        } else {
+          next.push_back(n);
+        }
+        next.back().pop();
+      }
+      break;
+    case Step::Child:
+      next = child_step<R>(set, st, fn);
+      break;
+  }
+  if (!one) path_normalize<R>(next);
+  return next;
+}
+
+// Whether the steps of `p.path` from `k` on, taken from `m`, reach a node that
+// passes `p`'s test, stopping at the first. Step `k`'s `//` is the caller's
+// (it walked it); after `k` come only `.` and child steps, walked depth first
+// on an explicit stack, so a long tail takes no C stack.
+template <class R>
+bool tail_holds(const Pred& p, PathNode<R>& m, size_t k, PredScratch<R>& s,
+                std::string_view fn) {
+  using V = typename R::Value;
+  const auto& steps = p.path;
+  auto skip_self = [&](size_t j) {
+    while (j < steps.size() && steps[j].kind == Step::Self) j++;
+    return j;
+  };
+  k = skip_self(k);
+  if (k == steps.size()) return test_holds<R>(p, *m.chain.back(), fn);
+  if (steps[k].kind == Step::Parent) {  // only ever the path's last step
+    return !m.index.empty() &&
+           test_holds<R>(p, *m.chain[m.chain.size() - 2], fn);
+  }
+  size_t base = m.index.size();
+  auto& frames = s.frames;
+  frames.clear();
+  // Starts step `j` at the node `m` ends at; false when it has no children.
+  auto open = [&](size_t j) {
+    const Step& st = steps[j];
+    const V* kids;
+    if (st.preds.empty()) {
+      kids = elem_children<R>(*m.chain.back());
+    } else {
+      if (s.cands.size() < steps.size()) s.cands.resize(steps.size());
+      kids = step_kids<R>(m, st, s.cands[j], fn);
+    }
+    if (!kids) return false;
+    frames.push_back({j, kids, 0});
+    return true;
+  };
+  bool found = false;
+  if (open(k)) {
+    while (!frames.empty()) {
+      auto& f = frames.back();
+      const Step& st = steps[f.k];
+      // The step's next child. Without predicates there are no positions to
+      // count, so each match is taken as found, with no list.
+      size_t i = SIZE_MAX;
+      if (st.preds.empty()) {
+        while (i == SIZE_MAX && f.pos < R::array_size(*f.kids)) {
+          size_t c = f.pos++;
+          if (name_matches<R>(st.test, R::array_at(*f.kids, c))) i = c;
+        }
+      } else if (f.pos < s.cands[f.k].size()) {
+        i = s.cands[f.k][f.pos++];
+      }
+      if (i == SIZE_MAX) {  // the step is done here: back to the one before
+        frames.pop_back();
+        if (!frames.empty()) m.pop();
+        continue;
+      }
+      const V& c = R::array_at(*f.kids, i);
+      size_t next = skip_self(f.k + 1);
+      if (next == steps.size()) {
+        if (test_holds<R>(p, c, fn)) {
+          found = true;
+          break;
+        }
+        continue;
+      }
+      m.push(&c, i, fn);
+      if (!open(next)) m.pop();
+    }
+  }
+  m.chain.resize(base + 1);
+  m.index.resize(base);
+  return found;
+}
+
+// Whether some node `p.path` selects from `at` passes `p`'s test. Its tail,
+// the `.` and child steps from the last `//` among them, runs depth first and
+// stops at the first pass; the steps before it (and a last `..`) run as node
+// sets.
+template <class R>
+bool path_test_holds(const Pred& p, PathNode<R>& at, PredScratch<R>& s,
+                     std::string_view fn) {
+  const auto& steps = p.path;
+  size_t lazy = steps.size();
+  while (lazy > 0 && steps[lazy - 1].kind != Step::Parent) {
+    lazy--;
+    if (steps[lazy].descendant) break;
+  }
+  if (lazy == steps.size()) lazy--;  // ends in `..`
+  std::vector<PathNode<R>> buf;
+  NodeSpan<R> cur(&at, 1);
+  for (size_t k = 0; k < lazy; k++) {
+    if (step_is_identity(steps[k])) continue;
+    // Until a step replaces it, `cur` is the candidate itself: borrowed.
+    buf = path_step<R>(cur, steps[k], fn, cur.data() != &at);
+    cur = buf;
+    if (cur.empty()) return false;
+  }
+  auto from = [&](PathNode<R>& m) {
+    return tail_holds<R>(p, m, lazy, s, fn);
+  };
+  if (steps[lazy].descendant) return walk_each<R>(cur, from, fn);
+  for (auto& m : cur) {
+    if (from(m)) return true;
+  }
+  return false;
+}
+
+// Predicate `p` on the `i`th of `kids`, the `pos`th of `size` candidates; a
+// path predicate sees the candidate as `n` extended to it.
+template <class R>
+bool pred_holds(const Pred& p, PathNode<R>& n, const typename R::Value& kids,
+                size_t i, size_t pos, size_t size, PredScratch<R>& scratch,
+                std::string_view fn) {
+  switch (p.kind) {
+    case Pred::Pos: return static_cast<int64_t>(pos) == p.n;
+    case Pred::Last:
+      return static_cast<int64_t>(pos) == static_cast<int64_t>(size) - p.n;
+    case Pred::Test: break;
+  }
+  const auto& c = R::array_at(kids, i);
+  if (p.path.empty()) return test_holds<R>(p, c, fn);
+  n.push(&c, i, fn);
+  bool ok = path_test_holds<R>(p, n, scratch, fn);
+  n.pop();
+  return ok;
 }
 
 // Every match of `path` under `ctx`, in document order without duplicates.
@@ -1332,28 +1609,7 @@ std::vector<const typename R::Value*> select(const typename R::Value& ctx,
   auto steps = PathCompiler(path, scope, fn).compile();
   std::vector<Node> set{Node{{&ctx}, {}}};
   for (const auto& st : steps) {
-    if (st.descendant) set = descendant_or_self<R>(set, fn);
-    // From a single node every step's result is already in document order.
-    bool one = set.size() == 1;
-    switch (st.kind) {
-      case Step::Self:
-        break;
-      case Step::Parent: {
-        std::vector<Node> up;
-        for (auto& n : set) {
-          if (n.index.empty()) continue;  // above the context element
-          n.chain.pop_back();
-          n.index.pop_back();
-          up.push_back(std::move(n));
-        }
-        set = std::move(up);
-        break;
-      }
-      case Step::Child:
-        set = child_step<R>(set, st, fn);
-        break;
-    }
-    if (!one) path_normalize<R>(set);
+    if (!step_is_identity(st)) set = path_step<R>(set, st, fn, true);
   }
   std::vector<const V*> out;
   out.reserve(set.size());

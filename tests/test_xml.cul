@@ -483,6 +483,60 @@ for _ in XML.find_iter(lib, './/title') {
   n_iter += 1
 }
 assert_eq(n_iter, 3)
+// A predicate's operand may be a relative path, evaluated from the
+// candidate: true when it selects something, or when something it selects
+// equals the literal (its string-value, or its trailing `@attr`).
+fn ids(xs) {
+  xs.map(|e| e.attrs.id)
+}
+assert_eq(ids(XML.find_all(lib, 'shelf[book/author]')), ['s1', 's2'])
+assert_eq(ids(XML.find_all(lib, "shelf[book/author='Z']")), ['s2'])
+assert_eq(ids(XML.find_all(lib, 'shelf[book/@year]')), ['s1'])
+assert_eq(ids(XML.find_all(lib, "shelf[book/@lang='fr']")), ['s1'])
+assert_eq(ids(XML.find_all(lib, "shelf[book/@lang='en']")), ['s1', 's2'])
+assert_eq(ids(XML.find_all(lib, "shelf[ book / @lang = 'fr' ]")), ['s1'])
+assert_eq(ids(XML.find_all(lib, "shelf[.//title='C']")), ['s2'])
+assert_eq(ids(XML.find_all(lib, 'shelf[./note]')), ['s1'])
+assert_eq(ids(XML.find_all(lib, 'shelf[*/author[2]]')), ['s2'])
+assert_eq(
+  ids(XML.find_all(lib, 'shelf[*[author][@lang="en"]/title]')),
+  ['s1', 's2'],
+)
+// Its own predicates nest, with positions per parent as outside.
+assert_eq(ids(XML.find_all(lib, "shelf[book[@lang='fr']]")), ['s1'])
+assert_eq(ids(XML.find_all(lib, "shelf[book[title='B']/@lang='fr']")), ['s1'])
+assert_eq(ids(XML.find_all(lib, "shelf[book[author[.='Y']]]")), ['s2'])
+assert_eq(ids(XML.find_all(lib, 'shelf[book[2]]')), ['s1'])
+assert_eq(ids(XML.find_all(lib, "shelf[book[last()]/title='C']")), ['s2'])
+// `p//@a` is XPath's `p//./@a`: the attribute on what `p` selects or below.
+assert_eq(ids(XML.find_all(lib, '*[.//@year]')), ['s1'])
+assert_eq(ids(XML.find_all(lib, "*[.//@lang='fr']")), ['s1'])
+assert_eq(ids(XML.find_all(lib, "shelf[book//@lang='en']")), ['s1', 's2'])
+assert_eq(ids(XML.find_all(lib, "shelf[ . // @id = 's2' ]")), ['s2'])
+assert_eq(ids(XML.find_all(lib, 'shelf[title//@lang]')), [])
+assert_eq(titles(XML.find_all(lib, './/book[..//@year]')), ['A', 'B'])
+// `.` is the candidate and `..` its parent, up to the start element.
+assert_eq(titles(XML.find_all(lib, ".//book[.='AX']")), ['A'])
+assert_eq(titles(XML.find_all(lib, './/book[../note]')), ['A', 'B'])
+assert_eq(titles(XML.find_all(lib, ".//book[../@id='s2']")), ['C'])
+assert_eq(
+  XML.find_all(lib, ".//title[../../@id='s1']").map(|t| XML.text(t)),
+  ['A', 'B'],
+)
+assert_eq(
+  titles(XML.find_all(lib, ".//book[../book/@year='2001']")),
+  ['A', 'B'],
+)
+assert_eq(XML.find_all(lib, 'shelf[../..]'), [])
+// Positions and path predicates combine in the order written.
+assert_eq(titles(XML.find_all(lib, './/book[title][2]')), ['B'])
+assert_eq(titles(XML.find_all(lib, './/book[2][title]')), ['B'])
+assert_eq(titles(XML.find_all(lib, './/book[author][2]')), [])
+assert_eq(
+  titles(XML.find_all(lib, 'shelf/book[1][author/../title]')),
+  ['A', 'C'],
+)
+assert_eq(titles(XML.find_all(lib, './/book[.//author="Y"][last()]')), ['C'])
 
 // text: the XPath string-value of the first match.
 assert_eq(XML.text(lib, 'shelf/note'), 'n1')
@@ -560,6 +614,37 @@ assert_eq(
   ['A', 'B', 'C'],
 )
 assert_eq(XML.text(feed, 'a:entry[m:thumb]/a:title', namespaces: ns), 'T1')
+// A predicate's path resolves names as the outer path does.
+assert_eq(XML.text(feed, "a:entry[m:thumb/@url='a.png']", namespaces: ns), 'T1')
+assert_eq(XML.text(feed, "a:entry[a:title='T2']", namespaces: ns), 'T2')
+assert_eq(XML.text(feed, "*:entry[*:title='T2']"), 'T2')
+assert_eq(XML.text(feed, 'a:entry[.//Q{urn:media}thumb]', namespaces: ns), 'T1')
+assert_eq(
+  XML.find_all(feed, 'entry[title]', namespaces: {'': 'urn:atom'}).size(),
+  2,
+)
+assert_eq(XML.find_all(feed, '*[title]').size(), 0)
+assert_eq(
+  err(|| XML.find(feed, 'a:entry[x:title]', namespaces: ns)),
+  "ValueError: XML.find: unknown namespace prefix 'x' at column 9",
+)
+// Nesting is bounded by the limit, not by the evaluator's stack: 998
+// predicates deep in a 1000-deep tree.
+fn nest_preds(n) {
+  'a' + repeat(n, '[a').join('') + repeat(n, ']').join('')
+}
+assert_eq(nested.find_all(nest_preds(998)).size(), 1)
+assert_eq(nested.find_all(nest_preds(998) + '/a[a]').size(), 1)
+assert_eq(nested.find_all(nest_preds(999)).size(), 0)
+// A predicate path's run of child steps is walked on an explicit stack: 997
+// levels that each climb 200 `..` and descend 200 steps again overflowed
+// the C stack while every such step recursed.
+let tall = XML.parse(repeat(203, '<a>').join('') + repeat(203, '</a>').join(''))
+let down = repeat(199, 'a/').join('') + 'a'
+let climb = repeat(200, '../').join('') + down + '['
+let climbs = repeat(997, climb).join('')
+let deep_tail = "a[{down}[{climbs}.{repeat(997, ']').join('')}]]"
+assert_eq(tall.find_all(deep_tail).size(), 1)
 // A prefix `namespaces:` lacks falls back to the start element's own
 // `xmlns:p` declarations; `namespaces:` wins when both bind it. Its `xmlns=`
 // default is never read: an unprefixed name still means no namespace.
@@ -650,9 +735,89 @@ assert_eq(
   "ValueError: XML.find: unsupported path syntax '@' at column 7",
 )
 assert_eq(
-  err(|| XML.text(lib, "shelf[.='x']")),
-  "ValueError: XML.text: unsupported path syntax '.' at column 7",
+  err(|| XML.text(lib, "shelf[.!='x']")),
+  "ValueError: XML.text: unsupported path syntax '!=' at column 8",
 )
+// A predicate's path takes the outer path's steps and nothing more.
+assert_eq(
+  err(|| XML.find(lib, 'shelf[/lib]')),
+  'ValueError: XML.find: a path is relative to the element',
+)
+assert_eq(
+  err(|| XML.find(lib, 'shelf[//book]')),
+  'ValueError: XML.find: a path is relative to the element',
+)
+assert_eq(
+  err(|| XML.find(lib, 'shelf[not(book)]')),
+  "ValueError: XML.find: unsupported path syntax 'not()' at column 7",
+)
+assert_eq(
+  err(|| XML.find(lib, 'shelf[count(book)=2]')),
+  "ValueError: XML.find: unsupported path syntax 'count()' at column 7",
+)
+assert_eq(
+  err(|| XML.find(lib, 'shelf[book or note]')),
+  "ValueError: XML.find: unsupported path syntax 'or' at column 12",
+)
+assert_eq(
+  err(|| XML.find(lib, 'shelf[book/title and note]')),
+  "ValueError: XML.find: unsupported path syntax 'and' at column 18",
+)
+assert_eq(
+  err(|| XML.find(lib, "shelf[book/title!='A']")),
+  "ValueError: XML.find: unsupported path syntax '!=' at column 17",
+)
+assert_eq(
+  err(|| XML.find(lib, 'shelf[book/@year<2000]')),
+  "ValueError: XML.find: unsupported path syntax '<' at column 17",
+)
+assert_eq(
+  err(|| XML.find(lib, 'shelf[book/@year>2000]')),
+  "ValueError: XML.find: unsupported path syntax '>' at column 17",
+)
+assert_eq(
+  err(|| XML.find(lib, 'shelf[book|note]')),
+  "ValueError: XML.find: unsupported path syntax '|' at column 11",
+)
+assert_eq(
+  err(|| XML.find(lib, 'shelf[book=note]')),
+  "ValueError: XML.find: unsupported path syntax 'note' at column 12",
+)
+assert_eq(
+  err(|| XML.find(lib, 'shelf[book/@lang/title]')),
+  "ValueError: XML.find: unsupported path syntax '/' at column 17",
+)
+assert_eq(
+  err(|| XML.find(lib, 'shelf[//@id]')),
+  'ValueError: XML.find: a path is relative to the element',
+)
+assert_eq(
+  err(|| XML.find(lib, './/@id')),
+  "ValueError: XML.find: unsupported path syntax '@' at column 4",
+)
+assert_eq(
+  err(|| XML.find(lib, 'shelf[book/following-sibling::note]')),
+  "ValueError: XML.find: unsupported path syntax 'following-sibling::' at column 12",
+)
+assert_eq(
+  err(|| XML.find(lib, 'shelf[./book[1]/..[1]]')),
+  "ValueError: XML.find: unsupported path syntax '[' at column 19",
+)
+assert_eq(
+  err(|| XML.find(lib, 'shelf[book[@lang]')),
+  'ValueError: XML.find: unterminated predicate at column 6',
+)
+assert_eq(
+  err(|| XML.find(lib, 'shelf[book/]')),
+  "ValueError: XML.find: unsupported path syntax ']' at column 12",
+)
+// Nested predicates count toward the nesting limit, so no path can run the
+// compiler or the evaluator out of stack.
+assert_eq(
+  err(|| XML.find(lib, nest_preds(1001))),
+  'ValueError: XML.find: nesting too deep (limit 1000)',
+)
+assert_eq(XML.find(lib, nest_preds(1000)), nil)
 assert_eq(
   err(|| XML.find(lib, 'shelf/')),
   'ValueError: XML.find: unexpected end of path at column 7',
