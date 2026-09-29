@@ -3862,7 +3862,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_prop_wr(
     culebra_runtime_throw_error("ImmutableError", "Shared values are immutable",
                                 line, col);
   // An own slot of a receiver that is no view answers presence and value in
-  // one lookup, and primes the site as object_get_ic's own hit does.
+  // one lookup. Only this arm primes the site, so its cache holds a plain
+  // Object's shape, which no view shares: the JIT's shape test is enough.
   if (kind == 0) {
     auto idx = obj->find_slot(key);
     if (idx != static_cast<size_t>(-1)) {
@@ -3877,7 +3878,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_prop_wr(
     auto [dline, dcol] = _jit_unpack_pos(dot_pos);
     culebra::throw_compound_missing_property_at(dline, dcol);
   }
-  return culebra_runtime_object_get_ic(obj, key, ic, line, col);
+  JitPropIC unprimed{};
+  return culebra_runtime_object_get_ic(obj, key, &unprimed, line, col);
 }
 
 // True if a TAG_OBJECT receiver is a builtin stdlib namespace (IO, Sys, ...).

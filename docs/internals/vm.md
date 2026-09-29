@@ -217,14 +217,17 @@ The heap objects a VM needs are the runtime's existing ones:
   the own slot, and — for a method read on a class instance, whose data
   is in own slots and whose methods sit on the shared meta behind
   `proto` — the proto slot, cached as the pair (receiver shape, proto
-  shape) the runtime helper's miss path fills. A write site's IC
+  shape) the runtime helper's miss path fills. A view (packed, Shared,
+  SharedBuffer, FixedArray), whose accesses the runtime answers before
+  its slots, grows its shape from a root of its own
+  (`ShapeRegistry::view_root`), so no read or write cache an Object
+  primed can match it. A write site's IC
   (`JitPropSetIC`) settles a warm update in one call,
   `object_set_update`, which answers false for a transition or a
   refusal; the site then calls `object_set_fast`, which words the error.
   The read half of a compound step (`o.k op= v`, `Op::PropWr`) has the
-  read site's own-slot arm, taken when the receiver also carries none of
-  the four view flags (a Shared, packed, buffer or fixed-array view);
-  its miss is `prop_wr`, which is the executor's whole step.
+  read site's own-slot arm; its miss is `prop_wr`, which is the
+  executor's whole step and primes the site from a plain Object only.
 - `JitArray`, `JitSet`, tuples, `JitTensor`.
 
 Objects are allocated from a per-`Runtime` slab allocator

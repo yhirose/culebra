@@ -138,6 +138,7 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
       culebra::ValueWalkFrame walk;
       n.kind = K::Object;
       n.is_error = o->is_error;
+      n.is_packed_view = o->is_packed_view;
       if (o->shape) {
         for (size_t i = 0; i < o->prop_size(); i++) {
           sendable::SendNode key;
@@ -330,7 +331,10 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
       if (n.is_backref)
         return {TAG_OBJECT,
                 reinterpret_cast<int64_t>(ctx.protos.at(n.ref_id))};
-      auto* o = culebra_runtime_object_new();
+      // A bare packed view (rare — usually the buffer crosses, not a view)
+      // arrives as a generic Object, a view before its markers land.
+      auto* o = n.is_packed_view ? _jit_view_new(&JitObject::is_packed_view)
+                                 : culebra_runtime_object_new();
       o->is_error = n.is_error;
       // Register a shared class meta BEFORE filling entries so a backref
       // inside its own subtree (a method capturing another instance of
@@ -386,11 +390,6 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
         if (!n.elems[0].is_backref)
           _culebra_value_release_impl(proto.tag, proto.data);
       }
-      // A bare packed view (rare — usually the buffer crosses, not a view)
-      // arrives as a generic Object; restore its O(1) discriminator, which is
-      // a flag, not a slot. Buffers take the dedicated K::SharedBuffer path.
-      if (o->find_slot("__packedview_id__") != static_cast<size_t>(-1))
-        o->is_packed_view = true;
       return {TAG_OBJECT, reinterpret_cast<int64_t>(o)};
     }
     case K::Closure: {
@@ -1452,7 +1451,7 @@ inline void _jit_sv_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
 }
 
 inline JitValue _jit_make_shared_val_view(int64_t id, int64_t node) {
-  auto* h = culebra_runtime_object_new();
+  auto* h = _jit_view_new(&JitObject::is_shared_val);
   h->set_or_append("__sharedval_id__", JitValue{TAG_LONG, id}, false);
   h->set_or_append("__sharedval_node__", JitValue{TAG_LONG, node}, false);
   h->set_or_append("_dropped", JitValue{TAG_BOOL, 0}, true);
@@ -1469,7 +1468,6 @@ inline JitValue _jit_make_shared_val_view(int64_t id, int64_t node) {
   meth("copy", _jit_sv_copy);
   meth("iter", _jit_sv_iter);
   meth("drop", _jit_sv_drop);
-  h->is_shared_val = true;
   h->has_drop = true;
   // The one place a view comes into being, so the one place the generic
   // get/index paths learn how to read it (rt_runtime.inc.h).
@@ -1484,8 +1482,7 @@ inline JitValue _jit_make_shared_val_view(int64_t id, int64_t node) {
 // GC-driven `drop` that releases the buffer's ref. Mirrors the channel
 // endpoint and the interp make_shared_buffer_handle.
 inline JitValue _jit_make_shared_buffer_handle(int64_t id, int64_t count) {
-  auto* h = culebra_runtime_object_new();
-  h->is_shared_buffer = true;
+  auto* h = _jit_view_new(&JitObject::is_shared_buffer);
   h->set_or_append("__sharedbuffer_id__", JitValue{TAG_LONG, id}, false);
   h->set_or_append("__sharedbuffer_count__", JitValue{TAG_LONG, count}, false);
   h->set_or_append("_dropped", JitValue{TAG_BOOL, 0}, true);

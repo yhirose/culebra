@@ -198,4 +198,22 @@ let bad_key = try { arr_view['x']; nil } catch e { e }
 assert_eq(bad_key.message, 'type error: expected Long, got String')
 assert_throws('IndexError', fn () { arr_view[99] })
 
+# A view's shape is never an Object's: a write site an Object with the
+# view's own slot names warmed still refuses the view.
+let sv_target = Shared.new({a: 1})
+fn poke(o) {
+  o._dropped = true
+}
+let noop = || nil
+let sv_impostor = {__sharedval_id__: 0, __sharedval_node__: 0,
+  mut _dropped: false, size: noop, has: noop, keys: noop, values: noop,
+  copy: noop, iter: noop, drop: noop}
+for _ in 0..3 {
+  poke(sv_impostor)
+}
+assert_throws('ImmutableError', fn () {
+  poke(sv_target)
+})
+assert_eq(sv_target.a, 1)
+
 IO.inspect('test_shared OK')

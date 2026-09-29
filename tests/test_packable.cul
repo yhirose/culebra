@@ -186,4 +186,30 @@ assert_throws('ValueError', fn () {
   })
 })
 
+# A view's shape is never an Object's: a read site an Object with the view's
+# marker names warmed still answers a view as a cold site does.
+let vbuf = SharedBuffer.new(2, FloatPair)
+fn read_marker(o) {
+  o.__packedview_id__
+}
+fn marker_on_view() {
+  try {
+    read_marker(vbuf[1])
+  } catch e {
+    e.kind
+  }
+}
+let marker_cold = marker_on_view()
+let impostor = {__packedview_id__: 'plain', __packedview_index__: 0}
+for _ in 0..3 {
+  assert_eq(read_marker(impostor), 'plain')
+}
+assert_eq(marker_on_view(), marker_cold)
+
+# a bare view that crossed an isolate is still a view, and an Object that
+# only carries the marker names is still an Object
+vbuf[1].x = 2.5
+assert_eq(Isolate.spawn(|v| v.x, vbuf[1]).join(), 2.5)
+assert_eq(Isolate.spawn(|o| o.__packedview_id__, impostor).join(), 'plain')
+
 inspect("packable ok")

@@ -49,6 +49,10 @@ struct Shape {
   // special-method lookup has to ask of an instance's own slots before it
   // may trust its class's table (see _lookup_special). Fixed once per Shape.
   bool any_special = false;
+  // The root this shape's tree grows from (null on a root itself), so a
+  // rebuild after a removal stays on the object's own tree.
+  Shape* root = nullptr;
+  Shape* tree_root() { return root ? root : this; }
 
   static bool is_special_name(std::string_view name) {
     return (name.size() > 4 && name.substr(0, 2) == "__" &&
@@ -95,6 +99,9 @@ struct ShapeRegistry {
     return inst;
   }
   Shape* root() { return root_.get(); }
+  // The root of every view's tree (_jit_view_new), which no plain Object
+  // reaches: no inline cache an Object primed matches a view.
+  Shape* view_root() { return view_root_.get(); }
 
   // Return the Shape obtained by adding `name` to `current`'s
   // property set. Cached on `current->add_transitions` so identical
@@ -116,6 +123,7 @@ struct ShapeRegistry {
                        static_cast<uint8_t>(FieldType::Any));
     next->types.push_back(static_cast<uint8_t>(type));
     next->any_special = current->any_special || Shape::is_special_name(name);
+    next->root = current->tree_root();
     auto& stored_name = next->names.back();
     auto* raw = next.get();
     owned_.push_back(std::move(next));
@@ -125,11 +133,14 @@ struct ShapeRegistry {
     return raw;
   }
 
-  ShapeRegistry() : root_(std::make_unique<Shape>()) {}
+  ShapeRegistry()
+      : root_(std::make_unique<Shape>()),
+        view_root_(std::make_unique<Shape>()) {}
 
  private:
   std::mutex mu_;
   std::unique_ptr<Shape> root_;
+  std::unique_ptr<Shape> view_root_;
   std::vector<std::unique_ptr<Shape>> owned_;  // keeps non-root shapes alive
 };
 
@@ -690,7 +701,7 @@ struct JitObject {
     for (size_t i = 0; i < slots.size(); i++) f(prop_name(i), slots[i]);
   }
 
-  // Remove a property by rebuilding the shape from root. Slow path
+  // Remove a property by rebuilding the shape from its root. Slow path
   // (`Object.remove` is rare); cycle members invoked via the cycle
   // collector use the unified release path which clears slots wholesale
   // instead.
@@ -717,7 +728,7 @@ struct JitObject {
       ++mut_count;
       return;
     }
-    auto* new_shape = culebra::shape_registry().root();
+    auto* new_shape = shape->tree_root();
     decltype(slots) new_slots;
     new_slots.reserve(slots.size() - 1);
     for (size_t i = 0; i < shape->names.size(); i++) {

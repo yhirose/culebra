@@ -268,8 +268,7 @@ inline void _jit_fa_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
 }
 inline JitValue _jit_make_fixed_array_view(int64_t id, int64_t abs_off,
                                            const culebra::PackableField& f) {
-  auto* h = culebra_runtime_object_new();
-  h->is_fixed_array_view = true;
+  auto* h = _jit_view_new(&JitObject::is_fixed_array_view);
   h->set_or_append("__fa_id__", JitValue{TAG_LONG, id}, false);
   h->set_or_append("__fa_off__", JitValue{TAG_LONG, abs_off}, false);
   h->set_or_append("__fa_cap__", JitValue{TAG_LONG, static_cast<long>(f.layout.capacity)}, false);
@@ -677,8 +676,7 @@ inline JitObject* _jit_shared_buffer_index(JitObject* buf, int64_t idx,
   if (idx < 0 || idx >= n) {
     throw culebra::CulebraError("IndexError", "index out of range", line, col);
   }
-  auto* view = culebra_runtime_object_new();
-  view->is_packed_view = true;
+  auto* view = _jit_view_new(&JitObject::is_packed_view);
   culebra_runtime_object_set(view, "__packedview_id__", false, TAG_LONG, id, 0, 0);
   culebra_runtime_object_set(view, "__packedview_index__", false, TAG_LONG, idx, 0, 0);
   return view;

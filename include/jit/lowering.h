@@ -3810,31 +3810,16 @@ struct Lowering {
           auto objPtr = b.CreateIntToPtr(j.extract_data(recv), ptrTy);
           auto* nm = reinterpret_cast<const char*>(c.consts[in.c].data);
           auto i8Ty = b.getInt8Ty();
-          auto i32Ty = b.getInt32Ty();
           auto po = Chunk::decode_prop_wr(in.d);
           auto [icTy, icGlobal] = j.emit_prop_ic_global();
-          // The read's own-slot arm, for a receiver that is no view: a shape
-          // does not say that. The four view flags are adjacent bytes.
-          static_assert(offsetof(JitObject, is_shared_buffer) ==
-                            offsetof(JitObject, is_packed_view) + 1 &&
-                        offsetof(JitObject, is_shared_val) ==
-                            offsetof(JitObject, is_packed_view) + 2 &&
-                        offsetof(JitObject, is_fixed_array_view) ==
-                            offsetof(JitObject, is_packed_view) + 3);
-          auto viewFlags = b.CreateAlignedLoad(
-              i32Ty,
-              b.CreateConstInBoundsGEP1_64(
-                  i8Ty, objPtr, offsetof(JitObject, is_packed_view),
-                  "pwr.flags.p"),
-              llvm::Align(1), "pwr.flags");
+          // The read's own-slot arm: prop_wr primes the cache from plain
+          // Objects only, whose shapes no view shares.
           auto shapeMatch =
               j.emit_prop_ic_shape_match(objPtr, icTy, icGlobal).second;
-          auto hit = b.CreateAnd(b.CreateICmpEQ(viewFlags, b.getInt32(0)),
-                                 shapeMatch, "pwr.hit");
           auto fastBB = BasicBlock::Create(j.ctx_, "pwr.fast", fn);
           auto slowBB = BasicBlock::Create(j.ctx_, "pwr.slow", fn);
           auto mergeBB = BasicBlock::Create(j.ctx_, "pwr.merge", fn);
-          b.CreateCondBr(hit, fastBB, slowBB);
+          b.CreateCondBr(shapeMatch, fastBB, slowBB);
 
           b.SetInsertPoint(fastBB);
           auto [fastTag, fastData] =

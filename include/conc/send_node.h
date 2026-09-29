@@ -80,6 +80,8 @@ struct SendNode {
   // Object: the Error Object a catch built (JitObject::is_error), which a
   // re-throw on the receiving side still reports as that error.
   bool is_error = false;
+  // Object: a bare packed view (JitObject::is_packed_view).
+  bool is_packed_view = false;
 
   // Declared here, defaulted below the class, for the reason toml::Node's are
   // (toml.h): the self-referential vector<pair<SendNode, SendNode>> makes

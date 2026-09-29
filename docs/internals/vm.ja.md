@@ -217,14 +217,17 @@ VMが必要とするヒープオブジェクトはランタイムの既存のも
   インラインで答える: 自分のslotと、クラスインスタンスでのメソッド読み
   （データは自分のslot、メソッドは`proto`の先の共有metaにある）で使う
   protoのslot。後者は（受け手のshape、protoのshape）の対としてキャッシュ
-  され、ランタイムhelperのmiss経路が埋める。書きサイトのIC
+  され、ランタイムhelperのmiss経路が埋める。view（packed・Shared・
+  SharedBuffer・FixedArray）はランタイムがslotより先にアクセスに答える
+  ので、そのshapeは専用のroot（`ShapeRegistry::view_root`）から伸ばす。
+  Objectが温めた読みや書きのキャッシュがviewに一致することはない。
+  書きサイトのIC
   （`JitPropSetIC`）は温まった更新を呼び出し1つ、`object_set_update`で
   済ませる。これはtransitionや拒否にはfalseを返し、サイトはそのとき
   `object_set_fast`を呼んでエラーを組み立てさせる。
   複合代入（`o.k op= v`、`Op::PropWr`）の読みの側は、読みサイトの自分の
-  slotの枝を持つ。受け手が4つのview flag（Shared・packed・buffer・
-  fixed-arrayのview）のどれも持たないときだけその枝を通る。missは
-  `prop_wr`が受け持ち、executorはこれ1つで済ませる。
+  slotの枝を持つ。missは`prop_wr`が受け持ち、executorはこれ1つで済ませる。
+  サイトのキャッシュを温めるのは、`prop_wr`が扱う普通のObjectだけである。
 - `JitArray`、`JitSet`、タプル、`JitTensor`。
 
 オブジェクトはper-`Runtime`のスラブアロケータ（`rt_slab.h`）から

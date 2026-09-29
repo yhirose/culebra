@@ -3265,6 +3265,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_new() {
   return o;
 }
 
+// A fresh view of the kind `flag` names, its markers still to come. The one
+// place a view flag is set, so no view grows on a plain Object's tree.
+inline JitObject* _jit_view_new(bool JitObject::* flag) {
+  auto* view = culebra_runtime_object_new();
+  view->*flag = true;
+  view->shape = culebra::shape_registry().view_root();
+  return view;
+}
+
 // One meta per (variant, enum), the twin of a class's. It carries the two
 // names, and every variant instance reaches them through `proto` — the same
 // route a class instance reaches its own name by. Returns +1; every caller
@@ -3991,8 +4000,7 @@ _jit_packed_view_record(JitObject* view) {
 
 // A nested @packable record view over `core` at absolute byte offset `off`.
 inline JitObject* _jit_make_nested_view(int64_t id, int64_t off, const char* cls) {
-  auto* view = culebra_runtime_object_new();
-  view->is_packed_view = true;
+  auto* view = _jit_view_new(&JitObject::is_packed_view);
   culebra_runtime_object_set(view, "__packedview_id__", false, TAG_LONG, id, 0, 0);
   culebra_runtime_object_set(view, "__packedview_byteoff__", false, TAG_LONG, off, 0, 0);
   culebra_runtime_object_set(view, "__packedview_class__", false, TAG_STRING,
