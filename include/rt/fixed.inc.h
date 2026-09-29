@@ -82,10 +82,10 @@ inline const JitParamMeta* _jit_make_handle_meta(
 
 inline JitClosure* _jit_make_handle_method(
     void (*fn)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*), size_t arity,
-    const JitParamMeta* meta = nullptr) {
+    const JitParamMeta* meta = nullptr, uint64_t extra_flags = 0) {
   return culebra_runtime_closure_new(reinterpret_cast<void*>(fn),
                                      /*n_captures=*/0, arity,
-                                     JIT_CLOSURE_NATIVE, meta);
+                                     JIT_CLOSURE_NATIVE | extra_flags, meta);
 }
 
 // Slot a handle method onto `h` — shared by every native-handle builder
@@ -103,10 +103,21 @@ inline JitClosure* _jit_make_handle_method(
 inline void _jit_handle_bind_method(
     JitObject* h, const char* name,
     void (*f)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*), size_t ar,
-    const JitParamMeta* meta = nullptr) {
+    const JitParamMeta* meta = nullptr, uint64_t extra_flags = 0) {
   h->set_or_append(name,
       JitValue{TAG_FUNC, reinterpret_cast<int64_t>(
-          _jit_make_handle_method(f, ar, meta))}, false);
+          _jit_make_handle_method(f, ar, meta, extra_flags))}, false);
+}
+
+// A handle method a value may carry into another Isolate
+// (JIT_CLOSURE_PORTABLE): the body must read nothing but `self` and its args,
+// and `meta` must outlive every Runtime (a function-local static), since the
+// receiver rebuilds the closure over the same raw pointer.
+inline void _jit_bind_portable_method(
+    JitObject* h, const char* name,
+    void (*f)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*), size_t ar,
+    const JitParamMeta* meta = nullptr) {
+  _jit_handle_bind_method(h, name, f, ar, meta, JIT_CLOSURE_PORTABLE);
 }
 
 

@@ -936,6 +936,10 @@ inline constexpr uint64_t JIT_CLOSURE_GETTER = 1ull << 0;
 inline constexpr uint64_t JIT_CLOSURE_NATIVE = 1ull << 1;
 // DERIVED — a method `@derive` supplied rather than one the class wrote.
 inline constexpr uint64_t JIT_CLOSURE_DERIVED = 1ull << 2;
+// PORTABLE — a NATIVE closure that may still cross an Isolate: it has no
+// captures and its body reads state only from `self` and its arguments, so the
+// receiver rebuilds it from fn_ptr / arity / meta alone (see jit_serialize).
+inline constexpr uint64_t JIT_CLOSURE_PORTABLE = 1ull << 3;
 
 // Sentinel `arity` for a variadic closure (a builtin ns-method that accepts a
 // range of arg counts, e.g. range/iota/Math.min). Higher-order callback
