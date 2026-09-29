@@ -4759,6 +4759,63 @@ struct JIT {
     return make_value(static_cast<uint8_t>(want), extract_data(view));
   }
 
+  // A read site's own inline cache; the layout mirrors JitPropIC field for
+  // field — the IR reads only {shape, offset}, the runtime helper owns the
+  // proto trio. All three shape fields are seeded to the non-null sentinel
+  // `(void*)1` so the first read always misses to the slow path: real Shape*
+  // are heap-allocated (8-byte aligned, never == 1) and a freshly-allocated
+  // Object has shape == null, so the sentinel can never spuriously fast-path
+  // into an OOB slots[0].
+  std::pair<llvm::StructType*, llvm::GlobalVariable*> emit_prop_ic_global() {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto i64Ty = builder_.getInt64Ty();
+    auto icTy =
+        llvm::StructType::get(ctx_, {ptrTy, i64Ty, ptrTy, ptrTy, i64Ty});
+    auto* sentinelPtr = llvm::ConstantExpr::getIntToPtr(
+        llvm::ConstantInt::get(i64Ty, 1), ptrTy);
+    auto* icInit = llvm::ConstantStruct::get(
+        icTy, {sentinelPtr, llvm::ConstantInt::get(i64Ty, 0), sentinelPtr,
+               sentinelPtr, llvm::ConstantInt::get(i64Ty, 0)});
+    auto* icGlobal = new llvm::GlobalVariable(
+        *module_, icTy, /*isConstant=*/false,
+        llvm::GlobalValue::PrivateLinkage, icInit,
+        ".prop.ic." + std::to_string(prop_ic_counter_++));
+    return {icTy, icGlobal};
+  }
+
+  // `slots[offset].value` of `holder`, borrowed, as the tag/data pair a
+  // merge takes.
+  std::pair<llvm::Value*, llvm::Value*> emit_object_slot(llvm::Value* holder,
+                                                         llvm::Value* offset) {
+    auto v = emit_load_elem(emit_object_entry_ptr(holder, offset));
+    return {extract_tag(v), extract_data(v)};
+  }
+
+  // The receiver's shape, and whether it is the one a read site's cache
+  // recorded an own slot for.
+  std::pair<llvm::Value*, llvm::Value*> emit_prop_ic_shape_match(
+      llvm::Value* objPtr, llvm::StructType* icTy, llvm::GlobalVariable* ic) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto objShape = builder_.CreateLoad(
+        ptrTy,
+        builder_.CreateConstInBoundsGEP1_64(builder_.getInt8Ty(), objPtr,
+                                            offsetof(JitObject, shape),
+                                            "shape.fieldp"),
+        "obj.shape");
+    auto icShape = builder_.CreateLoad(
+        ptrTy, builder_.CreateStructGEP(icTy, ic, 0, "ic.shape.p"), "ic.shape");
+    return {objShape, builder_.CreateICmpEQ(objShape, icShape, "shape.match")};
+  }
+
+  // The own slot that cache recorded, for a receiver whose shape matched.
+  std::pair<llvm::Value*, llvm::Value*> emit_prop_ic_own_slot(
+      llvm::Value* objPtr, llvm::StructType* icTy, llvm::GlobalVariable* ic) {
+    auto offset = builder_.CreateLoad(
+        builder_.getInt64Ty(),
+        builder_.CreateStructGEP(icTy, ic, 1, "ic.off.p"), "ic.off");
+    return emit_object_slot(objPtr, offset);
+  }
+
   // Get a property from an object (TAG_OBJECT required).
   //
   // Inlines a V8/SpiderMonkey-style monomorphic inline cache: each call
@@ -4830,24 +4887,7 @@ struct JIT {
     auto recvData = extract_data(receiver);
     auto keyPtr = builder_.CreateGlobalString(name, ".key");
 
-    // Per-site inline cache; layout mirrors JitPropIC field for field — the
-    // IR reads only {shape, offset}, the runtime helper owns the proto trio.
-    // All three shape fields are seeded to the non-null sentinel `(void*)1`
-    // so the first read always misses to the slow path: real Shape* are
-    // heap-allocated (8-byte aligned, never == 1) and a freshly-allocated
-    // Object has shape == null, so the sentinel can never spuriously
-    // fast-path into an OOB slots[0].
-    auto icTy =
-        llvm::StructType::get(ctx_, {ptrTy, i64Ty, ptrTy, ptrTy, i64Ty});
-    auto* sentinelPtr = llvm::ConstantExpr::getIntToPtr(
-        llvm::ConstantInt::get(i64Ty, 1), ptrTy);
-    auto* icInit = llvm::ConstantStruct::get(
-        icTy, {sentinelPtr, llvm::ConstantInt::get(i64Ty, 0), sentinelPtr,
-               sentinelPtr, llvm::ConstantInt::get(i64Ty, 0)});
-    auto* icGlobal = new llvm::GlobalVariable(
-        *module_, icTy, /*isConstant=*/false,
-        llvm::GlobalValue::PrivateLinkage, icInit,
-        ".prop.ic." + std::to_string(prop_ic_counter_++));
+    auto [icTy, icGlobal] = emit_prop_ic_global();
 
     auto objBB = llvm::BasicBlock::Create(ctx_, "prop.obj", fn);
     auto fastBB = llvm::BasicBlock::Create(ctx_, "prop.fast", fn);
@@ -4864,27 +4904,12 @@ struct JIT {
     // Object: take the fast path only when its shape matches the cache.
     builder_.SetInsertPoint(objBB);
     auto objPtr = builder_.CreateIntToPtr(recvData, ptrTy);
-    auto shapeFieldPtr = builder_.CreateConstInBoundsGEP1_64(
-        i8Ty, objPtr, offsetof(JitObject, shape), "shape.fieldp");
-    auto objShape = builder_.CreateLoad(ptrTy, shapeFieldPtr, "obj.shape");
-    auto icShapePtr =
-        builder_.CreateStructGEP(icTy, icGlobal, 0, "ic.shape.p");
-    auto icShape = builder_.CreateLoad(ptrTy, icShapePtr, "ic.shape");
-    auto shapeMatch =
-        builder_.CreateICmpEQ(objShape, icShape, "shape.match");
+    auto [objShape, shapeMatch] =
+        emit_prop_ic_shape_match(objPtr, icTy, icGlobal);
     builder_.CreateCondBr(shapeMatch, fastBB, protoBB);
 
-    // `slots[offset].value` of `holder`, the tagged pair the merge takes.
-    auto load_entry = [&](llvm::Value* holder, llvm::Value* offset) {
-      auto v = emit_load_elem(emit_object_entry_ptr(holder, offset));
-      return std::pair{extract_tag(v), extract_data(v)};
-    };
-
     builder_.SetInsertPoint(fastBB);
-    auto icOffsetPtr =
-        builder_.CreateStructGEP(icTy, icGlobal, 1, "ic.off.p");
-    auto icOffset = builder_.CreateLoad(i64Ty, icOffsetPtr, "ic.off");
-    auto [fastTag, fastData] = load_entry(objPtr, icOffset);
+    auto [fastTag, fastData] = emit_prop_ic_own_slot(objPtr, icTy, icGlobal);
     builder_.CreateBr(mergeBB);
     auto fastEnd = builder_.GetInsertBlock();
 
@@ -4919,7 +4944,7 @@ struct JIT {
     auto icProtoOffset = builder_.CreateLoad(
         i64Ty, builder_.CreateStructGEP(icTy, icGlobal, 4, "ic.poff.p"),
         "ic.poff");
-    auto [protoTag, protoData] = load_entry(shapeHolder, icProtoOffset);
+    auto [protoTag, protoData] = emit_object_slot(shapeHolder, icProtoOffset);
     builder_.CreateBr(mergeBB);
     auto protoEnd = builder_.GetInsertBlock();
 

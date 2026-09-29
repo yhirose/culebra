@@ -240,10 +240,10 @@ enum class Op : uint8_t {
                // read of `o.k op= v`: receiver gate as PropSet, then the
                // Shared-view ImmutableError (ahead of the existence check,
                // the interp's order), then the missing-property
-               // AttributeError — anchored at the DOT node, whose packed
-               // line<<32|col rides consts[d] (every other throw here uses
-               // the statement, this instruction's own stamp). The hit is a
-               // raw retained view (+1), never bound.
+               // AttributeError — anchored at the DOT node (every other
+               // throw here uses the statement, this instruction's own
+               // stamp). The hit is a raw retained view (+1), never bound.
+               // `d` is Chunk::PropWrOperand.
   PropCo,      // regs[a] = current value for `o.k ??= v`: receiver gate,
                // then the nc receiver-kind rejects (Shared view / packed
                // field, at the statement), then a plain property read — a
@@ -2642,6 +2642,19 @@ struct Chunk {
   }
   static SlotInitOperand decode_slot_init(int32_t d) {
     return {d >> 3, (d & 1) != 0, static_cast<int8_t>((d >> 1) & 3)};
+  }
+  // Op::PropWr's `d`: the const holding the DOT node's packed position, and
+  // PropVal's `d` — the tag a declared field promises its read (0 for none).
+  struct PropWrOperand {
+    int32_t pos_const;
+    int8_t tag;
+  };
+  static int32_t encode_prop_wr(PropWrOperand po) {
+    assert(po.pos_const < (1 << 23));
+    return (po.pos_const << 8) | static_cast<uint8_t>(po.tag);
+  }
+  static PropWrOperand decode_prop_wr(int32_t d) {
+    return {d >> 8, static_cast<int8_t>(d & 0xff)};
   }
   int32_t num_slots = 0;
   // Cell slots in creation order: a slot's rank, against a cleanup step's
@@ -9318,7 +9331,13 @@ class Compiler {
         auto rhs = compile_assign_rhs(ast, av);
         auto recv = chain_prefix();
         int32_t cur = alloc_temp(ast);
-        emit(Op::PropWr, cur, recv.slot, name, dotpos);
+        // `<name>.<field>` reads what compile_property_read's first postfix
+        // would: the declared class's promise about the field's tag.
+        int32_t tag = end == av.lvaloff + 1
+                          ? declared_read_tag(*ast.nodes[av.lvaloff], fin.token)
+                          : 0;
+        emit(Op::PropWr, cur, recv.slot, name,
+             Chunk::encode_prop_wr({dotpos, static_cast<int8_t>(tag)}));
         int32_t t = alloc_temp(ast);
         emit(op, t, cur, rhs.slot, /*inplace=*/1);
         // No namespace check on the write-back: a namespace's unknown
@@ -16353,23 +16372,16 @@ struct Exec {
             culebra_runtime_type_error_typed(
                 line, col, "Object, Array, or Tensor",
                 static_cast<int8_t>(recv.tag));
-          // The Shared-view reject runs ahead of the existence check (the
-          // interp's is_shared_val_view-before-find_prop order), at the
-          // statement; the miss anchors at the DOT node from consts[d].
-          if (culebra_runtime_nc_receiver_kind(recv.data) == 2)
-            culebra_runtime_throw_error("ImmutableError",
-                                        "Shared values are immutable", line,
-                                        col);
-          auto* obj = reinterpret_cast<JitObject*>(recv.data);
-          if (!culebra_runtime_object_has(obj, key)) {
-            int64_t pk = c.consts[in.d].data;
-            culebra_runtime_compound_missing_property(pk >> 32,
-                                                      pk & 0xffffffff);
-          }
+          // The JIT's cache miss, whole: the miss anchors at the DOT node.
+          // One scratch cache entry, as PropVal's.
           JitPropIC ic{};
-          JitValue view = culebra_runtime_prop_get(TAG_OBJECT, recv.data, key,
-                                                   &ic, line, col,
-                                                   /*own_receiver=*/false);
+          auto po = Chunk::decode_prop_wr(in.d);
+          JitValue view = culebra_runtime_prop_wr(
+              reinterpret_cast<JitObject*>(recv.data), key, &ic, line, col,
+              c.consts[po.pos_const].data);
+          // A declared field's tag, checked where PropVal checks it.
+          if (po.tag != 0 && static_cast<int8_t>(view.tag) != po.tag)
+            culebra_runtime_field_type_reject(po.tag, key, line, col);
           _culebra_value_retain_impl(static_cast<int8_t>(view.tag),
                                        view.data);
           regs[in.a] = view;

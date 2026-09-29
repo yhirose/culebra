@@ -3835,6 +3835,37 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_nc_receiver_kind(
   return 0;
 }
 
+// The read half of `o.k op= v` (Op::PropWr): the executor's whole step, and
+// the JIT's cache miss. The Shared-view reject runs ahead of the existence
+// check (the interp's order) at the statement; the miss anchors at the DOT
+// node (`dot_pos`, packed). The value comes back borrowed.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_prop_wr(
+    JitObject* obj, const char* key, JitPropIC* ic, int64_t line, int64_t col,
+    int64_t dot_pos) {
+  int8_t kind =
+      culebra_runtime_nc_receiver_kind(reinterpret_cast<int64_t>(obj));
+  if (kind == 2)
+    culebra_runtime_throw_error("ImmutableError", "Shared values are immutable",
+                                line, col);
+  // An own slot of a receiver that is no view answers presence and value in
+  // one lookup, and primes the site as object_get_ic's own hit does.
+  if (kind == 0) {
+    auto idx = obj->find_slot(key);
+    if (idx != static_cast<size_t>(-1)) {
+      if (!obj->is_dict) {
+        ic->shape = obj->shape;
+        ic->offset = idx;
+      }
+      return obj->slots[idx].value;
+    }
+  }
+  if (!culebra_runtime_object_has(obj, key)) {
+    auto [dline, dcol] = _jit_unpack_pos(dot_pos);
+    culebra::throw_compound_missing_property_at(dline, dcol);
+  }
+  return culebra_runtime_object_get_ic(obj, key, ic, line, col);
+}
+
 // True if a TAG_OBJECT receiver is a builtin stdlib namespace (IO, Sys, ...).
 // A namespace answers every member itself — an unknown one is an AttributeError
 // (culebra_runtime_prop_get), never a UFCS candidate — so the builtin-receiver

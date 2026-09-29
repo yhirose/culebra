@@ -899,3 +899,47 @@ let oob = try {
   e
 }
 assert_eq(oob.kind, 'IndexError')
+
+# One compound site, warmed on one shape and then handed every other kind of
+# receiver: each gets the answer a cold site gives it.
+let bump = fn (o) {
+  o.k += 1
+  o.k
+}
+for _ in 0..3 {
+  assert_eq(bump({mut k: 1}), 2)
+}
+assert_eq(bump({a: 0, mut k: 5}), 6)
+let many = {}
+for i in 0..200 {
+  many['f{i}'] = i
+}
+many.k = 1
+assert_eq(bump(many), 2)
+let r_warm_missing = try {
+  bump({mut a: 1})
+} catch e {
+  e
+}
+assert_eq(r_warm_missing.kind, 'AttributeError')
+let r_warm_immutable = try {
+  bump({k: 1})
+} catch e {
+  e
+}
+assert_eq(r_warm_immutable.kind, 'ImmutableError')
+let r_warm_shared = try {
+  bump(Shared.new({k: 1}))
+} catch e {
+  e
+}
+assert_eq(r_warm_shared.kind, 'ImmutableError')
+# the Shared-view reject comes ahead of the existence check
+let shared_view = Shared.new({a: 1})
+let r_shared_first = try {
+  shared_view.zzz += 1
+  nil
+} catch e {
+  e
+}
+assert_eq(r_shared_first.kind, 'ImmutableError')

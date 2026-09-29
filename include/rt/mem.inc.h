@@ -976,6 +976,7 @@ inline constexpr auto object_set_uncached =
     "culebra_runtime_object_set_uncached";
 inline constexpr auto object_set_any      = "culebra_runtime_object_set_any";
 inline constexpr auto object_get_any      = "culebra_runtime_object_get_any";
+inline constexpr auto prop_wr             = "culebra_runtime_prop_wr";
 inline constexpr auto object_get_for_coalesce
     = "culebra_runtime_object_get_for_coalesce";
 inline constexpr auto register_packable   = "culebra_runtime_register_packable";
@@ -1103,8 +1104,6 @@ inline constexpr auto register_trait      = "culebra_runtime_register_trait";
 inline constexpr auto type_error          = "culebra_runtime_type_error";
 inline constexpr auto destructure_mismatch
     = "culebra_runtime_destructure_mismatch";
-inline constexpr auto compound_missing_property
-    = "culebra_runtime_compound_missing_property";
 inline constexpr auto immutable_assign
     = "culebra_runtime_immutable_assign";
 inline constexpr auto module_register

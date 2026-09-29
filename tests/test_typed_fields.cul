@@ -461,6 +461,50 @@ assert_throws('TypeError', fn () {
   forged.x
 })
 
+# --- a compound step reads the field the way a plain read does ---
+
+class Counter {
+  n: Long
+  f: Float
+  new() {
+  }
+  tick(k) {
+    for _ in 0..k {
+      self.n += 1
+      self.f += 0.5
+    }
+  }
+}
+
+let ctr = Counter()
+ctr.tick(4)
+assert_eq(ctr.n, 4)
+assert_eq(ctr.f, 2.0)
+
+fn nudge(p: Pt) {
+  p.x += 1.0
+  p.x
+}
+
+assert_eq(nudge(Pt(1.0, 2.0)), 2.0)
+
+# the forgery the plain read refuses, refused at the compound read too
+let r_forged_step = try {
+  let forged: Pt = {class: 'Pt', x: 'no', y: 0.0}
+  forged.x += 1.0
+  nil
+} catch e {
+  e
+}
+let r_forged_read = try {
+  let forged: Pt = {class: 'Pt', x: 'no', y: 0.0}
+  forged.x
+} catch e {
+  e
+}
+assert_eq(r_forged_step.kind, 'TypeError')
+assert_eq(r_forged_step.message, r_forged_read.message)
+
 # --- a write site that has already succeeded still checks the next one ---
 
 let warm = Fields()

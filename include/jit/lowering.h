@@ -3807,43 +3807,64 @@ struct Lowering {
           auto recv = load_slot(in.b);
           auto tag = j.extract_tag(recv);
           require_object_recv(tag, "pwr");
-          auto objData = j.extract_data(recv);
-          auto objPtr = b.CreateIntToPtr(objData, ptrTy);
-          // Shared-view reject ahead of the existence check (the interp's
-          // order), at the statement.
-          auto kind = j.emit_call(
-              j.module_->getOrInsertFunction(rt::nc_receiver_kind,
-                                             b.getInt8Ty(), i64Ty),
-              {objData}, "pwr.kind");
-          auto svBB = BasicBlock::Create(j.ctx_, "pwr.sverr", fn);
-          auto hasBB = BasicBlock::Create(j.ctx_, "pwr.has", fn);
-          b.CreateCondBr(b.CreateICmpEQ(kind, b.getInt8(2)), svBB, hasBB);
-          b.SetInsertPoint(svBB);
-          j.emit_throw_error("ImmutableError", "Shared values are immutable",
-                             j.current_line_, j.current_column_);
-          b.CreateUnreachable();
-          b.SetInsertPoint(hasBB);
+          auto objPtr = b.CreateIntToPtr(j.extract_data(recv), ptrTy);
           auto* nm = reinterpret_cast<const char*>(c.consts[in.c].data);
-          auto keyPtr = j.get_or_create_global_str(nm, ".vm.propname");
-          auto has = j.emit_call(
-              j.module_->getOrInsertFunction(rt::object_has, b.getInt1Ty(),
-                                             ptrTy, ptrTy),
-              {objPtr, keyPtr}, "pwr.has");
-          auto readBB = BasicBlock::Create(j.ctx_, "pwr.read", fn);
-          auto missBB = BasicBlock::Create(j.ctx_, "pwr.miss", fn);
-          b.CreateCondBr(has, readBB, missBB);
-          b.SetInsertPoint(missBB);
-          {
-            // The miss anchors at the DOT node, packed into consts[d].
-            int64_t pk = c.consts[in.d].data;
-            j.emit_call(
-                j.module_->getOrInsertFunction(rt::compound_missing_property,
-                                               b.getVoidTy(), i64Ty, i64Ty),
-                {b.getInt64(pk >> 32), b.getInt64(pk & 0xffffffff)});
-            b.CreateUnreachable();
-          }
-          b.SetInsertPoint(readBB);
-          auto view = j.emit_property_get(recv, nm);
+          auto i8Ty = b.getInt8Ty();
+          auto i32Ty = b.getInt32Ty();
+          auto po = Chunk::decode_prop_wr(in.d);
+          auto [icTy, icGlobal] = j.emit_prop_ic_global();
+          // The read's own-slot arm, for a receiver that is no view: a shape
+          // does not say that. The four view flags are adjacent bytes.
+          static_assert(offsetof(JitObject, is_shared_buffer) ==
+                            offsetof(JitObject, is_packed_view) + 1 &&
+                        offsetof(JitObject, is_shared_val) ==
+                            offsetof(JitObject, is_packed_view) + 2 &&
+                        offsetof(JitObject, is_fixed_array_view) ==
+                            offsetof(JitObject, is_packed_view) + 3);
+          auto viewFlags = b.CreateAlignedLoad(
+              i32Ty,
+              b.CreateConstInBoundsGEP1_64(
+                  i8Ty, objPtr, offsetof(JitObject, is_packed_view),
+                  "pwr.flags.p"),
+              llvm::Align(1), "pwr.flags");
+          auto shapeMatch =
+              j.emit_prop_ic_shape_match(objPtr, icTy, icGlobal).second;
+          auto hit = b.CreateAnd(b.CreateICmpEQ(viewFlags, b.getInt32(0)),
+                                 shapeMatch, "pwr.hit");
+          auto fastBB = BasicBlock::Create(j.ctx_, "pwr.fast", fn);
+          auto slowBB = BasicBlock::Create(j.ctx_, "pwr.slow", fn);
+          auto mergeBB = BasicBlock::Create(j.ctx_, "pwr.merge", fn);
+          b.CreateCondBr(hit, fastBB, slowBB);
+
+          b.SetInsertPoint(fastBB);
+          auto [fastTag, fastData] =
+              j.emit_prop_ic_own_slot(objPtr, icTy, icGlobal);
+          b.CreateBr(mergeBB);
+          auto fastEnd = b.GetInsertBlock();
+
+          b.SetInsertPoint(slowBB);
+          auto slowView = j.emit_value_call(
+              j.module_->getOrInsertFunction(rt::prop_wr, j.valueType_, ptrTy,
+                                             ptrTy, ptrTy, i64Ty, i64Ty, i64Ty),
+              {objPtr, j.get_or_create_global_str(nm, ".vm.propname"),
+               icGlobal, j.current_line_val(), j.current_column_val(),
+               b.getInt64(c.consts[po.pos_const].data)},
+              "pwr.slow");
+          auto slowTag = j.extract_tag(slowView);
+          auto slowData = j.extract_data(slowView);
+          b.CreateBr(mergeBB);
+          auto slowEnd = b.GetInsertBlock();
+
+          b.SetInsertPoint(mergeBB);
+          auto tagPhi = b.CreatePHI(i8Ty, 2, "pwr.tag");
+          tagPhi->addIncoming(fastTag, fastEnd);
+          tagPhi->addIncoming(slowTag, slowEnd);
+          auto dataPhi = b.CreatePHI(i64Ty, 2, "pwr.data");
+          dataPhi->addIncoming(fastData, fastEnd);
+          dataPhi->addIncoming(slowData, slowEnd);
+          llvm::Value* view = j.make_value(tagPhi, dataPhi);
+          // PropVal's declared-tag guard: the retain then folds away.
+          if (po.tag != 0) view = j.emit_field_type_guard(view, po.tag, nm);
           j.emit_value_retain(view);
           b.CreateStore(view, slots[in.a]);
           break;

@@ -221,6 +221,10 @@ The heap objects a VM needs are the runtime's existing ones:
   (`JitPropSetIC`) settles a warm update in one call,
   `object_set_update`, which answers false for a transition or a
   refusal; the site then calls `object_set_fast`, which words the error.
+  The read half of a compound step (`o.k op= v`, `Op::PropWr`) has the
+  read site's own-slot arm, taken when the receiver also carries none of
+  the four view flags (a Shared, packed, buffer or fixed-array view);
+  its miss is `prop_wr`, which is the executor's whole step.
 - `JitArray`, `JitSet`, tuples, `JitTensor`.
 
 Objects are allocated from a per-`Runtime` slab allocator
@@ -1207,6 +1211,8 @@ a parameter or a local whose annotation names the class, `self` inside
 that class's own members, or the next step of a chain through a
 class-typed field (`Compiler::declared_read_tag`,
 `culebra::class_field_types`, `culebra::class_field_classes`).
+`Op::PropWr`, the read of `self.n += 1`, carries the same answer in its
+`d` beside the const of its DOT position (`Chunk::PropWrOperand`).
 
 What the lowering does with it is the whole point. The read produces the
 slot's payload with the tag as a *constant*, so everything a tagged value

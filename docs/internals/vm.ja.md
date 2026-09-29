@@ -221,6 +221,10 @@ VMが必要とするヒープオブジェクトはランタイムの既存のも
   （`JitPropSetIC`）は温まった更新を呼び出し1つ、`object_set_update`で
   済ませる。これはtransitionや拒否にはfalseを返し、サイトはそのとき
   `object_set_fast`を呼んでエラーを組み立てさせる。
+  複合代入（`o.k op= v`、`Op::PropWr`）の読みの側は、読みサイトの自分の
+  slotの枝を持つ。受け手が4つのview flag（Shared・packed・buffer・
+  fixed-arrayのview）のどれも持たないときだけその枝を通る。missは
+  `prop_wr`が受け持ち、executorはこれ1つで済ませる。
 - `JitArray`、`JitSet`、タプル、`JitTensor`。
 
 オブジェクトはper-`Runtime`のスラブアロケータ（`rt_slab.h`）から
@@ -1177,6 +1181,8 @@ namespace closureのadapterが届いたであろうhelperへ1つのdispatch
 そのクラス自身のメンバ内の`self`、あるいはクラス型fieldを辿った次の段で
 ある（`Compiler::declared_read_tag`、`culebra::class_field_types`、
 `culebra::class_field_classes`）。
+`self.n += 1`の読みである`Op::PropWr`は、同じ答えを`d`で、DOTの位置を
+持つconstの番号と並べて運ぶ（`Chunk::PropWrOperand`）。
 
 loweringがそれで何をするかが要点である。読みはslotのペイロードを
 **定数**のtagとともに作るので、tag付きの値が負っていたものが全て

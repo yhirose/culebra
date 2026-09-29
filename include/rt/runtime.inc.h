@@ -678,11 +678,6 @@ culebra_runtime_destructure_mismatch(int64_t line, int64_t col) {
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
-culebra_runtime_compound_missing_property(int64_t line, int64_t col) {
-  culebra::throw_compound_missing_property_at(line, col);
-}
-
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
 culebra_runtime_immutable_assign(const char* name, int64_t line, int64_t col) {
   culebra::throw_immutable_assign_at(name ? name : "", line, col);
 }
