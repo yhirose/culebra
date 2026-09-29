@@ -1,0 +1,123 @@
+# Audio.Capture: an instrument tuner.
+# The pitch of a sound is how often its wave repeats. Autocorrelation finds
+# that: it compares the last block of samples with a copy of itself shifted
+# by each candidate period, and the shift that matches best is the period.
+# Hum or play one note; the display shows its name and how many cents (a
+# hundredth of a semitone) it is above or below. Esc quits.
+#
+#   culebra examples/audio/tuner.cul
+
+let RATE = 8000
+let N = 512        # samples examined (64 ms)
+let LOW_HZ = 70.0  # the range searched: a bass's low E to a high whistle
+let HIGH_HZ = 1000.0
+let QUIET = 0.01  # below this loudness there is no note to name
+
+let W = 320
+let H = 120
+let BG = Canvas.rgba(30, 30, 40)
+let INK = Canvas.rgba(240, 240, 235)
+let LABEL = Canvas.rgba(200, 200, 210)
+let TRACK = Canvas.rgba(55, 55, 70)
+let IN_TUNE = Canvas.rgba(90, 210, 130)
+let OFF = Canvas.rgba(250, 200, 90)
+
+let NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+
+let mic = Audio.Capture.new(RATE)
+mic.start()
+if !mic.ready() {
+  println("no microphone available")
+  Sys.exit(1)
+}
+
+# The frequency of `samples`, or nil when it is too quiet or has no clear
+# period. Every lag from the shortest period (HIGH_HZ) to the longest is
+# scored, and the answer is the first one that scores nearly as well as the
+# best: a wave also matches itself at twice and three times its period, and
+# those must not win over the true one.
+fn pitch_of(samples) {
+  let energy = samples.reduce(0.0, |a, x| a + x * x)
+  return nil if Math.sqrt(energy / N) < QUIET
+
+  let min_lag = Math.floor(RATE / HIGH_HZ)
+  let max_lag = Math.ceil(RATE / LOW_HZ)
+  let scores = range(min_lag, max_lag + 1).map(fn (lag) {
+    mut sum = 0.0
+    for i in range(N - lag) {
+      sum += samples[i] * samples[i + lag]
+    }
+    # Normalised by the overlap, so a longer lag is not penalised for having
+    # fewer terms to add up.
+    sum / (N - lag)
+  }).collect()
+  let best = scores.max()
+  # A real note matches itself at its period nearly as well as at lag 0.
+  return nil if best < 0.3 * energy / N
+
+  mut k = 1
+  while k < scores.size() - 1 {
+    let is_peak = scores[k] >= scores[k - 1] && scores[k] > scores[k + 1]
+    break if is_peak && scores[k] >= 0.9 * best
+    k += 1
+  }
+  return nil if k >= scores.size() - 1
+  # The true peak lies between whole samples: the parabola through the score
+  # and its two neighbours puts it there.
+  let y0 = scores[k - 1]
+  let y2 = scores[k + 1]
+  let bend = y0 - 2.0 * scores[k] + y2
+  let shift = bend == 0.0 ? 0.0 : 0.5 * (y0 - y2) / bend
+  to_float(RATE) / (min_lag + k + shift)
+}
+
+# The nearest note to `hz` and how many cents off it is. Notes are numbered
+# as in MIDI: A4 = 69, and octave 4 starts at C4 = 60.
+fn note_of(hz) {
+  let semis = 12.0 * Math.log(hz / 440.0) / Math.log(2.0)
+  let nearest = Math.round(semis)
+  let midi = 69 + nearest
+  (
+    NAMES[midi % 12] + to_string(midi / 12 - 1),
+    Math.round((semis - nearest) * 100.0),
+  )
+}
+
+mut heard = repeat(N, 0.0)
+mut shown = nil
+
+Canvas.title("tuner")
+Canvas.run(W, H, fn () {
+  for k in Canvas.key_queue() {
+    Canvas.quit() if k == "escape"
+  }
+
+  let block = mic.read()
+  if !block.empty() {
+    let all = heard + block
+    heard = all.slice(all.size() - N, all.size())
+    let hz = pitch_of(heard)
+    shown = hz == nil ? nil : (hz, note_of(hz))
+  }
+
+  Canvas.clear(BG)
+  Canvas.rect(20, 80, W - 40, 6, TRACK)
+  Canvas.rect(W / 2 - 1, 74, 2, 18, LABEL)
+  if shown != nil {
+    let (hz, (name, cents)) = shown
+    let tuned = Math.abs(cents) <= 5
+    Canvas.text(name, 20, 24, tuned ? IN_TUNE : INK)
+    Canvas.text(
+      "{Math.round(hz * 10.0) / 10.0} Hz  {cents >= 0 ? "+" : ""}{cents} cents",
+      20,
+      48,
+      LABEL,
+    )
+    let x = W / 2 + Math.round(Math.clamp(cents, -50, 50) / 50.0 * (W / 2 - 20))
+    Canvas.rect(x - 3, 76, 6, 14, tuned ? IN_TUNE : OFF)
+  } else {
+    Canvas.text("listening…", 20, 24, LABEL)
+  }
+  Canvas.text("Esc quits", 20, 104, LABEL)
+  true
+})

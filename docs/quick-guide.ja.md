@@ -792,7 +792,7 @@ inspect(match 9 {
 
 **PriorityQueue** — PriorityQueue.new(*, key: Function | Nil = nil, reverse: Bool = false); pq.push(x); pq.pop() -> Any; pq.peek() -> Any; pq.size(); pq.empty(); to_string(pq) -> String
 
-**Audio** — Audio.available() -> Bool; sound.play(); sound.stop(); sound.playing() -> Bool; sound.volume(v); sound.pitch(p); sound.pan(p); music.play(); music.stop(); music.pause(); music.resume(); music.seek(seconds); music.playing() -> Bool; music.volume(v); music.pitch(p); music.pan(p); pcm.ready() -> Bool; pcm.needed() -> Long; pcm.push(samples: Array) -> Long; pcm.submit() -> Long; pcm.latency() -> Float; pcm.play(); stop(); pause(); resume(); playing() -> Bool; pcm.volume(v); pcm.pitch(p); pcm.pan(p)
+**Audio** — Audio.available() -> Bool; sound.play(); sound.stop(); sound.playing() -> Bool; sound.volume(v); sound.pitch(p); sound.pan(p); music.play(); music.stop(); music.pause(); music.resume(); music.seek(seconds); music.playing() -> Bool; music.volume(v); music.pitch(p); music.pan(p); pcm.ready() -> Bool; pcm.needed() -> Long; pcm.push(samples: Array) -> Long; pcm.submit() -> Long; pcm.latency() -> Float; pcm.play(); stop(); pause(); resume(); playing() -> Bool; pcm.volume(v); pcm.pitch(p); pcm.pan(p); Audio.capture_available() -> Bool; mic.ready() -> Bool; mic.start(); running() -> Bool; mic.waiting() -> Long; mic.read(frames = nil) -> Array
 
 ### 一覧ではなく章を読むもの
 

@@ -1,0 +1,65 @@
+# Audio.Capture: a microphone level meter.
+# A capture hands over what the microphone heard since the last read, as
+# numbers in -1.0..1.0. The loudness of a block is the root mean square of
+# those numbers, drawn here on a decibel scale with a slow-falling peak mark.
+# Esc quits.
+#
+#   culebra examples/audio/volume_meter.cul
+
+let W = 320
+let H = 120
+let FLOOR_DB = -60.0  # the bar's left end; quieter is drawn as empty
+
+let BG = Canvas.rgba(30, 30, 40)
+let TRACK = Canvas.rgba(55, 55, 70)
+let LEVEL = Canvas.rgba(90, 210, 130)
+let LOUD = Canvas.rgba(240, 90, 80)
+let PEAK = Canvas.rgba(250, 200, 90)
+let LABEL = Canvas.rgba(200, 200, 210)
+
+let mic = Audio.Capture.new(16000)
+mic.start()
+if !mic.ready() {
+  println("no microphone available")
+  Sys.exit(1)
+}
+
+fn rms(block) {
+  Math.sqrt(block.reduce(0.0, |a, x| a + x * x) / block.size())
+}
+
+fn to_db(x) {
+  x > 0.0 ? 20.0 * Math.log(x) / Math.log(10.0) : FLOOR_DB
+}
+
+# A level in dB as a fraction of the bar's width.
+fn fraction(db) {
+  Math.clamp((db - FLOOR_DB) / -FLOOR_DB, 0.0, 1.0)
+}
+
+mut db = FLOOR_DB
+mut peak = FLOOR_DB
+
+Canvas.title("volume meter")
+Canvas.run(W, H, fn () {
+  for k in Canvas.key_queue() {
+    Canvas.quit() if k == "escape"
+  }
+
+  let block = mic.read()
+  if !block.empty() {
+    db = to_db(rms(block))
+    peak = Math.max(db, peak - 0.6)  # holds, then falls ~36 dB a second
+  }
+
+  let bar_w = W - 40
+  Canvas.clear(BG)
+  Canvas.rect(20, 40, bar_w, 24, TRACK)
+  let w = Math.round(fraction(db) * bar_w)
+  Canvas.rect(20, 40, w, 24, db > -6.0 ? LOUD : LEVEL)
+  let px = 20 + Math.round(fraction(peak) * bar_w)
+  Canvas.rect(px - 1, 36, 2, 32, PEAK)
+  Canvas.text("{Math.round(db)} dB", 20, 80, LABEL)
+  Canvas.text("Esc quits", 20, 100, LABEL)
+  true
+})

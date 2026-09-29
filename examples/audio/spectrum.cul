@@ -1,0 +1,123 @@
+# Audio.Capture: a spectrum analyser.
+# The last N samples heard go through a fast Fourier transform, which splits
+# the sound into how much energy each frequency carries. The bars are those
+# energies, spaced evenly in pitch (an octave is the same width anywhere) and
+# scaled in decibels. Esc quits.
+#
+#   culebra examples/audio/spectrum.cul
+
+let RATE = 16000
+let N = 1024  # samples per transform; a power of two
+let BARS = 48
+let LOW = 60.0     # Hz at the first bar's left edge
+let HIGH = 7000.0  # Hz at the last bar's right edge
+let FLOOR_DB = -70.0
+
+let W = 320
+let H = 160
+let BG = Canvas.rgba(30, 30, 40)
+let BAR = Canvas.rgba(90, 210, 130)
+let LABEL = Canvas.rgba(200, 200, 210)
+
+let mic = Audio.Capture.new(RATE)
+mic.start()
+if !mic.ready() {
+  println("no microphone available")
+  Sys.exit(1)
+}
+
+# Hann window: fades the block's ends so a wave that does not fit N samples
+# exactly does not smear across every bin.
+let WINDOW = iota(N).map(|i| 0.5 - 0.5 * Math.cos(2.0 * Math.pi * i / (N - 1)))
+
+# Position of each sample after the transform's bit-reversal shuffle.
+fn bit_reversed(n) {
+  let bits = Math.round(Math.log(n) / Math.log(2.0))
+  iota(n).map(fn (i) {
+    mut r = 0
+    mut x = i
+    for _ in range(bits) {
+      r = r << 1 | x & 1
+      x = x >> 1
+    }
+    r
+  })
+}
+let ORDER = bit_reversed(N)
+
+# The rotations the butterflies multiply by, e^(-2πij/N), computed once:
+# a stage of size `size` uses every (N / size)th one.
+let TW_RE = iota(N / 2).map(|j| Math.cos(-2.0 * Math.pi * j / N))
+let TW_IM = iota(N / 2).map(|j| Math.sin(-2.0 * Math.pi * j / N))
+
+# The magnitude of each frequency bin 0..N/2, by an in-place radix-2 FFT.
+fn spectrum(samples) {
+  mut re = ORDER.map(|i| samples[i] * WINDOW[i])
+  mut im = repeat(N, 0.0)
+  mut size = 2
+  while size <= N {
+    let half = size / 2
+    let stride = N / size
+    for start in range(N, step: size) {
+      for k in range(half) {
+        let wr = TW_RE[k * stride]
+        let wi = TW_IM[k * stride]
+        let a = start + k
+        let b = a + half
+        let tr = re[b] * wr - im[b] * wi
+        let ti = re[b] * wi + im[b] * wr
+        re[b] = re[a] - tr
+        im[b] = im[a] - ti
+        re[a] = re[a] + tr
+        im[a] = im[a] + ti
+      }
+    }
+    size *= 2
+  }
+  iota(N / 2).map(|i| Math.sqrt(re[i] * re[i] + im[i] * im[i]) / (N / 4))
+}
+
+# Bar i covers the bins between two frequencies LOW..HIGH apart evenly in log
+# scale; its height is the loudest bin among them.
+let EDGES = iota(BARS + 1).map(fn (i) {
+  let hz = LOW * (HIGH / LOW) ** (to_float(i) / BARS)
+  Math.clamp(Math.round(hz * N / RATE), 1, N / 2 - 1)
+})
+
+let LN10 = Math.log(10.0)
+
+# Each bar's height in pixels for one spectrum.
+fn bar_heights(mags) {
+  iota(BARS).map(fn (i) {
+    let lo = EDGES[i]
+    let m = mags.slice(lo, Math.max(EDGES[i + 1], lo + 1)).max()
+    let db = m > 0.0 ? 20.0 * Math.log(m) / LN10 : FLOOR_DB
+    Math.round(Math.clamp((db - FLOOR_DB) / -FLOOR_DB, 0.0, 1.0) * (H - 24))
+  })
+}
+
+mut heard = repeat(N, 0.0)
+mut heights = repeat(BARS, 0)
+
+Canvas.title("spectrum")
+Canvas.run(W, H, fn () {
+  for k in Canvas.key_queue() {
+    Canvas.quit() if k == "escape"
+  }
+
+  let block = mic.read()
+  if !block.empty() {
+    let all = heard + block
+    heard = all.slice(all.size() - N, all.size())
+    heights = bar_heights(spectrum(heard))  # only when something new arrived
+  }
+
+  Canvas.clear(BG)
+  let bw = W / BARS
+  for i, h in heights.enumerate() {
+    Canvas.rect(i * bw, H - 16 - h, bw - 1, h, BAR)
+  }
+  Canvas.text("{Math.round(LOW)} Hz", 2, H - 12, LABEL)
+  Canvas.text("{Math.round(HIGH)} Hz", W - 56, H - 12, LABEL)
+  true
+})

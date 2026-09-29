@@ -1057,3 +1057,9 @@ playing() -> Bool
 pcm.volume(v)
 pcm.pitch(p)
 pcm.pan(p)
+Audio.capture_available() -> Bool
+mic.ready() -> Bool
+mic.start()
+running() -> Bool
+mic.waiting() -> Long
+mic.read(frames = nil) -> Array

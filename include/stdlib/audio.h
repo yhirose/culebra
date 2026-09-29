@@ -1,8 +1,8 @@
 #pragma once
 
 // The Audio namespace's backend choke: the one owner of the sound device and
-// of everything that plays through it (tone, Sound, Music, PCM). The
-// script-facing surface is src/preambles/audio.cul and the natives are in
+// of everything that plays through it (tone, Sound, Music, PCM) or listens on
+// the microphone (Capture). The script-facing surface is src/preambles/audio.cul and the natives are in
 // stdlib/bindings.h; this header picks the backend.
 //
 //   native (CULEBRA_AUDIO_NATIVE)   raylib's audio module built standalone
@@ -15,7 +15,8 @@
 //   anything else                   silent, as a machine with no device is
 //
 // Silent means what a native build answers on a machine with no audio device:
-// nothing plays, and a PCM's block counts pushes all the same.
+// nothing plays, a PCM's block counts pushes all the same, and a Capture
+// hears nothing.
 
 #include <stdlib/pcm_block.h>
 
@@ -23,6 +24,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <unordered_map>
+#include <vector>
 
 // The table above, decided once.
 #if defined(__EMSCRIPTEN__)
@@ -212,6 +214,18 @@ bool pcm_playing(int64_t id);
 void pcm_volume(int64_t id, double v);
 void pcm_pitch(int64_t id, double p);
 void pcm_pan(int64_t id, double p);
+bool capture_present();
+// `rate` and `channels` arrive checked (rt::pcm_count / pcm_channels).
+void capture_new(int64_t id, int rate, int channels);
+void capture_free(int64_t id);
+bool capture_ready(int64_t id);
+void capture_start(int64_t id);
+void capture_stop(int64_t id);
+bool capture_running(int64_t id);
+int64_t capture_waiting(int64_t id);
+// Up to `frames` waiting frames (all of them when negative), interleaved into
+// `out`, which is cleared first.
+void capture_read(int64_t id, int64_t frames, std::vector<float>& out);
 
 #endif
 
@@ -291,6 +305,23 @@ CULEBRA_RT_AUDIO_LINKAGE bool pcm_playing(int64_t) { return false; }
 CULEBRA_RT_AUDIO_LINKAGE void pcm_volume(int64_t, double) {}
 CULEBRA_RT_AUDIO_LINKAGE void pcm_pitch(int64_t, double) {}
 CULEBRA_RT_AUDIO_LINKAGE void pcm_pan(int64_t, double) {}
+#endif
+
+// Capture has no browser backend yet, so the browser is silent here too: no
+// device, and a read finds nothing.
+#if !defined(CULEBRA_AUDIO_DEVICE)
+CULEBRA_RT_AUDIO_LINKAGE bool capture_present() { return false; }
+CULEBRA_RT_AUDIO_LINKAGE void capture_new(int64_t, int, int) {}
+CULEBRA_RT_AUDIO_LINKAGE void capture_free(int64_t) {}
+CULEBRA_RT_AUDIO_LINKAGE bool capture_ready(int64_t) { return false; }
+CULEBRA_RT_AUDIO_LINKAGE void capture_start(int64_t) {}
+CULEBRA_RT_AUDIO_LINKAGE void capture_stop(int64_t) {}
+CULEBRA_RT_AUDIO_LINKAGE bool capture_running(int64_t) { return false; }
+CULEBRA_RT_AUDIO_LINKAGE int64_t capture_waiting(int64_t) { return 0; }
+CULEBRA_RT_AUDIO_LINKAGE void capture_read(int64_t, int64_t,
+                                           std::vector<float>& out) {
+  out.clear();
+}
 #endif
 
 #undef CULEBRA_RT_AUDIO_LINKAGE

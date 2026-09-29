@@ -5076,7 +5076,7 @@ inline JitValue _ns_canvas_title(JitValue* a, int64_t) {
   return _ns_adapt::v_nil();
 }
 // --- Audio: the natives behind src/preambles/audio.cul ----------------------
-// Every handle method is one of three shapes, so those are one template each.
+// Most handle methods are one of four shapes, so those are one template each.
 // The bytes-taking constructors sniff the format here, before any backend, so
 // a bad file is the same ValueError on every one (stdlib/audio.h).
 template <void (*F)(int64_t)>
@@ -5092,6 +5092,10 @@ template <void (*F)(int64_t, double)>
 inline JitValue _ns_audio_set(JitValue* a, int64_t) {
   F(_ns_adapt::take_long(a[0]), _ns_adapt::take_double(a[1]));
   return _ns_adapt::v_nil();
+}
+template <int64_t (*F)(int64_t)>
+inline JitValue _ns_audio_count(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(F(_ns_adapt::take_long(a[0])));
 }
 inline JitValue _ns_audio_available(JitValue*, int64_t) {
   return _ns_adapt::v_bool(culebra::_audio_detail::available());
@@ -5157,17 +5161,33 @@ inline JitValue _ns_audio_pcm_push(JitValue* a, int64_t) {
       _ns_adapt::take_long(a[0]), scratch.data(),
       static_cast<int64_t>(scratch.size())));
 }
-inline JitValue _ns_audio_pcm_needed(JitValue* a, int64_t) {
-  return _ns_adapt::v_long(
-      culebra::_audio_detail::pcm_needed(_ns_adapt::take_long(a[0])));
-}
-inline JitValue _ns_audio_pcm_submit(JitValue* a, int64_t) {
-  return _ns_adapt::v_long(
-      culebra::_audio_detail::pcm_submit(_ns_adapt::take_long(a[0])));
-}
 inline JitValue _ns_audio_pcm_latency(JitValue* a, int64_t) {
   return _ns_adapt::v_float(
       culebra::_audio_detail::pcm_latency(_ns_adapt::take_long(a[0])));
+}
+inline JitValue _ns_audio_capture_present(JitValue*, int64_t) {
+  return _ns_adapt::v_bool(culebra::_audio_detail::capture_present());
+}
+// Checked here, before any backend, by the rules a PCM's arguments follow.
+inline JitValue _ns_audio_capture_new(JitValue* a, int64_t) {
+  namespace ad = culebra::_audio_detail;
+  int rate = culebra::rt::pcm_count(_ns_adapt::take_long(a[0]),
+                                    "Audio.Capture: rate");
+  int channels = culebra::rt::pcm_channels(_ns_adapt::take_long(a[1]));
+  int64_t id = ad::alloc_id();
+  ad::capture_new(id, rate, channels);
+  return _ns_adapt::v_long(id);
+}
+inline JitValue _ns_audio_capture_read(JitValue* a, int64_t) {
+  thread_local std::vector<float> scratch;  // a block a frame: no allocation
+  culebra::_audio_detail::capture_read(_ns_adapt::take_long(a[0]),
+                                       _ns_adapt::take_long(a[1]), scratch);
+  auto* r = _jit_array_new_reserved(static_cast<int64_t>(scratch.size()),
+                                    "Audio.Capture.read() result");
+  for (float f : scratch)
+    culebra_runtime_array_push(r, TAG_FLOAT,
+                               _culebra_double_to_bits(static_cast<double>(f)));
+  return _ns_adapt::v_array(r);
 }
 
 inline JitValue _ns_canvas_width(JitValue*, int64_t) {
@@ -9750,9 +9770,9 @@ inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "pcm_new",        3, &_ns_audio_pcm_new},
   {"_Audio", "pcm_free",       1, &_ns_audio_on<culebra::_audio_detail::pcm_free>},
   {"_Audio", "pcm_ready",      1, &_ns_audio_ask<culebra::_audio_detail::pcm_ready>},
-  {"_Audio", "pcm_needed",     1, &_ns_audio_pcm_needed},
+  {"_Audio", "pcm_needed",     1, &_ns_audio_count<culebra::_audio_detail::pcm_needed>},
   {"_Audio", "pcm_push",       2, &_ns_audio_pcm_push},
-  {"_Audio", "pcm_submit",     1, &_ns_audio_pcm_submit},
+  {"_Audio", "pcm_submit",     1, &_ns_audio_count<culebra::_audio_detail::pcm_submit>},
   {"_Audio", "pcm_latency",    1, &_ns_audio_pcm_latency},
   {"_Audio", "pcm_play",       1, &_ns_audio_on<culebra::_audio_detail::pcm_play>},
   {"_Audio", "pcm_stop",       1, &_ns_audio_on<culebra::_audio_detail::pcm_stop>},
@@ -9762,6 +9782,15 @@ inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "pcm_volume",     2, &_ns_audio_set<culebra::_audio_detail::pcm_volume>},
   {"_Audio", "pcm_pitch",      2, &_ns_audio_set<culebra::_audio_detail::pcm_pitch>},
   {"_Audio", "pcm_pan",        2, &_ns_audio_set<culebra::_audio_detail::pcm_pan>},
+  {"_Audio", "capture_present", 0, &_ns_audio_capture_present},
+  {"_Audio", "capture_new",    2, &_ns_audio_capture_new},
+  {"_Audio", "capture_free",   1, &_ns_audio_on<culebra::_audio_detail::capture_free>},
+  {"_Audio", "capture_ready",  1, &_ns_audio_ask<culebra::_audio_detail::capture_ready>},
+  {"_Audio", "capture_start",  1, &_ns_audio_on<culebra::_audio_detail::capture_start>},
+  {"_Audio", "capture_stop",   1, &_ns_audio_on<culebra::_audio_detail::capture_stop>},
+  {"_Audio", "capture_running", 1, &_ns_audio_ask<culebra::_audio_detail::capture_running>},
+  {"_Audio", "capture_waiting", 1, &_ns_audio_count<culebra::_audio_detail::capture_waiting>},
+  {"_Audio", "capture_read",   2, &_ns_audio_capture_read},
 };
 inline const NsMethod kNsRows_Canvas_native[] = {
   {"_Canvas", "init",            2,  &_ns_canvas_init},

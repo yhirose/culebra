@@ -1437,6 +1437,24 @@ inline constexpr CanonParam kCanonParams_Audio_native[] = {
   // 56: _Audio.pcm_pan
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
   {"p", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
+  // 58: _Audio.capture_new
+  {"rate", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"channels", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 60: _Audio.capture_free
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 61: _Audio.capture_ready
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 62: _Audio.capture_start
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 63: _Audio.capture_stop
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 64: _Audio.capture_running
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 65: _Audio.capture_waiting
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 66: _Audio.capture_read
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"frames", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonSigs_Audio_native[] = {
@@ -1476,6 +1494,15 @@ inline constexpr CanonSig kCanonSigs_Audio_native[] = {
   {"_Audio", "", "pcm_volume", kCanonParams_Audio_native + 52, 2, "", 2, 2, false, -1, -1, -1},
   {"_Audio", "", "pcm_pitch", kCanonParams_Audio_native + 54, 2, "", 2, 2, false, -1, -1, -1},
   {"_Audio", "", "pcm_pan", kCanonParams_Audio_native + 56, 2, "", 2, 2, false, -1, -1, -1},
+  {"_Audio", "", "capture_present", nullptr, 0, "Bool", 0, 0, false, -1, -1, -1},
+  {"_Audio", "", "capture_new", kCanonParams_Audio_native + 58, 2, "Long", 2, 2, false, -1, -1, -1},
+  {"_Audio", "", "capture_free", kCanonParams_Audio_native + 60, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "capture_ready", kCanonParams_Audio_native + 61, 1, "Bool", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "capture_start", kCanonParams_Audio_native + 62, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "capture_stop", kCanonParams_Audio_native + 63, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "capture_running", kCanonParams_Audio_native + 64, 1, "Bool", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "capture_waiting", kCanonParams_Audio_native + 65, 1, "Long", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "capture_read", kCanonParams_Audio_native + 66, 2, "Array", 2, 2, false, -1, -1, -1},
 };
 
 inline constexpr CanonParam kCanonParams_Bare[] = {

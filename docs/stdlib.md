@@ -79,7 +79,7 @@ Conventions used below:
 37. [`StateMachine`](#37-statemachine) — hierarchical state machine, with a text DSL
 38. [`FST`](#38-fst) — compiled read-only dictionary: prefix, predictive and fuzzy search
 39. [`Search`](#39-search) — full-text index over your own documents, ranked
-40. [`Audio`](#40-audio) — sound for any program, with or without a window: WASM-4 tones, samples, streamed music, synthesised PCM
+40. [`Audio`](#40-audio) — sound for any program, with or without a window: WASM-4 tones, samples, streamed music, synthesised PCM, the microphone
 41. [Design notes](#41-design-notes)
 42. [Not included (yet)](#42-not-included-yet)
 
@@ -125,7 +125,7 @@ Conventions used below:
 | Share variable-length read-only data across threads (no copy) | [§12 Shared](#shared--immutable-values-shared-by-reference) — `Shared.new(value)` |
 | Handle Ctrl+C / SIGINT gracefully | [§12 Signal](#signal--signalnotify--signalreset) — `Signal.notify(tx)` / `Signal.reset()` |
 | Desktop GUI (native WebView + local server) | [§30 Desktop](#30-desktop--webview) — `Desktop.run({title, assets, routes})` |
-| Play a tone, a sound effect or music; synthesise audio | [§40 Audio](#40-audio) — `Audio.tone(440, 10)` / `Audio.Sound.new(bytes).play()` / `Audio.Music.new(bytes)` / `Audio.PCM.new(44100, 1, 1024)` |
+| Play a tone, a sound effect or music; synthesise audio | [§40 Audio](#40-audio) — `Audio.tone(440, 10)` / `Audio.Sound.new(bytes).play()` / `Audio.Music.new(bytes)` / `Audio.PCM.new(44100, 1, 1024)` / `Audio.Capture.new(44100)` |
 | Heap introspection / leak checks | [§7 GC](#gc--heap-introspection) — `GC.stat()` → `{live_objects, rc_objects, heap_bytes}` |
 | 2D/3D vector math (dot, length, normalize, distance) | [§31 `Vector2`](#31-vector2) / [§32 `Vector3`](#32-vector3) |
 | FIFO queue, sliding window, front+back stack | [§33 `Deque`](#33-deque) — `Deque.new()` — `push_back`/`pop_front` |
@@ -8062,7 +8062,7 @@ built it. Give each isolate its own.
 ## 40. `Audio`
 
 Sound for any program: WASM-4-style tones, one-shot samples, streamed music,
-and PCM the script synthesises. `Audio` owns the sound device on its own and
+PCM the script synthesises, and the microphone. `Audio` owns the sound device on its own and
 needs no window, so it works the same whether a program draws with `Canvas`,
 with `Scene`, or not at all. The device opens on first use; a program that
 never plays anything never opens it.
@@ -8220,6 +8220,45 @@ At 60 fps a 44.1 kHz stream wants 735 frames a frame; producing and pushing a
 whole block at once (rather than one call per sample) is what keeps this
 affordable in a script's own per-frame budget. A `PCM` is silent in the
 browser, where it answers as a machine with no audio device does.
+
+### Capture
+
+`Audio.Capture` is the microphone, and the mirror of `PCM`: the runtime
+records into a ring holding the last second, and the script drains it a block
+at a time. It needs no output device and no window.
+`Audio.Capture.new(rate = 44100, channels = 1)` opens the default input at
+`rate` Hz (a request the platform meets by resampling), 1 or 2 channels,
+taking both as `PCM` does: a `rate` below 1 is 1, and one past 2^31 − 1 raises
+`ValueError` (`Audio.Capture: rate is too large`). A new capture is stopped. Recording starts at `start()` and
+frames the script does not read in time are dropped from the newest end.
+
+A machine may have no microphone, or refuse the program one (a permission
+the operating system asks the user for, on macOS and Windows). Neither is an
+error: `ready()` is `false`, nothing ever arrives, and the first attempt prints
+one warning. The same holds in any run with `CULEBRA_AUDIO` set to `off` or
+`0`, and in the browser, which has no capture yet.
+
+| Function / method | Effect |
+| --- | --- |
+| `Audio.capture_available() -> Bool` | whether the platform reports an input device (`false` when `CULEBRA_AUDIO` is `off`) |
+| `mic.ready() -> Bool` | `false` when no input device could be opened: the methods below still answer as they say |
+| `mic.start()` / `stop()` / `running() -> Bool` | recording control; `stop()` keeps what is already in the ring |
+| `mic.waiting() -> Long` | frames in the ring, ready to read |
+| `mic.read(frames = nil) -> Array` | take up to `frames` frames out of the ring (all that are waiting when omitted) as `Float`s in `-1.0..1.0`, stereo interleaved L,R, so `frames * channels` values at most; empty when nothing is waiting; a `frames` that is not a `Long` raises `TypeError` |
+
+```culebra
+# doctest: skip
+let mic = Audio.Capture.new(44100)
+mic.start()
+loop {
+  let block = mic.read()
+  if !block.empty() {
+    let peak = block.map(|x| Math.abs(x)).max()
+    println("#".repeat(Math.round(peak * 60)))
+  }
+  Time.sleep(0.02)
+}
+```
 
 ## 41. Design notes
 

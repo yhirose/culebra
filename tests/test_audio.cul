@@ -118,6 +118,37 @@ assert_eq(stereo.push([0.4, 0.4, 0.5]), 1)  // a trailing half frame is not take
 // Each handle is its own stream: filling one leaves another empty.
 assert_eq(Audio.PCM.new(44100, 2, 8).push(iota(16).map(|_| 0.0)), 8)
 
+// Capture: the microphone. The suite has no device, so a Capture is a handle
+// whose reads find nothing; what reaches a device branches on ready().
+assert_eq(type_of(Audio.capture_available()), "Bool")
+let mic = Audio.Capture.new()
+assert_eq(mic.running(), false)
+assert_eq(mic.waiting(), 0)
+assert_eq(mic.read(0), [])
+if !mic.ready() {
+  mic.start()
+  assert_eq(mic.running(), false)
+  assert_eq(mic.read(), [])
+  assert_eq(mic.read(64), [])
+}
+mic.start()
+mic.stop()
+assert_eq(mic.running(), false)
+assert_eq(Audio.Capture.new(16000, 2).read(), [])
+// Its arguments follow PCM's rules, and raise the same way.
+let too_fast = try {
+  Audio.Capture.new(1 << 40)
+} catch e {
+  e
+}
+assert_eq((too_fast.kind, too_fast.message.contains("Audio.Capture: rate")), ("ValueError", true))
+assert_throws("TypeError", fn () {
+  Audio.Capture.new("44100")
+})
+assert_throws("TypeError", fn () {
+  mic.read("all")
+})
+
 // Closed like the C++ namespaces: an unknown member raises.
 assert_throws("AttributeError", fn () {
   Audio.typo

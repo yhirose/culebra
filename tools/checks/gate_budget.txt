@@ -57,7 +57,9 @@ ctest.entries 34
 # without namespaces, text and stringify: seven blocks, in en and ja.
 # 982 since the Kauai spec shows its planned Audio.Kauai API, skipped, in en
 # and ja.
-docs.blocks 982
+# 984 since Audio's Capture section shows a microphone loop (skipped, but
+# counted), in en and ja.
+docs.blocks 984
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

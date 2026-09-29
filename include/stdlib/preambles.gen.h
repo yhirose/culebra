@@ -1821,14 +1821,51 @@ inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module 
     }
   }
 
+  # The microphone, read a block at a time. The runtime keeps the last second
+  # of samples (Floats in -1..1, stereo interleaved L,R) while it runs; read
+  # takes up to `frames` of them (all that are waiting when omitted) and
+  # answers an Array, empty when none are. `rate` is a request, met by
+  # resampling. With no microphone, or none the program may open, nothing
+  # arrives: ready() says which, and Audio.capture_available() says before.
+  class Capture {
+    new(rate: Long = 44100, channels: Long = 1) {
+      self._id = _Audio.capture_new(rate, channels)
+    }
+    ready() {
+      _Audio.capture_ready(self._id)
+    }
+    start() {
+      _Audio.capture_start(self._id)
+    }
+    stop() {
+      _Audio.capture_stop(self._id)
+    }
+    running() {
+      _Audio.capture_running(self._id)
+    }
+    waiting() {
+      _Audio.capture_waiting(self._id)
+    }
+    read(frames = nil) {
+      _Audio.capture_read(self._id, frames == nil ? -1 : frames)
+    }
+    drop() {
+      _Audio.capture_free(self._id) if self._id != nil
+    }
+  }
+
   {
     available: fn () {
       _Audio.available()
+    },
+    capture_available: fn () {
+      _Audio.capture_present()
     },
     tone: tone,
     Sound: Sound,
     Music: Music,
     PCM: PCM,
+    Capture: Capture,
     PULSE: PULSE,
     PULSE2: PULSE2,
     TRIANGLE: TRIANGLE,

@@ -77,7 +77,7 @@
 37. [`StateMachine`](#37-statemachine) — 入れ子にできる状態機械。テキストでも書ける
 38. [`FST`](#38-fst) — 書き換えない辞書を圧縮して持つ。前方一致・補完・あいまい検索
 39. [`Search`](#39-search) — 自分の文書を全文検索して順位をつける
-40. [`Audio`](#40-audio) — ウィンドウの有無によらず使える音: WASM-4のtone、効果音、ストリーム再生の音楽、合成するPCM
+40. [`Audio`](#40-audio) — ウィンドウの有無によらず使える音: WASM-4のtone、効果音、ストリーム再生の音楽、合成するPCM、マイク
 41. [設計上の注記](#41-設計上の注記)
 42. [未収録（将来検討）](#42-未収録将来検討)
 
@@ -122,7 +122,7 @@
 | 可変長のread-onlyデータをスレッド間で共有（コピーなし） | [§12 Shared](#shared--参照共有する-immutable-値) — `Shared.new(value)` |
 | Ctrl+C / SIGINTを綺麗に扱う | [§12 Signal](#signal--signalnotify--signalreset) — `Signal.notify(tx)` / `Signal.reset()` |
 | デスクトップGUI（ネイティブWebView + ローカルサーバ） | [§30 Desktop](#30-desktop--webview) — `Desktop.run({title, assets, routes})` |
-| 音を鳴らす（tone・効果音・音楽）、音を合成する | [§40 Audio](#40-audio) — `Audio.tone(440, 10)` / `Audio.Sound.new(bytes).play()` / `Audio.Music.new(bytes)` / `Audio.PCM.new(44100, 1, 1024)` |
+| 音を鳴らす（tone・効果音・音楽）、音を合成する | [§40 Audio](#40-audio) — `Audio.tone(440, 10)` / `Audio.Sound.new(bytes).play()` / `Audio.Music.new(bytes)` / `Audio.PCM.new(44100, 1, 1024)` / `Audio.Capture.new(44100)` |
 | ヒープ情報・リークチェック | [§7 GC](#gc--ヒープ情報の取得) — `GC.stat()` → `{live_objects, rc_objects, heap_bytes}` |
 | 2D/3Dベクトル演算（dot、length、normalize、distance） | [§31 `Vector2`](#31-vector2) / [§32 `Vector3`](#32-vector3) |
 | FIFOキュー、スライディングウィンドウ、前後両端のスタック | [§33 `Deque`](#33-deque) — `Deque.new()` — `push_back`/`pop_front` |
@@ -7749,7 +7749,7 @@ isolateごとに別の索引を持たせる。
 ## 40. `Audio`
 
 どのプログラムでも使える音: WASM-4流のtone、ワンショットのサンプル、ストリーム
-再生の音楽、スクリプトが合成するPCM。`Audio`は音声デバイスを単独で持ち、
+再生の音楽、スクリプトが合成するPCM、マイク。`Audio`は音声デバイスを単独で持ち、
 ウィンドウを必要としないので、`Canvas`で描くプログラムでも、`Scene`で描く
 プログラムでも、何も描かないプログラムでも同じように動く。デバイスは初回使用時に
 開き、何も鳴らさないプログラムはデバイスを開かない。
@@ -7902,6 +7902,44 @@ Canvas.run(160, 160, fn () {
 必要とする。サンプルごとに呼ぶのでなく、ブロック全体をまとめて作って渡すことが、
 スクリプトの1フレームの予算に収めるための要点になる。`PCM`はブラウザでは
 鳴らず、音声デバイスの無いマシンと同じように答える。
+
+### Capture
+
+`Audio.Capture`はマイクで、`PCM`の鏡になる。ランタイムが直近1秒分を保持する
+リングに録音し、スクリプトがブロック単位で取り出す。出力デバイスもウィンドウも
+必要としない。`Audio.Capture.new(rate = 44100, channels = 1)`は既定の入力を
+`rate` Hz、1または2チャンネルで開く（`rate`は要求で、プラットフォームが
+リサンプルして満たす）。どちらも`PCM`と同じに扱い、1未満の`rate`は1、2^31 − 1を
+超える`rate`は`ValueError`（`Audio.Capture: rate is too large`）。作った直後は停止していて、
+`start()`から録音が始まる。スクリプトが間に合わず読まなかったフレームは、
+新しい側から捨てられる。
+
+マイクの無いマシンや、プログラムに使わせないマシン（macOSとWindowsでは
+OSがユーザーに許可を求める）もある。どちらもエラーではない: `ready()`は`false`で、
+何も届かず、最初の試行が警告を1度だけ表示する。`CULEBRA_AUDIO`を`off`か`0`にした
+実行と、まだキャプチャを持たないブラウザでも同じ。
+
+| 関数 / メソッド | 効果 |
+| --- | --- |
+| `Audio.capture_available() -> Bool` | プラットフォームが入力デバイスを報告するか（`CULEBRA_AUDIO`が`off`なら`false`） |
+| `mic.ready() -> Bool` | 入力デバイスを開けなければ`false`: 以下のメソッドは書かれたとおりに答える |
+| `mic.start()` / `stop()` / `running() -> Bool` | 録音の操作と状態。`stop()`はリングに入っているぶんを残す |
+| `mic.waiting() -> Long` | リングにあって読めるフレーム数 |
+| `mic.read(frames = nil) -> Array` | リングから最大`frames`フレームを取り出す（省略時は待っているぶん全部）。値は`-1.0..1.0`の`Float`で、ステレオはL,Rを交互に並べるので最大`frames * channels`個。何も待っていなければ空。`Long`でない`frames`は`TypeError` |
+
+```culebra
+# doctest: skip
+let mic = Audio.Capture.new(44100)
+mic.start()
+loop {
+  let block = mic.read()
+  if !block.empty() {
+    let peak = block.map(|x| Math.abs(x)).max()
+    println("#".repeat(Math.round(peak * 60)))
+  }
+  Time.sleep(0.02)
+}
+```
 
 ## 41. 設計上の注記
 

@@ -4,9 +4,11 @@
 // of their own. The backend-neutral pieces (format sniff, handle ids, the
 // silent and browser backends) are in include/stdlib/audio.h.
 //
-// Everything here runs on the main thread except two helpers raylib or this
-// file starts: raylib's mixer thread (the tone synth's callback below) and the
-// music feeder, which takes g_music_mutex around every Music call.
+// Everything here runs on the main thread except three helpers raylib,
+// miniaudio or this file starts: raylib's mixer thread (the tone synth's
+// callback below), the music feeder, which takes g_music_mutex around every
+// Music call, and a capture device's thread, which only fills that capture's
+// ring (culebra_raudio.c).
 
 #include "stdlib/audio.h"
 
@@ -24,6 +26,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "culebra_capture.h"
 #include "raudio.h"
 
 namespace culebra {
@@ -62,6 +65,22 @@ void ensure_device() {
   }
   g_ready = true;
   arm_exit_teardown();
+}
+
+// The capture context, apart from the device above so a program that only
+// listens never opens an output. Latched and armed the same way.
+bool g_capture_ready = false;
+bool g_capture_failed = false;
+
+bool ensure_capture() {
+  if (g_capture_ready || g_capture_failed || audio_off()) return g_capture_ready;
+  if (!culebra_capture_init()) {
+    g_capture_failed = true;
+    return false;
+  }
+  g_capture_ready = true;
+  arm_exit_teardown();
+  return true;
 }
 
 // A stream takes its sub-buffer size from a raylib global, which then sizes
@@ -405,12 +424,71 @@ PcmStream* find_stream(int64_t id) {
   return it == g_streams.end() ? nullptr : &it->second;
 }
 
+// --- Capture: the microphone, read a block at a time ----------------------
+//
+// The device thread fills a one-second ring and the script drains it, the
+// mirror of PCM: the runtime is not reentrant from a foreign thread, so a
+// script callback on the device thread was never an option. Opening needs no
+// output device, and a capture that cannot be had (no microphone, permission
+// refused, CULEBRA_AUDIO=off) is a handle whose reads find nothing, as a PCM
+// with no device plays nothing.
+class Capture {
+ public:
+  // `rate` and `channels` arrive checked (rt::pcm_count / pcm_channels).
+  Capture(int rate, int channels) : channels_(static_cast<unsigned>(channels)) {
+    if (audio_off()) return;
+    if (ensure_capture())
+      c_ = culebra_capture_open(static_cast<unsigned>(rate), channels_,
+                                static_cast<unsigned>(rate));
+    static bool warned = false;  // said once, as the device's own warning is
+    if (c_ == nullptr && !warned) {
+      warned = true;
+      std::fputs("WARNING: Audio: no capture device -- Capture stays silent\n",
+                 stderr);
+    }
+  }
+  ~Capture() { culebra_capture_close(c_); }
+  Capture(const Capture&) = delete;
+  Capture& operator=(const Capture&) = delete;
+
+  bool ready() const { return c_ != nullptr; }
+  void start() { if (c_) culebra_capture_start(c_); }
+  void stop() { if (c_) culebra_capture_stop(c_); }
+  bool running() const { return c_ && culebra_capture_running(c_); }
+  int64_t waiting() const {
+    return c_ ? static_cast<int64_t>(culebra_capture_waiting(c_)) : 0;
+  }
+  // A negative `frames` takes all that are waiting.
+  void read(int64_t frames, std::vector<float>& out) {
+    out.clear();
+    if (!c_) return;
+    int64_t have = waiting();
+    frames = frames < 0 ? have : std::min(frames, have);
+    out.resize(static_cast<size_t>(frames) * channels_);
+    size_t got = culebra_capture_read(c_, out.data(), static_cast<size_t>(frames));
+    out.resize(got * channels_);
+  }
+
+ private:
+  CulebraCapture* c_ = nullptr;
+  unsigned channels_;
+};
+
+std::unordered_map<int64_t, Capture> g_captures;
+
+Capture* find_capture(int64_t id) {
+  auto it = g_captures.find(id);
+  return it == g_captures.end() ? nullptr : &it->second;
+}
+
 // --- exit ------------------------------------------------------------------
 
 // Hand the device back at process exit, after everything that plays through
 // it: the feeder stops and joins first, then tracks, sounds and streams go,
-// then the tone stream and the device. Each step clears what guards it, so
-// the owning statics find nothing left when their own destructors run.
+// then the captures and their context, then the tone stream and the device.
+// Each step clears what guards it, so a second registration (the device and
+// the capture context each arm one) and the owning statics' destructors find
+// nothing left.
 void exit_teardown() {
   if (g_feeder.joinable()) {
     {
@@ -428,6 +506,11 @@ void exit_teardown() {
   for (auto& [id, s] : g_sounds) UnloadSound(s);
   g_sounds.clear();
   g_streams.clear();
+  g_captures.clear();
+  if (g_capture_ready) {
+    culebra_capture_shutdown();
+    g_capture_ready = false;
+  }
   if (g_tone_ready) {
     UnloadAudioStream(g_tone_stream);
     g_tone_ready = false;
@@ -646,6 +729,36 @@ void pcm_pitch(int64_t id, double p) {
 }
 void pcm_pan(int64_t id, double p) {
   if (auto* s = find_stream(id)) s->pan(p);
+}
+
+bool capture_present() {
+  return ensure_capture() && culebra_capture_present();
+}
+void capture_new(int64_t id, int rate, int channels) {
+  g_captures.try_emplace(id, rate, channels);
+}
+void capture_free(int64_t id) { g_captures.erase(id); }
+bool capture_ready(int64_t id) {
+  auto* c = find_capture(id);
+  return c && c->ready();
+}
+void capture_start(int64_t id) {
+  if (auto* c = find_capture(id)) c->start();
+}
+void capture_stop(int64_t id) {
+  if (auto* c = find_capture(id)) c->stop();
+}
+bool capture_running(int64_t id) {
+  auto* c = find_capture(id);
+  return c && c->running();
+}
+int64_t capture_waiting(int64_t id) {
+  auto* c = find_capture(id);
+  return c ? c->waiting() : 0;
+}
+void capture_read(int64_t id, int64_t frames, std::vector<float>& out) {
+  if (auto* c = find_capture(id)) c->read(frames, out);
+  else out.clear();
 }
 
 }  // namespace _audio_detail
