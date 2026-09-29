@@ -17,6 +17,7 @@
 #include <stdlib/hash.h>
 #include <stdlib/json.h>
 #include <stdlib/toml.h>
+#include <stdlib/xml.h>
 #include <stdlib/uuid.h>
 #include <stdlib/vfs.h>
 #include <rt/rt.h>
@@ -2224,12 +2225,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_race_kw(
 }
 
 #if defined(CULEBRA_HTTP_ENABLED)
-// Defined in jit.h (forward-declared there too); HTTP's `json` method
-// needs it before this point.
-inline JitClosure* _jit_make_handle_method(
-    void (*fn)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*), size_t arity,
-    const JitParamMeta* meta);
-
 // `r.json()` — parse the response body as JSON. Method ABI: self arrives +1
 // (release before returning), mirroring the proc/file handle methods.
 inline void _jit_http_json(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
@@ -2924,13 +2919,7 @@ inline JitObject* _file_iter_build(JitValue self, bool chunks, int64_t n) {
     it = _iter_wrap_fast<&_file_lines_fast_fn>(
         {handle_cell, id_cell, line_cell, col_cell});
   }
-  auto* dispose_cls = culebra_runtime_closure_new(
-      reinterpret_cast<void*>(&_file_iter_dispose_fn), 1, 0,
-      JIT_CLOSURE_NATIVE, /*meta=*/nullptr);
-  culebra_runtime_cell_retain(id_cell);  // wrap_fast's closures keep it alive
-  dispose_cls->captures[0] = id_cell;
-  it->set_or_append("dispose",
-      JitValue{TAG_FUNC, reinterpret_cast<int64_t>(dispose_cls)}, false);
+  _iter_set_dispose(it, &_file_iter_dispose_fn, id_cell);
   return it;
 }
 inline void _jit_file_lines(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
@@ -4138,6 +4127,15 @@ inline bool require_bool(JitValue v, const char* param) {
   }
   return v.data != 0;
 }
+inline JitObject* require_object(JitValue v, const char* param) {
+  if (v.tag != TAG_OBJECT) {
+    culebra::throw_runtime_error_at(
+        "TypeError",
+        culebra::format("type error: parameter '{}' expects Object", param), 0,
+        0);
+  }
+  return reinterpret_cast<JitObject*>(v.data);
+}
 inline JitClosure* require_func(JitValue v, const char* param) {
   if (v.tag != TAG_FUNC) {
     culebra::throw_runtime_error_at(
@@ -4171,6 +4169,7 @@ inline JitValue v_float(double x)        {
 inline JitValue v_string(const char* s)  {
   return {TAG_STRING, reinterpret_cast<int64_t>(s)};
 }
+inline JitValue str(std::string_view s)  { return v_string(_culebra_heap_str(s)); }
 inline JitValue v_array(JitArray* a)     {
   return {TAG_ARRAY, reinterpret_cast<int64_t>(a)};
 }
@@ -7461,6 +7460,376 @@ inline JitValue _ns_toml_stringify(JitValue* a, int64_t n) {
       _culebra_heap_str(culebra::toml::stringify(root, sort_keys)));
 }
 
+// XML.{parse,events,find,find_all,find_iter,text,stringify}: the parser, the
+// path language and stringify live in xml.h; these policies and adapters are
+// the JitValue side of it. Slow-path only; every optional parameter is a slot
+// of the kwarg slab.
+
+// Each element is +1 owned by its parent's children (the root by the caller),
+// so a throw mid-parse releases everything through the root. `meta` is the
+// shared element meta (borrowed); each element's `proto` holds a +1 on it.
+struct _JitXmlBuilder {
+  using Value = JitValue;
+  JitObject* meta;
+  struct Elem {
+    JitObject* obj;
+    JitArray* kids;  // borrowed: `obj` owns it
+  };
+  static JitValue ns_value(bool has_ns, const std::string& ns) {
+    return has_ns ? _ns_adapt::str(ns) : _ns_adapt::v_nil();
+  }
+  // The `attrs` Object: parse and events shape it the same way.
+  static JitValue attrs_object(const std::vector<culebra::xml::Attr>& attrs) {
+    auto* a = culebra_runtime_object_new();
+    for (const auto& at : attrs) {
+      _ns_adapt::set_field(a, at.name.c_str(), _ns_adapt::str(at.value));
+    }
+    return _ns_adapt::v_object(a);
+  }
+  Elem element_new(std::string_view tag, bool has_ns, const std::string& ns,
+                   const std::vector<culebra::xml::Attr>& attrs) {
+    auto* o = culebra_runtime_object_new();
+    _ns_adapt::set_field(o, "tag", _ns_adapt::str(tag));
+    _ns_adapt::set_field(o, "ns", ns_value(has_ns, ns));
+    _ns_adapt::set_field(o, "attrs", attrs_object(attrs));
+    auto* kids = culebra_runtime_array_new();
+    _ns_adapt::set_field(o, "children", _ns_adapt::v_array(kids));
+    meta->refcount++;  // the element's own reference, released with it
+    o->set_proto(meta);
+    return {o, kids};
+  }
+  void append_element(Elem& parent, Elem& child) {
+    auto v = _ns_adapt::v_object(child.obj);
+    culebra_runtime_array_push(parent.kids, v.tag, v.data);
+  }
+  void append_text(Elem& parent, std::string_view text) {
+    auto v = _ns_adapt::str(text);
+    culebra_runtime_array_push(parent.kids, v.tag, v.data);
+  }
+  JitValue element_done(Elem& root) { return _ns_adapt::v_object(root.obj); }
+  void element_abandon(Elem& root) {
+    JitOwnedVal drop(_ns_adapt::v_object(root.obj));
+  }
+};
+
+struct _JitXmlReader {
+  using Value = JitValue;
+  static culebra::xml::VKind kind(const JitValue& v) {
+    using culebra::xml::VKind;
+    switch (v.tag) {
+      case TAG_NIL:        return VKind::Nil;
+      case TAG_STRING:
+      case TAG_STRINGVIEW: return VKind::String;
+      case TAG_LONG:       return VKind::Long;
+      case TAG_FLOAT:      return VKind::Float;
+      case TAG_BOOL:       return VKind::Bool;
+      case TAG_ARRAY:      return VKind::Array;
+      case TAG_OBJECT:     return VKind::Object;
+    }
+    return VKind::Other;
+  }
+  static std::string_view as_string(const JitValue& v) {
+    return _culebra_str_view(v.tag, v.data);
+  }
+  static std::string scalar_text(const JitValue& v) {
+    return _culebra_value_to_str_impl(v.tag, v.data);
+  }
+  static const JitValue* field(const JitValue& v, std::string_view name) {
+    if (v.tag != TAG_OBJECT) return nullptr;
+    auto* obj = reinterpret_cast<JitObject*>(v.data);
+    size_t i = obj->find_slot(name);
+    return i == static_cast<size_t>(-1) ? nullptr : &obj->slots[i].value;
+  }
+  static size_t array_size(const JitValue& v) {
+    return reinterpret_cast<JitArray*>(v.data)->size;
+  }
+  static const JitValue& array_at(const JitValue& v, size_t i) {
+    return reinterpret_cast<JitArray*>(v.data)->items[i];
+  }
+  static std::vector<std::pair<std::string_view, const JitValue*>>
+  object_entries(const JitValue& v) {
+    auto* obj = reinterpret_cast<JitObject*>(v.data);
+    std::vector<std::pair<std::string_view, const JitValue*>> entries;
+    if (!obj->shape && !obj->is_dict) return entries;
+    entries.reserve(obj->prop_size());
+    for (size_t i = 0; i < obj->prop_size(); i++) {
+      entries.emplace_back(obj->prop_name(i), &obj->slots[i].value);
+    }
+    return entries;
+  }
+  static std::string_view type_name(const JitValue& v) {
+    return _culebra_tag_name(v.tag);
+  }
+};
+
+inline JitObject* _xml_element_meta();
+
+inline JitValue _ns_xml_parse(JitValue* a, int64_t n) {
+  auto text = _ns_adapt::require_sv(a[0], "text");
+  bool keep_space = n > 1 && _ns_adapt::require_bool(a[1], "keep_space");
+  _JitXmlBuilder b{_xml_element_meta()};
+  return culebra::xml::parse(b, text, keep_space, "XML.parse");
+}
+
+// The `namespaces:` Object as prefix -> URI pairs (nil: none).
+inline culebra::xml::NsMap _xml_ns_map(JitValue* a, int64_t n, int64_t idx,
+                                       const char* fn) {
+  culebra::xml::NsMap m;
+  if (n <= idx || a[idx].tag == TAG_NIL) return m;
+  _ns_adapt::require_object(a[idx], "namespaces");
+  for (const auto& [k, v] : _JitXmlReader::object_entries(a[idx])) {
+    if (v->tag != TAG_STRING && v->tag != TAG_STRINGVIEW) {
+      culebra::throw_runtime_error_at(
+          "TypeError",
+          culebra::format("{}: namespace '{}' must map to a String, got {}", fn,
+                          k, _culebra_tag_name(v->tag)),
+          0, 0);
+    }
+    m.emplace_back(std::string(k), std::string(_culebra_str_view(v->tag, v->data)));
+  }
+  return m;
+}
+
+// find / find_all / find_iter / text share the argument shape
+// (el, path, namespaces); `text` defaults its path.
+inline std::vector<const JitValue*> _xml_select(JitValue* a, int64_t n,
+                                                const char* fn,
+                                                std::string_view path,
+                                                int64_t ns_idx) {
+  _ns_adapt::require_object(a[0], "el");
+  auto ns = _xml_ns_map(a, n, ns_idx, fn);
+  return culebra::xml::select<_JitXmlReader>(a[0], path, ns, fn);
+}
+
+// A match lives inside the borrowed `el`, so the caller gets its own +1.
+inline JitValue _xml_match_owned(const JitValue* v) {
+  return JitOwnedVal::from_borrowed(*v).consume();
+}
+
+inline JitValue _xml_matches_array(JitValue* a, int64_t n, const char* fn) {
+  auto hits = _xml_select(a, n, fn, _ns_adapt::require_sv(a[1], "path"), 2);
+  auto* arr = culebra_runtime_array_new();
+  for (const auto* v : hits) {
+    auto owned = _xml_match_owned(v);
+    culebra_runtime_array_push(arr, owned.tag, owned.data);
+  }
+  return _ns_adapt::v_array(arr);
+}
+
+inline JitValue _ns_xml_find(JitValue* a, int64_t n) {
+  auto hits =
+      _xml_select(a, n, "XML.find", _ns_adapt::require_sv(a[1], "path"), 2);
+  if (hits.empty()) return _ns_adapt::v_nil();
+  return _xml_match_owned(hits[0]);
+}
+inline JitValue _ns_xml_find_all(JitValue* a, int64_t n) {
+  return _xml_matches_array(a, n, "XML.find_all");
+}
+inline JitValue _ns_xml_find_iter(JitValue* a, int64_t n) {
+  JitOwnedVal arr(_xml_matches_array(a, n, "XML.find_iter"));
+  auto v = arr.borrow();
+  return _ns_adapt::v_object(_iter_from_array_obj(v.tag, v.data));
+}
+inline JitValue _ns_xml_text(JitValue* a, int64_t n) {
+  std::string_view path =
+      n > 1 ? _ns_adapt::require_sv(a[1], "path") : std::string_view(".");
+  auto hits = _xml_select(a, n, "XML.text", path, 2);
+  if (hits.empty()) return _ns_adapt::v_nil();
+  return _ns_adapt::str(
+      culebra::xml::string_value<_JitXmlReader>(*hits[0], "XML.text"));
+}
+
+inline JitValue _ns_xml_stringify(JitValue* a, int64_t n) {
+  _ns_adapt::require_object(a[0], "el");
+  int64_t indent = n > 1 ? _ns_adapt::require_long(a[1], "indent") : 0;
+  bool declaration = n > 2 && _ns_adapt::require_bool(a[2], "declaration");
+  return _ns_adapt::str(
+      culebra::xml::stringify<_JitXmlReader>(a[0], indent, declaration));
+}
+
+// The element methods: `el.find(path)` is `XML.find(el, path)`, and so on.
+// Parsed elements reach them through `proto`, one meta per Runtime whose
+// methods are captureless; a hand-built Object has none and uses the
+// functions. The method ABI hands `self` and each argument at +1 (callee-
+// consumes); the adapter only borrows them, so they are released here.
+inline void _xml_elem_call(JitValue* ret, int8_t self_tag, int64_t self_data,
+                           int64_t n, JitValue* args,
+                           JitValue (*fn)(JitValue*, int64_t),
+                           std::initializer_list<JitValue> defaults,
+                           const char* required = nullptr) {
+  JitMethodArgs held_args{n, args};
+  JitMethodSelf self(JitValue{self_tag, self_data});
+  if (n > static_cast<int64_t>(defaults.size())) {
+    _ns_adapt::arity_error("XML", "", static_cast<int>(defaults.size()), n,
+                           _jit_thread.call_line, _jit_thread.call_col);
+  }
+  if (required && !_jit_file_arg_present(n, args, 0)) {
+    culebra::throw_missing_required_arg_at(required, _jit_thread.call_line,
+                                           _jit_thread.call_col);
+  }
+  JitValue a[3] = {self.borrow()};  // self + the widest method's two params
+  assert(defaults.size() < std::size(a));
+  size_t k = 1;
+  for (auto d : defaults) {
+    a[k] = _jit_file_arg_present(n, args, k - 1) ? args[k - 1] : d;
+    k++;
+  }
+  *ret = _jit_at_call_site([&] { return fn(a, static_cast<int64_t>(k)); });
+}
+// find / find_all / find_iter: (path, namespaces=nil). One instantiation,
+// so one process-wide fn_ptr, per function.
+template <JitValue (*Fn)(JitValue*, int64_t)>
+inline void _xml_elem_path_method(JitValue* ret, JitClosure*, int8_t st,
+                                  int64_t sd, int64_t n, JitValue* args) {
+  _xml_elem_call(ret, st, sd, n, args, Fn,
+                 {_ns_adapt::v_nil(), _ns_adapt::v_nil()}, "path");
+}
+inline void _xml_elem_text(JitValue* ret, JitClosure*, int8_t st, int64_t sd,
+                           int64_t n, JitValue* args) {
+  std::optional<JitOwnedVal> dot;  // the default path, only when it is used
+  if (!_jit_file_arg_present(n, args, 0)) {
+    dot.emplace(_ns_adapt::str("."));
+  }
+  _xml_elem_call(ret, st, sd, n, args, &_ns_xml_text,
+                 {dot ? dot->borrow() : _ns_adapt::v_nil(), _ns_adapt::v_nil()});
+}
+inline void _xml_elem_stringify(JitValue* ret, JitClosure*, int8_t st,
+                                int64_t sd, int64_t n, JitValue* args) {
+  _xml_elem_call(ret, st, sd, n, args, &_ns_xml_stringify,
+                 {_ns_adapt::v_long(0), _ns_adapt::v_bool(false)});
+}
+
+// The shared element meta: a plain Object (not a class meta, so `type_of`,
+// `inspect`, equality and JSON see the four fields alone), pinned per Runtime
+// like the native metas: the table holds a +1 and every element one more.
+// Its methods are portable, so an element keeps them across an Isolate.
+inline JitObject* _xml_element_meta() {
+  auto& t = culebra::runtime_substate<_JitPinnedMetas<int>>(
+      culebra::kSlotXmlElementMeta);
+  auto it = t.tbl.find(0);
+  if (it == t.tbl.end()) {
+    // The method closures are unrooted until slotted into the meta.
+    culebra::gc::Heap::CollectPause pause(_gc_heap());
+    auto* meta = culebra_runtime_object_new();
+    static const JitParamMeta* find_meta =
+        _jit_make_handle_meta({"path", "namespaces"}, {false, true});
+    static const JitParamMeta* text_meta =
+        _jit_make_handle_meta({"path", "namespaces"}, {true, true});
+    static const JitParamMeta* stringify_meta =
+        _jit_make_handle_meta({"indent", "declaration"}, {true, true});
+    _jit_bind_portable_method(
+        meta, "find", _xml_elem_path_method<&_ns_xml_find>, 1, find_meta);
+    _jit_bind_portable_method(meta, "find_all",
+                              _xml_elem_path_method<&_ns_xml_find_all>, 1,
+                              find_meta);
+    _jit_bind_portable_method(meta, "find_iter",
+                              _xml_elem_path_method<&_ns_xml_find_iter>, 1,
+                              find_meta);
+    _jit_bind_portable_method(meta, "text", _xml_elem_text, 0, text_meta);
+    _jit_bind_portable_method(meta, "stringify", _xml_elem_stringify, 0,
+                              stringify_meta);
+    _gc_heap().pin(meta);
+    it = t.tbl.emplace(0, meta).first;
+  }
+  return it->second;
+}
+
+// XML.events: the pull parser behind a lazy iterator. Its state is native, so
+// it lives in a holder Object whose `drop` frees it: the iterator owns the
+// holder, and the state goes when the iterator does, when it is drained or
+// fails, or when a `break` disposes it.
+struct _XmlEventsState {
+  std::string text;  // the parser reads this copy
+  culebra::xml::PullParser parser;
+  _XmlEventsState(std::string_view t, bool keep_space)
+      : text(t), parser(text, keep_space, "XML.events") {}
+};
+
+inline void _xml_events_free(JitObject* holder) {
+  size_t i = holder->find_slot("_ptr");
+  auto& slot = holder->slots[i].value;
+  delete reinterpret_cast<_XmlEventsState*>(slot.data);
+  slot.data = 0;
+}
+inline JitObject* _xml_events_holder(JitClosure* cls) {
+  return reinterpret_cast<JitObject*>(cls->captures[0]->value.data);
+}
+
+inline void _xml_events_fast_fn(JitClosure* cls, JitValue, bool* done,
+                                int8_t* out_tag, int64_t* out_data) {
+  auto* holder = _xml_events_holder(cls);
+  auto* st = reinterpret_cast<_XmlEventsState*>(_jit_handle_long(holder, "_ptr"));
+  if (!st) {
+    *done = true;
+    return;
+  }
+  culebra::xml::Event ev;
+  bool got;
+  try {
+    got = st->parser.next(ev);
+  } catch (...) {
+    _xml_events_free(holder);
+    throw;
+  }
+  if (!got) {
+    _xml_events_free(holder);
+    *done = true;
+    return;
+  }
+  using K = culebra::xml::EventKind;
+  using B = _JitXmlBuilder;
+  auto* o = culebra_runtime_object_new();
+  _ns_adapt::set_field(o, "kind", _ns_adapt::str(ev.kind == K::Start ? "start"
+                                                 : ev.kind == K::End ? "end"
+                                                                     : "text"));
+  if (ev.kind == K::Text) {
+    _ns_adapt::set_field(o, "text", _ns_adapt::str(ev.text));
+  } else {
+    _ns_adapt::set_field(o, "tag", _ns_adapt::str(ev.tag));
+    _ns_adapt::set_field(o, "ns", B::ns_value(ev.has_ns, ev.ns));
+    if (ev.kind == K::Start) {
+      _ns_adapt::set_field(o, "attrs", B::attrs_object(ev.attrs));
+    }
+  }
+  *done = false;
+  *out_tag = TAG_OBJECT;
+  *out_data = reinterpret_cast<int64_t>(o);
+}
+
+inline void _xml_events_dispose_fn(JitValue* __ret, JitClosure* cls,
+                                   int8_t self_tag, int64_t self_data, int64_t,
+                                   JitValue*) {
+  // Native iterator method: self arrives +1-owned (callee-consumes).
+  JitOwnedVal self_guard(JitValue{self_tag, self_data});
+  _xml_events_free(_xml_events_holder(cls));
+  *__ret = {TAG_NIL, 0};
+}
+inline void _xml_events_drop_fn(JitValue* __ret, JitClosure*, int8_t,
+                                int64_t self_data, int64_t, JitValue*) {
+  // drop runs from the destructor's drop protocol: must NOT release self.
+  _xml_events_free(reinterpret_cast<JitObject*>(self_data));
+  *__ret = {TAG_NIL, 0};
+}
+
+inline JitValue _ns_xml_events(JitValue* a, int64_t n) {
+  auto text = _ns_adapt::require_sv(a[0], "text");
+  bool keep_space = n > 1 && _ns_adapt::require_bool(a[1], "keep_space");
+  auto* holder = culebra_runtime_object_new();
+  holder->set_or_append(
+      "_ptr",
+      JitValue{TAG_LONG, reinterpret_cast<int64_t>(
+                             new _XmlEventsState(text, keep_space))},
+      false);
+  holder->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
+  _jit_handle_bind_method(holder, "drop", _xml_events_drop_fn, 0);
+  _jit_owned_bind_drop(holder);
+  auto* holder_cell = culebra_runtime_cell_new(
+      TAG_OBJECT, reinterpret_cast<int64_t>(holder));
+  auto* it = _iter_wrap_fast<&_xml_events_fast_fn>({holder_cell});
+  _iter_set_dispose(it, &_xml_events_dispose_fn, holder_cell);
+  return _ns_adapt::v_object(it);
+}
+
 // Env.{parse,load}: dotenv parsing via env.h (shared with interp). Both return
 // an Object of String values; `load` also reads a file and sets each entry into
 // the process environment (overwriting only when `override: true`).
@@ -8055,10 +8424,7 @@ inline JitValue _ns_peg_parse(JitValue* a, int64_t) {
 namespace _fst_adapt {
 
 using _ns_adapt::set_field;
-
-inline JitValue str(std::string_view s) {
-  return _ns_adapt::v_string(_culebra_heap_str(s));
-}
+using _ns_adapt::str;
 
 // A key list: Array of String, element-checked the way String.from_bytes
 // checks its Longs, so the failing element is named at the same call.
@@ -8909,6 +9275,7 @@ inline bool _ns_method_uses_kwarg_slab(const NsMethod* m) {
   if (ns == "JSON")     return nm == "stringify" || nm == "parse";
   if (ns == "CSV")      return nm == "parse" || nm == "stringify";
   if (ns == "TOML")     return nm == "stringify";  // sort_keys default
+  if (ns == "XML")      return true;  // every method has a defaulted param
   if (ns == "Env")      return nm == "load";  // path/override defaults
   if (ns == "Sys")      return nm == "env";  // fallback default
   if (ns == "Compress") return nm == "deflate";  // level default
@@ -9289,6 +9656,15 @@ inline const NsMethod kNsRows_TOML[] = {
   {"TOML", "parse",     1, &_ns_toml_parse,     nullptr, "String", "text"},
   {"TOML", "stringify", 1, &_ns_toml_stringify, nullptr, "Object", "v"},
 };
+inline const NsMethod kNsRows_XML[] = {
+  {"XML", "parse",     1, &_ns_xml_parse,     nullptr, "String", "text"},
+  {"XML", "events",    1, &_ns_xml_events,    nullptr, "String", "text"},
+  {"XML", "find",      2, &_ns_xml_find,      nullptr, "Object", "el"},
+  {"XML", "find_all",  2, &_ns_xml_find_all,  nullptr, "Object", "el"},
+  {"XML", "find_iter", 2, &_ns_xml_find_iter, nullptr, "Object", "el"},
+  {"XML", "text",      1, &_ns_xml_text,      nullptr, "Object", "el"},
+  {"XML", "stringify", 1, &_ns_xml_stringify, nullptr, "Object", "el"},
+};
 inline const NsMethod kNsRows_Env[] = {
   {"Env", "parse", 1, &_ns_env_parse, nullptr, "String", "text"},
   {"Env", "load",  0, &_ns_env_load,  nullptr, "String", "path"},
@@ -9542,6 +9918,8 @@ CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_SQLite{
 #endif
 CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_TOML{
     kNsRows_TOML, kCanonSigs_TOML};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_XML{
+    kNsRows_XML, kCanonSigs_XML};
 CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Env{
     kNsRows_Env, kCanonSigs_Env};
 CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_UUID{
@@ -9598,6 +9976,7 @@ inline const NsGroupRef kNsGroups[] = {
   {"SQLite", &culebra_ns_group_SQLite},
 #endif
   {"TOML", &culebra_ns_group_TOML},
+  {"XML", &culebra_ns_group_XML},
   {"Env", &culebra_ns_group_Env},
   {"UUID", &culebra_ns_group_UUID},
   {"String", &culebra_ns_group_String},
@@ -11276,7 +11655,8 @@ inline const std::unordered_set<std::string_view>& builtin_var_names() {
       "Channel",
       "Parallel",
       "Signal",  "Encoding", "Compress",  "SharedBuffer", "Shared",
-      "Hash",    "CSV",       "TOML",      "Env",       "UUID",       "String",
+      "Hash",    "CSV",       "TOML",      "XML",       "Env",        "UUID",
+      "String",
       "_Term",   "_Canvas",   "_Audio",
 #if defined(CULEBRA_SQLITE_ENABLED)
       "SQLite",

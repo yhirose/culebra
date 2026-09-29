@@ -71,7 +71,7 @@ APIリファレンスは [`stdlib.ja.md`](stdlib.ja.md) を参照してくださ
   上限は数千接続。
 - **batteries-included、ティア制。** コア
   (Math/IO/FS/File/Sys/Random/String/Time/Args) とTier 1
-  (Regex/Http/Hash/Encoding/Compress/JSON/CSV/TOML/SQLite/UUID/
+  (Regex/Http/Hash/Encoding/Compress/JSON/CSV/TOML/XML/SQLite/UUID/
   PEG/FST/Log/Term/Canvas) はどちらも出荷済み。Tier 2/3 (Crypto、Sockets)
   は需要次第 — Ch.14参照。
 - **1.0前。** ソース・APIは変わる可能性。tag付きリリースには3プラット
@@ -1792,7 +1792,7 @@ inspect(JSON.stringify({a: 1}))     # => '{"a":1}'
 |---|---|
 | 数値・テキスト | `Math`、`Regex`、`FST`（引くために組み上げた辞書） |
 | ファイル・プロセス・環境 | `FS`、`File`、`Path`、`Proc`、`Sys`、`Env` |
-| データ形式 | `JSON`、`CSV`、`TOML`、`Encoding`、`Compress`、`Hash`、`UUID`、`PEG`（自前の文法） |
+| データ形式 | `JSON`、`CSV`、`TOML`、`XML`、`Encoding`、`Compress`、`Hash`、`UUID`、`PEG`（自前の文法） |
 | ネットワーク | `Http`、`Net` |
 | 並行 | `Isolate`、`Channel`、`Parallel`、`Shared`、`SharedBuffer` |
 | ストレージ | `SQLite`、`Search`（全文検索） |

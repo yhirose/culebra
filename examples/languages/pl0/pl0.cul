@@ -12,7 +12,7 @@
 #
 #     {name: 'while', nodes: [cond, body]} => exec_while(cond, body, scope),
 #
-# so the code reads like the grammar it implements. See docs/stdlib.md §34.
+# so the code reads like the grammar it implements. See docs/stdlib.md §35.
 #
 # Run it:  culebra examples/languages/pl0/pl0.cul examples/languages/pl0/samples/square.pas
 #          culebra examples/languages/pl0/pl0.cul examples/languages/pl0/samples/gcd.pas

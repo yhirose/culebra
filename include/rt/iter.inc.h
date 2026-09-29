@@ -441,6 +441,20 @@ inline JitObject* _iter_wrap_fast(std::initializer_list<JitCell*> captures,
   return obj;
 }
 
+// Give a source iterator the `dispose` that closes what it reads: `fn` runs
+// with `cell` (shared with the iterator's own closures) as its one capture.
+inline void _iter_set_dispose(
+    JitObject* it,
+    void (*fn)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*),
+    JitCell* cell) {
+  auto* dispose_cls = culebra_runtime_closure_new(
+      reinterpret_cast<void*>(fn), 1, 0, JIT_CLOSURE_NATIVE, /*meta=*/nullptr);
+  culebra_runtime_cell_retain(cell);
+  dispose_cls->captures[0] = cell;
+  it->set_or_append("dispose",
+      JitValue{TAG_FUNC, reinterpret_cast<int64_t>(dispose_cls)}, false);
+}
+
 // Bind-time mirror of the interp's `f: Function` typed-param check: reject a
 // non-callable callback BEFORE the terminal's JitIterDrive opens, so this
 // edge does NOT dispose — the interp raises it at argument binding, outside

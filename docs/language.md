@@ -4216,8 +4216,8 @@ closures nesting through captures counts the same way), and the
 identically on every backend. A same-pointer comparison (`a == a`)
 answers without walking. Building, indexing, and dropping a deeper value
 stay safe at any depth — teardown is bounded internally, not by this
-error. `JSON` / `TOML` apply the same limit to their own trees (see the
-stdlib reference).
+error. `JSON` / `TOML` / `XML` apply the same limit to their own trees
+(see the stdlib reference).
 
 A `Tensor`'s autograd graph is not value nesting and is not subject to
 this bound: `.backward()` and dropping an unevaluated graph both stay

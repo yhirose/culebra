@@ -10,7 +10,7 @@
 #
 #   1. Every UnOp/BinOp/VarKind/IntrinsicId/ConstKind member's name_of()
 #      string is documented, in both docs/stdlib.md and docs/stdlib.ja.md's
-#      section 35 -- a new member is usable from a script the moment the
+#      CodeGen section -- a new member is usable from a script the moment the
 #      submodule bumps, but silently undocumented until someone notices.
 #   2. Every Tag has a row in the TAG_MAP table below: its name_of() string,
 #      a builder method that produces it, and a reader method that can read
@@ -118,13 +118,14 @@ method_exists() { echo "$bound_methods" | grep -qx -- "$1"; }
 lower() { echo "$1" | tr 'A-Z' 'a-z'; }
 
 section_slice() {
-  # docs/stdlib{,.ja}.md section 35 (`## 35. ...` through the next `## `).
-  sed -n '/^## 35\. /,/^## 36\. /p' "$1"
+  # docs/stdlib{,.ja}.md's CodeGen chapter, found by name so a chapter
+  # inserted ahead of it does not move the slice.
+  awk '/^## [0-9]+\. `CodeGen`/{f=1; print; next} f && /^## /{exit} f' "$1"
 }
 md_en=$(section_slice "$STDLIB_MD")
 md_ja=$(section_slice "$STDLIB_JA")
 if [ -z "$md_en" ] || [ -z "$md_ja" ]; then
-  note "section 35 (CodeGen) is empty in ${STDLIB_MD} or ${STDLIB_JA} -- did the heading move or get renumbered?"
+  note "the CodeGen section is empty in ${STDLIB_MD} or ${STDLIB_JA} -- did the heading move or get renumbered?"
 fi
 
 # Every code span (`...`) in the section, one per line -- the only place a
@@ -145,10 +146,10 @@ check_documented() {
   word=$(lower "$member")
   pat="'${word}'|(^|[^A-Za-z_])${word}([^A-Za-z_]|\$)"
   if ! grep -qE -- "$pat" <<< "$spans_en"; then
-    note "${enum_name}::${member} ('${word}') is not documented in ${STDLIB_MD} section 35"
+    note "${enum_name}::${member} ('${word}') is not documented in ${STDLIB_MD}'s CodeGen section"
   fi
   if ! grep -qE -- "$pat" <<< "$spans_ja"; then
-    note "${enum_name}::${member} ('${word}') is not documented in ${STDLIB_JA} section 35"
+    note "${enum_name}::${member} ('${word}') is not documented in ${STDLIB_JA}'s CodeGen section"
   fi
 }
 while IFS= read -r m; do [ -n "$m" ] && check_documented UnOp "$m"; done <<< "$unop_members"

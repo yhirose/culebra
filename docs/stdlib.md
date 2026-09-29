@@ -64,23 +64,24 @@ Conventions used below:
 22. [`Term`](#22-term) — terminal color, cursor control, size, and key/mouse input for TUIs
 23. [`Log`](#23-log) — leveled, structured logging to stderr (text / JSON, child loggers)
 24. [`TOML`](#24-toml) — parse / stringify TOML configuration
-25. [`SQLite`](#25-sqlite) — embedded SQL database (query / execute / prepared statements / transactions)
-26. [`Canvas`](#26-canvas) — immediate-mode 2D framebuffer for games (shapes, sprites, offscreen targets, text, keys/mouse/gamepad, window controls)
-27. [`Scene`](#27-scene) — retained-mode 3D renderer for procedural geometry
-28. [`Net`](#28-net) — raw TCP / UDP sockets and name resolution (the layer under `Http`)
-29. [`Desktop` / `Webview`](#29-desktop--webview) — native WebView desktop app: local HTTP server + window, one call
-30. [`Vector2`](#30-vector2) — minimal 2D float vector for graphics/game code (also stands in for a "Point")
-31. [`Vector3`](#31-vector3) — the 3D counterpart of `Vector2`
-32. [`Deque`](#32-deque) — double-ended queue, O(1) amortized push/pop at either end
-33. [`PriorityQueue`](#33-priorityqueue) — binary min-heap, O(log n) push/pop
-34. [`PEG`](#34-peg) — PEG parser generator: write a grammar, get a syntax tree
-35. [`CodeGen`](#35-codegen) — build a small language's IR by hand and run it
-36. [`StateMachine`](#36-statemachine) — hierarchical state machine, with a text DSL
-37. [`FST`](#37-fst) — compiled read-only dictionary: prefix, predictive and fuzzy search
-38. [`Search`](#38-search) — full-text index over your own documents, ranked
-39. [`Audio`](#39-audio) — sound for any program, with or without a window: WASM-4 tones, samples, streamed music, synthesised PCM
-40. [Design notes](#40-design-notes)
-41. [Not included (yet)](#41-not-included-yet)
+25. [`XML`](#25-xml): parse / search (an XPath subset) / stringify XML; a lazy event stream for large documents
+26. [`SQLite`](#26-sqlite) — embedded SQL database (query / execute / prepared statements / transactions)
+27. [`Canvas`](#27-canvas) — immediate-mode 2D framebuffer for games (shapes, sprites, offscreen targets, text, keys/mouse/gamepad, window controls)
+28. [`Scene`](#28-scene) — retained-mode 3D renderer for procedural geometry
+29. [`Net`](#29-net) — raw TCP / UDP sockets and name resolution (the layer under `Http`)
+30. [`Desktop` / `Webview`](#30-desktop--webview) — native WebView desktop app: local HTTP server + window, one call
+31. [`Vector2`](#31-vector2) — minimal 2D float vector for graphics/game code (also stands in for a "Point")
+32. [`Vector3`](#32-vector3) — the 3D counterpart of `Vector2`
+33. [`Deque`](#33-deque) — double-ended queue, O(1) amortized push/pop at either end
+34. [`PriorityQueue`](#34-priorityqueue) — binary min-heap, O(log n) push/pop
+35. [`PEG`](#35-peg) — PEG parser generator: write a grammar, get a syntax tree
+36. [`CodeGen`](#36-codegen) — build a small language's IR by hand and run it
+37. [`StateMachine`](#37-statemachine) — hierarchical state machine, with a text DSL
+38. [`FST`](#38-fst) — compiled read-only dictionary: prefix, predictive and fuzzy search
+39. [`Search`](#39-search) — full-text index over your own documents, ranked
+40. [`Audio`](#40-audio) — sound for any program, with or without a window: WASM-4 tones, samples, streamed music, synthesised PCM
+41. [Design notes](#41-design-notes)
+42. [Not included (yet)](#42-not-included-yet)
 
 **Where to find what**
 
@@ -106,7 +107,7 @@ Conventions used below:
 | Run an external command | [§11 Proc](#11-proc) — `Proc.run(["git", "status"])` |
 | Call an HTTP/HTTPS API | [§15 Http](#15-http) — `Http.get("https://api.example/x")` |
 | Serve HTTP — routes, static files, WebSocket | [§15 `Http.server()`](#httpserver---object) — `Http.server().get("/", h).listen(8080)` |
-| Speak a raw TCP / UDP protocol, resolve a hostname | [§28 Net](#28-net) — `Net.connect(host, port)` / `Net.listen(port)` / `Net.udp()` / `Net.resolve(host)` |
+| Speak a raw TCP / UDP protocol, resolve a hostname | [§29 Net](#29-net) — `Net.connect(host, port)` / `Net.listen(port)` / `Net.udp()` / `Net.resolve(host)` |
 | Escape / unescape HTML entities | [§16 Encoding](#16-encoding) — `Encoding.html.unescape("a &amp; b")` |
 | Encode / decode base64, hex, url | [§16 Encoding](#16-encoding) — `Encoding.base64.encode(s)` |
 | gzip / gunzip data or files | [§17 Compress](#17-compress) — `Compress.gzip(s)` / `Compress.gunzip(z)` |
@@ -114,7 +115,8 @@ Conventions used below:
 | Hash / checksum / HMAC | [§18 Hash](#18-hash) — `Hash.sha256(s)` / `Hash.hmac_sha256(key, s)` |
 | Parse / write CSV | [§19 CSV](#19-csv) — `CSV.parse(text)` / `CSV.stringify(rows)` |
 | Parse / write TOML | [§24 TOML](#24-toml) — `TOML.parse(text)` / `TOML.stringify(obj)` |
-| Query an embedded SQL database | [§25 SQLite](#25-sqlite) — `SQLite.open(path)` → `db.query(sql, params)` / `db.execute(...)` |
+| Parse / search / write XML | [§25 XML](#25-xml): `XML.parse(text)` / `root.find_all(".//item")` / `el.stringify()` |
+| Query an embedded SQL database | [§26 SQLite](#26-sqlite) — `SQLite.open(path)` → `db.query(sql, params)` / `db.execute(...)` |
 | Load a `.env` config file | [§20 Env](#20-env) — `Env.load(".env")` / `Env.parse(text)` |
 | Generate a UUID | [§21 UUID](#21-uuid) — `UUID.v4()` / `UUID.v7()` |
 | Leveled / structured logging | [§23 Log](#23-log) — `Log.info("msg", {k: v})` / `Log.with({req: id})` |
@@ -122,17 +124,17 @@ Conventions used below:
 | Share fixed-layout data across threads/processes (zero copy) | [§12 SharedBuffer](#sharedbuffer--zero-copy-shared-fixed-layout-data) — `SharedBuffer.new(n, FloatPair)` / `.file` / `.shared` |
 | Share variable-length read-only data across threads (no copy) | [§12 Shared](#shared--immutable-values-shared-by-reference) — `Shared.new(value)` |
 | Handle Ctrl+C / SIGINT gracefully | [§12 Signal](#signal--signalnotify--signalreset) — `Signal.notify(tx)` / `Signal.reset()` |
-| Desktop GUI (native WebView + local server) | [§29 Desktop](#29-desktop--webview) — `Desktop.run({title, assets, routes})` |
-| Play a tone, a sound effect or music; synthesise audio | [§39 Audio](#39-audio) — `Audio.tone(440, 10)` / `Audio.Sound.new(bytes).play()` / `Audio.Music.new(bytes)` / `Audio.Pcm.new(44100, 1, 1024)` |
+| Desktop GUI (native WebView + local server) | [§30 Desktop](#30-desktop--webview) — `Desktop.run({title, assets, routes})` |
+| Play a tone, a sound effect or music; synthesise audio | [§40 Audio](#40-audio) — `Audio.tone(440, 10)` / `Audio.Sound.new(bytes).play()` / `Audio.Music.new(bytes)` / `Audio.Pcm.new(44100, 1, 1024)` |
 | Heap introspection / leak checks | [§7 GC](#gc--heap-introspection) — `GC.stat()` → `{live_objects, rc_objects, heap_bytes}` |
-| 2D/3D vector math (dot, length, normalize, distance) | [§30 `Vector2`](#30-vector2) / [§31 `Vector3`](#31-vector3) |
-| FIFO queue, sliding window, front+back stack | [§32 `Deque`](#32-deque) — `Deque.new()` — `push_back`/`pop_front` |
-| Priority scheduling, event simulation, shortest-path search | [§33 `PriorityQueue`](#33-priorityqueue) — `PriorityQueue.new()` — `push`/`pop` |
-| Parse a language / config format of your own | [§34 PEG](#34-peg) — write a PEG grammar, `PEG.parse(grammar, text)` → a tree `match` takes apart |
-| Model a workflow, protocol or UI mode as states and events | [§36 `StateMachine`](#36-statemachine) — `StateMachine.parse(text)`, or a description `Object` |
-| Autocomplete / prefix lookup over a large fixed word list | [§37 FST](#37-fst) — `FST.Set.new(FST.compile_set(words))` → `.predictive_search("hel")` |
-| Spelling correction, fuzzy lookup | [§37 FST](#37-fst) — `.edit_distance_search(word, 1)` / `.suggest(word)` |
-| Search many documents by keyword, ranked | [§38 Search](#38-search) — `Search.Index.new()` → `.add(key, text)` → `.search("quick -dog")` |
+| 2D/3D vector math (dot, length, normalize, distance) | [§31 `Vector2`](#31-vector2) / [§32 `Vector3`](#32-vector3) |
+| FIFO queue, sliding window, front+back stack | [§33 `Deque`](#33-deque) — `Deque.new()` — `push_back`/`pop_front` |
+| Priority scheduling, event simulation, shortest-path search | [§34 `PriorityQueue`](#34-priorityqueue) — `PriorityQueue.new()` — `push`/`pop` |
+| Parse a language / config format of your own | [§35 PEG](#35-peg) — write a PEG grammar, `PEG.parse(grammar, text)` → a tree `match` takes apart |
+| Model a workflow, protocol or UI mode as states and events | [§37 `StateMachine`](#37-statemachine) — `StateMachine.parse(text)`, or a description `Object` |
+| Autocomplete / prefix lookup over a large fixed word list | [§38 FST](#38-fst) — `FST.Set.new(FST.compile_set(words))` → `.predictive_search("hel")` |
+| Spelling correction, fuzzy lookup | [§38 FST](#38-fst) — `.edit_distance_search(word, 1)` / `.suggest(word)` |
+| Search many documents by keyword, ranked | [§39 Search](#39-search) — `Search.Index.new()` → `.add(key, text)` → `.search("quick -dog")` |
 | String / Array / Object methods | [language spec §18](language.md) |
 | Integer sequences (`range`, `iota`) | [language spec §19](language.md) |
 | Fill an `Array` with `n` copies of a value | [language spec §19](language.md) — `repeat(n, value)` |
@@ -4993,7 +4995,286 @@ inspect(TOML.stringify({a: 1, b: {c: 2}}))
 
 ---
 
-## 25. `SQLite`
+## 25. `XML`
+
+Read XML into plain values, search it with a small path language, and write it
+back. There is no element type: an element is an `Object` with four fields.
+The elements `parse` returns, and every element found in them, also have
+methods: `el.find(path)` is `XML.find(el, path)`, and so on for the rest.
+
+| Call | Result |
+| --- | --- |
+| `XML.parse(text, keep_space=false) -> Object` | the root element |
+| `XML.events(text, keep_space=false) -> Iterator` | the document as a lazy stream of events |
+| `el.find(path, namespaces={}) -> Object \| Nil` | the first match, or `nil` |
+| `el.find_all(path, namespaces={}) -> Array` | every match |
+| `el.find_iter(path, namespaces={}) -> Iterator` | every match, as an `Iterator` |
+| `el.text(path=".", namespaces={}) -> String \| Nil` | the text of the first match, or `nil` |
+| `el.stringify(indent=0, declaration=false) -> String` | XML text |
+
+An element has four fields, in this order:
+
+* `tag`: the name as written, prefix included (`'item'`, `'m:image'`).
+* `ns`: the namespace URI the name resolves to, or `nil` when it has none.
+* `attrs`: an `Object` of `String` values, keys as written and in document
+  order. Namespace declarations (`xmlns`, `xmlns:m`) stay here, which is how
+  `stringify` writes them back.
+* `children`: an `Array` of elements and `String`s (text), in document order.
+
+The methods are not fields: they live on a prototype every parsed element
+shares, so `inspect`, `==`, `keys()`, `for` and `JSON.stringify` see the four
+fields only, and `type_of` answers `'Object'`. `el.has('find')` is `true`, as
+for a class instance's method; `el.get('find', d)` and `el['find']` see no such
+field. An element built by hand, or a copy made with spread (`{...el}`), is a
+plain `Object` without the methods; the `XML` functions take any `Object` of
+this shape, so use them there. A parsed element keeps its methods when it is
+sent to another `Isolate` or through a `Channel`. `Shared.new` refuses one,
+since its methods are functions and a `Shared` value is data only.
+
+```culebra
+let doc = XML.parse('<order id="17"><item sku="a1">Tea</item><item sku="b2">Mug &amp; saucer</item></order>')
+inspect(doc.tag)                   # => 'order'
+inspect(doc.attrs)                 # => {id: '17'}
+inspect(doc.children[1])           # => {tag: 'item', ns: nil, attrs: {sku: 'b2'}, children: ['Mug & saucer']}
+inspect(doc.text('item[2]'))       # => 'Mug & saucer'
+inspect(XML.text(doc, 'item[2]'))  # => 'Mug & saucer'
+inspect({...doc}.find)             # => nil
+```
+
+### `XML.parse(text, keep_space=false) -> Object`
+
+Parse a whole document and return its root element.
+
+* **Text.** Adjacent text, CDATA sections and references merge into one
+  `String`; comments and processing instructions are dropped, so text on
+  either side of one merges too. Text that is only whitespace (space, tab,
+  newline, carriage return) is dropped unless `keep_space: true`; other text
+  is kept as written, not trimmed.
+* **Line ends.** `\r\n` and a lone `\r` read as `\n`, in text and CDATA
+  alike (XML 1.0 section 2.11).
+* **Attribute values.** A literal tab, newline or carriage return in a value
+  reads as a space (XML 1.0 section 3.3.3). One written as a character
+  reference (`&#10;`) is kept, which is how `stringify` writes them.
+* **Entities.** Only the five predefined ones (`&lt;` `&gt;` `&amp;` `&quot;`
+  `&apos;`) and character references (`&#10;`, `&#x1F600;`). Any other
+  `&name;` is an error naming it.
+* **Prolog.** The XML declaration and a DOCTYPE, internal subset included, are
+  read past and not kept. Nothing a DOCTYPE declares is used: no entity is
+  expanded and nothing external is fetched. The declaration holds `version`
+  (`1.` and digits), then optionally `encoding`, then optionally `standalone`
+  (`yes` or `no`), in that order, each once and after whitespace.
+* **Names.** Element, attribute and entity names, and processing instruction
+  targets, are made of XML 1.0's name characters: letters and digits of most
+  scripts, `_`, `-`, `.` and `:`, checked character by character. A
+  processing instruction target contains no `:`.
+* **Encoding.** UTF-8 only. A declaration naming another encoding is an error
+  (the name is compared case-insensitively), and so are bytes that are not
+  UTF-8 and characters XML does not allow (most control characters). A
+  leading byte order mark is skipped.
+* **Namespaces.** Each element's `ns` comes from the `xmlns` / `xmlns:p`
+  declarations in scope where it appears; `xmlns=""` removes the default
+  namespace, and the `xml` prefix is always bound to
+  `http://www.w3.org/XML/1998/namespace`. An element or attribute prefix that
+  nothing binds is an error. No other prefix, and not the default, may be bound
+  to that namespace, and nothing may be bound to
+  `http://www.w3.org/2000/xmlns/`. Two attributes of one element may not share
+  a namespace and local name, as `p:a` and `q:a` do when `p` and `q` are bound
+  to the same URI.
+* **Well-formedness.** One root element; end tags match; attribute names are
+  unique in their element and their values quoted, with no `<` inside; only
+  whitespace, comments and processing instructions around the root.
+* **Depth.** Elements nested more than 1000 deep raise `ValueError`
+  (`nesting too deep (limit 1000)`), as in `JSON`.
+
+A malformed document raises `ValueError` whose message starts with
+`XML.parse:`, and `e.line` / `e.col` (both 1-based, counting bytes) point at
+the fault in the document:
+
+```culebra
+let r = try {
+  XML.parse("<a>\n  <b></a>")
+  nil
+} catch e {
+  e
+}
+println(r.message)           # => XML.parse: mismatched end tag: expected '</b>', got '</a>'
+inspect("{r.line}:{r.col}")  # => '2:6'
+```
+
+### `XML.events(text, keep_space=false) -> Iterator`
+
+The same parser as `parse`, one event at a time, for a document too large to
+hold as a tree or when only part of it is needed. Each event is an `Object`:
+
+| `kind` | Other fields |
+| --- | --- |
+| `'start'` | `tag`, `ns`, `attrs` |
+| `'end'` | `tag`, `ns` |
+| `'text'` | `text` |
+
+`<a/>` yields a `start` and an `end`. Text merges and whitespace is dropped
+exactly as in `parse`; comments and processing instructions yield nothing.
+
+Nothing is read at the call. Each step parses only as far as the next event,
+so a malformed document raises when the iteration reaches the fault, after
+every event before it, with the message starting `XML.events:`. Leaving a
+`for` loop early with `break` closes the iterator and releases the parser;
+the rest of the text is never read.
+
+```culebra
+let texts = XML.events('<log><e>boot</e> <e>ready</e></log>')
+  .filter(|ev| ev.kind == 'text')
+  .map(|ev| ev.text)
+  .collect()
+inspect(texts)  # => ['boot', 'ready']
+# The tail is not XML, but the loop stops before reaching it.
+for ev in XML.events('<log><e>boot</e><<<') {
+  inspect(ev)  # => {kind: 'start', tag: 'log', ns: nil, attrs: {}}
+  break
+}
+```
+
+### `el.find(path, namespaces={}) -> Object | Nil`, `XML.find(el, path, namespaces={}) -> Object | Nil`
+
+### `el.find_all(path, namespaces={}) -> Array`, `XML.find_all(el, path, namespaces={}) -> Array`
+
+### `el.find_iter(path, namespaces={}) -> Iterator`, `XML.find_iter(el, path, namespaces={}) -> Iterator`
+
+Search the tree under `el` with `path`. `find_all` returns every match in
+document order without duplicates, `find` the first of them (or `nil`), and
+`find_iter` the same matches as `find_all` as an `Iterator`. The matches are
+the elements themselves, not copies.
+
+The path language is a subset of XPath: the abbreviated location paths of
+XPath 1.0, plus two name forms from later versions (`*:tag` from XPath 2.0,
+`Q{uri}tag` from XPath 3.0). Each form means what it means in XPath. A path is
+relative to `el`; steps are separated by `/`.
+
+| Step | Selects |
+| --- | --- |
+| `tag` | child elements named `tag` |
+| `p:tag` | child elements named `tag` in the namespace bound to `p` |
+| `Q{uri}tag` | child elements named `tag` in namespace `uri` (`Q{}tag`: in no namespace) |
+| `*:tag` | child elements named `tag` in any namespace or none |
+| `*`, `p:*`, `Q{uri}*` | every child element (in that namespace) |
+| `.` | the element itself |
+| `..` | the parent (nothing above `el`) |
+| `a//b` | `b` elements anywhere below an `a`, at any depth (`.//b`: anywhere below `el`) |
+
+| Predicate | Keeps an element that |
+| --- | --- |
+| `[@attr]` | has attribute `attr` |
+| `[@attr='v']` | has `attr` equal to `v` (`"v"` works too) |
+| `[tag]` | has a child element `tag` |
+| `[tag='v']` | has a child element `tag` whose text is `v` |
+| `[n]` | is the `n`th of the candidates (1-based) |
+| `[last()]`, `[last()-n]` | is the last candidate, or `n` before it |
+
+Predicates chain (`book[@lang='en'][2]`), each filtering what the one before
+kept. As in XPath, a position counts among the children of one parent:
+`book[1]` is the first `book` of every parent that has one, and `.//book[1]`
+the first `book` child of `el` and of each element under it. Attribute names in
+predicates are matched as written in the document (`[@xlink:href]`).
+
+**Names and namespaces.** A prefix in a path is looked up in `namespaces:`
+first, then in the `xmlns:p` declarations on `el` itself (not its ancestors,
+which an element does not record). A prefix found in neither is a
+`ValueError`. An unprefixed name matches only elements with no namespace, even
+under a default `xmlns=`; to match those, map `""` in `namespaces:` to their
+URI (XPath 2.0's default element namespace), or write `Q{uri}tag` or `*:tag`.
+
+Everything else is rejected with a `ValueError` naming the construct and its
+column: axes (`following-sibling::`), functions other than `last()`, `and`,
+`or`, comparisons other than `=`, unions (`|`), attribute steps (`a/@href`),
+and absolute paths (`/a`, `//a`: "a path is relative to the element"). A
+name in braces without the `Q` (`{uri}tag`, `{*}tag`) is not XPath either; its
+error gives the XPath spelling (`Q{uri}tag`, `*:tag`).
+
+```culebra
+let lib = XML.parse('<lib><shelf><book lang="en"><title>A</title></book><book lang="fr"><title>B</title></book></shelf><shelf><book lang="en"><title>C</title></book></shelf></lib>')
+let titles = |xs| xs.map(|b| b.text('title'))
+inspect(titles(lib.find_all('.//book')))              # => ['A', 'B', 'C']
+inspect(titles(lib.find_all(".//book[@lang='en']")))  # => ['A', 'C']
+inspect(titles(lib.find_all('.//book[1]')))           # => ['A', 'C']
+inspect(titles(lib.find_all('shelf/book[last()]')))   # => ['B', 'C']
+inspect(lib.find_all(".//book[title='B']/..").size()) # => 1
+inspect(lib.find_iter('.//title').count())            # => 3
+lib.find('shelf/following-sibling::shelf')  # !! unsupported path syntax 'following-sibling::' at column 7
+```
+
+With namespaces:
+
+```culebra
+let feed = XML.parse('<feed xmlns="urn:ex:feed" xmlns:m="urn:ex:media"><entry><title>First</title><m:image href="a.png"/></entry></feed>')
+inspect(feed.ns)                           # => 'urn:ex:feed'
+inspect(feed.children[0].children[1].ns)   # => 'urn:ex:media'
+let ns = {f: 'urn:ex:feed'}
+inspect(feed.text('f:entry/f:title', namespaces: ns))  # => 'First'
+# `m` is not in `ns`; the root's own xmlns:m binds it.
+inspect(feed.find('f:entry/m:image', namespaces: ns).attrs.href)  # => 'a.png'
+inspect(feed.find('entry'))                                        # => nil
+inspect(feed.find_all('entry', namespaces: {'': 'urn:ex:feed'}).size())  # => 1
+inspect(feed.find_all('*:entry').size())                                 # => 1
+```
+
+### `el.text(path=".", namespaces={}) -> String | Nil`, `XML.text(el, path=".", namespaces={}) -> String | Nil`
+
+The text of the first element `path` matches: its XPath string-value, every
+text below it joined in document order. `nil` when nothing matches; `''` for
+a match with no text. The whitespace `parse` dropped between elements is not
+part of it; parse with `keep_space: true` to keep it.
+
+```culebra
+inspect(XML.parse('<p>a <b>bold</b> word</p>').text())  # => 'a bold word'
+inspect(XML.parse('<p><q/></p>').text('q'))            # => ''
+inspect(XML.parse('<p/>').text('q'))                   # => nil
+```
+
+### `el.stringify(indent=0, declaration=false) -> String`, `XML.stringify(el, indent=0, declaration=false) -> String`
+
+Write an element as XML text: the `tag`, then `attrs` in order, then
+`children`. `ns` is not read; namespace declarations come from `attrs`.
+
+* `tag` must be a `String`. `attrs` and `children` may be left out (or `nil`);
+  when present `attrs` is an `Object` whose values are `String`, `Long`,
+  `Float` or `Bool`, and `children` an `Array` of elements and `String`s.
+  Anything else is a `TypeError`.
+* The tag and each key of `attrs` must be names `parse` accepts (a qualified
+  name: name characters, at most one `:`, not at either end); another is a
+  `TypeError`. Text and attribute values that hold bytes which are not UTF-8,
+  or a character no XML document can contain (most control characters), are
+  a `ValueError`.
+* An element with no children is written `<tag/>`.
+* Text escapes `&`, `<`, `>` and carriage return (`&#13;`). Attribute values
+  are quoted with `"` and escape `&`, `<`, `"`, and tab, newline and carriage
+  return as character references, so each reads back unchanged.
+* `indent > 0` puts each child element on its own indented line, but only in
+  an element whose children are all elements: an element holding any text
+  keeps its whole content on one line, so indenting never changes text.
+* `declaration: true` starts the output with
+  `<?xml version="1.0" encoding="UTF-8"?>` and a newline.
+* Elements nested more than 1000 deep raise `ValueError`, as in `parse`.
+
+`XML.parse(XML.stringify(e))` equals `e` for any `e` that `parse` returned,
+with or without `indent`, when both parses use the same `keep_space`.
+
+```culebra
+inspect(XML.stringify({tag: 'point', attrs: {x: 1, y: 2.5, note: 'a "b"'}}))  # => '<point x="1" y="2.5" note="a &quot;b&quot;"/>'
+let page = XML.parse('<page><head><title>Hi</title></head><p>Say <b>hi</b></p></page>')
+println(page.stringify(indent: 2, declaration: true))
+# => |
+# <?xml version="1.0" encoding="UTF-8"?>
+# <page>
+#   <head>
+#     <title>Hi</title>
+#   </head>
+#   <p>Say <b>hi</b></p>
+# </page>
+```
+
+---
+
+## 26. `SQLite`
 
 Embedded SQL database backed by [SQLite](https://sqlite.org) (the amalgamation
 is vendored and compiled in — no system library is required). `SQLite.open`
@@ -5091,13 +5372,13 @@ boundary. Transactions do not nest (use `SAVEPOINT` directly if you need that).
 
 ---
 
-## 26. `Canvas`
+## 27. `Canvas`
 
 An immediate-mode 2D framebuffer for little games and pixel graphics: draw a
 frame, `present` it, poll input, repeat. Colors are packed RGBA `Long`s and
 the buffer can be any size (a WASM-4-style 160×160 is typical). In the WASM
 Playground a Canvas program runs in the **Canvas tab** — frames are shown on a
-`<canvas>`, keyboard/pointer feed the input, and sound ([`Audio`](#39-audio)) plays through WebAudio.
+`<canvas>`, keyboard/pointer feed the input, and sound ([`Audio`](#40-audio)) plays through WebAudio.
 Natively a build **opens a real desktop window** on macOS, Linux and Windows,
 using vendored static raylib + SDL3, the same backend the
 `Scene` namespace links. Building it on Linux needs SDL3's documented build
@@ -5534,7 +5815,7 @@ share the same numbers.
 
 ### Audio
 
-Canvas carries no audio of its own: sound is the [`Audio`](#39-audio)
+Canvas carries no audio of its own: sound is the [`Audio`](#40-audio)
 namespace, which a Canvas program uses as any other program does.
 
 ### The game loop
@@ -5581,7 +5862,7 @@ no-op.
 
 ---
 
-## 27. `Scene`
+## 28. `Scene`
 
 A retained-mode renderer for 3D built from procedural geometry: you populate a
 scene graph of nodes — primitives (boxes, spheres, cylinders, planes) and
@@ -5957,7 +6238,7 @@ The mouse reports in window points; its buttons are `"left"`, `"right"` and
 
 ### Audio
 
-Scene carries no audio of its own: sound is the [`Audio`](#39-audio)
+Scene carries no audio of its own: sound is the [`Audio`](#40-audio)
 namespace, which a Scene program uses as any other program does.
 
 ### A minimal scene
@@ -5988,7 +6269,7 @@ view.drop()
 
 ---
 
-## 28. `Net`
+## 29. `Net`
 
 Raw TCP and UDP sockets, plus name resolution — the layer under
 [§15 Http](#15-http). Blocking, with an optional per-socket timeout: the same
@@ -6144,7 +6425,7 @@ raises `NetError: networking is not available in this build`.
 
 ---
 
-## 29. `Desktop` / `Webview`
+## 30. `Desktop` / `Webview`
 
 A desktop GUI written in web tech: a local HTTP server supplies the UI, a
 **native WebView** window displays it, and the whole thing ships as one
@@ -6291,7 +6572,7 @@ window.__culebra_before_close__ = () => {
 
 ---
 
-## 30. `Vector2`
+## 31. `Vector2`
 
 A minimal 2D float vector for graphics/game code — an ordinary culebra
 class, not a language builtin. Elements are
@@ -6332,13 +6613,13 @@ inspect({Vector2.new(1, 2), Vector2.new(1, 2)}.size())  # => 1
 | `"{a}"` / `to_string(a)` | `String` — `"(x, y)"` |
 
 `cross()` is intentionally not provided (on either `Vector2` or `Vector3`
-— see §31): a 2D cross product returns a scalar (the perp dot product)
+— see §32): a 2D cross product returns a scalar (the perp dot product)
 while a 3D cross product returns a vector, and no example in this codebase
 needed one.
 
-## 31. `Vector3`
+## 32. `Vector3`
 
-The 3D counterpart of `Vector2` (§30) — same design (Float-only, no
+The 3D counterpart of `Vector2` (§31) — same design (Float-only, no
 separate "Point" type, nominal `==`), same member set, with `x`, `y`, `z`
 fields and `Vector3.new(x, y, z)`.
 
@@ -6363,7 +6644,7 @@ inspect(a + Vector3.new(1, 1, 1))  # => (2.0, 3.0, 4.0)
 | `a.distance_squared_to(other)` | `Float` — skips the square root, for ranking or thresholding distances |
 | `"{a}"` / `to_string(a)` | `String` — `"(x, y, z)"` |
 
-## 32. `Deque`
+## 33. `Deque`
 
 A double-ended queue — an ordinary culebra class
 , not a language builtin. Backed by a
@@ -6406,7 +6687,7 @@ return `nil` on an empty `Deque` rather than throwing — the same
 ambiguity `Array.pop()` already accepts (a pushed `nil` and an empty
 `Deque` are indistinguishable from the return value alone).
 
-## 33. `PriorityQueue`
+## 34. `PriorityQueue`
 
 A binary min-heap over an `Array` — an ordinary culebra class
 , not a language builtin.
@@ -6446,7 +6727,7 @@ inspect(jobs.pop())  # => (1, 'ping')
 Like `Array.pop()` and `Deque`, `pop`/`peek` return `nil` on an empty
 queue rather than throwing.
 
-## 34. `PEG`
+## 35. `PEG`
 
 A parser generator: you write a **PEG** (parsing expression grammar) and get a
 syntax tree back. The engine is the vendored
@@ -6731,7 +7012,7 @@ is no tree to optimize); the rule-entry depth guard above still applies, but
 the tree-depth `ValueError` does not — there is no separate
 tree-materialization pass for it to bound.
 
-## 35. `CodeGen`
+## 36. `CodeGen`
 
 A closed intermediate representation and the register-bytecode compiler and
 executor that run it — [cpp-vmlib](https://github.com/yhirose/cpp-vmlib),
@@ -7171,7 +7452,7 @@ Neither `CodeGen.Module`, `CodeGen.Program` nor `CodeGen.Runtime` can cross
 an isolate boundary (`Isolate.spawn`/`Parallel.map`'s workers each build
 their own).
 
-## 36. `StateMachine`
+## 37. `StateMachine`
 
 A hierarchical state machine — a *statechart* — as an ordinary culebra
 class, not a language builtin. States
@@ -7182,7 +7463,7 @@ Two front ends build the same machine. `StateMachine.new` takes a
 description `Object`, so guards and actions are ordinary functions written
 beside it. `StateMachine.parse` takes the text DSL, where guards and
 actions are *names* resolved against the `guards:` / `actions:` tables —
-the same "name → function" table §34's semantic actions use.
+the same "name → function" table §35's semantic actions use.
 
 ```culebra
 let vending = `
@@ -7321,7 +7602,7 @@ initial state, a composite state without one, and two initial siblings.
 Not modelled: parallel regions and history states (SCXML's `<parallel>` and
 `<history>`). A machine is in exactly one leaf state at a time.
 
-## 37. `FST`
+## 38. `FST`
 
 A **compiled read-only dictionary** — a set of keys, or a map from keys to
 values, built once into a compact byte string and then queried (engine: the
@@ -7476,7 +7757,7 @@ characters — a one-character change to a multi-byte character costs more than
 one edit. Normalize (`.lower()`, and NFC via `String`) before building and
 before querying when that matters.
 
-## 38. `Search`
+## 39. `Search`
 
 A **full-text index**: add documents under keys you choose, then search them
 with a query language and get ranked hits back (engine: the vendored
@@ -7766,7 +8047,7 @@ times, or one that keeps adding to it.
 An index is not `Sendable`: results alias it, so it stays on the thread that
 built it. Give each isolate its own.
 
-## 39. `Audio`
+## 40. `Audio`
 
 Sound for any program: WASM-4-style tones, one-shot samples, streamed music,
 and PCM the script synthesises. `Audio` owns the sound device on its own and
@@ -7928,7 +8209,7 @@ whole block at once (rather than one call per sample) is what keeps this
 affordable in a script's own per-frame budget. A `Pcm` is silent in the
 browser, where it answers as a machine with no audio device does.
 
-## 40. Design notes
+## 41. Design notes
 
 ### Namespace-first, with three global shortcuts
 
@@ -7984,13 +8265,13 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 41. Not included (yet)
+## 42. Not included (yet)
 
 ### Heavier data structures
 
 `Set` and `Tuple` are language built-ins (see
-[`docs/language.md`](language.md)); `Deque` (§32) and `PriorityQueue`
-(§33) cover the queue/heap shapes, and `FST` (§37) the compiled
+[`docs/language.md`](language.md)); `Deque` (§33) and `PriorityQueue`
+(§34) cover the queue/heap shapes, and `FST` (§38) the compiled
 dictionary. No sorted map/tree; reach for `Object` plus
 `.sort()`/`.sorted()` (language spec §18) when order matters.
 

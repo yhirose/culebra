@@ -1,0 +1,885 @@
+// XML namespace: parse / events / find / find_all / find_iter / text /
+// stringify.
+// The parser, the path language and stringify are one C++ core (xml.h), so
+// running under tests/*.cul checks every lane agrees on values and errors.
+
+// The error a call raises, as "Kind: message".
+fn err(f) {
+  try {
+    f()
+    'no error'
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+// The same, with the document position a parse error carries.
+fn perr(f) {
+  try {
+    f()
+    'no error'
+  } catch e {
+    "{e.kind}: {e.message} @{e.line}:{e.col}"
+  }
+}
+
+// --- the element: {tag, ns, attrs, children} ---
+let doc = XML.parse('<note id="7" lang="en"><to>Tove</to><body>Hi <b>there</b>!</body></note>')
+assert_eq(doc.tag, 'note')
+assert_eq(doc.ns, nil)
+assert_eq(doc.attrs, {id: '7', lang: 'en'})
+assert_eq(doc.attrs.keys(), ['id', 'lang'])
+assert_eq(doc.children.size(), 2)
+assert_eq(doc.children[0], {tag: 'to', ns: nil, attrs: {}, children: ['Tove']})
+assert_eq(doc.children[1].children[0], 'Hi ')
+assert_eq(doc.children[1].children[1].tag, 'b')
+assert_eq(doc.children[1].children[2], '!')
+assert_eq(XML.parse('<e/>'), {tag: 'e', ns: nil, attrs: {}, children: []})
+assert_eq(XML.parse('<e></e>').children, [])
+assert_eq(XML.parse("<e a='single'/>").attrs.a, 'single')
+
+// Text, CDATA and references merge into one String; comments and PIs drop.
+assert_eq(
+  XML.parse('<a>x<![CDATA[<y>&]]>z&amp;<!-- c -->w<?pi data?>v</a>').children,
+  ['x<y>&z&wv'],
+)
+// Whitespace-only text between elements drops unless keep_space; other text
+// is kept verbatim.
+let spaced = "<a>\n  <b> x </b>\n  <c/>\n</a>"
+assert_eq(XML.parse(spaced).children.map(|c| type_of(c)), ['Object', 'Object'])
+assert_eq(XML.parse(spaced).children[0].children, [' x '])
+assert_eq(
+  XML.parse(spaced, keep_space: true).children,
+  [
+    "\n  ",
+    {tag: 'b', ns: nil, attrs: {}, children: [' x ']},
+    "\n  ",
+    {tag: 'c', ns: nil, attrs: {}, children: []},
+    "\n",
+  ],
+)
+assert_eq(XML.parse(spaced, true).children.size(), 5)
+// Line ends read as "\n" (XML 1.0 section 2.11).
+assert_eq(XML.parse("<a>1\r\n2\r3</a>").children, ["1\n2\n3"])
+
+// The declaration and DOCTYPE are read past, internal subset included.
+let prolog = "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\"?>\n<!-- lead -->\n<!DOCTYPE r [\n  <!ENTITY e \"boom\">\n  <!-- ] > -->\n]>\n<?pi x?>\n<r/>\n<!-- trail -->\n"
+assert_eq(XML.parse(prolog).tag, 'r')
+assert_eq(XML.parse(String.from_code_point(0xFEFF) + '<r/>').tag, 'r')
+assert_eq(XML.parse('<?xml version="1.0" encoding="UTF-8"?><r/>').tag, 'r')
+
+// --- entities: the five predefined and numeric references only ---
+assert_eq(XML.parse('<a>&lt;&gt;&amp;&quot;&apos;</a>').children, ["<>&\"'"])
+assert_eq(XML.parse('<a>&#65;&#x42;&#x1F600;&#10;</a>').children, ["AB😀\n"])
+assert_eq(XML.parse('<a t="&lt;&#x41;"/>').attrs.t, '<A')
+// A DOCTYPE's entities are never expanded (no XXE, no billion laughs).
+assert_eq(
+  perr(|| XML.parse('<!DOCTYPE r [<!ENTITY e "x">]><r>&e;</r>')),
+  "ValueError: XML.parse: undefined entity '&e;' @1:34",
+)
+assert_eq(
+  perr(|| XML.parse("<a>\n  &nbsp;</a>")),
+  "ValueError: XML.parse: undefined entity '&nbsp;' @2:3",
+)
+assert_eq(
+  perr(|| XML.parse('<a>&#0;</a>')),
+  "ValueError: XML.parse: character reference '&#0;' is not a valid XML character @1:4",
+)
+assert_eq(
+  perr(|| XML.parse('<a>&#xD800;</a>')),
+  "ValueError: XML.parse: character reference '&#xD800;' is not a valid XML character @1:4",
+)
+assert_eq(
+  perr(|| XML.parse('<a>&#x12G;</a>')),
+  "ValueError: XML.parse: malformed character reference @1:4",
+)
+assert_eq(
+  perr(|| XML.parse('<a>a & b</a>')),
+  "ValueError: XML.parse: '&' does not start an entity reference @1:6",
+)
+assert_eq(
+  perr(|| XML.parse('<a>&amp</a>')),
+  "ValueError: XML.parse: unterminated entity reference @1:4",
+)
+
+// --- well-formedness ---
+assert_eq(
+  perr(|| XML.parse('<a><b></a>')),
+  "ValueError: XML.parse: mismatched end tag: expected '</b>', got '</a>' @1:7",
+)
+assert_eq(
+  perr(|| XML.parse('<a x="1" x="2"/>')),
+  "ValueError: XML.parse: duplicate attribute 'x' @1:10",
+)
+assert_eq(
+  perr(|| XML.parse('<a x=1/>')),
+  "ValueError: XML.parse: attribute value must be quoted @1:6",
+)
+assert_eq(
+  perr(|| XML.parse('<a x="<"/>')),
+  "ValueError: XML.parse: '<' is not allowed in an attribute value @1:7",
+)
+assert_eq(
+  perr(|| XML.parse('<a x="1/>')),
+  "ValueError: XML.parse: unterminated attribute value @1:6",
+)
+assert_eq(
+  perr(|| XML.parse('<a x="1"y="2"/>')),
+  "ValueError: XML.parse: expected whitespace, '>' or '/>' in a start tag @1:9",
+)
+assert_eq(
+  perr(|| XML.parse('hello <a/>')),
+  "ValueError: XML.parse: content before the root element @1:1",
+)
+assert_eq(
+  perr(|| XML.parse('<a/>tail')),
+  "ValueError: XML.parse: content after the root element @1:5",
+)
+assert_eq(
+  perr(|| XML.parse('<a/><b/>')),
+  "ValueError: XML.parse: more than one root element @1:5",
+)
+assert_eq(
+  perr(|| XML.parse('  <!-- only -->  ')),
+  "ValueError: XML.parse: no root element @1:18",
+)
+assert_eq(perr(|| XML.parse('')), "ValueError: XML.parse: no root element @1:1")
+assert_eq(
+  perr(|| XML.parse('<a><b>')),
+  "ValueError: XML.parse: unexpected end of input: '<b>' is not closed @1:7",
+)
+assert_eq(
+  perr(|| XML.parse('<a>x]]>y</a>')),
+  "ValueError: XML.parse: ']]>' is not allowed in text @1:5",
+)
+assert_eq(
+  perr(|| XML.parse('<a><!-- a -- b --></a>')),
+  "ValueError: XML.parse: '--' is not allowed in a comment @1:11",
+)
+assert_eq(
+  perr(|| XML.parse('<a><![CDATA[x</a>')),
+  "ValueError: XML.parse: unterminated CDATA section @1:4",
+)
+assert_eq(
+  perr(|| XML.parse('<r/><?xml version="1.0"?>')),
+  "ValueError: XML.parse: the XML declaration is only allowed at the start @1:5",
+)
+assert_eq(
+  perr(|| XML.parse('<a:b:c/>')),
+  "ValueError: XML.parse: invalid qualified name 'a:b:c' @1:2",
+)
+assert_eq(
+  perr(|| XML.parse('<1a/>')),
+  "ValueError: XML.parse: content before the root element @1:1",
+)
+
+// UTF-8 only: another declared encoding is an error, and so are bytes that
+// are not UTF-8 or characters XML does not allow.
+assert_eq(
+  perr(|| XML.parse('<?xml version="1.0" encoding="ISO-8859-1"?><r/>')),
+  "ValueError: XML.parse: encoding 'ISO-8859-1' is not supported (only UTF-8) @1:31",
+)
+assert_eq(
+  perr(|| XML.parse('<r>ok' + Encoding.hex.decode('ff') + '</r>')),
+  "ValueError: XML.parse: invalid UTF-8 @1:6",
+)
+assert_eq(
+  perr(|| XML.parse('<r>' + Encoding.hex.decode('c0af') + '</r>')),
+  "ValueError: XML.parse: invalid UTF-8 @1:4",
+)
+assert_eq(
+  perr(|| XML.parse('<r>' + String.from_code_point(1) + '</r>')),
+  "ValueError: XML.parse: invalid character U+0001 @1:4",
+)
+assert_eq(XML.parse('<r>é😀</r>').children, ['é😀'])
+
+// Attribute values normalize literal whitespace to spaces (XML 1.0 3.3.3);
+// references keep theirs.
+assert_eq(XML.parse("<a v=\"x\ny\tz\r\nw\"/>").attrs.v, 'x y z w')
+assert_eq(XML.parse('<a v="x&#10;y&#9;z"/>').attrs.v, "x\ny\tz")
+
+// Nesting deeper than 1000 elements is an error, like JSON.
+let deep_ok = repeat(1000, '<a>').join('') + repeat(1000, '</a>').join('')
+mut depth = 0
+mut cur = XML.parse(deep_ok)
+while !cur.children.empty() {
+  cur = cur.children[0]
+  depth += 1
+}
+assert_eq(depth, 999)
+let too_deep = repeat(1001, '<a>').join('') + repeat(1001, '</a>').join('')
+assert_eq(
+  perr(|| XML.parse(too_deep)),
+  "ValueError: XML.parse: nesting too deep (limit 1000) @1:3001",
+)
+
+// Names are read as characters against XML 1.0's NameStartChar / NameChar,
+// so a character outside them ends the name even when it is not ASCII.
+assert_eq(XML.parse('<é日本 a·b="1"/>').tag, 'é日本')
+assert_eq(XML.parse('<é日本 a·b="1"/>').attrs, {'a·b': '1'})
+assert_eq(
+  perr(|| XML.parse('<a×/>')),
+  "ValueError: XML.parse: expected whitespace, '>' or '/>' in a start tag @1:3",
+)
+assert_eq(
+  perr(|| XML.parse('<a' + String.from_code_point(0xA0) + 'b/>')),
+  "ValueError: XML.parse: expected whitespace, '>' or '/>' in a start tag @1:3",
+)
+assert_eq(
+  perr(|| XML.parse('<r>&·x;</r>')),
+  "ValueError: XML.parse: '&' does not start an entity reference @1:4",
+)
+
+// The XML declaration: `version` first, then `encoding`, then `standalone`,
+// each at most once and after whitespace (XML 1.0 [23]-[32]).
+assert_eq(XML.parse('<?xml version="1.1" standalone="no"?><r/>').tag, 'r')
+assert_eq(
+  perr(|| XML.parse('<?xml encoding="UTF-8" version="1.0"?><r/>')),
+  'ValueError: XML.parse: the XML declaration must start with version @1:7',
+)
+assert_eq(
+  perr(|| XML.parse('<?xml version="1.0" standalone="yes" encoding="UTF-8"?><r/>')),
+  "ValueError: XML.parse: 'encoding' is repeated or out of order in the XML declaration @1:38",
+)
+assert_eq(
+  perr(|| XML.parse('<?xml version="1.0" version="1.0"?><r/>')),
+  "ValueError: XML.parse: 'version' is repeated or out of order in the XML declaration @1:21",
+)
+assert_eq(
+  perr(|| XML.parse('<?xml version="1.0"encoding="UTF-8"?><r/>')),
+  'ValueError: XML.parse: expected whitespace in the XML declaration @1:20',
+)
+assert_eq(
+  perr(|| XML.parse('<?xml version="2.0"?><r/>')),
+  "ValueError: XML.parse: version '2.0' is not an XML 1.x version @1:16",
+)
+assert_eq(
+  perr(|| XML.parse('<?xml version="1."?><r/>')),
+  "ValueError: XML.parse: version '1.' is not an XML 1.x version @1:16",
+)
+assert_eq(
+  perr(|| XML.parse('<?xml version="1.0" standalone="maybe"?><r/>')),
+  "ValueError: XML.parse: standalone must be 'yes' or 'no', got 'maybe' @1:33",
+)
+
+// A processing instruction's target is a name without ':' followed by
+// whitespace or `?>`; `<!DOCTYPE` is followed by whitespace.
+assert_eq(XML.parse('<r><?pi?></r>').children, [])
+assert_eq(
+  perr(|| XML.parse('<r><?pi"x"?></r>')),
+  "ValueError: XML.parse: expected whitespace or '?>' after a processing instruction target @1:8",
+)
+assert_eq(
+  perr(|| XML.parse('<r><?a:b x?></r>')),
+  "ValueError: XML.parse: a processing instruction target cannot contain ':' @1:6",
+)
+assert_eq(
+  perr(|| XML.parse('<!DOCTYPEr><r/>')),
+  "ValueError: XML.parse: expected whitespace after '<!DOCTYPE' @1:10",
+)
+
+// --- namespaces ---
+let nsdoc = XML.parse('<root xmlns="urn:d" xmlns:x="urn:x" xmlns:xlink="urn:l"><x:item xlink:href="#a">1</x:item><item>2</item><plain xmlns=""><deep/></plain><x:y xmlns:x="urn:x2"/></root>')
+assert_eq(nsdoc.ns, 'urn:d')
+assert_eq(nsdoc.attrs.keys(), ['xmlns', 'xmlns:x', 'xmlns:xlink'])
+assert_eq(nsdoc.children[0].tag, 'x:item')
+assert_eq(nsdoc.children[0].ns, 'urn:x')
+assert_eq(nsdoc.children[0].attrs['xlink:href'], '#a')
+assert_eq(nsdoc.children[1].ns, 'urn:d')
+assert_eq(nsdoc.children[2].ns, nil)
+assert_eq(nsdoc.children[2].children[0].ns, nil)
+assert_eq(nsdoc.children[3].ns, 'urn:x2')
+assert_eq(
+  XML.parse('<a xml:lang="en"><xml:b/></a>').children[0].ns,
+  'http://www.w3.org/XML/1998/namespace',
+)
+assert_eq(
+  perr(|| XML.parse('<p:a/>')),
+  "ValueError: XML.parse: unbound namespace prefix 'p' @1:2",
+)
+assert_eq(
+  perr(|| XML.parse('<a p:x="1"/>')),
+  "ValueError: XML.parse: unbound namespace prefix 'p' @1:4",
+)
+// A declaration is in scope for its element only.
+assert_eq(
+  perr(|| XML.parse('<r><a xmlns:p="urn:p"/><p:c/></r>')),
+  "ValueError: XML.parse: unbound namespace prefix 'p' @1:25",
+)
+assert_eq(
+  perr(|| XML.parse('<a xmlns:p=""/>')),
+  "ValueError: XML.parse: namespace prefix 'p' cannot be undeclared @1:4",
+)
+
+// Two attributes may not share a namespace and local name however they are
+// prefixed (Namespaces in XML 1.0 §6.3).
+assert_eq(
+  XML
+    .parse('<r xmlns:p="urn:x" xmlns:q="urn:y" p:a="1" q:a="2" p:b="3"/>')
+    .attrs
+    .size(),
+  5,
+)
+assert_eq(
+  perr(|| XML.parse('<r xmlns:p="urn:x" xmlns:q="urn:x" p:a="1" q:a="2"/>')),
+  "ValueError: XML.parse: attribute 'q:a' has the same namespace and local name as 'p:a' @1:44",
+)
+// Reserved names (§3): the XML namespace belongs to `xml` alone, and the
+// xmlns namespace is never declared, as a prefix or as the default.
+assert_eq(
+  XML.parse('<r xmlns:xml="http://www.w3.org/XML/1998/namespace"/>').tag,
+  'r',
+)
+assert_eq(
+  perr(|| XML.parse('<r xmlns:p="http://www.w3.org/XML/1998/namespace"/>')),
+  "ValueError: XML.parse: the namespace 'http://www.w3.org/XML/1998/namespace' is bound only to the 'xml' prefix @1:4",
+)
+assert_eq(
+  perr(|| XML.parse('<r xmlns="http://www.w3.org/XML/1998/namespace"/>')),
+  "ValueError: XML.parse: the namespace 'http://www.w3.org/XML/1998/namespace' is bound only to the 'xml' prefix @1:4",
+)
+assert_eq(
+  perr(|| XML.parse('<r xmlns:p="http://www.w3.org/2000/xmlns/"/>')),
+  "ValueError: XML.parse: the namespace 'http://www.w3.org/2000/xmlns/' cannot be declared @1:4",
+)
+assert_eq(
+  perr(|| XML.parse('<r xmlns="http://www.w3.org/2000/xmlns/"/>')),
+  "ValueError: XML.parse: the namespace 'http://www.w3.org/2000/xmlns/' cannot be declared @1:4",
+)
+
+// --- events: a lazy Iterator over the same parser ---
+let evs = XML.events("<r a=\"1\"><s>x</s><t/>\n</r>").collect()
+assert_eq(
+  evs,
+  [
+    {kind: 'start', tag: 'r', ns: nil, attrs: {a: '1'}},
+    {kind: 'start', tag: 's', ns: nil, attrs: {}},
+    {kind: 'text', text: 'x'},
+    {kind: 'end', tag: 's', ns: nil},
+    {kind: 'start', tag: 't', ns: nil, attrs: {}},
+    {kind: 'end', tag: 't', ns: nil},
+    {kind: 'end', tag: 'r', ns: nil},
+  ],
+)
+assert_eq(
+  XML.events("<r>\n<t/></r>", keep_space: true).map(|e| e.kind).collect(),
+  ['start', 'text', 'start', 'end', 'end'],
+)
+assert_eq(
+  XML
+    .events('<r xmlns="urn:r"><p:q xmlns:p="urn:p"/></r>')
+    .map(|e| e.ns)
+    .collect(),
+  ['urn:r', 'urn:p', 'urn:p', 'urn:r'],
+)
+// Nothing is parsed at the call: a malformed document raises when the
+// iteration reaches the fault, after every event before it.
+let bad = XML.events('<r><s/><t></r>')
+let seen = []
+let bad_err = perr(fn () {
+  for e in bad {
+    seen.push("{e.kind}:{e.tag}")
+  }
+})
+assert_eq(seen, ['start:r', 'start:s', 'end:s', 'start:t'])
+assert_eq(
+  bad_err,
+  "ValueError: XML.events: mismatched end tag: expected '</t>', got '</r>' @1:11",
+)
+assert_eq(err(|| XML.events('not xml')), 'no error')
+assert_eq(
+  err(|| XML.events('not xml').next()),
+  'ValueError: XML.events: content before the root element',
+)
+// Breaking out early releases the parser (the iterator's dispose); the
+// rest of the document, malformed here, is never read.
+let firsts = []
+for _ in range(3) {
+  for e in XML.events('<r><a/><b/><<<') {
+    firsts.push(e.tag)
+    break
+  }
+}
+assert_eq(firsts, ['r', 'r', 'r'])
+assert_eq(
+  XML.events('<r><a/><b/></r>').take(2).map(|e| e.tag).collect(),
+  ['r', 'a'],
+)
+let manual = XML.events('<r/>')
+assert_true(manual.has_next())
+assert_eq(manual.next().kind, 'start')
+assert_eq(manual.next().kind, 'end')
+assert_false(manual.has_next())
+manual.dispose()
+
+// --- paths ---
+let lib = XML.parse('<lib><shelf id="s1"><book lang="en" year="2001"><title>A</title><author>X</author></book><book lang="fr"><title>B</title></book><note>n1</note></shelf><shelf id="s2"><book lang="en"><title>C</title><author>Y</author><author>Z</author></book></shelf></lib>')
+fn titles(xs) {
+  xs.map(|b| XML.text(b, 'title'))
+}
+assert_eq(XML.find(lib, 'shelf').attrs.id, 's1')
+assert_eq(XML.find(lib, 'nothing'), nil)
+assert_eq(XML.find_all(lib, 'shelf').size(), 2)
+assert_eq(titles(XML.find_all(lib, 'shelf/book')), ['A', 'B', 'C'])
+assert_eq(titles(XML.find_all(lib, './/book')), ['A', 'B', 'C'])
+assert_eq(titles(XML.find_all(lib, 'shelf//book')), ['A', 'B', 'C'])
+assert_eq(XML.find_all(lib, '*').size(), 2)
+assert_eq(
+  XML.find_all(lib, 'shelf/*').map(|e| e.tag),
+  ['book', 'book', 'note', 'book'],
+)
+assert_eq(XML.find_all(lib, '.').size(), 1)
+assert_true(XML.find(lib, '.') == lib)
+assert_eq(XML.find_all(lib, './/title/..').size(), 3)
+// `..` above the context element matches nothing.
+assert_eq(XML.find(lib, '..'), nil)
+assert_eq(XML.find_all(lib, 'shelf/..').size(), 1)
+// Document order, no duplicates.
+assert_eq(XML.find_all(lib, './/book/../book').size(), 3)
+assert_eq(
+  XML.find_all(lib, './/*').map(|e| e.tag),
+  [
+    'shelf',
+    'book',
+    'title',
+    'author',
+    'book',
+    'title',
+    'note',
+    'shelf',
+    'book',
+    'title',
+    'author',
+    'author',
+  ],
+)
+// Predicates.
+assert_eq(titles(XML.find_all(lib, './/book[@year]')), ['A'])
+assert_eq(titles(XML.find_all(lib, './/book[@lang="en"]')), ['A', 'C'])
+assert_eq(titles(XML.find_all(lib, ".//book[@lang='fr']")), ['B'])
+assert_eq(titles(XML.find_all(lib, './/book[author]')), ['A', 'C'])
+assert_eq(titles(XML.find_all(lib, ".//book[author='Z']")), ['C'])
+assert_eq(titles(XML.find_all(lib, ".//book[ title = 'B' ]")), ['B'])
+assert_eq(titles(XML.find_all(lib, './/book[@lang="en"][author]')), ['A', 'C'])
+// Positions are per parent, as in XPath, and count after the predicates
+// before them.
+assert_eq(titles(XML.find_all(lib, './/book[1]')), ['A', 'C'])
+assert_eq(titles(XML.find_all(lib, 'shelf/book[2]')), ['B'])
+assert_eq(titles(XML.find_all(lib, 'shelf/book[last()]')), ['B', 'C'])
+assert_eq(titles(XML.find_all(lib, 'shelf/book[last()-1]')), ['A'])
+assert_eq(titles(XML.find_all(lib, './/book[@lang="en"][1]')), ['A', 'C'])
+assert_eq(titles(XML.find_all(lib, 'shelf[2]/book')), ['C'])
+assert_eq(XML.find_all(lib, './/author[2]').map(|e| XML.text(e)), ['Z'])
+assert_eq(XML.find_all(lib, 'shelf/book[0]'), [])
+assert_eq(XML.find_all(lib, 'shelf/book[9]'), [])
+// A child named `last` is a name test, not the function.
+assert_eq(XML.find(XML.parse('<a><b><last/></b></a>'), 'b[last]').tag, 'b')
+// find_iter gives find_all's matches as an Iterator.
+assert_eq(
+  XML.find_iter(lib, './/title').map(|t| XML.text(t)).collect(),
+  ['A', 'B', 'C'],
+)
+mut n_iter = 0
+for _ in XML.find_iter(lib, './/title') {
+  n_iter += 1
+}
+assert_eq(n_iter, 3)
+
+// text: the XPath string-value of the first match.
+assert_eq(XML.text(lib, 'shelf/note'), 'n1')
+assert_eq(XML.text(lib, 'shelf/book'), 'AX')
+assert_eq(XML.text(XML.parse('<p>a<b>b<i>c</i></b>d</p>')), 'abcd')
+assert_eq(XML.text(lib, 'missing'), nil)
+assert_eq(XML.text(XML.parse('<e/>')), '')
+
+// Namespaced names: prefixes come from `namespaces:`, an unprefixed name
+// means no namespace unless "" is mapped, `Q{uri}` spells the namespace in
+// place (XPath 3.0) and `*:` means any (XPath 2.0).
+let feed = XML.parse('<feed xmlns="urn:atom" xmlns:m="urn:media"><entry><title>T1</title><m:thumb url="a.png"/></entry><entry><title>T2</title></entry><title xmlns="">bare</title></feed>')
+let ns = {a: 'urn:atom', m: 'urn:media'}
+assert_eq(XML.find_all(feed, 'a:entry', namespaces: ns).size(), 2)
+assert_eq(
+  XML.find_all(feed, 'a:entry/a:title', ns).map(|t| XML.text(t)),
+  ['T1', 'T2'],
+)
+assert_eq(XML.find(feed, 'a:entry/m:thumb', namespaces: ns).attrs.url, 'a.png')
+assert_eq(XML.find_all(feed, 'entry'), [])
+assert_eq(XML.text(feed, 'title'), 'bare')
+assert_eq(XML.find_all(feed, 'entry', namespaces: {'': 'urn:atom'}).size(), 2)
+assert_eq(XML.find_all(feed, 'Q{urn:atom}entry').size(), 2)
+assert_eq(XML.find_all(feed, '*:title').size(), 1)
+assert_eq(XML.find_all(feed, './/*:title').size(), 3)
+assert_eq(XML.find_all(feed, 'Q{}title').map(|t| XML.text(t)), ['bare'])
+assert_eq(
+  XML.find_all(feed, './/m:*', namespaces: ns).map(|e| e.tag),
+  ['m:thumb'],
+)
+assert_eq(XML.find_all(feed, 'Q{urn:atom}*').size(), 2)
+assert_eq(XML.text(feed, 'Q{urn:atom}entry[Q{urn:media}thumb]/*:title'), 'T1')
+// The brace forms outside XPath are errors that name the XPath spelling.
+assert_eq(
+  err(|| XML.find(feed, 'x/{urn:atom}entry')),
+  "ValueError: XML.find: '\{urn:atom}entry' is not XPath syntax at column 3; write Q\{urn:atom}entry",
+)
+assert_eq(
+  err(|| XML.find_all(feed, '{*}title')),
+  "ValueError: XML.find_all: '\{*}title' is not XPath syntax at column 1; write *:title",
+)
+assert_eq(
+  err(|| XML.find(feed, '{}title')),
+  "ValueError: XML.find: '\{}title' is not XPath syntax at column 1; write Q\{}title",
+)
+assert_eq(
+  err(|| XML.find(feed, 'a[{urn:atom}*]')),
+  "ValueError: XML.find: '\{urn:atom}*' is not XPath syntax at column 3; write Q\{urn:atom}*",
+)
+assert_eq(
+  err(|| XML.find(feed, '*:*')),
+  "ValueError: XML.find: unsupported path syntax '*' at column 3",
+)
+// A braced URI holds no '{' (XPath 3.0's BracedURILiteral).
+assert_eq(
+  err(|| XML.find(feed, 'Q{a{b}c')),
+  "ValueError: XML.find: unsupported path syntax '\{' at column 4",
+)
+// Path names follow the parser's name characters.
+assert_eq(
+  err(|| XML.find(feed, 'a×')),
+  "ValueError: XML.find: unsupported path syntax '×' at column 2",
+)
+// `//` over nested matches walks each subtree once: at depth 1000 this took
+// seconds (23.6 on a -O1 build) while every nested match walked its own
+// subtree again, and takes milliseconds now. Its result keeps document order
+// without duplicates.
+let nested = XML.parse(repeat(1000, '<a>').join('') +
+  repeat(1000, '</a>').join(''))
+let t_nested = Time.monotonic()
+assert_eq(nested.find_all('.//a//a').size(), 998)
+assert_true(Time.monotonic() - t_nested < 2.0)
+assert_eq(
+  XML.find_all(lib, './/*//title').map(|t| XML.text(t)),
+  ['A', 'B', 'C'],
+)
+assert_eq(XML.text(feed, 'a:entry[m:thumb]/a:title', namespaces: ns), 'T1')
+// A prefix `namespaces:` lacks falls back to the start element's own
+// `xmlns:p` declarations; `namespaces:` wins when both bind it. Its `xmlns=`
+// default is never read: an unprefixed name still means no namespace.
+let cat = XML.parse('<cat xmlns="urn:cat" xmlns:p="urn:price"><item><p:cost>3</p:cost></item><p:cost>9</p:cost><q:cost xmlns:q="urn:price">7</q:cost></cat>')
+assert_eq(XML.text(cat, 'p:cost'), '9')
+assert_eq(XML.find_all(cat, './/p:cost').map(|c| XML.text(c)), ['3', '9', '7'])
+assert_eq(XML.find_iter(cat, './/p:cost').count(), 3)
+assert_eq(XML.text(cat, 'p:cost', namespaces: {p: 'urn:other'}), nil)
+assert_eq(XML.text(cat, 'x:cost', namespaces: {x: 'urn:price'}), '9')
+assert_eq(XML.find_all(cat, 'item'), [])
+assert_eq(XML.find_all(cat, 'item', namespaces: {'': 'urn:cat'}).size(), 1)
+// Only the start element's declarations: a child's own is not consulted.
+assert_eq(
+  err(|| XML.find(cat, 'q:cost')),
+  "ValueError: XML.find: unknown namespace prefix 'q' at column 1",
+)
+let inner = XML.find(cat, '*:item')
+assert_eq(
+  err(|| XML.find(inner, 'p:cost')),
+  "ValueError: XML.find: unknown namespace prefix 'p' at column 1",
+)
+// Attributes in predicates match by the name as written.
+let linked = XML.parse('<r xmlns:xlink="urn:l"><a xlink:href="#x"/><a/></r>')
+assert_eq(XML.find_all(linked, 'a[@xlink:href]').size(), 1)
+assert_eq(XML.find_all(linked, "a[@xlink:href='#x']").size(), 1)
+// In a hand-built tree an attribute that is not a scalar is present but
+// equals no literal; Long / Float / Bool compare as their text.
+let built = {
+  tag: 'r',
+  children: [
+    {tag: 'a', attrs: {k: [1]}},
+    {tag: 'a', attrs: {k: ''}},
+    {tag: 'a', attrs: {k: 2}},
+  ],
+}
+assert_eq(XML.find_all(built, 'a[@k]').size(), 3)
+assert_eq(XML.find_all(built, "a[@k='']").map(|e| e.attrs.k), [''])
+assert_eq(XML.find_all(built, "a[@k='[1]']"), [])
+assert_eq(XML.find_all(built, "a[@k='2']").size(), 1)
+
+// Path errors name the construct and its column.
+assert_eq(
+  err(|| XML.find(lib, 'x:book')),
+  "ValueError: XML.find: unknown namespace prefix 'x' at column 1",
+)
+assert_eq(
+  err(|| XML.find(lib, '/lib')),
+  'ValueError: XML.find: a path is relative to the element',
+)
+assert_eq(
+  err(|| XML.find_all(lib, '//book')),
+  'ValueError: XML.find_all: a path is relative to the element',
+)
+assert_eq(
+  err(|| XML.find(lib, 'shelf/following-sibling::shelf')),
+  "ValueError: XML.find: unsupported path syntax 'following-sibling::' at column 7",
+)
+assert_eq(
+  err(|| XML.find(lib, 'shelf/text()')),
+  "ValueError: XML.find: unsupported path syntax 'text()' at column 7",
+)
+assert_eq(
+  err(|| XML.find(lib, 'book[position()=1]')),
+  "ValueError: XML.find: unsupported path syntax 'position()' at column 6",
+)
+assert_eq(
+  err(|| XML.find(lib, 'book[@a or @b]')),
+  "ValueError: XML.find: unsupported path syntax 'or' at column 9",
+)
+assert_eq(
+  err(|| XML.find(lib, "book[@a='1' and @b]")),
+  "ValueError: XML.find: unsupported path syntax 'and' at column 13",
+)
+assert_eq(
+  err(|| XML.find(lib, "book[@a!='1']")),
+  "ValueError: XML.find: unsupported path syntax '!=' at column 8",
+)
+assert_eq(
+  err(|| XML.find(lib, 'book[@a<1]')),
+  "ValueError: XML.find: unsupported path syntax '<' at column 8",
+)
+assert_eq(
+  err(|| XML.find_iter(lib, 'shelf|book')),
+  "ValueError: XML.find_iter: unsupported path syntax '|' at column 6",
+)
+assert_eq(
+  err(|| XML.find(lib, 'shelf/@id')),
+  "ValueError: XML.find: unsupported path syntax '@' at column 7",
+)
+assert_eq(
+  err(|| XML.text(lib, "shelf[.='x']")),
+  "ValueError: XML.text: unsupported path syntax '.' at column 7",
+)
+assert_eq(
+  err(|| XML.find(lib, 'shelf/')),
+  'ValueError: XML.find: unexpected end of path at column 7',
+)
+assert_eq(
+  err(|| XML.find(lib, 'shelf[1')),
+  'ValueError: XML.find: unterminated predicate at column 6',
+)
+assert_eq(
+  err(|| XML.find(lib, '..[1]')),
+  "ValueError: XML.find: unsupported path syntax '[' at column 3",
+)
+assert_eq(err(|| XML.find(lib, '')), 'ValueError: XML.find: empty path')
+assert_eq(
+  err(|| XML.find(lib, 'a', namespaces: {p: 1})),
+  "TypeError: XML.find: namespace 'p' must map to a String, got Long",
+)
+
+// --- stringify ---
+assert_eq(
+  XML.stringify(XML.parse('<a x="1"><b/>t&amp;<c>&lt;</c></a>')),
+  '<a x="1"><b/>t&amp;<c>&lt;</c></a>',
+)
+assert_eq(
+  XML.stringify({
+    tag: 'e',
+    attrs: {q: 'a"b<c&d>', ws: "l1\nl2\r\tx"},
+    children: ["1 < 2 > 0 & \r"],
+  }),
+  '<e q="a&quot;b&lt;c&amp;d>" ws="l1&#10;l2&#13;&#9;x">1 &lt; 2 &gt; 0 &amp; &#13;</e>',
+)
+assert_eq(
+  XML.stringify({tag: 'n', attrs: {l: 1, f: 2.5, b: true}, children: []}),
+  '<n l="1" f="2.5" b="true"/>',
+)
+assert_eq(XML.stringify({tag: 'br'}), '<br/>')
+assert_eq(
+  XML.stringify(XML.parse('<r/>'), declaration: true),
+  "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<r/>",
+)
+// Indentation applies only where every child is an element; an element
+// holding text keeps its content on one line.
+let pretty = XML.parse('<r><a><b/><c>x<d/>y</c></a><e>t</e></r>')
+assert_eq(
+  XML.stringify(pretty, indent: 2),
+  "<r>\n  <a>\n    <b/>\n    <c>x<d/>y</c>\n  </a>\n  <e>t</e>\n</r>",
+)
+assert_eq(
+  XML.stringify(XML.parse('<m>t<a><b/></a></m>'), 2),
+  '<m>t<a><b/></a></m>',
+)
+assert_eq(
+  XML.stringify(pretty, 4, true).split("\n")[0],
+  '<?xml version="1.0" encoding="UTF-8"?>',
+)
+assert_eq(
+  err(|| XML.stringify({children: []})),
+  "TypeError: XML.stringify: an element's tag must be a String, got Nil",
+)
+assert_eq(
+  err(|| XML.stringify({tag: 3})),
+  "TypeError: XML.stringify: an element's tag must be a String, got Long",
+)
+assert_eq(
+  err(|| XML.stringify({tag: 'a', children: 'x'})),
+  'TypeError: XML.stringify: children must be an Array, got String',
+)
+assert_eq(
+  err(|| XML.stringify({tag: 'a', children: [1]})),
+  'TypeError: XML.stringify: a child must be an element Object or a String, got Long',
+)
+assert_eq(
+  err(|| XML.stringify({tag: 'a', attrs: {x: [1]}})),
+  "TypeError: XML.stringify: attribute 'x' must be a String, Long, Float or Bool, got Array",
+)
+assert_eq(
+  err(|| XML.stringify({tag: 'a', attrs: [1]})),
+  'TypeError: XML.stringify: attrs must be an Object, got Array',
+)
+mut tower = {tag: 'x', children: []}
+for _ in range(1000) {
+  tower = {tag: 'x', children: [tower]}
+}
+assert_eq(
+  err(|| XML.stringify(tower)),
+  'ValueError: XML.stringify: nesting too deep (limit 1000)',
+)
+assert_eq(
+  err(|| XML.find_all(tower, './/x')),
+  'ValueError: XML.find_all: nesting too deep (limit 1000)',
+)
+// stringify writes only what parse reads back: names are QNames (a
+// TypeError otherwise, like a tag that is not a String), and a character no
+// XML document can hold is a ValueError.
+assert_eq(XML.stringify({tag: 'é', attrs: {'日': 'v'}}), '<é 日="v"/>')
+assert_eq(
+  err(|| XML.stringify({tag: 'a b'})),
+  "TypeError: XML.stringify: invalid element name 'a b'",
+)
+assert_eq(
+  err(|| XML.stringify({tag: ''})),
+  "TypeError: XML.stringify: invalid element name ''",
+)
+assert_eq(
+  err(|| XML.stringify({tag: 'p:a:b'})),
+  "TypeError: XML.stringify: invalid element name 'p:a:b'",
+)
+assert_eq(
+  err(|| XML.stringify({tag: 'a', attrs: {'x"y': '1'}})),
+  "TypeError: XML.stringify: invalid attribute name 'x\"y'",
+)
+assert_eq(
+  err(|| XML.stringify({tag: 'a', children: [String.from_code_point(1)]})),
+  'ValueError: XML.stringify: invalid character U+0001',
+)
+assert_eq(
+  err(|| XML.stringify({tag: 'a', attrs: {k: String.from_code_point(0)}})),
+  'ValueError: XML.stringify: invalid character U+0000',
+)
+assert_eq(
+  err(|| XML.stringify({tag: 'a', children: [Encoding.hex.decode('ff')]})),
+  'ValueError: XML.stringify: invalid UTF-8',
+)
+
+// Round trip: parse(stringify(parse(s))) == parse(s), indented or not.
+let samples = [
+  '<note id="7"><to>Tove</to><body>Hi <b>there</b>!</body></note>',
+  prolog,
+  '<a v="x&#10;y&#9;z&#13;" w="&quot;&apos;&lt;&gt;&amp;">1&#13;2 &lt;tag&gt; <![CDATA[]]>]]&gt;</a>',
+  '<root xmlns="urn:d" xmlns:x="urn:x"><x:item x:k="v">1</x:item><plain xmlns=""/></root>',
+  '<p>  lead <i> mid </i> trail  </p>',
+]
+for s in samples {
+  let once = XML.parse(s)
+  assert_eq(XML.parse(XML.stringify(once)), once)
+  assert_eq(XML.parse(XML.stringify(once, indent: 2)), once)
+  let spaced_once = XML.parse(s, keep_space: true)
+  assert_eq(
+    XML.parse(XML.stringify(spaced_once), keep_space: true),
+    spaced_once,
+  )
+}
+
+// --- parameter types ---
+assert_eq(
+  err(|| XML.parse(1)),
+  "TypeError: type error: parameter 'text' expects String",
+)
+assert_eq(
+  err(|| XML.parse('<a/>', keep_space: 1)),
+  "TypeError: type error: parameter 'keep_space' expects Bool",
+)
+assert_eq(
+  err(|| XML.find('<a/>', 'a')),
+  "TypeError: type error: parameter 'el' expects Object",
+)
+assert_eq(
+  err(|| XML.find(lib, 1)),
+  "TypeError: type error: parameter 'path' expects String",
+)
+assert_eq(
+  err(|| XML.stringify(lib, indent: 'x')),
+  "TypeError: type error: parameter 'indent' expects Long",
+)
+// As values, through the same adapters.
+let find = XML.find
+assert_eq(find(lib, 'shelf').attrs.id, 's1')
+let parse = XML.parse
+assert_eq(parse('<a/>', true).tag, 'a')
+
+// --- the method form: a parsed element reaches the functions as methods ---
+let m = XML.parse('<shop xmlns:p="urn:p"><item id="1">Tea</item><item id="2"><p:cost>3</p:cost></item></shop>')
+assert_eq(m.find('item').attrs.id, '1')
+assert_eq(m.find('item'), XML.find(m, 'item'))
+assert_eq(m.find('nothing'), nil)
+assert_eq(m.find_all('item').map(|e| e.attrs.id), ['1', '2'])
+assert_eq(m.find_iter('item').map(|e| e.attrs.id).collect(), ['1', '2'])
+assert_eq(m.text(), 'Tea3')
+assert_eq(m.text('item'), 'Tea')
+assert_eq(m.text('item/p:cost'), '3')
+assert_eq(m.text('item/q:cost', namespaces: {q: 'urn:p'}), '3')
+assert_eq(m.find('item').stringify(), '<item id="1">Tea</item>')
+assert_eq(
+  m.stringify(indent: 1, declaration: true),
+  XML.stringify(m, indent: 1, declaration: true),
+)
+// Found elements are the parsed ones, so they carry the methods too.
+assert_eq(
+  m.find_all('item')[1].find('p:cost', namespaces: {p: 'urn:p'}).text(),
+  '3',
+)
+// `find` on the children Array is still Array.find.
+assert_eq(m.children.find(|c| c.attrs.id == '2').attrs.id, '2')
+// The methods live on a shared prototype: the element's own fields are the
+// four, so it prints, compares, serializes and iterates as a plain Object.
+let plain_m = XML.parse('<a x="1">t</a>')
+assert_eq(plain_m.keys(), ['tag', 'ns', 'attrs', 'children'])
+assert_eq(type_of(plain_m), 'Object')
+assert_eq(plain_m, {tag: 'a', ns: nil, attrs: {x: '1'}, children: ['t']})
+assert_eq(
+  JSON.stringify(plain_m),
+  '{"tag":"a","ns":null,"attrs":{"x":"1"},"children":["t"]}',
+)
+assert_eq(
+  IO.capture(|| inspect(plain_m)),
+  "\{tag: 'a', ns: nil, attrs: \{x: '1'}, children: ['t']}\n",
+)
+// A hand-built element, a spread copy and an event are plain Objects.
+assert_eq({tag: 'a'}.find, nil)
+assert_eq({...plain_m}.find, nil)
+assert_eq(XML.events('<a/>').next().find, nil)
+assert_eq(err(|| m.find()), "ArityError: missing required argument 'path'")
+assert_eq(
+  err(|| m.find('item', {}, 3)),
+  'ArityError: expected 2 positional arguments, got 3',
+)
+assert_eq(
+  err(|| m.find(1)),
+  "TypeError: type error: parameter 'path' expects String",
+)
+assert_eq(
+  err(|| m.find('q:x')),
+  "ValueError: XML.find: unknown namespace prefix 'q' at column 1",
+)
+assert_eq(
+  err(|| m.stringify(indent: 'x')),
+  "TypeError: type error: parameter 'indent' expects Long",
+)
+let bound = m.find
+assert_eq(bound('item').attrs.id, '1')

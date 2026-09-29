@@ -135,7 +135,7 @@ The whole standard library is bound before the program runs — no
 package manager, no lockfile:
 
 - **Data.** JSON (with optional JSONC comments and trailing commas),
-  CSV, TOML, `.env`, UUID, and SQLite — the amalgamation is compiled
+  CSV, TOML, XML, `.env`, UUID, and SQLite — the amalgamation is compiled
   in, so there is no system library to install.
 - **Text.** Grapheme-aware regex, encodings (base64 / hex / url / HTML
   entities), SHA / MD5 digests and HMAC, gzip / deflate.

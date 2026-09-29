@@ -62,23 +62,24 @@
 22. [`Term`](#22-term) — TUI向けの端末の色・カーソル制御・サイズ・キー/マウス入力
 23. [`Log`](#23-log) — stderrへのレベル付き構造化ログ（text / JSON、child logger）
 24. [`TOML`](#24-toml) — TOML設定をparse / stringify
-25. [`SQLite`](#25-sqlite) — 組み込みSQLデータベース（query / execute / プリペアド文 / トランザクション）
-26. [`Canvas`](#26-canvas) — ゲーム向けイミディエイトモード2Dフレームバッファ（図形 / スプライト / オフスクリーン描画先 / テキスト / キー・マウス・ゲームパッド / ウィンドウ制御）
-27. [`Scene`](#27-scene) — 手続きジオメトリ向けのretained-mode 3Dレンダラ
-28. [`Net`](#28-net) — 生のTCP / UDPソケットと名前解決（`Http`の下位レイヤ）
-29. [`Desktop` / `Webview`](#29-desktop--webview) — ネイティブWebViewのデスクトップアプリ: ローカルHTTPサーバ + ウィンドウを1呼び出しで
-30. [`Vector2`](#30-vector2) — グラフィックス/ゲーム向けの最小限の2D floatベクトル（「Point」の代わりも兼ねる）
-31. [`Vector3`](#31-vector3) — `Vector2`の3D版
-32. [`Deque`](#32-deque) — 両端キュー、両端のpush/popが償却O(1)
-33. [`PriorityQueue`](#33-priorityqueue) — 二分ヒープ、push/popがO(log n)
-34. [`PEG`](#34-peg) — PEGパーサジェネレータ。文法を書くと構文木が返る
-35. [`CodeGen`](#35-codegen) — 小さな言語のIRを手で組み立てて実行する
-36. [`StateMachine`](#36-statemachine) — 入れ子にできる状態機械。テキストでも書ける
-37. [`FST`](#37-fst) — 書き換えない辞書を圧縮して持つ。前方一致・補完・あいまい検索
-38. [`Search`](#38-search) — 自分の文書を全文検索して順位をつける
-39. [`Audio`](#39-audio) — ウィンドウの有無によらず使える音: WASM-4のtone、効果音、ストリーム再生の音楽、合成するPCM
-40. [設計上の注記](#40-設計上の注記)
-41. [未収録（将来検討）](#41-未収録将来検討)
+25. [`XML`](#25-xml): XMLをparse / 検索（XPathの部分集合） / stringify。大きな文書向けの遅延イベント列
+26. [`SQLite`](#26-sqlite) — 組み込みSQLデータベース（query / execute / プリペアド文 / トランザクション）
+27. [`Canvas`](#27-canvas) — ゲーム向けイミディエイトモード2Dフレームバッファ（図形 / スプライト / オフスクリーン描画先 / テキスト / キー・マウス・ゲームパッド / ウィンドウ制御）
+28. [`Scene`](#28-scene) — 手続きジオメトリ向けのretained-mode 3Dレンダラ
+29. [`Net`](#29-net) — 生のTCP / UDPソケットと名前解決（`Http`の下位レイヤ）
+30. [`Desktop` / `Webview`](#30-desktop--webview) — ネイティブWebViewのデスクトップアプリ: ローカルHTTPサーバ + ウィンドウを1呼び出しで
+31. [`Vector2`](#31-vector2) — グラフィックス/ゲーム向けの最小限の2D floatベクトル（「Point」の代わりも兼ねる）
+32. [`Vector3`](#32-vector3) — `Vector2`の3D版
+33. [`Deque`](#33-deque) — 両端キュー、両端のpush/popが償却O(1)
+34. [`PriorityQueue`](#34-priorityqueue) — 二分ヒープ、push/popがO(log n)
+35. [`PEG`](#35-peg) — PEGパーサジェネレータ。文法を書くと構文木が返る
+36. [`CodeGen`](#36-codegen) — 小さな言語のIRを手で組み立てて実行する
+37. [`StateMachine`](#37-statemachine) — 入れ子にできる状態機械。テキストでも書ける
+38. [`FST`](#38-fst) — 書き換えない辞書を圧縮して持つ。前方一致・補完・あいまい検索
+39. [`Search`](#39-search) — 自分の文書を全文検索して順位をつける
+40. [`Audio`](#40-audio) — ウィンドウの有無によらず使える音: WASM-4のtone、効果音、ストリーム再生の音楽、合成するPCM
+41. [設計上の注記](#41-設計上の注記)
+42. [未収録（将来検討）](#42-未収録将来検討)
 
 **目的別索引**
 
@@ -104,7 +105,7 @@
 | 外部コマンド実行 | [§11 Proc](#11-proc) — `Proc.run(["git", "status"])` |
 | HTTP/HTTPS APIを呼ぶ | [§15 Http](#15-http) — `Http.get("https://api.example/x")` |
 | HTTPを提供する（ルーティング・静的ファイル・WebSocket） | [§15 `Http.server()`](#httpserver---object) — `Http.server().get("/", h).listen(8080)` |
-| 生のTCP / UDPを話す、ホスト名を解決する | [§28 Net](#28-net) — `Net.connect(host, port)` / `Net.listen(port)` / `Net.udp()` / `Net.resolve(host)` |
+| 生のTCP / UDPを話す、ホスト名を解決する | [§29 Net](#29-net) — `Net.connect(host, port)` / `Net.listen(port)` / `Net.udp()` / `Net.resolve(host)` |
 | HTMLエンティティのescape / unescape | [§16 Encoding](#16-encoding) — `Encoding.html.unescape("a &amp; b")` |
 | base64 / hex / urlのエンコード・デコード | [§16 Encoding](#16-encoding) — `Encoding.base64.encode(s)` |
 | データ・ファイルのgzip / gunzip | [§17 Compress](#17-compress) — `Compress.gzip(s)` / `Compress.gunzip(z)` |
@@ -112,6 +113,7 @@
 | ハッシュ / チェックサム / HMAC | [§18 Hash](#18-hash) — `Hash.sha256(s)` / `Hash.hmac_sha256(key, s)` |
 | CSVのパース / 生成 | [§19 CSV](#19-csv) — `CSV.parse(text)` / `CSV.stringify(rows)` |
 | TOMLのパース / 生成 | [§24 TOML](#24-toml) — `TOML.parse(text)` / `TOML.stringify(obj)` |
+| XMLのパース / 検索 / 生成 | [§25 XML](#25-xml): `XML.parse(text)` / `root.find_all(".//item")` / `el.stringify()` |
 | `.env`設定ファイルの読込 | [§20 Env](#20-env) — `Env.load(".env")` / `Env.parse(text)` |
 | UUIDの生成 | [§21 UUID](#21-uuid) — `UUID.v4()` / `UUID.v7()` |
 | レベル付き / 構造化ログ | [§23 Log](#23-log) — `Log.info("msg", {k: v})` / `Log.with({req: id})` |
@@ -119,17 +121,17 @@
 | 固定レイアウトデータをスレッド/プロセス間で共有（zero copy） | [§12 SharedBuffer](#sharedbuffer--zero-copy-で共有する固定レイアウトデータ) — `SharedBuffer.new(n, FloatPair)` / `.file` / `.shared` |
 | 可変長のread-onlyデータをスレッド間で共有（コピーなし） | [§12 Shared](#shared--参照共有する-immutable-値) — `Shared.new(value)` |
 | Ctrl+C / SIGINTを綺麗に扱う | [§12 Signal](#signal--signalnotify--signalreset) — `Signal.notify(tx)` / `Signal.reset()` |
-| デスクトップGUI（ネイティブWebView + ローカルサーバ） | [§29 Desktop](#29-desktop--webview) — `Desktop.run({title, assets, routes})` |
-| 音を鳴らす（tone・効果音・音楽）、音を合成する | [§39 Audio](#39-audio) — `Audio.tone(440, 10)` / `Audio.Sound.new(bytes).play()` / `Audio.Music.new(bytes)` / `Audio.Pcm.new(44100, 1, 1024)` |
+| デスクトップGUI（ネイティブWebView + ローカルサーバ） | [§30 Desktop](#30-desktop--webview) — `Desktop.run({title, assets, routes})` |
+| 音を鳴らす（tone・効果音・音楽）、音を合成する | [§40 Audio](#40-audio) — `Audio.tone(440, 10)` / `Audio.Sound.new(bytes).play()` / `Audio.Music.new(bytes)` / `Audio.Pcm.new(44100, 1, 1024)` |
 | ヒープ情報・リークチェック | [§7 GC](#gc--ヒープ情報の取得) — `GC.stat()` → `{live_objects, rc_objects, heap_bytes}` |
-| 2D/3Dベクトル演算（dot、length、normalize、distance） | [§30 `Vector2`](#30-vector2) / [§31 `Vector3`](#31-vector3) |
-| FIFOキュー、スライディングウィンドウ、前後両端のスタック | [§32 `Deque`](#32-deque) — `Deque.new()` — `push_back`/`pop_front` |
-| 優先度スケジューリング、イベントシミュレーション、最短経路探索 | [§33 `PriorityQueue`](#33-priorityqueue) — `PriorityQueue.new()` — `push`/`pop` |
-| 自前の言語・設定フォーマットをパースする | [§34 PEG](#34-peg) — PEG文法を書いて`PEG.parse(grammar, text)`。返る木は`match`で分解できる |
-| 手順・通信手順・画面のモードを状態とイベントで表す | [§36 `StateMachine`](#36-statemachine) — `StateMachine.parse(text)`、または記述用の`Object` |
-| 変わらない大きな語彙から前方一致で補完する | [§37 FST](#37-fst) — `FST.Set.new(FST.compile_set(words))` → `.predictive_search("hel")` |
-| 綴りの直し・あいまい検索 | [§37 FST](#37-fst) — `.edit_distance_search(word, 1)`／`.suggest(word)` |
-| たくさんの文書を語で検索して順位をつける | [§38 Search](#38-search) — `Search.Index.new()` → `.add(key, text)` → `.search("quick -dog")` |
+| 2D/3Dベクトル演算（dot、length、normalize、distance） | [§31 `Vector2`](#31-vector2) / [§32 `Vector3`](#32-vector3) |
+| FIFOキュー、スライディングウィンドウ、前後両端のスタック | [§33 `Deque`](#33-deque) — `Deque.new()` — `push_back`/`pop_front` |
+| 優先度スケジューリング、イベントシミュレーション、最短経路探索 | [§34 `PriorityQueue`](#34-priorityqueue) — `PriorityQueue.new()` — `push`/`pop` |
+| 自前の言語・設定フォーマットをパースする | [§35 PEG](#35-peg) — PEG文法を書いて`PEG.parse(grammar, text)`。返る木は`match`で分解できる |
+| 手順・通信手順・画面のモードを状態とイベントで表す | [§37 `StateMachine`](#37-statemachine) — `StateMachine.parse(text)`、または記述用の`Object` |
+| 変わらない大きな語彙から前方一致で補完する | [§38 FST](#38-fst) — `FST.Set.new(FST.compile_set(words))` → `.predictive_search("hel")` |
+| 綴りの直し・あいまい検索 | [§38 FST](#38-fst) — `.edit_distance_search(word, 1)`／`.suggest(word)` |
+| たくさんの文書を語で検索して順位をつける | [§39 Search](#39-search) — `Search.Index.new()` → `.add(key, text)` → `.search("quick -dog")` |
 | 行列・テンソル演算（BLAS対応） | [§8 Tensor](#8-tensor) |
 | String / Array / Objectのメソッド | [言語仕様 §18](language.ja.md) |
 | 整数列（`range`, `iota`） | [言語仕様 §19](language.ja.md) |
@@ -4838,7 +4840,268 @@ inspect(TOML.stringify({a: 1, b: {c: 2}}))
 
 ---
 
-## 25. `SQLite`
+## 25. `XML`
+
+XMLを普通の値として読み込み、小さなパス言語で検索し、書き戻す。専用の要素型は
+無い。要素は4つのフィールドを持つ`Object`である。`parse`が返す要素と、そこから
+見つかる要素はメソッドも持つ。`el.find(path)`は`XML.find(el, path)`と同じで、
+ほかも同様。
+
+| 呼び出し | 結果 |
+| --- | --- |
+| `XML.parse(text, keep_space=false) -> Object` | ルート要素 |
+| `XML.events(text, keep_space=false) -> Iterator` | 文書を遅延評価のイベント列として返す |
+| `el.find(path, namespaces={}) -> Object \| Nil` | 最初の一致、無ければ`nil` |
+| `el.find_all(path, namespaces={}) -> Array` | すべての一致 |
+| `el.find_iter(path, namespaces={}) -> Iterator` | すべての一致を`Iterator`で |
+| `el.text(path=".", namespaces={}) -> String \| Nil` | 最初の一致のテキスト、無ければ`nil` |
+| `el.stringify(indent=0, declaration=false) -> String` | XMLテキスト |
+
+要素は次の4つのフィールドをこの順で持つ:
+
+* `tag`: 書かれたとおりの名前。接頭辞も含む（`'item'`、`'m:image'`）。
+* `ns`: 名前が解決された名前空間URI。名前空間が無ければ`nil`。
+* `attrs`: 値が`String`の`Object`。キーは書かれたとおり、文書中の順。名前空間
+  宣言（`xmlns`、`xmlns:m`）もここに残り、`stringify`はこれを使って宣言を書き戻す。
+* `children`: 要素と`String`（テキスト）の`Array`。文書中の順。
+
+メソッドはフィールドではなく、parseされたすべての要素が共有するプロトタイプに
+ある。そのため`inspect`、`==`、`keys()`、`for`、`JSON.stringify`には4つの
+フィールドしか見えず、`type_of`は`'Object'`を返す。`el.has('find')`はクラス
+インスタンスのメソッドと同じく`true`を返すが、`el.get('find', d)`と`el['find']`
+からはフィールドとして見えない。手で組み立てた要素や、spreadで作ったコピー
+（`{...el}`）はメソッドを持たない普通の`Object`である。`XML`の関数は
+この形の`Object`なら何でも受け取るので、そうした要素には関数を使う。parseされた
+要素は、別の`Isolate`に送っても`Channel`を通してもメソッドを保つ。`Shared.new`は
+これを受け付けない。メソッドは関数で、`Shared`の値はデータだけだからである。
+
+```culebra
+let doc = XML.parse('<order id="17"><item sku="a1">Tea</item><item sku="b2">Mug &amp; saucer</item></order>')
+inspect(doc.tag)                   # => 'order'
+inspect(doc.attrs)                 # => {id: '17'}
+inspect(doc.children[1])           # => {tag: 'item', ns: nil, attrs: {sku: 'b2'}, children: ['Mug & saucer']}
+inspect(doc.text('item[2]'))       # => 'Mug & saucer'
+inspect(XML.text(doc, 'item[2]'))  # => 'Mug & saucer'
+inspect({...doc}.find)             # => nil
+```
+
+### `XML.parse(text, keep_space=false) -> Object`
+
+文書全体をparseし、ルート要素を返す。
+
+* **テキスト。** 隣り合うテキスト・CDATAセクション・参照は1つの`String`に
+  まとまる。コメントと処理命令は捨てられるので、その両側のテキストもまとまる。
+  空白（スペース・タブ・改行・復帰）だけのテキストは`keep_space: true`でない限り
+  捨てられる。それ以外のテキストは書かれたとおりに残り、前後の空白も削られない。
+* **改行。** `\r\n`と単独の`\r`は、テキストでもCDATAでも`\n`として読む
+  （XML 1.0の2.11節）。
+* **属性値。** 値の中に直接書かれたタブ・改行・復帰はスペースとして読む
+  （XML 1.0の3.3.3節）。文字参照（`&#10;`）で書かれたものは残り、`stringify`も
+  この形で書く。
+* **実体。** 定義済みの5つ（`&lt;` `&gt;` `&amp;` `&quot;` `&apos;`）と文字参照
+  （`&#10;`、`&#x1F600;`）だけ。それ以外の`&name;`はその名前を示すエラーになる。
+* **プロローグ。** XML宣言とDOCTYPE（内部サブセットを含む）は読み飛ばし、残さない。
+  DOCTYPEが宣言したものは何も使わない。実体は展開せず、外部のものも取得しない。
+  宣言には`version`（`1.`と数字）、続いて省略可能な`encoding`、さらに省略可能な
+  `standalone`（`yes`か`no`）を、この順に、それぞれ1回だけ、空白の後に書く。
+* **名前。** 要素名・属性名・実体名と処理命令のターゲットは、XML 1.0の名前文字
+  （大半の文字体系の文字と数字、`_`、`-`、`.`、`:`）で書き、1文字ずつ検査する。
+  処理命令のターゲットは`:`を含まない。
+* **文字コード。** UTF-8のみ。宣言が別の文字コードを名乗ればエラー（名前の比較は
+  大文字小文字を区別しない）。UTF-8でないバイト列や、XMLが許さない文字（大半の
+  制御文字）もエラー。先頭のバイトオーダーマークは読み飛ばす。
+* **名前空間。** 各要素の`ns`は、その位置で有効な`xmlns` / `xmlns:p`宣言から決まる。
+  `xmlns=""`は既定の名前空間を外し、接頭辞`xml`は常に
+  `http://www.w3.org/XML/1998/namespace`に束縛される。どの宣言も束縛していない
+  要素や属性の接頭辞はエラー。ほかの接頭辞も既定の名前空間もこの名前空間には
+  束縛できず、`http://www.w3.org/2000/xmlns/`には何も束縛できない。1つの要素の
+  2つの属性が同じ名前空間と局所名を持つこと（`p`と`q`が同じURIに束縛されたときの
+  `p:a`と`q:a`など）もできない。
+* **整形式。** ルート要素は1つ。終了タグは対応する開始タグと一致する。属性名は要素内で
+  重複せず、値は引用符で囲まれ、`<`を含まない。ルートの外には空白・コメント・処理命令
+  しか置けない。
+* **深さ。** 1000段を超えて入れ子になった要素は`JSON`と同じく`ValueError`
+  （`nesting too deep (limit 1000)`）になる。
+
+不正な文書は`XML.parse:`で始まるメッセージの`ValueError`を投げ、`e.line` /
+`e.col`（いずれも1始まり、バイト単位）が文書中の問題箇所を指す:
+
+```culebra
+let r = try {
+  XML.parse("<a>\n  <b></a>")
+  nil
+} catch e {
+  e
+}
+println(r.message)           # => XML.parse: mismatched end tag: expected '</b>', got '</a>'
+inspect("{r.line}:{r.col}")  # => '2:6'
+```
+
+### `XML.events(text, keep_space=false) -> Iterator`
+
+`parse`と同じパーサを1イベントずつ使う。木として持つには大きすぎる文書や、
+一部だけが必要な場合に向く。各イベントは`Object`:
+
+| `kind` | ほかのフィールド |
+| --- | --- |
+| `'start'` | `tag`、`ns`、`attrs` |
+| `'end'` | `tag`、`ns` |
+| `'text'` | `text` |
+
+`<a/>`は`start`と`end`を1つずつ生む。テキストのまとめ方と空白の扱いは`parse`と
+まったく同じで、コメントと処理命令は何も生まない。
+
+呼び出した時点では何も読まない。各ステップは次のイベントまでしかparseしないので、
+不正な文書は反復が問題箇所に達したときに、それより前のイベントをすべて返した後で
+`XML.events:`で始まるメッセージの例外を投げる。`for`ループを`break`で途中で抜けると
+イテレータが閉じてパーサが解放され、残りのテキストは読まれない。
+
+```culebra
+let texts = XML.events('<log><e>boot</e> <e>ready</e></log>')
+  .filter(|ev| ev.kind == 'text')
+  .map(|ev| ev.text)
+  .collect()
+inspect(texts)  # => ['boot', 'ready']
+# The tail is not XML, but the loop stops before reaching it.
+for ev in XML.events('<log><e>boot</e><<<') {
+  inspect(ev)  # => {kind: 'start', tag: 'log', ns: nil, attrs: {}}
+  break
+}
+```
+
+### `el.find(path, namespaces={}) -> Object | Nil`, `XML.find(el, path, namespaces={}) -> Object | Nil`
+
+### `el.find_all(path, namespaces={}) -> Array`, `XML.find_all(el, path, namespaces={}) -> Array`
+
+### `el.find_iter(path, namespaces={}) -> Iterator`, `XML.find_iter(el, path, namespaces={}) -> Iterator`
+
+`el`以下の木を`path`で検索する。`find_all`はすべての一致を文書順に重複なく返し、
+`find`はその最初（無ければ`nil`）、`find_iter`は`find_all`と同じ一致を`Iterator`で
+返す。返るのは要素そのもので、コピーではない。
+
+パス言語はXPathの部分集合で、XPath 1.0の省略形のロケーションパスに、後の版の名前の
+形式を2つ加えたもの（XPath 2.0の`*:tag`とXPath 3.0の`Q{uri}tag`）。各形式の意味は
+XPathでの意味と同じ。パスは`el`からの相対で、ステップは`/`で区切る。
+
+| ステップ | 選ぶもの |
+| --- | --- |
+| `tag` | 名前が`tag`の子要素 |
+| `p:tag` | `p`に束縛された名前空間にある、名前が`tag`の子要素 |
+| `Q{uri}tag` | 名前空間`uri`にある、名前が`tag`の子要素（`Q{}tag`は名前空間なし） |
+| `*:tag` | 名前空間の有無を問わず、名前が`tag`の子要素 |
+| `*`、`p:*`、`Q{uri}*` | すべての子要素（その名前空間のもの） |
+| `.` | 要素自身 |
+| `..` | 親（`el`より上には何も無い） |
+| `a//b` | `a`の下の任意の深さにある`b`要素（`.//b`は`el`の下の任意の位置） |
+
+| 述語 | 残す要素 |
+| --- | --- |
+| `[@attr]` | 属性`attr`を持つ |
+| `[@attr='v']` | 属性`attr`が`v`に等しい（`"v"`も可） |
+| `[tag]` | 子要素`tag`を持つ |
+| `[tag='v']` | テキストが`v`の子要素`tag`を持つ |
+| `[n]` | 候補の`n`番目（1始まり） |
+| `[last()]`、`[last()-n]` | 最後の候補、またはその`n`個前 |
+
+述語は連ねられ（`book[@lang='en'][2]`）、それぞれが前の述語の残したものをさらに
+絞る。XPathと同じく位置は1つの親の子の中で数える。`book[1]`は`book`を持つ各親の
+最初の`book`で、`.//book[1]`は`el`自身と、その下の各要素の最初の`book`子要素。
+述語中の属性名は文書に書かれたとおりの名前で照合する（`[@xlink:href]`）。
+
+**名前と名前空間。** パス中の接頭辞はまず`namespaces:`で引き、無ければ`el`自身の
+`xmlns:p`宣言で引く（祖先の宣言は見ない。要素は祖先を記録していない）。どちらにも
+無い接頭辞は`ValueError`。接頭辞の無い名前は、既定の`xmlns=`の下にあっても名前空間の
+無い要素にしか一致しない。そうした要素に一致させるには`namespaces:`で`""`をそのURIに
+対応させる（XPath 2.0の既定要素名前空間）か、`Q{uri}tag`か`*:tag`と書く。
+
+それ以外はすべて、その構文と桁を示す`ValueError`で拒否する: 軸（`following-sibling::`）、
+`last()`以外の関数、`and`、`or`、`=`以外の比較、和集合（`|`）、属性ステップ
+（`a/@href`）、絶対パス（`/a`、`//a`: "a path is relative to the element"）。
+`Q`の無い波括弧の名前（`{uri}tag`、`{*}tag`）もXPathではなく、そのエラーはXPathでの
+書き方（`Q{uri}tag`、`*:tag`）を示す。
+
+```culebra
+let lib = XML.parse('<lib><shelf><book lang="en"><title>A</title></book><book lang="fr"><title>B</title></book></shelf><shelf><book lang="en"><title>C</title></book></shelf></lib>')
+let titles = |xs| xs.map(|b| b.text('title'))
+inspect(titles(lib.find_all('.//book')))              # => ['A', 'B', 'C']
+inspect(titles(lib.find_all(".//book[@lang='en']")))  # => ['A', 'C']
+inspect(titles(lib.find_all('.//book[1]')))           # => ['A', 'C']
+inspect(titles(lib.find_all('shelf/book[last()]')))   # => ['B', 'C']
+inspect(lib.find_all(".//book[title='B']/..").size()) # => 1
+inspect(lib.find_iter('.//title').count())            # => 3
+lib.find('shelf/following-sibling::shelf')  # !! unsupported path syntax 'following-sibling::' at column 7
+```
+
+名前空間を使う場合:
+
+```culebra
+let feed = XML.parse('<feed xmlns="urn:ex:feed" xmlns:m="urn:ex:media"><entry><title>First</title><m:image href="a.png"/></entry></feed>')
+inspect(feed.ns)                           # => 'urn:ex:feed'
+inspect(feed.children[0].children[1].ns)   # => 'urn:ex:media'
+let ns = {f: 'urn:ex:feed'}
+inspect(feed.text('f:entry/f:title', namespaces: ns))  # => 'First'
+# `m` is not in `ns`; the root's own xmlns:m binds it.
+inspect(feed.find('f:entry/m:image', namespaces: ns).attrs.href)  # => 'a.png'
+inspect(feed.find('entry'))                                        # => nil
+inspect(feed.find_all('entry', namespaces: {'': 'urn:ex:feed'}).size())  # => 1
+inspect(feed.find_all('*:entry').size())                                 # => 1
+```
+
+### `el.text(path=".", namespaces={}) -> String | Nil`, `XML.text(el, path=".", namespaces={}) -> String | Nil`
+
+`path`に最初に一致した要素のテキスト。XPathのstring-value、つまりその下のすべての
+テキストを文書順につないだもの。一致が無ければ`nil`、テキストの無い要素なら`''`。
+`parse`が要素の間で捨てた空白は含まない。残すには`keep_space: true`で読む。
+
+```culebra
+inspect(XML.parse('<p>a <b>bold</b> word</p>').text())  # => 'a bold word'
+inspect(XML.parse('<p><q/></p>').text('q'))            # => ''
+inspect(XML.parse('<p/>').text('q'))                   # => nil
+```
+
+### `el.stringify(indent=0, declaration=false) -> String`, `XML.stringify(el, indent=0, declaration=false) -> String`
+
+要素をXMLテキストとして書く。`tag`、順序どおりの`attrs`、`children`の順に出力する。
+`ns`は読まない。名前空間宣言は`attrs`から出る。
+
+* `tag`は`String`でなければならない。`attrs`と`children`は省略（または`nil`）できる。
+  ある場合、`attrs`は値が`String`・`Long`・`Float`・`Bool`の`Object`、`children`は
+  要素と`String`の`Array`。それ以外は`TypeError`。
+* タグと`attrs`の各キーは`parse`が受け付ける名前（修飾名: 名前文字で書き、`:`は
+  1つまでで両端には置かない）でなければならず、そうでなければ`TypeError`。
+  テキストと属性値にUTF-8でないバイト列や、XML文書に含められない文字（大半の
+  制御文字）があれば`ValueError`。
+* 子の無い要素は`<tag/>`と書く。
+* テキストは`&`、`<`、`>`と復帰（`&#13;`）をエスケープする。属性値は`"`で囲み、
+  `&`、`<`、`"`をエスケープし、タブ・改行・復帰を文字参照で書くので、どれも読み戻すと
+  元のままになる。
+* `indent > 0`は子要素を1つずつインデントした行に置くが、子がすべて要素である要素に
+  限る。テキストを1つでも持つ要素は中身全体を1行に保つので、インデントがテキストを
+  変えることはない。
+* `declaration: true`は出力の先頭に`<?xml version="1.0" encoding="UTF-8"?>`と改行を
+  置く。
+* 1000段を超えて入れ子になった要素は`parse`と同じく`ValueError`になる。
+
+`parse`が返した任意の`e`について、2回のparseが同じ`keep_space`を使えば、`indent`の
+有無にかかわらず`XML.parse(XML.stringify(e))`は`e`に等しい。
+
+```culebra
+inspect(XML.stringify({tag: 'point', attrs: {x: 1, y: 2.5, note: 'a "b"'}}))  # => '<point x="1" y="2.5" note="a &quot;b&quot;"/>'
+let page = XML.parse('<page><head><title>Hi</title></head><p>Say <b>hi</b></p></page>')
+println(page.stringify(indent: 2, declaration: true))
+# => |
+# <?xml version="1.0" encoding="UTF-8"?>
+# <page>
+#   <head>
+#     <title>Hi</title>
+#   </head>
+#   <p>Say <b>hi</b></p>
+# </page>
+```
+
+---
+
+## 26. `SQLite`
 
 [SQLite](https://sqlite.org) による組み込みSQLデータベース（amalgamationを
 vendor同梱・コンパイル済みで、システムライブラリ不要）。`SQLite.open`は
@@ -4935,13 +5198,13 @@ Database / Statementハンドルは生成したスレッド（isolate）に紐�
 
 ---
 
-## 26. `Canvas`
+## 27. `Canvas`
 
 小さなゲームやピクセルグラフィックス向けのイミディエイトモード2Dフレーム
 バッファ。フレームを描き、`present`で提示し、入力をポーリングして繰り返す。
 色はpacked RGBA `Long`、バッファは任意サイズ（WASM-4流の160×160が典型）。
 WASM PlaygroundではCanvasプログラムは **Canvasタブ**で動く — フレームは
-`<canvas>`に表示され、キーボード / ポインタが入力になり、音（[`Audio`](#39-audio)）は
+`<canvas>`に表示され、キーボード / ポインタが入力になり、音（[`Audio`](#40-audio)）は
 WebAudioで鳴る。ネイティブではmacOS・Linux・Windowsで（`Scene`と同じvendored静的
 raylib + SDL3を使い）**実際のデスクトップウィンドウを開く**。Linuxでの
 ビルドにはSDL3が挙げるビルド依存が必要で、探索するX11 / 音声のヘッダが
@@ -5361,7 +5624,7 @@ raylib自身の`GamepadButton` / `GamepadAxis`の値で、スクリプトがそ�
 
 ### 音声
 
-Canvasは音声を持たない。音は名前空間[`Audio`](#39-audio)で、Canvasのプログラムも
+Canvasは音声を持たない。音は名前空間[`Audio`](#40-audio)で、Canvasのプログラムも
 ほかのプログラムと同じようにそれを使う。
 
 ### ゲームループ
@@ -5409,7 +5672,7 @@ Canvas.run(160, 160, fn () {
 
 ---
 
-## 27. `Scene`
+## 28. `Scene`
 
 手続きジオメトリから組み立てる3D用のretained-modeレンダラ。ノードの
 シーングラフ — プリミティブ（box / sphere / cylinder / plane）と手組みメッシュ
@@ -5768,7 +6031,7 @@ ASCII）: 数字と数語のHUDはそれだけ列挙して小さなアトラス�
 
 ### 音声
 
-Sceneは音声を持たない。音は名前空間[`Audio`](#39-audio)で、Sceneのプログラムも
+Sceneは音声を持たない。音は名前空間[`Audio`](#40-audio)で、Sceneのプログラムも
 ほかのプログラムと同じようにそれを使う。
 
 ### 最小のシーン
@@ -5799,7 +6062,7 @@ view.drop()
 
 ---
 
-## 28. `Net`
+## 29. `Net`
 
 生のTCP / UDPソケットと名前解決 — [§15 Http](#15-http) の下位レイヤ。
 ブロッキング + ソケット単位のタイムアウトで、`Http`と同じ「asyncではなく
@@ -5954,7 +6217,7 @@ inspect(Net.resolve("localhost"))  # => ["127.0.0.1", "::1"]
 
 ---
 
-## 29. `Desktop` / `Webview`
+## 30. `Desktop` / `Webview`
 
 Web技術で書くデスクトップGUI: ローカルHTTPサーバがUIを配信し、
 **ネイティブWebView** ウィンドウがそれを表示し、全体が1バイナリに
@@ -6100,7 +6363,7 @@ window.__culebra_before_close__ = () => {
 
 ---
 
-## 30. `Vector2`
+## 31. `Vector2`
 
 グラフィックス/ゲームコード向けの最小限の2D floatベクトル——言語組み込み
 ではなく普通のculebraクラスです。要素は
@@ -6137,14 +6400,14 @@ inspect(a + Vector2.new(1, 1))  # => (4.0, 5.0)
 | `a.distance_squared_to(other)` | `Float` — 平方根を省く。距離の比較や閾値判定用 |
 | `"{a}"` / `to_string(a)` | `String` — `"(x, y)"` |
 
-`cross()`は(`Vector2`・`Vector3`(§31)いずれにも)意図的に持たせて
+`cross()`は(`Vector2`・`Vector3`(§32)いずれにも)意図的に持たせて
 いません: 2Dの外積はスカラー(perp dot)、3Dの外積はベクトルを返す
 非対称な演算で、このリポジトリのどのexampleでも必要とされなかった
 ためです。
 
-## 31. `Vector3`
+## 32. `Vector3`
 
-`Vector2`(§30)の3D版——同じ設計(Float固定、独立したPoint型を
+`Vector2`(§31)の3D版——同じ設計(Float固定、独立したPoint型を
 作らない、nominalな`==`)、同じメンバー構成で、`x` / `y` / `z`
 フィールドと`Vector3.new(x, y, z)`を持ちます。
 
@@ -6169,7 +6432,7 @@ inspect(a + Vector3.new(1, 1, 1))  # => (2.0, 3.0, 4.0)
 | `a.distance_squared_to(other)` | `Float` — 平方根を省く。距離の比較や閾値判定用 |
 | `"{a}"` / `to_string(a)` | `String` — `"(x, y, z)"` |
 
-## 32. `Deque`
+## 33. `Deque`
 
 両端キュー——言語組み込みではなく普通のculebraクラスです。
 成長するリングバッファ(配列 +
@@ -6212,7 +6475,7 @@ inspect(q.size())       # => 1
 `Array.pop()`が既に受け入れているのと同じ曖昧さです(pushした
 `nil`と空であることは戻り値だけからは区別できません)。
 
-## 33. `PriorityQueue`
+## 34. `PriorityQueue`
 
 `Array`上の二分ヒープ——言語組み込みではなく普通のculebraクラスです。
 `push`/`pop`はO(log n)で、
@@ -6250,7 +6513,7 @@ inspect(jobs.pop())  # => (1, 'ping')
 `Array.pop()`や`Deque`と同様、`pop`/`peek`は空のキューに対して
 例外を投げず`nil`を返します。
 
-## 34. `PEG`
+## 35. `PEG`
 
 パーサジェネレータ。**PEG**（parsing expression grammar）を書くと構文木が返る。
 エンジンは同梱の[cpp-peglib](https://github.com/yhirose/cpp-peglib)で、culebra自身の
@@ -6523,7 +6786,7 @@ actionが投げたものは何であれ — culebraの`throw`、`sv`の誤用に
 機械生成のネストに対する規則入場の深度ガードは引き続き効くが、
 木の深さの`ValueError`は効かない — それを課す対象の木構築パス自体が無いので。
 
-## 35. `CodeGen`
+## 36. `CodeGen`
 
 閉じた中間表現(IR)と、それを実行するレジスタ方式のbytecodeコンパイラ・実行器 ——
 [cpp-vmlib](https://github.com/yhirose/cpp-vmlib)。`PEG`がcpp-peglibを取り込むのと
@@ -6951,7 +7214,7 @@ generatorの活性化(`set_generator`を参照)。変数のcaptureはフロン�
 `CodeGen.Runtime`のいずれもisolateの境界を越えられない
 (`Isolate.spawn`/`Parallel.map`のworkerはそれぞれ自分自身のModuleを組み立てる)。
 
-## 36. `StateMachine`
+## 37. `StateMachine`
 
 入れ子にできる状態機械。言語の組み込みではなく、素のculebraクラス。
 状態は入れ子にでき、いま居る状態が
@@ -6961,7 +7224,7 @@ generatorの活性化(`set_generator`を参照)。変数のcaptureはフロン�
 作り方は2通りあるが、出来上がる機械は同じもの。`StateMachine.new`には
 記述用の`Object`を渡すので、guardやactionはその場に普通の関数として書ける。
 `StateMachine.parse`には下記のテキストを渡し、guardとactionは`guards:` /
-`actions:`の表から名前で引く——§34のsemantic actionsと同じ「名前→関数」の表。
+`actions:`の表から名前で引く——§35のsemantic actionsと同じ「名前→関数」の表。
 
 ```culebra
 let vending = `
@@ -7097,7 +7360,7 @@ guardとactionは`fn (ctx, ev)`。`ctx`は渡した`context:`、`ev`は
 扱わないもの: 並行領域と履歴状態（SCXMLの`<parallel>`と`<history>`）。
 機械が同時に居る葉の状態は常に1つ。
 
-## 37. `FST`
+## 38. `FST`
 
 **書き換えない辞書を圧縮して持つ**ための名前空間。鍵の集合、または鍵から値への対応を、一度だけ小さなバイト列に組み上げ、あとは引くだけにする（エンジンは同梱の[cpp-fstlib](https://github.com/yhirose/cpp-fstlib)。有限状態トランスデューサ）。鍵どうしで前も後ろも共有するので大きな語彙がよく縮み、しかも展開せずそのまま引ける。引き換えに、組み上げたあとは足すことも消すこともできない。
 
@@ -7209,7 +7472,7 @@ inspect(d.suggest("thier")[0].key)  # => 'their'
 
 鍵は**バイト列として**比べる。大文字小文字も Unicode の正規化形も区別するし、編集距離が数えるのは文字ではなくバイトなので、複数バイトの文字を1文字書き換えると2つ以上の直しとして数えられる。そこが問題になる場面では、組み上げる前と引く前に`.lower()`や NFC への正規化をかけておく。
 
-## 38. `Search`
+## 39. `Search`
 
 自分で決めた鍵のもとに文書を登録しておき、問い合わせ言語で検索して、順位のついた
 結果を受け取る**全文検索**（エンジンは同梱の
@@ -7472,7 +7735,7 @@ let idx = Search.Index.load("notes.idx", readonly: true)
 索引は`Sendable`ではない。結果が索引を参照しているので、作ったスレッドから出せない。
 isolateごとに別の索引を持たせる。
 
-## 39. `Audio`
+## 40. `Audio`
 
 どのプログラムでも使える音: WASM-4流のtone、ワンショットのサンプル、ストリーム
 再生の音楽、スクリプトが合成するPCM。`Audio`は音声デバイスを単独で持ち、
@@ -7629,7 +7892,7 @@ Canvas.run(160, 160, fn () {
 スクリプトの1フレームの予算に収めるための要点になる。`Pcm`はブラウザでは
 鳴らず、音声デバイスの無いマシンと同じように答える。
 
-## 40. 設計上の注記
+## 41. 設計上の注記
 
 ### 名前空間ファースト、グローバルは出力の3つだけ
 
@@ -7686,13 +7949,13 @@ run_with(IO, "via parameter")
 
 ---
 
-## 41. 未収録（将来検討）
+## 42. 未収録（将来検討）
 
 ### 重量級データ構造
 
 `Set`と`Tuple`は言語組込みです（[`docs/language.ja.md`](language.ja.md)
-参照）。`Deque`（§32）と`PriorityQueue`（§33）でキュー・ヒープの形は
-カバーし、書き換えない辞書は`FST`（§37）が受け持ちます。ソート済み
+参照）。`Deque`（§33）と`PriorityQueue`（§34）でキュー・ヒープの形は
+カバーし、書き換えない辞書は`FST`（§38）が受け持ちます。ソート済み
 map/treeはありません。順序が必要なら`Object`に`.sort()`/`.sorted()`
 （言語仕様§18）を組み合わせてください。
 

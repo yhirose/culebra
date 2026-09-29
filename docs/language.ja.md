@@ -3988,7 +3988,7 @@ walkする操作 — 表示系（`inspect` / `print` / 補間 / `to_string` /
 投げます。全backendで同一です。同一ポインタの比較（`a == a`）は
 walkせずに答えます。より深い値の構築・index・破棄はどの深さでも
 安全です — teardownは内部的にboundされ、このエラーにはなりません。
-`JSON` / `TOML`は自身の木に同じ上限を適用します（stdlibリファレンス
+`JSON` / `TOML` / `XML`は自身の木に同じ上限を適用します（stdlibリファレンス
 参照）。
 
 `Tensor`のautogradグラフは値のネストではなく、この上限の対象外です。

@@ -174,9 +174,12 @@ ratchet "bare RC calls (sendable_rt.h)" "$(count_bare include/conc/sendable.h)" 
 # (their only owner until then); the three helpers share the one site.
 # 4 -> 5 (2026-09-19, reviewed): `_set_all` holds a Set member whose probe can
 # run a user `hash` / `eq`, which may drop the set's own ref to it.
+# 5 -> 6 (2026-09-28, reviewed): XML.find / find_all / find_iter return elements found
+# inside their borrowed `el` argument, so each answer needs its own +1
+# (_xml_match_owned, one site for all three).
 rbrw=$(grep -rE --include='*.h' "JitOwnedVal::from_borrowed\(" include/ \
        | grep -vcE "^[^:]*:[[:space:]]*//" || true)
-ratchet "runtime borrow->owned seam sites" "$rbrw" 5
+ratchet "runtime borrow->owned seam sites" "$rbrw" 6
 
 # Codegen-side hand-placed throw guards: the automatic unwind-temp window
 # is the default cleaner for a codegen-owned +1, so the hand-placed

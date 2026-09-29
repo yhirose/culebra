@@ -1,4 +1,4 @@
-// Conformance: stdlib FST (compiled read-only dictionaries). See docs/stdlib.md §39.
+// Conformance: stdlib FST (compiled read-only dictionaries). See docs/stdlib.md §38.
 // Engine: vendor/cpp-fstlib (finite state transducer).
 //
 // A dictionary is built once into a byte code String, then opened for

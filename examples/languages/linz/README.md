@@ -26,7 +26,7 @@ ported checker against all of them.
 
 - **PEG instead of a hand-rolled parser.** The BNF in the original
   `parser.rs`'s doc comment translates almost directly into a `PEG`
-  grammar — see `docs/stdlib.md` §34. The one real difference is keyword
+  grammar — see `docs/stdlib.md` §35. The one real difference is keyword
   boundaries: `%word` (a `PEG`/cpp-peglib directive — see
   `examples/languages/pl0/pl0.cul`'s grammar for the same technique) makes every
   quoted literal in the grammar reject a longer identifier sharing its

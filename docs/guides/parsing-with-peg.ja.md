@@ -7,7 +7,7 @@
 このガイドに出てくるコードブロックは、すべて実際に動きます。doctestとして
 両方のエンジンで実行されているので、書きっぱなしのものは1つもありません。
 
-APIのリファレンスは[`stdlib.ja.md` §34](../stdlib.ja.md#34-peg)にあります。
+APIのリファレンスは[`stdlib.ja.md` §35](../stdlib.ja.md#35-peg)にあります。
 あちらは「各呼び出しが何をするか」を引くための文書で、こちらは
 「どういうときに使うか」「文法をどう組み立てるか」のための文書です。
 
@@ -574,7 +574,7 @@ print(PEG.str(PEG.parse(g, '1')))
 
 ## この先
 
-* [`stdlib.ja.md` §34](../stdlib.ja.md#34-peg) — 全呼び出し、ノードの
+* [`stdlib.ja.md` §35](../stdlib.ja.md#35-peg) — 全呼び出し、ノードの
   フィールド、エラーと深さの上限。
 * [cpp-peglibの構文リファレンス](https://github.com/yhirose/cpp-peglib#syntax)
   — このガイドで使わなかった部分も含めた、記法の全体。

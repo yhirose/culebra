@@ -5,7 +5,7 @@ out, and going from there to a language of your own with an interpreter
 to run it. Every code block here runs — they are executed as doctests on
 both engines.
 
-The API reference is [`stdlib.md` §34](../stdlib.md#34-peg). This guide is
+The API reference is [`stdlib.md` §35](../stdlib.md#35-peg). This guide is
 about *when* to use it and how to shape a grammar; the reference is about
 what each call does.
 
@@ -560,7 +560,7 @@ grammar hoisted out of it.
 
 ## Where to go next
 
-* [`stdlib.md` §34](../stdlib.md#34-peg) — every call, the node fields,
+* [`stdlib.md` §35](../stdlib.md#35-peg) — every call, the node fields,
   the error and depth bounds.
 * [cpp-peglib's syntax reference](https://github.com/yhirose/cpp-peglib#syntax)
   — the full notation, including the parts this guide did not need.

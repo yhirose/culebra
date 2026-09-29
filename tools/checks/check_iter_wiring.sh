@@ -132,9 +132,11 @@ PYEOF
 # 16 -> 18 (reviewed): String.words()/sentences() (UAX #29 segmentation),
 # each its own leaf source over the receiver String, same shape as the
 # graphemes leaf beside them.
+# 18 -> 19 (2026-09-28, reviewed): XML.events, a leaf source over the pull
+# parser that XML.parse builds its tree from.
 wf=$(count_no_upstream '_iter_wrap_fast<[^>]*>\s*\(')
-ratchet "no-upstream _iter_wrap_fast calls (leaves)" "$wf" 18
+ratchet "no-upstream _iter_wrap_fast calls (leaves)" "$wf" 19
 
 if (( fail )); then exit 1; fi
 echo "iter-wiring OK (pull=$pull/0 advance_raw=$adv/25 has_next_closure=$hnc/4" \
-     "wrap_fast-leaves=$wf/18)"
+     "wrap_fast-leaves=$wf/19)"

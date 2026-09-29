@@ -24,10 +24,13 @@
 # evaluated to when a later operand rebinds its variable).
 # 288 since test_key_hash_once.cul (a key is hashed once, entering a lookup or
 # a container; a stored key keeps its hash and is never hashed again).
-tests.cul 288
+# 289 since test_xml.cul (the XML namespace: parse, events, paths, stringify).
+tests.cul 289
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
-tests.isolate 20
+# 21 since test_xml_isolate.cul (an XML element keeps its methods across an
+# Isolate and a Channel).
+tests.isolate 21
 
 # The curated bytecode cases held to frozen expected outputs, x2 lanes x3 GC
 # axes in the full gate, and built by `culebra build` in the aot lane.
@@ -50,7 +53,9 @@ ctest.entries 34
 # and ja (Scene's own audio example went with Scene's audio).
 # 966 since §14 Traits and protocols shows a key changed while stored, in en
 # and ja.
-docs.blocks 966
+# 980 since stdlib's XML chapter shows parse, errors, events, paths with and
+# without namespaces, text and stringify: seven blocks, in en and ja.
+docs.blocks 980
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

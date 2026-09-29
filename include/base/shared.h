@@ -2315,6 +2315,10 @@ enum RuntimeSlot : size_t {
   // `proto`. Holds a +1 and a pin on each, so it needs the placement the
   // registries above have — torn down while the GC heap and slab are alive.
   kSlotWrappedMetas,
+  // The same, for the one meta every element XML.parse builds points its
+  // `proto` at (the element methods). Holds a +1 and a pin, placed like the
+  // two above.
+  kSlotXmlElementMeta,
   kSlotShapeRegistry,  // reserved/unused: the Shape intern table is now a
                        // process-global singleton (see jit.h ShapeRegistry) —
                        // Shapes are shared immutable metadata, not isolated heap

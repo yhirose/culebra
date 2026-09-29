@@ -8,7 +8,7 @@ binary. It builds the same app that lives at
 directory's files directly if you'd rather read finished code first.
 
 This guide covers *using* `Desktop`/`Webview`. For the API reference see
-[`stdlib.md` §29](../stdlib.md#29-desktop--webview); for how the pieces fit
+[`stdlib.md` §30](../stdlib.md#30-desktop--webview); for how the pieces fit
 together internally (the loopback bridge, the `Embed.dir` dev/AOT split,
 platform build requirements, and the Ubuntu sandbox note in full) see
 [`examples/webview/README.md`](../../examples/webview/README.md).
@@ -328,7 +328,7 @@ Debian, Fedora, Arch, and non-Ubuntu-patched kernels need none of it.
 
 ## Where to go next
 
-- [`stdlib.md` §29](../stdlib.md#29-desktop--webview) — the full
+- [`stdlib.md` §30](../stdlib.md#30-desktop--webview) — the full
   `Desktop`/`Webview` API reference.
 - [`examples/webview/README.md`](../../examples/webview/README.md) — how the
   loopback bridge, single-binary packaging, and per-platform build

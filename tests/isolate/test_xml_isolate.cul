@@ -1,0 +1,89 @@
+# A parsed XML element keeps its methods across an Isolate boundary: its
+# shared meta's methods are portable native closures (no captures), so they
+# are rebuilt on the other side. Runs under both engines.
+
+fn caught(thunk) {
+  try {
+    thunk()
+    "NO ERROR"
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+
+let doc = XML.parse('<lib xmlns:p="urn:p"><book lang="en"><title>A</title></book><book lang="fr"><title>B</title><p:note>n</p:note></book></lib>')
+fn probe(el) {
+  [
+    el.find('book').attrs.lang,
+    el.text('book[2]/title'),
+    el.find_all('book').map(|b| b.text('title')),
+    el.find_iter('.//title').map(|t| t.text()).collect(),
+    el.text('.//p:note'),
+    el.find('book[2]').stringify(),
+  ]
+}
+let here = probe(doc)
+
+# Captured by a spawned closure.
+assert_eq(Isolate.spawn(|| probe(doc)).join(), here)
+# Passed as an argument.
+assert_eq(Isolate.spawn(probe, doc).join(), here)
+# Through a Channel, and back.
+let (tx, rx) = Channel.new()
+let h = Isolate.spawn(fn () {
+  let got = rx.recv()
+  [probe(got), got]
+})
+tx.send(doc)
+let [there, back] = h.join()
+assert_eq(there, here)
+assert_eq(probe(back), here)
+assert_eq(back, doc)
+
+# Several elements in one message: the meta crosses once, backrefs after.
+let books = doc.find_all('book')
+let titles = Isolate.spawn(|| books.map(|b| b.text('title'))).join()
+assert_eq(titles, ['A', 'B'])
+assert_eq(
+  Isolate
+    .spawn(|| [books[0].find('title').text(), books[1].stringify()])
+    .join(),
+  ['A', books[1].stringify()],
+)
+
+# Only the portable element methods cross: any other native builtin is still
+# refused, with the same message.
+let f = Math.abs
+assert_eq(
+  caught(|| Isolate.spawn(|| f(-1))),
+  'SendError: Isolate.spawn: a native/builtin function is not Sendable',
+)
+assert_eq(
+  caught(|| tx.send(Math.abs)),
+  'SendError: a native/builtin function is not Sendable',
+)
+# A method read off an element is bound to it, a closure with a capture, so it
+# stays behind too; the element itself is what crosses.
+assert_eq(
+  caught(|| tx.send(doc.find)),
+  'SendError: a native/builtin function is not Sendable',
+)
+
+# Shared.new: a parsed element is refused, since its methods are functions
+# and Shared values are data only; a hand-built element-shaped Object is
+# accepted, but its view is not an element to the XML functions or methods
+# (they read nothing through it). Pinned as current behaviour, not a design.
+assert_eq(
+  caught(|| Shared.new(doc)),
+  'SendError: Shared.new: functions cannot be shared (Shared values are data only)',
+)
+let v = Shared.new({
+  tag: 'r',
+  ns: nil,
+  attrs: {},
+  children: [{tag: 'b', ns: nil, attrs: {}, children: ['x']}],
+})
+assert_eq(v.tag, 'r')
+assert_eq(v.find, nil)
+assert_eq(XML.find(v, 'b'), nil)
+assert_eq(XML.text(v), '')

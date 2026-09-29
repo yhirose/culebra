@@ -10,7 +10,7 @@ culebraの`Webview`・`Desktop`名前空間を使って、小さなデスクト�
 ファイルを直接実行してみてください。
 
 このガイドが扱うのは`Desktop`/`Webview`の**使い方**です。APIリファレンスは
-[`stdlib.ja.md` §29](../stdlib.ja.md#29-desktop--webview)に、内部の仕組み
+[`stdlib.ja.md` §30](../stdlib.ja.md#30-desktop--webview)に、内部の仕組み
 （loopback bridge、`Embed.dir`のdev/AOT切り替え、プラットフォームごとの
 ビルド要件、Ubuntuのsandbox注意点の全文）は
 [`examples/webview/README.md`](../../examples/webview/README.md)にあります。
@@ -360,7 +360,7 @@ Fedora、Arch、それにUbuntu由来のパッチが入っていないカーネ�
 
 ## 次に読むもの
 
-- [`stdlib.ja.md` §29](../stdlib.ja.md#29-desktop--webview) — `Desktop`/`Webview`
+- [`stdlib.ja.md` §30](../stdlib.ja.md#30-desktop--webview) — `Desktop`/`Webview`
   APIの完全なリファレンス。
 - [`examples/webview/README.md`](../../examples/webview/README.md) —
   loopback bridge・単一バイナリ化・プラットフォームごとのビルド要件が

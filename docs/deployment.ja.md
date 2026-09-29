@@ -1219,7 +1219,7 @@ optional引数は末尾に連続していなければならず、この2つの�
 
 ### Searchにsplitterを挿す
 
-`Search`は解析器からsplitterを受け取りますが（[stdlib.ja.md §38](stdlib.ja.md#38-search)）、
+`Search`は解析器からsplitterを受け取りますが（[stdlib.ja.md §39](stdlib.ja.md#39-search)）、
 そのsplitterは自分のクラスでもかまいません。`culebra::search::ISplitter`——
 `<interop/search_splitter.h>`、culebraの他のヘッダを何もincludeしないヘッダ——を継承し、
 上と同じように`wrap<T>`で宣言します。それ以外に宣言するものはありません。契約を

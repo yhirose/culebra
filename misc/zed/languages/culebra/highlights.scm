@@ -50,7 +50,7 @@
 ((type) @type.builtin
  (#match? @type.builtin "^(Isolate|Channel|Parallel|Signal|SharedBuffer|Shared|GC|Regex|Http)$"))
 ((type) @type.builtin
- (#match? @type.builtin "^(Encoding|Compress|Hash|CSV|Env|UUID|Term|Log|TOML|SQLite)$"))
+ (#match? @type.builtin "^(Encoding|Compress|Hash|CSV|Env|UUID|Term|Log|TOML|XML|SQLite)$"))
 ((type) @type.builtin
  (#match? @type.builtin "^(Canvas|Audio|Scene|Net|Desktop|Webview|Vector2|Vector3|Deque|PriorityQueue|StateMachine)$"))
 ((type) @type.builtin

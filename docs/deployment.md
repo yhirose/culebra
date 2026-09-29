@@ -1248,7 +1248,7 @@ workflow.
 ### Plugging a splitter into Search
 
 `Search` takes its text splitter from the analyzer ([stdlib.md
-§38](stdlib.md#38-search)), and that splitter can be a class of yours: derive
+§39](stdlib.md#39-search)), and that splitter can be a class of yours: derive
 from `culebra::search::ISplitter` — `<interop/search_splitter.h>`, a header
 that includes nothing else of culebra's — and declare the class with
 `wrap<T>` as above. Nothing else is declared. Deriving from the contract is

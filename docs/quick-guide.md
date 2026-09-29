@@ -796,6 +796,8 @@ run.
 
 **TOML** — TOML.parse(text: String) -> Object; TOML.stringify(v: Object, sort_keys: Bool = false) -> String
 
+**XML** — XML.parse(text, keep_space=false) -> Object; XML.events(text, keep_space=false) -> Iterator; el.find(path, namespaces={}) -> Object | Nil; el.find_all(path, namespaces={}) -> Array; el.find_iter(path, namespaces={}) -> Iterator; el.text(path=".", namespaces={}) -> String | Nil; el.stringify(indent=0, declaration=false) -> String; XML.find(el, path, namespaces={}) -> Object | Nil; XML.find_all(el, path, namespaces={}) -> Array; XML.find_iter(el, path, namespaces={}) -> Iterator; XML.text(el, path=".", namespaces={}) -> String | Nil; XML.stringify(el, indent=0, declaration=false) -> String
+
 **Vector2** — Vector2.new(x, y); a.hash() -> Long; a.dot(other); a.length(); a.length_squared(); a.normalized(); a.distance_to(other); a.distance_squared_to(other) -> Float; to_string(a) -> String
 
 **Vector3** — Vector3.new(x, y, z); a.hash() -> Long; a.dot(other); a.length(); a.length_squared(); a.normalized(); a.distance_to(other); a.distance_squared_to(other) -> Float; to_string(a) -> String

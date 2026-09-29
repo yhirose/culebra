@@ -903,6 +903,45 @@ inline constexpr CanonSig kCanonSigs_TOML[] = {
   {"TOML", "", "stringify", kCanonParams_TOML + 1, 2, "String", 1, 2, false, -1, -1, -1},
 };
 
+inline constexpr CanonParam kCanonParams_XML[] = {
+  // 0: XML.parse
+  {"text", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
+  {"keep_space", true, false, false, false, false, "Bool", CanonDefault::Bool, 0, {}},
+  // 2: XML.events
+  {"text", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
+  {"keep_space", true, false, false, false, false, "Bool", CanonDefault::Bool, 0, {}},
+  // 4: XML.find
+  {"el", false, false, false, false, false, "Object", CanonDefault::None, 0, {}},
+  {"path", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
+  {"namespaces", true, false, false, false, false, "Object", CanonDefault::Nil, 0, {}},
+  // 7: XML.find_all
+  {"el", false, false, false, false, false, "Object", CanonDefault::None, 0, {}},
+  {"path", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
+  {"namespaces", true, false, false, false, false, "Object", CanonDefault::Nil, 0, {}},
+  // 10: XML.find_iter
+  {"el", false, false, false, false, false, "Object", CanonDefault::None, 0, {}},
+  {"path", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
+  {"namespaces", true, false, false, false, false, "Object", CanonDefault::Nil, 0, {}},
+  // 13: XML.text
+  {"el", false, false, false, false, false, "Object", CanonDefault::None, 0, {}},
+  {"path", true, false, false, false, false, "String", CanonDefault::Str, 0, "."},
+  {"namespaces", true, false, false, false, false, "Object", CanonDefault::Nil, 0, {}},
+  // 16: XML.stringify
+  {"el", false, false, false, false, false, "Object", CanonDefault::None, 0, {}},
+  {"indent", true, false, false, false, false, "Long", CanonDefault::Long, 0, {}},
+  {"declaration", true, false, false, false, false, "Bool", CanonDefault::Bool, 0, {}},
+};
+
+inline constexpr CanonSig kCanonSigs_XML[] = {
+  {"XML", "", "parse", kCanonParams_XML + 0, 2, "Object", 1, 2, false, -1, -1, -1},
+  {"XML", "", "events", kCanonParams_XML + 2, 2, "Iterator", 1, 2, false, -1, -1, -1},
+  {"XML", "", "find", kCanonParams_XML + 4, 3, "Object | Nil", 2, 3, false, -1, -1, -1},
+  {"XML", "", "find_all", kCanonParams_XML + 7, 3, "Array", 2, 3, false, -1, -1, -1},
+  {"XML", "", "find_iter", kCanonParams_XML + 10, 3, "Iterator", 2, 3, false, -1, -1, -1},
+  {"XML", "", "text", kCanonParams_XML + 13, 3, "String | Nil", 1, 3, false, -1, -1, -1},
+  {"XML", "", "stringify", kCanonParams_XML + 16, 3, "String", 1, 3, false, -1, -1, -1},
+};
+
 inline constexpr CanonParam kCanonParams_Env[] = {
   // 0: Env.parse
   {"text", false, false, false, false, false, "String", CanonDefault::None, 0, {}},

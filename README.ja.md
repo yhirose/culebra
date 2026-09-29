@@ -129,7 +129,7 @@ WindowsとLinux向けのパッケージはまだ無いので、上のダウン�
 マネージャもロックファイルもありません:
 
 - **データ。** JSON（JSONCのコメントと末尾カンマも任意で受け付けます）、
-  CSV、TOML、`.env`、UUID、そしてSQLite — amalgamationを同梱して
+  CSV、TOML、XML、`.env`、UUID、そしてSQLite — amalgamationを同梱して
   コンパイルしているので、システムライブラリの導入は不要です。
 - **テキスト。** 書記素単位の正規表現、エンコーディング（base64 / hex /
   url / HTMLエンティティ）、SHA / MD5ダイジェストとHMAC、gzip / deflate。
