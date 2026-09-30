@@ -2674,6 +2674,15 @@ Isolate.spawn(|| total)      # SendError: captures the mutable variable 'total'
 Isolate.spawn(|t| t, total)  # ok — passed by value
 ```
 
+A class instance crosses with its class, so its methods work on the other
+side — and so do the default methods of the traits it conforms to (`neq` from
+`Eq`, `lt` from `Comparable`, a user trait's defaults): a worker starts with
+the traits as they were declared when it was spawned. What a default captures
+is copied at the spawn, as the sent closure's captures are, and rebuilt in the
+worker only when it calls that default. A class value itself
+(`Isolate.spawn(|| Sq(1))` naming a top-level `Sq`) is not Sendable; pass an
+instance in, or declare the class inside the closure.
+
 ### Parallelism cap
 
 Live isolates are capped (default: the machine's core count; override with the

@@ -307,17 +307,31 @@ inline void release_inflight_channels(const sendable::SendNode& n) {
 // the inline-over-cap fallback (which would deadlock: a streaming producer fills
 // a bounded channel with no consumer draining it yet). Mirrors the structure
 // walk of release_inflight_channels.
+template <class Leaf>
+inline bool node_any(const sendable::SendNode& n, Leaf leaf) {
+  if (leaf(n.kind)) return true;
+  for (const auto& e : n.elems)
+    if (node_any(e, leaf)) return true;
+  for (const auto& e : n.entries)
+    if (node_any(e.first, leaf) || node_any(e.second, leaf)) return true;
+  for (const auto& c : n.captures)
+    if (node_any(c.second, leaf)) return true;
+  return false;
+}
+
 inline bool node_carries_channel(const sendable::SendNode& n) {
   using K = sendable::SendNode::K;
-  if (n.kind == K::Channel) return true;
-  for (const auto& e : n.elems)
-    if (node_carries_channel(e)) return true;
-  for (const auto& e : n.entries)
-    if (node_carries_channel(e.first) || node_carries_channel(e.second))
-      return true;
-  for (const auto& c : n.captures)
-    if (node_carries_channel(c.second)) return true;
-  return false;
+  return node_any(n, [](K k) { return k == K::Channel; });
+}
+
+// Does a serialized value hold an in-flight ref — a node of any kind
+// release_inflight_channels drops? (node_carries_channel asks a narrower
+// question: only a channel endpoint can block its isolate.)
+inline bool node_carries_inflight(const sendable::SendNode& n) {
+  using K = sendable::SendNode::K;
+  return node_any(n, [](K k) {
+    return k == K::Channel || k == K::SharedBuffer || k == K::SharedVal;
+  });
 }
 
 // Drop one endpoint: when the last tx is gone the channel auto-closes (waking
@@ -658,6 +672,8 @@ enum class PMode { Map, Each, MapSettled, Race };
 struct ParallelState {
   std::vector<sendable::SendNode> items;    // serialized inputs
   sendable::SendNode fn;                     // serialized closure
+  // The parent's default table, shared by the workers.
+  std::shared_ptr<const sendable::TraitDefaults> trait_defaults;
   PMode mode = PMode::Map;
   std::vector<sendable::SendNode> results;   // serialized outputs, by index
   std::atomic<size_t> next{0};               // next element to claim

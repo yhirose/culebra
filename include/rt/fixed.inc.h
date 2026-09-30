@@ -1480,14 +1480,16 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get(
 // hits don't update the cache because the fast path keys on
 // `obj->shape`; caching the proto's offset there would load the wrong
 // slot. `ic` is borrowed; never released.
-// Forward declaration for the trait-default table referenced below.
+// Forward declarations for the trait-default table referenced below.
 inline std::unordered_map<std::string,
                           std::unordered_map<std::string, JitClosure*>>&
 _jit_trait_default_impls();
+inline JitClosure* _jit_find_shipped_default(JitObject* obj, const char* key);
 
 // The registered default named `key` whose trait this instance conforms to,
-// or null. Conformance is cached inside _culebra_type_matches_single. One
-// source for the three askers: the property read, the UFCS gate, and the
+// or null — in a worker Runtime, one its parent shipped is installed here on
+// its first miss. Conformance is cached inside _culebra_type_matches_single.
+// One source for the three askers: the property read, the UFCS gate, and the
 // `__call__` lookup — each keeps its own gate on what may ask.
 inline JitClosure* _jit_find_trait_default(JitObject* obj, const char* key) {
   for (auto& [trait_name, methods] : _jit_trait_default_impls()) {
@@ -1498,7 +1500,7 @@ inline JitClosure* _jit_find_trait_default(JitObject* obj, const char* key) {
                                      trait_name))
       return m_it->second;
   }
-  return nullptr;
+  return _jit_find_shipped_default(obj, key);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(

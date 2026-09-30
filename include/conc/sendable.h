@@ -450,6 +450,87 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
   return {TAG_NIL, 0};
 }
 
+// --- Trait defaults across Runtimes ------------------------------------------
+// The default-method table (_jit_trait_default_impls) is per-Runtime, filled
+// when a trait declaration executes. A worker Runtime executes only the
+// closure it was sent, so its table would stay empty and `Eq.neq` — or a user
+// trait's default — would miss there. Every worker site (Isolate.spawn,
+// Channel.fan_in, Parallel.*, the Http/Net server pools) therefore ships the
+// parent's table with the message: the parent snapshots it at spawn, and the
+// worker rebuilds a default only when a lookup first misses it, so what a
+// default captures is copied into a worker that calls it, not into every
+// worker. A default body is a closure like the sent one; one that is not
+// Sendable (a mut capture, a captured native) is left out, and the worker
+// misses that one default alone.
+// Shipped entry i is still live: not installed yet, and its trait not
+// declared again in this Runtime.
+inline bool jit_shipped_pending(const _JitTraitDefaultTable& t, size_t i) {
+  return t.shipped_open[i] && !t.shipped_closed.count((*t.shipped)[i].trait);
+}
+
+inline std::shared_ptr<const sendable::TraitDefaults>
+jit_snapshot_trait_defaults() {
+  sendable::TraitDefaults out;
+  for (const auto& [trait_name, methods] : _jit_trait_default_impls()) {
+    for (const auto& [method_name, cls] : methods) {
+      if (!cls) continue;
+      try {
+        JitSerCtx sc;
+        sendable::SendNode body = jit_serialize(
+            JitValue{TAG_FUNC, reinterpret_cast<int64_t>(cls)}, sc);
+        // A body over a channel or a shared handle would owe an in-flight
+        // release per snapshot, not per installing worker; a default is not
+        // the place to share one, so it stays with its Runtime.
+        if (node_carries_inflight(body)) {
+          release_inflight_channels(body);
+          continue;
+        }
+        out.push_back({trait_name, method_name, std::move(body)});
+      } catch (const culebra::CulebraError& e) {
+        if (e.kind != "SendError") throw;
+      }
+    }
+  }
+  // What this Runtime was itself shipped and never installed travels on.
+  const auto& t = _jit_trait_default_table();
+  for (size_t i = 0; t.shipped && i < t.shipped->size(); i++)
+    if (jit_shipped_pending(t, i)) out.push_back((*t.shipped)[i]);
+  return std::make_shared<const sendable::TraitDefaults>(std::move(out));
+}
+
+// The lookup's miss (_jit_find_shipped_default): rebuild the shipped default
+// `key` of a trait `obj` conforms to, and register it. The rebuilt closure
+// arrives at +1 and the table takes it (culebra_runtime_register_trait_default's
+// contract).
+inline JitClosure* jit_install_shipped_default(JitObject* obj,
+                                               const char* key) {
+  auto& t = _jit_trait_default_table();
+  for (size_t i = 0; i < t.shipped->size(); i++) {
+    const auto& d = (*t.shipped)[i];
+    if (!jit_shipped_pending(t, i) || d.method != key ||
+        !_culebra_type_matches_single(
+            TAG_OBJECT, reinterpret_cast<int64_t>(obj), d.trait.c_str()))
+      continue;
+    t.shipped_open[i] = false;
+    JitDeCtx dc;
+    auto* cls = reinterpret_cast<JitClosure*>(jit_deserialize(d.body, dc).data);
+    culebra_runtime_register_trait_default(d.trait.c_str(), d.method.c_str(),
+                                           cls);
+    return cls;
+  }
+  return nullptr;
+}
+
+// Under the worker's RuntimeScope, before it runs anything: the defaults wait
+// there, still serialized, until a lookup misses one.
+inline void jit_install_trait_defaults(
+    std::shared_ptr<const sendable::TraitDefaults> defaults) {
+  _jit_shipped_default_hook = &jit_install_shipped_default;
+  auto& t = _jit_trait_default_table();
+  t.shipped_open.assign(defaults->size(), true);
+  t.shipped = std::move(defaults);
+}
+
 // --- Isolate handle registry (JIT handle methods are captureless → store the
 //     IsolateCore behind an integer id, mirroring the channel registry) -------
 
@@ -474,6 +555,7 @@ inline std::shared_ptr<IsolateCore> jit_isolate_lookup(int64_t id) {
 inline void run_isolate_child_jit(std::shared_ptr<IsolateCore> core,
                                   sendable::SendNode sclosure,
                                   std::vector<sendable::SendNode> sargs,
+                                  std::shared_ptr<const sendable::TraitDefaults> defaults,
                                   bool decrement_live) {
   // A fresh Runtime gives this work its own JIT heap (and fresh thread_local
   // multifn tables); the shared fn_ptr allocates on whichever Runtime is active.
@@ -481,6 +563,7 @@ inline void run_isolate_child_jit(std::shared_ptr<IsolateCore> core,
   culebra::RuntimeScope scope(rt);
   rt.interrupt_flag = &core->interrupt;
   try {
+    jit_install_trait_defaults(std::move(defaults));
     JitDeCtx dc;
     // The rebuilt closure is the child heap's only ref to whatever crossed the
     // boundary, so its captures drop when it does (the interp path drops them
@@ -736,10 +819,12 @@ inline JitValue culebra_jit_isolate_spawn(int8_t fn_tag, int64_t fn_data,
       g_live_isolates().fetch_add(1, std::memory_order_relaxed) < isolate_cap();
   bool threaded = must_thread || under_cap;
   if (!threaded) g_live_isolates().fetch_sub(1, std::memory_order_relaxed);
-  core->thread = culebra::SizedThread([core, sclo = std::move(sclo),
-                              sargs = std::move(sargs), threaded]() mutable {
-    run_isolate_child_jit(core, sclo, sargs, /*decrement_live=*/threaded);
-  });
+  core->thread = culebra::SizedThread(
+      [core, sclo = std::move(sclo), sargs = std::move(sargs),
+       defaults = jit_snapshot_trait_defaults(), threaded]() mutable {
+        run_isolate_child_jit(core, sclo, sargs, defaults,
+                              /*decrement_live=*/threaded);
+      });
   if (!threaded) {
     // Synchronous fallback over the cap: still a fresh thread (the JIT multifn
     // tables are thread_local, so an inline run on the parent thread would
@@ -1690,6 +1775,7 @@ inline JitValue culebra_jit_channel_fan_in(int64_t n, JitValue* args,
           "SendError", std::string("Channel.fan_in: ") + e.what(), line, col);
     throw;
   }
+  auto defaults = jit_snapshot_trait_defaults();  // shared by the producers
   std::vector<int64_t> ids;
   std::vector<std::shared_ptr<IsolateCore>> producers;
   for (size_t i = 0; i < arr->size; i++) {
@@ -1720,8 +1806,9 @@ inline JitValue culebra_jit_channel_fan_in(int64_t n, JitValue* args,
     auto pcore = std::make_shared<IsolateCore>();
     g_live_isolates().fetch_add(1, std::memory_order_relaxed);
     pcore->thread = culebra::SizedThread(
-        [pcore, sfn, sargs = std::move(sargs)]() mutable {
-          run_isolate_child_jit(pcore, sfn, sargs, /*decrement_live=*/true);
+        [pcore, sfn, sargs = std::move(sargs), defaults]() mutable {
+          run_isolate_child_jit(pcore, sfn, sargs, defaults,
+                                /*decrement_live=*/true);
         });
     producers.push_back(std::move(pcore));
     ids.push_back(cid);
@@ -1806,6 +1893,7 @@ inline void jit_parallel_worker(std::shared_ptr<ParallelState> st) {
   culebra::RuntimeScope scope(rt);
   rt.interrupt_flag = &st->interrupt;
   try {
+    jit_install_trait_defaults(st->trait_defaults);
     JitDeCtx dc;
     // Owned for the same reason as the isolate child's closure: the captures
     // (a `tx` above all) must drop on every exit path, throw included.
@@ -1886,6 +1974,7 @@ inline JitValue jit_parallel_run(JitValue items_v, JitValue fn_v, int64_t limit,
   auto st = std::make_shared<ParallelState>();
   st->mode = mode;
   { JitSerCtx sc; st->fn = jit_serialize(fn_v, sc); }
+  st->trait_defaults = jit_snapshot_trait_defaults();
   st->items.reserve(arr->size);
   for (size_t i = 0; i < arr->size; i++) {
     JitSerCtx sc;

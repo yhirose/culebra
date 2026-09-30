@@ -628,9 +628,20 @@ inline std::string_view _jit_multifn_display(std::string_view key) {
 // in culebra::trait_registry (mutex-guarded); only the compiled
 // default-method closures are per-Runtime, so this table is isolated
 // rather than locked.
+namespace culebra::sendable { struct TraitDefaultNode; }
 struct _JitTraitDefaultTable {
   std::unordered_map<std::string,
                      std::unordered_map<std::string, JitClosure*>> entries;
+  // A worker Runtime's defaults from the Runtime that spawned it, still
+  // serialized (conc/sendable.h): one is rebuilt into `entries` the first time
+  // a lookup here misses it, so a worker that calls none rebuilds none.
+  // `shipped_open[i]` until entry i is installed; a trait declared again here
+  // closes its shipped entries (`shipped_closed`), as a re-declaration
+  // replaces its defaults.
+  std::shared_ptr<const std::vector<culebra::sendable::TraitDefaultNode>>
+      shipped;
+  std::vector<bool> shipped_open;
+  std::unordered_set<std::string> shipped_closed;
   ~_JitTraitDefaultTable() {
     for (auto& [_, methods] : entries)
       for (auto& [__, cls] : methods)
@@ -639,11 +650,25 @@ struct _JitTraitDefaultTable {
                                       reinterpret_cast<int64_t>(cls));
   }
 };
+inline _JitTraitDefaultTable& _jit_trait_default_table() {
+  return culebra::runtime_substate<_JitTraitDefaultTable>(
+      culebra::kSlotJitTraitDefaults);
+}
 inline std::unordered_map<std::string,
                           std::unordered_map<std::string, JitClosure*>>&
 _jit_trait_default_impls() {
-  return culebra::runtime_substate<_JitTraitDefaultTable>(
-             culebra::kSlotJitTraitDefaults).entries;
+  return _jit_trait_default_table().entries;
+}
+
+// Installs, and returns, the shipped default named `key` that one of this
+// instance's traits supplies (jit_install_shipped_default, conc/sendable.h,
+// which sets the hook when it ships the defaults); null when none does.
+inline JitClosure* (*_jit_shipped_default_hook)(JitObject*, const char*) =
+    nullptr;
+inline JitClosure* _jit_find_shipped_default(JitObject* obj, const char* key) {
+  return _jit_trait_default_table().shipped
+             ? _jit_shipped_default_hook(obj, key)
+             : nullptr;
 }
 
 // Runtime registration hook called from compile_trait_decl's emitted
@@ -678,7 +703,9 @@ culebra_runtime_register_trait_default(const char* trait_name,
 // above.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
 culebra_runtime_trait_defaults_reset(const char* trait_name) {
-  auto& tbl = _jit_trait_default_impls();
+  auto& t = _jit_trait_default_table();
+  if (t.shipped) t.shipped_closed.insert(trait_name);
+  auto& tbl = t.entries;
   auto it = tbl.find(trait_name);
   if (it == tbl.end()) return;
   auto doomed = std::move(it->second);

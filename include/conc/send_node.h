@@ -100,6 +100,19 @@ inline SendNode::SendNode(SendNode&&) noexcept = default;
 inline SendNode& SendNode::operator=(const SendNode&) = default;
 inline SendNode& SendNode::operator=(SendNode&&) noexcept = default;
 
+// A trait's default-method body in transit, with the (trait, method) it is
+// registered under. The default table is per-Runtime and only a trait
+// declaration fills it, so a worker Runtime — which executes only the closure
+// it was sent — keeps the parent's table serialized and rebuilds an entry the
+// first time a lookup misses it (sendable.h: jit_snapshot_trait_defaults /
+// jit_install_shipped_default).
+struct TraitDefaultNode {
+  std::string trait;
+  std::string method;
+  SendNode body;
+};
+using TraitDefaults = std::vector<TraitDefaultNode>;
+
 [[noreturn]] inline void send_error(const std::string& what) {
   throw culebra::CulebraError("SendError", what);
 }

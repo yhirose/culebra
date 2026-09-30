@@ -1,0 +1,168 @@
+# A trait's default methods reach every worker Runtime: Isolate.spawn,
+# Parallel.map and an Http.server handler pool. The default table is
+# per-Runtime and only a trait declaration fills it, so a worker (which runs
+# only the closure it was sent) starts with the parent's table installed —
+# builtin traits (Eq.neq, Comparable.lt) and user traits alike. Same across
+# the executor, --jit and an AOT binary.
+#
+# (A closure that names a class is not Sendable — the class value carries
+# native members — so the workers below receive instances, or declare their
+# own class; both conform to the parent's traits.)
+
+trait Shape {
+  area()
+  describe() {
+    "{self.name}: {self.area()}"
+  }
+  bigger_than(other) {
+    self.area() > other.area()
+  }
+}
+
+class Sq {
+  new(.name, .side) {}
+  area() {
+    self.side * self.side
+  }
+  eq(o) {
+    self.side == o.side
+  }
+  cmp(o) {
+    self.side - o.side
+  }
+}
+
+fn probe(a, b) {
+  [a.describe(), a.bigger_than(b), a.neq(b), a.lt(b), a.ge(b)]
+}
+
+let here = probe(Sq('a', 3), Sq('b', 2))
+assert_eq(here, ['a: 9', true, true, false, true])
+
+# Isolate.spawn: sent instances, and a class declared inside the worker.
+assert_eq(Isolate.spawn(probe, Sq('a', 3), Sq('b', 2)).join(), here)
+assert_eq(Isolate.spawn(fn () {
+  class Tri {
+    new(.name, .w, .h) {}
+    area() {
+      self.w * self.h / 2
+    }
+    eq(o) {
+      self.area() == o.area()
+    }
+  }
+  let t = Tri('t', 4, 3)
+  [t.describe(), t.bigger_than(Tri('u', 2, 2)), t.neq(Tri('v', 6, 2))]
+}).join(), ['t: 6', true, false])
+
+# Parallel.map: every worker of the pool has the defaults.
+let squares = [1, 2, 3, 4].map(|n| Sq('s', n))
+assert_eq(
+  Parallel.map(squares, |s| s.describe()),
+  ['s: 1', 's: 4', 's: 9', 's: 16'],
+)
+let two = Sq('s', 2)
+assert_eq(Parallel.map(squares, |s| s.neq(two)), [true, false, true, true])
+
+# Http.server: a handler runs on a pool worker.
+let (tx, rx) = Channel.new(1)
+let iso = Isolate.spawn(fn () {
+  let srv = Http.server()
+  srv.get('/shape/:n', fn (req) {
+    class Sq {
+      new(.name, .side) {}
+      area() {
+        self.side * self.side
+      }
+      eq(o) {
+        self.side == o.side
+      }
+    }
+    let s = Sq('s', req.params['n'].to_long())
+    s.describe() + ' ' + s.neq(Sq('s', 2)).to_string()
+  })
+  tx.send(srv.bind(0))
+  tx.drop()
+  srv.serve(workers: 2)
+})
+tx.drop()
+let port = rx.recv()
+assert_true(port != nil)
+let base = 'http://127.0.0.1:' + port.to_string()
+assert_eq(Http.get(base + '/shape/3').body, 's: 9 true')
+assert_eq(Http.get(base + '/shape/2').body, 's: 4 false')
+iso.drop()
+
+# Net.serve: the same for a connection handler.
+let (ntx, nrx) = Channel.new(1)
+let niso = Isolate.spawn(fn () {
+  let l = Net.listen(0, host: '127.0.0.1')
+  ntx.send(l.port)
+  ntx.drop()
+  l.serve(fn (conn) {
+    class Sq {
+      new(.name, .side) {}
+      area() {
+        self.side * self.side
+      }
+    }
+    conn.write(Sq('n', conn.read_line().to_long()).describe() + "\n")
+  }, workers: 2)
+})
+ntx.drop()
+let nport = nrx.recv()
+assert_true(nport != nil)
+let c = Net.connect('127.0.0.1', nport, timeout: 2000)
+c.set_timeout(2000)
+c.write("5\n")
+assert_eq(c.read_line(), 'n: 25')
+c.close()
+niso.drop()
+
+# The worker has the table as it was when it was spawned: a trait declared
+# after the spawn is not there.
+let (tx2, rx2) = Channel.new()
+let waiter = Isolate.spawn(fn (s) {
+  rx2.recv()
+  try {
+    s.late()
+    'unexpected'
+  } catch e {
+    e.kind
+  }
+}, Sq('x', 1))
+trait Late {
+  late() {
+    'late'
+  }
+}
+tx2.send(1)
+tx2.drop()
+assert_eq(waiter.join(), 'TypeError')
+assert_eq(Sq('x', 1).late(), 'late')
+
+# A worker passes on what it was given and never used: its own worker has
+# the defaults too.
+let grandchild = Isolate.spawn(
+  |s| Isolate.spawn(|t| [t.describe(), t.neq(t)], s).join(),
+  Sq('g', 3),
+)
+assert_eq(grandchild.join(), ['g: 9', false])
+
+# A trait declared again inside a worker replaces the defaults it was given,
+# as a re-declaration does anywhere.
+assert_eq(Isolate.spawn(fn (s) {
+  trait Shape {
+    area()
+    describe() {
+      "a shape of {self.area()}"
+    }
+  }
+  [s.describe(), try {
+    s.bigger_than(s)
+  } catch e {
+    e.kind
+  }]
+}, Sq('r', 2)).join(), ['a shape of 4', 'TypeError'])
+
+inspect('trait defaults reach workers')

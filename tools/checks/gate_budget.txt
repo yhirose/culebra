@@ -32,7 +32,9 @@
 # 295 since test_audio_kauai_spec.cul, _jetveux.cul and _errors.cul (every
 # example of the Kauai spec plays, Je te veux matches its score note for
 # note, and the spec's mistakes name their lines).
-tests.cul 295
+# 296 since test_trait_defaults_workers.cul (a trait's default methods reach
+# every worker Runtime: Isolate, Parallel, the Http and Net pools).
+tests.cul 296
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
