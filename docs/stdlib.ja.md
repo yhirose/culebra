@@ -8038,7 +8038,7 @@ loop {
 
 曲に誤りがあると`KauaiError`になり、メッセージにはファイル名と行番号が付く。
 曲のオブジェクトには`play()`、`stop()`、`volume(v)`、`playing()`、
-`reached(mark)`、`prepare()`、`length()`、`events()`があり、音声デバイスで
+`reached(mark)`、`prepare()`、`length()`、`about()`、`events()`があり、音声デバイスで
 実際に鳴っているかどうかに関係なく、自分で経過時間を管理する。詳しくは仕様の
 [10章](kauai/language.ja.md#10-culebra-から再生する)を参照。
 

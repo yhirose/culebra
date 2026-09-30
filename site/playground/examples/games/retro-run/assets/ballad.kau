@@ -1,5 +1,7 @@
-# The racing game's ending theme: a slow ballad in Eb, after the late-night
-# coast-road ballads of the 16-bit arcades.
+about {
+  title  Theme
+  note   the racing game's ending theme: a slow ballad in Eb, after the late-night coast-road ballads of the 16-bit arcades
+}
 
 band Trio {
   voice Piano  host Ep bright=0.8  plays chords rootless from E3  poly  vol 26%

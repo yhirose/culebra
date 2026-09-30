@@ -8357,7 +8357,7 @@ program supplies for `host` instruments as samples mixed alongside them.
 
 A song's mistake raises `KauaiError`, its message naming the file and the
 line. The song answers `play()`, `stop()`, `volume(v)`, `playing()`,
-`reached(mark)`, `prepare()`, `length()` and `events()`, and keeps its own
+`reached(mark)`, `prepare()`, `length()`, `about()` and `events()`, and keeps its own
 time whether or not a device plays it; the specification's
 [section 10](kauai/language.md#10-playing-from-culebra) has them all.
 

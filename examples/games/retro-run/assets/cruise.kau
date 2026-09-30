@@ -1,4 +1,7 @@
-# Lap one of a racing game: ~129 bpm in C.
+about {
+  title  Cruise
+  note   lap one of a racing game: ~129 bpm in C
+}
 
 use 'run.kau'
 

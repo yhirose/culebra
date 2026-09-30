@@ -108,8 +108,8 @@ Kauaiでも大文字で書きます。コード記号（`Fmaj7`）、音の高�
 始まり、`}`だけの行で終わります。語は空白で区切り、インデントには意味が
 ありません。
 
-**コメント。** 行頭、または空白の直後にある`#`から行末までがコメントです。
-語の途中の`#`はシャープなので、`g#`、`F#m7`、`D#3`はコメントになりません。
+**コメント。** 行頭、または空白の直後にある`//`から行末までがコメントです。
+語の途中の`//`はコメントになりません（`https://`）。`#`はいつもシャープです。
 
 **範囲などで使う音の高さ。** 定義の中で音の高さを指定するとき（`E2..D#3`、
 `from C4`）は、大文字の音名に、必要なら`#`か`b`を付け、オクターブ番号を
@@ -148,6 +148,36 @@ voicings {
   9sus4   0 5 7 10 14
 }
 ```
+
+**`about { ... }`** には、その曲について、誰がいつ書いたか、何から取ったかを
+書きます。1行に1つずつ、項目名と内容を書きます。内容は引用符で囲まず、行末
+までがそのまま内容になります。どの項目も書けるのは1回までで、必須の項目は
+ありません。`about`を書けるのは`song`のあるファイルだけで、1つのファイルに
+1つまでです。
+
+```kauai
+about {
+  title     Je te veux
+  composer  Erik Satie
+  year      1897
+  source    the OpenScore Lieder score (CC0)
+  note      the voice as written; the chords are a reading of the piano part
+}
+```
+
+| 項目 | 内容 |
+|---|---|
+| `title` | 曲名 |
+| `composer` | 作曲者 |
+| `lyricist` | 作詞者 |
+| `arranger` | 編曲した人、またはKauaiに書き起こした人 |
+| `year` | 作られた年（数） |
+| `source` | 元にした楽譜や録音 |
+| `license` | 使ってよい条件 |
+| `note` | そのほかのこと（1行） |
+
+`about`の内容は演奏に影響しません。プログラムからは`about()`で読みます
+（[10章](#10-culebra-から再生する)）。
 
 同じ種類の定義に同じ名前を付けるとエラーです（grooveが2つ、sectionが2つ
 など）。同じファイルの中でも、ファイルをまたいでも同じです。grooveとsectionの
@@ -840,6 +870,7 @@ section Bridge {
 - `N.C.`の前にある`>`や`<`
 - songの行で2回書いたオプション（`in D in E`）
 - 取り込まれるファイルにある`song`。1つのファイルにある2つ以上の`song`
+- 取り込まれるファイルにある`about`、1つのファイルにある2つ以上の`about`。`about`にない項目、2回書いた項目、内容のない項目、数でない`year`
 - `#`や`b`で始まる、またはコード表にすでにある`voicings`の名前
 - `8`と`16`以外を指定した`swing`。「長:短」になっていない比（`3:2`のように書く）。組が小節をちょうど埋めないスウィング（3/8拍子の`swing 8`）
 
@@ -896,6 +927,7 @@ song.play()
 | `reached(NAME)` | `mark NAME`の位置まで演奏が進んだかどうか |
 | `prepare()` | hostの音声を1つ作り、残りの数を返す |
 | `length()` | 1回通して演奏したときの秒数 |
+| `about()` | `about`に書いた項目をまとめたオブジェクト。例: `{title: 'Je te veux', composer: 'Erik Satie', year: 1897}`。`about`がなければ`{}` |
 | `events()` | 演奏する音を時間順に並べたもの。各要素は`{at, len, by, pitch, vol}`で、`at`と`len`は秒、`by`は楽器かドラムの名前、`pitch`はMIDIのノート番号（ドラムは`nil`）、`vol`はその音の強弱での楽器の`vol`（hostの音声では、音声自身の音量に対する割合） |
 
 runtimeは、すべての音を音声ストリーム自身のクロックに合わせて予約します。
@@ -1008,8 +1040,11 @@ PEGで書いた文法です。ファイルは1行ずつ読み、`EOL`は行の�
 [9章](#9-エラー)に挙げています。
 
 ```
-File       <- (Use / Voicings / Band / Groove / Section / Song / EOL)*
+File       <- (Use / Voicings / About / Band / Groove / Section / Song / EOL)*
 Use        <- 'use' Quoted EOL
+About      <- 'about' '{' EOL (AboutItem Text EOL / EOL)* '}' EOL
+AboutItem  <- 'title' / 'composer' / 'lyricist' / 'arranger' / 'year'
+            / 'source' / 'license' / 'note'
 
 Voicings   <- 'voicings' '{' EOL (!('#' / 'b') Quality Int+ EOL)* '}' EOL
 Band       <- 'band' Name '{' EOL (Voice / Drum / Derived / EOL)* '}' EOL
@@ -1097,6 +1132,7 @@ Level      <- Int / Percent
 Interval   <- 'm2' / 'M2' / 'm3' / 'M3' / 'P4' / 'TT' / 'P5' / 'm6' / 'M6'
             / 'm7' / 'M7' / 'P8'
 Quoted     <- "'" [^']* "'"
+Text       <- (!EOL .)+                     # to the end of the line, no quotes
 ```
 
 ## 付録 C: 完全な曲
@@ -1133,7 +1169,10 @@ band Run {
 1周目の曲です。
 
 ```kauai
-# Lap one of a racing game: ~129 bpm in C.
+about {
+  title  Cruise
+  note   lap one of a racing game: ~129 bpm in C
+}
 
 use 'run.kau'
 
@@ -1257,8 +1296,10 @@ section Hook {
 2周目の曲です。2回目のサビは1回目を全音上に移調したもの（`in E`）で、最後の2小節は移調せず、書いたとおりの音でDに戻ります。
 
 ```kauai
-# Lap two of the racing game: 150 bpm in D, after the Japanese fusion bands of
-# the 80s.
+about {
+  title  Sprint
+  note   lap two of the racing game: 150 bpm in D, after the Japanese fusion bands of the 80s
+}
 
 use 'run.kau'
 
@@ -1378,8 +1419,10 @@ section Chorus {
 エンディングのテーマです。エレクトリックピアノはhost楽器（`Ep`）で、和音を弾きます。メロディも同じエレクトリックピアノで、音色を明るくして弾きます。
 
 ```kauai
-# The racing game's ending theme: a slow ballad in Eb, after the late-night
-# coast-road ballads of the 16-bit arcades.
+about {
+  title  Theme
+  note   the racing game's ending theme: a slow ballad in Eb, after the late-night coast-road ballads of the 16-bit arcades
+}
 
 band Trio {
   voice Piano  host Ep bright=0.8  plays chords rootless from E3  poly  vol 26%
@@ -1469,8 +1512,13 @@ section Peak {
 *ジュ・トゥ・ヴー*（エリック・サティ、1897年）。歌のパートは、スラー、強弱、クレッシェンド、ディミヌエンドまで含めて、OpenScore Liederの楽譜（CC0）のとおりです。前奏のピアノの右手はパート`Fill`として書き、和音やタイも楽譜どおりにしてあります。コード記号は、ピアノのパートから読み取って付けました。`\rit 104`と、それを受ける`\tempo`は、楽譜の*retenir*（テンポを落として）と*au refrain*（リフレインのテンポで）を表しています。
 
 ```kauai
-# Je te veux (Erik Satie, 1897): the voice as written, from the OpenScore
-# Lieder score (CC0); the chords are a reading of the piano part.
+about {
+  title     Je te veux
+  composer  Erik Satie
+  year      1897
+  source    the OpenScore Lieder score (CC0)
+  note      the voice as written; the chords are a reading of the piano part
+}
 
 voicings {
   7b5     0 4 6 10
@@ -1629,3 +1677,5 @@ section Coda {
 | `Cdim`でディミニッシュ・セブンスを表す | `Cdim`は3和音。4和音は`Cdim7` |
 | 6/8拍子で、付点4分音符を数えて`tempo 60` | `tempo`は4分音符で数える。付点4分音符で数えるなら`tempo 4.=60` |
 | 16ステップのつもりで、15や17個並べたドラムの行 | 1ステップの長さが音価にならなければいけないので、数え間違いはエラーになる |
+| `#`や`%`でコメントを始める | コメントは`//`で始める。`#`はシャープ、`%`は小節の繰り返し |
+| 曲名や作曲者を引用符で囲む（`title = "..."`） | `about`ブロックに書く。各項目の内容は引用符なしで行末まで |

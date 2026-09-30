@@ -148,6 +148,39 @@ assert_throws("TypeError", fn () {
   Audio.Kauai.new(42)
 })
 
+# `about` says what the song is, each item's text to the end of its line; a
+# `//` starts a comment at the start of a line or after a space, and a `#` is
+# a sharp.
+let about = Audio.Kauai.new(lines([
+  'about {',
+  '  title     Etude Op. 10 #3  // not the title',
+  '  composer  Frédéric Chopin',
+  '  year      1832',
+  '  source    https://example.org/etude',
+  '}',
+  '// a line of comment',
+  song_of(['  Verse  // once']),
+  'section Verse {',
+  '  C  c#1',
+  '}',
+]))
+assert_eq(about.about(), {
+  title: 'Etude Op. 10 #3',
+  composer: 'Frédéric Chopin',
+  year: 1832,
+  source: 'https://example.org/etude',
+})
+assert_eq(notes(about, "Tune"), [(0.0, 2.0, 73, 20.0)])
+assert_eq(first.about(), {})
+let about_error = |items| error_of(lines(['about {', ...items, '}', song_of(['  Verse']), 'section Verse {', '  C  c1', '}']))
+assert_eq(about_error(['  tempo 100']), ("KauaiError",
+  "line 2: about says title, composer, lyricist, arranger, year, source, license, note, not tempo"))
+assert_eq(about_error(['  title A', '  title B']), ("KauaiError", "line 3: about says title once"))
+assert_eq(about_error(['  note']), ("KauaiError", "line 2: note needs its text: note ..."))
+assert_eq(about_error(['  year 1890s']), ("KauaiError", "line 2: a year is a number: 1890s"))
+assert_eq(error_of(lines(['about {', '}', 'about {', '}', song_of(['  Verse'])])),
+  ("KauaiError", "line 3: a file says about once"))
+
 # A song file and the files it uses, here from a directory of its own: any
 # object with exists(name) and read(name), as Embed.dir gives.
 let files = {
@@ -158,6 +191,8 @@ let files = {
     'section Verse {', '  C  c1', '}',
   ]),
   "songs/second.kau": lines(["use 'first.kau'"]),
+  "songs/about.kau": lines(['about {', '  title Band', '}']),
+  "songs/third.kau": lines(["use 'about.kau'"]),
 }
 let dir = {exists: |name| files.has(name), read: |name| files[name]}
 assert_eq(notes(Audio.Kauai.load("songs/first.kau", dir: dir), "Tune"), [(0.0, 2.0, 72, 20.0)])
@@ -171,6 +206,13 @@ let used_song = try {
   e.message
 }
 assert_eq(used_song, "songs/first.kau:2: a file that is used holds no song")
+let used_about = try {
+  Audio.Kauai.load("songs/third.kau", dir: dir)
+  nil
+} catch e {
+  e.message
+}
+assert_eq(used_about, "songs/about.kau:1: a file that is used holds no about")
 
 # A host voice's sounds come from the program: one per pitch, built by
 # prepare() a call at a time, or by play() all at once.

@@ -110,9 +110,9 @@ that kind of thing is expected.
 `{` opens a block, and a line that is only `}` closes it. Words are separated
 by spaces; indentation has no meaning.
 
-**Comments.** A `#` at the start of a line, or after a space, starts a
-comment that runs to the end of the line. A `#` inside a word is a sharp:
-`g#`, `F#m7` and `D#3` are not comments.
+**Comments.** A `//` at the start of a line, or after a space, starts a
+comment that runs to the end of the line. A `//` inside a word is not one
+(`https://`), and a `#` is always a sharp.
 
 **Pitches in ranges.** Where a definition names a pitch (`E2..D#3`,
 `from C4`), it is written with a capital letter, an optional `#` or `b`,
@@ -152,6 +152,35 @@ voicings {
   9sus4   0 5 7 10 14
 }
 ```
+
+**`about { ... }`** says what the song is: who wrote it, when, and where
+it comes from. Each line is an item and its text, which runs to the end of
+the line without quotes. Each item is written at most once, and none is
+required. Only a file with a `song` may have one, and at most one.
+
+```kauai
+about {
+  title     Je te veux
+  composer  Erik Satie
+  year      1897
+  source    the OpenScore Lieder score (CC0)
+  note      the voice as written; the chords are a reading of the piano part
+}
+```
+
+| Item | What it says |
+|---|---|
+| `title` | the song's title |
+| `composer` | who wrote the music |
+| `lyricist` | who wrote the words |
+| `arranger` | who arranged it or wrote it down in Kauai |
+| `year` | the year it was written, a number |
+| `source` | where it was taken from: a score, a recording |
+| `license` | the terms it may be used under |
+| `note` | anything else, on one line |
+
+Nothing in `about` changes how the song plays; a program reads it with
+`about()` ([section 10](#10-playing-from-culebra)).
 
 Two definitions of the same kind with the same name (two grooves, two
 sections), in one file or across files, are an error. A groove and a section
@@ -843,6 +872,7 @@ under.
 - `>` or `<` before `N.C.`
 - an option said twice on a line of the song (`in D in E`)
 - a `song` in a file that is used, or more than one in a file
+- an `about` in a file that is used or twice in a file; an item it does not have, one written twice or without its text, or a `year` that is not a number
 - a `voicings` name that starts with `#` or `b`, or that the chord table already has
 - a `swing` on other than `8` or `16`, a ratio that is not long to short (`3:2`), or a swing whose pairs do not fill the bar (`swing 8` in 3/8)
 
@@ -898,6 +928,7 @@ check the song and raise the first error of [section 9](#9-errors) as a
 | `reached(NAME)` | whether it has played as far as `mark NAME` |
 | `prepare()` | builds one host sound, and answers how many remain |
 | `length()` | seconds once through |
+| `about()` | what its `about` says, as an object of the items written: `{title: 'Je te veux', composer: 'Erik Satie', year: 1897}`; `{}` without one |
 | `events()` | what it plays, in order: `{at, len, by, pitch, vol}`, with `at` and `len` in seconds, `by` the voice or drum, `pitch` a MIDI note (`nil` for a drum), and `vol` the voice's `vol` at the note's dynamic (a host sound's as a fraction of its own level) |
 
 The runtime schedules every note on the audio stream's own clock, so the
@@ -1009,8 +1040,11 @@ more than the language does (the number of beats in a bar, which names are
 defined), [section 9](#9-errors) says what is checked.
 
 ```
-File       <- (Use / Voicings / Band / Groove / Section / Song / EOL)*
+File       <- (Use / Voicings / About / Band / Groove / Section / Song / EOL)*
 Use        <- 'use' Quoted EOL
+About      <- 'about' '{' EOL (AboutItem Text EOL / EOL)* '}' EOL
+AboutItem  <- 'title' / 'composer' / 'lyricist' / 'arranger' / 'year'
+            / 'source' / 'license' / 'note'
 
 Voicings   <- 'voicings' '{' EOL (!('#' / 'b') Quality Int+ EOL)* '}' EOL
 Band       <- 'band' Name '{' EOL (Voice / Drum / Derived / EOL)* '}' EOL
@@ -1098,6 +1132,7 @@ Level      <- Int / Percent
 Interval   <- 'm2' / 'M2' / 'm3' / 'M3' / 'P4' / 'TT' / 'P5' / 'm6' / 'M6'
             / 'm7' / 'M7' / 'P8'
 Quoted     <- "'" [^']* "'"
+Text       <- (!EOL .)+                     # to the end of the line, no quotes
 ```
 
 ## Appendix C: Complete songs
@@ -1134,7 +1169,10 @@ band Run {
 Lap one.
 
 ```kauai
-# Lap one of a racing game: ~129 bpm in C.
+about {
+  title  Cruise
+  note   lap one of a racing game: ~129 bpm in C
+}
 
 use 'run.kau'
 
@@ -1258,8 +1296,10 @@ section Hook {
 Lap two. The second chorus is the first one a step up (`in E`), and its last two bars fall back to D as written.
 
 ```kauai
-# Lap two of the racing game: 150 bpm in D, after the Japanese fusion bands of
-# the 80s.
+about {
+  title  Sprint
+  note   lap two of the racing game: 150 bpm in D, after the Japanese fusion bands of the 80s
+}
 
 use 'run.kau'
 
@@ -1379,8 +1419,10 @@ section Chorus {
 The ending theme. The electric piano is a host voice (`Ep`) that plays chords, and the melody is played on it too, brighter.
 
 ```kauai
-# The racing game's ending theme: a slow ballad in Eb, after the late-night
-# coast-road ballads of the 16-bit arcades.
+about {
+  title  Theme
+  note   the racing game's ending theme: a slow ballad in Eb, after the late-night coast-road ballads of the 16-bit arcades
+}
 
 band Trio {
   voice Piano  host Ep bright=0.8  plays chords rootless from E3  poly  vol 26%
@@ -1470,8 +1512,13 @@ section Peak {
 *Je te veux* (Erik Satie, 1897). The voice part is as written in the OpenScore Lieder score (CC0), with its slurs, dynamics, crescendos and diminuendos, and the piano's right hand in the intro is the part `Fill`, its chords and ties as written; the chord symbols are a reading of the piano part, and the `\rit 104` and the `\tempo` that answers it stand for the score's *retenir* and *au refrain*.
 
 ```kauai
-# Je te veux (Erik Satie, 1897): the voice as written, from the OpenScore
-# Lieder score (CC0); the chords are a reading of the piano part.
+about {
+  title     Je te veux
+  composer  Erik Satie
+  year      1897
+  source    the OpenScore Lieder score (CC0)
+  note      the voice as written; the chords are a reading of the piano part
+}
 
 voicings {
   7b5     0 4 6 10
@@ -1630,3 +1677,5 @@ them would otherwise play a wrong note without an error.
 | `Cdim` for a diminished seventh | `Cdim` is the triad; the seventh chord is `Cdim7` |
 | `tempo 60` in 6/8 for dotted quarters | `tempo` counts quarter notes; dotted quarters are `tempo 4.=60` |
 | A drum row of 15 or 17 steps for 16 | a bar's steps come to a note value, and a miscount is an error |
+| `#` or `%` starts a comment | comments start with `//`; `#` is a sharp and `%` repeats a bar |
+| The title and composer in quotes (`title = "..."`) | an `about` block, each item's text to the end of its line without quotes |

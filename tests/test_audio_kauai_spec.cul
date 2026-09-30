@@ -194,6 +194,16 @@ fn voicings_alone(b) {
   } if voiced(song) != want
   song
 }
+# An about on its own says what it lists, over the first song of section 2.
+fn about_alone(b) {
+  let song = song_of(b + "\n" + blocks[0])
+  let want = b.split("\n").slice(1, -1).map(words_of).map(|w| w[0])
+  throw {
+    kind: "AssertionError",
+    message: "about() has {song.about().keys()}, want {want}",
+  } if song.about().keys() != want
+  song
+}
 # A song on its own is the one of Appendix C by its name, played with the
 # rest of that file.
 fn song_alone(b) {
@@ -218,13 +228,14 @@ fn with_use(b) {
 fn played(b) {
   let first = words_of(b
     .split("\n")
-    .find(|l| !l.trim().empty() && !l.trim().starts_with("#")))[0]
+    .find(|l| !l.trim().empty() && !l.trim().starts_with("//")))[0]
   return with_use(b) if defines(b, "use")
   return song_of(b) if defines(b, "song") && defines(b, "band")
   return song_alone(b) if first == "song"
   return sections_alone(b) if first == "section"
   return band_alone(b) if first == "band"
   return groove_alone(b) if first == "groove"
+  return about_alone(b) if first == "about"
   voicings_alone(b)
 }
 
@@ -239,7 +250,7 @@ for i, b in blocks.enumerate() {
   failures.push("block {i + 1}: {got}") if type_of(got) != "Long" || got == 0
 }
 assert_eq(failures, [])
-assert_eq(blocks.size(), 25)
+assert_eq(blocks.size(), 26)
 
 # Appendix A: every spelling of every quality voices its intervals from C4.
 let appendix = FS

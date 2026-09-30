@@ -1,5 +1,7 @@
-# Lap two of the racing game: 150 bpm in D, after the Japanese fusion bands of
-# the 80s.
+about {
+  title  Sprint
+  note   lap two of the racing game: 150 bpm in D, after the Japanese fusion bands of the 80s
+}
 
 use 'run.kau'
 

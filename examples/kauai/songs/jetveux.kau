@@ -1,5 +1,10 @@
-# Je te veux (Erik Satie, 1897): the voice as written, from the OpenScore
-# Lieder score (CC0); the chords are a reading of the piano part.
+about {
+  title     Je te veux
+  composer  Erik Satie
+  year      1897
+  source    the OpenScore Lieder score (CC0)
+  note      the voice as written; the chords are a reading of the piano part
+}
 
 voicings {
   7b5     0 4 6 10

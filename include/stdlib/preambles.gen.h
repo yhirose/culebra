@@ -1671,11 +1671,11 @@ let _kauai_module = fn () {
 
   # --- lines and blocks ------------------------------------------------------
 
-  # A `#` starts a comment only at the start of a line or after a space, so a
-  # sharp (`g#`, `F#m7`) is not one.
+  # A `//` starts a comment only at the start of a line or after a space, so
+  # one inside a word (`https://`) is not.
   fn strip_comment(s) {
-    let at = s.index_of(" #")
-    let cut = s.starts_with("#") ? 0 : at
+    let at = s.index_of(" //")
+    let cut = s.starts_with("//") ? 0 : at
     cut < 0 ? s : s.slice(0, cut).to_string()
   }
 
@@ -2976,6 +2976,25 @@ let _kauai_module = fn () {
     song
   }
 
+  # What `about { ... }` says of the song: each line an item and its text, to
+  # the end of the line; `year` a number.
+  let ABOUT = ["title", "composer", "lyricist", "arranger", "year", "source", "license", "note"]
+  fn parse_about(b) {
+    fail(b.line, "about takes no name") if b.head.size() != 1
+    mut about = {}
+    for it in b.body {
+      fail(it.line, "about holds lines, not blocks") if it.has("head")
+      let key = it.words[0]
+      fail(it.line, "about says {ABOUT.join(", ")}, not {key}") if !ABOUT.contains(key)
+      fail(it.line, "about says {key} once") if about.has(key)
+      let text = it.text.slice(key.size(), it.text.size()).trim().to_string()
+      fail(it.line, "{key} needs its text: {key} ...") if text.empty()
+      fail(it.line, "a year is a number: {text}") if key == "year" && !all_of(text, "0123456789")
+      about[key] = key == "year" ? to_long(text) : text
+    }
+    about
+  }
+
   # Bar `r` as it plays the `nth` time its section plays: its `2nd:` line if it
   # has one for that time, and its parts with that time's lines over them (a
   # `.` there leaves the part out).
@@ -2996,6 +3015,7 @@ let _kauai_module = fn () {
   fn tops(src, file, load, used) {
     blocks(src, file).flat_map(fn (top) {
       fail(top.line, "a file that is used holds no song") if used && top.has("head") && top.head[0] == "song"
+      fail(top.line, "a file that is used holds no about") if used && top.has("head") && top.head[0] == "about"
       return [top] if top.has("head") || top.words[0] != "use"
       let quoted = top.words.size() == 2 ? top.words[1] : ""
       fail(top.line, "use takes a quoted file name: use 'band.kau'") if quoted.size() < 3 || !quoted.starts_with("'") || !quoted.ends_with("'")
@@ -3005,7 +3025,7 @@ let _kauai_module = fn () {
   }
 
   fn parse(src, file, load) {
-    mut out = {bands: {}, grooves: {}, sections: {}, songs: []}
+    mut out = {bands: {}, grooves: {}, sections: {}, songs: [], mut about: nil}
     qualities = {...CLOSE}
     # Two of a kind may not share a name; a groove and a section may.
     let define = fn (kind, table, name, line) {
@@ -3030,6 +3050,10 @@ let _kauai_module = fn () {
           out.sections[sec.name] = sec
         },
         "song" => out.songs.push(parse_song(top)),
+        "about" => {
+          fail(top.line, "a file says about once") if out.about != nil
+          out.about = parse_about(top)
+        },
         # `voicings { NAME INTERVAL... }` adds chord qualities to the table.
         "voicings" => {
           for it in top.body {
@@ -3553,6 +3577,7 @@ let _kauai_module = fn () {
     }
     {
       song: song,
+      about: s.about ?? {},
       voices: voices,
       drums: band.drums,
       # Where each mark is, as the bar it comes before.
@@ -3774,6 +3799,7 @@ let _kauai_module = fn () {
       self._length = time(x.steps)
       self._loop_at = x.song.loop ? time(x.loop_at) : -1.0
       self._marks = x.marks.keys().map(|k| (k, time(x.marks[k]))).to_object()
+      self._about = x.about
       self._build = host_sounds(x, self._events, voices, drums)
       self._todo = self._build.keys()
       self._sounds = {}
@@ -3836,6 +3862,11 @@ let _kauai_module = fn () {
     # Seconds once through.
     length() {
       self._length
+    }
+
+    # What its `about` says: {title, composer, ...}, the items it writes.
+    about() {
+      {...self._about}
     }
 
     # What it plays, in order: {at, len, by, pitch, vol}, in seconds from its
