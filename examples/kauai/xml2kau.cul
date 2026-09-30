@@ -1,0 +1,953 @@
+# MusicXML to Kauai (docs/kauai/language.md):
+#
+#   culebra examples/kauai/xml2kau.cul score.musicxml            # to stdout
+#   culebra examples/kauai/xml2kau.cul score.mxl song.kau        # to a file
+#
+# scores/sample.musicxml is a small score with a pickup, a repeat and its
+# endings, chord symbols and a piano on two staves, to try it on.
+#
+# Reads a partwise score, uncompressed (.musicxml, .xml) or compressed
+# (.mxl), and writes a song that plays it:
+#
+# - each voice of each part is a line (a voice may cross staves); the first
+#   part's first line is the melody, and every other line a part written out
+#   in blocks
+# - a line of single notes plays on a chip channel (pulse, pulse2, triangle,
+#   saw) while one is free, and one with chords, or past the four, on
+#   `host Ep` (the electric piano sounds.cul supplies to play.cul and
+#   jukebox.cul)
+# - the repeats become sections, played with their endings or `xN`; the
+#   rest of the score is sections between them
+# - chord symbols (<harmony>) become the bars' chords, on the beats they
+#   fall on; a bar without one keeps the chord before it
+# - the title, the creators, the rights and the source become `about`
+# - notes keep their ties, tuplets, grace notes, staccato, accents, tenuto,
+#   marcato, fermatas and arpeggios; dynamics, hairpins and tempo marks
+#   become directions; a meter change becomes a `meter` line
+#
+# Slurs, lyrics, ornaments, key changes and partial bars other than an
+# opening pickup are left out (a partial bar is filled with rests). What it
+# writes is read back with Audio.Kauai before it is written, and a mistake
+# there is reported with the song it made.
+
+let Q = 10080  # time in a quarter note: every common tuplet divides it
+let WHOLE = Q * 4
+let STEPS = {C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11}
+let SHARPS = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+let MAJOR = [
+  "Cb",
+  "Gb",
+  "Db",
+  "Ab",
+  "Eb",
+  "Bb",
+  "F",
+  "C",
+  "G",
+  "D",
+  "A",
+  "E",
+  "B",
+  "F#",
+  "C#",
+]
+let MINOR = [
+  "Ab",
+  "Eb",
+  "Bb",
+  "F",
+  "C",
+  "G",
+  "D",
+  "A",
+  "E",
+  "B",
+  "F#",
+  "C#",
+  "G#",
+  "D#",
+  "A#",
+]
+let DYNAMICS = {
+  ppp: "pp",
+  pp: "pp",
+  p: "p",
+  mp: "mp",
+  mf: "mf",
+  f: "f",
+  ff: "ff",
+  fff: "ff",
+}
+let MARKS = {staccato: ".", accent: "!", tenuto: "-", "strong-accent": "^"}
+# <harmony>'s kinds, as the chord table spells them.
+let KINDS = {
+  major: "",
+  minor: "m",
+  augmented: "aug",
+  diminished: "dim",
+  dominant: "7",
+  "major-seventh": "maj7",
+  "minor-seventh": "m7",
+  "diminished-seventh": "dim7",
+  "augmented-seventh": "7#5",
+  "half-diminished": "m7b5",
+  "major-minor": "mmaj7",
+  "major-sixth": "6",
+  "minor-sixth": "m6",
+  "dominant-ninth": "9",
+  "major-ninth": "maj9",
+  "minor-ninth": "m9",
+  "dominant-11th": "9",
+  "minor-11th": "m11",
+  "dominant-13th": "13",
+  "major-13th": "maj9",
+  "minor-13th": "m11",
+  "suspended-second": "sus2",
+  "suspended-fourth": "sus4",
+  power: "",
+}
+
+fn die(msg) {
+  IO.eprintln("xml2kau: {msg}")
+  Sys.exit(1)
+}
+
+# --- reading the file ---------------------------------------------------------
+
+fn le(b, at, n) {
+  mut v = 0
+  for i in 0..n {
+    v |= b[at + i] << 8 * i
+  }
+  v
+}
+let le_bytes = |v, n| iota(n).map(|i| v >> 8 * i & 255)
+
+# The files of a ZIP archive, by name. A deflated entry's bytes, with its
+# CRC-32 and length from the directory, are what a gzip member holds, so
+# Compress.gunzip reads them.
+fn unzip(data) {
+  let b = data.bytes().collect()
+  mut end = b.size() - 22
+  while end >= 0 && le(b, end, 4) != 0x06054b50 {
+    end -= 1
+  }
+  die("not a MusicXML file or an .mxl archive") if end < 0
+  mut at = le(b, end + 16, 4)
+  mut files = {}
+  for i in 0..le(b, end + 10, 2) {
+    let method = le(b, at + 10, 2)
+    let size = le(b, at + 20, 4)
+    let name_len = le(b, at + 28, 2)
+    let name = data.slice(at + 46, at + 46 + name_len).to_string()
+    let local = le(b, at + 42, 4)
+    let start = local + 30 + le(b, local + 26, 2) + le(b, local + 28, 2)
+    let raw = data.slice(start, start + size).to_string()
+    files[name] = match method {
+      0 => raw,
+      8 => Compress.gunzip(String.from_bytes([
+        0x1f,
+        0x8b,
+        8,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        255,
+      ]) +
+        raw +
+        String.from_bytes([
+          ...le_bytes(le(b, at + 16, 4), 4),
+          ...le_bytes(le(b, at + 24, 4), 4),
+        ])),
+      _ => die("{name} is stored in a way this reader does not know ({method})"),
+    }
+    at += 46 + name_len + le(b, at + 30, 2) + le(b, at + 32, 2)
+  }
+  files
+}
+
+# UTF-16 text (a score may be saved so, after its byte order mark) as UTF-8.
+fn utf8_of(data) {
+  let b = data.bytes().collect()
+  let big = b[0] == 0xfe
+  let unit = |k| big ? b[k] << 8 | b[k + 1] : b[k + 1] << 8 | b[k]
+  mut out = []
+  mut i = 2
+  while i + 1 < b.size() {
+    mut c = unit(i)
+    i += 2
+    if c >= 0xd800 && c < 0xdc00 && i + 1 < b.size() {
+      c = 0x10000 + (c - 0xd800 << 10) + (unit(i) - 0xdc00)
+      i += 2
+    }
+    let encoded = cond {
+      c < 0x80 => [c],
+      c < 0x800 => [0xc0 | c >> 6, 0x80 | c & 0x3f],
+      c < 0x10000 => [0xe0 | c >> 12, 0x80 | c >> 6 & 0x3f, 0x80 | c & 0x3f],
+      _ => [
+        0xf0 | c >> 18,
+        0x80 | c >> 12 & 0x3f,
+        0x80 | c >> 6 & 0x3f,
+        0x80 | c & 0x3f,
+      ],
+    }
+    for x in encoded {
+      out.push(x)
+    }
+  }
+  String.from_bytes(out).replace('encoding="UTF-16"', 'encoding="UTF-8"')
+}
+
+fn as_utf8(data) {
+  let head = data.slice(0, 2).bytes().collect()
+  head == [0xfe, 0xff] || head == [0xff, 0xfe] ? utf8_of(data) : data
+}
+
+# The score's XML: the file, or the score an .mxl archive's container names.
+fn score_text(path) {
+  let data = FS.read(path)
+  return as_utf8(data) if !data.starts_with("PK")
+  let files = unzip(data)
+  let container = files.get("META-INF/container.xml", nil)
+  let root = container == nil
+    ? nil
+    : XML.parse(as_utf8(container)).find(".//*:rootfile")
+  let name = root?.attrs.get("full-path", nil) ??
+    files
+      .keys()
+      .find(|k| !k.starts_with("META-INF") &&
+        (k.ends_with(".xml") || k.ends_with(".musicxml")))
+  die("{path} holds no score") if name == nil
+  as_utf8(files[name])
+}
+
+# --- the score as events ------------------------------------------------------
+
+let elements = |el| el.children.filter(|c| type_of(c) == "Object")
+let text_of = |el, path| el.text(path)?.trim()
+let number_of = |el, path| to_long(text_of(el, path) ?? "0")
+
+# A note of <pitch>: its letter, its alteration and its octave.
+fn pitch_of(p) {
+  let alter = Math.round(to_float(text_of(p, "alter") ?? "0"))
+  {step: text_of(p, "step"), alter: alter, octave: number_of(p, "octave")}
+}
+let natural = |n| 12 * (n.octave + 1) + STEPS[n.step]
+let sounding = |n| natural(n) + n.alter
+
+# The chord a <harmony> names, as a chord symbol.
+fn chord_of(h) {
+  let root = h.find("root")
+  return nil if root == nil
+  let accidental = |el, path| match Math.round(to_float(text_of(el, path) ?? "0")) {
+    1 => "#",
+    -1 => "b",
+    _ => "",
+  }
+  let kind = text_of(h, "kind") ?? "major"
+  return "N.C." if kind == "none"
+  let added = h
+    .find_all("degree")
+    .any(|d| text_of(d, "degree-type") == "add" &&
+      text_of(d, "degree-value") == "9")
+  let quality = kind == "major" && added ? "add9" : KINDS.get(kind, "")
+  let bass = h.find("bass")
+  let over = bass == nil
+    ? ""
+    : "/" + text_of(bass, "bass-step") + accidental(bass, "bass-alter")
+  text_of(root, "root-step") + accidental(root, "root-alter") + quality + over
+}
+
+# A part's measures: for each, its meter, what its barlines say, and its
+# events by line (its voice), with times in Q to the quarter.
+fn read_part(part) {
+  mut divisions = 1
+  mut meter = (4, 4)
+  mut key = nil
+  mut out = []
+  for m in part.find_all("measure") {
+    mut at = 0
+    mut end = 0
+    mut lines = {}
+    mut previous = nil  # the last note's event, which a <chord/> note joins
+    mut graces = {}
+    let bar = {
+      implicit: m.attrs.get("implicit", "no") == "yes",
+      harmonies: [],
+      directions: [],
+      tempos: [],
+      mut forward: false,
+      mut backward: nil,
+      mut ending_start: nil,
+      mut ending_stop: false,
+    }
+    let ticks = |el| number_of(el, "duration") * Q / divisions
+    for c in elements(m) {
+      match c.tag {
+        "attributes" => {
+          divisions = to_long(text_of(c, "divisions") ?? "{divisions}")
+          if let t = c.find("time"); t != nil {
+            meter = (number_of(t, "beats"), number_of(t, "beat-type"))
+          }
+          if let k = c.find("key"); k != nil && key == nil {
+            let fifths = Math.max(-7, Math.min(7, number_of(k, "fifths")))
+            key = text_of(k, "mode") == "minor"
+              ? MINOR[fifths + 7] + "m"
+              : MAJOR[fifths + 7]
+          }
+        },
+        "harmony" => bar.harmonies.push((
+          at + number_of(c, "offset") * Q / divisions,
+          chord_of(c),
+        )),
+        "direction" => {
+          let where = at + number_of(c, "offset") * Q / divisions
+          let staff = text_of(c, "staff") ?? "1"
+          for d in c.find_all("direction-type/dynamics/*") {
+            let word = DYNAMICS.get(d.tag, nil)
+            bar.directions.push({
+              at: where,
+              staff: staff,
+              word: "\\{word}",
+            }) if word != nil
+          }
+          for w in c.find_all("direction-type/wedge") {
+            let word = match w.attrs.get("type", "") {
+              "crescendo" => "\\cresc",
+              "diminuendo" => "\\dim",
+              "stop" => "\\!",
+              _ => nil,
+            }
+            bar.directions.push({
+              at: where,
+              staff: staff,
+              word: word,
+            }) if word != nil
+          }
+          if let s = c.find("sound[@tempo]"); s != nil {
+            bar.tempos.push((where, Math.round(to_float(s.attrs["tempo"]))))
+          }
+        },
+        "sound" => {
+          bar.tempos.push((
+            at,
+            Math.round(to_float(c.attrs["tempo"])),
+          )) if c.attrs.has("tempo")
+        },
+        "backup" => at -= ticks(c),
+        "forward" => {
+          at += ticks(c)
+          end = Math.max(end, at)
+        },
+        "barline" => {
+          bar.forward = true if c.find("repeat[@direction='forward']") != nil
+          if let r = c.find("repeat[@direction='backward']"); r != nil {
+            bar.backward = to_long(r.attrs.get("times", "2"))
+          }
+          if let e = c.find("ending"); e != nil {
+            match e.attrs.get("type", "") {
+              "start" => bar.ending_start = e
+                .attrs
+                .get("number", "1")
+                .split(",")
+                .map(|x| to_long(x.trim())),
+              _ => bar.ending_stop = true,
+            }
+          }
+        },
+        "note" => {
+          let line = text_of(c, "voice") ?? "1"
+          let pitch = c.find("pitch")
+          let tied = c.find("tie[@type='start']") != nil
+          let n = pitch == nil ? nil : {...pitch_of(pitch), tie: tied}
+          if c.find("grace") != nil {
+            graces[line] = [...graces.get(line, []), n] if n != nil
+            continue
+          }
+          if c.find("chord") != nil && previous != nil {
+            previous.notes.push(n) if n != nil && !previous.rest
+            continue
+          }
+          let tm = c.find("time-modification")
+          let marks = c
+            .find_all("notations/articulations/*")
+            .map(|a| MARKS.get(a.tag, ""))
+            .join("") +
+            (c.find("notations/fermata") != nil ? "@" : "")
+          let rest = n == nil || c.find("cue") != nil
+          let dots = c.find_all("dot").size()
+          let ev = {
+            at: at,
+            len: ticks(c),
+            rest: rest,
+            mut notes: rest ? [] : [n],
+            type: text_of(c, "type"),
+            dots: dots,
+            tuplet: tm == nil
+              ? nil
+              : (number_of(tm, "actual-notes"), number_of(tm, "normal-notes")),
+            tuplet_start: c.find("notations/tuplet[@type='start']") != nil,
+            tuplet_stop: c.find("notations/tuplet[@type='stop']") != nil,
+            marks: marks,
+            arpeggio: c.find("notations/arpeggiate") != nil,
+            graces: rest ? [] : graces.get(line, []),
+            staff: text_of(c, "staff") ?? "1",
+          }
+          graces[line] = []
+          lines[line] = [...lines.get(line, []), ev]
+          previous = ev
+          at += ev.len
+          end = Math.max(end, at)
+        },
+        _ => nil,
+      }
+    }
+    let (beats, beat_type) = meter
+    out.push({
+      ...bar,
+      meter: meter,
+      len: beats * WHOLE / beat_type,
+      content: end,
+      lines: lines,
+      key: key,
+    })
+  }
+  out
+}
+
+# --- writing notes ------------------------------------------------------------
+
+let VALUES = [1, 2, 4, 8, 16, 32]
+fn value_len(v, dots) {
+  let base = WHOLE / v
+  match dots {
+    0 => base,
+    1 => base * 3 / 2,
+    _ => base * 7 / 4,
+  }
+}
+let TYPES = {whole: 1, half: 2, quarter: 4, eighth: 8, "16th": 16, "32nd": 32}
+
+# `len` as note values, longest first: plain or dotted.
+fn values_for(len) {
+  mut left = len
+  mut out = []
+  while left > 0 {
+    let fit = VALUES
+      .flat_map(|v| [(v, 1), (v, 0)])
+      .find(|(v, d)| value_len(v, d) <= left)
+    break if fit == nil
+    out.push(fit)
+    left -= value_len(fit[0], fit[1])
+  }
+  out
+}
+let value_text = |(v, dots)| "{v}" + ".".repeat(dots)
+
+# A line's octave range: the natural note to start it on that leaves its
+# notes the fewest octave marks.
+fn range_of(notes) {
+  return 60 if notes.empty()
+  let naturals = notes.map(natural)
+  let lo = naturals.min()
+  let hi = naturals.max()
+  let cost = |start| notes.map(|n| Math.abs(marks_of(n, start))).sum()
+  iota(hi - lo + 13)
+    .map(|k| lo - 12 + k)
+    .filter(|p| [0, 2, 4, 5, 7, 9, 11].contains(Math.wrap(p, 12)))
+    .sorted_by(|p| cost(p) * 1000 + Math.abs(p - lo))[0]
+}
+fn marks_of(n, start) {
+  let place = start + Math.wrap(STEPS[n.step] - Math.wrap(start, 12), 12)
+  (natural(n) - place) / 12
+}
+let range_text = |lo| "{SHARPS[lo % 12]}{lo / 12 - 1}..{SHARPS[(lo + 11) % 12]}{(lo + 11) / 12 - 1}"
+
+fn note_name(n, start) {
+  let accidental = match n.alter {
+    2 => "##",
+    1 => "#",
+    -1 => "b",
+    -2 => "bb",
+    _ => "",
+  }
+  let m = marks_of(n, start)
+  n.step.lower() + accidental + (m > 0 ? "'".repeat(m) : ",".repeat(-m))
+}
+
+# One bar of a line as notes, from its events (nil: nothing written) and its
+# directions, filled with rests to `len`. `state` carries across the bars a
+# line plays: the pitches a tie holds on, and the value the next note may
+# leave out.
+fn bar_notes(events, directions, len, start, state) {
+  mut words = []
+  mut at = 0
+  mut prev = nil
+  mut tuplet = nil
+  mut tuplet_from = 0  # the word that opens the tuplet
+  mut tuplet_values = []
+  let pending = directions.sorted_by(|d| d.at)
+  mut next_dir = 0
+  let directions_to = fn (t) {
+    while next_dir < pending.size() && pending[next_dir].at <= t {
+      words.push(pending[next_dir].word)
+      next_dir += 1
+    }
+  }
+  let valued = fn (text, pair) {
+    let v = value_text(pair)
+    let out = v == prev && tuplet == nil ? text : text + v
+    prev = v
+    out
+  }
+  let rests = fn (from, to) {
+    mut t = from
+    for pair in values_for(to - from) {
+      directions_to(t)
+      words.push(valued("r", pair))
+      t += value_len(pair[0], pair[1])
+    }
+  }
+  # Three of one value in the time of two is written short: `3[c8 d e]`.
+  let close_tuplet = fn () {
+    if tuplet != nil {
+      words[words.size() - 1] = words[-1] + "]"
+      let short = tuplet == (3, 2) &&
+        tuplet_values.size() == 3 &&
+        tuplet_values.all(|v| v == tuplet_values[0])
+      words[tuplet_from] = "3[" +
+        words[tuplet_from].slice(4, words[tuplet_from].size()) if short
+      tuplet = nil
+      prev = nil
+    }
+  }
+  for ev in events ?? [] {
+    continue if ev.at < at
+    close_tuplet() if ev.at > at ||
+      tuplet != nil && (ev.tuplet != tuplet || ev.tuplet_start)
+    rests(at, ev.at) if ev.at > at
+    directions_to(ev.at)
+    let held = !ev.rest && ev.notes.all(|n| state.tied.contains(sounding(n)))
+    let marks = held
+      ? ""
+      : ev.rest ? ev.marks.contains("@") ? "@" : "" : ev.marks
+    let graces = ev.graces.empty() || held
+      ? ""
+      : "\{" + ev.graces.map(|g| note_name(g, start)).join(" ") + "}"
+    let body = cond {
+      ev.rest => "r",
+      ev.notes.size() == 1 => note_name(ev.notes[0], start),
+      _ => {
+        let all_tied = ev.notes.all(|n| n.tie)
+        let inner = ev
+          .notes
+          .sorted_by(sounding)
+          .map(|n| note_name(n, start) + (n.tie && !all_tied ? "~" : ""))
+        (ev.arpeggio ? "~" : "") + "<" + inner.join(" ") + ">"
+      },
+    }
+    let tie = !ev.rest && ev.notes.all(|n| n.tie) ? "~" : ""
+    let written = TYPES.get(ev.type ?? "", nil)
+    let head = graces + marks + body
+    if ev.tuplet != nil && written != nil {
+      let opening = tuplet == nil
+      let shown = value_text((written, ev.dots))
+      if opening {
+        tuplet = ev.tuplet
+        tuplet_from = words.size()
+        tuplet_values = []
+        prev = nil
+      }
+      tuplet_values.push(shown)
+      let (p, q) = ev.tuplet
+      words.push((opening ? "{p}:{q}[" : "") +
+        head +
+        (shown == prev ? "" : shown) +
+        tie)
+      prev = shown
+      close_tuplet() if ev.tuplet_stop
+    } else {
+      close_tuplet()
+      let values = written != nil && value_len(written, ev.dots) == ev.len
+        ? [(written, ev.dots)]
+        : values_for(ev.len)
+      for i, pair in values.enumerate() {
+        let last = i == values.size() - 1
+        let piece = i == 0 ? head : ev.rest ? "r" : body
+        words.push(valued(piece, pair) + (ev.rest ? "" : last ? tie : "~"))
+      }
+    }
+    at = ev.at + ev.len
+    state.tied = ev.rest ? [] : ev.notes.filter(|n| n.tie).map(sounding)
+  }
+  close_tuplet()
+  rests(at, len) if at < len
+  directions_to(len)
+  words.join(" ")
+}
+
+# --- the song -----------------------------------------------------------------
+
+let CAPITALS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+let ALNUM = CAPITALS + CAPITALS.lower() + "0123456789"
+
+# A name Kauai reads as one: capitalized words run together, their letters
+# without accents.
+fn name_of(text, fallback) {
+  let words = text
+    .normalize("NFD")
+    .split_whitespace()
+    .map(|w| w
+      .iter()
+      .map(|ch| ch.to_string())
+      .filter(|ch| ALNUM.contains(ch))
+      .collect()
+      .join(""))
+    .filter(|w| !w.empty())
+  let joined = words
+    .map(|w| w.slice(0, 1).upper() + w.slice(1, w.size()))
+    .join("")
+  joined.empty() || !CAPITALS.contains(joined.slice(0, 1)) ? fallback : joined
+}
+
+let one_line = |s| s.split_whitespace().join(" ").replace("//", "/")
+
+fn about_of(doc) {
+  let title = text_of(doc, "work/work-title") ?? text_of(doc, "movement-title")
+  let creator = |type| doc
+    .find("identification/creator[@type='{type}']")
+    ?.text()
+  let items = [
+    ("title", title),
+    ("composer", creator("composer")),
+    ("lyricist", creator("lyricist") ?? creator("poet")),
+    ("arranger", creator("arranger")),
+    ("source", text_of(doc, "identification/source")),
+    ("license", text_of(doc, "identification/rights")),
+    ("note", "converted from MusicXML by xml2kau.cul"),
+  ]
+  items
+    .filter(|(k, v)| v != nil && !one_line(v).empty())
+    .map(|(k, v)| (k, one_line(v)))
+}
+
+# The measures in the order the score's repeats lay them out: plain runs,
+# and repeats with their endings, as sections.
+fn sections_of(bars, first) {
+  mut out = []
+  mut run_start = first
+  mut i = first
+  let plain = fn (to) {
+    out.push({
+      body: iota(to - run_start).map(|k| run_start + k),
+      endings: [],
+      times: 1,
+    }) if to > run_start
+  }
+  while i < bars.size() {
+    let b = bars[i]
+    if b.forward {
+      plain(i)
+      run_start = i
+    }
+    if b.ending_start != nil {
+      let body = iota(i - run_start).map(|k| run_start + k)
+      mut endings = []
+      while i < bars.size() && bars[i].ending_start != nil {
+        let numbers = bars[i].ending_start
+        mut measures = [i]
+        while !bars[i].ending_stop &&
+            i + 1 < bars.size() &&
+            bars[i + 1].ending_start == nil &&
+            !bars[i + 1].forward {
+          i += 1
+          measures.push(i)
+        }
+        endings.push({numbers: numbers, measures: measures})
+        i += 1
+      }
+      out.push({body: body, endings: endings, times: 1})
+      run_start = i
+      continue
+    }
+    if b.backward != nil {
+      out.push({
+        body: iota(i + 1 - run_start).map(|k| run_start + k),
+        endings: [],
+        times: b.backward,
+      })
+      run_start = i + 1
+    }
+    i += 1
+  }
+  plain(bars.size())
+  out
+}
+
+fn convert(path) {
+  let doc = XML.parse(score_text(path))
+  die("{doc.tag} is not read: only a partwise score (<score-partwise>)") if doc.tag !=
+    "score-partwise"
+  let names = doc
+    .find_all("part-list/score-part")
+    .map(|p| (p.attrs["id"], text_of(p, "part-name") ?? p.attrs["id"]))
+    .to_object()
+  let parts = doc
+    .find_all("part")
+    .map(|p| {
+      name: name_of(names.get(p.attrs["id"], ""), "Part"),
+      bars: read_part(p),
+    })
+  die("the score has no parts") if parts.empty()
+  let bars = parts[0].bars
+  die("the score has no measures") if bars.empty()
+  let count = bars.size()
+
+  # The lines: each part's voices, in the order they first play, leaving out
+  # a voice that only rests.
+  mut lines = []
+  for pi, part in parts.enumerate() {
+    mut keys = []
+    for b in part.bars {
+      for k, evs in b.lines {
+        keys.push(k) if !keys.contains(k) && evs.any(|e| !e.rest)
+      }
+    }
+    for li, k in keys.enumerate() {
+      let name = li == 0 ? part.name : "{part.name}{li + 1}"
+      let taken = lines.any(|l| l.name == name)
+      let opening = part.bars.flat_map(|b| b.lines.get(k, [])).find(|e| !e.rest)
+      lines.push({
+        part: pi,
+        key: k,
+        staff: opening.staff,
+        name: taken ? "{name}{pi + 1}" : name,
+      })
+    }
+  }
+  die("the score has no notes") if lines.empty()
+  let melody = lines[0]
+  let notes_of = |l| parts[l.part]
+    .bars
+    .flat_map(|b| b.lines.get(l.key, []))
+    .flat_map(|e| [...e.notes, ...e.graces])
+  let starts = lines.map(|l| range_of(notes_of(l)))
+  let poly = lines.map(|l| parts[l.part].bars.any(|b| b
+    .lines
+    .get(l.key, [])
+    .any(|e| e.notes.size() > 1)))
+
+  # A direction goes to its part's first line on its staff.
+  let directions_for = fn (li, bi) {
+    let l = lines[li]
+    let staff = l.staff
+    let first = lines.find(|x| x.part == l.part && x.staff == staff)
+    return [] if first != l
+    let marked = parts[l.part].bars[bi].directions.filter(|d| d.staff == staff)
+    return marked if li != 0
+    [
+      ...marked,
+      ...bars[bi].tempos.filter(|(at, bpm)| bi > 0 || at > 0).map(|(at, bpm)| ({at: at, word: "\\tempo {bpm}"})),
+    ]
+  }
+
+  # An opening bar shorter than its meter is a pickup: Kauai's own when only
+  # the melody plays in it, else a whole bar that rests until it starts.
+  let short_start = bars[0].implicit && bars[0].content < bars[0].len
+  let plays_in = |l, bi| parts[l.part]
+    .bars[bi]
+    .lines
+    .get(l.key, [])
+    .any(|e| !e.rest)
+  let pickup = short_start &&
+    !lines.slice(1, lines.size()).any(|l| plays_in(l, 0))
+  let shift = |bi| bi == 0 && short_start ? bars[0].len - bars[0].content : 0
+  let tempo = bars[0].tempos.find(|(at, bpm)| at == 0)?[1] ?? 120
+  let song_meter = bars[pickup ? Math.min(1, count - 1) : 0].meter
+  let meter_text = |(n, d)| "{n}/{d}"
+
+  # Every bar's chords, a bar without its own keeping the one before; a
+  # section's or an ending's first bar names what sounds.
+  mut sounding_chord = []
+  mut chord = "N.C."
+  for bi in 0..count {
+    let named = parts
+      .flat_map(|p| bi < p.bars.size() ? p.bars[bi].harmonies : [])
+      .filter(|(at, c)| c != nil)
+    sounding_chord.push(chord)
+    chord = named.sorted_by(|(at, c)| at)[-1][1] if !named.empty()
+  }
+  let chords_of = fn (bi, first_bar) {
+    let b = bars[bi]
+    let (beats, beat_type) = b.meter
+    let beat = WHOLE / beat_type
+    mut at_beat = {}
+    let harmonies = parts.flat_map(|p| bi < p.bars.size()
+      ? p.bars[bi].harmonies
+      : [])
+    for h in harmonies.filter(|(at, c)| c != nil) {
+      at_beat["{Math.min(beats - 1, h[0] / beat)}"] ??= h[1]
+    }
+    return first_bar ? sounding_chord[bi] : "" if at_beat.empty()
+    let on = iota(beats).filter(|k| at_beat.has("{k}"))
+    let even = !on.empty() &&
+      beats % on.size() == 0 &&
+      on.enumerate().all(|(i, k)| k == i * (beats / on.size()))
+    return on.map(|k| at_beat["{k}"]).join(" ") if even
+    iota(beats).map(fn (k) {
+      return at_beat["{k}"] if at_beat.has("{k}")
+      k == 0 && first_bar ? sounding_chord[bi] : "/"
+    }).join(" ")
+  }
+
+  let states = lines.map(|l| {mut tied: []})
+  let bar_of = fn (li, bi) {
+    let l = lines[li]
+    let b = parts[l.part].bars[bi]
+    let events = b.lines.get(l.key, nil)
+    return nil if li > 0 && (events == nil || events.all(|e| e.rest))
+    let late = shift(bi)
+    bar_notes(
+      events?.map(|e| {...e, at: e.at + late}),
+      directions_for(li, bi).map(|d| {...d, at: d.at + late}),
+      bars[bi].len,
+      starts[li],
+      states[li],
+    )
+  }
+
+  # A run of bars as lines of the section: meter changes, chords and the
+  # melody, then the parts in blocks.
+  let block = fn (indices, indent, meter_in) {
+    mut out = []
+    mut meter = meter_in
+    for n, bi in indices.enumerate() {
+      if bars[bi].meter != meter {
+        meter = bars[bi].meter
+        out.push("{indent}meter {meter_text(meter)}")
+      }
+      let chords = chords_of(bi, n == 0)
+      let notes = bar_of(0, bi)
+      out.push(indent +
+        (chords.size() >= 14 ? chords + "  " : "{chords:<14}") +
+        notes)
+    }
+    for li in 1..lines.size() {
+      let written = indices.map(|bi| bar_of(li, bi))
+      continue if written.all(|w| w == nil)
+      out.push("")
+      out.push("{indent}part {lines[li].name} \{")
+      for w in written {
+        out.push("{indent}  {w ?? "."}")
+      }
+      out.push("{indent}}")
+    }
+    (out, meter)
+  }
+
+  let sections = sections_of(bars, pickup ? 1 : 0)
+  mut text = []
+  mut plays = []
+  for si, sec in sections.enumerate() {
+    let name = si < 26 ? CAPITALS.slice(si, si + 1).to_string() : "S{si + 1}"
+    text.push("")
+    text.push("section {name} \{")
+    if si == 0 && pickup {
+      let lead_in = bar_notes(
+        bars[0].lines.get(melody.key, []).filter(|e| !e.rest),
+        [],
+        bars[0].content,
+        starts[0],
+        states[0],
+      )
+      text.push("  pickup  {lead_in}")
+    }
+    let (body, meter) = block(sec.body, "  ", song_meter)
+    text = [...text, ...body]
+    for e in sec.endings {
+      for number in e.numbers {
+        let (lines_out, _) = block(e.measures, "    ", meter)
+        text = [...text, "", "  ending {number} \{", ...lines_out, "  }"]
+      }
+    }
+    text.push("}")
+    let passes = sec.endings.flat_map(|e| e.numbers).sorted()
+    if passes.empty() {
+      plays.push(sec.times > 1 ? "  {name} x{sec.times}" : "  {name}")
+    } else {
+      plays = [...plays, ...passes.map(|p| "  {name} ending {p}")]
+    }
+  }
+
+  # The band: single notes on the chip channels while they last, the lowest
+  # line on the triangle; chords and the rest on the host piano.
+  let channels = ["pulse", "pulse2", "saw"]
+  mut chips = {}
+  let singles = iota(lines.size()).filter(|li| !poly[li])
+  let lows = singles.filter(|li| li > 0).sorted_by(|li| starts[li])
+  chips["{lows[0]}"] = "triangle" if !lows.empty()
+  mut free = channels
+  for li in singles {
+    continue if chips.has("{li}") || free.empty()
+    chips["{li}"] = free[0]
+    free = free.slice(1, free.size())
+  }
+  let voice_line = fn (li) {
+    let l = lines[li]
+    let plays_what = li == 0 ? "plays melody" : "plays part {l.name}"
+    let source = chips.get("{li}", nil)
+    source == nil
+      ? "  voice {l.name}  host Ep  {plays_what}  poly  vol 40%"
+      : "  voice {l.name}  {source}  {plays_what}  vol {li == 0 ? 20 : 14}  gap 1"
+  }
+
+  let about = about_of(doc)
+  let title = about.find(|(k, v)| k == "title")?[1] ?? FS.basename(path)
+  let song = name_of(title, "Score")
+  let key = bars[0].key ?? parts[0].bars.find(|b| b.key != nil)?.key ?? "C"
+  [
+    "about \{",
+    ...about.map(|(k, v)| "  {k:<9} {v}"),
+    "}",
+    "",
+    "band Score \{",
+    ...iota(lines.size()).map(voice_line),
+    "}",
+    "",
+    "song {song} \{",
+    "  tempo {tempo}",
+    ...(song_meter == (4, 4) ? [] : ["  meter {meter_text(song_meter)}"]),
+    "  key {key}",
+    "  band Score",
+    "  melody in {range_text(starts[0])}",
+    ...iota(lines.size() - 1).map(|k| "  part {lines[k + 1].name} in {range_text(starts[k + 1])}"),
+    "",
+    ...plays,
+    "}",
+    ...text,
+  ].join("\n") +
+    "\n"
+}
+
+if Sys.argv.empty() || Sys.argv.size() > 2 {
+  IO.eprintln("usage: culebra examples/kauai/xml2kau.cul score.musicxml [song.kau]")
+  Sys.exit(2)
+}
+let song = convert(Sys.argv[0])
+let checked = try {
+  Audio.Kauai.new(song, voices: {ep: |pitch, params| nil})
+  nil
+} catch e {
+  e.message
+}
+if Sys.argv.size() == 2 {
+  FS.write(Sys.argv[1], song)
+} else {
+  print(song)
+}
+if checked != nil {
+  die("the song does not read back: {checked}")
+}

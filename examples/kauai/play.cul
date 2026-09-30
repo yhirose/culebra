@@ -13,7 +13,8 @@
 # (Ctrl+C stops a song that loops).
 #
 # A band that plays `host` instruments names sounds that sounds.cul
-# synthesises; jukebox.cul plays the same songs from a window.
+# synthesises; jukebox.cul plays the same songs from a window, and
+# xml2kau.cul makes a song from a MusicXML score.
 
 import sounds from './sounds.cul'
 
