@@ -35,3 +35,6 @@
 [submodule "vendor/cpp-searchlib"]
 	path = vendor/cpp-searchlib
 	url = https://github.com/yhirose/cpp-searchlib
+[submodule "vendor/cpp-zipper"]
+	path = vendor/cpp-zipper
+	url = https://github.com/yhirose/cpp-zipper
