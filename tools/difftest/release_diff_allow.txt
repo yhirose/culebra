@@ -38,6 +38,12 @@ m|*|sentences|*
 bareread|*|words
 bareread|*|sentences
 
+# `String.pack` / `String.unpack` (fixed-width scalars <-> bytes) are new:
+# the baseline has no such members and fails every case on the missing one.
+pack|*
+unpack|*
+packinto|*
+
 # `Math.f32` joined the namespace after v0.4.0, so `Math` has one more member
 # than the baseline binary's: every case that asks a namespace object for its
 # size reads 25 where the baseline read 24. The shadowing these cases are

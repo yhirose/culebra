@@ -4868,6 +4868,8 @@ receiver is never mutated.
 | `String.from_code_point(cp: Long) -> String`    | The inverse of `code_points()`: one Unicode scalar value in, a one-character `String` out. Raises `ValueError` for `cp` above `U+10FFFF` or in the surrogate range `U+D800`–`U+DFFF` — the same boundary the `\u`/`\U` literal escapes (§4.1) reject at parse time. |
 | `String.from_code_points(cps: Array) -> String` | The plural inverse of `code_points()`: an `Array` of Unicode scalar values in, a `String` out. Each element passes through the same gate as `from_code_point`, so `String.from_code_points([cp]) == String.from_code_point(cp)`; a non-`Long` element is a `TypeError`, an out-of-range one a `ValueError`. |
 | `String.from_bytes(bytes: Array) -> String`     | The inverse of `bytes()`: an `Array` of raw byte values (`0`–`255`) in, a `String` out. **No UTF-8 validation**, and no error on malformed input: culebra `String`s tolerate invalid UTF-8 (same as `iter()`), so `String.from_bytes(s.bytes().collect()) == s` holds for every `String`, including ones with invalid sequences. A non-`Long` element is a `TypeError`, an out-of-range one (outside `0`–`255`) a `ValueError`. |
+| `String.pack(type: String, values: Array, endian: String = "little") -> String` | Each element of `values` as one fixed-width scalar of `type`, laid end to end — the bytes a binary file or protocol stores. See [Binary data](#binary-data-stringpack--stringunpack) below. |
+| `String.unpack(type: String, data: StringLike, at: Long = 0, count: Long? = nil, into: Array? = nil, endian: String = "little") -> Array` | The inverse of `pack`: scalars of `type` read from byte `at` of `data` — `count` of them, as many as `into` holds, or else every remaining byte. |
 
 ```culebra
 # 'é' is 2 UTF-8 bytes, so 'café' is 5 bytes
@@ -4875,6 +4877,57 @@ inspect('café'.bytes().collect())                    # => [99, 97, 102, 195, 16
 inspect(String.from_code_point(233))                  # => 'é'
 inspect(String.from_bytes([99, 97, 102, 195, 169]))   # => 'café'
 inspect(String.from_code_points([99, 97, 102, 233]))  # => 'café'
+```
+
+#### Binary data: `String.pack` / `String.unpack`
+
+`String.pack` turns an `Array` of numbers into the bytes a binary file
+format or a network protocol holds them as, one fixed-width scalar per
+element; `String.unpack` reads them back. `type` names the scalar:
+
+| `type` | Bytes | Element |
+|---|---|---|
+| `"u8"` / `"i8"` | 1 | `Long`, `0`–`255` / `-128`–`127` |
+| `"u16"` / `"i16"` | 2 | `Long`, `0`–`65535` / `-32768`–`32767` |
+| `"u32"` / `"i32"` | 4 | `Long`, `0`–`4294967295` / `-2147483648`–`2147483647` |
+| `"i64"` | 8 | any `Long` |
+| `"f32"` | 4 | `Float` (IEEE binary32); `pack` rounds the way `Math.f32` does and takes a `Long` too |
+| `"f64"` | 8 | `Float`; `pack` takes a `Long` too |
+| `"bool"` | 1 | `Bool`, written as `1` / `0`; any nonzero byte reads as `true` |
+
+There is no `"u64"`: its upper half does not fit in a `Long`, and `"i64"`
+carries the same 64 bits. `endian:` is `"little"` (the default — the
+order x86 and ARM keep in memory, and what most file formats use) or
+`"big"` (network byte order).
+
+`pack` checks every element: an element of the wrong type is a
+`TypeError`, a value outside the type's range a `ValueError` — it is not
+truncated — and both messages give the element's index.
+`String.pack("u8", a)` is `String.from_bytes(a)`.
+
+`unpack` starts at byte `at` and reads `count` scalars. Without `count`
+it reads every remaining byte, which must then be a whole number of
+scalars (a `ValueError` otherwise). `into:` writes the scalars over an
+existing `Array` instead of making a new one — as many as it holds — and
+returns that same `Array`, for an array other code also refers to. An
+`at` outside `data`, or a read past its end, is an `IndexError`; giving
+both `count` and `into` is a `ValueError`. `data` may be a `StringView`,
+so a `slice` is read without a copy.
+
+```culebra
+let b = String.pack("u16", [1, 256, 65535])
+inspect(b.bytes().collect())  # => [1, 0, 0, 1, 255, 255]
+inspect(String.unpack("u16", b))  # => [1, 256, 65535]
+inspect(String.pack("u32", [1], endian: "big").bytes().collect())  # => [0, 0, 0, 1]
+
+# a u32 count, then that many i16 samples
+let data = String.pack("u32", [3]) + String.pack("i16", [-1, 0, 1])
+let n = String.unpack("u32", data, count: 1)[0]
+inspect(String.unpack("i16", data, at: 4, count: n))  # => [-1, 0, 1]
+
+let samples = [0, 0, 0]
+String.unpack("i16", data, at: 4, into: samples)
+inspect(samples)  # => [-1, 0, 1]
 ```
 
 #### StringView

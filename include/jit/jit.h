@@ -3670,7 +3670,7 @@ struct JIT {
       }
       case NsFn::MathF32: {
         // A Float rounds through IEEE single: fptrunc's round-to-nearest is
-        // the very rule _culebra_f32_round spells out by hand (up to the
+        // the very rule scalar_bytes::round_f32 spells out by hand (up to the
         // rounding midpoint float's max, beyond it infinity, NaN unchanged).
         // A Long takes the helper.
         auto floatBB = llvm::BasicBlock::Create(ctx_, "ns.float", fn);

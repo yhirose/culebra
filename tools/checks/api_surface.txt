@@ -49,6 +49,8 @@ s.bytes() -> Iterator<Long>
 String.from_code_point(cp: Long) -> String
 String.from_code_points(cps: Array) -> String
 String.from_bytes(bytes: Array) -> String
+String.pack(type: String, values: Array, endian: String = "little") -> String
+String.unpack(type: String, data: StringLike, at: Long = 0, count: Long? = nil, into: Array? = nil, endian: String = "little") -> Array
 a.size() -> Long
 a.empty() -> Bool
 a.presence() -> Array | Nil

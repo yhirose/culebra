@@ -2809,4 +2809,52 @@ for n in ['size', 'add', 'to_string', 'drop', 'parameters', 'zzz'] {
   }
 }
 
+# --- Dimension: String.pack / String.unpack (binary scalars) ----------------
+# Every type at and past its range, every element-type mismatch, both byte
+# orders, and unpack's at/count/into/endian edges. The bytes are shown as
+# numbers so a divergence names the byte that differs.
+let pack_types = ['"u8"', '"i8"', '"u16"', '"i16"', '"u32"', '"i32"', '"i64"',
+                  '"f32"', '"f64"', '"bool"', '"u64"', '7']
+let pack_values = ['[0, 1]', '[-1]', '[255, 256]', '[-128, -129]', '[65535, 65536]',
+                   '[-32768, -32769]', '[4294967295, 4294967296]',
+                   '[-2147483648, -2147483649]', '[9223372036854775807]',
+                   '[0.1, 1.0e40, -1.0e40]', '[1.5]', '[true, false]', '["a"]', '[nil]',
+                   '[]', '"ab"', 'nil']
+for t in pack_types {
+  for v in pack_values {
+    case("pack|" + t + "|" + v, 'String.pack(' + t + ', ' + v + ').bytes().collect()')
+  }
+  for e in ['"big"', '"little"', '"native"', '1'] {
+    case("pack|" + t + "|endian " + e,
+         'String.pack(' + t + ', [1], endian: ' + e + ').bytes().collect()')
+  }
+}
+let unpack_data = ['String.from_bytes([1, 2, 3, 4, 5, 6, 7, 8, 255, 254])', '""',
+                   '"abcdefgh".slice(1, 7)', '[1, 2]', 'nil']
+let unpack_args = ['', ', at: 2', ', at: 10', ', at: 11', ', at: -1', ', at: "1"',
+                   ', count: 2', ', at: 4, count: 3', ', count: -1', ', count: 99',
+                   ', count: nil', ', count: 1.0', ', into: [9, 9]',
+                   ', into: [[1], "s", nil]', ', into: []', ', into: "x"',
+                   ', count: 1, into: [0]', ', endian: "big"', ', endian: "x"',
+                   ', at: 2, count: 2, endian: "big"', ', cnt: 1']
+for t in pack_types {
+  for d in unpack_data {
+    for a in unpack_args {
+      case("unpack|" + t + "|" + d + a, 'String.unpack(' + t + ', ' + d + a + ')')
+    }
+  }
+}
+# into is overwritten in place and returned; a failed read leaves it as it was
+let into_cases = [
+  'let x = [0, 0]; let y = String.unpack("u8", String.from_bytes([5, 6]), into: x); y.push(7); x',
+  'let x = [1, 2, 3]; try { String.unpack("u16", "ab", into: x) } catch e { nil }; x',
+  'let p = String.pack; p("i16", [-2], endian: "big").bytes().collect()',
+  'let u = String.unpack; u("u16", String.from_bytes([1, 0, 2, 0]), 2)',
+  'String.unpack("f32", String.pack("f32", [16777217, 0.1]))',
+  'String.unpack("i64", String.pack("i64", [-9223372036854775807 - 1]))',
+]
+for c in into_cases {
+  case("packinto|" + c, c)
+}
+
 print(out.join("\n"))

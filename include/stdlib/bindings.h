@@ -39,6 +39,7 @@
 #include <interop/wrap_registry.h>  // the wrap.h compiled-lane rows
 #include <stdlib/kernels.h>  // File/FS/Time/Net/Regex kernels shared with interp
 #include <base/shared.h>
+#include <base/scalar_bytes.h>  // String.pack/unpack, Math.f32's rounding
 #include <base/stdout_capture.h>  // program_out() / ProgramOutCapture (IO.capture)
 #include <stdlib/fst.h>    // the value-neutral FST choke
 #include <stdlib/search.h>  // the value-neutral Search choke (the Search AOT axis)
@@ -211,22 +212,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_math_wrap(
   return culebra::math::wrap(x, n, [&] { return std::pair(line, col); });
 }
 
-// Round to float and back, as the Core IR's tofloat32 does (cpp-vmlib's
-// Op::ToFloat32): a bare static_cast<float> is undefined past float's range,
-// so that range is handled by hand -- up to the rounding midpoint a value
-// comes back as float's max, beyond it as infinity, and NaN stays NaN.
-inline double _culebra_f32_round(double d) {
-  constexpr double kFloatMax =
-      static_cast<double>(std::numeric_limits<float>::max());
-  constexpr double kFloatOverflow = 0x1.ffffffp127;  // (2-2^-24)*2^127
-  if (std::isnan(d)) return d;
-  if (d >= kFloatOverflow) return std::numeric_limits<double>::infinity();
-  if (d > kFloatMax) return kFloatMax;
-  if (d <= -kFloatOverflow) return -std::numeric_limits<double>::infinity();
-  if (d < -kFloatMax) return -kFloatMax;
-  return static_cast<double>(static_cast<float>(d));
-}
-
 #define CUL_MATH_F2F(name, fn)                                          \
   CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_math_##name(    \
       int8_t tag, int64_t data, int64_t line, int64_t col) {            \
@@ -236,7 +221,7 @@ inline double _culebra_f32_round(double d) {
                 [](double x) { return fn(x); }))};                      \
   }
 CUL_MATH_F2F(log,  std::log)
-CUL_MATH_F2F(f32,  _culebra_f32_round)
+CUL_MATH_F2F(f32,  culebra::scalar_bytes::round_f32)
 CUL_MATH_F2F(exp,  std::exp)
 CUL_MATH_F2F(sqrt, std::sqrt)
 CUL_MATH_F2F(sin,  std::sin)
@@ -4136,6 +4121,13 @@ inline JitObject* require_object(JitValue v, const char* param) {
   }
   return reinterpret_cast<JitObject*>(v.data);
 }
+inline JitArray* require_array(JitValue v, const char* param) {
+  if (v.tag != TAG_ARRAY) {
+    culebra::throw_runtime_error_at(
+        "TypeError", culebra::param_type_error_message(param, "Array"), 0, 0);
+  }
+  return reinterpret_cast<JitArray*>(v.data);
+}
 inline JitClosure* require_func(JitValue v, const char* param) {
   if (v.tag != TAG_FUNC) {
     culebra::throw_runtime_error_at(
@@ -7935,6 +7927,151 @@ inline JitValue _ns_string_from_code_points(JitValue* a, int64_t) {
   return _ns_adapt::v_string(_culebra_heap_str(out));
 }
 
+// String.pack(type, values, endian) / String.unpack(type, data, at, count,
+// into, endian): an Array of fixed-width scalars <-> their bytes. The bytes
+// are scalar_bytes.h's; these walk the Array and word each failure.
+inline culebra::scalar_bytes::Type _ns_pack_type(JitValue v, std::string_view fn) {
+  auto name = _ns_adapt::require_sv(v, "type");
+  if (const auto* t = culebra::scalar_bytes::find_type(name)) return *t;
+  throw culebra::CulebraError(
+      "ValueError", culebra::format("{}: unknown type '{}' (one of {}).", fn, name,
+                                    culebra::scalar_bytes::type_names()));
+}
+// True for big-endian; little when the slot was not passed.
+inline bool _ns_pack_endian(JitValue* a, int64_t n, int64_t i, std::string_view fn) {
+  if (n <= i) return false;
+  auto endian = _ns_adapt::require_sv(a[i], "endian");
+  if (endian == "little") return false;
+  if (endian == "big") return true;
+  throw culebra::CulebraError(
+      "ValueError",
+      culebra::format("{}: endian must be 'little' or 'big', not '{}'.", fn, endian));
+}
+
+inline JitValue _ns_string_pack(JitValue* a, int64_t n) {
+  namespace sb = culebra::scalar_bytes;
+  constexpr std::string_view fn = "String.pack";
+  const sb::Type t = _ns_pack_type(a[0], fn);
+  ::JitArray* arr = _ns_adapt::require_array(a[1], "values");
+  const bool big = _ns_pack_endian(a, n, 2, fn);
+  const bool is_int = t.kind == sb::Kind::Signed || t.kind == sb::Kind::Unsigned;
+  const auto [lo, hi] = is_int ? sb::int_range(t) : std::pair<int64_t, int64_t>{};
+  auto element_error = [&](const JitValue& e, size_t i) {
+    std::string_view want = t.kind == sb::Kind::Bool    ? "Bool"
+                            : t.kind == sb::Kind::Float ? "Long or Float"
+                                                        : "Long";
+    throw culebra::CulebraError(
+        "TypeError",
+        culebra::format("{}: {} takes {} elements, got {} at index {}.", fn, t.name,
+                        want, _culebra_tag_name(e.tag), i));
+  };
+  // Filled in place: nothing below allocates, so the fresh string is not
+  // collected before it is returned.
+  const size_t count = arr->size;
+  const JitValue* items = arr->items;
+  char* out = _str_alloc(count * t.width);
+  auto* p = reinterpret_cast<uint8_t*>(out);
+  for (size_t i = 0; i < count; i++, p += t.width) {
+    const JitValue& e = items[i];
+    switch (t.kind) {
+      case sb::Kind::Bool:
+        if (e.tag != ::TAG_BOOL) element_error(e, i);
+        *p = e.data ? 1 : 0;
+        break;
+      case sb::Kind::Float:
+        if (e.tag == ::TAG_FLOAT)
+          sb::store_float(p, t, _culebra_float_to_double(e.data), big);
+        else if (e.tag == ::TAG_LONG)
+          sb::store_float(p, t, static_cast<double>(e.data), big);
+        else
+          element_error(e, i);
+        break;
+      default:
+        if (e.tag != ::TAG_LONG) element_error(e, i);
+        if (e.data < lo || e.data > hi) {
+          throw culebra::CulebraError(
+              "ValueError",
+              culebra::format("{}: {} at index {} is out of range for {} ({} to {}).",
+                              fn, e.data, i, t.name, lo, hi));
+        }
+        sb::store_bits(p, static_cast<uint64_t>(e.data), t.width, big);
+    }
+  }
+  return _ns_adapt::v_string(out);
+}
+
+inline JitValue _ns_string_unpack(JitValue* a, int64_t n) {
+  namespace sb = culebra::scalar_bytes;
+  constexpr std::string_view fn = "String.unpack";
+  const sb::Type t = _ns_pack_type(a[0], fn);
+  const std::string_view data = _ns_adapt::require_sv(a[1], "data");
+  const int64_t at = n > 2 ? _ns_adapt::require_long(a[2], "at") : 0;
+  const JitValue count_v = n > 3 ? a[3] : _ns_adapt::v_nil();
+  const JitValue into_v = n > 4 ? a[4] : _ns_adapt::v_nil();
+  const bool big = _ns_pack_endian(a, n, 5, fn);
+  const int64_t size = static_cast<int64_t>(data.size());
+  if (at < 0 || at > size) {
+    throw culebra::CulebraError(
+        "IndexError",
+        culebra::format("{}: at {} is outside the {} bytes of data.", fn, at, size));
+  }
+  const int64_t avail = size - at;
+  ::JitArray* into = nullptr;
+  int64_t count;
+  if (into_v.tag != ::TAG_NIL) {
+    into = _ns_adapt::require_array(into_v, "into");
+    if (count_v.tag != ::TAG_NIL) {
+      throw culebra::CulebraError(
+          "ValueError", culebra::format("{}: pass count or into, not both.", fn));
+    }
+    count = static_cast<int64_t>(into->size);
+  } else if (count_v.tag == ::TAG_NIL) {
+    if (avail % t.width != 0) {
+      throw culebra::CulebraError(
+          "ValueError",
+          culebra::format("{}: the {} bytes from {} are not a whole number of {} "
+                          "({} bytes each).",
+                          fn, avail, at, t.name, t.width));
+    }
+    count = avail / t.width;
+  } else {
+    count = _ns_adapt::require_long(count_v, "count");
+    if (count < 0) {
+      throw culebra::CulebraError(
+          "ValueError",
+          culebra::format("{}: count must not be negative, got {}.", fn, count));
+    }
+  }
+  if (count > avail / t.width) {
+    throw culebra::CulebraError(
+        "IndexError",
+        culebra::format("{}: {} {} from {} run past the end ({} bytes remain).",
+                        fn, count, t.name, at, avail));
+  }
+  const auto* p = reinterpret_cast<const uint8_t*>(data.data()) + at;
+  auto decode = [&](int64_t i) -> JitValue {
+    const uint8_t* q = p + i * t.width;
+    switch (t.kind) {
+      case sb::Kind::Bool: return _ns_adapt::v_bool(*q != 0);
+      case sb::Kind::Float: return _ns_adapt::v_float(sb::load_float(q, t, big));
+      default: return _ns_adapt::v_long(sb::load_int(q, t, big));
+    }
+  };
+  if (!into) {
+    ::JitArray* r = _jit_array_new_reserved(count, "String.unpack result");
+    for (int64_t i = 0; i < count; i++) r->items[i] = decode(i);
+    r->size = static_cast<size_t>(count);
+    return _ns_adapt::v_array(r);
+  }
+  // The ordinary slot store: releasing an old element can run a `drop` that
+  // shrinks `into`, and array_set checks the index every time.
+  for (int64_t i = 0; i < count; i++) {
+    JitValue v = decode(i);
+    culebra_runtime_array_set(into, i, v.tag, v.data, 0, 0);
+  }
+  return JitOwnedVal::from_borrowed(into_v).consume();
+}
+
 // UUID.{v4,v7}: canonical UUID strings via uuid.h (shared entropy/format).
 inline JitValue _ns_uuid_v4(JitValue*, int64_t) {
   return _ns_adapt::v_string(_culebra_heap_str(culebra::uuid::v4()));
@@ -9312,6 +9449,7 @@ inline bool _ns_method_uses_kwarg_slab(const NsMethod* m) {
   if (ns == "Env")      return nm == "load";  // path/override defaults
   if (ns == "Sys")      return nm == "env";  // fallback default
   if (ns == "Compress") return nm == "deflate";  // level default
+  if (ns == "String")   return nm == "pack" || nm == "unpack";  // endian/at/...
   if (ns == "IO")       return nm == "println";  // arg defaults to ""
   if (ns.empty())       return nm == "range" || nm == "iota" ||
                                nm == "grid" || nm == "Range" ||
@@ -9710,6 +9848,8 @@ inline const NsMethod kNsRows_String[] = {
   {"String", "from_code_point", 1, &_ns_string_from_code_point, nullptr, "Long", "cp"},
   {"String", "from_bytes", 1, &_ns_string_from_bytes, nullptr, "Array", "bytes"},
   {"String", "from_code_points", 1, &_ns_string_from_code_points, nullptr, "Array", "cps"},
+  {"String", "pack", 2, &_ns_string_pack, nullptr, "String", "type"},
+  {"String", "unpack", 2, &_ns_string_unpack, nullptr, "String", "type"},
 };
 inline const NsMethod kNsRows_Tensor[] = {
   {"Tensor", "zeros",    -1, &_ns_tensor_zeros},

@@ -1,0 +1,160 @@
+# String.pack / String.unpack: an Array of fixed-width scalars <-> its bytes.
+
+fn err(f) {
+  try {
+    f()
+    nil
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+
+# --- byte layout: little-endian by default, big on request ---
+assert_eq(String.pack("u16", [0x1234]).bytes().collect(), [0x34, 0x12])
+assert_eq(
+  String.pack("u16", [0x1234], endian: "big").bytes().collect(),
+  [0x12, 0x34],
+)
+assert_eq(
+  String.pack("u32", [0x01020304]).bytes().collect(),
+  [4, 3, 2, 1],
+)
+assert_eq(String.pack("i16", [-2]).bytes().collect(), [0xFE, 0xFF])
+assert_eq(String.pack("i64", [-1]).bytes().collect(), repeat(8, 0xFF))
+assert_eq(String.pack("bool", [true, false]).bytes().collect(), [1, 0])
+assert_eq(String.pack("f32", [1.0]).bytes().collect(), [0, 0, 0x80, 0x3F])
+assert_eq(String.pack("u8", []), "")
+
+# --- u8 is from_bytes, and unpack of u8 is bytes().collect() ---
+let raw = [0, 1, 127, 128, 255]
+assert_eq(String.pack("u8", raw), String.from_bytes(raw))
+let s = 'café'
+assert_eq(String.unpack("u8", s), s.bytes().collect())
+
+# --- every type round-trips its boundary values ---
+let cases = [
+  ("u8", [0, 255]),
+  ("i8", [-128, 127, -1]),
+  ("u16", [0, 65535]),
+  ("i16", [-32768, 32767]),
+  ("u32", [0, 4294967295]),
+  ("i32", [-2147483648, 2147483647]),
+  ("i64", [-9223372036854775807 - 1, 9223372036854775807]),
+  ("f64", [0.1, -2.5e300, Math.inf]),
+  ("bool", [true, false, true]),
+]
+for (t, vs) in cases {
+  for endian in ["little", "big"] {
+    let b = String.pack(t, vs, endian: endian)
+    assert_eq(String.unpack(t, b, endian: endian), vs)
+  }
+}
+
+# --- f32 rounds the way Math.f32 does; a Long is accepted as a number ---
+let fs = [0.1, 16777217, -3.5, 1.0e40, -1.0e40]
+assert_eq(
+  String.unpack("f32", String.pack("f32", fs)),
+  fs.map(|x| Math.f32(x)),
+)
+assert_eq(String.unpack("f64", String.pack("f64", [3])), [3.0])
+let nan = String.unpack("f64", String.pack("f64", [Math.nan]))[0]
+assert_true(nan != nan)
+
+# --- a nonzero byte reads back as true ---
+assert_eq(String.unpack("bool", String.from_bytes([0, 1, 2])), [false, true, true])
+
+# --- at / count: a cursor over a record ---
+let rec = String.pack("u32", [7]) + String.pack("u16", [1, 2, 3])
+assert_eq(String.unpack("u32", rec, count: 1), [7])
+assert_eq(String.unpack("u16", rec, at: 4), [1, 2, 3])
+assert_eq(String.unpack("u16", rec, at: 6, count: 1), [2])
+assert_eq(String.unpack("u16", rec, at: 10, count: 0), [])
+assert_eq(String.unpack("u16", rec, at: 10), [])
+# A StringView is read like the String it views
+assert_eq(String.unpack("u16", rec.slice(4, 8)), [1, 2])
+
+# --- into: overwrite an existing Array in place, and hand it back ---
+let dst = [9, 9, 9]
+let alias = dst
+let got = String.unpack("u16", rec, at: 4, into: dst)
+assert_eq(alias, [1, 2, 3])
+# the result is `dst` itself, not a copy
+got.push(4)
+assert_eq(dst.size(), 4)
+# old elements are released (heap values included)
+let objs = [[1], [2]]
+String.unpack("u8", String.from_bytes([5, 6]), into: objs)
+assert_eq(objs, [5, 6])
+# an empty `into` reads nothing
+assert_eq(String.unpack("u32", "", into: []), [])
+
+# --- errors ---
+assert_eq(
+  err(|| String.pack("u16", [65536])),
+  "ValueError: String.pack: 65536 at index 0 is out of range for u16 (0 to 65535).",
+)
+assert_eq(
+  err(|| String.pack("u8", [1, -1])),
+  "ValueError: String.pack: -1 at index 1 is out of range for u8 (0 to 255).",
+)
+assert_eq(
+  err(|| String.pack("i8", [128])),
+  "ValueError: String.pack: 128 at index 0 is out of range for i8 (-128 to 127).",
+)
+assert_eq(
+  err(|| String.pack("u16", [1, 2.0])),
+  "TypeError: String.pack: u16 takes Long elements, got Float at index 1.",
+)
+assert_eq(
+  err(|| String.pack("f32", ["x"])),
+  "TypeError: String.pack: f32 takes Long or Float elements, got String at index 0.",
+)
+assert_eq(
+  err(|| String.pack("bool", [1])),
+  "TypeError: String.pack: bool takes Bool elements, got Long at index 0.",
+)
+assert_eq(
+  err(|| String.pack("u64", [1])),
+  "ValueError: String.pack: unknown type 'u64' (one of u8, i8, u16, i16, u32, i32, i64, f32, f64, bool).",
+)
+assert_eq(
+  err(|| String.pack("u16", [1], endian: "native")),
+  "ValueError: String.pack: endian must be 'little' or 'big', not 'native'.",
+)
+assert_throws("TypeError", || String.pack("u16", "ab"))
+assert_throws("TypeError", || String.pack(16, [1]))
+
+assert_eq(
+  err(|| String.unpack("u16", "abc")),
+  "ValueError: String.unpack: the 3 bytes from 0 are not a whole number of u16 (2 bytes each).",
+)
+assert_eq(
+  err(|| String.unpack("u16", "abcd", at: 5)),
+  "IndexError: String.unpack: at 5 is outside the 4 bytes of data.",
+)
+assert_eq(
+  err(|| String.unpack("u16", "abcd", at: -1)),
+  "IndexError: String.unpack: at -1 is outside the 4 bytes of data.",
+)
+assert_eq(
+  err(|| String.unpack("u32", "abcdef", at: 1, count: 2)),
+  "IndexError: String.unpack: 2 u32 from 1 run past the end (5 bytes remain).",
+)
+assert_eq(
+  err(|| String.unpack("u16", "abcd", into: [0, 0, 0])),
+  "IndexError: String.unpack: 3 u16 from 0 run past the end (4 bytes remain).",
+)
+assert_eq(
+  err(|| String.unpack("u8", "ab", count: -1)),
+  "ValueError: String.unpack: count must not be negative, got -1.",
+)
+assert_eq(
+  err(|| String.unpack("u8", "ab", count: 1, into: [0])),
+  "ValueError: String.unpack: pass count or into, not both.",
+)
+assert_throws("TypeError", || String.unpack("u8", [1, 2]))
+assert_throws("TypeError", || String.unpack("u8", "ab", into: "x"))
+# a failed unpack leaves `into` as it was
+let keep = [1, 2, 3]
+err(|| String.unpack("u16", "ab", into: keep))
+assert_eq(keep, [1, 2, 3])

@@ -177,9 +177,11 @@ ratchet "bare RC calls (sendable_rt.h)" "$(count_bare include/conc/sendable.h)" 
 # 5 -> 6 (2026-09-28, reviewed): XML.find / find_all / find_iter return elements found
 # inside their borrowed `el` argument, so each answer needs its own +1
 # (_xml_match_owned, one site for all three).
+# 6 -> 7 (2026-09-29, reviewed): String.unpack(..., into: arr) fills the
+# borrowed `into` in place and returns that same Array, the Sys.env shape.
 rbrw=$(grep -rE --include='*.h' "JitOwnedVal::from_borrowed\(" include/ \
        | grep -vcE "^[^:]*:[[:space:]]*//" || true)
-ratchet "runtime borrow->owned seam sites" "$rbrw" 6
+ratchet "runtime borrow->owned seam sites" "$rbrw" 7
 
 # Codegen-side hand-placed throw guards: the automatic unwind-temp window
 # is the default cleaner for a codegen-owned +1, so the hand-placed

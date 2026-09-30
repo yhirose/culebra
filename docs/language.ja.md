@@ -4619,6 +4619,8 @@ matcher一族`assert_true` / `assert_eq`等）は
 | `String.from_code_point(cp: Long) -> String`    | `code_points()`の逆演算: Unicodeスカラー値1つを受け取り1文字の`String`を返す。`cp`が`U+10FFFF`超過またはサロゲート範囲`U+D800`–`U+DFFF`の場合`ValueError`（`\u`/`\U`リテラルエスケープ §4.1がパース時に拒否するのと同じ境界） |
 | `String.from_code_points(cps: Array) -> String` | `code_points()`の複数形の逆演算: Unicodeスカラー値の`Array`を受け取り`String`を返す。各要素は`from_code_point`と同じゲートを通るので`String.from_code_points([cp]) == String.from_code_point(cp)`。要素が`Long`でなければ`TypeError`、範囲外なら`ValueError` |
 | `String.from_bytes(bytes: Array) -> String`     | `bytes()`の逆演算: 生バイト値（`0`–`255`）の`Array`を受け取り`String`を返す。**UTF-8の検証は行わず**、不正入力でも例外を投げない: culebraの`String`は不正なUTF-8を許容する（`iter()`と同様）ため、不正なバイト列を含むあらゆる`String`について`String.from_bytes(s.bytes().collect()) == s`が成立する。要素が`Long`でなければ`TypeError`、範囲外（`0`–`255`の外）なら`ValueError` |
+| `String.pack(type: String, values: Array, endian: String = "little") -> String` | `values`の各要素を`type`の固定幅の値1つとして、順に並べたバイト列。二進のファイル形式や通信で使うバイト列を作る。下の[バイナリデータ](#バイナリデータ-stringpack--stringunpack)を参照 |
+| `String.unpack(type: String, data: StringLike, at: Long = 0, count: Long? = nil, into: Array? = nil, endian: String = "little") -> Array` | `pack`の逆演算: `data`のバイト位置`at`から`type`の値を読む。読む個数は`count`、`into`の要素数、どちらも無ければ残りのバイト全部 |
 
 ```culebra
 # 'é' は UTF-8 で 2 バイトなので 'café' は 5 バイト
@@ -4626,6 +4628,55 @@ inspect('café'.bytes().collect())                    # => [99, 97, 102, 195, 16
 inspect(String.from_code_point(233))                  # => 'é'
 inspect(String.from_bytes([99, 97, 102, 195, 169]))   # => 'café'
 inspect(String.from_code_points([99, 97, 102, 233]))  # => 'café'
+```
+
+#### バイナリデータ: `String.pack` / `String.unpack`
+
+`String.pack`は数値の`Array`を、二進のファイル形式や通信で使うバイト列に
+変換する。要素1つが固定幅の値1つになる。`String.unpack`はその逆で、
+バイト列から数値を読み出す。値の種類は`type`で指定する:
+
+| `type` | バイト数 | 要素 |
+|---|---|---|
+| `"u8"` / `"i8"` | 1 | `Long`、`0`–`255` / `-128`–`127` |
+| `"u16"` / `"i16"` | 2 | `Long`、`0`–`65535` / `-32768`–`32767` |
+| `"u32"` / `"i32"` | 4 | `Long`、`0`–`4294967295` / `-2147483648`–`2147483647` |
+| `"i64"` | 8 | 任意の`Long` |
+| `"f32"` | 4 | `Float`（IEEEの単精度）。`pack`は`Math.f32`と同じ規則で丸め、`Long`も受け付ける |
+| `"f64"` | 8 | `Float`。`pack`は`Long`も受け付ける |
+| `"bool"` | 1 | `Bool`。`1` / `0`で書き、読むときは0以外を`true`とする |
+
+`"u64"`は無い。上半分が`Long`に収まらないためで、同じ64ビットは`"i64"`で
+扱える。`endian:`はバイトの順序で、`"little"`（既定。x86やARMのメモリ上の
+順序で、多くのファイル形式もこちら）か`"big"`（ネットワークで使う順序）。
+
+`pack`は要素を1つずつ検査する。型の違う要素は`TypeError`、型の範囲外の値は
+`ValueError`になる（下位ビットだけ残すような切り詰めはしない）。どちらの
+メッセージにも要素の位置が入る。`String.pack("u8", a)`は
+`String.from_bytes(a)`と同じ結果になる。
+
+`unpack`はバイト位置`at`から`count`個を読む。`count`を省くと残りのバイトを
+全部読み、そのバイト数が値の幅で割り切れなければ`ValueError`。`into:`を
+渡すと、新しい`Array`を作らずに既存の`Array`へ上書きし（読む個数はその
+要素数）、その`Array`自身を返す。他の場所からも参照されている配列を
+書き換えるときに使う。`at`が`data`の外にあるとき、または末尾を越えて
+読もうとしたときは`IndexError`。`count`と`into`を両方渡すと`ValueError`。
+`data`には`StringView`も渡せるので、`slice`した部分をコピーせずに読める。
+
+```culebra
+let b = String.pack("u16", [1, 256, 65535])
+inspect(b.bytes().collect())  # => [1, 0, 0, 1, 255, 255]
+inspect(String.unpack("u16", b))  # => [1, 256, 65535]
+inspect(String.pack("u32", [1], endian: "big").bytes().collect())  # => [0, 0, 0, 1]
+
+# 個数を u32 で書き、続けてその個数の i16 のサンプルを置く
+let data = String.pack("u32", [3]) + String.pack("i16", [-1, 0, 1])
+let n = String.unpack("u32", data, count: 1)[0]
+inspect(String.unpack("i16", data, at: 4, count: n))  # => [-1, 0, 1]
+
+let samples = [0, 0, 0]
+String.unpack("i16", data, at: 4, into: samples)
+inspect(samples)  # => [-1, 0, 1]
 ```
 
 #### StringView
