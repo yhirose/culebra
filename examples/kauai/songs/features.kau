@@ -1,3 +1,8 @@
+about {
+  title  A tour of the notation
+  note   a pickup, a slur, a triplet, the marks on notes, dynamics and a ritardando
+}
+
 band Duo {
   voice Tune  pulse     plays melody            vol 20
   voice Bass  triangle  plays roots in E2..D#3  vol 30

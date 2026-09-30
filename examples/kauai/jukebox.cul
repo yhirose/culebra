@@ -1,0 +1,300 @@
+# A jukebox for the songs in songs/, in a Canvas window:
+#
+#   culebra examples/kauai/jukebox.cul                # the songs in songs/
+#   culebra examples/kauai/jukebox.cul a.kau b.kau    # these songs instead
+#
+# The list shows each song's title and composer from its `about` block (the
+# file's name when it has none). Click a song or move with the arrow keys;
+# Play (Enter or Space) plays it, Stop (Esc) stops it, and the volume follows
+# the slider, the - and + buttons, or the - and = keys.
+#
+# The songs load one a frame, so the window opens at once. A song's host
+# sounds (sounds.cul) are built one a frame too before it plays, with a bar
+# that shows how many are left.
+
+import sounds from './sounds.cul'
+
+let W = 480
+let H = 320
+let ROW = 16
+let ROWS = 10
+let LIST_Y = 36
+
+let BG = Canvas.rgba(18, 20, 28)
+let PANEL = Canvas.rgba(30, 34, 46)
+let PICKED = Canvas.rgba(52, 60, 84)
+let TEXT = Canvas.rgba(230, 230, 236)
+let DIM = Canvas.rgba(140, 146, 162)
+let ACCENT = Canvas.rgba(240, 180, 80)
+let WRONG = Canvas.rgba(230, 100, 90)
+
+# The controls, as (x, y, w, h).
+let PLAY = (12, 276, 64, 20)
+let STOP = (84, 276, 64, 20)
+let QUIETER = (172, 276, 20, 20)
+let SLIDER = (198, 282, 120, 8)
+let LOUDER = (324, 276, 20, 20)
+
+let paths = Sys.argv.empty()
+  ? FS.glob(FS.join(FS.dirname(Sys.script), "songs", "*.kau"))
+  : Sys.argv
+if paths.empty() {
+  println("no songs to play")
+  Sys.exit(1)
+}
+let entries = paths.map(|p| {
+  path: p,
+  file: FS.basename(p),
+  mut song: nil,
+  mut error: nil,
+})
+
+mut loaded = 0
+mut picked = 0
+mut top = 0
+mut playing = nil  # the entry that plays, or is having its sounds built
+mut building = false
+mut left = 0
+mut started = 0.0
+mut volume = 0.8
+mut was_down = false
+mut sliding = false
+
+fn clock(secs) {
+  let s = Math.round(secs)
+  "{s / 60}:{s % 60 < 10 ? "0" : ""}{s % 60}"
+}
+
+# `s` cut to `n` characters, with `..` when it was longer.
+fn clip(s, n) {
+  s.size() <= n ? s : s.slice(0, n - 2).to_string() + ".."
+}
+
+# `s` in lines of at most `n` characters, broken between words.
+fn wrap(s, n) {
+  mut out = [""]
+  for word in s.split_whitespace() {
+    let line = out[-1]
+    if line.empty() {
+      out[out.size() - 1] = word.to_string()
+    } else if line.size() + 1 + word.size() <= n {
+      out[out.size() - 1] = "{line} {word}"
+    } else {
+      out.push(word.to_string())
+    }
+  }
+  out
+}
+
+fn load(e) {
+  e.song = try {
+    Audio.Kauai.load(e.path, voices: sounds.voices, drums: sounds.drums)
+  } catch err {
+    e.error = err.message
+    nil
+  }
+}
+
+let about_of = |e| e.song == nil ? {} : e.song.about()
+let title_of = |e| about_of(e).title ?? e.file
+
+# The composer and the year, as far as `about` says them.
+fn byline(a) {
+  let year = a.year == nil ? [] : ["{a.year}"]
+  [...(a.composer == nil ? [] : [a.composer]), ...year].join(", ")
+}
+
+fn stop() {
+  playing.song.stop() if playing != nil
+  playing = nil
+  building = false
+}
+
+fn play(e) {
+  stop()
+  return if e.song == nil
+  playing = e
+  e.song.volume(volume)
+  building = true
+  left = e.song.prepare()
+}
+
+fn set_volume(v) {
+  volume = Math.max(0.0, Math.min(1.0, v))
+  playing.song.volume(volume) if playing != nil
+}
+
+fn pick(i) {
+  picked = Math.max(0, Math.min(entries.size() - 1, i))
+  top = picked if picked < top
+  top = picked - ROWS + 1 if picked >= top + ROWS
+}
+
+fn inside(m, (x, y, w, h)) {
+  Canvas.point_in_rect(m.x, m.y, x, y, w, h)
+}
+
+fn on_keys() {
+  for key in Canvas.key_queue() {
+    match key {
+      "up" => pick(picked - 1),
+      "down" => pick(picked + 1),
+      "enter" | " " => play(entries[picked]),
+      "escape" => stop(),
+      "-" => set_volume(volume - 0.1),
+      "=" | "+" => set_volume(volume + 0.1),
+      _ => nil,
+    }
+  }
+}
+
+fn on_mouse() {
+  let m = Canvas.mouse()
+  let down = m.buttons & 1 != 0
+  let pressed = down && !was_down
+  was_down = down
+  let (sx, _, sw, _) = SLIDER
+  sliding = false if !down
+  sliding = true if pressed && inside(m, (sx - 4, 276, sw + 8, 20))
+  set_volume((m.x - sx) / sw.to_float()) if sliding
+  return if !pressed
+
+  if inside(m, (0, LIST_Y, W, ROWS * ROW)) {
+    let i = top + (m.y - LIST_Y) / ROW
+    pick(i) if i < entries.size()
+  }
+  cond {
+    inside(m, PLAY) => play(entries[picked]),
+    inside(m, STOP) => stop(),
+    inside(m, QUIETER) => set_volume(volume - 0.1),
+    inside(m, LOUDER) => set_volume(volume + 0.1),
+    _ => nil,
+  }
+}
+
+fn button(r, label, lit) {
+  let (x, y, w, h) = r
+  Canvas.rect(x, y, w, h, lit ? ACCENT : PANEL)
+  Canvas.rect(x, y, w, h, DIM, fill: false)
+  Canvas.text(
+    label,
+    x + (w - Canvas.text_width(label)) / 2,
+    y + (h - 8) / 2,
+    lit ? BG : TEXT,
+  )
+}
+
+fn draw_list() {
+  Canvas.text("KAUAI JUKEBOX", 12, 10, ACCENT, scale: 2)
+  let count = loaded < entries.size()
+    ? "loading {loaded}/{entries.size()}"
+    : "{entries.size()} songs"
+  Canvas.text(count, W - 12 - Canvas.text_width(count), 14, DIM)
+  for row in 0..ROWS {
+    let i = top + row
+    break if i >= entries.size()
+    let e = entries[i]
+    let y = LIST_Y + row * ROW
+    Canvas.rect(0, y, W, ROW, PICKED) if i == picked
+    Canvas.text(">", 6, y + 4, ACCENT) if e == playing
+    let by = byline(about_of(e))
+    let (name, color) = cond {
+      i >= loaded => (e.file, DIM),
+      e.error != nil => ("{e.file}: not a song", WRONG),
+      _ => (title_of(e), TEXT),
+    }
+    Canvas.text(clip(name, 56 - by.size()), 18, y + 4, color)
+    Canvas.text(by, W - 12 - Canvas.text_width(by), y + 4, DIM)
+  }
+  Canvas.line(0, 200, W, 200, PANEL)
+}
+
+fn draw_details() {
+  let e = entries[picked]
+  return Canvas.text("loading...", 12, 208, DIM) if picked >= loaded
+  if e.error != nil {
+    for i, l in wrap(e.error, 56).slice(0, 4).enumerate() {
+      Canvas.text(l, 12, 208 + i * 12, WRONG)
+    }
+    return
+  }
+  let a = about_of(e)
+  Canvas.text(clip(title_of(e), 56), 12, 208, TEXT)
+  let credits = [
+    a.lyricist == nil ? nil : "words: {a.lyricist}",
+    a.arranger == nil ? nil : "arranged: {a.arranger}",
+    a.source,
+    a.license,
+  ].filter(|x| x != nil)
+  let lines = [
+    ...(byline(a).empty() ? [] : [byline(a)]),
+    ...credits,
+    ...(a.note == nil ? [] : wrap(a.note, 56)),
+  ]
+  for i, l in lines.slice(0, 4).enumerate() {
+    Canvas.text(clip(l, 56), 12, 222 + i * 12, DIM)
+  }
+  Canvas.text(e.file, W - 12 - Canvas.text_width(e.file), 208, DIM)
+}
+
+fn draw_controls() {
+  let sounding = playing != nil && !building && playing.song.playing()
+  button(PLAY, "Play", sounding)
+  button(STOP, "Stop", false)
+  button(QUIETER, "-", false)
+  button(LOUDER, "+", false)
+  let (sx, sy, sw, sh) = SLIDER
+  Canvas.rect(sx, sy, sw, sh, PANEL)
+  Canvas.rect(sx, sy, Math.round(sw * volume), sh, ACCENT)
+  Canvas.text("{Math.round(volume * 100)}%", 352, 282, DIM)
+
+  let status = cond {
+    playing == nil => "",
+    building => "building sounds: {left} left",
+    _ => {
+      let length = playing.song.length()
+      let t = Time.monotonic() - started
+      let at = sounding ? t > length ? t % length : t : length
+      "{clock(at)} / {clock(length)}"
+    },
+  }
+  Canvas.text(status, W - 12 - Canvas.text_width(status), 309, DIM)
+  Canvas.text(
+    "no audio device: songs keep time in silence",
+    12,
+    309,
+    WRONG,
+  ) if !Audio.available()
+  if playing != nil && !building {
+    let length = playing.song.length()
+    let t = Time.monotonic() - started
+    let at = sounding ? (t > length ? t % length : t) / length : 1.0
+    Canvas.rect(12, 301, W - 24, 4, PANEL)
+    Canvas.rect(12, 301, Math.round((W - 24) * at), 4, ACCENT)
+  }
+}
+
+Canvas.title("Kauai Jukebox")
+Canvas.run(W, H, fn () {
+  if loaded < entries.size() {
+    load(entries[loaded])
+    loaded += 1
+  }
+  if building {
+    left = playing.song.prepare()
+    if left == 0 {
+      building = false
+      playing.song.play()
+      started = Time.monotonic()
+    }
+  }
+  on_keys()
+  on_mouse()
+
+  Canvas.clear(BG)
+  draw_list()
+  draw_details()
+  draw_controls()
+  true
+})
+stop()

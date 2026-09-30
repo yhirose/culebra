@@ -1,3 +1,8 @@
+about {
+  title  Piece for a string trio
+  note   the melody on the violin, and the viola and cello parts written out
+}
+
 band Trio {
   voice Violin  pulse     plays melody              vol 20
   voice Viola   pulse2    plays part Alto           vol 16
