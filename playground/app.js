@@ -900,7 +900,8 @@ function stopRafPump() {
 // the same channel, like the real APU. The context is created lazily so the
 // page needs no audio permission until a program actually plays something.
 let audioCtx = null;
-const activeVoices = [null, null, null, null, null];  // one slot per channel
+// Per channel, the notes started or scheduled and not yet ended.
+const activeVoices = Array.from({ length: 5 }, () => new Set());
 const pulseWaves = {};  // duty index -> PeriodicWave, built on demand
 
 // Browsers start an AudioContext "suspended" until a user gesture. Create it
@@ -958,21 +959,30 @@ function playTone(m) {
 }
 
 // A tone from `now` on the context's clock, its phases in seconds; answers
-// the source node (null when audio is unavailable).
+// the source node (null when audio is unavailable). `scale` multiplies the
+// levels after they are clamped, as a score's volume does natively.
 function toneAt(now, ch, startFreq, endFreq, attackT, decayT, sustainT, releaseT,
-                vol, peak, duty) {
+                vol, peak, duty, scale = 1) {
   try {
     let total = attackT + decayT + sustainT + releaseT;
     if (total <= 0) total = 1 / 60;  // guarantee an audible blip
     const startF = Math.max(1, startFreq);
     const endF = Math.max(1, endFreq);
-    const G = (v) => toneLevel(v) * 0.2;  // raw waveforms stack: keep it gentle
+    const G = (v) => toneLevel(v) * 0.2 * scale;  // raw waveforms stack: keep it gentle
     const peakG = G(peak), susG = G(vol);
     const channel = ch | 0;
 
-    // Cut any note still playing on this channel (monophony).
-    const prev = activeVoices[channel];
-    if (prev) { try { prev.stop(now); } catch {} }
+    // Monophony by time, as the native mixer has it: a channel belongs to the
+    // note that started last. This one cuts what is sounding at `now`, and is
+    // cut in turn by a note a score has already put later on.
+    let end = now + total;
+    for (const v of activeVoices[channel]) {
+      if (v.start <= now) {
+        if (now < v.end) { try { v.src.stop(now); } catch {} v.end = now; }
+      } else {
+        end = Math.min(end, v.start);
+      }
+    }
 
     const gain = audioCtx.createGain();
     let src;
@@ -1007,9 +1017,10 @@ function toneAt(now, ch, startFreq, endFreq, attackT, decayT, sustainT, releaseT
 
     gain.connect(audioCtx.destination);
     src.start(now);
-    src.stop(now + total);
-    activeVoices[channel] = src;
-    src.onended = () => { if (activeVoices[channel] === src) activeVoices[channel] = null; };
+    src.stop(end);
+    const voice = { src, start: now, end };
+    activeVoices[channel].add(voice);
+    src.onended = () => activeVoices[channel].delete(voice);
     return src;
   } catch {
     // Audio unavailable (autoplay policy, no device) — a game stays playable.
@@ -1176,6 +1187,10 @@ function stopScore(e) {
   if (!run) return;
   clearInterval(run.timer);
   for (const node of run.nodes) { try { node.stop(); } catch {} }
+  // Its notes give their channels up now, not when their `ended` comes round.
+  for (const voices of activeVoices) {
+    for (const v of voices) if (run.nodes.has(v.src)) voices.delete(v);
+  }
 }
 
 function resetScores() {
@@ -1208,8 +1223,8 @@ function pumpScore(e) {
         }
       } else {
         node = toneAt(when, ev[i + 1], ev[i + 2], ev[i + 3], ev[i + 4], ev[i + 5],
-                      ev[i + 6], ev[i + 7], ev[i + 8] * e.volume,
-                      ev[i + 9] * e.volume, ev[i + 10]);
+                      ev[i + 6], ev[i + 7], ev[i + 8], ev[i + 9], ev[i + 10],
+                      e.volume);
       }
       if (node) {
         run.nodes.add(node);

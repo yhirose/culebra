@@ -184,7 +184,10 @@ struct ScoreCommand {
   int64_t start = 0;             // play: the stream sample the score starts on
 };
 
-// A score being played, and a sample sounding. Audio thread only.
+// A score being played, and a sample sounding. Audio thread only. The audio
+// thread never drops a score's last reference (see g_retired), so it frees
+// nothing: a sample plays its score's PCM, and the score plays on until its
+// samples end.
 struct PlayingScore {
   int64_t id = 0;
   std::shared_ptr<Score> score;
@@ -193,7 +196,7 @@ struct PlayingScore {
 };
 struct Sampler {
   int64_t owner = 0;
-  std::shared_ptr<const std::vector<float>> pcm;
+  const std::vector<float>* pcm = nullptr;  // the owner's
   size_t pos = 0;
   double gain = 0;
 };
@@ -207,10 +210,19 @@ std::vector<Sampler> g_samplers;          // audio thread
 // score holds its samples' PCM itself, so a Sound freed while a song plays
 // keeps sounding in it.
 std::unordered_map<int64_t, std::shared_ptr<Score>> g_scores;
+// Freed scores the mixer may still hold, kept until this thread holds the last
+// reference, so that the free happens here.
+std::vector<std::shared_ptr<Score>> g_retired;
+
+// Called from the main thread's audio calls, so a freed song goes soon after
+// the mixer lets go of it.
+void release_retired() {
+  std::erase_if(g_retired, [](const auto& s) { return s.use_count() == 1; });
+}
 std::unordered_map<int64_t, std::shared_ptr<const std::vector<float>>> g_sound_pcm;
 
 // Start what score `ps` has due at stream sample `p`, and go round again at
-// its end if it loops; false once it has played through.
+// its end if it loops; false once it has played through and its samples ended.
 bool advance_score(PlayingScore& ps, int64_t p, Note* voices) {
   const Score& s = *ps.score;
   for (;;) {
@@ -225,11 +237,13 @@ bool advance_score(PlayingScore& ps, int64_t p, Note* voices) {
         voices[e.channel] = n;
       } else {
         if (g_samplers.size() == kMaxSamplers) g_samplers.erase(g_samplers.begin());
-        g_samplers.push_back(Sampler{ps.id, e.pcm, 0, e.gain * v});
+        g_samplers.push_back(Sampler{ps.id, e.pcm.get(), 0, e.gain * v});
       }
     }
     if (p < ps.origin + s.length) return true;
-    if (s.loop_at < 0 || s.length <= s.loop_at) return false;
+    if (s.loop_at < 0 || s.length <= s.loop_at) {
+      return std::ranges::any_of(g_samplers, [&](const Sampler& x) { return x.owner == ps.id; });
+    }
     ps.origin += s.length - s.loop_at;
     ps.next = std::lower_bound(s.events.begin(), s.events.end(), s.loop_at,
                                [](const ScoreEvent& e, int64_t at) { return e.at < at; }) -
@@ -642,6 +656,7 @@ void exit_teardown() {
   g_samplers.clear();
   g_score_inbox.clear();
   g_scores.clear();
+  g_retired.clear();
   g_sound_pcm.clear();
   if (g_ready) {
     CloseAudioDevice();
@@ -674,6 +689,7 @@ void tone(int64_t start_freq, int64_t end_freq, int64_t attack, int64_t decay,
   ensure_tone_stream();
   if (!g_tone_ready) return;
   if (channel < 0 || channel > 4) return;
+  release_retired();
 
   Note n = make_note(start_freq, end_freq, frames_to_samples(attack),
                      frames_to_samples(decay), frames_to_samples(sustain),
@@ -699,7 +715,8 @@ void score_new(int64_t id, const double* events, int64_t count, double length,
                double loop_at) {
   ensure_tone_stream();
   if (!g_tone_ready) return;
-  auto samples = [](double seconds) {
+  release_retired();
+  auto samples =[](double seconds) {
     return static_cast<int64_t>(std::max(0.0, seconds) * kSampleRate);
   };
   auto s = std::make_shared<Score>();
@@ -727,10 +744,15 @@ void score_new(int64_t id, const double* events, int64_t count, double length,
   g_scores[id] = std::move(s);
 }
 void score_free(int64_t id) {
+  auto it = g_scores.find(id);
+  if (it == g_scores.end()) return;
   score_stop(id);
-  g_scores.erase(id);
+  g_retired.push_back(std::move(it->second));
+  g_scores.erase(it);
+  release_retired();
 }
 void score_play(int64_t id) {
+  release_retired();
   auto it = g_scores.find(id);
   if (it == g_scores.end()) return;
   std::lock_guard<std::mutex> lock(g_tone_mutex);
