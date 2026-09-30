@@ -8024,22 +8024,23 @@ loop {
 
 > **Status: Draft.** リリースまでに、言語とAPIが変わることがある。
 
-`Audio.Kauai`は、Kauaiで書いた曲を演奏する。Kauaiは、バンドが演奏するとおりに
-音楽を書く言語で、コードとメロディ、そしてバンドがそれをどう伴奏するかを
-grooveとして書く（[Kauai言語仕様](kauai/language.ja.md)）。曲は全体を読んで
-検査してからruntimeに渡され、runtimeは各音を音声ストリーム自身のクロック上で
-`tone`のチャンネルから鳴らし、`host`楽器にプログラムが渡した音をサンプルとして
-それに重ねる。
+`Audio.Kauai`は、Kauaiで書いた曲を演奏する。Kauaiはバンドの演奏をそのまま
+書き表すための言語で、コードとメロディに加えて、バンドがそれにどう伴奏を
+付けるかをgrooveとして書く（[Kauai言語仕様](kauai/language.ja.md)）。曲は
+まず全体を読み込んで検査し、それからruntimeに渡す。runtimeは、音声ストリーム
+自身のクロックに合わせて各音を`tone`のチャンネルで鳴らし、`host`楽器の音は、
+プログラムが用意した音声をサンプルとしてそこに重ねる。
 
-| 関数 | 働き |
+| 関数 | 動作 |
 | --- | --- |
-| `Audio.Kauai.new(text: String, voices = nil, drums = nil)` | 文字列の曲。他のファイルは使えない |
-| `Audio.Kauai.load(path: String, voices = nil, drums = nil, dir = nil)` | 曲のファイルと、それが`use`するファイル。ディスクから、または`dir`（`Embed.dir`、あるいは`exists(name)`と`read(name)`を持つオブジェクト）から読む |
+| `Audio.Kauai.new(text: String, voices = nil, drums = nil)` | 文字列から曲を作る。ほかのファイルは取り込めない |
+| `Audio.Kauai.load(path: String, voices = nil, drums = nil, dir = nil)` | 曲のファイルと、そこから`use`しているファイルを読み込む。読み込み元はディスクか、`dir`（`Embed.dir`、または`exists(name)`と`read(name)`を持つオブジェクト） |
 
-曲の誤りは`KauaiError`になり、メッセージにファイルと行が付く。曲は`play()`、
-`stop()`、`volume(v)`、`playing()`、`reached(mark)`、`prepare()`、`length()`、
-`events()`に答え、デバイスで鳴っているかどうかにかかわらず自分の時間を持つ。
-すべては仕様の[10章](kauai/language.ja.md#10-culebra-から再生する)にある。
+曲に誤りがあると`KauaiError`になり、メッセージにはファイル名と行番号が付く。
+曲のオブジェクトには`play()`、`stop()`、`volume(v)`、`playing()`、
+`reached(mark)`、`prepare()`、`length()`、`events()`があり、音声デバイスで
+実際に鳴っているかどうかに関係なく、自分で経過時間を管理する。詳しくは仕様の
+[10章](kauai/language.ja.md#10-culebra-から再生する)を参照。
 
 ```culebra
 let song = Audio.Kauai.new(`
