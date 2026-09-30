@@ -2903,7 +2903,7 @@ class FloatPair {
 
 `@packable`はバイトレイアウト（C ABI自然アライメント）を確定する。
 各フィールドは固定スカラ — `Float32`, `Float64`/`Float`, `Int8`,
-`Int16`, `Int32`, `Int64`/`Long`, `Byte`, `Bool` — でなければならず、
+`Int16`, `Int32`, `Int64`/`Long`, `Byte`, `UInt16`, `UInt32`, `Bool` — でなければならず、
 非スカラフィールドはロード時に`SyntaxError`。デフォルト省略時は型の
 ゼロ値（`0` / `0.0` / `false`）。
 

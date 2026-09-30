@@ -2986,7 +2986,8 @@ inline ZeroKind zero_kind_for_type(std::string_view type) {
     return ZeroKind::Float;
   if (type == "Bool") return ZeroKind::Bool;
   if (type == "String") return ZeroKind::String;
-  if (type == "Long" || type == "Byte" || type.starts_with("Int"))
+  if (type == "Long" || type == "Byte" || type.starts_with("Int") ||
+      type.starts_with("UInt"))
     return ZeroKind::Long;
   return ZeroKind::Nil;  // reference types default to nil
 }

@@ -37,6 +37,7 @@
 #endif  // !_WIN32
 
 #include <base/shared.h>  // CulebraError
+#include <base/scalar_bytes.h>  // a record's byte-stream form
 
 // @packable fixed-layout structs and the SharedBuffer backing store.
 // This header is pure metadata + raw byte storage — the engine-value
@@ -60,6 +61,8 @@ inline PackableTypeInfo packable_type_info(std::string_view t) {
   if (t == "Int32") return {4, 4};
   if (t == "Int64" || t == "Long") return {8, 8};
   if (t == "Byte") return {1, 1};
+  if (t == "UInt16") return {2, 2};
+  if (t == "UInt32") return {4, 4};
   if (t == "Bool") return {1, 1};
   return {0, 0};
 }
@@ -406,6 +409,8 @@ inline int packable_scalar_code(std::string_view t) {
   if (t == "Int64" || t == "Long") return 5;
   if (t == "Byte") return 6;
   if (t == "Bool") return 7;
+  if (t == "UInt16") return 8;
+  if (t == "UInt32") return 9;
   return -1;
 }
 inline std::string_view packable_scalar_name(int code) {
@@ -418,6 +423,8 @@ inline std::string_view packable_scalar_name(int code) {
     case 5: return "Int64";
     case 6: return "Byte";
     case 7: return "Bool";
+    case 8: return "UInt16";
+    case 9: return "UInt32";
   }
   return "";
 }
@@ -522,7 +529,7 @@ inline PackableLayout compute_packable_layout(
           "SyntaxError",
           culebra::format("@packable class `{}`: field `{}` has non-packable "
                           "type `{}` (expected a fixed scalar — Float32/Float64/"
-                          "Int8/Int16/Int32/Int64/Byte/Bool — or "
+                          "Int8/Int16/Int32/Int64/Byte/UInt16/UInt32/Bool — or "
                           "FixedArray<scalar, N> / FixedString<N> / "
                           "FixedSet<scalar, N> / FixedMap<scalar, scalar, N> / "
                           "Bytes<N> / an optional scalar `T?` / a @packable enum "

@@ -2993,7 +2993,7 @@ class FloatPair {
 
 `@packable` fixes the byte layout (C-ABI natural alignment). Every field
 must be a fixed scalar — `Float32`, `Float64`/`Float`, `Int8`, `Int16`,
-`Int32`, `Int64`/`Long`, `Byte`, or `Bool`. A non-scalar field is a
+`Int32`, `Int64`/`Long`, `Byte`, `UInt16`, `UInt32`, or `Bool`. A non-scalar field is a
 `SyntaxError` at load time. A field with no default takes the type's zero
 value (`0`, `0.0`, `false`).
 

@@ -3845,6 +3845,8 @@ inline JitValue _jit_packable_read_field(const uint8_t* base,
     int64_t v; std::memcpy(&v, p, 8); return {TAG_LONG, v};
   }
   if (f.type == "Byte") { uint8_t v; std::memcpy(&v, p, 1); return {TAG_LONG, static_cast<int64_t>(v)}; }
+  if (f.type == "UInt16") { uint16_t v; std::memcpy(&v, p, 2); return {TAG_LONG, static_cast<int64_t>(v)}; }
+  if (f.type == "UInt32") { uint32_t v; std::memcpy(&v, p, 4); return {TAG_LONG, static_cast<int64_t>(v)}; }
   if (f.type == "Bool") { uint8_t v; std::memcpy(&v, p, 1); return {TAG_BOOL, v ? 1 : 0}; }
   return {TAG_NIL, 0};
 }
@@ -3940,13 +3942,19 @@ inline void _jit_packable_write_field(uint8_t* base,
     if (tag == TAG_FLOAT) return culebra::double_to_long(_culebra_float_to_double(data), 0, 0);
     throw culebra::CulebraError("TypeError", "type error: expected Long");
   };
-  if (f.type == "Float32") { float v = static_cast<float>(as_double()); std::memcpy(p, &v, 4); return; }
+  if (f.type == "Float32") {
+    float v = static_cast<float>(culebra::scalar_bytes::round_f32(as_double()));
+    std::memcpy(p, &v, 4);
+    return;
+  }
   if (f.type == "Float64" || f.type == "Float") { double v = as_double(); std::memcpy(p, &v, 8); return; }
   if (f.type == "Int8")  { int8_t  v = static_cast<int8_t>(as_long());  std::memcpy(p, &v, 1); return; }
   if (f.type == "Int16") { int16_t v = static_cast<int16_t>(as_long()); std::memcpy(p, &v, 2); return; }
   if (f.type == "Int32") { int32_t v = static_cast<int32_t>(as_long()); std::memcpy(p, &v, 4); return; }
   if (f.type == "Int64" || f.type == "Long") { int64_t v = as_long(); std::memcpy(p, &v, 8); return; }
   if (f.type == "Byte")  { uint8_t v = static_cast<uint8_t>(as_long()); std::memcpy(p, &v, 1); return; }
+  if (f.type == "UInt16") { uint16_t v = static_cast<uint16_t>(as_long()); std::memcpy(p, &v, 2); return; }
+  if (f.type == "UInt32") { uint32_t v = static_cast<uint32_t>(as_long()); std::memcpy(p, &v, 4); return; }
   if (f.type == "Bool") {
     bool b;
     if (tag == TAG_BOOL || tag == TAG_LONG) b = (data != 0);
