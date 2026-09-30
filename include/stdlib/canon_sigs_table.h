@@ -968,16 +968,18 @@ inline constexpr CanonParam kCanonParams_String[] = {
   // 2: String.from_code_points
   {"cps", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
   // 3: String.pack
-  {"type", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
+  {"type", false, false, false, false, false, "", CanonDefault::None, 0, {}},
   {"values", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
   {"endian", true, false, false, false, false, "String", CanonDefault::Str, 0, "little"},
   // 6: String.unpack
-  {"type", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
+  {"type", false, false, false, false, false, "", CanonDefault::None, 0, {}},
   {"data", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
   {"at", true, false, false, false, false, "Long", CanonDefault::Long, 0, {}},
   {"count", true, false, false, false, false, "Long?", CanonDefault::Nil, 0, {}},
   {"into", true, false, false, false, false, "Array?", CanonDefault::Nil, 0, {}},
   {"endian", true, false, false, false, false, "String", CanonDefault::Str, 0, "little"},
+  // 12: String.pack_size
+  {"type", false, false, false, false, false, "", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonSigs_String[] = {
@@ -986,6 +988,7 @@ inline constexpr CanonSig kCanonSigs_String[] = {
   {"String", "", "from_code_points", kCanonParams_String + 2, 1, "String", 1, 1, false, -1, -1, -1},
   {"String", "", "pack", kCanonParams_String + 3, 3, "String", 2, 3, false, -1, -1, -1},
   {"String", "", "unpack", kCanonParams_String + 6, 6, "Array", 2, 6, false, -1, -1, -1},
+  {"String", "", "pack_size", kCanonParams_String + 12, 1, "Long", 1, 1, false, -1, -1, -1},
 };
 
 inline constexpr CanonParam kCanonParams_Tensor[] = {

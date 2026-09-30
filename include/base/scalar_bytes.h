@@ -8,6 +8,7 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -58,18 +59,41 @@ inline std::pair<int64_t, int64_t> int_range(const Type& t) {
   return {0, (int64_t{1} << bits) - 1};
 }
 
-// The low `width` bytes of `bits`, least significant first unless `big`.
-inline void store_bits(uint8_t* p, uint64_t bits, int width, bool big) {
-  for (int k = 0; k < width; k++) {
-    uint8_t b = static_cast<uint8_t>(bits >> (8 * k));
-    p[big ? width - 1 - k : k] = b;
+// One unsigned word of type U at `p` in the stated byte order: a plain
+// (unaligned) copy, byte-swapped only when that order is not the host's.
+template <class U>
+inline U load_as(const uint8_t* p, bool big) {
+  U v;
+  std::memcpy(&v, p, sizeof v);
+  return big == (std::endian::native == std::endian::big) ? v : std::byteswap(v);
+}
+template <class U>
+inline void store_as(uint8_t* p, U v, bool big) {
+  if (big != (std::endian::native == std::endian::big)) v = std::byteswap(v);
+  std::memcpy(p, &v, sizeof v);
+}
+// Calls f with a value of the unsigned word type `width` bytes wide, so a
+// loop over many scalars picks its width once, outside the loop.
+template <class F>
+inline decltype(auto) with_word(int width, F&& f) {
+  switch (width) {
+    case 1: return f(uint8_t{});
+    case 2: return f(uint16_t{});
+    case 4: return f(uint32_t{});
+    default: return f(uint64_t{});
   }
 }
+
+// The low `width` bytes of `bits`, least significant first unless `big`.
+inline void store_bits(uint8_t* p, uint64_t bits, int width, bool big) {
+  with_word(width, [&](auto w) {
+    store_as(p, static_cast<decltype(w)>(bits), big);
+  });
+}
 inline uint64_t load_bits(const uint8_t* p, int width, bool big) {
-  uint64_t bits = 0;
-  for (int k = 0; k < width; k++)
-    bits |= static_cast<uint64_t>(p[big ? width - 1 - k : k]) << (8 * k);
-  return bits;
+  return with_word(width, [&](auto w) -> uint64_t {
+    return load_as<decltype(w)>(p, big);
+  });
 }
 
 // Round to the nearest binary32 (`Math.f32`, and the Core IR's tofloat32 —

@@ -4868,8 +4868,9 @@ receiver is never mutated.
 | `String.from_code_point(cp: Long) -> String`    | The inverse of `code_points()`: one Unicode scalar value in, a one-character `String` out. Raises `ValueError` for `cp` above `U+10FFFF` or in the surrogate range `U+D800`–`U+DFFF` — the same boundary the `\u`/`\U` literal escapes (§4.1) reject at parse time. |
 | `String.from_code_points(cps: Array) -> String` | The plural inverse of `code_points()`: an `Array` of Unicode scalar values in, a `String` out. Each element passes through the same gate as `from_code_point`, so `String.from_code_points([cp]) == String.from_code_point(cp)`; a non-`Long` element is a `TypeError`, an out-of-range one a `ValueError`. |
 | `String.from_bytes(bytes: Array) -> String`     | The inverse of `bytes()`: an `Array` of raw byte values (`0`–`255`) in, a `String` out. **No UTF-8 validation**, and no error on malformed input: culebra `String`s tolerate invalid UTF-8 (same as `iter()`), so `String.from_bytes(s.bytes().collect()) == s` holds for every `String`, including ones with invalid sequences. A non-`Long` element is a `TypeError`, an out-of-range one (outside `0`–`255`) a `ValueError`. |
-| `String.pack(type: String, values: Array, endian: String = "little") -> String` | Each element of `values` as one fixed-width scalar of `type`, laid end to end — the bytes a binary file or protocol stores. See [Binary data](#binary-data-stringpack--stringunpack) below. |
-| `String.unpack(type: String, data: StringLike, at: Long = 0, count: Long? = nil, into: Array? = nil, endian: String = "little") -> Array` | The inverse of `pack`: scalars of `type` read from byte `at` of `data` — `count` of them, as many as `into` holds, or else every remaining byte. |
+| `String.pack(type: String \| Class, values: Array, endian: String = "little") -> String` | Each element of `values` as one fixed-width scalar of `type` — or one record of a `@packable` class — laid end to end: the bytes a binary file or protocol stores. See [Binary data](#binary-data-stringpack--stringunpack) below. |
+| `String.unpack(type: String \| Class, data: StringLike, at: Long = 0, count: Long? = nil, into: Array? = nil, endian: String = "little") -> Array` | The inverse of `pack`: elements of `type` read from byte `at` of `data` — `count` of them, as many as `into` holds, or else every remaining byte. |
+| `String.pack_size(type: String \| Class) -> Long` | The bytes one element of `type` takes: `2` for `"u16"`, a record's field widths summed. |
 
 ```culebra
 # 'é' is 2 UTF-8 bytes, so 'café' is 5 bytes
@@ -4928,6 +4929,27 @@ inspect(String.unpack("i16", data, at: 4, count: n))  # => [-1, 0, 1]
 let samples = [0, 0, 0]
 String.unpack("i16", data, at: 4, into: samples)
 inspect(samples)  # => [-1, 0, 1]
+```
+
+`type` may also be a `@packable` class: each element is then one record,
+its fields in declaration order with no padding, each in the byte order
+`endian:` names — a file header, a packet, a table row. `unpack` builds
+each record without running `new`, since a record's fields are all of it.
+Which fields a record can carry, and what they turn into, is in the
+standard library's [records as bytes](stdlib.md#records-as-bytes-stringpack).
+`String.pack_size(type)` answers how many bytes one element takes, which
+is what a read of exactly one record from a file or a socket needs.
+
+```culebra
+@packable
+class Idx {
+  magic: UInt32
+  count: UInt32
+}
+let raw = String.pack("u32", [2049, 60000], endian: "big")
+let h = String.unpack(Idx, raw, count: 1, endian: "big")[0]
+inspect([h.magic, h.count])  # => [2049, 60000]
+inspect(String.pack_size(Idx))  # => 8
 ```
 
 #### StringView

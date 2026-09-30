@@ -6903,18 +6903,11 @@ inline JitValue _ns_sharedbuffer_new(JitValue* a, int64_t n) {
     throw culebra::CulebraError("ValueError",
         "SharedBuffer.new: count must be >= 0");
   }
-  if (a[1].tag != TAG_OBJECT) {
+  std::string_view cname = _jit_packable_class_name(a[1]);
+  if (cname.empty()) {
     throw culebra::CulebraError("TypeError",
         "SharedBuffer.new: second argument must be a @packable class");
   }
-  auto* cls = reinterpret_cast<JitObject*>(a[1].data);
-  auto mi = cls->find_slot("__packable__");
-  if (mi == static_cast<size_t>(-1) || cls->slots[mi].value.tag != TAG_STRING) {
-    throw culebra::CulebraError("TypeError",
-        "SharedBuffer.new: second argument must be a @packable class");
-  }
-  std::string_view cname =
-      _str_sv(reinterpret_cast<const char*>(cls->slots[mi].value.data));
   const auto* layout = culebra::lookup_packable_layout(cname);
   if (!layout) {
     throw culebra::CulebraError("TypeError",
@@ -6945,18 +6938,11 @@ inline JitValue _ns_sharedbuffer_file(JitValue* a, int64_t n) {
     throw culebra::CulebraError("ValueError",
         "SharedBuffer.file: count must be >= 0");
   }
-  if (a[2].tag != TAG_OBJECT) {
+  std::string_view cname = _jit_packable_class_name(a[2]);
+  if (cname.empty()) {
     throw culebra::CulebraError("TypeError",
         "SharedBuffer.file: type must be a @packable class");
   }
-  auto* cls = reinterpret_cast<JitObject*>(a[2].data);
-  auto mi = cls->find_slot("__packable__");
-  if (mi == static_cast<size_t>(-1) || cls->slots[mi].value.tag != TAG_STRING) {
-    throw culebra::CulebraError("TypeError",
-        "SharedBuffer.file: type must be a @packable class");
-  }
-  std::string_view cname =
-      _str_sv(reinterpret_cast<const char*>(cls->slots[mi].value.data));
   const auto* layout = culebra::lookup_packable_layout(cname);
   if (!layout) {
     throw culebra::CulebraError("TypeError",
@@ -6982,18 +6968,11 @@ inline JitValue _ns_sharedbuffer_shared(JitValue* a, int64_t n) {
     throw culebra::CulebraError("ValueError",
         "SharedBuffer.shared: count must be >= 0");
   }
-  if (a[1].tag != TAG_OBJECT) {
+  std::string_view cname = _jit_packable_class_name(a[1]);
+  if (cname.empty()) {
     throw culebra::CulebraError("TypeError",
         "SharedBuffer.shared: second argument must be a @packable class");
   }
-  auto* cls = reinterpret_cast<JitObject*>(a[1].data);
-  auto mi = cls->find_slot("__packable__");
-  if (mi == static_cast<size_t>(-1) || cls->slots[mi].value.tag != TAG_STRING) {
-    throw culebra::CulebraError("TypeError",
-        "SharedBuffer.shared: second argument must be a @packable class");
-  }
-  std::string_view cname =
-      _str_sv(reinterpret_cast<const char*>(cls->slots[mi].value.data));
   const auto* layout = culebra::lookup_packable_layout(cname);
   if (!layout) {
     throw culebra::CulebraError("TypeError",
@@ -7016,18 +6995,11 @@ inline JitValue _ns_sharedbuffer_receive(JitValue* a, int64_t n) {
         "SharedBuffer.receive: name must be a String");
   }
   std::string_view name = _str_sv(reinterpret_cast<const char*>(a[0].data));
-  if (a[1].tag != TAG_OBJECT) {
+  std::string_view cname = _jit_packable_class_name(a[1]);
+  if (cname.empty()) {
     throw culebra::CulebraError("TypeError",
         "SharedBuffer.receive: second argument must be a @packable class");
   }
-  auto* cls = reinterpret_cast<JitObject*>(a[1].data);
-  auto mi = cls->find_slot("__packable__");
-  if (mi == static_cast<size_t>(-1) || cls->slots[mi].value.tag != TAG_STRING) {
-    throw culebra::CulebraError("TypeError",
-        "SharedBuffer.receive: second argument must be a @packable class");
-  }
-  std::string_view cname =
-      _str_sv(reinterpret_cast<const char*>(cls->slots[mi].value.data));
   const auto* layout = culebra::lookup_packable_layout(cname);
   if (!layout) {
     throw culebra::CulebraError("TypeError",
@@ -7928,14 +7900,32 @@ inline JitValue _ns_string_from_code_points(JitValue* a, int64_t) {
 }
 
 // String.pack(type, values, endian) / String.unpack(type, data, at, count,
-// into, endian): an Array of fixed-width scalars <-> their bytes. The bytes
-// are scalar_bytes.h's; these walk the Array and word each failure.
-inline culebra::scalar_bytes::Type _ns_pack_type(JitValue v, std::string_view fn) {
-  auto name = _ns_adapt::require_sv(v, "type");
-  if (const auto* t = culebra::scalar_bytes::find_type(name)) return *t;
+// into, endian) / String.pack_size(type): an Array of fixed-width scalars, or
+// of @packable records, <-> their bytes. The scalar bytes are
+// scalar_bytes.h's and a record's fixed.inc.h's; these walk the Array and word
+// each failure.
+
+// What `type` names: a scalar type ("u16"), or a @packable class (`record`).
+struct _NsPackType {
+  culebra::scalar_bytes::Type scalar{};
+  JitRecordType record{};
+  std::string_view name() const { return record.cls ? record.name : scalar.name; }
+  size_t width() const { return record.cls ? record.size : scalar.width; }
+};
+inline _NsPackType _ns_pack_type(JitValue v, std::string_view fn) {
+  if (v.tag == TAG_STRING || v.tag == TAG_STRINGVIEW) {
+    auto name = _culebra_str_view(v.tag, v.data);
+    if (const auto* t = culebra::scalar_bytes::find_type(name)) return {*t, {}};
+    throw culebra::CulebraError(
+        "ValueError", culebra::format("{}: unknown type '{}' (one of {}).", fn, name,
+                                      culebra::scalar_bytes::type_names()));
+  }
+  if (auto rec = _jit_record_type(v, fn); rec.cls) return {{}, rec};
   throw culebra::CulebraError(
-      "ValueError", culebra::format("{}: unknown type '{}' (one of {}).", fn, name,
-                                    culebra::scalar_bytes::type_names()));
+      "TypeError",
+      culebra::format("{}: type must be a scalar type's name or a @packable "
+                      "class, got {}.",
+                      fn, _culebra_tag_name(v.tag)));
 }
 // True for big-endian; little when the slot was not passed.
 inline bool _ns_pack_endian(JitValue* a, int64_t n, int64_t i, std::string_view fn) {
@@ -7951,9 +7941,21 @@ inline bool _ns_pack_endian(JitValue* a, int64_t n, int64_t i, std::string_view 
 inline JitValue _ns_string_pack(JitValue* a, int64_t n) {
   namespace sb = culebra::scalar_bytes;
   constexpr std::string_view fn = "String.pack";
-  const sb::Type t = _ns_pack_type(a[0], fn);
+  const _NsPackType type = _ns_pack_type(a[0], fn);
   ::JitArray* arr = _ns_adapt::require_array(a[1], "values");
   const bool big = _ns_pack_endian(a, n, 2, fn);
+  // Filled in place: nothing below allocates, so the fresh string is not
+  // collected before it is returned.
+  const size_t count = arr->size;
+  const JitValue* items = arr->items;
+  char* out = _str_alloc(count * type.width());
+  auto* p = reinterpret_cast<uint8_t*>(out);
+  if (type.record.cls) {
+    for (size_t i = 0; i < count; i++, p += type.record.size)
+      _jit_record_write(p, items[i], type.record, big, fn, i);
+    return _ns_adapt::v_string(out);
+  }
+  const sb::Type t = type.scalar;
   const bool is_int = t.kind == sb::Kind::Signed || t.kind == sb::Kind::Unsigned;
   const auto [lo, hi] = is_int ? sb::int_range(t) : std::pair<int64_t, int64_t>{};
   auto element_error = [&](const JitValue& e, size_t i) {
@@ -7965,28 +7967,27 @@ inline JitValue _ns_string_pack(JitValue* a, int64_t n) {
         culebra::format("{}: {} takes {} elements, got {} at index {}.", fn, t.name,
                         want, _culebra_tag_name(e.tag), i));
   };
-  // Filled in place: nothing below allocates, so the fresh string is not
-  // collected before it is returned.
-  const size_t count = arr->size;
-  const JitValue* items = arr->items;
-  char* out = _str_alloc(count * t.width);
-  auto* p = reinterpret_cast<uint8_t*>(out);
-  for (size_t i = 0; i < count; i++, p += t.width) {
-    const JitValue& e = items[i];
-    switch (t.kind) {
-      case sb::Kind::Bool:
+  // The width is picked once, so the loop stores whole words.
+  sb::with_word(t.width, [&](auto word) {
+    using W = decltype(word);
+    for (size_t i = 0; i < count; i++, p += sizeof(W)) {
+      const JitValue& e = items[i];
+      if (t.kind == sb::Kind::Bool) {
         if (e.tag != ::TAG_BOOL) element_error(e, i);
         *p = e.data ? 1 : 0;
-        break;
-      case sb::Kind::Float:
-        if (e.tag == ::TAG_FLOAT)
-          sb::store_float(p, t, _culebra_float_to_double(e.data), big);
-        else if (e.tag == ::TAG_LONG)
-          sb::store_float(p, t, static_cast<double>(e.data), big);
-        else
-          element_error(e, i);
-        break;
-      default:
+      } else if (t.kind == sb::Kind::Float) {
+        if constexpr (sizeof(W) >= 4) {
+          double d = 0;
+          if (e.tag == ::TAG_FLOAT) d = _culebra_float_to_double(e.data);
+          else if (e.tag == ::TAG_LONG) d = static_cast<double>(e.data);
+          else element_error(e, i);
+          if constexpr (sizeof(W) == 8)
+            sb::store_as(p, std::bit_cast<uint64_t>(d), big);
+          else
+            sb::store_as(p, std::bit_cast<uint32_t>(
+                                static_cast<float>(sb::round_f32(d))), big);
+        }
+      } else {
         if (e.tag != ::TAG_LONG) element_error(e, i);
         if (e.data < lo || e.data > hi) {
           throw culebra::CulebraError(
@@ -7994,22 +7995,24 @@ inline JitValue _ns_string_pack(JitValue* a, int64_t n) {
               culebra::format("{}: {} at index {} is out of range for {} ({} to {}).",
                               fn, e.data, i, t.name, lo, hi));
         }
-        sb::store_bits(p, static_cast<uint64_t>(e.data), t.width, big);
+        sb::store_as(p, static_cast<W>(e.data), big);
+      }
     }
-  }
+  });
   return _ns_adapt::v_string(out);
 }
 
 inline JitValue _ns_string_unpack(JitValue* a, int64_t n) {
   namespace sb = culebra::scalar_bytes;
   constexpr std::string_view fn = "String.unpack";
-  const sb::Type t = _ns_pack_type(a[0], fn);
+  const _NsPackType type = _ns_pack_type(a[0], fn);
   const std::string_view data = _ns_adapt::require_sv(a[1], "data");
   const int64_t at = n > 2 ? _ns_adapt::require_long(a[2], "at") : 0;
   const JitValue count_v = n > 3 ? a[3] : _ns_adapt::v_nil();
   const JitValue into_v = n > 4 ? a[4] : _ns_adapt::v_nil();
   const bool big = _ns_pack_endian(a, n, 5, fn);
   const int64_t size = static_cast<int64_t>(data.size());
+  const int64_t width = static_cast<int64_t>(type.width());
   if (at < 0 || at > size) {
     throw culebra::CulebraError(
         "IndexError",
@@ -8026,14 +8029,15 @@ inline JitValue _ns_string_unpack(JitValue* a, int64_t n) {
     }
     count = static_cast<int64_t>(into->size);
   } else if (count_v.tag == ::TAG_NIL) {
-    if (avail % t.width != 0) {
+    // A record with no fields takes no bytes: there is no count to derive.
+    if (width == 0 || avail % width != 0) {
       throw culebra::CulebraError(
           "ValueError",
           culebra::format("{}: the {} bytes from {} are not a whole number of {} "
                           "({} bytes each).",
-                          fn, avail, at, t.name, t.width));
+                          fn, avail, at, type.name(), width));
     }
-    count = avail / t.width;
+    count = avail / width;
   } else {
     count = _ns_adapt::require_long(count_v, "count");
     if (count < 0) {
@@ -8042,34 +8046,66 @@ inline JitValue _ns_string_unpack(JitValue* a, int64_t n) {
           culebra::format("{}: count must not be negative, got {}.", fn, count));
     }
   }
-  if (count > avail / t.width) {
+  if (width != 0 && count > avail / width) {
     throw culebra::CulebraError(
         "IndexError",
         culebra::format("{}: {} {} from {} run past the end ({} bytes remain).",
-                        fn, count, t.name, at, avail));
+                        fn, count, type.name(), at, avail));
   }
   const auto* p = reinterpret_cast<const uint8_t*>(data.data()) + at;
-  auto decode = [&](int64_t i) -> JitValue {
-    const uint8_t* q = p + i * t.width;
-    switch (t.kind) {
-      case sb::Kind::Bool: return _ns_adapt::v_bool(*q != 0);
-      case sb::Kind::Float: return _ns_adapt::v_float(sb::load_float(q, t, big));
-      default: return _ns_adapt::v_long(sb::load_int(q, t, big));
+  // Fills `into` through the ordinary slot store — releasing an old element
+  // can run a `drop` that shrinks it, and array_set checks the index every
+  // time — or a fresh Array, which is filled as it grows.
+  auto fill = [&](auto&& element) -> JitValue {
+    if (into) {
+      for (int64_t i = 0; i < count; i++) {
+        JitValue v = element(i);
+        culebra_runtime_array_set(into, i, v.tag, v.data, 0, 0);
+      }
+      return JitOwnedVal::from_borrowed(into_v).consume();
     }
-  };
-  if (!into) {
     ::JitArray* r = _jit_array_new_reserved(count, "String.unpack result");
-    for (int64_t i = 0; i < count; i++) r->items[i] = decode(i);
-    r->size = static_cast<size_t>(count);
+    for (int64_t i = 0; i < count; i++) {
+      r->items[i] = element(i);
+      r->size = static_cast<size_t>(i + 1);
+    }
     return _ns_adapt::v_array(r);
+  };
+  if (type.record.cls) {
+    // A record read allocates its instance and its String fields, each held
+    // only here until it is stored: no collection until the Array has them.
+    culebra::gc::Heap::CollectPause pause(_gc_heap());
+    return fill([&](int64_t i) {
+      return _jit_record_read(p + i * width, type.record, big);
+    });
   }
-  // The ordinary slot store: releasing an old element can run a `drop` that
-  // shrinks `into`, and array_set checks the index every time.
-  for (int64_t i = 0; i < count; i++) {
-    JitValue v = decode(i);
-    culebra_runtime_array_set(into, i, v.tag, v.data, 0, 0);
-  }
-  return JitOwnedVal::from_borrowed(into_v).consume();
+  const sb::Type t = type.scalar;
+  // The width is picked once, so the loop loads whole words.
+  return sb::with_word(t.width, [&](auto word) {
+    using W = decltype(word);
+    return fill([&](int64_t i) -> JitValue {
+      const W bits = sb::load_as<W>(p + i * sizeof(W), big);
+      switch (t.kind) {
+        case sb::Kind::Bool: return _ns_adapt::v_bool(bits != 0);
+        case sb::Kind::Float:
+          if constexpr (sizeof(W) == 8)
+            return _ns_adapt::v_float(std::bit_cast<double>(bits));
+          else if constexpr (sizeof(W) == 4)
+            return _ns_adapt::v_float(std::bit_cast<float>(bits));
+          else
+            return _ns_adapt::v_nil();  // no 1- or 2-byte float type
+        case sb::Kind::Signed:
+          return _ns_adapt::v_long(
+              static_cast<int64_t>(static_cast<std::make_signed_t<W>>(bits)));
+        default: return _ns_adapt::v_long(static_cast<int64_t>(bits));
+      }
+    });
+  });
+}
+
+inline JitValue _ns_string_pack_size(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(
+      static_cast<int64_t>(_ns_pack_type(a[0], "String.pack_size").width()));
 }
 
 // UUID.{v4,v7}: canonical UUID strings via uuid.h (shared entropy/format).
@@ -9848,8 +9884,9 @@ inline const NsMethod kNsRows_String[] = {
   {"String", "from_code_point", 1, &_ns_string_from_code_point, nullptr, "Long", "cp"},
   {"String", "from_bytes", 1, &_ns_string_from_bytes, nullptr, "Array", "bytes"},
   {"String", "from_code_points", 1, &_ns_string_from_code_points, nullptr, "Array", "cps"},
-  {"String", "pack", 2, &_ns_string_pack, nullptr, "String", "type"},
-  {"String", "unpack", 2, &_ns_string_unpack, nullptr, "String", "type"},
+  {"String", "pack", 2, &_ns_string_pack},
+  {"String", "unpack", 2, &_ns_string_unpack},
+  {"String", "pack_size", 1, &_ns_string_pack_size},
 };
 inline const NsMethod kNsRows_Tensor[] = {
   {"Tensor", "zeros",    -1, &_ns_tensor_zeros},

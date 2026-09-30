@@ -63,7 +63,9 @@ ctest.entries 34
 # counted), in en and ja.
 # 988 since stdlib's Audio.Kauai section shows the API as built, in en and ja.
 # 986 since §18.1 shows String.pack / String.unpack, in en and ja.
-docs.blocks 990
+# 990 since §18.1 and stdlib's @packable section show a record packed and
+# read back, in en and ja.
+docs.blocks 994
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

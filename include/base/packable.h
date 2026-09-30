@@ -11,6 +11,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -564,6 +565,48 @@ inline const PackableLayout* lookup_packable_layout(std::string_view name) {
   std::lock_guard<std::mutex> lk(packable_layout_mutex());
   auto it = packable_layout_registry().find(name);
   return it == packable_layout_registry().end() ? nullptr : &it->second;
+}
+
+// --- A record as a byte stream (String.pack / String.unpack) --------------
+// Its fields in declaration order with no padding, each scalar in the byte
+// order the call names — encoding/binary's rule for a Go struct. This is not
+// the layout above (C-ABI alignment, host byte order): that one is memory two
+// isolates share, this one is bytes a file or a socket carries.
+
+// The byte-stream scalar a packable scalar type is written as, or null.
+inline const scalar_bytes::Type* packable_wire_scalar(std::string_view t) {
+  static constexpr std::pair<std::string_view, std::string_view> kCodes[] = {
+      {"Int8", "i8"},     {"Int16", "i16"},   {"Int32", "i32"},
+      {"Int64", "i64"},   {"Long", "i64"},    {"Byte", "u8"},
+      {"UInt16", "u16"},  {"UInt32", "u32"},  {"Float32", "f32"},
+      {"Float64", "f64"}, {"Float", "f64"},   {"Bool", "bool"},
+  };
+  for (const auto& [name, code] : kCodes)
+    if (t == name) return scalar_bytes::find_type(code);
+  return nullptr;
+}
+
+// Bytes one field takes in the stream: a scalar its width, a Bytes<N> or a
+// FixedString<N> (NUL-padded, C's char[N]) N. Nullopt for a field with no
+// byte-stream form — a Fixed collection, an optional, an enum, a nested record.
+inline std::optional<size_t> packable_wire_size(const PackableField& f) {
+  if (f.layout.is_bytes || f.layout.is_fixed_string) return f.layout.capacity;
+  if (auto* t = packable_wire_scalar(f.type)) return t->width;
+  return std::nullopt;
+}
+// A whole record's, or the first field that has none (in `*bad`).
+inline std::optional<size_t> packable_wire_size(const PackableLayout& l,
+                                                const PackableField** bad) {
+  size_t n = 0;
+  for (const auto& f : l.fields) {
+    auto k = packable_wire_size(f);
+    if (!k) {
+      *bad = &f;
+      return std::nullopt;
+    }
+    n += *k;
+  }
+  return n;
 }
 
 inline size_t packable_class_stride(std::string_view name) {

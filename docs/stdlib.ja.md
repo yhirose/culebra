@@ -3295,6 +3295,57 @@ lines[0].end = lines[0].start  # サブレコードまるごとコピー（memcp
 サブレコードまるごとの代入は**同じ**クラスの別レコードのバイトをコピーする（違えば
 `TypeError`）。個別フィールドの設定はview経由（`outer.inner.field = v`）。
 
+#### バイト列としてのレコード: `String.pack`
+
+`@packable`クラスは、二進のファイルや通信のメッセージの中のレコードを
+表すのにも使える。[`String.pack` / `String.unpack`](language.ja.md#バイナリデータ-stringpack--stringunpack)
+の`type`に渡すと、要素1つがレコード1件になる。フィールドは宣言した順に、
+**詰め物を入れずに**並び、各スカラーは呼び出しの`endian:`の順序で書かれる
+（指定しなければlittle）。これは上のSharedBufferの置き方とは別のものである。
+SharedBufferはフィールドをCと同じ規則で整列させ、機械のバイト順のまま
+置く（isolateの間で共有するメモリのため）。こちらはファイルに載る
+バイト列のためのもので、ファイル形式で半端な位置にあるフィールドも、
+その位置どおりに宣言すればよい。
+
+| フィールド | バイト数 | 書くとき | 読むとき |
+|---|---|---|---|
+| `Int8` … `Int64`、`Byte`、`UInt16`、`UInt32` | 型の幅 | 型の範囲内の`Long`（範囲外は`ValueError`） | `Long` |
+| `Float32`、`Float64` | 4、8 | `Float`か`Long`。`Float32`は`Math.f32`と同じ規則で丸める | `Float` |
+| `Bool` | 1 | `1` / `0` | 0以外は`true` |
+| `Bytes<N>` | `N` | ちょうど`N`バイトのString（違えば`ValueError`） | その`N`バイト |
+| `FixedString<N>` | `N` | `N`バイトまで。残りはNULで埋める（Cの`char[N]`。`N`を超えると`CapacityError`） | 最初のNULの手前まで |
+
+値を入れていない（`nil`の）`Bytes<N>`・`FixedString<N>`フィールドは0の
+バイトとして書く。それ以外の種類（`FixedArray`、`FixedSet`、`FixedMap`、
+optional、enum、入れ子のレコード）にはバイト列の形がなく、そういう
+フィールドを持つクラスを渡すと`TypeError`になる。その部分はスカラーの
+`String.unpack`で読むか、別のレコードに分ける。`pack`にはそのクラスの
+インスタンスを渡す（ほかの値は`TypeError`）。エラーのメッセージには
+レコードの番号とフィールド名が入る。`unpack`はレコードを**`new`を呼ばずに**
+作る。`@packable`のレコードの状態は宣言したフィールドがすべてで、
+そのどれもがバイト列から埋まるからである。返るのはそのクラスの普通の
+インスタンスで、メソッドも使え、後でフィールドに書くときの型の検査も
+効く。`String.pack_size(Class)`はレコード1件のバイト数で、ちょうど1件分
+だけ読むときに使う:
+
+```culebra
+@packable
+class Lump {
+  offset: Int32
+  size: Int32
+  name: FixedString<8>
+}
+let l = Lump()
+l.offset = 12
+l.size = 4096
+l.name = "E1M1"
+let bytes = String.pack(Lump, [l])
+inspect(String.pack_size(Lump))  # => 16
+inspect(bytes.slice(8, 16).bytes().collect())  # => [69, 49, 77, 49, 0, 0, 0, 0]
+let back = String.unpack(Lump, bytes)[0]
+inspect([back.offset, back.size, back.name])  # => [12, 4096, 'E1M1']
+```
+
 ### Shared — 参照共有する immutable 値
 
 `Shared.new(value)`は普通の値（オブジェクト・配列・タプル・セット・スカラの

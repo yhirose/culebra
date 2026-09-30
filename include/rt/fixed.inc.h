@@ -2008,6 +2008,182 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_materialize_value(
   return {TAG_OBJECT, reinterpret_cast<int64_t>(inst)};
 }
 
+// --- @packable records as byte streams (String.pack / String.unpack) ------
+// packable.h decides the form (declaration order, no padding, one byte order
+// per call); these move a class-sugar instance's fields to and from it.
+
+// The @packable class name a value's `__packable__` marker carries — the
+// class object SharedBuffer and String.pack take — or empty for any other.
+inline std::string_view _jit_packable_class_name(JitValue v) {
+  if (v.tag != TAG_OBJECT) return {};
+  auto* cls = reinterpret_cast<JitObject*>(v.data);
+  auto mi = cls->find_slot("__packable__");
+  if (mi == static_cast<size_t>(-1) || cls->slots[mi].value.tag != TAG_STRING)
+    return {};
+  return _str_sv(reinterpret_cast<const char*>(cls->slots[mi].value.data));
+}
+
+// What String.pack/unpack need to know about a record type: the class, its
+// instances' meta, the layout and how many bytes one record takes.
+struct JitRecordType {
+  JitObject* cls;
+  JitObject* meta;
+  std::string_view name;
+  const culebra::PackableLayout* layout;
+  size_t size;
+};
+// Null `cls` when `v` is not a @packable class; a class with a field that has
+// no byte-stream form is an error, named by `fn`.
+inline JitRecordType _jit_record_type(JitValue v, std::string_view fn) {
+  auto name = _jit_packable_class_name(v);
+  if (name.empty()) return {};
+  auto* cls = reinterpret_cast<JitObject*>(v.data);
+  const auto* layout = culebra::lookup_packable_layout(name);
+  if (!layout || !cls->class_meta_of()) return {};
+  const culebra::PackableField* bad = nullptr;
+  auto size = culebra::packable_wire_size(*layout, &bad);
+  if (!size) {
+    throw culebra::CulebraError(
+        "TypeError",
+        culebra::format("{}: {}.{} is a {}, which has no byte-stream form "
+                        "(a scalar, Bytes<N> or FixedString<N> field has).",
+                        fn, name, bad->name, bad->type));
+  }
+  return {cls, cls->class_meta_of(), name, layout, *size};
+}
+
+[[noreturn]] inline void _jit_record_field_error(const char* kind,
+                                                 std::string_view fn, size_t i,
+                                                 const culebra::PackableField& f,
+                                                 std::string_view detail) {
+  throw culebra::CulebraError(
+      kind, culebra::format("{}: record {}, field `{}`: {}", fn, i, f.name, detail));
+}
+
+// Record `rec`'s fields into the `rt.size` bytes at `p`. `rec` must be an
+// instance of the class — the same meta, not just the same name.
+inline void _jit_record_write(uint8_t* p, JitValue rec, const JitRecordType& rt,
+                              bool big, std::string_view fn, size_t i) {
+  namespace sb = culebra::scalar_bytes;
+  auto* o = rec.tag == TAG_OBJECT ? reinterpret_cast<JitObject*>(rec.data)
+                                  : nullptr;
+  if (!o || o->proto() != rt.meta) {
+    const char* got = o && _jit_meta_class_name(o) ? _jit_meta_class_name(o)
+                                                   : _culebra_tag_name(rec.tag);
+    throw culebra::CulebraError(
+        "TypeError", culebra::format("{}: {} takes {} records, got {} at index {}.",
+                                     fn, rt.name, rt.name, got, i));
+  }
+  for (const auto& f : rt.layout->fields) {
+    auto si = o->find_slot(f.name);
+    JitValue v = si == static_cast<size_t>(-1) ? JitValue{TAG_NIL, 0}
+                                               : o->slots[si].value;
+    if (f.layout.is_bytes || f.layout.is_fixed_string) {
+      // Left unset (a declared field with no initializer starts nil): its
+      // zero bytes, as in a fresh SharedBuffer record.
+      if (v.tag == TAG_NIL) {
+        std::memset(p, 0, f.layout.capacity);
+        p += f.layout.capacity;
+        continue;
+      }
+      if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW)
+        _jit_record_field_error(
+            "TypeError", fn, i, f,
+            culebra::format("{} takes a String, got {}.", f.type,
+                            _culebra_tag_name(v.tag)));
+      auto s = _culebra_str_view(v.tag, v.data);
+      const size_t n = f.layout.capacity;
+      if (f.layout.is_bytes && s.size() != n)
+        _jit_record_field_error(
+            "ValueError", fn, i, f,
+            culebra::format("{} takes exactly {} bytes, got {}.", f.type, n,
+                            s.size()));
+      if (s.size() > n)
+        _jit_record_field_error(
+            "CapacityError", fn, i, f,
+            culebra::format("{} holds up to {} bytes, got {}.", f.type, n,
+                            s.size()));
+      if (!s.empty()) std::memcpy(p, s.data(), s.size());
+      std::memset(p + s.size(), 0, n - s.size());  // C's char[N]: NUL-padded
+      p += n;
+      continue;
+    }
+    const sb::Type& t = *culebra::packable_wire_scalar(f.type);
+    std::string_view want = t.kind == sb::Kind::Bool    ? "Bool"
+                            : t.kind == sb::Kind::Float ? "Long or Float"
+                                                        : "Long";
+    auto type_error = [&] {
+      _jit_record_field_error(
+          "TypeError", fn, i, f,
+          culebra::format("{} takes {}, got {}.", f.type, want,
+                          _culebra_tag_name(v.tag)));
+    };
+    switch (t.kind) {
+      case sb::Kind::Bool:
+        if (v.tag != TAG_BOOL) type_error();
+        *p = v.data ? 1 : 0;
+        break;
+      case sb::Kind::Float:
+        if (v.tag == TAG_FLOAT)
+          sb::store_float(p, t, _culebra_float_to_double(v.data), big);
+        else if (v.tag == TAG_LONG)
+          sb::store_float(p, t, static_cast<double>(v.data), big);
+        else
+          type_error();
+        break;
+      default: {
+        if (v.tag != TAG_LONG) type_error();
+        auto [lo, hi] = sb::int_range(t);
+        if (v.data < lo || v.data > hi)
+          _jit_record_field_error(
+              "ValueError", fn, i, f,
+              culebra::format("{} is out of range for {} ({} to {}).", v.data,
+                              f.type, lo, hi));
+        sb::store_bits(p, static_cast<uint64_t>(v.data), t.width, big);
+      }
+    }
+    p += t.width;
+  }
+}
+
+// A new instance holding the record at `p` — built without running `new`: a
+// @packable record's whole state is its declared fields, and every one of
+// them comes from the bytes. The fields go in in declaration order, as the
+// constructor sets them, so the instance's shape is the one `new` builds.
+// A FixedString<N> reads up to its first NUL, C's rule for char[N].
+inline JitValue _jit_record_read(const uint8_t* p, const JitRecordType& rt,
+                                 bool big) {
+  namespace sb = culebra::scalar_bytes;
+  auto* inst = _jit_class_instance_alloc(rt.meta, rt.cls);
+  for (const auto& f : rt.layout->fields) {
+    JitValue v;
+    if (f.layout.is_bytes || f.layout.is_fixed_string) {
+      size_t n = f.layout.capacity;
+      if (f.layout.is_fixed_string) {
+        const void* nul = std::memchr(p, 0, n);
+        if (nul) n = static_cast<size_t>(static_cast<const uint8_t*>(nul) - p);
+      }
+      v = {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(
+                           std::string_view(reinterpret_cast<const char*>(p), n)))};
+      p += f.layout.capacity;
+    } else {
+      const sb::Type& t = *culebra::packable_wire_scalar(f.type);
+      switch (t.kind) {
+        case sb::Kind::Bool: v = {TAG_BOOL, *p != 0}; break;
+        case sb::Kind::Float:
+          v = {TAG_FLOAT, _culebra_double_to_bits(sb::load_float(p, t, big))};
+          break;
+        default: v = {TAG_LONG, sb::load_int(p, t, big)};
+      }
+      p += t.width;
+    }
+    _jit_object_set_declared(inst, f.name.c_str(), /*mut=*/true, v.tag, v.data,
+                             0, 0, /*is_init=*/true,
+                             culebra::field_type_for_annotation(f.type));
+  }
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(inst)};
+}
+
 // Build a range value `{start, end, inclusive, step}` carrying the shared
 // Range meta. Each endpoint arrives tagged — Long or Float, already checked
 // by the caller, or Nil for an open end; `step` is a Long, defaulting to 1.

@@ -3392,6 +3392,55 @@ nests it. Assigning a whole sub-record copies the bytes of another record of
 the **same** class (otherwise `TypeError`); to set individual fields, go
 through the view (`outer.inner.field = v`).
 
+#### Records as bytes: `String.pack`
+
+A `@packable` class also describes a record in a binary file or a network
+message. Handed to [`String.pack` / `String.unpack`](language.md#binary-data-stringpack--stringunpack)
+as the `type`, each element is one record: its fields in declaration order,
+**no padding**, each scalar in the byte order the call's `endian:` names
+(little unless told). This is a separate form from the SharedBuffer layout
+above, which aligns fields the C way and keeps the machine's byte order —
+that one is memory isolates share, this one is bytes a file carries — so a
+field at an odd offset in a file format is declared where it sits.
+
+| Field | Bytes | Written | Read back |
+|---|---|---|---|
+| `Int8` … `Int64`, `Byte`, `UInt16`, `UInt32` | its width | a `Long` in the type's range (`ValueError` otherwise) | `Long` |
+| `Float32`, `Float64` | 4, 8 | a `Float` or `Long`; `Float32` rounds as `Math.f32` does | `Float` |
+| `Bool` | 1 | `1` / `0` | nonzero is `true` |
+| `Bytes<N>` | `N` | a String of exactly `N` bytes (`ValueError` otherwise) | the `N` bytes |
+| `FixedString<N>` | `N` | up to `N` bytes, NUL-padded — C's `char[N]` (`CapacityError` past `N`) | up to the first NUL |
+
+A `Bytes<N>` or `FixedString<N>` field left unset (`nil`) is written as
+zeros. The other kinds — `FixedArray`, `FixedSet`, `FixedMap`, an optional,
+an enum, a nested record — have no byte-stream form, and naming a class
+with one is a `TypeError`: read those parts with a scalar `String.unpack`,
+or as a record of their own. `pack` takes instances of that class (another
+value is a `TypeError`), and its errors name the record and the field.
+`unpack` builds each record **without running `new`** — a `@packable`
+record's state is its declared fields, and every one of them comes from the
+bytes — so the result is an ordinary instance of the class, with its
+methods and its field types checked on later writes.
+`String.pack_size(Class)` is one record's size, for reading exactly one:
+
+```culebra
+@packable
+class Lump {
+  offset: Int32
+  size: Int32
+  name: FixedString<8>
+}
+let l = Lump()
+l.offset = 12
+l.size = 4096
+l.name = "E1M1"
+let bytes = String.pack(Lump, [l])
+inspect(String.pack_size(Lump))  # => 16
+inspect(bytes.slice(8, 16).bytes().collect())  # => [69, 49, 77, 49, 0, 0, 0, 0]
+let back = String.unpack(Lump, bytes)[0]
+inspect([back.offset, back.size, back.name])  # => [12, 4096, 'E1M1']
+```
+
 ### Shared — immutable values shared by reference
 
 `Shared.new(value)` freezes an ordinary value — any nesting of objects,

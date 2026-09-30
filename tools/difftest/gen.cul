@@ -2856,5 +2856,36 @@ let into_cases = [
 for c in into_cases {
   case("packinto|" + c, c)
 }
+# @packable records: a class with one field of each byte-stream kind, built
+# without `new` on the way back. The decl lives in the thunk (fresh per case).
+let rec_pre = '@packable class R { a: UInt16  b: Int8  c: Bytes<2>  d: FixedString<3>  e: Float32  f: Bool }; ' +
+  'fn r(a, b, c, d, e, f) { let rr = R(); rr.a = a; rr.b = b; rr.c = c; rr.d = d; rr.e = e; rr.f = f; rr }; '
+let rec_values = ['r(1, -1, "ab", "xy", 0.5, true)', 'r(65535, 127, "\t\t", "", 1.0e40, false)',
+                  'r(65536, 0, "ab", "", 0.0, true)', 'r(0, -129, "ab", "", 0.0, true)',
+                  'r(0, 0, "abc", "", 0.0, true)', 'r(0, 0, "ab", "long", 0.0, true)',
+                  'r(0, 0, 5, "", 0.0, true)', 'r(0, 0, "ab", "", "x", true)',
+                  'r(0, 0, "ab", "", 0, 1)', 'R()', '5', '[]']
+for v in rec_values {
+  for e in ['', ', endian: "big"'] {
+    case("packrec|" + v + e,
+         rec_pre + 'String.pack(R, [' + v + ']' + e + ').bytes().collect()')
+    case("packrec-rt|" + v + e,
+         rec_pre + 'let s = String.pack(R, [' + v + ', R()]' + e + '); ' +
+         'String.unpack(R, s' + e + ').map(|x| [x.a, x.b, x.c, x.d, x.e, x.f])')
+  }
+}
+let rec_reads = ['String.pack_size(R)', 'String.unpack(R, "")',
+                 'String.unpack(R, "abcdefghijklm", count: 1)[0].d',
+                 'String.unpack(R, "abcdefghijklm", at: 1)', 'String.unpack(R, "abc")',
+                 'let xs = [1, "s"]; String.unpack(R, String.pack(R, [R(), R()]), into: xs); class_of(xs[1]) == R',
+                 'let x = String.unpack(R, String.pack(R, [R()]))[0]; x.a = "no"',
+                 'let x = String.unpack(R, String.pack(R, [R()]))[0]; x.keys() == R().keys()',
+                 'class P { x = 1 }; String.pack(P, [])',
+                 '@packable class Q { xs: FixedArray<Int32, 2> }; String.pack_size(Q)',
+                 '@packable class N { v: Int32  new(v) { self.v = v } }; String.unpack(N, String.pack(N, [N(-7)]))[0].v',
+                 'String.pack(R, [R(), 1])']
+for c in rec_reads {
+  case("packrec-read|" + c, rec_pre + c)
+}
 
 print(out.join("\n"))

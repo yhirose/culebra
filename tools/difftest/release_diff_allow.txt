@@ -43,6 +43,9 @@ bareread|*|sentences
 pack|*
 unpack|*
 packinto|*
+# ...and a @packable class as the type (a record per element), with the
+# UInt16 field type the baseline's @packable does not know.
+packrec*
 
 # `Math.f32` joined the namespace after v0.4.0, so `Math` has one more member
 # than the baseline binary's: every case that asks a namespace object for its

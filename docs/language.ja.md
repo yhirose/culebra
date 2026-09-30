@@ -4619,8 +4619,9 @@ matcher一族`assert_true` / `assert_eq`等）は
 | `String.from_code_point(cp: Long) -> String`    | `code_points()`の逆演算: Unicodeスカラー値1つを受け取り1文字の`String`を返す。`cp`が`U+10FFFF`超過またはサロゲート範囲`U+D800`–`U+DFFF`の場合`ValueError`（`\u`/`\U`リテラルエスケープ §4.1がパース時に拒否するのと同じ境界） |
 | `String.from_code_points(cps: Array) -> String` | `code_points()`の複数形の逆演算: Unicodeスカラー値の`Array`を受け取り`String`を返す。各要素は`from_code_point`と同じゲートを通るので`String.from_code_points([cp]) == String.from_code_point(cp)`。要素が`Long`でなければ`TypeError`、範囲外なら`ValueError` |
 | `String.from_bytes(bytes: Array) -> String`     | `bytes()`の逆演算: 生バイト値（`0`–`255`）の`Array`を受け取り`String`を返す。**UTF-8の検証は行わず**、不正入力でも例外を投げない: culebraの`String`は不正なUTF-8を許容する（`iter()`と同様）ため、不正なバイト列を含むあらゆる`String`について`String.from_bytes(s.bytes().collect()) == s`が成立する。要素が`Long`でなければ`TypeError`、範囲外（`0`–`255`の外）なら`ValueError` |
-| `String.pack(type: String, values: Array, endian: String = "little") -> String` | `values`の各要素を`type`の固定幅の値1つとして、順に並べたバイト列。二進のファイル形式や通信で使うバイト列を作る。下の[バイナリデータ](#バイナリデータ-stringpack--stringunpack)を参照 |
-| `String.unpack(type: String, data: StringLike, at: Long = 0, count: Long? = nil, into: Array? = nil, endian: String = "little") -> Array` | `pack`の逆演算: `data`のバイト位置`at`から`type`の値を読む。読む個数は`count`、`into`の要素数、どちらも無ければ残りのバイト全部 |
+| `String.pack(type: String \| Class, values: Array, endian: String = "little") -> String` | `values`の各要素を`type`の固定幅の値1つ（`@packable`クラスならレコード1件）として、順に並べたバイト列。二進のファイル形式や通信で使うバイト列を作る。下の[バイナリデータ](#バイナリデータ-stringpack--stringunpack)を参照 |
+| `String.unpack(type: String \| Class, data: StringLike, at: Long = 0, count: Long? = nil, into: Array? = nil, endian: String = "little") -> Array` | `pack`の逆演算: `data`のバイト位置`at`から`type`の要素を読む。読む個数は`count`、`into`の要素数、どちらも無ければ残りのバイト全部 |
+| `String.pack_size(type: String \| Class) -> Long` | `type`の要素1つが何バイトか。`"u16"`なら`2`、レコードならフィールドの幅の合計 |
 
 ```culebra
 # 'é' は UTF-8 で 2 バイトなので 'café' は 5 バイト
@@ -4677,6 +4678,27 @@ inspect(String.unpack("i16", data, at: 4, count: n))  # => [-1, 0, 1]
 let samples = [0, 0, 0]
 String.unpack("i16", data, at: 4, into: samples)
 inspect(samples)  # => [-1, 0, 1]
+```
+
+`type`には`@packable`クラスも渡せる。そのときは要素1つがレコード1件になり、
+フィールドを宣言した順に、詰め物を入れずに、`endian:`の順序で並べる。
+ファイルのヘッダ、通信のパケット、表の1行などに使う。`unpack`はレコードを
+`new`を呼ばずに作る。レコードの状態はフィールドがすべてだからである。
+レコードに持たせられるフィールドの種類と、それぞれの読み書きのされ方は、
+標準ライブラリの[バイト列としてのレコード](stdlib.ja.md#バイト列としてのレコード-stringpack)を参照。
+`String.pack_size(type)`は要素1つのバイト数を返す。ファイルやソケットから
+ちょうど1件分だけ読むときに使う。
+
+```culebra
+@packable
+class Idx {
+  magic: UInt32
+  count: UInt32
+}
+let raw = String.pack("u32", [2049, 60000], endian: "big")
+let h = String.unpack(Idx, raw, count: 1, endian: "big")[0]
+inspect([h.magic, h.count])  # => [2049, 60000]
+inspect(String.pack_size(Idx))  # => 8
 ```
 
 #### StringView

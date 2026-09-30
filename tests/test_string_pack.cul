@@ -15,10 +15,7 @@ assert_eq(
   String.pack("u16", [0x1234], endian: "big").bytes().collect(),
   [0x12, 0x34],
 )
-assert_eq(
-  String.pack("u32", [0x01020304]).bytes().collect(),
-  [4, 3, 2, 1],
-)
+assert_eq(String.pack("u32", [0x01020304]).bytes().collect(), [4, 3, 2, 1])
 assert_eq(String.pack("i16", [-2]).bytes().collect(), [0xFE, 0xFF])
 assert_eq(String.pack("i64", [-1]).bytes().collect(), repeat(8, 0xFF))
 assert_eq(String.pack("bool", [true, false]).bytes().collect(), [1, 0])
@@ -52,16 +49,16 @@ for (t, vs) in cases {
 
 # --- f32 rounds the way Math.f32 does; a Long is accepted as a number ---
 let fs = [0.1, 16777217, -3.5, 1.0e40, -1.0e40]
-assert_eq(
-  String.unpack("f32", String.pack("f32", fs)),
-  fs.map(|x| Math.f32(x)),
-)
+assert_eq(String.unpack("f32", String.pack("f32", fs)), fs.map(|x| Math.f32(x)))
 assert_eq(String.unpack("f64", String.pack("f64", [3])), [3.0])
 let nan = String.unpack("f64", String.pack("f64", [Math.nan]))[0]
 assert_true(nan != nan)
 
 # --- a nonzero byte reads back as true ---
-assert_eq(String.unpack("bool", String.from_bytes([0, 1, 2])), [false, true, true])
+assert_eq(
+  String.unpack("bool", String.from_bytes([0, 1, 2])),
+  [false, true, true],
+)
 
 # --- at / count: a cursor over a record ---
 let rec = String.pack("u32", [7]) + String.pack("u16", [1, 2, 3])
@@ -158,3 +155,167 @@ assert_throws("TypeError", || String.unpack("u8", "ab", into: "x"))
 let keep = [1, 2, 3]
 err(|| String.unpack("u16", "ab", into: keep))
 assert_eq(keep, [1, 2, 3])
+
+# --- @packable records: declaration order, no padding, one byte order ---
+@packable
+class Hdr {
+  magic: Bytes<2> = "BM"
+  size: UInt32  # at offset 2: unaligned, as in a BMP file header
+  flags: UInt16
+  scale: Float32
+  ok: Bool
+  name: FixedString<6>
+}
+assert_eq(String.pack_size(Hdr), 2 + 4 + 2 + 4 + 1 + 6)
+assert_eq(String.pack_size("i64"), 8)
+let hd = Hdr()
+hd.size = 0x01020304
+hd.flags = 0xBEEF
+hd.scale = 0.5
+hd.ok = true
+hd.name = "ab"
+let hb = String.pack(Hdr, [hd])
+assert_eq(
+  hb.bytes().collect(),
+  [66, 77, 4, 3, 2, 1, 0xEF, 0xBE, 0, 0, 0, 0x3F, 1, 97, 98, 0, 0, 0, 0],
+)
+assert_eq(
+  String.pack(Hdr, [hd], endian: "big").bytes().collect().slice(2, 8),
+  [1, 2, 3, 4, 0xBE, 0xEF],
+)
+let hr = String.unpack(Hdr, hb, count: 1)[0]
+assert_true(class_of(hr) == Hdr)
+assert_eq(hr.keys(), hd.keys())
+assert_eq(
+  [hr.magic, hr.size, hr.flags, hr.scale, hr.ok, hr.name],
+  ["BM", 0x01020304, 0xBEEF, 0.5, true, "ab"],
+)
+assert_eq(
+  String.unpack(
+    Hdr,
+    String.pack(Hdr, [hd], endian: "big"),
+    endian: "big",
+  )[0].size,
+  0x01020304,
+)
+# a record read back keeps its declared field types and stays mutable
+hr.flags = 1
+assert_eq(hr.flags, 1)
+assert_throws("TypeError", fn () {
+  hr.flags = "x"
+})
+# a Bytes / FixedString field left unset (nil) writes its zero bytes
+assert_eq(
+  String.pack(Hdr, [Hdr()]).slice(13, 19).bytes().collect(),
+  repeat(6, 0),
+)
+# FixedString<N> reads up to its first NUL, as C's char[N] does
+let cstr = String.pack(Hdr, [Hdr()]).slice(0, 13) +
+  String.from_bytes([120, 0, 121, 122, 0, 0])
+assert_eq(String.unpack(Hdr, cstr)[0].name, "x")
+
+# arrays of records, and into:
+@packable
+class Pt {
+  x: Int16
+  y: Int16
+}
+fn pt(x, y) {
+  let p = Pt()
+  p.x = x
+  p.y = y
+  p
+}
+let pts = String.pack(Pt, [pt(1, -2), pt(3, 4), pt(-5, 6)])
+assert_eq(pts.size(), 12)
+assert_eq(
+  String.unpack(Pt, pts).map(|p| [p.x, p.y]),
+  [[1, -2], [3, 4], [-5, 6]],
+)
+assert_eq(String.unpack(Pt, pts, at: 4, count: 1)[0].x, 3)
+let slots = [nil, 0, 'old']
+String.unpack(Pt, pts, into: slots)
+assert_eq(slots.map(|p| p.y), [-2, 4, 6])
+
+# `new` is not run: a record's whole state comes from its bytes
+mut news = 0
+@packable
+class Counted {
+  v: Int32
+  new(v) {
+    news += 1
+    self.v = v
+  }
+}
+let cb = String.pack(Counted, [Counted(7), Counted(8)])
+assert_eq(news, 2)
+assert_eq(String.unpack(Counted, cb).map(|c| c.v), [7, 8])
+assert_eq(news, 2)
+
+# a record's `drop` runs for one read back, as for one built by `new`
+mut drops = 0
+@packable
+class Dropped {
+  v: Byte
+  drop() {
+    drops += 1
+  }
+}
+fn read_dropped() {
+  String.unpack(Dropped, String.from_bytes([1, 2, 3])).size()
+}
+assert_eq(read_dropped(), 3)
+assert_eq(drops, 3)
+
+# errors name the record and the field
+fn hdr_with(f) {
+  let h = Hdr()
+  f(h)
+  h
+}
+assert_eq(err(|| String.pack(Hdr, [hd, hdr_with(fn (h) {
+  h.size = -1
+})])), "ValueError: String.pack: record 1, field `size`: -1 is out of range for UInt32 (0 to 4294967295).")
+assert_eq(err(|| String.pack(Hdr, [hdr_with(fn (h) {
+  h.magic = "B"
+})])), "ValueError: String.pack: record 0, field `magic`: Bytes<2> takes exactly 2 bytes, got 1.")
+assert_eq(err(|| String.pack(Hdr, [hdr_with(fn (h) {
+  h.name = "toolong"
+})])), "CapacityError: String.pack: record 0, field `name`: FixedString<6> holds up to 6 bytes, got 7.")
+assert_eq(err(|| String.pack(Hdr, [hdr_with(fn (h) {
+  h.magic = 5
+})])), "TypeError: String.pack: record 0, field `magic`: Bytes<2> takes a String, got Long.")
+assert_eq(
+  err(|| String.pack(Pt, [pt(1, 2), hd])),
+  "TypeError: String.pack: Pt takes Pt records, got Hdr at index 1.",
+)
+@packable
+class WithArray {
+  xs: FixedArray<Int32, 4>
+}
+assert_eq(
+  err(|| String.pack_size(WithArray)),
+  "TypeError: String.pack_size: WithArray.xs is a FixedArray<Int32, 4>, which has no byte-stream form (a scalar, Bytes<N> or FixedString<N> field has).",
+)
+class NotPackable {
+  x = 1
+}
+assert_eq(
+  err(|| String.pack(NotPackable, [])),
+  "TypeError: String.pack: type must be a scalar type's name or a @packable class, got Object.",
+)
+assert_eq(
+  err(|| String.unpack(Pt, "abcde")),
+  "ValueError: String.unpack: the 5 bytes from 0 are not a whole number of Pt (4 bytes each).",
+)
+
+# UInt16 / UInt32 are @packable scalars in a SharedBuffer too
+@packable
+class Wide {
+  a: UInt16
+  b: UInt32
+}
+let wb = SharedBuffer.new(1, Wide)
+wb[0].a = 65535
+wb[0].b = 4294967295
+assert_eq([wb[0].a, wb[0].b], [65535, 4294967295])
