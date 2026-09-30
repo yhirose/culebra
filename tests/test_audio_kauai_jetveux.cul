@@ -1,15 +1,16 @@
-# Je te veux (Erik Satie, 1897) against its score, note for note. The
-# tests/kauai/*.expect files were written from the OpenScore Lieder score
-# (CC0) alone, reading no Kauai, so a mistake in Audio.Kauai cannot reach
-# them: every note as [MIDI pitch, start, length], in quarter notes from the
-# song's start, and where the score rolls a chord or has a grace note.
+# Je te veux (Erik Satie, 1897), the songs in examples/kauai/songs, against
+# its score note for note. The tests/kauai/*.expect files were written from the
+# OpenScore Lieder score (CC0) alone, reading no Kauai, so a mistake in
+# Audio.Kauai cannot reach them: every note as [MIDI pitch, start, length],
+# in quarter notes from the song's start, and where the score rolls a chord
+# or has a grace note.
 #
 # The songs are played at one tempo, their tempo directions taken out, so
 # that seconds map to quarters. Times compare in sixty-fourths (a sixteenth
 # of a quarter), the finest the song writes.
 
-let DIR = "tests/kauai"
-let read = |name| FS.read(FS.join(DIR, name))
+let read = |name| FS.read(FS.join("tests/kauai", name))
+let song_file = |name| FS.read(FS.join("examples/kauai/songs", name))
 let one_tempo = |text| text
   .replace("\\rit 104 ", "")
   .replace("\\tempo 114 ", "")
@@ -27,17 +28,12 @@ let hosted = |text| Audio.Kauai.new(
   voices: {ep: |pitch, params| nil},
 )
 
-# The voice, as Appendix C of the spec prints the song, and as the piano
-# version writes it.
-let spec_blocks = FS.read("docs/kauai/language.md").split("\n```kauai\n")
-let spec_song = spec_blocks
-  .slice(1, spec_blocks.size())
-  .map(|p| p.split("\n```\n")[0].to_string())
-  .find(|b| b.contains("\nsong JeTeVeux") && b.contains("\nsection Intro"))
+# The voice, as the song Appendix C of the spec prints writes it, and as the
+# piano version does.
 let voice = JSON.parse(read("jetveux.expect")).notes.map(written)
 assert_eq(voice.size(), 273)
-assert_eq(played(hosted(spec_song), "Singer"), voice)
-let piano_song = hosted(read("jetveux_piano.kau"))
+assert_eq(played(hosted(song_file("jetveux.kau")), "Singer"), voice)
+let piano_song = hosted(song_file("jetveux_piano.kau"))
 assert_eq(played(piano_song, "Singer"), voice)
 
 # Every piano note, as played: a rolled chord's notes a sixty-fourth apart

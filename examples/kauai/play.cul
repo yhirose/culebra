@@ -1,6 +1,12 @@
 # Play a song written in Kauai (docs/kauai/language.md):
 #
-#   culebra examples/kauai/play.cul song.kau
+#   culebra examples/kauai/play.cul examples/kauai/songs/first.kau
+#
+# songs/ holds the spec's first song (first.kau), a string trio with its
+# parts written out (trio.kau), a tour of the notation (features.kau), and Je
+# te veux (Erik Satie, 1897) as the spec prints it (jetveux.kau) and with its
+# piano written out (jetveux_piano.kau); retro-run's music is in
+# examples/games/retro-run/assets.
 #
 # The song is read and checked, then handed to the runtime whole, which keeps
 # time on the audio stream's own clock: this script only waits for the end
@@ -60,7 +66,11 @@ fn electric_piano(pitch, bright) {
     let index = bright * (1.4 * Math.exp(-t * 6.0) + 0.25)
     let tines = Math.sin(w * i + index * Math.sin(w * i)) +
       Math.sin(w2 * i + index * Math.sin(w2 * i))
-    tines * 0.25 * Math.exp(-t * decay) * Math.min(1.0, i / 40.0) * Math.min(1.0, (n - i) / 800.0)
+    tines *
+      0.25 *
+      Math.exp(-t * decay) *
+      Math.min(1.0, i / 40.0) *
+      Math.min(1.0, (n - i) / 800.0)
   })
 }
 

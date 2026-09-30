@@ -1,0 +1,29 @@
+band Trio {
+  voice Violin  pulse     plays melody              vol 20
+  voice Viola   pulse2    plays part Alto           vol 16
+  voice Cello   triangle  plays part Cello          vol 24
+}
+
+song Piece {
+  tempo 90
+  band Trio
+  melody in C5..B5
+  part Alto in G4..F#5
+  part Cello in C3..B3
+
+  Theme
+}
+
+section Theme {
+  C             e4 g c'2
+    Alto:       c2 e
+  G7            d'4 c' g2
+    Alto:       b2 d
+  C             e2 c
+
+  part Cello {
+    c1
+    g,1
+    .
+  }
+}

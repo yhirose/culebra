@@ -1,0 +1,139 @@
+# Je te veux (Erik Satie, 1897): the voice as written, from the OpenScore
+# Lieder score (CC0); the chords are a reading of the piano part.
+
+voicings {
+  7b5     0 4 6 10
+  9sus4   0 5 7 10 14
+}
+
+band Salon {
+  voice Singer  pulse               plays melody                           duty 1/2  vol 22  env 2 2 8
+  voice Bass    triangle            plays roots in E1..D#2                           vol 32  env 0 2 6
+  voice Piano   host Ep bright=0.9  plays chords from E3  plays part Fill  poly      vol 30%
+}
+
+song JeTeVeux {
+  tempo 124
+  meter 3/4
+  key C
+  band Salon
+  groove Valse
+  melody in D4..C#5
+  part Fill in A3..G#4
+
+  Intro
+  Refrain  ending 1
+  Couplet
+  Refrain  ending 2
+  Couplet
+  Refrain  ending 3
+  Coda
+}
+
+groove Valse {
+  Bass   1 - -
+  Piano  . x x
+}
+
+section Intro {
+  N.C.          r2.
+    Fill:       r4 e g
+  G9            r2.
+    Fill:       <a d>2.
+  C6/G          r2.
+    Fill:       <a c e a'>2 <e, e>4
+  G7            r2.
+    Fill:       <g,~ b~ e g~>2.
+                r r2
+    Fill:       <g, b d g>4 e g
+}
+
+section Refrain {
+  pickup  \pp (e g
+  Cadd9         \tempo d'2.
+  C/G           c2 e'4
+  Cmaj7         b2.
+  C6/G          a2.)
+  Cmaj7         (b2.
+  C6/G          a2 e4
+  G7/D          b2.~
+  G6            b) (d e
+  G7/D          g2.~
+  G6            g) (d e
+  Dm6           a2.~
+  G6            a) (d e
+  G7/D          g2 f4~
+  G7            f g2
+  C             e2.
+  Em7/B         d) (e g
+  A7sus4        d'2.
+  C/G           c2 e'4
+  Cmaj7         b2.
+  C6/G          a2) r4
+  Cmaj7         (b2.
+  C6/G          a2 g4
+  Dm7           a2.
+  Dm/F          d) (f g
+  G7 G7 C/E     \cresc a b c \!
+  Dm/F Em/G Dm7 d' e' f'
+  C/E C/G Am    g' e' c
+  F#m7b5        a c e'
+  C/G C/G F/A   \dim g2 f4) \!
+  G7/F          (e d2
+  ending 1 {
+    C             c,2.~
+    D7 D7 C/E     c,) (b c)
+  }
+  ending 2 {
+    C             c,2.~
+    D7 D7 C/E     c,) (b c)
+  }
+  ending 3 {
+    C             c,2.~
+                  c,) r r
+  }
+}
+
+section Couplet key G {
+  melody in E4..D#5
+  Am6           \p (e2.~
+  D7            e) (e f#
+  G             d,2.~
+  D7            d,) \cresc (f# g \!
+  D7/A          d2 d4~
+  D7            d d2
+  G6            \dim e'2. \!
+  D7            d) (b c
+  Am6           e2.~
+  D7            e) (e f#
+  G             d,2.~
+  G/D           d,) (b g
+  F#7           \cresc f#2 f#4~ \!
+  F#7/C#        f# f#2
+  Bm/D          \dim b2. \!
+  Cmaj7         d) (b c
+  Am6           e2.~
+  D7            e) (e f#
+  G             d,2.~
+  D7            d,) \cresc (f# g \!
+  D7/A          d2 d4~
+  D7            d d2
+  Gmaj7         \dim f#'2. \!
+  D7            e') (d b
+  Am6           e2.~
+  D7            e) (e f#
+  G             d,2.~
+  D7            d,) (g f#
+  Am7           e \cresc g c
+  Ab7b5         \rit 104 d2 \! d4
+  G G9sus4 G6   \dim g'2. \!
+  G7            g) r2
+}
+
+section Coda {
+  Em            \tempo 114 r2.
+  Dm7/F         r2.
+  G7/D          r2.
+  C             r2.
+                r2.
+}

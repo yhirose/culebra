@@ -1,0 +1,30 @@
+band Duo {
+  voice Tune  pulse     plays melody            vol 20
+  voice Bass  triangle  plays roots in E2..D#3  vol 30
+}
+
+song Features {
+  tempo 100
+  band Duo
+  melody in C5..B5
+
+  Intro
+  Test
+}
+
+groove Test {
+  Bass  1 - - -
+}
+
+section Intro {
+  N.C.  r1
+}
+
+section Test {
+  pickup  \pp (e8 f
+  C       g4) 3[c8 d e] .f .g !a -b
+  F       (a8 g f e) \cresc d2
+  G7      g4 ^g g \! r
+  N.C.    \rit 80 c2 \f c
+  C       \tempo c1
+}

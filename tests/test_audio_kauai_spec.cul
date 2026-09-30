@@ -1,7 +1,7 @@
 # Every ```kauai block of the Kauai spec (docs/kauai/language.md) reads and
-# plays, and the Japanese spec shows the same blocks. A block that is not a
-# whole song is played in the smallest song around it; the chord table of
-# Appendix A voices every spelling as the table says.
+# plays, and the Japanese spec and examples/kauai/songs show the same songs. A
+# block that is not a whole song is played in the smallest song around it;
+# the chord table of Appendix A voices every spelling as the table says.
 
 let lines = |xs| xs.join("\n")
 
@@ -13,6 +13,9 @@ fn blocks_of(path) {
 let SPEC = "docs/kauai/language.md"
 let blocks = blocks_of(SPEC)
 assert_eq(blocks_of("docs/kauai/language.ja.md"), blocks)
+# The first song of section 2, and Je te veux as Appendix C prints it.
+assert_eq(FS.read("examples/kauai/songs/first.kau"), blocks[0] + "\n")
+assert_eq(FS.read("examples/kauai/songs/jetveux.kau"), blocks[-1] + "\n")
 
 let words_of = |l| l.trim().split_whitespace().map(|w| w.to_string())
 
@@ -260,3 +263,13 @@ for row in appendix.split("\n").map(|l| l.to_string().trim()).filter(|l| l.start
 }
 assert_eq(wrong, [])
 assert_eq(spellings, 70)
+
+# The songs of examples/kauai/songs read and play as the spec now has it.
+let examples = FS.glob("examples/kauai/songs/*.kau")
+assert_eq(
+  examples.map(FS.basename),
+  ["features.kau", "first.kau", "jetveux.kau", "jetveux_piano.kau", "trio.kau"],
+)
+for path in examples {
+  assert_true(song_of(FS.read(path)).events().size() > 0)
+}

@@ -1,0 +1,24 @@
+band Duo {
+  voice Tune  pulse     plays melody            vol 20
+  voice Bass  triangle  plays roots in E2..D#3  vol 30
+}
+
+song First {
+  tempo 100
+  band Duo
+  groove Walk
+  melody in C5..B5
+
+  Verse x2
+}
+
+groove Walk {
+  Bass  1 - 5 -
+}
+
+section Verse {
+  C     e4 g c'2
+        d'4 c' g2
+  F G   a4 f g d
+  C     c1
+}
