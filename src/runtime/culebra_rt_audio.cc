@@ -23,6 +23,7 @@
 #include <memory>
 #include <mutex>
 #include <numbers>
+#include <span>
 #include <string_view>
 #include <thread>
 #include <unordered_map>
@@ -196,7 +197,7 @@ struct PlayingScore {
 };
 struct Sampler {
   int64_t owner = 0;
-  const std::vector<float>* pcm = nullptr;  // the owner's
+  std::span<const float> pcm;  // the owner's
   size_t pos = 0;
   double gain = 0;
 };
@@ -237,7 +238,7 @@ bool advance_score(PlayingScore& ps, int64_t p, Note* voices) {
         voices[e.channel] = n;
       } else {
         if (g_samplers.size() == kMaxSamplers) g_samplers.erase(g_samplers.begin());
-        g_samplers.push_back(Sampler{ps.id, e.pcm.get(), 0, e.gain * v});
+        g_samplers.push_back(Sampler{ps.id, *e.pcm, 0, e.gain * v});
       }
     }
     if (p < ps.origin + s.length) return true;
@@ -372,9 +373,9 @@ void tone_callback(void* buffer_data, unsigned int frames) {
     std::erase_if(g_playing, [&](PlayingScore& ps) { return !advance_score(ps, p, g_voice); });
     double mixed = 0.0;
     for (auto& s : g_samplers) {
-      if (s.pos < s.pcm->size()) mixed += (*s.pcm)[s.pos++] * s.gain;
+      if (s.pos < s.pcm.size()) mixed += s.pcm[s.pos++] * s.gain;
     }
-    std::erase_if(g_samplers, [](const Sampler& s) { return s.pos >= s.pcm->size(); });
+    std::erase_if(g_samplers, [](const Sampler& s) { return s.pos >= s.pcm.size(); });
     for (int c = 0; c < 5; c++) {
       Note& n = g_voice[c];
       if (!n.active || n.elapsed >= n.total) {
