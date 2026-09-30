@@ -1202,6 +1202,7 @@ inline void _jit_gc_enumerate_children(void* obj, uint8_t tag,
         out.push_back(o->proto());
         if (o->cls) out.push_back(o->cls);
       }
+      if (auto* meta = o->class_meta_of()) out.push_back(meta);
       _jit_view_cache_each(o, [&](JitValue& v) { _gc_push_value(out, v); });
       break;
     }

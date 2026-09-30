@@ -268,6 +268,8 @@ culebra_runtime_owned_scope_exit(int64_t mark_arg) {
             self(JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(o->cls)}, id,
                  self);
         }
+        if (auto* meta = o->class_meta_of())
+          self(JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(meta)}, id, self);
         break;
       }
       case TAG_ARRAY:
@@ -461,6 +463,11 @@ inline void _culebra_value_release_node(int8_t tag, int64_t data) {
           if (cls)
             _culebra_value_release_impl(GC_TAG_OBJECT,
                                          reinterpret_cast<int64_t>(cls));
+        }
+        if (auto* meta = o->class_meta_of()) {
+          o->instance_meta = nullptr;
+          _culebra_value_release_impl(GC_TAG_OBJECT,
+                                       reinterpret_cast<int64_t>(meta));
         }
         for (auto& entry : o->slots) {
           _culebra_value_release_impl(entry.value.tag, entry.value.data);

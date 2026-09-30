@@ -563,24 +563,36 @@ struct JitObject {
   // A declared enum's object: `enum_ref` is its weak handle, which it clears
   // as it is freed (_jit_enum_forget). Never GEP'd.
   bool is_enum = false;
-  // One trailing pointer, five exclusive roles: a packed view's cache of the
+  // One trailing pointer, six exclusive roles: a packed view's cache of the
   // heap values its field reads minted (`is_packed_view`, see JitViewCache), a
   // declared enum's weak handle (`is_enum`, see JitEnumRef), a builtin
   // namespace's name (`is_namespace`), the class object a class-sugar
-  // instance (the only kind with a `proto`) was built by, or a class meta's
+  // instance (the only kind with a `proto`) was built by, a class object's
+  // instance meta (`is_class`, see class_meta_of), or a class meta's
   // special-method table
   // (`is_class_meta`, see Special) — owned by the meta and freed with it. The
   // instance holds a +1 on its class, released with it, so a method can name
   // the class through its receiver after the declaring scope is gone
-  // (culebra_runtime_class_self); sharing the slot is what keeps JitObject
-  // inside its 128-byte slab class. Never GEP'd.
+  // (culebra_runtime_class_self); a class object holds one on its meta the
+  // same way. Sharing the slot is what keeps JitObject inside its 128-byte
+  // slab class. Never GEP'd.
   union {
     const char* ns_name = nullptr;
     JitObject* cls;
+    JitObject* instance_meta;
     JitSpecialTable* specials;
     JitEnumRef* enum_ref;
     JitViewCache* view_cache;
   };
+
+  // The meta a class object's instances share, or null: set by
+  // culebra_runtime_mark_class for a declared class, and absent on the
+  // wrapped native classes, which build no class-sugar instances. What lets a
+  // runtime helper build an instance without running `new` (a @packable
+  // record read back from its bytes).
+  JitObject* class_meta_of() const {
+    return is_class && !is_namespace && !proto() ? instance_meta : nullptr;
+  }
 
   // --- Shape-based property access helpers ---
 

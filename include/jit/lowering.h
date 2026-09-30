@@ -4342,9 +4342,11 @@ struct Lowering {
           auto o = j.emit_call(
               j.module_->getOrInsertFunction(rt::object_new, ptrTy), {},
               "vm.class.ns");
-          j.emit_call(j.module_->getOrInsertFunction(rt::mark_class,
-                                                     b.getVoidTy(), ptrTy),
-                      {o});
+          auto meta = b.CreateIntToPtr(j.extract_data(load_slot(in.b)), ptrTy);
+          j.emit_call(j.module_->getOrInsertFunction(
+                          rt::mark_class, b.getVoidTy(), ptrTy, ptrTy),
+                      {o, meta});
+          b.CreateStore(j.make_nil(), slots[in.b]);
           b.CreateStore(j.make_object(o), slots[in.a]);
           break;
         }

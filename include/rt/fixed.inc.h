@@ -1698,11 +1698,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_class_call_method(
 }
 
 // Flag a freshly built class namespace object as callable — `C(args)`
-// dispatches to its `new` (see culebra_runtime_class_new_method). Emitted by
-// compile_class_decl; mirrors interp's `ObjectValue::is_class = true`.
+// dispatches to its `new` (see culebra_runtime_class_new_method) — and hand
+// it the meta its instances share, absorbing that +1 (JitObject::
+// class_meta_of). Emitted by compile_class_decl.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_mark_class(
-    JitObject* o) {
+    JitObject* o, JitObject* meta) {
   o->is_class = true;
+  o->instance_meta = meta;
 }
 
 // `C(args)` construction: returns the class object's `new` constructor as a
@@ -1876,32 +1878,40 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_run_field_init(
 // balance the matching release in the Object destructor. `cls_tag`/`cls_data`
 // is the constructor's receiver — the class object, when the call came
 // through one — retained the same way (JitObject::cls).
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
-    const char* class_name, JitObject* class_meta, int8_t cls_tag,
-    int64_t cls_data, int8_t finit_tag, int64_t finit_data, int8_t body_tag,
-    int64_t body_data, int64_t n_args, JitValue* args) {
+// A fresh instance of the class whose meta is `class_meta` (built by the
+// class object `cls`, or null), with no field yet: its proto wired, a +1 on
+// the meta and on the class — released in the JitObject destructor — and a
+// `drop` registered on the owned stack. What every way of making an instance
+// starts from, `new` or not.
+inline JitObject* _jit_class_instance_alloc(JitObject* class_meta,
+                                            JitObject* cls) {
   auto* inst = culebra_runtime_object_new();
-
   // A `@value` instance's field set is closed from here on, not from the
-  // freeze at the end: the declared stores below are `is_init` and no user
-  // write is, so a constructor cannot slip in a field its siblings lack —
+  // freeze at the end: the declared stores that follow are `is_init` and no
+  // user write is, so a constructor cannot slip in a field its siblings lack —
   // through a computed key or an alias any more than through `self.z = v`,
   // which the declaration refuses outright.
   inst->fields_closed = class_meta && class_meta->is_value;
   inst->set_proto(class_meta);
-  // Retain the meta on the instance so it lives at least as long as
-  // any of its instances. The matching release runs in the JitObject
-  // destructor (release_impl GC_TAG_OBJECT path).
   if (class_meta) class_meta->refcount++;
-  if (cls_tag == TAG_OBJECT &&
-      reinterpret_cast<JitObject*>(cls_data)->is_class) {
-    inst->cls = reinterpret_cast<JitObject*>(cls_data);
-    inst->cls->refcount++;
+  if (cls) {
+    inst->cls = cls;
+    cls->refcount++;
   }
-  // Mirror inherited `drop` so the destructor's `has_drop` gate fires,
-  // and register the instance on the owned stack (deterministic drop).
-  if (class_meta && class_meta->methods_drop)
-    _jit_owned_bind_drop(inst);
+  // Mirror inherited `drop` so the destructor's `has_drop` gate fires.
+  if (class_meta && class_meta->methods_drop) _jit_owned_bind_drop(inst);
+  return inst;
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
+    const char* class_name, JitObject* class_meta, int8_t cls_tag,
+    int64_t cls_data, int8_t finit_tag, int64_t finit_data, int8_t body_tag,
+    int64_t body_data, int64_t n_args, JitValue* args) {
+  auto* inst = _jit_class_instance_alloc(
+      class_meta, cls_tag == TAG_OBJECT &&
+                          reinterpret_cast<JitObject*>(cls_data)->is_class
+                      ? reinterpret_cast<JitObject*>(cls_data)
+                      : nullptr);
 
   // The instance's own slots are its fields and nothing else: its name is
   // on the meta above, reached through `proto`. (`class_name` is still
@@ -1988,15 +1998,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_materialize_value(
     void** shape_cache, const char* const* keys, int64_t n_keys,
     JitObject* class_meta, const JitValue* field_values) {
   auto* shape = _jit_resolve_cached_shape(shape_cache, keys, n_keys);
-  auto* inst = culebra_runtime_object_new();
+  auto* inst = _jit_class_instance_alloc(class_meta, nullptr);
   inst->shape = shape;
   inst->slots.reserve(static_cast<size_t>(n_keys));
   for (int64_t i = 0; i < n_keys; i++)
     inst->slots.push_back(JitObjectEntry{field_values[i], /*mut=*/false});
-  inst->set_proto(class_meta);
-  if (class_meta) class_meta->refcount++;
-  if (class_meta && class_meta->methods_drop)
-    _jit_owned_bind_drop(inst);
   inst->fields_closed = true;
   inst->frozen = true;
   return {TAG_OBJECT, reinterpret_cast<int64_t>(inst)};

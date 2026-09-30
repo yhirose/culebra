@@ -511,7 +511,8 @@ enum class Op : uint8_t {
                // such gate, having already taken the inline tag compare for
                // every name that is a primitive's.
   ClassObj,    // regs[a] = fresh Object (+1) marked `is_class`, so `C(args)`
-               // finds its `new` (object_new + mark_class)
+               // finds its `new`, holding the instance meta regs[b] (absorbs
+               // its +1; regs[b] = nil) — object_new + mark_class
   BindStatic,  // bind regs[c] into class object regs[a] under name consts[b]
                // (object_bind_static — the raw emplace the class namespace
                // uses, so a member named `drop` stays an ordinary function
@@ -7874,7 +7875,12 @@ class Compiler {
       into = ctor;
     }
     int32_t cls = alloc_temp(ast);
-    emit(Op::ClassObj, cls);
+    {
+      int32_t m = alloc_temp(ast);
+      emit(Op::CellGet, m, meta_cell);
+      emit(Op::ClassObj, cls, m);
+      forget_temp(m);  // the class object absorbed the +1
+    }
     // The class namespace: `new`, then the statics and their fields. The raw
     // bind is deliberate — a static named `drop` is an ordinary function
     // here, so neither the well-known contract nor the drop registration
@@ -16995,7 +17001,9 @@ struct Exec {
         do {
           [[maybe_unused]] const Insn& in = *ip;
           auto* o = culebra_runtime_object_new();
-          culebra_runtime_mark_class(o);
+          culebra_runtime_mark_class(
+              o, reinterpret_cast<JitObject*>(regs[in.b].data));
+          regs[in.b] = JitValue{TAG_NIL, 0};
           regs[in.a] = JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(o)};
           ++ip;
           break;
