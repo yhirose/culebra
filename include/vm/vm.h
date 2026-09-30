@@ -493,9 +493,11 @@ enum class Op : uint8_t {
   RegPack,     // register the @packable byte layout of class consts[a] from
                // the "name:Type;…" spec consts[b] (culebra_runtime_register_
                // packable), at the declaration — the layout must land in the
-               // running process, which under AOT is not the compiling one.
-               // The field types are lint-validated, so nothrow. d=1 reads
-               // the spec as an enum's tagged union instead.
+               // running process, which under AOT is not the compiling one —
+               // and on the class object regs[c] (borrowed), whose meta keeps
+               // its own copy. The field types are lint-validated, so
+               // nothrow. d=1 reads the spec as an enum's tagged union
+               // instead (no c).
   EnumVariant, // bind one variant of enum consts[d], named consts[c], on
                // the enum namespace regs[a], immutable: with arity b=0 the
                // singleton instance it always is, otherwise the constructor
@@ -7922,7 +7924,7 @@ class Compiler {
         spec += ':';
         spec += ftype;
       }
-      emit(Op::RegPack, kconst_str(class_name), kconst_str(spec));
+      emit(Op::RegPack, kconst_str(class_name), kconst_str(spec), cls);
       int32_t marker = alloc_temp(ast);
       emit(Op::LoadConst, marker, kconst_str(class_name));
       emit(Op::BindStatic, cls, kconst_str("__packable__"), marker);
@@ -16965,7 +16967,8 @@ struct Exec {
           else
             culebra_runtime_register_packable(
                 reinterpret_cast<const char*>(c.consts[in.a].data),
-                reinterpret_cast<const char*>(c.consts[in.b].data));
+                reinterpret_cast<const char*>(c.consts[in.b].data),
+                reinterpret_cast<JitObject*>(regs[in.c].data));
           ++ip;
           break;
         } while (0);

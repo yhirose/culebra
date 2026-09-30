@@ -335,6 +335,19 @@ struct JitEnumRef {
   }
 };
 
+// What a `@packable` class's records are, fixed by its declaration and kept
+// on its meta — so two classes that share a name each keep their own, and a
+// record is laid out by the class it is an instance of.
+struct JitRecordInfo {
+  culebra::PackableLayout layout;
+  // The shape `new` gives an instance: the declared fields, in order, typed.
+  culebra::Shape* shape = nullptr;
+  // Bytes one record takes in a byte stream (String.pack), or — `no_wire`
+  // set — the first field that has no byte-stream form.
+  size_t wire_size = 0;
+  const culebra::PackableField* no_wire = nullptr;
+};
+
 struct JitSpecialTable {
   JitSpecialTable() = default;
   JitSpecialTable(const JitSpecialTable&) = delete;
@@ -379,6 +392,8 @@ struct JitSpecialTable {
   // match by their fields, as an enum variant's do — `==` by structure, keys
   // field by field. The derived `eq` fills no slot (_special_closure).
   bool eq_by_fields = false;
+  // A `@packable` class's record form (RegPack); null on every other meta.
+  std::unique_ptr<JitRecordInfo> record;
 };
 
 // All refcounted heap types share the same first field: i64 refcount.

@@ -34,7 +34,7 @@ inline constexpr Type kTypes[] = {
 };
 
 // Null when `name` is none of kTypes.
-inline const Type* find_type(std::string_view name) {
+constexpr const Type* find_type(std::string_view name) {
   for (const Type& t : kTypes)
     if (t.name == name) return &t;
   return nullptr;
@@ -49,7 +49,13 @@ inline std::string type_names() {
   return s;
 }
 
-// The Long range an integer kind holds (i64: all of it).
+// What a value of this kind is, for a message that one was not.
+constexpr std::string_view value_kind_name(Kind k) {
+  return k == Kind::Bool ? "Bool" : k == Kind::Float ? "Long or Float" : "Long";
+}
+
+// The Long range a type's integer holds (i64: all of it). Asked of a float
+// or bool type it answers something, which nothing reads.
 inline std::pair<int64_t, int64_t> int_range(const Type& t) {
   if (t.width == 8) return {std::numeric_limits<int64_t>::min(),
                             std::numeric_limits<int64_t>::max()};
@@ -84,18 +90,6 @@ inline decltype(auto) with_word(int width, F&& f) {
   }
 }
 
-// The low `width` bytes of `bits`, least significant first unless `big`.
-inline void store_bits(uint8_t* p, uint64_t bits, int width, bool big) {
-  with_word(width, [&](auto w) {
-    store_as(p, static_cast<decltype(w)>(bits), big);
-  });
-}
-inline uint64_t load_bits(const uint8_t* p, int width, bool big) {
-  return with_word(width, [&](auto w) -> uint64_t {
-    return load_as<decltype(w)>(p, big);
-  });
-}
-
 // Round to the nearest binary32 (`Math.f32`, and the Core IR's tofloat32 —
 // cpp-vmlib's Op::ToFloat32): up to the rounding midpoint past float's max
 // it lands on the max, beyond it on infinity; NaN stays. Spelled out because
@@ -110,25 +104,6 @@ inline double round_f32(double d) {
   if (d <= -kFloatOverflow) return -std::numeric_limits<double>::infinity();
   if (d < -kFloatMax) return -kFloatMax;
   return static_cast<double>(static_cast<float>(d));
-}
-
-inline void store_float(uint8_t* p, const Type& t, double d, bool big) {
-  if (t.width == 8) {
-    store_bits(p, std::bit_cast<uint64_t>(d), 8, big);
-    return;
-  }
-  store_bits(p, std::bit_cast<uint32_t>(static_cast<float>(round_f32(d))), 4,
-             big);
-}
-
-inline int64_t load_int(const uint8_t* p, const Type& t, bool big) {
-  const int shift = t.kind == Kind::Signed ? 64 - t.width * 8 : 0;
-  return static_cast<int64_t>(load_bits(p, t.width, big) << shift) >> shift;
-}
-inline double load_float(const uint8_t* p, const Type& t, bool big) {
-  uint64_t bits = load_bits(p, t.width, big);
-  if (t.width == 8) return std::bit_cast<double>(bits);
-  return static_cast<double>(std::bit_cast<float>(static_cast<uint32_t>(bits)));
 }
 
 }  // namespace culebra::scalar_bytes

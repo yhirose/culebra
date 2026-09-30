@@ -2890,19 +2890,29 @@ for c in rec_reads {
 # FixedArray<T, N>: exactly N, in a SharedBuffer view and in a record's bytes.
 let fa_pre = '@packable class V { p: FixedArray<Int16, 3>  q: BoundedArray<Int16, 3> }; ' +
   'let b = SharedBuffer.new(1, V); '
+let w_pre = '@packable class W { p: FixedArray<UInt16, 2> }; '
 let fa_cases = ['b[0].p[1] = -2; [b[0].p.size(), b[0].p.capacity(), b[0].p[1], b[0].p[-1]]',
                 'b[0].p.set(0, 7); let acc = []; for x in b[0].p { acc.push(x) }; acc',
                 'b[0].p[3]', 'b[0].p[1] = 40000', 'b[0].p = [1, 2, 3]', 'b[0].p.push(1)',
                 'b[0].p.has("push")', 'b[0].p.foo = 1', 'b[0].q.push(5); [b[0].q.size(), b[0].p.size()]',
-                '@packable class W { p: FixedArray<UInt16, 2> }; let w = W(); w.p = [1, 65535]; ' +
+                w_pre + 'let w = W(); w.p = [1, 65535]; ' +
                 'String.unpack(W, String.pack(W, [w], endian: "big"), endian: "big")[0].p',
-                '@packable class W { p: FixedArray<UInt16, 2> }; String.pack(W, [W()]).bytes().collect()',
-                '@packable class W { p: FixedArray<UInt16, 2> }; let w = W(); w.p = [1]; String.pack(W, [w])',
-                '@packable class W { p: FixedArray<UInt16, 2> }; let w = W(); w.p = [1, -1]; String.pack(W, [w])',
-                '@packable class W { p: FixedArray<UInt16, 2> }; let w = W(); w.p = "ab"; String.pack(W, [w])',
+                w_pre + 'String.pack(W, [W()]).bytes().collect()',
+                w_pre + 'let w = W(); w.p = [1]; String.pack(W, [w])',
+                w_pre + 'let w = W(); w.p = [1, -1]; String.pack(W, [w])',
+                w_pre + 'let w = W(); w.p = "ab"; String.pack(W, [w])',
                 '@packable class W { p: FixedArray<Float32, 2> }; String.pack_size(W)']
 for c in fa_cases {
   case("fixarr|" + c, fa_pre + c)
+}
+# Two classes of one name: each one's records are laid out by itself.
+let twin_pre = 'fn mk_a() { @packable class P { x: Int16  y: Int16 }; P }; ' +
+  'fn mk_b() { @packable class P { raw: Bytes<8> }; P }; let pa = mk_a(); let pb = mk_b(); '
+for c in ['[String.pack_size(pa), String.pack_size(pb)]',
+          'String.unpack(pa, "abcdefgh").map(|r| [r.x, r.y])',
+          'String.unpack(pb, "abcdefgh")[0].raw',
+          'String.pack(pa, String.unpack(pb, "abcdefgh"))'] {
+  case("packrec-twin|" + c, twin_pre + c)
 }
 
 print(out.join("\n"))

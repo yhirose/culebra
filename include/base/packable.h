@@ -54,18 +54,36 @@ struct PackableTypeInfo {
   size_t align;
 };
 
+// The packable scalars: each one's spellings and the fixed-width scalar its
+// bytes are (scalar_bytes.h), whose width is both its size and its alignment
+// in a record. Its index here is its code (packable_scalar_code).
+struct PackableScalar {
+  std::string_view name;
+  std::string_view alias;  // a second spelling, or empty
+  const scalar_bytes::Type* wire;
+};
+inline constexpr PackableScalar kPackableScalars[] = {
+    {"Float32", "", scalar_bytes::find_type("f32")},
+    {"Float64", "Float", scalar_bytes::find_type("f64")},
+    {"Int8", "", scalar_bytes::find_type("i8")},
+    {"Int16", "", scalar_bytes::find_type("i16")},
+    {"Int32", "", scalar_bytes::find_type("i32")},
+    {"Int64", "Long", scalar_bytes::find_type("i64")},
+    {"Byte", "", scalar_bytes::find_type("u8")},
+    {"Bool", "", scalar_bytes::find_type("bool")},
+    {"UInt16", "", scalar_bytes::find_type("u16")},
+    {"UInt32", "", scalar_bytes::find_type("u32")},
+};
+inline const PackableScalar* find_packable_scalar(std::string_view t) {
+  for (const auto& s : kPackableScalars)
+    if (t == s.name || (!s.alias.empty() && t == s.alias)) return &s;
+  return nullptr;
+}
+
 inline PackableTypeInfo packable_type_info(std::string_view t) {
-  if (t == "Float32") return {4, 4};
-  if (t == "Float64" || t == "Float") return {8, 8};
-  if (t == "Int8") return {1, 1};
-  if (t == "Int16") return {2, 2};
-  if (t == "Int32") return {4, 4};
-  if (t == "Int64" || t == "Long") return {8, 8};
-  if (t == "Byte") return {1, 1};
-  if (t == "UInt16") return {2, 2};
-  if (t == "UInt32") return {4, 4};
-  if (t == "Bool") return {1, 1};
-  return {0, 0};
+  auto* s = find_packable_scalar(t);
+  return s ? PackableTypeInfo{s->wire->width, s->wire->width}
+           : PackableTypeInfo{0, 0};
 }
 
 inline size_t packable_align_up(size_t n, size_t a) {
@@ -231,6 +249,13 @@ struct PackableFieldInfo {
   size_t val_size = 0;       // sizeof(V) (BoundedMap)
   size_t data_offset = 0;    // byte offset of the element/key array within field
   size_t val_offset = 0;     // byte offset of the value array (BoundedMap)
+  // The field in a byte stream (String.pack): the bytes it takes — a scalar
+  // its width, a Bytes<N> or a BoundedString<N> (NUL-padded, C's char[N]) N,
+  // a FixedArray<T, N> N of T — and the scalar it, or a FixedArray's element,
+  // is written as. wire_size 0: no such form — a BoundedArray, Set or Map (a
+  // count that varies), an optional, an enum, a nested record.
+  size_t wire_size = 0;
+  const scalar_bytes::Type* wire = nullptr;
 };
 
 inline PackableFieldInfo packable_field_info(std::string_view t) {
@@ -267,6 +292,7 @@ inline PackableFieldInfo packable_field_info(std::string_view t) {
     fi.align = 1;
     fi.data_offset = 0;
     fi.size = fi.capacity;  // exactly N bytes
+    fi.wire_size = fi.capacity;
     return fi;
   }
   // BoundedString<N> = `[len:i32][byte × N]` inline, a fixed-capacity UTF-8
@@ -286,6 +312,7 @@ inline PackableFieldInfo packable_field_info(std::string_view t) {
     fi.align = 4;                  // the inline len is an i32
     fi.data_offset = 4;
     fi.size = fi.data_offset + fi.capacity;  // 4 + N
+    fi.wire_size = fi.capacity;
     return fi;
   }
   // BoundedSet<T, N> = `[count:i32][state:byte × N][T × N]`, an open-addressed
@@ -373,6 +400,10 @@ inline PackableFieldInfo packable_field_info(std::string_view t) {
     fi.align = bounded ? std::max<size_t>(4, ei.align) : ei.align;
     fi.data_offset = bounded ? packable_align_up(4, ei.align) : 0;
     fi.size = fi.data_offset + fi.capacity * ei.size;
+    if (!bounded) {
+      fi.wire = find_packable_scalar(elem)->wire;
+      fi.wire_size = fi.capacity * fi.wire->width;
+    }
     return fi;
   }
   // A registered @packable enum used by name -> a tagged-union field.
@@ -394,11 +425,11 @@ inline PackableFieldInfo packable_field_info(std::string_view t) {
     fi.align = packable_class_align(t);
     return fi;
   }
-  auto si = packable_type_info(t);
-  if (si.size == 0) return {};
+  auto* scalar = find_packable_scalar(t);
+  if (!scalar) return {};
   PackableFieldInfo fi;
-  fi.size = si.size;
-  fi.align = si.align;
+  fi.wire = scalar->wire;
+  fi.size = fi.align = fi.wire_size = fi.wire->width;
   return fi;
 }
 
@@ -410,32 +441,13 @@ inline bool is_packable_type(std::string_view t) {
 // store its element type in a numeric slot (no JIT-string allocation) and
 // map back to the name for the byte read/write switch. -1 = not a scalar.
 inline int packable_scalar_code(std::string_view t) {
-  if (t == "Float32") return 0;
-  if (t == "Float64" || t == "Float") return 1;
-  if (t == "Int8") return 2;
-  if (t == "Int16") return 3;
-  if (t == "Int32") return 4;
-  if (t == "Int64" || t == "Long") return 5;
-  if (t == "Byte") return 6;
-  if (t == "Bool") return 7;
-  if (t == "UInt16") return 8;
-  if (t == "UInt32") return 9;
-  return -1;
+  auto* s = find_packable_scalar(t);
+  return s ? static_cast<int>(s - kPackableScalars) : -1;
 }
 inline std::string_view packable_scalar_name(int code) {
-  switch (code) {
-    case 0: return "Float32";
-    case 1: return "Float64";
-    case 2: return "Int8";
-    case 3: return "Int16";
-    case 4: return "Int32";
-    case 5: return "Int64";
-    case 6: return "Byte";
-    case 7: return "Bool";
-    case 8: return "UInt16";
-    case 9: return "UInt32";
-  }
-  return "";
+  return code >= 0 && code < static_cast<int>(std::size(kPackableScalars))
+             ? kPackableScalars[code].name
+             : std::string_view{};
 }
 
 // A single declared field: its name, the type token as written (`Float32`,
@@ -599,41 +611,17 @@ inline const PackableLayout* lookup_packable_layout(std::string_view name) {
 // the layout above (C-ABI alignment, host byte order): that one is memory two
 // isolates share, this one is bytes a file or a socket carries.
 
-// The byte-stream scalar a packable scalar type is written as, or null.
-inline const scalar_bytes::Type* packable_wire_scalar(std::string_view t) {
-  static constexpr std::pair<std::string_view, std::string_view> kCodes[] = {
-      {"Int8", "i8"},     {"Int16", "i16"},   {"Int32", "i32"},
-      {"Int64", "i64"},   {"Long", "i64"},    {"Byte", "u8"},
-      {"UInt16", "u16"},  {"UInt32", "u32"},  {"Float32", "f32"},
-      {"Float64", "f64"}, {"Float", "f64"},   {"Bool", "bool"},
-  };
-  for (const auto& [name, code] : kCodes)
-    if (t == name) return scalar_bytes::find_type(code);
-  return nullptr;
-}
-
-// Bytes one field takes in the stream: a scalar its width, a Bytes<N> or a
-// BoundedString<N> (NUL-padded, C's char[N]) N, a FixedArray<T, N> N of T.
-// Nullopt for a field with no byte-stream form — a BoundedArray, Set or Map
-// (a count that varies), an optional, an enum, a nested record.
-inline std::optional<size_t> packable_wire_size(const PackableField& f) {
-  if (f.layout.is_bytes || f.layout.is_bounded_string) return f.layout.capacity;
-  if (f.layout.is_fixed_array)
-    return f.layout.capacity * packable_wire_scalar(f.layout.elem_type)->width;
-  if (auto* t = packable_wire_scalar(f.type)) return t->width;
-  return std::nullopt;
-}
-// A whole record's, or the first field that has none (in `*bad`).
+// Bytes one record takes in the stream, or — a field with no byte-stream
+// form — that field, in `*bad`.
 inline std::optional<size_t> packable_wire_size(const PackableLayout& l,
                                                 const PackableField** bad) {
   size_t n = 0;
   for (const auto& f : l.fields) {
-    auto k = packable_wire_size(f);
-    if (!k) {
+    if (f.layout.wire_size == 0) {
       *bad = &f;
       return std::nullopt;
     }
-    n += *k;
+    n += f.layout.wire_size;
   }
   return n;
 }

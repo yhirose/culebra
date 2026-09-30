@@ -3431,6 +3431,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_eff_copy(
     culebra_runtime_value_retain(e.value.tag, e.value.data);
   }
   o->is_class = src->is_class;
+  if (auto* meta = src->class_meta_of()) {  // a class object: its +1 on the meta
+    o->instance_meta = meta;
+    meta->refcount++;
+  }
   _gc_register(o, GC_TAG_OBJECT);
   return o;
 }

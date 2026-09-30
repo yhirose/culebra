@@ -4330,12 +4330,21 @@ struct Lowering {
           break;
         }
         case Op::RegPack: {
-          j.emit_call(
-              j.module_->getOrInsertFunction(
-                  in.d ? rt::register_packable_enum : rt::register_packable,
-                  b.getVoidTy(), ptrTy, ptrTy),
-              {vm_str_const(in.a, ".vm.pkg.name"),
-               vm_str_const(in.b, ".vm.pkg.spec")});
+          auto name = vm_str_const(in.a, ".vm.pkg.name");
+          auto spec = vm_str_const(in.b, ".vm.pkg.spec");
+          if (in.d) {
+            j.emit_call(j.module_->getOrInsertFunction(
+                            rt::register_packable_enum, b.getVoidTy(), ptrTy,
+                            ptrTy),
+                        {name, spec});
+          } else {
+            j.emit_call(
+                j.module_->getOrInsertFunction(rt::register_packable,
+                                               b.getVoidTy(), ptrTy, ptrTy,
+                                               ptrTy),
+                {name, spec,
+                 b.CreateIntToPtr(j.extract_data(load_slot(in.c)), ptrTy)});
+          }
           break;
         }
         case Op::ClassObj: {

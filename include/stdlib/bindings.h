@@ -7909,8 +7909,8 @@ inline JitValue _ns_string_from_code_points(JitValue* a, int64_t) {
 struct _NsPackType {
   culebra::scalar_bytes::Type scalar{};
   JitRecordType record{};
-  std::string_view name() const { return record.cls ? record.name : scalar.name; }
-  size_t width() const { return record.cls ? record.size : scalar.width; }
+  std::string_view name() const { return record.cls ? record.name() : scalar.name; }
+  size_t width() const { return record.cls ? record.info->wire_size : scalar.width; }
 };
 inline _NsPackType _ns_pack_type(JitValue v, std::string_view fn) {
   if (v.tag == TAG_STRING || v.tag == TAG_STRINGVIEW) {
@@ -7951,51 +7951,30 @@ inline JitValue _ns_string_pack(JitValue* a, int64_t n) {
   char* out = _str_alloc(count * type.width());
   auto* p = reinterpret_cast<uint8_t*>(out);
   if (type.record.cls) {
-    for (size_t i = 0; i < count; i++, p += type.record.size)
+    for (size_t i = 0; i < count; i++, p += type.width())
       _jit_record_write(p, items[i], type.record, big, fn, i);
     return _ns_adapt::v_string(out);
   }
   const sb::Type t = type.scalar;
-  const bool is_int = t.kind == sb::Kind::Signed || t.kind == sb::Kind::Unsigned;
-  const auto [lo, hi] = is_int ? sb::int_range(t) : std::pair<int64_t, int64_t>{};
-  auto element_error = [&](const JitValue& e, size_t i) {
-    std::string_view want = t.kind == sb::Kind::Bool    ? "Bool"
-                            : t.kind == sb::Kind::Float ? "Long or Float"
-                                                        : "Long";
-    throw culebra::CulebraError(
-        "TypeError",
-        culebra::format("{}: {} takes {} elements, got {} at index {}.", fn, t.name,
-                        want, _culebra_tag_name(e.tag), i));
-  };
+  const auto [lo, hi] = sb::int_range(t);
   // The width is picked once, so the loop stores whole words.
   sb::with_word(t.width, [&](auto word) {
     using W = decltype(word);
     for (size_t i = 0; i < count; i++, p += sizeof(W)) {
       const JitValue& e = items[i];
-      if (t.kind == sb::Kind::Bool) {
-        if (e.tag != ::TAG_BOOL) element_error(e, i);
-        *p = e.data ? 1 : 0;
-      } else if (t.kind == sb::Kind::Float) {
-        if constexpr (sizeof(W) >= 4) {
-          double d = 0;
-          if (e.tag == ::TAG_FLOAT) d = _culebra_float_to_double(e.data);
-          else if (e.tag == ::TAG_LONG) d = static_cast<double>(e.data);
-          else element_error(e, i);
-          if constexpr (sizeof(W) == 8)
-            sb::store_as(p, std::bit_cast<uint64_t>(d), big);
-          else
-            sb::store_as(p, std::bit_cast<uint32_t>(
-                                static_cast<float>(sb::round_f32(d))), big);
-        }
-      } else {
-        if (e.tag != ::TAG_LONG) element_error(e, i);
-        if (e.data < lo || e.data > hi) {
+      switch (_jit_scalar_put<W>(p, t.kind, lo, hi, e, big)) {
+        case JitScalarPut::Ok: break;
+        case JitScalarPut::WrongType:
+          throw culebra::CulebraError(
+              "TypeError",
+              culebra::format("{}: {} takes {} elements, got {} at index {}.", fn,
+                              t.name, sb::value_kind_name(t.kind),
+                              _culebra_tag_name(e.tag), i));
+        case JitScalarPut::OutOfRange:
           throw culebra::CulebraError(
               "ValueError",
               culebra::format("{}: {} at index {} is out of range for {} ({} to {}).",
                               fn, e.data, i, t.name, lo, hi));
-        }
-        sb::store_as(p, static_cast<W>(e.data), big);
       }
     }
   });
@@ -8083,22 +8062,8 @@ inline JitValue _ns_string_unpack(JitValue* a, int64_t n) {
   // The width is picked once, so the loop loads whole words.
   return sb::with_word(t.width, [&](auto word) {
     using W = decltype(word);
-    return fill([&](int64_t i) -> JitValue {
-      const W bits = sb::load_as<W>(p + i * sizeof(W), big);
-      switch (t.kind) {
-        case sb::Kind::Bool: return _ns_adapt::v_bool(bits != 0);
-        case sb::Kind::Float:
-          if constexpr (sizeof(W) == 8)
-            return _ns_adapt::v_float(std::bit_cast<double>(bits));
-          else if constexpr (sizeof(W) == 4)
-            return _ns_adapt::v_float(std::bit_cast<float>(bits));
-          else
-            return _ns_adapt::v_nil();  // no 1- or 2-byte float type
-        case sb::Kind::Signed:
-          return _ns_adapt::v_long(
-              static_cast<int64_t>(static_cast<std::make_signed_t<W>>(bits)));
-        default: return _ns_adapt::v_long(static_cast<int64_t>(bits));
-      }
+    return fill([&](int64_t i) {
+      return _jit_scalar_get<W>(p + i * sizeof(W), t.kind, big);
     });
   });
 }
@@ -11177,6 +11142,7 @@ inline JitObject* _jit_namespace_get_or_build(std::string_view name) {
     // reference (entry module, closure, child isolate) resolves through here,
     // so one write per Runtime covers them all.
     if (const char* ns = culebra::lazy_namespace_static_name(name)) {
+      assert(!obj->class_meta_of());  // ns_name shares the meta's slot
       obj->is_namespace = true;
       obj->ns_name = ns;  // static storage, outlives every Runtime
     }
