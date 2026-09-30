@@ -1,0 +1,117 @@
+# Lap one of a racing game: ~129 bpm in C.
+
+use 'run.kau'
+
+song Cruise {
+  tempo 129
+  key C
+  band Run
+  melody in F5..E6
+  loop
+
+  Intro    with harmony
+  Verse
+  Climb    with echo
+  Hook     with echo ending 1
+  Hook     with harmony ending 2
+}
+
+groove Intro {
+  Bass   1 - . 1  8 - 1 -  1 - . 1  8 - > -
+  Arp    1 2  3 4  3 4  2 3
+  Kick   x... .... x..x ....
+  Hat    ..x. ..x. ..x. ..x.
+  Snare  .... x... .... x...
+  last {
+    Kick   x... .... x... ....
+    Hat    ..x. ..x. ..x. ....
+    Snare  .... x... ...x x...
+    Tom    .... .... .... .x..
+    Floor  .... .... .... ..xx
+  }
+}
+
+groove Verse {
+  Bass   1 - . 1  8 - 1 -  . 8 - 1  5 - > -
+  Arp    1 2  3 4  3 4  2 3
+  Kick   x... ...x x... ....
+  Hat    ..x. ..x. ..x. ....
+  Snare  .... x... .... x...
+  Open   .... .... .... ..x.
+}
+
+groove Climb {
+  Bass   1 - 1 -  1 - 1 -  1 - 1 -  1 - > -
+  Arp    1 2  3 4  1 2  3 4
+  Kick   x... .... x... ....
+  Hat    ..xx ..xx ..xx ..xx
+  Snare  .... x... .... x...
+  last {
+    Kick   x... .... .... ....
+    Hat    .... .... .... ....
+    Snare  ..x. x.xx .... ....
+    Tom    .... .... xxxx ....
+    Floor  .... .... .... xxxx
+  }
+}
+
+groove Hook {
+  Bass   1 - 8 -  1 8 - 1  - 8 1 -  5 - > -
+  Arp    4 3  2 1  2 3  4 3
+  Kick   x... ...x x... ....
+  Hat    ..x. ..x. ..x. ..x.
+  Snare  .... x... .... x...
+  Open   .... .... .... ...x
+  first {
+    Kick   .... ...x x... ....
+    Crash  x... .... .... ....
+  }
+  last {
+    Hat    ..x. ..x. ..x. ....
+    Snare  .... x... ...x xx..
+    Open   .... .... .... ....
+    Floor  .... .... .... ..xx
+  }
+}
+
+section Intro {
+  Fmaj7       r8 a16 c e8. d c8 a4
+  G6          r8 b16 d g'8. e d8 b d
+  Em7         e2 d8 b g a
+  Am7         b8. c4~ c16 e8 d c b
+}
+
+section Verse {
+  Cmaj7       r4. e,16 g b8. a g8~
+  Bm7b5 E7    g f8 e, d,4 g#8 b
+  Am7         c4. b8 a4 e,8 g~
+  Gm7 C7      g8 f bb8. a g8 e,4
+  Fmaj7       f r8 a16 c e8. d c8~
+  Fm6         c r8 ab g f d, f
+  Em7 A7      e, g8 b c#8. e d8~
+  Dm7 G7      d c8 a b4 g8 f
+}
+
+section Climb {
+  Fmaj7       e,8 f a c4 e8 c a
+  Em7         b g8 b4 d8 b g
+  Dm7         a8 c d f'4 e8 d c
+  G7sus4 G7   d4. c8 b4 r16 g a b
+}
+
+section Hook {
+  Fmaj7       c8. a c8 e4 d8 c
+  G7          d4. b4 g8 a b
+  Em7         b8. g b8 d4 e8 d
+  Am7         c2 r8 e d c
+  Dm7         a8. f a8 c4 e8 f'
+  G7          g' f'8 d b4 d8 f'
+  ending 1 {
+    Cmaj7       e2 d8 b g a~
+    Gm7 C7      a r8 bb a g e, g
+  }
+  ending 2 {
+    Cmaj7       e2 g'8 e d c~
+    Gm7 C7      c r8 d c bb g e,
+  }
+}

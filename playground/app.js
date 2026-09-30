@@ -441,12 +441,17 @@ function spawnWorker() {
       handleSound(msg);
       return;
     }
+    if (msg.type === "score") {
+      handleScore(msg);
+      return;
+    }
     if (msg.type === "done") {
       running = false;
       previewing = false;
       stopRafPump();
       resetMusic();   // the native analogue: process exit silences every track
       resetSounds();
+      resetScores();
       stopBtn.disabled = true;
       runBtn.disabled = false;
       ranOnce = true;
@@ -481,6 +486,7 @@ function run({ holdFirstFrame = false } = {}) {
   ensureAudio();    // this click is a user gesture — unlock audio for any tones
   resetMusic();     // a fresh run must not inherit the previous run's BGM
   resetSounds();
+  resetScores();
   running = true;
   runBtn.disabled = true;
   stopBtn.disabled = false;
@@ -523,6 +529,7 @@ function stop() {
   stopRafPump();
   resetMusic();     // terminating the worker must also silence a looping BGM
   resetSounds();
+  resetScores();
   stopBtn.disabled = true;
   runBtn.disabled = true; // until the fresh worker reports ready
   updatePlayOverlay();
@@ -944,19 +951,24 @@ function whiteNoise() {
 const toneLevel = (v) => Math.max(0, Math.min(1, v / 100));
 
 function playTone(m) {
+  const F = (frames) => Math.max(0, frames) / 60;  // frames@60fps -> seconds
+  if (!ensureAudio()) return;
+  toneAt(audioCtx.currentTime, m.channel, m.startFreq, m.endFreq, F(m.attack),
+         F(m.decay), F(m.sustain), F(m.release), m.vol, m.peak, m.duty);
+}
+
+// A tone from `now` on the context's clock, its phases in seconds; answers
+// the source node (null when audio is unavailable).
+function toneAt(now, ch, startFreq, endFreq, attackT, decayT, sustainT, releaseT,
+                vol, peak, duty) {
   try {
-    if (!ensureAudio()) return;
-    const now = audioCtx.currentTime;
-    const F = (frames) => Math.max(0, frames) / 60;  // frames@60fps -> seconds
-    const attackT = F(m.attack), decayT = F(m.decay);
-    const sustainT = F(m.sustain), releaseT = F(m.release);
     let total = attackT + decayT + sustainT + releaseT;
     if (total <= 0) total = 1 / 60;  // guarantee an audible blip
-    const startF = Math.max(1, m.startFreq);
-    const endF = Math.max(1, m.endFreq);
+    const startF = Math.max(1, startFreq);
+    const endF = Math.max(1, endFreq);
     const G = (v) => toneLevel(v) * 0.2;  // raw waveforms stack: keep it gentle
-    const peakG = G(m.peak), susG = G(m.vol);
-    const channel = m.channel | 0;
+    const peakG = G(peak), susG = G(vol);
+    const channel = ch | 0;
 
     // Cut any note still playing on this channel (monophony).
     const prev = activeVoices[channel];
@@ -975,7 +987,7 @@ function playTone(m) {
       src.connect(lp).connect(gain);
     } else {
       const osc = audioCtx.createOscillator();
-      if (channel === 0 || channel === 1) osc.setPeriodicWave(pulseWave(m.duty | 0));
+      if (channel === 0 || channel === 1) osc.setPeriodicWave(pulseWave(duty | 0));
       else if (channel === 2) osc.type = "triangle";
       else osc.type = "sawtooth";  // channel 4: culebra extension
       osc.frequency.setValueAtTime(startF, now);
@@ -998,8 +1010,10 @@ function playTone(m) {
     src.stop(now + total);
     activeVoices[channel] = src;
     src.onended = () => { if (activeVoices[channel] === src) activeVoices[channel] = null; };
+    return src;
   } catch {
     // Audio unavailable (autoplay policy, no device) — a game stays playable.
+    return null;
   }
 }
 
@@ -1078,8 +1092,8 @@ function handleSound(m) {
         if (!ensureAudio()) return;
         // The decode is asynchronous, and a script plays a sample it has just
         // made: a play asked for before it lands is honoured when it does,
-        // as a track's is.
-        audioCtx.decodeAudioData(m.buf.buffer)
+        // as a track's is, and a score waits for `ready`.
+        entry.ready = audioCtx.decodeAudioData(m.buf.buffer)
           .then((buf) => {
             if (sounds.get(m.id) !== entry) return;  // freed while decoding
             entry.buf = buf;
@@ -1144,6 +1158,117 @@ function startTrack(id, t, offset) {
   t.voice = v;
   t.pausedAt = null;
   t.wantPlay = false;
+}
+
+// --- Audio.Kauai: a song's notes, each started on the context's own clock ---
+// A score arrives whole (stdlib/audio.h's kScoreStride numbers an event: its
+// time, then a tone's channel, frequencies, phases in seconds, vol, peak and
+// duty; or -1, a Sound's handle and a gain), and a timer puts each note on
+// the context's clock a little ahead of when it sounds, the usual WebAudio
+// lookahead: the notes keep time however the page's own timers jitter.
+const SCORE_STRIDE = 11;
+const SCORE_AHEAD = 0.2;  // seconds of notes scheduled ahead of the clock
+const scores = new Map();  // id -> { events, length, loopAt, volume, run }
+
+function stopScore(e) {
+  const run = e.run;
+  e.run = null;
+  if (!run) return;
+  clearInterval(run.timer);
+  for (const node of run.nodes) { try { node.stop(); } catch {} }
+}
+
+function resetScores() {
+  for (const e of scores.values()) stopScore(e);
+  scores.clear();
+}
+
+// Put every note due before the clock is SCORE_AHEAD further on in place,
+// going round again at the end of a song that loops.
+function pumpScore(e) {
+  const run = e.run;
+  if (!run) return;
+  const ev = e.events;
+  const n = ev.length / SCORE_STRIDE;
+  const until = audioCtx.currentTime + SCORE_AHEAD;
+  for (;;) {
+    while (run.next < n && run.origin + ev[run.next * SCORE_STRIDE] < until) {
+      const i = run.next++ * SCORE_STRIDE;
+      const when = Math.max(audioCtx.currentTime, run.origin + ev[i]);
+      let node = null;
+      if (ev[i + 1] < 0) {
+        const snd = sounds.get(ev[i + 2]);
+        if (snd && snd.buf) {
+          node = audioCtx.createBufferSource();
+          node.buffer = snd.buf;
+          const gain = audioCtx.createGain();
+          gain.gain.value = Math.max(0, ev[i + 3] * e.volume);
+          node.connect(gain).connect(audioCtx.destination);
+          node.start(when);
+        }
+      } else {
+        node = toneAt(when, ev[i + 1], ev[i + 2], ev[i + 3], ev[i + 4], ev[i + 5],
+                      ev[i + 6], ev[i + 7], ev[i + 8] * e.volume,
+                      ev[i + 9] * e.volume, ev[i + 10]);
+      }
+      if (node) {
+        run.nodes.add(node);
+        node.addEventListener("ended", () => run.nodes.delete(node));
+      }
+    }
+    if (run.origin + e.length > until) return;
+    if (e.loopAt < 0 || e.length <= e.loopAt) {
+      // Played through: the timer goes once the last notes have started.
+      if (run.next >= n) { clearInterval(run.timer); }
+      return;
+    }
+    run.origin += e.length - e.loopAt;
+    run.next = 0;
+    while (run.next < n && ev[run.next * SCORE_STRIDE] < e.loopAt) run.next++;
+  }
+}
+
+function handleScore(m) {
+  try {
+    const e = scores.get(m.id);
+    switch (m.cmd) {
+      case "new":
+        scores.set(m.id, { events: m.events, length: m.length, loopAt: m.loopAt,
+                           volume: 1, run: null });
+        break;
+      case "play": {
+        if (!e || !ensureAudio()) return;
+        stopScore(e);
+        // The samples the song plays have just been made, and decode on their
+        // own time: the song starts once they have.
+        const decoding = [];
+        for (let i = 0; i < e.events.length; i += SCORE_STRIDE) {
+          if (e.events[i + 1] < 0) decoding.push(sounds.get(e.events[i + 2])?.ready);
+        }
+        const run = { origin: 0, next: 0, nodes: new Set(), timer: 0 };
+        e.run = run;
+        Promise.all(decoding).then(() => {
+          if (e.run !== run) return;  // stopped or played again meanwhile
+          run.origin = audioCtx.currentTime + 0.05;
+          run.timer = setInterval(() => pumpScore(e), 25);
+          pumpScore(e);
+        });
+        break;
+      }
+      case "stop":
+        if (e) stopScore(e);
+        break;
+      case "volume":
+        if (e) e.volume = Math.max(0, m.value);
+        break;
+      case "free":
+        if (e) stopScore(e);
+        scores.delete(m.id);
+        break;
+    }
+  } catch {
+    // Audio unavailable — the program plays on in silence.
+  }
 }
 
 function resetMusic() {

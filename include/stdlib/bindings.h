@@ -5146,19 +5146,22 @@ inline JitValue _ns_audio_pcm_new(JitValue* a, int64_t) {
                  _ns_adapt::take_long(a[2]));
   return _ns_adapt::v_long(id);
 }
-// `samples` carry polygon's Long|Float contract, checked whole before any is
-// taken: a skipped element would shift every stereo pair after it.
+// An Array of numbers, with polygon's Long|Float contract, checked whole
+// before any is taken: a skipped element would shift every one after it.
+inline void _ns_audio_numbers(JitValue v, std::vector<double>& out,
+                              const char* error) {
+  out.clear();
+  auto* xs = _ns_adapt::take_array(v);
+  for (size_t i = 0; xs && i < xs->size; i++) {
+    const auto& e = xs->items[i];
+    if (e.tag != TAG_LONG && e.tag != TAG_FLOAT)
+      culebra::throw_runtime_error_at("TypeError", error, 0, 0);
+    out.push_back(_culebra_coerce_num(e.tag, e.data));
+  }
+}
 inline JitValue _ns_audio_pcm_push(JitValue* a, int64_t) {
   thread_local std::vector<double> scratch;  // a block a frame: no allocation
-  scratch.clear();
-  auto* samples = _ns_adapt::take_array(a[1]);
-  for (size_t i = 0; samples && i < samples->size; i++) {
-    const auto& e = samples->items[i];
-    if (e.tag != TAG_LONG && e.tag != TAG_FLOAT)
-      culebra::throw_runtime_error_at(
-          "TypeError", culebra::_audio_detail::kPcmSamplesError, 0, 0);
-    scratch.push_back(_culebra_coerce_num(e.tag, e.data));
-  }
+  _ns_audio_numbers(a[1], scratch, culebra::_audio_detail::kPcmSamplesError);
   return _ns_adapt::v_long(culebra::_audio_detail::pcm_push(
       _ns_adapt::take_long(a[0]), scratch.data(),
       static_cast<int64_t>(scratch.size())));
@@ -5188,6 +5191,16 @@ inline JitValue _ns_audio_capture_read(JitValue* a, int64_t) {
     culebra_runtime_array_push(r, TAG_FLOAT,
                                _culebra_double_to_bits(static_cast<double>(f)));
   return _ns_adapt::v_array(r);
+}
+// Audio.Kauai's timed notes, kScoreStride numbers an event (stdlib/audio.h).
+inline JitValue _ns_audio_score_new(JitValue* a, int64_t) {
+  namespace ad = culebra::_audio_detail;
+  std::vector<double> events;
+  _ns_audio_numbers(a[0], events, ad::kScoreEventsError);
+  int64_t id = ad::alloc_id();
+  ad::score_new(id, events.data(), static_cast<int64_t>(events.size()),
+                _ns_adapt::take_double(a[1]), _ns_adapt::take_double(a[2]));
+  return _ns_adapt::v_long(id);
 }
 
 inline JitValue _ns_canvas_width(JitValue*, int64_t) {
@@ -9791,6 +9804,11 @@ inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "capture_running", 1, &_ns_audio_ask<culebra::_audio_detail::capture_running>},
   {"_Audio", "capture_waiting", 1, &_ns_audio_count<culebra::_audio_detail::capture_waiting>},
   {"_Audio", "capture_read",   2, &_ns_audio_capture_read},
+  {"_Audio", "score_new",      3, &_ns_audio_score_new},
+  {"_Audio", "score_free",     1, &_ns_audio_on<culebra::_audio_detail::score_free>},
+  {"_Audio", "score_play",     1, &_ns_audio_on<culebra::_audio_detail::score_play>},
+  {"_Audio", "score_stop",     1, &_ns_audio_on<culebra::_audio_detail::score_stop>},
+  {"_Audio", "score_volume",   2, &_ns_audio_set<culebra::_audio_detail::score_volume>},
 };
 inline const NsMethod kNsRows_Canvas_native[] = {
   {"_Canvas", "init",            2,  &_ns_canvas_init},

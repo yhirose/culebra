@@ -1,9 +1,9 @@
 # Kauai Language Specification
 
-> **Status: Planned.** This document is the design of Kauai; nothing here is
-> implemented in Culebra yet. The songs in
-> [Appendix C](#appendix-c-complete-songs) were expanded by a prototype and
-> checked note for note.
+> **Status: Draft.** Kauai is implemented in Culebra as `Audio.Kauai`; the
+> language and its API may still change before a release. The songs in
+> [Appendix C](#appendix-c-complete-songs) were checked note for note
+> against the game they came from and against the score.
 
 Kauai is a language for writing music as a band plays it: a lead sheet of
 chords and melody, and grooves that say how the band accompanies them. A
@@ -849,25 +849,71 @@ under.
 ## 10. Playing from Culebra
 
 ```culebra
-# doctest: skip (Kauai is not implemented yet; this is the planned API)
-let song = Audio.Kauai.load("ballad.kau", voices: {
-  ep: fn (pitch, params) { Audio.Sound.new(electric_piano(pitch, params.bright)) },
-})
-song.prepare()          # build one host note; answers how many remain
+let song = Audio.Kauai.new(`
+band Duo {
+  voice Tune  pulse     plays melody            vol 20
+  voice Bass  triangle  plays roots in E2..D#3  vol 30
+}
+
+song First {
+  tempo 100
+  band Duo
+  groove Walk
+  melody in C5..B5
+
+  Verse x2
+}
+
+groove Walk {
+  Bass  1 - 5 -
+}
+
+section Verse {
+  C     e4 g c'2
+        d'4 c' g2
+  F G   a4 f g d
+  C     c1
+}
+`)
+println(song.length())     # => 19.2
+println(song.events()[0])  # => {at: 0.0, len: 0.6, by: 'Tune', pitch: 76, vol: 20.0}
 song.play()
-song.volume(0.5)
-song.reached("Drive")   # has the song passed `mark Drive`?
-song.stop()
 ```
 
-`Audio.Kauai.load(path)` reads a song file, and the files it names with
-`use`, relative to it. `Audio.Kauai.new(text)` takes a song as a string,
-which cannot `use` other files. Both check the song and raise the first
-error of [section 9](#9-errors).
+`Audio.Kauai.new(text)` takes a song as a string, which cannot `use` other
+files. `Audio.Kauai.load(path)` reads a song file, and the files it names
+with `use`, relative to it; with `dir:` it reads them from a directory
+handle instead, an `Embed.dir` or any object with `exists(name)` and
+`read(name)`, so a program built into one binary carries its songs. Both
+check the song and raise the first error of [section 9](#9-errors) as a
+`KauaiError` whose message names the file and the line
+(`ballad.kau:12: ...`, or `line 12: ...` for a string).
+
+| Method | What it does |
+|---|---|
+| `play()` | plays from the top (again, if it is playing), after building the host sounds `prepare()` has not |
+| `stop()` | stops, silencing what it was playing |
+| `volume(v)` | the level of the whole song, `0.0` to `1.0`, from its next note on |
+| `playing()` | whether it is playing: from `play()` until `stop()`, or until its end if it does not `loop` |
+| `reached(NAME)` | whether it has played as far as `mark NAME` |
+| `prepare()` | builds one host sound, and answers how many remain |
+| `length()` | seconds once through |
+| `events()` | what it plays, in order: `{at, len, by, pitch, vol}`, with `at` and `len` in seconds, `by` the voice or drum, `pitch` a MIDI note (`nil` for a drum), and `vol` the voice's `vol` at the note's dynamic (a host sound's as a fraction of its own level) |
 
 The runtime schedules every note on the audio stream's own clock, so the
 music keeps time through a long frame, and plays in a program with no frame
-loop at all.
+loop at all. A song keeps its own time as well: `playing()` and `reached()`
+follow the clock from `play()`, whether or not a device plays it.
+
+```culebra
+# doctest: skip (reads ballad.kau, and electric_piano is the program's own)
+let song = Audio.Kauai.load("ballad.kau", voices: {
+  ep: |pitch, params| Audio.Sound(electric_piano(pitch, params.bright)),
+})
+song.prepare()          # build one host sound; answers how many remain
+song.play()
+song.reached("Drive")   # has the song passed `mark Drive`?
+```
 
 A host voice is built one pitch at a time: for each pitch the song needs, the
 function given under `voices:` for the voice's host name is called with the
@@ -877,9 +923,10 @@ is built once: the function given for its sound under `drums:`
 (`drums: {kick: fn (params) { ... }}`) is called with the drum's
 `name=value` parameters, and returns the `Audio.Sound` to play. The keys of
 `voices:` and `drums:` are the host names in lower case: `host Ep` is `ep:`,
-`host HiHat` is `hihat:`.
-`prepare()` builds one sound and answers how many remain, so a game can
-spread the work over frames; `play()` builds whatever is left first.
+`host HiHat` is `hihat:`; a song whose host sound has no function is a
+`ValueError` when it is read. `prepare()` builds one sound and answers how
+many remain, so a game can spread the work over frames; `play()` builds
+whatever is left first.
 
 ## Appendix A: Chord qualities
 

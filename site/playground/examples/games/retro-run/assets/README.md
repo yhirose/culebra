@@ -20,6 +20,12 @@ the game will not notice, as long as the sizes below stay exactly as they are.
 | `background_yuugata.png` | 1290×1470 | golden hour |
 | `background_yuugure.png` | 1290×1470 | dusk |
 | `background_twilight.png` | 1290×1470 | twilight |
+| `cruise.kau`, `sprint.kau`, `run.kau` | | the laps' music in Kauai, and the band they share |
+| `ballad.kau` | | the ending theme |
+
+The music is written, not generated: songs in Kauai (`docs/kauai/language.md`),
+which any text editor changes. The game plays whatever these files say, with
+the one fixed part that the theme has a `mark Drive`, where the car drives off.
 
 ## What is fixed and what is free
 

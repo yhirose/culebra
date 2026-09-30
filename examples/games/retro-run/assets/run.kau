@@ -1,0 +1,17 @@
+band Run {
+  voice Lead    pulse     plays melody            duty 1/4  vol 15  env 1 2 4  gap 2
+  voice Second  pulse2                            duty 1/8  vol 9   env 1 2 6  gap 2
+  voice Bass    saw       plays roots in E2..D#3            vol 18  env 0 3 3  gap 3
+  voice Arp     triangle  plays chords from C4              vol 7   env 1 4 6  gap 4
+
+  Second echoes Lead      late 3/16  level 70%
+  Second harmonizes Lead  under m3
+
+  drum Kick   noise 120       len 1  vol 20  env 0 3 2
+  drum Snare  noise 800       len 3  vol 13  env 0 2 2
+  drum Hat    noise 3000      len 1  vol 5   env 0 0 1
+  drum Open   noise 3000      len 3  vol 6   env 0 0 3
+  drum Crash  noise 5000      len 4  vol 11  env 0 0 30
+  drum Tom    noise 900->500  len 3  vol 12  env 0 0 4
+  drum Floor  noise 500->250  len 3  vol 13  env 0 0 5
+}

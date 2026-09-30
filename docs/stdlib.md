@@ -8062,7 +8062,7 @@ built it. Give each isolate its own.
 ## 40. `Audio`
 
 Sound for any program: WASM-4-style tones, one-shot samples, streamed music,
-PCM the script synthesises, and the microphone. `Audio` owns the sound device on its own and
+PCM the script synthesises, the microphone, and songs written in Kauai. `Audio` owns the sound device on its own and
 needs no window, so it works the same whether a program draws with `Canvas`,
 with `Scene`, or not at all. The device opens on first use; a program that
 never plays anything never opens it.
@@ -8258,6 +8258,48 @@ loop {
   }
   Time.sleep(0.02)
 }
+```
+
+### Kauai
+
+> **Status: Draft.** The language and its API may still change before a
+> release.
+
+`Audio.Kauai` plays songs written in Kauai, a language for music as a band
+plays it: chords and a melody, and grooves that say how the band accompanies
+them ([the Kauai specification](kauai/language.md)). A song is read and
+checked whole, then handed to the runtime, which starts each note on the
+audio stream's own clock through `tone`'s channels, and plays the sounds the
+program supplies for `host` instruments as samples mixed alongside them.
+
+| Function | Effect |
+| --- | --- |
+| `Audio.Kauai.new(text: String, voices = nil, drums = nil)` | a song from its text, which uses no other files |
+| `Audio.Kauai.load(path: String, voices = nil, drums = nil, dir = nil)` | a song file and the files it `use`s, from the disk or from `dir` (an `Embed.dir`, or any object with `exists(name)` and `read(name)`) |
+
+A song's mistake raises `KauaiError`, its message naming the file and the
+line. The song answers `play()`, `stop()`, `volume(v)`, `playing()`,
+`reached(mark)`, `prepare()`, `length()` and `events()`, and keeps its own
+time whether or not a device plays it; the specification's
+[section 10](kauai/language.md#10-playing-from-culebra) has them all.
+
+```culebra
+let song = Audio.Kauai.new(`
+band Solo {
+  voice Lead  pulse  plays melody  vol 20
+}
+song Tune {
+  tempo 120
+  band Solo
+  melody in C5..B5
+  Theme
+}
+section Theme {
+  C  e4 g c'2
+}
+`)
+println(song.length())  # => 2.0
+song.play()
 ```
 
 ## 41. Design notes

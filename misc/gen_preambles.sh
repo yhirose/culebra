@@ -17,6 +17,11 @@ gen() {
   for base in time term canvas audio args matchers regex peg fst string_fns log desktop path vector2 vector3 deque priority_queue state_machine effects test_ambient; do
     name=$(printf '%s' "$base" | tr 'a-z' 'A-Z')
     printf 'inline constexpr const char* %s_MODULE_SOURCE = R"=culpre=(' "$name"
+    # Audio.Kauai is a module of its own that Audio builds: its source goes
+    # first, where audio.cul's module can call it.
+    if [ "$base" = audio ]; then
+      cat "$SRC/kauai.cul"
+    fi
     cat "$SRC/$base.cul"
     printf ')=culpre=";\n\n'
   done

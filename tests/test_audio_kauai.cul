@@ -1,0 +1,212 @@
+# Audio.Kauai: songs in the Kauai language (docs/kauai/language.md). The test
+# harness keeps the device closed (CULEBRA_AUDIO=off), so nothing sounds; a
+# song still reads, checks and times its notes, and keeps its own time while
+# it "plays".
+
+let lines = |xs| xs.join("\n")
+# Seconds to the millisecond, so that times compare as written.
+let ms = |x| Math.round(x * 1000) / 1000.0
+let notes = fn (song, by) {
+  song.events().filter(|e| e.by == by).map(|e| (ms(e.at), ms(e.len), e.pitch, ms(e.vol)))
+}
+
+let DUO = lines([
+  'band Duo {',
+  '  voice Tune  pulse     plays melody            vol 20  gap 2',
+  '  voice Bass  triangle  plays roots in E2..D#3  vol 30',
+  '  drum Kick   noise 120  len 1  vol 20',
+  '}',
+  'groove Walk {',
+  '  Bass  1 - 5 -',
+  '  Kick  x... ....',
+  '}',
+])
+let song_of = fn (body) {
+  lines([DUO, 'song First {', '  tempo 120', '  band Duo', '  groove Walk', '  melody in C5..B5', ...body, '}'])
+}
+
+# Notes, their marks and the band's dynamics: a quarter is half a second at
+# tempo 120, a staccato keeps its time, and an accent after \f is a level
+# above f, as the bass and the drums after \f are at f.
+let first = Audio.Kauai.new(lines([
+  song_of(['  Verse', '  mark End']),
+  'section Verse {',
+  "  C     e4 .g \\f !c'2",
+  '}',
+]))
+assert_eq(notes(first, "Tune"), [(0.0, 0.5, 76, 20.0), (0.5, 0.5, 79, 20.0), (1.0, 1.0, 84, 27.059)])
+assert_eq(notes(first, "Bass"), [(0.0, 1.0, 48, 30.0), (1.0, 1.0, 55, 35.294)])
+assert_eq(notes(first, "Kick"), [(0.0, 0.017, nil, 20.0)])
+assert_eq(first.length(), 2.0)
+
+# Playing keeps the song's own time, device or not; stop() ends it.
+assert_eq(first.playing(), false)
+assert_eq(first.reached("End"), false)
+first.play()
+assert_eq(first.playing(), true)
+assert_eq(first.reached("End"), false)
+first.volume(0.5)
+first.volume(1)
+first.stop()
+assert_eq(first.playing(), false)
+assert_throws("ValueError", fn () {
+  first.reached("Nowhere")
+})
+assert_throws("TypeError", fn () {
+  first.volume("loud")
+})
+
+# A tempo change, a fermata and swing all move the notes in time.
+let timed = fn (bar) {
+  notes(Audio.Kauai.new(lines([song_of(['  Verse']), 'section Verse {', "  C  {bar}", '}'])), "Tune")
+    .map(|n| n[0])
+}
+assert_eq(timed('c4 d \tempo 60 e f'), [0.0, 0.5, 1.0, 2.0])
+assert_eq(timed('c4 @d e f'), [0.0, 0.5, 1.5, 2.0])
+let swung = Audio.Kauai.new(lines([
+  song_of(['  swing 8', '  Verse']),
+  'section Verse {',
+  '  C  c8 d e f g a b c',
+  '}',
+]))
+assert_eq(notes(swung, "Tune").map(|n| n[0]), [0.0, 0.333, 0.5, 0.833, 1.0, 1.333, 1.5, 1.833])
+
+# A song that loops plays the pickup it starts with again over its end.
+let looped = Audio.Kauai.new(lines([
+  song_of(['  loop', '  Verse']),
+  'section Verse {',
+  '  pickup g8',
+  '  C  c4 d e r',
+  '}',
+]))
+assert_eq(notes(looped, "Tune").map(|n| (n[0], n[2])), [(0.0, 79), (0.25, 72), (0.75, 74), (1.25, 76), (2.0, 79)])
+assert_eq(looped.length(), 2.25)
+looped.play()
+assert_eq(looped.playing(), true)
+looped.stop()
+
+# Hits: the band strikes the rhythm in place of its groove, the bass on the
+# chord's bass note, the drums that play hits with it and the others resting;
+# a bar of rests is a break. A part plays instead of its voice's groove row.
+let BAND = lines([
+  'band Combo {',
+  '  voice Lead  pulse     plays melody            vol 20',
+  '  voice Echo  pulse2                            vol 10',
+  '  voice Bass  triangle  plays roots in E2..D#3  plays part Fill  vol 30',
+  '  Echo echoes Lead  late 1/8  level 50%',
+  '  drum Kick   noise 120   len 1  vol 20  plays hits',
+  '  drum Hat    noise 3000  len 1  vol 5',
+  '}',
+  'groove Beat {',
+  '  Bass  1 - - -',
+  '  Kick  x...',
+  '  Hat   .x.x',
+  '}',
+])
+let combo = Audio.Kauai.new(lines([
+  BAND,
+  'song Combo {', '  tempo 120', '  band Combo', '  groove Beat', '  melody in C5..B5', '  Kime with echo', '}',
+  'section Kime {',
+  '  F     c1',
+  '    hits:  !x4 r x2',
+  '  G     r1',
+  '    hits:  r1',
+  '  C     r1',
+  '    Fill:  c4 d e f',
+  '}',
+]))
+assert_eq(notes(combo, "Bass"), [(0.0, 0.5, 41, 35.294), (1.0, 1.0, 41, 30.0), (4.0, 0.5, 72, 30.0), (4.5, 0.5, 74, 30.0), (5.0, 0.5, 76, 30.0), (5.5, 0.5, 77, 30.0)])
+assert_eq(notes(combo, "Kick").map(|n| n[0]), [0.0, 1.0, 4.0])
+assert_eq(notes(combo, "Hat").map(|n| n[0]), [4.5, 5.5])
+assert_eq(notes(combo, "Echo"), [(0.25, 2.0, 72, 5.0)])
+
+# Mistakes are found before anything plays, and name their line.
+let error_of = fn (text) {
+  try {
+    Audio.Kauai.new(text)
+    nil
+  } catch e {
+    (e.kind, e.message)
+  }
+}
+assert_eq(error_of(lines([song_of(['  Verse']), 'section Verse {', '  C  c4 d e', '}'])),
+  ("KauaiError", "line 18: the bar is 3.0 beats long, want 4"))
+assert_eq(error_of(lines([song_of(['  Verse']), 'section Verse {', '  Cdim9  c1', '}'])),
+  ("KauaiError", "line 18: unknown chord: Cdim9"))
+assert_eq(error_of(lines(["use 'band.kau'", song_of(['  Verse'])])),
+  ("KauaiError", "line 1: a song given as text uses no files: use 'band.kau'"))
+assert_eq(error_of(song_of(['  Chorus'])), ("KauaiError", "line 15: no section Chorus"))
+let band_error = |line| error_of(lines(['band B {', line, '}', 'song S {', '  tempo 100', '  band B', '}']))
+assert_eq(band_error('  voice V pulse plays melody'), ("KauaiError", "line 2: a voice needs its vol: vol 20"))
+assert_eq(band_error('  voice V noise plays melody vol 10'),
+  ("KauaiError", "line 2: a voice plays on pulse, pulse2, triangle or saw, or a host instrument; not noise"))
+assert_eq(error_of(lines(['band B {', '  voice V pulse plays melody vol 10', '  voice W pulse vol 10', '}'])),
+  ("KauaiError", "line 3: W and V both play on pulse"))
+assert_eq(error_of(lines([DUO, 'song S {', '  tempo 100', '  band Duo', '  melody in C5..B5', '  V with echo', '}', 'section V {', '  C  c1', '}'])),
+  ("KauaiError", "line 14: `with echo` needs a voice that echoes the melody"))
+assert_throws("TypeError", fn () {
+  Audio.Kauai.new(42)
+})
+
+# A song file and the files it uses, here from a directory of its own: any
+# object with exists(name) and read(name), as Embed.dir gives.
+let files = {
+  "songs/band.kau": DUO,
+  "songs/first.kau": lines([
+    "use 'band.kau'",
+    'song First {', '  tempo 120', '  band Duo', '  groove Walk', '  melody in C5..B5', '  Verse', '}',
+    'section Verse {', '  C  c1', '}',
+  ]),
+  "songs/second.kau": lines(["use 'first.kau'"]),
+}
+let dir = {exists: |name| files.has(name), read: |name| files[name]}
+assert_eq(notes(Audio.Kauai.load("songs/first.kau", dir: dir), "Tune"), [(0.0, 2.0, 72, 20.0)])
+assert_throws("IOError", fn () {
+  Audio.Kauai.load("songs/none.kau", dir: dir)
+})
+let used_song = try {
+  Audio.Kauai.load("songs/second.kau", dir: dir)
+  nil
+} catch e {
+  e.message
+}
+assert_eq(used_song, "songs/first.kau:2: a file that is used holds no song")
+
+# A host voice's sounds come from the program: one per pitch, built by
+# prepare() a call at a time, or by play() all at once.
+let WAV = Encoding.hex.decode("524946462800000057415645666d7420100000000100010040" +
+  "1f0000401f000001000800646174610400000080c8803c")
+let HOSTED = lines([
+  'band Keys {',
+  '  voice Piano  host Ep bright=0.8  plays melody  poly  vol 40%',
+  '  drum Ride    host Ride           vol 50%',
+  '}',
+  'groove Time {',
+  '  Ride  x.x.',
+  '}',
+  'song Solo {', '  tempo 60', '  band Keys', '  groove Time', '  melody in C4..B4', '  Solo', '}',
+  'section Solo {', '  C  <c e g>2 c', '}',
+])
+mut asked = []
+let hosted = Audio.Kauai.new(HOSTED, voices: {
+  ep: fn (pitch, params) {
+    asked.push((pitch, params.bright))
+    Audio.Sound.new(WAV)
+  },
+}, drums: {ride: |params| Audio.Sound.new(WAV)})
+assert_eq(notes(hosted, "Piano"), [(0.0, 2.0, 60, 0.4), (0.0, 2.0, 64, 0.4), (0.0, 2.0, 67, 0.4), (2.0, 2.0, 60, 0.4)])
+assert_eq(notes(hosted, "Ride").map(|n| (n[0], n[3])), [(0.0, 0.5), (2.0, 0.5)])
+assert_eq(hosted.prepare(), 3)
+hosted.play()
+assert_eq(asked.map(|a| a[0]).sorted(), [60, 64, 67])
+assert_eq(asked[0][1], 0.8)
+hosted.stop()
+assert_throws("ValueError", fn () {
+  Audio.Kauai.new(HOSTED, drums: {ride: |params| Audio.Sound.new(WAV)})
+})
+let not_a_sound = Audio.Kauai.new(HOSTED, voices: {ep: |pitch, params| 1}, drums: {ride: |params| 1})
+assert_throws("TypeError", fn () {
+  not_a_sound.prepare()
+})
+
+print("audio kauai ok\n")

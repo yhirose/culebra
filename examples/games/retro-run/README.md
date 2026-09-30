@@ -69,12 +69,23 @@ A `music.ogg` or `music.mp3` in the directory (looked for in that order) loops
 under the run as an `Audio.Music`, replacing the built-in chiptune —
 upstream's own soundtrack, if you have it. It plays at `MUSIC_VOL` (0.6), under
 the engine but clearly audible; edit the constant to taste. The generated set
-ships no music, so the chiptune is the default: a tune a lap, breezy for the
-first and a sprint for the second.
+ships no recording, so the chiptune is the default: a tune a lap, breezy for
+the first and a sprint for the second.
 
 Either way the flag ends it: the music fades out over a couple of seconds, a
 few more pass in silence, and a slow chiptune theme plays once over the frozen
 finish; when it is done, the sea comes in and stays until the restart.
+
+The chiptunes are songs written in Kauai, a language for music as a band plays
+it (`docs/kauai/language.md`): `assets/cruise.kau` and `assets/sprint.kau` for
+the laps, which share the band in `assets/run.kau`, and `assets/ballad.kau` for
+the theme. `Audio.Kauai` reads them from the same directory as the art, so a
+`--assets` directory can bring songs of its own, and plays them on the audio
+stream's own clock. To hear one alone:
+
+```sh
+culebra examples/kauai/play.cul examples/games/retro-run/assets/cruise.kau
+```
 
 ## Performance
 

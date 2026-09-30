@@ -1,8 +1,8 @@
 # Kauai 言語仕様
 
-> **Status: Planned.** 本書はKauaiの設計であり、Culebraにはまだ実装されて
-> いません。[付録C](#付録-c-完全な曲)の曲は、試作の展開器で展開し、1音ずつ
-> 確かめてあります。
+> **Status: Draft.** KauaiはCulebraの`Audio.Kauai`として実装されています。
+> リリースまでに、言語とAPIが変わることがあります。[付録C](#付録-c-完全な曲)の
+> 曲は、元のゲームと楽譜に対して1音ずつ確かめてあります。
 
 Kauaiは、バンドが演奏するとおりに音楽を書くための言語です。コードと
 メロディのリードシートを書き、バンドがそれをどう伴奏するかをgrooveとして
@@ -819,25 +819,72 @@ section Bridge {
 ## 10. Culebra から再生する
 
 ```culebra
-# doctest: skip (Kauai is not implemented yet; this is the planned API)
-let song = Audio.Kauai.load("ballad.kau", voices: {
-  ep: fn (pitch, params) { Audio.Sound.new(electric_piano(pitch, params.bright)) },
-})
-song.prepare()          # build one host note; answers how many remain
+let song = Audio.Kauai.new(`
+band Duo {
+  voice Tune  pulse     plays melody            vol 20
+  voice Bass  triangle  plays roots in E2..D#3  vol 30
+}
+
+song First {
+  tempo 100
+  band Duo
+  groove Walk
+  melody in C5..B5
+
+  Verse x2
+}
+
+groove Walk {
+  Bass  1 - 5 -
+}
+
+section Verse {
+  C     e4 g c'2
+        d'4 c' g2
+  F G   a4 f g d
+  C     c1
+}
+`)
+println(song.length())     # => 19.2
+println(song.events()[0])  # => {at: 0.0, len: 0.6, by: 'Tune', pitch: 76, vol: 20.0}
 song.play()
-song.volume(0.5)
-song.reached("Drive")   # has the song passed `mark Drive`?
-song.stop()
 ```
 
+`Audio.Kauai.new(text)`は曲を文字列で受け取り、その中では`use`を使えません。
 `Audio.Kauai.load(path)`は曲のファイルを読み、そのファイルが`use`で指定した
-ファイルを、そこからの相対パスで読みます。`Audio.Kauai.new(text)`は曲を
-文字列で受け取り、その中では`use`を使えません。どちらも曲を検査し、
-[9章](#9-エラー)の最初のエラーを投げます。
+ファイルを、そこからの相対パスで読みます。`dir:`を渡すと、ファイルの代わりに
+ディレクトリのハンドル（`Embed.dir`、または`exists(name)`と`read(name)`を持つ
+オブジェクト）から読むので、1つのバイナリにビルドしたプログラムも曲を持ち
+運べます。どちらも曲を検査し、[9章](#9-エラー)の最初のエラーを`KauaiError`
+として投げます。メッセージにはファイルと行が付きます（`ballad.kau:12: ...`、
+文字列の曲では`line 12: ...`）。
+
+| メソッド | 働き |
+|---|---|
+| `play()` | `prepare()`でまだ作っていないhostの音を作ってから、頭から演奏する（演奏中なら頭から弾き直す） |
+| `stop()` | 止めて、鳴っている音も消す |
+| `volume(v)` | 曲全体の音量（`0.0`から`1.0`）。次の音から効く |
+| `playing()` | 演奏中かどうか。`play()`から`stop()`まで、`loop`しない曲ではその終わりまで |
+| `reached(NAME)` | `mark NAME`まで演奏したかどうか |
+| `prepare()` | hostの音を1つ作り、残りの数を返す |
+| `length()` | 1回通したときの秒数 |
+| `events()` | 演奏する音を順に並べたもの。各要素は`{at, len, by, pitch, vol}`で、`at`と`len`は秒、`by`は楽器かドラムの名前、`pitch`はMIDIのノート番号（ドラムは`nil`）、`vol`はその音の強弱での楽器の`vol`（hostの音では、音そのものの音量に対する割合） |
 
 runtimeは、すべての音を音声ストリーム自身のクロック上でスケジュールします。
 そのため、長いフレームがあってもテンポは崩れず、フレームループのない
-プログラムでも演奏できます。
+プログラムでも演奏できます。曲は自分の時間も持っています。`playing()`と
+`reached()`は、音声デバイスで鳴っているかどうかにかかわらず、`play()`からの
+時間で答えます。
+
+```culebra
+# doctest: skip (reads ballad.kau, and electric_piano is the program's own)
+let song = Audio.Kauai.load("ballad.kau", voices: {
+  ep: |pitch, params| Audio.Sound(electric_piano(pitch, params.bright)),
+})
+song.prepare()          # build one host sound; answers how many remain
+song.play()
+song.reached("Drive")   # has the song passed `mark Drive`?
+```
 
 host楽器は1音ずつ作ります。曲に必要な各音の高さについて、`voices:`の中で
 楽器のhost名に対応する関数を、音の高さ（MIDIのノート番号。`60`が中央のド）と、
@@ -846,9 +893,9 @@ host楽器は1音ずつ作ります。曲に必要な各音の高さについて
 その音の名前に対応する関数（`drums: {kick: fn (params) { ... }}`）を、ドラムの
 `name=value`パラメータで呼び、返された`Audio.Sound`を鳴らします。`voices:`と
 `drums:`のキーは、host名を小文字にしたものです。`host Ep`は`ep:`、`host HiHat`は
-`hihat:`です。`prepare()`は
-音を1つ作って残りの数を返すので、ゲームは作業を複数のフレームに分散できます。
-`play()`は残りを先に作ります。
+`hihat:`です。hostの音に対応する関数がない曲は、読んだ時点で`ValueError`に
+なります。`prepare()`は音を1つ作って残りの数を返すので、ゲームは作業を複数の
+フレームに分散できます。`play()`は残りをすべて作ってから演奏します。
 
 ## 付録 A: コードの種類
 

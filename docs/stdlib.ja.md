@@ -7749,7 +7749,7 @@ isolateごとに別の索引を持たせる。
 ## 40. `Audio`
 
 どのプログラムでも使える音: WASM-4流のtone、ワンショットのサンプル、ストリーム
-再生の音楽、スクリプトが合成するPCM、マイク。`Audio`は音声デバイスを単独で持ち、
+再生の音楽、スクリプトが合成するPCM、マイク、Kauaiで書いた曲。`Audio`は音声デバイスを単独で持ち、
 ウィンドウを必要としないので、`Canvas`で描くプログラムでも、`Scene`で描く
 プログラムでも、何も描かないプログラムでも同じように動く。デバイスは初回使用時に
 開き、何も鳴らさないプログラムはデバイスを開かない。
@@ -7939,6 +7939,46 @@ loop {
   }
   Time.sleep(0.02)
 }
+```
+
+### Kauai
+
+> **Status: Draft.** リリースまでに、言語とAPIが変わることがある。
+
+`Audio.Kauai`は、Kauaiで書いた曲を演奏する。Kauaiは、バンドが演奏するとおりに
+音楽を書く言語で、コードとメロディ、そしてバンドがそれをどう伴奏するかを
+grooveとして書く（[Kauai言語仕様](kauai/language.ja.md)）。曲は全体を読んで
+検査してからruntimeに渡され、runtimeは各音を音声ストリーム自身のクロック上で
+`tone`のチャンネルから鳴らし、`host`楽器にプログラムが渡した音をサンプルとして
+それに重ねる。
+
+| 関数 | 働き |
+| --- | --- |
+| `Audio.Kauai.new(text: String, voices = nil, drums = nil)` | 文字列の曲。他のファイルは使えない |
+| `Audio.Kauai.load(path: String, voices = nil, drums = nil, dir = nil)` | 曲のファイルと、それが`use`するファイル。ディスクから、または`dir`（`Embed.dir`、あるいは`exists(name)`と`read(name)`を持つオブジェクト）から読む |
+
+曲の誤りは`KauaiError`になり、メッセージにファイルと行が付く。曲は`play()`、
+`stop()`、`volume(v)`、`playing()`、`reached(mark)`、`prepare()`、`length()`、
+`events()`に答え、デバイスで鳴っているかどうかにかかわらず自分の時間を持つ。
+すべては仕様の[10章](kauai/language.ja.md#10-culebra-から再生する)にある。
+
+```culebra
+let song = Audio.Kauai.new(`
+band Solo {
+  voice Lead  pulse  plays melody  vol 20
+}
+song Tune {
+  tempo 120
+  band Solo
+  melody in C5..B5
+  Theme
+}
+section Theme {
+  C  e4 g c'2
+}
+`)
+println(song.length())  # => 2.0
+song.play()
 ```
 
 ## 41. 設計上の注記

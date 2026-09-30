@@ -13,12 +13,14 @@
 #include "stdlib/audio.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <mutex>
 #include <numbers>
 #include <string_view>
@@ -117,6 +119,7 @@ struct Note {
   int64_t elapsed = 0;        // samples into the note; audio thread owns this
   double phase = 0;           // 0..1, oscillator channels
   double lp_state = 0;        // noise channel's one-pole lowpass
+  int64_t owner = 0;          // the score that started it; 0 for tone()
 };
 
 // A note carries where it starts, on the stream's own sample clock. tone()
@@ -152,14 +155,103 @@ Queued g_pending[kQueueCap];
 int g_pending_count = 0;
 int64_t g_pos = 0;           // samples rendered so far
 
+// --- Score: a song's notes, on the stream's own clock ---------------------
+//
+// Audio.Kauai hands a whole song over at once, every note already timed, and
+// the mixer below starts each one on its sample: the music keeps time however
+// long a frame runs, and plays in a program with no frame loop. A note is a
+// tone on one of the channels, or a sample (an Audio.Sound's decoded PCM)
+// mixed in alongside them, as many at once as the song asks for.
+struct ScoreEvent {
+  int64_t at = 0;    // samples from the score's start
+  int channel = -1;  // a tone channel, or -1 for a sample
+  Note note;         // a tone
+  std::shared_ptr<const std::vector<float>> pcm;  // a sample, mono at kSampleRate
+  double gain = 0;   // a sample's
+};
+
+struct Score {
+  std::vector<ScoreEvent> events;  // ordered by `at`
+  int64_t length = 0;              // samples in one time through
+  int64_t loop_at = -1;            // where a loop goes back to; -1 plays once
+  std::atomic<double> volume{1.0};
+};
+
+// Asked for on the main thread, carried out at the next buffer.
+struct ScoreCommand {
+  int64_t id = 0;
+  std::shared_ptr<Score> score;  // play; null stops
+  int64_t start = 0;             // play: the stream sample the score starts on
+};
+
+// A score being played, and a sample sounding. Audio thread only.
+struct PlayingScore {
+  int64_t id = 0;
+  std::shared_ptr<Score> score;
+  int64_t origin = 0;  // the stream sample this time through starts on
+  size_t next = 0;     // the next event to start
+};
+struct Sampler {
+  int64_t owner = 0;
+  std::shared_ptr<const std::vector<float>> pcm;
+  size_t pos = 0;
+  double gain = 0;
+};
+constexpr size_t kMaxSamplers = 64;  // the oldest goes, as a channel's note would
+
+std::vector<ScoreCommand> g_score_inbox;  // guarded by g_tone_mutex
+std::vector<PlayingScore> g_playing;      // audio thread
+std::vector<Sampler> g_samplers;          // audio thread
+
+// The scores and the samples they can play, by handle. Main thread only; a
+// score holds its samples' PCM itself, so a Sound freed while a song plays
+// keeps sounding in it.
+std::unordered_map<int64_t, std::shared_ptr<Score>> g_scores;
+std::unordered_map<int64_t, std::shared_ptr<const std::vector<float>>> g_sound_pcm;
+
+// Start what score `ps` has due at stream sample `p`, and go round again at
+// its end if it loops; false once it has played through.
+bool advance_score(PlayingScore& ps, int64_t p, Note* voices) {
+  const Score& s = *ps.score;
+  for (;;) {
+    while (ps.next < s.events.size() && ps.origin + s.events[ps.next].at <= p) {
+      const ScoreEvent& e = s.events[ps.next++];
+      double v = s.volume.load(std::memory_order_relaxed);
+      if (e.channel >= 0) {
+        Note n = e.note;
+        n.vol *= v;
+        n.peak *= v;
+        n.owner = ps.id;
+        voices[e.channel] = n;
+      } else {
+        if (g_samplers.size() == kMaxSamplers) g_samplers.erase(g_samplers.begin());
+        g_samplers.push_back(Sampler{ps.id, e.pcm, 0, e.gain * v});
+      }
+    }
+    if (p < ps.origin + s.length) return true;
+    if (s.loop_at < 0 || s.length <= s.loop_at) return false;
+    ps.origin += s.length - s.loop_at;
+    ps.next = std::lower_bound(s.events.begin(), s.events.end(), s.loop_at,
+                               [](const ScoreEvent& e, int64_t at) { return e.at < at; }) -
+              s.events.begin();
+  }
+}
+
+// Silence what score `id` started: its tones on their channels, its samples.
+void cut_score(int64_t id, Note* voices) {
+  for (int c = 0; c < 5; c++)
+    if (voices[c].owner == id) voices[c].active = false;
+  std::erase_if(g_samplers, [id](const Sampler& s) { return s.owner == id; });
+}
+
 AudioStream g_tone_stream;
 bool g_tone_ready = false;
 
 // tone's vol/peak arrive as WASM-4's 0..100. A synthesised waveform is raw and
 // up to four channels stack, so tone keeps a headroom the file paths don't
 // need: the browser's "keep it gentle" 0.2.
-double tone_gain_of(int64_t v) {
-  return std::clamp(v, int64_t{0}, int64_t{100}) / 100.0 * 0.2;
+double tone_gain_of(double v) {
+  return std::clamp(v, 0.0, 100.0) / 100.0 * 0.2;
 }
 
 // The ADSR envelope's gain at `elapsed` samples into a note of the given phase
@@ -242,6 +334,13 @@ void tone_callback(void* buffer_data, unsigned int frames) {
       g_pending[g_pending_count++] = g_inbox[i];
     }
     g_inbox_count = 0;
+    // A score played again starts over; one stopped goes silent at once.
+    for (auto& cmd : g_score_inbox) {
+      std::erase_if(g_playing, [&](const PlayingScore& ps) { return ps.id == cmd.id; });
+      cut_score(cmd.id, g_voice);
+      if (cmd.score) g_playing.push_back(PlayingScore{cmd.id, std::move(cmd.score), cmd.start, 0});
+    }
+    g_score_inbox.clear();
     g_stream_next = g_pos + frames;
     g_stream_at = std::chrono::steady_clock::now();
   }
@@ -256,7 +355,12 @@ void tone_callback(void* buffer_data, unsigned int frames) {
       g_voice[g_pending[head].channel] = g_pending[head].note;
       head++;
     }
+    std::erase_if(g_playing, [&](PlayingScore& ps) { return !advance_score(ps, p, g_voice); });
     double mixed = 0.0;
+    for (auto& s : g_samplers) {
+      if (s.pos < s.pcm->size()) mixed += (*s.pcm)[s.pos++] * s.gain;
+    }
+    std::erase_if(g_samplers, [](const Sampler& s) { return s.pos >= s.pcm->size(); });
     for (int c = 0; c < 5; c++) {
       Note& n = g_voice[c];
       if (!n.active || n.elapsed >= n.total) {
@@ -283,6 +387,9 @@ void ensure_tone_stream() {
   ensure_device();
   if (!g_ready || g_tone_ready) return;
   g_tone_stream = load_stream(kSampleRate, 1, 0);  // 32-bit float, mono
+  // The mixer adds to these as notes start, and must not allocate to do it.
+  g_playing.reserve(16);
+  g_samplers.reserve(kMaxSamplers);
   SetAudioStreamCallback(g_tone_stream, tone_callback);
   // Date the stream clock before the device can call back: a tone() issued
   // ahead of the first buffer would otherwise be measured from the epoch and
@@ -307,6 +414,37 @@ template <class Map>
 typename Map::mapped_type* find_handle(Map& handles, int64_t id) {
   auto it = handles.find(id);
   return it == handles.end() ? nullptr : &it->second;
+}
+
+// A note sliding `start_freq` -> `end_freq` through its phases (in samples),
+// at tone's vol and peak (0..100).
+Note make_note(double start_freq, double end_freq, int64_t attack, int64_t decay,
+               int64_t sustain, int64_t release, double vol, double peak,
+               int64_t duty) {
+  Note n;
+  n.active = true;
+  n.start_freq = std::max(1.0, start_freq);
+  n.end_freq = std::max(1.0, end_freq);
+  n.attack = attack;
+  n.decay = decay;
+  n.sustain = sustain;
+  n.release = release;
+  n.total = n.attack + n.decay + n.sustain + n.release;
+  if (n.total <= 0) n.total = 1;  // guarantee an audible blip, like the browser
+  n.vol = tone_gain_of(vol);
+  n.peak = tone_gain_of(peak);
+  static constexpr double kDutyCycles[4] = {0.125, 0.25, 0.5, 0.75};
+  n.duty = kDutyCycles[std::clamp<int64_t>(duty, 0, 3)];
+  return n;
+}
+
+// The stream sample a note asked for now starts on: the next buffer's, and as
+// far into it as the clock has moved since that buffer was dated, so notes
+// keep their spacing however long a buffer is. Called under g_tone_mutex.
+int64_t stream_now() {
+  double ahead = std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                               g_stream_at).count();
+  return g_stream_next + static_cast<int64_t>(ahead * kSampleRate);
 }
 
 // --- Sound: decoded once, played per call -----------------------------------
@@ -500,6 +638,11 @@ void exit_teardown() {
     UnloadAudioStream(g_tone_stream);
     g_tone_ready = false;
   }
+  g_playing.clear();
+  g_samplers.clear();
+  g_score_inbox.clear();
+  g_scores.clear();
+  g_sound_pcm.clear();
   if (g_ready) {
     CloseAudioDevice();
     g_ready = false;
@@ -532,35 +675,75 @@ void tone(int64_t start_freq, int64_t end_freq, int64_t attack, int64_t decay,
   if (!g_tone_ready) return;
   if (channel < 0 || channel > 4) return;
 
-  Note n;
-  n.active = true;
-  n.start_freq = std::max<int64_t>(1, start_freq);
-  n.end_freq = std::max<int64_t>(1, end_freq);
-  n.attack = frames_to_samples(attack);
-  n.decay = frames_to_samples(decay);
-  n.sustain = frames_to_samples(sustain);
-  n.release = frames_to_samples(release);
-  n.total = n.attack + n.decay + n.sustain + n.release;
-  if (n.total <= 0) n.total = 1;  // guarantee an audible blip, like the browser
-  n.vol = tone_gain_of(vol);
-  n.peak = tone_gain_of(peak);
-  static constexpr double kDutyCycles[4] = {0.125, 0.25, 0.5, 0.75};
-  n.duty = kDutyCycles[std::clamp<int64_t>(duty, 0, 3)];
-
+  Note n = make_note(start_freq, end_freq, frames_to_samples(attack),
+                     frames_to_samples(decay), frames_to_samples(sustain),
+                     frames_to_samples(release), vol, peak, duty);
   std::lock_guard<std::mutex> lock(g_tone_mutex);
   if (g_inbox_count == kQueueCap) {   // see kQueueCap: the oldest is the loss
     std::move(g_inbox + 1, g_inbox + kQueueCap, g_inbox);
     g_inbox_count--;
   }
-  double ahead = std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                               g_stream_at).count();
-  int64_t start = g_stream_next + static_cast<int64_t>(ahead * kSampleRate);
   // The queue is walked head-first, and a sequencer never means to place a
   // note behind one it has already asked for, so clock jitter across a buffer
   // edge settles in favour of the order the calls came in.
-  start = std::max(start, g_last_start);
+  int64_t start = std::max(stream_now(), g_last_start);
   g_last_start = start;
   g_inbox[g_inbox_count++] = Queued{start, static_cast<int>(channel), n};
+}
+
+// `events` is Audio.Kauai's flat list, kScoreStride numbers an event: its
+// time in seconds, then a tone's channel, start and end frequency, attack,
+// decay, sustain and release in seconds, vol, peak and duty; or -1 and a
+// Sound's handle and gain. A Sound the device could not decode is left out.
+void score_new(int64_t id, const double* events, int64_t count, double length,
+               double loop_at) {
+  ensure_tone_stream();
+  if (!g_tone_ready) return;
+  auto samples = [](double seconds) {
+    return static_cast<int64_t>(std::max(0.0, seconds) * kSampleRate);
+  };
+  auto s = std::make_shared<Score>();
+  for (int64_t i = 0; i + kScoreStride <= count; i += kScoreStride) {
+    const double* e = events + i;
+    ScoreEvent ev;
+    ev.at = samples(e[0]);
+    ev.channel = static_cast<int>(e[1]);
+    if (ev.channel < 0) {
+      auto it = g_sound_pcm.find(static_cast<int64_t>(e[2]));
+      if (it == g_sound_pcm.end()) continue;
+      ev.pcm = it->second;
+      ev.gain = std::max(0.0, e[3]);
+    } else {
+      if (ev.channel > 4) continue;
+      ev.note = make_note(e[2], e[3], samples(e[4]), samples(e[5]), samples(e[6]),
+                          samples(e[7]), e[8], e[9], static_cast<int64_t>(e[10]));
+    }
+    s->events.push_back(std::move(ev));
+  }
+  std::stable_sort(s->events.begin(), s->events.end(),
+                   [](const ScoreEvent& a, const ScoreEvent& b) { return a.at < b.at; });
+  s->length = samples(length);
+  s->loop_at = loop_at < 0 ? -1 : samples(loop_at);
+  g_scores[id] = std::move(s);
+}
+void score_free(int64_t id) {
+  score_stop(id);
+  g_scores.erase(id);
+}
+void score_play(int64_t id) {
+  auto it = g_scores.find(id);
+  if (it == g_scores.end()) return;
+  std::lock_guard<std::mutex> lock(g_tone_mutex);
+  g_score_inbox.push_back(ScoreCommand{id, it->second, stream_now()});
+}
+void score_stop(int64_t id) {
+  if (!g_scores.contains(id)) return;
+  std::lock_guard<std::mutex> lock(g_tone_mutex);
+  g_score_inbox.push_back(ScoreCommand{id, nullptr, 0});
+}
+void score_volume(int64_t id, double v) {
+  auto it = g_scores.find(id);
+  if (it != g_scores.end()) it->second->volume.store(std::max(0.0, v));
 }
 
 // The format sniff (and its ValueError) has already run in the backend-neutral
@@ -572,8 +755,14 @@ void sound_load(int64_t id, const uint8_t* data, int64_t len, const char* fmt) {
   Wave w = LoadWaveFromMemory(fmt, data, static_cast<int>(len));
   if (w.data == nullptr) return;
   Sound s = LoadSoundFromWave(w);
-  UnloadWave(w);
   g_sounds[id] = s;
+  // A score mixes the sample itself, so it keeps it as the mixer's samples.
+  WaveFormat(&w, kSampleRate, 32, 1);
+  if (float* f = LoadWaveSamples(w)) {
+    g_sound_pcm[id] = std::make_shared<const std::vector<float>>(f, f + w.frameCount);
+    UnloadWaveSamples(f);
+  }
+  UnloadWave(w);
 }
 void sound_free(int64_t id) {
   auto it = g_sounds.find(id);
@@ -581,6 +770,7 @@ void sound_free(int64_t id) {
   StopSound(it->second);
   UnloadSound(it->second);
   g_sounds.erase(it);
+  g_sound_pcm.erase(id);
 }
 void sound_play(int64_t id) {
   if (auto* s = find_handle(g_sounds, id)) PlaySound(*s);  // restarts if already playing

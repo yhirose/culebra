@@ -1,0 +1,124 @@
+# Play a song written in Kauai (docs/kauai/language.md):
+#
+#   culebra examples/kauai/play.cul song.kau
+#
+# The song is read and checked, then handed to the runtime whole, which keeps
+# time on the audio stream's own clock: this script only waits for the end
+# (Ctrl+C stops a song that loops).
+#
+# A band that plays `host` instruments names sounds this script supplies:
+# `host Ep` (an electric piano, `bright=` how hard its hammer bites) and the
+# drums `host Kick`, `Snare`, `Hat`, `Ride`, `Crash` and `Tom`. Each is
+# synthesised here into a WAV once, as the song asks for it.
+
+let RATE = 22050
+
+# `v` as `n` little-endian bytes.
+fn le_bytes(v, n) {
+  iota(n).map(|i| v >> 8 * i & 255)
+}
+
+# 16-bit mono samples (-1.0..1.0) as a WAV file's bytes.
+fn wav(samples) {
+  let n = samples.size()
+  mut out = [
+    ...le_bytes(0x46464952, 4),  # RIFF
+    ...le_bytes(36 + n * 2, 4),
+    ...le_bytes(0x45564157, 4),  # WAVE
+    ...le_bytes(0x20746d66, 4),  # fmt
+    ...le_bytes(16, 4),
+    ...le_bytes(1, 2),  # PCM
+    ...le_bytes(1, 2),  # mono
+    ...le_bytes(RATE, 4),
+    ...le_bytes(RATE * 2, 4),
+    ...le_bytes(2, 2),
+    ...le_bytes(16, 2),
+    ...le_bytes(0x61746164, 4),  # data
+    ...le_bytes(n * 2, 4),
+  ]
+  for s in samples {
+    let v = Math.round(Math.max(-1.0, Math.min(1.0, s)) * 32000) & 0xFFFF
+    out.push(v & 255)
+    out.push(v >> 8)
+  }
+  String.from_bytes(out)
+}
+
+fn hz(pitch) {
+  440.0 * Math.exp((pitch - 69) / 12.0 * Math.log(2.0))
+}
+
+# Three seconds of an electric piano's note: two FM pairs a hair apart for the
+# chorus of a real instrument, the modulation falling away after the hammer.
+fn electric_piano(pitch, bright) {
+  let w = 2.0 * Math.pi * hz(pitch) / RATE
+  let w2 = w * 1.0025
+  let decay = 1.1 * Math.sqrt(hz(pitch) / 261.63)
+  let n = RATE * 3
+  iota(n).map(fn (i) {
+    let t = i.to_float() / RATE
+    let index = bright * (1.4 * Math.exp(-t * 6.0) + 0.25)
+    let tines = Math.sin(w * i + index * Math.sin(w * i)) +
+      Math.sin(w2 * i + index * Math.sin(w2 * i))
+    tines * 0.25 * Math.exp(-t * decay) * Math.min(1.0, i / 40.0) * Math.min(1.0, (n - i) / 800.0)
+  })
+}
+
+# A drum: a pitch that falls from `f0` to `f1`, and noise, each dying away
+# over `secs`.
+fn drum(secs, f0, f1, tone, noise) {
+  let n = Math.round(RATE * secs)
+  mut phase = 0.0
+  iota(n).map(fn (i) {
+    let t = i.to_float() / n
+    phase += 2.0 * Math.pi * (f0 + (f1 - f0) * t) / RATE
+    let env = Math.exp(-t * 5.0) * Math.min(1.0, i / 20.0)
+    (Math.sin(phase) * tone + Random.uniform(-1.0, 1.0) * noise) * env
+  })
+}
+
+let DRUMS = {
+  kick: || drum(0.35, 140.0, 45.0, 0.9, 0.05),
+  snare: || drum(0.2, 220.0, 160.0, 0.35, 0.5),
+  hat: || drum(0.06, 8000.0, 8000.0, 0.0, 0.35),
+  ride: || drum(0.8, 5200.0, 5000.0, 0.08, 0.2),
+  crash: || drum(1.4, 4000.0, 3000.0, 0.05, 0.4),
+  tom: || drum(0.3, 180.0, 110.0, 0.8, 0.1),
+}
+
+fn clock(secs) {
+  let s = Math.round(secs)
+  "{s / 60}:{s % 60 < 10 ? "0" : ""}{s % 60}"
+}
+
+if Sys.argv.empty() {
+  println("usage: culebra examples/kauai/play.cul <song.kau>")
+  Sys.exit(2)
+}
+let path = Sys.argv[0]
+let song = try {
+  Audio.Kauai.load(
+    path,
+    voices: {ep: |pitch, params| Audio.Sound(wav(electric_piano(pitch, params.get("bright", 1.0))))},
+    drums: DRUMS.keys().map(|k| (k, |params| Audio.Sound(wav(DRUMS[k]())))).to_object(),
+  )
+} catch e {
+  println("{e.kind}: {e.message}")
+  Sys.exit(1)
+}
+if !Audio.available() {
+  println("{path}: no audio device, so nothing plays")
+  Sys.exit(1)
+}
+# Build the host sounds first, saying how far along it is: play() would build
+# them all the same, only in silence.
+mut left = song.prepare()
+while left > 0 {
+  print("\rpreparing sounds: {left} left ")
+  left = song.prepare()
+}
+println("\rplaying {path} ({clock(song.length())} once through)")
+song.play()
+while song.playing() {
+  Time.sleep(0.1)
+}

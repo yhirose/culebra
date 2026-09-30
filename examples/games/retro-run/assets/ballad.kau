@@ -1,0 +1,84 @@
+# The racing game's ending theme: a slow ballad in Eb, after the late-night
+# coast-road ballads of the 16-bit arcades.
+
+band Trio {
+  voice Piano  host Ep bright=0.8  plays chords rootless from E3  poly  vol 26%
+  voice Sing   host Ep bright=1.3  plays melody                    poly  vol 46%
+  voice Bass   triangle            plays roots in E2..D#3          vol 34  env 3 0 14  gap 3
+
+  drum Brush  noise 4000  len 2  vol 4  env 0 0 5
+  drum Ride   noise 6000  len 1  vol 3  env 0 0 10
+}
+
+song Theme {
+  tempo 69
+  key Eb
+  band Trio
+  melody in D5..C#6
+
+  Intro
+  mark Drive
+  Verse
+  Peak
+}
+
+groove Alone {
+  Piano  x - - -  - - - -  - - 4 -  - - - - | x - - -  - - - -  x - - -  - - - -
+  Bass   1 - - -  - - - -  - - - -  5 - - - | 1 - - -  - - - -  1 - - -  - - > -
+  Ride   .... x... .... x...
+}
+
+groove Verse {
+  Piano  x - - -  - - - -  - - x -  - - 4 -
+  Bass   1 - - -  - - - -  - - 5 -  - - > -
+  Brush  .... x... .... x...
+}
+
+groove Peak {
+  Piano  x - - 4  - - 3 -  x - - 4  - - 3 -
+  Bass   1 - - -  - - 5 -  1 - - -  8 - > -
+  Brush  .... x... .... x...
+  Ride   .... .... x... ..x.
+}
+
+groove Settle {
+  Piano  x - - -  - - 4 -  - - 3 -  - - 2 -
+  Bass   1 - - -  - - - -  - - - -  - - - -
+}
+
+groove Ring {
+  Piano  x - - -  - - - -  - - - -  - - - -
+  Bass   1 - - -  - - - -  - - - -  - - - -
+}
+
+section Intro {
+  groove Alone
+  Abmaj9      r4. bb16 g bb2~
+  Gm7 C7      bb g8 f e2
+  Fm9         f4. bb16 g eb2~
+  Bb7sus4 Bb7 eb r8 eb16 f d4 f8 g
+}
+
+section Verse {
+  Ebmaj9      bb2~ bb8 g4 f8
+  Gm7 Cm9     g2 eb4 d8 eb
+  Abmaj9      c2 bb4 g
+  Fm9 Bb7sus4 ab4. g8 f4 eb
+  Ebmaj9      d4. eb8 f4 g8 bb
+  Dm7b5 G7    c4. ab8 b4. g8
+  Cm9         g2~ g8 eb d c,
+  Abm6 Db9    eb2 f4 eb
+}
+
+section Peak {
+  Abmaj9      eb'4. c bb4
+  Bb/Ab       d'2 c4 bb
+  Gm7         bb4. d' c8 bb
+  Cm9         g2~ g8 bb g eb
+  Fm9         f2 ab4 g
+  Bb7sus4 Bb7 eb4. f8 d4. r8
+  groove Settle
+  Abmaj9      eb2 g4 bb
+  groove Ring
+  Ebmaj9      g1
+}

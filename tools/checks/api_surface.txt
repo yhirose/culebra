@@ -1063,3 +1063,5 @@ mic.start()
 running() -> Bool
 mic.waiting() -> Long
 mic.read(frames = nil) -> Array
+Audio.Kauai.new(text: String, voices = nil, drums = nil)
+Audio.Kauai.load(path: String, voices = nil, drums = nil, dir = nil)

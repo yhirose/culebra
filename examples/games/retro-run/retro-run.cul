@@ -589,7 +589,7 @@ mut finished = false
 # --- BGM ---------------------------------------------------------------
 # A music.ogg / music.mp3 next to the art (upstream's own soundtrack, say)
 # loops under the run instead of the chiptune; the generated assets ship no
-# music, so the riff below is the default. It sits under the engine and the
+# recording, so the songs below are the default. It sits under the engine and the
 # chiptune's own level, loud enough to carry on laptop speakers.
 let MUSIC_FILE = ["music.ogg", "music.mp3"].find(|n| ART.exists(n))
 let MUSIC_VOL = 0.6
@@ -604,683 +604,15 @@ let MUSIC_DELAY = GO_BEEP + FPS  # frames from the green light to the music
 mut music_on = false
 mut music_wait = MUSIC_DELAY
 
-# The chiptune fallback: a tune per lap, sequenced from `update()` so the
-# rhythm is exact regardless of display framerate. `tone()` is fire-and-forget
-# (the APU keeps playing the note on its own), so the sequencer only asks
-# "does a note start on this sixteenth". Every channel is monophonic, so each
-# has one part: the lead on the pulse, a second pulse that echoes or
-# harmonises it, the bass on the sawtooth, the chords broken up on the
-# triangle, the drums on the noise.
-let BAR = 16  # sixteenths per bar
-let ECHO = 3  # sixteenths the echo trails the lead by
-
-# Pitches are MIDI numbers, converted once at load.
-let hz = fn (n) {
-  Math.round(440 * Math.exp((n - 69) / 12.0 * Math.log(2.0)))
-}
-let HZ = iota(128).map(hz)
-
-let PITCH_CLASS = {C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11}
-
-# The letter and accidental at the head of `s` ("F#m7", "Bb5") as a pitch
-# class, and the rest of the string.
-let split_root = fn (s) {
-  let letter = s.slice(0, 1).to_string()
-  if !PITCH_CLASS.has(letter) {
-    throw {kind: "ValueError", message: "not a note: {s}"}
-  }
-  let accidental = s.size() > 1 ? s.slice(1, 2).to_string() : ""
-  let shift = cond {
-    accidental == "#" => 1,
-    accidental == "b" => -1,
-    _ => 0,
-  }
-  let head = shift == 0 ? 1 : 2
-  (
-    Math.wrap(PITCH_CLASS[letter] + shift, 12),
-    s.slice(head, s.size()).to_string(),
-  )
-}
-
-# A lead token: a note name starts a note ("A5" is 81), `-` holds the one
-# before it (-1), `.` rests (0).
-let note_number = fn (tok) {
-  return -1 if tok == "-"
-  return 0 if tok == "."
-  let (pc, octave) = split_root(tok)
-  (to_long(octave) + 1) * 12 + pc
-}
-
-# The intervals of a chord quality, always four, so an arpeggio has four
-# tones to walk.
-let chord_shape = fn (quality) {
-  match quality {
-    "" => [0, 4, 7, 12],
-    "m" => [0, 3, 7, 12],
-    "6" => [0, 4, 7, 9],
-    "m6" => [0, 3, 7, 9],
-    "7" => [0, 4, 7, 10],
-    "maj7" => [0, 4, 7, 11],
-    "m7" => [0, 3, 7, 10],
-    "m7b5" => [0, 3, 6, 10],
-    "sus4" => [0, 5, 7, 12],
-    "7sus4" => [0, 5, 7, 10],
-    "add9" => [0, 4, 7, 14],
-    "9" => [0, 4, 7, 10, 14],
-    "maj9" => [0, 4, 7, 11, 14],
-    "m9" => [0, 3, 7, 10, 14],
-    _ => nil,
-  }
-}
-
-# A chord symbol ("F#m/A") as (bass, tones): the bass in E2..D#3, so a line
-# that walks down the roots walks down, and the tones from middle C up.
-let chord = fn (name) {
-  let (symbol, over) = name.split_once("/") ?? (name, nil)
-  let (pc, quality) = split_root(symbol.to_string())
-  let shape = chord_shape(quality)
-  if shape == nil {
-    throw {kind: "ValueError", message: "unknown chord: {name}"}
-  }
-  mut bass_pc = pc
-  if over != nil {
-    let (over_pc, _) = split_root(over.to_string())
-    bass_pc = over_pc
-  }
-  (40 + Math.wrap(bass_pc - 4, 12), shape.map(|i| 60 + pc + i))
-}
-
-# The whitespace-separated tokens of a pattern, which must number `n`.
-let tokens = fn (text, n) {
-  let out = text.split_whitespace().map(|tok| tok.to_string())
-  if out.size() != n {
-    throw {
-      kind: "ValueError",
-      message: "want {n} tokens, got {out.size()}: {text}",
-    }
-  }
-  out
-}
-
-# A note table becomes (pitch, length in sixteenths) at each onset.
-let onsets = fn (table) {
-  mut out = repeat(table.size(), nil)
-  for i, n in table.enumerate() {
-    continue if n <= 0
-    mut len = 1
-    while i + len < table.size() && table[i + len] == -1 {
-      len += 1
-    }
-    out[i] = (n, len)
-  }
-  out
-}
-
-# The highest of `tones`, in any octave, at least a minor third under `m`.
-let below = fn (tones, m) {
-  tones.map(|tone| m - 3 - Math.wrap(m - 3 - tone, 12)).max()
-}
-
-# A tune from its score, expanded to what starts on each sixteenth.
+# The chiptune fallback: a song per lap and the ending theme, written in the
+# Kauai language (assets/*.kau; docs/kauai/language.md has them all). Each is
+# handed to the runtime whole, which keeps time on the audio stream's own
+# clock, so a frame that runs long never drags the music.
 #
-# `chords` has a bar per entry: one chord symbol, or two split at the half
-# bar. `lead` has a bar per entry of sixteen tokens (a note name starts a
-# note, `-` holds it, `.` rests). `form` names the groove each bar plays, and
-# a groove is the bass as intervals over the root per sixteenth (`.` rests,
-# `>` steps up a semitone into the next bar's root; each note lasts until the
-# next unless `bass_len` says otherwise), the arpeggio as chord tones by
-# index per eighth, the drums as a letter of `kit` per sixteenth, and what
-# the second pulse plays: `echo` (the lead, ECHO sixteenths late and softer)
-# or `harmony` (the chord tone under each lead note).
-let tune = fn (score) {
-  let bars = score.chords.size()
-  let steps = bars * BAR
-  if score.lead.size() != bars || score.form.size() != bars {
-    throw {
-      kind: "ValueError",
-      message: "{bars} bars of chords, {score.lead.size()} of lead, {score.form.size()} of form",
-    }
-  }
-  let changes = score.chords.map(fn (text) {
-    text.split_whitespace().map(|name| chord(name.to_string()))
-  })
-  let lead = onsets(score.lead.flat_map(fn (text) {
-    tokens(text, BAR).map(note_number)
-  }))
-  mut grooves = {}
-  for name, g in score.grooves {
-    let hits = g.drums.iter().map(|ch| ch.to_string()).collect()
-    if hits.size() != BAR || hits.any(|ch| ch != "." && !score.kit.has(ch)) {
-      throw {kind: "ValueError", message: "bad drums in {name}: {g.drums}"}
-    }
-    grooves[name] = {
-      bass: tokens(g.bass, BAR),
-      bass_len: g.get("bass_len", nil),
-      arp: tokens(g.arp, BAR / 2),
-      drums: hits,
-      second: g.get("second", nil),
-    }
-  }
-  if !score.form.all(|name| grooves.has(name)) {
-    throw {kind: "ValueError", message: "form names a groove the score lacks"}
-  }
-
-  let arp_shift = score.get("arp_shift", 0)
-  mut bass = repeat(steps, nil)
-  mut arp = repeat(steps, nil)
-  mut drums = repeat(steps, nil)
-  mut second = repeat(steps, nil)
-  for step in 0..steps {
-    let bar = step / BAR
-    let slot = step % BAR
-    let g = grooves[score.form[bar]]
-    let here = changes[bar]
-    let (root, tones) = here[here.size() == 2 && slot >= BAR / 2 ? 1 : 0]
-
-    let bass_hit = g.bass[slot]
-    if bass_hit != "." {
-      let (next_root, _) = changes[(bar + 1) % bars][0]
-      mut run = 1
-      while slot + run < BAR && g.bass[slot + run] == "." {
-        run += 1
-      }
-      bass[step] = (
-        bass_hit == ">" ? next_root - 1 : root + to_long(bass_hit),
-        g.bass_len ?? run,
-      )
-    }
-    let pick = g.arp[slot / 2]
-    arp[step] = tones[to_long(pick)] + arp_shift if slot % 2 == 0 && pick != "."
-    drums[step] = g.drums[slot] if g.drums[slot] != "."
-
-    let echoed = lead[Math.wrap(step - ECHO, steps)]
-    if g.second == "echo" && echoed != nil {
-      let (echo_pitch, echo_len) = echoed
-      second[step] = (echo_pitch, echo_len, 0.7)
-    } else if g.second == "harmony" && lead[step] != nil {
-      let (sung, sung_len) = lead[step]
-      second[step] = (below(tones, sung), sung_len, 1.0)
-    }
-  }
-  {
-    tick: score.tick,
-    length: score.tick * steps,
-    voices: score.voices,
-    kit: score.kit,
-    lead: lead,
-    second: second,
-    bass: bass,
-    arp: arp,
-    drums: drums,
-  }
-}
-
-# An instrument: the channel, its sustain level and envelope in frames.
-let voice = fn (wave, vol, attack, decay, release, duty = Audio.DUTY_HALF) {
-  {
-    wave: wave,
-    vol: vol,
-    attack: attack,
-    decay: decay,
-    release: release,
-    duty: duty,
-  }
-}
-
-let sound = fn (v, pitch, frames, gain) {
-  Audio.tone(
-    HZ[pitch],
-    frames,
-    vol: Math.round(v.vol * gain),
-    wave: v.wave,
-    attack: v.attack,
-    decay: v.decay,
-    release: v.release,
-    duty: v.duty,
-  )
-}
-
-# One hit of a kit's drum on the noise channel.
-let drum = fn (d, gain) {
-  Audio.tone(
-    d.freq,
-    d.dur,
-    vol: Math.round(d.vol * gain),
-    wave: Audio.NOISE,
-    end_freq: d.end_freq ?? d.freq,
-    decay: d.decay ?? 0,
-    release: d.release ?? 0,
-  )
-}
-
-# Start whatever begins on sixteenth `step` of tune `t`, at `gain`.
-let play_step = fn (t, step, gain) {
-  let v = t.voices
-  let lead = t.lead[step]
-  if lead != nil {
-    let (lead_pitch, lead_len) = lead
-    sound(v.lead, lead_pitch, lead_len * t.tick - 2, gain)
-  }
-  let second = t.second[step]
-  if second != nil {
-    let (second_pitch, second_len, level) = second
-    sound(v.second, second_pitch, second_len * t.tick - 2, gain * level)
-  }
-  let bass = t.bass[step]
-  if bass != nil {
-    let (bass_pitch, bass_len) = bass
-    sound(v.bass, bass_pitch, bass_len * t.tick - 3, gain)
-  }
-  let key = t.arp[step]
-  sound(v.arp, key, t.tick * 2 - 4, gain) if key != nil
-  let hit = t.drums[step]
-  drum(t.kit[hit], gain) if hit != nil
-}
-
-# The race's band: a nasal lead, a thin second pulse under it, a sawtooth
-# bass, soft triangle arpeggios. The kit: kick, snare, closed and open hat,
-# crash, high and low tom.
-let RUN_VOICES = {
-  lead: voice(Audio.PULSE, 15, 1, 2, 4, Audio.DUTY_QUARTER),
-  second: voice(Audio.PULSE2, 9, 1, 2, 6, Audio.DUTY_EIGHTH),
-  bass: voice(Audio.SAWTOOTH, 18, 0, 3, 3),
-  arp: voice(Audio.TRIANGLE, 7, 1, 4, 6),
-}
-let RUN_KIT = {
-  k: {freq: 120, dur: 1, vol: 20, decay: 3, release: 2},
-  s: {freq: 800, dur: 3, vol: 13, decay: 2, release: 2},
-  h: {freq: 3000, dur: 1, vol: 5, release: 1},
-  o: {freq: 3000, dur: 3, vol: 6, release: 3},
-  c: {freq: 5000, dur: 4, vol: 11, release: 30},
-  t: {freq: 900, end_freq: 500, dur: 3, vol: 12, release: 4},
-  T: {freq: 500, end_freq: 250, dur: 3, vol: 13, release: 5},
-}
-
-# Lap one cruises, ~129 bpm in C: four bars over IV-V-iii-vi on a straight
-# beat, a figure that springs off two sixteenths and is answered higher, then
-# a long note and a turnaround; a
-# verse whose phrases answer each other, sixteenth pickups against held notes,
-# over a city-pop turn (a borrowed Fm6 for a moment of shade); a pre-chorus
-# that climbs over falling chords; and a hook over the royal road that states
-# its figure, answers it and builds to a high G, played twice: echoed, then in
-# harmony with a second ending that reaches the high G again before falling
-# back to the top of the tune.
-let CRUISE_HOOK = [
-  "C6 - - A5  - - C6 -  E6 - - -  D6 - C6 -",
-  "D6 - - -  - - B5 -  - - G5 -  A5 - B5 -",
-  "B5 - - G5  - - B5 -  D6 - - -  E6 - D6 -",
-  "C6 - - -  - - - -  . . E6 -  D6 - C6 -",
-  "A5 - - F5  - - A5 -  C6 - - -  E6 - F6 -",
-  "G6 - - -  F6 - D6 -  B5 - - -  D6 - F6 -",
-  "E6 - - -  - - - -  D6 - B5 -  G5 - A5 -",
-  "- - - -  . . Bb5 -  A5 - G5 -  E5 - G5 -",
-]
-let CRUISE = tune({
-  tick: 7,
-  voices: RUN_VOICES,
-  kit: RUN_KIT,
-  chords: [
-    "Fmaj7",
-    "G6",
-    "Em7",
-    "Am7",
-    "Cmaj7",
-    "Bm7b5 E7",
-    "Am7",
-    "Gm7 C7",
-    "Fmaj7",
-    "Fm6",
-    "Em7 A7",
-    "Dm7 G7",
-    "Fmaj7",
-    "Em7",
-    "Dm7",
-    "G7sus4 G7",
-    "Fmaj7",
-    "G7",
-    "Em7",
-    "Am7",
-    "Dm7",
-    "G7",
-    "Cmaj7",
-    "Gm7 C7",
-    "Fmaj7",
-    "G7",
-    "Em7",
-    "Am7",
-    "Dm7",
-    "G7",
-    "Cmaj7",
-    "Gm7 C7",
-  ],
-  lead: [
-    ". . A5 C6  E6 - - D6  - - C6 -  A5 - - -",
-    ". . B5 D6  G6 - - E6  - - D6 -  B5 - D6 -",
-    "E6 - - -  - - - -  D6 - B5 -  G5 - A5 -",
-    "B5 - - C6  - - - -  E6 - D6 -  C6 - B5 -",
-    ". . . .  . . E5 G5  B5 - - A5  - - G5 -",
-    "- - - -  F5 - E5 -  D5 - - -  G#5 - B5 -",
-    "C6 - - -  - - B5 -  A5 - - -  E5 - G5 -",
-    "- - F5 -  Bb5 - - A5  - - G5 -  E5 - - -",
-    "F5 - - -  . . A5 C6  E6 - - D6  - - C6 -",
-    "- - - -  . . Ab5 -  G5 - F5 -  D5 - F5 -",
-    "E5 - - -  G5 - B5 -  C#6 - - E6  - - D6 -",
-    "- - - -  C6 - A5 -  B5 - - -  G5 - F5 -",
-    "E5 - F5 -  A5 - C6 -  - - E6 -  C6 - A5 -",
-    "B5 - - -  G5 - B5 -  - - D6 -  B5 - G5 -",
-    "A5 - C6 -  D6 - F6 -  - - E6 -  D6 - C6 -",
-    "D6 - - -  - - C6 -  B5 - - -  . G5 A5 B5",
-    ...CRUISE_HOOK,
-    ...CRUISE_HOOK.slice(0, 6),
-    "E6 - - -  - - - -  G6 - E6 -  D6 - C6 -",
-    "- - - -  . . D6 -  C6 - Bb5 -  G5 - E5 -",
-  ],
-  grooves: {
-    intro: {
-      bass: "0 . . 0  12 . 0 .  0 . . 0  12 . > .",
-      bass_len: 2,
-      arp: "0 1 2 3 2 3 1 2",
-      drums: "k.h.s.h.k.hks.h.",
-      second: "harmony",
-    },
-    intro_turn: {
-      bass: "0 . . 0  12 . 0 .  0 . . 0  12 . > .",
-      bass_len: 2,
-      arp: "0 1 2 3 2 3 1 2",
-      drums: "k.h.s.h.k.hsstTT",
-      second: "harmony",
-    },
-    verse: {
-      bass: "0 . . 0  12 . 0 .  . 12 . 0  7 . > .",
-      bass_len: 2,
-      arp: "0 1 2 3 2 3 1 2",
-      drums: "k.h.s.hkk.h.s.o.",
-    },
-    climb: {
-      bass: "0 . 0 .  0 . 0 .  0 . 0 .  0 . > .",
-      bass_len: 2,
-      arp: "0 1 2 3 0 1 2 3",
-      drums: "k.hhs.hhk.hhs.hh",
-      second: "echo",
-    },
-    fill: {
-      bass: "0 . 0 .  0 . 0 .  0 . 0 .  0 . > .",
-      bass_len: 2,
-      arp: "0 1 2 3 0 1 2 3",
-      drums: "k.s.s.ssttttTTTT",
-      second: "echo",
-    },
-    hook_in: {
-      bass: "0 . 12 .  0 12 . 0  . 12 0 .  7 . > .",
-      bass_len: 2,
-      arp: "3 2 1 0 1 2 3 2",
-      drums: "c.h.s.hkk.h.s.ho",
-      second: "echo",
-    },
-    hook: {
-      bass: "0 . 12 .  0 12 . 0  . 12 0 .  7 . > .",
-      bass_len: 2,
-      arp: "3 2 1 0 1 2 3 2",
-      drums: "k.h.s.hkk.h.s.ho",
-      second: "echo",
-    },
-    hook_turn: {
-      bass: "0 . 12 .  0 12 . 0  . 12 0 .  7 . > .",
-      bass_len: 2,
-      arp: "3 2 1 0 1 2 3 2",
-      drums: "k.h.s.hkk.hsssTT",
-      second: "echo",
-    },
-    twin_in: {
-      bass: "0 . 12 .  0 12 . 0  . 12 0 .  7 . > .",
-      bass_len: 2,
-      arp: "3 2 1 0 1 2 3 2",
-      drums: "c.h.s.hkk.h.s.ho",
-      second: "harmony",
-    },
-    twin: {
-      bass: "0 . 12 .  0 12 . 0  . 12 0 .  7 . > .",
-      bass_len: 2,
-      arp: "3 2 1 0 1 2 3 2",
-      drums: "k.h.s.hkk.h.s.ho",
-      second: "harmony",
-    },
-    twin_turn: {
-      bass: "0 . 12 .  0 12 . 0  . 12 0 .  7 . > .",
-      bass_len: 2,
-      arp: "3 2 1 0 1 2 3 2",
-      drums: "k.h.s.hkk.hsssTT",
-      second: "harmony",
-    },
-  },
-  form: [
-    ...repeat(3, "intro"),
-    "intro_turn",
-    ...repeat(8, "verse"),
-    ...repeat(3, "climb"),
-    "fill",
-    "hook_in",
-    ...repeat(6, "hook"),
-    "hook_turn",
-    "twin_in",
-    ...repeat(6, "twin"),
-    "twin_turn",
-  ],
-})
-
-# Lap two sprints for the flag, 150 bpm in D, after the Japanese fusion bands
-# of the 80s: a twin-lead riff of 3-3-2 hits that climbs out of each one,
-# over Dmaj7, C/D and Bbmaj7; a verse phrased
-# like a saxophone, leaning on ninths, a Lydian sharp four and a flat seven
-# over ii-iii-IV-V and a bVII9; a pre-chorus climbing sus chords a step at a
-# time; and a chorus that holds major sevenths while the chords slide down a
-# semitone (IV-iii-bIII), echoed in D, then in harmony a step up in E before
-# bVI-bVII drops it back into the riff. Sixteenth hats and a bass bouncing on
-# the octave keep it running.
-let SPRINT = tune({
-  tick: 6,
-  voices: RUN_VOICES,
-  kit: RUN_KIT,
-  chords: [
-    "Dmaj7",
-    "C/D",
-    "Bbmaj7",
-    "A7sus4 A7",
-    "Em9",
-    "F#m7",
-    "Gmaj7",
-    "A7sus4 A7",
-    "Bm9",
-    "Gmaj7",
-    "C9",
-    "F#m7 B7",
-    "G/A",
-    "A/B",
-    "Bb/C",
-    "C/D D7",
-    "Gmaj7",
-    "F#m7",
-    "Fmaj7",
-    "Em7 A7",
-    "Bm7",
-    "E9",
-    "Gmaj7/A",
-    "Cmaj7 D/E",
-    "Amaj7",
-    "G#m7",
-    "Gmaj7",
-    "F#m7 B7",
-    "C#m7",
-    "F#9",
-    "Amaj7/B",
-    "Bbmaj7 C",
-  ],
-  lead: [
-    "D6 - . A5  - . D6 -  E6 - F#6 -  . A6 - -",
-    "G6 - - -  . . E6 -  . D6 - C6  - - A5 -",
-    "Bb5 - . F5  - . Bb5 -  C6 - D6 -  . F6 - -",
-    "E6 - - D6  - - A5 -  C#6 - E6 -  D6 C#6 B5 A5",
-    "F#5 - - -  - - - -  . . G5 A5  B5 - D6 -",
-    "- - E6 -  - - C#6 -  - - B5 -  A5 - - -",
-    "- - - -  . . F#5 A5  C#6 - - B5  - - A5 -",
-    "- - E5 -  G5 - A5 -  D6 - - C#6  - - . .",
-    ". . F#5 A5  C#6 - - -  B5 - A5 -  - - F#5 -",
-    "- - - -  E5 - F#5 -  A5 - - B5  - - D6 -",
-    "E6 - - -  D6 - Bb5 -  - - G5 -  E5 - G5 -",
-    "A5 - - C#6  - - E6 -  D#6 - - -  A5 - F#5 -",
-    "E5 - A5 -  B5 - D6 -  - - E6 -  D6 - B5 -",
-    "F#5 - B5 -  C#6 - E6 -  - - F#6 -  E6 - C#6 -",
-    "G5 - C6 -  D6 - F6 -  - - G6 -  F6 - D6 -",
-    "E6 - - -  - - D6 -  C6 - A5 -  F#5 G5 A5 -",
-    "F#6 - - -  - - - -  E6 - F#6 -  D6 - F#6 -",
-    "- - E6 -  C#6 - - -  B5 - C#6 -  E6 - - -",
-    "E6 - - -  - - - -  D6 - E6 -  C6 - E6 -",
-    "- - D6 -  B5 - - -  C#6 - E6 -  G6 - F#6 -",
-    "- - - -  - - E6 -  D6 - - C#6  - - B5 -",
-    "- - - -  G#5 - B5 -  D6 - - E6  - - F#6 -",
-    "- - - -  - - E6 -  D6 - - B5  - - A5 -",
-    "- - - -  G5 - B5 -  D6 - - E6  - - F#6 -",
-    "G#6 - - -  - - - -  F#6 - G#6 -  E6 - G#6 -",
-    "- - F#6 -  D#6 - - -  C#6 - D#6 -  F#6 - - -",
-    "F#6 - - -  - - - -  E6 - F#6 -  D6 - F#6 -",
-    "- - E6 -  C#6 - - -  D#6 - F#6 -  A6 - G#6 -",
-    "- - - -  - - F#6 -  E6 - - D#6  - - C#6 -",
-    "- - - -  A#5 - C#6 -  E6 - - F#6  - - G#6 -",
-    "- - - -  A6 - G#6 -  F#6 - E6 -  C#6 - A5 -",
-    "- - - -  D6 - F6 -  A6 - G6 -  E6 - C6 -",
-  ],
-  grooves: {
-    riff: {
-      bass: "0 . . 0  . . 0 .  . 0 . .  0 . 12 .",
-      bass_len: 2,
-      arp: "0 1 2 3 3 2 1 0",
-      drums: "k.hhs.hkk.hhs.ho",
-      second: "harmony",
-    },
-    verse: {
-      bass: "0 12 0 12  0 12 0 12  0 12 0 12  7 12 > 12",
-      bass_len: 1,
-      arp: "0 2 1 3 0 2 1 3",
-      drums: "khhhshhkhhkhshhh",
-    },
-    lift: {
-      bass: "0 . 0 .  0 . 0 .  0 . 0 .  0 . > .",
-      bass_len: 2,
-      arp: "0 1 2 3 0 1 2 3",
-      drums: "khhhshhhkhhhshhh",
-      second: "echo",
-    },
-    fill: {
-      bass: "0 . 0 .  0 . 0 .  0 . 0 .  0 . > .",
-      bass_len: 2,
-      arp: "0 1 2 3 0 1 2 3",
-      drums: "khhhshhhs.ssttTT",
-      second: "echo",
-    },
-    chorus_in: {
-      bass: "0 . 12 0  . 12 0 .  0 12 . 0  12 . > 12",
-      bass_len: 1,
-      arp: "3 2 1 0 3 2 1 0",
-      drums: "chhhshhkkhhhshoh",
-      second: "echo",
-    },
-    chorus: {
-      bass: "0 . 12 0  . 12 0 .  0 12 . 0  12 . > 12",
-      bass_len: 1,
-      arp: "3 2 1 0 3 2 1 0",
-      drums: "khohshokkhohshoh",
-      second: "echo",
-    },
-    chorus_turn: {
-      bass: "0 . 12 0  . 12 0 .  0 12 . 0  12 . > 12",
-      bass_len: 1,
-      arp: "3 2 1 0 3 2 1 0",
-      drums: "khohshokkhssttTT",
-      second: "echo",
-    },
-    twin_in: {
-      bass: "0 . 12 0  . 12 0 .  0 12 . 0  12 . > 12",
-      bass_len: 1,
-      arp: "3 2 1 0 3 2 1 0",
-      drums: "chhhshhkkhhhshoh",
-      second: "harmony",
-    },
-    twin: {
-      bass: "0 . 12 0  . 12 0 .  0 12 . 0  12 . > 12",
-      bass_len: 1,
-      arp: "3 2 1 0 3 2 1 0",
-      drums: "khohshokkhohshoh",
-      second: "harmony",
-    },
-    twin_turn: {
-      bass: "0 . 12 0  . 12 0 .  0 12 . 0  12 . > 12",
-      bass_len: 1,
-      arp: "3 2 1 0 3 2 1 0",
-      drums: "khohshokkhssttTT",
-      second: "harmony",
-    },
-  },
-  form: [
-    ...repeat(4, "riff"),
-    ...repeat(8, "verse"),
-    ...repeat(3, "lift"),
-    "fill",
-    "chorus_in",
-    ...repeat(6, "chorus"),
-    "chorus_turn",
-    "twin_in",
-    ...repeat(6, "twin"),
-    "twin_turn",
-  ],
-})
-
-let LAP_TUNES = [CRUISE, SPRINT]
-mut playing = CRUISE
-mut bgm_frame = 0
-
-# The tune for lap `n`, from its first bar.
-let start_tune = fn (n) {
-  playing = LAP_TUNES[(n - 1) % LAP_TUNES.size()]
-  bgm_frame = 0
-}
-
-# The tune's level, 1.0 while the race runs; the ending turns it down.
-mut bgm_gain = 1.0
-
-# Crossing into a new lap fades the last lap's tune out before the next one
-# starts from its first bar.
-let LAP_FADE = 2 * FPS  # frames the last lap's tune takes to go
-mut lap_fade = 0
-
-let tick_bgm = fn () {
-  if lap_fade > 0 {
-    lap_fade -= 1
-    bgm_gain = lap_fade / to_float(LAP_FADE)
-    if lap_fade == 0 {
-      start_tune(lap)
-      bgm_gain = 1.0
-    }
-  }
-  play_step(
-    playing,
-    bgm_frame / playing.tick,
-    bgm_gain,
-  ) if bgm_frame % playing.tick == 0
-  bgm_frame = (bgm_frame + 1) % playing.length
-}
-
-# --- ending ----------------------------------------------------------------
-# After the flag the run's music fades out while the car coasts to a stop, the
-# electric piano is built while a few seconds pass in silence, and a slow theme
-# plays once, the car driving itself off when its opening bars are done; when
-# it is over the sea takes over and stays.
-let FADE_OUT = 2.5     # seconds the run's music takes to go
-let ENDING_REST = 3.0  # seconds of silence before the theme, at the least
-
 # The theme's electric piano is sampled rather than an APU channel: a chord
-# needs several notes at once, and a struck tine needs more than a pulse.
-# Each pitch the theme uses is synthesised once into a WAV and kept as a
-# `Sound`, which is a voice of its own, so a chord is several of them.
+# needs several notes at once, and a struck tine needs more than a pulse. The
+# band plays it as `host Ep`, and each pitch the theme uses is synthesised
+# here once, into a WAV kept as a `Sound`.
 let EP_RATE = 22050
 
 # `v` as `n` little-endian bytes.
@@ -1316,7 +648,7 @@ let pcm_wav = fn (samples) {
 
 # Three seconds of one electric-piano note. Two FM pairs a hair apart give
 # the slow chorus of a real instrument; the modulation index starts high and
-# falls away after the hammer (the bark, scaled by `bark`) to a warm sine;
+# falls away after the hammer (the bark, the band's `bright=`) to a warm sine;
 # a bell partial rings for an instant above notes low enough to keep it
 # under the Nyquist limit; higher keys die away sooner.
 let ep_samples = fn (pitch, bark) {
@@ -1341,267 +673,48 @@ let ep_samples = fn (pitch, bark) {
   out
 }
 
-# A chord as the piano plays it: rootless (the bass has the root), close,
-# from the E below middle C upward.
-let voicing = fn (name) {
-  let (symbol, _) = name.split_once("/") ?? (name, nil)
-  let (pc, quality) = split_root(symbol.to_string())
-  mut out = []
-  mut lowest = 52
-  for i in chord_shape(quality).filter(|i| i % 12 != 0) {
-    mut p = 48 + Math.wrap(pc + i, 12)
-    while p < lowest {
-      p += 12
-    }
-    out.push(p)
-    lowest = p + 1
-  }
-  out
-}
-
-# The theme from its score, expanded per sixteenth like a lap's tune. The
-# melody is the piano's top line; a groove's `comp` strikes the voiced chord
-# (`x`), one of its notes by index (a digit), or nothing (`.`); `bass` and
-# `drums` read as in `tune`. `voices` lists every (key, pitch, bark) the
-# theme needs sampled: the melody's notes brighter than the chords'.
-let ballad = fn (score) {
-  let bars = score.chords.size()
-  let steps = bars * BAR
-  if score.melody.size() != bars || score.form.size() != bars {
-    throw {
-      kind: "ValueError",
-      message: "{bars} bars of chords, {score.melody.size()} of melody, {score.form.size()} of form",
-    }
-  }
-  let changes = score.chords.map(fn (text) {
-    text.split_whitespace().map(fn (symbol) {
-      let (low, _) = chord(symbol.to_string())
-      (low, voicing(symbol.to_string()))
-    })
+# The songs come with the art; a `--assets` directory without them keeps the
+# built-in ones.
+let SONGS = ART.exists("cruise.kau") ? ART : Embed.dir("assets")
+let kauai = fn (name) {
+  Audio.Kauai.load(name, dir: SONGS, voices: {
+    ep: |pitch, params| Audio.Sound(pcm_wav(ep_samples(pitch, params.bright))),
   })
-  let melody = onsets(score.melody.flat_map(fn (bar_text) {
-    tokens(bar_text, BAR).map(note_number)
-  }))
-  mut grooves = {}
-  for groove_name, g in score.grooves {
-    let hits = g.drums.iter().map(|ch| ch.to_string()).collect()
-    if hits.size() != BAR || hits.any(|ch| ch != "." && !score.kit.has(ch)) {
-      throw {
-        kind: "ValueError",
-        message: "bad drums in {groove_name}: {g.drums}",
-      }
-    }
-    grooves[groove_name] = {
-      comp: tokens(g.comp, BAR),
-      bass: tokens(g.bass, BAR),
-      drums: hits,
-    }
-  }
+}
+let LAP_TUNES = [kauai("cruise.kau"), kauai("sprint.kau")]
+let THEME = kauai("ballad.kau")
+mut playing = LAP_TUNES[0]
 
-  mut comp = repeat(steps, nil)
-  mut bass = repeat(steps, nil)
-  mut drums = repeat(steps, nil)
-  mut wanted = {}
-  for step in 0..steps {
-    let bar = step / BAR
-    let slot = step % BAR
-    let g = grooves[score.form[bar]]
-    let here = changes[bar]
-    let (root, notes) = here[here.size() == 2 && slot >= BAR / 2 ? 1 : 0]
+# The tune for lap `n`, from its first bar, once the last one has stopped.
+let start_tune = fn (n) {
+  playing.stop()
+  playing = LAP_TUNES[(n - 1) % LAP_TUNES.size()]
+  playing.volume(1.0)
+}
 
-    let strike = g.comp[slot]
-    if strike != "." {
-      let struck = strike == "x"
-        ? notes
-        : [notes[Math.min(to_long(strike), notes.size() - 1)]]
-      comp[step] = struck
-      for p in struck {
-        wanted["c{p}"] = {pitch: p, bark: 0.8}
-      }
-    }
-    let bass_hit = g.bass[slot]
-    if bass_hit != "." {
-      let (next_root, _) = changes[(bar + 1) % bars][0]
-      mut run = 1
-      while slot + run < BAR && g.bass[slot + run] == "." {
-        run += 1
-      }
-      bass[step] = (
-        bass_hit == ">" ? next_root - 1 : root + to_long(bass_hit),
-        run,
-      )
-    }
-    drums[step] = g.drums[slot] if g.drums[slot] != "."
-    let sung = melody[step]
-    if sung != nil {
-      let (sung_pitch, _) = sung
-      wanted["m{sung_pitch}"] = {pitch: sung_pitch, bark: 1.3}
-    }
-  }
-  {
-    tick: score.tick,
-    length: score.tick * steps,
-    kit: score.kit,
-    melody: melody,
-    comp: comp,
-    bass: bass,
-    drums: drums,
-    voices: wanted
-      .keys()
-      .sorted()
-      .map(|key| (key, wanted[key].pitch, wanted[key].bark)),
+# Crossing into a new lap fades the last lap's tune out before the next one
+# starts from its first bar.
+let LAP_FADE = 2 * FPS  # frames the last lap's tune takes to go
+mut lap_fade = 0
+
+let tick_bgm = fn () {
+  return nil if lap_fade == 0
+  lap_fade -= 1
+  playing.volume(lap_fade / to_float(LAP_FADE))
+  if lap_fade == 0 {
+    start_tune(lap)
+    playing.play()
   }
 }
 
-# The theme: a slow ballad at 69 bpm in Eb, after the late-night coast-road
-# ballads of the 16-bit arcades. Four bars of the piano alone drifting down
-# IV-iii-ii-V through a C7 that leans into the ii: a high Bb, the note the
-# verse will open on, sighing down by step to the C7's third, resolving up
-# to the ii where the opening figure answers on its extensions, the last
-# bar's suspension resolving with the chord; a verse whose phrases sing a long note and sigh
-# down from it,
-# turning through G7 to the relative minor and a borrowed Abm6; a second
-# half that climbs to its high Eb and settles through ii-V; and two bars
-# ringing out on Ebmaj9. A round triangle bass walks under it, brushes on
-# two and four from the verse, a ride joins at the peak.
-let BALLAD = ballad({
-  tick: 13,
-  kit: {
-    b: {freq: 4000, dur: 2, vol: 4, release: 5},
-    r: {freq: 6000, dur: 1, vol: 3, release: 10},
-  },
-  chords: [
-    "Abmaj9",
-    "Gm7 C7",
-    "Fm9",
-    "Bb7sus4 Bb7",
-    "Ebmaj9",
-    "Gm7 Cm9",
-    "Abmaj9",
-    "Fm9 Bb7sus4",
-    "Ebmaj9",
-    "Dm7b5 G7",
-    "Cm9",
-    "Abm6 Db9",
-    "Abmaj9",
-    "Bb/Ab",
-    "Gm7",
-    "Cm9",
-    "Fm9",
-    "Bb7sus4 Bb7",
-    "Abmaj9",
-    "Ebmaj9",
-  ],
-  melody: [
-    ". . . .  . . Bb5 G5  Bb5 - - -  - - - -",
-    "- - - -  G5 - F5 -  E5 - - -  - - - -",
-    "F5 - - -  - - Bb5 G5  Eb5 - - -  - - - -",
-    "- - - -  . . Eb5 F5  D5 - - -  F5 - G5 -",
-    "Bb5 - - -  - - - -  - - G5 -  - - F5 -",
-    "G5 - - -  - - - -  Eb5 - - -  D5 - Eb5 -",
-    "C6 - - -  - - - -  Bb5 - - -  G5 - - -",
-    "Ab5 - - -  - - G5 -  F5 - - -  Eb5 - - -",
-    "D5 - - -  - - Eb5 -  F5 - - -  G5 - Bb5 -",
-    "C6 - - -  - - Ab5 -  B5 - - -  - - G5 -",
-    "G5 - - -  - - - -  - - Eb5 -  D5 - C5 -",
-    "Eb5 - - -  - - - -  F5 - - -  Eb5 - - -",
-    "Eb6 - - -  - - C6 -  - - - -  Bb5 - - -",
-    "D6 - - -  - - - -  C6 - - -  Bb5 - - -",
-    "Bb5 - - -  - - D6 -  - - - -  C6 - Bb5 -",
-    "G5 - - -  - - - -  - - Bb5 -  G5 - Eb5 -",
-    "F5 - - -  - - - -  Ab5 - - -  G5 - - -",
-    "Eb5 - - -  - - F5 -  D5 - - -  - - . .",
-    "Eb5 - - -  - - - -  G5 - - -  Bb5 - - -",
-    "G5 - - -  - - - -  - - - -  - - - -",
-  ],
-  grooves: {
-    alone: {
-      comp: "x . . .  . . . .  . . 3 .  . . . .",
-      bass: "0 . . .  . . . .  . . . .  7 . . .",
-      drums: "....r.......r...",
-    },
-    alone_two: {
-      comp: "x . . .  . . . .  x . . .  . . . .",
-      bass: "0 . . .  . . . .  0 . . .  . . > .",
-      drums: "....r.......r...",
-    },
-    verse: {
-      comp: "x . . .  . . . .  . . x .  . . 3 .",
-      bass: "0 . . .  . . . .  . . 7 .  . . > .",
-      drums: "....b.......b...",
-    },
-    peak: {
-      comp: "x . . 3  . . 2 .  x . . 3  . . 2 .",
-      bass: "0 . . .  . . 7 .  0 . . .  12 . > .",
-      drums: "....b...r...b.r.",
-    },
-    settle: {
-      comp: "x . . .  . . 3 .  . . 2 .  . . 1 .",
-      bass: "0 . . .  . . . .  . . . .  . . . .",
-      drums: "................",
-    },
-    ring: {
-      comp: "x . . .  . . . .  . . . .  . . . .",
-      bass: "0 . . .  . . . .  . . . .  . . . .",
-      drums: "................",
-    },
-  },
-  form: [
-    "alone",
-    "alone_two",
-    "alone",
-    "alone_two",
-    ...repeat(8, "verse"),
-    ...repeat(6, "peak"),
-    "settle",
-    "ring",
-  ],
-})
-
-# Loudness against the APU: a `Sound` plays at `vol`% of its own level, a
-# tone at a fifth of that.
-let EP_MELODY_VOL = 0.46
-let EP_COMP_VOL = 0.26
-let BALLAD_BASS = voice(Audio.TRIANGLE, 34, 3, 0, 14)
-
-mut ep_voices = {}
-let ep_ready = fn () {
-  ep_voices.size() == BALLAD.voices.size()
-}
-
-# Sample the next note the theme still lacks. One a frame, so the frozen
-# finish stays responsive while the piano is built.
-let build_ep_voice = fn () {
-  let missing = BALLAD.voices.find(|v| !ep_voices.has(v[0]))
-  if missing != nil {
-    let (key, pitch, bark) = missing
-    ep_voices[key] = Audio.Sound.new(pcm_wav(ep_samples(pitch, bark)))
-  }
-}
-
-let ring = fn (voice, vol) {
-  voice.volume(vol)
-  voice.play()
-}
-
-let play_ballad_step = fn (b, step) {
-  let sung = b.melody[step]
-  if sung != nil {
-    let (sung_pitch, _) = sung
-    ring(ep_voices["m{sung_pitch}"], EP_MELODY_VOL)
-  }
-  for p in b.comp[step] ?? [] {
-    ring(ep_voices["c{p}"], EP_COMP_VOL)
-  }
-  let low = b.bass[step]
-  if low != nil {
-    let (low_pitch, low_len) = low
-    sound(BALLAD_BASS, low_pitch, low_len * b.tick - 3, 1.0)
-  }
-  let hit = b.drums[step]
-  drum(b.kit[hit], 1.0) if hit != nil
-}
-mut end_frame = 0
+# --- ending ----------------------------------------------------------------
+# After the flag the run's music fades out while the car coasts to a stop, the
+# electric piano is built while a few seconds pass in silence, and a slow theme
+# plays once, the car driving itself off at its `mark Drive`; when it is over
+# the sea takes over and stays.
+let FADE_OUT = 2.5     # seconds the run's music takes to go
+let ENDING_REST = 3.0  # seconds of silence before the theme, at the least
+mut theme_on = false
 
 # The sea: one wave at a time on the noise channel, a hiss that swells, breaks
 # and draws back over four or five seconds, then a pause of its own choosing.
@@ -1631,21 +744,20 @@ let tick_ending = fn (dt) {
   if ending_t < FADE_OUT {
     let gain = 1.0 - ending_t / FADE_OUT
     if music == nil {
-      bgm_gain = gain
-      tick_bgm()
+      playing.volume(gain)
     } else {
       music.volume(MUSIC_VOL * gain)
     }
-  } else if ending_t < FADE_OUT + ENDING_REST || !ep_ready() {
+  } else if !theme_on {
     music?.stop()
-    build_ep_voice()
-  } else if end_frame < BALLAD.length {
-    play_ballad_step(
-      BALLAD,
-      end_frame / BALLAD.tick,
-    ) if end_frame % BALLAD.tick == 0
-    end_frame += 1
-  } else {
+    playing.stop()
+    # A note of the piano a frame, so the frozen finish stays responsive.
+    let left = THEME.prepare()
+    if left == 0 && ending_t >= FADE_OUT + ENDING_REST {
+      THEME.play()
+      theme_on = true
+    }
+  } else if !THEME.playing() {
     tick_waves()
   }
 }
@@ -1673,7 +785,6 @@ let tick_count_in = fn (dt) {
 # to a stop while the race music fades, stands there through the theme's
 # opening bars, then cruises off at an easy pace, moving over for anything
 # slower ahead.
-let THEME_INTRO = 4 * BAR * BALLAD.tick  # frames of the theme spent standing
 let CRUISE_SPEED = MAX_SPEED * 0.45
 let LANE_CENTRES = iota(LANES).map(|i| (2.0 * i + 1.0) / LANES - 1.0)
 mut auto_lane = 0.0
@@ -1695,7 +806,7 @@ let lane_blocked = fn (lane, from, reach) {
 let autopilot = fn () {
   let segment = find_segment(position + PLAYER_Z)
   let here = segment.index
-  let rolling = end_frame >= THEME_INTRO
+  let rolling = theme_on && THEME.reached("Drive")
   if !rolling {
     auto_lane = LANE_CENTRES.min_by(|lane| Math.abs(lane - player_x))
   } else if lane_blocked(auto_lane, here, 12) {
@@ -1744,9 +855,9 @@ let restart_race = fn () {
   count_in = COUNT_IN
   counted = 4
   ending_t = 0.0
-  end_frame = 0
+  theme_on = false
+  THEME.stop()
   wave_wait = 0
-  bgm_gain = 1.0
   lap_fade = 0
   start_tune(1)
   music_on = false
@@ -1929,9 +1040,10 @@ let update = fn (dt) {
       music_on = true
       music?.volume(MUSIC_VOL)
       music?.play()
+      playing.play() if music == nil
     }
   }
-  tick_bgm() if music == nil && music_on && !finished
+  tick_bgm() if music == nil && !finished
 }
 
 # --- render ----------------------------------------------------------------

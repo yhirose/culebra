@@ -1,8 +1,9 @@
 #pragma once
 
 // The Audio namespace's backend choke: the one owner of the sound device and
-// of everything that plays through it (tone, Sound, Music, PCM) or listens on
-// the microphone (Capture). The script-facing surface is src/preambles/audio.cul and the natives are in
+// of everything that plays through it (tone, Sound, Music, PCM, and the
+// scores Audio.Kauai plays) or listens on the microphone (Capture). The
+// script-facing surface is src/preambles/audio.cul and the natives are in
 // stdlib/bindings.h; this header picks the backend.
 //
 //   native (CULEBRA_AUDIO_NATIVE)   raylib's audio module built standalone
@@ -69,6 +70,8 @@ inline constexpr auto kSoundFormatError =
 
 inline constexpr auto kPcmSamplesError =
     "type error: parameter 'samples' expects an Array of Long|Float";
+inline constexpr auto kScoreEventsError =
+    "type error: parameter 'events' expects an Array of Long|Float";
 
 // Sound, Music and PCM handles: one counter for every backend, so a
 // handle's lifecycle reads the same whether or not a host can play it.
@@ -76,6 +79,9 @@ inline int64_t alloc_id() {
   static int64_t n = 0;
   return ++n;
 }
+
+// Numbers an event takes in a score's flat list (score_new).
+inline constexpr int64_t kScoreStride = 11;
 
 #if defined(CULEBRA_AUDIO_BROWSER)
 
@@ -126,6 +132,17 @@ EM_JS(void, _wasm_audio_music_load,
 EM_JS(int, _wasm_audio_music_playing, (int id), {
   return self.__musicPlaying[id] ? 1 : 0;
 });
+// A score's events go to the page whole; it schedules them on its own clock.
+EM_JS(void, _wasm_audio_score_new,
+      (int id, const double* events, int count, double length, double loop_at), {
+  postMessage({ type: "score", cmd: "new", id: id,
+                events: HEAPF64.slice(events >> 3, (events >> 3) + count),
+                length: length, loopAt: loop_at });
+});
+EM_JS(void, _wasm_audio_score, (int cmd, int id, double value), {
+  const names = ["play", "stop", "free", "volume"];
+  postMessage({ type: "score", cmd: names[cmd], id: id, value: value });
+});
 
 inline bool available() { return true; }
 inline void tone(int64_t start_freq, int64_t end_freq, int64_t attack,
@@ -171,6 +188,16 @@ inline void music_seek(int64_t id, double seconds) {
 inline void music_volume(int64_t id, double x) { _wasm_audio_music(6, static_cast<int>(id), x); }
 inline void music_pitch(int64_t id, double x) { _wasm_audio_music(7, static_cast<int>(id), x); }
 inline void music_pan(int64_t id, double x) { _wasm_audio_music(8, static_cast<int>(id), x); }
+
+inline void score_new(int64_t id, const double* events, int64_t count,
+                      double length, double loop_at) {
+  _wasm_audio_score_new(static_cast<int>(id), events, static_cast<int>(count),
+                        length, loop_at);
+}
+inline void score_play(int64_t id) { _wasm_audio_score(0, static_cast<int>(id), 0); }
+inline void score_stop(int64_t id) { _wasm_audio_score(1, static_cast<int>(id), 0); }
+inline void score_free(int64_t id) { _wasm_audio_score(2, static_cast<int>(id), 0); }
+inline void score_volume(int64_t id, double x) { _wasm_audio_score(3, static_cast<int>(id), x); }
 
 #elif defined(CULEBRA_AUDIO_DEVICE)
 
@@ -226,6 +253,12 @@ int64_t capture_waiting(int64_t id);
 // Up to `frames` waiting frames (all of them when negative), interleaved into
 // `out`, which arrives empty.
 void capture_read(int64_t id, int64_t frames, std::vector<float>& out);
+void score_new(int64_t id, const double* events, int64_t count, double length,
+               double loop_at);
+void score_free(int64_t id);
+void score_play(int64_t id);
+void score_stop(int64_t id);
+void score_volume(int64_t id, double v);
 
 #endif
 
@@ -262,6 +295,12 @@ CULEBRA_RT_AUDIO_LINKAGE void music_seek(int64_t, double) {}
 CULEBRA_RT_AUDIO_LINKAGE void music_volume(int64_t, double) {}
 CULEBRA_RT_AUDIO_LINKAGE void music_pitch(int64_t, double) {}
 CULEBRA_RT_AUDIO_LINKAGE void music_pan(int64_t, double) {}
+CULEBRA_RT_AUDIO_LINKAGE void score_new(int64_t, const double*, int64_t, double,
+                                        double) {}
+CULEBRA_RT_AUDIO_LINKAGE void score_free(int64_t) {}
+CULEBRA_RT_AUDIO_LINKAGE void score_play(int64_t) {}
+CULEBRA_RT_AUDIO_LINKAGE void score_stop(int64_t) {}
+CULEBRA_RT_AUDIO_LINKAGE void score_volume(int64_t, double) {}
 #endif
 
 #if !defined(CULEBRA_AUDIO_DEVICE)

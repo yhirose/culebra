@@ -210,6 +210,8 @@ let _audio_module = fn () {
     Music: Music,
     PCM: PCM,
     Capture: Capture,
+    # Songs in the Kauai language (src/preambles/kauai.cul).
+    Kauai: _kauai_module(),
     PULSE: PULSE,
     PULSE2: PULSE2,
     TRIANGLE: TRIANGLE,
