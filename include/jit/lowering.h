@@ -3596,7 +3596,7 @@ struct Lowering {
               sw->addCase(b.getInt8(3), sbBB);
               b.SetInsertPoint(favBB);
               j.emit_throw_error(
-                  "TypeError", "`?" "?=` is not supported on a FixedArray element",
+                  "TypeError", "`?" "?=` is not supported on a FixedArray or BoundedArray element",
                   j.current_line_, j.current_column_);
               b.CreateUnreachable();
               b.SetInsertPoint(svBB);

@@ -1,15 +1,15 @@
-// FixedSet<T,N> and FixedMap<K,V,N>: open-addressed hash collections laid out
+// BoundedSet<T,N> and BoundedMap<K,V,N>: open-addressed hash collections laid out
 // inline in a @packable record, mutated in place through a view.
 
 @packable
 class Bag {
-  tags: FixedSet<Int32, 8>
-  counts: FixedMap<Int32, Int32, 8>
+  tags: BoundedSet<Int32, 8>
+  counts: BoundedMap<Int32, Int32, 8>
 }
 
 b = SharedBuffer.new(2, Bag)
 
-// --- FixedSet ---
+// --- BoundedSet ---
 s = b[0].tags
 assert_eq(s.size(), 0)
 assert_eq(s.capacity(), 8)
@@ -49,7 +49,7 @@ try {
   assert_eq(e.kind, "CapacityError")
 }
 
-// --- FixedMap ---
+// --- BoundedMap ---
 m = b[0].counts
 assert_eq(m.size(), 0)
 assert_eq(m.get(42), nil)  // absent -> nil

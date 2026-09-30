@@ -675,7 +675,7 @@ Culebraはシャドウを3つの軸で独立に扱います:
   はキーが無ければ挿入する — 実行時に挿入されたキーのmutable-by-default
   ルール（§10）に従い、既存キーがnil値を持つ場合はそのスロットの
   `mut`フラグに従う。Array要素は自動拡張しない: 範囲外の`i`は引き続き
-  `IndexError`。`FixedArray`/`SharedBuffer`要素や`@packable`のpacked
+  `IndexError`。`FixedArray`/`BoundedArray`/`SharedBuffer`要素や`@packable`のpacked
   フィールド（packed scalarにnilセンチネルは無い）、`Shared.new`ビュー
   （常にimmutable）には非対応。
 

@@ -3569,14 +3569,17 @@ inline void _jit_overwrite_slot(JitObjectEntry& entry,
 // non-String sidecar — so the closed field set holds however the write is
 // spelled. `key` is null for a non-String key, which is an entry rather than
 // a property.
-// A FixedArray/Set/Map view is frozen too — its state is the bytes behind it
+// An array, BoundedSet or BoundedMap view is frozen too — its state is the bytes behind it
 // — and is named as what it is.
 [[noreturn]] inline void _jit_throw_value_add(const JitObject* obj,
                                               const char* key, int64_t line,
                                               int64_t col) {
-  const char* what = obj->is_fixed_array_view ? "a FixedArray view"
-                     : obj->has_own("__fs_id__") ? "a FixedSet view"
-                     : obj->has_own("__fm_id__") ? "a FixedMap view"
+  const char* what = obj->is_array_view
+                         ? (obj->slots[obj->find_slot("__fa_fixed__")].value.data
+                                ? "a FixedArray view"
+                                : "a BoundedArray view")
+                     : obj->has_own("__fs_id__") ? "a BoundedSet view"
+                     : obj->has_own("__fm_id__") ? "a BoundedMap view"
                                                  : "a @value instance";
   throw culebra::CulebraError(
       "ImmutableError",
@@ -3788,7 +3791,7 @@ inline JitValue _jit_shared_val_index(JitObject* view, int8_t key_tag,
 inline JitValue _jit_packable_read_field(const uint8_t* base,
                                          const culebra::PackableField& f) {
   const uint8_t* p = base + f.offset;
-  if (f.layout.is_fixed_string) {
+  if (f.layout.is_bounded_string) {
     // `[len:i32][byte × N]` -> a String of the first `len` bytes.
     int32_t len; std::memcpy(&len, p, 4);
     const char* s = _culebra_heap_str(std::string_view(
@@ -3854,22 +3857,22 @@ inline JitValue _jit_packable_read_field(const uint8_t* base,
 // Encode a primitive JitValue into field `f`'s raw bytes. Numeric coercion
 // mirrors the interp (Long<->Float implicit). Pure borrow-and-write: it
 // never releases `(tag, data)` — both the storing callers (which consume
-// via an owned JitOwnedVal) and the key-encoding callers (FixedSet/Map probe,
+// via an owned JitOwnedVal) and the key-encoding callers (BoundedSet/Map probe,
 // which must NOT consume) rely on that.
 inline void _jit_packable_write_field(uint8_t* base,
                                       const culebra::PackableField& f,
                                       int8_t tag, int64_t data) {
   uint8_t* p = base + f.offset;
-  if (f.layout.is_fixed_string) {
+  if (f.layout.is_bounded_string) {
     if (tag != TAG_STRING && tag != TAG_STRINGVIEW) {
       throw culebra::CulebraError("TypeError", culebra::format(
-          "FixedString field `{}` expects a String, got {}", f.name,
+          "BoundedString field `{}` expects a String, got {}", f.name,
           _culebra_tag_name(tag)));
     }
     auto sv = _culebra_str_view(tag, data);
     if (sv.size() > f.layout.capacity) {
       throw culebra::CulebraError("CapacityError", culebra::format(
-          "FixedString<{}> overflow: `{}` needs {} bytes", f.layout.capacity, f.name,
+          "BoundedString<{}> overflow: `{}` needs {} bytes", f.layout.capacity, f.name,
           sv.size()));
     }
     int32_t len = static_cast<int32_t>(sv.size());
@@ -4017,12 +4020,12 @@ inline JitObject* _jit_make_nested_view(int64_t id, int64_t off, const char* cls
 }
 
 // fwd: defined below (after the byte helpers they need); _jit_packed_view_get
-// builds a collection view for a FixedArray/FixedSet/FixedMap field.
-inline JitValue _jit_make_fixed_array_view(int64_t id, int64_t abs_off,
+// builds a collection view for a BoundedArray/BoundedSet/BoundedMap field.
+inline JitValue _jit_make_array_view(int64_t id, int64_t abs_off,
                                            const culebra::PackableField& f);
-inline JitValue _jit_make_fixed_set_view(int64_t id, int64_t abs_off,
+inline JitValue _jit_make_bounded_set_view(int64_t id, int64_t abs_off,
                                          const culebra::PackableField& f);
-inline JitValue _jit_make_fixed_map_view(int64_t id, int64_t abs_off,
+inline JitValue _jit_make_bounded_map_view(int64_t id, int64_t abs_off,
                                          const culebra::PackableField& f);
 
 // The value a packed view's read of the field at `field_off` last minted, or
@@ -4066,13 +4069,15 @@ inline JitValue _jit_packed_view_get(JitObject* view, const char* key,
   auto field_off = static_cast<int64_t>(f->offset);
   // A sub-view reads the bytes live, so the one a field first minted serves
   // every later read.
-  if (f->layout.is_fixed_array || f->layout.is_fixed_set ||
-      f->layout.is_fixed_map || f->layout.is_struct) {
+  if (f->layout.is_fixed_array || f->layout.is_bounded_array ||
+      f->layout.is_bounded_set || f->layout.is_bounded_map ||
+      f->layout.is_struct) {
     if (auto* held = _jit_packed_view_cached(view, field_off)) return *held;
     JitValue sub;
-    if (f->layout.is_fixed_array) sub = _jit_make_fixed_array_view(id, abs_off, *f);
-    else if (f->layout.is_fixed_set) sub = _jit_make_fixed_set_view(id, abs_off, *f);
-    else if (f->layout.is_fixed_map) sub = _jit_make_fixed_map_view(id, abs_off, *f);
+    if (f->layout.is_fixed_array || f->layout.is_bounded_array)
+      sub = _jit_make_array_view(id, abs_off, *f);
+    else if (f->layout.is_bounded_set) sub = _jit_make_bounded_set_view(id, abs_off, *f);
+    else if (f->layout.is_bounded_map) sub = _jit_make_bounded_map_view(id, abs_off, *f);
     else
       sub = {TAG_OBJECT, reinterpret_cast<int64_t>(_jit_make_nested_view(
                              id, abs_off, f->layout.elem_type.c_str()))};
@@ -4106,17 +4111,18 @@ inline void _jit_packed_view_set(JitObject* view, const char* key, int8_t tag,
         culebra::format("@packable {} has no field `{}`",
                         _jit_packed_view_class(view, *core), key), line, col);
   }
-  if (f->layout.is_fixed_array) {
+  if (f->layout.is_fixed_array || f->layout.is_bounded_array) {
     throw culebra::CulebraError("TypeError",
-        culebra::format("cannot assign to FixedArray field `{}`; mutate it via "
-                        ".push(...) / [i] = ...", key),
+        culebra::format("cannot assign to {} field `{}`; mutate it via {}[i] = ...",
+                        f->layout.is_fixed_array ? "FixedArray" : "BoundedArray",
+                        key, f->layout.is_fixed_array ? "" : ".push(...) / "),
         line, col);
   }
-  if (f->layout.is_fixed_set || f->layout.is_fixed_map) {
+  if (f->layout.is_bounded_set || f->layout.is_bounded_map) {
     throw culebra::CulebraError("TypeError",
         culebra::format("cannot assign to {} field `{}`; mutate it through its "
                         "methods",
-                        f->layout.is_fixed_set ? "FixedSet" : "FixedMap", key),
+                        f->layout.is_bounded_set ? "BoundedSet" : "BoundedMap", key),
         line, col);
   }
   if (f->layout.is_struct) {

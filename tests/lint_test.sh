@@ -274,6 +274,13 @@ expect_param_reject "value field param untyped" "needs a type annotation" '@valu
 class C { new(.k) { } }'
 expect_param_reject "packable field param untyped" "needs a type annotation" '@packable
 class C { new(.k) { } }'
+# The retired Fixed* names of the bounded collections say what they are now.
+expect_param_reject "retired FixedString" "which is now spelled \`BoundedString<8>\`" '@packable
+class C { s: FixedString<8> }'
+expect_param_reject "retired FixedSet" "which is now spelled \`BoundedSet<Int32, 4>\`" '@packable
+class C { s: FixedSet<Int32, 4> }'
+expect_param_reject "retired FixedMap" "which is now spelled \`BoundedMap<Int32, Byte, 4>\`" '@packable
+class C { m: FixedMap<Int32, Byte, 4> }'
 # Dead code still rejected (the win over the interp's eval-time check, which
 # would never run a never-evaluated branch).
 expect_param_reject "dead-code malformed" "'**' catch-all must be the last parameter" 'if false { fn f(**kw, b) { } }'

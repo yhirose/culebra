@@ -123,13 +123,13 @@ assert_throws('TypeError', fn () {
 @packable
 class Vec {
   n: Int32 = 0
-  xs: FixedArray<Float32, 4>
+  xs: BoundedArray<Float32, 4>
 }
 let vb = SharedBuffer.new(1, Vec)
 vb[0].xs.push(1.5)
 assert_throws('TypeError', fn () {
   vb[0].xs[0] ??= 9.0
-})  // FixedArray element
+})  // BoundedArray element
 
 let shared = Shared.new({a: 1})
 assert_throws('ImmutableError', fn () {

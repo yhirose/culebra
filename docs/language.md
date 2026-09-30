@@ -717,9 +717,9 @@ working with possibly-nil values.
   usual mutable-by-default rule for a runtime-inserted key (§10) and the
   existing slot's `mut` flag when the key is already present but nil. An
   Array index does not auto-extend: an out-of-range `i` still raises
-  `IndexError`. Not supported on a `FixedArray`/`SharedBuffer` element or
-  a `@packable` packed field (no `nil` sentinel for a packed scalar), or
-  on a `Shared.new` view (unconditionally immutable).
+  `IndexError`. Not supported on a `FixedArray`/`BoundedArray`/`SharedBuffer`
+  element or a `@packable` packed field (no `nil` sentinel for a packed
+  scalar), or on a `Shared.new` view (unconditionally immutable).
 
 ### Truthiness
 

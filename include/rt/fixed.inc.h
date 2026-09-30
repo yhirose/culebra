@@ -1,6 +1,6 @@
 #pragma once
 
-// FixedArray / FixedSet / FixedMap views (byte ops shared with the
+// FixedArray / BoundedArray / BoundedSet / BoundedMap views (byte ops shared with the
 // [i] index hooks), packable registration, object any-key runtime,
 // inline caches and class meta/instance construction.
 //
@@ -12,8 +12,8 @@
 // (split across rt_fixed.inc.h / rt_dispatch.inc.h / rt_iter.inc.h).
 extern "C" {
 
-// --- FixedArray view byte helpers (used by both the [i] index hooks here
-// and the FixedArray view native methods below) -------------------------
+// --- Array view byte helpers: a FixedArray's or a BoundedArray's (used by
+// both the [i] index hooks here and the view's native methods below) --------
 inline std::shared_ptr<culebra::SharedBufferCore> _jit_fa_core(JitObject* v) {
   int64_t id = v->slots[v->find_slot("__fa_id__")].value.data;
   auto core = culebra::lookup_shared_buffer(id);
@@ -28,8 +28,11 @@ inline culebra::PackableField _jit_fa_elem_field(JitObject* v) {
   return culebra::PackableField::scalar(culebra::packable_scalar_name(
       static_cast<int>(_jit_fa_field_long(v, "__fa_ecode__"))));
 }
+// A FixedArray holds exactly its capacity; a BoundedArray's count is the i32
+// in front of its elements.
 inline int64_t _jit_fa_len(JitObject* v) {
   auto core = _jit_fa_core(v);
+  if (_jit_fa_field_long(v, "__fa_fixed__")) return _jit_fa_field_long(v, "__fa_cap__");
   int32_t n;
   std::memcpy(&n, core->data + _jit_fa_field_long(v, "__fa_off__"), 4);
   return n;
@@ -123,7 +126,7 @@ inline void _jit_bind_portable_method(
 
 // A captureless native method closure (reads its state from `self`). Generic
 // JIT-object helper — channel/isolate/SharedBuffer handles use it too. Lives
-// here (not sendable_rt.h) so the FixedArray view, ODR-used from this file,
+// here (not sendable_rt.h) so the BoundedArray view, ODR-used from this file,
 // is fully defined where it is used.
 inline JitClosure* _jit_native_method(
     void (*fn)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
@@ -133,7 +136,7 @@ inline JitClosure* _jit_native_method(
 }
 
 // Attach a captureless native method `fn` under name `nm` to a view or
-// iterator object. Shared by every Fixed{Array,Set,Map} view + iterator
+// iterator object. Shared by every Bounded{Array,Set,Map} view + iterator
 // builder (an immutable, borrowed function slot).
 inline void _jit_view_method(
     JitObject* o, const char* nm,
@@ -143,11 +146,11 @@ inline void _jit_view_method(
       false);
 }
 
-// --- FixedArray view methods + iterator (native, captureless) -----------
+// --- Array view methods + iterator (native, captureless) ------------------
 inline int64_t _jit_fa_self_long(JitValue self, const char* key) {
   return _jit_fa_field_long(reinterpret_cast<JitObject*>(self.data), key);
 }
-// A packed view's index — FixedArray or SharedBuffer — which coerces a Long
+// A packed view's index — an array view or a SharedBuffer — which coerces a Long
 // or a Float as the interp's `key.to_long()` does.
 inline int64_t _jit_view_index(int8_t tag, int64_t data, int64_t line, int64_t col) {
   if (tag == TAG_LONG) return data;
@@ -201,7 +204,7 @@ inline void _jit_fa_push(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
   int64_t cap = _jit_fa_self_long(self, "__fa_cap__");
   if (len >= cap)
     throw culebra::CulebraError(
-        "IndexError", culebra::format("FixedArray is full (capacity {})", cap));
+        "IndexError", culebra::format("BoundedArray is full (capacity {})", cap));
   if (n >= 1)
     _jit_packable_write_field(_jit_fa_elem_ptr(v, len), _jit_fa_elem_field(v),
                               args[0].tag, args[0].data);
@@ -253,7 +256,7 @@ inline void _jit_fa_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
   JitMethodSelf _s{self};
   auto* v = reinterpret_cast<JitObject*>(self.data);
   auto* it = culebra_runtime_object_new();
-  for (const char* k : {"__fa_id__", "__fa_off__", "__fa_cap__",
+  for (const char* k : {"__fa_id__", "__fa_off__", "__fa_cap__", "__fa_fixed__",
                         "__fa_dataoff__", "__fa_esize__", "__fa_ecode__"})
     it->set_or_append(k, JitValue{TAG_LONG, _jit_fa_field_long(v, k)}, false);
   it->set_or_append("_pos", JitValue{TAG_LONG, 0}, true);
@@ -266,12 +269,13 @@ inline void _jit_fa_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
   meth("next", _jit_fa_iter_next);
   { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
 }
-inline JitValue _jit_make_fixed_array_view(int64_t id, int64_t abs_off,
+inline JitValue _jit_make_array_view(int64_t id, int64_t abs_off,
                                            const culebra::PackableField& f) {
-  auto* h = _jit_view_new(&JitObject::is_fixed_array_view);
+  auto* h = _jit_view_new(&JitObject::is_array_view);
   h->set_or_append("__fa_id__", JitValue{TAG_LONG, id}, false);
   h->set_or_append("__fa_off__", JitValue{TAG_LONG, abs_off}, false);
   h->set_or_append("__fa_cap__", JitValue{TAG_LONG, static_cast<long>(f.layout.capacity)}, false);
+  h->set_or_append("__fa_fixed__", JitValue{TAG_LONG, f.layout.is_fixed_array ? 1 : 0}, false);
   h->set_or_append("__fa_dataoff__", JitValue{TAG_LONG, static_cast<long>(f.layout.data_offset)}, false);
   h->set_or_append("__fa_esize__", JitValue{TAG_LONG, static_cast<long>(f.layout.elem_size)}, false);
   h->set_or_append("__fa_ecode__", JitValue{TAG_LONG, culebra::packable_scalar_code(f.layout.elem_type)}, false);
@@ -281,7 +285,8 @@ inline JitValue _jit_make_fixed_array_view(int64_t id, int64_t abs_off,
   };
   meth("size", _jit_fa_size);
   meth("capacity", _jit_fa_capacity);
-  meth("push", _jit_fa_push);
+  // A FixedArray always holds N: nothing to push.
+  if (f.layout.is_bounded_array) meth("push", _jit_fa_push);
   meth("get", _jit_fa_get_m);
   meth("set", _jit_fa_set_m);
   meth("iter", _jit_fa_iter);
@@ -291,7 +296,7 @@ inline JitValue _jit_make_fixed_array_view(int64_t id, int64_t abs_off,
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
 
-// --- FixedSet<T,N> view: open-addressed hash set, byte ops shared with the
+// --- BoundedSet<T,N> view: open-addressed hash set, byte ops shared with the
 // interp via culebra::fixed_probe. State is read from `self` slots. ---------
 inline std::shared_ptr<culebra::SharedBufferCore> _jit_fs_core(JitObject* v) {
   int64_t id = v->slots[v->find_slot("__fs_id__")].value.data;
@@ -365,7 +370,7 @@ inline void _jit_fs_add(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t s
   if (slot >= 0) { *__ret = {TAG_NIL, 0}; return; }
   if (insert < 0)
     throw culebra::CulebraError(
-        "CapacityError", culebra::format("FixedSet is full (capacity {})", cap));
+        "CapacityError", culebra::format("BoundedSet is full (capacity {})", cap));
   std::memcpy(_jit_fs_vals(v) + insert * esize, key, esize);
   _jit_fs_states(v)[insert] = culebra::kFixedFull;
   _jit_fs_set_count(v, _jit_fs_count(v) + 1);
@@ -431,7 +436,7 @@ inline void _jit_fs_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
   meth("next", _jit_fs_iter_next);
   { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
 }
-inline JitValue _jit_make_fixed_set_view(int64_t id, int64_t abs_off,
+inline JitValue _jit_make_bounded_set_view(int64_t id, int64_t abs_off,
                                          const culebra::PackableField& f) {
   auto* h = culebra_runtime_object_new();
   h->set_or_append("__fs_id__", JitValue{TAG_LONG, id}, false);
@@ -450,11 +455,11 @@ inline JitValue _jit_make_fixed_set_view(int64_t id, int64_t abs_off,
   meth("add", _jit_fs_add);
   meth("remove", _jit_fs_remove);
   meth("iter", _jit_fs_iter);
-  h->frozen = true;  // as the FixedArray view's
+  h->frozen = true;  // as the BoundedArray view's
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
 
-// --- FixedMap<K,V,N> view: open-addressed hash map, byte ops shared via
+// --- BoundedMap<K,V,N> view: open-addressed hash map, byte ops shared via
 // culebra::fixed_probe. ----------------------------------------------------
 inline int64_t _jit_fm_long(JitObject* v, const char* k) {
   return v->slots[v->find_slot(k)].value.data;
@@ -543,7 +548,7 @@ inline void _jit_fm_set(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t s
   if (slot < 0) {
     if (insert < 0)
       throw culebra::CulebraError(
-          "CapacityError", culebra::format("FixedMap is full (capacity {})", cap));
+          "CapacityError", culebra::format("BoundedMap is full (capacity {})", cap));
     std::memcpy(_jit_fm_keys(v) + insert * ksize, key, ksize);
     _jit_fm_states(v)[insert] = culebra::kFixedFull;
     _jit_fm_set_count(v, _jit_fm_count(v) + 1);
@@ -633,7 +638,7 @@ inline void _jit_fm_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
   meth("next", _jit_fm_iter_next);
   { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
 }
-inline JitValue _jit_make_fixed_map_view(int64_t id, int64_t abs_off,
+inline JitValue _jit_make_bounded_map_view(int64_t id, int64_t abs_off,
                                          const culebra::PackableField& f) {
   auto* h = culebra_runtime_object_new();
   h->set_or_append("__fm_id__", JitValue{TAG_LONG, id}, false);
@@ -657,7 +662,7 @@ inline JitValue _jit_make_fixed_map_view(int64_t id, int64_t abs_off,
   meth("remove", _jit_fm_remove);
   meth("keys", _jit_fm_keys_m);
   meth("iter", _jit_fm_iter);
-  h->frozen = true;  // as the FixedArray view's
+  h->frozen = true;  // as the BoundedArray view's
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
 
@@ -845,9 +850,9 @@ inline void _jit_object_set_any(JitObject* obj, int8_t key_tag,
                                 int64_t line, int64_t col, bool is_init) {
   std::string _kbuf;
   _jit_normalize_str_key(key_tag, key_data, _kbuf);
-  // `arr[i] = v` on a FixedArray view: write element i into the inline bytes
+  // `arr[i] = v` on an array view: write element i into the inline bytes
   // (the index coerces Long/Float like the interp).
-  if (obj->is_fixed_array_view) {
+  if (obj->is_array_view) {
     int64_t i = _jit_view_index(key_tag, key_data, line, col);
     _jit_fa_set(obj, i, val_tag, val_data, line, col);
     return;
@@ -1087,8 +1092,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
       ? JitValue{key_tag, key_data}
       : JitValue{TAG_NIL, 0};
   JitUnwindRelease g{key_guard, recv_guard};
-  // `arr[i]` on a FixedArray view: read element i from the inline bytes.
-  if (obj->is_fixed_array_view) {
+  // `arr[i]` on an array view: read element i from the inline bytes.
+  if (obj->is_array_view) {
     int64_t i = _jit_view_index(key_tag, key_data, line, col);
     JitValue r = _jit_fa_get(obj, i, line, col);
     *out_tag = r.tag;
@@ -1157,7 +1162,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
 // instance receivers are supported (this is `??=`'s complex-lvalue path,
 // not the general subscript-read path) — the receiver dispatch in
 // compile_assign_complex only calls this for a TAG_OBJECT lval that isn't
-// a FixedArray view / SharedBuffer / Shared.new view (those reject `??=`
+// a BoundedArray view / SharedBuffer / Shared.new view (those reject `??=`
 // before reaching here, matching the interp).
 // Consumes the caller's +1 to a non-String key on every exit; a TAG_STRING
 // key is a borrowed cstring (never released). The receiver is borrowed.
@@ -2045,8 +2050,9 @@ inline JitRecordType _jit_record_type(JitValue v, std::string_view fn) {
   if (!size) {
     throw culebra::CulebraError(
         "TypeError",
-        culebra::format("{}: {}.{} is a {}, which has no byte-stream form "
-                        "(a scalar, Bytes<N> or FixedString<N> field has).",
+        culebra::format("{}: {}.{} is a {}, which has no byte-stream form (a "
+                        "scalar, Bytes<N>, BoundedString<N> or FixedArray<T, N> "
+                        "field has).",
                         fn, name, bad->name, bad->type));
   }
   return {cls, cls->class_meta_of(), name, layout, *size};
@@ -2060,11 +2066,69 @@ inline JitRecordType _jit_record_type(JitValue v, std::string_view fn) {
       kind, culebra::format("{}: record {}, field `{}`: {}", fn, i, f.name, detail));
 }
 
+// What went wrong putting a scalar: an error kind and its detail, which the
+// caller prefixes with where it was (a field, or a FixedArray's element).
+struct JitRecordFault {
+  const char* kind = nullptr;
+  std::string detail;
+};
+// One scalar of packable type `type` into `p`: a Long in its range, a Float
+// (or Long) for a float type, a Bool. A fault leaves `p` unwritten.
+inline JitRecordFault _jit_record_put_scalar(uint8_t* p, std::string_view type,
+                                             JitValue v, bool big) {
+  namespace sb = culebra::scalar_bytes;
+  const sb::Type& t = *culebra::packable_wire_scalar(type);
+  std::string_view want = t.kind == sb::Kind::Bool    ? "Bool"
+                          : t.kind == sb::Kind::Float ? "Long or Float"
+                                                      : "Long";
+  auto type_fault = [&] {
+    return JitRecordFault{"TypeError",
+                          culebra::format("{} takes {}, got {}.", type, want,
+                                          _culebra_tag_name(v.tag))};
+  };
+  switch (t.kind) {
+    case sb::Kind::Bool:
+      if (v.tag != TAG_BOOL) return type_fault();
+      *p = v.data ? 1 : 0;
+      return {};
+    case sb::Kind::Float:
+      if (v.tag == TAG_FLOAT)
+        sb::store_float(p, t, _culebra_float_to_double(v.data), big);
+      else if (v.tag == TAG_LONG)
+        sb::store_float(p, t, static_cast<double>(v.data), big);
+      else
+        return type_fault();
+      return {};
+    default: {
+      if (v.tag != TAG_LONG) return type_fault();
+      auto [lo, hi] = sb::int_range(t);
+      if (v.data < lo || v.data > hi)
+        return {"ValueError",
+                culebra::format("{} is out of range for {} ({} to {}).", v.data,
+                                type, lo, hi)};
+      sb::store_bits(p, static_cast<uint64_t>(v.data), t.width, big);
+      return {};
+    }
+  }
+}
+inline JitValue _jit_record_get_scalar(const uint8_t* p, std::string_view type,
+                                       bool big) {
+  namespace sb = culebra::scalar_bytes;
+  const sb::Type& t = *culebra::packable_wire_scalar(type);
+  switch (t.kind) {
+    case sb::Kind::Bool: return {TAG_BOOL, *p != 0};
+    case sb::Kind::Float:
+      return {TAG_FLOAT, _culebra_double_to_bits(sb::load_float(p, t, big))};
+    default: return {TAG_LONG, sb::load_int(p, t, big)};
+  }
+}
+
 // Record `rec`'s fields into the `rt.size` bytes at `p`. `rec` must be an
-// instance of the class — the same meta, not just the same name.
+// instance of the class — the same meta, not just the same name. A field left
+// unset (a declared field with no initializer starts nil) writes its zero
+// bytes, as in a fresh SharedBuffer record.
 inline void _jit_record_write(uint8_t* p, JitValue rec, const JitRecordType& rt,
                               bool big, std::string_view fn, size_t i) {
-  namespace sb = culebra::scalar_bytes;
   auto* o = rec.tag == TAG_OBJECT ? reinterpret_cast<JitObject*>(rec.data)
                                   : nullptr;
   if (!o || o->proto() != rt.meta) {
@@ -2078,71 +2142,46 @@ inline void _jit_record_write(uint8_t* p, JitValue rec, const JitRecordType& rt,
     auto si = o->find_slot(f.name);
     JitValue v = si == static_cast<size_t>(-1) ? JitValue{TAG_NIL, 0}
                                                : o->slots[si].value;
-    if (f.layout.is_bytes || f.layout.is_fixed_string) {
-      // Left unset (a declared field with no initializer starts nil): its
-      // zero bytes, as in a fresh SharedBuffer record.
-      if (v.tag == TAG_NIL) {
-        std::memset(p, 0, f.layout.capacity);
-        p += f.layout.capacity;
-        continue;
-      }
-      if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW)
-        _jit_record_field_error(
-            "TypeError", fn, i, f,
-            culebra::format("{} takes a String, got {}.", f.type,
-                            _culebra_tag_name(v.tag)));
-      auto s = _culebra_str_view(v.tag, v.data);
-      const size_t n = f.layout.capacity;
-      if (f.layout.is_bytes && s.size() != n)
-        _jit_record_field_error(
-            "ValueError", fn, i, f,
-            culebra::format("{} takes exactly {} bytes, got {}.", f.type, n,
-                            s.size()));
-      if (s.size() > n)
-        _jit_record_field_error(
-            "CapacityError", fn, i, f,
-            culebra::format("{} holds up to {} bytes, got {}.", f.type, n,
-                            s.size()));
-      if (!s.empty()) std::memcpy(p, s.data(), s.size());
-      std::memset(p + s.size(), 0, n - s.size());  // C's char[N]: NUL-padded
-      p += n;
-      continue;
-    }
-    const sb::Type& t = *culebra::packable_wire_scalar(f.type);
-    std::string_view want = t.kind == sb::Kind::Bool    ? "Bool"
-                            : t.kind == sb::Kind::Float ? "Long or Float"
-                                                        : "Long";
-    auto type_error = [&] {
-      _jit_record_field_error(
-          "TypeError", fn, i, f,
-          culebra::format("{} takes {}, got {}.", f.type, want,
-                          _culebra_tag_name(v.tag)));
+    const size_t size = *culebra::packable_wire_size(f);
+    auto fail = [&](const char* kind, std::string_view detail) {
+      _jit_record_field_error(kind, fn, i, f, detail);
     };
-    switch (t.kind) {
-      case sb::Kind::Bool:
-        if (v.tag != TAG_BOOL) type_error();
-        *p = v.data ? 1 : 0;
-        break;
-      case sb::Kind::Float:
-        if (v.tag == TAG_FLOAT)
-          sb::store_float(p, t, _culebra_float_to_double(v.data), big);
-        else if (v.tag == TAG_LONG)
-          sb::store_float(p, t, static_cast<double>(v.data), big);
-        else
-          type_error();
-        break;
-      default: {
-        if (v.tag != TAG_LONG) type_error();
-        auto [lo, hi] = sb::int_range(t);
-        if (v.data < lo || v.data > hi)
-          _jit_record_field_error(
-              "ValueError", fn, i, f,
-              culebra::format("{} is out of range for {} ({} to {}).", v.data,
-                              f.type, lo, hi));
-        sb::store_bits(p, static_cast<uint64_t>(v.data), t.width, big);
+    if (v.tag == TAG_NIL && !culebra::packable_wire_scalar(f.type)) {
+      std::memset(p, 0, size);
+    } else if (f.layout.is_fixed_array) {
+      if (v.tag != TAG_ARRAY)
+        fail("TypeError", culebra::format("{} takes an Array, got {}.", f.type,
+                                          _culebra_tag_name(v.tag)));
+      auto* arr = reinterpret_cast<JitArray*>(v.data);
+      const size_t n = f.layout.capacity;
+      if (arr->size != n)
+        fail("ValueError", culebra::format("{} takes exactly {} elements, got {}.",
+                                           f.type, n, arr->size));
+      const size_t w = size / n;
+      for (size_t k = 0; k < n; k++) {
+        auto fault =
+            _jit_record_put_scalar(p + k * w, f.layout.elem_type, arr->items[k], big);
+        if (fault.kind)
+          fail(fault.kind, culebra::format("element {}: {}", k, fault.detail));
       }
+    } else if (f.layout.is_bytes || f.layout.is_bounded_string) {
+      if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW)
+        fail("TypeError", culebra::format("{} takes a String, got {}.", f.type,
+                                          _culebra_tag_name(v.tag)));
+      auto s = _culebra_str_view(v.tag, v.data);
+      if (f.layout.is_bytes && s.size() != size)
+        fail("ValueError", culebra::format("{} takes exactly {} bytes, got {}.",
+                                           f.type, size, s.size()));
+      if (s.size() > size)
+        fail("CapacityError", culebra::format("{} holds up to {} bytes, got {}.",
+                                              f.type, size, s.size()));
+      if (!s.empty()) std::memcpy(p, s.data(), s.size());
+      std::memset(p + s.size(), 0, size - s.size());  // C's char[N]: NUL-padded
+    } else if (auto fault = _jit_record_put_scalar(p, f.type, v, big);
+               fault.kind) {
+      fail(fault.kind, fault.detail);
     }
-    p += t.width;
+    p += size;
   }
 }
 
@@ -2150,33 +2189,34 @@ inline void _jit_record_write(uint8_t* p, JitValue rec, const JitRecordType& rt,
 // @packable record's whole state is its declared fields, and every one of
 // them comes from the bytes. The fields go in in declaration order, as the
 // constructor sets them, so the instance's shape is the one `new` builds.
-// A FixedString<N> reads up to its first NUL, C's rule for char[N].
+// A BoundedString<N> reads up to its first NUL, C's rule for char[N]; a
+// FixedArray<T, N> is an Array of its N elements.
 inline JitValue _jit_record_read(const uint8_t* p, const JitRecordType& rt,
                                  bool big) {
-  namespace sb = culebra::scalar_bytes;
   auto* inst = _jit_class_instance_alloc(rt.meta, rt.cls);
   for (const auto& f : rt.layout->fields) {
+    const size_t size = *culebra::packable_wire_size(f);
     JitValue v;
-    if (f.layout.is_bytes || f.layout.is_fixed_string) {
-      size_t n = f.layout.capacity;
-      if (f.layout.is_fixed_string) {
+    if (f.layout.is_fixed_array) {
+      const size_t n = f.layout.capacity;
+      const size_t w = size / n;
+      auto* arr = _jit_array_new_reserved(static_cast<int64_t>(n), "FixedArray");
+      for (size_t k = 0; k < n; k++)
+        arr->items[k] = _jit_record_get_scalar(p + k * w, f.layout.elem_type, big);
+      arr->size = n;
+      v = {TAG_ARRAY, reinterpret_cast<int64_t>(arr)};
+    } else if (f.layout.is_bytes || f.layout.is_bounded_string) {
+      size_t n = size;
+      if (f.layout.is_bounded_string) {
         const void* nul = std::memchr(p, 0, n);
         if (nul) n = static_cast<size_t>(static_cast<const uint8_t*>(nul) - p);
       }
       v = {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(
                            std::string_view(reinterpret_cast<const char*>(p), n)))};
-      p += f.layout.capacity;
     } else {
-      const sb::Type& t = *culebra::packable_wire_scalar(f.type);
-      switch (t.kind) {
-        case sb::Kind::Bool: v = {TAG_BOOL, *p != 0}; break;
-        case sb::Kind::Float:
-          v = {TAG_FLOAT, _culebra_double_to_bits(sb::load_float(p, t, big))};
-          break;
-        default: v = {TAG_LONG, sb::load_int(p, t, big)};
-      }
-      p += t.width;
+      v = _jit_record_get_scalar(p, f.type, big);
     }
+    p += size;
     _jit_object_set_declared(inst, f.name.c_str(), /*mut=*/true, v.tag, v.data,
                              0, 0, /*is_init=*/true,
                              culebra::field_type_for_annotation(f.type));

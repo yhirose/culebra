@@ -3173,18 +3173,45 @@ A `.file` buffer reserves a small fixed header at the front of the file for this
 lock, so its bytes are culebra's container format rather than a bare array of
 your records — keep that in mind if an external tool reads the file directly.
 
-#### Variable-count fields: `FixedArray<T, N>`
+#### Fixed-count fields: `FixedArray<T, N>`
 
-A `@packable` field may be a `FixedArray<T, N>` — a fixed-**capacity** inline
+A `@packable` field may be a `FixedArray<T, N>` — exactly `N` elements of a
+scalar `T`, laid out inline as `[T × N]` with nothing in front of them: C's
+`T[N]`. Its size never changes, so there is no `push`; each element is zero
+until written. For the arrays a record format fixes the length of — a
+shape's three dimensions, a color's three channels, a reserved block.
+
+```culebra
+@packable
+class Voxel {
+  pos: FixedArray<Int16, 3>
+  rgb: FixedArray<Byte, 3>
+}
+let grid = SharedBuffer.new(2, Voxel)
+let v = grid[0]
+v.pos[0] = -4
+v.rgb[2] = 255
+inspect([v.pos.size(), v.pos[0], v.rgb[2], v.rgb[0]])  # => [3, -4, 255, 0]
+```
+
+The view supports `.size()` / `.capacity()` (both `N`) / `.get(i)` /
+`.set(i, v)` / `arr[i]` (read & write) / `for x in arr`; an index outside
+`0...N` (negative counts from the end) is an `IndexError`. As with
+`BoundedArray`, assigning the whole field is a `TypeError` — write its
+elements.
+
+#### Variable-count fields: `BoundedArray<T, N>`
+
+A `@packable` field may be a `BoundedArray<T, N>` — a fixed-**capacity** inline
 collection (`N` elements of a scalar `T`) whose **count** varies at runtime. It
 is laid out fully inline (`[len][T × N]`, no pointers), so variable-count data
-still fits a shared record — the VARCHAR(N) / fixed-array pattern.
+still fits a shared record — the VARCHAR(N) pattern.
 
 ```culebra
 # doctest: skip
 @packable class Body {
   mass: Float32 = 0.0
-  trail: FixedArray<Float32, 8>   # up to 8 points, starts empty
+  trail: BoundedArray<Float32, 8>   # up to 8 points, starts empty
 }
 
 let bodies = SharedBuffer.new(100, Body)
@@ -3204,11 +3231,11 @@ scalar. Assigning the whole field (`record.field = ...`) is a `TypeError` —
 mutate it through the view. The view reads/writes the record's bytes in place,
 so it shares across isolates with the buffer.
 
-#### Text fields: `FixedString<N>`
+#### Text fields: `BoundedString<N>`
 
-A `@packable` field may be a `FixedString<N>` — a fixed-**capacity** inline
+A `@packable` field may be a `BoundedString<N>` — a fixed-**capacity** inline
 UTF-8 string holding up to `N` bytes (`[len][byte × N]`, no pointers). Unlike
-`FixedArray`, it is read and written as a whole `String` value — the VARCHAR(N)
+`BoundedArray`, it is read and written as a whole `String` value — the VARCHAR(N)
 pattern:
 
 ```culebra
@@ -3216,7 +3243,7 @@ pattern:
 @packable
 class Row {
   id: Int32
-  name: FixedString<16>
+  name: BoundedString<16>
 }
 
 let rows = SharedBuffer.new(100, Row)
@@ -3231,18 +3258,18 @@ rows[1].name            # => ""        (zero value is empty)
 fresh `String` copy of the stored bytes, so it shares across isolates with the
 buffer (a child isolate's write is visible to the parent's read).
 
-#### Hash collections: `FixedSet<T, N>` and `FixedMap<K, V, N>`
+#### Hash collections: `BoundedSet<T, N>` and `BoundedMap<K, V, N>`
 
-A `@packable` field may also be a `FixedSet<T, N>` (up to `N` scalar values) or
-a `FixedMap<K, V, N>` (up to `N` scalar key→value pairs). Both are
+A `@packable` field may also be a `BoundedSet<T, N>` (up to `N` scalar values) or
+a `BoundedMap<K, V, N>` (up to `N` scalar key→value pairs). Both are
 open-addressed hash tables laid out fully inline (`[count][states][entries]`,
 no pointers), mutated in place through a view:
 
 ```culebra
 # doctest: skip
 @packable class Bag {
-  tags:   FixedSet<Int32, 16>
-  counts: FixedMap<Int32, Int32, 16>
+  tags:   BoundedSet<Int32, 16>
+  counts: BoundedMap<Int32, Int32, 16>
 }
 
 let b = SharedBuffer.new(100, Bag)
@@ -3264,7 +3291,7 @@ for k, v in m { ... }          # yields (key, value) tuples
 ```
 
 `add` / `set` past capacity raise `CapacityError`. Key and value types must be
-fixed scalars; equality is by the scalar's bytes (so `FixedSet<Float32>` treats
+fixed scalars; equality is by the scalar's bytes (so `BoundedSet<Float32>` treats
 `0.0` and `-0.0` as distinct). Assigning the whole field is a `TypeError` —
 mutate through the view's methods. The view itself holds nothing but the way to
 the bytes, so writing onto it (`m.note = 1`, `m[42] = 1`) is an
@@ -3357,7 +3384,7 @@ e[0].digest  # => the 32 bytes (binary-safe)
 
 The written `String` must be **exactly** `N` bytes (a `ValueError` otherwise);
 a non-String raises `TypeError`. The bytes are binary-safe (embedded NULs are
-preserved). Unlike `FixedString<N>` (a variable-length text field with a length
+preserved). Unlike `BoundedString<N>` (a variable-length text field with a length
 prefix), `Bytes<N>` is a fixed-size blob.
 
 #### Nested records: a `@packable` class field
@@ -3409,13 +3436,15 @@ field at an odd offset in a file format is declared where it sits.
 | `Float32`, `Float64` | 4, 8 | a `Float` or `Long`; `Float32` rounds as `Math.f32` does | `Float` |
 | `Bool` | 1 | `1` / `0` | nonzero is `true` |
 | `Bytes<N>` | `N` | a String of exactly `N` bytes (`ValueError` otherwise) | the `N` bytes |
-| `FixedString<N>` | `N` | up to `N` bytes, NUL-padded — C's `char[N]` (`CapacityError` past `N`) | up to the first NUL |
+| `BoundedString<N>` | `N` | up to `N` bytes, NUL-padded — C's `char[N]` (`CapacityError` past `N`) | up to the first NUL |
+| `FixedArray<T, N>` | `N` × `T`'s | an `Array` of exactly `N` elements, each as `T` above | an `Array` of `N` |
 
-A `Bytes<N>` or `FixedString<N>` field left unset (`nil`) is written as
-zeros. The other kinds — `FixedArray`, `FixedSet`, `FixedMap`, an optional,
-an enum, a nested record — have no byte-stream form, and naming a class
-with one is a `TypeError`: read those parts with a scalar `String.unpack`,
-or as a record of their own. `pack` takes instances of that class (another
+A `Bytes<N>`, `BoundedString<N>` or `FixedArray<T, N>` field left unset
+(`nil`) is written as zeros. The other kinds — `BoundedArray`, `BoundedSet`,
+`BoundedMap` (a count that varies has no place in a fixed-size record), an
+optional, an enum, a nested record — have no byte-stream form, and naming a
+class with one is a `TypeError`: read those parts with a scalar
+`String.unpack`, or as a record of their own. `pack` takes instances of that class (another
 value is a `TypeError`), and its errors name the record and the field.
 `unpack` builds each record **without running `new`** — a `@packable`
 record's state is its declared fields, and every one of them comes from the
@@ -3428,7 +3457,7 @@ methods and its field types checked on later writes.
 class Lump {
   offset: Int32
   size: Int32
-  name: FixedString<8>
+  name: BoundedString<8>
 }
 let l = Lump()
 l.offset = 12

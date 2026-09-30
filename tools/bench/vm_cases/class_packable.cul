@@ -77,8 +77,8 @@ println(Wide.new().i8)
 # --- Fixed-capacity inline fields ----------------------------------------
 @packable
 class Body {
-  label: FixedString<8> = ''
-  xs: FixedArray<Int32, 3> = []
+  label: BoundedString<8> = ''
+  xs: BoundedArray<Int32, 3> = []
 }
 let bb = SharedBuffer.new(2, Body)
 bb[0].label = 'hi'

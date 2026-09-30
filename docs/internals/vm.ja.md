@@ -218,7 +218,7 @@ VMが必要とするヒープオブジェクトはランタイムの既存のも
   （データは自分のslot、メソッドは`proto`の先の共有metaにある）で使う
   protoのslot。後者は（受け手のshape、protoのshape）の対としてキャッシュ
   され、ランタイムhelperのmiss経路が埋める。view（packed・Shared・
-  SharedBuffer・FixedArray）はランタイムがslotより先にアクセスに答える
+  SharedBuffer・FixedArray・BoundedArray）はランタイムがslotより先にアクセスに答える
   ので、そのshapeは専用のroot（`ShapeRegistry::view_root`）から伸ばす。
   Objectが温めた読みや書きのキャッシュがviewに一致することはない。
   書きサイトのIC

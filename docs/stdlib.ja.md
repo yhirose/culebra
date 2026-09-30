@@ -3082,18 +3082,44 @@ inspect(tally[0].n)  # ちょうど 8000 — lost update なし
 バイト列は素のレコード配列ではなくculebraのコンテナ形式になる — 外部ツールが
 ファイルを直接読む場合は注意。
 
-#### 可変個数フィールド: `FixedArray<T, N>`
+#### 固定個数フィールド: `FixedArray<T, N>`
 
-`@packable`フィールドには`FixedArray<T, N>`を使える — スカラ`T`を
+`@packable`フィールドには`FixedArray<T, N>`を使える。スカラ`T`をちょうど
+`N`個持つ配列で、前に何も置かずに`[T × N]`としてインラインに並ぶ（Cの
+`T[N]`）。個数は変わらないので`push`は無く、各要素は書くまで0。レコードの
+形式で長さが決まっている配列に使う（形の3つの次元、色の3チャンネル、
+予約領域など）。
+
+```culebra
+@packable
+class Voxel {
+  pos: FixedArray<Int16, 3>
+  rgb: FixedArray<Byte, 3>
+}
+let grid = SharedBuffer.new(2, Voxel)
+let v = grid[0]
+v.pos[0] = -4
+v.rgb[2] = 255
+inspect([v.pos.size(), v.pos[0], v.rgb[2], v.rgb[0]])  # => [3, -4, 255, 0]
+```
+
+viewは`.size()` / `.capacity()`（どちらも`N`）/ `.get(i)` / `.set(i, v)` /
+`arr[i]`（読み書き）/ `for x in arr`をサポート。`0...N`の外の添字（負の数は
+末尾から数える）は`IndexError`。`BoundedArray`と同じく、フィールドまるごとの
+代入は`TypeError`で、要素に書く。
+
+#### 可変個数フィールド: `BoundedArray<T, N>`
+
+`@packable`フィールドには`BoundedArray<T, N>`を使える — スカラ`T`を
 **容量** `N`個まで保持する固定容量のインラインコレクションで、**個数**は
 実行時に可変。完全インライン展開（`[len][T × N]`、ポインタなし）なので、
-可変個数のデータも共有レコードに載る（VARCHAR(N) / 固定長配列の手法）。
+可変個数のデータも共有レコードに載る（VARCHAR(N)の手法）。
 
 ```culebra
 # doctest: skip
 @packable class Body {
   mass: Float32 = 0.0
-  trail: FixedArray<Float32, 8>   # 最大 8 点、初期は空
+  trail: BoundedArray<Float32, 8>   # 最大 8 点、初期は空
 }
 
 let bodies = SharedBuffer.new(100, Body)
@@ -3112,11 +3138,11 @@ viewは`.size()` / `.capacity()` / `.push(v)` / `.get(i)` / `.set(i, v)` /
 （`record.field = ...`）は`TypeError` — view経由で変更する。viewはレコード
 のバイトをその場で読み書きするので、bufferとともにisolate間で共有される。
 
-#### テキストフィールド: `FixedString<N>`
+#### テキストフィールド: `BoundedString<N>`
 
-`@packable`フィールドには`FixedString<N>`を使える — 最大`N`バイトの
+`@packable`フィールドには`BoundedString<N>`を使える — 最大`N`バイトの
 UTF-8文字列を保持する固定容量インライン文字列（`[len][byte × N]`、ポインタ
-なし）。`FixedArray`と違い、**まるごと`String`値として**読み書きする
+なし）。`BoundedArray`と違い、**まるごと`String`値として**読み書きする
 （VARCHAR(N) の手法）:
 
 ```culebra
@@ -3124,7 +3150,7 @@ UTF-8文字列を保持する固定容量インライン文字列（`[len][byte 
 @packable
 class Row {
   id: Int32
-  name: FixedString<16>
+  name: BoundedString<16>
 }
 
 let rows = SharedBuffer.new(100, Row)
@@ -3139,18 +3165,18 @@ rows[1].name            # => ""        （ゼロ値は空文字列）
 bufferとともにisolate間で共有される（子isolateの書き込みが親の読み出しに
 見える）。
 
-#### ハッシュコレクション: `FixedSet<T, N>` / `FixedMap<K, V, N>`
+#### ハッシュコレクション: `BoundedSet<T, N>` / `BoundedMap<K, V, N>`
 
-`@packable`フィールドには`FixedSet<T, N>`（最大`N`個のスカラ値）や
-`FixedMap<K, V, N>`（最大`N`組のスカラkey→value）も使える。どちらも完全
+`@packable`フィールドには`BoundedSet<T, N>`（最大`N`個のスカラ値）や
+`BoundedMap<K, V, N>`（最大`N`組のスカラkey→value）も使える。どちらも完全
 インライン展開（`[count][states][entries]`、ポインタなし）のopen-addressing
 ハッシュテーブルで、view経由でその場変更する:
 
 ```culebra
 # doctest: skip
 @packable class Bag {
-  tags:   FixedSet<Int32, 16>
-  counts: FixedMap<Int32, Int32, 16>
+  tags:   BoundedSet<Int32, 16>
+  counts: BoundedMap<Int32, Int32, 16>
 }
 
 let b = SharedBuffer.new(100, Bag)
@@ -3172,7 +3198,7 @@ for k, v in m { ... }          # (key, value) タプルを yield
 ```
 
 容量超過の`add` / `set`は`CapacityError`。キー/値型は固定スカラに限り、等価は
-スカラのバイト比較（`FixedSet<Float32>`は`0.0`と`-0.0`を別物とみなす）。
+スカラのバイト比較（`BoundedSet<Float32>`は`0.0`と`-0.0`を別物とみなす）。
 フィールドまるごとの代入は`TypeError` — viewのメソッド経由で変更する。view自体は
 バイトへの道筋しか持たないので、viewへの書き込み（`m.note = 1`、`m[42] = 1`）は
 `ImmutableError`。バイトはレコード内にあるので、bufferとともにisolate間で共有
@@ -3261,7 +3287,7 @@ e[0].digest  # => 32 バイト（バイナリ安全）
 ```
 
 書き込む`String`は**ちょうど** `N`バイトでなければならない（違えば`ValueError`）。
-String以外は`TypeError`。バイトはバイナリ安全（埋め込みNULも保持）。`FixedString<N>`
+String以外は`TypeError`。バイトはバイナリ安全（埋め込みNULも保持）。`BoundedString<N>`
 （長さprefix付きの可変長テキスト）と違い、`Bytes<N>`は固定長blob。
 
 #### ネストレコード: `@packable` クラスのフィールド
@@ -3313,12 +3339,14 @@ SharedBufferはフィールドをCと同じ規則で整列させ、機械のバ�
 | `Float32`、`Float64` | 4、8 | `Float`か`Long`。`Float32`は`Math.f32`と同じ規則で丸める | `Float` |
 | `Bool` | 1 | `1` / `0` | 0以外は`true` |
 | `Bytes<N>` | `N` | ちょうど`N`バイトのString（違えば`ValueError`） | その`N`バイト |
-| `FixedString<N>` | `N` | `N`バイトまで。残りはNULで埋める（Cの`char[N]`。`N`を超えると`CapacityError`） | 最初のNULの手前まで |
+| `BoundedString<N>` | `N` | `N`バイトまで。残りはNULで埋める（Cの`char[N]`。`N`を超えると`CapacityError`） | 最初のNULの手前まで |
+| `FixedArray<T, N>` | `T`の幅 × `N` | 要素がちょうど`N`個の`Array`。各要素は上の`T`の規則で書く | `N`個の`Array` |
 
-値を入れていない（`nil`の）`Bytes<N>`・`FixedString<N>`フィールドは0の
-バイトとして書く。それ以外の種類（`FixedArray`、`FixedSet`、`FixedMap`、
-optional、enum、入れ子のレコード）にはバイト列の形がなく、そういう
-フィールドを持つクラスを渡すと`TypeError`になる。その部分はスカラーの
+値を入れていない（`nil`の）`Bytes<N>`・`BoundedString<N>`・`FixedArray<T, N>`
+フィールドは0のバイトとして書く。それ以外の種類（`BoundedArray`、`BoundedSet`、
+`BoundedMap`（個数が変わるものは固定長のレコードに収まらない）、optional、
+enum、入れ子のレコード）にはバイト列の形がなく、そういうフィールドを持つ
+クラスを渡すと`TypeError`になる。その部分はスカラーの
 `String.unpack`で読むか、別のレコードに分ける。`pack`にはそのクラスの
 インスタンスを渡す（ほかの値は`TypeError`）。エラーのメッセージには
 レコードの番号とフィールド名が入る。`unpack`はレコードを**`new`を呼ばずに**
@@ -3333,7 +3361,7 @@ optional、enum、入れ子のレコード）にはバイト列の形がなく�
 class Lump {
   offset: Int32
   size: Int32
-  name: FixedString<8>
+  name: BoundedString<8>
 }
 let l = Lump()
 l.offset = 12

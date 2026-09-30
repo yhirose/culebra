@@ -47,6 +47,10 @@ packinto|*
 # UInt16 field type the baseline's @packable does not know.
 packrec*
 
+# FixedArray<T, N> now means exactly N elements; the baseline's FixedArray was
+# a count that varies up to N (now BoundedArray), with a length in front.
+fixarr|*
+
 # `Math.f32` joined the namespace after v0.4.0, so `Math` has one more member
 # than the baseline binary's: every case that asks a namespace object for its
 # size reads 25 where the baseline read 24. The shadowing these cases are

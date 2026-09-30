@@ -1,0 +1,111 @@
+# FixedArray<T, N>: exactly N scalars (C's T[N]), where BoundedArray holds up
+# to N with a count that varies.
+
+fn err(f) {
+  try {
+    f()
+    nil
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+
+@packable
+class Shape3 {
+  dims: FixedArray<UInt32, 3>
+  trail: BoundedArray<Int16, 4>
+}
+
+# --- in a SharedBuffer: always N, zero until written ---
+let buf = SharedBuffer.new(2, Shape3)
+let d = buf[0].dims
+assert_eq(d.size(), 3)
+assert_eq(d.capacity(), 3)
+assert_eq([d[0], d[1], d[2]], [0, 0, 0])
+d[0] = 28
+d[1] = 28
+d.set(2, 1)
+mut seen = []
+for x in d {
+  seen.push(x)
+}
+assert_eq(seen, [28, 28, 1])
+assert_eq(d.get(-1), 1)
+assert_eq(buf[1].dims.size(), 3)  # its own record, still zeros
+assert_eq(buf[1].dims[0], 0)
+assert_throws("IndexError", || d[3])
+assert_eq(d.has("push"), false)  # nothing to push onto a fixed count
+assert_eq(
+  err(|| buf[0].dims = [1, 2, 3]),
+  "TypeError: cannot assign to FixedArray field `dims`; mutate it via [i] = ...",
+)
+assert_eq(
+  err(|| d.foo = 1),
+  "ImmutableError: cannot add property 'foo' to a FixedArray view",
+)
+# the bounded one beside it keeps its count
+buf[0].trail.push(-5)
+assert_eq([buf[0].trail.size(), buf[0].trail.capacity()], [1, 4])
+assert_eq(
+  err(|| buf[0].trail = [1]),
+  "TypeError: cannot assign to BoundedArray field `trail`; mutate it via .push(...) / [i] = ...",
+)
+
+# its layout is the elements alone: no count in front, the element's alignment
+@packable
+class Tight {
+  tag: Byte
+  rgb: FixedArray<Byte, 3>
+}
+let t = SharedBuffer.new(1, Tight)
+t[0].rgb[2] = 255
+assert_eq(t[0].rgb[2], 255)
+
+# --- as bytes: N elements, each in the call's byte order ---
+@packable
+class TensorHead {
+  magic: Bytes<4> = "TNSR"
+  dims: FixedArray<UInt32, 3>
+}
+assert_eq(String.pack_size(TensorHead), 4 + 3 * 4)
+let th = TensorHead()
+th.dims = [28, 28, 1]
+let tb = String.pack(TensorHead, [th], endian: "big")
+assert_eq(
+  tb.bytes().collect(),
+  [84, 78, 83, 82, 0, 0, 0, 28, 0, 0, 0, 28, 0, 0, 0, 1],
+)
+let back = String.unpack(TensorHead, tb, endian: "big")[0]
+assert_eq(back.dims, [28, 28, 1])
+assert_eq(type_of(back.dims), "Array")
+# left unset, it writes zeros
+assert_eq(
+  String.pack(TensorHead, [TensorHead()]).bytes().collect().slice(4, 16),
+  repeat(12, 0),
+)
+fn head_with(dims) {
+  let h = TensorHead()
+  h.dims = dims
+  h
+}
+assert_eq(
+  err(|| String.pack(TensorHead, [head_with([1, 2])])),
+  "ValueError: String.pack: record 0, field `dims`: FixedArray<UInt32, 3> takes exactly 3 elements, got 2.",
+)
+assert_eq(
+  err(|| String.pack(TensorHead, [head_with([1, -2, 3])])),
+  "ValueError: String.pack: record 0, field `dims`: element 1: -2 is out of range for UInt32 (0 to 4294967295).",
+)
+assert_eq(
+  err(|| String.pack(TensorHead, [head_with("abc")])),
+  "TypeError: String.pack: record 0, field `dims`: FixedArray<UInt32, 3> takes an Array, got String.",
+)
+# a BoundedArray's count has no place in a byte stream
+@packable
+class WithBounded {
+  xs: BoundedArray<Int32, 4>
+}
+assert_eq(
+  err(|| String.pack_size(WithBounded)),
+  "TypeError: String.pack_size: WithBounded.xs is a BoundedArray<Int32, 4>, which has no byte-stream form (a scalar, Bytes<N>, BoundedString<N> or FixedArray<T, N> field has).",
+)

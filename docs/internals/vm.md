@@ -218,7 +218,7 @@ The heap objects a VM needs are the runtime's existing ones:
   is in own slots and whose methods sit on the shared meta behind
   `proto` — the proto slot, cached as the pair (receiver shape, proto
   shape) the runtime helper's miss path fills. A view (packed, Shared,
-  SharedBuffer, FixedArray), whose accesses the runtime answers before
+  SharedBuffer, FixedArray, BoundedArray), whose accesses the runtime answers before
   its slots, grows its shape from a root of its own
   (`ShapeRegistry::view_root`), so no read or write cache an Object
   primed can match it. A write site's IC

@@ -499,7 +499,7 @@ struct JitObject {
   bool is_packed_view = false;
   bool is_shared_buffer = false;
   bool is_shared_val = false;
-  bool is_fixed_array_view = false;
+  bool is_array_view = false;
   // A Regex match: `m[i]` / `m["name"]` subscripts hit its capture groups
   // (mirrors interp's ObjectValue::is_match). Trailing, like the flags above.
   bool is_match = false;

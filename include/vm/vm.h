@@ -16254,7 +16254,7 @@ struct Exec {
               case 1:
                 culebra_runtime_throw_error(
                     "TypeError",
-                    "`?" "?=` is not supported on a FixedArray element",
+                    "`?" "?=` is not supported on a FixedArray or BoundedArray element",
                     line, col);
                 break;
               case 2:

@@ -207,28 +207,30 @@ parse_packable_enum_spec(std::string_view spec) {
 inline size_t packable_class_stride(std::string_view name);
 inline size_t packable_class_align(std::string_view name);
 
-// Layout of a whole field — a scalar, or a `FixedArray<T, N>` (a fixed-
-// capacity inline collection: `[len:i32][T × N]`, no pointers, so it fits a
-// @packable record). size 0 means the type isn't a packable field type.
+// Layout of a whole field — a scalar, or an inline collection with no
+// pointers, so it fits a @packable record: a `FixedArray<T, N>` (exactly N,
+// `[T × N]`), a `BoundedArray<T, N>` (up to N, `[len:i32][T × N]`), ...
+// size 0 means the type isn't a packable field type.
 struct PackableFieldInfo {
   size_t size = 0;
   size_t align = 1;
-  bool is_fixed_array = false;
-  bool is_fixed_string = false;  // FixedString<N>: `[len:i32][byte × N]`
-  bool is_fixed_set = false;     // FixedSet<T,N>: `[count][state×N][T×N]`
-  bool is_fixed_map = false;     // FixedMap<K,V,N>: `[count][state×N][K×N][V×N]`
+  bool is_fixed_array = false;    // FixedArray<T,N>: `[T×N]`, always N elements
+  bool is_bounded_array = false;  // BoundedArray<T,N>: `[len:i32][T×N]`
+  bool is_bounded_string = false;  // BoundedString<N>: `[len:i32][byte × N]`
+  bool is_bounded_set = false;     // BoundedSet<T,N>: `[count][state×N][T×N]`
+  bool is_bounded_map = false;     // BoundedMap<K,V,N>: `[count][state×N][K×N][V×N]`
   bool is_optional = false;      // T?: `[present:byte][T]`, nil when present==0
   bool is_enum = false;          // a registered @packable enum: `[tag:i32][payload]`
   bool is_bytes = false;         // Bytes<N>: exactly N raw bytes (no length prefix)
   bool is_struct = false;        // a nested @packable class (its record, inline)
-  std::string elem_type;     // FixedArray/Set element (or FixedMap key) scalar
+  std::string elem_type;     // BoundedArray/Set element (or BoundedMap key) scalar
                              // — or, for is_enum/is_struct, the enum/class name
-  std::string val_type;      // FixedMap value scalar
+  std::string val_type;      // BoundedMap value scalar
   size_t capacity = 0;       // N
   size_t elem_size = 0;      // sizeof(T) / sizeof(K)
-  size_t val_size = 0;       // sizeof(V) (FixedMap)
+  size_t val_size = 0;       // sizeof(V) (BoundedMap)
   size_t data_offset = 0;    // byte offset of the element/key array within field
-  size_t val_offset = 0;     // byte offset of the value array (FixedMap)
+  size_t val_offset = 0;     // byte offset of the value array (BoundedMap)
 };
 
 inline PackableFieldInfo packable_field_info(std::string_view t) {
@@ -267,9 +269,9 @@ inline PackableFieldInfo packable_field_info(std::string_view t) {
     fi.size = fi.capacity;  // exactly N bytes
     return fi;
   }
-  // FixedString<N> = `[len:i32][byte × N]` inline, a fixed-capacity UTF-8
+  // BoundedString<N> = `[len:i32][byte × N]` inline, a fixed-capacity UTF-8
   // string field read/written as a whole String value (a VARCHAR(N)).
-  constexpr std::string_view kFS = "FixedString<";
+  constexpr std::string_view kFS = "BoundedString<";
   if (t.starts_with(kFS) && t.ends_with(">")) {
     auto nstr = _packable_trim(t.substr(kFS.size(), t.size() - kFS.size() - 1));
     int64_t n = 0;
@@ -278,7 +280,7 @@ inline PackableFieldInfo packable_field_info(std::string_view t) {
     if (ec != std::errc() || ptr != nstr.data() + nstr.size() || n <= 0)
       return {};
     PackableFieldInfo fi;
-    fi.is_fixed_string = true;
+    fi.is_bounded_string = true;
     fi.capacity = static_cast<size_t>(n);
     fi.elem_size = 1;
     fi.align = 4;                  // the inline len is an i32
@@ -286,9 +288,9 @@ inline PackableFieldInfo packable_field_info(std::string_view t) {
     fi.size = fi.data_offset + fi.capacity;  // 4 + N
     return fi;
   }
-  // FixedSet<T, N> = `[count:i32][state:byte × N][T × N]`, an open-addressed
+  // BoundedSet<T, N> = `[count:i32][state:byte × N][T × N]`, an open-addressed
   // hash set of up to N scalar values, mutated in place through a view.
-  constexpr std::string_view kFSet = "FixedSet<";
+  constexpr std::string_view kFSet = "BoundedSet<";
   if (t.starts_with(kFSet) && t.ends_with(">")) {
     auto inner = t.substr(kFSet.size(), t.size() - kFSet.size() - 1);  // "T , N"
     auto comma = inner.rfind(',');
@@ -302,7 +304,7 @@ inline PackableFieldInfo packable_field_info(std::string_view t) {
     if (ec != std::errc() || ptr != nstr.data() + nstr.size() || n <= 0)
       return {};
     PackableFieldInfo fi;
-    fi.is_fixed_set = true;
+    fi.is_bounded_set = true;
     fi.elem_type = std::string(elem);
     fi.capacity = static_cast<size_t>(n);
     fi.elem_size = ei.size;
@@ -311,9 +313,9 @@ inline PackableFieldInfo packable_field_info(std::string_view t) {
     fi.size = fi.data_offset + fi.capacity * ei.size;
     return fi;
   }
-  // FixedMap<K, V, N> = `[count:i32][state:byte × N][K × N][V × N]`, an
+  // BoundedMap<K, V, N> = `[count:i32][state:byte × N][K × N][V × N]`, an
   // open-addressed hash map of up to N scalar key→value pairs.
-  constexpr std::string_view kFMap = "FixedMap<";
+  constexpr std::string_view kFMap = "BoundedMap<";
   if (t.starts_with(kFMap) && t.ends_with(">")) {
     auto inner = t.substr(kFMap.size(), t.size() - kFMap.size() - 1);
     auto c1 = inner.find(',');
@@ -330,7 +332,7 @@ inline PackableFieldInfo packable_field_info(std::string_view t) {
     if (ec != std::errc() || ptr != nstr.data() + nstr.size() || n <= 0)
       return {};
     PackableFieldInfo fi;
-    fi.is_fixed_map = true;
+    fi.is_bounded_map = true;
     fi.elem_type = std::string(kt);
     fi.val_type = std::string(vt);
     fi.capacity = static_cast<size_t>(n);
@@ -343,9 +345,13 @@ inline PackableFieldInfo packable_field_info(std::string_view t) {
     fi.size = fi.val_offset + fi.capacity * vi.size;
     return fi;
   }
-  constexpr std::string_view kFA = "FixedArray<";
-  if (t.starts_with(kFA) && t.ends_with(">")) {
-    auto inner = t.substr(kFA.size(), t.size() - kFA.size() - 1);  // "T , N"
+  // FixedArray<T, N> = `[T × N]`: exactly N scalars, C's `T[N]`.
+  // BoundedArray<T, N> = `[len:i32][T × N]`: up to N, a count that varies.
+  // The same element array; only the bounded one carries a count before it.
+  for (bool bounded : {false, true}) {
+    std::string_view head = bounded ? "BoundedArray<" : "FixedArray<";
+    if (!t.starts_with(head) || !t.ends_with(">")) continue;
+    auto inner = t.substr(head.size(), t.size() - head.size() - 1);  // "T , N"
     auto comma = inner.rfind(',');
     if (comma == std::string_view::npos) return {};
     auto elem = _packable_trim(inner.substr(0, comma));
@@ -358,12 +364,14 @@ inline PackableFieldInfo packable_field_info(std::string_view t) {
     if (ec != std::errc() || ptr != nstr.data() + nstr.size() || n <= 0)
       return {};
     PackableFieldInfo fi;
-    fi.is_fixed_array = true;
+    fi.is_fixed_array = !bounded;
+    fi.is_bounded_array = bounded;
     fi.elem_type = std::string(elem);
     fi.capacity = static_cast<size_t>(n);
     fi.elem_size = ei.size;
-    fi.align = std::max<size_t>(4, ei.align);   // the inline len is an i32
-    fi.data_offset = packable_align_up(4, ei.align);
+    // The bounded one's inline len is an i32.
+    fi.align = bounded ? std::max<size_t>(4, ei.align) : ei.align;
+    fi.data_offset = bounded ? packable_align_up(4, ei.align) : 0;
     fi.size = fi.data_offset + fi.capacity * ei.size;
     return fi;
   }
@@ -398,7 +406,7 @@ inline bool is_packable_type(std::string_view t) {
   return packable_field_info(t).size != 0;
 }
 
-// Small integer code for a packable scalar, so a JIT FixedArray view can
+// Small integer code for a packable scalar, so a JIT BoundedArray view can
 // store its element type in a numeric slot (no JIT-string allocation) and
 // map back to the name for the byte read/write switch. -1 = not a scalar.
 inline int packable_scalar_code(std::string_view t) {
@@ -431,12 +439,12 @@ inline std::string_view packable_scalar_name(int code) {
 }
 
 // A single declared field: its name, the type token as written (`Float32`,
-// `FixedArray<Int32, 8>`, ...), the byte offset from C-ABI natural alignment,
+// `BoundedArray<Int32, 8>`, ...), the byte offset from C-ABI natural alignment,
 // and `layout` — what `packable_field_info` says about that type. A field
 // *has* a layout rather than being one, so the two stay separate structs and
 // `compute_packable_layout` never recomputes the layout from `type`.
 //
-// The read/write paths also address the *elements* of a FixedArray/Set/Map,
+// The read/write paths also address the *elements* of a BoundedArray/Set/Map,
 // which are bare scalars with no declaration of their own. `scalar()` builds
 // that second shape: only `type` carries information, and the all-zero
 // `layout` is what routes it past every `layout.is_*` arm to the scalar
@@ -453,7 +461,7 @@ struct PackableField {
   }
 };
 
-// FNV-1a over `n` key bytes — the hash for open-addressed Fixed{Set,Map}.
+// FNV-1a over `n` key bytes — the hash for open-addressed Bounded{Set,Map}.
 // Byte-level so interp and JIT share one hash (the keys are fixed scalars,
 // already canonicalized into their field bytes before hashing).
 inline uint64_t fixed_hash_bytes(const uint8_t* key, size_t n) {
@@ -465,7 +473,7 @@ inline uint64_t fixed_hash_bytes(const uint8_t* key, size_t n) {
   return h;
 }
 
-// Slot states for an open-addressed Fixed{Set,Map}.
+// Slot states for an open-addressed Bounded{Set,Map}.
 enum : uint8_t { kFixedEmpty = 0, kFixedFull = 1, kFixedTomb = 2 };
 
 // Linear-probe for `key` (key_size bytes) among `cap` slots. `keys` is the
@@ -515,6 +523,33 @@ struct PackableLayout {
   }
 };
 
+// The name a field type was renamed to, when `t` spells a retired one:
+// FixedString/FixedSet/FixedMap became Bounded* (their count varies up to N),
+// and FixedArray now means exactly N. Empty for any other type.
+inline std::string packable_renamed_type(std::string_view t) {
+  for (std::string_view old : {"FixedString<", "FixedSet<", "FixedMap<"})
+    if (t.starts_with(old)) return "Bounded" + std::string(t.substr(5));
+  return {};
+}
+
+// Why `t` is not a packable field type, for a declaration's SyntaxError.
+inline std::string packable_type_error(std::string_view class_name,
+                                       std::string_view field,
+                                       std::string_view t) {
+  if (auto renamed = packable_renamed_type(t); !renamed.empty())
+    return culebra::format("@packable class `{}`: field `{}` has type `{}`, "
+                           "which is now spelled `{}`",
+                           class_name, field, t, renamed);
+  return culebra::format(
+      "@packable class `{}`: field `{}` has non-packable type `{}` (expected a "
+      "fixed scalar — Float32/Float64/Int8/Int16/Int32/Int64/Byte/UInt16/"
+      "UInt32/Bool — or FixedArray<scalar, N> / BoundedArray<scalar, N> / "
+      "BoundedString<N> / BoundedSet<scalar, N> / BoundedMap<scalar, scalar, "
+      "N> / Bytes<N> / an optional scalar `T?` / a @packable enum or nested "
+      "@packable class)",
+      class_name, field, t);
+}
+
 // Compute the C-ABI layout for an ordered list of (name, type) fields.
 // Throws SyntaxError on a non-fixed field type — that is the @packable
 // constraint surfacing at declaration time.
@@ -525,18 +560,9 @@ inline PackableLayout compute_packable_layout(
   size_t off = 0;
   for (const auto& [name, type] : fields) {
     auto info = packable_field_info(type);
-    if (info.size == 0) {
-      throw CulebraError(
-          "SyntaxError",
-          culebra::format("@packable class `{}`: field `{}` has non-packable "
-                          "type `{}` (expected a fixed scalar — Float32/Float64/"
-                          "Int8/Int16/Int32/Int64/Byte/UInt16/UInt32/Bool — or "
-                          "FixedArray<scalar, N> / FixedString<N> / "
-                          "FixedSet<scalar, N> / FixedMap<scalar, scalar, N> / "
-                          "Bytes<N> / an optional scalar `T?` / a @packable enum "
-                          "or nested @packable class)",
-                          class_name, name, type));
-    }
+    if (info.size == 0)
+      throw CulebraError("SyntaxError",
+                         packable_type_error(class_name, name, type));
     off = packable_align_up(off, info.align);
     layout.fields.push_back({name, type, off, info});
     off += info.size;
@@ -587,10 +613,13 @@ inline const scalar_bytes::Type* packable_wire_scalar(std::string_view t) {
 }
 
 // Bytes one field takes in the stream: a scalar its width, a Bytes<N> or a
-// FixedString<N> (NUL-padded, C's char[N]) N. Nullopt for a field with no
-// byte-stream form — a Fixed collection, an optional, an enum, a nested record.
+// BoundedString<N> (NUL-padded, C's char[N]) N, a FixedArray<T, N> N of T.
+// Nullopt for a field with no byte-stream form — a BoundedArray, Set or Map
+// (a count that varies), an optional, an enum, a nested record.
 inline std::optional<size_t> packable_wire_size(const PackableField& f) {
-  if (f.layout.is_bytes || f.layout.is_fixed_string) return f.layout.capacity;
+  if (f.layout.is_bytes || f.layout.is_bounded_string) return f.layout.capacity;
+  if (f.layout.is_fixed_array)
+    return f.layout.capacity * packable_wire_scalar(f.layout.elem_type)->width;
   if (auto* t = packable_wire_scalar(f.type)) return t->width;
   return std::nullopt;
 }

@@ -17,7 +17,7 @@ try {
 @packable
 class Rec {
   id: UInt16
-  name: FixedString<4>
+  name: BoundedString<4>
   w: Float32
 }
 let r = Rec()

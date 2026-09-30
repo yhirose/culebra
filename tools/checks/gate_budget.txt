@@ -26,8 +26,9 @@
 # a container; a stored key keeps its hash and is never hashed again).
 # 289 since test_xml.cul (the XML namespace: parse, events, paths, stringify).
 # 290 since test_string_pack.cul (String.pack / String.unpack: fixed-width
-# scalars to bytes and back).
-tests.cul 291
+# scalars to bytes and back). 291 since test_fixedarray.cul (FixedArray<T, N>
+# is exactly N; the count that varies is BoundedArray's).
+tests.cul 292
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -64,8 +65,9 @@ ctest.entries 34
 # 988 since stdlib's Audio.Kauai section shows the API as built, in en and ja.
 # 986 since §18.1 shows String.pack / String.unpack, in en and ja.
 # 990 since §18.1 and stdlib's @packable section show a record packed and
-# read back, in en and ja.
-docs.blocks 994
+# read back, in en and ja. 992 since the @packable section shows a
+# FixedArray, in en and ja.
+docs.blocks 996
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

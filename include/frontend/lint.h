@@ -716,14 +716,8 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
             if (!culebra::is_packable_type(mv.type_annotation)) {
               diags_.push_back(Diagnostic{
                   "SyntaxError",
-                  std::format(
-                      "@packable class `{}`: field `{}` has non-packable type "
-                      "`{}` (expected a fixed scalar — Float32/Float64/Int8/"
-                      "Int16/Int32/Int64/Byte/UInt16/UInt32/Bool — or FixedArray<scalar, N> / "
-                      "FixedString<N> / FixedSet<scalar, N> / "
-                      "FixedMap<scalar, scalar, N> / Bytes<N> / an optional "
-                      "scalar `T?` / a @packable enum or nested @packable class)",
-                      class_name, mv.name, mv.type_annotation),
+                  culebra::packable_type_error(class_name, mv.name,
+                                               mv.type_annotation),
                   static_cast<long>(mv.name_line),
                   static_cast<long>(mv.name_col), Severity::Error});
               pk_ok = false;

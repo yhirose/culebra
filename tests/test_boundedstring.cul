@@ -1,10 +1,10 @@
-// FixedString<N>: a fixed-capacity inline UTF-8 string field on a @packable
+// BoundedString<N>: a fixed-capacity inline UTF-8 string field on a @packable
 // record — `[len:i32][byte × N]`, read/written as a whole String (a VARCHAR(N)).
 
 @packable
 class Row {
   id: Int32
-  name: FixedString<16>
+  name: BoundedString<16>
 }
 
 buf = SharedBuffer.new(3, Row)
@@ -54,7 +54,7 @@ assert_eq(buf[0].name, "x")
 assert_eq(buf[1].name, "y")
 assert_eq(buf[2].name, "z")
 
-// Cross-isolate share: a child isolate writes FixedString fields into the
+// Cross-isolate share: a child isolate writes BoundedString fields into the
 // shared backing bytes (zero copy), the parent reads them back.
 shared = SharedBuffer.new(2, Row)
 worker = Isolate.spawn(fn () {
