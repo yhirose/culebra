@@ -1,0 +1,262 @@
+# Every ```kauai block of the Kauai spec (docs/kauai/language.md) reads and
+# plays, and the Japanese spec shows the same blocks. A block that is not a
+# whole song is played in the smallest song around it; the chord table of
+# Appendix A voices every spelling as the table says.
+
+let lines = |xs| xs.join("\n")
+
+fn blocks_of(path) {
+  let parts = FS.read(path).split("\n```kauai\n")
+  parts.slice(1, parts.size()).map(|p| p.split("\n```\n")[0].to_string())
+}
+
+let SPEC = "docs/kauai/language.md"
+let blocks = blocks_of(SPEC)
+assert_eq(blocks_of("docs/kauai/language.ja.md"), blocks)
+
+let words_of = |l| l.trim().split_whitespace().map(|w| w.to_string())
+
+# Chords voiced from C4, a whole-note bar each (2.4 seconds at tempo 100),
+# after the definitions `defs`; `voiced` answers each bar's pitches.
+fn chords(defs, syms) {
+  song_of(lines([
+    defs,
+    'band B {',
+    '  voice M pulse plays melody vol 10',
+    '  voice Ch host Ep plays chords from C4 poly vol 40%',
+    '}',
+    'song S {',
+    '  tempo 100',
+    '  band B',
+    '  groove G',
+    '  melody in C4..B4',
+    '  T',
+    '}',
+    'groove G {',
+    '  Ch x',
+    '}',
+    'section T {',
+    ...syms.map(|s| "  {s} c1"),
+    '}',
+  ]))
+}
+fn voiced(song) {
+  let tones = song.events().filter(|e| e.by == "Ch")
+  let bars = Math.round(tones[-1].at / 2.4) + 1
+  iota(bars).map(|i| tones
+    .filter(|e| Math.round(e.at / 2.4) == i)
+    .map(|e| e.pitch)
+    .sorted())
+}
+let defines = |b, kind| b
+  .split("\n")
+  .any(|l| l.to_string().starts_with(kind + " "))
+
+# Host instruments are the program's; nothing here builds their sounds, so a
+# table that names each one is enough.
+fn hosts(text) {
+  mut out = {}
+  for line in text.split("\n") {
+    let w = words_of(line)
+    for i in 0..w.size() - 1 {
+      out[w[i + 1].lower()] = |a, b = nil| nil if w[i] == "host"
+    }
+  }
+  out
+}
+let song_of = |text| Audio.Kauai.new(
+  text,
+  voices: hosts(text),
+  drums: hosts(text),
+)
+
+# The files of Appendix C, by what their comments call them.
+let run_kau = blocks.find(|b| b.starts_with("band Run") &&
+  b.contains("drum Floor"))
+let song_line = |name| "\nsong " + name + ' {'
+let appendix_song = |name| blocks.find(|b| b.contains(song_line(name)) &&
+  defines(b, "section"))
+
+# A section on its own plays in a song of its own: each section once for
+# each of its endings, or twice if it has `2nd` lines, by a melody voice and
+# a voice for the parts it names, in 4/4 or else 3/4. A bar of rest between
+# the plays leaves room for a pickup.
+let CAPITALS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+fn sections_alone(b) {
+  mut sections = []
+  mut parts = []
+  for line in b.split("\n") {
+    let w = words_of(line)
+    continue if w.empty()
+    sections.push({
+      name: w[1],
+      endings: [],
+      mut again: false,
+    }) if w[0] == "section"
+    sections[-1].endings.push(w[1]) if w[0] == "ending"
+    let second_part = w[0] == "2nd" && w.size() > 1 && w[1].ends_with(":")
+    sections[-1].again = true if w[0] == "2nd:" || second_part
+    parts.push(w[1]) if w[0] == "part" && w.get(2, "") == '{'
+    parts.push(w[0].strip_suffix(":")) if w[0].ends_with(":") &&
+      CAPITALS.contains(w[0].slice(0, 1))
+    parts.push(w[1].strip_suffix(":")) if second_part
+  }
+  let plays = sections.flat_map(fn (s) {
+    return s.endings.map(|n| "  {s.name} ending {n}\n  Gap") if !s.endings.empty()
+    [s.again ? "  {s.name}\n  Gap\n  {s.name}\n  Gap" : "  {s.name}\n  Gap"]
+  })
+  let players = parts.empty()
+    ? []
+    : ["  voice P host Pad plays part {parts.to_set().to_array().join(" ")} poly vol 50%"]
+  mut failed = []
+  for (meter, rest) in [("4/4", "r1"), ("3/4", "r2.")] {
+    let text = lines([
+      'band Doc {',
+      '  voice M host Lead plays melody poly vol 50%',
+      ...players,
+      '}',
+      'song Doc {',
+      '  tempo 100',
+      "  meter {meter}",
+      '  band Doc',
+      '  melody in C4..B4',
+      ...plays,
+      '}',
+      'section Gap {',
+      "  N.C. {rest}",
+      '}',
+      b,
+    ])
+    let got = try {
+      song_of(text)
+    } catch e {
+      failed.push("{meter}: {e.message}")
+      nil
+    }
+    return got if got != nil
+  }
+  throw {kind: "KauaiError", message: failed.join("; ")}
+}
+
+# A band on its own plays one bar, with a melody voice of its own if it has
+# none; a groove on its own plays under run.kau's band, whose drums it names,
+# made host drums so that a fill may hit with the hats; voicings are voiced,
+# each against its intervals.
+let one_bar = |band, extra| lines([
+  'song Doc {',
+  '  tempo 100',
+  "  band {band}",
+  ...extra,
+  '  melody in C4..B4',
+  '  T',
+  '}',
+])
+fn band_alone(b) {
+  let name = words_of(b)[1]
+  let own = b.contains("plays melody")
+    ? b
+    : lines([
+      b.slice(0, b.size() - 1) +
+        '  voice DocTune host Lead plays melody vol 50%',
+      '}',
+    ])
+  song_of(lines([own, one_bar(name, []), 'section T {', '  C  c1', '}']))
+}
+fn groove_alone(b) {
+  let name = words_of(b)[1]
+  let kit = run_kau.split("\n").map(fn (l) {
+    let w = words_of(l)
+    return l.to_string() if w.get(0, "") != "drum"
+    "  drum {w[1]} host {w[1]} vol 50%"
+  })
+  song_of(lines([
+    lines(kit),
+    one_bar("Run", ["  groove {name}"]),
+    b,
+    'section T {',
+    '  C  c1',
+    '  F  c1',
+    '  G7 c1',
+    '  C  c1',
+    '}',
+  ]))
+}
+fn voicings_alone(b) {
+  let rows = b.split("\n").slice(1, -1).map(words_of)
+  let song = chords(b, rows.map(|w| "C" + w[0]))
+  let want = rows.map(|w| w.slice(1, w.size()).map(|x| 60 + to_long(x)))
+  throw {
+    kind: "AssertionError",
+    message: "voiced {voiced(song)}, want {want}",
+  } if voiced(song) != want
+  song
+}
+# A song on its own is the one of Appendix C by its name, played with the
+# rest of that file.
+fn song_alone(b) {
+  let name = words_of(b)[1]
+  let file = appendix_song(name)
+  let from = file.index_of(song_line(name))
+  let to = file.index_of("\n}", from)
+  song_of(file.slice(0, from) + "\n" + b + file.slice(to + 2, file.size()))
+}
+# A song file that uses run.kau reads it beside it.
+fn with_use(b) {
+  let files = {"songs/run.kau": run_kau, "songs/song.kau": b}
+  let dir = {exists: |name| files.has(name), read: |name| files[name]}
+  Audio.Kauai.load(
+    "songs/song.kau",
+    voices: hosts(b),
+    drums: hosts(b),
+    dir: dir,
+  )
+}
+
+fn played(b) {
+  let first = words_of(b
+    .split("\n")
+    .find(|l| !l.trim().empty() && !l.trim().starts_with("#")))[0]
+  return with_use(b) if defines(b, "use")
+  return song_of(b) if defines(b, "song") && defines(b, "band")
+  return song_alone(b) if first == "song"
+  return sections_alone(b) if first == "section"
+  return band_alone(b) if first == "band"
+  return groove_alone(b) if first == "groove"
+  voicings_alone(b)
+}
+
+assert_true(run_kau != nil)
+mut failures = []
+for i, b in blocks.enumerate() {
+  let got = try {
+    played(b).events().size()
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+  failures.push("block {i + 1}: {got}") if type_of(got) != "Long" || got == 0
+}
+assert_eq(failures, [])
+assert_eq(blocks.size(), 25)
+
+# Appendix A: every spelling of every quality voices its intervals from C4.
+let appendix = FS
+  .read(SPEC)
+  .split("\n## ")
+  .find(|part| part.starts_with("Appendix A"))
+mut spellings = 0
+mut wrong = []
+for row in appendix.split("\n").map(|l| l.to_string().trim()).filter(|l| l.starts_with("| ")) {
+  let cells = row
+    .slice(1, row.size() - 1)
+    .split("|")
+    .map(|c| c.trim().to_string())
+  continue if cells.size() != 4 || !cells[1].starts_with("`C")
+  let want = cells[3].split_whitespace().map(|x| 60 + to_long(x.to_string()))
+  for sym in "{cells[1]} {cells[2]}".split_whitespace().map(|x| x.to_string().replace("`", "")) {
+    spellings += 1
+    let got = voiced(chords("", [sym]))[0]
+    wrong.push("{sym}: {got}, the table says {want}") if got != want
+  }
+}
+assert_eq(wrong, [])
+assert_eq(spellings, 70)

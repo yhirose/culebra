@@ -25,10 +25,14 @@
 # 288 since test_key_hash_once.cul (a key is hashed once, entering a lookup or
 # a container; a stored key keeps its hash and is never hashed again).
 # 289 since test_xml.cul (the XML namespace: parse, events, paths, stringify).
-# 290 since test_string_pack.cul (String.pack / String.unpack: fixed-width
-# scalars to bytes and back). 291 since test_fixedarray.cul (FixedArray<T, N>
+# 290 since test_audio_kauai.cul (Audio.Kauai reads, times and plays a song).
+# 291 since test_string_pack.cul (String.pack / String.unpack: fixed-width
+# scalars to bytes and back). 292 since test_fixedarray.cul (FixedArray<T, N>
 # is exactly N; the count that varies is BoundedArray's).
-tests.cul 292
+# 295 since test_audio_kauai_spec.cul, _jetveux.cul and _errors.cul (every
+# example of the Kauai spec plays, Je te veux matches its score note for
+# note, and the spec's mistakes name their lines).
+tests.cul 295
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

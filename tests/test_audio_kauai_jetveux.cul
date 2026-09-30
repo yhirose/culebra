@@ -1,0 +1,70 @@
+# Je te veux (Erik Satie, 1897) against its score, note for note. The
+# tests/kauai/*.expect files were written from the OpenScore Lieder score
+# (CC0) alone, reading no Kauai, so a mistake in Audio.Kauai cannot reach
+# them: every note as [MIDI pitch, start, length], in quarter notes from the
+# song's start, and where the score rolls a chord or has a grace note.
+#
+# The songs are played at one tempo, their tempo directions taken out, so
+# that seconds map to quarters. Times compare in sixty-fourths (a sixteenth
+# of a quarter), the finest the song writes.
+
+let DIR = "tests/kauai"
+let read = |name| FS.read(FS.join(DIR, name))
+let one_tempo = |text| text
+  .replace("\\rit 104 ", "")
+  .replace("\\tempo 114 ", "")
+  .replace("\\tempo ", "")
+let QUARTERS = 124 / 60.0
+let at_64 = |seconds| Math.round(seconds * QUARTERS * 16)
+let q64 = |quarters| Math.round(to_float(quarters) * 16)
+let played = |song, by| song
+  .events()
+  .filter(|e| e.by == by)
+  .map(|e| (e.pitch, at_64(e.at), at_64(e.len)))
+let written = |n| (to_long(n[0]), q64(n[1]), q64(n[2]))
+let hosted = |text| Audio.Kauai.new(
+  one_tempo(text),
+  voices: {ep: |pitch, params| nil},
+)
+
+# The voice, as Appendix C of the spec prints the song, and as the piano
+# version writes it.
+let spec_blocks = FS.read("docs/kauai/language.md").split("\n```kauai\n")
+let spec_song = spec_blocks
+  .slice(1, spec_blocks.size())
+  .map(|p| p.split("\n```\n")[0].to_string())
+  .find(|b| b.contains("\nsong JeTeVeux") && b.contains("\nsection Intro"))
+let voice = JSON.parse(read("jetveux.expect")).notes.map(written)
+assert_eq(voice.size(), 273)
+assert_eq(played(hosted(spec_song), "Singer"), voice)
+let piano_song = hosted(read("jetveux_piano.kau"))
+assert_eq(played(piano_song, "Singer"), voice)
+
+# Every piano note, as played: a rolled chord's notes a sixty-fourth apart
+# from the bottom and ending together, a grace note a sixty-fourth before the
+# notes it leads into, which start after it.
+mut piano = JSON.parse(read("jetveux_piano.expect")).map(written)
+assert_eq(piano.size(), 1401)
+let ornaments = JSON.parse(read("jetveux_ornaments.expect"))
+let delay = fn (pitch, at, by) {
+  let i = iota(piano.size()).find(|j| piano[j][0] == pitch && piano[j][1] == at)
+  piano[i] = (pitch, at + by, piano[i][2] - by)
+}
+for roll in ornaments.arpeggios {
+  for k, p in roll[1].enumerate() {
+    delay(to_long(p), q64(roll[0]), k)
+  }
+}
+for grace in ornaments.graces {
+  let at = q64(grace[0])
+  for k, p in grace[1].enumerate() {
+    piano.push((to_long(p), at + k, 1))
+  }
+  for p in grace[2] {
+    delay(to_long(p), at, grace[1].size())
+  }
+}
+let in_order = |notes| notes.sorted_by(|n| n[1] * 100000000 +
+  n[0] * 100000 +
+  n[2])
+assert_eq(in_order(played(piano_song, "Piano")), in_order(piano))

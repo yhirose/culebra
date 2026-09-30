@@ -1,0 +1,522 @@
+# Je te veux (Erik Satie, 1897), from the OpenScore Lieder score (CC0): the
+# voice and the piano as written; the chord symbols are a reading of the piano.
+
+voicings {
+  7b5     0 4 6 10
+  9sus4   0 5 7 10 14
+}
+
+band Salon {
+  voice Singer  pulse               plays melody  duty 1/2  vol 22  env 2 2 8
+  voice Piano   host Ep bright=0.9  poly  vol 30%  plays part RightUpper RightLower LeftUpper LeftLower
+}
+
+song JeTeVeux {
+  tempo 124
+  meter 3/4
+  key C
+  band Salon
+  melody in D4..C#5
+  part RightUpper in A3..G#4
+  part RightLower in A3..G#4
+  part LeftUpper in A1..G#2
+  part LeftLower in F2..E3
+
+  Intro
+  Refrain  ending 1
+  Couplet
+  Refrain  ending 2
+  Couplet
+  Refrain  ending 3
+  Coda
+}
+
+section Intro {
+  N.C.          r2.
+  G9            r2.
+  C6/G          r2.
+  G7            r2.
+                r r2
+
+  part RightUpper {
+    r \p (e g
+    \cresc <a d>2. \!
+    ~<a a'>2 \dim <e, e>4)
+    (~<g, g>2.~ \!
+    <g, g>) \pp (e g
+  }
+
+  part RightLower {
+    .
+    .
+    <c e>2 \dim r4
+    <b~ e>2. \!
+    <b d> \pp r2
+  }
+
+  part LeftUpper {
+    r2.
+    <g f'>2.
+    <g e'>2.
+    (<g f'>2.~
+    <g f'>) e' g'
+  }
+
+  part LeftLower {
+    .
+    .
+    .
+    .
+    g, r r
+  }
+}
+
+section Refrain {
+  pickup  \pp (e g
+  Cadd9         \tempo d'2.
+  C/G           c2 e'4
+  Cmaj7         b2.
+  C6/G          a2.)
+  Cmaj7         (b2.
+  C6/G          a2 e4
+  G7/D          b2.~
+  G6            b) (d e
+  G7/D          g2.~
+  G6            g) (d e
+  Dm6           a2.~
+  G6            a) (d e
+  G7/D          g2 f4~
+  G7            f g2
+  C             e2.
+  Em7/B         d) (e g
+  A7sus4        d'2.
+  C/G           c2 e'4
+  Cmaj7         b2.
+  C6/G          a2) r4
+  Cmaj7         (b2.
+  C6/G          a2 g4
+  Dm7           a2.
+  Dm/F          d) (f g
+  G7 G7 C/E     \cresc a b c \!
+  Dm/F Em/G Dm7 d' e' f'
+  C/E C/G Am    g' e' c
+  F#m7b5        a c e'
+  C/G C/G F/A   \dim g2 f4) \!
+  G7/F          (e d2
+
+  part RightUpper {
+    <d d'>2.
+    <c c'>2 <e e'>4
+    <b b'>2.
+    <a a'>2.)
+    (<b b'>2.
+    <a a'>2 <e, e>4
+    <b b'>2.~
+    \cresc <b b'>) (d e \!
+    <g, g>2.~
+    <g, g>) (d e
+    <a a'>2.~
+    <a a'>) (d e
+    <g, g>2 <f, f>4~
+    <f, f> <g, g>2
+    <e, e>2.
+    <d, d>) (e g
+    <d d'>2.
+    <c c'>2 <e e'>4
+    <b b'>2.
+    <a a'>2.)
+    (<b b'>2.
+    <a a'>2 <g, g>4
+    \dim <a a'>2. \!
+    <d, d>) (<f, f> <g, g>
+    \cresc <a a'> <b b'> <c c'>
+    <d d'> <e e'> <f f'>
+    <g g'> \! <e e'> <c c'>
+    <a a'> <c c'> <e e'>
+    \dim <g, g>2 \! <f, f>4)
+    (<e, e> <d, d>2
+  }
+
+  part RightLower {
+    r <e g> <e g>
+    r <e g> r
+    r <e g> <e g>
+    r <e g> <e g>
+    r <e g> <e g>
+    r <e g> r
+    r <f g> <f g>
+    .
+    r <b f> <b f>
+    .
+    r <b f> <b f>
+    .
+    r <b f> r
+    r r <b f>
+    r <g, c> <g, c>
+    r e, g,
+    r <e g> <e g>
+    r <e g> r
+    r <e g> <e g>
+    r <e g> <e g>
+    r <e g> <e g>
+    r <e g> r
+    \dim r <c f> <c f> \!
+    .
+    r (<f, a> <e, g,>)
+    r (<g, b> <d, a c>)
+    r (<g, c> <a c>)
+    r (<f#, a> <f#, c>)
+    \dim r <c e> \! r
+    r r <f, b>
+  }
+
+  part LeftUpper {
+    <c c'> r r
+    <g, g> r r
+    <c c'> r r
+    <g, g> r r
+    <c c'> r r
+    <g, g> r r
+    <d d'> r r
+    r d' e'
+    <d d'> r r
+    r d' e'
+    <d d'> r r
+    r d' e'
+    <d d'> r r
+    <g, g> r r
+    <c c'> r r
+    <b b'> r r
+    <a a'> r r
+    <g, g> r r
+    <c c'> r r
+    <g, g> r r
+    <c c'> r r
+    <g, g> r r
+    <d, d> r r
+    <f, f> r r
+    <g, g> r r
+    <f, f> r r
+    <e, e> r r
+    <f#, f#> r r
+    <g, g> r (<a a'>
+    <f, f> <g, g>) r
+  }
+
+  part LeftLower {
+    .
+    .
+    .
+    .
+    .
+    .
+    .
+    <g, g> r r
+    .
+    <g, g> r r
+    .
+    <g, g> r r
+    .
+    .
+    .
+    .
+    .
+    .
+    .
+    .
+    .
+    .
+    .
+    .
+    .
+    .
+    .
+    .
+    .
+    .
+  }
+
+  ending 1 {
+    C             c,2.~
+    D7 D7 C/E     c,) (b c)
+
+    part RightUpper {
+      <c, c>2.~)
+      <c, c> r r
+    }
+
+    part RightLower {
+      r (<d, d> <e, e>
+      <f#, f#>) \dim (<b b'> <c c'>) \!
+    }
+
+    part LeftUpper {
+      <c, c> r r
+      <d, d> r <e, e>
+    }
+  }
+
+  ending 2 {
+    C             c,2.~
+    D7 D7 C/E     c,) (b c)
+
+    part RightUpper {
+      {e}<c, c>2.~)
+      <c, c> r r
+    }
+
+    part RightLower {
+      r (<d, d> <e, e>
+      <f#, f#>) \dim (<b b'> <c c'>) \!
+    }
+
+    part LeftUpper {
+      <c, c> r r
+      <d, d> r <e, e>
+    }
+  }
+
+  ending 3 {
+    C             c,2.~
+                  c,) r r
+
+    part RightUpper {
+      <c, c>2.~
+      <c, c>) (<d, d> <e, e>
+    }
+
+    part RightLower {
+      r <e, g,> <e, g,>
+      .
+    }
+
+    part LeftUpper {
+      <c, c> r r
+      <c, c> r r
+    }
+  }
+}
+
+section Couplet key G {
+  melody in E4..D#5
+  Am6           \p (e2.~
+  D7            e) (e f#
+  G             d,2.~
+  D7            d,) \cresc (f# g \!
+  D7/A          d2 d4~
+  D7            d d2
+  G6            \dim e'2. \!
+  D7            d) (b c
+  Am6           e2.~
+  D7            e) (e f#
+  G             d,2.~
+  G/D           d,) (b g
+  F#7           \cresc f#2 f#4~ \!
+  F#7/C#        f# f#2
+  Bm/D          \dim b2. \!
+  Cmaj7         d) (b c
+  Am6           e2.~
+  D7            e) (e f#
+  G             d,2.~
+  D7            d,) \cresc (f# g \!
+  D7/A          d2 d4~
+  D7            d d2
+  Gmaj7         \dim f#'2. \!
+  D7            e') (d b
+  Am6           e2.~
+  D7            e) (e f#
+  G             d,2.~
+  D7            d,) (g f#
+  Am7           e \cresc g c
+  Ab7b5         \rit 104 d2 \! d4
+  G G9sus4 G6   \dim g'2. \!
+  G7            g) r2
+
+  part RightUpper {
+    (<e, e>2.~
+    <e, e>) (<e, e> <f#, f#>
+    <d, d>2.~
+    <d, d>) (<f#, f#> <g, g>
+    <d d'>2 <d d'>4~
+    <d d'> <d d'>2
+    <e e'>2. \dim \!
+    <d d'>) (<b b'> <c c'>
+    <e, e>2.~
+    <e, e>) (<e, e> <f#, f#>
+    <d, d>2.~
+    <d, d>) (<b b'> <g, g>
+    \cresc <f#, f#>2 <f#, f#>4~ \!
+    <f#, f#> <f#, f#>2
+    \dim <b b'>2. \!
+    <d d'>) <b b'> <c c'>
+    2nd: <d d'>) (<b b'> <c c'>
+    (<e, e>2.~
+    2nd: <e, e>2.~
+    <e, e>) (<e, e> <f#, f#>
+    <d, d>2.~
+    <d, d>) (<f#, f#> <g, g>
+    <d d'>2 <d d'>4~
+    <d d'> <d d'>2
+    <f# f#'>2. \dim \!
+    2nd: <f# f#'>2. \dim
+    <e e'>) (<d d'> <b b'>
+    2nd: <e e'>) \! (<d d'> <b b'>
+    <e, e>2.~
+    <e, e>) (<e, e> <f#, f#>
+    <d, d>2.~
+    <d, d>) (<g, g> <f#, f#>
+    <e, e> \cresc <g, g> <c c'>
+    2nd: \cresc <e, e> <g, g> <c c'>
+    <d d'>2.) \!
+    \dim (<g g'~>2. \!
+    <g g'>) \pp (e g
+  }
+
+  part RightLower {
+    r <f#, c> <f#, c>
+    .
+    r <g, b> <g, b>
+    .
+    r <f# c'>2
+    <f# c'>2 <f# c'>4
+    r \dim <g b'> <g b'> \!
+    .
+    r <f#, c> <f#, c>
+    .
+    r <g, b> <g, b>
+    .
+    \cresc r <a# e>2 \!
+    <a# e>2 <a# e>4
+    \dim r <d f#> <d f#> \!
+    r <e g>2
+    r <f#, c> <f#, c>
+    .
+    r <g, b> <g, b>
+    .
+    r <f# c'>2
+    <f# c'>2 <f# c'>4
+    r \dim <g b'> <g b'> \!
+    2nd: r \dim <g b'> <g b'>
+    .
+    r <f#, c> <f#, c>
+    .
+    r <g, b> <g, b>
+    .
+    <g, c>2 \cresc r4
+    2nd: \cresc <g, c>2 r4
+    r \! <f# c'> <f# c'>
+    \dim r <f d'> <e e'> \!
+    <f d'> \pp r2
+  }
+
+  part LeftUpper {
+    <a a'> r r
+    <d, d> r r
+    <g, g> r r
+    <d, d> r r
+    r <f#' c''>2
+    r <f#' c''>2
+    r g'2
+    2nd: r <g' b''>2
+    <d d'> r r
+    <a a'> r r
+    <d, d> r r
+    <g, g> r r
+    <d, d> r r
+    <f#, f#> r r
+    <c# c#'> r r
+    <d d'> r r
+    <c c'> r <b b'>
+    <a a'> r r
+    <d, d> r r
+    <g, g> r r
+    <d, d> r r
+    r <f#' c''>2
+    r <f#' c''>2
+    r <g' b''>2
+    <d d'> r r
+    <a a'> r r
+    <d, d> r r
+    <g, g> r r
+    <d, d> r r
+    <a a'> r r
+    r <ab'' c''>2
+    r <a'' c''> <g' b''>
+    <g' b''> e' g'
+  }
+
+  part LeftLower {
+    .
+    .
+    .
+    .
+    <a, a> r r
+    <d, d> r r
+    <g, g> r r
+    .
+    .
+    .
+    .
+    .
+    .
+    .
+    .
+    .
+    .
+    .
+    .
+    .
+    <a, a> r r
+    <d, d> r r
+    <g, g> r r
+    .
+    .
+    .
+    .
+    .
+    .
+    <ab, ab> r r
+    <g, g>2.~
+    <g, g> r r
+  }
+}
+
+section Coda {
+  Em            \tempo 114 r2.
+  Dm7/F         r2.
+  G7/D          r2.
+  C             r2.
+                r2.
+
+  part RightUpper {
+    <b, b>2 <g,, g,>4
+    <d, d>2.
+    \pp <g, g>2.
+    <c c'>2.~
+    <c c'>) r r
+  }
+
+  part RightLower {
+    r <e, g,> r
+    r <a c> <a c>
+    \pp r <b f> <b f>
+    r <e g> <e g>~
+    <e g> r2
+  }
+
+  part LeftUpper {
+    <e, e> r r
+    <f, f> r r
+    <d, d> r r
+    <c, c> r r
+    <c, c> r r
+  }
+
+  part LeftLower {
+    .
+    .
+    .
+    r <c e g'>2~
+    <c e g'> r r
+  }
+}

@@ -1,0 +1,232 @@
+# Audio.Kauai's mistakes (section 9 of docs/kauai/language.md): each is found
+# before anything plays, and says what is wrong and on which line. The line
+# numbers count the lines of the song each case builds.
+
+let lines = |xs| xs.join("\n")
+let sec = |name, body| lines(['section ' + name + ' {', body, '}'])
+let song = fn (head, sections) {
+  lines([
+    'band B {',
+    '  voice M   pulse     plays melody            vol 10',
+    '  voice Bs  triangle  plays roots in E2..D#3  vol 10',
+    '  voice Ch  host Ep   plays chords from C4  poly  vol 40%',
+    '}',
+    'song S {',
+    '  tempo 100',
+    '  band B',
+    '  groove G',
+    '  melody in C4..B4',
+    head,
+    '}',
+    'groove G {',
+    '  Bs 1 5',
+    '  Ch x -',
+    '}',
+    sections,
+  ])
+}
+# The section T, played as `head` says; its first bar is line 18.
+let play = |head, body| song(head, sec("T", body))
+let with_hits = fn (body) {
+  lines([
+    'band B {',
+    '  voice M   pulse     plays melody            vol 10',
+    '  voice Bs  triangle  plays roots in E2..D#3  vol 10',
+    '  voice P   saw       plays part A            vol 10',
+    '  drum Kick host Kick plays hits vol 80%',
+    '}',
+    'song S {',
+    '  tempo 100',
+    '  band B',
+    '  groove G',
+    '  melody in C4..B4',
+    '  T',
+    '}',
+    'groove G {',
+    '  Bs 1 5 1 5',
+    '}',
+    sec("T", body),
+  ])
+}
+# A section played twice, whose second bar (line 13) is `second`.
+let twice = fn (second) {
+  lines([
+    'band B {',
+    '  voice M pulse plays melody poly vol 10',
+    '  voice P triangle plays part A vol 10',
+    '}',
+    'song S {',
+    '  tempo 100',
+    '  band B',
+    '  melody in C4..B4',
+    '  T x2',
+    '}',
+    sec("T", "  F  c1\n  " + second),
+  ])
+}
+let error_of = fn (text) {
+  try {
+    Audio.Kauai.new(
+      text,
+      voices: {ep: |pitch, params| nil},
+      drums: {kick: |params| nil},
+    )
+    nil
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+let fails = |text, message| assert_eq(error_of(text), "KauaiError: " + message)
+
+# Notes, chords and ranges.
+fails(
+  play("  melody in F#4..F5\n  T", "C c1"),
+  "line 11: a range starts on a natural note: F#4..F5",
+)
+fails(play("  T", "C c#b1"), "line 18: a note is sharp or flat, not both: c#b")
+fails(play("  T", "C F G c1"), "line 18: 3 chords do not share 4 beats evenly")
+fails(
+  play("  T", "C / G7 c1"),
+  "line 18: with slashes, a bar gives a chord or a / for each of its 4 beats",
+)
+fails(
+  play("  T", "/ / / / c1"),
+  "line 18: the first bar of a section or an ending names its chords",
+)
+fails(
+  play("  T", "C7(10) c1"),
+  "line 18: a tension is 9, b9, #9, 11, #11, 13 or b13, or a b5 or #5: 10 in C7(10)",
+)
+fails(
+  play("  T", "C7(b11) c1"),
+  "line 18: a tension is 9, b9, #9, 11, #11, 13 or b13, or a b5 or #5: b11 in C7(b11)",
+)
+fails(play("  T", "C7(9,9) c1"), "line 18: 9 is written twice in C7(9,9)")
+fails(
+  play("  T", "C7(5) c1"),
+  "line 18: a fifth in parentheses is b5 or #5: 5 in C7(5)",
+)
+fails(play("  T", "C7(9 c1"), "line 18: unknown chord: C7(9")
+fails(
+  lines(['voicings {', '  m7 0 3 7 10', '}', play("  T", "C c1")]),
+  "line 2: m7 is already a chord quality",
+)
+fails(twice("c2 ~ c2"), "line 13: a tie is written against its note: c2~ c")
+fails(
+  twice("~c2 r"),
+  "line 13: an arpeggio rolls a chord, its ~ right before the <: ~<c e g>",
+)
+fails(
+  twice('c2~ {d}c4 r'),
+  "line 13: grace notes lead into a note, not a tied one",
+)
+fails(
+  twice('{d}r2 r'),
+  'line 13: grace notes lead into a note, not a rest: {d}r2',
+)
+fails(twice('.{d}c2 r'), 'line 13: grace notes come before the marks: {d}.c8')
+
+# Marks, slurs, ties and dynamics, some only found at the end of the song.
+fails(
+  play("  T", "C c2~ .c2"),
+  "line 18: a note held by a tie is not struck, and takes no marks",
+)
+fails(
+  play("  T", "C c2~ @c2"),
+  "line 18: a note held by a tie is not struck, and takes no marks",
+)
+fails(
+  play("  T", "C c2. .r4"),
+  "line 18: a rest takes no playing marks but a fermata: .r4",
+)
+fails(play("  T", "C c4 d e f)"), "line 18: a ) with no ( open")
+fails(
+  play("  T", "C (c4 (d e) f)"),
+  "line 18: a slur is open already; close it with ) first",
+)
+fails(
+  play("  T", "C (c4 d e f\ng1"),
+  "line 18: the melody: a slur the song never closes",
+)
+fails(
+  play("  T", "C c1~"),
+  "line 18: the melody: a tie at the end of the song, with no note to tie to",
+)
+fails(
+  play("  T", "C \\cresc c1"),
+  "line 18: the melody: a cresc that nothing ends",
+)
+
+# Meter, tempo, grooves, pickups and repeats.
+fails(
+  play("  T", "meter 3/5\nC c2."),
+  "line 18: a meter's beat is a note value: 3/5",
+)
+fails(
+  play("  T", "C c1").replace("tempo 100", "tempo 3=60"),
+  "line 7: 3 is not a note value (1 2 4 8 16 32)",
+)
+fails(
+  play(
+    "  T",
+    "C c1",
+  ).replace("  Bs 1 5\n  Ch x -", "  Bs 1 - - - - - - - - - - - - - -"),
+  "line 14: a bar of 15 steps makes each one no note value (plain, dotted or triplet): count the steps",
+)
+fails(
+  play("  T\n  loop", "pickup g a\nC c1"),
+  "line 19: the song loops, so its last bar has to rest where the pickup plays",
+)
+fails(
+  play("  T", "%\nC c1"),
+  "line 18: % repeats the bar before it in its section or ending",
+)
+fails(
+  play("  T", "C c1\n%%"),
+  "line 19: %% repeats the two bars before it in its section or ending",
+)
+fails(
+  play("  T", "C c1\n%\n  2nd: d1"),
+  "line 20: a % bar plays as the bar it repeats; write the bar out to change it",
+)
+fails(
+  play("  T", "C c1\nmeter 3/4\n%"),
+  "line 20: the bar is 4.0 beats long, want 3",
+)
+
+# Later times, hits and the song's lines.
+fails(
+  play("  T x2", "C c1\n2nd:"),
+  "line 19: `2nd:` gives the bar's chords, its notes, or both",
+)
+fails(twice("C c1\n  2x: e1"), "line 14: the 2nd time is written 2nd, not 2x")
+fails(
+  twice("C c1\n  3rd: e1"),
+  "line 14: T plays 2 times, so this time never comes",
+)
+fails(twice("C c1\n  A 2nd: e1"), "line 14: the time comes first: `2nd A:`")
+fails(
+  twice(lines(['C c1', '  part A {', '    2nd: e1', '    .', '    g1', '  }'])),
+  "line 15: in a part block, a `2nd:` line comes under the line it changes",
+)
+fails(
+  with_hits("C c1\n  hits: c2 r"),
+  "line 19: hits are x (strike) and r (rest), with a value and the marks ! and .: c2",
+)
+fails(
+  with_hits("C c1\n  hits: (x4 x) r2"),
+  "line 19: hits are x (strike) and r (rest), with a value and the marks ! and .: (",
+)
+fails(
+  with_hits("C c1\n  hits: x2"),
+  "line 19: the hits are 2.0 beats long, want 4",
+)
+fails(
+  with_hits("C c1\n  hits: x1\n  hits: x1"),
+  "line 20: hits: is written twice under one bar",
+)
+fails(
+  with_hits("C c1").replace("plays part A", "plays hits"),
+  "line 4: only a drum plays hits",
+)
+fails(play("  T in D in E", "C c1"), "line 11: `in` is said once a line")
