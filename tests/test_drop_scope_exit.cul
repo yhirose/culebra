@@ -111,3 +111,19 @@ fn explicit_in_cycle() {
 }
 explicit_in_cycle()
 assert_eq(log.size(), 8)  # exactly one push, not two
+
+# --- A scope that ends with more than one resource, the first reaching past
+# the analysis's node budget: every one survives to its holder (a later
+# candidate the walk never reached once read as a node it did not have).
+fn over_budget() {
+  mut keep = []
+  for i in 0..2 {
+    let r = R.new(log)
+    r.items = iota(5000).map(|k| ({k: k}))
+    keep.push(r)
+  }
+  assert_eq(log.size(), 8)  # neither dropped at the loop body's exit
+  nil
+}
+over_budget()
+assert_eq(log.size(), 10)  # both dropped when keep's scope exited

@@ -317,12 +317,15 @@ culebra_runtime_owned_scope_exit(int64_t mark_arg) {
 
   // Seed: each candidate. The generic walk's explained++ accounts for
   // exactly one reference — our analysis pin above.
-  std::vector<size_t> cand_ids(pending.size());
+  std::vector<size_t> cand_ids(pending.size(), npos);
   for (size_t i = 0; i < pending.size(); i++) {
     walk_value(
         JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(pending[i].obj)}, npos,
         walk_value);
-    cand_ids[i] = index.find(pending[i].obj)->second;
+    // Past the budget the walk adds no nodes, so a later candidate may have
+    // none; an overflow keeps every candidate anyway.
+    if (auto it = index.find(pending[i].obj); it != index.end())
+      cand_ids[i] = it->second;
   }
 
   std::vector<char> reachable(nodes.size(), 0);
@@ -343,6 +346,7 @@ culebra_runtime_owned_scope_exit(int64_t mark_arg) {
       }
     }
   }
+  auto survives = [&](size_t i) { return overflow || reachable[cand_ids[i]]; };
 
   // Survivors return first, in original (creation) order, inherited by
   // the parent scope's region — BEFORE any drop fires: a drop body may
@@ -352,7 +356,7 @@ culebra_runtime_owned_scope_exit(int64_t mark_arg) {
   // analysis pins come off (the at-most-once `dropped` flag makes any
   // resulting refcount-0 re-entry into drop a no-op).
   for (size_t i = pending.size(); i-- > 0;) {
-    if (reachable[cand_ids[i]]) {
+    if (survives(i)) {
       pending[i].obj->owned_idx =
           static_cast<int64_t>(stack.entries.size());
       stack.entries.push_back(pending[i]);
@@ -362,8 +366,7 @@ culebra_runtime_owned_scope_exit(int64_t mark_arg) {
   for (size_t i = 0; i < pending.size(); i++) {
     // The chokepoint saves/restores the entry refcount: firing consumes
     // none of the cycle member's remaining references.
-    if (!reachable[cand_ids[i]])
-      _culebra_call_drop_if_present(pending[i].obj);
+    if (!survives(i)) _culebra_call_drop_if_present(pending[i].obj);
   }
   for (auto& p : pending) {
     _culebra_value_release_impl(GC_TAG_OBJECT,
