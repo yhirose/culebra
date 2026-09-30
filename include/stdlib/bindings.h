@@ -5076,7 +5076,8 @@ inline JitValue _ns_canvas_title(JitValue* a, int64_t) {
   return _ns_adapt::v_nil();
 }
 // --- Audio: the natives behind src/preambles/audio.cul ----------------------
-// Most handle methods are one of four shapes, so those are one template each.
+// Most handle methods are one of four shapes, so those are one template each,
+// and so is a question about the machine (_ns_audio_query).
 // The bytes-taking constructors sniff the format here, before any backend, so
 // a bad file is the same ValueError on every one (stdlib/audio.h).
 template <void (*F)(int64_t)>
@@ -5097,8 +5098,9 @@ template <int64_t (*F)(int64_t)>
 inline JitValue _ns_audio_count(JitValue* a, int64_t) {
   return _ns_adapt::v_long(F(_ns_adapt::take_long(a[0])));
 }
-inline JitValue _ns_audio_available(JitValue*, int64_t) {
-  return _ns_adapt::v_bool(culebra::_audio_detail::available());
+template <bool (*F)()>
+inline JitValue _ns_audio_query(JitValue*, int64_t) {
+  return _ns_adapt::v_bool(F());
 }
 inline JitValue _ns_audio_tone(JitValue* a, int64_t) {
   culebra::_audio_detail::tone(
@@ -5165,9 +5167,6 @@ inline JitValue _ns_audio_pcm_latency(JitValue* a, int64_t) {
   return _ns_adapt::v_float(
       culebra::_audio_detail::pcm_latency(_ns_adapt::take_long(a[0])));
 }
-inline JitValue _ns_audio_capture_present(JitValue*, int64_t) {
-  return _ns_adapt::v_bool(culebra::_audio_detail::capture_present());
-}
 // Checked here, before any backend, by the rules a PCM's arguments follow.
 inline JitValue _ns_audio_capture_new(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
@@ -5180,6 +5179,7 @@ inline JitValue _ns_audio_capture_new(JitValue* a, int64_t) {
 }
 inline JitValue _ns_audio_capture_read(JitValue* a, int64_t) {
   thread_local std::vector<float> scratch;  // a block a frame: no allocation
+  scratch.clear();
   culebra::_audio_detail::capture_read(_ns_adapt::take_long(a[0]),
                                        _ns_adapt::take_long(a[1]), scratch);
   auto* r = _jit_array_new_reserved(static_cast<int64_t>(scratch.size()),
@@ -9746,7 +9746,7 @@ inline const NsMethod kNsRows_Term_native[] = {
   {"_Term",  "attach_tty",  0, &_ns_term_attach_tty},
 };
 inline const NsMethod kNsRows_Audio_native[] = {
-  {"_Audio", "available",      0, &_ns_audio_available},
+  {"_Audio", "available",      0, &_ns_audio_query<culebra::_audio_detail::available>},
   {"_Audio", "tone",          10, &_ns_audio_tone},
   {"_Audio", "sound_load",     1, &_ns_audio_sound_load},
   {"_Audio", "sound_free",     1, &_ns_audio_on<culebra::_audio_detail::sound_free>},
@@ -9782,7 +9782,7 @@ inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "pcm_volume",     2, &_ns_audio_set<culebra::_audio_detail::pcm_volume>},
   {"_Audio", "pcm_pitch",      2, &_ns_audio_set<culebra::_audio_detail::pcm_pitch>},
   {"_Audio", "pcm_pan",        2, &_ns_audio_set<culebra::_audio_detail::pcm_pan>},
-  {"_Audio", "capture_present", 0, &_ns_audio_capture_present},
+  {"_Audio", "capture_present", 0, &_ns_audio_query<culebra::_audio_detail::capture_present>},
   {"_Audio", "capture_new",    2, &_ns_audio_capture_new},
   {"_Audio", "capture_free",   1, &_ns_audio_on<culebra::_audio_detail::capture_free>},
   {"_Audio", "capture_ready",  1, &_ns_audio_ask<culebra::_audio_detail::capture_ready>},

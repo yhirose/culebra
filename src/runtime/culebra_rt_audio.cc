@@ -302,14 +302,16 @@ int64_t frames_to_samples(int64_t frames) {
                               (static_cast<double>(kSampleRate) / 60.0));
 }
 
+// The handle behind `id` in one of the tables below; nullptr once freed.
+template <class Map>
+typename Map::mapped_type* find_handle(Map& handles, int64_t id) {
+  auto it = handles.find(id);
+  return it == handles.end() ? nullptr : &it->second;
+}
+
 // --- Sound: decoded once, played per call -----------------------------------
 
 std::unordered_map<int64_t, Sound> g_sounds;
-
-Sound* find_sound(int64_t id) {
-  auto it = g_sounds.find(id);
-  return it == g_sounds.end() ? nullptr : &it->second;
-}
 
 // --- Music: streamed, fed by a thread of its own ------------------------------
 //
@@ -353,11 +355,6 @@ void feed_music() {
 void ensure_feeder() {
   if (g_feeder.joinable()) return;
   g_feeder = std::thread(feed_music);
-}
-
-Track* find_track(int64_t id) {
-  auto it = g_tracks.find(id);
-  return it == g_tracks.end() ? nullptr : &it->second;
 }
 
 void unload_track(Track& t) {
@@ -419,11 +416,6 @@ class PcmStream : public rt::PcmBlock {
 
 std::unordered_map<int64_t, PcmStream> g_streams;
 
-PcmStream* find_stream(int64_t id) {
-  auto it = g_streams.find(id);
-  return it == g_streams.end() ? nullptr : &it->second;
-}
-
 // --- Capture: the microphone, read a block at a time ----------------------
 //
 // The device thread fills a one-second ring and the script drains it, the
@@ -458,15 +450,14 @@ class Capture {
   int64_t waiting() const {
     return c_ ? static_cast<int64_t>(culebra_capture_waiting(c_)) : 0;
   }
-  // A negative `frames` takes all that are waiting.
+  // A negative `frames` takes all that are waiting. The ring has one reader,
+  // so what waiting() counts is all there when read.
   void read(int64_t frames, std::vector<float>& out) {
-    out.clear();
     if (!c_) return;
     int64_t have = waiting();
     frames = frames < 0 ? have : std::min(frames, have);
     out.resize(static_cast<size_t>(frames) * channels_);
-    size_t got = culebra_capture_read(c_, out.data(), static_cast<size_t>(frames));
-    out.resize(got * channels_);
+    culebra_capture_read(c_, out.data(), static_cast<size_t>(frames));
   }
 
  private:
@@ -476,19 +467,13 @@ class Capture {
 
 std::unordered_map<int64_t, Capture> g_captures;
 
-Capture* find_capture(int64_t id) {
-  auto it = g_captures.find(id);
-  return it == g_captures.end() ? nullptr : &it->second;
-}
-
 // --- exit ------------------------------------------------------------------
 
 // Hand the device back at process exit, after everything that plays through
 // it: the feeder stops and joins first, then tracks, sounds and streams go,
 // then the captures and their context, then the tone stream and the device.
-// Each step clears what guards it, so a second registration (the device and
-// the capture context each arm one) and the owning statics' destructors find
-// nothing left.
+// Each step clears what guards it, so the owning statics find nothing left
+// when their own destructors run.
 void exit_teardown() {
   if (g_feeder.joinable()) {
     {
@@ -524,8 +509,14 @@ void exit_teardown() {
 // Registered once the device exists rather than from a file-scope object's
 // destructor: a registration made after the audio driver was dlopen'd runs
 // before that driver tears itself down (culebra_rt_canvas.cc's
-// arm_exit_teardown has the long form).
-void arm_exit_teardown() { std::atexit(exit_teardown); }
+// arm_exit_teardown has the long form). The device and the capture context
+// each arm it; the first one registers.
+void arm_exit_teardown() {
+  static bool armed = false;
+  if (armed) return;
+  armed = true;
+  std::atexit(exit_teardown);
+}
 
 }  // namespace
 
@@ -592,23 +583,23 @@ void sound_free(int64_t id) {
   g_sounds.erase(it);
 }
 void sound_play(int64_t id) {
-  if (auto* s = find_sound(id)) PlaySound(*s);  // restarts if already playing
+  if (auto* s = find_handle(g_sounds, id)) PlaySound(*s);  // restarts if already playing
 }
 void sound_stop(int64_t id) {
-  if (auto* s = find_sound(id)) StopSound(*s);
+  if (auto* s = find_handle(g_sounds, id)) StopSound(*s);
 }
 bool sound_playing(int64_t id) {
-  auto* s = find_sound(id);
+  auto* s = find_handle(g_sounds, id);
   return s && IsSoundPlaying(*s);
 }
 void sound_volume(int64_t id, double v) {
-  if (auto* s = find_sound(id)) SetSoundVolume(*s, static_cast<float>(v));
+  if (auto* s = find_handle(g_sounds, id)) SetSoundVolume(*s, static_cast<float>(v));
 }
 void sound_pitch(int64_t id, double p) {
-  if (auto* s = find_sound(id)) SetSoundPitch(*s, static_cast<float>(p));
+  if (auto* s = find_handle(g_sounds, id)) SetSoundPitch(*s, static_cast<float>(p));
 }
 void sound_pan(int64_t id, double p) {
-  if (auto* s = find_sound(id)) SetSoundPan(*s, static_cast<float>(p));
+  if (auto* s = find_handle(g_sounds, id)) SetSoundPan(*s, static_cast<float>(p));
 }
 
 void music_load(int64_t id, const uint8_t* data, int64_t len, const char* fmt,
@@ -641,43 +632,43 @@ void music_free(int64_t id) {
 }
 void music_play(int64_t id) {
   std::lock_guard<std::mutex> lock(g_music_mutex);
-  if (auto* t = find_track(id)) PlayMusicStream(t->music);
+  if (auto* t = find_handle(g_tracks, id)) PlayMusicStream(t->music);
   g_feeder_wake.notify_one();
 }
 void music_stop(int64_t id) {
   std::lock_guard<std::mutex> lock(g_music_mutex);
-  if (auto* t = find_track(id)) StopMusicStream(t->music);
+  if (auto* t = find_handle(g_tracks, id)) StopMusicStream(t->music);
 }
 void music_pause(int64_t id) {
   std::lock_guard<std::mutex> lock(g_music_mutex);
-  if (auto* t = find_track(id)) PauseMusicStream(t->music);
+  if (auto* t = find_handle(g_tracks, id)) PauseMusicStream(t->music);
 }
 void music_resume(int64_t id) {
   std::lock_guard<std::mutex> lock(g_music_mutex);
-  if (auto* t = find_track(id)) ResumeMusicStream(t->music);
+  if (auto* t = find_handle(g_tracks, id)) ResumeMusicStream(t->music);
   g_feeder_wake.notify_one();
 }
 bool music_playing(int64_t id) {
   std::lock_guard<std::mutex> lock(g_music_mutex);
-  auto* t = find_track(id);
+  auto* t = find_handle(g_tracks, id);
   return t && IsMusicStreamPlaying(t->music);
 }
 void music_seek(int64_t id, double seconds) {
   if (!(seconds > 0)) seconds = 0;  // NaN and negatives land at the start
   std::lock_guard<std::mutex> lock(g_music_mutex);
-  if (auto* t = find_track(id)) SeekMusicStream(t->music, static_cast<float>(seconds));
+  if (auto* t = find_handle(g_tracks, id)) SeekMusicStream(t->music, static_cast<float>(seconds));
 }
 void music_volume(int64_t id, double v) {
   std::lock_guard<std::mutex> lock(g_music_mutex);
-  if (auto* t = find_track(id)) SetMusicVolume(t->music, static_cast<float>(v));
+  if (auto* t = find_handle(g_tracks, id)) SetMusicVolume(t->music, static_cast<float>(v));
 }
 void music_pitch(int64_t id, double p) {
   std::lock_guard<std::mutex> lock(g_music_mutex);
-  if (auto* t = find_track(id)) SetMusicPitch(t->music, static_cast<float>(p));
+  if (auto* t = find_handle(g_tracks, id)) SetMusicPitch(t->music, static_cast<float>(p));
 }
 void music_pan(int64_t id, double p) {
   std::lock_guard<std::mutex> lock(g_music_mutex);
-  if (auto* t = find_track(id)) SetMusicPan(t->music, static_cast<float>(p));
+  if (auto* t = find_handle(g_tracks, id)) SetMusicPan(t->music, static_cast<float>(p));
 }
 
 void pcm_new(int64_t id, int64_t rate, int64_t channels, int64_t buffer) {
@@ -686,49 +677,49 @@ void pcm_new(int64_t id, int64_t rate, int64_t channels, int64_t buffer) {
 }
 void pcm_free(int64_t id) { g_streams.erase(id); }
 bool pcm_ready(int64_t id) {
-  auto* s = find_stream(id);
+  auto* s = find_handle(g_streams, id);
   return s && s->ready();
 }
 int64_t pcm_needed(int64_t id) {
-  auto* s = find_stream(id);
+  auto* s = find_handle(g_streams, id);
   return s ? s->needed() : 0;
 }
 int64_t pcm_push(int64_t id, const double* values, int64_t count) {
-  auto* s = find_stream(id);
+  auto* s = find_handle(g_streams, id);
   return s ? s->push_block(values, count) : 0;
 }
 int64_t pcm_submit(int64_t id) {
-  auto* s = find_stream(id);
+  auto* s = find_handle(g_streams, id);
   return s ? s->submit() : 0;
 }
 double pcm_latency(int64_t id) {
-  auto* s = find_stream(id);
+  auto* s = find_handle(g_streams, id);
   return s ? s->latency() : 0.0;
 }
 void pcm_play(int64_t id) {
-  if (auto* s = find_stream(id)) s->play();
+  if (auto* s = find_handle(g_streams, id)) s->play();
 }
 void pcm_stop(int64_t id) {
-  if (auto* s = find_stream(id)) s->stop();
+  if (auto* s = find_handle(g_streams, id)) s->stop();
 }
 void pcm_pause(int64_t id) {
-  if (auto* s = find_stream(id)) s->pause();
+  if (auto* s = find_handle(g_streams, id)) s->pause();
 }
 void pcm_resume(int64_t id) {
-  if (auto* s = find_stream(id)) s->resume();
+  if (auto* s = find_handle(g_streams, id)) s->resume();
 }
 bool pcm_playing(int64_t id) {
-  auto* s = find_stream(id);
+  auto* s = find_handle(g_streams, id);
   return s && s->playing();
 }
 void pcm_volume(int64_t id, double v) {
-  if (auto* s = find_stream(id)) s->volume(v);
+  if (auto* s = find_handle(g_streams, id)) s->volume(v);
 }
 void pcm_pitch(int64_t id, double p) {
-  if (auto* s = find_stream(id)) s->pitch(p);
+  if (auto* s = find_handle(g_streams, id)) s->pitch(p);
 }
 void pcm_pan(int64_t id, double p) {
-  if (auto* s = find_stream(id)) s->pan(p);
+  if (auto* s = find_handle(g_streams, id)) s->pan(p);
 }
 
 bool capture_present() {
@@ -739,26 +730,25 @@ void capture_new(int64_t id, int rate, int channels) {
 }
 void capture_free(int64_t id) { g_captures.erase(id); }
 bool capture_ready(int64_t id) {
-  auto* c = find_capture(id);
+  auto* c = find_handle(g_captures, id);
   return c && c->ready();
 }
 void capture_start(int64_t id) {
-  if (auto* c = find_capture(id)) c->start();
+  if (auto* c = find_handle(g_captures, id)) c->start();
 }
 void capture_stop(int64_t id) {
-  if (auto* c = find_capture(id)) c->stop();
+  if (auto* c = find_handle(g_captures, id)) c->stop();
 }
 bool capture_running(int64_t id) {
-  auto* c = find_capture(id);
+  auto* c = find_handle(g_captures, id);
   return c && c->running();
 }
 int64_t capture_waiting(int64_t id) {
-  auto* c = find_capture(id);
+  auto* c = find_handle(g_captures, id);
   return c ? c->waiting() : 0;
 }
 void capture_read(int64_t id, int64_t frames, std::vector<float>& out) {
-  if (auto* c = find_capture(id)) c->read(frames, out);
-  else out.clear();
+  if (auto* c = find_handle(g_captures, id)) c->read(frames, out);
 }
 
 }  // namespace _audio_detail

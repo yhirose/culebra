@@ -107,8 +107,7 @@ Canvas.run(W, H, fn () {
 
   let block = mic.read()
   if !block.empty() {
-    let all = heard + block
-    heard = all.slice(all.size() - N, all.size())
+    heard = (heard + block)[-N..]
     heights = bar_heights(spectrum(heard))  # only when something new arrived
   }
 

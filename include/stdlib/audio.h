@@ -224,7 +224,7 @@ void capture_stop(int64_t id);
 bool capture_running(int64_t id);
 int64_t capture_waiting(int64_t id);
 // Up to `frames` waiting frames (all of them when negative), interleaved into
-// `out`, which is cleared first.
+// `out`, which arrives empty.
 void capture_read(int64_t id, int64_t frames, std::vector<float>& out);
 
 #endif
@@ -319,9 +319,7 @@ CULEBRA_RT_AUDIO_LINKAGE void capture_stop(int64_t) {}
 CULEBRA_RT_AUDIO_LINKAGE bool capture_running(int64_t) { return false; }
 CULEBRA_RT_AUDIO_LINKAGE int64_t capture_waiting(int64_t) { return 0; }
 CULEBRA_RT_AUDIO_LINKAGE void capture_read(int64_t, int64_t,
-                                           std::vector<float>& out) {
-  out.clear();
-}
+                                           std::vector<float>&) {}
 #endif
 
 #undef CULEBRA_RT_AUDIO_LINKAGE

@@ -11,8 +11,8 @@ extern "C" {
 
 typedef struct CulebraCapture CulebraCapture;
 
-// Opens the capture context (idempotent); 0 when the platform has none. Every
-// call below needs it open.
+// Opens the capture context, once; 0 when the platform has none. Every call
+// below needs it open.
 int culebra_capture_init(void);
 // 1 when the platform reports at least one capture device.
 int culebra_capture_present(void);
@@ -28,7 +28,7 @@ int culebra_capture_running(const CulebraCapture* c);
 size_t culebra_capture_waiting(CulebraCapture* c);
 // Moves up to `frames` waiting frames into `out`; answers how many.
 size_t culebra_capture_read(CulebraCapture* c, float* out, size_t frames);
-// Closes the context; call after every capture is closed.
+// Closes the context, once, after every capture is closed.
 void culebra_capture_shutdown(void);
 
 #ifdef __cplusplus

@@ -49,14 +49,10 @@ struct CulebraCapture {
 };
 
 static ma_context g_capture_ctx;
-static int g_capture_ctx_ready = 0;
 
 int culebra_capture_init(void) {
-  if (g_capture_ctx_ready) return 1;
   ma_context_config cfg = ma_context_config_init();
-  if (ma_context_init(NULL, 0, &cfg, &g_capture_ctx) != MA_SUCCESS) return 0;
-  g_capture_ctx_ready = 1;
-  return 1;
+  return ma_context_init(NULL, 0, &cfg, &g_capture_ctx) == MA_SUCCESS;
 }
 
 int culebra_capture_present(void) {
@@ -145,8 +141,4 @@ size_t culebra_capture_read(CulebraCapture* c, float* out, size_t frames) {
   return got;
 }
 
-void culebra_capture_shutdown(void) {
-  if (!g_capture_ctx_ready) return;
-  ma_context_uninit(&g_capture_ctx);
-  g_capture_ctx_ready = 0;
-}
+void culebra_capture_shutdown(void) { ma_context_uninit(&g_capture_ctx); }

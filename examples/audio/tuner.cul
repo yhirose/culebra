@@ -94,8 +94,7 @@ Canvas.run(W, H, fn () {
 
   let block = mic.read()
   if !block.empty() {
-    let all = heard + block
-    heard = all.slice(all.size() - N, all.size())
+    heard = (heard + block)[-N..]
     let hz = pitch_of(heard)
     shown = hz == nil ? nil : (hz, note_of(hz))
   }
