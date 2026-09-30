@@ -615,30 +615,31 @@ mut music_wait = MUSIC_DELAY
 # here once, into a WAV kept as a `Sound`.
 let EP_RATE = 22050
 
-# `v` as `n` little-endian bytes.
-let le_bytes = fn (v, n) {
-  iota(n).map(|i| v >> 8 * i & 255)
+# A mono 16-bit PCM WAV file's 44-byte header, field by field in file order.
+@packable
+class WavHeader {
+  riff: Bytes<4> = "RIFF"
+  size: UInt32  # 36 + the samples' bytes
+  wave: Bytes<4> = "WAVE"
+  fmt: Bytes<4> = "fmt "
+  fmt_size: UInt32 = 16
+  format: UInt16 = 1  # PCM
+  channels: UInt16 = 1
+  rate: UInt32 = EP_RATE
+  byte_rate: UInt32 = EP_RATE * 2
+  block_align: UInt16 = 2
+  bits: UInt16 = 16
+  data: Bytes<4> = "data"
+  data_size: UInt32
 }
 
 # 16-bit mono samples as a WAV file's bytes.
 let pcm_wav = fn (samples) {
   let data = String.pack("i16", samples)
-  let header = [
-    ...le_bytes(0x46464952, 4),  # RIFF
-    ...le_bytes(36 + data.size(), 4),
-    ...le_bytes(0x45564157, 4),  # WAVE
-    ...le_bytes(0x20746d66, 4),  # fmt
-    ...le_bytes(16, 4),
-    ...le_bytes(1, 2),  # PCM
-    ...le_bytes(1, 2),  # mono
-    ...le_bytes(EP_RATE, 4),
-    ...le_bytes(EP_RATE * 2, 4),
-    ...le_bytes(2, 2),
-    ...le_bytes(16, 2),
-    ...le_bytes(0x61746164, 4),  # data
-    ...le_bytes(data.size(), 4),
-  ]
-  String.from_bytes(header) + data
+  let h = WavHeader()
+  h.size = 36 + data.size()
+  h.data_size = data.size()
+  String.pack(WavHeader, [h]) + data
 }
 
 # Three seconds of one electric-piano note. Two FM pairs a hair apart give

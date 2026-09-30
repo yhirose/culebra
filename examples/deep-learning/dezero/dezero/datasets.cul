@@ -92,8 +92,8 @@ class ArrayDataset {
 
 # --- MNIST: parse the local IDX-gzip files, no downloading -----------------
 #
-# Mirrors examples/tensor/mnist/train.cul's own IDX-gzip parsing (16-byte
-# image header, 8-byte label header, row-major bytes/image) rather than
+# Mirrors examples/tensor/mnist/train.cul's own IDX-gzip parsing (a
+# big-endian header record, then row-major bytes/image) rather than
 # its chunked-Tensor-concat optimization, since this port's datasets are
 # for small subsets/demos rather than full-speed 60k-image training.
 
@@ -106,9 +106,40 @@ fn mnist_data_ready(data_dir) {
   ].all(|f| FS.exists(FS.join(data_dir, f)))
 }
 
+# IDX headers are big-endian: a magic number, then one count per dimension.
+@packable
+class IdxImages {
+  magic: UInt32  # 2051
+  count: UInt32
+  rows: UInt32
+  cols: UInt32
+}
+@packable
+class IdxLabels {
+  magic: UInt32  # 2049
+  count: UInt32
+}
+
+fn idx_header(type, raw, magic, path) {
+  h = String.unpack(type, raw, count: 1, endian: "big")[0]
+  if h.magic != magic {
+    throw {
+      kind: "ValueError",
+      message: "{path}: not an IDX file (magic {h.magic})",
+    }
+  }
+  h
+}
+
 fn load_mnist_labels(path, limit) {
   raw = Compress.gunzip(FS.read(path))
-  all = raw.slice(8, raw.size()).bytes().collect()
+  h = idx_header(IdxLabels, raw, 2049, path)
+  all = String.unpack(
+    "u8",
+    raw,
+    at: String.pack_size(IdxLabels),
+    count: h.count,
+  )
   if limit == nil {
     all
   } else {
@@ -118,10 +149,14 @@ fn load_mnist_labels(path, limit) {
 
 fn load_mnist_images(path, n) {
   raw = Compress.gunzip(FS.read(path))
-  rows = range(n).map(|i| {
-    off = 16 + i * 784
-    raw.slice(off, off + 784).bytes().map(|b| to_float(b) / 255.0).collect()
-  }).collect()
+  h = idx_header(IdxImages, raw, 2051, path)
+  size = h.rows * h.cols
+  start = String.pack_size(IdxImages)
+  rows = range(n)
+    .map(|i| String
+      .unpack("u8", raw, at: start + i * size, count: size)
+      .map(|b| to_float(b) / 255.0))
+    .collect()
   Tensor.from(rows)
 }
 

@@ -22,25 +22,35 @@ fn pluck(freq, secs) {
   out
 }
 
-# `n` bytes of `v`, least significant first: the WAV header's byte order.
-fn le(v, n) {
-  iota(n).map(|i| v >> 8 * i & 255)
+# The 44-byte header of a mono 16-bit PCM WAV file. String.pack lays the
+# fields out in this order with no padding, little-endian unless told.
+@packable
+class WavHeader {
+  riff: Bytes<4> = "RIFF"
+  size: UInt32  # bytes after this field: 36 + the samples
+  wave: Bytes<4> = "WAVE"
+  fmt: Bytes<4> = "fmt "
+  fmt_size: UInt32 = 16
+  format: UInt16 = 1  # PCM
+  channels: UInt16 = 1
+  rate: UInt32 = RATE
+  byte_rate: UInt32 = RATE * 2
+  block_align: UInt16 = 2
+  bits: UInt16 = 16
+  data: Bytes<4> = "data"
+  data_size: UInt32
 }
 
 # Samples in -1.0..1.0 as a mono 16-bit PCM WAV file, as a String of bytes.
 fn wav(samples) {
-  let u16 = |v| String.from_bytes(le(v, 2))
-  let u32 = |v| String.from_bytes(le(v, 4))
   let data = String.pack(
     "i16",
     samples.map(|s| Math.round(Math.clamp(s, -1.0, 1.0) * 32767)),
   )
-  [
-    "RIFF", u32(36 + data.size()), "WAVE",
-    "fmt ", u32(16), u16(1), u16(1),            # PCM, mono
-    u32(RATE), u32(RATE * 2), u16(2), u16(16),  # rate, bytes/s, bytes/frame, bits
-    "data", u32(data.size()), data,
-  ].join("")
+  let h = WavHeader()
+  h.size = 36 + data.size()
+  h.data_size = data.size()
+  String.pack(WavHeader, [h]) + data
 }
 
 let bytes = wav(pluck(220, 1.2))

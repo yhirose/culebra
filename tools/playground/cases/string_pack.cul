@@ -1,5 +1,6 @@
 # Byte order is spelled out, not the host's: wasm must lay out the same bytes.
-let b = String.pack("u16", [1, 256, 65535]) + String.pack("u32", [7], endian: "big")
+let b = String.pack("u16", [1, 256, 65535]) +
+  String.pack("u32", [7], endian: "big")
 inspect(b.bytes().collect())
 inspect(String.unpack("u16", b, count: 3))
 inspect(String.unpack("u32", b, at: 6, endian: "big"))
@@ -12,3 +13,17 @@ try {
 } catch e {
   println("{e.kind}: {e.message}")
 }
+# a @packable record, built back without `new`
+@packable
+class Rec {
+  id: UInt16
+  name: FixedString<4>
+  w: Float32
+}
+let r = Rec()
+r.id = 513
+r.name = "ab"
+r.w = 1.5
+let rb = String.pack(Rec, [r, r], endian: "big")
+inspect(rb.bytes().collect())
+inspect(String.unpack(Rec, rb, endian: "big").map(|x| [x.id, x.name, x.w]))

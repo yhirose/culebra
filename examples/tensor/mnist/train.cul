@@ -24,22 +24,45 @@ for f in ['train-images-idx3-ubyte.gz', 'train-labels-idx1-ubyte.gz', 't10k-imag
 Random.seed(42)
 
 # === IDX loading ===
-#
-# Images: 16-byte header, then rows*cols bytes per sample. `order`
-# picks the samples and their sequence, so the training set arrives
-# pre-shuffled. Chunked Tensor.concat keeps the peak Array small.
 
+# IDX headers are big-endian: a magic number, then one count per dimension.
+@packable
+class IdxImages {
+  magic: UInt32  # 2051
+  count: UInt32
+  rows: UInt32
+  cols: UInt32
+}
+@packable
+class IdxLabels {
+  magic: UInt32  # 2049
+  count: UInt32
+}
+
+let idx_header = fn (type, raw, magic, path) {
+  let h = String.unpack(type, raw, count: 1, endian: "big")[0]
+  if h.magic != magic {
+    throw {
+      kind: "ValueError",
+      message: "{path}: not an IDX file (magic {h.magic})",
+    }
+  }
+  h
+}
+
+# Images: the header, then rows*cols bytes per sample. `order` picks the
+# samples and their sequence, so the training set arrives pre-shuffled.
+# Chunked Tensor.concat keeps the peak Array small.
 let load_images = fn (path, order) {
   let raw = Compress.gunzip(FS.read(path))
+  let h = idx_header(IdxImages, raw, 2051, path)
+  let size = h.rows * h.cols
+  let start = String.pack_size(IdxImages)
   mut chunks = []
   mut rows = []
   for idx in order {
-    let off = 16 + idx * 784
-    rows.push(raw
-      .slice(off, off + 784)
-      .bytes()
-      .map(|b| to_float(b) / 255.0)
-      .collect())
+    let pixels = String.unpack("u8", raw, at: start + idx * size, count: size)
+    rows.push(pixels.map(|b| to_float(b) / 255.0))
     if rows.size() == 2000 {
       chunks.push(Tensor.from(rows))
       rows = []
@@ -51,7 +74,8 @@ let load_images = fn (path, order) {
 
 let load_labels = fn (path) {
   let raw = Compress.gunzip(FS.read(path))
-  raw.slice(8, raw.size()).bytes().collect()
+  let h = idx_header(IdxLabels, raw, 2049, path)
+  String.unpack("u8", raw, at: String.pack_size(IdxLabels), count: h.count)
 }
 
 let build_one_hot = fn (labels, k) {
