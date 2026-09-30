@@ -31,11 +31,10 @@ fn le(v, n) {
 fn wav(samples) {
   let u16 = |v| String.from_bytes(le(v, 2))
   let u32 = |v| String.from_bytes(le(v, 4))
-  mut pcm = []
-  for s in samples {
-    pcm.extend(le(Math.round(Math.clamp(s, -1.0, 1.0) * 32767) & 0xFFFF, 2))
-  }
-  let data = String.from_bytes(pcm)
+  let data = String.pack(
+    "i16",
+    samples.map(|s| Math.round(Math.clamp(s, -1.0, 1.0) * 32767)),
+  )
   [
     "RIFF", u32(36 + data.size()), "WAVE",
     "fmt ", u32(16), u16(1), u16(1),            # PCM, mono

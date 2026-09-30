@@ -622,10 +622,10 @@ let le_bytes = fn (v, n) {
 
 # 16-bit mono samples as a WAV file's bytes.
 let pcm_wav = fn (samples) {
-  let n = samples.size()
-  mut out = [
+  let data = String.pack("i16", samples)
+  let header = [
     ...le_bytes(0x46464952, 4),  # RIFF
-    ...le_bytes(36 + n * 2, 4),
+    ...le_bytes(36 + data.size(), 4),
     ...le_bytes(0x45564157, 4),  # WAVE
     ...le_bytes(0x20746d66, 4),  # fmt
     ...le_bytes(16, 4),
@@ -636,14 +636,9 @@ let pcm_wav = fn (samples) {
     ...le_bytes(2, 2),
     ...le_bytes(16, 2),
     ...le_bytes(0x61746164, 4),  # data
-    ...le_bytes(n * 2, 4),
+    ...le_bytes(data.size(), 4),
   ]
-  for s in samples {
-    let v = s & 0xFFFF
-    out.push(v & 255)
-    out.push(v >> 8)
-  }
-  String.from_bytes(out)
+  String.from_bytes(header) + data
 }
 
 # Three seconds of one electric-piano note. Two FM pairs a hair apart give

@@ -1,0 +1,14 @@
+# Byte order is spelled out, not the host's: wasm must lay out the same bytes.
+let b = String.pack("u16", [1, 256, 65535]) + String.pack("u32", [7], endian: "big")
+inspect(b.bytes().collect())
+inspect(String.unpack("u16", b, count: 3))
+inspect(String.unpack("u32", b, at: 6, endian: "big"))
+inspect(String.unpack("f32", String.pack("f32", [0.1, -2.5])))
+let dst = [0, 0]
+String.unpack("i16", String.pack("i16", [-1, 2]), into: dst)
+inspect(dst)
+try {
+  String.pack("u8", [256])
+} catch e {
+  println("{e.kind}: {e.message}")
+}
