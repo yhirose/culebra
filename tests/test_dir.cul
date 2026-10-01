@@ -207,6 +207,10 @@ assert_eq(
   "ValueError: Dir.memory: 'a' is both a file and a directory",
 )
 assert_eq(Dir.memory({}).files(), [])
+# glob's character is a code point, as FS.glob's is.
+let accents = Dir.memory({'é.txt': '', 'ab.txt': '', 'ü.md': ''})
+assert_eq(accents.glob('?.txt'), ['é.txt'])
+assert_eq(accents.glob('[à-ö].*'), ['é.txt'])
 # A file may be named like an Object method; it shadows none of the Dir's.
 let named = Dir.memory({'keys': 'k', 'has/x': 'h', 'size': 's'})
 assert_eq(named.files(), ['has/x', 'keys', 'size'])

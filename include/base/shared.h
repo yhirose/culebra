@@ -3401,7 +3401,7 @@ trait Dir {
     if pat.starts_with('/') || pat.starts_with("\\") || segs.any(|s| s == '..') {
       return []
     }
-    let pbytes = segs.map(|s| s.bytes().collect())
+    let pchars = segs.map(|s| s.code_points().collect())
     let seg_match = fn (p, n) {
       mut pi = 0
       mut ni = 0
@@ -3464,7 +3464,7 @@ trait Dir {
         }
         return false
       }
-      ni < ns.size() && seg_match(pbytes[pi], ns[ni].bytes().collect()) && fn(pi + 1, ns, ni + 1)
+      ni < ns.size() && seg_match(pchars[pi], ns[ni].code_points().collect()) && fn(pi + 1, ns, ni + 1)
     }
     self.files().filter(|f| path_match(0, f.split('/'), 0))
   }

@@ -12,6 +12,7 @@
 #include <stdlib/net.h>
 #include <base/os_compat.h>   // os_strptime (Time), os_* shims
 #include <base/shared.h>      // CulebraError, runtime_substate, kSlot*
+#include <unicodelib_encodings.h>  // unicode::utf8::decode_codepoint (glob)
 
 #include <chrono>
 #include <cstdint>
@@ -42,30 +43,48 @@ namespace culebra {
 
 namespace _glob_detail {
 
+// A path component as code points, decoded as String.code_points() does: a
+// byte that starts no UTF-8 sequence is one U+FFFD.
+inline std::u32string code_points(std::string_view s) {
+  std::u32string out;
+  for (size_t i = 0; i < s.size();) {
+    char32_t cp;
+    size_t n;
+    if (!unicode::utf8::decode_codepoint(s.data() + i, s.size() - i, n, cp)) {
+      cp = 0xFFFD;
+      n = 1;
+    }
+    out.push_back(cp);
+    i += n;
+  }
+  return out;
+}
+
 // Match a single path component against a glob token supporting `*`, `?`,
 // and `[...]` character classes (`[!...]` / `[^...]` negate, `a-z` ranges);
-// a `[` with no `]` is an ordinary character. Backtracking on `*` — after any
-// miss, a class's included. Dir's `glob` default (shared.h) is the same
-// matcher in Culebra; the two answer alike.
-inline bool match_segment(std::string_view pat, std::string_view name) {
-  size_t pi = 0, ni = 0, star = std::string_view::npos, mark = 0;
+// a `[` with no `]` is an ordinary character. A character is a code point.
+// Backtracking on `*` — after any miss, a class's included. Dir's `glob`
+// default (shared.h) is the same matcher in Culebra; the two answer alike.
+inline bool match_segment(std::string_view pattern, std::string_view segment) {
+  const std::u32string pat = code_points(pattern), name = code_points(segment);
+  size_t pi = 0, ni = 0, star = std::u32string::npos, mark = 0;
   while (ni < name.size()) {
-    if (pi < pat.size() && pat[pi] == '*') {
+    if (pi < pat.size() && pat[pi] == U'*') {
       star = pi++;
       mark = ni;
       continue;
     }
     size_t step = 0;  // the pattern characters `name[ni]` matched
-    size_t close = pi < pat.size() && pat[pi] == '['
-                       ? pat.find(']', pi + 1)
-                       : std::string_view::npos;
-    if (close != std::string_view::npos) {
-      auto cls = pat.substr(pi + 1, close - pi - 1);
-      bool neg = !cls.empty() && (cls[0] == '!' || cls[0] == '^');
+    size_t close = pi < pat.size() && pat[pi] == U'['
+                       ? pat.find(U']', pi + 1)
+                       : std::u32string::npos;
+    if (close != std::u32string::npos) {
+      std::u32string_view cls(pat.data() + pi + 1, close - pi - 1);
+      bool neg = !cls.empty() && (cls[0] == U'!' || cls[0] == U'^');
       if (neg) cls.remove_prefix(1);
       bool hit = false;
       for (size_t k = 0; k < cls.size(); ++k) {
-        if (k + 2 < cls.size() && cls[k + 1] == '-') {
+        if (k + 2 < cls.size() && cls[k + 1] == U'-') {
           if (name[ni] >= cls[k] && name[ni] <= cls[k + 2]) hit = true;
           k += 2;
         } else if (cls[k] == name[ni]) {
@@ -73,20 +92,20 @@ inline bool match_segment(std::string_view pat, std::string_view name) {
         }
       }
       if (hit != neg) step = close + 1 - pi;
-    } else if (pi < pat.size() && (pat[pi] == '?' || pat[pi] == name[ni])) {
+    } else if (pi < pat.size() && (pat[pi] == U'?' || pat[pi] == name[ni])) {
       step = 1;
     }
     if (step) {
       pi += step;
       ++ni;
-    } else if (star != std::string_view::npos) {
+    } else if (star != std::u32string::npos) {
       pi = star + 1;
       ni = ++mark;
     } else {
       return false;
     }
   }
-  while (pi < pat.size() && pat[pi] == '*') ++pi;
+  while (pi < pat.size() && pat[pi] == U'*') ++pi;
   return pi == pat.size();
 }
 

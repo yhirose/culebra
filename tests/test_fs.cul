@@ -223,6 +223,12 @@ FS.write(FS.join(xdir, "a[b"), "")
 assert_eq(FS.glob(FS.join(xdir, "*[f].txt")).map(|p| FS.basename(p)), ["f.txt", "gf.txt"])
 assert_eq(FS.glob(FS.join(xdir, "?[!x].txt")).map(|p| FS.basename(p)), ["gf.txt"])
 assert_eq(FS.glob(FS.join(xdir, "a[b")).map(|p| FS.basename(p)), ["a[b"])
+// A character is a code point: `?` takes `é` whole, and a range compares
+// code points.
+FS.write(FS.join(xdir, "é.txt"), "")
+assert_eq(FS.glob(FS.join(xdir, "?.txt")).map(|p| FS.basename(p)), ["f.txt", "é.txt"])
+assert_eq(FS.glob(FS.join(xdir, "[à-ö].txt")).map(|p| FS.basename(p)), ["é.txt"])
+FS.remove(FS.join(xdir, "é.txt"))
 FS.remove(FS.join(xdir, "gf.txt"))
 FS.remove(FS.join(xdir, "a[b"))
 

@@ -761,7 +761,8 @@ reading one under it fails for any other reason.
 #### `FS.glob(pattern: String) -> Array<String>`
 
 Paths matching a glob `pattern`, sorted. Supports `*`, `?`, `[...]`
-per segment and `**` for recursive descent. This is shell-style glob,
+per segment and `**` for recursive descent; a character is a code
+point, so `?` matches `é` whole. This is shell-style glob,
 distinct from `Regex`.
 
 ```culebra
@@ -8458,7 +8459,7 @@ inspect(d.exists('../a.txt'))                               # => false
 
 `glob` matches each `/`-separated segment of a file's path: `*` is any run of
 characters, `?` one character, `[abc]`, `[a-z]` and `[!a]` one character of a
-set. A segment that is exactly `**` matches any number of segments, none
+set, a character being a code point. A segment that is exactly `**` matches any number of segments, none
 included, so `img/**` is every file under `img`. Only files are listed, never
 directories (`FS.glob` lists both, and its `**` stands for directories only).
 
