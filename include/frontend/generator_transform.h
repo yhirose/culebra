@@ -643,9 +643,12 @@ inline bool is_flat_tuple_pattern(const peg::Ast& pattern) {
 enum class EditSite { Expr, Stmt, InitBinding };
 
 // The plain local a promoted leaf of a destructuring pattern binds first, to
-// be copied into its slot (only a flat tuple can bind slots directly).
-inline std::string destructure_temp(std::string_view name) {
-  return "_g_d_" + std::string(name);
+// be copied into its slot (only a flat tuple can bind slots directly). Named
+// for the pattern's position as well, so two destructurings in one scope each
+// declare their own: the binding is a declaration, which a second
+// destructuring of the same leaf would otherwise repeat.
+inline std::string destructure_temp(const peg::Ast& pat, std::string_view name) {
+  return std::format("_g_d{}_{}", pat.position, name);
 }
 
 // Bind `pat`'s promoted leaves to temporaries (destructure_temp): push the
@@ -660,7 +663,7 @@ inline MappedSource rename_pattern_leaves(const peg::Ast& pat,
   for_each_pattern_leaf(pat, [&](const peg::Ast& id, bool shorthand) {
     auto name = std::string(id.token);
     if (!promoted.names.contains(name)) return;
-    auto temp = destructure_temp(name);
+    auto temp = destructure_temp(pat, name);
     auto pos = static_cast<size_t>(id.token.data() - src.data());
     out.push_back({pos, id.token.size(),
                    shorthand ? std::format("{}: {}", name, temp) : temp});

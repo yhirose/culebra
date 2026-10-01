@@ -162,6 +162,18 @@ fn yield_from_unless(skip) {
 assert_eq(yield_from_unless(false).collect(), [1, 2, 3])
 assert_eq(yield_from_unless(true).collect(), [3])
 
+// a local destructured twice between two yields: each destructuring binds
+// its own temporaries
+fn redestructure() {
+  mut a = 0
+  mut b = 0
+  yield 0
+  (a, (b,)) = (1, (2,))
+  (a, (b,)) = (a + 2, (b + 2,))
+  yield a + b
+}
+assert_eq(redestructure().collect(), [0, 7])
+
 // --- yield in both if and else arms ---
 fn alternating() {
   mut i = 0

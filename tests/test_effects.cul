@@ -246,6 +246,17 @@ effect fn cf_tail_block() {
 }
 assert_eq(handle { cf_tail_block() } with cf_note(x, resume) { resume(x) }, nil)
 
+// a promoted local destructured twice in one stretch of the body
+effect fn cf_redestructure() {
+  mut a = 0
+  mut b = 0
+  let n = perform cf_note(10)
+  (a, (b,)) = (1, (2,))
+  (a, (b,)) = (a + n, (b + 20,))
+  a + b
+}
+assert_eq(handle { cf_redestructure() } with cf_note(x, resume) { resume(x) }, 33)
+
 // for-in body performs (desugared to while + iterator)
 effect fn cf_each()
 effect fn cf_iterate(xs) {
