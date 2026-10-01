@@ -52,13 +52,17 @@ inline bool is_fn_boundary(unsigned int tag) {
   return tag == "FUNCTION"_ || tag == "LAMBDA"_ || tag == "MULTIFN_DECL"_;
 }
 
+// A `yield` or a `yield from`: both suspend, so every walk counts them alike.
+inline bool is_yield(unsigned int tag) {
+  using namespace peg::udl;
+  return tag == "YIELD"_ || tag == "YIELD_FROM"_;
+}
+
 // First YIELD or YIELD_FROM belonging to this fn body, stopping at fn
 // boundaries (see `is_fn_boundary`) — a nested generator's yields are its
-// own. A `yield from` suspends like a `yield`, so it counts the same.
-// nullptr when absent.
+// own. nullptr when absent.
 inline const peg::Ast* find_yield_in_fn_body(const peg::Ast& node) {
-  using namespace peg::udl;
-  if (node.tag == "YIELD"_ || node.tag == "YIELD_FROM"_) return &node;
+  if (is_yield(node.tag)) return &node;
   if (is_fn_boundary(node.tag)) return nullptr;
   for (auto& c : node.nodes) {
     if (auto* y = find_yield_in_fn_body(*c)) return y;
@@ -138,16 +142,10 @@ inline void reject_self_in_lowered_body(const peg::Ast& body,
 // any yield still present belongs to no `fn name(...)` declaration (a class
 // method, an object property's fn, a fn expression, top level) and would
 // otherwise run as a plain statement with backend-dependent results.
-// Matches original_tag too: a lone `yield` in a block collapses onto its
-// parent (`BLOCK[YIELD]`, `STATEMENT/4[YIELD]`), which carries the parent's
-// tag and keeps YIELD only in original_tag.
+// The tag is enough: YIELD / YIELD_FROM are never collapsed away
+// (ast_optimizer_keep_rules), and a parent collapsing onto one takes its tag.
 inline const peg::Ast* find_orphan_yield(const peg::Ast& node) {
-  using namespace peg::udl;
-  auto is_yield = [](const peg::Ast& n) {
-    return n.tag == "YIELD"_ || n.tag == "YIELD_FROM"_ ||
-           n.original_tag == "YIELD"_ || n.original_tag == "YIELD_FROM"_;
-  };
-  if (is_yield(node)) return &node;
+  if (is_yield(node.tag)) return &node;
   for (auto& c : node.nodes) {
     if (auto* y = find_orphan_yield(*c)) return y;
   }
@@ -168,7 +166,7 @@ inline const peg::Ast* find_yield_inside_try_or_defer(const peg::Ast& body) {
       [&](const peg::Ast& n, bool inside_guard) {
         if (found) return;
         if (is_fn_boundary(n.tag)) return;
-        if (inside_guard && (n.tag == "YIELD"_ || n.tag == "YIELD_FROM"_)) {
+        if (inside_guard && is_yield(n.tag)) {
           found = &n;
           return;
         }
