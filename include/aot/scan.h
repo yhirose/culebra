@@ -110,28 +110,46 @@ inline void aot_collect_names(const peg::Ast& node, AotNames& out) {
   for (const auto& child : node.nodes) aot_collect_names(*child, out);
 }
 
-// The built-in traits (shared.h) run in every program but are no module the
-// loader returns, so the scan above never reads them — and a default body
-// that reaches a namespace (`Dir.copy_to`'s `FS`) would find it unlinked in
-// a binary whose program never names it. Their default bodies count as
-// named by every program; the declarations' own names do not (the trait
-// `Dir` is not a use of the namespace `_Dir`).
-inline void _aot_collect_trait_bodies(const peg::Ast& node, AotNames& out) {
-  using namespace peg::udl;
-  if (node.tag == "TRAIT_BODY"_) {
-    aot_collect_names(node, out);
-    return;
-  }
-  for (const auto& child : node.nodes) _aot_collect_trait_bodies(*child, out);
-}
-inline void aot_collect_builtin_trait_names(AotNames& out) {
-  if (auto ast = parse_builtin_traits_preamble())
-    _aot_collect_trait_bodies(*ast, out);
-}
-
 // Does the program name `name` (either spelling, `X` or `_X`)?
 inline bool aot_named(const AotNames& names, std::string_view name) {
   return names.contains(_aot_name_key(name));
+}
+
+// The built-in traits (shared.h) run in every program but are no module the
+// loader returns, so the scan above never reads them — and a default body
+// that reaches a namespace (`Dir.copy_to`'s `FS`) would find it unlinked in
+// a binary whose program calls it. A default runs only when something calls
+// it by name, so its body counts as named exactly when its method's name
+// is; run to a fixpoint, since a default the program calls may call another.
+// The declarations' own names never count (the trait `Dir` is not a use of
+// the namespace `_Dir`).
+inline void _aot_collect_trait_methods(const peg::Ast& node,
+                                       std::vector<const peg::Ast*>& out) {
+  using namespace peg::udl;
+  if (node.tag == "TRAIT_METHOD"_) {
+    out.push_back(&node);
+    return;
+  }
+  for (const auto& child : node.nodes) _aot_collect_trait_methods(*child, out);
+}
+inline void aot_collect_builtin_trait_names(AotNames& out) {
+  using namespace peg::udl;
+  auto ast = parse_builtin_traits_preamble();
+  if (!ast) return;
+  std::vector<const peg::Ast*> methods;
+  _aot_collect_trait_methods(*ast, methods);
+  std::vector<bool> taken(methods.size(), false);
+  for (bool grew = true; grew;) {
+    grew = false;
+    for (size_t i = 0; i < methods.size(); i++) {
+      const auto& m = *methods[i];
+      if (taken[i] || m.nodes.empty() || !aot_named(out, m.nodes[0]->token))
+        continue;
+      taken[i] = grew = true;
+      for (const auto& part : m.nodes)
+        if (part->tag == "TRAIT_BODY"_) aot_collect_names(*part, out);
+    }
+  }
 }
 
 }  // namespace culebra
