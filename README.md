@@ -172,13 +172,15 @@ Tensor.eval(y)  # [[5.0, 11.0], [11.0, 25.0]]
 
 ### Embedded assets
 
-`Embed.dir(name)` hands a directory of files to your program with no
+`Dir.embedded(name)` hands a directory of files to your program with no
 code change across backends: the VM and JIT read it live
 from disk — edit a file, rerun — and `culebra build` bakes every byte
 into the executable, so the shipped binary needs nothing alongside it.
+It is one kind of `Dir`, read the same way as a directory on disk
+(`Dir.disk`) or files held in memory (`Dir.memory`).
 
 ```culebra
-let assets = Embed.dir("dist")         # index.html, favicon.ico, ...
+let assets = Dir.embedded("dist")         # index.html, favicon.ico, ...
 println(assets.exists("index.html"))   # => true
 println(assets.exists("favicon.ico"))  # => true
 ```
@@ -192,7 +194,7 @@ whole thing — server, routes, and embedded assets — as one binary.
 ```culebra
 Desktop.run({
   title: "Hello from culebra",
-  assets: Embed.dir("dist"),  # index.html, favicon.ico, ...
+  assets: Dir.embedded("dist"),  # index.html, favicon.ico, ...
   routes: fn (srv) {
     srv.get("/api/hello", fn (req) {
       "hi from the embedded server"

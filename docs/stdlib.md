@@ -80,8 +80,9 @@ Conventions used below:
 38. [`FST`](#38-fst) — compiled read-only dictionary: prefix, predictive and fuzzy search
 39. [`Search`](#39-search) — full-text index over your own documents, ranked
 40. [`Audio`](#40-audio) — sound for any program, with or without a window: WASM-4 tones, samples, streamed music, synthesised PCM, the microphone
-41. [Design notes](#41-design-notes)
-42. [Not included (yet)](#42-not-included-yet)
+41. [`Dir`](#41-dir) — a read-only set of files on disk, in memory or baked into the binary, read one way (`Dir.disk` / `Dir.memory` / `Dir.embedded`, and the `Dir` trait)
+42. [Design notes](#42-design-notes)
+43. [Not included (yet)](#43-not-included-yet)
 
 **Where to find what**
 
@@ -4148,7 +4149,7 @@ srv.listen(8080)  # blocks; Ctrl+C to stop
 | Method | Effect |
 | --- | --- |
 | `get/post/put/delete/patch/options(pattern, handler)` | register `handler` (a `fn(req)->response`) for that method and route `pattern`; returns the server (so calls chain) |
-| `static(mount, dir)` | serve static files at the URL prefix `mount`; `dir` is a String path (a live on-disk directory) or an `Embed.dir(...)` handle (baked into the binary under AOT — see [Embed](#embed)) |
+| `static(mount, dir)` | serve static files at the URL prefix `mount`; `dir` is a String path (a live on-disk directory) or a `Dir.embedded(...)` (baked into the binary under AOT — see [Embedded assets](#embedded-assets)) |
 | `sink.write(chunk)` | (inside a `stream:` closure) push one chunk; returns `false` if the client has disconnected |
 | `bind(port, host="0.0.0.0") -> Long` | open the listening socket and return the port it got; `port=0` asks the OS for an ephemeral one; a `port` outside 0..65535 is a `ValueError` (on `listen` / `listen_async` too). Once only, and not after the server has served |
 | `serve(workers=0)` | run the accept loop on a bound socket until interrupted (blocks the calling thread). Handlers run on a worker pool, never on the accept loop, so a slow handler can't block accepting new connections — and handlers must be **Sendable**. `workers=0` (default) picks a CPU-scaled pool size; pass a positive count to fix it |
@@ -4412,60 +4413,6 @@ Note the `()` on `Empty()` and `Closed()`, as in a `Channel` match: a bare
 for the *next message*, and a timeout is the absence of one, not the end of the
 stream. They do become interruptible with one set, since the wait between
 attempts is where a Ctrl+C lands.
-
-### Embed
-
-`Embed.dir(name)` returns a handle over a directory of assets that resolves
-*per backend*, with no code change:
-
-- **Run from source** (VM / JIT): it reads the live on-disk directory
-  `name`, resolved relative to the entry script — so editing a file and running
-  again shows the change immediately (a real dev loop).
-- **`culebra build`** (AOT): the directory is walked at build time and its bytes
-  are baked into the executable; the binary reads them with no external files.
-  The build prints what it embedded (`embedded N file(s) (… bytes) from '…'`).
-
-| Method | Returns | Notes |
-|---|---|---|
-| `dir.read(path)` | `String` | the file's bytes (binary-safe); `IOError` when it isn't there |
-| `dir.exists(path)` | `Bool` | whether `path` is a file in the directory |
-
-`path` is relative to the directory and forward-slashed (`"sub/logo.png"`); an
-absolute path or one containing `..` is not found rather than escaping.
-
-```culebra
-# doctest: skip
-let art = Embed.dir("assets")
-let sheet = Canvas.Sprite.from_png(art.read("sprites.png"))
-let music = art.exists("music.ogg") ? Audio.Music.new(art.read("music.ogg")) : nil
-music?.play()
-```
-
-The same handle serves a whole directory over HTTP:
-
-```culebra
-# doctest: skip — listens on a port until interrupted
-let srv = Http.server()
-srv.static("/", Embed.dir("dist"))  # whole frontend, one line
-srv.get("/api/ping", fn (req) {
-  '{"ok":true}'
-})
-srv.listen(8080)
-```
-
-`name` must be a string literal so the AOT build can find and bake it; a
-computed path still works from source but isn't embedded. Under `srv.static`
-the Content-Type is inferred from each file's extension, a request for a
-directory (or `/`) serves its `index.html`, and a path not in the directory
-falls through to the registered routes (so an API route always wins).
-`Embed.dir` is independent of `Http` — a program that only reads assets needs
-no server. A handle is Sendable: sending one to another isolate rebuilds it
-there over the same directory.
-
-`culebra build` compiles the baked assets against the culebra headers, so it
-needs a source checkout: the one the binary was built from by default, or
-`$CULEBRA_HOME` when that is set. With neither it stops with an error rather
-than producing a binary.
 
 ---
 
@@ -5750,7 +5697,7 @@ centring or right-aligning.
 ### TTF fonts
 
 `Canvas.Font(data)` parses TTF/OTF bytes — `FS.read` of a font file, or
-`Embed.dir(...).read(...)` to bake it into an AOT binary the same way
+`Dir.embedded(...).read(...)` to bake it into an AOT binary the same way
 `Sprite.from_png` assets already do — and returns a handle. Unlike `Sprite`,
 a `Font` has no fixed size: size is a parameter of each draw call, so one
 `Font` serves every size a program uses, and rasterized glyphs are cached
@@ -6172,7 +6119,7 @@ a dropped handle a `ClosedError`.
 | Method | Result |
 | --- | --- |
 | `view.texture(img, mipmaps = true, repeat = true) -> Texture` | upload a `Scene.Image` (below); mipmapped and repeating for a tiled material, neither for a sprite or a LUT |
-| `view.texture_png(bytes) -> Texture` | a PNG's bytes (`FS.read`, or an `Embed.dir` asset) straight to a texture |
+| `view.texture_png(bytes) -> Texture` | a PNG's bytes (`FS.read`, or a `Dir.embedded` asset) straight to a texture |
 | `view.checker(px, checks, r1,g1,b1, r2,g2,b2) -> Texture` | a checkerboard |
 | `view.grain(px, r, g, b, amt) -> Texture` | a flat colour with noise grain |
 | `view.canvas(w, h) -> Texture` / `view.canvas_end()` | open a render-to-texture the 2D calls paint into, and close it |
@@ -6289,7 +6236,7 @@ the next `path_begin()`, so a shape can be filled and then outlined.
 
 `view.font(path, size, chars = "") -> Font` rasterizes a TTF/OTF at one pixel
 size into a glyph atlas, and `view.font_bytes(data, size, chars = "") -> Font`
-does the same from the file's bytes — an `Embed.dir` asset, so a one-binary
+does the same from the file's bytes — a `Dir.embedded` asset, so a one-binary
 game ships its font inside itself. `chars` names the glyphs to include (`""`
 is printable ASCII): a HUD lists its digits and words and gets a small atlas,
 one with Japanese lists the characters it uses. A font that cannot be loaded
@@ -6584,7 +6531,7 @@ the window closes, then stop the server.
 | --- | --- | --- |
 | `title` | `'culebra'` | window title |
 | `size` | window default | `[width, height]` in pixels |
-| `assets` | — | static root served at `/` — typically `Embed.dir('dist')`, which reads from disk in dev and is baked into the binary under `culebra build` |
+| `assets` | — | static root served at `/` — typically `Dir.embedded('dist')`, which reads from disk in dev and is baked into the binary under `culebra build` |
 | `routes` | — | `fn (srv) { ... }` to register the app's own routes on the `Http` server (§15) |
 | `port` | `8731`, then OS-assigned | loopback port the server binds. Unset: try `8731`; if it's taken (say, another culebra desktop app), fall back to an OS-assigned free port — note the page's origin, and so its `localStorage`, changes with the port. Set explicitly: bind exactly that port or fail |
 | `workers` | `4` | server worker threads |
@@ -6598,7 +6545,7 @@ from culebra code.
 Desktop.run({title: 'culebra desktop', size: [
   720,
   560,
-], assets: Embed.dir('dist'), routes: fn (srv) {
+], assets: Dir.embedded('dist'), routes: fn (srv) {
   srv.get('/api/hello', fn (req) {
     {content_type: 'application/json', body: JSON.stringify({message: 'hello'})}
   })
@@ -8204,7 +8151,7 @@ Audio.tone(700, 0, 10, Audio.PULSE, 870, 10, 5, 3, 20, Audio.DUTY_QUARTER)
 ### Sound
 
 `Audio.Sound.new(data)` decodes a one-shot sample from its bytes (WAV, MP3 or
-Ogg Vorbis, a `String` from `FS.read`, `Embed` or built by the program) and
+Ogg Vorbis, a `String` from `FS.read`, a `Dir` or built by the program) and
 plays it per call: the recorded-sample counterpart to `tone`'s synthesis.
 
 | Method | Effect |
@@ -8362,7 +8309,7 @@ program supplies for `host` instruments as samples mixed alongside them.
 | Function | Effect |
 | --- | --- |
 | `Audio.Kauai.new(text: String, voices = nil, drums = nil)` | a song from its text, which uses no other files |
-| `Audio.Kauai.load(path: String, voices = nil, drums = nil, dir = nil)` | a song file and the files it `use`s, from the disk or from `dir` (an `Embed.dir`, or any object with `exists(name)` and `read(name)`) |
+| `Audio.Kauai.load(path: String, voices = nil, drums = nil, dir = nil)` | a song file and the files it `use`s, from the disk or from `dir` (any `Dir`, or any object with `exists(name)` and `read(name)`) |
 
 A song's mistake raises `KauaiError`, its message naming the file and the
 line. The song answers `play()`, `stop()`, `volume(v)`, `playing()`,
@@ -8389,7 +8336,175 @@ println(song.length())  # => 2.0
 song.play()
 ```
 
-## 41. Design notes
+## 41. `Dir`
+
+A **read-only set of files**, wherever it lives — a directory on disk, files
+held in memory, or assets baked into the executable — read the same way. A
+function written against a `Dir` works with any of them.
+
+```culebra
+let d = Dir.memory({'readme.md': '# hi', 'img/logo.png': 'PNG', 'img/bg.png': 'PNG'})
+inspect(d.files())            # => ['img/bg.png', 'img/logo.png', 'readme.md']
+inspect(d.read('readme.md'))  # => '# hi'
+inspect(d.list_dir('img'))    # => ['bg.png', 'logo.png']
+inspect(d.glob('**/*.png'))   # => ['img/bg.png', 'img/logo.png']
+inspect(d.is_dir('img'))      # => true
+```
+
+### Getting one
+
+| Factory | A Dir over |
+| --- | --- |
+| `Dir.disk(path: String \| Path) -> Dir` | the directory `path` on disk, read live; `IOError` when it is not a directory |
+| `Dir.memory(files: Object) -> Dir` | the files of `files`: one key per file, `"sub/name.txt"`, to its contents (a `String`, binary-safe) |
+| `Dir.embedded(name: String) -> Dir` | the directory `name` next to the entry script — baked into the executable by `culebra build` ([below](#embedded-assets)) |
+
+`Dir.memory` takes a flat Object: a file in a subdirectory is a key with a
+`/`, not a nested Object. A nested Object or a value that is not a `String`
+raises `TypeError`; a key outside the directory (`../x`, `/x`), two keys naming
+one file (`a/b` and `a//b`), or a file that is also a directory (`a` and `a/b`)
+raise `ValueError`. Keys are normalized when the Dir is made.
+
+`type_of` names the kind (`DiskDir`, `MemoryDir`, `EmbedDir`); a parameter that
+takes any of them is annotated `Dir`.
+
+### Reading
+
+Every Dir answers the same nine methods:
+
+| Method | Returns | |
+| --- | --- | --- |
+| `d.read(path)` | `String` | the file's bytes |
+| `d.list_dir(path)` | `Array<String>` | the bare names directly under the directory `path`, sorted |
+| `d.exists(path)` | `Bool` | whether `path` is a file or a directory |
+| `d.is_file(path)` | `Bool` | |
+| `d.is_dir(path)` | `Bool` | |
+| `d.size(path)` | `Long` | the file's size in bytes |
+| `d.files()` | `Array<String>` | every file's path, sorted |
+| `d.glob(pattern)` | `Array<String>` | the files whose path matches `pattern`, sorted |
+| `d.copy_to(dest)` | `Nil` | writes every file under the disk directory `dest` |
+
+A path is relative to the Dir's root and separated by `/`. `""` and `"."` name
+the root itself; `.` and empty segments drop out, so `./a`, `a//b`, `a/./b`
+and a trailing `/` name what `a` and `a/b` do. A path that starts with `/` or
+`\`, or climbs with `..`, is simply not there: `exists` answers `false` and
+`read` raises the `IOError` any missing file does, so nothing is read from
+outside the Dir. Otherwise a name is taken as written — `foo..txt` is an
+ordinary file, and `\` is not a separator. Lists are sorted by bytes. Names
+are compared as written in `Dir.memory` and `Dir.embedded`; `Dir.disk` follows
+the operating system (case-insensitive on macOS and Windows by default).
+
+`read` and `size` on a path that is no file, and `list_dir` on one that is no
+directory, raise `IOError`, worded the same by every kind of Dir:
+
+```culebra
+let d = Dir.memory({'a.txt': 'alpha', 'img/x.png': 'x'})
+println(try { d.read('b.txt') } catch e { e.message })      # => Dir.read: no such file 'b.txt'
+println(try { d.read('img') } catch e { e.message })        # => Dir.read: 'img' is a directory
+println(try { d.list_dir('a.txt') } catch e { e.message })  # => Dir.list_dir: 'a.txt' is a file
+inspect(d.exists('../a.txt'))                               # => false
+```
+
+`glob` matches each `/`-separated segment of a file's path: `*` is any run of
+characters, `?` one character, `[abc]`, `[a-z]` and `[!a]` one character of a
+set. A segment that is exactly `**` matches any number of segments, none
+included. Only files are listed, never directories.
+
+```culebra
+let d = Dir.memory({'a.txt': '', 'b.md': '', 'img/x.png': '', 'img/sub/y.png': ''})
+inspect(d.glob('*.txt'))     # => ['a.txt']
+inspect(d.glob('img/*'))     # => ['img/x.png']
+inspect(d.glob('**/*.png'))  # => ['img/sub/y.png', 'img/x.png']
+inspect(d.glob('[ab].*'))    # => ['a.txt', 'b.md']
+```
+
+`copy_to(dest)` writes the Dir out to disk: every file lands at its path under
+`dest`, with the directories made as needed and a file of the same name
+overwritten. Dumping the baked assets of a built binary is
+`Dir.embedded('assets').copy_to(dir)`. A path that would land outside `dest` —
+which only a Dir of your own can list — raises `ValueError` before it is
+written.
+
+### The `Dir` trait
+
+`Dir` is also one of the built-in traits ([language.md](language.md), Built-in
+traits). `read`, `list_dir`, `exists`, `is_file` and `is_dir` are required;
+`files`, `glob`, `size` and `copy_to` are default methods written over them.
+So a class of your own that answers the five is a `Dir`: it passes a `Dir`
+annotation and gets the other four.
+
+```culebra
+class Greetings {
+  read(path) { "hello from {path}" }
+  list_dir(path) { path == '' ? ['a.txt', 'b.txt'] : [] }
+  exists(path) { self.is_file(path) || self.is_dir(path) }
+  is_file(path) { path == 'a.txt' || path == 'b.txt' }
+  is_dir(path) { path == '' }
+}
+fn count(d: Dir) {
+  d.files().size()
+}
+inspect(count(Greetings()))      # => 2
+inspect(Greetings().glob('b*'))  # => ['b.txt']
+```
+
+A trait annotation accepts a class instance, and an Object literal is not one.
+Much of the library asks for less than a Dir anyway: a reader that only looks
+files up by name (`Audio.Kauai.load(dir:)`) takes anything with
+`exists(path)` and `read(path)`, an Object literal included. To make a set of
+literal files a full Dir, hand them to `Dir.memory`.
+
+Every kind is Sendable: sent to an isolate, a `Dir.disk` reads the same
+directory, a `Dir.memory` its own copy of the contents and a `Dir.embedded`
+the same assets.
+
+### Embedded assets
+
+`Dir.embedded(name)` resolves *per backend*, with no code change:
+
+- **Run from source** (VM / JIT): it reads the live on-disk directory `name`,
+  resolved relative to the entry script — so editing a file and running again
+  shows the change immediately (a real dev loop).
+- **`culebra build`** (AOT): the directory is walked at build time and its bytes
+  are baked into the executable; the binary reads them with no external files.
+  The build prints what it embedded (`embedded N file(s) (… bytes) from '…'`).
+
+```culebra
+# doctest: skip
+let art = Dir.embedded("assets")
+let sheet = Canvas.Sprite.from_png(art.read("sprites.png"))
+let music = art.exists("music.ogg") ? Audio.Music.new(art.read("music.ogg")) : nil
+music?.play()
+```
+
+The same Dir serves a whole directory over HTTP:
+
+```culebra
+# doctest: skip — listens on a port until interrupted
+let srv = Http.server()
+srv.static("/", Dir.embedded("dist"))  # whole frontend, one line
+srv.get("/api/ping", fn (req) {
+  '{"ok":true}'
+})
+srv.listen(8080)
+```
+
+`name` must be a string literal so the AOT build can find and bake it; a
+computed name still works from source but isn't embedded. Under `srv.static`
+the Content-Type is inferred from each file's extension, a request for a
+directory (or `/`) serves its `index.html`, and a path not in the directory
+falls through to the registered routes (so an API route always wins).
+`Dir.embedded` is independent of `Http` — a program that only reads assets
+needs no server.
+
+`culebra build` compiles the baked assets against the culebra headers, so it
+needs a source checkout: the one the binary was built from by default, or
+`$CULEBRA_HOME` when that is set. With neither it stops with an error rather
+than producing a binary.
+
+---
+
+## 42. Design notes
 
 ### Namespace-first, with three global shortcuts
 
@@ -8445,7 +8560,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 42. Not included (yet)
+## 43. Not included (yet)
 
 ### Heavier data structures
 

@@ -43,7 +43,7 @@ culebra build retro-run.cul -o retro-run
 ./retro-run --assets assets-racer
 ```
 
-The art comes in with it: the game reads `assets/` through `Embed.dir`, which
+The art comes in with it: the game reads `assets/` through `Dir.embedded`, which
 the build walks and bakes into the executable, so the binary runs anywhere on
 its own. `--assets` still reads a directory instead.
 

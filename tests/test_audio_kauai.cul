@@ -182,7 +182,7 @@ assert_eq(error_of(lines(['about {', '}', 'about {', '}', song_of(['  Verse'])])
   ("KauaiError", "line 3: a file says about once"))
 
 # A song file and the files it uses, here from a directory of its own: any
-# object with exists(name) and read(name), as Embed.dir gives.
+# object with exists(name) and read(name), as Dir.embedded gives.
 let files = {
   "songs/band.kau": DUO,
   "songs/first.kau": lines([

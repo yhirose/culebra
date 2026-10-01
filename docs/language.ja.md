@@ -3481,7 +3481,7 @@ traitは何も登録せず、同名の再宣言は前のcontractとdefaultをま
 
 #### Built-in trait
 
-runtimeはpreambleとして7つの基本traitをship — `import`不要
+runtimeはpreambleとして8つの基本traitをship — `import`不要
 で使える:
 
 | Trait | Required | Default |
@@ -3493,6 +3493,10 @@ runtimeはpreambleとして7つの基本traitをship — `import`不要
 | `Hashable` | `hash() -> Long` | — |
 | `Iterator` | `has_next() -> Bool`, `next() -> Any` | — |
 | `Iterable` | `iter() -> Iterator` | — |
+| `Dir` | `read(path)`, `list_dir(path)`, `exists(path)`, `is_file(path)`, `is_dir(path)` | `files`, `glob`, `size`, `copy_to` |
+
+trait注釈に答えるのはクラスのインスタンスで、Objectリテラルはクラスを
+持たないので、どんなメンバーがあってもこれらのどれにもconformしない。
 
 `cmp`だけ書けば6関係methodが揃い、`eq`だけ書けば`neq`が
 入り、`to_s`だけ書けばStringerの使える場所で受け取れる。

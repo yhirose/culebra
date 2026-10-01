@@ -78,8 +78,9 @@
 38. [`FST`](#38-fst) — 書き換えない辞書を圧縮して持つ。前方一致・補完・あいまい検索
 39. [`Search`](#39-search) — 自分の文書を全文検索して順位をつける
 40. [`Audio`](#40-audio) — ウィンドウの有無によらず使える音: WASM-4のtone、効果音、ストリーム再生の音楽、合成するPCM、マイク
-41. [設計上の注記](#41-設計上の注記)
-42. [未収録（将来検討）](#42-未収録将来検討)
+41. [`Dir`](#41-dir) — ディスク・メモリ・バイナリへの焼き込みのどこにあるファイルの集まりも、同じ読み方で（`Dir.disk` / `Dir.memory` / `Dir.embedded`と`Dir` trait）
+42. [設計上の注記](#42-設計上の注記)
+43. [未収録（将来検討）](#43-未収録将来検討)
 
 **目的別索引**
 
@@ -4031,7 +4032,7 @@ srv.listen(8080)  # ブロックする。Ctrl+C で停止
 | メソッド | 効果 |
 | --- | --- |
 | `get/post/put/delete/patch/options(pattern, handler)` | そのメソッドとルート`pattern`に`handler`（`fn(req)->response`）を登録。サーバを返す（チェーン可） |
-| `static(mount, dir)` | URLプレフィックス`mount`で静的ファイルを配信。`dir`はStringパス（ディスク上のディレクトリをライブ配信）または`Embed.dir(...)`ハンドル（AOTではバイナリに焼き込み — [Embed](#embed) 参照） |
+| `static(mount, dir)` | URLプレフィックス`mount`で静的ファイルを配信。`dir`はStringパス（ディスク上のディレクトリをライブ配信）または`Dir.embedded(...)`（AOTではバイナリに焼き込み — [埋め込みアセット](#埋め込みアセット) 参照） |
 | `sink.write(chunk)` | （`stream:`クロージャ内）1チャンクを送出。クライアント切断時は`false`を返す |
 | `bind(port, host="0.0.0.0") -> Long` | listenソケットを開き、実際に取れたポートを返す。`port=0`はOS任せのephemeral port。0〜65535の外の`port`は`ValueError`（`listen` / `listen_async`も同じ）。1回だけ、かつ配信開始後は不可 |
 | `serve(workers=0)` | バインド済みソケットでacceptループを回す（中断まで呼び出しスレッドをブロック）。ハンドラはacceptループでなくworkerプールで動くので、遅いハンドラが新規接続の受付を止めない — ハンドラは **Sendable** 必須。`workers=0`（既定）はCPU連動のプールサイズ、正の数で固定 |
@@ -4283,59 +4284,6 @@ while running {
 **次のメッセージ**を待つもので、タイムアウトはメッセージが無いというだけで終端では
 ないからです。ただし待ち直す隙にCtrl+Cが届くようになるので、中断できるようには
 なります。
-
-### Embed
-
-`Embed.dir(name)`はアセットディレクトリのハンドルを返し、**バックエンドごとに**
-（コード変更なしで）解決されます:
-
-- **ソース実行**（VM / JIT）: `name`のディスク上ディレクトリをライブに
-  読む（エントリスクリプト相対で解決）。ファイルを編集して実行し直せば即反映
-  ＝開発ループ。
-- **`culebra build`**（AOT）: ビルド時にディレクトリを走査してバイト列をバイナリ
-  に焼き込み、外部ファイル無しで読む。焼き込んだ内容はビルドが表示する
-  （`embedded N file(s) (… bytes) from '…'`）。
-
-| メソッド | 返り値 | 備考 |
-|---|---|---|
-| `dir.read(path)` | `String` | ファイルのバイト列（バイナリセーフ）。無ければ`IOError` |
-| `dir.exists(path)` | `Bool` | `path`がそのディレクトリのファイルか |
-
-`path`はディレクトリ相対でスラッシュ区切り（`"sub/logo.png"`）。絶対パスや`..`を
-含むパスは外に出るのではなく「見つからない」として扱われる。
-
-```culebra
-# doctest: skip
-let art = Embed.dir("assets")
-let sheet = Canvas.Sprite.from_png(art.read("sprites.png"))
-let music = art.exists("music.ogg") ? Audio.Music.new(art.read("music.ogg")) : nil
-music?.play()
-```
-
-同じハンドルでディレクトリ全体をHTTP配信できる:
-
-```culebra
-# doctest: skip — ポートを listen して割り込みまで待つ
-let srv = Http.server()
-srv.static("/", Embed.dir("dist"))  # フロントエンド全体を1行で
-srv.get("/api/ping", fn (req) {
-  '{"ok":true}'
-})
-srv.listen(8080)
-```
-
-`name`はAOTビルドが探して焼き込めるよう**文字列リテラル**であること（計算した
-パスはソース実行では動くが焼き込まれない）。`srv.static`経由ではContent-Typeは
-拡張子から推論、ディレクトリ（や`/`）へのリクエストはその`index.html`、
-ディレクトリに無いパスは登録ルートにフォールスルー（APIルートが常に優先）。
-`Embed.dir`は`Http`非依存＝アセットを読むだけのプログラムにサーバは要らない。
-ハンドルはSendableで、別のisolateに送ると同じディレクトリのハンドルとして
-向こう側で再構築される。
-
-`culebra build`は焼き込むアセットをculebraのヘッダに対してコンパイルするため、
-ソースチェックアウトが必要。既定はそのバイナリをビルドしたときのパスで、
-`$CULEBRA_HOME`があればそちらが優先される。どちらも無ければバイナリを作らず
-エラーで停止する。
 
 ---
 
@@ -5565,7 +5513,7 @@ FS.write("tile.png", tile.to_png())
 ### TTFフォント
 
 `Canvas.Font(data)`はTTF/OTFのバイト列をパースし — フォントファイルの`FS.read`や、
-`Embed.dir(...).read(...)`でAOTバイナリへ焼き込める（`Sprite.from_png`のアセットと
+`Dir.embedded(...).read(...)`でAOTバイナリへ焼き込める（`Sprite.from_png`のアセットと
 同じ要領） — ハンドルを返す。`Sprite`と違い`Font`はサイズを固定しない — サイズは
 描画のたびに引数で渡すので、1つの`Font`がプログラム内で使う全サイズを兼ねる。
 ラスタライズ済みグリフは内部で(font, codepoint, size)ごとにキャッシュされる。
@@ -5971,7 +5919,7 @@ while !view.closing() {
 | メソッド | 結果 |
 | --- | --- |
 | `view.texture(img, mipmaps = true, repeat = true) -> Texture` | `Scene.Image`（下記）をアップロード。タイル用マテリアルならミップマップ＋リピート、スプライトやLUTなら両方off |
-| `view.texture_png(bytes) -> Texture` | PNGのバイト列（`FS.read`や`Embed.dir`の資産）を直接テクスチャに |
+| `view.texture_png(bytes) -> Texture` | PNGのバイト列（`FS.read`や`Dir.embedded`の資産）を直接テクスチャに |
 | `view.checker(px, checks, r1,g1,b1, r2,g2,b2) -> Texture` | 市松 |
 | `view.grain(px, r, g, b, amt) -> Texture` | 単色＋ノイズの粒 |
 | `view.canvas(w, h) -> Texture` / `view.canvas_end()` | 2D呼び出しで塗るrender-to-textureを開く / 閉じる |
@@ -6084,7 +6032,7 @@ g, b)`（4点以上を通るCatmull-Rom曲線）のいずれかで描く。点�
 
 `view.font(path, size, chars = "") -> Font`はTTF/OTFを1つのピクセルサイズで
 グリフアトラスに焼く。`view.font_bytes(data, size, chars = "") -> Font`は
-ファイルのバイト列から同じことをする — `Embed.dir`の資産に使え、One Binaryの
+ファイルのバイト列から同じことをする — `Dir.embedded`の資産に使え、One Binaryの
 ゲームがフォントを自分の中に持てる。`chars`は含めるグリフ（`""`は印字可能
 ASCII）: 数字と数語のHUDはそれだけ列挙して小さなアトラスを得、日本語を使うなら
 使う文字を列挙する。読めないフォントは`RuntimeError`で、組み込みフォントへ
@@ -6378,7 +6326,7 @@ culebraはそれを生成も所有もせず、その上にある2つの決めら
 | --- | --- | --- |
 | `title` | `'culebra'` | ウィンドウタイトル |
 | `size` | ウィンドウ既定値 | `[width, height]`（ピクセル） |
-| `assets` | — | `/`に配信する静的ルート。通常は`Embed.dir('dist')` — devではディスクから読み、`culebra build`ではバイナリに焼き込まれる |
+| `assets` | — | `/`に配信する静的ルート。通常は`Dir.embedded('dist')` — devではディスクから読み、`culebra build`ではバイナリに焼き込まれる |
 | `routes` | — | `fn (srv) { ... }`。アプリ自身のルートを`Http`サーバ（§15）に登録する |
 | `port` | `8731`、だめならOS任せ | サーバがbindするloopbackポート。未指定: まず`8731`を試し、使用中なら（別のculebraデスクトップアプリなど）OSが選ぶ空きポートに切り替える — ポートが変わるとページのorigin、つまり`localStorage`も変わる点に注意。明示指定: そのポートにbindするか失敗する |
 | `workers` | `4` | サーバのワーカースレッド数 |
@@ -6391,7 +6339,7 @@ culebraはそれを生成も所有もせず、その上にある2つの決めら
 Desktop.run({title: 'culebra desktop', size: [
   720,
   560,
-], assets: Embed.dir('dist'), routes: fn (srv) {
+], assets: Dir.embedded('dist'), routes: fn (srv) {
   srv.get('/api/hello', fn (req) {
     {content_type: 'application/json', body: JSON.stringify({message: 'hello'})}
   })
@@ -7891,7 +7839,7 @@ Audio.tone(700, 0, 10, Audio.PULSE, 870, 10, 5, 3, 20, Audio.DUTY_QUARTER)
 ### Sound
 
 `Audio.Sound.new(data)`はワンショットのサンプルをバイト列（WAV / MP3 /
-Ogg Vorbisの`String`。`FS.read`や`Embed`から、あるいはプログラムが組み立てた
+Ogg Vorbisの`String`。`FS.read`や`Dir`から、あるいはプログラムが組み立てた
 もの）からデコードし、呼び出しごとに再生する。`tone`の合成に対する録音サンプル
 側の対応物。
 
@@ -8045,7 +7993,7 @@ loop {
 | 関数 | 動作 |
 | --- | --- |
 | `Audio.Kauai.new(text: String, voices = nil, drums = nil)` | 文字列から曲を作る。ほかのファイルは取り込めない |
-| `Audio.Kauai.load(path: String, voices = nil, drums = nil, dir = nil)` | 曲のファイルと、そこから`use`しているファイルを読み込む。読み込み元はディスクか、`dir`（`Embed.dir`、または`exists(name)`と`read(name)`を持つオブジェクト） |
+| `Audio.Kauai.load(path: String, voices = nil, drums = nil, dir = nil)` | 曲のファイルと、そこから`use`しているファイルを読み込む。読み込み元はディスクか、`dir`（任意の`Dir`、または`exists(name)`と`read(name)`を持つオブジェクト） |
 
 曲に誤りがあると`KauaiError`になり、メッセージにはファイル名と行番号が付く。
 曲のオブジェクトには`play()`、`stop()`、`volume(v)`、`playing()`、
@@ -8072,7 +8020,171 @@ println(song.length())  # => 2.0
 song.play()
 ```
 
-## 41. 設計上の注記
+## 41. `Dir`
+
+**読み出し専用のファイルの集まり**を、どこにあっても同じ読み方で扱います。
+ディスク上のディレクトリでも、メモリ上のファイルでも、実行ファイルに焼き込んだ
+アセットでもかまいません。`Dir`を相手に書いた関数は、どれに対しても動きます。
+
+```culebra
+let d = Dir.memory({'readme.md': '# hi', 'img/logo.png': 'PNG', 'img/bg.png': 'PNG'})
+inspect(d.files())            # => ['img/bg.png', 'img/logo.png', 'readme.md']
+inspect(d.read('readme.md'))  # => '# hi'
+inspect(d.list_dir('img'))    # => ['bg.png', 'logo.png']
+inspect(d.glob('**/*.png'))   # => ['img/bg.png', 'img/logo.png']
+inspect(d.is_dir('img'))      # => true
+```
+
+### 作り方
+
+| 作る関数 | 対象 |
+| --- | --- |
+| `Dir.disk(path: String \| Path) -> Dir` | ディスク上のディレクトリ`path`。その都度ディスクから読む。ディレクトリでなければ`IOError` |
+| `Dir.memory(files: Object) -> Dir` | `files`のファイル。キーは1ファイルにつき1つ（`"sub/name.txt"`）、値は中身（`String`、バイナリセーフ） |
+| `Dir.embedded(name: String) -> Dir` | エントリスクリプトの隣のディレクトリ`name`。`culebra build`が実行ファイルに焼き込む（[後述](#埋め込みアセット)） |
+
+`Dir.memory`に渡すObjectは平らにします。サブディレクトリのファイルは`/`を含む
+キーで書き、Objectを入れ子にはしません。入れ子のObjectや`String`でない値は
+`TypeError`です。ディレクトリの外を指すキー（`../x`、`/x`）、同じファイルを
+指す2つのキー（`a/b`と`a//b`）、ファイルでありディレクトリでもあるもの
+（`a`と`a/b`）は`ValueError`です。キーは作るときに正規化されます。
+
+`type_of`は種類を名乗ります（`DiskDir`、`MemoryDir`、`EmbedDir`）。どれでも
+受け取る引数には`Dir`と注釈します。
+
+### 読み方
+
+どの`Dir`も同じ9つのメソッドに答えます:
+
+| メソッド | 返り値 | |
+| --- | --- | --- |
+| `d.read(path)` | `String` | ファイルのバイト列 |
+| `d.list_dir(path)` | `Array<String>` | ディレクトリ`path`の直下にある名前（パスなし）、ソート済み |
+| `d.exists(path)` | `Bool` | `path`がファイルかディレクトリか |
+| `d.is_file(path)` | `Bool` | |
+| `d.is_dir(path)` | `Bool` | |
+| `d.size(path)` | `Long` | ファイルのバイト数 |
+| `d.files()` | `Array<String>` | すべてのファイルのパス、ソート済み |
+| `d.glob(pattern)` | `Array<String>` | パスが`pattern`に合うファイル、ソート済み |
+| `d.copy_to(dest)` | `Nil` | すべてのファイルをディスク上のディレクトリ`dest`の下に書き出す |
+
+パスは`Dir`の根からの相対で、区切りは`/`です。`""`と`"."`は根そのものを
+指します。`.`と空の区切りは取り除かれるので、`./a`、`a//b`、`a/./b`、末尾の`/`は
+`a`や`a/b`と同じものを指します。`/`か`\`で始まるパスと、`..`で上に出るパスは
+「無い」ものとして扱います。`exists`は`false`を返し、`read`は他の無いファイルと
+同じ`IOError`を投げるので、`Dir`の外が読まれることはありません。それ以外の名前は
+書いたとおりに扱います。`foo..txt`は普通のファイル名で、`\`は区切りではありません。
+一覧はバイト順にソートします。名前の比較は、`Dir.memory`と`Dir.embedded`では
+書いたとおりです。`Dir.disk`はOSに従います（macOSとWindowsの既定では大文字小文字を
+区別しません）。
+
+ファイルでないパスへの`read`と`size`、ディレクトリでないパスへの`list_dir`は
+`IOError`です。文面はどの種類の`Dir`でも同じです:
+
+```culebra
+let d = Dir.memory({'a.txt': 'alpha', 'img/x.png': 'x'})
+println(try { d.read('b.txt') } catch e { e.message })      # => Dir.read: no such file 'b.txt'
+println(try { d.read('img') } catch e { e.message })        # => Dir.read: 'img' is a directory
+println(try { d.list_dir('a.txt') } catch e { e.message })  # => Dir.list_dir: 'a.txt' is a file
+inspect(d.exists('../a.txt'))                               # => false
+```
+
+`glob`はファイルのパスを`/`で区切った1つずつと照合します。`*`は任意の文字の並び、
+`?`は1文字、`[abc]`・`[a-z]`・`[!a]`は集合の1文字です。ちょうど`**`だけの区切りは
+任意の個数（0個を含む）の区切りに合います。一覧に入るのはファイルだけで、
+ディレクトリは入りません。
+
+```culebra
+let d = Dir.memory({'a.txt': '', 'b.md': '', 'img/x.png': '', 'img/sub/y.png': ''})
+inspect(d.glob('*.txt'))     # => ['a.txt']
+inspect(d.glob('img/*'))     # => ['img/x.png']
+inspect(d.glob('**/*.png'))  # => ['img/sub/y.png', 'img/x.png']
+inspect(d.glob('[ab].*'))    # => ['a.txt', 'b.md']
+```
+
+`copy_to(dest)`は`Dir`をディスクに書き出します。各ファイルは`dest`の下の同じパスに
+置かれ、必要なディレクトリは作られ、同名のファイルは上書きされます。ビルドした
+バイナリに焼き込んだアセットを書き出すには`Dir.embedded('assets').copy_to(dir)`です。
+`dest`の外に出るパス（自作の`Dir`でなければ一覧に現れません）は、書く前に
+`ValueError`になります。
+
+### `Dir` trait
+
+`Dir`は組み込みtraitの1つでもあります（[language.ja.md](language.ja.md)の
+組み込みtrait）。`read`、`list_dir`、`exists`、`is_file`、`is_dir`が必須で、
+`files`、`glob`、`size`、`copy_to`はそれらの上に書かれた既定メソッドです。
+ですから5つに答える自作のクラスは`Dir`です。`Dir`の注釈を通り、残りの4つが
+付いてきます。
+
+```culebra
+class Greetings {
+  read(path) { "hello from {path}" }
+  list_dir(path) { path == '' ? ['a.txt', 'b.txt'] : [] }
+  exists(path) { self.is_file(path) || self.is_dir(path) }
+  is_file(path) { path == 'a.txt' || path == 'b.txt' }
+  is_dir(path) { path == '' }
+}
+fn count(d: Dir) {
+  d.files().size()
+}
+inspect(count(Greetings()))      # => 2
+inspect(Greetings().glob('b*'))  # => ['b.txt']
+```
+
+trait注釈が受け付けるのはクラスのインスタンスで、Objectリテラルは含みません。
+とはいえライブラリの多くは`Dir`ほどを求めません。名前でファイルを引くだけの
+読み手（`Audio.Kauai.load(dir:)`）は、`exists(path)`と`read(path)`を持つもの
+なら何でも受け取ります（Objectリテラルを含む）。リテラルで書いたファイルを
+完全な`Dir`にするには`Dir.memory`に渡します。
+
+どの種類もSendableです。isolateに送ると、`Dir.disk`は同じディレクトリを、
+`Dir.memory`は中身の自分用のコピーを、`Dir.embedded`は同じアセットを読みます。
+
+### 埋め込みアセット
+
+`Dir.embedded(name)`は**バックエンドごとに**（コード変更なしで）解決されます:
+
+- **ソース実行**（VM / JIT）: `name`のディスク上ディレクトリをライブに
+  読む（エントリスクリプト相対で解決）。ファイルを編集して実行し直せば即反映
+  ＝開発ループ。
+- **`culebra build`**（AOT）: ビルド時にディレクトリを走査してバイト列をバイナリ
+  に焼き込み、外部ファイル無しで読む。焼き込んだ内容はビルドが表示する
+  （`embedded N file(s) (… bytes) from '…'`）。
+
+```culebra
+# doctest: skip
+let art = Dir.embedded("assets")
+let sheet = Canvas.Sprite.from_png(art.read("sprites.png"))
+let music = art.exists("music.ogg") ? Audio.Music.new(art.read("music.ogg")) : nil
+music?.play()
+```
+
+同じ`Dir`でディレクトリ全体をHTTP配信できる:
+
+```culebra
+# doctest: skip — ポートを listen して割り込みまで待つ
+let srv = Http.server()
+srv.static("/", Dir.embedded("dist"))  # フロントエンド全体を1行で
+srv.get("/api/ping", fn (req) {
+  '{"ok":true}'
+})
+srv.listen(8080)
+```
+
+`name`はAOTビルドが探して焼き込めるよう**文字列リテラル**であること（計算した
+名前はソース実行では動くが焼き込まれない）。`srv.static`経由ではContent-Typeは
+拡張子から推論、ディレクトリ（や`/`）へのリクエストはその`index.html`、
+ディレクトリに無いパスは登録ルートにフォールスルー（APIルートが常に優先）。
+`Dir.embedded`は`Http`非依存＝アセットを読むだけのプログラムにサーバは要らない。
+
+`culebra build`は焼き込むアセットをculebraのヘッダに対してコンパイルするため、
+ソースチェックアウトが必要。既定はそのバイナリをビルドしたときのパスで、
+`$CULEBRA_HOME`があればそちらが優先される。どちらも無ければバイナリを作らず
+エラーで停止する。
+
+---
+
+## 42. 設計上の注記
 
 ### 名前空間ファースト、グローバルは出力の3つだけ
 
@@ -8129,7 +8241,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 42. 未収録（将来検討）
+## 43. 未収録（将来検討）
 
 ### 重量級データ構造
 

@@ -179,7 +179,7 @@ let ART = ART_DIR != nil
     exists: |n| FS.exists(ART_DIR + "/" + n),
     read: |n| FS.read(ART_DIR + "/" + n),
   }
-  : Embed.dir("assets")
+  : Dir.embedded("assets")
 let SCENES = ["asayake", "hiru", "yuugata", "yuugure", "twilight"]
 let SCENE_COUNT = SCENES.size()
 
@@ -671,7 +671,7 @@ let ep_samples = fn (pitch, bark) {
 
 # The songs come with the art; a `--assets` directory without them keeps the
 # built-in ones.
-let SONGS = ART.exists("cruise.kau") ? ART : Embed.dir("assets")
+let SONGS = ART.exists("cruise.kau") ? ART : Dir.embedded("assets")
 let kauai = fn (name) {
   Audio.Kauai.load(name, dir: SONGS, voices: {
     ep: |pitch, params| Audio.Sound(pcm_wav(ep_samples(pitch, params.bright))),

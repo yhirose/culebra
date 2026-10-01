@@ -1719,7 +1719,7 @@ fixture's `drop` fires into the right test's captured output.
 **A file is a program.** Each gets its own `Runtime` — where the
 namespace caches and the class and overload registries live — its own
 session and cells, its own entry script (`Sys.script`, and the directory
-`Embed.dir(...)` resolves against), and its own isolate-join guard; and
+`Dir.embedded(...)` resolves against), and its own isolate-join guard; and
 the runner runs that file's own tests while the scope is open rather than
 loading every file first. Nothing a file writes at the top level reaches
 the next one. A file may `import`: its module list runs as one session

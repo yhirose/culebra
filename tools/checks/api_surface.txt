@@ -442,8 +442,6 @@ ws.set_timeout(ms)
 ws.close()
 ws.is_open()
 Http.ws(url) -> Object
-dir.read(path)
-dir.exists(path)
 Encoding.html
 Encoding.html.escape(s) -> String
 Encoding.html.unescape(s) -> String
@@ -1068,3 +1066,15 @@ mic.waiting() -> Long
 mic.read(frames = nil) -> Array
 Audio.Kauai.new(text: String, voices = nil, drums = nil)
 Audio.Kauai.load(path: String, voices = nil, drums = nil, dir = nil)
+Dir.disk(path: String | Path) -> Dir
+Dir.memory(files: Object) -> Dir
+Dir.embedded(name: String) -> Dir
+d.read(path)
+d.list_dir(path)
+d.exists(path)
+d.is_file(path)
+d.is_dir(path)
+d.size(path)
+d.files()
+d.glob(pattern)
+d.copy_to(dest)

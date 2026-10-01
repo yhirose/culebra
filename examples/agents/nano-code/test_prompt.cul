@@ -1,6 +1,6 @@
 import prompt from './core/prompt.cul'
 
-# The base prompt itself is read through Embed.dir, which resolves against the
+# The base prompt itself is read through Dir.embedded, which resolves against the
 # entry script — and under `culebra test` there is no entry script, so what is
 # tested here is the composition, with a base standing in for the file.
 

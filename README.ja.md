@@ -166,14 +166,15 @@ Tensor.eval(y)  # [[5.0, 11.0], [11.0, 25.0]]
 
 ### 埋め込みアセット
 
-`Embed.dir(name)`は、ディレクトリ1つを、バックエンドが変わってもコードは
+`Dir.embedded(name)`は、ディレクトリ1つを、バックエンドが変わってもコードは
 そのままでプログラムに渡します。VMとJITはディスクから直接読むので、
 ファイルを直して実行し直すだけで反映されます。`culebra build`のほうは
 全バイトを実行ファイルに焼き込むので、配布するバイナリはそれ単体で
-完結します。
+完結します。これは`Dir`の一種で、ディスク上のディレクトリ（`Dir.disk`）や
+メモリ上のファイル（`Dir.memory`）と同じ読み方をします。
 
 ```culebra
-let assets = Embed.dir("dist")         # index.html、favicon.icoなど
+let assets = Dir.embedded("dist")         # index.html、favicon.icoなど
 println(assets.exists("index.html"))   # => true
 println(assets.exists("favicon.ico"))  # => true
 ```
@@ -187,7 +188,7 @@ OS自身のWebViewエンジンが表示し、`culebra build`がサーバー・�
 ```culebra
 Desktop.run({
   title: "Hello from culebra",
-  assets: Embed.dir("dist"),  # index.html、favicon.icoなど
+  assets: Dir.embedded("dist"),  # index.html、favicon.icoなど
   routes: fn (srv) {
     srv.get("/api/hello", fn (req) {
       "hi from the embedded server"

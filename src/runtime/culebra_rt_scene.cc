@@ -1542,7 +1542,7 @@ class View {
     t->tex = configure(LoadTextureFromImage(img.im), mipmaps, repeat);
     return t;
   }
-  // A PNG's bytes (FS.read, or an Embed.dir asset) straight to a texture.
+  // A PNG's bytes (FS.read, or an Dir.embedded asset) straight to a texture.
   std::shared_ptr<Texture> texture_png(std::string bytes) {
     return texture(*Image::from_png(std::move(bytes)), true, true);
   }
@@ -1642,7 +1642,7 @@ class View {
   // A TTF/OTF at one pixel size. `chars` names the glyphs to rasterize ("" =
   // printable ASCII): a HUD that draws digits and a few words lists them and
   // gets a small atlas; one with Japanese lists the characters it uses. The
-  // bytes form is for an embedded asset (Embed.dir), so a one-binary game
+  // bytes form is for an embedded asset (Dir.embedded), so a one-binary game
   // ships its font inside itself.
   std::shared_ptr<Font> font(std::string path, int64_t size, std::string chars) {
     return adopt_font([&](int* cps, int n) {

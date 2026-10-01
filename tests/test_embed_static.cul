@@ -1,11 +1,12 @@
-# Static asset serving via `srv.static(mount, Embed.dir(...))`. Run from source
-# (this suite), Embed.dir reads the live on-disk directory relative to the entry
-# script; under an AOT build the same call serves a baked-in table. Output is
-# identical across interp/JIT (no random / timing values printed). The server is
-# started with listen_async (serves on a background thread); stop() halts it.
+# Static asset serving via `srv.static(mount, Dir.embedded(...))`. Run from
+# source (this suite), Dir.embedded reads the live on-disk directory relative to
+# the entry script; under an AOT build the same call serves a baked-in table.
+# Output is identical across interp/JIT (no random / timing values printed).
+# The server is started with listen_async (serves on a background thread);
+# stop() halts it.
 
 srv = Http.server()
-srv.static("/", Embed.dir("embed_assets"))
+srv.static("/", Dir.embedded("embed_assets"))
 srv.get("/api/ok", fn (req) {
   {content_type: "application/json", body: '{"ok":true}'}
 })
@@ -36,3 +37,36 @@ miss = Http.get(BASE + "/nope.css")
 inspect("GET /nope.css -> " + miss.status.to_string())
 srv.stop()
 inspect("server stopped")
+
+# srv.static knows a Dir.embedded by its class, not by its shape or its name:
+# a class of the program's own called EmbedDir, with the same field, is not one.
+class EmbedDir {
+  new(.name) {}
+}
+let other = Http.server()
+try {
+  other.static("/", EmbedDir("embed_assets"))
+} catch e {
+  inspect(e.kind + ": " + e.message)
+}
+try {
+  other.static("/", Dir.memory({'a.txt': 'a'}))
+} catch e {
+  inspect(e.kind + ": " + e.message)
+}
+
+# A Dir.embedded made here and sent to an isolate is still one there.
+let assets = Dir.embedded("embed_assets")
+let (tx, rx) = Channel.new(1)
+let iso = Isolate.spawn(fn () {
+  let s = Http.server()
+  s.static("/", assets)
+  tx.send(s.bind(0))
+  tx.drop()
+  s.serve()
+})
+tx.drop()
+let port = rx.recv()
+let js2 = Http.get("http://127.0.0.1:" + port.to_string() + "/app.js")
+inspect("isolate GET /app.js -> " + js2.status.to_string())
+iso.drop()

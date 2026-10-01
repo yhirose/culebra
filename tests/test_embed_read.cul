@@ -1,23 +1,28 @@
-# Reading assets straight out of an `Embed.dir(...)` handle — the same handle
-# `srv.static` takes, without a server. Run from source (this suite) it reads
-# the live on-disk directory relative to the entry script; under an AOT build
-# the same calls read a baked-in table, and the output has to match either way.
+# Reading assets out of a `Dir.embedded(...)` — the same Dir `srv.static`
+# takes, without a server. Run from source it reads the live on-disk directory
+# relative to the entry script; under an AOT build the same calls read a
+# baked-in table, and the output has to match either way. (The contract every
+# kind of Dir keeps is tests/test_dir.cul's.)
 
-d = Embed.dir("embed_assets")
+let d = Dir.embedded("embed_assets")
 inspect(d.exists("app.js"))
 inspect(d.exists("nope.css"))
 inspect(d.read("app.js").trim())
 inspect(d.read("index.html").contains("<h1>It works</h1>"))
+inspect(d.files())
 
 # Binary-safe: the bytes come back whole, baked or on disk.
 inspect(d.read("index.html").size())
+inspect(d.size("index.html"))
 
-# A path out of the directory is not found rather than escaping it.
+# A path out of the directory is not found rather than escaping it; the
+# directory itself is there.
 inspect(d.exists("../test_embed_read.cul"))
 inspect(d.exists("/etc/hosts"))
 inspect(d.exists(""))
+inspect(d.is_dir("."))
 
-# A missing file names both the directory and the file.
+# A missing file names it.
 try {
   d.read("nope.css")
 } catch e {
@@ -41,9 +46,9 @@ try {
   inspect(e.kind + ": " + e.message)
 }
 
-# The handle is Sendable: an isolate rebuilds it over the same directory.
-(tx, rx) = Channel.new()
-h = Isolate.spawn(
+# Sendable: an isolate reads the same directory.
+let (tx, rx) = Channel.new()
+let h = Isolate.spawn(
   fn (tx, art) {
     tx.send(art.read("app.js").trim())
   },

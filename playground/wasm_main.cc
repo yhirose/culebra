@@ -94,7 +94,7 @@ EMSCRIPTEN_KEEPALIVE int run_culebra(const char* src_c, const char* path_c,
   (void)g_streams_installed;
 
   std::string path = (path_c && *path_c) ? path_c : "/work/main.cul";
-  // Sets the entry directory too, which is what `Embed.dir(name)` resolves its
+  // Sets the entry directory too, which is what `Dir.embedded(name)` resolves its
   // live-disk base against — the worker writes a program's assets next to its
   // source, at the same relative path, so a handle finds them here as well.
   culebra::set_main_script(path);

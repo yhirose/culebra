@@ -9,7 +9,7 @@ directory's files directly if you'd rather read finished code first.
 
 This guide covers *using* `Desktop`/`Webview`. For the API reference see
 [`stdlib.md` §30](../stdlib.md#30-desktop--webview); for how the pieces fit
-together internally (the loopback bridge, the `Embed.dir` dev/AOT split,
+together internally (the loopback bridge, the `Dir.embedded` dev/AOT split,
 platform build requirements, and the Ubuntu sandbox note in full) see
 [`examples/webview/README.md`](../../examples/webview/README.md).
 
@@ -61,10 +61,10 @@ Point `assets:` at a directory and the server serves it at `/`:
 
 ```culebra
 # doctest: skip — opens a window
-Desktop.run({title: "My App", size: [720, 560], assets: Embed.dir("dist")})
+Desktop.run({title: "My App", size: [720, 560], assets: Dir.embedded("dist")})
 ```
 
-`Embed.dir("dist")` resolves *per backend* with no code change: run from
+`Dir.embedded("dist")` resolves *per backend* with no code change: run from
 source and it reads the live directory on disk next to the entry script (edit
 `dist/index.html`, reload the window, see the change); `culebra build` walks
 the directory at build time and bakes its bytes into the executable instead.
@@ -90,7 +90,7 @@ before the window opens:
 
 ```culebra
 # doctest: skip — opens a window
-Desktop.run({assets: Embed.dir("dist"), routes: fn (srv) {
+Desktop.run({assets: Dir.embedded("dist"), routes: fn (srv) {
   srv.get("/api/hello", fn (req) {
     {
       content_type: "application/json",
@@ -221,7 +221,7 @@ loudly instead of falling back when it's unavailable:
 ```culebra
 # doctest: skip — opens a window
 Desktop.run({
-  assets: Embed.dir("dist"),
+  assets: Dir.embedded("dist"),
   port: 5173,
   routes: fn (srv) {
     # ...

@@ -30,8 +30,7 @@ struct SendNode {
   // stays unbound) — and so does a closure over a `self` no frame supplied.
   // Either way the receiver re-asks against its own Runtime.
   enum class K { Nil, Bool, Long, Float, Str, Array, Object, Set, Tuple,
-                 Closure, Channel, SharedBuffer, SharedVal, EmbedDir,
-                 Unbound };
+                 Closure, Channel, SharedBuffer, SharedVal, Unbound };
   K kind = K::Nil;
 
   bool b = false;  // Bool; also Channel role (false = tx, true = rx)
@@ -82,6 +81,9 @@ struct SendNode {
   bool is_error = false;
   // Object: a bare packed view (JitObject::is_packed_view).
   bool is_packed_view = false;
+  // Object, a class meta: which Dir module class it is (JitSpecialTable::
+  // dir_kind), a fact of the meta's C++ side that the entries cannot carry.
+  int8_t dir_kind = 0;
 
   // Declared here, defaulted below the class, for the reason toml::Node's are
   // (toml.h): the self-referential vector<pair<SendNode, SendNode>> makes

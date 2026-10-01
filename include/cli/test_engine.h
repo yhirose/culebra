@@ -15,7 +15,7 @@
 #include <vm/script_teardown.h>
 #include <stdlib/bindings.h>
 #include <cli/test_runner.h>
-#include <stdlib/vfs.h>  // MainScriptScope — Embed.dir / Sys.script are per program
+#include <stdlib/vfs.h>  // MainScriptScope — Dir.embedded / Sys.script are per program
 #include <vm/session.h>
 
 #include <filesystem>
@@ -203,7 +203,7 @@ class VmTestHost : public TestHost {
     explicit Unit(const std::string& path) : script(path) {}
     Runtime rt;
     RuntimeScope scope{rt};
-    // `Sys.script` and Embed.dir's base. Before the session, so a `drop`
+    // `Sys.script` and Dir.embedded's base. Before the session, so a `drop`
     // body running as the cells are handed back still sees its own file's.
     MainScriptScope script;
     vm::Session session;

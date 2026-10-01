@@ -63,6 +63,7 @@
 #include <fstream>
 #include <limits>
 #include <numbers>  // std::numbers::pi / ::e (Math.pi / Math.e; portable vs M_PI)
+#include <ranges>   // _ns_adapt::string_array over any sized range
 #include <set>      // builtin_global_names (the lint's name universe)
 #include <base/confirm.h>    // confirm_on_tty (Search.segmenter asks before a fetch)
 #include <base/os_compat.h>  // os_setenv / os_strptime (setenv / strptime shims)
@@ -4166,6 +4167,16 @@ inline JitValue str(std::string_view s)  { return v_string(_culebra_heap_str(s))
 inline JitValue v_array(JitArray* a)     {
   return {TAG_ARRAY, reinterpret_cast<int64_t>(a)};
 }
+// An Array of Strings from any sized range of them (a vector, a map's keys).
+template <class R>
+inline JitValue string_array(const R& list) {
+  auto* arr = culebra_runtime_array_new_reserved(std::ranges::size(list));
+  for (const auto& s : list) {
+    auto v = str(s);
+    culebra_runtime_array_push(arr, v.tag, v.data);
+  }
+  return v_array(arr);
+}
 inline JitValue v_object(JitObject* o)   {
   return {TAG_OBJECT, reinterpret_cast<int64_t>(o)};
 }
@@ -6495,23 +6506,20 @@ inline void _jit_http_server_static(JitValue* __ret, JitClosure*, int8_t self_ta
   *__ret = _jit_at_call_site([&] {
     std::string mount(_culebra_str_view(args[0].tag, args[0].data));
     std::string err;
-    // dir is either a String path (live disk via mount point) or an
-    // `Embed.dir(...)` handle object {__embed_dir__, name} (baked under
-    // AOT, live disk otherwise). Mirrors the interp overload.
-    // Mirror the interp message exactly (interp/JIT symmetry): a wrong type or
-    // a forged Object that isn't a real Embed.dir handle both land here.
+    // dir is either a String path (live disk via mount point) or a
+    // `Dir.embedded(...)` (baked under AOT, live disk otherwise), known by its
+    // class (JitSpecialTable::dir_kind).
     auto bad_dir = [] {
       throw culebra::CulebraError(
           "TypeError",
-          "server.static: dir must be a String path or Embed.dir(...)", 0, 0);
+          "server.static: dir must be a String path or Dir.embedded(...)", 0, 0);
     };
     if (args[1].tag == TAG_OBJECT) {
       auto* o = reinterpret_cast<JitObject*>(args[1].data);
-      // A real Embed.dir handle has both __embed_dir__ and name; a forged
-      // lookalike missing either is rejected like any non-String (no OOB read).
       size_t ni = o->find_slot("name");
-      if (o->find_slot("__embed_dir__") == static_cast<size_t>(-1) ||
-          ni == static_cast<size_t>(-1))
+      if (_jit_meta_dir_kind(o) != int8_t(culebra::DirKind::Embedded) ||
+          ni == static_cast<size_t>(-1) ||
+          o->slots[ni].value.tag != TAG_STRING)
         bad_dir();
       JitValue nv = o->slots[ni].value;
       culebra::http::http_server_serve_embed(
@@ -8666,14 +8674,6 @@ template <typename O> inline JitValue surfaced(const O& v) {
   }
 }
 
-inline JitValue string_array(const std::vector<std::string>& list) {
-  auto* arr = culebra_runtime_array_new_reserved(list.size());
-  for (const auto& s : list) {
-    auto v = str(s);
-    culebra_runtime_array_push(arr, v.tag, v.data);
-  }
-  return _ns_adapt::v_array(arr);
-}
 
 template <typename O>
 inline JitValue entry_array(
@@ -8723,6 +8723,62 @@ inline JitValue _ns_dir_normalize(JitValue* a, int64_t) {
   return _ns_adapt::str(out);
 }
 
+// `_Dir.mark(self, kind)`, from a Dir class's constructor: the class says
+// which kind it is on its meta, once for all its instances (dir_kind).
+inline JitValue _ns_dir_mark(JitValue* a, int64_t) {
+  auto kind = _ns_adapt::require_sv(a[1], "kind");
+  int8_t k = kind == "disk"       ? int8_t(culebra::DirKind::Disk)
+             : kind == "memory"   ? int8_t(culebra::DirKind::Memory)
+             : kind == "embedded" ? int8_t(culebra::DirKind::Embedded)
+             : kind == "zip"      ? int8_t(culebra::DirKind::Zip)
+                                  : int8_t(culebra::DirKind::None);
+  JitObject* meta = a[0].tag == TAG_OBJECT
+                        ? reinterpret_cast<JitObject*>(a[0].data)->proto()
+                        : nullptr;
+  if (!meta || !meta->is_class_meta || !meta->specials || !k)
+    culebra::throw_runtime_error_at(
+        "TypeError", "_Dir.mark: expects a class instance and a Dir kind", 0,
+        0);
+  meta->specials->dir_kind = k;
+  return _ns_adapt::v_nil();
+}
+
+// The reads behind Dir.embedded (src/preambles/dir.cul): `name` is the
+// directory, `path` the user's, normalized here. A path that is not there —
+// absent, or outside the directory (a null Dir) — answers false / nil; the
+// class raises the IOError, worded like every Dir.
+inline JitValue _dir_embedded_read(const culebra::Dir* d, std::string_view p) {
+  std::string out;
+  return d && d->read(p, out) ? _ns_adapt::str(out) : _ns_adapt::v_nil();
+}
+inline JitValue _dir_embedded_list_dir(const culebra::Dir* d,
+                                       std::string_view p) {
+  std::vector<std::string> names;
+  if (!d || !d->list_dir(p, names)) return _ns_adapt::v_nil();
+  return _ns_adapt::string_array(names);
+}
+inline JitValue _dir_embedded_is_file(const culebra::Dir* d,
+                                      std::string_view p) {
+  return {TAG_BOOL, d && d->is_file(p) ? 1 : 0};
+}
+inline JitValue _dir_embedded_is_dir(const culebra::Dir* d,
+                                     std::string_view p) {
+  return {TAG_BOOL, d && d->is_dir(p) ? 1 : 0};
+}
+inline JitValue _dir_embedded_size(const culebra::Dir* d, std::string_view p) {
+  std::uintmax_t n = 0;
+  return d && d->size(p, n) ? JitValue{TAG_LONG, static_cast<int64_t>(n)}
+                            : _ns_adapt::v_nil();
+}
+template <JitValue (*Op)(const culebra::Dir*, std::string_view)>
+inline JitValue _ns_dir_embedded(JitValue* a, int64_t) {
+  auto name = _ns_adapt::require_sv(a[0], "name");
+  std::string rel;
+  if (!culebra::dir_path_normalize(_ns_adapt::require_sv(a[1], "path"), rel))
+    return Op(nullptr, rel);
+  return Op(culebra::open_embed_dir(std::string(name)).get(), rel);
+}
+
 inline JitValue _ns_fst_compile_set(JitValue* a, int64_t) {
   return _fst_adapt::str(culebra::fstdict::compile_set(
       _fst_adapt::keys(a[0]), _ns_adapt::require_bool(a[1], "sorted")));
@@ -8765,12 +8821,12 @@ inline JitValue _ns_fst_set_longest_common_prefix_search(JitValue* a, int64_t) {
              : _ns_adapt::v_nil();
 }
 inline JitValue _ns_fst_set_predictive_search(JitValue* a, int64_t) {
-  return _fst_adapt::string_array(culebra::fstdict::set_predictive_search(
+  return _ns_adapt::string_array(culebra::fstdict::set_predictive_search(
       _fst_adapt::bytecode(a[0]),
       _ns_adapt::require_sv(a[1], "prefix", "StringLike")));
 }
 inline JitValue _ns_fst_set_edit_distance_search(JitValue* a, int64_t) {
-  return _fst_adapt::string_array(culebra::fstdict::set_edit_distance_search(
+  return _ns_adapt::string_array(culebra::fstdict::set_edit_distance_search(
       _fst_adapt::bytecode(a[0]),
       _ns_adapt::require_sv(a[1], "word", "StringLike"),
       _fst_adapt::budget(a[2], "max_edits"),
@@ -9524,72 +9580,9 @@ inline const std::vector<NsMethod>& _wrapped_ns_methods() {
   return rows;
 }
 
-// `Embed.dir(name)` — handle {__embed_dir__: true, name} + read/exists, also
-// consumed by `srv.static`. Mirrors interp make_embed_dir_handle; the
-// bake-vs-disk decision happens in vfs.h's open_embed_dir (table present →
-// embedded, else live disk), so the handle just carries the name.
-inline std::string _jit_embed_dir_name(JitObject* h) {
-  size_t i = h->find_slot("name");
-  if (i == static_cast<size_t>(-1)) return {};
-  JitValue v = h->slots[i].value;
-  return std::string(_culebra_str_view(v.tag, v.data));
-}
-
-inline void _jit_embed_dir_read(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
-                                               int64_t n, JitValue* args) {
-  JitValue self{self_tag, self_data};
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "path");
-  if (args[0].tag != TAG_STRING)
-    _jit_file_param_type_error(self, "path", "String", 0);
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
-  std::string name = _jit_embed_dir_name(reinterpret_cast<JitObject*>(self.data));
-  std::string path(_culebra_str_view(args[0].tag, args[0].data));
-  std::string bytes;
-  if (!culebra::embed_dir_read(name, path, bytes))
-    throw culebra::CulebraError(
-        "IOError", culebra::format("Embed.dir.read: '{}' has no '{}'", name, path),
-        _jit_thread.call_line, _jit_thread.call_col);
-  { *__ret = {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(bytes))}; return; }
-}
-
-inline void _jit_embed_dir_exists(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
-                                                 int64_t n, JitValue* args) {
-  JitValue self{self_tag, self_data};
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "path");
-  if (args[0].tag != TAG_STRING)
-    _jit_file_param_type_error(self, "path", "String", 0);
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
-  bool ok = culebra::embed_dir_exists(
-      _jit_embed_dir_name(reinterpret_cast<JitObject*>(self.data)),
-      _culebra_str_view(args[0].tag, args[0].data));
-  { *__ret = {TAG_BOOL, ok ? 1 : 0}; return; }
-}
-
-inline JitValue _jit_make_embed_dir_handle(const std::string& name) {
-  auto* o = culebra_runtime_object_new();
-  culebra_runtime_object_set(o, "__embed_dir__", false, TAG_BOOL, 1, 0, 0);
-  culebra_runtime_object_set(
-      o, "name", false, TAG_STRING,
-      reinterpret_cast<int64_t>(_culebra_heap_str(name)), 0, 0);
-  static const JitParamMeta* path_meta =
-      _jit_make_handle_meta({"path"}, {false});
-  _jit_handle_bind_method(o, "read", _jit_embed_dir_read, 1, path_meta);
-  _jit_handle_bind_method(o, "exists", _jit_embed_dir_exists, 1, path_meta);
-  return {TAG_OBJECT, reinterpret_cast<int64_t>(o)};
-}
-
-inline JitValue _ns_embed_dir(JitValue* args, int64_t n) {
-  (void)n;
-  return _jit_make_embed_dir_handle(
-      std::string(_culebra_str_view(args[0].tag, args[0].data)));
-}
-
 // The stdlib namespaces, one row table each (one group each, below). Rows
 // never move between tables — a namespace's slot order is its `keys()` order
 // — and a new method is one row in its namespace's table.
-inline const NsMethod kNsRows_Embed[] = {
-  {"Embed",  "dir",       1, &_ns_embed_dir, nullptr, "String", "name"},
-};
 inline const NsMethod kNsRows_IO[] = {
   {"IO",     "inspect",   1, &_ns_io_inspect},
   {"IO",     "print",     1, &_ns_io_print},
@@ -9913,7 +9906,13 @@ inline const NsMethod kNsRows_Term_native[] = {
   {"_Term",  "attach_tty",  0, &_ns_term_attach_tty},
 };
 inline const NsMethod kNsRows_Dir_native[] = {
-  {"_Dir", "normalize", 1, &_ns_dir_normalize},
+  {"_Dir", "normalize",         1, &_ns_dir_normalize},
+  {"_Dir", "mark",              2, &_ns_dir_mark},
+  {"_Dir", "embedded_read",     2, &_ns_dir_embedded<_dir_embedded_read>},
+  {"_Dir", "embedded_list_dir", 2, &_ns_dir_embedded<_dir_embedded_list_dir>},
+  {"_Dir", "embedded_is_file",  2, &_ns_dir_embedded<_dir_embedded_is_file>},
+  {"_Dir", "embedded_is_dir",   2, &_ns_dir_embedded<_dir_embedded_is_dir>},
+  {"_Dir", "embedded_size",     2, &_ns_dir_embedded<_dir_embedded_size>},
 };
 inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "available",      0, &_ns_audio_query<culebra::_audio_detail::available>},
@@ -10062,8 +10061,6 @@ inline std::string ns_group_symbol(std::string_view ns) {
 #else
 #define CULEBRA_NS_GROUP_LINKAGE extern "C" inline
 #endif
-CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Embed{
-    kNsRows_Embed, kCanonSigs_Embed};
 CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_IO{
     kNsRows_IO, kCanonSigs_IO};
 CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Math{
@@ -10150,7 +10147,6 @@ CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Dir_native{
 // inline and nothing the archive emits reads it (check_aot_feature_axes.sh
 // keeps that so).
 inline const NsGroupRef kNsGroups[] = {
-  {"Embed", &culebra_ns_group_Embed},
   {"IO", &culebra_ns_group_IO},
   {"Math", &culebra_ns_group_Math},
   {"FS", &culebra_ns_group_FS},
@@ -11856,7 +11852,7 @@ inline const std::unordered_set<std::string_view>& builtin_var_names() {
       "to_long", "to_float",  "to_string", "type_of", "hash", "__eff_copy",
       "Range",   "class_of",
       "__eff_abort", "__eff_catch_abort",
-      "Math",    "IO",        "FS",        "File",     "Embed",   "_Time",
+      "Math",    "IO",        "FS",        "File",     "_Time",
       "Random",  "Sys",       "JSON",      "Tensor",   "GC",
       "_Regex",  "_PEG",      "_FST",      "Search",    "Proc",     "Net",
       "Isolate",

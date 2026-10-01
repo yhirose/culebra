@@ -2231,7 +2231,7 @@ let _kauai_module = fn () {
   }
   {
     # A song file, and the files it uses, relative to it: from the disk, or
-    # from `dir` (an `Embed.dir`, or anything with `exists(name)` and
+    # from `dir` (a `Dir.embedded`, or anything with `exists(name)` and
     # `read(name)`).
     load: fn (path: String, voices = nil, drums = nil, dir = nil) {
       let exists = dir == nil ? |n| FS.exists(n) : |n| dir.exists(n)

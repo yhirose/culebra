@@ -372,7 +372,7 @@ build-scene *extra:
 # /usr/bin is read-only even for root (SIP), so a system-wide install goes here.
 # Pass it positionally for a user-local one: `just install ~/.local`.
 # The AOT runtime archives are embedded in the binary, so it needs nothing else
-# to run scripts or to `culebra build`. Only `Embed.dir` and `culebra wrap` read
+# to run scripts or to `culebra build`. Only `Dir.embedded` and `culebra wrap` read
 # a source checkout — from the path baked in at build time, or $CULEBRA_HOME
 # (include/base/source_dir.h) — so keep this tree, or point CULEBRA_HOME at one.
 [doc("Install the Release binary into PREFIX/bin (default /usr/local, sudo only if needed).")]
@@ -808,7 +808,7 @@ _run-tests BACKEND:
         rm -rf "$out_dir" && mkdir -p "$out_dir"
         local d="$job_dir/aot"
         mkdir -p "$d"
-        # `culebra build` reads $CULEBRA_HOME for the Embed.dir headers (it
+        # `culebra build` reads $CULEBRA_HOME for the Dir.embedded headers (it
         # ignored the env var until 2026-07 while telling the user to set it).
         # The rest of the phase covers the baked-path default; this covers the
         # override, which must fail cleanly rather than in the asset compile.
@@ -839,7 +839,7 @@ _run-tests BACKEND:
             echo "test aot FAIL: cache prune deleted $keep" >&2; exit 1
         done
         # A build leaves nothing in the temp dir: neither the scratch object nor
-        # (with Embed.dir) the generated asset TU and its object, which used to
+        # (with Dir.embedded) the generated asset TU and its object, which used to
         # accumulate one pair per invocation. A failed link is the same
         # contract — that path used to keep the object too. A private TMPDIR
         # makes anything left over visible.

@@ -394,6 +394,11 @@ struct JitSpecialTable {
   bool eq_by_fields = false;
   // A `@packable` class's record form (RegPack); null on every other meta.
   std::unique_ptr<JitRecordInfo> record;
+  // Which of the Dir module's classes this is (culebra::DirKind), or 0. Set
+  // by `_Dir.mark` from the class's own constructor, so a native that takes
+  // a Dir (`srv.static`) knows the class by identity and never by its name:
+  // a program's own class called EmbedDir is not one.
+  int8_t dir_kind = 0;
 };
 
 // All refcounted heap types share the same first field: i64 refcount.
@@ -805,6 +810,11 @@ inline const char* _jit_meta_class_name(JitObject* obj) {
 inline bool _jit_meta_opaque(JitObject* obj) {
   auto* sp = _jit_meta_specials(obj);
   return sp && sp->opaque_instances;
+}
+// Which Dir module class the value is an instance of (culebra::DirKind).
+inline int8_t _jit_meta_dir_kind(JitObject* obj) {
+  auto* sp = _jit_meta_specials(obj);
+  return sp ? sp->dir_kind : 0;
 }
 // Whether the class declares its instances non-Sendable.
 inline bool _jit_meta_nonsendable(JitObject* obj) {

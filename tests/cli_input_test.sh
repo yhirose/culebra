@@ -84,13 +84,13 @@ for bad in "--bail=abc" "--bail=0" "--bail=3x"; do
     echo "FAIL $bad: rc=$rc out=$(tail -1 <<<"$out")"; fail=1; }
 done
 
-# Embed.dir bakes a directory into the binary. A file it can't read, or a
+# Dir.embedded bakes a directory into the binary. A file it can't read, or a
 # subdirectory it can't walk into, used to be skipped in silence — the build
 # reported success and the binary served a table with holes in it.
 mkdir -p "$TMP/emb/assets/sub"
 printf 'a\n' > "$TMP/emb/assets/a.txt"
 printf 'b\n' > "$TMP/emb/assets/sub/b.txt"
-printf 'let d = Embed.dir("assets")\nIO.println("x")\n' > "$TMP/emb/app.cul"
+printf 'let d = Dir.embedded("assets")\nIO.println("x")\n' > "$TMP/emb/app.cul"
 # `culebra build` needs the runtime archives to finish the link; the asset walk
 # runs first, so its diagnostics are observable either way.
 embed_out() { "$CULEBRA" build "$TMP/emb/app.cul" -o "$TMP/emb/app" 2>&1; }

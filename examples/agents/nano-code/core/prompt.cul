@@ -2,7 +2,7 @@
 # workspace says about itself.
 #
 # Upstream finds the base beside its own source through `__dirname`, which its
-# own comment warns is undefined under ESM. `Embed.dir` needs no path guess and
+# own comment warns is undefined under ESM. `Dir.embedded` needs no path guess and
 # resolves per backend: run from source it reads the live file, and `culebra
 # build` bakes it into the executable — so a built agent still has its prompt
 # with no files to ship beside it.
@@ -17,7 +17,7 @@
 # the agent runs, and is optional, so it stays an ordinary read.
 
 fn base_instructions() {
-  Embed.dir('core').read('prompt.md')
+  Dir.embedded('core').read('prompt.md')
 }
 
 fn with_project_instructions(base, workspace_root) {

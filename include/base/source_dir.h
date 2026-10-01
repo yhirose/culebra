@@ -13,7 +13,7 @@ const char* source_dir();
 
 // The checkout to actually use: $CULEBRA_HOME wins over the baked path, so a
 // relocated or copied install can still be pointed at a tree. Every command
-// that needs the sources goes through this — `culebra build` (Embed.dir needs
+// that needs the sources goes through this — `culebra build` (Dir.embedded needs
 // the headers) and `culebra wrap` (rebuilds the tree) must agree on which
 // checkout they mean.
 std::string resolved_source_dir();

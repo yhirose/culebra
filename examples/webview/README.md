@@ -24,7 +24,7 @@ The binding lives in `src/runtime/culebra_rt_webview.cc` + `vendor/webview/`.
 
 | File | Role |
 |---|---|
-| `desktop_app.cul` | The recommended shape: `Desktop.run` + `Embed.dir` — a complete desktop app |
+| `desktop_app.cul` | The recommended shape: `Desktop.run` + `Dir.embedded` — a complete desktop app |
 | `hello.cul` | Minimal raw `Webview.Window`: one window with inline HTML, no server |
 | `dist/` | The frontend as real files (`index.html`, `style.css`, `app.js`) |
 
@@ -134,7 +134,7 @@ collapses the whole "server + window + assets + shutdown" dance into
 Desktop.run({
   title:  "My App",
   size:   [720, 560],
-  assets: Embed.dir("dist"),       # dev: live disk / AOT: baked into the binary
+  assets: Dir.embedded("dist"),       # dev: live disk / AOT: baked into the binary
   routes: fn(srv) {                # just the API — the facade does the rest
     srv.get("/api/hello", fn(req) { ... })
   }
@@ -157,7 +157,7 @@ JS↔culebra bridge. `Desktop.quit()` exposes the same for a custom handler.
 
 ## Single binary + a real dev loop
 
-`Embed.dir(name)` is the whole trick behind `assets:`, and it resolves *per
+`Dir.embedded(name)` is the whole trick behind `assets:`, and it resolves *per
 backend* with no code change:
 
 - **Dev** (run from source): it serves the live on-disk directory, resolved

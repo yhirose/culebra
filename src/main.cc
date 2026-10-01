@@ -790,7 +790,7 @@ void print_build_usage(ostream& os) {
         "                     point at a libculebra_rt.a built for the\n"
         "                     target. Defaults to the host build.\n"
         "  CULEBRA_HOME       Source checkout to take headers from when the\n"
-        "                     program uses Embed.dir (default: the path this\n"
+        "                     program uses Dir.embedded (default: the path this\n"
         "                     binary was built from)\n";
 }
 
@@ -1043,13 +1043,13 @@ int run_build(const BuildOptions& opts) {
       /*preamble_from_source=*/!host_build);
   if (rc != 0) return rc;
 
-  // --- Embedded assets: bake each `Embed.dir("...")` directory into an object
+  // --- Embedded assets: bake each `Dir.embedded("...")` directory into an object
   // file linked alongside the program. The object reproduces the directory as a
   // static AssetEntry table and registers it (under the dir name) at static-init
   // time; at runtime `http_server_serve_embed` finds the baked table and serves
   // from it instead of disk — so the binary needs no external asset files. Dirs
   // are resolved relative to the entry script (the same base the dev disk path
-  // uses). A non-literal `Embed.dir(expr)` is skipped here and falls back to
+  // uses). A non-literal `Dir.embedded(expr)` is skipped here and falls back to
   // live disk at runtime.
   std::string assets_obj;
   {
@@ -1061,7 +1061,7 @@ int run_build(const BuildOptions& opts) {
       auto src_dir = culebra::resolved_source_dir();
       if (src_dir.empty() || !fs::exists(fs::path(src_dir) / "include")) {
         std::println(stderr,
-            "culebra build: Embed.dir needs the culebra headers; no include/ "
+            "culebra build: Dir.embedded needs the culebra headers; no include/ "
             "at '{}' — set CULEBRA_HOME to a checkout", src_dir);
         return 1;
       }
@@ -1081,7 +1081,7 @@ int run_build(const BuildOptions& opts) {
         std::error_code ec;
         if (!fs::is_directory(root, ec)) {
           std::println(stderr,
-              "culebra build: Embed.dir(\"{}\"): not a directory at '{}'", dir,
+              "culebra build: Dir.embedded(\"{}\"): not a directory at '{}'", dir,
               root.string());
           return 1;
         }
@@ -1091,7 +1091,7 @@ int run_build(const BuildOptions& opts) {
         // missing files at runtime.
         auto fail_read = [&](const fs::path& p, std::string_view why) {
           std::println(stderr,
-              "culebra build: Embed.dir(\"{}\"): can't read '{}': {}", dir,
+              "culebra build: Dir.embedded(\"{}\"): can't read '{}': {}", dir,
               p.string(), why);
           return 1;
         };
@@ -2595,7 +2595,7 @@ int run_main(int argc, const char** argv) {
 
   // `Sys.script` — the entry script's absolute path, read from this holder
   // when the Sys namespace is materialized. Its directory is the base for
-  // `Embed.dir(...)`'s disk fallback (dev),
+  // `Dir.embedded(...)`'s disk fallback (dev),
   // so embedded-asset paths resolve the way the AOT build walks them —
   // relative to the source — whatever the cwd is. Both are left empty (→ nil)
   // for the REPL and stdin.

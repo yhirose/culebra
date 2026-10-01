@@ -74,7 +74,9 @@ ctest.entries 34
 # 990 since §18.1 and stdlib's @packable section show a record packed and
 # read back, in en and ja. 992 since the @packable section shows a
 # FixedArray, in en and ja.
-docs.blocks 996
+# 996 since stdlib's Dir chapter (six blocks) takes over the Embed section's
+# two, in en and ja.
+docs.blocks 1004
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

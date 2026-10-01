@@ -1128,7 +1128,7 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
   }
 
   # A parsed TTF/OTF font (its bytes as a String, e.g. from `FS.read` or
-  # `Embed.dir(...).read(...)` -- the latter bakes the font into an AOT
+  # `Dir.embedded(...).read(...)` -- the latter bakes the font into an AOT
   # binary the same way it already does for Sprite.from_png assets). Unlike
   # Sprite this has no fixed size: size is given per draw call, so one Font
   # serves every size a program uses, and the native side caches rasterized
@@ -3887,7 +3887,7 @@ let _kauai_module = fn () {
   }
   {
     # A song file, and the files it uses, relative to it: from the disk, or
-    # from `dir` (an `Embed.dir`, or anything with `exists(name)` and
+    # from `dir` (a `Dir.embedded`, or anything with `exists(name)` and
     # `read(name)`).
     load: fn (path: String, voices = nil, drums = nil, dir = nil) {
       let exists = dir == nil ? |n| FS.exists(n) : |n| dir.exists(n)
@@ -5867,11 +5867,14 @@ let _state_machine_module = fn () {
 let StateMachine = _state_machine_module()
 )=culpre=";
 
-inline constexpr const char* DIR_MODULE_SOURCE = R"=culpre=(# Dir — a read-only set of files, wherever they live: a directory on disk or
-# files held in memory. Each kind is a class over thin natives (`_Dir.*`), and
-# every one conforms to the built-in `trait Dir` (shared.h): the five required
-# methods are here, the defaults (`files` / `glob` / `size` / `copy_to`) come
-# from the trait unless a kind answers faster itself.
+inline constexpr const char* DIR_MODULE_SOURCE = R"=culpre=(# Dir — a read-only set of files, wherever they live: a directory on disk,
+# files held in memory, or assets baked into the binary. Each kind is a class
+# over thin natives (`_Dir.*`), and every one conforms to the built-in
+# `trait Dir` (shared.h): the five required methods are here, the defaults
+# (`files` / `glob` / `size` / `copy_to`) come from the trait unless a kind
+# answers faster itself. Each class names its kind to the natives in its
+# constructor (`_Dir.mark`), which is how `srv.static` knows a Dir.embedded by
+# its class rather than by its name.
 #
 # Paths are relative to the root and `/` separated, and `_Dir.normalize` is
 # the one rule for every kind (vfs.h): `""` and `"."` name the root, `.` and
@@ -5916,6 +5919,7 @@ let _dir_module = fn () {
 
   class DiskDir {
     new(path) {
+      _Dir.mark(self, 'disk')
       let p = _disk_path('Dir.disk', path)
       self.root = FS.abspath(p)
       if !FS.is_dir(self.root) {
@@ -5970,6 +5974,7 @@ let _dir_module = fn () {
 
   class MemoryDir {
     new(files) {
+      _Dir.mark(self, 'memory')
       if type_of(files) != 'Object' {
         throw {
           kind: 'TypeError',
@@ -6057,12 +6062,52 @@ let _dir_module = fn () {
     }
   }
 
+  # A directory next to the entry script, baked into the binary by
+  # `culebra build` when `name` is a string literal; read live from disk
+  # otherwise. Only the name is held, so it crosses an Isolate as it is.
+  class EmbedDir {
+    new(name) {
+      _Dir.mark(self, 'embedded')
+      if type_of(name) != 'String' && type_of(name) != 'StringView' {
+        throw {
+          kind: 'TypeError',
+          message: "type error: Dir.embedded expects String, got {type_of(name)}",
+        }
+      }
+      self.name = to_string(name)
+    }
+    read(path) {
+      _need_file(self, 'read', path)
+      _Dir.embedded_read(self.name, path)
+    }
+    list_dir(path) {
+      _need_dir(self, 'list_dir', path)
+      _Dir.embedded_list_dir(self.name, path)
+    }
+    exists(path) {
+      self.is_file(path) || self.is_dir(path)
+    }
+    is_file(path) {
+      _Dir.embedded_is_file(self.name, path)
+    }
+    is_dir(path) {
+      _Dir.embedded_is_dir(self.name, path)
+    }
+    size(path) {
+      _need_file(self, 'size', path)
+      _Dir.embedded_size(self.name, path)
+    }
+  }
+
   {
     disk: fn (path) {
       DiskDir(path)
     },
     memory: fn (files) {
       MemoryDir(files)
+    },
+    embedded: fn (name) {
+      EmbedDir(name)
     },
   }
 }

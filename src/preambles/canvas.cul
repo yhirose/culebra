@@ -255,7 +255,7 @@ let _canvas_module = fn () {
   }
 
   # A parsed TTF/OTF font (its bytes as a String, e.g. from `FS.read` or
-  # `Embed.dir(...).read(...)` -- the latter bakes the font into an AOT
+  # `Dir.embedded(...).read(...)` -- the latter bakes the font into an AOT
   # binary the same way it already does for Sprite.from_png assets). Unlike
   # Sprite this has no fixed size: size is given per draw call, so one Font
   # serves every size a program uses, and the native side caches rasterized

@@ -4,7 +4,7 @@
 //   * which stdlib namespaces it references — each AOT feature axis force-loads
 //     a runtime archive and appends its link flags on a hit (see kFeatureAxes
 //     in src/main.cc for the axes themselves)
-//   * which directories it bakes in via `Embed.dir("...")`
+//   * which directories it bakes in via `Dir.embedded("...")`
 
 #include <frontend/parser.h>
 
@@ -42,9 +42,9 @@ inline bool _ast_literal_string(const peg::Ast& n, std::string& out) {
   return false;
 }
 
-// The constant string literal of `Embed.dir("...")`'s argument, descending only
-// through structural wrappers — never into a nested call. So `Embed.dir("ui")`
-// reads "ui", but `Embed.dir(make_path("ui"))` finds no literal (returns false)
+// The constant string literal of `Dir.embedded("...")`'s argument, descending only
+// through structural wrappers — never into a nested call. So `Dir.embedded("ui")`
+// reads "ui", but `Dir.embedded(make_path("ui"))` finds no literal (returns false)
 // rather than baking the wrong directory from a buried argument. Returns false
 // when the argument isn't a plain string literal (the runtime then falls back
 // to live disk, and nothing is embedded).
@@ -57,7 +57,7 @@ inline bool _first_literal_string(const peg::Ast& node, std::string& out) {
   return false;
 }
 
-// Collect the literal directory names passed to `Embed.dir("...")` across the
+// Collect the literal directory names passed to `Dir.embedded("...")` across the
 // program. `culebra build` walks each at build time (relative to the entry
 // script) and bakes its files into the binary; dirs whose argument isn't a
 // string literal are skipped (they fall back to live disk at runtime). The
@@ -69,9 +69,9 @@ inline void aot_collect_embed_dirs(const peg::Ast& node,
     for (size_t i = 1; i + 1 < node.nodes.size(); i++) {
       const auto& dot = *node.nodes[i];
       const auto& recv = *node.nodes[i - 1];
-      if ((dot.original_tag == "DOT"_) && dot.token == "dir" &&
+      if ((dot.original_tag == "DOT"_) && dot.token == "embedded" &&
           recv.tag == "IDENTIFIER"_ && recv.original_tag != "DOT"_ &&
-          recv.token == "Embed" &&
+          recv.token == "Dir" &&
           node.nodes[i + 1]->original_tag == "ARGUMENTS"_) {
         std::string name;
         if (_first_literal_string(*node.nodes[i + 1], name) &&

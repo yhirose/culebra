@@ -1168,7 +1168,7 @@ struct HttpServer {
   // because bind and serve are separate calls: it is what tells serve the
   // socket is open, and (for a port-0 bind) the only record of the number.
   int bound_port = -1;
-  // Static asset mounts (srv.static with Embed.dir), served by a pre_routing
+  // Static asset mounts (srv.static with Dir.embedded), served by a pre_routing
   // handler installed on first use.
   std::vector<StaticMount> static_mounts;
   bool static_handler_installed = false;
@@ -1415,7 +1415,7 @@ CULEBRA_RT_HTTP_LINKAGE void http_server_static(int64_t id,
 // (AOT single binary), otherwise the live on-disk directory `base` (dev — edits
 // show up on the next request). Static assets are tried before registered
 // routes and only when the file exists, so an API route at e.g. /api/* still
-// wins; a closed id no-ops. This is the `srv.static(mount, Embed.dir(...))`
+// wins; a closed id no-ops. This is the `srv.static(mount, Dir.embedded(...))`
 // path — the plain `srv.static(mount, "dir")` keeps using set_mount_point.
 CULEBRA_RT_HTTP_LINKAGE void http_server_serve_embed(int64_t id,
                                                      const std::string& mount,

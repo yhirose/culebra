@@ -14,10 +14,10 @@ let WEIGHTS = FS.join(FS.dirname(Sys.script), 'weights')
 # Regular for legibility at the small sizes this UI uses -- subsetted to
 # just the glyphs it draws (uppercase A-Z, digits, space and a few
 # punctuation marks), which shrinks it from a ~340 KB static instance to
-# ~10 KB. Embed.dir bakes it into `culebra build`/the WASM Playground bundle
+# ~10 KB. Dir.embedded bakes it into `culebra build`/the WASM Playground bundle
 # the same way it already does for retro-run's art, so the demo still ships
 # as one self-contained file with no separate font to lose.
-let FONT = Canvas.Font(Embed.dir("assets").read("Inter-SemiBold-subset.ttf"))
+let FONT = Canvas.Font(Dir.embedded("assets").read("Inter-SemiBold-subset.ttf"))
 
 # Palette from site/assets/brand.css (light theme).
 let BG = Canvas.rgba(247, 245, 239)

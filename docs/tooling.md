@@ -206,7 +206,7 @@ code is `0` when all tests pass, `1` when any fail.
 runner runs that file's tests before it loads the next one. What a file
 writes at the top level is the file's — a `mut range = 5` leaves `range`
 a function everywhere else — and so are its classes, its overloads, its
-`Sys.script`, and the directory `Embed.dir(...)` resolves against. A
+`Sys.script`, and the directory `Dir.embedded(...)` resolves against. A
 fixture declared in one file is not visible from another; pass it through
 a parameter, or declare it in each file that wants it. A file may
 `import`, and its modules run as one unit the way they do in a script.

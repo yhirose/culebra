@@ -17,7 +17,7 @@ if Sys.argv.empty() {
   println("usage: culebra examples/audio/music_player.cul <file.mp3|file.ogg>")
 } else {
   let path = Sys.argv[0]
-  # The bytes, not the path: the same call takes Embed data in a built binary.
+  # The bytes, not the path: the same call takes a Dir.embedded file in a built binary.
   # Bytes that are neither MP3 nor Ogg raise ValueError here.
   let music = Audio.Music(FS.read(path), loop: false)
 

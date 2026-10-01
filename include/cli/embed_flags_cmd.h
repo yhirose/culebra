@@ -8,7 +8,7 @@
 // is also what keeps the flags and the engine the same age.
 //
 // Header-only embedding builds against a culebra checkout, so this reports
-// the same tree `culebra wrap` and `Embed.dir` use (base/source_dir.h) and
+// the same tree `culebra wrap` and `Dir.embedded` use (base/source_dir.h) and
 // fails with the same "set CULEBRA_HOME" when there is none.
 
 namespace culebra {

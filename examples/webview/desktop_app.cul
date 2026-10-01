@@ -19,7 +19,7 @@ let VISITS_DB = "visits.db"
 Desktop.run({
   title: "culebra desktop",
   size: [720, 560],
-  assets: Embed.dir("dist"),
+  assets: Dir.embedded("dist"),
   routes: fn (srv) {
     srv.get("/api/hello", fn (req) {
       {

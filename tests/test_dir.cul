@@ -212,6 +212,18 @@ assert_eq(
 assert_eq(Dir.memory({}).files(), [])
 assert_eq(Dir.memory({}).list_dir(''), [])
 
+# --- Dir.embedded ---
+# tests/dir_fixture holds FILES: read live from source, from the baked table
+# in a binary `culebra build` made.
+let emb = Dir.embedded('dir_fixture')
+assert_eq(type_of(emb), 'EmbedDir')
+assert_eq(emb.keys(), ['name'])
+check_dir(emb)
+assert_eq(
+  caught(|| Dir.embedded(5)),
+  'TypeError: type error: Dir.embedded expects String, got Long',
+)
+
 # --- a Dir of the program's own: every default from the trait ---
 let own = Wrapped(Dir.memory(FILES))
 check_dir(own)

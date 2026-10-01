@@ -8,15 +8,6 @@
 
 namespace culebra {
 
-inline constexpr CanonParam kCanonParams_Embed[] = {
-  // 0: Embed.dir
-  {"name", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
-};
-
-inline constexpr CanonSig kCanonSigs_Embed[] = {
-  {"Embed", "", "dir", kCanonParams_Embed + 0, 1, "Object", 1, 1, false, -1, -1, -1},
-};
-
 inline constexpr CanonParam kCanonParams_IO[] = {
   // 0: IO.inspect
   {"x", false, false, false, false, true, "", CanonDefault::None, 0, {}},
@@ -1542,10 +1533,22 @@ inline constexpr CanonSig kCanonSigs_Audio_native[] = {
 inline constexpr CanonParam kCanonParams_Dir_native[] = {
   // 0: _Dir.normalize
   {"path", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  // 1: _Dir.mark
+  {"dir", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  {"kind", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  // 3: _Dir.embedded_read / _list_dir / _is_file / _is_dir / _size
+  {"name", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  {"path", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonSigs_Dir_native[] = {
   {"_Dir", "", "normalize", kCanonParams_Dir_native + 0, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Dir", "", "mark", kCanonParams_Dir_native + 1, 2, "", 2, 2, false, -1, -1, -1},
+  {"_Dir", "", "embedded_read", kCanonParams_Dir_native + 3, 2, "", 2, 2, false, -1, -1, -1},
+  {"_Dir", "", "embedded_list_dir", kCanonParams_Dir_native + 3, 2, "", 2, 2, false, -1, -1, -1},
+  {"_Dir", "", "embedded_is_file", kCanonParams_Dir_native + 3, 2, "Bool", 2, 2, false, -1, -1, -1},
+  {"_Dir", "", "embedded_is_dir", kCanonParams_Dir_native + 3, 2, "Bool", 2, 2, false, -1, -1, -1},
+  {"_Dir", "", "embedded_size", kCanonParams_Dir_native + 3, 2, "", 2, 2, false, -1, -1, -1},
 };
 
 inline constexpr CanonParam kCanonParams_Bare[] = {

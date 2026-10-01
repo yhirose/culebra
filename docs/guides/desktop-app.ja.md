@@ -11,7 +11,7 @@ culebraの`Webview`・`Desktop`名前空間を使って、小さなデスクト�
 
 このガイドが扱うのは`Desktop`/`Webview`の**使い方**です。APIリファレンスは
 [`stdlib.ja.md` §30](../stdlib.ja.md#30-desktop--webview)に、内部の仕組み
-（loopback bridge、`Embed.dir`のdev/AOT切り替え、プラットフォームごとの
+（loopback bridge、`Dir.embedded`のdev/AOT切り替え、プラットフォームごとの
 ビルド要件、Ubuntuのsandbox注意点の全文）は
 [`examples/webview/README.md`](../../examples/webview/README.md)にあります。
 
@@ -65,10 +65,10 @@ GUIスレッドの仕事はこれで全部です。`set_html`はHTML文字列リ
 
 ```culebra
 # doctest: skip — ウィンドウを開く
-Desktop.run({title: "My App", size: [720, 560], assets: Embed.dir("dist")})
+Desktop.run({title: "My App", size: [720, 560], assets: Dir.embedded("dist")})
 ```
 
-`Embed.dir("dist")`は、コードを変えないまま、**バックエンドごとに**
+`Dir.embedded("dist")`は、コードを変えないまま、**バックエンドごとに**
 解決先が変わります。ソースから実行したときは、エントリスクリプトの隣に
 あるディスク上のディレクトリをそのまま読みます。`dist/index.html`を編集して
 ウィンドウを再読み込みすれば、すぐ反映されます。`culebra build`のほうは
@@ -95,7 +95,7 @@ dist/
 
 ```culebra
 # doctest: skip — ウィンドウを開く
-Desktop.run({assets: Embed.dir("dist"), routes: fn (srv) {
+Desktop.run({assets: Dir.embedded("dist"), routes: fn (srv) {
   srv.get("/api/hello", fn (req) {
     {
       content_type: "application/json",
@@ -236,7 +236,7 @@ culebra --jit examples/webview/desktop_app.cul    # 同じ出力、JIT経由
 ```culebra
 # doctest: skip — ウィンドウを開く
 Desktop.run({
-  assets: Embed.dir("dist"),
+  assets: Dir.embedded("dist"),
   port: 5173,
   routes: fn (srv) {
     # ...
