@@ -289,7 +289,7 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
     case K::Long:  return {TAG_LONG, n.i};
     case K::Float: return jit_float(n.d);
     case K::Str:
-      return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(n.s.c_str()))};
+      return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(n.s))};
     case K::Array: {
       auto* a = culebra_runtime_array_new();
       for (const auto& e : n.elems) {

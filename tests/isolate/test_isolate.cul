@@ -217,4 +217,13 @@ assert_eq(made.twice(), 14)
 assert_eq(made.keys(), ['v'])
 assert_eq(made.to_string(), 'Made {mut v: 7}')
 
+# A String is bytes, NUL included, whichever way it crosses: an argument, a
+# capture, a Channel, a result.
+let bin = String.from_bytes([65, 0, 66, 255, 0])
+assert_eq(Isolate.spawn(|b| b, bin).join(), bin)
+assert_eq(Isolate.spawn(|| bin.size()).join(), 5)
+let (btx, brx) = Channel.new(1)
+btx.send(bin)
+assert_eq(brx.recv(), bin)
+
 inspect("test_isolate: all assertions passed")
