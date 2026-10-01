@@ -34,7 +34,8 @@
 # note, and the spec's mistakes name their lines).
 # 296 since test_trait_defaults_workers.cul (a trait's default methods reach
 # every worker Runtime: Isolate, Parallel, the Http and Net pools).
-tests.cul 296
+# 297 since test_dir.cul (one contract over every kind of Dir).
+tests.cul 297
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

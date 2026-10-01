@@ -110,6 +110,25 @@ inline void aot_collect_names(const peg::Ast& node, AotNames& out) {
   for (const auto& child : node.nodes) aot_collect_names(*child, out);
 }
 
+// The built-in traits (shared.h) run in every program but are no module the
+// loader returns, so the scan above never reads them — and a default body
+// that reaches a namespace (`Dir.copy_to`'s `FS`) would find it unlinked in
+// a binary whose program never names it. Their default bodies count as
+// named by every program; the declarations' own names do not (the trait
+// `Dir` is not a use of the namespace `_Dir`).
+inline void _aot_collect_trait_bodies(const peg::Ast& node, AotNames& out) {
+  using namespace peg::udl;
+  if (node.tag == "TRAIT_BODY"_) {
+    aot_collect_names(node, out);
+    return;
+  }
+  for (const auto& child : node.nodes) _aot_collect_trait_bodies(*child, out);
+}
+inline void aot_collect_builtin_trait_names(AotNames& out) {
+  if (auto ast = parse_builtin_traits_preamble())
+    _aot_collect_trait_bodies(*ast, out);
+}
+
 // Does the program name `name` (either spelling, `X` or `_X`)?
 inline bool aot_named(const AotNames& names, std::string_view name) {
   return names.contains(_aot_name_key(name));

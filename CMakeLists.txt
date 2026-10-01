@@ -2298,7 +2298,7 @@ if(CULEBRA_ENABLE_JIT)
   set(_baked_names __Traits
                    Time Term Canvas Audio Args Regex PEG FST Log Path Vector2
                    Vector3
-                   Deque PriorityQueue StateMachine __Eff __Matchers
+                   Deque PriorityQueue StateMachine Dir __Eff __Matchers
                    __StringFns)
   if(CULEBRA_ENABLE_WEBVIEW)
     list(APPEND _baked_names Desktop)

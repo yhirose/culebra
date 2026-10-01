@@ -129,7 +129,8 @@ inline bool is_object_builtin_method_name(std::string_view name) {
 inline const char* lazy_namespace_static_name(std::string_view name) {
   static constexpr const char* kNames[] = {"Time",  "Term", "Canvas",  "Audio",
                                            "Args",  "Regex", "PEG",    "FST",
-                                           "Log",   "Desktop", "__Eff"};
+                                           "Log",   "Desktop", "Dir",
+                                           "__Eff"};
   for (const char* n : kNames)
     if (name == n) return n;
   return nullptr;
@@ -3294,6 +3295,130 @@ trait Iterator {
 }
 trait Iterable {
   iter() -> Iterator
+}
+trait Dir {
+  read(path) -> String
+  list_dir(path) -> Array
+  exists(path) -> Bool
+  is_file(path) -> Bool
+  is_dir(path) -> Bool
+  files() -> Array {
+    mut out = []
+    mut todo = ['']
+    while !todo.empty() {
+      let dir = todo.pop()
+      for name in self.list_dir(dir) {
+        let p = dir == '' ? name : "{dir}/{name}"
+        if self.is_dir(p) {
+          todo.push(p)
+        } else if self.is_file(p) {
+          out.push(p)
+        }
+      }
+    }
+    out.sorted()
+  }
+  glob(pattern) -> Array {
+    let pat = to_string(pattern)
+    let segs = pat.split('/').filter(|s| s != '' && s != '.').map(|s| to_string(s))
+    if pat.starts_with('/') || pat.starts_with("\\") || segs.any(|s| s == '..') {
+      return []
+    }
+    let pbytes = segs.map(|s| s.bytes().collect())
+    let seg_match = fn (p, n) {
+      mut pi = 0
+      mut ni = 0
+      mut star = -1
+      mut mark = 0
+      while ni < n.size() {
+        mut step = 0
+        if pi < p.size() && p[pi] == 42 {
+          star = pi
+          mark = ni
+          pi += 1
+          continue
+        }
+        if pi < p.size() && p[pi] == 91 {
+          mut close = pi + 1
+          while close < p.size() && p[close] != 93 {
+            close += 1
+          }
+          if close < p.size() {
+            mut k = pi + 1
+            let neg = k < close && (p[k] == 33 || p[k] == 94)
+            if neg {
+              k += 1
+            }
+            mut hit = false
+            while k < close {
+              if k + 2 < close && p[k + 1] == 45 {
+                hit = hit || (n[ni] >= p[k] && n[ni] <= p[k + 2])
+                k += 3
+              } else {
+                hit = hit || p[k] == n[ni]
+                k += 1
+              }
+            }
+            step = hit != neg ? close + 1 - pi : 0
+          }
+        } else if pi < p.size() && (p[pi] == 63 || p[pi] == n[ni]) {
+          step = 1
+        }
+        if step > 0 {
+          pi += step
+          ni += 1
+        } else if star >= 0 {
+          mark += 1
+          pi = star + 1
+          ni = mark
+        } else {
+          return false
+        }
+      }
+      while pi < p.size() && p[pi] == 42 {
+        pi += 1
+      }
+      pi == p.size()
+    }
+    let path_match = fn (pi, ns, ni) {
+      if pi == segs.size() {
+        return ni == ns.size()
+      }
+      if segs[pi] == '**' {
+        mut k = ni
+        while k <= ns.size() {
+          if fn(pi + 1, ns, k) {
+            return true
+          }
+          k += 1
+        }
+        return false
+      }
+      ni < ns.size() && seg_match(pbytes[pi], ns[ni].bytes().collect()) && fn(pi + 1, ns, ni + 1)
+    }
+    self.files().filter(|f| path_match(0, f.split('/'), 0))
+  }
+  size(path) -> Long {
+    if !self.is_file(path) {
+      throw {kind: 'IOError', message: self.is_dir(path) ? "Dir.size: '{path}' is a directory" : "Dir.size: no such file '{path}'"}
+    }
+    self.read(path).size()
+  }
+  copy_to(dest) {
+    let root = to_string(dest)
+    let win = FS.sep() == "\\"
+    FS.mkdir(root)
+    for f in self.files() {
+      let path = to_string(f)
+      let segs = (win ? path.replace("\\", '/') : path).split('/')
+      if path.starts_with('/') || path.starts_with("\\") || (win && path.contains(':')) || segs.any(|s| s == '' || s == '.' || s == '..') {
+        throw {kind: 'ValueError', message: "copy_to: '{path}' is not a path inside the directory"}
+      }
+      let target = FS.join(root, path)
+      FS.mkdir(FS.dirname(target))
+      FS.write(target, self.read(path))
+    }
+  }
 }
 )culebra";
   return src;

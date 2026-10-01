@@ -26,7 +26,7 @@ const KEYWORDS = new Set([
 const CONSTANTS = new Set(["true", "false", "nil"]);
 const BUILTINS = new Set([
   "Nil", "Bool", "Long", "Float", "String", "Array", "Object", "Function", "Any",
-  "Math", "IO", "FS", "File", "Embed", "Time", "Random", "Sys", "Tensor", "JSON", "Args", "Proc", "Path",
+  "Math", "IO", "FS", "File", "Embed", "Time", "Random", "Sys", "Tensor", "JSON", "Args", "Proc", "Path", "Dir",
   "Isolate", "Channel", "Parallel", "Signal", "SharedBuffer", "Shared", "GC", "Regex", "Http",
   "Encoding", "Compress", "Hash", "CSV", "Env", "UUID", "Term", "Log", "TOML", "XML", "SQLite",
   "Canvas", "Audio", "Scene", "Net", "Desktop", "Webview", "Vector2", "Vector3", "Deque", "PriorityQueue", "StateMachine",

@@ -46,7 +46,7 @@
 ((type) @type.builtin
  (#match? @type.builtin "^(Nil|Bool|Long|Float|String|Array|Object|Function|Any)$"))
 ((type) @type.builtin
- (#match? @type.builtin "^(Math|IO|FS|File|Embed|Time|Random|Sys|Tensor|JSON|Args|Proc|Path)$"))
+ (#match? @type.builtin "^(Math|IO|FS|File|Embed|Time|Random|Sys|Tensor|JSON|Args|Proc|Path|Dir)$"))
 ((type) @type.builtin
  (#match? @type.builtin "^(Isolate|Channel|Parallel|Signal|SharedBuffer|Shared|GC|Regex|Http)$"))
 ((type) @type.builtin

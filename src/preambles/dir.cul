@@ -1,0 +1,200 @@
+# Dir — a read-only set of files, wherever they live: a directory on disk or
+# files held in memory. Each kind is a class over thin natives (`_Dir.*`), and
+# every one conforms to the built-in `trait Dir` (shared.h): the five required
+# methods are here, the defaults (`files` / `glob` / `size` / `copy_to`) come
+# from the trait unless a kind answers faster itself.
+#
+# Paths are relative to the root and `/` separated, and `_Dir.normalize` is
+# the one rule for every kind (vfs.h): `""` and `"."` name the root, `.` and
+# empty segments drop out, and a path that starts with `/` or `\` or climbs
+# with `..` is simply not there.
+let _dir_module = fn () {
+  let _win = FS.sep() == "\\"
+
+  # A path argument that names a directory on disk: a String or a Path.
+  let _disk_path = fn (who, p) {
+    let t = type_of(p)
+    if t != 'String' && t != 'StringView' && t != 'Path' {
+      throw {
+        kind: 'TypeError',
+        message: "type error: {who} expects String|Path, got {t}",
+      }
+    }
+    to_string(p)
+  }
+
+  # The two kinds of IOError every Dir owes, worded once for all of them.
+  let _need_file = fn (d, op, path) {
+    if !d.is_file(path) {
+      throw {
+        kind: 'IOError',
+        message: d.is_dir(path)
+          ? "Dir.{op}: '{path}' is a directory"
+          : "Dir.{op}: no such file '{path}'",
+      }
+    }
+  }
+  let _need_dir = fn (d, op, path) {
+    if !d.is_dir(path) {
+      throw {
+        kind: 'IOError',
+        message: d.is_file(path)
+          ? "Dir.{op}: '{path}' is a file"
+          : "Dir.{op}: no such directory '{path}'",
+      }
+    }
+  }
+
+  class DiskDir {
+    new(path) {
+      let p = _disk_path('Dir.disk', path)
+      self.root = FS.abspath(p)
+      if !FS.is_dir(self.root) {
+        throw {kind: 'IOError', message: "Dir.disk: no such directory '{p}'"}
+      }
+    }
+    # The OS path of `path` under the root, or nil when it is not inside it.
+    # On Windows `\` and `:` would leave the root (a separator, a drive), so
+    # a path holding either is not there either.
+    _full(path) {
+      let rel = _Dir.normalize(path)
+      if rel == nil || _win && (rel.contains("\\") || rel.contains(':')) {
+        nil
+      } else {
+        rel == '' ? self.root : FS.join(self.root, rel)
+      }
+    }
+    read(path) {
+      _need_file(self, 'read', path)
+      FS.read(self._full(path))
+    }
+    list_dir(path) {
+      _need_dir(self, 'list_dir', path)
+      FS.list_dir(self._full(path)).sorted()
+    }
+    exists(path) {
+      let f = self._full(path)
+      f != nil && FS.exists(f)
+    }
+    is_file(path) {
+      let f = self._full(path)
+      f != nil && FS.is_file(f)
+    }
+    is_dir(path) {
+      let f = self._full(path)
+      f != nil && FS.is_dir(f)
+    }
+    size(path) {
+      _need_file(self, 'size', path)
+      FS.size(self._full(path))
+    }
+    files() {
+      let skip = self.root.size() + (self.root.ends_with(FS.sep()) ? 0 : 1)
+      FS
+        .walk(self.root)
+        .filter(|p| FS.is_file(p))
+        .map(|p| to_string(p.slice(skip, p.size())))
+        .map(|p| _win ? p.replace("\\", '/') : p)
+        .sorted()
+    }
+  }
+
+  class MemoryDir {
+    new(files) {
+      if type_of(files) != 'Object' {
+        throw {
+          kind: 'TypeError',
+          message: "type error: Dir.memory expects Object, got {type_of(files)}",
+        }
+      }
+      mut contents = {}
+      for key, value in files {
+        if type_of(key) != 'String' {
+          throw {
+            kind: 'TypeError',
+            message: "Dir.memory: a path is a String, got {type_of(key)}",
+          }
+        }
+        let t = type_of(value)
+        if t != 'String' && t != 'StringView' {
+          throw {
+            kind: 'TypeError',
+            message: "Dir.memory: '{key}' holds {t}, not String (a file in a subdirectory is a key like 'sub/name.txt')",
+          }
+        }
+        let rel = _Dir.normalize(key)
+        if rel == nil || rel == '' {
+          throw {
+            kind: 'ValueError',
+            message: "Dir.memory: '{key}' is not a file inside the directory",
+          }
+        }
+        if contents.has(rel) {
+          throw {
+            kind: 'ValueError',
+            message: "Dir.memory: '{key}' names a file another key already names",
+          }
+        }
+        contents[rel] = to_string(value)
+      }
+      for rel in contents.keys() {
+        let parts = rel.split('/')
+        for i in range(1, parts.size()) {
+          let parent = parts.slice(0, i).join('/')
+          if contents.has(parent) {
+            throw {
+              kind: 'ValueError',
+              message: "Dir.memory: '{parent}' is both a file and a directory",
+            }
+          }
+        }
+      }
+      self.contents = contents
+    }
+    _is_dir(rel) {
+      rel == '' || self.contents.keys().any(|k| k.starts_with(rel + '/'))
+    }
+    read(path) {
+      _need_file(self, 'read', path)
+      self.contents[_Dir.normalize(path)]
+    }
+    list_dir(path) {
+      _need_dir(self, 'list_dir', path)
+      let rel = _Dir.normalize(path)
+      let prefix = rel == '' ? '' : rel + '/'
+      mut names = {}
+      for k in self.contents.keys() {
+        if k.starts_with(prefix) {
+          let rest = to_string(k.slice(prefix.size(), k.size()))
+          names[to_string(rest.split('/')[0])] = true
+        }
+      }
+      names.keys().sorted()
+    }
+    exists(path) {
+      let rel = _Dir.normalize(path)
+      rel != nil && (self.contents.has(rel) || self._is_dir(rel))
+    }
+    is_file(path) {
+      let rel = _Dir.normalize(path)
+      rel != nil && self.contents.has(rel)
+    }
+    is_dir(path) {
+      let rel = _Dir.normalize(path)
+      rel != nil && self._is_dir(rel)
+    }
+    files() {
+      self.contents.keys().sorted()
+    }
+  }
+
+  {
+    disk: fn (path) {
+      DiskDir(path)
+    },
+    memory: fn (files) {
+      MemoryDir(files)
+    },
+  }
+}
+let Dir = _dir_module()

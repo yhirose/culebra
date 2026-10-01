@@ -59,7 +59,7 @@ syn keyword culBoolean     true false
 syn keyword culConstant    nil
 syn keyword culStorage     let mut static get
 syn keyword culBuiltin     Nil Bool Long Float String Array Object Function Any
-syn keyword culBuiltin     Math IO FS File Embed Time Random Sys Tensor JSON Args Proc Path
+syn keyword culBuiltin     Math IO FS File Embed Time Random Sys Tensor JSON Args Proc Path Dir
 syn keyword culBuiltin     Isolate Channel Parallel Signal SharedBuffer Shared GC Regex Http
 syn keyword culBuiltin     Encoding Compress Hash CSV Env UUID Term Log TOML XML SQLite
 syn keyword culBuiltin     Canvas Audio Scene Net Desktop Webview Vector2 Vector3 Deque PriorityQueue StateMachine

@@ -1539,6 +1539,15 @@ inline constexpr CanonSig kCanonSigs_Audio_native[] = {
   {"_Audio", "", "score_volume", kCanonParams_Audio_native + 74, 2, "", 2, 2, false, -1, -1, -1},
 };
 
+inline constexpr CanonParam kCanonParams_Dir_native[] = {
+  // 0: _Dir.normalize
+  {"path", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+};
+
+inline constexpr CanonSig kCanonSigs_Dir_native[] = {
+  {"_Dir", "", "normalize", kCanonParams_Dir_native + 0, 1, "", 1, 1, false, -1, -1, -1},
+};
+
 inline constexpr CanonParam kCanonParams_Bare[] = {
   // 0: inspect
   {"x", false, false, false, false, true, "", CanonDefault::None, 0, {}},

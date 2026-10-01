@@ -1,0 +1,249 @@
+# Dir: one contract over every kind of read-only file set. check_dir runs the
+# same assertions over Dir.disk, Dir.memory and a class of the program's own
+# that writes only the five required methods (so every default — files, glob,
+# size, copy_to — runs from the trait). Same across the executor, --jit and
+# an AOT binary.
+
+let FILES = {
+  'a.txt': 'alpha',
+  'b-c.txt': 'bc',
+  'foo..txt': 'dots are part of the name',
+  'empty.txt': '',
+  'img/x.png': String.from_bytes([137, 80, 78, 71, 0, 255]),
+  'img/sub/y.png': 'y',
+  'docs/readme.md': '# readme',
+}
+let SORTED = FILES.keys().sorted()
+
+fn caught(thunk) {
+  try {
+    thunk()
+    'NO ERROR'
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+
+# A Dir of the program's own: the five, nothing else.
+class Wrapped {
+  new(.inner) {}
+  read(path) {
+    self.inner.read(path)
+  }
+  list_dir(path) {
+    self.inner.list_dir(path)
+  }
+  exists(path) {
+    self.inner.exists(path)
+  }
+  is_file(path) {
+    self.inner.is_file(path)
+  }
+  is_dir(path) {
+    self.inner.is_dir(path)
+  }
+}
+
+fn takes_dir(d: Dir) {
+  'a Dir'
+}
+
+fn check_dir(d) {
+  assert_eq(takes_dir(d), 'a Dir')
+  assert_eq(d.files(), SORTED)
+  for path, body in FILES {
+    assert_eq(d.read(path), body, path)
+    assert_true(d.exists(path), path)
+    assert_true(d.is_file(path), path)
+    assert_false(d.is_dir(path), path)
+    assert_eq(d.size(path), body.size(), path)
+  }
+  for path in ['', '.', 'img', 'img/sub', 'docs', 'img/', './img/sub/'] {
+    assert_true(d.exists(path), path)
+    assert_true(d.is_dir(path), path)
+    assert_false(d.is_file(path), path)
+  }
+  let top = ['a.txt', 'b-c.txt', 'docs', 'empty.txt', 'foo..txt', 'img']
+  assert_eq(d.list_dir(''), top)
+  assert_eq(d.list_dir('.'), top)
+  assert_eq(d.list_dir('img'), ['sub', 'x.png'])
+  assert_eq(d.list_dir('img/'), ['sub', 'x.png'])
+  assert_eq(d.list_dir('img//sub'), ['y.png'])
+
+  # Normalization: `.` and empty segments drop out, a trailing `/` too.
+  assert_eq(d.read('./a.txt'), 'alpha')
+  assert_eq(d.read('img//x.png'), FILES['img/x.png'])
+  assert_eq(d.read('img/./sub/y.png'), 'y')
+  assert_eq(d.read('docs/readme.md/'), '# readme')
+
+  # Outside the directory, or absent: not there, never an error to ask.
+  for path in ['../a.txt', 'img/../a.txt', '/a.txt', "\\a.txt", 'nope', 'img/nope'] {
+    assert_false(d.exists(path), path)
+    assert_false(d.is_file(path), path)
+    assert_false(d.is_dir(path), path)
+  }
+
+  # The IOErrors, worded the same by every kind.
+  assert_eq(caught(|| d.read('nope')), "IOError: Dir.read: no such file 'nope'")
+  assert_eq(
+    caught(|| d.read('../a.txt')),
+    "IOError: Dir.read: no such file '../a.txt'",
+  )
+  assert_eq(caught(|| d.read('img')), "IOError: Dir.read: 'img' is a directory")
+  assert_eq(caught(|| d.read('')), "IOError: Dir.read: '' is a directory")
+  assert_eq(caught(|| d.size('nope')), "IOError: Dir.size: no such file 'nope'")
+  assert_eq(caught(|| d.size('img')), "IOError: Dir.size: 'img' is a directory")
+  assert_eq(
+    caught(|| d.list_dir('a.txt')),
+    "IOError: Dir.list_dir: 'a.txt' is a file",
+  )
+  assert_eq(
+    caught(|| d.list_dir('nope')),
+    "IOError: Dir.list_dir: no such directory 'nope'",
+  )
+  assert_eq(
+    caught(|| d.list_dir('/')),
+    "IOError: Dir.list_dir: no such directory '/'",
+  )
+
+  # glob: files only, `*` `?` `[...]` within a segment, `**` across them.
+  assert_eq(d.glob('*.txt'), ['a.txt', 'b-c.txt', 'empty.txt', 'foo..txt'])
+  assert_eq(d.glob('**/*.png'), ['img/sub/y.png', 'img/x.png'])
+  assert_eq(d.glob('img/*'), ['img/x.png'])
+  assert_eq(d.glob('img/**'), ['img/sub/y.png', 'img/x.png'])
+  assert_eq(d.glob('**'), SORTED)
+  assert_eq(d.glob('[ab]*'), ['a.txt', 'b-c.txt'])
+  assert_eq(d.glob('*[!t]'), [])
+  assert_eq(d.glob('?.txt'), ['a.txt'])
+  assert_eq(d.glob('./docs/*.md'), ['docs/readme.md'])
+  assert_eq(d.glob('*'), ['a.txt', 'b-c.txt', 'empty.txt', 'foo..txt'])
+  assert_eq(d.glob('../*'), [])
+  assert_eq(d.glob('/a.txt'), [])
+  assert_eq(d.glob('nothing*'), [])
+
+  # copy_to writes every file under a disk directory, making directories.
+  let out = FS.mkdtemp('culebra-dir-copy')
+  defer {
+    FS.remove(out, recursive: true)
+  }
+  let dest = FS.join(out, 'nested', 'dest')
+  d.copy_to(dest)
+  let copy = Dir.disk(dest)
+  assert_eq(copy.files(), SORTED)
+  for path, body in FILES {
+    assert_eq(copy.read(path), body, path)
+  }
+
+  # Every kind crosses an Isolate and answers there.
+  assert_eq(
+    Isolate.spawn(|x| [x.files(), x.glob('**/*.png')], d).join(),
+    [SORTED, ['img/sub/y.png', 'img/x.png']],
+  )
+}
+
+# --- Dir.disk ---
+let root = FS.mkdtemp('culebra-dir-disk')
+defer {
+  FS.remove(root, recursive: true)
+}
+for path, body in FILES {
+  let full = FS.join(root, path)
+  FS.mkdir(FS.dirname(full))
+  FS.write(full, body)
+}
+let disk = Dir.disk(root)
+assert_eq(type_of(disk), 'DiskDir')
+check_dir(disk)
+check_dir(Dir.disk(Path.new(root)))
+assert_eq(disk.root, FS.abspath(root))
+assert_eq(
+  caught(|| Dir.disk(FS.join(
+    root,
+    'nope',
+  ))).starts_with("IOError: Dir.disk: no such directory"),
+  true,
+)
+assert_eq(
+  caught(|| Dir.disk(FS.join(
+    root,
+    'a.txt',
+  ))).starts_with("IOError: Dir.disk: no such directory"),
+  true,
+)
+assert_eq(
+  caught(|| Dir.disk(5)),
+  'TypeError: type error: Dir.disk expects String|Path, got Long',
+)
+
+# --- Dir.memory ---
+let mem = Dir.memory(FILES)
+assert_eq(type_of(mem), 'MemoryDir')
+check_dir(mem)
+# Keys are normalized when the Dir is made.
+assert_eq(Dir.memory({'./a//b.txt': 'x'}).files(), ['a/b.txt'])
+assert_eq(
+  caught(|| Dir.memory(5)),
+  'TypeError: type error: Dir.memory expects Object, got Long',
+)
+assert_eq(
+  caught(|| Dir.memory({img: {'x.png': 'x'}})),
+  "TypeError: Dir.memory: 'img' holds Object, not String (a file in a subdirectory is a key like 'sub/name.txt')",
+)
+assert_eq(
+  caught(|| Dir.memory({'a': 1})).starts_with("TypeError: Dir.memory: 'a' holds Long"),
+  true,
+)
+assert_eq(
+  caught(|| Dir.memory({'../x': 'y'})),
+  "ValueError: Dir.memory: '../x' is not a file inside the directory",
+)
+assert_eq(
+  caught(|| Dir.memory({'.': 'y'})),
+  "ValueError: Dir.memory: '.' is not a file inside the directory",
+)
+assert_eq(
+  caught(|| Dir.memory({'a/b': 'x', 'a//b': 'y'})),
+  "ValueError: Dir.memory: 'a//b' names a file another key already names",
+)
+assert_eq(
+  caught(|| Dir.memory({'a': 'x', 'a/b': 'y'})),
+  "ValueError: Dir.memory: 'a' is both a file and a directory",
+)
+assert_eq(Dir.memory({}).files(), [])
+assert_eq(Dir.memory({}).list_dir(''), [])
+
+# --- a Dir of the program's own: every default from the trait ---
+let own = Wrapped(Dir.memory(FILES))
+check_dir(own)
+# A path a broken Dir lists outside itself is refused, not written.
+class Leaky {
+  read(path) {
+    'x'
+  }
+  list_dir(path) {
+    []
+  }
+  exists(path) {
+    true
+  }
+  is_file(path) {
+    true
+  }
+  is_dir(path) {
+    false
+  }
+  files() {
+    ['../escaped.txt']
+  }
+}
+let trap = FS.mkdtemp('culebra-dir-leak')
+defer {
+  FS.remove(trap, recursive: true)
+}
+assert_eq(
+  caught(|| Leaky().copy_to(FS.join(trap, 'in'))),
+  "ValueError: copy_to: '../escaped.txt' is not a path inside the directory",
+)
+assert_false(FS.exists(FS.join(trap, 'escaped.txt')))
+
+inspect('Dir contract holds')

@@ -5229,6 +5229,7 @@ inline int build_object_from_modules(
   AotNames names;
   for (const auto& m : modules)
     if (m.ast) aot_collect_names(*m.ast, names);
+  aot_collect_builtin_trait_names(names);
   return Lowering::build_object(prog, out_path, opt_level, emit_llvm,
                                 target_triple, names, entries.all);
 }

@@ -8713,6 +8713,16 @@ inline std::string_view bytecode(JitValue v) {
 
 }  // namespace _fst_adapt
 
+// _Dir — the natives behind the Dir module (src/preambles/dir.cul). The
+// path rule every kind of Dir answers by: the normalized relative path, or
+// nil for one that is not inside the directory (vfs.h dir_path_normalize).
+inline JitValue _ns_dir_normalize(JitValue* a, int64_t) {
+  std::string out;
+  if (!culebra::dir_path_normalize(_ns_adapt::require_sv(a[0], "path"), out))
+    return _ns_adapt::v_nil();
+  return _ns_adapt::str(out);
+}
+
 inline JitValue _ns_fst_compile_set(JitValue* a, int64_t) {
   return _fst_adapt::str(culebra::fstdict::compile_set(
       _fst_adapt::keys(a[0]), _ns_adapt::require_bool(a[1], "sorted")));
@@ -9902,6 +9912,9 @@ inline const NsMethod kNsRows_Term_native[] = {
   {"_Term",  "read_key",    1, &_ns_term_read_key},
   {"_Term",  "attach_tty",  0, &_ns_term_attach_tty},
 };
+inline const NsMethod kNsRows_Dir_native[] = {
+  {"_Dir", "normalize", 1, &_ns_dir_normalize},
+};
 inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "available",      0, &_ns_audio_query<culebra::_audio_detail::available>},
   {"_Audio", "tone",          10, &_ns_audio_tone},
@@ -10127,6 +10140,8 @@ CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Canvas_native{
     kNsRows_Canvas_native, kCanonSigs_Canvas_native};
 CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Audio_native{
     kNsRows_Audio_native, kCanonSigs_Audio_native};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Dir_native{
+    kNsRows_Dir_native, kCanonSigs_Dir_native};
 
 // Every group, for the lanes that run in this process (the JIT, the VM) and
 // for `culebra build`'s emitter. An AOT binary reads the list its program
@@ -10176,6 +10191,7 @@ inline const NsGroupRef kNsGroups[] = {
   {"_Term", &culebra_ns_group_Term_native},
   {"_Canvas", &culebra_ns_group_Canvas_native},
   {"_Audio", &culebra_ns_group_Audio_native},
+  {"_Dir", &culebra_ns_group_Dir_native},
 };
 
 #if defined(CULEBRA_RT_DEFINE_RUNTIME) || defined(CULEBRA_RT_FEATURE_ARCHIVE)
@@ -11849,7 +11865,7 @@ inline const std::unordered_set<std::string_view>& builtin_var_names() {
       "Signal",  "Encoding", "Compress",  "SharedBuffer", "Shared",
       "Hash",    "CSV",       "TOML",      "XML",       "Env",        "UUID",
       "String",
-      "_Term",   "_Canvas",   "_Audio",
+      "_Term",   "_Canvas",   "_Audio",    "_Dir",
 #if defined(CULEBRA_SQLITE_ENABLED)
       "SQLite",
 #endif
@@ -11861,7 +11877,7 @@ inline const std::unordered_set<std::string_view>& builtin_var_names() {
       "Log",
       "Path",    "Canvas",    "Audio",     "__Eff",     "Vector2",   "Vector3",
       "Deque",
-      "PriorityQueue", "StateMachine",
+      "PriorityQueue", "StateMachine", "Dir",
       // The bare function globals from those same source modules (assert_*,
       // `replace`) are listed by lazy_fn_group_of below, not here.
 #if defined(CULEBRA_HTTP_ENABLED)

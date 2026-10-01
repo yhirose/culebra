@@ -27,6 +27,32 @@
 
 namespace culebra {
 
+// A path as a Dir keys it: relative to the root, `/` separated, no `.` or
+// empty segment (`a//b`, `./a`, `a/./b`, a trailing `/`), and `""` for the
+// root itself (`"."` too). False for a path that starts with `/` or `\` or
+// climbs with `..` — such a path is simply not there, never an error. A
+// backslash is an ordinary character otherwise (`foo\bar` is one name); an
+// archive that recorded its entries with `\` converts them as it indexes.
+// The one rule for every kind of Dir (`Dir.disk` / `memory` / `embedded` /
+// `zip`) and the _Dir.normalize native the preamble classes call.
+inline bool dir_path_normalize(std::string_view path, std::string& out) {
+  out.clear();
+  if (!path.empty() && (path.front() == '/' || path.front() == '\\'))
+    return false;
+  for (size_t i = 0; i <= path.size();) {
+    size_t j = path.find('/', i);
+    if (j == std::string_view::npos) j = path.size();
+    auto seg = path.substr(i, j - i);
+    if (seg == "..") return false;
+    if (!seg.empty() && seg != ".") {
+      if (!out.empty()) out += '/';
+      out += seg;
+    }
+    i = j + 1;
+  }
+  return true;
+}
+
 // A read-only directory: resolve a forward-slashed, already-sanitized relative
 // path (no leading '/', no "..") to its bytes.
 struct Dir {
