@@ -269,4 +269,21 @@ check("unless-effect", [265, 42], fn () {
   handle { un_tally(nil) } with un_note(x, k) { k(x) }
 })
 
+// a condition that cannot be tested reports where it was written: past an arm
+// that did not run, and in the lowered bodies, whose `if` the lowering writes
+fn cn_else_if(z) {
+  if false { 0 } else if z { 1 }
+}
+check("cond-else-if", [275, 26], fn () { cn_else_if(nil) })
+fn cn_while(z) {
+  while z { yield 1 }
+}
+check("cond-while-gen", [279, 9], fn () { cn_while(nil).collect() })
+effect fn cn_if(z) {
+  if z { perform un_note(1) }
+}
+check("cond-if-effect", [283, 6], fn () {
+  handle { cn_if(nil) } with un_note(x, k) { k(x) }
+})
+
 inspect("test_transform_error_lines: all assertions passed")

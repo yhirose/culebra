@@ -1,5 +1,5 @@
-# A non-Bool/non-numeric guard raises TypeError, attributed to the match
-# node — identical kind/message/position on every lane.
+# A non-Bool/non-numeric guard raises TypeError, attributed to the guard, as
+# any condition's is — identical kind/message/position on every lane.
 println("before")
 let s = "x"
 println(match 5 {

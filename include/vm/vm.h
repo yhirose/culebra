@@ -5254,6 +5254,14 @@ class Compiler {
     }
   };
 
+  // A branch on a condition the program wrote: a condition to_bool rejects
+  // reports where it was written, not at whatever was compiled last (the `if`
+  // statement, or the arm before an `else if`).
+  size_t emit_test(Op op, int32_t slot, const peg::Ast& cond) {
+    StampGuard at(*this, cond);
+    return emit(op, slot);
+  }
+
   size_t emit(Op op, int32_t a = 0, int32_t b = 0, int32_t c = 0,
               int32_t d = 0) {
     if (chunk_.positions.empty() ||
@@ -9815,7 +9823,7 @@ class Compiler {
       store_into(cond_slot, compile_expr(*wv.cond));
       sweep_temps(base, slot_base);
     }
-    size_t exit_jump = emit(Op::JumpIfFalse, cond_slot);
+    size_t exit_jump = emit_test(Op::JumpIfFalse, cond_slot, *wv.cond);
 
     loops_.push_back({next_slot_, {}, {}, broke,
                       scopes_.size(), enter_loop_label(wv.label)});
@@ -12805,7 +12813,7 @@ class Compiler {
     size_t i = iv.arm_off;
     for (; i + 1 < ast.nodes.size(); i += 2) {
       auto cond = compile_expr(*ast.nodes[i]);
-      size_t skip = emit(Op::JumpIfFalse, cond.slot);
+      size_t skip = emit_test(Op::JumpIfFalse, cond.slot, *ast.nodes[i]);
       compile_arm(*ast.nodes[i + 1]);
       end_jumps.push_back(emit(Op::Jump));
       patch_to_here(skip);
@@ -12836,7 +12844,7 @@ class Compiler {
         break;
       }
       auto c = compile_expr(test);
-      size_t skip = emit(Op::JumpIfFalse, c.slot);
+      size_t skip = emit_test(Op::JumpIfFalse, c.slot, test);
       compile_arm_into(*arm->nodes[1], res);
       end_jumps.push_back(emit(Op::Jump));
       patch_to_here(skip);
@@ -12855,7 +12863,7 @@ class Compiler {
     for (size_t i = 0; i < ast.nodes.size(); i++) {
       store_into(res, compile_expr(*ast.nodes[i]), /*dst_is_fresh=*/i == 0);
       if (i + 1 < ast.nodes.size())
-        end_jumps.push_back(emit(jump_op, res));
+        end_jumps.push_back(emit_test(jump_op, res, *ast.nodes[i]));
     }
     for (size_t j : end_jumps) patch_to_here(j);
     return {res, true};
@@ -13008,14 +13016,13 @@ class Compiler {
                            /*is_mut=*/true, /*declares=*/true);
       size_t body_idx = 1;
       if (arm->nodes[body_idx]->tag == "GUARD"_) {
-        auto g = compile_expr(*arm->nodes[body_idx]->nodes[0]);
+        const auto& guard = *arm->nodes[body_idx]->nodes[0];
+        auto g = compile_expr(guard);
         // Branch on the guard being TAKEN, so the failing path is the fall
         // through and its release ladder is emitted here — with the arm's
         // scope still open, which is what lets the whole pattern's bindings
-        // (not just one) be released by the ordinary scope ladder. The test
-        // reads the pending MATCH position: a non-Bool guard's TypeError
-        // reports the match node in both existing lanes.
-        size_t take = emit(Op::JumpIfTrue, g.slot);
+        // (not just one) be released by the ordinary scope ladder.
+        size_t take = emit_test(Op::JumpIfTrue, g.slot, guard);
         release_down_to(scopes_.back().slot_watermark);
         fail_jumps.push_back(emit(Op::Jump));
         patch_to_here(take);
