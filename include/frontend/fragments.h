@@ -349,6 +349,31 @@ struct SourcePos {
 // Where a byte of a synthesized buffer came from in the user's source. It
 // caches, per buffer it visits, the anchors found in it and its line starts —
 // both fixed once the buffer is parsed — so one serves a whole lowering.
+// The byte `column - 1` code points (counted as peg::codepoint_count does)
+// past `line_start`, a line's first byte in `buf`.
+inline size_t column_offset(const std::string& buf, size_t line_start,
+                            size_t column) {
+  size_t off = line_start;
+  for (size_t cp = 1; cp < column && off < buf.size(); cp++)
+    off += std::max<size_t>(
+        1, peg::codepoint_length(buf.data() + off, buf.size() - off));
+  return off;
+}
+
+// The byte of `buf` at a node's line and column (1-based, the column in
+// code points, as the parser counts them), or nullopt past its last line.
+inline std::optional<size_t> offset_at(const std::string& buf, size_t line,
+                                       size_t column) {
+  if (line == 0) return std::nullopt;
+  size_t off = 0;
+  for (size_t l = 1; l < line; l++) {
+    off = buf.find('\n', off);
+    if (off == std::string::npos) return std::nullopt;
+    off++;
+  }
+  return column_offset(buf, off, column);
+}
+
 class SourceResolver {
  public:
   // The user-source line and column (as the parser counts them: 1-based,
@@ -391,12 +416,7 @@ class SourceResolver {
     auto& b = buffer(buf);
     index_lines(b, buf);
     if (n.line == 0 || n.line > b.line_starts.size()) return std::nullopt;
-    size_t off = b.line_starts[n.line - 1];
-    // Past `column - 1` code points, counted as peg::codepoint_count does.
-    for (size_t cp = 1; cp < n.column && off < buf.size(); cp++)
-      off += std::max<size_t>(
-          1, peg::codepoint_length(buf.data() + off, buf.size() - off));
-    return resolve(buf, off);
+    return resolve(buf, column_offset(buf, b.line_starts[n.line - 1], n.column));
   }
 
  private:

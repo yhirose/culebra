@@ -218,6 +218,18 @@ assert_eq(
   112,
 )
 
+// a postfix `if` / `unless` statement that performs
+effect fn cf_note(x)
+effect fn cf_tally(skip) {
+  mut acc = 0
+  acc = acc + perform cf_note(1)
+  acc = acc + perform cf_note(10) unless skip
+  acc = acc + perform cf_note(100) if skip
+  acc
+}
+assert_eq(handle { cf_tally(false) } with cf_note(x, resume) { resume(x) }, 11)
+assert_eq(handle { cf_tally(true) } with cf_note(x, resume) { resume(x) }, 101)
+
 // for-in body performs (desugared to while + iterator)
 effect fn cf_each()
 effect fn cf_iterate(xs) {

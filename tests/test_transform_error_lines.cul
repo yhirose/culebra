@@ -235,4 +235,38 @@ check("col-clause", [235, 57], fn () {
   handle { perform ask() } with ask(k) { let w = 1; w + [1][9] }
 })
 
+// `stmt unless c` runs `!c`; a `!` that fails reports where `c` reads from, as
+// in a plain statement, also in lowered bodies and through parentheses
+fn un_plain(z) {
+  mut x = 0
+  x = 1 unless z
+  x
+}
+check("unless-plain", [242, 16], fn () { un_plain(nil) })
+fn un_gen(z) {
+  yield 1 unless z
+}
+check("unless-gen", [247, 18], fn () { un_gen(nil).collect() })
+fn un_paren(z) {
+  yield 1 unless (z)
+}
+check("unless-paren", [251, 19], fn () { un_paren(nil).collect() })
+fn un_destructure(z) {
+  mut a = 0
+  mut b = 0
+  (a, b) = (1, 2) unless z
+  yield a + b
+}
+check("unless-destructure", [257, 26], fn () { un_destructure(nil).collect() })
+effect fn un_note(x)
+effect fn un_tally(z) {
+  mut acc = 0
+  acc = acc + perform un_note(1)
+  acc = acc + perform un_note(10) unless z
+  acc
+}
+check("unless-effect", [265, 42], fn () {
+  handle { un_tally(nil) } with un_note(x, k) { k(x) }
+})
+
 inspect("test_transform_error_lines: all assertions passed")

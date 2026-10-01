@@ -672,6 +672,13 @@ inline MappedSource rename_pattern_leaves(const peg::Ast& pat,
   return copies;
 }
 
+// Defined below; collect_promoted_edits writes a condition through it.
+inline MappedSource rewrite_locals_to_self(const peg::Ast& n,
+                                           const std::string& src,
+                                           const PromotedLocals& promoted,
+                                           EditSite site = EditSite::Expr,
+                                           std::vector<SourceEdit> edits = {});
+
 // The edits that move every promoted local under `n` to where it lives
 // (promoted_slot). Only references are touched — a member name (`o.x`) and a
 // label (`{x: v}`, `f(x: v)`) are not the local — and a shorthand `{x}` is
@@ -763,13 +770,9 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
     std::vector<SourceEdit> inner;
     collect_promoted_edits(base, src, promoted, inner, EditSite::Stmt);
     if (!inner.empty()) {
-      std::vector<SourceEdit> cond_edits;
-      collect_promoted_edits(*pv->cond, src, promoted, cond_edits,
-                             EditSite::Expr);
-      auto cond = rewrite_edits(*pv->cond, src, std::move(cond_edits));
       out.push_back({base.position, 0,
-                     pv->is_unless ? "if !(" + cond + ") { "
-                                   : "if " + cond + " { "});
+                     "if " + rewrite_locals_to_self(*n.nodes[0], src, promoted) +
+                         " { "});
       out.insert(out.end(), inner.begin(), inner.end());
       size_t base_end = base.position + base.length;
       out.push_back({base_end, n.position + n.length - base_end, " }"});
@@ -810,8 +813,21 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
 inline MappedSource rewrite_locals_to_self(const peg::Ast& n,
                                            const std::string& src,
                                            const PromotedLocals& promoted,
-                                           EditSite site = EditSite::Expr,
-                                           std::vector<SourceEdit> edits = {}) {
+                                           EditSite site,
+                                           std::vector<SourceEdit> edits) {
+  using namespace peg::udl;
+  // The `!c` that `unless c` runs has no source of its own (see
+  // make_postfix_if): it is written around `c`, standing at `c`'s line and
+  // column, as the synthesized `!` does (a collapsed `(c)` keeps the
+  // parenthesis's position but takes the column of what is inside).
+  if (n.original_tag == "STMT_MODIFIER_UNLESS"_) {
+    const auto& c = *n.nodes[1];
+    auto at = offset_at(src, c.line, c.column).value_or(c.position);
+    return MappedSource::standing_for("!(", src, at) +
+           rewrite_locals_to_self(c, src, promoted, EditSite::Expr,
+                                  std::move(edits)) +
+           ")";
+  }
   if (ast_source_slice(n, src).empty()) return {};
   collect_promoted_edits(n, src, promoted, edits, site);
   return rewrite_edits(n, src, std::move(edits));

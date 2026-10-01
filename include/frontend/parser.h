@@ -2285,10 +2285,12 @@ inline std::shared_ptr<peg::Ast> make_postfix_if(const peg::Ast& stmt) {
       Node(*base, "STATEMENT", base->position, base->length));
 
   if (is_unless) {
-    auto bang = tok("UNARY_NOT_OPERATOR", "UNARY_NOT_OPERATOR",
-                    std::string_view("!"), cond->line, cond->column);
-    // Named for what it was written as, so view_postfix_if can tell.
-    cond = grp("UNARY_NOT", "STMT_MODIFIER_UNLESS", {bang, cond});
+    // At the condition, where an error of the negation is reported, and named
+    // for what it was written as, so rewrite_locals_to_self can tell.
+    SynthNode at{path, cond->line, cond->column};
+    auto bang = at.tok("UNARY_NOT_OPERATOR", "UNARY_NOT_OPERATOR",
+                       std::string_view("!"), cond->line, cond->column);
+    cond = at.grp("UNARY_NOT", "STMT_MODIFIER_UNLESS", {bang, cond});
   }
 
   // The whole IF node's span mirrors `stmt`'s (start of the base statement
@@ -2303,8 +2305,6 @@ inline std::shared_ptr<peg::Ast> make_postfix_if(const peg::Ast& stmt) {
 // re-emits source needs this: the IF's source still reads that way.
 struct PostfixIfView {
   const peg::Ast* stmt;
-  const peg::Ast* cond;  // as written: `c` of `unless c`, not the `!c` it runs
-  bool is_unless;
 };
 
 inline std::optional<PostfixIfView> view_postfix_if(const peg::Ast& n) {
@@ -2312,10 +2312,7 @@ inline std::optional<PostfixIfView> view_postfix_if(const peg::Ast& n) {
   if (n.tag != "IF"_ || n.nodes.size() != 2 ||
       n.nodes[1]->original_tag != "STATEMENT"_)
     return std::nullopt;
-  const auto& cond = *n.nodes[0];
-  bool unless = cond.original_tag == "STMT_MODIFIER_UNLESS"_;
-  return PostfixIfView{n.nodes[1].get(),
-                       unless ? cond.nodes[1].get() : &cond, unless};
+  return PostfixIfView{n.nodes[1].get()};
 }
 
 // Walk the optimized AST, replacing every postfix-modifier STATEMENT with
