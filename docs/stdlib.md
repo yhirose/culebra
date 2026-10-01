@@ -99,6 +99,7 @@ Conventions used below:
 | Stat / walk / glob / copy / rename / symlink / chmod / chown | [§3 FS](#3-fs) |
 | Watch a directory for changes | [§3 FS](#3-fs) — `FS.watch` |
 | Directory listing / create / remove | `FS.list_dir`, `FS.mkdir`, `FS.remove` |
+| Read a ZIP archive, the assets baked into the binary, or files held in memory, one way | [§41 Dir](#41-dir) — `Dir.zip(path)` / `Dir.embedded("assets")` / `Dir.memory({...})` |
 | `Instant` / `Duration`, ISO 8601, calendar arithmetic | [§5 Time](#5-time) |
 | Wrap an index that can go negative into `0..n` | [§1 Math](#1-math) — `Math.wrap(i, n)` (`%` truncates, so it stays negative) |
 | Random numbers | `Random.int`, `.uniform`, `.gauss`, `.shuffle`, `.choice`, `.weighted_choice` |
@@ -112,6 +113,7 @@ Conventions used below:
 | Escape / unescape HTML entities | [§16 Encoding](#16-encoding) — `Encoding.html.unescape("a &amp; b")` |
 | Encode / decode base64, hex, url | [§16 Encoding](#16-encoding) — `Encoding.base64.encode(s)` |
 | gzip / gunzip data or files | [§17 Compress](#17-compress) — `Compress.gzip(s)` / `Compress.gunzip(z)` |
+| Pack files into a ZIP archive | [§17 Compress](#17-compress) — `Compress.zip(files)` |
 | Compress without the gzip envelope | [§17 Compress](#17-compress) — `Compress.deflate(s, level: 9)` (decode with `Compress.gunzip`) |
 | Hash / checksum / HMAC | [§18 Hash](#18-hash) — `Hash.sha256(s)` / `Hash.hmac_sha256(key, s)` |
 | Parse / write CSV | [§19 CSV](#19-csv) — `CSV.parse(text)` / `CSV.stringify(rows)` |
@@ -4521,8 +4523,8 @@ takes the byte order from a leading byte-order mark (`FE FF` big-endian,
 `FF FE` little-endian) and drops the mark; without one it reads big-endian,
 as RFC 2781 says — which is how Java's `UTF-16` reads it, and not how
 Python's `utf-16` does (that assumes the machine's order). An odd number of
-bytes, or a surrogate without its pair, raises `ValueError` naming the byte
-offset; `encode` raises it for a `String` that is not UTF-8.
+bytes, or a surrogate without its pair (named by its byte offset), raises
+`ValueError`; `encode` raises it for a `String` that is not UTF-8.
 
 ```culebra
 let b = Encoding.utf16.encode("héllo")
@@ -4597,7 +4599,9 @@ HTTP responses are decompressed transparently by the `Http` client (it sends
 
 `zip` packs a set of files into an archive: an Object of one key per file
 (`"sub/name.txt"` to its contents, as [`Dir.memory`](#41-dir) takes it) or any
-[`Dir`](#41-dir). The entries go in sorted by path, with one fixed timestamp,
+[`Dir`](#41-dir). A path holding `\` or starting with a drive (`C:`) raises
+`ValueError`, since an archive reader takes either for a separator or a root.
+The entries go in sorted by path, with one fixed timestamp,
 so the same files always make the same bytes. Writing the archive is
 `FS.write`; reading one back, or extracting it, is
 [`Dir.zip`](#zip-archives).
@@ -8437,8 +8441,9 @@ and a trailing `/` name what `a` and `a/b` do. A path that starts with `/` or
 `read` raises the `IOError` any missing file does, so nothing is read from
 outside the Dir. Otherwise a name is taken as written — `foo..txt` is an
 ordinary file, and `\` is not a separator. Lists are sorted by bytes. Names
-are compared as written in `Dir.memory` and `Dir.embedded`; `Dir.disk` follows
-the operating system (case-insensitive on macOS and Windows by default).
+are compared as written in `Dir.memory`, `Dir.zip` and a baked
+`Dir.embedded`; `Dir.disk`, and `Dir.embedded` run from source, follow the
+operating system (case-insensitive on macOS and Windows by default).
 
 `read` and `size` on a path that is no file, and `list_dir` on one that is no
 directory, raise `IOError`, worded the same by every kind of Dir:
@@ -8454,7 +8459,8 @@ inspect(d.exists('../a.txt'))                               # => false
 `glob` matches each `/`-separated segment of a file's path: `*` is any run of
 characters, `?` one character, `[abc]`, `[a-z]` and `[!a]` one character of a
 set. A segment that is exactly `**` matches any number of segments, none
-included. Only files are listed, never directories.
+included, so `img/**` is every file under `img`. Only files are listed, never
+directories (`FS.glob` lists both, and its `**` stands for directories only).
 
 ```culebra
 let d = Dir.memory({'a.txt': '', 'b.md': '', 'img/x.png': '', 'img/sub/y.png': ''})

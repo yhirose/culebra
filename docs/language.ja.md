@@ -3493,10 +3493,10 @@ runtimeはpreambleとして8つの基本traitをship — `import`不要
 | `Hashable` | `hash() -> Long` | — |
 | `Iterator` | `has_next() -> Bool`, `next() -> Any` | — |
 | `Iterable` | `iter() -> Iterator` | — |
-| `Dir` | `read(path)`, `list_dir(path)`, `exists(path)`, `is_file(path)`, `is_dir(path)` | `files`, `glob`, `size`, `copy_to` |
+| `Dir` | `read(path) -> String`, `list_dir(path) -> Array`, `exists(path) -> Bool`, `is_file(path) -> Bool`, `is_dir(path) -> Bool` | `files`, `glob`, `size`, `copy_to` |
 
-trait注釈に答えるのはクラスのインスタンスで、Objectリテラルはクラスを
-持たないので、どんなメンバーがあってもこれらのどれにもconformしない。
+Objectリテラルはクラスを持たないので、どんなメンバーがあってもこれらのどれにも
+conformしない。
 
 `cmp`だけ書けば6関係methodが揃い、`eq`だけ書けば`neq`が
 入り、`to_s`だけ書けばStringerの使える場所で受け取れる。

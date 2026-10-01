@@ -72,26 +72,34 @@ struct Index {
   }
 
   // Records the entry `name` (as the archive wrote it). `\` — which some
-  // Windows tools write — is a separator here, and a name that starts with a
+  // Windows tools write — is a separator here, and a path that starts with a
   // drive (`C:`) is as absolute as one that starts with `/`: such an entry, or
   // one that climbs with `..`, could never be read by path and is left out.
-  // When two entries name one file, the first wins.
+  // The first entry wins: over a later one naming the same file, and over one
+  // that would make a file a directory too, or a directory a file.
   void add(std::string name, const Entry& e) {
     std::replace(name.begin(), name.end(), '\\', '/');
     bool dir = !name.empty() && name.back() == '/';
-    if (name.size() >= 2 && name[1] == ':' &&
-        std::isalpha(static_cast<unsigned char>(name[0])))
-      return;
     std::string key;
-    if (!dir_path_normalize(name, key) || key.empty()) return;
+    if (!dir_path_normalize(name, key) || key.empty() || has_drive(key))
+      return;
+    if (files.count(key) || (!dir && dirs.count(key))) return;
+    std::vector<std::string> parents;
+    for (auto slash = key.find('/'); slash != std::string::npos;
+         slash = key.find('/', slash + 1)) {
+      parents.push_back(key.substr(0, slash));
+      if (files.count(parents.back())) return;
+    }
+    dirs.insert(parents.begin(), parents.end());
     if (dir) {
       dirs.insert(key);
     } else {
       files.emplace(key, e);
     }
-    for (auto slash = key.rfind('/'); slash != std::string::npos && slash > 0;
-         slash = key.rfind('/', slash - 1))
-      dirs.insert(key.substr(0, slash));
+  }
+  static bool has_drive(std::string_view key) {
+    return key.size() >= 2 && key[1] == ':' &&
+           std::isalpha(static_cast<unsigned char>(key[0]));
   }
 };
 
@@ -121,16 +129,25 @@ struct Reader {
 
 // Walks the central directory into the index. The cursor stops on an error
 // as it does at the end, so `error()` is what tells the two apart.
+// An archive of no entries has no first one to go to, so it is not walked.
+// A size past what a Long holds is damage, not a file.
 inline Opened _index(Reader* r) {
   Opened o;
-  r->unzip.enumerate([&](zipper::UnZip& u) {
-    unz64_file_pos pos{};
-    if (unzGetFilePos64(u, &pos) != UNZ_OK) return;
-    o.index.add(u.file_path(), {pos.pos_in_zip_directory, pos.num_of_file,
-                                u.file_size()});
-  });
-  if (!r->unzip.error().empty()) {
-    o.error = r->unzip.error();
+  unz_global_info64 info{};
+  if (unzGetGlobalInfo64(r->unzip, &info) == UNZ_OK && info.number_entry > 0)
+    r->unzip.enumerate([&](zipper::UnZip& u) {
+      unz64_file_pos pos{};
+      if (unzGetFilePos64(u, &pos) != UNZ_OK) return;
+      uint64_t size = u.file_size();
+      if (size > static_cast<uint64_t>(INT64_MAX)) {
+        o.error = "not a ZIP archive, or a damaged one";
+        return;
+      }
+      o.index.add(u.file_path(),
+                  {pos.pos_in_zip_directory, pos.num_of_file, size});
+    });
+  if (o.error.empty()) o.error = r->unzip.error();
+  if (!o.error.empty()) {
     delete r;
     return o;
   }
@@ -201,6 +218,12 @@ CULEBRA_ZIP_LINKAGE bool read(Reader* r, const Entry& e, std::string& out,
   out.clear();
   if (!r->unzip.read(out)) {
     error = r->unzip.error();
+    return false;
+  }
+  // minizip checks the CRC only once the recorded size is read through, so
+  // data that ends short of it would pass unchecked.
+  if (out.size() != e.size) {
+    error = "the data does not match its recorded size";
     return false;
   }
   return true;

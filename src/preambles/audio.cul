@@ -44,7 +44,7 @@ let _audio_module = fn () {
   }
 
   # A one-shot sample decoded once from WAV, MP3 or Ogg bytes (a String, e.g.
-  # from FS.read or Embed) and played per call. One voice: play() restarts
+  # from FS.read or a Dir) and played per call. One voice: play() restarts
   # it. Raises ValueError when the bytes are none of the three formats.
   class Sound {
     new(data: String) {

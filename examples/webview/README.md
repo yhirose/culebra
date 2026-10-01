@@ -134,7 +134,7 @@ collapses the whole "server + window + assets + shutdown" dance into
 Desktop.run({
   title:  "My App",
   size:   [720, 560],
-  assets: Dir.embedded("dist"),       # dev: live disk / AOT: baked into the binary
+  assets: Dir.embedded("dist"),    # dev: live disk / AOT: baked into the binary
   routes: fn(srv) {                # just the API — the facade does the rest
     srv.get("/api/hello", fn(req) { ... })
   }

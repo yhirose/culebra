@@ -22,7 +22,7 @@
 #include <base/source_dir.h>
 #include <cli/test_engine.h>
 #include <cli/test_runner.h>
-#include <stdlib/vfs.h>  // main_script_dir() — set here for Embed's dev disk fallback
+#include <stdlib/vfs.h>  // main_script_dir() — set here for Dir.embedded's dev disk fallback
                   // (pulled transitively only on the JIT/AOT path otherwise)
 #ifdef CULEBRA_JIT_ENABLED
 #ifndef CULEBRA_WRAP_LINK_FLAGS

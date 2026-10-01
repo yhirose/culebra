@@ -3395,7 +3395,7 @@ trait Dir {
     }
     out.sorted()
   }
-  glob(pattern) -> Array {
+  glob(pattern: StringLike) -> Array {
     let pat = to_string(pattern)
     let segs = pat.split('/').filter(|s| s != '' && s != '.').map(|s| to_string(s))
     if pat.starts_with('/') || pat.starts_with("\\") || segs.any(|s| s == '..') {
@@ -3474,16 +3474,18 @@ trait Dir {
     }
     self.read(path).size()
   }
-  copy_to(dest) {
+  copy_to(dest: String | Path) {
     let root = to_string(dest)
     let win = FS.sep() == "\\"
-    FS.mkdir(root)
-    for f in self.files() {
-      let path = to_string(f)
+    let paths = self.files().map(|f| to_string(f))
+    for path in paths {
       let segs = (win ? path.replace("\\", '/') : path).split('/')
       if path.starts_with('/') || path.starts_with("\\") || (win && path.contains(':')) || segs.any(|s| s == '' || s == '.' || s == '..') {
         throw {kind: 'ValueError', message: "copy_to: '{path}' is not a path inside the directory"}
       }
+    }
+    FS.mkdir(root)
+    for path in paths {
       let target = FS.join(root, path)
       FS.mkdir(FS.dirname(target))
       FS.write(target, self.read(path))

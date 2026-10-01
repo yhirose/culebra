@@ -7243,10 +7243,18 @@ inline JitValue _ns_compress_zip(JitValue* a, int64_t) {
     if (body.tag != TAG_STRING && body.tag != TAG_STRINGVIEW)
       fail("TypeError", culebra::format("'{}' holds {}, not String", path,
                                         culebra_runtime_type_of(body.tag)));
+    // A reader takes `\` for a separator and `C:` for a drive, so neither
+    // may reach an entry name (APPNOTE 4.4.17).
     std::string key;
-    if (!culebra::dir_path_normalize(path, key) || key.empty())
+    if (!culebra::dir_path_normalize(path, key) || key.empty() ||
+        culebra::zip::Index::has_drive(key))
       fail("ValueError",
            culebra::format("'{}' is not a file inside the archive", path));
+    if (key.find('\\') != std::string::npos)
+      fail("ValueError",
+           culebra::format("'{}' holds a backslash, which an archive reads "
+                           "as a separator",
+                           path));
     if (files.count(key))
       fail("ValueError",
            culebra::format("'{}' names a file another path already names",
@@ -7284,6 +7292,14 @@ inline JitValue _ns_compress_zip(JitValue* a, int64_t) {
     if (o->non_string_props && !o->non_string_props->empty())
       fail("TypeError", "a path is a String");
   }
+  // As Dir.memory refuses: a path a file and a directory both.
+  for (const auto& [key, _] : files)
+    for (auto slash = key.find('/'); slash != std::string::npos;
+         slash = key.find('/', slash + 1))
+      if (files.count(key.substr(0, slash)))
+        fail("ValueError",
+             culebra::format("'{}' is both a file and a directory",
+                             key.substr(0, slash)));
   std::vector<std::pair<std::string, std::string>> entries(files.begin(),
                                                            files.end());
   std::string out, err;
@@ -8928,13 +8944,16 @@ inline _DirZipTable::Open& _dir_zip_open_of(JitValue id) {
   return it->second;
 }
 
-// `_Dir.zip_open(path)`: a missing file is an IOError, like any file read;
-// one that is there and holds no archive is a ValueError, with the reason.
+// `_Dir.zip_open(path)`: a missing or unreadable file is an IOError, like any
+// file read; one that is there and holds no archive is a ValueError, with the
+// reason.
 inline JitValue _ns_dir_zip_open(JitValue* a, int64_t) {
   std::string path(_ns_adapt::require_sv(a[0], "path"));
   std::error_code ec;
   if (!std::filesystem::is_regular_file(path, ec))
     _dir_zip_throw("IOError", "Dir.zip: no such file '" + path + "'");
+  if (!std::ifstream(path, std::ios::binary))
+    _dir_zip_throw("IOError", "Dir.zip: cannot open '" + path + "'");
   return _dir_zip_register(culebra::zip::open_file(path), "'" + path + "': ");
 }
 inline JitValue _ns_dir_zip_open_bytes(JitValue* a, int64_t) {

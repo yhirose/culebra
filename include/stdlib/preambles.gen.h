@@ -3880,10 +3880,14 @@ let _kauai_module = fn () {
     }
   }
 
-  # `name` beside the file `from`.
-  fn beside(from, name) {
+  # `name` beside the file `from`; inside a Dir the separator is always `/`.
+  fn beside(from, name, in_dir) {
     let dir = from == nil ? "" : FS.dirname(from)
-    dir == "" ? name : FS.join(dir, name)
+    cond {
+      dir == "" => name,
+      in_dir => "{dir}/{name}",
+      _ => FS.join(dir, name),
+    }
   }
   {
     # A song file, and the files it uses, relative to it: from the disk, or
@@ -3894,7 +3898,7 @@ let _kauai_module = fn () {
       let read = dir == nil ? |n| FS.read(n) : |n| dir.read(n)
       throw {kind: "IOError", message: "Audio.Kauai: no song file {path}"} if !exists(path)
       let load_used = fn (name, from, line) {
-        let file = beside(from, name)
+        let file = beside(from, name, dir != nil)
         fail(line, "no file {file} to use") if !exists(file)
         (read(file), file)
       }
@@ -3955,7 +3959,7 @@ let _audio_module = fn () {
   }
 
   # A one-shot sample decoded once from WAV, MP3 or Ogg bytes (a String, e.g.
-  # from FS.read or Embed) and played per call. One voice: play() restarts
+  # from FS.read or a Dir) and played per call. One voice: play() restarts
   # it. Raises ValueError when the bytes are none of the three formats.
   class Sound {
     new(data: String) {
@@ -5981,6 +5985,9 @@ let _dir_module = fn () {
     }
   }
 
+  # The contents are read only by subscript, and which paths are files or
+  # directories lives in Sets: on an Object a key named like a method
+  # ('keys', 'has') would shadow it.
   class MemoryDir {
     new(files) {
       _Dir.mark(self, 'memory')
@@ -5991,6 +5998,7 @@ let _dir_module = fn () {
         }
       }
       mut contents = {}
+      mut paths = [].to_set()
       for key, value in files {
         if type_of(key) != 'String' {
           throw {
@@ -6012,7 +6020,7 @@ let _dir_module = fn () {
             message: "Dir.memory: '{key}' is not a file inside the directory",
           }
         }
-        if contents.has(rel) {
+        if !paths.add(rel) {
           throw {
             kind: 'ValueError',
             message: "Dir.memory: '{key}' names a file another key already names",
@@ -6021,25 +6029,23 @@ let _dir_module = fn () {
         contents[rel] = to_string(value)
       }
       # Every directory a file lies under, so asking about one is a lookup.
-      mut dirs = {}
-      for rel in contents.keys() {
+      mut dirs = [''].to_set()
+      for rel in paths {
         let parts = rel.split('/')
         for i in range(1, parts.size()) {
           let parent = parts.slice(0, i).join('/')
-          if contents.has(parent) {
+          if paths.contains(parent) {
             throw {
               kind: 'ValueError',
               message: "Dir.memory: '{parent}' is both a file and a directory",
             }
           }
-          dirs[parent] = true
+          dirs.add(parent)
         }
       }
       self.contents = contents
-      self.dirs = dirs
-    }
-    _is_dir(rel) {
-      rel == '' || self.dirs.has(rel)
+      self._paths = paths
+      self._dirs = dirs
     }
     read(path) {
       _need_file(self, 'read', path)
@@ -6050,8 +6056,7 @@ let _dir_module = fn () {
       let rel = _Dir.normalize(path)
       let prefix = rel == '' ? '' : rel + '/'
       self
-        .contents
-        .keys()
+        ._paths
         .iter()
         .filter(|k| k.starts_with(prefix))
         .map(|k| to_string(k.slice(prefix.size(), k.size()).split('/')[0]))
@@ -6061,18 +6066,18 @@ let _dir_module = fn () {
     }
     exists(path) {
       let rel = _Dir.normalize(path)
-      rel != nil && (self.contents.has(rel) || self._is_dir(rel))
+      rel != nil && (self._paths.contains(rel) || self._dirs.contains(rel))
     }
     is_file(path) {
       let rel = _Dir.normalize(path)
-      rel != nil && self.contents.has(rel)
+      rel != nil && self._paths.contains(rel)
     }
     is_dir(path) {
       let rel = _Dir.normalize(path)
-      rel != nil && self._is_dir(rel)
+      rel != nil && self._dirs.contains(rel)
     }
     files() {
-      self.contents.keys().sorted()
+      self._paths.to_array().sorted()
     }
   }
 
@@ -6123,7 +6128,7 @@ let _dir_module = fn () {
         }
       }
       if path != nil {
-        self.path = _disk_path('Dir.zip', path)
+        self.path = FS.abspath(_disk_path('Dir.zip', path))
         self._id = _Dir.zip_open(self.path)
       } else {
         # The open archive keeps its own copy of the bytes.

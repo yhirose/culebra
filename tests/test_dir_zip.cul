@@ -89,6 +89,23 @@ assert_true(caught(|| Compress.zip({
   'a/b': 'x',
   './a/b': 'y',
 })).starts_with("ValueError: Compress.zip: "))
+# What Dir.memory refuses, and names a reader would take for a separator or a
+# root.
+assert_eq(
+  caught(|| Compress.zip({'a': 'x', 'a/b': 'y'})),
+  "ValueError: Compress.zip: 'a' is both a file and a directory",
+)
+assert_eq(
+  caught(|| Compress.zip(Dir.memory({"a\\b.txt": 'x'}))),
+  "ValueError: Compress.zip: 'a\\b.txt' holds a backslash, which an archive reads as a separator",
+)
+assert_eq(
+  caught(|| Compress.zip({'C:x.txt': 'x'})),
+  "ValueError: Compress.zip: 'C:x.txt' is not a file inside the archive",
+)
+# No files make an archive of no entries, which reads back.
+assert_eq(Dir.zip(bytes: Compress.zip({})).files(), [])
+assert_eq(Dir.zip(bytes: Compress.zip({})).list_dir(''), [])
 # A field named like a default shadows it, and is no method to call.
 class Shadowed {
   new() {
@@ -149,6 +166,13 @@ assert_eq(crafted.list_dir('empty'), [])
 for path in ['../evil.txt', 'evil.txt', '/abs.txt', 'abs.txt', 'C:/drive.txt', 'drive.txt'] {
   assert_false(crafted.exists(path), path)
 }
+# The first entry wins over one that would make a file a directory too, or a
+# directory a file; a drive is found after `./` as well.
+let clash = Dir.zip(bytes: FIX.read('clash.zip'))
+assert_eq(clash.files(), ['a', 'ok.txt'])
+assert_eq(clash.list_dir(''), ['a', 'd', 'ok.txt'])
+assert_true(clash.is_file('a') && !clash.is_dir('a'))
+assert_true(clash.is_dir('d') && !clash.is_file('d'))
 
 # What cannot be read says why; asking about it costs nothing.
 assert_eq(crafted.size('bz.txt'), 10)
@@ -170,7 +194,18 @@ mut bytes = good.bytes().collect()
 bytes[45] = (bytes[45] + 1) % 256
 let damaged = Dir.zip(bytes: String.from_bytes(bytes))
 assert_eq(damaged.files(), ['x.txt'])
-assert_true(caught(|| damaged.read('x.txt')).starts_with("ValueError: Dir.zip: 'x.txt': "))
+assert_eq(
+  caught(|| damaged.read('x.txt')),
+  "ValueError: Dir.zip: 'x.txt': the data does not match its CRC",
+)
+# An entry whose data ends short of its recorded size, where minizip never
+# reaches the CRC.
+let short = Dir.zip(bytes: FIX.read('short.zip'))
+assert_eq(short.size('short.txt'), 10)
+assert_eq(
+  caught(|| short.read('short.txt')),
+  "ValueError: Dir.zip: 'short.txt': the data does not match its recorded size",
+)
 
 # Not an archive at all.
 assert_eq(
@@ -202,7 +237,7 @@ defer {
 let zpath = FS.join(tmp, 'files.zip')
 FS.write(zpath, packed)
 let zf = Dir.zip(zpath)
-assert_eq(zf.path, zpath)
+assert_eq(zf.path, FS.abspath(zpath))
 assert_eq(zf.files(), z.files())
 assert_eq(zf.read('img/x.png'), FILES['img/x.png'])
 assert_eq(

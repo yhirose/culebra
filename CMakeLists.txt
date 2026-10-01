@@ -257,7 +257,8 @@ set(_zlib_link "-lz")
 option(CULEBRA_ENABLE_ZIP "Enable ZIP archives (Dir.zip, Compress.zip)" ON)
 if(CULEBRA_ENABLE_ZIP)
   add_compile_definitions(CULEBRA_ENABLE_ZIP)
-  include_directories(./vendor/minizip ./vendor/cpp-zipper)
+  # BEFORE: a zlib prefix such as Homebrew's ships its own minizip headers.
+  include_directories(BEFORE ./vendor/minizip ./vendor/cpp-zipper)
   # Encrypted entries are refused before they are opened (zipper.h), so the
   # crypt code is left out; warnings are silenced as for any vendored C.
   add_library(culebra_minizip OBJECT ./vendor/minizip/minizip/ioapi.c

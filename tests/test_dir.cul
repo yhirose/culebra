@@ -207,6 +207,17 @@ assert_eq(
   "ValueError: Dir.memory: 'a' is both a file and a directory",
 )
 assert_eq(Dir.memory({}).files(), [])
+# A file may be named like an Object method; it shadows none of the Dir's.
+let named = Dir.memory({'keys': 'k', 'has/x': 'h', 'size': 's'})
+assert_eq(named.files(), ['has/x', 'keys', 'size'])
+assert_eq(named.read('keys'), 'k')
+assert_true(named.is_dir('has'))
+assert_eq(named.list_dir('has'), ['x'])
+assert_eq(named.size('size'), 1)
+assert_eq(
+  caught(|| Dir.memory({'has': 'h', 'has/x': 'x'})),
+  "ValueError: Dir.memory: 'has' is both a file and a directory",
+)
 assert_eq(Dir.memory({}).list_dir(''), [])
 
 # --- Dir.embedded ---
@@ -241,7 +252,8 @@ zb.close()
 # --- a Dir of the program's own: every default from the trait ---
 let own = Wrapped(Dir.memory(FILES))
 check_dir(own)
-# A path a broken Dir lists outside itself is refused, not written.
+# A path a broken Dir lists outside itself is refused before anything is
+# written.
 class Leaky {
   read(path) {
     'x'
@@ -259,7 +271,7 @@ class Leaky {
     false
   }
   files() {
-    ['../escaped.txt']
+    ['a.txt', '../escaped.txt']
   }
 }
 let trap = FS.mkdtemp('culebra-dir-leak')
@@ -271,5 +283,15 @@ assert_eq(
   "ValueError: copy_to: '../escaped.txt' is not a path inside the directory",
 )
 assert_false(FS.exists(FS.join(trap, 'escaped.txt')))
+assert_false(FS.exists(FS.join(trap, 'in')))
+# The destination is a path on disk.
+assert_eq(
+  caught(|| own.copy_to(nil)),
+  "TypeError: type error: parameter 'dest' expects String | Path",
+)
+assert_eq(
+  caught(|| own.glob(5)),
+  "TypeError: type error: parameter 'pattern' expects StringLike",
+)
 
 inspect('Dir contract holds')

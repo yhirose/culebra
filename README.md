@@ -180,7 +180,7 @@ It is one kind of `Dir`, read the same way as a directory on disk
 (`Dir.disk`) or files held in memory (`Dir.memory`).
 
 ```culebra
-let assets = Dir.embedded("dist")         # index.html, favicon.ico, ...
+let assets = Dir.embedded("dist")       # index.html, favicon.ico, ...
 println(assets.exists("index.html"))   # => true
 println(assets.exists("favicon.ico"))  # => true
 ```

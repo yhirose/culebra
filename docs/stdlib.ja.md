@@ -97,6 +97,7 @@
 | stat / walk / glob / copy / rename / symlink / chmod / chown | [§3 FS](#3-fs) |
 | ディレクトリの変更監視 | [§3 FS](#3-fs) — `FS.watch` |
 | ディレクトリ列挙・作成・削除 | `FS.list_dir`、`FS.mkdir`、`FS.remove` |
+| ZIPアーカイブ、バイナリに焼き込んだアセット、メモリ上のファイルを同じやり方で読む | [§41 Dir](#41-dir) — `Dir.zip(path)` / `Dir.embedded("assets")` / `Dir.memory({...})` |
 | `Instant` / `Duration`クラス、ISO 8601、カレンダー算術 | [§5 Time](#5-time) |
 | 負になりうるインデックスを`0..n`に巻き戻す | [§1 Math](#1-math) — `Math.wrap(i, n)`（`%`は切り捨てなので負のまま） |
 | 乱数 | `Random.int`、`.uniform`、`.gauss`、`.shuffle`、`.choice`、`.weighted_choice` |
@@ -110,6 +111,7 @@
 | HTMLエンティティのescape / unescape | [§16 Encoding](#16-encoding) — `Encoding.html.unescape("a &amp; b")` |
 | base64 / hex / urlのエンコード・デコード | [§16 Encoding](#16-encoding) — `Encoding.base64.encode(s)` |
 | データ・ファイルのgzip / gunzip | [§17 Compress](#17-compress) — `Compress.gzip(s)` / `Compress.gunzip(z)` |
+| ファイルをZIPアーカイブに詰める | [§17 Compress](#17-compress) — `Compress.zip(files)` |
 | gzipの封筒なしで圧縮 | [§17 Compress](#17-compress) — `Compress.deflate(s, level: 9)`（展開は`Compress.gunzip`） |
 | ハッシュ / チェックサム / HMAC | [§18 Hash](#18-hash) — `Hash.sha256(s)` / `Hash.hmac_sha256(key, s)` |
 | CSVのパース / 生成 | [§19 CSV](#19-csv) — `CSV.parse(text)` / `CSV.stringify(rows)` |
@@ -4389,8 +4391,8 @@ culebraの`String`はUTF-8です。これらは、ファイルやプロトコル
 先頭のバイトオーダーマーク（`FE FF`ならビッグエンディアン、`FF FE`ならリトル
 エンディアン）でバイト順を決め、マークは取り除きます。マークが無ければRFC 2781の
 とおりビッグエンディアンで読みます。JavaのUTF-16と同じ読み方で、Pythonの`utf-16`
-とは違います（そちらはマシンのバイト順を仮定します）。奇数バイト、ペアの無い
-サロゲートはバイト位置付きの`ValueError`です。`encode`はUTF-8でない`String`に
+とは違います（そちらはマシンのバイト順を仮定します）。奇数バイトと、ペアの無い
+サロゲート（バイト位置付き）は`ValueError`です。`encode`はUTF-8でない`String`に
 `ValueError`を投げます。
 
 ```culebra
@@ -4465,7 +4467,9 @@ HTTPレスポンスは`Http`クライアントが透過的に展開します（`
 
 `zip`はファイルの集まりをアーカイブに詰めます。渡すのは、1ファイルにつき1つの
 キー（`"sub/name.txt"`から中身へ、[`Dir.memory`](#41-dir)が受け取る形）を持つ
-Objectか、任意の[`Dir`](#41-dir)です。エントリはパスの順に、同じ固定の時刻で
+Objectか、任意の[`Dir`](#41-dir)です。`\`を含むパスとドライブ（`C:`）で始まるパスは
+`ValueError`です。アーカイブを読む側はそれぞれを区切りと根と受け取るからです。
+エントリはパスの順に、同じ固定の時刻で
 入るので、同じファイルからはいつも同じバイト列ができます。アーカイブを書くのは
 `FS.write`、読み戻したり展開したりするのは[`Dir.zip`](#zipアーカイブ)です。
 
@@ -8118,9 +8122,9 @@ inspect(d.is_dir('img'))      # => true
 「無い」ものとして扱います。`exists`は`false`を返し、`read`は他の無いファイルと
 同じ`IOError`を投げるので、`Dir`の外が読まれることはありません。それ以外の名前は
 書いたとおりに扱います。`foo..txt`は普通のファイル名で、`\`は区切りではありません。
-一覧はバイト順にソートします。名前の比較は、`Dir.memory`と`Dir.embedded`では
-書いたとおりです。`Dir.disk`はOSに従います（macOSとWindowsの既定では大文字小文字を
-区別しません）。
+一覧はバイト順にソートします。名前の比較は、`Dir.memory`・`Dir.zip`・焼き込んだ
+`Dir.embedded`では書いたとおりです。`Dir.disk`と、ソースから実行した`Dir.embedded`は
+OSに従います（macOSとWindowsの既定では大文字小文字を区別しません）。
 
 ファイルでないパスへの`read`と`size`、ディレクトリでないパスへの`list_dir`は
 `IOError`です。文面はどの種類の`Dir`でも同じです:
@@ -8135,8 +8139,9 @@ inspect(d.exists('../a.txt'))                               # => false
 
 `glob`はファイルのパスを`/`で区切った1つずつと照合します。`*`は任意の文字の並び、
 `?`は1文字、`[abc]`・`[a-z]`・`[!a]`は集合の1文字です。ちょうど`**`だけの区切りは
-任意の個数（0個を含む）の区切りに合います。一覧に入るのはファイルだけで、
-ディレクトリは入りません。
+任意の個数（0個を含む）の区切りに合うので、`img/**`は`img`の下の全ファイルです。
+一覧に入るのはファイルだけで、ディレクトリは入りません（`FS.glob`は両方を返し、
+その`**`はディレクトリだけを表します）。
 
 ```culebra
 let d = Dir.memory({'a.txt': '', 'b.md': '', 'img/x.png': '', 'img/sub/y.png': ''})

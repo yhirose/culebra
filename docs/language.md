@@ -3730,11 +3730,10 @@ are visible without `import`:
 | `Hashable` | `hash() -> Long` | — |
 | `Iterator` | `has_next() -> Bool`, `next() -> Any` | — |
 | `Iterable` | `iter() -> Iterator` | — |
-| `Dir` | `read(path)`, `list_dir(path)`, `exists(path)`, `is_file(path)`, `is_dir(path)` | `files`, `glob`, `size`, `copy_to` |
+| `Dir` | `read(path) -> String`, `list_dir(path) -> Array`, `exists(path) -> Bool`, `is_file(path) -> Bool`, `is_dir(path) -> Bool` | `files`, `glob`, `size`, `copy_to` |
 
-A trait annotation is answered by a class instance — an Object
-literal has no class and conforms to none of these, whatever members
-it carries.
+An Object literal has no class and conforms to none of these,
+whatever members it carries.
 
 A class with only `cmp` automatically gets the six-way comparison
 suite; a class with `eq` gets `neq`; a class with `to_s` is

@@ -2224,10 +2224,14 @@ let _kauai_module = fn () {
     }
   }
 
-  # `name` beside the file `from`.
-  fn beside(from, name) {
+  # `name` beside the file `from`; inside a Dir the separator is always `/`.
+  fn beside(from, name, in_dir) {
     let dir = from == nil ? "" : FS.dirname(from)
-    dir == "" ? name : FS.join(dir, name)
+    cond {
+      dir == "" => name,
+      in_dir => "{dir}/{name}",
+      _ => FS.join(dir, name),
+    }
   }
   {
     # A song file, and the files it uses, relative to it: from the disk, or
@@ -2238,7 +2242,7 @@ let _kauai_module = fn () {
       let read = dir == nil ? |n| FS.read(n) : |n| dir.read(n)
       throw {kind: "IOError", message: "Audio.Kauai: no song file {path}"} if !exists(path)
       let load_used = fn (name, from, line) {
-        let file = beside(from, name)
+        let file = beside(from, name, dir != nil)
         fail(line, "no file {file} to use") if !exists(file)
         (read(file), file)
       }

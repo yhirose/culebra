@@ -174,7 +174,7 @@ Tensor.eval(y)  # [[5.0, 11.0], [11.0, 25.0]]
 メモリ上のファイル（`Dir.memory`）と同じ読み方をします。
 
 ```culebra
-let assets = Dir.embedded("dist")         # index.html、favicon.icoなど
+let assets = Dir.embedded("dist")       # index.html、favicon.icoなど
 println(assets.exists("index.html"))   # => true
 println(assets.exists("favicon.ico"))  # => true
 ```
