@@ -447,9 +447,9 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
 // parent's table with the message: the parent snapshots it at spawn, and the
 // worker rebuilds a default only when a lookup first misses it, so what a
 // default captures is copied into a worker that calls it, not into every
-// worker. A default body is a closure like the sent one; one that is not
-// Sendable (a mut capture, a captured native) is left out, and the worker
-// misses that one default alone.
+// worker. A default body is a closure like the sent one; one that cannot be
+// sent (a mut capture, a captured native, a dropped Shared value) is left
+// out, and the worker misses that one default alone.
 // Shipped entry i is still live: not installed yet, and its trait not
 // declared again in this Runtime.
 inline bool jit_shipped_pending(const _JitTraitDefaultTable& t, size_t i) {
@@ -462,6 +462,9 @@ jit_snapshot_trait_defaults() {
   for (const auto& [trait_name, methods] : _jit_trait_default_impls()) {
     for (const auto& [method_name, cls] : methods) {
       if (!cls) continue;
+      // Frozen: the walk bumps no in-flight ref, so a body that throws
+      // halfway, or is left out below, owes no release.
+      sendable::FreezeGuard frozen;
       try {
         JitSerCtx sc;
         sendable::SendNode body = jit_serialize(
@@ -469,13 +472,9 @@ jit_snapshot_trait_defaults() {
         // A body over a channel or a shared handle would owe an in-flight
         // release per snapshot, not per installing worker; a default is not
         // the place to share one, so it stays with its Runtime.
-        if (node_carries_inflight(body)) {
-          release_inflight_channels(body);
-          continue;
-        }
-        out.push_back({trait_name, method_name, std::move(body)});
-      } catch (const culebra::CulebraError& e) {
-        if (e.kind != "SendError") throw;
+        if (!node_carries_inflight(body))
+          out.push_back({trait_name, method_name, std::move(body)});
+      } catch (const culebra::CulebraError&) {
       }
     }
   }
@@ -499,9 +498,9 @@ inline JitClosure* jit_install_shipped_default(JitObject* obj,
         !_culebra_type_matches_single(
             TAG_OBJECT, reinterpret_cast<int64_t>(obj), d.trait.c_str()))
       continue;
-    t.shipped_open[i] = false;
     JitDeCtx dc;
     auto* cls = reinterpret_cast<JitClosure*>(jit_deserialize(d.body, dc).data);
+    t.shipped_open[i] = false;
     culebra_runtime_register_trait_default(d.trait.c_str(), d.method.c_str(),
                                            cls);
     return cls;
@@ -513,7 +512,8 @@ inline JitClosure* jit_install_shipped_default(JitObject* obj,
 // there, still serialized, until a lookup misses one.
 inline void jit_install_trait_defaults(
     std::shared_ptr<const sendable::TraitDefaults> defaults) {
-  _jit_shipped_default_hook = &jit_install_shipped_default;
+  [[maybe_unused]] static const bool hooked =
+      (_jit_shipped_default_hook = &jit_install_shipped_default, true);
   auto& t = _jit_trait_default_table();
   t.shipped_open.assign(defaults->size(), true);
   t.shipped = std::move(defaults);
@@ -788,6 +788,9 @@ inline JitValue culebra_jit_isolate_spawn(int8_t fn_tag, int64_t fn_data,
     throw;
   }
 
+  // Before the core is registered: nothing may throw between that and the
+  // thread that teardown joins.
+  auto defaults = jit_snapshot_trait_defaults();
   auto core = std::make_shared<IsolateCore>();
   int64_t id = jit_isolate_next_id().fetch_add(1, std::memory_order_relaxed);
   _install_jit_isolate_teardown_hook();
@@ -809,7 +812,7 @@ inline JitValue culebra_jit_isolate_spawn(int8_t fn_tag, int64_t fn_data,
   if (!threaded) g_live_isolates().fetch_sub(1, std::memory_order_relaxed);
   core->thread = culebra::SizedThread(
       [core, sclo = std::move(sclo), sargs = std::move(sargs),
-       defaults = jit_snapshot_trait_defaults(), threaded]() mutable {
+       defaults = std::move(defaults), threaded]() mutable {
         run_isolate_child_jit(core, sclo, sargs, defaults,
                               /*decrement_live=*/threaded);
       });

@@ -165,4 +165,17 @@ assert_eq(Isolate.spawn(fn (s) {
   }]
 }, Sq('r', 2)).join(), ['a shape of 4', 'TypeError'])
 
+# A default that cannot be sent (here it captures a Shared value already
+# dropped) stays behind; it costs a spawn nothing, nor what runs after it.
+let gone = Shared.new({a: 1})
+trait Peek {
+  peek()
+  peek_shared() {
+    gone.a
+  }
+}
+gone.drop()
+assert_eq(Isolate.spawn(|| 42).join(), 42)
+assert_eq(Parallel.map([1, 2], |x| x * 10), [10, 20])
+
 inspect('trait defaults reach workers')
