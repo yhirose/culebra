@@ -675,6 +675,16 @@ inline MappedSource rename_pattern_leaves(const peg::Ast& pat,
   return copies;
 }
 
+// `text` a lowering writes for `node`, standing at the node's line and column:
+// whatever it raises reports where the node was written, as diagnostics do
+// (a collapsed node keeps its parent's position but takes its child's column).
+inline MappedSource standing_at(std::string text, const peg::Ast& node,
+                                const std::string& src) {
+  return MappedSource::standing_for(
+      std::move(text), src,
+      offset_at(src, node.line, node.column).value_or(node.position));
+}
+
 // Defined below; collect_promoted_edits writes a condition through it.
 inline MappedSource rewrite_locals_to_self(const peg::Ast& n,
                                            const std::string& src,
@@ -820,13 +830,11 @@ inline MappedSource rewrite_locals_to_self(const peg::Ast& n,
                                            std::vector<SourceEdit> edits) {
   using namespace peg::udl;
   // The `!c` that `unless c` runs has no source of its own (see
-  // make_postfix_if): it is written around `c`, standing at `c`'s line and
-  // column, as the synthesized `!` does (a collapsed `(c)` keeps the
-  // parenthesis's position but takes the column of what is inside).
+  // make_postfix_if): it is written around `c`, standing where the
+  // synthesized `!` does.
   if (n.original_tag == "STMT_MODIFIER_UNLESS"_) {
     const auto& c = *n.nodes[1];
-    auto at = offset_at(src, c.line, c.column).value_or(c.position);
-    return MappedSource::standing_for("!(", src, at) +
+    return standing_at("!(", n, src) +
            rewrite_locals_to_self(c, src, promoted, EditSite::Expr,
                                   std::move(edits)) +
            ")";
@@ -834,6 +842,16 @@ inline MappedSource rewrite_locals_to_self(const peg::Ast& n,
   if (ast_source_slice(n, src).empty()) return {};
   collect_promoted_edits(n, src, promoted, edits, site);
   return rewrite_edits(n, src, std::move(edits));
+}
+
+// The iterator a loop or a `yield from` over `iterable` holds across
+// suspensions, opened as a `for` head opens one (__for_iter), so a value that
+// cannot be walked fails as it does in any fn, where it was written.
+inline MappedSource for_iter_source(const peg::Ast& iterable,
+                                    const std::string& src,
+                                    const PromotedLocals& promoted) {
+  return standing_at("__for_iter(", iterable, src) +
+         rewrite_locals_to_self(iterable, src, promoted) + ")";
 }
 
 // The [begin, end) offsets of a block's statements in `src`: its span inside
@@ -1523,8 +1541,10 @@ struct CpsBuilder {
     }
     if (u->tag == "YIELD_FROM"_ && !u->nodes.empty()) {
       int e = fresh();
-      states[e] = std::format("      self._g_delegate = ({}).iter(){}\n",
-                              rw(*u->nodes[0]), mk(*u->nodes[0])) +
+      states[e] = std::format(
+                      "      self._g_delegate = {}{}\n",
+                      anchored(for_iter_source(*u->nodes[0], src, rewrite_set)),
+                      mk(*u->nodes[0])) +
                   jump(cont);
       return e;
     }
@@ -1621,7 +1641,8 @@ struct CpsBuilder {
         u->position, h);
     open.pop_back();
     int e = fresh();
-    states[e] = std::format("      {} = ({}).iter(){}\n", it, rw(*fv.iter),
+    states[e] = std::format("      {} = {}{}\n", it,
+                            anchored(for_iter_source(*fv.iter, src, rewrite_set)),
                             mk(*fv.iter)) +
                 jump(reach);
     return e;

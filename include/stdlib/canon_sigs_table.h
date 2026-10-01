@@ -1650,6 +1650,8 @@ inline constexpr CanonParam kCanonParams_Bare[] = {
   {"args", false, false, false, true, false, "", CanonDefault::None, 0, {}},
   // 45: class_of
   {"v", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  // 46: __for_iter
+  {"v", false, false, false, false, false, "", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonSigs_Bare[] = {
@@ -1665,6 +1667,7 @@ inline constexpr CanonSig kCanonSigs_Bare[] = {
   {"", "", "__eff_copy", kCanonParams_Bare + 9, 1, "Object", 1, 1, false, -1, -1, -1},
   {"", "", "__eff_abort", kCanonParams_Bare + 10, 1, "", 1, 1, false, -1, -1, -1},
   {"", "", "__eff_catch_abort", kCanonParams_Bare + 11, 1, "Array", 1, 1, false, -1, -1, -1},
+  {"", "", "__for_iter", kCanonParams_Bare + 46, 1, "Object", 1, 1, false, -1, -1, -1},
   {"", "", "range", kCanonParams_Bare + 12, 2, "", 0, 0, true, -1, 1, 0},
   {"", "", "iota", kCanonParams_Bare + 14, 1, "", 0, 0, true, -1, -1, 0},
   {"", "", "repeat", kCanonParams_Bare + 15, 2, "Array", 2, 2, false, -1, -1, -1},

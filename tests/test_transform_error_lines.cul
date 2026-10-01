@@ -286,4 +286,27 @@ check("cond-if-effect", [283, 6], fn () {
   handle { cn_if(nil) } with un_note(x, k) { k(x) }
 })
 
+// a value a `for` cannot walk fails where it was written, with the `for`
+// head's error, also when a lowered body holds the iterator
+fn it_gen(v) {
+  for x in v { yield x }
+}
+check("for-gen", [292, 12], fn () { it_gen(1).collect() })
+fn it_from(v) {
+  yield from v
+}
+check("yield-from", [296, 14], fn () { it_from(nil).collect() })
+effect fn it_eff(v) {
+  for x in v { perform un_note(x) }
+  nil
+}
+check("for-effect", [300, 12], fn () {
+  handle { it_eff(true) } with un_note(x, k) { k(x) }
+})
+class IterFive {
+  new() {}
+  iter() { 5 }
+}
+check("for-broken-gen", [292, 12], fn () { it_gen(IterFive()).collect() })
+
 inspect("test_transform_error_lines: all assertions passed")

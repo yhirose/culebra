@@ -4330,6 +4330,19 @@ inline JitValue _ns_global_eff_abort(JitValue* a, int64_t) {
   culebra_runtime_eff_abort(static_cast<int8_t>(a[0].tag), a[0].data);
   return {TAG_NIL, 0};  // unreachable: eff_abort always throws
 }
+// The iterator a `for` head opens on `a[0]`, with its coercion and its checks
+// (a value that cannot be walked, an `iter()` whose result is no iterator):
+// what the generator and effect lowerings call where their loop holds an
+// iterator across suspensions.
+inline JitValue _ns_global_for_iter(JitValue* a, int64_t) {
+  auto it = _iter_coerce_iterable(static_cast<int8_t>(a[0].tag), a[0].data, 0, 0);
+  JitUnwindRelease guard{it};  // a broken iterator is released, as for_open does
+  JitClosure* has_next = nullptr;
+  JitClosure* next = nullptr;
+  culebra_runtime_iter_protocol_open(static_cast<int8_t>(it.tag), it.data, 0, 0,
+                                     &has_next, &next);
+  return it;
+}
 inline JitValue _ns_global_eff_catch_abort(JitValue* a, int64_t) {
   auto* fn = reinterpret_cast<JitClosure*>(a[0].data);
   return {TAG_ARRAY,
@@ -11081,6 +11094,7 @@ inline const NsMethod kBuiltinFns[] = {
   {"", "__eff_copy", 1, &_ns_global_eff_copy},
   {"", "__eff_abort", 1, &_ns_global_eff_abort},
   {"", "__eff_catch_abort", 1, &_ns_global_eff_catch_abort},
+  {"", "__for_iter", 1, &_ns_global_for_iter},
   {"", "range",    -1, &_ns_global_range},
   {"", "iota",     -1, &_ns_global_iota},
   {"", "repeat",    2, &_ns_global_repeat},
@@ -11977,7 +11991,7 @@ inline const std::unordered_set<std::string_view>& builtin_var_names() {
       "inspect", "print",   "println",   "repeat",
       "to_long", "to_float",  "to_string", "type_of", "hash", "__eff_copy",
       "Range",   "class_of",
-      "__eff_abort", "__eff_catch_abort",
+      "__eff_abort", "__eff_catch_abort", "__for_iter",
       "Math",    "IO",        "FS",        "File",     "_Time",
       "Random",  "Sys",       "JSON",      "Tensor",   "GC",
       "_Regex",  "_PEG",      "_FST",      "Search",    "Proc",     "Net",

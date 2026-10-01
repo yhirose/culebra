@@ -1411,7 +1411,7 @@ class EffectsLowerer {
 
   // --- for-in desugar (to `while` + iterator) ----------------------------
   // The CPS engine works over `while`, so a `for x in e { … }` that carries a
-  // suspension is rewritten to `let _it = (e).iter(); while _it.has_next() {
+  // suspension is rewritten to `let _it = __for_iter(e); while _it.has_next() {
   // let x = _it.next(); … }` — the same source pre-pass the generator uses,
   // keyed on `has_suspension` instead of `has_yield`. Only a single loop
   // variable is supported; a destructuring `for k, v in …` with a suspension is
@@ -1464,8 +1464,9 @@ class EffectsLowerer {
       // A label belongs to the loop, not to the iterator binding: it moves
       // onto the desugared `while`, after the `let` that opens the iterator.
       MappedSource replacement =
-          std::format("let {} = (", iter_var) + source_of(expr_node) +
-          std::format(").iter(){1}\n"
+          std::format("let {} = ", iter_var) +
+          standing_at("__for_iter(", expr_node, src_) + source_of(expr_node) +
+          std::format("){1}\n"
                       "{3}while {0}.has_next() {{{1}\n"
                       "  let {2} = {0}.next(){1}\n"
                       "  ",
