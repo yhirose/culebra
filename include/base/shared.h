@@ -3415,29 +3415,28 @@ trait Dir {
           pi += 1
           continue
         }
+        mut close = p.size()
         if pi < p.size() && p[pi] == 91 {
-          mut close = pi + 1
+          close = pi + 1
           while close < p.size() && p[close] != 93 {
             close += 1
           }
-          if close < p.size() {
-            mut k = pi + 1
-            let neg = k < close && (p[k] == 33 || p[k] == 94)
-            if neg {
+        }
+        if close < p.size() {
+          mut k = pi + 1
+          let neg = k < close && (p[k] == 33 || p[k] == 94)
+          k += 1 if neg
+          mut hit = false
+          while k < close {
+            if k + 2 < close && p[k + 1] == 45 {
+              hit = hit || (n[ni] >= p[k] && n[ni] <= p[k + 2])
+              k += 3
+            } else {
+              hit = hit || p[k] == n[ni]
               k += 1
             }
-            mut hit = false
-            while k < close {
-              if k + 2 < close && p[k + 1] == 45 {
-                hit = hit || (n[ni] >= p[k] && n[ni] <= p[k + 2])
-                k += 3
-              } else {
-                hit = hit || p[k] == n[ni]
-                k += 1
-              }
-            }
-            step = hit != neg ? close + 1 - pi : 0
           }
+          step = hit != neg ? close + 1 - pi : 0
         } else if pi < p.size() && (p[pi] == 63 || p[pi] == n[ni]) {
           step = 1
         }
@@ -3458,16 +3457,10 @@ trait Dir {
       pi == p.size()
     }
     let path_match = fn (pi, ns, ni) {
-      if pi == segs.size() {
-        return ni == ns.size()
-      }
+      return ni == ns.size() if pi == segs.size()
       if segs[pi] == '**' {
-        mut k = ni
-        while k <= ns.size() {
-          if fn(pi + 1, ns, k) {
-            return true
-          }
-          k += 1
+        for k in ni..=ns.size() {
+          return true if fn(pi + 1, ns, k)
         }
         return false
       }

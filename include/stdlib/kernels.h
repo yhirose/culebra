@@ -43,15 +43,23 @@ namespace culebra {
 namespace _glob_detail {
 
 // Match a single path component against a glob token supporting `*`, `?`,
-// and `[...]` character classes. Backtracking on `*`.
+// and `[...]` character classes (`[!...]` / `[^...]` negate, `a-z` ranges);
+// a `[` with no `]` is an ordinary character. Backtracking on `*` — after any
+// miss, a class's included. Dir's `glob` default (shared.h) is the same
+// matcher in Culebra; the two answer alike.
 inline bool match_segment(std::string_view pat, std::string_view name) {
   size_t pi = 0, ni = 0, star = std::string_view::npos, mark = 0;
   while (ni < name.size()) {
-    if (pi < pat.size() && (pat[pi] == '?' || pat[pi] == name[ni])) {
-      ++pi; ++ni;
-    } else if (pi < pat.size() && pat[pi] == '[') {
-      size_t close = pat.find(']', pi + 1);
-      if (close == std::string_view::npos) return false;
+    if (pi < pat.size() && pat[pi] == '*') {
+      star = pi++;
+      mark = ni;
+      continue;
+    }
+    size_t step = 0;  // the pattern characters `name[ni]` matched
+    size_t close = pi < pat.size() && pat[pi] == '['
+                       ? pat.find(']', pi + 1)
+                       : std::string_view::npos;
+    if (close != std::string_view::npos) {
       auto cls = pat.substr(pi + 1, close - pi - 1);
       bool neg = !cls.empty() && (cls[0] == '!' || cls[0] == '^');
       if (neg) cls.remove_prefix(1);
@@ -64,12 +72,16 @@ inline bool match_segment(std::string_view pat, std::string_view name) {
           hit = true;
         }
       }
-      if (hit == neg) return false;
-      pi = close + 1; ++ni;
-    } else if (pi < pat.size() && pat[pi] == '*') {
-      star = pi++; mark = ni;
+      if (hit != neg) step = close + 1 - pi;
+    } else if (pi < pat.size() && (pat[pi] == '?' || pat[pi] == name[ni])) {
+      step = 1;
+    }
+    if (step) {
+      pi += step;
+      ++ni;
     } else if (star != std::string_view::npos) {
-      pi = star + 1; ni = ++mark;
+      pi = star + 1;
+      ni = ++mark;
     } else {
       return false;
     }

@@ -216,6 +216,15 @@ assert_eq(FS.glob(FS.join(xdir, "*.txt")).size(), 1)
 assert_eq(FS.glob(FS.join(FS.join(xdir, "sub"), "*.txt")).size(), 1)
 // A forward slash keeps working on both platforms (Windows accepts either).
 assert_eq(FS.glob("{xdir}/*.txt").size(), 1)
+// `*` backtracks past a class that missed: `*[f]*` is tried at every offset,
+// not only the first. A `[` with no `]` is an ordinary character.
+FS.write(FS.join(xdir, "gf.txt"), "")
+FS.write(FS.join(xdir, "a[b"), "")
+assert_eq(FS.glob(FS.join(xdir, "*[f].txt")).map(|p| FS.basename(p)), ["f.txt", "gf.txt"])
+assert_eq(FS.glob(FS.join(xdir, "?[!x].txt")).map(|p| FS.basename(p)), ["gf.txt"])
+assert_eq(FS.glob(FS.join(xdir, "a[b")).map(|p| FS.basename(p)), ["a[b"])
+FS.remove(FS.join(xdir, "gf.txt"))
+FS.remove(FS.join(xdir, "a[b"))
 
 // rename then copy.
 FS.rename(FS.join(xdir, "f.txt"), FS.join(xdir, "r.txt"))

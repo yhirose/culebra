@@ -116,6 +116,8 @@ fn check_dir(d, sendable = true) {
   assert_eq(d.glob('[ab]*'), ['a.txt', 'b-c.txt'])
   assert_eq(d.glob('*[!t]'), [])
   assert_eq(d.glob('?.txt'), ['a.txt'])
+  assert_eq(d.glob('*[xc].*'), ['b-c.txt'])
+  assert_eq(d.glob('foo..txt['), [])
   assert_eq(d.glob('./docs/*.md'), ['docs/readme.md'])
   assert_eq(d.glob('*'), ['a.txt', 'b-c.txt', 'empty.txt', 'foo..txt'])
   assert_eq(d.glob('../*'), [])
