@@ -17491,8 +17491,11 @@ struct Exec {
               hit = r.tag == arm.tag;
             } else {
               auto* o = reinterpret_cast<JitObject*>(r.data);
+              // A member of the receiver's own — a trait default included,
+              // as a method of its class — binds the call by its own
+              // signature, so the built-in's arity is not its business.
               hit = r.tag == TAG_OBJECT && object_takes_builtin_table(o) &&
-                    !culebra_runtime_object_has(
+                    !culebra_runtime_object_has_or_trait_default(
                         o, reinterpret_cast<const char*>(
                                c.consts[arm.name_k].data)) &&
                     (arm.tag == Chunk::kArityObj ||

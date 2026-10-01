@@ -330,4 +330,29 @@ fn make_silent() {
 assert_eq(speak_to(make_speaking()), 'speaks')
 assert_eq(try { speak_to(make_silent()) } catch e { e.kind }, 'DispatchError')
 
+# A default named like an Object built-in is a method of the conforming class,
+# so it wins over the built-in — at the built-in's own arity and at any other
+# (the built-in's arity check is not the default's business).
+trait Measured {
+  len() -> Long
+  size(extra) { self.len() + extra }
+  keys() { ['trait', 'keys'] }
+  get(k, fallback) { "trait get {k}" }
+}
+class Ruler {
+  new(.n) {}
+  len() { self.n }
+}
+let ruler = Ruler(3)
+assert_eq(ruler.size(10), 13)
+assert_eq(ruler.keys(), ['trait', 'keys'])
+assert_eq(ruler.get('a', 0), 'trait get a')
+# A receiver that conforms to nothing still owes the built-in's diagnostic.
+class Plain {
+  new(.n) {}
+}
+assert_eq(try { Plain(1).size(10) } catch e { e.kind }, 'ArityError')
+assert_eq(try { {a: 1}.size(10) } catch e { e.kind }, 'ArityError')
+assert_eq(Plain(1).keys(), ['n'])
+
 IO.inspect("test_traits OK")

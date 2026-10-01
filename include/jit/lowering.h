@@ -4881,8 +4881,13 @@ struct Lowering {
               auto objPtr = b.CreateIntToPtr(j.extract_data(r), ptrTy);
               auto name = std::string(_str_sv(reinterpret_cast<const char*>(
                   c.consts[arm.name_k].data)));
-              auto own = j.emit_object_has(
-                  objPtr, j.get_or_create_global_str(name, ".vm.barity.name"));
+              // Exec's arm: a trait default counts as the receiver's own.
+              auto own = j.emit_call(
+                  j.module_->getOrInsertFunction(
+                      rt::object_has_or_trait_default, b.getInt1Ty(), ptrTy,
+                      ptrTy),
+                  {objPtr, j.get_or_create_global_str(name, ".vm.barity.name")},
+                  "barity.own");
               // A view never takes the table's diagnostic —
               // Exec::object_takes_builtin_table, in IR.
               auto plain = b.CreateICmpEQ(
