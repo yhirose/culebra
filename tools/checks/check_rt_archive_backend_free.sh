@@ -107,7 +107,7 @@ fi
 # Accelerate: tl's macOS elementwise kernels are vDSP and vForce, and
 # -framework Accelerate rides the Tensor axis like -framework Metal, so a
 # reference to either breaks the same links.
-backends='MTLCreateSystemDefaultDevice|cblas_|vDSP_|_vv[a-z]+f|sqlite3_[a-z]|SSL_CTX_new|deflateInit|inflateInit'
+backends='MTLCreateSystemDefaultDevice|cblas_|vDSP_|_vv[a-z]+f|sqlite3_[a-z]|SSL_CTX_new|deflateInit|inflateInit|unzOpen|zipOpen'
 hits=$(printf '%s\n' "$out" | { grep -E "$backends" || true; })
 
 if [[ -z "$hits" ]]; then

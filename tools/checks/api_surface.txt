@@ -457,6 +457,7 @@ Encoding.url.decode(s) -> String
 Compress.gzip(data: String) -> String
 Compress.gunzip(data: String) -> String
 Compress.deflate(data: String, level: Long = -1) -> String
+Compress.zip(files: Object | Dir) -> String
 Hash.sha256(data: String) -> String
 Hash.sha1(data: String) -> String
 Hash.sha512(data: String) -> String
@@ -1069,6 +1070,7 @@ Audio.Kauai.load(path: String, voices = nil, drums = nil, dir = nil)
 Dir.disk(path: String | Path) -> Dir
 Dir.memory(files: Object) -> Dir
 Dir.embedded(name: String) -> Dir
+Dir.zip(path: String | Path = nil, *, bytes: String = nil) -> Dir
 d.read(path)
 d.list_dir(path)
 d.exists(path)

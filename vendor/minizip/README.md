@@ -1,7 +1,7 @@
 # MiniZip (vendored)
 
-The ZIP reader and writer from zlib's `contrib/minizip`, which the `Zip`
-namespace drives through `vendor/cpp-zipper/zipper.h`. The files are
+The ZIP reader and writer from zlib's `contrib/minizip`, which `Dir.zip` and
+`Compress.zip` drive through `vendor/cpp-zipper/zipper.h` (`include/stdlib/zip.h`). The files are
 committed directly (not a submodule): they are a directory of the zlib
 source tree, and culebra needs only the reader, the writer and their I/O
 layer. zlib itself is the system's (the same libz the `Compress` namespace

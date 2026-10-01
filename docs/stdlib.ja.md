@@ -54,7 +54,7 @@
 14. [`Regex`](#14-regex) — 線形時間・grapheme単位の正規表現
 15. [`Http`](#15-http) — 同期HTTP/HTTPSクライアント（get/post/put/delete/head/request）、サーバー（ルーティング・静的ファイル・WebSocket）、Server-Sent Events
 16. [`Encoding`](#16-encoding) — スキーム別のテキストコーデック（`Encoding.html`、`Encoding.base64`、`Encoding.hex`、`Encoding.url`）
-17. [`Compress`](#17-compress) — データ・ファイルのgzip / deflate圧縮/展開
+17. [`Compress`](#17-compress) — データ・ファイルのgzip / deflate圧縮/展開と、ファイルをZIPアーカイブに詰めること
 18. [`Hash`](#18-hash) — SHA-256/SHA-1/SHA-512/MD5ダイジェストとHMAC（hex出力）
 19. [`CSV`](#19-csv) — RFC 4180流のCSVをparse / stringify
 20. [`Env`](#20-env) — dotenv形式の`.env`をparse / load
@@ -78,7 +78,7 @@
 38. [`FST`](#38-fst) — 書き換えない辞書を圧縮して持つ。前方一致・補完・あいまい検索
 39. [`Search`](#39-search) — 自分の文書を全文検索して順位をつける
 40. [`Audio`](#40-audio) — ウィンドウの有無によらず使える音: WASM-4のtone、効果音、ストリーム再生の音楽、合成するPCM、マイク
-41. [`Dir`](#41-dir) — ディスク・メモリ・バイナリへの焼き込みのどこにあるファイルの集まりも、同じ読み方で（`Dir.disk` / `Dir.memory` / `Dir.embedded`と`Dir` trait）
+41. [`Dir`](#41-dir) — ディスク・メモリ・バイナリへの焼き込み・ZIPアーカイブのどこにあるファイルの集まりも、同じ読み方で（`Dir.disk` / `Dir.memory` / `Dir.embedded` / `Dir.zip`と`Dir` trait）
 42. [設計上の注記](#42-設計上の注記)
 43. [未収録（将来検討）](#43-未収録将来検討)
 
@@ -4389,6 +4389,7 @@ NULも往復で保持）です。
 | `Compress.gzip(data: String) -> String` | gzip圧縮したバイト列（RFC 1952ラッパー）。標準の`gzip`ツールと相互運用可 |
 | `Compress.gunzip(data: String) -> String` | 展開したバイト列。不正な入力は`ValueError` |
 | `Compress.deflate(data: String, level: Long = -1) -> String` | zlib圧縮したバイト列（RFC 1950ラッパー）— `gzip`からgzip固有のヘッダを除いたもの |
+| `Compress.zip(files: Object \| Dir) -> String` | `files`を持つZIPアーカイブのバイト列 |
 
 `gunzip`はヘッダを自動判別するので、`gzip`と`deflate`の出力をどちらも同じ
 1つの関数で展開します — 別に`inflate`はありません。gzipのメンバーが
@@ -4437,6 +4438,24 @@ inspect(Compress.deflate(text, level: 9).size() <=
 HTTPレスポンスは`Http`クライアントが透過的に展開します（`Accept-Encoding`を
 送り、`Content-Encoding: gzip`を自動で展開）。したがって`Compress`は自分で扱う
 データやファイル向けで、`Http`のボディには不要です。
+
+`zip`はファイルの集まりをアーカイブに詰めます。渡すのは、1ファイルにつき1つの
+キー（`"sub/name.txt"`から中身へ、[`Dir.memory`](#41-dir)が受け取る形）を持つ
+Objectか、任意の[`Dir`](#41-dir)です。エントリはパスの順に、同じ固定の時刻で
+入るので、同じファイルからはいつも同じバイト列ができます。アーカイブを書くのは
+`FS.write`、読み戻したり展開したりするのは[`Dir.zip`](#zipアーカイブ)です。
+
+```culebra
+let z = Compress.zip({'readme.md': '# hi', 'img/logo.png': 'PNG'})
+inspect(z.slice(0, 2))                          # => 'PK'
+inspect(z == Compress.zip({'img/logo.png': 'PNG', 'readme.md': '# hi'}))  # => true
+inspect(Dir.zip(bytes: z).files())              # => ['img/logo.png', 'readme.md']
+```
+
+```culebra
+# doctest: skip — ファイルを書く
+FS.write("site.zip", Compress.zip(Dir.disk("public")))
+```
 
 ---
 
@@ -8024,7 +8043,7 @@ song.play()
 
 **読み出し専用のファイルの集まり**を、どこにあっても同じ読み方で扱います。
 ディスク上のディレクトリでも、メモリ上のファイルでも、実行ファイルに焼き込んだ
-アセットでもかまいません。`Dir`を相手に書いた関数は、どれに対しても動きます。
+アセットでも、ZIPアーカイブのエントリでもかまいません。`Dir`を相手に書いた関数は、どれに対しても動きます。
 
 ```culebra
 let d = Dir.memory({'readme.md': '# hi', 'img/logo.png': 'PNG', 'img/bg.png': 'PNG'})
@@ -8042,6 +8061,7 @@ inspect(d.is_dir('img'))      # => true
 | `Dir.disk(path: String \| Path) -> Dir` | ディスク上のディレクトリ`path`。その都度ディスクから読む。ディレクトリでなければ`IOError` |
 | `Dir.memory(files: Object) -> Dir` | `files`のファイル。キーは1ファイルにつき1つ（`"sub/name.txt"`）、値は中身（`String`、バイナリセーフ） |
 | `Dir.embedded(name: String) -> Dir` | エントリスクリプトの隣のディレクトリ`name`。`culebra build`が実行ファイルに焼き込む（[後述](#埋め込みアセット)） |
+| `Dir.zip(path: String \| Path = nil, *, bytes: String = nil) -> Dir` | ZIPアーカイブのエントリ。ファイル`path`にあるもの、または`bytes`が持つもので、どちらか1つを渡す（[後述](#zipアーカイブ)） |
 
 `Dir.memory`に渡すObjectは平らにします。サブディレクトリのファイルは`/`を含む
 キーで書き、Objectを入れ子にはしません。入れ子のObjectや`String`でない値は
@@ -8049,7 +8069,7 @@ inspect(d.is_dir('img'))      # => true
 指す2つのキー（`a/b`と`a//b`）、ファイルでありディレクトリでもあるもの
 （`a`と`a/b`）は`ValueError`です。キーは作るときに正規化されます。
 
-`type_of`は種類を名乗ります（`DiskDir`、`MemoryDir`、`EmbedDir`）。どれでも
+`type_of`は種類を名乗ります（`DiskDir`、`MemoryDir`、`EmbedDir`、`ZipArchive`）。どれでも
 受け取る引数には`Dir`と注釈します。
 
 ### 読み方
@@ -8103,8 +8123,9 @@ inspect(d.glob('[ab].*'))    # => ['a.txt', 'b.md']
 ```
 
 `copy_to(dest)`は`Dir`をディスクに書き出します。各ファイルは`dest`の下の同じパスに
-置かれ、必要なディレクトリは作られ、同名のファイルは上書きされます。ビルドした
-バイナリに焼き込んだアセットを書き出すには`Dir.embedded('assets').copy_to(dir)`です。
+置かれ、必要なディレクトリは作られ、同名のファイルは上書きされます。アーカイブの
+展開は`Dir.zip(path).copy_to(dir)`、ビルドしたバイナリに焼き込んだアセットの
+書き出しは`Dir.embedded('assets').copy_to(dir)`です。
 `dest`の外に出るパス（自作の`Dir`でなければ一覧に現れません）は、書く前に
 `ValueError`になります。
 
@@ -8137,8 +8158,10 @@ trait注釈が受け付けるのはクラスのインスタンスで、Objectリ
 なら何でも受け取ります（Objectリテラルを含む）。リテラルで書いたファイルを
 完全な`Dir`にするには`Dir.memory`に渡します。
 
-どの種類もSendableです。isolateに送ると、`Dir.disk`は同じディレクトリを、
+`Dir.zip`以外はSendableです。isolateに送ると、`Dir.disk`は同じディレクトリを、
 `Dir.memory`は中身の自分用のコピーを、`Dir.embedded`は同じアセットを読みます。
+開いたアーカイブは開いたisolateのものなので、ワーカーは（同じパスやバイト列から）
+自分で開きます。
 
 ### 埋め込みアセット
 
@@ -8181,6 +8204,49 @@ srv.listen(8080)
 ソースチェックアウトが必要。既定はそのバイナリをビルドしたときのパスで、
 `$CULEBRA_HOME`があればそちらが優先される。どちらも無ければバイナリを作らず
 エラーで停止する。
+
+### ZIPアーカイブ
+
+`Dir.zip(path)`はファイルにあるアーカイブを開き、セントラルディレクトリだけを
+読みます。エントリのバイト列は、そのエントリを読むときに読みます。
+`Dir.zip(bytes: data)`はメモリ上にあるアーカイブ（ダウンロードしたものや、
+別の`Dir`のファイル）を読みます。逆向きの「詰める」は
+[`Compress.zip`](#17-compress)です。
+
+```culebra
+let z = Dir.zip(bytes: Compress.zip({'score.xml': '<score/>', 'META-INF/container.xml': '<c/>'}))
+inspect(z.files())                # => ['META-INF/container.xml', 'score.xml']
+inspect(z.list_dir(''))           # => ['META-INF', 'score.xml']
+inspect(z.read('score.xml'))      # => '<score/>'
+inspect(z.size('score.xml'))      # => 8
+```
+
+```culebra
+# doctest: skip — ファイルを読み書きする
+let archive = Dir.zip("download.zip")
+for path in archive.glob("**/*.json") {
+  inspect(JSON.parse(archive.read(path)))
+}
+archive.copy_to("extracted")      # すべて展開する
+archive.close()
+```
+
+アーカイブが持つ名前は、開くときにパスにします。`\`（Windowsのツールが書くことが
+あります）はそこでは区切りとして読みます。`/`やドライブ（`C:`）で始まる名前、
+`..`で上に出る名前のエントリは除くので、アーカイブの外に読まれたり展開されたり
+するエントリはありません。2つのエントリが同じファイルを指すときは、先にある方を
+読みます。
+
+読めないものは理由付きの`ValueError`です。アーカイブでない（または壊れた）
+バイト列は開くとき、暗号化されたエントリ、stored・deflate以外の方式で圧縮された
+エントリ、データがCRCと合わないエントリは、そのエントリを読むときです。無い
+ファイルは、他のファイル読み出しと同じく`IOError`です。
+
+開いたアーカイブは、`close()`するか最後の参照が無くなるまでファイル（または
+バイト列のコピー）を持ちます。`close()`の後はどのメソッドも`ClosedError`です。
+別のisolateには送れません（`SendError`）。開いたアーカイブはそのisolateのもの
+なので、ワーカーは自分で開きます。WASMのPlaygroundはZIPに対応していないので、
+`Dir.zip`と`Compress.zip`はそこでは例外を投げます。
 
 ---
 

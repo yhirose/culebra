@@ -1,11 +1,10 @@
 # Dir — a read-only set of files, wherever they live: a directory on disk,
-# files held in memory, or assets baked into the binary. Each kind is a class
-# over thin natives (`_Dir.*`), and every one conforms to the built-in
-# `trait Dir` (shared.h): the five required methods are here, the defaults
-# (`files` / `glob` / `size` / `copy_to`) come from the trait unless a kind
-# answers faster itself. Each class names its kind to the natives in its
-# constructor (`_Dir.mark`), which is how `srv.static` knows a Dir.embedded by
-# its class rather than by its name.
+# files held in memory, assets baked into the binary, or the entries of a ZIP
+# archive. Each kind is a class over thin natives (`_Dir.*`), and every one
+# conforms to the built-in `trait Dir` (shared.h): the five required methods
+# are here, the defaults (`files` / `glob` / `size` / `copy_to`) come from the
+# trait unless a kind answers faster itself. Each class names its kind to the
+# natives in its constructor (`_Dir.mark`, JitSpecialTable::dir_kind).
 #
 # Paths are relative to the root and `/` separated, and `_Dir.normalize` is
 # the one rule for every kind (vfs.h): `""` and `"."` name the root, `.` and
@@ -24,6 +23,16 @@ let _dir_module = fn () {
       }
     }
     to_string(p)
+  }
+  let _string_arg = fn (who, v) {
+    let t = type_of(v)
+    if t != 'String' && t != 'StringView' {
+      throw {
+        kind: 'TypeError',
+        message: "type error: {who} expects String, got {t}",
+      }
+    }
+    to_string(v)
   }
 
   # The two kinds of IOError every Dir owes, worded once for all of them.
@@ -62,10 +71,10 @@ let _dir_module = fn () {
     # a path holding either is not there either.
     _full(path) {
       let rel = _Dir.normalize(path)
-      if rel == nil || _win && (rel.contains("\\") || rel.contains(':')) {
-        nil
-      } else {
-        rel == '' ? self.root : FS.join(self.root, rel)
+      cond {
+        rel == nil || _win && (rel.contains("\\") || rel.contains(':')) => nil,
+        rel == '' => self.root,
+        _ => FS.join(self.root, rel),
       }
     }
     read(path) {
@@ -142,6 +151,8 @@ let _dir_module = fn () {
         }
         contents[rel] = to_string(value)
       }
+      # Every directory a file lies under, so asking about one is a lookup.
+      mut dirs = {}
       for rel in contents.keys() {
         let parts = rel.split('/')
         for i in range(1, parts.size()) {
@@ -152,12 +163,14 @@ let _dir_module = fn () {
               message: "Dir.memory: '{parent}' is both a file and a directory",
             }
           }
+          dirs[parent] = true
         }
       }
       self.contents = contents
+      self.dirs = dirs
     }
     _is_dir(rel) {
-      rel == '' || self.contents.keys().any(|k| k.starts_with(rel + '/'))
+      rel == '' || self.dirs.has(rel)
     }
     read(path) {
       _need_file(self, 'read', path)
@@ -167,14 +180,15 @@ let _dir_module = fn () {
       _need_dir(self, 'list_dir', path)
       let rel = _Dir.normalize(path)
       let prefix = rel == '' ? '' : rel + '/'
-      mut names = {}
-      for k in self.contents.keys() {
-        if k.starts_with(prefix) {
-          let rest = to_string(k.slice(prefix.size(), k.size()))
-          names[to_string(rest.split('/')[0])] = true
-        }
-      }
-      names.keys().sorted()
+      self
+        .contents
+        .keys()
+        .iter()
+        .filter(|k| k.starts_with(prefix))
+        .map(|k| to_string(k.slice(prefix.size(), k.size()).split('/')[0]))
+        .distinct()
+        .collect()
+        .sorted()
     }
     exists(path) {
       let rel = _Dir.normalize(path)
@@ -199,13 +213,7 @@ let _dir_module = fn () {
   class EmbedDir {
     new(name) {
       _Dir.mark(self, 'embedded')
-      if type_of(name) != 'String' && type_of(name) != 'StringView' {
-        throw {
-          kind: 'TypeError',
-          message: "type error: Dir.embedded expects String, got {type_of(name)}",
-        }
-      }
-      self.name = to_string(name)
+      self.name = _string_arg('Dir.embedded', name)
     }
     read(path) {
       _need_file(self, 'read', path)
@@ -230,6 +238,61 @@ let _dir_module = fn () {
     }
   }
 
+  # The entries of a ZIP archive: a file, read lazily off its central
+  # directory, or an archive already in memory. The open archive belongs to
+  # this Runtime (`_id` names it in the natives' table), so a ZipArchive never
+  # crosses an Isolate — its kind says so — and a worker opens its own.
+  # `close()` frees it early, the last reference frees it otherwise, and any
+  # use after that is a ClosedError.
+  class ZipArchive {
+    new(path, bytes) {
+      _Dir.mark(self, 'zip')
+      if (path == nil) == (bytes == nil) {
+        throw {
+          kind: 'TypeError',
+          message: "type error: Dir.zip takes a path or bytes:, one of the two",
+        }
+      }
+      if path != nil {
+        self.path = _disk_path('Dir.zip', path)
+        self._id = _Dir.zip_open(self.path)
+      } else {
+        # The open archive keeps its own copy of the bytes.
+        self._id = _Dir.zip_open_bytes(_string_arg('Dir.zip bytes:', bytes))
+      }
+    }
+    read(path) {
+      _need_file(self, 'read', path)
+      _Dir.zip_read(self._id, path)
+    }
+    list_dir(path) {
+      _need_dir(self, 'list_dir', path)
+      _Dir.zip_list_dir(self._id, path)
+    }
+    exists(path) {
+      self.is_file(path) || self.is_dir(path)
+    }
+    is_file(path) {
+      _Dir.zip_is_file(self._id, path)
+    }
+    is_dir(path) {
+      _Dir.zip_is_dir(self._id, path)
+    }
+    size(path) {
+      _need_file(self, 'size', path)
+      _Dir.zip_size(self._id, path)
+    }
+    files() {
+      _Dir.zip_files(self._id)
+    }
+    close() {
+      _Dir.zip_close(self._id)
+    }
+    drop() {
+      _Dir.zip_close(self._id) if self._id != nil
+    }
+  }
+
   {
     disk: fn (path) {
       DiskDir(path)
@@ -239,6 +302,9 @@ let _dir_module = fn () {
     },
     embedded: fn (name) {
       EmbedDir(name)
+    },
+    zip: fn (path = nil, *, bytes = nil) {
+      ZipArchive(path, bytes)
     },
   }
 }

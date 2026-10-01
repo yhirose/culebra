@@ -780,7 +780,7 @@ run.
 
 **Encoding** — Encoding.html; Encoding.html.escape(s) -> String; Encoding.html.unescape(s) -> String; Encoding.base64; Encoding.base64.encode(s) -> String; Encoding.base64.decode(s) -> String; Encoding.hex; Encoding.hex.encode(s) -> String; Encoding.hex.decode(s) -> String; Encoding.url; Encoding.url.encode(s) -> String; Encoding.url.decode(s) -> String
 
-**Compress** — Compress.gzip(data: String) -> String; Compress.gunzip(data: String) -> String; Compress.deflate(data: String, level: Long = -1) -> String
+**Compress** — Compress.gzip(data: String) -> String; Compress.gunzip(data: String) -> String; Compress.deflate(data: String, level: Long = -1) -> String; Compress.zip(files: Object | Dir) -> String
 
 **Hash** — Hash.sha256(data: String) -> String; Hash.sha1(data: String) -> String; Hash.sha512(data: String) -> String; Hash.md5(data: String) -> String; Hash.hmac_sha256(key: String, data: String) -> String; Hash.hmac_sha1(key: String, data: String) -> String; Hash.hmac_sha512(key: String, data: String) -> String
 
@@ -808,7 +808,7 @@ run.
 
 **Audio** — Audio.available() -> Bool; sound.play(); sound.stop(); sound.playing() -> Bool; sound.volume(v); sound.pitch(p); sound.pan(p); music.play(); music.stop(); music.pause(); music.resume(); music.seek(seconds); music.playing() -> Bool; music.volume(v); music.pitch(p); music.pan(p); pcm.ready() -> Bool; pcm.needed() -> Long; pcm.push(samples: Array) -> Long; pcm.submit() -> Long; pcm.latency() -> Float; pcm.play(); stop(); pause(); resume(); playing() -> Bool; pcm.volume(v); pcm.pitch(p); pcm.pan(p); Audio.capture_available() -> Bool; mic.ready() -> Bool; mic.start(); running() -> Bool; mic.waiting() -> Long; mic.read(frames = nil) -> Array; Audio.Kauai.new(text: String, voices = nil, drums = nil); Audio.Kauai.load(path: String, voices = nil, drums = nil, dir = nil)
 
-**Dir** — Dir.disk(path: String | Path) -> Dir; Dir.memory(files: Object) -> Dir; Dir.embedded(name: String) -> Dir; d.read(path); d.list_dir(path); d.exists(path); d.is_file(path); d.is_dir(path); d.size(path); d.files(); d.glob(pattern); d.copy_to(dest)
+**Dir** — Dir.disk(path: String | Path) -> Dir; Dir.memory(files: Object) -> Dir; Dir.embedded(name: String) -> Dir; Dir.zip(path: String | Path = nil, *, bytes: String = nil) -> Dir; d.read(path); d.list_dir(path); d.exists(path); d.is_file(path); d.is_dir(path); d.size(path); d.files(); d.glob(pattern); d.copy_to(dest)
 
 ### Read the chapter for these
 

@@ -2356,6 +2356,9 @@ enum RuntimeSlot : size_t {
   kSlotJitModuleTable,
   kSlotJitNamespaceTable,
   kSlotFileTable,
+  // The ZIP archives Dir.zip opened (bindings.h _DirZipTable): plain C++
+  // readers, no JitValue, so its place among the GC slots is moot.
+  kSlotZipArchives,
   // The session name table vm.h's repl_session() falls back to when no
   // session is current on the thread. A slot rather than one object for the
   // process because a session's cells are heap objects, and a heap belongs to

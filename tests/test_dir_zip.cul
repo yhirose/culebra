@@ -1,0 +1,255 @@
+# Dir.zip and Compress.zip, past the contract every Dir keeps
+# (tests/test_dir.cul): archives written by another tool, entries no reader
+# can trust by name, what cannot be read and why, and the lifetime of an open
+# archive. The archives in tests/zip_fixture were written by Python's zipfile
+# (and the encrypted one by zip -P); they are read through Dir.embedded, so an
+# AOT binary carries them.
+
+fn caught(thunk) {
+  try {
+    thunk()
+    'NO ERROR'
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+
+let FIX = Dir.embedded('zip_fixture')
+let FILES = {
+  'b.txt': 'bee',
+  'a.txt': 'alpha',
+  'img/x.png': String.from_bytes([137, 80, 78, 71, 0, 255]),
+  'empty.txt': '',
+}
+
+# --- Compress.zip: the same files make the same bytes ---
+let packed = Compress.zip(FILES)
+assert_eq(packed.slice(0, 2), 'PK')
+assert_eq(Compress.zip(FILES), packed)
+assert_eq(
+  Compress.zip({
+    'a.txt': 'alpha',
+    'empty.txt': '',
+    'img/x.png': FILES['img/x.png'],
+    'b.txt': 'bee',
+  }),
+  packed,
+)
+assert_eq(Compress.zip(Dir.memory(FILES)), packed)
+let z = Dir.zip(bytes: packed)
+assert_eq(z.files(), ['a.txt', 'b.txt', 'empty.txt', 'img/x.png'])
+for path, body in FILES {
+  assert_eq(z.read(path), body, path)
+}
+
+# Any Dir packs, a class of the program's own included.
+class Two {
+  read(path) {
+    "body of {path}"
+  }
+  list_dir(path) {
+    path == '' ? ['one', 'two'] : []
+  }
+  exists(path) {
+    self.is_file(path) || self.is_dir(path)
+  }
+  is_file(path) {
+    path == 'one' || path == 'two'
+  }
+  is_dir(path) {
+    path == ''
+  }
+}
+assert_eq(Dir.zip(bytes: Compress.zip(Two())).read('two'), 'body of two')
+
+assert_eq(
+  caught(|| Compress.zip(5)),
+  'TypeError: type error: Compress.zip expects Object|Dir, got Long',
+)
+assert_eq(
+  caught(|| Compress.zip([1])),
+  'TypeError: type error: Compress.zip expects Object|Dir, got Array',
+)
+class NotADir {
+  new(.x) {}
+}
+assert_eq(
+  caught(|| Compress.zip(NotADir(1))),
+  'TypeError: type error: Compress.zip expects Object|Dir, got NotADir',
+)
+assert_eq(
+  caught(|| Compress.zip({a: {b: 'c'}})),
+  "TypeError: Compress.zip: 'a' holds Object, not String",
+)
+assert_eq(
+  caught(|| Compress.zip({'../x': 'y'})),
+  "ValueError: Compress.zip: '../x' is not a file inside the archive",
+)
+assert_true(caught(|| Compress.zip({
+  'a/b': 'x',
+  './a/b': 'y',
+})).starts_with("ValueError: Compress.zip: "))
+# A field named like a default shadows it, and is no method to call.
+class Shadowed {
+  new() {
+    self.files = ['a.txt']
+  }
+  read(path) {
+    'a'
+  }
+  list_dir(path) {
+    ['a.txt']
+  }
+  exists(path) {
+    true
+  }
+  is_file(path) {
+    path == 'a.txt'
+  }
+  is_dir(path) {
+    path == ''
+  }
+}
+assert_eq(
+  caught(|| Compress.zip(Shadowed())),
+  "TypeError: Compress.zip: the Dir's files is not a method",
+)
+
+# --- an archive another tool wrote: a MusicXML score ---
+let mxl = Dir.zip(bytes: FIX.read('sample.mxl'))
+assert_eq(mxl.files(), ['META-INF/container.xml', 'score.musicxml'])
+assert_eq(mxl.list_dir(''), ['META-INF', 'score.musicxml'])
+assert_true(mxl.is_dir('META-INF'))
+let root_file = XML
+  .parse(mxl.read('META-INF/container.xml'))
+  .find('.//rootfile')
+  .attrs['full-path']
+assert_eq(root_file, 'score.musicxml')
+assert_true(mxl.read(root_file).contains('<score-partwise'))
+assert_eq(mxl.size(root_file), mxl.read(root_file).size())
+
+# --- entries no reader can trust by name ---
+let crafted = Dir.zip(bytes: FIX.read('crafted.zip'))
+# `\` is a separator in an archive's own names (and only there); `../x`,
+# `/x` and `C:/x` are left out; of two entries named alike, the first wins.
+assert_eq(
+  crafted.files(),
+  ['bz.txt', 'dup.txt', 'stored.txt', 'win/style/path.txt'],
+)
+assert_eq(
+  crafted.list_dir(''),
+  ['bz.txt', 'dup.txt', 'empty', 'stored.txt', 'win'],
+)
+assert_eq(crafted.read('win/style/path.txt'), 'backslashes')
+assert_false(crafted.exists("win\\style\\path.txt"))
+assert_eq(crafted.read('dup.txt'), 'first')
+assert_eq(crafted.read('stored.txt'), 'kept as is')
+assert_true(crafted.is_dir('empty'))
+assert_eq(crafted.list_dir('empty'), [])
+for path in ['../evil.txt', 'evil.txt', '/abs.txt', 'abs.txt', 'C:/drive.txt', 'drive.txt'] {
+  assert_false(crafted.exists(path), path)
+}
+
+# What cannot be read says why; asking about it costs nothing.
+assert_eq(crafted.size('bz.txt'), 10)
+assert_eq(
+  caught(|| crafted.read('bz.txt')),
+  "ValueError: Dir.zip: 'bz.txt': the entry is compressed with method 12, which only stored (0) and deflate (8) are read",
+)
+let enc = Dir.zip(bytes: FIX.read('encrypted.zip'))
+assert_eq(enc.files(), ['secret.txt'])
+assert_eq(
+  caught(|| enc.read('secret.txt')),
+  "ValueError: Dir.zip: 'secret.txt': the entry is encrypted",
+)
+
+# A damaged entry: the archive opens, the entry does not read.
+let long = 'the quick brown fox jumps over the lazy dog '.repeat(20)
+let good = Compress.zip({'x.txt': long})
+mut bytes = good.bytes().collect()
+bytes[45] = (bytes[45] + 1) % 256
+let damaged = Dir.zip(bytes: String.from_bytes(bytes))
+assert_eq(damaged.files(), ['x.txt'])
+assert_true(caught(|| damaged.read('x.txt')).starts_with("ValueError: Dir.zip: 'x.txt': "))
+
+# Not an archive at all.
+assert_eq(
+  caught(|| Dir.zip(bytes: 'not a zip')),
+  'ValueError: Dir.zip: not a ZIP archive, or a damaged one',
+)
+assert_eq(
+  caught(|| Dir.zip(bytes: '')),
+  'ValueError: Dir.zip: not a ZIP archive, or a damaged one',
+)
+assert_eq(
+  caught(|| Dir.zip()),
+  'TypeError: type error: Dir.zip takes a path or bytes:, one of the two',
+)
+assert_eq(
+  caught(|| Dir.zip('a.zip', bytes: packed)),
+  'TypeError: type error: Dir.zip takes a path or bytes:, one of the two',
+)
+assert_eq(
+  caught(|| Dir.zip(bytes: 5)),
+  'TypeError: type error: Dir.zip bytes: expects String, got Long',
+)
+
+# --- Dir.zip(path): a file, read off its central directory ---
+let tmp = FS.mkdtemp('culebra-dir-zip')
+defer {
+  FS.remove(tmp, recursive: true)
+}
+let zpath = FS.join(tmp, 'files.zip')
+FS.write(zpath, packed)
+let zf = Dir.zip(zpath)
+assert_eq(zf.path, zpath)
+assert_eq(zf.files(), z.files())
+assert_eq(zf.read('img/x.png'), FILES['img/x.png'])
+assert_eq(
+  caught(|| Dir.zip(FS.join(tmp, 'missing.zip'))),
+  "IOError: Dir.zip: no such file '{FS.join(tmp, 'missing.zip')}'",
+)
+FS.write(FS.join(tmp, 'text.zip'), 'plain text')
+assert_eq(
+  caught(|| Dir.zip(FS.join(tmp, 'text.zip'))),
+  "ValueError: Dir.zip: '{FS.join(tmp, 'text.zip')}': not a ZIP archive, or a damaged one",
+)
+assert_eq(caught(|| Dir.zip(tmp)), "IOError: Dir.zip: no such file '{tmp}'")
+
+# --- copy_to extracts, and an entry that climbs cannot ---
+let escape = Dir.zip(bytes: FIX.read('escape.zip'))
+assert_eq(escape.files(), ['ok/inside.txt'])
+let out = FS.join(tmp, 'out')
+escape.copy_to(out)
+assert_eq(Dir.disk(out).files(), ['ok/inside.txt'])
+assert_false(FS.exists(FS.join(tmp, 'escaped.txt')))
+assert_false(FS.exists(FS.join(tmp, 'up.txt')))
+mxl.copy_to(FS.join(tmp, 'mxl'))
+assert_eq(Dir.disk(FS.join(tmp, 'mxl')).files(), mxl.files())
+
+# --- an open archive's lifetime ---
+assert_eq(type_of(z), 'ZipArchive')
+assert_eq(
+  caught(|| Isolate.spawn(|d| d.files(), z)),
+  'SendError: Isolate.spawn: a native handle is not Sendable',
+)
+z.close()
+z.close()
+assert_eq(
+  caught(|| z.read('a.txt')),
+  'ClosedError: Dir.zip: the archive is closed',
+)
+assert_eq(caught(|| z.files()), 'ClosedError: Dir.zip: the archive is closed')
+# A worker opens its own.
+assert_eq(
+  Isolate.spawn(|b| Dir.zip(bytes: b).read('b.txt'), packed).join(),
+  'bee',
+)
+# The last reference closes it too; a fresh one is unaffected.
+{
+  let scoped = Dir.zip(bytes: packed)
+  assert_eq(scoped.read('a.txt'), 'alpha')
+}
+zf.close()
+
+inspect('Dir.zip holds')

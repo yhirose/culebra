@@ -817,12 +817,15 @@ inline constexpr CanonParam kCanonParams_Compress[] = {
   // 2: Compress.deflate
   {"data", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
   {"level", true, false, false, false, false, "Long", CanonDefault::Long, -1, {}},
+  // 4: Compress.zip
+  {"files", false, false, false, false, false, "", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonSigs_Compress[] = {
   {"Compress", "", "gzip", kCanonParams_Compress + 0, 1, "String", 1, 1, false, -1, -1, -1},
   {"Compress", "", "gunzip", kCanonParams_Compress + 1, 1, "String", 1, 1, false, -1, -1, -1},
   {"Compress", "", "deflate", kCanonParams_Compress + 2, 2, "String", 1, 2, false, -1, -1, -1},
+  {"Compress", "", "zip", kCanonParams_Compress + 4, 1, "String", 1, 1, false, -1, -1, -1},
 };
 
 inline constexpr CanonParam kCanonParams_Hash[] = {
@@ -1539,6 +1542,13 @@ inline constexpr CanonParam kCanonParams_Dir_native[] = {
   // 3: _Dir.embedded_read / _list_dir / _is_file / _is_dir / _size
   {"name", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
   {"path", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  // 5: _Dir.zip_open
+  {"path", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  // 6: _Dir.zip_open_bytes
+  {"bytes", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
+  // 7: _Dir.zip_read / _is_file / _is_dir / _list_dir / _size
+  {"id", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  {"path", false, false, false, false, false, "StringLike", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonSigs_Dir_native[] = {
@@ -1549,6 +1559,15 @@ inline constexpr CanonSig kCanonSigs_Dir_native[] = {
   {"_Dir", "", "embedded_is_file", kCanonParams_Dir_native + 3, 2, "Bool", 2, 2, false, -1, -1, -1},
   {"_Dir", "", "embedded_is_dir", kCanonParams_Dir_native + 3, 2, "Bool", 2, 2, false, -1, -1, -1},
   {"_Dir", "", "embedded_size", kCanonParams_Dir_native + 3, 2, "", 2, 2, false, -1, -1, -1},
+  {"_Dir", "", "zip_open", kCanonParams_Dir_native + 5, 1, "Long", 1, 1, false, -1, -1, -1},
+  {"_Dir", "", "zip_open_bytes", kCanonParams_Dir_native + 6, 1, "Long", 1, 1, false, -1, -1, -1},
+  {"_Dir", "", "zip_read", kCanonParams_Dir_native + 7, 2, "", 2, 2, false, -1, -1, -1},
+  {"_Dir", "", "zip_is_file", kCanonParams_Dir_native + 7, 2, "Bool", 2, 2, false, -1, -1, -1},
+  {"_Dir", "", "zip_is_dir", kCanonParams_Dir_native + 7, 2, "Bool", 2, 2, false, -1, -1, -1},
+  {"_Dir", "", "zip_list_dir", kCanonParams_Dir_native + 7, 2, "", 2, 2, false, -1, -1, -1},
+  {"_Dir", "", "zip_size", kCanonParams_Dir_native + 7, 2, "", 2, 2, false, -1, -1, -1},
+  {"_Dir", "", "zip_files", kCanonParams_Dir_native + 7, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Dir", "", "zip_close", kCanonParams_Dir_native + 7, 1, "", 1, 1, false, -1, -1, -1},
 };
 
 inline constexpr CanonParam kCanonParams_Bare[] = {

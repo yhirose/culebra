@@ -1,2 +1,3 @@
 if false { let z = Compress.gzip("x") }
-print("compress ok")
+let d = Dir.zip(bytes: Compress.zip({'a.txt': 'ok'}))
+print("compress " + d.read("a.txt"))

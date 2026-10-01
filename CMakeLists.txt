@@ -248,6 +248,25 @@ include_directories(${ZLIB_INCLUDE_DIRS})
 # Compress (or Http) — resolved to the system libz (-lz, dynamic).
 set(_zlib_link "-lz")
 
+# ZIP archives (Dir.zip, Compress.zip): MiniZip from zlib's contrib
+# (vendor/minizip), driven through cpp-zipper (vendor/cpp-zipper), over the
+# same libz. Compiled once into an OBJECT library for the `culebra` driver and
+# the culebra_rt_compress feature archive (AOT), whose choke it shares (see
+# zip.h). OFF leaves only the stubs, which answer "not available in this
+# build"; the WASM playground's own build defines nothing and gets them too.
+option(CULEBRA_ENABLE_ZIP "Enable ZIP archives (Dir.zip, Compress.zip)" ON)
+if(CULEBRA_ENABLE_ZIP)
+  add_compile_definitions(CULEBRA_ENABLE_ZIP)
+  include_directories(./vendor/minizip ./vendor/cpp-zipper)
+  # Encrypted entries are refused before they are opened (zipper.h), so the
+  # crypt code is left out; warnings are silenced as for any vendored C.
+  add_library(culebra_minizip OBJECT ./vendor/minizip/minizip/ioapi.c
+    ./vendor/minizip/minizip/unzip.c ./vendor/minizip/minizip/zip.c)
+  target_compile_definitions(culebra_minizip PRIVATE NOCRYPT NOUNCRYPT)
+  target_compile_options(culebra_minizip PRIVATE -w -ffunction-sections
+    -fdata-sections)
+endif()
+
 # Http stdlib namespace: cpp-httplib (vendored) + OpenSSL for TLS. OpenSSL is
 # linked statically so the `culebra` driver and AOT-built binaries stay
 # self-contained (cpp-httplib's OpenSSL path is identical to a future
@@ -1207,7 +1226,14 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   # (the lone zlib anchor — the only code that calls deflate/inflate).
   # Force-loaded only when the AST scan reports Compress use, mirroring the
   # tensor/http objects, so a non-Compress binary references no libz symbol.
-  add_library(culebra_rt_compress STATIC ./src/runtime/culebra_rt_compress.cc)
+  # It also carries the ZIP choke (zip.h) and the MiniZip objects behind it,
+  # force-loaded the same way when the program names `zip`.
+  if(CULEBRA_ENABLE_ZIP)
+    add_library(culebra_rt_compress STATIC ./src/runtime/culebra_rt_compress.cc
+      $<TARGET_OBJECTS:culebra_minizip>)
+  else()
+    add_library(culebra_rt_compress STATIC ./src/runtime/culebra_rt_compress.cc)
+  endif()
   target_compile_features(culebra_rt_compress PRIVATE cxx_std_23)
   target_compile_options(culebra_rt_compress PRIVATE
     -ffunction-sections -fdata-sections)
@@ -1646,6 +1672,9 @@ endif()
 # AOT link fragment only when the program references Compress (see
 # aot_uses_compress) — non-Compress AOT binaries omit libz.
 target_link_libraries(culebra ZLIB::ZLIB)
+if(CULEBRA_ENABLE_ZIP)
+  target_link_libraries(culebra culebra_minizip)
+endif()
 if(CULEBRA_ENABLE_JIT)
   target_compile_definitions(culebra PRIVATE CULEBRA_ZLIB_LINK="${_zlib_link}")
 endif()
@@ -1957,6 +1986,9 @@ endif()
 # The embedding TUs include vm_embed.h -> stdlib_rt.h -> compress.h inline, which calls
 # zlib directly, so the suite needs libz.
 target_link_libraries(smoke_suite ZLIB::ZLIB)
+if(CULEBRA_ENABLE_ZIP)
+  target_link_libraries(smoke_suite culebra_minizip)
+endif()
 # ... and the same stack reaches fswatcher.h, which calls FSEvents on macOS.
 target_link_libraries(smoke_suite ${_core_frameworks})
 # ... and sqlite.h inline wrappers, which call sqlite3_* directly.

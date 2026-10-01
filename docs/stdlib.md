@@ -56,7 +56,7 @@ Conventions used below:
 14. [`Regex`](#14-regex) — linear-time, grapheme-aware regular expressions
 15. [`Http`](#15-http) — synchronous HTTP/HTTPS client (get/post/put/delete/head/request), server (routes, static files, WebSocket), and Server-Sent Events
 16. [`Encoding`](#16-encoding) — text codecs by scheme (`Encoding.html`, `Encoding.base64`, `Encoding.hex`, `Encoding.url`)
-17. [`Compress`](#17-compress) — gzip / deflate (de)compression for data and files
+17. [`Compress`](#17-compress) — gzip / deflate (de)compression for data and files, and packing files into a ZIP archive
 18. [`Hash`](#18-hash) — SHA-256/SHA-1/SHA-512/MD5 digests and HMAC (hex output)
 19. [`CSV`](#19-csv) — parse / stringify RFC 4180-ish comma-separated values
 20. [`Env`](#20-env) — parse / load dotenv-style `.env` files
@@ -80,7 +80,7 @@ Conventions used below:
 38. [`FST`](#38-fst) — compiled read-only dictionary: prefix, predictive and fuzzy search
 39. [`Search`](#39-search) — full-text index over your own documents, ranked
 40. [`Audio`](#40-audio) — sound for any program, with or without a window: WASM-4 tones, samples, streamed music, synthesised PCM, the microphone
-41. [`Dir`](#41-dir) — a read-only set of files on disk, in memory or baked into the binary, read one way (`Dir.disk` / `Dir.memory` / `Dir.embedded`, and the `Dir` trait)
+41. [`Dir`](#41-dir) — a read-only set of files on disk, in memory, baked into the binary or in a ZIP archive, read one way (`Dir.disk` / `Dir.memory` / `Dir.embedded` / `Dir.zip`, and the `Dir` trait)
 42. [Design notes](#42-design-notes)
 43. [Not included (yet)](#43-not-included-yet)
 
@@ -4520,6 +4520,7 @@ gzip / deflate (de)compression, backed by zlib. Every function is binary-safe
 | `Compress.gzip(data: String) -> String` | gzip-compressed bytes (RFC 1952 wrapper); interoperates with the standard `gzip` tool |
 | `Compress.gunzip(data: String) -> String` | the decompressed bytes; raises `ValueError` on malformed input |
 | `Compress.deflate(data: String, level: Long = -1) -> String` | zlib-compressed bytes (RFC 1950 wrapper) — `gzip` minus its gzip-specific header |
+| `Compress.zip(files: Object \| Dir) -> String` | the bytes of a ZIP archive holding `files` |
 
 `gunzip` auto-detects the header, so it decompresses both `gzip` and
 `deflate` output with the one function — there is no separate `inflate`.
@@ -4569,6 +4570,25 @@ inspect(Compress.deflate(text, level: 9).size() <=
 HTTP responses are decompressed transparently by the `Http` client (it sends
 `Accept-Encoding` and inflates `Content-Encoding: gzip` automatically), so
 `Compress` is for data and files you handle yourself, not for `Http` bodies.
+
+`zip` packs a set of files into an archive: an Object of one key per file
+(`"sub/name.txt"` to its contents, as [`Dir.memory`](#41-dir) takes it) or any
+[`Dir`](#41-dir). The entries go in sorted by path, with one fixed timestamp,
+so the same files always make the same bytes. Writing the archive is
+`FS.write`; reading one back, or extracting it, is
+[`Dir.zip`](#zip-archives).
+
+```culebra
+let z = Compress.zip({'readme.md': '# hi', 'img/logo.png': 'PNG'})
+inspect(z.slice(0, 2))                          # => 'PK'
+inspect(z == Compress.zip({'img/logo.png': 'PNG', 'readme.md': '# hi'}))  # => true
+inspect(Dir.zip(bytes: z).files())              # => ['img/logo.png', 'readme.md']
+```
+
+```culebra
+# doctest: skip — writes a file
+FS.write("site.zip", Compress.zip(Dir.disk("public")))
+```
 
 ---
 
@@ -8339,8 +8359,9 @@ song.play()
 ## 41. `Dir`
 
 A **read-only set of files**, wherever it lives — a directory on disk, files
-held in memory, or assets baked into the executable — read the same way. A
-function written against a `Dir` works with any of them.
+held in memory, assets baked into the executable, or the entries of a ZIP
+archive — read the same way. A function written against a `Dir` works with
+any of them.
 
 ```culebra
 let d = Dir.memory({'readme.md': '# hi', 'img/logo.png': 'PNG', 'img/bg.png': 'PNG'})
@@ -8358,6 +8379,7 @@ inspect(d.is_dir('img'))      # => true
 | `Dir.disk(path: String \| Path) -> Dir` | the directory `path` on disk, read live; `IOError` when it is not a directory |
 | `Dir.memory(files: Object) -> Dir` | the files of `files`: one key per file, `"sub/name.txt"`, to its contents (a `String`, binary-safe) |
 | `Dir.embedded(name: String) -> Dir` | the directory `name` next to the entry script — baked into the executable by `culebra build` ([below](#embedded-assets)) |
+| `Dir.zip(path: String \| Path = nil, *, bytes: String = nil) -> Dir` | the entries of a ZIP archive: the one in the file `path`, or the one held in `bytes` — give one of the two ([below](#zip-archives)) |
 
 `Dir.memory` takes a flat Object: a file in a subdirectory is a key with a
 `/`, not a nested Object. A nested Object or a value that is not a `String`
@@ -8365,8 +8387,8 @@ raises `TypeError`; a key outside the directory (`../x`, `/x`), two keys naming
 one file (`a/b` and `a//b`), or a file that is also a directory (`a` and `a/b`)
 raise `ValueError`. Keys are normalized when the Dir is made.
 
-`type_of` names the kind (`DiskDir`, `MemoryDir`, `EmbedDir`); a parameter that
-takes any of them is annotated `Dir`.
+`type_of` names the kind (`DiskDir`, `MemoryDir`, `EmbedDir`, `ZipArchive`); a
+parameter that takes any of them is annotated `Dir`.
 
 ### Reading
 
@@ -8420,7 +8442,8 @@ inspect(d.glob('[ab].*'))    # => ['a.txt', 'b.md']
 
 `copy_to(dest)` writes the Dir out to disk: every file lands at its path under
 `dest`, with the directories made as needed and a file of the same name
-overwritten. Dumping the baked assets of a built binary is
+overwritten. Extracting an archive is `Dir.zip(path).copy_to(dir)`, and
+dumping the baked assets of a built binary is
 `Dir.embedded('assets').copy_to(dir)`. A path that would land outside `dest` —
 which only a Dir of your own can list — raises `ValueError` before it is
 written.
@@ -8454,9 +8477,10 @@ files up by name (`Audio.Kauai.load(dir:)`) takes anything with
 `exists(path)` and `read(path)`, an Object literal included. To make a set of
 literal files a full Dir, hand them to `Dir.memory`.
 
-Every kind is Sendable: sent to an isolate, a `Dir.disk` reads the same
-directory, a `Dir.memory` its own copy of the contents and a `Dir.embedded`
-the same assets.
+Every kind but `Dir.zip` is Sendable: sent to an isolate, a `Dir.disk` reads
+the same directory, a `Dir.memory` its own copy of the contents and a
+`Dir.embedded` the same assets. An open archive belongs to the isolate that
+opened it; a worker opens its own (from the same path or bytes).
 
 ### Embedded assets
 
@@ -8501,6 +8525,49 @@ needs no server.
 needs a source checkout: the one the binary was built from by default, or
 `$CULEBRA_HOME` when that is set. With neither it stops with an error rather
 than producing a binary.
+
+### ZIP archives
+
+`Dir.zip(path)` opens the archive in a file and reads only its central
+directory; an entry's bytes are read when it is. `Dir.zip(bytes: data)` reads
+an archive already in memory — downloaded, or one of a Dir's own files.
+Packing goes the other way, with [`Compress.zip`](#17-compress).
+
+```culebra
+let z = Dir.zip(bytes: Compress.zip({'score.xml': '<score/>', 'META-INF/container.xml': '<c/>'}))
+inspect(z.files())                # => ['META-INF/container.xml', 'score.xml']
+inspect(z.list_dir(''))           # => ['META-INF', 'score.xml']
+inspect(z.read('score.xml'))      # => '<score/>'
+inspect(z.size('score.xml'))      # => 8
+```
+
+```culebra
+# doctest: skip — reads and writes files
+let archive = Dir.zip("download.zip")
+for path in archive.glob("**/*.json") {
+  inspect(JSON.parse(archive.read(path)))
+}
+archive.copy_to("extracted")      # extract everything
+archive.close()
+```
+
+An archive's own names are made into paths when it opens: `\` (which some
+Windows tools write) is read as a separator there, and an entry whose name
+starts with `/` or a drive (`C:`), or climbs with `..`, is left out, so no
+entry can be read or extracted outside the archive. When two entries name
+one file, the first is the one read.
+
+What cannot be read raises `ValueError` with the reason: bytes that are no
+archive (or a damaged one) when it opens; an encrypted entry, one compressed
+with a method other than stored or deflate, or one whose data does not match
+its CRC when that entry is read. A file that is not there is an `IOError`, as
+any file read is.
+
+The open archive holds the file (or its copy of the bytes) until `close()`, or
+until the last reference to it goes; after `close()` every method raises
+`ClosedError`. It cannot be sent to another isolate (`SendError`): the open
+archive is this isolate's, and a worker opens its own. The WASM playground has
+no ZIP support: `Dir.zip` and `Compress.zip` raise there.
 
 ---
 

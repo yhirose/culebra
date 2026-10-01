@@ -20,6 +20,7 @@
 #include <stdlib/xml.h>
 #include <stdlib/uuid.h>
 #include <stdlib/vfs.h>
+#include <stdlib/zip.h>  // Dir.zip / Compress.zip
 #include <rt/rt.h>
 #include <stdlib/net.h>
 #include <stdlib/proc.h>
@@ -7186,6 +7187,78 @@ inline JitValue _ns_compress_deflate(JitValue* a, int64_t n) {
   return _ns_adapt::v_string(_culebra_heap_str(r.data));
 }
 
+// Compress.zip(files): the bytes of a .zip holding `files` — an Object of
+// path to contents, normalized as Dir.memory takes it, or any Dir (its
+// files() and read(path)). Entries go in sorted by path with one fixed
+// timestamp, so the same files make the same bytes.
+inline JitValue _ns_compress_zip(JitValue* a, int64_t) {
+  auto fail = [](const char* kind, const std::string& msg) {
+    culebra::throw_runtime_error_at(kind, "Compress.zip: " + msg, 0, 0);
+  };
+  auto bad_type = [](std::string_view got) {
+    culebra::throw_runtime_error_at(
+        "TypeError",
+        culebra::format("type error: Compress.zip expects Object|Dir, got {}",
+                        got),
+        0, 0);
+  };
+  auto* o = a[0].tag == TAG_OBJECT ? reinterpret_cast<JitObject*>(a[0].data)
+                                   : nullptr;
+  if (!o || culebra_runtime_is_namespace(a[0].data))
+    bad_type(culebra_runtime_type_of(a[0].tag));
+  std::map<std::string, std::string> files;  // sorted by path
+  auto add = [&](std::string_view path, JitValue body) {
+    if (body.tag != TAG_STRING && body.tag != TAG_STRINGVIEW)
+      fail("TypeError", culebra::format("'{}' holds {}, not String", path,
+                                        culebra_runtime_type_of(body.tag)));
+    std::string key;
+    if (!culebra::dir_path_normalize(path, key) || key.empty())
+      fail("ValueError",
+           culebra::format("'{}' is not a file inside the archive", path));
+    if (files.count(key))
+      fail("ValueError",
+           culebra::format("'{}' names a file another path already names",
+                           path));
+    files.emplace(std::move(key),
+                  std::string(_culebra_str_view(body.tag, body.data)));
+  };
+  if (o->proto()) {
+    // A class instance: a Dir, asked for its files and their bytes.
+    if (!_culebra_type_matches_single(TAG_OBJECT, a[0].data, "Dir"))
+      bad_type(_jit_meta_class_name(o));
+    // A field of the name shadows the trait's default, and is no method.
+    auto method = [&](const char* name) {
+      JitPropIC ic{};
+      JitValue m = culebra_runtime_object_get_ic(o, name, &ic, 0, 0);
+      if (m.tag != TAG_FUNC)
+        fail("TypeError", culebra::format("the Dir's {} is not a method", name));
+      return reinterpret_cast<JitClosure*>(m.data);
+    };
+    JitOwnedVal list(_culebra_invoke_method0(method("files"), a[0]));
+    if (list.borrow().tag != TAG_ARRAY)
+      fail("TypeError", "files() did not return an Array");
+    auto* arr = reinterpret_cast<JitArray*>(list.borrow().data);
+    auto* read = method("read");
+    for (size_t i = 0; i < arr->size; i++) {
+      JitValue p = arr->items[i];
+      if (p.tag != TAG_STRING && p.tag != TAG_STRINGVIEW)
+        fail("TypeError", "files() listed a path that is not a String");
+      JitOwnedVal body(_culebra_invoke_method1(read, a[0], p));
+      add(_culebra_str_view(p.tag, p.data), body.borrow());
+    }
+  } else {
+    for (size_t i = 0; o->shape && i < o->prop_size(); i++)
+      add(o->prop_name(i), o->slots[i].value);
+    if (o->non_string_props && !o->non_string_props->empty())
+      fail("TypeError", "a path is a String");
+  }
+  std::vector<std::pair<std::string, std::string>> entries(files.begin(),
+                                                           files.end());
+  std::string out, err;
+  if (!culebra::zip::pack(entries, out, err)) fail("ValueError", err);
+  return _ns_adapt::str(out);
+}
+
 // Hash.{sha256,sha1,sha512,md5} + Hash.hmac_*: self-hosted digests via hash.h,
 // returning the lowercase hex digest. require_sv keeps the input binary-safe
 // and raises the binder's canonical `parameter '<name>' expects String` for a
@@ -8740,6 +8813,10 @@ inline JitValue _ns_dir_mark(JitValue* a, int64_t) {
         "TypeError", "_Dir.mark: expects a class instance and a Dir kind", 0,
         0);
   meta->specials->dir_kind = k;
+  // An open archive is this Runtime's (the table below), so its class says
+  // its instances cannot cross an isolate.
+  if (k == int8_t(culebra::DirKind::Zip))
+    meta->specials->nonsendable_instances = true;
   return _ns_adapt::v_nil();
 }
 
@@ -8777,6 +8854,124 @@ inline JitValue _ns_dir_embedded(JitValue* a, int64_t) {
   if (!culebra::dir_path_normalize(_ns_adapt::require_sv(a[1], "path"), rel))
     return Op(nullptr, rel);
   return Op(culebra::open_embed_dir(std::string(name)).get(), rel);
+}
+
+// The archives Dir.zip opened, by the id a ZipArchive holds. Per Runtime: a
+// ZipArchive never crosses an isolate (_ns_dir_mark), so no other thread
+// reaches one, and the Runtime's end closes what the program left open.
+struct _DirZipTable {
+  struct Open {
+    culebra::zip::Reader* reader;
+    culebra::zip::Index index;
+  };
+  std::unordered_map<int64_t, Open> entries;
+  int64_t next_id = 1;
+  ~_DirZipTable() {
+    for (auto& [_, a] : entries) culebra::zip::close(a.reader);
+  }
+};
+inline _DirZipTable& _dir_zip_table() {
+  return culebra::runtime_substate<_DirZipTable>(culebra::kSlotZipArchives);
+}
+
+[[noreturn]] inline void _dir_zip_throw(const char* kind,
+                                        const std::string& msg) {
+  culebra::throw_runtime_error_at(kind, msg, 0, 0);
+}
+
+inline JitValue _dir_zip_register(culebra::zip::Opened o,
+                                  const std::string& what) {
+  if (!o.reader) _dir_zip_throw("ValueError", "Dir.zip: " + what + o.error);
+  auto& t = _dir_zip_table();
+  int64_t id = t.next_id++;
+  t.entries.emplace(id, _DirZipTable::Open{o.reader, std::move(o.index)});
+  return {TAG_LONG, id};
+}
+
+inline _DirZipTable::Open& _dir_zip_open_of(JitValue id) {
+  auto& t = _dir_zip_table();
+  auto it = id.tag == TAG_LONG ? t.entries.find(id.data) : t.entries.end();
+  if (it == t.entries.end())
+    _dir_zip_throw("ClosedError", "Dir.zip: the archive is closed");
+  return it->second;
+}
+
+// `_Dir.zip_open(path)`: a missing file is an IOError, like any file read;
+// one that is there and holds no archive is a ValueError, with the reason.
+inline JitValue _ns_dir_zip_open(JitValue* a, int64_t) {
+  std::string path(_ns_adapt::require_sv(a[0], "path"));
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(path, ec))
+    _dir_zip_throw("IOError", "Dir.zip: no such file '" + path + "'");
+  return _dir_zip_register(culebra::zip::open_file(path), "'" + path + "': ");
+}
+inline JitValue _ns_dir_zip_open_bytes(JitValue* a, int64_t) {
+  return _dir_zip_register(
+      culebra::zip::open_bytes(std::string(_ns_adapt::require_sv(a[0], "bytes"))),
+      "");
+}
+
+// The entry of `path`, or null: absent, or outside the archive.
+inline const culebra::zip::Entry* _dir_zip_entry(_DirZipTable::Open& z,
+                                                 JitValue path) {
+  std::string key;
+  if (!culebra::dir_path_normalize(_ns_adapt::require_sv(path, "path"), key))
+    return nullptr;
+  auto it = z.index.files.find(key);
+  return it == z.index.files.end() ? nullptr : &it->second;
+}
+inline JitValue _ns_dir_zip_read(JitValue* a, int64_t) {
+  auto& z = _dir_zip_open_of(a[0]);
+  const auto* e = _dir_zip_entry(z, a[1]);
+  if (!e) return _ns_adapt::v_nil();
+  std::string out, err;
+  if (!culebra::zip::read(z.reader, *e, out, err))
+    _dir_zip_throw("ValueError",
+                   culebra::format("Dir.zip: '{}': {}",
+                                   _ns_adapt::require_sv(a[1], "path"), err));
+  return _ns_adapt::str(out);
+}
+inline JitValue _ns_dir_zip_is_file(JitValue* a, int64_t) {
+  return {TAG_BOOL, _dir_zip_entry(_dir_zip_open_of(a[0]), a[1]) ? 1 : 0};
+}
+inline JitValue _ns_dir_zip_is_dir(JitValue* a, int64_t) {
+  auto& z = _dir_zip_open_of(a[0]);
+  std::string key;
+  bool in = culebra::dir_path_normalize(_ns_adapt::require_sv(a[1], "path"),
+                                        key) &&
+            z.index.is_dir(key);
+  return {TAG_BOOL, in ? 1 : 0};
+}
+inline JitValue _ns_dir_zip_list_dir(JitValue* a, int64_t) {
+  auto& z = _dir_zip_open_of(a[0]);
+  std::string key;
+  std::vector<std::string> names;
+  if (!culebra::dir_path_normalize(_ns_adapt::require_sv(a[1], "path"), key) ||
+      !z.index.list_dir(key, names))
+    return _ns_adapt::v_nil();
+  return _ns_adapt::string_array(names);
+}
+inline JitValue _ns_dir_zip_size(JitValue* a, int64_t) {
+  const auto* e = _dir_zip_entry(_dir_zip_open_of(a[0]), a[1]);
+  return e ? JitValue{TAG_LONG, static_cast<int64_t>(e->size)}
+           : _ns_adapt::v_nil();
+}
+inline JitValue _ns_dir_zip_files(JitValue* a, int64_t) {
+  // A std::map: its keys come sorted by bytes.
+  return _ns_adapt::string_array(std::views::keys(_dir_zip_open_of(a[0]).index.files));
+}
+// Closing twice, or a ZipArchive whose constructor never got an id, is a
+// no-op.
+inline JitValue _ns_dir_zip_close(JitValue* a, int64_t) {
+  auto& t = _dir_zip_table();
+  if (a[0].tag == TAG_LONG) {
+    if (auto it = t.entries.find(a[0].data); it != t.entries.end()) {
+      auto* r = it->second.reader;
+      t.entries.erase(it);
+      culebra::zip::close(r);
+    }
+  }
+  return _ns_adapt::v_nil();
 }
 
 inline JitValue _ns_fst_compile_set(JitValue* a, int64_t) {
@@ -9809,6 +10004,7 @@ inline const NsMethod kNsRows_Compress[] = {
   {"Compress", "gzip",     1, &_ns_compress_gzip,   nullptr, "String", "data"},
   {"Compress", "gunzip",   1, &_ns_compress_gunzip, nullptr, "String", "data"},
   {"Compress", "deflate",  1, &_ns_compress_deflate, nullptr, "String", "data"},
+  {"Compress", "zip",      1, &_ns_compress_zip},
 };
 inline const NsMethod kNsRows_Hash[] = {
   {"Hash", "sha256",      1, &_ns_hash_sha256, nullptr, "String", "data"},
@@ -9913,6 +10109,15 @@ inline const NsMethod kNsRows_Dir_native[] = {
   {"_Dir", "embedded_is_file",  2, &_ns_dir_embedded<_dir_embedded_is_file>},
   {"_Dir", "embedded_is_dir",   2, &_ns_dir_embedded<_dir_embedded_is_dir>},
   {"_Dir", "embedded_size",     2, &_ns_dir_embedded<_dir_embedded_size>},
+  {"_Dir", "zip_open",          1, &_ns_dir_zip_open},
+  {"_Dir", "zip_open_bytes",    1, &_ns_dir_zip_open_bytes},
+  {"_Dir", "zip_read",          2, &_ns_dir_zip_read},
+  {"_Dir", "zip_is_file",       2, &_ns_dir_zip_is_file},
+  {"_Dir", "zip_is_dir",        2, &_ns_dir_zip_is_dir},
+  {"_Dir", "zip_list_dir",      2, &_ns_dir_zip_list_dir},
+  {"_Dir", "zip_size",          2, &_ns_dir_zip_size},
+  {"_Dir", "zip_files",         1, &_ns_dir_zip_files},
+  {"_Dir", "zip_close",         1, &_ns_dir_zip_close},
 };
 inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "available",      0, &_ns_audio_query<culebra::_audio_detail::available>},

@@ -35,7 +35,9 @@
 # 296 since test_trait_defaults_workers.cul (a trait's default methods reach
 # every worker Runtime: Isolate, Parallel, the Http and Net pools).
 # 297 since test_dir.cul (one contract over every kind of Dir).
-tests.cul 297
+# 296 since test_dir_zip.cul (ZIP archives another tool wrote, entries no
+# reader can trust by name, what cannot be read and why).
+tests.cul 298
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -76,7 +78,9 @@ ctest.entries 34
 # FixedArray, in en and ja.
 # 996 since stdlib's Dir chapter (six blocks) takes over the Embed section's
 # two, in en and ja.
-docs.blocks 1004
+# 1004 since Compress.zip and Dir.zip show packing and reading an archive, two
+# blocks each, in en and ja.
+docs.blocks 1012
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130
