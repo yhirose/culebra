@@ -42,19 +42,55 @@ assert_true(s.message.contains("start rule 'Nope' is undefined"))
 assert_eq(try { PEG.check("Bad <- ***") } catch err { err.kind }, "PEGError")
 assert_eq(PEG.check(calc), nil)
 
+let deep_subject = "(".repeat(20000) + "1" + ")".repeat(20000)
+
 // --- errors are catchable, not a crash: machine-written nesting hits the
-// rule-entry guard the front end uses for culebra's own grammar ---
+// rule-nesting bound the front end uses for culebra's own grammar ---
 let deep = try {
-  PEG.parse(calc, "(".repeat(20000) + "1" + ")".repeat(20000))
+  PEG.parse(calc, deep_subject)
 } catch err {
   err
 }
 assert_eq(deep.kind, "PEGError")
 assert_true(deep.message.contains("nesting too deep"))
 
-// The guard's counter is per parse, so the same grammar still parses after
-// one input blew through it.
+// The bound is per parse, so the same grammar still parses after one input
+// went past it.
 assert_eq(PEG.parse(calc, "1 + 2").name, "Additive")
+
+// PEG.test reports too deep a subject as an error, not as a mismatch, even
+// after an error that `%recover` got past.
+let deep_test = try {
+  PEG.test(calc, deep_subject)
+} catch err {
+  err
+}
+assert_eq(deep_test.kind, "PEGError")
+assert_true(deep_test.message.contains("nesting too deep (limit 4000)"))
+
+let recovering = `
+  S   <- (L / ERR)*
+  L   <- A ';'
+  A   <- '(' A ')' / [0-9]
+  ERR <- 'x'^bad
+  bad <- (!';' .)* ';'
+`
+let after_recovery = "1;?;" + "(".repeat(5000) + "1" + ")".repeat(5000) + ";"
+let recovered_test = try { PEG.test(recovering, after_recovery) } catch err { err }
+assert_eq(recovered_test.kind, "PEGError")
+assert_true(recovered_test.message.contains("nesting too deep (limit 4000)"))
+let recovered_parse = try { PEG.parse(recovering, after_recovery) } catch err { err }
+assert_true(recovered_parse.message.contains("nesting too deep (limit 4000)"))
+
+// A tree deeper than the rule-nesting bound is a PEGError too, though a
+// left-recursive chain parses without nesting.
+let chain = `
+  Sum <- Sum '+' Num / Num
+  Num <- < [0-9] >
+`
+let long_chain = try { PEG.parse(chain, "1" + "+1".repeat(5000)) } catch err { err }
+assert_eq(long_chain.kind, "PEGError")
+assert_true(long_chain.message.contains("nesting too deep (limit 4000)"))
 
 // --- a tree deeper than the value-nesting bound is a ValueError, the same
 // bound (and message) JSON.parse applies to its own trees ---
@@ -83,10 +119,10 @@ assert_true(named.message.contains("syntax error"))
 // `path` parameter on `check`/`compile` to name one.
 assert_true(g.message.starts_with("PEG: grammar:"))
 
-// The rule-entry guard's message honors `path` too -- it is a subject
+// The nesting bound's message honors `path` too -- it is a subject
 // position like any other.
 let deep_named = try {
-  PEG.parse(calc, "(".repeat(20000) + "1" + ")".repeat(20000), path: "deep.pas")
+  PEG.parse(calc, deep_subject, path: "deep.pas")
 } catch err {
   err
 }

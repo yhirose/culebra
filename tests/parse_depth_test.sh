@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Regression test for the parser's behaviour on pathological nesting.
 #
-# Depth (include/frontend/parser.h get_parser's enter/leave hooks): deep
+# Depth (include/frontend/parser.h's set_max_depth bound): deep
 # machine-written nesting must be a SyntaxError, not a C-stack SIGSEGV;
 # realistic generated nesting must still parse. Nesting descends through
 # whichever recursive rule family probes first (a `[` tower dives through the
@@ -38,10 +38,10 @@ run_ok() {  # run_ok <label> <expected-stdout> <culebra-args...>
 }
 
 # --- too deep: clean SyntaxError, process must not crash -------------------
-# `run`, `fmt` and `lint` all parse the file; parser.h converts the guard's
-# throw into the ordinary parse-error channel, so each reports and exits with
-# its usual error status. rc >= 128 is a signal death — the SIGSEGV this
-# guard exists to prevent.
+# `run`, `fmt` and `lint` all parse the file; peglib reports the bound
+# through the logger, the ordinary parse-error channel, so each reports and
+# exits with its usual error status. rc >= 128 is a signal death — the SIGSEGV
+# this bound exists to prevent.
 for shape in "[ ]" "{ }" "( )"; do
   set -- $shape
   deep "$1" "$2" 20000 > "$TMP/deep.cul"

@@ -22,19 +22,19 @@
 
 namespace culebra {
 
-// Nesting-depth guard for the PEG's recursive descent. Machine-written
-// nesting (20k `(`s or `[`s) otherwise overflows the C stack inside
-// peglib — an uncatchable SIGSEGV instead of a SyntaxError. The unit is
-// *rule* entries, not brackets: one literal nesting level costs ~6 rules
-// (measured), the deepest file in the test corpus reaches 101, and the
-// crash needs ~120k — so 4000 allows ~650-deep generated literals with
-// 40x corpus headroom while staying two orders under the cliff, which
-// also keeps every downstream AST walker (optimizer, transforms, both
-// backends' compilers, the formatter) far from its own stack budget.
-// Reset per parse: a throw from the enter hook aborts the parse before
-// peglib's scope_exit can rebalance the count.
+// Nesting-depth bound for the PEG's recursive descent (peglib's
+// set_max_depth). Machine-written nesting (20k `(`s or `[`s) otherwise
+// overflows the C stack inside peglib — an uncatchable SIGSEGV instead of a
+// SyntaxError. The unit is *rule* matches in progress, not brackets: one
+// literal nesting level costs ~6 rules (measured), the deepest file in the
+// test corpus reaches 101, and the crash needs ~120k — so 4000 allows
+// ~650-deep generated literals with 40x corpus headroom while staying two
+// orders under the cliff. peglib holds the AST it returns to the same bound,
+// which keeps every downstream AST walker (transforms, both backends'
+// compilers, the formatter) far from its own stack budget.
 inline constexpr int64_t kCulebraParseDepthLimit = 4000;
-inline thread_local int64_t _culebra_parse_depth = 0;
+
+inline const std::vector<std::string>& ast_optimizer_keep_rules();
 
 inline peg::parser& get_parser() {
   // thread_local — peg::parser's logger callback and VM state aren't
@@ -64,31 +64,11 @@ inline peg::parser& get_parser() {
       throw std::logic_error("invalid peg grammar");
     }
 
-    parser.enable_ast();
+    // The optimized AST, built directly rather than optimized afterwards.
+    parser.enable_ast(true, true, ast_optimizer_keep_rules());
     parser.enable_packrat_parsing();
-
-    // Every nesting construct passes through EXPRESSION or STATEMENT, so
-    // two hooks bound the whole grammar's recursion. peglib runs `leave`
-    // from a scope_exit, so backtracking keeps the count balanced.
-    auto enter_depth = [](const peg::Context& c, const char* s, size_t,
-                          std::any&) {
-      if (++_culebra_parse_depth > kCulebraParseDepthLimit) {
-        auto [ln, col] = c.line_info(s);
-        throw CulebraError(
-            "SyntaxError", nesting_too_deep_message(kCulebraParseDepthLimit),
-            static_cast<long>(ln), static_cast<long>(col));
-      }
-    };
-    auto leave_depth = [](const peg::Context&, const char*, size_t, size_t,
-                          std::any&, std::any&) { --_culebra_parse_depth; };
-    // Every named rule counts: deep nesting descends through whichever
-    // recursive rule family matches first (a 20k-`[` tower dives through
-    // the *pattern* rules while probing DESTRUCTURE_ASSIGN, never touching
-    // EXPRESSION), so hooking a hand-picked subset is a losing game.
-    for (const auto& [rule_name, def] : parser.get_grammar()) {
-      parser[rule_name.c_str()].enter = enter_depth;
-      parser[rule_name.c_str()].leave = leave_depth;
-    }
+    // Reported through the logger, which parse_undesugared() rewords.
+    parser.set_max_depth(kCulebraParseDepthLimit);
   }
 
   return parser;
@@ -2347,10 +2327,10 @@ inline std::shared_ptr<peg::Ast> desugar_postfix_modifiers(
   return node;
 }
 
-// Rules the AstOptimizer must NOT collapse onto a single child — the shared
-// single source of truth for every consumer of the optimized AST (interp /
-// JIT / lint / fmt). Adding a structural node to the grammar usually means
-// adding its name here too.
+// Rules never collapsed onto a single child when get_parser's enable_ast
+// builds the optimized AST (AstOptimizer's keep-list) — the single source of
+// truth for every consumer of that AST (interp / JIT / lint / fmt). Adding a
+// structural node to the grammar usually means adding its name here too.
 inline const std::vector<std::string>& ast_optimizer_keep_rules() {
   static const std::vector<std::string> rules = {
       "PARAMETERS", "LAMBDA_PARAMS", "SEQUENCE", "OBJECT",
@@ -2413,7 +2393,7 @@ inline const std::vector<std::string>& ast_optimizer_keep_rules() {
 }
 
 // peglib's error reporter counts a column in code points; every other position
-// culebra reports (an AST node, the nesting guard, a bare `\r`) counts bytes.
+// culebra reports (an AST node, a bare `\r`) counts bytes.
 // Converting the one keeps a column meaning the same thing everywhere.
 inline size_t codepoint_column_to_byte(std::string_view src, size_t line,
                                        size_t col) {
@@ -2434,7 +2414,7 @@ inline size_t codepoint_column_to_byte(std::string_view src, size_t line,
 }
 
 // Where a parse stopped and why: the grammar's own error, the nesting-depth
-// guard, or a rejected bare carriage return.
+// bound, or a rejected bare carriage return.
 struct ParseFailure {
   size_t line = 0;
   size_t col = 0;
@@ -2447,27 +2427,30 @@ inline std::string format_parse_failure(const std::string& path,
   return std::format("{}:{}:{}: {}\n", path, f.line, f.col, f.message);
 }
 
+// The AST as the grammar builds it, before any desugaring: what parse()
+// and parse_for_format() share.
+//
 // `expr` is taken by mutable reference because the newline normalization edits
 // it: the AST's tokens are string_views into this buffer, so it is the one that
 // has to hold the normalized bytes. Callers already had to keep it alive for as
 // long as the AST — they now also have to own it rather than share it, which is
 // only visible to a caller parsing one buffer from several threads.
-inline std::shared_ptr<peg::Ast> parse(const std::string& path,
-                                       std::string& expr,
-                                       std::vector<ParseFailure>& failures) {
+inline std::shared_ptr<peg::Ast> parse_undesugared(
+    const std::string& path, std::string& expr,
+    std::vector<ParseFailure>& failures) {
   auto& parser = get_parser();
-  _culebra_parse_depth = 0;  // an aborted parse leaves the count mid-flight
 
   parser.set_logger([&](size_t ln, size_t col, const std::string& err_msg) {
-    failures.push_back({ln, codepoint_column_to_byte(expr, ln, col), err_msg});
+    failures.push_back(
+        {ln, codepoint_column_to_byte(expr, ln, col),
+         reword_parse_depth_error(err_msg, kCulebraParseDepthLimit)});
   });
 
   std::shared_ptr<peg::Ast> ast;
-  // The depth guard throws from peglib's enter hook, so it bypasses the
+  // The newline normalization throws on a bare `\r`, which bypasses the
   // logger. Convert it here so every caller sees one failure shape
-  // (msgs + nullptr) — before this, each caller needed its own catch, and
-  // fmt/lint/doctest/repl/dap each missed it in turn. The newline
-  // normalization below reports a bare `\r` the same way.
+  // (failures + nullptr) — fmt/lint/doctest/repl/dap would each need their own
+  // catch otherwise.
   try {
     normalize_source_newlines(expr);
     if (!parser.parse_n(expr.data(), expr.size(), ast, path.c_str())) {
@@ -2478,9 +2461,14 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
                         e.what()});
     return nullptr;
   }
+  return ast;
+}
 
-  auto opt = peg::AstOptimizer(true, ast_optimizer_keep_rules());
-  return desugar_postfix_modifiers(desugar_regex_literals(opt.optimize(ast)));
+inline std::shared_ptr<peg::Ast> parse(const std::string& path,
+                                       std::string& expr,
+                                       std::vector<ParseFailure>& failures) {
+  auto ast = parse_undesugared(path, expr, failures);
+  return ast ? desugar_postfix_modifiers(desugar_regex_literals(ast)) : nullptr;
 }
 
 inline std::shared_ptr<peg::Ast> parse(const std::string& path,
@@ -2500,27 +2488,10 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
 inline std::shared_ptr<peg::Ast> parse_for_format(
     const std::string& path, std::string& expr,
     std::vector<std::string>& msgs) {
-  auto& parser = get_parser();
-  _culebra_parse_depth = 0;  // an aborted parse leaves the count mid-flight
-
-  parser.set_logger([&](size_t ln, size_t col, const std::string& err_msg) {
-    msgs.push_back(format_parse_failure(
-        path, {ln, codepoint_column_to_byte(expr, ln, col), err_msg}));
-  });
-
-  std::shared_ptr<peg::Ast> ast;
-  try {  // depth guard + bare `\r` → msgs, as in parse()
-    normalize_source_newlines(expr);
-    if (!parser.parse_n(expr.data(), expr.size(), ast, path.c_str())) {
-      return nullptr;
-    }
-  } catch (const CulebraError& e) {
-    msgs.push_back(std::format("{}:{}:{}: {}\n", path, e.line, e.col, e.what()));
-    return nullptr;
-  }
-
-  auto opt = peg::AstOptimizer(true, ast_optimizer_keep_rules());
-  return opt.optimize(ast);
+  std::vector<ParseFailure> failures;
+  auto ast = parse_undesugared(path, expr, failures);
+  for (const auto& f : failures) msgs.push_back(format_parse_failure(path, f));
+  return ast;
 }
 
 inline constexpr const char* kBuiltinTraitsPath = "<builtin>";

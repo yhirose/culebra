@@ -7,7 +7,7 @@
 // culebra's own front end already runs on cpp-peglib (parser.h), so handing a
 // parser to programs adds no dependency. What it does add is a grammar that is
 // user data, so both guards the front end applies to its own grammar apply
-// here: the per-rule recursion counter (machine-written nesting otherwise
+// here: the bound on rules in progress (machine-written nesting otherwise
 // overflows the C stack inside peglib — an uncatchable SIGSEGV instead of an
 // error) and the value-nesting bound the rest of the stdlib applies to trees
 // it hands back (json.h).
@@ -45,7 +45,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include <base/shared.h>  // CulebraError, nesting_too_deep_message
+#include <base/shared.h>  // CulebraError, the nesting-bound wording
 
 #include <peglib.h>
 
@@ -55,8 +55,11 @@ namespace culebra::pegparser {
 // same way json.h applies it to a parsed document.
 inline constexpr int64_t kPEGTreeDepthLimit = kCulebraRecursionLimit;
 
-// Rule entries, not tree levels — the unit parser.h counts for culebra's own
-// grammar, at the same limit and for the same reason.
+// Rule matches in progress, not tree levels — the unit parser.h bounds for
+// culebra's own grammar, at the same limit and for the same reason. peglib
+// also fails a parse whose tree is deeper than this (a left-recursive chain),
+// before optimize_ast walks it recursively; a shallower tree past the bound
+// above is _flatten's ValueError.
 inline constexpr int64_t kPEGParseDepthLimit = 4000;
 
 // What identifies a loaded grammar — and so what the compile cache keys on.
@@ -135,10 +138,10 @@ struct Compiled {
   std::string err;
   size_t err_line = 0, err_col = 0;
   // The subject's name, for the duration of one parse() call only (set at its
-  // top, read by the enter lambda below through the `c` it captures). Not a
-  // property of the grammar, so it isn't threaded through compile()'s
-  // Options -- cpp-peglib's own parse_n() takes a path per call for the same
-  // reason: one parser, many files.
+  // top, read when it reports a failure). Not a property of the grammar, so
+  // it isn't threaded through compile()'s Options -- cpp-peglib's own
+  // parse_n() takes a path per call for the same reason: one parser, many
+  // files.
   std::string path;
   // One reentrant parse_with_actions() call's frame: which actions map is
   // active and where its subject text starts (SemanticValues::sv() is a view
@@ -166,8 +169,6 @@ struct Compiled {
 };
 using Handle = std::shared_ptr<Compiled>;
 
-inline thread_local int64_t _peg_parse_depth = 0;
-
 [[noreturn]] inline void _fail(const std::string& msg) {
   // No position: these are offsets into the grammar or the subject, not into
   // the culebra source, so they go in the text and the binding layer stamps
@@ -184,6 +185,17 @@ inline std::string _fmt_err(std::string_view path, size_t ln, size_t col,
                       : culebra::format("{}:{}:{}: {}", path, ln, col, msg);
 }
 
+// A failed parse of the subject, as a PEGError.
+[[noreturn]] inline void _fail_parse(const Compiled& c) {
+  _fail(_fmt_err(c.path, c.err_line, c.err_col,
+                 c.err.empty() ? "syntax error" : c.err));
+}
+
+// The error peglib's set_max_depth bound reports, as the logger rewords it.
+inline bool _is_depth_error(const std::string& msg) {
+  return msg == nesting_too_deep_message(kPEGParseDepthLimit);
+}
+
 // Load (or cache-hit) `grammar`. Throws CulebraError("PEGError") for a
 // malformed grammar, with the position inside the grammar text in the message.
 inline Handle _build(std::string_view grammar, const Options& opt) {
@@ -193,8 +205,11 @@ inline Handle _build(std::string_view grammar, const Options& opt) {
   // Raw `this`: the parser is a member, so the callback cannot outlive it.
   auto* c = h.get();
   h->parser.set_logger([c](size_t ln, size_t col, const std::string& msg) {
-    if (c->err.empty()) {
-      c->err = msg;
+    auto m = reword_parse_depth_error(msg, kPEGParseDepthLimit);
+    // The depth bound ends the parse, so it outranks an error recovered
+    // (`%recover`) before it.
+    if (c->err.empty() || _is_depth_error(m)) {
+      c->err = std::move(m);
       c->err_line = ln;
       c->err_col = col;
     }
@@ -205,24 +220,8 @@ inline Handle _build(std::string_view grammar, const Options& opt) {
   }
   h->parser.enable_ast();
   if (opt.packrat) h->parser.enable_packrat_parsing();
-
-  // Every named rule counts, for the reason parser.h gives: deep nesting
-  // descends through whichever recursive rule family matches first, so
-  // hooking a hand-picked subset is a losing game. peglib runs `leave` from a
-  // scope_exit, so backtracking keeps the count balanced.
-  auto enter = [c](const ::peg::Context& ctx, const char* s, size_t, std::any&) {
-    if (++_peg_parse_depth > kPEGParseDepthLimit) {
-      auto [ln, col] = ctx.line_info(s);
-      _fail(_fmt_err(c->path, ln, col,
-                     nesting_too_deep_message(kPEGParseDepthLimit)));
-    }
-  };
-  auto leave = [](const ::peg::Context&, const char*, size_t, size_t, std::any&,
-                  std::any&) { --_peg_parse_depth; };
-  for (const auto& [rule_name, def] : h->parser.get_grammar()) {
-    h->parser[rule_name.c_str()].enter = enter;
-    h->parser[rule_name.c_str()].leave = leave;
-  }
+  // Reported through the logger above, as a failed parse.
+  h->parser.set_max_depth(kPEGParseDepthLimit);
   return h;
 }
 
@@ -275,30 +274,26 @@ inline void _flatten(const ::peg::Ast& a, Tree& t, int64_t depth) {
 
 // A registered action parsing again (this grammar applied to itself, or just
 // to a substring it extracted) reuses this Compiled's err/err_line/err_col/
-// path, and the depth guard's counter is a single thread_local shared by every
-// parse. Each parse starts them fresh and puts back what it found on every
-// exit, a thrown one included, so a nested call's bookkeeping neither leaks
-// into the resuming outer one nor, for the counter, silently discounts it.
+// path. Each parse starts them fresh and puts back what it found on every
+// exit, a thrown one included, so a nested call's bookkeeping does not leak
+// into the resuming outer one.
 struct _ParseState {
   Compiled& c;
   std::string err;
   size_t line, col;
   std::string path;
-  int64_t depth;
   _ParseState(Compiled& compiled, std::string_view subject)
       : c(compiled), err(std::move(compiled.err)), line(compiled.err_line),
-        col(compiled.err_col), path(std::move(compiled.path)), depth(_peg_parse_depth) {
+        col(compiled.err_col), path(std::move(compiled.path)) {
     c.err.clear();
     c.err_line = c.err_col = 0;
     c.path.assign(subject);
-    _peg_parse_depth = 0;
   }
   ~_ParseState() {
     c.err = std::move(err);
     c.err_line = line;
     c.err_col = col;
     c.path = std::move(path);
-    _peg_parse_depth = depth;
   }
 };
 
@@ -312,10 +307,7 @@ inline Tree parse(Compiled& c, std::string_view text,
   {
     Compiled& t = _tree_mode(c);
     _ParseState state(t, path);
-    if (!t.parser.parse(text, ast)) {
-      _fail(_fmt_err(t.path, t.err_line, t.err_col,
-                    t.err.empty() ? "syntax error" : t.err));
-    }
+    if (!t.parser.parse(text, ast)) _fail_parse(t);
     if (optimize) ast = t.parser.optimize_ast(ast);
   }
   Tree t;
@@ -328,7 +320,10 @@ inline Tree parse(Compiled& c, std::string_view text,
 inline bool test(Compiled& c, std::string_view text) {
   Compiled& t = _tree_mode(c);
   _ParseState state(t, {});
-  return t.parser.parse(text);
+  if (t.parser.parse(text)) return true;
+  // Too deep a subject is an error, as in parse(), not a mismatch.
+  if (_is_depth_error(t.err)) _fail_parse(t);
+  return false;
 }
 
 // The rule this reduction belongs to, whatever action fires: default when
@@ -453,10 +448,7 @@ inline std::any parse_with_actions(Compiled& c,
   _AnyBox result;
   {
     ActionScope scope(c, actions, text.data());
-    if (!c.parser.parse_n(text.data(), text.size(), result)) {
-      _fail(_fmt_err(c.path, c.err_line, c.err_col,
-                    c.err.empty() ? "syntax error" : c.err));
-    }
+    if (!c.parser.parse_n(text.data(), text.size(), result)) _fail_parse(c);
   }
   return result.v;
 }

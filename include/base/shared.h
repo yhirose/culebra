@@ -481,6 +481,15 @@ inline std::string nesting_too_deep_message(int64_t limit) {
   return culebra::format("nesting too deep (limit {})", limit);
 }
 
+// A peglib logger message, with peglib's wording for its set_max_depth bound
+// replaced by the one above.
+inline std::string reword_parse_depth_error(const std::string& msg,
+                                            int64_t limit) {
+  return msg == culebra::format("exceeded the maximum nesting depth of {}", limit)
+             ? nesting_too_deep_message(limit)
+             : msg;
+}
+
 // Depth of the current *value* walk — the C++-recursive traversals that
 // follow a value's own nesting (str/inspect, ==, hash, sendable serialize)
 // rather than culebra calls. A loop can build `a = [a]` deeper than any

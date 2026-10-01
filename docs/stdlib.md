@@ -7032,12 +7032,13 @@ a subject document, and the grammar text is not one.
 
 Two bounds keep adversarial input catchable rather than fatal:
 
-* **Rule entries** — a parse that descends through more than 4000 rule entries
-  raises `PEGError` (`nesting too deep`). Machine-written nesting would
-  otherwise overflow the C stack inside the parser. This is the same guard, at
-  the same limit, that culebra applies to its own grammar.
-* **Tree depth** — a tree deeper than 1000 levels raises `ValueError`
-  (`nesting too deep (limit 1000)`), the
+* **Rule nesting** — a parse that nests more than 4000 rule matches, or
+  returns a tree deeper than 4000 levels, raises `PEGError`
+  (`nesting too deep (limit 4000)`). Machine-written nesting would otherwise
+  overflow the C stack inside the parser. This is the same bound, at the same
+  limit, that culebra applies to its own grammar.
+* **Tree depth** — a shallower tree still deeper than 1000 levels raises
+  `ValueError` (`nesting too deep (limit 1000)`), the
   [value-nesting bound](language.md#the-value-nesting-bound) `JSON` and `TOML`
   apply to their own trees.
 
@@ -7098,9 +7099,8 @@ inspect(try {
 Whatever an action itself throws — a culebra `throw`, a `TypeError` from
 misusing `sv`, anything — propagates unchanged; there is no action-specific
 catch to work around. `optimize` has no effect when `actions` is given (there
-is no tree to optimize); the rule-entry depth guard above still applies, but
-the tree-depth `ValueError` does not — there is no separate
-tree-materialization pass for it to bound.
+is no tree to optimize); the rule-nesting bound above still applies, but
+neither tree-depth error does — there is no tree for them to bound.
 
 ## 36. `CodeGen`
 
