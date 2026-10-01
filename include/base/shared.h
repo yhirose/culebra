@@ -1094,6 +1094,80 @@ inline std::optional<std::string> hex_decode(std::string_view in) {
   return out;
 }
 
+// UTF-16 (`Encoding.utf16`). Decoding, a byte-order mark picks the order and
+// is dropped; without one the bytes are big-endian (RFC 2781 §4.3, as Java's
+// "UTF-16" reads them — Python's 'utf-16' assumes the machine's order
+// instead). An odd number of bytes, or a surrogate without its pair, is an
+// error naming the byte offset. Encoding is big-endian, the mark only when
+// asked for, and refuses bytes that are not UTF-8.
+inline std::optional<std::string> utf16_decode(std::string_view in,
+                                               std::string& error) {
+  if (in.size() % 2 != 0) {
+    error = culebra::format("odd length ({} bytes)", in.size());
+    return std::nullopt;
+  }
+  auto byte = [&](size_t k) { return static_cast<uint32_t>(
+                                  static_cast<unsigned char>(in[k])); };
+  size_t i = 0;
+  bool le = false;
+  if (in.size() >= 2 && byte(0) == 0xFE && byte(1) == 0xFF) {
+    i = 2;
+  } else if (in.size() >= 2 && byte(0) == 0xFF && byte(1) == 0xFE) {
+    i = 2;
+    le = true;
+  }
+  auto unit = [&](size_t k) {
+    return le ? (byte(k + 1) << 8 | byte(k)) : (byte(k) << 8 | byte(k + 1));
+  };
+  std::string out;
+  out.reserve(in.size());
+  while (i < in.size()) {
+    uint32_t u = unit(i);
+    if (u >= 0xD800 && u <= 0xDBFF && i + 4 <= in.size()) {
+      uint32_t lo = unit(i + 2);
+      if (lo >= 0xDC00 && lo <= 0xDFFF) {
+        append_utf8(out, 0x10000 + ((u - 0xD800) << 10) + (lo - 0xDC00));
+        i += 4;
+        continue;
+      }
+    }
+    if (u >= 0xD800 && u <= 0xDFFF) {
+      error = culebra::format("a surrogate without its pair at byte {}", i);
+      return std::nullopt;
+    }
+    append_utf8(out, u);
+    i += 2;
+  }
+  return out;
+}
+
+inline std::optional<std::string> utf16_encode(std::string_view in, bool bom,
+                                               std::string& error) {
+  std::string out;
+  out.reserve(in.size() * 2 + 2);
+  auto put = [&](uint32_t u) {
+    out += static_cast<char>(u >> 8);
+    out += static_cast<char>(u & 0xFF);
+  };
+  if (bom) put(0xFEFF);
+  for (size_t i = 0; i < in.size();) {
+    char32_t cp;
+    size_t n = unicode::utf8::decode_codepoint(in.data() + i, in.size() - i, cp);
+    if (n == 0) {
+      error = culebra::format("not UTF-8 at byte {}", i);
+      return std::nullopt;
+    }
+    if (cp >= 0x10000) {
+      put(0xD800 + ((cp - 0x10000) >> 10));
+      put(0xDC00 + ((cp - 0x10000) & 0x3FF));
+    } else {
+      put(cp);
+    }
+    i += n;
+  }
+  return out;
+}
+
 // Percent-encode: the RFC 3986 unreserved set `A-Za-z0-9-_.~` plus whatever
 // `extra_unreserved` lists is kept verbatim, every other byte becomes `%XX`
 // with upper-case hex (so a space is `%20`, not `+`). Byte-oriented, so UTF-8

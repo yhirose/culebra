@@ -454,6 +454,9 @@ Encoding.hex.decode(s) -> String
 Encoding.url
 Encoding.url.encode(s) -> String
 Encoding.url.decode(s) -> String
+Encoding.utf16
+Encoding.utf16.encode(s: String, bom: Bool = false) -> String
+Encoding.utf16.decode(bytes: String) -> String
 Compress.gzip(data: String) -> String
 Compress.gunzip(data: String) -> String
 Compress.deflate(data: String, level: Long = -1) -> String

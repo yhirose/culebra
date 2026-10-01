@@ -55,7 +55,7 @@ Conventions used below:
 13. [Matchers](#13-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close` family
 14. [`Regex`](#14-regex) — linear-time, grapheme-aware regular expressions
 15. [`Http`](#15-http) — synchronous HTTP/HTTPS client (get/post/put/delete/head/request), server (routes, static files, WebSocket), and Server-Sent Events
-16. [`Encoding`](#16-encoding) — text codecs by scheme (`Encoding.html`, `Encoding.base64`, `Encoding.hex`, `Encoding.url`)
+16. [`Encoding`](#16-encoding) — text codecs by scheme (`Encoding.html`, `Encoding.base64`, `Encoding.hex`, `Encoding.url`, `Encoding.utf16`)
 17. [`Compress`](#17-compress) — gzip / deflate (de)compression for data and files, and packing files into a ZIP archive
 18. [`Hash`](#18-hash) — SHA-256/SHA-1/SHA-512/MD5 digests and HMAC (hex output)
 19. [`CSV`](#19-csv) — parse / stringify RFC 4180-ish comma-separated values
@@ -4419,7 +4419,7 @@ attempts is where a Ctrl+C lands.
 ## 16. `Encoding`
 
 Text codecs, grouped into a **sub-namespace per scheme** (`Encoding.html`,
-`Encoding.base64`, `Encoding.hex`, `Encoding.url`). The codec logic is shared
+`Encoding.base64`, `Encoding.hex`, `Encoding.url`, `Encoding.utf16`). The codec logic is shared
 between the VM and the JIT/AOT backends, and every codec is
 binary-safe (embedded NUL bytes survive a round trip).
 
@@ -4506,6 +4506,30 @@ stays a `+` (so `encode`/`decode` round-trip exactly).
 inspect(Encoding.url.encode("a b&c"))      # => 'a%20b%26c'
 inspect(Encoding.url.decode("a%20b%26c"))  # => 'a b&c'
 inspect(Encoding.url.encode("café"))      # => 'caf%C3%A9'
+```
+
+### `Encoding.utf16`
+
+| Function | Result |
+| --- | --- |
+| `Encoding.utf16.encode(s: String, bom: Bool = false) -> String` | `String` — the UTF-16 bytes of `s`, big-endian; `bom: true` puts the byte-order mark `FE FF` first |
+| `Encoding.utf16.decode(bytes: String) -> String` | `String` — the text, as UTF-8 |
+
+A culebra `String` is UTF-8; these read and write the other encoding a file
+or a protocol may use (an XML file written by a Windows tool, say). `decode`
+takes the byte order from a leading byte-order mark (`FE FF` big-endian,
+`FF FE` little-endian) and drops the mark; without one it reads big-endian,
+as RFC 2781 says — which is how Java's `UTF-16` reads it, and not how
+Python's `utf-16` does (that assumes the machine's order). An odd number of
+bytes, or a surrogate without its pair, raises `ValueError` naming the byte
+offset; `encode` raises it for a `String` that is not UTF-8.
+
+```culebra
+let b = Encoding.utf16.encode("héllo")
+inspect(Encoding.hex.encode(b))                                   # => '006800e9006c006c006f'
+inspect(Encoding.utf16.decode(b))                                 # => 'héllo'
+inspect(Encoding.hex.encode(Encoding.utf16.encode("😀", bom: true)))  # => 'feffd83dde00'
+inspect(Encoding.utf16.decode(Encoding.hex.decode("fffe6800e900")))   # => 'hé'
 ```
 
 ---

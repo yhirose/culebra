@@ -7142,6 +7142,25 @@ inline JitValue _ns_encoding_hex_decode(JitValue* a, int64_t) {
   }
   return _ns_adapt::v_string(_culebra_heap_str(*r));
 }
+// Encoding.utf16.{encode,decode}: the shared codec (shared.h); both raise
+// ValueError naming what is wrong and where.
+inline JitValue _ns_encoding_utf16_encode(JitValue* a, int64_t n) {
+  bool bom = n > 1 && _ns_adapt::require_bool(a[1], "bom");
+  std::string err;
+  auto r = culebra::utf16_encode(_ns_adapt::require_sv(a[0], "s"), bom, err);
+  if (!r)
+    throw culebra::CulebraError("ValueError", "Encoding.utf16.encode: " + err,
+                                0, 0);
+  return _ns_adapt::str(*r);
+}
+inline JitValue _ns_encoding_utf16_decode(JitValue* a, int64_t) {
+  std::string err;
+  auto r = culebra::utf16_decode(_ns_adapt::require_sv(a[0], "bytes"), err);
+  if (!r)
+    throw culebra::CulebraError("ValueError", "Encoding.utf16.decode: " + err,
+                                0, 0);
+  return _ns_adapt::str(*r);
+}
 // Encoding.url.{encode,decode}: percent-encoding; decode is lenient (never
 // fails), matching interp.
 inline JitValue _ns_encoding_url_encode(JitValue* a, int64_t) {
@@ -9714,6 +9733,8 @@ inline bool _ns_method_uses_kwarg_slab(const NsMethod* m) {
   if (ns == "Sys")      return nm == "env";  // fallback default
   if (ns == "Compress") return nm == "deflate";  // level default
   if (ns == "String")   return nm == "pack" || nm == "unpack";  // endian/at/...
+  if (ns == "Encoding")                          // utf16.encode's bom default
+    return m->sub && std::string_view(m->sub) == "utf16" && nm == "encode";
   if (ns == "IO")       return nm == "println";  // arg defaults to ""
   if (ns.empty())       return nm == "range" || nm == "iota" ||
                                nm == "grid" || nm == "Range" ||
@@ -9999,6 +10020,8 @@ inline const NsMethod kNsRows_Encoding[] = {
   {"Encoding", "decode",   1, &_ns_encoding_hex_decode, "hex",    "String", "s"},
   {"Encoding", "encode",   1, &_ns_encoding_url_encode, "url",    "String", "s"},
   {"Encoding", "decode",   1, &_ns_encoding_url_decode, "url",    "String", "s"},
+  {"Encoding", "encode",   1, &_ns_encoding_utf16_encode, "utf16"},
+  {"Encoding", "decode",   1, &_ns_encoding_utf16_decode, "utf16", "String", "bytes"},
 };
 inline const NsMethod kNsRows_Compress[] = {
   {"Compress", "gzip",     1, &_ns_compress_gzip,   nullptr, "String", "data"},

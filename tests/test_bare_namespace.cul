@@ -169,6 +169,6 @@ assert_eq(
   ],
 )
 // Sub-namespaces come out in first-appearance order, not hash order.
-assert_eq(Encoding.keys(), ["html", "base64", "hex", "url"])
+assert_eq(Encoding.keys(), ["html", "base64", "hex", "url", "utf16"])
 
 "OK".inspect()

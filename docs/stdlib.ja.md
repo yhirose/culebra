@@ -53,7 +53,7 @@
 13. [Matchers](#13-matchers) — `assert_true` / `assert_eq` / `assert_throws` / `assert_close`一族
 14. [`Regex`](#14-regex) — 線形時間・grapheme単位の正規表現
 15. [`Http`](#15-http) — 同期HTTP/HTTPSクライアント（get/post/put/delete/head/request）、サーバー（ルーティング・静的ファイル・WebSocket）、Server-Sent Events
-16. [`Encoding`](#16-encoding) — スキーム別のテキストコーデック（`Encoding.html`、`Encoding.base64`、`Encoding.hex`、`Encoding.url`）
+16. [`Encoding`](#16-encoding) — スキーム別のテキストコーデック（`Encoding.html`、`Encoding.base64`、`Encoding.hex`、`Encoding.url`、`Encoding.utf16`）
 17. [`Compress`](#17-compress) — データ・ファイルのgzip / deflate圧縮/展開と、ファイルをZIPアーカイブに詰めること
 18. [`Hash`](#18-hash) — SHA-256/SHA-1/SHA-512/MD5ダイジェストとHMAC（hex出力）
 19. [`CSV`](#19-csv) — RFC 4180流のCSVをparse / stringify
@@ -4290,7 +4290,7 @@ while running {
 ## 16. `Encoding`
 
 テキストコーデックを**スキームごとのサブ名前空間**にまとめた名前空間
-（`Encoding.html`、`Encoding.base64`、`Encoding.hex`、`Encoding.url`）。
+（`Encoding.html`、`Encoding.base64`、`Encoding.hex`、`Encoding.url`、`Encoding.utf16`）。
 コーデックのロジックはVMとJIT/AOT両バックエンドで共有しており、
 いずれもバイナリセーフ（埋め込みNULバイトも往復で保持）です。
 
@@ -4375,6 +4375,30 @@ inspect(Encoding.hex.decode("00FF").size())  # => 2
 inspect(Encoding.url.encode("a b&c"))      # => 'a%20b%26c'
 inspect(Encoding.url.decode("a%20b%26c"))  # => 'a b&c'
 inspect(Encoding.url.encode("café"))      # => 'caf%C3%A9'
+```
+
+### `Encoding.utf16`
+
+| 関数 | 結果 |
+| --- | --- |
+| `Encoding.utf16.encode(s: String, bom: Bool = false) -> String` | `String` — `s`のUTF-16のバイト列（ビッグエンディアン）。`bom: true`で先頭にバイトオーダーマーク`FE FF`を置く |
+| `Encoding.utf16.decode(bytes: String) -> String` | `String` — テキスト（UTF-8） |
+
+culebraの`String`はUTF-8です。これらは、ファイルやプロトコルが使うもう1つの
+符号化（Windowsのツールが書いたXMLファイルなど）を読み書きします。`decode`は
+先頭のバイトオーダーマーク（`FE FF`ならビッグエンディアン、`FF FE`ならリトル
+エンディアン）でバイト順を決め、マークは取り除きます。マークが無ければRFC 2781の
+とおりビッグエンディアンで読みます。JavaのUTF-16と同じ読み方で、Pythonの`utf-16`
+とは違います（そちらはマシンのバイト順を仮定します）。奇数バイト、ペアの無い
+サロゲートはバイト位置付きの`ValueError`です。`encode`はUTF-8でない`String`に
+`ValueError`を投げます。
+
+```culebra
+let b = Encoding.utf16.encode("héllo")
+inspect(Encoding.hex.encode(b))                                   # => '006800e9006c006c006f'
+inspect(Encoding.utf16.decode(b))                                 # => 'héllo'
+inspect(Encoding.hex.encode(Encoding.utf16.encode("😀", bom: true)))  # => 'feffd83dde00'
+inspect(Encoding.utf16.decode(Encoding.hex.decode("fffe6800e900")))   # => 'hé'
 ```
 
 ---

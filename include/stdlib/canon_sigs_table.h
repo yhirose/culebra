@@ -796,6 +796,11 @@ inline constexpr CanonParam kCanonParams_Encoding[] = {
   {"s", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
   // 7: Encoding.url.decode
   {"s", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
+  // 8: Encoding.utf16.encode
+  {"s", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
+  {"bom", true, false, false, false, false, "Bool", CanonDefault::Bool, 0, {}},
+  // 10: Encoding.utf16.decode
+  {"bytes", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonSigs_Encoding[] = {
@@ -807,6 +812,8 @@ inline constexpr CanonSig kCanonSigs_Encoding[] = {
   {"Encoding", "hex", "decode", kCanonParams_Encoding + 5, 1, "String", 1, 1, false, -1, -1, -1},
   {"Encoding", "url", "encode", kCanonParams_Encoding + 6, 1, "String", 1, 1, false, -1, -1, -1},
   {"Encoding", "url", "decode", kCanonParams_Encoding + 7, 1, "String", 1, 1, false, -1, -1, -1},
+  {"Encoding", "utf16", "encode", kCanonParams_Encoding + 8, 2, "String", 1, 2, false, -1, -1, -1},
+  {"Encoding", "utf16", "decode", kCanonParams_Encoding + 10, 1, "String", 1, 1, false, -1, -1, -1},
 };
 
 inline constexpr CanonParam kCanonParams_Compress[] = {

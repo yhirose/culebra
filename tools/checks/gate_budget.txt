@@ -80,7 +80,8 @@ ctest.entries 34
 # two, in en and ja.
 # 1004 since Compress.zip and Dir.zip show packing and reading an archive, two
 # blocks each, in en and ja.
-docs.blocks 1012
+# 1006 since Encoding.utf16 shows its byte orders and its mark, in en and ja.
+docs.blocks 1014
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130
