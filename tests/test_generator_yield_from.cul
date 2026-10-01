@@ -113,10 +113,10 @@ for l in outer([Leaf.new(1), Leaf.new(2), Leaf.new(3), Leaf.new(4)]) {
 assert_eq(leaf_log, 'v1;v2;')
 
 // --- yield from inside an if/else branch (json_walk recursive flatten) ---
-// Regression: a yielding for-in nested in an if-branch used to inherit the
-// enclosing block's pos/len under AstOptimizer collapse, so the for-in
-// desugar clobbered the branch braces and the fn was left untransformed
-// (silently returned nil). Fixed by `{ no_ast_opt }` on the FOR rule.
+// Regression: a yielding for-in nested in an if-branch inherits the enclosing
+// block's pos/len under AstOptimizer collapse; the for-in desugar once sliced
+// by that span, clobbered the branch braces and left the fn untransformed
+// (silently returned nil).
 fn json_walk(node) {
   if type_of(node) == 'Array' {
     for v in node {
