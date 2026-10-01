@@ -346,22 +346,15 @@ struct SourcePos {
   long col;
 };
 
-// Where a byte of a synthesized buffer came from in the user's source. It
-// caches, per buffer it visits, the anchors found in it and its line starts —
-// both fixed once the buffer is parsed — so one serves a whole lowering.
-// The byte `column - 1` code points (counted as peg::codepoint_count does)
-// past `line_start`, a line's first byte in `buf`.
+// The byte at `column` (1-based, in bytes as a node counts it) of the line
+// starting at `line_start` in `buf`.
 inline size_t column_offset(const std::string& buf, size_t line_start,
                             size_t column) {
-  size_t off = line_start;
-  for (size_t cp = 1; cp < column && off < buf.size(); cp++)
-    off += std::max<size_t>(
-        1, peg::codepoint_length(buf.data() + off, buf.size() - off));
-  return off;
+  return std::min(line_start + std::max<size_t>(column, 1) - 1, buf.size());
 }
 
-// The byte of `buf` at a node's line and column (1-based, the column in
-// code points, as the parser counts them), or nullopt past its last line.
+// The byte of `buf` at a node's line and column (1-based), or nullopt past
+// its last line.
 inline std::optional<size_t> offset_at(const std::string& buf, size_t line,
                                        size_t column) {
   if (line == 0) return std::nullopt;
@@ -374,10 +367,13 @@ inline std::optional<size_t> offset_at(const std::string& buf, size_t line,
   return column_offset(buf, off, column);
 }
 
+// Where a byte of a synthesized buffer came from in the user's source. It
+// caches, per buffer it visits, the anchors found in it and its line starts —
+// both fixed once the buffer is parsed — so one serves a whole lowering.
 class SourceResolver {
  public:
   // The user-source line and column (as the parser counts them: 1-based,
-  // column in code points) of byte `off` of `buf`, or nullopt for a byte a
+  // column in bytes) of byte `off` of `buf`, or nullopt for a byte a
   // lowering synthesized.
   std::optional<SourcePos> resolve(const std::string& buf, size_t off) {
     const std::string* at = &buf;
@@ -462,8 +458,7 @@ class SourceResolver {
     auto it = std::upper_bound(b.line_starts.begin(), b.line_starts.end(), off);
     size_t line = static_cast<size_t>(it - b.line_starts.begin());
     size_t start = *(it - 1);
-    auto col = peg::codepoint_count(buf.data() + start, off - start) + 1;
-    return SourcePos{static_cast<long>(line), static_cast<long>(col)};
+    return SourcePos{static_cast<long>(line), static_cast<long>(off - start + 1)};
   }
 };
 

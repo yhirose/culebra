@@ -212,7 +212,7 @@ effect fn col_anf() {
 check("col-anf", [210, 34], fn () { handle { col_anf() } with ask(k) { k(1) } })
 
 // ...in a generator nested in a closure, behind a destructure, after
-// multi-byte characters (the column counts code points)
+// multi-byte characters (the column counts bytes, as in a plain fn)
 fn col_outer() {
   let k = 2
   let f = fn () { fn col_inner() { let q = k; yield q + [1][9] }; col_inner() }
@@ -222,7 +222,7 @@ check("col-nested", [218, 57], fn () { col_outer().collect() })
 fn col_pat() { let [a, b] = [1, 2]; yield a + b + [1][9] }
 check("col-destructure", [222, 51], fn () { col_pat().collect() })
 fn col_wide() { let s = "ああ"; yield s.size() + [1][9] }
-check("col-wide", [224, 48], fn () { col_wide().collect() })
+check("col-wide", [224, 52], fn () { col_wide().collect() })
 
 // ...in a handle that reads a generator's local (reached through the
 // enclosing instance), and in a handler clause reading one of its own
