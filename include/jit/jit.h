@@ -3034,6 +3034,112 @@ struct JIT {
     module_->getOrInsertFunction(
         rt::array_sorted, ptrTy, ptrTy, builder_.getInt1Ty(),
         builder_.getInt64Ty(), builder_.getInt64Ty());
+    // Iterator terminal methods, adapters and the iterators of a String, an
+    // Array and an Object: core runtime (iter.inc.h), so core declares them.
+    // The open `for` and the built-in traits' default bodies reach them in a
+    // host that installs no stdlib, where a lookup of an undeclared one is a
+    // null callee (the `!=` case of tests/embedding/mi_smoke.cc).
+    auto i64 = builder_.getInt64Ty();
+    auto i8 = builder_.getInt8Ty();
+    module_->getOrInsertFunction(rt::iter_collect, ptrTy, i8, i64);
+    module_->getOrInsertFunction(rt::iter_join, ptrTy, i8, i64, ptrTy);
+    module_->getOrInsertFunction(rt::iter_count, i64, i8, i64);
+    module_->getOrInsertFunction(rt::iter_for_each, builder_.getVoidTy(),
+                                 i8, i64, i8, i64, i64, i64);
+    module_->getOrInsertFunction(rt::iter_reduce, builder_.getVoidTy(),
+                                 i8, i64, i8, i64, i8, i64, i64, i64,
+                                 ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::iter_find, builder_.getVoidTy(),
+                                 i8, i64, i8, i64, i64, i64, ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::iter_position, builder_.getVoidTy(),
+                                 i8, i64, i8, i64, i64, i64, ptrTy, ptrTy);
+    // contains borrows the needle, so it needs no position for an error.
+    module_->getOrInsertFunction(rt::iter_contains, i64, i8, i64, i8, i64);
+    module_->getOrInsertFunction(rt::iter_first, builder_.getVoidTy(),
+                                 i8, i64, ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::iter_last, builder_.getVoidTy(),
+                                 i8, i64, ptrTy, ptrTy);
+    // nth carries line+col for the "n must not be negative" error.
+    module_->getOrInsertFunction(rt::iter_nth, builder_.getVoidTy(),
+                                 i8, i64, i64, i64, i64, ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::iter_any, i64, i8, i64, i8, i64, i64,
+                                 i64);
+    // sum/product/min/max: (it, id, line, col) -> %Value (see the Array decls
+    // below — the result tag is data-dependent).
+    module_->getOrInsertFunction(rt::iter_sum, valueType_, i8, i64, i64,
+                                 i64);
+    module_->getOrInsertFunction(rt::iter_product, valueType_, i8, i64,
+                                 i64, i64);
+    module_->getOrInsertFunction(rt::iter_min, valueType_, i8, i64, i64,
+                                 i64);
+    module_->getOrInsertFunction(rt::iter_max, valueType_, i8, i64, i64,
+                                 i64);
+    // min_by/max_by: (it, id, ft, fd, line, col) -> %Value
+    module_->getOrInsertFunction(rt::iter_min_by, valueType_, i8, i64,
+                                 i8, i64, i64, i64);
+    module_->getOrInsertFunction(rt::iter_max_by, valueType_, i8, i64,
+                                 i8, i64, i64, i64);
+    // to_set/to_object/group_by/partition return a fresh Set / Object /
+    // Object / Tuple pointer.
+    module_->getOrInsertFunction(rt::iter_to_set, ptrTy, i8, i64, i64, i64);
+    module_->getOrInsertFunction(rt::iter_to_object, ptrTy, i8, i64, i64, i64);
+    module_->getOrInsertFunction(rt::iter_group_by, ptrTy, i8, i64, i8, i64,
+                                 i64, i64);
+    module_->getOrInsertFunction(rt::iter_partition, ptrTy, i8, i64, i8, i64,
+                                 i64, i64);
+    module_->getOrInsertFunction(rt::iter_unzip, ptrTy, i8, i64, i64, i64);
+    module_->getOrInsertFunction(rt::iter_all, i64, i8, i64, i8, i64, i64,
+                                 i64);
+
+    // Iterator lazy factories. map/filter/take_while carry line+col so the
+    // eager callback-arity check can report the call site (see iter_chain/zip/
+    // flat_map below, which already carry them for the "not iterable" error).
+    module_->getOrInsertFunction(rt::iter_map, ptrTy, i8, i64, i8, i64,
+                                 i64, i64);
+    module_->getOrInsertFunction(rt::iter_filter, ptrTy, i8, i64, i8, i64,
+                                 i64, i64);
+    module_->getOrInsertFunction(rt::iter_take, ptrTy, i8, i64, i64);
+    module_->getOrInsertFunction(rt::iter_skip, ptrTy, i8, i64, i64);
+    module_->getOrInsertFunction(rt::iter_take_while, ptrTy, i8, i64, i8, i64,
+                                 i64, i64);
+    module_->getOrInsertFunction(rt::iter_skip_while, ptrTy, i8, i64, i8, i64,
+                                 i64, i64);
+    // flatten/distinct carry line+col for the not-iterable / unhashable errors.
+    module_->getOrInsertFunction(rt::iter_flatten, ptrTy, i8, i64, i64, i64);
+    module_->getOrInsertFunction(rt::iter_distinct, ptrTy, i8, i64, i64, i64);
+    // scan takes the seed as a value pair before the callback.
+    module_->getOrInsertFunction(rt::iter_scan, ptrTy, i8, i64, i8, i64, i8,
+                                 i64, i64, i64);
+    module_->getOrInsertFunction(rt::iter_tap, ptrTy, i8, i64, i8, i64, i64,
+                                 i64);
+    module_->getOrInsertFunction(rt::iter_chunk_by, ptrTy, i8, i64, i8, i64,
+                                 i64, i64);
+    // step_by carries line+col for the "n must be at least 1" error.
+    module_->getOrInsertFunction(rt::iter_step_by, ptrTy, i8, i64, i64, i64,
+                                 i64);
+    // chunks/windows carry line+col for the "n must be at least 1" error.
+    module_->getOrInsertFunction(rt::iter_chunks, ptrTy, i8, i64, i64, i64,
+                                 i64);
+    module_->getOrInsertFunction(rt::iter_windows, ptrTy, i8, i64, i64, i64,
+                                 i64);
+    // chain/zip/flat_map carry line+col for the "not iterable" error.
+    module_->getOrInsertFunction(rt::iter_chain, ptrTy, i8, i64, i8, i64,
+                                 i64, i64);
+    module_->getOrInsertFunction(rt::iter_zip, ptrTy, i8, i64, i8, i64,
+                                 i64, i64);
+    module_->getOrInsertFunction(rt::iter_enumerate, ptrTy, i8, i64);
+    module_->getOrInsertFunction(rt::iter_flat_map, ptrTy, i8, i64, i8, i64,
+                                 i64, i64);
+    // (has_next_cls, next_cls, iter_tag, iter_data, &out_tag, &out_data) -> i64 (1/0)
+    module_->getOrInsertFunction(rt::iter_advance, i64,
+                                 ptrTy, ptrTy, i8, i64, ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::str_code_points, ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::str_graphemes, ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::str_words, ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::str_sentences, ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::str_bytes, ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::array_iter, ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::object_iter, ptrTy, ptrTy);
     // sum/product/min/max: (arr, line, col) -> %Value. The result tag is
     // data-dependent (a Float element promotes sum/product; min/max return
     // the winning element), so these cannot return a bare i64.
