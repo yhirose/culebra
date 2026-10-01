@@ -169,17 +169,16 @@ let BG_TREES = Art(5, 985, 1280, 480)
 
 # --- assets ----------------------------------------------------------------
 # `--assets <dir>` points at art held elsewhere — upstream's own, say; without
-# it the generated stand-ins in assets/ are used, through a handle that reads
-# them wherever this is running: the directory next to the source natively and
-# in the Playground, and the copy `culebra build` bakes into the binary — which
-# is why the executable needs no files beside it.
+# it the generated stand-ins in assets/ are used, wherever this is running:
+# the directory next to the source natively and in the Playground, and the
+# copy `culebra build` bakes into the binary — which is why the executable
+# needs no files beside it. Either way the art is a Dir, read the same way.
 let ART_DIR = args.assets
-let ART = ART_DIR != nil
-  ? {
-    exists: |n| FS.exists(ART_DIR + "/" + n),
-    read: |n| FS.read(ART_DIR + "/" + n),
-  }
-  : Dir.embedded("assets")
+if ART_DIR != nil && !FS.is_dir(ART_DIR) {
+  println("retro-run: --assets {ART_DIR} is not a directory")
+  Sys.exit(2)
+}
+let ART = ART_DIR != nil ? Dir.disk(ART_DIR) : Dir.embedded("assets")
 let SCENES = ["asayake", "hiru", "yuugata", "yuugure", "twilight"]
 let SCENE_COUNT = SCENES.size()
 

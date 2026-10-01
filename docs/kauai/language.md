@@ -912,9 +912,10 @@ song.play()
 
 `Audio.Kauai.new(text)` takes a song as a string, which cannot `use` other
 files. `Audio.Kauai.load(path)` reads a song file, and the files it names
-with `use`, relative to it; with `dir:` it reads them from a directory
-handle instead, any `Dir` or any object with `exists(name)` and
-`read(name)`, so a program built into one binary carries its songs. Both
+with `use`, relative to it; with `dir:` it reads them from a `Dir`
+instead (a `Dir.embedded`, so a program built into one binary carries its
+songs, or `Dir.memory` for songs written in the program), or from any
+object with `exists(name)` and `read(name)`. Both
 check the song and raise the first error of [section 9](#9-errors) as a
 `KauaiError` whose message names the file and the line
 (`ballad.kau:12: ...`, or `line 12: ...` for a string).

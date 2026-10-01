@@ -181,8 +181,8 @@ assert_eq(about_error(['  year 1890s']), ("KauaiError", "line 2: a year is a num
 assert_eq(error_of(lines(['about {', '}', 'about {', '}', song_of(['  Verse'])])),
   ("KauaiError", "line 3: a file says about once"))
 
-# A song file and the files it uses, here from a directory of its own: any
-# object with exists(name) and read(name), as Dir.embedded gives.
+# A song file and the files it uses, here from a Dir of its own. Any object
+# with exists(name) and read(name) does as well (the last check below).
 let files = {
   "songs/band.kau": DUO,
   "songs/first.kau": lines([
@@ -194,8 +194,10 @@ let files = {
   "songs/about.kau": lines(['about {', '  title Band', '}']),
   "songs/third.kau": lines(["use 'about.kau'"]),
 }
-let dir = {exists: |name| files.has(name), read: |name| files[name]}
+let dir = Dir.memory(files)
 assert_eq(notes(Audio.Kauai.load("songs/first.kau", dir: dir), "Tune"), [(0.0, 2.0, 72, 20.0)])
+let readable = {exists: |name| files.has(name), read: |name| files[name]}
+assert_eq(notes(Audio.Kauai.load("songs/first.kau", dir: readable), "Tune"), [(0.0, 2.0, 72, 20.0)])
 assert_throws("IOError", fn () {
   Audio.Kauai.load("songs/none.kau", dir: dir)
 })
