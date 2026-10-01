@@ -662,12 +662,15 @@ _jit_trait_default_impls() {
 
 // Installs, and returns, the shipped default named `key` that one of this
 // instance's traits supplies (jit_install_shipped_default, conc/sendable.h,
-// which sets the hook when it ships the defaults); null when none does.
-inline JitClosure* (*_jit_shipped_default_hook)(JitObject*, const char*) =
-    nullptr;
-inline JitClosure* _jit_find_shipped_default(JitObject* obj, const char* key) {
+// which sets the hook when it ships the defaults); null when none does, or
+// when `found` (the trait of an installed one) already does — a shipped one
+// besides it is the same ambiguity it would be in the parent.
+inline JitClosure* (*_jit_shipped_default_hook)(JitObject*, const char*,
+                                                const std::string*) = nullptr;
+inline JitClosure* _jit_find_shipped_default(JitObject* obj, const char* key,
+                                             const std::string* found) {
   return _jit_trait_default_table().shipped
-             ? _jit_shipped_default_hook(obj, key)
+             ? _jit_shipped_default_hook(obj, key, found)
              : nullptr;
 }
 

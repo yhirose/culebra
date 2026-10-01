@@ -485,27 +485,35 @@ jit_snapshot_trait_defaults() {
   return std::make_shared<const sendable::TraitDefaults>(std::move(out));
 }
 
-// The lookup's miss (_jit_find_shipped_default): rebuild the shipped default
-// `key` of a trait `obj` conforms to, and register it. The rebuilt closure
-// arrives at +1 and the table takes it (culebra_runtime_register_trait_default's
-// contract).
-inline JitClosure* jit_install_shipped_default(JitObject* obj,
-                                               const char* key) {
+// The lookup (_jit_find_shipped_default): rebuild the shipped default `key`
+// of a trait `obj` conforms to, and register it — unless `found` names the
+// trait of an installed one. Every pending match is counted first, so a
+// worker finds two traits ambiguous exactly where its parent does, whatever
+// it has installed so far. The rebuilt closure arrives at +1 and the table
+// takes it (culebra_runtime_register_trait_default's contract).
+inline JitClosure* jit_install_shipped_default(JitObject* obj, const char* key,
+                                               const std::string* found) {
   auto& t = _jit_trait_default_table();
+  size_t pick = t.shipped->size();
   for (size_t i = 0; i < t.shipped->size(); i++) {
     const auto& d = (*t.shipped)[i];
     if (!jit_shipped_pending(t, i) || d.method != key ||
         !_culebra_type_matches_single(
             TAG_OBJECT, reinterpret_cast<int64_t>(obj), d.trait.c_str()))
       continue;
-    JitDeCtx dc;
-    auto* cls = reinterpret_cast<JitClosure*>(jit_deserialize(d.body, dc).data);
-    t.shipped_open[i] = false;
-    culebra_runtime_register_trait_default(d.trait.c_str(), d.method.c_str(),
-                                           cls);
-    return cls;
+    if (found) _jit_trait_default_ambiguous(*found, d.trait, key);
+    if (pick < t.shipped->size())
+      _jit_trait_default_ambiguous((*t.shipped)[pick].trait, d.trait, key);
+    pick = i;
   }
-  return nullptr;
+  if (pick == t.shipped->size()) return nullptr;
+  const auto& d = (*t.shipped)[pick];
+  JitDeCtx dc;
+  auto* cls = reinterpret_cast<JitClosure*>(jit_deserialize(d.body, dc).data);
+  t.shipped_open[pick] = false;
+  culebra_runtime_register_trait_default(d.trait.c_str(), d.method.c_str(),
+                                         cls);
+  return cls;
 }
 
 // Under the worker's RuntimeScope, before it runs anything: the defaults wait

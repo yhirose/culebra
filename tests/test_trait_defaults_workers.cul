@@ -165,6 +165,42 @@ assert_eq(Isolate.spawn(fn (s) {
   }]
 }, Sq('r', 2)).join(), ['a shape of 4', 'TypeError'])
 
+# Two traits that both supply one default leave it ambiguous, in a worker
+# as in its parent, whichever it touched first.
+trait Left {
+  left_req()
+  side() {
+    'left'
+  }
+}
+trait Right {
+  right_req()
+  side() {
+    'right'
+  }
+}
+class OnlyLeft {
+  left_req() {
+    1
+  }
+}
+class BothSides {
+  left_req() {
+    1
+  }
+  right_req() {
+    2
+  }
+}
+let ambiguous = "ambiguous default `side`: traits Left and Right both supply it; define `side` on the class"
+assert_eq(Isolate.spawn(fn (x, y) {
+  [x.side(), try {
+    y.side()
+  } catch e {
+    e.message
+  }]
+}, OnlyLeft(), BothSides()).join(), ['left', ambiguous])
+
 # A default that cannot be sent (here it captures a Shared value already
 # dropped) stays behind; it costs a spawn nothing, nor what runs after it.
 let gone = Shared.new({a: 1})

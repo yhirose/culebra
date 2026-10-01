@@ -3470,6 +3470,25 @@ defaultは適合クラスが継承したmethodなので、クラス自身のmeth
 method（`size`/`keys`等）・合成された`parameters()`・duck typing
 のiterator method群 — にはdefaultが勝つ。
 
+2つのtraitがそれぞれ同名のdefaultを持つこともある。両方に適合し、その名前を
+自分では定義していないクラスには継承すべきdefaultが1つに決まらないので、
+それに触れると`DispatchError`（`ambiguous default`）になる。クラスにその
+methodを定義すれば解決する:
+
+    trait Left {
+      left_req()
+      side() { 'left' }
+    }
+    trait Right {
+      right_req()
+      side() { 'right' }
+    }
+    class Both {
+      left_req() { 1 }
+      right_req() { 2 }
+    }
+    Both().side()     # DispatchError: ambiguous default `side`: ...
+
 trait内でmethod名は1度だけ宣言する。同名を2つ書くと`SyntaxError`:
 contractもdefault bodyも名前をkeyに持つので、trait側にはそれらを
 まとめるoverload setが無い（クラスにはある — 「Method overloading」

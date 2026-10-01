@@ -3707,6 +3707,25 @@ outranks it, and it outranks everything the runtime supplies for an
 object — the `Object` built-in methods (`size`, `keys`, ...), the
 synthesized `parameters()`, and the duck-typed iterator method set.
 
+Two traits may each supply a default of the same name. A class that
+conforms to both and does not define that name itself has no one
+default to inherit, so reaching it raises `DispatchError` (`ambiguous
+default`), and defining the method on the class settles it:
+
+    trait Left {
+      left_req()
+      side() { 'left' }
+    }
+    trait Right {
+      right_req()
+      side() { 'right' }
+    }
+    class Both {
+      left_req() { 1 }
+      right_req() { 2 }
+    }
+    Both().side()     # DispatchError: ambiguous default `side`: ...
+
 A trait declares each method name once. Two same-name methods are a
 `SyntaxError`: the contract and the default bodies are keyed by name,
 so a trait has no overload set to merge them into (a class does — see

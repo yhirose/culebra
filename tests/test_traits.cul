@@ -355,4 +355,51 @@ assert_eq(try { Plain(1).size(10) } catch e { e.kind }, 'ArityError')
 assert_eq(try { {a: 1}.size(10) } catch e { e.kind }, 'ArityError')
 assert_eq(Plain(1).keys(), ['n'])
 
+// Two traits that both supply a default `side` leave it ambiguous for a
+// class conforming to both; the class's own `side` settles it.
+trait LeftSide {
+  left_req()
+  side() {
+    "left"
+  }
+}
+trait RightSide {
+  right_req()
+  side() {
+    "right"
+  }
+}
+class OnlyLeftSide {
+  left_req() {
+    1
+  }
+}
+class BothSides {
+  left_req() {
+    1
+  }
+  right_req() {
+    2
+  }
+}
+class OwnSide {
+  left_req() {
+    1
+  }
+  right_req() {
+    2
+  }
+  side() {
+    "own"
+  }
+}
+assert_eq(OnlyLeftSide().side(), "left")
+assert_eq(OwnSide().side(), "own")
+let ambiguous_side = try {
+  BothSides().side()
+} catch e {
+  "{e.kind}: {e.message}"
+}
+assert_eq(ambiguous_side, "DispatchError: ambiguous default `side`: traits LeftSide and RightSide both supply it; define `side` on the class")
+
 IO.inspect("test_traits OK")

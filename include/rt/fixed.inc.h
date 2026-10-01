@@ -1484,7 +1484,23 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get(
 inline std::unordered_map<std::string,
                           std::unordered_map<std::string, JitClosure*>>&
 _jit_trait_default_impls();
-inline JitClosure* _jit_find_shipped_default(JitObject* obj, const char* key);
+inline JitClosure* _jit_find_shipped_default(JitObject* obj, const char* key,
+                                             const std::string* found);
+
+// Two traits that both supply this instance a default `key` leave it
+// ambiguous, as two equally specific methods do; the class settles it by
+// defining `key` itself. Worded the same whichever trait is met first.
+[[noreturn]] inline void _jit_trait_default_ambiguous(const std::string& a,
+                                                      const std::string& b,
+                                                      const char* key) {
+  const auto& [first, second] = std::minmax(a, b);
+  throw culebra::CulebraError(
+      "DispatchError",
+      culebra::format("ambiguous default `{}`: traits {} and {} both supply "
+                      "it; define `{}` on the class",
+                      key, first, second, key),
+      0, 0);
+}
 
 // The registered default named `key` whose trait this instance conforms to,
 // or null — in a worker Runtime, one its parent shipped is installed here on
@@ -1492,15 +1508,22 @@ inline JitClosure* _jit_find_shipped_default(JitObject* obj, const char* key);
 // One source for the three askers: the property read, the UFCS gate, and the
 // `__call__` lookup — each keeps its own gate on what may ask.
 inline JitClosure* _jit_find_trait_default(JitObject* obj, const char* key) {
+  JitClosure* found = nullptr;
+  const std::string* from = nullptr;
   for (auto& [trait_name, methods] : _jit_trait_default_impls()) {
     auto m_it = methods.find(key);
     if (m_it == methods.end() || !m_it->second) continue;
-    if (_culebra_type_matches_single(TAG_OBJECT,
-                                     reinterpret_cast<int64_t>(obj),
-                                     trait_name))
-      return m_it->second;
+    if (!_culebra_type_matches_single(TAG_OBJECT,
+                                      reinterpret_cast<int64_t>(obj),
+                                      trait_name))
+      continue;
+    if (from) _jit_trait_default_ambiguous(*from, trait_name, key);
+    found = m_it->second;
+    from = &trait_name;
   }
-  return _jit_find_shipped_default(obj, key);
+  if (auto* shipped = _jit_find_shipped_default(obj, key, from))
+    return shipped;
+  return found;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
