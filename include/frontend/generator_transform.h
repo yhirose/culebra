@@ -676,14 +676,30 @@ inline MappedSource rename_pattern_leaves(const peg::Ast& pat,
   return copies;
 }
 
-// `text` a lowering writes for `node`, standing at the node's line and column:
-// whatever it raises reports where the node was written, as diagnostics do
-// (a collapsed node keeps its parent's position but takes its child's column).
+// The byte of `src` where `node` was written: its line and column, not its
+// position (a collapsed node keeps its parent's position but takes its
+// child's column).
+inline size_t written_at(const peg::Ast& node, const std::string& src) {
+  return offset_at(src, node.line, node.column).value_or(node.position);
+}
+
+// `text` a lowering writes for `node`, standing where the node was written:
+// whatever it raises reports there, as diagnostics do.
 inline MappedSource standing_at(std::string text, const peg::Ast& node,
                                 const std::string& src) {
-  return MappedSource::standing_for(
-      std::move(text), src,
-      offset_at(src, node.line, node.column).value_or(node.position));
+  return MappedSource::standing_for(std::move(text), src, written_at(node, src));
+}
+
+// The byte just past where `node` itself was written, for an edit that
+// replaces it. A node a block collapsed onto keeps the block's range, braces
+// and all, so it ends where the last of its children does: a child's range is
+// its own (a synthesized one, unless's `!`, has none, so its children answer).
+inline size_t written_end(const peg::Ast& node) {
+  if (node.nodes.empty()) return node.position + node.length;
+  size_t e = 0;
+  for (auto& c : node.nodes)
+    e = std::max(e, c->length ? c->position + c->length : written_end(*c));
+  return e;
 }
 
 // Defined below; collect_promoted_edits writes a condition through it.
@@ -789,7 +805,7 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
                          " { "});
       out.insert(out.end(), inner.begin(), inner.end());
       size_t base_end = base.position + base.length;
-      out.push_back({base_end, n.position + n.length - base_end, " }"});
+      out.push_back({base_end, written_end(n) - base_end, " }"});
       return;
     }
   }

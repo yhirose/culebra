@@ -1454,7 +1454,7 @@ class EffectsLowerer {
       auto prov = mk(*f);
       auto body_text = inner_source(blk_node);
       reattach_marker(body_text, *f);
-      // Preserve a trailing `nobreak { … }` (a FOR child inside f->length that
+      // Preserve a trailing `nobreak { … }` (a FOR child inside its span that
       // the whole-node replacement would otherwise drop): re-attach it to the
       // desugared while verbatim.
       MappedSource nobreak_suffix;
@@ -1473,7 +1473,8 @@ class EffectsLowerer {
                       iter_var, prov, std::string(var_node.token),
                       loop_label_prefix(fv.label)) +
           body_text + "\n}" + nobreak_suffix;
-      edits.push_back({f->position, f->length, std::move(replacement)});
+      auto begin = written_at(*f, src_);
+      edits.push_back({begin, written_end(*f) - begin, std::move(replacement)});
     }
     return rewrite_edits(body, src_, std::move(edits));
   }

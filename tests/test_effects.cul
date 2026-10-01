@@ -271,6 +271,31 @@ assert_eq(
   handle { cf_iterate([10, 20, 30]) } with cf_each(resume) { resume(1) },
   [11, 21, 31],
 )
+// A block's only statement takes the block's braces as its range in the
+// tree: the desugar must replace the loop alone (the body's, an arm's)
+effect fn cf_sole_for(xs) {
+  for x in xs { perform cf_note(x) }
+}
+effect fn cf_arm_for(xs) {
+  if true { for x in xs { perform cf_note(x) } }
+  nil
+}
+mut cf_sole_seen = []
+handle { cf_sole_for([1, 2]); cf_arm_for([3]) } with cf_note(x, resume) {
+  cf_sole_seen.push(x)
+  resume(nil)
+}
+assert_eq(cf_sole_seen, [1, 2, 3])
+// ...and so must the lowering of a postfix `if` on a destructuring
+effect fn cf_sole_postfix(c) {
+  mut a = 0
+  mut b = 0
+  perform cf_note(0)
+  if true { (a, b) = (1, 2) if c }
+  [a, b]
+}
+assert_eq(handle { cf_sole_postfix(true) } with cf_note(x, resume) { resume(x) }, [1, 2])
+assert_eq(handle { cf_sole_postfix(false) } with cf_note(x, resume) { resume(x) }, [0, 0])
 
 // break / continue inside a while carrying a perform
 effect fn cf_tick()

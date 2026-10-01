@@ -309,4 +309,14 @@ class IterFive {
 }
 check("for-broken-gen", [292, 12], fn () { it_gen(IterFive()).collect() })
 
+// the for-in desugar replaces the loop from where it was written, past a
+// character of several bytes on its line too
+effect fn wide_eff(xs) {
+  let s = "日"; for x in xs { perform un_note(x / 0) }
+  nil
+}
+check("wide-effect", [315, 48], fn () {
+  handle { wide_eff([1]) } with un_note(x, k) { k(x) }
+})
+
 inspect("test_transform_error_lines: all assertions passed")

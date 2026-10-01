@@ -174,6 +174,18 @@ fn redestructure() {
 }
 assert_eq(redestructure().collect(), [0, 7])
 
+// a postfix `if` on a destructuring that is a block's only statement, which
+// takes the block's braces as its range in the tree
+fn sole_postfix_destructure(c) {
+  mut a = 0
+  mut b = 0
+  yield 0
+  if true { (a, b) = (1, 2) if c }
+  yield a + b
+}
+assert_eq(sole_postfix_destructure(true).collect(), [0, 3])
+assert_eq(sole_postfix_destructure(false).collect(), [0, 0])
+
 // --- yield in both if and else arms ---
 fn alternating() {
   mut i = 0
