@@ -298,4 +298,33 @@ assert_eq(
   "TypeError: type error: parameter 'pattern' expects StringLike",
 )
 
+# Dir.disk follows a symlink while it leads somewhere inside the root; one
+# that leads out is not there, and a loop is walked once.
+if FS.sep() == '/' {
+  let t = FS.mkdtemp('culebra-dir-links')
+  defer {
+    FS.remove(t, recursive: true)
+  }
+  let root = FS.join(t, 'root')
+  FS.mkdir(FS.join(root, 'sub'))
+  FS.mkdir(FS.join(t, 'outside'))
+  FS.write(FS.join(t, 'outside', 'leak.txt'), 'SECRET')
+  FS.write(FS.join(root, 'sub', 'f.txt'), 'f')
+  FS.symlink(FS.join(t, 'outside'), FS.join(root, 'outlink'))
+  FS.symlink(FS.join(t, 'outside', 'leak.txt'), FS.join(root, 'leak.txt'))
+  FS.symlink(FS.join(root, 'sub'), FS.join(root, 'alias'))
+  FS.symlink(root, FS.join(root, 'sub', 'up'))
+  let linked = Dir.disk(root)
+  assert_eq(linked.files(), ['alias/f.txt', 'sub/f.txt'])
+  assert_eq(linked.list_dir(''), ['alias', 'sub'])
+  assert_eq(linked.read('alias/f.txt'), 'f')
+  assert_false(linked.exists('outlink'))
+  assert_false(linked.exists('outlink/leak.txt'))
+  assert_eq(
+    caught(|| linked.read('leak.txt')),
+    "IOError: Dir.read: no such file 'leak.txt'",
+  )
+  assert_true(linked.is_dir('sub/up'))
+}
+
 inspect('Dir contract holds')

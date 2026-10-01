@@ -82,37 +82,63 @@ struct Dir {
   }
 };
 
-// Dev: read from a base directory on disk at request time, so edits are live.
-struct DiskDir : Dir {
-  std::string base;
-  explicit DiskDir(std::string b) : base(std::move(b)) {}
-  // The OS path under the base, or false for a path the OS would read as
-  // leaving it: on Windows a `\` is a separator and a `:` a drive, so a
-  // normalized path holding either is not inside.
-  bool full_path(std::string_view path, std::filesystem::path& out) const {
-#ifdef _WIN32
-    if (path.find_first_of("\\:") != std::string_view::npos) return false;
-#endif
-    out = std::filesystem::path(base);
-    if (!path.empty()) out /= std::filesystem::path(std::string(path));
-    return true;
+// What `culebra build` bakes of a directory, and so what a Dir.embedded
+// holds wherever it runs: the regular files below it, never a symlink (to a
+// file or a directory) nor a special file, and a directory only while a file
+// lies under it. One rule for the bake (embed_kind) and the live reading.
+enum class EmbedKind { None, File, Directory };
+inline EmbedKind embed_kind(const std::filesystem::file_status& st) {
+  switch (st.type()) {
+    case std::filesystem::file_type::regular: return EmbedKind::File;
+    case std::filesystem::file_type::directory: return EmbedKind::Directory;
+    default: return EmbedKind::None;
   }
-  // Only a regular file counts. Opening a directory succeeds on some platforms
-  // and reads back as an empty file, where the baked table — which holds no
-  // directories — reports not-found; the two have to answer alike.
+}
+
+// Run from source: the directory on disk, read at request time so edits are
+// live, holding exactly what the bake would (embed_kind).
+struct LiveDir : Dir {
+  std::string base;
+  explicit LiveDir(std::string b) : base(std::move(b)) {}
+  // What `path` is, walked one component at a time so that no symlink is
+  // passed through; the OS path in `out`. On Windows a `\` is a separator and
+  // a `:` a drive, so a normalized path holding either is not inside.
+  EmbedKind reach(std::string_view path, std::filesystem::path& out) const {
+#ifdef _WIN32
+    if (path.find_first_of("\\:") != std::string_view::npos)
+      return EmbedKind::None;
+#endif
+    std::error_code ec;
+    out = std::filesystem::path(base);
+    if (!std::filesystem::is_directory(out, ec)) return EmbedKind::None;
+    auto kind = EmbedKind::Directory;
+    for (const auto& seg : std::filesystem::path(std::string(path))) {
+      if (kind != EmbedKind::Directory) return EmbedKind::None;
+      out /= seg;
+      kind = embed_kind(std::filesystem::symlink_status(out, ec));
+    }
+    return kind;
+  }
+  static bool holds_file(const std::filesystem::path& dir) {
+    std::error_code ec;
+    for (std::filesystem::recursive_directory_iterator it(dir, ec), end;
+         !ec && it != end; it.increment(ec))
+      if (embed_kind(it->symlink_status(ec)) == EmbedKind::File) return true;
+    return false;
+  }
   bool is_file(std::string_view path) const override {
     std::filesystem::path p;
-    std::error_code ec;
-    return full_path(path, p) && std::filesystem::is_regular_file(p, ec);
+    return reach(path, p) == EmbedKind::File;
   }
+  // The root always is, as in the baked table.
   bool is_dir(std::string_view path) const override {
     std::filesystem::path p;
-    std::error_code ec;
-    return full_path(path, p) && std::filesystem::is_directory(p, ec);
+    return path.empty() ||
+           (reach(path, p) == EmbedKind::Directory && holds_file(p));
   }
   bool read(std::string_view path, std::string& out) const override {
     std::filesystem::path p;
-    if (!is_file(path) || !full_path(path, p)) return false;
+    if (reach(path, p) != EmbedKind::File) return false;
     std::ifstream f(p, std::ios::binary);
     if (!f) return false;
     out.assign(std::istreambuf_iterator<char>(f),
@@ -121,20 +147,24 @@ struct DiskDir : Dir {
   }
   bool list_dir(std::string_view path,
                 std::vector<std::string>& out) const override {
-    std::filesystem::path p;
-    if (!is_dir(path) || !full_path(path, p)) return false;
-    std::error_code ec;
+    if (!is_dir(path)) return false;
     out.clear();
+    std::filesystem::path p;
+    if (reach(path, p) != EmbedKind::Directory) return true;  // a missing root
+    std::error_code ec;
     for (std::filesystem::directory_iterator it(p, ec), end; !ec && it != end;
-         it.increment(ec))
-      out.push_back(it->path().filename().generic_string());
-    if (ec) return false;
+         it.increment(ec)) {
+      auto kind = embed_kind(it->symlink_status(ec));
+      if (kind == EmbedKind::File ||
+          (kind == EmbedKind::Directory && holds_file(it->path())))
+        out.push_back(it->path().filename().generic_string());
+    }
     std::sort(out.begin(), out.end());
     return true;
   }
   bool size(std::string_view path, std::uintmax_t& out) const override {
     std::filesystem::path p;
-    if (!is_file(path) || !full_path(path, p)) return false;
+    if (reach(path, p) != EmbedKind::File) return false;
     std::error_code ec;
     out = std::filesystem::file_size(p, ec);
     return !ec;
@@ -247,7 +277,7 @@ inline std::unique_ptr<Dir> open_embed_dir(const std::string& name) {
   std::string base = main_script_dir();
   if (!base.empty() && base.back() != '/') base += '/';
   base += name;
-  return std::make_unique<DiskDir>(std::move(base));
+  return std::make_unique<LiveDir>(std::move(base));
 }
 
 // Absolute path of the entry script, set at startup before the environment is

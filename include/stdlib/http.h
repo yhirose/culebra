@@ -60,7 +60,7 @@
 #include <base/shared.h>  // throw_if_interrupted / culebra_g_sigint (Ctrl+C wiring)
 #include <stdlib/http_method.h>  // HttpMethod (a checked method)
 #include <stdlib/port.h>    // Port (a checked port number)
-#include <stdlib/vfs.h>     // Dir / DiskDir / EmbeddedDir / serve_static (static assets)
+#include <stdlib/vfs.h>     // Dir / LiveDir / EmbeddedDir / serve_static (static assets)
 
 namespace culebra::http {
 

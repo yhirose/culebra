@@ -5930,6 +5930,8 @@ let _dir_module = fn () {
     }
   }
 
+  # A symlink is followed while it leads to somewhere inside the root; one
+  # that leads out, or nowhere, is not there.
   class DiskDir {
     new(path) {
       _Dir.mark(self, 'disk')
@@ -5938,17 +5940,17 @@ let _dir_module = fn () {
       if !FS.is_dir(self.root) {
         throw {kind: 'IOError', message: "Dir.disk: no such directory '{p}'"}
       }
+      self._real = FS.realpath(self.root)
     }
-    # The OS path of `path` under the root, or nil when it is not inside it.
-    # On Windows `\` and `:` would leave the root (a separator, a drive), so
-    # a path holding either is not there either.
+    # Where `path` really is, or nil when that is not inside the root. On
+    # Windows `\` and `:` would leave the root (a separator, a drive), so a
+    # path holding either is not there either.
     _full(path) {
       let rel = _Dir.normalize(path)
-      cond {
-        rel == nil || _win && (rel.contains("\\") || rel.contains(':')) => nil,
-        rel == '' => self.root,
-        _ => FS.join(self.root, rel),
-      }
+      return nil if rel == nil || _win && (rel.contains("\\") || rel.contains(':'))
+      let real = FS.realpath(rel == '' ? self.root : FS.join(self.root, rel))
+      let top = self._real.ends_with(FS.sep()) ? self._real : self._real + FS.sep()
+      real == self._real || real.starts_with(top) ? real : nil
     }
     read(path) {
       _need_file(self, 'read', path)
@@ -5956,7 +5958,11 @@ let _dir_module = fn () {
     }
     list_dir(path) {
       _need_dir(self, 'list_dir', path)
-      FS.list_dir(self._full(path)).sorted()
+      let rel = _Dir.normalize(path)
+      FS
+        .list_dir(self._full(path))
+        .filter(|n| self.exists(rel == '' ? n : "{rel}/{n}"))
+        .sorted()
     }
     exists(path) {
       let f = self._full(path)
@@ -5974,14 +5980,25 @@ let _dir_module = fn () {
       _need_file(self, 'size', path)
       FS.size(self._full(path))
     }
+    # Walked as list_dir and is_dir see it, symlinks included; a directory
+    # that leads back to one it lies in is not walked again.
     files() {
-      let skip = self.root.size() + (self.root.ends_with(FS.sep()) ? 0 : 1)
-      FS
-        .walk(self.root)
-        .filter(|p| FS.is_file(p))
-        .map(|p| to_string(p.slice(skip, p.size())))
-        .map(|p| _win ? p.replace("\\", '/') : p)
-        .sorted()
+      mut out = []
+      mut todo = [('', [])]
+      while !todo.empty() {
+        let (dir, above) = todo.pop()
+        let real = self._full(dir)
+        continue if above.contains(real)
+        for name in self.list_dir(dir) {
+          let p = dir == '' ? name : "{dir}/{name}"
+          if self.is_dir(p) {
+            todo.push((p, above + [real]))
+          } else if self.is_file(p) {
+            out.push(p)
+          }
+        }
+      }
+      out.sorted()
     }
   }
 

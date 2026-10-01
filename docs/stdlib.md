@@ -8440,7 +8440,12 @@ the root itself; `.` and empty segments drop out, so `./a`, `a//b`, `a/./b`
 and a trailing `/` name what `a` and `a/b` do. A path that starts with `/` or
 `\`, or climbs with `..`, is simply not there: `exists` answers `false` and
 `read` raises the `IOError` any missing file does, so nothing is read from
-outside the Dir. Otherwise a name is taken as written — `foo..txt` is an
+outside the Dir. `Dir.disk` follows a symbolic link while it leads somewhere
+inside its root, and a link that leads out (or nowhere) is not there either;
+`files()` walks a link that loops back once. `Dir.embedded` holds what
+`culebra build` bakes, run from source or not: the regular files below the
+directory, never a symbolic link, and a directory only while a file lies
+under it. Otherwise a name is taken as written — `foo..txt` is an
 ordinary file, and `\` is not a separator. Lists are sorted by bytes. Names
 are compared as written in `Dir.memory`, `Dir.zip` and a baked
 `Dir.embedded`; `Dir.disk`, and `Dir.embedded` run from source, follow the

@@ -1105,9 +1105,11 @@ int run_build(const BuildOptions& opts) {
         for (fs::recursive_directory_iterator it(root, ec), end;; it.increment(ec)) {
           if (ec) return fail_read(root, ec.message());
           if (it == end) break;
-          bool regular = it->is_regular_file(ec);
+          // What a Dir.embedded holds (vfs.h embed_kind): a symlink is not
+          // followed, to a file or a directory.
+          auto kind = culebra::embed_kind(it->symlink_status(ec));
           if (ec) return fail_read(it->path(), ec.message());
-          if (!regular) continue;
+          if (kind != culebra::EmbedKind::File) continue;
           auto rel = fs::relative(it->path(), root, ec).generic_string();
           if (ec || rel.empty()) return fail_read(it->path(), "no path under the directory");
           std::ifstream f(it->path(), std::ios::binary);
