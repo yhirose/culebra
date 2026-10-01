@@ -230,6 +230,22 @@ effect fn cf_tally(skip) {
 assert_eq(handle { cf_tally(false) } with cf_note(x, resume) { resume(x) }, 11)
 assert_eq(handle { cf_tally(true) } with cf_note(x, resume) { resume(x) }, 101)
 
+// a bare block that performs, nested or inside an arm
+effect fn cf_blocks(flag) {
+  mut acc = 0
+  { acc = acc + perform cf_note(1) }
+  { { acc = acc + perform cf_note(10) } }
+  if flag { { acc = acc + perform cf_note(100) } }
+  acc
+}
+assert_eq(handle { cf_blocks(true) } with cf_note(x, resume) { resume(x) }, 111)
+
+// a bare block yields nil in tail position, as in any fn
+effect fn cf_tail_block() {
+  { perform cf_note(1); 5 }
+}
+assert_eq(handle { cf_tail_block() } with cf_note(x, resume) { resume(x) }, nil)
+
 // for-in body performs (desugared to while + iterator)
 effect fn cf_each()
 effect fn cf_iterate(xs) {

@@ -724,7 +724,8 @@ class EffectsLowerer {
     // block body (hoists stay inside the block so a loop re-evaluates them),
     // leaving the driving condition / iterable untouched (a `perform` there is
     // rejected — its evaluation order across iterations has no hoist).
-    if ((s->tag == "IF"_ || s->tag == "WHILE"_ || s->tag == "FOR"_) &&
+    if ((s->tag == "IF"_ || s->tag == "WHILE"_ || s->tag == "FOR"_ ||
+         s->tag == "LEXICAL_SCOPE"_) &&
         has_suspension(*s)) {
       return anf_control_flow(s, ctr);
     }
@@ -792,6 +793,8 @@ class EffectsLowerer {
       if (has_suspension(*fv.iter)) reject_control_expr(*fv.iter);
       blocks.push_back(fv.body);
       if (fv.nobreak) blocks.push_back(fv.nobreak);
+    } else if (s->tag == "LEXICAL_SCOPE"_) {  // a bare `{ … }`
+      blocks.push_back(s->nodes[0].get());
     } else {  // IF: [(INIT_CLAUSE)?, cond, block, …, (else-block)]
       auto iv = culebra::view_if(*s);
       // A `perform` in the init clause is not supported (it would need a
@@ -1218,7 +1221,7 @@ class EffectsLowerer {
       return cps_jump(st, u->tag == "BREAK"_ ? target->exit : target->header);
     }
     if (u->tag == "LEXICAL_SCOPE"_) {
-      int entry = cps_block_seq(st, *u, cont, tail, rw);
+      int entry = cps_block_seq(st, *u->nodes[0], cont, tail, rw);
       if (st.failed) return -1;
       return cps_fresh_boxes(st, *u->nodes[0], entry, rw);
     }
@@ -1232,8 +1235,8 @@ class EffectsLowerer {
     return -1;
   }
 
-  // The tail statement of a value-producing sequence. Loops carry no value; an
-  // `if` recurses per arm; a suspension's resumed value becomes the value; a
+  // The tail statement of a value-producing sequence. Loops and bare blocks
+  // carry no value (nil, as in culebra); an `if` recurses per arm; a suspension's resumed value becomes the value; a
   // plain statement is compiled by `cps_tail_value`.
   int cps_tail_stmt(CpsState& st, const peg::Ast* s, int cont,
                     const PromotedLocals& rw) const {
@@ -1241,7 +1244,8 @@ class EffectsLowerer {
     auto* u = unwrap_stmt(s);
     if (u->tag == "IF"_) return cps_if(st, u, cont, /*tail=*/true, rw);
     if (u->tag == "WHILE"_ || u->tag == "RETURN"_ || u->tag == "THROW"_ ||
-        u->tag == "DEFER"_ || u->tag == "BREAK"_ || u->tag == "CONTINUE"_)
+        u->tag == "DEFER"_ || u->tag == "BREAK"_ || u->tag == "CONTINUE"_ ||
+        u->tag == "LEXICAL_SCOPE"_)
       return cps_stmt(st, s, cont, /*tail=*/false, rw);
     if (u->tag == "FOR"_) {
       // A suspending `for` is desugared to `while` upstream; a non-suspending
@@ -1254,8 +1258,7 @@ class EffectsLowerer {
                                  cont);
       return e;
     }
-    if (u->tag == "LEXICAL_SCOPE"_ || u->tag == "STATEMENTS"_)
-      return cps_stmt(st, u, cont, /*tail=*/true, rw);
+    if (u->tag == "STATEMENTS"_) return cps_stmt(st, u, cont, /*tail=*/true, rw);
     if (has_suspension(*u)) {
       EffStmtClass c = classify(u, rw);
       if (c.kind == EffStmtClass::Suspend)
