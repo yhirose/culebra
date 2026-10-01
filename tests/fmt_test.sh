@@ -54,6 +54,9 @@ fi
 # and reformat its interior (comments included). The optimizer folds the
 # enclosing body's `{` onto the scope, which once made fmt strip the inner
 # braces (safety net refused) — see include/cli/formatter.h print_lexical_scope.
+# A block whose only statement is a `yield` was refused too while YIELD was
+# `no_ast_opt`: the block collapsed onto it kept the range of `yield 1`, so the
+# scan for its `{` started past it.
 cat > "$TMP/blk_in.cul" <<'EOF'
 fn g() {
   // before block
@@ -66,6 +69,11 @@ fn g() {
 for i in 0..3 {
   {
     let a = i
+  }
+}
+fn h() {
+  {
+    yield 1 // in a block
   }
 }
 EOF
@@ -81,6 +89,11 @@ fn g() {
 for i in 0..3 {
   {
     let a = i
+  }
+}
+fn h() {
+  {
+    yield 1  // in a block
   }
 }
 EOF
@@ -635,7 +648,8 @@ fi
 # optimizer's single-child widening). The scan then found the ENCLOSING brace
 # and gave the body that block's interior, so the comment above the keyword
 # was printed a second time inside the body. See include/cli/formatter.h
-# print_try / print_defer.
+# print_try / print_defer. A body whose only statement is a `yield` was refused
+# while YIELD was `no_ast_opt`, as in 1b.
 cat > "$TMP/lone_in.cul" <<'EOF'
 fn f(a) {
   if a==1 {
@@ -657,6 +671,16 @@ fn g(a) {
     defer {
       println(a)
     }
+  }
+}
+fn h() {
+  try {
+    yield 1 # in try
+  } catch e {
+    println(e)
+  }
+  defer {
+    yield 2 # in defer
   }
 }
 EOF
@@ -681,6 +705,16 @@ fn g(a) {
     defer {
       println(a)
     }
+  }
+}
+fn h() {
+  try {
+    yield 1  # in try
+  } catch e {
+    println(e)
+  }
+  defer {
+    yield 2  # in defer
   }
 }
 EOF

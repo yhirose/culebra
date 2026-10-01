@@ -820,7 +820,7 @@ inline MappedSource rewrite_locals_to_self(const peg::Ast& n,
 }
 
 // The [begin, end) offsets of a block's statements in `src`: its span inside
-// the braces. A block collapsed into its lone statement may have none.
+// the braces, or the whole span of a node without them (a STATEMENTS list).
 inline std::pair<size_t, size_t> block_inner_span(const peg::Ast& block,
                                                   const std::string& src) {
   auto whole = ast_source_slice(block, src);

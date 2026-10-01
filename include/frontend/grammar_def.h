@@ -118,8 +118,8 @@ const auto grammar_ = R"(
   # a } else { b }`, unaffected), or the next token isn't if/unless at all.
   RETURN                   <-  return (_sp_ !_nl_ (&IF / !(if / unless)) EXPRESSION)?
   THROW                    <-  throw _sp_ !_nl_ EXPRESSION
-  YIELD_FROM               <-  yield _sp_ from _sp_ !_nl_ EXPRESSION                  { no_ast_opt }
-  YIELD                    <-  yield _sp_ !_nl_ EXPRESSION                            { no_ast_opt }
+  YIELD_FROM               <-  yield _sp_ from _sp_ !_nl_ EXPRESSION
+  YIELD                    <-  yield _sp_ !_nl_ EXPRESSION
   # An optional loop label targets an enclosing labelled loop instead of the
   # innermost one (`break outer`). The label must sit on the same line as the
   # keyword — `_sp_ !_nl_`, RETURN's rule above — so a bare `break` followed by
