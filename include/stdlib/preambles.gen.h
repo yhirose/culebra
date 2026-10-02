@@ -5884,8 +5884,6 @@ inline constexpr const char* DIR_MODULE_SOURCE = R"=culpre=(# Dir — a read-onl
 # empty segments drop out, and a path that starts with `/` or `\` or climbs
 # with `..` is simply not there.
 let _dir_module = fn () {
-  let _win = FS.sep() == "\\"
-
   # A path argument that names a directory on disk: a String or a Path.
   let _disk_path = fn (who, p) {
     let t = type_of(p)
@@ -5931,7 +5929,9 @@ let _dir_module = fn () {
   }
 
   # A symlink is followed while it leads to somewhere inside the root; one
-  # that leads out, or nowhere, is not there.
+  # that leads out, or nowhere, is not there. The rule is the C++ RootDir's
+  # (vfs.h), which `srv.static` serves from too; `_real` is the root's real
+  # path, taken here.
   class DiskDir {
     new(path) {
       _Dir.mark(self, 'disk')
@@ -5942,63 +5942,29 @@ let _dir_module = fn () {
       }
       self._real = FS.realpath(self.root)
     }
-    # Where `path` really is, or nil when that is not inside the root. On
-    # Windows `\` and `:` would leave the root (a separator, a drive), so a
-    # path holding either is not there either.
-    _full(path) {
-      let rel = _Dir.normalize(path)
-      return nil if rel == nil || _win && (rel.contains("\\") || rel.contains(':'))
-      let real = FS.realpath(rel == '' ? self.root : FS.join(self.root, rel))
-      let top = self._real.ends_with(FS.sep()) ? self._real : self._real + FS.sep()
-      real == self._real || real.starts_with(top) ? real : nil
-    }
     read(path) {
       _need_file(self, 'read', path)
-      FS.read(self._full(path))
+      _Dir.disk_read(self._real, path)
     }
     list_dir(path) {
       _need_dir(self, 'list_dir', path)
-      let rel = _Dir.normalize(path)
-      FS
-        .list_dir(self._full(path))
-        .filter(|n| self.exists(rel == '' ? n : "{rel}/{n}"))
-        .sorted()
+      _Dir.disk_list_dir(self._real, path)
     }
     exists(path) {
-      let f = self._full(path)
-      f != nil && FS.exists(f)
+      self.is_file(path) || self.is_dir(path)
     }
     is_file(path) {
-      let f = self._full(path)
-      f != nil && FS.is_file(f)
+      _Dir.disk_is_file(self._real, path)
     }
     is_dir(path) {
-      let f = self._full(path)
-      f != nil && FS.is_dir(f)
+      _Dir.disk_is_dir(self._real, path)
     }
     size(path) {
       _need_file(self, 'size', path)
-      FS.size(self._full(path))
+      _Dir.disk_size(self._real, path)
     }
-    # Walked as list_dir and is_dir see it, symlinks included; a directory
-    # that leads back to one it lies in is not walked again.
     files() {
-      mut out = []
-      mut todo = [('', [])]
-      while !todo.empty() {
-        let (dir, above) = todo.pop()
-        let real = self._full(dir)
-        continue if above.contains(real)
-        for name in self.list_dir(dir) {
-          let p = dir == '' ? name : "{dir}/{name}"
-          if self.is_dir(p) {
-            todo.push((p, above + [real]))
-          } else if self.is_file(p) {
-            out.push(p)
-          }
-        }
-      }
-      out.sorted()
+      _Dir.disk_files(self._real)
     }
   }
 
@@ -6189,6 +6155,7 @@ let _dir_module = fn () {
     }
     close() {
       _Dir.zip_close(self._id)
+      self._id = nil
       self.bytes = nil
     }
     drop() {

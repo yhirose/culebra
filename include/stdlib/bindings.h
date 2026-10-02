@@ -6508,6 +6508,10 @@ inline void _jit_http_server_ws(JitValue* __ret, JitClosure*, int8_t self_tag, i
   { *__ret = _jit_http_server_route(self, n, args, "WS"); return; }
 }
 
+// A Dir module instance as a C++ Dir that holds no Culebra value, or null for
+// any other object (defined with the _Dir natives below).
+inline std::unique_ptr<culebra::Dir> _dir_rebuild(JitObject* o);
+
 inline void _jit_http_server_static(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                    int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
@@ -6520,24 +6524,19 @@ inline void _jit_http_server_static(JitValue* __ret, JitClosure*, int8_t self_ta
   *__ret = _jit_at_call_site([&] {
     std::string mount(_culebra_str_view(args[0].tag, args[0].data));
     std::string err;
-    // dir is either a String path (live disk via mount point) or a
-    // `Dir.embedded(...)` (baked under AOT, live disk otherwise), known by its
-    // class (JitSpecialTable::dir_kind).
+    // dir is a String path (live disk via mount point) or a Dir. One of the
+    // Dir module's, known by its class (JitSpecialTable::dir_kind), is
+    // rebuilt from its fields as a C++ Dir the server owns, so no Culebra
+    // value reaches the server's threads.
     auto bad_dir = [] {
       throw culebra::CulebraError(
-          "TypeError",
-          "server.static: dir must be a String path or Dir.embedded(...)", 0, 0);
+          "TypeError", "server.static: dir must be a String path or a Dir", 0,
+          0);
     };
     if (args[1].tag == TAG_OBJECT) {
-      auto* o = reinterpret_cast<JitObject*>(args[1].data);
-      size_t ni = o->find_slot("name");
-      if (_jit_meta_dir_kind(o) != int8_t(culebra::DirKind::Embedded) ||
-          ni == static_cast<size_t>(-1) ||
-          o->slots[ni].value.tag != TAG_STRING)
-        bad_dir();
-      JitValue nv = o->slots[ni].value;
-      culebra::http::http_server_serve_embed(
-          id, mount, std::string(_culebra_str_view(nv.tag, nv.data)), err);
+      auto dir = _dir_rebuild(reinterpret_cast<JitObject*>(args[1].data));
+      if (!dir) bad_dir();
+      culebra::http::http_server_serve_dir(id, mount, std::move(dir), err);
     } else if (args[1].tag == TAG_STRING) {
       culebra::http::http_server_static(
           id, mount, std::string(_culebra_str_view(args[1].tag, args[1].data)),
@@ -8868,33 +8867,36 @@ inline JitValue _ns_dir_mark(JitValue* a, int64_t) {
   return _ns_adapt::v_nil();
 }
 
-// The reads behind Dir.embedded (src/preambles/dir.cul): `name` is the
-// directory, `path` the user's, normalized here. A path that is not there —
-// absent, or outside the directory (a null Dir) — answers false / nil; the
-// class raises the IOError, worded like every Dir.
-inline JitValue _dir_embedded_read(const culebra::Dir* d, std::string_view p) {
+// The reads behind Dir.embedded and Dir.disk (src/preambles/dir.cul), over
+// the C++ Dir each is (vfs.h): `path` is the user's, normalized here. A path
+// that is not there — absent, or outside the directory (a null Dir) —
+// answers false / nil; the class raises the IOError, worded like every Dir.
+// A file that is there and cannot be read is an IOError here.
+inline JitValue _dir_read(const culebra::Dir* d, std::string_view p) {
   std::string out;
-  return d && d->read(p, out) ? _ns_adapt::str(out) : _ns_adapt::v_nil();
+  if (!d || !d->is_file(p)) return _ns_adapt::v_nil();
+  if (!d->read(p, out))
+    culebra::throw_runtime_error_at(
+        "IOError", culebra::format("Dir.read: cannot read '{}'", p), 0, 0);
+  return _ns_adapt::str(out);
 }
-inline JitValue _dir_embedded_list_dir(const culebra::Dir* d,
-                                       std::string_view p) {
+inline JitValue _dir_list_dir(const culebra::Dir* d, std::string_view p) {
   std::vector<std::string> names;
   if (!d || !d->list_dir(p, names)) return _ns_adapt::v_nil();
   return _ns_adapt::string_array(names);
 }
-inline JitValue _dir_embedded_is_file(const culebra::Dir* d,
-                                      std::string_view p) {
+inline JitValue _dir_is_file(const culebra::Dir* d, std::string_view p) {
   return {TAG_BOOL, d && d->is_file(p) ? 1 : 0};
 }
-inline JitValue _dir_embedded_is_dir(const culebra::Dir* d,
-                                     std::string_view p) {
+inline JitValue _dir_is_dir(const culebra::Dir* d, std::string_view p) {
   return {TAG_BOOL, d && d->is_dir(p) ? 1 : 0};
 }
-inline JitValue _dir_embedded_size(const culebra::Dir* d, std::string_view p) {
+inline JitValue _dir_size(const culebra::Dir* d, std::string_view p) {
   std::uintmax_t n = 0;
   return d && d->size(p, n) ? JitValue{TAG_LONG, static_cast<int64_t>(n)}
                             : _ns_adapt::v_nil();
 }
+// `_Dir.embedded_*(name, path)`.
 template <JitValue (*Op)(const culebra::Dir*, std::string_view)>
 inline JitValue _ns_dir_embedded(JitValue* a, int64_t) {
   auto name = _ns_adapt::require_sv(a[0], "name");
@@ -8902,6 +8904,23 @@ inline JitValue _ns_dir_embedded(JitValue* a, int64_t) {
   if (!culebra::dir_path_normalize(_ns_adapt::require_sv(a[1], "path"), rel))
     return Op(nullptr, rel);
   return Op(culebra::open_embed_dir(std::string(name)).get(), rel);
+}
+// `_Dir.disk_*(real, path)`: `real` is the root's real path, which the
+// DiskDir took when it was made.
+inline culebra::RootDir _dir_disk_root(JitValue real) {
+  return culebra::RootDir(
+      std::filesystem::path(std::string(_ns_adapt::require_sv(real, "real"))));
+}
+template <JitValue (*Op)(const culebra::Dir*, std::string_view)>
+inline JitValue _ns_dir_disk(JitValue* a, int64_t) {
+  auto root = _dir_disk_root(a[0]);
+  std::string rel;
+  if (!culebra::dir_path_normalize(_ns_adapt::require_sv(a[1], "path"), rel))
+    return Op(nullptr, rel);
+  return Op(&root, rel);
+}
+inline JitValue _ns_dir_disk_files(JitValue* a, int64_t) {
+  return _ns_adapt::string_array(_dir_disk_root(a[0]).files());
 }
 
 // The archives Dir.zip opened, by the id a ZipArchive holds. Per Runtime: a
@@ -8947,13 +8966,16 @@ inline _DirZipTable::Open& _dir_zip_open_of(JitValue id) {
 // `_Dir.zip_open(path)`: a missing or unreadable file is an IOError, like any
 // file read; one that is there and holds no archive is a ValueError, with the
 // reason.
-inline JitValue _ns_dir_zip_open(JitValue* a, int64_t) {
-  std::string path(_ns_adapt::require_sv(a[0], "path"));
+inline void _dir_zip_need_file(const std::string& path) {
   std::error_code ec;
   if (!std::filesystem::is_regular_file(path, ec))
     _dir_zip_throw("IOError", "Dir.zip: no such file '" + path + "'");
   if (!std::ifstream(path, std::ios::binary))
     _dir_zip_throw("IOError", "Dir.zip: cannot open '" + path + "'");
+}
+inline JitValue _ns_dir_zip_open(JitValue* a, int64_t) {
+  std::string path(_ns_adapt::require_sv(a[0], "path"));
+  _dir_zip_need_file(path);
   return _dir_zip_register(culebra::zip::open_file(path), "'" + path + "': ");
 }
 // `_Dir.zip_open_bytes(bytes)`: the archive reads the caller's String in
@@ -9033,6 +9055,60 @@ inline JitValue _ns_dir_zip_close(JitValue* a, int64_t) {
     }
   }
   return _ns_adapt::v_nil();
+}
+
+// What a Dir module instance is made of, read off its fields: `_real` for
+// Dir.disk, `contents` for Dir.memory, `name` for Dir.embedded, `path` or
+// `bytes` for Dir.zip. The copy owns everything it reads — a memory Dir's
+// contents and an archive's bytes are copied once, an archive file is opened
+// again — so it lives as long as its owner wants, on any thread.
+inline std::unique_ptr<culebra::Dir> _dir_rebuild(JitObject* o) {
+  auto field = [o](const char* name) {
+    size_t i = o->find_slot(name);
+    return i == static_cast<size_t>(-1) ? JitValue{TAG_NIL, 0}
+                                        : o->slots[i].value;
+  };
+  auto text = [&](const char* name) {
+    return std::string(_ns_adapt::require_sv(field(name), name));
+  };
+  switch (static_cast<culebra::DirKind>(_jit_meta_dir_kind(o))) {
+    case culebra::DirKind::Disk:
+      return std::make_unique<culebra::RootDir>(
+          std::filesystem::path(text("_real")));
+    case culebra::DirKind::Memory: {
+      JitValue c = field("contents");
+      if (c.tag != TAG_OBJECT)
+        culebra::throw_runtime_error_at(
+            "TypeError", "Dir.memory: its contents are not an Object", 0, 0);
+      auto* co = reinterpret_cast<JitObject*>(c.data);
+      std::map<std::string, std::string> files;
+      for (size_t i = 0; i < co->prop_size(); i++) {
+        std::string key(co->prop_name(i));
+        files.emplace(key, _ns_adapt::require_sv(co->slots[i].value, key.c_str()));
+      }
+      return std::make_unique<culebra::MapDir>(std::move(files));
+    }
+    case culebra::DirKind::Embedded:
+      return culebra::open_embed_dir(text("name"));
+    case culebra::DirKind::Zip: {
+      if (field("_id").tag == TAG_NIL)
+        _dir_zip_throw("ClosedError", "Dir.zip: the archive is closed");
+      std::string error;
+      std::unique_ptr<culebra::zip::ZipDir> z;
+      if (field("path").tag != TAG_NIL) {
+        std::string path = text("path");
+        _dir_zip_need_file(path);
+        z = culebra::zip::ZipDir::open(&path, {}, error);
+        if (!z) _dir_zip_throw("ValueError", "Dir.zip: '" + path + "': " + error);
+      } else {
+        z = culebra::zip::ZipDir::open(nullptr, text("bytes"), error);
+        if (!z) _dir_zip_throw("ValueError", "Dir.zip: " + error);
+      }
+      return z;
+    }
+    default:
+      return nullptr;
+  }
 }
 
 inline JitValue _ns_fst_compile_set(JitValue* a, int64_t) {
@@ -10169,11 +10245,17 @@ inline const NsMethod kNsRows_Term_native[] = {
 inline const NsMethod kNsRows_Dir_native[] = {
   {"_Dir", "normalize",         1, &_ns_dir_normalize},
   {"_Dir", "mark",              2, &_ns_dir_mark},
-  {"_Dir", "embedded_read",     2, &_ns_dir_embedded<_dir_embedded_read>},
-  {"_Dir", "embedded_list_dir", 2, &_ns_dir_embedded<_dir_embedded_list_dir>},
-  {"_Dir", "embedded_is_file",  2, &_ns_dir_embedded<_dir_embedded_is_file>},
-  {"_Dir", "embedded_is_dir",   2, &_ns_dir_embedded<_dir_embedded_is_dir>},
-  {"_Dir", "embedded_size",     2, &_ns_dir_embedded<_dir_embedded_size>},
+  {"_Dir", "embedded_read",     2, &_ns_dir_embedded<_dir_read>},
+  {"_Dir", "embedded_list_dir", 2, &_ns_dir_embedded<_dir_list_dir>},
+  {"_Dir", "embedded_is_file",  2, &_ns_dir_embedded<_dir_is_file>},
+  {"_Dir", "embedded_is_dir",   2, &_ns_dir_embedded<_dir_is_dir>},
+  {"_Dir", "embedded_size",     2, &_ns_dir_embedded<_dir_size>},
+  {"_Dir", "disk_read",         2, &_ns_dir_disk<_dir_read>},
+  {"_Dir", "disk_list_dir",     2, &_ns_dir_disk<_dir_list_dir>},
+  {"_Dir", "disk_is_file",      2, &_ns_dir_disk<_dir_is_file>},
+  {"_Dir", "disk_is_dir",       2, &_ns_dir_disk<_dir_is_dir>},
+  {"_Dir", "disk_size",         2, &_ns_dir_disk<_dir_size>},
+  {"_Dir", "disk_files",        1, &_ns_dir_disk_files},
   {"_Dir", "zip_open",          1, &_ns_dir_zip_open},
   {"_Dir", "zip_open_bytes",    1, &_ns_dir_zip_open_bytes},
   {"_Dir", "zip_read",          3, &_ns_dir_zip_read},

@@ -21,13 +21,15 @@
 #include <cctype>
 #include <cstdint>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
-#include <stdlib/vfs.h>  // dir_path_normalize
+#include <stdlib/vfs.h>  // Dir, dir_path_normalize
 
 #if !defined(CULEBRA_RT_COMPRESS_WEAK) && defined(CULEBRA_ENABLE_ZIP)
 #define CULEBRA_ZIP_REAL 1
@@ -332,6 +334,61 @@ CULEBRA_ZIP_LINKAGE bool pack(
   return false;
 #endif
 }
+
+// An archive as a Dir that owns everything it reads: what a server keeps of a
+// `Dir.zip`, opened again from its path or over its own copy of the bytes, so
+// it outlives the ZipArchive it came from and holds no Culebra value. Server
+// threads share it, and the one minizip cursor reads under a lock.
+struct ZipDir : Dir {
+  std::string bytes;  // empty for an archive in a file
+  Reader* reader = nullptr;
+  Index index;
+  mutable std::mutex m;
+
+  ZipDir() = default;
+  ZipDir(const ZipDir&) = delete;
+  ZipDir& operator=(const ZipDir&) = delete;
+  ~ZipDir() override {
+    if (reader) close(reader);
+  }
+  // Null with the reason in `error` when the archive does not open.
+  static std::unique_ptr<ZipDir> open(const std::string* path,
+                                      std::string bytes, std::string& error) {
+    auto d = std::make_unique<ZipDir>();
+    d->bytes = std::move(bytes);
+    Opened o = path ? open_file(*path) : open_bytes(d->bytes);
+    if (!o.reader) {
+      error = o.error;
+      return nullptr;
+    }
+    d->reader = o.reader;
+    d->index = std::move(o.index);
+    return d;
+  }
+  bool read(std::string_view path, std::string& out) const override {
+    auto it = index.files.find(std::string(path));
+    if (it == index.files.end()) return false;
+    std::lock_guard<std::mutex> lock(m);
+    std::string error;
+    return zip::read(reader, bytes, it->second, it->first, out, error);
+  }
+  bool is_file(std::string_view path) const override {
+    return index.files.count(std::string(path)) != 0;
+  }
+  bool is_dir(std::string_view path) const override {
+    return index.is_dir(path);
+  }
+  bool list_dir(std::string_view path,
+                std::vector<std::string>& out) const override {
+    return index.list_dir(path, out);
+  }
+  bool size(std::string_view path, std::uintmax_t& out) const override {
+    auto it = index.files.find(std::string(path));
+    if (it == index.files.end()) return false;
+    out = it->second.size;
+    return true;
+  }
+};
 
 #undef CULEBRA_ZIP_STUB
 #undef CULEBRA_ZIP_UNLINKED

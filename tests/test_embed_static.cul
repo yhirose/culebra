@@ -49,11 +49,6 @@ try {
 } catch e {
   inspect(e.kind + ": " + e.message)
 }
-try {
-  other.static("/", Dir.memory({'a.txt': 'a'}))
-} catch e {
-  inspect(e.kind + ": " + e.message)
-}
 
 # A Dir.embedded made here and sent to an isolate is still one there.
 let assets = Dir.embedded("embed_assets")

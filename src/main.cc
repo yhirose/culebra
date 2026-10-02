@@ -1049,7 +1049,7 @@ int run_build(const BuildOptions& opts) {
   // --- Embedded assets: bake each `Dir.embedded("...")` directory into an object
   // file linked alongside the program. The object reproduces the directory as a
   // static AssetEntry table and registers it (under the dir name) at static-init
-  // time; at runtime `http_server_serve_embed` finds the baked table and serves
+  // time; at runtime `open_embed_dir` finds the baked table and `srv.static` serves
   // from it instead of disk — so the binary needs no external asset files. Dirs
   // are resolved relative to the entry script (the same base the dev disk path
   // uses). A non-literal `Dir.embedded(expr)` is skipped here and falls back to

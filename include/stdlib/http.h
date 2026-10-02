@@ -1132,8 +1132,8 @@ CULEBRA_RT_HTTP_LINKAGE void http_res_set_stream(ServerResponse& res,
 
 #if !defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
 
-// A static asset mount: serve `dir` (a live disk dir in dev, or a baked
-// embedded table under AOT) at the URL prefix `mount`.
+// A static asset mount: serve `dir` (any culebra::Dir the server owns) at the
+// URL prefix `mount`.
 struct StaticMount {
   std::string mount;
   std::unique_ptr<culebra::Dir> dir;
@@ -1168,7 +1168,7 @@ struct HttpServer {
   // because bind and serve are separate calls: it is what tells serve the
   // socket is open, and (for a port-0 bind) the only record of the number.
   int bound_port = -1;
-  // Static asset mounts (srv.static with Dir.embedded), served by a pre_routing
+  // Static asset mounts (srv.static with a Dir), served by a pre_routing
   // handler installed on first use.
   std::vector<StaticMount> static_mounts;
   bool static_handler_installed = false;
@@ -1410,24 +1410,23 @@ CULEBRA_RT_HTTP_LINKAGE void http_server_static(int64_t id,
 #endif
 }
 
-// Serve a virtual directory at the URL prefix `mount`: the baked asset table
-// registered under `name` when this binary was built with the assets embedded
-// (AOT single binary), otherwise the live on-disk directory `base` (dev — edits
-// show up on the next request). Static assets are tried before registered
-// routes and only when the file exists, so an API route at e.g. /api/* still
-// wins; a closed id no-ops. This is the `srv.static(mount, Dir.embedded(...))`
-// path — the plain `srv.static(mount, "dir")` keeps using set_mount_point.
-CULEBRA_RT_HTTP_LINKAGE void http_server_serve_embed(int64_t id,
-                                                     const std::string& mount,
-                                                     const std::string& name,
-                                                     std::string& err) {
+// Serve a Dir at the URL prefix `mount`: the server owns `dir` and its worker
+// threads read it concurrently, so it is one that holds no Culebra value (the
+// binding rebuilds one from a Dir module instance's fields). Static assets are
+// tried before registered routes and only when the file exists, so an API
+// route at e.g. /api/* still wins; a closed id no-ops. This is the
+// `srv.static(mount, dir)` path for a Dir — the plain `srv.static(mount,
+// "dir")` keeps using set_mount_point.
+CULEBRA_RT_HTTP_LINKAGE void http_server_serve_dir(
+    int64_t id, const std::string& mount, std::unique_ptr<culebra::Dir> dir,
+    std::string& err) {
 #if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
-  (void)id; (void)mount; (void)name;
+  (void)id; (void)mount; (void)dir;
   err = "Http runtime not linked (no Http use detected at build)";
 #else
   HttpServer* s = _http_server_get(id);
   if (!_http_server_open_unstarted(s, err)) return;
-  s->static_mounts.push_back({mount, culebra::open_embed_dir(name)});
+  s->static_mounts.push_back({mount, std::move(dir)});
   if (!s->static_handler_installed) {
     s->static_handler_installed = true;
     HttpServer* sp = s;  // outlives the handler (it lives on sp->svr)

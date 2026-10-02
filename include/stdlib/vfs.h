@@ -19,7 +19,9 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -168,6 +170,156 @@ struct LiveDir : Dir {
     std::error_code ec;
     out = std::filesystem::file_size(p, ec);
     return !ec;
+  }
+};
+
+// `Dir.disk`: a directory on disk, read live, with the root as a boundary
+// (Go's os.Root): a symlink is followed while it leads somewhere inside the
+// root, and one that leads out, or nowhere, is not there. `real` is the
+// root's own real path, taken when the Dir is made.
+struct RootDir : Dir {
+  std::filesystem::path real;
+  explicit RootDir(std::filesystem::path r) : real(std::move(r)) {}
+  // Where `path` really is, or false when that is not inside the root. On
+  // Windows a `\` is a separator and a `:` a drive, so a path holding either
+  // would leave the root.
+  bool reach(std::string_view path, std::filesystem::path& out) const {
+#ifdef _WIN32
+    if (path.find_first_of("\\:") != std::string_view::npos) return false;
+#endif
+    std::error_code ec;
+    out = path.empty() ? real
+                       : std::filesystem::weakly_canonical(
+                             real / std::filesystem::path(std::string(path)), ec);
+    if (ec) return false;
+    const auto& top = real.native();
+    const auto& at = out.native();
+    if (at == top) return true;
+    auto sep = std::filesystem::path::preferred_separator;
+    return at.size() > top.size() && at.compare(0, top.size(), top) == 0 &&
+           (top.back() == sep || at[top.size()] == sep);
+  }
+  bool is_file(std::string_view path) const override {
+    std::filesystem::path p;
+    std::error_code ec;
+    return reach(path, p) && std::filesystem::is_regular_file(p, ec);
+  }
+  bool is_dir(std::string_view path) const override {
+    std::filesystem::path p;
+    std::error_code ec;
+    return reach(path, p) && std::filesystem::is_directory(p, ec);
+  }
+  bool read(std::string_view path, std::string& out) const override {
+    std::filesystem::path p;
+    std::error_code ec;
+    if (!reach(path, p) || !std::filesystem::is_regular_file(p, ec))
+      return false;
+    std::ifstream f(p, std::ios::binary);
+    if (!f) return false;
+    out.assign(std::istreambuf_iterator<char>(f),
+               std::istreambuf_iterator<char>());
+    return !f.bad();
+  }
+  bool list_dir(std::string_view path,
+                std::vector<std::string>& out) const override {
+    std::filesystem::path p;
+    std::error_code ec;
+    if (!reach(path, p) || !std::filesystem::is_directory(p, ec)) return false;
+    out.clear();
+    std::string prefix = path.empty() ? std::string() : std::string(path) + "/";
+    for (std::filesystem::directory_iterator it(p, ec), end; !ec && it != end;
+         it.increment(ec)) {
+      auto name = it->path().filename().u8string();
+      std::string n(name.begin(), name.end());
+      if (exists(prefix + n)) out.push_back(std::move(n));
+    }
+    std::sort(out.begin(), out.end());
+    return true;
+  }
+  bool size(std::string_view path, std::uintmax_t& out) const override {
+    std::filesystem::path p;
+    std::error_code ec;
+    if (!reach(path, p) || !std::filesystem::is_regular_file(p, ec))
+      return false;
+    out = std::filesystem::file_size(p, ec);
+    return !ec;
+  }
+  // Every file, walked as list_dir and is_dir see it, symlinks included; a
+  // directory that leads back to one it lies in is not walked again.
+  std::vector<std::string> files() const {
+    std::vector<std::string> out;
+    struct Todo {
+      std::string dir;
+      std::vector<std::filesystem::path> above;
+    };
+    std::vector<Todo> todo{{"", {}}};
+    while (!todo.empty()) {
+      Todo t = std::move(todo.back());
+      todo.pop_back();
+      std::filesystem::path at;
+      if (!reach(t.dir, at) ||
+          std::find(t.above.begin(), t.above.end(), at) != t.above.end())
+        continue;
+      std::vector<std::string> names;
+      if (!list_dir(t.dir, names)) continue;
+      for (auto& name : names) {
+        std::string p = t.dir.empty() ? name : t.dir + "/" + name;
+        if (is_dir(p)) {
+          auto above = t.above;
+          above.push_back(at);
+          todo.push_back({std::move(p), std::move(above)});
+        } else if (is_file(p)) {
+          out.push_back(std::move(p));
+        }
+      }
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+  }
+};
+
+// Files held by value, keyed by normalized path — what a server keeps of a
+// `Dir.memory`. A directory is there when a file lies under it, and the root
+// always is.
+struct MapDir : Dir {
+  std::map<std::string, std::string> files;
+  std::set<std::string> dirs{""};
+  explicit MapDir(std::map<std::string, std::string> f) : files(std::move(f)) {
+    for (const auto& [key, _] : files)
+      for (auto slash = key.find('/'); slash != std::string::npos;
+           slash = key.find('/', slash + 1))
+        dirs.insert(key.substr(0, slash));
+  }
+  bool read(std::string_view path, std::string& out) const override {
+    auto it = files.find(std::string(path));
+    if (it == files.end()) return false;
+    out = it->second;
+    return true;
+  }
+  bool is_file(std::string_view path) const override {
+    return files.count(std::string(path)) != 0;
+  }
+  bool is_dir(std::string_view path) const override {
+    return dirs.count(std::string(path)) != 0;
+  }
+  bool list_dir(std::string_view path,
+                std::vector<std::string>& out) const override {
+    if (!is_dir(path)) return false;
+    std::string prefix = path.empty() ? std::string() : std::string(path) + "/";
+    std::set<std::string> names;
+    for (const auto& [key, _] : files)
+      if (key.size() > prefix.size() && key.compare(0, prefix.size(), prefix) == 0) {
+        auto rest = key.substr(prefix.size());
+        names.insert(rest.substr(0, rest.find('/')));
+      }
+    out.assign(names.begin(), names.end());
+    return true;
+  }
+  bool size(std::string_view path, std::uintmax_t& out) const override {
+    auto it = files.find(std::string(path));
+    if (it == files.end()) return false;
+    out = it->second.size();
+    return true;
   }
 };
 
@@ -343,7 +495,8 @@ inline std::string content_type_for(std::string_view path) {
 //   - require the URL to be under `mount` (with a '/' boundary), strip it
 //   - strip leading slashes
 //   - map "" or a trailing "/" to "index.html"
-//   - reject any path containing ".." (traversal)
+//   - normalize as every Dir path is (dir_path_normalize), so a path that
+//     climbs with `..` is not there while `foo..txt` is an ordinary name
 // Returns false when the URL isn't under this mount or escapes it.
 inline bool static_key(std::string_view url, std::string_view mount,
                        std::string& key) {
@@ -354,10 +507,9 @@ inline bool static_key(std::string_view url, std::string_view mount,
     url.remove_prefix(mount.size());
   }
   while (!url.empty() && url.front() == '/') url.remove_prefix(1);
-  key.assign(url);
-  if (key.empty() || key.back() == '/') key += "index.html";
-  if (key.find("..") != std::string::npos) return false;
-  return true;
+  std::string raw(url);
+  if (raw.empty() || raw.back() == '/') raw += "index.html";
+  return dir_path_normalize(raw, key);
 }
 
 struct StaticResult {

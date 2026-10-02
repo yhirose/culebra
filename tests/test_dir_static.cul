@@ -1,0 +1,125 @@
+# srv.static(mount, dir) over every kind of Dir: each is served the same way,
+# from a copy the server owns (rebuilt from the Dir's fields), so it keeps
+# serving after the Dir it came from is closed or gone. Same across the
+# executor, --jit and an AOT binary.
+
+let FILES = {
+  'index.html': '<h1>home</h1>',
+  'app.js': 'console.log(1)',
+  'foo..txt': 'dots are part of the name',
+  'img/x.png': String.from_bytes([137, 80, 78, 71, 0, 255]),
+  'docs/index.html': '<h1>docs</h1>',
+}
+
+fn caught(thunk) {
+  try {
+    thunk()
+    'NO ERROR'
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+
+# Serves `dir` at /s next to one route, and hands `check` the base URL.
+fn serving(dir, check) {
+  let srv = Http.server()
+  srv.static("/s", dir)
+  srv.get("/api/ok", fn (req) {
+    'ok'
+  })
+  let port = srv.listen_async(0)
+  defer {
+    srv.stop()
+  }
+  check("http://127.0.0.1:{port}")
+}
+
+fn check_served(dir, label) {
+  serving(dir, fn (base) {
+    for path, body in FILES {
+      let r = Http.get("{base}/s/{path}")
+      assert_eq(r.status, 200, "{label} {path}")
+      assert_eq(r.body, body, "{label} {path}")
+    }
+    assert_eq(Http.get("{base}/s/").body, FILES['index.html'], label)
+    assert_eq(Http.get("{base}/s/docs/").body, FILES['docs/index.html'], label)
+    assert_eq(Http.get("{base}/s/img/x.png").headers['Content-Type'], 'image/png', label)
+    assert_eq(Http.get("{base}/s/nope.css").status, 404, label)
+    assert_eq(Http.get("{base}/s/img").status, 404, label)
+    assert_eq(Http.get("{base}/api/ok").body, 'ok', label)
+  })
+}
+
+let t = FS.mkdtemp('culebra-dir-static')
+defer {
+  FS.remove(t, recursive: true)
+}
+let root = FS.join(t, 'root')
+Dir.memory(FILES).copy_to(root)
+let data = Compress.zip(FILES)
+let zpath = FS.join(t, 'site.zip')
+FS.write(zpath, data)
+
+check_served(Dir.disk(root), 'disk')
+check_served(Dir.memory(FILES), 'memory')
+check_served(Dir.zip(zpath), 'zip file')
+check_served(Dir.zip(bytes: data), 'zip bytes')
+
+# Dir.disk is read live: a file written after static() is served.
+let disk = Dir.disk(root)
+serving(disk, fn (base) {
+  FS.write(FS.join(root, 'late.txt'), 'late')
+  assert_eq(Http.get("{base}/s/late.txt").body, 'late')
+})
+
+# Dir.disk serves only what is inside its root, a symlink leading out
+# included.
+if FS.sep() == '/' {
+  FS.write(FS.join(t, 'secret.txt'), 'SECRET')
+  FS.symlink(FS.join(t, 'secret.txt'), FS.join(root, 'leak.txt'))
+  serving(Dir.disk(root), fn (base) {
+    assert_eq(Http.get("{base}/s/leak.txt").status, 404)
+  })
+}
+
+# The server's copy outlives the Dir: an archive closed after static() still
+# serves, and a Dir.memory serves its contents as they were.
+let z = Dir.zip(bytes: data)
+let m = Dir.memory(FILES)
+let srv = Http.server()
+srv.static("/z", z)
+srv.static("/m", m)
+z.close()
+m.contents['app.js'] = 'changed'
+let port = srv.listen_async(0)
+assert_eq(Http.get("http://127.0.0.1:{port}/z/app.js").body, 'console.log(1)')
+assert_eq(Http.get("http://127.0.0.1:{port}/m/app.js").body, 'console.log(1)')
+srv.stop()
+
+# A closed archive cannot be served; neither can what is no Dir.
+let closed = Dir.zip(bytes: data)
+closed.close()
+assert_eq(
+  caught(|| Http.server().static("/", closed)),
+  'ClosedError: Dir.zip: the archive is closed',
+)
+assert_eq(
+  caught(|| Http.server().static("/", 5)),
+  'TypeError: server.static: dir must be a String path or a Dir',
+)
+
+# A Dir sent to an isolate is served there the same way.
+let (tx, rx) = Channel.new(1)
+let iso = Isolate.spawn(fn () {
+  let s = Http.server()
+  s.static("/", disk)
+  tx.send(s.bind(0))
+  tx.drop()
+  s.serve()
+})
+tx.drop()
+let iport = rx.recv()
+assert_eq(Http.get("http://127.0.0.1:{iport}/app.js").body, 'console.log(1)')
+iso.drop()
+
+inspect('srv.static serves every Dir')
