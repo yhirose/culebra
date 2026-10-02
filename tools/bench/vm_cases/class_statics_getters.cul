@@ -68,7 +68,7 @@ class K {
   static FROM_OUTER = outer + 2
   new() { self.x = 1 }
   static B = trace('static-B', 2)
-  static SIZED: Long
+  static SIZED: Long = 8
 }
 println('--- done')
 println(K.A + K.B)

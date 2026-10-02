@@ -1,0 +1,1 @@
+SyntaxError: static field `LIMIT` in class `E` needs a value at 4:10.

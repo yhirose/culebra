@@ -42,6 +42,7 @@ error_class_getter_params	1
 error_class_method_miss	1
 error_class_overload_dispatch	1
 error_class_self_immutable	1
+error_class_static_field_value	1
 error_class_wellknown	1
 error_class_wellknown_overload	1
 error_coalesce_immutable	1

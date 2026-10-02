@@ -20,8 +20,8 @@ static-B
 --- done
 3
 42
-nil
-['new', 'name', 'A', 'FROM_OUTER', 'B']
+8
+['new', 'name', 'A', 'FROM_OUTER', 'B', 'SIZED']
 42
 v=21
 21

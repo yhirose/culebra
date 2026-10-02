@@ -74,10 +74,48 @@ test_static_field_immutable = fn () {
   assert_true(kind == 'kind=ImmutableError' || kind == 'kind=TypeError')
 }
 
+# A static field may annotate its value's type: still a constant on the
+# class object, checked against the type once, where the class is declared.
+test_static_field_typed = fn () {
+  class Typed {
+    static PI: Float = 3.14
+    static NAMES: Array<String> = ['circle']
+    static NONE: Long? = nil
+  }
+  assert_eq(Typed.PI, 3.14)
+  assert_eq(Typed.NAMES, ['circle'])
+  assert_eq(Typed.NONE, nil)
+  assert_eq(Typed().PI, nil)
+  assert_eq(try { Typed.PI = 2.0 } catch e { e.kind }, 'ImmutableError')
+}
+
+test_static_field_typed_mismatch = fn () {
+  let declare = fn () {
+    class Wrong {
+      static PI: Long = 3.14
+    }
+    Wrong.PI
+  }
+  assert_eq(try { declare() } catch e { [e.kind, e.message] },
+            ['TypeError', "type error: static field 'PI' expects Long"])
+}
+
+# A class's type parameter in a static's annotation checks as Any, as it does
+# in every other member annotation.
+test_static_field_typed_generic = fn () {
+  class Default<T> {
+    static D: T = 5
+  }
+  assert_eq(Default.D, 5)
+}
+
 test_static_field_basic()
 test_static_field_with_method()
 test_static_field_expression()
 test_static_field_not_on_instance()
 test_static_field_immutable()
+test_static_field_typed()
+test_static_field_typed_mismatch()
+test_static_field_typed_generic()
 
 inspect('static-field OK')

@@ -1627,6 +1627,11 @@ Semantics:
   evaluated in the enclosing scope at class declaration time. Like
   static methods, static fields are immutable (`Circle.PI = 2` raises
   `ImmutableError`) and not visible through instances.
+  `static NAME: Type = EXPRESSION` annotates the value's type, checked
+  once at declaration time like a typed `let` (`static PI: Long = 3.14`
+  raises `TypeError: type error: static field 'PI' expects Long`). A
+  static field always has a value: `static NAME: Type` alone is a
+  `SyntaxError` at load time.
 * `NAME = EXPRESSION` / `NAME: Type` / `NAME: Type = EXPRESSION`
   declares an **instance field** — mutable per-instance state
   initialized before the `new` body runs. The type annotation is

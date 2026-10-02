@@ -773,9 +773,11 @@ inline TraitMethodView view_trait_method(const peg::Ast& m) {
 // MEMBER_MOD (nodes[0]) holds at most one of `static` / `get`, so node
 // indices are unchanged; a `get` method (nodes[2] == PARAMETERS) is read
 // as a property. Three member forms, told apart by the tag of nodes[2]:
-//   - typed instance field (`x: Float32`, `x: Float32 = 0.0`): nodes[2]
-//     is TYPE_ANNOTATION; an optional default expression is nodes[3].
-//   - static field (`static x = expr`): nodes[2] is the value expression.
+//   - typed field (`x: Float32`, `x: Float32 = 0.0`, `static X: T = expr`):
+//     nodes[2] is TYPE_ANNOTATION; the value is nodes[3], required when
+//     `static`.
+//   - untyped field (`static x = expr`, `x = expr`): nodes[2] is the value
+//     expression.
 //   - method (`f(a) -> T { ... }`): nodes[2] is PARAMETERS, an optional
 //     RETURN_TYPE is nodes[3], and the body is the last node.
 // One central accessor avoids walker drift when the rule changes again.
@@ -785,9 +787,10 @@ struct MethodView {
   std::string_view name;
   size_t name_line;
   size_t name_col;
-  bool is_field;                  // static field: `static x = expr`
+  bool is_field;                  // `static x [: Type] = expr`, or an untyped
+                                  // instance field `x = expr`
   bool is_typed_field;            // typed instance field: `x: Type [= expr]`
-  std::string_view type_annotation;  // typed field's type token; else empty
+  std::string_view type_annotation;  // a field's type token; else empty
   std::string_view return_type;   // method's `-> T` token; else empty
   const peg::Ast* params;         // nullptr unless method
   const std::shared_ptr<peg::Ast>* body;  // nullptr unless method
@@ -799,8 +802,7 @@ struct MethodView {
                                   // instance), so holders keep the subtree
                                   // alive through this instead of the raw ptr
 
-  // A field of each instance, its `value` run per instance; a typed field is
-  // one even when marked `static`.
+  // A field of each instance, its `value` run per instance.
   bool instance_field() const {
     return is_typed_field || (is_field && !is_static);
   }
@@ -837,7 +839,7 @@ inline MethodView view_method(const peg::Ast& m) {
     bool has_default = m.nodes.size() == 4;
     return MethodView{
         is_static, is_getter, ident.token, ident.line, ident.column,
-        /*is_field=*/false, /*is_typed_field=*/true,
+        /*is_field=*/is_static, /*is_typed_field=*/!is_static,
         /*type_annotation=*/third.token, /*return_type=*/{},
         /*params=*/nullptr, /*body=*/nullptr,
         /*value=*/has_default ? m.nodes[3].get() : nullptr,
@@ -974,6 +976,28 @@ inline void require_getter_no_params(const MethodView& mv,
   if (!getter_takes_params(mv)) return;
   throw CulebraError("SyntaxError",
                      getter_params_message(mv.name, class_name),
+                     static_cast<long>(mv.name_line),
+                     static_cast<long>(mv.name_col));
+}
+
+// `static NAME: Type` with no `= value`: a static field is a constant set
+// once at the declaration, so it needs one. Shared with the lint pass, as
+// the getter's is.
+inline bool static_field_lacks_value(const MethodView& mv) {
+  return mv.is_static && mv.is_field && !mv.value;
+}
+
+inline std::string static_field_value_message(std::string_view name,
+                                              std::string_view class_name) {
+  return std::format("static field `{}` in class `{}` needs a value", name,
+                     class_name);
+}
+
+inline void require_static_field_value(const MethodView& mv,
+                                       std::string_view class_name) {
+  if (!static_field_lacks_value(mv)) return;
+  throw CulebraError("SyntaxError",
+                     static_field_value_message(mv.name, class_name),
                      static_cast<long>(mv.name_line),
                      static_cast<long>(mv.name_col));
 }
@@ -1273,7 +1297,7 @@ inline std::vector<ValueSelfWrite> find_value_self_writes_in_members(
   std::vector<ValueSelfWrite> out;
   for (size_t i = first_member; i < class_ast.nodes.size(); i++) {
     auto mv = view_method(*class_ast.nodes[i]);
-    if (mv.is_static && !mv.is_typed_field) continue;
+    if (mv.is_static) continue;
     find_value_self_writes(*class_ast.nodes[i], declared, out);
   }
   return out;
@@ -1343,12 +1367,12 @@ inline bool value_body_writes_self(const peg::Ast& body) {
 
 // Evaluator-side safety net for the per-member half of the contract: no
 // `drop`, and every instance field declared with a value type. A `static`
-// member other than a typed field lives on the class object, outside the
-// instance protocol and its field set, so it is exempt. Throws the canonical
-// SyntaxError at the member's name, matching what lint reports pre-eval.
+// member lives on the class object, outside the instance protocol and its
+// field set, so it is exempt. Throws the canonical SyntaxError at the
+// member's name, matching what lint reports pre-eval.
 inline void require_value_member(const MethodView& mv,
                                  std::string_view class_name) {
-  if (mv.is_static && !mv.is_typed_field) return;
+  if (mv.is_static) return;
   auto at = [&](std::string msg) {
     return CulebraError("SyntaxError", std::move(msg),
                         static_cast<long>(mv.name_line),
@@ -1918,12 +1942,11 @@ struct DeclaredField {
 using DeclaredFields = std::map<std::string, DeclaredField, std::less<>>;
 
 // A class's instance fields in declaration order, each a node view_method
-// reads: the body's own (a typed field is an instance field even when
-// written `static`, compile_class_decl's classification), and the fields
-// the `new` overloads' field parameters declare — a `.x` naming no body
-// field, spliced in at the first `new`'s place, the first spelling of each
-// name winning (check_field_params holds the others to it). Lint, the
-// compiler and the baked-stdlib scan all lay fields out from this one list.
+// reads: the body's own, and the fields the `new` overloads' field
+// parameters declare — a `.x` naming no body field, spliced in at the first
+// `new`'s place, the first spelling of each name winning (check_field_params
+// holds the others to it). Lint, the compiler and the baked-stdlib scan all
+// lay fields out from this one list.
 inline std::vector<const peg::Ast*> collect_instance_fields(
     const peg::Ast& cls, size_t members_from) {
   std::vector<const peg::Ast*> out;

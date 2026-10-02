@@ -617,6 +617,13 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
               static_cast<long>(mv.name_line),
               static_cast<long>(mv.name_col), Severity::Error});
         }
+        if (culebra::static_field_lacks_value(mv)) {
+          diags_.push_back(Diagnostic{
+              "SyntaxError",
+              culebra::static_field_value_message(mv.name, class_name),
+              static_cast<long>(mv.name_line),
+              static_cast<long>(mv.name_col), Severity::Error});
+        }
         // Static members live on the class object, instance members on
         // instances — each name space is checked independently. Constructors
         // (`new`) overload like methods — distinct signatures merge, an
@@ -642,12 +649,11 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
         }
         // The three per-member clauses of the `@value` contract, in the order
         // require_value_member (the compile-side safety net) applies them and
-        // over the same members: a `static` member other than a typed field
-        // is the class object's, outside the instance protocol and its field
-        // set. No `drop` — a destructor tells one instance from another,
-        // which is the identity the contract removes.
-        const bool value_member =
-            is_value && !(mv.is_static && !mv.is_typed_field);
+        // over the same members: a `static` member is the class object's,
+        // outside the instance protocol and its field set. No `drop` — a
+        // destructor tells one instance from another, which is the identity
+        // the contract removes.
+        const bool value_member = is_value && !mv.is_static;
         if (value_member && mv.name == "drop") {
           diags_.push_back(Diagnostic{
               "SyntaxError", culebra::value_drop_message(class_name),
@@ -670,9 +676,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       }
       // The per-field clauses, over the instance fields in declaration order
       // — the body's and the ones the `new` field parameters declare, the
-      // list the compiler lays the class out from. A typed field written
-      // `static` is an instance field (compile_class_decl's wart), so it is
-      // a value member here too.
+      // list the compiler lays the class out from.
       for (const auto* f : inst_field_list) {
         auto mv = culebra::view_method(*f);
         // A field a `new` parameter declares joins the instance namespace

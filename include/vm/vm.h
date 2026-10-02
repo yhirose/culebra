@@ -7700,11 +7700,8 @@ class Compiler {
     std::vector<const peg::Ast*> static_asts;
     std::vector<const peg::Ast*> static_fields;
     // The instance fields in declaration order: the body's, and the ones the
-    // `new` overloads' field parameters declare (collect_instance_fields —
-    // including the classification's wart that a *typed* field is an
-    // instance field even when written `static`, so `static T: Long = 5`
-    // lands on every instance and the class object never carries it). The
-    // shared per-field checks run over that one list: a @packable field
+    // `new` overloads' field parameters declare (collect_instance_fields).
+    // The shared per-field checks run over that one list: a @packable field
     // carries the type its bytes are laid out from, a @value field holds a
     // value (lint reports both first; this is the same safety net the other
     // backends keep).
@@ -7726,6 +7723,7 @@ class Compiler {
       if (mv.is_getter) culebra::require_getter_no_params(mv, class_name);
       if (mv.instance_field()) continue;
       if (mv.is_field) {
+        culebra::require_static_field_value(mv, class_name);
         static_fields.push_back(&m);
         continue;
       }
@@ -7863,11 +7861,17 @@ class Compiler {
     std::vector<int32_t> static_field_vals;
     for (auto* m : static_fields) {
       auto mv = culebra::view_method(*m);
-      static_field_vals.push_back(
-          owned_src(*m, mv.value ? compile_expr(*mv.value)
-                                 : ExprResult{emit_zero_value(
-                                                  *m, mv.type_annotation),
-                                              true}));
+      auto v = compile_expr(*mv.value);
+      if (!mv.type_annotation.empty()) {
+        StampGuard pos(*this, *m);
+        auto type = type_params.empty()
+                        ? std::string(mv.type_annotation)
+                        : culebra::lower_type_params(mv.type_annotation,
+                                                     type_params);
+        emit_type_check(type, v.slot,
+                        culebra::format("static field '{}'", mv.name));
+      }
+      static_field_vals.push_back(owned_src(*m, v));
     }
     std::vector<int32_t> method_chunks;
     for (auto* m : method_asts) {

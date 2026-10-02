@@ -1530,6 +1530,11 @@ variable 'self'`になります。送出されるのは本体に入った時点�
   外側スコープで評価されます。staticメソッドと同じく、static fieldは
   immutable（`Circle.PI = 2`は`ImmutableError`を投げる）かつ
   インスタンス経由では参照できません。
+  `static NAME: Type = EXPRESSION`は値の型を注釈し、型つきの`let`と
+  同じくclass宣言時に1度検査されます（`static PI: Long = 3.14`は
+  `TypeError: type error: static field 'PI' expects Long`を投げる）。
+  static fieldは必ず値を持つので、`static NAME: Type`だけを書くと
+  ロード時の`SyntaxError`になります。
 * `NAME = EXPRESSION` / `NAME: Type` / `NAME: Type = EXPRESSION`は
   **インスタンスfield** を宣言します — `new`本体の前に初期化される
   per-instanceの可変状態です。型注釈は言語の他の場所と同様optional:

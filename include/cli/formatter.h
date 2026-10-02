@@ -1746,21 +1746,16 @@ class Printer {
 
   DocP print_method(const peg::Ast& m) {
     auto v = view_method(m);
-    if (v.is_field)  // `static x = expr` / untyped instance field `x = expr`
-      return doc_concat(
-          {doc_text((v.is_static ? "static " : "") + std::string(v.name) +
-                    " = "),
-           print(*v.value)});
     // `static` and `get` are mutually exclusive member modifiers.
-    DocP prefix = v.is_static ? doc_text("static ")
-                : v.is_getter ? doc_text("get ")
-                              : doc_text("");
-    if (v.is_typed_field) {
-      DocP d = doc_concat({prefix, doc_text(std::string(v.name) + ": " +
-                                            std::string(v.type_annotation))});
-      if (v.value) d = doc_concat({d, doc_text(" = "), print(*v.value)});
-      return d;
+    std::string mod = v.is_static ? "static " : v.is_getter ? "get " : "";
+    if (v.is_field || v.is_typed_field) {  // `[static] x [: T] [= expr]`
+      std::string head = mod + std::string(v.name);
+      if (!v.type_annotation.empty())
+        head += ": " + std::string(v.type_annotation);
+      if (!v.value) return doc_text(head);
+      return doc_concat({doc_text(head + " = "), print(*v.value)});
     }
+    DocP prefix = doc_text(mod);
     std::string ret = v.return_type.empty() ? "" : " -> " + std::string(v.return_type);
     return doc_concat({prefix, doc_text(std::string(v.name)), print_params(*v.params),
                        doc_text(ret + " "),

@@ -1,0 +1,6 @@
+# A static field is a constant, so it needs a value — reported by the static
+# pass, so it fires before anything runs on every backend.
+class E {
+  static LIMIT: Long
+}
+println('unreached')

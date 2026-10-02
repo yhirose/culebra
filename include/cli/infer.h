@@ -891,7 +891,7 @@ class Inference {
         Member member{name, kind, sig, {}, this};
         member.function = &m;
         push(std::move(member));
-      } else if (mv.is_typed_field) {
+      } else if (!mv.type_annotation.empty()) {
         push({name, MemberKind::Field, name + ": " + std::string(mv.type_annotation),
               parse_type(mv.type_annotation, class_lookup())});
       } else if (mv.value) {
