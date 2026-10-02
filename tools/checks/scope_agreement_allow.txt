@@ -1,0 +1,131 @@
+# Findings of tools/checks/scope_agreement.py that are known and not yet
+# fixed: each entry is a finding as the gate prints it, then why it is
+# allowed. An entry that stops firing fails the gate, so a fix removes its
+# lines here. The D numbers are the plan's table of differences between
+# the compiler and resolve.h (~/.claude/plans/culebra-scope-source).
+
+# D3: a bare write to a stdlib name is an ImmutableError; resolve.h declares it
+MISMATCH use 'Math' tools/bench/vm_cases/implicit_declaration.cul:55:15 resolve=Math@55:15 compiler=none  # D3
+MISMATCH use 'println' tools/bench/vm_cases/implicit_declaration.cul:54:15 resolve=println@54:15 compiler=none  # D3
+MISMATCH use 'range' tools/bench/vm_cases/implicit_declaration.cul:56:16 resolve=range@56:16 compiler=none  # D3
+
+# D4: resolve.h does not know the names earlier REPL inputs declared
+MISMATCH use 'c' (repl):2:3 resolve=c@2:3 compiler=none  # D4
+MISMATCH use 'k' (repl):1:20 resolve=k@1:20 compiler=none  # D4
+
+# D5: a default naming a later parameter reads the outer binding (docs); the compiler raises NameError
+MISMATCH use 'v' grid/later_param_default__top.cul:3:11 resolve=v@1:5 compiler=none  # D5
+
+# D6: a body's `let` of the function's own name fills the own-name binding
+MISMATCH declaration 'shadowed' tests/test_multidispatch.cul:349:7 resolve=shadowed@349:7 compiler=shadowed@347:4  # D6
+MISMATCH declaration 'shadowed' tools/bench/vm_cases/multifn_self.cul:34:7 resolve=shadowed@34:7 compiler=shadowed@32:4  # D6
+
+# D7: a static value's declaration lands in the enclosing scope
+MISMATCH declaration 'v' grid/static_value__outer.cul:5:19 resolve=v@5:19 compiler=v@2:7  # D7
+MISMATCH declaration 'v' grid/static_value__top.cul:4:17 resolve=v@4:17 compiler=v@1:5  # D7
+MISMATCH use 'v' grid/static_value__outer.cul:7:4 resolve=v@2:7 compiler=v@5:19  # D7
+MISMATCH use 'v' grid/static_value__top.cul:6:2 resolve=v@1:5 compiler=v@4:17  # D7
+
+# D8: an if/cond arm's declaration of a captured name makes a second cell
+MISMATCH second-cell 'root' tests/test_dir.cul:308:7 resolve=root@155:5 compiler=root@155:5  # D8
+MISMATCH second-cell 'v' grid/cond_arm__destructure__outer.cul:6:10 resolve=v@2:7 compiler=v@2:7  # D8
+MISMATCH second-cell 'v' grid/cond_arm__destructure__outer.cul:7:18 resolve=v@2:7 compiler=v@2:7  # D8
+MISMATCH second-cell 'v' grid/cond_arm__destructure__top.cul:5:8 resolve=v@1:5 compiler=v@1:5  # D8
+MISMATCH second-cell 'v' grid/cond_arm__destructure__top.cul:6:16 resolve=v@1:5 compiler=v@1:5  # D8
+MISMATCH second-cell 'v' grid/cond_arm__fn__outer.cul:6:8 resolve=v@2:7 compiler=v@2:7  # D8
+MISMATCH second-cell 'v' grid/cond_arm__fn__outer.cul:7:18 resolve=v@2:7 compiler=v@2:7  # D8
+MISMATCH second-cell 'v' grid/cond_arm__fn__top.cul:5:6 resolve=v@1:5 compiler=v@1:5  # D8
+MISMATCH second-cell 'v' grid/cond_arm__fn__top.cul:6:16 resolve=v@1:5 compiler=v@1:5  # D8
+MISMATCH second-cell 'v' grid/cond_arm__let__outer.cul:6:9 resolve=v@2:7 compiler=v@2:7  # D8
+MISMATCH second-cell 'v' grid/cond_arm__let__outer.cul:7:18 resolve=v@2:7 compiler=v@2:7  # D8
+MISMATCH second-cell 'v' grid/cond_arm__let__top.cul:5:7 resolve=v@1:5 compiler=v@1:5  # D8
+MISMATCH second-cell 'v' grid/cond_arm__let__top.cul:6:16 resolve=v@1:5 compiler=v@1:5  # D8
+MISMATCH second-cell 'v' grid/cond_arm__mut__outer.cul:6:9 resolve=v@2:7 compiler=v@2:7  # D8
+MISMATCH second-cell 'v' grid/cond_arm__mut__outer.cul:7:18 resolve=v@2:7 compiler=v@2:7  # D8
+MISMATCH second-cell 'v' grid/cond_arm__mut__top.cul:5:7 resolve=v@1:5 compiler=v@1:5  # D8
+MISMATCH second-cell 'v' grid/cond_arm__mut__top.cul:6:16 resolve=v@1:5 compiler=v@1:5  # D8
+MISMATCH second-cell 'v' grid/else_arm__destructure__outer.cul:7:10 resolve=v@2:7 compiler=v@2:7  # D8
+MISMATCH second-cell 'v' grid/else_arm__destructure__outer.cul:8:18 resolve=v@2:7 compiler=v@2:7  # D8
+MISMATCH second-cell 'v' grid/else_arm__destructure__top.cul:6:8 resolve=v@1:5 compiler=v@1:5  # D8
+MISMATCH second-cell 'v' grid/else_arm__destructure__top.cul:7:16 resolve=v@1:5 compiler=v@1:5  # D8
+MISMATCH second-cell 'v' grid/else_arm__fn__outer.cul:7:8 resolve=v@2:7 compiler=v@2:7  # D8
+MISMATCH second-cell 'v' grid/else_arm__fn__outer.cul:8:18 resolve=v@2:7 compiler=v@2:7  # D8
+MISMATCH second-cell 'v' grid/else_arm__fn__top.cul:6:6 resolve=v@1:5 compiler=v@1:5  # D8
+MISMATCH second-cell 'v' grid/else_arm__fn__top.cul:7:16 resolve=v@1:5 compiler=v@1:5  # D8
+MISMATCH second-cell 'v' grid/else_arm__let__outer.cul:7:9 resolve=v@2:7 compiler=v@2:7  # D8
+MISMATCH second-cell 'v' grid/else_arm__let__outer.cul:8:18 resolve=v@2:7 compiler=v@2:7  # D8
+MISMATCH second-cell 'v' grid/else_arm__let__top.cul:6:7 resolve=v@1:5 compiler=v@1:5  # D8
+MISMATCH second-cell 'v' grid/else_arm__let__top.cul:7:16 resolve=v@1:5 compiler=v@1:5  # D8
+MISMATCH second-cell 'v' grid/else_arm__mut__outer.cul:7:9 resolve=v@2:7 compiler=v@2:7  # D8
+MISMATCH second-cell 'v' grid/else_arm__mut__outer.cul:8:18 resolve=v@2:7 compiler=v@2:7  # D8
+MISMATCH second-cell 'v' grid/else_arm__mut__top.cul:6:7 resolve=v@1:5 compiler=v@1:5  # D8
+MISMATCH second-cell 'v' grid/else_arm__mut__top.cul:7:16 resolve=v@1:5 compiler=v@1:5  # D8
+MISMATCH second-cell 'v' grid/if_arm__destructure__outer.cul:5:10 resolve=v@2:7 compiler=v@2:7  # D8
+MISMATCH second-cell 'v' grid/if_arm__destructure__outer.cul:6:18 resolve=v@2:7 compiler=v@2:7  # D8
+MISMATCH second-cell 'v' grid/if_arm__destructure__top.cul:4:8 resolve=v@1:5 compiler=v@1:5  # D8
+MISMATCH second-cell 'v' grid/if_arm__destructure__top.cul:5:16 resolve=v@1:5 compiler=v@1:5  # D8
+MISMATCH second-cell 'v' grid/if_arm__fn__outer.cul:5:8 resolve=v@2:7 compiler=v@2:7  # D8
+MISMATCH second-cell 'v' grid/if_arm__fn__outer.cul:6:18 resolve=v@2:7 compiler=v@2:7  # D8
+MISMATCH second-cell 'v' grid/if_arm__fn__top.cul:4:6 resolve=v@1:5 compiler=v@1:5  # D8
+MISMATCH second-cell 'v' grid/if_arm__fn__top.cul:5:16 resolve=v@1:5 compiler=v@1:5  # D8
+MISMATCH second-cell 'v' grid/if_arm__let__outer.cul:5:9 resolve=v@2:7 compiler=v@2:7  # D8
+MISMATCH second-cell 'v' grid/if_arm__let__outer.cul:6:18 resolve=v@2:7 compiler=v@2:7  # D8
+MISMATCH second-cell 'v' grid/if_arm__let__top.cul:4:7 resolve=v@1:5 compiler=v@1:5  # D8
+MISMATCH second-cell 'v' grid/if_arm__let__top.cul:5:16 resolve=v@1:5 compiler=v@1:5  # D8
+MISMATCH second-cell 'v' grid/if_arm__mut__outer.cul:5:9 resolve=v@2:7 compiler=v@2:7  # D8
+MISMATCH second-cell 'v' grid/if_arm__mut__outer.cul:6:18 resolve=v@2:7 compiler=v@2:7  # D8
+MISMATCH second-cell 'v' grid/if_arm__mut__top.cul:4:7 resolve=v@1:5 compiler=v@1:5  # D8
+MISMATCH second-cell 'v' grid/if_arm__mut__top.cul:5:16 resolve=v@1:5 compiler=v@1:5  # D8
+
+# D9-D11: an initializer's or a static value's declaration, captured, is not a cell (VmError since b4caedc2)
+MISMATCH capture-not-cell 't' tests/test_capture_not_cell.cul:47:33 resolve=t@47:23 compiler=t@47:23  # D9-D11
+MISMATCH capture-not-cell 'u' tests/test_capture_not_cell.cul:25:10 resolve=u@24:14 compiler=u@24:14  # D9-D11
+MISMATCH capture-not-cell 'u' tests/test_capture_not_cell.cul:35:24 resolve=u@35:14 compiler=u@35:14  # D9-D11
+MISMATCH capture-not-cell 'v' grid/initializer__outer.cul:6:8 resolve=v@5:12 compiler=v@5:12  # D9-D11
+MISMATCH capture-not-cell 'v' grid/initializer__top.cul:5:6 resolve=v@4:10 compiler=v@4:10  # D9-D11
+MISMATCH capture-not-cell 'v' grid/own_initializer__outer.cul:5:22 resolve=v@5:12 compiler=v@5:12  # D9-D11
+MISMATCH capture-not-cell 'v' grid/own_initializer__top.cul:4:20 resolve=v@4:10 compiler=v@4:10  # D9-D11
+UNSEEN 't' tests/test_capture_not_cell.cul:47:36  # D9-D11
+UNSEEN 'u' tests/test_capture_not_cell.cul:25:13  # D9-D11
+UNSEEN 'u' tests/test_capture_not_cell.cul:35:27  # D9-D11
+UNSEEN 'v' grid/initializer__outer.cul:6:11  # D9-D11
+UNSEEN 'v' grid/initializer__top.cul:5:9  # D9-D11
+UNSEEN 'v' grid/own_initializer__outer.cul:5:25  # D9-D11
+UNSEEN 'v' grid/own_initializer__top.cul:4:23  # D9-D11
+
+# D12: a closure in a default naming a later parameter is a forward-reference VmError
+MISMATCH capture-unbound 'v' grid/later_param_closure.cul:2:13 resolve=unrecorded compiler=none  # D12
+MISMATCH capture-unbound 'v' grid/later_param_closure__top.cul:3:11 resolve=unrecorded compiler=none  # D12
+UNSEEN 'v' grid/later_param_closure.cul:2:16  # D12
+UNSEEN 'v' grid/later_param_closure__top.cul:3:14  # D12
+
+# D15: a destructuring redeclaration of a captured name makes a second cell (a plain `let` reuses it)
+MISMATCH second-cell 'c1' tools/bench/vm_cases/destructure.cul:86:6 resolve=c1@83:6 compiler=c1@83:6  # D15
+MISMATCH second-cell 'v' grid/sequence__destructure__outer.cul:4:10 resolve=v@2:7 compiler=v@2:7  # D15
+MISMATCH second-cell 'v' grid/sequence__destructure__outer.cul:5:18 resolve=v@2:7 compiler=v@2:7  # D15
+MISMATCH second-cell 'v' grid/sequence__destructure__top.cul:3:8 resolve=v@1:5 compiler=v@1:5  # D15
+MISMATCH second-cell 'v' grid/sequence__destructure__top.cul:4:16 resolve=v@1:5 compiler=v@1:5  # D15
+
+# D16: `fn name` in an arm of an `if` with an init clause is a VmError, or declares into an outer binding
+MISMATCH declaration 'v' grid/init_clause__fn__outer.cul:5:8 resolve=v@5:8 compiler=v@2:7  # D16
+MISMATCH declaration 'v' grid/init_clause__fn__top.cul:4:6 resolve=v@4:6 compiler=v@1:5  # D16
+MISMATCH use 'v' grid/init_clause__fn__outer.cul:9:4 resolve=v@2:7 compiler=v@5:8  # D16
+MISMATCH use 'v' grid/init_clause__fn__top.cul:8:2 resolve=v@1:5 compiler=v@4:6  # D16
+UNSEEN '_inner' grid/init_clause__fn.cul:4:9  # D16
+UNSEEN 'v' grid/init_clause__fn.cul:3:8  # D16
+UNSEEN 'v' grid/init_clause__fn.cul:4:21  # D16
+UNSEEN 'v' grid/init_clause__fn.cul:5:5  # D16
+
+# D17: lint's undefined-name check does not count a declaration inside a default, an initializer or a static value
+MISMATCH lint-NameError 'v' grid/default.cul:2:31 resolve=v@2:18 lint=-  # D17
+MISMATCH lint-NameError 'v' grid/own_initializer.cul:3:25 resolve=v@3:12 lint=-  # D17
+MISMATCH lint-NameError 'v' grid/static_value.cul:3:32 resolve=v@3:19 lint=-  # D17
+
+# D18: a default's declaration, captured, is not a cell (VmError since b4caedc2)
+MISMATCH capture-not-cell 'v' grid/default__outer.cul:4:28 resolve=v@4:18 compiler=v@4:18  # D18
+MISMATCH capture-not-cell 'v' grid/default__top.cul:3:26 resolve=v@3:16 compiler=v@3:16  # D18
+UNSEEN 'v' grid/default__outer.cul:4:31  # D18
+UNSEEN 'v' grid/default__top.cul:3:29  # D18
+
+# N1: a pattern with two `...rest` never matches, so its names are never bound
+UNSEEN 'u' tools/bench/vm_cases/match_structural.cul:58:40  # N1

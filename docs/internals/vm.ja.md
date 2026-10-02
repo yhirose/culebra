@@ -1871,6 +1871,25 @@ comparator自身のセルフテスト（`release_diff_selftest.sh`）があり�
 リークゲート（leak-fuzz、leak-abort、rc-leakバッテリー、GC stress、
 assertレーン）はコレクタと一緒に`memory.md` §5〜6で説明されている。
 
+### 10.6 名前解決をresolve.hと突き合わせる
+
+スコープの規則は`include/frontend/resolve.h`（エディタ支援が読む
+解決器）に1度だけ書かれ、コンパイラは自前のスコープのスタックを
+持つ。`CULEBRA_SCOPE_CHECK`がディレクトリを指すと、コンパイラは
+引いたすべての名前をresolve.hと突き合わせて報告する
+（`include/frontend/scope_check.h`）。名前のノードを引くときは
+`lookup_at`（と`check_use`）を、宣言は`push_binding`（と
+`note_declaration`）を通るので、resolve.hと別の変数を読み書きする
+出現、クロージャが1つのcellから捕獲した変数に2つ目のcellが
+できること、cellでない捕獲がそれぞれ所見になる。
+`tools/checks/scope_agreement.py`は、コーパス、生成した格子（スコープ
+を開く構文 × 宣言の形、外側に同名の変数がある場合とない場合）、
+`culebra test`のセッション、REPLのテストをこの状態でコンパイルし、
+`tools/checks/scope_agreement_allow.txt`にない所見、載っているのに
+もう出ない所見、成功したのに報告を書かなかったコンパイルのどれかで
+失敗する。その行`scope agreement`は`just test-dev`と`just test`で
+走る。検査の有無で出力するバイトコードは変わらない。
+
 ## 11. 設計判断
 
 - **スタックベースでなくレジスタベース。** レジスタは解析が既に

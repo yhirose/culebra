@@ -1456,6 +1456,14 @@ _run-tests BACKEND:
         JOBS="$JOBS" {{nice_cmd}} python3 tools/checks/lowering_diff.py "$BIN"
     }
 
+    # The compiler resolves every name as resolve.h (the scope rules' one
+    # statement) does: the corpus and a generated grid of scope shapes,
+    # compiled with the check on, against a list of the known differences
+    # (tools/checks/scope_agreement.py, include/frontend/scope_check.h).
+    run_scope_agreement() {
+        JOBS="$JOBS" {{nice_cmd}} python3 tools/checks/scope_agreement.py "$BIN"
+    }
+
     # Webview dynamic-load gate (Linux): the engine is dlopen'd at window
     # creation, so neither the driver nor an AOT binary may carry it in
     # DT_NEEDED or export the forwarders (tools/checks/check_webview_dynload.sh).
@@ -1517,6 +1525,7 @@ _run-tests BACKEND:
       "run_vm_cases plain|vm_cases (frozen expected outputs)|binary|dev|-|local|18"
       "run_vm_cases gc|vm_cases (frozen expected, + the two GC axes)|binary|test|light|-|62"
       "run_codegen_backends|codegen backends (-O0, fast vs --vm)|binary|dev,test|light|-|24"
+      "run_scope_agreement|scope agreement (the compiler resolves names as resolve.h does)|binary|dev,test|light|-|15"
       "run_lowering_diff|lowering diff (a statement in a fn, a generator and an effect body)|binary|test|light|-|30"
       "run_difftest|difftest (generated corpus)|binary|test|diff|heavy|143"
       "run_difftest_refs|difftest (refcount lane)|binary||leak|-|146"

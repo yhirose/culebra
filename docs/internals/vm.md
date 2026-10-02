@@ -1894,6 +1894,26 @@ new corpus-only function fails the report, and the file is empty. A
 The leak gates (leak-fuzz, leak-abort, the rc-leak battery, GC stress,
 the assert lane) are described with the collector in `memory.md` §5–6.
 
+### 10.6 Name resolution against resolve.h
+
+The scope rules are stated once, in `include/frontend/resolve.h` (the
+resolver the editor support reads); the compiler keeps a scope stack of
+its own. With `CULEBRA_SCOPE_CHECK` naming a directory, the compiler
+reports every name it looks up against resolve.h
+(`include/frontend/scope_check.h`): the lookup of a name node goes
+through `lookup_at` (and `check_use`), a declaration through
+`push_binding` (and `note_declaration`), so a read
+or write naming a variable other than resolve.h's, a variable a closure
+captured from one cell that gets a second, and a capture that is not a
+cell are each a finding. `tools/checks/scope_agreement.py` compiles the
+corpus, a generated grid (each scope-opening construct × each declaring
+form, with and without an outer variable of the same name), a
+`culebra test` session and the REPL test that way, and fails on a
+finding `tools/checks/scope_agreement_allow.txt` does not list, on a
+listed one that no longer fires, and on a successful compile that wrote
+no report. Its row, `scope agreement`, runs in `just test-dev` and
+`just test`. The emitted bytecode is the same with the check on or off.
+
 ## 11. Design decisions
 
 - **Register-based, not stack-based.** Registers map directly onto the

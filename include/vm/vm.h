@@ -12,6 +12,7 @@
 
 #include <vm/builtin_signatures.h>
 #include <frontend/fn_analysis.h>
+#include <frontend/scope_check.h>
 #include <frontend/module_loader.h>
 #include <frontend/parser.h>
 #include <base/range_bounds.h>
@@ -4716,9 +4717,13 @@ class Compiler {
     // reads; the returned top-level info carries chunk 0's captured_locals.
     FuncInfo top_info = analysis.analyze_program(ast, opts.repl);
     prog.chunks.emplace_back();  // reserve index 0 for the top level
+    // The scope agreement check (scope_check.h).
+    std::optional<scope_check::Report> check;
+    if (scope_check::checks(ast)) check.emplace(ast);
     Compiler main(prog, analysis, /*in_function=*/false, &top_info);
     main.library_ = culebra::is_library_path(ast.path);  // a baked module
     main.repl_ = opts.repl;
+    main.check_ = check ? &*check : nullptr;
     // A statement carries a debug instruction only when it comes from the
     // entry module: the prologues below are the stdlib's, and a debugger
     // stops in user source (the interp's hook is keyed the same way, by the
@@ -4794,6 +4799,7 @@ class Compiler {
       } else {
         main.compile_statement(ast);
       }
+      main.check_entry_exports(ast);
       if (main.frame_defer_mark_ >= 0)
         main.emit(Op::DeferRunTo, main.frame_defer_mark_);
       // Program exit releases the top level's bindings without running their
@@ -4946,6 +4952,11 @@ class Compiler {
     // case: an ordinary Value binding, read and written the normal way.
     const std::vector<std::string>* unboxed_layout = nullptr;
     const peg::Ast* unboxed_class = nullptr;
+    // Under the scope agreement check only (scope_check.h): the resolve.h
+    // symbol this binding holds, and whether its declaration has compiled —
+    // until then a pre-declaration still means what it shadows.
+    size_t symbol = scope_check::kUnrecorded;
+    bool declaration_compiled = false;
   };
   struct Scope {
     // A deque, not a vector: a `Binding*` from lookup / predeclared_here is
@@ -5091,6 +5102,23 @@ class Compiler {
   // How much debug instrumentation this unit carries, inherited by every
   // nested chunk's Compiler (a breakpoint has to reach a function body).
   Debug debug_ = Debug::Off;
+  // The scope agreement check's report for this unit (null when it is off),
+  // inherited by every nested chunk's Compiler; and, per chunk, the cell a
+  // closure captured each checked symbol from, which every later binding of
+  // the symbol must share.
+  scope_check::Report* check_ = nullptr;
+  std::map<size_t, int32_t> captured_cell_;
+  // Nonzero inside a walk that asks about code not compiled yet (a
+  // whole-scope `@value` precheck, an inline candidate's body): its lookups
+  // answer for a later point, so the check leaves them to the compile.
+  int lookahead_ = 0;
+  struct Lookahead {
+    Compiler& c;
+    explicit Lookahead(Compiler& comp) : c(comp) { c.lookahead_++; }
+    ~Lookahead() { c.lookahead_--; }
+    Lookahead(const Lookahead&) = delete;
+    Lookahead& operator=(const Lookahead&) = delete;
+  };
   // What the enclosing class declares about its fields, for a member's own
   // `self.x` reads (MemberOpts::owner_fields).
   const culebra::ClassFieldTypes* self_fields_ = nullptr;
@@ -5419,7 +5447,7 @@ class Compiler {
     const culebra::ClassFieldClasses* named = nullptr;
     if (head.token == "self") {
       named = self_field_classes_;
-    } else if (const Binding* b = lookup(head.token)) {
+    } else if (const Binding* b = lookup_at(head)) {
       named = b->decl_field_classes;
     }
     if (!named) return {};
@@ -5697,12 +5725,131 @@ class Compiler {
   }
 
   // The one door into a scope's binding list, so the debug table's live
-  // ranges cannot drift from what `lookup` answers: a name is visible from
-  // the instruction its declaration landed at until its scope closes.
-  Binding& push_binding(Binding b) {
+  // ranges cannot drift from what `lookup_name` answers: a name is visible
+  // from the instruction its declaration landed at until its scope closes.
+  // `name` is the node that declares it. A binding no name node declares —
+  // the compiler's own, `self`, `fn`, `__ARGS__`, a capture, the body's own
+  // name — goes through push_unnamed_binding instead.
+  Binding& push_binding(const peg::Ast& name, Binding b) {
+    Binding& pushed = push_unnamed_binding(std::move(b));
+    note_declaration(name, pushed);
+    return pushed;
+  }
+
+  Binding& push_unnamed_binding(Binding b) {
     b.debug_start = static_cast<uint32_t>(chunk_.code.size());
     scopes_.back().bindings.push_back(std::move(b));
     return scopes_.back().bindings.back();
+  }
+
+  // ---- the scope agreement check (scope_check.h) ---------------------------
+
+  // A declaration statement binding `b`, pushed for it or already in scope
+  // (a pre-declared cell, a captured name's cell, the session's): it has to
+  // be the variable resolve.h says the statement declares.
+  void note_declaration(const peg::Ast& name, Binding& b) {
+    if (!check_ || !check_->covers(name, b.name)) return;
+    check_->count_check();
+    size_t s = check_->symbol_of(name);
+    if (s == scope_check::kUnrecorded) return check_->missing(name, b.name);
+    if (b.symbol != s && b.symbol != scope_check::kUnrecorded &&
+        b.symbol != culebra::resolve::kNone)
+      check_->mismatch("declaration", name, b.name, s, b.symbol);
+    b.symbol = s;
+    b.declaration_compiled = true;
+    check_one_cell(name, b);
+  }
+
+  // A variable a closure captured from one cell keeps that cell: the closure
+  // would not see what a second one holds.
+  void check_one_cell(const peg::Ast& name, const Binding& b) {
+    if (!b.is_cell || b.session) return;
+    auto it = captured_cell_.find(b.symbol);
+    if (it != captured_cell_.end() && it->second != b.slot)
+      check_->mismatch("second-cell", name, b.name, b.symbol, b.symbol);
+  }
+
+  void note_captured_cell(const peg::Ast& fn, std::string_view name,
+                          const Binding& b) {
+    if (!check_ || b.session || b.symbol >= check_->resolution().symbols.size())
+      return;
+    auto [it, fresh] = captured_cell_.try_emplace(b.symbol, b.slot);
+    if (!fresh && it->second != b.slot)
+      check_->mismatch("second-cell", fn, name, b.symbol, b.symbol);
+  }
+
+  // The variable a use of `b` means where it is compiled: a pre-declaration
+  // whose declaration has not compiled yet still means what it shadows.
+  static size_t static_symbol(const Binding* b) {
+    if (!b) return culebra::resolve::kNone;
+    if (b->declaration_compiled || !b->lazy || b->session) return b->symbol;
+    return b->shadowed ? static_symbol(b->shadowed.get())
+                       : culebra::resolve::kNone;
+  }
+
+  // A use of the name node `name` that the compiler resolved to `b`
+  // (null: nothing in scope binds it).
+  void check_use(const peg::Ast& name, const Binding* b) {
+    if (!check_ || lookahead_ || !check_->covers(name, name.token)) return;
+    check_->count_check();
+    size_t expected = check_->symbol_of(name);
+    if (expected == scope_check::kUnrecorded)
+      return check_->missing(name, name.token);
+    size_t actual = static_symbol(b);
+    // A binding no name node declared (what `culebra test` supplies around
+    // a test file) is a name the program does not declare either.
+    if (actual == scope_check::kUnrecorded && expected == culebra::resolve::kNone)
+      actual = expected;
+    // In a session the top level's names are the session's cells, and
+    // resolve.h knows no earlier input: both answer "the session".
+    if (repl_) {
+      const auto& res = check_->resolution();
+      auto top = [&](size_t s) {
+        return s < res.symbols.size() && res.symbols[s].scope == 0;
+      };
+      if (top(expected)) expected = culebra::resolve::kNone;
+      if ((b && b->session) || top(actual)) actual = culebra::resolve::kNone;
+    }
+    if (actual != expected)
+      check_->mismatch("use", name, name.token, expected, actual);
+  }
+
+  // A pre-declaration names the variable its declaration statement will.
+  // Its anchor is the declared name, or a whole destructuring statement
+  // whose leaf the declaration itself then names (note_declaration).
+  void tag_predeclaration(const peg::Ast& at, Binding& b) {
+    if (!check_ || !check_->covers(at, b.name)) return;
+    size_t s = check_->symbol_of(at);
+    if (s == scope_check::kUnrecorded) return;
+    b.symbol = s;
+    check_one_cell(at, b);
+  }
+
+  // A bare write. One to a conditional pre-declaration is that declaration
+  // in whichever arm runs it (emit_conditional_rebind decides which at run
+  // time), so it names the variable the way a `let` would.
+  void check_write(const peg::Ast& name, const Binding* b) {
+    if (b && b->conditional)
+      note_declaration(name, *lookup_name_mut(b->name));
+    else
+      check_use(name, b);
+  }
+
+  void count_dynamic() {
+    if (check_) check_->count_dynamic();
+  }
+
+  // The symbol a function body's own name (FuncInfo::own_name) stands for:
+  // what resolve.h binds the function to, else (a class member's class) the
+  // binding the name has where the body is written.
+  size_t own_name_symbol(const peg::Ast& body, std::string_view own) const {
+    const auto& res = check_->resolution();
+    if (auto it = res.body_scope.find(&body); it != res.body_scope.end())
+      if (size_t owner = res.scopes[it->second].owner;
+          owner != culebra::resolve::kNone)
+        return owner;
+    const Binding* outer = lookup_name(own);
+    return outer ? outer->symbol : culebra::resolve::kNone;
   }
 
   // A closing scope's bindings, as the ranges a paused frame is read
@@ -5813,13 +5960,26 @@ class Compiler {
     return segments;
   }
 
-  const Binding* lookup(std::string_view name) const {
-    return const_cast<Compiler*>(this)->lookup_mut(name);
+  // What the name node `name` reads or writes here. Every lookup of a name
+  // the program spells goes through this one (a write that may land in the
+  // session: lookup_or_session, then check_use), which the scope agreement
+  // check holds against resolve.h.
+  const Binding* lookup_at(const peg::Ast& name) {
+    const Binding* b = lookup_name(name.token);
+    check_use(name, b);
+    return b;
   }
 
-  // The same walk for the one caller that settles a binding it found by name
-  // rather than by pre-declaration (compile_multifn_decl's grant).
-  Binding* lookup_mut(std::string_view name) {
+  // A question about the scope by name, with no name node behind it: what a
+  // pre-declaration shadows, whether a write would declare, a capture list's
+  // free variable, a parameter the prologue just bound, a UFCS candidate.
+  const Binding* lookup_name(std::string_view name) const {
+    return const_cast<Compiler*>(this)->lookup_name_mut(name);
+  }
+
+  // The same walk, for a caller that settles or tags a binding it found by
+  // name (compile_multifn_decl's grant, a declaration's note_declaration).
+  Binding* lookup_name_mut(std::string_view name) {
     for (auto sc = scopes_.rbegin(); sc != scopes_.rend(); ++sc)
       for (auto b = sc->bindings.rbegin(); b != sc->bindings.rend(); ++b)
         if (b->name == name) return &*b;
@@ -6209,7 +6369,8 @@ class Compiler {
               /*is_cell=*/true, /*lazy=*/true};
     b.shadowed_builtin = is_stdlib_global(name) || is_stdlib_namespace(name);
     b.session = true;
-    return push_binding(std::move(b));
+    b.symbol = culebra::resolve::kNone;  // until a declaration here names it
+    return push_unnamed_binding(std::move(b));
   }
 
   // An earlier input of the session declared `name` (the interp's environment
@@ -6232,7 +6393,7 @@ class Compiler {
   // globals (bound already, nothing here to write) — and, off the REPL, for
   // any name nothing binds.
   const Binding* lookup_or_session(const peg::Ast& at, const std::string& name) {
-    if (const Binding* b = lookup(name)) return b;
+    if (const Binding* b = lookup_name(name)) return b;
     return session_owns(name) ? &bind_session(at, name) : nullptr;
   }
 
@@ -6262,7 +6423,7 @@ class Compiler {
     // when the write runs.
     if (Binding* pre = predeclared_here(name))
       return !pre->conditional && pre->awaits_implicit;
-    if (lookup(name)) return false;
+    if (lookup_name(name)) return false;
     return name != "self" && !is_stdlib_namespace(name) &&
            !is_stdlib_global(name);
   }
@@ -6293,6 +6454,7 @@ class Compiler {
   // is checked against the mutability THAT arm wrote.
   bool emit_conditional_rebind(const peg::Ast& at, const Binding& b,
                                ExprResult r) {
+    count_dynamic();
     // The probe belongs to the enclosing statement's temps, as
     // assign_shadowing's does: a scope of its own here would roll the slot
     // number back, and the read this assignment returns would take the same
@@ -6318,6 +6480,7 @@ class Compiler {
   // not run, so the name means the shadowed binding — what the interp's
   // environment chain answers.
   ExprResult read_shadowing(const peg::Ast& at, const Binding& b) {
+    count_dynamic();
     int32_t out = alloc_temp(at);
     if (b.is_cell) {
       emit(Op::CellGet, out, b.slot);
@@ -6344,6 +6507,7 @@ class Compiler {
   // own. Only one arm ever executes, so both may consume the RHS temp.
   ExprResult assign_shadowing(const peg::Ast& ast, const peg::Ast& tgt,
                               const Binding& b, ExprResult r) {
+    count_dynamic();
     int32_t probe = lazy_probe(tgt, b);
     size_t to_outer = emit(Op::JumpIfTag, probe, 0, TAG_NO_SELF);
     if (!b.is_mut) {
@@ -6564,7 +6728,7 @@ class Compiler {
       return nullptr;
     const auto& post = *ast.nodes[1];
     if (post.original_tag != "ARGUMENTS"_ || has_kwargs(post)) return nullptr;
-    const Binding* b = lookup(ast.nodes[0]->token);
+    const Binding* b = lookup_at(*ast.nodes[0]);
     if (!b || !b->is_cell || b->shadowed || !binding_writes_once(*b))
       return nullptr;
     if (b->slot >= static_cast<int32_t>(slot_cell_.size()) ||
@@ -6933,7 +7097,7 @@ class Compiler {
     std::vector<std::shared_ptr<Binding>> shadowed;
     std::vector<bool> shadowed_builtin;
     for (const auto& d : decls) {
-      const Binding* prev = lookup(d.name);
+      const Binding* prev = lookup_name(d.name);
       shadowed.push_back(prev ? std::make_shared<Binding>(*prev) : nullptr);
       shadowed_builtin.push_back(!prev && is_stdlib_global(d.name));
     }
@@ -6992,7 +7156,7 @@ class Compiler {
         b.mut_slot = mslots[k];
         emit(Op::LoadConst, b.mut_slot, kconst({TAG_BOOL, 0}));
       }
-      push_binding(std::move(b));
+      tag_predeclaration(*decls[k].at, push_unnamed_binding(std::move(b)));
     }
   }
 
@@ -7141,7 +7305,7 @@ class Compiler {
         bool implicit = !av.is_let && !av.is_mut;
         if (!culebra::is_sink_name(name) &&
             info_->captured_locals.contains(name) && forward_ref(name) &&
-            (!implicit || !lookup(name))) {
+            (!implicit || !lookup_name(name))) {
           add(target, std::move(name), av.is_mut, implicit);
         }
       }
@@ -7195,7 +7359,7 @@ class Compiler {
     // is not the sole declaration of its dispatcher however this line reads.
     // Settled before the body compiles, because the body's own recursive
     // calls stand on the same answer (compile_fn_chunk's own-name block).
-    Binding* b = lookup_mut(name);
+    Binding* b = lookup_name_mut(name);
     bool session_overload =
         b && b->session && repl_session().value(name).tag == TAG_FUNC;
     // Nor is one that appends to a dispatcher this scope already declared —
@@ -7235,6 +7399,7 @@ class Compiler {
     emit(Op::MultifnReg, t, cls, into, idx);
     forget_temp(cls);  // the registry absorbed the body's +1 (reg is nil)
     store_cell(ast, b->slot, {t, true});
+    note_declaration(*ast.nodes[dec_end], *b);
     emit_session_decl_bind(*b, /*is_mut=*/false);
     // The name now reads as a dispatcher over exactly one untyped overload,
     // and will for as long as the binding lives — nothing else can append
@@ -7280,9 +7445,10 @@ class Compiler {
     int32_t val = alloc_temp(ast);
     emit(Op::MakeClosure, val, idx);
     val = apply_decorators(ast, dec_end, val);
-    const Binding* b = lookup(name);
+    Binding* b = lookup_name_mut(name);
     if (!b || !b->is_cell)
       reject(ast, culebra::format("fn '{}' declared here", name));
+    note_declaration(*ast.nodes[dec_end], *b);
     store_cell(ast, b->slot, {val, true});
     emit_session_decl_bind(*b, /*is_mut=*/false);
   }
@@ -7364,13 +7530,16 @@ class Compiler {
     Binding* binding;
   };
   DeclCell bind_decl_cell(const peg::Ast& ast, const std::string& name) {
+    const peg::Ast& head = *ast.nodes[culebra::first_non_decorator_index(ast)];
     if (Binding* pre = predeclared_here(name)) {
+      note_declaration(head, *pre);
       slot_rank_[pre->slot] = next_rank_++;
       settle_predeclared(*pre);
       return {pre->slot, pre};
     }
     if (repl_top()) {
       Binding& sb = bind_session(ast, name);
+      note_declaration(head, sb);
       sb.lazy = false;
       sb.shadowed_builtin = false;
       return {sb.slot, &sb};
@@ -7382,8 +7551,8 @@ class Compiler {
       emit(Op::LoadConst, t, kconst({TAG_NIL, 0}));
       emit(Op::CellNew, slot, t);
     }
-    push_binding({name, slot, /*is_mut=*/false, /*is_cell=*/true});
-    return {slot, &scopes_.back().bindings.back()};
+    Binding& b = push_binding(head, {name, slot, /*is_mut=*/false, /*is_cell=*/true});
+    return {slot, &b};
   }
 
   // A `@value` class's compile-time registration: the process-wide flat
@@ -7754,7 +7923,7 @@ class Compiler {
       finit_slot = alloc_cell_slot(ast, "(field.init)");
       emit(Op::CellNew, finit_slot, owned_src(ast, {t, true}));
       if (new_ast) {
-        push_binding(
+        push_unnamed_binding(
             {culebra::field_init_slot_name(ast), finit_slot,
              /*is_mut=*/false, /*is_cell=*/true});
       }
@@ -8059,6 +8228,7 @@ class Compiler {
     }
     Compiler fc(prog_, analysis_, /*in_function=*/true, info_, idx);
     fc.repl_ = repl_;
+    fc.check_ = check_;
     fc.debug_ = debug_;
     fc.stamp(ast);
     fc.push_scope(ast, /*owned_mark=*/false);
@@ -8127,9 +8297,12 @@ class Compiler {
     // see materialize_run's own comment.
     std::vector<const peg::Ast*> meta_classes;
     std::vector<int32_t> meta_slots;
+    // The resolve.h symbol each capture holds (the scope agreement check).
+    std::vector<size_t> symbols;
 
     // A capture with nothing behind it (a sentinel cell): every flag off.
     void push(int32_t slot) {
+      symbols.push_back(culebra::resolve::kNone);
       slots.push_back(slot);
       muts.push_back(false);
       lazys.push_back(false);
@@ -8137,6 +8310,7 @@ class Compiler {
       knowns.emplace_back();
     }
     void push(const Binding& b) {
+      symbols.push_back(b.symbol);
       slots.push_back(b.slot);
       muts.push_back(b.is_mut);
       lazys.push_back(b.lazy);
@@ -8166,7 +8340,7 @@ class Compiler {
   CaptureList resolve_captures(const peg::Ast& ast, const FuncInfo& info) {
     CaptureList caps;
     for (const auto& fv : info.free_vars) {
-      const Binding* b = lookup(fv);
+      const Binding* b = lookup_name(fv);
       // A UFCS candidate read only as a method name is an OPTIONAL free
       // variable: the enclosing frames may not bind it at all, and that is
       // not an error — the call site's Function gate simply declines and the
@@ -8198,16 +8372,25 @@ class Compiler {
       // this statement list declares and a closure here captures, so a
       // forward reference resolves above. Anything still missing is a
       // name no statement list on the way in declares.
-      if (!b) reject(ast, culebra::format("forward-reference capture of '{}'", fv));
+      if (!b) {
+        if (check_ && check_->covers(ast, fv))
+          check_->mismatch("capture-unbound", ast, fv, scope_check::kUnrecorded,
+                           culebra::resolve::kNone);
+        reject(ast, culebra::format("forward-reference capture of '{}'", fv));
+      }
       // A captured local is a cell because FnAnalysis marked it captured; a
       // plain slot here means the two disagree on a scope, and handing it
       // over as a cell would corrupt memory.
-      if (!b->is_cell)
+      if (!b->is_cell) {
+        if (check_ && check_->covers(ast, fv))
+          check_->mismatch("capture-not-cell", ast, fv, b->symbol, b->symbol);
         reject(ast, culebra::format("capture of '{}', which is not a cell", fv));
+      }
       // Same reason a read refills it: MakeClosure may sit in a branch the
       // slot's own ReplCell does not dominate.
       ensure_session_slot(*b);
       caps.push(*b);
+      note_captured_cell(ast, fv, *b);
       // The class this free variable names, when it is one whose meta cell
       // THIS compiler can already reach: thread it too, so materialize_run
       // inside the callee can reach it the same way (value_meta_cell_ is
@@ -8272,6 +8455,7 @@ class Compiler {
     prog_.chunks.emplace_back();
     Compiler fc(prog_, analysis_, /*in_function=*/true, info_, idx);
     fc.repl_ = repl_;
+    fc.check_ = check_;
     fc.debug_ = debug_;
     fc.chunk_.variadic = true;
     fc.chunk_.cb_max = -1;
@@ -8298,6 +8482,7 @@ class Compiler {
     fc.self_fields_ = mo.owner_fields;
     fc.self_field_classes_ = mo.owner_field_classes;
     fc.repl_ = repl_;
+    fc.check_ = check_;
     fc.debug_ = debug_;
     fc.library_ = library_;
     fc.stamp(ast);
@@ -8495,8 +8680,7 @@ class Compiler {
       if (info.captured_locals.contains("self")) {
         promos.push_back({"self", fc.chunk_.self_slot, false, &ast});
       } else {
-        fc.push_binding(
-            {"self", fc.chunk_.self_slot, false});
+        fc.push_unnamed_binding({"self", fc.chunk_.self_slot, false});
       }
     }
     // The frame's own closure: the `fn` handle, and a literal's own `let`
@@ -8509,7 +8693,7 @@ class Compiler {
          info.own_name_source == FuncInfo::OwnNameSource::Closure))
       fc.chunk_.fn_slot = fc.alloc_slot(ast, "fn");
     if (info.uses_fn) {
-      Binding& fnb = fc.push_binding({"fn", fc.chunk_.fn_slot, false});
+      Binding& fnb = fc.push_unnamed_binding({"fn", fc.chunk_.fn_slot, false});
       // A method's `fn` IS the bound wrapper (interp: the handle a method
       // call binds), so recursion and any escapee keep the original
       // receiver. The cache makes repeated reads compare equal and leaves
@@ -8564,7 +8748,8 @@ class Compiler {
       bool captured = info.captured_locals.contains(info.own_name);
       if (info.own_name_source == Src::Closure && !captured) {
         fc.grant_known_chunk(
-            fc.push_binding({info.own_name, fc.chunk_.fn_slot, false}), idx);
+            fc.push_unnamed_binding({info.own_name, fc.chunk_.fn_slot, false}),
+            idx);
       } else if (!captured) {
         // A member's or a dispatch's own name, read off the receiver into a
         // plain slot of this frame: nothing captures it, so it needs no
@@ -8575,7 +8760,7 @@ class Compiler {
           fc.emit(Op::MfSelf, slot);
         else
           fc.emit(Op::ClsSelf, slot, fc.chunk_.self_slot);
-        Binding& ob = fc.push_binding(
+        Binding& ob = fc.push_unnamed_binding(
             {info.own_name, slot, /*is_mut=*/false, /*is_cell=*/false,
              /*lazy=*/true});
         if (info.own_name_source == Src::Receiver && mo.owner_ctor_chunk >= 0)
@@ -8598,7 +8783,7 @@ class Compiler {
             fc.emit(Op::CellNew, cslot, t);  // nils t; the sweep is a no-op
           }
         }
-        Binding& ob = fc.push_binding(
+        Binding& ob = fc.push_unnamed_binding(
             {info.own_name, cslot, /*is_mut=*/false, /*is_cell=*/true,
              /*lazy=*/info.own_name_source != Src::Closure});
         // `Name.new(...)` in a member. The name is read from the receiver,
@@ -8623,10 +8808,17 @@ class Compiler {
         }
       }
     }
+    // The body's own name is the variable its function is bound to.
+    if (check_ && own_name_live) {
+      if (Binding* ob = fc.lookup_name_mut(info.own_name)) {
+        ob->symbol = own_name_symbol(body, info.own_name);
+        ob->declaration_compiled = true;
+      }
+    }
     for (const auto& pr : promos) {
       int32_t cslot = fc.alloc_cell_slot(*pr.at, pr.name);
       fc.emit(Op::CellNew, cslot, pr.abi_slot);
-      fc.push_binding({pr.name, cslot, pr.is_mut, true});
+      fc.push_unnamed_binding({pr.name, cslot, pr.is_mut, true});
     }
     // Bind the captures: borrowed cell pointers out of the closure. The
     // slots are named-but-not-cell, so frame teardown's Release is a no-op
@@ -8643,9 +8835,11 @@ class Compiler {
         continue;
       }
       Binding cap{info.free_vars[i], s, caps.muts[i], true, caps.lazys[i]};
+      cap.symbol = caps.symbols[i];
+      cap.declaration_compiled = true;
       cap.shadowed_builtin = caps.shadowed_builtins[i];
       cap.known = caps.knowns[i];
-      fc.push_binding(std::move(cap));
+      fc.push_unnamed_binding(std::move(cap));
     }
     // The meta-cell captures riding after the ordinary ones (same offset
     // resolve_captures/capture_src_slots used): give this chunk its own
@@ -8668,10 +8862,9 @@ class Compiler {
       if (info.captured_locals.contains("self")) {
         int32_t cslot = fc.alloc_cell_slot(ast, "self");
         fc.emit(Op::CellNew, cslot, s);
-        fc.push_binding(
-            {"self", cslot, false, true, /*lazy=*/true});
+        fc.push_unnamed_binding({"self", cslot, false, true, /*lazy=*/true});
       } else {
-        fc.push_binding(
+        fc.push_unnamed_binding(
             {"self", s, false, /*is_cell=*/false, /*lazy=*/true});
       }
     }
@@ -8756,9 +8949,11 @@ class Compiler {
         // behind as an anonymous drained one.
         int32_t cslot = fc.alloc_cell_slot(*pl.at, pl.name);
         fc.emit(Op::CellNew, cslot, pl.slot);
-        fc.push_binding({pl.name, cslot, pl.is_mut, true});
+        fc.push_binding(culebra::param_name_node(*pl.at),
+                        {pl.name, cslot, pl.is_mut, true});
       } else {
-        auto& b = fc.push_binding({pl.name, pl.slot, pl.is_mut});
+        auto& b = fc.push_binding(culebra::param_name_node(*pl.at),
+                                  {pl.name, pl.slot, pl.is_mut});
         // The entry check has already refused anything but an instance of
         // this class (a same-shaped different class included), so what the
         // class declares about its fields holds for every read below. Not a
@@ -8779,9 +8974,9 @@ class Compiler {
         if (info.captured_locals.contains(nm)) {
           slot = fc.alloc_cell_slot(at, nm);
           fc.emit(Op::CellNew, slot, src);
-          fc.push_binding({nm, slot, false, true});
+          fc.push_binding(at, {nm, slot, false, true});
         } else {
-          fc.push_binding({nm, slot, false});
+          fc.push_binding(at, {nm, slot, false});
         }
       };
       if (info.uses_args && !args_rest_name.empty()) {
@@ -8801,12 +8996,12 @@ class Compiler {
     // either adopts the Object it marked or binds a fresh empty one.
     if (rest_slot >= 0) {
       fc.emit(Op::KwRest, rest_slot);
-      fc.push_binding({rest_name, rest_slot, false});
+      fc.push_binding(*rest_at, {rest_name, rest_slot, false});
       if (info.captured_locals.contains(rest_name)) {
         int32_t cslot = fc.alloc_cell_slot(*rest_at, rest_name);
         fc.emit(Op::CellNew, cslot, rest_slot);
         fc.scopes_.back().bindings.pop_back();
-        fc.push_binding({rest_name, cslot, false, true});
+        fc.push_binding(*rest_at, {rest_name, cslot, false, true});
       }
     }
     // Count the frame, after the parameters bound and their types checked
@@ -8838,7 +9033,7 @@ class Compiler {
     std::vector<const ParamPlan*> optional_fields;
     for (const auto& pl : plans) {
       if (!pl.is_field || pl.sink) continue;
-      const Binding* b = fc.lookup(pl.name);
+      const Binding* b = fc.lookup_name(pl.name);
       provided[pl.name] = {b->slot, b->is_cell, pl.optional};
       if (pl.optional) optional_fields.push_back(&pl);
     }
@@ -8846,7 +9041,7 @@ class Compiler {
     // above, leaving the ABI receiver slot drained: the field stores reach
     // the instance through the cell's value instead.
     if (mo.field_init_owner || mo.prologue_fields || mo.thunk_fields) {
-      if (const Binding* sb = fc.lookup("self"); sb && sb->is_cell) {
+      if (const Binding* sb = fc.lookup_name("self"); sb && sb->is_cell) {
         fc.field_recv_ = fc.alloc_slot(ast, "(self.fields)");
         fc.emit(Op::CellGet, fc.field_recv_, sb->slot);
       }
@@ -8857,7 +9052,7 @@ class Compiler {
     if (mo.field_init_owner) {
       TempScope fts(fc);
       const Binding* fb =
-          fc.lookup(culebra::field_init_slot_name(*mo.field_init_owner));
+          fc.lookup_name(culebra::field_init_slot_name(*mo.field_init_owner));
       int32_t t = fc.alloc_temp(ast);
       fc.emit(Op::CellGet, t, fb->slot);
       if (mo.finit_params && !mo.finit_params->empty()) {
@@ -8893,7 +9088,7 @@ class Compiler {
     // `.x?` left out by the caller: the parameter reads as the field the
     // declaration just initialized, so the body never sees the sentinel.
     for (const ParamPlan* pl : optional_fields) {
-      const Binding* b = fc.lookup(pl->name);
+      const Binding* b = fc.lookup_name(pl->name);
       TempScope fts(fc);
       size_t filled = fc.emit(Op::JumpIfFilled, fc.lazy_probe(*pl->at, *b));
       int32_t v = fc.alloc_temp(*pl->at);
@@ -8968,30 +9163,42 @@ class Compiler {
                       /*is_mut=*/false, /*declares=*/true);
   }
 
+  // The names a module's `export { ... }` statements list, read once the
+  // module has run to its end.
+  template <class F>
+  static void for_each_export(const peg::Ast& mod, F&& f) {
+    using namespace peg::udl;
+    const peg::Ast* stmts =
+        mod.tag == "STATEMENTS"_ || mod.original_tag == "STATEMENTS"_
+            ? &mod
+            : (mod.nodes.empty() ? nullptr : mod.nodes[0].get());
+    if (!stmts) return;
+    for (const auto& s : stmts->nodes)
+      if (s->tag == "EXPORT_STMT"_)
+        for (const auto& id : s->nodes) f(*id);
+  }
+
   // A dependency module's body is done: collect what its `export` statements
   // name into one Object and hand it to the module table. Read through
   // compile_expr, so a name no statement bound raises the same NameError the
   // interp's extract_export does — at run time, where the read happens.
   void emit_module_export(const peg::Ast& mod) {
-    using namespace peg::udl;
     StampGuard pos(*this, mod);
     int32_t obj = alloc_temp(mod);
     emit(Op::ObjectNew, obj);
-    const peg::Ast* stmts =
-        mod.tag == "STATEMENTS"_ || mod.original_tag == "STATEMENTS"_
-            ? &mod
-            : (mod.nodes.empty() ? nullptr : mod.nodes[0].get());
-    if (stmts) {
-      for (const auto& s : stmts->nodes) {
-        if (s->tag != "EXPORT_STMT"_) continue;
-        for (const auto& id : s->nodes) {
-          auto v = compile_expr(*id);
-          emit(Op::ObjectSet, obj, owned_src(*id, v), kconst_str(id->token),
-               /*mut=*/0);
-        }
-      }
-    }
+    for_each_export(mod, [&](const peg::Ast& id) {
+      auto v = compile_expr(id);
+      emit(Op::ObjectSet, obj, owned_src(id, v), kconst_str(id.token),
+           /*mut=*/0);
+    });
     emit(Op::ModReg, obj, kconst_str(std::string(mod.path)));
+  }
+
+  // An entry module's exports have no importer, so nothing compiles them;
+  // the scope agreement check still looks each up where a dependency's
+  // would be read.
+  void check_entry_exports(const peg::Ast& mod) {
+    if (check_) for_each_export(mod, [&](const peg::Ast& id) { lookup_at(id); });
   }
 
   // An assignment's RHS, with `x: T = e`'s annotation checked the moment the
@@ -9043,6 +9250,7 @@ class Compiler {
       // of minting a second one, and the binding stops being lazy.
       if (Binding* pre = predeclared_here(name)) {
         auto rhs = compile_assign_rhs(ast, av);
+        note_declaration(*tgt, *pre);
         store_binding(*tgt, *pre, rhs);
         slot_rank_[pre->slot] = next_rank_++;  // released as declared here
         emit_session_decl_bind(*pre, decl_mut);
@@ -9065,6 +9273,7 @@ class Compiler {
       // second declaration reads its value (probed on both backends).
       if (Binding* held = captured_here(name)) {
         auto rhs = compile_assign_rhs(ast, av);
+        note_declaration(*tgt, *held);
         store_cell(*tgt, held->slot, rhs);
         slot_rank_[held->slot] = next_rank_++;  // redeclared here
         emit_session_decl_bind(*held, decl_mut);
@@ -9083,6 +9292,7 @@ class Compiler {
       if (repl_top()) {
         Binding& sb = bind_session(*tgt, name);
         store_cell(*tgt, sb.slot, compile_assign_rhs(ast, av));
+        note_declaration(*tgt, sb);
         emit_session_decl_bind(sb, decl_mut);
         sb.is_mut = decl_mut;
         sb.lazy = false;
@@ -9104,7 +9314,7 @@ class Compiler {
         Binding b{name, rhs.slot, decl_mut, /*is_cell=*/false};
         b.unboxed_layout = cand.layout;
         b.unboxed_class = cand.cls;
-        push_binding(std::move(b));
+        push_binding(*tgt, std::move(b));
         return {rhs.slot, /*owned=*/false, -1, cand.layout, cand.cls};
       }
       bool cell = info_->captured_locals.contains(name);
@@ -9115,7 +9325,7 @@ class Compiler {
       } else {
         store_into(slot, rhs, /*dst_is_fresh=*/true);
       }
-      push_binding({name, slot, decl_mut, cell});
+      push_binding(*tgt, {name, slot, decl_mut, cell});
       grant_known_chunk(scopes_.back().bindings.back(), rhs.chunk);
       grant_known_const(scopes_.back().bindings.back(), *av.rhs);
       grant_declared_class(scopes_.back().bindings.back(), *av.rhs,
@@ -9123,6 +9333,7 @@ class Compiler {
       return read_binding(*tgt, scopes_.back().bindings.back());
     }
     const Binding* b = lookup_or_session(*tgt, name);
+    check_write(*tgt, b);
     // Stage 3 (spec §15.3): reassigning a `let mut v` proven unboxed for
     // its whole scope. The RHS compiles into its OWN fresh run (the same
     // splice machinery `v`'s declaration used) and is copied field by
@@ -9181,7 +9392,7 @@ class Compiler {
                          static_cast<int>(ast.column));
     }
     auto base = av.op_base;
-    const Binding* b = lookup(tgt.token);
+    const Binding* b = lookup_at(tgt);
     // Only a name that already holds a value has one to step from: a stdlib
     // global does, and at the REPL so does anything the session declared.
     bool global = is_stdlib_global(tgt.token) || is_stdlib_namespace(tgt.token);
@@ -9463,7 +9674,7 @@ class Compiler {
     const peg::Ast& head = *place.nodes[off];
     if (head.tag != "IDENTIFIER"_) return false;
     if (head.token == "self") return true;
-    const Binding* b = lookup(head.token);
+    const Binding* b = lookup_at(head);
     return b && b->decl_fields;
   }
 
@@ -9638,8 +9849,7 @@ class Compiler {
         int32_t bind = cell ? alloc_cell_slot(id, std::string(id.token)) : var;
         emit(Op::Take, var, base + kForElem);
         if (cell) emit(Op::CellNew, bind, var);
-        push_binding(
-            {std::string(id.token), bind, false, cell});
+        push_binding(id, {std::string(id.token), bind, false, cell});
       } else {
         // A destructuring binding: the leaves retain their own sub-elements,
         // so the element's own `+1` is released once the shape matched. A
@@ -9744,7 +9954,7 @@ class Compiler {
     }
     size_t prep = emit(Op::ForPrep, base);
 
-    if (!sink) push_binding({std::string(id.token), bind, false, cell});
+    if (!sink) push_binding(id, {std::string(id.token), bind, false, cell});
     loops_.push_back({next_slot_, {}, {}, broke,
                       scopes_.size(), enter_loop_label(fv.label)});
     size_t body_ix = chunk_.code.size();
@@ -9878,7 +10088,7 @@ class Compiler {
   bool is_direct_global_call(const peg::Ast& ast, std::string_view name) {
     using namespace peg::udl;
     if (ast.nodes.size() != 2 || ast.nodes[0]->tag != "IDENTIFIER"_ ||
-        ast.nodes[0]->token != name || lookup(name) ||
+        ast.nodes[0]->token != name || lookup_at(*ast.nodes[0]) ||
         ast.nodes[1]->original_tag != "ARGUMENTS"_ ||
         ast.nodes[1]->nodes.size() != 1)
       return false;
@@ -9905,7 +10115,7 @@ class Compiler {
     // The table first: every `x.m(args)` chain passes here, and the scope
     // walk and the resolver's string are only worth paying for a row.
     const NsFnSpec* spec = nsfn_lookup(head.token, post.token);
-    if (!spec || lookup(head.token) || !is_stdlib_namespace(head.token))
+    if (!spec || lookup_at(head) || !is_stdlib_namespace(head.token))
       return nullptr;
     const culebra::CanonSig* sig = nsfn_sig(*spec);
     if (!sig) return nullptr;
@@ -10020,6 +10230,7 @@ class Compiler {
   bool inline_body_ok(const peg::Ast& member, bool is_ctor,
                       const peg::Ast& class_ast, std::string_view class_name,
                       const std::vector<std::string>* layout) {
+    Lookahead ahead(*this);
     auto mv = culebra::view_method(member);
     if (!mv.body) return false;
     const auto& body = **mv.body;
@@ -10055,7 +10266,7 @@ class Compiler {
         if (p.name == n) return;
       auto it2 = analysis_.func_info.find(&member);
       if (it2 != analysis_.func_info.end() && n == it2->second.own_name) return;
-      if (!lookup(n) && (is_stdlib_global(n) || is_stdlib_namespace(n))) return;
+      if (!lookup_name(n) && (is_stdlib_global(n) || is_stdlib_namespace(n))) return;
       ok = false;
     };
     walk_identifiers_scoped(**mv.body, {}, check_name);
@@ -10654,7 +10865,7 @@ class Compiler {
       auto it = w.live->find(n);
       if (it != w.live->end()) return it->second;
     }
-    const Binding* b = lookup(n);
+    const Binding* b = lookup_name(n);
     return b ? b->unboxed_class : nullptr;
   }
 
@@ -10829,6 +11040,7 @@ class Compiler {
   bool dunder_takes_run_param(const peg::Ast& cls, std::string_view dunder,
                               const peg::Ast& ocls, std::string_view oname,
                               const std::vector<std::string>* olayout) {
+    Lookahead ahead(*this);
     const peg::Ast* m = value_member_ast(cls, dunder);
     if (!m) return false;
     auto mv = culebra::view_method(*m);
@@ -10975,6 +11187,7 @@ class Compiler {
   // every visit.
   void precheck_value_bindings_at(
       const std::vector<std::shared_ptr<peg::Ast>>& stmts, size_t i) {
+    Lookahead ahead(*this);
     // A round answers for every candidate at or after its own start, so the
     // rest of this list's loop has nothing left to ask about them.
     // Re-asking would be worse than redundant: a round starting later sees
@@ -11160,7 +11373,7 @@ class Compiler {
         Binding b{ps[i].name, base, /*is_mut=*/false};
         b.unboxed_layout = args[i].unboxed;
         b.unboxed_class = args[i].unboxed_class;
-        push_binding(std::move(b));
+        push_binding(culebra::param_name_node(*ps[i].at), std::move(b));
         continue;
       }
       int32_t slot = alloc_slot(*ps[i].at, ps[i].name);
@@ -11169,7 +11382,8 @@ class Compiler {
         StampGuard pos(*this, *arg_asts[i]);
         emit_param_type_check(ps[i].type, slot, ps[i].name);
       }
-      push_binding({ps[i].name, slot, /*is_mut=*/false});
+      push_binding(culebra::param_name_node(*ps[i].at),
+                   {ps[i].name, slot, /*is_mut=*/false});
     }
   }
 
@@ -11260,7 +11474,7 @@ class Compiler {
     if (is_ctor) {
       for (size_t i = 0; i < ps.size(); i++) {
         if (!ps[i].field) continue;
-        const Binding* b = lookup(ps[i].name);
+        const Binding* b = lookup_name(ps[i].name);
         auto ix = std::find(layout->begin(), layout->end(), ps[i].name);
         assert(b && ix != layout->end() && "a field parameter names a field");
         StampGuard pos(*this, *ps[i].at);
@@ -11319,7 +11533,7 @@ class Compiler {
     using namespace peg::udl;
     if (res.chunk >= 0) return {res.chunk};
     if (head.tag != "IDENTIFIER"_) return {};
-    const Binding* b = lookup(head.token);
+    const Binding* b = lookup_at(head);
     if (!b) return {};
     return {b->known.chunk, b->known.cell,
             b->known.via_mono ? Chunk::Reach::Mono : Chunk::Reach::Direct};
@@ -11338,7 +11552,7 @@ class Compiler {
       return {};
     const auto& head = *at.nodes[0];
     if (head.tag != "IDENTIFIER"_) return {};
-    const Binding* b = lookup(head.token);
+    const Binding* b = lookup_at(head);
     if (!b) return {};
     // `lazy` is exactly "the value of this name is still a run-time
     // question": a member's own class name is read off the receiver, and a
@@ -11359,7 +11573,7 @@ class Compiler {
       return nullptr;
     const auto& head = *at.nodes[0];
     if (head.tag != "IDENTIFIER"_) return nullptr;
-    const Binding* b = lookup(head.token);
+    const Binding* b = lookup_at(head);
     if (b) {
       // A lazy binding is a run-time question about WHICH class the name
       // holds (a member's own name reads it off the receiver), and unboxing
@@ -11417,6 +11631,7 @@ class Compiler {
   const peg::Ast* member_own_tail(const peg::Ast& member,
                                   std::string_view class_name) {
     using namespace peg::udl;
+    Lookahead ahead(*this);
     if (!member_returns_own(member, class_name)) return nullptr;
     auto mv = culebra::view_method(member);
     const peg::Ast* tail = (*mv.body).get();
@@ -11485,7 +11700,7 @@ class Compiler {
     // consumer that can take the run as-is, same as any other chain.
     if (ast.tag == "IDENTIFIER"_) {
       if (!allow_trailing_class) return nullptr;
-      const Binding* b = lookup(ast.token);
+      const Binding* b = lookup_at(ast);
       return (b && b->unboxed_class) ? b->unboxed_class : nullptr;
     }
     if (ast.tag != "CALL"_ || ast.nodes.size() < 3 ||
@@ -11527,7 +11742,7 @@ class Compiler {
     // no run to allocate, nothing to splice.
     if (ast.tag == "IDENTIFIER"_) {
       if (!allow_trailing_class) return std::nullopt;
-      const Binding* b = lookup(ast.token);
+      const Binding* b = lookup_at(ast);
       if (!b || !b->unboxed_class) return std::nullopt;
       return ExprResult{b->slot, /*owned=*/false, -1, b->unboxed_layout,
                         b->unboxed_class};
@@ -11858,7 +12073,7 @@ class Compiler {
     using namespace peg::udl;
     if (ast.nodes.size() < 2 || ast.nodes[0]->tag != "IDENTIFIER"_)
       return std::nullopt;
-    const Binding* b = lookup(ast.nodes[0]->token);
+    const Binding* b = lookup_at(*ast.nodes[0]);
     if (!b || !b->unboxed_class) return std::nullopt;
     const peg::Ast& cls = *b->unboxed_class;
     size_t dec_end = culebra::first_non_decorator_index(cls);
@@ -11980,7 +12195,7 @@ class Compiler {
     using namespace peg::udl;
     if (head.tag != "IDENTIFIER"_) return nullptr;
     if (head.token == "self") return self_fields_;
-    const Binding* b = lookup(head.token);
+    const Binding* b = lookup_at(head);
     return b ? b->decl_fields : nullptr;
   }
 
@@ -12088,7 +12303,7 @@ class Compiler {
 
   enum class UfcsCand { None, Binding, Global };
   UfcsCand ufcs_candidate(std::string_view name, const BMethSpec* spec) {
-    if (lookup(name)) return UfcsCand::Binding;
+    if (lookup_name(name)) return UfcsCand::Binding;
     bool subsumes = spec && spec->subsumes_global;
     if (is_stdlib_global(name) && !subsumes) return UfcsCand::Global;
     return UfcsCand::None;
@@ -12337,7 +12552,7 @@ class Compiler {
     // so UfcsTakes below declines it like interp's pre-decl env miss (no
     // UnboundErr); NsGet is the resolver's cached closure, always a Function.
     const Binding* cb =
-        cand == UfcsCand::Binding ? lookup(post.token) : nullptr;
+        cand == UfcsCand::Binding ? lookup_name(post.token) : nullptr;
     ExprResult candv = cb ? read_binding(post, *cb, /*unbound_guard=*/false)
                           : [&] {
                               int32_t t = alloc_temp(post);
@@ -12978,7 +13193,7 @@ class Compiler {
       } else {
         emit(Op::Take, e, caught);
       }
-      push_binding({name, e, /*is_mut=*/true, cell});
+      push_binding(id, {name, e, /*is_mut=*/true, cell});
     }
     // The catch body is its own defer scope (scan_eh_defer keys the node);
     // handler code sits outside the region, so its defers behave like any
@@ -13185,6 +13400,7 @@ class Compiler {
       // minting a second one — compile_assign_var's rule, which a collapsed
       // `if` arm's declaring destructure now reaches too.
       if (Binding* pre = predeclared_here(name)) {
+        note_declaration(ident, *pre);
         store_binding(at, *pre, v);
         slot_rank_[pre->slot] = next_rank_++;
         emit_session_decl_bind(*pre, is_mut);
@@ -13195,6 +13411,7 @@ class Compiler {
       // A REPL line's top-level leaf binds in the session, like `let x = v`.
       if (repl_top()) {
         Binding& sb = bind_session(ident, name);
+        note_declaration(ident, sb);
         store_cell(at, sb.slot, v);
         emit_session_decl_bind(sb, is_mut);
         sb.is_mut = is_mut;
@@ -13210,14 +13427,16 @@ class Compiler {
       } else {
         store_into(slot, v, /*dst_is_fresh=*/true);
       }
-      push_binding({name, slot, is_mut, cell});
+      push_binding(ident, {name, slot, is_mut, cell});
       return;
     }
     const Binding* b = lookup_or_session(ident, name);
+    bool leaf_declares = !b && !is_stdlib_namespace(name) && !is_stdlib_global(name);
+    if (!leaf_declares) check_write(ident, b);
     // A leaf naming nothing visible declares it, exactly as bare `x = v`
     // does — immutably. (`self` is not special here: the interp's pattern
     // walk binds it like any other leaf, probed on both backends.)
-    if (!b && !is_stdlib_namespace(name) && !is_stdlib_global(name)) {
+    if (leaf_declares) {
       bind_pattern_name(at, ident, src, src_owned, /*is_mut=*/false,
                         /*declares=*/true);
       return;
@@ -13896,7 +14115,7 @@ class Compiler {
           if (ast.token == "self")
             return {f.base, /*owned=*/false, -1, f.layout, f.class_ast};
         }
-        const Binding* b = lookup(ast.token);
+        const Binding* b = lookup_at(ast);
         if (b) {
           // A `let mut` local the whole-scope walk proved unboxed for its
           // entire lexical extent (precheck_value_bindings_at): every textual

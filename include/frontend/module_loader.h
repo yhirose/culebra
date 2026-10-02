@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "frontend/effects_transform.h"
+#include "frontend/scope_check.h"
 #include "frontend/lint.h"
 #include "frontend/parser.h"
 #include "base/shared.h"
@@ -132,7 +133,10 @@ inline std::vector<LoadedModule> ModuleLoader::load_program(
   load_recursive(entry_abs, entry_source, parse_msgs);
   // Static lint pass: shared by interp / JIT / AOT (all backends share
   // this loader), so a sound diagnostic aborts before any of them eval.
-  for (const auto& m : loaded_) lint::check_module(*m.ast);
+  for (const auto& m : loaded_) {
+    scope_check::check_lint(*m.ast);
+    lint::check_module(*m.ast);
+  }
   return std::move(loaded_);
 }
 
