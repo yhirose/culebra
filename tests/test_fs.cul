@@ -135,6 +135,25 @@ let werr = try {
 }
 assert_eq(werr, "IOError: FS.write: cannot open '/no/such/dir/x.txt'")
 
+// A directory is no file: reading one is an IOError, not an empty String
+// (on POSIX it opens as a stream and then reads as nothing).
+let dir_err = |thunk| try {
+  thunk()
+  "no-error"
+} catch e {
+  e.kind + ": " + e.message
+}
+assert_eq(dir_err(|| FS.read(tmp_root)), "IOError: FS.read: '" + tmp_root + "' is a directory")
+assert_eq(dir_err(|| Path.new(tmp_root).read()), "IOError: FS.read: '" + tmp_root + "' is a directory")
+assert_eq(
+  dir_err(|| File.open(tmp_root).read()),
+  "IOError: File.open('" + tmp_root + "', 'r'): is a directory",
+)
+assert_eq(
+  dir_err(|| File.open(tmp_root, "w")),
+  "IOError: File.open('" + tmp_root + "', 'w'): is a directory",
+)
+
 // --- Extensions: stat / rename / copy / walk / glob / paths / symlinks ---
 // Pure path helpers (no I/O).
 assert_eq(FS.normpath("a/./b/../c"), "a{FS.sep()}c")

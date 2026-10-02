@@ -158,8 +158,16 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_input() {
   return _culebra_heap_str(line);
 }
 
+// A directory opens as a stream on POSIX and then reads as nothing, so it is
+// refused by name first; a read that fails partway is an error too, never a
+// short String.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_read_file(
     const char* path, int64_t line, int64_t col) {
+  std::error_code ec;
+  if (std::filesystem::is_directory(path, ec)) {
+    throw culebra::CulebraError("IOError",
+        culebra::format("FS.read: '{}' is a directory", path), line, col);
+  }
   std::ifstream ifs(path, std::ios::binary);
   if (!ifs) {
     throw culebra::CulebraError("IOError",
@@ -167,6 +175,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_read_file(
   }
   std::string s((std::istreambuf_iterator<char>(ifs)),
                 std::istreambuf_iterator<char>());
+  if (ifs.bad()) {
+    throw culebra::CulebraError("IOError",
+        culebra::format("FS.read: cannot read '{}'", path), line, col);
+  }
   return _culebra_heap_str(s);
 }
 

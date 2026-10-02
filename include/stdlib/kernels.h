@@ -375,6 +375,14 @@ inline int64_t _file_open(const std::string& path, const std::string& mode,
     _file_throw(culebra::format("File.open: invalid mode '{}' (expected r/w/a)",
                                 mode), line, col, "ValueError");
   }
+  // A directory opens as a stream on POSIX (and then reads as nothing); it
+  // is no file, in any mode.
+  std::error_code ec;
+  if (std::filesystem::is_directory(path, ec)) {
+    _file_throw(culebra::format("File.open('{}', '{}'): is a directory", path,
+                                mode),
+                line, col);
+  }
   auto& tbl = _file_table();
   int64_t id = tbl.next_id++;
   auto& slot = tbl.entries[id];
