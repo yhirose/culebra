@@ -280,20 +280,33 @@ class Heap {
   bool callbacks_wired() const { return callbacks_wired_; }
   void mark_callbacks_wired() { callbacks_wired_ = true; }
 
-  // Pin an object as a permanent root (and trace its children). Used for the
-  // few program-lifetime objects built outside jit.h's reach — the cached
-  // namespace objects — so the root enumerator need not cross headers.
+  // Pin an object as a root (and trace its children) while C++ holds it out
+  // of the collector's sight: the cached namespace objects, a server's
+  // handlers, a streaming response's closure. Pins are counted, as JNI's
+  // global references are: each holder pins once and unpins once, and the
+  // object stays a root while any holder is left — one object can have two
+  // holders (a handler that streams itself), and the first to let go must
+  // not unpin it for the other. kFlagPinned mirrors "the count is not zero"
+  // in the header, which is what the collector reads.
   static constexpr uint8_t kFlagPinned = 1;
   void pin(void* p) {
-    if (GcHeader* h = objects_.find(p)) h->flags |= kFlagPinned;
+    if (GcHeader* h = objects_.find(p)) {
+      h->flags |= kFlagPinned;
+      ++pins_[p];
+    }
   }
 
-  // Clear a pin set by pin(). Unlike the program-lifetime namespace objects,
-  // some C++-held roots are ephemeral (e.g. a streaming response closure held
-  // only by httplib's content provider): pin while held, unpin when dropped so
-  // the object can be reclaimed once its refcount also reaches zero.
+  // Let go of one pin(). A holder that is ephemeral (a streaming response
+  // closure held only by httplib's content provider) unpins when it drops
+  // the object, so it can be reclaimed once nothing else holds it.
   void unpin(void* p) {
-    if (GcHeader* h = objects_.find(p)) h->flags &= ~kFlagPinned;
+    GcHeader* h = objects_.find(p);
+    auto it = pins_.find(p);
+    if (!h || it == pins_.end()) return;
+    if (--it->second == 0) {
+      pins_.erase(it);
+      h->flags &= ~kFlagPinned;
+    }
   }
 
   // Mark an object whose refcount just reached zero as mid-teardown. Its
@@ -341,6 +354,7 @@ class Heap {
     if (!dying_.empty() && dying_.back() == p) dying_.pop_back();
     if (GcHeader* h = objects_.find(p)) {
       live_bytes_ -= h->size;
+      if (h->flags & kFlagPinned) pins_.erase(p);
       objects_.erase(p);
       if (!birth_sites_.empty()) birth_sites_.erase(p);
     }
@@ -353,6 +367,7 @@ class Heap {
     if (!h) return;
     uint32_t size = h->size;
     live_bytes_ -= size;
+    if (h->flags & kFlagPinned) pins_.erase(p);
     objects_.erase(p);
     if (!birth_sites_.empty()) birth_sites_.erase(p);
     std::memset(p, 0xDE, size);
@@ -1089,6 +1104,7 @@ class Heap {
   std::unordered_map<void*, BirthSite> birth_sites_;
 
   GcRegistry objects_;
+  std::unordered_map<void*, uint32_t> pins_;  // pin() counts, while nonzero
   std::vector<void**> global_roots_;
   std::vector<void*> extra_roots_;  // scratch reused across collections
   std::vector<void*> dying_;        // mid-teardown objects (begin_teardown)

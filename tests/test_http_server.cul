@@ -700,3 +700,31 @@ assert_true(!ctres.headers.has("X-Injected"))
 mapi.close()
 msrv.stop()
 inspect("CR/LF in a method or a header -> refused at once, nothing smuggled")
+
+# A handler that streams itself: the response's closure is the very handler
+# the worker holds, so both pin it. The stream letting go must not unpin it
+# for the worker, or a collection frees the handler it still calls.
+fn streams_itself(x) {
+  if x.has('method') {
+    return {stream: streams_itself}
+  }
+  x.write('chunk')
+  nil
+}
+let ssrv = Http.server()
+ssrv.get('/s', streams_itself)
+ssrv.get('/gc', fn (req) {
+  mut junk = []
+  for i in range(0, 20000) {
+    junk.push([i, "{i}"])
+  }
+  GC.stat()
+  'gc'
+})
+let sport = ssrv.listen_async(0, workers: 1)
+for _ in range(0, 5) {
+  assert_eq(Http.get("http://127.0.0.1:{sport}/s").body, 'chunk')
+  assert_eq(Http.get("http://127.0.0.1:{sport}/gc").body, 'gc')
+}
+ssrv.stop()
+inspect("a handler that streams itself stays held")
