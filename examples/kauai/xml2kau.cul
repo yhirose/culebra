@@ -114,114 +114,35 @@ fn die(msg) {
 
 # --- reading the file ---------------------------------------------------------
 
-fn le(b, at, n) {
-  mut v = 0
-  for i in 0..n {
-    v |= b[at + i] << 8 * i
-  }
-  v
-}
-let le_bytes = |v, n| iota(n).map(|i| v >> 8 * i & 255)
-
-# The files of a ZIP archive, by name. A deflated entry's bytes, with its
-# CRC-32 and length from the directory, are what a gzip member holds, so
-# Compress.gunzip reads them.
-fn unzip(data) {
-  let b = data.bytes().collect()
-  mut end = b.size() - 22
-  while end >= 0 && le(b, end, 4) != 0x06054b50 {
-    end -= 1
-  }
-  die("not a MusicXML file or an .mxl archive") if end < 0
-  mut at = le(b, end + 16, 4)
-  mut files = {}
-  for i in 0..le(b, end + 10, 2) {
-    let method = le(b, at + 10, 2)
-    let size = le(b, at + 20, 4)
-    let name_len = le(b, at + 28, 2)
-    let name = data.slice(at + 46, at + 46 + name_len).to_string()
-    let local = le(b, at + 42, 4)
-    let start = local + 30 + le(b, local + 26, 2) + le(b, local + 28, 2)
-    let raw = data.slice(start, start + size).to_string()
-    files[name] = match method {
-      0 => raw,
-      8 => Compress.gunzip(String.from_bytes([
-        0x1f,
-        0x8b,
-        8,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        255,
-      ]) +
-        raw +
-        String.from_bytes([
-          ...le_bytes(le(b, at + 16, 4), 4),
-          ...le_bytes(le(b, at + 24, 4), 4),
-        ])),
-      _ => die("{name} is stored in a way this reader does not know ({method})"),
-    }
-    at += 46 + name_len + le(b, at + 30, 2) + le(b, at + 32, 2)
-  }
-  files
-}
-
-# UTF-16 text (a score may be saved so, after its byte order mark) as UTF-8.
-fn utf8_of(data) {
-  let b = data.bytes().collect()
-  let big = b[0] == 0xfe
-  let unit = |k| big ? b[k] << 8 | b[k + 1] : b[k + 1] << 8 | b[k]
-  mut out = []
-  mut i = 2
-  while i + 1 < b.size() {
-    mut c = unit(i)
-    i += 2
-    if c >= 0xd800 && c < 0xdc00 && i + 1 < b.size() {
-      c = 0x10000 + (c - 0xd800 << 10) + (unit(i) - 0xdc00)
-      i += 2
-    }
-    let encoded = cond {
-      c < 0x80 => [c],
-      c < 0x800 => [0xc0 | c >> 6, 0x80 | c & 0x3f],
-      c < 0x10000 => [0xe0 | c >> 12, 0x80 | c >> 6 & 0x3f, 0x80 | c & 0x3f],
-      _ => [
-        0xf0 | c >> 18,
-        0x80 | c >> 12 & 0x3f,
-        0x80 | c >> 6 & 0x3f,
-        0x80 | c & 0x3f,
-      ],
-    }
-    for x in encoded {
-      out.push(x)
-    }
-  }
-  String.from_bytes(out).replace('encoding="UTF-16"', 'encoding="UTF-8"')
-}
-
+# Text a score may be saved in UTF-16 (after its byte order mark), as UTF-8.
 fn as_utf8(data) {
   let head = data.slice(0, 2).bytes().collect()
-  head == [0xfe, 0xff] || head == [0xff, 0xfe] ? utf8_of(data) : data
+  return data if head != [0xfe, 0xff] && head != [0xff, 0xfe]
+  Encoding.utf16.decode(data).replace('encoding="UTF-16"', 'encoding="UTF-8"')
 }
 
 # The score's XML: the file, or the score an .mxl archive's container names.
 fn score_text(path) {
   let data = FS.read(path)
   return as_utf8(data) if !data.starts_with("PK")
-  let files = unzip(data)
-  let container = files.get("META-INF/container.xml", nil)
-  let root = container == nil
-    ? nil
-    : XML.parse(as_utf8(container)).find(".//*:rootfile")
-  let name = root?.attrs.get("full-path", nil) ??
-    files
-      .keys()
-      .find(|k| !k.starts_with("META-INF") &&
-        (k.ends_with(".xml") || k.ends_with(".musicxml")))
-  die("{path} holds no score") if name == nil
-  as_utf8(files[name])
+  try {
+    let zip = Dir.zip(bytes: data)
+    let root = zip.is_file("META-INF/container.xml")
+      ? XML
+        .parse(as_utf8(zip.read("META-INF/container.xml")))
+        .find(".//*:rootfile")
+      : nil
+    let name = root?.attrs.get("full-path", nil) ??
+      zip
+        .files()
+        .find(|k| !k.starts_with("META-INF") &&
+          (k.ends_with(".xml") || k.ends_with(".musicxml")))
+    die("{path} holds no score") if name == nil
+    as_utf8(zip.read(name))
+  } catch e {
+    die("{path}: {e.message}") if e.kind == "ValueError"
+    throw e
+  }
 }
 
 # --- the score as events ------------------------------------------------------
