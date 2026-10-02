@@ -59,15 +59,5 @@ MISMATCH second-cell 'v' grid/if_arm__mut__outer.cul:6:18 resolve=v@2:7 compiler
 MISMATCH second-cell 'v' grid/if_arm__mut__top.cul:4:7 resolve=v@1:5 compiler=v@1:5  # D8
 MISMATCH second-cell 'v' grid/if_arm__mut__top.cul:5:16 resolve=v@1:5 compiler=v@1:5  # D8
 
-# D16: `fn name` in an arm of an `if` with an init clause is a VmError, or declares into an outer binding
-MISMATCH declaration 'v' grid/init_clause__fn__outer.cul:5:8 resolve=v@5:8 compiler=v@2:7  # D16
-MISMATCH declaration 'v' grid/init_clause__fn__top.cul:4:6 resolve=v@4:6 compiler=v@1:5  # D16
-MISMATCH use 'v' grid/init_clause__fn__outer.cul:9:4 resolve=v@2:7 compiler=v@5:8  # D16
-MISMATCH use 'v' grid/init_clause__fn__top.cul:8:2 resolve=v@1:5 compiler=v@4:6  # D16
-UNSEEN '_inner' grid/init_clause__fn.cul:4:9  # D16
-UNSEEN 'v' grid/init_clause__fn.cul:3:8  # D16
-UNSEEN 'v' grid/init_clause__fn.cul:4:21  # D16
-UNSEEN 'v' grid/init_clause__fn.cul:5:5  # D16
-
 # N1: a pattern with two `...rest` never matches, so its names are never bound
 UNSEEN 'u' tools/bench/vm_cases/match_structural.cul:58:40  # N1

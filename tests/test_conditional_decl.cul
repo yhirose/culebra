@@ -177,3 +177,16 @@ assert_throws("NameError", fn () {
   }
   loop_rearm()
 })
+
+// --- An `if` with an init clause: its arms declare into the clause's
+// scope, a `fn` included, and that scope ends with the `if`. ---
+fn cd_init_clause_fn() {
+  let v = 'outer'
+  let r = if let c = 1; c > 0 {
+    fn v() { 7 }
+    let read = || v
+    read()()
+  }
+  [r, v]
+}
+assert_eq(cd_init_clause_fn(), [7, 'outer'])

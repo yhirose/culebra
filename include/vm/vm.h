@@ -7242,15 +7242,9 @@ class Compiler {
       return;
     }
     if (node.tag == "IF"_) {
-      auto iv = culebra::view_if(node);
       // An init clause opens a scope of its own around the whole `if`, so
       // nothing inside can reach past it.
-      if (iv.init) return;
-      // compile_if's own walk: (cond, body) pairs, then a trailing else.
-      size_t i = iv.arm_off;
-      for (; i + 1 < node.nodes.size(); i += 2)
-        collect_escaping_decls(*node.nodes[i + 1], decls);
-      if (i < node.nodes.size()) collect_escaping_decls(*node.nodes[i], decls);
+      if (!culebra::view_if(node).init) collect_arm_decls(node, decls);
       return;
     }
     if (node.tag == "MULTIFN_DECL"_ || node.tag == "CLASS_DECL"_ ||
@@ -7283,6 +7277,17 @@ class Compiler {
         if (implicit && !declares_implicitly(std::string(target->token))) return;
         add_decl(decls, target, std::string(target->token), av.is_mut, implicit);
       }
+  }
+
+  // What an `if`'s arms declare into the scope around them: compile_if's own
+  // walk, (cond, body) pairs and then a trailing else.
+  void collect_arm_decls(const peg::Ast& if_node, DeclList& decls) {
+    auto iv = culebra::view_if(if_node);
+    size_t i = iv.arm_off;
+    for (; i + 1 < if_node.nodes.size(); i += 2)
+      collect_escaping_decls(*if_node.nodes[i + 1], decls);
+    if (i < if_node.nodes.size())
+      collect_escaping_decls(*if_node.nodes[i], decls);
   }
 
   void predeclare_forward_refs(const peg::Ast& ast) {
@@ -13067,16 +13072,15 @@ class Compiler {
     // — so its slot is taken before that scope opens.
     int32_t res = alloc_temp(ast);
     InitScope init(*this, ast, iv.init);
-    // An arm body declares into the scope around the `if`. Whether it ran is
+    // An arm body declares into the scope around the arms. Whether it ran is
     // a run-time fact, so the names take the pre-declaration a forward
     // reference takes: one lazy binding per name for the whole `if` — shared by
     // the arms, so `if c { let a = 1 } else { let a = 2 }` reads whichever arm
     // ran — shadowing what the name meant before, and still holding the
-    // sentinel (hence NameError) when no arm declared it. An init clause opens
-    // a scope of its own, so nothing there escapes and collect_escaping_decls
-    // declines to look.
+    // sentinel (hence NameError) when no arm declared it. With an init
+    // clause, the scope around the arms is the clause's, which keeps them.
     DeclList escaping;
-    collect_escaping_decls(ast, escaping);
+    collect_arm_decls(ast, escaping);
     predeclare_conditional_cells(ast, escaping);
     auto compile_arm = [&](const peg::Ast& body) { compile_arm_into(body, res); };
     std::vector<size_t> end_jumps;
