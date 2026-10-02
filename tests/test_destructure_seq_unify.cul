@@ -64,3 +64,30 @@ mut ok1 = 0
 let frozen = 1
 assert_throws("ImmutableError", fn () { [ok1, frozen] = [5, 6] })
 assert_eq(ok1, 5)
+
+// A destructuring redeclaration of a captured name writes the cell the
+// closure holds, as a plain `let` does.
+fn dsu_redeclare_captured() {
+  let [c1, c2] = [38, 39]
+  let sum = fn () { c1 + c2 }
+  let [c1] = [40]
+  let c2 = 2
+  [sum(), c1]
+}
+assert_eq(dsu_redeclare_captured(), [42, 40])
+
+// ...and what the first declaration's annotation promised about the value
+// does not carry over to the new one.
+class DsuTyped {
+  x: Float = 1.0
+}
+class DsuOther {
+  x = 'str'
+}
+fn dsu_redeclare_typed() {
+  let p: DsuTyped = DsuTyped.new()
+  let g = fn () { p }
+  let [p] = [DsuOther.new()]
+  [p.x, g().x]
+}
+assert_eq(dsu_redeclare_typed(), ['str', 'str'])

@@ -6421,6 +6421,20 @@ class Compiler {
          kconst_str(b.name));
   }
 
+  // A declaration of a name a closure here already captured writes the cell
+  // the closures hold (captured_here); what the earlier declaration promised
+  // about its value does not carry over.
+  void redeclare_held(const peg::Ast& name, Binding& held, ExprResult v,
+                      bool is_mut) {
+    note_declaration(name, held);
+    store_cell(name, held.slot, v);
+    slot_rank_[held.slot] = next_rank_++;  // redeclared here
+    emit_session_decl_bind(held, is_mut);
+    held.is_mut = is_mut;
+    held.decl_fields = nullptr;
+    held.decl_field_classes = nullptr;
+  }
+
   // Whether a bare `x = v` on this name declares rather than reassigns —
   // interp's assign_name, where a name the environment chain cannot answer is
   // bound by the write. `self` is bound in every frame there, and a stdlib
@@ -9312,13 +9326,10 @@ class Compiler {
       // second declaration reads its value (probed on both backends).
       if (Binding* held = captured_here(name)) {
         auto rhs = compile_assign_rhs(ast, av);
-        note_declaration(*tgt, *held);
-        store_cell(*tgt, held->slot, rhs);
-        slot_rank_[held->slot] = next_rank_++;  // redeclared here
-        emit_session_decl_bind(*held, decl_mut);
-        held->is_mut = decl_mut;
+        redeclare_held(*tgt, *held, rhs, decl_mut);
         grant_known_chunk(*held, rhs.chunk);
         grant_known_const(*held, *av.rhs);
+        grant_declared_class(*held, *av.rhs, av.type_annotation);
         return read_binding(*tgt, *held);
       }
       // A REPL line's top-level declaration binds in the session, so the
@@ -13445,6 +13456,10 @@ class Compiler {
         emit_session_decl_bind(*pre, is_mut);
         pre->is_mut = is_mut;
         settle_predeclared(*pre);
+        return;
+      }
+      if (Binding* held = captured_here(name)) {
+        redeclare_held(ident, *held, v, is_mut);
         return;
       }
       // A REPL line's top-level leaf binds in the session, like `let x = v`.

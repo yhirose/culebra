@@ -59,13 +59,6 @@ MISMATCH second-cell 'v' grid/if_arm__mut__outer.cul:6:18 resolve=v@2:7 compiler
 MISMATCH second-cell 'v' grid/if_arm__mut__top.cul:4:7 resolve=v@1:5 compiler=v@1:5  # D8
 MISMATCH second-cell 'v' grid/if_arm__mut__top.cul:5:16 resolve=v@1:5 compiler=v@1:5  # D8
 
-# D15: a destructuring redeclaration of a captured name makes a second cell (a plain `let` reuses it)
-MISMATCH second-cell 'c1' tools/bench/vm_cases/destructure.cul:86:6 resolve=c1@83:6 compiler=c1@83:6  # D15
-MISMATCH second-cell 'v' grid/sequence__destructure__outer.cul:4:10 resolve=v@2:7 compiler=v@2:7  # D15
-MISMATCH second-cell 'v' grid/sequence__destructure__outer.cul:5:18 resolve=v@2:7 compiler=v@2:7  # D15
-MISMATCH second-cell 'v' grid/sequence__destructure__top.cul:3:8 resolve=v@1:5 compiler=v@1:5  # D15
-MISMATCH second-cell 'v' grid/sequence__destructure__top.cul:4:16 resolve=v@1:5 compiler=v@1:5  # D15
-
 # D16: `fn name` in an arm of an `if` with an init clause is a VmError, or declares into an outer binding
 MISMATCH declaration 'v' grid/init_clause__fn__outer.cul:5:8 resolve=v@5:8 compiler=v@2:7  # D16
 MISMATCH declaration 'v' grid/init_clause__fn__top.cul:4:6 resolve=v@4:6 compiler=v@1:5  # D16
