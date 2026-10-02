@@ -11,7 +11,8 @@
 //    with a scope per initializer; a static value, where the class is
 //    declared; a `{}` block; a loop body; a match arm; a try body and its
 //    catch; the block `handle` runs; and the init clause around its `if` /
-//    `while` / `match`. An `if` arm shares the enclosing scope.
+//    `while` / `match`. An `if` arm shares the enclosing scope. The builder a
+//    `_lazy_ns_register` call registers is a module of its own.
 //  - Within one function a declaration is visible from its statement on, after
 //    its right-hand side (`let x = x` reads the outer `x`). Every declaration of
 //    one name in one scope is the same variable: a repeated `let`, a bare
@@ -125,6 +126,15 @@ struct Import {
   std::string path;
 };
 
+// `v.name(...)`: a free function `name` may be what the call reaches (UFCS),
+// which no static pass can decide. `symbol` is what `name` resolves to where
+// the call is written, as a read there would (kNone: nothing).
+struct MethodCall {
+  const peg::Ast* node = nullptr;
+  size_t symbol = kNone;
+  size_t scope = kNone;
+};
+
 // `Alias.member` where Alias is an import: `member` names a top-level
 // declaration of the imported module.
 struct ModuleMember {
@@ -141,9 +151,7 @@ struct Resolution {
   std::vector<Unresolved> unresolved;
   std::vector<Import> imports;
   std::vector<ModuleMember> module_members;
-  // Names called as a method (`v.name(...)`). A free function of that name may
-  // be what the call reaches (UFCS), which no static pass can decide.
-  std::vector<std::string> method_call_names;  // sorted, unique
+  std::vector<MethodCall> method_calls;  // in walk order
 
   // The occurrence whose name spans `position` (its end included, so a cursor
   // just past a name still finds it), or nullptr.
@@ -211,10 +219,10 @@ struct Resolution {
     return kNone;
   }
 
-  bool called_as_method(std::string_view name) const {
-    return std::binary_search(method_call_names.begin(),
-                              method_call_names.end(), name,
-                              std::less<>());
+  // Whether a method call may reach `symbol` through UFCS.
+  bool called_as_method(size_t symbol) const {
+    return std::ranges::any_of(
+        method_calls, [&](const MethodCall& m) { return m.symbol == symbol; });
   }
 };
 
@@ -376,7 +384,11 @@ class Resolver {
 
   void enqueue(const peg::Ast* params, const peg::Ast* body,
                size_t owner = kNone) {
-    if (body) jobs_.push_back({params, body, cur_, owner});
+    enqueue_in(cur_, params, body, owner);
+  }
+  void enqueue_in(size_t parent, const peg::Ast* params, const peg::Ast* body,
+                  size_t owner) {
+    if (body) jobs_.push_back({params, body, parent, owner});
   }
 
   void finish() {
@@ -392,9 +404,6 @@ class Resolver {
     std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
       return r_.scopes[a].begin < r_.scopes[b].begin;
     });
-    auto& m = r_.method_call_names;
-    std::sort(m.begin(), m.end());
-    m.erase(std::unique(m.begin(), m.end()), m.end());
   }
 
   // ---- walking --------------------------------------------------------------
@@ -507,13 +516,13 @@ class Resolver {
     return n.tag == "FUNCTION"_ || n.tag == "LAMBDA"_;
   }
 
-  void enqueue_literal(const peg::Ast& fn, size_t owner) {
+  void enqueue_literal(const peg::Ast& fn, size_t owner, size_t parent) {
     if (fn.tag == "FUNCTION"_) {
       auto fv = view_function(fn);
-      enqueue(fv.params, fv.body.get(), owner);
+      enqueue_in(parent, fv.params, fv.body.get(), owner);
     } else {
       auto lv = view_lambda(fn);
-      enqueue(lv.params, lv.body.get(), owner);
+      enqueue_in(parent, lv.params, lv.body.get(), owner);
     }
   }
 
@@ -555,7 +564,7 @@ class Resolver {
       size_t sym = (av.is_let || av.is_mut)
                        ? declare(*target, name, SymbolKind::Variable)
                        : bare_write(*target, name);
-      enqueue_literal(*av.rhs, sym);
+      enqueue_literal(*av.rhs, sym, cur_);
       return;
     }
     walk(*av.rhs);
@@ -566,6 +575,10 @@ class Resolver {
   }
 
   void walk_call(const peg::Ast& n) {
+    if (const peg::Ast* builder = lazy_ns_builder(n)) {
+      enqueue_literal(*builder, kNone, /*parent=*/kNone);
+      return;
+    }
     const peg::Ast& head = *n.nodes[0];
     walk(head);
     size_t callee = kNone;
@@ -582,7 +595,7 @@ class Resolver {
                     (c.original_tag == "DOT"_ || c.original_tag == "SAFE_DOT"_);
       if (member) {
         if (i + 1 < n.nodes.size() && n.nodes[i + 1]->original_tag == "ARGUMENTS"_)
-          r_.method_call_names.emplace_back(c.token);
+          r_.method_calls.push_back({&c, r_.lookup(cur_, c.token), cur_});
         if (i == 1 && import_sym != kNone) {
           size_t off = offset_of(c, c.token);
           if (off != kNone)
@@ -734,7 +747,7 @@ class Resolver {
 
       case "FUNCTION"_:
       case "LAMBDA"_:
-        enqueue_literal(n, kNone);
+        enqueue_literal(n, kNone, cur_);
         return;
 
       case "DEFER"_:

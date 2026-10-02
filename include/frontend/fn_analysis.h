@@ -428,28 +428,6 @@ struct FnAnalysis {
     }
   }
 
-  // If `node` is a `_lazy_ns_register("Ns", fn(){...})` intrinsic call,
-  // return its builder FUNCTION/LAMBDA argument (descending single-child
-  // wrappers), else nullptr. Mirrors the detection in the stdlib intrinsic.
-  const peg::Ast* lazy_ns_builder_arg(const peg::Ast& node) const {
-    using namespace peg::udl;
-    if (node.tag != "CALL"_ || node.nodes.size() != 2) return nullptr;
-    const auto& callee = *node.nodes[0];
-    if (callee.tag != "IDENTIFIER"_ ||
-        callee.token != "_lazy_ns_register")
-      return nullptr;
-    const auto& args = *node.nodes[1];
-    if (args.original_tag != "ARGUMENTS"_ || args.nodes.size() != 2)
-      return nullptr;
-    const peg::Ast* builder = args.nodes[1].get();
-    while (builder->nodes.size() == 1 && builder->tag != "FUNCTION"_ &&
-           builder->tag != "LAMBDA"_)
-      builder = builder->nodes[0].get();
-    return (builder->tag == "FUNCTION"_ || builder->tag == "LAMBDA"_)
-               ? builder
-               : nullptr;
-  }
-
   // The function literal an expression IS — the AST optimizer has already
   // folded the EXPRESSION wrapper onto it, so this is a tag test, not a
   // descent: `[fn …]` is an Array holding one, not one.
@@ -764,7 +742,7 @@ struct FnAnalysis {
       // captureless invariant. Analyze the builder with no outer scope so
       // such names resolve as globals (never captures); skip the rest of the
       // CALL so it isn't re-analyzed under the enclosing scope.
-      if (const peg::Ast* builder = lazy_ns_builder_arg(node)) {
+      if (const peg::Ast* builder = lazy_ns_builder(node)) {
         std::vector<const std::set<std::string>*> barrier;  // no outer scope
         analyze_function(*builder, barrier);
         return;

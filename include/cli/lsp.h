@@ -815,7 +815,7 @@ class Server {
       return std::format("`{}` is exported, and the modules that import it "
                          "would not follow the rename.",
                          sym.name);
-    if (t.snap->res.called_as_method(sym.name))
+    if (t.snap->res.called_as_method(t.occ->symbol))
       return std::format("`{}` is also called as a method (`value.{}(...)`). "
                          "Those calls may reach this name, and a rename "
                          "cannot follow them.",

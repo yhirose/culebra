@@ -203,7 +203,15 @@ void test_spellings() {
   if (auto p = resolve_source("let o = {}\no.member\n"))
     check(occ(*p, "member", 0) == nullptr, "a member is not a name");
   if (auto p = resolve_source("fn size(v) { 0 }\n[1].size()\n"))
-    check(p->res.called_as_method("size"), "a method call's name is recorded");
+    check(p->res.called_as_method(sym(*p, "size", 0)),
+          "a method call may reach the function of its name");
+  if (auto p = resolve_source("fn f() {\n  let size = 1\n}\n[1].size()\n"))
+    check(!p->res.called_as_method(sym(*p, "size", 0)),
+          "a method call reaches only the name visible where it is written");
+  if (auto p = resolve_source(
+          "fn f() {\n  let size = fn (v) { 0 }\n  [1].size()\n}\n"))
+    check(p->res.called_as_method(sym(*p, "size", 0)),
+          "a method call in a function reaches the function's name");
   if (auto p = resolve_source("let k = 1\nlet o = {(k, 1): 2, k: 3}\n")) {
     same(*p, "k", 0, 1, "a computed object key reads the name");
     check(occ(*p, "k", 2) == nullptr, "a key spelled as a name is not a name");
@@ -226,6 +234,14 @@ void test_globals() {
   if (auto p = resolve_source("let println = 0\nprintln = 1\n",
                               {.globals = &kGlobals}))
     same(*p, "println", 0, 1, "a declared name of a global's spelling is written");
+  // A stdlib function value's method call reaches a free function by UFCS;
+  // the globals do not tell it from a namespace's member call.
+  if (auto p = resolve_source("fn twice(f, x) { f(f(x)) }\nprintln.twice(1)\n",
+                              {.globals = &kGlobals}))
+    check(p->res.called_as_method(sym(*p, "twice", 0)),
+          "a method call on a global may reach a free function");
+  if (auto p = resolve_source("let x = 1\n_lazy_ns_register('N', fn () { x })\n"))
+    unbound(*p, "x", 1, "a lazy namespace builder sees nothing around it");
 }
 
 void test_session() {

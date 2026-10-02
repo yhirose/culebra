@@ -1697,6 +1697,27 @@ inline const peg::Ast& param_name_node(const peg::Ast& p) {
   return (is_kwargs_rest(p) || is_args_rest(p)) ? p : *p.nodes[1];
 }
 
+// If `call` is the stdlib splice's `_lazy_ns_register("Ns", fn(){...})`, its
+// builder FUNCTION / LAMBDA (descending single-child wrappers), else nullptr.
+// The builder is a module of its own, rebuilt on whichever Runtime first
+// names the namespace, so nothing around the call is in its scope.
+inline const peg::Ast* lazy_ns_builder(const peg::Ast& call) {
+  using namespace peg::udl;
+  if (call.tag != "CALL"_ || call.nodes.size() != 2) return nullptr;
+  const auto& callee = *call.nodes[0];
+  if (callee.tag != "IDENTIFIER"_ || callee.token != "_lazy_ns_register")
+    return nullptr;
+  const auto& args = *call.nodes[1];
+  if (args.original_tag != "ARGUMENTS"_ || args.nodes.size() != 2)
+    return nullptr;
+  const peg::Ast* builder = args.nodes[1].get();
+  while (builder->nodes.size() == 1 && builder->tag != "FUNCTION"_ &&
+         builder->tag != "LAMBDA"_)
+    builder = builder->nodes[0].get();
+  return (builder->tag == "FUNCTION"_ || builder->tag == "LAMBDA"_) ? builder
+                                                                    : nullptr;
+}
+
 // (name, line, col) of a PARAMETER-shaped node's name (param_name_node).
 struct ParamNameLoc {
   std::string_view name;
