@@ -643,8 +643,9 @@ struct FnAnalysis {
       // binding, or by build_class_instance for a class with no `new`),
       // not at declaration time — analyze them as one nested function
       // whose FuncInfo is keyed by the CLASS_DECL node itself so
-      // compile_class_decl can recover it. It has no locals; `self` is a
-      // builtin. Static-field values still evaluate at declaration time
+      // compile_class_decl can recover it. Its locals are what each
+      // initializer declares, visible in that initializer alone; `self` is
+      // a builtin. Static-field values still evaluate at declaration time
       // in the enclosing scope.
       FuncInfo field_info;
       std::set<std::string> field_locals;
@@ -682,7 +683,7 @@ struct FnAnalysis {
           if (mv.value) {
             fields_need_a_thunk = true;
             outer.push_back(&my_locals);
-            visit_for_frees(*mv.value, field_locals, outer, field_info);
+            visit_scoped_expr(*mv.value, field_locals, outer, field_info);
             scan_eh_defer(*mv.value, /*at_fn_top=*/true, field_info);
             outer.pop_back();
           }
@@ -1176,8 +1177,8 @@ struct FnAnalysis {
   }
 
   // An expression that is a scope of its own in the frame being walked (a
-  // static value): what it declares is a local of this frame visible in it
-  // alone.
+  // static value, a field initializer): what it declares is a local of this
+  // frame visible in it alone.
   void visit_scoped_expr(const peg::Ast& expr,
                          const std::set<std::string>& my_locals,
                          std::vector<const std::set<std::string>*>& outer,

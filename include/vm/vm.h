@@ -6184,7 +6184,9 @@ class Compiler {
       emit_declared_field_layout({&f});
       return;
     }
-    ExprResult v = compile_expr(*mv.value);
+    // Each initializer is a scope of its own.
+    int32_t v = alloc_temp(f);
+    compile_scoped_expr_into(*mv.value, v);
     // A slot learns its declared type from the layout op, so a field with
     // an initializer takes its typed zero first and its own store is the
     // overwrite every later write is — checked by the same rule. Emitted
@@ -6192,8 +6194,9 @@ class Compiler {
     if (culebra::field_type_for_annotation(mv.type_annotation) !=
         culebra::FieldType::Any)
       emit_declared_field_layout({&f});
-    emit(Op::ObjectSet, field_recv(), owned_src(f, v),
-         kconst_str(std::string(mv.name)), /*mut=*/1);
+    emit(Op::ObjectSet, field_recv(), v, kconst_str(std::string(mv.name)),
+         /*mut=*/1);
+    forget_temp(v);  // ObjectSet absorbed the +1
   }
 
   // The slots for a run of fields as one Op::FieldsInit: the instance takes

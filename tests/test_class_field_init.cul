@@ -161,4 +161,24 @@ test_self_captured_by_a_closure = fn () {
 }
 test_self_captured_by_a_closure()
 
+# Each initializer is a scope of its own: what one declares ends with it.
+let cfi_side = 'outer'
+class CfiScoped {
+  area = (let cfi_side = 3) * cfi_side
+  label = cfi_side
+  shared = (let cfi_k = 2) + (|| cfi_k)()
+}
+mut cfi_m = 0
+test_initializer_scope = fn () {
+  let o = CfiScoped.new()
+  assert_eq([o.area, o.label, o.shared], [9, 'outer', 4])
+  # A write after the class reaches the outer `mut`, not the initializer's.
+  class CfiWriteAfter {
+    f = (let cfi_m = 1) + 0
+  }
+  cfi_m = 5
+  assert_eq([CfiWriteAfter.new().f, cfi_m], [1, 5])
+}
+test_initializer_scope()
+
 inspect('class-field-init OK')

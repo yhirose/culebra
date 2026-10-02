@@ -1667,6 +1667,9 @@ Semantics:
     defining scope, not over the constructor call); pass ctor args to
     fields explicitly with `self.x = a` in the body, or with a field
     parameter (`new(.x)`, below).
+  - **Each initializer is a scope of its own**: what one declares
+    (`area = (let side = 3) * side`) ends with it, and the next
+    field's initializer does not see it.
   - A typed field without an initializer (`name: String` above) takes
     its type's zero value: `0` / `0.0` / `''` / `false`; reference
     types (`Array`, `Object`, ...) default to `nil`. The untyped form

@@ -2,8 +2,8 @@
 # compiler disagree about which scope holds a name, the compiler would find a
 # plain slot instead; it refuses the closure (a VmError where the code
 # building it runs) rather than handing the slot over as a cell, which
-# crashed the process. Each shape below is a scope bug of its own: when one
-# is fixed, its case here becomes the value the program means.
+# crashed the process. Each shape below was such a scope bug, and is now the
+# value the program means.
 
 fn cnc_outcome(f) {
   try {
@@ -13,30 +13,38 @@ fn cnc_outcome(f) {
   }
 }
 
-fn cnc_not_a_cell(name) {
-  ['VmError', "--vm: unsupported: capture of '{name}', which is not a cell"]
-}
+let cnc_u = 100
 
-# A field initializer's declaration, read by a closure in a later field.
+# A field initializer's declaration, read by a closure in a later field: the
+# declaration ended with its initializer, so the closure reads the outer one.
 fn cnc_initializer_carried() {
-  let u = 100
   class CncCarried {
-    f = (let u = 7) + 1
-    g = (|| u)()
+    f = (let cnc_u = 7) + 1
+    g = (|| cnc_u)()
   }
   CncCarried().g
 }
-assert_eq(cnc_outcome(cnc_initializer_carried), cnc_not_a_cell('u'))
+assert_eq(cnc_outcome(cnc_initializer_carried), 100)
 
 # The same declaration, read by a closure in its own initializer.
 fn cnc_initializer_own() {
-  let u = 100
   class CncOwn {
-    f = (let u = 7) + (|| u)()
+    f = (let cnc_u = 7) + (|| cnc_u)()
   }
   CncOwn().f
 }
-assert_eq(cnc_outcome(cnc_initializer_own), cnc_not_a_cell('u'))
+assert_eq(cnc_outcome(cnc_initializer_own), 14)
+
+# An initializer's closure over the enclosing function's variable: a cell
+# the field-init function captures in turn.
+fn cnc_initializer_outer() {
+  let w = 100
+  class CncOuter {
+    f = (let cnc_w = 7) + (|| w + cnc_w)()
+  }
+  CncOuter().f
+}
+assert_eq(cnc_outcome(cnc_initializer_outer), 114)
 
 # A static value's declaration, read by a closure in the same value, inside a
 # nested function: the value's own, a local of that function's frame.
