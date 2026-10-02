@@ -190,3 +190,84 @@ fn cd_init_clause_fn() {
   [r, v]
 }
 assert_eq(cd_init_clause_fn(), [7, 'outer'])
+
+// --- A declaration in an operand a short-circuit skips, or after a `?.`:
+// a closure built after it captures a cell that exists either way, and a
+// read the skipped declaration never bound is a NameError. ---
+fn cd_short_circuit(c) {
+  c && (let h = [1, 2])
+  let g = || h
+  g()
+}
+assert_eq(cd_short_circuit(true), [1, 2])
+assert_throws("NameError", fn () { cd_short_circuit(false) })
+
+fn cd_coalesce(x) {
+  x ?? (let n = [4])
+  let g = || n
+  g()
+}
+assert_eq(cd_coalesce(nil), [4])
+assert_throws("NameError", fn () { cd_coalesce(1) })
+
+fn cd_safe_call(o) {
+  o?.push((let k = [3]))
+  let g = || k
+  g()
+}
+assert_eq(cd_safe_call([]), [3])
+assert_throws("NameError", fn () { cd_safe_call(nil) })
+
+// A skipped declaration of a name this scope already binds leaves that
+// binding as it was: its value, and its mutability.
+fn cd_skipped_redeclare(c) {
+  let h = 1
+  c && (let h = 2)
+  h
+}
+assert_eq([cd_skipped_redeclare(true), cd_skipped_redeclare(false)], [2, 1])
+fn cd_skipped_mut(c) {
+  let h = 1
+  c && (mut h = 2)
+  h = 3
+  h
+}
+assert_eq(cd_skipped_mut(true), 3)
+assert_throws("ImmutableError", fn () { cd_skipped_mut(false) })
+
+// A skipped declaration does not settle a cell a closure above holds.
+fn cd_skipped_forward(c) {
+  let g = || h
+  c && (let h = [2])
+  let r = h
+  let h = [1]
+  [r, g()]
+}
+assert_eq(cd_skipped_forward(true), [[2], [1]])
+assert_throws("NameError", fn () { cd_skipped_forward(false) })
+
+// A `while` condition and a `match` subject run outside their bodies.
+fn cd_while_cond(c) {
+  while c && ((let h = [1]) != nil) { break }
+  let g = || h
+  g()
+}
+assert_eq(cd_while_cond(true), [1])
+assert_throws("NameError", fn () { cd_while_cond(false) })
+fn cd_match_subject(c) {
+  match c && (let h = [1]) { _ => 0 }
+  let g = || h
+  g()
+}
+assert_eq(cd_match_subject(true), [1])
+assert_throws("NameError", fn () { cd_match_subject(false) })
+
+// The same for an `if` arm: the later declaration fills the cell the
+// closure above holds.
+fn cd_arm_forward(c) {
+  let g = || h
+  if c { let h = [2] }
+  let h = [1]
+  g()
+}
+assert_eq([cd_arm_forward(true), cd_arm_forward(false)], [[1], [1]])

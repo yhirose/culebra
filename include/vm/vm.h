@@ -6310,7 +6310,7 @@ class Compiler {
   }
 
   // The conditional pre-declaration this scope already holds for `name`.
-  // An `if`/`cond` hoists what its arms declare, and collect_escaping_decls
+  // An `if`/`cond` hoists what its arms declare, and collect_conditional_decls
   // recurses into nested arms — so an enclosing construct has already minted
   // the cell a nested one would, and an earlier construct in the same scope
   // has minted the one a later one would. The name is a single binding here,
@@ -6833,6 +6833,7 @@ class Compiler {
   // ends with it, so its value lands in `dst`, a slot taken before the scope.
   void compile_scoped_expr_into(const peg::Ast& expr, int32_t dst) {
     push_scope(expr);
+    predeclare_conditional_decls(expr);
     {
       TempScope ts(*this);
       store_into(dst, compile_expr(expr), /*dst_is_fresh=*/true);
@@ -6841,7 +6842,7 @@ class Compiler {
   }
 
   // An `if` / `cond` arm body in value position. It gets no scope of its own:
-  // the enclosing one holds what it declares (collect_escaping_decls pinned
+  // the enclosing one holds what it declares (collect_conditional_decls pinned
   // those names to lazy cells first) and owns any `defer` it registers, which
   // is the interpreter's eval_if / eval_cond — and its DeferHandoff — exactly.
   void compile_arm_into(const peg::Ast& body, int32_t dst) {
@@ -6875,6 +6876,7 @@ class Compiler {
     using namespace peg::udl;
     stamp(ast);
     emit_dbg_stmt(ast);
+    predeclare_conditional_decls(ast);
     TempScope ts(*this);
     StatementWrites sw(*this, ast);
     switch (ast.tag) {
@@ -6923,6 +6925,7 @@ class Compiler {
   void compile_statement(const peg::Ast& ast) {
     stamp(ast);
     emit_dbg_stmt(ast);
+    predeclare_conditional_decls(ast);
     TempScope ts(*this);
     StatementWrites sw(*this, ast);
     compile_statement_inner(ast);
@@ -7203,14 +7206,24 @@ class Compiler {
   // So does a `fn name` this scope has already declared: an arm declares
   // into the scope around it, where a second `fn name` is an overload of the
   // first — it appends to that dispatcher (compile_multifn_decl) rather than
-  // hiding it behind a cell of its own.
+  // hiding it behind a cell of its own. And a forward reference's cell (a
+  // closure above already holds it) is the variable a later declaration
+  // fills, so it becomes conditional itself rather than shadowed by a second.
   void predeclare_conditional_cells(const peg::Ast& ast,
                                     const DeclList& decls) {
     DeclList fresh;
-    for (const auto& d : decls)
-      if (!conditional_here(d.name) &&
-          !scopes_.back().multifn_decls.contains(d.name))
-        fresh.push_back(d);
+    for (const auto& d : decls) {
+      if (conditional_here(d.name) ||
+          scopes_.back().multifn_decls.contains(d.name))
+        continue;
+      if (Binding* pre = predeclared_here(d.name); pre && !pre->session) {
+        pre->conditional = true;
+        pre->mut_slot = alloc_slot(*d.at, "(" + d.name + ".decl_mut)");
+        emit(Op::LoadConst, pre->mut_slot, kconst({TAG_BOOL, 0}));
+        continue;
+      }
+      fresh.push_back(d);
+    }
     predeclare_cells(ast, fresh, /*conditional=*/true);
   }
 
@@ -7223,71 +7236,135 @@ class Compiler {
     pre.shadowed_builtin = false;
   }
 
-  // What an `if` / `cond` arm body declares into the scope AROUND it. Neither
-  // construct opens a scope for its arms — interp's eval_if and eval_cond run
-  // the body in the enclosing environment (run_loop_body guards for a block;
-  // these do not) — so a `let` there declares outside, on every backend,
-  // whatever the statement count. A nested arm passes its own declarations up
-  // the same way, which is why this recurses; a `{ ... }` statement inside one
-  // is a LEXICAL_SCOPE and keeps its own.
-  void collect_escaping_decls(const peg::Ast& node, DeclList& decls) {
+  // What `node` declares where it may not run: an `if` / `?:` / `cond` arm
+  // or a later test, an operand a short-circuit skips (`c && (let h = f())`),
+  // the rest of a chain after a `?.`. None of these opens a scope — an `if`
+  // arm declares into the scope around it, on every backend — so whether
+  // the declaration ran is a run-time fact, and the names take a conditional
+  // pre-declaration (predeclare_conditional_cells): a closure built after it
+  // captures a cell that exists either way, and a read the skipped
+  // declaration never bound finds the sentinel. A scope of its own (a block,
+  // a loop, a match, a try, an `if` with an init clause) keeps what it
+  // declares, and a function body runs elsewhere; a `while` condition and a
+  // `match` subject, compiled outside their bodies, are hoisted by
+  // compile_while and compile_match themselves.
+  void collect_conditional_decls(const peg::Ast& node, DeclList& decls,
+                                 bool conditional) {
     using namespace peg::udl;
-    if (node.tag == "STATEMENTS"_) {
-      for (const auto& n : node.nodes) collect_escaping_decls(*n, decls);
-      return;
-    }
-    if (node.tag == "COND"_) {
-      for (const auto& arm : node.nodes)
-        collect_escaping_decls(*arm->nodes[1], decls);
-      return;
-    }
-    if (node.tag == "IF"_) {
-      // An init clause opens a scope of its own around the whole `if`, so
-      // nothing inside can reach past it.
-      if (!culebra::view_if(node).init) collect_arm_decls(node, decls);
-      return;
-    }
-    if (node.tag == "MULTIFN_DECL"_ || node.tag == "CLASS_DECL"_ ||
-        node.tag == "ENUM_DECL"_) {
-      size_t i = 0;
-      while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) i++;
-      add_decl(decls, node.nodes[i].get(),
-               std::string(culebra::parse_generic_head(node.nodes[i]->token).outer),
-               /*is_mut=*/false, /*implicit=*/false, /*in_cell=*/true);
-      return;
-    }
-    if (node.tag == "DESTRUCTURE_ASSIGN"_) {
-      // `let [a, b] = …`: every leaf it binds escapes too, each anchored at
-      // the statement (compile_destructure_assign's own reading of the node).
-      bool is_mut = node.nodes[1]->token == "mut";
-      if (node.nodes[0]->token != "let" && !is_mut) return;
-      culebra::for_each_pattern_binding(
-          *node.nodes[2], [&](std::string_view name, size_t, size_t) {
-            add_decl(decls, &node, std::string(name), is_mut);
-          });
-      return;
-    }
-    if (node.tag != "ASSIGNMENT"_) return;
-    auto av = culebra::view_assignment(node);
-    if (av.compound) return;
-    if (const auto* target = culebra::assign_name_target(node, av))
-      if (!culebra::is_sink_name(target->token)) {
-        bool implicit = !av.is_let && !av.is_mut;
-        // A bare write declares only where nothing already answers the name.
-        if (implicit && !declares_implicitly(std::string(target->token))) return;
-        add_decl(decls, target, std::string(target->token), av.is_mut, implicit);
+    auto walk = [&](const peg::Ast& n, bool c) {
+      collect_conditional_decls(n, decls, c);
+    };
+    switch (node.tag) {
+      case "FUNCTION"_:
+      case "LAMBDA"_:
+      case "DEFER"_:
+      case "TRAIT_DECL"_:
+      case "LEXICAL_SCOPE"_:
+      case "FOR"_:
+      case "WHILE"_:
+      case "MATCH"_:
+      case "TRY"_:
+        return;
+      case "MULTIFN_DECL"_:
+      case "CLASS_DECL"_:
+      case "ENUM_DECL"_: {
+        if (!conditional) return;
+        size_t i = culebra::first_non_decorator_index(node);
+        add_decl(decls, node.nodes[i].get(),
+                 std::string(culebra::parse_generic_head(node.nodes[i]->token).outer),
+                 /*is_mut=*/false, /*implicit=*/false, /*in_cell=*/true);
+        return;
       }
+      case "IF"_:
+      case "CONDITIONAL"_:
+        if (!culebra::view_if(node).init)
+          collect_arm_decls(node, decls, conditional);
+        return;
+      case "COND"_:
+        collect_arm_decls(node, decls, conditional);
+        return;
+      case "LOGICAL_AND"_:
+      case "LOGICAL_OR"_:
+      case "NIL_COALESCE"_:
+        for (size_t i = 0; i < node.nodes.size(); i++)
+          walk(*node.nodes[i], conditional || i > 0);
+        return;
+      case "CONDITION"_:  // `a < b < c`: a link after a failed one is skipped
+        for (size_t i = 0; i < node.nodes.size(); i++)
+          walk(*node.nodes[i], conditional || i > 2);
+        return;
+      case "CALL"_: {
+        bool skippable = conditional;
+        for (const auto& c : node.nodes) {
+          auto t = c->original_tag;
+          if (t == "SAFE_INDEX"_ || t == "SAFE_DOT"_) skippable = true;
+          walk(*c, skippable);
+        }
+        return;
+      }
+      case "DESTRUCTURE_ASSIGN"_: {
+        // `let [a, b] = …`: each leaf is anchored at the statement
+        // (compile_destructure_assign's own reading of the node).
+        bool is_mut = node.nodes[1]->token == "mut";
+        if (conditional && (node.nodes[0]->token == "let" || is_mut))
+          culebra::for_each_pattern_binding(
+              *node.nodes[2], [&](std::string_view name, size_t, size_t) {
+                add_decl(decls, &node, std::string(name), is_mut);
+              });
+        walk(*node.nodes[3], conditional);
+        return;
+      }
+      case "ASSIGNMENT"_: {
+        auto av = culebra::view_assignment(node);
+        const auto* target =
+            av.compound ? nullptr : culebra::assign_name_target(node, av);
+        if (conditional && target && !culebra::is_sink_name(target->token)) {
+          bool implicit = !av.is_let && !av.is_mut;
+          // A bare write declares only where nothing already answers the name.
+          if (!implicit || declares_implicitly(std::string(target->token)))
+            add_decl(decls, target, std::string(target->token), av.is_mut,
+                     implicit);
+        }
+        for (const auto& c : node.nodes)
+          if (c.get() != target)
+            walk(*c, conditional || (av.op_token == "??=" && c.get() == av.rhs));
+        return;
+      }
+      default:
+        for (const auto& c : node.nodes) walk(*c, conditional);
+        return;
+    }
   }
 
-  // What an `if`'s arms declare into the scope around them: compile_if's own
-  // walk, (cond, body) pairs and then a trailing else.
-  void collect_arm_decls(const peg::Ast& if_node, DeclList& decls) {
-    auto iv = culebra::view_if(if_node);
-    size_t i = iv.arm_off;
-    for (; i + 1 < if_node.nodes.size(); i += 2)
-      collect_escaping_decls(*if_node.nodes[i + 1], decls);
-    if (i < if_node.nodes.size())
-      collect_escaping_decls(*if_node.nodes[i], decls);
+  // What an `if` / `?:` / `cond` declares past its first test: in its arms
+  // and its later tests.
+  void collect_arm_decls(const peg::Ast& node, DeclList& decls,
+                         bool conditional) {
+    using namespace peg::udl;
+    if (node.tag == "COND"_) {
+      for (size_t a = 0; a < node.nodes.size(); a++) {
+        collect_conditional_decls(*node.nodes[a]->nodes[0], decls,
+                                  conditional || a > 0);
+        collect_conditional_decls(*node.nodes[a]->nodes[1], decls, true);
+      }
+      return;
+    }
+    size_t first = culebra::view_if(node).arm_off;
+    for (size_t i = first; i < node.nodes.size(); i++)
+      collect_conditional_decls(*node.nodes[i], decls, conditional || i > first);
+  }
+
+  // At the head of a statement (or of an expression that is a scope of its
+  // own), the cells for what it declares where it may not run. A name whose
+  // cell a closure here already holds is that same variable, which the
+  // declaration writes (captured_here); any other binding here is shadowed,
+  // as compile_if's own hoist does.
+  void predeclare_conditional_decls(const peg::Ast& ast) {
+    DeclList decls;
+    collect_conditional_decls(ast, decls, /*conditional=*/false);
+    std::erase_if(decls,
+                  [&](const Decl& d) { return captured_here(d.name) != nullptr; });
+    predeclare_conditional_cells(ast, decls);
   }
 
   void predeclare_forward_refs(const peg::Ast& ast) {
@@ -10078,6 +10155,7 @@ class Compiler {
     // The init bindings are evaluated once, before the first condition, and
     // stay live through the `nobreak` tail — hence the scope around it all.
     InitScope init(*this, ast, wv.init);
+    predeclare_conditional_decls(*wv.cond);  // once, outside the loop
     int32_t broke = alloc_broke_slot(ast, wv.nobreak);
 
     // The condition re-evaluates every iteration, so its temps must be
@@ -13079,9 +13157,9 @@ class Compiler {
     // ran — shadowing what the name meant before, and still holding the
     // sentinel (hence NameError) when no arm declared it. With an init
     // clause, the scope around the arms is the clause's, which keeps them.
-    DeclList escaping;
-    collect_arm_decls(ast, escaping);
-    predeclare_conditional_cells(ast, escaping);
+    DeclList arms;
+    collect_arm_decls(ast, arms, /*conditional=*/false);
+    predeclare_conditional_cells(ast, arms);
     auto compile_arm = [&](const peg::Ast& body) { compile_arm_into(body, res); };
     std::vector<size_t> end_jumps;
     size_t i = iv.arm_off;
@@ -13107,9 +13185,9 @@ class Compiler {
   ExprResult compile_cond(const peg::Ast& ast) {
     using namespace peg::udl;
     int32_t res = alloc_temp(ast);
-    DeclList escaping;
-    collect_escaping_decls(ast, escaping);
-    predeclare_conditional_cells(ast, escaping);
+    DeclList arms;
+    collect_arm_decls(ast, arms, /*conditional=*/false);
+    predeclare_conditional_cells(ast, arms);
     std::vector<size_t> end_jumps;
     for (const auto& arm : ast.nodes) {  // each COND_ARM: [test, body]
       const auto& test = *arm->nodes[0];
@@ -13271,6 +13349,7 @@ class Compiler {
     auto mv = culebra::view_match(ast);
     int32_t res = alloc_temp(ast);  // the construct's value: outside the scope
     InitScope init(*this, ast, mv.init);
+    predeclare_conditional_decls(*mv.subject);
     int32_t subj = alloc_temp(ast);
     store_into(subj, compile_expr(*mv.subject), /*dst_is_fresh=*/true);
     std::vector<size_t> end_jumps;
