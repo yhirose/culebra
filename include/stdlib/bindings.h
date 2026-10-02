@@ -8956,30 +8956,40 @@ inline JitValue _ns_dir_zip_open(JitValue* a, int64_t) {
     _dir_zip_throw("IOError", "Dir.zip: cannot open '" + path + "'");
   return _dir_zip_register(culebra::zip::open_file(path), "'" + path + "': ");
 }
+// `_Dir.zip_open_bytes(bytes)`: the archive reads the caller's String in
+// place (the ZipArchive keeps it as its `bytes`), nothing is copied.
 inline JitValue _ns_dir_zip_open_bytes(JitValue* a, int64_t) {
   return _dir_zip_register(
-      culebra::zip::open_bytes(std::string(_ns_adapt::require_sv(a[0], "bytes"))),
-      "");
+      culebra::zip::open_bytes(_ns_adapt::require_sv(a[0], "bytes")), "");
 }
 
 // The entry of `path`, or null: absent, or outside the archive.
-inline const culebra::zip::Entry* _dir_zip_entry(_DirZipTable::Open& z,
-                                                 JitValue path) {
+inline const std::pair<const std::string, culebra::zip::Entry>* _dir_zip_find(
+    _DirZipTable::Open& z, JitValue path) {
   std::string key;
   if (!culebra::dir_path_normalize(_ns_adapt::require_sv(path, "path"), key))
     return nullptr;
   auto it = z.index.files.find(key);
-  return it == z.index.files.end() ? nullptr : &it->second;
+  return it == z.index.files.end() ? nullptr : &*it;
 }
+inline const culebra::zip::Entry* _dir_zip_entry(_DirZipTable::Open& z,
+                                                 JitValue path) {
+  const auto* found = _dir_zip_find(z, path);
+  return found ? &found->second : nullptr;
+}
+// `_Dir.zip_read(id, bytes, path)`: `bytes` is what the ZipArchive holds now
+// (nil for a file); anything but a String reads as no archive at all.
 inline JitValue _ns_dir_zip_read(JitValue* a, int64_t) {
   auto& z = _dir_zip_open_of(a[0]);
-  const auto* e = _dir_zip_entry(z, a[1]);
-  if (!e) return _ns_adapt::v_nil();
+  const auto* found = _dir_zip_find(z, a[2]);
+  if (!found) return _ns_adapt::v_nil();
+  std::string_view bytes = _culebra_str_view(a[1].tag, a[1].data);
   std::string out, err;
-  if (!culebra::zip::read(z.reader, *e, out, err))
+  if (!culebra::zip::read(z.reader, bytes, found->second, found->first, out,
+                          err))
     _dir_zip_throw("ValueError",
                    culebra::format("Dir.zip: '{}': {}",
-                                   _ns_adapt::require_sv(a[1], "path"), err));
+                                   _ns_adapt::require_sv(a[2], "path"), err));
   return _ns_adapt::str(out);
 }
 inline JitValue _ns_dir_zip_is_file(JitValue* a, int64_t) {
@@ -10166,7 +10176,7 @@ inline const NsMethod kNsRows_Dir_native[] = {
   {"_Dir", "embedded_size",     2, &_ns_dir_embedded<_dir_embedded_size>},
   {"_Dir", "zip_open",          1, &_ns_dir_zip_open},
   {"_Dir", "zip_open_bytes",    1, &_ns_dir_zip_open_bytes},
-  {"_Dir", "zip_read",          2, &_ns_dir_zip_read},
+  {"_Dir", "zip_read",          3, &_ns_dir_zip_read},
   {"_Dir", "zip_is_file",       2, &_ns_dir_zip_is_file},
   {"_Dir", "zip_is_dir",        2, &_ns_dir_zip_is_dir},
   {"_Dir", "zip_list_dir",      2, &_ns_dir_zip_list_dir},

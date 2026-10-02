@@ -6130,11 +6130,13 @@ let _dir_module = fn () {
   }
 
   # The entries of a ZIP archive: a file, read lazily off its central
-  # directory, or an archive already in memory. The open archive belongs to
-  # this Runtime (`_id` names it in the natives' table), so a ZipArchive never
-  # crosses an Isolate — its kind says so — and a worker opens its own.
-  # `close()` frees it early, the last reference frees it otherwise, and any
-  # use after that is a ClosedError.
+  # directory, or an archive already in memory, read in place: the String
+  # stays the program's, held here as `bytes` and lent to each read (nothing
+  # is copied). Both fields are there either way, one of them nil. The open
+  # archive belongs to this Runtime (`_id` names it in the natives' table), so
+  # a ZipArchive never crosses an Isolate — its kind says so — and a worker
+  # opens its own. `close()` frees it early, the last reference frees it
+  # otherwise, and any use after that is a ClosedError.
   class ZipArchive {
     new(path, bytes) {
       _Dir.mark(self, 'zip')
@@ -6144,17 +6146,26 @@ let _dir_module = fn () {
           message: "type error: Dir.zip takes a path or bytes:, one of the two",
         }
       }
+      self.path = nil
+      self.bytes = nil
       if path != nil {
         self.path = FS.abspath(_disk_path('Dir.zip', path))
         self._id = _Dir.zip_open(self.path)
       } else {
-        # The open archive keeps its own copy of the bytes.
-        self._id = _Dir.zip_open_bytes(_string_arg('Dir.zip bytes:', bytes))
+        let t = type_of(bytes)
+        if t != 'String' && t != 'StringView' {
+          throw {
+            kind: 'TypeError',
+            message: "type error: Dir.zip bytes: expects String, got {t}",
+          }
+        }
+        self.bytes = bytes
+        self._id = _Dir.zip_open_bytes(bytes)
       }
     }
     read(path) {
       _need_file(self, 'read', path)
-      _Dir.zip_read(self._id, path)
+      _Dir.zip_read(self._id, self.bytes, path)
     }
     list_dir(path) {
       _need_dir(self, 'list_dir', path)
@@ -6178,6 +6189,7 @@ let _dir_module = fn () {
     }
     close() {
       _Dir.zip_close(self._id)
+      self.bytes = nil
     }
     drop() {
       _Dir.zip_close(self._id) if self._id != nil

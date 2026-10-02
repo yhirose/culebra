@@ -262,6 +262,62 @@ assert_false(FS.exists(FS.join(tmp, 'up.txt')))
 mxl.copy_to(FS.join(tmp, 'mxl'))
 assert_eq(Dir.disk(FS.join(tmp, 'mxl')).files(), mxl.files())
 
+# --- Dir.zip(bytes:): the program's String, read in place ---
+let inplace = Dir.zip(bytes: packed)
+assert_eq(inplace.bytes, packed)
+assert_eq(inplace.path, nil)
+assert_eq(zf.bytes, nil)
+# The archive is what keeps its bytes alive: one opened over a temporary, or
+# over a StringView whose String nothing else names, reads after a collection.
+fn open_temporary() {
+  Dir.zip(bytes: Compress.zip(FILES))
+}
+fn open_view() {
+  let padded = 'X' + Compress.zip(FILES)
+  let view = padded[1..padded.size()]
+  Dir.zip(bytes: view)
+}
+let temporary = open_temporary()
+let viewed = open_view()
+assert_eq(type_of(viewed.bytes), 'StringView')
+GC.stat()
+for path in FILES.keys() {
+  assert_eq(temporary.read(path), FILES[path])
+  assert_eq(viewed.read(path), FILES[path])
+}
+# Two archives over one String: closing one leaves the other reading.
+let first = Dir.zip(bytes: packed)
+let second = Dir.zip(bytes: packed)
+first.close()
+assert_eq(second.read('a.txt'), 'alpha')
+# What it reads is whatever `bytes` holds when it reads: an equal copy reads
+# as the original, and anything else never reads as another archive's entry,
+# even one laid out alike (the same names and sizes, other contents).
+inplace.bytes = String.from_bytes(packed.bytes().collect())
+assert_eq(inplace.read('a.txt'), 'alpha')
+let alike = Compress.zip({
+  'b.txt': 'bed',
+  'a.txt': 'omega',
+  'img/x.png': String.from_bytes([137, 80, 78, 71, 0, 254]),
+  'empty.txt': '',
+})
+assert_eq(alike.size(), packed.size())
+for other in [alike, 'not a zip', nil, 5] {
+  inplace.bytes = other
+  assert_eq(
+    caught(|| inplace.read('a.txt')),
+    "ValueError: Dir.zip: 'a.txt': not a ZIP archive, or a damaged one",
+  )
+}
+assert_eq(inplace.files(), z.files())
+# close() lets the bytes go with the archive.
+inplace.close()
+assert_eq(inplace.bytes, nil)
+assert_eq(
+  caught(|| inplace.read('a.txt')),
+  'ClosedError: Dir.zip: the archive is closed',
+)
+
 # --- an open archive's lifetime ---
 assert_eq(type_of(z), 'ZipArchive')
 assert_eq(

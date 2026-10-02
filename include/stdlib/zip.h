@@ -37,11 +37,14 @@
 namespace culebra::zip {
 
 // One file of an archive: where its entry sits (minizip's unz64_file_pos, so
-// a read goes straight to it rather than searching by name) and its size.
+// a read goes straight to it rather than searching by name), its size, and
+// what a read checks the entry it lands on against (crc, compressed size).
 struct Entry {
   uint64_t pos_in_central_dir = 0;
   uint64_t num_of_file = 0;
   uint64_t size = 0;
+  uint64_t compressed_size = 0;
+  uint32_t crc = 0;
 };
 
 // What an archive holds, keyed by normalized path. A directory is there when
@@ -71,18 +74,23 @@ struct Index {
     return true;
   }
 
-  // Records the entry `name` (as the archive wrote it). `\` — which some
-  // Windows tools write — is a separator here, and a path that starts with a
-  // drive (`C:`) is as absolute as one that starts with `/`: such an entry, or
-  // one that climbs with `..`, could never be read by path and is left out.
-  // The first entry wins: over a later one naming the same file, and over one
-  // that would make a file a directory too, or a directory a file.
-  void add(std::string name, const Entry& e) {
+  // The path an entry's `name` (as the archive wrote it) is read by, or false
+  // when it is left out. `\` — which some Windows tools write — is a
+  // separator here, and a path that starts with a drive (`C:`) is as absolute
+  // as one that starts with `/`: such an entry, or one that climbs with `..`,
+  // could never be read by path.
+  static bool entry_key(std::string name, std::string& key) {
     std::replace(name.begin(), name.end(), '\\', '/');
-    bool dir = !name.empty() && name.back() == '/';
+    return dir_path_normalize(name, key) && !key.empty() && !has_drive(key);
+  }
+
+  // Records the entry `name`. The first entry wins: over a later one naming
+  // the same file, and over one that would make a file a directory too, or a
+  // directory a file.
+  void add(const std::string& name, const Entry& e) {
+    bool dir = !name.empty() && (name.back() == '/' || name.back() == '\\');
     std::string key;
-    if (!dir_path_normalize(name, key) || key.empty() || has_drive(key))
-      return;
+    if (!entry_key(name, key)) return;
     if (files.count(key) || (!dir && dirs.count(key))) return;
     std::vector<std::string> parents;
     for (auto slash = key.find('/'); slash != std::string::npos;
@@ -122,30 +130,58 @@ struct Opened {
 #endif
 
 #if defined(CULEBRA_ZIP_REAL)
+// An archive opened in memory reads the caller's bytes and keeps no pointer
+// to them: they are lent for one call (Lend) and taken back at its end, so
+// nothing here can outlive the String the program holds.
 struct Reader {
-  std::string bytes;  // an in-memory archive: unzip reads these in place
   zipper::UnZip unzip;
+  bool in_memory = false;
 };
 
+// Points an in-memory archive at `bytes` for one scope, and at nothing after.
+struct Lend {
+  Reader* r;
+  Lend(Reader* reader, std::string_view bytes) : r(reader) {
+    if (r->in_memory) r->unzip.rebind_memory(bytes.data(), bytes.size());
+  }
+  ~Lend() {
+    if (r->in_memory) r->unzip.rebind_memory(nullptr, 0);
+  }
+};
+
+// The entry under minizip's cursor, its name included, in one header read.
+inline bool _current(unzFile u, unz_file_info64& info, std::string& name) {
+  char buf[512];
+  if (unzGetCurrentFileInfo64(u, &info, buf, sizeof buf, nullptr, 0, nullptr,
+                              0) != UNZ_OK)
+    return false;
+  if (info.size_filename <= sizeof buf) {
+    name.assign(buf, info.size_filename);
+    return true;
+  }
+  name.assign(info.size_filename, '\0');
+  return unzGetCurrentFileInfo64(u, &info, name.data(), name.size(), nullptr,
+                                 0, nullptr, 0) == UNZ_OK;
+}
+
 // Walks the central directory into the index. The cursor stops on an error
-// as it does at the end, so `error()` is what tells the two apart.
-// An archive of no entries has no first one to go to, so it is not walked.
-// A size past what a Long holds is damage, not a file.
+// as it does at the end, so `error()` is what tells the two apart. A size
+// past what a Long holds is damage, not a file.
 inline Opened _index(Reader* r) {
   Opened o;
-  unz_global_info64 info{};
-  if (unzGetGlobalInfo64(r->unzip, &info) == UNZ_OK && info.number_entry > 0)
-    r->unzip.enumerate([&](zipper::UnZip& u) {
-      unz64_file_pos pos{};
-      if (unzGetFilePos64(u, &pos) != UNZ_OK) return;
-      uint64_t size = u.file_size();
-      if (size > static_cast<uint64_t>(INT64_MAX)) {
-        o.error = "not a ZIP archive, or a damaged one";
-        return;
-      }
-      o.index.add(u.file_path(),
-                  {pos.pos_in_zip_directory, pos.num_of_file, size});
-    });
+  r->unzip.enumerate([&](zipper::UnZip& u) {
+    unz64_file_pos pos{};
+    unz_file_info64 info{};
+    std::string name;
+    if (unzGetFilePos64(u, &pos) != UNZ_OK || !_current(u, info, name) ||
+        info.uncompressed_size > static_cast<uint64_t>(INT64_MAX)) {
+      o.error = "not a ZIP archive, or a damaged one";
+      return;
+    }
+    o.index.add(name, {pos.pos_in_zip_directory, pos.num_of_file,
+                       info.uncompressed_size, info.compressed_size,
+                       static_cast<uint32_t>(info.crc)});
+  });
   if (o.error.empty()) o.error = r->unzip.error();
   if (!o.error.empty()) {
     delete r;
@@ -185,18 +221,24 @@ CULEBRA_ZIP_LINKAGE Opened open_file(const std::string& path) {
 #endif
 }
 
-// Opens the archive held in `bytes`, which the reader keeps.
-CULEBRA_ZIP_LINKAGE Opened open_bytes(std::string bytes) {
+// Opens the archive held in `bytes`, which stay the caller's: they are read
+// here to index the archive, and lent again to every read.
+CULEBRA_ZIP_LINKAGE Opened open_bytes(std::string_view bytes) {
 #if defined(CULEBRA_ZIP_REAL)
   auto* r = new Reader;
-  r->bytes = std::move(bytes);
-  if (!r->unzip.open_memory(r->bytes.data(), r->bytes.size())) {
+  if (!r->unzip.open_memory(bytes.data(), bytes.size())) {
     Opened o;
     o.error = r->unzip.error();
     delete r;
     return o;
   }
-  return _index(r);
+  r->in_memory = true;
+  Opened o;
+  {
+    Lend lent(r, bytes);
+    o = _index(r);
+  }
+  return o;
 #else
   (void)bytes;
   Opened o;
@@ -205,13 +247,26 @@ CULEBRA_ZIP_LINKAGE Opened open_bytes(std::string bytes) {
 #endif
 }
 
-// The bytes of `e`; false with the reason (encrypted, an unsupported method,
-// a CRC mismatch, damage) in `error`.
-CULEBRA_ZIP_LINKAGE bool read(Reader* r, const Entry& e, std::string& out,
-                              std::string& error) {
+// The bytes of `e`, the entry indexed under `key`; false with the reason
+// (encrypted, an unsupported method, a CRC mismatch, damage) in `error`. An
+// archive opened in memory reads `bytes`, which should be what it opened.
+// Whatever they are, the entry they hold where `e` sits has to be the one
+// indexed (key, sizes and crc), or the read is refused as damage: an archive
+// handed other bytes, or a file rewritten under an open archive, never reads
+// as another entry.
+CULEBRA_ZIP_LINKAGE bool read(Reader* r, std::string_view bytes,
+                              const Entry& e, std::string_view key,
+                              std::string& out, std::string& error) {
 #if defined(CULEBRA_ZIP_REAL)
+  Lend lent(r, bytes);
   unz64_file_pos pos{e.pos_in_central_dir, e.num_of_file};
-  if (unzGoToFilePos64(r->unzip, &pos) != UNZ_OK) {
+  unz_file_info64 info{};
+  std::string name, at;
+  if (unzGoToFilePos64(r->unzip, &pos) != UNZ_OK ||
+      !_current(r->unzip, info, name) || !Index::entry_key(name, at) ||
+      at != key || info.crc != e.crc ||
+      info.compressed_size != e.compressed_size ||
+      info.uncompressed_size != e.size) {
     error = "not a ZIP archive, or a damaged one";
     return false;
   }
@@ -229,7 +284,9 @@ CULEBRA_ZIP_LINKAGE bool read(Reader* r, const Entry& e, std::string& out,
   return true;
 #else
   (void)r;
+  (void)bytes;
   (void)e;
+  (void)key;
   (void)out;
   error = CULEBRA_ZIP_STUB;
   return false;

@@ -8599,9 +8599,17 @@ with a method other than stored or deflate, or one whose data does not match
 its CRC when that entry is read. A file that is not there is an `IOError`, as
 any file read is.
 
-The open archive holds the file (or its copy of the bytes) until `close()`, or
-until the last reference to it goes; after `close()` every method raises
-`ClosedError`. It cannot be sent to another isolate (`SendError`): the open
+An archive opened from bytes reads them in place: nothing is copied, and the
+archive keeps them as its `bytes` (a StringView keeps the whole String it
+views). It reads whatever `bytes` holds at the time, so an equal copy reads the
+same; anything else is no archive to a `read`, which raises the `ValueError`
+for a damaged one, while `files`, `is_file`, `size` and `list_dir` go on
+answering from what was opened. Printing an archive prints its `bytes`, as
+printing the String would.
+
+The open archive holds the file (or its `bytes`) until `close()`, or until the
+last reference to it goes; after `close()` (which sets `bytes` to `nil`) every
+method raises `ClosedError`. It cannot be sent to another isolate (`SendError`): the open
 archive is this isolate's, and a worker opens its own. The WASM playground has
 no ZIP support: `Dir.zip` and `Compress.zip` raise there.
 
