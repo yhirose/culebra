@@ -33,6 +33,7 @@
 #include <map>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace culebra::resolve {
@@ -74,6 +75,7 @@ struct Symbol {
   size_t scope = kNone;
   bool exported = false;               // named by an `export { ... }`
   std::vector<size_t> occurrences;     // into Resolution::occurrences, in order
+  const peg::Ast* declared_at = nullptr;  // the name node that first declares it
 };
 
 struct Scope {
@@ -81,6 +83,17 @@ struct Scope {
   bool function = false;
   size_t begin = 0, end = 0;  // the bytes of the syntax that opens it
   std::map<std::string, size_t, std::less<>> names;  // name -> symbol
+  // The symbol a function scope's function is bound to (a `fn name`, or the
+  // name a literal is assigned to), else kNone.
+  size_t owner = kNone;
+};
+
+struct Options {
+  // Record what each name node resolves to (Resolution::node_symbol), the
+  // nodes a desugaring or a lowering synthesized included: what a consumer
+  // of the AST rather than of the source text — the compiler's agreement
+  // check — looks names up by.
+  bool record_nodes = false;
 };
 
 // A name read or written where nothing declares it.
@@ -157,6 +170,13 @@ struct Resolution {
   }
   std::vector<size_t> scopes_by_begin;  // scope indices, ordered by begin
 
+  // With Options::record_nodes: each name node the walk looked up, to its
+  // symbol or kNone. Keyword labels and implicit names (`_`, `self`, `fn`,
+  // `__NAME__`) are left out.
+  std::unordered_map<const peg::Ast*, size_t> node_symbol;
+  // With Options::record_nodes: each function body to its scope.
+  std::unordered_map<const peg::Ast*, size_t> body_scope;
+
   // Where a symbol is first declared, or kNone.
   size_t first_declaration(size_t symbol) const {
     for (size_t i : symbols[symbol].occurrences)
@@ -190,8 +210,8 @@ using namespace peg::udl;
 
 class Resolver {
  public:
-  Resolver(const peg::Ast& root, std::string_view source)
-      : root_(root), src_(source) {}
+  Resolver(const peg::Ast& root, std::string_view source, Options opts)
+      : root_(root), src_(source), opts_(opts) {}
 
   Resolution run() {
     cur_ = push_scope(kNone, /*function=*/true, 0, src_.size());
@@ -253,9 +273,18 @@ class Resolver {
 
   void add(const peg::Ast& n, std::string_view name, size_t sym, size_t scope,
            Role role, Spelling spelling) {
+    if (opts_.record_nodes && spelling != Spelling::KeywordLabel)
+      r_.node_symbol[&n] = sym;
     size_t off = offset_of(n, name);
     if (off == kNone) return;
     r_.occurrences.push_back({off, name.size(), sym, scope, role, spelling});
+  }
+
+  // A name read or written where nothing declares it.
+  void add_unresolved(const peg::Ast& n, std::string_view name) {
+    if (opts_.record_nodes) r_.node_symbol[&n] = kNone;
+    size_t off = offset_of(n, name);
+    if (off != kNone) r_.unresolved.push_back({std::string(name), off, cur_});
   }
 
   static bool implicit(std::string_view name) {
@@ -275,6 +304,7 @@ class Resolver {
       s.name = std::string(name);
       s.kind = kind;
       s.scope = cur_;
+      s.declared_at = &n;
       r_.symbols.push_back(std::move(s));
       names.emplace(std::string(name), sym);
     }
@@ -286,8 +316,7 @@ class Resolver {
     if (implicit(name)) return kNone;
     size_t sym = r_.lookup(cur_, name);
     if (sym == kNone) {
-      size_t off = offset_of(n, name);
-      if (off != kNone) r_.unresolved.push_back({std::string(name), off, cur_});
+      add_unresolved(n, name);
       return kNone;
     }
     add(n, name, sym, cur_, Role::Read, spelling);
@@ -353,6 +382,8 @@ class Resolver {
     cur_ = push_scope(job.parent, true,
                       job.params ? job.params->position : job.body->position,
                       end_of(*job.body));
+    r_.scopes[cur_].owner = job.owner;
+    if (opts_.record_nodes) r_.body_scope[job.body] = cur_;
     if (job.params) {
       for (const auto& p : job.params->nodes) {
         if (is_kw_only_sep(*p)) continue;
@@ -454,8 +485,7 @@ class Resolver {
       if (implicit(name)) return;
       size_t sym = r_.lookup(cur_, name);
       if (sym == kNone) {
-        size_t off = offset_of(*target, name);
-        if (off != kNone) r_.unresolved.push_back({std::string(name), off, cur_});
+        add_unresolved(*target, name);
       } else {
         add(*target, name, sym, cur_, Role::Write, Spelling::Plain);
       }
@@ -754,6 +784,7 @@ class Resolver {
 
   const peg::Ast& root_;
   std::string_view src_;
+  Options opts_;
   Resolution r_;
   size_t cur_ = kNone;
   std::deque<Job> jobs_;
@@ -766,8 +797,9 @@ class Resolver {
 
 // Resolve every name in a module parsed from `source` (the buffer the AST's
 // tokens view, after the parse normalized it).
-inline Resolution resolve_module(const peg::Ast& root, std::string_view source) {
-  return _detail::Resolver(root, source).run();
+inline Resolution resolve_module(const peg::Ast& root, std::string_view source,
+                                 Options opts = {}) {
+  return _detail::Resolver(root, source, opts).run();
 }
 
 // ---- outline ----------------------------------------------------------------

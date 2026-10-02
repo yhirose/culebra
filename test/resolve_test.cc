@@ -40,7 +40,7 @@ struct Parsed {
   Resolution res;
 };
 
-std::unique_ptr<Parsed> resolve_source(std::string src) {
+std::unique_ptr<Parsed> resolve_source(std::string src, Options opts = {}) {
   auto p = std::make_unique<Parsed>();
   p->src = std::move(src);
   std::vector<culebra::ParseFailure> failures;
@@ -49,7 +49,7 @@ std::unique_ptr<Parsed> resolve_source(std::string src) {
     check(false, "parses: " + p->src);
     return nullptr;
   }
-  p->res = resolve_module(*p->ast, p->src);
+  p->res = resolve_module(*p->ast, p->src, opts);
   return p;
 }
 
@@ -247,6 +247,65 @@ std::tuple<long, long, std::string> locate(const std::string& src, size_t off,
   return {line, static_cast<long>(off - start + 1), name};
 }
 
+// The name nodes spelled `name`, in tree order.
+void collect_names(const peg::Ast& n, std::string_view name,
+                   std::vector<const peg::Ast*>& out) {
+  if (n.is_token && n.token == name) out.push_back(&n);
+  for (const auto& c : n.nodes) collect_names(*c, name, out);
+}
+
+void test_node_records() {
+  const std::string src =
+      "let x = 1\n{ let x = 2; x }\nx\nfn f(k) { k }\nf(k: x)\nr = re'a+'\n";
+  if (auto p = resolve_source(src))
+    check(p->res.node_symbol.empty() && p->res.body_scope.empty(),
+          "nodes are recorded only on request");
+  auto p = resolve_source(src, {.record_nodes = true});
+  if (!p) return;
+  const Resolution& res = p->res;
+  auto symbol_of = [&](const peg::Ast* n) {
+    auto it = res.node_symbol.find(n);
+    return it == res.node_symbol.end() ? kNone - 1 : it->second;
+  };
+
+  std::vector<const peg::Ast*> xs;
+  collect_names(*p->ast, "x", xs);
+  check(xs.size() == 5, "five x nodes");
+  if (xs.size() == 5) {
+    size_t outer = symbol_of(xs[0]), inner = symbol_of(xs[1]);
+    check(outer < res.symbols.size() && inner < res.symbols.size() &&
+              outer != inner,
+          "each declaration node records its own symbol");
+    check(outer < res.symbols.size() && res.symbols[outer].declared_at == xs[0],
+          "a symbol records the node that declares it");
+    check(symbol_of(xs[2]) == inner, "a read in the block records the inner x");
+    check(symbol_of(xs[3]) == outer && symbol_of(xs[4]) == outer,
+          "reads after the block record the outer x");
+  }
+
+  // `f(k: x)`: the label names a parameter, not a variable read here.
+  std::vector<const peg::Ast*> ks;
+  collect_names(*p->ast, "k", ks);
+  check(ks.size() == 3 && !res.node_symbol.contains(ks.back()),
+        "a keyword label is not recorded");
+
+  // `fn f(k) { k }`: the body maps to a function scope bound to `f`.
+  bool found = false;
+  for (const auto& [body, scope] : res.body_scope) {
+    const Scope& s = res.scopes[scope];
+    found |= s.function && s.owner != kNone &&
+             res.symbols[s.owner].name == "f";
+  }
+  check(found, "a function body maps to its scope and the symbol it binds");
+
+  // `re'a+'` desugars to a call through a name the source never spells.
+  bool synthesized = false;
+  for (const auto& [node, symbol] : res.node_symbol)
+    synthesized |= name_offset(*node, node->token, p->src) == kNone &&
+                   symbol == kNone;
+  check(synthesized, "a synthesized name node is recorded");
+}
+
 void test_corpus(const std::filesystem::path& root) {
   size_t files = 0, reads = 0;
   for (const char* dir : {"tests", "examples"}) {
@@ -304,6 +363,7 @@ int main(int argc, char** argv) {
   test_declarations();
   test_spellings();
   test_outline();
+  test_node_records();
   if (argc >= 2) test_corpus(argv[1]);
 
   if (failures) {
