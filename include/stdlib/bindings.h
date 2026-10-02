@@ -6452,6 +6452,18 @@ inline thread_local std::unordered_map<int64_t, std::vector<JitRouteRecord>>
 // worker thread rebuilds the handlers onto its own heap here.
 inline thread_local std::vector<JitValue> g_jit_srv_w_handlers;
 
+// Records `value` (a handler, or a Dir sent like one) on server `id`, held as
+// the comment on JitRouteRecord says; returns its index, which is also where
+// each worker finds its copy in g_jit_srv_w_handlers.
+inline size_t _jit_http_server_record(int64_t id, std::string method,
+                                      std::string pattern, JitValue value) {
+  auto& recs = g_jit_srv_routes[id];
+  culebra_runtime_value_retain(value.tag, value.data);
+  _gc_heap().pin(reinterpret_cast<void*>(value.data));
+  recs.push_back({std::move(method), std::move(pattern), value});
+  return recs.size() - 1;
+}
+
 // A Dir of the program's own, served by srv.static. It is recorded with the
 // routes (method "STATIC") and so sent and rebuilt per worker like a handler;
 // each worker reads its own copy, g_jit_srv_w_handlers[index], through the
@@ -6473,8 +6485,8 @@ struct _JitWorkerDir : culebra::Dir {
           "TypeError", culebra::format("server.static: the Dir has no {}", name),
           0, 0);
     JitValue args[1] = {_ns_adapt::str(std::string(path))};
-    culebra_runtime_value_retain(d.tag, d.data);  // the callee consumes self
-    return _jit_invoke(m, d, 1, args);
+    // The callee consumes self, and the copy stays the worker's.
+    return _jit_invoke(m, JitOwnedVal::from_borrowed(d).consume(), 1, args);
   }
   bool ask(const char* name, std::string_view path) const {
     JitOwnedVal r(call(name, path));
@@ -6531,11 +6543,9 @@ inline JitValue _jit_http_server_route(JitValue self, int64_t n, JitValue* args,
   if (args[1].tag != TAG_FUNC)
     _jit_file_param_type_error(self, "handler", "Function", 1);
   _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
-  culebra_runtime_value_retain(args[1].tag, args[1].data);
-  _gc_heap().pin(reinterpret_cast<void*>(args[1].data));
-  g_jit_srv_routes[id].push_back(
-      {method, std::string(_culebra_str_view(args[0].tag, args[0].data)),
-       args[1]});
+  _jit_http_server_record(
+      id, method, std::string(_culebra_str_view(args[0].tag, args[0].data)),
+      args[1]);
   culebra_runtime_value_retain(self.tag, self.data);  // chainable return (+1)
   return self;
 }
@@ -6609,11 +6619,8 @@ inline void _jit_http_server_static(JitValue* __ret, JitClosure*, int8_t self_ta
         // (retained and pinned as a handler is), read there.
         if (!_culebra_value_matches_type(args[1].tag, args[1].data, "Dir"))
           bad_dir();
-        auto& recs = g_jit_srv_routes[id];
-        dir = std::make_unique<_JitWorkerDir>(recs.size());
-        culebra_runtime_value_retain(args[1].tag, args[1].data);
-        _gc_heap().pin(reinterpret_cast<void*>(args[1].data));
-        recs.push_back({"STATIC", mount, args[1]});
+        dir = std::make_unique<_JitWorkerDir>(
+            _jit_http_server_record(id, "STATIC", mount, args[1]));
       }
       culebra::http::http_server_serve_dir(id, mount, std::move(dir), err);
     } else if (args[1].tag == TAG_STRING) {

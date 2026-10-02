@@ -39,7 +39,9 @@
 # reader can trust by name, what cannot be read and why).
 # 299 since test_capture_not_cell.cul (a closure never captures a slot that is
 # not a cell; the compiler refuses it instead).
-tests.cul 299
+# 300 since test_dir_static.cul (srv.static serves every kind of Dir, a class
+# of the program's own included).
+tests.cul 300
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -83,7 +85,9 @@ ctest.entries 34
 # 1004 since Compress.zip and Dir.zip show packing and reading an archive, two
 # blocks each, in en and ja.
 # 1006 since Encoding.utf16 shows its byte orders and its mark, in en and ja.
-docs.blocks 1014
+# 1016 since stdlib's "Serving a Dir" shows static() over an archive and a
+# disk directory, in en and ja.
+docs.blocks 1016
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

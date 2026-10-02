@@ -18,7 +18,7 @@ MISMATCH use 'v' grid/static_value__outer.cul:7:4 resolve=v@2:7 compiler=v@5:19 
 MISMATCH use 'v' grid/static_value__top.cul:6:2 resolve=v@1:5 compiler=v@4:17  # D7
 
 # D8: an if/cond arm's declaration of a captured name makes a second cell
-MISMATCH second-cell 'root' tests/test_dir.cul:308:7 resolve=root@155:5 compiler=root@155:5  # D8
+MISMATCH second-cell 'root' tests/test_dir.cul:301:7 resolve=root@148:5 compiler=root@148:5  # D8
 MISMATCH second-cell 'v' grid/cond_arm__destructure__outer.cul:6:10 resolve=v@2:7 compiler=v@2:7  # D8
 MISMATCH second-cell 'v' grid/cond_arm__destructure__outer.cul:7:18 resolve=v@2:7 compiler=v@2:7  # D8
 MISMATCH second-cell 'v' grid/cond_arm__destructure__top.cul:5:8 resolve=v@1:5 compiler=v@1:5  # D8

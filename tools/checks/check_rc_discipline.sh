@@ -179,9 +179,12 @@ ratchet "bare RC calls (sendable_rt.h)" "$(count_bare include/conc/sendable.h)" 
 # (_xml_match_owned, one site for all three).
 # 6 -> 7 (2026-09-29, reviewed): String.unpack(..., into: arr) fills the
 # borrowed `into` in place and returns that same Array, the Sys.env shape.
+# 7 -> 8 (2026-10-02, reviewed): srv.static over a Dir of the program's own
+# calls the worker's copy (held in g_jit_srv_w_handlers) as a method's self,
+# which the callee consumes, so each call hands it a +1 (_JitWorkerDir::call).
 rbrw=$(grep -rE --include='*.h' "JitOwnedVal::from_borrowed\(" include/ \
        | grep -vcE "^[^:]*:[[:space:]]*//" || true)
-ratchet "runtime borrow->owned seam sites" "$rbrw" 7
+ratchet "runtime borrow->owned seam sites" "$rbrw" 8
 
 # Codegen-side hand-placed throw guards: the automatic unwind-temp window
 # is the default cleaner for a codegen-owned +1, so the hand-placed
