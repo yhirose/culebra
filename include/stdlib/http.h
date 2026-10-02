@@ -1436,15 +1436,24 @@ CULEBRA_RT_HTTP_LINKAGE void http_server_serve_dir(
           if (req.method != "GET" && req.method != "HEAD") {
             return httplib::Server::HandlerResponse::Unhandled;
           }
-          for (auto& m : sp->static_mounts) {
-            culebra::StaticResult r;
-            if (culebra::serve_static(*m.dir, m.mount, req.path, r)) {
-              res.status = r.status;
-              // `r` is loop-local and unused after this — move the (possibly
-              // large) body instead of letting set_content copy it.
-              res.set_content(std::move(r.body), r.content_type);
-              return httplib::Server::HandlerResponse::Handled;
+          // A Dir of the program's own runs its methods here, and a throw
+          // from them answers 500, as a route handler's does.
+          try {
+            for (auto& m : sp->static_mounts) {
+              culebra::StaticResult r;
+              if (culebra::serve_static(*m.dir, m.mount, req.path, r)) {
+                res.status = r.status;
+                // `r` is loop-local and unused after this — move the
+                // (possibly large) body instead of letting set_content copy
+                // it.
+                res.set_content(std::move(r.body), r.content_type);
+                return httplib::Server::HandlerResponse::Handled;
+              }
             }
+          } catch (const std::exception& e) {
+            res.status = 500;
+            res.set_content(e.what(), "text/plain");
+            return httplib::Server::HandlerResponse::Handled;
           }
           return httplib::Server::HandlerResponse::Unhandled;
         });

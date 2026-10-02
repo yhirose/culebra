@@ -43,7 +43,11 @@ fn check_served(dir, label) {
     }
     assert_eq(Http.get("{base}/s/").body, FILES['index.html'], label)
     assert_eq(Http.get("{base}/s/docs/").body, FILES['docs/index.html'], label)
-    assert_eq(Http.get("{base}/s/img/x.png").headers['Content-Type'], 'image/png', label)
+    assert_eq(
+      Http.get("{base}/s/img/x.png").headers['Content-Type'],
+      'image/png',
+      label,
+    )
     assert_eq(Http.get("{base}/s/nope.css").status, 404, label)
     assert_eq(Http.get("{base}/s/img").status, 404, label)
     assert_eq(Http.get("{base}/api/ok").body, 'ok', label)
@@ -105,6 +109,76 @@ assert_eq(
 )
 assert_eq(
   caught(|| Http.server().static("/", 5)),
+  'TypeError: server.static: dir must be a String path or a Dir',
+)
+
+# A Dir of the program's own is sent to the server's workers with the
+# routes, and each reads its copy through its methods; a throw from them
+# answers 500, as a handler's does.
+class Greetings {
+  new(.prefix) {}
+  read(path) {
+    throw {kind: 'ValueError', message: 'broken'} if path == 'broken.txt'
+    "{self.prefix} {path}"
+  }
+  list_dir(path) {
+    path == '' ? ['a.txt', 'broken.txt'] : []
+  }
+  exists(path) {
+    self.is_file(path) || self.is_dir(path)
+  }
+  is_file(path) {
+    path == 'a.txt' || path == 'broken.txt'
+  }
+  is_dir(path) {
+    path == ''
+  }
+}
+serving(Greetings('hello'), fn (base) {
+  assert_eq(Http.get("{base}/s/a.txt").body, 'hello a.txt')
+  assert_eq(
+    Http.get("{base}/s/a.txt").headers['Content-Type'],
+    'text/plain; charset=utf-8',
+  )
+  assert_eq(Http.get("{base}/s/b.txt").status, 404)
+  assert_eq(Http.get("{base}/api/ok").body, 'ok')
+  assert_eq(Http.get("{base}/s/broken.txt").status, 500)
+})
+
+# What crosses to the workers has to be Sendable, as a handler does.
+class Holding {
+  new(.d) {}
+  read(path) {
+    self.d.read(path)
+  }
+  list_dir(path) {
+    self.d.list_dir(path)
+  }
+  exists(path) {
+    self.d.exists(path)
+  }
+  is_file(path) {
+    self.d.is_file(path)
+  }
+  is_dir(path) {
+    self.d.is_dir(path)
+  }
+}
+
+let unsendable = Http.server()
+unsendable.static("/h", Holding(Http.server()))
+assert_eq(
+  caught(|| unsendable.listen_async(0)),
+  'SendError: server.listen_async: the Dir served at /h is not Sendable: a native handle is not Sendable',
+)
+unsendable.close()
+
+# An object that is no Dir is refused when it is handed over.
+class NotADir {
+  new(.name) {}
+}
+assert_eq(
+  caught(|| Http.server().static("/", NotADir('x'))),
   'TypeError: server.static: dir must be a String path or a Dir',
 )
 

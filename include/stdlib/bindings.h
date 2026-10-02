@@ -6452,6 +6452,74 @@ inline thread_local std::unordered_map<int64_t, std::vector<JitRouteRecord>>
 // worker thread rebuilds the handlers onto its own heap here.
 inline thread_local std::vector<JitValue> g_jit_srv_w_handlers;
 
+// A Dir of the program's own, served by srv.static. It is recorded with the
+// routes (method "STATIC") and so sent and rebuilt per worker like a handler;
+// each worker reads its own copy, g_jit_srv_w_handlers[index], through the
+// copy's methods. A throw from them answers 500, as a handler's does.
+struct _JitWorkerDir : culebra::Dir {
+  size_t index;
+  explicit _JitWorkerDir(size_t i) : index(i) {}
+  // `dir.name(path)`, owned.
+  JitValue call(const char* name, std::string_view path) const {
+    JitValue d = g_jit_srv_w_handlers[index];
+    auto* o = reinterpret_cast<JitObject*>(d.data);
+    JitClosure* m = nullptr;
+    if (auto* e = _find_property(o, name); e && e->value.tag == TAG_FUNC)
+      m = reinterpret_cast<JitClosure*>(e->value.data);
+    else
+      m = _jit_find_trait_default(o, name);
+    if (!m)
+      throw culebra::CulebraError(
+          "TypeError", culebra::format("server.static: the Dir has no {}", name),
+          0, 0);
+    JitValue args[1] = {_ns_adapt::str(std::string(path))};
+    culebra_runtime_value_retain(d.tag, d.data);  // the callee consumes self
+    return _jit_invoke(m, d, 1, args);
+  }
+  bool ask(const char* name, std::string_view path) const {
+    JitOwnedVal r(call(name, path));
+    return r.borrow().tag == TAG_BOOL && r.borrow().data;
+  }
+  bool is_file(std::string_view path) const override {
+    return ask("is_file", path);
+  }
+  bool is_dir(std::string_view path) const override {
+    return ask("is_dir", path);
+  }
+  bool read(std::string_view path, std::string& out) const override {
+    if (!is_file(path)) return false;
+    JitOwnedVal r(call("read", path));
+    JitValue v = r.borrow();
+    if (v.tag != TAG_STRING)
+      throw culebra::CulebraError(
+          "TypeError",
+          culebra::format("server.static: the Dir's read('{}') returned {}, not String",
+                          path, culebra_runtime_type_of(v.tag)),
+          0, 0);
+    out.assign(_culebra_str_view(v.tag, v.data));
+    return true;
+  }
+  bool list_dir(std::string_view path,
+                std::vector<std::string>& out) const override {
+    if (!is_dir(path)) return false;
+    JitOwnedVal r(call("list_dir", path));
+    JitValue v = r.borrow();
+    out.clear();
+    if (v.tag != TAG_ARRAY) return false;
+    auto* arr = reinterpret_cast<JitArray*>(v.data);
+    for (size_t i = 0; i < arr->size; i++)
+      if (arr->items[i].tag == TAG_STRING)
+        out.emplace_back(_culebra_str_view(arr->items[i].tag, arr->items[i].data));
+    return true;
+  }
+  bool size(std::string_view path, std::uintmax_t& out) const override {
+    std::string bytes;
+    if (!read(path, bytes)) return false;
+    out = bytes.size();
+    return true;
+  }
+};
+
 inline JitValue _jit_http_server_route(JitValue self, int64_t n, JitValue* args,
                                        const char* method) {
   int64_t id =
@@ -6534,8 +6602,19 @@ inline void _jit_http_server_static(JitValue* __ret, JitClosure*, int8_t self_ta
           0);
     };
     if (args[1].tag == TAG_OBJECT) {
-      auto dir = _dir_rebuild(reinterpret_cast<JitObject*>(args[1].data));
-      if (!dir) bad_dir();
+      std::unique_ptr<culebra::Dir> dir =
+          _dir_rebuild(reinterpret_cast<JitObject*>(args[1].data));
+      if (!dir) {
+        // A Dir of the program's own: sent to the workers with the routes
+        // (retained and pinned as a handler is), read there.
+        if (!_culebra_value_matches_type(args[1].tag, args[1].data, "Dir"))
+          bad_dir();
+        auto& recs = g_jit_srv_routes[id];
+        dir = std::make_unique<_JitWorkerDir>(recs.size());
+        culebra_runtime_value_retain(args[1].tag, args[1].data);
+        _gc_heap().pin(reinterpret_cast<void*>(args[1].data));
+        recs.push_back({"STATIC", mount, args[1]});
+      }
       culebra::http::http_server_serve_dir(id, mount, std::move(dir), err);
     } else if (args[1].tag == TAG_STRING) {
       culebra::http::http_server_static(
@@ -6573,14 +6652,18 @@ inline JitValue _jit_http_server_do_serve(int64_t id, int64_t workers,
       } catch (culebra::CulebraError& e) {
         throw culebra::CulebraError(
             "SendError",
-            culebra::format("{}: handler for {} {} is not Sendable: {}", ctx,
-                            rec.method, rec.pattern, e.what()),
+            rec.method == "STATIC"
+                ? culebra::format("{}: the Dir served at {} is not Sendable: {}",
+                                  ctx, rec.pattern, e.what())
+                : culebra::format("{}: handler for {} {} is not Sendable: {}",
+                                  ctx, rec.method, rec.pattern, e.what()),
             0, 0);
       }
     }
     for (size_t i = 0; i < recs.size(); i++) {
       size_t ri = i;
       std::string rerr;
+      if (recs[i].method == "STATIC") continue;  // served by its _JitWorkerDir
       if (recs[i].method == "WS") {
         culebra::http::WsHandler wh =
             [ri](const culebra::http::ServerRequest& q,
