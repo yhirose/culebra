@@ -3479,7 +3479,7 @@ trait Dir {
     let win = FS.sep() == "\\"
     let paths = self.files().map(|f| to_string(f))
     for path in paths {
-      let segs = (win ? path.replace("\\", '/') : path).split('/')
+      let segs = (win ? path.tr("\\", '/') : path).split('/')
       if path.starts_with('/') || path.starts_with("\\") || (win && path.contains(':')) || segs.any(|s| s == '' || s == '.' || s == '..') {
         throw {kind: 'ValueError', message: "copy_to: '{path}' is not a path inside the directory"}
       }
