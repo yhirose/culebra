@@ -541,7 +541,8 @@ class Server {
     }
     if (linted.authored) {
       snap->ast = linted.authored;
-      snap->res = resolve::resolve_module(*snap->ast, snap->text);
+      snap->res = resolve::resolve_module(*snap->ast, snap->text,
+                                          {.globals = lint::builtin_names()});
       snap->outline = resolve::outline(*snap->ast, snap->text, snap->res);
       d.snapshot = std::move(snap);
     }
@@ -972,7 +973,8 @@ class Server {
       modules_.erase(key);
       return nullptr;
     }
-    mod->res = resolve::resolve_module(*mod->ast, mod->text);
+    mod->res = resolve::resolve_module(*mod->ast, mod->text,
+                                       {.globals = lint::builtin_names()});
     mod->inference = std::make_unique<infer::Inference>(*mod->ast, mod->text,
                                                         mod->res, catalog());
     mod->members = mod->inference->visible(mod->text.size());
@@ -1042,7 +1044,8 @@ class Server {
     size_t offset = 0;
     std::optional<infer::Type> receiver;
     if (ast) {
-      probe_res.emplace(resolve::resolve_module(*ast, probe));
+      probe_res.emplace(resolve::resolve_module(
+          *ast, probe, {.globals = lint::builtin_names()}));
       inf.emplace(*ast, probe, *probe_res, catalog(), module_members_for(uri));
       offset = probe.find(kPlaceholder);
       size_t index = 0;

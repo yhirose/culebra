@@ -2381,6 +2381,11 @@ inline void scan(const peg::Ast& n, std::map<long, LineUse>& out) {
 inline const std::set<std::string, std::less<>>* (*builtin_names_hook)() =
     nullptr;
 
+// The builtin names, or null before the hook is installed.
+inline const std::set<std::string, std::less<>>* builtin_names() {
+  return builtin_names_hook ? builtin_names_hook() : nullptr;
+}
+
 // The Error-severity static analyses, shared by the enforce path
 // (`check_module`, run on every load) and the report path (`collect_module`,
 // the `culebra lint` CLI). These are the checks the runtime is certain to
@@ -2392,10 +2397,8 @@ inline void run_error_checks(const peg::Ast& ast,
   walker.run(ast);
   // Undefined-variable check (the sound subset that is certain to raise
   // NameError) — run only when the builtin-name provider is installed.
-  if (builtin_names_hook) {
-    if (const auto* globals = builtin_names_hook())
-      _detail::undefined::analyze_module(ast, *globals, diags);
-  }
+  if (const auto* globals = builtin_names())
+    _detail::undefined::analyze_module(ast, *globals, diags);
 }
 
 // Run the load-stage static lint checks over one module AST before evaluation.

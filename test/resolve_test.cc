@@ -210,6 +210,42 @@ void test_spellings() {
   }
 }
 
+// A stdlib global, as the compiler's Options::globals knows it.
+const std::set<std::string, std::less<>> kGlobals{"println", "range", "Math"};
+
+void test_globals() {
+  if (auto p = resolve_source("println = 1\nprintln(2)\n",
+                              {.globals = &kGlobals})) {
+    unbound(*p, "println", 0, "a bare write to a global is refused, not declared");
+    unbound(*p, "println", 1, "and a read after it is the global");
+  }
+  if (auto p = resolve_source("println = 1\nprintln(2)\n"))
+    same(*p, "println", 0, 1, "with no globals known, the bare write declares");
+  if (auto p = resolve_source("[range] = [5]\n", {.globals = &kGlobals}))
+    unbound(*p, "range", 0, "so does a bare destructure");
+  if (auto p = resolve_source("let println = 0\nprintln = 1\n",
+                              {.globals = &kGlobals}))
+    same(*p, "println", 0, 1, "a declared name of a global's spelling is written");
+}
+
+void test_session() {
+  std::vector<std::string> earlier{"c"};
+  if (auto p = resolve_source("fn bump() { c = c + 1 }\nlet c = 5\n",
+                              {.session = earlier})) {
+    size_t c = p->res.lookup(0, "c");
+    check(c != kNone && p->res.symbols[c].declared_at == nullptr,
+          "an earlier input's name is the module scope's");
+    check(sym(*p, "c", 0) == c && sym(*p, "c", 1) == c,
+          "a nested write and read reach the earlier input's variable");
+    check(sym(*p, "c", 2) == c, "a top-level `let` declares that same variable");
+  }
+  if (auto p = resolve_source("fn bump() { c = 1 }\n")) {
+    size_t c = sym(*p, "c", 0);
+    check(c != kNone && p->res.symbols[c].scope != 0,
+          "out of a session the nested write declares a local");
+  }
+}
+
 void test_decorators() {
   if (auto p = resolve_source(
           "let wrap = fn (f) { f }\n@wrap\nfn g() { 1 }\n@wrap\nclass C {}\n")) {
@@ -381,6 +417,8 @@ int main(int argc, char** argv) {
   test_order();
   test_declarations();
   test_spellings();
+  test_globals();
+  test_session();
   test_decorators();
   test_outline();
   test_node_records();

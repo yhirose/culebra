@@ -1905,7 +1905,10 @@ through `lookup_at` (and `check_use`), a declaration through
 `push_binding` (and `note_declaration`), so a read
 or write naming a variable other than resolve.h's, a variable a closure
 captured from one cell that gets a second, and a capture that is not a
-cell are each a finding. `tools/checks/scope_agreement.py` compiles the
+cell are each a finding. resolve.h is told what the compiler knows
+beyond the source: the stdlib's global names (a bare write to one is
+refused, not a declaration) and, in a session, the names earlier inputs
+declared. `tools/checks/scope_agreement.py` compiles the
 corpus, a generated grid (each scope-opening construct × each declaring
 form, with and without an outer variable of the same name), a
 `culebra test` session and the REPL test that way, and fails on a

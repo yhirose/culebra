@@ -15,7 +15,11 @@
 //    one name in one scope is the same variable: a repeated `let`, a bare
 //    `x = v`, the overloads of `fn name`.
 //  - A bare `x = v` (or a bare destructure) writes the `x` visible there, or
-//    declares one in the innermost scope when none is.
+//    declares one in the innermost scope when none is, unless `x` is a stdlib
+//    global (Options::globals), which refuses the write instead.
+//  - In a session (the REPL, `culebra test`), the top level of every input is
+//    one scope: the names earlier inputs declared (Options::session) are its
+//    variables from the start.
 //  - A function body sees an enclosing function's variables wherever they are
 //    declared, since a closure captures the variable itself; so each function
 //    body is resolved after the whole body that encloses it.
@@ -32,6 +36,8 @@
 #include <cstdint>
 #include <deque>
 #include <map>
+#include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -95,6 +101,13 @@ struct Options {
   // of the AST rather than of the source text — the compiler's agreement
   // check — looks names up by.
   bool record_nodes = false;
+  // The stdlib's global names (lint::builtin_names()). A bare write to one
+  // that nothing declares is refused by the global rather than declaring a
+  // variable; with none given, it declares.
+  const std::set<std::string, std::less<>>* globals = nullptr;
+  // The names earlier inputs of a session have declared: the module scope's
+  // variables before this input's first statement.
+  std::span<const std::string> session;
 };
 
 // A name read or written where nothing declares it.
@@ -216,6 +229,8 @@ class Resolver {
 
   Resolution run() {
     cur_ = push_scope(kNone, /*function=*/true, 0, src_.size());
+    for (const auto& name : opts_.session)
+      if (!implicit(name)) symbol_in(cur_, name, SymbolKind::Variable, nullptr);
     walk_body(root_);
     for (const auto* e : exports_) {
       read(*e, e->token, Spelling::Plain);
@@ -292,25 +307,32 @@ class Resolver {
     return name == "_" || is_always_bound_name(name);
   }
 
+  // The variable `name` is in `scope`, made the first time.
+  size_t symbol_in(size_t scope, std::string_view name, SymbolKind kind,
+                   const peg::Ast* at) {
+    auto& names = r_.scopes[scope].names;
+    if (auto it = names.find(name); it != names.end()) return it->second;
+    size_t sym = r_.symbols.size();
+    Symbol s;
+    s.name = std::string(name);
+    s.kind = kind;
+    s.scope = scope;
+    s.declared_at = at;
+    r_.symbols.push_back(std::move(s));
+    names.emplace(std::string(name), sym);
+    return sym;
+  }
+
   size_t declare(const peg::Ast& n, std::string_view name, SymbolKind kind,
                  Spelling spelling = Spelling::Plain) {
     if (implicit(name)) return kNone;
-    auto& names = r_.scopes[cur_].names;
-    size_t sym;
-    if (auto it = names.find(name); it != names.end()) {
-      sym = it->second;
-    } else {
-      sym = r_.symbols.size();
-      Symbol s;
-      s.name = std::string(name);
-      s.kind = kind;
-      s.scope = cur_;
-      s.declared_at = &n;
-      r_.symbols.push_back(std::move(s));
-      names.emplace(std::string(name), sym);
-    }
+    size_t sym = symbol_in(cur_, name, kind, &n);
     add(n, name, sym, cur_, Role::Declaration, spelling);
     return sym;
+  }
+
+  bool global(std::string_view name) const {
+    return opts_.globals && opts_.globals->contains(name);
   }
 
   size_t read(const peg::Ast& n, std::string_view name, Spelling spelling) {
@@ -324,11 +346,16 @@ class Resolver {
     return sym;
   }
 
-  // `x = v`: the visible `x`, else a new one here.
+  // `x = v`: the visible `x`, else a new one here — or, for a stdlib global,
+  // the global, which refuses it.
   size_t bare_write(const peg::Ast& n, std::string_view name,
                     Spelling spelling = Spelling::Plain) {
     if (implicit(name)) return kNone;
     size_t sym = r_.lookup(cur_, name);
+    if (sym == kNone && global(name)) {
+      add_unresolved(n, name);
+      return kNone;
+    }
     if (sym == kNone) return declare(n, name, SymbolKind::Variable, spelling);
     add(n, name, sym, cur_, Role::Write, spelling);
     return sym;

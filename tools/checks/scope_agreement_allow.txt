@@ -4,15 +4,6 @@
 # lines here. The D numbers are the plan's table of differences between
 # the compiler and resolve.h (~/.claude/plans/culebra-scope-source).
 
-# D3: a bare write to a stdlib name is an ImmutableError; resolve.h declares it
-MISMATCH use 'Math' tools/bench/vm_cases/implicit_declaration.cul:55:15 resolve=Math@55:15 compiler=none  # D3
-MISMATCH use 'println' tools/bench/vm_cases/implicit_declaration.cul:54:15 resolve=println@54:15 compiler=none  # D3
-MISMATCH use 'range' tools/bench/vm_cases/implicit_declaration.cul:56:16 resolve=range@56:16 compiler=none  # D3
-
-# D4: resolve.h does not know the names earlier REPL inputs declared
-MISMATCH use 'c' (repl):2:3 resolve=c@2:3 compiler=none  # D4
-MISMATCH use 'k' (repl):1:20 resolve=k@1:20 compiler=none  # D4
-
 # D5: a default naming a later parameter reads the outer binding (docs); the compiler raises NameError
 MISMATCH use 'v' grid/later_param_default__top.cul:3:11 resolve=v@1:5 compiler=none  # D5
 

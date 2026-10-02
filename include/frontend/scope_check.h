@@ -30,6 +30,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <format>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -105,10 +106,17 @@ inline void write_report(std::string_view header,
   std::fclose(out);
 }
 
+// The options every resolution the check makes is held to: the compiler's.
+inline resolve::Options options(std::span<const std::string> session = {}) {
+  return {.record_nodes = true, .globals = lint::builtin_names(),
+          .session = session};
+}
+
 class Report {
  public:
-  explicit Report(const peg::Ast& root)
-      : res_(resolve::resolve_module(root, {}, {.record_nodes = true})),
+  // `session`: the names earlier inputs declared, when `root` is a session's.
+  explicit Report(const peg::Ast& root, std::span<const std::string> session)
+      : res_(resolve::resolve_module(root, {}, options(session))),
         path_(root.path) {
     std::vector<const peg::Ast*> stack{&root};
     while (!stack.empty()) {
@@ -185,7 +193,7 @@ inline void check_lint(const peg::Ast& root) {
     return d.kind != "NameError" && d.kind != "ShadowError";
   });
   if (diags.empty()) return;
-  auto res = resolve::resolve_module(root, {}, {.record_nodes = true});
+  auto res = resolve::resolve_module(root, {}, options());
   std::vector<std::string> lines;
   for (const auto& d : diags) {
     auto open = d.message.find('\'');

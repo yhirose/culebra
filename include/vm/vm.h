@@ -3267,6 +3267,14 @@ class ReplSession {
     return it != entries_.end() && it->second.cell->value.tag != TAG_NO_SELF;
   }
 
+  // The names declared() answers true for.
+  std::vector<std::string> declared_names() {
+    std::vector<std::string> out;
+    for (const auto& [name, e] : entries_)
+      if (e.cell->value.tag != TAG_NO_SELF) out.push_back(name);
+    return out;
+  }
+
   bool is_mut(std::string_view name) {
     auto it = entries_.find(name);
     return it != entries_.end() && it->second.is_mut;
@@ -4719,7 +4727,9 @@ class Compiler {
     prog.chunks.emplace_back();  // reserve index 0 for the top level
     // The scope agreement check (scope_check.h).
     std::optional<scope_check::Report> check;
-    if (scope_check::checks(ast)) check.emplace(ast);
+    if (scope_check::checks(ast))
+      check.emplace(ast, opts.repl ? repl_session().declared_names()
+                                   : std::vector<std::string>{});
     Compiler main(prog, analysis, /*in_function=*/false, &top_info);
     main.library_ = culebra::is_library_path(ast.path);  // a baked module
     main.repl_ = opts.repl;
@@ -5800,8 +5810,8 @@ class Compiler {
     // a test file) is a name the program does not declare either.
     if (actual == scope_check::kUnrecorded && expected == culebra::resolve::kNone)
       actual = expected;
-    // In a session the top level's names are the session's cells, and
-    // resolve.h knows no earlier input: both answer "the session".
+    // In a session the top level's names are the session's cells, which
+    // carry no resolve.h symbol: both answer "the session".
     if (repl_) {
       const auto& res = check_->resolution();
       auto top = [&](size_t s) {

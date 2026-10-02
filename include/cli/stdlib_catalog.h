@@ -109,7 +109,8 @@ class StdlibCatalog final : public infer::Catalog {
     std::vector<ParseFailure> failures;
     mod->ast = parse("<" + std::string(label) + ">", mod->source, failures);
     if (!mod->ast) return nullptr;
-    mod->res = resolve::resolve_module(*mod->ast, mod->source);
+    mod->res = resolve::resolve_module(*mod->ast, mod->source,
+                                       {.globals = lint::builtin_names()});
     mod->inference =
         std::make_unique<infer::Inference>(*mod->ast, mod->source, mod->res, this);
     modules_.push_back(std::move(mod));
