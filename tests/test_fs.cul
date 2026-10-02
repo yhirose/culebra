@@ -245,14 +245,26 @@ assert_eq(FS.glob(FS.join(xdir, "*[f].txt")).map(|p| FS.basename(p)), ["f.txt", 
 assert_eq(FS.glob(FS.join(xdir, "?[!x].txt")).map(|p| FS.basename(p)), ["gf.txt"])
 assert_eq(FS.glob(FS.join(xdir, "a[b")).map(|p| FS.basename(p)), ["a[b"])
 // A character is a code point: `?` takes `é` whole, and a range compares
-// code points. Not on Windows, where FS hands a path to the OS in the ANSI
-// code page rather than as UTF-8, so `é.txt` is created under another name.
-if FS.sep() == "/" {
-  FS.write(FS.join(xdir, "é.txt"), "")
-  assert_eq(FS.glob(FS.join(xdir, "?.txt")).map(|p| FS.basename(p)), ["f.txt", "é.txt"])
-  assert_eq(FS.glob(FS.join(xdir, "[à-ö].txt")).map(|p| FS.basename(p)), ["é.txt"])
-  FS.remove(FS.join(xdir, "é.txt"))
-}
+// code points.
+FS.write(FS.join(xdir, "é.txt"), "")
+assert_eq(FS.glob(FS.join(xdir, "?.txt")).map(|p| FS.basename(p)), ["f.txt", "é.txt"])
+assert_eq(FS.glob(FS.join(xdir, "[à-ö].txt")).map(|p| FS.basename(p)), ["é.txt"])
+FS.remove(FS.join(xdir, "é.txt"))
+
+// A name outside ASCII is the same name on every OS, written, listed, read
+// and removed (on Windows the C runtime used to read it in the ANSI code
+// page: `é日本.txt` was created as `Ã©æ—¥æœ¬.txt`).
+let wide = FS.join(xdir, "wide")
+FS.mkdir(FS.join(wide, "日本"))
+FS.write(FS.join(wide, "日本", "é.txt"), "x")
+assert_eq(FS.list_dir(wide), ["日本"])
+assert_eq(FS.list_dir(FS.join(wide, "日本")), ["é.txt"])
+assert_eq(FS.read(FS.join(wide, "日本", "é.txt")), "x")
+assert_eq(File.open(FS.join(wide, "日本", "é.txt")).read(), "x")
+assert_eq(Dir.disk(wide).files(), ["日本/é.txt"])
+assert_eq(Dir.disk(wide).read("日本/é.txt"), "x")
+FS.remove(wide, recursive: true)
+assert_false(FS.exists(wide))
 FS.remove(FS.join(xdir, "gf.txt"))
 FS.remove(FS.join(xdir, "a[b"))
 

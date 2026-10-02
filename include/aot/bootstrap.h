@@ -33,9 +33,10 @@ extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE int culebra_aot_bootstrap(
     }
   }
 
-  // UTF-8 console output and cooperative Ctrl+C, same as the CLI: the program's
-  // loop safepoints and (if it runs the interpreter) statement poll observe the
-  // flag.
+  // UTF-8 paths and console output and cooperative Ctrl+C, same as the CLI:
+  // the program's loop safepoints and (if it runs the interpreter) statement
+  // poll observe the flag.
+  culebra::install_utf8_locale();
   culebra::install_console_utf8();
   culebra::install_sigint_handler();
 

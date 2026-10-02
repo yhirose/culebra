@@ -2469,7 +2469,8 @@ int run_main(int argc, const char** argv) {
   startup_profile::start();
   startup_profile::mark("main entered");
 
-  // Before anything can print.
+  // Before anything can print, or open a file.
+  culebra::install_utf8_locale();
   culebra::install_console_utf8();
 
   // No SIGINT handler here: the lanes that poll the flag install it themselves

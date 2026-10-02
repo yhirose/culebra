@@ -7,6 +7,7 @@
 #include <numeric>
 #include <csignal>
 #include <cctype>
+#include <clocale>
 #include <mutex>
 #include <cerrno>
 #include <charconv>
@@ -2771,6 +2772,18 @@ inline void request_interrupt() {
 inline void install_sigint_handler() {
   current_runtime().interrupt_flag = &culebra_g_sigint;
   std::signal(SIGINT, _culebra_sigint_handler);
+}
+
+// Every path culebra hands the C runtime is a UTF-8 String, and on Windows the
+// CRT reads a narrow path in the ANSI code page unless the locale says UTF-8:
+// `é.txt` was created as `Ã©.txt`. LC_CTYPE only, so numbers keep the "C"
+// format. Windows 10 1803 and later; on an older one the call fails and paths
+// stay ANSI. argv and the environment already arrive through the wide APIs.
+// CLI-only, like install_console_utf8: an embedder owns its process's locale.
+inline void install_utf8_locale() {
+#if defined(_WIN32)
+  std::setlocale(LC_CTYPE, ".UTF8");
+#endif
 }
 
 // A Windows console decodes output with its code page — on a localized install

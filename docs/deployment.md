@@ -849,6 +849,13 @@ Script code is unaffected: `catch e` still binds an error object with
 `e.kind == "Interrupted"` and may resume, and the press is consumed when
 that throw happens, so a caught interrupt does not fire twice.
 
+The process's locale is the host's too. A script's paths are UTF-8, and on
+Windows the C runtime reads a path in the ANSI code page unless the locale
+says UTF-8, so a name outside ASCII (`é.txt`) is created and looked up under
+another name. The CLI and an AOT binary call
+`culebra::install_utf8_locale()` at startup (Windows 10 1803 and later; a
+no-op elsewhere); a host that runs scripts touching such paths calls it too.
+
 ### Defining host functions
 
 `Embed::define` registers a C++ callable as a script-visible function.
