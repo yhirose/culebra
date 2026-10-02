@@ -96,24 +96,30 @@ def grid(dir):
             body = f'{form}\nlet _inner = || v\nv'
             cases[f'{cname}__{fname}'] = construct.replace('BODY', indent(body, 2))
     cases.update(EXPRESSIONS)
-    # In a function, with and without an outer `v`, and at the top level
-    # under one (where a parameter may reuse the name: the shadow rule is
-    # about enclosing functions).
+    # In a function, with and without an outer `v` (beside the case, or at the
+    # top level, where only a capture reaches it), and at the top level under
+    # one (where a parameter may reuse the name: the shadow rule is about
+    # enclosing functions).
     variants = {
-        '': (False, True),
-        '__outer': (True, True),
-        '__top': (True, False),
+        '': (None, True),
+        '__outer': ('here', True),
+        '__top_fn': ('top', True),
+        '__top': ('here', False),
     }
     paths = []
     for (name, text) in cases.items():
         for (suffix, (outer, in_fn)) in variants.items():
             by = 2 if in_fn else 0
-            lines = ['fn grid_case() {'] if in_fn else []
-            if outer:
+            lines = ["let v = 'top'"] if outer == 'top' else []
+            if in_fn:
+                lines.append('fn grid_case() {')
+            if outer == 'here':
                 lines += [indent("let v = 'outer'\nlet _before = || v", by)]
             lines.append(indent(text, by))
-            if outer:
+            if outer == 'here':
                 lines.append(indent('[v, _before()]', by))
+            elif outer == 'top':
+                lines.append(indent('v', by))
             if in_fn:
                 lines.append('}')
             path = os.path.join(dir, f'{name}{suffix}.cul')

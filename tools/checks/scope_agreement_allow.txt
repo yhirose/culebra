@@ -59,5 +59,20 @@ MISMATCH second-cell 'v' grid/if_arm__mut__outer.cul:6:18 resolve=v@2:7 compiler
 MISMATCH second-cell 'v' grid/if_arm__mut__top.cul:4:7 resolve=v@1:5 compiler=v@1:5  # D8
 MISMATCH second-cell 'v' grid/if_arm__mut__top.cul:5:16 resolve=v@1:5 compiler=v@1:5  # D8
 
+# D19: in a function, a name a nested scope declares (a `fn` in a block, loop, arm
+# or try; anything in an init clause) and read after it means a top-level
+# variable, which fn_analysis's flat locals never capture: NameError
+MISMATCH use 'v' grid/block__fn__top_fn.cul:8:3 resolve=v@1:5 compiler=none  # D19
+MISMATCH use 'v' grid/catch__fn__top_fn.cul:10:3 resolve=v@1:5 compiler=none  # D19
+MISMATCH use 'v' grid/for__fn__top_fn.cul:8:3 resolve=v@1:5 compiler=none  # D19
+MISMATCH use 'v' grid/init_clause__destructure__top_fn.cul:8:3 resolve=v@1:5 compiler=none  # D19
+MISMATCH use 'v' grid/init_clause__fn__top_fn.cul:8:3 resolve=v@1:5 compiler=none  # D19
+MISMATCH use 'v' grid/init_clause__let__top_fn.cul:8:3 resolve=v@1:5 compiler=none  # D19
+MISMATCH use 'v' grid/init_clause__mut__top_fn.cul:8:3 resolve=v@1:5 compiler=none  # D19
+MISMATCH use 'v' grid/match_arm__fn__top_fn.cul:10:3 resolve=v@1:5 compiler=none  # D19
+MISMATCH use 'v' grid/nobreak__fn__top_fn.cul:10:3 resolve=v@1:5 compiler=none  # D19
+MISMATCH use 'v' grid/try__fn__top_fn.cul:10:3 resolve=v@1:5 compiler=none  # D19
+MISMATCH use 'v' grid/while__fn__top_fn.cul:10:3 resolve=v@1:5 compiler=none  # D19
+
 # N1: a pattern with two `...rest` never matches, so its names are never bound
 UNSEEN 'u' tools/bench/vm_cases/match_structural.cul:58:40  # N1
