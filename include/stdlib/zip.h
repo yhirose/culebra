@@ -29,7 +29,7 @@
 #include <utility>
 #include <vector>
 
-#include <stdlib/vfs.h>  // Dir, dir_path_normalize
+#include <stdlib/vfs.h>  // Dir, dir_path_normalize, dir_child
 
 #if !defined(CULEBRA_RT_COMPRESS_WEAK) && defined(CULEBRA_ENABLE_ZIP)
 #define CULEBRA_ZIP_REAL 1
@@ -62,16 +62,12 @@ struct Index {
   bool list_dir(std::string_view key, std::vector<std::string>& out) const {
     out.clear();
     if (!is_dir(key)) return false;
-    std::string prefix = key.empty() ? std::string() : std::string(key) + "/";
-    std::set<std::string> names;
-    auto add = [&](const std::string& p) {
-      if (p.size() <= prefix.size() || p.compare(0, prefix.size(), prefix))
-        return;
-      auto rest = p.substr(prefix.size());
-      names.insert(rest.substr(0, rest.find('/')));
-    };
-    for (const auto& [p, _] : files) add(p);
-    for (const auto& p : dirs) add(p);
+    std::set<std::string, std::less<>> names;
+    std::string_view name;
+    for (const auto& [p, _] : files)
+      if (dir_child(p, key, name)) names.emplace(name);
+    for (const auto& p : dirs)
+      if (dir_child(p, key, name)) names.emplace(name);
     out.assign(names.begin(), names.end());
     return true;
   }
@@ -352,18 +348,25 @@ struct ZipDir : Dir {
     if (reader) close(reader);
   }
   // Null with the reason in `error` when the archive does not open.
-  static std::unique_ptr<ZipDir> open(const std::string* path,
-                                      std::string bytes, std::string& error) {
+  static std::unique_ptr<ZipDir> open_file(const std::string& path,
+                                           std::string& error) {
+    auto d = std::make_unique<ZipDir>();
+    return d->take(zip::open_file(path), error) ? std::move(d) : nullptr;
+  }
+  static std::unique_ptr<ZipDir> open_bytes(std::string bytes,
+                                            std::string& error) {
     auto d = std::make_unique<ZipDir>();
     d->bytes = std::move(bytes);
-    Opened o = path ? open_file(*path) : open_bytes(d->bytes);
+    return d->take(zip::open_bytes(d->bytes), error) ? std::move(d) : nullptr;
+  }
+  bool take(Opened o, std::string& error) {
     if (!o.reader) {
       error = o.error;
-      return nullptr;
+      return false;
     }
-    d->reader = o.reader;
-    d->index = std::move(o.index);
-    return d;
+    reader = o.reader;
+    index = std::move(o.index);
+    return true;
   }
   bool read(std::string_view path, std::string& out) const override {
     auto it = index.files.find(std::string(path));

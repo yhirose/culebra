@@ -1,16 +1,15 @@
 #pragma once
 
-// A tiny read-only virtual directory used to serve static web assets.
+// The C++ side of the Dir module: the read-only `Dir` interface, the path rule
+// every kind answers by (dir_path_normalize), and the kinds that hold no
+// Culebra value — `LiveDir` and `EmbeddedDir` behind Dir.embedded (live from
+// disk run from source, a baked table in an AOT binary), `RootDir` behind
+// Dir.disk, and `MapDir`, the copy of a Dir.memory a server keeps. A server
+// serves any of them through `serve_static()`, so every lane answers a
+// request byte for byte the same.
 //
-// `DiskDir` reads live from a base directory on disk (dev: edit a file and the
-// next request sees it); `EmbeddedDir` reads from a baked, read-only asset
-// table linked into an AOT single binary. `serve_static()` drives either one
-// the same way, so the interpreter, the JIT, and an AOT build all answer a
-// request byte-for-byte identically — the only difference is which `Dir` a
-// `Dir.embedded(...)` reads (chosen per backend, see stdlib).
-//
-// This header is value-neutral: it touches no culebra Value type, so the three
-// backends share one implementation (the CSV/TOML/http core pattern).
+// This header is value-neutral: it touches no culebra Value type, so the
+// lanes share one implementation (the CSV/TOML/http core pattern).
 
 #include <algorithm>
 #include <cctype>
@@ -54,6 +53,21 @@ inline bool dir_path_normalize(std::string_view path, std::string& out) {
     }
     i = j + 1;
   }
+  return true;
+}
+
+// The bare name directly under the directory `dir` on the way to `key` (both
+// normalized), or false when `key` does not lie below `dir`.
+inline bool dir_child(std::string_view key, std::string_view dir,
+                      std::string_view& name) {
+  if (!dir.empty()) {
+    if (key.size() <= dir.size() || !key.starts_with(dir) ||
+        key[dir.size()] != '/')
+      return false;
+    key.remove_prefix(dir.size() + 1);
+  }
+  if (key.empty()) return false;
+  name = key.substr(0, key.find('/'));
   return true;
 }
 
@@ -190,7 +204,7 @@ struct RootDir : Dir {
     std::error_code ec;
     out = path.empty() ? real
                        : std::filesystem::weakly_canonical(
-                             real / std::filesystem::path(std::string(path)), ec);
+                             real / std::filesystem::path(path), ec);
     if (ec) return false;
     const auto& top = real.native();
     const auto& at = out.native();
@@ -199,48 +213,55 @@ struct RootDir : Dir {
     return at.size() > top.size() && at.compare(0, top.size(), top) == 0 &&
            (top.back() == sep || at[top.size()] == sep);
   }
+  // What `path` is (a symlink followed), its real path in `p`; not_found
+  // when it is not inside the root.
+  std::filesystem::file_type kind(std::string_view path,
+                                  std::filesystem::path& p) const {
+    std::error_code ec;
+    return reach(path, p) ? std::filesystem::status(p, ec).type()
+                          : std::filesystem::file_type::not_found;
+  }
   bool is_file(std::string_view path) const override {
     std::filesystem::path p;
-    std::error_code ec;
-    return reach(path, p) && std::filesystem::is_regular_file(p, ec);
+    return kind(path, p) == std::filesystem::file_type::regular;
   }
   bool is_dir(std::string_view path) const override {
     std::filesystem::path p;
-    std::error_code ec;
-    return reach(path, p) && std::filesystem::is_directory(p, ec);
+    return kind(path, p) == std::filesystem::file_type::directory;
   }
   bool read(std::string_view path, std::string& out) const override {
     std::filesystem::path p;
-    std::error_code ec;
-    if (!reach(path, p) || !std::filesystem::is_regular_file(p, ec))
-      return false;
+    if (kind(path, p) != std::filesystem::file_type::regular) return false;
     std::ifstream f(p, std::ios::binary);
     if (!f) return false;
     out.assign(std::istreambuf_iterator<char>(f),
                std::istreambuf_iterator<char>());
-    return !f.bad();
+    return true;
   }
   bool list_dir(std::string_view path,
                 std::vector<std::string>& out) const override {
     std::filesystem::path p;
-    std::error_code ec;
-    if (!reach(path, p) || !std::filesystem::is_directory(p, ec)) return false;
+    if (kind(path, p) != std::filesystem::file_type::directory) return false;
     out.clear();
     std::string prefix = path.empty() ? std::string() : std::string(path) + "/";
+    std::error_code ec;
     for (std::filesystem::directory_iterator it(p, ec), end; !ec && it != end;
          it.increment(ec)) {
       auto name = it->path().filename().u8string();
       std::string n(name.begin(), name.end());
-      if (exists(prefix + n)) out.push_back(std::move(n));
+      std::filesystem::path q;
+      auto k = kind(prefix + n, q);
+      if (k == std::filesystem::file_type::regular ||
+          k == std::filesystem::file_type::directory)
+        out.push_back(std::move(n));
     }
     std::sort(out.begin(), out.end());
     return true;
   }
   bool size(std::string_view path, std::uintmax_t& out) const override {
     std::filesystem::path p;
+    if (kind(path, p) != std::filesystem::file_type::regular) return false;
     std::error_code ec;
-    if (!reach(path, p) || !std::filesystem::is_regular_file(p, ec))
-      return false;
     out = std::filesystem::file_size(p, ec);
     return !ec;
   }
@@ -248,33 +269,30 @@ struct RootDir : Dir {
   // directory that leads back to one it lies in is not walked again.
   std::vector<std::string> files() const {
     std::vector<std::string> out;
-    struct Todo {
-      std::string dir;
-      std::vector<std::filesystem::path> above;
-    };
-    std::vector<Todo> todo{{"", {}}};
-    while (!todo.empty()) {
-      Todo t = std::move(todo.back());
-      todo.pop_back();
-      std::filesystem::path at;
-      if (!reach(t.dir, at) ||
-          std::find(t.above.begin(), t.above.end(), at) != t.above.end())
-        continue;
-      std::vector<std::string> names;
-      if (!list_dir(t.dir, names)) continue;
-      for (auto& name : names) {
-        std::string p = t.dir.empty() ? name : t.dir + "/" + name;
-        if (is_dir(p)) {
-          auto above = t.above;
-          above.push_back(at);
-          todo.push_back({std::move(p), std::move(above)});
-        } else if (is_file(p)) {
-          out.push_back(std::move(p));
-        }
-      }
-    }
+    std::vector<std::filesystem::path> above;
+    walk("", real, above, out);
     std::sort(out.begin(), out.end());
     return out;
+  }
+  // `dir` (really at `at`) and below; `above` holds the real paths of the
+  // directories it lies in.
+  void walk(const std::string& dir, const std::filesystem::path& at,
+            std::vector<std::filesystem::path>& above,
+            std::vector<std::string>& out) const {
+    if (std::find(above.begin(), above.end(), at) != above.end()) return;
+    std::vector<std::string> names;
+    if (!list_dir(dir, names)) return;
+    above.push_back(at);
+    for (auto& name : names) {
+      std::string p = dir.empty() ? name : dir + "/" + name;
+      std::filesystem::path q;
+      auto k = kind(p, q);
+      if (k == std::filesystem::file_type::directory)
+        walk(p, q, above, out);
+      else if (k == std::filesystem::file_type::regular)
+        out.push_back(std::move(p));
+    }
+    above.pop_back();
   }
 };
 
@@ -305,13 +323,10 @@ struct MapDir : Dir {
   bool list_dir(std::string_view path,
                 std::vector<std::string>& out) const override {
     if (!is_dir(path)) return false;
-    std::string prefix = path.empty() ? std::string() : std::string(path) + "/";
-    std::set<std::string> names;
+    std::set<std::string, std::less<>> names;
+    std::string_view name;
     for (const auto& [key, _] : files)
-      if (key.size() > prefix.size() && key.compare(0, prefix.size(), prefix) == 0) {
-        auto rest = key.substr(prefix.size());
-        names.insert(rest.substr(0, rest.find('/')));
-      }
+      if (dir_child(key, path, name)) names.emplace(name);
     out.assign(names.begin(), names.end());
     return true;
   }
@@ -342,19 +357,6 @@ struct EmbeddedDir : Dir {
       if (entries[i].path && path == entries[i].path) return &entries[i];
     return nullptr;
   }
-  // The part of an entry's path below the directory `path`, if it is there.
-  static bool under(std::string_view entry, std::string_view path,
-                    std::string_view& rest) {
-    if (path.empty()) {
-      rest = entry;
-      return true;
-    }
-    if (entry.size() <= path.size() || !entry.starts_with(path) ||
-        entry[path.size()] != '/')
-      return false;
-    rest = entry.substr(path.size() + 1);
-    return true;
-  }
   bool read(std::string_view path, std::string& out) const override {
     const AssetEntry* e = find(path);
     if (!e) return false;
@@ -366,23 +368,20 @@ struct EmbeddedDir : Dir {
   }
   bool is_dir(std::string_view path) const override {
     if (path.empty()) return true;
-    std::string_view rest;
+    std::string_view name;
     for (std::size_t i = 0; i < count; i++)
-      if (entries[i].path && under(entries[i].path, path, rest)) return true;
+      if (entries[i].path && dir_child(entries[i].path, path, name)) return true;
     return false;
   }
   bool list_dir(std::string_view path,
                 std::vector<std::string>& out) const override {
     if (!is_dir(path)) return false;
-    out.clear();
-    std::string_view rest;
-    for (std::size_t i = 0; i < count; i++) {
-      if (!entries[i].path || !under(entries[i].path, path, rest)) continue;
-      std::string name(rest.substr(0, rest.find('/')));
-      if (std::find(out.begin(), out.end(), name) == out.end())
-        out.push_back(std::move(name));
-    }
-    std::sort(out.begin(), out.end());
+    std::set<std::string, std::less<>> names;
+    std::string_view name;
+    for (std::size_t i = 0; i < count; i++)
+      if (entries[i].path && dir_child(entries[i].path, path, name))
+        names.emplace(name);
+    out.assign(names.begin(), names.end());
     return true;
   }
   bool size(std::string_view path, std::uintmax_t& out) const override {

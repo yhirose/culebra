@@ -159,8 +159,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_input() {
 }
 
 // A directory opens as a stream on POSIX and then reads as nothing, so it is
-// refused by name first; a read that fails partway is an error too, never a
-// short String.
+// refused by name first.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_read_file(
     const char* path, int64_t line, int64_t col) {
   std::error_code ec;
@@ -175,10 +174,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_read_file(
   }
   std::string s((std::istreambuf_iterator<char>(ifs)),
                 std::istreambuf_iterator<char>());
-  if (ifs.bad()) {
-    throw culebra::CulebraError("IOError",
-        culebra::format("FS.read: cannot read '{}'", path), line, col);
-  }
   return _culebra_heap_str(s);
 }
 
@@ -6483,22 +6478,21 @@ inline size_t _jit_http_server_record(int64_t id, std::string method,
 struct _JitWorkerDir : culebra::Dir {
   size_t index;
   explicit _JitWorkerDir(size_t i) : index(i) {}
-  // `dir.name(path)`, owned.
+  // `dir.name(path)`, owned. Looked up as Compress.zip looks a Dir's
+  // methods up: a field of the name shadows the trait's default.
   JitValue call(const char* name, std::string_view path) const {
     JitValue d = g_jit_srv_w_handlers[index];
-    auto* o = reinterpret_cast<JitObject*>(d.data);
-    JitClosure* m = nullptr;
-    if (auto* e = _find_property(o, name); e && e->value.tag == TAG_FUNC)
-      m = reinterpret_cast<JitClosure*>(e->value.data);
-    else
-      m = _jit_find_trait_default(o, name);
-    if (!m)
+    JitPropIC ic{};
+    JitValue m = culebra_runtime_object_get_ic(
+        reinterpret_cast<JitObject*>(d.data), name, &ic, 0, 0);
+    if (m.tag != TAG_FUNC)
       throw culebra::CulebraError(
-          "TypeError", culebra::format("server.static: the Dir has no {}", name),
+          "TypeError",
+          culebra::format("server.static: the Dir's {} is not a method", name),
           0, 0);
-    JitValue args[1] = {_ns_adapt::str(std::string(path))};
-    // The callee consumes self, and the copy stays the worker's.
-    return _jit_invoke(m, JitOwnedVal::from_borrowed(d).consume(), 1, args);
+    JitOwnedVal p(_ns_adapt::str(path));
+    return _culebra_invoke_method1(reinterpret_cast<JitClosure*>(m.data), d,
+                                   p.borrow());
   }
   bool ask(const char* name, std::string_view path) const {
     JitOwnedVal r(call(name, path));
@@ -6537,9 +6531,10 @@ struct _JitWorkerDir : culebra::Dir {
     return true;
   }
   bool size(std::string_view path, std::uintmax_t& out) const override {
-    std::string bytes;
-    if (!read(path, bytes)) return false;
-    out = bytes.size();
+    if (!is_file(path)) return false;
+    JitOwnedVal r(call("size", path));
+    if (r.borrow().tag != TAG_LONG) return false;
+    out = static_cast<std::uintmax_t>(r.borrow().data);
     return true;
   }
 };
@@ -8972,11 +8967,11 @@ inline JitValue _ns_dir_mark(JitValue* a, int64_t) {
 // A file that is there and cannot be read is an IOError here.
 inline JitValue _dir_read(const culebra::Dir* d, std::string_view p) {
   std::string out;
-  if (!d || !d->is_file(p)) return _ns_adapt::v_nil();
-  if (!d->read(p, out))
+  if (d && d->read(p, out)) return _ns_adapt::str(out);
+  if (d && d->is_file(p))
     culebra::throw_runtime_error_at(
         "IOError", culebra::format("Dir.read: cannot read '{}'", p), 0, 0);
-  return _ns_adapt::str(out);
+  return _ns_adapt::v_nil();
 }
 inline JitValue _dir_list_dir(const culebra::Dir* d, std::string_view p) {
   std::vector<std::string> names;
@@ -9007,7 +9002,7 @@ inline JitValue _ns_dir_embedded(JitValue* a, int64_t) {
 // DiskDir took when it was made.
 inline culebra::RootDir _dir_disk_root(JitValue real) {
   return culebra::RootDir(
-      std::filesystem::path(std::string(_ns_adapt::require_sv(real, "real"))));
+      std::filesystem::path(_ns_adapt::require_sv(real, "real")));
 }
 template <JitValue (*Op)(const culebra::Dir*, std::string_view)>
 inline JitValue _ns_dir_disk(JitValue* a, int64_t) {
@@ -9060,13 +9055,15 @@ inline JitValue _dir_zip_register_new(culebra::zip::Opened o,
   _dir_zip_register(std::move(o), what, id);
   return {TAG_LONG, id};
 }
-inline void _dir_zip_need_file(const std::string& path);
-
-// A ZipArchive field, nil when it has none.
-inline JitValue _dir_zip_field(JitObject* o, const char* name) {
-  size_t i = o->find_slot(name);
-  return i == static_cast<size_t>(-1) ? JitValue{TAG_NIL, 0} : o->slots[i].value;
+// A missing or unreadable archive file is an IOError, like any file read.
+inline void _dir_zip_need_file(const std::string& path) {
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(path, ec))
+    _dir_zip_throw("IOError", "Dir.zip: no such file '" + path + "'");
+  if (!std::ifstream(path, std::ios::binary))
+    _dir_zip_throw("IOError", "Dir.zip: cannot open '" + path + "'");
 }
+
 // The open archive of the ZipArchive `self`. One this Runtime has not opened
 // yet arrived from another isolate: it opens here, from its `path` or its
 // `bytes`, under the id it carries. A nil id is a closed archive.
@@ -9074,13 +9071,13 @@ inline _DirZipTable::Open& _dir_zip_open_of(JitValue self) {
   if (self.tag != TAG_OBJECT)
     _dir_zip_throw("TypeError", "Dir.zip: expects a ZipArchive");
   auto* o = reinterpret_cast<JitObject*>(self.data);
-  JitValue id = _dir_zip_field(o, "_id");
+  JitValue id = _jit_slot_or_nil(o, "_id");
   if (id.tag != TAG_LONG)
     _dir_zip_throw("ClosedError", "Dir.zip: the archive is closed");
   auto& t = _dir_zip_table();
   if (auto it = t.entries.find(id.data); it != t.entries.end())
     return it->second;
-  JitValue path = _dir_zip_field(o, "path");
+  JitValue path = _jit_slot_or_nil(o, "path");
   if (path.tag != TAG_NIL) {
     std::string p(_ns_adapt::require_sv(path, "path"));
     _dir_zip_need_file(p);
@@ -9089,20 +9086,13 @@ inline _DirZipTable::Open& _dir_zip_open_of(JitValue self) {
   }
   return _dir_zip_register(
       culebra::zip::open_bytes(
-          _ns_adapt::require_sv(_dir_zip_field(o, "bytes"), "bytes")),
+          _ns_adapt::require_sv(_jit_slot_or_nil(o, "bytes"), "bytes")),
       "", id.data);
 }
 
 // `_Dir.zip_open(path)`: a missing or unreadable file is an IOError, like any
 // file read; one that is there and holds no archive is a ValueError, with the
 // reason.
-inline void _dir_zip_need_file(const std::string& path) {
-  std::error_code ec;
-  if (!std::filesystem::is_regular_file(path, ec))
-    _dir_zip_throw("IOError", "Dir.zip: no such file '" + path + "'");
-  if (!std::ifstream(path, std::ios::binary))
-    _dir_zip_throw("IOError", "Dir.zip: cannot open '" + path + "'");
-}
 inline JitValue _ns_dir_zip_open(JitValue* a, int64_t) {
   std::string path(_ns_adapt::require_sv(a[0], "path"));
   _dir_zip_need_file(path);
@@ -9137,7 +9127,7 @@ inline JitValue _ns_dir_zip_read(JitValue* a, int64_t) {
   const auto* found = _dir_zip_find(z, a[1]);
   if (!found) return _ns_adapt::v_nil();
   JitValue held =
-      _dir_zip_field(reinterpret_cast<JitObject*>(a[0].data), "bytes");
+      _jit_slot_or_nil(reinterpret_cast<JitObject*>(a[0].data), "bytes");
   std::string_view bytes = _culebra_str_view(held.tag, held.data);
   std::string out, err;
   if (!culebra::zip::read(z.reader, bytes, found->second, found->first, out,
@@ -9196,11 +9186,7 @@ inline JitValue _ns_dir_zip_close(JitValue* a, int64_t) {
 // contents and an archive's bytes are copied once, an archive file is opened
 // again — so it lives as long as its owner wants, on any thread.
 inline std::unique_ptr<culebra::Dir> _dir_rebuild(JitObject* o) {
-  auto field = [o](const char* name) {
-    size_t i = o->find_slot(name);
-    return i == static_cast<size_t>(-1) ? JitValue{TAG_NIL, 0}
-                                        : o->slots[i].value;
-  };
+  auto field = [o](const char* name) { return _jit_slot_or_nil(o, name); };
   auto text = [&](const char* name) {
     return std::string(_ns_adapt::require_sv(field(name), name));
   };
@@ -9231,10 +9217,10 @@ inline std::unique_ptr<culebra::Dir> _dir_rebuild(JitObject* o) {
       if (field("path").tag != TAG_NIL) {
         std::string path = text("path");
         _dir_zip_need_file(path);
-        z = culebra::zip::ZipDir::open(&path, {}, error);
+        z = culebra::zip::ZipDir::open_file(path, error);
         if (!z) _dir_zip_throw("ValueError", "Dir.zip: '" + path + "': " + error);
       } else {
-        z = culebra::zip::ZipDir::open(nullptr, text("bytes"), error);
+        z = culebra::zip::ZipDir::open_bytes(text("bytes"), error);
         if (!z) _dir_zip_throw("ValueError", "Dir.zip: " + error);
       }
       return z;
