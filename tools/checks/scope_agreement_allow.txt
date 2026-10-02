@@ -4,9 +4,6 @@
 # lines here. The D numbers are the plan's table of differences between
 # the compiler and resolve.h (~/.claude/plans/culebra-scope-source).
 
-# D5: a default naming a later parameter reads the outer binding (docs); the compiler raises NameError
-MISMATCH use 'v' grid/later_param_default__top.cul:3:11 resolve=v@1:5 compiler=none  # D5
-
 # D6: a body's `let` of the function's own name fills the own-name binding
 MISMATCH declaration 'shadowed' tests/test_multidispatch.cul:349:7 resolve=shadowed@349:7 compiler=shadowed@347:4  # D6
 MISMATCH declaration 'shadowed' tools/bench/vm_cases/multifn_self.cul:34:7 resolve=shadowed@34:7 compiler=shadowed@32:4  # D6
@@ -84,12 +81,6 @@ UNSEEN 'v' grid/initializer__top.cul:5:9  # D9-D11
 UNSEEN 'v' grid/own_initializer__outer.cul:5:25  # D9-D11
 UNSEEN 'v' grid/own_initializer__top.cul:4:23  # D9-D11
 
-# D12: a closure in a default naming a later parameter is a forward-reference VmError
-MISMATCH capture-unbound 'v' grid/later_param_closure.cul:2:13 resolve=unrecorded compiler=none  # D12
-MISMATCH capture-unbound 'v' grid/later_param_closure__top.cul:3:11 resolve=unrecorded compiler=none  # D12
-UNSEEN 'v' grid/later_param_closure.cul:2:16  # D12
-UNSEEN 'v' grid/later_param_closure__top.cul:3:14  # D12
-
 # D15: a destructuring redeclaration of a captured name makes a second cell (a plain `let` reuses it)
 MISMATCH second-cell 'c1' tools/bench/vm_cases/destructure.cul:86:6 resolve=c1@83:6 compiler=c1@83:6  # D15
 MISMATCH second-cell 'v' grid/sequence__destructure__outer.cul:4:10 resolve=v@2:7 compiler=v@2:7  # D15
@@ -107,16 +98,9 @@ UNSEEN 'v' grid/init_clause__fn.cul:3:8  # D16
 UNSEEN 'v' grid/init_clause__fn.cul:4:21  # D16
 UNSEEN 'v' grid/init_clause__fn.cul:5:5  # D16
 
-# D17: lint's undefined-name check does not count a declaration inside a default, an initializer or a static value
-MISMATCH lint-NameError 'v' grid/default.cul:2:31 resolve=v@2:18 lint=-  # D17
+# D17: lint's undefined-name check does not count a declaration inside an initializer or a static value
 MISMATCH lint-NameError 'v' grid/own_initializer.cul:3:25 resolve=v@3:12 lint=-  # D17
 MISMATCH lint-NameError 'v' grid/static_value.cul:3:32 resolve=v@3:19 lint=-  # D17
-
-# D18: a default's declaration, captured, is not a cell (VmError since b4caedc2)
-MISMATCH capture-not-cell 'v' grid/default__outer.cul:4:28 resolve=v@4:18 compiler=v@4:18  # D18
-MISMATCH capture-not-cell 'v' grid/default__top.cul:3:26 resolve=v@3:16 compiler=v@3:16  # D18
-UNSEEN 'v' grid/default__outer.cul:4:31  # D18
-UNSEEN 'v' grid/default__top.cul:3:29  # D18
 
 # N1: a pattern with two `...rest` never matches, so its names are never bound
 UNSEEN 'u' tools/bench/vm_cases/match_structural.cul:58:40  # N1

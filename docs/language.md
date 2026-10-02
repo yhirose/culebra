@@ -2250,7 +2250,11 @@ an expression).
   the function's definition environment, extended with the bindings the
   frame makes before its parameters — the receiver `self`, the recursion
   handle `fn`, and any earlier parameter — so both `fn (a, b = a + 1)`
-  and `m(k = self.n)` work. In a constructor the instance already exists
+  and `m(k = self.n)` work. A later parameter is not in that
+  environment, for a closure in the default either: with a top-level
+  `b`, `fn (x = b, b = 5)` and `fn (x = || b, b = 5)` read that `b`.
+  What a default declares is its own and ends with it; the body does
+  not see it. In a constructor the instance already exists
   but its field initializers have not run yet, so `self`'s fields read
   `nil` there. Default parameters must follow all required parameters.
 * A parameter may be a **destructuring pattern** — `fn ({x, y})`,

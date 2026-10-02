@@ -40,8 +40,10 @@
 # 299 since test_capture_not_cell.cul (a closure never captures a slot that is
 # not a cell; the compiler refuses it instead).
 # 300 since test_dir_static.cul (srv.static serves every kind of Dir, a class
-# of the program's own included).
-tests.cul 300
+# of the program's own included). 301 since test_param_default_scope.cul (a
+# default sees where its function is defined and the parameters before it;
+# what it declares is its own).
+tests.cul 301
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

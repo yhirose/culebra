@@ -1134,22 +1134,10 @@ struct FnAnalysis {
     DeclKinds kinds;
     for (auto& p : params_ast.nodes) {
       if (culebra::is_kw_only_sep(*p)) continue;
-      // A destructuring param (`fn ({a, b})`) binds the pattern's names,
-      // not a single identifier — extract_param_name_loc would index a
-      // non-existent IDENTIFIER child (flaky OOB read). Mirror the interp
-      // analyzer and collect the pattern's bindings.
-      if (culebra::is_pattern_param(*p)) {
-        for_each_pattern_binding(
-            *p, [&](std::string_view nm, size_t, size_t) {
-              my_locals.insert(std::string(nm));
-              kinds.scope_wide.insert(std::string(nm));
-            });
-        continue;
-      }
-      auto [name_sv, line, col] = culebra::extract_param_name_loc(*p);
-      auto name = std::string(name_sv);
-      my_locals.insert(name);
-      kinds.scope_wide.insert(name);
+      for_each_param_name(*p, [&](std::string_view nm) {
+        my_locals.insert(std::string(nm));
+        kinds.scope_wide.insert(std::string(nm));
+      });
     }
 
     FuncInfo info;
@@ -1166,12 +1154,7 @@ struct FnAnalysis {
     collect_fn_locals(body_ast, my_locals, outer, kinds);
 
     DeclaredScope declared(*this, my_locals, kinds);
-    for (auto& p : params_ast.nodes) {
-      if (culebra::is_kw_only_sep(*p) || culebra::is_kwargs_rest(*p)) continue;
-      if (auto* def = extract_default_expr(*p)) {
-        visit_for_frees(*def, my_locals, outer, info);
-      }
-    }
+    visit_defaults(params_ast, outer, info);
     visit_for_frees(body_ast, my_locals, outer, info);
     scan_eh_defer(body_ast, true, info);
 
@@ -1190,6 +1173,48 @@ struct FnAnalysis {
 
     func_info[info_key] = info;
     return info;
+  }
+
+  // Each name a parameter binds. A destructuring param (`fn ({a, b})`)
+  // binds the pattern's names, not a single identifier —
+  // extract_param_name_loc would index a non-existent IDENTIFIER child
+  // (flaky OOB read).
+  template <class F>
+  static void for_each_param_name(const peg::Ast& p, F&& f) {
+    if (culebra::is_pattern_param(p)) {
+      for_each_pattern_binding(
+          p, [&](std::string_view nm, size_t, size_t) { f(nm); });
+      return;
+    }
+    f(culebra::extract_param_name_loc(p).name);
+  }
+
+  // A default sees where its function is defined, the frame's own name and
+  // the parameters before it, a closure in it included (resolve.h's
+  // walk_default); what it declares is its own.
+  void visit_defaults(const peg::Ast& params_ast,
+                      std::vector<const std::set<std::string>*>& outer,
+                      FuncInfo& info) {
+    if (std::ranges::none_of(params_ast.nodes, [](const auto& p) {
+          return extract_default_expr(*p) != nullptr;
+        }))
+      return;
+    std::set<std::string> head;
+    if (!info.own_name.empty()) head.insert(info.own_name);
+    for (auto& p : params_ast.nodes) {
+      if (culebra::is_kw_only_sep(*p)) continue;
+      if (const auto* def = extract_default_expr(*p)) {
+        std::set<std::string> locals = head;
+        DeclKinds kinds;
+        kinds.scope_wide = head;
+        collect_fn_locals(*def, locals, outer, kinds);
+        DeclaredScope declared(*this, locals, kinds);
+        visit_for_frees(*def, locals, outer, info);
+      }
+      for_each_param_name(*p, [&](std::string_view nm) {
+        head.insert(std::string(nm));
+      });
+    }
   }
 
   // Shared by FUNCTION ([PARAMETERS, (RETURN_TYPE)?, BLOCK]) and LAMBDA

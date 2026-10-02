@@ -144,6 +144,18 @@ void test_order() {
     same(*p, "later", 0, 1, "a method sees a later top-level name");
   if (auto p = resolve_source("fn f(a, b = a) { b }\n"))
     same(*p, "a", 0, 1, "a default sees an earlier parameter");
+  if (auto p = resolve_source(
+          "let lp = 1\nfn f(x = lp, y = || lp, z = || (|| lp)(), lp = 5) { lp }\n")) {
+    same(*p, "lp", 0, 1, "a default reads the outer name of a later parameter");
+    same(*p, "lp", 0, 2, "so does a closure in a default");
+    same(*p, "lp", 0, 3, "and a closure nested in one");
+    same(*p, "lp", 4, 5, "the body reads the parameter");
+  }
+  if (auto p = resolve_source(
+          "let dv = 1\nfn f(x = (let dv = 2) + (|| dv)()) { dv }\n")) {
+    same(*p, "dv", 1, 2, "a closure in a default reads its declaration");
+    same(*p, "dv", 0, 3, "the body does not: the declaration is the default's");
+  }
   if (auto p = resolve_source("(pa, pb) = (1, 2)\nprint(pa)\n"))
     same(*p, "pa", 0, 1, "a place assignment declares a bare name");
 }

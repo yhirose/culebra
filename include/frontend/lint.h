@@ -1525,8 +1525,9 @@ void walk(const peg::Ast& node, Chain& chain, const NameSet& globals,
           std::vector<Diagnostic>& diags);
 
 // Analyze a function-like scope: collect its frame, then walk parameter
-// default expressions (evaluated in the function's own scope, with earlier
-// params bound) and the body for reads against the extended chain.
+// default expressions (each a scope of its own, checked against the whole
+// frame like the body, so a later parameter counts as bound) and the body
+// for reads against the extended chain.
 inline void analyze_fn(const peg::Ast* params, const peg::Ast& body,
                        Chain& chain, const NameSet& globals,
                        std::vector<Diagnostic>& diags) {
@@ -1536,7 +1537,7 @@ inline void analyze_fn(const peg::Ast* params, const peg::Ast& body,
   if (params) {
     for (const auto& p : params->nodes)
       if (const auto* def = culebra::extract_default_expr(*p))
-        walk(*def, chain, globals, diags);
+        analyze_fn(nullptr, *def, chain, globals, diags);
   }
   walk(body, chain, globals, diags);
   chain.pop_back();

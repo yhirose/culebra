@@ -66,6 +66,12 @@ EXPRESSIONS = {
     'default': 'fn _d(x = (let v = 1) + (|| v)()) { x }',
     'later_param_default': 'fn _d(x = v, v = 5) { x }',
     'later_param_closure': 'fn _d(x = || v, v = 5) { x() }',
+    'later_param_nested_closure': 'fn _d(x = || (|| v)(), v = 5) { x() }',
+    'earlier_param_closure': 'fn _d(v = 1, x = || v) { x() }',
+    'pattern_param_default': 'fn _d([v], x = v) { x }',
+    'pattern_param_closure': 'fn _d([v], x = || v) { x() }',
+    # What a default declares is its own: the body reads the outer `v`.
+    'default_then_body': 'fn _d(x = (let v = 1) + 0) { v }',
     'initializer': 'class _K {\nf = (let v = 1) + 0\ng = (|| v)()\n}',
     'own_initializer': 'class _K {\nf = (let v = 1) + (|| v)()\n}',
     'static_value': 'class _S {\nstatic s = (let v = 1) + (|| v)()\n}',

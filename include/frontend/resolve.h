@@ -9,10 +9,11 @@
 //    method, `defer`, `effect fn`, a handler clause); a class's field
 //    initializers, which run when an instance is made, as one function body
 //    with a scope per initializer; a static value, where the class is
-//    declared; a `{}` block; a loop body; a match arm; a try body and its
-//    catch; the block `handle` runs; and the init clause around its `if` /
-//    `while` / `match`. An `if` arm shares the enclosing scope. The builder a
-//    `_lazy_ns_register` call registers is a module of its own.
+//    declared; a parameter's default; a `{}` block; a loop body; a match
+//    arm; a try body and its catch; the block `handle` runs; and the init
+//    clause around its `if` / `while` / `match`. An `if` arm shares the
+//    enclosing scope. The builder a `_lazy_ns_register` call registers is a
+//    module of its own.
 //  - Within one function a declaration is visible from its statement on, after
 //    its right-hand side (`let x = x` reads the outer `x`). Every declaration of
 //    one name in one scope is the same variable: a repeated `let`, a bare
@@ -25,7 +26,9 @@
 //    variables from the start.
 //  - A function body sees an enclosing function's variables wherever they are
 //    declared, since a closure captures the variable itself; so each function
-//    body is resolved after the whole body that encloses it.
+//    body is resolved after the whole body that encloses it. A parameter's
+//    default is the exception: it sees the parameters before it and where
+//    the function is defined, so a function in it is resolved right there.
 //
 // A name nothing here declares — a stdlib global, `self`, a NameError at run
 // time — resolves to no symbol. A member (`o.x`) and an object key spelled
@@ -44,6 +47,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace culebra::resolve {
@@ -257,11 +261,7 @@ class Resolver {
       size_t sym = r_.lookup(0, e->token);
       if (sym != kNone) r_.symbols[sym].exported = true;
     }
-    while (!jobs_.empty()) {
-      Job job = jobs_.front();
-      jobs_.pop_front();
-      run_job(job);
-    }
+    drain_jobs();
     for (const auto& l : labels_) {
       auto it = params_of_.find(l.callee);
       if (it == params_of_.end()) continue;
@@ -448,8 +448,7 @@ class Resolver {
           bind_pattern(*p, Bind::Parameter);
           continue;
         }
-        // A default sees the parameters before it, not its own.
-        if (const auto* d = extract_default_expr(*p)) walk(*d);
+        if (const auto* d = extract_default_expr(*p)) walk_default(*d);
         const peg::Ast& name_node = param_name_node(*p);
         size_t sym = declare(name_node, name_node.token, SymbolKind::Parameter);
         if (sym != kNone && job.owner != kNone)
@@ -458,6 +457,25 @@ class Resolver {
     }
     walk_body(*job.body);
     cur_ = saved;
+  }
+
+  void drain_jobs() {
+    while (!jobs_.empty()) {
+      Job job = jobs_.front();
+      jobs_.pop_front();
+      run_job(job);
+    }
+  }
+
+  // A default sees where its function is defined and the parameters before
+  // it, not its own or a later one, a closure in it included: the functions
+  // it holds are resolved before the next parameter is declared. What it
+  // declares is its own.
+  void walk_default(const peg::Ast& d) {
+    auto enclosing = std::exchange(jobs_, {});
+    scoped_body(d);
+    drain_jobs();
+    jobs_ = std::move(enclosing);
   }
 
   void bind_pattern(const peg::Ast& pat, Bind mode) {

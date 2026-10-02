@@ -8529,6 +8529,7 @@ class Compiler {
     struct PatParam {
       const peg::Ast* pat;
       int32_t slot;
+      size_t before_plan;  // unpacked ahead of plans[before_plan]
     };
     std::vector<PatParam> pat_params;
     // The declared parameters, in ABI order. Slots and the name/type tables
@@ -8602,7 +8603,7 @@ class Compiler {
           auto synth = std::string(
               culebra::destructure_param_name(fc.chunk_.param_names.size()));
           int32_t slot = push_synthetic_param(*p, synth, /*has_default=*/0);
-          pat_params.push_back({pv.pattern, slot});
+          pat_params.push_back({pv.pattern, slot, plans.size()});
           continue;
         }
         // Lint's rule, kept as the compile-time safety net every backend
@@ -8915,7 +8916,33 @@ class Compiler {
                 plans[i].abi_index);
       }
     }
-    for (const auto& pl : plans) {
+    // Unpack a destructuring param where it stands among the others, so a
+    // later default reads its names: the test-then-bind walks of
+    // compile_destructure_assign against the synthetic slot (borrowed — it
+    // stays behind as an anonymous drained slot). Every throw anchors at the
+    // pattern node (interp/JIT's destructure_mismatch anchor), and the
+    // leaves declare immutable frame bindings, cells included.
+    size_t next_pat = 0;
+    auto unpack_patterns_before = [&](size_t plan) {
+      for (; next_pat < pat_params.size() &&
+             pat_params[next_pat].before_plan <= plan;
+           ++next_pat) {
+        const auto& pp = pat_params[next_pat];
+        StampGuard pos(fc, *pp.pat);
+        TempScope ts(fc);
+        std::vector<size_t> fail;
+        fc.compile_pattern_test(*pp.pat, pp.slot, fail);
+        fc.compile_pattern_bind(*pp.pat, pp.slot, /*subj_owned=*/false, fail,
+                                /*is_mut=*/false, /*declares=*/true);
+        size_t done = fc.emit(Op::Jump);
+        for (size_t ix : fail) fc.patch_to_here(ix);
+        fc.emit(Op::DestrErr);
+        fc.patch_to_here(done);
+      }
+    };
+    for (size_t i = 0; i < plans.size(); ++i) {
+      unpack_patterns_before(i);
+      const auto& pl = plans[i];
       if (pl.default_expr) {
         // The slot the prologue left TAG_UNFILLED takes the default's own
         // +1 — the same ownership a passed argument transfers. The frame is
@@ -8923,13 +8950,19 @@ class Compiler {
         // default that re-enters its function would otherwise overflow the
         // C stack uncounted); a throw skips the leave and the enclosing
         // frame's restore corrects the count, as in the JIT.
+        //
+        // What a default declares is its own (resolve.h's walk_default).
         size_t filled = fc.emit(Op::JumpIfFilled, pl.slot);
         {
-          TempScope ts(fc);
           StampGuard pos(fc, *pl.default_expr);
           fc.emit(Op::RecEnter, 0);
-          fc.store_into(pl.slot, fc.compile_expr(*pl.default_expr),
-                        /*dst_is_fresh=*/true);
+          fc.push_scope(*pl.default_expr);
+          {
+            TempScope ts(fc);
+            fc.store_into(pl.slot, fc.compile_expr(*pl.default_expr),
+                          /*dst_is_fresh=*/true);
+          }
+          fc.pop_scope();
           fc.emit(Op::RecLeave);
         }
         fc.patch_to_here(filled);
@@ -8979,6 +9012,7 @@ class Compiler {
         }
       }
     }
+    unpack_patterns_before(plans.size());
     // The overflow Array's names, after the parameters' own.
     if (fc.chunk_.keeps_args) {
       const int32_t aslot = args_slot;
@@ -9024,23 +9058,6 @@ class Compiler {
     // code the body runs.
     fc.emit(Op::RecEnter, 1);
     fc.chunk_.counts_frame = true;
-    // Unpack destructuring params, left to right: the test-then-bind walks
-    // of compile_destructure_assign against the synthetic slot (borrowed —
-    // it stays behind as an anonymous drained slot). Every throw anchors at
-    // the pattern node (interp/JIT's destructure_mismatch anchor), and the
-    // leaves declare immutable frame bindings, cells included.
-    for (const auto& pp : pat_params) {
-      StampGuard pos(fc, *pp.pat);
-      TempScope ts(fc);
-      std::vector<size_t> fail;
-      fc.compile_pattern_test(*pp.pat, pp.slot, fail);
-      fc.compile_pattern_bind(*pp.pat, pp.slot, /*subj_owned=*/false, fail,
-                              /*is_mut=*/false, /*declares=*/true);
-      size_t done = fc.emit(Op::Jump);
-      for (size_t ix : fail) fc.patch_to_here(ix);
-      fc.emit(Op::DestrErr);
-      fc.patch_to_here(done);
-    }
     // The field parameters, now bound: what this `new` supplies to the
     // field stores below, wherever they are emitted.
     ProvidedFields provided;
