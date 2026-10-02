@@ -8199,6 +8199,11 @@ class Compiler {
       // forward reference resolves above. Anything still missing is a
       // name no statement list on the way in declares.
       if (!b) reject(ast, culebra::format("forward-reference capture of '{}'", fv));
+      // A captured local is a cell because FnAnalysis marked it captured; a
+      // plain slot here means the two disagree on a scope, and handing it
+      // over as a cell would corrupt memory.
+      if (!b->is_cell)
+        reject(ast, culebra::format("capture of '{}', which is not a cell", fv));
       // Same reason a read refills it: MakeClosure may sit in a branch the
       // slot's own ReplCell does not dominate.
       ensure_session_slot(*b);

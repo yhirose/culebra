@@ -37,7 +37,9 @@
 # 297 since test_dir.cul (one contract over every kind of Dir).
 # 296 since test_dir_zip.cul (ZIP archives another tool wrote, entries no
 # reader can trust by name, what cannot be read and why).
-tests.cul 298
+# 299 since test_capture_not_cell.cul (a closure never captures a slot that is
+# not a cell; the compiler refuses it instead).
+tests.cul 299
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

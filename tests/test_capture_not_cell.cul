@@ -1,0 +1,53 @@
+# A closure captures a variable through its cell. Where FnAnalysis and the
+# compiler disagree about which scope holds a name, the compiler would find a
+# plain slot instead; it refuses the closure (a VmError where the code
+# building it runs) rather than handing the slot over as a cell, which
+# crashed the process. Each shape below is a scope bug of its own: when one
+# is fixed, its case here becomes the value the program means.
+
+fn cnc_outcome(f) {
+  try {
+    f()
+  } catch e {
+    [e.kind, e.message]
+  }
+}
+
+fn cnc_not_a_cell(name) {
+  ['VmError', "--vm: unsupported: capture of '{name}', which is not a cell"]
+}
+
+# A field initializer's declaration, read by a closure in a later field.
+fn cnc_initializer_carried() {
+  let u = 100
+  class CncCarried {
+    f = (let u = 7) + 1
+    g = (|| u)()
+  }
+  CncCarried().g
+}
+assert_eq(cnc_outcome(cnc_initializer_carried), cnc_not_a_cell('u'))
+
+# The same declaration, read by a closure in its own initializer.
+fn cnc_initializer_own() {
+  let u = 100
+  class CncOwn {
+    f = (let u = 7) + (|| u)()
+  }
+  CncOwn().f
+}
+assert_eq(cnc_outcome(cnc_initializer_own), cnc_not_a_cell('u'))
+
+# A static value's declaration, read by a closure in the same value, where
+# the name `inner` sees is a capture of the enclosing function's.
+fn cnc_static_value() {
+  let t = 0
+  let inner = fn () {
+    class CncStatic {
+      static s = (let t = 5) + (|| t)()
+    }
+    CncStatic.s
+  }
+  inner()
+}
+assert_eq(cnc_outcome(cnc_static_value), cnc_not_a_cell('t'))
