@@ -318,12 +318,60 @@ assert_eq(
   'ClosedError: Dir.zip: the archive is closed',
 )
 
+# --- an archive sent to an isolate opens again there ---
+# From its bytes and from its file; the sender's stays open, and closing
+# the one that arrived leaves the sender's alone.
+let zdir = FS.mkdtemp('culebra-zip-send')
+defer {
+  FS.remove(zdir, recursive: true)
+}
+let zpath = FS.join(zdir, 'sent.zip')
+FS.write(zpath, packed)
+let zfile = Dir.zip(zpath)
+for sent in [z, zfile] {
+  assert_eq(
+    Isolate
+      .spawn(fn (d) {
+        let got = [d.read('b.txt'), d.files()]
+        d.close()
+        got
+      }, sent)
+      .join(),
+    ['bee', z.files()],
+  )
+  assert_eq(sent.read('b.txt'), 'bee')
+}
+# A file archive opens again from its path, so one whose file is gone by
+# then cannot.
+let gone = Dir.zip(zpath)
+FS.remove(zpath)
+assert_eq(
+  Isolate.spawn(|d| caught(|| d.read('b.txt')), gone).join(),
+  "IOError: Dir.zip: no such file '{zpath}'",
+)
+assert_eq(gone.read('b.txt'), 'bee')
+gone.close()
+zfile.close()
+# An id names one archive in the whole process: an archive a worker opens
+# itself is never taken for one that arrived.
+let other = Compress.zip({'b.txt': 'other'})
+assert_eq(
+  Isolate
+    .spawn(fn (b1, b2) {
+      let first = Dir.zip(bytes: b1)
+      Isolate
+        .spawn(fn (sent, b) {
+          let mine = Dir.zip(bytes: b)
+          [mine.read('b.txt'), sent.read('b.txt')]
+        }, first, b2)
+        .join()
+    }, packed, other)
+    .join(),
+  ['other', 'bee'],
+)
+
 # --- an open archive's lifetime ---
 assert_eq(type_of(z), 'ZipArchive')
-assert_eq(
-  caught(|| Isolate.spawn(|d| d.files(), z)),
-  'SendError: Isolate.spawn: a native handle is not Sendable',
-)
 z.close()
 z.close()
 assert_eq(
@@ -331,10 +379,10 @@ assert_eq(
   'ClosedError: Dir.zip: the archive is closed',
 )
 assert_eq(caught(|| z.files()), 'ClosedError: Dir.zip: the archive is closed')
-# A worker opens its own.
+# A closed archive arrives closed.
 assert_eq(
-  Isolate.spawn(|b| Dir.zip(bytes: b).read('b.txt'), packed).join(),
-  'bee',
+  Isolate.spawn(|d| caught(|| d.read('b.txt')), z).join(),
+  'ClosedError: Dir.zip: the archive is closed',
 )
 # The last reference closes it too; a fresh one is unaffected.
 {

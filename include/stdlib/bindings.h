@@ -8943,10 +8943,6 @@ inline JitValue _ns_dir_mark(JitValue* a, int64_t) {
         "TypeError", "_Dir.mark: expects a class instance and a Dir kind", 0,
         0);
   meta->specials->dir_kind = k;
-  // An open archive is this Runtime's (the table below), so its class says
-  // its instances cannot cross an isolate.
-  if (k == int8_t(culebra::DirKind::Zip))
-    meta->specials->nonsendable_instances = true;
   return _ns_adapt::v_nil();
 }
 
@@ -9006,20 +9002,22 @@ inline JitValue _ns_dir_disk_files(JitValue* a, int64_t) {
   return _ns_adapt::string_array(_dir_disk_root(a[0]).files());
 }
 
-// The archives Dir.zip opened, by the id a ZipArchive holds. Per Runtime: a
-// ZipArchive never crosses an isolate (_ns_dir_mark), so no other thread
-// reaches one, and the Runtime's end closes what the program left open.
+// The archives Dir.zip opened, by the id a ZipArchive holds. Per Runtime, so
+// no other thread reaches one, and the Runtime's end closes what the program
+// left open. An id is unique in the process: a ZipArchive sent to an isolate
+// keeps its id, and the receiving Runtime opens the archive again under it
+// (_dir_zip_open_of).
 struct _DirZipTable {
   struct Open {
     culebra::zip::Reader* reader;
     culebra::zip::Index index;
   };
   std::unordered_map<int64_t, Open> entries;
-  int64_t next_id = 1;
   ~_DirZipTable() {
     for (auto& [_, a] : entries) culebra::zip::close(a.reader);
   }
 };
+inline std::atomic<int64_t> g_dir_zip_next_id{1};
 inline _DirZipTable& _dir_zip_table() {
   return culebra::runtime_substate<_DirZipTable>(culebra::kSlotZipArchives);
 }
@@ -9029,21 +9027,51 @@ inline _DirZipTable& _dir_zip_table() {
   culebra::throw_runtime_error_at(kind, msg, 0, 0);
 }
 
-inline JitValue _dir_zip_register(culebra::zip::Opened o,
-                                  const std::string& what) {
+inline _DirZipTable::Open& _dir_zip_register(culebra::zip::Opened o,
+                                             const std::string& what,
+                                             int64_t id) {
   if (!o.reader) _dir_zip_throw("ValueError", "Dir.zip: " + what + o.error);
-  auto& t = _dir_zip_table();
-  int64_t id = t.next_id++;
-  t.entries.emplace(id, _DirZipTable::Open{o.reader, std::move(o.index)});
+  return _dir_zip_table()
+      .entries.emplace(id, _DirZipTable::Open{o.reader, std::move(o.index)})
+      .first->second;
+}
+inline JitValue _dir_zip_register_new(culebra::zip::Opened o,
+                                      const std::string& what) {
+  int64_t id = g_dir_zip_next_id++;
+  _dir_zip_register(std::move(o), what, id);
   return {TAG_LONG, id};
 }
+inline void _dir_zip_need_file(const std::string& path);
 
-inline _DirZipTable::Open& _dir_zip_open_of(JitValue id) {
-  auto& t = _dir_zip_table();
-  auto it = id.tag == TAG_LONG ? t.entries.find(id.data) : t.entries.end();
-  if (it == t.entries.end())
+// A ZipArchive field, nil when it has none.
+inline JitValue _dir_zip_field(JitObject* o, const char* name) {
+  size_t i = o->find_slot(name);
+  return i == static_cast<size_t>(-1) ? JitValue{TAG_NIL, 0} : o->slots[i].value;
+}
+// The open archive of the ZipArchive `self`. One this Runtime has not opened
+// yet arrived from another isolate: it opens here, from its `path` or its
+// `bytes`, under the id it carries. A nil id is a closed archive.
+inline _DirZipTable::Open& _dir_zip_open_of(JitValue self) {
+  if (self.tag != TAG_OBJECT)
+    _dir_zip_throw("TypeError", "Dir.zip: expects a ZipArchive");
+  auto* o = reinterpret_cast<JitObject*>(self.data);
+  JitValue id = _dir_zip_field(o, "_id");
+  if (id.tag != TAG_LONG)
     _dir_zip_throw("ClosedError", "Dir.zip: the archive is closed");
-  return it->second;
+  auto& t = _dir_zip_table();
+  if (auto it = t.entries.find(id.data); it != t.entries.end())
+    return it->second;
+  JitValue path = _dir_zip_field(o, "path");
+  if (path.tag != TAG_NIL) {
+    std::string p(_ns_adapt::require_sv(path, "path"));
+    _dir_zip_need_file(p);
+    return _dir_zip_register(culebra::zip::open_file(p), "'" + p + "': ",
+                             id.data);
+  }
+  return _dir_zip_register(
+      culebra::zip::open_bytes(
+          _ns_adapt::require_sv(_dir_zip_field(o, "bytes"), "bytes")),
+      "", id.data);
 }
 
 // `_Dir.zip_open(path)`: a missing or unreadable file is an IOError, like any
@@ -9059,12 +9087,13 @@ inline void _dir_zip_need_file(const std::string& path) {
 inline JitValue _ns_dir_zip_open(JitValue* a, int64_t) {
   std::string path(_ns_adapt::require_sv(a[0], "path"));
   _dir_zip_need_file(path);
-  return _dir_zip_register(culebra::zip::open_file(path), "'" + path + "': ");
+  return _dir_zip_register_new(culebra::zip::open_file(path),
+                               "'" + path + "': ");
 }
 // `_Dir.zip_open_bytes(bytes)`: the archive reads the caller's String in
 // place (the ZipArchive keeps it as its `bytes`), nothing is copied.
 inline JitValue _ns_dir_zip_open_bytes(JitValue* a, int64_t) {
-  return _dir_zip_register(
+  return _dir_zip_register_new(
       culebra::zip::open_bytes(_ns_adapt::require_sv(a[0], "bytes")), "");
 }
 
@@ -9082,19 +9111,21 @@ inline const culebra::zip::Entry* _dir_zip_entry(_DirZipTable::Open& z,
   const auto* found = _dir_zip_find(z, path);
   return found ? &found->second : nullptr;
 }
-// `_Dir.zip_read(id, bytes, path)`: `bytes` is what the ZipArchive holds now
-// (nil for a file); anything but a String reads as no archive at all.
+// `_Dir.zip_read(self, path)`: an archive in memory reads the `bytes` the
+// ZipArchive holds now; anything but a String reads as no archive at all.
 inline JitValue _ns_dir_zip_read(JitValue* a, int64_t) {
   auto& z = _dir_zip_open_of(a[0]);
-  const auto* found = _dir_zip_find(z, a[2]);
+  const auto* found = _dir_zip_find(z, a[1]);
   if (!found) return _ns_adapt::v_nil();
-  std::string_view bytes = _culebra_str_view(a[1].tag, a[1].data);
+  JitValue held =
+      _dir_zip_field(reinterpret_cast<JitObject*>(a[0].data), "bytes");
+  std::string_view bytes = _culebra_str_view(held.tag, held.data);
   std::string out, err;
   if (!culebra::zip::read(z.reader, bytes, found->second, found->first, out,
                           err))
     _dir_zip_throw("ValueError",
                    culebra::format("Dir.zip: '{}': {}",
-                                   _ns_adapt::require_sv(a[2], "path"), err));
+                                   _ns_adapt::require_sv(a[1], "path"), err));
   return _ns_adapt::str(out);
 }
 inline JitValue _ns_dir_zip_is_file(JitValue* a, int64_t) {
@@ -9126,8 +9157,8 @@ inline JitValue _ns_dir_zip_files(JitValue* a, int64_t) {
   // A std::map: its keys come sorted by bytes.
   return _ns_adapt::string_array(std::views::keys(_dir_zip_open_of(a[0]).index.files));
 }
-// Closing twice, or a ZipArchive whose constructor never got an id, is a
-// no-op.
+// `_Dir.zip_close(id)`: closing twice, an archive this Runtime never opened,
+// or a ZipArchive whose constructor never got an id, is a no-op.
 inline JitValue _ns_dir_zip_close(JitValue* a, int64_t) {
   auto& t = _dir_zip_table();
   if (a[0].tag == TAG_LONG) {
@@ -9174,7 +9205,7 @@ inline std::unique_ptr<culebra::Dir> _dir_rebuild(JitObject* o) {
     case culebra::DirKind::Embedded:
       return culebra::open_embed_dir(text("name"));
     case culebra::DirKind::Zip: {
-      if (field("_id").tag == TAG_NIL)
+      if (field("_id").tag != TAG_LONG)
         _dir_zip_throw("ClosedError", "Dir.zip: the archive is closed");
       std::string error;
       std::unique_ptr<culebra::zip::ZipDir> z;
@@ -10341,7 +10372,7 @@ inline const NsMethod kNsRows_Dir_native[] = {
   {"_Dir", "disk_files",        1, &_ns_dir_disk_files},
   {"_Dir", "zip_open",          1, &_ns_dir_zip_open},
   {"_Dir", "zip_open_bytes",    1, &_ns_dir_zip_open_bytes},
-  {"_Dir", "zip_read",          3, &_ns_dir_zip_read},
+  {"_Dir", "zip_read",          2, &_ns_dir_zip_read},
   {"_Dir", "zip_is_file",       2, &_ns_dir_zip_is_file},
   {"_Dir", "zip_is_dir",        2, &_ns_dir_zip_is_dir},
   {"_Dir", "zip_list_dir",      2, &_ns_dir_zip_list_dir},

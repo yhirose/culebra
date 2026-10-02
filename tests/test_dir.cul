@@ -49,7 +49,7 @@ fn takes_dir(d: Dir) {
   'a Dir'
 }
 
-fn check_dir(d, sendable = true) {
+fn check_dir(d) {
   assert_eq(takes_dir(d), 'a Dir')
   assert_eq(d.files(), SORTED)
   for path, body in FILES {
@@ -137,18 +137,11 @@ fn check_dir(d, sendable = true) {
     assert_eq(copy.read(path), body, path)
   }
 
-  # Every kind but an open archive crosses an Isolate and answers there.
-  if sendable {
-    assert_eq(
-      Isolate.spawn(|x| [x.files(), x.glob('**/*.png')], d).join(),
-      [SORTED, ['img/sub/y.png', 'img/x.png']],
-    )
-  } else {
-    assert_eq(
-      caught(|| Isolate.spawn(|x| x.files(), d)),
-      'SendError: Isolate.spawn: a native handle is not Sendable',
-    )
-  }
+  # Every kind crosses an Isolate and answers there.
+  assert_eq(
+    Isolate.spawn(|x| [x.files(), x.glob('**/*.png')], d).join(),
+    [SORTED, ['img/sub/y.png', 'img/x.png']],
+  )
 }
 
 # --- Dir.disk ---
@@ -241,14 +234,14 @@ assert_eq(
 let packed = Compress.zip(FILES)
 let zb = Dir.zip(bytes: packed)
 assert_eq(type_of(zb), 'ZipArchive')
-check_dir(zb, sendable: false)
+check_dir(zb)
 let ztmp = FS.mkdtemp('culebra-dir-zip')
 defer {
   FS.remove(ztmp, recursive: true)
 }
 FS.write(FS.join(ztmp, 'files.zip'), packed)
 let zf = Dir.zip(FS.join(ztmp, 'files.zip'))
-check_dir(zf, sendable: false)
+check_dir(zf)
 assert_eq(Compress.zip(zf), packed)
 zf.close()
 zb.close()

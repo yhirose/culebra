@@ -226,10 +226,11 @@ let _dir_module = fn () {
   # directory, or an archive already in memory, read in place: the String
   # stays the program's, held here as `bytes` and lent to each read (nothing
   # is copied). Both fields are there either way, one of them nil. The open
-  # archive belongs to this Runtime (`_id` names it in the natives' table), so
-  # a ZipArchive never crosses an Isolate — its kind says so — and a worker
-  # opens its own. `close()` frees it early, the last reference frees it
-  # otherwise, and any use after that is a ClosedError.
+  # archive is the Runtime's (`_id` names it in the natives' table, which the
+  # natives reach through `self`); sent to an Isolate, a ZipArchive opens
+  # again there from its `path` or `bytes` when it is first used. `close()`
+  # frees it early (`_id` becomes nil), the last reference frees it
+  # otherwise, and any use after closing is a ClosedError.
   class ZipArchive {
     new(path, bytes) {
       _Dir.mark(self, 'zip')
@@ -258,27 +259,27 @@ let _dir_module = fn () {
     }
     read(path) {
       _need_file(self, 'read', path)
-      _Dir.zip_read(self._id, self.bytes, path)
+      _Dir.zip_read(self, path)
     }
     list_dir(path) {
       _need_dir(self, 'list_dir', path)
-      _Dir.zip_list_dir(self._id, path)
+      _Dir.zip_list_dir(self, path)
     }
     exists(path) {
       self.is_file(path) || self.is_dir(path)
     }
     is_file(path) {
-      _Dir.zip_is_file(self._id, path)
+      _Dir.zip_is_file(self, path)
     }
     is_dir(path) {
-      _Dir.zip_is_dir(self._id, path)
+      _Dir.zip_is_dir(self, path)
     }
     size(path) {
       _need_file(self, 'size', path)
-      _Dir.zip_size(self._id, path)
+      _Dir.zip_size(self, path)
     }
     files() {
-      _Dir.zip_files(self._id)
+      _Dir.zip_files(self)
     }
     close() {
       _Dir.zip_close(self._id)
