@@ -325,9 +325,9 @@ let zdir = FS.mkdtemp('culebra-zip-send')
 defer {
   FS.remove(zdir, recursive: true)
 }
-let zpath = FS.join(zdir, 'sent.zip')
-FS.write(zpath, packed)
-let zfile = Dir.zip(zpath)
+let spath = FS.join(zdir, 'sent.zip')
+FS.write(spath, packed)
+let zfile = Dir.zip(spath)
 for sent in [z, zfile] {
   assert_eq(
     Isolate
@@ -341,17 +341,19 @@ for sent in [z, zfile] {
   )
   assert_eq(sent.read('b.txt'), 'bee')
 }
-# A file archive opens again from its path, so one whose file is gone by
-# then cannot.
-let gone = Dir.zip(zpath)
-FS.remove(zpath)
-assert_eq(
-  Isolate.spawn(|d| caught(|| d.read('b.txt')), gone).join(),
-  "IOError: Dir.zip: no such file '{zpath}'",
-)
-assert_eq(gone.read('b.txt'), 'bee')
-gone.close()
 zfile.close()
+# A file archive opens again from its path, so one whose file is gone by
+# then cannot. (Windows does not let a file that is open be removed.)
+if FS.sep() == '/' {
+  let gone = Dir.zip(spath)
+  FS.remove(spath)
+  assert_eq(
+    Isolate.spawn(|d| caught(|| d.read('b.txt')), gone).join(),
+    "IOError: Dir.zip: no such file '{spath}'",
+  )
+  assert_eq(gone.read('b.txt'), 'bee')
+  gone.close()
+}
 # An id names one archive in the whole process: an archive a worker opens
 # itself is never taken for one that arrived.
 let other = Compress.zip({'b.txt': 'other'})

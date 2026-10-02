@@ -21,6 +21,9 @@ fn caught(thunk) {
 }
 
 # Serves `dir` at /s next to one route, and hands `check` the base URL.
+# The server is closed, not only stopped, so the archive file it opened is
+# let go before the temporary directory is removed (Windows refuses to
+# remove a file that is open).
 fn serving(dir, check) {
   let srv = Http.server()
   srv.static("/s", dir)
@@ -29,7 +32,7 @@ fn serving(dir, check) {
   })
   let port = srv.listen_async(0)
   defer {
-    srv.stop()
+    srv.close()
   }
   check("http://127.0.0.1:{port}")
 }
@@ -66,7 +69,9 @@ FS.write(zpath, data)
 
 check_served(Dir.disk(root), 'disk')
 check_served(Dir.memory(FILES), 'memory')
-check_served(Dir.zip(zpath), 'zip file')
+let zfile = Dir.zip(zpath)
+check_served(zfile, 'zip file')
+zfile.close()
 check_served(Dir.zip(bytes: data), 'zip bytes')
 
 # Dir.disk is read live: a file written after static() is served.
@@ -98,7 +103,7 @@ m.contents['app.js'] = 'changed'
 let port = srv.listen_async(0)
 assert_eq(Http.get("http://127.0.0.1:{port}/z/app.js").body, 'console.log(1)')
 assert_eq(Http.get("http://127.0.0.1:{port}/m/app.js").body, 'console.log(1)')
-srv.stop()
+srv.close()
 
 # A closed archive cannot be served; neither can what is no Dir.
 let closed = Dir.zip(bytes: data)
