@@ -663,8 +663,12 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
         }
         if (mv.is_field || mv.is_typed_field) {
           // The field's own checks ran over the field list above; only its
-          // initializer is left to walk.
-          if (mv.value) walk(*mv.value);
+          // initializer is left to walk. A static value is a scope of its own.
+          if (mv.value && mv.is_static) {
+            scoped(*mv.value, [](Scope&) {});
+          } else if (mv.value) {
+            walk(*mv.value);
+          }
           continue;
         }
         check_dup_params(*mv.params);
@@ -1578,7 +1582,12 @@ inline void walk(const peg::Ast& node, Chain& chain, const NameSet& globals,
       for (size_t j = i + 1; j < node.nodes.size(); j++) {
         auto mv = culebra::view_method(*node.nodes[j]);
         if (mv.is_field || mv.is_typed_field) {
-          if (mv.value) walk(*mv.value, chain, globals, diags);
+          // A static value is a scope of its own.
+          if (mv.value && mv.is_static) {
+            analyze_fn(nullptr, *mv.value, chain, globals, diags);
+          } else if (mv.value) {
+            walk(*mv.value, chain, globals, diags);
+          }
           continue;
         }
         analyze_fn(mv.params, **mv.body, chain, globals, diags);

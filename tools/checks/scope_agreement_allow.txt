@@ -8,12 +8,6 @@
 MISMATCH declaration 'shadowed' tests/test_multidispatch.cul:349:7 resolve=shadowed@349:7 compiler=shadowed@347:4  # D6
 MISMATCH declaration 'shadowed' tools/bench/vm_cases/multifn_self.cul:34:7 resolve=shadowed@34:7 compiler=shadowed@32:4  # D6
 
-# D7: a static value's declaration lands in the enclosing scope
-MISMATCH declaration 'v' grid/static_value__outer.cul:5:19 resolve=v@5:19 compiler=v@2:7  # D7
-MISMATCH declaration 'v' grid/static_value__top.cul:4:17 resolve=v@4:17 compiler=v@1:5  # D7
-MISMATCH use 'v' grid/static_value__outer.cul:7:4 resolve=v@2:7 compiler=v@5:19  # D7
-MISMATCH use 'v' grid/static_value__top.cul:6:2 resolve=v@1:5 compiler=v@4:17  # D7
-
 # D8: an if/cond arm's declaration of a captured name makes a second cell
 MISMATCH second-cell 'root' tests/test_dir.cul:301:7 resolve=root@148:5 compiler=root@148:5  # D8
 MISMATCH second-cell 'v' grid/cond_arm__destructure__outer.cul:6:10 resolve=v@2:7 compiler=v@2:7  # D8
@@ -65,21 +59,19 @@ MISMATCH second-cell 'v' grid/if_arm__mut__outer.cul:6:18 resolve=v@2:7 compiler
 MISMATCH second-cell 'v' grid/if_arm__mut__top.cul:4:7 resolve=v@1:5 compiler=v@1:5  # D8
 MISMATCH second-cell 'v' grid/if_arm__mut__top.cul:5:16 resolve=v@1:5 compiler=v@1:5  # D8
 
-# D9-D11: an initializer's or a static value's declaration, captured, is not a cell (VmError since b4caedc2)
-MISMATCH capture-not-cell 't' tests/test_capture_not_cell.cul:47:33 resolve=t@47:23 compiler=t@47:23  # D9-D11
-MISMATCH capture-not-cell 'u' tests/test_capture_not_cell.cul:25:10 resolve=u@24:14 compiler=u@24:14  # D9-D11
-MISMATCH capture-not-cell 'u' tests/test_capture_not_cell.cul:35:24 resolve=u@35:14 compiler=u@35:14  # D9-D11
-MISMATCH capture-not-cell 'v' grid/initializer__outer.cul:6:8 resolve=v@5:12 compiler=v@5:12  # D9-D11
-MISMATCH capture-not-cell 'v' grid/initializer__top.cul:5:6 resolve=v@4:10 compiler=v@4:10  # D9-D11
-MISMATCH capture-not-cell 'v' grid/own_initializer__outer.cul:5:22 resolve=v@5:12 compiler=v@5:12  # D9-D11
-MISMATCH capture-not-cell 'v' grid/own_initializer__top.cul:4:20 resolve=v@4:10 compiler=v@4:10  # D9-D11
-UNSEEN 't' tests/test_capture_not_cell.cul:47:36  # D9-D11
-UNSEEN 'u' tests/test_capture_not_cell.cul:25:13  # D9-D11
-UNSEEN 'u' tests/test_capture_not_cell.cul:35:27  # D9-D11
-UNSEEN 'v' grid/initializer__outer.cul:6:11  # D9-D11
-UNSEEN 'v' grid/initializer__top.cul:5:9  # D9-D11
-UNSEEN 'v' grid/own_initializer__outer.cul:5:25  # D9-D11
-UNSEEN 'v' grid/own_initializer__top.cul:4:23  # D9-D11
+# D9-D10: an initializer's declaration, captured, is not a cell (VmError since b4caedc2)
+MISMATCH capture-not-cell 'u' tests/test_capture_not_cell.cul:25:10 resolve=u@24:14 compiler=u@24:14  # D9-D10
+MISMATCH capture-not-cell 'u' tests/test_capture_not_cell.cul:35:24 resolve=u@35:14 compiler=u@35:14  # D9-D10
+MISMATCH capture-not-cell 'v' grid/initializer__outer.cul:6:8 resolve=v@5:12 compiler=v@5:12  # D9-D10
+MISMATCH capture-not-cell 'v' grid/initializer__top.cul:5:6 resolve=v@4:10 compiler=v@4:10  # D9-D10
+MISMATCH capture-not-cell 'v' grid/own_initializer__outer.cul:5:22 resolve=v@5:12 compiler=v@5:12  # D9-D10
+MISMATCH capture-not-cell 'v' grid/own_initializer__top.cul:4:20 resolve=v@4:10 compiler=v@4:10  # D9-D10
+UNSEEN 'u' tests/test_capture_not_cell.cul:25:13  # D9-D10
+UNSEEN 'u' tests/test_capture_not_cell.cul:35:27  # D9-D10
+UNSEEN 'v' grid/initializer__outer.cul:6:11  # D9-D10
+UNSEEN 'v' grid/initializer__top.cul:5:9  # D9-D10
+UNSEEN 'v' grid/own_initializer__outer.cul:5:25  # D9-D10
+UNSEEN 'v' grid/own_initializer__top.cul:4:23  # D9-D10
 
 # D15: a destructuring redeclaration of a captured name makes a second cell (a plain `let` reuses it)
 MISMATCH second-cell 'c1' tools/bench/vm_cases/destructure.cul:86:6 resolve=c1@83:6 compiler=c1@83:6  # D15
@@ -98,9 +90,8 @@ UNSEEN 'v' grid/init_clause__fn.cul:3:8  # D16
 UNSEEN 'v' grid/init_clause__fn.cul:4:21  # D16
 UNSEEN 'v' grid/init_clause__fn.cul:5:5  # D16
 
-# D17: lint's undefined-name check does not count a declaration inside an initializer or a static value
+# D17: lint's undefined-name check does not count a declaration inside an initializer
 MISMATCH lint-NameError 'v' grid/own_initializer.cul:3:25 resolve=v@3:12 lint=-  # D17
-MISMATCH lint-NameError 'v' grid/static_value.cul:3:32 resolve=v@3:19 lint=-  # D17
 
 # N1: a pattern with two `...rest` never matches, so its names are never bound
 UNSEEN 'u' tools/bench/vm_cases/match_structural.cul:58:40  # N1

@@ -1624,7 +1624,9 @@ Semantics:
       inspect(Circle.MAX)        # 100
 
   The value expression can be arbitrary (`static SUM = [1,2,3].sum()`),
-  evaluated in the enclosing scope at class declaration time. Like
+  evaluated in the enclosing scope at class declaration time. What it
+  declares is its own and ends with it: after
+  `t = 0; class K { static s = (let t = 5) + 1 }`, `t` is still `0`. Like
   static methods, static fields are immutable (`Circle.PI = 2` raises
   `ImmutableError`) and not visible through instances.
   `static NAME: Type = EXPRESSION` annotates the value's type, checked

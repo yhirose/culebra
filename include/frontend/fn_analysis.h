@@ -689,7 +689,7 @@ struct FnAnalysis {
           continue;
         }
         if (mv.is_field) {  // static field: declaration-time, enclosing scope
-          if (mv.value) visit_for_frees(*mv.value, my_locals, outer, info);
+          if (mv.value) visit_scoped_expr(*mv.value, my_locals, outer, info);
           continue;
         }
         if (!mv.is_static && mv.name == "new") new_method_asts.push_back(&method);
@@ -1173,6 +1173,26 @@ struct FnAnalysis {
 
     func_info[info_key] = info;
     return info;
+  }
+
+  // An expression that is a scope of its own in the frame being walked (a
+  // static value): what it declares is a local of this frame visible in it
+  // alone.
+  void visit_scoped_expr(const peg::Ast& expr,
+                         const std::set<std::string>& my_locals,
+                         std::vector<const std::set<std::string>*>& outer,
+                         FuncInfo& info) {
+    std::set<std::string> own;
+    DeclKinds kinds;
+    collect_fn_locals(expr, own, outer, kinds);
+    DeclaredBlock block(*this);
+    if (own.empty()) return visit_for_frees(expr, my_locals, outer, info);
+    // DeclaredScope's seed: a match or catch binding holds for its whole arm.
+    for (const auto& name : own)
+      if (!kinds.from_assign.contains(name) || kinds.scope_wide.contains(name))
+        declared_.insert(name);
+    own.insert(my_locals.begin(), my_locals.end());
+    visit_for_frees(expr, own, outer, info);
   }
 
   // Each name a parameter binds. A destructuring param (`fn ({a, b})`)

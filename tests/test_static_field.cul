@@ -109,6 +109,31 @@ test_static_field_typed_generic = fn () {
   assert_eq(Default.D, 5)
 }
 
+# What a static value declares is its own: it ends with the value, and a
+# closure in the value reads it through a cell of its own.
+mut sf_scope_t = 0
+class SfScoped {
+  static s = (let sf_scope_t = 5) + 1
+  static c = (let sf_own = 4) + (|| sf_own)()
+}
+test_static_field_value_scope = fn () {
+  assert_eq([SfScoped.s, SfScoped.c, sf_scope_t], [6, 8, 0])
+  # A write after it reaches the outer `mut`, not the value's `let`.
+  class SfWriteAfter {
+    static s = (let sf_scope_t = 7) + 0
+  }
+  sf_scope_t = 6
+  assert_eq([SfWriteAfter.s, sf_scope_t], [7, 6])
+  let in_fn = fn () {
+    let v = 'outer'
+    class SfInFn {
+      static s = (let v = 1) + 0
+    }
+    [SfInFn.s, v]
+  }
+  assert_eq(in_fn(), [1, 'outer'])
+}
+
 test_static_field_basic()
 test_static_field_with_method()
 test_static_field_expression()
@@ -117,5 +142,6 @@ test_static_field_immutable()
 test_static_field_typed()
 test_static_field_typed_mismatch()
 test_static_field_typed_generic()
+test_static_field_value_scope()
 
 inspect('static-field OK')

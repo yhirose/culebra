@@ -6812,6 +6812,17 @@ class Compiler {
     pop_scope();
   }
 
+  // An expression that is a scope of its own (resolve.h): what it declares
+  // ends with it, so its value lands in `dst`, a slot taken before the scope.
+  void compile_scoped_expr_into(const peg::Ast& expr, int32_t dst) {
+    push_scope(expr);
+    {
+      TempScope ts(*this);
+      store_into(dst, compile_expr(expr), /*dst_is_fresh=*/true);
+    }
+    pop_scope();
+  }
+
   // An `if` / `cond` arm body in value position. It gets no scope of its own:
   // the enclosing one holds what it declares (collect_escaping_decls pinned
   // those names to lazy cells first) and owns any `defer` it registers, which
@@ -7857,21 +7868,23 @@ class Compiler {
     // Static field values evaluate here, at the declaration, in the
     // enclosing scope (the JIT's static_field_vals) — the only user code a
     // class declaration runs, so it stays ahead of the closure building,
-    // which keeps the method run below contiguous.
+    // which keeps the method run below contiguous. Each is a scope of its
+    // own.
     std::vector<int32_t> static_field_vals;
     for (auto* m : static_fields) {
       auto mv = culebra::view_method(*m);
-      auto v = compile_expr(*mv.value);
+      int32_t dst = alloc_temp(*m);
+      compile_scoped_expr_into(*mv.value, dst);
       if (!mv.type_annotation.empty()) {
         StampGuard pos(*this, *m);
         auto type = type_params.empty()
                         ? std::string(mv.type_annotation)
                         : culebra::lower_type_params(mv.type_annotation,
                                                      type_params);
-        emit_type_check(type, v.slot,
+        emit_type_check(type, dst,
                         culebra::format("static field '{}'", mv.name));
       }
-      static_field_vals.push_back(owned_src(*m, v));
+      static_field_vals.push_back(dst);
     }
     std::vector<int32_t> method_chunks;
     for (auto* m : method_asts) {
@@ -8950,19 +8963,11 @@ class Compiler {
         // default that re-enters its function would otherwise overflow the
         // C stack uncounted); a throw skips the leave and the enclosing
         // frame's restore corrects the count, as in the JIT.
-        //
-        // What a default declares is its own (resolve.h's walk_default).
         size_t filled = fc.emit(Op::JumpIfFilled, pl.slot);
         {
           StampGuard pos(fc, *pl.default_expr);
           fc.emit(Op::RecEnter, 0);
-          fc.push_scope(*pl.default_expr);
-          {
-            TempScope ts(fc);
-            fc.store_into(pl.slot, fc.compile_expr(*pl.default_expr),
-                          /*dst_is_fresh=*/true);
-          }
-          fc.pop_scope();
+          fc.compile_scoped_expr_into(*pl.default_expr, pl.slot);
           fc.emit(Op::RecLeave);
         }
         fc.patch_to_here(filled);

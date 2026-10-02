@@ -38,10 +38,9 @@ fn cnc_initializer_own() {
 }
 assert_eq(cnc_outcome(cnc_initializer_own), cnc_not_a_cell('u'))
 
-# A static value's declaration, read by a closure in the same value, where
-# the name `inner` sees is a capture of the enclosing function's.
+# A static value's declaration, read by a closure in the same value, inside a
+# nested function: the value's own, a local of that function's frame.
 fn cnc_static_value() {
-  let t = 0
   let inner = fn () {
     class CncStatic {
       static s = (let t = 5) + (|| t)()
@@ -50,4 +49,4 @@ fn cnc_static_value() {
   }
   inner()
 }
-assert_eq(cnc_outcome(cnc_static_value), cnc_not_a_cell('t'))
+assert_eq(cnc_outcome(cnc_static_value), 10)
