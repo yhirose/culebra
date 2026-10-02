@@ -8314,9 +8314,11 @@ archive.close()
 開いたアーカイブは、`close()`するか最後の参照が無くなるまでファイル（または
 `bytes`）を持ちます。`close()`（`bytes`を`nil`にします）の後はどのメソッドも
 `ClosedError`です。
-別のisolateには送れません（`SendError`）。開いたアーカイブはそのisolateのもの
-なので、ワーカーは自分で開きます。WASMのPlaygroundはZIPに対応していないので、
-`Dir.zip`と`Compress.zip`はそこでは例外を投げます。
+Windowsでは開いているファイルを削除も置き換えもできないので、先にアーカイブを
+閉じてください。それを配信しているサーバ（[Dirを配信する](#dirを配信する)）も
+ファイルを開き直しているので、閉じておきます。別のisolateに送ると、アーカイブは
+送り先で開き直されます（[前述](#dir-trait)）。WASMのPlaygroundはZIPに対応して
+いないので、`Dir.zip`と`Compress.zip`はそこでは例外を投げます。
 
 ---
 

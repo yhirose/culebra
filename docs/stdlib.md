@@ -8634,9 +8634,11 @@ printing the String would.
 
 The open archive holds the file (or its `bytes`) until `close()`, or until the
 last reference to it goes; after `close()` (which sets `bytes` to `nil`) every
-method raises `ClosedError`. It cannot be sent to another isolate (`SendError`): the open
-archive is this isolate's, and a worker opens its own. The WASM playground has
-no ZIP support: `Dir.zip` and `Compress.zip` raise there.
+method raises `ClosedError`. On Windows a file that is open cannot be removed
+or replaced, so close the archive first, and close any server that serves it
+([Serving a Dir](#serving-a-dir)), since it opened the file again. Sent to another
+isolate, an archive opens again there ([above](#the-dir-trait)). The WASM
+playground has no ZIP support: `Dir.zip` and `Compress.zip` raise there.
 
 ---
 
