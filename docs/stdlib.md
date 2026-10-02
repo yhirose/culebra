@@ -4152,7 +4152,7 @@ srv.listen(8080)  # blocks; Ctrl+C to stop
 | Method | Effect |
 | --- | --- |
 | `get/post/put/delete/patch/options(pattern, handler)` | register `handler` (a `fn(req)->response`) for that method and route `pattern`; returns the server (so calls chain) |
-| `static(mount, dir)` | serve static files at the URL prefix `mount`; `dir` is a String path (a live on-disk directory) or a `Dir.embedded(...)` (baked into the binary under AOT — see [Embedded assets](#embedded-assets)) |
+| `static(mount, dir)` | serve static files at the URL prefix `mount`; `dir` is a String path (a live on-disk directory) or any `Dir` — `Dir.embedded(...)` is baked into the binary under AOT (see [Serving a Dir](#serving-a-dir)) |
 | `sink.write(chunk)` | (inside a `stream:` closure) push one chunk; returns `false` if the client has disconnected |
 | `bind(port, host="0.0.0.0") -> Long` | open the listening socket and return the port it got; `port=0` asks the OS for an ephemeral one; a `port` outside 0..65535 is a `ValueError` (on `listen` / `listen_async` too). Once only, and not after the server has served |
 | `serve(workers=0)` | run the accept loop on a bound socket until interrupted (blocks the calling thread). Handlers run on a worker pool, never on the accept loop, so a slow handler can't block accepting new connections — and handlers must be **Sendable**. `workers=0` (default) picks a CPU-scaled pool size; pass a positive count to fix it |
@@ -6580,7 +6580,7 @@ the window closes, then stop the server.
 | --- | --- | --- |
 | `title` | `'culebra'` | window title |
 | `size` | window default | `[width, height]` in pixels |
-| `assets` | — | static root served at `/` — typically `Dir.embedded('dist')`, which reads from disk in dev and is baked into the binary under `culebra build` |
+| `assets` | — | static root served at `/`: any `Dir` ([Serving a Dir](#serving-a-dir)), typically `Dir.embedded('dist')`, which reads from disk in dev and is baked into the binary under `culebra build` |
 | `routes` | — | `fn (srv) { ... }` to register the app's own routes on the `Http` server (§15) |
 | `port` | `8731`, then OS-assigned | loopback port the server binds. Unset: try `8731`; if it's taken (say, another culebra desktop app), fall back to an OS-assigned free port — note the page's origin, and so its `localStorage`, changes with the port. Set explicitly: bind exactly that port or fail |
 | `workers` | `4` | server worker threads |
@@ -8513,10 +8513,38 @@ files up by name (`Audio.Kauai.load(dir:)`) takes anything with
 `exists(path)` and `read(path)`, an Object literal included. To make a set of
 literal files a full Dir, hand them to `Dir.memory`.
 
-Every kind but `Dir.zip` is Sendable: sent to an isolate, a `Dir.disk` reads
-the same directory, a `Dir.memory` its own copy of the contents and a
-`Dir.embedded` the same assets. An open archive belongs to the isolate that
-opened it; a worker opens its own (from the same path or bytes).
+Every kind is Sendable: sent to an isolate, a `Dir.disk` reads the same
+directory, a `Dir.memory` its own copy of the contents and a `Dir.embedded`
+the same assets. A `Dir.zip` opens its archive again there, from its path or
+its bytes, when it is first used: an archive whose file is gone by then raises
+`IOError`, and a closed one arrives closed.
+
+### Serving a Dir
+
+`srv.static(mount, dir)` ([§15](#15-http)) and `Desktop.run(assets: dir)`
+serve any Dir. The Content-Type comes from each file's extension, a request
+for a directory (or for the mount itself) serves its `index.html`, and a path
+that is no file falls through to the registered routes, so an API route always
+wins.
+
+```culebra
+# doctest: skip — listens on a port until interrupted
+let srv = Http.server()
+srv.static("/", Dir.zip("site.zip"))         # a whole site in one archive
+srv.static("/files", Dir.disk("shared"))
+srv.listen(8080)
+```
+
+The server answers on threads of its own, which do not share the program's
+objects, so what it reads depends on the kind:
+
+| Dir | What the server reads |
+| --- | --- |
+| `Dir.disk` | the directory itself, live: a file written later is served |
+| `Dir.embedded` | the same assets: from disk when run from source, baked in a built binary |
+| `Dir.memory` | a copy of the contents, taken when `static` is called |
+| `Dir.zip` | the archive opened again (from a file) or a copy of its bytes, taken when `static` is called; closing the program's archive afterwards does not stop it |
+| a class of your own | a copy in each of the server's workers, sent as a route handler is: it must be Sendable (`SendError` when the server starts), its `is_file` and `read` run there for each request, and a throw from them answers 500 |
 
 ### Embedded assets
 
@@ -8550,12 +8578,9 @@ srv.listen(8080)
 ```
 
 `name` must be a string literal so the AOT build can find and bake it; a
-computed name still works from source but isn't embedded. Under `srv.static`
-the Content-Type is inferred from each file's extension, a request for a
-directory (or `/`) serves its `index.html`, and a path not in the directory
-falls through to the registered routes (so an API route always wins).
-`Dir.embedded` is independent of `Http` — a program that only reads assets
-needs no server.
+computed name still works from source but isn't embedded. How `srv.static`
+serves it is [above](#serving-a-dir). `Dir.embedded` is independent of `Http`
+— a program that only reads assets needs no server.
 
 `culebra build` compiles the baked assets against the culebra headers, so it
 needs a source checkout: the one the binary was built from by default, or

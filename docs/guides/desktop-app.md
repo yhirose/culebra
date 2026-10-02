@@ -68,7 +68,10 @@ Desktop.run({title: "My App", size: [720, 560], assets: Dir.embedded("dist")})
 source and it reads the live directory on disk next to the entry script (edit
 `dist/index.html`, reload the window, see the change); `culebra build` walks
 the directory at build time and bakes its bytes into the executable instead.
-More on the second half in [§6](#6-shipping-one-binary).
+More on the second half in [§6](#6-shipping-one-binary). `assets:` takes any
+`Dir`: `Dir.disk(path)` for a directory elsewhere, `Dir.zip(path)` for a site
+packed in one archive, or a class of your own
+([stdlib §41](../stdlib.md#serving-a-dir)).
 
 Lay out `dist/` like any static site:
 
