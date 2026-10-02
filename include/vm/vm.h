@@ -4723,13 +4723,13 @@ class Compiler {
     }
     // lint::check_shadow (parity) + the per-fn FuncInfo compile_fn_chunk
     // reads; the returned top-level info carries chunk 0's captured_locals.
-    FuncInfo top_info = analysis.analyze_program(ast, opts.repl);
+    auto session = opts.repl ? repl_session().declared_names()
+                             : std::vector<std::string>{};
+    FuncInfo top_info = analysis.analyze_program(ast, opts.repl, session);
     prog.chunks.emplace_back();  // reserve index 0 for the top level
     // The scope agreement check (scope_check.h).
     std::optional<scope_check::Report> check;
-    if (scope_check::checks(ast))
-      check.emplace(ast, opts.repl ? repl_session().declared_names()
-                                   : std::vector<std::string>{});
+    if (scope_check::checks(ast)) check.emplace(ast, session);
     Compiler main(prog, analysis, /*in_function=*/false, &top_info);
     main.library_ = culebra::is_library_path(ast.path);  // a baked module
     main.repl_ = opts.repl;
@@ -12401,8 +12401,8 @@ class Compiler {
   //
   // The UFCS test only consults THIS chunk's scopes, and that is the whole
   // test: FnAnalysis already counts a candidate living in an enclosing frame
-  // as a free variable of the reading function, so resolve_captures rejects it
-  // at the fn literal ("UFCS candidate capture of ..."), and a candidate that
+  // as a free variable of the reading function, so resolve_captures binds it
+  // (or a nil cell, where nothing does) at the fn literal, and a candidate that
   // is a builtin never enters scopes_ at all — is_stdlib_global catches those.
   // `.name` / `.params` / `.return_type` on a Function receiver are answered
   // by culebra_runtime_fn_introspect_get, which reads the signature out of

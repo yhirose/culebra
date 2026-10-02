@@ -156,6 +156,10 @@ void test_order() {
     same(*p, "dv", 1, 2, "a closure in a default reads its declaration");
     same(*p, "dv", 0, 3, "the body does not: the declaration is the default's");
   }
+  if (auto p = resolve_source("fn f() {\n  let self = 1\n  self\n}\n"))
+    same(*p, "self", 0, 1, "a `let self` is a variable");
+  if (auto p = resolve_source("fn f() {\n  self.v\n}\n"))
+    unbound(*p, "self", 0, "the receiver is no variable");
   if (auto p = resolve_source("(pa, pb) = (1, 2)\nprint(pa)\n"))
     same(*p, "pa", 0, 1, "a place assignment declares a bare name");
 }

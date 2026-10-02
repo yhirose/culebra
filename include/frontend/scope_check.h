@@ -21,6 +21,7 @@
 // (check_lint), as `MISMATCH lint-<kind>` lines.
 
 #include "base/shared.h"
+#include "frontend/fn_analysis.h"
 #include "frontend/lint.h"
 #include "frontend/resolve.h"
 
@@ -100,8 +101,7 @@ inline void write_report(std::string_view header,
 
 // The options every resolution the check makes is held to: the compiler's.
 inline resolve::Options options(std::span<const std::string> session = {}) {
-  return {.record_nodes = true, .globals = lint::builtin_names(),
-          .session = session};
+  return compiler_resolve_options(session);
 }
 
 class Report {
@@ -123,7 +123,7 @@ class Report {
   ~Report() {
     try {
       for (const auto& [node, symbol] : res_.node_symbol)
-        if (!seen_.contains(node))
+        if (!seen_.contains(node) && covers(*node, node->token))
           lines_.push_back(std::format("UNSEEN '{}' {}", node->token, where(*node)));
       write_report(std::format("SUMMARY {} checked={} dynamic={}", path_,
                                checked_, dynamic_),

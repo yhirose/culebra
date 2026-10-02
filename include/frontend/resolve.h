@@ -1,9 +1,10 @@
 #pragma once
 
 // Static name resolution over the source as written: which declaration each
-// identifier refers to. An editor's go-to-definition, find-references,
-// highlight and rename read it, so it follows the compiler's scoping
-// (vm::Compiler) rather than an approximation of it:
+// identifier refers to. It is the one statement of culebra's scope rules: the
+// compiler's captures are derived from it (fn_analysis.h), its own lookups are
+// held to it (scope_check.h), and an editor's go-to-definition,
+// find-references, highlight and rename read it:
 //
 //  - Scopes: the module; each function-like body (`fn`, a lambda, `fn name`, a
 //    method, `defer`, `effect fn`, a handler clause); a class's field
@@ -30,8 +31,8 @@
 //    default is the exception: it sees the parameters before it and where
 //    the function is defined, so a function in it is resolved right there.
 //
-// A name nothing here declares — a stdlib global, `self`, a NameError at run
-// time — resolves to no symbol. A member (`o.x`) and an object key spelled
+// A name nothing here declares — a stdlib global, the receiver `self`, a
+// NameError at run time — resolves to no symbol; a `let self` is a variable. A member (`o.x`) and an object key spelled
 // as a name (`{x: 1}`) are not names; a computed key and a decorator's callee
 // are expressions like any other.
 
@@ -90,6 +91,7 @@ struct Symbol {
   bool exported = false;               // named by an `export { ... }`
   std::vector<size_t> occurrences;     // into Resolution::occurrences, in order
   const peg::Ast* declared_at = nullptr;  // the name node that first declares it
+  size_t declarations = 0;  // the statements declaring it, synthesized ones included
 };
 
 struct Scope {
@@ -137,6 +139,7 @@ struct MethodCall {
   const peg::Ast* node = nullptr;
   size_t symbol = kNone;
   size_t scope = kNone;
+  const peg::Ast* receiver = nullptr;  // the postfix chain before the call
 };
 
 // `Alias.member` where Alias is an import: `member` names a top-level
@@ -202,6 +205,8 @@ struct Resolution {
   // symbol or kNone. Keyword labels and implicit names (`_`, `self`, `fn`,
   // `__NAME__`) are left out.
   std::unordered_map<const peg::Ast*, size_t> node_symbol;
+  // With Options::record_nodes: the scope each of those nodes is written in.
+  std::unordered_map<const peg::Ast*, size_t> node_scope;
   // With Options::record_nodes: each function body to its scope.
   std::unordered_map<const peg::Ast*, size_t> body_scope;
   // With Options::record_nodes: each class with field initializers to the
@@ -210,7 +215,11 @@ struct Resolution {
 
   // The function scope a symbol is declared in.
   size_t frame_of(size_t symbol) const {
-    size_t s = symbols[symbol].scope;
+    return function_of(symbols[symbol].scope);
+  }
+
+  // The function scope `scope` is in (itself, if it is one).
+  size_t function_of(size_t s) const {
     while (s != kNone && !scopes[s].function) s = scopes[s].parent;
     return s;
   }
@@ -310,8 +319,10 @@ class Resolver {
 
   void add(const peg::Ast& n, std::string_view name, size_t sym, size_t scope,
            Role role, Spelling spelling) {
-    if (opts_.record_nodes && spelling != Spelling::KeywordLabel)
+    if (opts_.record_nodes && spelling != Spelling::KeywordLabel) {
       r_.node_symbol[&n] = sym;
+      r_.node_scope[&n] = scope;
+    }
     size_t off = offset_of(n, name);
     if (off == kNone) return;
     r_.occurrences.push_back({off, name.size(), sym, scope, role, spelling});
@@ -319,14 +330,21 @@ class Resolver {
 
   // A name read or written where nothing declares it.
   void add_unresolved(const peg::Ast& n, std::string_view name) {
-    if (opts_.record_nodes) r_.node_symbol[&n] = kNone;
+    if (opts_.record_nodes) {
+      r_.node_symbol[&n] = kNone;
+      r_.node_scope[&n] = cur_;
+    }
     size_t off = offset_of(n, name);
     if (off != kNone) r_.unresolved.push_back({std::string(name), off, cur_});
   }
 
+  // A name the runtime binds, which no declaration makes a variable. `self`
+  // is the exception: a frame's receiver unless a declaration names it (`let
+  // self`), when it is a variable like any other.
   static bool implicit(std::string_view name) {
-    return name == "_" || is_always_bound_name(name);
+    return name == "_" || (is_always_bound_name(name) && !receiver(name));
   }
+  static bool receiver(std::string_view name) { return name == "self"; }
 
   // The variable `name` is in `scope`, made the first time.
   size_t symbol_in(size_t scope, std::string_view name, SymbolKind kind,
@@ -348,6 +366,7 @@ class Resolver {
                  Spelling spelling = Spelling::Plain) {
     if (implicit(name)) return kNone;
     size_t sym = symbol_in(cur_, name, kind, &n);
+    r_.symbols[sym].declarations++;
     add(n, name, sym, cur_, Role::Declaration, spelling);
     return sym;
   }
@@ -360,7 +379,7 @@ class Resolver {
     if (implicit(name)) return kNone;
     size_t sym = r_.lookup(cur_, name);
     if (sym == kNone) {
-      add_unresolved(n, name);
+      if (!receiver(name)) add_unresolved(n, name);
       return kNone;
     }
     add(n, name, sym, cur_, Role::Read, spelling);
@@ -373,6 +392,7 @@ class Resolver {
                     Spelling spelling = Spelling::Plain) {
     if (implicit(name)) return kNone;
     size_t sym = r_.lookup(cur_, name);
+    if (sym == kNone && receiver(name)) return kNone;  // the receiver refuses it
     if (sym == kNone && global(name)) {
       add_unresolved(n, name);
       return kNone;
@@ -570,7 +590,7 @@ class Resolver {
       if (implicit(name)) return;
       size_t sym = r_.lookup(cur_, name);
       if (sym == kNone) {
-        add_unresolved(*target, name);
+        if (!receiver(name)) add_unresolved(*target, name);
       } else {
         add(*target, name, sym, cur_, Role::Write, Spelling::Plain);
       }
@@ -613,7 +633,8 @@ class Resolver {
                     (c.original_tag == "DOT"_ || c.original_tag == "SAFE_DOT"_);
       if (member) {
         if (i + 1 < n.nodes.size() && n.nodes[i + 1]->original_tag == "ARGUMENTS"_)
-          r_.method_calls.push_back({&c, r_.lookup(cur_, c.token), cur_});
+          r_.method_calls.push_back(
+              {&c, r_.lookup(cur_, c.token), cur_, n.nodes[i - 1].get()});
         if (i == 1 && import_sym != kNone) {
           size_t off = offset_of(c, c.token);
           if (off != kNone)

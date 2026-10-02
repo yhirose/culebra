@@ -1015,10 +1015,10 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
 // --- Static shadow analyzer ---
 //
 // Walks the AST once before eval, raising ShadowError at any binding
-// site that would shadow a name from an enclosing function scope. This
-// matches the JIT's compile-time check (jit.h `collect_fn_locals` /
-// `visit_for_frees`) so both backends reject shadow violations
-// uniformly — including dead code that never executes.
+// site that would shadow a name from an enclosing function scope.
+// FnAnalysis::analyze_program runs it before compiling, so every lane
+// rejects shadow violations uniformly — including dead code that never
+// executes.
 //
 // `outer[0]` is the top-level scope: those names act as globals and
 // may be shadowed freely. `outer[1..]` are enclosing function scopes
@@ -1149,7 +1149,7 @@ inline void collect_locals(const peg::Ast& node, NameSet& locals,
     // hoist every trait method's params and body-lets into the enclosing
     // function's local set, producing a false shadow report between
     // sibling methods. Method bodies are analyzed on their own by
-    // descend_into_nested. Matches the JIT's collect_fn_locals.
+    // descend_into_nested.
     return;
   }
 

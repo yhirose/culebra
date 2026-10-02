@@ -188,4 +188,74 @@ fn sh_outer() {
 }
 assert_eq(sh_outer(), 'outer')
 
+# A closure sees the scopes open where it is written, not every name its
+# function declares: one whose block has closed is not captured. Reading it
+# is the NameError of any unbound name, where it is read; writing it declares
+# the closure's own; an outer one it hid is seen again.
+fn closed_read() {
+  {
+    nfs_x = 1
+  }
+  let f = fn () {
+    nfs_x
+  }
+  f()
+}
+assert_eq(try {
+  closed_read()
+} catch e {
+  "{e.kind} {e.line}:{e.col} {e.message}"
+}, "NameError 200:5 undefined variable 'nfs_x'")
+
+fn closed_arm() {
+  match 1 {
+    nfs_k => 0
+  }
+  defer {
+    nfs_k
+  }
+  1
+}
+assert_eq(try {
+  closed_arm()
+} catch e {
+  e.kind
+}, 'NameError')
+
+fn closed_block_read() {
+  {
+    nfs_x = 1
+  }
+  try {
+    nfs_x
+  } catch e {
+    e.kind
+  }
+}
+assert_eq(closed_block_read(), 'NameError')
+
+fn closed_write() {
+  {
+    nfs_x = 1
+  }
+  let f = fn () {
+    nfs_x = 2
+    nfs_x
+  }
+  f()
+}
+assert_eq(closed_write(), 2)
+
+nfs_hidden = 5
+fn hides_outer() {
+  {
+    let nfs_hidden = 1
+  }
+  let f = fn () {
+    nfs_hidden
+  }
+  f()
+}
+assert_eq(hides_outer(), 5)
+
 IO.inspect("test_nested_fn_scope OK")

@@ -116,6 +116,14 @@ out=$(session "let t1 = fn () { z = 5; z + 1 }" "let t2 = fn () { z = 6; z + 2 }
 [[ "$out" == *$'\n'"6"$'\n'"8"$'\n'"1"$'\n'*$'\n'"2"$'\n'"2" ]] ||
   { echo "FAIL function-local bare decl: $out"; fail=1; }
 
+# A `fn` an earlier line declared too still recurses through its own
+# dispatch, not through the session's binding of the name, which a later line
+# rebinds.
+out=$(session "fn f(a, b) { a + b }" \
+              "fn f(n) { if n == 0 { 'done' } else { f(n - 1) } }" \
+              "let g = f" "let f = 5" "g(3)")
+[[ "$out" == *$'\n'"'done'" ]] || { echo "FAIL own name across lines: $out"; fail=1; }
+
 # Out of the VM's slice is a report the session survives, not a crash.
 out=$(session "let t = Tensor.from([[1.0]])" "1 + 1")
 [[ "$out" == *$'\n'"2" ]] || { echo "FAIL slice recovery: $out"; fail=1; }

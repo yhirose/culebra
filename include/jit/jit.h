@@ -237,8 +237,8 @@ class WinSEHMemoryManager : public llvm::SectionMemoryManager {
 // --- JIT compiler implementation ---
 
 struct JIT {
-  // The front-end analysis (FuncInfo, the locals/free-var/EH-defer passes)
-  // lives in fn_analysis.h, shared with the bytecode compiler
+  // The front-end analysis (FuncInfo: captures derived from resolve.h,
+  // EH/defer flags) lives in fn_analysis.h, shared with the bytecode compiler
   // (docs/internals/vm.md §4); `analysis_` below holds this compilation's
   // instance and its accumulated results.
 

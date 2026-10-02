@@ -259,4 +259,64 @@ no_recv_let = fn () {
 }
 assert_eq(no_recv_let(), 9)
 
+# A `self` a declaration names is a variable, seen where that declaration is
+# in scope: in a nested function or class it is theirs, in a block it ends
+# with the block, and before it the receiver is still what `self` means.
+class SlxDecl {
+  new() { self.v = 7 }
+  nested_fn() {
+    let f = fn () {
+      fn g() {
+        let self = 1
+        self
+      }
+      self.v
+    }
+    f()
+  }
+  nested_class() {
+    let f = fn () {
+      class SlxInner {
+        m() {
+          let self = 1
+          self
+        }
+      }
+      self.v
+    }
+    f()
+  }
+  block_self() {
+    let f = fn () {
+      {
+        let self = 1
+      }
+      self.v
+    }
+    f()
+  }
+  before_self() {
+    let f = fn () {
+      let a = self.v
+      let self = 1
+      [a, self]
+    }
+    f()
+  }
+  computed_key() {
+    let f = fn () { {(self.v, 1): 1} }
+    f()
+  }
+  local_self_captured() {
+    let self = 3
+    let g = || self
+    g()
+  }
+}
+let slx_decl = SlxDecl()
+assert_eq([slx_decl.nested_fn(), slx_decl.nested_class(), slx_decl.block_self(),
+           slx_decl.before_self(), slx_decl.computed_key(),
+           slx_decl.local_self_captured()],
+          [7, 7, 7, [7, 1], {(7, 1): 1}, 3])
+
 inspect('self-lexical OK')

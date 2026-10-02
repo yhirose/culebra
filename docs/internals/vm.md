@@ -334,11 +334,15 @@ message), as is one whose descriptor names a native constructor.
 module top level included — before it is compiled, and produces a
 `FuncInfo`:
 
-- **Locals and free variables.** Which names are the function's own,
-  which are captured from an enclosing function (`free_vars`, with a
-  parallel `free_var_mut` and `free_var_lazy`), and which of its own
-  locals nested closures capture (`captured_locals` — these are the
-  ones promoted to cells).
+- **Captures.** Which names are captured from an enclosing function
+  (`free_vars`, in source order; `optional_free_vars` for a UFCS
+  candidate `v.name(...)` that only a method call names), and which of
+  the function's own locals nested closures capture (`captured_locals` — these are
+  the ones promoted to cells). These are derived from `resolve.h`, the
+  one statement of the scope rules: a name a function reads whose
+  variable another function declares is a free variable of each
+  function from the reader out to the declaring one, which captures it
+  (§10.6 holds the compiler's own lookups to the same resolution).
 - **EH and defer flags.** Whether the body contains `try` or a scope with
   `defer` (`has_eh`), a defer at any depth (`has_any_defer`, which is
   what makes `return`/`break`/`continue` run pending defers), and the
@@ -1897,9 +1901,10 @@ the assert lane) are described with the collector in `memory.md` §5–6.
 ### 10.6 Name resolution against resolve.h
 
 The scope rules are stated once, in `include/frontend/resolve.h` (the
-resolver the editor support reads); the compiler keeps a scope stack of
-its own. With `CULEBRA_SCOPE_CHECK` naming a directory, the compiler
-reports every name it looks up against resolve.h
+resolver the editor support reads, and the source of `FnAnalysis`'s
+captures, §4); the compiler keeps a scope stack of its own. With
+`CULEBRA_SCOPE_CHECK` naming a directory, the compiler reports every
+name it looks up against resolve.h
 (`include/frontend/scope_check.h`): the lookup of a name node goes
 through `lookup_at` (and `check_use`), a declaration through
 `push_binding` (and `note_declaration`), so a read

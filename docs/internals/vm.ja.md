@@ -333,11 +333,15 @@ cellを自分の`Runtime`上に再構築する。`mut`束縛をcaptureしてい�
 `FnAnalysis`（`fn_analysis.h`）は各関数のAST — モジュールトップ
 レベルを含む — に対してコンパイルの前に走り、`FuncInfo`を生成する:
 
-- **localsと自由変数。** どの名前がこの関数自身のものか、どれが
-  外側の関数からcaptureされたものか（`free_vars`、並行する
-  `free_var_mut`と`free_var_lazy`つき）、自分のlocalsのうちどれを
+- **capture。** どの名前が外側の関数からcaptureされたものか
+  （`free_vars`、ソースの位置順。メソッド呼び出し`v.name(...)`だけが
+  名指すUFCS候補は`optional_free_vars`）、自分のlocalsのうちどれを
   ネストしたクロージャがcaptureするか（`captured_locals` — これが
-  cellに昇格されるもの）。
+  cellに昇格されるもの）。これらはスコープ規則の唯一の記述である
+  `resolve.h`から導く: ある関数が読む名前の変数を別の関数が宣言して
+  いれば、読む側からその宣言側の手前までの各関数の自由変数になり、
+  宣言側がcaptureする（コンパイラ自身のlookupも§10.6で同じ解決に
+  縛られている）。
 - **EHとdeferのフラグ。** 本体が`try`かdeferを持つスコープを含む
   か（`has_eh`）、任意の深さでdeferを含むか（`has_any_defer`。これが
   `return`/`break`/`continue`に保留中のdeferを実行させる）、defer
@@ -1873,10 +1877,11 @@ assertレーン）はコレクタと一緒に`memory.md` §5〜6で説明され�
 
 ### 10.6 名前解決をresolve.hと突き合わせる
 
-スコープの規則は`include/frontend/resolve.h`（エディタ支援が読む
-解決器）に1度だけ書かれ、コンパイラは自前のスコープのスタックを
-持つ。`CULEBRA_SCOPE_CHECK`がディレクトリを指すと、コンパイラは
-引いたすべての名前をresolve.hと突き合わせて報告する
+スコープの規則は`include/frontend/resolve.h`（エディタ支援が読み、
+`FnAnalysis`のcapture（§4）の源にもなる解決器）に1度だけ書かれ、
+コンパイラは自前のスコープのスタックを持つ。`CULEBRA_SCOPE_CHECK`が
+ディレクトリを指すと、コンパイラは引いたすべての名前をresolve.hと
+突き合わせて報告する
 （`include/frontend/scope_check.h`）。名前のノードを引くときは
 `lookup_at`（と`check_use`）を、宣言は`push_binding`（と
 `note_declaration`）を通るので、resolve.hと別の変数を読み書きする

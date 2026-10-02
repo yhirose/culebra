@@ -119,11 +119,11 @@ inline const ExtensionHooks& current_hooks() {
 
 // `fn` is the implicit recursion handle (the enclosing function's own
 // value), bound in every function frame. `self` is NOT here: it is a
-// lexically capturable binding (FnAnalysis::note_free_var special-cases
-// it) so a nested closure inherits the enclosing frame's receiver,
-// interp-style. `range`/`iota`/`grid` are core globals (see
-// `try_compile_core_global`); everything else (inspect/Math/IO/...) is
-// supplied by the registered extension.
+// lexically capturable binding (FnAnalysis tracks it apart from
+// resolve.h, which does not model it) so a nested closure inherits the
+// enclosing frame's receiver, interp-style. `range`/`iota`/`grid` are core
+// globals (see `try_compile_core_global`); everything else
+// (inspect/Math/IO/...) is supplied by the registered extension.
 inline bool is_builtin_var(const std::string& name) {
   if (name == "fn") return true;
   if (name == "range" || name == "iota" || name == "grid") return true;

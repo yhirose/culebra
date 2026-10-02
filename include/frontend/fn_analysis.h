@@ -1,13 +1,14 @@
 #pragma once
 
 // Front-end analysis over the AST, shared by every backend that compiles
-// functions (docs/internals/vm.md §4): per-function locals, free-variable /
-// capture sets, and EH/defer emission flags. Lifted out of jit.h so the
+// functions (docs/internals/vm.md §4): per-function capture sets (derived
+// from resolve.h), own names, and EH/defer emission flags. Lifted out of jit.h so the
 // bytecode compiler can consume the same passes as the JIT; deliberately
 // LLVM-free.
 
 #include <frontend/lint.h>
 #include <frontend/parser.h>
+#include <frontend/resolve.h>
 #include <base/shared.h>
 
 #include <algorithm>
@@ -15,8 +16,10 @@
 #include <format>
 #include <map>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -25,12 +28,10 @@ namespace culebra {
 // Analysis result for a function (including the top-level main program).
 struct FuncInfo {
   std::vector<std::string> free_vars;   // captured from outer
-  // Free vars noted only as UFCS method-name candidates, never read as a
-  // variable. The enclosing locals set is flat per function, so a name
-  // declared in a block that has already closed still lands here — for a
-  // real read that's a compile error, but a candidate that isn't in reach
-  // just means the receiver's builtin answers, so emit_closure_build binds
-  // it to nil instead.
+  // Free vars that only a method call `v.name(...)` names (a UFCS
+  // candidate), never read as a variable. Where the compiler finds no binding
+  // for one, the receiver's own method answers, so resolve_captures (vm.h)
+  // feeds it a nil cell instead of refusing the closure.
   std::set<std::string> optional_free_vars;
   std::set<std::string> captured_locals;  // my locals captured by nested
   // EH/defer emission flags (populated by scan_eh_defer):
@@ -89,6 +90,18 @@ inline std::string field_init_slot_name(const peg::Ast& class_decl) {
   return std::format("\x1f__finit_{:x}",
                      reinterpret_cast<uintptr_t>(&class_decl));
 }
+inline bool is_field_init_slot_name(std::string_view name) {
+  return name.starts_with("\x1f__finit_");
+}
+
+// How the compiler resolves a module (resolve.h): with the stdlib's global
+// names, and in a session the names earlier inputs declared. The captures
+// (FnAnalysis) and the agreement check (scope_check.h) are both held to it.
+inline resolve::Options compiler_resolve_options(
+    std::span<const std::string> session = {}) {
+  return {.record_nodes = true, .globals = lint::builtin_names(),
+          .session = session};
+}
 
 // One FnAnalysis instance per compilation. `func_info` and
 // `scope_has_defer` are keyed by `peg::Ast*` and never cleared — they
@@ -101,9 +114,9 @@ inline std::string field_init_slot_name(const peg::Ast& class_decl) {
 // constructing a fresh instance per compilation.
 struct FnAnalysis {
   // True for names the host backend supplies as builtins (fn/range/stdlib
-  // namespaces/...); such names never resolve to user scopes, so they are
-  // skipped as free-variable candidates. Injected as a plain predicate so
-  // the analysis stays independent of the backend's extension machinery.
+  // namespaces/...): what tells a stdlib namespace receiver (member
+  // dispatch, never UFCS) apart. Injected as a plain predicate so the
+  // analysis stays independent of the backend's extension machinery.
   using IsBuiltinVar = bool (*)(const std::string&);
 
   explicit FnAnalysis(IsBuiltinVar is_builtin_var)
@@ -142,482 +155,142 @@ struct FnAnalysis {
   // this only when `lookup()` finds no live local shadowing the name.
   std::map<std::string, const peg::Ast*, std::less<>> stdlib_value_classes;
 
+  // `session`: the names earlier inputs of a session declared, when
+  // `session_top` (resolve::Options::session).
   FuncInfo analyze_program(const peg::Ast& programAst,
-                           bool session_top = false) {
+                           bool session_top = false,
+                           std::span<const std::string> session = {}) {
     session_top_ = session_top;
     // Shadow analysis is single-sourced in lint.h (the same check the
-    // interpreter runs). collect_fn_locals/visit_for_frees below only collect
-    // locals + free variables for codegen; they no longer check shadowing.
+    // interpreter runs).
     lint::check_shadow(programAst);
-    std::vector<const std::set<std::string>*> outer;
-    std::set<std::string> my_locals;
-    DeclKinds kinds;
-    collect_fn_locals(programAst, my_locals, outer, kinds);
-
+    res_ = resolve::resolve_module(programAst, {},
+                                   compiler_resolve_options(session));
+    fns_.clear();
     FuncInfo info;
-    DeclaredScope declared(*this, my_locals, kinds);
-    visit_for_frees(programAst, my_locals, outer, info);
+    depth_ = 0;
+    visit(programAst, info);
     scan_eh_defer(programAst, true, info);
+    derive_captures(info);
     return info;
   }
 
  private:
   IsBuiltinVar is_builtin_var_;
   int defer_count_ = 0;  // DEFER nodes seen so far, across all scans
-
-  // How a local gets its binding, collected alongside the locals set.
-  // `from_assign` names are bound by the statement that assigns them, so
-  // before that statement the name still means whatever it meant outside
-  // (the interp resolves through the environment chain at the moment the
-  // read runs). `scope_wide` names — parameters, loop / catch / match
-  // bindings, `fn` / `class` / `enum` / `import` declarations — are in
-  // scope for the whole body, exactly as they are today.
-  struct DeclKinds {
-    std::set<std::string> from_assign;
-    std::set<std::string> scope_wide;
-    // Declared more than once in the function's flat locals (a second
-    // `let`, a block-scoped shadow, a parameter's name): a literal bound
-    // to such a name keeps reading the cell (FuncInfo::own_name).
-    std::set<std::string> redeclared;
-  };
-
-  // Locals of the function being walked that are already bound at the
-  // current point. Seeded with everything but the not-yet-assigned names;
-  // visit_for_frees adds each as it passes its declaration.
-  std::set<std::string> declared_;
-  // The function being walked's DeclKinds::redeclared.
-  std::set<std::string> redeclared_;
   // The program being analyzed is a REPL line: its top-level `let`s are
   // session cells a later line may rebind (analyze_program's flag).
   bool session_top_ = false;
+  // The module being analyzed, resolved: what every name means.
+  culebra::resolve::Resolution res_;
+  // How many functions deep the walk is (0: the module's top level).
+  int depth_ = 0;
+  // This module's functions: each function scope res_ gives one, to the
+  // FuncInfo its walk filled (std::map nodes stay put).
+  std::unordered_map<size_t, FuncInfo*> fns_;
   // `let name = fn …` literals whose body reads `name` as itself: filled
   // by the assignment's walk, read when the literal's own walk starts.
   std::map<const peg::Ast*, std::string> literal_own_names_;
 
-  // Save/restore `declared_` across a nested function's walk.
-  struct DeclaredScope {
-    FnAnalysis& fa;
-    std::set<std::string> saved, saved_redeclared;
-    DeclaredScope(FnAnalysis& fa, const std::set<std::string>& my_locals,
-                  const DeclKinds& kinds)
-        : fa(fa),
-          saved(std::move(fa.declared_)),
-          saved_redeclared(std::move(fa.redeclared_)) {
-      fa.declared_.clear();
-      fa.redeclared_ = kinds.redeclared;
-      for (const auto& name : my_locals) {
-        if (kinds.from_assign.contains(name) &&
-            !kinds.scope_wide.contains(name)) {
-          continue;  // bound by its own assignment, walked below
-        }
-        fa.declared_.insert(name);
-      }
-    }
-    ~DeclaredScope() {
-      fa.declared_ = std::move(saved);
-      fa.redeclared_ = std::move(saved_redeclared);
-    }
-  };
-
-  // A block's own declarations die with it: after `{ let x = 1 }` the
-  // name means again whatever it meant outside the block. The locals set
-  // is flat per function, so this is where block granularity lives.
-  // Sites match lint.h's ScopeWalker (LEXICAL_SCOPE, loop bodies, match
-  // arms, try/catch bodies); `if` deliberately shares its enclosing one.
-  struct DeclaredBlock {
-    FnAnalysis& fa;
-    std::set<std::string> saved;
-    explicit DeclaredBlock(FnAnalysis& fa) : fa(fa), saved(fa.declared_) {}
-    ~DeclaredBlock() { fa.declared_ = std::move(saved); }
-  };
-
-  // Collect names introduced by `let x = ...` or by bare `x = ...` where x is
-  // not in any outer scope (auto-local). Does not descend into nested
-  // functions.
-  // Does an enclosing function already hold this name? A bare (`let`-less)
-  // write to such a name reassigns it rather than declaring a local.
-  static bool visible_in_outer(
-      std::string_view name,
-      const std::vector<const std::set<std::string>*>& outer) {
-    for (auto* s : outer)
-      if (s->contains(std::string(name))) return true;
-    return false;
-  }
-
   // free_vars keeps first-seen order, so "add if absent" is a linear probe
-  // rather than a set. Returns whether the name was new.
-  static bool add_free_var(FuncInfo& info, const std::string& name) {
+  // rather than a set.
+  static void add_free_var(FuncInfo& info, const std::string& name) {
     auto& fvs = info.free_vars;
-    if (std::find(fvs.begin(), fvs.end(), name) != fvs.end()) return false;
-    fvs.push_back(name);
-    return true;
+    if (std::find(fvs.begin(), fvs.end(), name) == fvs.end())
+      fvs.push_back(name);
   }
 
-  void collect_fn_locals(
-      const peg::Ast& node, std::set<std::string>& locals,
-      const std::vector<const std::set<std::string>*>& outer,
-      DeclKinds& kinds) const {
+  // A nested function reading the receiver `self` captures this frame's:
+  // cell-promote it, and keep propagating so an enclosing receiver reaches it
+  // the same way. (A `self` some declaration names is a variable resolve.h
+  // resolves, captured like any other.)
+  static void propagate_self(const FuncInfo& nested, FuncInfo& info) {
+    if (std::find(nested.free_vars.begin(), nested.free_vars.end(), "self") ==
+        nested.free_vars.end())
+      return;
+    info.captured_locals.insert("self");
+    add_free_var(info, "self");
+  }
+
+  // What a name node resolves to, kNone when nothing declares it.
+  size_t symbol_of(const peg::Ast& name) const {
+    auto it = res_.node_symbol.find(&name);
+    return it == res_.node_symbol.end() ? culebra::resolve::kNone : it->second;
+  }
+
+  // A method call's receiver that is a stdlib namespace, which the call
+  // reaches by member dispatch, never through UFCS.
+  bool namespace_receiver(const peg::Ast& recv) const {
     using namespace peg::udl;
-    // A defer body is a frame of its own (analyze_defer collects it, starting
-    // at the body): its bindings are not this function's, as lint's shadow
-    // walker reads it too.
-    if (node.tag == "FUNCTION"_ || node.tag == "LAMBDA"_ ||
-        node.tag == "DEFER"_)
-      return;
-    // Record which bucket a freshly collected local belongs to; see
-    // DeclKinds. Called next to every `locals.insert` below.
-    auto note = [&](std::string_view name, bool from_assign) {
-      (from_assign ? kinds.from_assign : kinds.scope_wide)
-          .insert(std::string(name));
-    };
-
-    if (node.tag == "MATCH"_) {
-      // MATCH = [(INIT_CLAUSE)?, subject, MATCH_ARMS]; MATCH_ARM =
-      // [PATTERN, (GUARD)?, EXPR]. Register pattern-bound names as locals of the
-      // enclosing function so that nested closures capturing them are handled
-      // correctly by the free-variable analysis (the bindings are then promoted
-      // to cells via `captured_locals`). Same mechanism as TRY's catch binding
-      // below. The optional init clause's own bindings are picked up by the
-      // generic recursive walk that follows (like a plain `let`).
-      for (auto& arm : culebra::view_match(node).arms->nodes) {
-        for_each_pattern_binding(
-            *arm->nodes[0],
-            [&](std::string_view name, size_t, size_t) {
-              locals.insert(std::string(name));
-              note(name, /*from_assign=*/false);
-            });
-      }
-      // fall through to normal recursive walk
-    }
-
-    if (node.tag == "DESTRUCTURE_ASSIGN"_) {
-      // [LET, MUTABLE, PATTERN, EXPRESSION]. The pattern's bound names are
-      // locals of the enclosing function (like a plain `let`), so nested
-      // closures can capture them and the bindings get promoted to cells.
-      // Same mechanism as MATCH above; without this they look like globals and
-      // a capturing closure raises NameError. A `let`-less destructure
-      // reassigns whatever is visible, exactly as bare `x = v` does, so a name
-      // an enclosing scope already holds is a free variable, not a local.
-      if (node.nodes.size() >= 3) {
-        bool is_declare = node.nodes[0]->token == "let" ||
-                          node.nodes[1]->token == "mut";
-        for_each_pattern_binding(
-            *node.nodes[2],
-            [&](std::string_view name, size_t, size_t) {
-              if (is_declare || !visible_in_outer(name, outer)) {
-                locals.insert(std::string(name));
-                note(name, /*from_assign=*/true);
-              }
-            });
-      }
-      // fall through to walk the RHS
-    }
-
-    if (node.tag == "PLACE_ASSIGN"_) {
-      // A plain-name target declares when nothing visible holds the name, so
-      // it is a local of the enclosing function for the same reason as the
-      // destructure patterns above — and a free variable when an enclosing
-      // scope does hold it. Chain targets bind nothing and are walked as
-      // ordinary expressions below.
-      culebra::for_each_place_target(
-          node, [](const peg::Ast&) {},
-          [&](const peg::Ast& name) {
-            if (!visible_in_outer(name.token, outer)) {
-              locals.insert(std::string(name.token));
-              note(name.token, /*from_assign=*/true);
-            }
-          });
-      // fall through to walk the targets' subexpressions and the RHS
-    }
-
-    if (node.tag == "TRY"_) {
-      // TRY = [body_block, catch_ident, catch_body]. The catch binding
-      // introduces a new local in the enclosing function; register it
-      // so nested closures that capture it see it and get a cell.
-      // `try ... catch _ { ... }` is the sink form (drop the value).
-      auto& id = *node.nodes[1];
-      auto name = std::string(id.token);
-      if (!is_sink_name(name)) {
-        locals.insert(name);
-        note(name, /*from_assign=*/false);
-      }
-      // fall through to walk the bodies
-    }
-
-    if (node.tag == "FOR"_) {
-      // FOR = [IDENT(var), EXPRESSION(iterable), BLOCK(body), (NOBREAK)?]. The
-      // loop binding is BLOCK-SCOPED (visible only within the body), so we
-      // deliberately don't add it to the enclosing function's flat
-      // `locals` set — otherwise functions defined OUTSIDE the for
-      // body in the same enclosing function would wrongly see the
-      // binding in their `outer`. Subtree-local visibility for closures
-      // inside the body is re-established in visit_for_frees' FOR handler.
-      auto fv = culebra::view_for(node);
-      collect_fn_locals(*fv.iter, locals, outer, kinds);
-      collect_fn_locals(*fv.body, locals, outer, kinds);
-      // A `nobreak { … }` block can define closures too; walk it so their
-      // captured locals are registered (compile_for emits it).
-      if (fv.nobreak) collect_fn_locals(*fv.nobreak, locals, outer, kinds);
-      return;
-    }
-
-    if (node.tag == "ASSIGNMENT"_) {
-      auto av = culebra::view_assignment(node);
-      if (!av.compound) {
-        if (const auto* ident_node = culebra::assign_name_target(node, av)) {
-          auto name = std::string(ident_node->token);
-          bool is_declare = av.is_let || av.is_mut;
-
-          if (is_declare) {
-            if (!is_sink_name(name)) {
-              if (!locals.insert(name).second) kinds.redeclared.insert(name);
-              note(name, /*from_assign=*/true);
-            }
-          } else if (!visible_in_outer(name, outer) && !is_sink_name(name) &&
-                     !is_builtin_var_(name)) {
-            // A bare assignment declares only where nothing already answers
-            // the name: not in an enclosing scope, and not as a stdlib global
-            // (writing one is a reassignment that throws, so the frame gains
-            // no binding — a nested read still means the global).
-            locals.insert(name);
-            note(name, /*from_assign=*/true);
-          }
-        }
-      }
-      collect_fn_locals(*node.nodes.back(), locals, outer, kinds);
-      return;
-    }
-
-    if (node.tag == "CLASS_DECL"_ || node.tag == "ENUM_DECL"_ ||
-        node.tag == "MULTIFN_DECL"_) {
-      // `class/enum/fn Name ...` binds `Name` in the enclosing scope. The
-      // bodies are analyzed separately (visit_for_frees), enum variants are
-      // namespaced (`Name.Ok`), not bound bare, and leading DECORATOR
-      // children precede the head. Generic params are stripped so
-      // `class Pair<K, V>` binds under `Pair`.
-      size_t i = 0;
-      while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
-        collect_fn_locals(*node.nodes[i], locals, outer, kinds);
-        i++;
-      }
-      auto name =
-          std::string(culebra::parse_generic_head(node.nodes[i]->token).outer);
-      locals.insert(name);
-      note(name, /*from_assign=*/false);
-      return;
-    }
-
-    if (node.tag == "TRAIT_DECL"_) {
-      // trait declarations don't bind a name in the value env (they
-      // live in culebra::trait_registry()). Default-method bodies are
-      // analyzed in visit_for_frees, not here.
-      return;
-    }
-
-    if (node.tag == "IMPORT_STMT"_) {
-      // `import name from "path"` binds `name` in the enclosing scope.
-      auto& id = *node.nodes[0];
-      auto name = std::string(id.token);
-      locals.insert(name);
-      note(name, /*from_assign=*/false);
-      return;
-    }
-
-    for (auto& c : node.nodes) {
-      collect_fn_locals(*c, locals, outer, kinds);
-    }
+    if (recv.tag != "IDENTIFIER"_ || recv.original_tag == "DOT"_ ||
+        !is_builtin_var_(std::string(recv.token)))
+      return false;
+    auto it = res_.node_symbol.find(&recv);
+    return it == res_.node_symbol.end() || it->second == culebra::resolve::kNone;
   }
 
-  // The function literal an expression IS — the AST optimizer has already
-  // folded the EXPRESSION wrapper onto it, so this is a tag test, not a
-  // descent: `[fn …]` is an Array holding one, not one.
-  static const peg::Ast* fn_literal_of(const peg::Ast& expr) {
-    using namespace peg::udl;
-    return (expr.tag == "FUNCTION"_ || expr.tag == "LAMBDA"_) ? &expr
-                                                               : nullptr;
+  // `let name = fn …` names the literal after itself only when nothing can
+  // rebind the name behind it: the variable is declared once.
+  bool declared_once(const peg::Ast& target) const {
+    auto it = res_.node_symbol.find(&target);
+    return it != res_.node_symbol.end() &&
+           it->second != culebra::resolve::kNone &&
+           res_.symbols[it->second].declarations == 1;
   }
 
-  // Record `name` as a free variable of the function under analysis when it
-  // resolves to an enclosing lexical scope. Shared by the IDENTIFIER read path
-  // and the UFCS method-name path.
-  //
-  // A real binding in an enclosing scope is captured even when `name` also
-  // matches a builtin: lexical scope wins, matching the interp (`let Math = 5;
-  // fn(){ Math }` sees 5, not the Math namespace; likewise a stdlib module's
-  // own helper/class — e.g. Regex's internal `Regex` class — captured by its
-  // methods). Only a name with no enclosing binding falls through to builtin /
-  // namespace resolution at its use site (compile_identifier → namespace_get).
-  // lookup_var resolves captures/slots before builtins, so capture and
-  // resolution stay consistent.
-  //
-  // `optional` marks a UFCS method-name candidate (see optional_free_vars); a
-  // genuine read of the same name clears the mark whichever order they appear.
-  void note_free_var(const std::string& name,
-                     const std::set<std::string>& my_locals,
-                     std::vector<const std::set<std::string>*>& outer,
-                     FuncInfo& info, bool optional = false) {
-    // Any mention of a multifn body's own name — a direct read or a UFCS
-    // candidate — turns on the prologue self-handle bind. Checked before
-    // the locals cut: the name IS a local of the body (seeded by
-    // analyze_fn_common), which is exactly what keeps it out of free_vars.
-    if (name == info.own_name) info.own_name_used = true;
-    // A local only means "this frame's binding" from the statement that
-    // binds it onward. Before that the declaration has not run, so the
-    // name still resolves outward — the interp walks the environment
-    // chain at the moment of the read, and an enclosing binding (or a
-    // global) answers. Fall through to the outer scan so the compiled
-    // backends capture the same thing the interp would find.
-    if (my_locals.contains(name) && declared_.contains(name)) return;
-    // `self` is always capturable: every frame defines a self slot (the
-    // receiver, or the lexical fallback), so the outer-scope scan below
-    // would never see it in a locals set. Register it unconditionally;
-    // the enclosing frame cell-promotes its slot via the merge loop's
-    // matching special case, and a frame with no lexical self feeds the
-    // capture a NO_SELF cell (emit_closure_build's fallback) so the read
-    // guard still raises the interp's NameError.
-    if (name == "self") {
-      add_free_var(info, name);
-      return;
-    }
-    for (auto* scope : outer) {
-      if (scope->contains(name)) {
-        if (add_free_var(info, name) && optional)
-          info.optional_free_vars.insert(name);
-        if (!optional) info.optional_free_vars.erase(name);
-        return;
-      }
-    }
-    // In a session unit a name nothing in scope binds is the session's, and
-    // the enclosing frame can hand its cell over — so capture it rather than
-    // leave the body to look the name up, which it would do on whatever
-    // thread runs it (an isolate's has neither the session nor the Runtime
-    // the cell was minted in). Not a name the runtime binds itself, and not a
-    // UFCS candidate, which is not a read.
-    if (session_top_ && !outer.empty() && !optional &&
-        !is_always_bound_name(name)) {
-      add_free_var(info, name);
-      info.optional_free_vars.erase(name);
-      return;
-    }
-    // else: builtin/global (resolved at the use site) or unresolved (runtime
-    // NameError) — not a free variable either way.
-  }
-
-  void visit_for_frees(const peg::Ast& node,
-                       const std::set<std::string>& my_locals,
-                       std::vector<const std::set<std::string>*>& outer,
-                       FuncInfo& info) {
+  void visit(const peg::Ast& node, FuncInfo& info) {
     using namespace peg::udl;
 
     if (node.tag == "FUNCTION"_ || node.tag == "LAMBDA"_ ||
         node.tag == "DEFER"_ || node.tag == "MULTIFN_DECL"_) {
-      // Analyze nested function / defer / multimethod body; its
-      // locals/frees don't leak into the enclosing scope, but the
-      // enclosing scope owns any captured vars (cells) that it
-      // references. FUNCTION and LAMBDA share analyze_function (same
-      // AST shape: [params, body]; LAMBDA just lacks the optional
-      // RETURN_TYPE slot). MULTIFN_DECL has [name, params, body] —
-      // analyze_multifn picks params/body off nodes[1] and the last
-      // child.
-      // MULTIFN_DECL may carry leading DECORATOR children whose
-      // expressions live in the enclosing scope (not the fn's inner
-      // scope) — visit them directly so any free vars they reference
-      // surface to `info`.
+      // A decorator's expression runs in the enclosing scope.
       if (node.tag == "MULTIFN_DECL"_) {
         for (auto& child : node.nodes) {
           if (child->tag != "DECORATOR"_) break;
-          visit_for_frees(*child, my_locals, outer, info);
+          visit(*child, info);
         }
       }
-      outer.push_back(&my_locals);
-      FuncInfo nested_info;
       if (node.tag == "DEFER"_) {
-        nested_info = analyze_defer(node, outer);
+        propagate_self(analyze_fn_common(&node, nullptr, *node.nodes[0]), info);
       } else if (node.tag == "MULTIFN_DECL"_) {
-        nested_info = analyze_multifn(node, outer);
+        propagate_self(analyze_multifn(node), info);
       } else {
         std::string_view own_name;
         if (auto it = literal_own_names_.find(&node);
             it != literal_own_names_.end())
           own_name = it->second;
-        nested_info = analyze_function(node, outer, own_name);
-      }
-      outer.pop_back();
-      for (const auto& fv : nested_info.free_vars) {
-        if (my_locals.contains(fv)) {
-          info.captured_locals.insert(fv);
-        } else if (fv == "self") {
-          // A nested closure captures THIS frame's self slot (dynamic
-          // receiver, or our own lexical fallback) — cell-promote it AND
-          // keep propagating so our fallback is wired the same way.
-          // (An explicit `let self` shadow lands in my_locals and takes
-          // the plain-local arm above instead.)
-          info.captured_locals.insert(fv);
-          add_free_var(info, fv);
-        } else {
-          // A candidate stays optional as it travels outward: no frame on
-          // the way holds a binding for it either.
-          if (add_free_var(info, fv) &&
-              nested_info.optional_free_vars.contains(fv)) {
-            info.optional_free_vars.insert(fv);
-          }
-          if (!nested_info.optional_free_vars.contains(fv)) {
-            info.optional_free_vars.erase(fv);
-          }
-        }
+        auto fv = culebra::view_function(node);
+        propagate_self(analyze_fn_common(&node, fv.params, *fv.body, own_name),
+                       info);
       }
       return;
     }
 
     if (node.tag == "ENUM_DECL"_) {
-      // Enum variants have no fn bodies — only decorators (evaluated in
-      // the enclosing scope) can reference free vars. Explicitly handle
-      // it so the generic tail recurse doesn't scan VARIANT identifiers
-      // (e.g. `Ok`) as variable references.
-      size_t i = 0;
-      while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
-        visit_for_frees(*node.nodes[i], my_locals, outer, info);
-        i++;
+      // Only decorators (evaluated in the enclosing scope) can read anything;
+      // variant names are not variables.
+      for (auto& c : node.nodes) {
+        if (c->tag != "DECORATOR"_) break;
+        visit(*c, info);
       }
       return;
     }
 
     if (node.tag == "TRAIT_DECL"_) {
-      // Default-impl bodies are nested functions captured from the
-      // enclosing scope. Signature-only methods skip analysis.
-      size_t i = 0;
-      while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
-        visit_for_frees(*node.nodes[i], my_locals, outer, info);
-        i++;
-      }
-      // node.nodes[i] is CLASS_HEAD; methods follow.
+      size_t i = culebra::first_non_decorator_index(node);
+      for (size_t d = 0; d < i; d++) visit(*node.nodes[d], info);
+      // node.nodes[i] is CLASS_HEAD; methods follow. A default body is a
+      // receiver frame, so it captures no enclosing `self`.
       for (size_t j = i + 1; j < node.nodes.size(); j++) {
-        // A signature-only method analyzes to {} (analyze_trait_method finds
-        // no TRAIT_BODY), so its propagate loop is a no-op.
-        outer.push_back(&my_locals);
-        auto method_info = analyze_trait_method(*node.nodes[j], outer);
-        outer.pop_back();
-        for (const auto& fv : method_info.free_vars) {
-          if (my_locals.contains(fv)) {
-            info.captured_locals.insert(fv);
-          } else {
-            add_free_var(info, fv);
-          }
-        }
+        auto tv = culebra::view_trait_method(*node.nodes[j]);
+        if (tv.body) analyze_fn_common(node.nodes[j].get(), tv.params, *tv.body);
       }
       return;
     }
 
     if (node.tag == "CLASS_DECL"_) {
-      // Each METHOD is a nested function (params + body) that captures
-      // from the enclosing scope. Propagate their free_vars exactly
-      // like the FUNCTION branch above. Leading DECORATOR children
-      // live in the enclosing scope.
-      size_t i = 0;
-      while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
-        visit_for_frees(*node.nodes[i], my_locals, outer, info);
-        i++;
-      }
+      size_t i = culebra::first_non_decorator_index(node);
+      for (size_t d = 0; d < i; d++) visit(*node.nodes[d], info);
       // A class whose value the declarator loop never touches names
       // itself through its receiver (FuncInfo::own_name) rather than
       // capturing the declaring scope's cell — the ring
@@ -636,36 +309,21 @@ struct FnAnalysis {
           node.nodes.begin(), node.nodes.begin() + i,
           [](const auto& d) { return culebra::is_compile_time_decorator(*d); });
       std::string_view class_own;
-      if (all_compile_time && !(session_top_ && outer.empty()))
+      if (all_compile_time && !(session_top_ && depth_ == 0))
         class_own = culebra::parse_generic_head(node.nodes[i]->token).outer;
       // Typed-field initializers execute per instance inside a synthetic
       // field-init function (invoked after the `new` body's parameter
       // binding, or by build_class_instance for a class with no `new`),
       // not at declaration time — analyze them as one nested function
       // whose FuncInfo is keyed by the CLASS_DECL node itself so
-      // compile_class_decl can recover it. Its locals are what each
-      // initializer declares, visible in that initializer alone; `self` is
-      // a builtin. Static-field values still evaluate at declaration time
-      // in the enclosing scope.
+      // compile_class_decl can recover it; `self` is a builtin there.
+      // Static-field values still evaluate at declaration time in the
+      // enclosing scope.
       FuncInfo field_info;
-      std::set<std::string> field_locals;
-      // The class name is already in declared_ (a scope-wide local of the
-      // enclosing frame), so seeding it here is what makes a field
-      // initializer's read the frame's own — analyze_fn_common's seed.
-      if (!class_own.empty() &&
-          field_locals.insert(std::string(class_own)).second) {
+      if (!class_own.empty()) {
         field_info.own_name = std::string(class_own);
         field_info.own_name_source = FuncInfo::OwnNameSource::Receiver;
       }
-      auto propagate = [&](const FuncInfo& nested) {
-        for (const auto& fv : nested.free_vars) {
-          if (my_locals.contains(fv)) {
-            info.captured_locals.insert(fv);
-          } else {
-            add_free_var(info, fv);
-          }
-        }
-      };
       bool has_instance_fields = false;
       // An initializer expression is the only reason a `new` body reaches
       // the field-init closure at all; a plain `x: Float` is stored by the
@@ -682,38 +340,31 @@ struct FnAnalysis {
           has_instance_fields = true;
           if (mv.value) {
             fields_need_a_thunk = true;
-            outer.push_back(&my_locals);
-            visit_scoped_expr(*mv.value, field_locals, outer, field_info);
+            depth_++;
+            visit(*mv.value, field_info);
+            depth_--;
             scan_eh_defer(*mv.value, /*at_fn_top=*/true, field_info);
-            outer.pop_back();
           }
           continue;
         }
         if (mv.is_field) {  // static field: declaration-time, enclosing scope
-          if (mv.value) visit_scoped_expr(*mv.value, my_locals, outer, info);
+          if (mv.value) visit(*mv.value, info);
           continue;
         }
         if (!mv.is_static && mv.name == "new") new_method_asts.push_back(&method);
-        outer.push_back(&my_locals);
-        auto method_info = analyze_method(method, outer, class_own);
-        outer.pop_back();
-        propagate(method_info);
+        analyze_fn_common(&method, mv.params, **mv.body, class_own,
+                          FuncInfo::OwnNameSource::Receiver);
       }
       // The field-init frame is a receiver frame (build_class_instance /
       // the `new` body always invoke it with the instance as `self`), so
-      // its lexical-fallback capture is dead weight — drop it like
-      // analyze_fn_common does for METHOD bodies. Must happen before
-      // propagate: the enclosing frame would otherwise carry a free
-      // `self` without the cell promotion the capture needs.
+      // its lexical-fallback capture is dead weight.
       std::erase(field_info.free_vars, "self");
-      propagate(field_info);
-      func_info[&node] = std::move(field_info);
+      record(&node, res_.initializer_scope, &node, std::move(field_info));
       // Each `new` body invokes the field-init closure right after its
       // parameter binding (interp parity: initializers run only once the
       // ctor args bound successfully). It reaches the closure through a
-      // synthetic capture compile_class_decl binds in the class's scope;
-      // added AFTER propagate so the hidden name never leaks into the
-      // enclosing function's free list (nothing outside resolves it).
+      // synthetic capture compile_class_decl binds in the class's scope,
+      // which nothing outside resolves.
       if (has_instance_fields && fields_need_a_thunk) {
         auto slot_name = field_init_slot_name(node);
         for (auto* new_method_ast : new_method_asts)
@@ -722,274 +373,205 @@ struct FnAnalysis {
       return;
     }
 
-    // CALL = primary + postfix chain. A `DOT(name)` (or `SAFE_DOT`)
-    // immediately followed by ARGUMENTS is a method call that may resolve
-    // via UFCS to a free function `name(receiver, ...)`. If `name` is an
-    // outer-scope variable, it must be captured so the nested-fn UFCS
-    // lookup (lookup_var at the call site) can find it — otherwise
-    // `(5).dbl()` inside a closure would miss the captured `dbl` that
-    // `dbl(5)` resolves fine. Builtin method names count too: whether
-    // `remove` is the builtin or a UFCS candidate is a property of the
-    // receiver, decided at runtime, so the name has to be in reach either
-    // way. Bare property access (DOT without a following ARGUMENTS) never
-    // uses UFCS, so it's left alone.
     if (node.tag == "CALL"_) {
-      // Scope barrier for a lazy-ns builder. The stdlib splices
-      // `_lazy_ns_register("Ns", fn(){...})` at entry-module top level; the
-      // builder fn is a self-contained module rebuilt per-Runtime via its
-      // fn_ptr, so it MUST stay captureless. A UFCS-candidate method name in
-      // its body (`comp._step(rv)`) would otherwise be noted as a free var
-      // and capture a same-named entry-module user global, breaking the
-      // captureless invariant. Analyze the builder with no outer scope so
-      // such names resolve as globals (never captures); skip the rest of the
-      // CALL so it isn't re-analyzed under the enclosing scope.
+      // The builder `_lazy_ns_register("Ns", fn(){...})` registers is a
+      // self-contained module rebuilt per Runtime, so it must stay
+      // captureless (resolve.h resolves it as a root of its own).
       if (const peg::Ast* builder = lazy_ns_builder(node)) {
-        std::vector<const std::set<std::string>*> barrier;  // no outer scope
-        analyze_function(*builder, barrier);
+        auto fv = culebra::view_function(*builder);
+        int saved = std::exchange(depth_, 0);
+        analyze_fn_common(builder, fv.params, *fv.body);
+        depth_ = saved;
         return;
       }
-      for (size_t i = 0; i < node.nodes.size(); i++) {
-        const auto& child = *node.nodes[i];
-        bool is_method = (child.original_tag == "DOT"_ ||
-                          child.original_tag == "SAFE_DOT"_) &&
-                         i + 1 < node.nodes.size() &&
-                         node.nodes[i + 1]->original_tag == "ARGUMENTS"_;
-        if (is_method) {
-          auto mname = std::string(child.token);
-          // A call whose receiver is a builtin namespace identifier
-          // (`Http.server()`, `Time.sleep()`) is member dispatch, never
-          // UFCS — don't capture the member name. Capturing it would pull
-          // an outer var of the same name into the closure; if that var is
-          // the one being assigned this very closure (e.g.
-          // `server = Isolate.spawn(fn{ Http.server() })`) its cell isn't
-          // in scope yet and closure-build fails. A local shadowing the
-          // namespace name is a real receiver, so require it out of scope.
-          // is_method means this DOT is a postfix, so the grammar
-          // (CALL <- PRIMARY postfix*) guarantees a receiver at i - 1.
-          const auto& recv = *node.nodes[i - 1];
-          auto recv_name = std::string(recv.token);
-          bool ns_receiver =
-              recv.tag == "IDENTIFIER"_ && recv.original_tag != "DOT"_ &&
-              is_builtin_var_(recv_name) && !my_locals.contains(recv_name) &&
-              std::none_of(outer.begin(), outer.end(), [&](auto* s) {
-                return s->contains(recv_name);
-              });
-          if (!ns_receiver) {
-            note_free_var(mname, my_locals, outer, info, /*optional=*/true);
-          }
-          continue;  // skip the DOT recursion (it would early-return)
-        }
-        visit_for_frees(child, my_locals, outer, info);
+      // `v.name(...)` may reach the body's own name through UFCS, unless the
+      // receiver is a stdlib namespace (member dispatch).
+      for (size_t i = 1; i + 1 < node.nodes.size(); i++) {
+        const auto& c = *node.nodes[i];
+        if ((c.original_tag == "DOT"_ || c.original_tag == "SAFE_DOT"_) &&
+            node.nodes[i + 1]->original_tag == "ARGUMENTS"_ &&
+            c.token == info.own_name && !namespace_receiver(*node.nodes[i - 1]))
+          info.own_name_used = true;
       }
-      return;
     }
 
-    // DOT[IDENTIFIER] is a property name, not a variable reference.
-    // The AST optimizer collapses the single-child rule so node.tag
-    // reads as IDENTIFIER; use original_tag and check before the
-    // IDENTIFIER handler below.
-    if (node.original_tag == "DOT"_) {
+    // A member name (`.x`, `?.x`), an object key, a keyword argument's label
+    // and a pattern entry's key are not variables.
+    if (node.original_tag == "DOT"_ || node.original_tag == "SAFE_DOT"_) return;
+    if (node.tag == "OBJECT_PROPERTY"_) {
+      // A computed key is an expression like any other (resolve.h's walk).
+      auto pv = culebra::view_object_property(node);
+      if (!pv.is_shorthand && pv.key->tag != "IDENTIFIER"_) visit(*pv.key, info);
+      visit(*pv.value, info);
+      return;
+    }
+    if (node.tag == "KWARG"_ || node.tag == "OBJECT_PAT_ENTRY"_) {
+      for (size_t i = 1; i < node.nodes.size(); i++) visit(*node.nodes[i], info);
       return;
     }
 
     if (node.tag == "IDENTIFIER"_) {
-      auto name = std::string(node.token);
       // `__ARGS__` is auto-bound by the function prologue; flag use so
       // the prologue can skip the Array allocation when nothing reads it.
-      if (name == "__ARGS__") info.uses_args = true;
+      if (node.token == "__ARGS__") info.uses_args = true;
       // Reading the `fn` handle allocates the bound-handle cache slot.
-      if (name == "fn") info.uses_fn = true;
-      note_free_var(name, my_locals, outer, info);
-      return;
-    }
-
-    if (node.tag == "FOR"_) {
-      // FOR = [IDENT(var), EXPRESSION(iterable), BLOCK(body), (NOBREAK)?]. The
-      // binding is block-scoped to the body — make it visible only
-      // while walking the body (by extending `my_locals` for that
-      // subtree) so nested closures inside the body can capture it
-      // while closures outside the body don't see it. Also register
-      // the binding in `info.captured_locals` if any nested closure
-      // references it — that flag is what triggers cell promotion when the
-      // loop body is emitted.
-      auto fv = culebra::view_for(node);
-      visit_for_frees(*fv.iter, my_locals, outer, info);
-      auto extended = my_locals;
-      // A destructuring loop binding (`for (k, v) in …`) binds every leaf of
-      // the pattern, not one identifier — collect them all, as MATCH and
-      // DESTRUCTURE_ASSIGN do, or a closure in the body sees them as free
-      // variables and raises NameError.
-      std::vector<std::string> names;
-      culebra::for_each_pattern_binding(
-          *fv.binding, [&](std::string_view nm, size_t, size_t) {
-            names.emplace_back(nm);
-            extended.insert(std::string(nm));
-          });
-      {
-        DeclaredBlock body_scope(*this);
-        visit_for_frees(*fv.body, extended, outer, info);
-      }
-      // A `nobreak { … }` runs after the loop with the loop variable OUT of
-      // scope, so walk it in `my_locals` (not `extended`) — a closure there
-      // must not resolve the loop binding.
-      if (fv.nobreak) {
-        DeclaredBlock nobreak_scope(*this);
-        visit_for_frees(*fv.nobreak, my_locals, outer, info);
-      }
-      // If the body walk pulled a name into the enclosing function's
-      // free-vars (because a nested closure referenced it), we instead
-      // mark it captured here and drop it from the free list — the
-      // enclosing function owns it.
-      for (const auto& name : names) {
-        auto it = std::find(info.free_vars.begin(), info.free_vars.end(),
-                            name);
-        if (it != info.free_vars.end()) {
-          info.captured_locals.insert(name);
-          info.free_vars.erase(it);
-        }
-      }
-      return;
-    }
-
-    if (node.tag == "OBJECT_PROPERTY"_) {
-      // `view.value` collapses long form (EXPRESSION) and shorthand
-      // (IDENTIFIER read-from-scope) so the walker doesn't branch.
-      auto pv = culebra::view_object_property(node);
-      visit_for_frees(*pv.value, my_locals, outer, info);
-      return;
-    }
-
-    // The other two places an IDENTIFIER names something that is not a
-    // variable of this scope (OBJECT_PROPERTY above is the third): a keyword
-    // argument's label names the callee's parameter, and a pattern entry's
-    // key names the property being matched. Walking them as reads made a
-    // closure claim the name as free, which is harmless where something
-    // binds it and a rejected program where an inner statement list declares
-    // it further down. Everything to the right of the label is a read.
-    if (node.tag == "KWARG"_ || node.tag == "OBJECT_PAT_ENTRY"_) {
-      for (size_t i = 1; i < node.nodes.size(); i++) {
-        visit_for_frees(*node.nodes[i], my_locals, outer, info);
-      }
+      if (node.token == "fn") info.uses_fn = true;
+      // Any mention of the body's own name turns on its prologue bind.
+      if (node.token == info.own_name) info.own_name_used = true;
+      // `self` is always capturable: every frame defines a self slot (the
+      // receiver, or the lexical fallback), and a frame with no lexical self
+      // feeds the capture a NO_SELF cell (emit_closure_build's fallback) so
+      // the read guard still raises the interp's NameError.
+      if (node.token == "self" && symbol_of(node) == culebra::resolve::kNone)
+        add_free_var(info, "self");
       return;
     }
 
     if (node.tag == "ASSIGNMENT"_) {
       auto av = culebra::view_assignment(node);
       if (av.lvalcnt == 1) {
-        // Simple target: `x = expr` / `let x = expr` / `x += expr`.
-        // For compound (`x += expr`), x must already exist — visit it as
-        // an identifier so the closure-capture analyzer sees the read.
-        auto ident_node = node.nodes[av.lvaloff];
-        if (ident_node->tag == "IDENTIFIER"_) {
-          auto name = std::string(ident_node->token);
-          // A builtin name is not skipped here: note_free_var only records a
-          // name an enclosing scope actually declares, so `println = 9` inside
-          // a closure captures an enclosing `mut println` — and stays a
-          // non-capture when nothing shadows the global.
-          if ((!av.is_let || av.compound) && !my_locals.contains(name)) {
-            visit_for_frees(*ident_node, my_locals, outer, info);
-          }
-          // A bare write to the body's own name is a write to that
-          // (immutable) binding — it has to be bound for the write to be
-          // refused, rather than declare a body-local of the same name.
-          if (!av.is_let && !av.is_mut && name == info.own_name)
-            info.own_name_used = true;
-        }
+        // A simple target that is not a declaration is a read too: a bare
+        // write to the body's own name (an immutable binding) has to be bound
+        // for the write to be refused. A bare `self = v` is refused by the
+        // frame's own receiver, which it does not capture.
+        const auto& ident = *node.nodes[av.lvaloff];
+        bool receiver_write = ident.token == "self" && !av.compound;
+        if (ident.tag == "IDENTIFIER"_ && !av.is_mut &&
+            (!av.is_let || av.compound) && !receiver_write)
+          visit(ident, info);
       } else {
         // Complex lvalue: primary + postfixes. TYPE_ANNOTATION and
         // ASSIGN_OP sit between the last lvalue and rhs, so stopping at
         // `lvaloff + lvalcnt` naturally skips them.
-        for (int i = 0; i < av.lvalcnt; i++) {
-          visit_for_frees(*node.nodes[av.lvaloff + i], my_locals, outer, info);
-        }
+        for (int i = 0; i < av.lvalcnt; i++)
+          visit(*node.nodes[av.lvaloff + i], info);
       }
       // `let name = fn …`: the literal reads `name` as itself (see
-      // FuncInfo::own_name) wherever nothing can rebind the name behind
-      // it — an immutable binding the list declares once, outside a REPL
-      // session's top level.
+      // FuncInfo::own_name) wherever nothing can rebind the name behind it,
+      // and not at a REPL line's top level, where a later line may.
       if (av.is_let && !av.is_mut && !av.compound && av.lvalcnt == 1 &&
-          !(session_top_ && outer.empty())) {
-        if (const auto* target = culebra::assign_name_target(node, av)) {
-          auto name = std::string(target->token);
-          if (!is_sink_name(name) && !redeclared_.contains(name))
-            if (const auto* lit = fn_literal_of(*av.rhs))
-              literal_own_names_[lit] = std::move(name);
-        }
-      }
-      visit_for_frees(*av.rhs, my_locals, outer, info);
-      // The binding exists from here on: a later read of the name is this
-      // frame's local, not the enclosing one it resolved to above.
-      if (!av.compound && av.lvalcnt == 1) {
+          !(session_top_ && depth_ == 0)) {
         if (const auto* target = culebra::assign_name_target(node, av))
-          declared_.insert(std::string(target->token));
+          if (!is_sink_name(target->token) && declared_once(*target))
+            if (const auto* lit = fn_literal_of(*av.rhs))
+              literal_own_names_[lit] = std::string(target->token);
       }
+      visit(*av.rhs, info);
       return;
     }
 
-    if (node.tag == "DESTRUCTURE_ASSIGN"_ && node.nodes.size() >= 4) {
-      // A destructure binds the leaves this frame declares; those are not
-      // reads. The declaring form binds every leaf, the `let`-less form the
-      // ones collect_fn_locals made locals (bare `[a, b] = v` declares where
-      // bare `a = v` would) and reads the rest, which reassign further out.
-      // The right-hand side is walked first either way, so `[a, b] = [a, 1]`
-      // still reads the `a` that was in scope before the statement.
-      bool declares =
-          node.nodes[0]->token == "let" || node.nodes[1]->token == "mut";
-      visit_for_frees(*node.nodes[3], my_locals, outer, info);
+    for (auto& c : node.nodes) visit(*c, info);
+  }
+
+  // The function literal an expression IS — the AST optimizer has already
+  // folded the EXPRESSION wrapper onto it, so this is a tag test, not a
+  // descent: `[fn …]` is an Array holding one, not one.
+  static const peg::Ast* fn_literal_of(const peg::Ast& expr) {
+    using namespace peg::udl;
+    return (expr.tag == "FUNCTION"_ || expr.tag == "LAMBDA"_) ? &expr
+                                                               : nullptr;
+  }
+
+  // Each name a parameter binds. A destructuring param (`fn ({a, b})`)
+  // binds the pattern's names, not a single identifier —
+  // extract_param_name_loc would index a non-existent IDENTIFIER child
+  // (flaky OOB read).
+  template <class F>
+  static void for_each_param_name(const peg::Ast& p, F&& f) {
+    if (culebra::is_pattern_param(p)) {
       for_each_pattern_binding(
-          *node.nodes[2], [&](std::string_view nm, size_t, size_t) {
-            std::string name(nm);
-            if (declares || my_locals.contains(name)) {
-              declared_.insert(std::move(name));
-              return;
-            }
-            note_free_var(name, my_locals, outer, info);
-          });
+          p, [&](std::string_view nm, size_t, size_t) { f(nm); });
       return;
     }
+    f(culebra::extract_param_name_loc(p).name);
+  }
 
-    if (node.tag == "LEXICAL_SCOPE"_) {
-      DeclaredBlock block(*this);
-      for (auto& c : node.nodes) visit_for_frees(*c, my_locals, outer, info);
-      return;
-    }
+  // Every function's captures, from what resolve.h says each name means: a
+  // name a function reads (or writes) whose variable another function
+  // declares is a free variable of each function from the reader out to the
+  // declaring one, which captures it. A body's own name is the one the
+  // prologue binds (FuncInfo::own_name), so it stops there. A method call
+  // `v.name(...)` makes `name` an optional free variable (a UFCS candidate),
+  // unless the receiver is a stdlib namespace. In a session, a name no
+  // statement of this input declares — an earlier input's, or one nothing
+  // declares — is the session's: a free variable out to the top, captured by
+  // none, short of a function that declares the name itself. The receiver
+  // `self` and the field-init slot stay as the walk (visit) found them.
+  void derive_captures(FuncInfo& top) {
+    namespace rs = culebra::resolve;
+    const rs::Resolution& r = res_;
+    fns_[0] = &top;
+    std::unordered_map<size_t, size_t> own_symbol;
+    for (const auto& [f, info] : fns_)
+      if (f != 0 && !info->own_name.empty())
+        own_symbol[f] = r.lookup(r.scopes[f].parent, info->own_name);
 
-    if (node.tag == "WHILE"_) {
-      // The init clause binds for the whole loop (its scope wraps the
-      // body); the body and the nobreak tail are each their own.
-      auto wv = culebra::view_while(node);
-      DeclaredBlock loop(*this);
-      if (wv.init) visit_for_frees(*wv.init, my_locals, outer, info);
-      visit_for_frees(*wv.cond, my_locals, outer, info);
-      {
-        DeclaredBlock body(*this);
-        visit_for_frees(*wv.body, my_locals, outer, info);
+    // In a session, the names each function declares in any of its scopes.
+    std::set<std::pair<size_t, std::string_view>> declares;
+    if (session_top_)
+      for (size_t sym = 0; sym < r.symbols.size(); sym++)
+        if (r.symbols[sym].declarations > 0)
+          declares.emplace(r.frame_of(sym), r.symbols[sym].name);
+
+    // Names are views of the AST's tokens, which outlive this.
+    struct Found {
+      std::unordered_map<std::string_view, size_t> free;  // first position
+      std::set<std::string_view> optional, read, captured;
+    };
+    std::unordered_map<size_t, Found> found;
+    auto reach = [&](size_t sym, std::string_view name, size_t scope,
+                     size_t position, bool optional) {
+      size_t own = sym;  // what the name means, the session's included
+      if (session_top_ && sym != rs::kNone && !r.symbols[sym].declared_at)
+        sym = rs::kNone;
+      size_t home = sym == rs::kNone ? rs::kNone : r.frame_of(sym);
+      size_t from = r.function_of(scope);
+      if (sym == rs::kNone && (!session_top_ || from == 0)) return;
+      for (size_t f = from; f != rs::kNone && f != home;
+           f = r.function_of(r.scopes[f].parent)) {
+        // A session name stops at a function declaring the name in a scope of
+        // its own: bound across the function, it would turn that scope's own
+        // write into a reassignment. The reader binds the session's cell
+        // where it builds its closure (vm.h's resolve_captures).
+        if (sym == rs::kNone && declares.contains({f, name})) return;
+        if (auto o = own_symbol.find(f);
+            own != rs::kNone && o != own_symbol.end() && o->second == own) {
+          if (f != from) found[f].captured.insert(name);
+          return;
+        }
+        auto& here = found[f];
+        auto [it, fresh] = here.free.try_emplace(name, position);
+        if (!fresh) it->second = std::min(it->second, position);
+        (optional ? here.optional : here.read).insert(name);
+        if (sym != rs::kNone && r.function_of(r.scopes[f].parent) == home)
+          found[home].captured.insert(name);
       }
-      if (wv.nobreak) {
-        DeclaredBlock tail(*this);
-        visit_for_frees(*wv.nobreak, my_locals, outer, info);
-      }
-      return;
-    }
+    };
+    for (const auto& [node, sym] : r.node_symbol)
+      reach(sym, node->token, r.node_scope.at(node), node->position, false);
+    for (const auto& m : r.method_calls)
+      if (m.symbol != rs::kNone && !namespace_receiver(*m.receiver))
+        reach(m.symbol, m.node->token, m.scope, m.node->position, true);
 
-    if (node.tag == "TRY"_) {
-      // [body BLOCK, catch IDENTIFIER, catch BLOCK] — two sibling scopes;
-      // the catch binding itself is scope-wide (collect_fn_locals).
-      for (auto& c : node.nodes) {
-        DeclaredBlock block(*this);
-        visit_for_frees(*c, my_locals, outer, info);
-      }
-      return;
-    }
-
-    if (node.tag == "MATCH_ARM"_) {
-      DeclaredBlock arm(*this);
-      for (auto& c : node.nodes) visit_for_frees(*c, my_locals, outer, info);
-      return;
-    }
-
-    for (auto& c : node.nodes) {
-      visit_for_frees(*c, my_locals, outer, info);
+    for (auto& [f, info] : fns_) {
+      auto& here = found[f];
+      std::vector<std::string> free;
+      for (const auto& n : info->free_vars)
+        if (n == "self" || is_field_init_slot_name(n)) free.push_back(n);
+      std::vector<std::pair<size_t, std::string_view>> by_position;
+      for (const auto& [n, pos] : here.free) by_position.emplace_back(pos, n);
+      std::sort(by_position.begin(), by_position.end());
+      for (const auto& [pos, n] : by_position)
+        if (std::find(free.begin(), free.end(), n) == free.end())
+          free.emplace_back(n);
+      info->free_vars = std::move(free);
+      info->optional_free_vars.clear();
+      for (const auto& n : here.optional)
+        if (!here.read.contains(n)) info->optional_free_vars.emplace(n);
+      bool self = info->captured_locals.contains("self");
+      info->captured_locals.clear();
+      for (const auto& n : here.captured) info->captured_locals.emplace(n);
+      if (self) info->captured_locals.insert("self");
     }
   }
 
@@ -1117,209 +699,75 @@ struct FnAnalysis {
     return any;
   }
 
-  // Body of the shared analysis for user-defined callable AST nodes
-  // (FUNCTION or METHOD). `params_ast` / `body_ast` are supplied
-  // explicitly because METHOD puts its IDENTIFIER at index 0, pushing
-  // the params / body down by one slot. `info_key` is the AST pointer
-  // used to key `func_info` — callers point at the outer FUNCTION /
-  // METHOD node so `compile_*` can recover the analysis result later.
-  FuncInfo analyze_fn_common(
-      const peg::Ast* info_key,
-      const peg::Ast& params_ast,
-      const peg::Ast& body_ast,
-      std::vector<const std::set<std::string>*>& outer,
-      std::string_view own_name = {},
+  // The shared analysis of a function-like body: a FUNCTION / LAMBDA, a
+  // METHOD, a trait's default body, a `fn name`, a `defer`, a lazy builder.
+  // `info_key` is the node func_info keys it by, which compile_* recovers it
+  // from.
+  const FuncInfo& analyze_fn_common(
+      const peg::Ast* info_key, const peg::Ast* params_ast,
+      const peg::Ast& body_ast, std::string_view own_name = {},
       FuncInfo::OwnNameSource own_name_source =
           FuncInfo::OwnNameSource::Closure) {
-    std::set<std::string> my_locals;
-    DeclKinds kinds;
-    for (auto& p : params_ast.nodes) {
-      if (culebra::is_kw_only_sep(*p)) continue;
-      for_each_param_name(*p, [&](std::string_view nm) {
-        my_locals.insert(std::string(nm));
-        kinds.scope_wide.insert(std::string(nm));
-      });
-    }
-
+    using namespace peg::udl;
     FuncInfo info;
-    // The body's own name becomes a body-level local (the prologue binds
-    // it — see FuncInfo::own_name), unless a same-named parameter shadows
-    // it. Seeded before collect so a nested fn's reference lands in
-    // captured_locals like any local's would.
-    if (!own_name.empty() && !culebra::is_sink_name(own_name) &&
-        my_locals.insert(std::string(own_name)).second) {
+    // The body's own name is the prologue's (FuncInfo::own_name), unless a
+    // same-named parameter shadows it.
+    bool shadowed = false;
+    if (params_ast)
+      for (auto& p : params_ast->nodes)
+        if (!culebra::is_kw_only_sep(*p))
+          for_each_param_name(*p, [&](std::string_view nm) {
+            if (nm == own_name) shadowed = true;
+          });
+    if (!own_name.empty() && !culebra::is_sink_name(own_name) && !shadowed) {
       info.own_name = std::string(own_name);
       info.own_name_source = own_name_source;
-      kinds.scope_wide.insert(info.own_name);
     }
-    collect_fn_locals(body_ast, my_locals, outer, kinds);
-
-    DeclaredScope declared(*this, my_locals, kinds);
-    visit_defaults(params_ast, outer, info);
-    visit_for_frees(body_ast, my_locals, outer, info);
+    depth_++;
+    if (params_ast)
+      for (auto& p : params_ast->nodes)
+        if (!culebra::is_kw_only_sep(*p) && !culebra::is_kwargs_rest(*p))
+          if (const auto* def = extract_default_expr(*p)) visit(*def, info);
+    visit(body_ast, info);
+    depth_--;
     scan_eh_defer(body_ast, true, info);
-
     // Receiver frames (methods, trait defaults) always arrive with a
     // dispatched receiver — every invoke path passes one, and a detached
     // read binds it into the wrapper (culebra_runtime_bind_method_value).
     // Their lexical-fallback capture of an enclosing `self` is therefore
     // dead weight: drop it. captured_locals keeps "self" so a nested
     // closure inside the method still cell-captures the receiver slot.
-    {
-      using namespace peg::udl;
-      if (info_key->tag == "METHOD"_ || info_key->tag == "TRAIT_METHOD"_) {
-        std::erase(info.free_vars, "self");
-      }
-    }
-
-    func_info[info_key] = info;
-    return info;
+    if (info_key->tag == "METHOD"_ || info_key->tag == "TRAIT_METHOD"_)
+      std::erase(info.free_vars, "self");
+    return record(info_key, res_.body_scope, &body_ast, std::move(info));
   }
 
-  // An expression that is a scope of its own in the frame being walked (a
-  // static value, a field initializer): what it declares is a local of this
-  // frame visible in it alone.
-  void visit_scoped_expr(const peg::Ast& expr,
-                         const std::set<std::string>& my_locals,
-                         std::vector<const std::set<std::string>*>& outer,
-                         FuncInfo& info) {
-    std::set<std::string> own;
-    DeclKinds kinds;
-    collect_fn_locals(expr, own, outer, kinds);
-    DeclaredBlock block(*this);
-    if (own.empty()) return visit_for_frees(expr, my_locals, outer, info);
-    // DeclaredScope's seed: a match or catch binding holds for its whole arm.
-    for (const auto& name : own)
-      if (!kinds.from_assign.contains(name) || kinds.scope_wide.contains(name))
-        declared_.insert(name);
-    own.insert(my_locals.begin(), my_locals.end());
-    visit_for_frees(expr, own, outer, info);
+  // Keep `info` under `key`, and remember it as the function scope `scopes`
+  // maps `scope_key` to (derive_captures fills its captures).
+  const FuncInfo& record(
+      const peg::Ast* key,
+      const std::unordered_map<const peg::Ast*, size_t>& scopes,
+      const peg::Ast* scope_key, FuncInfo info) {
+    FuncInfo& slot = func_info[key] = std::move(info);
+    if (auto it = scopes.find(scope_key); it != scopes.end())
+      fns_[it->second] = &slot;
+    return slot;
   }
 
-  // Each name a parameter binds. A destructuring param (`fn ({a, b})`)
-  // binds the pattern's names, not a single identifier —
-  // extract_param_name_loc would index a non-existent IDENTIFIER child
-  // (flaky OOB read).
-  template <class F>
-  static void for_each_param_name(const peg::Ast& p, F&& f) {
-    if (culebra::is_pattern_param(p)) {
-      for_each_pattern_binding(
-          p, [&](std::string_view nm, size_t, size_t) { f(nm); });
-      return;
-    }
-    f(culebra::extract_param_name_loc(p).name);
-  }
-
-  // A default sees where its function is defined, the frame's own name and
-  // the parameters before it, a closure in it included (resolve.h's
-  // walk_default); what it declares is its own.
-  void visit_defaults(const peg::Ast& params_ast,
-                      std::vector<const std::set<std::string>*>& outer,
-                      FuncInfo& info) {
-    if (std::ranges::none_of(params_ast.nodes, [](const auto& p) {
-          return extract_default_expr(*p) != nullptr;
-        }))
-      return;
-    std::set<std::string> head;
-    if (!info.own_name.empty()) head.insert(info.own_name);
-    for (auto& p : params_ast.nodes) {
-      if (culebra::is_kw_only_sep(*p)) continue;
-      if (const auto* def = extract_default_expr(*p)) {
-        std::set<std::string> locals = head;
-        DeclKinds kinds;
-        kinds.scope_wide = head;
-        collect_fn_locals(*def, locals, outer, kinds);
-        DeclaredScope declared(*this, locals, kinds);
-        visit_for_frees(*def, locals, outer, info);
-      }
-      for_each_param_name(*p, [&](std::string_view nm) {
-        head.insert(std::string(nm));
-      });
-    }
-  }
-
-  // Shared by FUNCTION ([PARAMETERS, (RETURN_TYPE)?, BLOCK]) and LAMBDA
-  // ([LAMBDA_PARAMS, BODY]) — both have params at index 0, but a declared
-  // return type shifts the body, so find it through view_function.
-  FuncInfo analyze_function(
-      const peg::Ast& fnAst,
-      std::vector<const std::set<std::string>*>& outer,
-      std::string_view own_name = {}) {
-    auto fv = culebra::view_function(fnAst);
-    return analyze_fn_common(&fnAst, *fv.params, *fv.body, outer, own_name);
-  }
-
-  // METHOD ast: [IDENTIFIER, PARAMETERS, BLOCK]. Analyzed just like a
-  // nested FUNCTION — the implicit `self` arrives as the dispatched
-  // receiver (analyze_fn_common drops the lexical-fallback capture).
-  // `class_own` is the class's name for a member that reads it through its
-  // receiver (FuncInfo::own_name), empty when the class is decorated.
-  FuncInfo analyze_method(
-      const peg::Ast& methodAst,
-      std::vector<const std::set<std::string>*>& outer,
-      std::string_view class_own = {}) {
-    auto mv = culebra::view_method(methodAst);
-    return analyze_fn_common(&methodAst, *mv.params, **mv.body, outer,
-                             class_own, FuncInfo::OwnNameSource::Receiver);
-  }
-
-  // TRAIT_METHOD: only default-body methods need analysis (sig-only
-  // methods carry no body to walk). `view_trait_method` finds the
-  // optional TRAIT_BODY regardless of where it lands relative to the
-  // optional RETURN_TYPE sibling.
-  FuncInfo analyze_trait_method(
-      const peg::Ast& traitMethodAst,
-      std::vector<const std::set<std::string>*>& outer) {
-    auto tv = culebra::view_trait_method(traitMethodAst);
-    if (!tv.body) return {};
-    return analyze_fn_common(&traitMethodAst, *tv.params, *tv.body, outer);
-  }
-
-  // MULTIFN_DECL ast: [IDENTIFIER, PARAMETERS, [RETURN_TYPE,] BLOCK].
-  // Analyzed like a nested FUNCTION — body is the last child.
-  FuncInfo analyze_multifn(
-      const peg::Ast& multifnAst,
-      std::vector<const std::set<std::string>*>& outer) {
-    using namespace peg::udl;
-    // Skip leading DECORATOR children — params live right after the
-    // IDENTIFIER (which is itself right after the decorators).
-    size_t name_idx = 0;
-    while (name_idx < multifnAst.nodes.size() &&
-           multifnAst.nodes[name_idx]->tag == "DECORATOR"_) {
-      name_idx++;
-    }
-    auto paramsIdx = name_idx + 1;
-    auto bodyIdx = multifnAst.nodes.size() - 1;
-    // An undecorated body gets its own name as the prologue-bound
-    // self-handle (FuncInfo::own_name). A decorated one keeps the plain
-    // capture: its binding is the decorator's result, which only the
-    // declaring scope's cell knows.
+  // MULTIFN_DECL ast: [DECORATOR*, IDENTIFIER, PARAMETERS, [RETURN_TYPE,]
+  // BLOCK]. An undecorated body gets its own name as the prologue-bound
+  // self-handle (FuncInfo::own_name). A decorated one keeps the plain
+  // capture: its binding is the decorator's result, which only the
+  // declaring scope's cell knows.
+  const FuncInfo& analyze_multifn(const peg::Ast& multifnAst) {
+    size_t name_idx = culebra::first_non_decorator_index(multifnAst);
     auto self_name =
         name_idx == 0
             ? culebra::parse_generic_head(multifnAst.nodes[0]->token).outer
             : std::string_view{};
-    return analyze_fn_common(&multifnAst, *multifnAst.nodes[paramsIdx],
-                             *multifnAst.nodes[bodyIdx], outer, self_name,
+    return analyze_fn_common(&multifnAst, multifnAst.nodes[name_idx + 1].get(),
+                             *multifnAst.nodes.back(), self_name,
                              FuncInfo::OwnNameSource::Dispatch);
-  }
-
-  // `defer { BODY }` behaves like a 0-parameter nested function that
-  // closes over the enclosing scope. Shadow checks are unneeded (no
-  // params, no let/mut at the defer line itself).
-  FuncInfo analyze_defer(
-      const peg::Ast& deferAst,
-      std::vector<const std::set<std::string>*>& outer) {
-    std::set<std::string> my_locals;
-    DeclKinds kinds;
-    collect_fn_locals(*deferAst.nodes[0], my_locals, outer, kinds);
-
-    FuncInfo info;
-    DeclaredScope declared(*this, my_locals, kinds);
-    visit_for_frees(*deferAst.nodes[0], my_locals, outer, info);
-    scan_eh_defer(*deferAst.nodes[0], true, info);
-
-    func_info[&deferAst] = info;
-    return info;
   }
 };
 

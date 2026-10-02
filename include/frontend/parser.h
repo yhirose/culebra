@@ -387,10 +387,10 @@ inline std::string_view extract_type_annotation(const peg::Ast& node,
 //                 (_ TYPE_ANNOTATION)? _ ASSIGN_OP _ EXPRESSION
 // Layout: [LET, MUTABLE, lval-chain..., (TYPE_ANNOTATION)?, ASSIGN_OP, EXPRESSION].
 // `lvaloff` is the index of the first lvalue child (always 2 today;
-// exposed so callers iterate as `ast.nodes[av.lvaloff + i]`). All four
-// walkers (interp shadow / interp eval / JIT shadow / JIT compile) and
-// both passes (collect_fn_locals, visit_for_frees) read through this
-// view so a future grammar tweak only updates view_assignment.
+// exposed so callers iterate as `ast.nodes[av.lvaloff + i]`). Every walker
+// that reads an assignment (resolve.h, lint.h, fn_analysis.h, the compiler)
+// reads through this view so a future grammar tweak only updates
+// view_assignment.
 struct AssignmentView {
   bool is_let;                  // node[0].token == "let"
   bool is_mut;                  // node[1].token == "mut"
