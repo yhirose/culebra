@@ -1685,17 +1685,20 @@ inline TraitDeclSpec trait_decl_spec(const peg::Ast& ast) {
   return spec;
 }
 
-// Returns (name, line, col) for a PARAMETER-shaped AST node. The
-// KWARGS_REST shape stores the name as the node's own token; normal
-// parameters keep it on the IDENTIFIER child at index 1.
+// The node that spells a parameter's name: a `*rest` / `**rest` parameter
+// is its own name, any other carries it after its marker.
+inline const peg::Ast& param_name_node(const peg::Ast& p) {
+  return (is_kwargs_rest(p) || is_args_rest(p)) ? p : *p.nodes[1];
+}
+
+// (name, line, col) of a PARAMETER-shaped node's name (param_name_node).
 struct ParamNameLoc {
   std::string_view name;
   size_t line;
   size_t column;
 };
 inline ParamNameLoc extract_param_name_loc(const peg::Ast& p) {
-  if (is_kwargs_rest(p) || is_args_rest(p)) return {p.token, p.line, p.column};
-  const auto& id = *p.nodes[1];
+  const auto& id = param_name_node(p);
   return {id.token, id.line, id.column};
 }
 

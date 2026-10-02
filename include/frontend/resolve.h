@@ -21,8 +21,9 @@
 //    body is resolved after the whole body that encloses it.
 //
 // A name nothing here declares — a stdlib global, `self`, a NameError at run
-// time — resolves to no symbol. A member (`o.x`) and an object key are not
-// names.
+// time — resolves to no symbol. A member (`o.x`) and an object key spelled
+// as a name (`{x: 1}`) are not names; a computed key and a decorator's callee
+// are expressions like any other.
 
 #include "frontend/parser.h"
 
@@ -393,10 +394,8 @@ class Resolver {
         }
         // A default sees the parameters before it, not its own.
         if (const auto* d = extract_default_expr(*p)) walk(*d);
-        const peg::Ast& name_node =
-            (is_kwargs_rest(*p) || is_args_rest(*p)) ? *p : *p->nodes[1];
-        auto loc = extract_param_name_loc(*p);
-        size_t sym = declare(name_node, loc.name, SymbolKind::Parameter);
+        const peg::Ast& name_node = param_name_node(*p);
+        size_t sym = declare(name_node, name_node.token, SymbolKind::Parameter);
         if (sym != kNone && job.owner != kNone)
           params_of_[job.owner].push_back(sym);
       }
@@ -544,6 +543,7 @@ class Resolver {
 
   void walk_decl_head(const peg::Ast& n, SymbolKind kind, size_t* sym_out) {
     size_t i = first_non_decorator_index(n);
+    for (size_t k = 0; k < i; k++) walk(*n.nodes[k]);
     if (i >= n.nodes.size()) return;
     const peg::Ast& head = *n.nodes[i];
     auto name = parse_generic_head(head.token).outer;
@@ -581,6 +581,8 @@ class Resolver {
           if (pv.key->tag == "IDENTIFIER"_)
             read(*pv.key, pv.key->token, Spelling::ObjectShorthand);
         } else {
+          // A name key is the key's spelling; any other key is an expression.
+          if (pv.key->tag != "IDENTIFIER"_) walk(*pv.key);
           walk(*pv.value);
         }
         return;
@@ -679,7 +681,11 @@ class Resolver {
         return;
 
       case "DECORATOR"_:
-        return;  // a decorator's callee and trait names are not variable reads
+        // The callee is read when the declaration runs, in the scope around
+        // it; a compiler directive (`@value`, `@packable`, `@derive(...)`)
+        // reads nothing.
+        if (!is_compile_time_decorator(n) && !n.nodes.empty()) walk(*n.nodes[0]);
+        return;
 
       case "LEXICAL_SCOPE"_: {
         size_t saved = cur_;

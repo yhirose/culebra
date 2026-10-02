@@ -204,6 +204,25 @@ void test_spellings() {
     check(occ(*p, "member", 0) == nullptr, "a member is not a name");
   if (auto p = resolve_source("fn size(v) { 0 }\n[1].size()\n"))
     check(p->res.called_as_method("size"), "a method call's name is recorded");
+  if (auto p = resolve_source("let k = 1\nlet o = {(k, 1): 2, k: 3}\n")) {
+    same(*p, "k", 0, 1, "a computed object key reads the name");
+    check(occ(*p, "k", 2) == nullptr, "a key spelled as a name is not a name");
+  }
+}
+
+void test_decorators() {
+  if (auto p = resolve_source(
+          "let wrap = fn (f) { f }\n@wrap\nfn g() { 1 }\n@wrap\nclass C {}\n")) {
+    same(*p, "wrap", 0, 1, "a function's decorator reads its callee");
+    same(*p, "wrap", 0, 2, "a class's decorator reads its callee");
+  }
+  if (auto p = resolve_source(
+          "fn mk(arg) { |f| f }\nfn main() {\n  let width = 2\n  @mk(width)\n  fn h() { 1 }\n}\n")) {
+    same(*p, "mk", 0, 1, "a decorator call's callee is read");
+    same(*p, "width", 0, 1, "its arguments are read in the declaring scope");
+  }
+  if (auto p = resolve_source("let value = 1\n@value\nclass V { x = 0 }\n"))
+    check(occ(*p, "value", 1) == nullptr, "a compiler directive reads nothing");
 }
 
 void test_outline() {
@@ -362,6 +381,7 @@ int main(int argc, char** argv) {
   test_order();
   test_declarations();
   test_spellings();
+  test_decorators();
   test_outline();
   test_node_records();
   if (argc >= 2) test_corpus(argv[1]);
