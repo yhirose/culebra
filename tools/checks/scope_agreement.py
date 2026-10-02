@@ -69,6 +69,8 @@ EXPRESSIONS = {
     'initializer': 'class _K {\nf = (let v = 1) + 0\ng = (|| v)()\n}',
     'own_initializer': 'class _K {\nf = (let v = 1) + (|| v)()\n}',
     'static_value': 'class _S {\nstatic s = (let v = 1) + (|| v)()\n}',
+    # A static value runs where the class is declared, before the `let`.
+    'static_before_declaration': 'class _S {\nstatic s = v\n}\nlet v = 1',
     'conditional_expr': 'true && (let v = 1)\nlet _in = || v',
     'decorator': 'let _dec = fn (f) { f }\n@_dec\nfn _h() { v }',
     # The condition reads `v` before the arm declares one of its own.

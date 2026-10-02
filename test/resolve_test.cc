@@ -246,6 +246,40 @@ void test_session() {
   }
 }
 
+void test_class_values() {
+  if (auto p = resolve_source(
+          "fn main() {\n  class S {\n    static s = v\n  }\n  let v = 1\n}\n"))
+    unbound(*p, "v", 0, "a static value runs where the class is declared");
+  if (auto p = resolve_source("fn main() {\n  let v = 0\n  class S {\n"
+                              "    static s = (let v = 1) + v\n  }\n  v\n}\n")) {
+    differ(*p, "v", 0, 1, "a static value's declaration is its own");
+    same(*p, "v", 1, 2, "read within the value");
+    same(*p, "v", 0, 3, "and ends with it");
+    size_t v0 = sym(*p, "v", 0), v1 = sym(*p, "v", 1);
+    check(v0 != kNone && v1 != kNone &&
+              p->res.frame_of(v0) == p->res.frame_of(v1),
+          "a static value is in the declaring function");
+  }
+  // The parse folds a one-statement body into the statement, the class here.
+  if (auto p = resolve_source(
+          "fn main() {\n  class S {\n    static s = (let v = 1) + (|| v)()\n  }\n}\n"))
+    same(*p, "v", 0, 1, "a closure in a static value reads its declaration");
+  if (auto p = resolve_source(
+          "fn main() {\n  class K {\n    f = later\n  }\n  let later = 1\n}\n"))
+    same(*p, "later", 0, 1, "an initializer runs per instance, after the body");
+  if (auto p = resolve_source("class K {\n  f = (let u = 7) + u\n  g = u\n}\n")) {
+    same(*p, "u", 0, 1, "an initializer reads its own declaration");
+    unbound(*p, "u", 2, "which ends with the initializer");
+  }
+  if (auto p = resolve_source(
+          "class K {\n  f = (let u = 7) + 0\n  g: Long = (let w = 1) + 0\n}\n")) {
+    size_t u = sym(*p, "u", 0), w = sym(*p, "w", 0);
+    check(u != kNone && w != kNone && p->res.frame_of(u) != 0 &&
+              p->res.frame_of(u) == p->res.frame_of(w),
+          "a class's initializers share one function scope");
+  }
+}
+
 void test_decorators() {
   if (auto p = resolve_source(
           "let wrap = fn (f) { f }\n@wrap\nfn g() { 1 }\n@wrap\nclass C {}\n")) {
@@ -419,6 +453,7 @@ int main(int argc, char** argv) {
   test_spellings();
   test_globals();
   test_session();
+  test_class_values();
   test_decorators();
   test_outline();
   test_node_records();

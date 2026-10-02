@@ -699,7 +699,7 @@ struct FnAnalysis {
       for (size_t j = i + 1; j < node.nodes.size(); j++) {
         const auto& method = *node.nodes[j];
         auto mv = culebra::view_method(method);
-        if (mv.is_typed_field || (mv.is_field && !mv.is_static)) {
+        if (mv.instance_field()) {
           has_instance_fields = true;
           if (mv.value) {
             fields_need_a_thunk = true;

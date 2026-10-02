@@ -77,14 +77,6 @@ inline std::string describe(const resolve::Resolution& res, size_t symbol) {
                      s.declared_at->column);
 }
 
-// The function scope a symbol is declared in.
-inline size_t frame_of(const resolve::Resolution& res, size_t symbol) {
-  size_t s = res.symbols[symbol].scope;
-  while (s != resolve::kNone && !res.scopes[s].function)
-    s = res.scopes[s].parent;
-  return s;
-}
-
 // One report file per checked module, created exclusively, so processes and
 // threads writing into one directory never overwrite each other.
 inline void write_report(std::string_view header,
@@ -221,7 +213,7 @@ inline void check_lint(const peg::Ast& root) {
     } else {
       // Found from outside the declaring function, it is that function's.
       agrees = symbol != resolve::kNone &&
-               res.lookup(res.scopes[frame_of(res, symbol)].parent, name) !=
+               res.lookup(res.scopes[res.frame_of(symbol)].parent, name) !=
                    resolve::kNone;
     }
     if (!agrees)

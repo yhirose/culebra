@@ -798,6 +798,12 @@ struct MethodView {
                                   // outlive the declaration (evaluated per
                                   // instance), so holders keep the subtree
                                   // alive through this instead of the raw ptr
+
+  // A field of each instance, its `value` run per instance; a typed field is
+  // one even when marked `static`.
+  bool instance_field() const {
+    return is_typed_field || (is_field && !is_static);
+  }
 };
 
 // `new(.x)`: a field parameter, [FIELD_MARK, IDENTIFIER, FIELD_OPTIONAL,
@@ -1903,14 +1909,14 @@ inline std::vector<const peg::Ast*> collect_instance_fields(
   std::set<std::string_view> body_names;
   for (size_t i = members_from; i < cls.nodes.size(); i++) {
     auto mv = view_method(*cls.nodes[i]);
-    if (mv.is_typed_field || (mv.is_field && !mv.is_static))
+    if (mv.instance_field())
       body_names.insert(mv.name);
   }
   bool spliced = false;
   for (size_t i = members_from; i < cls.nodes.size(); i++) {
     const auto& m = *cls.nodes[i];
     auto mv = view_method(m);
-    if (mv.is_typed_field || (mv.is_field && !mv.is_static)) {
+    if (mv.instance_field()) {
       out.push_back(&m);
       continue;
     }

@@ -7724,7 +7724,7 @@ class Compiler {
       auto mv = culebra::view_method(m);
       // A getter takes no parameters (and is a method, not a field form).
       if (mv.is_getter) culebra::require_getter_no_params(mv, class_name);
-      if (mv.is_typed_field || (mv.is_field && !mv.is_static)) continue;
+      if (mv.instance_field()) continue;
       if (mv.is_field) {
         static_fields.push_back(&m);
         continue;

@@ -6,10 +6,12 @@
 // (vm::Compiler) rather than an approximation of it:
 //
 //  - Scopes: the module; each function-like body (`fn`, a lambda, `fn name`, a
-//    method or field initializer, `defer`, `effect fn`, a handler clause); a
-//    `{}` block; a loop body; a match arm; a try body and its catch; the block
-//    `handle` runs; and the init clause around its `if` / `while` / `match`. An
-//    `if` arm shares the enclosing scope.
+//    method, `defer`, `effect fn`, a handler clause); a class's field
+//    initializers, which run when an instance is made, as one function body
+//    with a scope per initializer; a static value, where the class is
+//    declared; a `{}` block; a loop body; a match arm; a try body and its
+//    catch; the block `handle` runs; and the init clause around its `if` /
+//    `while` / `match`. An `if` arm shares the enclosing scope.
 //  - Within one function a declaration is visible from its statement on, after
 //    its right-hand side (`let x = x` reads the outer `x`). Every declaration of
 //    one name in one scope is the same variable: a repeated `let`, a bare
@@ -190,6 +192,16 @@ struct Resolution {
   std::unordered_map<const peg::Ast*, size_t> node_symbol;
   // With Options::record_nodes: each function body to its scope.
   std::unordered_map<const peg::Ast*, size_t> body_scope;
+  // With Options::record_nodes: each class with field initializers to the
+  // function scope they run in.
+  std::unordered_map<const peg::Ast*, size_t> initializer_scope;
+
+  // The function scope a symbol is declared in.
+  size_t frame_of(size_t symbol) const {
+    size_t s = symbols[symbol].scope;
+    while (s != kNone && !scopes[s].function) s = scopes[s].parent;
+    return s;
+  }
 
   // Where a symbol is first declared, or kNone.
   size_t first_declaration(size_t symbol) const {
@@ -261,6 +273,7 @@ class Resolver {
     const peg::Ast* body;
     size_t parent;
     size_t owner;  // the symbol the function is bound to, for keyword labels
+    bool initializers = false;  // `body` is a CLASS_DECL with initializers
   };
   struct Label {
     size_t callee;
@@ -411,6 +424,13 @@ class Resolver {
                       job.params ? job.params->position : job.body->position,
                       end_of(*job.body));
     r_.scopes[cur_].owner = job.owner;
+    if (job.initializers) {
+      if (opts_.record_nodes) r_.initializer_scope[job.body] = cur_;
+      for_each_value(*job.body, /*instance=*/true,
+                     [&](const peg::Ast& v) { scoped_body(v); });
+      cur_ = saved;
+      return;
+    }
     if (opts_.record_nodes) r_.body_scope[job.body] = cur_;
     if (job.params) {
       for (const auto& p : job.params->nodes) {
@@ -494,6 +514,18 @@ class Resolver {
     } else {
       auto lv = view_lambda(fn);
       enqueue(lv.params, lv.body.get(), owner);
+    }
+  }
+
+  // A class's field initializers (run per instance) or static values (run
+  // where the class is declared), each by its value expression.
+  template <typename F>
+  static void for_each_value(const peg::Ast& class_decl, bool instance, F&& f) {
+    for (size_t j = first_non_decorator_index(class_decl) + 1;
+         j < class_decl.nodes.size(); j++) {
+      if (class_decl.nodes[j]->tag != "METHOD"_) continue;
+      auto mv = view_method(*class_decl.nodes[j]);
+      if (mv.value && mv.instance_field() == instance) f(*mv.value);
     }
   }
 
@@ -658,15 +690,17 @@ class Resolver {
 
       case "CLASS_DECL"_: {
         walk_decl_head(n, SymbolKind::Class, nullptr);
-        size_t i = first_non_decorator_index(n);
-        for (size_t j = i + 1; j < n.nodes.size(); j++) {
+        bool initializers = false;
+        for (size_t j = first_non_decorator_index(n) + 1; j < n.nodes.size();
+             j++) {
           if (n.nodes[j]->tag != "METHOD"_) continue;
           auto mv = view_method(*n.nodes[j]);
-          if (mv.body)
-            enqueue(mv.params, mv.body->get());
-          else if (mv.value)
-            enqueue(nullptr, mv.value);
+          if (mv.body) enqueue(mv.params, mv.body->get());
+          initializers |= mv.value && mv.instance_field();
         }
+        for_each_value(n, /*instance=*/false,
+                       [&](const peg::Ast& v) { scoped_body(v); });
+        if (initializers) jobs_.push_back({nullptr, &n, cur_, kNone, true});
         return;
       }
 
