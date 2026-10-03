@@ -21,7 +21,7 @@ culebra は個人の趣味プロジェクト（プログラミング言語処理
    直後に `git log --oneline -1` が `master` の HEAD と一致するか確認し、ずれていれば `git rebase master`（`baseRef` の設定はセッション開始時に読まれるので、同じセッション内で変えた直後は `origin/master` 基準のままだった実例あり）
 3. **以後そのセッションの全パスは worktree の絶対パスで統一する。** `EnterWorktree` は cwd を移すだけで、Edit/Write に渡した絶対パスは worktree 内へ正規化されない（main tree を直接汚した実例あり）
 4. worktree は main tree の中にネストするので、main tree で cwd 再帰型のコマンド（`culebra test`／`culebra fmt -i .`／`culebra lint .`）を打つと `.claude/worktrees/*` まで拾う。main tree は ff マージ点専用（build も test もしない）という上のルールを守っていれば踏まない
-5. マージ = **rebase → 再テスト → ff-only**。textual に無衝突でも意味的に正しいとは限らないので rebase 後は必ず再テストする。ただし**再テストは既定で `just test-dev`（~80s）**であって全ゲートではない（下の「どこまで回すか」）。master は他セッションで頻繁に動くので、rebase のたびに全ゲートを回すとマシンが占有され全員が止まる
+5. マージ = **rebase → 再テスト → ff-only**。textual に無衝突でも意味的に正しいとは限らないので rebase 後は必ず再テストする。ただし**再テストは既定で `just test-dev`（~125s）**であって全ゲートではない（下の「どこまで回すか」）。master は他セッションで頻繁に動くので、rebase のたびに全ゲートを回すとマシンが占有され全員が止まる
 6. 完了後 `ExitWorktree` を `action: "remove"` で呼ぶ（worktree と branch を消して cwd を main tree に戻す）
 
 **Step 5-6 は `/ff-merge` skill で自動化されている**（`disable-model-invocation` なのでユーザーが明示的に呼ぶ）。内部で `just land`（`misc/land.sh`）が rebase → `just test-dev` → ff-only merge を machine-wide ロック下で1プロセス実行し、着地レース（他セッションが先に master を進めた場合）は自動リトライする。全て commit 済みならこれを使う。上記 5-6 は手動でやる場合の内訳。
@@ -41,9 +41,10 @@ culebra は個人の趣味プロジェクト（プログラミング言語処理
 ## テスト（速い順に段階的に）
 
 1. 単発確認: `./build-dev/culebra <file>.cul`（+ `--jit`）
-2. 全レーン対称確認: **`just test-dev`**（~80s、no-LTO）— 通常はここまで。生成物ゲート `check-generated`（grammar sync / preamble / blob / site version）を前段で回すので、生成物のずれは着地前にここで落ちる
-3. フルゲート **`just test`**（実測 450〜880s、うち 95% は difftest + leak 系 + AOT）
-4. **docs を触ったら必ず `just doctest`**（`just test` には含まれない別ステップ）
+2. 編集ごとの確認: **`just check`**（実測 33s）— 開発中はここまで。source/IR の ratchet と `tests/*.cul` 全体の assertion（executor 1プロセス）と examples
+3. 着地ゲート **`just test-dev`**（実測 ~125s、no-LTO）— `just land`（`/ff-merge`）が回すので、開発中に自分で回さない。JIT 対称（op 被覆の部分集合）・codegen 軸・ctest の CLI 半分・isolate など。生成物ゲート `check-generated`（grammar sync / preamble / blob / site version）を前段で回すので、生成物のずれは着地前にここで落ちる
+4. フルゲート **`just test`**（実測 450〜880s、うち 95% は difftest + leak 系 + AOT）
+5. **docs を触ったら必ず `just doctest`**（`just test` には含まれない別ステップ）
 
 `tests/*.cul` は全レーンが回すので、**CMake オプションで消える namespace（`Scene` / `Webview` /
 `Desktop`）を名指ししない**。ローカルはその軸を build しているので緑になり、軸の無いレーンだけが
@@ -59,8 +60,8 @@ difftest・AOT・leak 系・wrap はそこで必ず走る。ローカルで全�
 
 | 変更 / 状況 | ローカルで回すもの |
 |---|---|
-| rebase 後の再検証（textual 無衝突） | `just test-dev` |
-| 通常のコード変更 | `just test-dev` |
+| 通常のコード変更（開発中） | `just check` + 触った箇所の単発実行（`--jit` も） |
+| 着地・rebase 後の再検証 | `just test-dev`（`just land` が回す） |
 | **Canvas/Scene の window backend、AOT gating、runtime archive** | **`just test`**（+ CMakeLists/wrap なら `just test wrap`） |
 | **`Runtime` の teardown、GC heap、slab allocator** | **`just test-assert`** — 全レーンが `Release`（`-DNDEBUG`）で木の assert は 1 度も走らない。これだけが `NDEBUG` なしでビルドして同じスイープを回す |
 | docs | `just doctest` |

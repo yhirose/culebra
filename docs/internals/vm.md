@@ -1919,8 +1919,8 @@ form, with and without an outer variable of the same name), a
 `culebra test` session and the REPL test that way, and fails on a
 finding `tools/checks/scope_agreement_allow.txt` does not list, on a
 listed one that no longer fires, and on a successful compile that wrote
-no report. Its row, `scope agreement`, runs in `just test-dev` and
-`just test`. The emitted bytecode is the same with the check on or off.
+no report. Its row, `scope agreement`, runs in `just test` and CI. The
+emitted bytecode is the same with the check on or off.
 
 ## 11. Design decisions
 

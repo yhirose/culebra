@@ -1895,8 +1895,7 @@ assertレーン）はコレクタと一緒に`memory.md` §5〜6で説明され�
 `culebra test`のセッション、REPLのテストをこの状態でコンパイルし、
 `tools/checks/scope_agreement_allow.txt`にない所見、載っているのに
 もう出ない所見、成功したのに報告を書かなかったコンパイルのどれかで
-失敗する。その行`scope agreement`は`just test-dev`と`just test`で
-走る。検査の有無で出力するバイトコードは変わらない。
+失敗する。その行`scope agreement`は`just test`とCIで走る。検査の有無で出力するバイトコードは変わらない。
 
 ## 11. 設計判断
 

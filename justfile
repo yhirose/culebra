@@ -1239,12 +1239,10 @@ _run-tests BACKEND:
     # VM slice, so a VmError here is an output mismatch — a slice regression
     # fails the gate instead of skipping. Quiet on success (the scripts print
     # one OK line per case × lane); full output is replayed on failure.
-    # AXES=plain runs the frozen comparison alone; AXES=gc adds the two GC
-    # axes (compare.sh reads STRESS / REFS). The axes cost 21s and 20s against
-    # the plain lane's 18s and re-apply to these 181 cases exactly what
-    # run_gc_stress applies to the whole corpus, so the landing gate takes the
-    # plain lane and the full gate — where run_gc_stress runs too — takes all
-    # three. The aot axis builds each case with `culebra build` and holds the
+    # AXES=gc adds the two GC axes (compare.sh reads STRESS / REFS). The full
+    # gate alone runs it: both of its catches came from the GC axes, and the
+    # landing gate's vm/jit symmetry already holds the two lanes to each
+    # other. The aot axis builds each case with `culebra build` and holds the
     # binary to the same expectation: the AOT sweep compares stdout only, and
     # every tests/*.cul exits 0, so this is where an AOT binary's uncaught-error
     # line and exit code are read.
@@ -1259,7 +1257,6 @@ _run-tests BACKEND:
                 || { printf '%s\n' "$out"; exit 1; }
         done
         case "$axes" in
-            plain) echo "vm_cases OK (both lanes == frozen expected)" ;;
             gc) echo "vm_cases OK (both lanes == frozen expected, + GC_STRESS, + GC_REFS GC_STRESS)" ;;
             aot) echo "vm_cases OK (AOT binaries == frozen expected, stderr and exit code)" ;;
         esac
@@ -1534,9 +1531,9 @@ _run-tests BACKEND:
     #   ci    | CI shards that run it; every `test` row must name at least one
     #   gate  | -  always | heavy  skipped by CULEBRA_TEST_SKIP_HEAVY | wrap  only
     #         | with CULEBRA_TEST_WRAP | local  a local-only variant whose full
-    #         | version runs in a CI shard (the sampled AOT sweep, the plain
-    #         | vm_cases lane, the CLI half of ctest), exempt from the rule that
-    #         | a full-gate phase must reach CI
+    #         | version runs in a CI shard (the sampled AOT sweep, the CLI
+    #         | half of ctest), exempt from the rule that a full-gate phase
+    #         | must reach CI
     #   cost  | measured wall seconds, single run, 8-core M1 Pro, warm build-gate
     #
     # Order is execution order: cheap first, then the corpus sweeps, AOT last
@@ -1563,10 +1560,9 @@ _run-tests BACKEND:
       "run_doctest_skips|doctest skips (a skip is justified, or says why)|binary|check,dev,test|light|-|3"
       "run_diff_vm_jit shape|vm/jit symmetry (the op cover + what the branch touched)|binary|dev|-|local|15"
       "run_diff_vm_jit full|vm/jit symmetry (every test file)|binary|test|light|-|116"
-      "run_vm_cases plain|vm_cases (frozen expected outputs)|binary|dev|-|local|18"
       "run_vm_cases gc|vm_cases (frozen expected, + the two GC axes)|binary|test|light|-|62"
       "run_codegen_backends|codegen backends (-O0, fast vs --vm)|binary|dev,test|light|-|24"
-      "run_scope_agreement|scope agreement (the compiler resolves names as resolve.h does)|binary|dev,test|light|-|15"
+      "run_scope_agreement|scope agreement (the compiler resolves names as resolve.h does)|binary|test|light|-|15"
       "run_lowering_diff|lowering diff (a statement in a fn, a generator and an effect body)|binary|test|light|-|30"
       "run_difftest|difftest (generated corpus)|binary|test|diff|heavy|143"
       "run_difftest_refs|difftest (refcount lane)|binary||leak|-|146"
