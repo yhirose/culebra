@@ -25,6 +25,7 @@
 
 #include "frontend/fragments.h"
 #include "frontend/parser.h"
+#include "frontend/resolve.h"
 
 #include <algorithm>
 #include <atomic>
@@ -875,20 +876,11 @@ inline MappedSource rewrite_block_inner(const peg::Ast& block,
                        static_cast<long>(block.column));
 }
 
-// Whether a node opens a variable scope of its own — the engines' sites:
-// fn-like and method bodies, a class's
-// members, LEXICAL_SCOPE, DEFER, loop bodies, MATCH arms, TRY bodies, and
-// a `handle` body (its own computation). IF shares its enclosing scope.
-// MATCH and TRY are taken as one level each (their arms as siblings), an
-// over-approximation in the direction collect_local_names tolerates.
-inline bool opens_scope(unsigned int tag) {
-  using namespace peg::udl;
-  return is_fn_boundary(tag) || tag == "EFFECT_FN_DECL"_ ||
-         tag == "METHOD"_ || tag == "CLASS_DECL"_ || tag == "TRAIT_DECL"_ ||
-         tag == "LEXICAL_SCOPE"_ || tag == "DEFER"_ || tag == "WHILE"_ ||
-         tag == "FOR"_ || tag == "MATCH"_ || tag == "TRY"_ ||
-         tag == "HANDLE"_;
-}
+// Whether a node opens a variable scope of its own: the scope rules' own
+// table (resolve.h). A whole MATCH or TRY counts as one level here (their
+// arms as siblings), an over-approximation in the direction
+// collect_local_names tolerates.
+using resolve::opens_scope;
 
 // Positional parameter names of a PARAMETERS node, skipping the kw-only
 // separator and any `**kwargs` rest. Shared by the generator and effects

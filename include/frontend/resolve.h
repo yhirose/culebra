@@ -291,6 +291,35 @@ inline size_t name_offset(const peg::Ast& n, std::string_view name,
   return source.substr(off, name.size()) == name ? off : kNone;
 }
 
+// Whether a construct opens a scope of its own somewhere inside it: what a
+// walk that stays on one scope's level must not enter. The generator and
+// effect lowerings ask it to tell what a body's own level declares; the
+// Resolver below is what opens the scopes, and resolve_test holds the two
+// together. An `if` opens none for its arms; the scope around an `if` with
+// an init clause is the one this leaves out.
+inline bool opens_scope(unsigned int tag) {
+  using namespace peg::udl;
+  switch (tag) {
+    case "FUNCTION"_:
+    case "LAMBDA"_:
+    case "MULTIFN_DECL"_:
+    case "EFFECT_FN_DECL"_:
+    case "METHOD"_:
+    case "CLASS_DECL"_:
+    case "TRAIT_DECL"_:
+    case "DEFER"_:
+    case "LEXICAL_SCOPE"_:
+    case "FOR"_:
+    case "WHILE"_:
+    case "MATCH"_:
+    case "TRY"_:
+    case "HANDLE"_:
+      return true;
+    default:
+      return false;
+  }
+}
+
 namespace _detail {
 
 using namespace peg::udl;

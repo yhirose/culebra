@@ -359,7 +359,8 @@ module top level included — before it is compiled, and produces a
 
 The analysis is injected with one predicate, `is_builtin_var`, so it
 stays independent of the stdlib machinery; shadowing is checked by
-`lint::check_shadow`, single-sourced with `culebra lint`.
+`lint::check_shadow` on the same resolution, single-sourced with
+`culebra lint`.
 
 ### 4.1 Declaration semantics
 
@@ -1921,6 +1922,18 @@ finding `tools/checks/scope_agreement_allow.txt` does not list, on a
 listed one that no longer fires, and on a successful compile that wrote
 no report. Its row, `scope agreement`, runs in `just test` and CI. The
 emitted bytecode is the same with the check on or off.
+
+The other readers of the scope rules take them from resolve.h rather
+than restate them. The load-time lint (`include/frontend/lint.h`)
+resolves each module once and reads its three scope checks off the
+result: a read nothing visible declares is the undefined-name
+`NameError`, a declaration of a name that is an enclosing function's
+variable where the function is written is the `ShadowError`, and a bare
+write to a variable after its `let` is the `ImmutableError`. The
+generator and effect lowerings, which work on source text and
+re-parsed fragments, take only the table of scope-opening constructs
+(`resolve::opens_scope`); `resolve_test` holds that table to the scopes
+the resolver opens.
 
 ## 11. Design decisions
 

@@ -358,8 +358,8 @@ cellを自分の`Runtime`上に再構築する。`mut`束縛をcaptureしてい�
   何も払わずに済むようにする。
 
 この解析は`is_builtin_var`という1つの述語で注入されており、stdlib
-機構から独立している。shadowingは`lint::check_shadow`でチェック
-され、`culebra lint`と単一のソースを共有する。
+機構から独立している。shadowingは同じ解決結果の上で
+`lint::check_shadow`がチェックし、`culebra lint`と単一のソースを共有する。
 
 ### 4.1 宣言の意味論
 
@@ -1896,6 +1896,16 @@ assertレーン）はコレクタと一緒に`memory.md` §5〜6で説明され�
 `tools/checks/scope_agreement_allow.txt`にない所見、載っているのに
 もう出ない所見、成功したのに報告を書かなかったコンパイルのどれかで
 失敗する。その行`scope agreement`は`just test`とCIで走る。検査の有無で出力するバイトコードは変わらない。
+
+スコープの規則を読むほかの箇所は、規則を書き直さずresolve.hから
+受け取る。ロード時のlint（`include/frontend/lint.h`）はモジュールごとに
+1度解決し、スコープに関わる3つの検査をその結果から読む。見える宣言の
+ない読みが未定義名の`NameError`、関数が書かれた位置で外側の関数の
+変数である名前の宣言が`ShadowError`、`let`の後のその変数への裸の
+書き込みが`ImmutableError`になる。generatorとeffectの変換はソースの
+テキストと再パースした断片の上で動くので、スコープを開く構文の表
+（`resolve::opens_scope`）だけを受け取る。その表がresolverの開く
+スコープと一致することは`resolve_test`が確かめる。
 
 ## 11. 設計判断
 

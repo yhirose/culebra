@@ -491,6 +491,97 @@ void test_declaration_forms() {
 }
 
 
+// ---- the scope-opening table ----------------------------------------------
+
+// Where `target` sits under `n`: 0 not there, 1 on `n`'s own level, 2 inside
+// a construct opens_scope names.
+int level_of(const peg::Ast& n, const peg::Ast* target, bool crossed) {
+  if (&n == target) return crossed ? 2 : 1;
+  for (const auto& c : n.nodes)
+    if (int r = level_of(*c, target, crossed || opens_scope(c->tag))) return r;
+  return 0;
+}
+
+// opens_scope is what the lowerings stop at; the Resolver is what opens the
+// scopes. A `let v` written in each construct is on the function's own level
+// for both, or for neither.
+void test_scope_table() {
+  struct Case {
+    const char* what;
+    const char* construct;
+    bool own_level;
+  };
+  const std::vector<Case> cases = {
+      {"a statement", "let v = 1", true},
+      {"an if arm", "if true { let v = 1 }", true},
+      {"an else arm", "if false { 0 } else { let v = 1 }", true},
+      {"a cond arm", "cond { true => { let v = 1 }, _ => 0 }", true},
+      {"a ternary arm", "true ? (let v = 1) : 0", true},
+      {"an operand", "true && (let v = 1)", true},
+      {"a block", "{ let v = 1 }", false},
+      {"a for body", "for i in [1] { let v = 1 }", false},
+      {"a nobreak block", "for i in [] { 0 } nobreak { let v = 1 }", false},
+      {"a while body", "while false { let v = 1 }", false},
+      {"a match arm", "match 1 { _ => { let v = 1 } }", false},
+      {"a try body", "try { let v = 1 } catch e { 0 }", false},
+      {"a catch body", "try { 0 } catch e { let v = 1 }", false},
+      {"a defer", "defer { let v = 1 }", false},
+      {"a function literal", "g = fn () { let v = 1 }", false},
+      {"a lambda", "g = || (let v = 1)", false},
+      {"a named function", "fn g() { let v = 1 }", false},
+      {"a default", "fn g(x = (let v = 1)) { x }", false},
+      {"a method", "class K { m() { let v = 1 } }", false},
+      {"an initializer", "class K { f = (let v = 1) }", false},
+      {"a static value", "class K { static s = (let v = 1) }", false},
+      {"a trait method", "trait T { m() { let v = 1 } }", false},
+      {"a handled block", "handle { let v = 1 } with ask(resume) { 0 }", false},
+      {"a handler clause", "handle { 0 } with ask(resume) { let v = 1 }", false},
+  };
+  auto probe = [&](const Case& c, bool& resolver, bool& table) {
+    auto p = resolve_source(
+        std::format("effect fn ask()\nfn f() {{\n  0\n  {}\n  0\n}}\n", c.construct),
+        {.record_nodes = true});
+    if (!p) return false;
+    const Resolution& res = p->res;
+    const peg::Ast* body = nullptr;
+    size_t scope = kNone;
+    for (const auto& [b, s] : res.body_scope)
+      if (res.scopes[s].owner != kNone &&
+          res.symbols[res.scopes[s].owner].name == "f") {
+        body = b;
+        scope = s;
+      }
+    const Declaration* v = nullptr;
+    for (const auto& d : res.declarations)
+      if (d.node->token == "v") v = &d;
+    if (!body || !v) {
+      check(false, std::format("scope table [{}]: no `v` in `f`", c.what));
+      return false;
+    }
+    resolver = res.symbols[v->symbol].scope == scope;
+    table = level_of(*body, v->node, false) == 1;
+    return true;
+  };
+  for (const auto& c : cases) {
+    bool resolver = false, table = false;
+    if (!probe(c, resolver, table)) continue;
+    check(resolver == c.own_level,
+          std::format("scope table [{}]: the resolver puts `v` {} the "
+                      "function's own level",
+                      c.what, resolver ? "on" : "off"));
+    check(table == resolver,
+          std::format("scope table [{}]: opens_scope and the resolver disagree",
+                      c.what));
+  }
+  // The one construct the table leaves out: an init clause's scope holds the
+  // arms, and the lowerings take them as the level around the `if`.
+  bool resolver = true, table = false;
+  if (probe({"an if with an init clause", "if let c = 1; c > 0 { let v = 1 }", false},
+            resolver, table))
+    check(!resolver && table,
+          "scope table: an init clause's `if` is the known difference");
+}
+
 // ---- the load-time lint ------------------------------------------------------
 
 // The `kind` errors the lint reports for `src`, as `name@line`, in the order
@@ -663,6 +754,7 @@ int main() {
   test_outline();
   test_node_records();
   test_declaration_forms();
+  test_scope_table();
   test_lint_undefined();
   test_lint_shadow();
   test_lint_let();
