@@ -2557,6 +2557,19 @@ inspect(grade(5))    # => 'small'
 inspect(grade(500))  # => 'big'
 ```
 
+宣言（`let`、`mut`、宣言する分割代入、`fn`、`class`、`enum`、
+`effect fn`、`import`）と`defer`には修飾子を付けられません。修飾された
+文は脱糖後の`if`の腕で、腕はそれ自身がスコープです（§6 スコープ）。
+宣言は腕と一緒に終わり、`defer`はその場で走ることになるため、どちらも
+`SyntaxError`です。裸の`x = v if c`はスコープ内の`x`への書き込みなので
+書けます:
+
+    let x = 1 if c                   # !! SyntaxError
+    defer { close() } if c           # !! SyntaxError
+    x = 1 if c                       # OK: スコープ内の`x`に書き込む
+    let y = if c { 1 } else { 0 }    # `if`の値を宣言する
+    defer { if c { close() } }       # 条件は中に書く
+
 `unless`が予約されるのは代入ターゲットの位置だけで、他の
 [hard 予約語](#キーワード)と同様パラメータ名・オブジェクトのキー・
 プロパティ名としては引き続き使えます。

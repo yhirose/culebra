@@ -2691,6 +2691,19 @@ inspect(grade(5))    # => 'small'
 inspect(grade(500))  # => 'big'
 ```
 
+A declaration (`let`, `mut`, a declaring destructure, `fn`, `class`,
+`enum`, `effect fn`, `import`) and a `defer` take no modifier. The
+statement is the arm of the `if` it desugars to, and an arm is a scope of
+its own (§6 Scope): the declaration would end with the arm and the
+`defer` would run at once, so both are a `SyntaxError`. A bare
+`x = v if c` writes the `x` already in scope and is allowed:
+
+    let x = 1 if c                   # !! SyntaxError
+    defer { close() } if c           # !! SyntaxError
+    x = 1 if c                       # OK: writes the `x` in scope
+    let y = if c { 1 } else { 0 }    # declare the value of an `if`
+    defer { if c { close() } }       # put the test inside
+
 `unless` is a reserved word only at the assignment-target position,
 like the rest of the [hard-reserved keywords](#keywords) — it stays a
 valid parameter name, object key, and property name.

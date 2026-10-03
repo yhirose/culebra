@@ -47,6 +47,29 @@ expect_syntax_reject "range pattern with by" "syntax error" \
 expect_syntax_reject "bare range pattern" "syntax error" \
   'match 1 { .. => 1, _ => 0 }'
 
+# `stmt if c` is an `if` arm, a scope of its own: a declaration or a `defer`
+# there is refused at the modifier. A bare write is not a declaration.
+expect_postfix_reject() {
+  expect_syntax_reject "$1" "cannot take a trailing \`if\` or \`unless\`" "$2"
+}
+expect_postfix_reject "postfix let"          'let a = 1 if true'
+expect_postfix_reject "postfix mut"          'mut a = 1 unless false'
+expect_postfix_reject "postfix let mut"      'let mut a = 1 if true'
+expect_postfix_reject "postfix destructure"  'let (a, b) = (1, 2) if true'
+expect_postfix_reject "postfix fn"           'fn f() { 1 } if true'
+expect_postfix_reject "postfix class"        'class K {} unless false'
+expect_postfix_reject "postfix enum"         'enum E { A } if true'
+expect_postfix_reject "postfix effect fn"    'effect fn ask() if true'
+expect_postfix_reject "postfix defer"        'fn f() { defer { inspect(1) } if true }'
+expect_postfix_reject "postfix let in a fn nothing calls" \
+  'fn f(c) { let a = 1 if c }'
+expect_syntax_reject "postfix defer names the fix" "defer { if c" \
+  'fn f() { defer { inspect(1) } unless false }'
+expect_accept "postfix bare write"           'mut a = 0
+a = 1 if true
+(a, b) = (2, 3) unless false
+a += 1 if true'
+
 # Rejected: reassigning a `let` binding (hoisted ImmutableError).
 expect_reject "top-level let reassign"  'let a = 1
 a = 2'

@@ -2300,6 +2300,48 @@ inline std::shared_ptr<peg::Ast> desugar_regex_literals(
 inline std::shared_ptr<peg::Ast> desugar_postfix_modifiers(
     std::shared_ptr<peg::Ast> node);
 
+// `stmt if c` is `if c { stmt }`, and an arm is a scope: a declaration there
+// would end with it, and a `defer` would run at once. Refused at the
+// modifier. A bare `x = v if c` writes the `x` in scope and stays.
+inline void reject_postfix_declaration(const peg::Ast& stmt) {
+  using namespace peg::udl;
+  const auto& base = *stmt.nodes[0];
+  const char* what = nullptr;
+  const char* instead = nullptr;
+  switch (base.tag) {
+    case "DEFER"_:
+      what = "a `defer`";
+      instead = "a defer runs when its arm ends. Put the test inside: "
+                "`defer { if c { … } }`";
+      break;
+    case "ASSIGNMENT"_:
+    case "DESTRUCTURE_ASSIGN"_:
+      if (base.nodes[0]->token != "let" && base.nodes[1]->token != "mut") return;
+      what = "a declaration";
+      instead = "what an arm declares ends with it. Declare the value of an "
+                "`if` instead: `let x = if c { … } else { … }`";
+      break;
+    case "MULTIFN_DECL"_:
+    case "CLASS_DECL"_:
+    case "ENUM_DECL"_:
+    case "EFFECT_FN_DECL"_:
+    case "IMPORT_STMT"_:
+      what = "a declaration";
+      instead = "what an arm declares ends with it. Write `if c { … }` around "
+                "the declaration and the code that uses it";
+      break;
+    default:
+      return;
+  }
+  const auto& at = *stmt.nodes[1];
+  throw CulebraError(
+      "SyntaxError",
+      std::format("{} cannot take a trailing `if` or `unless`: the statement "
+                  "is an `if` arm, and {}.",
+                  what, instead),
+      static_cast<long>(at.line), static_cast<long>(at.column));
+}
+
 // `stmt if cond` / `stmt unless cond` (see view_postfix_modifier) is
 // desugared, after AST optimization, into an ordinary IF node — `[cond,
 // then]` for `if`, `[!cond, then]` for `unless` — so both backends reuse
@@ -2313,6 +2355,7 @@ inline std::shared_ptr<peg::Ast> desugar_postfix_modifiers(
 // is_collapsed_single_statement fallback, the same way any ordinary
 // top-level statement does.
 inline std::shared_ptr<peg::Ast> make_postfix_if(const peg::Ast& stmt) {
+  reject_postfix_declaration(stmt);
   using Node = peg::Ast;
   const char* path = stmt.path.c_str();
   size_t ln = stmt.line, col = stmt.column;
