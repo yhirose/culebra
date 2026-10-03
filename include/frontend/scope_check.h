@@ -122,7 +122,7 @@ class Report {
   Report& operator=(const Report&) = delete;
   ~Report() {
     try {
-      for (const auto& [node, symbol] : res_.node_symbol)
+      for (const auto& [node, use] : res_.uses)
         if (!seen_.contains(node) && covers(*node, node->token))
           lines_.push_back(std::format("UNSEEN '{}' {}", node->token, where(*node)));
       write_report(std::format("SUMMARY {} checked={} dynamic={}", path_,
@@ -143,10 +143,10 @@ class Report {
   // What resolve.h says `node` names (kNone: nothing), and that the
   // compiler asked; kUnrecorded when resolve.h never looked it up.
   size_t symbol_of(const peg::Ast& node) {
-    auto it = res_.node_symbol.find(&node);
-    if (it == res_.node_symbol.end()) return kUnrecorded;
+    auto it = res_.uses.find(&node);
+    if (it == res_.uses.end()) return kUnrecorded;
     seen_.insert(&node);
-    return it->second;
+    return it->second.symbol;
   }
 
   void count_check() { checked_++; }
@@ -195,11 +195,11 @@ inline void check_lint(const peg::Ast& root) {
     auto at = where(root.path, d.line, d.col);
     const peg::Ast* node = nullptr;
     size_t symbol = resolve::kNone;
-    for (const auto& [n, s] : res.node_symbol) {
+    for (const auto& [n, use] : res.uses) {
       if (n->token == name && static_cast<int64_t>(n->line) == d.line &&
           static_cast<int64_t>(n->column) == d.col) {
         node = n;
-        symbol = s;
+        symbol = use.symbol;
         break;
       }
     }

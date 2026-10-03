@@ -213,10 +213,7 @@ struct FnAnalysis {
   }
 
   // What a name node resolves to, kNone when nothing declares it.
-  size_t symbol_of(const peg::Ast& name) const {
-    auto it = res_.node_symbol.find(&name);
-    return it == res_.node_symbol.end() ? culebra::resolve::kNone : it->second;
-  }
+  size_t symbol_of(const peg::Ast& name) const { return res_.symbol_of(name); }
 
   // A method call's receiver that is a stdlib namespace, which the call
   // reaches by member dispatch, never through UFCS.
@@ -225,17 +222,14 @@ struct FnAnalysis {
     if (recv.tag != "IDENTIFIER"_ || recv.original_tag == "DOT"_ ||
         !is_builtin_var_(std::string(recv.token)))
       return false;
-    auto it = res_.node_symbol.find(&recv);
-    return it == res_.node_symbol.end() || it->second == culebra::resolve::kNone;
+    return symbol_of(recv) == culebra::resolve::kNone;
   }
 
   // `let name = fn …` names the literal after itself only when nothing can
   // rebind the name behind it: the variable is declared once.
   bool declared_once(const peg::Ast& target) const {
-    auto it = res_.node_symbol.find(&target);
-    return it != res_.node_symbol.end() &&
-           it->second != culebra::resolve::kNone &&
-           res_.symbols[it->second].declarations == 1;
+    size_t sym = symbol_of(target);
+    return sym != culebra::resolve::kNone && res_.symbols[sym].declarations == 1;
   }
 
   void visit(const peg::Ast& node, FuncInfo& info) {
@@ -547,8 +541,8 @@ struct FnAnalysis {
           found[home].captured.insert(name);
       }
     };
-    for (const auto& [node, sym] : r.node_symbol)
-      reach(sym, node->token, r.node_scope.at(node), node->position, false);
+    for (const auto& [node, use] : r.uses)
+      reach(use.symbol, node->token, use.scope, node->position, false);
     for (const auto& m : r.method_calls)
       if (m.symbol != rs::kNone && !namespace_receiver(*m.receiver))
         reach(m.symbol, m.node->token, m.scope, m.node->position, true);

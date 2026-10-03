@@ -67,6 +67,22 @@ enum class SymbolKind : uint8_t {
 
 enum class Role : uint8_t { Declaration, Read, Write };
 
+// How a declaration is written.
+enum class Form : uint8_t {
+  Let,        // `let x`, a leaf of a `let` pattern
+  Mut,        // `mut x`, `let mut x`, a leaf of a `mut` pattern
+  Bare,       // `x = v`, a leaf of a bare pattern, where nothing visible is `x`
+  Parameter,  // a parameter, a leaf of a pattern parameter
+  Loop,       // a `for` binding
+  Catch,
+  Pattern,    // a match arm's binding
+  Function,
+  Class,
+  Enum,
+  Import,
+  Operation,  // `effect fn`
+};
+
 // How an occurrence is spelled, which a rename has to respect.
 enum class Spelling : uint8_t {
   Plain,
@@ -92,6 +108,8 @@ struct Symbol {
   std::vector<size_t> occurrences;     // into Resolution::occurrences, in order
   const peg::Ast* declared_at = nullptr;  // the name node that first declares it
   size_t declarations = 0;  // the statements declaring it, synthesized ones included
+  uint16_t forms = 0;       // a bit per Form that declares it
+  bool declared_as(Form f) const { return forms >> static_cast<int>(f) & 1; }
 };
 
 struct Scope {
@@ -105,10 +123,11 @@ struct Scope {
 };
 
 struct Options {
-  // Record what each name node resolves to (Resolution::node_symbol), the
-  // nodes a desugaring or a lowering synthesized included: what a consumer
-  // of the AST rather than of the source text — the compiler's agreement
-  // check — looks names up by.
+  // Record what each name node is (Resolution::uses, declarations,
+  // unbound_reads),
+  // the nodes a desugaring or a lowering synthesized included: what a
+  // consumer of the AST rather than of the source text — the compiler, the
+  // load-time lint — looks names up by.
   bool record_nodes = false;
   // The stdlib's global names (lint::builtin_names()). A bare write to one
   // that nothing declares is refused by the global rather than declaring a
@@ -117,6 +136,19 @@ struct Options {
   // The names earlier inputs of a session have declared: the module scope's
   // variables before this input's first statement.
   std::span<const std::string> session;
+};
+
+// What a name node is, kept per node the walk looked up
+// (Options::record_nodes).
+struct Use {
+  size_t symbol = kNone;  // kNone: nothing declares the name
+  size_t scope = kNone;   // the scope the name is written in
+};
+
+// A declaration, by its name node.
+struct Declaration {
+  const peg::Ast* node = nullptr;
+  size_t symbol = kNone;
 };
 
 // A name read or written where nothing declares it.
@@ -201,12 +233,20 @@ struct Resolution {
   }
   std::vector<size_t> scopes_by_begin;  // scope indices, ordered by begin
 
-  // With Options::record_nodes: each name node the walk looked up, to its
-  // symbol or kNone. Keyword labels and implicit names (`_`, `self`, `fn`,
-  // `__NAME__`) are left out.
-  std::unordered_map<const peg::Ast*, size_t> node_symbol;
-  // With Options::record_nodes: the scope each of those nodes is written in.
-  std::unordered_map<const peg::Ast*, size_t> node_scope;
+  // With Options::record_nodes: each name node the walk looked up. Keyword
+  // labels and implicit names (`_`, `self`, `fn`, `__NAME__`) are left out.
+  std::unordered_map<const peg::Ast*, Use> uses;
+  // With Options::record_nodes, in walk order (a function's body after the
+  // body around it): every declaration, and every read nothing declares.
+  std::vector<Declaration> declarations;
+  std::vector<const peg::Ast*> unbound_reads;
+
+  // What a name node resolves to: kNone when nothing declares it, or when
+  // the walk never looked it up.
+  size_t symbol_of(const peg::Ast& name) const {
+    auto it = uses.find(&name);
+    return it == uses.end() ? kNone : it->second.symbol;
+  }
   // With Options::record_nodes: each function body to its scope.
   std::unordered_map<const peg::Ast*, size_t> body_scope;
   // With Options::record_nodes: each class with field initializers to the
@@ -297,7 +337,6 @@ class Resolver {
     const peg::Ast* node;
     size_t scope;
   };
-  enum class Bind { Declare, Parameter, Bare };
 
   // ---- bookkeeping ----------------------------------------------------------
 
@@ -319,20 +358,19 @@ class Resolver {
 
   void add(const peg::Ast& n, std::string_view name, size_t sym, size_t scope,
            Role role, Spelling spelling) {
-    if (opts_.record_nodes && spelling != Spelling::KeywordLabel) {
-      r_.node_symbol[&n] = sym;
-      r_.node_scope[&n] = scope;
-    }
+    if (opts_.record_nodes && spelling != Spelling::KeywordLabel)
+      r_.uses[&n] = {sym, scope};
     size_t off = offset_of(n, name);
     if (off == kNone) return;
     r_.occurrences.push_back({off, name.size(), sym, scope, role, spelling});
   }
 
   // A name read or written where nothing declares it.
-  void add_unresolved(const peg::Ast& n, std::string_view name) {
+  void add_unresolved(const peg::Ast& n, std::string_view name,
+                      Role role = Role::Read) {
     if (opts_.record_nodes) {
-      r_.node_symbol[&n] = kNone;
-      r_.node_scope[&n] = cur_;
+      r_.uses[&n] = {kNone, cur_};
+      if (role == Role::Read) r_.unbound_reads.push_back(&n);
     }
     size_t off = offset_of(n, name);
     if (off != kNone) r_.unresolved.push_back({std::string(name), off, cur_});
@@ -362,11 +400,25 @@ class Resolver {
     return sym;
   }
 
-  size_t declare(const peg::Ast& n, std::string_view name, SymbolKind kind,
+  static SymbolKind kind_of(Form form) {
+    switch (form) {
+      case Form::Parameter: return SymbolKind::Parameter;
+      case Form::Function: return SymbolKind::Function;
+      case Form::Class: return SymbolKind::Class;
+      case Form::Enum: return SymbolKind::Enum;
+      case Form::Import: return SymbolKind::Import;
+      case Form::Operation: return SymbolKind::EffectOperation;
+      default: return SymbolKind::Variable;
+    }
+  }
+
+  size_t declare(const peg::Ast& n, std::string_view name, Form form,
                  Spelling spelling = Spelling::Plain) {
     if (implicit(name)) return kNone;
-    size_t sym = symbol_in(cur_, name, kind, &n);
+    size_t sym = symbol_in(cur_, name, kind_of(form), &n);
     r_.symbols[sym].declarations++;
+    r_.symbols[sym].forms |= static_cast<uint16_t>(1u << static_cast<int>(form));
+    if (opts_.record_nodes) r_.declarations.push_back({&n, sym});
     add(n, name, sym, cur_, Role::Declaration, spelling);
     return sym;
   }
@@ -394,10 +446,10 @@ class Resolver {
     size_t sym = r_.lookup(cur_, name);
     if (sym == kNone && receiver(name)) return kNone;  // the receiver refuses it
     if (sym == kNone && global(name)) {
-      add_unresolved(n, name);
+      add_unresolved(n, name, Role::Write);
       return kNone;
     }
-    if (sym == kNone) return declare(n, name, SymbolKind::Variable, spelling);
+    if (sym == kNone) return declare(n, name, Form::Bare, spelling);
     add(n, name, sym, cur_, Role::Write, spelling);
     return sym;
   }
@@ -465,12 +517,12 @@ class Resolver {
       for (const auto& p : job.params->nodes) {
         if (is_kw_only_sep(*p)) continue;
         if (is_pattern_param(*p)) {
-          bind_pattern(*p, Bind::Parameter);
+          bind_pattern(*p, Form::Parameter);
           continue;
         }
         if (const auto* d = extract_default_expr(*p)) walk_default(*d);
         const peg::Ast& name_node = param_name_node(*p);
-        size_t sym = declare(name_node, name_node.token, SymbolKind::Parameter);
+        size_t sym = declare(name_node, name_node.token, Form::Parameter);
         if (sym != kNone && job.owner != kNone)
           params_of_[job.owner].push_back(sym);
       }
@@ -498,36 +550,37 @@ class Resolver {
     jobs_ = std::move(enclosing);
   }
 
-  void bind_pattern(const peg::Ast& pat, Bind mode) {
+  // `form`: how each leaf is declared; Form::Bare writes the visible name.
+  void bind_pattern(const peg::Ast& pat, Form form) {
     switch (pat.tag) {
       case "PATTERN"_:
       case "ARRAY_PATTERN"_:
       case "TUPLE_PATTERN"_:
       case "FOR_BINDING"_:
-        for (const auto& c : pat.nodes) bind_pattern(*c, mode);
+        for (const auto& c : pat.nodes) bind_pattern(*c, form);
         return;
       case "IDENTIFIER"_:
-        bind(pat, pat.token, mode,
+        bind(pat, pat.token, form,
              pat.original_tag == "OBJECT_PAT_ENTRY"_ ? Spelling::PatternShorthand
                                                      : Spelling::Plain);
         return;
       case "TYPED_IDENT"_:
-        bind(*pat.nodes[0], pat.nodes[0]->token, mode, Spelling::Plain);
+        bind(*pat.nodes[0], pat.nodes[0]->token, form, Spelling::Plain);
         return;
       case "REST_PATTERN"_:
         if (!pat.nodes.empty())
-          bind(*pat.nodes[0], pat.nodes[0]->token, mode, Spelling::Plain);
+          bind(*pat.nodes[0], pat.nodes[0]->token, form, Spelling::Plain);
         return;
       case "CTOR_PATTERN"_:
         for (size_t i = 1; i < pat.nodes.size(); i++)
-          bind_pattern(*pat.nodes[i], mode);
+          bind_pattern(*pat.nodes[i], form);
         return;
       case "OBJECT_PATTERN"_:
         for (const auto& e : pat.nodes) {
           if (e->tag == "OBJECT_PAT_ENTRY"_ && e->nodes.size() >= 2)
-            bind_pattern(*e->nodes[1], mode);
+            bind_pattern(*e->nodes[1], form);
           else if (e->tag == "IDENTIFIER"_)
-            bind(*e, e->token, mode, Spelling::PatternShorthand);
+            bind(*e, e->token, form, Spelling::PatternShorthand);
         }
         return;
       default:
@@ -535,19 +588,17 @@ class Resolver {
     }
   }
 
-  void bind(const peg::Ast& n, std::string_view name, Bind mode,
+  void bind(const peg::Ast& n, std::string_view name, Form form,
             Spelling spelling) {
-    switch (mode) {
-      case Bind::Declare:
-        declare(n, name, SymbolKind::Variable, spelling);
-        return;
-      case Bind::Parameter:
-        declare(n, name, SymbolKind::Parameter, spelling);
-        return;
-      case Bind::Bare:
-        bare_write(n, name, spelling);
-        return;
-    }
+    if (form == Form::Bare)
+      bare_write(n, name, spelling);
+    else
+      declare(n, name, form, spelling);
+  }
+
+  // `let mut x` is mutable: `mut` decides.
+  static Form declared_form(bool is_mut) {
+    return is_mut ? Form::Mut : Form::Let;
   }
 
   static bool is_function_literal(const peg::Ast& n) {
@@ -590,7 +641,7 @@ class Resolver {
       if (implicit(name)) return;
       size_t sym = r_.lookup(cur_, name);
       if (sym == kNone) {
-        if (!receiver(name)) add_unresolved(*target, name);
+        if (!receiver(name)) add_unresolved(*target, name, Role::Write);
       } else {
         add(*target, name, sym, cur_, Role::Write, Spelling::Plain);
       }
@@ -600,14 +651,14 @@ class Resolver {
     // later, so binding first changes nothing it reads.
     if (is_function_literal(*av.rhs)) {
       size_t sym = (av.is_let || av.is_mut)
-                       ? declare(*target, name, SymbolKind::Variable)
+                       ? declare(*target, name, declared_form(av.is_mut))
                        : bare_write(*target, name);
       enqueue_literal(*av.rhs, sym, cur_);
       return;
     }
     walk(*av.rhs);
     if (av.is_let || av.is_mut)
-      declare(*target, name, SymbolKind::Variable);
+      declare(*target, name, declared_form(av.is_mut));
     else
       bare_write(*target, name);
   }
@@ -652,13 +703,13 @@ class Resolver {
     }
   }
 
-  void walk_decl_head(const peg::Ast& n, SymbolKind kind, size_t* sym_out) {
+  void walk_decl_head(const peg::Ast& n, Form form, size_t* sym_out) {
     size_t i = first_non_decorator_index(n);
     for (size_t k = 0; k < i; k++) walk(*n.nodes[k]);
     if (i >= n.nodes.size()) return;
     const peg::Ast& head = *n.nodes[i];
     auto name = parse_generic_head(head.token).outer;
-    size_t sym = declare(head, name, kind);
+    size_t sym = declare(head, name, form);
     if (sym_out) *sym_out = sym;
   }
 
@@ -706,9 +757,9 @@ class Resolver {
       case "DESTRUCTURE_ASSIGN"_: {
         if (n.nodes.size() < 4) return;
         walk(*n.nodes[3]);
-        bool declared =
-            n.nodes[0]->token == "let" || n.nodes[1]->token == "mut";
-        bind_pattern(*n.nodes[2], declared ? Bind::Declare : Bind::Bare);
+        bool is_mut = n.nodes[1]->token == "mut";
+        bool declared = n.nodes[0]->token == "let" || is_mut;
+        bind_pattern(*n.nodes[2], declared ? declared_form(is_mut) : Form::Bare);
         return;
       }
 
@@ -724,7 +775,7 @@ class Resolver {
 
       case "MULTIFN_DECL"_: {
         size_t sym = kNone;
-        walk_decl_head(n, SymbolKind::Function, &sym);
+        walk_decl_head(n, Form::Function, &sym);
         size_t i = first_non_decorator_index(n);
         // [DECORATOR*, head, PARAMETERS, (RETURN_TYPE)?, body]
         if (i + 3 <= n.nodes.size())
@@ -734,14 +785,14 @@ class Resolver {
 
       case "EFFECT_FN_DECL"_: {
         size_t sym = kNone;
-        walk_decl_head(n, SymbolKind::EffectOperation, &sym);
+        walk_decl_head(n, Form::Operation, &sym);
         if (effect_fn_has_body(n) && n.nodes.size() >= 3)
           enqueue(n.nodes[1].get(), n.nodes.back().get(), sym);
         return;
       }
 
       case "CLASS_DECL"_: {
-        walk_decl_head(n, SymbolKind::Class, nullptr);
+        walk_decl_head(n, Form::Class, nullptr);
         bool initializers = false;
         for (size_t j = first_non_decorator_index(n) + 1; j < n.nodes.size();
              j++) {
@@ -767,12 +818,12 @@ class Resolver {
       }
 
       case "ENUM_DECL"_:
-        walk_decl_head(n, SymbolKind::Enum, nullptr);
+        walk_decl_head(n, Form::Enum, nullptr);
         return;
 
       case "IMPORT_STMT"_:
         if (!n.nodes.empty() && n.nodes[0]->is_token) {
-          size_t sym = declare(*n.nodes[0], n.nodes[0]->token, SymbolKind::Import);
+          size_t sym = declare(*n.nodes[0], n.nodes[0]->token, Form::Import);
           if (sym != kNone && n.nodes.size() >= 2)
             r_.imports.push_back({sym, std::string(n.nodes[1]->token)});
         }
@@ -814,7 +865,7 @@ class Resolver {
         walk(*fv.iter);
         size_t saved = cur_;
         cur_ = push_scope(cur_, false, fv.binding->position, end_of(*fv.body));
-        bind_pattern(*fv.binding, Bind::Declare);
+        bind_pattern(*fv.binding, Form::Loop);
         walk_body(*fv.body);
         cur_ = saved;
         if (fv.nobreak) scoped_body(*fv.nobreak);
@@ -853,7 +904,7 @@ class Resolver {
         for (const auto& arm : mv.arms->nodes) {
           if (arm->nodes.empty()) continue;
           cur_ = push_scope(around, false, arm->position, end_of(*arm));
-          bind_pattern(*arm->nodes[0], Bind::Declare);
+          bind_pattern(*arm->nodes[0], Form::Pattern);
           for (size_t k = 1; k < arm->nodes.size(); k++)
             walk_body(*arm->nodes[k]);
           cur_ = around;
@@ -868,7 +919,7 @@ class Resolver {
         size_t saved = cur_;
         cur_ = push_scope(cur_, false, n.nodes[1]->position, end_of(*n.nodes[2]));
         if (n.nodes[1]->is_token)
-          declare(*n.nodes[1], n.nodes[1]->token, SymbolKind::Variable);
+          declare(*n.nodes[1], n.nodes[1]->token, Form::Catch);
         walk_body(*n.nodes[2]);
         cur_ = saved;
         return;

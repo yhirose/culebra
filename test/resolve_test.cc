@@ -11,9 +11,11 @@
 #include <frontend/lint.h>
 #include <frontend/resolve.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <format>
+#include <map>
 #include <fstream>
 #include <memory>
 #include <set>
@@ -379,14 +381,15 @@ void test_node_records() {
   const std::string src =
       "let x = 1\n{ let x = 2; x }\nx\nfn f(k) { k }\nf(k: x)\nr = re'a+'\n";
   if (auto p = resolve_source(src))
-    check(p->res.node_symbol.empty() && p->res.body_scope.empty(),
+    check(p->res.uses.empty() && p->res.declarations.empty() &&
+              p->res.unbound_reads.empty() && p->res.body_scope.empty(),
           "nodes are recorded only on request");
   auto p = resolve_source(src, {.record_nodes = true});
   if (!p) return;
   const Resolution& res = p->res;
   auto symbol_of = [&](const peg::Ast* n) {
-    auto it = res.node_symbol.find(n);
-    return it == res.node_symbol.end() ? kNone - 1 : it->second;
+    auto it = res.uses.find(n);
+    return it == res.uses.end() ? kNone - 1 : it->second.symbol;
   };
 
   std::vector<const peg::Ast*> xs;
@@ -402,12 +405,14 @@ void test_node_records() {
     check(symbol_of(xs[2]) == inner, "a read in the block records the inner x");
     check(symbol_of(xs[3]) == outer && symbol_of(xs[4]) == outer,
           "reads after the block record the outer x");
+    check(res.uses.at(xs[2]).scope != res.uses.at(xs[3]).scope,
+          "a node records the scope it is written in");
   }
 
   // `f(k: x)`: the label names a parameter, not a variable read here.
   std::vector<const peg::Ast*> ks;
   collect_names(*p->ast, "k", ks);
-  check(ks.size() == 3 && !res.node_symbol.contains(ks.back()),
+  check(ks.size() == 3 && !res.uses.contains(ks.back()),
         "a keyword label is not recorded");
 
   // `fn f(k) { k }`: the body maps to a function scope bound to `f`.
@@ -421,10 +426,92 @@ void test_node_records() {
 
   // `re'a+'` desugars to a call through a name the source never spells.
   bool synthesized = false;
-  for (const auto& [node, symbol] : res.node_symbol)
+  for (const auto& [node, use] : res.uses)
     synthesized |= name_offset(*node, node->token, p->src) == kNone &&
-                   symbol == kNone;
+                   use.symbol == kNone;
   check(synthesized, "a synthesized name node is recorded");
+}
+
+// How each declaration is written, and the names nothing declares.
+void test_declaration_forms() {
+  const std::string src =
+      "let a = 1\n"
+      "mut b = 2\n"
+      "let mut c = 3\n"
+      "d = 4\n"
+      "let (e, f) = (5, 6)\n"
+      "mut [g] = [7]\n"
+      "(h, a) = (8, 9)\n"
+      "fn k(p, (q, r)) { for i in [p] { i } }\n"
+      "try { 0 } catch err { err }\n"
+      "match 1 { m => m }\n"
+      "class C {}\n"
+      "enum E { V }\n"
+      "import M from 'm'\n"
+      "a = 2\n"
+      "b = 3\n"
+      "let a = 4\n"
+      "nowhere\n"
+      "nothing += 1\n";
+  auto p = resolve_source(src, {.record_nodes = true});
+  if (!p) return;
+  const Resolution& res = p->res;
+  // Each name is one variable here, so its symbol's forms are the name's.
+  std::map<std::string, size_t> symbols;
+  for (const auto& d : res.declarations)
+    symbols[std::string(d.node->token)] = d.symbol;
+  auto is = [&](const char* name, std::vector<Form> want) {
+    uint16_t mask = 0;
+    for (Form f : want) mask |= static_cast<uint16_t>(1u << static_cast<int>(f));
+    check(symbols.contains(name) && res.symbols[symbols[name]].forms == mask,
+          std::format("the form(s) `{}` is declared in", name));
+  };
+  is("a", {Form::Let});
+  is("b", {Form::Mut});
+  is("c", {Form::Mut});
+  is("d", {Form::Bare});
+  is("e", {Form::Let});
+  is("f", {Form::Let});
+  is("g", {Form::Mut});
+  is("h", {Form::Bare});
+  is("k", {Form::Function});
+  is("p", {Form::Parameter});
+  is("q", {Form::Parameter});
+  is("r", {Form::Parameter});
+  is("i", {Form::Loop});
+  is("err", {Form::Catch});
+  is("m", {Form::Pattern});
+  is("C", {Form::Class});
+  is("E", {Form::Enum});
+  is("M", {Form::Import});
+
+  size_t a = res.lookup(0, "a"), b = res.lookup(0, "b");
+  check(a != kNone && res.symbols[a].declared_as(Form::Let) &&
+            !res.symbols[a].declared_as(Form::Mut) &&
+            !res.symbols[a].declared_as(Form::Bare),
+        "a symbol records every form that declares it, and no other");
+  check(b != kNone && res.symbols[b].declared_as(Form::Mut),
+        "a mutable symbol records `mut`");
+
+  // `(h, a) = …` and `a = 2` write the `a` already there; the two `let`s
+  // declare it.
+  size_t a_declarations = 0;
+  for (const auto& d : res.declarations) a_declarations += d.symbol == a;
+  check(a != kNone && res.symbols[a].declarations == 2 && a_declarations == 2,
+        "a bare write to a declared name declares nothing");
+
+  // Declarations come in walk order: the module's, then the function's.
+  std::vector<std::string> order;
+  for (const auto& d : res.declarations) order.emplace_back(d.node->token);
+  auto pos = [&](const char* n) {
+    return std::find(order.begin(), order.end(), n) - order.begin();
+  };
+  check(pos("M") < pos("p") && pos("p") < pos("q") && pos("r") < pos("i"),
+        "a function's declarations follow those of the body around it");
+
+  check(res.unbound_reads.size() == 1 &&
+            res.unbound_reads[0]->token == "nowhere",
+        "a read nothing declares is listed; a write is not");
 }
 
 void test_corpus(const std::filesystem::path& root) {
@@ -489,6 +576,7 @@ int main(int argc, char** argv) {
   test_decorators();
   test_outline();
   test_node_records();
+  test_declaration_forms();
   if (argc >= 2) test_corpus(argv[1]);
 
   if (failures) {
