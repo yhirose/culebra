@@ -1,12 +1,10 @@
 // Unit test for static name resolution (include/frontend/resolve.h).
 //
 // The cases pin the scoping rules the compiler implements — each one was
-// checked against what `culebra` does when the program runs. The corpus check
-// then holds the resolver against the lint's undefined-variable analysis over
-// every tracked .cul file: that analysis binds a name anywhere in its function,
-// so a read it cannot bind must be one the resolver cannot bind either.
+// checked against what `culebra` does when the program runs — and the three
+// checks the load-time lint reads off a resolution (include/frontend/lint.h).
 //
-// Usage: resolve_test <source-dir>     (built and run by CTest)
+// Usage: resolve_test     (built and run by CTest)
 
 #include <frontend/lint.h>
 #include <frontend/resolve.h>
@@ -493,77 +491,6 @@ void test_declaration_forms() {
 }
 
 
-// ---- corpus -----------------------------------------------------------------
-
-std::string read_file(const std::filesystem::path& p) {
-  std::ifstream in(p, std::ios::binary);
-  std::stringstream ss;
-  ss << in.rdbuf();
-  return ss.str();
-}
-
-// (line, byte column, name) of a byte offset.
-std::tuple<long, long, std::string> locate(const std::string& src, size_t off,
-                                           const std::string& name) {
-  long line = 1;
-  size_t start = 0;
-  for (size_t i = 0; i < off && i < src.size(); i++)
-    if (src[i] == '\n') {
-      line++;
-      start = i + 1;
-    }
-  return {line, static_cast<long>(off - start + 1), name};
-}
-
-void test_corpus(const std::filesystem::path& root) {
-  size_t files = 0, reads = 0;
-  for (const char* dir : {"tests", "examples"}) {
-    std::error_code ec;
-    for (auto it = std::filesystem::recursive_directory_iterator(root / dir, ec);
-         it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
-      if (ec) break;
-      if (!it->is_regular_file() || it->path().extension() != ".cul") continue;
-      std::string src = read_file(it->path());
-      // The lint analyses the lowered program; on the source as written an
-      // effect operation is a name only the resolver knows.
-      if (src.find("effect fn") != std::string::npos) continue;
-      std::vector<culebra::ParseFailure> pf;
-      auto ast = culebra::parse(it->path().string(), src, pf);
-      if (!ast) continue;
-      files++;
-      auto res = resolve_module(*ast, src);
-
-      std::set<std::tuple<long, long, std::string>> resolver;
-      for (const auto& u : res.unresolved)
-        resolver.insert(locate(src, u.position, u.name));
-      std::vector<culebra::lint::Diagnostic> diags;
-      culebra::lint::_detail::undefined::analyze_module(*ast, {}, diags);
-      std::vector<size_t> line_starts{0};
-      for (size_t i = 0; i < src.size(); i++)
-        if (src[i] == '\n') line_starts.push_back(i + 1);
-      for (const auto& d : diags) {
-        std::string name = d.message.substr(d.message.find('\'') + 1);
-        name.pop_back();
-        // A read the parse synthesized (a regex literal's `Regex.compile`) has
-        // no text in the source, so there is nothing an editor could point at.
-        size_t off = d.line >= 1 && static_cast<size_t>(d.line) <= line_starts.size()
-                         ? line_starts[d.line - 1] + static_cast<size_t>(d.col - 1)
-                         : std::string::npos;
-        if (off == std::string::npos || src.compare(off, name.size(), name) != 0)
-          continue;
-        reads++;
-        if (!resolver.contains({d.line, d.col, name}))
-          check(false, std::format("{}:{}:{}: the lint cannot bind `{}` but the "
-                                   "resolver does",
-                                   it->path().string(), d.line, d.col, name));
-      }
-    }
-  }
-  check(files > 400, std::format("the corpus was read ({} files)", files));
-  std::printf("resolve_test: corpus %zu files, %zu unbound reads agree\n", files,
-              reads);
-}
-
 // ---- the load-time lint ------------------------------------------------------
 
 // The `kind` errors the lint reports for `src`, as `name@line`, in the order
@@ -575,6 +502,7 @@ std::vector<std::string> lint_errors(std::string src, std::string_view kind) {
   if (!p) return {};
   std::vector<culebra::lint::Diagnostic> diags;
   culebra::lint::_detail::RuleWalker(p->res, diags).run(*p->ast);
+  culebra::lint::_detail::undefined_reads(p->res, globals, diags);
   std::vector<std::string> out;
   for (const auto& d : diags) {
     if (d.kind != kind) continue;
@@ -604,6 +532,38 @@ void check_lint(std::string_view kind, const std::vector<LintCase>& cases) {
   }
 }
 
+// A read is undefined when no declaration is visible where it is written.
+void test_lint_undefined() {
+  check_lint("NameError", {
+      {"nothing declares it", "zzz\n", {"zzz@1"}},
+      {"in a function nothing calls", "fn f() {\n  zzz\n}\n", {"zzz@2"}},
+      {"a global", "inspect(1)\n", {}},
+      {"after its block", "{ let a = 1 }\na\n", {"a@2"}},
+      {"a loop variable after the loop", "for i in [1] { }\ni\n", {"i@2"}},
+      {"a loop body's name after the loop", "for i in [1] { let t = i }\nt\n",
+       {"t@2"}},
+      {"a catch variable after the catch",
+       "fn f() {\n  try { throw 1 } catch e { 0 }\n  e\n}\n", {"e@3"}},
+      {"a pattern's binding after the arm",
+       "fn f(v) {\n  match v { q => 0 }\n  q\n}\n", {"q@3"}},
+      {"above its declaration", "a\nlet a = 1\n", {"a@1"}},
+      {"its own right-hand side", "let b = b\n", {"b@1"}},
+      {"a decorator nothing declares", "@nope\nfn f() { 1 }\n", {"nope@1"}},
+      {"reported in source order", "fn f() {\n  late\n}\nearly\n",
+       {"late@2", "early@4"}},
+      // A declaration is visible but may not have run: the run's to decide.
+      {"a closure called early", "let g = fn () { x }\ng()\nlet x = 1\n", {}},
+      {"a skipped declaration", "true && (let q = 5)\nq\n", {}},
+      {"an if arm's name after the if", "if true { x = 1 }\nx\n", {}},
+      {"a function declared below", "fn a() { b() }\nfn b() { 1 }\n", {}},
+      // Not reads of a variable.
+      {"a compound write", "y += 1\n", {}},
+      {"the receiver and the sink", "class C { f() { self } }\nlet _ = 1\n", {}},
+      {"a member, a label, a key",
+       "let o = {k: 1}\nfn f(a) { a }\nf(a: o.k)\n", {}},
+  });
+}
+
 // `x = v` after a `let x` of that variable.
 void test_lint_let() {
   check_lint("ImmutableError", {
@@ -629,7 +589,7 @@ void test_lint_let() {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int main() {
   test_scopes();
   test_order();
   test_declarations();
@@ -641,8 +601,8 @@ int main(int argc, char** argv) {
   test_outline();
   test_node_records();
   test_declaration_forms();
+  test_lint_undefined();
   test_lint_let();
-  if (argc >= 2) test_corpus(argv[1]);
 
   if (failures) {
     std::printf("resolve_test: %d failure(s)\n", failures);

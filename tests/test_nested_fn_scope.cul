@@ -108,23 +108,7 @@ fn in_catch() {
 }
 assert_eq(in_catch(), 'catch')
 
-# block-scoped fn stays block-scoped (must not leak to the function)
-fn no_leak() {
-  {
-    fn g() {
-      'y'
-    }
-    nil
-  }
-  mut k = nil
-  try {
-    g()
-  } catch e {
-    k = e.kind
-  }
-  k
-}
-assert_eq(no_leak(), 'NameError')
+# (A block-scoped fn does not leak to the function: tested in lint_test.sh.)
 
 # `mut rec = fn ...` declares too — same self-recursion support
 fn mut_rec() {
@@ -189,51 +173,9 @@ fn sh_outer() {
 assert_eq(sh_outer(), 'outer')
 
 # A closure sees the scopes open where it is written, not every name its
-# function declares: one whose block has closed is not captured. Reading it
-# is the NameError of any unbound name, where it is read; writing it declares
-# the closure's own; an outer one it hid is seen again.
-fn closed_read() {
-  {
-    nfs_x = 1
-  }
-  let f = fn () {
-    nfs_x
-  }
-  f()
-}
-assert_eq(try {
-  closed_read()
-} catch e {
-  "{e.kind} {e.line}:{e.col} {e.message}"
-}, "NameError 200:5 undefined variable 'nfs_x'")
-
-fn closed_arm() {
-  match 1 {
-    nfs_k => 0
-  }
-  defer {
-    nfs_k
-  }
-  1
-}
-assert_eq(try {
-  closed_arm()
-} catch e {
-  e.kind
-}, 'NameError')
-
-fn closed_block_read() {
-  {
-    nfs_x = 1
-  }
-  try {
-    nfs_x
-  } catch e {
-    e.kind
-  }
-}
-assert_eq(closed_block_read(), 'NameError')
-
+# function declares: one whose block has closed is not captured. Writing it
+# declares the closure's own; an outer one it hid is seen again. (Reading one
+# is a load-time NameError, tested in lint_test.sh.)
 fn closed_write() {
   {
     nfs_x = 1

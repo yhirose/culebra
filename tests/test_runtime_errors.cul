@@ -74,21 +74,28 @@ let r5 = try {
 }
 assert_eq(r5.kind, 'ZeroDivisionError')
 
-# A name bound in no scope is a *static* error caught before eval (the
-# sound subset, alongside ShadowError). A flow-dependent NameError — a
-# name read before its own later declaration runs — stays runtime-catchable:
-let r_nameread = try {
+# A name no visible declaration resolves is a *static* error caught before
+# eval (alongside ShadowError). A flow-dependent NameError — a function body
+# reading a variable whose declaration has not run yet when it is called —
+# stays runtime-catchable:
+let early_reader = fn () {
   read_before_decl
-  let read_before_decl = 1
+}
+let r_nameread = try {
+  early_reader()
   nil
 } catch e {
   e
 }
+let read_before_decl = 1
 assert_eq(r_nameread.kind, 'NameError')
 
 let r_namewrite = try {
   fn () {
-    let z = rhs_before_decl
+    let f = fn () {
+      rhs_before_decl
+    }
+    let z = f()
     let rhs_before_decl = 1
     z
   }()
@@ -291,7 +298,7 @@ assert_eq(r_lvcall.kind, 'DispatchError')
 # Line and column both match across backends: the JIT no longer shifts
 # error lines by the stdlib preamble height (the preamble is now spliced
 # into the AST after parse, so user nodes keep their natural positions).
-assert_eq(r_lvcall.line, 284)
+assert_eq(r_lvcall.line, 291)
 assert_eq(r_lvcall.col, 3)
 
 # --- Runtime helpers (throwing stdlib functions) ---
@@ -379,7 +386,7 @@ let r_attr = try {
   e
 }
 assert_eq(r_attr.kind, 'AttributeError')
-assert_eq(r_attr.line, 376)
+assert_eq(r_attr.line, 383)
 assert_eq(r_attr.col, 5)
 
 let r_type = try {
@@ -389,7 +396,7 @@ let r_type = try {
   e
 }
 assert_eq(r_type.kind, 'TypeError')
-assert_eq(r_type.line, 386)
+assert_eq(r_type.line, 393)
 assert_eq(r_type.col, 11)
 
 # --- built-in method arity: symmetric count-based ArityError ---
@@ -765,7 +772,7 @@ let r_nsv = try {
   e
 }
 assert_eq(r_nsv.kind, 'TypeError')
-assert_eq(r_nsv.line, 763)
+assert_eq(r_nsv.line, 770)
 # Through a higher-order call, the error is attributed to the HOF call site.
 let r_nshof = try {
   ["x", "y"].map(Math.abs)
@@ -773,7 +780,7 @@ let r_nshof = try {
   e
 }
 assert_eq(r_nshof.kind, 'TypeError')
-assert_eq(r_nshof.line, 771)
+assert_eq(r_nshof.line, 778)
 
 # A built-in method on a receiver whose type doesn't support it reports the
 # same receiver-resolution failure on both backends. The JIT's polymorphic

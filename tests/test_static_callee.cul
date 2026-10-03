@@ -212,8 +212,11 @@ fn either(v) {
 assert_eq(either(2), 'fn:2')
 
 # Hoisted, so a call ahead of the declaration is the NameError it always was.
-assert_eq(try {
+let call_not_yet = fn () {
   not_yet(1)
+}
+assert_eq(try {
+  call_not_yet()
 } catch e {
   e.kind
 }, 'NameError')

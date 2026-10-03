@@ -1631,6 +1631,10 @@ bool run_scripts(const Options& options) {
   // so it takes them out at the splice and never parses their source. Every
   // other reader of this list — the executor, --ast — compiles what it gets.
   std::vector<const culebra::BakedPreamble*> baked;
+  // A dump of a test file is of what `culebra test` compiles: `test` and
+  // `parametrize` are bound there (as `culebra lint` takes them, per file).
+  if (options.vm == Options::Vm::Dump)
+    culebra::set_test_ambients(culebra::default_test_cul_matcher(path));
   if (!load_entry_program(path, *user_src, splice, modules,
                           options.jit ? &baked : nullptr))
     return false;

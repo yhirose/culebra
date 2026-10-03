@@ -97,14 +97,14 @@ assert_eq(reads_h(), 2)
 
 # --- (7b) Reading a forward ref before its declaration runs ---
 # The pre-allocated cell exists as soon as a closure captures it, but the
-# name stays unbound until the declaring statement executes: a read —
-# direct or through the capture — is a runtime NameError on every
-# backend, never a nil placeholder flowing into user code.
+# name stays unbound until the declaring statement executes: a read through
+# the capture is a runtime NameError on every backend, never a nil
+# placeholder flowing into user code. (A direct read above the declaration
+# is a load-time NameError, tested in lint_test.sh.)
 let cap_u = fn () {
   unbound_u + 1
 }
 assert_throws('NameError', cap_u)
-assert_eq(try { unbound_u + 1 } catch e { e.kind }, 'NameError')
 let unbound_u = 41
 assert_eq(cap_u(), 42)
 

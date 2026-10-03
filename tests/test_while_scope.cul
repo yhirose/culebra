@@ -26,19 +26,14 @@ while j < 3 {
 assert_eq(acc2, [1, 2, 3])
 
 // 3. A binding first introduced inside the body does NOT leak out (fresh
-//    scope, like `for`). Referencing it after the loop is a NameError.
+//    scope, like `for`). Referencing it after the loop is a load-time
+//    NameError, tested in lint_test.sh.
 mut k = 0
 while k < 1 {
   leaked = 99
   k = k + 1
 }
-mut saw_err = false
-try {
-  inspect(leaked)
-} catch e {
-  saw_err = true
-}
-assert_eq(saw_err, true)
+assert_eq(k, 1)
 
 // 4. An outer `mut` accumulator is still reassigned from inside via the scope
 //    chain — the common loop idiom is unaffected by the fresh body scope.

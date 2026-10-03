@@ -421,9 +421,12 @@ expect_shadow_reject "defer body shadows fn let"  'fn f() { let r = 1; defer { l
 
 # --- Undefined variable (sound subset): a name bound in no enclosing scope
 # and not a builtin is certain to raise NameError, so it aborts before eval
-# (like ShadowError, and regardless of whether the code is reachable). A
-# flow-dependent NameError (use-before-def) is NOT flagged — it stays a
-# catchable runtime error. Load-stage check, so it fires on every backend.
+# (like ShadowError, and regardless of whether the code is reachable). That
+# covers a read no declaration is visible to: after the scope that declared
+# it has closed, or above its declaration. A NameError that depends on when
+# a function runs (a closure called before the declaration it reads) or on
+# a skipped declaration stays a catchable runtime error. Load-stage check,
+# so it fires on every backend.
 expect_undef_reject() {
   printf 'inspect("RAN")\n%s\n' "$2" > "$TMP/t.cul"
   for be in "--vm" "--jit"; do
@@ -448,11 +451,33 @@ expect_undef_reject "undefined object value"  'let o = {k: zzz}'
 expect_undef_reject "undefined kwarg value"   'fn f(a) { a }
 f(a: zzz)'
 expect_undef_reject "undefined index base"    'zzz[0] = 1'
+expect_undef_reject "read after block"        '{ let a = 1 }
+inspect(a)'
+expect_undef_reject "for var after loop"      'for i in [1] { inspect(i) }
+inspect(i)'
+expect_undef_reject "catch var after catch"   'try { throw "x" } catch e { inspect(e) }
+inspect(e)'
+expect_undef_reject "match binding after arm" 'match 1 { n => n }
+inspect(n)'
+expect_undef_reject "read above declaration"  'inspect(a)
+let a = 1'
+expect_undef_reject "while body leak"         'mut k = 0
+while k < 1 { leaked = 99; k = k + 1 }
+inspect(leaked)'
+expect_undef_reject "fn in block leak"        'fn f() { { fn g() { 1 } }; g() }'
+expect_undef_reject "closed block read in fn" 'fn f() { { w = 1 }; fn() { w } }'
 # Accepted (sound-negative — must run on both backends):
 expect_undef_accept "forward-ref fn body"     'fn a() { b() }
 fn b() { 1 }
 a()'
-expect_undef_accept "use-before-def runtime"  'let r = try { x; let x = 1; nil } catch e { nil }'
+expect_undef_accept "closure before decl"     'let g = fn () { x }
+let r = try { g(); nil } catch e { e.kind }
+let x = 1
+if r != "NameError" { throw "no NameError" }'
+expect_undef_accept "skipped conditional decl" 'let c = false
+c && (let q = 5)
+let r = try { q } catch e { e.kind }
+if r != "NameError" { throw "no NameError" }'
 expect_undef_accept "destructure binding"     'let (p, q) = (1, 2)
 inspect(p + q)'
 expect_undef_accept "for-var read"            'for i in [1, 2] { inspect(i) }'

@@ -2118,8 +2118,7 @@ add_test(NAME fragment_ledger_test COMMAND fragment_ledger_test)
 add_executable(resolve_test test/resolve_test.cc)
 target_compile_features(resolve_test PRIVATE cxx_std_23)
 target_include_directories(resolve_test PRIVATE include vendor/cpp-peglib)
-add_test(NAME resolve_test
-         COMMAND resolve_test ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME resolve_test COMMAND resolve_test)
 
 # Editor type inference (include/cli/infer.h): what it establishes case by
 # case, then a measurement over the corpus of how many method-call receivers

@@ -4201,7 +4201,7 @@ builds (unless noted).
 |---|---|---|
 | `TypeError` | Arithmetic / comparison on incompatible operand types; calling a non-callable; failing `: T` annotation; `to_long`/`to_float` on non-coercible value; `__str__` returning non-String; `*` splat of non-Array / `**` splat of non-Object; built-in arg-type check failure; mixed positional + keyword targeting the same parameter; duplicate keyword; more positionals than the `*` separator allows (`takes N positional arguments but M given`). | yes |
 | `ZeroDivisionError` | Integer `/`, `%`, `**` with negative exponent collapsing to division; float `/` or `%` with RHS == 0. | yes |
-| `NameError` | Read of an undefined identifier; compound assignment (`x += rhs`) on undefined `x`; REPL global lookup miss. A name bound in *no* scope (and not a builtin) is caught before evaluation — see Compile-time errors; a name read before its own later declaration runs (use-before-def) stays a runtime error. | yes¹ |
+| `NameError` | Read of an undefined identifier; compound assignment (`x += rhs`) on undefined `x`; REPL global lookup miss. A read that no declaration visible under the scope rules (§6) resolves, and that is not a builtin, is caught before evaluation — see Compile-time errors; a read whose declaration is visible but has not run (or was skipped) stays a runtime error. | yes¹ |
 | `ImmutableError` | Assignment to a `let` (non-`mut`) binding; assignment to an immutable Object property or `Dict` entry; rebinding `self` inside a constructor body. | yes |
 | `KeyError` | Dict subscript on absent key; Object subscript on absent key. | yes |
 | `IndexError` | Array / String / Tensor index out of range; Tensor slice out of bounds; Tensor reduction axis out of range. | yes |
@@ -4235,10 +4235,12 @@ A message that runs to several lines leads with the position instead
 (`Kind at LINE:COL: message`), so it cannot be read as part of the last
 line's value.
 
-¹ The `NameError` for a name that is bound in *no* enclosing scope and is
-not a builtin is the exception: it is caught before evaluation (see
-Compile-time errors) and so is *not* catchable. Every other `NameError` —
-notably use-before-def — is a runtime error and is catchable.
+¹ The `NameError` for a read that no declaration visible under the scope
+rules resolves (and that is not a builtin) is the exception: it is
+caught before evaluation (see Compile-time errors) and so is *not*
+catchable. Every other `NameError` — a declaration that is visible but
+has not run, a skipped conditional declaration, `x += rhs` on an
+undefined `x`, a REPL line — is a runtime error and is catchable.
 
 ### The value-nesting bound
 
@@ -4266,24 +4268,43 @@ stdlib reference).
 
 ### Compile-time errors
 
-Two checks run when the program is loaded, before any `try` block runs —
-so user code cannot catch them. Both abort with the same `Kind: message`
+Three checks run when the program is loaded, before any `try` block runs —
+so user code cannot catch them. All abort with the same `Kind: message`
 format and run identically on every backend.
 
 * **`ShadowError`** — a binding that shadows a captured outer name; see
   "Shadow prohibition" in §6 for the rule.
-* **`NameError` (statically undefined)** — a variable read whose name is
-  bound in *no* lexical scope and is not a builtin. This is *certain* to
-  fail at runtime, so — like an unknown name in a statically-checked
-  language — it is reported before evaluation rather than waiting for the
-  (possibly never-taken) path that reads it. The check is sound: it flags
-  only names that resolve nowhere, so it never rejects a valid program.
+* **`NameError` (statically undefined)** — a read of a name for which no
+  declaration is visible at that point under the scope rules of §6, and
+  that is not a builtin. The message is `NameError: undefined variable
+  'x' at LINE:COL`. It is reported before anything runs, whether or not
+  the code would be reached. This includes a name bound nowhere; a read
+  after the scope that declared the name has closed (after a `{ ... }`
+  block, after a loop body including the `for` variable, after a `match`
+  arm, after a `catch`); a read that comes before the declaration in the
+  same function (use-before-def, `inspect(a)` followed by `let a = 1`);
+  and a decorator's callee that nothing declares. A loop body is a fresh
+  scope per iteration, so a declaration below a read never runs first.
+* **`ImmutableError` (reassignment)** — a bare `x = v` after a `let x` of
+  the same variable, with no `mut` declaration of it in between, is
+  reported as `ImmutableError: cannot reassign 'x' (declared without
+  'mut')`.
 
-The complementary cases stay at *runtime*, catchable by `try`/`catch`,
-because they cannot be proven to fail statically: **use-before-def** (a
-name *is* bound in scope but is read before its declaration executes — the
-binding might run first on a later loop iteration), `ImmutableError`, and
-missing / unknown kwargs.
+The remaining cases stay at *runtime*, catchable by `try`/`catch`, because
+a declaration is visible but may not have run, or the failure cannot be
+proven statically:
+
+* a function body reading a variable of an enclosing function whose
+  declaration has not run when the function is called (`let g = fn () { x }`,
+  then `g()`, then `let x = 1`);
+* a declaration in a conditionally evaluated position that was skipped
+  (`c && (let q = 5)` then `q`; an `if` arm shares the enclosing scope, so
+  `if c { x = 1 }` then `x` is a `NameError` when `c` is false);
+* compound assignment (`x += rhs`) on an undefined `x`;
+* a REPL line, which is resolved against the session when it runs;
+* every other `ImmutableError` (a bare-declared name, a parameter, a field
+  of an immutable binding, a write reached before the `let`, such as inside
+  a closure written above it), and missing / unknown kwargs.
 
 ### Assertion API
 

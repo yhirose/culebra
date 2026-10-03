@@ -3977,7 +3977,7 @@ shutdownパターン）は、`Signal.notify`でチャネルを登録します（
 |---|---|---|
 | `TypeError` | 演算子・比較における型不一致；非callableの呼出；`: T`型注釈失敗；`to_long`/`to_float`の非変換可能値；`__str__`がString以外を返す；`*` splatの非Array / `**` splatの非Object；組み込み引数チェックの失敗；同一パラメータへpositional + keyword重複；duplicate keyword；`*`区切りが許す数を超えたpositional（`takes N positional arguments but M given`） | はい |
 | `ZeroDivisionError` | 整数`/`, `%`, 負指数の`**`で除算になるケース；浮動小数`/`または`%`のRHS == 0 | はい |
-| `NameError` | 未定義識別子の読み取り；compound代入（`x += rhs`）の`x`が未定義；REPL global検索のmiss。どのスコープにも無くbuiltinでもない名前は評価前に検出（コンパイル時エラー参照）；自身の後続宣言より前に読む（use-before-def）場合はruntimeエラーのまま | はい¹ |
+| `NameError` | 未定義識別子の読み取り；compound代入（`x += rhs`）の`x`が未定義；REPL global検索のmiss。スコープ規則（§6）で見える宣言がどれも解決しない読み取り（builtinを除く）は評価前に検出（コンパイル時エラー参照）；宣言は見えるが未実行（またはスキップ）の読み取りはruntimeエラーのまま | はい¹ |
 | `ImmutableError` | `let`（非`mut`）束縛への代入；immutable ObjectプロパティまたはDictエントリへの代入；コンストラクタ本体内の`self`再代入 | はい |
 | `KeyError` | Dictの存在しないキーsubscript；Objectの存在しないキーsubscript | はい |
 | `IndexError` | Array / String / Tensorの範囲外index；Tensor slice範囲外；Tensor reduction axis範囲外 | はい |
@@ -4009,9 +4009,11 @@ shutdownパターン）は、`Signal.notify`でチャネルを登録します（
 （`Kind at LINE:COL: message`）になり、最終行の値の一部と読めてしまう
 のを避けます。
 
-¹ どのスコープにも無くbuiltinでもない名前の`NameError`だけは例外で、
-評価前に検出され（コンパイル時エラー参照）catchできません。それ以外の
-`NameError`（特にuse-before-def）はruntimeエラーでcatch可能です。
+¹ スコープ規則で見える宣言がどれも解決しない読み取り（builtinを除く）の
+`NameError`だけは例外で、評価前に検出され（コンパイル時エラー参照）
+catchできません。それ以外の`NameError`（宣言は見えるが未実行、スキップ
+された条件付き宣言、未定義の`x`への`x += rhs`、REPLの行）はruntimeエラーで
+catch可能です。
 
 ### 値ネストの上限
 
@@ -4037,22 +4039,39 @@ walkせずに答えます。より深い値の構築・index・破棄はどの�
 
 ### コンパイル時エラー
 
-プログラム読込時、`try`ブロックが走る前に2つの検査が走ります。
-どちらもユーザコードではcatchできず、同じ`Kind: message`形式で
+プログラム読込時、`try`ブロックが走る前に3つの検査が走ります。
+いずれもユーザコードではcatchできず、同じ`Kind: message`形式で
 中断し、全バックエンドで同一に動作します。
 
 * **`ShadowError`** — キャプチャ済み外側名と衝突する束縛。ルールは §6
   の「シャドウ禁止」を参照。
-* **`NameError`（静的に未定義）** — どの語彙スコープにも束縛が無く、
-  builtinでもない変数参照。runtimeで**必ず**失敗するため、静的型を
-  持つ言語の未知名と同様に、それを読む（到達しないかもしれない）経路を
-  待たず評価前に報告します。健全（sound）な検査で、どこにも解決しない
-  名前のみを報告するため、正しいプログラムを誤って拒否しません。
+* **`NameError`（静的に未定義）** — その位置で§6のスコープ規則のもとで
+  見える宣言が無く、builtinでもない名前の読み取り。メッセージは
+  `NameError: undefined variable 'x' at LINE:COL`。何かが実行される前に、
+  そのコードに到達するかどうかに関わらず報告されます。どこにも束縛されて
+  いない名前に加えて、宣言したスコープが閉じた後の読み取り（`{ ... }`
+  ブロックの後、ループ本体の後（`for`の変数を含む）、`match`アームの後、
+  `catch`の後）、同じ関数内で宣言より前に読む場合（use-before-def、
+  `inspect(a)`の後に`let a = 1`）、何も宣言していないデコレータの呼び出し先
+  も対象です。ループ本体は周回ごとに新しいスコープなので、読み取りより
+  下の宣言が先に実行されることはありません。
+* **`ImmutableError`（再代入）** — ある変数の`let x`の後に、その間に
+  `mut`宣言を挟まず裸の`x = v`を書くと、`ImmutableError: cannot reassign
+  'x' (declared without 'mut')`として報告されます。
 
-これらの相補的なケースは静的に失敗を証明できないため *runtime*（`try`/
-`catch`で捕捉可能）のままです: **use-before-def**（名前はスコープに
-束縛されるが宣言の実行前に読む — 後続のループ周回で先に束縛されうる）、
-`ImmutableError`、missing / unknown kwargs。
+それ以外は、宣言は見えるが未実行かもしれない、または静的に失敗を証明
+できないため、*runtime*（`try`/`catch`で捕捉可能）のままです:
+
+* 外側の関数の変数を読む関数本体で、呼び出し時にその宣言がまだ実行
+  されていない場合（`let g = fn () { x }`、`g()`、`let x = 1`の順）
+* 条件付きで評価される位置にある宣言がスキップされた場合（`c && (let q = 5)`
+  の後の`q`。`if`のアームは外側のスコープを共有するので、`if c { x = 1 }`の後の
+  `x`は`c`が偽のとき`NameError`）
+* 未定義の`x`に対するcompound代入（`x += rhs`）
+* REPLの行（実行時にセッションに対して解決される）
+* 上記以外の`ImmutableError`（素の宣言で作られた名前、パラメータ、不変
+  束縛のフィールド、`let`より前に到達する書き込み（上に書かれたクロー
+  ジャ内など））と、missing / unknown kwargs
 
 ### Assertion API
 

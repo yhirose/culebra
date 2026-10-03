@@ -15,14 +15,9 @@
 // `dynamic` counts the reads and writes whose binding only the run can name
 // (a pre-declaration shadowing another, a conditional declaration): resolve.h
 // gives each a symbol, the compiler a guarded fallback.
-//
-// The load-time lint (lint.h) is a third reader of the scope rules; its
-// NameError and ShadowError are held against the resolution too
-// (check_lint), as `MISMATCH lint-<kind>` lines.
 
 #include "base/shared.h"
 #include "frontend/fn_analysis.h"
-#include "frontend/lint.h"
 #include "frontend/resolve.h"
 
 #include <atomic>
@@ -172,55 +167,5 @@ class Report {
   size_t checked_ = 0, dynamic_ = 0;
 };
 
-// lint's undefined-variable NameError has to be a read resolve.h finds no
-// declaration for, and its ShadowError a declaration hiding a variable of an
-// enclosing function. Called where the loader lints, before an error there
-// ends the load.
-inline void check_lint(const peg::Ast& root) {
-  if (!checks(root)) return;
-  std::vector<lint::Diagnostic> diags;
-  lint::run_error_checks(root, diags);
-  lint::collect_shadow(root, diags);
-  std::erase_if(diags, [](const lint::Diagnostic& d) {
-    return d.kind != "NameError" && d.kind != "ShadowError";
-  });
-  if (diags.empty()) return;
-  auto res = resolve::resolve_module(root, {}, options());
-  std::vector<std::string> lines;
-  for (const auto& d : diags) {
-    auto open = d.message.find('\'');
-    auto close = d.message.find('\'', open + 1);
-    if (open == std::string::npos || close == std::string::npos) continue;
-    std::string name = d.message.substr(open + 1, close - open - 1);
-    auto at = where(root.path, d.line, d.col);
-    const peg::Ast* node = nullptr;
-    size_t symbol = resolve::kNone;
-    for (const auto& [n, use] : res.uses) {
-      if (n->token == name && static_cast<int64_t>(n->line) == d.line &&
-          static_cast<int64_t>(n->column) == d.col) {
-        node = n;
-        symbol = use.symbol;
-        break;
-      }
-    }
-    if (!node) {
-      lines.push_back(missing_line(name, at));
-      continue;
-    }
-    bool agrees;
-    if (d.kind == "NameError") {
-      agrees = symbol == resolve::kNone;
-    } else {
-      // Found from outside the declaring function, it is that function's.
-      agrees = symbol != resolve::kNone &&
-               res.lookup(res.scopes[res.frame_of(symbol)].parent, name) !=
-                   resolve::kNone;
-    }
-    if (!agrees)
-      lines.push_back(std::format("MISMATCH lint-{} '{}' {} resolve={} lint=-",
-                                  d.kind, name, at, describe(res, symbol)));
-  }
-  if (!lines.empty()) write_report({}, lines);
-}
 
 }  // namespace culebra::scope_check

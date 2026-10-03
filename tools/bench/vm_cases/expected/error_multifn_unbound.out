@@ -1,2 +1,2 @@
 before
-NameError: undefined variable 'early' at 3:9.
+NameError: undefined variable 'early' at 2:26.

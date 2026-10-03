@@ -1,6 +1,7 @@
 # uncaught call before the decl statement ran: NameError at the reference
+let call_early = fn () { early(1) }
 println("before")
-println(early(1))
+println(call_early())
 fn early(x) {
   x + 1
 }

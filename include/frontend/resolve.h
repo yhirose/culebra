@@ -3,8 +3,8 @@
 // Static name resolution over the source as written: which declaration each
 // identifier refers to. It is the one statement of culebra's scope rules: the
 // compiler's captures are derived from it (fn_analysis.h), its own lookups are
-// held to it (scope_check.h), and an editor's go-to-definition,
-// find-references, highlight and rename read it:
+// held to it (scope_check.h), the load-time checks read it (lint.h), and an
+// editor's go-to-definition, find-references, highlight and rename read it:
 //
 //  - Scopes: the module; each function-like body (`fn`, a lambda, `fn name`, a
 //    method, `defer`, `effect fn`, a handler clause); a class's field

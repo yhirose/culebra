@@ -112,8 +112,11 @@ assert_eq(captures_needs_two()(1, 2), 3)
 # --- `fn name`: the dispatcher cell is borrowed too ---
 # Hoisted, so a call ahead of the declaration still asks the cell whether
 # the declaration ran — the guard reads the cell in place now.
-assert_eq(try {
+let call_ahead = fn () {
   ahead(1)
+}
+assert_eq(try {
+  call_ahead()
 } catch e {
   e.kind
 }, 'NameError')
