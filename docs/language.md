@@ -492,13 +492,23 @@ a sink there — use a positional pattern if you want to discard.)
 
 ### Shadow prohibition
 
-Introducing a new binding is an error if a variable with the same
-name exists in an enclosing function (closure-captured). The rule
-applies uniformly to three kinds of binding introduction:
+Introducing a new binding in a function is an error if a variable with
+the same name, declared in an enclosing function, is visible at the place
+the inner function is written (that is, the inner function could capture
+it). The rule applies uniformly to every form that declares a name:
 
-* `let` / `mut` declarations
-* function parameters (`fn (name) { ... }`)
-* `match` pattern bindings (`match v { name => ... }`)
+* `let` / `mut` declarations, including each name a destructuring
+  pattern declares (`let (a, b) = pair`, `let {x, y} = point`,
+  `let [h, ...t] = xs`)
+* function parameters (`fn (name) { ... }`), including the names a
+  pattern parameter binds
+* `match` pattern bindings (`match v { name => ... }`), a `for`
+  variable, and a `catch` variable
+* the name of a nested `fn`, `class` or `enum`, and an `import`
+
+It also covers declarations written inside a parameter's default value
+or a class field's initializer. A bare `x = v` never shadows: it writes
+the visible `x`, or declares a new one when none is visible.
 
 For example:
 
@@ -522,7 +532,7 @@ the same name as a captured variable, silently breaking the intent
 to reassign the outer binding. Renaming the inner variable removes
 the ambiguity.
 
-Shadowing is *allowed* in two cases:
+Shadowing is *allowed* in these cases:
 
 * **Globals and builtins** (`inspect`, `min`, or any top-level binding)
   may always be shadowed, so writing `mut min = arr[0]` in a local
@@ -535,6 +545,28 @@ Shadowing is *allowed* in two cases:
           a = 0
           { let a = 1; ... }   # OK: new binding scoped to the block
         }
+
+* **A name that is not visible from the inner function** is not
+  captured, so the inner function may declare it: a sibling block that
+  has closed, a different `match` arm, or a loop body the inner function
+  is not written in.
+
+        fn outer() {
+          { let a = 1 }                    # this `a` is gone when the block ends
+          inner = fn () { let a = 2; a }   # OK: no `a` is visible here
+        }
+
+A name the enclosing function declares *later*, in a scope that
+encloses the inner function, is still visible to it (a closure captures
+the variable itself), so that is still an error:
+
+    fn outer() {
+      inner = fn () { let a = 2 }   # error: `a` below is visible to `inner`
+      let a = 1
+    }
+
+The error is `ShadowError: cannot shadow outer variable 'a' (declared in
+an enclosing function)`.
 
 The restriction applies only at function boundaries: closure-captured
 state is mutated via bare `x = v`, and a new local is declared with

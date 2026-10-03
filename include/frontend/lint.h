@@ -5,9 +5,9 @@
 // failures the runtime is certain to raise); warnings are advisory. This is
 // the shared home for static checks: rules over the `RuleWalker` walk (let
 // reassignment, break/continue/return placement, duplicate params,
-// @packable field types) plus the self-contained shadow analyzer
-// (`check_shadow`). The compiler calls `check_shadow` too (from
-// analyze_program), so the rule has a single source.
+// @packable field types), and the undefined-name and shadow checks. What a
+// name refers to is never decided here: the scope rules are resolve.h's,
+// and every check that asks reads its resolution.
 
 #include <algorithm>
 #include <format>
@@ -943,344 +943,17 @@ inline void RuleWalker::walk(const peg::Ast& node) {
   }
 }
 
-// --- Static shadow analyzer ---
-//
-// Walks the AST once before eval, raising ShadowError at any binding
-// site that would shadow a name from an enclosing function scope.
-// FnAnalysis::analyze_program runs it before compiling, so every lane
-// rejects shadow violations uniformly — including dead code that never
-// executes.
-//
-// `outer[0]` is the top-level scope: those names act as globals and
-// may be shadowed freely. `outer[1..]` are enclosing function scopes
-// whose names would be captured by the current function and so are
-// off-limits for re-binding. The two-phase structure (collect a
-// function's full local set, *then* descend into its nested functions)
-// is load-bearing: a nested function shadows an outer binding even when
-// that binding appears textually after the nested function.
-//
-// Throws directly via `throw_shadow_error` on the first violation —
-// byte-identical to the interp's former `check_shadow_static`, which
-// this replaces. (Kept as a self-contained walk rather than folded into
-// the RuleWalker rules above, whose single-pass block-granular model
-// can't reproduce the collect-then-descend ordering without diverging.)
-namespace shadow {
+// --- The scope checks, read off the resolution (resolve.h) ---
 
-using NameSet = std::set<std::string, std::less<>>;
-using OuterChain = std::vector<const NameSet*>;
-
-inline void check(std::string_view name, size_t line, size_t col,
-                  const OuterChain& outer) {
-  if (is_sink(name)) return;
-  for (size_t i = 1; i < outer.size(); i++) {
-    if (outer[i]->contains(name)) {
-      culebra::throw_shadow_error(name, line, col);
-    }
-  }
+// The resolution lists a function's names after the body around it; the
+// diagnostics from `first` on are put in source order, so the first one
+// reported is the first in the source.
+inline void sort_by_position(std::vector<Diagnostic>& diags, size_t first) {
+  std::stable_sort(diags.begin() + static_cast<std::ptrdiff_t>(first),
+                   diags.end(), [](const Diagnostic& a, const Diagnostic& b) {
+                     return a.line != b.line ? a.line < b.line : a.col < b.col;
+                   });
 }
-
-inline void check_pattern(const peg::Ast& pattern, const OuterChain& outer) {
-  culebra::for_each_pattern_binding(
-      pattern, [&](std::string_view name, size_t line, size_t col) {
-        check(name, line, col, outer);
-      });
-}
-
-void analyze_fn_body(const peg::Ast& params_ast, const peg::Ast& body_ast,
-                     OuterChain& outer);
-
-// Phase 1: walk this function's body, collecting binding sites into
-// `locals` and checking shadow violations. Stops at nested function
-// boundaries (recursed into in phase 2).
-inline void collect_locals(const peg::Ast& node, NameSet& locals,
-                           const OuterChain& outer) {
-  using namespace peg::udl;
-  // A defer body is a frame of its own (descend_into_nested): its bindings
-  // are not this function's.
-  if (node.tag == "FUNCTION"_ || node.tag == "LAMBDA"_ ||
-      node.tag == "DEFER"_)
-    return;
-
-  if (node.tag == "MATCH"_) {
-    // Match-arm bindings are arm-scoped at runtime, but we register
-    // them in the enclosing function's locals so nested closures
-    // inside an arm body can capture them. This over-approximates
-    // (a closure in a *different* arm would see the previous arm's
-    // names too) but only affects free-var resolution, never the
-    // shadow check itself — `check` looks at outer[1..] only.
-    // The optional init clause's bindings are picked up by the generic
-    // recursion below (its ASSIGNMENT children register as locals).
-    for (auto& arm : culebra::view_match(node).arms->nodes) {
-      check_pattern(*arm->nodes[0], outer);
-      culebra::for_each_pattern_binding(
-          *arm->nodes[0], [&](std::string_view name, size_t, size_t) {
-            locals.insert(std::string(name));
-          });
-    }
-    // fall through to walk arm bodies
-  }
-
-  if (node.tag == "TRY"_) {
-    auto& id = *node.nodes[1];
-    auto name = std::string(id.token);
-    check(name, id.line, id.column, outer);
-    if (!is_sink(name)) locals.insert(name);
-    // fall through
-  }
-
-  if (node.tag == "FOR"_) {
-    auto fv = culebra::view_for(node);
-    auto& var = *fv.binding;
-    // The loop variable may be a destructuring pattern (`for (i, x) in`).
-    if (culebra::is_pattern_param(var)) {
-      check_pattern(var, outer);
-    } else {
-      check(std::string(var.token), var.line, var.column, outer);
-    }
-    // FOR binding is block-scoped; deliberately not added to enclosing
-    // locals so a same-named binding outside the loop doesn't see it.
-    collect_locals(*fv.iter, locals, outer);
-    collect_locals(*fv.body, locals, outer);
-    // A nobreak block shares the enclosing function scope; collect its locals.
-    if (fv.nobreak) collect_locals(*fv.nobreak, locals, outer);
-    return;
-  }
-
-  if (node.tag == "ASSIGNMENT"_) {
-    auto av = culebra::view_assignment(node);
-    if (av.lvalcnt == 1 && !av.compound) {
-      auto ident_node = node.nodes[av.lvaloff];
-      if (ident_node->tag == "IDENTIFIER"_) {
-        auto name = std::string(ident_node->token);
-        if (av.is_let || av.is_mut) {
-          check(name, ident_node->line, ident_node->column, outer);
-          if (!is_sink(name)) locals.insert(name);
-        } else {
-          // Bare assignment is auto-local only when the name doesn't
-          // already exist in any outer scope.
-          bool in_outer = false;
-          for (auto* s : outer) {
-            if (s->contains(name)) {
-              in_outer = true;
-              break;
-            }
-          }
-          if (!in_outer && !is_sink(name)) locals.insert(name);
-        }
-      }
-    }
-    collect_locals(*node.nodes.back(), locals, outer);
-    return;
-  }
-
-  if (node.tag == "TRAIT_DECL"_) {
-    // A trait binds no name in the value env (traits live in the trait
-    // registry, not as a value), so nothing enters `locals`. Crucially we
-    // do NOT fall through to the generic recursion: descending would
-    // hoist every trait method's params and body-lets into the enclosing
-    // function's local set, producing a false shadow report between
-    // sibling methods. Method bodies are analyzed on their own by
-    // descend_into_nested.
-    return;
-  }
-
-  if (node.tag == "CLASS_DECL"_ || node.tag == "MULTIFN_DECL"_ ||
-      node.tag == "ENUM_DECL"_) {
-    // Skip leading DECORATOR children (added grammar form
-    // `@expr ... fn name() {...}` / `@expr ... class Name {...}`).
-    // ENUM_DECL binds its enum name the same way (CLASS_HEAD node).
-    size_t i = 0;
-    while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
-      collect_locals(*node.nodes[i], locals, outer);
-      i++;
-    }
-    auto& id = *node.nodes[i];
-    // Both CLASS_DECL and MULTIFN_DECL now use CLASS_HEAD, which may
-    // carry Generic params (`Box<T>`, `min<T: Bound>`); strip via
-    // parse_generic_head so the binding lives under the outer name.
-    auto name = std::string(culebra::parse_generic_head(id.token).outer);
-    check(name, id.line, id.column, outer);
-    if (!is_sink(name)) locals.insert(name);
-    return;
-  }
-
-  // IMPORT_STMT introduces a local binding for the imported namespace.
-  if (node.tag == "IMPORT_STMT"_) {
-    auto& id = *node.nodes[0];
-    auto name = std::string(id.token);
-    check(name, id.line, id.column, outer);
-    if (!is_sink(name)) locals.insert(name);
-    return;
-  }
-
-  // DESTRUCTURE_ASSIGN binds a pattern to a value.
-  if (node.tag == "DESTRUCTURE_ASSIGN"_) {
-    const auto& pattern = *node.nodes[1];
-    check_pattern(pattern, outer);
-    culebra::for_each_pattern_binding(
-        pattern, [&](std::string_view name, size_t, size_t) {
-          locals.insert(std::string(name));
-        });
-    collect_locals(*node.nodes[2], locals, outer);
-    return;
-  }
-
-  // PLACE_ASSIGN: a plain-name target may declare, so it is a local of this
-  // scope; a chain target only reads.
-  if (node.tag == "PLACE_ASSIGN"_) {
-    culebra::for_each_place_target(
-        node,
-        [&](const peg::Ast& chain) { collect_locals(chain, locals, outer); },
-        [&](const peg::Ast& name) { locals.insert(std::string(name.token)); });
-    collect_locals(*node.nodes.back(), locals, outer);
-    return;
-  }
-
-  for (auto& c : node.nodes) collect_locals(*c, locals, outer);
-}
-
-// Phase 2: descend into nested function bodies with the now-populated
-// outer chain.
-inline void descend_into_nested(const peg::Ast& node, const NameSet& my_locals,
-                                OuterChain& outer) {
-  using namespace peg::udl;
-
-  if (node.tag == "FUNCTION"_ || node.tag == "LAMBDA"_) {
-    // FUNCTION's RETURN_TYPE (if present) is metadata only — the
-    // shadow walker only needs params + body, which `view_function`
-    // resolves uniformly for both forms.
-    auto fv = node.tag == "FUNCTION"_ ? culebra::view_function(node)
-                                      : culebra::view_lambda(node);
-    outer.push_back(&my_locals);
-    analyze_fn_body(*fv.params, *fv.body, outer);
-    outer.pop_back();
-    return;
-  }
-
-  if (node.tag == "MULTIFN_DECL"_) {
-    // [DECORATOR*, IDENTIFIER, PARAMETERS, (RETURN_TYPE)?, BLOCK]
-    size_t i = 0;
-    while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
-      // Decorators are evaluated in the outer scope, not the fn's
-      // inner scope — descend with the current `outer`.
-      descend_into_nested(*node.nodes[i], my_locals, outer);
-      i++;
-    }
-    outer.push_back(&my_locals);
-    analyze_fn_body(*node.nodes[i + 1], *node.nodes.back(), outer);
-    outer.pop_back();
-    return;
-  }
-
-  if (node.tag == "DEFER"_) {
-    // [BLOCK] — same scope rules as a 0-param nested function.
-    outer.push_back(&my_locals);
-    NameSet defer_locals;
-    collect_locals(*node.nodes[0], defer_locals, outer);
-    descend_into_nested(*node.nodes[0], defer_locals, outer);
-    outer.pop_back();
-    return;
-  }
-
-  if (node.tag == "CLASS_DECL"_) {
-    // [DECORATOR*, CLASS_HEAD, METHOD ...]. Each METHOD is viewed
-    // through `view_method` so size 3 (static field) and size 4-5
-    // (method, with an optional RETURN_TYPE) share the same handling.
-    size_t i = 0;
-    while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
-      descend_into_nested(*node.nodes[i], my_locals, outer);
-      i++;
-    }
-    for (size_t j = i + 1; j < node.nodes.size(); j++) {
-      auto mv = culebra::view_method(*node.nodes[j]);
-      if (mv.is_field || mv.is_typed_field) {
-        if (mv.value) descend_into_nested(*mv.value, my_locals, outer);
-        continue;
-      }
-      outer.push_back(&my_locals);
-      analyze_fn_body(*mv.params, **mv.body, outer);
-      outer.pop_back();
-    }
-    return;
-  }
-
-  if (node.tag == "TRAIT_DECL"_) {
-    // [DECORATOR*, CLASS_HEAD, TRAIT_METHOD ...] — each TRAIT_METHOD is
-    // [IDENTIFIER, PARAMETERS, RETURN_TYPE?, TRAIT_BODY?]. Default-body
-    // methods are nested fns whose body must pass the shadow check;
-    // signature-only methods have no body to analyze.
-    size_t i = 0;
-    while (i < node.nodes.size() && node.nodes[i]->tag == "DECORATOR"_) {
-      descend_into_nested(*node.nodes[i], my_locals, outer);
-      i++;
-    }
-    for (size_t j = i + 1; j < node.nodes.size(); j++) {
-      auto tv = culebra::view_trait_method(*node.nodes[j]);
-      if (!tv.body) continue;
-      outer.push_back(&my_locals);
-      analyze_fn_body(*tv.params, *tv.body, outer);
-      outer.pop_back();
-    }
-    return;
-  }
-
-  if (node.tag == "FOR"_) {
-    // [pattern/var, iterable, BLOCK, (NOBREAK)?]. The loop variable is
-    // block-scoped to the body and is captured by closures defined there, so a
-    // nested function inside the body must not shadow it — but code after the
-    // loop never sees it. Descend the body with the loop binding(s) folded into
-    // a body-local copy of the enclosing locals; the iterable is in the
-    // enclosing scope. A nobreak block runs after the loop with the loop var out
-    // of scope, so descend it with the plain enclosing locals.
-    if (node.nodes.size() >= 3) {
-      auto fv = culebra::view_for(node);
-      descend_into_nested(*fv.iter, my_locals, outer);
-      NameSet body_locals = my_locals;
-      auto& var = *fv.binding;
-      if (culebra::is_pattern_param(var)) {
-        culebra::for_each_pattern_binding(
-            var, [&](std::string_view name, size_t, size_t) {
-              if (!is_sink(name)) body_locals.insert(std::string(name));
-            });
-      } else if (var.is_token && !is_sink(var.token)) {
-        body_locals.insert(std::string(var.token));
-      }
-      descend_into_nested(*fv.body, body_locals, outer);
-      if (fv.nobreak) descend_into_nested(*fv.nobreak, my_locals, outer);
-      return;
-    }
-  }
-
-  for (auto& c : node.nodes) descend_into_nested(*c, my_locals, outer);
-}
-
-inline void analyze_fn_body(const peg::Ast& params_ast,
-                            const peg::Ast& body_ast, OuterChain& outer) {
-  NameSet my_locals;
-  for (auto& p : params_ast.nodes) {
-    if (culebra::is_kw_only_sep(*p)) continue;
-    if (culebra::is_pattern_param(*p)) {
-      // Destructuring param (`fn ({a, b})`) — register every name the
-      // pattern binds (not a single param node).
-      check_pattern(*p, outer);
-      culebra::for_each_pattern_binding(
-          *p, [&](std::string_view nm, size_t, size_t) {
-            if (!is_sink(nm)) my_locals.insert(std::string(nm));
-          });
-      continue;
-    }
-    auto [name_sv, line, col] = culebra::extract_param_name_loc(*p);
-    auto name = std::string(name_sv);
-    check(name, line, col, outer);
-    if (!is_sink(name)) my_locals.insert(name);
-  }
-  collect_locals(body_ast, my_locals, outer);
-  descend_into_nested(body_ast, my_locals, outer);
-}
-
-}  // namespace shadow
-
-// --- The undefined-name check, read off the resolution (resolve.h) ---
 
 // A read no declaration visible there declares and no global answers: the
 // name of a variable whose scope has closed, one read above its declaration,
@@ -1304,12 +977,30 @@ inline void undefined_reads(const resolve::Resolution& res,
         static_cast<long>(n->line), static_cast<long>(n->column),
         Severity::Error});
   }
-  // The resolution lists a function's names after the body around it; the
-  // first one reported is the first in the source.
-  std::stable_sort(diags.begin() + static_cast<std::ptrdiff_t>(first),
-                   diags.end(), [](const Diagnostic& a, const Diagnostic& b) {
-                     return a.line != b.line ? a.line < b.line : a.col < b.col;
-                   });
+  sort_by_position(diags, first);
+}
+
+// A declaration in a function of a name that is, where the function is
+// written, a variable of an enclosing function: the one the function would
+// capture, which a bare `x = v` in it writes (so a bare write declares only
+// where no such variable is). The module's own names are globals and may be
+// shadowed freely; a name whose scope closed before the function, or one a
+// sibling scope holds, is not visible to it and so is not shadowed.
+inline void shadows(const resolve::Resolution& res,
+                    std::vector<Diagnostic>& diags) {
+  size_t first = diags.size();
+  for (const auto& d : res.declarations) {
+    const auto& sym = res.symbols[d.symbol];
+    size_t around = res.scopes[res.function_of(sym.scope)].parent;
+    if (around == resolve::kNone) continue;  // the module's own
+    size_t outer = res.lookup(around, sym.name);
+    if (outer == resolve::kNone || res.frame_of(outer) == 0) continue;
+    diags.push_back(Diagnostic{
+        "ShadowError", culebra::shadow_error_msg(sym.name),
+        static_cast<long>(d.node->line), static_cast<long>(d.node->column),
+        Severity::Error});
+  }
+  sort_by_position(diags, first);
 }
 
 // --- Static unused-local analyzer (advisory, Warning severity) ---
@@ -2043,10 +1734,6 @@ inline void check_module(const peg::Ast& ast) {
 // The warning analyzers treat `effect fn` bodies and handler clause bodies as
 // their own scopes (they lower to functions), so an unused local written in
 // one is reported at its authored position, same as in any function.
-// Report-mode wrapper for the shadow check (defined below): fills `diags`
-// instead of throwing.
-inline void collect_shadow(const peg::Ast& ast, std::vector<Diagnostic>& diags);
-
 inline std::vector<Diagnostic> collect_module(const peg::Ast& lowered,
                                               const peg::Ast& authored) {
   std::vector<Diagnostic> diags;
@@ -2055,7 +1742,7 @@ inline std::vector<Diagnostic> collect_module(const peg::Ast& lowered,
   // Shadow is an error-severity static check the run path applies before eval;
   // like the other error checks it runs on the lowered AST (positions map back
   // to the authored source, same as when running the file).
-  collect_shadow(lowered, diags);
+  _detail::shadows(res, diags);
   _detail::unused::analyze_module(authored, diags);
   _detail::toplevel::analyze_module(authored, diags);
   _detail::unreachable::analyze_module(authored, diags);
@@ -2083,32 +1770,16 @@ inline std::set<long> removable_import_lines(const peg::Ast& root) {
   return out;
 }
 
-// Static shadow check over an entire script AST before evaluation begins.
-// Throws a `ShadowError` CulebraError on the first violation. `outer`
-// starts empty — top-level names enter the chain only when a nested
-// function pushes them, so the first scope (`outer[0]` from a nested
-// function's perspective) is the top-level / "globals" frame which
-// `shadow::check` skips. Invoked by both backends: the interpreter before
-// eval and the JIT from analyze_program, so the rule has one source.
-inline void check_shadow(const peg::Ast& ast) {
-  _detail::shadow::NameSet top_locals;
-  _detail::shadow::OuterChain outer;
-  _detail::shadow::collect_locals(ast, top_locals, outer);
-  _detail::shadow::descend_into_nested(ast, top_locals, outer);
-}
-
-// `culebra lint` reports the same static problems the run path aborts on, so it
-// must surface shadow errors too. `check_shadow` throws on the first violation
-// — which is exactly what running the file surfaces (it aborts before eval on
-// the first) — so catch it and record one diagnostic. The walker is not
-// structured to enumerate every violation, and reporting more than the run path
-// ever would is not the goal.
-inline void collect_shadow(const peg::Ast& ast, std::vector<Diagnostic>& diags) {
-  try {
-    check_shadow(ast);
-  } catch (const culebra::CulebraError& e) {
-    diags.push_back(Diagnostic{e.kind, e.what(), e.line, e.col, Severity::Error});
-  }
+// The shadow check over a resolved module, before it is compiled: throws a
+// `ShadowError` CulebraError for the first violation. The compiler calls it
+// (FnAnalysis::analyze_program) on the resolution it compiles from, so every
+// lane rejects the same programs, dead code included.
+inline void check_shadow(const resolve::Resolution& res) {
+  std::vector<Diagnostic> diags;
+  _detail::shadows(res, diags);
+  if (!diags.empty())
+    throw culebra::CulebraError(diags[0].kind, diags[0].message, diags[0].line,
+                                diags[0].col);
 }
 
 }  // namespace culebra::lint

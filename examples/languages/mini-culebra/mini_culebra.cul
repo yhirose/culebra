@@ -10315,7 +10315,7 @@ fn emit_assign(m, node, f, res) {
       op.token == '=' => v,
       read_back == nil => v,
       _ => {
-        let (pl, pc) = pos_args(m, op)
+        let (op_line, op_col) = pos_args(m, op)
         cond {
           op.token ==
             '??=' => ir.make_if_else(
@@ -10338,7 +10338,7 @@ fn emit_assign(m, node, f, res) {
               op.token == '**=' => '__pow',
               _ => '__mod',
             }
-            call_pre(m, f, name, [read_back(), v, pl, pc], op)
+            call_pre(m, f, name, [read_back(), v, op_line, op_col], op)
           },
         }
       },

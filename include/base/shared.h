@@ -1278,17 +1278,12 @@ inline std::string url_decode(std::string_view in) {
                      line, col);
 }
 
-// Raise the uniform shadow-prohibition error. Used by interp and JIT at
-// every binding site that would shadow a closure-captured outer variable
-// (let/mut declarations, function parameters, match pattern bindings).
-[[noreturn]] inline void throw_shadow_error(std::string_view name,
-                                            size_t line, size_t column) {
-  throw CulebraError(
-      "ShadowError",
-      culebra::format("cannot shadow outer variable '{}' (declared in an enclosing "
-                      "function)",
-                      name),
-      static_cast<long>(line), static_cast<long>(column));
+// The shadow-prohibition error's message: a declaration that would shadow a
+// variable of an enclosing function (lint.h).
+inline std::string shadow_error_msg(std::string_view name) {
+  return culebra::format(
+      "cannot shadow outer variable '{}' (declared in an enclosing function)",
+      name);
 }
 
 // Call site passed a keyword the callee doesn't accept. Both backends

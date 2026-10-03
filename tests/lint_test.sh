@@ -379,8 +379,11 @@ x ??= 7'
 expect_accept "index assign"            'mut o = [1]
 o[0] = 9'
 
-# Shadow: a nested function may not shadow a binding captured from an enclosing
-# function. Single-sourced in lint.h (lint::check_shadow); the JIT now routes
+# Shadow: a declaration in a nested function may not shadow a variable of an
+# enclosing function (not the top level) that is visible where the nested
+# function is written; every declaring form counts (parameters, let,
+# destructuring, parameter defaults, class field initializers). A name from a
+# closed or sibling scope is not visible, so it is no error. Single-sourced in lint.h (lint::check_shadow); the JIT now routes
 # through it instead of its own collect_fn_locals pass, so assert BOTH backends
 # reject before eval. For-loop variables are block-scoped to the body and are
 # captured by closures there — shadowing one was previously missed by the interp.
@@ -405,7 +408,18 @@ expect_shadow_reject "inner param shadows let"   'fn outer() { let x = 1; fn inn
 expect_shadow_reject "for-var simple inside loop" 'fn f() { for i in [1] { fn g(i) { i } } }'
 expect_shadow_reject "for-var destructure inside" 'fn f() { for (i, x) in [(1, 2)] { fn g(x) { x } } }'
 expect_shadow_reject "block-let nested fn"        'fn f() { { let b = 1; fn g(b) { b } } }'
+expect_shadow_reject "tuple destructure"          'fn o() { let a = 1; fn i() { let (a, b) = (1, 2); a } }'
+expect_shadow_reject "array destructure"          'fn o() { let a = 1; fn i() { let [a] = [1]; a } }'
+expect_shadow_reject "object destructure"         'fn o() { let a = 1; fn i() { let {a} = {a: 2}; a } }'
+expect_shadow_reject "param default declaration"  'fn o() { let a = 1; fn i(x = (let a = 2)) { x } }'
+expect_shadow_reject "class field initializer"    'fn o() { let a = 1; class C { f = (let a = 2) } }'
 # Accepted (sound-negative): out of scope, or a legitimate capture.
+expect_shadow_accept "closed sibling block"       'fn o() { { let a = 1 }; fn i() { let a = 2; a }; i() }
+o()'
+expect_shadow_accept "other match arm"            'fn o(v) { match v { 1 => { let a = 1; a }, _ => { fn i() { let a = 2; a }; i() } } }
+o(2)'
+expect_shadow_accept "loop body not enclosing"    'fn o() { for k in [1] { let a = 1 }; fn i() { let a = 2; a }; i() }
+o()'
 expect_shadow_accept "for-var after loop"         'fn f() { for i in [1] { }; fn g() { let i = 2 } }'
 expect_shadow_accept "toplevel for-var"           'for i in [1] { fn g(i) { i } }'
 expect_shadow_accept "nested captures for-var"    'fn f() { for i in [1] { let y = i; fn g() { y } } }'

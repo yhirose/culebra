@@ -503,6 +503,7 @@ std::vector<std::string> lint_errors(std::string src, std::string_view kind) {
   std::vector<culebra::lint::Diagnostic> diags;
   culebra::lint::_detail::RuleWalker(p->res, diags).run(*p->ast);
   culebra::lint::_detail::undefined_reads(p->res, globals, diags);
+  culebra::lint::_detail::shadows(p->res, diags);
   std::vector<std::string> out;
   for (const auto& d : diags) {
     if (d.kind != kind) continue;
@@ -564,6 +565,67 @@ void test_lint_undefined() {
   });
 }
 
+// A declaration shadows when the name is, where its function is written, a
+// variable of an enclosing function.
+void test_lint_shadow() {
+  check_lint("ShadowError", {
+      {"a let", "fn o() {\n  let a = 1\n  fn i() {\n    let a = 2\n  }\n}\n",
+       {"a@4"}},
+      {"a parameter", "fn o() {\n  let a = 1\n  fn i(a) { a }\n}\n", {"a@3"}},
+      {"a pattern's leaf",
+       "fn o() {\n  let a = 1\n  fn i() {\n    let (a, b) = (1, 2)\n  }\n}\n",
+       {"a@4"}},
+      {"a match binding",
+       "fn o() {\n  let a = 1\n  fn i(v) {\n    match v { a => a }\n  }\n}\n",
+       {"a@4"}},
+      {"a loop variable, a catch variable",
+       "fn o() {\n  let a = 1\n  fn i() {\n    for a in [1] { }\n"
+       "    try { 0 } catch a { 0 }\n  }\n}\n",
+       {"a@4", "a@5"}},
+      {"a function's and a class's name",
+       "fn o() {\n  let a = 1\n  let b = 2\n  fn i() {\n    fn a() { 0 }\n"
+       "    class b {}\n  }\n}\n",
+       {"a@5", "b@6"}},
+      {"in a default", "fn o() {\n  let a = 1\n  fn i(x = (let a = 2)) { x }\n}\n",
+       {"a@3"}},
+      {"in an initializer",
+       "fn o() {\n  let a = 1\n  class K {\n    f = (let a = 2)\n  }\n}\n",
+       {"a@4"}},
+      {"in a defer", "fn f() {\n  let r = 1\n  defer { let r = 2 }\n}\n",
+       {"r@3"}},
+      {"a name declared below the function",
+       "fn o() {\n  fn i() { let a = 2 }\n  let a = 1\n}\n", {"a@2"}},
+      {"a loop variable, inside the loop",
+       "fn f() {\n  for i in [1] {\n    fn g(i) { i }\n  }\n}\n", {"i@3"}},
+      {"two functions deep",
+       "fn o() {\n  let a = 1\n  fn m() {\n    fn i() { let a = 2 }\n  }\n}\n",
+       {"a@4"}},
+      {"reported in source order",
+       "fn o() {\n  let x = 1\n  fn b() {\n    fn d() { let x = 2 }\n  }\n"
+       "  fn c() { let x = 3 }\n}\n",
+       {"x@4", "x@6"}},
+      // Not visible where the function is written, so not captured.
+      {"a closed block's name",
+       "fn o() {\n  { let a = 1 }\n  fn i() { let a = 2 }\n}\n", {}},
+      {"a loop variable, after the loop",
+       "fn f() {\n  for i in [1] { }\n  fn g() { let i = 2 }\n}\n", {}},
+      {"another arm's name",
+       "fn o(v) {\n  match v {\n    1 => { let a = 1 },\n"
+       "    _ => { fn i() { let a = 2 } },\n  }\n}\n",
+       {}},
+      {"a sibling function's name",
+       "fn a() { let x = 1 }\nfn b() { let x = 2 }\n", {}},
+      // The module's names are globals; a block in a function is its own.
+      {"a top-level name", "let x = 1\nfn f() { let x = 2 }\n", {}},
+      {"a top-level block's name", "{\n  let x = 1\n  fn f() { let x = 2 }\n}\n",
+       {}},
+      {"a block in the same function", "fn f() {\n  let a = 0\n  { let a = 1 }\n}\n",
+       {}},
+      // A bare write is the outer variable's.
+      {"a bare write", "fn o() {\n  mut a = 1\n  fn i() { a = 2 }\n}\n", {}},
+  });
+}
+
 // `x = v` after a `let x` of that variable.
 void test_lint_let() {
   check_lint("ImmutableError", {
@@ -602,6 +664,7 @@ int main() {
   test_node_records();
   test_declaration_forms();
   test_lint_undefined();
+  test_lint_shadow();
   test_lint_let();
 
   if (failures) {

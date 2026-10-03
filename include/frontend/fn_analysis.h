@@ -160,11 +160,9 @@ struct FnAnalysis {
                            bool session_top = false,
                            std::span<const std::string> session = {}) {
     session_top_ = session_top;
-    // Shadow analysis is single-sourced in lint.h (the same check the
-    // interpreter runs).
-    lint::check_shadow(programAst);
     res_ = resolve::resolve_module(programAst, {},
                                    compiler_resolve_options(session));
+    lint::check_shadow(res_);
     fns_.clear();
     FuncInfo info;
     depth_ = 0;
