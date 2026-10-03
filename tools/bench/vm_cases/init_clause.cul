@@ -126,8 +126,8 @@ let caught = try {
 }
 println(caught)
 
-# A `defer` in one of the blocks belongs to the enclosing defer scope, the
-# same one it belongs to without the clause.
+# A `defer` in one of the arms belongs to the arm, as it does without the
+# clause: it fires when the arm ends, the clause's binding still alive.
 fn deferred() {
   if let g = 'g'; true {
     defer { println(['defer', g]) }

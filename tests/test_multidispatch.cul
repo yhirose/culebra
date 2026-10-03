@@ -351,11 +351,9 @@ fn shadowed(n) {
 }
 assert_eq(shadowed(1), 'Function/99')
 
-# Sibling if-arm declarations share the enclosing scope slot, so each
-# executed path gets its own dispatcher — chosen by the runtime state of
-# the binding, like the interp's per-activation env frame. (The arm that
-# did not run this call must not contribute: this used to read a cell
-# that was never created and crash.)
+# Each if arm is a scope of its own, so sibling arms declaring one name
+# declare a dispatcher each, and the arm that did not run this call
+# contributes nothing.
 fn arms(c) {
   if c {
     fn ah(a) {

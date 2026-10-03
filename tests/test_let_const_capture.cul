@@ -70,11 +70,8 @@ assert_eq(read_m(), 11)
 
 // A conditional declaration is a run-time fact, not a fold.
 let pick = fn (flag) {
-  if flag {
-    let C = 1
-  } else {
-    let C = 2
-  }
+  flag && (let C = 1)
+  !flag && (let C = 2)
   let read_c = fn () {
     C
   }
@@ -82,6 +79,19 @@ let pick = fn (flag) {
 }
 assert_eq(pick(true), 1)
 assert_eq(pick(false), 2)
+
+// Each arm's constant is its own: the closure made in an arm folds that one.
+let pick_arm = fn (flag) {
+  if flag {
+    let C = 1
+    fn () { C }
+  } else {
+    let C = 2
+    fn () { C }
+  }
+}
+assert_eq(pick_arm(true)(), 1)
+assert_eq(pick_arm(false)(), 2)
 
 // A forward reference: the closure captures the cell before the
 // declaration runs, and reading it too early is still the NameError.

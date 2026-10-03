@@ -204,11 +204,8 @@ for i in 0..3 {
 }
 assert_eq(log, 'b0;d0;d1;b2;d2;')
 
-# An `if` with an init clause scopes its bindings, not its defers: the
-# block is not a defer scope with or without one, so the defer belongs to
-# the enclosing frame either way. The interpreter used to register it on
-# the init scope, which nothing ever ran — the defer was lost on every
-# exit path.
+# An `if` arm is a scope of its own, with or without an init clause: a
+# defer in it runs when the arm ends, the clause's binding still alive.
 fn init_if_defer() {
   if let x = 'init'; true {
     defer {
@@ -220,7 +217,7 @@ fn init_if_defer() {
 }
 log = ''
 init_if_defer()
-assert_eq(log, 'body;after;defer-init;')
+assert_eq(log, 'body;defer-init;after;')
 
 fn init_if_defer_return() {
   if let x = 'r'; true {
@@ -251,7 +248,7 @@ try {
 }
 assert_eq(log, 'defer-t;caught;')
 
-# The enclosing defer scope can be a loop body rather than the frame.
+# In a loop body the arm's defer still runs at the arm's end, each pass.
 log = ''
 mut n = 0
 while n < 2 {

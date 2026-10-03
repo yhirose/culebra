@@ -126,8 +126,10 @@ fn deep(d) {
     defer {
       probe_note = quiet()
     }
+    deep(d + 1)
+  } else {
+    deep(d + 1)
   }
-  deep(d + 1)
 }
 
 n = 0

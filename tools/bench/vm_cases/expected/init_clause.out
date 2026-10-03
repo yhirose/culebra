@@ -27,8 +27,8 @@ after match
 after break
 caught
 body
-after
 ['defer', 'g']
+after
 ['loop-body', 0]
 ['loop-defer', 0]
 ['loop-body', 1]

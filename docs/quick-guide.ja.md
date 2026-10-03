@@ -620,6 +620,7 @@ inspect(show('hi'))  # => 'hi'
 | Stringへの`s[0]` | `TypeError`。バイトオフセットを取る`s.slice(0, 1)`を使う |
 | `-7 % 3 == 2` (Python) | `-1` — 符号は被除数に従う (C流) |
 | `-7 / 2 == -4` (Python) | `-3` — Long除算はゼロ方向に切り捨て |
+| `if c { x = 1 } else { x = 2 }`の後で`x`を読む | 読込時の`NameError`。各腕は独自のスコープ。`x = if c { 1 } else { 2 }`と書く |
 | `if [] { }` / `if '' { }` | `TypeError`。判定できるのは`Bool` / `Long` / `Float`のみ |
 | `0 == false` | `false` — 型をまたぐ暗黙変換は無い |
 | `.length` / `.count` | `.size()`。存在しないプロパティは`nil`なので`.length`はraiseせず`nil`になる |

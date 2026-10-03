@@ -393,21 +393,36 @@ fn pat_deco_let(N) {
 }
 
 fn pat_conditional_decl(N) {
-  # A name whose only declaration sites are nested inside if/cond arms
-  # (runtime_decl slot): exercises the sentinel store/release cycle —
+  # A name whose only declaration sites are in expressions that may be
+  # skipped (runtime_decl slot): exercises the sentinel store/release cycle —
   # declare-path store, reassign-path release-then-store, and the
   # scope-exit re-arm to the sentinel each loop pass — for both a
-  # never-taken branch (sentinel released as-is) and heap payloads
+  # never-run declaration (sentinel released as-is) and heap payloads
   # flowing through the declare/reassign/read guards.
   for i in 0..N {
-    if i % 3 == 0 {
-      v = V.new(i, [], [])
-    } else if i % 3 == 1 {
-      mut v = V.new(i, [], [])
+    i % 3 == 0 && (v = V.new(i, [], []))
+    i % 3 == 1 && (mut v = V.new(i, [], []))
+    if i % 3 == 1 {
       v = V.new(i + 1, [], [])
     }
     if i % 3 != 2 {
       let _ = v.data
+    }
+  }
+}
+
+fn pat_arm_decl(N) {
+  # A heap payload declared in an `if` arm, a scope of its own: released at
+  # the arm's end on every pass, captured (a cell) or not (a slot).
+  for i in 0..N {
+    if i % 2 == 0 {
+      let v = V.new(i, [], [])
+      let _ = v.data
+    } else {
+      mut w = V.new(i, [], [])
+      w = V.new(i + 1, [], [])
+      let peek = fn () { w.data }
+      let _ = peek()
     }
   }
 }
@@ -486,6 +501,7 @@ let PATTERNS = [
   ["array_sized_default", pat_array_sized_default],
   ["deco_let", pat_deco_let],
   ["conditional_decl", pat_conditional_decl],
+  ["arm_decl", pat_arm_decl],
   ["ufcs_hook_throw", pat_ufcs_hook_throw],
 ]
 

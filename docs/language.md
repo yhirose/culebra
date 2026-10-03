@@ -414,9 +414,11 @@ Assignment with a simple identifier LHS is handled as follows:
     captured variables in outer scopes (see §11). This is the
     mechanism by which closure-based objects mutate their state.
   * Otherwise a new (immutable) binding is created in the innermost
-    scope: the block, loop body or match arm the assignment is written in.
-    An `if` arm shares its enclosing scope, so a binding made there stays
-    visible after the `if`.
+    scope: the block, loop body, match arm or `if` / `cond` / `?:` arm the
+    assignment is written in. A binding made in an arm ends with the arm
+    and is not visible after the `if`; to get a value out, bind the value
+    of the `if` itself (`x = if c { 1 } else { 2 }`, or
+    `(a, b) = if c { (1, 2) } else { (3, 4) }` for two names).
 
 ### Compound assignment
 
@@ -539,11 +541,13 @@ Shadowing is *allowed* in these cases:
   function costs nothing.
 * **Block-scope shadowing within the same function** is allowed. A
   `{ ... }` block may introduce a new `let`/`mut` binding of a name
-  already declared in the enclosing function body:
+  already declared in the enclosing function body, and so may an `if` /
+  `cond` / `?:` arm:
 
         fn () {
           a = 0
           { let a = 1; ... }   # OK: new binding scoped to the block
+          if c { let a = 2 }   # OK: scoped to the arm
         }
 
 * **A name that is not visible from the inner function** is not
@@ -592,10 +596,17 @@ is not changing.
   binding introduced in the body neither leaks out of the loop nor persists
   across iterations (so a bare immutable `x = …` re-declares each pass rather
   than re-assigning), and a body `defer` fires at the end of every iteration.
-  An `if` body shares the enclosing scope (it does not iterate, so nothing
-  collides).
 * `match` arms introduce a scope that covers the arm's guard and body;
   variable bindings from the pattern are visible there.
+* Each arm of an `if` (the `then` body, every `else if`, the `else`), each
+  `cond` arm and each arm of the ternary `c ? a : b` is a scope of its own,
+  like a `{}` block. A name declared in an arm, and a `fn` written in it,
+  end with the arm, and a `defer` in it fires when the arm ends. A bare
+  `x = v` still writes an `x` that is visible there; only when none is does
+  it declare, in the arm. The tests are not part of an arm: what a test
+  declares (`else if (let m = f()) > 0`) belongs to the scope around the
+  `if`. An init clause (`if mut d = f(); …`) is the scope around the whole
+  `if`, so its names reach every test and every arm.
 
 ### Assignment targets
 
@@ -611,7 +622,7 @@ Culebra treats the three shadow axes independently:
 | Scope relationship | Culebra | Typical convention |
 |---|---|---|
 | Across a function boundary (closure capture) | **Error** | Warning or allowed |
-| Within the same function (block scope) | Allowed | Warning or allowed |
+| Within the same function (block or arm scope) | Allowed | Warning or allowed |
 | A global / builtin name | Allowed | Warning or allowed |
 
 The three positions get different policies because each serves a
@@ -2653,6 +2664,22 @@ Each binding must be a declaration (`let` / `mut`); a bare `if x = 0;
 …` is a `SyntaxError`. Multiple bindings use `,`
 (`if mut a = f(), mut b = g(); …`).
 
+Each arm (the `then` body, every `else if`, the `else`) is a scope of its
+own, like a `{}` block (§6 Scope). A name declared in an arm is not visible
+after the `if`; bind the value of the `if` to get it out:
+
+```culebra
+fn pick(c) {
+  x = if c { 1 } else { 2 }
+  x
+}
+inspect(pick(true))   # => 1
+inspect(pick(false))  # => 2
+```
+
+Reading an arm's name after the `if` (`if c { x = 1 } else { x = 2 }`, then
+`x`) is a load-time `NameError`.
+
 ### Statement modifiers (`if` / `unless`)
 
     stmt if cond
@@ -2735,7 +2762,8 @@ zero falsy), and may be any expression — calls, `&&`/`||`,
 comparisons. An arm body follows the same
 [expression-or-block](#arm-bodies) rule as `match` arms: a bare
 expression, or a brace block that yields its last statement's value
-and forms its own scope.
+and forms its own scope. Every arm is a scope of its own, block or bare
+expression, and so is each arm of the ternary `c ? a : b` (§6 Scope).
 
 Use `cond` in place of a `match true { _ if … => ... }` guard chain
 when there is nothing to match on — it reads as a priority-ordered
@@ -4094,6 +4122,8 @@ A `defer { BLOCK }` statement registers `BLOCK` to run when the
 
 Block scope (not function scope) means:
 
+* An arm of an `if` / `cond` / `?:` is a scope too, so a `defer` in an arm
+  fires when the arm ends, not when the enclosing scope does.
 * `defer` in a loop body fires on every iteration — matches the
   programmer's intent of per-iteration cleanup.
 * `defer` in a conditional block fires only if that block actually ran.
@@ -4326,8 +4356,9 @@ format and run identically on every backend.
   the code would be reached. This includes a name bound nowhere; a read
   after the scope that declared the name has closed (after a `{ ... }`
   block, after a loop body including the `for` variable, after a `match`
-  arm, after a `catch`); a read that comes before the declaration in the
-  same function (use-before-def, `inspect(a)` followed by `let a = 1`);
+  arm, after an `if` / `cond` / `?:` arm, after a `catch`); a read that
+  comes before the declaration in the same function (use-before-def,
+  `inspect(a)` followed by `let a = 1`);
   and a decorator's callee that nothing declares. A loop body is a fresh
   scope per iteration, so a declaration below a read never runs first.
 * **`ImmutableError` (reassignment)** — a bare `x = v` after a `let x` of
@@ -4343,8 +4374,9 @@ proven statically:
   declaration has not run when the function is called (`let g = fn () { x }`,
   then `g()`, then `let x = 1`);
 * a declaration in a conditionally evaluated position that was skipped
-  (`c && (let q = 5)` then `q`; an `if` arm shares the enclosing scope, so
-  `if c { x = 1 }` then `x` is a `NameError` when `c` is false);
+  (`c && (let q = 5)` then `q`, or a later test of an `if`,
+  `if a { … } else if (let m = f()) > 0 { … }` then `m`, when `a` was
+  true);
 * compound assignment (`x += rhs`) on an undefined `x`;
 * a REPL line, which is resolved against the session when it runs;
 * every other `ImmutableError` (a bare-declared name, a parameter, a field
@@ -5997,17 +6029,19 @@ Anonymous function expressions `let f = fn(...) {...}` are unaffected.
 Multimethods only apply to **top-level `fn name(...)` declarations**.
 
 The overloads of a name belong to the scope that declares them. An `if`
-or `cond` arm is not a scope of its own (§6), so a `fn name` written in
-one joins the overloads of the scope around it, from the moment the arm
-runs:
+or `cond` arm is a scope of its own (§6), so a `fn name` written in one is
+the arm's own function: it does not join the overloads of the scope around
+it, and it ends with the arm:
 
 ```culebra
 fn describe(x: Long) { 'a number' }
 if true {
   fn describe(x: String) { 'a string' }
+  inspect(describe('hi'))  # => 'a string'
 }
-inspect(describe(1))     # => 'a number'
-inspect(describe('hi'))  # => 'a string'
+inspect(describe(1))       # => 'a number'
+# !! DispatchError
+describe('hi')
 ```
 
 **Default parameters and arity.** A method with default parameters

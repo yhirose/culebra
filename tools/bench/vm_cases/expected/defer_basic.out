@@ -2,11 +2,11 @@ scope-body
 scope-2
 scope-1
 between
+if-defer
 nil
 arm-body
+arm-defer
 42
 end
-arm-defer
-if-defer
 top-2
 top-1

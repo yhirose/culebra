@@ -892,10 +892,12 @@ inline MappedSource rewrite_block_inner(const peg::Ast& block,
                        static_cast<long>(block.column));
 }
 
-// Whether a node opens a variable scope of its own: the scope rules' own
-// table (resolve.h). A whole MATCH or TRY counts as one level here (their
-// arms as siblings), an over-approximation in the direction
-// collect_local_names tolerates.
+// Whether a node opens a variable scope of its own, and whether a child is
+// an `if` / `?:` / `cond` arm, a scope too: the scope rules' own table
+// (resolve.h). A whole MATCH or TRY counts as one level here (their arms as
+// siblings), an over-approximation in the direction collect_local_names
+// tolerates.
+using resolve::is_arm;
 using resolve::opens_scope;
 
 // Positional parameter names of a PARAMETERS node, skipping the kw-only
@@ -914,8 +916,8 @@ inline std::vector<std::string_view> collect_positional_param_names(
 
 // What `c` binds at the level it sits on: an assignment target (declared or
 // bare), a destructure's leaves, a nested `fn` / `class` / `enum` name —
-// without entering a node that opens a scope of its own (whose bindings are
-// that scope's, a loop's binding included).
+// without entering a node that opens a scope of its own or an arm (whose
+// bindings are that scope's, a loop's binding included).
 inline void bind_level(const peg::Ast& c, std::set<std::string>& out) {
   using namespace peg::udl;
   if (c.tag == "MULTIFN_DECL"_ || c.tag == "CLASS_DECL"_ ||
@@ -932,7 +934,19 @@ inline void bind_level(const peg::Ast& c, std::set<std::string>& out) {
   } else if (c.tag == "DESTRUCTURE_ASSIGN"_) {
     pattern_binding_names(*view_destructure(c).pattern, out);
   }
-  for (auto& g : c.nodes) bind_level(*g, out);
+  for (size_t i = 0; i < c.nodes.size(); i++)
+    if (!is_arm(c, i)) bind_level(*c.nodes[i], out);
+}
+
+// What a body's own level binds: a statement list's, or the one statement a
+// block collapsed onto.
+inline void bind_body_level(const peg::Ast& body, std::set<std::string>& out) {
+  using namespace peg::udl;
+  if (body.tag == "STATEMENTS"_) {
+    for (auto& c : body.nodes) bind_level(*c, out);
+  } else {
+    bind_level(body, out);
+  }
 }
 
 // Add what a scope-opening node makes visible inside it: what it binds on
@@ -963,26 +977,43 @@ inline void add_scope_names(const peg::Ast& n, std::set<std::string>& names) {
   for (auto& c : n.nodes) bind_level(*c, names);
 }
 
-// Where a node sits: the program, and the scope-opening nodes between it and
-// the node, outermost first. A walk carries this (pointers only) and turns it
-// into names — the `outer` of collect_local_names — only for a body it
-// actually lowers, so a program with no generator or effect pays nothing.
+// Where a node sits: the program, and the scopes between it and the node,
+// outermost first: a scope-opening node, or the body of an arm. A walk
+// carries this (pointers only) and turns it into names — the `outer` of
+// collect_local_names — only for a body it actually lowers, so a program
+// with no generator or effect pays nothing.
 struct ScopeChain {
+  struct Link {
+    const peg::Ast* node;
+    bool arm;
+  };
   const peg::Ast* root = nullptr;
-  std::vector<const peg::Ast*> nodes;
+  std::vector<Link> nodes;
+
+  // `ast`'s children, each replaced by `f` of it, with the scopes `ast`
+  // opens on the chain meanwhile.
+  template <typename F>
+  void walk_children(peg::Ast& ast, F&& f) {
+    bool opens = opens_scope(ast.tag);
+    if (opens) nodes.push_back({&ast, false});
+    for (size_t i = 0; i < ast.nodes.size(); i++) {
+      bool arm = is_arm(ast, i);
+      if (arm) nodes.push_back({ast.nodes[i].get(), true});
+      ast.nodes[i] = f(ast.nodes[i]);
+      if (arm) nodes.pop_back();
+    }
+    if (opens) nodes.pop_back();
+  }
 };
 
 inline std::set<std::string> names_in_scope(const ScopeChain& chain) {
-  using namespace peg::udl;
   std::set<std::string> names;
   if (!chain.root) return names;
-  // A one-statement program is that statement, with no STATEMENTS above it.
-  if (chain.root->tag == "STATEMENTS"_) {
-    for (auto& c : chain.root->nodes) bind_level(*c, names);
-  } else {
-    bind_level(*chain.root, names);
+  bind_body_level(*chain.root, names);
+  for (const auto& l : chain.nodes) {
+    if (l.arm) bind_body_level(*l.node, names);
+    else add_scope_names(*l.node, names);
   }
-  for (const auto* n : chain.nodes) add_scope_names(*n, names);
   return names;
 }
 
@@ -1274,22 +1305,23 @@ inline const CpsLoop* target_loop(const std::vector<CpsLoop>& stack,
 }
 
 // A defer that belongs to the scope being compiled: reached through no node
-// that opens a scope of its own. An `if` arm opens none, so its defers belong
-// to the scope around it, as in plain code. A defer anywhere deeper sits in a
-// scope that runs start to finish inside one state, where the backends' own
+// that opens a scope of its own and no arm. A defer anywhere deeper sits in
+// a scope the machine compiles as one (compile_arm, for an `if` it splits)
+// or that runs start to finish inside one state, where the backends' own
 // defer does the work.
 inline bool has_scope_level_defer(const peg::Ast& n) {
   using namespace peg::udl;
   if (n.tag == "DEFER"_) return true;
   if (opens_scope(n.tag)) return false;
-  for (auto& c : n.nodes)
-    if (has_scope_level_defer(*c)) return true;
+  for (size_t i = 0; i < n.nodes.size(); i++)
+    if (!is_arm(n, i) && has_scope_level_defer(*n.nodes[i])) return true;
   return false;
 }
 
 // The names `s` declares (`let` / `mut`, a declaring destructure) in the
-// scope it sits in: through `if` arms, which open none, but not into a
-// nested scope or fn.
+// scope it sits in, and in its `if` arms: an arm is entered at most once per
+// entry of the scope around it, so that scope's fresh box serves the arm
+// too, split or not. Not into a nested scope or fn.
 inline void declared_at_level(const peg::Ast& s, std::set<std::string>& out) {
   using namespace peg::udl;
   if (opens_scope(s.tag)) return;
@@ -1392,14 +1424,10 @@ struct CpsBuilder {
   }
   // `stmts` as a scope of their own, left through its exit into `cont` — or
   // straight into `cont` when no defer of its own could need running.
-  // `binds` names what the scope binds on entry (a for-in's loop variable)
-  // and `first` is the source that binds it, run ahead of the first
-  // statement. Each entry gives the boxed names the scope declares a fresh
-  // box (emit_fresh_boxes); a state binds its boxes on entry
-  // (emit_box_prologue), so the swap is a state of its own.
-  int compile_scope(const std::vector<const peg::Ast*>& stmts, int cont,
-                    std::set<std::string> binds = {},
-                    const std::string& first = "") {
+  // `first` is source run ahead of the first statement. An arm is this much:
+  // its boxes are the fresh ones of the scope around it (declared_at_level).
+  int compile_arm(const std::vector<const peg::Ast*>& stmts, int cont,
+                  const std::string& first = "") {
     int id = push_scope();
     bool owns_defers =
         std::any_of(stmts.begin(), stmts.end(),
@@ -1407,6 +1435,17 @@ struct CpsBuilder {
     int entry =
         compile_seq(stmts, owns_defers ? exit_to({id}, cont) : cont, first);
     open.pop_back();
+    return failed ? -1 : entry;
+  }
+  // A scope that can be entered again (a block, a loop body). `binds` names
+  // what it binds on entry (a for-in's loop variable) and `first` is the
+  // source that binds it. Each entry gives the boxed names the scope
+  // declares a fresh box (emit_fresh_boxes); a state binds its boxes on
+  // entry (emit_box_prologue), so the swap is a state of its own.
+  int compile_scope(const std::vector<const peg::Ast*>& stmts, int cont,
+                    std::set<std::string> binds = {},
+                    const std::string& first = "") {
+    int entry = compile_arm(stmts, cont, first);
     if (failed) return -1;
     auto boxes = emit_fresh_boxes(rewrite_set, stmts, std::move(binds));
     if (boxes.empty()) return entry;
@@ -1659,7 +1698,7 @@ struct CpsBuilder {
   // if / else-if / else chain. IF nodes are [(INIT_CLAUSE)?, cond, block, cond,
   // block, ..., elseblock?]; a trailing odd arm (past the init) is the bare
   // `else` block. An init clause runs its bindings once before the chain.
-  // An arm is no scope of its own, so its defers join the enclosing one.
+  // Each arm is a scope of its own, which its defers end with.
   int compile_if(const peg::Ast* ifnode, int cont) {
     auto iv = culebra::view_if(*ifnode);
     const auto& nodes = ifnode->nodes;
@@ -1668,7 +1707,7 @@ struct CpsBuilder {
     int else_entry;
     size_t pairs;
     if (arm_n % 2 == 1) {
-      else_entry = compile_seq(body_stmts(*nodes[nodes.size() - 1]), cont);
+      else_entry = compile_arm(body_stmts(*nodes[nodes.size() - 1]), cont);
       if (failed) return -1;
       pairs = (arm_n - 1) / 2;
     } else {
@@ -1677,7 +1716,7 @@ struct CpsBuilder {
     }
     int chain = else_entry;
     for (size_t p = pairs; p-- > 0;) {
-      int block_entry = compile_seq(body_stmts(*nodes[off + 2 * p + 1]), cont);
+      int block_entry = compile_arm(body_stmts(*nodes[off + 2 * p + 1]), cont);
       if (failed) return -1;
       int s = fresh();
       states[s] = std::format(
@@ -1832,7 +1871,7 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
   // A generator declared inside this body (in a closure) came through as
   // text, so it is lowered here, from the fragment it now lives in.
   ScopeChain inner = chain;
-  inner.nodes.push_back(ast.get());
+  inner.nodes.push_back({ast.get(), false});
   auto body =
       transform_generators_in(wrapper_fn->nodes.back(), *synthesized, inner);
   ast->nodes.back() =
@@ -1966,7 +2005,7 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
 // Walk the AST, transforming every yield-carrying MULTIFN_DECL. The
 // walk visits every node — yield-free modules pay one whole-tree
 // pointer pass (dwarfed by the PEG parse already run). `chain` is where
-// `ast` sits; a scope-opening node is on it while its children are walked.
+// `ast` sits; a scope is on it while what it holds is walked.
 //
 // Top-down: a generator is lowered from its body as written, and one declared
 // inside it is lowered from the fragment that lowering emits. `handle` and
@@ -1979,12 +2018,9 @@ inline std::shared_ptr<peg::Ast> transform_generators_in(
   if (ast->tag == "MULTIFN_DECL"_ && fn_body_has_yield(*ast->nodes.back()))
     return transform_one_generator_fn(ast, src, chain);
   if (ast->tag == "HANDLE"_ || ast->tag == "EFFECT_FN_DECL"_) return ast;
-  bool opens = opens_scope(ast->tag);
-  if (opens) chain.nodes.push_back(ast.get());
-  for (auto& child : ast->nodes) {
-    child = transform_generators_in(child, src, chain);
-  }
-  if (opens) chain.nodes.pop_back();
+  chain.walk_children(*ast, [&](std::shared_ptr<peg::Ast>& child) {
+    return transform_generators_in(child, src, chain);
+  });
   return ast;
 }
 

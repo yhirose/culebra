@@ -631,6 +631,7 @@ produces something else, in Culebra.
 | `s[0]` on a String | `TypeError`. Use `s.slice(0, 1)`, which takes byte offsets |
 | `-7 % 3 == 2` (Python) | `-1` — the sign follows the dividend, as in C |
 | `-7 / 2 == -4` (Python) | `-3` — Long division truncates toward zero |
+| `if c { x = 1 } else { x = 2 }` then reading `x` | `NameError` at load: each arm is a scope of its own. Write `x = if c { 1 } else { 2 }` |
 | `if [] { }`, `if '' { }` | `TypeError`. Only `Bool`, `Long` and `Float` are testable |
 | `0 == false` | `false` — there is no cross-type coercion |
 | `.length` / `.count` | `.size()`. A missing property is `nil`, so `.length` reads as `nil` instead of raising |

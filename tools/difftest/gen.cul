@@ -1423,7 +1423,7 @@ let nrec = [
   'try { fn h(n) { n > 0 ? h(n - 1) : 18 }; h(2) } catch e { e.kind }',
   'try { throw "x" } catch e { fn h(n) { n > 0 ? h(n - 1) : 19 }; h(2) }',
   '{ mut rec = fn (n) { n > 0 ? rec(n - 1) : 20 }; rec(2) }',
-  'if false { fn h(n) { n }; nil } else { nil }; h(2)',
+  'fn h(n) { 29 }; if true { fn h(n) { n }; nil } else { nil }; h(2)',
   'if true { fn h(n) { n > 0 ? h(n - 1) : 21 }; h(2) } else { fn h(n) { n > 0 ? h(n - 1) : 22 }; h(2) }',
   'if false { fn h(n) { n > 0 ? h(n - 1) : 23 }; h(2) } else { fn h(n) { n > 0 ? h(n - 1) : 24 }; h(2) }',
   'fn h() { 25 }; { fn h() { 26 }; h() }',

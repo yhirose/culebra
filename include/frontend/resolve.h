@@ -10,11 +10,12 @@
 //    method, `defer`, `effect fn`, a handler clause); a class's field
 //    initializers, which run when an instance is made, as one function body
 //    with a scope per initializer; a static value, where the class is
-//    declared; a parameter's default; a `{}` block; a loop body; a match
-//    arm; a try body and its catch; the block `handle` runs; and the init
-//    clause around its `if` / `while` / `match`. An `if` arm shares the
-//    enclosing scope. The builder a `_lazy_ns_register` call registers is a
-//    module of its own.
+//    declared; a parameter's default; a `{}` block; a loop body; an `if` /
+//    `cond` / `?:` arm; a match arm; a try body and its catch; the block
+//    `handle` runs; and the init clause around its `if` / `while` / `match`.
+//    A test of an `if` or a `cond` is no part of an arm: what it declares
+//    is the scope's around the construct. The builder a
+//    `_lazy_ns_register` call registers is a module of its own.
 //  - Within one function a declaration is visible from its statement on, after
 //    its right-hand side (`let x = x` reads the outer `x`). Every declaration of
 //    one name in one scope is the same variable: a repeated `let`, a bare
@@ -293,10 +294,10 @@ inline size_t name_offset(const peg::Ast& n, std::string_view name,
 
 // Whether a construct opens a scope of its own somewhere inside it: what a
 // walk that stays on one scope's level must not enter. The generator and
-// effect lowerings ask it to tell what a body's own level declares; the
-// Resolver below is what opens the scopes, and resolve_test holds the two
-// together. An `if` opens none for its arms; the scope around an `if` with
-// an init clause is the one this leaves out.
+// effect lowerings ask it, and is_arm below, to tell what a body's own
+// level declares; the Resolver is what opens the scopes, and resolve_test
+// holds the two together. The scope around an `if` with an init clause is
+// the one this leaves out.
 inline bool opens_scope(unsigned int tag) {
   using namespace peg::udl;
   switch (tag) {
@@ -315,6 +316,25 @@ inline bool opens_scope(unsigned int tag) {
     case "TRY"_:
     case "HANDLE"_:
       return true;
+    default:
+      return false;
+  }
+}
+
+// Whether `parent.nodes[i]` is an arm of an `if`, a `?:` or a `cond`: a
+// scope of its own, where the tests beside it are on the level around the
+// construct.
+inline bool is_arm(const peg::Ast& parent, size_t i) {
+  using namespace peg::udl;
+  switch (parent.tag) {
+    case "IF"_:
+    case "CONDITIONAL"_: {
+      // [(INIT_CLAUSE)?, test, arm, test, arm, …, (else-arm)?]
+      size_t off = view_if(parent).arm_off;
+      return i >= off && ((i - off) % 2 == 1 || i + 1 == parent.nodes.size());
+    }
+    case "COND_ARM"_:  // [test, arm]
+      return i == 1;
     default:
       return false;
   }
@@ -913,15 +933,24 @@ class Resolver {
         return;
       }
 
-      case "IF"_: {
+      case "IF"_:
+      case "CONDITIONAL"_: {
         auto iv = view_if(n);
         size_t saved = cur_;
         open_init_scope(n, iv.init);
-        for (size_t i = iv.arm_off; i < n.nodes.size(); i++)
-          walk_body(*n.nodes[i]);
+        for (size_t i = iv.arm_off; i < n.nodes.size(); i++) {
+          if (is_arm(n, i)) scoped_body(*n.nodes[i]);
+          else walk(*n.nodes[i]);
+        }
         cur_ = saved;
         return;
       }
+
+      case "COND_ARM"_:
+        if (n.nodes.size() < 2) break;
+        walk(*n.nodes[0]);
+        scoped_body(*n.nodes[1]);
+        return;
 
       case "MATCH"_: {
         if (n.nodes.size() < 2) break;

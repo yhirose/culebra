@@ -74,6 +74,9 @@ a += 1 if true'
 expect_reject "top-level let reassign"  'let a = 1
 a = 2'
 expect_reject "fn-scope let reassign"   'f = fn () { let b = 1; b = 2 }'
+expect_reject "if-arm let reassign"     'if true { let b = 1; b = 2 }'
+expect_accept "if-arm let, then the name" 'if true { let b = 1 }
+b = 2'
 expect_reject "closure writes outer let" 'let a = 1
 f = fn () { a = 2 }'
 # A name a default reads is not a parameter, and a bare pattern declares
@@ -503,6 +506,20 @@ while k < 1 { leaked = 99; k = k + 1 }
 inspect(leaked)'
 expect_undef_reject "fn in block leak"        'fn f() { { fn g() { 1 } }; g() }'
 expect_undef_reject "closed block read in fn" 'fn f() { { w = 1 }; fn() { w } }'
+# An `if` / `cond` / `?:` arm is a scope of its own.
+expect_undef_reject "if arm leak"             'if true { leaked = 1 }
+inspect(leaked)'
+expect_undef_reject "else arm leak"           'if false { 0 } else { let leaked = 1 }
+inspect(leaked)'
+expect_undef_reject "else-if arm leak"        'if false { 0 } else if true { leaked = 1 }
+inspect(leaked)'
+expect_undef_reject "cond arm leak"           'cond { true => { leaked = 1 }, _ => 0 }
+inspect(leaked)'
+expect_undef_reject "ternary arm leak"        'true ? (leaked = 1) : 0
+inspect(leaked)'
+expect_undef_reject "sibling arm read"        'fn f(c) { if c { let a = 1 } else { a } }'
+expect_undef_reject "fn in if arm leak"       'fn f() { if true { fn g() { 1 } }; g() }'
+expect_undef_reject "if arm read in fn"       'fn f() { if true { w = 1 }; fn() { w } }'
 # Accepted (sound-negative — must run on both backends):
 expect_undef_accept "forward-ref fn body"     'fn a() { b() }
 fn b() { 1 }
@@ -515,6 +532,11 @@ expect_undef_accept "skipped conditional decl" 'let c = false
 c && (let q = 5)
 let r = try { q } catch e { e.kind }
 if r != "NameError" { throw "no NameError" }'
+expect_undef_accept "skipped later test"      'fn f(a) { if a { 0 } else if (let m = 1) > 0 { 0 }; m }
+let r = try { f(true) } catch e { e.kind }
+if r != "NameError" { throw "no NameError" }
+if f(false) != 1 { throw "no m" }'
+expect_undef_accept "if init binding in arms" 'if let k = 1; k > 0 { inspect(k) } else { inspect(k) }'
 expect_undef_accept "destructure binding"     'let (p, q) = (1, 2)
 inspect(p + q)'
 expect_undef_accept "for-var read"            'for i in [1, 2] { inspect(i) }'

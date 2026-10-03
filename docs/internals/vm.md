@@ -374,14 +374,19 @@ mutability bit:
   earlier in the list captures a real cell (mutual recursion works); a
   read before the declaring statement ran raises `NameError` through
   `UnboundErr`, the read guard on lazy cells.
-- The arms of `if` / `cond` do not open a scope, so a name several arms
-  declare shares **one binding**, and which declaration ran is a fact of
+- Each arm of an `if` / `cond` / `?:` is compiled as a block
+  (`compile_block_into`): its own scope and its own `defer` scope, so a
+  name an arm declares ends with the arm. A declaration inside an
+  expression that may be skipped is the one case left with a conditional
+  pre-declaration: a later test of an `if` / `cond`, an operand a
+  short-circuit skips (`c && (let h = f())`), the rest of a chain after
+  `?.`, the right side of `??=`. Which declaration ran is then a fact of
   this call: the compiler records each declaration's `mut` in a slot
   beside it (`Binding::mut_slot`) and a bare write consults it. The
-  binding is a cell only when a closure captures the name or the
-  declaration is a `fn` / class / enum; otherwise it is a plain slot
-  holding the same sentinel, so the lowering sees the value rather than
-  a heap load and the tag it carries folds like any local's.
+  binding is a cell only when a closure captures the name; otherwise it
+  is a plain slot holding the same sentinel, so the lowering sees the
+  value rather than a heap load and the tag it carries folds like any
+  local's.
 - A declaration never writes through a borrowed capture: `fn () { let
   sh = sh + 1 }` shadows the enclosing `sh` rather than assigning it,
   because owning the cell is what distinguishes the two.
@@ -1276,10 +1281,10 @@ here, and why the head is the only place worth attacking.
 
 A `try` region is static: a scope entry in `Chunk::cleanups` with a
 `handler` pc and a `caught_slot`. Every lexical scope, loop body, `try`
-body and `match` arm records one `Cleanup` entry as it closes
-(innermost-first order), with its slot range, its `defer` mark slot if
-it declares defers, how many cells existed at that point
-(`cells_before`), and its parent.
+body, `match` arm and `if` / `cond` / `?:` arm records one `Cleanup`
+entry as it closes (innermost-first order), with its slot range, its
+`defer` mark slot if it declares defers, how many cells existed at that
+point (`cells_before`), and its parent.
 
 A throw at `pc` is torn down scope by scope:
 

@@ -1,33 +1,44 @@
---- escapes
-1
---- arms share
+--- value
 then
-else
 2
---- never ran
-NameError
+default
+ternary
 --- shadowing
-outer
 inner
+outer
+outer
+cond
+outer
+outer
+--- arms apart
+2
+ImmutableError
+--- free again
+5
 --- shapes
-from g
+arm g
 3
-nil
+true
 9
-7
---- nested
-7
---- declaring condition
-17
---- capture
-captured
---- in fn / value position
-inner fn
-value
-value
---- real block
+outer g
+DispatchError
+--- declaring test
+9
+8
+9
+9
 1
+NameError
+--- capture
+[0, 200]
+--- defer
+arm body
+arm defer
+after if
+else body
+after if
 --- drop
+drop 2
 inside
 drop 1
 after

@@ -42,8 +42,8 @@ struct FuncInfo {
                               // a defer-stack mark so an early return/break/
                               // continue runs the still-pending defers — even
                               // when the only defers live in a lexical scope
-                              // or a match block arm (interp runs these via
-                              // its unwind catch-all).
+                              // or an `if` / `cond` / match arm (interp runs
+                              // these via its unwind catch-all).
   bool has_return = false;    // contains RETURN at any depth (stopping at
                               // nested fns). With has_any_defer, gates HOF
                               // callback inlining (is_inlinable_lambda).
@@ -686,7 +686,20 @@ struct FnAnalysis {
       return false;  // arm bodies absorb their own defers
     }
     bool any = false;
-    for (auto& c : node.nodes) any |= scan_eh_defer(*c, at_fn_top, info);
+    for (size_t i = 0; i < node.nodes.size(); i++) {
+      auto& c = *node.nodes[i];
+      if (!resolve::is_arm(node, i)) {
+        any |= scan_eh_defer(c, at_fn_top, info);
+        continue;
+      }
+      // An `if` / `?:` / `cond` arm is a scope of its own, as a match arm
+      // is: a defer in it fires when the arm ends (compile_block_into keys
+      // the arm's node).
+      if (scan_eh_defer(c, /*at_fn_top=*/false, info)) {
+        scope_has_defer.insert(&c);
+        info.has_eh = true;
+      }
+    }
     return any;
   }
 

@@ -41,6 +41,14 @@ out=$(session "let x = 1" "x + 1" "mut m = 5" "m = m + 1" "m")
 [[ "$out" == "1"$'\n'"2"$'\n'"5"$'\n'"6"$'\n'"6" ]] ||
   { echo "FAIL bindings: $out"; fail=1; }
 
+# An `if` arm on a line is a scope of its own: what it declares is no session
+# binding, and the name is free on the next line. A write to a session
+# binding from an arm still lands in it.
+out=$(session "if true { y = 1 }" "y" "y = 2" "y" "mut z = 0" \
+              "if true { z = 5 }" "z")
+[[ "$out" == "1"$'\n'*"NameError"*$'\n'"2"$'\n'"2"$'\n'"0"$'\n'"5"$'\n'"5" ]] ||
+  { echo "FAIL if arm scope: $out"; fail=1; }
+
 # A redeclaration lands in the same binding, so a closure made before it reads
 # the new value — one persistent session environment, entry for entry.
 out=$(session "mut c = 0" "let bump = fn () {" "  c = c + 1" "}" \

@@ -90,8 +90,9 @@ for i in 0..4 {
   }
 }
 
-# --- An arm's declaration lands outside the `cond` -----------------------
+# --- An arm is a scope of its own: its declaration ends with it ----------
 println('--- scope')
+let inside = 'outside'
 let r = cond {
   true => {
     let inside = 'declared in the arm'
@@ -100,23 +101,25 @@ let r = cond {
 }
 println(r)
 println(inside)
-# ... whichever arm ran is what the name holds
-cond {
+# ... each arm declares its own, and the value leaves as the `cond`'s
+let picked = cond {
   false => {
-    let picked = 'then'
+    let p = 'then'
+    p
   },
   _ => {
-    let picked = 'else'
+    let p = 'else'
+    p
   },
 }
 println(picked)
-# ... and a closure built after the `cond` reads the same cell
-cond {
+# ... and a closure built in the arm keeps the arm's variable
+let read_it = cond {
   true => {
     let captured = 'from the arm'
+    fn () { captured }
   },
 }
-let read_it = fn () { captured }
 println(read_it())
 
 # --- Churn: the arms reuse their slots -----------------------------------

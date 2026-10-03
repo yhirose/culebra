@@ -168,12 +168,11 @@ class EffectsLowerer {
           op, args, line));
       return reparse_expr(synth, line);
     }
-    // A scope-opening node is on the chain while its children are walked; a
-    // `handle` is lowered above, its body's own level being the lowering's.
-    bool opens = opens_scope(ast->tag);
-    if (opens) scopes_.nodes.push_back(ast.get());
-    for (auto& child : ast->nodes) child = transform(child);
-    if (opens) scopes_.nodes.pop_back();
+    // A scope is on the chain while what it holds is walked; a `handle` is
+    // lowered above, its body's own level being the lowering's.
+    scopes_.walk_children(*ast, [&](std::shared_ptr<peg::Ast>& child) {
+      return transform(child);
+    });
     return ast;
   }
 

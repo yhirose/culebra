@@ -99,7 +99,27 @@ void test_scopes() {
   if (auto p = resolve_source("fn main() {\n  { x = 1 }\n  print(x)\n}\n"))
     unbound(*p, "x", 1, "a bare assignment in a block stays in the block");
   if (auto p = resolve_source("fn main() {\n  if true { y = 1 }\n  print(y)\n}\n"))
-    same(*p, "y", 0, 1, "an if arm shares its scope");
+    unbound(*p, "y", 1, "a bare assignment in an if arm stays in the arm");
+  if (auto p = resolve_source("if c { let a = 1; a } else { let a = 2; a }\n")) {
+    same(*p, "a", 0, 1, "an arm's declaration is visible in the arm");
+    differ(*p, "a", 0, 2, "each arm of an if is a scope of its own");
+  }
+  if (auto p = resolve_source(
+          "cond { c => { let b = 1 }, _ => { let b = 2 } }\nc ? (zz = 1) : 0\nzz\n")) {
+    differ(*p, "b", 0, 1, "each arm of a cond is a scope of its own");
+    unbound(*p, "zz", 1, "a ternary arm is a scope of its own");
+  }
+  if (auto p = resolve_source(
+          "if c { 0 } else if (let m = 1) > 0 { m }\nm\n"
+          "cond { c => 0, (let kk = 1) > 0 => kk }\nkk\n")) {
+    same(*p, "m", 0, 1, "a later test's declaration is visible in its arm");
+    same(*p, "m", 0, 2, "a later test declares around the if");
+    same(*p, "kk", 0, 2, "a cond test declares around the cond");
+  }
+  if (auto p = resolve_source("if let k = 1; k > 0 { k }\nprint(k)\n")) {
+    same(*p, "k", 0, 2, "an if init binding is visible in the arms");
+    unbound(*p, "k", 3, "an if init binding ends with the if");
+  }
   if (auto p = resolve_source("for item in [1] { print(item) }\nprint(item)\n")) {
     same(*p, "item", 0, 1, "a loop variable is visible in the body");
     unbound(*p, "item", 2, "a loop variable ends with the loop");
@@ -494,16 +514,20 @@ void test_declaration_forms() {
 // ---- the scope-opening table ----------------------------------------------
 
 // Where `target` sits under `n`: 0 not there, 1 on `n`'s own level, 2 inside
-// a construct opens_scope names.
+// a construct opens_scope names or an arm is_arm does.
 int level_of(const peg::Ast& n, const peg::Ast* target, bool crossed) {
   if (&n == target) return crossed ? 2 : 1;
-  for (const auto& c : n.nodes)
-    if (int r = level_of(*c, target, crossed || opens_scope(c->tag))) return r;
+  for (size_t i = 0; i < n.nodes.size(); i++) {
+    const auto& c = *n.nodes[i];
+    if (int r = level_of(c, target,
+                         crossed || opens_scope(c.tag) || is_arm(n, i)))
+      return r;
+  }
   return 0;
 }
 
-// opens_scope is what the lowerings stop at; the Resolver is what opens the
-// scopes. A `let v` written in each construct is on the function's own level
+// opens_scope and is_arm are what the lowerings stop at; the Resolver is what
+// opens the scopes. A `let v` written in each construct is on the function's own level
 // for both, or for neither.
 void test_scope_table() {
   struct Case {
@@ -513,10 +537,20 @@ void test_scope_table() {
   };
   const std::vector<Case> cases = {
       {"a statement", "let v = 1", true},
-      {"an if arm", "if true { let v = 1 }", true},
-      {"an else arm", "if false { 0 } else { let v = 1 }", true},
-      {"a cond arm", "cond { true => { let v = 1 }, _ => 0 }", true},
-      {"a ternary arm", "true ? (let v = 1) : 0", true},
+      {"an if test", "if (let v = 1) > 0 { 0 }", true},
+      {"an else-if test", "if false { 0 } else if (let v = 1) > 0 { 0 }", true},
+      {"a cond test", "cond { (let v = 1) > 0 => 0, _ => 0 }", true},
+      {"a ternary test", "(let v = 1) > 0 ? 1 : 0", true},
+      {"an if arm", "if true { let v = 1 }", false},
+      {"an if arm of several statements", "if true { 0; let v = 1 }", false},
+      {"an else-if arm", "if false { 0 } else if true { let v = 1 }", false},
+      {"an else arm", "if false { 0 } else { let v = 1 }", false},
+      {"a cond arm", "cond { true => { let v = 1 }, _ => 0 }", false},
+      {"a cond default arm", "cond { false => 0, _ => { let v = 1 } }", false},
+      {"a ternary arm", "true ? (let v = 1) : 0", false},
+      {"a ternary else arm", "false ? 0 : (let v = 1)", false},
+      {"an arm of an if with an init clause",
+       "if let c = 1; c > 0 { let v = 1 }", false},
       {"an operand", "true && (let v = 1)", true},
       {"a block", "{ let v = 1 }", false},
       {"a for body", "for i in [1] { let v = 1 }", false},
@@ -570,16 +604,16 @@ void test_scope_table() {
                       "function's own level",
                       c.what, resolver ? "on" : "off"));
     check(table == resolver,
-          std::format("scope table [{}]: opens_scope and the resolver disagree",
+          std::format("scope table [{}]: the table and the resolver disagree",
                       c.what));
   }
-  // The one construct the table leaves out: an init clause's scope holds the
-  // arms, and the lowerings take them as the level around the `if`.
+  // The one scope the table leaves out: an `if`'s init clause, whose bindings
+  // the lowerings take as the level around the `if`.
   bool resolver = true, table = false;
-  if (probe({"an if with an init clause", "if let c = 1; c > 0 { let v = 1 }", false},
+  if (probe({"an if's init clause", "if let v = 1; v > 0 { 0 }", false},
             resolver, table))
     check(!resolver && table,
-          "scope table: an init clause's `if` is the known difference");
+          "scope table: an `if`'s init clause is the known difference");
 }
 
 // ---- the load-time lint ------------------------------------------------------
@@ -638,6 +672,12 @@ void test_lint_undefined() {
        "fn f() {\n  try { throw 1 } catch e { 0 }\n  e\n}\n", {"e@3"}},
       {"a pattern's binding after the arm",
        "fn f(v) {\n  match v { q => 0 }\n  q\n}\n", {"q@3"}},
+      {"an if arm's name after the if", "if true { x = 1 }\nx\n", {"x@2"}},
+      {"an if arm's name in the other arm",
+       "fn f(c) {\n  if c { let x = 1 } else { x }\n}\n", {"x@2"}},
+      {"a cond arm's name after the cond",
+       "cond { true => { x = 1 }, _ => 0 }\nx\n", {"x@2"}},
+      {"a ternary arm's name after it", "true ? (x = 1) : 0\nx\n", {"x@2"}},
       {"above its declaration", "a\nlet a = 1\n", {"a@1"}},
       {"its own right-hand side", "let b = b\n", {"b@1"}},
       {"a decorator nothing declares", "@nope\nfn f() { 1 }\n", {"nope@1"}},
@@ -646,7 +686,8 @@ void test_lint_undefined() {
       // A declaration is visible but may not have run: the run's to decide.
       {"a closure called early", "let g = fn () { x }\ng()\nlet x = 1\n", {}},
       {"a skipped declaration", "true && (let q = 5)\nq\n", {}},
-      {"an if arm's name after the if", "if true { x = 1 }\nx\n", {}},
+      {"a later test's name after the if",
+       "if false { 0 } else if (let m = 1) > 0 { 0 }\nm\n", {}},
       {"a function declared below", "fn a() { b() }\nfn b() { 1 }\n", {}},
       // Not reads of a variable.
       {"a compound write", "y += 1\n", {}},
@@ -704,6 +745,9 @@ void test_lint_shadow() {
        "fn o(v) {\n  match v {\n    1 => { let a = 1 },\n"
        "    _ => { fn i() { let a = 2 } },\n  }\n}\n",
        {}},
+      {"another if arm's name",
+       "fn o(c) {\n  if c { let a = 1 } else { fn i() { let a = 2 } }\n}\n",
+       {}},
       {"a sibling function's name",
        "fn a() { let x = 1 }\nfn b() { let x = 2 }\n", {}},
       // The module's names are globals; a block in a function is its own.
@@ -734,6 +778,9 @@ void test_lint_let() {
       {"a write above the let", "let poke = fn () { fixed = 1 }\nlet fixed = 0\n",
        {}},
       {"a block's let, then the outer name", "{ let a = 1 }\na = 2\n", {}},
+      {"an if arm's let, then the outer name", "if true { let a = 1 }\na = 2\n",
+       {}},
+      {"in an if arm", "if true {\n  let a = 1\n  a = 2\n}\n", {"a@3"}},
       {"a let over a parameter", "f = fn (a) {\n  let a = 1\n  a = 2\n}\n", {}},
       {"a bare declaration", "a = 1\na = 2\n", {}},
       {"a compound write", "let a = 1\na += 1\n", {}},

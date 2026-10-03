@@ -122,11 +122,9 @@ fn mut_rec() {
 }
 mut_rec()
 
-# if branches share the enclosing scope: both branches may declare the
-# same recursive name, and whichever runs materializes its own binding;
-# a binding whose branch never ran reads as the interp's NameError
-# (used to be a whole-program compile failure — or, for a non-recursive
-# fn, a null-cell crash).
+# an if arm is a scope of its own: both arms may declare the same
+# recursive name, each its own function, and the name ends with the arm
+# (a read after the `if` is refused at load: tests/lint_test.sh).
 fn both_branches(c) {
   if c {
     fn h(n) {
@@ -143,22 +141,22 @@ fn both_branches(c) {
 assert_eq(both_branches(true), 'then')
 assert_eq(both_branches(false), 'else')
 
-fn untaken() {
-  if false {
-    fn h(n) {
-      n
-    }
-    nil
-  } else {
-    nil
+fn arm_fn_over_outer(c) {
+  fn h(n) {
+    'outer'
   }
-  h(2)
+  let in_arm = if c {
+    fn h(n) {
+      n > 0 ? h(n - 1) : 'arm'
+    }
+    h(2)
+  } else {
+    h(2)
+  }
+  [in_arm, h(2)]
 }
-assert_eq(try {
-  untaken()
-} catch e {
-  e.kind
-}, 'NameError')
+assert_eq(arm_fn_over_outer(true), ['arm', 'outer'])
+assert_eq(arm_fn_over_outer(false), ['outer', 'outer'])
 
 # an inner `fn` shadows an outer same-named one; the outer survives
 fn sh_outer() {

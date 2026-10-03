@@ -1,195 +1,9 @@
-// A bare/`let`/`mut` declaration whose only site(s) sit inside an
-// if/cond arm: only one arm ever runs per call, so declare-vs-reassign
-// can't be told apart from a sibling arm's own first declare at compile
-// time — the JIT used to misclassify the second-compiled arm's first
-// touch as a reassignment of the first-compiled arm's (immutable-by-
-// default) binding, raising a false ImmutableError, and a read of a
-// never-taken branch's declaration silently returned nil instead of
-// the interp's NameError. Runs under interp, --jit, and AOT.
-
-// --- Original bug: if/else sibling arms, each their own call. ---
-fn if_else_sibling(a) {
-  if a { x = 1 } else { x = 2 }
-  x
-}
-assert_eq(if_else_sibling(true), 1)
-assert_eq(if_else_sibling(false), 2)
-
-// --- Two independent, sequential if statements in one call: each
-// arm's bare declare must not see the other's as already-declared. ---
-fn sequential_ifs(n) {
-  mut out = []
-  if n == 0 {
-    x = 1
-    out.push(x)
-  }
-  if n == 1 {
-    x = 2
-    out.push(x)
-  }
-  out
-}
-assert_eq(sequential_ifs(0), [1])
-assert_eq(sequential_ifs(1), [2])
-
-// --- Both arms taken across two calls in the SAME call: the second
-// if's bare declare of the same name IS a real reassignment (the first
-// if unconditionally ran first) and must still raise ImmutableError,
-// matching interp. ---
-assert_throws("ImmutableError", fn () {
-  fn both_taken(n) {
-    if n >= 0 { x = 1 }
-    if n >= 1 { x = 2 }
-    x
-  }
-  both_taken(1)
-})
-
-// --- True sequential reassignment (same straight-line block, not
-// sibling branches) still throws — top level and inside a single arm. ---
-assert_throws("ImmutableError", fn () {
-  y = 1
-  y = 2
-})
-assert_throws("ImmutableError", fn () {
-  if true {
-    z = 1
-    z = 2
-  }
-})
-
-// --- Read of a branch that didn't run this call: NameError, not nil
-// (the JIT used to read a stale/zeroed slot as nil here). ---
-assert_throws("NameError", fn () {
-  fn maybe_declared(n) {
-    if n == 1 { w = 5 }
-    w
-  }
-  maybe_declared(0)
-})
-
-// --- 3+ arm if/elif/else and cond: every arm mutually exclusive with
-// every other arm, not just its immediate neighbor. ---
-fn if_elif_chain(a) {
-  if a == 1 { v = 1 } else if a == 2 { v = 2 } else { v = 3 }
-  v
-}
-assert_eq(if_elif_chain(1), 1)
-assert_eq(if_elif_chain(2), 2)
-assert_eq(if_elif_chain(3), 3)
-
-fn cond_arms(a) {
-  cond {
-    a == 1 => { u = 1 },
-    a == 2 => { u = 2 },
-    _ => { u = 3 },
-  }
-  u
-}
-assert_eq(cond_arms(1), 1)
-assert_eq(cond_arms(2), 2)
-assert_eq(cond_arms(3), 3)
-
-// --- Closure capturing a name declared unconditionally before an
-// if/else that also assigns it: unaffected by this fix, regression
-// guard for the ordinary (non-conditional-declare) capture path. ---
-fn closure_over_unconditional(a) {
-  mut n = 0
-  fn bump() {
-    n = n + 1
-  }
-  if a { bump() } else { bump() }
-  n
-}
-assert_eq(closure_over_unconditional(true), 1)
-assert_eq(closure_over_unconditional(false), 1)
-
-// --- Mixed `mut` / bare across sibling arms: JIT tracks mut-ness at
-// runtime (per the arm that actually ran), matching interp exactly —
-// not "whichever arm compiled last wins". ---
-fn mixed_mut(a) {
-  if a { mut m = 1 } else { m = 2 }
-  m = 5
-  m
-}
-assert_eq(mixed_mut(true), 5)
-assert_throws("ImmutableError", fn () {
-  mixed_mut(false)
-})
-
-// --- Mutability across two SEPARATE ifs, where the arm that runs is not
-// the arm compiled last: whichever declaration ran owns the answer, so a
-// compiler that lets the last-compiled `mut` speak for the name accepts a
-// write the interp refuses (and vice versa). ---
-fn mut_first_compiled(a) {
-  if a { let n = 1 }
-  if !a { mut n = 2 }
-  n = 9
-  n
-}
-assert_eq(mut_first_compiled(false), 9)
-assert_throws("ImmutableError", fn () {
-  mut_first_compiled(true)
-})
-
-// --- Sibling arms each holding a NESTED if that declares the same name:
-// the outer construct already hoisted it, so the inner ones must share
-// that cell. Minting one per site put its allocation inside a single arm
-// and left the other arm reading a cell its path never made — a segfault
-// (tests/test_args.cul was hitting exactly this through Args.try_parse). ---
-fn nested_sibling_arms(argv) {
-  mut got = nil
-  let tok = argv[0]
-  if tok.starts_with("--") {
-    if tok == "--zzz" {
-      got = "long-zzz"
-    } else {
-      let raw = if false { "x" } else { argv[1] }
-      got = "long-{raw}"
-    }
-  } else {
-    if tok == "-zzz" {
-      got = "short-zzz"
-    } else {
-      let raw = if false { "y" } else { argv[1] }
-      got = "short-{raw}"
-    }
-  }
-  got
-}
-assert_eq(nested_sibling_arms(["-n", "7"]), "short-7")
-assert_eq(nested_sibling_arms(["--count", "9"]), "long-9")
-assert_eq(nested_sibling_arms(["--zzz", "9"]), "long-zzz")
-
-// --- Loop body: a conditionally-declared name must re-arm to "not yet
-// declared" every pass, not leak the previous iteration's value or its
-// slot's storage across iterations. ---
-assert_throws("NameError", fn () {
-  fn loop_rearm() {
-    for i in range(3) {
-      if i == 0 { p = 100 }
-      if i == 0 {
-        assert_eq(p, 100)
-      } else {
-        p  // never declared this pass — must raise, not read stale 100
-      }
-    }
-  }
-  loop_rearm()
-})
-
-// --- An `if` with an init clause: its arms declare into the clause's
-// scope, a `fn` included, and that scope ends with the `if`. ---
-fn cd_init_clause_fn() {
-  let v = 'outer'
-  let r = if let c = 1; c > 0 {
-    fn v() { 7 }
-    let read = || v
-    read()()
-  }
-  [r, v]
-}
-assert_eq(cd_init_clause_fn(), [7, 'outer'])
+// A declaration inside an expression that may be skipped: an operand a
+// short-circuit skips, the rest of a chain after a `?.`, a later test of an
+// `if` or a `cond`. None of these is a scope of its own (an arm is:
+// tests/test_if_arm_scope.cul), so the name belongs to the scope around the
+// statement, and whether it was declared is a fact of the run: a read the
+// skipped declaration never bound is a NameError, on every backend.
 
 // --- A declaration in an operand a short-circuit skips, or after a `?.`:
 // a closure built after it captures a cell that exists either way, and a
@@ -262,8 +76,53 @@ fn cd_match_subject(c) {
 assert_eq(cd_match_subject(true), [1])
 assert_throws("NameError", fn () { cd_match_subject(false) })
 
-// The same for an `if` arm: the later declaration fills the cell the
-// closure above holds.
+// A later test of an `if` / `cond` declares around the construct: its arm
+// reads the name, and so does the code after when the test ran.
+fn cd_later_test(a) {
+  if a { 0 } else if (let m = [5]) != nil { m.push(6) }
+  let g = || m
+  g()
+}
+assert_eq(cd_later_test(false), [5, 6])
+assert_throws("NameError", fn () { cd_later_test(true) })
+fn cd_cond_test(a) {
+  cond {
+    a => 0,
+    (let m = [7]) != nil => m.push(8),
+  }
+  m
+}
+assert_eq(cd_cond_test(false), [7, 8])
+assert_throws("NameError", fn () { cd_cond_test(true) })
+
+// Two skippable declarations of one name with their own mutability: a later
+// write is checked against the one that ran.
+fn cd_mixed_mut(a) {
+  a && (mut m = 1)
+  !a && (let m = 2)
+  m = 5
+  m
+}
+assert_eq(cd_mixed_mut(true), 5)
+assert_throws("ImmutableError", fn () { cd_mixed_mut(false) })
+
+// In a loop the name is undeclared again on every pass.
+assert_throws("NameError", fn () {
+  fn cd_loop_rearm() {
+    for i in range(3) {
+      i == 0 && (let p = 100)
+      if i == 0 {
+        assert_eq(p, 100)
+      } else {
+        p
+      }
+    }
+  }
+  cd_loop_rearm()
+})
+
+// An arm's declaration is the arm's own: the closure above reads the
+// function's `h`, which the later declaration fills.
 fn cd_arm_forward(c) {
   let g = || h
   if c { let h = [2] }

@@ -81,6 +81,13 @@ EXPRESSIONS = {
     'decorator': 'let _dec = fn (f) { f }\n@_dec\nfn _h() { v }',
     # The condition reads `v` before the arm declares one of its own.
     'arm_after_condition': '{\nif v == 0 {\nlet v = 1\n}\n}',
+    # An arm that is one expression is a scope too.
+    'ternary_arm': 'true ? (let v = 1) + (|| v)() : 0\nlet _in = || v',
+    'cond_expr_arm': 'cond {\ntrue => (let v = 1) + (|| v)(),\n_ => 0,\n}\nlet _in = || v',
+    # A later test is no arm: it declares around the construct.
+    'later_test': 'if false {\n0\n} else if (let v = 1) > 0 {\nv\n}\nlet _in = || v',
+    'cond_later_test': 'cond {\nfalse => 0,\n(let v = 1) > 0 => v,\n}\nlet _in = || v',
+    'init_later_test': 'if let _c = 1; _c > 1 {\n0\n} else if (let v = 1) > 0 {\n(|| v)()\n}',
 }
 
 

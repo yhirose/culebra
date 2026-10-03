@@ -8,56 +8,5 @@
 MISMATCH declaration 'shadowed' tests/test_multidispatch.cul:349:7 resolve=shadowed@349:7 compiler=shadowed@347:4  # D6
 MISMATCH declaration 'shadowed' tools/bench/vm_cases/multifn_self.cul:34:7 resolve=shadowed@34:7 compiler=shadowed@32:4  # D6
 
-# D8: an if/cond arm's declaration of a captured name makes a second cell
-MISMATCH second-cell 'root' tests/test_dir.cul:301:7 resolve=root@148:5 compiler=root@148:5  # D8
-MISMATCH second-cell 'v' grid/cond_arm__destructure__outer.cul:6:10 resolve=v@2:7 compiler=v@2:7  # D8
-MISMATCH second-cell 'v' grid/cond_arm__destructure__outer.cul:7:18 resolve=v@2:7 compiler=v@2:7  # D8
-MISMATCH second-cell 'v' grid/cond_arm__destructure__top.cul:5:8 resolve=v@1:5 compiler=v@1:5  # D8
-MISMATCH second-cell 'v' grid/cond_arm__destructure__top.cul:6:16 resolve=v@1:5 compiler=v@1:5  # D8
-MISMATCH second-cell 'v' grid/cond_arm__fn__outer.cul:6:8 resolve=v@2:7 compiler=v@2:7  # D8
-MISMATCH second-cell 'v' grid/cond_arm__fn__outer.cul:7:18 resolve=v@2:7 compiler=v@2:7  # D8
-MISMATCH second-cell 'v' grid/cond_arm__fn__top.cul:5:6 resolve=v@1:5 compiler=v@1:5  # D8
-MISMATCH second-cell 'v' grid/cond_arm__fn__top.cul:6:16 resolve=v@1:5 compiler=v@1:5  # D8
-MISMATCH second-cell 'v' grid/cond_arm__let__outer.cul:6:9 resolve=v@2:7 compiler=v@2:7  # D8
-MISMATCH second-cell 'v' grid/cond_arm__let__outer.cul:7:18 resolve=v@2:7 compiler=v@2:7  # D8
-MISMATCH second-cell 'v' grid/cond_arm__let__top.cul:5:7 resolve=v@1:5 compiler=v@1:5  # D8
-MISMATCH second-cell 'v' grid/cond_arm__let__top.cul:6:16 resolve=v@1:5 compiler=v@1:5  # D8
-MISMATCH second-cell 'v' grid/cond_arm__mut__outer.cul:6:9 resolve=v@2:7 compiler=v@2:7  # D8
-MISMATCH second-cell 'v' grid/cond_arm__mut__outer.cul:7:18 resolve=v@2:7 compiler=v@2:7  # D8
-MISMATCH second-cell 'v' grid/cond_arm__mut__top.cul:5:7 resolve=v@1:5 compiler=v@1:5  # D8
-MISMATCH second-cell 'v' grid/cond_arm__mut__top.cul:6:16 resolve=v@1:5 compiler=v@1:5  # D8
-MISMATCH second-cell 'v' grid/else_arm__destructure__outer.cul:7:10 resolve=v@2:7 compiler=v@2:7  # D8
-MISMATCH second-cell 'v' grid/else_arm__destructure__outer.cul:8:18 resolve=v@2:7 compiler=v@2:7  # D8
-MISMATCH second-cell 'v' grid/else_arm__destructure__top.cul:6:8 resolve=v@1:5 compiler=v@1:5  # D8
-MISMATCH second-cell 'v' grid/else_arm__destructure__top.cul:7:16 resolve=v@1:5 compiler=v@1:5  # D8
-MISMATCH second-cell 'v' grid/else_arm__fn__outer.cul:7:8 resolve=v@2:7 compiler=v@2:7  # D8
-MISMATCH second-cell 'v' grid/else_arm__fn__outer.cul:8:18 resolve=v@2:7 compiler=v@2:7  # D8
-MISMATCH second-cell 'v' grid/else_arm__fn__top.cul:6:6 resolve=v@1:5 compiler=v@1:5  # D8
-MISMATCH second-cell 'v' grid/else_arm__fn__top.cul:7:16 resolve=v@1:5 compiler=v@1:5  # D8
-MISMATCH second-cell 'v' grid/else_arm__let__outer.cul:7:9 resolve=v@2:7 compiler=v@2:7  # D8
-MISMATCH second-cell 'v' grid/else_arm__let__outer.cul:8:18 resolve=v@2:7 compiler=v@2:7  # D8
-MISMATCH second-cell 'v' grid/else_arm__let__top.cul:6:7 resolve=v@1:5 compiler=v@1:5  # D8
-MISMATCH second-cell 'v' grid/else_arm__let__top.cul:7:16 resolve=v@1:5 compiler=v@1:5  # D8
-MISMATCH second-cell 'v' grid/else_arm__mut__outer.cul:7:9 resolve=v@2:7 compiler=v@2:7  # D8
-MISMATCH second-cell 'v' grid/else_arm__mut__outer.cul:8:18 resolve=v@2:7 compiler=v@2:7  # D8
-MISMATCH second-cell 'v' grid/else_arm__mut__top.cul:6:7 resolve=v@1:5 compiler=v@1:5  # D8
-MISMATCH second-cell 'v' grid/else_arm__mut__top.cul:7:16 resolve=v@1:5 compiler=v@1:5  # D8
-MISMATCH second-cell 'v' grid/if_arm__destructure__outer.cul:5:10 resolve=v@2:7 compiler=v@2:7  # D8
-MISMATCH second-cell 'v' grid/if_arm__destructure__outer.cul:6:18 resolve=v@2:7 compiler=v@2:7  # D8
-MISMATCH second-cell 'v' grid/if_arm__destructure__top.cul:4:8 resolve=v@1:5 compiler=v@1:5  # D8
-MISMATCH second-cell 'v' grid/if_arm__destructure__top.cul:5:16 resolve=v@1:5 compiler=v@1:5  # D8
-MISMATCH second-cell 'v' grid/if_arm__fn__outer.cul:5:8 resolve=v@2:7 compiler=v@2:7  # D8
-MISMATCH second-cell 'v' grid/if_arm__fn__outer.cul:6:18 resolve=v@2:7 compiler=v@2:7  # D8
-MISMATCH second-cell 'v' grid/if_arm__fn__top.cul:4:6 resolve=v@1:5 compiler=v@1:5  # D8
-MISMATCH second-cell 'v' grid/if_arm__fn__top.cul:5:16 resolve=v@1:5 compiler=v@1:5  # D8
-MISMATCH second-cell 'v' grid/if_arm__let__outer.cul:5:9 resolve=v@2:7 compiler=v@2:7  # D8
-MISMATCH second-cell 'v' grid/if_arm__let__outer.cul:6:18 resolve=v@2:7 compiler=v@2:7  # D8
-MISMATCH second-cell 'v' grid/if_arm__let__top.cul:4:7 resolve=v@1:5 compiler=v@1:5  # D8
-MISMATCH second-cell 'v' grid/if_arm__let__top.cul:5:16 resolve=v@1:5 compiler=v@1:5  # D8
-MISMATCH second-cell 'v' grid/if_arm__mut__outer.cul:5:9 resolve=v@2:7 compiler=v@2:7  # D8
-MISMATCH second-cell 'v' grid/if_arm__mut__outer.cul:6:18 resolve=v@2:7 compiler=v@2:7  # D8
-MISMATCH second-cell 'v' grid/if_arm__mut__top.cul:4:7 resolve=v@1:5 compiler=v@1:5  # D8
-MISMATCH second-cell 'v' grid/if_arm__mut__top.cul:5:16 resolve=v@1:5 compiler=v@1:5  # D8
-
 # N1: a pattern with two `...rest` never matches, so its names are never bound
 UNSEEN 'u' tools/bench/vm_cases/match_structural.cul:58:40  # N1

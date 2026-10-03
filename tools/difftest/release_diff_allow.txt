@@ -193,3 +193,8 @@ ausound|*
 # Object holds: `has` on an Object with no non-String key answered false,
 # where the same call on one that has such a key raised.
 m|{a: 1, b: 2}|has|*
+
+# An `if` / `cond` / `?:` arm is a scope of its own: a `fn` declared in an arm
+# is the arm's, and no longer replaces or joins the function of that name
+# outside it. The baseline answered 2 here (the arm's `h`), this build 29.
+nestedfn|fn h(n) { 29 }; if true { fn h(n) { n }; nil } else { nil }; h(2)

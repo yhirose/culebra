@@ -4865,18 +4865,17 @@ class Compiler {
     // `shadowed_builtin` says the same for a stdlib global.
     std::shared_ptr<Binding> shadowed;
     bool shadowed_builtin = false;
-    // Pre-declared for a collapsed `if` arm, whose declaration may not run
-    // at all — and, when the `if` has several arms declaring the name, runs
-    // in exactly one of them. So the declaration statement fills the cell
-    // without settling the binding: it stays lazy, so every arm finds the
-    // same cell and a read still asks the sentinel whether any arm ran.
+    // Pre-declared for a declaration inside an expression that may be
+    // skipped (collect_conditional_decls), so it may not run at all. The
+    // declaration fills the cell without settling the binding: it stays
+    // lazy, and a read still asks the sentinel whether the declaration ran.
     bool conditional = false;
     // A conditional binding's `mut` is the runtime fact its declaration
-    // wrote, not something the compiler can name: the arms declare the same
-    // name with their own mutability and only one of them runs, so a later
-    // write must ask which did. Holds a Bool, false until a declaration
-    // lands. -1 for every other binding, whose `is_mut` above is already
-    // the whole answer.
+    // wrote, not something the compiler can name: several skippable
+    // declarations of the name carry their own mutability and a later write
+    // must ask which ran. Holds a Bool, false until a declaration lands. -1
+    // for every other binding, whose `is_mut` above is already the whole
+    // answer.
     int32_t mut_slot = -1;
     // Pre-declared for a bare `x = v` site, which IS the declaration: that
     // write fills the cell instead of being checked against it. Cleared
@@ -5405,8 +5404,8 @@ class Compiler {
   }
 
   // What both grants refuse: a binding whose value is a run-time question —
-  // reassignment (`mut`, or a conditional arm's), and a REPL session cell the
-  // next line can refill.
+  // reassignment (`mut`, or a skippable declaration's), and a REPL session
+  // cell the next line can refill.
   static bool binding_writes_once(const Binding& b) {
     return !b.is_mut && !b.session && !b.conditional && !b.shadowed_builtin &&
            !b.awaits_implicit && b.mut_slot < 0;
@@ -5709,8 +5708,8 @@ class Compiler {
   // with the bindings as ordinary declarations inside it. They outlive every
   // arm and every iteration (a captured one is a single cell, not one per
   // turn) and die at the construct's exit, where this scope's ladder runs.
-  // A block of the construct is not a defer scope on any backend, and this
-  // scope does not make it one — no DeferScope is opened here.
+  // The clause registers no defer of its own, so no DeferScope is opened
+  // here; an arm or a body inside opens its own.
   struct InitScope {
     Compiler& c;
     bool open;
@@ -5836,7 +5835,7 @@ class Compiler {
   }
 
   // A bare write. One to a conditional pre-declaration is that declaration
-  // in whichever arm runs it (emit_conditional_rebind decides which at run
+  // when it is the first to run (emit_conditional_rebind decides at run
   // time), so it names the variable the way a `let` would.
   void check_write(const peg::Ast& name, const Binding* b) {
     if (b && b->conditional)
@@ -6310,15 +6309,15 @@ class Compiler {
   }
 
   // The conditional pre-declaration this scope already holds for `name`.
-  // An `if`/`cond` hoists what its arms declare, and collect_conditional_decls
-  // recurses into nested arms — so an enclosing construct has already minted
-  // the cell a nested one would, and an earlier construct in the same scope
-  // has minted the one a later one would. The name is a single binding here,
-  // and a later arm finds it, so both cases must reuse this cell rather than
-  // mint a second one: minting again put the `CellNew` inside one arm,
-  // leaving a sibling arm's read to walk the shadow chain into a cell that
-  // path never allocated (a segfault), and made a second `if`'s bare declare
-  // of the name a fresh binding instead of the reassignment interp reports.
+  // A statement hoists what its skippable expressions declare, and an `if`
+  // with an init clause hoists its later tests' again, so an earlier
+  // statement in the same scope (or the statement head) has already minted
+  // the cell a later one would. The name is a single binding here, so both
+  // reuse this cell rather than mint a second one: minting again put the
+  // `CellNew` on a path that may not run, leaving a read on another path to
+  // walk the shadow chain into a cell never allocated (a segfault), and made
+  // a second bare declare of the name a fresh binding instead of the
+  // reassignment it is.
   Binding* conditional_here(const std::string& name) {
     auto* b = predeclared_here(name);
     return b && b->conditional ? b : nullptr;
@@ -6474,11 +6473,11 @@ class Compiler {
   }
 
   // A bare write to a conditionally-declared name, where "is this the
-  // declaration or a reassignment" is a runtime fact: only one arm runs, so
-  // the sentinel still in the cell means no declaration has landed and this
-  // write is one (immutably — a bare declare never carries `mut`), while a
-  // value there means the arm that ran already bound the name and this write
-  // is checked against the mutability THAT arm wrote.
+  // declaration or a reassignment" is a runtime fact: the sentinel still in
+  // the cell means no declaration has landed and this write is one
+  // (immutably — a bare declare never carries `mut`), while a value there
+  // means a declaration that ran already bound the name and this write is
+  // checked against the mutability THAT one wrote.
   bool emit_conditional_rebind(const peg::Ast& at, const Binding& b,
                                ExprResult r) {
     count_dynamic();
@@ -6774,13 +6773,13 @@ class Compiler {
 
   // Scope-level defer mark, established around a block whose scope declares
   // its own defers (scan_eh_defer's scope_has_defer, keyed by `key` — the
-  // block node for loop bodies, the LEXICAL_SCOPE node for `{ ... }`). The
-  // mark slot lives in the ENCLOSING scope (it must survive this scope's
-  // release ladder); DeferMark re-executes per entry, so one slot serves a
-  // loop body's every iteration. Exits run before the scope's releases —
-  // fall-through here, a jump out via the scope's own mark (leave_scopes), a
-  // throw via the region handler's mark (compile_try) or the frame's
-  // (run_frame).
+  // block node for loop bodies and arms, the LEXICAL_SCOPE node for
+  // `{ ... }`). The mark slot lives in the ENCLOSING scope (it must survive
+  // this scope's release ladder); DeferMark re-executes per entry, so one
+  // slot serves a loop body's every iteration. Exits run before the scope's
+  // releases — fall-through here, a jump out via the scope's own mark
+  // (leave_scopes), a throw via the region handler's mark (compile_try) or
+  // the frame's (run_frame).
   struct DeferScope {
     Compiler& c;
     int32_t mark = -1;
@@ -6839,20 +6838,6 @@ class Compiler {
       store_into(dst, compile_expr(expr), /*dst_is_fresh=*/true);
     }
     pop_scope();
-  }
-
-  // An `if` / `cond` arm body in value position. It gets no scope of its own:
-  // the enclosing one holds what it declares (collect_conditional_decls pinned
-  // those names to lazy cells first) and owns any `defer` it registers, which
-  // is the interpreter's eval_if / eval_cond — and its DeferHandoff — exactly.
-  void compile_arm_into(const peg::Ast& body, int32_t dst) {
-    using namespace peg::udl;
-    if (body.tag == "STATEMENTS"_) {
-      TempScope ts(*this);
-      compile_body_into(body, dst);
-      return;
-    }
-    compile_value_into(body, dst);
   }
 
   // compile_block_into's core, scope management left to the caller —
@@ -7110,19 +7095,14 @@ class Compiler {
     std::string name;
     bool is_mut;
     bool implicit;
-    // A `fn` / class / enum name: its declaration installs through the cell
-    // (MultifnReg appends to what it holds), so it is minted as one even
-    // where a value declaration would take a plain slot.
-    bool in_cell;
   };
   using DeclList = std::vector<Decl>;
 
   static void add_decl(DeclList& decls, const peg::Ast* at, std::string name,
-                       bool is_mut, bool implicit = false,
-                       bool in_cell = false) {
+                       bool is_mut, bool implicit = false) {
     for (const auto& d : decls)
       if (d.name == name) return;  // overloads share the first decl's cell
-    decls.push_back({at, std::move(name), is_mut, implicit, in_cell});
+    decls.push_back({at, std::move(name), is_mut, implicit});
   }
 
   // Mint one lazy binding per name and register it in the current scope,
@@ -7157,16 +7137,15 @@ class Compiler {
     }
     TempScope ts(*this);
     // A cell only where a closure can hold the name (a forward reference
-    // always can: that is what pre-declared it) or the declaration installs
-    // through it. A conditional value declaration nobody captures takes a
-    // plain slot holding the same sentinel: the reads keep their guard, and
-    // the lowering's mem2reg then sees the value itself instead of a load
-    // from heap memory, so the tag it carries folds like any local's.
+    // always can: that is what pre-declared it). A conditional declaration
+    // nobody captures takes a plain slot holding the same sentinel: the
+    // reads keep their guard, and the lowering's mem2reg then sees the value
+    // itself instead of a load from heap memory, so the tag it carries folds
+    // like any local's.
     std::vector<int32_t> cslots;
     std::vector<bool> plain;
     for (const auto& d : decls) {
-      bool cell = !conditional || d.in_cell ||
-                  info_->captured_locals.contains(d.name);
+      bool cell = !conditional || info_->captured_locals.contains(d.name);
       cslots.push_back(cell ? alloc_cell_slot(*d.at, d.name)
                             : alloc_slot(*d.at, d.name));
       plain.push_back(!cell);
@@ -7201,21 +7180,18 @@ class Compiler {
     }
   }
 
-  // predeclare_cells for an `if`/`cond` hoist: the names this scope already
-  // pre-declared conditionally keep the cell they have (conditional_here).
-  // So does a `fn name` this scope has already declared: an arm declares
-  // into the scope around it, where a second `fn name` is an overload of the
-  // first — it appends to that dispatcher (compile_multifn_decl) rather than
-  // hiding it behind a cell of its own. And a forward reference's cell (a
+  // predeclare_cells for the declarations a statement may skip: the names
+  // this scope already pre-declared conditionally keep the cell they have
+  // (conditional_here). A name whose cell a closure here already holds is
+  // that same variable, which the declaration writes (captured_here); any
+  // other binding here is shadowed. And a forward reference's cell (a
   // closure above already holds it) is the variable a later declaration
   // fills, so it becomes conditional itself rather than shadowed by a second.
   void predeclare_conditional_cells(const peg::Ast& ast,
                                     const DeclList& decls) {
     DeclList fresh;
     for (const auto& d : decls) {
-      if (conditional_here(d.name) ||
-          scopes_.back().multifn_decls.contains(d.name))
-        continue;
+      if (conditional_here(d.name) || captured_here(d.name)) continue;
       if (Binding* pre = predeclared_here(d.name); pre && !pre->session) {
         pre->conditional = true;
         pre->mut_slot = alloc_slot(*d.at, "(" + d.name + ".decl_mut)");
@@ -7236,18 +7212,18 @@ class Compiler {
     pre.shadowed_builtin = false;
   }
 
-  // What `node` declares where it may not run: an `if` / `?:` / `cond` arm
-  // or a later test, an operand a short-circuit skips (`c && (let h = f())`),
-  // the rest of a chain after a `?.`. None of these opens a scope — an `if`
-  // arm declares into the scope around it, on every backend — so whether
-  // the declaration ran is a run-time fact, and the names take a conditional
-  // pre-declaration (predeclare_conditional_cells): a closure built after it
-  // captures a cell that exists either way, and a read the skipped
-  // declaration never bound finds the sentinel. A scope of its own (a block,
-  // a loop, a match, a try, an `if` with an init clause) keeps what it
-  // declares, and a function body runs elsewhere; a `while` condition and a
-  // `match` subject, compiled outside their bodies, are hoisted by
-  // compile_while and compile_match themselves.
+  // What `node` declares where it may not run: a later test of an `if` /
+  // `?:` / `cond`, an operand a short-circuit skips (`c && (let h = f())`),
+  // the rest of a chain after a `?.`. None of these opens a scope, so
+  // whether the declaration ran is a run-time fact, and the names take a
+  // conditional pre-declaration (predeclare_conditional_cells): a closure
+  // built after it captures a cell that exists either way, and a read the
+  // skipped declaration never bound finds the sentinel. A scope of its own
+  // (a block, a loop, an arm, a match, a try, an `if` with an init clause)
+  // keeps what it declares, and a function body runs elsewhere; a `while`
+  // condition and a `match` subject, compiled outside their bodies, are
+  // hoisted by compile_while and compile_match themselves. A `fn`, a class
+  // and an enum are statements, which only a scope of its own holds.
   void collect_conditional_decls(const peg::Ast& node, DeclList& decls,
                                  bool conditional) {
     using namespace peg::udl;
@@ -7264,24 +7240,17 @@ class Compiler {
       case "WHILE"_:
       case "MATCH"_:
       case "TRY"_:
-        return;
       case "MULTIFN_DECL"_:
       case "CLASS_DECL"_:
-      case "ENUM_DECL"_: {
-        if (!conditional) return;
-        size_t i = culebra::first_non_decorator_index(node);
-        add_decl(decls, node.nodes[i].get(),
-                 std::string(culebra::parse_generic_head(node.nodes[i]->token).outer),
-                 /*is_mut=*/false, /*implicit=*/false, /*in_cell=*/true);
+      case "ENUM_DECL"_:
         return;
-      }
       case "IF"_:
       case "CONDITIONAL"_:
         if (!culebra::view_if(node).init)
-          collect_arm_decls(node, decls, conditional);
+          collect_test_decls(node, decls, conditional);
         return;
       case "COND"_:
-        collect_arm_decls(node, decls, conditional);
+        collect_test_decls(node, decls, conditional);
         return;
       case "LOGICAL_AND"_:
       case "LOGICAL_OR"_:
@@ -7336,34 +7305,30 @@ class Compiler {
     }
   }
 
-  // What an `if` / `?:` / `cond` declares past its first test: in its arms
-  // and its later tests.
-  void collect_arm_decls(const peg::Ast& node, DeclList& decls,
-                         bool conditional) {
+  // What the tests of an `if` / `?:` / `cond` declare: each one past the
+  // first may not run. An arm is a scope of its own and keeps what it
+  // declares.
+  void collect_test_decls(const peg::Ast& node, DeclList& decls,
+                          bool conditional) {
     using namespace peg::udl;
     if (node.tag == "COND"_) {
-      for (size_t a = 0; a < node.nodes.size(); a++) {
+      for (size_t a = 0; a < node.nodes.size(); a++)
         collect_conditional_decls(*node.nodes[a]->nodes[0], decls,
                                   conditional || a > 0);
-        collect_conditional_decls(*node.nodes[a]->nodes[1], decls, true);
-      }
       return;
     }
     size_t first = culebra::view_if(node).arm_off;
     for (size_t i = first; i < node.nodes.size(); i++)
-      collect_conditional_decls(*node.nodes[i], decls, conditional || i > first);
+      if (!culebra::resolve::is_arm(node, i))
+        collect_conditional_decls(*node.nodes[i], decls,
+                                  conditional || i > first);
   }
 
   // At the head of a statement (or of an expression that is a scope of its
-  // own), the cells for what it declares where it may not run. A name whose
-  // cell a closure here already holds is that same variable, which the
-  // declaration writes (captured_here); any other binding here is shadowed,
-  // as compile_if's own hoist does.
+  // own), the cells for what it declares where it may not run.
   void predeclare_conditional_decls(const peg::Ast& ast) {
     DeclList decls;
     collect_conditional_decls(ast, decls, /*conditional=*/false);
-    std::erase_if(decls,
-                  [&](const Decl& d) { return captured_here(d.name) != nullptr; });
     predeclare_conditional_cells(ast, decls);
   }
 
@@ -7482,10 +7447,10 @@ class Compiler {
     Binding* b = lookup_name_mut(name);
     bool session_overload =
         b && b->session && repl_session().value(name).tag == TAG_FUNC;
-    // Nor is one that appends to a dispatcher this scope already declared —
-    // an `if` arm's `fn name` after the statement list's own, which the
-    // list's count never saw (the first one's grant is struck by the
-    // store_cell below, like any re-declaration's).
+    // Nor is one that appends to a dispatcher this scope already declared,
+    // which the list's count did not see when a transform expanded one
+    // statement into a list of its own (the first one's grant is struck by
+    // the store_cell below, like any re-declaration's).
     mo.sole_multifn = scopes_.back().sole_multifn.contains(name) &&
                       !scopes_.back().multifn_decls.contains(name) &&
                       !session_overload;
@@ -13150,17 +13115,17 @@ class Compiler {
     // — so its slot is taken before that scope opens.
     int32_t res = alloc_temp(ast);
     InitScope init(*this, ast, iv.init);
-    // An arm body declares into the scope around the arms. Whether it ran is
-    // a run-time fact, so the names take the pre-declaration a forward
-    // reference takes: one lazy binding per name for the whole `if` — shared by
-    // the arms, so `if c { let a = 1 } else { let a = 2 }` reads whichever arm
-    // ran — shadowing what the name meant before, and still holding the
-    // sentinel (hence NameError) when no arm declared it. With an init
-    // clause, the scope around the arms is the clause's, which keeps them.
-    DeclList arms;
-    collect_arm_decls(ast, arms, /*conditional=*/false);
-    predeclare_conditional_cells(ast, arms);
-    auto compile_arm = [&](const peg::Ast& body) { compile_arm_into(body, res); };
+    // A later test may not run, so what it declares takes the conditional
+    // pre-declaration: the statement head's, except under an init clause,
+    // whose scope is theirs.
+    if (iv.init) {
+      DeclList tests;
+      collect_test_decls(ast, tests, /*conditional=*/false);
+      predeclare_conditional_cells(ast, tests);
+    }
+    // Each arm is a scope of its own, as a block is: what it declares and
+    // the defers it registers end with it.
+    auto compile_arm = [&](const peg::Ast& body) { compile_block_into(body, res); };
     std::vector<size_t> end_jumps;
     size_t i = iv.arm_off;
     for (; i + 1 < ast.nodes.size(); i += 2) {
@@ -13180,24 +13145,21 @@ class Compiler {
   // `cond { test => body, ..., _ => default }` — the subjectless conditional,
   // compile_if's shape with a test per arm. A `_` WILDCARD test is the
   // unconditional default, so the arms after it are dead and never compiled;
-  // with none reached the result stays nil. Arm bodies declare into the scope
-  // around the `cond`, as an `if` arm's do.
+  // with none reached the result stays nil. Each arm body is a scope of its
+  // own, as an `if` arm is.
   ExprResult compile_cond(const peg::Ast& ast) {
     using namespace peg::udl;
     int32_t res = alloc_temp(ast);
-    DeclList arms;
-    collect_arm_decls(ast, arms, /*conditional=*/false);
-    predeclare_conditional_cells(ast, arms);
     std::vector<size_t> end_jumps;
     for (const auto& arm : ast.nodes) {  // each COND_ARM: [test, body]
       const auto& test = *arm->nodes[0];
       if (test.tag == "WILDCARD"_) {
-        compile_arm_into(*arm->nodes[1], res);
+        compile_block_into(*arm->nodes[1], res);
         break;
       }
       auto c = compile_expr(test);
       size_t skip = emit_test(Op::JumpIfFalse, c.slot, test);
-      compile_arm_into(*arm->nodes[1], res);
+      compile_block_into(*arm->nodes[1], res);
       end_jumps.push_back(emit(Op::Jump));
       patch_to_here(skip);
     }
@@ -13530,8 +13492,7 @@ class Compiler {
     ExprResult v{src, src_owned};
     if (declares) {
       // A leaf whose name was pre-declared here fills that cell instead of
-      // minting a second one — compile_assign_var's rule, which a collapsed
-      // `if` arm's declaring destructure now reaches too.
+      // minting a second one — compile_assign_var's rule.
       if (Binding* pre = predeclared_here(name)) {
         note_declaration(ident, *pre);
         store_binding(at, *pre, v);

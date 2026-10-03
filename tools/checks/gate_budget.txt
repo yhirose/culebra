@@ -43,7 +43,10 @@
 # of the program's own included). 301 since test_param_default_scope.cul (a
 # default sees where its function is defined and the parameters before it;
 # what it declares is its own).
-tests.cul 301
+# 300 since an `if` arm is a scope of its own: test_if_arm_scope.cul holds the
+# rule, and test_if_arm_slot_decl.cul and test_fn_overload_in_if_arm.cul, which
+# held the old one, are gone.
+tests.cul 300
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -89,7 +92,9 @@ ctest.entries 34
 # 1006 since Encoding.utf16 shows its byte orders and its mark, in en and ja.
 # 1016 since stdlib's "Serving a Dir" shows static() over an archive and a
 # disk directory, in en and ja.
-docs.blocks 1016
+# 1018 since §12 `if` shows a value leaving an arm as the `if`'s value, in en
+# and ja.
+docs.blocks 1018
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

@@ -1,0 +1,405 @@
+// An `if`, `cond` or `?:` arm is a scope of its own, as a block, a loop body
+// or a match arm is: what it declares ends with the arm, a name it hides
+// means the outer binding again after it, and a `defer` in it fires when the
+// arm ends. A value leaves an arm as the construct's value. A read of an
+// arm's name after the arm is refused at load (tests/lint_test.sh).
+
+// --- A value leaves an arm as the construct's value. ---
+fn ias_value(a) {
+  ias_x = if a { 1 } else { 2 }
+  ias_x
+}
+assert_eq(ias_value(true), 1)
+assert_eq(ias_value(false), 2)
+fn ias_pair(a) {
+  (ias_p, ias_q) = if a { (1, 2) } else { (3, 4) }
+  ias_p + ias_q
+}
+assert_eq(ias_pair(false), 7)
+
+// --- Two `if`s that declare one name declare two variables. ---
+fn ias_sequential(n) {
+  mut out = []
+  if n == 0 {
+    ias_x = 1
+    out.push(ias_x)
+  }
+  if n == 1 {
+    ias_x = 2
+    out.push(ias_x)
+  }
+  out
+}
+assert_eq(ias_sequential(0), [1])
+assert_eq(ias_sequential(1), [2])
+
+// --- After the arms the name is free again: a bare write declares it. ---
+fn ias_redeclare(a) {
+  if a { mut ias_m = 1 } else { ias_m = 2 }
+  ias_m = 5
+  ias_m
+}
+assert_eq(ias_redeclare(true), 5)
+assert_eq(ias_redeclare(false), 5)
+
+// --- A reassignment in an arm refuses as it does anywhere. ---
+assert_throws("ImmutableError", fn () {
+  if true {
+    ias_z = 1
+    ias_z = 2
+  }
+})
+
+// --- Sibling arms that declare one name with different mutability: each
+// write is checked against its own arm's declaration. ---
+fn ias_sibling_mut(a) {
+  if a {
+    mut ias_s = 1
+    ias_s = 2
+    ias_s
+  } else {
+    ias_s = 10
+    try { fn () { ias_s = 20 }() } catch e { e.kind }
+  }
+}
+assert_eq(ias_sibling_mut(true), 2)
+assert_eq(ias_sibling_mut(false), "ImmutableError")
+
+// --- A write to an outer variable from an arm is still a write to it. ---
+fn ias_outer_write(a) {
+  mut n = 0
+  if a { n = 1 } else { n = 2 }
+  cond {
+    n == 1 => { n += 10 },
+    _ => { n += 20 },
+  }
+  a ? (n += 100) : (n += 200)
+  n
+}
+assert_eq(ias_outer_write(true), 111)
+assert_eq(ias_outer_write(false), 222)
+
+// --- A name an arm hides means the outer binding again after it. ---
+fn ias_shadow(a) {
+  let ias_outer = "outer"
+  if a {
+    let ias_outer = "inner"
+    assert_eq(ias_outer, "inner")
+  } else {
+    assert_eq(ias_outer, "outer")
+  }
+  ias_outer
+}
+assert_eq(ias_shadow(true), "outer")
+assert_eq(ias_shadow(false), "outer")
+fn ias_shadow_cond(a) {
+  let ias_outer = "outer"
+  let got = cond {
+    a => {
+      let ias_outer = "inner"
+      ias_outer
+    },
+    _ => ias_outer,
+  }
+  [got, ias_outer]
+}
+assert_eq(ias_shadow_cond(true), ["inner", "outer"])
+assert_eq(ias_shadow_cond(false), ["outer", "outer"])
+fn ias_shadow_ternary(a) {
+  let ias_outer = "outer"
+  let got = a ? (let ias_outer = "inner") : ias_outer
+  [got, ias_outer]
+}
+assert_eq(ias_shadow_ternary(true), ["inner", "outer"])
+assert_eq(ias_shadow_ternary(false), ["outer", "outer"])
+
+// --- A closure made before the arm keeps reading the outer variable, and
+// one made in the arm reads the arm's. ---
+fn ias_capture(a) {
+  let ias_c = "outer"
+  let before = || ias_c
+  mut inner = nil
+  if a {
+    let ias_c = "inner"
+    inner = || ias_c
+  }
+  [before(), inner == nil ? nil : inner(), ias_c]
+}
+assert_eq(ias_capture(true), ["outer", "inner", "outer"])
+assert_eq(ias_capture(false), ["outer", nil, "outer"])
+
+// --- Sibling arms each holding a nested `if` that declares one name. ---
+fn ias_nested_sibling_arms(argv) {
+  mut ias_got = nil
+  let tok = argv[0]
+  if tok.starts_with("--") {
+    if tok == "--zzz" {
+      ias_got = "long-zzz"
+    } else {
+      let ias_raw = if false { "x" } else { argv[1] }
+      ias_got = "long-{ias_raw}"
+    }
+  } else {
+    if tok == "-zzz" {
+      ias_got = "short-zzz"
+    } else {
+      let ias_raw = if false { "y" } else { argv[1] }
+      ias_got = "short-{ias_raw}"
+    }
+  }
+  ias_got
+}
+assert_eq(ias_nested_sibling_arms(["-n", "7"]), "short-7")
+assert_eq(ias_nested_sibling_arms(["--count", "9"]), "long-9")
+assert_eq(ias_nested_sibling_arms(["--zzz", "9"]), "long-zzz")
+
+// --- In a loop each pass enters the arm afresh: a closure made in it
+// keeps that pass's binding. ---
+fn ias_loop_capture() {
+  mut fs = []
+  for i in range(3) {
+    if i != 1 {
+      let ias_p = i * 100
+      fs.push(|| ias_p)
+    }
+  }
+  fs.map(|f| f())
+}
+assert_eq(ias_loop_capture(), [0, 200])
+
+// --- A `fn` declared in an arm is the arm's: it joins no overload set
+// outside, and one arm's does not reach its sibling. ---
+fn ias_describe(x: Long) { "a number" }
+fn ias_arm_fn(a) {
+  if a {
+    fn ias_describe(x: String) { "a string" }
+    assert_eq(ias_describe("hi"), "a string")
+  }
+  try { ias_describe("hi") } catch e { e.kind }
+}
+assert_eq(ias_arm_fn(true), "DispatchError")
+assert_eq(ias_arm_fn(false), "DispatchError")
+assert_eq(ias_describe(1), "a number")
+fn ias_arm_fn_siblings(a) {
+  if a {
+    fn ias_pick() { "then" }
+    ias_pick()
+  } else {
+    fn ias_pick() { "else" }
+    ias_pick()
+  }
+}
+assert_eq(ias_arm_fn_siblings(true), "then")
+assert_eq(ias_arm_fn_siblings(false), "else")
+
+// --- A closure made before the arm calls the function it was written
+// under; in the arm the name means the arm's function alone. ---
+fn ias_fn_between(a) {
+  fn ias_h(x) { "one" }
+  let call = fn () {
+    try { ias_h(1, 2) } catch e { e.kind }
+  }
+  if a {
+    fn ias_h(x, y) { "two" }
+    assert_eq(ias_h(1, 2), "two")
+    assert_eq(try { ias_h(1) } catch e { e.kind }, "DispatchError")
+  }
+  [call(), ias_h(1)]
+}
+assert_eq(ias_fn_between(true), ["DispatchError", "one"])
+assert_eq(ias_fn_between(false), ["DispatchError", "one"])
+fn ias_fn_in_cond(n) {
+  fn ias_h(x) { "one" }
+  let picked = cond {
+    n == 2 => {
+      fn ias_h(x, y) { "two" }
+      ias_h(1, 2)
+    },
+    _ => ias_h(1),
+  }
+  [picked, try { ias_h(1, 2) } catch e { e.kind }]
+}
+assert_eq(ias_fn_in_cond(2), ["two", "DispatchError"])
+assert_eq(ias_fn_in_cond(1), ["one", "DispatchError"])
+
+// --- A class and an enum declared in an arm are usable in it. ---
+fn ias_arm_class(a) {
+  if a {
+    class IasBox {
+      new(.v) {}
+    }
+    enum IasTone { Low, High }
+    [IasBox.new(3).v, IasTone.High == IasTone.High]
+  } else {
+    nil
+  }
+}
+assert_eq(ias_arm_class(true), [3, true])
+assert_eq(ias_arm_class(false), nil)
+
+// --- An init clause's names reach every test and arm; what an arm
+// declares over one ends with the arm. ---
+fn ias_init(a) {
+  if let ias_k = 10; a {
+    let ias_k = ias_k + 1
+    ias_k
+  } else if ias_k > 5 {
+    ias_k + 2
+  }
+}
+assert_eq(ias_init(true), 11)
+assert_eq(ias_init(false), 12)
+
+// --- A later test's declaration is the scope's around the `if`: its arm
+// reads it, and so does the code after, when the test ran. ---
+fn ias_later_test(a) {
+  if a { 0 } else if (let ias_t = 5) > 0 { ias_t + 1 }
+  try { ias_t } catch e { e.kind }
+}
+assert_eq(ias_later_test(false), 5)
+assert_eq(ias_later_test(true), "NameError")
+
+// --- A `defer` in an arm fires when the arm ends, on every way out. ---
+fn ias_defer(log) {
+  if true {
+    defer { log.push("defer") }
+    log.push("body")
+  }
+  log.push("after")
+  log
+}
+assert_eq(ias_defer([]), ["body", "defer", "after"])
+fn ias_defer_else(log, a) {
+  if a {
+    log.push("then")
+  } else {
+    defer { log.push("defer") }
+    log.push("else")
+  }
+  log.push("after")
+  log
+}
+assert_eq(ias_defer_else([], false), ["else", "defer", "after"])
+assert_eq(ias_defer_else([], true), ["then", "after"])
+fn ias_defer_cond(log, n) {
+  let got = cond {
+    n == 1 => {
+      defer { log.push("defer") }
+      log.push("arm")
+      "one"
+    },
+    _ => "other",
+  }
+  log.push(got)
+  log
+}
+assert_eq(ias_defer_cond([], 1), ["arm", "defer", "one"])
+assert_eq(ias_defer_cond([], 2), ["other"])
+fn ias_defer_init(log) {
+  if let k = 1; k > 0 {
+    defer { log.push("defer {k}") }
+    log.push("body")
+  }
+  log.push("after")
+  log
+}
+assert_eq(ias_defer_init([]), ["body", "defer 1", "after"])
+fn ias_defer_return(log) {
+  if true {
+    defer { log.push("defer") }
+    return log
+  }
+  log.push("unreached")
+}
+assert_eq(ias_defer_return([]), ["defer"])
+fn ias_defer_throw(log) {
+  try {
+    if true {
+      defer { log.push("defer") }
+      throw "boom"
+    }
+  } catch e {
+    log.push(e)
+  }
+  log
+}
+assert_eq(ias_defer_throw([]), ["defer", "boom"])
+fn ias_defer_break(log) {
+  for i in range(3) {
+    if i == 1 {
+      defer { log.push("defer {i}") }
+      break
+    }
+    log.push("pass {i}")
+  }
+  log
+}
+assert_eq(ias_defer_break([]), ["pass 0", "defer 1"])
+
+// --- A value declared in an arm drops when the arm ends. ---
+mut ias_log = []
+class IasNoisy {
+  new(tag) {
+    self.tag = tag
+  }
+  drop() {
+    ias_log.push(self.tag)
+  }
+}
+fn ias_drops(a) {
+  let first = IasNoisy.new("first")
+  if a { let second = IasNoisy.new("second") }
+  let third = IasNoisy.new("third")
+  nil
+}
+ias_drops(true)
+assert_eq(ias_log, ["second", "third", "first"])
+
+// --- In a generator an arm is the same scope: its defer fires at the arm's
+// end, and a closure made in it on each pass keeps that pass's binding. ---
+fn ias_gen_defer(log) {
+  if true {
+    defer { log.push("defer") }
+    yield 1
+    log.push("body")
+  }
+  log.push("after")
+  yield 2
+}
+let ias_glog = []
+assert_eq(ias_gen_defer(ias_glog).collect(), [1, 2])
+assert_eq(ias_glog, ["body", "defer", "after"])
+fn ias_gen_capture() {
+  mut fs = []
+  for i in range(3) {
+    if i != 1 {
+      let ias_p = i * 100
+      yield i
+      fs.push(|| ias_p)
+    }
+  }
+  yield fs.map(|f| f())
+}
+assert_eq(ias_gen_capture().collect(), [0, 2, [0, 200]])
+
+// --- A hot loop whose arm declares: the arithmetic stays exact. ---
+fn ias_clamp_loop(n) {
+  mut vx = 3.0
+  mut vy = 0.0
+  for _ in 0..n {
+    vx += 0.5 * 0.016
+    vy += -9.8 * 0.016
+    let speed = Math.sqrt(vx * vx + vy * vy)
+    if speed > 4.0 {
+      let ias_k = 4.0 / speed
+      vx *= ias_k
+      vy *= ias_k
+    }
+    if vy < -3.0 {
+      vy = -vy * 0.8
+    }
+  }
+  [vx, vy]
+}
+let ias_got = ias_clamp_loop(200)
+assert_eq(ias_got[0] * ias_got[0] + ias_got[1] * ias_got[1] <= 16.0 + 1e-9, true)

@@ -18,9 +18,8 @@ let v = if true {
 }
 println(v)
 
-# An if-arm defer belongs to the enclosing scope (both backends agree):
-# it fires at program end with the other top-level defers, not at the
-# arm's close.
+# An if-arm defer belongs to the arm, a scope of its own: it fires at the
+# arm's close, ahead of what follows the `if`.
 if true {
   defer { println("arm-defer") }
   println("arm-body")
