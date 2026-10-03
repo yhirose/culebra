@@ -638,13 +638,14 @@ _run-tests BACKEND:
         [[ "${1:-full}" == shape ]] || { printf '%s\n' tests/*.cul; return; }
         grep '^tests/' tools/checks/jit_shape_set.txt
         # Anything the branch changed, committed or not: the file you are
-        # working on is the one the cover has no way to know about. Each probe
-        # is optional — outside a repository, or on a checkout with no master,
+        # working on is the one the cover has no way to know about. A file the
+        # branch deleted is not there to run (--diff-filter=d). Each probe is
+        # optional — outside a repository, or on a checkout with no master,
         # the cover alone is still a valid lane.
         local base
-        git diff --name-only HEAD -- tests 2>/dev/null || true
+        git diff --name-only --diff-filter=d HEAD -- tests 2>/dev/null || true
         if base=$(git merge-base HEAD master 2>/dev/null); then
-            git diff --name-only "$base" -- tests 2>/dev/null || true
+            git diff --name-only --diff-filter=d "$base" -- tests 2>/dev/null || true
         fi
         git ls-files --others --exclude-standard -- tests 2>/dev/null || true
     }
