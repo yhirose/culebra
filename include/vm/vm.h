@@ -4247,15 +4247,19 @@ namespace owned_detail {
 // that read looking at whatever the mark slot last held.
 //
 // The check is a plain sequential scan, not a CFG walk: a nested bracket is
-// eligible only when NOTHING sits between its Mark and its Exit but a single
-// straight run of whitelisted instructions — no branch, no nested Mark, no
-// registering op. A loop body with an `if` inside stays conservative today;
-// eliding an outer bracket around an inner one that survives on its own
-// (branches inside it) is a precision loss, not a soundness one. Fixpoint
-// iteration in compile_unit recovers most of it anyway: once an inner
-// bracket that WAS eligible is deleted, its formerly-nested body reads as
-// flat code on the next round, and an outer bracket around it becomes
-// eligible too.
+// eligible only when everything from its Mark to the first Exit of its depth
+// is whitelisted instructions and jumps or tests that go forward, no further
+// than that Exit — no nested Mark, no registering op, no loop. Every
+// instruction in the run is then one the scan has looked at, and no path out
+// of the Mark misses the Exit: control cannot leave the run except through
+// it. So an arm that only computes (`acc += i` tests for an in-place result)
+// loses its bracket, and a branch around the Exit (a `break` in an arm, whose
+// own ladder holds an Exit of this depth first) keeps it. Eliding an outer
+// bracket around an inner one that survives on its own is a precision loss,
+// not a soundness one. Fixpoint iteration in compile_unit recovers most of
+// it anyway: once an inner bracket that WAS eligible is deleted, its
+// formerly-nested body reads as flat code on the next round, and an outer
+// bracket around it becomes eligible too.
 inline bool owned_registers(Op op) {
   switch (op) {
     // Arithmetic, comparisons, control-testing, register shuffling, and
@@ -4298,21 +4302,44 @@ inline bool owned_registers(Op op) {
   }
 }
 
-// The chunk's decisions: for each `OwnedMark d` (d > 0), whether it and its
-// straight-line-matched `OwnedExit d` are both dead.
+// A branch that at most tests a slot: it binds nothing, and where it goes
+// is the caller's question.
+inline bool owned_plain_branch(Op op) {
+  switch (op) {
+    case Op::Jump:
+    case Op::JumpIfFalse:
+    case Op::JumpIfTrue:
+    case Op::JumpIfNotNil:
+    case Op::JumpIfNil:
+    case Op::JumpIfSame:
+    case Op::JumpIfTag: return true;
+    default: return false;
+  }
+}
+
+// The chunk's decisions: for each `OwnedMark d` (d > 0), whether it and the
+// `OwnedExit d` its forward-only run ends at are both dead.
 inline void owned_plan_for_chunk(const Chunk& c, std::vector<char>& dead) {
   const size_t n = c.code.size();
   for (size_t m = 0; m < n; ++m) {
     if (c.code[m].op != Op::OwnedMark || c.code[m].a == 0) continue;
     const int32_t d = c.code[m].a;
     size_t k = m + 1;
+    size_t far = m;  // the furthest a branch in the run goes
     bool clean = true;
     for (; k < n; ++k) {
       const Insn& in = c.code[k];
       if (in.op == Op::OwnedExit && in.a == d) break;  // matched: stop here
-      // Anything else that can open or close a bracket, branch, or register
-      // ends the straight-line run right here — whether or not it is itself
-      // the thing that made the region dirty.
+      if (owned_plain_branch(in.op)) {
+        auto t = static_cast<size_t>(rc_detail::rc_successors(in).target);
+        if (t > k) {
+          far = std::max(far, t);
+          continue;
+        }
+      }
+      // Anything else that can open or close a bracket, loop back, leave, or
+      // register ends the run right here — whether or not it is itself the
+      // thing that made the region dirty.
       auto sc = rc_detail::rc_successors(in);
       if (in.op == Op::OwnedMark || in.op == Op::OwnedExit || !sc.fall ||
           sc.target >= 0 || owned_registers(in.op)) {
@@ -4320,7 +4347,7 @@ inline void owned_plan_for_chunk(const Chunk& c, std::vector<char>& dead) {
         break;
       }
     }
-    if (clean && k < n) {
+    if (clean && k < n && far <= k) {
       dead[m] = 1;
       dead[k] = 1;
     }

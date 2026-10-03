@@ -45,3 +45,67 @@ fn body() {
 
 assert_eq(body(), 3)
 assert_eq(log.size(), 3)
+
+// A run may branch forward and still lose its bracket, as long as nothing in
+// it registers and no branch goes around its Exit. Three shapes hold the two
+// conditions.
+
+// The call sits in an `if` arm, a scope of its own: the arm's bracket is what
+// drops the cycle, at the arm's end on every pass.
+fn arm_holds_call(n) {
+  mut seen = []
+  mut i = 0
+  while i < n {
+    if i >= 0 {
+      let r = make_cycle()
+      i += 1
+    }
+    seen.push(log.size())
+  }
+  seen
+}
+let base_a = log.size()
+assert_eq(arm_holds_call(3), [base_a + 1, base_a + 2, base_a + 3])
+
+// A test that branches inside the run, then the call: the loop body's bracket
+// stays, since the run registers.
+fn branch_then_call(n) {
+  mut i = 0
+  mut odd = 0
+  while i < n {
+    if i % 2 == 1 { odd += 1 }
+    let r = make_cycle()
+    i += 1
+  }
+  [odd, log.size()]
+}
+let base_b = log.size()
+assert_eq(branch_then_call(3), [1, base_b + 3])
+
+// A branch around the arm's Exit: the arm registers nothing, but a `break`
+// inside it leaves through a ladder of its own, so the test that skips the
+// `break` jumps past that ladder's Exit. The arm keeps its bracket. Dropping
+// only its Mark would leave the fall-through Exit resolving the mark an
+// earlier scope of that depth took (the nested block below takes one), which
+// reaches the cycle the loop body made and nothing holds: it would drop at
+// the arm's end, ahead of the read, instead of at the body's.
+fn branch_around_exit(n) {
+  {
+    {
+      let q = make_cycle()
+    }
+  }
+  mut seen = []
+  mut i = 0
+  while i < n {
+    make_cycle()
+    if i >= 0 {
+      break if i > 100
+      i += 1
+    }
+    seen.push(log.size())
+  }
+  seen
+}
+let base_c = log.size()
+assert_eq(branch_around_exit(3), [base_c + 1, base_c + 2, base_c + 3])

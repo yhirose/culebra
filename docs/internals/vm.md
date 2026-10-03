@@ -511,20 +511,22 @@ non-refcounted value there is already a no-op.
 pair (never the frame's own, at depth 0 — the throw path reads
 `marks[owned_frame_depth]` directly, so removing its `OwnedMark` would
 leave that read looking at whatever the slot last held) is dead when the
-straight-line run from its `OwnedMark` to its matching `OwnedExit`
-contains no branch and nothing that can register a droppable object —
-instance construction, or a property write that binds `drop`
-(`fixed.inc.h`'s `_jit_owned_bind_drop` call sites). A `Call` needs no
-case in that check: whatever a callee registers, its own frame-level
-bracket drains before it returns control (the throw path resolves only
-the frame's mark, "nowhere else" — a nested bracket is a synchronous-path
-optimization the unwind path never sees), so nothing a call does can
-outlive the call instruction. The check is a plain sequential scan, not
-a CFG walk — a loop body with an `if` inside stays conservative on the
-first round, but fixpoint iteration recovers most of that anyway: once
-an inner bracket that WAS eligible is deleted, its formerly-nested body
-reads as flat code on the next round, and an outer bracket around it can
-become eligible too.
+run from its `OwnedMark` to the first `OwnedExit` of its depth holds
+nothing that can register a droppable object — instance construction, a
+property write that binds `drop` (`fixed.inc.h`'s `_jit_owned_bind_drop`
+call sites), or a call, whose callee can return a cycle that only this
+bracket would drop — and no way out but that `OwnedExit`: the only
+branches in it are jumps and tests that go forward, no further than the
+`OwnedExit`. The throw path resolves only the frame's mark, so a nested
+bracket is a synchronous-path optimization the unwind never sees. The
+check is a plain sequential scan, not a CFG walk: every instruction of
+such a run is one the scan has looked at. An `if` arm that only computes
+loses its bracket this way (`acc += i` tests for an in-place result), a
+loop inside the run or a branch around the `OwnedExit` keeps it, and a
+loop body with an `if` inside stays conservative on the first round;
+fixpoint iteration recovers most of that: once an inner bracket that WAS
+eligible is deleted, its formerly-nested body reads as flat code on the
+next round, and an outer bracket around it can become eligible too.
 
 **Destination coalescing** is the third, and it is not about refcounts at
 all: two thirds of every `Take` is the second half of `<producer> X ;
