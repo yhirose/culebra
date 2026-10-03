@@ -713,10 +713,12 @@ fn streams_itself(x) {
 }
 let ssrv = Http.server()
 ssrv.get('/s', streams_itself)
+# What frees it is a collection the allocations start (GC.stat()'s alone does
+# not), so the handler allocates; none of it is kept, or every collection under
+# CULEBRA_GC_STRESS walks a heap growing to 20000 pairs.
 ssrv.get('/gc', fn (req) {
-  mut junk = []
-  for i in range(0, 20000) {
-    junk.push([i, "{i}"])
+  for i in range(20000) {
+    [i, "{i}"]
   }
   GC.stat()
   'gc'
