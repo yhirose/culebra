@@ -41,10 +41,11 @@ culebra は個人の趣味プロジェクト（プログラミング言語処理
 ## テスト（速い順に段階的に）
 
 1. 単発確認: `./build-dev/culebra <file>.cul`（+ `--jit`）
-2. 編集ごとの確認: **`just check`**（実測 33s）— 開発中はここまで。source/IR の ratchet と `tests/*.cul` 全体の assertion（executor 1プロセス）と examples
-3. 着地ゲート **`just test-dev`**（実測 ~125s、no-LTO）— `just land`（`/ff-merge`）が回すので、開発中に自分で回さない。JIT 対称（op 被覆の部分集合）・codegen 軸・ctest の CLI 半分・isolate など。生成物ゲート `check-generated`（grammar sync / preamble / blob / site version）を前段で回すので、生成物のずれは着地前にここで落ちる
-4. フルゲート **`just test`**（実測 450〜880s、うち 95% は difftest + leak 系 + AOT）
-5. **docs を触ったら必ず `just doctest`**（`just test` には含まれない別ステップ）
+2. 触った領域だけ: **`just phase <語>…`** — ゲート表の行を関数名かラベルの部分一致で選んで `build-dev/` に対して回す（`just phase scope`、`just phase vm_cases sweep`）。書いている最中の反復はこれと単発実行で足りる
+3. 編集ごとの確認: **`just check`**（実測 33s）— 開発中はここまで。source/IR の ratchet と `tests/*.cul` 全体の assertion（executor 1プロセス）と examples
+4. 着地ゲート **`just test-dev`**（実測 ~125s、no-LTO）— `just land`（`/ff-merge`）が回すので、開発中に自分で回さない。JIT 対称（op 被覆の部分集合）・codegen 軸・ctest の CLI 半分・isolate など。生成物ゲート `check-generated`（grammar sync / preamble / blob / site version）を前段で回すので、生成物のずれは着地前にここで落ちる
+5. フルゲート **`just test`**（実測 450〜880s、うち 95% は difftest + leak 系 + AOT）
+6. **docs を触ったら必ず `just doctest`**（`just test` には含まれない別ステップ）
 
 `tests/*.cul` は全レーンが回すので、**CMake オプションで消える namespace（`Scene` / `Webview` /
 `Desktop`）を名指ししない**。ローカルはその軸を build しているので緑になり、軸の無いレーンだけが

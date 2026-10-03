@@ -502,6 +502,15 @@ test BACKEND='all': check-generated build-gate
 check: dev
     @BIN=./build-dev/culebra just _run-tests check
 
+# The phases a change is about, by name, while it is being written: each word
+# selects the gate table's rows whose function or label contains it (`just
+# phase scope` runs the scope agreement, `just phase vm_cases sweep` three
+# rows). `just land` still runs the whole landing gate.
+[doc("Run the gate phases whose name contains one of WORDS, vs build-dev/")]
+[group("test")]
+phase +WORDS: dev
+    @BIN=./build-dev/culebra just _run-tests "only:{{WORDS}}"
+
 # Fast inner-loop tests against the no-LTO build-dev/ binary (`just dev`).
 # The landing gate: `just land` runs it and nothing else before fast-forwarding
 # master, so it carries the phases whose absence has let a break through — the
@@ -1662,8 +1671,38 @@ _run-tests BACKEND:
         [[ -n "${CULEBRA_GATE_DRYRUN:-}" ]] \
             || echo "lane $sel: $n phases, $((SECONDS - start))s against a ${budget}s budget"
     }
+    # Run the rows a word names (`just phase`): each word has to be part of
+    # some row's function or label, and a row runs once however many name it.
+    # No tier, shard or heavy filter applies — naming a row is asking for it.
+    run_named() {
+        local row fn label rest word hit cmd start=$SECONDS
+        local -a picked=()
+        gate_table_selftest
+        for word in "$@"; do
+            hit=0
+            for row in "${gate_rows[@]}"; do
+                IFS='|' read -r fn label rest <<< "$row"
+                [[ "$fn|$label" == *"$word"* ]] || continue
+                hit=1
+                [[ " ${picked[*]-} " == *" ${fn// /:} "* ]] || picked+=("${fn// /:}")
+            done
+            (( hit )) || { echo "gate table: no phase matches '$word'" >&2; exit 2; }
+        done
+        for row in "${gate_rows[@]}"; do
+            IFS='|' read -r fn label rest <<< "$row"
+            [[ " ${picked[*]} " == *" ${fn// /:} "* ]] || continue
+            read -r -a cmd <<< "$fn"
+            phase "$label"; "${cmd[@]}" < /dev/null
+        done
+        echo "phases: ${#picked[@]} ran in $((SECONDS - start))s"
+    }
     backend="{{BACKEND}}"
     case "$backend" in
+      only:*)
+        read -r -a words <<< "${backend#only:}"
+        run_named "${words[@]}"
+        phase "done"; echo "test OK (${backend#only:})"
+        ;;
       # Order: cheap tests first, then AOT (slowest + most env-sensitive,
       # so a failure there shouldn't mask matcher regressions).
       # CULEBRA_TEST_SKIP_HEAVY skips the platform-independent heavy phases
