@@ -1309,12 +1309,32 @@ _run-tests BACKEND:
     # GC.stat()'s collection trusts the refcounts to be exact, and a collect at
     # every allocation is what makes an under-counted reference free a live
     # object here rather than in a user's program.
+    #
+    # A file whose leading comment says `# gc-stress: skip — <why>` stays out
+    # of this sweep and runs on every other lane. It is for a file that repeats
+    # what the rest of the corpus already does under the collector, at a cost
+    # the timeout cannot hold when every allocation collects the whole heap.
+    # The why is required, and a marker below the header, where a reader of
+    # the file's top would miss it, fails the phase rather than skip quietly.
     run_gc_stress() {
-        local d="$job_dir/gcstress"
+        local d="$job_dir/gcstress" f mark files=() skipped=0 bad=()
         mkdir -p "$d"
+        for f in tests/*.cul; do
+            mark=$(awk '!/^#/ { body = 1 } /^# gc-stress:/ { print (body ? "below the header" : $0); exit }' "$f")
+            case "$mark" in
+              '') files+=("$f") ;;
+              '# gc-stress: skip — '?*) skipped=$((skipped + 1)) ;;
+              *) bad+=("$f: $mark") ;;
+            esac
+        done
+        if (( ${#bad[@]} > 0 )); then
+            echo "test (gc-stress) FAIL: a marker is not \`# gc-stress: skip — <why>\` in the file's leading comment:" >&2
+            printf '  %s\n' "${bad[@]}" >&2
+            exit 1
+        fi
         # Only crash/no-crash matters here (correctness is covered by the
         # vm-vs-JIT diff), so discard stdout and keep stderr for triage.
-        printf '%s\n' tests/*.cul | xargs -n1 -P "$JOBS" -I '{}' bash -c '
+        printf '%s\n' "${files[@]}" | xargs -n1 -P "$JOBS" -I '{}' bash -c '
             f="$1"; d="$2"
             name=$(basename "$f" .cul)
             if ! CULEBRA_GC_STRESS=1 cul --jit "$f" > /dev/null 2> "$d/$name.err"; then
@@ -1327,7 +1347,7 @@ _run-tests BACKEND:
             done
         ' _ '{}' "$d"
         collect_failures "$d" "(gc-stress)" || exit 1
-        echo "test (gc-stress) OK (jit conservative; vm + jit refcount-seeded)"
+        echo "test (gc-stress) OK (jit conservative; vm + jit refcount-seeded; $skipped skipped by their header)"
     }
 
     # RC-leak gate: run the leak battery (tools/analysis). Each pattern runs

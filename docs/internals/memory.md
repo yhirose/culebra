@@ -670,7 +670,11 @@ same way. On native builds the whole protocol folds away.
   `just test` sweeps the test files under it with `CULEBRA_GC_STRESS=1`
   on both lanes, and runs the difftest corpus under it with each record
   carrying `rc_objects`, so the two engines are held to the same
-  refcounts.
+  refcounts. A test file whose leading comment says
+  `# gc-stress: skip — <why>` stays out of that sweep and runs on every
+  other lane: a file that repeats paths the rest of the corpus already
+  takes through the collector, at a cost the per-file timeout cannot
+  hold when every allocation collects the whole heap.
 - `GC.stat()` exposes `live_objects`, `rc_objects` (refcounted objects
   only — the count the leak fuzzer watches) and `heap_bytes` for
   diagnostic use; `CULEBRA_GC_BIRTH_SITE=1` records an allocation

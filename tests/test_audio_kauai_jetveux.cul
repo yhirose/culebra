@@ -8,6 +8,8 @@
 # The songs are played at one tempo, their tempo directions taken out, so
 # that seconds map to quarters. Times compare in sixty-fourths (a sixteenth
 # of a quarter), the finest the song writes.
+#
+# gc-stress: skip — two whole scores over test_audio_kauai.cul's paths
 
 let read = |name| FS.read(FS.join("tests/kauai", name))
 let song_file = |name| FS.read(FS.join("examples/kauai/songs", name))

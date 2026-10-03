@@ -680,7 +680,11 @@ callee・receiver・引数を呼び出しの全期間レジスタに保つよう
   （§6.2）。`just test`はテストファイル群をこれと
   `CULEBRA_GC_STRESS=1`の下で両レーンでスイープし、difftestコーパス
   を各レコードに`rc_objects`を付けてこの下で走らせるので、2つの
-  エンジンは同じrefcountに縛られる。
+  エンジンは同じrefcountに縛られる。先頭のコメントに
+  `# gc-stress: skip — <why>`と書いたテストファイルはこのスイープから
+  外れ、他のすべてのレーンでは走る。対象は、コーパスの他のファイルが
+  すでにcollectorに通している経路を繰り返すだけで、確保のたびにヒープ
+  全体を回収するとファイルごとのタイムアウトに収まらないファイルである。
 - `GC.stat()`は診断用に`live_objects`、`rc_objects`（参照カウント
   されたオブジェクトのみ — leak fuzzerが見るカウント）、
   `heap_bytes`を公開する。`CULEBRA_GC_BIRTH_SITE=1`はleak監査の

@@ -2,6 +2,8 @@
 # plays, and the Japanese spec and examples/kauai/songs show the same songs. A
 # block that is not a whole song is played in the smallest song around it;
 # the chord table of Appendix A voices every spelling as the table says.
+#
+# gc-stress: skip — ~1M allocations over test_audio_kauai.cul's paths
 
 let lines = |xs| xs.join("\n")
 
