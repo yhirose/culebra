@@ -728,12 +728,23 @@ _run-tests BACKEND:
     # runners, while a return to the 2026-07/09 incidents (which idle at
     # 35-64s, i.e. well over 100s under this same contention) still trips it.
     check_jit_file_budget() {
-        local d="$1"
-        local budget_ms="${CULEBRA_JIT_FILE_BUDGET_MS:-60000}"
-        local f name u s ms over=()
-        for f in "$d"/*.jitcpu; do
+        check_cpu_budget "$1" jitcpu "${CULEBRA_JIT_FILE_BUDGET_MS:-60000}" "(vm vs jit)" \
+            "tests/*.cul --jit compile CPU time" \
+            "split the file at section boundaries (see tests/test_tensor_ops.cul's header for the pattern); a flat script compiles as one JIT function, whose optimization cost grows superlinearly with size."
+    }
+
+    # Fail on any timing over budget_ms among the TIMEFORMAT="%U %S" files a
+    # sweep left as <dir>/<name>[.<lane>].<ext>, each reported as
+    # tests/<name>.cul (<lane>).
+    check_cpu_budget() {
+        local d="$1" ext="$2" budget_ms="$3" label="$4" what="$5" hint="$6"
+        local f stem shown u s ms over=()
+        for f in "$d"/*."$ext"; do
             [[ -e "$f" ]] || continue
-            name=$(basename "$f" .jitcpu)
+            stem=${f##*/}
+            stem=${stem%."$ext"}
+            shown="tests/${stem%%.*}.cul"
+            [[ "$stem" == *.* ]] && shown+=" (${stem#*.})"
             # bash's TIMEFORMAT "%U %S": seconds with three decimals each.
             # Anything else means the line never arrived intact — seen twice on
             # 2026-09-12, once under a load of 84 and once under 5, cause not
@@ -745,19 +756,19 @@ _run-tests BACKEND:
             # and the next occurrence leaves evidence.
             read -r u s < "$f" || true
             if [[ ! "$u" =~ ^[0-9]+\.[0-9]{3}$ || ! "$s" =~ ^[0-9]+\.[0-9]{3}$ ]]; then
-                echo "test (vm vs jit) WARN: unreadable --jit timing for tests/$name.cul, not measured against the budget" >&2
+                echo "test $label WARN: unreadable timing for $shown, not measured against the budget" >&2
                 echo "  $f held: $(tr '\n' '|' < "$f" | head -c 200)" >&2
                 continue
             fi
             ms=$(( 10#${u%.*} * 1000 + 10#${u#*.} + 10#${s%.*} * 1000 + 10#${s#*.} ))
-            (( ms > budget_ms )) && over+=("$ms $name")
+            (( ms > budget_ms )) && over+=("$ms $shown")
         done
         (( ${#over[@]} == 0 )) && return 0
-        echo "test (vm vs jit) FAIL: tests/*.cul --jit compile CPU time exceeds ${budget_ms}ms:" >&2
-        printf '%s\n' "${over[@]}" | sort -rn | while read -r ms name; do
-            echo "  ${ms}ms  tests/$name.cul" >&2
+        echo "test $label FAIL: $what exceeds ${budget_ms}ms:" >&2
+        printf '%s\n' "${over[@]}" | sort -rn | while read -r ms shown; do
+            echo "  ${ms}ms  $shown" >&2
         done
-        echo "split the file at section boundaries (see tests/test_tensor_ops.cul's header for the pattern); a flat script compiles as one JIT function, whose optimization cost grows superlinearly with size." >&2
+        echo "$hint" >&2
         exit 1
     }
 
@@ -1316,6 +1327,14 @@ _run-tests BACKEND:
     # the timeout cannot hold when every allocation collects the whole heap.
     # The why is required, and a marker below the header, where a reader of
     # the file's top would miss it, fails the phase rather than skip quietly.
+    #
+    # Each run is held to a CPU budget, as check_jit_file_budget holds a
+    # compile, so a file growing toward the timeout fails by name first. A
+    # case that keeps what it allocates grows quadratically here: one in
+    # test_http_server.cul took 276 s of the file's 282 (2026-10-02). The
+    # default is 2.7x the slowest run then, 44 s CPU (test_deep_values.cul on
+    # refs-vm, release build, 20 jobs); CULEBRA_GC_STRESS_FILE_BUDGET_MS
+    # overrides it.
     run_gc_stress() {
         local d="$job_dir/gcstress" f mark files=() skipped=0 bad=()
         mkdir -p "$d"
@@ -1337,16 +1356,18 @@ _run-tests BACKEND:
         printf '%s\n' "${files[@]}" | xargs -n1 -P "$JOBS" -I '{}' bash -c '
             f="$1"; d="$2"
             name=$(basename "$f" .cul)
-            if ! CULEBRA_GC_STRESS=1 cul --jit "$f" > /dev/null 2> "$d/$name.err"; then
-                touch "$d/$name.fail"
-            fi
+            TIMEFORMAT="%U %S"
+            { time CULEBRA_GC_STRESS=1 cul --jit "$f" > /dev/null 2> "$d/$name.err"; } 2> "$d/$name.jit.gccpu" \
+                || touch "$d/$name.fail"
             for lane in vm jit; do
-                if ! CULEBRA_GC_REFS=1 CULEBRA_GC_STRESS=1 cul --$lane "$f" > /dev/null 2> "$d/$name.refs-$lane.err"; then
-                    touch "$d/$name.refs-$lane.fail"
-                fi
+                { time CULEBRA_GC_REFS=1 CULEBRA_GC_STRESS=1 cul --$lane "$f" > /dev/null 2> "$d/$name.refs-$lane.err"; } \
+                    2> "$d/$name.refs-$lane.gccpu" || touch "$d/$name.refs-$lane.fail"
             done
         ' _ '{}' "$d"
         collect_failures "$d" "(gc-stress)" || exit 1
+        check_cpu_budget "$d" gccpu "${CULEBRA_GC_STRESS_FILE_BUDGET_MS:-120000}" "(gc-stress)" \
+            "a tests/*.cul run's CPU time under a collection at every allocation" \
+            "every collection walks the live heap, so a file that keeps what it allocates costs the square of it: drop what the test does not need to keep, or, if the file only repeats paths others take, give it a \`# gc-stress: skip — <why>\` header."
         echo "test (gc-stress) OK (jit conservative; vm + jit refcount-seeded; $skipped skipped by their header)"
     }
 

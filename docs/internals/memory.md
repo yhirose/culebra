@@ -674,7 +674,9 @@ same way. On native builds the whole protocol folds away.
   `# gc-stress: skip — <why>` stays out of that sweep and runs on every
   other lane: a file that repeats paths the rest of the corpus already
   takes through the collector, at a cost the per-file timeout cannot
-  hold when every allocation collects the whole heap.
+  hold when every allocation collects the whole heap. Each run in the
+  sweep is also held to a CPU budget, so a file whose cost grows with
+  its live heap fails by name before it reaches the timeout.
 - `GC.stat()` exposes `live_objects`, `rc_objects` (refcounted objects
   only — the count the leak fuzzer watches) and `heap_bytes` for
   diagnostic use; `CULEBRA_GC_BIRTH_SITE=1` records an allocation
