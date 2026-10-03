@@ -51,6 +51,20 @@ expect_syntax_reject "bare range pattern" "syntax error" \
 expect_reject "top-level let reassign"  'let a = 1
 a = 2'
 expect_reject "fn-scope let reassign"   'f = fn () { let b = 1; b = 2 }'
+expect_reject "closure writes outer let" 'let a = 1
+f = fn () { a = 2 }'
+# A name a default reads is not a parameter, and a bare pattern declares
+# nothing that is already there: the `let` each names stays immutable.
+expect_reject "let read by a default"   'let n = 1
+fn f(a = n) { n = 2 }'
+expect_reject "let under a bare tuple"  'let a = 1
+fn g(p) { (a, b) = p; a = 5 }'
+expect_reject "let under a bare pattern" 'let a = 1
+fn g(p) { [a, b] = p; a = 5 }'
+# Only a `let` the write follows: a `mut` after it comes too late.
+expect_reject "mut after the write"     'let a = 1
+a = 2
+mut a = 3'
 
 # Accepted (sound-negative — must NOT be flagged):
 expect_accept "let mut reassign"        'let mut a = 1
@@ -58,6 +72,15 @@ a = 2'
 expect_accept "mut reassign"            'mut a = 1
 a = 2'
 expect_accept "no reassign"             'let a = 1'
+# A write the walk reaches before the `let` is the run's to refuse.
+expect_accept "write before the let"    'let poke = fn () { fixed = 1 }
+let fixed = 0'
+expect_accept "mut before the write"    'let a = 1
+mut a = 2
+a = 3'
+# A parameter, a loop's, a catch's and a pattern's binding are the run's too.
+expect_accept "let over a parameter"    'f = fn (a) { let a = 1; a }'
+expect_accept "declaring pattern"       'let (p, q) = (1, 2)'
 # `{ }` is a scope boundary: the inner `let a` is block-local; the outer
 # `a = 2` is a fresh auto-local, not a reassignment.
 expect_accept "block-local then outer"  '{ let a = 1 }

@@ -348,28 +348,6 @@ void test_outline() {
   }
 }
 
-// ---- corpus -----------------------------------------------------------------
-
-std::string read_file(const std::filesystem::path& p) {
-  std::ifstream in(p, std::ios::binary);
-  std::stringstream ss;
-  ss << in.rdbuf();
-  return ss.str();
-}
-
-// (line, byte column, name) of a byte offset.
-std::tuple<long, long, std::string> locate(const std::string& src, size_t off,
-                                           const std::string& name) {
-  long line = 1;
-  size_t start = 0;
-  for (size_t i = 0; i < off && i < src.size(); i++)
-    if (src[i] == '\n') {
-      line++;
-      start = i + 1;
-    }
-  return {line, static_cast<long>(off - start + 1), name};
-}
-
 // The name nodes spelled `name`, in tree order.
 void collect_names(const peg::Ast& n, std::string_view name,
                    std::vector<const peg::Ast*>& out) {
@@ -514,6 +492,29 @@ void test_declaration_forms() {
         "a read nothing declares is listed; a write is not");
 }
 
+
+// ---- corpus -----------------------------------------------------------------
+
+std::string read_file(const std::filesystem::path& p) {
+  std::ifstream in(p, std::ios::binary);
+  std::stringstream ss;
+  ss << in.rdbuf();
+  return ss.str();
+}
+
+// (line, byte column, name) of a byte offset.
+std::tuple<long, long, std::string> locate(const std::string& src, size_t off,
+                                           const std::string& name) {
+  long line = 1;
+  size_t start = 0;
+  for (size_t i = 0; i < off && i < src.size(); i++)
+    if (src[i] == '\n') {
+      line++;
+      start = i + 1;
+    }
+  return {line, static_cast<long>(off - start + 1), name};
+}
+
 void test_corpus(const std::filesystem::path& root) {
   size_t files = 0, reads = 0;
   for (const char* dir : {"tests", "examples"}) {
@@ -563,6 +564,69 @@ void test_corpus(const std::filesystem::path& root) {
               reads);
 }
 
+// ---- the load-time lint ------------------------------------------------------
+
+// The `kind` errors the lint reports for `src`, as `name@line`, in the order
+// it reports them.
+std::vector<std::string> lint_errors(std::string src, std::string_view kind) {
+  static const std::set<std::string, std::less<>> globals{"inspect"};
+  auto p = resolve_source(std::move(src),
+                          {.record_nodes = true, .globals = &globals});
+  if (!p) return {};
+  std::vector<culebra::lint::Diagnostic> diags;
+  culebra::lint::_detail::RuleWalker(p->res, diags).run(*p->ast);
+  std::vector<std::string> out;
+  for (const auto& d : diags) {
+    if (d.kind != kind) continue;
+    auto open = d.message.find('\'');
+    auto close = d.message.find('\'', open + 1);
+    out.push_back(std::format("{}@{}",
+                              d.message.substr(open + 1, close - open - 1),
+                              d.line));
+  }
+  return out;
+}
+
+struct LintCase {
+  const char* what;
+  const char* src;
+  std::vector<std::string> want;
+};
+
+void check_lint(std::string_view kind, const std::vector<LintCase>& cases) {
+  for (const auto& c : cases) {
+    auto got = lint_errors(c.src, kind);
+    if (got == c.want) continue;
+    std::string list;
+    for (const auto& g : got) list += g + " ";
+    check(false, std::format("{} [{}]: got {}", kind, c.what,
+                             list.empty() ? "nothing" : list));
+  }
+}
+
+// `x = v` after a `let x` of that variable.
+void test_lint_let() {
+  check_lint("ImmutableError", {
+      {"a let", "let a = 1\na = 2\n", {"a@2"}},
+      {"from a closure", "let a = 1\nf = fn () {\n  a = 2\n}\n", {"a@3"}},
+      {"a mut after the write", "let a = 1\na = 2\nmut a = 3\n", {"a@2"}},
+      {"a name a default reads", "let n = 1\nfn f(a = n) {\n  n = 2\n}\n",
+       {"n@3"}},
+      {"under a bare pattern", "let a = 1\nfn g(p) {\n  [a, b] = p\n  a = 5\n}\n",
+       {"a@4"}},
+      {"a mut before the write", "let a = 1\nmut a = 2\na = 3\n", {}},
+      {"a let mut", "let mut a = 1\na = 2\n", {}},
+      {"a declaring pattern before the write",
+       "let a = 1\nlet (a, b) = (2, 3)\na = 4\n", {}},
+      {"a write above the let", "let poke = fn () { fixed = 1 }\nlet fixed = 0\n",
+       {}},
+      {"a block's let, then the outer name", "{ let a = 1 }\na = 2\n", {}},
+      {"a let over a parameter", "f = fn (a) {\n  let a = 1\n  a = 2\n}\n", {}},
+      {"a bare declaration", "a = 1\na = 2\n", {}},
+      {"a compound write", "let a = 1\na += 1\n", {}},
+  });
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -577,6 +641,7 @@ int main(int argc, char** argv) {
   test_outline();
   test_node_records();
   test_declaration_forms();
+  test_lint_let();
   if (argc >= 2) test_corpus(argv[1]);
 
   if (failures) {

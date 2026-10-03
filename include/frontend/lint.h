@@ -1,24 +1,25 @@
 #pragma once
 
-// Static lint framework. Walks each module AST once before evaluation,
-// modeling culebra's exact lexical scoping, and reports diagnostics.
-// Error-severity findings abort before eval (sound: only failures the
-// runtime is certain to raise); warnings are advisory. This is the shared
-// home for static checks: rules over the `ScopeWalker` walk (let
+// Static lint framework. Checks each module before evaluation and reports
+// diagnostics. Error-severity findings abort before eval (sound: only
+// failures the runtime is certain to raise); warnings are advisory. This is
+// the shared home for static checks: rules over the `RuleWalker` walk (let
 // reassignment, break/continue/return placement, duplicate params,
 // @packable field types) plus the self-contained shadow analyzer
-// (`check_shadow`, moved here from the interp). The JIT calls `check_shadow`
-// too (from analyze_program), so the rule has a single source.
+// (`check_shadow`). The compiler calls `check_shadow` too (from
+// analyze_program), so the rule has a single source.
 
 #include <algorithm>
 #include <format>
 #include <map>
 #include <set>
+#include <span>
 #include <string>
 #include <vector>
 
 #include "base/packable.h"
 #include "frontend/parser.h"
+#include "frontend/resolve.h"
 #include "base/shared.h"
 
 namespace culebra::lint {
@@ -68,43 +69,42 @@ inline void check_pattern_const_strings(const peg::Ast& pat,
   for (const auto& c : pat.nodes) check_pattern_const_strings(*c, diags);
 }
 
-// Over-approximate binding capture: insert every IDENTIFIER token under
-// `node` into `out`. Used for params / patterns / catch vars, where
-// over-binding only ever weakens detection (a missed reassignment), never
-// produces a false positive — the soundness direction we want.
-inline void collect_idents(const peg::Ast& node,
-                           std::set<std::string, std::less<>>& out) {
-  if (node.tag == "IDENTIFIER"_ && node.is_token) {
-    if (!is_sink(node.token)) out.insert(std::string(node.token));
-    return;
-  }
-  for (const auto& c : node.nodes) collect_idents(*c, out);
-}
-
-// One lexical scope, mirroring a runtime Environment: names bound
-// immutably (`let`) vs mutably (`mut` / params / loop & catch vars).
-struct Scope {
-  std::set<std::string, std::less<>> lets;
-  std::set<std::string, std::less<>> muts;
-};
-
-// Walks the AST modeling culebra's exact scope boundaries, verified
-// against the engines' scope-opening sites: LEXICAL_SCOPE, FOR, WHILE
-// body, MATCH arms, TRY/catch bodies, DEFER, and function/lambda/method
-// bodies open a child scope; IF shares the enclosing one.
-class ScopeWalker {
+// Walks the AST once for the rules a node's place decides: where a
+// break / continue / return may stand, what a parameter list and a class
+// body may hold, and a `let` reassigned. Which variable a name is comes
+// from the resolution (resolve.h), not from a scope model of its own.
+class RuleWalker {
  public:
-  explicit ScopeWalker(std::vector<Diagnostic>& diags) : diags_(diags) {}
+  RuleWalker(const resolve::Resolution& res, std::vector<Diagnostic>& diags)
+      : res_(res), diags_(diags), passed_(res.symbols.size()) {}
 
-  void run(const peg::Ast& ast) {
-    scopes_.emplace_back();   // top-level / module scope
-    walk(ast);
-    scopes_.pop_back();
-  }
+  void run(const peg::Ast& ast) { walk(ast); }
 
  private:
-  std::vector<Scope> scopes_;
+  const resolve::Resolution& res_;
   std::vector<Diagnostic>& diags_;
+  // Per variable, the declarations the walk has passed: a `let`, and one
+  // that leaves it reassignable (a `mut`, a declaring pattern).
+  enum : uint8_t { kLet = 1, kReassignable = 2 };
+  std::vector<uint8_t> passed_;
+
+  void pass(const peg::Ast& name, uint8_t what) {
+    if (size_t sym = res_.symbol_of(name); sym != resolve::kNone)
+      passed_[sym] |= what;
+  }
+
+  // `x = v` is certain to fail when the walk has passed a `let` of that
+  // variable and nothing that leaves it reassignable. A binding the callee or
+  // the construct makes (a parameter, a loop's, a catch's, a pattern's) is
+  // left to the run.
+  bool reassigns_let(const peg::Ast& target) const {
+    using resolve::Form;
+    size_t s = res_.symbol_of(target);
+    if (s == resolve::kNone || passed_[s] != kLet) return false;
+    const auto& sym = res_.symbols[s];
+    return !sym.declared_as(Form::Parameter) && !sym.declared_as(Form::Loop) &&
+           !sym.declared_as(Form::Catch) && !sym.declared_as(Form::Pattern);
+  }
   // The loops a break/continue here could target, innermost last, each held
   // by its label (empty for an unlabelled loop). Its depth is what the
   // outside-a-loop check reads; its names are what a labelled `break outer`
@@ -162,34 +162,14 @@ class ScopeWalker {
     ~FnDepthGuard() { --slot; }
   };
 
-  // Innermost-first lookup: 'l' = let (immutable), 'm' = mutable, 0 = unknown.
-  char classify(std::string_view name) const {
-    for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
-      if (it->muts.contains(name)) return 'm';
-      if (it->lets.contains(name)) return 'l';
-    }
-    return 0;
-  }
-
-  // Walk `body` in a fresh child scope; `bind` populates names that belong
-  // to the new scope (params, loop var, catch var) before the body.
-  template <class Bind>
-  void scoped(const peg::Ast& body, Bind&& bind) {
-    scopes_.emplace_back();
-    bind(scopes_.back());
-    walk(body);
-    scopes_.pop_back();
-  }
-
   void walk_children(const peg::Ast& node) {
     for (const auto& c : node.nodes) walk(*c);
   }
 
-  // Validate + register an INIT_CLAUSE's bindings (while / if / match init clauses)
-  // into the current top scope. Each binding must declare with
-  // `let` / `mut`; a bare `x = 0` would reassign an outer variable or make an
-  // immutable binding, so reject it pre-eval on every backend — the caller has
-  // already pushed the enclosing scope the bindings live in.
+  // An INIT_CLAUSE's bindings (while / if / match init clauses). Each must
+  // declare with `let` / `mut`; a bare `x = 0` would reassign an outer
+  // variable or make an immutable binding, so reject it pre-eval on every
+  // backend.
   void walk_init_clause(const peg::Ast& init) {
     for (const auto& binding : init.nodes) {
       bool declared = binding->nodes.size() >= 2 &&
@@ -202,7 +182,7 @@ class ScopeWalker {
             static_cast<long>(binding->line),
             static_cast<long>(binding->column), Severity::Error});
       }
-      walk(*binding);   // registers the declared name in the enclosing scope
+      walk(*binding);
     }
   }
 
@@ -344,7 +324,7 @@ class ScopeWalker {
   void walk(const peg::Ast& node);
 };
 
-inline void ScopeWalker::walk(const peg::Ast& node) {
+inline void RuleWalker::walk(const peg::Ast& node) {
   switch (node.tag) {
     case "FUNCTION"_:
     case "LAMBDA"_: {
@@ -355,14 +335,9 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       check_param_wellformed(*fv.params);
       LoopBoundary g(loop_labels_);
       FnDepthGuard fg(fn_depth_);
-      scoped(*fv.body, [&](Scope& s) { collect_idents(*fv.params, s.muts); });
+      walk(*fv.body);
       return;
     }
-    case "LEXICAL_SCOPE"_:   // LEXICAL_SCOPE <- BLOCK: a child variable scope
-      scopes_.emplace_back();  // that shares the enclosing loop / control flow.
-      walk_children(node);     // Walk the statements, not the node (recursion).
-      scopes_.pop_back();
-      return;
     case "DEFER"_: {
       // DEFER <- [BLOCK]: the body is a deferred thunk — a separate closure
       // in the JIT — so it is a function boundary for break/continue. A
@@ -370,109 +345,67 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       // on it today, the interp silently propagates), so reset loop depth.
       // It is also a function boundary for `return` (which exits the defer
       // closure, docs §defer).
-      scopes_.emplace_back();
       LoopBoundary g(loop_labels_);
       FnDepthGuard fg(fn_depth_);
       walk_children(node);
-      scopes_.pop_back();
       return;
     }
     case "WHILE"_: {
-      // [(INIT_CLAUSE)?, condition, BLOCK]: the condition is evaluated before
-      // each iteration in the enclosing scope; the body is a fresh child scope
-      // per iteration (like FOR — see the engines' while lowering /
-      // jit.h compile_while). The condition stays at the enclosing loop depth;
-      // the body is inside the loop.
+      // [(INIT_CLAUSE)?, condition, BLOCK]: the condition stays at the
+      // enclosing loop depth; the body is inside the loop.
       if (node.nodes.size() < 2) { walk_children(node); return; }
       auto wv = culebra::view_while(node);
-      // The init clause (`while mut i = 0; …`) binds loop-scoped variables in
-      // an enclosing scope wrapping the condition, body, and nobreak. Each
-      // binding must be a declaration (`let`/`mut`); a bare `x = 0` would
-      // reassign an outer variable or create an immutable binding — reject it
-      // pre-eval on every backend, mirroring the break/continue check above.
-      bool pushed = false;
-      if (wv.init) {
-        scopes_.emplace_back();
-        pushed = true;
-        walk_init_clause(*wv.init);
-      }
+      if (wv.init) walk_init_clause(*wv.init);
       walk(*wv.cond);
       {
         check_dup_loop_label(wv.label);
         LoopScope g(loop_labels_, wv.label);
-        scoped(*wv.body, [](Scope&) {});
+        walk(*wv.body);
       }
       // The nobreak block runs after the loop, so a break/continue inside it
       // belongs to an enclosing loop — walk it at the *outer* loop depth (no
-      // guard), in its own scope. It still sees the init scope, so keep it
-      // before the pop.
-      if (wv.nobreak) scoped(*wv.nobreak, [](Scope&) {});
-      if (pushed) scopes_.pop_back();
+      // guard).
+      if (wv.nobreak) walk(*wv.nobreak);
       return;
     }
     case "IF"_: {
-      // [(INIT_CLAUSE)?, cond, block, cond, block, …, (else-block)?]. IF shares
-      // the enclosing scope (no per-branch scope), so with no init clause the
-      // default child walk is correct. An init clause (`if mut x = f(); …`)
-      // scopes its bindings to the whole chain: push a scope, register them,
-      // then walk the arms (from arm_off, skipping the INIT_CLAUSE child).
+      // [(INIT_CLAUSE)?, cond, block, cond, block, …, (else-block)?]: an
+      // init clause's bindings are held to its rule, then the arms (from
+      // arm_off, past the INIT_CLAUSE child).
       auto iv = culebra::view_if(node);
       if (!iv.init) { walk_children(node); return; }
-      scopes_.emplace_back();
       walk_init_clause(*iv.init);
       for (size_t i = iv.arm_off; i < node.nodes.size(); i++)
         walk(*node.nodes[i]);
-      scopes_.pop_back();
       return;
     }
     case "FOR"_: {
-      // [pattern, iterable, BLOCK, (NOBREAK_CLAUSE)?]: iterable in the
-      // enclosing scope, loop var + body in a child scope inside the loop. A
-      // nobreak block runs after the loop (enclosing loop depth, own scope);
-      // the loop variable is not visible there.
+      // [pattern, iterable, BLOCK, (NOBREAK_CLAUSE)?]: the iterable is
+      // outside the loop, the body inside it. A nobreak block runs after the
+      // loop (enclosing loop depth).
       if (node.nodes.size() < 3) { walk_children(node); return; }
       auto fv = culebra::view_for(node);
       walk(*fv.iter);
       {
         check_dup_loop_label(fv.label);
         LoopScope g(loop_labels_, fv.label);
-        scoped(*fv.body, [&](Scope& s) { collect_idents(*fv.binding, s.muts); });
+        walk(*fv.body);
       }
-      if (fv.nobreak) scoped(*fv.nobreak, [](Scope&) {});
-      return;
-    }
-    case "TRY"_: {
-      // [tryBLOCK, catchID, catchBLOCK]
-      if (node.nodes.size() < 3) { walk_children(node); return; }
-      scoped(*node.nodes[0], [](Scope&) {});
-      scoped(*node.nodes[2],
-             [&](Scope& s) { collect_idents(*node.nodes[1], s.muts); });
+      if (fv.nobreak) walk(*fv.nobreak);
       return;
     }
     case "MATCH"_: {
       // [(INIT_CLAUSE)?, subject, ARMS]; each arm = [PATTERN, (GUARD)?, EXPR].
-      // An init clause (`match mut x = f(); x { … }`) scopes its bindings to the
-      // subject and every arm: push an enclosing scope, register them, then walk
-      // the subject/arms inside it. With no init clause `scope_pushed` is false
-      // and this behaves exactly as before.
       auto mv = culebra::view_match(node);
-      bool scope_pushed = mv.init != nullptr;
-      if (scope_pushed) {
-        scopes_.emplace_back();
-        walk_init_clause(*mv.init);
-      }
+      if (mv.init) walk_init_clause(*mv.init);
       walk(*mv.subject);
       for (const auto& arm : mv.arms->nodes) {
         if (arm->nodes.empty()) continue;
         // A pattern is a constant position: reject interpolating `"..."`
         // patterns (the guard/body below may interpolate freely).
         check_pattern_const_strings(*arm->nodes[0], diags_);
-        scopes_.emplace_back();
-        collect_idents(*arm->nodes[0], scopes_.back().muts);
         for (size_t i = 1; i < arm->nodes.size(); i++) walk(*arm->nodes[i]);
-        scopes_.pop_back();
       }
-      if (scope_pushed) scopes_.pop_back();
       return;
     }
     case "MULTIFN_DECL"_: {
@@ -485,8 +418,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       check_param_wellformed(*node.nodes[i + 1]);
       LoopBoundary g(loop_labels_);
       FnDepthGuard fg(fn_depth_);
-      scoped(*node.nodes.back(),
-             [&](Scope& s) { collect_idents(*node.nodes[i + 1], s.muts); });
+      walk(*node.nodes.back());
       return;
     }
     case "CLASS_DECL"_: {
@@ -663,8 +595,8 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
         }
         if (mv.is_field || mv.is_typed_field) {
           // The field's own checks ran over the field list above; only its
-          // initializer is left to walk, a scope of its own.
-          if (mv.value) scoped(*mv.value, [](Scope&) {});
+          // initializer is left to walk.
+          if (mv.value) walk(*mv.value);
           continue;
         }
         check_dup_params(*mv.params);
@@ -672,7 +604,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
         check_param_wellformed(*mv.params,
                                /*ctor=*/mv.name == "new" && !mv.is_static);
         FnDepthGuard fg(fn_depth_);
-        scoped(**mv.body, [&](Scope& s) { collect_idents(*mv.params, s.muts); });
+        walk(**mv.body);
       }
       // The per-field clauses, over the instance fields in declaration order
       // — the body's and the ones the `new` field parameters declare, the
@@ -850,7 +782,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
         check_param_wellformed(*tv.params);
         if (!tv.body) continue;   // signature-only method: nothing to walk
         FnDepthGuard fg(fn_depth_);
-        scoped(*tv.body, [&](Scope& s) { collect_idents(*tv.params, s.muts); });
+        walk(*tv.body);
       }
       return;
     }
@@ -951,18 +883,17 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       if (av.lvalcnt == 1) {
         const auto& lval = *node.nodes[av.lvaloff];
         if (lval.tag == "IDENTIFIER"_ && lval.is_token) {
-          std::string_view name = lval.token;
           // `let mut x` carries both flags and is mutable, so check
           // is_mut first; only a bare `let` (no mut) is immutable.
           if (av.is_mut) {
-            if (!is_sink(name)) scopes_.back().muts.insert(std::string(name));
+            pass(lval, kReassignable);
           } else if (av.is_let) {
-            if (!is_sink(name)) scopes_.back().lets.insert(std::string(name));
-          } else if (!av.compound && classify(name) == 'l') {
+            pass(lval, kLet);
+          } else if (!av.compound && reassigns_let(lval)) {
             diags_.push_back(Diagnostic{
                 "ImmutableError",
                 std::format("cannot reassign '{}' (declared without 'mut')",
-                            name),
+                            lval.token),
                 static_cast<long>(lval.line),
                 static_cast<long>(lval.column), Severity::Error});
           }
@@ -975,18 +906,20 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
       return;
     }
     case "DESTRUCTURE_ASSIGN"_: {
-      // [LET, MUTABLE, pattern, EXPRESSION]. Bind pattern names mutable-side
-      // (conservative — never flag a destructured-name reassignment), then
-      // walk the RHS.
-      walk(*node.nodes.back());
-      if (node.nodes.size() >= 3)
-        collect_idents(*node.nodes[2], scopes_.back().muts);
+      // [LET, MUTABLE, pattern, EXPRESSION]. What a pattern declares stays
+      // reassignable here (conservative — never flag a destructured name's
+      // reassignment).
+      auto dv = culebra::view_destructure(node);
+      walk(*dv.rhs);
+      if (dv.declares)
+        culebra::for_each_pattern_leaf(
+            *dv.pattern,
+            [&](const peg::Ast& id, bool) { pass(id, kReassignable); });
       return;
     }
     case "PLACE_ASSIGN"_: {
       // [target..., EXPRESSION]. A chain target's subexpressions are ordinary
-      // reads; a plain-name target binds mutable-side, like the pattern names
-      // above (conservative — never flag its later reassignment).
+      // reads.
       walk(*node.nodes.back());
       culebra::for_each_place_target(
           node,
@@ -1001,9 +934,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
             }
             walk(chain);
           },
-          [&](const peg::Ast& name) {
-            scopes_.back().muts.insert(std::string(name.token));
-          });
+          [](const peg::Ast&) {});
       return;
     }
     default:
@@ -1031,7 +962,7 @@ inline void ScopeWalker::walk(const peg::Ast& node) {
 // Throws directly via `throw_shadow_error` on the first violation —
 // byte-identical to the interp's former `check_shadow_static`, which
 // this replaces. (Kept as a self-contained walk rather than folded into
-// the ScopeWalker rules above, whose single-pass block-granular model
+// the RuleWalker rules above, whose single-pass block-granular model
 // can't reproduce the collect-then-descend ordering without diverging.)
 namespace shadow {
 
@@ -2392,14 +2323,23 @@ inline const std::set<std::string, std::less<>>* builtin_names() {
   return builtin_names_hook ? builtin_names_hook() : nullptr;
 }
 
+// How a module is resolved (resolve.h) for the compiler and for the checks
+// here: with the stdlib's global names, and in a session the names earlier
+// inputs declared.
+inline resolve::Options resolve_options(
+    std::span<const std::string> session = {}) {
+  return {.record_nodes = true, .globals = builtin_names(), .session = session};
+}
+
 // The Error-severity static analyses, shared by the enforce path
 // (`check_module`, run on every load) and the report path (`collect_module`,
 // the `culebra lint` CLI). These are the checks the runtime is certain to
-// raise: malformed control flow / declarations (ScopeWalker) and the sound
+// raise: malformed control flow / declarations (RuleWalker) and the sound
 // undefined-variable subset. Appends to `diags`.
 inline void run_error_checks(const peg::Ast& ast,
                              std::vector<Diagnostic>& diags) {
-  _detail::ScopeWalker walker(diags);
+  auto res = resolve::resolve_module(ast, {}, resolve_options());
+  _detail::RuleWalker walker(res, diags);
   walker.run(ast);
   // Undefined-variable check (the sound subset that is certain to raise
   // NameError) — run only when the builtin-name provider is installed.

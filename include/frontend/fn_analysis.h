@@ -99,8 +99,7 @@ inline bool is_field_init_slot_name(std::string_view name) {
 // (FnAnalysis) and the agreement check (scope_check.h) are both held to it.
 inline resolve::Options compiler_resolve_options(
     std::span<const std::string> session = {}) {
-  return {.record_nodes = true, .globals = lint::builtin_names(),
-          .session = session};
+  return lint::resolve_options(session);
 }
 
 // One FnAnalysis instance per compilation. `func_info` and

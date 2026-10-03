@@ -875,8 +875,8 @@ inline MappedSource rewrite_block_inner(const peg::Ast& block,
                        static_cast<long>(block.column));
 }
 
-// Whether a node opens a variable scope of its own — the engines' sites, as
-// lint.h's ScopeWalker models them: fn-like and method bodies, a class's
+// Whether a node opens a variable scope of its own — the engines' sites:
+// fn-like and method bodies, a class's
 // members, LEXICAL_SCOPE, DEFER, loop bodies, MATCH arms, TRY bodies, and
 // a `handle` body (its own computation). IF shares its enclosing scope.
 // MATCH and TRY are taken as one level each (their arms as siblings), an
