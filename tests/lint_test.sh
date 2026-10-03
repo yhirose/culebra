@@ -65,6 +65,9 @@ expect_postfix_reject "postfix let in a fn nothing calls" \
   'fn f(c) { let a = 1 if c }'
 expect_syntax_reject "postfix defer names the fix" "defer { if c" \
   'fn f() { defer { inspect(1) } unless false }'
+# An `import` belongs to the top level, modifier or not: its own error.
+expect_syntax_reject "postfix import" "must be at the top level" \
+  "import m from './m.cul' if true"
 expect_accept "postfix bare write"           'mut a = 0
 a = 1 if true
 (a, b) = (2, 3) unless false

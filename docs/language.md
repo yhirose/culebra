@@ -2719,7 +2719,7 @@ inspect(grade(500))  # => 'big'
 ```
 
 A declaration (`let`, `mut`, a declaring destructure, `fn`, `class`,
-`enum`, `effect fn`, `import`) and a `defer` take no modifier. The
+`enum`, `effect fn`) and a `defer` take no modifier. The
 statement is the arm of the `if` it desugars to, and an arm is a scope of
 its own (§6 Scope): the declaration would end with the arm and the
 `defer` would run at once, so both are a `SyntaxError`. A bare

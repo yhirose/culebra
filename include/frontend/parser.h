@@ -2302,7 +2302,8 @@ inline std::shared_ptr<peg::Ast> desugar_postfix_modifiers(
 
 // `stmt if c` is `if c { stmt }`, and an arm is a scope: a declaration there
 // would end with it, and a `defer` would run at once. Refused at the
-// modifier. A bare `x = v if c` writes the `x` in scope and stays.
+// modifier. A bare `x = v if c` writes the `x` in scope and stays; an
+// `import` is refused by its own rule, which holds it to the top level.
 inline void reject_postfix_declaration(const peg::Ast& stmt) {
   using namespace peg::udl;
   const auto& base = *stmt.nodes[0];
@@ -2325,7 +2326,6 @@ inline void reject_postfix_declaration(const peg::Ast& stmt) {
     case "CLASS_DECL"_:
     case "ENUM_DECL"_:
     case "EFFECT_FN_DECL"_:
-    case "IMPORT_STMT"_:
       what = "a declaration";
       instead = "what an arm declares ends with it. Write `if c { … }` around "
                 "the declaration and the code that uses it";
