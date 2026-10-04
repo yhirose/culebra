@@ -4325,7 +4325,7 @@ inline void owned_plan_for_chunk(const Chunk& c, std::vector<char>& dead) {
     if (c.code[m].op != Op::OwnedMark || c.code[m].a == 0) continue;
     const int32_t d = c.code[m].a;
     size_t k = m + 1;
-    size_t far = m;  // the furthest a branch in the run goes
+    size_t reach = m;  // the furthest a branch in the run goes
     bool clean = true;
     for (; k < n; ++k) {
       const Insn& in = c.code[k];
@@ -4333,7 +4333,7 @@ inline void owned_plan_for_chunk(const Chunk& c, std::vector<char>& dead) {
       if (owned_plain_branch(in.op)) {
         auto t = static_cast<size_t>(rc_detail::rc_successors(in).target);
         if (t > k) {
-          far = std::max(far, t);
+          reach = std::max(reach, t);
           continue;
         }
       }
@@ -4347,7 +4347,7 @@ inline void owned_plan_for_chunk(const Chunk& c, std::vector<char>& dead) {
         break;
       }
     }
-    if (clean && k < n && far <= k) {
+    if (clean && k < n && reach <= k) {
       dead[m] = 1;
       dead[k] = 1;
     }
