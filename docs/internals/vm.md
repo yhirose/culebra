@@ -93,9 +93,10 @@ includes them in a fixed order and nothing else includes them at all.
 
 1. **Load.** `ModuleLoader::load_program` parses the entry file and every
    module it imports, returning a `LoadedModule` list in topological order
-   (dependencies first, entry last). Parsing goes through
-   `parse_with_transforms`, which runs the generator and effects
-   transforms (§11) on the AST.
+   (dependencies first, entry last). Each module is parsed, its scope
+   checks are read off it as written (§10.6), and then the generator and
+   effects transforms (§11) run on the AST (`apply_transforms`); the
+   checks are reported once every module is read.
 2. **Splice the stdlib preamble.** `splice_stdlib_preamble` scans the
    ASTs' tokens for stdlib names (`Time`, `Regex`, `Path`, the `assert_*`
    family, …) and prepends a synthesized `<stdlib>` module holding the
@@ -1936,7 +1937,12 @@ resolves each module once and reads its three scope checks off the
 result: a read nothing visible declares is the undefined-name
 `NameError`, a declaration of a name that is an enclosing function's
 variable where the function is written is the `ShadowError`, and a bare
-write to a variable after its `let` is the `ImmutableError`. The
+write to a variable after its `let` is the `ImmutableError`. It resolves
+the module as written, before the generator and effect lowerings
+replace a body with a state machine (`lint::scope_diagnostics`, called
+by the loader between the parse and the transforms), so a lowered body
+is held to the three checks as a plain one is; the checks of what a
+node's place allows (`RuleWalker`) read the lowered module. The
 generator and effect lowerings, which work on source text and
 re-parsed fragments, take only the table of scope-opening constructs
 (`resolve::opens_scope`); `resolve_test` holds that table to the scopes

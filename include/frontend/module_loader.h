@@ -28,6 +28,10 @@ struct LoadedModule {
   std::shared_ptr<std::string> source;
   std::shared_ptr<peg::Ast> ast;
   std::vector<std::filesystem::path> deps;
+  // What the module's names mean where they are written, read before the
+  // lowerings (lint::scope_diagnostics) and reported once every module is
+  // read (lint::check_module).
+  std::vector<lint::Diagnostic> scope_diagnostics;
 };
 
 // Path stamped on the synthesized preamble module, so it is distinguishable
@@ -133,7 +137,7 @@ inline std::vector<LoadedModule> ModuleLoader::load_program(
   // Static lint pass: shared by interp / JIT / AOT (all backends share
   // this loader), so a sound diagnostic aborts before any of them eval.
   for (const auto& m : loaded_) {
-    lint::check_module(*m.ast);
+    lint::check_module(*m.ast, m.scope_diagnostics);
   }
   return std::move(loaded_);
 }
@@ -171,8 +175,7 @@ inline size_t ModuleLoader::load_recursive(
     }
   }
 
-  auto ast = culebra::parse_with_transforms(abs_path.string(), *src_buf,
-                                            parse_msgs);
+  auto ast = culebra::parse(abs_path.string(), *src_buf, parse_msgs);
   if (!ast) {
     // PEG diagnostics live in parse_msgs (path:line:col: ...). Fold them
     // into the error so the CLI catch handler prints the actual hint.
@@ -182,6 +185,9 @@ inline size_t ModuleLoader::load_recursive(
                        std::format("failed to parse module '{}'{}",
                                    abs_path.string(), detail));
   }
+  // The scope checks read the module as written, so before the lowerings.
+  auto scope = lint::scope_diagnostics(*ast);
+  ast = culebra::apply_transforms(ast, abs_path.string(), *src_buf);
   validate_module(*ast);
   auto deps = extract_imports(*ast, abs_path.parent_path());
 
@@ -192,7 +198,8 @@ inline size_t ModuleLoader::load_recursive(
   }
 
   size_t idx = loaded_.size();
-  loaded_.push_back(LoadedModule{abs_path, src_buf, ast, deps});
+  loaded_.push_back(LoadedModule{abs_path, src_buf, ast, deps,
+                                 std::move(scope)});
   index_[key] = idx;
   stack_.pop_back();
   return idx;

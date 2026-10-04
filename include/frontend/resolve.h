@@ -487,6 +487,14 @@ class Resolver {
     return sym;
   }
 
+  // The operation a `perform` or a handler clause names: the `effect fn`
+  // visible there. One nothing declares is no unbound read, since an
+  // operation meets its handler by name when it is performed.
+  void operation(const peg::Ast& n) {
+    if (size_t sym = r_.lookup(cur_, n.token); sym != kNone)
+      add(n, n.token, sym, cur_, Role::Read, Spelling::Plain);
+  }
+
   // `x = v`: the visible `x`, else a new one here — or, for a stdlib global,
   // the global, which refuses it.
   size_t bare_write(const peg::Ast& n, std::string_view name,
@@ -989,7 +997,7 @@ class Resolver {
         for (size_t j = 1; j < n.nodes.size(); j++) {
           const peg::Ast& clause = *n.nodes[j];
           if (clause.tag == "HANDLE_CLAUSE"_ && clause.nodes.size() >= 3) {
-            read(*clause.nodes[0], clause.nodes[0]->token, Spelling::Plain);
+            operation(*clause.nodes[0]);
             enqueue(clause.nodes[1].get(), clause.nodes[2].get());
           } else if (clause.tag == "RETURN_CLAUSE"_ && clause.nodes.size() >= 2) {
             enqueue(clause.nodes[0].get(), clause.nodes[1].get());
@@ -1000,7 +1008,7 @@ class Resolver {
 
       case "PERFORM"_:
         if (!n.nodes.empty() && n.nodes[0]->tag == "IDENTIFIER"_)
-          read(*n.nodes[0], n.nodes[0]->token, Spelling::Plain);
+          operation(*n.nodes[0]);
         for (size_t i = 1; i < n.nodes.size(); i++) walk(*n.nodes[i]);
         return;
 

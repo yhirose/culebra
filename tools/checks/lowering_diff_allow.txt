@@ -2,7 +2,7 @@
 # yet fixed: `<sweep> <cases that disagree> <form>`, under why. A form whose
 # count moves, or that agrees now, fails the gate, so a fix removes its line.
 # The cause of all of them: a lowering moves a body's locals onto its state
-# object by name, and the load-time checks see the lowered body.
+# object by name.
 
 # L1: reassigning what was declared without `mut` raises nothing
 sole 5 (a, (b,)) = (1, (2,)); (a, (b,)) = (3, (4,)); EMIT(a + b)
@@ -23,31 +23,9 @@ binding 5 for x in [1] { EMIT(x); x = 2 }
 binding 5 for x in [1, 2] { x += 10; EMIT(x) }
 binding 1 if C { mut a = 1; a = 2; EMIT(a) } else { a = 3; a = 4; EMIT(a) }
 
-# L2: a load-time error is not reported: a lone `let` reassigned, a name read
-# where no declaration reaches, a function's declaration over an enclosing one
-binding 5 let a = 1; a = 2; EMIT(a)
-binding 5 let a = 1; EMIT(a); a = 2; EMIT(a)
-binding 5 let a = 1; while false { a = 2 }; EMIT(a)
-sole 25 (a, b) = (1, 2) if C; EMIT(a)
-sole 25 (a, b) = (1, 2) unless C; EMIT(a)
-sole 25 (a, b) = (1, 2) unless C; (a, b) = (b, a) if C; EMIT(a)
-binding 5 EMIT(a); a = 1
-binding 5 { a = 1 }; EMIT(a)
-binding 5 { a = 1; EMIT(a) }; EMIT(a)
-binding 5 if C { a = 1 }; EMIT(a)
-binding 5 if C { a = 1; EMIT(a) }; EMIT(a)
-binding 5 if C { a = 1 } else { a = 2 }; EMIT(a)
-binding 5 if C { (a, b) = (1, 2) }; EMIT(a)
-binding 5 a = 1 if C; EMIT(a)
-binding 5 while C { a = 1; break }; EMIT(a)
-binding 5 while C { a = 1; EMIT(a); break }; EMIT(a)
-binding 5 for x in [1] { EMIT(x) }; EMIT(x)
-binding 5 try { a = 1 } catch e { 0 }; EMIT(a)
-binding 5 if let d = 1; C { EMIT(d) }; EMIT(d)
-binding 5 f = fn () { a }; EMIT(0); { a = 1 }; EMIT(1)
-binding 5 a = 1; f = fn () { let a = 2; a }; EMIT(f())
+# L2: a closure's parameter named as a local of the body breaks the lowering,
+# ahead of the load's ShadowError
 binding 5 a = 1; f = fn (a) { a }; EMIT(f(2))
-binding-fn 5 if C { fn h() { 1 }; EMIT(h()) }; EMIT(h())
 
 # L3: a nested scope's declaration shares the slot of the outer name
 binding 5 a = 1; { let a = 2; EMIT(a) }; EMIT(a)

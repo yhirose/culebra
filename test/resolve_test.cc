@@ -626,7 +626,7 @@ std::vector<std::string> lint_errors(std::string src, std::string_view kind) {
                           {.record_nodes = true, .globals = &globals});
   if (!p) return {};
   std::vector<culebra::lint::Diagnostic> diags;
-  culebra::lint::_detail::RuleWalker(p->res, diags).run(*p->ast);
+  culebra::lint::_detail::LetRule(p->res, diags).run(*p->ast);
   culebra::lint::_detail::undefined_reads(p->res, globals, diags);
   culebra::lint::_detail::shadows(p->res, diags);
   std::vector<std::string> out;
@@ -681,6 +681,12 @@ void test_lint_undefined() {
       {"above its declaration", "a\nlet a = 1\n", {"a@1"}},
       {"its own right-hand side", "let b = b\n", {"b@1"}},
       {"a decorator nothing declares", "@nope\nfn f() { 1 }\n", {"nope@1"}},
+      // An operation meets its handler by name when it is performed.
+      {"an operation nothing declares",
+       "handle { perform op(zzz) } with op(x, k) { k(x) }\n", {"zzz@1"}},
+      {"a handler clause's own names",
+       "effect fn op(x)\nhandle { perform op(1) } with op(x, k) { k(x) }\nk\n",
+       {"k@3"}},
       {"reported in source order", "fn f() {\n  late\n}\nearly\n",
        {"late@2", "early@4"}},
       // A declaration is visible but may not have run: the run's to decide.

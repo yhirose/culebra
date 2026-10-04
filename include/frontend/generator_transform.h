@@ -2024,19 +2024,7 @@ inline std::shared_ptr<peg::Ast> transform_generators_in(
   return ast;
 }
 
-// Parse + the generator transformation pass. The public entry
-// `parse_with_transforms` (effects_transform.h) chains the effects pass
-// after this one; callers route through the public entry.
-inline std::shared_ptr<peg::Ast> parse_with_generator_transforms(
-    const std::string& path, std::string& expr,
-    std::vector<std::string>& msgs) {
-  auto ast = parse(path, expr, msgs);
-  if (!ast) return ast;
-  ScopeChain chain{ast.get(), {}};
-  return transform_generators_in(ast, expr, chain);
-}
-
-// Reject the yields no pass claimed. Runs from `parse_with_transforms` once
+// Reject the yields no pass claimed. Runs from `apply_transforms` once
 // both passes are done, so the effects pass gets to diagnose its own bodies
 // first, and the yields it re-parses into fragments are covered too.
 inline void reject_orphan_yield(const peg::Ast& ast) {

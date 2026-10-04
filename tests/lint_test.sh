@@ -869,6 +869,33 @@ expect_lint_clean "clause captures enclosing local" 'effect fn ask()
 fn f() { let base = 100; handle { perform ask() } with ask(resume) { resume(base) } }
 inspect(f())'
 
+# --- A generator's and an effect's body are held to the scope checks ---
+# The lowerings replace such a body with a state machine. The checks read the
+# module as written, so they see it as they see a plain body.
+expect_reject "generator let reassign" 'fn g() { let a = 1; yield a; a = 2 }'
+expect_reject "effect fn let reassign" 'effect fn op()
+effect fn e() { let a = 1; perform op(); a = 2 }'
+expect_reject "handle body let reassign" 'effect fn op()
+handle { let a = 1; perform op(); a = 2 } with op(k) { k(nil) }'
+expect_undef_reject "generator read after block" \
+  'fn g() { { a = 1 }; yield a }'
+expect_undef_reject "generator read after arm" \
+  'fn g(c) { if c { a = 1 }; yield a }'
+expect_undef_reject "generator read above declaration" \
+  'fn g() { yield a; a = 1 }'
+expect_undef_reject "effect fn read after loop" 'effect fn op(x)
+effect fn e() { for x in [1] { perform op(x) }; x }'
+expect_shadow_reject "closure in a generator shadows its local" \
+  'fn g() { a = 1; f = fn () { let a = 2; a }; yield f() }'
+expect_shadow_reject "closure in an effect fn shadows its local" 'effect fn op()
+effect fn e() { a = 1; f = fn () { let a = 2; a }; perform op(); f() }'
+expect_lint_error "generator read after block" 'fn g() { { a = 1 }; yield a }
+inspect(g().collect())'
+# An operation meets its handler by name when it is performed: one that no
+# `effect fn` declares is no undefined name.
+expect_undef_accept "an operation nothing declares" \
+  'inspect(handle { perform op(1) } with op(x, k) { k(x + 1) })'
+
 # --- `culebra lint` surfaces ShadowError like the run path ---
 # Shadowing an enclosing function's local is a pre-eval ShadowError when the
 # file runs; the CLI must report it too, at the same position, not stay clean.

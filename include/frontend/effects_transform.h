@@ -2019,15 +2019,12 @@ inline std::shared_ptr<peg::Ast> transform_effects_in(
   return lowerer.transform(ast);
 }
 
-// Public parse entry: `parse()` plus the generator and effects
-// transformation passes. Every caller that wants `yield` / effects support
-// (interp module load, JIT/AOT, REPL, lazy module loader) routes through
-// here.
-inline std::shared_ptr<peg::Ast> parse_with_transforms(
-    const std::string& path, std::string& expr,
-    std::vector<std::string>& msgs) {
-  auto ast = parse_with_generator_transforms(path, expr, msgs);
-  if (!ast) return ast;
+// The generator and effects transformation passes over a module parsed as
+// written (`parse()`), `expr` its source.
+inline std::shared_ptr<peg::Ast> apply_transforms(
+    std::shared_ptr<peg::Ast> ast, const std::string& path, std::string& expr) {
+  ScopeChain chain{ast.get(), {}};
+  ast = transform_generators_in(ast, expr, chain);
   auto out = transform_effects_in(ast, expr);
   reject_orphan_yield(*out);
   reject_sized_spread_mix(*out);
@@ -2053,6 +2050,18 @@ inline std::shared_ptr<peg::Ast> parse_with_transforms(
     }
   }
   return out;
+}
+
+// Public parse entry: `parse()` plus the generator and effects
+// transformation passes. Every caller that wants `yield` / effects support
+// (the REPL, an embedder, the stdlib preamble) routes through here; the
+// module loader runs the two steps itself, with the load's scope checks
+// between them.
+inline std::shared_ptr<peg::Ast> parse_with_transforms(
+    const std::string& path, std::string& expr,
+    std::vector<std::string>& msgs) {
+  auto ast = parse(path, expr, msgs);
+  return ast ? apply_transforms(ast, path, expr) : ast;
 }
 
 // The same, with the fragments the lowering synthesizes owned by `fragments`

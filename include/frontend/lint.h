@@ -70,41 +70,17 @@ inline void check_pattern_const_strings(const peg::Ast& pat,
 }
 
 // Walks the AST once for the rules a node's place decides: where a
-// break / continue / return may stand, what a parameter list and a class
-// body may hold, and a `let` reassigned. Which variable a name is comes
-// from the resolution (resolve.h), not from a scope model of its own.
+// break / continue / return may stand, and what a parameter list and a
+// class body may hold. What a name means is not its business (the scope
+// checks below).
 class RuleWalker {
  public:
-  RuleWalker(const resolve::Resolution& res, std::vector<Diagnostic>& diags)
-      : res_(res), diags_(diags), passed_(res.symbols.size()) {}
+  explicit RuleWalker(std::vector<Diagnostic>& diags) : diags_(diags) {}
 
   void run(const peg::Ast& ast) { walk(ast); }
 
  private:
-  const resolve::Resolution& res_;
   std::vector<Diagnostic>& diags_;
-  // Per variable, the declarations the walk has passed: a `let`, and one
-  // that leaves it reassignable (a `mut`, a declaring pattern).
-  enum : uint8_t { kLet = 1, kReassignable = 2 };
-  std::vector<uint8_t> passed_;
-
-  void pass(const peg::Ast& name, uint8_t what) {
-    if (size_t sym = res_.symbol_of(name); sym != resolve::kNone)
-      passed_[sym] |= what;
-  }
-
-  // `x = v` is certain to fail when the walk has passed a `let` of that
-  // variable and nothing that leaves it reassignable. A binding the callee or
-  // the construct makes (a parameter, a loop's, a catch's, a pattern's) is
-  // left to the run.
-  bool reassigns_let(const peg::Ast& target) const {
-    using resolve::Form;
-    size_t s = res_.symbol_of(target);
-    if (s == resolve::kNone || passed_[s] != kLet) return false;
-    const auto& sym = res_.symbols[s];
-    return !sym.declared_as(Form::Parameter) && !sym.declared_as(Form::Loop) &&
-           !sym.declared_as(Form::Catch) && !sym.declared_as(Form::Pattern);
-  }
   // The loops a break/continue here could target, innermost last, each held
   // by its label (empty for an unlabelled loop). Its depth is what the
   // outside-a-loop check reads; its names are what a labelled `break outer`
@@ -880,41 +856,14 @@ inline void RuleWalker::walk(const peg::Ast& node) {
         syntax("cannot assign to a function call result.");
       }
       walk(*av.rhs);
-      if (av.lvalcnt == 1) {
-        const auto& lval = *node.nodes[av.lvaloff];
-        if (lval.tag == "IDENTIFIER"_ && lval.is_token) {
-          // `let mut x` carries both flags and is mutable, so check
-          // is_mut first; only a bare `let` (no mut) is immutable.
-          if (av.is_mut) {
-            pass(lval, kReassignable);
-          } else if (av.is_let) {
-            pass(lval, kLet);
-          } else if (!av.compound && reassigns_let(lval)) {
-            diags_.push_back(Diagnostic{
-                "ImmutableError",
-                std::format("cannot reassign '{}' (declared without 'mut')",
-                            lval.token),
-                static_cast<long>(lval.line),
-                static_cast<long>(lval.column), Severity::Error});
-          }
-        }
-      } else {
-        // Complex lvalue (index / property chain): walk its expression
-        // parts; immutability of fields/elements is enforced at runtime.
+      // Complex lvalue (index / property chain): walk its expression parts.
+      if (av.lvalcnt > 1)
         for (int k = 0; k < av.lvalcnt; k++) walk(*node.nodes[av.lvaloff + k]);
-      }
       return;
     }
     case "DESTRUCTURE_ASSIGN"_: {
-      // [LET, MUTABLE, pattern, EXPRESSION]. What a pattern declares stays
-      // reassignable here (conservative — never flag a destructured name's
-      // reassignment).
-      auto dv = culebra::view_destructure(node);
-      walk(*dv.rhs);
-      if (dv.declares)
-        culebra::for_each_pattern_leaf(
-            *dv.pattern,
-            [&](const peg::Ast& id, bool) { pass(id, kReassignable); });
+      // [LET, MUTABLE, pattern, EXPRESSION]
+      walk(*culebra::view_destructure(node).rhs);
       return;
     }
     case "PLACE_ASSIGN"_: {
@@ -1002,6 +951,80 @@ inline void shadows(const resolve::Resolution& res,
   }
   sort_by_position(diags, first);
 }
+
+// `x = v` where the walk has passed a `let` of that variable and nothing
+// that leaves it reassignable (a `mut`, a declaring pattern): certain to
+// raise ImmutableError when it runs. A binding the callee or the construct
+// makes (a parameter, a loop's, a catch's, a pattern's) is left to the run,
+// and so is an element or a field. Statements are passed in the order they
+// are written, a function's body where it stands.
+class LetRule {
+ public:
+  LetRule(const resolve::Resolution& res, std::vector<Diagnostic>& diags)
+      : res_(res), diags_(diags), passed_(res.symbols.size()) {}
+
+  void run(const peg::Ast& ast) { walk(ast); }
+
+ private:
+  const resolve::Resolution& res_;
+  std::vector<Diagnostic>& diags_;
+  // Per variable, the declarations the walk has passed.
+  enum : uint8_t { kLet = 1, kReassignable = 2 };
+  std::vector<uint8_t> passed_;
+
+  void pass(const peg::Ast& name, uint8_t what) {
+    if (size_t sym = res_.symbol_of(name); sym != resolve::kNone)
+      passed_[sym] |= what;
+  }
+
+  bool reassigns_let(const peg::Ast& target) const {
+    using resolve::Form;
+    size_t s = res_.symbol_of(target);
+    if (s == resolve::kNone || passed_[s] != kLet) return false;
+    const auto& sym = res_.symbols[s];
+    return !sym.declared_as(Form::Parameter) && !sym.declared_as(Form::Loop) &&
+           !sym.declared_as(Form::Catch) && !sym.declared_as(Form::Pattern);
+  }
+
+  void walk(const peg::Ast& node) {
+    using namespace peg::udl;
+    if (node.tag == "ASSIGNMENT"_) {
+      auto av = culebra::view_assignment(node);
+      walk(*av.rhs);
+      if (av.lvalcnt != 1) {
+        for (int k = 0; k < av.lvalcnt; k++) walk(*node.nodes[av.lvaloff + k]);
+        return;
+      }
+      const auto& lval = *node.nodes[av.lvaloff];
+      if (lval.tag != "IDENTIFIER"_ || !lval.is_token) return;
+      // `let mut x` carries both flags and is mutable.
+      if (av.is_mut) {
+        pass(lval, kReassignable);
+      } else if (av.is_let) {
+        pass(lval, kLet);
+      } else if (!av.compound && reassigns_let(lval)) {
+        diags_.push_back(Diagnostic{
+            "ImmutableError",
+            std::format("cannot reassign '{}' (declared without 'mut')",
+                        lval.token),
+            static_cast<long>(lval.line), static_cast<long>(lval.column),
+            Severity::Error});
+      }
+      return;
+    }
+    if (node.tag == "DESTRUCTURE_ASSIGN"_) {
+      // What a pattern declares stays reassignable here.
+      auto dv = culebra::view_destructure(node);
+      walk(*dv.rhs);
+      if (dv.declares)
+        culebra::for_each_pattern_leaf(
+            *dv.pattern,
+            [&](const peg::Ast& id, bool) { pass(id, kReassignable); });
+      return;
+    }
+    for (const auto& c : node.nodes) walk(*c);
+  }
+};
 
 // --- Static unused-local analyzer (advisory, Warning severity) ---
 //
@@ -1680,30 +1703,47 @@ inline resolve::Options resolve_options(
 
 // The Error-severity static analyses of the load, shared by the enforce path
 // (`check_module`, run on every load) and the report path (`collect_module`,
-// the `culebra lint` CLI). These are the checks the runtime is certain to
-// raise: malformed control flow / declarations (RuleWalker) and the reads
-// nothing declares. `res` is `ast` resolved with resolve_options(). Appends
-// to `diags`.
-inline void run_error_checks(const peg::Ast& ast, const resolve::Resolution& res,
-                             std::vector<Diagnostic>& diags) {
-  _detail::RuleWalker walker(res, diags);
-  walker.run(ast);
+// the `culebra lint` CLI): what the runtime is certain to raise. They read
+// two forms of a module.
+//
+// What a name means is read off the module as written, before the generator
+// and effect lowerings replace a body with a state machine: a `let`
+// reassigned, a read nothing visible declares, a function's declaration over
+// an enclosing function's variable. A lowered body is held to them as a
+// plain one is.
+inline std::vector<Diagnostic> scope_diagnostics(const peg::Ast& authored) {
+  auto res = resolve::resolve_module(authored, {}, resolve_options());
+  std::vector<Diagnostic> diags;
+  _detail::LetRule(res, diags).run(authored);
   // Run only when the builtin-name provider is installed: without it every
   // stdlib name would read as undefined.
   if (const auto* globals = builtin_names())
     _detail::undefined_reads(res, *globals, diags);
+  _detail::shadows(res, diags);
+  return diags;
 }
 
-// Run the load-stage static lint checks over one module AST before evaluation.
-// Throws the first Error-severity diagnostic as a CulebraError (same shape
-// the runtime would raise), so the module loader surfaces it uniformly to
-// every backend. Advisory warnings (e.g. unused locals) are NOT run here —
-// they would be discarded, and the load path stays free of their cost; the
-// `culebra lint` CLI runs the full set via `collect_module`.
-inline void check_module(const peg::Ast& ast) {
-  auto res = resolve::resolve_module(ast, {}, resolve_options());
+// What a node's place decides (RuleWalker) is read off the module the
+// backends run, the lowered one: malformed control flow and declarations.
+// Appends to `diags`.
+inline void run_rule_checks(const peg::Ast& lowered,
+                            std::vector<Diagnostic>& diags) {
+  _detail::RuleWalker(diags).run(lowered);
+}
+
+// Run the load-stage static lint checks over one module before evaluation:
+// the rule checks over its lowered AST, then `scope`, the
+// scope_diagnostics() of the module as written. Throws the first as a
+// CulebraError (same shape the runtime would raise), so the module loader
+// surfaces it uniformly to every backend. Advisory warnings (e.g. unused
+// locals) are NOT run here — they would be discarded, and the load path stays
+// free of their cost; the `culebra lint` CLI runs the full set via
+// `collect_module`.
+inline void check_module(const peg::Ast& lowered,
+                         const std::vector<Diagnostic>& scope) {
   std::vector<Diagnostic> diags;
-  run_error_checks(ast, res, diags);
+  run_rule_checks(lowered, diags);
+  diags.insert(diags.end(), scope.begin(), scope.end());
   for (const auto& d : diags) {
     if (d.severity == Severity::Error) {
       throw culebra::CulebraError(d.kind, d.message, d.line, d.col);
@@ -1716,17 +1756,15 @@ inline void check_module(const peg::Ast& ast) {
 // unused locals) and RETURN all diagnostics without throwing, so the caller
 // can print them all. Diagnostics are sorted by source position.
 //
-// The two analyses need different views of the program, so the caller passes
+// The analyses need different views of the program, so the caller passes
 // both:
 //   `lowered`  — what the backends actually run: generators and effects
 //                lowered to classes plus runtime calls, i.e. the output of
-//                `parse_with_transforms`, which is also what the load-stage
-//                `check_module` sees. Error checks must use this form to stay
-//                sound — on the raw parse, `effect fn` and `handle … with`
-//                introduce bindings no analyzer knows about, so every
-//                operation, clause parameter and `resume` reads as undefined.
-//   `authored` — the raw parse of the source the user typed. Advisory
-//                warnings must use this form, because a synthesized binding
+//                `parse_with_transforms`. The rule checks read this form, as
+//                the load-stage `check_module` does.
+//   `authored` — the raw parse of the source the user typed. The scope
+//                checks read this form (scope_diagnostics), and so do the
+//                advisory warnings, because a synthesized binding
 //                is not the user's to act on (an abort clause deliberately
 //                never reads its `resume`; a clause may ignore an operation
 //                argument) and synthesized positions collapse onto the
@@ -1737,12 +1775,9 @@ inline void check_module(const peg::Ast& ast) {
 inline std::vector<Diagnostic> collect_module(const peg::Ast& lowered,
                                               const peg::Ast& authored) {
   std::vector<Diagnostic> diags;
-  auto res = resolve::resolve_module(lowered, {}, resolve_options());
-  run_error_checks(lowered, res, diags);
-  // Shadow is an error-severity static check the run path applies before eval;
-  // like the other error checks it runs on the lowered AST (positions map back
-  // to the authored source, same as when running the file).
-  _detail::shadows(res, diags);
+  run_rule_checks(lowered, diags);
+  auto scope = scope_diagnostics(authored);
+  diags.insert(diags.end(), scope.begin(), scope.end());
   _detail::unused::analyze_module(authored, diags);
   _detail::toplevel::analyze_module(authored, diags);
   _detail::unreachable::analyze_module(authored, diags);

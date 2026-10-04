@@ -92,8 +92,10 @@ includeし、他のどこからもincludeしない。
 1. **ロード。** `ModuleLoader::load_program`がエントリファイルと
    そこからimportされる全モジュールをパースし、`LoadedModule`の
    リストをトポロジカル順（依存先が先、エントリが最後）で返す。
-   パースは`parse_with_transforms`を通り、generatorとeffectsの変換
-   （§11）がASTに対して走る。
+   各モジュールはパースされ、書かれたままの形からスコープの検査を
+   読み取り（§10.6）、そのあとgeneratorとeffectsの変換（§11）がASTに
+   対して走る（`apply_transforms`）。検査の結果は全モジュールを読み
+   終えてから報告する。
 2. **stdlib preambleを差し込む。** `splice_stdlib_preamble`がAST群の
    トークンをスキャンしてstdlib名（`Time`、`Regex`、`Path`、
    `assert_*`ファミリー、…）を探し、プログラムが名指ししている遅延
@@ -1909,7 +1911,12 @@ assertレーン）はコレクタと一緒に`memory.md` §5〜6で説明され�
 1度解決し、スコープに関わる3つの検査をその結果から読む。見える宣言の
 ない読みが未定義名の`NameError`、関数が書かれた位置で外側の関数の
 変数である名前の宣言が`ShadowError`、`let`の後のその変数への裸の
-書き込みが`ImmutableError`になる。generatorとeffectの変換はソースの
+書き込みが`ImmutableError`になる。解決するのは書かれたままの
+モジュールで、generatorとeffectの変換が本体を状態機械に置き換える
+前である（`lint::scope_diagnostics`。ローダーがパースと変換の間で
+呼ぶ）。だから変換される本体も、普通の本体と同じ3つの検査を受ける。
+節点の位置が許すものの検査（`RuleWalker`）は変換後のモジュールを読む。
+generatorとeffectの変換はソースの
 テキストと再パースした断片の上で動くので、スコープを開く構文の表
 （`resolve::opens_scope`）だけを受け取る。その表がresolverの開く
 スコープと一致することは`resolve_test`が確かめる。
