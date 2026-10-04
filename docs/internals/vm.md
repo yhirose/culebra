@@ -1943,10 +1943,16 @@ replace a body with a state machine (`lint::scope_diagnostics`, called
 by the loader between the parse and the transforms), so a lowered body
 is held to the three checks as a plain one is; the checks of what a
 node's place allows (`RuleWalker`) read the lowered module. The
-generator and effect lowerings, which work on source text and
-re-parsed fragments, take only the table of scope-opening constructs
-(`resolve::opens_scope`); `resolve_test` holds that table to the scopes
-the resolver opens.
+generator and effect lowerings rewrite a body they have parsed again,
+so each resolves the tree it rewrites (`resolve::resolve_body`: the
+body under its parameters, with the names visible around the function
+passed in) and reads off the result which variable a name is. A
+variable gets a slot of its own on the state instance when the machine
+enters the scope that holds it, a scope whose statements end up in
+different states (`PromotedLocals`); a scope no suspension splits is
+emitted as written, its variables the locals they were. Each block
+that is a scope is recorded under its node (`Resolution::block_scope`),
+which `resolve_test` holds every non-function scope to.
 
 ### 10.7 A lowered body against a plain function
 
@@ -1985,7 +1991,8 @@ count moved or that agrees now. Its row, `lowering diff`, runs in
   implementing the iterator protocol; `effects_transform.h` rewrites
   `effect fn` / `perform` / `handle` into plain source over the `__Eff`
   runtime. Both lower control flow through a flat-dispatch CPS state
-  machine with locals on the state instance. The engines need no
+  machine, with the variables of every scope a suspension splits on the
+  state instance. The engines need no
   generator- or effect-specific support, so they agree by construction.
   Frame suspension in the VM would be a simplification, not a
   requirement.

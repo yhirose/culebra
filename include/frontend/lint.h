@@ -940,7 +940,9 @@ inline void shadows(const resolve::Resolution& res,
   size_t first = diags.size();
   for (const auto& d : res.declarations) {
     const auto& sym = res.symbols[d.symbol];
-    size_t around = res.scopes[res.function_of(sym.scope)].parent;
+    const auto& fn = res.scopes[res.function_of(sym.scope)];
+    if (fn.lowered) continue;  // a lowered body's: checked as it was written
+    size_t around = fn.parent;
     if (around == resolve::kNone) continue;  // the module's own
     size_t outer = res.lookup(around, sym.name);
     if (outer == resolve::kNone || res.frame_of(outer) == 0) continue;

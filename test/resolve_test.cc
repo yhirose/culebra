@@ -511,25 +511,13 @@ void test_declaration_forms() {
 }
 
 
-// ---- the scope-opening table ----------------------------------------------
+// ---- which constructs are scopes -------------------------------------------
 
-// Where `target` sits under `n`: 0 not there, 1 on `n`'s own level, 2 inside
-// a construct opens_scope names or an arm is_arm does.
-int level_of(const peg::Ast& n, const peg::Ast* target, bool crossed) {
-  if (&n == target) return crossed ? 2 : 1;
-  for (size_t i = 0; i < n.nodes.size(); i++) {
-    const auto& c = *n.nodes[i];
-    if (int r = level_of(c, target,
-                         crossed || opens_scope(c.tag) || is_arm(n, i)))
-      return r;
-  }
-  return 0;
-}
-
-// opens_scope and is_arm are what the lowerings stop at; the Resolver is what
-// opens the scopes. A `let v` written in each construct is on the function's own level
-// for both, or for neither.
-void test_scope_table() {
+// A `let v` written in each construct is on the function's own level or in
+// a scope of the construct's. A scope that is no function's is recorded
+// under the block that opens it (Resolution::block_scope), which is how a
+// lowering finds the variables of a block it compiles.
+void test_scope_levels() {
   struct Case {
     const char* what;
     const char* construct;
@@ -570,8 +558,11 @@ void test_scope_table() {
       {"a trait method", "trait T { m() { let v = 1 } }", false},
       {"a handled block", "handle { let v = 1 } with ask(resume) { 0 }", false},
       {"a handler clause", "handle { 0 } with ask(resume) { let v = 1 }", false},
+      {"an if's init clause", "if let v = 1; v > 0 { 0 }", false},
+      {"a while's init clause", "while let v = 1; v > 1 { 0 }", false},
+      {"a match's init clause", "match let v = 1; v { _ => 0 }", false},
   };
-  auto probe = [&](const Case& c, bool& resolver, bool& table) {
+  auto probe = [&](const Case& c, bool& own_level, bool& recorded) {
     auto p = resolve_source(
         std::format("effect fn ask()\nfn f() {{\n  0\n  {}\n  0\n}}\n", c.construct),
         {.record_nodes = true});
@@ -589,31 +580,83 @@ void test_scope_table() {
     for (const auto& d : res.declarations)
       if (d.node->token == "v") v = &d;
     if (!body || !v) {
-      check(false, std::format("scope table [{}]: no `v` in `f`", c.what));
+      check(false, std::format("scope levels [{}]: no `v` in `f`", c.what));
       return false;
     }
-    resolver = res.symbols[v->symbol].scope == scope;
-    table = level_of(*body, v->node, false) == 1;
+    size_t held = res.symbols[v->symbol].scope;
+    own_level = held == scope;
+    recorded = res.scopes[held].function;
+    for (const auto& [block, s] : res.block_scope) recorded |= s == held;
     return true;
   };
   for (const auto& c : cases) {
-    bool resolver = false, table = false;
-    if (!probe(c, resolver, table)) continue;
-    check(resolver == c.own_level,
-          std::format("scope table [{}]: the resolver puts `v` {} the "
-                      "function's own level",
-                      c.what, resolver ? "on" : "off"));
-    check(table == resolver,
-          std::format("scope table [{}]: the table and the resolver disagree",
+    bool own_level = false, recorded = false;
+    if (!probe(c, own_level, recorded)) continue;
+    check(own_level == c.own_level,
+          std::format("scope levels [{}]: `v` is {} the function's own level",
+                      c.what, own_level ? "on" : "off"));
+    check(recorded,
+          std::format("scope levels [{}]: the scope of `v` is no function's "
+                      "and no recorded block's",
                       c.what));
   }
-  // The one scope the table leaves out: an `if`'s init clause, whose bindings
-  // the lowerings take as the level around the `if`.
-  bool resolver = true, table = false;
-  if (probe({"an if's init clause", "if let v = 1; v > 0 { 0 }", false},
-            resolver, table))
-    check(!resolver && table,
-          "scope table: an `if`'s init clause is the known difference");
+}
+
+// ---- a body on its own -------------------------------------------------------
+
+void test_body() {
+  std::string src =
+      "let a = p\n"         // the body's own `a`, from a parameter
+      "{ let a = 2 }\n"     // a block's `a`
+      "for i in [1] { let t = i }\n"
+      "if let c = 1; c > 0 { let u = 1 } else { let u = 2 }\n"
+      "out = a\n"           // a write to a name visible around the function
+      "fresh = a\n";        // a name nothing around declares: the body's own
+  std::vector<culebra::ParseFailure> failures;
+  auto ast = culebra::parse("(test)", src, failures);
+  if (!ast) return check(false, "body: parses");
+  std::vector<std::string> around{"out", "a"};
+  std::vector<std::string_view> params{"p"};
+  auto res = resolve_body(*ast, params, {.record_nodes = true, .session = around});
+
+  auto it = res.body_scope.find(ast.get());
+  if (it == res.body_scope.end()) return check(false, "body: its scope is recorded");
+  size_t body = it->second;
+  check(res.scopes[body].function && res.scopes[body].parent == 0,
+        "body: a function scope under the one around it");
+  auto in = [&](size_t scope, std::string_view name) {
+    auto f = res.scopes[scope].names.find(name);
+    return f == res.scopes[scope].names.end() ? kNone : f->second;
+  };
+  size_t p = in(body, "p");
+  check(p != kNone && res.symbols[p].declared_as(Form::Parameter),
+        "body: a parameter known by name is the body's");
+  size_t a = in(body, "a");
+  check(a != kNone && a != in(0, "a"),
+        "body: its `let` of a name visible around it is its own variable");
+  check(in(body, "out") == kNone && res.symbols[in(0, "out")].declarations == 0,
+        "body: a bare write to a name around it declares nothing");
+  check(in(body, "fresh") != kNone,
+        "body: a bare write to a name nothing declares is the body's");
+
+  // Every block that is a scope is recorded under its node, and holds what
+  // is declared on its level.
+  std::map<std::string, size_t, std::less<>> holder;  // name -> block scope
+  for (const auto& [node, scope] : res.block_scope)
+    for (const auto& [name, symbol] : res.scopes[scope].names)
+      holder[name] = scope;
+  check(holder.contains("t") && holder["t"] == holder["i"],
+        "body: a loop's variable and its body's are one recorded scope");
+  check(holder.contains("c") && holder.contains("u") &&
+            res.scopes[holder["u"]].parent == holder["c"],
+        "body: an init clause's scope is recorded, around the arms'");
+  size_t blocks_a = 0;
+  for (const auto& [node, scope] : res.block_scope)
+    blocks_a += res.scopes[scope].names.contains("a");
+  check(blocks_a == 1, "body: the block's `a` is in the block's scope");
+  for (const auto& [node, scope] : res.block_scope)
+    check(res.function_of(scope) == body,
+          "body: a block's scope is in the body's frame");
 }
 
 // ---- the load-time lint ------------------------------------------------------
@@ -768,6 +811,27 @@ void test_lint_shadow() {
 }
 
 // `x = v` after a `let x` of that variable.
+// A state class a lowering synthesized holds, in its methods, a body written
+// in the function around the class: what it declares there was held to the
+// shadow rule as written, and is no declaration of the method's own.
+void test_lint_lowered_class() {
+  auto shadows_in = [](const char* cls) {
+    std::string src = std::format(
+        "fn g(z) {{\n  class {} {{\n    step() {{ let z = 9 }}\n  }}\n}}\n", cls);
+    std::vector<culebra::ParseFailure> failures;
+    auto ast = culebra::parse("<gen#0>", src, failures);
+    if (!ast) return size_t{99};
+    auto res = resolve_module(*ast, src, {.record_nodes = true});
+    std::vector<culebra::lint::Diagnostic> diags;
+    culebra::lint::_detail::shadows(res, diags);
+    return diags.size();
+  };
+  check(shadows_in("K") == 1,
+        "ShadowError [a method over the enclosing function's parameter]");
+  check(shadows_in("_Gen_g_1_1") == 0,
+        "ShadowError [a lowered state class's method holds the body's own]");
+}
+
 void test_lint_let() {
   check_lint("ImmutableError", {
       {"a let", "let a = 1\na = 2\n", {"a@2"}},
@@ -796,6 +860,7 @@ void test_lint_let() {
 }  // namespace
 
 int main() {
+  test_body();
   test_scopes();
   test_order();
   test_declarations();
@@ -807,7 +872,8 @@ int main() {
   test_outline();
   test_node_records();
   test_declaration_forms();
-  test_scope_table();
+  test_scope_levels();
+  test_lint_lowered_class();
   test_lint_undefined();
   test_lint_shadow();
   test_lint_let();

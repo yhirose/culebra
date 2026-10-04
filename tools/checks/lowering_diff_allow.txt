@@ -1,8 +1,8 @@
 # Forms of tools/checks/lowering_diff.py that are known to disagree and not
 # yet fixed: `<sweep> <cases that disagree> <form>`, under why. A form whose
 # count moves, or that agrees now, fails the gate, so a fix removes its line.
-# The cause of all of them: a lowering moves a body's locals onto its state
-# object by name.
+# A lowering moves the variables of a scope a suspension splits onto its
+# state object, where a slot holds a value and nothing else.
 
 # L1: reassigning what was declared without `mut` raises nothing
 sole 5 (a, (b,)) = (1, (2,)); (a, (b,)) = (3, (4,)); EMIT(a + b)
@@ -14,7 +14,6 @@ binding 2 a = 1; if C { a = 2 }; EMIT(a)
 binding 5 a = 1; f = fn () { a = 2 }; f(); EMIT(a)
 binding 5 z = 5; EMIT(z)
 binding 1 z += 5; EMIT(z)
-binding 5 println = 1; EMIT(1)
 binding 5 (a, b) = (1, 2); a = 3; EMIT(a)
 binding 5 (a, b) = (1, 2); EMIT(a); (a, b) = (3, 4); EMIT(a)
 binding 5 let (a, b) = (1, 2); a = 3; EMIT(a)
@@ -22,38 +21,6 @@ binding 5 mut a = 1; b = 2; EMIT(a); (a, b) = (3, 4); EMIT(a)
 binding 5 for x in [1] { EMIT(x); x = 2 }
 binding 5 for x in [1, 2] { x += 10; EMIT(x) }
 binding 1 if C { mut a = 1; a = 2; EMIT(a) } else { a = 3; a = 4; EMIT(a) }
-
-# L2: a closure's parameter named as a local of the body breaks the lowering,
-# ahead of the load's ShadowError
-binding 5 a = 1; f = fn (a) { a }; EMIT(f(2))
-
-# L3: a nested scope's declaration shares the slot of the outer name
-binding 5 a = 1; { let a = 2; EMIT(a) }; EMIT(a)
-binding 2 let a = "outer"; if C { let a = "inner"; EMIT(a) }; EMIT(a)
-binding 1 let a = "outer"; if C { EMIT(0) } else { let a = "inner"; EMIT(a) }; EMIT(a)
-binding 2 let a = "outer"; EMIT(C ? (let a = "inner") : 0); EMIT(a)
-binding 2 let a = "outer"; while C { let a = "inner"; EMIT(a); break }; EMIT(a)
-binding 5 let a = "outer"; for q in [1] { let a = "inner"; EMIT(a) }; EMIT(a)
-binding 5 let a = "outer"; for a in [7] { EMIT(a) }; EMIT(a)
-binding 5 let a = "outer"; match z { a => 0 }; EMIT(a)
-binding 5 let a = "outer"; try { let a = "inner" } catch e { 0 }; EMIT(a)
-binding 5 { let top = 1 }; EMIT(top)
-binding 3 if C { let top = 1 }; EMIT(top)
-binding 3 if C { let top = 1; EMIT(top) }; EMIT(top)
-binding 2 if C { let z = 9; EMIT(z) }; EMIT(z)
-binding 5 { mut z = 9; z += 1; EMIT(z) }; EMIT(z)
-binding 2 mut f = nil; a = 0; if C { let a = 1; f = || a; EMIT(a) }; EMIT([a, f == nil ? 0 : f()])
-
-# L4: the closures of a loop no suspension splits capture one variable
-binding 5 mut fs = []; for i in [1, 2, 3] { let x = i * 10; fs.push(|| x) }; EMIT(fs.map(|f| f()))
-binding 5 mut fs = []; mut i = 0; while i < 3 { let x = i; fs.push(|| x); i += 1 }; EMIT(fs.map(|f| f()))
-
-# L5: writing what a loop, a match arm or a catch binds, with no suspension
-# inside it, breaks the lowering
-binding 5 for x in [1] { x = 2 }; EMIT(1)
-binding 5 for (x, y) in [(1, 2)] { x = 5 }; EMIT(1)
-binding 5 match z { q => { q = 2 } }; EMIT(1)
-binding 5 try { throw "t" } catch e { e = 1 }; EMIT(1)
 
 # L6: left as they are until a suspended body keeps its frame: `??=` and a
 # typed store over an immutable, a closure called ahead of the declaration

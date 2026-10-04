@@ -17,13 +17,15 @@
 // The body is lowered by a flat-dispatch CPS state machine (see
 // `CpsBuilder`): each basic block becomes a state, control flow becomes
 // `self._g_state = K; continue` jumps over one `while true` dispatch
-// loop, and every local lives on the instance (all-locals-on-heap, so no
-// liveness analysis). The C# rule runs first: yield is rejected inside
+// loop, and the variables of every scope a yield splits live on the
+// instance, each in a slot of its own (PromotedLocals, read off resolve.h;
+// no liveness analysis). The C# rule runs first: yield is rejected inside
 // try-catch/defer.
 
 #pragma once
 
 #include "frontend/fragments.h"
+#include "frontend/lint.h"
 #include "frontend/parser.h"
 #include "frontend/resolve.h"
 
@@ -39,8 +41,10 @@
 #include <numeric>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace culebra {
@@ -562,70 +566,216 @@ inline std::string next_fragment_label(const char* stem) {
                      counter.fetch_add(1, std::memory_order_relaxed));
 }
 
-// The locals a lowered body promotes onto its state instance. `names` is all
-// of them (the enclosing fn's params included); `boxed` is the subset some
-// closure written in the body reads. A boxed local lives in a one-field box:
-// the instance holds the box and the closure captures the box, so neither
-// reaches the other. Unboxed, the closure would read the local through `self`
-// while the instance held the closure back (`let h = fn …` is a local too) —
-// a reference cycle for a body that never wrote one.
-struct PromotedLocals {
-  std::set<std::string> names;
-  std::set<std::string> boxed;
-};
-
-// The plain local a boxed name is reached through. `emit_box_prologue` binds
-// it on entry to each piece of emitted code — an effects method, a generator
-// state — so one spelling serves both inside a closure (which captures this
-// local) and outside it.
-inline std::string box_local(std::string_view name) {
-  return "_bx_" + std::string(name);
-}
-
-// The instance field a promoted name is stored under. A user's local gets a
-// namespace of its own, apart from the state class's methods (the iterator
-// protocol, `_step`), its machinery fields and the names the runtime reads
-// off an object (`drop`) — `let dispose = 'x'` silently skipped a generator's
-// defers when a local shared the method's name. The machinery's own names
-// (`_g_*`, `_eff_*`, like the `_eff_outer` a nested handle is handed) are
-// read back by their spelling and keep it.
-inline std::string instance_field(std::string_view name) {
-  if (name.starts_with("_g_") || name.starts_with("_eff_"))
-    return std::string(name);
-  return "_l_" + std::string(name);
-}
-
-// Where a promoted name lives, as source: the box's field when it is boxed,
-// the instance slot otherwise. The single definition of the spelling — the
-// locals rewrite reads through it and every synthesized store writes through
-// it, so the two cannot drift.
-inline std::string promoted_slot(const PromotedLocals& promoted,
-                                 const std::string& name) {
-  return promoted.boxed.contains(name) ? box_local(name) + ".v"
-                                       : "self." + instance_field(name);
-}
-
 // A box holding `value` — the one shape every box is made in.
 inline std::string box_literal(std::string_view value) {
   return std::format("{{mut v: {}}}", value);
 }
 
-// Bind the boxed locals `body` names, for prepending to it. Every emitted
-// method that carries body source needs this — the box is reached as a plain
-// local, so without the binding the lowered source names a free `_bx_<name>`.
-// Taking the body rather than a flag is what keeps that rule from being
-// re-decided per method: a method that mentions no box gets no prologue, and
-// one that mentions a box cannot be given the wrong set.
-inline std::string emit_box_prologue(const PromotedLocals& promoted,
-                                     std::string_view body) {
-  std::string out;
-  for (const auto& n : promoted.boxed) {
-    auto local = box_local(n);
-    if (body.find(local) == std::string_view::npos) continue;
-    out += std::format("      let {} = self.{}\n", local, instance_field(n));
+// The locals a lowered body moves onto its state instance, by variable. The
+// body is resolved (resolve.h) under the names visible around it, and a
+// variable gets a slot when the machine enters the scope that holds it
+// (promote): a scope whose statements end up in different states. A scope no
+// suspension splits is emitted as it was written, and its variables stay the
+// locals they were.
+//
+// A slotted variable some closure written in the body reads lives in a
+// one-field box: the instance holds the box and the closure captures the box,
+// so neither reaches the other. Unboxed, the closure would read the local
+// through `self` while the instance held the closure back (`let h = fn …` is
+// a local too) — a reference cycle for a body that never wrote one. A closure
+// is any function scope of the resolution, a `defer` among them though these
+// transforms inline one they run themselves: an extra box costs one object, a
+// missing one restores the cycle.
+class PromotedLocals {
+ public:
+  struct Slot {
+    std::string field;  // on the instance; empty while the variable has none
+    std::string box;    // the plain local its box is reached through, if boxed
+    // Where the variable lives, as source. Each piece of emitted code binds
+    // the box locals it names on entry (box_prologue), so one spelling serves
+    // both inside a closure (which captures the local) and outside it.
+    std::string place() const {
+      return box.empty() ? "self." + field : box + ".v";
+    }
+  };
+
+  PromotedLocals() = default;  // of no body: nothing has a slot
+  // `body` under parameters named `params`, where `around` are the names
+  // visible around the function. The body's own level is entered.
+  PromotedLocals(const peg::Ast& body, std::span<const std::string_view> params,
+                 std::span<const std::string> around)
+      : res_(resolve::resolve_body(body, params, lint::resolve_options(around))),
+        body_(res_.body_scope.at(&body)),
+        slots_(res_.symbols.size()),
+        captured_(res_.symbols.size()) {
+    for (const auto& [node, use] : res_.uses)
+      if (use.symbol != resolve::kNone && res_.frame_of(use.symbol) == body_ &&
+          res_.function_of(use.scope) != body_ && !own_name(use))
+        captured_[use.symbol] = true;
+    promote(body_);
   }
-  return out;
-}
+
+  // The scope the body's own statements are on, and the one `block` opens
+  // when it is a scope of its own (resolve::Resolution::block_scope).
+  size_t body_scope() const { return body_; }
+  std::optional<size_t> scope_of(const peg::Ast& block) const {
+    auto it = res_.block_scope.find(&block);
+    if (it == res_.block_scope.end()) return std::nullopt;
+    return it->second;
+  }
+
+  // Give every variable of `scope` a slot. A user's local gets a namespace
+  // of its own, apart from the state class's methods (the iterator protocol,
+  // `_step`), its machinery fields and the names the runtime reads off an
+  // object (`drop`); the second variable of a name gets a numbered one. The
+  // machinery's own names (`_g_*`, `_eff_*`, like the `_eff_outer` a nested
+  // handle is handed) are read back by their spelling and keep it.
+  void promote(size_t scope) {
+    for (const auto& [name, sym] : res_.scopes[scope].names) {
+      Slot& s = slots_[sym];
+      if (!s.field.empty()) continue;
+      int k = spelled_[name]++;
+      if (name.starts_with("_g_") || name.starts_with("_eff_")) {
+        if (k)
+          throw CulebraError("InternalError",
+                             "a lowering declared `" + name + "` twice", 0, 0);
+        s.field = name;
+      } else {
+        s.field = k ? std::format("_l{}_{}", k, name) : "_l_" + name;
+      }
+      if (captured_[sym])
+        s.box = k ? std::format("_bx{}_{}", k, name) : "_bx_" + name;
+      order_.push_back(sym);
+    }
+  }
+
+  // The slot of the variable `name` names, or nullptr when it has none: a
+  // name the body does not declare, a variable of a scope emitted as
+  // written, a named fn's own name inside it.
+  const Slot* slot(const peg::Ast& name) const {
+    auto it = res_.uses.find(&name);
+    if (it == res_.uses.end() || it->second.symbol == resolve::kNone)
+      return nullptr;
+    const Slot& s = slots_[it->second.symbol];
+    return s.field.empty() || own_name(it->second) ? nullptr : &s;
+  }
+
+  // Whether `name` names a variable of the body's own, slotted or not.
+  bool declares(const peg::Ast& name) const {
+    size_t sym = res_.symbol_of(name);
+    return sym != resolve::kNone && res_.frame_of(sym) == body_;
+  }
+
+  // Source giving each boxed variable of `scope` a fresh box, for a scope
+  // entered again: a closure made on an earlier pass keeps that pass's
+  // variable. Empty when nothing there is boxed.
+  std::string fresh_boxes(size_t scope) const {
+    std::string out;
+    for (const auto& [name, sym] : res_.scopes[scope].names)
+      if (!slots_[sym].box.empty())
+        out += std::format("      self.{} = {}\n", slots_[sym].field,
+                           box_literal("nil"));
+    return out;
+  }
+
+  // Bind the boxes `body` names, for prepending to it. Every emitted method
+  // that carries body source needs this — the box is reached as a plain
+  // local, so without the binding the lowered source names a free one.
+  // Taking the body rather than a flag is what keeps that rule from being
+  // re-decided per method: a method that mentions no box gets no prologue,
+  // and one that mentions a box cannot be given the wrong set.
+  std::string box_prologue(std::string_view body) const {
+    std::string out;
+    for (size_t sym : order_) {
+      const Slot& s = slots_[sym];
+      if (s.box.empty() || body.find(s.box) == std::string_view::npos) continue;
+      out += std::format("      let {} = self.{}\n", s.box, s.field);
+    }
+    return out;
+  }
+
+  // The state class's `new`: its slot list `_p0, _p1, ...` for `params`, the
+  // arguments its call passes, and after `ctor_inits` the initializer of
+  // every slot the body got: a parameter's from its `_pN`, any other nil. A
+  // boxed slot holds the box, made once here; every later store goes into
+  // its `v` field, so the box the closures captured stays the live one.
+  void emit_ctor(std::span<const std::string_view> params,
+                 std::string& ctor_params, std::string& ctor_call_args,
+                 std::string& ctor_inits) const {
+    std::vector<std::string> value(slots_.size(), "nil");
+    for (size_t j = 0; j < params.size(); j++) {
+      auto arg = std::format("_p{}", j);
+      if (j > 0) {
+        ctor_params += ", ";
+        ctor_call_args += ", ";
+      }
+      ctor_params += arg;
+      ctor_call_args += std::string(params[j]);
+      const auto& names = res_.scopes[body_].names;
+      if (auto it = names.find(params[j]); it != names.end())
+        value[it->second] = arg;
+    }
+    for (size_t sym : order_) {
+      const Slot& s = slots_[sym];
+      ctor_inits += std::format(
+          "      self.{} = {}\n", s.field,
+          s.box.empty() ? value[sym] : box_literal(value[sym]));
+    }
+  }
+
+  // Source giving every box a copy of its own: a forked frame shares the
+  // boxes of the one it was copied from otherwise.
+  std::string refork() const {
+    std::string out;
+    for (size_t sym : order_) {
+      const Slot& s = slots_[sym];
+      if (!s.box.empty())
+        out += std::format("      self.{0} = {1}\n", s.field,
+                           box_literal("self." + s.field + ".v"));
+    }
+    return out;
+  }
+
+  // Whether `n`, on the level of `scope`, holds a `defer` of that scope: one
+  // reached through no scope of its own. A defer anywhere deeper sits in a
+  // scope the machine enters by itself, or in one that runs start to finish
+  // inside one state, where the backends' own defer does the work.
+  bool has_defer_of(const peg::Ast& n, size_t scope) const {
+    using namespace peg::udl;
+    if (n.tag == "DEFER"_) {
+      if (n.nodes.empty()) return false;
+      auto it = res_.body_scope.find(n.nodes[0].get());
+      return it != res_.body_scope.end() &&
+             res_.scopes[it->second].parent == scope;
+    }
+    if (is_fn_boundary(n.tag)) return false;
+    // Nothing under a block of another scope is this scope's.
+    if (auto it = res_.block_scope.find(&n);
+        it != res_.block_scope.end() && it->second != scope)
+      return false;
+    for (const auto& c : n.nodes)
+      if (has_defer_of(*c, scope)) return true;
+    return false;
+  }
+
+ private:
+  // A named fn's own name inside its body binds to the declaration itself,
+  // not to the slot the declaration is stored in.
+  bool own_name(const resolve::Use& use) const {
+    if (!res_.symbols[use.symbol].declared_as(resolve::Form::Function))
+      return false;
+    for (size_t s = use.scope; s != resolve::kNone; s = res_.scopes[s].parent)
+      if (res_.scopes[s].owner == use.symbol) return true;
+    return false;
+  }
+
+  resolve::Resolution res_;
+  size_t body_ = resolve::kNone;
+  std::vector<Slot> slots_;     // by symbol
+  std::vector<char> captured_;  // by symbol: some closure names it
+  std::vector<size_t> order_;   // the slotted symbols, as they got one
+  std::map<std::string, int, std::less<>> spelled_;  // slotted per name
+};
 
 // `(a, b, _)`: every leaf a plain name — the one destructuring shape that
 // also reads as a PLACE_ASSIGN once its leaves are spelled `self.<name>`.
@@ -662,8 +812,9 @@ inline MappedSource rename_pattern_leaves(const peg::Ast& pat,
                                          std::string_view sep) {
   MappedSource copies;
   for_each_pattern_leaf(pat, [&](const peg::Ast& id, bool shorthand) {
+    const auto* slot = promoted.slot(id);
+    if (!slot) return;
     auto name = std::string(id.token);
-    if (!promoted.names.contains(name)) return;
     auto temp = destructure_temp(pat, name);
     auto pos = static_cast<size_t>(id.token.data() - src.data());
     out.push_back({pos, id.token.size(),
@@ -671,7 +822,7 @@ inline MappedSource rename_pattern_leaves(const peg::Ast& pat,
     // A copy that fails (a slot that cannot take the value) is the leaf's.
     copies += std::format("{} ", sep);
     copies += MappedSource::standing_for(
-        std::format("{} = {}", promoted_slot(promoted, name), temp), src, pos);
+        std::format("{} = {}", slot->place(), temp), src, pos);
   });
   return copies;
 }
@@ -710,7 +861,7 @@ inline MappedSource rewrite_locals_to_self(const peg::Ast& n,
                                            std::vector<SourceEdit> edits = {});
 
 // The edits that move every promoted local under `n` to where it lives
-// (promoted_slot). Only references are touched — a member name (`o.x`) and a
+// (PromotedLocals::Slot::place). Only references are touched — a member name (`o.x`) and a
 // label (`{x: v}`, `f(x: v)`) are not the local — and a shorthand `{x}` is
 // both, so it keeps its key and gains the value (`{x: <slot>}`). A `let` /
 // `mut` in front of a promoted target goes: that declaration is now a store
@@ -739,12 +890,9 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
     return static_cast<size_t>(t.token.data() - src.data());
   };
   auto is_promoted = [&](const peg::Ast& id) {
-    return id.tag == "IDENTIFIER"_ && id.is_token &&
-           promoted.names.contains(std::string(id.token));
+    return id.tag == "IDENTIFIER"_ && id.is_token && promoted.slot(id);
   };
-  auto slot = [&](const peg::Ast& id) {
-    return promoted_slot(promoted, std::string(id.token));
-  };
+  auto slot = [&](const peg::Ast& id) { return promoted.slot(id)->place(); };
   // The `let` / `mut` keyword(s) of a declaration, up to its first target.
   auto drop_keywords = [&](const peg::Ast& decl, size_t target) {
     const auto& kw = decl.nodes[0]->token.empty() ? *decl.nodes[1]
@@ -892,14 +1040,6 @@ inline MappedSource rewrite_block_inner(const peg::Ast& block,
                        static_cast<long>(block.column));
 }
 
-// Whether a node opens a variable scope of its own, and whether a child is
-// an `if` / `?:` / `cond` arm, a scope too: the scope rules' own table
-// (resolve.h). A whole MATCH or TRY counts as one level here (their arms as
-// siblings), an over-approximation in the direction collect_local_names
-// tolerates.
-using resolve::is_arm;
-using resolve::opens_scope;
-
 // Positional parameter names of a PARAMETERS node, skipping the kw-only
 // separator and any `**kwargs` rest. Shared by the generator and effects
 // transforms — both feed the names into ctor slot emission, so the skip rules
@@ -914,202 +1054,52 @@ inline std::vector<std::string_view> collect_positional_param_names(
   return names;
 }
 
-// What `c` binds at the level it sits on: an assignment target (declared or
-// bare), a destructure's leaves, a nested `fn` / `class` / `enum` name —
-// without entering a node that opens a scope of its own or an arm (whose
-// bindings are that scope's, a loop's binding included).
-inline void bind_level(const peg::Ast& c, std::set<std::string>& out) {
-  using namespace peg::udl;
-  if (c.tag == "MULTIFN_DECL"_ || c.tag == "CLASS_DECL"_ ||
-      c.tag == "ENUM_DECL"_ || c.tag == "EFFECT_FN_DECL"_) {
-    auto head = c.nodes[first_non_decorator_index(c)]->token;
-    out.insert(std::string(culebra::parse_generic_head(head).outer));
-    return;
-  }
-  if (opens_scope(c.tag)) return;
-  if (c.tag == "ASSIGNMENT"_) {
-    auto av = view_assignment(c);
-    if (const auto* t = assign_name_target(c, av))
-      out.insert(std::string(t->token));
-  } else if (c.tag == "DESTRUCTURE_ASSIGN"_) {
-    pattern_binding_names(*view_destructure(c).pattern, out);
-  }
-  for (size_t i = 0; i < c.nodes.size(); i++)
-    if (!is_arm(c, i)) bind_level(*c.nodes[i], out);
-}
-
-// What a body's own level binds: a statement list's, or the one statement a
-// block collapsed onto.
-inline void bind_body_level(const peg::Ast& body, std::set<std::string>& out) {
-  using namespace peg::udl;
-  if (body.tag == "STATEMENTS"_) {
-    for (auto& c : body.nodes) bind_level(*c, out);
-  } else {
-    bind_level(body, out);
-  }
-}
-
-// Add what a scope-opening node makes visible inside it: what it binds on
-// entry (parameters, a loop's or an arm's pattern) and what its own level
-// binds.
-inline void add_scope_names(const peg::Ast& n, std::set<std::string>& names) {
-  using namespace peg::udl;
-  const peg::Ast* params = nullptr;
-  if (n.tag == "MULTIFN_DECL"_) {
-    size_t i = first_non_decorator_index(n);
-    if (i + 2 < n.nodes.size()) params = n.nodes[i + 1].get();
-  } else if (n.tag == "FUNCTION"_) {
-    params = view_function(n).params;
-  } else if (n.tag == "LAMBDA"_) {
-    params = view_lambda(n).params;
-  } else if (n.tag == "METHOD"_) {
-    params = view_method(n).params;
-  } else if (n.tag == "FOR"_) {
-    pattern_binding_names(*view_for(n).binding, names);
-  } else if (n.tag == "MATCH"_) {
-    for (auto& arm : view_match(n).arms->nodes)
-      pattern_binding_names(*arm->nodes[0], names);
-  }
-  if (params && params->tag == "PARAMETERS"_) {
-    for (auto nm : collect_positional_param_names(*params))
-      names.insert(std::string(nm));
-  }
-  for (auto& c : n.nodes) bind_level(*c, names);
-}
-
-// Where a node sits: the program, and the scopes between it and the node,
-// outermost first: a scope-opening node, or the body of an arm. A walk
-// carries this (pointers only) and turns it into names — the `outer` of
-// collect_local_names — only for a body it actually lowers, so a program
-// with no generator or effect pays nothing.
-struct ScopeChain {
-  struct Link {
-    const peg::Ast* node;
-    bool arm;
-  };
+// Where a lowering walks: the root, the nodes from it down to the one being
+// walked, and the names visible around the root. A body to lower is resolved
+// under the names visible where it stands (PromotedLocals), which the root's
+// own resolution says; the root is resolved the first time one is asked for,
+// so a program with no generator or effect pays nothing.
+struct Surroundings {
   const peg::Ast* root = nullptr;
-  std::vector<Link> nodes;
+  std::vector<std::string> around;
+  std::vector<const peg::Ast*> path;
+  // The root's resolution, shared by the copies of one walk (a lowerer handed
+  // a subtree of another buffer walks on with a copy).
+  std::shared_ptr<std::optional<resolve::Resolution>> resolved =
+      std::make_shared<std::optional<resolve::Resolution>>();
 
-  // `ast`'s children, each replaced by `f` of it, with the scopes `ast`
-  // opens on the chain meanwhile.
+  // `ast`'s children, each replaced by `f` of it, with `ast` on the path
+  // meanwhile.
   template <typename F>
   void walk_children(peg::Ast& ast, F&& f) {
-    bool opens = opens_scope(ast.tag);
-    if (opens) nodes.push_back({&ast, false});
-    for (size_t i = 0; i < ast.nodes.size(); i++) {
-      bool arm = is_arm(ast, i);
-      if (arm) nodes.push_back({ast.nodes[i].get(), true});
-      ast.nodes[i] = f(ast.nodes[i]);
-      if (arm) nodes.pop_back();
+    path.push_back(&ast);
+    for (auto& c : ast.nodes) c = f(c);
+    path.pop_back();
+  }
+
+  // The names visible where the walk stands: those of the innermost scope
+  // the path is in, and of every scope around it.
+  std::vector<std::string> visible() {
+    if (!*resolved)
+      resolved->emplace(
+          resolve::resolve_module(*root, {}, lint::resolve_options(around)));
+    const resolve::Resolution* res = &**resolved;
+    size_t scope = 0;
+    for (size_t i = path.size(); i-- > 0;) {
+      auto it = res->body_scope.find(path[i]);
+      if (it == res->body_scope.end()) {
+        it = res->block_scope.find(path[i]);
+        if (it == res->block_scope.end()) continue;
+      }
+      scope = it->second;
+      break;
     }
-    if (opens) nodes.pop_back();
+    std::vector<std::string> out;
+    for (size_t s = scope; s != resolve::kNone; s = res->scopes[s].parent)
+      for (const auto& [name, sym] : res->scopes[s].names) out.push_back(name);
+    return out;
   }
 };
-
-inline std::set<std::string> names_in_scope(const ScopeChain& chain) {
-  std::set<std::string> names;
-  if (!chain.root) return names;
-  bind_body_level(*chain.root, names);
-  for (const auto& l : chain.nodes) {
-    if (l.arm) bind_body_level(*l.node, names);
-    else add_scope_names(*l.node, names);
-  }
-  return names;
-}
-
-// Collect every name a lowered body declares — the locals the state object
-// carries across a suspension. A `let` / `mut` declares outright, in the
-// single-target and destructuring forms alike; a bare `x = …` (or a bare
-// destructure's leaf) declares only where no enclosing scope binds `x`,
-// since otherwise it reassigns that binding (docs §Scope), and promoting
-// it would silently split the two. `outer` is the enclosing scopes' bound
-// names (names_in_scope). Stops at nested fn boundaries.
-inline std::set<std::string> collect_local_names(
-    const peg::Ast& body, const std::set<std::string>& outer) {
-  using namespace peg::udl;
-  std::set<std::string> out;
-  auto declare = [&](std::string_view name, bool declared) {
-    if (is_sink_name(name)) return;
-    if (declared || !outer.contains(std::string(name)))
-      out.insert(std::string(name));
-  };
-  std::function<void(const peg::Ast&)> walk = [&](const peg::Ast& n) {
-    // A nested `handle` opens its own computation scope; its locals belong to
-    // that inner computation, not this one (they must not be rewritten to this
-    // instance's `self.`). Generators carry no HANDLE, so this is a no-op there.
-    if (is_fn_boundary(n.tag) || n.tag == "HANDLE"_) return;
-    if (n.tag == "ASSIGNMENT"_) {
-      auto av = view_assignment(n);
-      if (!av.compound) {
-        if (const auto* t = assign_name_target(n, av))
-          declare(t->token, av.is_let || av.is_mut);
-      }
-    } else if (n.tag == "DESTRUCTURE_ASSIGN"_) {
-      auto dv = view_destructure(n);
-      for_each_pattern_leaf(*dv.pattern, [&](const peg::Ast& id, bool) {
-        declare(id.token, dv.declares);
-      });
-    }
-    for (auto& c : n.nodes) walk(*c);
-  };
-  walk(body);
-  return out;
-}
-
-// The promoted names some closure written in the body reads — the ones that
-// have to be boxed (see PromotedLocals). A named fn's references to its OWN
-// name don't count: those bind to the declaration itself (the multifn uplink),
-// not through the instance. A nested HANDLE is NOT a stop: only closures
-// matter here, and a name this body promoted keeps its meaning inside one
-// (a handle body cannot redeclare an enclosing binding). What a handle reads
-// outside any closure still goes through the enclosing-instance path.
-//
-// The answer must be a SUPERSET of the true capture set: an extra box costs
-// one object, a missing one silently restores the cycle this exists to break
-// (which only the leak-fuzz corpus would notice, and only for a shape it
-// already carries). That is why the boundary set is `is_fn_boundary` and NOT
-// fn_analysis.h's — DEFER is a closure boundary there, and these transforms
-// inline defer bodies into the dispose / finalize methods, where they run in
-// the same scope as the rest of the body.
-inline std::set<std::string> collect_captured_names(
-    const peg::Ast& body, const std::set<std::string>& promoted) {
-  using namespace peg::udl;
-  std::set<std::string> out;
-  // Named fns whose own name is in scope, innermost last.
-  std::vector<std::string_view> own;
-  std::function<void(const peg::Ast&, bool)> walk = [&](const peg::Ast& n,
-                                                        bool in_fn) {
-    if (in_fn && n.tag == "IDENTIFIER"_ && n.original_tag != "DOT"_ &&
-        n.original_tag != "SAFE_DOT"_ &&
-        std::find(own.begin(), own.end(), n.token) == own.end()) {
-      auto name = std::string(n.token);
-      if (promoted.contains(name)) out.insert(std::move(name));
-    }
-    bool decl = n.tag == "MULTIFN_DECL"_ && !n.nodes.empty();
-    if (decl) own.push_back(n.nodes[first_non_decorator_index(n)]->token);
-    bool inner = in_fn || is_fn_boundary(n.tag);
-    for (size_t i = 0; i < n.nodes.size(); i++) {
-      if (is_label_position(n, i)) continue;
-      walk(*n.nodes[i], inner);
-    }
-    if (decl) own.pop_back();
-  };
-  walk(body, false);
-  return out;
-}
-
-// Everything a lowered body promotes: its locals plus the enclosing fn's
-// params, and which of them a closure reads. One factory so the two transforms
-// cannot compute `boxed` from a different body or a different name set than
-// the rewrite will use.
-inline PromotedLocals make_promoted_locals(
-    const peg::Ast& body, std::set<std::string> locals,
-    const std::vector<std::string_view>& param_names) {
-  PromotedLocals p{std::move(locals), {}};
-  for (auto& pn : param_names) p.names.insert(std::string(pn));
-  p.boxed = collect_captured_names(body, p.names);
-  return p;
-}
 
 // Unwrap a STATEMENT wrapper down to the concrete tag (CLASS_DECL,
 // WHILE, ASSIGNMENT, ...). AstOptimizer collapses most STATEMENTs
@@ -1172,45 +1162,6 @@ inline bool swap_body_with_wrapper_params(
   return true;
 }
 
-// Wire the generated class's `new(_p0, _p1, ...)` slot list and append
-// matching `self.<param> = _pN` initializers, then `self.<local> = nil`
-// for every body-declared local not shadowed by a param. Shared between
-// Stage 3 and Stage 6b — both stages seed `ctor_inits` with their own
-// state-field prefix (`_g_drained` / `_g_phase` / etc.) before calling
-// this to append the per-instance bindings.
-inline void emit_ctor_param_and_local_inits(
-    const std::vector<std::string_view>& param_names,
-    const std::set<std::string>& locals,
-    const PromotedLocals& promoted,
-    std::string& ctor_params,
-    std::string& ctor_call_args,
-    std::string& ctor_inits) {
-  // A boxed slot holds the box, made once here; every later store goes into
-  // its `v` field (promoted_slot), so the box the closures captured stays the
-  // live one.
-  auto init = [&](const std::string& name, std::string_view value) {
-    return std::format("      self.{} = {}\n", instance_field(name),
-                       promoted.boxed.contains(name) ? box_literal(value)
-                                                     : std::string(value));
-  };
-  std::set<std::string> param_set;
-  for (size_t j = 0; j < param_names.size(); j++) {
-    auto pn = std::string(param_names[j]);
-    auto slot = std::format("_p{}", j);
-    if (j > 0) {
-      ctor_params += ", ";
-      ctor_call_args += ", ";
-    }
-    ctor_params += slot;
-    ctor_call_args += pn;
-    ctor_inits += init(pn, slot);
-    param_set.insert(std::move(pn));
-  }
-  for (const auto& l : locals) {
-    if (!param_set.contains(l)) ctor_inits += init(l, "nil");
-  }
-}
-
 // --- CPS engine: flat-dispatch state machine -----------------------------
 //
 // Linearizes a generator body into a flat list of states. Each state is a
@@ -1218,9 +1169,10 @@ inline void emit_ctor_param_and_local_inits(
 // lookahead, advance state, `return true`), a delegate hand-off
 // (`yield from`), or a `self._g_state = K; continue` jump. has_next() is
 // one `while true` dispatch loop over the states. Because culebra's yield
-// is a STATEMENT (never an expression) and locals live on the heap
-// (self.X), the linearizer works statement-by-statement with no
-// expression splitting and no liveness analysis; "flat" dispatch (every
+// is a STATEMENT (never an expression) and the locals of a scope it splits
+// live on the heap (the instance), the linearizer works statement by
+// statement with no expression splitting and no liveness analysis; "flat"
+// dispatch (every
 // basic block is a state, edges set a counter) sidesteps the relooper
 // problem of reconstructing structured loops.
 //
@@ -1304,60 +1256,9 @@ inline const CpsLoop* target_loop(const std::vector<CpsLoop>& stack,
   return nullptr;
 }
 
-// A defer that belongs to the scope being compiled: reached through no node
-// that opens a scope of its own and no arm. A defer anywhere deeper sits in
-// a scope the machine compiles as one (compile_arm, for an `if` it splits)
-// or that runs start to finish inside one state, where the backends' own
-// defer does the work.
-inline bool has_scope_level_defer(const peg::Ast& n) {
-  using namespace peg::udl;
-  if (n.tag == "DEFER"_) return true;
-  if (opens_scope(n.tag)) return false;
-  for (size_t i = 0; i < n.nodes.size(); i++)
-    if (!is_arm(n, i) && has_scope_level_defer(*n.nodes[i])) return true;
-  return false;
-}
-
-// The names `s` declares (`let` / `mut`, a declaring destructure) in the
-// scope it sits in, and in its `if` arms: an arm is entered at most once per
-// entry of the scope around it, so that scope's fresh box serves the arm
-// too, split or not. Not into a nested scope or fn.
-inline void declared_at_level(const peg::Ast& s, std::set<std::string>& out) {
-  using namespace peg::udl;
-  if (opens_scope(s.tag)) return;
-  if (s.tag == "ASSIGNMENT"_) {
-    auto av = view_assignment(s);
-    if (const auto* t = assign_name_target(s, av);
-        t && (av.is_let || av.is_mut) && !av.compound)
-      out.insert(std::string(t->token));
-  } else if (s.tag == "DESTRUCTURE_ASSIGN"_) {
-    if (auto dv = view_destructure(s); dv.declares)
-      pattern_binding_names(*dv.pattern, out);
-  }
-  for (auto& c : s.nodes) declared_at_level(*c, out);
-}
-
-// A scope entered again gives each boxed name it binds — `binds`, plus what
-// `stmts` declare (declared_at_level) — a fresh box, so a closure made on an
-// earlier pass keeps that pass's binding. The source that does it, run in a
-// state of its own before the scope's first: a state binds its boxes on
-// entry (emit_box_prologue). Empty when nothing is boxed.
-inline std::string emit_fresh_boxes(const PromotedLocals& promoted,
-                                    const std::vector<const peg::Ast*>& stmts,
-                                    std::set<std::string> binds = {}) {
-  for (const auto* s : stmts) declared_at_level(*s, binds);
-  std::string out;
-  for (const auto& n : binds) {
-    if (promoted.boxed.contains(n))
-      out += std::format("      self.{} = {}\n", instance_field(n),
-                         box_literal("nil"));
-  }
-  return out;
-}
-
 struct CpsBuilder {
   const std::string& src;
-  const PromotedLocals& rewrite_set;
+  PromotedLocals& rewrite_set;
   std::vector<std::string> states;
   int terminal = -1;  // state that sets drained + returns false
   std::vector<CpsLoop> loop_stack;
@@ -1390,6 +1291,9 @@ struct CpsBuilder {
   static std::string iterator_field(int k) {
     return std::format("_g_it_{}", k);
   }
+  // The scope (of the body's resolution) the statements being compiled are
+  // on.
+  size_t scope = resolve::kNone;
   bool failed = false;
 
   int fresh() {
@@ -1422,36 +1326,52 @@ struct CpsBuilder {
     open.push_back(id);
     return id;
   }
-  // `stmts` as a scope of their own, left through its exit into `cont` — or
-  // straight into `cont` when no defer of its own could need running.
-  // `first` is source run ahead of the first statement. An arm is this much:
-  // its boxes are the fresh ones of the scope around it (declared_at_level).
-  int compile_arm(const std::vector<const peg::Ast*>& stmts, int cont,
-                  const std::string& first = "") {
+  // The statements of resolved scope `inner` as a scope of the machine's,
+  // left through its exit into `cont` — or straight into `cont` when no defer
+  // of its own could need running. `first` is source run ahead of the first
+  // statement. Its variables are on the instance from here on (promote).
+  int compile_level(size_t inner, const std::vector<const peg::Ast*>& stmts,
+                    int cont, const std::string& first = "") {
+    rewrite_set.promote(inner);
+    size_t outer = std::exchange(scope, inner);
     int id = push_scope();
-    bool owns_defers =
-        std::any_of(stmts.begin(), stmts.end(),
-                    [](const peg::Ast* s) { return has_scope_level_defer(*s); });
+    bool owns_defers = std::any_of(
+        stmts.begin(), stmts.end(),
+        [&](const peg::Ast* s) { return rewrite_set.has_defer_of(*s, inner); });
     int entry =
         compile_seq(stmts, owns_defers ? exit_to({id}, cont) : cont, first);
     open.pop_back();
+    scope = outer;
     return failed ? -1 : entry;
   }
-  // A scope that can be entered again (a block, a loop body). `binds` names
-  // what it binds on entry (a for-in's loop variable) and `first` is the
-  // source that binds it. Each entry gives the boxed names the scope
-  // declares a fresh box (emit_fresh_boxes); a state binds its boxes on
-  // entry (emit_box_prologue), so the swap is a state of its own.
-  int compile_scope(const std::vector<const peg::Ast*>& stmts, int cont,
-                    std::set<std::string> binds = {},
+  // `block`, a scope of its own: a `{ }`, a loop body, an arm. Each entry
+  // gives its boxed variables a fresh box (fresh_boxes); a state binds its
+  // boxes on entry (box_prologue), so the swap is a state of its own.
+  int compile_scope(const peg::Ast& block, int cont,
                     const std::string& first = "") {
-    int entry = compile_arm(stmts, cont, first);
+    size_t inner = *rewrite_set.scope_of(block);
+    int entry = compile_level(inner, body_stmts(block), cont, first);
     if (failed) return -1;
-    auto boxes = emit_fresh_boxes(rewrite_set, stmts, std::move(binds));
+    return after_fresh_boxes(inner, entry);
+  }
+  // The state that gives `inner`'s boxed variables fresh boxes and goes on
+  // to `entry`, or `entry` itself when none is boxed.
+  int after_fresh_boxes(size_t inner, int entry) {
+    auto boxes = rewrite_set.fresh_boxes(inner);
     if (boxes.empty()) return entry;
     int r = fresh();
     states[r] = boxes + jump(entry);
     return r;
+  }
+  // An init clause's bindings, run once ahead of `cont`: declarations no
+  // yield can sit in, so they are emitted as written (locals rewritten to
+  // their slots) in a state that jumps to `cont`.
+  int compile_init(const peg::Ast& init, int cont) {
+    std::vector<const peg::Ast*> init_stmts;
+    for (auto& b : init.nodes) init_stmts.push_back(b.get());
+    int entry = compile_seq(init_stmts, cont);
+    if (failed) return -1;
+    return after_fresh_boxes(*rewrite_set.scope_of(init), entry);
   }
   // Register `body` in the innermost open scope; the state that marks it
   // reached, then goes on to `cont`.
@@ -1523,9 +1443,9 @@ struct CpsBuilder {
   // / the generator, or a defer of the scope being compiled (which must
   // register with the machine, not fire when the state's method returns).
   // Everything else is verbatim-safe.
-  static bool needs_split(const peg::Ast& s) {
+  bool needs_split(const peg::Ast& s) const {
     return fn_body_has_yield(s) || has_escaping_loop_ctrl(s) ||
-           has_scope_level_defer(s);
+           rewrite_set.has_defer_of(s, scope);
   }
 
   // Linearize `stmts`, returning the entry state. `cont` is the state to
@@ -1563,9 +1483,11 @@ struct CpsBuilder {
   // multi-target binding (`for k, v in …`) is the tuple each step yields.
   std::string bind_src(const peg::Ast& binding, const std::string& value) {
     using namespace peg::udl;
-    if (binding.tag == "IDENTIFIER"_)
-      return promoted_slot(rewrite_set, std::string(binding.token)) + " = " +
-             value;
+    if (binding.tag == "IDENTIFIER"_) {
+      // `_` binds nothing: the value is dropped.
+      const auto* slot = rewrite_set.slot(binding);
+      return (slot ? slot->place() : std::string(binding.token)) + " = " + value;
+    }
     std::vector<SourceEdit> edits;
     auto copies = rename_pattern_leaves(binding, src, rewrite_set, edits, ";");
     auto pat = rewrite_edits(binding, src, std::move(edits));
@@ -1614,35 +1536,31 @@ struct CpsBuilder {
     if (u->tag == "IF"_) return compile_if(u, cont);
     if (u->tag == "WHILE"_ && u->nodes.size() >= 2) {
       auto wv = culebra::view_while(*u);
+      // What the init clause binds is in reach of the condition and the body.
+      if (wv.init) rewrite_set.promote(*rewrite_set.scope_of(*wv.init));
       int h = fresh();
       // break exits to `cont` (skipping nobreak); a condition-false exit runs
       // the nobreak block first, so its entry state is where the loop falls
       // through on normal completion. loop_stack's exit stays `cont`.
       int normal_exit = cont;
       if (wv.nobreak) {
-        normal_exit = compile_seq(body_stmts(*wv.nobreak), cont);
+        normal_exit = compile_scope(*wv.nobreak, cont);
         if (failed) return -1;
       }
       loop_stack.push_back(
           {h, cont, loop_label_name(wv.label), open.size(), open.size()});
-      int body_entry = compile_scope(body_stmts(*wv.body), h);
+      int body_entry = compile_scope(*wv.body, h);
       loop_stack.pop_back();
       if (failed) return -1;
       states[h] = std::format(
           "      if {} {{ self._g_state = {} }} else {{ self._g_state = {} }}{}\n"
           "      continue\n",
           rw(*wv.cond), body_entry, normal_exit, mk(*wv.cond));
-      if (!wv.init) return h;
-      // The init clause runs its bindings once, then enters the condition
-      // state. They are yield-free declarations, so compile_seq emits them
-      // verbatim (locals rewritten to their slots) in a state that jumps to h.
-      std::vector<const peg::Ast*> init_stmts;
-      for (auto& b : wv.init->nodes) init_stmts.push_back(b.get());
-      return compile_seq(init_stmts, h);
+      return wv.init ? compile_init(*wv.init, h) : h;
     }
     if (u->tag == "FOR"_) return compile_for(u, cont);
     if (u->tag == "LEXICAL_SCOPE"_ && !u->nodes.empty()) {
-      return compile_scope(body_stmts(*u->nodes[0]), cont);
+      return compile_scope(*u->nodes[0], cont);
     }
     if (u->tag == "STATEMENTS"_) return compile_seq(body_stmts(*u), cont);
     failed = true;  // anything unexpected
@@ -1659,7 +1577,7 @@ struct CpsBuilder {
     auto it = "self." + iterator_field(iterators++);
     int after = cont;
     if (fv.nobreak) {
-      after = compile_seq(body_stmts(*fv.nobreak), cont);
+      after = compile_scope(*fv.nobreak, cont);
       if (failed) return -1;
     }
     size_t outer = open.size();
@@ -1669,10 +1587,9 @@ struct CpsBuilder {
     loop_stack.push_back(
         {h, cont, loop_label_name(fv.label), outer, open.size()});
     // The loop variable is the body scope's own, bound first on each entry.
-    std::set<std::string> loop_vars;
-    pattern_binding_names(*fv.binding, loop_vars);
+    rewrite_set.promote(*rewrite_set.scope_of(*fv.body));
     int body_entry = compile_scope(
-        body_stmts(*fv.body), h, std::move(loop_vars),
+        *fv.body, h,
         "      " + bind_src(*fv.binding, it + ".next()") + mk(*fv.binding) +
             "\n");
     loop_stack.pop_back();
@@ -1701,13 +1618,15 @@ struct CpsBuilder {
   // Each arm is a scope of its own, which its defers end with.
   int compile_if(const peg::Ast* ifnode, int cont) {
     auto iv = culebra::view_if(*ifnode);
+    // What the init clause binds is in reach of every test and arm.
+    if (iv.init) rewrite_set.promote(*rewrite_set.scope_of(*iv.init));
     const auto& nodes = ifnode->nodes;
     size_t off = iv.arm_off;
     size_t arm_n = nodes.size() - off;
     int else_entry;
     size_t pairs;
     if (arm_n % 2 == 1) {
-      else_entry = compile_arm(body_stmts(*nodes[nodes.size() - 1]), cont);
+      else_entry = compile_scope(*nodes[nodes.size() - 1], cont);
       if (failed) return -1;
       pairs = (arm_n - 1) / 2;
     } else {
@@ -1716,7 +1635,7 @@ struct CpsBuilder {
     }
     int chain = else_entry;
     for (size_t p = pairs; p-- > 0;) {
-      int block_entry = compile_arm(body_stmts(*nodes[off + 2 * p + 1]), cont);
+      int block_entry = compile_scope(*nodes[off + 2 * p + 1], cont);
       if (failed) return -1;
       int s = fresh();
       states[s] = std::format(
@@ -1725,37 +1644,23 @@ struct CpsBuilder {
           rw(*nodes[off + 2 * p]), block_entry, chain, mk(*nodes[off + 2 * p]));
       chain = s;
     }
-    if (!iv.init) return chain;
     // The init clause runs its bindings once, then enters the if-chain.
-    std::vector<const peg::Ast*> init_stmts;
-    for (auto& b : iv.init->nodes) init_stmts.push_back(b.get());
-    return compile_seq(init_stmts, chain);
+    return iv.init ? compile_init(*iv.init, chain) : chain;
   }
 };
 
-// The bindings of the for-in loops the machine drives (compile_for): each
-// holds across a suspension like any other local.
-inline void add_driven_loop_bindings(const peg::Ast& n,
-                                     std::set<std::string>& out) {
-  using namespace peg::udl;
-  if (is_fn_boundary(n.tag) || n.tag == "HANDLE"_) return;
-  if (n.tag == "FOR"_ && CpsBuilder::needs_split(n))
-    pattern_binding_names(*culebra::view_for(n).binding, out);
-  for (auto& c : n.nodes) add_driven_loop_bindings(*c, out);
-}
-
 inline std::shared_ptr<peg::Ast> transform_generators_in(
-    std::shared_ptr<peg::Ast> ast, const std::string& src, ScopeChain& chain);
+    std::shared_ptr<peg::Ast> ast, const std::string& src, Surroundings& names);
 
 // CPS transform entry. Returns the transformed ast on success, or the
 // original ast unchanged when the body uses a construct outside the
-// engine's scope (caller then reports / falls back).
+// engine's scope (caller then reports / falls back). `around` are the names
+// visible around the function.
 inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
     std::shared_ptr<peg::Ast> ast, const std::string& src,
     const peg::Ast& name_ast, const peg::Ast& params_ast,
-    int64_t decl_fallback, const ScopeChain& chain) {
+    int64_t decl_fallback, const std::vector<std::string>& around) {
   using namespace peg::udl;
-  auto outer = names_in_scope(chain);
 
   // Prefix from the shared constant: both backends recognize the state class
   // by it (culebra::is_lowered_state_class).
@@ -1765,17 +1670,15 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
                               name_ast.line, name_ast.column);
 
   auto param_names = collect_positional_param_names(params_ast);
-  auto locals = collect_local_names(*ast->nodes.back(), outer);
-  add_driven_loop_bindings(*ast->nodes.back(), locals);
-  auto rewrite_set =
-      make_promoted_locals(*ast->nodes.back(), locals, param_names);
+  PromotedLocals rewrite_set(*ast->nodes.back(), param_names, around);
 
   CpsBuilder b{src, rewrite_set, {}};
   b.terminal = b.fresh();
   b.states[b.terminal] =
       "      self._g_drained = true\n      return false\n";
   // The body is a scope like any other: finishing it runs its defers.
-  int entry = b.compile_scope(body_stmts(*ast->nodes.back()), b.terminal);
+  int entry = b.compile_level(rewrite_set.body_scope(),
+                              body_stmts(*ast->nodes.back()), b.terminal);
   if (b.failed || entry < 0) return ast;  // unsupported shape
   b.finish_exits();
 
@@ -1796,8 +1699,7 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
   for (int k = 0; k < b.iterators; k++) {
     ctor_inits += std::format("      self.{} = nil\n", CpsBuilder::iterator_field(k));
   }
-  emit_ctor_param_and_local_inits(param_names, locals, rewrite_set,
-                                  ctor_params, ctor_call_args, ctor_inits);
+  rewrite_set.emit_ctor(param_names, ctor_params, ctor_call_args, ctor_inits);
 
   // Each state binds the boxes it names on entry, not has_next() once: a
   // scope entered again swaps its boxes (compile_scope), and a closure made
@@ -1806,12 +1708,12 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
   for (size_t id = 0; id < b.states.size(); id++) {
     const auto& st = b.states[id];
     dispatch += std::format("      if self._g_state == {} {{\n{}{}      }}\n",
-                            id, emit_box_prologue(rewrite_set, st), st);
+                            id, rewrite_set.box_prologue(st), st);
   }
 
   std::string defer_runs = b.pending_defers();
   // dispose() binds the boxes its defers name.
-  defer_runs = emit_box_prologue(rewrite_set, defer_runs) + defer_runs;
+  defer_runs = rewrite_set.box_prologue(defer_runs) + defer_runs;
   // Released without being drained or disposed, a generator still owes its
   // pending defers, as a plain call's frame would. With none to owe it needs
   // no drop — a `yield from` delegate it drops closes itself.
@@ -1870,8 +1772,8 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
   if (!wrapper_fn) return ast;
   // A generator declared inside this body (in a closure) came through as
   // text, so it is lowered here, from the fragment it now lives in.
-  ScopeChain inner = chain;
-  inner.nodes.push_back({ast.get(), false});
+  Surroundings inner{wrapper_fn->nodes.back().get(), around};
+  for (auto pn : param_names) inner.around.emplace_back(pn);
   auto body =
       transform_generators_in(wrapper_fn->nodes.back(), *synthesized, inner);
   ast->nodes.back() =
@@ -1886,12 +1788,14 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
 // defer, yield from — is handled by the one engine.
 inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
     std::shared_ptr<peg::Ast> ast, const std::string& src,
-    const ScopeChain& chain) {
+    Surroundings& names) {
   using namespace peg::udl;
   size_t i = 0;
   while (i < ast->nodes.size() && ast->nodes[i]->tag == "DECORATOR"_) i++;
   if (i + 2 >= ast->nodes.size()) return ast;
   if (!fn_body_has_yield(*ast->nodes.back())) return ast;
+  // Read before the body is replaced by its annotated copy below.
+  auto around = names.visible();
 
   // C# rule (CS1626): a yield statement may not appear inside a try-catch
   // or defer block. yield-spanning try is permanently out of scope.
@@ -1989,7 +1893,7 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
   const auto& params_ast = *ast->nodes[i + 1];
   auto orig_body = ast->nodes.back();
   auto out = transform_one_generator_fn_cps(ast, *cur, name_ast,
-                                            params_ast, decl_fallback, chain);
+                                            params_ast, decl_fallback, around);
   if (out->nodes.back().get() != orig_body.get()) return out;
 
   // CPS left the body untouched — it hit a construct it can't lower
@@ -2004,7 +1908,7 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
 
 // Walk the AST, transforming every yield-carrying MULTIFN_DECL. The
 // walk visits every node — yield-free modules pay one whole-tree
-// pointer pass (dwarfed by the PEG parse already run). `chain` is where
+// pointer pass (dwarfed by the PEG parse already run). `names` is where
 // `ast` sits; a scope is on it while what it holds is walked.
 //
 // Top-down: a generator is lowered from its body as written, and one declared
@@ -2013,13 +1917,13 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
 // emits for them. Either way no lowering rewrites a body another has already
 // replaced part of (collect_promoted_edits relies on it).
 inline std::shared_ptr<peg::Ast> transform_generators_in(
-    std::shared_ptr<peg::Ast> ast, const std::string& src, ScopeChain& chain) {
+    std::shared_ptr<peg::Ast> ast, const std::string& src, Surroundings& names) {
   using namespace peg::udl;
   if (ast->tag == "MULTIFN_DECL"_ && fn_body_has_yield(*ast->nodes.back()))
-    return transform_one_generator_fn(ast, src, chain);
+    return transform_one_generator_fn(ast, src, names);
   if (ast->tag == "HANDLE"_ || ast->tag == "EFFECT_FN_DECL"_) return ast;
-  chain.walk_children(*ast, [&](std::shared_ptr<peg::Ast>& child) {
-    return transform_generators_in(child, src, chain);
+  names.walk_children(*ast, [&](std::shared_ptr<peg::Ast>& child) {
+    return transform_generators_in(child, src, names);
   });
   return ast;
 }

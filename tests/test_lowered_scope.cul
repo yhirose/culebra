@@ -1,0 +1,310 @@
+// A generator's and an effect's body bind names as a plain fn's does: each
+// variable is its own, whatever its name, and lives as long as its scope. A
+// name read where no declaration reaches is refused at load
+// (tests/lint_test.sh); the forms are swept against a plain fn by
+// tools/checks/lowering_diff.py.
+
+effect fn ls_emit(x)
+fn ls_run(body) {
+  mut out = []
+  handle { body() } with ls_emit(x, k) {
+    out.push(x)
+    k(nil)
+  }
+  out
+}
+ls_top = "top"
+
+// --- An arm's `let` over an outer name is the arm's: the outer one is back
+// after it. ---
+fn ls_gen_arm(c) {
+  let a = "outer"
+  if c {
+    let a = "inner"
+    yield a
+  }
+  yield a
+}
+assert_eq(ls_gen_arm(true).collect(), ["inner", "outer"])
+assert_eq(ls_gen_arm(false).collect(), ["outer"])
+effect fn ls_eff_arm(c) {
+  let a = "outer"
+  if c {
+    let a = "inner"
+    perform ls_emit(a)
+  }
+  perform ls_emit(a)
+}
+assert_eq(ls_run(fn () { ls_eff_arm(true) }), ["inner", "outer"])
+assert_eq(ls_run(fn () { ls_eff_arm(false) }), ["outer"])
+
+// --- The same of an else arm, a block, a loop body and a loop variable. ---
+fn ls_gen_scopes() {
+  let a = "outer"
+  if false { yield 0 } else {
+    let a = "else"
+    yield a
+  }
+  {
+    let a = "block"
+    yield a
+  }
+  mut n = 0
+  while n < 1 {
+    let a = "while"
+    yield a
+    n += 1
+  }
+  for a in ["for"] { yield a }
+  for q in [1] {
+    let a = "body"
+    yield a
+  }
+  yield a
+}
+assert_eq(ls_gen_scopes().collect(),
+          ["else", "block", "while", "for", "body", "outer"])
+effect fn ls_eff_scopes() {
+  let a = "outer"
+  if false { perform ls_emit(0) } else {
+    let a = "else"
+    perform ls_emit(a)
+  }
+  {
+    let a = "block"
+    perform ls_emit(a)
+  }
+  mut n = 0
+  while n < 1 {
+    let a = "while"
+    perform ls_emit(a)
+    n += 1
+  }
+  for a in ["for"] { perform ls_emit(a) }
+  perform ls_emit(a)
+}
+assert_eq(ls_run(fn () { ls_eff_scopes() }),
+          ["else", "block", "while", "for", "outer"])
+
+// --- A scope no suspension sits in keeps its variables to itself too. ---
+fn ls_gen_whole(z) {
+  let a = "outer"
+  { let a = "block" }
+  if z { let a = "arm" }
+  for a in [1] { a }
+  match z { a => a }
+  try { let a = "try" } catch e { e }
+  yield a
+}
+assert_eq(ls_gen_whole(true).collect(), ["outer"])
+
+// --- A parameter and a top-level name under an arm's `let`. ---
+fn ls_gen_param(z) {
+  if z {
+    let z = 9
+    yield z
+    let ls_top = 1
+    yield ls_top
+  }
+  yield z
+  yield ls_top
+}
+assert_eq(ls_gen_param(true).collect(), [9, 1, true, "top"])
+effect fn ls_eff_param(z) {
+  if z {
+    let z = 9
+    perform ls_emit(z)
+    let ls_top = 1
+    perform ls_emit(ls_top)
+  }
+  perform ls_emit(z)
+  perform ls_emit(ls_top)
+}
+assert_eq(ls_run(fn () { ls_eff_param(true) }), [9, 1, true, "top"])
+
+// --- A parameter, and a local of the function a `handle` is written in,
+// under the `let` or the binding of a scope no suspension sits in. ---
+fn ls_gen_param_whole(z) {
+  mut seen = []
+  { let z = 9; seen.push(z) }
+  for z in [7] { seen.push(z) }
+  yield seen
+  yield z
+}
+assert_eq(ls_gen_param_whole(1).collect(), [[9, 7], 1])
+effect fn ls_eff_param_whole(z) {
+  mut seen = []
+  { let z = 9; seen.push(z) }
+  for z in [7] { seen.push(z) }
+  perform ls_emit(seen)
+  perform ls_emit(z)
+}
+assert_eq(ls_run(fn () { ls_eff_param_whole(1) }), [[9, 7], 1])
+fn ls_handle_local() {
+  let a = "outer"
+  mut out = []
+  handle {
+    { let a = "inner"; out.push(a) }
+    perform ls_emit(a)
+  } with ls_emit(x, k) {
+    out.push(x)
+    k(nil)
+  }
+  out
+}
+assert_eq(ls_handle_local(), ["inner", "outer"])
+
+// --- Sibling arms that declare one name declare two variables. ---
+fn ls_gen_siblings(c) {
+  if c {
+    mut a = 1
+    a = 2
+    yield a
+  } else {
+    let a = [3]
+    yield a
+  }
+}
+assert_eq(ls_gen_siblings(true).collect(), [2])
+assert_eq(ls_gen_siblings(false).collect(), [[3]])
+
+// --- A closure captures the variable of the pass that made it, in a loop
+// the machine splits and in one it leaves whole. ---
+fn ls_gen_capture() {
+  mut whole = []
+  for i in [1, 2, 3] {
+    let x = i * 10
+    whole.push(|| x)
+  }
+  yield whole.map(|f| f())
+  mut split = []
+  for i in [1, 2, 3] {
+    let x = i * 10
+    split.push(|| x)
+    yield i
+  }
+  yield split.map(|f| f())
+}
+assert_eq(ls_gen_capture().collect(), [[10, 20, 30], 1, 2, 3, [10, 20, 30]])
+effect fn ls_eff_capture() {
+  mut whole = []
+  mut i = 0
+  while i < 3 {
+    let x = i
+    whole.push(|| x)
+    i += 1
+  }
+  perform ls_emit(whole.map(|f| f()))
+  mut split = []
+  for j in [1, 2, 3] {
+    let x = j * 10
+    split.push(|| x)
+    perform ls_emit(j)
+  }
+  perform ls_emit(split.map(|f| f()))
+}
+assert_eq(ls_run(fn () { ls_eff_capture() }),
+          [[0, 1, 2], 1, 2, 3, [10, 20, 30]])
+
+// --- A closure made in an arm reads the arm's variable, the body the
+// outer one of the same name. ---
+fn ls_gen_arm_closure(c) {
+  mut f = nil
+  a = 0
+  if c {
+    let a = 1
+    f = || a
+    yield a
+  }
+  yield [a, f == nil ? -1 : f()]
+}
+assert_eq(ls_gen_arm_closure(true).collect(), [1, [0, 1]])
+assert_eq(ls_gen_arm_closure(false).collect(), [[0, -1]])
+
+// --- What a loop binds is not reassigned, as in a plain fn; a match arm's
+// and a catch's binding may be. ---
+fn ls_gen_loop_write() {
+  for x in [1] { x = 2 }
+  yield 1
+}
+assert_throws("ImmutableError", fn () { ls_gen_loop_write().collect() })
+effect fn ls_eff_loop_write() {
+  for x in [1] { x = 2 }
+  perform ls_emit(1)
+}
+assert_throws("ImmutableError", fn () { ls_run(fn () { ls_eff_loop_write() }) })
+fn ls_gen_arm_write(z) {
+  match z { q => { q = 2 } }
+  try { throw "t" } catch e { e = 1 }
+  yield 1
+}
+assert_eq(ls_gen_arm_write(0).collect(), [1])
+
+// --- A bare write to a stdlib global is refused by the global. ---
+fn ls_gen_global() {
+  println = 1
+  yield 1
+}
+assert_throws("ImmutableError", fn () { ls_gen_global().collect() })
+
+// --- A defer reads the variable of its own scope. ---
+fn ls_gen_defer(log) {
+  let a = "outer"
+  defer { log.push(a) }
+  {
+    let a = "inner"
+    defer { log.push(a) }
+    yield a
+  }
+  yield a
+}
+ls_log = []
+assert_eq(ls_gen_defer(ls_log).collect(), ["inner", "outer"])
+assert_eq(ls_log, ["inner", "outer"])
+
+// --- An effect body's last statement is its value, a write to a name around
+// it included. ---
+mut ls_mtop = 5
+effect fn ls_eff_tail() {
+  perform ls_emit(1)
+  ls_mtop = 6
+}
+mut ls_tail_out = []
+assert_eq(handle { ls_eff_tail() } with ls_emit(x, k) {
+  ls_tail_out.push(x)
+  k(nil)
+}, 6)
+assert_eq(ls_mtop, 6)
+
+// --- `_` binds nothing: what a suspension resumes with is dropped, or is
+// the body's value when the statement is its last. ---
+effect fn ls_ask()
+effect fn ls_eff_sink() {
+  let _ = perform ls_ask()
+  7
+}
+assert_eq(handle { ls_eff_sink() } with ls_ask(k) { k(2) }, 7)
+assert_eq(handle { let _ = perform ls_ask() } with ls_ask(k) { k(2) }, 2)
+assert_eq(handle { let _ = ls_eff_sink(); 3 } with ls_ask(k) { k(2) }, 3)
+fn ls_gen_sink() {
+  for _ in [1, 2] { yield 0 }
+}
+assert_eq(ls_gen_sink().collect(), [0, 0])
+
+// --- Each fork of a continuation has its own variables, an arm's among
+// them. ---
+effect fn ls_choose(a, b)
+ls_forks = handle {
+  let x = perform ls_choose(1, 2)
+  mut f = nil
+  if x > 0 {
+    let x = perform ls_choose(10, 20)
+    f = || x
+  }
+  [x, f()]
+} with ls_choose(a, b, k) {
+  [k(a), k(b)]
+}
+assert_eq(ls_forks, [[[1, 10], [1, 20]], [[2, 10], [2, 20]]])
+
+println("test_lowered_scope OK")

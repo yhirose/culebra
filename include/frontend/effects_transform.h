@@ -98,7 +98,7 @@ inline std::set<std::string> collect_effect_fn_names(const peg::Ast& root) {
 // A statement-level suspension point discovered by the splitter.
 struct EffSuspension {
   enum Kind { Perform, Delegate } kind;
-  std::string target;      // local bound to the result (empty = discarded)
+  const peg::Ast* target = nullptr;  // the name bound to the result, if any
   bool binds = false;      // true when the statement was `let target = …`
   std::string op;          // Perform: operation name
   std::string args_array;  // Perform: `[a, b, …]` source (rewritten, anchored)
@@ -133,9 +133,10 @@ class EffectsLowerer {
         src_is_original_(src_is_original), path_(std::move(path)),
         markers_{src, src_is_original} {}
 
-  // The program the walk starts at — the root of the ScopeChain that decides
-  // whether a bare `x = …` in a lowered body declares or reassigns.
-  void set_scope_root(const peg::Ast* root) { scopes_.root = root; }
+  // The program the walk starts at: what says which names are visible
+  // around a lowered body, so whether a bare `x = …` in it declares or
+  // reassigns.
+  void set_scope_root(const peg::Ast* root) { names_.root = root; }
 
   // --- entry: rebuild the tree, lowering effect constructs -------------
   std::shared_ptr<peg::Ast> transform(std::shared_ptr<peg::Ast> ast) {
@@ -166,11 +167,9 @@ class EffectsLowerer {
           "  __Eff.perform_direct(\"{}\", {}, {})\n"
           "}}\n",
           op, args, line));
-      return reparse_expr(synth, line);
+      return reparse_expr(synth, line, names_.visible());
     }
-    // A scope is on the chain while what it holds is walked; a `handle` is
-    // lowered above, its body's own level being the lowering's.
-    scopes_.walk_children(*ast, [&](std::shared_ptr<peg::Ast>& child) {
+    names_.walk_children(*ast, [&](std::shared_ptr<peg::Ast>& child) {
       return transform(child);
     });
     return ast;
@@ -181,7 +180,7 @@ class EffectsLowerer {
   const std::set<std::string>& effect_fns_;
   bool src_is_original_ = false;
   std::string path_;
-  ScopeChain scopes_;
+  Surroundings names_;
   mutable LineMarkers markers_;
   mutable SourceResolver resolver_;
 
@@ -189,7 +188,7 @@ class EffectsLowerer {
   EffectsLowerer sub_lowerer(const std::string& src, bool src_is_original = false,
                              std::string path = "") const {
     EffectsLowerer sub(src, effect_fns_, src_is_original, std::move(path));
-    sub.scopes_ = scopes_;
+    sub.names_ = names_;
     return sub;
   }
 
@@ -295,10 +294,10 @@ class EffectsLowerer {
       auto av = view_assignment(*s);
       const peg::Ast* rhs = av.rhs;
       bool bind = av.is_let && av.lvalcnt == 1 && !av.compound;
-      std::string target;
+      const peg::Ast* target = nullptr;
       if (bind) {
         const auto& lval = *s->nodes[av.lvaloff];
-        if (lval.tag == "IDENTIFIER"_) target = std::string(lval.token);
+        if (lval.tag == "IDENTIFIER"_) target = &lval;
         else bind = false;
       }
       if (rhs->tag == "PERFORM"_) {
@@ -331,12 +330,12 @@ class EffectsLowerer {
     // bare `perform …`
     if (s->tag == "PERFORM"_) {
       return EffStmtClass{EffStmtClass::Suspend,
-                          make_perform(*s, "", /*binds=*/false, rewrite)};
+                          make_perform(*s, nullptr, /*binds=*/false, rewrite)};
     }
     // bare `effectfn(…)`
     if (is_effect_call(*s)) {
       return EffStmtClass{EffStmtClass::Suspend,
-                          make_delegate(*s, "", /*binds=*/false, rewrite)};
+                          make_delegate(*s, nullptr, /*binds=*/false, rewrite)};
     }
 
     // Any other statement is verbatim — as long as no suspension hides in it.
@@ -352,12 +351,12 @@ class EffectsLowerer {
         err_pos(s).line, err_pos(s).col);
   }
 
-  EffSuspension make_perform(const peg::Ast& perform, std::string target,
+  EffSuspension make_perform(const peg::Ast& perform, const peg::Ast* target,
                              bool binds,
                              const PromotedLocals& rewrite) const {
     EffSuspension su;
     su.kind = EffSuspension::Perform;
-    su.target = std::move(target);
+    su.target = target;
     su.binds = binds;
     su.op = std::string(perform.nodes[0]->token);
     su.args_array = anchored(perform_args_array(*perform.nodes[1], rewrite));
@@ -366,12 +365,12 @@ class EffectsLowerer {
     return su;
   }
 
-  EffSuspension make_delegate(const peg::Ast& call, std::string target,
+  EffSuspension make_delegate(const peg::Ast& call, const peg::Ast* target,
                               bool binds,
                               const PromotedLocals& rewrite) const {
     EffSuspension su;
     su.kind = EffSuspension::Delegate;
-    su.target = std::move(target);
+    su.target = target;
     su.binds = binds;
     // A delegate site needs the un-driven computation, not a driven result:
     // route to the maker half of the decl pair (`f(…)` -> `__eff_comp_f(…)`).
@@ -382,7 +381,7 @@ class EffectsLowerer {
     // must not be silently redirected to the global maker (`is_effect_call`
     // is name-set based), so reject the shadow at lower time.
     std::string callee(call.nodes[0]->token);
-    if (rewrite.names.count(callee)) {
+    if (rewrite.declares(*call.nodes[0])) {
       throw CulebraError(
           "SyntaxError",
           std::format("a local binding shadows effect fn '{}' at a call site "
@@ -859,8 +858,9 @@ class EffectsLowerer {
   // The body lowers to a flat list of states — the same shape and reasoning as
   // the generator's `CpsBuilder`: each basic block is a state, control flow
   // becomes `self._eff_state = K; continue`
-  // jumps over one `while true` dispatch loop, and every local lives on the
-  // instance (all-locals-on-heap, so no liveness analysis). The transition
+  // jumps over one `while true` dispatch loop, and the variables of every
+  // scope a suspension splits live on the instance (PromotedLocals, so no
+  // liveness analysis). The transition
   // primitives differ from the generator's: a `perform` returns SUSPEND (and
   // on resume binds `_rv` to its target), an effect-fn call returns DELEGATE,
   // and the body's tail expression / a `return` assign `self._eff_val`. A
@@ -888,7 +888,7 @@ class EffectsLowerer {
   // `n` rewritten and anchored (see CpsBuilder::rw), placed only where a
   // statement or a parenthesized expression starts.
   std::string cps_rw(const peg::Ast& n,
-                     const PromotedLocals& rw) const {
+                     PromotedLocals& rw) const {
     return anchored(rewrite_locals_to_self(n, src_, rw));
   }
 
@@ -901,7 +901,7 @@ class EffectsLowerer {
   // recursion binds to the declaration itself (the multifn uplink) instead of
   // reading back the slot it was just stored in.
   std::string emit_named_fn_decl(const CpsState& st, const peg::Ast& decl,
-                                 const PromotedLocals& rw) const {
+                                 PromotedLocals& rw) const {
     size_t k = first_non_decorator_index(decl);
     if (k != 0) {
       throw CulebraError(
@@ -924,23 +924,20 @@ class EffectsLowerer {
     // Rewrite only past the name token so the header keeps a plain inner name
     // (the locals rewrite would turn it into `fn <promoted spelling>(`).
     size_t after = decl.nodes[k]->position + decl.nodes[k]->length;
-    // `rewrite_locals_to_self` only asks `boxed` about a name it is
-    // rewriting, so dropping it from `names` is the whole exclusion.
-    PromotedLocals inner = rw;
-    inner.names.erase(name);
     std::vector<SourceEdit> edits;
-    collect_promoted_edits(decl, src_, inner, edits, EditSite::Stmt);
+    collect_promoted_edits(decl, src_, rw, edits, EditSite::Stmt);
+    std::erase_if(edits, [&](const SourceEdit& e) { return e.pos < after; });
     return anchored("fn " + name +
                     splice_source(src_, after, stmt_span(st, decl).second,
                                   std::move(edits))) +
-           "\n      " + promoted_slot(rw, name) + " = " + name;
+           "\n      " + rw.slot(*decl.nodes[k])->place() + " = " + name;
   }
 
   // Statement-level emission source: a named fn decl is emitted and stored
   // into its slot; one buried in otherwise-verbatim control flow would silently
   // keep state-local scope, so reject it; anything else is the rewritten slice.
   std::string stmt_src(const CpsState& st, const peg::Ast& s,
-                       const PromotedLocals& rw) const {
+                       PromotedLocals& rw) const {
     using namespace peg::udl;
     auto* u = unwrap_stmt(&s);
     if (u->tag == "MULTIFN_DECL"_) return emit_named_fn_decl(st, *u, rw);
@@ -961,7 +958,7 @@ class EffectsLowerer {
   }
   // Statement `s` with its promoted locals moved to their slots, and `edits`.
   MappedSource stmt_rewritten(const CpsState& st, const peg::Ast& s,
-                              const PromotedLocals& rw,
+                              PromotedLocals& rw,
                               std::vector<SourceEdit> edits = {}) const {
     if (st.braced.contains(&s))
       return rewrite_block_inner(s, src_, rw, std::move(edits));
@@ -987,16 +984,16 @@ class EffectsLowerer {
   // position). On resume the driver re-enters `_step` at the resume state,
   // where `_rv` holds the resumed value.
   int cps_emit_suspension(CpsState& st, const EffSuspension& su, int cont,
-                          bool tail, const PromotedLocals& rw) const {
+                          bool tail, PromotedLocals& rw) const {
     int after = cont;
     if (su.binds || tail) {
       int resume = st.fresh();
       std::string b;
-      if (su.binds)
-        b += std::format("      {} = {}\n", promoted_slot(rw, su.target),
-                         st.rv);
+      // `let _ = …` binds nothing: the resumed value is dropped.
+      const auto* slot = su.binds ? rw.slot(*su.target) : nullptr;
+      if (slot) b += std::format("      {} = {}\n", slot->place(), st.rv);
       if (tail) {
-        std::string v = su.binds ? promoted_slot(rw, su.target) : st.rv;
+        std::string v = slot ? slot->place() : st.rv;
         b += std::format("      self._eff_val = {}\n", v);
       }
       b += std::format("      self._eff_state = {}\n      continue\n", cont);
@@ -1020,7 +1017,7 @@ class EffectsLowerer {
   }
 
   int cps_return(CpsState& st, const peg::Ast* u,
-                 const PromotedLocals& rw) const {
+                 PromotedLocals& rw) const {
     const peg::Ast* e = u->nodes.empty() ? nullptr : u->nodes[0].get();
     if (e && has_suspension(*e)) reject_hidden(*u);  // ANF hoists; defensive
     int s = st.fresh();
@@ -1036,7 +1033,7 @@ class EffectsLowerer {
   // to the terminal state. The grammar guarantees an operand, thrown verbatim;
   // a suspension in it is defensively rejected (ANF hoists it first).
   int cps_throw(CpsState& st, const peg::Ast* u,
-                const PromotedLocals& rw) const {
+                PromotedLocals& rw) const {
     const peg::Ast& e = *u->nodes[0];
     if (has_suspension(e)) reject_hidden(*u);  // ANF hoists; defensive
     int s = st.fresh();
@@ -1052,7 +1049,7 @@ class EffectsLowerer {
   // machine can't express); a `perform` inside the body is rejected too — it
   // would run at completion, outside the CPS engine.
   int cps_defer(CpsState& st, const peg::Ast* u, int cont,
-                const PromotedLocals& rw) const {
+                PromotedLocals& rw) const {
     const peg::Ast& block = *u->nodes[0];
     if (has_suspension(block))
       throw CulebraError(
@@ -1077,7 +1074,7 @@ class EffectsLowerer {
   // value (matching culebra's block-value semantics — `let x = e` / `x = e`
   // evaluate to `e`); anything else leaves `_eff_val` nil.
   int cps_tail_value(CpsState& st, const peg::Ast* u,
-                     const PromotedLocals& rw) const {
+                     PromotedLocals& rw) const {
     using namespace peg::udl;
     int s = st.fresh();
     std::string body;
@@ -1091,9 +1088,12 @@ class EffectsLowerer {
       auto av = view_assignment(*u);
       if (av.lvalcnt == 1) {
         const auto& lval = *u->nodes[av.lvaloff];
-        if (lval.tag == "IDENTIFIER"_)
+        if (lval.tag == "IDENTIFIER"_) {
+          // A name around the body has no slot: it is read as it is written.
+          const auto* slot = rw.slot(lval);
           body += std::format("      self._eff_val = {}\n",
-                              promoted_slot(rw, std::string(lval.token)));
+                              slot ? slot->place() : std::string(lval.token));
+        }
       }
     } else if (u->tag == "DESTRUCTURE_ASSIGN"_) {
       // A destructure evaluates to its right-hand side. The statement may end
@@ -1119,18 +1119,25 @@ class EffectsLowerer {
   // braces (the AstOptimizer pos/len trap): it is noted, to be written from
   // inside them (stmt_span).
   int cps_block_seq(CpsState& st, const peg::Ast& block, int cont, bool tail,
-                    const PromotedLocals& rw) const {
+                    PromotedLocals& rw) const {
     auto stmts = body_stmts(block);
     if (stmts.size() == 1 && stmts[0] == &block &&
         block_inner_span(block, src_).first != block.position)
       st.braced.insert(&block);
-    return cps_seq(st, stmts, cont, tail, rw);
+    // A block that is a scope of its own: its variables are on the instance
+    // from here on.
+    auto scope = rw.scope_of(block);
+    if (scope) rw.promote(*scope);
+    int entry = cps_seq(st, stmts, cont, tail, rw);
+    if (st.failed || !scope) return entry;
+    return cps_fresh_boxes(st, *scope, entry, rw);
   }
 
-  // Entering `block` again swaps its boxes first (emit_fresh_boxes).
-  int cps_fresh_boxes(CpsState& st, const peg::Ast& block, int entry,
-                      const PromotedLocals& rw) const {
-    auto boxes = emit_fresh_boxes(rw, body_stmts(block));
+  // Entering `scope` again swaps its boxes first (PromotedLocals::
+  // fresh_boxes).
+  int cps_fresh_boxes(CpsState& st, size_t scope, int entry,
+                      PromotedLocals& rw) const {
+    auto boxes = rw.fresh_boxes(scope);
     if (boxes.empty()) return entry;
     int r = st.fresh();
     st.states[r] = boxes + std::format(
@@ -1138,11 +1145,27 @@ class EffectsLowerer {
     return r;
   }
 
+  // An init clause's (suspension-free) bindings, run once ahead of `cont`:
+  // emitted as written (locals rewritten) in a state that jumps to `cont`.
+  int cps_init(CpsState& st, const peg::Ast& init, int cont,
+               PromotedLocals& rw) const {
+    std::vector<const peg::Ast*> init_stmts;
+    for (auto& b : init.nodes) {
+      if (has_suspension(*b)) reject_control_expr(*b);
+      init_stmts.push_back(b.get());
+    }
+    int entry = cps_seq(st, init_stmts, cont, /*tail=*/false, rw);
+    if (st.failed) return -1;
+    return cps_fresh_boxes(st, *rw.scope_of(init), entry, rw);
+  }
+
   int cps_while(CpsState& st, const peg::Ast* w, int cont,
-                const PromotedLocals& rw) const {
+                PromotedLocals& rw) const {
     if (w->nodes.size() < 2) { st.failed = true; return -1; }
     auto wv = culebra::view_while(*w);
     if (has_suspension(*wv.cond)) reject_control_expr(*wv.cond);
+    // What the init clause binds is in reach of the condition and the body.
+    if (wv.init) rw.promote(*rw.scope_of(*wv.init));
     int h = st.fresh();
     // break exits to `cont` (skipping nobreak); a condition-false exit runs the
     // nobreak block first, so normal_exit is the loop's fall-through state.
@@ -1155,29 +1178,22 @@ class EffectsLowerer {
     int body_entry = cps_block_seq(st, *wv.body, h, /*tail=*/false, rw);
     st.loop_stack.pop_back();
     if (st.failed) return -1;
-    body_entry = cps_fresh_boxes(st, *wv.body, body_entry, rw);
     st.states[h] = std::format(
         "      if {} {{ self._eff_state = {} }} else {{ self._eff_state = {} }}{}\n"
         "      continue\n",
         cps_rw(*wv.cond, rw), body_entry, normal_exit, mk(*wv.cond));
-    if (!wv.init) return h;
-    // The init clause runs its (suspension-free) bindings once, then enters the
-    // condition state. cps_seq emits the yield-free declarations verbatim
-    // (locals rewritten) in a state that jumps to h.
-    std::vector<const peg::Ast*> init_stmts;
-    for (auto& b : wv.init->nodes) {
-      if (has_suspension(*b)) reject_control_expr(*b);
-      init_stmts.push_back(b.get());
-    }
-    return cps_seq(st, init_stmts, h, /*tail=*/false, rw);
+    // The init clause runs its bindings once, then enters the condition state.
+    return wv.init ? cps_init(st, *wv.init, h, rw) : h;
   }
 
   // if / else-if / else. IF nodes are [(INIT_CLAUSE)?, cond, block, …,
   // elseblock?]. When `tail`, each arm is compiled in value position; a missing
   // else leaves the value nil. An init clause runs its bindings once first.
   int cps_if(CpsState& st, const peg::Ast* ifn, int cont, bool tail,
-             const PromotedLocals& rw) const {
+             PromotedLocals& rw) const {
     auto iv = culebra::view_if(*ifn);
+    // What the init clause binds is in reach of every test and arm.
+    if (iv.init) rw.promote(*rw.scope_of(*iv.init));
     const auto& nodes = ifn->nodes;
     size_t off = iv.arm_off;
     size_t arm_n = nodes.size() - off;
@@ -1205,19 +1221,12 @@ class EffectsLowerer {
           cps_rw(*condn, rw), block_entry, chain, mk(*condn));
       chain = s;
     }
-    if (!iv.init) return chain;
-    // The init clause runs its (suspension-free) bindings once, then enters the
-    // if-chain.
-    std::vector<const peg::Ast*> init_stmts;
-    for (auto& b : iv.init->nodes) {
-      if (has_suspension(*b)) reject_control_expr(*b);
-      init_stmts.push_back(b.get());
-    }
-    return cps_seq(st, init_stmts, chain, /*tail=*/false, rw);
+    // The init clause runs its bindings once, then enters the if-chain.
+    return iv.init ? cps_init(st, *iv.init, chain, rw) : chain;
   }
 
   int cps_stmt(CpsState& st, const peg::Ast* s, int cont, bool tail,
-               const PromotedLocals& rw) const {
+               PromotedLocals& rw) const {
     using namespace peg::udl;
     auto* u = unwrap_stmt(s);
     if (u->tag == "IF"_) return cps_if(st, u, cont, tail, rw);
@@ -1230,11 +1239,8 @@ class EffectsLowerer {
       if (!target) { st.failed = true; return -1; }
       return cps_jump(st, u->tag == "BREAK"_ ? target->exit : target->header);
     }
-    if (u->tag == "LEXICAL_SCOPE"_) {
-      int entry = cps_block_seq(st, *u->nodes[0], cont, tail, rw);
-      if (st.failed) return -1;
-      return cps_fresh_boxes(st, *u->nodes[0], entry, rw);
-    }
+    if (u->tag == "LEXICAL_SCOPE"_)
+      return cps_block_seq(st, *u->nodes[0], cont, tail, rw);
     if (u->tag == "STATEMENTS"_) return cps_block_seq(st, *u, cont, tail, rw);
     // Leaf statement: a statement-level suspension (post-ANF) or a rejected
     // hidden one.
@@ -1249,7 +1255,7 @@ class EffectsLowerer {
   // carry no value (nil, as in culebra); an `if` recurses per arm; a suspension's resumed value becomes the value; a
   // plain statement is compiled by `cps_tail_value`.
   int cps_tail_stmt(CpsState& st, const peg::Ast* s, int cont,
-                    const PromotedLocals& rw) const {
+                    PromotedLocals& rw) const {
     using namespace peg::udl;
     auto* u = unwrap_stmt(s);
     if (u->tag == "IF"_) return cps_if(st, u, cont, /*tail=*/true, rw);
@@ -1281,7 +1287,7 @@ class EffectsLowerer {
   // Linearize a sequence with no value semantics (interior of a body / loop):
   // maximal runs of split-free statements collapse into one state.
   int cps_interior(CpsState& st, const std::vector<const peg::Ast*>& stmts,
-                   int cont, const PromotedLocals& rw) const {
+                   int cont, PromotedLocals& rw) const {
     int k = cont;
     std::string pending;
     auto flush = [&]() {
@@ -1309,7 +1315,7 @@ class EffectsLowerer {
   // Compile a statement sequence; when `tail`, its final statement is in value
   // position (assigns `self._eff_val`).
   int cps_seq(CpsState& st, const std::vector<const peg::Ast*>& stmts, int cont,
-              bool tail, const PromotedLocals& rw) const {
+              bool tail, PromotedLocals& rw) const {
     if (tail && !stmts.empty()) {
       std::vector<const peg::Ast*> rest(stmts.begin(), stmts.end() - 1);
       int tail_entry = cps_tail_stmt(st, stmts.back(), cont, rw);
@@ -1330,8 +1336,7 @@ class EffectsLowerer {
   // `rewrite` = params + body locals, moved onto the instance so they persist
   // across states (the ones a closure reads through their box). Throws
   // SyntaxError for a construct the CPS engine can't lower.
-  DispatchOut build_dispatch(const peg::Ast& body,
-                             const PromotedLocals& rewrite,
+  DispatchOut build_dispatch(const peg::Ast& body, PromotedLocals& rewrite,
                              const std::string& rv_name) const {
     reject_nested_defers(body);
     CpsState st;
@@ -1377,7 +1382,7 @@ class EffectsLowerer {
     for (size_t i = 0; i < st.states.size(); i++) {
       dispatch += std::format(
           "        if self._eff_state == {} {{\n{}{}        }}\n", i,
-          emit_box_prologue(rewrite, st.states[i]), st.states[i]);
+          rewrite.box_prologue(st.states[i]), st.states[i]);
     }
     dispatch += "      }\n";
 
@@ -1568,10 +1573,12 @@ class EffectsLowerer {
   // if/while. Each pre-pass re-parses into a clean buffer whose slices resolve.
   // `capture_outer` redirects enclosing-instance reads (`self.x`) through the
   // `_eff_outer` ctor param — set when a nested handle captures an outer binding.
+  // `around` are the names visible around the body.
   std::string build_computation_class(
       const std::string& class_name, const peg::Ast& body_node,
       const std::vector<std::string_view>& param_names,
-      const std::string& rv_name, bool capture_outer = false) const {
+      const std::string& rv_name, const std::vector<std::string>& around,
+      bool capture_outer = false) const {
     // A bare yield would make the effect body itself a generator, which it is
     // not — reject it symmetrically up front. Yields inside a nested named fn
     // are fine: the fragment re-parse runs the generator chain over them.
@@ -1628,19 +1635,18 @@ class EffectsLowerer {
             "effects A-normalization produced unparseable source", 0, 0);
       }
       return sub_lowerer(*src2).build_class_from_program(
-          class_name, *prog2, param_names, rv_name);
+          class_name, *prog2, param_names, rv_name, around);
     }
-    return sub_lowerer(*src).build_class_from_program(class_name, *prog,
-                                                      param_names, rv_name);
+    return sub_lowerer(*src).build_class_from_program(
+        class_name, *prog, param_names, rv_name, around);
   }
 
-  // Names of named fn decls in the body (statement level or nested control
-  // flow), stopping at fn / HANDLE boundaries like `collect_local_names` —
-  // they are promoted like any other local (see `emit_named_fn_decl`), so calls
-  // to them from elsewhere in the body read the slot. A second clause of the
-  // same name would silently overwrite it (a single value can't hold a
-  // multimethod), so it is rejected symmetrically.
-  std::set<std::string> collect_named_fn_decls(const peg::Ast& body) const {
+  // The named fn decls of the body (statement level or nested control flow),
+  // stopping at fn / HANDLE boundaries: each is a local like any other (see
+  // `emit_named_fn_decl`), so calls to it from elsewhere in the body read the
+  // slot. A second clause of the same name would silently overwrite it (a
+  // single value can't hold a multimethod), so it is rejected symmetrically.
+  void reject_named_fn_clauses(const peg::Ast& body) const {
     using namespace peg::udl;
     std::set<std::string> out;
     std::function<void(const peg::Ast&)> walk = [&](const peg::Ast& n) {
@@ -1662,16 +1668,15 @@ class EffectsLowerer {
       for (auto& c : n.nodes) walk(*c);
     };
     walk(body);
-    return out;
   }
 
   std::string build_class_from_program(
       const std::string& class_name, const peg::Ast& program,
       const std::vector<std::string_view>& param_names,
-      const std::string& rv_name) const {
-    auto locals = collect_local_names(program, names_in_scope(scopes_));
-    for (auto& fname : collect_named_fn_decls(program)) locals.insert(fname);
-    auto rewrite = make_promoted_locals(program, locals, param_names);
+      const std::string& rv_name,
+      const std::vector<std::string>& around) const {
+    reject_named_fn_clauses(program);
+    PromotedLocals rewrite(program, param_names, around);
 
     auto disp = build_dispatch(program, rewrite, rv_name);
 
@@ -1689,24 +1694,18 @@ class EffectsLowerer {
       for (int k = 0; k < disp.n_defers; k++)
         ctor_inits += std::format("      self._eff_defer_{} = false\n", k);
     }
-    emit_ctor_param_and_local_inits(param_names, locals, rewrite,
-                                    ctor_params, ctor_call_args, ctor_inits);
+    rewrite.emit_ctor(param_names, ctor_params, ctor_call_args, ctor_inits);
 
     // _eff_finalize() binds the boxes its defers name (_step's states bind
     // their own).
     auto finalize_body =
-        emit_box_prologue(rewrite, disp.finalize_body) + disp.finalize_body;
+        rewrite.box_prologue(disp.finalize_body) + disp.finalize_body;
 
     // Forking a suspended continuation shallow-copies the frame, which aliases
     // the boxes instead of copying them; `_eff_refork` gives each fork its own,
     // so a boxed local stays as fork-private as the scalar it replaced (see the
     // driver's `_fork`).
-    std::string refork_body;
-    for (const auto& n : rewrite.boxed) {
-      auto field = instance_field(n);
-      refork_body += std::format("      self.{} = {}\n", field,
-                                 box_literal("self." + field + ".v"));
-    }
+    std::string refork_body = rewrite.refork();
 
     // Every computation exposes `_eff_finalize()` so the driver can call it
     // uniformly on the abort path; it is empty when the body has no defers,
@@ -1734,9 +1733,10 @@ class EffectsLowerer {
           "fn {0}{1} {{ throw {{ kind: \"EffectError\", message: \"effect "
           "operation '{0}' must be invoked via `perform`\" }} }}\n",
           name, anchored(source_of(*ast->nodes[1]))));
-      return reparse_decl(synth, err_line(*ast));
+      return reparse_decl(synth, err_line(*ast), names_.visible());
     }
 
+    auto around = names_.visible();
     const auto& params_ast = *ast->nodes[1];
     const auto& body = *ast->nodes.back();
 
@@ -1757,7 +1757,7 @@ class EffectsLowerer {
                                   ast->line, ast->column);
     auto rv_name = std::format("_rv_{}_{}", ast->line, ast->column);
     std::string cls =
-        build_computation_class(class_name, body, param_names, rv_name);
+        build_computation_class(class_name, body, param_names, rv_name, around);
 
     std::string call_args;
     for (size_t j = 0; j < param_names.size(); j++) {
@@ -1778,7 +1778,7 @@ class EffectsLowerer {
         "fn {0}{1} {{ __Eff.run_comp(__eff_comp_{0}({4})) }}\n"
         "}}\n",
         name, params, cls, class_name, call_args));
-    return reparse_stmts(synth, err_line(*ast));
+    return reparse_stmts(synth, err_line(*ast), around);
   }
 
   // Classify a handler clause body against its `resume` parameter: "t" =
@@ -1840,6 +1840,7 @@ class EffectsLowerer {
   std::shared_ptr<peg::Ast> lower_handle(std::shared_ptr<peg::Ast> ast) {
     using namespace peg::udl;
     const auto& body = *ast->nodes[0];
+    auto around = names_.visible();
 
     // A nested `handle` whose body / clauses read an enclosing computation's
     // binding through the instance (a `self.` access, from the outer locals
@@ -1862,7 +1863,8 @@ class EffectsLowerer {
     std::vector<std::string_view> body_params;
     if (captures) body_params.push_back("_eff_outer");
     std::string cls =
-        build_computation_class(class_name, body, body_params, rv_name, captures);
+        build_computation_class(class_name, body, body_params, rv_name, around,
+                                captures);
 
     // Build the handler frame `{ op: adapter, … }` over every op `with` clause,
     // plus an optional `with return(v) { … }` that maps the normal-completion
@@ -1958,7 +1960,7 @@ class EffectsLowerer {
           "}}\n",
           cls, class_name, frame, return_fn));
     }
-    return reparse_expr(synth, err_line(*ast));
+    return reparse_expr(synth, err_line(*ast), around);
   }
 
   // Re-parse a synthesized `fn name(...) { … }` and return its MULTIFN_DECL,
@@ -1967,18 +1969,18 @@ class EffectsLowerer {
   // ran before this text existed) and recursively lower any effect constructs
   // it still carries (composition of nested handles / effect fns). The
   // synthesized source is registered for lifetime via the generator
-  // transform's source store.
+  // transform's source store. `around` are the names visible where the
+  // fragment goes.
   std::shared_ptr<peg::Ast> reparse_decl(std::shared_ptr<std::string> synth,
-                                         int64_t fallback_line) {
+                                         int64_t fallback_line,
+                                         std::vector<std::string> around) {
     auto label = next_fragment_label("eff");
     auto fn = parse_wrapper_fn(synth, label.c_str());
     if (!fn) {
       throw CulebraError("InternalError",
                          "effects transform produced unparseable source", 0, 0);
     }
-    ScopeChain chain = scopes_;
-    fn = transform_generators_in(fn, *synth, chain);
-    auto out = sub_lowerer(*synth, false, label).transform(fn);
+    auto out = lower_fragment(fn, *synth, label, std::move(around));
     // Restore original positions (anchors, then the provenance markers);
     // machinery lines fall back to the declaration's line. Subtrees spliced
     // in by the nested lowering above carry other labels and are already
@@ -1992,27 +1994,40 @@ class EffectsLowerer {
   // effect constructs. Both backends evaluate a nested STATEMENTS node in the
   // enclosing scope, so the spliced decls bind exactly where the original did.
   std::shared_ptr<peg::Ast> reparse_stmts(std::shared_ptr<std::string> synth,
-                                          int64_t fallback_line) {
+                                          int64_t fallback_line,
+                                          std::vector<std::string> around) {
     auto label = next_fragment_label("eff");
     auto fn = parse_wrapper_fn(synth, label.c_str());
     if (!fn) {
       throw CulebraError("InternalError",
                          "effects transform produced unparseable source", 0, 0);
     }
-    ScopeChain chain = scopes_;
-    fn = transform_generators_in(fn, *synth, chain);
-    auto body = fn->nodes.back();
-    auto out = sub_lowerer(*synth, false, label).transform(body);
+    auto out =
+        lower_fragment(fn, *synth, label, std::move(around))->nodes.back();
     return reposition_fragment(out, *synth, fallback_line, label);
+  }
+
+  // The generator pass, then this one, over a fragment's `fn`, each under
+  // the names visible where the fragment goes.
+  std::shared_ptr<peg::Ast> lower_fragment(std::shared_ptr<peg::Ast> fn,
+                                           const std::string& synth,
+                                           const std::string& label,
+                                           std::vector<std::string> around) {
+    Surroundings gen{fn.get(), around};
+    fn = transform_generators_in(fn, synth, gen);
+    auto sub = sub_lowerer(synth, false, label);
+    sub.names_ = Surroundings{fn.get(), std::move(around)};
+    return sub.transform(fn);
   }
 
   // Re-parse a synthesized `fn __wrapper__() { <expr> }` and return the single
   // expression node in its body (to splice in place of a HANDLE), recursively
   // lowering nested effect constructs.
   std::shared_ptr<peg::Ast> reparse_expr(std::shared_ptr<std::string> synth,
-                                         int64_t fallback_line) {
+                                         int64_t fallback_line,
+                                         std::vector<std::string> around) {
     using namespace peg::udl;
-    auto body = reparse_stmts(synth, fallback_line);
+    auto body = reparse_stmts(synth, fallback_line, std::move(around));
     return (body->tag == "STATEMENTS"_ && !body->nodes.empty())
                ? body->nodes[0]
                : body;
@@ -2034,8 +2049,8 @@ inline std::shared_ptr<peg::Ast> transform_effects_in(
 // written (`parse()`), `expr` its source.
 inline std::shared_ptr<peg::Ast> apply_transforms(
     std::shared_ptr<peg::Ast> ast, const std::string& path, std::string& expr) {
-  ScopeChain chain{ast.get(), {}};
-  ast = transform_generators_in(ast, expr, chain);
+  Surroundings names{ast.get()};
+  ast = transform_generators_in(ast, expr, names);
   auto out = transform_effects_in(ast, expr);
   reject_orphan_yield(*out);
   reject_sized_spread_mix(*out);

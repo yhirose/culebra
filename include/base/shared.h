@@ -3039,12 +3039,11 @@ inline int8_t prop_key_kind(std::string_view name) {
                              (name == "drop" ? 2 : 0));
 }
 
-// Two lowerings rewrite a body into a synthesized class and promote every
-// body local to a field on the instance — the generator CPS transform
-// (generator_transform.h) and the effects transform (effects_transform.h),
-// which shares its collect_local_names / rewrite_locals_to_self /
-// emit_ctor_param_and_local_inits helpers. These are the class names they
-// emit.
+// Two lowerings rewrite a body into a synthesized class and move the
+// variables of every scope a suspension splits to fields on the instance —
+// the generator CPS transform (generator_transform.h) and the effects
+// transform (effects_transform.h), which shares its PromotedLocals. These
+// are the class names they emit.
 //
 // Such an instance's own slots are compiler storage, not user object slots,
 // so a value read of one must NOT bind `self` the way `o.f` does. Binding

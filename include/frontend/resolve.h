@@ -121,6 +121,10 @@ struct Scope {
   // The symbol a function scope's function is bound to (a `fn name`, or the
   // name a literal is assigned to), else kNone.
   size_t owner = kNone;
+  // A method of a state class a generator or effect lowering synthesized. It
+  // holds a body written in the function around the class, which is where
+  // its declarations were checked against the enclosing functions'.
+  bool lowered = false;
 };
 
 struct Options {
@@ -253,6 +257,10 @@ struct Resolution {
   // With Options::record_nodes: each class with field initializers to the
   // function scope they run in.
   std::unordered_map<const peg::Ast*, size_t> initializer_scope;
+  // With Options::record_nodes: each block that is a scope of its own to
+  // that scope: a `{}`'s, a loop's, a try's and a catch's body, an arm, the
+  // block `handle` runs, and an init clause (the scope around its construct).
+  std::unordered_map<const peg::Ast*, size_t> block_scope;
 
   // The function scope a symbol is declared in.
   size_t frame_of(size_t symbol) const {
@@ -290,35 +298,6 @@ inline size_t name_offset(const peg::Ast& n, std::string_view name,
     return kNone;
   size_t off = static_cast<size_t>(p - source.data());
   return source.substr(off, name.size()) == name ? off : kNone;
-}
-
-// Whether a construct opens a scope of its own somewhere inside it: what a
-// walk that stays on one scope's level must not enter. The generator and
-// effect lowerings ask it, and is_arm below, to tell what a body's own
-// level declares; the Resolver is what opens the scopes, and resolve_test
-// holds the two together. The scope around an `if` with an init clause is
-// the one this leaves out.
-inline bool opens_scope(unsigned int tag) {
-  using namespace peg::udl;
-  switch (tag) {
-    case "FUNCTION"_:
-    case "LAMBDA"_:
-    case "MULTIFN_DECL"_:
-    case "EFFECT_FN_DECL"_:
-    case "METHOD"_:
-    case "CLASS_DECL"_:
-    case "TRAIT_DECL"_:
-    case "DEFER"_:
-    case "LEXICAL_SCOPE"_:
-    case "FOR"_:
-    case "WHILE"_:
-    case "MATCH"_:
-    case "TRY"_:
-    case "HANDLE"_:
-      return true;
-    default:
-      return false;
-  }
 }
 
 // Whether `parent.nodes[i]` is an arm of an `if`, a `?:` or a `cond`: a
@@ -372,6 +351,27 @@ class Resolver {
     return std::move(r_);
   }
 
+  // The root as a function's body, under parameters known by name: the
+  // session's names are those visible around the function.
+  Resolution run_body(std::span<const std::string_view> params) {
+    size_t around = push_scope(kNone, /*function=*/true, 0, src_.size());
+    for (const auto& name : opts_.session)
+      if (!implicit(name)) symbol_in(around, name, SymbolKind::Variable, nullptr);
+    cur_ = push_scope(around, /*function=*/true, root_.position, end_of(root_));
+    if (opts_.record_nodes) r_.body_scope[&root_] = cur_;
+    for (auto name : params) {
+      if (implicit(name)) continue;
+      auto& sym =
+          r_.symbols[symbol_in(cur_, name, SymbolKind::Parameter, nullptr)];
+      sym.declarations++;
+      sym.forms |= static_cast<uint16_t>(1u << static_cast<int>(Form::Parameter));
+    }
+    walk_body(root_);
+    drain_jobs();
+    finish();
+    return std::move(r_);
+  }
+
  private:
   // A function-like body, resolved once the body enclosing it is complete.
   struct Job {
@@ -380,6 +380,7 @@ class Resolver {
     size_t parent;
     size_t owner;  // the symbol the function is bound to, for keyword labels
     bool initializers = false;  // `body` is a CLASS_DECL with initializers
+    bool lowered = false;       // a method of a lowered state class
   };
   struct Label {
     size_t callee;
@@ -549,9 +550,16 @@ class Resolver {
 
   static size_t end_of(const peg::Ast& n) { return n.position + n.length; }
 
+  // A scope a block opens, recorded under the block.
+  size_t push_block_scope(const peg::Ast& block, size_t begin, size_t end) {
+    size_t s = push_scope(cur_, false, begin, end);
+    if (opts_.record_nodes) r_.block_scope[&block] = s;
+    return s;
+  }
+
   void scoped_body(const peg::Ast& n) {
     size_t saved = cur_;
-    cur_ = push_scope(cur_, false, n.position, end_of(n));
+    cur_ = push_block_scope(n, n.position, end_of(n));
     walk_body(n);
     cur_ = saved;
   }
@@ -562,6 +570,7 @@ class Resolver {
                       job.params ? job.params->position : job.body->position,
                       end_of(*job.body));
     r_.scopes[cur_].owner = job.owner;
+    r_.scopes[cur_].lowered = job.lowered;
     if (job.initializers) {
       if (opts_.record_nodes) r_.initializer_scope[job.body] = cur_;
       for_each_value(*job.body, /*instance=*/true,
@@ -774,7 +783,7 @@ class Resolver {
   // around the whole construct.
   void open_init_scope(const peg::Ast& n, const peg::Ast* init) {
     if (!init) return;
-    cur_ = push_scope(cur_, false, n.position, end_of(n));
+    cur_ = push_block_scope(*init, n.position, end_of(n));
     for (const auto& b : init->nodes) walk(*b);
   }
 
@@ -851,11 +860,18 @@ class Resolver {
       case "CLASS_DECL"_: {
         walk_decl_head(n, Form::Class, nullptr);
         bool initializers = false;
-        for (size_t j = first_non_decorator_index(n) + 1; j < n.nodes.size();
-             j++) {
+        size_t head = first_non_decorator_index(n);
+        bool lowered =
+            head < n.nodes.size() &&
+            is_lowered_state_class(
+                parse_generic_head(n.nodes[head]->token).outer, n.path);
+        for (size_t j = head + 1; j < n.nodes.size(); j++) {
           if (n.nodes[j]->tag != "METHOD"_) continue;
           auto mv = view_method(*n.nodes[j]);
-          if (mv.body) enqueue(mv.params, mv.body->get());
+          if (mv.body) {
+            enqueue(mv.params, mv.body->get());
+            jobs_.back().lowered = lowered;
+          }
           initializers |= mv.value && mv.instance_field();
         }
         for_each_value(n, /*instance=*/false,
@@ -911,7 +927,10 @@ class Resolver {
       case "LEXICAL_SCOPE"_: {
         size_t saved = cur_;
         cur_ = push_scope(cur_, false, n.position, end_of(n));
-        for (const auto& c : n.nodes) walk_body(*c);
+        for (const auto& c : n.nodes) {
+          if (opts_.record_nodes) r_.block_scope[c.get()] = cur_;
+          walk_body(*c);
+        }
         cur_ = saved;
         return;
       }
@@ -921,7 +940,8 @@ class Resolver {
         auto fv = view_for(n);
         walk(*fv.iter);
         size_t saved = cur_;
-        cur_ = push_scope(cur_, false, fv.binding->position, end_of(*fv.body));
+        cur_ = push_block_scope(*fv.body, fv.binding->position,
+                                end_of(*fv.body));
         bind_pattern(*fv.binding, Form::Loop);
         walk_body(*fv.body);
         cur_ = saved;
@@ -969,7 +989,7 @@ class Resolver {
         size_t around = cur_;
         for (const auto& arm : mv.arms->nodes) {
           if (arm->nodes.empty()) continue;
-          cur_ = push_scope(around, false, arm->position, end_of(*arm));
+          cur_ = push_block_scope(*arm, arm->position, end_of(*arm));
           bind_pattern(*arm->nodes[0], Form::Pattern);
           for (size_t k = 1; k < arm->nodes.size(); k++)
             walk_body(*arm->nodes[k]);
@@ -983,7 +1003,8 @@ class Resolver {
         if (n.nodes.size() < 3) break;
         scoped_body(*n.nodes[0]);
         size_t saved = cur_;
-        cur_ = push_scope(cur_, false, n.nodes[1]->position, end_of(*n.nodes[2]));
+        cur_ = push_block_scope(*n.nodes[2], n.nodes[1]->position,
+                                end_of(*n.nodes[2]));
         if (n.nodes[1]->is_token)
           declare(*n.nodes[1], n.nodes[1]->token, Form::Catch);
         walk_body(*n.nodes[2]);
@@ -1036,6 +1057,15 @@ class Resolver {
 inline Resolution resolve_module(const peg::Ast& root, std::string_view source,
                                  Options opts = {}) {
   return _detail::Resolver(root, source, opts).run();
+}
+
+// Resolve a function's body on its own: `body` under parameters named
+// `params`, with Options::session the names visible around the function. A
+// lowering that rewrites a body resolves it so.
+inline Resolution resolve_body(const peg::Ast& body,
+                               std::span<const std::string_view> params,
+                               Options opts = {}) {
+  return _detail::Resolver(body, {}, opts).run_body(params);
 }
 
 // ---- outline ----------------------------------------------------------------

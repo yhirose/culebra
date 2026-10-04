@@ -1916,10 +1916,16 @@ assertレーン）はコレクタと一緒に`memory.md` §5〜6で説明され�
 前である（`lint::scope_diagnostics`。ローダーがパースと変換の間で
 呼ぶ）。だから変換される本体も、普通の本体と同じ3つの検査を受ける。
 節点の位置が許すものの検査（`RuleWalker`）は変換後のモジュールを読む。
-generatorとeffectの変換はソースの
-テキストと再パースした断片の上で動くので、スコープを開く構文の表
-（`resolve::opens_scope`）だけを受け取る。その表がresolverの開く
-スコープと一致することは`resolve_test`が確かめる。
+generatorとeffectの変換は、パースし直した本体を書き換えるので、
+書き換える木そのものを解決し（`resolve::resolve_body`。本体を引数の
+下で、関数の周囲から見える名前を渡して解決する）、名前がどの変数かを
+その結果から読む。変数が状態インスタンス上に自分のslotを得るのは、
+それを持つスコープに状態機械が入るとき、つまりそのスコープの文が
+別々の状態に分かれるときである（`PromotedLocals`）。中断で割られない
+スコープは書かれたとおりに出力され、その変数は元のローカルのまま残る。
+スコープであるブロックはその節点の下に記録され
+（`Resolution::block_scope`）、関数のものでないスコープがすべてそこに
+あることを`resolve_test`が確かめる。
 
 ### 10.7 変換された本体を普通の関数と突き合わせる
 
@@ -1955,8 +1961,8 @@ generatorの本体、effectの本体の同じ行と列に書き、それぞれ�
   `generator_transform.h`は`yield`する関数をイテレータプロトコル
   を実装するクラスに書き換え、`effects_transform.h`は
   `effect fn` / `perform` / `handle`を`__Eff`ランタイム上の普通の
-  ソースに書き換える。どちらも制御フローをstate instance上に
-  localsを持つflat-dispatchのCPS状態機械を通じてloweringする。
+  ソースに書き換える。どちらも制御フローをflat-dispatchのCPS状態機械を
+  通じてloweringし、中断で割られるスコープの変数をstate instance上に持つ。
   エンジンはgenerator固有やeffect固有の対応を一切必要としないので、
   構造的に一致する。VMでのフレーム中断化は要件ではなく単純化に
   なるだろう。

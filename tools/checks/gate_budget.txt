@@ -46,7 +46,10 @@
 # 300 since an `if` arm is a scope of its own: test_if_arm_scope.cul holds the
 # rule, and test_if_arm_slot_decl.cul and test_fn_overload_in_if_arm.cul, which
 # held the old one, are gone.
-tests.cul 300
+# 301 since test_lowered_scope.cul (a generator's and an effect's body bind
+# names as a plain fn's does: a variable per declaration, each as long as its
+# scope).
+tests.cul 301
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
