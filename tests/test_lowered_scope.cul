@@ -240,6 +240,111 @@ fn ls_gen_arm_write(z) {
 }
 assert_eq(ls_gen_arm_write(0).collect(), [1])
 
+// --- A store to a variable declared without `mut` is refused as in a plain
+// fn: after the right-hand side has run, under the same error. ---
+fn ls_rhs(log) {
+  log.push("rhs")
+  2
+}
+fn ls_gen_store(log) {
+  a = 1
+  yield a
+  a = ls_rhs(log)
+  yield a
+}
+ls_store_log = []
+assert_throws("ImmutableError", fn () { ls_gen_store(ls_store_log).collect() })
+assert_eq(ls_store_log, ["rhs"])
+effect fn ls_eff_store(log) {
+  a = 1
+  perform ls_emit(a)
+  a += ls_rhs(log)
+  perform ls_emit(a)
+}
+ls_store_log2 = []
+assert_throws("ImmutableError",
+              fn () { ls_run(fn () { ls_eff_store(ls_store_log2) }) })
+assert_eq(ls_store_log2, ["rhs"])
+fn ls_gen_store_message() {
+  a = 1
+  yield try { a = 2 } catch e { e.message }
+}
+assert_eq(ls_gen_store_message().collect(),
+          ["cannot reassign 'a' (declared without 'mut')"])
+
+// --- The same of a parameter, a loop's variable, a closure's store, a
+// tuple's leaf and a store written as an expression; a `mut` takes it. ---
+fn ls_gen_param_store(z, mut m) {
+  m = m + 1
+  yield m
+  z = 5
+  yield z
+}
+assert_eq(ls_gen_param_store(1, 1).take(1).collect(), [2])
+assert_throws("ImmutableError", fn () { ls_gen_param_store(1, 1).collect() })
+fn ls_gen_loop_store() {
+  for x in [1, 2] {
+    yield x
+    x = 5
+  }
+}
+assert_throws("ImmutableError", fn () { ls_gen_loop_store().collect() })
+fn ls_gen_closure_store() {
+  a = 1
+  mut b = 1
+  f = fn () { b = 2; a = 2 }
+  yield try { f() } catch e { e.kind }
+  yield [a, b]
+}
+assert_eq(ls_gen_closure_store().collect(), ["ImmutableError", [1, 2]])
+fn ls_gen_tuple_store() {
+  mut a = 1
+  b = 2
+  yield try { (a, b) = (3, 4) } catch e { e.kind }
+  yield [a, b]
+}
+assert_eq(ls_gen_tuple_store().collect(), ["ImmutableError", [3, 2]])
+fn ls_gen_expr_store(c) {
+  a = 1
+  yield try { c && (a = 2) } catch e { e.kind }
+  yield a
+}
+assert_eq(ls_gen_expr_store(true).collect(), ["ImmutableError", 1])
+assert_eq(ls_gen_expr_store(false).collect(), [false, 1])
+
+// --- A store in another's right-hand side is refused first. ---
+fn ls_gen_nested_store() {
+  mut a = 1
+  b = 2
+  yield try { a = b = 3 } catch e { e.kind }
+  yield [a, b]
+}
+assert_eq(ls_gen_nested_store().collect(), ["ImmutableError", [1, 2]])
+
+// --- The declaration written last before the store decides. ---
+fn ls_gen_redeclared() {
+  mut a = 1
+  a = 2
+  yield a
+  let a = 3
+  yield a
+  a = 4
+}
+assert_eq(ls_gen_redeclared().take(2).collect(), [2, 3])
+assert_throws("ImmutableError", fn () { ls_gen_redeclared().collect() })
+
+// --- `??=` stores only into nil, and a typed store is a store. ---
+fn ls_gen_default_store() {
+  a = 1
+  a ??= 2
+  yield a
+  b = nil
+  yield try { b ??= 2 } catch e { e.kind }
+  yield try { a: String = "s" } catch e { e.kind }
+}
+assert_eq(ls_gen_default_store().collect(),
+          [1, "ImmutableError", "ImmutableError"])
+
 // --- A bare write to a stdlib global is refused by the global. ---
 fn ls_gen_global() {
   println = 1

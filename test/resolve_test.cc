@@ -447,6 +447,8 @@ void test_declaration_forms() {
       "a = 2\n"
       "b = 3\n"
       "let a = 4\n"
+      "mut s = 1\n"
+      "let s = 2\n"
       "nowhere\n"
       "nothing += 1\n";
   auto p = resolve_source(src, {.record_nodes = true});
@@ -480,6 +482,13 @@ void test_declaration_forms() {
   is("C", {Form::Class});
   is("E", {Form::Enum});
   is("M", {Form::Import});
+
+  // Each declaration carries the form it is written in itself.
+  std::vector<Form> of_s;
+  for (const auto& d : res.declarations)
+    if (d.node->token == "s") of_s.push_back(d.form);
+  check(of_s == std::vector<Form>{Form::Mut, Form::Let},
+        "a redeclared variable's declarations each carry their own form");
 
   size_t a = res.lookup(0, "a"), b = res.lookup(0, "b");
   check(a != kNone && res.symbols[a].declared_as(Form::Let) &&

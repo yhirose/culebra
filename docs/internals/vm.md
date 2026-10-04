@@ -1950,7 +1950,11 @@ passed in) and reads off the result which variable a name is. A
 variable gets a slot of its own on the state instance when the machine
 enters the scope that holds it, a scope whose statements end up in
 different states (`PromotedLocals`); a scope no suspension splits is
-emitted as written, its variables the locals they were. Each block
+emitted as written, its variables the locals they were. A slot holds a
+value and no more, so a store its variable refuses is handed back to
+the compiler: the store is emitted in a block where the name is a local
+again (a `let` initialized from the slot), and raises the
+`ImmutableError` any local's does. Each block
 that is a scope is recorded under its node (`Resolution::block_scope`),
 which `resolve_test` holds every non-function scope to.
 

@@ -2,34 +2,16 @@
 # yet fixed: `<sweep> <cases that disagree> <form>`, under why. A form whose
 # count moves, or that agrees now, fails the gate, so a fix removes its line.
 # A lowering moves the variables of a scope a suspension splits onto its
-# state object, where a slot holds a value and nothing else.
+# state object, where a slot holds a value and nothing else. These are left
+# as they are until a suspended body keeps its frame.
 
-# L1: reassigning what was declared without `mut` raises nothing
-sole 5 (a, (b,)) = (1, (2,)); (a, (b,)) = (3, (4,)); EMIT(a + b)
-binding 5 a = 1; a = 2; EMIT(a)
-binding 5 a = 1; EMIT(a); a = 2; EMIT(a)
-binding 5 a = 1; a += 2; EMIT(a)
-binding 5 a = 1; { a = 2 }; EMIT(a)
-binding 2 a = 1; if C { a = 2 }; EMIT(a)
-binding 5 a = 1; f = fn () { a = 2 }; f(); EMIT(a)
-binding 5 z = 5; EMIT(z)
-binding 1 z += 5; EMIT(z)
-binding 5 (a, b) = (1, 2); a = 3; EMIT(a)
-binding 5 (a, b) = (1, 2); EMIT(a); (a, b) = (3, 4); EMIT(a)
-binding 5 let (a, b) = (1, 2); a = 3; EMIT(a)
-binding 5 mut a = 1; b = 2; EMIT(a); (a, b) = (3, 4); EMIT(a)
-binding 5 for x in [1] { EMIT(x); x = 2 }
-binding 5 for x in [1, 2] { x += 10; EMIT(x) }
-binding 1 if C { mut a = 1; a = 2; EMIT(a) } else { a = 3; a = 4; EMIT(a) }
-
-# L6: left as they are until a suspended body keeps its frame: `??=` and a
-# typed store over an immutable, a closure called ahead of the declaration
-# it reads, a declaration in an expression that did not run, the column of a
-# later test
-binding 5 let a = nil; a ??= 1; EMIT(a)
-binding 5 a = 1; a: String = "s"; EMIT(a)
+# L6: a slot does not know whether its declaration has run: a closure called
+# ahead of the declaration it reads, a declaration in an expression that was
+# skipped
 binding 5 c = || x; EMIT(try { c() } catch e { e.kind }); let x = 5; EMIT(x)
 binding 1 C && (let h = 1); EMIT(h)
+
+# L6: a declaration written as a test reports at its name, not at its `let`
 binding 2 if false { EMIT(0) } else if (let m = C) { EMIT(m) }; EMIT(m)
 
 # L7: a class declared in the body is unknown after a suspension

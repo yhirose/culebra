@@ -1578,7 +1578,8 @@ class EffectsLowerer {
       const std::string& class_name, const peg::Ast& body_node,
       const std::vector<std::string_view>& param_names,
       const std::string& rv_name, const std::vector<std::string>& around,
-      bool capture_outer = false) const {
+      bool capture_outer = false,
+      const std::vector<std::string_view>& mut_params = {}) const {
     // A bare yield would make the effect body itself a generator, which it is
     // not — reject it symmetrically up front. Yields inside a nested named fn
     // are fine: the fragment re-parse runs the generator chain over them.
@@ -1635,10 +1636,10 @@ class EffectsLowerer {
             "effects A-normalization produced unparseable source", 0, 0);
       }
       return sub_lowerer(*src2).build_class_from_program(
-          class_name, *prog2, param_names, rv_name, around);
+          class_name, *prog2, param_names, rv_name, around, mut_params);
     }
     return sub_lowerer(*src).build_class_from_program(
-        class_name, *prog, param_names, rv_name, around);
+        class_name, *prog, param_names, rv_name, around, mut_params);
   }
 
   // The named fn decls of the body (statement level or nested control flow),
@@ -1673,10 +1674,10 @@ class EffectsLowerer {
   std::string build_class_from_program(
       const std::string& class_name, const peg::Ast& program,
       const std::vector<std::string_view>& param_names,
-      const std::string& rv_name,
-      const std::vector<std::string>& around) const {
+      const std::string& rv_name, const std::vector<std::string>& around,
+      const std::vector<std::string_view>& mut_params) const {
     reject_named_fn_clauses(program);
-    PromotedLocals rewrite(program, param_names, around);
+    PromotedLocals rewrite(program, param_names, around, mut_params);
 
     auto disp = build_dispatch(program, rewrite, rv_name);
 
@@ -1757,7 +1758,9 @@ class EffectsLowerer {
                                   ast->line, ast->column);
     auto rv_name = std::format("_rv_{}_{}", ast->line, ast->column);
     std::string cls =
-        build_computation_class(class_name, body, param_names, rv_name, around);
+        build_computation_class(class_name, body, param_names, rv_name, around,
+                                /*capture_outer=*/false,
+                                collect_mut_param_names(params_ast));
 
     std::string call_args;
     for (size_t j = 0; j < param_names.size(); j++) {

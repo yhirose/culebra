@@ -2614,6 +2614,13 @@ for v in two() {
   `effect fn` body is the same shape and refuses the same way; a
   `handle` body is not — it is spliced where it was written, so an
   enclosing method's `self` is still that method's receiver (§16).
+* A name in the body means what it means in any function. Each
+  declaration makes a variable of its own, which lives as long as its
+  scope: a `let` in a block, an arm or a loop body is not the outer
+  variable of that name, and each pass of a loop has its own. A store to
+  a variable declared without `mut` raises `ImmutableError`, and the
+  load-time checks on names (§6) hold for the body as for any other. An
+  `effect fn` body and a `handle` body follow the same rule (§16).
 * A body local keeps plain-variable semantics even though the lowering
   stores it on the state object: a local holding a function is a value,
   not a method of that object, so `f == f` stays true, calling it (`f()`)

@@ -942,9 +942,14 @@ inline void shadows(const resolve::Resolution& res,
     const auto& sym = res.symbols[d.symbol];
     const auto& fn = res.scopes[res.function_of(sym.scope)];
     if (fn.lowered) continue;  // a lowered body's: checked as it was written
-    size_t around = fn.parent;
-    if (around == resolve::kNone) continue;  // the module's own
-    size_t outer = res.lookup(around, sym.name);
+    // Nor is a name looked for past a lowered body: what stands around the
+    // state class is not what stood around the body.
+    size_t outer = resolve::kNone;
+    for (size_t s = fn.parent; s != resolve::kNone && outer == resolve::kNone;
+         s = res.scopes[s].lowered ? resolve::kNone : res.scopes[s].parent)
+      if (auto it = res.scopes[s].names.find(sym.name);
+          it != res.scopes[s].names.end())
+        outer = it->second;
     if (outer == resolve::kNone || res.frame_of(outer) == 0) continue;
     diags.push_back(Diagnostic{
         "ShadowError", culebra::shadow_error_msg(sym.name),

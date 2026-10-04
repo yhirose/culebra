@@ -600,18 +600,37 @@ class PromotedLocals {
   };
 
   PromotedLocals() = default;  // of no body: nothing has a slot
-  // `body` under parameters named `params`, where `around` are the names
-  // visible around the function. The body's own level is entered.
+  // `body` under parameters named `params` (`mut_params` those declared
+  // `mut`), where `around` are the names visible around the function. The
+  // body's own level is entered.
   PromotedLocals(const peg::Ast& body, std::span<const std::string_view> params,
-                 std::span<const std::string> around)
+                 std::span<const std::string> around,
+                 std::span<const std::string_view> mut_params = {})
       : res_(resolve::resolve_body(body, params, lint::resolve_options(around))),
         body_(res_.body_scope.at(&body)),
         slots_(res_.symbols.size()),
-        captured_(res_.symbols.size()) {
+        captured_(res_.symbols.size()),
+        declared_(res_.symbols.size()),
+        mut_param_(res_.symbols.size()) {
     for (const auto& [node, use] : res_.uses)
       if (use.symbol != resolve::kNone && res_.frame_of(use.symbol) == body_ &&
           res_.function_of(use.scope) != body_ && !own_name(use))
         captured_[use.symbol] = true;
+    using resolve::Form;
+    for (const auto& d : res_.declarations) {
+      declaring_.insert(d.node);
+      declared_[d.symbol].push_back(
+          {d.node->token.data(), d.form == Form::Mut ||
+                                     d.form == Form::Pattern ||
+                                     d.form == Form::Catch});
+    }
+    for (auto& ds : declared_)
+      std::sort(ds.begin(), ds.end(),
+                [](const auto& a, const auto& b) { return a.at < b.at; });
+    for (auto name : mut_params)
+      if (auto it = res_.scopes[body_].names.find(name);
+          it != res_.scopes[body_].names.end())
+        mut_param_[it->second] = true;
     promote(body_);
   }
 
@@ -658,6 +677,32 @@ class PromotedLocals {
       return nullptr;
     const Slot& s = slots_[it->second.symbol];
     return s.field.empty() || own_name(it->second) ? nullptr : &s;
+  }
+
+  // Whether `target`, a name written to, is a slotted variable that refuses
+  // the store: the declaration written last before it made the variable
+  // immutable, as the compiler has it for a local. A name that declares is
+  // no such store, and one with no slot is the compiler's to refuse.
+  bool immutable_write(const peg::Ast& target) const {
+    auto it = res_.uses.find(&target);
+    if (it == res_.uses.end() || it->second.symbol == resolve::kNone ||
+        declaring_.contains(&target))
+      return false;
+    size_t sym = it->second.symbol;
+    if (slots_[sym].field.empty() || own_name(it->second)) return false;
+    const auto& ds = declared_[sym];
+    // A parameter is declared by its list, ahead of everything.
+    std::optional<bool> mut;
+    if (res_.symbols[sym].declared_as(resolve::Form::Parameter))
+      mut = mut_param_[sym];
+    for (const auto& d : ds)
+      if (d.at < target.token.data()) mut = d.mut;
+    // A store written above every declaration (in a loop, in a closure made
+    // first) is refused when no declaration lets it through.
+    if (!mut)
+      mut = std::any_of(ds.begin(), ds.end(),
+                        [](const auto& d) { return d.mut; });
+    return !*mut;
   }
 
   // Whether `name` names a variable of the body's own, slotted or not.
@@ -773,6 +818,15 @@ class PromotedLocals {
   size_t body_ = resolve::kNone;
   std::vector<Slot> slots_;     // by symbol
   std::vector<char> captured_;  // by symbol: some closure names it
+  // By symbol, its declarations in the order they are written: where, and
+  // whether one leaves the variable reassignable. A parameter's is its list.
+  struct Declared {
+    const char* at;
+    bool mut;
+  };
+  std::vector<std::vector<Declared>> declared_;
+  std::vector<char> mut_param_;
+  std::set<const peg::Ast*> declaring_;  // the name nodes that declare
   std::vector<size_t> order_;   // the slotted symbols, as they got one
   std::map<std::string, int, std::less<>> spelled_;  // slotted per name
 };
@@ -899,6 +953,43 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
                                                   : *decl.nodes[0];
     out.push_back({at(kw), target - at(kw), ""});
   };
+  // A store a slotted variable refuses (PromotedLocals::immutable_write) is
+  // left to the compiler. The store `stmt` runs in a block where each slotted
+  // name among `targets` is a local of that name again: a `let` for one that
+  // refuses, so the store raises as in any fn (after the right-hand side, at
+  // the target, under the same message), a `mut` copied back on the way out
+  // for one that takes it. Where the store is an expression the block is an
+  // `if`'s arm, which has its value. Called once the edits under `stmt` are
+  // in: a store in its right-hand side ends where it does, and closes first.
+  auto as_locals = [&](const peg::Ast& stmt,
+                       const std::vector<const peg::Ast*>& targets,
+                       const peg::Ast& rhs) {
+    bool is_stmt = site == EditSite::Stmt;
+    std::string head = is_stmt ? "{ " : "(if true { ";
+    std::set<const PromotedLocals::Slot*> seen;
+    for (const auto* t : targets) {
+      const auto* s = promoted.slot(*t);
+      if (!s || !seen.insert(s).second) continue;
+      head += promoted.immutable_write(*t)
+                  ? std::format("let {} = {}; ", t->token, s->place())
+                  : std::format("mut {0} = {1}; defer {{ {1} = {0} }}; ",
+                                t->token, s->place());
+    }
+    out.push_back({written_at(stmt, src), 0, head});
+    out.push_back({rhs.position + rhs.length, 0, is_stmt ? " }" : " })"});
+  };
+  auto refuses = [&](const std::vector<const peg::Ast*>& targets) {
+    return std::any_of(targets.begin(), targets.end(), [&](const peg::Ast* t) {
+      return promoted.immutable_write(*t);
+    });
+  };
+  // Everything under `stmt` but `targets` moves to its slot.
+  auto rewrite_but = [&](const peg::Ast& stmt,
+                         const std::vector<const peg::Ast*>& targets) {
+    for (const auto& c : stmt.nodes)
+      if (std::find(targets.begin(), targets.end(), c.get()) == targets.end())
+        collect_promoted_edits(*c, src, promoted, out, EditSite::Expr);
+  };
   if (n.tag == "IDENTIFIER"_) {
     if (n.original_tag != "DOT"_ && n.original_tag != "SAFE_DOT"_ &&
         is_promoted(n))
@@ -908,15 +999,37 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
   if (n.tag == "ASSIGNMENT"_) {
     auto av = view_assignment(n);
     const auto* t = assign_name_target(n, av);
-    if ((av.is_let || av.is_mut) && t && is_promoted(*t))
+    if ((av.is_let || av.is_mut) && t && is_promoted(*t)) {
       drop_keywords(n, at(*t));
+    } else if (t && refuses({t})) {
+      rewrite_but(n, {t});
+      as_locals(n, {t}, *av.rhs);
+      return;
+    }
+  } else if (n.tag == "PLACE_ASSIGN"_) {
+    std::vector<const peg::Ast*> names;
+    for_each_place_target(
+        n, [](const peg::Ast&) {},
+        [&](const peg::Ast& name) { names.push_back(&name); });
+    if (refuses(names)) {
+      rewrite_but(n, names);
+      as_locals(n, names, *n.nodes.back());
+      return;
+    }
   } else if (n.tag == "DESTRUCTURE_ASSIGN"_) {
     auto dv = view_destructure(n);
     const auto& pat = *dv.pattern;
     bool any = false;
+    std::vector<const peg::Ast*> leaves;
     for_each_pattern_leaf(pat, [&](const peg::Ast& id, bool) {
       any = any || is_promoted(id);
+      leaves.push_back(&id);
     });
+    if (refuses(leaves)) {
+      collect_promoted_edits(*dv.rhs, src, promoted, out, EditSite::Expr);
+      as_locals(n, leaves, *dv.rhs);
+      return;
+    }
     if (any && is_flat_tuple_pattern(pat)) {
       // Dropping the keyword leaves the PLACE_ASSIGN `(<slot>, <slot>) = …`.
       if (dv.declares) drop_keywords(n, pat.position);
@@ -1050,6 +1163,17 @@ inline std::vector<std::string_view> collect_positional_param_names(
   for (const auto& pn : params_ast.nodes) {
     if (is_kw_only_sep(*pn) || is_kwargs_rest(*pn)) continue;
     names.push_back(view_parameter(*pn).name);
+  }
+  return names;
+}
+
+// The parameters of a PARAMETERS node declared `mut`.
+inline std::vector<std::string_view> collect_mut_param_names(
+    const peg::Ast& params_ast) {
+  std::vector<std::string_view> names;
+  for (const auto& pn : params_ast.nodes) {
+    if (is_kw_only_sep(*pn) || is_kwargs_rest(*pn)) continue;
+    if (auto pv = view_parameter(*pn); pv.is_mut) names.push_back(pv.name);
   }
   return names;
 }
@@ -1670,7 +1794,8 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn_cps(
                               name_ast.line, name_ast.column);
 
   auto param_names = collect_positional_param_names(params_ast);
-  PromotedLocals rewrite_set(*ast->nodes.back(), param_names, around);
+  PromotedLocals rewrite_set(*ast->nodes.back(), param_names, around,
+                             collect_mut_param_names(params_ast));
 
   CpsBuilder b{src, rewrite_set, {}};
   b.terminal = b.fresh();

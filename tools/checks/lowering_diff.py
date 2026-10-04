@@ -146,6 +146,21 @@ BINDING_FORMS = [
     'let a = 1; a ??= 2; EMIT(a)',
     'a = 1; a: String = "s"; EMIT(a)',
     'a = 1; EMIT(a); a: Long = "s"; EMIT(a)',
+    'a = [1]; a += [2]; EMIT(a)',
+    'a = 1; a = 2 if C; EMIT(a)',
+    'a = 1; f = fn () { a += 1 }; EMIT(try { f() } catch e { e.kind }); EMIT(a)',
+    'mut a = 1; b = 2; EMIT(try { (a, b) = (3, 4) } catch e { e.kind }); EMIT([a, b])',
+    'for x in [1, 2] { EMIT(x); x = 5 }',
+    # The declaration written last decides.
+    'mut a = 1; let a = 2; a = 3; EMIT(a)',
+    'let a = 1; mut a = 2; a = 3; EMIT(a)',
+    'mut a = 1; EMIT(a); let a = 2; EMIT(a); a = 3; EMIT(a)',
+    # A store written as an expression, and one in another's right-hand side.
+    'a = 1; EMIT((a = 2)); EMIT(a)',
+    'a = 1; C && (a = 2); EMIT(a)',
+    'a = 1; b = 2; EMIT(try { a = b = 3 } catch e { e.kind }); EMIT([a, b])',
+    'mut a = 1; b = 2; EMIT(try { a = b = 3 } catch e { e.kind }); EMIT([a, b])',
+    'a = 1; b = 2; EMIT(try { (a, b) = (b = 3, 4) } catch e { e.kind }); EMIT([a, b])',
     # ...and what can.
     'mut a = 1; a = 2; EMIT(a)',
     'mut (a, b) = (1, 2); a = 3; EMIT(a)',

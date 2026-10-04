@@ -150,10 +150,11 @@ struct Use {
   size_t scope = kNone;   // the scope the name is written in
 };
 
-// A declaration, by its name node.
+// A declaration, by its name node, and how it is written.
 struct Declaration {
   const peg::Ast* node = nullptr;
   size_t symbol = kNone;
+  Form form = Form::Let;
 };
 
 // A name read or written where nothing declares it.
@@ -468,7 +469,7 @@ class Resolver {
     size_t sym = symbol_in(cur_, name, kind_of(form), &n);
     r_.symbols[sym].declarations++;
     r_.symbols[sym].forms |= static_cast<uint16_t>(1u << static_cast<int>(form));
-    if (opts_.record_nodes) r_.declarations.push_back({&n, sym});
+    if (opts_.record_nodes) r_.declarations.push_back({&n, sym, form});
     add(n, name, sym, cur_, Role::Declaration, spelling);
     return sym;
   }
