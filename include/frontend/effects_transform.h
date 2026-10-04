@@ -875,6 +875,9 @@ class EffectsLowerer {
     std::vector<std::string> defer_bodies;        // reverse source order (LIFO)
     int terminal = -1;                            // state that returns EFF_DONE
     std::string rv;                               // resume parameter name
+    // The statements a braced block collapsed onto: each keeps the block's
+    // range, braces and all, so its own source is what lies inside them.
+    std::set<const peg::Ast*> braced;
     bool failed = false;
     int fresh() {
       states.emplace_back();
@@ -897,7 +900,7 @@ class EffectsLowerer {
   // the next suspension. Its own name is left out of the locals rewrite, so
   // recursion binds to the declaration itself (the multifn uplink) instead of
   // reading back the slot it was just stored in.
-  std::string emit_named_fn_decl(const peg::Ast& decl,
+  std::string emit_named_fn_decl(const CpsState& st, const peg::Ast& decl,
                                  const PromotedLocals& rw) const {
     size_t k = first_non_decorator_index(decl);
     if (k != 0) {
@@ -928,7 +931,7 @@ class EffectsLowerer {
     std::vector<SourceEdit> edits;
     collect_promoted_edits(decl, src_, inner, edits, EditSite::Stmt);
     return anchored("fn " + name +
-                    splice_source(src_, after, decl.position + decl.length,
+                    splice_source(src_, after, stmt_span(st, decl).second,
                                   std::move(edits))) +
            "\n      " + promoted_slot(rw, name) + " = " + name;
   }
@@ -936,11 +939,11 @@ class EffectsLowerer {
   // Statement-level emission source: a named fn decl is emitted and stored
   // into its slot; one buried in otherwise-verbatim control flow would silently
   // keep state-local scope, so reject it; anything else is the rewritten slice.
-  std::string stmt_src(const peg::Ast& s,
+  std::string stmt_src(const CpsState& st, const peg::Ast& s,
                        const PromotedLocals& rw) const {
     using namespace peg::udl;
     auto* u = unwrap_stmt(&s);
-    if (u->tag == "MULTIFN_DECL"_) return emit_named_fn_decl(*u, rw);
+    if (u->tag == "MULTIFN_DECL"_) return emit_named_fn_decl(st, *u, rw);
     if (auto* fd = find_nested_fndef(*u)) {
       throw CulebraError(
           "SyntaxError",
@@ -948,7 +951,22 @@ class EffectsLowerer {
           "body is not supported — define it at the body's statement level.",
           err_pos(*fd).line, err_pos(*fd).col);
     }
-    return anchored(rewrite_locals_to_self(s, src_, rw, EditSite::Stmt));
+    return anchored(stmt_rewritten(st, s, rw));
+  }
+  // The [begin, end) statement `s` itself is written in (CpsState::braced).
+  std::pair<size_t, size_t> stmt_span(const CpsState& st,
+                                      const peg::Ast& s) const {
+    if (st.braced.contains(&s)) return block_inner_span(s, src_);
+    return {s.position, s.position + s.length};
+  }
+  // Statement `s` with its promoted locals moved to their slots, and `edits`.
+  MappedSource stmt_rewritten(const CpsState& st, const peg::Ast& s,
+                              const PromotedLocals& rw,
+                              std::vector<SourceEdit> edits = {}) const {
+    if (st.braced.contains(&s))
+      return rewrite_block_inner(s, src_, rw, std::move(edits));
+    return rewrite_locals_to_self(s, src_, rw, EditSite::Stmt,
+                                  std::move(edits));
   }
   bool cps_needs_split(const peg::Ast& s) const {
     using namespace peg::udl;
@@ -1066,10 +1084,10 @@ class EffectsLowerer {
     if (u->tag == "MULTIFN_DECL"_) {
       // A named fn decl in tail position: store it in its slot; the value is
       // nil (as in plain culebra, where a fn decl statement evaluates to nil).
-      body = "      " + emit_named_fn_decl(*u, rw) + mk(*u) + "\n" +
+      body = "      " + emit_named_fn_decl(st, *u, rw) + mk(*u) + "\n" +
              "      self._eff_val = nil\n";
     } else if (u->tag == "ASSIGNMENT"_) {
-      body = "      " + stmt_src(*u, rw) + mk(*u) + "\n";
+      body = "      " + stmt_src(st, *u, rw) + mk(*u) + "\n";
       auto av = view_assignment(*u);
       if (av.lvalcnt == 1) {
         const auto& lval = *u->nodes[av.lvaloff];
@@ -1082,13 +1100,13 @@ class EffectsLowerer {
       // in the copies into the slots, so the value is taken on the way in.
       const auto& rhs = *view_destructure(*u).rhs;
       body = "      " +
-             anchored(rewrite_locals_to_self(
-                 *u, src_, rw, EditSite::Stmt,
+             anchored(stmt_rewritten(
+                 st, *u, rw,
                  {{rhs.position, 0, "(self._eff_val = "},
                   {rhs.position + rhs.length, 0, ")"}})) +
              mk(*u) + "\n";
     } else {
-      body = std::format("      self._eff_val = ({}){}\n", stmt_src(*u, rw),
+      body = std::format("      self._eff_val = ({}){}\n", stmt_src(st, *u, rw),
                          mk(*u));
     }
     body += std::format("      self._eff_state = {}\n      continue\n", st.terminal);
@@ -1098,22 +1116,15 @@ class EffectsLowerer {
 
   // Compile a control-flow block's statements. A single-statement block
   // collapses onto its lone statement, whose span then covers the enclosing
-  // braces (the AstOptimizer pos/len trap); re-parse
-  // the brace-stripped inner for clean positions. A sub-lowerer bound to the
-  // fresh buffer feeds states into the shared `st`. Multi-statement blocks
-  // re-parse too — uniform and cheap.
+  // braces (the AstOptimizer pos/len trap): it is noted, to be written from
+  // inside them (stmt_span).
   int cps_block_seq(CpsState& st, const peg::Ast& block, int cont, bool tail,
                     const PromotedLocals& rw) const {
-    if (block_inner_span(block, src_).first != block.position) {  // braced
-      auto inner = inner_source(block);
-      reattach_marker(inner, block);
-      auto buf = std::make_shared<std::string>(anchored(inner) + "\n");
-      auto prog = parse_registered_source("<eff-block>", buf);
-      if (!prog) { st.failed = true; return -1; }
-      EffectsLowerer sub(*buf, effect_fns_);
-      return sub.cps_seq(st, body_stmts(*prog), cont, tail, rw);
-    }
-    return cps_seq(st, body_stmts(block), cont, tail, rw);
+    auto stmts = body_stmts(block);
+    if (stmts.size() == 1 && stmts[0] == &block &&
+        block_inner_span(block, src_).first != block.position)
+      st.braced.insert(&block);
+    return cps_seq(st, stmts, cont, tail, rw);
   }
 
   // Entering `block` again swaps its boxes first (emit_fresh_boxes).
@@ -1252,7 +1263,7 @@ class EffectsLowerer {
       // culebra), so tail position adds nothing.
       if (cps_needs_split(*u)) return cps_stmt(st, s, cont, /*tail=*/false, rw);
       int e = st.fresh();
-      st.states[e] = "      " + stmt_src(*u, rw) + mk(*u) +
+      st.states[e] = "      " + stmt_src(st, *u, rw) + mk(*u) +
                      std::format("\n      self._eff_state = {}\n      continue\n",
                                  cont);
       return e;
@@ -1284,7 +1295,7 @@ class EffectsLowerer {
     for (size_t idx = stmts.size(); idx-- > 0;) {
       const peg::Ast* s = stmts[idx];
       if (!cps_needs_split(*s)) {
-        pending = "      " + stmt_src(*s, rw) + mk(*s) + "\n" + pending;
+        pending = "      " + stmt_src(st, *s, rw) + mk(*s) + "\n" + pending;
       } else {
         flush();
         k = cps_stmt(st, s, k, /*tail=*/false, rw);
