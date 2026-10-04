@@ -1942,6 +1942,23 @@ re-parsed fragments, take only the table of scope-opening constructs
 (`resolve::opens_scope`); `resolve_test` holds that table to the scopes
 the resolver opens.
 
+### 10.7 A lowered body against a plain function
+
+A generator or an effect body is lowered source to source (§4), so no
+engine holds it to what the same statements mean in a plain `fn`.
+`tools/checks/lowering_diff.py` writes one statement on the same line
+and column of a plain function, a generator body and an effect body,
+and compares what each prints or raises: the kind, the message, the
+position, and whether at load or at run time. Its sweeps are statement
+forms × conditions × values, written mid-body, as the body's tail and
+as its only statement; what a `for` walks; and what a name means where
+it is written (declared or reassigned, in reach or not, mutable or not,
+captured by which closure). The forms known to differ are listed, each
+with its number of cases, in `tools/checks/lowering_diff_allow.txt`: a
+difference it does not list fails, and so does a listed form whose
+count moved or that agrees now. Its row, `lowering diff`, runs in
+`just test` and CI.
+
 ## 11. Design decisions
 
 - **Register-based, not stack-based.** Registers map directly onto the

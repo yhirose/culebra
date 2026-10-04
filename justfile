@@ -1499,7 +1499,8 @@ _run-tests BACKEND:
     # Lowering-diff gate: generator and effect bodies are lowered source to
     # source, so the same statement is run in a fn, a generator body and an
     # effect body, and what each prints or raises (with its position) must
-    # agree (tools/checks/lowering_diff.py).
+    # agree, but for the forms listed as known to differ
+    # (tools/checks/lowering_diff.py, lowering_diff_allow.txt).
     run_lowering_diff() {
         JOBS="$JOBS" {{nice_cmd}} python3 tools/checks/lowering_diff.py "$BIN"
     }
@@ -1573,7 +1574,7 @@ _run-tests BACKEND:
       "run_vm_cases gc|vm_cases (frozen expected, + the two GC axes)|binary|test|light|-|62"
       "run_codegen_backends|codegen backends (-O0, fast vs --vm)|binary|dev,test|light|-|24"
       "run_scope_agreement|scope agreement (the compiler resolves names as resolve.h does)|binary|test|light|-|15"
-      "run_lowering_diff|lowering diff (a statement in a fn, a generator and an effect body)|binary|test|light|-|30"
+      "run_lowering_diff|lowering diff (a statement in a fn, a generator and an effect body)|binary|test|light|-|65"
       "run_difftest|difftest (generated corpus)|binary|test|diff|heavy|143"
       "run_difftest_refs|difftest (refcount lane)|binary||leak|-|146"
       "run_leak_fuzz|leak-fuzz (corpus RC-leak regression)|binary||diff|-|146"
