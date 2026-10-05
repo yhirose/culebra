@@ -50,6 +50,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -65,6 +66,7 @@
 #include <rt/dispatch.inc.h>
 #include <rt/iter.inc.h>
 #include <rt/mem.inc.h>
+#include <rt/gen.inc.h>
 
 namespace culebra {
 

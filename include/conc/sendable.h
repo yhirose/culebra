@@ -117,6 +117,8 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
             o->slots[o->find_slot("__sharedval_node__")].value.data);
         return n;
       }
+      // A generator is a frame of this thread's, part-way through its body.
+      if (o->is_gen_frame) sendable::send_error("a generator is not Sendable");
       // A native handle says so with a slot of its own; a wrapped class says
       // it once, on the meta all its handles share.
       if (o->find_slot("__nonsendable__") != static_cast<size_t>(-1) ||
@@ -186,9 +188,9 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
         // the class object carries its constructor, a native closure, so
         // the walk refuses exactly where the method's cell capture used to.
         // Every other instance leaves its class behind, as before.
-        if (o->proto()->names_class && o->cls)
+        if (auto* cls = o->built_by(); cls && o->proto()->names_class)
           n.elems.push_back(jit_serialize(
-              {TAG_OBJECT, reinterpret_cast<int64_t>(o->cls)}, ctx));
+              {TAG_OBJECT, reinterpret_cast<int64_t>(cls)}, ctx));
       }
       // Non-string keys: ship them after the string keys, matching the
       // interp serializer's order (string props, then non_string_props),

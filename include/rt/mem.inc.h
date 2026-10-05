@@ -238,11 +238,29 @@ culebra_runtime_owned_scope_exit(int64_t mark_arg) {
     nodes[id].explained++;
     if (from != npos) nodes[from].out.push_back(id);
     if (!fresh) return;
+    // A cell is a node and its value its one edge: a closure's capture, and
+    // a generator frame's cell slot.
+    auto walk_cell = [&](JitCell* cell) {
+      bool cell_fresh;
+      size_t cid = add_node(cell, cell->refcount, cell_fresh);
+      nodes[cid].explained++;
+      nodes[id].out.push_back(cid);
+      if (cell_fresh) self(cell->value, cid, self);
+    };
     switch (v.tag) {
       case TAG_OBJECT: {
         auto* o = reinterpret_cast<JitObject*>(p);
         for (auto& entry : o->slots) self(entry.value, id, self);
         _jit_view_cache_each(o, [&](JitValue& v) { self(v, id, self); });
+        // A suspended generator's frame holds what its registers own, so
+        // a cycle through one resolves here like any other.
+        if (auto* frame = o->generator_frame()) {
+          std::vector<JitValue> vals;
+          std::vector<JitCell*> cells;
+          _jit_gen_frame_edges(frame, vals, cells);
+          for (auto& v : vals) self(v, id, self);
+          for (auto* cell : cells) walk_cell(cell);
+        }
         if (o->key_order && o->non_string_props) {
           for (const auto& k : *o->key_order) {
             self(k.value(), id, self);
@@ -263,8 +281,8 @@ culebra_runtime_owned_scope_exit(int64_t mark_arg) {
         if (o->proto()) {
           self(JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(o->proto())}, id,
                self);
-          if (o->cls)
-            self(JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(o->cls)}, id,
+          if (auto* cls = o->built_by())
+            self(JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(cls)}, id,
                  self);
         }
         if (auto* meta = o->class_meta_of())
@@ -289,15 +307,8 @@ culebra_runtime_owned_scope_exit(int64_t mark_arg) {
         // fully explained, so it drops at scope exit instead of parking
         // for the backstop. Cells share the i64-refcount-first layout.
         auto* c = reinterpret_cast<JitClosure*>(p);
-        for (size_t i = 0; i < c->n_captures; i++) {
-          auto* cell = c->captures[i];
-          if (!cell) continue;
-          bool cell_fresh;
-          size_t cid = add_node(cell, cell->refcount, cell_fresh);
-          nodes[cid].explained++;
-          nodes[id].out.push_back(cid);
-          if (cell_fresh) self(cell->value, cid, self);
-        }
+        for (size_t i = 0; i < c->n_captures; i++)
+          if (auto* cell = c->captures[i]) walk_cell(cell);
         // A multifn dispatcher owns its overload bodies through the
         // thread-local table (+1 each, invisible to slot walks) — the
         // same edges the mark phase uses.
@@ -458,9 +469,9 @@ inline void _culebra_value_release_node(int8_t tag, int64_t data) {
         _culebra_call_drop_if_present(o);
         if (o->proto()) {
           auto* proto = o->proto();
-          auto* cls = o->cls;
+          auto* cls = o->built_by();
           o->set_proto(nullptr);
-          o->cls = nullptr;
+          if (cls) o->cls = nullptr;  // a generator's frame sits there
           _culebra_value_release_impl(GC_TAG_OBJECT,
                                        reinterpret_cast<int64_t>(proto));
           if (cls)
@@ -481,6 +492,11 @@ inline void _culebra_value_release_node(int8_t tag, int64_t data) {
         if (o->is_packed_view) {
           delete o->view_cache;
           o->view_cache = nullptr;
+        }
+        // The frame's own references go, then the frame.
+        if (auto* frame = o->generator_frame()) {
+          _jit_gen_frame_release(frame);
+          o->gen_frame = nullptr;
         }
         // Sidecar teardown. Both `key_order` and the AnyKeyMap hold
         // a +1 ref on each refcounted (Tuple) key, plus the map holds
@@ -932,6 +948,8 @@ inline constexpr auto class_call_method   = "culebra_runtime_class_call_method";
 inline constexpr auto class_new_method    = "culebra_runtime_class_new_method";
 inline constexpr auto mark_class          = "culebra_runtime_mark_class";
 inline constexpr auto explicit_drop       = "culebra_runtime_explicit_drop";
+inline constexpr auto gen_ramp            = "culebra_runtime_gen_ramp";
+inline constexpr auto gen_resnap_site     = "culebra_runtime_gen_resnap_site";
 inline constexpr auto takes_drop_guard    = "culebra_runtime_takes_drop_guard";
 inline constexpr auto ufcs_takes          = "culebra_runtime_ufcs_takes";
 inline constexpr auto owned_hot           = "culebra_runtime_owned_hot";

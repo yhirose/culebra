@@ -1979,6 +1979,8 @@ inline bool _culebra_structure_equal(int8_t t1, int64_t d1, int8_t t2,
       auto* a = reinterpret_cast<JitObject*>(d1);
       auto* b = reinterpret_cast<JitObject*>(d2);
       if (a == b) return true;
+      // A generator is where its body stands, which no slot shows.
+      if (a->is_gen_frame || b->is_gen_frame) return false;
       if (_jit_meta_class_name(a) != _jit_meta_class_name(b)) return false;
       if (_jit_meta_enum_name(a) != _jit_meta_enum_name(b)) return false;
       if (a->prop_size() != b->prop_size()) return false;
@@ -3296,15 +3298,17 @@ culebra_runtime_make_variant_meta(const char* variant_name,
 }
 
 // The shared meta a value the runtime builds itself carries: the Range `a..b`
-// makes, and the ChannelResult / WsResult variants `try_recv` and
-// `ws_receive` return. None has a declaration to own a meta, and minting one
-// per value cost ~20% of `try_recv` (488 -> 389 ns/op measured at -O1), so
-// they come from a table instead. Per Runtime, and pinned: a table is a root
-// the cycle collector cannot see, and the trial-deletion pass would otherwise
-// find the meta's count fully explained by the values pointing at it and
-// condemn it out from under them. `enum_name` is null for a plain class.
+// makes, the ChannelResult / WsResult variants `try_recv` and `ws_receive`
+// return, and a generator's iterator (rt/gen.inc.h). None has a declaration
+// to own a meta, and minting one per value cost ~20% of `try_recv` (488 ->
+// 389 ns/op measured at -O1), so they come from a table instead. Per
+// Runtime, and pinned: a table is a root the cycle collector cannot see, and
+// the trial-deletion pass would otherwise find the meta's count fully
+// explained by the values pointing at it and condemn it out from under them.
+// `enum_name` is null for a plain class.
 // Both names must already be interned — the table keys on the pointers.
-// Returns +1 (transferable, like make_variant_meta).
+// `fill`, when the values have methods, binds them on the meta the first
+// time it is asked for. Returns +1 (transferable, like make_variant_meta).
 extern "C++" {  // a template cannot have C linkage; we sit in extern "C"
 template <class Key>
 struct _JitPinnedMetas {
@@ -3320,13 +3324,17 @@ struct _JitPinnedMetas {
 using _JitNativeMetas = _JitPinnedMetas<std::pair<const char*, const char*>>;
 }  // extern "C++"
 
-inline JitObject* _jit_native_meta(const char* name, const char* enum_name) {
+inline JitObject* _jit_native_meta(const char* name, const char* enum_name,
+                                   void (*fill)(JitObject*) = nullptr) {
   auto& t = culebra::runtime_substate<_JitNativeMetas>(
       culebra::kSlotJitNativeMetas);
   auto key = std::make_pair(name, enum_name);
   auto it = t.tbl.find(key);
   if (it == t.tbl.end()) {
+    // A method closure is unrooted until it is slotted into the meta.
+    culebra::gc::Heap::CollectPause pause(_gc_heap());
     auto* meta = culebra_runtime_make_variant_meta(name, enum_name);
+    if (fill) fill(meta);
     _gc_heap().pin(meta);
     it = t.tbl.emplace(key, meta).first;
   }
@@ -3406,7 +3414,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_eff_copy(
   o->set_proto(src->proto());   // shared class meta (methods)
   if (o->proto()) {
     o->proto()->refcount++;   // each instance holds a +1 (see dtor)
-    o->cls = src->cls;      // and one on its class object
+    o->cls = src->built_by();  // and one on its class object
     if (o->cls) o->cls->refcount++;
   }
   o->shape = src->shape;   // interned, immortal

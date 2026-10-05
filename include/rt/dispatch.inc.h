@@ -944,7 +944,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue
 culebra_runtime_class_self(int8_t self_tag, int64_t self_data) {
   if (self_tag == TAG_OBJECT) {
     auto* o = reinterpret_cast<JitObject*>(self_data);
-    JitObject* cls = o->proto() ? o->cls : o->is_class ? o : nullptr;
+    JitObject* cls = o->proto() ? o->built_by() : o->is_class ? o : nullptr;
     if (cls) {
       cls->refcount++;
       return JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(cls)};
@@ -1230,10 +1230,12 @@ inline void _jit_gc_enumerate_children(void* obj, uint8_t tag,
       }
       if (o->proto()) {
         out.push_back(o->proto());
-        if (o->cls) out.push_back(o->cls);
+        if (auto* cls = o->built_by()) out.push_back(cls);
       }
       if (auto* meta = o->class_meta_of()) out.push_back(meta);
       _jit_view_cache_each(o, [&](JitValue& v) { _gc_push_value(out, v); });
+      if (auto* frame = o->generator_frame())
+        _jit_gen_frame_children(frame, out);
       break;
     }
     case GC_TAG_CELL:
@@ -1309,6 +1311,7 @@ inline void _jit_gc_sweep_object(void* obj, uint8_t tag) {
       if (o->is_dict) delete o->dict_;
       if (o->is_class_meta) delete o->specials;
       if (o->is_packed_view) delete o->view_cache;
+      if (auto* frame = o->generator_frame()) _jit_gen_frame_sweep(frame);
       _jit_enum_forget(o);
       delete o;
       break;

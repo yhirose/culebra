@@ -451,6 +451,8 @@ inline culebra::Shape* dict_shape() {
   return &s;
 }
 
+struct JitGenFrame;  // rt/gen.inc.h
+
 struct JitObject {
   int64_t refcount;
   bool has_drop = false;
@@ -463,6 +465,11 @@ struct JitObject {
   // not as a thrown value (format_uncaught_throw). In the padding before the
   // pointer below, so JitObject stays inside its slab class. Never GEP'd.
   bool is_error = false;
+  // A generator's iterator, which is also the heap half of its frame
+  // (rt/gen.inc.h's JitGenFrame, in `gen_frame` below). What the frame holds
+  // is this object's to report to the collector, release and free; its
+  // methods are on the one meta every generator shares. Never GEP'd.
+  bool is_gen_frame = false;
   JitIterFastFn fast_next_fn = nullptr;
   // Optional prototype pointer. When set, property lookup falls through
   // to `proto->slots` after this object's own slots are exhausted (one
@@ -583,13 +590,13 @@ struct JitObject {
   // A declared enum's object: `enum_ref` is its weak handle, which it clears
   // as it is freed (_jit_enum_forget). Never GEP'd.
   bool is_enum = false;
-  // One trailing pointer, six exclusive roles: a packed view's cache of the
+  // One trailing pointer, seven exclusive roles: a packed view's cache of the
   // heap values its field reads minted (`is_packed_view`, see JitViewCache), a
   // declared enum's weak handle (`is_enum`, see JitEnumRef), a builtin
-  // namespace's name (`is_namespace`), the class object a class-sugar
-  // instance (the only kind with a `proto`) was built by, a class object's
-  // instance meta (`is_class`, see class_meta_of), or a class meta's
-  // special-method table
+  // namespace's name (`is_namespace`), a generator's frame (`is_gen_frame`,
+  // see generator_frame), the class object any other value with a `proto`
+  // was built by (see built_by), a class object's instance meta (`is_class`,
+  // see class_meta_of), or a class meta's special-method table
   // (`is_class_meta`, see Special) — owned by the meta and freed with it. The
   // instance holds a +1 on its class, released with it, so a method can name
   // the class through its receiver after the declaring scope is gone
@@ -603,6 +610,7 @@ struct JitObject {
     JitSpecialTable* specials;
     JitEnumRef* enum_ref;
     JitViewCache* view_cache;
+    JitGenFrame* gen_frame;  // `is_gen_frame`
   };
 
   // The meta a class object's instances share, or null: set by
@@ -612,6 +620,19 @@ struct JitObject {
   // record read back from its bytes).
   JitObject* class_meta_of() const {
     return is_class && !is_namespace && !proto() ? instance_meta : nullptr;
+  }
+
+  // The class object an instance was built by, or null: a value the runtime
+  // makes itself (a Range, a generator) has a meta and no class, and a
+  // generator keeps its frame where an instance keeps this.
+  JitObject* built_by() const {
+    return proto() && !is_gen_frame ? cls : nullptr;
+  }
+
+  // A generator's frame, or null: not a generator, or one being torn down
+  // whose frame has gone ahead of it.
+  JitGenFrame* generator_frame() const {
+    return is_gen_frame ? gen_frame : nullptr;
   }
 
   // --- Shape-based property access helpers ---
@@ -790,6 +811,17 @@ struct JitObject {
   }
 };
 static_assert(sizeof(JitObject) <= 128 && !std::is_polymorphic_v<JitObject>);
+
+// A generator's frame (rt/gen.inc.h), as the collector and the release path
+// reach it through the object it hangs off (JitObject::gen_frame).
+struct JitCell;
+inline void _jit_gen_frame_children(const JitGenFrame* g,
+                                    std::vector<void*>& out);
+inline void _jit_gen_frame_edges(const JitGenFrame* g,
+                                 std::vector<JitValue>& values,
+                                 std::vector<JitCell*>& cells);
+inline void _jit_gen_frame_release(JitGenFrame* g);
+inline void _jit_gen_frame_sweep(JitGenFrame* g);
 
 // The names a value answers to, read from the meta it reaches through
 // `proto`: the class that built it, and — on an enum variant — the enum
