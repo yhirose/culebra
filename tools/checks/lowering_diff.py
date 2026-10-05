@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """A statement means the same in a fn, a generator body and an effect body.
 
-Generator and effect bodies are lowered to state machines, source to source;
-a plain fn body is not. This places one statement on the same line and
-column of the three, and fails when what they print or raise (kind, line,
+An effect body is lowered to a state machine, source to source. A generator
+body is compiled as written and runs in a frame that leaves the stack at each
+yield. A plain fn body is neither. This places one statement on the same line
+and column of the three, and fails when what they print or raise (kind, line,
 column, message) differs. EMIT(x) in a statement is spelled
 `plain_emit__(x)`, `yield       (x)` and `perform emit(x)`, the same width,
 so the columns after it line up.
@@ -16,8 +17,8 @@ The sweeps:
   binding  what a name means where it is written: declared or reassigned, in
            reach or not, mutable or not, captured by which closure
   binding-fn, binding-defer
-           the same over the forms one lowering refuses by design, in the two
-           contexts that take them
+           the same over the forms one of the two refuses by design, in the
+           two contexts that take them
 
 A context that hangs or dies without a word fails the case even when the
 others do the same, and each sweep must run at least one case to a value in
@@ -26,7 +27,8 @@ every context, so that a check that measures nothing cannot pass.
 The forms known to disagree are listed in lowering_diff_allow.txt, each with
 how many of its cases do. A form that disagrees and is not listed fails, and
 so does a listed one whose count moved or that agrees now: a fix removes its
-line.
+line. The list is the effect lowering's: a generator body that differs from
+the plain fn fails whether or not its form is listed.
 
 Usage: lowering_diff.py <culebra-binary> [--jit] [--sweep name,...]
 JOBS (default: the CPU count) bounds the processes run at once, and
@@ -422,6 +424,7 @@ def main():
     jobs = list(cases())
     live = set()
     diffs = collections.defaultdict(list)  # (sweep, form) -> its cases that disagree
+    gen_diffs = []  # the cases a generator body differs from the plain fn in
     with concurrent.futures.ThreadPoolExecutor(JOBS) as pool:
         futures = [{ctx: pool.submit(run, src) for ctx, src in progs.items()}
                    for *_, progs in jobs]
@@ -433,6 +436,8 @@ def main():
                                                  for o in got.values()):
                 diffs[sweep, form].append(f'  {label}\n' + ''.join(
                     f'    {ctx:5}: {out}\n' for ctx, out in got.items()))
+                if got.get('gen', got['plain']) != got['plain']:
+                    gen_diffs.append(diffs[sweep, form][-1])
     if '--list' in sys.argv:
         for (sweep, form), cases_ in diffs.items():
             print(f'{sweep} {len(cases_)} {form}')
@@ -450,6 +455,11 @@ def main():
                f'agrees now: remove its line from {os.path.basename(ALLOW)}')
         print(f'lowering-diff FAIL: {key[0]} {key[1]!r}: {why}', file=sys.stderr)
         sys.stderr.write(''.join(diffs.get(key, [])))
+    if gen_diffs:
+        print(f'lowering-diff FAIL: {len(gen_diffs)} cases differ between a '
+              f'generator body and a plain fn ({ENGINE})', file=sys.stderr)
+        sys.stderr.write(''.join(gen_diffs))
+        return 1
     dead = [sweep for sweep in ran if sweep not in live]
     if dead:
         print(f'lowering-diff FAIL: no case of {", ".join(dead)} ran to a value '

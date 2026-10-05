@@ -292,11 +292,10 @@ struct Lowering {
     }
     // Filled on first use, per chunk (see param_meta_global).
     std::vector<llvm::Constant*> metas(p.chunks.size(), nullptr);
-    // A generator chunk compiled as written (CULEBRA_GEN_FRAMES) is two
-    // functions. The JitFn its closure names is a ramp into the runtime
-    // (culebra_runtime_gen_ramp), which puts the frame on the heap and calls
-    // the body; the body is the chunk, its registers in that frame, entered
-    // again at each resume.
+    // A generator chunk is two functions. The JitFn its closure names is a
+    // ramp into the runtime (culebra_runtime_gen_ramp), which puts the frame
+    // on the heap and calls the body; the body is the chunk, its registers
+    // in that frame, entered again at each resume.
     for (size_t i = 0; i < p.chunks.size(); ++i) {
       const Chunk& ch = p.chunks[i];
       if (!ch.is_generator) {

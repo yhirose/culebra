@@ -1,9 +1,10 @@
 # Forms of tools/checks/lowering_diff.py that are known to disagree and not
 # yet fixed: `<sweep> <cases that disagree> <form>`, under why. A form whose
 # count moves, or that agrees now, fails the gate, so a fix removes its line.
-# A lowering moves the variables of a scope a suspension splits onto its
-# state object, where a slot holds a value and nothing else. These are left
-# as they are until a suspended body keeps its frame.
+# All of them are an effect body's: its lowering moves the variables of a
+# scope a suspension splits onto its state object, where a slot holds a value
+# and nothing else. A generator body keeps its frame and agrees with the
+# plain fn on every form (lowering_diff.py fails a case where it does not).
 
 # L6: a slot does not know whether its declaration has run: a closure called
 # ahead of the declaration it reads, a declaration in an expression that was

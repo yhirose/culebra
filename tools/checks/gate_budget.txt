@@ -60,9 +60,9 @@ tests.cul 303
 # Isolate and a Channel).
 tests.isolate 21
 
-# tests/gen_frames/*.cul: the probes the generator-frames lane holds to frozen
-# outputs with CULEBRA_GEN_FRAMES set, on both engines in the landing gate and
-# under the collector's axes and `culebra build` in the full one.
+# tests/gen_frames/*.cul: the generator probes held to frozen outputs, on both
+# engines in the landing gate and under the collector's axes and `culebra
+# build` in the full one.
 tests.gen_frames 7
 
 # The curated bytecode cases held to frozen expected outputs, x2 lanes x3 GC

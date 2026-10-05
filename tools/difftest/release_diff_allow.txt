@@ -198,3 +198,33 @@ m|{a: 1, b: 2}|has|*
 # is the arm's, and no longer replaces or joins the function of that name
 # outside it. The baseline answered 2 here (the arm's `h`), this build 29.
 nestedfn|fn h(n) { 29 }; if true { fn h(n) { n }; nil } else { nil }; h(2)
+
+# A generator keeps its frame: the body is compiled as it is written and
+# suspended at each `yield`, where the baseline rewrote it into a state class
+# per generator function. A statement means in the body what it means in a
+# plain fn. What a program sees of the change:
+#
+# - a generator is a `Generator` whichever function made it, prints as
+#   `Generator {}`, and equals only itself. The baseline named the class
+#   (`_Gen_gg_<line>_<col>`), printed its state fields, and compared two
+#   generators field by field, so two fresh `gg(3)` were equal;
+gen|fn gg() { yield 1 }; type_of(gg())
+gen|fn gg() { yield 1 }; to_string(gg())
+gen|fn gg(n) { yield n }; let a = gg(3); to_string([a == a, a == gg(3)*
+# - an error that leaves the body runs the body's defers and finishes the
+#   generator. The baseline left the defers for dispose(), and the next
+#   has_next() ran the failing statement again;
+gen|mut log = []; fn gg() { defer { log.push("defer") }; yield 1; to_long("x") }*
+# - resuming a generator from inside its own body is a ValueError, "generator
+#   already running". The baseline recursed to a RecursionError;
+gen|mut me = nil; fn gg() { yield 1; yield try { me.next() }*
+# - dispose() releases the value has_next() pulled ahead. The baseline's
+#   next() still returned it;
+gen|fn gg() { yield 1; yield 2 }; let g = gg(); g.has_next(); g.dispose()*
+# - a local with a `drop` is dropped when its scope ends, as in a plain fn.
+#   The baseline dropped it when the generator went away;
+gen|mut log = []; fn gg() { if true { let r = {drop: fn () { log.push("drop") }}; yield 1 }*
+# - a statement block that is an expression's value may yield. The baseline
+#   refused the program when it was loaded ("unsupported control flow in a
+#   generator body").
+gen|fn gg() { let v = if true { yield 1; 5 } else { 6 }; yield v }*

@@ -8,7 +8,7 @@
 # edge inside a loop inside a closure — which is what the codegen seeds and
 # the generated difftest corpus are for.
 #
-# Generated from 301 files.
+# Generated from 303 files.
 tests/callable_iterator_hof.cul
 tests/test_args.cul
 tests/test_class_parameters.cul

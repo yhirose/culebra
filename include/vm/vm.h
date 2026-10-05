@@ -766,7 +766,7 @@ enum class Op : uint8_t {
                  // already made as a unit (docs §5.2.1). Emitted by the shape
                  // pass, never by the compiler, for the same reason
                  // MoveRetain is.
-  // Frame-saving generators (CULEBRA_GEN_FRAMES). `c` numbers the chunk's
+  // Generators, which keep their frame between resumes. `c` numbers the chunk's
   // suspension points from 1: the frame's state while it is suspended there,
   // and its run in the chunk's stack map (Chunk::gen_owned).
   GenStart,      // a generator fn's prologue ends here: the frame, parameters

@@ -50,14 +50,7 @@ got=$(wc -l < "$work/records" | tr -d ' ')
     comm -23 <(sort "$work/files") <(awk '{print $1}' "$work/records" | sort) | sed 's/^/  missing: /' >&2
     exit 1
 }
-# The generator-frames lane (gen_frames_lane.sh) lowers its probes in the same
-# gate with CULEBRA_GEN_FRAMES set, and until that is the default it is the
-# only place Op::GenStart and Op::Yield are lowered at all.
-CULEBRA="$BIN" CULEBRA_GEN_FRAMES=1 bash tools/checks/dump_ops.sh tests/gen_frames/*.cul \
-    > "$work/records.frames" || exit 1
-[[ -s "$work/records.frames" ]] || { echo "jit-shape-set: no probe under tests/gen_frames dumped" >&2; exit 1; }
-cat "$work/records" "$work/records.frames" | tr ' ' '\n' \
-    | grep -E '^[A-Z][A-Za-z]+$' | sort -u > "$work/covered"
+tr ' ' '\n' < "$work/records" | grep -E '^[A-Z][A-Za-z]+$' | sort -u > "$work/covered"
 
 comm -23 "$work/ops" "$work/covered" | sort > "$work/uncovered"
 if ! diff -q "$work/uncovered" "$work/filed" > /dev/null; then

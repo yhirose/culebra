@@ -330,10 +330,9 @@ static void scenario_collapsed_bodies() {
   disconnect_and_wait();
 }
 
-// Scenario 5: a generator that keeps its frame (CULEBRA_GEN_FRAMES) is a
-// frame of the call stack while its body runs: stopped inside it after a
-// resume, the stack is the body on top of whoever resumed it, each with its
-// own locals.
+// Scenario 5: a generator is a frame of the call stack while its body runs:
+// stopped inside it after a resume, the stack is the body on top of whoever
+// resumed it, each with its own locals.
 static void scenario_generator_frame() {
   std::string path = write_program(
       "culebra_dap_gen.cul",
@@ -352,9 +351,7 @@ static void scenario_generator_frame() {
       "  seen\n"                 // 13
       "}\n"                      // 14
       "IO.inspect(drive())\n");  // 15
-  ::setenv("CULEBRA_GEN_FRAMES", "1", 1);
   spawn_adapter();
-  ::unsetenv("CULEBRA_GEN_FRAMES");
 
   send("{\"type\":\"request\",\"command\":\"initialize\"}");
   read_until("\"event\":\"initialized\"");

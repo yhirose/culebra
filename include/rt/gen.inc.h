@@ -1,7 +1,7 @@
 #pragma once
 
 // A generator's frame, kept off the stack between resumes, and the iterator
-// it is to the program (CULEBRA_GEN_FRAMES).
+// it is to the program.
 //
 // Runtime-layer fragment of rt.h, split out for readability. These
 // fragments rely on rt.h's #include block and are included by rt.h in a

@@ -1,5 +1,10 @@
 // Generator (yield) AST transformation pass.
 //
+// What follows describes the lowering, which runs only with
+// CULEBRA_GEN_LOWERED set (gen_frames_enabled, below): by default this pass
+// checks where a `yield` is written, rewrites `yield from`, and leaves the
+// body to the compiler.
+//
 // A `fn` whose body contains `yield` / `yield from` is rewritten, at
 // parse time, into an anonymous class implementing the Iterator
 // protocol (iter / has_next / next / dispose), then re-parsed — the
@@ -142,13 +147,15 @@ inline void reject_self_in_lowered_body(const peg::Ast& body,
   }
 }
 
-// With CULEBRA_GEN_FRAMES set a generator fn is not lowered to a state class:
-// the compiler takes it as it is written and each engine suspends its frame
-// at a `yield` (vm.h Op::GenStart / Op::Yield, rt/gen.inc.h). Effect bodies
-// are lowered either way. Read once: the stdlib preamble baked into the
-// binary was compiled without it, so a library generator stays lowered.
+// A generator fn is not lowered to a state class: the compiler takes it as
+// it is written and each engine suspends its frame at a `yield` (vm.h
+// Op::GenStart / Op::Yield, rt/gen.inc.h). Effect bodies are lowered.
+// CULEBRA_GEN_LOWERED brings the generator lowering back, for comparing the
+// two until that lowering is deleted; no gate runs it. Read once, and the
+// stdlib preamble baked into the binary was compiled without it, so a
+// library generator keeps its frame either way.
 inline bool gen_frames_enabled() {
-  static const bool on = std::getenv("CULEBRA_GEN_FRAMES") != nullptr;
+  static const bool on = std::getenv("CULEBRA_GEN_LOWERED") == nullptr;
   return on;
 }
 

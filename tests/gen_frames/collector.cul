@@ -1,5 +1,5 @@
-// Tracing a frame, the shapes the lowered class has no twin for or does not
-// agree on: compared across the frames lanes only (--vm / --jit / build).
+// Tracing a frame: what a collection finds through one that is suspended,
+// running or closed, the same on --vm, --jit and a built binary.
 
 mut closed = 0
 mut dropped = 0

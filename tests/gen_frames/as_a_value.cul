@@ -1,6 +1,5 @@
-# What a generator is as a value, with frames: one object, its methods on
-# the meta every generator shares. The lowered class has other answers
-# (its state fields show), so this is held across the frames lanes only.
+# What a generator is as a value: one object, its methods on the meta every
+# generator shares.
 
 fn count(n) {
   mut k = 0

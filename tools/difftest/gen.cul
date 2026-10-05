@@ -528,11 +528,11 @@ case(
 )
 
 # --- Dimension 9: generators / yield --------------------------------------
-# Generators lower to a flat-dispatch CPS engine — structurally a different
-# implementation from the interpreter, so drive a generator declared inside
-# the thunk through each terminal (collect/count/next/for-in), including an
-# error mid-stream (position) and control-flow shapes. Single-quote raw so
-# the `{ ... }` bodies are not read as interpolation.
+# A generator's body runs in a frame that leaves the stack at each yield,
+# which each engine suspends and resumes in its own way, so drive a generator
+# declared inside the thunk through each terminal (collect/count/next/for-in),
+# including an error mid-stream (position) and control-flow shapes. Single-
+# quote raw so the `{ ... }` bodies are not read as interpolation.
 let gens = ['fn gg() { yield 1; yield 2; yield 3 }; gg().collect()',
             'fn gg() { yield 1; yield to_long("x"); yield 3 }; gg().collect()',
             'fn gg() { for x in [1, 2] { yield x * 10 } }; gg().collect()',
@@ -541,13 +541,29 @@ let gens = ['fn gg() { yield 1; yield 2; yield 3 }; gg().collect()',
             'fn gg() { yield 1; yield 2 }; gg().count()',
             'fn gg() { yield 7 }; gg().next()',
             'mut s = 0; fn gg() { yield 1; yield 2 }; for x in gg() { s = s + x }; s',
-            # a local name as literal string text is not rewritten; interpolation is
+            # a local's name in literal string text stays text; in an interpolation it reads the local
             'fn gg() { let base = 9; yield "the base v"; yield "b={base}" }; to_string(gg().collect())',
-            # a closure over a promoted body local: it captures the local's box,
-            # not the state instance (which holds the closure back)
+            # a closure over a body local that lives across a yield: called, and
+            # written through, after a resume
             'fn gg(n) { let h = fn (k) { k + n }; yield h(1); yield h(2) }; to_string(gg(10).collect())',
             'fn gg(n) { mut acc = n; let b = fn (k) { acc = acc + k }; b(1); yield acc; b(10); yield acc }; to_string(gg(5).collect())',
-            'fn gg(n) { let s = [n]; let a = fn (k) { s.push(k) }; defer { a(99) }; a(1); yield s.size() }; let g = gg(7); let v = g.next(); g.dispose(); to_string(v)']
+            'fn gg(n) { let s = [n]; let a = fn (k) { s.push(k) }; defer { a(99) }; a(1); yield s.size() }; let g = gg(7); let v = g.next(); g.dispose(); to_string(v)',
+            # what a generator is as a value: one type, no state to print, identity
+            'fn gg() { yield 1 }; type_of(gg())',
+            'fn gg() { yield 1 }; to_string(gg())',
+            'fn gg(n) { yield n }; let a = gg(3); to_string([a == a, a == gg(3), gg(3) == gg(3)])',
+            # a throw out of the body runs its defers and finishes the generator
+            'mut log = []; fn gg() { defer { log.push("defer") }; yield 1; to_long("x") }; let g = gg(); g.next(); log.push(try { g.next() } catch e { e.kind }); log.push(g.has_next()); to_string(log)',
+            # a generator resumed from inside its own body (`me = nil` undoes the
+            # ring the case built: the generator's closure reads the variable
+            # that holds the generator)
+            'mut me = nil; fn gg() { yield 1; yield try { me.next() } catch e { e.kind + ": " + e.message } }; me = gg(); me.next(); let r = me.next(); me = nil; r',
+            # dispose() releases the value has_next() pulled ahead
+            'fn gg() { yield 1; yield 2 }; let g = gg(); g.has_next(); g.dispose(); to_string([g.has_next(), g.next()])',
+            # a local with a drop goes when its scope ends, not when the generator does
+            'mut log = []; fn gg() { if true { let r = {drop: fn () { log.push("drop") }}; yield 1 }; log.push("after"); yield 2 }; gg().collect(); to_string(log)',
+            # a statement block that is an expression's value may yield
+            'fn gg() { let v = if true { yield 1; 5 } else { 6 }; yield v }; to_string(gg().collect())']
 for g in gens {
   case("gen|" + g, g)
 }
