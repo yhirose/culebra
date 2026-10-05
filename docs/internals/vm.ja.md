@@ -42,7 +42,7 @@ backstop — は別の文書[`memory.md`](memory.ja.md)にある。以下の各�
       │  parse (peglibの文法)
       ▼
      AST
-      │  AST→AST変換 (generator、algebraic effects)
+      │  AST→AST変換 (algebraic effects)
       ▼
   FnAnalysis      locals / slot、capture、EH + defer領域           fn_analysis.h
       ▼
@@ -93,9 +93,10 @@ includeし、他のどこからもincludeしない。
    そこからimportされる全モジュールをパースし、`LoadedModule`の
    リストをトポロジカル順（依存先が先、エントリが最後）で返す。
    各モジュールはパースされ、書かれたままの形からスコープの検査を
-   読み取り（§10.6）、そのあとgeneratorとeffectsの変換（§11）がASTに
-   対して走る（`apply_transforms`）。検査の結果は全モジュールを読み
-   終えてから報告する。
+   読み取り（§10.6）、そのあと変換がASTに対して走る
+   （`apply_transforms`）: effectsの変換（§11）と、generatorのパス
+   （`yield`を書ける場所の検査と`yield from`の書き換え、§5.7）である。
+   検査の結果は全モジュールを読み終えてから報告する。
 2. **stdlib preambleを差し込む。** `splice_stdlib_preamble`がAST群の
    トークンをスキャンしてstdlib名（`Time`、`Regex`、`Path`、
    `assert_*`ファミリー、…）を探し、プログラムが名指ししている遅延
@@ -596,7 +597,7 @@ testsと言語front endを合わせたコーパス全体では、4つのpassが
 | 文字列と出力 | `Fmt` `StrCat` `Disp` `Println` `SetOpPos` | 補間、および`println(<引数1個>)`のpeephole |
 | namespace関数 | `NsCall` `ToFloat` | 直接の`Math.f(args)` / `to_float(x)`はresolverもclosureも経ずにhelperへ届く（§5.4） |
 | セッションとデバッグ | `ReplCell` `ReplBind` `DbgStmt` | §8.1、§8.3 |
-| generatorのフレーム | `GenStart` `Yield` | §5.7。`CULEBRA_GEN_FRAMES`を設定したときだけemitされる |
+| generatorのフレーム | `GenStart` `Yield` | §5.7 |
 
 **コンパイラが名指しできる呼び先。** その文リストが1度だけ宣言する
 `let name = fn …`は、その関数リテラルに束縛されたままである:
@@ -1301,17 +1302,20 @@ or-patternの中のbinding alternative、制御フローの条件式の中の
 `perform`など — であり、これらはどのレーンでも言語仕様として拒否
 される。
 
-### 5.7 フレームを保持するgenerator
+### 5.7 generatorはフレームを保持する
 
-既定ではgeneratorはコンパイラの手前で変換され（§11）、この節は何も
-適用されない。環境変数`CULEBRA_GEN_FRAMES`が設定されていると
-（`gen_frames_enabled`、プロセスごとに1回読む）、本体がyieldする
-`fn name`は書かれたままコンパイラに届き、そのchunkはgeneratorになる
-（`Chunk::is_generator`）: 呼び出しはプロローグを実行してイテレータを
-返し、本体は`yield`のたびにスタックを離れ、次のresumeで戻るフレームの
-中で走る。このフラグは既定を切り替えるための段階である。effectの本体は
-どちらでも変換されたままで、標準ライブラリのCulebraモジュールが持つ
-generatorも同じである（フラグなしでバイナリに焼き込まれている）。
+本体がyieldする`fn name`は書かれたままコンパイラに届き、そのchunkは
+generatorになる（`Chunk::is_generator`）: 呼び出しはプロローグを実行して
+イテレータを返し、本体は`yield`のたびにスタックを離れ、次のresumeで
+戻るフレームの中で走る。effectの本体はそうではなく、コンパイラの手前で
+変換される（§11）。
+
+generatorも以前は同じように、それぞれ状態クラスへ変換されていた。その
+変換はまだ`generator_transform.h`に残っていて、環境変数
+`CULEBRA_GEN_LOWERED`で選べる（`gen_frames_enabled`、プロセスごとに
+1回読む）。2つを比べるためのもので、どのゲートも回さず、削除する予定で
+ある。標準ライブラリのCulebraモジュールはこの変数なしでバイナリに
+焼き込まれるので、そのgeneratorはどちらでもフレームを保持する。
 
 これを運ぶopcodeは2つ。`GenStart`はプロローグ — パラメータの束縛、
 既定値の評価、型検査、`RecEnter` — の後に置かれるので、プロローグが
@@ -1346,14 +1350,13 @@ throwが起きたら解放されるものと同じである: そこで途中に�
 
 `yield from e`に命令はない: `transform_one_generator_fn`がソース上で
 `for v in (e) { yield v }`に書き換える。このような関数に対して変換が
-するのはそれだけである。変換が拒否するものは引き続き、同じ文面で拒否
-される: `try`や`defer`の中の`yield`、本体の中の`self`、`fn name`宣言の
-外の`yield`。
+するのはそれだけである。変換が拒否していたものは引き続き、同じ文面で
+拒否される: `try`や`defer`の中の`yield`、本体の中の`self`、`fn name`
+宣言の外の`yield`。
 
-**プログラムから見える違い。** 書かれたままコンパイルされた本体は、
-名前の束縛も文の実行も普通の`fn`と同じである。§10.7がgeneratorの本体に
-ついて「異なる」と載せている形は、変換の側の違いである。変換された
-クラスと比べると:
+**変換との違い。** 書かれたままコンパイルされた本体は、名前の束縛も
+文の実行も普通の`fn`と同じで、§10.7がそれを保つ。変換されたクラスが
+別の答えを返していて、プログラムから見えるもの:
 
 - `type_of(g)`は`'Generator'`で、値は`Generator {}`と表示され、自前の
   プロパティを持たない（変換版: generator関数ごとに1クラスで、状態の
@@ -2056,11 +2059,11 @@ assertレーン）はコレクタと一緒に`memory.md` §5〜6で説明され�
 ない読みが未定義名の`NameError`、関数が書かれた位置で外側の関数の
 変数である名前の宣言が`ShadowError`、`let`の後のその変数への裸の
 書き込みが`ImmutableError`になる。解決するのは書かれたままの
-モジュールで、generatorとeffectの変換が本体を状態機械に置き換える
-前である（`lint::scope_diagnostics`。ローダーがパースと変換の間で
-呼ぶ）。だから変換される本体も、普通の本体と同じ3つの検査を受ける。
+モジュールで、effectの変換が本体を状態機械に置き換える前である
+（`lint::scope_diagnostics`。ローダーがパースと変換の間で呼ぶ）。
+だから変換される本体も、普通の本体と同じ3つの検査を受ける。
 節点の位置が許すものの検査（`RuleWalker`）は変換後のモジュールを読む。
-generatorとeffectの変換は、パースし直した本体を書き換えるので、
+effectの変換は、パースし直した本体を書き換えるので、
 書き換える木そのものを解決し（`resolve::resolve_body`。本体を引数の
 下で、関数の周囲から見える名前を渡して解決する）、名前がどの変数かを
 その結果から読む。変数が状態インスタンス上に自分のslotを得るのは、
@@ -2075,11 +2078,13 @@ slotは値を持つだけなので、その変数が拒む代入はコンパイ�
 （`Resolution::block_scope`）、関数のものでないスコープがすべてそこに
 あることを`resolve_test`が確かめる。
 
-### 10.7 変換された本体を普通の関数と突き合わせる
+### 10.7 generatorとeffectの本体を普通の関数と突き合わせる
 
-generatorとeffectの本体はソースからソースへ変換される（§4）ので、
-同じ文が普通の`fn`で持つ意味と一致することを、どのエンジンも保証
-しない。`tools/checks/lowering_diff.py`は1つの文を、普通の関数、
+effectの本体はソースからソースへ変換される（§11）ので、同じ文が
+普通の`fn`で持つ意味と一致することを、どのエンジンも保証しない。
+generatorの本体は書かれたままコンパイルされるが、`yield`をまたいで
+持つものは、スタックを離れたフレームの中にある（§5.7）。
+`tools/checks/lowering_diff.py`は1つの文を、普通の関数、
 generatorの本体、effectの本体の同じ行と列に書き、それぞれが出力する
 ものと投げるもの（種類、文面、位置、ロード時か実行時か）を比べる。
 掃引するのは、文の形 × 条件 × 値を本体の途中・末尾・唯一の文として
@@ -2088,23 +2093,21 @@ generatorの本体、effectの本体の同じ行と列に書き、それぞれ�
 捕獲するか）。異なると分かっている形は、そのケース数とともに
 `tools/checks/lowering_diff_allow.txt`に載せる。載っていない違い、
 載っているのにケース数が変わった形、もう一致する形のどれかで失敗する。
+載っている形はすべてeffectの変換のものである: generatorの本体が普通の
+関数と異なるケースは、その形が載っていてもいなくても失敗する。
 その行`lowering diff`は`just test`とCIで走る。
 
-### 10.8 フラグの後ろにある間のgeneratorフレーム
+### 10.8 generatorのプローブ
 
-上のレーンはすべて既定（generatorを変換する）で走るので、どれも
-`GenStart` / `Yield`、フレームのランタイム、コレクタから見たフレーム
-（§5.7）に届かない。`tools/checks/gen_frames_lane.sh`は
-`CULEBRA_GEN_FRAMES`を設定して2つの母集団を回す: `tests/gen_frames/`の
-プローブ（それぞれ凍結した出力と突き合わせる）と、コンパイラが
-フレームのgeneratorを作る`tests/*.cul`のファイル（自分のassertionで
-保つ）。`just test-dev`の行は、プローブをexecutorと`--jit`で、コーパスの
-ファイルをexecutorで、そのうちgeneratorを主題とするものは`--jit`でも
-回す。`just test`の行はそれに、残りの`--jit`、両母集団の
-`CULEBRA_GC_STRESS`・`CULEBRA_GC_REFS`・リーク監査（両エンジン）、
-`culebra build`を通したプローブを足す。JITレーンの部分集合
-（`conformance.md`）は、この2つのopcodeをlowerするファイルとして
-プローブを数える。WindowsのCIはプローブを回す。
+yieldする`tests/*.cul`のファイルは他と同じコーパスで、上のレーンが
+すべて掃く。`tests/gen_frames/`にあるのは、assertionでは測りにくい
+ものである: closeが各種の中断点でdeferとdropを走らせる順序、中断中の
+フレームを通してcollectionが回収するもの、値としてのgeneratorを出力する
+プログラムで、それぞれ凍結した出力と突き合わせる
+（`tools/checks/gen_frames_probes.sh`。`--freeze`が出力を書き直す）。
+`just test-dev`の行はこれをexecutorと`--jit`で回す。`just test`の行は
+`CULEBRA_GC_STRESS`・`CULEBRA_GC_REFS`・リーク監査の下で両エンジンで、
+さらに`culebra build`を通して回す。WindowsのCIは前者を回す。
 
 ## 11. 設計判断
 
@@ -2121,16 +2124,21 @@ generatorの本体、effectの本体の同じ行と列に書き、それぞれ�
 - **バイトコードは内部専用。** シリアライズなし、バージョンなし、
   ディスクに書かれることもない。これが、ある構文が必要とするたびに
   形式を自由に変えられる理由である。
-- **generatorとeffectsはAST→AST変換である。**
-  `generator_transform.h`は`yield`する関数をイテレータプロトコル
-  を実装するクラスに書き換え、`effects_transform.h`は
-  `effect fn` / `perform` / `handle`を`__Eff`ランタイム上の普通の
-  ソースに書き換える。どちらも制御フローをflat-dispatchのCPS状態機械を
-  通じてloweringし、中断で割られるスコープの変数をstate instance上に持つ。
-  エンジンはgenerator固有やeffect固有の対応を一切必要としないので、
-  構造的に一致する。generatorについては、エンジンがフレームを中断する
-  という代替が`CULEBRA_GEN_FRAMES`の後ろに実装してある（§5.7）。
-  effectの継続は複数回resumeできるので、effectは変換のままである。
+- **effectsはAST→AST変換で、generatorはフレームを保持する。**
+  `effects_transform.h`は`effect fn` / `perform` / `handle`を`__Eff`
+  ランタイム上の普通のソースに書き換える。制御フローをflat-dispatchの
+  CPS状態機械を通じてloweringし、中断で割られるスコープの変数をstate
+  instance上に持つ。エンジンはeffect固有の対応を一切必要としないので、
+  構造的に一致する。generatorも以前は同じように、`yield`する関数を
+  イテレータプロトコルを実装するクラスへ変換していた。エンジンが
+  フレームを中断できるようになって、それをやめた（§5.7）。変換は
+  `yield`がスコープから切り離す変数をすべてslotにし、slotは値しか
+  持てないので、変換された本体は、同じ文を普通の関数に書いたものと
+  いくつかの形で異なっていた（§10.7）。書かれたままコンパイルされた
+  本体にはその一覧がなく、bytecodeも少ない（`tests/test_generator.cul`は
+  変換では24,364命令だったものが5,714命令になる）。effectの継続は
+  複数回resumeできるが、ヒープとスタックの間を移るフレームはそれに
+  応えられないので、effectは変換のままである。
 - **組み込みメソッドはデータである。** `(name, argc)`ごとの
   テーブル行が、拒否の判断、executor、loweringを1つの定義の上に
   保つ（§5.4）。

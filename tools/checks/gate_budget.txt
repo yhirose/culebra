@@ -106,7 +106,9 @@ ctest.entries 34
 # disk directory, in en and ja.
 # 1018 since §12 `if` shows a value leaving an arm as the `if`'s value, in en
 # and ja.
-docs.blocks 1018
+# 1022 since §11 shows what a generator is as a value and a throw out of its
+# body ending it, in en and ja.
+docs.blocks 1022
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

@@ -43,7 +43,7 @@ for ahead-of-time binaries).
       │  parse (peglib grammar)
       ▼
      AST
-      │  AST→AST transforms (generators, algebraic effects)
+      │  AST→AST transform (algebraic effects)
       ▼
   FnAnalysis      locals / slots, captures, EH + defer regions       fn_analysis.h
       ▼
@@ -94,9 +94,11 @@ includes them in a fixed order and nothing else includes them at all.
 1. **Load.** `ModuleLoader::load_program` parses the entry file and every
    module it imports, returning a `LoadedModule` list in topological order
    (dependencies first, entry last). Each module is parsed, its scope
-   checks are read off it as written (§10.6), and then the generator and
-   effects transforms (§11) run on the AST (`apply_transforms`); the
-   checks are reported once every module is read.
+   checks are read off it as written (§10.6), and then the transforms
+   run on the AST (`apply_transforms`): the effects lowering (§11), and
+   the generator pass, which holds a `yield` to where one may be written
+   and rewrites `yield from` (§5.7). The checks are reported once every
+   module is read.
 2. **Splice the stdlib preamble.** `splice_stdlib_preamble` scans the
    ASTs' tokens for stdlib names (`Time`, `Regex`, `Path`, the `assert_*`
    family, …) and prepends a synthesized `<stdlib>` module holding the
@@ -604,7 +606,7 @@ of almost every scope.
 | strings and output | `Fmt` `StrCat` `Disp` `Println` `SetOpPos` | interpolation, and the `println(<one arg>)` peephole |
 | namespace functions | `NsCall` `ToFloat` | a direct `Math.f(args)` / `to_float(x)` reaches its helper without the resolver or a closure (§5.4) |
 | sessions and debug | `ReplCell` `ReplBind` `DbgStmt` | §8.1, §8.3 |
-| generator frames | `GenStart` `Yield` | §5.7; emitted only with `CULEBRA_GEN_FRAMES` set |
+| generator frames | `GenStart` `Yield` | §5.7 |
 
 **A callee the compiler can name.** A `let name = fn …` its statement
 list declares once is bound to that literal for good: it takes no `mut`,
@@ -1337,18 +1339,21 @@ structural shapes — a binding alternative inside an or-pattern, a
 `perform` in a control-flow condition — that the language rejects on
 every lane.
 
-### 5.7 A generator that keeps its frame
+### 5.7 A generator keeps its frame
 
-By default a generator is lowered ahead of the compiler (§11) and none
-of this section applies. With `CULEBRA_GEN_FRAMES` set in the
-environment (`gen_frames_enabled`, read once per process) a `fn name`
-whose body yields reaches the compiler as it is written, and its chunk
-is a generator (`Chunk::is_generator`): calling it runs the prologue
-and returns an iterator, and the body runs in a frame that leaves the
-stack at every `yield` and comes back at the next resume. The flag
-stages a change of default. Effect bodies stay lowered either way, and
-so do the generators of the standard library's Culebra modules, which
-are compiled into the binary without the flag.
+A `fn name` whose body yields reaches the compiler as it is written,
+and its chunk is a generator (`Chunk::is_generator`): calling it runs
+the prologue and returns an iterator, and the body runs in a frame that
+leaves the stack at every `yield` and comes back at the next resume.
+An effect body is lowered ahead of the compiler instead (§11).
+
+Generators were lowered the same way, each to a state class, and that
+lowering is still in `generator_transform.h`: `CULEBRA_GEN_LOWERED` in
+the environment selects it (`gen_frames_enabled`, read once per
+process), for comparing the two. No gate runs it, and it is to be
+deleted. The standard library's Culebra modules are compiled into the
+binary without the variable, so their generators keep their frames
+either way.
 
 Two opcodes carry it. `GenStart` follows the prologue — parameters
 bound, defaults evaluated, types checked, `RecEnter` run — so what the
@@ -1385,14 +1390,13 @@ frame through it (`memory.md` §6.3).
 
 `yield from e` has no instruction: `transform_one_generator_fn`
 rewrites it in source to `for v in (e) { yield v }`, and that is all it
-does to such a function. What the lowering refuses it still refuses,
+does to such a function. What the lowering refused it still refuses,
 with the same messages: a `yield` inside `try` or `defer`, `self` in
 the body, a `yield` outside a `fn name` declaration.
 
-**What a program sees differently.** A body compiled as written binds
-names and runs statements as a plain `fn` does; the forms §10.7 lists
-as differing for a generator body are differences of the lowering.
-Against the lowered class:
+**Against the lowering.** A body compiled as written binds names and
+runs statements as a plain `fn` does, which §10.7 holds it to. What a
+program sees that the lowered class answered differently:
 
 - `type_of(g)` is `'Generator'`, the value prints as `Generator {}`
   and has no properties of its own (lowered: one class per generator
@@ -2091,15 +2095,15 @@ result: a read nothing visible declares is the undefined-name
 `NameError`, a declaration of a name that is an enclosing function's
 variable where the function is written is the `ShadowError`, and a bare
 write to a variable after its `let` is the `ImmutableError`. It resolves
-the module as written, before the generator and effect lowerings
-replace a body with a state machine (`lint::scope_diagnostics`, called
-by the loader between the parse and the transforms), so a lowered body
-is held to the three checks as a plain one is; the checks of what a
-node's place allows (`RuleWalker`) read the lowered module. The
-generator and effect lowerings rewrite a body they have parsed again,
-so each resolves the tree it rewrites (`resolve::resolve_body`: the
-body under its parameters, with the names visible around the function
-passed in) and reads off the result which variable a name is. A
+the module as written, before the effect lowering replaces a body
+with a state machine (`lint::scope_diagnostics`, called by the loader
+between the parse and the transforms), so a lowered body is held to
+the three checks as a plain one is; the checks of what a node's place
+allows (`RuleWalker`) read the lowered module. The effect lowering
+rewrites a body it has parsed again, so it resolves the tree it
+rewrites (`resolve::resolve_body`: the body under its parameters, with
+the names visible around the function passed in) and reads off the
+result which variable a name is. A
 variable gets a slot of its own on the state instance when the machine
 enters the scope that holds it, a scope whose statements end up in
 different states (`PromotedLocals`); a scope no suspension splits is
@@ -2111,10 +2115,12 @@ again (a `let` initialized from the slot), and raises the
 that is a scope is recorded under its node (`Resolution::block_scope`),
 which `resolve_test` holds every non-function scope to.
 
-### 10.7 A lowered body against a plain function
+### 10.7 A generator and an effect body against a plain function
 
-A generator or an effect body is lowered source to source (§4), so no
-engine holds it to what the same statements mean in a plain `fn`.
+An effect body is lowered source to source (§11), so no engine holds
+it to what the same statements mean in a plain `fn`. A generator body
+is compiled as written, but what it holds across a `yield` lives in a
+frame that left the stack (§5.7).
 `tools/checks/lowering_diff.py` writes one statement on the same line
 and column of a plain function, a generator body and an effect body,
 and compares what each prints or raises: the kind, the message, the
@@ -2125,25 +2131,24 @@ it is written (declared or reassigned, in reach or not, mutable or not,
 captured by which closure). The forms known to differ are listed, each
 with its number of cases, in `tools/checks/lowering_diff_allow.txt`: a
 difference it does not list fails, and so does a listed form whose
-count moved or that agrees now. Its row, `lowering diff`, runs in
-`just test` and CI.
+count moved or that agrees now. Every listed form is the effect
+lowering's: a case in which the generator body differs from the plain
+function fails whether or not its form is listed. Its row, `lowering
+diff`, runs in `just test` and CI.
 
-### 10.8 Generator frames, while they are behind the flag
+### 10.8 Generator probes
 
-Every lane above runs the default, in which a generator is lowered, so
-none of them reaches `GenStart` / `Yield`, the frame runtime, or the
-collector's view of a frame (§5.7). `tools/checks/gen_frames_lane.sh`
-sets `CULEBRA_GEN_FRAMES` over two populations: the probes under
-`tests/gen_frames/`, each held to a frozen output, and the
-`tests/*.cul` files the compiler makes a frame generator in, held by
-their own assertions. Its row in `just test-dev` runs the probes on
-the executor and `--jit`, and the corpus files on the executor and, for
-those that are about generators, on `--jit`. Its row in `just test`
-adds the rest on `--jit`, both populations under `CULEBRA_GC_STRESS`,
-`CULEBRA_GC_REFS` and the leak audit on both engines, and the probes
-through `culebra build`. The JIT lane's subset (`conformance.md`)
-counts the probes as the files that lower the two opcodes. Windows CI
-runs the probes.
+The `tests/*.cul` files that yield are corpus like any other, swept by
+every lane above. `tests/gen_frames/` holds what an assertion is the
+wrong instrument for: programs that print the order a close runs defers
+and drops in at each kind of suspension point, what a collection
+reclaims through a suspended frame, and what a generator is as a
+value, each held to a frozen output
+(`tools/checks/gen_frames_probes.sh`, whose `--freeze` rewrites one).
+Its row in `just test-dev` runs them on the executor and `--jit`. Its
+row in `just test` runs them under `CULEBRA_GC_STRESS`,
+`CULEBRA_GC_REFS` and the leak audit on both engines, and through
+`culebra build`. Windows CI runs the first.
 
 ## 11. Design decisions
 
@@ -2160,18 +2165,23 @@ runs the probes.
 - **Bytecode is internal.** No serialization, no version, never written
   to disk. That is what lets the format change whenever a construct
   needs it to.
-- **Generators and effects are AST→AST transforms.**
-  `generator_transform.h` rewrites a `yield`ing function into a class
-  implementing the iterator protocol; `effects_transform.h` rewrites
-  `effect fn` / `perform` / `handle` into plain source over the `__Eff`
-  runtime. Both lower control flow through a flat-dispatch CPS state
-  machine, with the variables of every scope a suspension splits on the
-  state instance. The engines need no
-  generator- or effect-specific support, so they agree by construction.
-  For generators the alternative, a frame the engines suspend, is
-  implemented behind `CULEBRA_GEN_FRAMES` (§5.7); an effect's
-  continuation can be resumed more than once, and effects stay
-  transforms.
+- **Effects are an AST→AST transform; generators keep a frame.**
+  `effects_transform.h` rewrites `effect fn` / `perform` / `handle`
+  into plain source over the `__Eff` runtime, lowering control flow
+  through a flat-dispatch CPS state machine with the variables of
+  every scope a suspension splits on the state instance. The engines
+  need no effect-specific support, so they agree by construction.
+  Generators were lowered the same way, each `yield`ing function into
+  a class implementing the iterator protocol, until the engines
+  learned to suspend a frame (§5.7). The lowering made a slot of every
+  variable a `yield` splits from its scope, and a slot holds a value
+  and nothing else, so a lowered body differed from the same
+  statements in a plain function in a list of forms (§10.7); a body
+  compiled as written has no such list, and is less bytecode
+  (`tests/test_generator.cul` is 5,714 instructions where the lowering
+  made 24,364). An effect's continuation can be resumed more than
+  once, which a frame that moves between the heap and the stack does
+  not serve, and effects stay transforms.
 - **Built-in methods are data.** A table row per `(name, argc)` keeps the
   reject decision, the executor and the lowering on one definition
   (§5.4).

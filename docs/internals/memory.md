@@ -617,14 +617,13 @@ refcount accounting (`Heap::begin_teardown`, the role CPython's
 from inside that `drop` would sweep the corpse under its own release,
 or discount live children through edges it has already dropped.
 
-**A suspended generator frame.** With `CULEBRA_GEN_FRAMES` (`vm.md`
-§5.7) a generator's registers live on the heap between resumes, in a
-`JitGenFrame` that hangs off the generator's iterator object
-(`JitObject::gen_frame`, the object flagged `is_gen_frame`). The
-object is what the collector knows; the frame is its payload,
-enumerated, released and freed with it. What a suspended frame
-references is exact: the slots the chunk's stack map lists for the
-suspension point it is at — a value slot's payload, a cell slot's
+**A suspended generator frame.** A generator's registers live on the
+heap between resumes (`vm.md` §5.7), in a `JitGenFrame` that hangs off
+the generator's iterator object (`JitObject::gen_frame`, the object
+flagged `is_gen_frame`). The object is what the collector knows; the
+frame is its payload, enumerated, released and freed with it. What a
+suspended frame references is exact: the slots the chunk's stack map
+lists for the suspension point it is at — a value slot's payload, a cell slot's
 `JitCell` — its pending defers, the value `has_next()` pulled ahead,
 and its closure. Exactness is not an optimization here. A
 refcount-seeded collection (§6.2) subtracts every enumerated edge from

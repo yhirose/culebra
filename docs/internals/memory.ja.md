@@ -623,8 +623,8 @@ refcountの会計から外す（`Heap::begin_teardown`。CPythonの
 `drop`の内側からのコレクションが、走行中の解放の足元で亡骸を
 sweepしたり、既に手放した辺を通して生きた子を割り引いたりする。
 
-**中断しているgeneratorのフレーム。** `CULEBRA_GEN_FRAMES`
-（`vm.md` §5.7）では、generatorのレジスタはresumeの間ヒープ上にある。
+**中断しているgeneratorのフレーム。** generatorのレジスタはresumeの間
+ヒープ上にある（`vm.md` §5.7）。
 置き場所は`JitGenFrame`で、generatorのイテレータオブジェクトに
 ぶら下がる（`JitObject::gen_frame`、`is_gen_frame`の立ったオブジェクト）。
 コレクタが知っているのはオブジェクトで、フレームはその中身であり、

@@ -2504,10 +2504,10 @@ let leaf = {value: 3, kids: []}
 inspect(walk({value: 1, kids: [{value: 2, kids: [leaf]}]}).collect())  # => [1, 2, 3]
 ```
 
-**The generator object.** What the call returns is an ordinary
-Iterator: it carries `iter` / `has_next` / `next` / `dispose`, so it
-drives `for`-in, the lazy combinator set (§18.5), and any other
-consumer of the protocol. Suspension makes unbounded sources practical:
+**The generator object.** What the call returns is an Iterator: it
+carries `iter` / `has_next` / `next` / `dispose`, so it drives `for`-in,
+the lazy combinator set (§18.5), and any other consumer of the
+protocol. Suspension makes unbounded sources practical:
 
 ```culebra
 fn nat() {
@@ -2520,16 +2520,38 @@ fn nat() {
 inspect(nat().map(|x| x * x).take(5).collect())  # => [0, 1, 4, 9, 16]
 ```
 
-The body starts on the first `has_next()`, not at the call. A generator
-is **one-shot**: once drained it stays exhausted, and iterating the same
-object again produces nothing. Call the function again for a fresh run.
+The call binds the parameters, as any call does: a default is
+evaluated and a declared type is checked there. The body starts on the
+first `has_next()`, which runs it to its next `yield` and holds that
+value for `next()`. A generator is **one-shot**: once drained it stays
+exhausted, and iterating the same object again produces nothing. Call
+the function again for a fresh run.
+
+Whichever function made it, a generator's `type_of` is `'Generator'`
+and it prints as `Generator {}`: what the suspended body holds is not
+among its properties. Two generators are equal only when they are the
+same object. A generator belongs to the isolate that made it and is
+not Sendable (stdlib `Isolate`).
+
+```culebra
+fn count(n) {
+  for i in 0..n {
+    yield i
+  }
+}
+let g = count(3)
+inspect(type_of(g))     # => 'Generator'
+inspect(g == g)         # => true
+inspect(g == count(3))  # => false
+```
 
 **Inside the body**, `yield` may appear at any depth in `while`, `for`,
 `if` and `{ }` bodies, and `break` / `continue` / `return` behave as they
 do in a normal function — `return` ends the generation. A `defer` runs
 when its scope is left, as in a normal function (§15): a loop body's
 defer on every iteration, the body's own when the body finishes. A
-`for`-in in the body closes its iterator the same way.
+`for`-in in the body closes its iterator the same way, and a local
+with a `drop` (§17) is dropped when its scope is left.
 
 ```culebra
 fn rows() {
@@ -2554,7 +2576,9 @@ A generator can also stop while suspended: the consumer leaves its
 `for`-in by `break`, `return` or an exception, a terminal method
 finishes early (§18.5), `dispose()` is called, or the last reference to
 the generator goes away. The defers still pending run then, innermost
-first — cleanup does not depend on the body reaching its end.
+first, and the locals still in scope are released — cleanup does not
+depend on the body reaching its end. A value `has_next()` was holding
+for `next()` is released with them.
 
 ```culebra
 fn two() {
@@ -2573,6 +2597,29 @@ for v in two() {
 # 'closed'
 ```
 
+An exception that leaves the body ends the generator too. The body's
+pending defers run as it unwinds, the exception reaches whoever asked
+for the next value, and the generator is exhausted from then on:
+
+```culebra
+fn broken() {
+  defer {
+    inspect('closed')
+  }
+  yield 1
+  throw 'boom'
+}
+let b = broken()
+inspect(b.next())
+inspect(try { b.next() } catch e { "caught {e}" })
+inspect(b.has_next())
+# => |
+# 1
+# 'closed'
+# 'caught boom'
+# false
+```
+
 **Restrictions.**
 
 * `yield` may not appear inside a `try` / `catch` or a `defer` block.
@@ -2580,8 +2627,8 @@ for v in two() {
   try-catch or defer block.` To guard a yielded value, put the `try`
   in the expression (`yield try { ... } catch e { ... }`); to clean up,
   use a `defer` as above.
-* Only `fn name(...) { ... }` **declarations** are transformed into
-  generators — at the top level or nested inside another function. A
+* Only `fn name(...) { ... }` **declarations** are generators — at
+  the top level or nested inside another function. A
   `yield` anywhere else — in a class method, in an object property's
   function, in a `fn` expression assigned to a variable, or at the top
   level of a file — is rejected at parse time:
@@ -2591,29 +2638,27 @@ for v in two() {
       or a fn expression cannot be a generator. Declare a named fn and
       call it instead.
 
-  The check runs over what the transform pass leaves behind, so every
-  backend rejects the same programs at the same position.
-* `self` may not be referenced in a generator's body. The body is
-  lowered into methods of a synthesized state class, so a bare
-  `self` there could only name that internal object — never a receiver
-  (a generator is a named fn and cannot be a method). The parser
-  rejects it:
+  The check runs when the file is loaded, so every backend rejects the
+  same programs at the same position.
+* `self` may not be referenced in a generator's body, where a plain
+  `fn` declared inside a method would read that method's receiver. The
+  parser rejects it:
 
       SyntaxError: self is not available inside a generator body (a
       function that uses yield) — bind it outside first (let me = self)
       and use that variable, or pass it as a parameter.
 
-  The rule reaches a `fn` / lambda **defined** in the body, which would
-  otherwise read that state object through the enclosing method's
-  `self`. One shape is exempt: a function that is an object property
+  The rule reaches a `fn` / lambda **defined** in the body. One shape
+  is exempt: a function that is an object property
   (`yield {m: fn () { self.x }}`), whose `self` is the dynamic receiver
-  of the object it is called on (§10), never the state object. A
-  property name, object key, or kwarg label spelled `self` is not a
-  reference either. To reach an enclosing receiver, capture it first:
-  `let me = self` outside the generator, then use `me` inside. An
-  `effect fn` body is the same shape and refuses the same way; a
-  `handle` body is not — it is spliced where it was written, so an
-  enclosing method's `self` is still that method's receiver (§16).
+  of the object it is called on (§10). A property name, object key, or
+  kwarg label spelled `self` is not a reference either. To reach an
+  enclosing receiver, capture it first: `let me = self` outside the
+  generator, then use `me` inside. An `effect fn` body refuses `self`
+  the same way; a `handle` body does not (§16).
+* A generator cannot be resumed while its body is running: `has_next()`
+  or `next()` called on it from inside its own body raises `ValueError:
+  generator already running`.
 * A name in the body means what it means in any function. Each
   declaration makes a variable of its own, which lives as long as its
   scope: a `let` in a block, an arm or a loop body is not the outer
@@ -2621,23 +2666,13 @@ for v in two() {
   a variable declared without `mut` raises `ImmutableError`, and the
   load-time checks on names (§6) hold for the body as for any other. An
   `effect fn` body and a `handle` body follow the same rule (§16).
-* A body local keeps plain-variable semantics even though the lowering
-  stores it on the state object: a local holding a function is a value,
-  not a method of that object, so `f == f` stays true, calling it (`f()`)
-  passes no receiver exactly as it would outside a generator, and passing
-  it on leaves the receiver to whatever call follows (`holder.f = f`,
-  then `holder.f()` sees `holder`). The generator's own protocol methods
-  are not locals and bind as usual (§10). An `effect fn` body and a
-  `handle` body promote their locals the same way, so this rule holds
-  there too (§16) — it is only the `self` rule above that treats the two
-  differently.
-* A generator body cannot `perform` a bare effect operation or declare
-  an `effect fn`; a self-contained `handle { ... }` expression inside
-  the body does work (§16).
+* A generator body cannot declare an `effect fn`. A bare `perform` in
+  the body is answered by the handlers installed around the call that
+  resumes it, and a self-contained `handle { ... }` expression inside
+  the body works (§16).
 
-Generators are compiled by a source-level transform shared by every
-lane, so an identical program yields identical values under the VM,
-the JIT, and an AOT binary.
+An identical program yields identical values under the VM, the JIT,
+and an AOT binary.
 
 ---
 
@@ -4448,9 +4483,8 @@ the operation does — and whether, and how many times, to **resume** the code
 that performed it. One mechanism expresses generators, exceptions, cooperative
 scheduling, and backtracking search without each needing dedicated syntax.
 
-Effects lower, at parse time, to ordinary Culebra classes plus a small runtime
-(the same compile-time transform the generators use), so all three backends
-run identical code and behave identically.
+Effects lower, at parse time, to ordinary Culebra classes plus a small runtime,
+so all three backends run identical code and behave identically.
 
 ### Declaring an effect
 
@@ -4467,12 +4501,16 @@ An operation declaration only names the operation and its parameters; invoking
 it directly is an error — it must be reached through `perform`.
 
 An effectful function's body is lowered into a synthesized computation class,
-the same shape a generator body takes, so `self` may not be referenced there
-(`self is not available inside an effect fn body`) — pass what you mean as a
-parameter, or bind it outside as `let me = self`. A `handle { ... }` body is
-not restricted: it stays where it was written, so inside a method `self` is
-still that method's receiver. Both promote their locals onto the synthesized
-object, where a local holding a function stays a plain variable (§11).
+so a bare `self` there could only name that internal object, and it may not be
+referenced (`self is not available inside an effect fn body`) — pass what you
+mean as a parameter, or bind it outside as `let me = self`. A `handle { ... }`
+body is not restricted: it stays where it was written, so inside a method
+`self` is still that method's receiver. Both promote their locals onto the
+synthesized object, where a local keeps plain-variable semantics: one holding
+a function is a value, not a method of that object, so `f == f` stays true,
+calling it (`f()`) passes no receiver exactly as it would in a plain fn, and
+passing it on leaves the receiver to whatever call follows (`holder.f = f`,
+then `holder.f()` sees `holder`).
 
 ### Performing an operation
 

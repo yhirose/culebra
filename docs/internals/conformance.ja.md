@@ -136,10 +136,7 @@ executorが実装する全 bytecode opを JITが降ろすことを保つ最小�
 4つは理由付きでこの集合の中に記載してあり、その一覧は減る方向にしか
 動かせない。`tools/checks/check_jit_shape_set.sh`がゲートを回すたびに
 コンパイル済み bytecodeから被覆を再計算するので、新しい opは誰かが
-テストで届かせるまでゲートを落とす。`GenStart`と`Yield`は
-`CULEBRA_GEN_FRAMES`を設定したときだけemitされ、コーパスの掃きはそれを
-設定しない。このチェックは、generatorフレームのレーン（`vm.md` §10.8）の
-プローブを、この2つを降ろすファイルとして数える。
+テストで届かせるまでゲートを落とす。
 
 この cover が持っていないのは opの**組み合わせ**——ループの中の
 クロージャの中の unwindエッジ——である。それは codegenの種が手で運び、
@@ -149,7 +146,7 @@ executorが実装する全 bytecode opを JITが降ろすことを保つ最小�
 ### ゲート自身のコスト
 
 `tools/checks/gate_budget.txt`が掃く母集団——コーパス、isolateファイル、
-generatorフレームのプローブ、`vm_cases`、ctestエントリ、docブロック、
+generatorのプローブ、`vm_cases`、ctestエントリ、docブロック、
 言語サンプル——を記録し、
 `check-gate-budget`がその数を厳密に保つ。増えるのは普通のことで、
 増やすコミットの中でここを更新する。コーパスは6週間で203本から279本に
