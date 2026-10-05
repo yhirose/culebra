@@ -67,7 +67,16 @@ fi
 limit="${CULEBRA_TEST_TIMEOUT:-300}"
 # One culebra run, or one built binary's, bounded like the gate's others.
 bounded() { ${TIMEOUT_BIN:+$TIMEOUT_BIN "$limit"} "$@"; }
-export -f bounded
+# What a run printed, with the line ends the frozen files have: a Windows
+# build writes CRLF. Through tr, as the other Windows checks do it.
+no_cr() { printf '%s\n' "$1" | tr -d '\r'; }
+# Two files that should be equal. The Windows runner has no diffutils, and a
+# failure that cannot say what differed is no report.
+show_diff() {
+  if command -v diff > /dev/null 2>&1; then diff "$1" "$2"
+  else echo "--- $1"; cat "$1"; echo "--- $2"; cat "$2"; fi
+}
+export -f bounded no_cr show_diff
 export BIN TIMEOUT_BIN limit dir
 
 if (( FREEZE )); then
@@ -77,9 +86,11 @@ if (( FREEZE )); then
   for f in "${files[@]}"; do
     n=$(basename "$f" .cul)
     out=$(bounded "$BIN" --vm "$dir/$n.cul" 2>&1); rc=$?
+    out=$(no_cr "$out")
     [[ $rc -eq 0 ]] || { echo "FREEZE-FAIL $n.cul: exit $rc (a probe ends cleanly)" >&2; exit 1; }
     printf '%s\n' "$out" > "$dir/expected/$n.out"
     out_j=$(bounded "$BIN" --jit "$dir/$n.cul" 2>&1); rc=$?
+    out_j=$(no_cr "$out_j")
     if [[ $rc -ne 0 || "$out_j" != "$out" ]]; then
       echo "FREEZE-FAIL $n.cul: --jit disagrees with the fresh executor output" >&2
       exit 1
@@ -141,11 +152,11 @@ run_job() {
       want="$dir/expected/$n.out"
       [[ -f "$want" ]] || { fail "no $want: freeze it (gen_frames_lane.sh --freeze <bin> $f)" true; return; }
       out=$(bounded env $(axis_env "$axis") "$BIN" "$lane" "$f" 2>&1); rc=$?
-      out=${out//$'\r'/}  # a Windows build's line ends
+      out=$(no_cr "$out")
       if [[ $rc -ne 0 ]]; then fail "exit $rc" printf '%s\n' "$out"; return; fi
       if [[ "$axis" != leak && "$out" != "$(< "$want")" ]]; then
         printf '%s\n' "$out" > "$work/$id.got"
-        fail "output differs from $want" diff "$want" "$work/$id.got"; return
+        fail "output differs from $want" show_diff "$want" "$work/$id.got"; return
       fi ;;
     # A probe built into a binary, which runs under each axis the collector
     # has in a built program.
@@ -155,11 +166,11 @@ run_job() {
       out=$(bounded "$BIN" build "$f" -o "$exe" 2>&1) || { fail "culebra build failed" printf '%s\n' "$out"; return; }
       for a in plain stress refs; do
         out=$(bounded env $(axis_env "$a") "$exe" 2>&1); rc=$?
-        out=${out//$'\r'/}
+        out=$(no_cr "$out")
         if [[ $rc -ne 0 || "$out" != "$(< "$want")" ]]; then
           printf '%s\n' "$out" > "$work/$id.got"
           fail "built binary ($a): exit $rc, or its output differs from $want" \
-            diff "$want" "$work/$id.got"; rm -f "$exe"; return
+            show_diff "$want" "$work/$id.got"; rm -f "$exe"; return
         fi
       done
       rm -f "$exe" ;;
@@ -172,7 +183,7 @@ run_job() {
       if [[ $rc -ne 0 ]]; then fail "--jit exit $rc" cat "$work/$id.err"; return; fi
       if [[ "$out" != "$out_j" ]]; then
         printf '%s\n' "$out" > "$work/$id.vm"; printf '%s\n' "$out_j" > "$work/$id.jit"
-        fail "--vm and --jit print differently" diff "$work/$id.vm" "$work/$id.jit"; return
+        fail "--vm and --jit print differently" show_diff "$work/$id.vm" "$work/$id.jit"; return
       fi ;;
     # A corpus file on one engine, or under a collector axis: that it passes.
     run)
