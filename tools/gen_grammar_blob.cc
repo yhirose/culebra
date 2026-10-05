@@ -5,13 +5,21 @@
 // is safe but silent: get_parser() guards the blob with GRAMMAR_BLOB_HASH and
 // falls back to load_grammar(), which costs ~10 ms on every startup. `--check`
 // (via `just check-blob`) fails when the checked-in header is stale.
+//
+// The header also carries what the grammar says of a syntax error's expected
+// items (frontend/syntax_error.h): which of them may follow any expression,
+// which may start any operand, and which are whitespace. They are asked of
+// the grammar here, by parsing a few sources that stop short, so the
+// formatter keeps no list of its own to fall behind the grammar.
 #include "frontend/grammar_blob_key.h"  // culebra::grammar_blob_key() (+ grammar_, CPPPEGLIB_VERSION)
+#include "frontend/syntax_error.h"      // culebra::syntax_expected_key()
 #include "peglib.h"
 
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <regex>
 #include <string>
 #include <vector>
 
@@ -35,6 +43,91 @@ std::string read_file(const char* path) {
   while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) out.append(buf, n);
   std::fclose(f);
   return out;
+}
+
+using Keys = std::vector<std::string>;
+
+bool has(const Keys& keys, const std::string& k) {
+  return std::find(keys.begin(), keys.end(), k) != keys.end();
+}
+
+// What the parse of `src` expected where it failed. Empty when it did not
+// fail, which no probe below is meant to do.
+Keys expected_at(peg::parser& parser, const std::string& src) {
+  Keys out;
+  parser.set_error_reporter(
+      [&](const peg::ErrorReport& r) { out = culebra::syntax_expected_keys(r); });
+  bool ok = parser.parse(src);
+  parser.set_error_reporter(nullptr);
+  if (ok) out.clear();
+  return out;
+}
+
+// A position, read both ways peglib reports one: at the end of the input,
+// where every alternative is tried, and ahead of a byte nothing starts with,
+// where an alternative that cannot start is skipped and listed by its first
+// literal instead.
+Keys expected_after(peg::parser& parser, const std::string& src) {
+  Keys out = expected_at(parser, src);
+  for (auto& k : expected_at(parser, src + "\x01"))
+    if (!has(out, k)) out.push_back(std::move(k));
+  return out;
+}
+
+// What every one of `srcs` expects.
+Keys expected_by_all(peg::parser& parser,
+                     std::initializer_list<const char*> srcs) {
+  Keys out;
+  bool first = true;
+  for (const char* src : srcs) {
+    Keys here = expected_after(parser, src);
+    if (first) out = std::move(here);
+    else std::erase_if(out, [&](const std::string& k) { return !has(here, k); });
+    first = false;
+  }
+  return out;
+}
+
+// The literals of the rules a leading underscore keeps out of an error
+// message (_SpaceChar, _LineComment, ...). peglib leaves such a rule out when
+// it tried it; one it skipped it lists by literal, with no rule to go by.
+Keys underscore_literals(const std::string& grammar) {
+  Keys out;
+  static const std::regex rule(R"(^\s*~?_[A-Z]\w*\s*<-(.*)$)");
+  static const std::regex literal(R"('((?:[^'\\]|\\.)*)')");
+  size_t at = 0;
+  while (at < grammar.size()) {
+    size_t eol = grammar.find('\n', at);
+    if (eol == std::string::npos) eol = grammar.size();
+    std::string line = grammar.substr(at, eol - at);
+    at = eol + 1;
+    std::smatch m;
+    if (!std::regex_match(line, m, rule)) continue;
+    std::string rhs = m[1];
+    for (std::sregex_iterator it(rhs.begin(), rhs.end(), literal), end;
+         it != end; ++it) {
+      // The text peglib makes of a grammar literal, by the function it uses.
+      std::string raw = (*it)[1];
+      auto key = culebra::syntax_expected_key(
+          peg::resolve_escape_sequence(raw.data(), raw.size()), false);
+      if (!has(out, key)) out.push_back(std::move(key));
+    }
+  }
+  return out;
+}
+
+void append_keys(std::string& text, const char* name, const Keys& keys) {
+  appendf(text, "inline constexpr const char* %s[] = {\n", name);
+  for (const auto& k : keys) {
+    text += "    \"";
+    for (unsigned char ch : k) {
+      if (ch == '"' || ch == '\\') appendf(text, "\\%c", ch);
+      else if (ch >= 0x20 && ch < 0x7f) text += static_cast<char>(ch);
+      else appendf(text, "\\%03o", ch);
+    }
+    text += "\",\n";
+  }
+  text += "};\n\n";
 }
 
 }  // namespace
@@ -69,6 +162,24 @@ int main(int argc, char** argv) {
 
   const uint64_t hash = culebra::grammar_blob_key();
 
+  // A complete expression in four places that close differently; and where
+  // an expression is due, as an operator's operand or as a whole.
+  Keys silent = underscore_literals(culebra::grammar_);
+  Keys after_expr =
+      expected_by_all(parser, {"x = (f()", "x = [f()", "if f()", "g(f()"});
+  Keys operand = expected_after(parser, "x = 1 + ");
+  for (auto& k : expected_after(parser, "x = "))
+    if (!has(operand, k)) operand.push_back(std::move(k));
+  std::erase_if(after_expr, [&](const auto& k) { return has(silent, k); });
+  std::erase_if(operand, [&](const auto& k) { return has(silent, k); });
+  if (silent.empty() || after_expr.empty() || operand.empty()) {
+    std::fprintf(stderr,
+                 "gen_grammar_blob: a syntax-error probe expected nothing "
+                 "(silent %zu, after an expression %zu, operand %zu)\n",
+                 silent.size(), after_expr.size(), operand.size());
+    return 1;
+  }
+
   std::string text;
   text += "#pragma once\n";
   text += "// GENERATED by tools/gen_grammar_blob.cc (`just gen-blob`). Do not edit.\n";
@@ -85,6 +196,12 @@ int main(int argc, char** argv) {
     if ((i % 20) == 19) text += "\n";
   }
   text += "\n};\n\ninline constexpr size_t GRAMMAR_BLOB_SIZE = sizeof(GRAMMAR_BLOB);\n\n";
+  text += "// What a syntax error's expected items are, by the grammar's own account\n";
+  text += "// (frontend/syntax_error.h): whitespace and a comment's opener, what may\n";
+  text += "// follow any expression, what may start one.\n";
+  append_keys(text, "GRAMMAR_EXPECT_SILENT", silent);
+  append_keys(text, "GRAMMAR_EXPECT_AFTER_EXPR", after_expr);
+  append_keys(text, "GRAMMAR_EXPECT_OPERAND", operand);
   text += "}  // namespace culebra\n";
 
   if (check) {

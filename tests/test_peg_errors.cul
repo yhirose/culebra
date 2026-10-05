@@ -20,6 +20,34 @@ assert_eq(e.kind, "PEGError")
 assert_true(e.message.starts_with("PEG: 1:4:"))
 assert_true(e.message.contains("syntax error"))
 
+// --- what a failure expected is listed whole, a control character among it
+// spelled as its escape; at the end of the input a rule named with a leading
+// underscore stays out ---
+let spaced = try {
+  PEG.parse(`
+    List  <- '[' _ Item (_ ',' _ Item)* _ ']'
+    Item  <- < [0-9]+ >
+    ~_    <- (Space / EOL)*
+    Space <- ' ' / '\t'
+    EOL   <- '\n'
+  `, "[1, 2")
+} catch err {
+  err
+}
+assert_eq(spaced.message, "PEG: 1:6: syntax error, expecting ' ', '\\t', '\\n', ',' or ']'.")
+let unspaced = try {
+  PEG.parse(`
+    List   <- '[' _ Item (_ ',' _ Item)* _ ']'
+    Item   <- < [0-9]+ >
+    ~_     <- (_Space / _EOL)*
+    _Space <- ' ' / '\t'
+    _EOL   <- '\n'
+  `, "[1, 2")
+} catch err {
+  err
+}
+assert_eq(unspaced.message, "PEG: 1:6: syntax error, expecting ',' or ']'.")
+
 // --- a malformed grammar reports a position inside the grammar ---
 let g = try {
   PEG.compile("Bad <- ***")

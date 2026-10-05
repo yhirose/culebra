@@ -4077,6 +4077,18 @@ shutdownパターン）は、`Signal.notify`でチャネルを登録します（
 | `RecursionError` | 関数呼び出しの深さが固定上限1000フレームを超えた。ユーザ関数の入口（fn・lambda・メソッド・コンストラクタ — フィールド初期化子はコンストラクタのフレーム内で走る）が1フレームで、組み込みヘルパーやマルチメソッドのディスパッチは数えない。上限と報告される深さは全backendで同一、位置はcall site。カウントは`throw`とともに巻き戻るので、`catch`後は全予算を使い直せる | はい |
 | `RuntimeError` | 未変換throw siteから伝播した`std::runtime_error`をエンジンが拾うフォールバック。この場合のみ`e.line == 0` / `e.col == 0`がありうる | はい |
 
+構文解析できないソースは、1行も実行される前に拒否されます。メッセージは
+パーサがそれ以上進めなかった位置と、そこで何があれば先へ進めたかを
+示します:
+
+    SyntaxError: failed to parse module '/home/me/prog.cul'
+      /home/me/prog.cul:1:7: syntax error, unexpected '2', expecting ',', ')' or an operator.
+
+その位置で必要だったトークン（閉じ括弧、キーワード、区切り）はその文字列で
+列挙されます。完結した式の後ならいつでも続けられる演算子はまとめて
+`an operator`、式の先頭になれるものは`an expression`と書かれます。空白と
+コメントは列挙されません。
+
 未catchのエラーは`Kind: message at LINE:COL.`形式で表示し終了コード1で
 終了します（未catchのCtrl+Cは`interrupted`を表示して130）。`culebra`でも
 `culebra build`で作ったバイナリでも同じです。ユーザが`throw expr`で投げた

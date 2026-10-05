@@ -483,7 +483,7 @@ inline std::string nesting_too_deep_message(int64_t limit) {
   return culebra::format("nesting too deep (limit {})", limit);
 }
 
-// A peglib logger message, with peglib's wording for its set_max_depth bound
+// A peglib failure message, with peglib's wording for its set_max_depth bound
 // replaced by the one above.
 inline std::string reword_parse_depth_error(const std::string& msg,
                                             int64_t limit) {

@@ -589,21 +589,26 @@
   ~handle                  <-  K('handle')
   ~with                    <-  K('with')
 
-  ~_                       <-  (WhiteSpace / EndOfLine)*
-  ~_sp_                    <-  SpaceChar*
-  ~_h_                     <-  (SpaceChar / BlockComment)*
-  ~_nl_                    <-  LineComment? EndOfLine
+  ~_                       <-  (WhiteSpace / _EndOfLine)*
+  ~_sp_                    <-  _SpaceChar*
+  ~_h_                     <-  (_SpaceChar / _BlockComment)*
+  ~_nl_                    <-  _LineComment? _EndOfLine
 
-  WhiteSpace               <-  SpaceChar / Comment
-  Comment                  <-  BlockComment / LineComment
+  WhiteSpace               <-  _SpaceChar / Comment
+  Comment                  <-  _BlockComment / _LineComment
 
-  SpaceChar                <-  ' ' / '\t'
+  # The leading underscore keeps these four out of a syntax error's
+  # `expecting` list (peglib leaves out a rule so named): whitespace and a
+  # comment's opener may follow almost anything, so they are never what was
+  # missing. A block comment's closer can be, so it has a rule of its own.
+  _SpaceChar               <-  ' ' / '\t'
   # LF only: parse() normalizes a CRLF source and rejects a bare carriage
   # return before the grammar sees a byte of it (parser.h).
-  EndOfLine                <-  '\n'
+  _EndOfLine               <-  '\n'
   IdentInitChar            <-  [a-zA-Z_]
   IdentChar                <-  [a-zA-Z0-9_]
-  BlockComment             <-  '/*' (!'*/' .)* '*/'
-  LineComment              <-  ('#' / '//') (!EndOfLine .)* &(EndOfLine / !.)
+  _BlockComment            <-  '/*' (!BlockCommentEnd .)* BlockCommentEnd
+  BlockCommentEnd          <-  '*/'
+  _LineComment             <-  ('#' / '//') (!_EndOfLine .)* &(_EndOfLine / !.)
 
   K(S)                     <-  < S > !IdentInitChar # Keyward Macro

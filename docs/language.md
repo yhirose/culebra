@@ -4303,6 +4303,19 @@ builds (unless noted).
 | `RecursionError` | Function-call depth exceeded the fixed limit of 1000 frames. Every user-function entry counts one frame (fn, lambda, method, constructor — field initializers run inside the constructor's frame); built-in helpers and multimethod dispatch do not. The limit and the reported depth are identical on every backend, and reported at the call site. The count unwinds with `throw`, so a `catch` regains the full budget. | yes |
 | `RuntimeError` | Fallback when the engine catches an unconverted `std::runtime_error` from a not-yet-migrated throw site. `e.line == 0` and `e.col == 0` are possible in this case only. | yes |
 
+A source that does not parse is refused before any of it runs, with the
+position the parser could not get past and what would have let it go on
+from there:
+
+    SyntaxError: failed to parse module '/home/me/prog.cul'
+      /home/me/prog.cul:1:7: syntax error, unexpected '2', expecting ',', ')' or an operator.
+
+A token that was due at that point is listed by its text: a closing
+bracket, a keyword, a separator. The operators that may follow any
+complete expression are named together as `an operator`, and whatever may
+start an expression as `an expression`. Whitespace and comments are never
+listed.
+
 Uncaught errors print as `Kind: message at LINE:COL.` and exit with
 status 1 (an uncaught Ctrl+C prints `interrupted` and exits with 130),
 from `culebra` and from a `culebra build` binary alike. User-thrown

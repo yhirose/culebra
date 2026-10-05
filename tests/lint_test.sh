@@ -47,6 +47,41 @@ expect_syntax_reject "range pattern with by" "syntax error" \
 expect_syntax_reject "bare range pattern" "syntax error" \
   'match 1 { .. => 1, _ => 0 }'
 
+# What a syntax error says was expected (frontend/syntax_error.h): the token
+# that was missing by name, the operators that may follow any expression as
+# "an operator", what may start one as "an expression", and never whitespace.
+expect_syntax_message() { expect_syntax_reject "$1" "syntax error$3" "$2"; }
+expect_syntax_message "unclosed array"      'x = [1, 2' \
+  ", expecting ',', ']' or an operator."
+expect_syntax_message "unclosed call"       'foo(1 2)' \
+  ", unexpected '2', expecting ',', ')' or an operator."
+expect_syntax_message "missing operand"     'y = (1 +' \
+  ", expecting an expression."
+expect_syntax_message "operator as operand" 'x = 1 +* 2' \
+  ", unexpected '*', expecting an expression."
+expect_syntax_message "empty argument list" 'foo(' \
+  ", expecting '**', ')', <IDENTIFIER> or an expression."
+expect_syntax_message "dangling else"       'if x { 1 } else' \
+  ", expecting 'if' or '{'."
+expect_syntax_message "condition, no block" 'while true 1' \
+  ", unexpected '1', expecting '{' or an operator."
+expect_syntax_message "for without in"      'for x xs { }' \
+  ", unexpected 'xs', expecting ',' or 'in'."
+expect_syntax_message "member access"       'x.' \
+  ", expecting <IDENTIFIER>."
+expect_syntax_message "parameter list"      'fn f(a b) { }' \
+  ", unexpected 'b', expecting ':', '=', ',' or ')'."
+expect_syntax_message "class body"          'class C { 1 }' \
+  ", unexpected '1', expecting 'static', 'get', '}' or <IDENTIFIER>."
+# Ahead of a byte, where peglib lists a skipped alternative by its first
+# literal: the newline that may precede the block is still not what was
+# missing.
+expect_syntax_message "else, no block"      'if x { 1 } else 2' \
+  ", unexpected '2', expecting 'if' or '{'."
+# A comment left open wants its closer, though nothing lists its opener.
+expect_syntax_message "unclosed comment"    'x = 1 /* open' \
+  ", expecting '*/'."
+
 # `stmt if c` is an `if` arm, a scope of its own: a declaration or a `defer`
 # there is refused at the modifier. A bare write is not a declaration.
 expect_postfix_reject() {

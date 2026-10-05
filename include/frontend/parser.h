@@ -19,6 +19,7 @@
 #include "frontend/grammar_def.h"       // culebra::grammar_ — single source of truth
 #include "frontend/grammar_blob.gen.h"      // prebuilt serialized grammar (generated; `just gen-blob`)
 #include "frontend/grammar_blob_key.h"  // grammar_blob_key() — shared with the blob generator
+#include "frontend/syntax_error.h"      // format_syntax_error() — a parse failure's message
 
 namespace culebra {
 
@@ -36,6 +37,14 @@ inline constexpr int64_t kCulebraParseDepthLimit = 4000;
 
 inline const std::vector<std::string>& ast_optimizer_keep_rules();
 
+// A failure of culebra's own grammar as its message: the crowds the blob
+// generator found in the grammar are named, not listed.
+inline std::string culebra_syntax_error(const peg::ErrorReport& report) {
+  static const SyntaxExpectClasses classes{
+      GRAMMAR_EXPECT_SILENT, GRAMMAR_EXPECT_AFTER_EXPR, GRAMMAR_EXPECT_OPERAND};
+  return format_syntax_error(report, &classes);
+}
+
 inline peg::parser& get_parser() {
   // thread_local — peg::parser's logger callback and VM state aren't
   // safe to share across host threads.
@@ -45,6 +54,8 @@ inline peg::parser& get_parser() {
   if (!initialized) {
     initialized = true;
 
+    // What load_grammar() says of a grammar it cannot load; a parse reports
+    // through the error reporter instead.
     parser.set_logger([&](size_t ln, size_t col, const std::string& msg) {
       std::println(stderr, "{}:{}: {}", ln, col, msg);
     });
@@ -67,8 +78,9 @@ inline peg::parser& get_parser() {
     // The optimized AST, built directly rather than optimized afterwards.
     parser.enable_ast(true, true, ast_optimizer_keep_rules());
     parser.enable_packrat_parsing();
-    // Reported through the logger, which parse_undesugared() rewords.
+    // Reported like any failure, in words parse_undesugared() replaces.
     parser.set_max_depth(kCulebraParseDepthLimit);
+    parser.set_logger(peg::Log{});
   }
 
   return parser;
@@ -2533,15 +2545,16 @@ inline std::shared_ptr<peg::Ast> parse_undesugared(
     std::vector<ParseFailure>& failures) {
   auto& parser = get_parser();
 
-  parser.set_logger([&](size_t ln, size_t col, const std::string& err_msg) {
+  parser.set_error_reporter([&](const peg::ErrorReport& r) {
     failures.push_back(
-        {ln, codepoint_column_to_byte(expr, ln, col),
-         reword_parse_depth_error(err_msg, kCulebraParseDepthLimit)});
+        {r.line, codepoint_column_to_byte(expr, r.line, r.col),
+         reword_parse_depth_error(culebra_syntax_error(r),
+                                  kCulebraParseDepthLimit)});
   });
 
   std::shared_ptr<peg::Ast> ast;
   // The newline normalization throws on a bare `\r`, which bypasses the
-  // logger. Convert it here so every caller sees one failure shape
+  // reporter. Convert it here so every caller sees one failure shape
   // (failures + nullptr) — fmt/lint/doctest/repl/dap would each need their own
   // catch otherwise.
   try {

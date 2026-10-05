@@ -46,6 +46,7 @@
 #include <vector>
 
 #include <base/shared.h>  // CulebraError, the nesting-bound wording
+#include <frontend/syntax_error.h>  // format_syntax_error()
 
 #include <peglib.h>
 
@@ -131,7 +132,7 @@ using ActionMap = std::unordered_map<std::string, RuleAction>;
 
 // A loaded grammar, owned by the per-thread compile cache and handed out
 // shared so a caller's handle outlives a cache eviction. `err` is where the
-// parser's logger leaves the last diagnostic: a parser is only ever reached
+// parser leaves the last diagnostic (_build()'s `record`): a parser is only ever reached
 // from the thread that cached it, so one slot per grammar is enough.
 struct Compiled {
   ::peg::parser parser;
@@ -191,7 +192,7 @@ inline std::string _fmt_err(std::string_view path, size_t ln, size_t col,
                  c.err.empty() ? "syntax error" : c.err));
 }
 
-// The error peglib's set_max_depth bound reports, as the logger rewords it.
+// The error peglib's set_max_depth bound reports, as _build()'s `record` rewords it.
 inline bool _is_depth_error(const std::string& msg) {
   return msg == nesting_too_deep_message(kPEGParseDepthLimit);
 }
@@ -204,7 +205,10 @@ inline Handle _build(std::string_view grammar, const Options& opt) {
   h->opt = opt;
   // Raw `this`: the parser is a member, so the callback cannot outlive it.
   auto* c = h.get();
-  h->parser.set_logger([c](size_t ln, size_t col, const std::string& msg) {
+  // The grammar's own failures (load_grammar) come through the logger, a
+  // subject's through the reporter: the same words, with a control character
+  // the grammar expects spelled as its escape.
+  auto record = [c](size_t ln, size_t col, const std::string& msg) {
     auto m = reword_parse_depth_error(msg, kPEGParseDepthLimit);
     // The depth bound ends the parse, so it outranks an error recovered
     // (`%recover`) before it.
@@ -213,14 +217,19 @@ inline Handle _build(std::string_view grammar, const Options& opt) {
       c->err_line = ln;
       c->err_col = col;
     }
-  });
+  };
+  h->parser.set_logger(record);
   if (!h->parser.load_grammar(grammar, opt.start)) {
     _fail(culebra::format("PEG: grammar:{}:{}: {}", c->err_line, c->err_col,
                           c->err.empty() ? "invalid grammar" : c->err));
   }
+  h->parser.set_logger(peg::Log{});
+  h->parser.set_error_reporter([record](const peg::ErrorReport& r) {
+    record(r.line, r.col, culebra::format_syntax_error(r, nullptr));
+  });
   h->parser.enable_ast();
   if (opt.packrat) h->parser.enable_packrat_parsing();
-  // Reported through the logger above, as a failed parse.
+  // Reported like any failure of a parse, through the reporter above.
   h->parser.set_max_depth(kPEGParseDepthLimit);
   return h;
 }

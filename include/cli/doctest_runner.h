@@ -126,7 +126,7 @@ inline std::vector<DocBlock> extract_doc_blocks(const std::string& md) {
 
     // Join the body verbatim — markers are `#` comments, so the
     // interpreter ignores them. A trailing newline is required: the
-    // grammar's LineComment rule ends with `&EndOfLine`, so a final
+    // grammar's _LineComment rule ends with `&_EndOfLine`, so a final
     // comment line with no terminator would otherwise fail to parse.
     for (const auto& cl : code_lines) {
       blk.code += cl;
