@@ -12,7 +12,7 @@ trap 'rm -rf "$work"' EXIT
 # The op population, read off the executor's own name table: the set this lane
 # has to keep covered is "every op the VM implements", not a list kept here.
 sed -n '/static constexpr const char\* kNames\[\] = {/,/};/p' include/vm/vm.h \
-    | tr -d '",' | tr ' ' '\n' | grep -E '^[A-Z][A-Za-z]+$' | sort -u > "$work/ops"
+    | grep -o '"[A-Za-z0-9]\+"' | tr -d '"' | sort -u > "$work/ops"
 [[ -s "$work/ops" ]] || { echo "gen-jit-shape-set: no ops found in include/vm/vm.h" >&2; exit 1; }
 
 grep -v '^#' tools/checks/codegen_sensitive.txt | grep . > "$work/seeds"

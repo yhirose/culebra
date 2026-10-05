@@ -16,7 +16,7 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/culebra-shapechk.XXXXXX") || exit 1
 trap 'rm -rf "$work"' EXIT
 
 sed -n '/static constexpr const char\* kNames\[\] = {/,/};/p' include/vm/vm.h \
-    | tr -d '",' | tr ' ' '\n' | grep -E '^[A-Z][A-Za-z]+$' | sort -u > "$work/ops"
+    | grep -o '"[A-Za-z0-9]\+"' | tr -d '"' | sort -u > "$work/ops"
 [[ -s "$work/ops" ]] || { echo "jit-shape-set: no ops found in include/vm/vm.h" >&2; exit 1; }
 
 grep '^tests/' "$set_file" > "$work/files"
