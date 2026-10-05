@@ -1,0 +1,110 @@
+# Generators while the collector runs. A suspended generator's frame is on the
+# heap, and the collector reads what it holds off the chunk's stack map; a
+# running one is a root, its registers back on the linear-memory stack. Each
+# shape below allocates across the collector's threshold many times with a
+# frame suspended or running, and keeps strings only the frame holds: an edge
+# the frame does not report is a swept string, which reads back wrong or
+# traps. On wasm a collection waits for an instruction boundary (rt_gc.h
+# kDeferToSafepoint), and a resume is one more dispatch loop on the stack.
+
+# A local of the body, alive across a yield, read after many collections.
+fn labels(n) {
+  for i in 0..n {
+    let s = "label {i} of {n}"
+    yield s.size()
+    yield s
+  }
+}
+mut sizes = 0
+mut last = ''
+for v in labels(10000) {
+  let churn = iota(8).map(|k| "churn {k}")
+  if type_of(v) == 'String' {
+    last = v
+  } else {
+    sizes += v + churn.size()
+  }
+}
+println(sizes)
+println(last)
+
+# Frames suspended inside frames: each level of a recursion holds its own.
+fn walk(depth) {
+  let here = iota(4).map(|k| {d: depth, name: "node {depth}.{k}"})
+  yield here.size()
+  yield from walk(depth - 1) if depth > 0
+  yield here[3].name.size()
+}
+mut walked = 0
+for round in 0..4000 {
+  for v in walk(6) {
+    walked += v
+  }
+}
+println(walked)
+
+# Closed while suspended: the close runs the defer and releases the local.
+mut closed = 0
+fn opened(i) {
+  let name = "resource {i}"
+  defer {
+    closed += name.size()
+  }
+  yield name
+  yield "{name}!"
+}
+for i in 0..60000 {
+  for v in opened(i) {
+    break
+  }
+}
+println(closed)
+
+# Resumed from under a library helper: a lazy chain a terminal drives.
+fn naturals() {
+  mut i = 0
+  while true {
+    yield "n{i}"
+    i += 1
+  }
+}
+mut chained = 0
+for round in 0..3000 {
+  let xs = naturals().map(|s| s + s).filter(|s| s.size() > 4).take(20).collect()
+  chained += xs.size() + xs[19].size()
+}
+println(chained)
+
+# Driven by hand, the body doing the allocating: a collection lands while the
+# body runs under has_next(), and the value has_next() pulled ahead is held
+# by the frame alone until next() takes it.
+fn churned(n) {
+  for i in 0..n {
+    let kept = "kept {i}"
+    let churn = iota(8).map(|k| "churn {k} of {i}")
+    yield kept + churn[7]
+  }
+}
+let by_hand = churned(10000)
+mut pulled = 0
+mut text = 0
+while by_hand.has_next() {
+  text += by_hand.next().size()
+  pulled += 1
+}
+println(pulled)
+println(text)
+
+# A cycle through a frame, which only a collection reclaims.
+fn ring(box) {
+  yield box.tag
+  yield box.me
+}
+mut rings = 0
+for i in 0..100000 {
+  let box = {mut me: nil, tag: "box {i}"}
+  let r = ring(box)
+  box.me = r
+  rings += r.next().size()
+}
+println(rings)
