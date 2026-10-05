@@ -697,6 +697,7 @@ inline void _jit_isolate_poll(JitValue* __ret, JitClosure*, int8_t self_tag, int
 
 inline void _jit_isolate_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
+  JitMethodSelf _s{self};
   int64_t id = _jit_isolate_self_id(self);
   auto core = jit_isolate_lookup(id);
   if (core && !core->joined && core->thread.joinable()) {
@@ -966,6 +967,7 @@ inline bool _jit_handle_drop_consumed(JitObject* h) {
 
 inline void _jit_chan_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
+  JitMethodSelf _s{self};
   if (!_jit_handle_drop_consumed(reinterpret_cast<JitObject*>(self.data)))
     chan_drop(_jit_self_long(self, "__channel_id__"),
               static_cast<int>(_jit_self_long(self, "__channel_role__")));
@@ -1079,6 +1081,7 @@ inline JitValue _jit_make_channel_endpoint(int64_t id, int role) {
 inline void _jit_shared_buffer_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                         JitValue*) {
   JitValue self{self_tag, self_data};
+  JitMethodSelf _s{self};
   if (!_jit_handle_drop_consumed(reinterpret_cast<JitObject*>(self.data)))
     culebra::shared_buffer_drop(_jit_self_long(self, "__sharedbuffer_id__"));
   { *__ret = {TAG_NIL, 0}; return; }
@@ -1432,6 +1435,7 @@ inline void _jit_sv_copy(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
 
 inline void _jit_sv_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
+  JitMethodSelf _s{self};
   if (!_jit_handle_drop_consumed(reinterpret_cast<JitObject*>(self.data)))
     culebra::shared_val_drop(_jit_self_long(self, "__sharedval_id__"));
   { *__ret = {TAG_NIL, 0}; return; }
@@ -1612,6 +1616,7 @@ inline void _jit_merged_recv(JitValue* __ret, JitClosure*, int8_t self_tag, int6
 }
 inline void _jit_merged_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
+  JitMethodSelf _s{self};
   auto* h = reinterpret_cast<JitObject*>(self.data);
   size_t di = h->find_slot("_dropped");
   if (di != static_cast<size_t>(-1) && h->slots[di].value.tag == TAG_BOOL &&

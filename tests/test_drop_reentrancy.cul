@@ -4,7 +4,7 @@
 # here crashed or hung a lane before its guard existed (see the Phase 2-4
 # commit and the dying-object one): re-entrant collect deferral,
 # detach-before-release in the multifn replace/forget paths, the
-# saturating self-pin in _culebra_call_drop_if_present, and the teardown
+# reference _culebra_call_drop_if_present holds across the call, and the teardown
 # stack the collector treats as roots. `GC.stat()` finds its roots from
 # the reference counts, so every count below is exact on both lanes; each
 # drop fires exactly once and nothing may crash.
@@ -33,7 +33,7 @@ GC.stat()
 assert_eq(ev1.size(), 1)
 
 # --- 2) A drop body breaking its OWN cycle edge releases through itself:
-# the in-drop pin must absorb any number of self-releases.
+# the reference held across the call keeps the object until the body returns.
 let ev2 = []
 make_self = fn () {
   let cyc = {id: 'c', mut me: nil, drop: fn () {

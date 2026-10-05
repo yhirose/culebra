@@ -49,7 +49,9 @@
 # 301 since test_lowered_scope.cul (a generator's and an effect's body bind
 # names as a plain fn's does: a variable per declaration, each as long as its
 # scope).
-tests.cul 301
+# 302 since test_drop_self_count.cul (what a drop body does to the references
+# to its own object is counted: one it lets go of is gone, one it stores stays).
+tests.cul 302
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

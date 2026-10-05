@@ -2600,10 +2600,8 @@ inline JitValue _jit_handle_finish(JitObject* h, JitObject* res_obj) {
   return res;
 }
 
-// wait/poll/kill are invoked via the method ABI (_culebra_invoke_method1),
-// which retains `self`; the callee must consume that +1. Each releases `self`
-// before returning. (drop, below, is called from the destructor's drop
-// protocol, which manages the object's refcount itself — it must NOT release.)
+// wait/poll/kill/drop are invoked via the method ABI, which hands `self` over
+// at +1; the callee must consume it. Each releases `self` before returning.
 inline void _jit_handle_wait(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                             int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
@@ -2670,6 +2668,7 @@ inline void _jit_handle_kill(JitValue* __ret, JitClosure*, int8_t self_tag, int6
 inline void _jit_handle_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                             int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
+  JitMethodSelf _s{self};
   auto* h = reinterpret_cast<JitObject*>(self.data);
   if (_jit_handle_done(h)) { *__ret = {TAG_NIL, 0}; return; }
   int out_fd = static_cast<int>(_jit_handle_long(h, "_out"));
@@ -2709,8 +2708,8 @@ inline JitValue _culebra_proc_build_handle(int64_t pid, int out_fd,
 // Methods read `_id` (Long) from the handle and operate on the shared
 // side table (culebra::_file_* helpers, stdlib_kernels.h). Same
 // method ABI as the Proc handle: self arrives +1 and is released here,
-// except drop (called from the destructor's drop protocol, which manages
-// refcount itself — see _jit_handle_drop).
+// by `drop` like the rest (_culebra_call_drop_if_present calls it as it
+// would any method).
 
 // Binder-order argument checks, the same convention as wrap.h's
 // jit_check_args (interp parity): a missing required argument is an
@@ -2844,7 +2843,7 @@ inline void _jit_file_close(JitValue* __ret, JitClosure*, int8_t self_tag, int64
 inline void _jit_file_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                           int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  // drop runs from the destructor's drop protocol — must NOT release self.
+  JitMethodSelf _s{self};
   culebra::_file_close(_jit_handle_long(reinterpret_cast<JitObject*>(self.data),
                                         "_id"));
   { *__ret = {TAG_NIL, 0}; return; }
@@ -3024,7 +3023,7 @@ inline void _jit_watch_close(JitValue* __ret, JitClosure*, int8_t self_tag,
 inline void _jit_watch_drop(JitValue* __ret, JitClosure*, int8_t self_tag,
                                            int64_t self_data, int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  // drop runs from the destructor's drop protocol — must NOT release self.
+  JitMethodSelf _s{self};
   culebra::fswatch::fs_watch_close(
       _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id"));
   { *__ret = {TAG_NIL, 0}; return; }
@@ -3268,8 +3267,7 @@ inline JitValue _jit_sqlite_query(int64_t db_id, const std::string& sql,
   return rows;
 }
 
-// --- Statement handle methods (self arrives +1; released before return, except
-// drop which runs from the destructor protocol). ---------------------------
+// --- Statement handle methods (self arrives +1; released before return). ----
 
 inline int64_t _jit_sqlite_stmt_id(JitValue self) {
   return _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
@@ -3315,7 +3313,7 @@ inline void _jit_sqlite_stmt_finalize(JitValue* __ret, JitClosure*, int8_t self_
 inline void _jit_sqlite_stmt_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                  int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  // drop runs from the destructor's drop protocol — must NOT release self.
+  JitMethodSelf _s{self};
   culebra::sqlite::finalize(_jit_sqlite_stmt_id(self));
   { *__ret = {TAG_NIL, 0}; return; }
 }
@@ -3422,7 +3420,7 @@ inline void _jit_sqlite_db_close(JitValue* __ret, JitClosure*, int8_t self_tag, 
 inline void _jit_sqlite_db_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  // drop runs from the destructor's drop protocol — must NOT release self.
+  JitMethodSelf _s{self};
   culebra::sqlite::close_db(_jit_sqlite_db_id(self));
   { *__ret = {TAG_NIL, 0}; return; }
 }
@@ -3520,7 +3518,7 @@ inline void _jit_net_close(JitValue* __ret, JitClosure*, int8_t self_tag, int64_
 inline void _jit_net_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                          int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  // drop runs from the destructor's drop protocol — must NOT release self.
+  JitMethodSelf _s{self};
   culebra::net::close_handle(_jit_net_id(self));
   { *__ret = {TAG_NIL, 0}; return; }
 }
@@ -6027,7 +6025,7 @@ inline void _jit_http_client_close(JitValue* __ret, JitClosure*, int8_t self_tag
 inline void _jit_http_client_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                  int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  // drop runs from the destructor's drop protocol — must NOT release self.
+  JitMethodSelf _s{self};
   culebra::http::http_client_close(_jit_http_client_id(self));
   { *__ret = {TAG_NIL, 0}; return; }
 }
@@ -6413,8 +6411,9 @@ inline void _jit_ws_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
 inline void _jit_ws_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                         JitValue*) {
   JitValue self{self_tag, self_data};
-  // client drop (from the drop protocol — must NOT release self): close + free
-  // the owned connection. A server ws has no drop (the trampoline frees it).
+  JitMethodSelf _s{self};
+  // client drop: close + free the owned connection. A server ws has no drop
+  // (the trampoline frees it).
   culebra::http::ws_unregister(
       _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_ws"));
   { *__ret = {TAG_NIL, 0}; return; }
@@ -6883,7 +6882,7 @@ inline void _jit_http_server_close(JitValue* __ret, JitClosure*, int8_t self_tag
 inline void _jit_http_server_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                  int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  // drop runs from the destructor's drop protocol — must NOT release self.
+  JitMethodSelf _s{self};
   int64_t id = _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
   _jit_http_server_clear_routes(id);
   culebra::http::http_server_close(id);
@@ -8028,9 +8027,9 @@ inline void _xml_events_dispose_fn(JitValue* __ret, JitClosure* cls,
   _xml_events_free(_xml_events_holder(cls));
   *__ret = {TAG_NIL, 0};
 }
-inline void _xml_events_drop_fn(JitValue* __ret, JitClosure*, int8_t,
+inline void _xml_events_drop_fn(JitValue* __ret, JitClosure*, int8_t self_tag,
                                 int64_t self_data, int64_t, JitValue*) {
-  // drop runs from the destructor's drop protocol: must NOT release self.
+  JitMethodSelf _s{JitValue{self_tag, self_data}};
   _xml_events_free(reinterpret_cast<JitObject*>(self_data));
   *__ret = {TAG_NIL, 0};
 }
@@ -9720,7 +9719,7 @@ inline void _jit_search_close(JitValue* __ret, JitClosure*, int8_t self_tag, int
 inline void _jit_search_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                              int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  // drop runs from the destructor's drop protocol — must NOT release self.
+  JitMethodSelf _s{self};
   culebra::search::index_drop(_search_adapt::id(self));
   { *__ret = {TAG_NIL, 0}; return; }
 }
@@ -9738,7 +9737,7 @@ inline void _jit_search_segmenter_drop(JitValue* __ret, JitClosure*,
                                        int8_t self_tag, int64_t self_data,
                                        int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  // drop runs from the destructor's drop protocol — must NOT release self.
+  JitMethodSelf _s{self};
   culebra::search::segmenter_drop(_search_adapt::id(self));
   { *__ret = {TAG_NIL, 0}; return; }
 }

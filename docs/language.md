@@ -4771,6 +4771,17 @@ safe — it cannot cause `drop` to fire a second time or corrupt the
 cascade; `drop` runs exactly once no matter what its own body
 releases.
 
+What the body does to the references to its own object stands once it
+returns or throws. A reference it lets go of is gone: an object whose
+`drop` breaks its own cycle is reclaimed as soon as nothing else holds
+it, without waiting for a collection. A reference it stores (`log.push(self)`)
+is a reference like any other when the `drop` was fired by an explicit
+`x.drop()` or by a scope's exit resolving a cycle: the object stays for
+whoever holds it, dropped and never dropped again. Everywhere else the
+object is already being reclaimed when its `drop` runs, because the last
+reference went away or a collection found it unreachable. A reference
+stored from that body does not keep it, and the body must not store one.
+
 **Replacement order**: overwriting what a slot holds — `a[i] = v`,
 `o.x = v`, `o[k] = v`, or reassigning a variable — stores the new
 value first and releases the old one after. A `drop` that the release

@@ -356,12 +356,13 @@ inline JitValue jit_lower_return(R r) {
   }
 }
 
-// The drop event — runs from the destructor's drop protocol, which
-// passes self WITHOUT a +1: must not release it (Phase 3 convention).
+// The drop event. `self` arrives +1 and is released here, as in every
+// method thunk (_culebra_call_drop_if_present makes an ordinary call).
 template <class T>
 void jit_drop_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                         int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
+  JitMethodSelf _s{self};
   auto* h = reinterpret_cast<JitObject*>(self.data);
   foreign::table<T>().erase(_jit_handle_long(h, "_id"));
   { *__ret = {TAG_NIL, 0}; return; }
@@ -382,13 +383,13 @@ inline void jit_parent_link(JitObject* parent, int64_t* state,
   }
 }
 
-// Internal drop for a borrow handle: erase its borrow-table id. Like
-// every drop thunk it must NOT release self (the destructor protocol
-// passes self without a +1). Does not touch the parent's resource.
+// Internal drop for a borrow handle: erase its borrow-table id. Does not
+// touch the parent's resource.
 template <class T2>
 void jit_borrow_drop_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
+  JitMethodSelf _s{self};
   auto* h = reinterpret_cast<JitObject*>(self.data);
   foreign::borrow_erase(_jit_handle_long(h, "_bid"));
   { *__ret = {TAG_NIL, 0}; return; }

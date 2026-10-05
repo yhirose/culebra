@@ -24,16 +24,14 @@ inline void _culebra_cell_release(JitCell* c);
 // assignment time, so a mis-shaped drop is silently skipped here as a
 // belt-and-braces check.
 //
-// Refcount trick (matches interpreter's shared_ptr + no-op deleter):
-// bump high enough that the drop body's function-frame release of its
-// owned `self` slot — plus any retain/release pairs in the body —
-// can't drive refcount back to 0 and re-enter destruction. The frame
-// release subtracts 1, so 2 is the minimum safe baseline. After drop
-// returns the entry count is restored (see below) — any NET retain or
-// release of `o` the body performed is absorbed by the pin; so on the
-// release-to-zero path a body that resurrected `o` by storing it
-// somewhere leaves the caller a dangling reference (matches interp's
-// documented warning).
+// The call is an ordinary one: `self` goes to the body's frame at +1, as a
+// receiver goes to any callee, and the frame consumes it. This function
+// holds a second reference of its own for as long as the body runs, so
+// nothing the body releases can free `o` under it (CPython's
+// PyObject_CallFinalizerFromDealloc holds one the same way). What the body
+// does to the count beyond those two is what it did, and stays: a reference
+// to `o` it lets go of — `self.me = nil` breaking its own cycle edge — is
+// gone, one it stores somewhere is counted.
 inline void _culebra_call_drop_if_present(JitObject* o) {
   if (!o || !o->has_drop) return;
   if (o->dropped) return;  // already ran (explicit or backstop) — at most once
@@ -44,18 +42,15 @@ inline void _culebra_call_drop_if_present(JitObject* o) {
 
   o->dropped = true;  // set before running: re-entrancy-safe, at-most-once
 
-  // Pin the object across its own drop so a re-entrant release inside the
-  // drop body can't free it mid-call. The pin must absorb not just the
-  // frame's `self` release but ANY number of releases the body performs
-  // (e.g. `self.me = nil` breaking its own cycle edge), so use a value
-  // no real refcount can reach. RESTORE the entry count afterwards: on
-  // the release-to-zero path that's the 0 the caller's teardown expects,
-  // but an explicit `obj.drop()` (or a scope-exit / finalize firing)
-  // arrives with live references — parking those at 0 would let the
-  // next retain/release pair around the (legal, ClosedError-raising)
-  // dropped object free it from under its remaining holders.
-  const int64_t entry_rc = o->refcount;
-  o->refcount = int64_t{1} << 40;
+  // At zero the caller is this object's teardown, already under way: the
+  // count goes back to the zero it resumes from, so a body that stored `o`
+  // there leaves a dangling reference. Everywhere else — an explicit
+  // `obj.drop()`, a scope's exit, the collector's finalize pass — references
+  // remain, each caller holding one of its own.
+  const bool dying = o->refcount == 0;
+  // Read now: a body may replace its own `drop` slot, which frees `cls`.
+  [[maybe_unused]] const bool native = cls->flags & JIT_CLOSURE_NATIVE;
+  o->refcount += 2;  // the body's `self`, and this function's
   JitValue self_val{GC_TAG_OBJECT, reinterpret_cast<int64_t>(o)};
   // What the body throws is logged and swallowed (§17), so the rest of the
   // cascade proceeds — but the thrown/pending carriers are globals its
@@ -85,7 +80,11 @@ inline void _culebra_call_drop_if_present(JitObject* o) {
     std::cerr << "drop: unknown error" << std::endl;
   }
   culebra_runtime_restore_thrown(saved_flag, saved_tag, saved_data);
-  o->refcount = entry_rc;
+  // A drop the runtime wrote consumes its `self` like any method, and keeps
+  // nothing: one that did not would leave a count here nobody holds.
+  assert(!(dying && native) || o->refcount == 1);
+  if (dying) o->refcount = 0;
+  else _culebra_value_release_impl(self_val.tag, self_val.data);
 }
 
 // Explicit `obj.drop()` from JIT-compiled code: route through the at-most-once
@@ -140,8 +139,8 @@ inline void _jit_gc_finalize_dead(const std::vector<void*>& dead) {
     auto* h = heap.header(p);
     if (!h || h->type_tag != GC_TAG_OBJECT) continue;
     // has_drop / dropped / suppressed gating lives in
-    // _culebra_call_drop_if_present, which also saves/restores the
-    // entry refcount — the pass consumes none of the dead set's pins.
+    // _culebra_call_drop_if_present, which holds a reference of its own
+    // for the call — the pass consumes none of the dead set's pins.
     _culebra_call_drop_if_present(reinterpret_cast<JitObject*>(p));
   }
 }
@@ -364,8 +363,9 @@ culebra_runtime_owned_scope_exit(int64_t mark_arg) {
   }
   stack.refresh_top();
   for (size_t i = 0; i < pending.size(); i++) {
-    // The chokepoint saves/restores the entry refcount: firing consumes
-    // none of the cycle member's remaining references.
+    // The chokepoint holds a reference of its own for the call: firing
+    // consumes none of the cycle member's remaining references, and one the
+    // body lets go of itself is gone for the release below to see.
     if (!survives(i)) _culebra_call_drop_if_present(pending[i].obj);
   }
   for (auto& p : pending) {

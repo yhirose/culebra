@@ -1,0 +1,200 @@
+# What a `drop` body does to the reference count of its own object is what it
+# did. The runtime holds a reference of its own across the call, as any caller
+# does, instead of writing the count it found back afterwards: so a reference
+# to the object the body lets go of is gone (the object can then die by its
+# count alone), and one it stores somewhere is counted (the object stays for
+# whoever holds it). `GC.refcount` reads the count with the call's own +1 on
+# it, so every case below reads a difference.
+
+# What an object held by one array reads as, to read another against.
+let dsc_one = [{}]
+
+# The refcounted objects a call leaves behind.
+fn dsc_left(f) {
+  let before = GC.stat().rc_objects
+  f()
+  GC.stat().rc_objects - before
+}
+
+# --- 1) An explicit drop whose body stores `self`: the stored reference is a
+# real one. Unrecorded, the object was freed under the array at the end of the
+# function that made it.
+mut dsc_keep = []
+class DscKeeper {
+  new(.id) {}
+  drop() {
+    dsc_keep.push(self)
+  }
+}
+fn dsc_store() {
+  let r = DscKeeper(7)
+  let before = GC.refcount(r)
+  r.drop()
+  GC.refcount(r) - before
+}
+assert_eq(dsc_store(), 1)
+assert_eq(dsc_keep.size(), 1)
+assert_eq(dsc_keep[0].id, 7)
+assert_eq(GC.refcount(dsc_keep[0]) - GC.refcount(dsc_one[0]), 0)  # the array's only
+dsc_keep = []
+
+# The same when a scope's exit fires the drop on a cycle it abandoned: the
+# object the body stored is a live one, its own edge still in place.
+mut dsc_keep2 = []
+class DscKeptCycle {
+  new(.id) {
+    self.me = nil
+  }
+  drop() {
+    dsc_keep2.push(self)
+  }
+}
+fn dsc_store_scoped() {
+  let r = DscKeptCycle(8)
+  r.me = r
+  nil
+}
+dsc_store_scoped()
+assert_eq(dsc_keep2.size(), 1)
+assert_eq(dsc_keep2[0].id, 8)
+assert_eq(GC.refcount(dsc_keep2[0]) - GC.refcount(dsc_one[0]), 1)  # and its own edge
+dsc_keep2[0].me = nil
+dsc_keep2 = []
+
+# --- 2) An explicit drop whose body breaks its own cycle edge: that
+# reference is gone, and the object dies with its binding.
+class DscCutter {
+  new() {
+    self.me = nil
+  }
+  drop() {
+    self.me = nil
+  }
+}
+fn dsc_cut() {
+  let r = DscCutter()
+  r.me = r
+  let before = GC.refcount(r)
+  r.drop()
+  GC.refcount(r) - before
+}
+assert_eq(dsc_cut(), -1)
+assert_eq(dsc_left(dsc_cut), 0)
+
+# --- 3) The same body fired by a scope's exit, the cycle abandoned in it:
+# once the drop has cut the edge nothing holds the object. It used to keep a
+# count nobody held, which made it a root of every later GC.stat().
+fn dsc_scoped() {
+  let r = DscCutter()
+  r.me = r
+  nil
+}
+assert_eq(dsc_left(dsc_scoped), 0)
+
+# --- 4) A body that throws after cutting the edge: the throw is logged and
+# swallowed, and the count is as right as when it returns.
+class DscThrower {
+  new() {
+    self.me = nil
+  }
+  drop() {
+    self.me = nil
+    throw 'dsc boom'
+  }
+}
+fn dsc_throw() {
+  let r = DscThrower()
+  r.me = r
+  let before = GC.refcount(r)
+  r.drop()
+  GC.refcount(r) - before
+}
+assert_eq(dsc_throw(), -1)
+assert_eq(dsc_left(dsc_throw), 0)
+fn dsc_throw_scoped() {
+  let r = DscThrower()
+  r.me = r
+  nil
+}
+assert_eq(dsc_left(dsc_throw_scoped), 0)
+
+# --- 5) A body that touches no reference to its object leaves the count
+# alone: a method, a closure in an object literal, and a body that takes a
+# reference and gives it back.
+class DscPlain {
+  new() {
+    self.n = 0
+  }
+  drop() {
+    let again = self
+    self.n = again.n + 1
+  }
+}
+fn dsc_plain() {
+  let r = DscPlain()
+  let before = GC.refcount(r)
+  r.drop()
+  assert_eq(r.n, 1)
+  GC.refcount(r) - before
+}
+assert_eq(dsc_plain(), 0)
+mut dsc_fired = 0
+fn dsc_literal() {
+  let r = {id: 1, drop: fn () {
+    dsc_fired += 1
+  }}
+  let before = GC.refcount(r)
+  r.drop()
+  GC.refcount(r) - before
+}
+assert_eq(dsc_literal(), 0)
+assert_eq(dsc_fired, 1)
+assert_eq(dsc_left(dsc_plain), 0)
+assert_eq(dsc_left(dsc_literal), 0)
+
+# --- 6) A handle whose drop is the runtime's own function: the same count,
+# and the handle goes with its binding.
+fn dsc_native() {
+  let (tx, rx) = Channel(1)
+  let before = GC.refcount(tx)
+  tx.drop()
+  let d = GC.refcount(tx) - before
+  let before_rx = GC.refcount(rx)
+  rx.drop()
+  d + (GC.refcount(rx) - before_rx)
+}
+assert_eq(dsc_native(), 0)
+assert_eq(dsc_left(dsc_native), 0)
+fn dsc_file() {
+  let dir = FS.mkdtemp('culebra_drop_self_count_')
+  let p = FS.join(dir, 'f.txt')
+  let f = File.open(p, 'w')
+  let before = GC.refcount(f)
+  f.drop()
+  let d = GC.refcount(f) - before
+  FS.remove(p)
+  FS.remove(dir)
+  d
+}
+assert_eq(dsc_file(), 0)
+
+# --- 7) The body lets go of the last reference a variable held while the
+# drop is running on it: the object outlives the call that is dropping it.
+mut dsc_slot = nil
+mut dsc_last_seen = nil
+class DscLast {
+  new() {
+    self.tag = 'last'
+  }
+  drop() {
+    dsc_slot = nil
+    dsc_last_seen = self.tag
+  }
+}
+fn dsc_last() {
+  dsc_slot = DscLast()
+  dsc_slot.drop()
+  nil
+}
+assert_eq(dsc_left(dsc_last), 0)
+assert_eq(dsc_last_seen, 'last')

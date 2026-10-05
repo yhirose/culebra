@@ -159,6 +159,19 @@ cycle inside the scope is still dropped at the scope boundary
 (`culebra_runtime_owned_scope_exit`). The full contract — timing, order,
 suppression at program exit — is `language.md` §17.
 
+Every path that fires a `drop` goes through one function
+(`_culebra_call_drop_if_present`), and the call it makes is an ordinary
+one: `self` goes to the body's frame at `+1` and the frame consumes it,
+whether the body is compiled or one of the runtime's own handle methods.
+The function holds a second reference of its own for as long as the body
+runs, so nothing the body releases can free the object under it, the
+way CPython's `PyObject_CallFinalizerFromDealloc` keeps an object across
+its finalizer. The count the body leaves is therefore the real one: a
+reference to the object it let go of is gone, one it stored is counted.
+Only on the release-to-zero path is the count put back afterwards, to the
+zero the teardown in progress resumes from. The collector's finalize pass
+does not read the count either: what it finalizes it sweeps (§6.3).
+
 ## 4. The ownership discipline of the LLVM lowering
 
 ### 4.1 The goal
