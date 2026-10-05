@@ -546,7 +546,8 @@ scanning begins; and the explicitly registered roots outside any stack
 — the namespace tables, module caches, REPL session cells, the defer
 stack, the exception carrier, multimethod bodies — enumerated by the
 runtime's root function (`set_extra_roots_fn`) or pinned individually
-(`Heap::pin`).
+(`Heap::pin`). An object in teardown and an object whose edges are in
+flux are roots too, for as long as that lasts (§6.3).
 
 **Why this is sound.** Any collector-tracked pointer that is live
 across a call which might trigger a collection must, by the
@@ -615,6 +616,46 @@ refcount accounting (`Heap::begin_teardown`, the role CPython's
 `GC_UnTrack` plays at the top of `tp_dealloc`); otherwise a collection
 from inside that `drop` would sweep the corpse under its own release,
 or discount live children through edges it has already dropped.
+
+**A suspended generator frame.** With `CULEBRA_GEN_FRAMES` (`vm.md`
+§5.7) a generator's registers live on the heap between resumes, in a
+`JitGenFrame` that hangs off the generator's iterator object
+(`JitObject::gen_frame`, the object flagged `is_gen_frame`). The
+object is what the collector knows; the frame is its payload,
+enumerated, released and freed with it. What a suspended frame
+references is exact: the slots the chunk's stack map lists for the
+suspension point it is at — a value slot's payload, a cell slot's
+`JitCell` — its pending defers, the value `has_next()` pulled ahead,
+and its closure. Exactness is not an optimization here. A
+refcount-seeded collection (§6.2) subtracts every enumerated edge from
+its target's count, so an edge reported for a register the frame does
+not own — a borrowed copy, a temporary that already died — would take
+a reference away from whoever does own one, and free a live object;
+and a cell slot rides `TAG_LONG`, so its edge cannot be read off the
+tag at all. The trial deletion at a scope exit
+(`culebra_runtime_owned_scope_exit`, §3) reads the same set, which is
+how a cycle through a suspended frame resolves at the scope exit that
+drops it.
+
+**A running frame.** While a body runs its registers are in flux: on
+the executor they are in a window on the machine stack, in lowered
+code they are the frame's own memory, being written. For that stretch
+the frame's object is on the heap's active list (`Heap::begin_active`,
+held by `JitGenActive`): a root, left out of the refcount accounting
+as an object in teardown is, and marked through with every register
+payload as a candidate, by the stack scan's rule. Resumes nest, so the
+list is a stack; a collection copies it into the headers
+(`kFlagActive`) and clears the flags the previous one set. The guard
+also holds a count on the object for the run, since a body can let go
+of the last reference to its own iterator.
+
+A frame dies with its object. The iterator's `drop` is bound when the
+object goes out to the program, and it closes the frame: the body's
+`defer`s run and its locals are released, as by a `return` (`vm.md`
+§5.7). An object whose count reaches zero with its frame still
+suspended — its `drop` was suppressed, as at program exit — releases
+what the frame owns without running the body's defers. A swept one
+only frees the frame, its references being the sweep's own to reclaim.
 
 ### 6.4 Why not a moving or fully precise collector
 

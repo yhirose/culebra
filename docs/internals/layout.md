@@ -102,8 +102,8 @@ generator writes under `include/` ends in `.gen.h`.
 
 ## 4. `.inc.h` is not a header
 
-`rt/rt.h` is one translation unit's worth of runtime split across nine
-files for size. The eight `rt/*.inc.h` fragments are its body, not
+`rt/rt.h` is one translation unit's worth of runtime split across ten
+files for size. The nine `rt/*.inc.h` fragments are its body, not
 headers in any useful sense: they rely on rt.h's include block rather
 than their own, one `extern "C"` block opens in `rt/runtime.inc.h` and
 closes three files later in `rt/iter.inc.h`, and rt.h includes them in a

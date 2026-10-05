@@ -141,7 +141,10 @@ branch touches. It is 34 files covering 147 of the 151 ops for 71 of those
 reason, and that list may only shrink.
 `tools/checks/check_jit_shape_set.sh` recomputes the coverage from the
 compiled bytecode on every run of the gate, so a new op fails the gate
-until a test reaches it.
+until a test reaches it. `GenStart` and `Yield` are emitted only with
+`CULEBRA_GEN_FRAMES` set, which the corpus sweep does not do: the check
+counts the probes of the generator-frames lane (`vm.md` §10.8) as the
+files that lower them.
 
 What the cover does not hold is op *combinations* — an unwind edge inside
 a loop inside a closure. That is what the codegen seeds carry by hand, what
@@ -152,8 +155,8 @@ in CI's `ci-light` on every push.
 ### The gate's own cost
 
 `tools/checks/gate_budget.txt` records each swept population — the corpus,
-the isolate files, the `vm_cases`, the ctest entries, the doc blocks, the
-language samples — and `check-gate-budget` holds them exactly. Growth is
+the isolate files, the generator-frames probes, the `vm_cases`, the ctest
+entries, the doc blocks, the language samples — and `check-gate-budget` holds them exactly. Growth is
 normal and is made here, in the commit that grows it: the corpus went from
 203 files to 279 in six weeks, which is 174 of the JIT sweep's 610 CPU
 seconds, and nothing said so until the gate felt slow. Seconds are

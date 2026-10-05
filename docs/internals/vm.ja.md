@@ -179,7 +179,8 @@ release-diffゲート（§10.3）で、そこでは既定そのものが対象�
 ヘルパー（`rt_runtime.inc.h`）、固定レイアウトのビューとクラス構築
 （`rt_fixed.inc.h`）、マルチメソッドdispatchとキーワード呼び出し機構
 （`rt_dispatch.inc.h`）、イテレータプロトコル（`rt_iter.inc.h`）、参照
-カウント実装（`rt_mem.inc.h`）をincludeする。どれもLLVMを名指しない。
+カウント実装（`rt_mem.inc.h`）、generatorがresumeの間に保持するフレーム
+（`rt/gen.inc.h`、§5.7）をincludeする。どれもLLVMを名指しない。
 
 ### 3.1 値表現
 
@@ -576,7 +577,7 @@ testsと言語front endを合わせたコーパス全体では、4つのpassが
 
 ### 5.3 opcodeのファミリー
 
-152個のopcodeを分類すると:
+156個のopcodeを分類すると:
 
 | ファミリー | op | 備考 |
 |---|---|---|
@@ -595,6 +596,7 @@ testsと言語front endを合わせたコーパス全体では、4つのpassが
 | 文字列と出力 | `Fmt` `StrCat` `Disp` `Println` `SetOpPos` | 補間、および`println(<引数1個>)`のpeephole |
 | namespace関数 | `NsCall` `ToFloat` | 直接の`Math.f(args)` / `to_float(x)`はresolverもclosureも経ずにhelperへ届く（§5.4） |
 | セッションとデバッグ | `ReplCell` `ReplBind` `DbgStmt` | §8.1、§8.3 |
+| generatorのフレーム | `GenStart` `Yield` | §5.7。`CULEBRA_GEN_FRAMES`を設定したときだけemitされる |
 
 **コンパイラが名指しできる呼び先。** その文リストが1度だけ宣言する
 `let name = fn …`は、その関数リテラルに束縛されたままである:
@@ -1299,6 +1301,78 @@ or-patternの中のbinding alternative、制御フローの条件式の中の
 `perform`など — であり、これらはどのレーンでも言語仕様として拒否
 される。
 
+### 5.7 フレームを保持するgenerator
+
+既定ではgeneratorはコンパイラの手前で変換され（§11）、この節は何も
+適用されない。環境変数`CULEBRA_GEN_FRAMES`が設定されていると
+（`gen_frames_enabled`、プロセスごとに1回読む）、本体がyieldする
+`fn name`は書かれたままコンパイラに届き、そのchunkはgeneratorになる
+（`Chunk::is_generator`）: 呼び出しはプロローグを実行してイテレータを
+返し、本体は`yield`のたびにスタックを離れ、次のresumeで戻るフレームの
+中で走る。このフラグは既定を切り替えるための段階である。effectの本体は
+どちらでも変換されたままで、標準ライブラリのCulebraモジュールが持つ
+generatorも同じである（フラグなしでバイナリに焼き込まれている）。
+
+これを運ぶopcodeは2つ。`GenStart`はプロローグ — パラメータの束縛、
+既定値の評価、型検査、`RecEnter` — の後に置かれるので、プロローグが
+raiseするものは呼び出しがraiseする。`Yield a`はフレームを中断し、
+`regs[a]`の`+1`はresumeした側へ渡る。`yield`式そのものの値はnilである。
+どちらも`c`に、chunk内でのその中断点の番号（命令順に1から数える）を
+持つ。そこで中断している間のフレームの状態であり、どのレーンでも同じ
+番号である。
+
+**closeはreturnである。** generatorは、フレームが中断している間に
+イテレータがdisposeまたはdropされるとcloseされる。中断命令はそれぞれ
+レジスタ`b`を名指し、resumeがそこに書く: 続行ならfalse、closeならtrue。
+コンパイラはその命令の後に`JumpIfFalse b`を置き、その地点に書かれた
+`return`がコンパイルされる出口 — 文の途中にある一時値、開いている
+各スコープのdeferと束縛を内側から、フレーム自身のdefer、`Ret` — を
+飛び越えさせる（`Compiler::emit_gen_suspend`）。したがってcloseは、
+本体の`defer`をreturnと同じ順で走らせ、ローカルを同じ順で解放する。
+それをするのはchunk自身の命令であり、unwinderは関与せず、3レーンが
+1つのladderを共有する。本体からのthrowはフレームが終わるもう1つの
+道で、これは通常のthrowである（§5.5）: 本体のdeferが走り、束縛が解放
+され、generatorは終わる。
+
+**stack map。** 中断しているフレームが所有するものは、中断の次の命令で
+throwが起きたら解放されるものと同じである: そこで途中にある一時値
+（`chunk_temps_at`）、続いて`Cleanup`チェーンを上る各スコープのslot
+範囲。各slotはcellか値かのどちらかである（`chunk_gen_owned_slots`）。
+`Chunk::gen_owned`はこれを中断点ごとに持つ — 点の数、各点のrunの開始
+位置、run本体。エントリは`slot * 2 + is_cell` — 。組み立ては
+`compile_unit`で、pcを動かしレジスタの所有者を決める除去パス
+（§5.2.1）の後に行う。コレクタは中断フレームをこの表を通して読む
+（`memory.md` §6.3）。
+
+`yield from e`に命令はない: `transform_one_generator_fn`がソース上で
+`for v in (e) { yield v }`に書き換える。このような関数に対して変換が
+するのはそれだけである。変換が拒否するものは引き続き、同じ文面で拒否
+される: `try`や`defer`の中の`yield`、本体の中の`self`、`fn name`宣言の
+外の`yield`。
+
+**プログラムから見える違い。** 書かれたままコンパイルされた本体は、
+名前の束縛も文の実行も普通の`fn`と同じである。§10.7がgeneratorの本体に
+ついて「異なる」と載せている形は、変換の側の違いである。変換された
+クラスと比べると:
+
+- `type_of(g)`は`'Generator'`で、値は`Generator {}`と表示され、自前の
+  プロパティを持たない（変換版: generator関数ごとに1クラスで、状態の
+  フィールドが見える）。`==`は同一性である（変換版: フィールドごとの
+  比較なので、作りたての`count(3)`2つは等しい）
+- generatorはSendableでない: 送ると`SendError: a generator is not
+  Sendable`になる（変換版は状態ごとコピーされる）
+- `has_next()`が先読みした値は`dispose()`で解放される（変換版:
+  `next()`がまだそれを返す）
+- `drop`を持つローカルは、そのスコープの終わりでdropされる（変換版:
+  generatorが死ぬとき）
+- 本体からのthrowはdeferを走らせてgeneratorを終わらせる（変換版:
+  deferは`dispose()`を待ち、次の`has_next()`はthrowした状態をもう一度
+  実行する）
+- 本体の中から自分自身をresumeすると`ValueError: generator already
+  running`になる（変換版: 再帰してRecursionErrorに至る）
+- 式の中の文ブロックがyieldしてよい（変換版: SyntaxError
+  「unsupported control flow」）
+
 ## 6. executor
 
 `vm::Exec`はラベルのアドレスを並べた表を引いてディスパッチする。各腕は
@@ -1445,6 +1519,42 @@ pending flagを立てるだけであり、executorは次の命令境界でcollec
 `run_frame`がある。`Debug::Break`は
 `debugger`文が必要とするものだけをemitする。通常の実行
 （`Debug::Off`）はどちらもemitしない。
+
+### 6.5 generatorのフレーム
+
+`GenStart`（§5.7）はフレームをスタックから外す。レジスタウィンドウと
+owned markを`JitGenFrame`（`rt/gen.inc.h`）にコピーし、ウィンドウを
+クリアし — 値はもうフレームのものである — 、returnと同じようにその
+命令から出る。その値はフレームがぶら下がるオブジェクトで、これが
+プログラムの持つイテレータである。フレームはprogram、chunk、戻るべき
+pcを記録する。
+
+`Exec::gen_resume`がそれを戻す: 機械スタック上のウィンドウに
+レジスタとmarkをコピーして（フレーム側はクリアする）、中断命令の`b`
+レジスタにcloseフラグを書き、保存したpcからdispatchに入る。`Yield`では
+dispatchがyieldされた値を持って戻り、レジスタはフレームへ帰る。
+レジスタに入っていないものが3つ、一緒に動く:
+
+- **defer。** deferスタックは`Runtime`ごとに1本のLIFOで、markは高さで
+  ある。中断するフレームの未実行のdeferはスタックから切り取って
+  フレームに持たせ、resumeでpushし直し、そのpcで開いているスコープの
+  defer markレジスタを高さの差だけ動かす（`gen_rebase_defers`）。
+- **再帰の深さ。** resumeは1フレームとして数え、yieldで数え戻す。
+  数えるのは何かを動かす前なので、resumeでのRecursionErrorはフレームを
+  中断したまま無傷で残す。
+- **呼び出し元の位置。** ライブラリのフレームが公開する呼び出し位置は、
+  いまresumeした側のものになる（`culebra_runtime_gen_resnap_site`）。
+
+owned stackは何も要らない: そのmarkは高さでなくidである。デバッグ
+セッションでは、resumeされたウィンドウを`DbgFrame`としてpushする
+（§6.4）ので、本体の中で止まると、本体がresumeした側の上に見える。
+
+イテレータのメソッド（`iter`、`has_next`、`next`、`dispose`、および
+オブジェクトがプログラムに出ていくときに束縛される`drop`）は、すべての
+generatorが共有する1つのmeta（`_jit_gen_meta`）上のnativeで、それぞれ
+レシーバから自分のフレームを引く。`has_next()`は本体をresumeして値を
+1つ先読みする。`--jit`でもビルドしたバイナリでも同じもので、違うのは
+フレームのresumeの仕方だけである（§7.3）。
 
 ## 7. LLVM lowering
 
@@ -1631,6 +1741,40 @@ ASTコードジェンにはなかったレジスタ圧を払う（そのスコ�
 ない。4通りのpadの形が試され、木にあるものがその中で最良である
 （スコープごとに1つのpadはIRを最小化するが、`llc`に30秒かかる
 幅700のphiを生む）。
+
+### 7.3 generatorの本体
+
+generatorのchunk（§5.7）は2つのLLVM関数になる。`__vm_fn_N`は
+クロージャが名指すJitFnで、rampである: `culebra_runtime_gen_ramp`を
+1回呼ぶだけで、これがレジスタをnilにしたフレームを確保し、本体の
+プロローグをその中で走らせ、本体が`GenStart`で出たらイテレータを返す。
+`__vm_gen_N`は同じ`lower_chunk`を通したchunkで、フレームの
+`JitGenRegs`を指す7番目のパラメータを持つ。普通のchunkとの違いは
+5箇所である:
+
+- レジスタは`alloca`でなくフレームのレジスタ配列へのGEPで、owned
+  markも同じ。したがって中断時に何もコピーしない
+- entryブロックは、フレームに保存した状態での`switch`で終わる。
+  中断点ごとに1 case、defaultはプロローグである
+- `GenStart`と`Yield`は中断点の番号をstoreして`ret`する
+- resumeが入るブロックは、padが戻す先の再帰の深さをstoreし、そのpcの
+  cleanupチェーン（中断点ごとに静的に決まる）のdefer mark slotに
+  deferスタックの移動量を足し、ライブラリのフレームなら呼び出し位置を
+  公開し直し、`b`レジスタにcloseフラグを書いて次の命令へ分岐する
+- `for-in`カーソルのnativeな6フィールドは、entryブロックのallocaでは
+  なくフレームのscratchワードに置く
+
+loweringがレジスタの外に持つその他のもの — 引数のslab、unwind用の
+一時値プール、例外slot — は1命令の中で完結するので`alloca`のままで
+ある。cleanup padは変わらない: closeはそこに届かず（§5.7）、本体からの
+throwはどの関数とも同じようにpadを使う。chunkのstack mapはprivateな
+定数（`__vm_gen_owned_N`）としてrampに渡る。ビルドしたバイナリには
+問い合わせる`Chunk`がないからである。
+
+resumeの後にフレームから読み直したレジスタはtagが分からないので、
+resumeに続くループは、普通の関数の同じループなら畳み込まれるtag
+dispatchを持ち続ける: 300回のyieldの間に3000万回のFloat演算を回す形が
+0.55秒、普通のループは0.12秒（`just build`）。
 
 ## 8. セッションとホスト
 
@@ -1946,6 +2090,22 @@ generatorの本体、effectの本体の同じ行と列に書き、それぞれ�
 載っているのにケース数が変わった形、もう一致する形のどれかで失敗する。
 その行`lowering diff`は`just test`とCIで走る。
 
+### 10.8 フラグの後ろにある間のgeneratorフレーム
+
+上のレーンはすべて既定（generatorを変換する）で走るので、どれも
+`GenStart` / `Yield`、フレームのランタイム、コレクタから見たフレーム
+（§5.7）に届かない。`tools/checks/gen_frames_lane.sh`は
+`CULEBRA_GEN_FRAMES`を設定して2つの母集団を回す: `tests/gen_frames/`の
+プローブ（それぞれ凍結した出力と突き合わせる）と、コンパイラが
+フレームのgeneratorを作る`tests/*.cul`のファイル（自分のassertionで
+保つ）。`just test-dev`の行は、プローブをexecutorと`--jit`で、コーパスの
+ファイルをexecutorで、そのうちgeneratorを主題とするものは`--jit`でも
+回す。`just test`の行はそれに、残りの`--jit`、両母集団の
+`CULEBRA_GC_STRESS`・`CULEBRA_GC_REFS`・リーク監査（両エンジン）、
+`culebra build`を通したプローブを足す。JITレーンの部分集合
+（`conformance.md`）は、この2つのopcodeをlowerするファイルとして
+プローブを数える。WindowsのCIはプローブを回す。
+
 ## 11. 設計判断
 
 - **スタックベースでなくレジスタベース。** レジスタは解析が既に
@@ -1968,8 +2128,9 @@ generatorの本体、effectの本体の同じ行と列に書き、それぞれ�
   ソースに書き換える。どちらも制御フローをflat-dispatchのCPS状態機械を
   通じてloweringし、中断で割られるスコープの変数をstate instance上に持つ。
   エンジンはgenerator固有やeffect固有の対応を一切必要としないので、
-  構造的に一致する。VMでのフレーム中断化は要件ではなく単純化に
-  なるだろう。
+  構造的に一致する。generatorについては、エンジンがフレームを中断する
+  という代替が`CULEBRA_GEN_FRAMES`の後ろに実装してある（§5.7）。
+  effectの継続は複数回resumeできるので、effectは変換のままである。
 - **組み込みメソッドはデータである。** `(name, argc)`ごとの
   テーブル行が、拒否の判断、executor、loweringを1つの定義の上に
   保つ（§5.4）。

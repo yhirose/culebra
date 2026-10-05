@@ -177,8 +177,9 @@ the value model (`rt_value.inc.h`), the owned-resource stack for
 deterministic `drop` (`rt_owned.inc.h`), strings (`rt_string.inc.h`), the core
 `extern "C"` helpers (`rt_runtime.inc.h`), fixed-layout views and class
 construction (`rt_fixed.inc.h`), multimethod dispatch and the keyword-call
-machinery (`rt_dispatch.inc.h`), the iterator protocol (`rt_iter.inc.h`), and
-the reference-counting implementation (`rt_mem.inc.h`). None of it names
+machinery (`rt_dispatch.inc.h`), the iterator protocol (`rt_iter.inc.h`),
+the reference-counting implementation (`rt_mem.inc.h`), and the frame a
+generator keeps between resumes (`rt/gen.inc.h`, §5.7). None of it names
 LLVM.
 
 ### 3.1 The value model
@@ -584,7 +585,7 @@ of almost every scope.
 
 ### 5.3 The opcode families
 
-152 opcodes, grouped:
+156 opcodes, grouped:
 
 | family | ops | notes |
 |---|---|---|
@@ -603,6 +604,7 @@ of almost every scope.
 | strings and output | `Fmt` `StrCat` `Disp` `Println` `SetOpPos` | interpolation, and the `println(<one arg>)` peephole |
 | namespace functions | `NsCall` `ToFloat` | a direct `Math.f(args)` / `to_float(x)` reaches its helper without the resolver or a closure (§5.4) |
 | sessions and debug | `ReplCell` `ReplBind` `DbgStmt` | §8.1, §8.3 |
+| generator frames | `GenStart` `Yield` | §5.7; emitted only with `CULEBRA_GEN_FRAMES` set |
 
 **A callee the compiler can name.** A `let name = fn …` its statement
 list declares once is bound to that literal for good: it takes no `mut`,
@@ -1335,6 +1337,82 @@ structural shapes — a binding alternative inside an or-pattern, a
 `perform` in a control-flow condition — that the language rejects on
 every lane.
 
+### 5.7 A generator that keeps its frame
+
+By default a generator is lowered ahead of the compiler (§11) and none
+of this section applies. With `CULEBRA_GEN_FRAMES` set in the
+environment (`gen_frames_enabled`, read once per process) a `fn name`
+whose body yields reaches the compiler as it is written, and its chunk
+is a generator (`Chunk::is_generator`): calling it runs the prologue
+and returns an iterator, and the body runs in a frame that leaves the
+stack at every `yield` and comes back at the next resume. The flag
+stages a change of default. Effect bodies stay lowered either way, and
+so do the generators of the standard library's Culebra modules, which
+are compiled into the binary without the flag.
+
+Two opcodes carry it. `GenStart` follows the prologue — parameters
+bound, defaults evaluated, types checked, `RecEnter` run — so what the
+prologue raises is raised by the call. `Yield a` suspends the frame,
+`regs[a]`'s `+1` going to whoever resumed it; the `yield` expression
+itself evaluates to nil. Both carry in `c` the chunk's number for that
+suspension point, counted from 1 in instruction order: the state the
+frame is in while it is suspended there, on every lane.
+
+**Closing is a return.** A generator is closed when its iterator is
+disposed, or dropped, while the frame is suspended. Each suspension
+instruction names a register `b` that the resume sets: false to go on,
+true to close. The compiler follows the instruction with `JumpIfFalse
+b` over the exit a `return` written at that point compiles to — the
+statement's temporaries in flight, every open scope's defers and
+bindings innermost first, the frame's own defers, `Ret`
+(`Compiler::emit_gen_suspend`). A close therefore runs the body's
+`defer`s and releases its locals in the order a return does, by the
+chunk's own instructions: no unwinder takes part, and the three lanes
+share the one ladder. A throw out of the body is the other way a frame
+ends, and it is an ordinary throw (§5.5): the body's defers run, its
+bindings are released, and the generator is finished.
+
+**The stack map.** What a suspended frame owns is what a throw at the
+instruction after the suspension would release: the temporaries in
+flight there (`chunk_temps_at`), then each enclosing scope's slot
+range up the `Cleanup` chain, each slot a cell or a value
+(`chunk_gen_owned_slots`). `Chunk::gen_owned` holds that for every
+suspension point — the number of points, where each point's run
+starts, the runs, an entry being `slot * 2 + is_cell` — and is built
+in `compile_unit` after the elision passes (§5.2.1), which move pcs
+and decide what owns a register. The collector reads a suspended
+frame through it (`memory.md` §6.3).
+
+`yield from e` has no instruction: `transform_one_generator_fn`
+rewrites it in source to `for v in (e) { yield v }`, and that is all it
+does to such a function. What the lowering refuses it still refuses,
+with the same messages: a `yield` inside `try` or `defer`, `self` in
+the body, a `yield` outside a `fn name` declaration.
+
+**What a program sees differently.** A body compiled as written binds
+names and runs statements as a plain `fn` does; the forms §10.7 lists
+as differing for a generator body are differences of the lowering.
+Against the lowered class:
+
+- `type_of(g)` is `'Generator'`, the value prints as `Generator {}`
+  and has no properties of its own (lowered: one class per generator
+  function, whose state fields show), and `==` is identity (lowered:
+  field by field, so two fresh `count(3)` are equal);
+- a generator is not Sendable: sending one raises `SendError: a
+  generator is not Sendable` (a lowered one is copied, state and all);
+- a value `has_next()` pulled ahead is released by `dispose()`
+  (lowered: `next()` still returns it);
+- a local with a `drop` is dropped when its scope ends (lowered: when
+  the generator dies);
+- a throw out of the body runs its defers and finishes the generator
+  (lowered: the defers wait for `dispose()`, and the next `has_next()`
+  runs the throwing state again);
+- resuming a generator from inside its own body raises `ValueError:
+  generator already running` (lowered: it recurses to a
+  RecursionError);
+- a statement block inside an expression may yield (lowered: a
+  SyntaxError, "unsupported control flow").
+
 ## 6. The executor
 
 `vm::Exec` dispatches through a table of label addresses: every arm ends
@@ -1481,6 +1559,44 @@ pushes a `DbgFrame` (program, chunk, register window, pc) on entry and
 pops it on every exit, and a tracking session takes no inline frames, so
 every culebra frame has its `run_frame`. `Debug::Break` emits only what the `debugger`
 statement needs. A plain run (`Debug::Off`) emits neither.
+
+### 6.5 Generator frames
+
+`GenStart` (§5.7) moves the frame off the stack. The register window
+and the owned marks are copied into a `JitGenFrame` (`rt/gen.inc.h`),
+the window is cleared — the values are the frame's now — and the
+instruction leaves as a return does, its value the object the frame
+hangs off, which is the iterator the program holds. The frame records
+the program, the chunk and the pc to come back to.
+
+`Exec::gen_resume` puts it back: a window on the machine stack, the
+registers and marks copied in and cleared in the frame, the close flag
+written to the suspension instruction's `b` register, and dispatch
+entered at the saved pc. At a `Yield`, dispatch returns with the
+yielded value and the registers go back to the frame. Three things
+that are not in a register move with them:
+
+- **Defers.** The defer stack is one LIFO per `Runtime` and its marks
+  are heights. A suspending frame's pending defers are cut off the
+  stack into the frame; a resume pushes them back and moves the
+  defer-mark registers of the scopes open at the pc by the difference
+  in height (`gen_rebase_defers`).
+- **The recursion depth.** A resume counts as a frame and a yield
+  uncounts it. The count is taken before anything moves, so a
+  RecursionError at a resume leaves the frame suspended and whole.
+- **The call site.** A library frame's published call site becomes
+  that of whoever resumes it (`culebra_runtime_gen_resnap_site`).
+
+The owned stack needs nothing: its marks are ids, not heights. In a
+debug session the resumed window is pushed as a `DbgFrame` (§6.4), so
+a stop inside the body shows the body above its resumer.
+
+The iterator's methods (`iter`, `has_next`, `next`, `dispose`, and the
+`drop` bound when the object goes out to the program) are natives on
+one meta every generator shares (`_jit_gen_meta`), each reading its
+frame from the receiver; `has_next()` resumes the body to pull one
+value ahead. They are the same under `--jit` and in a built binary,
+where only how a frame is resumed differs (§7.3).
 
 ## 7. The LLVM lowering
 
@@ -1665,6 +1781,43 @@ register file is promoted to SSA. Measured on `tests/test_core.cul`, the
 not slower; four pad shapes were tried and the one in the tree is the
 best of them (a single per-scope pad minimizes IR but produces
 700-wide phis that take `llc` 30 s).
+
+### 7.3 Generator bodies
+
+A generator chunk (§5.7) is two LLVM functions. `__vm_fn_N`, the JitFn
+its closure names, is a ramp: one call to `culebra_runtime_gen_ramp`,
+which allocates the frame with its registers nil, runs the body's
+prologue into it and returns the iterator when the body leaves at
+`GenStart`. `__vm_gen_N` is the chunk through the same `lower_chunk`,
+with a seventh parameter that points at the frame's `JitGenRegs`. It
+differs from a plain chunk in five places:
+
+- a register is a GEP into the frame's register array instead of an
+  `alloca`, and so are the owned marks, so nothing is copied at a
+  suspension;
+- the entry block ends in a `switch` on the frame's saved state, one
+  case per suspension point, the default being the prologue;
+- `GenStart` and `Yield` store the point's number and `ret`;
+- the block a resume enters stores the recursion depth the pads
+  restore to, adds the defer stack's displacement to the defer-mark
+  slots of the cleanup chain at that pc (the chain is static per
+  point), republishes a library frame's call site, writes the close
+  flag to the `b` register and branches to the next instruction;
+- a `for-in` cursor's six native fields live in the frame's scratch
+  words, not in entry-block allocas.
+
+Everything else the lowering keeps outside registers — the argument
+slab, the unwind-temp pool, the exception slot — lives within one
+instruction and stays an `alloca`. The cleanup pads are unchanged: a
+close never reaches them (§5.7), and a throw out of the body uses them
+as any function's does. The chunk's stack map goes to the ramp as a
+private constant (`__vm_gen_owned_N`), a built binary having no
+`Chunk` to ask.
+
+A register reloaded from the frame after a resume has no known tag, so
+a loop that follows a resume keeps the tag dispatch the same loop in a
+plain function folds away: 30M Float steps between 300 yields ran in
+0.55 s, the plain loop in 0.12 s (`just build`).
 
 ## 8. Sessions and hosts
 
@@ -1975,6 +2128,23 @@ difference it does not list fails, and so does a listed form whose
 count moved or that agrees now. Its row, `lowering diff`, runs in
 `just test` and CI.
 
+### 10.8 Generator frames, while they are behind the flag
+
+Every lane above runs the default, in which a generator is lowered, so
+none of them reaches `GenStart` / `Yield`, the frame runtime, or the
+collector's view of a frame (§5.7). `tools/checks/gen_frames_lane.sh`
+sets `CULEBRA_GEN_FRAMES` over two populations: the probes under
+`tests/gen_frames/`, each held to a frozen output, and the
+`tests/*.cul` files the compiler makes a frame generator in, held by
+their own assertions. Its row in `just test-dev` runs the probes on
+the executor and `--jit`, and the corpus files on the executor and, for
+those that are about generators, on `--jit`. Its row in `just test`
+adds the rest on `--jit`, both populations under `CULEBRA_GC_STRESS`,
+`CULEBRA_GC_REFS` and the leak audit on both engines, and the probes
+through `culebra build`. The JIT lane's subset (`conformance.md`)
+counts the probes as the files that lower the two opcodes. Windows CI
+runs the probes.
+
 ## 11. Design decisions
 
 - **Register-based, not stack-based.** Registers map directly onto the
@@ -1998,8 +2168,10 @@ count moved or that agrees now. Its row, `lowering diff`, runs in
   machine, with the variables of every scope a suspension splits on the
   state instance. The engines need no
   generator- or effect-specific support, so they agree by construction.
-  Frame suspension in the VM would be a simplification, not a
-  requirement.
+  For generators the alternative, a frame the engines suspend, is
+  implemented behind `CULEBRA_GEN_FRAMES` (§5.7); an effect's
+  continuation can be resumed more than once, and effects stay
+  transforms.
 - **Built-in methods are data.** A table row per `(name, argc)` keeps the
   reject decision, the executor and the lowering on one definition
   (§5.4).
