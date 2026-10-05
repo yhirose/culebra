@@ -322,8 +322,23 @@ class Heap {
   // stack forget() pops; a collect copies it into the headers (flag_dying).
   // The release hot path pays a push/pop, not a registry probe.
   static constexpr uint8_t kFlagDying = 2;
-  static constexpr uint8_t kRootFlags = kFlagPinned | kFlagDying;
+  static constexpr uint8_t kFlagActive = 4;  // see begin_active
+  static constexpr uint8_t kRootFlags =
+      kFlagPinned | kFlagDying | kFlagActive;
   void begin_teardown(void* p) { dying_.push_back(p); }
+
+  // An object whose own edges are in flux — a generator's frame while
+  // its body runs, the registers of a lowered body living in it. For as long
+  // as it is active it is a root and, like a corpse, contributes no internal
+  // edges to gc_refs: what its registers hold is not a set of counted
+  // references until the body suspends again. Its children are still traced.
+  // Resumes nest, so this is a stack; a collect copies it into the headers
+  // and takes the flags of the previous collect's set back first.
+  void begin_active(void* p) { active_.push_back(p); }
+  void end_active(void* p) {
+    if (!active_.empty() && active_.back() == p) active_.pop_back();
+    else std::erase(active_, p);
+  }
 
   // Pause collection across a multi-object construction whose intermediates
   // are not yet reachable from any root (e.g. building a namespace object: its
@@ -621,7 +636,7 @@ class Heap {
       // reachability walk.
       if (!no_rc_fn_ || !no_rc_fn_(h.type_tag))
         refs_residue_[i] += *reinterpret_cast<int64_t*>(o);  // refcount @ off 0
-      if (!children_fn_ || h.flags & kFlagDying) return;
+      if (!children_fn_ || h.flags & (kFlagDying | kFlagActive)) return;
       kids.clear();
       children_fn_(o, h.type_tag, kids);
       for (void* c : kids) {
@@ -923,6 +938,11 @@ class Heap {
   void flag_dying() {
     for (void* p : dying_)
       if (GcHeader* h = objects_.find(p)) h->flags |= kFlagDying;
+    for (void* p : was_active_)
+      if (GcHeader* h = objects_.find(p)) h->flags &= ~kFlagActive;
+    was_active_ = active_;
+    for (void* p : active_)
+      if (GcHeader* h = objects_.find(p)) h->flags |= kFlagActive;
   }
 
   // Shared mark-sweep core. `seed(push)` supplies the initial roots.
@@ -1108,6 +1128,8 @@ class Heap {
   std::vector<void**> global_roots_;
   std::vector<void*> extra_roots_;  // scratch reused across collections
   std::vector<void*> dying_;        // mid-teardown objects (begin_teardown)
+  std::vector<void*> active_;       // objects with edges in flux (begin_active)
+  std::vector<void*> was_active_;   // the ones the last collect flagged
   std::vector<int64_t> refs_residue_;  // compute_gc_refs, by registry slot
   ChildrenFn children_fn_ = nullptr;
   RootFn extra_roots_fn_ = nullptr;
