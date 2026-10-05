@@ -1,0 +1,213 @@
+// Hard points for a lowered frame: cursors of every kind across a yield,
+// cleanup pads reached by close, defer marks at moving heights, throws.
+
+mut log = []
+res = fn (name) {
+  {name: name, drop: fn () { log.push("drop {name}") }}
+}
+
+// 1. every for-in cursor kind, suspended mid-walk
+fn kinds() {
+  for c in 'aé日' { yield c }
+  for x in [1, 2, 3] { yield x }
+  for x in (4, 5) { yield x }
+  for k, v in {p: 1, q: 2} { yield "{k}={v}" }
+  for i in 0..3 { yield i }
+  for i in 10..=4 by -3 { yield i }
+  for x in range(3).map(|x| x * 10) { yield x }
+  for i, v in ['x', 'y'].enumerate() { yield "{i}:{v}" }
+}
+println(kinds().collect())
+
+// 2. the array grows and shrinks between resumes
+fn walk(xs) {
+  for x in xs { yield x }
+}
+mut arr = [1, 2, 3]
+let w = walk(arr)
+println(w.next())
+arr.push(4)
+arr.push(5)
+println(w.collect())
+
+// 3. close at each depth: defers, drops, the inner iterator's dispose
+fn inner(tag) {
+  defer { log.push("inner defer {tag}") }
+  let r = res("inner {tag}")
+  mut i = 0
+  while true {
+    yield "{tag}{i}"
+    i += 1
+  }
+}
+fn outer() {
+  defer { log.push('outer defer') }
+  let a = res('a')
+  for x in inner('p') {
+    let b = res('b')
+    defer { log.push('loop defer') }
+    for y in inner('q') {
+      let c = res('c')
+      yield "{x}/{y}"
+    }
+  }
+}
+let o = outer()
+println(o.next())
+println(o.next())
+o.dispose()
+println(log)
+log = []
+
+// closed before the first resume, and after it finished
+let o2 = outer()
+o2.dispose()
+println(log)
+fn one() {
+  defer { log.push('one defer') }
+  yield 1
+}
+let o3 = one()
+println(o3.collect())
+o3.dispose()
+println(log)
+log = []
+
+// 4. a temporary in flight at the yield
+fn add3(a, b, c) { "{a.name}{b.name}{c.name}" }
+fn temps() {
+  let r = add3(res('t1'), if true {
+    yield 1
+    res('t-mid')
+  } else {
+    nil
+  }, res('t2'))
+  yield r
+}
+let t = temps()
+println(t.next())
+t.dispose()
+println(log)
+log = []
+
+// 5. the consumer's defers push between resumes: the frame's marks move
+fn deferring() {
+  defer { log.push('g0') }
+  yield 1
+  {
+    defer { log.push('g1') }
+    yield 2
+    defer { log.push('g2') }
+    yield 3
+  }
+  yield 4
+}
+fn consume() {
+  let g = deferring()
+  defer { log.push('c0') }
+  log.push(g.next())
+  {
+    defer { log.push('c1') }
+    defer { log.push('c2') }
+    log.push(g.next())
+    {
+      defer { log.push('c3') }
+      log.push(g.next())
+    }
+  }
+  log.push(g.next())
+  log.push(g.has_next())
+}
+consume()
+println(log)
+log = []
+
+// 6. a throw out of the body: its defers run, the generator is finished
+fn thrower() {
+  defer { log.push('thrower defer') }
+  let r = res('tr')
+  yield 1
+  throw 'boom'
+}
+let th = thrower()
+println(th.next())
+println(try { th.next() } catch e { "caught {e}" })
+println(th.has_next())
+println(log)
+log = []
+
+// 7. a runtime error inside, with its position
+fn bad() {
+  yield 1
+  let z = 0
+  yield 1 / z
+}
+println(try { bad().collect() } catch e { "{e.kind} {e.line}:{e.column}" })
+
+// 8. a defer that throws while the frame closes
+fn defer_throws() {
+  defer { throw 'from defer' }
+  defer { log.push('ran first') }
+  yield 1
+}
+let dt = defer_throws()
+dt.next()
+println(try { dt.dispose(); 'no throw' } catch e { "caught {e}" })
+println(log)
+log = []
+
+// 9. recursion: a tree walk, generators inside generators
+fn tree(n) {
+  if n > 0 {
+    for x in tree(n - 1) { yield x }
+    yield n
+    for x in tree(n - 1) { yield x }
+  }
+}
+println(tree(4).collect())
+
+// 10. resuming itself
+mut me = nil
+fn selfish() {
+  yield 1
+  yield me.next()
+}
+me = selfish()
+println(me.next())
+println(try { me.next() } catch e { "{e.kind}: {e.message}" })
+
+// 11. captured variables and a closure made in the body
+fn counter() {
+  mut n = 0
+  let bump = fn () { n += 1; n }
+  while n < 3 {
+    yield bump
+  }
+}
+println(counter().map(|f| f()).collect())
+
+// 12. typed parameters, defaults and keywords run in the ramp
+fn params(a: Long, b = a * 2, *, step = 1) {
+  mut i = a
+  while i < b {
+    yield i
+    i += step
+  }
+}
+println(params(2).collect())
+println(params(1, 7, step: 3).collect())
+println(try { params('x') } catch e { e.kind })
+println(try { params() } catch e { e.kind })
+
+// 13. dropped without being closed
+fn dropped() {
+  defer { log.push('dropped defer') }
+  let r = res('dr')
+  yield 1
+  yield 2
+}
+{
+  let d = dropped()
+  d.next()
+}
+println(log)

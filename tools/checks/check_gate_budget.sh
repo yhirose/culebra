@@ -23,6 +23,7 @@ measure() {
     case "$1" in
         tests.cul)        ls tests/*.cul | wc -l ;;
         tests.isolate)    ls tests/isolate/*.cul | wc -l ;;
+        tests.gen_frames) ls tests/gen_frames/*.cul | wc -l ;;
         vm_cases)         ls tools/bench/vm_cases/*.cul | wc -l ;;
         ctest.entries)    grep -c '^ *add_test(' CMakeLists.txt ;;
         docs.blocks)      grep -rhc '^```culebra' docs/*.md docs/*/*.md | paste -sd+ - | bc ;;

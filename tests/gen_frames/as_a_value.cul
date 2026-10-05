@@ -1,0 +1,98 @@
+# What a generator is as a value, with frames: one object, its methods on
+# the meta every generator shares. The lowered class has other answers
+# (its state fields show), so this is held across the frames lanes only.
+
+fn count(n) {
+  mut k = 0
+  while k < n {
+    yield k
+    k += 1
+  }
+}
+
+let g = count(3)
+
+# Its name, and nothing of its own to list.
+println(type_of(g))
+println(g)
+println("{g}")
+println(g.keys())
+println(g.size())
+println(g.has('next'))
+println(g.has('nope'))
+println(g.nope)
+println(type_of(g.next))
+
+# Identity is its only equality: two generators are two places in a body.
+println(g == g)
+println(g == count(3))
+println(g != count(3))
+println([count(3), g].index_of(g))
+
+# Nothing to spread or serialize.
+let o = {...g}
+println(o.keys())
+println(JSON.stringify(count(1)))
+
+# Type checks see an Object that is not a Function.
+fn takes_object(x: Object) {
+  type_of(x)
+}
+fn takes_fn(x: Function) {
+  'fn'
+}
+println(takes_object(g))
+println(try {
+  takes_fn(g)
+} catch e {
+  e.kind
+})
+
+# A property of the program's own is its own; the methods stay.
+g.label = 'mine'
+println(g.label)
+println(g.keys())
+println(g)
+println(g.next())
+
+# An own `next` shadows the shared one, for this generator alone.
+let g2 = count(2)
+g2.next = fn () {
+  42
+}
+println(g2.next())
+println(count(2).next())
+
+# A value has_next() pulled ahead goes when the generator is closed.
+let g3 = count(3)
+println(g3.has_next())
+g3.dispose()
+println("{g3.has_next()} {g3.next()}")
+
+# It does not cross an isolate.
+println(try {
+  Isolate.spawn(|it| it.next(), count(2)).join()
+} catch e {
+  "{e.kind}: {e.message}"
+})
+let (tx, rx) = Channel.new(1)
+println(try {
+  tx.send(count(2))
+} catch e {
+  "{e.kind}: {e.message}"
+})
+
+# Many at once share the one meta.
+mut total = 0
+mut gens = []
+mut i = 0
+while i < 1000 {
+  gens.push(count(i % 5))
+  i += 1
+}
+for it in gens {
+  for v in it {
+    total += v
+  }
+}
+println(total)

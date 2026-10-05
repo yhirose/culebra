@@ -51,12 +51,19 @@
 # scope).
 # 302 since test_drop_self_count.cul (what a drop body does to the references
 # to its own object is counted: one it lets go of is gone, one it stores stays).
-tests.cul 302
+# 303 since test_generator_method_value.cul (a generator's method read off the
+# object and called later, by every route a method value takes).
+tests.cul 303
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
 # Isolate and a Channel).
 tests.isolate 21
+
+# tests/gen_frames/*.cul: the probes the generator-frames lane holds to frozen
+# outputs with CULEBRA_GEN_FRAMES set, on both engines in the landing gate and
+# under the collector's axes and `culebra build` in the full one.
+tests.gen_frames 7
 
 # The curated bytecode cases held to frozen expected outputs, x2 lanes x3 GC
 # axes in the full gate, and built by `culebra build` in the aot lane.

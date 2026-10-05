@@ -330,6 +330,73 @@ static void scenario_collapsed_bodies() {
   disconnect_and_wait();
 }
 
+// Scenario 5: a generator that keeps its frame (CULEBRA_GEN_FRAMES) is a
+// frame of the call stack while its body runs: stopped inside it after a
+// resume, the stack is the body on top of whoever resumed it, each with its
+// own locals.
+static void scenario_generator_frame() {
+  std::string path = write_program(
+      "culebra_dap_gen.cul",
+      "fn count(n) {\n"          // 1
+      "  mut k = 0\n"            // 2
+      "  while k < n {\n"        // 3
+      "    yield k\n"            // 4
+      "    k += 1\n"             // 5  <- breakpoint: the second resume
+      "  }\n"                    // 6
+      "}\n"                      // 7
+      "fn drive() {\n"           // 8
+      "  mut seen = 40\n"        // 9
+      "  for v in count(3) {\n"  // 10
+      "    seen += v\n"          // 11
+      "  }\n"                    // 12
+      "  seen\n"                 // 13
+      "}\n"                      // 14
+      "IO.inspect(drive())\n");  // 15
+  ::setenv("CULEBRA_GEN_FRAMES", "1", 1);
+  spawn_adapter();
+  ::unsetenv("CULEBRA_GEN_FRAMES");
+
+  send("{\"type\":\"request\",\"command\":\"initialize\"}");
+  read_until("\"event\":\"initialized\"");
+  send("{\"type\":\"request\",\"command\":\"launch\",\"arguments\":{"
+       "\"program\":" + S(path) + ",\"stopOnEntry\":false}}");
+  send("{\"type\":\"request\",\"command\":\"setBreakpoints\","
+       "\"arguments\":{\"source\":{\"path\":" + S(path) +
+       "},\"breakpoints\":[{\"line\":5}]}}");
+  send("{\"type\":\"request\",\"command\":\"configurationDone\"}");
+  read_until("\"event\":\"stopped\"");
+
+  send("{\"type\":\"request\",\"command\":\"stackTrace\","
+       "\"arguments\":{\"threadId\":1}}");
+  read_until("\"command\":\"stackTrace\"");
+  must_contain("\"name\":\"count\",\"line\":5");
+  // The resumer is at the last statement it ran: a `for`'s advance is not a
+  // statement boundary of its own.
+  must_contain("\"name\":\"drive\",\"line\":11");
+  must_contain("\"name\":\"main\",\"line\":15");
+
+  // The body's own local, in the frame it was restored to.
+  send("{\"type\":\"request\",\"command\":\"evaluate\","
+       "\"arguments\":{\"expression\":\"k + n\",\"frameId\":1,"
+       "\"context\":\"watch\"}}");
+  read_until("\"command\":\"evaluate\"");
+  must_contain("\"result\":\"3\"");
+  // And the resumer's, one frame out.
+  send("{\"type\":\"request\",\"command\":\"evaluate\","
+       "\"arguments\":{\"expression\":\"seen + 2\",\"frameId\":2,"
+       "\"context\":\"watch\"}}");
+  read_until("\"result\":\"42\"");
+
+  send("{\"type\":\"request\",\"command\":\"setBreakpoints\","
+       "\"arguments\":{\"source\":{\"path\":" + S(path) +
+       "},\"breakpoints\":[]}}");
+  send("{\"type\":\"request\",\"command\":\"continue\","
+       "\"arguments\":{\"threadId\":1}}");
+  read_until("\"event\":\"terminated\"");
+  must_contain("43");  // 40 + 0 + 1 + 2
+  disconnect_and_wait();
+}
+
 int main(int argc, char** argv) {
   if (argc < 2) {
     std::fprintf(stderr, "usage: dap_test <culebra>\n");
@@ -341,6 +408,7 @@ int main(int argc, char** argv) {
   scenario_call_stack();
   scenario_conditional_bp();
   scenario_collapsed_bodies();
+  scenario_generator_frame();
   std::printf("dap_test OK (%s)\n", g_engine);
   return 0;
 }

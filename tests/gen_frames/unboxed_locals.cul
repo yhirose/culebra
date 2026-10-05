@@ -1,0 +1,51 @@
+// An unboxed @value local (a run of scalar registers) across a yield, and a
+// typed Float accumulator carried round a loop.
+
+@value
+class Vec2 {
+  x: Float
+  y: Float
+
+  new(x: Long | Float, y: Long | Float) {
+    self.x = to_float(x)
+    self.y = to_float(y)
+  }
+
+  __add__(o) {
+    Vec2.new(self.x + o.x, self.y + o.y)
+  }
+
+  __mul__(s) {
+    Vec2.new(self.x * s, self.y * s)
+  }
+}
+
+let DT = 1.0 / 60.0
+let G = Vec2.new(0, -9.8)
+
+fn fall(steps) {
+  let mut p = Vec2.new(0, 100)
+  let mut v = Vec2.new(12, 0)
+  for i in 0..steps {
+    v += G * DT
+    p += v * DT
+    if i % 100 == 0 {
+      yield p
+    }
+  }
+  yield p
+}
+for p in fall(600) {
+  println("{Math.round(p.x)} {Math.round(p.y)}")
+}
+
+fn mean(xs) {
+  mut sum: Float = 0.0
+  mut n: Long = 0
+  for x in xs {
+    sum += x
+    n += 1
+    yield sum / n
+  }
+}
+println(mean([1.0, 2.0, 6.0]).collect())

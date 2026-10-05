@@ -1,0 +1,11 @@
+param: built>0=true closed_before_gc=0 closed=100 dropped=100 kept=0
+unstarted: built>0=true closed_before_gc=0 closed=0 dropped=100 kept=0
+cell: built>0=true closed_before_gc=0 closed=100 dropped=100 kept=0
+forin: built>0=true closed_before_gc=0 closed=100 dropped=100 kept=0
+defer: built>0=true closed_before_gc=0 closed=100 dropped=100 kept=0
+nested: built>0=true closed_before_gc=0 closed=200 dropped=100 kept=0
+lookahead: built>0=true closed_before_gc=0 closed=100 dropped=100 kept=0
+scoped: closed_at_exit=100 closed=100 dropped=100 kept=0
+live: next=8 closed=0
+[2, 3, 4]
+collects: closed=1

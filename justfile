@@ -1505,6 +1505,17 @@ _run-tests BACKEND:
         JOBS="$JOBS" {{nice_cmd}} python3 tools/checks/lowering_diff.py "$BIN"
     }
 
+    # Generators that keep their frame, behind CULEBRA_GEN_FRAMES: every other
+    # phase runs the default, in which a generator is lowered to a state
+    # class, so this is the one place the flag is set. `dev` runs the probes
+    # (tests/gen_frames, frozen outputs) on both engines and the corpus's
+    # generator files; `full` adds what that leaves of them on --jit, the
+    # collector's axes and the probes through `culebra build`
+    # (tools/checks/gen_frames_lane.sh).
+    run_gen_frames() {
+        JOBS="$JOBS" {{nice_cmd}} bash tools/checks/gen_frames_lane.sh "$BIN" "$1" || exit 1
+    }
+
     # The compiler resolves every name as resolve.h (the scope rules' one
     # statement) does: the corpus and a generated grid of scope shapes,
     # compiled with the check on, against a list of the known differences
@@ -1573,6 +1584,8 @@ _run-tests BACKEND:
       "run_diff_vm_jit full|vm/jit symmetry (every test file)|binary|test|light|-|116"
       "run_vm_cases gc|vm_cases (frozen expected, + the two GC axes)|binary|test|light|-|62"
       "run_codegen_backends|codegen backends (-O0, fast vs --vm)|binary|dev,test|light|-|24"
+      "run_gen_frames dev|generator frames (CULEBRA_GEN_FRAMES: probes == frozen on both engines, generator files)|binary|dev,test|light|-|15"
+      "run_gen_frames full|generator frames (the other generator files on --jit, the GC axes, the probes built)|binary|test|gc|heavy|79"
       "run_scope_agreement|scope agreement (the compiler resolves names as resolve.h does)|binary|test|light|-|15"
       "run_lowering_diff|lowering diff (a statement in a fn, a generator and an effect body)|binary|test|light|-|65"
       "run_difftest|difftest (generated corpus)|binary|test|diff|heavy|143"

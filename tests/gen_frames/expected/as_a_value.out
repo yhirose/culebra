@@ -1,0 +1,28 @@
+Generator
+Generator {}
+Generator {}
+[]
+0
+true
+false
+nil
+Function
+true
+false
+true
+1
+[]
+{}
+Generator
+TypeError
+mine
+['label']
+Generator {mut label: 'mine'}
+0
+42
+0
+true
+false nil
+SendError: Isolate.spawn: a generator is not Sendable
+SendError: a generator is not Sendable
+2000

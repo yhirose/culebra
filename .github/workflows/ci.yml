@@ -202,7 +202,8 @@ jobs:
           # Split from ci-leak because the four together were 1007s and the
           # slowest lane decides when build-ubuntu's chain finishes; the two
           # halves are 285s and 258s of local budget, which is as even as the
-          # phases divide.
+          # phases divide. While CULEBRA_GEN_FRAMES is a flag this shard also
+          # carries the generator-frames lane's collector axes (79s).
           - lane: ci-gc
           # per-test AOT builds: `culebra build` shells out to the stock
           # `cc`/`c++` (never $CC/$CXX or LLVM tools — LLVM is statically
@@ -1763,6 +1764,12 @@ jobs:
       # registration the clang/lld switch dropped reached master. ~80 s.
       - name: Test — the suite, against the known-failure list
         run: tools/checks/check_suite_on_windows.sh ./build-win-aot/culebra.exe
+      # Generators that keep their frame are behind CULEBRA_GEN_FRAMES, which
+      # the suite above does not set: the probes, on the executor and --jit,
+      # against the outputs frozen on macOS. The corpus files and the
+      # collector's axes run in the Linux and macOS gates.
+      - name: Test — generator frames (CULEBRA_GEN_FRAMES, vm / JIT)
+        run: tools/checks/gen_frames_lane.sh ./build-win-aot/culebra.exe probes
       - name: Test — wrap fixture (vm / JIT / AOT)
         run: |
           misc/run_all_backends.sh ./build-win-aot/culebra.exe \

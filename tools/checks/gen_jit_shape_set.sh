@@ -17,6 +17,13 @@ sed -n '/static constexpr const char\* kNames\[\] = {/,/};/p' include/vm/vm.h \
 
 grep -v '^#' tools/checks/codegen_sensitive.txt | grep . > "$work/seeds"
 CULEBRA="$BIN" bash tools/checks/dump_ops.sh tests/*.cul > "$work/ops_by_file" || exit 1
+# What only the generator-frames lane lowers (check_jit_shape_set.sh counts its
+# probes as covered) is not this set's to cover, nor unreached.
+CULEBRA="$BIN" CULEBRA_GEN_FRAMES=1 bash tools/checks/dump_ops.sh tests/gen_frames/*.cul \
+    | tr ' ' '\n' | grep -E '^[A-Z][A-Za-z]+$' | sort -u > "$work/frames_ops"
+tr ' ' '\n' < "$work/ops_by_file" | grep -E '^[A-Z][A-Za-z]+$' | sort -u > "$work/corpus_ops"
+comm -23 "$work/frames_ops" "$work/corpus_ops" > "$work/frames_only"
+comm -23 "$work/ops" "$work/frames_only" > "$work/ops.set" && mv "$work/ops.set" "$work/ops"
 # One record per file, or the cover is computed from a corpus with holes in it —
 # and a file that went missing takes whatever op only it reaches with it.
 want=$(ls tests/*.cul | wc -l | tr -d ' ')

@@ -1,0 +1,186 @@
+// Cycles through a suspended generator, abandoned: each shape built 100
+// times, then dropped where no scope exit resolves it, so only a collection
+// can. Per shape: how many generators closed (their defer ran), how many
+// resources dropped, and how many refcounted objects the heap kept.
+
+mut closed = 0
+mut dropped = 0
+mut keep = []
+
+fn res(k) {
+  {id: k, pad: [k, k, k], drop: fn () { dropped += 1 }}
+}
+
+// A: suspended at a yield, the cycle through a parameter.
+fn g_param(box) {
+  defer { closed += 1 }
+  mut i = 0
+  while true {
+    yield box.id + i
+    i += 1
+  }
+}
+// C: through a local a closure made in the body captured (a cell slot).
+fn g_cell(box) {
+  defer { closed += 1 }
+  mut held = box
+  let peek = fn () { held.id }
+  while true {
+    yield peek()
+    held = box
+  }
+}
+// D: suspended inside a for-in, the cycle through the iterable.
+fn g_forin(box) {
+  defer { closed += 1 }
+  for x in [box, box] {
+    let inner = {of: x}
+    yield inner.of.id
+  }
+}
+// F: through a pending defer of an inner scope.
+fn g_defer(box) {
+  defer { closed += 1 }
+  {
+    let mine = [box]
+    defer { mine.push(0) }
+    yield 1
+    yield mine.size()
+  }
+}
+// G: an inner generator the outer one is suspended over.
+fn g_inner(box) {
+  defer { closed += 1 }
+  yield box
+  yield box
+}
+fn g_outer(box) {
+  defer { closed += 1 }
+  for b in g_inner(box) {
+    yield b.id
+  }
+}
+// E: the value has_next() pulled ahead is the cycle.
+fn g_la(box) {
+  defer { closed += 1 }
+  yield box
+  yield box
+}
+
+fn build(shape, n) {
+  for k in 0..n {
+    let box = res(k)
+    match shape {
+      'param' => {
+        let g = g_param(box)
+        g.next()
+        box.g = g
+      },
+      'unstarted' => {
+        box.g = g_param(box)
+      },
+      'cell' => {
+        let g = g_cell(box)
+        g.next()
+        box.g = g
+      },
+      'forin' => {
+        let g = g_forin(box)
+        g.next()
+        box.g = g
+      },
+      'defer' => {
+        let g = g_defer(box)
+        g.next()
+        box.g = g
+      },
+      'nested' => {
+        let g = g_outer(box)
+        g.next()
+        box.g = g
+      },
+      'lookahead' => {
+        let g = g_la(box)
+        g.has_next()
+        box.g = g
+      },
+      _ => nil,
+    }
+    keep.push(box)
+  }
+  nil
+}
+
+fn run(shape) {
+  // Once ahead of the count: whatever a shape sets up the first time it runs
+  // (the lowered for-in keeps two objects) is not the cycle's.
+  build(shape, 1)
+  keep = []
+  GC.stat()
+  closed = 0
+  dropped = 0
+  let before = GC.stat().rc_objects
+  build(shape, 100)
+  let held = GC.stat().rc_objects - before
+  keep = []
+  let early = closed
+  let after = GC.stat().rc_objects - before
+  println("{shape}: built>0={held > 0} closed_before_gc={early} closed={closed} dropped={dropped} kept={after}")
+}
+
+run('param')
+run('unstarted')
+run('cell')
+run('forin')
+run('defer')
+run('nested')
+run('lookahead')
+
+// The same cycle abandoned inside a scope: the scope's exit resolves it.
+fn scoped(n) {
+  for k in 0..n {
+    let box = res(k)
+    let g = g_param(box)
+    g.next()
+    box.g = g
+  }
+  nil
+}
+closed = 0
+dropped = 0
+let b2 = GC.stat().rc_objects
+scoped(100)
+let early2 = closed
+let a2 = GC.stat().rc_objects - b2
+println("scoped: closed_at_exit={early2} closed={closed} dropped={dropped} kept={a2}")
+
+// A live generator is not collected: suspended, and still owed its values.
+fn live() {
+  let box = res(7)
+  let g = g_param(box)
+  g.next()
+  box.g = g
+  GC.stat()
+  GC.stat()
+  let v = g.next()
+  println("live: next={v} closed={closed - 100}")
+}
+live()
+
+// A collection from inside a running generator keeps its own frame.
+fn g_collects(box) {
+  defer { closed += 1 }
+  mut acc = []
+  for i in 0..3 {
+    let fresh = res(100 + i)
+    acc.push(fresh)
+    GC.stat()
+    yield acc.size() + box.id
+  }
+}
+closed = 0
+let gc_box = res(1)
+let gg = g_collects(gc_box)
+gc_box.g = gg
+println(gg.collect())
+println("collects: closed={closed}")

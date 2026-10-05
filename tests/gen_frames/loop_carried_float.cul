@@ -1,0 +1,17 @@
+// A Float carried round the loop a yield sits in: the register is read
+// back from the frame at every resume.
+
+fn count(n) {
+  mut i = 0
+  mut acc = 0.5
+  while i < n {
+    acc = acc * 1.0001 + 0.25
+    yield i
+    i += 1
+  }
+}
+mut s = 0
+for x in count(10) {
+  s += x
+}
+println(s)

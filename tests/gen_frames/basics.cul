@@ -1,0 +1,53 @@
+// The shapes a generator is written in: a counted loop, a for-in with a
+// defer per turn, an early dispose, an endless one under take(), one
+// generator walked inside another.
+
+fn count(n) {
+  mut i = 0
+  while i < n {
+    yield i
+    i += 1
+  }
+}
+
+for x in count(3) {
+  println(x)
+}
+
+fn pairs(xs) {
+  for x in xs {
+    defer { println("defer {x}") }
+    yield x * 2
+  }
+  println("done")
+}
+
+for y in pairs([1, 2, 3]) {
+  println(y)
+}
+
+let g = pairs([10, 20, 30])
+println(g.next())
+g.dispose()
+println("after dispose")
+
+fn fib() {
+  mut a = 0.0
+  mut b = 1.0
+  while true {
+    yield a
+    let t = a + b
+    a = b
+    b = t
+  }
+}
+println(fib().take(10).collect())
+
+fn nested(n) {
+  for i in 0..n {
+    for j in count(i) {
+      yield [i, j]
+    }
+  }
+}
+println(nested(4).collect())

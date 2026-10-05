@@ -766,6 +766,17 @@ enum class Op : uint8_t {
                  // already made as a unit (docs §5.2.1). Emitted by the shape
                  // pass, never by the compiler, for the same reason
                  // MoveRetain is.
+  // Frame-saving generators (CULEBRA_GEN_FRAMES). `c` numbers the chunk's
+  // suspension points from 1: the frame's state while it is suspended there,
+  // and its run in the chunk's stack map (Chunk::gen_owned).
+  GenStart,      // a generator fn's prologue ends here: the frame, parameters
+                 // bound, moves to the heap and the call returns the object
+                 // that resumes it (rt/gen.inc.h). On resume regs[b] says
+                 // whether the generator is being closed, as Yield's does.
+  Yield,         // suspend the frame: regs[a]'s +1 goes to whoever resumed it.
+                 // On resume regs[b] = Bool, true when the generator is being
+                 // closed: the compiler follows it with the frame's exit
+                 // (Compiler::emit_gen_suspend)
 };
 
 struct Insn {
@@ -2792,6 +2803,11 @@ struct Chunk {
   // and the drift was observable: one `C.new()` left the counter at -1, so
   // a method chain after it got one frame more than the other backends.
   bool counts_frame = false;
+  // A generator fn compiled as written (Op::GenStart / Op::Yield).
+  bool is_generator = false;
+  // Its stack map, by suspension point (chunk_gen_owned_table): what a
+  // suspended frame owns, for the collector.
+  std::vector<int32_t> gen_owned;
   // One lexical scope's unwind step. A throw at pc runs, from the innermost
   // scope containing it outward: that scope's pending defers, then its own
   // named slots in reverse declaration order — the interpreter's per-scope
@@ -3083,6 +3099,53 @@ inline int32_t chunk_temp_floor(const Chunk& c, size_t pc) {
     k = cu.parent;
   }
   return 0;
+}
+
+// The slots a generator frame suspended ahead of `pc` owns a reference
+// through, each as `slot * 2 + is_cell`: what a throw at `pc` would release
+// (Exec::unwind) — the statement temporaries in flight, then every open
+// scope's range, innermost first, a slot counted once the way the destructive
+// releases count it. The borrow operand contract is what makes it exact: a
+// register in an open scope's range is nil, a scalar or an owned reference
+// wherever a throw can happen, and a yield is such a place.
+inline std::vector<int32_t> chunk_gen_owned_slots(const Chunk& c, size_t pc) {
+  std::vector<int32_t> out;
+  std::vector<bool> seen(static_cast<size_t>(c.num_slots), false);
+  auto add = [&](int32_t s, bool cell) {
+    if (s < 0 || s >= c.num_slots || seen[static_cast<size_t>(s)]) return;
+    seen[static_cast<size_t>(s)] = true;
+    out.push_back(s * 2 + (cell ? 1 : 0));
+  };
+  for (int32_t t : chunk_temps_at(c, pc)) add(t, false);
+  for (int32_t k = chunk_innermost_cleanup(c, pc); k >= 0;) {
+    const auto& cu = c.cleanups[static_cast<size_t>(k)];
+    for (int32_t s = cu.slot_lo; s < cu.slot_hi; ++s)
+      add(s, chunk_slot_is_cell(c, s, cu.cells_before));
+    k = cu.parent;
+  }
+  return out;
+}
+
+// A generator chunk's stack map (JitGenFrame::owned): the number of
+// suspension points, where each point's run starts (and where the last ends),
+// the runs. Point k is the GenStart / Yield whose `c` operand is k.
+inline std::vector<int32_t> chunk_gen_owned_table(const Chunk& c) {
+  std::vector<std::vector<int32_t>> runs;
+  for (size_t pc = 0; pc < c.code.size(); ++pc) {
+    if (c.code[pc].op != Op::GenStart && c.code[pc].op != Op::Yield) continue;
+    runs.push_back(chunk_gen_owned_slots(c, pc + 1));
+    assert(c.code[pc].c == static_cast<int32_t>(runs.size()));
+  }
+  auto n = static_cast<int32_t>(runs.size());
+  std::vector<int32_t> t{n};
+  int32_t at = n + 2;
+  for (const auto& r : runs) {
+    t.push_back(at);
+    at += static_cast<int32_t>(r.size());
+  }
+  t.push_back(at);
+  for (const auto& r : runs) t.insert(t.end(), r.begin(), r.end());
+  return t;
 }
 
 struct VmProgram;
@@ -4694,6 +4757,10 @@ class Compiler {
       for (Chunk& c : prog.chunks) shape_elide_chunk(c);
       // Last, because every pass above moves pcs.
       for (Chunk& c : prog.chunks) build_pos_index(c);
+      // And what a pass left owning a register is what a suspended frame
+      // owns: a generator chunk's stack map is read off the final tables.
+      for (Chunk& c : prog.chunks)
+        if (c.is_generator) c.gen_owned = chunk_gen_owned_table(c);
       // The postcondition, over what SHIPS rather than over what the fixpoint
       // last looked at. It is also the only thing that hands the four
       // analysis switches an `Op::ReleaseMany` — the shape pass runs after
@@ -5215,6 +5282,7 @@ class Compiler {
   // has_any_defer): `return` and the Halt epilogue run to it, as does the
   // executor / frame pad when a throw escapes every region.
   int32_t frame_defer_mark_ = -1;
+  int32_t gen_points_ = 0;  // GenStart / Yield emitted so far (their `c`)
   // Declared return type of this frame (const index) and the slot holding
   // the position its violation reports; -1 when the function declares none.
   int32_t ret_type_ = -1;
@@ -7068,6 +7136,25 @@ class Compiler {
         compile_expr(ast);  // expression statement; temps swept by the caller
         break;
     }
+  }
+
+  // A generator's suspension point. Closing a suspended generator is a
+  // `return` at the point it is suspended at: the instruction's `b` register
+  // is true on a closing resume, and what follows is the exit a `return`
+  // written there compiles to — the temporaries in flight, every scope's
+  // defers and bindings, the frame's last. One ladder for the three lanes,
+  // and no unwinder in it.
+  void emit_gen_suspend(const peg::Ast& at, Op op, int32_t src) {
+    int32_t closing = alloc_temp(at);
+    // Its place in the chunk's stack map (Chunk::gen_owned), counted from 1.
+    emit(op, src, closing, ++gen_points_);
+    size_t go_on = emit(Op::JumpIfFalse, closing);
+    for (int32_t t : stmt_temps_)
+      if (t != closing) emit(Op::Release, t);
+    leave_scopes(0, 0, frame_defer_mark_);
+    emit(Op::LoadConst, closing, kconst({TAG_NIL, 0}));
+    emit(Op::Ret, closing);
+    patch_to_here(go_on);
   }
 
   // The declared return type's check, at every exit the frame has: ahead of
@@ -9233,6 +9320,12 @@ class Compiler {
       // JIT's "the body BLOCK is this frame's scope"): its locals belong to
       // the frame, so they are released after the frame's defers run, not
       // before — and the unwind ladder covers them.
+      // A generator's body runs when it is first resumed.
+      if (culebra::gen_frames_enabled() && ast.tag == "MULTIFN_DECL"_ &&
+          culebra::fn_body_has_yield(body)) {
+        fc.chunk_.is_generator = true;
+        fc.emit_gen_suspend(ast, Op::GenStart, 0);
+      }
       fc.predeclare_forward_refs(body);
       fc.compile_body_into(body, rv);
     }
@@ -14375,6 +14468,13 @@ class Compiler {
         return compile_try(ast);
       case "MATCH"_:
         return compile_match(ast);
+      case "YIELD"_: {  // the frame suspends, its value moved out
+        int32_t src = owned_src(ast, compile_expr(*ast.nodes[0]));
+        emit_gen_suspend(ast, Op::Yield, src);
+        int32_t t = alloc_temp(ast);
+        emit(Op::LoadConst, t, kconst({TAG_NIL, 0}));
+        return {t, true};
+      }
       case "THROW"_: {
         int32_t src = owned_src(ast, compile_expr(*ast.nodes[0]));
         emit(Op::Throw, src);
@@ -14484,9 +14584,9 @@ inline std::string dump(const Chunk& c) {
       "Safepoint", "DropSuppress",
       "BArity",    "LazyNsReg", "FnHandle",  "OwnedMark", "OwnedExit",
       "ReplCell",  "ReplBind",  "DbgStmt",
-      "Halt",      "MoveRetain", "ReleaseMany"};
-  static_assert(std::size(kNames) ==
-                static_cast<size_t>(Op::ReleaseMany) + 1);
+      "Halt",      "MoveRetain", "ReleaseMany",
+      "GenStart",  "Yield"};
+  static_assert(std::size(kNames) == static_cast<size_t>(Op::Yield) + 1);
   std::string out;
   out += culebra::format("; slots: {}\n", c.num_slots);
   if (!c.capture_src_slots.empty()) {
@@ -14653,7 +14753,100 @@ struct Exec {
     // run_resolved's Drain does).
     int32_t ret_reg, run_base, run_n;
     size_t mark_seg, mark_used;  // the VmStack position to pop back to
+    bool yielded = false;        // dispatch left through Op::Yield
   };
+
+  // A debug session keeps the frame stack: the entry goes up as soon as the
+  // window exists and comes down on every exit, throw included.
+  struct DbgFrameGuard {
+    bool on;
+    DbgFrameGuard(bool on, const VmProgram& p, const Chunk& c, JitValue* regs)
+        : on(on) {
+      if (on) dbg_state().frames.push_back({&p, &c, regs});
+    }
+    ~DbgFrameGuard() {
+      if (on) dbg_state().frames.pop_back();
+    }
+  };
+
+  // The defer marks of the scopes open at `pc` move with the stack's height.
+  static void gen_rebase_defers(const Chunk& c, JitValue* regs, size_t pc,
+                                int64_t delta) {
+    if (delta == 0) return;
+    for (int32_t k = chunk_innermost_cleanup(c, pc); k >= 0;) {
+      const auto& cu = c.cleanups[static_cast<size_t>(k)];
+      if (cu.defer_mark_slot >= 0 && regs[cu.defer_mark_slot].tag == TAG_LONG)
+        regs[cu.defer_mark_slot].data += delta;
+      k = cu.parent;
+    }
+  }
+
+  // Put `g`'s frame back on the machine stack (`regs`, `marks`) and its
+  // defers back on the defer stack; the frame record to run it from.
+  static VmFrame gen_restore(JitGenFrame& g, const Chunk& c, JitValue* regs,
+                             int64_t* marks, bool closing, int64_t depth,
+                             bool tracking) {
+    std::memcpy(regs, g.regs.data(), g.regs.size() * sizeof(JitValue));
+    // What the suspension point reads first (Compiler::emit_gen_suspend).
+    regs[c.code[g.pc - 1].b] = JitValue{TAG_BOOL, closing ? 1 : 0};
+    std::memcpy(marks, g.marks.data(), g.marks.size() * sizeof(int64_t));
+    std::fill(g.regs.begin(), g.regs.end(), JitValue{TAG_NIL, 0});
+    gen_rebase_defers(c, regs, g.pc, _jit_gen_defers_back(g));
+    for (const auto& cu : c.cleanups)
+      if (cu.parent < 0 && cu.site_slot >= 0)
+        culebra_runtime_gen_resnap_site(&regs[cu.site_slot]);
+    return VmFrame{.c = &c,
+                   .regs = regs,
+                   .marks = marks,
+                   .cls = g.cls,
+                   .args = nullptr,
+                   .n_args = 0,
+                   .chunk_idx = g.chunk,
+                   .ip = c.code.data() + g.pc,
+                   .frame_depth = depth,
+                   .parent = nullptr,
+                   .stack = tracking ? nullptr : &vm_stack()};
+  }
+
+  // JitGenFrame::resume for a frame this executor made: the registers go to
+  // a window on the machine stack, dispatch runs from the saved pc, and at a
+  // yield they go back.
+  static bool gen_resume(JitGenFrame& g, JitValue& out, bool closing) {
+    const VmProgram& p = *static_cast<const VmProgram*>(g.prog);
+    const Chunk& c = p.chunks[static_cast<size_t>(g.chunk)];
+    JitValue regs[c.num_slots > 0 ? c.num_slots : 1];
+    int64_t marks[c.owned_depths > 0 ? c.owned_depths : 1];
+    // The depth first: a RecursionError here leaves the frame suspended
+    // and whole, nothing of it having moved.
+    int64_t depth = c.counts_frame ? culebra_runtime_recursion_enter() : -1;
+    JitGenActive active(g);  // a throw out of the body leaves the frame Done
+    const bool tracking = dbg_state().tracking;
+    VmFrame base = gen_restore(g, c, regs, marks, closing, depth, tracking);
+    // The window is a frame of the call stack again, on top of its resumer.
+    DbgFrameGuard dbg_frame{tracking, p, c, regs};
+    VmFrame* top = &base;
+    JitValue rv;
+    for (;;) {
+      try {
+        rv = dispatch(p, top);
+        break;
+      } catch (...) {
+        if (!unwind_frames(top, &base)) throw;
+      }
+    }
+    if (!base.yielded) {
+      _culebra_value_release_impl(static_cast<int8_t>(rv.tag), rv.data);
+      return false;
+    }
+    std::memcpy(g.regs.data(), regs, g.regs.size() * sizeof(JitValue));
+    std::memcpy(g.marks.data(), marks, g.marks.size() * sizeof(int64_t));
+    g.pc = static_cast<size_t>(base.ip - c.code.data());
+    g.jit.state = c.code[g.pc - 1].c;
+    _jit_gen_defers_away(g);
+    active.leave(JitGenFrame::Suspended);
+    out = rv;
+    return true;
+  }
 
   // The register windows of inline frames, per Runtime — the frames belong
   // to the heap that holds their values, and a Runtime's teardown finds its
@@ -14874,18 +15067,6 @@ struct Exec {
     // num_slots.
     JitValue regs[c.num_slots > 0 ? c.num_slots : 1];
     std::memset(regs, 0, sizeof(JitValue) * static_cast<size_t>(c.num_slots));
-    // A debug session keeps the frame stack: the entry goes up as soon as
-    // the window exists and comes down on every exit, throw included.
-    struct DbgFrameGuard {
-      bool on;
-      DbgFrameGuard(bool on, const VmProgram& p, const Chunk& c, JitValue* regs)
-          : on(on) {
-        if (on) dbg_state().frames.push_back({&p, &c, regs});
-      }
-      ~DbgFrameGuard() {
-        if (on) dbg_state().frames.pop_back();
-      }
-    };
     const bool tracking = dbg_state().tracking;
     DbgFrameGuard dbg_frame{tracking, p, c, regs};
     if (chunk_idx != 0)
@@ -15505,10 +15686,9 @@ struct Exec {
         &&L_NsCall, &&L_Safepoint, &&L_DropSuppress, &&L_BArity,
         &&L_LazyNsReg, &&L_FnHandle, &&L_OwnedMark, &&L_OwnedExit,
         &&L_ReplCell, &&L_ReplBind, &&L_DbgStmt, &&L_Halt, &&L_MoveRetain,
-        &&L_ReleaseMany,
+        &&L_ReleaseMany, &&L_GenStart, &&L_Yield,
     };
-    static_assert(std::size(kLabels) ==
-                  static_cast<size_t>(Op::ReleaseMany) + 1);
+    static_assert(std::size(kLabels) == static_cast<size_t>(Op::Yield) + 1);
     // The wasm safepoint rides the dispatch, which is the only place a
     // deferred collect runs (rt_gc.h kDeferToSafepoint). Between
     // instructions every live value of every frame sits in a register
@@ -17953,6 +18133,41 @@ struct Exec {
         do {
           [[maybe_unused]] const Insn& in = *ip;
           return JitValue{TAG_NIL, 0};
+        } while (0);
+        VM_NEXT();
+      L_GenStart:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
+          JitGenFrame* g =
+              _jit_gen_frame_new(f->cls, c.gen_owned.data(), &gen_resume);
+          g->regs.assign(regs, regs + c.num_slots);
+          g->marks.assign(f->marks, f->marks + c.owned_depths);
+          g->defer_base = culebra_runtime_defer_mark();
+          g->jit.state = in.c;
+          g->prog = &p;
+          g->chunk = f->chunk_idx;
+          g->pc = VM_PC + 1;
+          // The values moved: nothing of them is this window's any more,
+          // and the frame object is what the collector reads them through.
+          std::memset(regs, 0,
+                      static_cast<size_t>(c.num_slots) * sizeof(JitValue));
+          JitValue rv = _jit_gen_iterator(g);
+          if (c.counts_frame) culebra_runtime_recursion_leave();
+          if (!f->parent) return rv;
+          top = f = leave_inline(f, rv);
+          goto reenter;
+        } while (0);
+        VM_NEXT();
+      L_Yield:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
+          JitValue rv = regs[in.a];
+          regs[in.a] = JitValue{TAG_NIL, 0};
+          ++ip;
+          f->ip = ip;
+          f->yielded = true;
+          if (c.counts_frame) culebra_runtime_recursion_leave();
+          return rv;
         } while (0);
         VM_NEXT();
 #undef VM_PC

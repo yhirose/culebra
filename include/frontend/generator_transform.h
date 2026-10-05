@@ -142,6 +142,16 @@ inline void reject_self_in_lowered_body(const peg::Ast& body,
   }
 }
 
+// With CULEBRA_GEN_FRAMES set a generator fn is not lowered to a state class:
+// the compiler takes it as it is written and each engine suspends its frame
+// at a `yield` (vm.h Op::GenStart / Op::Yield, rt/gen.inc.h). Effect bodies
+// are lowered either way. Read once: the stdlib preamble baked into the
+// binary was compiled without it, so a library generator stays lowered.
+inline bool gen_frames_enabled() {
+  static const bool on = std::getenv("CULEBRA_GEN_FRAMES") != nullptr;
+  return on;
+}
+
 // First YIELD or YIELD_FROM anywhere in the tree, crossing fn boundaries.
 // Run after the transform pass, when every generator body has been lowered:
 // any yield still present belongs to no `fn name(...)` declaration (a class
@@ -149,10 +159,20 @@ inline void reject_self_in_lowered_body(const peg::Ast& body,
 // otherwise run as a plain statement with backend-dependent results.
 // The tag is enough: YIELD / YIELD_FROM are never collapsed away
 // (ast_optimizer_keep_rules), and a parent collapsing onto one takes its tag.
-inline const peg::Ast* find_orphan_yield(const peg::Ast& node) {
-  if (is_yield(node.tag)) return &node;
+// Under gen_frames_enabled a named fn's own yields are not orphans: they
+// stay in the tree for the compiler.
+inline const peg::Ast* find_orphan_yield(const peg::Ast& node,
+                                         bool in_named_fn = false) {
+  using namespace peg::udl;
+  if (is_yield(node.tag)) return in_named_fn ? nullptr : &node;
+  if (gen_frames_enabled()) {
+    if (node.tag == "MULTIFN_DECL"_) in_named_fn = true;
+    else if (node.tag == "FUNCTION"_ || node.tag == "LAMBDA"_ ||
+             node.tag == "METHOD"_ || node.tag == "DEFER"_)
+      in_named_fn = false;
+  }
   for (auto& c : node.nodes) {
-    if (auto* y = find_orphan_yield(*c)) return y;
+    if (auto* y = find_orphan_yield(*c, in_named_fn)) return y;
   }
   return nullptr;
 }
@@ -1983,6 +2003,41 @@ inline std::shared_ptr<peg::Ast> transform_one_generator_fn(
   // value is one binding away.
   reject_self_in_lowered_body(*ast->nodes.back(), src,
                               "a generator body (a function that uses yield)");
+
+  // A generator that keeps its frame is not lowered. `yield from e` alone is
+  // rewritten, to the loop it means, since the compiler has no form for it.
+  if (gen_frames_enabled()) {
+    std::vector<SourceEdit> edits;
+    int n = 0;
+    std::function<void(const peg::Ast&)> walk = [&](const peg::Ast& node) {
+      if (is_fn_boundary(node.tag)) return;
+      if (node.tag == "YIELD_FROM"_ && !node.nodes.empty()) {
+        const auto& e = *node.nodes[0];
+        size_t at = written_at(node, src);
+        auto v = std::format("_g_yf{}", n++);
+        edits.push_back({at, e.position - at, "for " + v + " in ("});
+        edits.push_back({e.position + e.length, 0, ") { yield " + v + " }"});
+        return;
+      }
+      for (auto& c : node.nodes) walk(*c);
+    };
+    walk(*ast->nodes.back());
+    if (edits.empty()) return ast;
+    auto [begin, end] = block_inner_span(*ast->nodes.back(), src);
+    auto synth = std::make_shared<std::string>(std::format(
+        "fn __gen_wrapper__() {{\n{}\n}}\n",
+        anchored(splice_source(src, begin, end, std::move(edits)))));
+    auto label = next_fragment_label("genf");
+    auto wrapper = parse_wrapper_fn(synth, label.c_str());
+    if (!wrapper)
+      throw CulebraError("InternalError",
+                         "frame generator: `yield from` rewrite did not parse",
+                         0, 0);
+    ast->nodes.back() =
+        reposition_fragment(wrapper->nodes.back(), *synth,
+                            static_cast<int64_t>(ast->nodes[i]->line), label);
+    return ast;
+  }
 
   // Annotate every body line with a `#@culebra:<original-line>` provenance marker
   // before the CPS state emission. Markers are comments, so the emitted

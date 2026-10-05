@@ -292,7 +292,54 @@ struct Lowering {
     }
     // Filled on first use, per chunk (see param_meta_global).
     std::vector<llvm::Constant*> metas(p.chunks.size(), nullptr);
-    for (size_t i = 0; i < p.chunks.size(); ++i) lower_chunk(j, p, i, fns, metas);
+    // A generator chunk compiled as written (CULEBRA_GEN_FRAMES) is two
+    // functions. The JitFn its closure names is a ramp into the runtime
+    // (culebra_runtime_gen_ramp), which puts the frame on the heap and calls
+    // the body; the body is the chunk, its registers in that frame, entered
+    // again at each resume.
+    for (size_t i = 0; i < p.chunks.size(); ++i) {
+      const Chunk& ch = p.chunks[i];
+      if (!ch.is_generator) {
+        lower_chunk(j, p, i, fns, metas);
+        continue;
+      }
+      auto& b = j.builder_;
+      auto i64Ty = b.getInt64Ty();
+      auto params = jitFnTy->params().vec();
+      params.push_back(ptrTy);
+      auto* body = Function::Create(
+          FunctionType::get(b.getVoidTy(), params, false),
+          Function::InternalLinkage, std::format("__vm_gen_{}", i), j.module_);
+      int64_t n_scratch = lower_chunk(j, p, i, fns, metas, body);
+      b.SetInsertPoint(BasicBlock::Create(j.ctx_, "entry", fns[i]));
+      std::vector<llvm::Value*> args;
+      for (auto& a : fns[i]->args()) args.push_back(&a);
+      // What the frame owns at each suspension point, for the collector:
+      // the chunk is not there to ask at run time.
+      auto* tableInit = llvm::ConstantDataArray::get(
+          j.ctx_,
+          llvm::ArrayRef<int32_t>(ch.gen_owned.data(), ch.gen_owned.size()));
+      auto* tableGV = new llvm::GlobalVariable(
+          *j.module_, tableInit->getType(), /*isConstant=*/true,
+          llvm::GlobalValue::PrivateLinkage, tableInit,
+          std::format("__vm_gen_owned_{}", i));
+      args.insert(args.end(),
+                  {body, b.getInt64(ch.num_slots), b.getInt64(ch.owned_depths),
+                   b.getInt64(n_scratch), b.getInt64(ch.counts_frame),
+                   tableGV});
+      auto rampParams = jitFnTy->params().vec();
+      rampParams.insert(rampParams.end(),
+                        {ptrTy, i64Ty, i64Ty, i64Ty, i64Ty, ptrTy});
+      b.CreateCall(j.module_->getOrInsertFunction(
+                       rt::gen_ramp,
+                       FunctionType::get(b.getVoidTy(), rampParams, false)),
+                   args);
+      b.CreateRetVoid();
+      std::string err;
+      raw_string_ostream os(err);
+      if (verifyFunction(*body, &os))
+        throw std::runtime_error("vm: lowered IR failed verification: " + err);
+    }
     if (!baked.empty()) {
       auto& entryBB = fns[0]->getEntryBlock();
       IRBuilder<> b(&entryBB, entryBB.begin());
@@ -313,12 +360,17 @@ struct Lowering {
     return fns[0];
   }
 
-  static void lower_chunk(JIT& j, const VmProgram& p, size_t chunk_idx,
-                          const std::vector<llvm::Function*>& fns,
-                          std::vector<llvm::Constant*>& metas) {
+  // `gen_body` is a generator chunk's body function (lower_program): the
+  // chunk is lowered into it rather than into the JitFn. Returns how many
+  // words of native scratch its frame needs.
+  static int64_t lower_chunk(JIT& j, const VmProgram& p, size_t chunk_idx,
+                             const std::vector<llvm::Function*>& fns,
+                             std::vector<llvm::Constant*>& metas,
+                             llvm::Function* gen_body = nullptr) {
     using namespace llvm;
     const Chunk& c = p.chunks[chunk_idx];
-    auto* fn = fns[chunk_idx];
+    auto* fn = gen_body ? gen_body : fns[chunk_idx];
+    const bool gen = gen_body != nullptr;
     auto& b = j.builder_;
     auto i64Ty = b.getInt64Ty();
     auto ptrTy = llvm::PointerType::get(j.ctx_, 0);
@@ -340,8 +392,25 @@ struct Lowering {
     // chunk.
     j.current_thread_state_ = nullptr;
     j.current_owned_hot_ = nullptr;
+    // A generator body's frame (JitGenRegs), read by offset: its registers
+    // and owned marks are the frame's own memory, not allocas, so nothing is
+    // copied at a suspension.
+    llvm::Value* genArg = gen ? fn->getArg(6) : nullptr;
+    auto gen_field = [&](size_t off) {
+      return b.CreateConstInBoundsGEP1_64(b.getInt8Ty(), genArg, off);
+    };
+    llvm::Value* genRegs = nullptr;
+    llvm::Value* genScratch = nullptr;
+    int64_t n_scratch = 0;
     llvm::Value* markArr = nullptr;
-    if (c.owned_depths > 0) {
+    if (gen) {
+      genRegs = b.CreateLoad(ptrTy, gen_field(offsetof(JitGenRegs, regs)),
+                             "gen.regs");
+      genScratch = b.CreateLoad(
+          ptrTy, gen_field(offsetof(JitGenRegs, scratch)), "gen.scratch");
+      markArr = b.CreateLoad(ptrTy, gen_field(offsetof(JitGenRegs, marks)),
+                             "gen.marks");
+    } else if (c.owned_depths > 0) {
       // The frame's mark array, the executor's `marks` — entry-block, so a
       // loop body's scope entry does not grow the stack every turn.
       markArr = b.CreateAlloca(i64Ty, b.getInt64(c.owned_depths), "owned.marks");
@@ -374,8 +443,24 @@ struct Lowering {
     // wins over the using-directive.)
     std::vector<llvm::Value*> slots(c.num_slots);
     for (int32_t s = 0; s < c.num_slots; ++s) {
+      if (gen) {  // the frame's own, nil from gen_ramp
+        slots[s] = b.CreateConstInBoundsGEP1_64(j.valueType_, genRegs, s,
+                                                c.slot_names[s]);
+        continue;
+      }
       slots[s] = b.CreateAlloca(j.valueType_, nullptr, c.slot_names[s]);
       b.CreateStore(j.make_nil(), slots[s]);
+    }
+    // A generator body is entered at its prologue once and at a resume point
+    // every time after: the cases are added as the walk meets them.
+    llvm::SwitchInst* genSwitch = nullptr;
+    if (gen) {
+      auto* freshBB = BasicBlock::Create(j.ctx_, "gen.fresh", fn);
+      genSwitch = b.CreateSwitch(
+          b.CreateLoad(i64Ty, gen_field(offsetof(JitGenRegs, state)),
+                       "gen.state"),
+          freshBB);
+      b.SetInsertPoint(freshBB);
     }
     auto load_slot = [&](int32_t s) {
       return b.CreateLoad(j.valueType_, slots[s]);
@@ -397,6 +482,14 @@ struct Lowering {
       auto it = for_cursors.find(base);
       if (it != for_cursors.end()) return it->second;
       auto cur = j.make_for_cursor();
+      if (gen) {
+        // The walk's native fields outlive a suspension: the frame's scratch.
+        IRBuilder<> eb(fn->getEntryBlock().getTerminator());
+        for (llvm::Value** f : {&cur.kind, &cur.src, &cur.pos, &cur.count,
+                                &cur.has_next, &cur.next})
+          *f = eb.CreateConstInBoundsGEP1_64(i64Ty, genScratch, n_scratch++,
+                                             "gen.for");
+      }
       cur.obj = slots[base + kForSrc];
       cur.iter = slots[base + kForIter];
       cur.elem = slots[base + kForElem];
@@ -606,6 +699,8 @@ struct Lowering {
           mark(static_cast<int32_t>(i) + 1);
           break;
         case Op::Ret:
+        case Op::GenStart:  // both leave the function
+        case Op::Yield:
         case Op::ImmutErr:  // lowers to a noreturn call + unreachable
         case Op::WkErr:
         case Op::DestrErr:
@@ -973,6 +1068,55 @@ struct Lowering {
       temp_pads.push_back({bb, k, key.second});
       temp_ix.emplace(std::move(key), bb);
       return bb;
+    };
+
+    // A generator body leaves at `pc`, to come back at pc + 1. The resume
+    // point re-enters the frame's state that is not in a register: the
+    // recursion depth the pads restore to, and the defer marks of the scopes
+    // open here, which moved with the defer stack (Exec::gen_rebase_defers).
+    // The instruction's `b` register takes whether this resume closes the
+    // generator; the exit that follows it is the chunk's own instructions.
+    auto gen_suspend = [&](size_t pc) {
+      // The compiler's number for this point, which the walk meets in order.
+      int64_t k = c.code[pc].c;
+      assert(k == static_cast<int64_t>(genSwitch->getNumCases()) + 1);
+      b.CreateStore(b.getInt64(k), gen_field(offsetof(JitGenRegs, state)));
+      b.CreateRetVoid();
+      auto* resumeBB =
+          BasicBlock::Create(j.ctx_, std::format("gen.resume.{}", k), fn);
+      genSwitch->addCase(b.getInt64(k), resumeBB);
+      b.SetInsertPoint(resumeBB);
+      if (depthSlot)
+        b.CreateStore(
+            b.CreateLoad(i64Ty, gen_field(offsetof(JitGenRegs, depth))),
+            depthSlot);
+      auto* delta = b.CreateLoad(
+          i64Ty, gen_field(offsetof(JitGenRegs, defer_delta)), "gen.delta");
+      for (int32_t s = chunk_innermost_cleanup(c, pc + 1); s >= 0;) {
+        const auto& cu = c.cleanups[static_cast<size_t>(s)];
+        if (cu.defer_mark_slot >= 0) {
+          auto v = load_slot(cu.defer_mark_slot);
+          auto tag = j.extract_tag(v);
+          auto data = j.extract_data(v);
+          b.CreateStore(
+              j.make_value(tag, b.CreateSelect(
+                                    b.CreateICmpEQ(tag, b.getInt8(TAG_LONG)),
+                                    b.CreateAdd(data, delta), data)),
+              slots[cu.defer_mark_slot]);
+        }
+        if (cu.parent < 0 && cu.site_slot >= 0)
+          b.CreateCall(j.module_->getOrInsertFunction(
+                           rt::gen_resnap_site, b.getVoidTy(),
+                           ptrTy),
+                       {slots[cu.site_slot]});
+        s = cu.parent;
+      }
+      b.CreateStore(
+          j.make_bool(b.CreateICmpNE(
+              b.CreateLoad(i64Ty, gen_field(offsetof(JitGenRegs, closing))),
+              b.getInt64(0))),
+          slots[c.code[pc].b]);
+      b.CreateBr(blocks.at(static_cast<int32_t>(pc) + 1));
     };
 
     // Pass 2: linear walk over the instructions. The chunk's position table
@@ -4971,6 +5115,19 @@ struct Lowering {
         case Op::Halt:
           b.CreateRetVoid();
           break;
+        case Op::GenStart:
+          if (c.counts_frame) j.emit_recursion_leave();
+          gen_suspend(i);
+          break;
+        case Op::Yield: {
+          auto v = load_slot(in.a);
+          b.CreateStore(j.make_nil(), slots[in.a]);
+          b.CreateStore(v, retPtr);
+          b.CreateStore(b.getInt64(1),
+                        gen_field(offsetof(JitGenRegs, yielded)));
+          gen_suspend(i);
+          break;
+        }
       }
     }
     j.current_lpad_ = nullptr;
@@ -5145,6 +5302,7 @@ struct Lowering {
                            blocks.at(static_cast<int32_t>(cu.handler)));
       if (passBB) b.SetInsertPoint(passBB);
     }
+    return n_scratch;
   }
 };
 

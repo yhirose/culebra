@@ -1,0 +1,247 @@
+// Tracing a frame, the shapes the lowered class has no twin for or does not
+// agree on: compared across the frames lanes only (--vm / --jit / build).
+
+mut closed = 0
+mut dropped = 0
+mut keep = []
+
+fn res(k) {
+  {id: k, pad: [k, k, k], drop: fn () { dropped += 1 }}
+}
+fn add3(a, b, c) { a.id + b + c.id }
+
+// 1. a statement temporary in flight at the yield holds the cycle
+fn g_temp(box) {
+  defer { closed += 1 }
+  let r = add3(box, if true {
+    yield 1
+    2
+  } else {
+    0
+  }, res(-1))
+  yield r
+}
+// 2. a drop-having local of the body, alive at the suspension
+fn g_local(box) {
+  defer { closed += 1 }
+  let mine = res(-2)
+  yield box.id + mine.id
+  yield 0
+}
+// 3. the frame holds its own iterator
+fn g_self(holder) {
+  defer { closed += 1 }
+  yield 0
+  let me = holder.g
+  yield 1
+  yield me == nil
+}
+// 4. two frames hold each other's iterator
+fn g_peer(holder, k) {
+  defer { closed += 1 }
+  yield 0
+  let other = holder.gs[1 - k]
+  yield 1
+  yield other == nil
+}
+// 5. Strings alive only in a suspended register
+fn g_str(box) {
+  defer { closed += 1 }
+  let s = "frame {box.id} " + 'x'.repeat(40)
+  yield s.size()
+  yield s
+}
+
+fn build(shape, n) {
+  for k in 0..n {
+    let box = res(k)
+    match shape {
+      'temp' => {
+        let g = g_temp(box)
+        g.next()
+        box.g = g
+      },
+      'local' => {
+        let g = g_local(box)
+        g.next()
+        box.g = g
+      },
+      'self' => {
+        box.g = g_self(box)
+        box.g.next()
+        box.g.next()
+      },
+      'peer' => {
+        box.gs = [g_peer(box, 0), g_peer(box, 1)]
+        for g in box.gs {
+          g.next()
+          g.next()
+        }
+      },
+      'str' => {
+        let g = g_str(box)
+        g.next()
+        box.g = g
+      },
+      _ => nil,
+    }
+    keep.push(box)
+  }
+  nil
+}
+
+fn run(shape) {
+  build(shape, 1)
+  keep = []
+  GC.stat()
+  closed = 0
+  dropped = 0
+  let before = GC.stat().rc_objects
+  build(shape, 100)
+  let held = GC.stat().rc_objects - before
+  keep = []
+  let early = closed
+  let after = GC.stat().rc_objects - before
+  println("{shape}: built>0={held > 0} closed_before_gc={early} closed={closed} dropped={dropped} kept={after}")
+}
+run('temp')
+run('local')
+run('self')
+run('peer')
+run('str')
+
+// 6. the body lets go of the last outside reference to its own iterator:
+// the frame stays for the run, and closes when the call returns.
+mut slot = nil
+fn g_orphan() {
+  defer { closed += 1 }
+  yield 1
+  slot = nil
+  GC.stat()
+  yield 2
+  yield 3
+}
+closed = 0
+slot = g_orphan()
+println(slot.next())
+println(slot.next())
+println("orphan: slot={slot} closed={closed}")
+
+// 7. collections from inside a running body: its registers (a String, a
+// cell, an in-flight array) are only in the frame
+fn g_busy(n) {
+  defer { closed += 1 }
+  mut acc = []
+  mut label = 'start'
+  let tag = fn () { label }
+  for i in 0..n {
+    label = "step {i} " + 'y'.repeat(20)
+    acc.push([tag(), res(1000 + i)])
+    GC.stat()
+    yield acc.size()
+  }
+  yield tag()
+}
+closed = 0
+dropped = 0
+println(g_busy(3).collect())
+GC.stat()
+println("busy: closed={closed} dropped={dropped}")
+
+// 8. the threshold collections (conservative roots) bound a loop that
+// abandons cycles; how many each reclaims is not fixed, that they do is.
+closed = 0
+mut mid = 0
+fn churn(n) {
+  for k in 0..n {
+    let box = {id: k}
+    let g = g_local(box)
+    g.next()
+    box.g = g
+    keep = [box]
+    mid = closed
+  }
+  keep = []
+  nil
+}
+churn(20000)
+println("churn: closed_in_loop>half={mid > 10000}")
+GC.stat()
+println("churn: closed={closed}")
+
+// 9. a RecursionError at a resume leaves the generator where it was: the
+// resume is the frame that does not fit, found by bisection with a plain fn.
+fn g_three(box) {
+  defer { closed += 1 }
+  yield box.id
+  yield box.id + 1
+  yield box.id + 2
+}
+fn leaf() { 0 }
+fn deep_leaf(n) {
+  if n == 0 {
+    return leaf()
+  }
+  deep_leaf(n - 1)
+}
+fn deep_next(it, n) {
+  if n == 0 {
+    return it.next()
+  }
+  deep_next(it, n - 1)
+}
+fn fits(n) {
+  try {
+    deep_leaf(n)
+    true
+  } catch e {
+    false
+  }
+}
+mut lo = 1
+mut hi = 1000000
+while hi - lo > 1 {
+  let m = (lo + hi) / 2
+  if fits(m) {
+    lo = m
+  } else {
+    hi = m
+  }
+}
+closed = 0
+dropped = 0
+fn recursion_case() {
+  let it = g_three(res(10))
+  println(it.next())
+  println(try {
+    deep_next(it, hi)
+  } catch e {
+    e.kind
+  })
+  println(it.next())
+  nil
+}
+recursion_case()
+GC.stat()
+println("recursion: closed={closed} dropped={dropped}")
+
+// 10. the frame holds its own iterator and a scope's exit closes it: the
+// close releases that reference from inside the iterator's own drop, and the
+// count has to come out right for the rest to die by refcount.
+fn scoped_self(n) {
+  for k in 0..n {
+    let box = res(k)
+    box.g = g_self(box)
+    box.g.next()
+    box.g.next()
+  }
+  nil
+}
+scoped_self(1)
+GC.stat()
+closed = 0
+dropped = 0
+let b10 = GC.stat().rc_objects
+scoped_self(100)
+let early10 = closed
+println("scoped-self: closed_at_exit={early10} dropped={dropped} kept={GC.stat().rc_objects - b10}")

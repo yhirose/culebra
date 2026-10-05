@@ -1,0 +1,109 @@
+# A generator's methods read off the object and called later, by every route
+# a method value takes: the method stays bound to its generator, keeps it
+# alive, and the generator closes (its `defer` runs) when the last of them
+# goes. `gmv_closed` counts the closes.
+
+mut gmv_closed = 0
+
+fn gmv_count(n) {
+  defer {
+    gmv_closed += 1
+  }
+  mut k = 0
+  while k < n {
+    yield k
+    k += 1
+  }
+}
+
+# --- 1) Each method as a value, called with no receiver in sight.
+fn gmv_by_hand() {
+  let g = gmv_count(3)
+  let h = g.has_next
+  let nx = g.next
+  assert_eq([h(), nx(), nx()], [true, 0, 1])
+  let d = g.dispose
+  d()
+  assert_eq([h(), nx(), gmv_closed], [false, nil, 1])
+}
+gmv_by_hand()
+
+# --- 2) The method value outlives the binding it was read from.
+fn gmv_next_of(n) {
+  let g = gmv_count(n)
+  g.next
+}
+fn gmv_outlives() {
+  let nx = gmv_next_of(2)
+  assert_eq([nx(), nx(), nx(), gmv_closed], [0, 1, nil, 2])
+}
+gmv_outlives()
+assert_eq(gmv_closed, 2)
+
+# --- 3) `iter()` is the same generator, as a value too.
+fn gmv_same_iter() {
+  let g = gmv_count(3)
+  let it = g.iter
+  let g2 = it()
+  assert_eq([g2.next(), g.next(), g2 == g], [0, 1, true])
+}
+gmv_same_iter()
+assert_eq(gmv_closed, 3)
+
+# --- 4) Handed to a callback, stored in a container, called through both.
+fn gmv_stored() {
+  let g = gmv_count(6)
+  let nx = g.next
+  assert_eq([10, 20].map(|x| nx() + x), [10, 21])
+  let box = {pull: g.next, more: g.has_next}
+  assert_eq([box.pull(), box.more()], [2, true])
+  let fns = [g.next, g.next]
+  assert_eq([fns[0](), fns[1]()], [3, 4])
+  assert_eq(g.collect(), [5])
+}
+gmv_stored()
+assert_eq(gmv_closed, 4)
+
+# --- 5) A method value keeps its generator alive, and nothing else does.
+fn gmv_held() {
+  let nx = gmv_count(1).next
+  let before = gmv_closed
+  assert_eq([nx(), gmv_closed - before], [0, 0])
+}
+gmv_held()
+assert_eq(gmv_closed, 5)
+
+# --- 6) `drop` as a value closes once, like the call.
+fn gmv_dropped() {
+  let g = gmv_count(2)
+  g.next()
+  let d = g.drop
+  d()
+  d()
+  g.dispose()
+  assert_eq(g.has_next(), false)
+}
+gmv_dropped()
+assert_eq(gmv_closed, 6)
+
+# --- 7) A for-in over a generator whose `next` was read first.
+fn gmv_mixed() {
+  let g = gmv_count(4)
+  let nx = g.next
+  mut seen = []
+  for v in g {
+    seen.push(v)
+    if v == 1 {
+      seen.push(nx())
+    }
+  }
+  assert_eq(seen, [0, 1, 2, 3])
+}
+gmv_mixed()
+
+# --- 8) Lazy chains hold the two protocol methods across the walk.
+assert_eq(gmv_count(5).filter(|x| x % 2 == 0).map(|x| x * 10).collect(),
+          [0, 20, 40])
+assert_eq(gmv_count(3).zip(gmv_count(9)).collect().map(|p| [p.first, p.second]),
+          [[0, 0], [1, 1], [2, 2]])
+assert_eq(gmv_closed, 10)
