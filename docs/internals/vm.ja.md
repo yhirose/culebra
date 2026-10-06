@@ -94,8 +94,8 @@ includeし、他のどこからもincludeしない。
    リストをトポロジカル順（依存先が先、エントリが最後）で返す。
    各モジュールはパースされ、書かれたままの形からスコープの検査を
    読み取り（§10.6）、そのあと変換がASTに対して走る
-   （`apply_transforms`）: effectsの変換（§11）と、generatorのパス
-   （`yield`を書ける場所の検査と`yield from`の書き換え、§5.7）である。
+   （`apply_transforms`）: effectsの変換（§11）と、generatorの検査
+   （`yield`を書ける場所の検査、§5.7）である。
    検査の結果は全モジュールを読み終えてから報告する。
 2. **stdlib preambleを差し込む。** `splice_stdlib_preamble`がAST群の
    トークンをスキャンしてstdlib名（`Time`、`Regex`、`Path`、
@@ -1310,12 +1310,8 @@ generatorになる（`Chunk::is_generator`）: 呼び出しはプロローグを
 戻るフレームの中で走る。effectの本体はそうではなく、コンパイラの手前で
 変換される（§11）。
 
-generatorも以前は同じように、それぞれ状態クラスへ変換されていた。その
-変換はまだ`generator_transform.h`に残っていて、環境変数
-`CULEBRA_GEN_LOWERED`で選べる（`gen_frames_enabled`、プロセスごとに
-1回読む）。2つを比べるためのもので、どのゲートも回さず、削除する予定で
-ある。標準ライブラリのCulebraモジュールはこの変数なしでバイナリに
-焼き込まれるので、そのgeneratorはどちらでもフレームを保持する。
+generatorもv0.7.0までは同じように、それぞれ状態クラスへ変換されていた
+（§12）。
 
 これを運ぶopcodeは2つ。`GenStart`はプロローグ — パラメータの束縛、
 既定値の評価、型検査、`RecEnter` — の後に置かれるので、プロローグが
@@ -1348,33 +1344,21 @@ throwが起きたら解放されるものと同じである: そこで途中に�
 （§5.2.1）の後に行う。コレクタは中断フレームをこの表を通して読む
 （`memory.md` §6.3）。
 
-`yield from e`に命令はない: `transform_one_generator_fn`がソース上で
-`for v in (e) { yield v }`に書き換える。このような関数に対して変換が
-するのはそれだけである。変換が拒否していたものは引き続き、同じ文面で
-拒否される: `try`や`defer`の中の`yield`、本体の中の`self`、`fn name`
-宣言の外の`yield`。
+`yield from e`に専用の命令はない: コンパイラは`e`に対する`for`が行う
+走査を、本体の位置に各要素の`Yield`を置いてemitする
+（`Compiler::compile_yield_from`）。カーソル（`ForSlot`）は`for`と同じな
+ので、その中断点でのcloseは、`for`の本体からの`return`と同じように、
+走査中のイテレータを出がけに閉じる。要素の`+1`はカーソルから、
+フレームをresumeした側へ直接渡る。
 
-**変換との違い。** 書かれたままコンパイルされた本体は、名前の束縛も
-文の実行も普通の`fn`と同じで、§10.7がそれを保つ。変換されたクラスが
-別の答えを返していて、プログラムから見えるもの:
+変換が拒否していたものは引き続き、同じ文面と位置で拒否される
+（`generator_rules.h`）: `try`や`defer`の中の`yield`、本体の中の`self`、
+本体の中の名前つき`fn`、本体の中の`effect fn`、`fn name`宣言の外の
+`yield`。どれかを解くのは、それだけで1つの言語変更である。
 
-- `type_of(g)`は`'Generator'`で、値は`Generator {}`と表示され、自前の
-  プロパティを持たない（変換版: generator関数ごとに1クラスで、状態の
-  フィールドが見える）。`==`は同一性である（変換版: フィールドごとの
-  比較なので、作りたての`count(3)`2つは等しい）
-- generatorはSendableでない: 送ると`SendError: a generator is not
-  Sendable`になる（変換版は状態ごとコピーされる）
-- `has_next()`が先読みした値は`dispose()`で解放される（変換版:
-  `next()`がまだそれを返す）
-- `drop`を持つローカルは、そのスコープの終わりでdropされる（変換版:
-  generatorが死ぬとき）
-- 本体からのthrowはdeferを走らせてgeneratorを終わらせる（変換版:
-  deferは`dispose()`を待ち、次の`has_next()`はthrowした状態をもう一度
-  実行する）
-- 本体の中から自分自身をresumeすると`ValueError: generator already
-  running`になる（変換版: 再帰してRecursionErrorに至る）
-- 式の中の文ブロックがyieldしてよい（変換版: SyntaxError
-  「unsupported control flow」）
+書かれたままコンパイルされた本体は、名前の束縛も文の実行も普通の
+`fn`と同じで、§10.7がそれを保つ。変換されたクラスが別の答えを返して
+いて、プログラムから見えるものは§12にある。
 
 ## 6. executor
 
@@ -2187,3 +2171,39 @@ tree-walkerより約7ms遅くexecutor上で起動する — preambleが歩かれ
 `include/jit/lowering.h`、`include/rt/rt.h`のコミット履歴が移行の記録
 を残している。それを始めた設計提案とフェーズごとの知見は、ここで
 なくその履歴の中に生きている。
+
+generatorもかつてはeffectの本体と同じように変換されていた: `yield`する
+`fn name`は、ソース上で、イテレータプロトコル（`iter` / `has_next` /
+`next` / `dispose`）を実装するクラスと、flat-dispatchの状態機械に書き
+換えられ、`yield`で割られる変数はインスタンスに置かれた。v0.7.0まで
+はそれが唯一の実装だった。§5.7のgeneratorはそれを3段階で置き換えた:
+フレームのランタイムとコンパイラ・エンジン側の経路を環境変数の裏に
+置く段階、既定を切り替える段階（古い経路は環境変数
+`CULEBRA_GEN_LOWERED`1つ分の距離に残し、2つを比べるために使った）、
+そして変換の削除である。最後の段階で、それまでソースを
+`for v in (e) { yield v }`に書き換えていた`yield from`もコンパイラへ
+移った。フレームを保持する本体が、変換されたクラスと違うこと
+（プログラムから見えるもの）:
+
+- `type_of(g)`は`'Generator'`で、値は`Generator {}`と表示され、自前の
+  プロパティを持たない（変換版: generator関数ごとに1クラスで、状態の
+  フィールドが見える）。`==`は同一性である（変換版: フィールドごとの
+  比較なので、作りたての`count(3)`2つは等しい）
+- generatorはSendableでない: 送ると`SendError: a generator is not
+  Sendable`になる（変換版は状態ごとコピーされる）
+- `has_next()`が先読みした値は`dispose()`で解放される（変換版:
+  `next()`がまだそれを返す）
+- `drop`を持つローカルは、そのスコープの終わりでdropされる（変換版:
+  generatorが死ぬとき）
+- 本体からのthrowはdeferを走らせてgeneratorを終わらせる（変換版:
+  deferは`dispose()`を待ち、次の`has_next()`はthrowした状態をもう一度
+  実行する）
+- 本体の中から自分自身をresumeすると`ValueError: generator already
+  running`になる（変換版: 再帰してRecursionErrorに至る）
+- 式の中の文ブロックがyieldしてよい（変換版: SyntaxError
+  「unsupported control flow」）
+
+`tests/test_generator.cul`を`--jit`でコンパイルするCPU時間は、変換版の
+35.1秒に対してフレーム版は9.5秒で、バイトコードは24,364命令から
+5,714命令になった。上の一覧のうち、v0.7.0に対するrelease-diffゲートが
+見たケースは`tools/difftest/release_diff_allow.txt`にある。

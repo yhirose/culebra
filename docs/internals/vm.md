@@ -96,9 +96,8 @@ includes them in a fixed order and nothing else includes them at all.
    (dependencies first, entry last). Each module is parsed, its scope
    checks are read off it as written (§10.6), and then the transforms
    run on the AST (`apply_transforms`): the effects lowering (§11), and
-   the generator pass, which holds a `yield` to where one may be written
-   and rewrites `yield from` (§5.7). The checks are reported once every
-   module is read.
+   the generator check, which holds a `yield` to where one may be written
+   (§5.7). The checks are reported once every module is read.
 2. **Splice the stdlib preamble.** `splice_stdlib_preamble` scans the
    ASTs' tokens for stdlib names (`Time`, `Regex`, `Path`, the `assert_*`
    family, …) and prepends a synthesized `<stdlib>` module holding the
@@ -1347,13 +1346,8 @@ the prologue and returns an iterator, and the body runs in a frame that
 leaves the stack at every `yield` and comes back at the next resume.
 An effect body is lowered ahead of the compiler instead (§11).
 
-Generators were lowered the same way, each to a state class, and that
-lowering is still in `generator_transform.h`: `CULEBRA_GEN_LOWERED` in
-the environment selects it (`gen_frames_enabled`, read once per
-process), for comparing the two. No gate runs it, and it is to be
-deleted. The standard library's Culebra modules are compiled into the
-binary without the variable, so their generators keep their frames
-either way.
+Generators were lowered the same way, each to a state class, up to v0.7.0
+(§12).
 
 Two opcodes carry it. `GenStart` follows the prologue — parameters
 bound, defaults evaluated, types checked, `RecEnter` run — so what the
@@ -1388,34 +1382,23 @@ in `compile_unit` after the elision passes (§5.2.1), which move pcs
 and decide what owns a register. The collector reads a suspended
 frame through it (`memory.md` §6.3).
 
-`yield from e` has no instruction: `transform_one_generator_fn`
-rewrites it in source to `for v in (e) { yield v }`, and that is all it
-does to such a function. What the lowering refused it still refuses,
-with the same messages: a `yield` inside `try` or `defer`, `self` in
-the body, a `yield` outside a `fn name` declaration.
+`yield from e` has no instruction of its own: the compiler emits the walk
+a `for` over `e` makes, with a `Yield` of each element where the body
+would be (`Compiler::compile_yield_from`). It is the same cursor
+(`ForSlot`), so a close at that suspension closes the iterator being
+walked on the way out, as a `return` out of a `for` body does, and the
+element's `+1` goes from the cursor straight to whoever resumed the
+frame.
 
-**Against the lowering.** A body compiled as written binds names and
-runs statements as a plain `fn` does, which §10.7 holds it to. What a
-program sees that the lowered class answered differently:
+What the lowering refused is still refused, with the same messages and
+positions (`generator_rules.h`): a `yield` inside `try` or `defer`,
+`self` in the body, a named `fn` in the body, an `effect fn` in the
+body, a `yield` outside a `fn name` declaration. Lifting one is a
+language change of its own.
 
-- `type_of(g)` is `'Generator'`, the value prints as `Generator {}`
-  and has no properties of its own (lowered: one class per generator
-  function, whose state fields show), and `==` is identity (lowered:
-  field by field, so two fresh `count(3)` are equal);
-- a generator is not Sendable: sending one raises `SendError: a
-  generator is not Sendable` (a lowered one is copied, state and all);
-- a value `has_next()` pulled ahead is released by `dispose()`
-  (lowered: `next()` still returns it);
-- a local with a `drop` is dropped when its scope ends (lowered: when
-  the generator dies);
-- a throw out of the body runs its defers and finishes the generator
-  (lowered: the defers wait for `dispose()`, and the next `has_next()`
-  runs the throwing state again);
-- resuming a generator from inside its own body raises `ValueError:
-  generator already running` (lowered: it recurses to a
-  RecursionError);
-- a statement block inside an expression may yield (lowered: a
-  SyntaxError, "unsupported control flow").
+A body compiled as written binds names and runs statements as a plain
+`fn` does, which §10.7 holds it to. What a program sees that the lowered
+class answered differently is listed in §12.
 
 ## 6. The executor
 
@@ -2229,3 +2212,40 @@ the interpreter as the independent second opinion. The commit history
 of `include/vm/vm.h`, `include/jit/lowering.h` and `include/rt/rt.h` records
 the migration; the design proposal that started it and the per-phase
 findings live in that history rather than here.
+
+Generators were once lowered like effect bodies: each `yield`ing `fn name`
+was rewritten, in source, to a class implementing the iterator protocol
+(`iter` / `has_next` / `next` / `dispose`) over a flat-dispatch state
+machine, the variables a `yield` splits living on the instance. That was
+the only implementation up to v0.7.0. The generators of §5.7 replaced it
+in three steps: the frame runtime and the compiler and engine paths
+behind an environment variable, the switch of the default (the old path
+stayed one environment variable away, `CULEBRA_GEN_LOWERED`, for
+comparing the two), and the deletion of the lowering, with `yield from`,
+until then a source rewrite to `for v in (e) { yield v }`, moving into
+the compiler. What a body that keeps its frame does differently from the
+lowered class, as a program sees it:
+
+- `type_of(g)` is `'Generator'`, the value prints as `Generator {}` and
+  has no properties of its own (lowered: one class per generator
+  function, whose state fields show), and `==` is identity (lowered:
+  field by field, so two fresh `count(3)` are equal);
+- a generator is not Sendable: sending one raises `SendError: a
+  generator is not Sendable` (a lowered one is copied, state and all);
+- a value `has_next()` pulled ahead is released by `dispose()`
+  (lowered: `next()` still returns it);
+- a local with a `drop` is dropped when its scope ends (lowered: when
+  the generator dies);
+- a throw out of the body runs its defers and finishes the generator
+  (lowered: the defers wait for `dispose()`, and the next `has_next()`
+  runs the throwing state again);
+- resuming a generator from inside its own body raises `ValueError:
+  generator already running` (lowered: it recurses to a
+  RecursionError);
+- a statement block inside an expression may yield (lowered: a
+  SyntaxError, "unsupported control flow").
+
+`--jit` compiled `tests/test_generator.cul` in 35.1 s of CPU lowered and
+in 9.5 s with frames, and its bytecode went from 24,364 to 5,714
+instructions. `tools/difftest/release_diff_allow.txt` lists the cases of
+the list above that the release-diff gate saw against v0.7.0.
