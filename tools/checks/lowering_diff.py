@@ -16,9 +16,9 @@ The sweeps:
   sole     the statement as the whole body, which declares nothing ahead of it
   binding  what a name means where it is written: declared or reassigned, in
            reach or not, mutable or not, captured by which closure
-  binding-fn, binding-defer
-           the same over the forms one of the two refuses by design, in the
-           two contexts that take them
+  binding-defer
+           the same over a form an effect body refuses by design, in the two
+           contexts that take it
 
 A context that hangs or dies without a word fails the case even when the
 others do the same, and each sweep must run at least one case to a value in
@@ -241,13 +241,12 @@ BINDING_FORMS = [
     'while let d = 1; C { EMIT(d); break }; EMIT(0)',
     # A class of the body's own.
     'class K { new() {} }; EMIT(1); EMIT(K() == nil)',
-]
-# A generator body takes no named fn, and an effect body no nested defer.
-BINDING_FN_FORMS = [
+    # A named fn's.
     'fn h() { 1 }; EMIT(1); EMIT(h())',
     'if C { fn h() { 1 }; EMIT(h()) }; EMIT(h())',
     'a = 1; if C { fn h() { a }; EMIT(h()) }; EMIT(a)',
 ]
+# An effect body takes no nested defer.
 BINDING_DEFER_FORMS = [
     '{ defer { log.push("d") }; log.push("body") }; log.push("after"); EMIT(log)',
     'if C { defer { log.push("d") }; log.push("body") }; log.push("after"); EMIT(log)',
@@ -346,8 +345,6 @@ SWEEPS = [  # name, templates, statement forms, conditions, values of z, prelude
     ('iter', BODY, ['for x in z { EMIT(x) }'], CONDS, ITER_VALUES, ITER_PRELUDE),
     ('sole', SOLE, BODY_FORMS, CONDS, VALUES, ''),
     ('binding', SOLE, BINDING_FORMS, ['z'], VALUES, BINDING_PRELUDE),
-    ('binding-fn', without(SOLE, 'gen'), BINDING_FN_FORMS, ['z'], VALUES,
-     BINDING_PRELUDE),
     ('binding-defer', without(SOLE, 'eff'), BINDING_DEFER_FORMS, ['z'], VALUES,
      BINDING_PRELUDE),
 ]

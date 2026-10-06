@@ -2572,6 +2572,11 @@ for r in rows() {
 # 'close 2'
 ```
 
+A `fn name` declared in the body binds as it does in any function: in
+the scope it is written in, visible to the closures that read it, and
+free to read the body's variables, whatever the `yield`s around it have
+done.
+
 A generator can also stop while suspended: the consumer leaves its
 `for`-in by `break`, `return` or an exception, a terminal method
 finishes early (§18.5), `dispose()` is called, or the last reference to

@@ -1392,8 +1392,8 @@ frame.
 
 What the lowering refused is still refused, with the same messages and
 positions (`generator_rules.h`): a `yield` inside `try` or `defer`,
-`self` in the body, a named `fn` in the body, an `effect fn` in the
-body, a `yield` outside a `fn name` declaration. Lifting one is a
+`self` in the body, an `effect fn` in the body, a `yield` outside a
+`fn name` declaration. Lifting one is a
 language change of its own.
 
 A body compiled as written binds names and runs statements as a plain

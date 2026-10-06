@@ -167,35 +167,6 @@ inline const peg::Ast* find_yield_inside_try_or_defer(const peg::Ast& body) {
   return found;
 }
 
-// Locate the first named function definition (`fn name(...) { ... }`, a
-// MULTIFN_DECL) that appears as a statement inside a generator body — at the
-// top level or nested in its control flow (if / for / while / block / try),
-// but NOT inside a nested fn VALUE (an anonymous `fn (...) {...}` / `|x| ...`,
-// which opens its own scope and binds fine). Returns nullptr if none. An
-// effect body is searched the same way: its lowering has no state to bind
-// such a definition in.
-inline const peg::Ast* find_nested_fndef(const peg::Ast& body) {
-  using namespace peg::udl;
-  const peg::Ast* found = nullptr;
-  std::function<void(const peg::Ast&)> walk = [&](const peg::Ast& n) {
-    for (auto& c : n.nodes) {
-      if (found) return;
-      if (c->tag == "MULTIFN_DECL"_) {
-        found = c.get();
-        return;
-      }
-      // A nested fn VALUE keeps its own scope, and a nested `handle` opens
-      // its own computation scope (the effects pass validates fns inside it)
-      // — leave both (and their inner defs) alone.
-      if (c->tag == "FUNCTION"_ || c->tag == "LAMBDA"_ || c->tag == "HANDLE"_)
-        continue;
-      walk(*c);
-    }
-  };
-  walk(body);
-  return found;
-}
-
 // The rules one generator is held to. `fn` is a MULTIFN_DECL parsed from
 // `src` whose body yields.
 inline void check_generator_fn(const peg::Ast& fn, const std::string& src) {
@@ -239,20 +210,6 @@ inline void check_generator_fn(const peg::Ast& fn, const std::string& src) {
           "define it outside the generator.",
           source_pos(*e, src).line, source_pos(*e, src).col);
     }
-  }
-
-  // A named function definition inside a generator body is refused (the
-  // lowering that had nowhere to bind it is gone; see the header). Anonymous
-  // fn / lambda VALUES
-  // (`let f = |x| ...` / `let f = fn (x) { ... }`) work and are unaffected.
-  if (auto* fd = find_nested_fndef(body)) {
-    throw CulebraError(
-        "SyntaxError",
-        "a named function definition cannot appear inside a generator body "
-        "(a function that uses yield). Bind a lambda instead (let f = |x| ... "
-        "/ let f = fn (x) { ... }) or define the function outside the "
-        "generator.",
-        source_pos(*fd, src).line, source_pos(*fd, src).col);
   }
 
   // A generator is a named fn, called with no receiver: `self` in its body

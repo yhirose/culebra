@@ -1,0 +1,96 @@
+// What a generator body may hold: each form binds and runs as it does in a
+// plain fn, across a yield and a close. (jit_error_pos_test.sh holds what a
+// generator body still refuses.)
+
+// --- a named fn declared in the body ---------------------------------------
+
+// declared before the first yield, used after resumes
+fn nf_basic() {
+  fn triple(x) {
+    x * 3
+  }
+  yield triple(2)
+  yield triple(3)
+}
+assert_eq(nf_basic().collect(), [6, 9])
+
+// it closes over a local the body changes across a yield
+fn nf_closes_over() {
+  mut total = 0
+  fn add(x) {
+    total = total + x
+  }
+  add(1)
+  yield total
+  add(10)
+  yield total
+}
+assert_eq(nf_closes_over().collect(), [1, 11])
+
+// declared after a yield, in a branch, in a loop body (one per pass)
+fn nf_scopes(n) {
+  yield 0
+  if n > 0 {
+    fn half(x) {
+      x / 2
+    }
+    yield half(n)
+  }
+  for i in 0..2 {
+    fn sq(x) {
+      x * x
+    }
+    yield sq(i + n)
+  }
+}
+assert_eq(nf_scopes(4).collect(), [0, 2, 16, 25])
+
+// recursion, and a generator declared inside a generator
+fn nf_nested() {
+  fn fact(n) {
+    if n <= 1 { 1 } else { n * fact(n - 1) }
+  }
+  fn inner() {
+    yield fact(3)
+    yield fact(4)
+  }
+  yield from inner()
+  yield fact(5)
+}
+assert_eq(nf_nested().collect(), [6, 24, 120])
+
+// a named fn that outlives the generator
+mut nf_kept = []
+fn nf_escapes() {
+  fn mk(x) {
+    x + 100
+  }
+  nf_kept.push(mk)
+  yield 1
+}
+nf_escapes().collect()
+assert_eq(nf_kept[0](5), 105)
+
+// closing before and after the declaration is reached
+mut nf_log = []
+fn nf_close() {
+  defer {
+    nf_log.push('defer')
+  }
+  yield 1
+  fn late(x) {
+    x
+  }
+  yield late(2)
+}
+for v in nf_close() {
+  break
+}
+assert_eq(nf_log, ['defer'])
+let nf_second = nf_close()
+nf_second.next()
+nf_second.next()
+nf_second.dispose()
+assert_eq(nf_log, ['defer', 'defer'])
+
+IO.inspect('test_generator_body_forms OK')

@@ -182,17 +182,6 @@ check_same "tensor sum bad axis"     'Tensor.zeros([2, 3]).sum(9)'
 check_same "tensor slice oob"        'Tensor.zeros([3]).slice(5, 9)'
 check_same "tensor reshape nested"   'let x = 1 + Tensor.zeros([6]).reshape([4]).sum()'
 
-# A named function definition inside a generator body is refused before
-# anything runs, like yield-in-try (the state-machine lowering had no place to
-# bind it, and the rule outlived that lowering). Anonymous fn / lambda VALUES
-# inside a generator still work (not rejected).
-check_same "fn-def in generator"        'fn g() { fn h(x) { x * 3 }; yield h(2) }
-g().collect()'
-check_same "nested generator-def"       'fn g() { fn inner() { yield 1 }; for x in inner() { yield x } }
-g().collect()'
-check_same "fn-def in if in generator"  'fn g() { if true { fn h() { 1 } }; yield 1 }
-g().collect()'
-
 # What a generator refuses, word for word and where: the rules date from the
 # state-machine lowering and outlived it, so nothing else holds their text.
 GEN_IN_TRY="SyntaxError: yield cannot appear inside a try-catch or defer block. Move the try to the yielded expression value (yield try { ... } catch e { ... }) or use a top-level \`defer { ... }\` for cleanup."
@@ -214,8 +203,6 @@ check_eq "effect fn in generator" 'fn g() {
   yield 1
 }
 g().collect()' "SyntaxError: an \`effect fn\` declaration cannot appear inside a generator body — define it outside the generator. at 2:3."
-check_eq "fn-def in generator, the text" 'fn g() { fn h(x) { x * 3 }; yield h(2) }
-g().collect()' "SyntaxError: a named function definition cannot appear inside a generator body (a function that uses yield). Bind a lambda instead (let f = |x| ... / let f = fn (x) { ... }) or define the function outside the generator. at 1:10."
 check_eq "self in generator, the text" 'fn g() { yield self }
 g().collect()' "$GEN_SELF at 1:16."
 check_eq "yield in fn expr, the text" 'let g = fn () { yield 9 }

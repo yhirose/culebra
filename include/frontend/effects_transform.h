@@ -116,6 +116,34 @@ struct EffStmtClass {
   EffSuspension susp;  // when kind == Suspend
 };
 
+// Locate the first named function definition (`fn name(...) { ... }`, a
+// MULTIFN_DECL) in `body`, however deep in control flow (if / for / while /
+// block / try), but NOT inside a nested fn VALUE (an anonymous
+// `fn (...) {...}` / `|x| ...`, which opens its own scope and binds fine).
+// Returns nullptr if none. An effect body is refused one nested in control
+// flow: its lowering has no state to bind such a definition in.
+inline const peg::Ast* find_nested_fndef(const peg::Ast& body) {
+  using namespace peg::udl;
+  const peg::Ast* found = nullptr;
+  std::function<void(const peg::Ast&)> walk = [&](const peg::Ast& n) {
+    for (auto& c : n.nodes) {
+      if (found) return;
+      if (c->tag == "MULTIFN_DECL"_) {
+        found = c.get();
+        return;
+      }
+      // A nested fn VALUE keeps its own scope, and a nested `handle` opens
+      // its own computation scope (the effects pass validates fns inside it)
+      // — leave both (and their inner defs) alone.
+      if (c->tag == "FUNCTION"_ || c->tag == "LAMBDA"_ || c->tag == "HANDLE"_)
+        continue;
+      walk(*c);
+    }
+  };
+  walk(body);
+  return found;
+}
+
 class EffectsLowerer {
  public:
   // `src_is_original` marks the one lowerer bound to the user's real file (set
