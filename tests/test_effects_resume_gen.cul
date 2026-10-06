@@ -9,8 +9,9 @@
 
 // --- effect constructs inside generator bodies ----------------------------
 // A self-contained `handle` expression works inside a generator body: the
-// effects pass lowers it where it stands. (A bare `perform` / an `effect fn`
-// decl inside a generator stay parse-time SyntaxErrors.)
+// effects pass lowers it where it stands, and so does an `effect fn`
+// declaration (tests/test_generator_body_forms.cul). A bare `perform` with no
+// handler around it is an EffectError at run time.
 effect fn eg_ask()
 fn eg_g1() {
   let v = handle { perform eg_ask() + 1 } with eg_ask(k) { k(10) }

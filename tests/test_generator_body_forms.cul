@@ -48,7 +48,11 @@ assert_eq(nf_scopes(4).collect(), [0, 2, 16, 25])
 // recursion, and a generator declared inside a generator
 fn nf_nested() {
   fn fact(n) {
-    if n <= 1 { 1 } else { n * fact(n - 1) }
+    if n <= 1 {
+      1
+    } else {
+      n * fact(n - 1)
+    }
   }
   fn inner() {
     yield fact(3)
@@ -92,5 +96,45 @@ nf_second.next()
 nf_second.next()
 nf_second.dispose()
 assert_eq(nf_log, ['defer', 'defer'])
+
+// --- an `effect fn` declared in the body ----------------------------------
+
+effect fn bf_ask()
+
+fn bf_effect() {
+  effect fn twice(x) {
+    let a = perform bf_ask()
+    x * a
+  }
+  effect fn sum_two() {
+    let a = perform bf_ask()
+    let b = perform bf_ask()
+    a + b
+  }
+  yield 1
+  yield handle {
+    twice(10)
+  } with bf_ask(k) {
+    k(3)
+  }
+  yield handle {
+    sum_two()
+  } with bf_ask(k) {
+    k(4)
+  }
+  yield 2
+}
+assert_eq(bf_effect().collect(), [1, 30, 8, 2])
+
+// no handler around it: the error a plain fn gets
+fn bf_unhandled() {
+  effect fn only() {
+    perform bf_ask()
+  }
+  yield only()
+}
+assert_throws("EffectError", fn () {
+  bf_unhandled().collect()
+})
 
 IO.inspect('test_generator_body_forms OK')

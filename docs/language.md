@@ -2678,10 +2678,9 @@ inspect(b.has_next())
   a variable declared without `mut` raises `ImmutableError`, and the
   load-time checks on names (§6) hold for the body as for any other. An
   `effect fn` body and a `handle` body follow the same rule (§16).
-* A generator body cannot declare an `effect fn`. A bare `perform` in
-  the body is answered by the handlers installed around the call that
-  resumes it, and a self-contained `handle { ... }` expression inside
-  the body works (§16).
+* A bare `perform` in the body is answered by the handlers installed
+  around the call that resumes it, and a self-contained `handle { ... }`
+  expression or an `effect fn` declared inside the body works (§16).
 
 An identical program yields identical values under the VM, the JIT,
 and an AOT binary.
@@ -4713,10 +4712,10 @@ inspect(doubled().collect())  # => [20, 7]
   self-contained `handle { … }` expression works inside a generator body
   (including in a yielded expression or a loop), and a bare `perform` in a
   generator body dispatches dynamically — against the handlers installed at
-  the `.next()` call that runs it. The remaining boundaries, rejected at
-  parse time (symmetrically): a **bare `yield`** in an effect body (the body
-  itself is not a generator — wrap the yield in a nested generator fn) and an
-  **`effect fn` declaration** inside a generator body.
+  the `.next()` call that runs it. An `effect fn` may be declared inside a
+  generator body too. The remaining boundary, rejected at parse time
+  (symmetrically): a **bare `yield`** in an effect body (the body itself is
+  not a generator — wrap the yield in a nested generator fn).
 * A `defer` at an effect fn or `handle` body's statement level runs when the
   body is left by **any** path: normal completion, a `throw` unwinding through
   it, or an abort — whether a handler clause returns without resuming or an

@@ -189,11 +189,6 @@ check_eq "yield in defer"         'fn g() {
 g().collect()' "$GEN_IN_TRY at 2:11."
 check_eq "yield from in try"      'fn g() { try { yield from [1] } catch e { 0 } }
 g().collect()' "$GEN_IN_TRY at 1:16."
-check_eq "effect fn in generator" 'fn g() {
-  effect fn ask()
-  yield 1
-}
-g().collect()' "SyntaxError: an \`effect fn\` declaration cannot appear inside a generator body — define it outside the generator. at 2:3."
 check_eq "yield in fn expr, the text" 'let g = fn () { yield 9 }
 g()' "$GEN_ORPHAN at 1:17."
 check_eq "yield from in method"   'class B { m() { yield from [1] } }

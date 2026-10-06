@@ -107,7 +107,9 @@ inline const peg::Ast* find_yield_inside_try_or_defer(const peg::Ast& body) {
 }
 
 // The rules one generator is held to. `fn` is a MULTIFN_DECL parsed from
-// `src` whose body yields.
+// `src` whose body yields. (A self-contained `handle { … }` or an
+// `effect fn` declared in the body is the effects pass's, which lowers it
+// where it stands; a bare `perform` outside any handle is rejected there.)
 inline void check_generator_fn(const peg::Ast& fn, const std::string& src) {
   using namespace peg::udl;
   size_t i = 0;
@@ -126,29 +128,6 @@ inline void check_generator_fn(const peg::Ast& fn, const std::string& src) {
         "the try to the yielded expression value (yield try { ... } "
         "catch e { ... }) or use a top-level `defer { ... }` for cleanup.",
         source_pos(*bad, src).line, source_pos(*bad, src).col);
-  }
-
-  // A self-contained `handle { … }` expression inside a generator body is
-  // fine: the effects pass (which runs after this one) lowers it where it
-  // stands. An `effect fn` DECL is not — it lowers to a named fn, which the
-  // next rule refuses; a bare `perform` outside any handle is rejected by the
-  // effects pass itself.
-  {
-    std::function<const peg::Ast*(const peg::Ast&)> find_eff_decl =
-        [&](const peg::Ast& n) -> const peg::Ast* {
-      if (n.tag == "EFFECT_FN_DECL"_) return &n;
-      for (auto& c : n.nodes) {
-        if (auto* e = find_eff_decl(*c)) return e;
-      }
-      return nullptr;
-    };
-    if (auto* e = find_eff_decl(body)) {
-      throw CulebraError(
-          "SyntaxError",
-          "an `effect fn` declaration cannot appear inside a generator body — "
-          "define it outside the generator.",
-          source_pos(*e, src).line, source_pos(*e, src).col);
-    }
   }
 }
 
