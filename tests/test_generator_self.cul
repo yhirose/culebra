@@ -1,9 +1,9 @@
-// `self` and generators: a generator is a named fn, called with no receiver,
-// so a bare `self` in its body names nothing the user can mean — it is
-// rejected at parse time (see jit_error_pos_test.sh for the rejection side).
-// This file pins what stays LEGAL: non-reference spellings of `self`, a fn
-// written as an object property (whose `self` is the receiver it is called
-// on), and the sanctioned capture idiom.
+// `self` and generators: a generator body reads `self` as a plain fn does.
+// Declared in a method it is the method's receiver, kept across yields and
+// after the method returned; where there is no receiver it is a NameError
+// at run time (jit_error_pos_test.sh). This file also pins the non-reference
+// spellings of `self`, a fn written as an object property (whose `self` is
+// the receiver it is called on), and the capture idiom.
 
 // A property named `self` is a label, not a reference.
 fn g_key() {
@@ -46,6 +46,80 @@ class Holder {
   }
 }
 assert_eq(Holder.new().run()[0], "held")
+
+// A generator declared in a method reads the method's receiver, as a plain
+// fn declared there does.
+class Reader {
+  new() {
+    self.tag = "held"
+    self.items = [1, 2, 3]
+  }
+  walk() {
+    fn g() {
+      for x in self.items {
+        yield "{self.tag}{x}"
+      }
+    }
+    return g().collect()
+  }
+  // through a closure written in the body
+  via_closure() {
+    fn g() {
+      let f = fn () {
+        self.tag
+      }
+      yield f()
+      yield f()
+    }
+    return g().collect()
+  }
+  // the generator outlives the call that made it, and writes through `self`
+  later() {
+    fn g() {
+      yield self.tag
+      self.tag = "changed"
+      yield self.tag
+    }
+    return g()
+  }
+  // closing it runs a defer that reads `self`
+  closes() {
+    fn g() {
+      defer {
+        self.tag = "closed"
+      }
+      yield 1
+      yield 2
+    }
+    for v in g() {
+      break
+    }
+    return self.tag
+  }
+}
+assert_eq(Reader.new().walk(), ["held1", "held2", "held3"])
+assert_eq(Reader.new().via_closure(), ["held", "held"])
+let reader = Reader.new()
+let reader_gen = reader.later()
+assert_eq(reader_gen.next(), "held")
+assert_eq(reader_gen.next(), "changed")
+assert_eq(reader.tag, "changed")
+assert_eq(Reader.new().closes(), "closed")
+
+// With no receiver around it, `self` is as undefined in a generator as in a
+// plain fn.
+fn g_no_receiver() {
+  yield self
+}
+fn p_no_receiver() {
+  self
+}
+assert_throws("NameError", fn () {
+  p_no_receiver()
+})
+assert_throws("NameError", fn () {
+  g_no_receiver().collect()
+})
 
 // The word `self` inside string content is untouched.
 fn g_str() {

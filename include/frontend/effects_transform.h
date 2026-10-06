@@ -116,6 +116,49 @@ struct EffStmtClass {
   EffSuspension susp;  // when kind == Suspend
 };
 
+// First bare `self` reference in an effect fn's body (reject_self_in_body
+// below states the rule). An effect body becomes methods of a synthesized
+// state class, so `self` there could only ever name that internal object,
+// never the enclosing receiver the user means. Nested functions are searched
+// too: a closure defined in the body reads the body's own `self`.
+//
+// Two things stop the walk. A function WRITTEN as an object-literal property
+// (`{m: fn () { self.x }}`) takes its `self` from whatever object it is
+// called on — ordinary code, so it stays legal. A class/trait declaration has
+// a `self` of its own in its methods. Non-reference identifiers are skipped
+// too: property names (`x.self`) and the label positions `is_label_position`
+// names.
+inline const peg::Ast* find_self_ref_in_fn_body(const peg::Ast& node) {
+  using namespace peg::udl;
+  if (node.tag == "CLASS_DECL"_ || node.tag == "TRAIT_DECL"_) return nullptr;
+  if (node.tag == "IDENTIFIER"_ && node.original_tag != "DOT"_ &&
+      node.token == "self")
+    return &node;
+  for (size_t i = 0; i < node.nodes.size(); i++) {
+    const auto& c = *node.nodes[i];
+    if (is_label_position(node, i)) continue;
+    if (node.tag == "OBJECT_PROPERTY"_ && is_fn_boundary(c.tag)) continue;
+    if (auto* s = find_self_ref_in_fn_body(c)) return s;
+  }
+  return nullptr;
+}
+
+// The refusal of `self` in a body. `what` names the body in the message; the
+// rest of the sentence — and so the workaround a user is told — is one
+// string. `body` is parsed from `src`.
+inline void reject_self_in_body(const peg::Ast& body, const std::string& src,
+                                std::string_view what) {
+  if (auto* s = find_self_ref_in_fn_body(body)) {
+    auto p = source_pos(*s, src);
+    throw CulebraError(
+        "SyntaxError",
+        std::format("self is not available inside {} — bind it outside first "
+                    "(let me = self) and use that variable, or pass it as a "
+                    "parameter.", what),
+        p.line, p.col);
+  }
+}
+
 // Locate the first named function definition (`fn name(...) { ... }`, a
 // MULTIFN_DECL) in `body`, however deep in control flow (if / for / while /
 // block / try), but NOT inside a nested fn VALUE (an anonymous

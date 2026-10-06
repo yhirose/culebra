@@ -77,29 +77,21 @@ o.g()'
 check_same "yield in fn expr"     'let g = fn () { yield 9 }
 g()'
 
-# `self` in a generator's body names no receiver (a generator is a named fn;
-# when it was lowered to a state class it silently resolved to that object).
-# A shared parse-time SyntaxError pointing at the self token. Labels (keys,
-# kwargs, `x.self`) stay legal — see test_generator_self.cul.
+# `self` in a generator's body is what it is in a plain fn: the receiver of
+# the method it is declared in (test_generator_self.cul), or, where there is
+# none, a NameError at run time, the same on both engines.
 check_same "self in generator"        'fn g() { yield self }
-g()'
+g().collect()'
 check_same "self.prop in generator"   'fn g() { yield self.name }
-g()'
+g().collect()'
 check_same "self write in generator"  'fn g() { self.x = 1
 yield 1 }
-g()'
-check_same "let self in generator"    'fn g() { let self = 1
-yield self }
-g()'
-# The rule reaches nested functions: a closure defined in the body reads the
-# body's own `self`, so it is refused where it is written. A function that is
-# an object property is exempt — there `self` is the dynamic receiver
-# (test_generator_self.cul asserts that side).
+g().collect()'
 check_same "self in nested fn"        'fn g() { yield (fn () { self })() }
-g()'
-# An effect fn body is the same shape — a named declaration whose lowering
-# leaves no receiver — and refuses identically. A handle body is NOT: there the
-# enclosing method's receiver survives (test_effects.cul asserts it).
+g().collect()'
+# An effect fn body is a different shape: its lowering to a state class leaves
+# no receiver, so `self` is refused where it is written. A handle body is NOT:
+# there the enclosing method's receiver survives (test_effects.cul asserts it).
 check_same "self in effect fn"        'effect fn ask()
 effect fn e() { let s = self
 let x = perform ask()
@@ -186,7 +178,6 @@ check_same "tensor reshape nested"   'let x = 1 + Tensor.zeros([6]).reshape([4])
 # state-machine lowering and outlived it, so nothing else holds their text.
 GEN_IN_TRY="SyntaxError: yield cannot appear inside a try-catch or defer block. Move the try to the yielded expression value (yield try { ... } catch e { ... }) or use a top-level \`defer { ... }\` for cleanup."
 GEN_ORPHAN="SyntaxError: yield can only appear inside a \`fn name(...) { ... }\` declaration body — a class method, an object property's function, or a fn expression cannot be a generator. Declare a named fn and call it instead."
-GEN_SELF="SyntaxError: self is not available inside a generator body (a function that uses yield) — bind it outside first (let me = self) and use that variable, or pass it as a parameter."
 check_eq "yield in try"           'fn g() { try { yield 1 } catch e { 0 } }
 g().collect()' "$GEN_IN_TRY at 1:16."
 check_eq "yield in catch"         'fn g() { try { 1 } catch e { yield 2 } }
@@ -203,8 +194,6 @@ check_eq "effect fn in generator" 'fn g() {
   yield 1
 }
 g().collect()' "SyntaxError: an \`effect fn\` declaration cannot appear inside a generator body — define it outside the generator. at 2:3."
-check_eq "self in generator, the text" 'fn g() { yield self }
-g().collect()' "$GEN_SELF at 1:16."
 check_eq "yield in fn expr, the text" 'let g = fn () { yield 9 }
 g()' "$GEN_ORPHAN at 1:17."
 check_eq "yield from in method"   'class B { m() { yield from [1] } }
@@ -220,14 +209,6 @@ check_eq "generator in a fn value in a generator" 'fn g() {
   yield f()
 }
 g().collect()' "$GEN_IN_TRY at 3:24."
-check_eq "self in a generator in a fn value in a generator" 'fn g() {
-  let f = fn () {
-    fn inner() { yield self }
-    inner().collect()
-  }
-  yield f()
-}
-g().collect()' "$GEN_SELF at 3:24."
 
 # Reading an unknown member of a builtin namespace raises AttributeError at the
 # access site (naming the member), instead of silently yielding nil and failing

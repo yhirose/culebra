@@ -364,6 +364,22 @@ inline std::string box_literal(std::string_view value) {
   return std::format("{{mut v: {}}}", value);
 }
 
+// A plain-identifier child that is a label, not a reference: OBJECT_PROPERTY
+// `{name: v}` (key at 1, after MUTABLE; the 2-child shorthand `{name}` IS a
+// reference and falls through), KWARG `f(name: v)` (key at 0) and
+// OBJECT_PAT_ENTRY `{name: pat}` (key at 0; the bare `{name}` collapses to its
+// IDENTIFIER, a binding). Every walk that asks "is this name read here" has to
+// skip these.
+inline bool is_label_position(const peg::Ast& parent, size_t i) {
+  using namespace peg::udl;
+  if (parent.nodes[i]->tag != "IDENTIFIER"_) return false;
+  return (parent.tag == "OBJECT_PROPERTY"_ && i == 1 &&
+          parent.nodes.size() >= 3) ||
+         (parent.tag == "KWARG"_ && i == 0) ||
+         (parent.tag == "OBJECT_PAT_ENTRY"_ && i == 0 &&
+          parent.nodes.size() >= 2);
+}
+
 // The locals a lowered body moves onto its state instance, by variable. The
 // body is resolved (resolve.h) under the names visible around it, and a
 // variable gets a slot when the machine enters the scope that holds it

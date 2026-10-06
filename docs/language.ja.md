@@ -2442,6 +2442,29 @@ for r in rows() {
 書かれたスコープの中にあり、それを読むクロージャから見え、周りの`yield`が
 何をしていても本体の変数を読めます。
 
+本体の中の`self`は、そこで宣言した関数の中と同じ意味です。メソッドの中なら
+そのメソッドのreceiverで（`yield`をまたいでも、メソッドが戻った後でも
+保たれます）、receiverが無い場所では`NameError`です。本体の中でオブジェクトの
+プロパティとして書いた関数の`self`は、その関数が呼ばれたオブジェクトです
+(§10)。
+
+```culebra
+class Shelf {
+  new() {
+    self.books = ['a', 'b']
+  }
+  titles() {
+    fn each() {
+      for b in self.books {
+        yield b
+      }
+    }
+    return each()
+  }
+}
+inspect(Shelf.new().titles().collect())  # => ['a', 'b']
+```
+
 ジェネレータは中断したまま止まることもあります。消費側が`break`・
 `return`・例外で`for`-inを抜けたとき、終端メソッドが途中で終わったとき
 (§18.5)、`dispose()`を呼んだとき、ジェネレータへの最後の参照が消えた
@@ -2510,22 +2533,6 @@ inspect(b.has_next())
 
   この検査はファイルのロード時に走るので、どのバックエンドでも同じ
   プログラムを同じ位置で拒否します。
-* ジェネレータ本体では`self`を参照できません（メソッドの中で宣言した
-  普通の`fn`なら、そのメソッドのreceiverを読める場面です）。パーサが
-  拒否します:
-
-      SyntaxError: self is not available inside a generator body (a
-      function that uses yield) — bind it outside first (let me = self)
-      and use that variable, or pass it as a parameter.
-
-  この規則は本体の中で**定義した**`fn` / lambdaにも及びます。例外は
-  1つ、オブジェクトのプロパティになる関数
-  （`yield {m: fn () { self.x }}`）で、その`self`は呼ばれたオブジェクトの
-  動的なreceiverです (§10)。`self`という綴りのプロパティ名・
-  オブジェクトキー・kwargラベルも参照ではないので合法です。外側の
-  receiverに触れたいときは、ジェネレータの外で`let me = self`と束縛して
-  から`me`を使います。`effect fn`の本体も同じく`self`を拒否します。
-  `handle`本体は拒否しません (§16)。
 * 本体が走っている間のジェネレータは再開できません。本体の中から
   自分自身の`has_next()`や`next()`を呼ぶと`ValueError: generator
   already running`になります。

@@ -8,7 +8,7 @@
 //
 // Those refusals date from when a generator was lowered to a state class, the
 // way an effect body still is (effects_transform.h), and are kept with their
-// wording. Lifting one is a language change of its own.
+// wording until lifted. Lifting one is a language change of its own.
 
 #pragma once
 
@@ -50,67 +50,6 @@ inline const peg::Ast* find_yield_in_fn_body(const peg::Ast& node) {
 
 inline bool fn_body_has_yield(const peg::Ast& node) {
   return find_yield_in_fn_body(node) != nullptr;
-}
-
-// A plain-identifier child that is a label, not a reference: OBJECT_PROPERTY
-// `{name: v}` (key at 1, after MUTABLE; the 2-child shorthand `{name}` IS a
-// reference and falls through), KWARG `f(name: v)` (key at 0) and
-// OBJECT_PAT_ENTRY `{name: pat}` (key at 0; the bare `{name}` collapses to its
-// IDENTIFIER, a binding). Every walk that asks "is this name read here" has to
-// skip these.
-inline bool is_label_position(const peg::Ast& parent, size_t i) {
-  using namespace peg::udl;
-  if (parent.nodes[i]->tag != "IDENTIFIER"_) return false;
-  return (parent.tag == "OBJECT_PROPERTY"_ && i == 1 &&
-          parent.nodes.size() >= 3) ||
-         (parent.tag == "KWARG"_ && i == 0) ||
-         (parent.tag == "OBJECT_PAT_ENTRY"_ && i == 0 &&
-          parent.nodes.size() >= 2);
-}
-
-// First bare `self` reference in a generator's or an effect fn's body
-// (reject_self_in_body below states the rule for both). An effect body
-// becomes methods of a synthesized state class, so `self` there could only
-// ever name that internal object, never the enclosing receiver the user
-// means; a generator body is a named fn's, which has no receiver. Nested
-// functions are searched too: a closure defined in the body reads the body's
-// own `self`.
-//
-// Two things stop the walk. A function WRITTEN as an object-literal property
-// (`yield {m: fn () { self.x }}`) takes its `self` from whatever object it is
-// called on — ordinary code, so it stays legal. A class/trait declaration has
-// a `self` of its own in its methods. Non-reference identifiers are skipped
-// too: property names (`x.self`) and the label positions `is_label_position`
-// names.
-inline const peg::Ast* find_self_ref_in_fn_body(const peg::Ast& node) {
-  using namespace peg::udl;
-  if (node.tag == "CLASS_DECL"_ || node.tag == "TRAIT_DECL"_) return nullptr;
-  if (node.tag == "IDENTIFIER"_ && node.original_tag != "DOT"_ &&
-      node.token == "self")
-    return &node;
-  for (size_t i = 0; i < node.nodes.size(); i++) {
-    const auto& c = *node.nodes[i];
-    if (is_label_position(node, i)) continue;
-    if (node.tag == "OBJECT_PROPERTY"_ && is_fn_boundary(c.tag)) continue;
-    if (auto* s = find_self_ref_in_fn_body(c)) return s;
-  }
-  return nullptr;
-}
-
-// The refusal a generator body and an effect body share. `what` names the
-// body in the message; the rest of the sentence — and so the workaround a
-// user is told — is one string. `body` is parsed from `src`.
-inline void reject_self_in_body(const peg::Ast& body, const std::string& src,
-                                std::string_view what) {
-  if (auto* s = find_self_ref_in_fn_body(body)) {
-    auto p = source_pos(*s, src);
-    throw CulebraError(
-        "SyntaxError",
-        std::format("self is not available inside {} — bind it outside first "
-                    "(let me = self) and use that variable, or pass it as a "
-                    "parameter.", what),
-        p.line, p.col);
-  }
 }
 
 // First YIELD or YIELD_FROM that belongs to no `fn name(...)` declaration,
@@ -211,16 +150,11 @@ inline void check_generator_fn(const peg::Ast& fn, const std::string& src) {
           source_pos(*e, src).line, source_pos(*e, src).col);
     }
   }
-
-  // A generator is a named fn, called with no receiver: `self` in its body
-  // names nothing the user can mean. The enclosing value is one binding away.
-  reject_self_in_body(body, src,
-                      "a generator body (a function that uses yield)");
 }
 
-// Hold every generator in the tree to those rules. `handle` and `effect fn` are left
-// to the effects pass, which runs this over what it emits for them. A
-// generator's own body is walked too: a function value in it may declare
+// Hold every generator in the tree to those rules. `handle` and `effect fn`
+// are left to the effects pass, which runs this over what it emits for them.
+// A generator's own body is walked too: a function value in it may declare
 // another generator.
 inline void check_generators_in(const peg::Ast& ast, const std::string& src) {
   using namespace peg::udl;

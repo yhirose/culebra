@@ -2577,6 +2577,29 @@ the scope it is written in, visible to the closures that read it, and
 free to read the body's variables, whatever the `yield`s around it have
 done.
 
+`self` in the body is what it is in a function declared there: inside
+a method, that method's receiver (kept across the `yield`s, and after the
+method has returned), and a `NameError` where no receiver is around. A
+function written as an object property inside the body has its own
+`self`, the object it is called on (§10).
+
+```culebra
+class Shelf {
+  new() {
+    self.books = ['a', 'b']
+  }
+  titles() {
+    fn each() {
+      for b in self.books {
+        yield b
+      }
+    }
+    return each()
+  }
+}
+inspect(Shelf.new().titles().collect())  # => ['a', 'b']
+```
+
 A generator can also stop while suspended: the consumer leaves its
 `for`-in by `break`, `return` or an exception, a terminal method
 finishes early (§18.5), `dispose()` is called, or the last reference to
@@ -2645,22 +2668,6 @@ inspect(b.has_next())
 
   The check runs when the file is loaded, so every backend rejects the
   same programs at the same position.
-* `self` may not be referenced in a generator's body, where a plain
-  `fn` declared inside a method would read that method's receiver. The
-  parser rejects it:
-
-      SyntaxError: self is not available inside a generator body (a
-      function that uses yield) — bind it outside first (let me = self)
-      and use that variable, or pass it as a parameter.
-
-  The rule reaches a `fn` / lambda **defined** in the body. One shape
-  is exempt: a function that is an object property
-  (`yield {m: fn () { self.x }}`), whose `self` is the dynamic receiver
-  of the object it is called on (§10). A property name, object key, or
-  kwarg label spelled `self` is not a reference either. To reach an
-  enclosing receiver, capture it first: `let me = self` outside the
-  generator, then use `me` inside. An `effect fn` body refuses `self`
-  the same way; a `handle` body does not (§16).
 * A generator cannot be resumed while its body is running: `has_next()`
   or `next()` called on it from inside its own body raises `ValueError:
   generator already running`.
