@@ -136,7 +136,7 @@ inline void _jit_gen_frame_edges(const JitGenFrame* frame,
 // The frame object's count reached zero. A frame its iterator closed owns
 // only its closure by now; one that was never closed (the iterator's drop
 // was suppressed, as at program exit) lets go of what it holds without
-// running its defers, as the lowered state object does.
+// running its defers.
 inline void _jit_gen_frame_release(JitGenFrame* g) {
   if (g->state == JitGenFrame::Suspended) {
     std::vector<JitValue> values;

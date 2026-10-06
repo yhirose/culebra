@@ -15,8 +15,8 @@
 //   * A suspension point is a statement-level `perform op(args)` (SUSPEND) or
 //     a statement-level call to another effect fn (DELEGATE). The body may use
 //     arbitrary control flow — if / while / for (desugared to while) with
-//     break / continue / return — lowered by a flat-dispatch CPS builder (the
-//     same shape the generator transform uses; see `build_dispatch`). An
+//     break / continue / return — lowered by a flat-dispatch CPS builder (see
+//     `build_dispatch`). An
 //     expression-nested `perform` is first hoisted to statement level by an
 //     A-normalization pre-pass (`anf_program`), so the CPS layer only ever
 //     sees statement-level suspensions. A `perform` in a control-flow
@@ -26,18 +26,18 @@
 //     `__Eff.handle(<BODY as a computation>, "op", <handler adapter>)`. The
 //     driver (`__Eff.drive`, in src/preambles/effects.cul) walks the
 //     dynamically-scoped handler stack; `resume` is the one-shot continuation
-//     (an ordinary RC value, so leak-safety is inherited from the generator
-//     machinery it mirrors). Handles may
+//     (an ordinary RC value, so leak-safety is inherited from ordinary RC).
+//     Handles may
 //     nest; each computation's `_step` resume parameter is uniquely named so an
 //     inner computation doesn't shadow an enclosing one.
 //
-// Reuses the generator transform's source-slice / local-rewrite helpers
-// (generator_transform.h): everything here is the same "splice verbatim
-// source between suspension points, rebuild only the seams" recipe.
+// Built from the source-slice / local-rewrite helpers of state_lowering.h:
+// everything here is "splice verbatim source between suspension points,
+// rebuild only the seams".
 
 #pragma once
 
-#include "frontend/generator_transform.h"
+#include "frontend/state_lowering.h"
 #include "frontend/parser.h"
 
 #include <algorithm>
@@ -122,7 +122,7 @@ class EffectsLowerer {
   // by transform_effects_in); its body slices get `#@culebra:<line>` provenance
   // markers on entry, which every later text stage carries as comments so the
   // final fragment parse can restore original line numbers (see the marker
-  // helpers in generator_transform.h).
+  // helpers in state_lowering.h).
   // `path` names the parse label `src` belongs to (the file path for the
   // original, a fragment label for re-parses); the transform() walk uses it to
   // notice subtrees spliced in from other fragments.
@@ -141,9 +141,9 @@ class EffectsLowerer {
   // --- entry: rebuild the tree, lowering effect constructs -------------
   std::shared_ptr<peg::Ast> transform(std::shared_ptr<peg::Ast> ast) {
     using namespace peg::udl;
-    // A subtree from another fragment (e.g. a generator-lowered body spliced
-    // in by the mainline generator pass) indexes that fragment's buffer, not
-    // ours — hand the walk to a lowerer over the right slice base.
+    // A subtree from another fragment (e.g. a body spliced in by a nested
+    // lowering) indexes that fragment's buffer, not ours — hand the walk to a
+    // lowerer over the right slice base.
     if (!path_.empty() && ast->path != path_) {
       if (auto src = fragment_source_for(ast->path)) {
         return sub_lowerer(*src, false, ast->path).transform(ast);
@@ -855,13 +855,11 @@ class EffectsLowerer {
 
   // --- CPS: flat-dispatch state machine over control flow ----------------
   //
-  // The body lowers to a flat list of states — the same shape and reasoning as
-  // the generator's `CpsBuilder`: each basic block is a state, control flow
-  // becomes `self._eff_state = K; continue`
-  // jumps over one `while true` dispatch loop, and the variables of every
-  // scope a suspension splits live on the instance (PromotedLocals, so no
-  // liveness analysis). The transition
-  // primitives differ from the generator's: a `perform` returns SUSPEND (and
+  // The body lowers to a flat list of states: each basic block is a state,
+  // control flow becomes `self._eff_state = K; continue` jumps over one
+  // `while true` dispatch loop, and the variables of every scope a suspension
+  // splits live on the instance (PromotedLocals, so no liveness analysis).
+  // The transition primitives: a `perform` returns SUSPEND (and
   // on resume binds `_rv` to its target), an effect-fn call returns DELEGATE,
   // and the body's tail expression / a `return` assign `self._eff_val`. A
   // statement-level suspension is all the CPS layer sees; expression-nested
@@ -871,7 +869,7 @@ class EffectsLowerer {
   // one — culebra forbids shadowing an enclosing-fn variable).
   struct CpsState {
     std::vector<std::string> states;
-    std::vector<CpsLoop> loop_stack;  // innermost last (generator_transform.h)
+    std::vector<CpsLoop> loop_stack;  // innermost last (state_lowering.h)
     std::vector<std::string> defer_bodies;        // reverse source order (LIFO)
     int terminal = -1;                            // state that returns EFF_DONE
     std::string rv;                               // resume parameter name
@@ -885,8 +883,8 @@ class EffectsLowerer {
     }
   };
 
-  // `n` rewritten and anchored (see CpsBuilder::rw), placed only where a
-  // statement or a parenthesized expression starts.
+  // `n` rewritten and anchored, placed only where a statement or a
+  // parenthesized expression starts.
   std::string cps_rw(const peg::Ast& n,
                      PromotedLocals& rw) const {
     return anchored(rewrite_locals_to_self(n, src_, rw));
@@ -1400,8 +1398,8 @@ class EffectsLowerer {
   // A `defer` must sit at the effect body's top statement level: block-scope
   // semantics inside if / while / for can't be expressed by the flat state
   // machine (the flat defer list runs at body exit, not the inner block's).
-  // Reject a nested one, mirroring the generator's stance. Stops at fn / HANDLE
-  // boundaries — those open their own scope and are validated on their own.
+  // Reject a nested one. Stops at fn / HANDLE boundaries — those open their
+  // own scope and are validated on their own.
   void reject_nested_defers(const peg::Ast& body) const {
     using namespace peg::udl;
     for (auto* s : body_stmts(body)) {
@@ -1427,8 +1425,7 @@ class EffectsLowerer {
   // --- for-in desugar (to `while` + iterator) ----------------------------
   // The CPS engine works over `while`, so a `for x in e { … }` that carries a
   // suspension is rewritten to `let _it = __for_iter(e); while _it.has_next() {
-  // let x = _it.next(); … }` — the same source pre-pass the generator uses,
-  // keyed on `has_suspension` instead of `has_yield`. Only a single loop
+  // let x = _it.next(); … }`, keyed on `has_suspension`. Only a single loop
   // variable is supported; a destructuring `for k, v in …` with a suspension is
   // rejected. Stops at fn / HANDLE boundaries so a nested handle's own for-ins
   // aren't reattributed.
@@ -1551,8 +1548,8 @@ class EffectsLowerer {
   // effect body via the outer locals-to-`self` rewrite, so any `self` node is a
   // real capture; an interpolation's `"{self.x}"` is a node too and is redirected.
   // Stops at CLASS_DECL: `self` inside a class's methods is that class's own
-  // instance (e.g. the machinery of a generator fn the mainline pass already
-  // lowered in place), never an enclosing-computation read.
+  // instance (e.g. a class declared in the body), never an
+  // enclosing-computation read.
   static bool captures_outer(const peg::Ast& node) {
     using namespace peg::udl;
     if (node.tag == "IDENTIFIER"_ && node.token == "self") return true;
@@ -1748,7 +1745,7 @@ class EffectsLowerer {
     // an enclosing method's receiver, and `handle { self.v + perform … }`
     // inside a method is ordinary code. (A handle written INSIDE an effect fn
     // body IS covered, by this walk: no receiver survives there either.)
-    reject_self_in_lowered_body(body, src_, "an effect fn body");
+    reject_self_in_body(body, src_, "an effect fn body");
 
     auto param_names = collect_positional_param_names(params_ast);
     // Prefix from the shared constant: both backends recognize the state
@@ -1967,12 +1964,12 @@ class EffectsLowerer {
   }
 
   // Re-parse a synthesized `fn name(...) { … }` and return its MULTIFN_DECL,
-  // then run the generator pass over the fragment (a nested named generator fn
-  // carried verbatim into a `_step` body is lowered here — the mainline chain
-  // ran before this text existed) and recursively lower any effect constructs
-  // it still carries (composition of nested handles / effect fns). The
-  // synthesized source is registered for lifetime via the generator
-  // transform's source store. `around` are the names visible where the
+  // then check the generators in the fragment (a nested named generator fn
+  // carried verbatim into a `_step` body is held to the same rules — the
+  // module-level check ran before this text existed) and recursively lower any
+  // effect constructs it still carries (composition of nested handles /
+  // effect fns). The synthesized source is registered for lifetime
+  // (parse_registered_source). `around` are the names visible where the
   // fragment goes.
   std::shared_ptr<peg::Ast> reparse_decl(std::shared_ptr<std::string> synth,
                                          int64_t fallback_line,
@@ -2010,14 +2007,13 @@ class EffectsLowerer {
     return reposition_fragment(out, *synth, fallback_line, label);
   }
 
-  // The generator pass, then this one, over a fragment's `fn`, each under
-  // the names visible where the fragment goes.
+  // The generator check, then this pass, over a fragment's `fn`, this one
+  // under the names visible where the fragment goes.
   std::shared_ptr<peg::Ast> lower_fragment(std::shared_ptr<peg::Ast> fn,
                                            const std::string& synth,
                                            const std::string& label,
                                            std::vector<std::string> around) {
-    Surroundings gen{fn.get(), around};
-    fn = transform_generators_in(fn, synth, gen);
+    check_generators_in(*fn, synth);
     auto sub = sub_lowerer(synth, false, label);
     sub.names_ = Surroundings{fn.get(), std::move(around)};
     return sub.transform(fn);
@@ -2048,19 +2044,18 @@ inline std::shared_ptr<peg::Ast> transform_effects_in(
   return lowerer.transform(ast);
 }
 
-// The generator and effects transformation passes over a module parsed as
+// The generator check and the effects lowering over a module parsed as
 // written (`parse()`), `expr` its source.
 inline std::shared_ptr<peg::Ast> apply_transforms(
     std::shared_ptr<peg::Ast> ast, const std::string& path, std::string& expr) {
-  Surroundings names{ast.get()};
-  ast = transform_generators_in(ast, expr, names);
+  check_generators_in(*ast, expr);
   auto out = transform_effects_in(ast, expr);
   reject_orphan_yield(*out);
   reject_sized_spread_mix(*out);
   reject_or_pattern_binding(*out);
   reject_invalid_new(*out);
-  // CULEBRA_TRANSFORM_STATS=1 reports how much culebra source the generator +
-  // effects passes synthesized for this module — the input to every backend's
+  // CULEBRA_TRANSFORM_STATS=1 reports how much culebra source the effects
+  // lowering synthesized for this module — the input to every backend's
   // compile, so it bounds what any codegen-side change can save.
   if (std::getenv("CULEBRA_TRANSFORM_STATS")) {
     auto sources = fragment_sources_snapshot();
@@ -2081,8 +2076,8 @@ inline std::shared_ptr<peg::Ast> apply_transforms(
   return out;
 }
 
-// Public parse entry: `parse()` plus the generator and effects
-// transformation passes. Every caller that wants `yield` / effects support
+// Public parse entry: `parse()` plus the generator check and the effects
+// lowering. Every caller that wants `yield` / effects support
 // (the REPL, an embedder, the stdlib preamble) routes through here; the
 // module loader runs the two steps itself, with the load's scope checks
 // between them.

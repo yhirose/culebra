@@ -1,4 +1,4 @@
-// Conformance: runtime errors inside effect / generator bodies report the
+// Conformance: runtime errors inside effect bodies (and generators) report the
 // ORIGINAL source line and column, not a transform-fragment position. Each
 // copy of user source the transforms make carries an anchor naming where it
 // came from, and the final fragment parse rebuilds the AST with the positions
@@ -107,7 +107,7 @@ check("gen-while-yield", [102, 11], fn () {
   gen_loop().collect()
 })
 
-// generator: error at a yield inside a (desugared) single-line for body
+// generator: error at a yield inside a single-line for body
 fn gen_for() {
   for v in [1, 2] { yield v + "s" }  // kept single-line: fmt-target, see header
 }
@@ -156,8 +156,8 @@ check("marker-imitation", [151, 13], fn () {
 })
 
 // error inside a named generator fn nested in an effect body reports the
-// original line (markers survive the effects fragment AND the generator
-// re-lowering of the nested fn)
+// original line (markers survive the effects fragment, and the nested fn is
+// held to the generator rules)
 effect fn ng_body() {
   let x = perform ask()
   fn g(n) {
@@ -171,7 +171,7 @@ check("nested-gen-in-effect", [165, 11], fn () {
 })
 
 // error inside a handle body nested in a generator reports the original line
-// (the effects pass sliced it from the generator fragment via the registry)
+// (the effects pass lowers it where it stands in the generator)
 fn eg_gen() {
   let v = handle {
     let x = perform ask()

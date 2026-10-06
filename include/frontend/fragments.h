@@ -1,6 +1,6 @@
 // The source a lowering synthesizes, and where its text came from.
 //
-// The generator and effects transforms rewrite a body's source text and
+// The effects transform rewrites a body's source text and
 // re-parse it, so the re-parsed AST's positions index a synthesized buffer,
 // not the user's file. Every run of user code they copy into one is recorded
 // (MappedSource), and a copy is placed into machinery text only behind an
@@ -147,7 +147,7 @@ struct SourceEdit {
 //
 // Process-global, and written from several threads at once: every isolate
 // resolves the lazy stdlib modules on its own thread and those modules contain
-// generators, so N children can be inside the transform together. (It cannot
+// effects, so N children can be inside the transform together. (It cannot
 // be thread_local either — the builtin-traits preamble is parsed once and its
 // AST is shared by every thread, so the buffers it views must outlive the
 // thread that made them.) Hence the lock, and hence accessors that do the work
@@ -168,8 +168,8 @@ struct SourceAnchor {
 // The synthesized buffers a lowering's AST views, and the parse label each was
 // read under. `by_label` lets a transform that walks a tree with spliced-in
 // subtrees (identified by a different `node->path`) resolve the right slice
-// base — e.g. the effects pass reaching a construct inside a generator-lowered
-// body. Non-unique labels (internal re-parses that never splice nodes into the
+// base — e.g. the effects pass reaching a construct inside a body another
+// lowering spliced in. Non-unique labels (internal re-parses that never splice nodes into the
 // final AST) may overwrite each other; only `next_fragment_label` labels are
 // ever looked up. `anchors` are the records `anchored` wrote, by id; their runs
 // point into buffers this ledger holds or into the user's own source.
@@ -216,9 +216,8 @@ inline std::vector<std::shared_ptr<std::string>> fragment_sources_snapshot() {
 
 // Parse a synthesized buffer after registering it (the resulting AST's
 // string_views point into it). The single place that pairs the lifetime store
-// with `parse` — used by the generator wrapper parse and the effects
-// transform's re-parses alike, so the "register before parse" rule lives in
-// one spot.
+// with `parse` — used by every re-parse of a synthesized fragment, so the
+// "register before parse" rule lives in one spot.
 inline std::shared_ptr<peg::Ast> parse_registered_source(
     const char* label, std::shared_ptr<std::string> synthesized) {
   {

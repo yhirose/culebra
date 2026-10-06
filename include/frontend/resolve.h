@@ -121,7 +121,7 @@ struct Scope {
   // The symbol a function scope's function is bound to (a `fn name`, or the
   // name a literal is assigned to), else kNone.
   size_t owner = kNone;
-  // A method of a state class a generator or effect lowering synthesized. It
+  // A method of a state class the effect lowering synthesized. It
   // holds a body written in the function around the class, which is where
   // its declarations were checked against the enclosing functions'.
   bool lowered = false;

@@ -2103,7 +2103,7 @@ target_include_directories(source_newlines_test PRIVATE include
                            vendor/cpp-peglib)
 add_test(NAME source_newlines_test COMMAND source_newlines_test)
 
-# The fragment ledger's caller-owned form (include/frontend/generator_transform.h):
+# The fragment ledger's caller-owned form (include/frontend/fragments.h):
 # a lowering given its own ledger leaves the process ledger untouched and frees
 # its synthesized buffers with that ledger.
 add_executable(fragment_ledger_test test/fragment_ledger_test.cc)

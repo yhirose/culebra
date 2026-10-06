@@ -3039,11 +3039,10 @@ inline int8_t prop_key_kind(std::string_view name) {
                              (name == "drop" ? 2 : 0));
 }
 
-// Two lowerings rewrite a body into a synthesized class and move the
-// variables of every scope a suspension splits to fields on the instance —
-// the generator CPS transform (generator_transform.h) and the effects
-// transform (effects_transform.h), which shares its PromotedLocals. These
-// are the class names they emit.
+// The effects transform (effects_transform.h) rewrites a body into a
+// synthesized class and moves the variables of every scope a suspension
+// splits to fields on the instance (PromotedLocals, state_lowering.h). These
+// are the class names it emits.
 //
 // Such an instance's own slots are compiler storage, not user object slots,
 // so a value read of one must NOT bind `self` the way `o.f` does. Binding
@@ -3052,21 +3051,19 @@ inline int8_t prop_key_kind(std::string_view name) {
 // own receiver. The class's own methods live on the proto, are not own slots,
 // and keep binding normally. Both backends test this once per class
 // declaration and flag the class meta.
-inline constexpr std::string_view kGeneratorStateClassPrefix = "_Gen_";
 inline constexpr std::string_view kEffectComputationClassPrefix = "_EffComp_";
 inline constexpr std::string_view kEffectBodyClassPrefix = "_EffBody_";
 
 // `parse_path` is the AST node's parse label. A lowering re-parses its
 // synthesized source under a `<stem#N>` label (next_fragment_label), which no
 // user file path can be, so requiring it keeps a user class that happens to
-// be spelled `_Gen_x` on ordinary binding semantics.
+// be spelled `_EffBody_x` on ordinary binding semantics.
 inline bool is_lowered_state_class(std::string_view class_name,
                                    std::string_view parse_path) {
   if (!parse_path.starts_with('<') ||
       parse_path.find('#') == std::string_view::npos)
     return false;
-  return class_name.starts_with(kGeneratorStateClassPrefix) ||
-         class_name.starts_with(kEffectComputationClassPrefix) ||
+  return class_name.starts_with(kEffectComputationClassPrefix) ||
          class_name.starts_with(kEffectBodyClassPrefix);
 }
 

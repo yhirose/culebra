@@ -6965,6 +6965,7 @@ class Compiler {
         break;
       case "FOR"_:
       case "WHILE"_:
+      case "YIELD_FROM"_:
       case "BREAK"_:
       case "CONTINUE"_:
       case "RETURN"_:
@@ -7031,6 +7032,9 @@ class Compiler {
         break;
       case "WHILE"_:
         compile_while(ast);
+        break;
+      case "YIELD_FROM"_:
+        compile_yield_from(ast);
         break;
       case "LEXICAL_SCOPE"_:
         // `{ ... }` statement: its own scope, and its own defer scope
@@ -9321,8 +9325,7 @@ class Compiler {
       // the frame, so they are released after the frame's defers run, not
       // before — and the unwind ladder covers them.
       // A generator's body runs when it is first resumed.
-      if (culebra::gen_frames_enabled() && ast.tag == "MULTIFN_DECL"_ &&
-          culebra::fn_body_has_yield(body)) {
+      if (ast.tag == "MULTIFN_DECL"_ && culebra::fn_body_has_yield(body)) {
         fc.chunk_.is_generator = true;
         fc.emit_gen_suspend(ast, Op::GenStart, 0);
       }
@@ -10016,41 +10019,12 @@ class Compiler {
         ident && !sink && info_->captured_locals.contains(std::string(id.token));
 
     int32_t broke = alloc_broke_slot(ast, fv.nobreak);
-    push_scope(ast);
-    int32_t base = alloc_slot(ast, "(for.disposed)");
-    alloc_slot(ast, "(for.iterable)");
-    alloc_slot(ast, "(for.set.arr)");
-    alloc_slot(ast, "(for.src)");
-    alloc_slot(ast, "(for.iter)");
-    alloc_slot(ast, "(for.elem)");
-    alloc_slot(ast, "(for.kind)");
-    alloc_slot(ast, "(for.pos)");
-    alloc_slot(ast, "(for.count)");
-    alloc_slot(ast, "(for.ptr)");
-    alloc_slot(ast, "(for.has_next)");
-    alloc_slot(ast, "(for.next)");
-    scopes_.back().dispose_base = base;
-    for_bases_.push_back(base);
-
-    // The iterable is evaluated once, before the loop, and both the
-    // not-iterable error and a broken protocol report there.
-    stamp(*fv.iter);
-    store_into(base + kForIterable, compile_expr(*fv.iter),
-               /*dst_is_fresh=*/true);
-    emit(Op::ForOpen, base);
-
+    ForCursor cur = open_for_cursor(ast, *fv.iter);
+    int32_t base = cur.base;
     loops_.push_back({next_slot_, {}, {}, broke,
                       scopes_.size(), enter_loop_label(fv.label)});
-    size_t head_ix = chunk_.code.size();
-    // A step's positionless throws report at the statement, not at the
-    // iterable expression the open reports at. The position rides in c/d as
-    // immediates: the step runs once per iteration, and a positions-table
-    // search there is the loop's hottest constant.
-    stamp(ast);
-    size_t next_ix = emit(Op::ForNext, base, 0,
-                          static_cast<int32_t>(pend_line_),
-                          static_cast<int32_t>(pend_col_));
-    emit(Op::Safepoint);  // the JIT polls at the top of the body
+    step_for_cursor(ast, cur);
+    size_t head_ix = cur.head_ix;
 
     {
       // One scope per iteration, holding the binding and the body's own
@@ -10104,14 +10078,73 @@ class Compiler {
       pop_scope();
     }
 
-    emit(Op::Jump, static_cast<int32_t>(head_ix));
-    size_t exit_ix = chunk_.code.size();
-    patch_jump(next_ix, exit_ix);
+    size_t exit_ix = turn_for_cursor(cur);
 
     auto& lc = loops_.back();
     for (size_t j : lc.continue_jumps) patch_jump(j, head_ix);
     for (size_t j : lc.break_jumps) patch_jump(j, exit_ix);
     loops_.pop_back();
+    close_for_cursor(cur);
+    // After the iterator is closed and the iteration's slots are gone: the
+    // order the other backends run it in.
+    compile_nobreak_tail(fv.nobreak, broke);
+  }
+
+  // A generic for-in's cursor, in the four pieces a walk is made of: `for`
+  // puts a body between the step and the turn, `yield from` a suspension.
+  struct ForCursor {
+    int32_t base;         // the slot run (ForSlot), in a scope of its own
+    size_t head_ix = 0;   // the step: where a turn comes back to
+    size_t next_ix = 0;   // its ForNext, patched to the exit
+  };
+
+  ForCursor open_for_cursor(const peg::Ast& ast, const peg::Ast& iter) {
+    push_scope(ast);
+    int32_t base = alloc_slot(ast, "(for.disposed)");
+    alloc_slot(ast, "(for.iterable)");
+    alloc_slot(ast, "(for.set.arr)");
+    alloc_slot(ast, "(for.src)");
+    alloc_slot(ast, "(for.iter)");
+    alloc_slot(ast, "(for.elem)");
+    alloc_slot(ast, "(for.kind)");
+    alloc_slot(ast, "(for.pos)");
+    alloc_slot(ast, "(for.count)");
+    alloc_slot(ast, "(for.ptr)");
+    alloc_slot(ast, "(for.has_next)");
+    alloc_slot(ast, "(for.next)");
+    scopes_.back().dispose_base = base;
+    for_bases_.push_back(base);
+
+    // The iterable is evaluated once, before the loop, and both the
+    // not-iterable error and a broken protocol report there.
+    stamp(iter);
+    store_into(base + kForIterable, compile_expr(iter), /*dst_is_fresh=*/true);
+    emit(Op::ForOpen, base);
+    return {base};
+  }
+
+  void step_for_cursor(const peg::Ast& ast, ForCursor& cur) {
+    cur.head_ix = chunk_.code.size();
+    // A step's positionless throws report at the statement, not at the
+    // iterable expression the open reports at. The position rides in c/d as
+    // immediates: the step runs once per iteration, and a positions-table
+    // search there is the loop's hottest constant.
+    stamp(ast);
+    cur.next_ix = emit(Op::ForNext, cur.base, 0,
+                       static_cast<int32_t>(pend_line_),
+                       static_cast<int32_t>(pend_col_));
+    emit(Op::Safepoint);  // the JIT polls at the top of the body
+  }
+
+  // Back to the step; returns where the walk leaves once it is drained.
+  size_t turn_for_cursor(const ForCursor& cur) {
+    emit(Op::Jump, static_cast<int32_t>(cur.head_ix));
+    size_t exit_ix = chunk_.code.size();
+    patch_jump(cur.next_ix, exit_ix);
+    return exit_ix;
+  }
+
+  void close_for_cursor(const ForCursor& cur) {
     // The drain and break paths close the iterator here rather than from
     // pop_scope's ladder: this instruction is still inside the scope's own
     // unwind range, so a throwing dispose runs that scope's releases on its
@@ -10119,12 +10152,21 @@ class Compiler {
     // an unwind reach it through the ladder and the cleanup step instead —
     // both from inside the range already — and the run's latch is what keeps
     // the three from closing it twice.
-    emit(Op::ForDispose, base);
+    emit(Op::ForDispose, cur.base);
     for_bases_.pop_back();
     pop_scope();
-    // After the iterator is closed and the iteration's slots are gone: the
-    // order the other backends run it in.
-    compile_nobreak_tail(fv.nobreak, broke);
+  }
+
+  // `yield from e`: each element `e` hands out is this generator's next
+  // value, its `+1` going from the cursor straight to whoever resumed the
+  // frame. Closing at that suspension closes `e`'s iterator on the way out,
+  // as a `return` out of a for-in body does.
+  void compile_yield_from(const peg::Ast& ast) {
+    ForCursor cur = open_for_cursor(ast, *ast.nodes[0]);
+    step_for_cursor(ast, cur);
+    emit_gen_suspend(ast, Op::Yield, cur.base + kForElem);
+    turn_for_cursor(cur);
+    close_for_cursor(cur);
   }
 
   void compile_for_counted_range(const peg::Ast& ast,
@@ -17212,8 +17254,8 @@ struct Exec {
           // The run is receiver-then-args; the callee consumes all of it.
           // culebra_runtime_call_receiver is not mirrored: it only rewrites a
           // lowered state object's promoted body local into "no receiver",
-          // and those protos come from the generator / effects transforms the
-          // slice rejects outright.
+          // and those protos come from the effects transform the slice
+          // rejects outright.
           JitValue r;
           try {
             // Rooted: callee (regs[b]), receiver (regs[c]) and args

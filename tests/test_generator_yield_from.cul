@@ -1,6 +1,6 @@
-// Stage 6b: yield from delegation via phase machine.
+// `yield from` delegation.
 //
-// Verifies the four patterns the phase machine must handle:
+// The four patterns:
 //   P1 — single `yield from g` at body top level
 //   P2 — sequential `yield from a; yield from b`
 //   P3 — `for x in xs { yield from f(x) }` (delegate inside a for-in)
@@ -133,5 +133,168 @@ assert_eq(jw[1], 2)
 assert_eq(jw[2], 3)
 assert_eq(jw[3], 4)
 assert_eq(jw[4], 5)
+
+// --- every kind of iterable a `for` walks ---
+assert_eq(passthrough(1..4).collect(), [1, 2, 3])
+assert_eq(passthrough(1..=4).collect(), [1, 2, 3, 4])
+assert_eq(passthrough('añb').collect(), ['a', 'ñ', 'b'])
+assert_eq(passthrough({a: 1, b: 2}).collect(), [('a', 1), ('b', 2)])
+assert_eq(passthrough((7, 8)).collect(), [7, 8])
+assert_eq(passthrough([3, 4].to_set()).collect(), [3, 4])
+assert_eq(passthrough([]).collect(), [])
+fn yf_literals() {
+  yield from 1..3
+  yield from (10..=11)
+  yield from [1, 2].map(|x| x * 100)
+}
+assert_eq(yf_literals().collect(), [1, 2, 10, 11, 100, 200])
+
+// --- closing at a `yield from` closes what it walks, once, innermost first ---
+mut yf_log = []
+class YfRes {
+  new(name) {
+    self.name = name
+  }
+  drop() {
+    yf_log.push("drop {self.name}")
+  }
+}
+class YfSrc {
+  new(name, n) {
+    self.name = name
+    self.n = n
+    self.i = 0
+  }
+  iter() {
+    self
+  }
+  has_next() {
+    self.i < self.n
+  }
+  next() {
+    self.i = self.i + 1
+    "{self.name}{self.i}"
+  }
+  dispose() {
+    yf_log.push("dispose {self.name}")
+  }
+}
+fn yf_deleg(tag) {
+  defer {
+    yf_log.push("defer {tag}")
+  }
+  let r = YfRes.new(tag)
+  yield "{tag}-head"
+  yield from YfSrc.new(tag, 3)
+  yield "{tag}-tail"
+}
+fn yf_nest(tag) {
+  defer {
+    yf_log.push('defer nest')
+  }
+  yield from yf_deleg(tag)
+  yield 'nest-tail'
+}
+for v in yf_deleg('a') {
+  yf_log.push(v)
+  break if v == 'a2'
+}
+assert_eq(yf_log, ['a-head', 'a1', 'a2', 'dispose a', 'defer a', 'drop a'])
+yf_log = []
+for v in yf_deleg('b') {
+  yf_log.push(v)
+}
+assert_eq(
+  yf_log,
+  ['b-head', 'b1', 'b2', 'b3', 'dispose b', 'b-tail', 'defer b', 'drop b'],
+)
+yf_log = []
+for v in yf_nest('c') {
+  yf_log.push(v)
+  break if v == 'c1'
+}
+assert_eq(
+  yf_log,
+  ['c-head', 'c1', 'dispose c', 'defer c', 'drop c', 'defer nest'],
+)
+yf_log = []
+{
+  let g = yf_nest('d')
+  g.next()
+  g.next()
+}
+assert_eq(yf_log, ['dispose d', 'defer d', 'drop d', 'defer nest'])
+yf_log = []
+{
+  let g = yf_nest('e')
+  g.next()
+  g.dispose()
+  assert_eq(g.has_next(), false)
+  g.dispose()
+}
+assert_eq(yf_log, ['defer e', 'drop e', 'defer nest'])
+
+// --- a throw out of the delegate ends this generator too ---
+fn yf_inner_throw() {
+  yield 1
+  to_long('x')
+}
+fn yf_outer_throw() {
+  defer {
+    yf_log.push('outer defer')
+  }
+  yield 0
+  yield from yf_inner_throw()
+  yield 99
+}
+yf_log = []
+let yf_thrown = yf_outer_throw()
+assert_eq(yf_thrown.next(), 0)
+assert_eq(yf_thrown.next(), 1)
+assert_throws('TypeError', fn () {
+  yf_thrown.next()
+})
+assert_eq(yf_log, ['outer defer'])
+assert_eq(yf_thrown.has_next(), false)
+
+// --- where a value is read off the statement around it ---
+fn yf_value(xs) {
+  let r = if xs.size() > 0 {
+    yield from xs
+  }
+  yield r
+}
+assert_eq(yf_value([1, 2]).collect(), [1, 2, nil])
+fn yf_modifier(xs, on) {
+  yield from xs if on
+  yield 'end'
+}
+assert_eq(yf_modifier([1, 2], true).collect(), [1, 2, 'end'])
+assert_eq(yf_modifier([1, 2], false).collect(), ['end'])
+
+// --- inside labelled loops, and with a closure's cell live across it ---
+fn yf_labelled(xss) {
+  outer: for xs in xss {
+    while true {
+      yield from xs
+      continue outer if xs.size() == 1
+      break outer
+    }
+  }
+  yield -1
+}
+assert_eq(yf_labelled([[1], [2], [3, 4], [5]]).collect(), [1, 2, 3, 4, -1])
+fn yf_cell() {
+  mut total = 0
+  let add = |x| total = total + x
+  for xs in [[1, 2], [3]] {
+    yield from xs.map(|x| {
+      add(x)
+      x
+    })
+  }
+  yield total
+}
+assert_eq(yf_cell().collect(), [1, 2, 3, 6])
 
 IO.inspect('test_generator_yield_from OK')

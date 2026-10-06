@@ -1,5 +1,4 @@
-// CPS spike: generators whose control flow exceeds the Stage 3
-// "single terminal loop, single yield-bearing stmt" shape.
+// Generators whose control flow goes beyond one loop with one yield in it.
 //   - post-loop yield   (chunk / group_by tail flush)
 //   - code after yield within a branch (chunk's `yield buf; buf = []`)
 //   - multiple yields per loop iteration (intersperse)

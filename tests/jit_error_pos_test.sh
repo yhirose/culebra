@@ -66,9 +66,9 @@ check_same "break outside loop" 'break'
 check_same "continue in fn"     'fn f() { continue }'
 
 # A yield outside a `fn name(...)` declaration (class method, object
-# property fn, fn expression, top level) is never generator-transformed;
-# it used to run silently with backend-dependent results (interp '' vs
-# JIT last yield value). Now a shared parse-time SyntaxError.
+# property fn, fn expression, top level) belongs to no generator; it used to
+# run silently with backend-dependent results (interp '' vs JIT last yield
+# value). Now a shared parse-time SyntaxError.
 check_same "yield top level"      'yield 1'
 check_same "yield in class method" 'class B { m() { yield 1 } }
 B().m()'
@@ -77,10 +77,10 @@ o.g()'
 check_same "yield in fn expr"     'let g = fn () { yield 9 }
 g()'
 
-# `self` in a generator's body used to silently resolve to the synthesized
-# state object (never the enclosing receiver). Now a shared parse-time
-# SyntaxError pointing at the self token. Labels (keys, kwargs, `x.self`) stay
-# legal — see test_generator_self.cul.
+# `self` in a generator's body names no receiver (a generator is a named fn;
+# when it was lowered to a state class it silently resolved to that object).
+# A shared parse-time SyntaxError pointing at the self token. Labels (keys,
+# kwargs, `x.self`) stay legal — see test_generator_self.cul.
 check_same "self in generator"        'fn g() { yield self }
 g()'
 check_same "self.prop in generator"   'fn g() { yield self.name }
@@ -92,9 +92,9 @@ check_same "let self in generator"    'fn g() { let self = 1
 yield self }
 g()'
 # The rule reaches nested functions: a closure defined in the body reads the
-# state object through the body method's own `self`, so it is refused where it
-# is written. A function that is an object property is exempt — there `self` is
-# the dynamic receiver (test_generator_self.cul asserts that side).
+# body's own `self`, so it is refused where it is written. A function that is
+# an object property is exempt — there `self` is the dynamic receiver
+# (test_generator_self.cul asserts that side).
 check_same "self in nested fn"        'fn g() { yield (fn () { self })() }
 g()'
 # An effect fn body is the same shape — a named declaration whose lowering
@@ -182,16 +182,65 @@ check_same "tensor sum bad axis"     'Tensor.zeros([2, 3]).sum(9)'
 check_same "tensor slice oob"        'Tensor.zeros([3]).slice(5, 9)'
 check_same "tensor reshape nested"   'let x = 1 + Tensor.zeros([6]).reshape([4]).sum()'
 
-# A named function definition inside a generator body has no CPS lowering (the
-# JIT didn't bind it → NameError, while the interp ran it — a divergence). The
-# generator transform now rejects it uniformly before eval, like yield-in-try.
-# Anonymous fn / lambda VALUES inside a generator still work (not rejected).
+# A named function definition inside a generator body is refused before
+# anything runs, like yield-in-try (the state-machine lowering had no place to
+# bind it, and the rule outlived that lowering). Anonymous fn / lambda VALUES
+# inside a generator still work (not rejected).
 check_same "fn-def in generator"        'fn g() { fn h(x) { x * 3 }; yield h(2) }
 g().collect()'
 check_same "nested generator-def"       'fn g() { fn inner() { yield 1 }; for x in inner() { yield x } }
 g().collect()'
 check_same "fn-def in if in generator"  'fn g() { if true { fn h() { 1 } }; yield 1 }
 g().collect()'
+
+# What a generator refuses, word for word and where: the rules date from the
+# state-machine lowering and outlived it, so nothing else holds their text.
+GEN_IN_TRY="SyntaxError: yield cannot appear inside a try-catch or defer block. Move the try to the yielded expression value (yield try { ... } catch e { ... }) or use a top-level \`defer { ... }\` for cleanup."
+GEN_ORPHAN="SyntaxError: yield can only appear inside a \`fn name(...) { ... }\` declaration body — a class method, an object property's function, or a fn expression cannot be a generator. Declare a named fn and call it instead."
+GEN_SELF="SyntaxError: self is not available inside a generator body (a function that uses yield) — bind it outside first (let me = self) and use that variable, or pass it as a parameter."
+check_eq "yield in try"           'fn g() { try { yield 1 } catch e { 0 } }
+g().collect()' "$GEN_IN_TRY at 1:16."
+check_eq "yield in catch"         'fn g() { try { 1 } catch e { yield 2 } }
+g().collect()' "$GEN_IN_TRY at 1:30."
+check_eq "yield in defer"         'fn g() {
+  defer { yield 1 }
+  yield 2
+}
+g().collect()' "$GEN_IN_TRY at 2:11."
+check_eq "yield from in try"      'fn g() { try { yield from [1] } catch e { 0 } }
+g().collect()' "$GEN_IN_TRY at 1:16."
+check_eq "effect fn in generator" 'fn g() {
+  effect fn ask()
+  yield 1
+}
+g().collect()' "SyntaxError: an \`effect fn\` declaration cannot appear inside a generator body — define it outside the generator. at 2:3."
+check_eq "fn-def in generator, the text" 'fn g() { fn h(x) { x * 3 }; yield h(2) }
+g().collect()' "SyntaxError: a named function definition cannot appear inside a generator body (a function that uses yield). Bind a lambda instead (let f = |x| ... / let f = fn (x) { ... }) or define the function outside the generator. at 1:10."
+check_eq "self in generator, the text" 'fn g() { yield self }
+g().collect()' "$GEN_SELF at 1:16."
+check_eq "yield in fn expr, the text" 'let g = fn () { yield 9 }
+g()' "$GEN_ORPHAN at 1:17."
+check_eq "yield from in method"   'class B { m() { yield from [1] } }
+B().m()' "$GEN_ORPHAN at 1:17."
+check_eq "yield top level, the text" 'yield 1' "$GEN_ORPHAN at 1:1."
+# A generator declared in a function value inside another generator's body is
+# held to the same rules (the walk goes on into a generator's body).
+check_eq "generator in a fn value in a generator" 'fn g() {
+  let f = fn () {
+    fn inner() { try { yield 1 } catch e { 0 } }
+    inner().collect()
+  }
+  yield f()
+}
+g().collect()' "$GEN_IN_TRY at 3:24."
+check_eq "self in a generator in a fn value in a generator" 'fn g() {
+  let f = fn () {
+    fn inner() { yield self }
+    inner().collect()
+  }
+  yield f()
+}
+g().collect()' "$GEN_SELF at 3:24."
 
 # Reading an unknown member of a builtin namespace raises AttributeError at the
 # access site (naming the member), instead of silently yielding nil and failing

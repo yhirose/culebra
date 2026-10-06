@@ -1844,7 +1844,7 @@ inline void _jit_fill_specials(JitObject* meta) {
 // retaining, and the meta's own destructor releases them. (A stray retain
 // here left the caller's original +1 unreleased — a class declared inside a
 // function leaked one closure per method on every call.)
-// `lowered_state` flags a class a lowering synthesized (generator / effects
+// `lowered_state` flags a class a lowering synthesized (an effects
 // state machine), so a value read of one of its instances' own slots stays
 // unbound — see culebra_runtime_bind_method_value and the interp setting
 // OrderedSymbolMap::lowered_state on the same object.

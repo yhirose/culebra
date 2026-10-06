@@ -400,12 +400,11 @@ fn th_gen() {
 assert_eq(th_gen().collect(), ["g:boom"])
 
 // --- promoted body locals stay values, not methods -------------------------
-// The effects lowering shares generator_transform's locals-to-`self` machinery
-// (PromotedLocals, rewrite_locals_to_self), so a local promoted onto an
-// _EffComp_ / _EffBody_ state object must
-// read back unbound — same contract tests/test_generator_self.cul pins for
-// _Gen_. Both backends agreed while this was broken, so difftest cannot see
-// it; these need value asserts.
+// The effects lowering moves a body's locals to `self` (PromotedLocals,
+// rewrite_locals_to_self in state_lowering.h), so a local promoted onto an
+// _EffComp_ / _EffBody_ state object must read back unbound. Both backends
+// agreed while this was broken, so difftest cannot see it; these need value
+// asserts.
 fn pl_mk_plain() {
   return fn () {
     1

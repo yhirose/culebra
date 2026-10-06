@@ -1,10 +1,9 @@
-// `self` and generators: the state-machine lowering runs the body inside
-// the synthesized class's methods, so a bare `self` there could only name
-// the internal state object — it is rejected at parse time (see
-// jit_error_pos_test.sh for the rejection side). This file pins what stays
-// LEGAL: non-reference spellings of `self`, a fn written as an object
-// property (whose `self` is the receiver it is called on), and the sanctioned
-// capture idiom.
+// `self` and generators: a generator is a named fn, called with no receiver,
+// so a bare `self` in its body names nothing the user can mean — it is
+// rejected at parse time (see jit_error_pos_test.sh for the rejection side).
+// This file pins what stays LEGAL: non-reference spellings of `self`, a fn
+// written as an object property (whose `self` is the receiver it is called
+// on), and the sanctioned capture idiom.
 
 // A property named `self` is a label, not a reference.
 fn g_key() {
@@ -66,10 +65,9 @@ fn mk_self() {
 }
 
 // A function from OUTSIDE, called bare in the body, is called the way a bare
-// call is called anywhere: with no receiver. The lowering promotes the local
-// onto the state object, so the call used to arrive as a method and hand the
-// state object over as `self` — the last way a body's `self` escaped after
-// the parse-time rule above.
+// call is called anywhere: with no receiver. (When a generator was lowered to
+// a state class the local lived on the state object, and the call once
+// arrived as a method with that object as `self`.)
 fn g_bare() {
   let f = mk_self()
   yield try {
@@ -106,12 +104,13 @@ fn g_local_calls() {
 }
 assert_eq(g_local_calls().collect(), [5, 2, "one and one is 2"])
 
-// --- Promoted locals are storage, not methods -----------------------------
-// The lowering moves every body local onto the state object. Reading one back
-// must hand out the value itself: binding it would make the state object a
-// permanent receiver, which is observable three ways below. Both backends
-// agreed with each other even while this was broken, so difftest cannot see
-// it — these need value asserts.
+// --- A body's locals are values, not methods ------------------------------
+// When a generator was lowered to a state class its locals lived on the state
+// object, and reading one back had to hand out the value itself: binding it
+// made the state object a permanent receiver, which showed three ways below.
+// A body that keeps its frame has plain locals; these hold it to that. Both
+// backends agreed with each other even while this was broken, so difftest
+// cannot see it — these need value asserts.
 
 // (1) Identity. A bound wrapper is minted per read, so `f == f` went false.
 fn g_identity() {
@@ -146,8 +145,8 @@ fn g_bound() {
 }
 assert_eq(g_bound().collect()[0], 7)
 
-// The state class's OWN protocol methods are proto entries, not promoted
-// locals, so they still bind: reading one as a value keeps its receiver.
+// A generator's own protocol methods bind: reading one as a value keeps its
+// receiver.
 fn g_protocol() {
   yield 11
   yield 22
@@ -171,17 +170,18 @@ let stolen = {tag: "other"}
 stolen.m = obj.m
 assert_eq(stolen.m(), "obj")
 
-// A user class spelled with a lowering's prefix keeps ordinary binding: the
-// state class is recognized by name AND by the `<stem#N>` parse label only a
-// re-parsed synthesized source carries, so a user file cannot reach it.
-class _Gen_decoy {
+// A user class spelled with the effect lowering's prefix keeps ordinary
+// binding: a state class is recognized by name AND by the `<stem#N>` parse
+// label only a re-parsed synthesized source carries, so a user file cannot
+// reach it.
+class _EffBody_decoy {
   new() {
     self.m = fn () {
       self.tag
     }
   }
 }
-let decoy = _Gen_decoy()
+let decoy = _EffBody_decoy()
 assert_eq(decoy.m == decoy.m, false)
 let decoy_holder = {tag: "holder"}
 decoy_holder.m = decoy.m

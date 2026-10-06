@@ -2174,7 +2174,7 @@ struct SynthNode {
   // `position`/`length` default to 0 (cpp-peglib's own default) for callers
   // that never need a source-text slice of the synthesized node. Passing the
   // real span matters for consumers that read raw source by offset instead
-  // of walking the tree — e.g. generator_transform.h's CPS builder takes a
+  // of walking the tree — e.g. effects_transform.h's CPS builder takes a
   // verbatim `ast_source_slice` of any statement it doesn't need to split,
   // which silently slices empty text from a position-less node.
   std::shared_ptr<peg::Ast> grp(
@@ -2386,7 +2386,7 @@ inline std::shared_ptr<peg::Ast> make_postfix_if(const peg::Ast& stmt) {
   std::shared_ptr<Node> base = desugar_postfix_modifiers(stmt.nodes[0]);
   // Real position/length (not the SynthNode default of 0), so a consumer
   // that reads raw source by offset instead of walking the tree — e.g.
-  // generator_transform.h's CPS builder, which takes a verbatim
+  // effects_transform.h's CPS builder, which takes a verbatim
   // `ast_source_slice` of any statement it doesn't need to split — slices
   // `then`'s own source text instead of an empty string.
   std::shared_ptr<Node> then_body = std::make_shared<Node>(

@@ -837,7 +837,7 @@ void test_lint_lowered_class() {
   };
   check(shadows_in("K") == 1,
         "ShadowError [a method over the enclosing function's parameter]");
-  check(shadows_in("_Gen_g_1_1") == 0,
+  check(shadows_in("_EffBody_g_1_1") == 0,
         "ShadowError [a lowered state class's method holds the body's own]");
 }
 

@@ -271,8 +271,7 @@ for x in outer_times10(100) {
 }
 assert_eq(sum_s5, 0 + 10 + 20 + 30)
 
-// a named generator fn declared inside a class method (its lowered class decl
-// sits inside the method's fn scope, not directly in the class body)
+// a named generator fn declared inside a class method
 class GenHost {
   m(n) {
     fn g() {
@@ -375,8 +374,7 @@ fn cl_iter() {
 }
 assert_eq(cl_iter().collect(), [0, 0, [11, 1, 22, 3], 3])
 
-// --- generator-internal break/continue: baseline (unlabeled), ahead of
-// labeled break/continue landing on the CPS `loop_stack` these share ---
+// --- generator-internal break/continue: baseline (unlabeled) ---
 
 // break/continue inside a plain while, driving what's yielded
 fn g_while_ctl(n) {
@@ -425,7 +423,7 @@ fn g_forin_ctl(xs) {
 }
 assert_eq(g_forin_ctl([1, 2, 3, 4, 5]).collect(), [1, 3, 4])
 
-// two CPS-managed loops: an inner break exits only the inner loop
+// two loops that both yield: an inner break exits only the inner loop
 fn g_double_ctl() {
   mut outs = []
   while true {
@@ -455,11 +453,10 @@ assert_eq(g_return_in_loop(10).collect(), [1, 2])
 
 // --- labeled break/continue inside a generator body ---
 //
-// The CPS transform keeps its own loop_stack (generator_transform.h), so a
-// label has to resolve past any number of CPS-managed loops. The break and
-// continue shapes are pinned in tests/test_labeled_loops.cul (15); these are
-// the two that file does not reach — a `while` nest, and a label on the
-// outer loop of a nobreak pair.
+// A label has to resolve past any number of loops a yield suspends in. The
+// break and continue shapes are pinned in tests/test_labeled_loops.cul (15);
+// these are the two that file does not reach — a `while` nest, and a label
+// on the outer loop of a nobreak pair.
 
 fn g_label_while_ctl(n) {
   mut i = 0
@@ -521,7 +518,7 @@ fn g_outer(xs) {
 }
 assert_eq(g_outer([1, 2, 3]).collect(), [1, 2, 3])
 assert_eq(g_seen_total, 6)
-// A local spelled like the state object's own methods is still a local.
+// A local spelled like the generator's own methods is still a local.
 fn g_next(next) {
   yield next
   yield next + 1

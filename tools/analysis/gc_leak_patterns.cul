@@ -268,8 +268,7 @@ fn pat_class_in_fn(N) {
   # a class declared inside a function re-builds its class meta (with a fresh
   # closure per method) on every call. build_class_meta must take over those
   # method closures' refs, not retain on top of them — else each method
-  # leaks one closure per instantiation. Generators hit this via their
-  # synthesized _Gen_ class (iter/has_next/next/dispose).
+  # leaks one closure per instantiation.
   for i in 0..N {
     let _ = mk_local(i)
   }
@@ -556,7 +555,7 @@ fn mk_proto(v) {
   }}
 }
 
-# A generator: its synthesized _Gen_ class is a self-returning iterator.
+# A generator.
 fn gen2(v) {
   yield v
   yield v + 1

@@ -24,7 +24,7 @@ sys.path.insert(0, 'tools/checks')
 import door_gate
 
 LABEL = 'source-anchor-door'
-FILES = ('include/frontend/generator_transform.h',
+FILES = ('include/frontend/state_lowering.h',
          'include/frontend/effects_transform.h')
 RAW = re.compile(r"\b(?:ast_source_slice|slice)\s*\(")
 BUILD = re.compile(r'std::string\s*[({]|std::format\s*\(|\+=|[^+]\+[^+=]|'
@@ -57,12 +57,8 @@ population = [
      and count(frag, 'inline std::string anchored(') == 1),
     ('the anchor spelled only in fragments.h',
      all(p == frag or 'kSourceAnchor' not in t for p, t in text.items())),
-    ('the generator places anchored copies',
-     count(FILES[0], 'anchored(') >= 4),
     ('the effects lowering places anchored copies',
      count(FILES[1], 'anchored(') >= 10),
-    ('the generator reads anchors back after its final parse',
-     count(FILES[0], 'reposition_fragment(') >= 2),  # def + use
     ('the effects lowering reads anchors back after its final parses',
      count(FILES[1], 'reposition_fragment(') >= 2),
     ('reposition_fragment resolves through the anchors',

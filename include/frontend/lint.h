@@ -1713,8 +1713,8 @@ inline resolve::Options resolve_options(
 // the `culebra lint` CLI): what the runtime is certain to raise. They read
 // two forms of a module.
 //
-// What a name means is read off the module as written, before the generator
-// and effect lowerings replace a body with a state machine: a `let`
+// What a name means is read off the module as written, before the effect
+// lowering replaces a body with a state machine: a `let`
 // reassigned, a read nothing visible declares, a function's declaration over
 // an enclosing function's variable. A lowered body is held to them as a
 // plain one is.
@@ -1765,8 +1765,8 @@ inline void check_module(const peg::Ast& lowered,
 //
 // The analyses need different views of the program, so the caller passes
 // both:
-//   `lowered`  — what the backends actually run: generators and effects
-//                lowered to classes plus runtime calls, i.e. the output of
+//   `lowered`  — what the backends actually run: effects lowered to
+//                classes plus runtime calls, i.e. the output of
 //                `parse_with_transforms`. The rule checks read this form, as
 //                the load-stage `check_module` does.
 //   `authored` — the raw parse of the source the user typed. The scope

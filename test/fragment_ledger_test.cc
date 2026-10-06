@@ -1,5 +1,5 @@
 // Unit test for the fragment ledger's caller-owned form
-// (include/frontend/generator_transform.h, effects_transform.h).
+// (include/frontend/fragments.h, effects_transform.h).
 //
 // A lowering re-parses the source it synthesizes, and the AST views those
 // buffers. By default the process owns them for good; the parse_with_transforms
