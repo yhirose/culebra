@@ -820,31 +820,40 @@ inline auto _jit_at_call_site(F&& op) -> decltype(op()) {
 // the op position is restored with the rest, so a second entry after the
 // first one's body ran lends the same op.
 struct JitBorrowedCallSite {
+  // Held, not looked up again at the restore: one thread-local fetch a scope.
+  JitThreadState& t = _jit_thread;
   int64_t line, col, bline, bcol, oline, ocol;
   int argn;
   JitBorrowedCallSite()
       : JitBorrowedCallSite(_jit_thread.op_line, _jit_thread.op_col) {}
   JitBorrowedCallSite(int64_t l, int64_t c)
-      : line(_jit_thread.call_line), col(_jit_thread.call_col),
-        bline(_jit_thread.boundary_line), bcol(_jit_thread.boundary_col),
-        oline(_jit_thread.op_line), ocol(_jit_thread.op_col),
-        argn(_jit_thread.argpos_n) {
-    _jit_thread.call_line = l;
-    _jit_thread.call_col = c;
-    _jit_thread.boundary_line = l;
-    _jit_thread.boundary_col = c;
-    _jit_thread.argpos_n = 0;
+      : line(t.call_line), col(t.call_col), bline(t.boundary_line),
+        bcol(t.boundary_col), oline(t.op_line), ocol(t.op_col),
+        argn(t.argpos_n) {
+    t.call_line = l;
+    t.call_col = c;
+    t.boundary_line = l;
+    t.boundary_col = c;
+    t.argpos_n = 0;
   }
   ~JitBorrowedCallSite() {
-    _jit_thread.call_line = line;
-    _jit_thread.call_col = col;
-    _jit_thread.boundary_line = bline;
-    _jit_thread.boundary_col = bcol;
-    _jit_thread.op_line = oline;
-    _jit_thread.op_col = ocol;
-    _jit_thread.argpos_n = argn;
+    t.call_line = line;
+    t.call_col = col;
+    t.boundary_line = bline;
+    t.boundary_col = bcol;
+    t.op_line = oline;
+    t.op_col = ocol;
+    t.argpos_n = argn;
   }
 };
+
+// The recursion guard on a thread state already in hand, for a runtime entry
+// that makes several of these steps (a generator's resume). The extern "C"
+// pair below is these on `_jit_thread`.
+inline int64_t _jit_recursion_enter(JitThreadState& t) {
+  culebra::check_recursion_depth(t.depth, t.call_line, t.call_col);
+  return ++t.depth;
+}
 
 extern "C" {
 
@@ -859,9 +868,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_recursion_enter() {
   // Reports at the call site the caller published (set_call_site), which is
   // what the interp reads back out of `__LINE__`/`__COLUMN__`. Returns the
   // new depth so the prologue can stash it for its cleanup pads.
-  culebra::check_recursion_depth(_jit_thread.depth, _jit_thread.call_line,
-                                 _jit_thread.call_col);
-  return ++_jit_thread.depth;
+  return _jit_recursion_enter(_jit_thread);
 }
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_recursion_leave() {
   --_jit_thread.depth;

@@ -48,6 +48,11 @@ struct JitGenFrame {
   // The object this hangs off (JitObject::gen_frame): the generator's
   // iterator, which is what the collector traces. Not owned.
   JitObject* self = nullptr;
+  // The Runtime's heap and defer stack, resolved once where the frame is made
+  // (a frame never leaves its Runtime: a generator is not Sendable), so a
+  // resume reaches them without a thread-local lookup apiece.
+  culebra::gc::Heap* heap = nullptr;
+  std::vector<JitValue>* defer_stack = nullptr;
   JitClosure* cls = nullptr;     // +1
   std::vector<JitValue> regs;    // owned while suspended
   std::vector<int64_t> marks;
@@ -164,7 +169,7 @@ inline void _jit_gen_frame_sweep(JitGenFrame* g) { delete g; }
 struct JitGenActive {
   JitGenFrame& g;
   culebra::gc::Heap& heap;
-  explicit JitGenActive(JitGenFrame& g_) : g(g_), heap(_gc_heap()) {
+  explicit JitGenActive(JitGenFrame& g_) : g(g_), heap(*g_.heap) {
     g.self->refcount++;
     heap.begin_active(g.self);
     g.state = JitGenFrame::Running;
@@ -180,7 +185,7 @@ struct JitGenActive {
 // The frame's pending defers go back on the defer stack; how far they sit
 // from where they were cut off.
 inline int64_t _jit_gen_defers_back(JitGenFrame& g) {
-  auto& ds = _culebra_defer_stack();
+  auto& ds = *g.defer_stack;
   int64_t base = static_cast<int64_t>(ds.size());
   ds.insert(ds.end(), g.defers.begin(), g.defers.end());
   g.defers.clear();
@@ -190,7 +195,7 @@ inline int64_t _jit_gen_defers_back(JitGenFrame& g) {
 }
 // And off it again, at a yield.
 inline void _jit_gen_defers_away(JitGenFrame& g) {
-  auto& ds = _culebra_defer_stack();
+  auto& ds = *g.defer_stack;
   g.defers.assign(ds.begin() + g.defer_base, ds.end());
   ds.resize(static_cast<size_t>(g.defer_base));
 }
@@ -201,7 +206,8 @@ inline bool _jit_gen_resume_lowered(JitGenFrame& g, JitValue& out,
                                     bool closing) {
   // The depth first: a RecursionError here leaves the frame suspended and
   // whole, nothing of it having moved.
-  g.jit.depth = g.counts_frame ? culebra_runtime_recursion_enter() : -1;
+  JitThreadState& t = _jit_thread;  // the one lookup, for enter and leave
+  g.jit.depth = g.counts_frame ? _jit_recursion_enter(t) : -1;
   g.jit.defer_delta = _jit_gen_defers_back(g);
   JitGenActive active(g);  // a throw out of the body leaves the frame Done
   g.jit.yielded = 0;
@@ -212,7 +218,7 @@ inline bool _jit_gen_resume_lowered(JitGenFrame& g, JitValue& out,
     _culebra_value_release_impl(static_cast<int8_t>(rv.tag), rv.data);
     return false;
   }
-  if (g.counts_frame) culebra_runtime_recursion_leave();
+  if (g.counts_frame) --t.depth;
   _jit_gen_defers_away(g);
   active.leave(JitGenFrame::Suspended);
   out = rv;
@@ -261,16 +267,34 @@ inline void _jit_gen_has_next_fn(JitValue* ret, JitClosure*, int8_t st,
   JitMethodSelf _s{JitValue{st, sd}};
   *ret = {TAG_BOOL, _jit_gen_fill(_jit_gen_of(st, sd)) ? 1 : 0};
 }
+// A value in hand, handed over: the lookahead's +1 goes to the caller.
+inline bool _jit_gen_pull(JitGenFrame* g, JitValue& out) {
+  if (!_jit_gen_fill(g)) return false;
+  g->has_la = false;
+  out = g->la;
+  return true;
+}
 inline void _jit_gen_next_fn(JitValue* ret, JitClosure*, int8_t st,
                              int64_t sd, int64_t, JitValue*) {
   JitMethodSelf _s{JitValue{st, sd}};
-  JitGenFrame* g = _jit_gen_of(st, sd);
-  if (!_jit_gen_fill(g)) {
-    *ret = {TAG_NIL, 0};
-    return;
-  }
-  g->has_la = false;
-  *ret = g->la;
+  if (!_jit_gen_pull(_jit_gen_of(st, sd), *ret)) *ret = {TAG_NIL, 0};
+}
+// The step a for-in (or a lazy combinator) takes over a generator, which
+// `_iter_advance_raw` would otherwise make as has_next() then next() through
+// two closure calls. Taken only when both closures are the natives above, so
+// a generator whose `has_next` / `next` were replaced is still walked through
+// what it carries.
+inline bool _jit_gen_walks(const JitClosure* has_next, const JitClosure* next) {
+  return has_next->fn_ptr == reinterpret_cast<void*>(&_jit_gen_has_next_fn) &&
+         next->fn_ptr == reinterpret_cast<void*>(&_jit_gen_next_fn);
+}
+inline bool _jit_gen_advance(JitGenFrame* g, int8_t* tag, int64_t* data) {
+  culebra::gc::SafepointUnsafeScope unsafe;  // as _jit_invoke holds it
+  JitValue v;
+  if (!_jit_gen_pull(g, v)) return false;
+  *tag = static_cast<int8_t>(v.tag);
+  *data = v.data;
+  return true;
 }
 // `dispose`, and the object's `drop` — the last reference went, or the
 // collector found the object dead: the frame closes. It goes with its
@@ -307,6 +331,8 @@ inline JitGenFrame* _jit_gen_frame_new(
   o->is_gen_frame = true;
   o->set_proto(_jit_gen_meta());  // transferred
   auto* g = new JitGenFrame{};
+  g->heap = &_gc_heap();
+  g->defer_stack = &_culebra_defer_stack();
   g->resume = resume;
   g->owned = owned;
   g->self = o;

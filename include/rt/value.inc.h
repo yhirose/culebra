@@ -822,6 +822,10 @@ inline void _jit_gen_frame_edges(const JitGenFrame* g,
                                  std::vector<JitCell*>& cells);
 inline void _jit_gen_frame_release(JitGenFrame* g);
 inline void _jit_gen_frame_sweep(JitGenFrame* g);
+// A for-in / iterator step over a generator, when its `has_next` and `next`
+// are the Generator meta's own: one resume instead of two closure calls.
+inline bool _jit_gen_walks(const JitClosure* has_next, const JitClosure* next);
+inline bool _jit_gen_advance(JitGenFrame* g, int8_t* tag, int64_t* data);
 
 // The names a value answers to, read from the meta it reaches through
 // `proto`: the class that built it, and — on an enum variant — the enum

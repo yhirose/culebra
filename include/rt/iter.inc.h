@@ -198,6 +198,12 @@ inline bool _iter_advance_raw(JitClosure* has_next_cls, JitClosure* next_cls,
                               int8_t* out_tag, int64_t* out_data) {
   if (iter_val.tag == TAG_OBJECT) {
     auto* iter_obj = reinterpret_cast<JitObject*>(iter_val.data);
+    if (auto* g = iter_obj->generator_frame()) {
+      if (has_next_cls && next_cls && _jit_gen_walks(has_next_cls, next_cls)) {
+        JitBorrowedCallSite site;  // the entry the slow path below makes
+        return _jit_gen_advance(g, out_tag, out_data);
+      }
+    }
     if (iter_obj->fast_next_fn) {
       size_t n = next_cls->n_captures;
       JitCell* state_cell = next_cls->captures[n - 2];

@@ -107,3 +107,30 @@ assert_eq(gmv_count(5).filter(|x| x % 2 == 0).map(|x| x * 10).collect(),
 assert_eq(gmv_count(3).zip(gmv_count(9)).collect().map(|p| [p.first, p.second]),
           [[0, 0], [1, 1], [2, 2]])
 assert_eq(gmv_closed, 10)
+
+# --- 9) A value has_next() pulled ahead is the walk's first element.
+fn gmv_peeked() {
+  let g = gmv_count(3)
+  assert_eq(g.has_next(), true)
+  mut seen = []
+  for v in g {
+    seen.push(v)
+  }
+  assert_eq(seen, [0, 1, 2])
+}
+gmv_peeked()
+
+# --- 10) A `next` the generator was given is what a for-in calls.
+fn gmv_replaced() {
+  let g = gmv_count(3)
+  g.next = fn () { 42 }
+  mut seen = []
+  for v in g {
+    seen.push(v)
+    if seen.size() == 2 {
+      break
+    }
+  }
+  assert_eq(seen, [42, 42])
+}
+gmv_replaced()
