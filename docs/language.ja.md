@@ -2323,7 +2323,8 @@ JITでは捕捉された可変変数はヒープの**セル**に配置され、�
 
 ### ジェネレータ (`yield`)
 
-本体に`yield`を含む`fn`宣言は**ジェネレータ関数**です。呼び出しても
+本体に`yield`を含む関数は**ジェネレータ関数**です。`fn`宣言、`fn`式、
+クラスのメソッド、traitの既定メソッドのいずれでもかまいません。呼び出しても
 本体は実行されず、イテレータ (§18.5) が返ります。本体は消費側が値を
 引き出すたびに、`yield` 1個分ずつ進みます。
 
@@ -2438,6 +2439,29 @@ for r in rows() {
 # 'close 2'
 ```
 
+yieldするクラスのメソッドは、オブジェクト自身を反復可能にする手段です。
+オブジェクトに対する`for`は`iter()`が返すものを歩き、メソッドのジェネレータは
+どのメソッドとも同じように`self`を読みます。`static`メソッド、getter、
+オブジェクトのプロパティとして書いた関数も同じように働きます（最後のものは、
+呼ばれたオブジェクトが`self`になります）。
+
+```culebra
+class Bag {
+  new(.items) {}
+  iter() {
+    for x in self.items {
+      yield x
+    }
+  }
+}
+for x in Bag.new([1, 2]) {
+  inspect(x)
+}
+# => |
+# 1
+# 2
+```
+
 `yield`は`try`の本体にも`catch`の本体にも置けます。再開した後に走るコードの
 throwは、中断しなかった関数と同じように、その`yield`がある`try`が捕まえます。
 そこで中断している間にジェネレータをcloseすると、`catch`は走らずに領域を
@@ -2541,16 +2565,14 @@ inspect(b.has_next())
   に走り、そこにはジェネレータをcloseするときも含まれるので、再び中断する
   本体はcloseできないからです。パーサが`SyntaxError: yield cannot appear
   inside a defer block`で拒否します。スコープが終わる前にyieldしてください。
-* ジェネレータになるのは`fn name(...) { ... }`という**宣言**
-  だけです（トップレベル・他の関数の内側のいずれも可）。それ以外の
-  位置の`yield` — クラスのメソッド、オブジェクトのプロパティに
-  置いた関数、変数に代入した`fn`式、ファイルのトップレベル — は
-  パース時に拒否されます:
+* `yield`は関数かメソッドの本体になければなりません。ファイルの
+  トップレベル、`|...|`ラムダ（本体は式です）、コンストラクタ`new`、
+  `drop`の中ではパース時に拒否されます:
 
-      SyntaxError: yield can only appear inside a `fn name(...) { ... }`
-      declaration body — a class method, an object property's function,
-      or a fn expression cannot be a generator. Declare a named fn and
-      call it instead.
+      SyntaxError: yield can only appear inside the body of a function
+      or a method (not `new` or `drop`): the top level of a file, a
+      `|...|` lambda, a constructor and `drop` cannot be generators.
+      Move the yield into a named fn and call it instead.
 
   この検査はファイルのロード時に走るので、どのバックエンドでも同じ
   プログラムを同じ位置で拒否します。
@@ -6499,11 +6521,9 @@ CLIバイナリはユーザコード実行前に、以下3つのグローバル�
   ランタイム`String`キーは`obj[k]`経由でもshapeに統合され、
   `obj['x']`と`obj.x`は同じスロットに到達します。詳細は §10
   「添字代入」を参照。
-* ジェネレータになれるのは`fn name(...)`宣言だけ。それ以外の位置 —
-  クラスのメソッド、オブジェクトのプロパティに置いた関数、`fn`式、
-  ファイルのトップレベル — の`yield`はパース時`SyntaxError`
-  （§11「ジェネレータ」）。yieldしたいメソッドは、隣に宣言した
-  名前付きfnに委譲します。
+* `yield`は関数かメソッドの本体に置くもの。ファイルのトップレベル、
+  `|...|`ラムダ、`new`、`drop`の中ではパース時`SyntaxError`
+  （§11「ジェネレータ」）。
 
 ---
 

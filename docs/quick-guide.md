@@ -321,8 +321,8 @@ for i, v in ['x', 'y'].enumerate() {
 # '1:y'
 ```
 
-A `fn` whose body contains `yield` is a generator; calling it returns
-an iterator.
+A function whose body contains `yield` is a generator; calling it
+returns an iterator.
 
 ```culebra
 fn countdown(start) {
@@ -335,8 +335,9 @@ fn countdown(start) {
 inspect(countdown(3).collect())  # => [3, 2, 1]
 ```
 
-Any object with `iter()`, `has_next()` and `next()` works with `for`
-and with every chain method.
+A method that yields makes its object iterable
+(`iter() { for x in self.items { yield x } }`). Any object with `iter()`,
+`has_next()` and `next()` works with `for` and with every chain method.
 
 ### 2.7 Pattern matching
 

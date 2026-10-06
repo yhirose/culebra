@@ -228,3 +228,17 @@ gen|mut log = []; fn gg() { if true { let r = {drop: fn () { log.push("drop") }}
 #   refused the program when it was loaded ("unsupported control flow in a
 #   generator body").
 gen|fn gg() { let v = if true { yield 1; 5 } else { 6 }; yield v }*
+# - a generator body holds what a plain fn holds, and a generator may be any
+#   function. The baseline refused each of these programs when it was loaded
+#   (a named fn, an effect fn, a yield in a try / catch, `self`, a method, a
+#   fn expression or an object's function that yields).
+gen|fn gg() { fn h(x) { x * 3 }*
+gen|effect fn a(); fn gg() { effect fn f()*
+gen|fn gg() { try { yield 1; to_long("x"); yield 2 } catch e*
+gen|mut log = []; fn gg() { defer { log.push("outer") }; try {*
+gen|class C { new() { self.v = 5 } vals()*
+gen|class B { new(.xs) {} iter()*
+gen|let g = fn (n) { yield n; yield n * 2 }*
+gen|let o = {t: 7, g: fn () { yield self.t }}*
+gen|class S { static of(n)*
+gen|class S { new() { self.n = 0; self.it = self.steps() }*

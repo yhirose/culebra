@@ -2455,8 +2455,9 @@ so that multiple closures can share the same slot. See §17.
 
 ### Generators (`yield`)
 
-A `fn` declaration whose body contains `yield` is a **generator
-function**. Calling it does not run the body: it returns an Iterator
+A function whose body contains `yield` is a **generator function**: a
+`fn` declaration, a `fn` expression, a class method, a trait's default
+method. Calling it does not run the body: it returns an Iterator
 (§18.5), and the body advances one `yield` at a time as the consumer
 pulls values out of it.
 
@@ -2572,6 +2573,29 @@ for r in rows() {
 # 'close 2'
 ```
 
+A class method that yields is how an object makes itself iterable: a
+`for` over the object walks what its `iter()` returns, and a method
+generator reads `self` as any method does. A `static` method, a getter
+and a fn written as an object property work the same way, the last with
+the object it is called on as `self`.
+
+```culebra
+class Bag {
+  new(.items) {}
+  iter() {
+    for x in self.items {
+      yield x
+    }
+  }
+}
+for x in Bag.new([1, 2]) {
+  inspect(x)
+}
+# => |
+# 1
+# 2
+```
+
 A `yield` may sit in the body of a `try` or of its `catch`. A throw
 from the code that runs after a resume is caught by the `try` the
 `yield` is in, exactly as in a function that did not suspend; closing
@@ -2678,16 +2702,14 @@ inspect(b.has_next())
   that suspended again could not be closed. The parser rejects it with
   `SyntaxError: yield cannot appear inside a defer block`. Yield before
   the scope ends.
-* Only `fn name(...) { ... }` **declarations** are generators — at
-  the top level or nested inside another function. A
-  `yield` anywhere else — in a class method, in an object property's
-  function, in a `fn` expression assigned to a variable, or at the top
-  level of a file — is rejected at parse time:
+* `yield` has to be in the body of a function or a method. At the top
+  level of a file, in a `|...|` lambda (its body is an expression), in a
+  constructor `new` and in `drop`, it is rejected at parse time:
 
-      SyntaxError: yield can only appear inside a `fn name(...) { ... }`
-      declaration body — a class method, an object property's function,
-      or a fn expression cannot be a generator. Declare a named fn and
-      call it instead.
+      SyntaxError: yield can only appear inside the body of a function
+      or a method (not `new` or `drop`): the top level of a file, a
+      `|...|` lambda, a constructor and `drop` cannot be generators.
+      Move the yield into a named fn and call it instead.
 
   The check runs when the file is loaded, so every backend rejects the
   same programs at the same position.
@@ -6796,11 +6818,9 @@ three names a script does.
   sidecar map.
   Runtime `String` keys via `obj[k]` unify with the shape — `obj['x']`
   and `obj.x` reach the same slot. See §10 "Subscript assignment".
-* Only `fn name(...)` declarations can be generators; `yield` anywhere
-  else — a class method, an object property's function, a `fn`
-  expression, or the top level of a file — is a parse-time
-  `SyntaxError` (§11 "Generators"). A method that needs to yield
-  delegates to a named fn declared beside it.
+* `yield` belongs in the body of a function or a method; at the top level
+  of a file, in a `|...|` lambda, in `new` and in `drop` it is a
+  parse-time `SyntaxError` (§11 "Generators").
 
 ---
 

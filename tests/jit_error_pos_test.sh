@@ -65,17 +65,17 @@ check_same "*args not last"     'fn f(*xs, y) { y }'
 check_same "break outside loop" 'break'
 check_same "continue in fn"     'fn f() { continue }'
 
-# A yield outside a `fn name(...)` declaration (class method, object
-# property fn, fn expression, top level) belongs to no generator; it used to
-# run silently with backend-dependent results (interp '' vs JIT last yield
-# value). Now a shared parse-time SyntaxError.
+# A yield outside the body of a function or a method (the top level, a `|...|`
+# lambda, `new`, `drop`) belongs to no generator; it used to run silently with
+# backend-dependent results (interp '' vs JIT last yield value). Now a shared
+# parse-time SyntaxError.
 check_same "yield top level"      'yield 1'
-check_same "yield in class method" 'class B { m() { yield 1 } }
-B().m()'
-check_same "yield in object prop" 'let o = {g: fn () { yield 7 }}
-o.g()'
-check_same "yield in fn expr"     'let g = fn () { yield 9 }
-g()'
+check_same "yield in lambda"      'let f = |x| if x { yield 1 }
+f(true)'
+check_same "yield in new"         'class B { new() { yield 1 } }
+B.new()'
+check_same "yield in drop"        'class B { drop() { yield 1 } }
+B.new()'
 
 # `self` in a generator's body is what it is in a plain fn: the receiver of
 # the method it is declared in (test_generator_self.cul), or, where there is
@@ -177,7 +177,7 @@ check_same "tensor reshape nested"   'let x = 1 + Tensor.zeros([6]).reshape([4])
 # What a generator refuses, word for word and where: the rules date from the
 # state-machine lowering and outlived it, so nothing else holds their text.
 GEN_IN_DEFER="SyntaxError: yield cannot appear inside a defer block: a defer runs as its scope is left, including when the generator is closed there, so it cannot suspend. Yield before the scope ends."
-GEN_ORPHAN="SyntaxError: yield can only appear inside a \`fn name(...) { ... }\` declaration body — a class method, an object property's function, or a fn expression cannot be a generator. Declare a named fn and call it instead."
+GEN_ORPHAN="SyntaxError: yield can only appear inside the body of a function or a method (not \`new\` or \`drop\`): the top level of a file, a \`|...|\` lambda, a constructor and \`drop\` cannot be generators. Move the yield into a named fn and call it instead."
 check_eq "yield in defer"         'fn g() {
   defer { yield 1 }
   yield 2
@@ -188,11 +188,44 @@ check_eq "yield from in defer"    'fn g() {
   yield 2
 }
 g().collect()' "$GEN_IN_DEFER at 2:11."
-check_eq "yield in fn expr, the text" 'let g = fn () { yield 9 }
-g()' "$GEN_ORPHAN at 1:17."
-check_eq "yield from in method"   'class B { m() { yield from [1] } }
-B().m()' "$GEN_ORPHAN at 1:17."
+check_eq "yield in lambda, the text" 'let f = |x| if x { yield 1 }
+f(true)' "$GEN_ORPHAN at 1:20."
+check_eq "yield in new, the text" 'class B {
+  new() {
+    yield 1
+  }
+}' "$GEN_ORPHAN at 3:5."
+check_eq "yield from in drop"     'class B {
+  drop() {
+    yield from [1]
+  }
+}' "$GEN_ORPHAN at 3:5."
 check_eq "yield top level, the text" 'yield 1' "$GEN_ORPHAN at 1:1."
+# A handler clause is a function of its own, and a yield in it would make it a
+# generator handing the handle an iterator: refused, in a `with op(k)` clause and
+# in a `with return(v)` one, wherever the handle sits.
+GEN_IN_CLAUSE="SyntaxError: \`yield\` cannot appear directly in a \`handle\` clause — wrap it in a generator fn defined in (or outside) the clause."
+check_eq "yield in a handler clause" 'effect fn ask()
+fn g() {
+  yield handle {
+    perform ask()
+  } with ask(k) {
+    yield 1
+    k(2)
+  }
+}
+g().collect()' "$GEN_IN_CLAUSE at 6:5."
+check_eq "yield in a return clause" 'effect fn ask()
+fn g() {
+  yield handle {
+    1
+  } with return(v) {
+    yield v
+    v
+  }
+}
+g().collect()' "$GEN_IN_CLAUSE at 6:5."
+
 # A generator declared in a function value inside another generator's body is
 # held to the same rules (the walk goes on into a generator's body).
 check_eq "generator in a fn value in a generator" 'fn g() {

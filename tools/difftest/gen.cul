@@ -563,7 +563,21 @@ let gens = ['fn gg() { yield 1; yield 2; yield 3 }; gg().collect()',
             # a local with a drop goes when its scope ends, not when the generator does
             'mut log = []; fn gg() { if true { let r = {drop: fn () { log.push("drop") }}; yield 1 }; log.push("after"); yield 2 }; gg().collect(); to_string(log)',
             # a statement block that is an expression's value may yield
-            'fn gg() { let v = if true { yield 1; 5 } else { 6 }; yield v }; to_string(gg().collect())']
+            'fn gg() { let v = if true { yield 1; 5 } else { 6 }; yield v }; to_string(gg().collect())',
+            # a body that holds what a plain fn holds: a named fn, an effect fn,
+            # a try / catch the yield sits in, `self` of the method around it
+            'fn gg() { fn h(x) { x * 3 }; yield h(2); yield h(3) }; to_string(gg().collect())',
+            'effect fn a(); fn gg() { effect fn f() { perform a() + 1 }; yield handle { f() } with a(k) { k(1) }; yield 0 }; to_string(gg().collect())',
+            'fn gg() { try { yield 1; to_long("x"); yield 2 } catch e { yield e.kind }; yield 3 }; to_string(gg().collect())',
+            'mut log = []; fn gg() { defer { log.push("outer") }; try { defer { log.push("try") }; yield 1; yield 2 } catch e { log.push("handler") } }; for v in gg() { break }; to_string(log)',
+            'class C { new() { self.v = 5 } vals() { yield self.v; self.v = 6; yield self.v } }; to_string(C.new().vals().collect())',
+            # a generator that is a method, a fn expression, an object's function
+            'class B { new(.xs) {} iter() { for x in self.xs { yield x } } }; mut s = 0; for x in B.new([1, 2, 3]) { s = s + x }; s',
+            'let g = fn (n) { yield n; yield n * 2 }; to_string(g(4).collect())',
+            'let o = {t: 7, g: fn () { yield self.t }}; to_string(o.g().collect())',
+            'class S { static of(n) { for i in 0..n { yield i } } }; to_string(S.of(3).collect())',
+            # the object that holds its own generator (a cycle through the frame)
+            'class S { new() { self.n = 0; self.it = self.steps() } steps() { while true { self.n = self.n + 1; yield self.n } } }; mut s = S.new(); s.it.next(); let r = s.it.next(); s = nil; r']
 for g in gens {
   case("gen|" + g, g)
 }

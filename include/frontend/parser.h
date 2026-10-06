@@ -1320,7 +1320,9 @@ inline std::vector<ValueSelfWrite> find_value_self_writes_in_members(
 // jump/unwind machinery re-established at the splice. `RETURN` is refused
 // rather than handled because an early return out of an inlined body would
 // have to become a jump past the rest of the CALLER's expression, which is
-// not something an expression position can express.
+// not something an expression position can express. A `yield` is refused
+// because the body is a generator: the call makes its frame, so there is
+// nothing to splice.
 //
 // The walk stops at a nested declaration for the same reason
 // find_value_self_writes does: an inner `fn` or `class` brings its own body,
@@ -1335,6 +1337,8 @@ inline bool is_straightline_body(const peg::Ast& node) {
     case "RETURN"_:
     case "TRY"_:
     case "DEFER"_:
+    case "YIELD"_:
+    case "YIELD_FROM"_:
       return false;
     case "CLASS_DECL"_:
     case "ENUM_DECL"_:

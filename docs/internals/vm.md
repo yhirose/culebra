@@ -1340,7 +1340,8 @@ every lane.
 
 ### 5.7 A generator keeps its frame
 
-A `fn name` whose body yields reaches the compiler as it is written,
+A function whose body yields (a `fn name`, a `fn` expression, a class
+method, a trait's default method) reaches the compiler as it is written,
 and its chunk is a generator (`Chunk::is_generator`): calling it runs
 the prologue and returns an iterator, and the body runs in a frame that
 leaves the stack at every `yield` and comes back at the next resume.
@@ -1390,13 +1391,15 @@ walked on the way out, as a `return` out of a `for` body does, and the
 element's `+1` goes from the cursor straight to whoever resumed the
 frame.
 
-Two of what the lowering refused are still refused (`generator_rules.h`):
-a `yield` inside a `defer`, which a close would have to run and could
-not suspend again, and a `yield` outside a `fn name` declaration. A
-`yield` inside a `try` or `catch` is ordinary code of the frame: the
-region is a pc range with a handler, which a resume re-enters at the
-same pc, and a close leaves it as a `return` does. Lifting one of the
-two is a language change of its own.
+Two kinds of place still refuse a `yield` (`generator_rules.h`): a
+`defer`, which a close would have to run and could not suspend again, and
+what is not the body of a function or a method (the top level, a `|...|`
+lambda, `new`, `drop`). A `yield` inside a `try` or `catch` is ordinary
+code of the frame: the region is a pc range with a handler, which a
+resume re-enters at the same pc, and a close leaves it as a `return`
+does. A method that yields is compiled like any method, with the
+receiver in its frame, and a `@value` method that yields is called
+rather than spliced into its caller (`is_straightline_body`).
 
 A body compiled as written binds names and runs statements as a plain
 `fn` does, which §10.7 holds it to. What a program sees that the lowered

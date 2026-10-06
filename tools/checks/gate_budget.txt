@@ -53,7 +53,10 @@
 # to its own object is counted: one it lets go of is gone, one it stores stays).
 # 303 since test_generator_method_value.cul (a generator's method read off the
 # object and called later, by every route a method value takes).
-tests.cul 303
+# 304 since test_generator_body_forms.cul (what a generator body may hold: a
+# named fn, an effect fn, a yield in try / catch, `self`; and generators that
+# are methods, fn expressions, object properties, trait defaults).
+tests.cul 304
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -108,7 +111,9 @@ ctest.entries 34
 # and ja.
 # 1022 since §11 shows what a generator is as a value and a throw out of its
 # body ending it, in en and ja.
-docs.blocks 1022
+# 1028 since §11 shows a yield in a try, `self` in a method's generator and an
+# object made iterable by a method that yields, in en and ja.
+docs.blocks 1028
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

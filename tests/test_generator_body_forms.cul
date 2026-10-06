@@ -329,4 +329,180 @@ fn tc_deep_next(g, n) {
 let tc_far = tc_plain()
 assert_eq([tc_deep_next(tc_far, 3), tc_deep_next(tc_far, 1)], [1, 2])
 
+// --- a generator that is not a `fn name` ----------------------------------
+
+class GkBag {
+  new(xs) {
+    self.xs = xs
+  }
+  iter() {
+    for x in self.xs {
+      yield x
+    }
+  }
+  pairs() {
+    mut i = 0
+    for x in self.xs {
+      yield (i, x)
+      i = i + 1
+    }
+  }
+  static count_to(n) {
+    for i in 0..n {
+      yield i
+    }
+  }
+  get doubled() {
+    for x in self.xs {
+      yield x * 2
+    }
+  }
+}
+let gk_bag = GkBag.new([10, 20, 30])
+assert_eq(gk_bag.iter().collect(), [10, 20, 30])
+assert_eq(gk_bag.pairs().collect(), [(0, 10), (1, 20), (2, 30)])
+assert_eq(GkBag.count_to(3).collect(), [0, 1, 2])
+assert_eq(gk_bag.doubled.collect(), [20, 40, 60])
+assert_eq(type_of(gk_bag.iter()), "Generator")
+
+// `iter()` makes the object itself iterable
+mut gk_seen = []
+for x in gk_bag {
+  gk_seen.push(x)
+}
+assert_eq(gk_seen, [10, 20, 30])
+assert_eq(gk_bag.iter().map(|x| x + 1).collect(), [11, 21, 31])
+
+// a method read off the object keeps its receiver
+let gk_pairs = gk_bag.pairs
+assert_eq(gk_pairs().collect(), [(0, 10), (1, 20), (2, 30)])
+
+// a fn expression, and an object property's function, whose `self` is the
+// object it is called on
+let gk_squares = fn (n) {
+  for i in 0..n {
+    yield i * i
+  }
+}
+assert_eq(gk_squares(4).collect(), [0, 1, 4, 9])
+let gk_obj = {tag: "o", items: fn () {
+  yield self.tag
+  yield 2
+}}
+assert_eq(gk_obj.items().collect(), ["o", 2])
+
+// a trait's default method
+trait GkWalk {
+  walk() {
+    yield "default"
+    yield self.name()
+  }
+  name()
+}
+class GkLeaf {
+  name() {
+    "leaf"
+  }
+}
+assert_eq(GkLeaf.new().walk().collect(), ["default", "leaf"])
+
+// a recursive walk through a method, and a method reading `self` through a
+// closure of its own
+class GkNode {
+  new(v, kids) {
+    self.v = v
+    self.kids = kids
+  }
+  walk() {
+    yield self.v
+    for k in self.kids {
+      yield from k.walk()
+    }
+  }
+  vals() {
+    let f = fn () {
+      self.v
+    }
+    yield f()
+    self.v = self.v + 1
+    yield f()
+  }
+}
+let gk_tree = GkNode.new(
+  1,
+  [GkNode.new(2, [GkNode.new(4, [])]), GkNode.new(3, [])],
+)
+assert_eq(gk_tree.walk().collect(), [1, 2, 4, 3])
+assert_eq(GkNode.new(5, []).vals().collect(), [5, 6])
+
+// the yield of a method in a class declared in a generator is the method's
+fn gk_outer() {
+  class Inner {
+    items() {
+      yield "inner"
+    }
+  }
+  yield "outer"
+  yield from Inner.new().items()
+}
+assert_eq(gk_outer().collect(), ["outer", "inner"])
+
+// closing a method generator runs its defers with the receiver whole
+class GkRes {
+  new() {
+    self.log = []
+  }
+  run() {
+    defer {
+      self.log.push("closed")
+    }
+    yield 1
+    yield 2
+  }
+}
+let gk_res = GkRes.new()
+for v in gk_res.run() {
+  break
+}
+assert_eq(gk_res.log, ["closed"])
+
+// an object that holds its own generator is a cycle through a frame
+class GkSelf {
+  new() {
+    self.n = 0
+    self.it = self.steps()
+  }
+  steps() {
+    while true {
+      self.n = self.n + 1
+      yield self.n
+    }
+  }
+}
+for _ in 0..50 {
+  let s = GkSelf.new()
+  s.it.next()
+  s.it.next()
+}
+let gk_self = GkSelf.new()
+gk_self.it.next()
+assert_eq(gk_self.it.next(), 2)
+
+// a `@value` method that yields is called, not spliced into the caller
+@value
+class GkP {
+  x: Float
+  y: Float
+  new(.x, .y) {}
+  coords() {
+    yield self.x
+    yield self.y
+  }
+}
+let gk_p = GkP.new(3.0, 4.0)
+let gk_coords = gk_p.coords()
+assert_eq(gk_coords.next(), 3.0)
+assert_eq(gk_coords.next(), 4.0)
+assert_eq(gk_coords.has_next(), false)
+
 IO.inspect('test_generator_body_forms OK')

@@ -1094,6 +1094,7 @@ class Inference {
       case "LAMBDA"_:
       case "MULTIFN_DECL"_:
       case "CLASS_DECL"_:
+      case "TRAIT_DECL"_:
       case "DEFER"_:
         return;  // their exits are their own
       case "RETURN"_:

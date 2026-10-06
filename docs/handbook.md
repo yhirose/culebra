@@ -740,8 +740,9 @@ for v in countdown(3) {
 
 ### 5.5 Generators with `yield`
 
-A `fn` body containing `yield` becomes a generator: calling it doesn't
-run the body, it returns an iterator (Ch.5.4's `iter`/`has_next`/`next`
+A function body containing `yield` becomes a generator (a `fn`
+declaration, a `fn` expression, a class method): calling it doesn't run
+the body, it returns an iterator (Ch.5.4's `iter`/`has_next`/`next`
 protocol, so it works with `for` and every lazy-chain method). `yield
 from` delegates to another iterable.
 

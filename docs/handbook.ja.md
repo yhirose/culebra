@@ -723,10 +723,10 @@ for v in countdown(3) {
 
 ### 5.5 ジェネレータ (`yield`)
 
-`yield`を含む`fn`本体はジェネレータになる — 呼び出しても本体は
-実行されず、イテレータ (5.4の`iter`/`has_next`/`next`プロトコル)
-が返るので、`for`やlazyチェインのメソッドがそのまま使える。
-`yield from`は他のiterableへ委譲する。
+`yield`を含む関数本体（`fn`宣言、`fn`式、クラスのメソッド）は
+ジェネレータになる — 呼び出しても本体は実行されず、イテレータ
+(5.4の`iter`/`has_next`/`next`プロトコル) が返るので、`for`やlazyチェイン
+のメソッドがそのまま使える。`yield from`は他のiterableへ委譲する。
 
 ```culebra
 fn countdown(start) {

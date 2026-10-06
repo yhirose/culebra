@@ -962,8 +962,8 @@ class EffectsLowerer {
   }
 
   // A named fn declared at statement level in an effect body stays a real
-  // `fn name(…)` declaration — only that spelling can be a generator (`yield`),
-  // and the fragment re-parse runs the generator chain over it. It is emitted
+  // `fn name(…)` declaration — it may be a generator (`yield`), whose rules
+  // the fragment re-parse checks. It is emitted
   // where it was written and then stored in the name's promoted slot, because
   // each state block is a fresh scope and a plain local decl would not survive
   // the next suspension. Its own name is left out of the locals rewrite, so
@@ -1493,6 +1493,19 @@ class EffectsLowerer {
     return nullptr;
   }
 
+  // A handler clause becomes a function of its own, which a `yield` in it
+  // would make a generator handing the `handle` an iterator. The clause is
+  // not a place to yield from, whatever generator the `handle` sits in.
+  void reject_yield_in_clause(const peg::Ast& clause_body) const {
+    if (auto* y = find_yield_in_fn_body(clause_body)) {
+      throw CulebraError(
+          "SyntaxError",
+          "`yield` cannot appear directly in a `handle` clause — wrap it in "
+          "a generator fn defined in (or outside) the clause.",
+          err_pos(*y).line, err_pos(*y).col);
+    }
+  }
+
   // --- for-in desugar (to `while` + iterator) ----------------------------
   // The CPS engine works over `while`, so a `for x in e { … }` that carries a
   // suspension is rewritten to `let _it = __for_iter(e); while _it.has_next() {
@@ -1649,8 +1662,8 @@ class EffectsLowerer {
       bool capture_outer = false,
       const std::vector<std::string_view>& mut_params = {}) const {
     // A bare yield would make the effect body itself a generator, which it is
-    // not — reject it symmetrically up front. Yields inside a nested named fn
-    // are fine: the fragment re-parse runs the generator chain over them.
+    // not — reject it symmetrically up front. Yields inside a nested function
+    // are fine: the fragment re-parse checks them as generators.
     if (auto* y = find_yield_in_fn_body(body_node)) {
       throw CulebraError(
           "SyntaxError",
@@ -1963,6 +1976,7 @@ class EffectsLowerer {
               "(`with return(value) { … }`).",
               err_pos(clause).line, err_pos(clause).col);
         }
+        reject_yield_in_clause(*clause.nodes[1]);
         auto vn = view_parameter(*params.nodes[0]).name;
         std::string ret_src = clause_source(*clause.nodes[1], captures, self_name);
         return_fn = std::format(
@@ -1997,6 +2011,7 @@ class EffectsLowerer {
       }
       auto resume_name = view_parameter(*params.nodes[nparams - 1]).name;
       binds += std::format("      let {} = _eh_resume\n", std::string(resume_name));
+      reject_yield_in_clause(handler_body);
       std::string handler_src = clause_source(handler_body, captures, self_name);
       if (!first_op) frame += ",";
       first_op = false;

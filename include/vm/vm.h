@@ -9325,7 +9325,8 @@ class Compiler {
       // the frame, so they are released after the frame's defers run, not
       // before — and the unwind ladder covers them.
       // A generator's body runs when it is first resumed.
-      if (ast.tag == "MULTIFN_DECL"_ && culebra::fn_body_has_yield(body)) {
+      if (culebra::can_be_generator(ast.tag) &&
+          culebra::fn_body_has_yield(body)) {
         fc.chunk_.is_generator = true;
         fc.emit_gen_suspend(ast, Op::GenStart, 0);
       }
@@ -10162,6 +10163,7 @@ class Compiler {
   // frame. Closing at that suspension closes `e`'s iterator on the way out,
   // as a `return` out of a for-in body does.
   void compile_yield_from(const peg::Ast& ast) {
+    if (!chunk_.is_generator) reject(ast, "yield from outside a generator body");
     ForCursor cur = open_for_cursor(ast, *ast.nodes[0]);
     step_for_cursor(ast, cur);
     emit_gen_suspend(ast, Op::Yield, cur.base + kForElem);
@@ -14511,6 +14513,7 @@ class Compiler {
       case "MATCH"_:
         return compile_match(ast);
       case "YIELD"_: {  // the frame suspends, its value moved out
+        if (!chunk_.is_generator) reject(ast, "yield outside a generator body");
         int32_t src = owned_src(ast, compile_expr(*ast.nodes[0]));
         emit_gen_suspend(ast, Op::Yield, src);
         int32_t t = alloc_temp(ast);

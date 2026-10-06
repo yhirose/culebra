@@ -314,7 +314,7 @@ for i, v in ['x', 'y'].enumerate() {
 # '1:y'
 ```
 
-bodyに`yield`を含む`fn`はジェネレータになり、呼ぶとイテレータが
+bodyに`yield`を含む関数はジェネレータになり、呼ぶとイテレータが
 返ります。
 
 ```culebra
@@ -328,8 +328,9 @@ fn countdown(start) {
 inspect(countdown(3).collect())  # => [3, 2, 1]
 ```
 
-`iter()` / `has_next()` / `next()`を持つオブジェクトなら何でも`for`
-と全チェーンメソッドで使えます。
+yieldするメソッドを書けば、そのオブジェクトは反復可能になります
+（`iter() { for x in self.items { yield x } }`）。`iter()` / `has_next()` /
+`next()`を持つオブジェクトなら何でも`for`と全チェーンメソッドで使えます。
 
 ### 2.7 パターンマッチ
 

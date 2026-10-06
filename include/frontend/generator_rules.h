@@ -1,14 +1,11 @@
 // Where a `yield` may be written.
 //
-// A `fn name(...) { ... }` whose body contains `yield` / `yield from` is a
+// A function or method whose body contains `yield` / `yield from` is a
 // generator. The compiler takes it as it is written and each engine suspends
 // its frame at a `yield` (vm.h Op::GenStart / Op::Yield, rt/gen.inc.h), so
-// nothing here rewrites anything: this pass refuses the places a `yield`
-// cannot stand, and what a generator body cannot hold.
-//
-// Those refusals date from when a generator was lowered to a state class, the
-// way an effect body still is (effects_transform.h), and are kept with their
-// wording until lifted. Lifting one is a language change of its own.
+// nothing here rewrites anything: this pass refuses the two places a `yield`
+// cannot stand, a `defer` and whatever is not the body of a function or a
+// method. Both rules are the language's, not an implementation's.
 
 #pragma once
 
@@ -36,12 +33,27 @@ inline bool is_yield(unsigned int tag) {
   return tag == "YIELD"_ || tag == "YIELD_FROM"_;
 }
 
-// First YIELD or YIELD_FROM belonging to this fn body, stopping at fn
-// boundaries (see `is_fn_boundary`) — a nested generator's yields are its
-// own. nullptr when absent.
+// A function that a `yield` in its body makes a generator: a `fn name`, a
+// `fn (...) { ... }` expression, a class method, a trait method's default
+// body. (A `|...|` lambda is a function too, but its body is an expression.)
+inline bool can_be_generator(unsigned int tag) {
+  using namespace peg::udl;
+  return tag == "MULTIFN_DECL"_ || tag == "FUNCTION"_ || tag == "METHOD"_ ||
+         tag == "TRAIT_METHOD"_;
+}
+
+// A node that owns the yields written inside it.
+inline bool opens_yield_scope(unsigned int tag) {
+  using namespace peg::udl;
+  return can_be_generator(tag) || tag == "LAMBDA"_;
+}
+
+// First YIELD or YIELD_FROM belonging to this fn body, stopping at the
+// functions inside it (see `opens_yield_scope`) — a nested generator's yields
+// are its own. nullptr when absent.
 inline const peg::Ast* find_yield_in_fn_body(const peg::Ast& node) {
   if (is_yield(node.tag)) return &node;
-  if (is_fn_boundary(node.tag)) return nullptr;
+  if (opens_yield_scope(node.tag)) return nullptr;
   for (auto& c : node.nodes) {
     if (auto* y = find_yield_in_fn_body(*c)) return y;
   }
@@ -52,22 +64,31 @@ inline bool fn_body_has_yield(const peg::Ast& node) {
   return find_yield_in_fn_body(node) != nullptr;
 }
 
-// First YIELD or YIELD_FROM that belongs to no `fn name(...)` declaration,
-// crossing fn boundaries: one in a class method, an object property's fn, a
-// fn expression, a `defer` body or at top level. A named fn's own yields are
-// the compiler's. The tag is enough: YIELD / YIELD_FROM are never collapsed
-// away (ast_optimizer_keep_rules), and a parent collapsing onto one takes its
-// tag.
+// First YIELD or YIELD_FROM that belongs to no generator, crossing function
+// boundaries. A function's own yields are the compiler's, whatever kind of
+// function it is: a `fn name`, a `fn (...) { ... }` expression (an object
+// property's among them), a class method, a trait's default method. What is
+// left: the top level of a file, a `|...|` lambda (its body is an expression),
+// a `defer` body, a constructor `new` (it hands back the instance) and
+// `drop` (the runtime calls it, and its result goes nowhere). The tag is
+// enough: YIELD / YIELD_FROM are never collapsed away
+// (ast_optimizer_keep_rules), and a parent collapsing onto one takes its tag.
 inline const peg::Ast* find_orphan_yield(const peg::Ast& node,
-                                         bool in_named_fn = false) {
+                                         bool owned = false) {
   using namespace peg::udl;
-  if (is_yield(node.tag)) return in_named_fn ? nullptr : &node;
-  if (node.tag == "MULTIFN_DECL"_) in_named_fn = true;
-  else if (node.tag == "FUNCTION"_ || node.tag == "LAMBDA"_ ||
-           node.tag == "METHOD"_ || node.tag == "DEFER"_)
-    in_named_fn = false;
+  if (is_yield(node.tag)) return owned ? nullptr : &node;
+  if (node.tag == "MULTIFN_DECL"_ || node.tag == "FUNCTION"_ ||
+      node.tag == "TRAIT_METHOD"_) {
+    owned = true;
+  } else if (node.tag == "METHOD"_) {
+    auto name = view_method(node).name;
+    owned = name != "new" && name != "drop";
+  } else if (node.tag == "CLASS_DECL"_ || node.tag == "TRAIT_DECL"_ ||
+             node.tag == "LAMBDA"_ || node.tag == "DEFER"_) {
+    owned = false;
+  }
   for (auto& c : node.nodes) {
-    if (auto* y = find_orphan_yield(*c, in_named_fn)) return y;
+    if (auto* y = find_orphan_yield(*c, owned)) return y;
   }
   return nullptr;
 }
@@ -82,7 +103,7 @@ inline const peg::Ast* find_yield_inside_defer(const peg::Ast& body) {
   std::function<void(const peg::Ast&, bool)> walk =
       [&](const peg::Ast& n, bool inside_defer) {
         if (found) return;
-        if (is_fn_boundary(n.tag)) return;
+        if (opens_yield_scope(n.tag)) return;
         if (inside_defer && is_yield(n.tag)) {
           found = &n;
           return;
@@ -94,15 +115,12 @@ inline const peg::Ast* find_yield_inside_defer(const peg::Ast& body) {
   return found;
 }
 
-// The rules one generator is held to. `fn` is a MULTIFN_DECL parsed from
-// `src` whose body yields. (A self-contained `handle { … }` or an
-// `effect fn` declared in the body is the effects pass's, which lowers it
-// where it stands; a bare `perform` outside any handle is rejected there.)
+// The rules one generator is held to. `fn` is a function of any kind parsed
+// from `src`, its body last, whose body yields. (A self-contained
+// `handle { … }` or an `effect fn` declared in the body is the effects pass's,
+// which lowers it where it stands; a bare `perform` outside any handle is
+// rejected there.)
 inline void check_generator_fn(const peg::Ast& fn, const std::string& src) {
-  using namespace peg::udl;
-  size_t i = 0;
-  while (i < fn.nodes.size() && fn.nodes[i]->tag == "DECORATOR"_) i++;
-  if (i + 2 >= fn.nodes.size()) return;
   const auto& body = *fn.nodes.back();
 
   // A yield statement may not appear inside a defer block (the C# rule,
@@ -125,7 +143,8 @@ inline void check_generator_fn(const peg::Ast& fn, const std::string& src) {
 inline void check_generators_in(const peg::Ast& ast, const std::string& src) {
   using namespace peg::udl;
   if (ast.tag == "HANDLE"_ || ast.tag == "EFFECT_FN_DECL"_) return;
-  if (ast.tag == "MULTIFN_DECL"_ && fn_body_has_yield(*ast.nodes.back()))
+  if (can_be_generator(ast.tag) && !ast.nodes.empty() &&
+      fn_body_has_yield(*ast.nodes.back()))
     check_generator_fn(ast, src);
   for (const auto& c : ast.nodes) check_generators_in(*c, src);
 }
@@ -137,10 +156,10 @@ inline void reject_orphan_yield(const peg::Ast& ast) {
   if (auto* y = find_orphan_yield(ast)) {
     throw CulebraError(
         "SyntaxError",
-        "yield can only appear inside a `fn name(...) { ... }` declaration "
-        "body — a class method, an object property's function, or a fn "
-        "expression cannot be a generator. Declare a named fn and call it "
-        "instead.",
+        "yield can only appear inside the body of a function or a method "
+        "(not `new` or `drop`): the top level of a file, a `|...|` lambda, "
+        "a constructor and `drop` cannot be generators. Move the yield into "
+        "a named fn and call it instead.",
         static_cast<long>(y->line), static_cast<long>(y->column));
   }
 }
