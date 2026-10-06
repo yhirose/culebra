@@ -176,19 +176,18 @@ check_same "tensor reshape nested"   'let x = 1 + Tensor.zeros([6]).reshape([4])
 
 # What a generator refuses, word for word and where: the rules date from the
 # state-machine lowering and outlived it, so nothing else holds their text.
-GEN_IN_TRY="SyntaxError: yield cannot appear inside a try-catch or defer block. Move the try to the yielded expression value (yield try { ... } catch e { ... }) or use a top-level \`defer { ... }\` for cleanup."
+GEN_IN_DEFER="SyntaxError: yield cannot appear inside a defer block: a defer runs as its scope is left, including when the generator is closed there, so it cannot suspend. Yield before the scope ends."
 GEN_ORPHAN="SyntaxError: yield can only appear inside a \`fn name(...) { ... }\` declaration body — a class method, an object property's function, or a fn expression cannot be a generator. Declare a named fn and call it instead."
-check_eq "yield in try"           'fn g() { try { yield 1 } catch e { 0 } }
-g().collect()' "$GEN_IN_TRY at 1:16."
-check_eq "yield in catch"         'fn g() { try { 1 } catch e { yield 2 } }
-g().collect()' "$GEN_IN_TRY at 1:30."
 check_eq "yield in defer"         'fn g() {
   defer { yield 1 }
   yield 2
 }
-g().collect()' "$GEN_IN_TRY at 2:11."
-check_eq "yield from in try"      'fn g() { try { yield from [1] } catch e { 0 } }
-g().collect()' "$GEN_IN_TRY at 1:16."
+g().collect()' "$GEN_IN_DEFER at 2:11."
+check_eq "yield from in defer"    'fn g() {
+  defer { yield from [1] }
+  yield 2
+}
+g().collect()' "$GEN_IN_DEFER at 2:11."
 check_eq "yield in fn expr, the text" 'let g = fn () { yield 9 }
 g()' "$GEN_ORPHAN at 1:17."
 check_eq "yield from in method"   'class B { m() { yield from [1] } }
@@ -198,12 +197,12 @@ check_eq "yield top level, the text" 'yield 1' "$GEN_ORPHAN at 1:1."
 # held to the same rules (the walk goes on into a generator's body).
 check_eq "generator in a fn value in a generator" 'fn g() {
   let f = fn () {
-    fn inner() { try { yield 1 } catch e { 0 } }
+    fn inner() { defer { yield 1 } }
     inner().collect()
   }
   yield f()
 }
-g().collect()' "$GEN_IN_TRY at 3:24."
+g().collect()' "$GEN_IN_DEFER at 3:26."
 
 # Reading an unknown member of a builtin namespace raises AttributeError at the
 # access site (naming the member), instead of silently yielding nil and failing

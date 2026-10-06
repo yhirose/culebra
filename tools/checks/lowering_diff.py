@@ -19,6 +19,8 @@ The sweeps:
   binding-defer
            the same over a form an effect body refuses by design, in the two
            contexts that take it
+  try      statements in a `try` / `catch`, in the two contexts that take one
+           around a suspension (an effect body takes none)
 
 A context that hangs or dies without a word fails the case even when the
 others do the same, and each sweep must run at least one case to a value in
@@ -252,6 +254,25 @@ BINDING_DEFER_FORMS = [
     'if C { defer { log.push("d") }; log.push("body") }; log.push("after"); EMIT(log)',
 ]
 
+# Statements in a try / catch around the emits. An effect body refuses a
+# perform inside one, so only the plain fn and the generator take these.
+TRY_FORMS = [
+    'try { EMIT(1) } catch e { EMIT(2) }',
+    'try { EMIT(1) } catch e { EMIT(2) }; EMIT(3)',
+    'try { EMIT(1); throw 5 } catch e { EMIT(e) }',
+    'try { if C { throw 1 }; EMIT(1) } catch e { EMIT(e) }; EMIT(0)',
+    'try { EMIT(1); EMIT(1 + z) } catch e { EMIT([e.kind, e.line, e.col]) }',
+    'try { EMIT(z.nope) } catch e { EMIT(e.kind) }; EMIT(2)',
+    'try { throw 1 } catch e { EMIT(e); to_long("x") }',
+    'for x in [1, 2, 3] { try { if C { continue }; EMIT(x) } catch e { EMIT(e) } }',
+    'for x in [1, 2, 3] { try { if C { break }; EMIT(x); throw x } catch e { EMIT(e) } }',
+    'try { try { EMIT(1); throw 1 } catch e { EMIT(e); throw e + 1 } } catch e { EMIT(e) }',
+    'mut v = try { EMIT(1); if C { throw 1 }; 2 } catch e { 3 }; EMIT(v)',
+    'try { (a, b) = (1, 2) if C; EMIT(a) } catch e { EMIT(e) }',
+    'while C { try { EMIT(1); break } catch e { EMIT(2) } }; EMIT(0)',
+    'try { EMIT(1) } catch e { EMIT(2) } unless C',
+]
+
 BODY_FORMS = [
     'EMIT(1) if C',
     'EMIT(1) unless C',
@@ -347,6 +368,7 @@ SWEEPS = [  # name, templates, statement forms, conditions, values of z, prelude
     ('binding', SOLE, BINDING_FORMS, ['z'], VALUES, BINDING_PRELUDE),
     ('binding-defer', without(SOLE, 'eff'), BINDING_DEFER_FORMS, ['z'], VALUES,
      BINDING_PRELUDE),
+    ('try', without(BODY, 'eff'), TRY_FORMS, CONDS, VALUES, ''),
 ]
 if '--sweep' in sys.argv:
     only = sys.argv[sys.argv.index('--sweep') + 1].split(',')

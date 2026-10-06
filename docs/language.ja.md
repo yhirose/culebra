@@ -2438,6 +2438,28 @@ for r in rows() {
 # 'close 2'
 ```
 
+`yield`は`try`の本体にも`catch`の本体にも置けます。再開した後に走るコードの
+throwは、中断しなかった関数と同じように、その`yield`がある`try`が捕まえます。
+そこで中断している間にジェネレータをcloseすると、`catch`は走らずに領域を
+抜け、保留中のdeferが走ります。
+
+```culebra
+fn guarded(n) {
+  try {
+    yield 'start'
+    if n > 0 {
+      throw "bad {n}"
+    }
+    yield 'ok'
+  } catch e {
+    yield "caught {e}"
+  }
+  yield 'end'
+}
+inspect(guarded(0).collect())  # => ['start', 'ok', 'end']
+inspect(guarded(2).collect())  # => ['start', 'caught bad 2', 'end']
+```
+
 本体の中で宣言した`fn name`は、どの関数の中でもそうであるように束縛されます。
 書かれたスコープの中にあり、それを読むクロージャから見え、周りの`yield`が
 何をしていても本体の変数を読めます。
@@ -2515,11 +2537,10 @@ inspect(b.has_next())
 
 **制約。**
 
-* `yield`は`try` / `catch`ブロックおよび`defer`ブロックの中には
-  置けません。パーサが`SyntaxError: yield cannot appear inside a
-  try-catch or defer block.`で拒否します。送り出す値を保護したい場合は
-  `try`を式の側に置き (`yield try { ... } catch e { ... }`)、後始末には
-  上記のように`defer`を使います。
+* `yield`は`defer`ブロックの中には置けません。deferはスコープを抜けるとき
+  に走り、そこにはジェネレータをcloseするときも含まれるので、再び中断する
+  本体はcloseできないからです。パーサが`SyntaxError: yield cannot appear
+  inside a defer block`で拒否します。スコープが終わる前にyieldしてください。
 * ジェネレータになるのは`fn name(...) { ... }`という**宣言**
   だけです（トップレベル・他の関数の内側のいずれも可）。それ以外の
   位置の`yield` — クラスのメソッド、オブジェクトのプロパティに

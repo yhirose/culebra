@@ -137,4 +137,196 @@ assert_throws("EffectError", fn () {
   bf_unhandled().collect()
 })
 
+// --- a yield inside try / catch -------------------------------------------
+
+fn tc_plain() {
+  try {
+    yield 1
+    yield 2
+  } catch e {
+    yield "caught"
+  }
+  yield 3
+}
+assert_eq(tc_plain().collect(), [1, 2, 3])
+
+// a throw from the code that runs after a resume lands in the same try, and
+// its catch may yield
+fn tc_throw(n) {
+  try {
+    yield 1
+    if n > 0 {
+      throw "boom{n}"
+    }
+    yield 2
+  } catch e {
+    yield "caught {e}"
+    yield "again"
+  }
+  yield "end"
+}
+assert_eq(tc_throw(0).collect(), [1, 2, "end"])
+assert_eq(tc_throw(7).collect(), [1, "caught boom7", "again", "end"])
+
+// a throw on the consumer's side never enters the generator's try
+fn tc_consumer() {
+  try {
+    yield 1
+  } catch e {
+    yield "never"
+  }
+}
+fn tc_consumer_run() {
+  let g = tc_consumer()
+  g.next()
+  throw "from the consumer"
+}
+assert_eq(try {
+  tc_consumer_run()
+} catch e {
+  e
+}, "from the consumer")
+
+// closing while suspended in the try body: the catch does not run, the
+// defers do (innermost first); the same inside a catch body
+mut tc_log = []
+fn tc_close() {
+  defer {
+    tc_log.push("outer")
+  }
+  try {
+    defer {
+      tc_log.push("try")
+    }
+    yield 1
+    yield 2
+  } catch e {
+    tc_log.push("handler")
+    yield "h"
+  }
+}
+for v in tc_close() {
+  break
+}
+assert_eq(tc_log, ["try", "outer"])
+tc_log = []
+let tc_second = tc_close()
+tc_second.next()
+tc_second.dispose()
+assert_eq(tc_log, ["try", "outer"])
+tc_log = []
+fn tc_close_catch() {
+  defer {
+    tc_log.push("outer")
+  }
+  try {
+    throw "x"
+  } catch e {
+    defer {
+      tc_log.push("catch")
+    }
+    yield e
+    yield "after"
+  }
+}
+for v in tc_close_catch() {
+  break
+}
+assert_eq(tc_log, ["catch", "outer"])
+
+// nested regions, and a rethrow from the inner catch
+fn tc_nested() {
+  try {
+    yield "a"
+    try {
+      yield "b"
+      throw "inner"
+    } catch e {
+      yield "in {e}"
+      throw "re {e}"
+    }
+    yield "unreached"
+  } catch e {
+    yield "out {e}"
+  }
+  yield "done"
+}
+assert_eq(tc_nested().collect(), ["a", "b", "in inner", "out re inner", "done"])
+
+// break / continue / return crossing the region
+fn tc_loop() {
+  for i in 0..5 {
+    try {
+      if i == 1 {
+        continue
+      }
+      if i == 3 {
+        break
+      }
+      yield i
+      if i == 2 {
+        throw "two"
+      }
+      yield i * 10
+    } catch e {
+      yield "c{i}"
+    }
+  }
+  yield "out"
+}
+assert_eq(tc_loop().collect(), [0, 0, 2, "c2", "out"])
+fn tc_return() {
+  try {
+    yield 1
+    return
+  } catch e {
+    yield "no"
+  }
+  yield "unreached"
+}
+assert_eq(tc_return().collect(), [1])
+
+// the try's value, and an error that leaves the body ends the generator
+fn tc_value() {
+  let v = try {
+    yield 1
+    10
+  } catch e {
+    20
+  }
+  yield v
+  let w = try {
+    yield 2
+    throw "x"
+  } catch e {
+    30
+  }
+  yield w
+}
+assert_eq(tc_value().collect(), [1, 10, 2, 30])
+fn tc_escapes() {
+  try {
+    yield 1
+    to_long("x")
+  } catch e {
+    throw e
+  }
+}
+let tc_dead = tc_escapes()
+assert_eq(tc_dead.next(), 1)
+assert_throws("TypeError", fn () {
+  tc_dead.next()
+})
+assert_eq(tc_dead.has_next(), false)
+
+// resumed from a deeper frame than the one that made it
+fn tc_deep_next(g, n) {
+  if n == 0 {
+    return g.next()
+  }
+  return tc_deep_next(g, n - 1)
+}
+let tc_far = tc_plain()
+assert_eq([tc_deep_next(tc_far, 3), tc_deep_next(tc_far, 1)], [1, 2])
+
 IO.inspect('test_generator_body_forms OK')

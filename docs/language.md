@@ -2572,6 +2572,29 @@ for r in rows() {
 # 'close 2'
 ```
 
+A `yield` may sit in the body of a `try` or of its `catch`. A throw
+from the code that runs after a resume is caught by the `try` the
+`yield` is in, exactly as in a function that did not suspend; closing
+the generator while it is suspended there leaves through the region
+without running the `catch`, running the defers that are pending:
+
+```culebra
+fn guarded(n) {
+  try {
+    yield 'start'
+    if n > 0 {
+      throw "bad {n}"
+    }
+    yield 'ok'
+  } catch e {
+    yield "caught {e}"
+  }
+  yield 'end'
+}
+inspect(guarded(0).collect())  # => ['start', 'ok', 'end']
+inspect(guarded(2).collect())  # => ['start', 'caught bad 2', 'end']
+```
+
 A `fn name` declared in the body binds as it does in any function: in
 the scope it is written in, visible to the closures that read it, and
 free to read the body's variables, whatever the `yield`s around it have
@@ -2650,11 +2673,11 @@ inspect(b.has_next())
 
 **Restrictions.**
 
-* `yield` may not appear inside a `try` / `catch` or a `defer` block.
-  The parser rejects it with `SyntaxError: yield cannot appear inside a
-  try-catch or defer block.` To guard a yielded value, put the `try`
-  in the expression (`yield try { ... } catch e { ... }`); to clean up,
-  use a `defer` as above.
+* `yield` may not appear inside a `defer` block: a defer runs as its
+  scope is left, including when the generator is closed there, and a body
+  that suspended again could not be closed. The parser rejects it with
+  `SyntaxError: yield cannot appear inside a defer block`. Yield before
+  the scope ends.
 * Only `fn name(...) { ... }` **declarations** are generators — at
   the top level or nested inside another function. A
   `yield` anywhere else — in a class method, in an object property's

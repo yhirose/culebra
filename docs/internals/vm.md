@@ -1390,10 +1390,13 @@ walked on the way out, as a `return` out of a `for` body does, and the
 element's `+1` goes from the cursor straight to whoever resumed the
 frame.
 
-Two of what the lowering refused are still refused, with the same
-messages and positions (`generator_rules.h`): a `yield` inside `try` or
-`defer`, and a `yield` outside a `fn name` declaration. Lifting one is
-a language change of its own.
+Two of what the lowering refused are still refused (`generator_rules.h`):
+a `yield` inside a `defer`, which a close would have to run and could
+not suspend again, and a `yield` outside a `fn name` declaration. A
+`yield` inside a `try` or `catch` is ordinary code of the frame: the
+region is a pc range with a handler, which a resume re-enters at the
+same pc, and a close leaves it as a `return` does. Lifting one of the
+two is a language change of its own.
 
 A body compiled as written binds names and runs statements as a plain
 `fn` does, which §10.7 holds it to. What a program sees that the lowered

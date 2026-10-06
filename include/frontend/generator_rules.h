@@ -72,35 +72,23 @@ inline const peg::Ast* find_orphan_yield(const peg::Ast& node,
   return nullptr;
 }
 
-// Locate the first YIELD reachable from inside a TRY's try-block / catch
-// block, or from inside a DEFER's body. Returns nullptr if no such yield
-// exists. Used to enforce the C# rule (CS1626): yield statements may not
-// appear inside a try-catch or defer. `yield try {...}
-// catch e {...}` is fine because the yield is OUTSIDE the try (only the
-// try-expression's value flows through it) — the guard descends into a
-// TRY's body BLOCKs but not into its position as an expression.
-inline const peg::Ast* find_yield_inside_try_or_defer(const peg::Ast& body) {
+// Locate the first YIELD reachable from inside a DEFER's body, or nullptr. A
+// defer runs as its scope is left, which includes the close of a generator
+// suspended in that scope, so a body that suspended again could not be
+// closed. A `try` / `catch` body may yield: it is ordinary code of the frame.
+inline const peg::Ast* find_yield_inside_defer(const peg::Ast& body) {
   using namespace peg::udl;
   const peg::Ast* found = nullptr;
   std::function<void(const peg::Ast&, bool)> walk =
-      [&](const peg::Ast& n, bool inside_guard) {
+      [&](const peg::Ast& n, bool inside_defer) {
         if (found) return;
         if (is_fn_boundary(n.tag)) return;
-        if (inside_guard && is_yield(n.tag)) {
+        if (inside_defer && is_yield(n.tag)) {
           found = &n;
           return;
         }
-        if (n.tag == "TRY"_) {
-          // TRY children: try-BLOCK, catch-IDENT, catch-BLOCK
-          if (n.nodes.size() > 0) walk(*n.nodes[0], true);
-          if (n.nodes.size() > 2) walk(*n.nodes[2], true);
-          return;
-        }
-        if (n.tag == "DEFER"_) {
-          if (!n.nodes.empty()) walk(*n.nodes[0], true);
-          return;
-        }
-        for (auto& c : n.nodes) walk(*c, inside_guard);
+        if (n.tag == "DEFER"_) inside_defer = true;
+        for (auto& c : n.nodes) walk(*c, inside_defer);
       };
   walk(body, false);
   return found;
@@ -117,16 +105,15 @@ inline void check_generator_fn(const peg::Ast& fn, const std::string& src) {
   if (i + 2 >= fn.nodes.size()) return;
   const auto& body = *fn.nodes.back();
 
-  // C# rule (CS1626): a yield statement may not appear inside a try-catch
-  // or defer block. Cleanup belongs in a top-level `defer { ... }`;
-  // value-level recovery in the yielded expression
-  // (`yield try { ... } catch e { ... }`).
-  if (auto* bad = find_yield_inside_try_or_defer(body)) {
+  // A yield statement may not appear inside a defer block (the C# rule,
+  // CS1626, without its try-catch half). Cleanup belongs in a defer, and a
+  // value that needs one yields before the scope ends.
+  if (auto* bad = find_yield_inside_defer(body)) {
     throw CulebraError(
         "SyntaxError",
-        "yield cannot appear inside a try-catch or defer block. Move "
-        "the try to the yielded expression value (yield try { ... } "
-        "catch e { ... }) or use a top-level `defer { ... }` for cleanup.",
+        "yield cannot appear inside a defer block: a defer runs as its scope "
+        "is left, including when the generator is closed there, so it cannot "
+        "suspend. Yield before the scope ends.",
         source_pos(*bad, src).line, source_pos(*bad, src).col);
   }
 }
