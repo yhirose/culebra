@@ -169,41 +169,55 @@ extern "C" {
                                                         int8_t t2, int64_t d2);
 }
 
-// Ordering helpers. Each one exactly mirrors the corresponding
-// interpreter `Value::operator<` / `<=` / `>` / `>=` so JIT
-// semantics match bit-for-bit. Nil is a special case: `nil op nil`
-// always returns false (ordering on `nil` is not defined). Cross-type
-// numeric (Long↔Float) is answered exactly, not through a promotion.
+// The four ordering operators, as the one parameter of `<`'s rule
+// (_culebra_value_order, further down — past the helpers it dispatches
+// through).
+enum class Ord : uint8_t { Lt, Le, Gt, Ge };
 
-template <typename Cmp>
-inline bool _culebra_value_ord(int8_t t1, int64_t d1, int8_t t2, int64_t d2,
-                               Cmp cmp, int64_t line, int64_t col) {
-  // Cross-type (non-numeric) and same-type-unorderable (Array/Object/...)
-  // both raise the canonical "cannot compare L and R", mirroring the
-  // interpreter's ord_compare. == stays structural on its own path.
+// What `op` answers for two doubles — false for all four with a NaN on either
+// side — and, against 0.0, for a three-way result.
+[[gnu::always_inline]] inline bool _ord_holds(Ord op, double a, double b) {
+  switch (op) {
+    case Ord::Lt: return a < b;
+    case Ord::Le: return a <= b;
+    case Ord::Gt: return a > b;
+    default:      return a >= b;
+  }
+}
+
+// The last step of the rule: two values with no parts. Nil is a special case:
+// `nil op nil` always returns false (ordering on `nil` is not defined).
+// Cross-type numeric (Long↔Float) is answered exactly, not through a
+// promotion. Only _culebra_value_order calls this.
+[[gnu::always_inline]] inline bool _culebra_scalar_order(
+    Ord op, int8_t t1, int64_t d1, int8_t t2, int64_t d2, int64_t line,
+    int64_t col) {
+  // Cross-type (non-numeric) and same-type-unorderable (Array/Set/...)
+  // both raise the canonical "cannot compare L and R". == stays structural
+  // on its own path.
   if (t1 != t2) {
     if ((t1 == TAG_LONG || t1 == TAG_FLOAT) &&
         (t2 == TAG_LONG || t2 == TAG_FLOAT)) {
-      return cmp(_culebra_num_cross_cmp(t1, d1, t2, d2), 0.0);
+      return _ord_holds(op, _culebra_num_cross_cmp(t1, d1, t2, d2), 0.0);
     }
     culebra::throw_compare_type_error(_culebra_tag_name(t1),
                                       _culebra_tag_name(t2), line, col);
   }
   switch (t1) {
     case TAG_NIL: return false;
-    case TAG_BOOL: return cmp(double(d1 != 0), double(d2 != 0));
+    case TAG_BOOL: return _ord_holds(op, double(d1 != 0), double(d2 != 0));
     case TAG_LONG:
       // Exact: past 2^53 two Longs a unit apart round to one double.
-      return cmp(double((d1 > d2) - (d1 < d2)), 0.0);
+      return _ord_holds(op, double((d1 > d2) - (d1 < d2)), 0.0);
     case TAG_FLOAT:
-      return cmp(_culebra_float_to_double(d1), _culebra_float_to_double(d2));
+      return _ord_holds(op, _culebra_float_to_double(d1),
+                        _culebra_float_to_double(d2));
     case TAG_STRING:
     case TAG_STRINGVIEW: {
       // Same-tag only (the cross-type branch above already threw):
-      // String<String and StringView<StringView both order by bytes,
-      // mirroring the interpreter's ord_compare cases.
+      // String<String and StringView<StringView both order by bytes.
       auto c = _culebra_str_view(t1, d1).compare(_culebra_str_view(t2, d2));
-      return cmp(double(c), 0.0);
+      return _ord_holds(op, double(c), 0.0);
     }
     default:
       culebra::throw_compare_type_error(_culebra_tag_name(t1),
@@ -442,10 +456,6 @@ inline _JitPos _jit_arg_pos(int i) {
 // multimethod registry below; declared here (outside the extern "C" block)
 // for the conformance walk, which needs it before that definition.
 inline size_t _jit_dispatcher_max_arity(JitClosure* cls);
-
-// Four ordering predicates share `_culebra_value_ord`'s Nil/cross-type
-// scaffolding; the public extern "C" trampolines below are the only
-// callers. A single `cmp` comparator parameterises the leaf compare.
 
 extern "C" {
 
@@ -2045,9 +2055,18 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_value_equal_borrow(
   return _culebra_value_equal(t1, d1, t2, d2);
 }
 
+// --- `<` `<=` `>` `>=` ---
+//
+// One rule, answered in one place, by what the left operand is: an Object
+// answers with its `__lt__` / `__le__`, then its `cmp`; two Tuples by their
+// first pair that is not `==`; everything else by _culebra_scalar_order.
+// Every comparison that means "ordered before" asks _culebra_value_order —
+// the operators, the sorts and their keys, min / max and theirs, a derived
+// `cmp` — which is what makes a key or a field order as the value itself
+// does. check_value_order_door.sh holds it.
+
 // Comparable-trait fallback: derive ordering from a user/derived
-// `cmp(other)` when no `__lt__`/`__le__` dunder is present. Mirrors the
-// interpreter's `try_cmp` in compare_values.
+// `cmp(other)` when no `__lt__`/`__le__` dunder is present.
 inline std::optional<int64_t> _special_cmp(int8_t t1, int64_t d1,
                                           int8_t t2, int64_t d2) {
   if (auto r = _try_special_binop(t1, d1, t2, d2, Special::Cmp)) {
@@ -2068,56 +2087,98 @@ inline std::optional<bool> _special_le(int8_t t1, int64_t d1,
   return _extract_bool_and_release(*lt) || _culebra_value_equal(t1, d1, t2, d2);
 }
 
-// Each ordering operator expands to a borrow-contract core plus its named
-// export:
-//
-//   _value_<name>_borrow  — the full `<`/`<=`/… semantics
-//     (user `__lt__`/`__le__`/`cmp` dispatch, then numeric/String/Nil ordering)
-//     raising the canonical compare type error WITHOUT touching the operands'
-//     refs. The sort comparators call this directly: the array still owns its
-//     elements, so releasing them on an incomparable-element throw would corrupt
-//     its refcounts.
-//
-//   culebra_runtime_value_<name>_borrow  — the same core under the extern name
-//     the lowering emits calls to.
-// The `fast_path` dispatches to a user method with no codegen call site, so
-// each expansion publishes the operator's own position for it to lend.
-#define CUL_DEF_ORD_OP(name, cmp_op, fast_path)                         \
-  inline bool _value_##name##_borrow(                                   \
-      int8_t t1, int64_t d1, int8_t t2, int64_t d2,                     \
-      int64_t line, int64_t col) {                                      \
-    { culebra_runtime_set_op_pos(line, col); fast_path }                \
-    return _culebra_value_ord(t1, d1, t2, d2,                           \
-                              [](double a, double b) { return a cmp_op b; }, \
-                              line, col);                               \
-  }                                                                     \
-  CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool                                \
-  culebra_runtime_value_##name##_borrow(                                \
-      int8_t t1, int64_t d1, int8_t t2, int64_t d2,                     \
-      int64_t line, int64_t col) {                                      \
-    return _value_##name##_borrow(t1, d1, t2, d2, line, col);           \
+// An Object on the left: its `__lt__` / `__le__`, then its `cmp`, and with
+// neither it does not order. `line`, when given, is the comparison's own
+// position: these methods have no call site, so it is published for them to
+// lend (a caller with none has published it already). Out of line: the rule
+// is inlined wherever something orders, and this arm is the one part of it
+// that is not a few instructions.
+[[gnu::noinline]] inline bool _culebra_object_order(
+    Ord op, int8_t t1, int64_t d1, int8_t t2, int64_t d2, int64_t line,
+    int64_t col) {
+  // The method may drop the last reference to a Tuple this pair came from.
+  _culebra_eq_walks_hold();
+  if (line) culebra_runtime_set_op_pos(line, col);
+  switch (op) {
+    case Ord::Lt:
+      if (auto r = _try_special_binop(t1, d1, t2, d2, Special::Lt))
+        return _extract_bool_and_release(*r);
+      break;
+    case Ord::Le:
+      if (auto r = _special_le(t1, d1, t2, d2)) return *r;
+      break;
+    case Ord::Gt:  // a > b ≡ !(a <= b)
+      if (auto r = _special_le(t1, d1, t2, d2)) return !*r;
+      break;
+    case Ord::Ge:  // a >= b ≡ !(a < b)
+      if (auto r = _try_special_binop(t1, d1, t2, d2, Special::Lt))
+        return !_extract_bool_and_release(*r);
+      break;
   }
-CUL_DEF_ORD_OP(less, <,
-  if (auto r = _try_special_binop(t1, d1, t2, d2, Special::Lt))
-    return _extract_bool_and_release(*r);
-  if (auto c = _special_cmp(t1, d1, t2, d2)) return *c < 0;
-)
-CUL_DEF_ORD_OP(leq, <=,
-  if (auto r = _special_le(t1, d1, t2, d2)) return *r;
-  if (auto c = _special_cmp(t1, d1, t2, d2)) return *c <= 0;
-)
-// a > b ≡ !(a <= b)
-CUL_DEF_ORD_OP(greater, >,
-  if (auto r = _special_le(t1, d1, t2, d2)) return !*r;
-  if (auto c = _special_cmp(t1, d1, t2, d2)) return *c > 0;
-)
-// a >= b ≡ !(a < b)
-CUL_DEF_ORD_OP(geq, >=,
-  if (auto r = _try_special_binop(t1, d1, t2, d2, Special::Lt))
-    return !_extract_bool_and_release(*r);
-  if (auto c = _special_cmp(t1, d1, t2, d2)) return *c >= 0;
-)
-#undef CUL_DEF_ORD_OP
+  if (auto c = _special_cmp(t1, d1, t2, d2))
+    return _ord_holds(op, double(*c), 0.0);
+  culebra::throw_compare_type_error(_culebra_tag_name(t1),
+                                    _culebra_tag_name(t2), line, col);
+}
+
+inline bool _culebra_tuple_order(Ord op, JitArray* a, JitArray* b,
+                                 int64_t line, int64_t col);
+
+// Borrow contract: the operands' refs are not touched, on the throw edge
+// either — a sort's array still owns the elements it compares.
+[[gnu::always_inline]] inline bool _culebra_value_order(
+    Ord op, int8_t t1, int64_t d1, int8_t t2, int64_t d2, int64_t line,
+    int64_t col) {
+  if (t1 == TAG_OBJECT)
+    return _culebra_object_order(op, t1, d1, t2, d2, line, col);
+  if (t1 == TAG_TUPLE && t2 == TAG_TUPLE)
+    return _culebra_tuple_order(op, reinterpret_cast<JitArray*>(d1),
+                                reinterpret_cast<JitArray*>(d2), line, col);
+  return _culebra_scalar_order(op, t1, d1, t2, d2, line, col);
+}
+
+// Two Tuples order by their first pair that is not `==`, as a derived `cmp`
+// orders two instances by their fields; with no such pair they are equal.
+// The lengths have to match: a shorter Tuple is not a smaller one.
+inline bool _culebra_tuple_order(Ord op, JitArray* a, JitArray* b,
+                                 int64_t line, int64_t col) {
+  if (a->size != b->size)
+    culebra::throw_compare_tuple_length_error(a->size, b->size, line, col);
+  if (line) culebra_runtime_set_op_pos(line, col);  // for an element's `eq`
+  JitEqWalk walk({TAG_TUPLE, reinterpret_cast<int64_t>(a)},
+                 {TAG_TUPLE, reinterpret_cast<int64_t>(b)});
+  for (size_t i = 0; i < a->size; i++) {
+    const JitValue x = a->items[i], y = b->items[i];
+    if (_culebra_value_equal(x.tag, x.data, y.tag, y.data)) continue;
+    return _culebra_value_order(op, x.tag, x.data, y.tag, y.data, line, col);
+  }
+  return op == Ord::Le || op == Ord::Ge;
+}
+
+// The names the lowering emits calls to, one per operator.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_value_less_borrow(
+    int8_t t1, int64_t d1, int8_t t2, int64_t d2, int64_t line, int64_t col) {
+  return _culebra_value_order(Ord::Lt, t1, d1, t2, d2, line, col);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_value_leq_borrow(
+    int8_t t1, int64_t d1, int8_t t2, int64_t d2, int64_t line, int64_t col) {
+  return _culebra_value_order(Ord::Le, t1, d1, t2, d2, line, col);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_value_greater_borrow(
+    int8_t t1, int64_t d1, int8_t t2, int64_t d2, int64_t line, int64_t col) {
+  return _culebra_value_order(Ord::Gt, t1, d1, t2, d2, line, col);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_value_geq_borrow(
+    int8_t t1, int64_t d1, int8_t t2, int64_t d2, int64_t line, int64_t col) {
+  return _culebra_value_order(Ord::Ge, t1, d1, t2, d2, line, col);
+}
+
+// `a < b`, for the callers that order a collection.
+inline bool _culebra_value_less(JitValue a, JitValue b, int64_t line,
+                                int64_t col) {
+  return _culebra_value_order(Ord::Lt, a.tag, a.data, b.tag, b.data, line,
+                              col);
+}
 
 // Power with full Python-style semantics:
 //   Long ** non-negative Long  → Long (exp-by-squaring, wraps)

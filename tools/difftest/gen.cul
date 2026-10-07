@@ -2945,4 +2945,49 @@ for c in ['[String.pack_size(pa), String.pack_size(pb)]',
   case("packrec-twin|" + c, twin_pre + c)
 }
 
+# --- Dimension: `<`'s one rule, wherever something is ordered ---------------
+# A Tuple orders by its first pair that is not `==`, and the same rule orders
+# a sort key, a min / max element and a derived cmp's field. Each lane has to
+# agree on the answer, on which pair raises, and on the calls a `cmp` sees.
+let ord_pre = 'class M { new(c) { self.c = c }  cmp(o) { self.c - o.c } }; ' +
+  '@derive(Comparable) class K { new(a, b) { self.a = a; self.b = b } }; ' +
+  'let ns = [{a: 2, b: 0.0, n: "c"}, {a: 1, b: 2.5, n: "b"}, {a: 1, b: 1.0, n: "a"}]; '
+let ord_cases = [
+  '[(1, 2) < (1, 3), (1, 3) < (1, 2), (1, 2) <= (1, 2), (2, 0) > (1, 9), (1, 2) >= (1, 3)]',
+  '[(1, 2.5) < (1, 3), (1.0, 2) < (1, 2.0), ("a", 2) < ("b", 1)]',
+  '((1, 2), 3) < ((1, 3), 0)', '(0, 0) < (0, 1) < (1, 0)',
+  '(1, 2) < (1, 2, 3)', '(1, 2, 3) >= (9, 9)', '(1, "a") < (2, 0, 0)',
+  '(1, "a") < (1, 2)', '(1, "a") < (2, 0)', '(1, [1]) < (1, [2])',
+  '(1, [1]) <= (1, [1])', '(1, 2) < [1, 3]', '[1, 2] < [1, 3]',
+  '[(nil, 1) < (nil, 2), (nil,) <= (nil,), (nil,) < (nil,)]',
+  'let n = Math.nan; [(n,) < (n,), (n,) <= (n,), (n,) >= (n,)]',
+  '[(1, M(1)) < (1, M(2)), (M(2), 0) > (M(1), 9), (M(1),) <= (M(1),)]',
+  '(1, {a: 1}) < (1, {a: 2})',
+  'ns.sorted_by(|n| (n.a, n.b)).map(|n| n.n)',
+  'ns.sorted_by(|n| (n.a, n.b), reverse: true).map(|n| n.n)',
+  'ns.sorted_by(|n| K(n.a, n.b)).map(|n| n.n)',
+  'ns.sorted_by(|n| M(n.a)).map(|n| n.n)', 'ns.sorted_by(|n| n)',
+  'mut xs = [3, 1, 2]; mut m = nil; try { xs.sort_by(|n| n == 1 ? (n,) : (n, n)) } catch e { m = e.message }; [m, xs]',
+  '[(2, 1), (1, 2), (1, 1)].sorted()', '[(2, 1), (1, 2), (1, 1)].sorted(reverse: true)',
+  'mut ps = [(2, "x"), (1, "y")]; ps.sort(); ps', '[(1, 2), (1,)].sorted()',
+  '[K(1, 2.5) < K(2, 0.0), K((1, 1), 9) < K((1, 2), 0), K(M(3), 0).cmp(K(M(1), 0))]',
+  'K([1], 0) < K([2], 0)',
+  '[(2, 1), (1, 2)].min()', '[(2, 1), (1, 2)].max()', '["pear", "apple"].min()',
+  '["pear", "apple"].iter().max()', '[true, false].min()', '[M(3), M(1), M(2)].min().c',
+  '[M(3), M(1)].iter().max().c', '[[1]].min()', '[nil].iter().max()', '[1, "a"].max()',
+  '[1, "a"].iter().min()', '[[1], [2]].min()', '[(1, "a"), (1.0, "a")].min()',
+  'ns.min_by(|n| (n.a, n.b)).n', 'ns.max_by(|n| K(n.a, n.b)).n', 'ns.min_by(|n| n.n).n',
+  'ns.iter().max_by(|n| (n.a, n.n)).n', '[1, 2].min_by(|n| n == 1 ? "k" : 0)',
+  # The calls a `cmp` sees, in order, from each place that orders.
+  'mut log = []; class S { new(n) { self.n = n }  cmp(o) { log.push([self.n, o.n]); self.n - o.n } }; ' +
+    'let _ = [(0, S(3)), (0, S(1)), (0, S(2))].min(); let _ = [S(3), S(1), S(2)].max_by(|s| (s,)); ' +
+    'let _ = [S(2), S(3), S(1)].sorted_by(|s| (0, s)); log',
+  # A `cmp` that empties the Array it is the minimum of.
+  'mut xs = []; class P { new(n) { self.n = n }  cmp(o) { while !xs.empty() { xs.pop() }; self.n - o.n } }; ' +
+    'xs.push(P(2)); xs.push(P(1)); xs.push(P(3)); [xs.min().n, xs.size()]',
+]
+for c in ord_cases {
+  case("order|" + c, ord_pre + c)
+}
+
 print(out.join("\n"))

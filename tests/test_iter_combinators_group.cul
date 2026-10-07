@@ -41,9 +41,11 @@ try {
 } catch e {
   assert_eq(e.kind, "ValueError")
 }
-# A non-numeric key reports like the unkeyed forms.
+# Keys compare by `<`: a String orders, and a pair `<` refuses reports like
+# the unkeyed forms.
+assert_eq([1, 2].min_by(|x| 'k'), 1)
 try {
-  [1, 2].min_by(|x| 'k')
+  [1, 2].min_by(|x| x == 1 ? 'k' : 0)
   assert_true(false)
 } catch e {
   assert_eq(e.kind, "TypeError")

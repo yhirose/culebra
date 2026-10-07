@@ -380,11 +380,23 @@ Ordering (`<`, `<=`, `>`, `>=`) is defined for:
   `false` < `true`; `Long` and `Float` mix by value, exactly, so
   ordering and `==` agree about every pair).
 * `String` — lexicographic byte ordering.
+* `Tuple` — pair by pair: the first pair that is not `==` decides, and
+  two Tuples with no such pair are equal (`(1, 2) < (1, 3)`,
+  `(1, 2) <= (1, 2)`). The two must have the same length — a shorter
+  Tuple is not a smaller one, so `(1, 2) < (1, 2, 3)` raises
+  `type error`. See *Tuples*.
 * `Nil` — `nil` compares equal to `nil` and always returns `false`
   for ordering comparisons.
+* An `Object` whose class defines `__lt__` or `cmp` — see
+  *Trait-method fallback*.
 
 Ordering values of different types (outside the numeric pair) raises
-`type error`.
+`type error`, and so does ordering two `Array`s, `Set`s, or `Object`s
+with neither method.
+
+This one rule is what everything that orders uses: the four operators,
+`sort` / `sorted`, the keys of `sort_by` / `sorted_by`, `min` / `max`
+and the keys of `min_by` / `max_by`, and the fields of a derived `cmp`.
 
 ---
 
@@ -718,7 +730,8 @@ parentheses there: `|x = (A | B)|`. `||` remains logical-or.
   and for numeric cross-type equality (`1 == 1.0`).
 * `<`, `<=`, `>`, `>=`: same-typed operands, with the exception that
   `Long` and `Float` compare by numeric value (`1 < 1.5` works). Any
-  other cross-type ordering raises `type error`.
+  other cross-type ordering raises `type error`. §5 lists the types
+  that order.
 * **Chaining**: `a < b < c` means `(a < b) && (b < c)` — the middle
   operand `b` is evaluated once, and the chain short-circuits to `false`
   at the first failing link. Any mix of comparison
@@ -2095,6 +2108,37 @@ recurses):
 
     (1, 2) == (1, 2)                 # true
     ([1], 2) == ([1], 2)             # true  (inner Arrays are value-equal)
+
+Ordering is pair by pair. The first pair that is not `==` decides, by
+`<`'s own rule for that pair; two Tuples with no such pair are equal:
+
+```culebra
+inspect((1, 2) < (1, 3))   # => true
+inspect((1, 9) < (2, 0))   # => true
+inspect((1, 2) <= (1, 2))  # => true
+```
+
+Only the deciding pair is ordered, so a pair `<` refuses raises the
+same `type error` there and nowhere else: `(1, 'a') < (1, 2)` raises
+(`cannot compare String and Long`), `(1, 'a') < (2, 0)` is `true`. The
+two Tuples must have the same length — a shorter one is not a smaller
+one:
+
+```culebra
+(1, 2) < (1, 2, 3)  # !! cannot compare Tuple and Tuple (lengths 2 and 3)
+```
+
+That makes a Tuple the key for ordering by several things at once:
+
+```culebra
+let notes = [{bar: 2, beat: 0.0}, {bar: 1, beat: 2.5}, {bar: 1, beat: 1.0}]
+let ordered = notes.sorted_by(|n| (n.bar, n.beat))
+inspect(ordered.map(|n| n.beat))                   # => [1.0, 2.5, 0.0]
+inspect(notes.min_by(|n| (n.bar, n.beat)).beat)    # => 1.0
+```
+
+`reverse: true` reverses the whole order; there is no per-position
+direction. An `Array` does not order.
 
 Tuples are hashable when their elements are, so they double as Object
 and Set keys:
@@ -4006,7 +4050,7 @@ class wrapper required:
 | Nil / Bool | ✓ | ✓ (Bool) | ✓ (Bool only) | — | ✓ | — |
 | Long / Float | ✓ | ✓ | ✓ | — | ✓ | — |
 | String / StringView | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Tuple | ✓ | ✓ | — | — | ✓ | ✓ |
+| Tuple | ✓ | ✓ | ✓ | — | ✓ | ✓ |
 | Array / Set | ✓ | ✓ | — | — | — | ✓ |
 | Object (bare literal) | ✓ | ✓ | — | — | — | ✓ |
 | Tensor | ✓ | ✓ | — | — | — | — |
@@ -4127,9 +4171,10 @@ tag), so they stay correct as fields change. Details:
   stated, and `==` follows it as usual.
 * **`cmp` ordering** compares each field pair exactly as `<` does: equal
   fields (by `==`) move on to the next, and the first unequal pair decides.
-  A pair `<` refuses to order — an Array, an Object, two different types —
-  is the same `cannot compare` TypeError there, so `cmp` orders the numeric
-  and string fields and no others.
+  So a field that is a Tuple, or an instance of a class with its own
+  `cmp` / `__lt__`, orders as it would standing alone. A pair `<` refuses
+  to order — an Array, an Object with neither method, two different
+  types — is the same `cannot compare` TypeError there.
 * **A derived `cmp` agrees with `==`.** Both walk the fields by `==`,
   so `cmp(other)` is `0` exactly when `==` holds. It is the key
   relation `eq` that is stricter, for the reason above.
@@ -5355,9 +5400,9 @@ inspect(seen)  # => [1, 2]
 | `a.flat_map(f: Function) -> Array`          | Concatenate `f(x)` for each element; each `f(x)` must be an `Array`. `f` must take one parameter. |
 | `a.sum() -> Long \| Float`                  | Sum of all elements, each `Long` or `Float`. Stays `Long` while every element is a `Long`, becomes `Float` once any element is one. Empty → `0`. |
 | `a.product() -> Long \| Float`              | Product of all elements, promoting like `sum`. Empty → `1`. |
-| `a.min() -> Any`                            | Smallest element, compared numerically across `Long` / `Float`. The element itself is returned, so its own type survives. Throws on empty. |
+| `a.min() -> Any`                            | Smallest element. Elements compare by the same rule as `<` (§5), so numbers, Strings, Tuples and Objects with `cmp` / `__lt__` all work, and a pair `<` refuses throws. The element itself is returned, so its own type survives, and ties keep the earlier element. Throws on empty. |
 | `a.max() -> Any`                            | Largest element. Same rule as `min`. |
-| `a.min_by(f: Function) -> Any`              | Element whose key `f(x)` is smallest; `f` must take one parameter and return a `Long` or `Float`. Each key is computed once, and ties keep the earlier element. Throws on empty. |
+| `a.min_by(f: Function) -> Any`              | Element whose key `f(x)` is smallest; `f` must take one parameter, and the keys compare by the same rule as `<` — a Tuple key orders by several things at once. Each key is computed once, and ties keep the earlier element. Throws on empty. |
 | `a.max_by(f: Function) -> Any`              | Element whose key `f(x)` is largest. Same rules as `min_by`. |
 | `a.to_set() -> Set`                         | Fresh `Set` of the elements in first-seen order, duplicates dropped. Set literals aside, this is how a `Set` is built from a collection. Unhashable elements throw. |
 | `a.to_object() -> Object`                   | Fresh `Object` from `(key, value)` tuples — the inverse of `Object.iter()`, so a table can be built as an expression instead of a `mut` + loop. Keys keep first-seen order and a repeat overwrites in place (last value, first position). Entries are **mutable**, like `group_by`'s and any other key inserted at runtime. An element that is not a 2-tuple raises `TypeError`; an unhashable key throws like any other. |
@@ -5366,7 +5411,7 @@ inspect(seen)  # => [1, 2]
 | `a.unzip() -> Tuple`                        | Split `(a, b)` pairs into `(Array, Array)` — the inverse of `zip`. Each element must be a 2-element `Tuple` or a `{first, second}` Object (either pair spelling is accepted); anything else raises `TypeError`. Destructures: `let (xs, ys) = pairs.unzip()`. |
 | `a.sort(reverse: Bool = false) -> Nil` *(mutating)* | Stable-sort in place in natural order — elements compare by the same rule as `<`, so an Object's `__lt__` / `cmp` is honored (a `Path` array sorts) and incomparable elements throw (leaving the array as it was). Keyword-only `reverse: true` sorts descending (still stable). |
 | `a.sorted(reverse: Bool = false) -> Array` | Like `sort` but returns a new sorted Array, leaving the receiver unchanged — so it chains (`xs.sorted().join(",")`). `reverse: true` for stable descending. |
-| `a.sort_by(key: Function, reverse: Bool = false) -> Nil` *(mutating)* | Stable-sort in place using `key(x)` as the comparison key (ascending). `key` must take one parameter and return a comparable value (`Long` / `String` / `Bool`). Keyword-only `reverse: true` sorts descending (still stable). |
+| `a.sort_by(key: Function, reverse: Bool = false) -> Nil` *(mutating)* | Stable-sort in place using `key(x)` as the comparison key (ascending). `key` must take one parameter; the keys compare by the same rule as `<`, so a key can be a number, a String, a Tuple (to order by several things at once: `\|n\| (n.bar, n.beat)`) or an Object with `cmp` / `__lt__`. Keyword-only `reverse: true` sorts descending (still stable). |
 | `a.sorted_by(key: Function, reverse: Bool = false) -> Array` | Like `sort_by` but returns a new sorted Array, leaving the receiver unchanged — so it chains (`xs.sorted_by(f).join(",")`). `reverse: true` for stable descending. |
 
 ```culebra
@@ -5706,9 +5751,9 @@ inspect(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())  # => [20, 40]
 | `it.contains(v)` | `Bool` | `true` if some element `== v` (as `Array.contains`) |
 | `it.sum()` | `Long` \| `Float` | sum of all elements; `Long` while every element is a `Long`, `Float` once any element is one (empty → `0`) |
 | `it.product()` | `Long` \| `Float` | product of all elements, promoting like `sum` (empty → `1`) |
-| `it.min()` | Any | smallest element, compared numerically; the element is returned, so its own type survives. Throws on empty |
+| `it.min()` | Any | smallest element, compared by the same rule as `<`; the element is returned, so its own type survives. Throws on empty |
 | `it.max()` | Any | largest element, same rule as `min` |
-| `it.min_by(f)` | Any | element with the smallest key `f(x)`; ties keep the earlier one. Throws on empty |
+| `it.min_by(f)` | Any | element with the smallest key `f(x)`, the keys compared by the same rule as `<`; ties keep the earlier one. Throws on empty |
 | `it.max_by(f)` | Any | element with the largest key `f(x)`; ties keep the earlier one. Throws on empty |
 | `it.to_set()` | `Set` | members in first-seen order, duplicates dropped |
 | `it.to_object()` | `Object` | `(key, value)` tuples into an Object — the inverse of `Object.iter()`. Keys in first-seen order, a repeat overwriting in place; entries mutable. A non-2-tuple element raises `TypeError` |

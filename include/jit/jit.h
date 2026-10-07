@@ -3968,7 +3968,7 @@ struct JIT {
   // else — String, Nil, a user `__eq__`/`__lt__`/`cmp`, the type errors on
   // reference types — goes through the runtime helper, which owns those
   // semantics. The numeric arms are exactly the helper's own (_culebra_value_
-  // equal / _culebra_value_ord compare promoted doubles; an ordered fcmp is
+  // equal / _culebra_scalar_order compare promoted doubles; an ordered fcmp is
   // false on NaN as C++'s `<` is), so a known tag lets SCCP fold the dispatch
   // away where an always-taken call could not.
   // Factored out so compile_condition can chain `a < b < c` as

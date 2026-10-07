@@ -626,7 +626,7 @@ inspect(show('hi'))  # => 'hi'
 | `0 == false` | `false` — 型をまたぐ暗黙変換は無い |
 | `.length` / `.count` | `.size()`。存在しないプロパティは`nil`なので`.length`はraiseせず`nil`になる |
 | `.append(x)` | `.push(x)` |
-| `xs.sort(\|a, b\| ...)` — 比較関数を渡す | `xs.sorted_by(key)`が取るのは比較関数ではなく**キー関数**。降順は`reverse: true`。`<=>`は無い |
+| `xs.sort(\|a, b\| ...)` — 比較関数を渡す | `xs.sorted_by(key)`が取るのは比較関数ではなく**キー関数**。降順は`reverse: true`。Tupleのキーなら複数の項目で並ぶ: `xs.sorted_by(\|x\| (x.a, x.b))`。`<=>`は無い |
 | `xs.take(n)` / `xs[:n]` | `xs.slice(0, n)`。`take`はIteratorのメソッド — `xs.iter().take(n).collect()` |
 | `obj.items()` / `obj.entries()` / `obj.to_array()` | `for k, v in obj`、または`obj.keys().map(\|k\| (k, obj[k]))` |
 | `del a[i]` / `a.splice(i, 1)` | `a.remove_at(i)`。取り除いた要素を返す |

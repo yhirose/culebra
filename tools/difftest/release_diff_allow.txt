@@ -258,3 +258,22 @@ gen|class S { new() { self.n = 0; self.it = self.steps() }*
 # method of Array)". A missing member still reads as nil; the call is where it
 # surfaces, and the baseline left the reader to find the name.
 + \s\('\w+' is not a method of \w+\)
+
+# `<` orders two Tuples pair by pair: the first pair that is not `==` decides,
+# and the lengths have to match. The baseline refused every pair of Tuples
+# with "cannot compare Tuple and Tuple".
+op|<|(1, 2)|(1, 2)
+op|<=|(1, 2)|(1, 2)
+op|>|(1, 2)|(1, 2)
+op|>=|(1, 2)|(1, 2)
+# ...and that one rule is what a sort key, a min / max element, a min_by /
+# max_by key and a derived cmp's field order by. The baseline ordered those
+# by the scalars alone, so a key with a `cmp` was "cannot compare Object and
+# Object", and min / max took numbers only: a Bool or String key now answers,
+# and a pair `<` refuses is `<`'s own error where it was "expected Long or
+# Float". `order|` is the dimension written for the rule.
+order|*
+m|[1, 2, 3]|max_by||x| x > 0
+m|[1, 2, 3]|min_by||x| x > 0
+typos|[1, "x"].min()
+typos|[1, 2].max_by(|x| "k")

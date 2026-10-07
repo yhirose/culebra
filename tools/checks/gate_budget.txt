@@ -59,7 +59,9 @@
 # 305 since test_method_miss.cul (a call on a method the receiver does not
 # have names the method and the receiver's type, by every route a method call
 # compiles to).
-tests.cul 305
+# 306 since test_ordering.cul (a Tuple orders pair by pair, and `<`'s one rule
+# is what a sort key, a min / max element and a derived cmp field order by).
+tests.cul 306
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -116,7 +118,9 @@ ctest.entries 34
 # body ending it, in en and ja.
 # 1028 since §11 shows a yield in a try, `self` in a method's generator and an
 # object made iterable by a method that yields, in en and ja.
-docs.blocks 1028
+# 1034 since *Tuples* shows a Tuple ordering pair by pair, the length it
+# requires and a Tuple as a several-part sort key, in en and ja.
+docs.blocks 1034
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

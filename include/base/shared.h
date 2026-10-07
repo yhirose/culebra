@@ -1366,6 +1366,19 @@ inline std::string shadow_error_msg(std::string_view name) {
                      line, col);
 }
 
+// Two Tuples of different lengths: they order pair by pair, and a shorter
+// one is not taken for a smaller one.
+[[noreturn]] inline void throw_compare_tuple_length_error(size_t lhs,
+                                                          size_t rhs,
+                                                          int64_t line = 0,
+                                                          int64_t col = 0) {
+  throw CulebraError("TypeError",
+                     "type error: cannot compare Tuple and Tuple (lengths " +
+                         std::to_string(lhs) + " and " + std::to_string(rhs) +
+                         ")",
+                     line, col);
+}
+
 // Resolve the position argument of Array `insert` / `remove_at`: negative
 // counts from the end, like `a[i]`. `allow_end` admits `size` itself — the
 // append slot `insert` accepts and `remove_at` (which must address a live
@@ -3297,12 +3310,11 @@ inline bool builtin_conforms_to_trait(std::string_view type_label,
            type_label == "Set" || type_label == "Tensor";
   }
   if (trait_name == "Comparable") {
-    // Ordering is well-defined on the value primitives. Container
-    // types (Array / Tuple / Set / Tensor) do compare lexicographically
-    // in the runtime, but we keep this conservative for the MVP.
+    // What `<` orders: the value primitives, and a Tuple pair by pair
+    // (as it is Hashable element by element).
     return type_label == "Bool" || type_label == "Long" ||
            type_label == "Float" || type_label == "String" ||
-           type_label == "StringView";
+           type_label == "StringView" || type_label == "Tuple";
   }
   if (trait_name == "StringLike") {
     // Byte-readable string flavors: owning `String` and the borrowed

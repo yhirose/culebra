@@ -356,9 +356,21 @@ LLVM ORC JITのどちらでも完全にサポートされています。Longの�
   `Long`と`Float`は昇格を通さず値どうしを厳密に比較するので、
   順序と`==`はどの対についても一致します）。
 * `String` — 辞書順（バイト比較）。
+* `Tuple` — 対ごと。`==`でない最初の対が結果を決め、そういう対が
+  無ければ2つは等しい（`(1, 2) < (1, 3)`、`(1, 2) <= (1, 2)`）。
+  長さは同じでなければなりません。短いTupleを小さいとはしないので、
+  `(1, 2) < (1, 2, 3)`は`type error`です。*タプル*を参照。
 * `Nil` — `nil`同士は等価、順序比較は常に`false`。
+* クラスが`__lt__`か`cmp`を定義している`Object` —
+  *traitメソッドへのフォールバック*を参照。
 
 （数値ペア以外の）異なる型同士の順序比較は`type error`になります。
+`Array`どうし、`Set`どうし、どちらのメソッドも無い`Object`どうしも
+同じです。
+
+順序を付けるものは全てこの1つの規則を使います: 4つの演算子、
+`sort` / `sorted`、`sort_by` / `sorted_by`のキー、`min` / `max`と
+`min_by` / `max_by`のキー、派生`cmp`のfield。
 
 ---
 
@@ -679,7 +691,7 @@ Culebraはシャドウを3つの軸で独立に扱います:
   `1 == 1.0`については §5の等価性節参照）。
 * `<`, `<=`, `>`, `>=`: 原則として同じ型同士。ただし`Long`と
   `Float`は数値として比較できます（`1 < 1.5`が有効）。これ以外
-  の型をまたぐ順序比較は`type error`。
+  の型をまたぐ順序比較は`type error`。順序を持つ型は §5にあります。
 * **チェーン**: `a < b < c`は`(a < b) && (b < c)`の意味。中間の
   `b`は一度だけ評価され、最初に偽になった所で短絡します。
   比較演算子は混在可: `0 <= i < n`、`lo < x <= hi`、`a == b == c`。
@@ -1977,6 +1989,37 @@ classインスタンスはleaf扱いで、ウォーカーはそこで停止し�
 
     (1, 2) == (1, 2)                 # true
     ([1], 2) == ([1], 2)             # true  (内側Arrayも値等価)
+
+順序は対ごとに決まります。`==`でない最初の対が、その対に対する`<`の
+規則で結果を決め、そういう対が無ければ2つは等しい:
+
+```culebra
+inspect((1, 2) < (1, 3))   # => true
+inspect((1, 9) < (2, 0))   # => true
+inspect((1, 2) <= (1, 2))  # => true
+```
+
+順序を付けるのは結果を決める対だけなので、`<`が拒む対はそこでだけ
+同じ`type error`になります。`(1, 'a') < (1, 2)`は例外
+（`cannot compare String and Long`）、`(1, 'a') < (2, 0)`は`true`。
+2つのTupleの長さは同じでなければなりません。短いほうを小さいとは
+しません:
+
+```culebra
+(1, 2) < (1, 2, 3)  # !! cannot compare Tuple and Tuple (lengths 2 and 3)
+```
+
+これでTupleは、複数の項目で一度に並べるためのキーになります:
+
+```culebra
+let notes = [{bar: 2, beat: 0.0}, {bar: 1, beat: 2.5}, {bar: 1, beat: 1.0}]
+let ordered = notes.sorted_by(|n| (n.bar, n.beat))
+inspect(ordered.map(|n| n.beat))                   # => [1.0, 2.5, 0.0]
+inspect(notes.min_by(|n| (n.bar, n.beat)).beat)    # => 1.0
+```
+
+`reverse: true`は順序全体を逆にします。位置ごとに向きを変える指定は
+ありません。`Array`は順序を持ちません。
 
 要素がハッシュ可能ならTupleもハッシュ可能なので、ObjectやSetの
 キーに使えます:
@@ -3761,7 +3804,7 @@ wrapperがlookaheadを1つcacheする。`next()`は`nil`を含む
 | Nil / Bool | ✓ | ✓ (Bool) | ✓ (Boolのみ) | — | ✓ | — |
 | Long / Float | ✓ | ✓ | ✓ | — | ✓ | — |
 | String / StringView | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Tuple | ✓ | ✓ | — | — | ✓ | ✓ |
+| Tuple | ✓ | ✓ | ✓ | — | ✓ | ✓ |
 | Array / Set | ✓ | ✓ | — | — | — | ✓ |
 | Object (bare literal) | ✓ | ✓ | — | — | — | ✓ |
 | Tensor | ✓ | ✓ | — | — | — | — |
@@ -3907,9 +3950,10 @@ fieldを走査する (methodと内部class tagは除外) ので、field変更に
   された等価で、`==`はこれまでどおりそれに従う。
 * **`cmp`の順序**は各field対を`<`とまったく同じ規則で比較する。
   等しい (`==`) fieldは次へ進み、最初に等しくなかった対が結果を決める。
-  `<`が順序を付けられない対 — Array、Object、型違い — はそこでも同じ
-  `cannot compare` TypeErrorになるので、`cmp`が順序を課すのは数値と
-  文字列のfieldだけ。
+  だからfieldがTupleでも、自分の`cmp` / `__lt__`を持つクラスの
+  インスタンスでも、単独のときと同じ順序になる。`<`が順序を付けられない
+  対 — Array、どちらのメソッドも無いObject、型違い — はそこでも同じ
+  `cannot compare` TypeErrorになる。
 * **派生`cmp`は`==`と一致する**。どちらもfieldを`==`で辿るので、
   `cmp(other)`が`0`になるのは`==`が真のときちょうど。厳しいのは
   キーの関係である`eq`のほうで、理由は上のとおり。
@@ -5090,9 +5134,9 @@ inspect(seen)  # => [1, 2]
 | `a.flat_map(f: Function) -> Array`          | 各要素に`f(x)`を適用し、その結果配列を連結。各`f(x)`は`Array`を返す必要あり。`f`は1引数を受け取る |
 | `a.sum() -> Long \| Float`                  | 全要素（`Long`または`Float`）の合計。全要素が`Long`の間は`Long`、一つでも`Float`があれば`Float`になる。空 → `0` |
 | `a.product() -> Long \| Float`              | 全要素の積。昇格規則は`sum`と同じ。空 → `1` |
-| `a.min() -> Any`                            | 最小の要素。比較は`Long` / `Float`をまたいで数値で行うが、返すのは要素そのものなのでその型が保たれる。空配列では例外 |
+| `a.min() -> Any`                            | 最小の要素。要素は`<`と同じ規則（§5）で比較するので、数値・String・Tuple・`cmp` / `__lt__`を持つObjectのどれでもよく、`<`が拒む対は例外になる。返すのは要素そのものなのでその型が保たれ、同値なら先に現れた方を返す。空配列では例外 |
 | `a.max() -> Any`                            | 最大の要素。規則は`min`と同じ |
-| `a.min_by(f: Function) -> Any`              | キー`f(x)`が最小の要素。`f`は1引数を受け取り`Long`か`Float`を返す必要あり。キーは各要素につき1回だけ計算し、同値なら先に現れた方を返す。空配列では例外 |
+| `a.min_by(f: Function) -> Any`              | キー`f(x)`が最小の要素。`f`は1引数を受け取り、キーは`<`と同じ規則で比較する（Tupleのキーなら複数の項目で一度に比べられる）。キーは各要素につき1回だけ計算し、同値なら先に現れた方を返す。空配列では例外 |
 | `a.max_by(f: Function) -> Any`              | キー`f(x)`が最大の要素。規則は`min_by`と同じ |
 | `a.to_set() -> Set`                         | 要素を初出順に持つ新しい`Set`（重複は除去）。Setリテラル以外でコレクションから`Set`を作る唯一の手段。ハッシュ不可の要素は例外 |
 | `a.to_object() -> Object`                   | `(key, value)`タプル列から新しい`Object`を作る。`Object.iter()`の逆なので、テーブルを`mut` + ループでなく式として組める。キーは初出順を保ち、重複したキーはその位置のまま値だけ上書き（後勝ち）。エントリは`group_by`と同じく **mutable**（実行時に挿入したキーの既定）。要素が2要素タプルでなければ`TypeError`、ハッシュ不可のキーは通常どおり例外 |
@@ -5101,7 +5145,7 @@ inspect(seen)  # => [1, 2]
 | `a.unzip() -> Tuple`                        | `(a, b)`ペアを`(Array, Array)`に分割する — `zip`の逆。各要素は2要素タプルか`{first, second}`形のObjectのどちらかを受け付け、それ以外は`TypeError`。分配束縛できる: `let (xs, ys) = pairs.unzip()` |
 | `a.sort(reverse: Bool = false) -> Nil` *(破壊的)* | 自然順でin-place安定ソート。要素は`<`と同じ規則で比較し、Objectの`__lt__` / `cmp`を尊重する（`Path`配列もソート可）。比較不能な要素はthrow（このとき配列は元のまま）。キーワード専用`reverse: true`で降順（安定のまま） |
 | `a.sorted(reverse: Bool = false) -> Array` | `sort`の非破壊版。新しいソート済みArrayを返し、受け手は不変＝チェーン可（`xs.sorted().join(",")`）。`reverse: true`で安定降順 |
-| `a.sort_by(key: Function, reverse: Bool = false) -> Nil` *(破壊的)* | `key(x)`を比較キーとして昇順にin-placeで安定ソート。`key`は1引数を受け取り、比較可能な値（`Long` / `String` / `Bool`）を返す必要あり。キーワード専用`reverse: true`で降順（安定のまま） |
+| `a.sort_by(key: Function, reverse: Bool = false) -> Nil` *(破壊的)* | `key(x)`を比較キーとして昇順にin-placeで安定ソート。`key`は1引数を受け取る。キーは`<`と同じ規則で比較するので、数値・String・Tuple（複数の項目で一度に並べる: `\|n\| (n.bar, n.beat)`）・`cmp` / `__lt__`を持つObjectのどれでもよい。キーワード専用`reverse: true`で降順（安定のまま） |
 | `a.sorted_by(key: Function, reverse: Bool = false) -> Array` | `sort_by`の非破壊版。新しいソート済みArrayを返し、受け手は不変＝チェーン可（`xs.sorted_by(f).join(",")`）。`reverse: true`で安定降順 |
 
 ```culebra
@@ -5437,9 +5481,9 @@ inspect(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())  # => [20, 40]
 | `it.contains(v)` | `Bool` | `== v`の要素があれば`true`（`Array.contains`と同じ） |
 | `it.sum()` | `Long` \| `Float` | 合計。全要素が`Long`なら`Long`、一つでも`Float`があれば`Float`（空は`0`） |
 | `it.product()` | `Long` \| `Float` | 積。昇格規則は`sum`と同じ（空は`1`） |
-| `it.min()` | Any | 最小の要素。比較は数値だが返すのは要素なので、その型が保たれる。空では例外 |
+| `it.min()` | Any | 最小の要素。比較は`<`と同じ規則で、返すのは要素なのでその型が保たれる。空では例外 |
 | `it.max()` | Any | 最大の要素。規則は`min`と同じ |
-| `it.min_by(f)` | Any | キー`f(x)`が最小の要素。同値なら先に現れた方。空では例外 |
+| `it.min_by(f)` | Any | キー`f(x)`が最小の要素。キーは`<`と同じ規則で比較する。同値なら先に現れた方。空では例外 |
 | `it.max_by(f)` | Any | キー`f(x)`が最大の要素。同値なら先に現れた方。空では例外 |
 | `it.to_set()` | `Set` | 初出順のメンバー、重複は除去 |
 | `it.to_object()` | `Object` | `(key, value)`タプルをObjectへ — `Object.iter()`の逆。キーは初出順、重複はその位置で上書き、エントリはmutable。2要素タプルでない要素は`TypeError` |

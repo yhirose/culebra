@@ -1,0 +1,327 @@
+// `<` has one rule, and everything that orders asks it: the four operators,
+// sort / sorted, the keys of sort_by / sorted_by, min / max and the keys of
+// min_by / max_by, the fields of a derived `cmp`. Two Tuples order by their
+// first pair that is not `==`.
+
+fn message(f) {
+  try {
+    f()
+    'no error'
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+
+fn drain(a) {
+  while !a.empty() {
+    a.pop()
+  }
+}
+
+// --- Tuple: the first pair that is not `==` decides ---
+assert_true((1, 2) < (1, 3))
+assert_false((1, 3) < (1, 2))
+assert_true((1, 9) < (2, 0))
+assert_false((1, 2) < (1, 2))
+assert_true((1, 2) <= (1, 2))
+assert_true((1, 2) >= (1, 2))
+assert_false((1, 2) > (1, 2))
+assert_true((2, 0) > (1, 9))
+assert_true((2, 0) >= (1, 9))
+assert_true(('a', 2) < ('b', 1))
+assert_true((1, 'a') < (1, 'b'))
+assert_lt((1, 2), (1, 3))
+assert_ge((1, 2), (1, 2))
+
+// Long and Float mix inside a Tuple as they do outside one.
+assert_true((1, 2.5) < (1, 3))
+assert_true((1.0, 2) <= (1, 2.0))
+assert_false((1.0, 2) < (1, 2.0))
+
+// Nested Tuples order the same way.
+assert_true(((1, 2), 3) < ((1, 3), 0))
+assert_true(((1, 2), 3) < ((1, 2), 4))
+
+// Chained comparison.
+assert_true((0, 0) < (0, 1) < (1, 0))
+
+// --- a shorter Tuple is not a smaller one ---
+assert_eq(
+  message(|| (1, 2) < (1, 2, 3)),
+  'TypeError: type error: cannot compare Tuple and Tuple (lengths 2 and 3)',
+)
+assert_eq(
+  message(|| (1, 2, 3) >= (9, 9)),
+  'TypeError: type error: cannot compare Tuple and Tuple (lengths 3 and 2)',
+)
+// ...decided before any element is looked at.
+assert_eq(
+  message(|| (1, 'a') < (2, 0, 0)),
+  'TypeError: type error: cannot compare Tuple and Tuple (lengths 2 and 3)',
+)
+assert_false((1, 2) == (1, 2, 3))
+
+// --- a pair `<` refuses is the same TypeError inside a Tuple ---
+assert_eq(
+  message(|| (1, 'a') < (1, 2)),
+  'TypeError: type error: cannot compare String and Long',
+)
+assert_eq(
+  message(|| (1, [1]) < (1, [2])),
+  'TypeError: type error: cannot compare Array and Array',
+)
+assert_eq(
+  message(|| (1, 2) < 3),
+  'TypeError: type error: cannot compare Tuple and Long',
+)
+assert_eq(
+  message(|| (1, 2) < [1, 3]),
+  'TypeError: type error: cannot compare Tuple and Array',
+)
+// Only the deciding pair is ordered: a later one is never reached, and an
+// equal one is never asked.
+assert_true((1, 'a') < (2, 0))
+assert_false((1, [1]) < (1, [1]))
+assert_true((1, [1]) <= (1, [1]))
+
+// An Array is still not ordered.
+assert_eq(
+  message(|| [1, 2] < [1, 3]),
+  'TypeError: type error: cannot compare Array and Array',
+)
+
+// `nil` elements are equal, so they pass to the next pair; NaN is not.
+assert_true((nil, 1) < (nil, 2))
+assert_true((nil,) <= (nil,))
+let nan = Math.nan
+assert_false((nan,) < (nan,))
+assert_false((nan,) <= (nan,))
+assert_false((nan,) >= (nan,))
+
+// --- an element with `cmp` / `__lt__` orders by it ---
+class Money {
+  new(.c) {}
+  cmp(o) {
+    self.c - o.c
+  }
+}
+class Rank {
+  new(.n) {}
+  __lt__(o) {
+    self.n < o.n
+  }
+}
+assert_true((1, Money(1)) < (1, Money(2)))
+assert_true((Money(2), 0) > (Money(1), 9))
+assert_true((Rank(1), 0) < (Rank(2), 0))
+
+// --- sorting by a Tuple key: several keys at once ---
+let notes = [
+  {bar: 2, beat: 0.0, name: 'c'},
+  {bar: 1, beat: 2.5, name: 'b'},
+  {bar: 1, beat: 1.0, name: 'a'},
+  {bar: 2, beat: 0.0, name: 'd'},
+]
+assert_eq(
+  notes.sorted_by(|n| (n.bar, n.beat)).map(|n| n.name),
+  ['a', 'b', 'c', 'd'],
+)  // stable: c stays before d
+assert_eq(
+  notes.sorted_by(|n| (n.bar, n.beat), reverse: true).map(|n| n.name),
+  ['c', 'd', 'b', 'a'],
+)  // still stable
+let by_key = notes.map(|n| n)
+by_key.sort_by(|n| (n.bar, n.name))
+assert_eq(by_key.map(|n| n.name), ['a', 'b', 'c', 'd'])
+assert_eq([(2, 1), (1, 2), (1, 1)].sorted(), [(1, 1), (1, 2), (2, 1)])
+assert_eq(
+  [(2, 1), (1, 2), (1, 1)].sorted(reverse: true),
+  [(2, 1), (1, 2), (1, 1)],
+)
+let pairs = [(2, 'x'), (1, 'y')]
+pairs.sort()
+assert_eq(pairs, [(1, 'y'), (2, 'x')])
+
+// A key Tuple of the wrong shape reports like `<`, and leaves the receiver.
+let ragged = [3, 1, 2]
+assert_eq(
+  message(|| ragged.sort_by(|n| n == 1 ? (n,) : (n, n))),
+  'TypeError: type error: cannot compare Tuple and Tuple (lengths 1 and 2)',
+)
+assert_eq(ragged, [3, 1, 2])
+
+// --- a key with `cmp` orders by it, as `<` does ---
+@derive(Comparable)
+class Key {
+  new(.bar, .beat) {}
+}
+assert_true(Key(1, 2.5) < Key(2, 0.0))
+assert_eq(
+  notes.sorted_by(|n| Key(n.bar, n.beat)).map(|n| n.name),
+  ['a', 'b', 'c', 'd'],
+)
+assert_eq(
+  notes.sorted_by(|n| Money(n.bar)).map(|n| n.name),
+  ['b', 'a', 'c', 'd'],
+)
+assert_eq(
+  notes.sorted_by(|n| Rank(n.bar), reverse: true).map(|n| n.name),
+  ['c', 'd', 'b', 'a'],
+)
+// A key with neither is still refused.
+assert_eq(
+  message(|| notes.sorted_by(|n| n)),
+  'TypeError: type error: cannot compare Object and Object',
+)
+
+// --- a derived `cmp` orders each field by `<` ---
+@derive(Comparable)
+class Entry {
+  new(.key, .at) {}
+}
+assert_true(Entry(Key(1, 1), 9) < Entry(Key(1, 2), 0))
+assert_true(Entry((1, 1), 9) < Entry((1, 2), 0))
+assert_eq(Entry((1, 1), 2).cmp(Entry((1, 1), 2)), 0)
+assert_eq(Entry(Money(3), 0).cmp(Entry(Money(1), 0)), 1)
+assert_eq(
+  message(|| Entry([1], 0) < Entry([2], 0)),
+  'TypeError: type error: cannot compare Array and Array',
+)
+
+// --- min / max: the elements compare by `<` ---
+assert_eq([(2, 1), (1, 2)].min(), (1, 2))
+assert_eq([(2, 1), (1, 2)].max(), (2, 1))
+assert_eq(['pear', 'apple', 'plum'].min(), 'apple')
+assert_eq(['pear', 'apple', 'plum'].max(), 'plum')
+assert_eq([true, false].min(), false)
+assert_eq([Money(3), Money(1), Money(2)].min().c, 1)
+assert_eq([Money(3), Money(1), Money(2)].max().c, 3)
+assert_eq([3, 1.5, 2].min(), 1.5)
+assert_eq(['pear', 'apple'].iter().min(), 'apple')
+assert_eq([(2, 1), (1, 2)].iter().max(), (2, 1))
+assert_eq([Money(3), Money(1)].iter().min().c, 1)
+// Ties keep the earlier element.
+let first = Money(1)
+let twin = Money(1)
+assert_true([first, twin].min() == first)
+assert_eq([(1, 'a'), (1.0, 'a')].min(), (1, 'a'))
+assert_eq(type_of([(1.0, 'a'), (1, 'a')].max()[0]), 'Float')
+assert_eq(type_of([1, 1.0].min()), 'Long')
+assert_eq(type_of([1.0, 1].max()), 'Float')
+// A leading run of numbers is compared where it sits, and what follows it
+// carries on from the run's best.
+class Num {
+  new(.n) {}
+  cmp(o) {
+    self.n - (type_of(o) == 'Long' ? o : o.n)
+  }
+}
+assert_eq([5, 2, Num(3)].min(), 2)
+assert_eq([5, 2, Num(1)].min().n, 1)
+// One element is compared with nothing.
+assert_eq([[1]].min(), [1])
+assert_eq([nil].iter().max(), nil)
+assert_eq(
+  message(|| [1, 'a'].min()),
+  'TypeError: type error: cannot compare String and Long',
+)
+assert_eq(
+  message(|| [1, 'a'].max()),
+  'TypeError: type error: cannot compare Long and String',
+)
+assert_eq(
+  message(|| [1, 'a'].iter().min()),
+  'TypeError: type error: cannot compare String and Long',
+)
+assert_eq(
+  message(|| [[1], [2]].min()),
+  'TypeError: type error: cannot compare Array and Array',
+)
+
+// --- min_by / max_by: the keys compare by `<` ---
+assert_eq(notes.min_by(|n| (n.bar, n.beat)).name, 'a')
+assert_eq(notes.max_by(|n| (n.bar, n.beat)).name, 'c')  // the earlier of c, d
+assert_eq(notes.min_by(|n| n.name).name, 'a')
+assert_eq(notes.max_by(|n| Key(n.bar, n.beat)).name, 'c')
+assert_eq(notes.iter().min_by(|n| (n.bar, n.beat)).name, 'a')
+assert_eq(notes.iter().max_by(|n| n.name).name, 'd')
+assert_eq(
+  message(|| [1, 2].min_by(|n| n == 1 ? 'k' : 0)),
+  'TypeError: type error: cannot compare Long and String',
+)
+assert_eq(
+  message(|| [1, 2].iter().max_by(|n| n == 1 ? 'k' : 0)),
+  'TypeError: type error: cannot compare String and Long',
+)
+
+// --- a `cmp` that empties the Array mid-min: the elements in hand stay ---
+let shrinking = []
+class Popper {
+  new(.n) {}
+  cmp(o) {
+    drain(shrinking)
+    self.n - o.n
+  }
+}
+shrinking.push(Popper(2))
+shrinking.push(Popper(1))
+shrinking.push(Popper(3))
+assert_eq(shrinking.min().n, 1)
+assert_eq(shrinking.size(), 0)
+
+// --- an element's `__lt__` that drops the Tuples it came from ---
+let held = [nil, nil]
+class Dropper {
+  new(.n) {}
+  __lt__(o) {
+    held[0] = nil
+    held[1] = nil
+    self.n < o.n
+  }
+}
+held[0] = (0, (Dropper(2), 'x'))
+held[1] = (0, (Dropper(1), 'x'))
+// `<=` asks `__lt__`, then `==` on the same pair.
+assert_false(held[0] <= held[1])
+assert_eq(held, [nil, nil])
+
+// --- the order of the calls is the same wherever the rule runs ---
+let calls = []
+class Seen {
+  new(.n) {}
+  cmp(o) {
+    calls.push("{self.n}v{o.n}")
+    self.n - o.n
+  }
+}
+let _ = [(0, Seen(3)), (0, Seen(1)), (0, Seen(2))].min()
+assert_eq(calls, ['1v3', '2v1'])
+drain(calls)
+let _ = [Seen(3), Seen(1), Seen(2)].max_by(|s| (s,))
+assert_eq(calls, ['3v1', '3v2'])
+
+// --- a Tuple satisfies a Comparable bound ---
+fn smaller<T: Comparable>(a: T, b: T) {
+  a < b ? a : b
+}
+assert_eq(smaller((2, 1), (1, 2)), (1, 2))
+assert_eq(smaller('b', 'a'), 'a')
+
+// --- whatever takes `<` takes a Tuple: a heap of (priority, order) ---
+let pq = PriorityQueue()
+pq.push((2, 'b'))
+pq.push((1, 'z'))
+pq.push((1, 'a'))
+assert_eq(pq.pop(), (1, 'a'))
+assert_eq(pq.pop(), (1, 'z'))
+
+// --- nesting past the walk bound is a ValueError, not a C-stack overflow ---
+fn tower(n) {
+  mut t = (0,)
+  for _ in 0..n {
+    t = (t,)
+  }
+  t
+}
+assert_throws('ValueError', || tower(2000) < tower(2000))
+assert_false(tower(100) < tower(100))

@@ -42,7 +42,7 @@ let r2c = try {
 }
 assert_eq(r2c.kind, 'TypeError')
 let r2d = try {
-  let _ = (1, 2) < (3, 4)
+  let _ = (1, 2) < (3, 4, 5)  # Tuples order pair by pair: lengths must match
   nil
 } catch e {
   e

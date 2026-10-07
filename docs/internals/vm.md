@@ -1165,6 +1165,21 @@ retained only when a user `__eq__` / `eq` is about to run, since that
 method may drop the last reference to any of them. The walk itself goes by
 index against both sizes, for the same reason.
 
+**`<` has one rule and one function that answers it,** in the same shape.
+It goes by what the left operand is — an Object answers with its `__lt__` /
+`__le__`, then its `cmp`; two Tuples by their first pair that is not `==`;
+everything else as a scalar: `_culebra_value_order`, taking the operator
+as a parameter. The four operators ask it, and so does everything
+else that means "ordered before" — `sort` / `sorted`, the keys of
+`sort_by` / `sorted_by`, `min` / `max` and the keys of `min_by` / `max_by`,
+the fields of a derived `cmp`. The last three used to call the scalar step
+directly, so a key or a field that was itself Comparable raised
+`cannot compare Object and Object` where `<` on the same pair answered.
+Nothing outside the rule may name its last step (`_culebra_scalar_order`),
+and `check_value_order_door.sh` holds that. A Tuple's walk links through
+the same `JitEqWalk` chain as `==`'s, so an element's `cmp` finds the
+Tuples it came from retained.
+
 **A class with no declaration still has a meta.** `Range`, the variants
 the runtime returns from `try_recv` and `ws_receive`, and the C++ classes
 a `wrap<T>` declaration binds are all values whose class was never

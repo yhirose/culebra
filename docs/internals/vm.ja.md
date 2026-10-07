@@ -1141,6 +1141,20 @@ Objectのキー（こちらは常に`eq`を通っていた）が、それを入�
 落としうるからで、走査自体が毎ステップ両方のサイズを見ながら添字で進むのも
 同じ理由による。
 
+**`<`の規則も1つ、それに答える関数も1つ**で、同じ形をしている。左の値が
+何かで分かれる — Objectは`__lt__` / `__le__`、次にその`cmp`で答え、Tuple
+どうしは`==`でない最初の対で、それ以外はスカラーとして答える:
+`_culebra_value_order`（演算子を引数に取る）。4つの演算子がこれを
+呼び、「前に並ぶ」を意味する他の全て — `sort` / `sorted`、`sort_by` /
+`sorted_by`のキー、`min` / `max`と`min_by` / `max_by`のキー、導出された
+`cmp`のフィールド — もこれを呼ぶ。後ろの3つは以前スカラーの段を直接呼んで
+いたので、キーやフィールドがそれ自体Comparableだと、同じ対に`<`が答える
+ところで`cannot compare Object and Object`になっていた。規則の最後の段
+（`_culebra_scalar_order`）の名前は規則の外に現れてはならず、
+`check_value_order_door.sh`がそれを保つ。Tupleの走査は`==`と同じ
+`JitEqWalk`の連結に繋がるので、要素の`cmp`が走るとき、その要素を持つ
+Tupleはretainされている。
+
 **宣言を持たないクラスにも meta がある。** `Range`、`try_recv`や
 `ws_receive`が返すバリアント、`wrap<T>`宣言で束ねたC++クラス — どれも
 culebraで書かれたクラスを持たない値だが、いずれも meta に届く。Runtimeごとの

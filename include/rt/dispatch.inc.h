@@ -160,19 +160,18 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_enum_define_variant(
 // emitted in the class-decl IR, and the thunks/helpers live in the rt
 // library.
 
-// Three-way compare for `cmp`, mirroring the interp's derived body: `==`
-// decides sameness, and anything else is ordered by `<`. Both operands here
-// are the twins of what the interp reaches — `_culebra_value_equal` for
-// `Value::operator==`, `_culebra_value_ord` for `Value::ord_compare` — so a
-// field pair the language refuses to order (Array, Object, mixed types)
-// raises the same TypeError, rather than an order invented from the raw
-// payloads. Positionless: every caller runs under _jit_at_call_site.
-inline int _jit_derived_cmp3(const JitValue& a, const JitValue& b) {
+// Three-way compare for `cmp`: `==` decides sameness, and anything else is
+// ordered by `<` — the operator's own rule, so a field that is itself
+// Comparable or a Tuple orders as it would standing alone, and a pair the
+// language refuses to order (Array, mixed types) raises the same TypeError.
+// The pair is linked as a walk's level is, so it is retained once a field's
+// own `eq` or `cmp` is about to run: that method may reassign the slot the
+// field was read from. Positionless: every caller runs under
+// _jit_at_call_site.
+inline int _jit_derived_cmp3(JitValue a, JitValue b) {
+  JitEqWalk walk(a, b);
   if (_culebra_value_equal(a.tag, a.data, b.tag, b.data)) return 0;
-  return _culebra_value_ord(a.tag, a.data, b.tag, b.data,
-                            [](double x, double y) { return x < y; }, 0, 0)
-             ? -1
-             : 1;
+  return _culebra_value_less(a, b, 0, 0) ? -1 : 1;
 }
 
 // eq(other): same class tag + every data field equal (JitValueEq, so

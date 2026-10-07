@@ -1497,9 +1497,29 @@ fn __order(a, b, line, col) {
     }
     return 0
   }
+  if __is_tuple(a) {
+    if __is_tuple(b) { return __tuple_order(a, b, line, col) }
+  }
   __cmp_ok(a, b, line, col)
   if __cmpv(a) < __cmpv(b) { return 0 - 1 }
   if __cmpv(b) < __cmpv(a) { return 1 }
+  0
+}
+
+# Two tuples order by their first pair that is not ==; a shorter one is not
+# a smaller one, so the lengths have to match.
+fn __tuple_order(a, b, line, col) {
+  let xs = __titems(a)
+  let ys = __titems(b)
+  if __len(xs) != __len(ys) {
+    __raise('TypeError', 'type error: cannot compare Tuple and Tuple (lengths ' +
+            __tostr(__len(xs)) + ' and ' + __tostr(__len(ys)) + ')', line, col)
+  }
+  mut i = 0
+  while i < __len(xs) {
+    if !__eq(xs[i], ys[i]) { return __order(xs[i], ys[i], line, col) }
+    i = i + 1
+  }
   0
 }
 
@@ -3914,16 +3934,13 @@ fn __it_min_max_by(src, name, owner, f, want_lt, line, col) {
     }
     mut best = src.next()
     mut bk = f(best)
-    __expect_num(bk, line, col)
     while src.has_next() {
       let v = src.next()
       let k = f(v)
-      __expect_num(k, line, col)
+      # by the language's own less-than, as a sort orders its keys
       mut better = false
-      if want_lt {
-        if k < bk { better = true }
-      } else {
-        if k > bk { better = true }
+      if want_lt { better = __lt(k, bk, line, col) } else {
+        better = __lt(bk, k, line, col)
       }
       if better {
         best = v
