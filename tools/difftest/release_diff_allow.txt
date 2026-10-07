@@ -242,3 +242,14 @@ gen|let g = fn (n) { yield n; yield n * 2 }*
 gen|let o = {t: 7, g: fn () { yield self.t }}*
 gen|class S { static of(n)*
 gen|class S { new() { self.n = 0; self.it = self.steps() }*
+
+# A surplus positional that was written for a keyword-only parameter is told
+# which one: the count error ends "('reverse' is keyword-only: write
+# reverse: ...)". The baseline gave the count alone.
+m|[1, 2, 3]|sort|*
+m|[1, 2, 3]|sort_by|*
+m|[1, 2, 3]|sorted|*
+m|[1, 2, 3]|sorted_by|*
+typos|([3, 1]).sort_by(1, 2)
+v-direct|to_long|1, 2*
+v-let|to_long|1, 2*

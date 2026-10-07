@@ -264,7 +264,8 @@ assert_eq(axis_err(fn () { R.max(true) }),
 assert_eq(axis_err(fn () { R.argmax('x') }),
           "type error: parameter 'axis' expects Long")
 assert_eq(axis_err(fn () { R.sum(0, 1) }),
-          "takes 1 positional argument but 2 given")
+          "takes 1 positional argument but 2 given " +
+            "('keepdims' is keyword-only: write keepdims: ...)")
 assert_eq(R.sum(nil), R.sum())
 
 # Reduction on a transposed view: stride-aware. ones(3,2).transpose()

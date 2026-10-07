@@ -101,7 +101,9 @@ inline BuiltinVerdict builtin_call_verdict(const BuiltinTable& tbl,
   bool has_rest = sig->kwargs_rest_idx >= 0;
   auto named = [&](std::string_view n) { return scan.kwarg(n) != nullptr; };
   if (!sig->variadic && n_pos > sig->max_arity)
-    return err("TypeError", too_many_positionals_message(sig->max_arity, n_pos),
+    return err("TypeError",
+               too_many_positionals_message(sig->max_arity, n_pos,
+                                            canon_kw_only_name(*sig)),
                true);
   for (size_t i = 0; i < params.size(); i++) {
     const auto& p = params[i];

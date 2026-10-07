@@ -303,7 +303,8 @@ let e7 = try {
   e
 }
 assert_true(e7.kind == 'TypeError' &&
-  e7.message == 'takes 1 positional argument but 2 given')
+  e7.message ==
+    "takes 1 positional argument but 2 given ('k' is keyword-only: write k: ...)")
 let kw_cap_dyn = kw_cap
 let e8 = try {
   kw_cap_dyn(1, 2)
@@ -312,7 +313,8 @@ let e8 = try {
   e
 }
 assert_true(e8.kind == 'TypeError' &&
-  e8.message == 'takes 1 positional argument but 2 given')
+  e8.message ==
+    "takes 1 positional argument but 2 given ('k' is keyword-only: write k: ...)")
 let e9 = try {
   [3, 1].sort(1)
   nil
@@ -320,7 +322,8 @@ let e9 = try {
   e
 }
 assert_true(e9.kind == 'TypeError' &&
-  e9.message == 'takes 0 positional arguments but 1 given')
+  e9.message == "takes 0 positional arguments but 1 given " +
+    "('reverse' is keyword-only: write reverse: ...)")
 
 # The argument-list shape errors (positional-after-keyword, duplicate keyword)
 # are the same catchable error for every call kind, not just user functions: a

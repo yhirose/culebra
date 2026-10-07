@@ -352,11 +352,20 @@ inline std::string join_messages(const std::vector<std::string>& msgs) {
 // must release owned values first. Any independent std::format of these
 // texts is a symmetry hazard: route new sites through a builder.
 
+// What a count error adds when the first surplus positional would have
+// landed on a keyword-only parameter: the name it has to be written with.
+// Empty for an empty name (no such parameter).
+inline std::string keyword_only_hint(std::string_view name) {
+  if (name.empty()) return {};
+  return culebra::format(" ('{}' is keyword-only: write {}: ...)", name, name);
+}
+
 // "takes N positional argument(s) but M given" — a call overflowed the
-// positional cap of a kw-only section.
-inline std::string too_many_positionals_message(int64_t cap, int64_t got) {
-  return culebra::format("takes {} positional argument{} but {} given", cap,
-                         cap == 1 ? "" : "s", got);
+// positional cap of a kw-only section, whose first parameter is `kw_only`.
+inline std::string too_many_positionals_message(int64_t cap, int64_t got,
+                                                std::string_view kw_only = {}) {
+  return culebra::format("takes {} positional argument{} but {} given{}", cap,
+                         cap == 1 ? "" : "s", got, keyword_only_hint(kw_only));
 }
 
 // "missing required argument 'name'" — no positional, no kwarg, no default.
@@ -447,11 +456,15 @@ inline std::string type_mismatch_message(std::string_view expected,
 // positionals are accepted and any positional overflows. Shared by
 // interp's bind_call_args, the JIT static kwargs resolver, and the JIT
 // dynamic-callee runtime guard — all three throw the same shape.
+// `kw_only_name()` is the parameter at `cap`, asked for only on the throw.
+template <class NameOf>
 inline void throw_if_too_many_positionals(int64_t cap, int64_t n_pos,
+                                           NameOf&& kw_only_name,
                                            int64_t line, int64_t col) {
   if (cap < 0 || n_pos <= cap) return;
-  throw CulebraError("TypeError", too_many_positionals_message(cap, n_pos),
-                     line, col);
+  throw CulebraError(
+      "TypeError", too_many_positionals_message(cap, n_pos, kw_only_name()),
+      line, col);
 }
 
 // --- recursion guard --------------------------------------------------
@@ -725,10 +738,13 @@ inline std::string builtin_method_kwargs_error_message(std::string_view method) 
 // interpreter does not carry the qualified name on these FunctionValues, so a
 // nameless message lets both backends render byte-identical text for
 // `Math.abs(1, 2)` and `let f = Math.abs; f(1, 2)` alike. Distinct from
-// builtin_arity_error_message, which names value-type *methods*.
-inline std::string ns_fn_arity_error_message(int64_t expected, int64_t got) {
-  return culebra::format("expected {} positional argument{}, got {}", expected,
-                         expected == 1 ? "" : "s", got);
+// builtin_arity_error_message, which names value-type *methods*. `kw_only` is
+// the keyword-only parameter a surplus positional was written for, if any.
+inline std::string ns_fn_arity_error_message(int64_t expected, int64_t got,
+                                             std::string_view kw_only = {}) {
+  return culebra::format("expected {} positional argument{}, got {}{}",
+                         expected, expected == 1 ? "" : "s", got,
+                         keyword_only_hint(kw_only));
 }
 
 // --- Numeric formatting / parsing ---

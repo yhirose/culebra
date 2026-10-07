@@ -4046,14 +4046,15 @@ namespace _ns_adapt {
 
 [[noreturn]] inline void arity_error(const char* /*ns*/, const char* /*method*/,
                                        int expected, int64_t got,
-                                       int64_t line = 0, int64_t col = 0) {
+                                       int64_t line = 0, int64_t col = 0,
+                                       std::string_view kw_only = {}) {
   // Nameless count message (see ns_fn_arity_error_message): the interpreter
   // does not carry the qualified name on these FunctionValues, so dropping it
   // keeps `Math.abs(1, 2)` and `let f = Math.abs; f(1, 2)` byte-identical
   // across backends.
   culebra::throw_runtime_error_at(
-      "ArityError", culebra::ns_fn_arity_error_message(expected, got), line,
-      col);
+      "ArityError", culebra::ns_fn_arity_error_message(expected, got, kw_only),
+      line, col);
 }
 
 inline const char* take_str(JitValue v) {
@@ -10832,11 +10833,13 @@ inline JitValue _jit_ns_method_dispatch(const NsMethod* m, int64_t n_args,
     if (pm) {
       if (!_ns_positional_count_ok(m, n_args)) {
         release_args();
-        // Too few → required count; too many → the cap (interp parity).
-        _ns_adapt::arity_error(
-            m->ns, m->name,
-            n_args > pm->max_arity ? pm->max_arity : pm->min_arity, n_args,
-            line, col);
+        // Too few → required count; too many → the cap (interp parity), and
+        // the keyword-only parameter the surplus one was written for.
+        if (n_args > pm->max_arity)
+          _ns_adapt::arity_error(m->ns, m->name, pm->max_arity, n_args, line,
+                                 col, culebra::canon_kw_only_name(*pm));
+        _ns_adapt::arity_error(m->ns, m->name, pm->min_arity, n_args, line,
+                               col);
       }
     } else if (!_ns_positional_count_ok(m, n_args)) {
       release_args();
@@ -10987,8 +10990,10 @@ inline _JitNsKwargs _jit_ns_take_kwargs(
   if (pm->args_rest_idx < 0 &&
       (n_pos > pm->max_arity || (!has_kw && n_pos < pm->min_arity)))
     throw culebra::CulebraError("ArityError",
-        culebra::ns_fn_arity_error_message(
-            n_pos < pm->min_arity ? pm->min_arity : pm->max_arity, n_pos),
+        n_pos < pm->min_arity
+            ? culebra::ns_fn_arity_error_message(pm->min_arity, n_pos)
+            : culebra::ns_fn_arity_error_message(
+                  pm->max_arity, n_pos, culebra::canon_kw_only_name(*pm)),
         line, col);
   for (auto& s : call.splats) {
     JitValue sv = s.borrow();

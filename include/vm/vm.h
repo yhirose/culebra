@@ -2733,6 +2733,15 @@ struct Chunk {
   // names against — see the JitParamMeta the program builds per chunk.
   int32_t kwargs_rest_idx = -1;
   int32_t first_kw_only_idx = -1;
+  // The first keyword-only parameter's name, which a surplus positional's
+  // error names. Empty when a `**rest` follows the `*` directly.
+  std::string_view kw_only_name() const {
+    auto i = static_cast<size_t>(first_kw_only_idx);
+    if (first_kw_only_idx < 0 || first_kw_only_idx == kwargs_rest_idx ||
+        i >= param_names.size())
+      return {};
+    return param_names[i];
+  }
   // Positional callback-arity bounds (cb_max = -1 when a `*args` catch-all
   // removes the upper bound), the same pair the JIT hands the HOF gate.
   int32_t cb_min = 0;
@@ -14986,8 +14995,9 @@ struct Exec {
     if (!vs) return nullptr;
     assert(call_target_holds(p, callee, tgt));
     const Chunk& c = p.chunks[static_cast<size_t>(tgt)];
-    culebra::throw_if_too_many_positionals(c.first_kw_only_idx, argc, line,
-                                           col);
+    culebra::throw_if_too_many_positionals(
+        c.first_kw_only_idx, argc, [&] { return c.kw_only_name(); }, line,
+        col);
     const size_t need = frame_block_size(c);
     if (need > VmStack::kSegment) return nullptr;
     const size_t mark_seg = vs->seg, mark_used = vs->used;
@@ -15544,8 +15554,10 @@ struct Exec {
                                JitValue* run, int32_t n_run, int32_t argc,
                                int64_t line, int64_t col) {
     assert(call_target_holds(p, callee, tgt));
+    const Chunk& tc = p.chunks[static_cast<size_t>(tgt)];
     culebra::throw_if_too_many_positionals(
-        p.chunks[static_cast<size_t>(tgt)].first_kw_only_idx, argc, line, col);
+        tc.first_kw_only_idx, argc, [&] { return tc.kw_only_name(); }, line,
+        col);
     struct Drain {
       JitValue* run;
       int32_t n;

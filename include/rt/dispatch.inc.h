@@ -572,6 +572,16 @@ extern "C++" {
 inline bool _jit_is_multifn_dispatcher(JitClosure* c);
 }
 
+// The first keyword-only parameter's name, which a surplus positional's
+// error names; empty when there is none (a `**rest` is not one to name).
+inline std::string_view _jit_kw_only_name(const JitParamMeta* meta) {
+  int64_t i = meta ? meta->first_kw_only_idx : -1;
+  if (i < 0 || i == meta->kwargs_rest_idx ||
+      static_cast<size_t>(i) >= meta->n_params)
+    return {};
+  return meta->names[i];
+}
+
 // Enforce kw-only at runtime for dynamic-callee positional calls.
 // `let g = f; g(1, 2)` where f is kw-only would otherwise fill the
 // kw-only slot positionally without the compile-time static check
@@ -583,8 +593,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_check_pos_count_cls(
   if (_jit_is_multifn_dispatcher(cls)) return;
   const JitParamMeta* meta = cls ? cls->meta : nullptr;
   if (!meta) return;
-  culebra::throw_if_too_many_positionals(meta->first_kw_only_idx, n_pos,
-                                          line, col);
+  culebra::throw_if_too_many_positionals(
+      meta->first_kw_only_idx, n_pos, [&] { return _jit_kw_only_name(meta); },
+      line, col);
 }
 
 struct JitMultiMethodEntry {
@@ -1459,8 +1470,17 @@ inline MultifnPick _jit_multifn_resolve(
   }
   auto pick = _jit_multifn_pick(m_it->second, arg_types, kwarg_keys);
   if (pick == -1) {
+    // One definition, and it stops taking positionals where this call went
+    // on: name the keyword-only parameter the next one was written for.
+    std::string hint;
+    if (m_it->second.size() == 1) {
+      const JitParamMeta* meta = m_it->second[0].body->meta;
+      if (meta && meta->first_kw_only_idx >= 0 &&
+          n_pos > meta->first_kw_only_idx)
+        hint = culebra::keyword_only_hint(_jit_kw_only_name(meta));
+    }
     throw culebra::CulebraError("DispatchError",
-        fail("no matching method"), line, col);
+        fail("no matching method") + hint, line, col);
   }
   if (pick == -2) {
     throw culebra::CulebraError("DispatchError",

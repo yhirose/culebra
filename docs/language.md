@@ -2366,7 +2366,8 @@ boundary; parameters after it can only be passed by name.
 
     g(1, y: 2)            # 13
     g(1, y: 2, z: 3)      # 6
-    g(1, 2)               # TypeError: takes 1 positional argument but 2 given
+    g(1, 2)               # TypeError: takes 1 positional argument but 2
+                          # given ('y' is keyword-only: write y: ...)
     g(1)                  # ArityError: missing required argument 'y'
 
 Rules:

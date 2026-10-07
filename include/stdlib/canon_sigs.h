@@ -66,6 +66,14 @@ struct CanonSig {
   int args_rest_idx;      // -1 = none
 };
 
+// The first keyword-only parameter's name, which a surplus positional's
+// error names; empty when there is none (a `**rest` is not one to name).
+inline std::string_view canon_kw_only_name(const CanonSig& s) {
+  int i = s.first_kw_only_idx;
+  if (i < 0 || i == s.kwargs_rest_idx || i >= s.n_params) return {};
+  return s.params[i].name;
+}
+
 }  // namespace culebra
 
 #include "stdlib/canon_sigs_table.h"

@@ -786,6 +786,12 @@ fn __index_of_str(xs, s) {
   0 - 1
 }
 
+# what a count error adds when the surplus positional was written for a
+# keyword-only parameter
+fn __kw_only_hint(pname) {
+  " ('" + pname + "' is keyword-only: write " + pname + ': ...)'
+}
+
 fn __bind_args(spec2, pos, kws, strict, apos, line, col) {
   let spec = spec2[0]
   let cap = spec2[1]
@@ -800,7 +806,10 @@ fn __bind_args(spec2, pos, kws, strict, apos, line, col) {
     if !strict { return nil }
     mut word = ' positional arguments but '
     if cap == 1 { word = ' positional argument but ' }
-    __raise('TypeError', 'takes ' + __tostr(cap) + word + __tostr(__len(pos)) + ' given',
+    # the parameter after the bare *, unless that is a **rest
+    mut hint = ''
+    if cap < __len(spec) && spec[cap][4] != 'kr' { hint = __kw_only_hint(spec[cap][0]) }
+    __raise('TypeError', 'takes ' + __tostr(cap) + word + __tostr(__len(pos)) + ' given' + hint,
             line, col)
   }
   mut args = []
@@ -2412,8 +2421,8 @@ fn __method(recv, name, pos, kws, apos, line, col) {
       if __len(pos) > cap {
         mut word = ' positional arguments but '
         if cap == 1 { word = ' positional argument but ' }
-        __raise('TypeError', 'takes ' + __tostr(cap) + word + __tostr(__len(pos)) + ' given',
-                line, col)
+        __raise('TypeError', 'takes ' + __tostr(cap) + word + __tostr(__len(pos)) + ' given' +
+                __kw_only_hint('reverse'), line, col)
       }
     }
     return __array_method(recv, name, args, line, col)

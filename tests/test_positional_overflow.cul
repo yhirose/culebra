@@ -64,7 +64,8 @@ let e_cap = try {
   e
 }
 assert_eq(e_cap.kind, 'TypeError')
-assert_eq(e_cap.message, 'takes 1 positional argument but 2 given')
+assert_eq(e_cap.message,
+          "takes 1 positional argument but 2 given ('k' is keyword-only: write k: ...)")
 
 // --- a `*args` catch-all removes the cap entirely ---
 let variadic = fn (a, *rest) {
@@ -99,7 +100,9 @@ let e_builtin_kw = try {
   e
 }
 assert_eq(e_builtin_kw.kind, 'TypeError')
-assert_eq(e_builtin_kw.message, 'takes 0 positional arguments but 1 given')
+assert_eq(e_builtin_kw.message,
+          "takes 0 positional arguments but 1 given " +
+            "('reverse' is keyword-only: write reverse: ...)")
 
 // --- a `fn name(...)` declaration dispatches, so a surplus finds no method ---
 fn decl(a, b) {
@@ -156,5 +159,51 @@ let e_ns_type = try {
   e
 }
 assert_eq(e_ns_type.kind, 'TypeError')
+
+// --- a surplus positional written for a keyword-only parameter is told so ---
+fn po_said(f) {
+  try {
+    f()
+    'no error'
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+let po_hint = "('base' is keyword-only: write base: ...)"
+
+// A stdlib function, called by name and as a value.
+assert_eq(po_said(fn () { to_long('ff', 16) }),
+          "ArityError: expected 1 positional argument, got 2 " + po_hint)
+let po_to_long = to_long
+assert_eq(po_said(fn () { po_to_long('ff', 16) }),
+          "ArityError: expected 1 positional argument, got 2 " + po_hint)
+assert_eq(to_long('ff', base: 16), 255)
+
+// A declared function finds no method, and has one definition to speak for.
+fn po_parse(s, *, base = 10) {
+  to_long(s, base: base)
+}
+assert_eq(po_said(fn () { po_parse('ff', 16) }),
+          "DispatchError: no matching method for `po_parse` " + po_hint)
+assert_eq(po_parse('ff', base: 16), 255)
+
+// Two definitions: neither is the one the call meant.
+fn po_two(s: String, *, base = 10) {
+  s
+}
+fn po_two(n: Long, *, base = 10) {
+  n
+}
+assert_eq(po_said(fn () { po_two('ff', 16) }),
+          "DispatchError: no matching method for `po_two`")
+
+// Too few is a count and nothing else, and a `**rest` is not a name to write.
+assert_eq(po_said(fn () { to_long() }),
+          "ArityError: expected 1 positional argument, got 0")
+let po_rest = fn (s, *, **opts) {
+  s
+}
+assert_eq(po_said(fn () { po_rest(1, 2) }),
+          "TypeError: takes 1 positional argument but 2 given")
 
 IO.inspect("test_positional_overflow OK")

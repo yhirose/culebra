@@ -40,7 +40,7 @@
 {kind: 'TypeError', message: 'got argument 'a' both positionally and as a keyword', line: 79, col: 15}
 {kind: 'TypeError', message: '**: splat operand must be Object, got Long', line: 80, col: 15}
 {kind: 'TypeError', message: '**: splat key must be String', line: 81, col: 15}
-{kind: 'TypeError', message: 'takes 1 positional argument but 2 given', line: 82, col: 15}
+{kind: 'TypeError', message: 'takes 1 positional argument but 2 given ('flag' is keyword-only: write flag: ...)', line: 82, col: 15}
 {kind: 'ArityError', message: 'missing required argument 'x'', line: 83, col: 15}
 {kind: 'ArityError', message: 'missing required argument 'a'', line: 84, col: 15}
 {kind: 'TypeError', message: 'type error: parameter 'a' expects Long', line: 86, col: 15}
