@@ -1453,6 +1453,13 @@ _run-tests BACKEND:
     # as every JIT test crashing at once.
     run_jit_host_symbols() { bash tools/checks/check_jit_host_symbols.sh "$BIN"; }
 
+    # The macOS driver loads nothing but what macOS ships: with a Homebrew
+    # dylib among its load commands it starts only where Homebrew has that
+    # dylib, and every machine that builds this does
+    # (misc/verify_standalone_macho.sh). Reads the linked binary alone; skips
+    # off macOS.
+    run_standalone_macho() { bash misc/verify_standalone_macho.sh "$BIN"; }
+
     # EH balance: every cleanup landingpad's __cxa_begin_catch is closed by an
     # __cxa_end_catch — the re-raising ones on the rethrow's own unwind edge.
     # An unclosed handler strands the exception object (~184 B per caught
@@ -1566,6 +1573,7 @@ _run-tests BACKEND:
       "run_rt_keep_scope|rt-keep scope (CULEBRA_RT_KEEP is culebra_runtime_*-only)|static|check,dev,test|buildtree|-|0"
       "run_optional_ns|optional ns (the tests/*.cul sweep names no optional namespace)|static|check,dev,test|buildtree|-|0"
       "run_jit_host_symbols|jit host symbols (driver defines what codegen names)|binary|dev,test|light|-|0"
+      "run_standalone_macho|standalone macho (the macOS driver loads only system libraries)|binary|dev,test|light|-|0"
       "run_eh_balance|eh balance (every begin_catch is closed)|binary|dev,test|light|-|2"
       "run_alloca_discipline|alloca discipline (scratch slots stay entry-block)|binary|dev,test|light|-|0"
       "run_float_carry|float carry (loop-carried Floats stay double phis)|binary|dev,test|light|-|0"

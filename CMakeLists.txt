@@ -548,26 +548,45 @@ libs (auto-detected when the static libs are missing)" OFF)
     set(llvm_libs LLVM)
   endif()
 
-  # LLVMSupport's exported interface names zstd::libzstd_shared, so even a
-  # -static link imports libzstd.dll — which a downloaded .exe won't find on a
-  # plain Windows box. The same package ships the static archive; point the
-  # imported target's import library at it. Windows-only: elsewhere a shared
+  # LLVMSupport's exported interface names zstd::libzstd_shared, so the driver
+  # imports the shared zstd whatever else is static: libzstd.dll under a
+  # -static Windows link, Homebrew's libzstd.1.dylib on macOS. Neither is on
+  # the machine a download lands on. The same package ships the static
+  # archive; point the imported target at it. Not on Linux, where a shared
   # zstd is a normal system library.
-  if(WIN32 AND TARGET zstd::libzstd_shared)
+  if((WIN32 OR APPLE) AND TARGET zstd::libzstd_shared)
     find_library(CULEBRA_ZSTD_STATIC NAMES libzstd.a zstd_static)
     if(CULEBRA_ZSTD_STATIC)
       # Per-configuration properties too: a plain IMPORTED_IMPLIB is ignored
       # whenever an IMPORTED_IMPLIB_<CONFIG> exists, and zstd's config package
-      # sets those.
+      # sets those. LLVM's own find module, which macOS goes through, has none.
       set(_zstd_props IMPORTED_IMPLIB "${CULEBRA_ZSTD_STATIC}"
                       IMPORTED_LOCATION "${CULEBRA_ZSTD_STATIC}")
       get_target_property(_zstd_cfgs zstd::libzstd_shared IMPORTED_CONFIGURATIONS)
-      foreach(_c IN LISTS _zstd_cfgs)
-        list(APPEND _zstd_props IMPORTED_IMPLIB_${_c} "${CULEBRA_ZSTD_STATIC}"
-                                IMPORTED_LOCATION_${_c} "${CULEBRA_ZSTD_STATIC}")
-      endforeach()
+      if(_zstd_cfgs)
+        foreach(_c IN LISTS _zstd_cfgs)
+          list(APPEND _zstd_props IMPORTED_IMPLIB_${_c} "${CULEBRA_ZSTD_STATIC}"
+                                  IMPORTED_LOCATION_${_c} "${CULEBRA_ZSTD_STATIC}")
+        endforeach()
+      endif()
       set_target_properties(zstd::libzstd_shared PROPERTIES ${_zstd_props})
       message(STATUS "zstd: linking ${CULEBRA_ZSTD_STATIC} statically (LLVM dep)")
+    endif()
+  endif()
+
+  # The interface names libz3 too where LLVM was built with its solver
+  # (Homebrew's is). The driver calls nothing in it, but ld64 writes a load
+  # command for every dylib on the link line, and one naming a library the
+  # machine lacks stops the process before main. Off the line it goes; a
+  # component that did need it would fail the link by name. Not
+  # -dead_strip_dylibs, which drops WebKit as well: Webview reaches its
+  # classes by name, so nothing is bound to the framework.
+  if(TARGET LLVMSupport)
+    get_target_property(_support_links LLVMSupport INTERFACE_LINK_LIBRARIES)
+    if(_support_links)
+      list(FILTER _support_links EXCLUDE REGEX "libz3")
+      set_target_properties(LLVMSupport PROPERTIES
+        INTERFACE_LINK_LIBRARIES "${_support_links}")
     endif()
   endif()
 

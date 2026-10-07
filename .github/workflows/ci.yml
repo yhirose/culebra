@@ -765,8 +765,10 @@ jobs:
   # the macOS download's configuration and nothing but a `v*` tag used to build
   # it. Two of the Linux job's steps are absent — a macOS runner has no display
   # server, and `otool -L` naming system frameworks is by design, not a
-  # regression. The AOT step stays: test-macos links one AOT binary, but with
-  # the window OFF, so the culebra_rt_canvas force-load is macOS-uncovered.
+  # regression. What it may not name is anything outside the system, which is
+  # this job's own load-time check. The AOT step stays: test-macos links one
+  # AOT binary, but with the window OFF, so the culebra_rt_canvas force-load
+  # is macOS-uncovered.
   macos-canvas-window:
     runs-on: macos-latest
     timeout-minutes: 60
@@ -816,6 +818,12 @@ jobs:
         run: misc/aot_axes/verify_canvas_window.sh build
       - name: Verify Scene is in this build too (it follows the window)
         run: misc/aot_axes/verify_scene_axis.sh build
+
+      # The download's load-time contract, on the configuration that links the
+      # most (the window's frameworks, Webview): nothing outside macOS itself.
+      # test-macos reaches the same script through the gate table.
+      - name: Verify the binary loads only system libraries
+        run: misc/verify_standalone_macho.sh build/culebra
 
       # A window-enabled binary must still take the headless path on demand,
       # byte-identically, on every engine. Set explicitly — the binary is
