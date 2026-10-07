@@ -45,6 +45,20 @@ inline std::string culebra_syntax_error(const peg::ErrorReport& report) {
   return format_syntax_error(report, &classes);
 }
 
+// What the current parse saw open and not parse: the earliest double-quoted
+// string, and the innermost `{` of an interpolation. A program that parses
+// has none worth asking about; in one that does not, the failure is usually
+// reported far from them, since a string runs across lines and its `{` hands
+// the text to the expression grammar (open_string_note).
+struct FailedString {
+  const char* start = nullptr;
+  const char* brace = nullptr;
+};
+inline FailedString& failed_string() {
+  static thread_local FailedString f;
+  return f;
+}
+
 inline peg::parser& get_parser() {
   // thread_local — peg::parser's logger callback and VM state aren't
   // safe to share across host threads.
@@ -81,6 +95,25 @@ inline peg::parser& get_parser() {
     // Reported like any failure, in words parse_undesugared() replaces.
     parser.set_max_depth(kCulebraParseDepthLimit);
     parser.set_logger(peg::Log{});
+
+    // failed_string's source. `opener` has to be there for an attempt to
+    // count: TRIPLE_STRING is tried at every `"` and fails at once on most,
+    // INTERP_EXPR at every position of a string's text. `earliest` picks
+    // between two that failed: the outermost string, the innermost brace.
+    auto note_failed = [&](const char* rule, std::string_view opener,
+                           const char* FailedString::* slot, bool earliest) {
+      parser[rule].leave = [opener, slot, earliest](
+                               const peg::Context&, const char* s, size_t n,
+                               size_t matchlen, std::any&, std::any&) {
+        if (matchlen != static_cast<size_t>(-1)) return;
+        if (!std::string_view(s, n).starts_with(opener)) return;
+        const char*& kept = failed_string().*slot;
+        if (!kept || (earliest ? s < kept : s > kept)) kept = s;
+      };
+    };
+    note_failed("INTERPOLATED_STRING", "\"", &FailedString::start, true);
+    note_failed("TRIPLE_STRING", "\"\"\"", &FailedString::start, true);
+    note_failed("INTERP_EXPR", "{", &FailedString::brace, false);
   }
 
   return parser;
@@ -2536,6 +2569,39 @@ inline std::string format_parse_failure(const std::string& path,
   return std::format("{}:{}:{}: {}\n", path, f.line, f.col, f.message);
 }
 
+// What a syntax error adds when a double-quoted string that opened on an
+// earlier line was still open where the parse stopped (failed_string): where
+// it began, and the `{` in it that did not close, which starts an
+// interpolation and is the usual reason. Empty when there is no such string.
+inline std::string open_string_note(std::string_view src,
+                                    const FailedString& failed,
+                                    size_t fail_pos, size_t fail_line) {
+  if (!failed.start) return {};
+  const auto at = static_cast<size_t>(failed.start - src.data());
+  if (at >= fail_pos || fail_pos > src.size()) return {};
+  // 1-based line and byte column, as a failure's own position is printed.
+  auto where = [&](size_t off) {
+    size_t line = 1, bol = 0;
+    for (size_t i = 0; i < off; ++i)
+      if (src[i] == '\n') { ++line; bol = i + 1; }
+    return std::pair{line, off - bol + 1};
+  };
+  const auto [line, col] = where(at);
+  if (line >= fail_line) return {};
+  // A brace is this string's when it lies between its quote and the failure.
+  const size_t brace = failed.brace && failed.brace > failed.start
+                           ? static_cast<size_t>(failed.brace - src.data())
+                           : fail_pos;
+  if (brace >= fail_pos)
+    return std::format(" The string opened at {}:{} is not closed.", line,
+                       col);
+  const auto [bline, bcol] = where(brace);
+  return std::format(
+      " The string opened at {}:{} is still open: its '{{' at {}:{} starts an "
+      "interpolation (write '\\{{' for a brace).",
+      line, col, bline, bcol);
+}
+
 // The AST as the grammar builds it, before any desugaring: what parse()
 // and parse_for_format() share.
 //
@@ -2553,8 +2619,10 @@ inline std::shared_ptr<peg::Ast> parse_undesugared(
     failures.push_back(
         {r.line, codepoint_column_to_byte(expr, r.line, r.col),
          reword_parse_depth_error(culebra_syntax_error(r),
-                                  kCulebraParseDepthLimit)});
+                                  kCulebraParseDepthLimit) +
+             open_string_note(expr, failed_string(), r.position, r.line)});
   });
+  failed_string() = {};
 
   std::shared_ptr<peg::Ast> ast;
   // The newline normalization throws on a bare `\r`, which bypasses the

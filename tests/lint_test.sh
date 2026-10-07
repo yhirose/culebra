@@ -82,6 +82,43 @@ expect_syntax_message "else, no block"      'if x { 1 } else 2' \
 expect_syntax_message "unclosed comment"    'x = 1 /* open' \
   ", expecting '*/'."
 
+# A double-quoted string that opened on an earlier line and was still open
+# where the parse stopped is named after the message (frontend/parser.h,
+# open_string_note). A `{` in one starts an interpolation, so the failure is
+# reported wherever the text it swallowed stops making sense: the note says
+# where the string began and which brace it was. The case is line 2 of the
+# file, after the `inspect("RAN")` line.
+expect_syntax_message "brace in a string" $'if s == "{" {\n  f("x")\n}\nf("y")' \
+  ", unexpected 'y', expecting '}' or an operator. The string opened at 2:9 is still open: its '{' at 2:10 starts an interpolation (write '\\{' for a brace)."
+expect_syntax_message "brace in a triple-quoted string" $'let t = """\n  a { b\n"""' \
+  ", unexpected '\"', expecting '}' or an operator. The string opened at 2:9 is still open: its '{' at 3:5 starts an interpolation (write '\\{' for a brace)."
+# One `"` does not close a triple-quoted string, so the brace after it counts.
+expect_syntax_reject "quote before the brace" \
+  " The string opened at 2:9 is still open: its '{' at 3:12 starts an interpolation (write '\\{' for a brace)." \
+  $'let t = """\n  say "hi" { b\n"""'
+# The brace is the one that did not close, not the first one in the string:
+# an interpolation that closed is not at fault, and the innermost open one is.
+expect_syntax_reject "quote forgotten after an interpolation" \
+  " The string opened at 2:9 is not closed." \
+  $'let s = "total: {n}\nlet t = n + 1'
+expect_syntax_reject "second interpolation is the open one" \
+  " The string opened at 2:9 is still open: its '{' at 4:5 starts an interpolation" \
+  $'let p = """\n  a {n}\n  b {n.}\n"""'
+expect_syntax_message "string never closed" $'let s = "open\nlet b = 2' \
+  ", expecting '\\', '{', '\"' or <INTERPOLATED_CONTENT>. The string opened at 2:9 is not closed."
+# Nothing is added where no such string is open: a failure on the string's
+# own line, an escaped brace, or an error that has nothing to do with one.
+expect_no_string_note() {
+  printf 'inspect("RAN")\n%s\n' "$2" > "$TMP/t.cul"
+  out=$("$CULEBRA" --vm "$TMP/t.cul" 2>&1)
+  if [[ "$out" != *"syntax error"* || "$out" == *"The string opened"* ]]; then
+    echo "FAIL no-string-note [$1]: $out"; fail=1
+  fi
+}
+expect_no_string_note "same line"     'print("a {x +} c")'
+expect_no_string_note "escaped brace" $'let u = "a \\{ b"\nlet v = (1 +'
+expect_no_string_note "closed string" $'let w = "fine {1}"\nlet z = )'
+
 # `stmt if c` is an `if` arm, a scope of its own: a declaration or a `defer`
 # there is refused at the modifier. A bare write is not a declaration.
 expect_postfix_reject() {
