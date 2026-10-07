@@ -79,7 +79,7 @@ the three places placement happens and how each is kept correct.
 There is no `shared_ptr` anywhere on the hot path: retain and release
 are explicit operations, placed by three different authors.
 
-**The bytecode compiler.** `vm::Compiler` emits `Retain` / `Release` /
+**The bytecode compiler.** `vm::Compiler` emits `MoveRetain` / `Release` /
 `Take` into the instruction stream, and both consumers — the executor
 and the LLVM lowering — merely execute them. The compiler's placement
 is therefore the one that matters most, and it is verified once:

@@ -1171,7 +1171,7 @@ struct Lowering {
         case Op::Move:
           b.CreateStore(load_slot(in.b), slots[in.a]);
           break;
-        case Op::MoveRetain:  // Move + Retain, fused by the elision pass
+        case Op::MoveRetain:
           b.CreateStore(load_slot(in.b), slots[in.a]);
           j.emit_value_retain(load_slot(in.a));
           break;
@@ -1184,9 +1184,6 @@ struct Lowering {
         case Op::Take:
           b.CreateStore(load_slot(in.b), slots[in.a]);
           b.CreateStore(j.make_nil(), slots[in.b]);
-          break;
-        case Op::Retain:
-          j.emit_value_retain(load_slot(in.a));
           break;
         case Op::Release:
           j.emit_value_release(load_slot(in.a));

@@ -77,7 +77,7 @@ LLVM lowering — は1つのランタイム、1つのヒープ、1つのコレ�
 ホットパス上には`shared_ptr`が一切ない: retainとreleaseは明示的な
 操作であり、これを配置する場所が3つある。
 
-**バイトコードコンパイラ。** `vm::Compiler`は`Retain` / `Release` /
+**バイトコードコンパイラ。** `vm::Compiler`は`MoveRetain` / `Release` /
 `Take`を命令列にemitし、2つの消費者 — executorとLLVM lowering —
 はそれを実行するだけである。したがってコンパイラの配置がもっとも
 重要であり、1回だけ検証される: すべての式は結果レジスタに`+1`を

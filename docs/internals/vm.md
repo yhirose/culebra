@@ -440,11 +440,12 @@ A `Chunk` carries, besides `code`:
 
 ### 5.2 Ownership in the instruction stream
 
-Reference counting is explicit: the compiler emits `Retain` and
-`Release`, and the consumers only execute them. Four value-movement ops
+Reference counting is explicit: the compiler emits `MoveRetain` and
+`Release`, and the consumers only execute them. Five value-movement ops
 set the vocabulary — `LoadConst` (a raw copy; constants are never
-refcounted), `Move` (raw copy, paired with `Retain` for a borrow), `Take`
-(transfer: the source becomes nil), `Release`. Every expression leaves a
+refcounted), `Move` (raw copy), `MoveRetain` (a copy with a `+1` of its
+own: a borrow), `Take` (transfer: the source becomes nil), `Release`.
+Every expression leaves a
 `+1` in its result register; a statement's temporaries are released by a
 sweep at its end.
 
@@ -462,7 +463,7 @@ new closure's captures from the callee chunk's `capture_src_slots`.
 ### 5.2.1 Bookkeeping the compiler proves dead
 
 The bookkeeping above is emitted unconditionally — every scope's slots get
-a `Release` on the way out, every borrowed copy a `Retain`, every scope a
+a `Release` on the way out, every borrowed copy a retain, every scope a
 mark/exit pair — because the compiler emits it in one forward pass, before
 it can know a given slot never holds anything but a `Long`, or a given
 scope never registers a droppable resource. `compile_unit` compiles once,
@@ -475,7 +476,8 @@ case costs performance, never correctness.
 
 **Refcount elision** (`plan_rc_elision`) is a forward dataflow per chunk,
 two-point lattice (`NonRc < Unknown`), deciding whether the slot a
-`Release`/`Retain` names can hold a refcounted value there. A `LoadConst`
+`Release` names, or a `MoveRetain` copies from, can hold a refcounted
+value there. A `LoadConst`
 of a non-refcounted constant, arithmetic on two non-refcounted operands,
 and similar — all read off the executor's own switch — lower the state to
 `NonRc`; anything unmodeled (a container op, a property write, …) raises
@@ -497,7 +499,8 @@ the state they had. `fib`'s chunk goes from ten `Release`s to four, and
 the four left are the ones that have to stay (each call's result, the
 `MfSelf` handle, the parameter).
 
-Dropping a `Retain` needs only the forward pass; dropping a
+Dropping a `MoveRetain`'s retain, which leaves a plain `Move`, needs only
+the forward pass; dropping a
 `Release` needs a second, backward liveness pass too, because `Release`
 is destructive (it nils the slot) and later code depends on the nil — an
 outer scope's ladder and the throw-path unwind release the same range
@@ -544,15 +547,11 @@ releasing it and a live value there would have leaked in the original
 code. A jump landing on the `Take` would reach it without the producer,
 so a jump target is never a candidate.
 
-**Fusing the borrow** is the fourth. `Move X, Y ; Retain X` is the only
-shape a `Retain` is ever emitted in (`store_into`'s not-owned arm writes
-both), so the pair becomes one `MoveRetain`, saving a dispatch on each.
-That opcode exists for the pass to emit; the compiler still writes the
-pair, which keeps the source it comes from readable. When the borrow is
-followed by `Release Y`, the copy's `+1` and the release's `-1` cancel —
-the value is never its last reference in between, so no `drop` can run —
-and the three become one `Take X, Y`, which leaves `Y` nil just as the
-`Release` did. That is how a function returns a parameter as is.
+**The borrow that is a transfer** is the fourth. When `MoveRetain X, Y`
+is followed by `Release Y`, the copy's `+1` and the release's `-1`
+cancel — the value is never its last reference in between, so no `drop`
+can run — and the two become one `Take X, Y`, which leaves `Y` nil just
+as the `Release` did. That is how a function returns a parameter as is.
 
 **Fusing the ladder** is the fifth, and unlike the four above it proves
 nothing — it is about the SHAPE of the code rather than its dataflow, so
@@ -579,18 +578,18 @@ this compile. `while i < n { i = i + 1 }` drops from thirteen
 instructions a loop iteration to eight this way: three `Release`s (the
 loop carries only a `Long`) and the loop body's `OwnedMark`/`OwnedExit`
 pair (nothing in it constructs a droppable object). Over the tests and
-the language front ends together, the four passes take 736,777
-instructions to 701,179; the fifth takes what is left down by a further
-23% — a release ladder is two or three rungs and there is one at the end
+the language front ends together, the four passes take 1,684,313
+instructions to 1,608,765; the fifth takes what is left down by a further
+25% — a release ladder is two or three rungs and there is one at the end
 of almost every scope.
 
 ### 5.3 The opcode families
 
-156 opcodes, grouped:
+155 opcodes, grouped:
 
 | family | ops | notes |
 |---|---|---|
-| values | `LoadConst` `Move` `Take` `Retain` `Release` `MoveRetain` `ReleaseMany` | §5.2; `MoveRetain` and `ReleaseMany` are the fused borrow and the fused release ladder the elision passes emit (§5.2.1) |
+| values | `LoadConst` `Move` `MoveRetain` `Take` `Release` `ReleaseMany` | §5.2; `ReleaseMany` is the fused release ladder the shape pass emits (§5.2.1) |
 | arithmetic, bitwise, comparison | `Neg` `Not` `Add` … `Pow` `MatMul` `BitAnd` … `Shr` `BitNot` `Eq` … `Ge` `JumpIfSame` | each is one runtime dispatch, with the arithmetic and comparison ops deciding both-Long and both-numeric inline first (`Neg` its Long and Float arms); `d=1` on an arithmetic op marks a compound assignment's in-place Tensor step |
 | containers | `ArrayNew/Append/Push/Extend/Resize` `TupleNew/Push` `SetNew/Add` `ObjectNew/NewShaped/Set/SetAny/Merge` `SlotInit` `RangeNew` `ChkLong` `ChkNum` | the container absorbs the element's `+1`; `SlotInit` is `ObjectSet` by slot index for a literal whose Shape was pre-built (§5.3.5) |
 | access | `Index` `IndexWr` `IndexCo` `IndexSet` `PropSet` `PropWr` `PropCo` `PropVal` `PropRaw` `HasProp` `UfcsTakes` `NsWrChk` `NilChk` | read / write / coalescing-write forms of subscript and property access; `PropVal` is a plain property read that may invoke a getter |
@@ -697,7 +696,7 @@ unguarded answer.
 callee does not need a register at all when the name behind it is one
 the compiler already knows cannot change under the call. That is the
 third fact `call_targets` carries: the `b` operand names a **cell**, and
-the value inside it is the callee. Both the read's `Retain` and the
+the value inside it is the callee. Both the read's retain and the
 `Release` that matched it at the end of the statement disappear, and the
 executor loses a whole instruction — the site is a `Call` and nothing
 else. The same table row carries this whether or not the site's chunk

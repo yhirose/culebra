@@ -60,16 +60,15 @@ inline constexpr int32_t kMaxSlots = 8192;
 inline constexpr int32_t kMaxOwnedDepth = 1024;
 
 // One fixed-width instruction. Registers are frame slots holding JitValue.
-// RC is explicit in the stream (vm.md §5.2): the compiler emits Retain/Release;
-// the VM and the LLVM lowering only execute them. Constants are scalars or
-// chunk-owned strings — neither is refcounted — so LoadConst is a raw copy;
-// Array is the slice's RC-real type, and its +1 flows through the same
-// Take/Release discipline as everything else.
+// RC is explicit in the stream (vm.md §5.2): the compiler emits the retaining
+// copy and the Release; the VM and the LLVM lowering only execute them.
+// Constants are scalars or chunk-owned strings — neither is refcounted — so
+// LoadConst is a raw copy; Array is the slice's RC-real type, and its +1
+// flows through the same Take/Release discipline as everything else.
 enum class Op : uint8_t {
   LoadConst,   // regs[a] = consts[b]
-  Move,        // regs[a] = regs[b] (raw copy; pair with Retain for a borrow)
+  Move,        // regs[a] = regs[b] (raw copy; a borrow is MoveRetain)
   Take,        // regs[a] = regs[b]; regs[b] = nil (ownership transfer)
-  Retain,      // retain regs[a]
   Release,     // release regs[a]; regs[a] = nil — destructive, so every slot
                // has one owner and sweeps cannot double-release
   Neg,         // regs[a] = -regs[b]: Long inline, else num_neg (line/col)
@@ -437,7 +436,7 @@ enum class Op : uint8_t {
                // Releases the cell previously in regs[a] (null on first run —
                // a loop's per-iteration redeclaration).
                // The cell pointer rides the reg as a Long, so the plain
-               // Release/Retain ops are no-ops on it (the descriptor-cell
+               // Release/MoveRetain ops are no-ops on it (the descriptor-cell
                // precedent); only CellRelease touches the cell's refcount.
   CellGet,     // regs[a] = cell(regs[b])->value, retained (+1) — load_slot
   CellSet,     // cell(regs[a])->value = regs[b] (absorbs the +1, releases the
@@ -754,18 +753,15 @@ enum class Op : uint8_t {
                  // forced one drops into the same minimal break the JIT's
                  // `debugger` compiles to.
   Halt,
-  MoveRetain,    // regs[a] = regs[b]; retain it. The borrow idiom `Move`
-                 // + `Retain` in one instruction: every Retain the compiler
-                 // emits is the second half of that pair (store_into's
-                 // not-owned arm), so fusing them costs one opcode and saves
-                 // a dispatch on each. Emitted by the elision pass, never by
-                 // the compiler itself, which keeps the pair readable in the
-                 // source it comes from.
+  MoveRetain,    // regs[a] = regs[b]; retain it. A borrowed copy with a +1
+                 // of its own (store_into's not-owned arm): the only way a
+                 // retain reaches the stream. The elision pass turns it into
+                 // a plain Move where the value cannot be refcounted.
   ReleaseMany,   // release and nil release_slots[a .. a+b), in that order.
                  // A scope's release ladder is one decision the compiler
                  // already made as a unit (docs §5.2.1). Emitted by the shape
-                 // pass, never by the compiler, for the same reason
-                 // MoveRetain is.
+                 // pass, never by the compiler, which keeps each Release
+                 // readable in the source it comes from.
   // Generators, which keep their frame between resumes. `c` numbers the chunk's
   // suspension points from 1: the frame's state while it is suspended there,
   // and its run in the chunk's stack map (Chunk::gen_owned).
@@ -3589,24 +3585,20 @@ struct Unsupported {
 
 // --- Refcount elision -------------------------------------------------------
 //
-// Which of a chunk's Release / Retain instructions do nothing.
+// Which of a chunk's Release instructions, and of its MoveRetains' retains,
+// do nothing.
 //
 // The compiler emits the bookkeeping unconditionally: every slot a scope owns
-// gets a Release on the way out, every borrowed copy a Retain, every
+// gets a Release on the way out, every borrowed copy a retain, every
 // assignment a Release of what it overwrites. On a slot that only ever holds
 // a Long the runtime call is a no-op — but the executor still fetches and
 // dispatches the instruction, and that is most of what a hot loop runs.
 //
 // This is the analysis half: a forward dataflow over the chunk with a
 // two-point lattice (NonRc < Unknown), answering whether the slot a Release
-// names can hold a refcounted value there. The compiler consumes it on a
-// SECOND emission pass, which is why the answer is keyed by the ORDINAL of
-// the decision and not by pc — the second pass emits fewer instructions, so
-// its pcs do not line up, but it reaches the same decisions in the same
-// order. Emitting again rather than deleting from the finished chunk is what
-// keeps `positions`, the cleanup ranges, the slot-debug ranges and the jump
-// targets correct: they are built by the ordinary emitter at the pcs that
-// survive, so there is no remap to write and none to get wrong.
+// names, or a MoveRetain copies from, can hold a refcounted value there. The
+// answer is keyed by pc and applied to the finished chunk (apply_rc_elision;
+// compile_unit says why that is a deletion pass and not a second emission).
 //
 // Safety is in the default, not the coverage. An op `rc_apply` does not model
 // clobbers EVERY slot to Unknown, so a new op — or one whose write set is not
@@ -3630,15 +3622,15 @@ struct Coalesce {
 struct RcPlan {
   // Per chunk, one byte per instruction: 1 where the instruction is dead —
   // provably a no-op — and may be deleted. Three analyses fill this in, over
-  // disjoint op sets (Release/Retain; OwnedMark/OwnedExit; the `Take` a
-  // producer can absorb), so their answers just OR together into one plan.
+  // disjoint op sets (Release; OwnedMark/OwnedExit; the `Take` a producer
+  // can absorb), so their answers just OR together into one plan.
   std::vector<std::vector<char>> dead;
   // Per chunk, the destination rewrites the third one asks for. A rewrite,
   // not a delete, so it rides beside `dead` rather than in it.
   std::vector<std::vector<Coalesce>> coalesce;
-  // Per chunk, the instructions whose op changes as they absorb the ones
-  // after them (which `dead` carries): a `Move` into the fused `MoveRetain`,
-  // or a borrow followed by its source's `Release` into a `Take`.
+  // Per chunk, the instructions whose op changes: a `MoveRetain` whose
+  // retain does nothing into a `Move`, or one followed by its source's
+  // `Release` (which `dead` carries) into a `Take`.
   std::vector<std::vector<std::pair<uint32_t, Op>>> retag;
 
   bool any() const {
@@ -3654,13 +3646,6 @@ struct RcPlan {
            });
   }
 };
-
-// The decisions the plan is about, spelled once: `emit` counts these on the
-// way out and plan_rc_elision counts the same ones on the way back in, so the
-// two ordinal spaces are the same set by construction.
-inline bool is_rc_op(Op op) {
-  return op == Op::Release || op == Op::Retain;
-}
 
 namespace rc_detail {
 
@@ -3786,8 +3771,7 @@ inline void rc_apply(const Chunk& c, const Insn& in, RcWords& out,
     case Op::DestrErr:
     case Op::Throw:
     case Op::Ret:
-    case Op::Halt:
-    case Op::Retain: break;
+    case Op::Halt: break;
     case Op::LoadConst:
       set(in.a, _is_refcounted_value_tag(
                     static_cast<int8_t>(c.consts[in.b].tag)));
@@ -3868,7 +3852,6 @@ inline void rc_reads(const Insn& in, Read read, ReadAll read_all) {
     case Op::ToFloat:
     case Op::CellGet:  // the cell pointer; the value inside is not a slot
     case Op::BitNot: read(in.b); break;
-    case Op::Retain:
     case Op::Release:
     case Op::Println:
     case Op::Ret:
@@ -4080,7 +4063,8 @@ inline std::vector<char> rc_plan_for_chunk(const Chunk& c, RcScratch& s,
   // it, and a for-in cursor slot must not inherit "a stale Long for whatever
   // the slot index becomes next" (ForSlot above). So dropping a Release needs
   // both halves: the value is not refcounted (forward), AND the nil store is
-  // dead (here). Retain writes nothing, so it needs only the first.
+  // dead (here). A MoveRetain's retain writes nothing, so it needs only the
+  // first.
   //
   // Conservatism is in rc_reads' default (an unmodeled op reads every slot)
   // and in the exit state: control leaving the chunk, and every throw edge,
@@ -4179,16 +4163,21 @@ inline std::vector<char> rc_plan_for_chunk(const Chunk& c, RcScratch& s,
 
   // The decisions. An unreached instruction is kept: it costs nothing to run
   // and the state there says nothing.
+  auto non_rc = [&](size_t pc, int32_t slot) {
+    return s.reached[pc] && slot >= 0 && static_cast<size_t>(slot) < slots &&
+           !rc_unknown(s.in, pc * words, static_cast<size_t>(slot));
+  };
   for (size_t pc = 0; pc < n; ++pc) {
     const Insn& insn = c.code[pc];
-    if (!is_rc_op(insn.op)) continue;
-    if (!s.reached[pc] || insn.a < 0 || static_cast<size_t>(insn.a) >= slots)
-      continue;
-    auto slot = static_cast<size_t>(insn.a);
-    if (rc_unknown(s.in, pc * words, slot)) continue;  // may be refcounted
-    if (insn.op == Op::Release && rc_unknown(s.live, pc * words, slot))
-      continue;  // its nil is read before it is overwritten
-    dead[pc] = 1;
+    if (insn.op == Op::Release) {
+      // Dead unless its nil is read before it is overwritten.
+      if (non_rc(pc, insn.a) &&
+          !rc_unknown(s.live, pc * words, static_cast<size_t>(insn.a)))
+        dead[pc] = 1;
+    } else if (insn.op == Op::MoveRetain && non_rc(pc, insn.b)) {
+      // The retain does nothing to a value that cannot be refcounted.
+      out_retag.push_back({static_cast<uint32_t>(pc), Op::Move});
+    }
   }
 
   // Destination coalescing: `<producer> X ; Take Y, X` is the shape two
@@ -4235,45 +4224,19 @@ inline std::vector<char> rc_plan_for_chunk(const Chunk& c, RcScratch& s,
       dead[pc + 1] = 1;
     }
 
-    // `Move X, Y ; Retain X ; Release Y` hands Y's value to X: the copy's
-    // +1 and the release's -1 cancel (the value is never the last reference
-    // in between, so no `drop` can run), which is what `Take X, Y` does in
-    // one instruction — Y is left nil either way. It is how a function
-    // returns a parameter as is. The borrow may already be one `MoveRetain`
-    // from a previous round. Nothing may land in the middle.
+    // `MoveRetain X, Y ; Release Y` hands Y's value to X: the copy's +1 and
+    // the release's -1 cancel (the value is never the last reference in
+    // between, so no `drop` can run), which is what `Take X, Y` does in one
+    // instruction — Y is left nil either way. It is how a function returns a
+    // parameter as is. Nothing may land on the Release, and a MoveRetain the
+    // decisions above made a Move is not a candidate.
     for (size_t pc = 0; pc + 1 < n; ++pc) {
       const Insn& mv = c.code[pc];
-      size_t rel = 0;  // the Release, when the borrow before it is whole
-      if (mv.op == Op::MoveRetain)
-        rel = pc + 1;
-      else if (mv.op == Op::Move && pc + 2 < n &&
-               c.code[pc + 1].op == Op::Retain && c.code[pc + 1].a == mv.a)
-        rel = pc + 2;
-      if (!rel || c.code[rel].op != Op::Release || c.code[rel].a != mv.b ||
-          mv.a == mv.b || dead[pc])
-        continue;
-      bool clear = true;
-      for (size_t k = pc + 1; k <= rel; ++k)
-        clear = clear && !dead[k] && !is_target[k];
-      if (!clear) continue;
-      out_retag.push_back({static_cast<uint32_t>(pc), Op::Take});
-      for (size_t k = pc + 1; k <= rel; ++k) dead[k] = 1;
-    }
-
-    // `Move X, Y ; Retain X` is the borrow idiom, and it is the ONLY shape a
-    // Retain is emitted in (store_into's not-owned arm writes both). Fusing
-    // the pair into one instruction saves a dispatch on each; the fused op
-    // does exactly what the two did, in the same order.
-    //
-    // A jump landing on the Retain would reach it without the Move — the
-    // retain would then apply to whatever X already held — so a target is
-    // never a candidate, the same condition the coalescing above checks.
-    for (size_t pc = 0; pc + 1 < n; ++pc) {
-      if (c.code[pc].op != Op::Move || c.code[pc + 1].op != Op::Retain)
-        continue;
-      if (c.code[pc + 1].a != c.code[pc].a) continue;
+      const Insn& rel = c.code[pc + 1];
+      if (mv.op != Op::MoveRetain || non_rc(pc, mv.b)) continue;
+      if (rel.op != Op::Release || rel.a != mv.b || mv.a == mv.b) continue;
       if (dead[pc] || dead[pc + 1] || is_target[pc + 1]) continue;
-      out_retag.push_back({static_cast<uint32_t>(pc), Op::MoveRetain});
+      out_retag.push_back({static_cast<uint32_t>(pc), Op::Take});
       dead[pc + 1] = 1;
     }
   }
@@ -4349,7 +4312,6 @@ inline bool owned_registers(Op op) {
     case Op::Move:
     case Op::MoveRetain:
     case Op::Take:
-    case Op::Retain:
     case Op::Release:
     case Op::Neg:
     case Op::Add:
@@ -4531,8 +4493,8 @@ inline void apply_rc_elision(Chunk& c, const std::vector<char>& dead,
                                  retag) {
   const size_t n = c.code.size();
   // The rewrites first, in the old numbering: each just redirects a
-  // producer's destination, or turns a Move into the fused MoveRetain, and
-  // the instruction it absorbs is in `dead`.
+  // producer's destination or changes a MoveRetain's op, and an instruction
+  // one absorbs is in `dead`.
   for (const auto& co : coalesce)
     if (co.at < n) c.code[co.at].a = co.dest;
   for (auto [at, op] : retag)
@@ -4738,8 +4700,9 @@ class Compiler {
   // itself what made some other slot's state Unknown, so a round can uncover
   // the next one. Each round is a sweep over the finished chunks rather than
   // another compile — which is the whole reason this is a deletion pass and
-  // not a second emission — and it terminates because every round deletes at
-  // least one instruction.
+  // not a second emission — and it terminates because every round deletes an
+  // instruction or turns a MoveRetain into a Move, and nothing makes a new
+  // MoveRetain.
   //
   // The postcondition is total rather than a comparison of two compiles: the
   // analysis over what SHIPPED must find nothing left to drop. That says the
@@ -4933,13 +4896,6 @@ class Compiler {
         info_(info),
         chunk_idx_(chunk_idx) {}
 
-
-  // One refcount decision, counted whether or not it emits. Every Release /
-  // Retain the compiler would emit goes through here, so the two passes reach
-  // the same decisions in the same order and the ordinal the plan is keyed by
-  // means the same thing in both (see plan_rc_elision). Without a plan — the
-  // first pass, and any lane that skips the analysis — this emits every one,
-  // which is what the compiler always did.
   struct Binding {
     std::string name;
     int32_t slot;
@@ -6142,9 +6098,10 @@ class Compiler {
   // never holds anything but Long/Float/Bool/nil (the decorator's own
   // declaration-time checks forbid a refcounted field, transitively through
   // a nested `@value` field too), so retain/release on it are unconditional
-  // no-ops — Release before AND Retain after both drop out, regardless of
-  // `dst_is_fresh`. `copy_run` is the only caller today (an N-slot run
-  // copied slot for slot always takes the borrowed, not-owned arm below).
+  // no-ops — the Release before AND the retain after both drop out,
+  // regardless of `dst_is_fresh`. `copy_run` is the only caller today (an
+  // N-slot run copied slot for slot always takes the borrowed, not-owned arm
+  // below).
   void store_into(int32_t dst, ExprResult r, bool dst_is_fresh = false,
                   bool no_refcount = false) {
     if (!r.owned && r.slot == dst) return;  // self-assign (`x = x`): the
@@ -6155,8 +6112,7 @@ class Compiler {
       emit(Op::Take, dst, r.slot);
       forget_temp(r.slot);
     } else {
-      emit(Op::Move, dst, r.slot);
-      if (!no_refcount) emit(Op::Retain, dst);
+      emit(no_refcount ? Op::Move : Op::MoveRetain, dst, r.slot);
     }
   }
 
@@ -6166,8 +6122,7 @@ class Compiler {
   int32_t owned_src(const peg::Ast& at, ExprResult r) {
     if (!r.owned) {
       int32_t src = alloc_temp(at);
-      emit(Op::Move, src, r.slot);
-      emit(Op::Retain, src);
+      emit(Op::MoveRetain, src, r.slot);
       return src;
     }
     forget_temp(r.slot);
@@ -6201,7 +6156,7 @@ class Compiler {
   };
   using ProvidedFields = std::map<std::string, ProvidedField, std::less<>>;
 
-  // A supplied field's argument, +1 (a Retain of the sentinel is a no-op).
+  // A supplied field's argument, +1 (retaining the sentinel is a no-op).
   int32_t emit_provided_read(const peg::Ast& at, const ProvidedField& pf) {
     if (!pf.is_cell) return owned_src(at, {pf.slot, /*owned=*/false});
     int32_t v = alloc_temp(at);
@@ -6606,8 +6561,7 @@ class Compiler {
     if (b.is_cell) {
       emit(Op::CellGet, out, b.slot);
     } else {
-      emit(Op::Move, out, b.slot);
-      emit(Op::Retain, out);
+      emit(Op::MoveRetain, out, b.slot);
     }
     size_t to_outer = emit(Op::JumpIfTag, out, 0, TAG_NO_SELF);
     size_t to_join = emit(Op::Jump, 0);
@@ -9217,8 +9171,7 @@ class Compiler {
       if (info.uses_args && !args_rest_name.empty()) {
         // Both live: the second binding needs a `+1` of its own.
         int32_t second = fc.alloc_slot(ast, "(args.rest.2)");
-        fc.emit(Op::Move, second, aslot);
-        fc.emit(Op::Retain, second);
+        fc.emit(Op::MoveRetain, second, aslot);
         bind_args("__ARGS__", ast, aslot);
         bind_args(args_rest_name, *args_rest_at, second);
       } else if (info.uses_args) {
@@ -14589,7 +14542,7 @@ class Compiler {
 
 inline std::string dump(const Chunk& c) {
   static constexpr const char* kNames[] = {
-      "LoadConst", "Move",      "Take",       "Retain",       "Release",
+      "LoadConst", "Move",      "Take",       "Release",
       "Neg",       "Not",       "Add",        "Sub",          "Mul",
       "Div",       "Mod",       "Pow",        "JumpIfSame",   "MatMul",
       "BitAnd",    "BitOr",     "BitXor",     "Shl",          "Shr",
@@ -15698,7 +15651,7 @@ struct Exec {
     // the destructors of whatever the arm built. A computed goto out of a
     // live scope skips those.
     static void* const kLabels[] = {
-        &&L_LoadConst, &&L_Move, &&L_Take, &&L_Retain, &&L_Release, &&L_Neg,
+        &&L_LoadConst, &&L_Move, &&L_Take, &&L_Release, &&L_Neg,
         &&L_Not, &&L_Add, &&L_Sub, &&L_Mul, &&L_Div, &&L_Mod, &&L_Pow,
         &&L_JumpIfSame, &&L_MatMul, &&L_BitAnd, &&L_BitOr, &&L_BitXor,
         &&L_Shl, &&L_Shr, &&L_BitNot, &&L_Eq, &&L_Ne, &&L_Lt, &&L_Le, &&L_Gt,
@@ -15803,7 +15756,7 @@ struct Exec {
           break;
         } while (0);
         VM_NEXT();
-      L_MoveRetain:  // Move + Retain, fused by the elision pass
+      L_MoveRetain:
         do {
           [[maybe_unused]] const Insn& in = *ip;
           regs[in.a] = regs[in.b];
@@ -15819,16 +15772,6 @@ struct Exec {
           [[maybe_unused]] const Insn& in = *ip;
           regs[in.a] = regs[in.b];
           regs[in.b] = JitValue{TAG_NIL, 0};
-          ++ip;
-          break;
-        } while (0);
-        VM_NEXT();
-      L_Retain:
-        do {
-          [[maybe_unused]] const Insn& in = *ip;
-          if (_is_refcounted_value(regs[in.a]))
-            _culebra_value_retain_impl(static_cast<int8_t>(regs[in.a].tag),
-                                         regs[in.a].data);
           ++ip;
           break;
         } while (0);

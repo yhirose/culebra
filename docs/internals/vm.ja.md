@@ -438,11 +438,12 @@ int32_t a, b, c, d; }`）。レジスタはフレームのslotであり、それ
 
 ### 5.2 命令列の中の所有権
 
-参照カウントは明示的である: コンパイラが`Retain`と`Release`を
-emitし、消費者はそれを実行するだけである。値移動を担う4つのop —
+参照カウントは明示的である: コンパイラが`MoveRetain`と`Release`を
+emitし、消費者はそれを実行するだけである。値移動を担う5つのop —
 `LoadConst`（生コピー。定数は参照カウントされない）、`Move`（生
-コピー。borrowのために`Retain`と対にする）、`Take`（転送: source
-がnilになる）、`Release` — が語彙を作る。すべての式は結果レジスタ
+コピー）、`MoveRetain`（自分の`+1`を持つコピー、つまりborrow）、
+`Take`（転送: sourceがnilになる）、`Release` — が語彙を作る。
+すべての式は結果レジスタ
 に`+1`を残し、文の一時値は文末のsweepで解放される。
 
 **borrowオペランド契約**がthrowを支配する: 演算子やヘルパーは
@@ -460,7 +461,7 @@ captureされた変数は6つのop — `CellNew`、`CellGet`、`CellSet`、
 ### 5.2.1 コンパイラが死んでいると証明したbookkeeping
 
 上記のbookkeepingは無条件に発行される — どのスコープも抜け際に
-slotへ`Release`を、借用のコピーには必ず`Retain`を、どのスコープにも
+slotへ`Release`を、借用のコピーには必ずretainを、どのスコープにも
 mark/exitの対を出す — というのも、コンパイラは1回の前方passで
 発行しており、あるslotが`Long`以外を一度も持たないこと、あるスコープが
 drop可能なリソースを一度も登録しないことを、その時点ではまだ知り得ない
@@ -473,8 +474,9 @@ bookkeepingを保持させる側に回る — ので、見落としはパフォ�
 損にしかならず、正しさを損なうことはない。
 
 **参照カウントの削除**（`plan_rc_elision`）はchunkごとの前方データフロー
-で、2点束（`NonRc < Unknown`）を使い、`Release`/`Retain`が指す
-slotがそこで参照カウント型を持ちうるかを判定する。非参照カウントの
+で、2点束（`NonRc < Unknown`）を使い、`Release`が指すslot、あるいは
+`MoveRetain`がコピー元にするslotが、そこで参照カウント型を持ちうるかを
+判定する。非参照カウントの
 定数を積む`LoadConst`、非参照カウントのオペランド同士の算術、といった
 （すべてexecutor自身のswitchから読み取った）ものは状態を`NonRc`へ
 落とし、モデル化していないもの（コンテナ操作、プロパティ書き込み、…）は
@@ -495,7 +497,8 @@ slotがそこで参照カウント型を持ちうるかを判定する。非参�
 10本から4本になり、残る4本は残るべきもの（各呼び出しの戻り値、
 `MfSelf`のハンドル、パラメータ）である。
 
-`Retain`を落とすには前方passだけで足りるが、
+`MoveRetain`のretainを落とす（ただの`Move`が残る）には前方passだけで
+足りるが、
 `Release`を落とすには後方向のliveness解析がもう1本要る。`Release`は
 破壊的（slotをnilにする）で、後続のコードがそのnilに依存しているから
 だ — 外側のスコープのladderとthrowパスのunwindは、内側の段が既に
@@ -540,14 +543,11 @@ liveness解析が「誰も読まない」と言い、かつ古い値が解放さ
 値があれば元のコードの時点で漏れていた）。`Take`に飛び込むjumpは
 producerを経ずに到達するので、jump先は決して候補にしない。
 
-**借用の融合**が4つ目。`Move X, Y ; Retain X`は`Retain`が発行される
-唯一の形（`store_into`の非所有の腕が両方を書く）なので、この対を1つの
-`MoveRetain`にしてディスパッチを1回ずつ節約する。このopcodeはpassが
-発行するために在り、コンパイラは今も対を書く — その方が元のソースとの
-対応が読める。借用の直後に`Release Y`が続くときは、コピーの`+1`と解放の
-`-1`が打ち消し合う（その間に値が最後の参照になることはないので`drop`は
-走らない）ので、3命令をまとめて1つの`Take X, Y`にする。`Y`は`Release`の
-ときと同じくnilになる。関数が引数をそのまま返すときの形がこれである。
+**転送になる借用**が4つ目。`MoveRetain X, Y`の直後に`Release Y`が続く
+ときは、コピーの`+1`と解放の`-1`が打ち消し合う（その間に値が最後の参照に
+なることはないので`drop`は走らない）ので、2命令をまとめて1つの
+`Take X, Y`にする。`Y`は`Release`のときと同じくnilになる。関数が引数を
+そのまま返すときの形がこれである。
 
 **梯子の融合**が5つ目で、上の4つと違って何も証明しない — データフロー
 ではなくコードの形の話なので、他の4つが不動点に達した後に1度だけ走る。
@@ -573,16 +573,16 @@ producerを経ずに到達するので、jump先は決して候補にしない�
 （このループはLongしか運ばない）と、ループ本体の`OwnedMark`/
 `OwnedExit`の対（中でdrop可能なオブジェクトを何も構築しない）である。
 testsと言語front endを合わせたコーパス全体では、4つのpassが
-736,777命令を701,179命令にする。5つ目はその残りをさらに23%削る —
+1,684,313命令を1,608,765命令にする。5つ目はその残りをさらに25%削る —
 解放の梯子は2段か3段で、ほとんどのスコープの終わりに1本ある。
 
 ### 5.3 opcodeのファミリー
 
-156個のopcodeを分類すると:
+155個のopcodeを分類すると:
 
 | ファミリー | op | 備考 |
 |---|---|---|
-| 値 | `LoadConst` `Move` `Take` `Retain` `Release` `MoveRetain` `ReleaseMany` | §5.2。`MoveRetain`と`ReleaseMany`はelision passが発行する、融合された借用と融合された解放の梯子（§5.2.1） |
+| 値 | `LoadConst` `Move` `MoveRetain` `Take` `Release` `ReleaseMany` | §5.2。`ReleaseMany`はshape passが発行する、融合された解放の梯子（§5.2.1） |
 | 算術・ビット演算・比較 | `Neg` `Not` `Add` … `Pow` `MatMul` `BitAnd` … `Shr` `BitNot` `Eq` … `Ge` `JumpIfSame` | それぞれ1回のランタイムdispatch。算術と比較のopは両Long・両数値の腕をまずinlineで決める（`Neg`はLongとFloatの腕）。算術opの`d=1`は複合代入のin-place Tensorステップを示す |
 | コンテナ | `ArrayNew/Append/Push/Extend/Resize` `TupleNew/Push` `SetNew/Add` `ObjectNew/NewShaped/Set/SetAny/Merge` `SlotInit` `RangeNew` `ChkLong` `ChkNum` | コンテナは要素の`+1`を吸収する。`SlotInit`はShapeを事前構築したリテラル向けの、スロット番号による`ObjectSet`（§5.3.5） |
 | アクセス | `Index` `IndexWr` `IndexCo` `IndexSet` `PropSet` `PropWr` `PropCo` `PropVal` `PropRaw` `HasProp` `UfcsTakes` `NsWrChk` `NilChk` | 添字とプロパティアクセスの読み/書き/coalescing-write形。`PropVal`はgetterを呼ぶこともある素のプロパティ読み取り |
@@ -682,7 +682,7 @@ loweringはclosureの`fn_ptr`をターゲットが名指しする関数と比較
 値が変わりえないとコンパイラが既に知っている名前なら、呼び先には
 レジスタすら要らない。これが`call_targets`の運ぶ3つ目の事実である:
 `b`オペランドが指すのは**cell**で、呼び先はその中の値である。読みの
-`Retain`と、それに対応する文末の`Release`が両方消え、executorからは
+retainと、それに対応する文末の`Release`が両方消え、executorからは
 命令が1つ丸ごと消える — そのサイトは`Call`だけになる。この印は
 サイトのchunkが解決されたかどうかとは独立に同じ行に乗る: 呼び先を
 どこから読むかは命令自身の事実であって、届くコードの事実ではないので、
