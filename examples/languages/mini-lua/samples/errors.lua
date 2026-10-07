@@ -15,11 +15,14 @@ print(ok, type(e), e.code)
 
 -- error's level: 1, the default, adds the position of the call; 0 adds
 -- none. Called through a value, as pcall does here, error has no Lua
--- caller whose position it could add. With no argument the value is nil.
+-- caller whose position it could add. With no argument the value is nil,
+-- which Lua 5.5 delivers as the string "<no error object>" and 5.4 as nil.
 print(pcall(function() error("one", 1) end))
 print(pcall(function() error("zero", 0) end))
 print(pcall(error, "via pcall"))
 print(pcall(function() error() end))
+local ok0, e0 = pcall(error)
+print(ok0, type(e0))
 
 -- `error` is a global like any other: a program may put its own function
 -- there, and a local of that name hides it. A call then gets exactly the
@@ -66,3 +69,5 @@ print(ok3)
 -- the program.
 local co = coroutine.create(function() error("in coroutine") end)
 print(pcall(function() return coroutine.resume(co) end))
+-- ...and a nil raised in one is delivered at the resume as pcall delivers it.
+print(coroutine.resume(coroutine.create(function() error() end)))

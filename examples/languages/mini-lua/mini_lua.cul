@@ -1,4 +1,5 @@
-# A slice of Lua 5.4, compiled to Core-IR.
+# A slice of Lua, compiled to Core-IR. It answers as Lua 5.5 does, and as
+# 5.4 with `--lua54`, in the two places where it tells them apart.
 #
 # `PEG` for the syntax and `CodeGen` for everything after it. What is here is
 # Lua's grammar, its scope rules and its lowering; `lua` itself is the oracle
@@ -232,6 +233,21 @@ fn not_of(v) {
 
 fn is_type(v, t) {
   m.binary('eq', m.intrinsic('typeof', [v], AT), S(t), AT)
+}
+
+# The error value a protected call hands back, given the one it caught.
+# Lua 5.5 never delivers nil there: an `error()` with no value reaches pcall
+# and coroutine.resume as the string below. 5.4 and earlier deliver the nil.
+fn delivered(caught) {
+  cond {
+    lua54 => caught,
+    _ => m.make_if_else(
+      is_type(caught, 'nil'),
+      S('<no error object>'),
+      caught,
+      AT,
+    ),
+  }
 }
 
 fn ret(v) {
@@ -1031,7 +1047,8 @@ fn register_iterators() {
     call_rt(f, '__error', [m.nil_literal(AT), L(0)], AT)
   })
   # `pcall(f, ...)` is a try: true and everything f answered, or false and
-  # whatever was raised -- a value, not a class, so it comes back unchanged.
+  # whatever was raised -- a value, not a class, so it comes back unchanged
+  # (but for a nil, which 5.5 does not deliver: see delivered).
   luafn('pcall', 3, fn (f) {
     m.make_try(
       2,
@@ -1052,7 +1069,10 @@ fn register_iterators() {
         ),
         AT,
       ),
-      m.make_return(m.array_lit([m.bool_literal(false, AT), L(2)], AT), AT),
+      m.make_return(
+        m.array_lit([m.bool_literal(false, AT), delivered(L(2))], AT),
+        AT,
+      ),
       AT,
     )
   })
@@ -1189,7 +1209,10 @@ fn register_iterators() {
             ],
             AT,
           ),
-          m.make_return(m.array_lit([m.bool_literal(false, AT), L(4)], AT), AT),
+          m.make_return(
+            m.array_lit([m.bool_literal(false, AT), delivered(L(4))], AT),
+            AT,
+          ),
           AT,
         ),
       ],
@@ -2565,9 +2588,10 @@ fn build(mm, root) {
 
 let want_ir = Sys.argv.contains('--ir')
 let want_ast = Sys.argv.contains('--ast')
-# Which Lua this run renders floats for. 5.5 changed tostring, and the oracle
-# is whichever `lua` is installed, so the target is told to the front end
-# rather than frozen into it.
+# Which Lua this run answers as. 5.5 changed how tostring renders a float
+# and what a protected call delivers for a nil error value, and the oracle is
+# whichever `lua` is installed, so the target is told to the front end rather
+# than frozen into it.
 let lua54 = Sys.argv.contains('--lua54')
 let args = Sys.argv.filter(|a| a != '--ir' && a != '--ast' && a != '--lua54')
 if args.empty() {

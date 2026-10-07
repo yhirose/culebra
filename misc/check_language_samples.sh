@@ -87,9 +87,10 @@ case "$arm" in
     set -- examples/languages/mini-lua/samples/*.lua
     LUA=${LUA:-lua}
     export LUA
-    # Lua 5.5 renders a float that "%.14g" cannot round-trip at 17 digits;
-    # 5.4 and earlier always stop at 14. The oracle is whichever `lua` is
-    # installed, so the front end is told which one it is being read against.
+    # Lua 5.5 renders a float that "%.14g" cannot round-trip at 17 digits
+    # (5.4 and earlier always stop at 14), and delivers a nil error value from
+    # a protected call as "<no error object>". The oracle is whichever `lua`
+    # is installed, so the front end is told which one it is being read against.
     case "$("$LUA" -v 2>&1)" in
       "Lua 5.5"*|"Lua 5.6"*|"Lua 6."*) LUA_TARGET= ;;
       *) LUA_TARGET=--lua54 ;;
