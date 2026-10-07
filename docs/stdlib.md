@@ -8008,7 +8008,7 @@ above: the same one on both sides, and a re-index when it changes.
 
 | Name | Model | Size | License |
 |---|---|---|---|
-| `ja-ud-gsd` | cpp-segmentlib's reference model v0.2.0, trained on UD Japanese-GSD | 2.1 MB | CC BY-SA 4.0 |
+| `ja-ud-gsd` | cpp-segmentlib's reference model v0.3.0, trained on UD Japanese-GSD | 2.1 MB | CC BY-SA 4.0 |
 
 A name resolves to a copy cached under `Sys.data_dir("culebra")/models`.
 The first time, culebra asks on the terminal before fetching it; a program
@@ -8021,7 +8021,7 @@ release before it is written, and the model's NOTICE goes beside it. With
 that never names `Http` cannot fetch either; the cache is shared, so one
 `culebra` run on the same machine fills it for both.
 
-The version is part of the cached file's name (`ja-ud-gsd-v0.2.0.mod`), so
+The version is part of the cached file's name (`ja-ud-gsd-v0.3.0.mod`), so
 an upstream update never replaces the model an index was built with: word
 boundaries that change mean a re-index, and it is a release of culebra, not
 the network, that decides when.
