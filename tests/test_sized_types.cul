@@ -43,8 +43,14 @@ assert_eq([1, 2, 3, 4].iter().size(), 3)
 // --- every other receiver is rejected, identically on both backends -----
 // A scalar has no member table at all, so it raises the shared
 // receiver-resolution error naming what could have answered.
-fn rejects(v, kind, message) {
-  for f in [|| v.size(), || v.empty(), || v.presence()] {
+fn rejects(v, kind, message_for) {
+  let calls = [
+    ['size', || v.size()],
+    ['empty', || v.empty()],
+    ['presence', || v.presence()],
+  ]
+  for call in calls {
+    let f = call[1]
     let e = try {
       f()
       nil
@@ -52,7 +58,7 @@ fn rejects(v, kind, message) {
       err
     }
     assert_eq(e.kind, kind)
-    assert_eq(e.message, message)
+    assert_eq(e.message, message_for(call[0]))
   }
 }
 
@@ -60,19 +66,18 @@ for scalar in [nil, true, 1, 1.5] {
   rejects(
     scalar,
     "TypeError",
-    "type error: expected Object, Array, or Tensor, got {type_of(scalar)}",
+    |_| "type error: expected Object, Array, or Tensor, got {type_of(scalar)}",
   )
 }
 
 // Functions and Tensors do have member access, so `.size` reads as a missing
-// property (`nil`) and the call is what fails. Note the scalar message above
+// property (`nil`) and the call is what fails, naming it. Note the scalar message above
 // names Tensor as a receiver that could have answered, but a Tensor does not
 // carry a length either — it reports its extent through `.shape`.
-rejects(|x| x, "TypeError", "type error: expected Function, got Nil")
-rejects(
-  Tensor.zeros([2]),
-  "TypeError",
-  "type error: expected Function, got Nil",
-)
+fn sized_miss(type) {
+  |name| "type error: expected Function, got Nil ('{name}' is not a method of {type})"
+}
+rejects(|x| x, "TypeError", sized_miss('Function'))
+rejects(Tensor.zeros([2]), "TypeError", sized_miss('Tensor'))
 
 IO.inspect("test_sized_types OK")

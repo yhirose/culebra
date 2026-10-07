@@ -2381,6 +2381,25 @@ struct JIT {
          builder_.getInt64(line), builder_.getInt64(col)});
   }
 
+  // rt::method_not_callable: a method call's callee is not a Function.
+  // `member` is the name the site read it by (null where it recorded none),
+  // `recv` the value it read it from.
+  void emit_method_not_callable(llvm::Value* line, llvm::Value* col,
+                                llvm::Value* callee_tag, const char* member,
+                                llvm::Value* recv) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto i64Ty = builder_.getInt64Ty();
+    auto i8Ty = builder_.getInt8Ty();
+    emit_call(module_->getOrInsertFunction(rt::method_not_callable,
+                                           builder_.getVoidTy(), i64Ty, i64Ty,
+                                           i8Ty, ptrTy, i8Ty, i64Ty),
+              {line, col, callee_tag,
+               member ? static_cast<llvm::Value*>(
+                            builder_.CreateGlobalString(member))
+                      : llvm::ConstantPointerNull::get(ptrTy),
+               extract_tag(recv), extract_data(recv)});
+  }
+
   // Emit a typed type-error throw with "expected X, got Y" context.
   // `expected` is a compile-time string literal; `got_tag` is the i8
   // LLVM value of the actual operand's runtime tag (e.g. extract_tag(v)).

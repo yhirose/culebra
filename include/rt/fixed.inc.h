@@ -1775,6 +1775,44 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_class_new_method(
   return {TAG_NIL, 0};
 }
 
+// The name `type_of` answers: the class that built the value, `Class` for a
+// class object, else the tag's.
+inline const char* _culebra_type_of_name(int8_t tag, int64_t data) {
+  if (tag == TAG_OBJECT) {
+    auto* o = reinterpret_cast<JitObject*>(data);
+    if (const char* name = _jit_meta_class_name(o)) return name;
+    if (o->is_class) return "Class";
+  }
+  return _culebra_tag_name(tag);
+}
+
+// A method call's callee (`recv.name(...)`) is not a Function. The same
+// TypeError a plain call raises, and when the member was simply not there
+// (a missing property reads as nil) the name and what it was asked of.
+[[noreturn]] CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
+culebra_runtime_method_not_callable(int64_t line, int64_t col,
+                                    int8_t callee_tag, const char* name,
+                                    int8_t recv_tag, int64_t recv_data) {
+  // A lowering's state object keeps its body's locals as own slots, so a bare
+  // `f()` there arrives as a method call on it (culebra_runtime_call_receiver,
+  // which has already answered when the receiver is TAG_NO_SELF): a plain
+  // call, with no member to name.
+  auto promoted_local = [&] {
+    if (recv_tag == TAG_NO_SELF) return true;
+    if (recv_tag != TAG_OBJECT) return false;
+    auto* o = reinterpret_cast<JitObject*>(recv_data);
+    return o->proto() && o->proto()->is_lowered_state && o->has_own(name);
+  };
+  if (callee_tag != TAG_NIL || !name || promoted_local())
+    culebra_runtime_type_error_typed(line, col, "Function", callee_tag);
+  throw culebra::CulebraError(
+      "TypeError",
+      culebra::type_mismatch_message("Function", "Nil") +
+          culebra::missing_method_hint(
+              name, _culebra_type_of_name(recv_tag, recv_data)),
+      line, col);
+}
+
 // `match v { x: ClassName => ... }` predicate. Returns true when `obj` was
 // built by a class of that name — read from its meta, so an object cannot
 // answer to a name by carrying one. Mirrors `culebra::class_tag()` + name

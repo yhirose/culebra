@@ -1357,6 +1357,7 @@ class C {
   f() { self.g(0) }  # C に `g` は無く、自由関数の `g` は Long を取る
 }
 C().f()      # TypeError: expected Function, got Nil
+             #            ('g' is not a method of C)
 7.g()        # UFCS → g(7)
 ```
 
@@ -1397,8 +1398,14 @@ iterator / `Tensor`）は引数を**位置で**バインドします。キーワ
 ```culebra
 # doctest: skip
 'abc'.truncate(bad(), loud())   # 両方走ってから `max` の型エラー
-'ab'.push(loud())               # loud() が走ってから "expected Function, got Nil"
+'ab'.push(loud())               # loud() が走ってから "expected Function, got Nil
+                                # ('push' is not a method of String)"
 ```
+
+存在しないメンバーは`nil`として読めるので、レシーバが持たないメソッドは
+呼び出しの時点で表に出ます。`nil`を呼んだときと同じ`TypeError`です。
+括弧の部分はメソッド呼び出しが足すもので、読もうとした名前と、
+レシーバの型（`type_of`の語彙）を示します。
 
 これより早く失敗する唯一の場合がスカラーのレシーバです。`nil`・
 `Bool`・`Long`・`Float`はそもそもメンバーを持てないので、

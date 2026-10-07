@@ -18,6 +18,12 @@ contract runs both ways, like the leak-abort allowlist: an unlisted change
 fails, and a listed pattern that no longer matches anything is reported so the
 file can shrink after the release that needed it ships.
 
+A message that gained a clause is a change of another shape: it touches every
+case that reaches the message, and a glob wide enough to name them all would
+also allow whatever else changes in them.  A `+ <regex>` entry names the added
+text instead: a case is allowed when this build's output, with every match
+removed, is the baseline's.
+
 Usage: release_diff.py --baseline F --head F --allow F --cases N
                        [--baseline-name S] [--head-name S]
 """
@@ -67,18 +73,42 @@ def compile_glob(pattern):
     return re.compile(body + r"\Z", re.DOTALL)
 
 
+ADDED = "+ "
+
+
 def read_allow(path):
-    """Read the allowlist into [(text, regex)], keeping the text for reports."""
+    """Read the allowlist into label globs and added-text regexes.
+
+    Each is [(text, regex)], keeping the text for reports.
+    """
     # No FileNotFoundError arm: the file is committed, so a missing one means a
     # mistyped --allow, and returning [] there would report every difference as
     # unlisted or — with no differences — print OK having read nothing.
-    patterns = []
+    labels, added = [], []
     text = open(path, encoding="utf-8").read()
     for line in text.splitlines():
         line = line.strip()
-        if line and not line.startswith("#"):
-            patterns.append((line, compile_glob(line)))
-    return patterns
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith(ADDED):
+            added.append((line, re.compile(line[len(ADDED):])))
+        else:
+            labels.append((line, compile_glob(line)))
+    return labels, added
+
+
+def without_added(body, baseline, added):
+    """The added-text entries that turn `body` back into `baseline`, or None.
+
+    All of them are applied: a case may reach two messages that each gained a
+    clause.  Only the ones that removed something are reported as used.
+    """
+    hits = []
+    for text, rx in added:
+        body, n = rx.subn("", body)
+        if n:
+            hits.append(text)
+    return hits if hits and body == baseline else None
 
 
 def main():
@@ -109,7 +139,7 @@ def main():
         )
         return 1
 
-    patterns = read_allow(args.allow)
+    patterns, added = read_allow(args.allow)
     changed, unlisted, used = [], [], set()
     for (blabel, bbody), (hlabel, hbody) in zip(base, head):
         if blabel != hlabel:
@@ -130,17 +160,19 @@ def main():
             continue
         changed.append((blabel, bbody, hbody))
         hit = next((text for text, rx in patterns if rx.match(blabel)), None)
-        if hit is None:
-            unlisted.append((blabel, bbody, hbody))
-        else:
+        if hit is not None:
             used.add(hit)
+        elif (hits := without_added(hbody, bbody, added)) is not None:
+            used.update(hits)
+        else:
+            unlisted.append((blabel, bbody, hbody))
 
     print(
         f"  {len(changed)} changed, {len(changed) - len(unlisted)} allowed, "
         f"{len(unlisted)} unlisted"
     )
 
-    stale = [text for text, _ in patterns if text not in used]
+    stale = [text for text, _ in patterns + added if text not in used]
     if stale:
         # Advisory, not a failure: the release that needed the entry may not
         # have shipped yet, and a gate that fails on an entry being *too*

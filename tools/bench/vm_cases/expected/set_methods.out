@@ -30,9 +30,9 @@ TypeError: unhashable type: 'Array'
 TypeError: unhashable type: 'Array'
 TypeError: type error: expected Object, Array, or Tensor, got Long
 ran 2
-TypeError: type error: expected Function, got Nil
+TypeError: type error: expected Function, got Nil ('add' is not a method of Array)
 ran 3
-TypeError: type error: expected Function, got Nil
+TypeError: type error: expected Function, got Nil ('remove' is not a method of String)
 ran 4
 ZeroDivisionError
 [1]

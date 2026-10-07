@@ -28,7 +28,7 @@
 [0, 1]
 [0, 10, 20]
 {kind: 'TypeError', message: 'type error: expected Object, Array, or Tensor, got Long', line: 67, col: 15}
-{kind: 'TypeError', message: 'type error: expected Function, got Nil', line: 68, col: 15}
+{kind: 'TypeError', message: 'type error: expected Function, got Nil ('code_points' is not a method of Array)', line: 68, col: 15}
 {kind: 'TypeError', message: 'type error: parameter 'sep' expects StringLike', line: 69, col: 31}
 {kind: 'TypeError', message: 'type error: to_object expects (key, value) tuples', line: 70, col: 15}
 {kind: 'TypeError', message: 'type error: unzip expects (a, b) tuples or {first, second} objects', line: 71, col: 15}

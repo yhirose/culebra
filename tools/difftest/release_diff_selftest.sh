@@ -118,8 +118,26 @@ check literal-brackets 1 "$PY" --baseline brk_b.txt --head brk_h.txt \
   --allow allow_brk.txt --cases 2
 says literal-brackets "2 changed, 1 allowed, 1 unlisted"
 
+# A `+ <regex>` entry names text this build adds: a case is allowed when its
+# output with that text removed is the baseline's. Anything else that changed
+# in the same case is still a change, which is the difference from a glob wide
+# enough to name every case the message reaches.
+mk "m|1|nope| ::: err=TypeError|not callable|1|1" \
+   "m|2|nope| ::: err=TypeError|not callable|2|1" > add_b.txt
+mk "m|1|nope| ::: err=TypeError|not callable ('nope' is missing)|1|1" \
+   "m|2|nope| ::: err=TypeError|not callable ('nope' is missing)|2|9" > add_h.txt
+printf "+ \\s\\('\\w+' is missing\\)\n" > allow_add.txt
+check added-text 1 "$PY" --baseline add_b.txt --head add_h.txt \
+  --allow allow_add.txt --cases 2
+says added-text "2 changed, 1 allowed, 1 unlisted"
+
+# One that removes nothing is reported like a glob that matches nothing.
+check added-stale 0 "$PY" --baseline same_b.txt --head same_h.txt \
+  --allow allow_add.txt --cases 2
+says added-stale "is missing"
+
 if [ "$fails" != 0 ]; then
   echo "release-diff selftest: $fails case(s) failed" >&2
   exit 1
 fi
-echo "release-diff selftest OK (10 cases)"
+echo "release-diff selftest OK (12 cases)"

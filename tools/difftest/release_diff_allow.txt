@@ -8,6 +8,11 @@
 # this file can shrink once the release that needed it has shipped. Blank
 # lines and `#` comments are ignored.
 #
+# A line that begins `+ ` is not a label but a regex naming text this build
+# ADDS to what a case prints: the case is allowed when its output with every
+# match removed is the baseline's. That is the entry for a message that gained
+# a clause, which reaches more cases than a glob should be wide enough to name.
+#
 # Put the "why" in a comment above the entry, the way leak_abort_allow.txt
 # does. This file is the draft of the next release's notes: an entry is a
 # change someone decided to make, and one with no reason attached is a change
@@ -246,10 +251,10 @@ gen|class S { new() { self.n = 0; self.it = self.steps() }*
 # A surplus positional that was written for a keyword-only parameter is told
 # which one: the count error ends "('reverse' is keyword-only: write
 # reverse: ...)". The baseline gave the count alone.
-m|[1, 2, 3]|sort|*
-m|[1, 2, 3]|sort_by|*
-m|[1, 2, 3]|sorted|*
-m|[1, 2, 3]|sorted_by|*
-typos|([3, 1]).sort_by(1, 2)
-v-direct|to_long|1, 2*
-v-let|to_long|1, 2*
++ \s\('\w+' is keyword-only: write \w+: \.\.\.\)
+
+# A method call on a name the receiver does not have is told which name and
+# what it was asked of: "expected Function, got Nil" ends "('fold' is not a
+# method of Array)". A missing member still reads as nil; the call is where it
+# surfaces, and the baseline left the reader to find the name.
++ \s\('\w+' is not a method of \w+\)

@@ -2,7 +2,7 @@
 {kind: 'AttributeError', message: 'namespace 'Math' has no member 'nope'', line: 8, col: 7}
 {kind: 'AttributeError', message: 'namespace 'Math' has no member 'nope'', line: 13, col: 7}
 {kind: 'AttributeError', message: 'namespace 'Math' has no member 'nope'', line: 14, col: 7}
-{kind: 'TypeError', message: 'type error: expected Function, got Nil', line: 15, col: 7}
+{kind: 'TypeError', message: 'type error: expected Function, got Nil ('nope' is not a method of Object)', line: 15, col: 7}
 {kind: 'ArityError', message: 'expected 1 positional argument, got 0', line: 18, col: 7}
 {kind: 'ArityError', message: 'expected 1 positional argument, got 2', line: 19, col: 7}
 {kind: 'TypeError', message: 'type error', line: 20, col: 7}

@@ -1149,6 +1149,8 @@ inline constexpr auto missing_required_arg
 inline constexpr auto throw_error
     = "culebra_runtime_throw_error";
 inline constexpr auto type_error_typed    = "culebra_runtime_type_error_typed";
+inline constexpr auto method_not_callable =
+    "culebra_runtime_method_not_callable";
 inline constexpr auto class_parameters_walk =
     "culebra_runtime_class_parameters_walk";
 inline constexpr auto multifn_register_and_install =

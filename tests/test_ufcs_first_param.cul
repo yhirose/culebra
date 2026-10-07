@@ -36,7 +36,11 @@ fn message_of(f) {
     "{e.kind}: {e.message}"
   }
 }
-let kMiss = 'TypeError: type error: expected Function, got Nil'
+# A method miss: the call's TypeError, naming the method no receiver answered.
+fn is_miss(said, name) {
+  said.starts_with(
+    "TypeError: type error: expected Function, got Nil ('{name}' is not a method of ")
+}
 
 # A closure whose annotation rejects the receiver: the method miss.
 let lam = fn (p: Long) {
@@ -48,8 +52,8 @@ class Caller {
     self.lam(0)
   }
 }
-assert_eq(message_of(|| Caller().f()), kMiss)
-assert_eq(message_of(|| 'abc'.lam()), kMiss)
+assert_true(is_miss(message_of(|| Caller().f()), 'lam'))
+assert_true(is_miss(message_of(|| 'abc'.lam()), 'lam'))
 assert_eq(7.lam(), 'lam')
 
 # An untyped first parameter accepts everything, and so does `Any`.
@@ -67,7 +71,7 @@ fn one(p: Long) {
   'one'
 }
 assert_eq(7.one(), 'one')
-assert_eq(message_of(|| C().one()), kMiss)
+assert_true(is_miss(message_of(|| C().one()), 'one'))
 
 # One accepting overload is enough; the pick over all the arguments follows.
 fn two(p: Long) {
@@ -78,7 +82,7 @@ fn two(p: String) {
 }
 assert_eq(7.two(), 'two-long')
 assert_eq('s'.two(), 'two-string')
-assert_eq(message_of(|| C().two()), kMiss)
+assert_true(is_miss(message_of(|| C().two()), 'two'))
 # The gate reads the receiver alone: a later argument no overload takes is
 # still the dispatch's own error.
 fn pair(p: Long, q: Long) {
@@ -110,16 +114,16 @@ fn ob(x: Object) {
 }
 assert_eq(5.un(), 'union')
 assert_eq('s'.un(), 'union')
-assert_eq(message_of(|| C().un()), kMiss)
+assert_true(is_miss(message_of(|| C().un()), 'un'))
 assert_eq(Bob().tr(), 'trait')
-assert_eq(message_of(|| C().tr()), kMiss)
+assert_true(is_miss(message_of(|| C().tr()), 'tr'))
 assert_eq(Shape.Origin.en(), 'enum')
 assert_eq(Shape.Circle(1.0).en(), 'enum')
 assert_eq(Shape.Circle(1.0).va(), 'variant')
-assert_eq(message_of(|| Shape.Origin.va()), kMiss)
-assert_eq(message_of(|| Other.Thing.en()), kMiss)
+assert_true(is_miss(message_of(|| Shape.Origin.va()), 'va'))
+assert_true(is_miss(message_of(|| Other.Thing.en()), 'en'))
 assert_eq(C().cc(), 'class')
-assert_eq(message_of(|| Bob().cc()), kMiss)
+assert_true(is_miss(message_of(|| Bob().cc()), 'cc'))
 assert_eq(C().ob(), 'object')
 assert_eq({a: 1}.ob(), 'object')
 
@@ -138,14 +142,14 @@ fn df(p: Long = 1) {
   p
 }
 assert_eq(7.df(), 7)
-assert_eq(message_of(|| C().df()), kMiss)
+assert_true(is_miss(message_of(|| C().df()), 'df'))
 
 # The keyword arm sits behind the same gate.
 fn kw(p: Long, k = 0) {
   p + k
 }
 assert_eq(5.kw(k: 1), 6)
-assert_eq(message_of(|| C().kw(k: 1)), kMiss)
+assert_true(is_miss(message_of(|| C().kw(k: 1)), 'kw'))
 
 # Asked before any argument runs. An object-ish miss reports after the
 # argument list; a scalar has no members at all and fails at the read.
@@ -157,7 +161,7 @@ fn loud(tag) {
 fn takes_string(s: String, n) {
   n
 }
-assert_eq(message_of(|| C().takes_string(loud('object'))), kMiss)
+assert_true(is_miss(message_of(|| C().takes_string(loud('object'))), 'takes_string'))
 assert_throws('TypeError', fn () {
   5.takes_string(loud('scalar'))
 })
@@ -175,9 +179,9 @@ class K {
 }
 let bound = K().m
 assert_eq(7.bound(), 7)
-assert_eq(message_of(|| C().bound()), kMiss)
+assert_true(is_miss(message_of(|| C().bound()), 'bound'))
 assert_eq(2.repeat('x'), ['x', 'x'])
-assert_eq(message_of(|| C().repeat('x')), kMiss)
+assert_true(is_miss(message_of(|| C().repeat('x')), 'repeat'))
 
 # The receiver's own method still wins over any candidate.
 class Own {

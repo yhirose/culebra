@@ -56,7 +56,10 @@
 # 304 since test_generator_body_forms.cul (what a generator body may hold: a
 # named fn, an effect fn, a yield in try / catch, `self`; and generators that
 # are methods, fn expressions, object properties, trait defaults).
-tests.cul 304
+# 305 since test_method_miss.cul (a call on a method the receiver does not
+# have names the method and the receiver's type, by every route a method call
+# compiles to).
+tests.cul 305
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

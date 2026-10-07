@@ -810,11 +810,14 @@ struct Lowering {
     // The JitFn hand-off, shared by Call / CallM and BMeth's user-method arm:
     // the TAG_FUNC gate and the tail above. `selfSlot < 0` is a plain call
     // (TAG_NO_SELF rides the receiver pair). Returns the call's result value.
+    // `member` is the name a method call read its callee by, which a missing
+    // one is told with (Chunk::call_names).
     auto emit_invoke = [&](llvm::Value* calleeV, int32_t selfSlot,
                            int32_t argBase, int32_t argc, int64_t line,
                            int64_t col,
                            const std::vector<int64_t>* argpos = nullptr,
-                           Chunk::CallTarget tgt = {}) -> llvm::Value* {
+                           Chunk::CallTarget tgt = {},
+                           const char* member = nullptr) -> llvm::Value* {
       publish_site(line, col, argpos);
       // Both resolved shapes end here: a direct call to the named chunk's
       // own function, with the receiver pair the ABI wants.
@@ -967,11 +970,16 @@ struct Lowering {
       auto* ctorEndBB = b.GetInsertBlock();
       b.CreateBr(okBB);
       b.SetInsertPoint(errBB);
-      j.emit_call(j.module_->getOrInsertFunction(rt::type_error_typed,
-                                                 b.getVoidTy(), i64Ty, i64Ty,
-                                                 ptrTy, b.getInt8Ty()),
-                  {b.getInt64(line), b.getInt64(col),
-                   b.CreateGlobalString("Function"), tag});
+      if (member && selfSlot >= 0) {
+        j.emit_method_not_callable(b.getInt64(line), b.getInt64(col), tag,
+                                   member, load_slot(selfSlot));
+      } else {
+        j.emit_call(j.module_->getOrInsertFunction(rt::type_error_typed,
+                                                   b.getVoidTy(), i64Ty, i64Ty,
+                                                   ptrTy, b.getInt8Ty()),
+                    {b.getInt64(line), b.getInt64(col),
+                     b.CreateGlobalString("Function"), tag});
+      }
       j.close_block_unreachable();
       b.SetInsertPoint(okBB);
       auto* calleePhi = b.CreatePHI(j.valueType_, 3, "call.callee");
@@ -2087,7 +2095,10 @@ struct Lowering {
                                         b.getInt64(kBMethGateMiss)),
                          missBB, biBB);
           b.SetInsertPoint(missBB);
-          j.emit_type_error_typed("Function", b.getInt8(TAG_NIL));
+          j.emit_method_not_callable(
+              j.current_line_val(), j.current_column_val(),
+              b.getInt8(TAG_NIL), chunk_call_name_at(c, i),
+              load_slot(in.b + 1));
           b.CreateUnreachable();
 
           b.SetInsertPoint(userBB);
@@ -4133,7 +4144,7 @@ struct Lowering {
                                         : load_slot(in.b),
                                     meth ? in.c : -1, in.c + (meth ? 1 : 0),
                                     in.d, line, col, chunk_argpos_at(c, i),
-                                    tgt),
+                                    tgt, chunk_call_name_at(c, i)),
                         slots[in.a]);
           break;
         }
@@ -4207,12 +4218,19 @@ struct Lowering {
             b.CreateStore(callee, selfSlot);
             b.CreateBr(readyBB);
             b.SetInsertPoint(errBB);
-            j.emit_call(j.module_->getOrInsertFunction(
-                            rt::type_error_typed, b.getVoidTy(), i64Ty, i64Ty,
-                            ptrTy, b.getInt8Ty()),
-                        {b.getInt64(line), b.getInt64(col),
-                         b.CreateGlobalString("Function"),
-                         j.extract_tag(callee)});
+            if (const char* member = chunk_call_name_at(c, i);
+                member && kc.has_receiver) {
+              j.emit_method_not_callable(b.getInt64(line), b.getInt64(col),
+                                         j.extract_tag(callee), member,
+                                         load_slot(in.c));
+            } else {
+              j.emit_call(j.module_->getOrInsertFunction(
+                              rt::type_error_typed, b.getVoidTy(), i64Ty,
+                              i64Ty, ptrTy, b.getInt8Ty()),
+                          {b.getInt64(line), b.getInt64(col),
+                           b.CreateGlobalString("Function"),
+                           j.extract_tag(callee)});
+            }
             j.close_block_unreachable();
           }
           b.SetInsertPoint(readyBB);

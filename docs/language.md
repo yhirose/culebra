@@ -1455,6 +1455,7 @@ class C {
   f() { self.g(0) }  # C has no `g`, and the free `g` takes a Long
 }
 C().f()      # TypeError: expected Function, got Nil
+             #            ('g' is not a method of C)
 7.g()        # UFCS → g(7)
 ```
 
@@ -1497,8 +1498,14 @@ list has run:
 ```culebra
 # doctest: skip
 'abc'.truncate(bad(), loud())   # both run, then the `max` type error
-'ab'.push(loud())               # loud() runs, then "expected Function, got Nil"
+'ab'.push(loud())               # loud() runs, then "expected Function, got Nil
+                                # ('push' is not a method of String)"
 ```
+
+A missing member reads as `nil`, so a method the receiver does not have
+surfaces at the call, as the `TypeError` any call on `nil` raises. The
+parenthesis is what a method call adds to it: the name it read and the
+type of what it read it from, in `type_of`'s vocabulary.
 
 The one thing that fails earlier is a scalar receiver: `nil`, `Bool`,
 `Long` and `Float` carry no members at all, so `(5).push(loud())` fails

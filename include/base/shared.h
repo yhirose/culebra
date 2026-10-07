@@ -443,6 +443,14 @@ inline std::string param_type_error_message(std::string_view name,
   return culebra::format("type error: parameter '{}' expects {}", name, type);
 }
 
+// What "expected Function, got Nil" adds when the nil was a member read for a
+// call: a missing member reads as nil, so the call is where a misspelt or
+// absent method surfaces, and this is the name it was looking for.
+inline std::string missing_method_hint(std::string_view name,
+                                       std::string_view receiver_type) {
+  return culebra::format(" ('{}' is not a method of {})", name, receiver_type);
+}
+
 // "type error: expected X, got Y" — an argument/receiver type mismatch.
 inline std::string type_mismatch_message(std::string_view expected,
                                          std::string_view got) {

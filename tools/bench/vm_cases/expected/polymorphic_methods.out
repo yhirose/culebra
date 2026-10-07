@@ -51,11 +51,11 @@ true
 ['[300, 301]']
 TypeError: type error: expected Object, Array, or Tensor, got Long
 ran 2
-TypeError: type error: expected Function, got Nil
+TypeError: type error: expected Function, got Nil ('slice' is not a method of Set)
 ran 3
-TypeError: type error: expected Function, got Nil
+TypeError: type error: expected Function, got Nil ('index_of' is not a method of Tuple)
 ran 4
-TypeError: type error: expected Function, got Nil
+TypeError: type error: expected Function, got Nil ('slice' is not a method of Object)
 TypeError: type error: parameter 'start' expects Long
 TypeError: type error: parameter 'end' expects Long
 TypeError: type error: parameter 'sub' expects StringLike
@@ -87,8 +87,8 @@ IndexError: Tensor: slice out of bounds.
 {}
 TypeError: type error: expected Object, Array, or Tensor, got Long
 ValueError: min of empty Array
-TypeError: type error: expected Function, got Nil
-TypeError: type error: expected Function, got Nil
+TypeError: type error: expected Function, got Nil ('product' is not a method of Tensor)
+TypeError: type error: expected Function, got Nil ('distinct' is not a method of Array)
 ran 5
 TypeError: type error: parameter 'sep' expects String
 TypeError: type error: parameter 'sep' expects String

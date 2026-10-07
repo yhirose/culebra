@@ -1618,8 +1618,16 @@ fn __destr(v, n, line, col) {
 fn __type_of(v, line, col) {
   if __is_tuple(v) { return 'Tuple' }
   if __is_instance(v) { return v["\zc"]['name'] }
+  if __is_class(v) { return 'Class' }
   if __is_range(v) { return 'Range' }
   __type_name(v)
+}
+
+# a method call on a name the receiver does not have: the nil callee's
+# TypeError, naming the method and what it was asked of
+fn __method_miss(recv, name, line, col) {
+  __raise('TypeError', "type error: expected Function, got Nil ('" + name +
+          "' is not a method of " + __type_of(recv, line, col) + ')', line, col)
 }
 
 fn __eq_list(xs, ys) {
@@ -2478,8 +2486,7 @@ fn __method(recv, name, pos, kws, apos, line, col) {
           return __call_nk(recv[name], pos, kws, apos, line, col)
         }
       }
-      __raise('TypeError', 'type error: expected Function, got Nil',
-              line, col)
+      __method_miss(recv, name, line, col)
     }
     if !__objecthas(recv, name) { __ns_missing(recv, name, line, col) }
     if __objecthas(recv, name) {
@@ -2492,7 +2499,7 @@ fn __method(recv, name, pos, kws, apos, line, col) {
     }
     return __object_method(recv, name, args, line, col)
   }
-  __raise('TypeError', 'type error: expected Function, got Nil', line, col)
+  __method_miss(recv, name, line, col)
 }
 
 fn __array_method(a, name, args, line, col) {
@@ -2749,7 +2756,7 @@ fn __array_method(a, name, args, line, col) {
       name == 'to_object' || name == 'unzip' {
     return __iter_method(__arr_iter(a), name, args, line, col)
   }
-  __raise('TypeError', 'type error: expected Function, got Nil', line, col)
+  __method_miss(a, name, line, col)
 }
 
 # A stable insertion sort of a copy, keyed once per element; a key that
@@ -2849,7 +2856,7 @@ fn __string_method(s, name, args, line, col) {
   }
   let r = __string_method2(s, name, args, line, col)
   if __nomethod(r) {
-    __raise('TypeError', 'type error: expected Function, got Nil', line, col)
+    __method_miss(s, name, line, col)
   }
   r
 }
@@ -2927,7 +2934,7 @@ fn __object_method(o, name, args, line, col) {
     if __objecthas(o, pk) { __drop_key(o, pk) }
     return nil
   }
-  __raise('TypeError', 'type error: expected Function, got Nil', line, col)
+  __method_miss(o, name, line, col)
 }
 
 # The synthesized parameters(): every class instance reachable from the
@@ -3375,7 +3382,7 @@ fn __set_method(s, name, args, line, col) {
     if name == 'subset' { return __set_all_in(s, b, line, col) }
     return __set_all_in(b, s, line, col)
   }
-  __raise('TypeError', 'type error: expected Function, got Nil', line, col)
+  __method_miss(s, name, line, col)
 }
 
 fn __tuple_method(t, name, args, line, col) {
@@ -3410,7 +3417,7 @@ fn __tuple_method(t, name, args, line, col) {
     __nargs(name, args, 0, line, col)
     return __arr_iter(items)
   }
-  __raise('TypeError', 'type error: expected Function, got Nil', line, col)
+  __method_miss(t, name, line, col)
 }
 
 # --- Iterators -------------------------------------------------------------

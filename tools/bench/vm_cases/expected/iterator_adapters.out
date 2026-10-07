@@ -40,8 +40,8 @@ nil
 [5, 3]
 35
 [(0, 'a'), (1, 'b'), (2, 'c')]
-{kind: 'TypeError', message: 'type error: expected Function, got Nil', line: 66, col: 15}
-{kind: 'TypeError', message: 'type error: expected Function, got Nil', line: 67, col: 15}
+{kind: 'TypeError', message: 'type error: expected Function, got Nil ('take' is not a method of Array)', line: 66, col: 15}
+{kind: 'TypeError', message: 'type error: expected Function, got Nil ('take' is not a method of Object)', line: 67, col: 15}
 {kind: 'TypeError', message: 'type error: parameter 'n' expects Long', line: 68, col: 34}
 {kind: 'ValueError', message: 'chunks() n must be at least 1', line: 69, col: 15}
 {kind: 'ValueError', message: 'windows() n must be at least 1', line: 70, col: 15}

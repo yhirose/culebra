@@ -112,12 +112,7 @@ class Value {
   // What the script's `type_of` answers — the class that built the value
   // ('Point'), not the tag it is stored under.
   const char* type_name() const {
-    if (v_.tag == TAG_OBJECT) {
-      auto* o = reinterpret_cast<JitObject*>(v_.data);
-      if (const char* name = _jit_meta_class_name(o)) return name;
-      if (o->is_class) return "Class";
-    }
-    return _culebra_tag_name(v_.tag);
+    return _culebra_type_of_name(static_cast<int8_t>(v_.tag), v_.data);
   }
 
   // The strict read, where to_long() and friends hand back a silent 0: a

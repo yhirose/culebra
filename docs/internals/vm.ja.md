@@ -434,6 +434,7 @@ int32_t a, b, c, d; }`）。レジスタはフレームのslotであり、それ
 | `slot_rank`、`slot_cell_rank` | 宣言順（release ladderは新しい方から歩く）と、各slotがいつcellになったか — インデックスは初めは一時値で、後にcaptureされた束縛のcellになることがある |
 | `cleanups`、`temp_points`/`temp_slots`、`defer_mark_slot`、`owned_depths` | unwindテーブル（§5.5） |
 | `call_argpos`、`kwcalls`、`arity_checks`、`name_tables` | 呼び出しごとの引数位置、キーワード呼び出しのレイアウト、組み込みのarity腕、クラスのメソッド名テーブル |
+| `call_names` | メソッド呼び出しごとに、呼び先を読むのに使ったメンバー名。存在しないメソッド（メンバーは`nil`として読める）の呼び出しは、これで名前を伝える |
 | `call_targets` | 呼び出し命令ごとに、その呼び先が解決された唯一の関数chunk、そのchunkがレジスタの値とどう対応するか（`Chunk::Reach`）、そして呼び先をcellから直接読むかどうか（§5.3） |
 
 ### 5.2 命令列の中の所有権
@@ -564,9 +565,9 @@ producerを経ずに到達するので、jump先は決して候補にしない�
 より慎重になるだけである。
 
 命令の削除や書き換えは完成した`Chunk`への1回のpassであって、2回目の
-発行ではない: pcを持つ7つの表（`code`のjumpオペランド、`positions`、
-`cleanups`、`slot_debug`、`temp_points`、`call_argpos`、密な
-`call_targets`）は1つの`pc → pc'`写像とともに移動する。これが閉じて
+発行ではない: pcを持つ8つの表（`code`のjumpオペランド、`positions`、
+`cleanups`、`slot_debug`、`temp_points`、`call_argpos`、`call_names`、
+密な`call_targets`）は1つの`pc → pc'`写像とともに移動する。これが閉じて
 いるのは、bytecodeが一切シリアライズされない（§5.1）からで、pcには
 このコンパイルの外に読み手がいない。`while i < n { i = i + 1 }`は
 これによってループ1反復あたり13命令から8命令へ減る: 3本の`Release`

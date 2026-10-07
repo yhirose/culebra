@@ -1,1 +1,1 @@
-TypeError: type error: expected Function, got Nil at 3:9.
+TypeError: type error: expected Function, got Nil ('trim' is not a method of Array) at 3:9.

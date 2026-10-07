@@ -556,7 +556,7 @@ let r_dmap = try {
   e
 }
 assert_eq(r_dmap.kind, 'TypeError')
-assert_eq(r_dmap.message, "type error: expected Function, got Nil")
+assert_eq(r_dmap.message, "type error: expected Function, got Nil ('map' is not a method of Object)")
 
 let r_dsum = try {
   {a: 1}.sum()
@@ -565,7 +565,7 @@ let r_dsum = try {
   e
 }
 assert_eq(r_dsum.kind, 'TypeError')
-assert_eq(r_dsum.message, "type error: expected Function, got Nil")
+assert_eq(r_dsum.message, "type error: expected Function, got Nil ('sum' is not a method of Object)")
 
 # A reduction's 1-arg form is the Tensor axis reduction; on a non-Tensor
 # it is whatever interp resolves it to, NOT "expected Tensor". The JIT
@@ -586,7 +586,7 @@ let r_amean = try {
   e
 }  # Array has no mean
 assert_eq(r_amean.kind, 'TypeError')
-assert_eq(r_amean.message, "type error: expected Function, got Nil")
+assert_eq(r_amean.message, "type error: expected Function, got Nil ('mean' is not a method of Array)")
 
 # Iterator-only methods (collect/count/take/...) on a value type or scalar
 # follow interp's resolution: a value type that lacks them is method-miss,
@@ -598,7 +598,7 @@ let r_acoll = try {
   e
 }
 assert_eq(r_acoll.kind, 'TypeError')
-assert_eq(r_acoll.message, "type error: expected Function, got Nil")
+assert_eq(r_acoll.message, "type error: expected Function, got Nil ('collect' is not a method of Array)")
 
 let r_scoll = try {
   5.collect()
@@ -626,7 +626,7 @@ let r_mc = try {
   e
 }
 assert_eq(r_mc.kind, 'TypeError')
-assert_eq(r_mc.message, "type error: expected Function, got Nil")
+assert_eq(r_mc.message, "type error: expected Function, got Nil ('collect' is not a method of Array)")
 # The valid fused path still produces the collected array.
 assert_eq([1, 2, 3].iter().map(fn (x) {
   x * 2
@@ -656,7 +656,7 @@ let r_au = try {
   e
 }  # String method on Array
 assert_eq(r_au.kind, 'TypeError')
-assert_eq(r_au.message, "type error: expected Function, got Nil")
+assert_eq(r_au.message, "type error: expected Function, got Nil ('upper' is not a method of Array)")
 
 let r_tp = try {
   2.pow(3)
@@ -677,7 +677,7 @@ let r_su2 = try {
   e
 }  # Set method on Array
 assert_eq(r_su2.kind, 'TypeError')
-assert_eq(r_su2.message, "type error: expected Function, got Nil")
+assert_eq(r_su2.message, "type error: expected Function, got Nil ('union' is not a method of Array)")
 
 let r_ap = try {
   2.push(1)

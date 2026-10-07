@@ -19,13 +19,13 @@ explicit twice
   drop 5
   drop 5
   = nil
-  = TypeError|type error: expected Function, got Nil
+  = TypeError|type error: expected Function, got Nil ('drop' is not a method of Plain)
   = []
   = [Plain {mut n: 1}]
   = own parameters
   = [Plain {mut n: 1}]
-  = TypeError|type error: expected Function, got Nil
-  = TypeError|type error: expected Function, got Nil
+  = TypeError|type error: expected Function, got Nil ('parameters' is not a method of Object)
+  = TypeError|type error: expected Function, got Nil ('parameters' is not a method of Array)
   = TypeError|type error: expected Object, Array, or Tensor, got Long
   = AttributeError|namespace 'Math' has no member 'parameters'
   = dict parameters

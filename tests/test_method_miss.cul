@@ -1,0 +1,87 @@
+# A method call on a name the receiver does not have. A missing member reads
+# as nil, so the call is where it surfaces: the TypeError any call on nil
+# raises, and after it the name the call read and the type of what it read
+# it from, in type_of's vocabulary.
+
+fn mm_said(f) {
+  try {
+    f()
+    'no error'
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+fn mm_miss(name, type) {
+  "TypeError: type error: expected Function, got Nil ('{name}' is not a method of {type})"
+}
+
+class MmPoint {
+  new(.x) {}
+  area() { self.x * 2 }
+  twice() { self.areaa() }
+}
+let mm_xs = [1, 2, 3]
+let mm_obj = { a: 1, m: 5 }
+let mm_p = MmPoint(3)
+let mm_nil = nil
+
+# --- every kind of receiver that has members ---
+assert_eq(mm_said(|| mm_xs.fold(0, |a, b| a + b)), mm_miss('fold', 'Array'))
+assert_eq(mm_said(|| 'abc'.foo()), mm_miss('foo', 'String'))
+assert_eq(mm_said(|| mm_obj.entries()), mm_miss('entries', 'Object'))
+assert_eq(mm_said(|| (1, 2).nope()), mm_miss('nope', 'Tuple'))
+assert_eq(mm_said(|| (0..3).nope()), mm_miss('nope', 'Range'))
+assert_eq(mm_said(|| mm_xs.map(|v| v + 1).nope()), mm_miss('nope', 'Array'))
+
+# An instance answers by its class; a class object is a Class.
+assert_eq(mm_said(|| mm_p.areaa()), mm_miss('areaa', 'MmPoint'))
+assert_eq(mm_said(|| mm_p.twice()), mm_miss('areaa', 'MmPoint'))
+assert_eq(mm_said(|| MmPoint.nope()), mm_miss('nope', 'Class'))
+
+# --- the name is the one the call wrote, whichever way the call compiles ---
+# A built-in's name on a receiver it does not belong to.
+assert_eq(mm_said(|| mm_xs.trim()), mm_miss('trim', 'Array'))
+assert_eq(mm_said(|| mm_obj.map(|v| v)), mm_miss('map', 'Object'))
+# With keyword arguments.
+assert_eq(mm_said(|| mm_xs.fold(init: 0)), mm_miss('fold', 'Array'))
+
+# --- the arguments still run first ---
+mut mm_log = []
+assert_eq(mm_said(|| mm_xs.nope(mm_log.push('arg ran'))), mm_miss('nope', 'Array'))
+assert_eq(mm_log, ['arg ran'])
+
+# --- what it does not change ---
+# A member that is there and is not a function: the value's type, no name.
+assert_eq(mm_said(|| mm_obj.m()), 'TypeError: type error: expected Function, got Long')
+# A plain call on nil has no member to name.
+assert_eq(mm_said(|| mm_nil()), 'TypeError: type error: expected Function, got Nil')
+# Nor has one in an effect body, where the lowering keeps the body's locals
+# on a state object and `cb(n)` reaches the call as a method call on it: by
+# position and by keyword, the two ways that call compiles.
+effect fn mm_ask()
+effect fn mm_run(cb) {
+  let n = perform mm_ask()
+  cb(n)
+}
+effect fn mm_run_kw(cb) {
+  let n = perform mm_ask()
+  cb(k: n)
+}
+assert_eq(mm_said(|| handle { mm_run(nil) } with mm_ask(k) { k(1) }),
+          'TypeError: type error: expected Function, got Nil')
+assert_eq(mm_said(|| handle { mm_run_kw(nil) } with mm_ask(k) { k(1) }),
+          'TypeError: type error: expected Function, got Nil')
+# A method that is missing there is still named.
+effect fn mm_run_miss(xs) {
+  let n = perform mm_ask()
+  xs.nope(n)
+}
+assert_eq(mm_said(|| handle { mm_run_miss([1]) } with mm_ask(k) { k(1) }),
+          mm_miss('nope', 'Array'))
+# A scalar has no members at all, which is reported before the call.
+assert_eq(mm_said(|| mm_nil.foo()),
+          'TypeError: type error: expected Object, Array, or Tensor, got Nil')
+# And a method that is there is called.
+assert_eq(mm_p.area(), 6)
+
+IO.inspect('test_method_miss OK')

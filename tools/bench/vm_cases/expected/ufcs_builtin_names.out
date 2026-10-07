@@ -34,5 +34,5 @@ trait upper
 class upper
 free push
 TypeError|type error: expected Object, Array, or Tensor, got Long
-TypeError|type error: expected Function, got Nil
+TypeError|type error: expected Function, got Nil ('notfn' is not a method of String)
 6000

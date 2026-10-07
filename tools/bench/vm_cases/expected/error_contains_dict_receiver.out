@@ -1,2 +1,2 @@
 ran 1
-TypeError: type error: expected Function, got Nil at 8:9.
+TypeError: type error: expected Function, got Nil ('contains' is not a method of Object) at 8:9.

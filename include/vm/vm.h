@@ -418,7 +418,8 @@ enum class Op : uint8_t {
                // receiver. Same JitFn ABI as Call (the callee consumes the
                // receiver and every arg, so the whole run is nil'd after),
                // and the same TAG_FUNC check — which is where a missing
-               // method surfaces, as "expected Function, got Nil".
+               // method surfaces, as "expected Function, got Nil" and the
+               // name the site read (Chunk::call_names).
   CallKw,      // regs[a] = call regs[b] with the keyword-carrying argument
                // list described by kwcalls[d] over the run at c: the
                // receiver (when the spec says so), then the positionals,
@@ -1594,7 +1595,7 @@ inline bool bmeth_has_rival_arity(const BMethSpec& s) {
 
 // The count-based ArityError this receiver owes: the arities the OTHER rows
 // of the name resolve on its tag, if any. Empty when the receiver simply
-// lacks the name, which is the flat "expected Function, got Nil" instead.
+// lacks the name, which is bmeth_miss_error's method miss instead.
 inline std::string bmeth_rival_arity_message(const BMethSpec& s, int8_t tag,
                                              bool iter_shaped) {
   int8_t lo = -1, hi = -1;
@@ -1680,9 +1681,14 @@ inline void bmeth_scalar_receiver_error(int8_t tag, int64_t line,
   culebra_runtime_type_error_typed(line, col, "Object, Array, or Tensor", tag);
 }
 
-inline void bmeth_miss_error(int64_t line, int64_t col) {
-  culebra_runtime_type_error_typed(line, col, "Function",
-                                   static_cast<int8_t>(TAG_NIL));
+// No receiver resolves the name: the missing method, told by the name the
+// site wrote (Chunk::call_names).
+[[noreturn]] inline void bmeth_miss_error(int64_t line, int64_t col,
+                                          const char* name,
+                                          const JitValue& recv) {
+  culebra_runtime_method_not_callable(
+      line, col, static_cast<int8_t>(TAG_NIL), name,
+      static_cast<int8_t>(recv.tag), recv.data);
 }
 
 // The gate slot's two sentinels: `{TAG_NO_SELF, 0}` is "the built-in
@@ -2889,6 +2895,10 @@ struct Chunk {
   // pc -> 1 + the `call_argpos` row keyed by it, 0 where none is; derived
   // by build_pos_index like pos_ix, empty until it has run.
   std::vector<uint32_t> argpos_ix;
+  // (pc, const index), sorted by pc: the member name a method call read its
+  // callee by. Asked only when that callee is nil, which is how a missing
+  // member reads: the TypeError that follows tells it by name.
+  std::vector<std::pair<uint32_t, int32_t>> call_names;
   // The function chunk each Call / CallM was resolved to, indexed by the
   // instruction, -1 where the callee stays a run-time question. A resolved
   // callee is a name bound once, by a `fn` literal, and never rebound. Only
@@ -3003,6 +3013,18 @@ inline const std::vector<int64_t>* chunk_argpos_at(const Chunk& c, size_t ix) {
     return row ? &c.call_argpos[row - 1].second : nullptr;
   }
   return chunk_argpos_search(c, ix);
+}
+
+// The member name the call at `ix` read its callee by, or null
+// (Chunk::call_names). Cold: asked on the way to a TypeError.
+inline const char* chunk_call_name_at(const Chunk& c, size_t ix) {
+  auto it = std::lower_bound(
+      c.call_names.begin(), c.call_names.end(), static_cast<uint32_t>(ix),
+      [](const auto& row, uint32_t pc) { return row.first < pc; });
+  if (it == c.call_names.end() || it->first != static_cast<uint32_t>(ix))
+    return nullptr;
+  return reinterpret_cast<const char*>(
+      c.consts[static_cast<size_t>(it->second)].data);
 }
 
 // The function chunk the call at `ix` was resolved to, with chunk -1 when its
@@ -4410,7 +4432,7 @@ inline RcPlan plan_rc_elision(const VmProgram& p) {
 }
 
 // Delete the marked instructions and close the gap, moving every pc-keyed
-// table with them. That set is closed and small — the jump operands, and six
+// table with them. That set is closed and small — the jump operands, and seven
 // side tables — because bytecode is internal to one compile: it is never
 // serialized, so a pc has no reader outside this program (docs §5.1).
 //
@@ -4420,11 +4442,12 @@ inline RcPlan plan_rc_elision(const VmProgram& p) {
 //   slot_debug      start / end
 //   temp_points     pc (the delta-coded unwind temporaries)
 //   call_argpos     the key of each sorted (pc, positions) row
+//   call_names      the key of each sorted (pc, name) row
 //   call_targets    dense: indexed BY pc
 //
 // A jump into a deleted instruction lands on the next surviving one, which is
 // what `at_or_after` gives it: deleting a no-op cannot change where control
-// arrives. The map is monotonic, so `call_argpos` stays sorted and the
+// arrives. The map is monotonic, so the sorted tables stay sorted and the
 // cleanup nesting finalize_chunk computed by range containment still holds.
 inline void delete_marked(Chunk& c, const std::vector<char>& dead) {
   const size_t n = c.code.size();
@@ -4487,6 +4510,7 @@ inline void delete_marked(Chunk& c, const std::vector<char>& dead) {
   keep_last_per_pc(c.temp_points,
                    [](const Chunk::TempPoint& t) { return t.pc; });
   for (auto& ap : c.call_argpos) ap.first = map_pc(ap.first);
+  for (auto& cn : c.call_names) cn.first = map_pc(cn.first);
 
   if (!c.call_targets.empty()) {
     std::vector<int32_t> targets(live, kNoCallTarget);
@@ -5461,6 +5485,12 @@ class Compiler {
     }
     chunk_.call_argpos.emplace_back(static_cast<uint32_t>(ix),
                                     std::move(packed));
+  }
+
+  // The member name the call at `ix` read its callee by (Chunk::call_names).
+  void record_call_name(size_t ix, std::string_view name) {
+    chunk_.call_names.emplace_back(static_cast<uint32_t>(ix),
+                                   kconst_str(name));
   }
 
   // What both grants refuse: a binding whose value is a run-time question —
@@ -12856,7 +12886,8 @@ class Compiler {
     int32_t callee = alloc_temp(at);
     emit(Op::PropRaw, callee, recv.slot, kconst_str(post.token));
     if (has_kwargs(args))
-      return compile_kwargs_call(at, args, callee, &recv);
+      return compile_kwargs_call(at, args, callee, &recv, nullptr, nullptr,
+                                 post.token);
     int32_t argc = static_cast<int32_t>(args.nodes.size());
     int32_t base = next_slot_;  // alloc_raw is sequential: a contiguous run
     alloc_temp(at);             // [0] = the receiver
@@ -12872,6 +12903,7 @@ class Compiler {
     int32_t t = alloc_temp(at);
     size_t ix = emit(Op::CallM, t, callee, base, argc);
     record_call_target(ix, postfix_ctor_callee(at, post), argc);
+    record_call_name(ix, post.token);
     std::vector<const peg::Ast*> asts;
     for (const auto& a : args.nodes) asts.push_back(a.get());
     record_call_argpos(ix, args, std::move(asts));
@@ -12968,6 +13000,7 @@ class Compiler {
     int32_t t = alloc_temp(at);
     size_t ix = emit(Op::BMeth, t, base, static_cast<int32_t>(spec.id),
                      spec.nargs);
+    record_call_name(ix, spec.name);
     // A user method shadowing the built-in name takes the gate slot and is
     // called from here, so this site publishes argument positions like any
     // other call — its typed parameters report at the argument expression.
@@ -13027,7 +13060,8 @@ class Compiler {
   ExprResult compile_kwargs_call(const peg::Ast& at, const peg::Ast& args,
                                  int32_t callee_slot, ExprResult* recv,
                                  ExprResult* pos0 = nullptr,
-                                 const peg::Ast* pos0_at = nullptr) {
+                                 const peg::Ast* pos0_at = nullptr,
+                                 std::string_view member = {}) {
     using namespace peg::udl;
     // Structural errors — a positional after a keyword, a repeated keyword —
     // are the interp's to raise where it scans the list: before any argument
@@ -13089,6 +13123,7 @@ class Compiler {
       stamp_at(cl, cc);
     }
     size_t ix = emit(Op::CallKw, t, callee_slot, base, spec);
+    if (!member.empty()) record_call_name(ix, member);
     // Only the positionals: they bind to the parameters of the same index,
     // which is what an argument-position table indexes by. A keyword value
     // reports at the call site on every backend, so leaving its parameter
@@ -15486,15 +15521,23 @@ struct Exec {
   // value itself when it is a Function, else the two cold probes — a
   // callable instance's `__call__`, then a class object's `new` — and the
   // TypeError a missing method has always raised when neither answers.
+  // `member` is the name a method call read `callee` by and `recv` what it
+  // read it from (null for a plain call): what a missing method is told with.
   static JitValue probe_callee(const JitValue& callee, int64_t line,
-                               int64_t col) {
+                               int64_t col, const char* member = nullptr,
+                               const JitValue* recv = nullptr) {
     if (callee.tag == TAG_FUNC) return callee;
     auto tag = static_cast<int8_t>(callee.tag);
     JitValue target = culebra_runtime_class_call_method(tag, callee.data);
     if (target.tag != TAG_FUNC)
       target = culebra_runtime_class_new_method(tag, callee.data);
-    if (target.tag != TAG_FUNC)
+    if (target.tag != TAG_FUNC) {
+      if (recv)
+        culebra_runtime_method_not_callable(
+            line, col, tag, member, static_cast<int8_t>(recv->tag),
+            recv->data);
       culebra_runtime_type_error_typed(line, col, "Function", tag);
+    }
     return target;
   }
 
@@ -15519,8 +15562,9 @@ struct Exec {
   // finding it and handing the receiver over.
   static JitValue dynamic_callee(const JitValue& callee, JitValue* self_reg,
                                  JitValue& self, int64_t argc, int64_t line,
-                                 int64_t col) {
-    JitValue target = probe_callee(callee, line, col);
+                                 int64_t col, const char* member = nullptr) {
+    JitValue target =
+        probe_callee(callee, line, col, member, member ? self_reg : nullptr);
     culebra_runtime_check_pos_count_cls(
         reinterpret_cast<JitClosure*>(target.data), argc, line, col);
     adopt_callee_as_self(callee, self_reg, self);
@@ -16693,7 +16737,9 @@ struct Exec {
           const JitValue& gate = regs[in.b];
           auto [line, col] = chunk_pos_at(c, VM_PC);
           if (gate.tag == TAG_NO_SELF && gate.data == kBMethGateMiss)
-            bmeth_miss_error(line, col);  // the arguments have run by now
+            // the arguments have run by now
+            bmeth_miss_error(line, col, chunk_call_name_at(c, VM_PC),
+                             regs[in.b + 1]);
           if (gate.tag != TAG_NO_SELF) {
             // The shadowing user method: CallM's hand-off, one slot over —
             // the same cold probes and keyword-only guard (the JIT lowers
@@ -17208,7 +17254,10 @@ struct Exec {
           // the interp's "expected Function, got Nil": the receiver and
           // args stay register-owned — nothing has been handed over yet, so
           // the enclosing ladder is still their releaser.
-          target = dynamic_callee(callee, &regs[in.c], self, in.d, line, col);
+          target = dynamic_callee(callee, &regs[in.c], self, in.d, line, col,
+                                  callee.tag == TAG_NIL
+                                      ? chunk_call_name_at(c, VM_PC)
+                                      : nullptr);
           // The run is receiver-then-args; the callee consumes all of it.
           // culebra_runtime_call_receiver is not mirrored: it only rewrites a
           // lowered state object's promoted body local into "no receiver",
@@ -17250,7 +17299,10 @@ struct Exec {
                                           : JitValue{TAG_NO_SELF, 0};
           // The same two cold probes the plain call makes, in the same order;
           // no keyword-only guard, since the resolver binds keywords itself.
-          JitValue target = probe_callee(callee, line, col);
+          JitValue target = probe_callee(
+              callee, line, col,
+              callee.tag == TAG_NIL ? chunk_call_name_at(c, VM_PC) : nullptr,
+              kc.has_receiver ? &regs[in.c] : nullptr);
           adopt_callee_as_self(callee, kc.has_receiver ? &regs[in.c] : nullptr,
                                self);
           callee = target;

@@ -436,6 +436,7 @@ A `Chunk` carries, besides `code`:
 | `slot_rank`, `slot_cell_rank` | declaration order (release ladders walk newest-first) and, per slot, when it became a cell — an index can be a temporary early on and a captured binding's cell later |
 | `cleanups`, `temp_points`/`temp_slots`, `defer_mark_slot`, `owned_depths` | the unwind tables (§5.5) |
 | `call_argpos`, `kwcalls`, `arity_checks`, `name_tables` | per-call argument positions, keyword-call layouts, built-in arity arms, class method-name tables |
+| `call_names` | per method call, the member name its callee was read by: what a call on a missing method (the member reads as nil) is told with |
 | `call_targets` | per call instruction, the one function chunk its callee was resolved to, how that chunk relates to the value in the register (`Chunk::Reach`), and whether the callee is read straight out of a cell (§5.3) |
 
 ### 5.2 Ownership in the instruction stream
@@ -570,9 +571,10 @@ refcount and owned-stack analyses need no arm for the new opcode: their
 postcondition they assert only gets more careful.
 
 Deleting or rewriting an instruction is a pass over the finished `Chunk`,
-not a second emission: the seven pc-keyed tables (`code`'s jump operands,
-`positions`, `cleanups`, `slot_debug`, `temp_points`, `call_argpos`, the
-dense `call_targets`) move with it through one `pc → pc'` map, closed
+not a second emission: the eight pc-keyed tables (`code`'s jump operands,
+`positions`, `cleanups`, `slot_debug`, `temp_points`, `call_argpos`,
+`call_names`, the dense `call_targets`) move with it through one
+`pc → pc'` map, closed
 because bytecode is never serialized (§5.1) — a pc has no reader outside
 this compile. `while i < n { i = i + 1 }` drops from thirteen
 instructions a loop iteration to eight this way: three `Release`s (the
