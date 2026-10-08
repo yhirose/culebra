@@ -135,3 +135,28 @@ fn stacked() {
 }
 
 assert_eq(trail, ["eval outer", "eval inner", "apply inner", "apply outer"])
+
+# --- 9. The name binds what the decorators return, so while one runs it is
+#        not bound yet: a member that reads it then gets the NameError of any
+#        name read before its declaration has run, as a decorated fn does ---
+mut dec_early = []
+let dec_probe = fn (v) {
+  let seen = try {
+    v().kind()
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+  dec_early.push(seen)
+  v
+}
+
+@dec_probe
+class DecProbed {
+  new() {}
+  kind() {
+    type_of(DecProbed)
+  }
+}
+
+assert_eq(dec_early, ["NameError: undefined variable 'DecProbed'"])
+assert_eq(DecProbed().kind(), 'Class')

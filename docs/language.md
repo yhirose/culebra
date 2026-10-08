@@ -1689,7 +1689,12 @@ Semantics:
   The value expression can be arbitrary (`static SUM = [1,2,3].sum()`),
   evaluated in the enclosing scope at class declaration time. What it
   declares is its own and ends with it: after
-  `t = 0; class K { static s = (let t = 5) + 1 }`, `t` is still `0`. Like
+  `t = 0; class K { static s = (let t = 5) + 1 }`, `t` is still `0`. The
+  class's own name is not bound yet at that point: a value that reads it,
+  itself or through a function it calls (`static T = Circle.PI * 2`),
+  raises `NameError: undefined variable 'Circle'`, as a read of any name
+  whose declaration has not run does. A function kept in a static
+  (`static unit = || Circle.new(1)`) runs later and names the class. Like
   static methods, static fields are immutable (`Circle.PI = 2` raises
   `ImmutableError`) and not visible through instances.
   `static NAME: Type = EXPRESSION` annotates the value's type, checked
@@ -6595,6 +6600,10 @@ class Point {
 
 Point.marked  # true
 ```
+
+The name is bound once the decorators have returned. Code that reads it
+while one of them runs (a method of the class the decorator calls, a
+decorated function calling itself) gets `NameError: undefined variable`.
 
 ### Interaction with multimethods
 

@@ -7319,8 +7319,15 @@ class Compiler {
   static void settle_predeclared(Binding& pre) {
     if (pre.conditional) return;
     pre.lazy = false;
-    pre.shadowed.reset();
-    pre.shadowed_builtin = false;
+    unshadow(pre);
+  }
+
+  // The name stops meaning what it shadowed, whether or not its own cell is
+  // filled yet. A conditional pre-declaration keeps what it shadows.
+  static void unshadow(Binding& b) {
+    if (b.conditional) return;
+    b.shadowed.reset();
+    b.shadowed_builtin = false;
   }
 
   // What `node` declares where it may not run: a later test of an `if` /
@@ -7719,36 +7726,44 @@ class Compiler {
   // The declaration cell a class or enum name binds through before its body
   // compiles: fill the cell an earlier forward reference already minted (so
   // both readers see the same value), bind in the session at the REPL's top
-  // level, or mint a fresh nil cell. The binding comes back for
-  // emit_session_decl_bind.
-  struct DeclCell {
-    int32_t slot;
-    Binding* binding;
-  };
-  DeclCell bind_decl_cell(const peg::Ast& ast, const std::string& name) {
+  // level, or mint a fresh cell. The name means this declaration from here
+  // on, but the cell holds the unbound sentinel until the finished value
+  // lands, and the declaration runs user code before that (a static value, a
+  // decorator): the binding stays lazy, so whatever reads the name in
+  // between asks the sentinel, and store_decl_cell settles it. (The
+  // session's cell keeps what an earlier REPL line bound, so a
+  // redeclaration there reads the previous value until then.)
+  Binding& bind_decl_cell(const peg::Ast& ast, const std::string& name) {
     const peg::Ast& head = *ast.nodes[culebra::first_non_decorator_index(ast)];
     if (Binding* pre = predeclared_here(name)) {
       note_declaration(head, *pre);
       slot_rank_[pre->slot] = next_rank_++;
-      settle_predeclared(*pre);
-      return {pre->slot, pre};
+      unshadow(*pre);
+      return *pre;
     }
     if (repl_top()) {
       Binding& sb = bind_session(ast, name);
       note_declaration(head, sb);
-      sb.lazy = false;
-      sb.shadowed_builtin = false;
-      return {sb.slot, &sb};
+      unshadow(sb);
+      return sb;
     }
     int32_t slot = alloc_cell_slot(ast, name);
     {
       TempScope ts(*this);
       int32_t t = alloc_temp(ast);
-      emit(Op::LoadConst, t, kconst({TAG_NIL, 0}));
+      emit(Op::LoadConst, t, kconst({TAG_NO_SELF, 0}));
       emit(Op::CellNew, slot, t);
     }
-    Binding& b = push_binding(head, {name, slot, /*is_mut=*/false, /*is_cell=*/true});
-    return {slot, &b};
+    return push_binding(head, {name, slot, /*is_mut=*/false, /*is_cell=*/true,
+                               /*lazy=*/true});
+  }
+
+  // The declaration's value lands in the cell bind_decl_cell bound, and the
+  // name reads as it from here on.
+  void store_decl_cell(const peg::Ast& ast, Binding& decl, int32_t val) {
+    store_cell(ast, decl.slot, {val, true});
+    settle_predeclared(decl);
+    emit_session_decl_bind(decl, /*is_mut=*/false);
   }
 
   // A `@value` class's compile-time registration: the process-wide flat
@@ -8011,7 +8026,7 @@ class Compiler {
     // earlier in the statement list already forward-referenced the name,
     // predeclare_forward_refs minted that cell — fill it rather than mint
     // a second one, so both readers see the same class.
-    auto [class_slot, decl_binding] = bind_decl_cell(ast, class_name);
+    Binding& decl = bind_decl_cell(ast, class_name);
     // `Name.new(...)` reaches one chunk, and the compiler can say which —
     // unless an overload set makes the constructor a dispatcher, or a
     // decorator that is not a compile-time one is free to hand back
@@ -8028,15 +8043,14 @@ class Compiler {
                     })) {
       ctor_chunk_idx = static_cast<int32_t>(prog_.chunks.size());
       prog_.chunks.emplace_back();
-      grant_known_ctor(*decl_binding, ctor_chunk_idx);
+      grant_known_ctor(decl, ctor_chunk_idx);
       // The same grant carries the declaration itself when the class can be
       // laid out as its fields, which is what an inlined construction reads
       // the member bodies from. Only where the grant took: a refused
       // constructor is a name whose value can move, and unboxing it would
       // rest on the same answer the refusal just withheld.
-      if (decl_binding->known.ctor >= 0 &&
-          culebra::value_flat_layout(class_name))
-        decl_binding->known.value_class = &ast;
+      if (decl.known.ctor >= 0 && culebra::value_flat_layout(class_name))
+        decl.known.value_class = &ast;
     }
 
     TempScope ts(*this);
@@ -8312,8 +8326,7 @@ class Compiler {
     // The name binds what the decorators return — the class object itself when
     // they hand it back, as `@mark` does, and anything else when they do not.
     cls = apply_decorators(ast, dec_end, cls);
-    store_cell(ast, class_slot, {cls, true});
-    emit_session_decl_bind(*decl_binding, /*is_mut=*/false);
+    store_decl_cell(ast, decl, cls);
   }
 
   // `enum Name { A(Long), B }` — a namespace object whose members are the
@@ -8342,7 +8355,7 @@ class Compiler {
     StampGuard pos(*this, ast);
     // A closure earlier in the list may already hold this name's cell
     // (predeclare_forward_refs); fill that one, as compile_class_decl does.
-    auto [enum_slot, decl_binding] = bind_decl_cell(ast, enum_name);
+    Binding& decl = bind_decl_cell(ast, enum_name);
 
     TempScope ts(*this);
     int32_t obj = alloc_temp(ast);
@@ -8370,8 +8383,7 @@ class Compiler {
     if (is_packable)
       emit(Op::RegPack, kconst_str(enum_name), kconst_str(spec), 0, 1);
     obj = apply_decorators(ast, dec_end, obj);
-    store_cell(ast, enum_slot, {obj, true});
-    emit_session_decl_bind(*decl_binding, /*is_mut=*/false);
+    store_decl_cell(ast, decl, obj);
   }
 
   // `trait Name: Super { req(); def() { ... } }` — a contract in the shared

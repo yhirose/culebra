@@ -1589,7 +1589,12 @@ variable 'self'`になります。送出されるのは本体に入った時点�
   値の式は任意（`static SUM = [1,2,3].sum()`等）で、class宣言時の
   外側スコープで評価されます。値の式の中の宣言はその式だけのもので、
   式の外へは出ません（`t = 0; class K { static s = (let t = 5) + 1 }`
-  の後も`t`は`0`）。staticメソッドと同じく、static fieldは
+  の後も`t`は`0`）。この時点でclass自身の名前はまだ束縛されていません。
+  値がそれを読むと、直接でも呼び出した関数の中でも
+  （`static T = Circle.PI * 2`）、宣言がまだ走っていない名前を読んだ
+  ときと同じ`NameError: undefined variable 'Circle'`になります。
+  staticに入れた関数（`static unit = || Circle.new(1)`）は後で走るので、
+  classを名指せます。staticメソッドと同じく、static fieldは
   immutable（`Circle.PI = 2`は`ImmutableError`を投げる）かつ
   インスタンス経由では参照できません。
   `static NAME: Type = EXPRESSION`は値の型を注釈し、型つきの`let`と
@@ -6306,6 +6311,10 @@ class Point {
 
 Point.marked  # true
 ```
+
+名前が束縛されるのはデコレータが戻った後です。デコレータの実行中に
+その名前を読むコード（デコレータが呼んだそのclassのメソッド、自分自身を
+呼ぶデコレータ付きの関数）は`NameError: undefined variable`になります。
 
 ### 多重ディスパッチとの相互作用
 

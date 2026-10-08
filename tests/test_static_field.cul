@@ -134,7 +134,67 @@ test_static_field_value_scope = fn () {
   assert_eq(in_fn(), [1, 'outer'])
 }
 
+# The class's own name is not bound while its static values are evaluated.
+# A read there is the NameError of any name read before its declaration has
+# run, whether the value reads it or a function it calls does. A function
+# kept in a static runs later, and names the class then.
+test_static_field_own_class = fn () {
+  let unbound = |name| "NameError: undefined variable '{name}'"
+  let said = fn (f) {
+    try {
+      f()
+      'bound'
+    } catch e {
+      "{e.kind}: {e.message}"
+    }
+  }
+  let direct = said(fn () {
+    class SfOwnDirect {
+      static s = 4
+      static t = SfOwnDirect.s + 1
+    }
+  })
+  assert_eq(direct, unbound('SfOwnDirect'))
+  let through_fn = said(fn () {
+    class SfOwnCalled {
+      static s = 4
+      static t = (|| SfOwnCalled.s + 1)()
+    }
+  })
+  assert_eq(through_fn, unbound('SfOwnCalled'))
+  let as_value = said(fn () {
+    class SfOwnValue {
+      static me = SfOwnValue
+    }
+  })
+  assert_eq(as_value, unbound('SfOwnValue'))
+  let made = said(fn () {
+    class SfOwnMade {
+      new() {}
+      static one = SfOwnMade.new()
+    }
+  })
+  assert_eq(made, unbound('SfOwnMade'))
+  let called = said(fn () {
+    class SfOwnSugar {
+      new() {}
+      static one = SfOwnSugar()
+    }
+  })
+  assert_eq(called, unbound('SfOwnSugar'))
+
+  class SfOwnLater {
+    new() {
+      self.v = 1
+    }
+    static make = || SfOwnLater()
+    static kind = || type_of(SfOwnLater)
+  }
+  assert_eq([SfOwnLater.make().v, SfOwnLater.kind()], [1, 'Class'])
+}
+
 test_static_field_basic()
+test_static_field_own_class()
 test_static_field_with_method()
 test_static_field_expression()
 test_static_field_not_on_instance()
