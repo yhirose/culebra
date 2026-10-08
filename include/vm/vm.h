@@ -5136,18 +5136,45 @@ class Compiler {
     const peg::Ast* unboxed_class = nullptr;
   };
 
-  // One entry per constructor or method body currently being spliced in.
-  // `self` and the class's own name resolve through this rather than through
-  // a Binding: the stack's lifetime IS the inline's, which is the invariant
-  // wanted, whereas a binding would have to survive scope push/pop and the
-  // capture plumbing for no gain.
-  struct InlineFrame {
-    std::string_view class_name;
+  // One entry per constructor or method body whose names are being answered:
+  // one being spliced in (emit_inline_body), or one asked about ahead of that
+  // (inline_body_ok, member_own_tail, dunder_takes_run_param). A body means
+  // by a name what it meant where it was written, not where it lands, so
+  // while an entry is on top a lookup sees the splice's own scopes
+  // (`scope_floor` and up: the parameters and the body's locals), then the
+  // class under the name the body calls it by, and nothing the landing site
+  // declares (lookup_name_mut). A name left unbound is a stdlib global or
+  // namespace, which inline_body_ok required it to be. `self` is the run at
+  // `base` (compile_expr). The stack's lifetime IS the splice's, which a
+  // binding would need the scope and capture plumbing to match.
+  struct MemberFrame {
     const peg::Ast* class_ast;                // the class declaration itself
-    int32_t base;                             // first field slot
+    std::string_view own_name;                // the member's FuncInfo::own_name
+    size_t scope_floor;                       // scopes_ below are the landing site's
+    int32_t base;                             // first field slot; -1 when only asked about
     const std::vector<std::string>* layout;   // field names, declaration order
   };
-  std::vector<InlineFrame> inlines_;
+  std::vector<MemberFrame> member_frames_;
+  struct InMember {
+    Compiler& c;
+    InMember(Compiler& comp, const peg::Ast& member, const peg::Ast& cls,
+             int32_t base = -1,
+             const std::vector<std::string>* layout = nullptr)
+        : c(comp) {
+      c.member_frames_.push_back(
+          {&cls, c.member_own_name(member), c.scopes_.size(), base, layout});
+    }
+    ~InMember() { c.member_frames_.pop_back(); }
+    InMember(const InMember&) = delete;
+    InMember& operator=(const InMember&) = delete;
+  };
+  // The name a member's body calls its own class by (FuncInfo::own_name):
+  // empty where the body has none, as when a parameter is spelled like it.
+  std::string_view member_own_name(const peg::Ast& member) const {
+    auto it = analysis_.func_info.find(&member);
+    return it == analysis_.func_info.end() ? std::string_view{}
+                                           : std::string_view(it->second.own_name);
+  }
   // `inline_body_ok` membership currently being decided, so a self- or
   // mutually-recursive operator (`__add__(o) { self + o }`, checking its own
   // eligibility through the fold-operand rule below) declines instead of
@@ -5162,7 +5189,8 @@ class Compiler {
   // operand. Populated only for a class THIS Compiler instance itself
   // compiled: a fresh `Compiler` per chunk (`Compiler fc(...)` at every
   // nested `fn`/closure) makes this naturally chunk-scoped with no
-  // save/restore, the same way `inlines_` and `checking_inline_body_` are.
+  // save/restore, the same way `member_frames_` and `checking_inline_body_`
+  // are.
   // A class declared in an outer chunk has no entry here, which is
   // `materialize_run`'s compile-time VmError — spec §15.8's own honest
   // limitation (cross-frame materialization), not attempted here: closing
@@ -6084,10 +6112,34 @@ class Compiler {
 
   // The same walk, for a caller that settles or tags a binding it found by
   // name (compile_multifn_decl's grant, a declaration's note_declaration).
+  // Inside a member body (MemberFrame) the walk stops at the splice's own
+  // scopes, and the body's name for its class finds that class's binding.
   Binding* lookup_name_mut(std::string_view name) {
+    const MemberFrame* in =
+        member_frames_.empty() ? nullptr : &member_frames_.back();
+    for (size_t i = scopes_.size(), floor = in ? in->scope_floor : 0;
+         i-- > floor;) {
+      auto& bs = scopes_[i].bindings;
+      for (auto b = bs.rbegin(); b != bs.rend(); ++b)
+        if (b->name == name) return &*b;
+    }
+    if (in && !in->own_name.empty() && name == in->own_name)
+      return value_class_binding(*in->class_ast);
+    return nullptr;
+  }
+
+  // The binding a flat `@value` class's declaration gave the class to
+  // (Known::value_class), whatever a scope in between declares under its
+  // name. Null for a stdlib module's class, which no binding carries: its
+  // name is then the unshadowed namespace's. Any other class reached here
+  // was reached through that binding, in a scope still open.
+  Binding* value_class_binding(const peg::Ast& cls) {
     for (auto sc = scopes_.rbegin(); sc != scopes_.rend(); ++sc)
       for (auto b = sc->bindings.rbegin(); b != sc->bindings.rend(); ++b)
-        if (b->name == name) return &*b;
+        if (b->known.value_class == &cls) return &*b;
+    assert(std::ranges::any_of(analysis_.stdlib_value_classes,
+                               [&](const auto& e) { return e.second == &cls; }) &&
+           "a program's class being spliced has its declaring binding in scope");
     return nullptr;
   }
 
@@ -6481,9 +6533,10 @@ class Compiler {
   }
 
   // An earlier input of the session declared `name` (the interp's environment
-  // chain answering it).
+  // chain answering it). Not for a member body being spliced in, which reads
+  // no name of the session's (MemberFrame).
   bool session_declared(std::string_view name) const {
-    return repl_ && repl_session().declared(name);
+    return repl_ && member_frames_.empty() && repl_session().declared(name);
   }
 
   // Whether a bare write to `name`, bound by nothing in scope, is the
@@ -10501,14 +10554,15 @@ class Compiler {
 
   // Whether a member's body may be compiled into this chunk. The hygiene
   // half of the question — the half that makes this a correctness rule
-  // rather than a heuristic: the body resolves its names through THIS
-  // compiler's scopes and declares its locals against THIS chunk's analysis,
-  // so every name it reads must mean here what it meant there.
+  // rather than a heuristic: the body is compiled by THIS compiler and
+  // declares its locals against THIS chunk's analysis, yet every name it
+  // reads must mean what it meant where it was written. The answer is the
+  // member's alone: nothing the landing site declares enters it, so asking
+  // ahead (a whole-scope walk) and asking at the splice cannot disagree.
   //
-  // `class_ast`/`class_name`/`layout` are the class this member belongs to —
-  // needed for the receiver-shape check below, not for the name check above
-  // it (which only asks whether a free name is safe to leave unbound-checked,
-  // not how it is used).
+  // `class_ast`/`class_name`/`layout` are the class this member belongs to:
+  // what the body's own name is read as (InMember), and what the
+  // receiver-shape check below asks about.
   bool inline_body_ok(const peg::Ast& member, bool is_ctor,
                       const peg::Ast& class_ast, std::string_view class_name,
                       const std::vector<std::string>* layout) {
@@ -10529,32 +10583,35 @@ class Compiler {
     // chunk's. With no nested closure there is nothing to capture, so the
     // set being empty is the check rather than a swap.
     if (!fi.captured_locals.empty()) return false;
-    // Every name the body reads must mean here what it meant in the callee's
-    // own frame. `free_vars` is NOT the set to ask: a stdlib NAMESPACE is not
-    // a variable, so `Math` never appears there — and a caller holding its
-    // own `Math` would silently rebind the body's. So the body's identifiers
-    // are walked directly, and only names that cannot be rebound are let
-    // through: the receiver, the class's own name, a parameter, a body-local
-    // `let`/`mut` declared earlier in the same statement list (walked
-    // scope-aware below — `Vector2.length()`'s `let x = self.x` is the
-    // shape this exists for), or a stdlib global/namespace this scope does
-    // not shadow.
+    // Every name the body reads must be one a splice can answer where it
+    // lands (MemberFrame). A free variable is the program's, which the
+    // landing site may not see at all, or may see another of: a `Math` of
+    // the program's own over the stdlib's, a function a UFCS call names.
+    // Refused. What is left, with no free variable, the body's identifiers
+    // say directly (a stdlib NAMESPACE is not a variable, so no list of
+    // variables names it): the receiver, the class's own name, a parameter,
+    // a body-local `let`/`mut` declared earlier in the same statement list
+    // (walked scope-aware below — `Vector2.length()`'s `let x = self.x` is
+    // the shape this exists for), or a stdlib global/namespace.
+    if (!fi.free_vars.empty()) return false;
+    // `fn` is no namespace, though the predicate below files it with them:
+    // it is the frame's own handle, and spliced it would be the landing
+    // frame's.
+    if (fi.uses_fn) return false;
     auto ps = inline_params(mv.params);
     if (!ps) return false;
     bool ok = true;
     auto check_name = [&](std::string_view n) {
-      if (!ok || n == "self") return;
+      if (!ok || n == "self" || n == fi.own_name) return;
       for (const auto& p : *ps)
         if (p.name == n) return;
-      auto it2 = analysis_.func_info.find(&member);
-      if (it2 != analysis_.func_info.end() && n == it2->second.own_name) return;
-      if (!lookup_name(n) && (is_stdlib_global(n) || is_stdlib_namespace(n))) return;
+      if (is_stdlib_global(n) || is_stdlib_namespace(n)) return;
       ok = false;
     };
     walk_identifiers_scoped(**mv.body, {}, check_name);
     if (!ok) return false;
-    // The name check above only asks WHICH free names are safe to leave
-    // unbound-checked — it says nothing about HOW they are used, and `self`
+    // The name check above only asks WHICH names the body reads — it says
+    // nothing about HOW they are used, and `self`
     // (plus the class's own name) is not an ordinary value inside a spliced
     // body: it is the unboxed run's marker. Handed to a consumer this
     // splice machinery never taught to look for `.unboxed` — a bare
@@ -10571,6 +10628,7 @@ class Compiler {
       const peg::Ast* m;
       ~Guard() { s.erase(m); }
     } guard{checking_inline_body_, &member};
+    InMember env(*this, member, class_ast);
     return receiver_refs_stay_unboxed(**mv.body, fi.own_name, class_ast,
                                       class_name, layout);
   }
@@ -10610,7 +10668,7 @@ class Compiler {
       return false;
     auto ps = inline_params(culebra::view_method(*m).params);
     return ps && ps->size() == arity &&
-           member_own_tail(*m, class_name) != nullptr;
+           member_own_tail(*m, cls);
   }
 
   // One operator token's worth of the question, shared between a fold's
@@ -10703,12 +10761,7 @@ class Compiler {
       return true;  // a member name, not a value reference
     if (node.tag == "CALL"_ && !node.nodes.empty() &&
         node.nodes[0]->tag == "IDENTIFIER"_) {
-      bool is_ctor_call =
-          !own_name.empty() && node.nodes[0]->token == own_name &&
-          node.nodes.size() >= 3 && node.nodes[1]->original_tag == "DOT"_ &&
-          node.nodes[1]->token == "new" &&
-          node.nodes[2]->original_tag == "ARGUMENTS"_;
-      if (is_ctor_call) {
+      if (is_own_construction(node, own_name)) {
         if (!chain_resolves_to_class(node, /*allow_trailing_class=*/true))
           return false;
         // chain_resolves_to_class only proves the CHAIN's own shape (the
@@ -10828,8 +10881,8 @@ class Compiler {
   // `splices` memoises "does this token splice on this class", which a
   // round asks over and over: once per operator of every statement, for
   // every candidate, on every pass. The answer cannot change while a round
-  // runs — nothing compiles in between, so the scope `inline_body_ok`
-  // resolves free names against is fixed — but it is NOT a property of
+  // runs — nothing compiles in between, and `inline_body_ok` asks the
+  // member alone — but it is NOT a property of
   // `(class, token)` in general: a re-entrant ask returns false from
   // `inline_body_ok`'s recursion guard. The cache is therefore owned by
   // the round and reached only from the round's own walks; a nested walk
@@ -11340,6 +11393,7 @@ class Compiler {
       const peg::Ast* m;
       ~Guard() { s.erase(m); }
     } guard{checking_run_param_, m};
+    InMember env(*this, *m, cls);
     return value_ref_ok(**mv.body, ValueWalk{(*ps)[0].name, &ocls, oname,
                                              olayout, /*writes_ok=*/false});
   }
@@ -11733,7 +11787,6 @@ class Compiler {
   // instance, whatever its body's last expression was); a method's is its
   // tail expression, copied out to `out_base` before the pop.
   ExprResult emit_inline_body(const peg::Ast& member, const peg::Ast& cls_ast,
-                              std::string_view cls,
                               int32_t self_base,
                               const std::vector<std::string>* layout,
                               const std::vector<InlineParam>& ps,
@@ -11744,8 +11797,9 @@ class Compiler {
     using namespace peg::udl;
     auto mv = culebra::view_method(member);
     const peg::Ast& body = **mv.body;
+    // The frame first: its floor is the scope about to open.
+    InMember env(*this, member, cls_ast, self_base, layout);
     push_scope(member, /*owned_mark=*/false);
-    inlines_.push_back({cls, &cls_ast, self_base, layout});
     bind_inline_params(ps, args, arg_asts);
     // A constructor's field parameters store into the run before the body,
     // as the boxed `new` stores them before its own statements — through
@@ -11801,7 +11855,6 @@ class Compiler {
         store_into(out_base, tail, /*dst_is_fresh=*/false);
       }
     }
-    inlines_.pop_back();
     pop_scope();
     if (is_ctor) return {self_base, /*owned=*/false, -1, layout, &cls_ast};
     return {out_base, /*owned=*/false, -1, out_layout,
@@ -11861,7 +11914,8 @@ class Compiler {
       // one) leaves "nothing yet" to run time, and the emitting caller asks
       // it (guard_lazy) before it lays an instance out. A member's own name,
       // read off the receiver, is a question about WHICH class and is never
-      // granted one.
+      // granted one; in a body being spliced in it is the class being
+      // spliced, whose binding the lookup found by the declaration.
       return b->known.value_class;
     }
     // No live local of this name: an UNSHADOWED stdlib namespace identifier
@@ -11878,26 +11932,36 @@ class Compiler {
     return it == analysis_.stdlib_value_classes.end() ? nullptr : it->second;
   }
 
+  // `Own.new(args)`, with or without a chain after it: a construction of a
+  // member's class under the name its body calls it by (`own`, empty when
+  // the body has none).
+  static bool is_own_construction(const peg::Ast& n, std::string_view own) {
+    using namespace peg::udl;
+    return !own.empty() && n.nodes.size() >= 3 &&
+           n.nodes[0]->tag == "IDENTIFIER"_ && n.nodes[0]->token == own &&
+           n.nodes[1]->original_tag == "DOT"_ && n.nodes[1]->token == "new" &&
+           n.nodes[2]->original_tag == "ARGUMENTS"_;
+  }
+
   // Whether a member's value is another instance of its own class — its body
   // ends in `C.new(...)` for the very C it belongs to, which is the shape
-  // every `@value` operator has. Answered syntactically, which is enough:
-  // the tail either IS that construction or the member is treated as
-  // returning a scalar, and a wrong guess in that direction only declines.
-  static bool member_returns_own(const peg::Ast& member,
-                                 std::string_view class_name) {
+  // every `@value` operator has: that tail, or nullptr. Answered
+  // syntactically, which is enough: the tail either IS that construction or
+  // the member is treated as returning a scalar, and a wrong guess in that
+  // direction only declines. `C` is the name the body calls its class by (a
+  // parameter spelled like the class leaves it none), and no local can be:
+  // inline_body_ok refuses a body that declares one (a bare occurrence of
+  // the name).
+  const peg::Ast* member_returns_own(const peg::Ast& member) const {
     using namespace peg::udl;
     auto mv = culebra::view_method(member);
-    if (!mv.body) return false;
+    if (!mv.body) return nullptr;
     const peg::Ast* tail = (*mv.body).get();
     if (tail->tag == "STATEMENTS"_) {
-      if (tail->nodes.empty()) return false;
+      if (tail->nodes.empty()) return nullptr;
       tail = tail->nodes.back().get();
     }
-    return tail->nodes.size() >= 3 && tail->nodes[0]->tag == "IDENTIFIER"_ &&
-           tail->nodes[0]->token == class_name &&
-           tail->nodes[1]->original_tag == "DOT"_ &&
-           tail->nodes[1]->token == "new" &&
-           tail->nodes[2]->original_tag == "ARGUMENTS"_;
+    return is_own_construction(*tail, member_own_name(member)) ? tail : nullptr;
   }
 
   // Whether a member's tail both has the `C.new(...)` shape
@@ -11909,16 +11973,15 @@ class Compiler {
   // the shape, not that `emit_inline_body` can actually splice it, and
   // allocating a run on a promise that turns out false leaves every slot
   // past the first holding whatever `alloc_zeroed_run` nil-initialized it
-  // to, with only slot 0 ever written.
-  const peg::Ast* member_own_tail(const peg::Ast& member,
-                                  std::string_view class_name) {
-    using namespace peg::udl;
+  // to, with only slot 0 ever written. `cls` is the member's class, which
+  // the tail's name is read as (InMember).
+  bool member_own_tail(const peg::Ast& member, const peg::Ast& cls) {
     Lookahead ahead(*this);
-    if (!member_returns_own(member, class_name)) return nullptr;
-    auto mv = culebra::view_method(member);
-    const peg::Ast* tail = (*mv.body).get();
-    if (tail->tag == "STATEMENTS"_) tail = tail->nodes.back().get();
-    return chain_resolves_to_class(*tail, /*allow_trailing_class=*/true);
+    const peg::Ast* tail = member_returns_own(member);
+    if (!tail) return false;
+    InMember env(*this, member, cls);
+    return chain_resolves_to_class(*tail, /*allow_trailing_class=*/true) ==
+           &cls;
   }
 
   // Whether the chain from `i` on only asks an unboxed value things it can
@@ -11955,7 +12018,7 @@ class Compiler {
       auto ps = inline_params(mv.params);
       if (!ps || !positional_args_match(*ps, *at.nodes[i + 1])) return false;
       i += 2;
-      if (!member_returns_own(*m, class_name))
+      if (!member_returns_own(*m))
         return i == at.nodes.size();  // a scalar result must end the chain
     }
     // Ran out still holding a run. Escaping to an arbitrary consumer would
@@ -12055,7 +12118,8 @@ class Compiler {
     // A body of this class being spliced in asks nothing: it runs on an
     // instance, and none is built before the name is bound (the enclosing
     // construction, if that is what is being spliced, asked just above).
-    bool own_body = !inlines_.empty() && inlines_.back().class_ast == cls;
+    bool own_body = !member_frames_.empty() &&
+                    member_frames_.back().class_ast == cls;
     if (const Binding* named = own_body ? nullptr : lookup_at(*ast.nodes[0]))
       guard_lazy(*ast.nodes[0], *named);
     // The run and every later step's run belong to the caller's scope, so
@@ -12075,7 +12139,7 @@ class Compiler {
     std::vector<ExprResult> args;
     std::vector<const peg::Ast*> arg_asts;
     compile_args(*ast.nodes[2], args, arg_asts);
-    ExprResult cur = emit_inline_body(*ctor, *cls, class_name, base, layout,
+    ExprResult cur = emit_inline_body(*ctor, *cls, base, layout,
                                       *cps, args, arg_asts, /*is_ctor=*/true,
                                       /*out_base=*/-1, layout);
     return splice_trailing_chain(cur, ast, 3, *cls, class_name, layout);
@@ -12116,9 +12180,9 @@ class Compiler {
         margs.push_back(compile_expr(*a));
         masts.push_back(a.get());
       }
-      bool run = member_own_tail(*m, class_name) != nullptr;
+      bool run = member_own_tail(*m, cls);
       int32_t out_base = run ? fresh_run() : alloc_slot(at, "(value.ret)");
-      cur = emit_inline_body(*m, cls, class_name, cur.slot, layout, *ps,
+      cur = emit_inline_body(*m, cls, cur.slot, layout, *ps,
                              margs, masts, /*is_ctor=*/false, out_base,
                              run ? layout : nullptr);
       i += 2;
@@ -12173,10 +12237,10 @@ class Compiler {
       return std::nullopt;
     auto ps = inline_params(culebra::view_method(*m).params);
     if (!ps || ps->size() != args.size()) return std::nullopt;
-    bool run = member_own_tail(*m, class_name) != nullptr;
+    bool run = member_own_tail(*m, cls);
     int32_t out_base = run ? alloc_zeroed_run(at, cls, class_name, *lhs.unboxed)
                            : alloc_slot(at, "(value.ret)");
-    return emit_inline_body(*m, cls, class_name, lhs.slot, lhs.unboxed, *ps,
+    return emit_inline_body(*m, cls, lhs.slot, lhs.unboxed, *ps,
                             args, arg_asts, /*is_ctor=*/false, out_base,
                             run ? lhs.unboxed : nullptr);
   }
@@ -14406,12 +14470,13 @@ class Compiler {
                chunk_.fn_bound_slot);
           return {t, true};
         }
-        // Inside an inlined `@value` body, `self` IS the unboxed run and
-        // the class's own name IS that class — neither goes through a
-        // Binding, so neither can be shadowed by, or leak into, the
-        // surrounding frame. The stack's lifetime is the inline's.
-        if (!inlines_.empty()) {
-          const auto& f = inlines_.back();
+        // Inside an inlined `@value` body, `self` IS the unboxed run: it
+        // goes through no Binding, so it can neither be shadowed by, nor
+        // leak into, the surrounding frame. Every other name the body reads
+        // is answered by the lookup below, which the frame confines to the
+        // body's own (lookup_name_mut).
+        if (!member_frames_.empty()) {
+          const auto& f = member_frames_.back();
           if (ast.token == "self")
             return {f.base, /*owned=*/false, -1, f.layout, f.class_ast};
         }
@@ -14458,7 +14523,9 @@ class Compiler {
         // on one line makes `to_string` read 7 on the next. Which of the two
         // it is stays a run-time question (the cell is still unbound when the
         // stdlib wins), and read_shadowing already asks it that way.
-        if (repl_) {
+        // A member body being spliced in was not written on a line: its
+        // unresolved names are the stdlib's.
+        if (repl_ && member_frames_.empty()) {
           // Inside a function the name is normally a free variable whose cell
           // the enclosing frame captured, which is what lets the body run on
           // another thread. A name declared only in a block or arm that did

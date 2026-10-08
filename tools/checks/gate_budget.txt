@@ -71,7 +71,9 @@
 # again, as a fn or a let, reads as whatever was written to it last).
 # 312 since test_value_same_name.cul (two @value classes of one name are each
 # laid out as their own declaration says).
-tests.cul 312
+# 313 since test_value_member_names.cul (a @value member compiled where it is
+# called reads its names where it was written).
+tests.cul 313
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

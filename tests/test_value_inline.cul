@@ -204,15 +204,15 @@ test_loop_member_declines_sibling_still_inlines = fn () {
 }
 test_loop_member_declines_sibling_still_inlines()
 
-test_shadowed_global_declines = fn () {
+test_shadowed_global_is_the_callers_alone = fn () {
   # `len()` reaches the stdlib `Math`. A caller that binds its own `Math`
-  # must not have the body silently resolve to it — the splice is refused,
-  # and the boxed call reaches the real one.
+  # must not have the body silently resolve to it: the body reads its names
+  # where it was written (tests/test_value_member_names.cul).
   let Math = 'not the namespace'
   assert_eq(V2.new(3.0, 4.0).len(), 5.0)
   assert_eq(Math, 'not the namespace')
 }
-test_shadowed_global_declines()
+test_shadowed_global_is_the_callers_alone()
 
 # ---- consumer-classified escapes: a run must never reach a consumer that
 # ---- expects a tagged Value, so these shapes decline and the boxed path

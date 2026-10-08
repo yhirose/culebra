@@ -1,0 +1,162 @@
+# A `@value` member's body is compiled where it is called, and still reads its
+# names where it was written: nothing the calling scope declares changes what
+# the body's own class, a namespace or a function means in it. (`Name.new(...)`
+# throughout, not `Name(...)`: it is the spelling that is laid out in slots.)
+
+# --- 1) the body's own class: the stdlib's `__mul__` builds the stdlib's
+#        `Vector2`, whatever the block it is called in declares under the name
+fn vmn_stdlib_own_class() {
+  let mut v = Vector2.new(1.0, 2.0)
+  if true {
+    @value
+    class Vector2 {
+      x: Float
+      y: Float
+      new(a: Float, b: Float) {
+        self.x = a * 100.0
+        self.y = b * 100.0
+      }
+    }
+    v *= 2.0
+  }
+  [v.x, v.y]
+}
+
+fn vmn_stdlib_own_class_narrower() {
+  let mut v = Vector2.new(1.0, 2.0)
+  if true {
+    @value
+    class Vector2 {
+      x: Float
+      new(a: Float, b: Float) {
+        self.x = a * 100.0
+      }
+    }
+    v *= 2.0
+  }
+  [v.x, v.y]
+}
+assert_eq(vmn_stdlib_own_class(), [2.0, 4.0])
+assert_eq(vmn_stdlib_own_class_narrower(), [2.0, 4.0])
+
+# --- 2) the same for a class of the program's: an operator, a method that
+#        returns its class, and one that builds a boxed instance of it
+fn vmn_program_own_class() {
+  @value
+  class VmnPair {
+    new(.x: Float, .y: Float) {}
+    __mul__(k) {
+      VmnPair.new(self.x * k, self.y * k)
+    }
+    twice() {
+      VmnPair.new(self.x * 2.0, self.y * 2.0)
+    }
+    boxed_sum() {
+      let held = [VmnPair.new(self.x, self.y)]
+      held[0].x + held[0].y
+    }
+  }
+  let mut v = VmnPair.new(1.0, 2.0)
+  let mut sums = []
+  if true {
+    @value
+    class VmnPair {
+      x: Float
+      y: Float
+      new(a: Float, b: Float) {
+        self.x = a * 100.0
+        self.y = b * 100.0
+      }
+    }
+    v *= 2.0
+    sums = [v.twice().y, v.boxed_sum()]
+  }
+  [v.x, v.y, sums]
+}
+assert_eq(vmn_program_own_class(), [2.0, 4.0, [8.0, 6.0]])
+
+# --- 3) a stdlib namespace: `length()` reads the stdlib's `Math` where the
+#        block has one of its own, which the block's own code still reads
+fn vmn_namespace_in_block() {
+  let v = Vector2.new(3.0, 4.0)
+  let mut got = []
+  if true {
+    let Math = {sqrt: |x| 99.0}
+    got = [v.length(), Math.sqrt(1.0)]
+  }
+  got
+}
+assert_eq(vmn_namespace_in_block(), [5.0, 99.0])
+
+# --- 4) and the other way round: a member reads the `Math` its function
+#        declares, called from a function that does not name it
+fn vmn_namespace_at_class() {
+  let Math = {sqrt: |x| 99.0}
+  @value
+  class VmnLen {
+    new(.x: Float, .y: Float) {}
+    len() {
+      Math.sqrt(self.x * self.x + self.y * self.y)
+    }
+  }
+  fn call() {
+    VmnLen.new(3.0, 4.0).len()
+  }
+  call()
+}
+assert_eq(vmn_namespace_at_class(), 99.0)
+
+# --- 5) a function a member calls on a value (UFCS) is the one its class
+#        sees: from a function that does not name it, and from a block with
+#        another of that name
+fn vmn_ufcs() {
+  fn vmn_twice(x) {
+    x * 2.0
+  }
+  @value
+  class VmnOne {
+    new(.x: Float) {}
+    doubled() {
+      let a = self.x
+      a.vmn_twice()
+    }
+  }
+  fn call() {
+    VmnOne.new(3.0).doubled()
+  }
+  let mut in_block = 0.0
+  if true {
+    let vmn_twice = |x| x * 100.0
+    in_block = VmnOne.new(3.0).doubled() + vmn_twice(1.0)
+  }
+  [call(), in_block]
+}
+assert_eq(vmn_ufcs(), [6.0, 106.0])
+
+# --- 6) `fn` in a member is the member's own handle, whichever function the
+#        call is in: one that reads no `fn`, one that reads its own, and a
+#        method of another class
+fn vmn_own_handle() {
+  @value
+  class VmnDown {
+    new(.x: Float) {}
+    down(n) {
+      n < 1.0 ? self.x : fn(n - 1.0) + 1.0
+    }
+  }
+  class VmnHost {
+    run(k) {
+      let _ = fn
+      k > 50.0 ? 2000.0 : VmnDown.new(3.0).down(100.0)
+    }
+  }
+  fn plain() {
+    VmnDown.new(3.0).down(2.0)
+  }
+  fn reading() {
+    let _ = fn
+    VmnDown.new(3.0).down(2.0)
+  }
+  [plain(), reading(), VmnHost.new().run(0.0)]
+}
+assert_eq(vmn_own_handle(), [5.0, 5.0, 103.0])

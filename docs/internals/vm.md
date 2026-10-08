@@ -742,12 +742,27 @@ and each declaration has its own fields and field types. Each member's body must
 (`inline_body_ok`): straight-line control flow, no nested `fn`/class literal,
 and — outside the constructor — no `self.x =` write, which on a boxed
 instance is the freeze's `ImmutableError`. And every name the body reads must
-mean, in the caller, what it meant in the callee: `self` and the class's own
-name resolve through a small per-inline record (`Compiler::inlines_`) rather
-than a `Binding`, and every other identifier is walked and must be a
-parameter, or a stdlib global or namespace the caller has not shadowed —
-`FuncInfo::free_vars` is not the set to ask, since a namespace is not a
-variable and never appears there.
+mean, where it lands, what it meant where it was written. A body with a free
+variable is refused: the variable is the program's (a `Math` of its own, a
+function a UFCS call names), and the landing site may not see it, or may see
+another one. So is a body that reads `fn`, the frame's own handle, which
+spliced would be the landing frame's. Otherwise every other identifier is
+walked and must be `self`, a parameter, a local of the body, the class's own
+name, or a stdlib global or namespace — the walk is needed because a
+namespace is not a variable and `FuncInfo::free_vars` never lists it.
+
+That check asks nothing of the landing site, because the splice does not
+read names there. While a body is spliced in — and while one is only being
+asked about — a per-member record is on top of `Compiler::member_frames_`, and
+every lookup by name (`lookup_name_mut`) answers through it: the scopes the
+splice itself opened (its parameters and locals), then the class under the
+name the body calls it by, found by its declaration
+(`Binding::Known::value_class`) rather than by spelling, and nothing else.
+`self` is the run the record points at. A name left unbound is therefore the
+stdlib's. So a block that declares its own `Vector2` or `Math` and then
+calls a stdlib `Vector2` method changes nothing in that method, and the
+question asked ahead (a whole-scope walk at a `let`) and the one asked at
+the splice cannot differ.
 
 The splice itself (`emit_inline_body`) reuses the ordinary statement
 compiler, `compile_statement`/`compile_expr`, inside a scope the caller pops
