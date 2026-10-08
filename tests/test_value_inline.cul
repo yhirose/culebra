@@ -541,4 +541,52 @@ test_declaration_reads_another_binding = fn () {
 }
 test_declaration_reads_another_binding()
 
+# ---- a member reaching another through `self`: `self` is the run, so the
+# ---- member it calls is spliced onto it like a step of any other chain.
+@value
+class SelfCalls {
+  new(.x: Float, .y: Float) {}
+  sq() {
+    self.x * self.x + self.y * self.y
+  }
+  scale(k) {
+    SelfCalls.new(self.x * k, self.y * k)
+  }
+  len() {
+    Math.sqrt(self.sq())
+  }
+  scaled_sq() {
+    self.scale(10.0).sq()
+  }
+  through_argument(k) {
+    self.scale(self.sq() * k).x
+  }
+  through_locals() {
+    let s = self.sq()
+    let t = self.scale(2.0).sq()
+    s + t
+  }
+  typed(k: Float) {
+    self.scale(k).len()
+  }
+}
+
+test_member_calls_member_through_self = fn () {
+  assert_eq(SelfCalls.new(3.0, 4.0).len(), 5.0)
+  assert_eq(SelfCalls.new(3.0, 4.0).scaled_sq(), 2500.0)
+  assert_eq(SelfCalls.new(3.0, 4.0).through_argument(1.0), 75.0)
+  assert_eq(SelfCalls.new(3.0, 4.0).through_locals(), 125.0)
+  let mut v = SelfCalls.new(1.5, 2.0)
+  v = v.scale(2.0)
+  assert_eq(v.len() + v.scaled_sq(), 5.0 + 2500.0)
+  # A parameter's annotation is still checked where the member is reached.
+  let msg = try {
+    SelfCalls.new(3.0, 4.0).typed('two')
+  } catch e {
+    e.message
+  }
+  assert_eq(msg, "type error: parameter 'k' expects Float")
+}
+test_member_calls_member_through_self()
+
 inspect('value-inline OK')

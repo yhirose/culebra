@@ -1000,9 +1000,10 @@ Once a declaration passes, `Binding` itself carries the answer
 (`unboxed_layout`/`unboxed_class`, set once and never revoked): a plain
 identifier read (`compile_expr`'s `IDENTIFIER` case) returns the run
 directly, the same unconditional way `self` does inside an inline frame;
-`v.<field>`/`v.<method>(...)` splices through `try_inline_value_binding_chain`,
-structurally identical to `self`'s own chain (`chain_stays_unboxed` from
-index 1); and a reassignment (`compile_assignment`) or compound step
+`v.<field>`/`v.<method>(...)` splices through `try_inline_name_chain`,
+the one path `self`'s own chain takes too (`self.len()` inside a member:
+both names are a run already, `name_run`, and `chain_stays_unboxed` is asked
+from index 1); and a reassignment (`compile_assignment`) or compound step
 (`compile_compound_assign`) compiles its RHS through the same
 fold/negation/chain machinery §5.3.2 already has
 (`compile_unboxed_value_expr`, `try_inline_operator`), then copies the

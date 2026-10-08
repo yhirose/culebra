@@ -985,9 +985,10 @@ bindingの出現を区別できないからで、shadowが却下されるのと�
 （`unboxed_layout`/`unboxed_class`。一度立てたら二度と取り消されない）:
 裸の識別子読み（`compile_expr`の`IDENTIFIER`case）はrunをそのまま
 返す——inlineフレーム内で`self`がそうするのと同じ無条件のやり方で。
-`v.<field>`/`v.<method>(...)`は`try_inline_value_binding_chain`を通じて
-spliceされ、これは`self`自身の連鎖（`chain_stays_unboxed`をindex 1
-から）と構造的に同一である。再代入（`compile_assignment`）と複合
+`v.<field>`/`v.<method>(...)`は`try_inline_name_chain`を通じて
+spliceされ、`self`自身の連鎖（メンバの中の`self.len()`）も同じ1本の経路を
+通る（どちらの名前も既にrunであり（`name_run`）、`chain_stays_unboxed`を
+index 1から問う）。再代入（`compile_assignment`）と複合
 ステップ（`compile_compound_assign`）はRHSを§5.3.2が既に持つのと
 同じfold・否定・連鎖の機構でコンパイルし
 （`compile_unboxed_value_expr`、`try_inline_operator`）、その結果の

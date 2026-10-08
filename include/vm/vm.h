@@ -11000,7 +11000,7 @@ class Compiler {
   // instead of `self`/a class's own name: whether every occurrence of
   // `name` in `node` is a shape this splice mechanism already knows how to
   // keep unboxed — a `name.<field>` / `name.<method>(...)` read chain
-  // (try_inline_value_binding_chain compiles it), a fold/negation-headed
+  // (try_inline_name_chain compiles it), a fold/negation-headed
   // postfix chain ending in a scalar (`(name + g).len()`,
   // try_inline_fold_chain compiles it), a write `name = <eligible rhs>`
   // (value_write_ok, above), or a compound step `name op= e` (the
@@ -11032,7 +11032,7 @@ class Compiler {
     if (node.original_tag == "DOT"_ || node.original_tag == "SAFE_DOT"_)
       return true;  // a member name, not a value reference
     // A postfix chain whose head is already an unboxed run — `name` itself
-    // (`name.x`, `name.len()`, try_inline_value_binding_chain's consumer), or
+    // (`name.x`, `name.len()`, try_inline_name_chain's consumer), or
     // a fold/negation over it (`(name + g).len()`, `(-name).x`,
     // try_inline_fold_chain's). Either way chain_stays_unboxed with
     // allow_trailing_class=false is the same condition the lookahead
@@ -12421,29 +12421,44 @@ class Compiler {
     return splice_trailing_chain(cur, ast, 1, *cls, class_name, layout);
   }
 
-  // compile_call's upfront lookahead for a chain rooted at a `let mut`
-  // local the whole-scope walk already proved unboxed — `v.x`, `v.len()` —
-  // mirroring try_inline_value_chain's role for a `C.new(...)` head, and
-  // structurally identical to how `self` reads its own chain
-  // (chain_stays_unboxed from index 1): the local IS the run already, in
-  // its own home slots, so there is nothing to construct, only steps to
-  // splice onto it.
-  std::optional<ExprResult> try_inline_value_binding_chain(const peg::Ast& ast) {
+  // The run a name already is, in its own slots: `self` in a body being
+  // spliced in, or a binding that holds one (Binding::unboxed_class: a
+  // local the whole-scope walk proved unboxed, a spliced parameter bound to
+  // a run). nullopt for every other name.
+  std::optional<ExprResult> name_run(const peg::Ast& name) {
+    if (name.token == "self" && !member_frames_.empty()) {
+      const auto& f = member_frames_.back();
+      assert(lookahead_ == 0 && f.base >= 0 &&
+             "a frame pushed only to ask about a body has no run to hand out");
+      return ExprResult{f.base, /*owned=*/false, -1, f.layout, f.class_ast};
+    }
+    const Binding* b = lookup_at(name);
+    if (!b || !b->unboxed_class) return std::nullopt;
+    return ExprResult{b->slot, /*owned=*/false, -1, b->unboxed_layout,
+                      b->unboxed_class};
+  }
+
+  // compile_call's upfront lookahead for a chain rooted at a name that is
+  // already a run (name_run) — `v.x`, `v.len()`, and inside a member
+  // `self.len()` — mirroring try_inline_value_chain's role for a
+  // `C.new(...)` head: there is nothing to construct, only steps to splice
+  // onto it. The two walks that let such a chain through
+  // (receiver_refs_stay_unboxed for `self`, value_ref_ok for a local) asked
+  // chain_stays_unboxed the same question from the same index.
+  std::optional<ExprResult> try_inline_name_chain(const peg::Ast& ast) {
     using namespace peg::udl;
     if (ast.nodes.size() < 2 || ast.nodes[0]->tag != "IDENTIFIER"_)
       return std::nullopt;
-    const Binding* b = lookup_at(*ast.nodes[0]);
-    if (!b || !b->unboxed_class) return std::nullopt;
-    const peg::Ast& cls = *b->unboxed_class;
+    auto head = name_run(*ast.nodes[0]);
+    if (!head) return std::nullopt;
+    const peg::Ast& cls = *head->unboxed_class;
     size_t dec_end = culebra::first_non_decorator_index(cls);
     auto class_name = culebra::parse_generic_head(cls.nodes[dec_end]->token).outer;
-    if (!chain_stays_unboxed(ast, 1, cls, class_name, b->unboxed_layout,
+    if (!chain_stays_unboxed(ast, 1, cls, class_name, head->unboxed,
                              /*allow_trailing_class=*/false))
       return std::nullopt;
-    ExprResult head{b->slot, /*owned=*/false, -1, b->unboxed_layout,
-                    b->unboxed_class};
-    return splice_trailing_chain(head, ast, 1, cls, class_name,
-                                 b->unboxed_layout);
+    return splice_trailing_chain(*head, ast, 1, cls, class_name,
+                                 head->unboxed);
   }
 
   // Postfix chain: `f(x)`, `a[i]`, `a?[i]`, `x.p`, `x.m(...)`, `x?.m(...)`,
@@ -12485,12 +12500,11 @@ class Compiler {
     // a fold/negation is allowed to end its own compile still unboxed; see
     // try_inline_fold_chain's own comment.
     if (auto r = try_inline_fold_chain(ast)) return *r;
-    // A chain rooted at a `let mut` local the whole-scope walk already
-    // proved unboxed for this local's entire scope — `v.x`, `v.len()` —
-    // same reasoning again, this time for a head that is neither a fresh
-    // construction nor a fold but a binding already sitting in its own
-    // home slots.
-    if (auto r = try_inline_value_binding_chain(ast)) return *r;
+    // A chain rooted at a name that is already a run (name_run): `v.x`,
+    // `v.len()`, a member's own `self.len()`. Same reasoning again, this
+    // time for a head that is neither a fresh construction nor a fold but
+    // a run already sitting in its own slots.
+    if (auto r = try_inline_name_chain(ast)) return *r;
     // A head the call can read out of its cell when it runs, rather than
     // copying into a register first (borrowed_call_head). `res.slot` is then
     // the CELL's slot, which only the Call the next loop turn emits knows how
