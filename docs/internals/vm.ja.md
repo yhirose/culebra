@@ -1651,11 +1651,18 @@ loweringされたプログラムに対してホスト側に登録されるもの
 `--jit-faststart`はIRパイプラインを飛ばしバックエンドの高速パス
 を使い（`JIT::apply_fast_codegen`。2つのレベルは一緒に動く）、
 `CULEBRA_JIT_CACHE`は`JIT::jit_module_name`（ソースとオプション）
-でキーづけられたobject cacheを有効にする。この2つは代替関係に
-ない: cacheはIR→objectのcompile layerに載るので、ヒットすれば
-バックエンドは飛ぶが`JIT::optimize_module`は飛ばない — それは
-`run_program`がその手前で既に走らせている。つまり`-O2`は温まった
-cacheでもIRパイプラインを毎回まるごと払う。そしてどちらも`--jit`の
+でキーづけられたobject cacheを有効にする。キーはIRではなくソース
+なので、ヒットはIRパイプラインとバックエンドの両方を通った後の
+モジュールを表す: `run_program`はloweringの後で
+`JIT::cached_object`に尋ね、ヒットすればどちらも走らせない —
+`JIT::exec`は保存されたobjectをリンクし、モジュールは読まずに
+捨てる。objectはcompile layer自身の検索に任せず先に読む。間で
+エントリが追い出されると、パイプラインを通っていないモジュールを
+バックエンドがコンパイルし、それをそのキーで保存してしまうからで
+ある。ミスはパイプラインとcompile layerを通り、compile layerは
+objectを名前の隣に書いてからrenameで置く。
+`tests/jit_cache_test.sh`が、ヒットした実行がcold startの実行と
+同じであることを保っている。そしてどちらもcoldな`--jit`の
 起動が安い理由ではない: プログラムが名前で呼ぶstdlibモジュールも、
 どのプログラムも登録する組み込みtraitも、そもそもモジュールの中に
 無い（§2、焼き込みpreamble）ので、loweringされるのはユーザーの
@@ -1672,6 +1679,8 @@ loweringするIRは6,167行ではなく758行、起動は82msではなく7msに�
 起動の残りが何に使われているかは`CULEBRA_JIT_TIME_PASSES`で読める:
 4つのフェーズ（lower・optimize・codegen・run）と、IRパイプラインと
 バックエンドそれぞれについてのLLVM自身のパス別レポートである。
+cacheにヒットしたときは2つ目のフェーズが`cached`（objectの読み込み）
+になり、`codegen`はそのリンクである。
 `tests/`のどのファイルでも実行は数msで、残りの大きい方の半分は
 バックエンドにある。フラットなスクリプト — 1つの関数で、トップ
 レベルのスロットとthread-stateポインタがその全体にわたって生きて

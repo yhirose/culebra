@@ -86,12 +86,20 @@ struct Lowering {
     auto phase_t = std::chrono::steady_clock::now();
     lower_program(jit, p, "__culebra_main", baked);
     JIT::time_phase("lower", phase_t);
-    if (opt_level > 0) JIT::optimize_module(*mod, opt_level);
-    JIT::time_phase("optimize", phase_t);
+    // A cache hit is this module already optimized and compiled, so neither
+    // happens again; --emit-llvm prints the pipeline's output and takes none.
+    auto cached = emit_llvm ? nullptr : JIT::cached_object(*mod);
+    if (cached) {
+      JIT::time_phase("cached", phase_t);
+    } else {
+      if (opt_level > 0) JIT::optimize_module(*mod, opt_level);
+      JIT::time_phase("optimize", phase_t);
+    }
     if (emit_llvm) {
       mod->print(outs(), nullptr);
     } else {
-      JIT::exec(std::move(ctx), std::move(mod), fast_codegen);
+      JIT::exec(std::move(ctx), std::move(mod), fast_codegen,
+                std::move(cached));
     }
   }
 

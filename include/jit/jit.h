@@ -30,6 +30,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/Process.h"  // the object cache's temporary file names
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/xxhash.h"
 #include "llvm/TargetParser/Host.h"
@@ -701,14 +702,20 @@ struct JIT {
       if (const char* mb = std::getenv("CULEBRA_JIT_CACHE_MAX_MB"))
         max_bytes_ = std::strtoull(mb, nullptr, 10) * 1024 * 1024;
     }
+    // Written beside its name and renamed onto it: a second process running
+    // the same program reads the entry whole or not at all.
     void notifyObjectCompiled(const llvm::Module* m,
                               llvm::MemoryBufferRef obj) override {
       auto p = path_for(m);
       if (p.empty()) return;
-      std::ofstream out(p, std::ios::binary);
+      auto tmp = p + "." + std::to_string(llvm::sys::Process::getProcessId());
+      std::ofstream out(tmp, std::ios::binary);
       out.write(obj.getBufferStart(),
                 static_cast<std::streamsize>(obj.getBufferSize()));
       out.close();
+      std::error_code ec;
+      if (out) std::filesystem::rename(tmp, p, ec);
+      if (!out || ec) std::filesystem::remove(tmp, ec);
       evict_if_over_cap();
     }
     std::unique_ptr<llvm::MemoryBuffer> getObject(
@@ -773,6 +780,29 @@ struct JIT {
       return std::string(dir.str());
     }
     return std::string(env);
+  }
+
+  // The process's object cache, or null when CULEBRA_JIT_CACHE leaves it off.
+  static FileObjectCache* object_cache() {
+    static const std::unique_ptr<FileObjectCache> cache =
+        []() -> std::unique_ptr<FileObjectCache> {
+      auto dir = jit_cache_dir();
+      if (!dir) return nullptr;
+      return std::make_unique<FileObjectCache>(*dir);
+    }();
+    return cache.get();
+  }
+
+  // The object an earlier run compiled this module to, or null. The key is
+  // the program's source, so a hit stands for the lowered module after the
+  // IR pipeline and the backend both: `exec` links it in place of running
+  // either. Read here, whole, rather than left for the compile layer to find
+  // — an entry evicted in between would have the backend compile a module
+  // the pipeline never saw, and store that under the key.
+  static std::unique_ptr<llvm::MemoryBuffer> cached_object(
+      const llvm::Module& m) {
+    auto* cache = object_cache();
+    return cache ? cache->getObject(&m) : nullptr;
   }
 
   // A salt uniquely identifying this binary's codegen ABI, computed once.
@@ -863,17 +893,15 @@ struct JIT {
     // requested, so backend output can be reused across runs. The opt
     // level is applied here too (instead of the separate JTMB path) to
     // keep a single place that configures codegen.
-    auto cache_dir = jit_cache_dir();
-    if (cache_dir) {
-      static FileObjectCache cache{*cache_dir};
+    if (auto* cache = object_cache()) {
       lb.setCompileFunctionCreator(
-          [fast_codegen](orc::JITTargetMachineBuilder jtmb)
+          [fast_codegen, cache](orc::JITTargetMachineBuilder jtmb)
               -> Expected<std::unique_ptr<orc::IRCompileLayer::IRCompiler>> {
             if (fast_codegen) apply_fast_codegen(jtmb);
             auto tm = jtmb.createTargetMachine();
             if (!tm) return tm.takeError();
             return std::make_unique<orc::TMOwningSimpleCompiler>(
-                std::move(*tm), &cache);
+                std::move(*tm), cache);
           });
     } else if (fast_codegen) {
       auto jtmb = cantFail(orc::JITTargetMachineBuilder::detectHost());
@@ -5797,9 +5825,12 @@ struct JIT {
 
   // --- Execution ---
 
+  // `cached` is the module's object from an earlier run (cached_object):
+  // given one, it is linked and the module is dropped unread.
   static void exec(std::unique_ptr<llvm::LLVMContext> ctx,
                    std::unique_ptr<llvm::Module> mod,
-                   bool fast_codegen = false) {
+                   bool fast_codegen = false,
+                   std::unique_ptr<llvm::MemoryBuffer> cached = nullptr) {
     using namespace llvm;
     auto phase_t = std::chrono::steady_clock::now();
     auto jit = create_jit_instance(fast_codegen);
@@ -5817,12 +5848,18 @@ struct JIT {
         fswatch::fs_watch_close_all();
       }
     } script_teardown_guard;
-    orc::ThreadSafeContext tsctx(std::move(ctx));
-    // The backend's passes run under ORC's legacy pass manager, which reads
-    // this global at construction; the report prints once codegen is done.
-    if (time_passes()) TimePassesIsEnabled = true;
-    cantFail(jit->addIRModule(
-        orc::ThreadSafeModule(std::move(mod), std::move(tsctx))));
+    if (cached) {
+      mod.reset();
+      ctx.reset();
+      cantFail(jit->addObjectFile(std::move(cached)));
+    } else {
+      orc::ThreadSafeContext tsctx(std::move(ctx));
+      // The backend's passes run under ORC's legacy pass manager, which reads
+      // this global at construction; the report prints once codegen is done.
+      if (time_passes()) TimePassesIsEnabled = true;
+      cantFail(jit->addIRModule(
+          orc::ThreadSafeModule(std::move(mod), std::move(tsctx))));
+    }
 
     auto mainFn =
         cantFail(jit->lookup("__culebra_main")).toPtr<void (*)()>();

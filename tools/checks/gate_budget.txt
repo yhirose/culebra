@@ -93,7 +93,8 @@ vm_cases 187
 
 # ctest entries. The shell-driven ones also make up the landing gate's CLI
 # phase (tools/checks/ctest_shell_driven.py names them).
-ctest.entries 34
+# 35 since jit_cache_test (a JIT cache hit is the run a cold start gives).
+ctest.entries 35
 
 # ```culebra blocks under docs/ — `just doctest` runs the runnable ones on both
 # engines, and the JIT lane costs one LLVM module per block.

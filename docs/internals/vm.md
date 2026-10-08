@@ -1698,11 +1698,17 @@ what makes the same lowering valid for an object file.
 `--jit-faststart` skips the IR pipeline and takes the backend's fast
 paths (`JIT::apply_fast_codegen`; the two levels move together), and
 `CULEBRA_JIT_CACHE` enables an object cache keyed by
-`JIT::jit_module_name` (sources, options). The two are not
-interchangeable: the cache is installed on the IR→object compile layer,
-so a hit skips the backend but never `JIT::optimize_module`, which
-`run_program` has already run by then — a warm `-O2` launch still pays
-the whole IR pipeline. Neither is what makes a `--jit` start-up cheap:
+`JIT::jit_module_name` (sources, options). The key is the source, not
+the IR, so a hit stands for the module after the IR pipeline and the
+backend both: `run_program` asks `JIT::cached_object` once the module is
+lowered, and on a hit runs neither — `JIT::exec` links the stored object
+and drops the module unread. The object is read up front rather than
+left for the compile layer's own lookup, so that an entry evicted in
+between cannot leave the backend compiling a module the pipeline never
+saw and storing that under the key. A miss goes through the pipeline and
+the compile layer, which stores the object beside its name and renames
+it into place. `tests/jit_cache_test.sh` holds a hit to the run a cold
+start gives. Neither is what makes a cold `--jit` start-up cheap:
 the stdlib modules a program names, and the built-in traits every
 program registers, are not in the module at all (§2, the baked
 preamble), so what gets lowered is the user's code. That is most of the
@@ -1717,7 +1723,9 @@ built binary pulls the archive member.
 
 What the rest of a start-up costs is read with `CULEBRA_JIT_TIME_PASSES`:
 the four phases (lower, optimize, codegen, run) and LLVM's own per-pass
-report for the IR pipeline and the backend. Execution is a few
+report for the IR pipeline and the backend. On a cache hit the second
+phase reads `cached` — the object's load — and `codegen` is its link.
+Execution is a few
 milliseconds on any file of `tests/`; the backend is the larger half of
 the rest, and a flat script — one function, its top-level slots and the
 thread-state pointer live across all of it — used to spend most of that

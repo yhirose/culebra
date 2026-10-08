@@ -2270,6 +2270,13 @@ add_test(NAME io_stdin_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/io_stdin_test.sh
                  $<TARGET_FILE:culebra>)
 
+# CULEBRA_JIT_CACHE: a hit links the stored object in place of the IR pipeline
+# and the backend, and is the run a cold start gives (the same file twice
+# against one cache directory, which a .cul sweep test has no way to do).
+add_test(NAME jit_cache_test
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/jit_cache_test.sh
+                 $<TARGET_FILE:culebra>)
+
 # examples/languages/pl0/pl0_codegen.cul against examples/languages/pl0/pl0.cul — two independent
 # implementations of PL/0, each the other's oracle — across interp / JIT / AOT
 # (needs `culebra build` for the AOT leg, and a stdin pipe for read.pas, so a
