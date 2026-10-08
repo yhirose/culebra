@@ -1,0 +1,62 @@
+# What a closure costs in refcounted objects: itself, and a cell for each
+# variable it captures. The same on every lane: the executor used to keep
+# one object more per closure, a cell naming the chunk to run, and
+# `GC.stat().rc_objects` read that much higher there.
+
+fn coc_cost(make) {
+  let before = GC.stat().rc_objects
+  let _kept = make()
+  GC.stat().rc_objects - before
+}
+
+fn coc_plain() {
+  fn () {
+    1
+  }
+}
+
+fn coc_counter() {
+  mut n = 0
+  fn () {
+    n += 1
+    n
+  }
+}
+
+fn coc_pair() {
+  mut a = 0
+  mut b = 0
+  fn () {
+    a += 1
+    b += a
+    b
+  }
+}
+
+fn coc_ten() {
+  mut fs = []
+  for i in 0..10 {
+    fs.push(fn () {
+      i
+    })
+  }
+  fs
+}
+
+# Once unmeasured: the first call of each pays what only a first call does.
+coc_cost(coc_plain)
+coc_cost(coc_counter)
+coc_cost(coc_pair)
+coc_cost(coc_ten)
+
+# --- 1) nothing captured: the closure alone
+assert_eq(coc_cost(coc_plain), 1)
+
+# --- 2) one variable: the closure and the variable's cell
+assert_eq(coc_cost(coc_counter), 2)
+
+# --- 3) two variables: a cell apiece
+assert_eq(coc_cost(coc_pair), 3)
+
+# --- 4) ten closures in an Array, each with its own `i`
+assert_eq(coc_cost(coc_ten), 21)

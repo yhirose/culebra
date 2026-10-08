@@ -65,7 +65,9 @@
 # path a drop fires on), test_gc_swept_cycle_edges.cul (a swept cycle gives
 # back the counts it held on what survives) and test_drop_exit_tables.cul (no
 # drop body runs after the program has ended; a worker's still do).
-tests.cul 309
+# 310 since test_closure_object_count.cul (a closure costs the same refcounted
+# objects on every engine: itself and a cell per captured variable).
+tests.cul 310
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

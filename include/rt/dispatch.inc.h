@@ -517,12 +517,10 @@ inline const char* _jit_first_mut_capture_of(JitClosure* c) {
   return m && m->n_mut_captures > 0 ? m->mut_capture_names[0] : nullptr;
 }
 
-// The same seam for the other kind of shared entry point: every native stdlib
-// closure runs through one trampoline, so its signature cannot key the per-fn
-// table either. stdlib_rt.h installs this — it owns the derivation from the
-// canonical interp parameter list, which is where a native's signature lives.
-// Kept separate from the hook above because both can be installed at once (a
-// VM run reaches native closures too).
+// Every native stdlib closure runs through one trampoline, so its signature
+// cannot key a per-fn table. stdlib_rt.h installs this — it owns the
+// derivation from the canonical parameter list, which is where a native's
+// signature lives.
 inline const JitParamMeta* (*_jit_native_meta_hook)(JitClosure*) = nullptr;
 
 // The parameter metadata a closure presents: its own, or — for a native
@@ -532,13 +530,6 @@ inline const JitParamMeta* _jit_presented_meta(JitClosure* c) {
   if (c->meta) return c->meta;
   return _jit_native_meta_hook ? _jit_native_meta_hook(c) : nullptr;
 }
-
-// The other half of the same seam: which capture cell carries the chunk a
-// closure runs, for the one place that has to REBUILD a closure from what it
-// recorded rather than call the one it was handed — the lazy-namespace
-// builder registry, whose entries outlive the closure they came from. Null
-// for anything but a VM-executor closure (a distinct fn_ptr is enough there).
-inline JitCell* (*_jit_closure_desc_hook)(JitClosure*) = nullptr;
 
 // Hook for stdlib namespace methods (FS/Proc/...). All such methods share
 // one trampoline fn_ptr, so they can't key the per-fn JitParamMeta table;
@@ -1082,8 +1073,8 @@ inline bool _jit_is_multifn_dispatcher(JitClosure* c) {
 
 // A dispatcher's record, reached from the closure rather than through
 // _jit_multifn_dispatchers — the executor's own idiom for closure-borne
-// metadata (Exec::desc_for_closure puts a VmFnDesc* in captures[0] the same
-// way, and discriminates by fn_ptr the same way). The map owns the record,
+// metadata (Exec::desc_of reads a VmFnDesc off the closure the same way,
+// and discriminates by fn_ptr the same way). The map owns the record,
 // and _jit_multifn_forget nils this cell before the record dies, so a
 // dispatcher mid-teardown answers null rather than a dangling pointer.
 inline JitMultifnDispatcher* _jit_dispatcher_record(JitClosure* c) {

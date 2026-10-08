@@ -11558,17 +11558,11 @@ inline std::mutex& _lazy_ns_builder_mutex() {
   static std::mutex m;
   return m;
 }
-// The builder's code, plus — on a lane whose closures share one fn_ptr — the
-// chunk descriptor to run (the payload of capture 0, see
-// _jit_closure_desc_hook). It is the descriptor value and not the cell
-// carrying it: cells belong to the Runtime that allocated them, and every
-// isolate rebuilds this builder on its own. Zero `desc` is the AST-JIT/AOT
-// case, where the fn_ptr says everything.
+// Everything the closure constructor takes, so the rebuild produces the same
+// closure rather than one that merely runs the same code. On a lane whose
+// closures share one fn_ptr the meta is also what names the chunk to run.
 struct _LazyNsBuilder {
   void* fn_ptr = nullptr;
-  int64_t desc = 0;
-  // Everything else the closure constructor takes, so the rebuild produces
-  // the same closure rather than one that merely runs the same code.
   uint64_t flags = 0;
   const JitParamMeta* meta = nullptr;
 };
@@ -11577,11 +11571,11 @@ inline _NameMap<_LazyNsBuilder>& _lazy_ns_builders() {
   return r;
 }
 inline void _lazy_ns_register_builder(const std::string& name, void* fn_ptr,
-                                      int64_t desc, uint64_t flags,
+                                      uint64_t flags,
                                       const JitParamMeta* meta) {
   std::lock_guard<std::mutex> lk(_lazy_ns_builder_mutex());
-  _lazy_ns_builders().insert_or_assign(
-      name, _LazyNsBuilder{fn_ptr, desc, flags, meta});
+  _lazy_ns_builders().insert_or_assign(name,
+                                       _LazyNsBuilder{fn_ptr, flags, meta});
 }
 inline _LazyNsBuilder _lazy_ns_builder(std::string_view name) {
   std::lock_guard<std::mutex> lk(_lazy_ns_builder_mutex());
@@ -11615,12 +11609,8 @@ inline JitObject* _jit_namespace_get_or_build(std::string_view name) {
   // is the module Object (refcount 1); the table + pin hold that single ref for
   // the Runtime's lifetime, same discipline as the native path below.
   if (auto bd = _lazy_ns_builder(name); bd.fn_ptr) {
-    // One capture where the lane needs the chunk named (the VM executor's
-    // descriptor, in a cell of this Runtime's own), none where the fn_ptr is
-    // the whole answer.
-    auto* cls = culebra_runtime_closure_new(bd.fn_ptr, bd.desc ? 1 : 0,
+    auto* cls = culebra_runtime_closure_new(bd.fn_ptr, /*n_captures=*/0,
                                             /*arity=*/0, bd.flags, bd.meta);
-    if (bd.desc) cls->captures[0] = culebra_runtime_cell_new(TAG_LONG, bd.desc);
     JitValue r = _culebra_invoke0(cls);
     culebra_runtime_value_release(TAG_FUNC, reinterpret_cast<int64_t>(cls));
     if (r.tag != TAG_OBJECT) {
@@ -11747,10 +11737,6 @@ culebra_runtime_lazy_ns_register(const char* name, int8_t builder_tag,
                                   int64_t builder_data) {
   if (builder_tag != TAG_FUNC) return;  // splice only ever passes a closure
   auto* c = reinterpret_cast<JitClosure*>(builder_data);
-  // A lane whose closures share one fn_ptr keeps the chunk in capture 0, so
-  // that one does not count against the captureless rule below.
-  JitCell* desc = _jit_closure_desc_hook ? _jit_closure_desc_hook(c) : nullptr;
-  size_t n_own = c->n_captures - (desc ? 1 : 0);
   // A module builder closes over nothing (it references only builtins +
   // its own locals), so the per-Runtime rebuild uses 0 captures. A non-zero
   // count means the builder body accidentally referenced an entry-module
@@ -11759,17 +11745,16 @@ culebra_runtime_lazy_ns_register(const char* name, int8_t builder_tag,
   // see the dynamic-perform cycle notes); the rebuilt closure would then read
   // a capture cell that was never populated, a release-silent null deref.
   // Fail loudly here instead, at the point the mistake was made.
-  if (n_own != 0) {
+  if (c->n_captures != 0) {
     throw culebra::CulebraError(
         "InternalError",
         culebra::format("lazy-ns builder '{}' must be captureless (has {} "
                         "capture(s)) — a call-form method name in its body "
                         "likely collides with a user global fn",
-                        name ? name : "?", n_own),
+                        name ? name : "?", c->n_captures),
         0, 0);
   }
-  _lazy_ns_register_builder(name ? name : "", c->fn_ptr,
-                            desc ? desc->value.data : 0, c->flags, c->meta);
+  _lazy_ns_register_builder(name ? name : "", c->fn_ptr, c->flags, c->meta);
 }
 
 // Cold arm of jit.h's emit_reject_bare_builtin_method. The codegen filter

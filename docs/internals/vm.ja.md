@@ -210,8 +210,8 @@ VMが必要とするヒープオブジェクトはランタイムの既存のも
   参照とREPLセッション束縛の表現でもある（§4.2、§8.1）。
 - `JitClosure` — `fn_ptr` + `JitCell*`のcapture配列 + arity。
   executorが構築するクロージャは`fn_ptr`にVM trampolineを持ち、
-  `captures[0]`に自分のchunk descriptorを持つ。loweringが構築する
-  クロージャはそこにネイティブ関数を持つ。どちらも同じ*JitFn ABI*
+  自分のchunkをパラメータのメタデータ経由で名指す（§6.1）。loweringが
+  構築するクロージャはそこにネイティブ関数を持つ。どちらも同じ*JitFn ABI*
   で呼ばれる: `void (JitValue* ret, JitClosure*, int8_t self_tag,
   int64_t self_data, int64_t n_args, JitValue* args)`。
 - `Shape`付き`JitObject` — V8スタイルのhidden classと固定slot、
@@ -1416,8 +1416,7 @@ C++スタック上にあるのはコレクタのためである: 保守的スキ
 ウィンドウも要らず、throwはC++のフレームを越えずにculebraのフレームを
 越え、再帰の上限は機械スタックの許す量ではなく言語が定めた値になる。
 `VmStack`はヒープ上のメモリで機械スタックのスキャンは歩かないので、
-`Exec::prepare`がdescriptorのフックと並べて`vm_stack_roots`を
-インストールする: コレクタはスタックをフレームごとに歩き（記録が自分の
+`Exec::prepare`が`vm_stack_roots`をインストールする: コレクタはスタックをフレームごとに歩き（記録が自分の
 ブロックの長さを持つ）、各レジスタのpayloadをrootの候補として取る。
 機械スタックのスキャンと同じ規則であり、タグでは絞らない — cellスロットの
 `JitCell`やfor-inカーソルのクロージャは、中身と無関係なタグで載っている
@@ -1433,13 +1432,15 @@ C++スタック上にあるのはコレクタのためである: 保守的スキ
 ### 6.1 クロージャとtrampoline
 
 executorのクロージャは本物の`JitClosure`であり、`fn_ptr`は
-`Exec::trampoline`である。その`captures[0]`は`VmFnDesc`
-（`{program, chunk}`）を保持するcellであり、本物のcaptureはその
-後に続く。ネイティブコードはVM関数をloweringされた関数と全く同じ
-方法で呼び、より多くを知る必要があるランタイムのヘルパー — キーワード
-解決器（`_jit_closure_meta_hook`）、遅延名前空間の再構築器、
-`mut`捕獲の検査 — は`Exec::prepare`がインストールするフック経由で
-descriptorを読む。
+`Exec::trampoline`である。executorのクロージャは全部この1つの番地を
+共有するので、どのchunkを解釈するかを言うのはクロージャの`meta`である。
+キーワード解決器が読むパラメータのメタデータは`VmChunkRef`の先頭
+メンバで、その後ろに`VmFnDesc`（`{program, chunk}`）がある。ネイティブ
+コードはVM関数をloweringされた関数と全く同じ方法で呼ぶ。クロージャを
+部品から組み直す側（isolateの受け取り側、遅延名前空間のレジストリ）は
+もともと`fn_ptr`・フラグ・`meta`を写していて、それで全部である。
+captureは本体自身のものだけで、loweringされたクロージャと同じ配列に
+なる。
 
 そのクロージャが何であるかを知るのに、フックも第二の入口も要らない。
 getter本体であることも構築子thunkであることもchunkの性質なので、
@@ -1457,12 +1458,15 @@ chunkは`fn_ptr`が1つしかなく、番地では2種類のchunkを区別でき
 しまう。クロージャ自身が持てば答えは値と一緒にisolate境界も越える。
 受け取り側の`Runtime`にある表では、そこまでは追えない。
 
-descriptor cellはクロージャに属し、`MakeClosure`ごとに1つである。
-chunkのすべてのクロージャで1つのcellを共有する方式も試されたが
-誤りであった: 1つのプログラムのクロージャは複数のisolateで同時に
-実行されることがあり、`JitCell`の参照カウントは単なる`int64_t`
-である — なぜならランタイムは`Runtime`ごとにシングルスレッドだから
-である。クロージャ間で何も共有しないことがこの不変条件を保つ。
+descriptorは以前`captures[0]`のcellに載っていて、`MakeClosure`ごとに
+1つあった（chunkのすべてのクロージャで1つのcellを共有するのは誤り:
+1つのプログラムのクロージャは複数のisolateで同時に実行されることが
+あり、`JitCell`の参照カウントは単なる`int64_t`である）。そのcellは
+loweringのレーンには無いオブジェクトだったので、executorでは
+`GC.stat().rc_objects`が生きているクロージャ1つにつき1多かった。
+descriptorは不変でプログラムのものなので、クロージャごとのカウントも
+持ち主も要らない。いまは両レーンがクロージャに同じオブジェクトを確保し、
+refcountレーンのdifftestの許可リストは空である。
 
 ### 6.2 throw
 

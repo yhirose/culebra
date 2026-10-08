@@ -4339,7 +4339,6 @@ struct Lowering {
           b.CreateStore(j.make_nil(), slots[in.a]);
           break;
         case Op::BindCapture: {
-          // Lowered closures carry no descriptor: captures[b] directly.
           auto capsFieldPtr =
               b.CreateStructGEP(j.closureType_, clsArg, 3, "caps.ptr");
           auto capsArr = b.CreateLoad(ptrTy, capsFieldPtr, "caps");

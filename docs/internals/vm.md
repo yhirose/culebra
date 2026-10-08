@@ -208,9 +208,9 @@ The heap objects a VM needs are the runtime's existing ones:
   lives in one (the Lua "upvalue" shape). Cells are also how forward
   references and REPL session bindings are represented (§4.2, §8.1).
 - `JitClosure` — `fn_ptr` + an array of `JitCell*` captures + arity. A
-  closure the executor builds has a VM trampoline as `fn_ptr` and its
-  chunk descriptor in `captures[0]`; a closure the lowering builds has a
-  native function there. Both are called through the same *JitFn ABI*:
+  closure the executor builds has a VM trampoline as `fn_ptr` and names
+  its chunk through its parameter metadata (§6.1); a closure the lowering
+  builds has a native function there. Both are called through the same *JitFn ABI*:
   `void (JitValue* ret, JitClosure*, int8_t self_tag, int64_t self_data,
   int64_t n_args, JitValue* args)`.
 - `JitObject` with `Shape` — a V8-style hidden class plus fixed slots,
@@ -1459,8 +1459,8 @@ below it, so a call costs no C++ prologue and no register window on the
 machine stack, a throw crosses culebra frames without crossing C++ ones,
 and the recursion limit is what the language says rather than what the
 machine stack allows. The `VmStack` is heap memory the machine-stack scan
-does not walk, so `Exec::prepare` installs `vm_stack_roots` beside the
-descriptor hook: the collector walks the stack frame by frame — each
+does not walk, so `Exec::prepare` installs `vm_stack_roots`: the
+collector walks the stack frame by frame — each
 record says how long its block is — and takes every register's payload
 as a candidate root, the rule the machine-stack scan applies (a cell
 slot's `JitCell` and a for-in cursor's closures ride tags that say
@@ -1476,13 +1476,15 @@ on the way, which keeps the pc off each instruction's critical path.
 ### 6.1 Closures and the trampoline
 
 An executor closure is a real `JitClosure` whose `fn_ptr` is
-`Exec::trampoline`. Its `captures[0]` is a cell holding a `VmFnDesc`
-(`{program, chunk}`); the real captures follow. Native code calls a VM
-function exactly as it calls a lowered one, and the runtime's helpers
-that need to know more — the keyword resolver
-(`_jit_closure_meta_hook`), the lazy-namespace rebuilder, the `mut`
-capture check — read the descriptor through hooks `Exec::prepare`
-installs.
+`Exec::trampoline`. Every executor closure shares that one address, so
+what says which chunk to interpret is the closure's `meta`: the
+parameter metadata the keyword resolver reads is the first member of a
+`VmChunkRef`, and the `VmFnDesc` (`{program, chunk}`) sits behind it.
+Native code calls a VM function exactly as it calls a lowered one, and
+whatever rebuilds a closure from its parts (the receiving side of an
+isolate, the lazy-namespace registry) already copies `fn_ptr`, flags and
+`meta`, which is all of it. The captures are the body's own and nothing
+else, the same array a lowered closure has.
 
 What a closure *is* takes no hook and no second entry point. A getter
 body and a constructor thunk are properties of the chunk, so
@@ -1499,11 +1501,15 @@ for whatever lands there next. On the closure the answers also cross an
 isolate boundary with the value they describe, which a table on the
 receiving `Runtime` could not do.
 
-The descriptor cell belongs to the closure, one per `MakeClosure`. A cell
-shared by every closure of a chunk was tried and is wrong: closures of
-one program run on several isolates at once, and a `JitCell`'s refcount
-is a plain `int64_t` because the runtime is single-threaded per
-`Runtime`. Sharing nothing across closures is what keeps the invariant.
+The descriptor used to ride in a cell at `captures[0]`, one per
+`MakeClosure` (a cell shared by every closure of a chunk is wrong:
+closures of one program run on several isolates at once, and a
+`JitCell`'s refcount is a plain `int64_t`). That cell was an object the
+lowered lanes do not have, so `GC.stat().rc_objects` read one higher per
+live closure on the executor. The descriptor is immutable and belongs to
+the program, so it needs no count and no owner per closure: the two
+lanes now allocate the same objects for a closure, and the refcount-lane
+difftest's allowlist is empty.
 
 ### 6.2 Throws
 

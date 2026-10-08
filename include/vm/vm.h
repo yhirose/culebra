@@ -401,13 +401,11 @@ enum class Op : uint8_t {
                // match test never throws, so it carries no position
 
   MakeClosure, // regs[a] = new closure (+1) over function chunk b. In the
-               // executor its fn_ptr is Exec::trampoline and captures[0]
-               // holds the chunk's shared descriptor cell, retained per
-               // closure (Long-valued, so its value release is a no-op —
-               // the bound-method thunk precedent); in
-               // the lowered module it is the chunk's native function. The
-               // chunk's capture_src_slots fill the (remaining) captures
-               // with retained cell pointers from this frame.
+               // executor its fn_ptr is Exec::trampoline, which finds the
+               // chunk behind the closure's meta (VmChunkRef); in the
+               // lowered module it is the chunk's native function. The
+               // chunk's capture_src_slots fill the captures with retained
+               // cell pointers from this frame.
   Call,        // regs[a] = call regs[b] with args regs[c..c+d). Publishes
                // the call site (set_call_site), checks TAG_FUNC (else the
                // interp's "expected Function" TypeError), and goes through
@@ -437,15 +435,14 @@ enum class Op : uint8_t {
                // Releases the cell previously in regs[a] (null on first run —
                // a loop's per-iteration redeclaration).
                // The cell pointer rides the reg as a Long, so the plain
-               // Release/MoveRetain ops are no-ops on it (the descriptor-cell
-               // precedent); only CellRelease touches the cell's refcount.
+               // Release/MoveRetain ops are no-ops on it; only CellRelease
+               // touches the cell's refcount.
   CellGet,     // regs[a] = cell(regs[b])->value, retained (+1) — load_slot
   CellSet,     // cell(regs[a])->value = regs[b] (absorbs the +1, releases the
                // old value after the store, like store_slot); regs[b] = nil
   CellRelease, // release cell regs[a]; regs[a] = nil — an owned cell slot's
                // scope exit (borrowed capture slots take the no-op Release)
   BindCapture, // regs[a] = closure's captures[b] as a borrowed cell pointer
-               // (executor offsets past the descriptor at captures[0])
   ImmutErr,    // throw ImmutableError for name consts[a] (runtime, after the
                // RHS evaluated — `if false { x = 1 }` stays silent, interp
                // parity); never falls through
@@ -3177,14 +3174,23 @@ inline std::vector<int32_t> chunk_gen_owned_table(const Chunk& c) {
 
 struct VmProgram;
 
-// What the executor's closures point at: the trampoline recovers the chunk
-// to interpret from one of these (stashed as a Long in the closure's capture
-// cell). Exec::run fills `descs` — compile_module returns the program by
-// value, so its final address exists only at run time.
+// The chunk an executor closure runs. Exec::prepare fills it — compile_module
+// returns the program by value, so its final address exists only at run time.
 struct VmFnDesc {
-  const VmProgram* prog;
-  int32_t chunk;
+  const VmProgram* prog = nullptr;
+  int32_t chunk = -1;
 };
+
+// What an executor closure's `meta` points at: the keyword resolver's view of
+// its chunk and, behind it, the chunk itself. Every executor closure enters
+// through one trampoline, so the code address cannot say which chunk to
+// interpret; the metadata the closure already carries does, and it crosses
+// an isolate with the closure. `meta` first, so the pointer is to both.
+struct VmChunkRef {
+  JitParamMeta meta{};
+  VmFnDesc desc{};
+};
+static_assert(std::is_standard_layout_v<VmChunkRef>);
 
 // A chunk's parameter metadata in the shape the runtime's keyword resolver
 // reads. The resolver is handed a `const JitParamMeta*` and indexes arrays of
@@ -3200,15 +3206,15 @@ struct VmChunkMeta {
   std::vector<const char*> mut_captures;
   std::string fn_name;
   std::string return_type;
-  JitParamMeta meta{};
+  VmChunkRef ref{};
 };
 
 // A compiled module: chunk 0 is the top level; every function literal adds
 // one (reserved in creation order, so nested literals interleave freely).
 struct VmProgram {
   std::vector<Chunk> chunks;
-  std::vector<VmFnDesc> descs;  // filled by Exec::run, one per chunk
-  // One per chunk, built before the run: what a keyword call binds against.
+  // One per chunk, built before the run: what a keyword call binds against,
+  // and what a closure over the chunk names it by.
   std::vector<std::unique_ptr<VmChunkMeta>> param_metas;
   // The entry module's path, for the debug instructions: they only exist in
   // statements compiled from it (the stdlib prologues get none), so one path
@@ -3265,21 +3271,22 @@ inline void build_param_metas(VmProgram& p) {
     for (size_t i = 0; i < n && i < c.param_mut.size(); i++)
       if (c.param_mut[i])
         m->mut_bits[i / 8] |= static_cast<uint8_t>(1u << (i % 8));
-    m->meta = JitParamMeta{m->names.data(),
-                           m->has_default_bits.data(),
-                           n,
-                           c.kwargs_rest_idx,
-                           c.first_kw_only_idx,
-                           m->fn_name.c_str(),
-                           m->return_type.c_str(),
-                           m->mut_bits.data(),
-                           m->types.data(),
-                           m->declared_types.data(),
-                           c.cb_min,
-                           c.cb_max,
-                           m->mut_captures.empty() ? nullptr
-                                                   : m->mut_captures.data(),
-                           static_cast<int64_t>(m->mut_captures.size())};
+    m->ref.meta = JitParamMeta{m->names.data(),
+                               m->has_default_bits.data(),
+                               n,
+                               c.kwargs_rest_idx,
+                               c.first_kw_only_idx,
+                               m->fn_name.c_str(),
+                               m->return_type.c_str(),
+                               m->mut_bits.data(),
+                               m->types.data(),
+                               m->declared_types.data(),
+                               c.cb_min,
+                               c.cb_max,
+                               m->mut_captures.empty()
+                                   ? nullptr
+                                   : m->mut_captures.data(),
+                               static_cast<int64_t>(m->mut_captures.size())};
     p.param_metas.push_back(std::move(m));
   }
 }
@@ -3343,8 +3350,7 @@ class ReplSession {
     if (auto it = entries_.find(name); it != entries_.end()) return it->second.cell;
     auto* c = culebra_runtime_cell_new(TAG_NO_SELF, 0);
     // A map node is a C++-held root the conservative stack scan cannot see,
-    // so every cell is pinned for the session — Exec::run's descriptor
-    // cells, same reason.
+    // so every cell is pinned for the session.
     _gc_heap().pin(c);
     return entries_.emplace(std::string(name), Entry{c, false}).first->second.cell;
   }
@@ -14702,40 +14708,38 @@ inline std::string dump(const VmProgram& p) {
 // yet); the abandoned frame's registers are reclaimed by the conservative
 // backstop, mirroring the JIT's uncaught-error path.
 struct Exec {
-  // The capture holding this closure's chunk descriptor, or null when the
-  // closure is not one of ours (its fn_ptr is not a VM trampoline). The
-  // lazy-namespace registry rebuilds closures from it (see the desc hook).
-  static JitCell* desc_for_closure(JitClosure* cls) {
-    if (!cls || cls->fn_ptr != reinterpret_cast<void*>(&trampoline))
-      return nullptr;
-    if (cls->n_captures == 0 || !cls->captures) return nullptr;
-    return cls->captures[0];
+  // The chunk a closure of ours runs, read off its meta (VmChunkRef). Only
+  // MakeClosure mints a closure whose fn_ptr is the trampoline, and a rebuilt
+  // one (another isolate's, the lazy-namespace registry's) carries the same
+  // meta, so the fn_ptr is what says the meta is a VmChunkRef.
+  static const VmFnDesc& desc_of(const JitClosure* cls) {
+    assert(cls->fn_ptr == reinterpret_cast<void*>(&trampoline) && cls->meta);
+    return reinterpret_cast<const VmChunkRef*>(cls->meta)->desc;
   }
 
-  // The descriptor behind a closure, validated: captures[0] names a chunk of
-  // a live program.
+  // The same for any closure: null when it is not one of ours, or names no
+  // chunk of a live program.
   static const VmFnDesc* closure_desc(JitClosure* cls) {
-    auto* cell = desc_for_closure(cls);
-    if (!cell) return nullptr;
-    const auto* d = reinterpret_cast<const VmFnDesc*>(cell->value.data);
-    if (!d || !d->prog ||
-        static_cast<size_t>(d->chunk) >= d->prog->chunks.size())
+    if (!cls || cls->fn_ptr != reinterpret_cast<void*>(&trampoline) ||
+        !cls->meta)
       return nullptr;
-    return d;
+    const VmFnDesc& d = desc_of(cls);
+    if (!d.prog || static_cast<size_t>(d.chunk) >= d.prog->chunks.size())
+      return nullptr;
+    return &d;
   }
 
   // The metadata a closure over chunk `i` carries — built once per program
   // (build_param_metas) and handed to every closure MakeClosure mints, the
   // way the lowering hands over its module global.
   static const JitParamMeta* chunk_meta(const VmProgram& p, int32_t i) {
-    return static_cast<size_t>(i) < p.param_metas.size()
-               ? &p.param_metas[i]->meta
-               : nullptr;
+    assert(static_cast<size_t>(i) < p.param_metas.size());
+    return &p.param_metas[i]->ref.meta;
   }
 
   // Safe for programs that outlive their own execution too (the REPL's
   // case): a closure one line built stays callable from a later one, since
-  // the descriptor a closure carries is its own cell.
+  // what it names its chunk by is the program's, not the run's.
   static void run(VmProgram& p) {
     prepare(p);
     run_prepared(p);
@@ -14743,11 +14747,9 @@ struct Exec {
 
   static void prepare(VmProgram& p) {
     build_param_metas(p);
-    _jit_closure_desc_hook = &desc_for_closure;
     _jit_vm_stack_roots_hook = &vm_stack_roots;
-    p.descs.resize(p.chunks.size());
-    for (size_t i = 0; i < p.chunks.size(); ++i)
-      p.descs[i] = {&p, static_cast<int32_t>(i)};
+    for (size_t i = 0; i < p.param_metas.size(); ++i)
+      p.param_metas[i]->ref.desc = {&p, static_cast<int32_t>(i)};
   }
 
   static void run_prepared(VmProgram& p) {
@@ -14770,13 +14772,12 @@ struct Exec {
 
   // JitFn-ABI entry: native code (and the executor's own Call op) reaches a
   // VM function through the closure's fn_ptr like any other closure; the
-  // descriptor in captures[0] says which chunk to interpret. The receiver
+  // closure's meta says which chunk to interpret. The receiver
   // scalars are unused until methods enter the slice.
   static void trampoline(JitValue* ret, JitClosure* cls, int8_t self_tag,
                          int64_t self_data, int64_t n_args, JitValue* args) {
-    auto* d = reinterpret_cast<const VmFnDesc*>(cls->captures[0]->value.data);
-    *ret = run_frame(*d->prog, d->chunk, cls, n_args, args, self_tag,
-                     self_data);
+    const VmFnDesc& d = desc_of(cls);
+    *ret = run_frame(*d.prog, d.chunk, cls, n_args, args, self_tag, self_data);
   }
 
   // One culebra frame, as dispatch runs it. A run_frame keeps its own on
@@ -17156,22 +17157,16 @@ struct Exec {
           const Chunk& f = p.chunks[in.b];
           auto n = f.capture_src_slots.size();
           auto* mc = culebra_runtime_closure_new(
-              reinterpret_cast<void*>(&trampoline), 1 + n,
+              reinterpret_cast<void*>(&trampoline), n,
               static_cast<size_t>(f.arity), chunk_closure_flags(f),
               chunk_meta(p, in.b));
-          // The descriptor rides in a cell of this closure's own, like every
-          // other capture: cells are refcounted non-atomically and freed into
-          // the slab of the Runtime that allocated them, so one shared per
-          // chunk would be retained and released by every isolate at once.
-          mc->captures[0] = culebra_runtime_cell_new(
-              TAG_LONG, reinterpret_cast<int64_t>(&p.descs[in.b]));
           // Fill the captures from the creating frame's cell slots, each
           // retained — emit_closure_build's loop.
           for (size_t i = 0; i < n; ++i) {
             auto* cell = reinterpret_cast<JitCell*>(
                 regs[f.capture_src_slots[i]].data);
             culebra_runtime_cell_retain(cell);
-            mc->captures[1 + i] = cell;
+            mc->captures[i] = cell;
           }
           regs[in.a] = JitValue{TAG_FUNC, reinterpret_cast<int64_t>(mc)};
           ++ip;
@@ -17414,10 +17409,10 @@ struct Exec {
       L_BindCapture:
         do {
           [[maybe_unused]] const Insn& in = *ip;
-          // captures[0] is the descriptor; user captures follow. Borrowed:
-          // no retain, and the slot's frame-teardown Release is a no-op.
+          // Borrowed: no retain, and the slot's frame-teardown Release is a
+          // no-op.
           regs[in.a] = JitValue{
-              TAG_LONG, reinterpret_cast<int64_t>(f->cls->captures[1 + in.b])};
+              TAG_LONG, reinterpret_cast<int64_t>(f->cls->captures[in.b])};
           ++ip;
           break;
         } while (0);
