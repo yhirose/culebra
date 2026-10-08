@@ -557,9 +557,8 @@ inline void run_isolate_child_jit(std::shared_ptr<IsolateCore> core,
                                   bool decrement_live) {
   // A fresh Runtime gives this work its own JIT heap (and fresh thread_local
   // multifn tables); the shared fn_ptr allocates on whichever Runtime is active.
-  culebra::Runtime rt;
+  culebra::Runtime rt(&core->interrupt);
   culebra::RuntimeScope scope(rt);
-  rt.interrupt_flag = &core->interrupt;
   try {
     jit_install_trait_defaults(std::move(defaults));
     JitDeCtx dc;
@@ -1895,9 +1894,8 @@ inline void jit_parallel_record_element_error(ParallelState& st, size_t i,
 }
 
 inline void jit_parallel_worker(std::shared_ptr<ParallelState> st) {
-  culebra::Runtime rt;
+  culebra::Runtime rt(&st->interrupt);
   culebra::RuntimeScope scope(rt);
-  rt.interrupt_flag = &st->interrupt;
   try {
     jit_install_trait_defaults(st->trait_defaults);
     JitDeCtx dc;

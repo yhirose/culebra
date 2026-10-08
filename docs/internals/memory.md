@@ -168,9 +168,26 @@ runs, so nothing the body releases can free the object under it, the
 way CPython's `PyObject_CallFinalizerFromDealloc` keeps an object across
 its finalizer. The count the body leaves is therefore the real one: a
 reference to the object it let go of is gone, one it stored is counted.
-Only on the release-to-zero path is the count put back afterwards, to the
-zero the teardown in progress resumes from. The collector's finalize pass
-does not read the count either: what it finalizes it sweeps (§6.3).
+Every caller reads it. On the release-to-zero path the function's own
+reference comes off without a release, and a count still above zero says
+the body kept the object: the teardown, which had released nothing yet,
+is called off (`Heap::abort_teardown`) and the object lives on, dropped
+and never dropped again. The collector's finalize pass takes its pins off
+after the bodies have run and looks again (§6.3). The body's closure is
+held across the call the same way, since a body may replace the `drop`
+slot it was read from.
+
+At program exit no body runs. `Runtime::drop_suppressed` is raised around
+the top level's own release and the teardown collect, and the `~Runtime`
+of the Runtime an entry ran on (the thread's default, a test unit's)
+raises it for good before it destroys the tables: what the module table,
+the trait default table and the rest still hold is released without
+`drop`, whichever table held it. That Runtime outlives the program's
+code, and a closure's body is bytecode or machine code the program
+owned. A worker's Runtime (an isolate's, a `Parallel` task's, a server
+pool thread's) is the other case, and is constructed as one: it ends
+while the program runs on, so what its tables hold is dropped like
+anything else, and a `tx` a trait default captured closes its channel.
 
 ## 4. The ownership discipline of the LLVM lowering
 
@@ -602,11 +619,35 @@ is no pointer-update pass afterward.
 finalize hook runs each unmarked object's `drop` exactly once, with the
 whole dead set still intact and its refcounts pinned so a drop body
 cannot free a sibling ahead of its sweep (`language.md` §17 states the
-contract). Then the registry is walked and every unmarked object's
-destructor runs and its slot is reclaimed. A full mark-and-sweep from
-the actual root set reclaims any unreachable object regardless of how
-stale its refcount is — the property that makes leaks recoverable
+contract). A body is user code, and it may hand a dead object to the
+living: store `self`, or a child, or a String, which has no count to
+show for it. It may also store one in an object it allocates, which no
+root may reach and which this sweep leaves alone all the same. So when
+any body ran, the pins come off and the collection looks again, with
+every object outside the dead set as a root beside the roots proper:
+what anything outside the set references stays, already finalized, with
+everything it references, and only the rest is swept (CPython's
+`handle_resurrected_objects`). No surviving object is then left pointing
+at a swept one. A collection whose dead set had no `drop` to run pays
+nothing for this. Then every object still dead
+has its destructor run and its slot reclaimed. A full mark-and-sweep
+from the actual root set reclaims any unreachable object regardless of
+how stale its refcount is — the property that makes leaks recoverable
 rather than permanent.
+
+**What the dead held on the living.** The sweep frees each dead object
+without releasing its edges, since the object at the other end is
+reclaimed by its own sweep entry. That is right between two dead
+objects and wrong for an edge that leaves the set: a survivor a dead
+cycle pointed at would keep a count nobody holds, never reach zero,
+never run its `drop`, and be a root of every refcount-seeded
+collection. Those edges are read off the dead set before the sweep,
+with the multiplicity the child enumerator reports, and released after
+it (`Heap::set_release_fn`), as `tp_clear` gives back what CPython's
+garbage held. A release is an ordinary one: a survivor that only a
+stale stack word had kept reaches zero there and is torn down, `drop`
+included. The exactness this relies on is the one the refcount-seeded
+roots already need (§6.2).
 
 One window needs care under both root sources: an object whose
 refcount just reached zero is still registered while its release runs

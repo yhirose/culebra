@@ -1236,9 +1236,8 @@ class CulebraWorkerPool : public httplib::TaskQueue {
 
  private:
   void worker() {
-    culebra::Runtime rt;
+    culebra::Runtime rt(isolate_flag_);  // honor cancel in nested blocking ops
     culebra::RuntimeScope scope(rt);
-    rt.interrupt_flag = isolate_flag_;  // honor cancel in nested blocking ops
     if (hooks_.setup) hooks_.setup();
     for (;;) {
       std::function<void()> job;

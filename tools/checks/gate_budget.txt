@@ -61,7 +61,11 @@
 # compiles to).
 # 306 since test_ordering.cul (a Tuple orders pair by pair, and `<`'s one rule
 # is what a sort key, a min / max element and a derived cmp field order by).
-tests.cul 306
+# 309 since test_drop_resurrect.cul (what a drop body stores stays, by every
+# path a drop fires on), test_gc_swept_cycle_edges.cul (a swept cycle gives
+# back the counts it held on what survives) and test_drop_exit_tables.cul (no
+# drop body runs after the program has ended; a worker's still do).
+tests.cul 309
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

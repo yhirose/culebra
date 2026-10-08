@@ -32,25 +32,30 @@ inline void _culebra_cell_release(JitCell* c);
 // does to the count beyond those two is what it did, and stays: a reference
 // to `o` it lets go of — `self.me = nil` breaking its own cycle edge — is
 // gone, one it stores somewhere is counted.
-inline void _culebra_call_drop_if_present(JitObject* o) {
-  if (!o || !o->has_drop) return;
-  if (o->dropped) return;  // already ran (explicit or backstop) — at most once
-  if (_jit_drop_suppressed()) return;  // cycle-held resource — no finalizer
+//
+// Returns whether the body ran. At zero the caller is this object's teardown,
+// about to begin: this function's reference then comes off without a release,
+// and a count still above zero on return says the body kept the object — the
+// caller calls the teardown off.
+inline bool _culebra_call_drop_if_present(JitObject* o) {
+  if (!o || !o->has_drop) return false;
+  if (o->dropped) return false;  // already ran (explicit or backstop)
+  if (_jit_drop_suppressed()) return false;  // program exit — no finalizer
   // Walks proto so class-sugar instances find their inherited `drop`.
   auto* cls = _protocol_member(o, "drop");
-  if (!cls || cls->arity != 0) return;
+  if (!cls || cls->arity != 0) return false;
 
   o->dropped = true;  // set before running: re-entrancy-safe, at-most-once
 
-  // At zero the caller is this object's teardown, already under way: the
-  // count goes back to the zero it resumes from, so a body that stored `o`
-  // there leaves a dangling reference. Everywhere else — an explicit
-  // `obj.drop()`, a scope's exit, the collector's finalize pass — references
-  // remain, each caller holding one of its own.
+  // Everywhere but at zero — an explicit `obj.drop()`, a scope's exit, the
+  // collector's finalize pass — references remain, each caller holding one
+  // of its own.
   const bool dying = o->refcount == 0;
-  // Read now: a body may replace its own `drop` slot, which frees `cls`.
   [[maybe_unused]] const bool native = cls->flags & JIT_CLOSURE_NATIVE;
   o->refcount += 2;  // the body's `self`, and this function's
+  // The body's own closure too: a body may replace its `drop` slot, and the
+  // slot's reference is the only other one.
+  cls->refcount++;
   JitValue self_val{GC_TAG_OBJECT, reinterpret_cast<int64_t>(o)};
   // What the body throws is logged and swallowed (§17), so the rest of the
   // cascade proceeds — but the thrown/pending carriers are globals its
@@ -80,11 +85,13 @@ inline void _culebra_call_drop_if_present(JitObject* o) {
     std::cerr << "drop: unknown error" << std::endl;
   }
   culebra_runtime_restore_thrown(saved_flag, saved_tag, saved_data);
+  _culebra_value_release_impl(GC_TAG_FUNC, reinterpret_cast<int64_t>(cls));
   // A drop the runtime wrote consumes its `self` like any method, and keeps
   // nothing: one that did not would leave a count here nobody holds.
   assert(!(dying && native) || o->refcount == 1);
-  if (dying) o->refcount = 0;
+  if (dying) --o->refcount;
   else _culebra_value_release_impl(self_val.tag, self_val.data);
+  return true;
 }
 
 // Explicit `obj.drop()` from JIT-compiled code: route through the at-most-once
@@ -115,34 +122,43 @@ culebra_runtime_takes_drop_guard(int8_t tag, int64_t data) {
 // style): runs once per collection, before any sweep, over the intact
 // dead set. Pin every dead struct's refcount first — a drop body that
 // breaks its own cycle would otherwise free a sibling ahead of its
-// finalize/sweep — then fire each pending `drop`. The pins need no
-// undo: sweep reclaims unmarked objects regardless of refcount, and
-// the `dropped` flag keeps the union with every other drop path
-// exactly-once. Finalization order within one collection is
-// unspecified (matches PEP 442). Suppressed-drop windows (top-level
-// exit, multifn body replacement) are honored inside
-// _culebra_call_drop_if_present.
-inline void _jit_gc_finalize_dead(const std::vector<void*>& dead) {
-  auto& heap = _gc_heap();
-  // All refcounted heap types share the i64 refcount first field; a traced
-  // String has no refcount (its first bytes are content, and for short
-  // strings offset 0 may even reach the trailing NUL) and a traced view's
-  // offset 0 is its borrowed `ptr`, so never touch either.
-  for (void* p : dead) {
-    auto* h = heap.header(p);
-    if (h && _jit_gc_is_traced_only(h->type_tag)) continue;
-    (*reinterpret_cast<int64_t*>(p))++;
-    if (h && h->type_tag == GC_TAG_OBJECT)
-      _jit_enum_forget(reinterpret_cast<JitObject*>(p));
+// finalize/sweep — then fire each pending `drop`, and take the pins off
+// again: the counts are then what the bodies left, which is what the
+// collector reads to tell an object a body handed to the living from one
+// that is still garbage (gc.h's FinalizeFn). A pin coming off frees nothing —
+// an object left at zero is the sweep's. The `dropped` flag keeps the union
+// with every other drop path exactly-once. Finalization order within one
+// collection is unspecified (matches PEP 442). The suppressed-drop window
+// (program exit) is honored inside _culebra_call_drop_if_present.
+inline bool _jit_gc_finalize_dead(
+    const std::vector<culebra::gc::Heap::Counted>& dead) {
+  // All refcounted heap types share the i64 refcount first field. (The heap
+  // leaves the traced-only ones out: a String's first bytes are content, a
+  // view's its borrowed `ptr`.)
+  auto count = [](void* p) -> int64_t& { return *static_cast<int64_t*>(p); };
+  for (auto [p, tag] : dead) {
+    count(p)++;
+    if (tag == GC_TAG_OBJECT) _jit_enum_forget(static_cast<JitObject*>(p));
   }
-  for (void* p : dead) {
-    auto* h = heap.header(p);
-    if (!h || h->type_tag != GC_TAG_OBJECT) continue;
+  bool ran = false;
+  for (auto [p, tag] : dead) {
     // has_drop / dropped / suppressed gating lives in
     // _culebra_call_drop_if_present, which holds a reference of its own
     // for the call — the pass consumes none of the dead set's pins.
-    _culebra_call_drop_if_present(reinterpret_cast<JitObject*>(p));
+    if (tag == GC_TAG_OBJECT)
+      ran |= _culebra_call_drop_if_present(static_cast<JitObject*>(p));
   }
+  for (auto [p, tag] : dead) count(p)--;
+  return ran;
+}
+
+// One reference a swept object held on a survivor, given back (gc.h's
+// ReleaseFn). A cell is the one refcounted type that is not a value.
+inline void _jit_gc_release_edge(void* obj, uint8_t tag) {
+  if (tag == GC_TAG_CELL) _culebra_cell_release(static_cast<JitCell*>(obj));
+  else
+    _culebra_value_release_impl(static_cast<int8_t>(tag),
+                                reinterpret_cast<int64_t>(obj));
 }
 
 // Resolve the owned-stack region registered above `mark` (the scope's
@@ -467,6 +483,15 @@ inline void _culebra_value_release_node(int8_t tag, int64_t data) {
         auto& heap = _gc_note_teardown(o);
         _jit_enum_forget(o);
         _culebra_call_drop_if_present(o);
+        // The body stored a reference to the object it was dropping: the
+        // object stays for whoever holds that, dropped and never dropped
+        // again, and nothing of it has been released yet (CPython's
+        // PyObject_CallFinalizerFromDealloc calls its dealloc off the same
+        // way).
+        if (o->refcount != 0) {
+          heap.abort_teardown(o);
+          break;
+        }
         if (o->proto()) {
           auto* proto = o->proto();
           auto* cls = o->built_by();

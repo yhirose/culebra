@@ -937,9 +937,8 @@ class ServePool {
 
  private:
   void worker() {
-    culebra::Runtime rt;
+    culebra::Runtime rt(interrupt_flag_);  // honor cancel in nested blocking ops
     culebra::RuntimeScope scope(rt);
-    rt.interrupt_flag = interrupt_flag_;  // honor cancel in nested blocking ops
     if (hooks_.setup) hooks_.setup();
     for (;;) {
       detail::FdGuard fd;

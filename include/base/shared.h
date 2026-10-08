@@ -2594,10 +2594,30 @@ struct Runtime {
   // (isolate.h); the Runtime only borrows a pointer. Null on the main thread.
   std::atomic<bool>* interrupt_flag = nullptr;
 
+  // No `drop` body runs while this is set (rt's _jit_drop_suppressed): the
+  // program's exit releases what is left without one (language.md §17). The
+  // entry's top-level scope raises it around its own release, and ~Runtime
+  // raises it for good unless the Runtime is a worker's.
+  bool drop_suppressed = false;
+
+  // A worker's Runtime ends while the program runs on; any other ends with
+  // the program it ran, or after it. See the two constructors.
+  const bool worker = false;
+
   std::array<void*, kRuntimeSlotCount> substate{};
   std::array<void (*)(void*), kRuntimeSlotCount> substate_deleter{};
 
+  // The Runtime an entry runs on: the thread's default, a test unit's, a doc
+  // block's. It outlives the code it ran — a closure's body is bytecode or
+  // machine code the program owned — so what its tables still hold at the end
+  // is released without `drop`.
   Runtime() = default;
+  // A worker's: an isolate's, a Parallel task's, a server pool thread's,
+  // cancelled through `interrupt` (may be null). The program and its code are
+  // still there when it ends, so what its tables still hold is dropped like
+  // anything else: a `tx` a trait default captured must close its channel.
+  explicit Runtime(std::atomic<bool>* interrupt)
+      : interrupt_flag(interrupt), worker(true) {}
   ~Runtime() {
     // Destroy substates in reverse slot order. The GC substates (kSlotInterpGc,
     // kSlotJitGc) are the lowest slots and MUST outlive the JitValue-holding
@@ -2612,7 +2632,12 @@ struct Runtime {
     // *different* Runtime's slab. Repeat until a pass frees nothing — a slot
     // revived below the cursor leaks (the interp owned stack revives that way,
     // from ~InterpGC's collect).
+    //
+    // The program this Runtime ran is over, and its code may already be
+    // unloaded: what the tables still hold goes without `drop`, whichever
+    // table held it. A worker's is dropped (see the constructors).
     RuntimeScope self(*this);
+    if (!worker) drop_suppressed = true;
     bool destroyed;
     do {
       destroyed = false;

@@ -1,0 +1,86 @@
+# What the runtime's own tables still hold when the program exits goes the
+# way of the top level's bindings (test_toplevel_drop.cul): released without
+# `drop`. A trait's default method is held by such a table for as long as the
+# Runtime lives, and one declared in a function captures that function's
+# locals; releasing it at exit used to run the captured object's `drop` after
+# the code a body runs on was gone, which crashed.
+#
+# Two guards: the count proves no drop ran before the exit, and the exit
+# itself proves the rest — a crash there fails the run, and a
+# `DROP:guard captured` line is one no lane prints.
+#
+# A worker's Runtime is the other case (the last section): it ends while the
+# program runs on, so what its tables hold is dropped like anything else.
+
+mut dxt_drops = 0
+class DxtGuard {
+  new(.n) {}
+  label() {
+    "guard {self.n}"
+  }
+  drop() {
+    dxt_drops += 1
+    inspect("DROP:{self.label()}")
+  }
+}
+class DxtSquare {
+  new(.side) {}
+  dxt_area() {
+    self.side * self.side
+  }
+}
+
+fn dxt_declare() {
+  let g = DxtGuard('captured')
+  trait DxtDescribed {
+    dxt_area()
+    dxt_describe() {
+      "{g.n} {self.dxt_area()}"
+    }
+  }
+  nil
+}
+dxt_declare()
+assert_eq(DxtSquare(3).dxt_describe(), 'captured 9')
+assert_eq(dxt_drops, 0)  # the default's closure still holds the guard
+
+# A scope that does exit still drops what it owns.
+fn dxt_scoped() {
+  let g = DxtGuard('scoped')
+  g.n
+}
+dxt_scoped()
+assert_eq(dxt_drops, 1)
+
+# --- A worker's Runtime ends in the middle of the program. The default its
+# trait declared is the last holder of what it captured, and letting go of it
+# drops that: a captured `tx` closes its channel, which the loop below waits
+# for, and a captured object's own `drop` runs.
+let (dxt_tx, dxt_rx) = Channel.new(4)
+let dxt_worker = Isolate.spawn(fn () {
+  let g = {drop: fn () {
+    dxt_tx.send('worker guard dropped')
+    nil
+  }}
+  trait DxtWorkerNamed {
+    dxt_id()
+    dxt_name() {
+      g.has('drop') ? "n{self.dxt_id()}" : ''
+    }
+  }
+  class DxtThing {
+    new(.id) {}
+    dxt_id() {
+      self.id
+    }
+  }
+  dxt_tx.send(DxtThing(7).dxt_name())
+  nil
+})
+dxt_tx.drop()
+let dxt_got = []
+for v in dxt_rx {
+  dxt_got.push(v)
+}
+dxt_worker.join()
+assert_eq(dxt_got, ['n7', 'worker guard dropped'])

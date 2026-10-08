@@ -323,9 +323,19 @@ class Heap {
   // The release hot path pays a push/pop, not a registry probe.
   static constexpr uint8_t kFlagDying = 2;
   static constexpr uint8_t kFlagActive = 4;  // see begin_active
+  static constexpr uint8_t kFlagCondemned = 8;  // in the sweep under way
   static constexpr uint8_t kRootFlags =
       kFlagPinned | kFlagDying | kFlagActive;
   void begin_teardown(void* p) { dying_.push_back(p); }
+
+  // The teardown did not happen: the object's `drop` left a reference to it
+  // behind, and it lives on for whoever holds that. Undoes begin_teardown,
+  // and the flag a collect inside the body copied into the header.
+  void abort_teardown(void* p) {
+    assert(!dying_.empty() && dying_.back() == p);
+    dying_.pop_back();
+    if (GcHeader* h = objects_.find(p)) h->flags &= ~kFlagDying;
+  }
 
   // An object whose own edges are in flux — a generator's frame while
   // its body runs, the registers of a lowered body living in it. For as long
@@ -448,16 +458,38 @@ class Heap {
   using SweepFn = void (*)(void* obj, uint8_t type_tag);
   void set_sweep_fn(SweepFn f) { sweep_fn_ = f; }
 
+  // An object that has a refcount (see NoRcFn), with its tag.
+  struct Counted {
+    void* obj;
+    uint8_t type_tag;
+  };
+
   // Pre-sweep finalize hook (PEP 442 style): called once per collection
-  // with every unmarked object still intact, BEFORE any sweep. The JIT
-  // runtime fires pending `drop`s here — the exactly-once GC backstop
+  // with every unmarked object still intact, BEFORE any sweep, and handed
+  // the ones among them that have a count to pin and may have a `drop`. The
+  // JIT runtime fires pending `drop`s here — the exactly-once GC backstop
   // for resources whose owner was orphaned in a cycle. The hook runs
   // user code; collection is paused around it (re-entrant collects are
-  // deferred) and the runtime pins the dead set's refcounts so a drop
-  // body releasing references inside it cannot free a sibling ahead of
-  // its sweep.
-  using FinalizeFn = void (*)(const std::vector<void*>& dead);
+  // deferred) and the runtime pins the dead set's refcounts for the pass, so
+  // a drop body releasing references inside it cannot free a sibling ahead
+  // of its sweep. Returns whether any user code ran: a body may have stored
+  // a reference to a dead object outside the dead set, so the collection
+  // then looks again and sweeps only what nothing outside the set references
+  // (CPython's handle_resurrected_objects).
+  using FinalizeFn = bool (*)(const std::vector<Counted>& dead);
   void set_finalize_fn(FinalizeFn f) { finalize_fn_ = f; }
+
+  // Gives back one reference a swept object held on a survivor. The sweep
+  // frees the dead without releasing their edges — each is reclaimed by its
+  // own sweep entry — which is right between two of the dead and wrong for an
+  // edge that leaves the set: the survivor would keep a count nobody holds,
+  // never reach zero, and be a refcount-seeded root for good. Those edges are
+  // read off the dead before the sweep and released after it, as tp_clear
+  // does for CPython's garbage; a release that reaches zero is an ordinary
+  // teardown and may run user code. Without one (the standalone heap) the
+  // edges are dropped with their owners.
+  using ReleaseFn = void (*)(void* obj, uint8_t type_tag);
+  void set_release_fn(ReleaseFn f) { release_fn_ = f; }
 
   // Predicate: does an object of this tag lack the i64 refcount slot at
   // offset 0? Traced-only values (Strings/StringViews) have content there,
@@ -468,6 +500,9 @@ class Heap {
   // standalone heap (all refcounted) leaves it null (every tag has a slot).
   using NoRcFn = bool (*)(uint8_t type_tag);
   void set_no_rc_fn(NoRcFn f) { no_rc_fn_ = f; }
+  bool counted(uint8_t type_tag) const {
+    return !no_rc_fn_ || !no_rc_fn_(type_tag);
+  }
 
   // Where a collection finds its roots.
   //
@@ -634,7 +669,7 @@ class Heap {
       // from 0, so it fails the > 0 root test below. A String reached only
       // from a live container is still marked via children_fn during the
       // reachability walk.
-      if (!no_rc_fn_ || !no_rc_fn_(h.type_tag))
+      if (counted(h.type_tag))
         refs_residue_[i] += *reinterpret_cast<int64_t*>(o);  // refcount @ off 0
       if (!children_fn_ || h.flags & (kFlagDying | kFlagActive)) return;
       kids.clear();
@@ -949,53 +984,97 @@ class Heap {
   template <class Seed>
   size_t collect_impl(Seed&& seed) {
     if (collect_paused_) return 0;  // defer re-entrant/paused collects
-    flag_dying();
-    objects_.for_each([](void*, GcHeader& h) { h.mark = 0; });
-
-    std::vector<void*> work;
-    auto push = [&](void* o) {
-      GcHeader* h = objects_.find(o);
-      if (h && !h->mark) {
-        h->mark = 1;
-        work.push_back(o);
+    std::vector<void*> work, kids;
+    // `again` is the look after the finalizers ran: everything outside the
+    // condemned set is then a root too, whether or not a root reaches it.
+    auto mark_from_roots = [&](bool again) {
+      flag_dying();
+      objects_.for_each([](void*, GcHeader& h) { h.mark = 0; });
+      auto push = [&](void* o) {
+        GcHeader* h = objects_.find(o);
+        if (h && !h->mark) {
+          h->mark = 1;
+          work.push_back(o);
+        }
+      };
+      // Pinned and mid-teardown objects are always roots.
+      objects_.for_each([&](void* k, GcHeader& h) {
+        if (h.flags & kRootFlags || (again && !(h.flags & kFlagCondemned))) {
+          h.mark = 1;
+          work.push_back(k);
+        }
+      });
+      seed(push);
+      while (!work.empty()) {
+        void* o = work.back();
+        work.pop_back();
+        if (children_fn_) {
+          kids.clear();
+          children_fn_(o, objects_.find(o)->type_tag, kids);
+          for (void* c : kids) push(c);
+        }
       }
     };
-    // Pinned and mid-teardown objects are always roots.
-    objects_.for_each([&](void* k, GcHeader& h) {
-      if (h.flags & kRootFlags && !h.mark) {
-        h.mark = 1;
-        work.push_back(k);
-      }
-    });
-    seed(push);
+    mark_from_roots(false);
 
-    std::vector<void*> kids;
-    while (!work.empty()) {
-      void* o = work.back();
-      work.pop_back();
-      if (children_fn_) {
-        kids.clear();
-        children_fn_(o, objects_.find(o)->type_tag, kids);
-        for (void* c : kids) push(c);
-      }
-    }
-
-    // Sweep unmarked. With a runtime sweep_fn the object is a `new`d JIT
-    // struct: de-register it (before delete, so a re-entrant lookup can't
-    // see it), then run the buffer-teardown + delete. Without one (the
-    // standalone heap) fall back to free_object's malloc/free + poison.
+    // The condemned, and apart the ones among them that have a count: the
+    // only ones with a `drop` to run or a counted reference to give back, and
+    // most of the dead are Strings.
     std::vector<void*> dead;
+    std::vector<Counted> counted_dead;
     objects_.for_each([&](void* k, GcHeader& h) {
-      if (!h.mark) dead.push_back(k);
+      if (h.mark) return;
+      h.flags |= kFlagCondemned;
+      dead.push_back(k);
+      if (counted(h.type_tag)) counted_dead.push_back({k, h.type_tag});
     });
     // Finalize before any sweep: every dead object is still intact, so a
     // drop body can safely touch its (equally dead) neighbours. The hook
-    // runs user code — pause threshold collects, and note that new
-    // objects it allocates are not in `dead` and so survive this sweep.
-    if (finalize_fn_ && !dead.empty()) {
-      CollectPause pause(*this);
-      finalize_fn_(dead);
+    // runs user code — pause threshold collects.
+    if (finalize_fn_ && !counted_dead.empty()) {
+      bool ran;
+      {
+        CollectPause pause(*this);
+        ran = finalize_fn_(counted_dead);
+      }
+      // A body that ran may have handed a dead object to the living: stored
+      // `self`, or a child, or a String, which has no count to show for it —
+      // in a live object, or in one it allocated, which no root may reach
+      // and which this sweep leaves alone all the same. So whatever anything
+      // outside the condemned set references is no longer condemned; it
+      // stays, already finalized, with everything it references.
+      if (ran) {
+        mark_from_roots(true);
+        std::erase_if(dead, [&](void* p) {
+          GcHeader* h = objects_.find(p);
+          if (h->mark) h->flags &= ~kFlagCondemned;
+          return h->mark != 0;
+        });
+        std::erase_if(counted_dead, [&](const Counted& d) {
+          return !(objects_.find(d.obj)->flags & kFlagCondemned);
+        });
+      }
     }
+
+    // The references the dead hold on survivors, read while the dead are
+    // intact (see set_release_fn).
+    std::vector<Counted> orphaned;
+    if (release_fn_ && children_fn_) {
+      for (const Counted& d : counted_dead) {
+        kids.clear();
+        children_fn_(d.obj, d.type_tag, kids);
+        for (void* c : kids) {
+          GcHeader* h = objects_.find(c);
+          if (h && !(h->flags & kFlagCondemned) && counted(h->type_tag))
+            orphaned.push_back({c, h->type_tag});
+        }
+      }
+    }
+
+    // Sweep. With a runtime sweep_fn the object is a `new`d JIT struct:
+    // de-register it (before delete, so a re-entrant lookup can't see it),
+    // then run the buffer-teardown + delete. Without one (the standalone
+    // heap) fall back to free_object's malloc/free + poison.
     for (void* p : dead) {
       if (sweep_fn_) {
         GcHeader* h = objects_.find(p);
@@ -1006,6 +1085,14 @@ class Heap {
       } else {
         free_object(p);
       }
+    }
+
+    // Each entry is a counted reference this function now holds, in a vector
+    // no scan reads: a collect from a `drop` one of these releases runs must
+    // not sweep the rest, so it waits.
+    if (!orphaned.empty()) {
+      CollectPause pause(*this);
+      for (const Counted& e : orphaned) release_fn_(e.obj, e.type_tag);
     }
     return dead.size();
   }
@@ -1135,6 +1222,7 @@ class Heap {
   RootFn extra_roots_fn_ = nullptr;
   SweepFn sweep_fn_ = nullptr;
   FinalizeFn finalize_fn_ = nullptr;
+  ReleaseFn release_fn_ = nullptr;
   NoRcFn no_rc_fn_ = nullptr;
   size_t live_bytes_ = 0;
   bool callbacks_wired_ = false;

@@ -1,0 +1,110 @@
+# A cycle the collector sweeps gives back the references it held on what
+# outlives it. The sweep frees the dead without releasing their edges, each
+# being reclaimed by its own sweep entry; an edge that left the dead set used
+# to stay counted on its target, which then never reached zero: never dropped,
+# and a root of every later GC.stat().
+
+mut sce_dropped = 0
+class SceLive {
+  new() {
+    self.tag = 'live'
+  }
+  drop() {
+    sce_dropped += 1
+  }
+}
+# No `drop`, so a scope's exit leaves the cycle to the collector.
+class SceNode {
+  new(.held) {
+    self.me = nil
+  }
+}
+fn sce_cycle(held) {
+  let n = SceNode(held)
+  n.me = n
+  nil
+}
+
+# --- 1) Ten dead cycles each holding one live object: the collection that
+# sweeps them takes their ten references off it. (No count is read between
+# the cycles and GC.stat(): under CULEBRA_GC_STRESS an earlier collection
+# may already have swept some.)
+fn sce_object() {
+  let dropped_before = sce_dropped
+  mut live = SceLive()
+  let before = GC.refcount(live)
+  for _ in 0..10 {
+    sce_cycle(live)
+  }
+  GC.stat()
+  assert_eq(GC.refcount(live) - before, 0)
+  assert_eq(live.tag, 'live')
+  live = nil  # the last reference: it drops here, not at some collection
+  assert_eq(sce_dropped - dropped_before, 1)
+  nil
+}
+sce_object()
+
+# --- 2) The same through the containers a dead object can hold it in: an
+# array element, a tuple, a set member, a closure's capture, a non-string key
+# and its value.
+fn sce_edges(held) {
+  let n = SceNode(nil)
+  n.me = n
+  n.arr = [held, held]
+  n.tup = (held, 1)
+  n.set = [held].to_set()
+  n.f = fn () {
+    held
+  }
+  n[(1, 2)] = held
+  nil
+}
+fn sce_every_edge() {
+  let live = (1, 2, 3)  # a Tuple: counted, and a Set takes it
+  let before = GC.refcount(live)
+  sce_edges(live)
+  GC.stat()
+  assert_eq(GC.refcount(live) - before, 0)
+  assert_eq(live, (1, 2, 3))
+  nil
+}
+sce_every_edge()
+
+# --- 3) Nothing is left behind: the cycles are gone and so is what only
+# they held.
+fn sce_left(f) {
+  let before = GC.stat().rc_objects
+  f()
+  GC.stat().rc_objects - before
+}
+assert_eq(sce_left(sce_object), 0)
+assert_eq(sce_left(sce_every_edge), 0)
+
+# --- 4) An object only a dead cycle held is dead with it, and a live one the
+# cycle merely pointed at is not: one collection tells them apart.
+mut sce_only_dropped = 0
+class SceOnly {
+  new() {}
+  drop() {
+    sce_only_dropped += 1
+  }
+}
+fn sce_owning_cycle(shared) {
+  let n = SceNode(shared)
+  n.me = n
+  n.own = SceOnly()
+  nil
+}
+fn sce_mixed() {
+  let shared = SceLive()
+  let before = GC.refcount(shared)
+  sce_owning_cycle(shared)
+  GC.stat()
+  assert_eq(sce_only_dropped, 1)
+  assert_eq(GC.refcount(shared) - before, 0)
+  nil
+}
+let sce_dropped_before = sce_dropped
+sce_mixed()
+assert_eq(sce_dropped - sce_dropped_before, 1)  # `shared`, at its scope's exit

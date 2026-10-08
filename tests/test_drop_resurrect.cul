@@ -1,0 +1,255 @@
+# A `drop` body that stores a reference to the object it is dropping keeps
+# that object, whichever path fired the drop: the stored reference is a
+# reference like any other. The object stays whole for whoever holds it,
+# dropped and never dropped again. The two paths that used to reclaim it
+# regardless are the last reference going away (the teardown went on from
+# the zero it had started at) and a collection finding it unreachable (the
+# sweep freed what the finalize pass had just handed to the living).
+
+# What an object held by one array reads as, to read another against.
+let rsr_one = [{}]
+
+# The refcounted objects a call leaves behind.
+fn rsr_left(f) {
+  let before = GC.stat().rc_objects
+  f()
+  GC.stat().rc_objects - before
+}
+
+# Reuses whatever the allocator was just given back.
+fn rsr_churn() {
+  iota(500).map(|i| {a: i, b: [i], s: "junk-{i}-{i * 3}"})
+  nil
+}
+
+# --- 1) The last reference goes, and the body stores `self`.
+mut rsr_keep = []
+mut rsr_drops = 0
+class RsrZero {
+  new(.n) {
+    self.payload = [n, n + 1]
+    self.name = "zero-{n}"
+  }
+  drop() {
+    rsr_drops += 1
+    rsr_keep.push(self)
+  }
+}
+fn rsr_zero() {
+  let _r = RsrZero(1)
+  nil
+}
+rsr_zero()
+rsr_churn()
+assert_eq(rsr_drops, 1)
+assert_eq(rsr_keep.size(), 1)
+assert_eq(rsr_keep[0].n, 1)
+assert_eq(rsr_keep[0].payload, [1, 2])
+assert_eq(rsr_keep[0].name, 'zero-1')
+assert_eq(GC.refcount(rsr_keep[0]) - GC.refcount(rsr_one[0]), 0)  # the array's only
+
+# A temporary, which no binding ever held.
+fn rsr_temp() {
+  RsrZero(2)
+  nil
+}
+rsr_temp()
+rsr_churn()
+assert_eq(rsr_drops, 2)
+assert_eq(rsr_keep[1].payload, [2, 3])
+
+# Letting go of it again frees it, without a second drop.
+fn rsr_zero_and_release() {
+  rsr_zero()
+  rsr_keep = []
+  nil
+}
+rsr_keep = []
+assert_eq(rsr_drops, 2)
+assert_eq(rsr_left(rsr_zero_and_release), 0)
+assert_eq(rsr_drops, 3)
+
+# --- 2) A collection finds the object unreachable, and the body stores
+# `self`: the object stays, its own cycle edge and what it references with it.
+mut rsr_kept_cycle = []
+mut rsr_cycle_drops = 0
+class RsrCycle {
+  new(.n) {
+    self.me = nil
+    self.payload = [n, n * 2]
+    self.name = "cycle-{n}"
+    self.kid = {tag: "kid-{n}"}
+  }
+  drop() {
+    rsr_cycle_drops += 1
+    rsr_kept_cycle.push(self)
+  }
+}
+mut rsr_c = RsrCycle(4)
+rsr_c.me = rsr_c
+rsr_c = nil  # the top level never exits, so only a collection finds it
+GC.stat()
+rsr_churn()
+assert_eq(rsr_cycle_drops, 1)
+assert_eq(rsr_kept_cycle.size(), 1)
+assert_eq(rsr_kept_cycle[0].n, 4)
+assert_eq(rsr_kept_cycle[0].payload, [4, 8])
+assert_eq(rsr_kept_cycle[0].name, 'cycle-4')
+assert_eq(rsr_kept_cycle[0].kid.tag, 'kid-4')
+assert_eq(GC.refcount(rsr_kept_cycle[0]) - GC.refcount(rsr_one[0]), 1)  # and its own edge
+GC.stat()
+assert_eq(rsr_cycle_drops, 1)  # never again
+assert_eq(rsr_kept_cycle[0].payload, [4, 8])
+rsr_kept_cycle[0].me = nil
+rsr_kept_cycle = []
+
+# --- 3) The body stores not `self` but something only `self` referenced: a
+# child object, and a String, which has no count to show that it was taken.
+mut rsr_kids = []
+mut rsr_names = []
+class RsrParts {
+  new(.n) {
+    self.me = nil
+    self.name = "parts-{n}-{n * 7}"
+    self.kid = {tag: "kid-{n}", of: [n]}
+  }
+  drop() {
+    rsr_kids.push(self.kid)
+    rsr_names.push(self.name)
+  }
+}
+mut rsr_p = RsrParts(5)
+rsr_p.me = rsr_p
+rsr_p = RsrParts(6)
+rsr_p.me = rsr_p
+rsr_p = nil
+GC.stat()
+rsr_churn()
+GC.stat()
+rsr_churn()
+assert_eq(rsr_names.sorted(), ['parts-5-35', 'parts-6-42'])
+assert_eq(rsr_kids.map(|k| k.tag).sorted(), ['kid-5', 'kid-6'])
+assert_eq(rsr_kids.map(|k| k.of[0]).sorted(), [5, 6])
+# What the bodies did not take went with the collection that ran them.
+assert_eq(GC.refcount(rsr_kids[0]) - GC.refcount(rsr_one[0]), 0)
+
+# --- 4) One collection, two cycles: the one whose body keeps it stays, the
+# other is swept by that same collection.
+mut rsr_mixed = []
+class RsrMixed {
+  new(.keep) {
+    self.me = nil
+  }
+  drop() {
+    rsr_mixed.push(self) if self.keep
+  }
+}
+fn rsr_two_cycles() {
+  mut m = RsrMixed(true)
+  m.me = m
+  m = RsrMixed(false)
+  m.me = m
+  m = nil
+  GC.stat()  # before the scope's exit, which would resolve them itself
+  nil
+}
+fn rsr_let_go() {
+  rsr_mixed[0].me = nil
+  rsr_mixed = []
+  nil
+}
+# The counts are read inside one call: a top-level binding made between two
+# readings would be in the second (under `culebra test` it is a cell).
+fn rsr_count_two_cycles() {
+  let before = GC.stat().rc_objects
+  rsr_two_cycles()
+  let kept = GC.stat().rc_objects - before
+  let kept_one = rsr_mixed.size() == 1 && rsr_mixed[0].keep
+  rsr_let_go()
+  let left = GC.stat().rc_objects - before
+  [kept, kept_one, left]
+}
+rsr_two_cycles()  # once unmeasured: what a first run costs stays out of the count
+rsr_let_go()
+assert_eq(rsr_count_two_cycles(), [1, true, 0])  # the kept one, then nothing
+
+# --- 5) A body that replaces its own `drop` slot is still running the
+# closure the slot held: what that closure captured stays until it returns.
+let rsr_log = []
+fn rsr_replacing(tag) {
+  let secret = ["cap-{tag}"]
+  let o = {id: tag}
+  o.drop = fn () {
+    o.drop = fn () {
+      nil
+    }
+    rsr_churn()
+    rsr_log.push(secret[0])
+    rsr_log.push(o.id)
+  }
+  o
+}
+fn rsr_replace() {
+  let a = rsr_replacing('a')
+  a.drop()
+  nil
+}
+rsr_replace()
+assert_eq(rsr_log, ['cap-a', 'a'])
+
+# --- 6) The body stores `self` in an object it makes, and nothing else holds
+# that object: garbage holding what the collection was about to sweep. The
+# collection leaves the new object alone, so it leaves what it references
+# alone too; the next one finds both unreachable and takes them together.
+mut rsr_boxed_drops = 0
+class RsrBoxed {
+  new(.n) {
+    self.me = nil
+  }
+  drop() {
+    rsr_boxed_drops += 1
+    self.extra = {back: self, tag: "x-{self.n}"}
+  }
+}
+fn rsr_boxed_rounds() {
+  for round in 0..10 {
+    mut b = RsrBoxed(round)
+    b.me = b
+    b = nil
+    GC.stat()
+    rsr_churn()
+  }
+  nil
+}
+rsr_left(rsr_boxed_rounds)  # once unmeasured, as above
+assert_eq(rsr_left(rsr_boxed_rounds), 0)
+assert_eq(rsr_boxed_drops, 20)
+
+# --- 7) The same, the new object a cycle with a `drop` of its own: when the
+# next collection runs that body, what it holds is still whole.
+mut rsr_seen = []
+class RsrHeld {
+  new(.n) {
+    self.me = nil
+    self.payload = [n, n + 1]
+  }
+  drop() {
+    let box = {}
+    box.me = box
+    box.held = self
+    box.drop = fn () {
+      rsr_seen.push(box.held.payload[0])
+    }
+    nil
+  }
+}
+for round in 0..10 {
+  mut h = RsrHeld(round)
+  h.me = h
+  h = nil
+  GC.stat()
+  rsr_churn()
+  GC.stat()
+  rsr_churn()
+}
+assert_eq(rsr_seen.sorted(), iota(10))

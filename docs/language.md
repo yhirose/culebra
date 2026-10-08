@@ -4935,12 +4935,11 @@ What the body does to the references to its own object stands once it
 returns or throws. A reference it lets go of is gone: an object whose
 `drop` breaks its own cycle is reclaimed as soon as nothing else holds
 it, without waiting for a collection. A reference it stores (`log.push(self)`)
-is a reference like any other when the `drop` was fired by an explicit
-`x.drop()` or by a scope's exit resolving a cycle: the object stays for
-whoever holds it, dropped and never dropped again. Everywhere else the
-object is already being reclaimed when its `drop` runs, because the last
-reference went away or a collection found it unreachable. A reference
-stored from that body does not keep it, and the body must not store one.
+is a reference like any other, whatever fired the `drop`: an explicit
+`x.drop()`, a scope's exit, the last reference going away, or a
+collection that found the object unreachable. The object stays for
+whoever holds it, whole, dropped and never dropped again. The same goes
+for anything the body takes out of the object, such as a field's value.
 
 **Replacement order**: overwriting what a slot holds — `a[i] = v`,
 `o.x = v`, `o[k] = v`, or reassigning a variable — stores the new
@@ -5036,8 +5035,10 @@ backend suppresses `drop` where the top-level scope is released, and
 an **uncaught** error is the same exit — the scopes the error passes
 through release deterministically (each one's `defer`s, then its own
 bindings, innermost first), but the top level's own bindings still
-leak un-dropped. For script-wide resources, prefer `defer` (§15) or
-explicit cleanup, which run on both exits.
+leak un-dropped. The same holds for an object something else keeps
+until exit, such as one a trait's default method captured: no `drop`
+runs once the program is over. For script-wide resources, prefer
+`defer` (§15) or explicit cleanup, which run on both exits.
 
 **JIT**: auto-drop fires under `--jit` with the same timing as the
 VM — at scope exit, cycle members included, closure-held shapes too

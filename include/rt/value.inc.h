@@ -1119,18 +1119,19 @@ inline void _jit_replace_value(JitValue& slot, int8_t tag, int64_t data) {
 }
 
 inline void _culebra_cell_release(JitCell* c);
-inline void _culebra_call_drop_if_present(JitObject* o);
-// Raised only around `__culebra_main`'s top-level scope release at
-// program exit (set via culebra_runtime_set_drop_suppressed below):
-// top-level bindings leak without `drop`, matching the interpreter's
-// never-torn-down global Environment. Everywhere else drop fires —
-// refcount-0 cascades are precise, scope exits resolve their owned
-// regions, and the GC's finalize pass backstops orphans exactly once
-// (the `dropped` flag dedupes all of them). _culebra_call_drop_if_present
-// honors the flag.
+inline bool _culebra_call_drop_if_present(JitObject* o);
+// Raised at program exit, and only there: around `__culebra_main`'s
+// top-level scope release (set via culebra_runtime_set_drop_suppressed
+// below), around the teardown collect, and by ~Runtime — unless the Runtime
+// is a worker's — for everything its tables still hold. What is left then
+// goes without `drop` (§17).
+// Everywhere else drop fires — refcount-0 cascades are precise, scope exits
+// resolve their owned regions, and the GC's finalize pass backstops orphans
+// exactly once (the `dropped` flag dedupes all of them).
+// _culebra_call_drop_if_present honors the flag. It is the Runtime's own, so
+// two Runtimes on one thread do not share it.
 inline bool& _jit_drop_suppressed() {
-  static thread_local bool v = false;
-  return v;
+  return culebra::current_runtime().drop_suppressed;
 }
 
 // Toggle the suppression flag from emitted IR. `__culebra_main` wraps its
@@ -1490,7 +1491,9 @@ void _jit_gc_enumerate_roots(std::vector<void*>& out);
 void _jit_gc_sweep_object(void* obj, uint8_t type_tag);
 }
 
-inline void _jit_gc_finalize_dead(const std::vector<void*>& dead);
+inline bool _jit_gc_finalize_dead(
+    const std::vector<culebra::gc::Heap::Counted>& dead);
+inline void _jit_gc_release_edge(void* obj, uint8_t type_tag);
 
 // Traced-only tags carry no refcount at offset 0 (String bytes / a view's
 // borrowed ptr live there). The Heap's RC-accounting paths consult this to
@@ -1506,6 +1509,7 @@ inline culebra::gc::Heap& _gc_heap(culebra::Runtime& rt) {
     h.set_extra_roots_fn(&_jit_gc_enumerate_roots);
     h.set_sweep_fn(&_jit_gc_sweep_object);
     h.set_finalize_fn(&_jit_gc_finalize_dead);
+    h.set_release_fn(&_jit_gc_release_edge);
     h.set_no_rc_fn(&_jit_gc_is_traced_only);
     h.mark_callbacks_wired();  // arms threshold/stress collects (must be last)
   }

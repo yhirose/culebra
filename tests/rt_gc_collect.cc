@@ -80,6 +80,72 @@ int main() {
   assert(heap.is_object(root2) && heap.is_object(Q) && heap.is_object(P));
   assert(heap.live_count() >= 6);  // 6 reachable objects all survive
 
+  // --- a finalizer hands a dead object to the living: that object stays,
+  // with what it references, and the rest of the dead are still swept ---
+  {
+    Heap h2;
+    h2.set_children_fn(&node_children);
+    static Heap* heap2;
+    static Node* live;
+    static Node* taken;
+    static Node* boxed;
+    static void* box;
+    static int finalize_calls;
+    heap2 = &h2;
+    live = new_node(h2);
+    Node* kid = new_node(h2);
+    taken = new_node(h2, kid);
+    boxed = new_node(h2);
+    void* gone = new_node(h2);
+    finalize_calls = 0;
+    h2.set_finalize_fn([](const std::vector<Heap::Counted>& dead) {
+      finalize_calls++;
+      assert(dead.size() == 4);  // taken, kid, boxed, gone
+      live->kids[0] = taken;
+      // Stored in an object the finalizer made, which no root reaches: this
+      // sweep leaves that object alone, so what it references stays too.
+      box = new_node(*heap2, boxed);
+      return true;  // user code ran
+    });
+    assert(h2.collect_precise({live}) == 1);
+    assert(finalize_calls == 1);
+    assert(h2.is_object(taken) && h2.is_object(kid) && !h2.is_object(gone));
+    assert(h2.is_object(box) && h2.is_object(boxed));
+
+    // A pass that ran nothing is believed: the dead are swept as found.
+    live->kids[0] = nullptr;
+    h2.set_finalize_fn([](const std::vector<Heap::Counted>&) { return false; });
+    assert(h2.collect_precise({live}) == 4);  // taken, kid, box, boxed
+    assert(h2.live_count() == 1);
+  }
+
+  // --- the dead give back what they held on survivors: one release per
+  // edge that leaves the dead set, none for an edge inside it ---
+  {
+    Heap h3;
+    h3.set_children_fn(&node_children);
+    static std::vector<void*> released;
+    static Heap* heap3;
+    static void* swept[2];
+    heap3 = &h3;
+    released.clear();
+    Node* survivor = new_node(h3);
+    Node* g1 = new_node(h3, survivor, survivor);
+    Node* g2 = new_node(h3, g1, survivor);
+    swept[0] = g1;
+    swept[1] = g2;
+    h3.set_release_fn([](void* o, uint8_t tag) {
+      assert(tag == kNodeTag);
+      // After the sweep: a release may run user code, which must find no
+      // half-swept object.
+      assert(!heap3->is_object(swept[0]) && !heap3->is_object(swept[1]));
+      released.push_back(o);
+    });
+    assert(h3.collect_precise({survivor}) == 2);
+    assert(released == std::vector<void*>(3, survivor));
+    assert(h3.is_object(survivor));
+  }
+
   // keep roots live to end so they're genuine roots during collect()
   asm volatile("" : : "r"(root), "r"(A), "r"(D), "r"(root2), "r"(Q), "r"(P)
                : "memory");
