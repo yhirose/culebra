@@ -73,6 +73,9 @@ difftest・AOT・leak 系・wrap はそこで必ず走る。ローカルで全�
   AOT リンクは `test-macos` が1本（dead-strip 越し）、`macos-canvas-window` が1本
   （`culebra_rt_canvas` の force-load）を見る。**per-test の AOT スイープは走らない**ので、
   「macOS だけで壊れる AOT リンク」（実例あり）のうちこの2軸以外はローカルだけ
+- 同じ理由で **macOS の vm/jit symmetry は op 被覆の部分集合**（`jit_shape_set.txt`、`just test-dev` と
+  同じ）だけを掃く。全 `tests/*.cul` の `--jit` は Ubuntu の ci-light（x86-64）でしか走らないので、
+  **arm64 でしか出ず、被覆外のファイルでしか踏まない JIT の不具合**は Mac で `just test` を回すまで見えない
 - **実際にウィンドウが開くこと**の macOS 側。Linux は Xvfb 下で実窓生成まで見るが、
   macOS ランナーにディスプレイサーバが無いので raylib の window path に入るのはローカルだけ
 

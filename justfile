@@ -496,7 +496,7 @@ check-preambles:
 #   embed             — C++ ctest (mt_smoke, mi_smoke, define_smoke).
 #   wrap              — `culebra wrap` end-to-end (rebuilds the tree).
 # The single-backend modes are for focused debugging.
-[doc("Full gate (no-LTO gate build). BACKEND=all|fast|jit|aot|embed|isolate|wrap (default: all). JOBS=N controls parallelism (default: CPU cores). CULEBRA_TEST_SKIP_HEAVY=1 skips difftest + gc-stress + AOT (set on the slow macOS CI runner); CULEBRA_TEST_WRAP=1 adds the wrap lane (CI runs it as its own lane instead).")]
+[doc("Full gate (no-LTO gate build). BACKEND=all|fast|jit|aot|embed|isolate|wrap (default: all). JOBS=N controls parallelism (default: CPU cores). CULEBRA_TEST_SKIP_HEAVY=1 skips difftest + gc-stress + AOT and sweeps the JIT lane over the op cover (set on the slow macOS CI runner); CULEBRA_TEST_WRAP=1 adds the wrap lane (CI runs it as its own lane instead).")]
 [group("test")]
 test BACKEND='all': check-generated build-gate
     @BIN=./build-gate/culebra {{lock_cmd}} just _run-tests {{BACKEND}}
@@ -638,7 +638,8 @@ _run-tests BACKEND:
 
     # The files this lane sweeps. SCOPE=full is the corpus; SCOPE=shape is the
     # op cover (tools/checks/jit_shape_set.txt) plus whatever test files the
-    # branch touches, which is what the landing gate runs: the corpus costs 610
+    # branch touches, which is what the landing gate runs, and CI's macOS job
+    # in place of the full sweep it skips as heavy: the corpus costs 610
     # CPU seconds on the --jit leg against 17 on the --vm leg — LLVM, not
     # execution — and the cover buys 147 of the 151 ops back for 71 of those
     # 610. The full sweep runs in `just test` and in CI's ci-light on every
@@ -1568,7 +1569,9 @@ _run-tests BACKEND:
     #         | with CULEBRA_TEST_WRAP | local  a local-only variant whose full
     #         | version runs in a CI shard (the sampled AOT sweep, the CLI
     #         | half of ctest), exempt from the rule that a full-gate phase
-    #         | must reach CI
+    #         | must reach CI | reduced  a heavy row's cheaper form: the full
+    #         | gate runs it only where CULEBRA_TEST_SKIP_HEAVY skipped that
+    #         | row, and the same rule exempts it
     #   cost  | measured wall seconds, single run, 8-core M1 Pro, warm build-gate
     #
     # Order is execution order: cheap first, then the corpus sweeps, AOT last
@@ -1594,8 +1597,8 @@ _run-tests BACKEND:
       "run_webview_dynload|webview dynload (engine stays behind dlopen)|tree|test|buildtree|-|0"
       "run_jit_shape_set|jit shape set (the subset still covers every op)|binary|check,dev,test|light|-|3"
       "run_doctest_skips|doctest skips (a skip is justified, or says why)|binary|check,dev,test|light|-|3"
-      "run_diff_vm_jit shape|vm/jit symmetry (the op cover + what the branch touched)|binary|dev|-|local|15"
-      "run_diff_vm_jit full|vm/jit symmetry (every test file)|binary|test|light|-|116"
+      "run_diff_vm_jit shape|vm/jit symmetry (the op cover + what the branch touched)|binary|dev,test|-|reduced|15"
+      "run_diff_vm_jit full|vm/jit symmetry (every test file)|binary|test|light|heavy|116"
       "run_vm_cases gc|vm_cases (frozen expected, + the two GC axes)|binary|test|light|-|62"
       "run_codegen_backends|codegen backends (-O0, fast vs --vm)|binary|dev,test|light|-|24"
       "run_gen_frames probes|generator frames (probes == frozen on both engines)|binary|dev,test|light|-|12"
@@ -1637,7 +1640,7 @@ _run-tests BACKEND:
             read -r -a cmd <<< "$fn"
             declare -F "${cmd[0]}" > /dev/null \
                 || { echo "gate table: no such phase function: ${cmd[0]}" >&2; bad=1; }
-            [[ ",$tiers," != *",test,"* || -n "$ci" || "$gate" == local ]] \
+            [[ ",$tiers," != *",test,"* || -n "${ci#-}" || "$gate" == local || "$gate" == reduced ]] \
                 || { echo "gate table: $fn is in the full gate but no CI shard" >&2; bad=1; }
             if [[ "$needs" == tree && ",$ci," == *",light,"* ]]; then
                 echo "gate table: $fn needs a build tree but rides the binary-only ci-light shard" >&2
@@ -1666,6 +1669,7 @@ _run-tests BACKEND:
             esac
             case "$gate" in
               heavy) [[ -z "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || continue ;;
+              reduced) [[ "$sel" != test || -n "${CULEBRA_TEST_SKIP_HEAVY:-}" ]] || continue ;;
               wrap)  [[ -n "${CULEBRA_TEST_WRAP:-}" || "$sel" == wrap ]] || continue ;;
             esac
             n=$((n + 1))
@@ -1737,7 +1741,9 @@ _run-tests BACKEND:
       # CULEBRA_TEST_SKIP_HEAVY skips the platform-independent heavy phases
       # (the generated difftest and its refcount lane, the gc-stress sweep, and the
       # per-test AOT links). CI sets it on the slow macOS runner — those run on
-      # Linux CI and in local dev.
+      # Linux CI and in local dev. It also takes the vm/jit sweep down to the
+      # op cover (the `reduced` row), which is not platform-independent: an
+      # arm64-only break in a file outside the cover goes unseen on a push.
       # The wrap row is opt-in rather than skip-by-flag: wrap rebuilds the
       # whole tree, which doubled this gate, and only a wrap/CMake/AOT change
       # can break it. Ubuntu CI runs it as its own lane (`_run-tests wrap`);

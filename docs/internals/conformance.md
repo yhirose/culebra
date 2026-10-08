@@ -149,6 +149,12 @@ the generated corpus (`tools/difftest`, ~17k cases on both lanes) covers by
 construction, and why the full 279-file sweep still runs in `just test` and
 in CI's `ci-light` on every push.
 
+CI's macOS job sweeps the cover as well, in place of the full sweep: the
+full one is five minutes of its three cores, nearly all of it LLVM. The
+full sweep therefore runs on x86-64 Linux only, and a break that needs
+both the arm64 backend and a file outside the cover is seen when
+`just test` is run on a Mac, not on a push.
+
 ### The gate's own cost
 
 `tools/checks/gate_budget.txt` records each swept population — the corpus,

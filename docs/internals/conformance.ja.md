@@ -143,6 +143,12 @@ executorが実装する全 bytecode opを JITが降ろすことを保つ最小�
 生成コーパス(`tools/difftest`、両レーンで約17,000ケース)が構成的に覆う。
 だから279ファイルの全掃きは`just test`と CIの`ci-light`で毎 push走る。
 
+CIの macOSジョブも全掃きの代わりにこの coverを掃く。全掃きは3コアで
+5分かかり、そのほとんどが LLVMである。したがって全掃きが走るのは
+x86-64の Linuxだけで、arm64のバックエンドと cover外のファイルの両方が
+揃って初めて出る不具合は、pushではなく Macで`just test`を回したときに
+見つかる。
+
 ### ゲート自身のコスト
 
 `tools/checks/gate_budget.txt`が掃く母集団——コーパス、isolateファイル、

@@ -452,7 +452,8 @@ jobs:
       # ~64 min → ~18).
       CULEBRA_BUILD_JOBS: "2"
       # `_run-tests all` skips the platform-independent heavy phases
-      # (difftest, leak sweeps, gc-stress, AOT) when this is non-empty.
+      # (difftest, leak sweeps, gc-stress, AOT) when this is non-empty, and
+      # sweeps the JIT lane over the op cover rather than every test file.
       CULEBRA_TEST_SKIP_HEAVY: "1"
       # A runner has no display; building the vendored SDL3 + raylib statics
       # would add ~4 min. Job-wide env, not a -D on the build step, so every
