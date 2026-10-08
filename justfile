@@ -2124,7 +2124,15 @@ check-site-playground-sync:
 [group("site")]
 [doc("Serve site/ locally (run `just site-build` first if the playground needs rebuilding)")]
 site-serve port="8000":
-    ./build-dev/culebra serve -p {{port}} -d site
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Static files come out the same from either build, so take the one this
+    # tree has: a topic worktree has `just dev`'s, the main tree `just build`'s.
+    for bin in ./build-dev/culebra ./build/culebra; do
+      if [ -x "$bin" ]; then exec "$bin" serve -p {{port}} -d site; fi
+    done
+    echo "site-serve: no culebra here -- run \`just dev\` or \`just build\` first" >&2
+    exit 1
 
 # The committed pages under site/ are what GitHub Pages serves, and both name
 # the version: the Playground's is stamped by build.sh from include/culebra.h,
