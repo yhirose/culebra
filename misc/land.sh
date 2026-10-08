@@ -68,6 +68,13 @@ for attempt in $(seq 1 "$max_attempts"); do
   ( cd "$worktree" && just test-dev )
 
   if git -C "$main_repo" merge --ff-only "$branch"; then
+    # The merge moves gitlinks but checks out nothing for a submodule the main
+    # tree never initialized, so one the branch added would stay empty there.
+    # The landing itself is done by now, so a failure here only warns.
+    if ! git -C "$main_repo" submodule update --init --recursive; then
+      echo "land: WARNING -- submodules in $main_repo are out of date; run" >&2
+      echo "  git -C \"$main_repo\" submodule update --init --recursive" >&2
+    fi
     echo "land: OK -- master is now $(git -C "$main_repo" rev-parse --short master)"
     exit 0
   fi
