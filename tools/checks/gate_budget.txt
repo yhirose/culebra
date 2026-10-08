@@ -67,7 +67,9 @@
 # drop body runs after the program has ended; a worker's still do).
 # 310 since test_closure_object_count.cul (a closure costs the same refcounted
 # objects on every engine: itself and a cell per captured variable).
-tests.cul 310
+# 311 since test_class_name_rebound.cul (a class name its scope declares
+# again, as a fn or a let, reads as whatever was written to it last).
+tests.cul 311
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

@@ -6858,11 +6858,17 @@ class Compiler {
   }
 
   ExprResult read_borrowed_head(const peg::Ast& at, const Binding& b) {
-    if (b.lazy) {
-      StampGuard pos(*this, at);
-      emit(Op::UnboundErr, b.slot, kconst_str(b.name), /*in_cell=*/1);
-    }
+    guard_lazy(at, b);
     return {b.slot, false};
+  }
+
+  // The guard a lazy read owes, at the name's own position, with no value
+  // taken: the name is only asked whether its declaration has run.
+  void guard_lazy(const peg::Ast& at, const Binding& b) {
+    if (!b.lazy) return;
+    ensure_session_slot(b);
+    StampGuard pos(*this, at);
+    emit(Op::UnboundErr, b.slot, kconst_str(b.name), /*in_cell=*/b.is_cell);
   }
 
   // Scope-level defer mark, established around a block whose scope declares
@@ -8049,13 +8055,20 @@ class Compiler {
                     })) {
       ctor_chunk_idx = static_cast<int32_t>(prog_.chunks.size());
       prog_.chunks.emplace_back();
-      grant_known_ctor(decl, ctor_chunk_idx);
+      // The name answers for the class only where this declaration is its
+      // scope's one writer of it: a `fn Name` or a `let Name` beside the
+      // class writes the same cell, before it or after, and what a read of
+      // the name finds is then a run-time question. (A member asks its
+      // receiver rather than the name, and keeps the chunk either way.)
+      if (analysis_.sole_class_decls.contains(&ast))
+        grant_known_ctor(decl, ctor_chunk_idx);
       // The same grant carries the declaration itself when the class can be
       // laid out as its fields, which is what an inlined construction reads
       // the member bodies from. Only where the grant took: a refused
       // constructor is a name whose value can move, and unboxing it would
       // rest on the same answer the refusal just withheld.
-      if (decl.known.ctor >= 0 && culebra::value_flat_layout(class_name))
+      if (is_value && decl.known.ctor >= 0 &&
+          culebra::value_flat_layout(class_name))
         decl.known.value_class = &ast;
     }
 
@@ -11847,11 +11860,15 @@ class Compiler {
     if (head.tag != "IDENTIFIER"_) return nullptr;
     const Binding* b = lookup_at(head);
     if (b) {
-      // A lazy binding is a run-time question about WHICH class the name
-      // holds (a member's own name reads it off the receiver), and unboxing
-      // has no guarded arm to fall back to — it either lays the instance out
-      // or it does not. So only the settled answer inlines.
-      return b->lazy ? nullptr : b->known.value_class;
+      // Only a class declaration grants this, to its own name, and only where
+      // it is the one writer of that name in its scope (sole_class_decls):
+      // the name holds this class or nothing yet. A lazy binding (the
+      // declaration is still running: a static value, or a function made in
+      // one) leaves "nothing yet" to run time, and the emitting caller asks
+      // it (guard_lazy) before it lays an instance out. A member's own name,
+      // read off the receiver, is a question about WHICH class and is never
+      // granted one.
+      return b->known.value_class;
     }
     // No live local of this name: an UNSHADOWED stdlib namespace identifier
     // is never a `lookup()`-able Binding at all — every stdlib lazy module
@@ -12039,8 +12056,17 @@ class Compiler {
                              allow_trailing_class))
       return std::nullopt;
 
-    // Committed. The run and every later step's run belong to the caller's
-    // scope, so they outlive each splice's own scope.
+    // Committed. A name read while its declaration is still running owes the
+    // guard its boxed read would have run, and here, ahead of the arguments,
+    // is where that read sits.
+    // A body of this class being spliced in asks nothing: it runs on an
+    // instance, and none is built before the name is bound (the enclosing
+    // construction, if that is what is being spliced, asked just above).
+    bool own_body = !inlines_.empty() && inlines_.back().class_ast == cls;
+    if (const Binding* named = own_body ? nullptr : lookup_at(*ast.nodes[0]))
+      guard_lazy(*ast.nodes[0], *named);
+    // The run and every later step's run belong to the caller's scope, so
+    // they outlive each splice's own scope.
     auto fresh_run = [&] { return alloc_zeroed_run(ast, class_name, *layout); };
     auto compile_args = [&](const peg::Ast& args,
                             std::vector<ExprResult>& out,

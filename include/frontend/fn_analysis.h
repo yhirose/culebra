@@ -154,6 +154,13 @@ struct FnAnalysis {
   // this only when `lookup()` finds no live local shadowing the name.
   std::map<std::string, const peg::Ast*, std::less<>> stdlib_value_classes;
 
+  // The class declarations whose name nothing else in their scope declares.
+  // The cell such a name binds through has that one writer, which is what
+  // lets the compiler take the class from the name without asking at run
+  // time (vm.h's constructor and layout grants); a `fn Name` or a `let Name`
+  // beside the class writes the same cell.
+  std::unordered_set<const peg::Ast*> sole_class_decls;
+
   // `session`: the names earlier inputs of a session declared, when
   // `session_top` (resolve::Options::session).
   FuncInfo analyze_program(const peg::Ast& programAst,
@@ -282,6 +289,7 @@ struct FnAnalysis {
     if (node.tag == "CLASS_DECL"_) {
       size_t i = culebra::first_non_decorator_index(node);
       for (size_t d = 0; d < i; d++) visit(*node.nodes[d], info);
+      if (declared_once(*node.nodes[i])) sole_class_decls.insert(&node);
       // A class whose value the declarator loop never touches names
       // itself through its receiver (FuncInfo::own_name) rather than
       // capturing the declaring scope's cell — the ring

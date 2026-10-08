@@ -125,8 +125,32 @@ fn drift(n) {
 println(drift(1000))
 CUL
 
+# A fourth row for a function kept in a static of the class it builds. It is
+# made while the class is still being declared, so the name it captures is
+# one whose declaration may not have run: the construction asks that once
+# (a guard) and is laid out in slots all the same. Declining to lay it out
+# there cost nothing a test could see, only an instance per iteration.
+cat > "$TMP/static_fn.cul" <<'CUL'
+@value
+class Step {
+  new(.x: Float, .y: Float) {}
+  __add__(o) {
+    Step.new(self.x + o.x, self.y + o.y)
+  }
+  static walk = fn (n) {
+    let mut at = Step.new(0.0, 0.0)
+    for _ in 0..n {
+      at += Step.new(1.0, 2.0)
+    }
+    at.x + at.y
+  }
+}
+
+println(Step.walk(1000))
+CUL
+
 # The first two rows carry four Floats (px/py/vx/vy; the x and y of `p` and
-# `v`); while_one carries the one its name says.
+# `v`); while_one carries the one its name says, static_fn the x and y of `at`.
 MIN_ROW_PHIS=4
 
 scan() {  # $1 = probe basename, $2 = double phis its busiest function needs
@@ -210,12 +234,15 @@ fail=0
 scan scalars || fail=1
 scan vector2 || fail=1
 scan while_one 1 || fail=1
+scan static_fn 2 || fail=1
 if (( fail )); then
   echo "float-carry FAIL (see above)." >&2
   echo "  A phi every edge feeds a double should be a double phi, and each row" >&2
   echo "  should still hold one per Float it carries. Check that" >&2
   echo "  JIT::PromoteFloatPhis is registered (optimize_module) and still" >&2
-  echo "  recognises the emitter's shape." >&2
+  echo "  recognises the emitter's shape. A row with no double phi at all has" >&2
+  echo "  lost its slots before the JIT saw it: the compiler declined to lay" >&2
+  echo "  the @value instance out (vm.h, postfix_value_class and its callers)." >&2
   exit 1
 fi
 echo "float-carry OK (every phi owed a double is one)"

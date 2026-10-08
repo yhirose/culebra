@@ -191,6 +191,49 @@ test_static_field_own_class = fn () {
     static kind = || type_of(SfOwnLater)
   }
   assert_eq([SfOwnLater.make().v, SfOwnLater.kind()], [1, 'Class'])
+
+  # A flat `@value` class's construction is laid out in slots, with no class
+  # object to ask at run time, so the read owes its guard there as well, and
+  # ahead of the arguments, which never run.
+  mut ran = []
+  let note = fn (v) {
+    ran.push(v)
+    v
+  }
+  let flat = said(fn () {
+    @value
+    class SfOwnFlat {
+      new(.x: Float, .y: Float) {}
+      static early = SfOwnFlat.new(note(1.0), note(2.0)).x
+    }
+  })
+  assert_eq([flat, ran], [unbound('SfOwnFlat'), []])
+  let flat_called = said(fn () {
+    @value
+    class SfOwnFlatCalled {
+      new(.x: Float, .y: Float) {}
+      static early = (|| SfOwnFlatCalled.new(1.0, 2.0).x)()
+    }
+  })
+  assert_eq(flat_called, unbound('SfOwnFlatCalled'))
+
+  @value
+  class SfOwnFlatLater {
+    new(.x: Float, .y: Float) {}
+    __add__(o) {
+      SfOwnFlatLater.new(self.x + o.x, self.y + o.y)
+    }
+    static walk = fn (n) {
+      let mut at = SfOwnFlatLater.new(0.0, 0.0)
+      for _ in 0..n {
+        at += SfOwnFlatLater.new(1.0, 2.0)
+      }
+      at.x + at.y
+    }
+    static make = || SfOwnFlatLater.new(1.0, 2.0)
+  }
+  assert_eq(SfOwnFlatLater.walk(10), 30.0)
+  assert_eq(SfOwnFlatLater.make(), SfOwnFlatLater(1.0, 2.0))
 }
 
 test_static_field_basic()
