@@ -113,6 +113,27 @@ else()
   set(_culebra_enable_lto FALSE)
 endif()
 
+# A submodule that was never checked out is an empty directory, which the
+# build only notices at the first #include of it. Report it at configure time.
+function(_culebra_require_submodules)
+  set(_missing "")
+  foreach(_sub IN LISTS ARGN)
+    file(GLOB _entries "${CMAKE_CURRENT_SOURCE_DIR}/vendor/${_sub}/*")
+    if(NOT _entries)
+      list(APPEND _missing "vendor/${_sub}")
+    endif()
+  endforeach()
+  if(_missing)
+    list(JOIN _missing " " _paths)
+    message(FATAL_ERROR
+      "Submodule not checked out: ${_paths}. Run:\n"
+      "  git submodule update --init --recursive ${_paths}")
+  endif()
+endfunction()
+_culebra_require_submodules(cpp-peglib cpp-vmlib cpp-linenoise cpp-unicodelib
+                            cpp-regexlib cpp-fstlib cpp-httplib cpp-searchlib
+                            cpp-embedlib)
+
 include_directories(./include)
 # cpp-tensorlib (header-only): the Tensor execution engine (lazy graph,
 # fusion, Accelerate/Metal backends). Vendored as a git submodule under
@@ -182,6 +203,7 @@ option(CULEBRA_ENABLE_AUDIO
   "Enable the Audio namespace's native backend (raylib's raudio, standalone)" ON)
 set(_audio_link "")
 if(CULEBRA_ENABLE_AUDIO)
+  _culebra_require_submodules(raylib)
   add_library(culebra_raudio OBJECT ./src/runtime/culebra_raudio.c)
   target_include_directories(culebra_raudio PRIVATE ./src/runtime)
   target_compile_options(culebra_raudio PRIVATE -w -ffunction-sections -fdata-sections)
@@ -256,6 +278,7 @@ set(_zlib_link "-lz")
 # build"; the WASM playground's own build defines nothing and gets them too.
 option(CULEBRA_ENABLE_ZIP "Enable ZIP archives (Dir.zip, Compress.zip)" ON)
 if(CULEBRA_ENABLE_ZIP)
+  _culebra_require_submodules(cpp-zipper)
   add_compile_definitions(CULEBRA_ENABLE_ZIP)
   # BEFORE: a zlib prefix such as Homebrew's ships its own minizip headers.
   include_directories(BEFORE ./vendor/minizip ./vendor/cpp-zipper)
@@ -1835,6 +1858,7 @@ endforeach()
 # the vendored SDL via CMAKE_PREFIX_PATH; both statics + frameworks are supplied
 # at the final link (a static archive records no link deps of its own).
 if(CULEBRA_ENABLE_SCENE OR CULEBRA_ENABLE_CANVAS_WINDOW)
+  _culebra_require_submodules(SDL raylib)
   include(ExternalProject)
   # Each dependency is built only when its static isn't already at the cache
   # path resolved above — a hit means some earlier build dir, possibly in
