@@ -114,7 +114,7 @@ tierが走らせるか、どの CIシャードが走らせるか、実測コス�
 
 | tier | 答える問い | 中身 |
 |---|---|---|
-| `just check` | この編集は既にツリーが主張していることを壊したか | source/IR ratchetと、8,539個の assertionを executor 1プロセスで |
+| `just check` | この編集は既にツリーが主張していることを壊したか | source/IR ratchetと、8,539個の assertionを executorで(20ファイルごとに1プロセス) |
 | `just test-dev` | これを masterに入れてよいか(`just land`はこれだけを回す) | 上記＋op coverに対する JITレーン、`-O0`と faststartの codegen軸、`ctest`の CLI半分、言語フロントエンド、isolate |
 | `just test` | これを pushしてよいか | 全コーパス×全軸、AOT含む |
 | CI | 両 OSと、ラップトップから見えないもの | 全掃き、refcount/leakレーン、プラットフォーム・ウィンドウビルド |

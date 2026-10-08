@@ -117,7 +117,7 @@ phase riding a binary-only shard, and a lane that selects nothing.
 
 | tier | question it answers | what it holds |
 |---|---|---|
-| `just check` | did this edit break what the tree already asserts | the source and IR ratchets, and all 8,539 assertions in one executor process |
+| `just check` | did this edit break what the tree already asserts | the source and IR ratchets, and all 8,539 assertions on the executor, twenty files to a process |
 | `just test-dev` | may this reach master (`just land` runs this and nothing else) | the above, plus the JIT lane over the op cover, the `-O0` and faststart codegen axes, the CLI half of `ctest`, the language front ends, isolate |
 | `just test` | may this be pushed | every axis over every corpus, AOT included |
 | CI | both operating systems, and what a laptop cannot see | the full sweeps, the refcount and leak lanes, the platform and window builds |

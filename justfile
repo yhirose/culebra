@@ -502,7 +502,7 @@ test BACKEND='all': check-generated build-gate
     @BIN=./build-gate/culebra {{lock_cmd}} just _run-tests {{BACKEND}}
 
 # The tier below test-dev: the source and IR ratchets plus the whole assertion
-# corpus in one executor process, and nothing that compiles the corpus through
+# corpus on the executor, and nothing that compiles the corpus through
 # LLVM. Cheap enough to run on every save, and it answers the question most
 # edits raise — did I break what the tree already asserts. `just test-dev` is
 # the gate for landing, `just test` for pushing.
@@ -1140,24 +1140,45 @@ _run-tests BACKEND:
     # session for. No skip list: a file that cannot run here is a bug. The
     # file count is asserted too, since these files register no `test(...)`,
     # so a runner that quietly ran nothing would exit 0 all the same.
+    #
+    # `sliced` is the edit loop's form: the same files on the same lane,
+    # twenty to a process and the processes side by side. One process spends
+    # 6 CPU seconds on the corpus and 27 on the clock, because three files
+    # wait rather than compute — test_fs_watch closes 400 inotify instances at
+    # 16 ms of kernel time each, test_http_server and test_proc sit out their
+    # timeouts — and one after another is the only way a single session can
+    # take them. What a slice cannot see is one file's leak into a file
+    # outside its twenty; the whole sweep, in the landing gate and above,
+    # still does.
     run_unit_runner_sweep() {
-        local out rc=0 want
+        local mode="${1:-whole}" d="$job_dir/unit-${1:-whole}" want got=0 per f n
         want=$(ls tests/*.cul | wc -l | tr -d ' ')
+        per=$want
+        [[ "$mode" == sliced ]] && per=20
+        mkdir -p "$d"
         # stdin from /dev/null, as the xargs phases get it: test_io_streams
         # reads a non-terminal stdin to EOF, and a pipe nobody closes (an
         # editor's or agent's shell) held the sweep until its timeout.
-        out=$(cul test --vm --reporter json tests/*.cul 2>&1 < /dev/null) || rc=$?
-        if [[ "$rc" != 0 ]]; then
-            echo "culebra test: the tests/*.cul sweep failed (rc $rc)" >&2
-            printf '%s\n' "$out" | grep -E '"event":"(file_error|test_fail)"' | tail -20 >&2 || true
-            printf '%s\n' "$out" | tail -3 >&2
+        printf '%s\n' tests/*.cul | xargs -n "$per" -P "$JOBS" bash -c '
+            d="$1"; shift
+            out="$d/$(basename "$1" .cul)"
+            cul test --vm --reporter json "$@" > "$out.out" 2>&1 < /dev/null \
+                || echo "$?" > "$out.fail"
+        ' _ "$d"
+        for f in "$d"/*.fail; do
+            echo "culebra test: the tests/*.cul sweep failed (rc $(cat "$f"))" >&2
+            grep -E '"event":"(file_error|test_fail)"' "${f%.fail}.out" | tail -20 >&2 || true
+            tail -3 "${f%.fail}.out" >&2
             exit 1
-        fi
-        case "${out##*$'\n'}" in
-            *'"files":'"$want"',"errored_files":0'*) ;;
-            *) echo "culebra test: sweep ran the wrong file count (want $want)" >&2
-               printf '%s\n' "$out" | tail -1 >&2; exit 1 ;;
-        esac
+        done
+        for f in "$d"/*.out; do
+            n=$(tail -1 "$f" | sed -n 's/.*"files":\([0-9]*\),"errored_files":0.*/\1/p')
+            got=$(( got + ${n:-0} ))
+        done
+        [[ "$got" == "$want" ]] || {
+            echo "culebra test: sweep ran the wrong file count (want $want, ran $got)" >&2
+            exit 1
+        }
     }
 
     # The suites under examples/: 30 files and 328 assertions that no gate ran.
@@ -1617,7 +1638,8 @@ _run-tests BACKEND:
       "run_languages_smoke|languages smoke (pl0, a few mini-culebra samples)|binary|dev|-|-|2"
       "run_languages|languages (front ends vs their oracles)|binary|test|light|heavy|13"
       "run_culebra_test_self|culebra-test self|binary|check,dev,test|light|-|0"
-      "run_unit_runner_sweep|culebra-test sweep (tests/*.cul as session units)|binary|check,dev,test|light|-|11"
+      "run_unit_runner_sweep sliced|culebra-test sweep (tests/*.cul as session units, twenty to a process)|binary|check|-|-|8"
+      "run_unit_runner_sweep|culebra-test sweep (tests/*.cul as session units)|binary|dev,test|light|-|11"
       "run_examples_sweep|examples sweep (the suites under examples/)|binary|check,dev,test|light|-|3"
       "run_isolate|isolate (jit + VM)|binary|dev,test|light|-|5"
       "run_aot_hygiene|AOT hygiene (CULEBRA_HOME, cache prune, TMPDIR, webview link)|binary|test|aot|-|6"
@@ -1757,7 +1779,7 @@ _run-tests BACKEND:
       # no-LTO build-dev/ binary too (see `test-dev`). This is the green-light
       # check after a single edit; `all` is the pre-commit gate.
       # The edit-by-edit tier: the source and IR ratchets, and the whole
-      # assertion corpus in one executor process. Everything in it is cheap
+      # assertion corpus on the executor. Everything in it is cheap
       # enough to run on every save, and between them they answer "did I break
       # what this tree already says" — 8,539 assertions for 11 seconds.
       check)
