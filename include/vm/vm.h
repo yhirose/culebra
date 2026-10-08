@@ -5024,7 +5024,7 @@ class Compiler {
       int32_t ctor = -1;
       // The class declaration behind that constructor, when the class is
       // `@value` with a layout flat enough to unbox into one slot per field
-      // (value_flat_layout). Its members' bodies are what an inlined
+      // (FnAnalysis::value_layouts). Its members' bodies are what an inlined
       // construction or method call compiles; nullptr means "compile the
       // ordinary boxed way". Rides `Known` so a capture inherits it and a
       // re-declaration strikes it, exactly as the two answers above do.
@@ -7778,13 +7778,6 @@ class Compiler {
     emit_session_decl_bind(decl, /*is_mut=*/false);
   }
 
-  // A `@value` class's compile-time registration: the process-wide flat
-  // layout plus the declaration AST under its name (stdlib_value_classes).
-  // Refused for a class with no declared field (nothing to lay out) or with
-  // a field initializer — an initializer is evaluated by the field-init
-  // thunk, which is a culebra frame, and a frame is what unboxing is here
-  // to remove. Absent from the registry simply means "compile the ordinary
-  // way", so every refusal here is safe by construction.
   // What a class's declarations promise about its fields, recorded for every
   // class: the type is checked on every write (docs/language.md §10), so a
   // read through a name whose declared class is this one knows the tag
@@ -7814,10 +7807,20 @@ class Compiler {
       culebra::register_class_field_classes(class_name, std::move(named));
   }
 
+  // A `@value` class's compile-time registration: its layout, by its
+  // declaration (FnAnalysis::value_layouts). Refused for a class with no
+  // declared field (nothing to lay out) or with a field initializer — an
+  // initializer is evaluated by the field-init thunk, which is a culebra
+  // frame, and a frame is what unboxing is here to remove. Absent simply
+  // means "compile the ordinary way", so every refusal here is safe by
+  // construction. `stdlib`: the class belongs to a stdlib module, whose name
+  // no binding carries, so it is also entered under its name
+  // (FnAnalysis::stdlib_value_classes).
   static void register_value_class_layout(
       const peg::Ast& ast, const std::string& class_name,
-      const std::vector<const peg::Ast*>& fields, FnAnalysis& analysis) {
-    std::vector<std::string> flat;
+      const std::vector<const peg::Ast*>& fields, FnAnalysis& analysis,
+      bool stdlib) {
+    FnAnalysis::FlatLayout flat;
     bool eligible = !fields.empty();
     for (const auto* f : fields) {
       auto mv = culebra::view_method(*f);
@@ -7825,20 +7828,14 @@ class Compiler {
         eligible = false;
         break;
       }
-      flat.emplace_back(mv.name);
+      flat.fields.emplace_back(mv.name);
+      flat.types.push_back(static_cast<uint8_t>(
+          culebra::field_type_for_annotation(mv.type_annotation)));
     }
     if (!eligible) return;
-    culebra::register_value_flat_layout(class_name, std::move(flat));
-    // The name-addressable twin of the binding `known.value_class`
-    // (compile_class_decl) sets, for a class no `lookup()` in the compiling
-    // frame's own scope can see — a stdlib lazy-namespace module's own
-    // class (see FnAnalysis::stdlib_value_classes' own comment).
-    // Harmless to record for every class, ordinary top-level ones
-    // included: `postfix_value_class` only ever consults this after
-    // `lookup()` has already failed, so a live local of the same name
-    // keeps shadowing it exactly as before.
-    analysis.stdlib_value_classes.insert_or_assign(std::string(class_name),
-                                                   &ast);
+    analysis.value_layouts.insert_or_assign(&ast, std::move(flat));
+    if (stdlib)
+      analysis.stdlib_value_classes.insert_or_assign(class_name, &ast);
   }
 
   // Walk a parsed stdlib module for `@value` class declarations and register
@@ -7864,10 +7861,11 @@ class Compiler {
         culebra::register_value_class(class_name);
         // The same field list compile_class_decl lays the class out from.
         auto fields = culebra::collect_instance_fields(ast, dec_end + 1);
-        // The field types too: a splice into the baked class's constructor
-        // (flat_field_type) reads them, as the compiled lane's would.
+        // The field types too, under the name: an annotation that names the
+        // baked class reads them, as it would the compiled lane's.
         register_declared_field_types(class_name, fields);
-        register_value_class_layout(ast, class_name, fields, analysis);
+        register_value_class_layout(ast, class_name, fields, analysis,
+                                    /*stdlib=*/true);
       }
     }
     for (const auto& n : ast.nodes)
@@ -7986,7 +7984,8 @@ class Compiler {
     // And, when its shape allows it, the layout an unboxed construction lays
     // the instance out as: one slot per declared field, in declaration order.
     if (is_value)
-      register_value_class_layout(ast, class_name, fields, analysis_);
+      register_value_class_layout(ast, class_name, fields, analysis_,
+                                  /*stdlib=*/library_);
     const peg::Ast* new_ast = new_asts.empty() ? nullptr : new_asts.front();
     // Resolve `@derive(...)` into the (method name, runtime kind) pairs to
     // append to the meta, after the members so a name the class declares
@@ -8067,8 +8066,7 @@ class Compiler {
       // the member bodies from. Only where the grant took: a refused
       // constructor is a name whose value can move, and unboxing it would
       // rest on the same answer the refusal just withheld.
-      if (is_value && decl.known.ctor >= 0 &&
-          culebra::value_flat_layout(class_name))
+      if (decl.known.ctor >= 0 && analysis_.value_layouts.contains(&ast))
         decl.known.value_class = &ast;
     }
 
@@ -8232,12 +8230,9 @@ class Compiler {
     // capture is a cell in this frame, like every other closure's.
     int32_t meta_cell = alloc_cell_slot(ast, "(class.meta)");
     emit(Op::CellNew, meta_cell, owned_src(ast, {meta, true}));
-    // Only a flat class has anything for materialize_run to reach for —
-    // value_flat_layout is exactly is_value's own eligibility test above
-    // (register_value_class_layout), asked again here rather than plumbed
-    // through as a bool, since this is the one place that needs it as a
-    // registry lookup rather than a side effect.
-    if (is_value && culebra::value_flat_layout(class_name))
+    // Only a flat class has anything for materialize_run to reach for: one
+    // register_value_class_layout gave a layout above.
+    if (analysis_.value_layouts.contains(&ast))
       value_meta_cell_[&ast] = meta_cell;
     int32_t nil_cell = -1;
     auto cell_or_nil = [&](int32_t cell) {
@@ -9838,8 +9833,10 @@ class Compiler {
       // refused any other name (value_undeclared_self_write_message).
       if (int32_t ix = inline_field_index(recv, fin.token); ix >= 0) {
         StampGuard pos(*this, ast);
-        emit_inline_field_check(value_class_of(*recv.unboxed_class)->name,
-                                fin.token, rhs.slot);
+        assert(recv.unboxed == value_class_of(*recv.unboxed_class)->layout &&
+               "a run is laid out as its own class");
+        emit_inline_field_check(*recv.unboxed_class, static_cast<size_t>(ix),
+                                rhs.slot);
         store_into(recv.slot + ix, rhs, /*dst_is_fresh=*/false);
         return rhs;
       }
@@ -10579,20 +10576,20 @@ class Compiler {
   }
 
   // A flat `@value` class's identity: the outer name off its declaration
-  // head, and the layout registered for it. nullopt when the class is not
-  // a flat one — the common answer, and the decline every caller makes.
-  // `name` points into the class AST's own token, so it outlives any
-  // caller here.
+  // head, and the layout its declaration was given
+  // (FnAnalysis::value_layouts). nullopt when the class is not a flat one —
+  // the common answer, and the decline every caller makes. `name` points
+  // into the class AST's own token, so it outlives any caller here.
   struct ValueClass {
     std::string_view name;
     const std::vector<std::string>* layout;
   };
-  static std::optional<ValueClass> value_class_of(const peg::Ast& cls) {
+  std::optional<ValueClass> value_class_of(const peg::Ast& cls) const {
+    auto it = analysis_.value_layouts.find(&cls);
+    if (it == analysis_.value_layouts.end()) return std::nullopt;
     size_t dec_end = culebra::first_non_decorator_index(cls);
     auto name = culebra::parse_generic_head(cls.nodes[dec_end]->token).outer;
-    const auto* layout = culebra::value_flat_layout(name);
-    if (!layout) return std::nullopt;
-    return ValueClass{name, layout};
+    return ValueClass{name, &it->second.fields};
   }
 
   // Whether `dunder` on `cls` can be spliced as an operator: the member
@@ -11419,10 +11416,10 @@ class Compiler {
   // The whole-scope pre-pass itself (spec §15.3), for ONE statement —
   // called right before `stmts[i]` compiles, not as one upfront pass over
   // the whole block the way `predeclare_forward_refs` reads its list:
-  // `chain_resolves_to_class`'s eligibility check depends on
-  // `culebra::value_flat_layout`, which an `@value class` only registers
+  // `chain_resolves_to_class`'s eligibility check depends on the class's
+  // layout (FnAnalysis::value_layouts), which an `@value class` only gets
   // as a SIDE EFFECT of compiling ITS OWN declaration
-  // (`register_value_flat_layout`, `compile_class_decl`) — a fact 2a/2b/2c
+  // (`register_value_class_layout`, `compile_class_decl`) — a fact 2a/2b/2c
   // never had to account for, since they ask the same question lazily,
   // inside `compile_expr`, by which point every textually earlier
   // statement has already compiled. A single pass run before ANY of the
@@ -11673,25 +11670,22 @@ class Compiler {
   }
 
   // The declared type of a flat `@value` field. The flat layout admits only
-  // Long / Float / Bool fields (is_flat_value_field_type), each registered
-  // under the class, so a run's field always has one.
-  static culebra::FieldType flat_field_type(std::string_view class_name,
-                                            std::string_view field) {
-    const auto* types = culebra::class_field_types_of(class_name);
-    assert(types && "a flat field is a typed field");
-    auto it = types->find(field);
-    assert(it != types->end() && "a flat field is a typed field");
-    return static_cast<culebra::FieldType>(it->second);
+  // Long / Float / Bool fields (is_flat_value_field_type), so a run's field
+  // always has one, and the class's own declaration says which. `ix` is the
+  // field's place in the run.
+  culebra::FieldType flat_field_type(const peg::Ast& cls, size_t ix) const {
+    return static_cast<culebra::FieldType>(
+        analysis_.value_layouts.at(&cls).types[ix]);
   }
 
   // `self.x = v` inside a spliced constructor: the store a boxed instance
   // would make goes through the field's declared type (object_set_declared),
   // so the run's slot gets the same check, worded the same way, at the
   // assignment's own position.
-  void emit_inline_field_check(std::string_view class_name,
-                               std::string_view field, int32_t slot) {
-    emit_type_check(culebra::field_type_name(flat_field_type(class_name, field)),
-                    slot, culebra::format("field '{}'", field));
+  void emit_inline_field_check(const peg::Ast& cls, size_t ix, int32_t slot) {
+    const auto& field = analysis_.value_layouts.at(&cls).fields[ix];
+    emit_type_check(culebra::field_type_name(flat_field_type(cls, ix)), slot,
+                    culebra::format("field '{}'", field));
   }
 
   // N contiguous slots named after a run's fields. `prefix` is only the
@@ -11712,14 +11706,14 @@ class Compiler {
   // `emit_inline_body` storing into it (`dst_is_fresh=false`, so it
   // releases whatever was there first) needs it to hold something safe to
   // release.
-  int32_t alloc_zeroed_run(const peg::Ast& at, std::string_view class_name,
+  int32_t alloc_zeroed_run(const peg::Ast& at, const peg::Ast& cls,
+                           std::string_view class_name,
                            const std::vector<std::string>& layout) {
     int32_t base = alloc_run_slots(at, class_name, layout);
     for (size_t k = 0; k < layout.size(); k++) {
       int32_t z = alloc_temp(at);
       emit(Op::LoadConst, z,
-           zero_const(culebra::field_type_name(
-               flat_field_type(class_name, layout[k]))));
+           zero_const(culebra::field_type_name(flat_field_type(cls, k))));
       store_into(base + static_cast<int32_t>(k), ExprResult{z, true},
                 /*dst_is_fresh=*/false);
     }
@@ -11760,15 +11754,15 @@ class Compiler {
       for (size_t i = 0; i < ps.size(); i++) {
         if (!ps[i].field) continue;
         const Binding* b = lookup_name(ps[i].name);
-        auto ix = std::find(layout->begin(), layout->end(), ps[i].name);
-        assert(b && ix != layout->end() && "a field parameter names a field");
+        auto at = std::find(layout->begin(), layout->end(), ps[i].name);
+        assert(b && at != layout->end() && "a field parameter names a field");
+        auto ix = static_cast<size_t>(at - layout->begin());
         StampGuard pos(*this, *ps[i].at);
         // An annotated parameter was just checked against the same scalar
         // type (check_field_params holds the two identical), so only an
         // unannotated `.x` on a typed field has the field's check to make.
-        if (ps[i].type.empty())
-          emit_inline_field_check(cls, ps[i].name, b->slot);
-        store_into(self_base + static_cast<int32_t>(ix - layout->begin()),
+        if (ps[i].type.empty()) emit_inline_field_check(cls_ast, ix, b->slot);
+        store_into(self_base + static_cast<int32_t>(ix),
                    ExprResult{b->slot, /*owned=*/false});
       }
     }
@@ -11876,10 +11870,9 @@ class Compiler {
     // (`_lazy_ns_register`, `stdlib_preamble.h`), not a compile-time `let`
     // — so a flat `@value` class declared inside one (`Vector2`, ...) would
     // otherwise never reach `known.value_class` no matter how it is
-    // written. `stdlib_value_classes` is that same fact under its declared
-    // NAME instead: registered at the identical site `known.value_class`
-    // is, so this returns exactly the same answer a local declaration
-    // would have.
+    // written. `stdlib_value_classes` is that declaration under its NAME
+    // instead, entered only for a stdlib module's class
+    // (register_value_class_layout).
     if (!is_stdlib_namespace(head.token)) return nullptr;
     auto it = analysis_.stdlib_value_classes.find(head.token);
     return it == analysis_.stdlib_value_classes.end() ? nullptr : it->second;
@@ -12067,7 +12060,9 @@ class Compiler {
       guard_lazy(*ast.nodes[0], *named);
     // The run and every later step's run belong to the caller's scope, so
     // they outlive each splice's own scope.
-    auto fresh_run = [&] { return alloc_zeroed_run(ast, class_name, *layout); };
+    auto fresh_run = [&] {
+      return alloc_zeroed_run(ast, *cls, class_name, *layout);
+    };
     auto compile_args = [&](const peg::Ast& args,
                             std::vector<ExprResult>& out,
                             std::vector<const peg::Ast*>& asts) {
@@ -12100,7 +12095,9 @@ class Compiler {
                                    std::string_view class_name,
                                    const std::vector<std::string>* layout) {
     using namespace peg::udl;
-    auto fresh_run = [&] { return alloc_zeroed_run(at, class_name, *layout); };
+    auto fresh_run = [&] {
+      return alloc_zeroed_run(at, cls, class_name, *layout);
+    };
     for (size_t i = from; i < at.nodes.size();) {
       const auto& post = *at.nodes[i];
       if (i + 1 >= at.nodes.size() ||
@@ -12177,7 +12174,7 @@ class Compiler {
     auto ps = inline_params(culebra::view_method(*m).params);
     if (!ps || ps->size() != args.size()) return std::nullopt;
     bool run = member_own_tail(*m, class_name) != nullptr;
-    int32_t out_base = run ? alloc_zeroed_run(at, class_name, *lhs.unboxed)
+    int32_t out_base = run ? alloc_zeroed_run(at, cls, class_name, *lhs.unboxed)
                            : alloc_slot(at, "(value.ret)");
     return emit_inline_body(*m, cls, class_name, lhs.slot, lhs.unboxed, *ps,
                             args, arg_asts, /*is_ctor=*/false, out_base,

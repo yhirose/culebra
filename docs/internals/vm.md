@@ -733,9 +733,12 @@ Eligibility is decided by `try_inline_value_chain` before a single
 instruction is emitted, over three questions, and a `no` to any of them
 compiles the ordinary boxed form unchanged — there is no half-inlined state
 and no run-time fallback. The class must have a flat layout
-(`value_flat_layout`): at least one declared field, every one a scalar, none
-with an initializer expression (an initializer runs through the field-init
-thunk, which is a frame). Each member's body must be splice-able
+(`FnAnalysis::value_layouts`): at least one declared field, every one a
+scalar, none with an initializer expression (an initializer runs through the
+field-init thunk, which is a frame). The layout is kept by the class's
+declaration, not by its name: two classes may share a name (one at the top
+level and one in a function, or a program's own `Vector2` and the stdlib's),
+and each declaration has its own fields and field types. Each member's body must be splice-able
 (`inline_body_ok`): straight-line control flow, no nested `fn`/class literal,
 and — outside the constructor — no `self.x =` write, which on a boxed
 instance is the freeze's `ImmutableError`. And every name the body reads must
@@ -963,7 +966,7 @@ proven unboxed. Two things follow from that:
   point that would have to answer for it.
 
 **Ordering, not just circularity, matters too.** `@value class`
-registration (`value_flat_layout`) is a side effect of compiling the class
+registration (`register_value_class_layout`) is a side effect of compiling the class
 declaration itself, so this walk cannot run as one pass over a whole block
 before any of it compiles the way `predeclare_forward_refs` does — a `let
 mut v = C.new(...)` textually after its own class's declaration would ask

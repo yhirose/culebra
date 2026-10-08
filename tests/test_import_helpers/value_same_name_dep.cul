@@ -1,0 +1,13 @@
+# A module with a `Vector2` of its own at its top level
+# (tests/test_value_same_name.cul).
+@value
+class Vector2 {
+  new(.x: Float, .y: Float) {}
+  length() {
+    99.0
+  }
+}
+
+let own_length = || Vector2.new(3.0, 4.0).length()
+
+export {own_length}

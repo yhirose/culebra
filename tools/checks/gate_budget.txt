@@ -69,7 +69,9 @@
 # objects on every engine: itself and a cell per captured variable).
 # 311 since test_class_name_rebound.cul (a class name its scope declares
 # again, as a fn or a let, reads as whatever was written to it last).
-tests.cul 311
+# 312 since test_value_same_name.cul (two @value classes of one name are each
+# laid out as their own declaration says).
+tests.cul 312
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

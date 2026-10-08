@@ -136,22 +136,45 @@ struct FnAnalysis {
   // the VM's region handler needs a mark exactly when the node is in here.
   std::unordered_set<const peg::Ast*> try_region_has_defer;
 
+  // The layout of a `@value` class flat enough to unbox into ordinary slots:
+  // its declared fields in order, one slot each, and the scalar each holds
+  // (culebra::FieldType as a byte). At least one field, every one a machine
+  // scalar (no nested `@value`: that layout is a later step), and none with
+  // an initializer (which routes construction through the field-init thunk,
+  // a call, and a call is what unboxing is here to remove). Absent means
+  // "not eligible", always a safe answer.
+  //
+  // By the declaration, not by the class's name: two classes may share a
+  // name, in two functions or with a stdlib one, and a run laid out as the
+  // other's fields re-boxes with them. The compiler reaches a program's
+  // class through its binding (Binding::Known::value_class) and a stdlib
+  // module's through stdlib_value_classes below, and both hand back the
+  // declaration. Valid for this one compile pass, like every other AST key
+  // here; the map's nodes stay put, so `fields` may be held.
+  struct FlatLayout {
+    std::vector<std::string> fields;
+    std::vector<uint8_t> types;
+  };
+  std::unordered_map<const peg::Ast*, FlatLayout> value_layouts;
+
   // A flat `@value` class's own declaration AST, by its declared name, for
-  // one this compile pass has already registered in the process-wide
-  // `culebra::value_flat_layouts()` (vm.h's compile_class_decl fills both
-  // together). Exists for exactly one shape: a class declared inside a
+  // a stdlib module's class this compile pass has laid out (value_layouts).
+  // Exists for exactly one shape: a class declared inside a
   // stdlib lazy-namespace module (`fn(){ @value class Vector2 {...};
   // Vector2 }()`, `include/stdlib/preamble.h`'s `_wrap_lazy_ns_module`) has
   // no `let`-bound name any ordinary scope's `lookup()` ever finds — every
   // reference resolves through the runtime namespace registry instead, so
   // `Binding::Known::value_class` (set only on a class's own declaration
-  // binding, vm.h ~5613) never reaches it. This is the same fact under a
+  // binding) never reaches it. This is the same fact under a
   // different key: name-addressable rather than binding-addressable, valid
   // for exactly this ONE compile pass (a fresh `FnAnalysis` per
   // `compile_module_impl`) — never process-wide, since a pointer into one
   // parse's AST is meaningless, or unsafe to read concurrently, against any
   // other. `postfix_value_class` (vm.h) is the only reader, falling back to
-  // this only when `lookup()` finds no live local shadowing the name.
+  // this only when `lookup()` finds no live local shadowing the name. Only
+  // a stdlib module's classes are entered: a program's own class named
+  // `Vector2` is reached through its binding, and must not answer here for
+  // the stdlib's in a scope that does not see it.
   std::map<std::string, const peg::Ast*, std::less<>> stdlib_value_classes;
 
   // The class declarations whose name nothing else in their scope declares.

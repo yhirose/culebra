@@ -714,9 +714,11 @@ chunkを取り消す再宣言もこのビットには触らない。
 適格性は`try_inline_value_chain`が命令を1つも出す前に3つの問いで決め、
 どれか1つでも`no`なら従来どおりのboxed形をそのままコンパイルする —
 半端な状態も実行時フォールバックも無い。クラスはflatなlayoutを持つ
-必要がある(`value_flat_layout`): 宣言fieldが1つ以上、全部スカラー、
+必要がある(`FnAnalysis::value_layouts`): 宣言fieldが1つ以上、全部スカラー、
 どれも初期化式を持たない(初期化式はfield-init thunk = フレームを
-通る)。各メンバの本体はsplice可能でなければならない(`inline_body_ok`):
+通る)。layoutはクラスの名前ではなく宣言ごとに持つ。2つのクラスが同じ
+名前を持つことはあり(トップレベルと関数の中、あるいはプログラム自身の
+`Vector2`とstdlibのもの)、宣言ごとに自分のfieldとその型を持つ。各メンバの本体はsplice可能でなければならない(`inline_body_ok`):
 straight-lineな制御フロー、入れ子の`fn`/classリテラルなし、そして
 コンストラクタ以外では`self.x =`書き込みなし(boxedインスタンスでは
 これはfreezeの`ImmutableError`)。そして本体が読む全ての名前は、
@@ -949,7 +951,7 @@ bindingの出現を区別できないからで、shadowが却下されるのと�
   `v`のbindingはこの問いに答えるべき時点でまだ存在し得ないからだ。
 
 **循環だけでなく順序も重要になる。** `@value class`の登録
-（`value_flat_layout`）はクラス宣言自身をコンパイルすることの副作用
+（`register_value_class_layout`）はクラス宣言自身をコンパイルすることの副作用
 なので、この歩みは`predeclare_forward_refs`がやるようにブロック
 全体を1パスでどれもコンパイルする前に処理することはできない——
 自クラスの宣言より後ろに書かれた`let mut v = C.new(...)`は、その

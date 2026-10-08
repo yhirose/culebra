@@ -1157,33 +1157,6 @@ inline bool is_value_class(std::string_view name) {
   return value_class_registry().contains(name);
 }
 
-// The declared field names, in order, of a `@value` class flat enough to
-// unbox into that many ordinary slots: at least one field, every one a
-// machine scalar (no nested `@value` — that layout is a later step), and no
-// initializer expression (an initializer routes construction through the
-// field-init thunk, which is a call, and a call is what unboxing is here to
-// remove). Registered from the same place and under the same rule as the
-// name above; absent means "not eligible", which is always a safe answer.
-inline std::map<std::string, std::vector<std::string>, std::less<>>&
-value_flat_layouts() {
-  static std::map<std::string, std::vector<std::string>, std::less<>> reg;
-  return reg;
-}
-inline void register_value_flat_layout(std::string name,
-                                       std::vector<std::string> fields) {
-  std::lock_guard<std::mutex> lk(value_class_mutex());
-  value_flat_layouts().insert_or_assign(std::move(name), std::move(fields));
-}
-// The layout by class name, or nullptr when the class is not flat-eligible.
-// Returns a pointer into the registry, which only ever grows, so the callee
-// (the compiler, single-threaded over one module list) may hold it.
-inline const std::vector<std::string>* value_flat_layout(
-    std::string_view name) {
-  std::lock_guard<std::mutex> lk(value_class_mutex());
-  auto it = value_flat_layouts().find(name);
-  return it == value_flat_layouts().end() ? nullptr : &it->second;
-}
-
 // The declared type of each field of a class (culebra::FieldType as a byte),
 // by class name then field name. Every class registers its own, `@value` or
 // not: a field's declared *scalar* type is checked on every write
