@@ -1,0 +1,85 @@
+# The arguments of Isolate.spawn are rebuilt in the worker one after another,
+# and each has to outlive the rebuilding of the ones after it. A worker that
+# kept them where its collector does not look ran on whatever a collection
+# left in their place: the last arguments' contents under the first ones'
+# names. Eight of them, because one or two can survive on a stale copy of the
+# pointer in the frame that rebuilt them; the gc-stress sweep, which collects
+# at every allocation, is where this file fails when the rule is broken.
+
+class Box {
+  new(.label, .items) {}
+}
+
+let show = |x| "{x.label}:{x.items}"
+let boxes = [0, 1, 2, 3, 4, 5, 6, 7].map(|i| Box("box{i}", [i, i + 1, i + 2]))
+let want = boxes.map(show)
+
+assert_eq(Isolate.spawn(
+  fn (a, b, c, d, e, f, g, h) {
+    [a, b, c, d, e, f, g, h].map(|x| "{x.label}:{x.items}")
+  },
+  boxes[0],
+  boxes[1],
+  boxes[2],
+  boxes[3],
+  boxes[4],
+  boxes[5],
+  boxes[6],
+  boxes[7],
+).join(), want)
+
+# Two is the count the fixed-arity call takes, and three the first that goes
+# through the argument buffer.
+assert_eq(
+  Isolate
+    .spawn(
+      |a, b| ["{a.label}:{a.items}", "{b.label}:{b.items}"],
+      boxes[0],
+      boxes[1],
+    )
+    .join(),
+  [want[0], want[1]],
+)
+assert_eq(Isolate.spawn(
+  fn (a, b, c) {
+    [a, b, c].map(|x| "{x.label}:{x.items}")
+  },
+  boxes[5],
+  boxes[6],
+  boxes[7],
+).join(), [want[5], want[6], want[7]])
+
+# The arguments are the worker's own from the call on, and gone when it
+# returns: a sender passed as one closes with it, by either route.
+let (tx, rx) = Channel.new(4)
+let sender = Isolate.spawn(
+  fn (out, a, b) {
+    out.send(a.label + b.label)
+    'done'
+  },
+  tx,
+  boxes[1],
+  boxes[2],
+)
+tx.drop()
+assert_eq(rx.recv(), 'box1box2')
+assert_eq(rx.recv(), nil)
+assert_eq(sender.join(), 'done')
+
+let (tx3, rx3) = Channel.new(4)
+let sender3 = Isolate.spawn(
+  fn (out, a, b, c) {
+    out.send(a.label + b.label + c.label)
+    'done'
+  },
+  tx3,
+  boxes[1],
+  boxes[2],
+  boxes[3],
+)
+tx3.drop()
+assert_eq(rx3.recv(), 'box1box2box3')
+assert_eq(rx3.recv(), nil)
+assert_eq(sender3.join(), 'done')
+
+inspect('isolate arguments ok')

@@ -569,30 +569,35 @@ inline void run_isolate_child_jit(std::shared_ptr<IsolateCore> core,
     // otherwise leave the channel open forever and hang every receiver.
     JitOwnedVal fn(jit_deserialize(sclosure, dc));
     auto* cls = reinterpret_cast<JitClosure*>(fn.borrow().data);
-    std::vector<JitOwnedVal> owned_args;
-    owned_args.reserve(sargs.size());
-    for (const auto& sa : sargs)
-      owned_args.emplace_back(jit_deserialize(sa, dc));
+    // The rebuilt arguments wait in a heap Array this frame reaches, not in a
+    // std::vector: rebuilding the next one allocates, and a collection there
+    // scans the machine stack and what it reaches, never a vector's buffer.
+    // Held only in one, an argument was swept while the ones after it were
+    // rebuilt, and the worker ran on whatever took its place.
+    auto* argv = culebra_runtime_array_new_reserved(
+        static_cast<int64_t>(sargs.size()));
+    JitOwnedVal argv_guard(
+        JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(argv)});
+    for (const auto& sa : sargs) {
+      JitValue a = jit_deserialize(sa, dc);
+      culebra_runtime_array_push(argv, a.tag, a.data);  // absorbs the +1
+    }
     // Rebuilt endpoints hold their own refs now; drop the in-flight ones.
     release_inflight_channels(sclosure);
     for (const auto& sa : sargs) release_inflight_channels(sa);
     // Each arm consumes exactly what it passes: the invoke takes the args over,
-    // and the callee frame releases the params on both its exit paths. Only the
-    // variadic form needs them flattened into a buffer.
+    // and the callee frame releases the params on both its exit paths. So the
+    // Array gives its elements up first, and is only their buffer from here.
+    const size_t argc = argv->size;
+    argv->size = 0;
     JitValue raw;
-    if (owned_args.empty()) raw = _culebra_invoke0(cls);
-    else if (owned_args.size() == 1)
-      raw = _culebra_invoke1(cls, owned_args[0].consume());
-    else if (owned_args.size() == 2)
-      raw = _culebra_invoke2(cls, owned_args[0].consume(),
-                             owned_args[1].consume());
-    else {
-      std::vector<JitValue> args;
-      args.reserve(owned_args.size());
-      for (auto& a : owned_args) args.push_back(a.consume());
-      raw = _jit_invoke(cls, {TAG_NO_SELF, 0},
-                        static_cast<int64_t>(args.size()), args.data());
-    }
+    if (argc == 0) raw = _culebra_invoke0(cls);
+    else if (argc == 1) raw = _culebra_invoke1(cls, argv->items[0]);
+    else if (argc == 2)
+      raw = _culebra_invoke2(cls, argv->items[0], argv->items[1]);
+    else
+      raw = _jit_invoke(cls, {TAG_NO_SELF, 0}, static_cast<int64_t>(argc),
+                        argv->items);
     JitOwnedVal r(raw);
     JitSerCtx sc;
     sendable::SendNode out = jit_serialize(r.borrow(), sc);

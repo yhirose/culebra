@@ -226,4 +226,31 @@ let (btx, brx) = Channel.new(1)
 btx.send(bin)
 assert_eq(brx.recv(), bin)
 
+# Arguments large enough that rebuilding one in the worker collects on its
+# own: each still holds what was sent once the last is rebuilt. (The small
+# form of this, under a collection at every allocation, is
+# tests/test_isolate_args.cul.)
+let big = fn (tag) {
+  let mut out = []
+  for i in 0..60000 {
+    out.push(["{tag}{i}"])
+  }
+  out
+}
+let tags = ["a", "b", "c", "d", "e", "f", "g", "h"]
+let bigs = tags.map(|t| big(t))
+assert_eq(Isolate.spawn(
+  fn (a, b, c, d, e, f, g, h) {
+    [a, b, c, d, e, f, g, h].map(|x| "{x.size()} {x[0][0]} {x[59999][0]}")
+  },
+  bigs[0],
+  bigs[1],
+  bigs[2],
+  bigs[3],
+  bigs[4],
+  bigs[5],
+  bigs[6],
+  bigs[7],
+).join(), tags.map(|t| "60000 {t}0 {t}59999"))
+
 inspect("test_isolate: all assertions passed")
