@@ -597,6 +597,18 @@ _run-tests BACKEND:
     rm -rf "$job_dir" && mkdir -p "$job_dir"
     trap 'rm -rf "$job_dir"' EXIT
 
+    # One JIT object cache for the run. The phases that put a file through
+    # --jit more than once — the vm/jit sweep and then gc-stress's two legs,
+    # vm_cases' three GC modes — compile it once and link that object after:
+    # the collector's settings change how the code runs, not what it is, and
+    # tests/jit_cache_test.sh holds a hit to the run a cold start gives. 87%
+    # of gc-stress's CPU was the same two compiles over again. The cache is
+    # this run's own, so one binary never meets another's objects.
+    jit_cache="$job_dir/jit-cache"
+    cul_cached() { CULEBRA_JIT_CACHE="$jit_cache" cul "$@"; }
+    export -f cul_cached
+    export jit_cache
+
     # Print stderr for every .fail marker in a job dir; 1 if any exist.
     # Independent of what the items were, so every parallel phase uses it.
     collect_failures() {
@@ -642,7 +654,7 @@ _run-tests BACKEND:
     # in place of the full sweep it skips as heavy: the corpus costs 610
     # CPU seconds on the --jit leg against 17 on the --vm leg — LLVM, not
     # execution — and the cover buys 147 of the 151 ops back for 71 of those
-    # 610. The full sweep runs in `just test` and in CI's ci-light on every
+    # 610. The full sweep runs in `just test` and in CI's ci-gc on every
     # push, so a shape the cover misses is caught there rather than never.
     diff_vm_jit_files() {
         [[ "${1:-full}" == shape ]] || { printf '%s\n' tests/*.cul; return; }
@@ -685,7 +697,7 @@ _run-tests BACKEND:
             # backend mismatch. CPU time (user+sys), not wall: the file runs
             # inside the JOBS-way sweep, and its wall there is whatever else
             # the machine is doing — a gate in a second session doubles it.
-            { TIMEFORMAT="%U %S"; time out_jit=$(cul --jit "$f" 2> "$d/$name.jit.err"); } 2> "$d/$name.jitcpu"; rc_jit=$?
+            { TIMEFORMAT="%U %S"; time out_jit=$(cul_cached --jit "$f" 2> "$d/$name.jit.err"); } 2> "$d/$name.jitcpu"; rc_jit=$?
             if [[ "$rc_jit" -ne 0 ]]; then
                 { echo "--jit failed for $f (rc=$rc_jit):"; \
                   cat "$d/$name.jit.err"; } > "$d/$name.err"
@@ -1294,7 +1306,7 @@ _run-tests BACKEND:
             aot) lane=--aot ;;
         esac
         for mode in "${modes[@]}"; do
-            out="$(env $mode ${TIMEOUT_BIN:+$TIMEOUT_BIN 300} tools/bench/vm_cases/compare.sh "$BIN" $lane 2>&1)" \
+            out="$(env CULEBRA_JIT_CACHE="$jit_cache" $mode ${TIMEOUT_BIN:+$TIMEOUT_BIN 300} tools/bench/vm_cases/compare.sh "$BIN" $lane 2>&1)" \
                 || { printf '%s\n' "$out"; exit 1; }
         done
         case "$axes" in
@@ -1359,6 +1371,11 @@ _run-tests BACKEND:
     # every allocation is what makes an under-counted reference free a live
     # object here rather than in a user's program.
     #
+    # The two --jit legs run the object the vm/jit sweep compiled, through the
+    # run's JIT cache (see jit_cache above), which is why that sweep shares a
+    # CI shard with this phase. Without it ahead — `just phase gc-stress` —
+    # the first leg compiles and the second links.
+    #
     # A file whose leading comment says `# gc-stress: skip — <why>` stays out
     # of this sweep and runs on every other lane. It is for a file that repeats
     # what the rest of the corpus already does under the collector, at a cost
@@ -1395,10 +1412,10 @@ _run-tests BACKEND:
             f="$1"; d="$2"
             name=$(basename "$f" .cul)
             TIMEFORMAT="%U %S"
-            { time CULEBRA_GC_STRESS=1 cul --jit "$f" > /dev/null 2> "$d/$name.err"; } 2> "$d/$name.jit.gccpu" \
+            { time CULEBRA_GC_STRESS=1 cul_cached --jit "$f" > /dev/null 2> "$d/$name.err"; } 2> "$d/$name.jit.gccpu" \
                 || touch "$d/$name.fail"
             for lane in vm jit; do
-                { time CULEBRA_GC_REFS=1 CULEBRA_GC_STRESS=1 cul --$lane "$f" > /dev/null 2> "$d/$name.refs-$lane.err"; } \
+                { time CULEBRA_GC_REFS=1 CULEBRA_GC_STRESS=1 cul_cached --$lane "$f" > /dev/null 2> "$d/$name.refs-$lane.err"; } \
                     2> "$d/$name.refs-$lane.gccpu" || touch "$d/$name.refs-$lane.fail"
             done
         ' _ '{}' "$d"
@@ -1619,8 +1636,8 @@ _run-tests BACKEND:
       "run_jit_shape_set|jit shape set (the subset still covers every op)|binary|check,dev,test|light|-|3"
       "run_doctest_skips|doctest skips (a skip is justified, or says why)|binary|check,dev,test|light|-|3"
       "run_diff_vm_jit shape|vm/jit symmetry (the op cover + what the branch touched)|binary|dev,test|-|reduced|15"
-      "run_diff_vm_jit full|vm/jit symmetry (every test file)|binary|test|light|heavy|116"
-      "run_vm_cases gc|vm_cases (frozen expected, + the two GC axes)|binary|test|light|-|62"
+      "run_diff_vm_jit full|vm/jit symmetry (every test file)|binary|test|gc|heavy|116"
+      "run_vm_cases gc|vm_cases (frozen expected, + the two GC axes)|binary|test|light|-|47"
       "run_codegen_backends|codegen backends (-O0, fast vs --vm)|binary|dev,test|light|-|24"
       "run_gen_frames probes|generator frames (probes == frozen on both engines)|binary|dev,test|light|-|12"
       "run_gen_frames full|generator frames (the probes under the GC axes, and built)|binary|test|gc|heavy|42"
@@ -1631,7 +1648,7 @@ _run-tests BACKEND:
       "run_leak_fuzz|leak-fuzz (corpus RC-leak regression)|binary||diff|-|146"
       "run_leak_abort|leak-abort (GAP5 loud detector smoke)|binary|test|light|-|1"
       "run_leak_abort_suite|leak-abort-suite (corpus inflated-RC, throw-paths)|binary|test|leak|heavy|139"
-      "run_gc_stress|gc-stress (collect every alloc; jit conservative, vm + jit refcount-seeded)|binary|test|gc|heavy|227"
+      "run_gc_stress|gc-stress (collect every alloc; jit conservative, vm + jit refcount-seeded)|binary|test|gc|heavy|89"
       "run_leak_battery|rc-leak battery (quiescent audit per pattern)|binary|test|gc|heavy|31"
       "run_embed_cli|ctest (CLI entries, binary only)|tree|dev|-|local|20"
       "run_embed|ctest (embedding smokes)|tree|test|buildtree|-|60"

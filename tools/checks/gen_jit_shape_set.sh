@@ -32,7 +32,7 @@ got=$(wc -l < "$work/ops_by_file" | tr -d ' ')
     echo "# somewhere in that gate. Regenerate with \`just gen-jit-shape-set\`;"
     echo "# tools/checks/check_jit_shape_set.sh holds the coverage."
     echo "#"
-    echo "# The full corpus runs this lane in \`just test\` and in CI's ci-light on"
+    echo "# The full corpus runs this lane in \`just test\` and in CI's ci-gc on"
     echo "# every push. What this set does not cover is op COMBINATIONS — an unwind"
     echo "# edge inside a loop inside a closure — which is what the codegen seeds and"
     echo "# the generated difftest corpus are for."

@@ -189,7 +189,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # jit host symbols + vm/JIT symmetry + codegen backends +
+          # jit host symbols + vm_cases + codegen backends +
           # leak-abort smoke + culebra-test self + isolate
           - lane: ci-light
           # generated difftest corpus + the corpus RC-leak regression gate
@@ -197,12 +197,13 @@ jobs:
           # refcount-lane difftest + corpus inflated-RC audit: the two passes
           # over the generated corpus that audit refcounts rather than results
           - lane: ci-leak
-          # the collector's own axes on the tests/*.cul corpus: gc-stress
+          # the tests/*.cul corpus on the JIT lane, and then under the
+          # collector's own axes: the vm/JIT symmetry sweep, gc-stress
           # (conservative jit; refcount-seeded vm + jit) + rc-leak battery.
-          # Split from ci-leak because the four together were 1007s and the
-          # slowest lane decides when build-ubuntu's chain finishes; the two
-          # halves are 285s and 258s of local budget, which is as even as the
-          # phases divide. This shard also carries the generator probes under
+          # The sweep is here because it compiles what gc-stress then runs:
+          # the lane shares one JIT object cache (justfile, jit_cache), so
+          # each file is compiled once in this shard rather than three times
+          # across two. This shard also carries the generator probes under
           # the same axes.
           - lane: ci-gc
           # per-test AOT builds: `culebra build` shells out to the stock

@@ -147,7 +147,7 @@ What the cover does not hold is op *combinations* — an unwind edge inside
 a loop inside a closure. That is what the codegen seeds carry by hand, what
 the generated corpus (`tools/difftest`, ~17k cases on both lanes) covers by
 construction, and why the full 279-file sweep still runs in `just test` and
-in CI's `ci-light` on every push.
+in CI's `ci-gc` on every push.
 
 CI's macOS job sweeps the cover as well, in place of the full sweep: the
 full one is five minutes of its three cores, nearly all of it LLVM. The
@@ -166,6 +166,15 @@ seconds, and nothing said so until the gate felt slow. Seconds are
 deliberately not the ratchet — the same lane varies by 1.5–2× on a loaded
 machine — so the table's per-phase costs are reported against the measured
 budget at the end of a lane and gate nothing.
+
+A lane compiles a file once. The phases that put the corpus through
+`--jit` again under a collector setting — gc-stress's two legs, the three
+modes of `vm_cases` — share one JIT object cache with the sweep that
+compiled it (`jit_cache` in the justfile, a directory of the run's own),
+so what they repeat is the run and not LLVM: the collector's settings
+change how the code runs, not what it is. The compiles were 87% of
+gc-stress's CPU. This is why the full vm/jit sweep and gc-stress share a
+CI shard.
 
 ### What is exempt, and why it has to say so
 

@@ -3,7 +3,7 @@
 # somewhere in that gate. Regenerate with `just gen-jit-shape-set`;
 # tools/checks/check_jit_shape_set.sh holds the coverage.
 #
-# The full corpus runs this lane in `just test` and in CI's ci-light on
+# The full corpus runs this lane in `just test` and in CI's ci-gc on
 # every push. What this set does not cover is op COMBINATIONS — an unwind
 # edge inside a loop inside a closure — which is what the codegen seeds and
 # the generated difftest corpus are for.
