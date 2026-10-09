@@ -786,6 +786,22 @@ the same compile-time machinery, recursively, which is also what collapses
 a method whose own tail constructs the same class (`V2.__add__` returning
 `V2.new(...)`) without a separate pass.
 
+The walk over a chain's steps (`chain_end`) therefore answers three ways,
+not two: *declined* (some step needs an object), *scalar* (it ended on a
+field read, or on a member whose value is not its class), or *run* (it
+ended still holding the instance). The two ways of staying unboxed are kept
+apart because their consumers differ. A scalar is an ordinary value in one
+slot. A run is N slots, which only a consumer that asked for one can take:
+§5.3.2's operator operand and a member's own tail, §5.3.3's `let` and
+write. The emitter is told which of the two its caller takes
+(`try_inline_value_chain(ast, want)`: a postfix chain anywhere in the
+program wants a scalar), and `chain_resolves_to_class`, the lookahead every
+run consumer asks, hands back a class for the run answer only. Answering both with one "the chain
+qualifies" let a scalar-ended chain be read as a run of the class it had
+built on the way (found live: `let d = C.new(3.0, 4.0).len()` laid `d` out
+as `C`'s fields, and printing it boxed the neighbouring local as the second
+one).
+
 ### 5.3.2 An operator on that value also splices
 
 `v + g * DT` reaches `__add__`/`__mul__` on the boxed path, through the same
@@ -796,15 +812,16 @@ splice, still no object built.
 
 An operator fold (`ADDITIVE`/`MULTIPLICATIVE`, and `UNARY_MINUS` sized down
 to one operand) decides before compiling anything, not operand by operand:
-`chain_resolves_to_class` — §5.3.1's eligibility check, exposed on its own
-as a pure, non-emitting lookahead — is asked of the *whole* operator
-sequence first. Every operator in the chain must resolve to a splice-able
+`fold_resolves_to_class`, a pure, non-emitting lookahead, is asked of the
+*whole* operator sequence first. Operand[0] must resolve to a run
+(`chain_resolves_to_class`, §5.3.1's eligibility check asked for a run),
+and every operator in the chain must resolve to a splice-able
 dunder on the class operand[0] would produce, checked with the exact same
 three tests the splice itself runs (the method exists, is eligible, and
 takes one argument) — not just that the token maps to a dunder name at all.
-Only if every operator qualifies does operand[0] compile through the
-relaxed form of §5.3.1's chain (`allow_trailing_class`, letting it end
-still holding the instance rather than a scalar); every other operand in
+Only if every operator qualifies does operand[0] compile as §5.3.1's chain
+ending in a run (still holding the instance rather than a scalar); every
+other operand in
 the program always reifies through the ordinary boxed path. This whole-fold
 scan is what makes the fold loop unconditional: once the accumulator is
 unboxed, every operator ahead of it is already proven to splice, so there
@@ -815,16 +832,23 @@ instead of a sequence of chain steps.
 
 A member whose tail *is* the operator — `__add__`'s body ending in
 `C.new(...)` for its own class — needs one more piece §5.3.1 did not: its
-own tail must be spliced the same relaxed way, not compiled through the
-ordinary `compile_expr` descent, which never lets a chain end holding the
-class itself. `member_own_tail` is what a caller asks before allocating the
-result as a run of scalar slots rather than one slot: it is not enough for
-the tail to have the `C.new(...)` *shape* (`member_returns_own`'s syntactic
-check) — it must also pass the same eligibility `chain_resolves_to_class`
-proves for any other chain. Getting this backwards — allocating a run on
-the shape check alone, then finding the tail did not actually splice —
-leaves every slot past the first holding whatever the run's zero-init left
-there, with only the first slot ever written.
+own tail must be spliced as a run too, not compiled through the ordinary
+`compile_expr` descent, which never lets a chain end holding the class
+itself. What a member's body leaves is part of the answer to whether it
+splices at all (`inline_body_end`: declined, a scalar, or a run), and
+everything that sizes a member's result reads it there: the chain walk
+deciding whether a step leaves a run for the next one, and the splice
+allocating that step's result as N slots or as one. It is a run when the
+tail is a construction chain of the member's own class that ends *in a
+run*. Naming the class is not enough: `C.new(...).x` builds one and yields a
+scalar. Sizing the result on the construction alone leaves every slot past
+the first holding whatever the run's zero-init left there, with only the
+first slot ever written (found live: `getx() { C.new(self.x, 1.0).x }`,
+then `C.new(5.0, 6.0).getx().y` read 0.0 where the boxed class raises a
+TypeError). One walk of the body gives both answers, so a tail that chains
+through other members is walked once per member; asking "does it splice"
+and "what does it leave" separately walks the tail twice at every level,
+which is exponential in how deep such a tail goes.
 
 **The operand a splice consumes can be a run too.** Nothing above says how
 the *other* operand arrives: it went through the ordinary `compile_expr`
@@ -856,7 +880,8 @@ sits in reduces to its arithmetic.
 Two consumer rules were tightened after this landed, both by finding a
 live escape rather than by review:
 
-- **Every dunder a fold would splice must itself pass `member_own_tail`**,
+- **Every dunder a fold would splice must itself leave a run
+  (`inline_body_end`)**,
   not just exist with the right arity. Every consumer of a spliced
   operator's result — the fold's own accumulator, a reassignment's
   copy-back, a trailing chain's field read — treats it as an N-slot run,
@@ -910,8 +935,9 @@ scalar (`(v + g).len()`), a write `v = <rhs>` whose RHS is itself
 fold/negation/construction-shaped (`value_write_ok`), or a compound
 step `v += e` / `v -= e` / `v *= e`, which splices the same dunder the
 desugared reassignment would. The declaration's own RHS accepts the same
-three shapes a write's does — a construction chain, a fold, or a negation
-— so `let d = C.new(...) + C.new(...)` persists the run §5.3.2 built. A
+three shapes a write's does — a construction chain that ends in a run, a
+fold, or a negation — so `let d = C.new(...) + C.new(...)` persists the run
+§5.3.2 built, and `let d = C.new(...).len()` is an ordinary local. A
 plain `let` is the degenerate single-assignment case: the walk refuses to
 classify any write to it, so a later `v = …` — an ImmutableError today —
 declines the binding and the ordinary path keeps the identical error.
@@ -1002,7 +1028,7 @@ identifier read (`compile_expr`'s `IDENTIFIER` case) returns the run
 directly, the same unconditional way `self` does inside an inline frame;
 `v.<field>`/`v.<method>(...)` splices through `try_inline_name_chain`,
 the one path `self`'s own chain takes too (`self.len()` inside a member:
-both names are a run already, `name_run`, and `chain_stays_unboxed` is asked
+both names are a run already, `name_run`, and `chain_end` is asked
 from index 1); and a reassignment (`compile_assignment`) or compound step
 (`compile_compound_assign`) compiles its RHS through the same
 fold/negation/chain machinery §5.3.2 already has
@@ -1063,8 +1089,9 @@ This is deliberately narrower than true reification: only a **bare**
 occurrence of `name` is a materialization site (`send(v)`), not an
 arbitrary expression that resolves unboxed to the same class (`send(v +
 g)`) — a fold/negation/construction reaching an ordinary consumer already
-compiles to a boxed value on its own (every other `compile_expr` dispatch
-to those tags passes `allow_trailing_class=false`), so widening
+compiles to a boxed value on its own (`compile_expr`'s own dispatch never
+asks for a run: a fold or negation passes `allow_trailing_class=false`, and
+a construction chain is asked for the scalar ending only), so widening
 `value_boundary_ok` past a bare identifier would duplicate work rather
 than add coverage.
 

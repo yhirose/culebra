@@ -589,4 +589,143 @@ test_member_calls_member_through_self = fn () {
 }
 test_member_calls_member_through_self()
 
+# ---- how a chain ends: one that ends in a scalar built an instance on the
+# ---- way but is not one. A consumer that takes a run (a `let`, a write, an
+# ---- operator's operand, a member's own tail) may be handed the class only
+# ---- by a chain that ends still holding it. `BoxedEnds` (the same members,
+# ---- no `@value`) is the reference for every answer.
+@value
+class Ends {
+  new(.x: Float, .y: Float) {}
+  len() {
+    Math.sqrt(self.x * self.x + self.y * self.y)
+  }
+  scale(k) {
+    Ends.new(self.x * k, self.y * k)
+  }
+  __add__(o) {
+    Ends.new(self.x + o.x, self.y + o.y)
+  }
+  # builds its own class and yields a scalar
+  first() {
+    Ends.new(self.x, 1.0).x
+  }
+  doubled_len() {
+    Ends.new(self.x, self.y).scale(2.0).len()
+  }
+  # builds its own class and yields it, through another member
+  doubled() {
+    Ends.new(self.x, self.y).scale(2.0)
+  }
+}
+
+class BoxedEnds {
+  new(.x: Float, .y: Float) {}
+  len() {
+    Math.sqrt(self.x * self.x + self.y * self.y)
+  }
+  scale(k) {
+    BoxedEnds.new(self.x * k, self.y * k)
+  }
+  __add__(o) {
+    BoxedEnds.new(self.x + o.x, self.y + o.y)
+  }
+  first() {
+    BoxedEnds.new(self.x, 1.0).x
+  }
+  doubled_len() {
+    BoxedEnds.new(self.x, self.y).scale(2.0).len()
+  }
+  doubled() {
+    BoxedEnds.new(self.x, self.y).scale(2.0)
+  }
+}
+
+test_scalar_ended_chain_bound_by_let = fn () {
+  let d = Ends.new(3.0, 4.0).len()
+  # the slot after `d`: what a run of two would have read as its `y`
+  let neighbour = [1, 2, 3]
+  assert_eq(d, BoxedEnds.new(3.0, 4.0).len())
+  assert_eq([d, d], [5.0, 5.0])
+  assert_eq(to_string(d), '5.0')
+  assert_eq(neighbour, [1, 2, 3])
+}
+test_scalar_ended_chain_bound_by_let()
+
+test_scalar_ended_chain_written_over_a_run = fn () {
+  let mut v = Ends.new(1.0, 2.0)
+  let neighbour = 'next slot'
+  v = Ends.new(3.0, 4.0).len()
+  assert_eq(v, 5.0)
+  assert_eq(neighbour, 'next slot')
+}
+test_scalar_ended_chain_written_over_a_run()
+
+test_scalar_ended_chain_heads_a_fold = fn () {
+  let sum = Ends.new(3.0, 4.0).len() + 1.0
+  let neighbour = 'next slot'
+  assert_eq(sum, 6.0)
+  assert_eq(neighbour, 'next slot')
+  # A Float on the left of a run is no step of the run's own arithmetic, so
+  # neither binding stays unboxed and the operator answers as it does boxed.
+  let boxed = try {
+    let p = BoxedEnds.new(1.0, 2.0)
+    let q = BoxedEnds.new(3.0, 4.0).len() + p
+    q.x
+  } catch e {
+    e.message
+  }
+  let inlined = try {
+    let p = Ends.new(1.0, 2.0)
+    let q = Ends.new(3.0, 4.0).len() + p
+    q.x
+  } catch e {
+    e.message
+  }
+  assert_eq(inlined, boxed)
+  # the same head under a postfix chain
+  let boxed_chain = try {
+    (BoxedEnds.new(3.0, 4.0).len() + 1.0).x
+  } catch e {
+    e.message
+  }
+  let inlined_chain = try {
+    (Ends.new(3.0, 4.0).len() + 1.0).x
+  } catch e {
+    e.message
+  }
+  assert_eq(inlined_chain, boxed_chain)
+}
+test_scalar_ended_chain_heads_a_fold()
+
+test_member_tail_ends_in_a_scalar = fn () {
+  assert_eq(Ends.new(5.0, 6.0).first(), 5.0)
+  assert_eq(Ends.new(3.0, 4.0).doubled_len(), 10.0)
+  # the member's value is a Float, so a step after it is the boxed answer
+  let boxed = try {
+    BoxedEnds.new(5.0, 6.0).first().y
+  } catch e {
+    e.message
+  }
+  let inlined = try {
+    Ends.new(5.0, 6.0).first().y
+  } catch e {
+    e.message
+  }
+  assert_eq(inlined, boxed)
+}
+test_member_tail_ends_in_a_scalar()
+
+test_member_tail_ends_in_a_run = fn () {
+  # still holding the instance after a step of its own, so the result is a
+  # run for whatever comes next
+  assert_eq(Ends.new(1.0, 2.0).doubled().y, 4.0)
+  assert_eq(Ends.new(3.0, 4.0).doubled().doubled().len(), 20.0)
+  let mut v = Ends.new(1.0, 2.0)
+  v = v + Ends.new(1.0, 1.0).doubled()
+  assert_eq(v.x, 3.0)
+  assert_eq(v.y, 4.0)
+}
+test_member_tail_ends_in_a_run()
+
 inspect('value-inline OK')

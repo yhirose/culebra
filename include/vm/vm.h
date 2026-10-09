@@ -5142,7 +5142,7 @@ class Compiler {
 
   // One entry per constructor or method body whose names are being answered:
   // one being spliced in (emit_inline_body), or one asked about ahead of that
-  // (inline_body_ok, member_own_tail, dunder_takes_run_param). A body means
+  // (inline_body_end, dunder_takes_run_param). A body means
   // by a name what it meant where it was written, not where it lands, so
   // while an entry is on top a lookup sees the splice's own scopes
   // (`scope_floor` and up: the parameters and the body's locals), then the
@@ -10563,6 +10563,20 @@ class Compiler {
     return ps.size() == args.nodes.size() && !has_kwargs(args);
   }
 
+  // What an unboxed value is left as: by a chain of steps over it
+  // (chain_end), or by a member's body spliced in (inline_body_end). The two
+  // ways of staying unboxed are different answers, not one: a scalar is an
+  // ordinary value any consumer takes, and a run is N slots only a consumer
+  // that asked for one can take (a write's copy-back, an operator's
+  // operand, a member's own tail). There is no reification, so a caller
+  // that reads one as the other lays a value out wrong rather than
+  // declining.
+  enum class ChainEnd {
+    Declined,  // something needs an object: the whole thing compiles boxed
+    Scalar,    // a field read, or a member whose value is not its class
+    Run,       // still holding the instance
+  };
+
   // Whether a member's body may be compiled into this chunk. The hygiene
   // half of the question — the half that makes this a correctness rule
   // rather than a heuristic: the body is compiled by THIS compiler and
@@ -10577,23 +10591,42 @@ class Compiler {
   bool inline_body_ok(const peg::Ast& member, bool is_ctor,
                       const peg::Ast& class_ast, std::string_view class_name,
                       const std::vector<std::string>* layout) {
+    return inline_body_end(member, is_ctor, class_ast, class_name, layout) !=
+           ChainEnd::Declined;
+  }
+
+  // The same question with what the spliced body leaves in the answer: a
+  // run when it is a constructor (the instance it filled) or its tail is a
+  // construction chain of its own class that ends still holding the
+  // instance, which is the shape every `@value` operator has; a scalar for
+  // any other tail. The tail naming its class is not enough: `C.new(...).x`
+  // builds one and yields a scalar. Everything that sizes a member's result
+  // (a run or one slot) reads it here, off the one walk that also decides
+  // whether the body splices at all, so they cannot size it differently —
+  // and a tail that chains through other members is walked once per member,
+  // not once per question.
+  ChainEnd inline_body_end(const peg::Ast& member, bool is_ctor,
+                           const peg::Ast& class_ast,
+                           std::string_view class_name,
+                           const std::vector<std::string>* layout) {
+    using namespace peg::udl;
     Lookahead ahead(*this);
     auto mv = culebra::view_method(member);
-    if (!mv.body) return false;
+    if (!mv.body) return ChainEnd::Declined;
     const auto& body = **mv.body;
-    if (!culebra::is_straightline_body(body)) return false;
-    if (culebra::value_body_has_nested_fn(body)) return false;
+    if (!culebra::is_straightline_body(body)) return ChainEnd::Declined;
+    if (culebra::value_body_has_nested_fn(body)) return ChainEnd::Declined;
     // A method's `self.x = v` is the freeze's ImmutableError on a boxed
     // instance; a constructor's is the point.
-    if (!is_ctor && culebra::value_body_writes_self(body)) return false;
+    if (!is_ctor && culebra::value_body_writes_self(body)) return ChainEnd::Declined;
     auto it = analysis_.func_info.find(&member);
-    if (it == analysis_.func_info.end()) return false;
+    if (it == analysis_.func_info.end()) return ChainEnd::Declined;
     const FuncInfo& fi = it->second;
     // No local of this body may live in a cell: that decision belongs to the
     // callee's analysis, and the emitters consult `info_`, which stays this
     // chunk's. With no nested closure there is nothing to capture, so the
     // set being empty is the check rather than a swap.
-    if (!fi.captured_locals.empty()) return false;
+    if (!fi.captured_locals.empty()) return ChainEnd::Declined;
     // Every name the body reads must be one a splice can answer where it
     // lands (MemberFrame). A free variable is the program's, which the
     // landing site may not see at all, or may see another of: a `Math` of
@@ -10604,13 +10637,13 @@ class Compiler {
     // a body-local `let`/`mut` declared earlier in the same statement list
     // (walked scope-aware below — `Vector2.length()`'s `let x = self.x` is
     // the shape this exists for), or a stdlib global/namespace.
-    if (!fi.free_vars.empty()) return false;
+    if (!fi.free_vars.empty()) return ChainEnd::Declined;
     // `fn` is no namespace, though the predicate below files it with them:
     // it is the frame's own handle, and spliced it would be the landing
     // frame's.
-    if (fi.uses_fn) return false;
+    if (fi.uses_fn) return ChainEnd::Declined;
     auto ps = inline_params(mv.params);
-    if (!ps) return false;
+    if (!ps) return ChainEnd::Declined;
     bool ok = true;
     auto check_name = [&](std::string_view n) {
       if (!ok || n == "self" || n == fi.own_name) return;
@@ -10620,7 +10653,7 @@ class Compiler {
       ok = false;
     };
     walk_identifiers_scoped(**mv.body, {}, check_name);
-    if (!ok) return false;
+    if (!ok) return ChainEnd::Declined;
     // The name check above only asks WHICH names the body reads — it says
     // nothing about HOW they are used, and `self`
     // (plus the class's own name) is not an ordinary value inside a spliced
@@ -10633,15 +10666,30 @@ class Compiler {
     // hygiene and inlined, and printed just `self.x`. So every occurrence
     // of `self` or the class's own name must be checked structurally too,
     // not just by name.
-    if (!checking_inline_body_.insert(&member).second) return false;
+    if (!checking_inline_body_.insert(&member).second) return ChainEnd::Declined;
     struct Guard {
       std::set<const peg::Ast*>& s;
       const peg::Ast* m;
       ~Guard() { s.erase(m); }
     } guard{checking_inline_body_, &member};
     InMember env(*this, member, class_ast);
-    return receiver_refs_stay_unboxed(**mv.body, fi.own_name, class_ast,
-                                      class_name, layout);
+    auto refs_ok = [&](const peg::Ast& n) {
+      return receiver_refs_stay_unboxed(n, fi.own_name, class_ast, class_name,
+                                        layout);
+    };
+    if (is_ctor)
+      return refs_ok(body) ? ChainEnd::Run : ChainEnd::Declined;
+    const peg::Ast* tail = &body;
+    if (body.tag == "STATEMENTS"_) {
+      if (body.nodes.empty()) return ChainEnd::Scalar;
+      for (size_t i = 0; i + 1 < body.nodes.size(); i++)
+        if (!refs_ok(*body.nodes[i])) return ChainEnd::Declined;
+      tail = body.nodes.back().get();
+    }
+    if (is_own_construction(*tail, fi.own_name))
+      return own_construction_end(*tail, fi.own_name, class_ast, class_name,
+                                  layout);
+    return refs_ok(*tail) ? ChainEnd::Scalar : ChainEnd::Declined;
   }
 
   // A flat `@value` class's identity: the outer name off its declaration
@@ -10662,8 +10710,8 @@ class Compiler {
   }
 
   // Whether `dunder` on `cls` can be spliced as an operator: the member
-  // exists, is eligible to inline, takes `arity` arguments, AND ends in
-  // its own class's construction (`member_own_tail`). That last clause is
+  // exists, takes `arity` arguments, is eligible to inline AND leaves a run
+  // of its own class (inline_body_end). That last clause is
   // what makes every consumer's shape assumption true by construction —
   // the fold's accumulator, a write's copy-back, and a trailing chain's
   // field read all treat the result as an N-slot run, and a dunder
@@ -10675,11 +10723,11 @@ class Compiler {
                         const std::vector<std::string>* layout) {
     const peg::Ast* m =
         dunder.empty() ? nullptr : value_member_ast(cls, dunder);
-    if (!m || !inline_body_ok(*m, /*is_ctor=*/false, cls, class_name, layout))
-      return false;
+    if (!m) return false;
     auto ps = inline_params(culebra::view_method(*m).params);
     return ps && ps->size() == arity &&
-           member_own_tail(*m, cls);
+           inline_body_end(*m, /*is_ctor=*/false, cls, class_name, layout) ==
+               ChainEnd::Run;
   }
 
   // One operator token's worth of the question, shared between a fold's
@@ -10731,15 +10779,39 @@ class Compiler {
     return dunder_splice_ok("__neg__", 0, cls, class_name, layout);
   }
 
+  // `Own.new(args)` and the chain after it, inside a member body: how it
+  // ends, with a run meaning one of the member's own class.
+  // construction_chain only proves the CHAIN's own shape (the ctor and any
+  // trailing field/method steps) — the arguments are a separate subtree it
+  // never looks inside, so a receiver reference nested in them
+  // (`Self.new(self.x + o.x, ...)`, the exact shape every landed operator
+  // body uses) is checked here.
+  ChainEnd own_construction_end(const peg::Ast& node,
+                                std::string_view own_name,
+                                const peg::Ast& class_ast,
+                                std::string_view class_name,
+                                const std::vector<std::string>* layout) {
+    using namespace peg::udl;
+    auto chain = construction_chain(node);
+    if (!chain) return ChainEnd::Declined;
+    for (size_t i = 2; i < node.nodes.size(); i++)
+      if (node.nodes[i]->original_tag == "ARGUMENTS"_)
+        for (const auto& a : node.nodes[i]->nodes)
+          if (!receiver_refs_stay_unboxed(*a, own_name, class_ast, class_name,
+                                          layout))
+            return ChainEnd::Declined;
+    return chain->cls == &class_ast ? chain->end : ChainEnd::Scalar;
+  }
+
   // Whether every occurrence of `self`, or of the class's own name
   // (`own_name` — empty when the body has none, e.g. a ctor never needs it),
   // is consumed only by a shape this splice mechanism already knows how to
   // keep unboxed. The two names are NOT interchangeable here even though
   // `inline_body_ok`'s hygiene check treats them alike: `self.field` /
   // `self.method(...)` is a chain over the RECEIVER's own run (scanned from
-  // index 1, chain_stays_unboxed's rule), while `OwnName.new(args)` is a
+  // index 1, chain_end's rule), while `OwnName.new(args)` is a
   // fresh CONSTRUCTION using the class's name as a callee — the exact shape
-  // `chain_resolves_to_class` already validates end to end, so it is asked
+  // `construction_chain` already validates end to end, so it is asked
   // directly rather than re-walked here (an earlier version of this
   // function conflated the two: scanning `OwnName.new(...)` from index 1
   // reads its DOT step as "call method literally named `new`" and asks
@@ -10772,26 +10844,15 @@ class Compiler {
       return true;  // a member name, not a value reference
     if (node.tag == "CALL"_ && !node.nodes.empty() &&
         node.nodes[0]->tag == "IDENTIFIER"_) {
-      if (is_own_construction(node, own_name)) {
-        if (!chain_resolves_to_class(node, /*allow_trailing_class=*/true))
-          return false;
-        // chain_resolves_to_class only proves the CHAIN's own shape (the
-        // ctor and any trailing field/method steps) — the constructor's own
-        // arguments are a separate subtree it never looks inside, so a
-        // receiver reference nested in them (`Self.new(self.x + o.x, ...)`,
-        // the exact shape every landed operator body uses) still needs
-        // checking here.
-        for (size_t i = 2; i < node.nodes.size(); i++)
-          if (node.nodes[i]->original_tag == "ARGUMENTS"_)
-            for (const auto& a : node.nodes[i]->nodes)
-              if (!receiver_refs_stay_unboxed(*a, own_name, class_ast,
-                                              class_name, layout))
-                return false;
-        return true;
-      }
+      // Either ending is one this body can compile: a scalar anywhere, a
+      // run as the member's own tail (inline_body_end) and boxed anywhere
+      // else.
+      if (is_own_construction(node, own_name))
+        return own_construction_end(node, own_name, class_ast, class_name,
+                                    layout) != ChainEnd::Declined;
       if (node.nodes[0]->token == "self") {
-        if (!chain_stays_unboxed(node, 1, class_ast, class_name, layout,
-                                 /*allow_trailing_class=*/false))
+        if (chain_end(node, 1, class_ast, class_name, layout) !=
+            ChainEnd::Scalar)
           return false;
         for (size_t i = 1; i < node.nodes.size(); i++)
           if (node.nodes[i]->original_tag == "ARGUMENTS"_)
@@ -10805,7 +10866,7 @@ class Compiler {
     // A fold or negation with bare `self`/the class's own name as its
     // operand is NOT classified here, deliberately: inside a body there is
     // no consumer for the run it would produce. A member's out slot is a
-    // run only for a `C.new(...)` tail (member_own_tail), a body-internal
+    // run only for a `C.new(...)` tail (inline_body_end), a body-internal
     // fold-headed chain has no lookahead to consume it
     // (try_inline_fold_chain resolves operand[0] through a Binding, which
     // `self` never has), and anything else — an argument, a print, a field
@@ -11045,21 +11106,20 @@ class Compiler {
     // A postfix chain whose head is already an unboxed run — `name` itself
     // (`name.x`, `name.len()`, try_inline_name_chain's consumer), or
     // a fold/negation over it (`(name + g).len()`, `(-name).x`,
-    // try_inline_fold_chain's). Either way chain_stays_unboxed with
-    // allow_trailing_class=false is the same condition the lookahead
-    // checks before committing, so the run ends consumed (a scalar),
-    // never escaping the splice. A head that is a fold over OTHER names,
-    // or one whose operators cannot splice, simply isn't this shape and
-    // falls through to the generic walk below (where a bare occurrence of
-    // `name` inside it declines as usual).
+    // try_inline_fold_chain's). Either way chain_end answering Scalar is
+    // the same condition the lookahead checks before committing, so the
+    // run ends consumed, never escaping the splice. A head that is a fold
+    // over OTHER names, or one whose operators cannot splice, simply isn't
+    // this shape and falls through to the generic walk below (where a bare
+    // occurrence of `name` inside it declines as usual).
     if (node.tag == "CALL"_ && !node.nodes.empty()) {
       bool head_is_run =
           (node.nodes[0]->tag == "IDENTIFIER"_ &&
            node.nodes[0]->token == w.name) ||
           (node.nodes.size() >= 2 && value_run_ok(*node.nodes[0], w));
       if (head_is_run) {
-        if (!chain_stays_unboxed(node, 1, *w.cls, w.class_name, w.layout,
-                                 /*allow_trailing_class=*/false))
+        if (chain_end(node, 1, *w.cls, w.class_name, w.layout) !=
+            ChainEnd::Scalar)
           return false;
         for (size_t i = 1; i < node.nodes.size(); i++)
           if (node.nodes[i]->original_tag == "ARGUMENTS"_)
@@ -11182,10 +11242,11 @@ class Compiler {
   // own honest limitation, cross-frame materialization, stays a decline).
   // Deliberately narrower than `unboxed_value_expr_class`'s full three
   // shapes: a fold, negation or fresh construction reaching this position
-  // already compiles to an ordinary boxed value on its own (every OTHER
-  // compile_expr dispatch to those tags passes allow_trailing_class=false,
-  // the same universal-caller guard UNARY_MINUS/ADDITIVE/MULTIPLICATIVE's
-  // own comments document) — only the plain-identifier chokepoint
+  // already compiles to an ordinary boxed value on its own (compile_expr's
+  // dispatch never asks for a run: a fold or negation passes
+  // allow_trailing_class=false, the universal-caller guard their own
+  // comments document, and a construction's chain is asked for the scalar
+  // ending only) — only the plain-identifier chokepoint
   // (compile_expr's IDENTIFIER case) can leak a run to a consumer that
   // never learned to check for one, so only that shape needs marking here.
   // Marks the specific AST node so that chokepoint reboxes exactly this
@@ -11245,8 +11306,7 @@ class Compiler {
     const peg::Ast& head = *rhs.nodes[0];
     bool head_ok = head.tag == "IDENTIFIER"_
                        ? name_run_class(head.token, w) == w.cls
-                       : chain_resolves_to_class(
-                             head, /*allow_trailing_class=*/true) == w.cls;
+                       : chain_resolves_to_class(head) == w.cls;
     if (!head_ok || !fold_operators_splice_ok(rhs, 1, w)) return false;
     for (size_t i = 1; i + 1 < rhs.nodes.size(); i += 2)
       if (!consumer_operand_ok(rhs.nodes[i]->token, *rhs.nodes[i + 1], w))
@@ -11307,9 +11367,8 @@ class Compiler {
     return {dst, /*owned=*/true};
   }
 
-  // The general counterpart to `try_inline_value_operand`, widened from
-  // that one shape (a fold's LHS) to whichever of the three top-level
-  // shapes an expression proven unboxed actually is. Two callers, asking
+  // An expression proven to be a run, compiled as whichever of the three
+  // top-level shapes it is (fold / negation / chain). Two callers, asking
   // the same question about different expressions: a write's RHS (whose
   // eligibility `value_ref_ok` or the declaration's own check already
   // settled) and an operator's own operand (`operand_stays_unboxed`). Both
@@ -11322,7 +11381,7 @@ class Compiler {
       return compile_fold(rhs, /*allow_trailing_class=*/true);
     if (rhs.tag == "UNARY_MINUS"_)
       return compile_unary_minus(rhs, /*allow_trailing_class=*/true);
-    auto r = try_inline_value_operand(rhs);
+    auto r = try_inline_value_chain(rhs, ChainEnd::Run);
     assert(r && "value_ref_ok's scan promised this RHS inlines");
     return *r;
   }
@@ -11337,7 +11396,7 @@ class Compiler {
     if (rhs.tag == "ADDITIVE"_ || rhs.tag == "MULTIPLICATIVE"_)
       return fold_resolves_to_class(rhs);
     if (rhs.tag == "UNARY_MINUS"_) return unary_minus_resolves_to_class(rhs);
-    return chain_resolves_to_class(rhs, /*allow_trailing_class=*/true);
+    return chain_resolves_to_class(rhs);
   }
 
   // Whether a spliced operator's own operand may arrive as a RUN rather
@@ -11831,19 +11890,19 @@ class Compiler {
                    ExprResult{b->slot, /*owned=*/false});
       }
     }
-    // A member the caller proved returns its own class (member_own_tail,
-    // asked before out_base was allocated as a run) has its tail compiled
-    // through the SAME splice machinery as any other chain, not the
-    // ordinary compile_expr descent — compile_expr's own postfix entry
-    // point (try_inline_value_chain) never allows a chain to end holding
+    // A member the caller proved leaves a run of its own class
+    // (inline_body_end, asked before out_base was allocated as a run) has
+    // its tail compiled through the SAME splice machinery as any other
+    // chain, not the ordinary compile_expr descent — compile_expr's own
+    // postfix entry point (compile_call) never allows a chain to end holding
     // the class itself, so it would come back boxed and leave out_base's
     // slots past the first one whatever alloc_zeroed_run nil-initialized
     // them to (Bug 3, session postmortem). The caller having already
     // proven eligibility is what makes the dereference below safe.
     auto compile_tail = [&](const peg::Ast& t) {
       if (is_ctor || !out_layout) return compile_expr(t);
-      auto r = try_inline_value_chain_impl(t, /*allow_trailing_class=*/true);
-      assert(r && "member_own_tail already proved this tail inlines");
+      auto r = try_inline_value_chain(t, ChainEnd::Run);
+      assert(r && "inline_body_end already proved this tail is a run");
       return *r;
     };
     ExprResult tail{-1, false};
@@ -11948,180 +12007,130 @@ class Compiler {
   // the body has none).
   static bool is_own_construction(const peg::Ast& n, std::string_view own) {
     using namespace peg::udl;
-    return !own.empty() && n.nodes.size() >= 3 &&
+    return !own.empty() && n.tag == "CALL"_ && n.nodes.size() >= 3 &&
            n.nodes[0]->tag == "IDENTIFIER"_ && n.nodes[0]->token == own &&
            n.nodes[1]->original_tag == "DOT"_ && n.nodes[1]->token == "new" &&
            n.nodes[2]->original_tag == "ARGUMENTS"_;
   }
 
-  // Whether a member's value is another instance of its own class — its body
-  // ends in `C.new(...)` for the very C it belongs to, which is the shape
-  // every `@value` operator has: that tail, or nullptr. Answered
-  // syntactically, which is enough: the tail either IS that construction or
-  // the member is treated as returning a scalar, and a wrong guess in that
-  // direction only declines. `C` is the name the body calls its class by (a
-  // parameter spelled like the class leaves it none), and no local can be:
-  // inline_body_ok refuses a body that declares one (a bare occurrence of
-  // the name).
-  const peg::Ast* member_returns_own(const peg::Ast& member) const {
-    using namespace peg::udl;
-    auto mv = culebra::view_method(member);
-    if (!mv.body) return nullptr;
-    const peg::Ast* tail = (*mv.body).get();
-    if (tail->tag == "STATEMENTS"_) {
-      if (tail->nodes.empty()) return nullptr;
-      tail = tail->nodes.back().get();
-    }
-    return is_own_construction(*tail, member_own_name(member)) ? tail : nullptr;
-  }
-
-  // Whether a member's tail both has the `C.new(...)` shape
-  // `member_returns_own` looks for AND is itself eligible to stay unboxed
-  // there — the same eligibility `chain_resolves_to_class` proves for an
-  // arbitrary chain, now asked of a member's own tail. A caller deciding
-  // whether `out_base` is a run (`fresh_run`) or a single slot must ask
-  // THIS, not the syntactic check alone: `member_returns_own` only proves
-  // the shape, not that `emit_inline_body` can actually splice it, and
-  // allocating a run on a promise that turns out false leaves every slot
-  // past the first holding whatever `alloc_zeroed_run` nil-initialized it
-  // to, with only slot 0 ever written. `cls` is the member's class, which
-  // the tail's name is read as (InMember).
-  bool member_own_tail(const peg::Ast& member, const peg::Ast& cls) {
-    Lookahead ahead(*this);
-    const peg::Ast* tail = member_returns_own(member);
-    if (!tail) return false;
-    InMember env(*this, member, cls);
-    return chain_resolves_to_class(*tail, /*allow_trailing_class=*/true) ==
-           &cls;
-  }
-
-  // Whether the chain from `i` on only asks an unboxed value things it can
-  // answer without an object. The ordinary rule is that it must end holding
-  // a scalar — a run reaching any other consumer would have to be
-  // re-materialised, and not offering it is cheaper and safer than
-  // materialising it. `allow_trailing_class` is the one place that rule
-  // relaxes: an operator fold (`Op::Add` and kin) is a second, EXPLICIT
-  // consumer for a run, so a chain ending still holding the instance itself
-  // — nothing more — is allowed there too. Decided before anything is
-  // emitted, either way.
-  bool chain_stays_unboxed(const peg::Ast& at, size_t i,
-                           const peg::Ast& class_ast,
-                           std::string_view class_name,
-                           const std::vector<std::string>* layout,
-                           bool allow_trailing_class) {
+  // How the chain from `i` on ends: whether it only asks an unboxed value
+  // things it can answer without an object, and what is left when it has.
+  // A member step leaves what its body leaves (inline_body_end), the same
+  // answer the emitter sizes the step's result by. Decided before anything
+  // is emitted.
+  ChainEnd chain_end(const peg::Ast& at, size_t i, const peg::Ast& class_ast,
+                     std::string_view class_name,
+                     const std::vector<std::string>* layout) {
     using namespace peg::udl;
     while (i < at.nodes.size()) {
       const auto& post = *at.nodes[i];
-      if (post.original_tag != "DOT"_) return false;
+      if (post.original_tag != "DOT"_) return ChainEnd::Declined;
       bool call = i + 1 < at.nodes.size() &&
                   at.nodes[i + 1]->original_tag == "ARGUMENTS"_;
       if (!call) {
         // A declared field read is the scalar leaf a chain may end on.
-        return i + 1 == at.nodes.size() &&
-               std::find(layout->begin(), layout->end(), post.token) !=
-                   layout->end();
+        bool leaf = i + 1 == at.nodes.size() &&
+                    std::find(layout->begin(), layout->end(), post.token) !=
+                        layout->end();
+        return leaf ? ChainEnd::Scalar : ChainEnd::Declined;
       }
       const peg::Ast* m = value_member_ast(class_ast, post.token);
-      if (!m ||
-          !inline_body_ok(*m, /*is_ctor=*/false, class_ast, class_name, layout))
-        return false;
-      auto mv = culebra::view_method(*m);
-      auto ps = inline_params(mv.params);
-      if (!ps || !positional_args_match(*ps, *at.nodes[i + 1])) return false;
+      if (!m) return ChainEnd::Declined;
+      auto ps = inline_params(culebra::view_method(*m).params);
+      if (!ps || !positional_args_match(*ps, *at.nodes[i + 1]))
+        return ChainEnd::Declined;
+      ChainEnd step = inline_body_end(*m, /*is_ctor=*/false, class_ast,
+                                      class_name, layout);
+      if (step == ChainEnd::Declined) return step;
       i += 2;
-      if (!member_returns_own(*m))
-        return i == at.nodes.size();  // a scalar result must end the chain
+      // A scalar result must end the chain.
+      if (step == ChainEnd::Scalar)
+        return i == at.nodes.size() ? ChainEnd::Scalar : ChainEnd::Declined;
     }
-    // Ran out still holding a run. Escaping to an arbitrary consumer would
-    // need re-materialising it — refused, UNLESS the caller is one of the
-    // two consumers that can take a run as-is (an operator, here) rather
-    // than an arbitrary one.
-    return allow_trailing_class;
+    return ChainEnd::Run;
   }
 
-  // The pure half of `try_inline_value_chain_impl`'s eligibility check,
-  // exposed on its own for an operator fold's lookahead: does `ast`
-  // structurally resolve, staying unboxed, to an instance of a flat
-  // `@value` class? No emission — every answer here is cheap to ask and
-  // cheap to throw away, which is what lets the fold decide whether an
-  // operator applies BEFORE it commits to compiling either operand.
-  const peg::Ast* chain_resolves_to_class(const peg::Ast& ast,
-                                          bool allow_trailing_class) {
+  // `C.new(args)` and the steps after it, for a flat `@value` class whose
+  // constructor splices with these arguments and whose every later step
+  // stays unboxed: what the lookahead and the emitter both need, derived
+  // once. `end` is Scalar or Run.
+  struct ConstructionChain {
+    const peg::Ast* cls;
+    std::string_view class_name;
+    const std::vector<std::string>* layout;
+    const peg::Ast* ctor;
+    std::vector<InlineParam> params;
+    ChainEnd end;
+  };
+  std::optional<ConstructionChain> construction_chain(const peg::Ast& ast) {
     using namespace peg::udl;
-    // A bare read of a `let mut` local the whole-scope walk already proved
-    // unboxed (Binding::unboxed_class) is now ALSO a valid chain root —
-    // what lets `v = v + g * DT` fold the same way a literal
-    // `C.new(...) + C.new(...)` already does, `v` playing operand[0]'s role
-    // (spec §15.3). A chain ending here with nothing after it still needs a
-    // consumer that can take the run as-is, same as any other chain.
-    if (ast.tag == "IDENTIFIER"_) {
-      if (!allow_trailing_class) return nullptr;
-      const Binding* b = lookup_at(ast);
-      return (b && b->unboxed_class) ? b->unboxed_class : nullptr;
-    }
     if (ast.tag != "CALL"_ || ast.nodes.size() < 3 ||
-        ast.nodes[2]->original_tag != "ARGUMENTS"_)
-      return nullptr;
-    const peg::Ast* cls = postfix_value_class(ast, *ast.nodes[1]);
-    if (!cls) return nullptr;
-    auto vc = value_class_of(*cls);
-    if (!vc) return nullptr;
-    auto class_name = vc->name;
-    const auto* layout = vc->layout;
-    const peg::Ast* ctor = value_member_ast(*cls, "new");
-    if (!ctor ||
-        !inline_body_ok(*ctor, /*is_ctor=*/true, *cls, class_name, layout))
-      return nullptr;
-    auto cps = inline_params(culebra::view_method(*ctor).params);
-    if (!cps || !positional_args_match(*cps, *ast.nodes[2])) return nullptr;
-    if (!chain_stays_unboxed(ast, 3, *cls, class_name, layout,
-                             allow_trailing_class))
-      return nullptr;
-    return cls;
-  }
-
-  // `C.new(args)` and everything after it, compiled as slots. Returns
-  // nullopt — before emitting anything — whenever any part of the chain
-  // fails to qualify, and the caller then compiles the whole thing the
-  // ordinary boxed way. `allow_trailing_class` widens what "qualify" means
-  // the same way `chain_stays_unboxed` does; `try_inline_value_chain` (the
-  // conservative, default caller — compile_call, any postfix chain in the
-  // program) always passes false, and `try_inline_value_operand` (an
-  // operator fold's LHS, once the fold has already confirmed the class has
-  // a matching operator) is the only caller that passes true.
-  std::optional<ExprResult> try_inline_value_chain_impl(
-      const peg::Ast& ast, bool allow_trailing_class) {
-    using namespace peg::udl;
-    // The emitting half of chain_resolves_to_class's new IDENTIFIER case:
-    // a proven-unboxed `let mut` local is already sitting in its own home
-    // slots, so "compiling" a bare read of it is just handing those back —
-    // no run to allocate, nothing to splice.
-    if (ast.tag == "IDENTIFIER"_) {
-      if (!allow_trailing_class) return std::nullopt;
-      const Binding* b = lookup_at(ast);
-      if (!b || !b->unboxed_class) return std::nullopt;
-      return ExprResult{b->slot, /*owned=*/false, -1, b->unboxed_layout,
-                        b->unboxed_class};
-    }
-    if (ast.nodes.size() < 3 ||
         ast.nodes[2]->original_tag != "ARGUMENTS"_)
       return std::nullopt;
     const peg::Ast* cls = postfix_value_class(ast, *ast.nodes[1]);
     if (!cls) return std::nullopt;
     auto vc = value_class_of(*cls);
     if (!vc) return std::nullopt;
-    auto class_name = vc->name;
-    const auto* layout = vc->layout;
     const peg::Ast* ctor = value_member_ast(*cls, "new");
     if (!ctor ||
-        !inline_body_ok(*ctor, /*is_ctor=*/true, *cls, class_name, layout))
+        !inline_body_ok(*ctor, /*is_ctor=*/true, *cls, vc->name, vc->layout))
       return std::nullopt;
     auto cps = inline_params(culebra::view_method(*ctor).params);
     if (!cps || !positional_args_match(*cps, *ast.nodes[2]))
       return std::nullopt;
-    if (!chain_stays_unboxed(ast, 3, *cls, class_name, layout,
-                             allow_trailing_class))
-      return std::nullopt;
+    ChainEnd end = chain_end(ast, 3, *cls, vc->name, vc->layout);
+    if (end == ChainEnd::Declined) return std::nullopt;
+    return ConstructionChain{cls,  vc->name,        vc->layout,
+                             ctor, std::move(*cps), end};
+  }
+
+  // The lookahead for a consumer that takes a run: does `ast` resolve,
+  // staying unboxed, to an instance of a flat `@value` class, and which? A
+  // chain that ends in a scalar is not one, whatever it constructed on the
+  // way. No emission — every answer here is cheap to ask and cheap to throw
+  // away, which is what lets a fold decide whether an operator applies
+  // BEFORE it commits to compiling either operand.
+  const peg::Ast* chain_resolves_to_class(const peg::Ast& ast) {
+    using namespace peg::udl;
+    // A bare read of a local the whole-scope walk already proved unboxed
+    // (Binding::unboxed_class) is a run as it stands — what lets
+    // `v = v + g * DT` fold the same way a literal `C.new(...) + C.new(...)`
+    // does, `v` playing operand[0]'s role (spec §15.3).
+    if (ast.tag == "IDENTIFIER"_) {
+      const Binding* b = lookup_at(ast);
+      return (b && b->unboxed_class) ? b->unboxed_class : nullptr;
+    }
+    auto chain = construction_chain(ast);
+    return chain && chain->end == ChainEnd::Run ? chain->cls : nullptr;
+  }
+
+  // `C.new(args)` and everything after it, compiled as slots, for a
+  // consumer that takes what `want` names (Scalar or Run). Returns nullopt
+  // — before emitting anything — whenever any part of the chain fails to
+  // qualify or it ends the other way, and the caller then compiles the
+  // whole thing the ordinary boxed way. compile_call (any postfix chain in
+  // the program) wants a scalar; a run is only for a caller whose own
+  // lookahead (chain_resolves_to_class) already proved one is coming: an
+  // operator's operand, a write's RHS, a member's own tail.
+  std::optional<ExprResult> try_inline_value_chain(const peg::Ast& ast,
+                                                   ChainEnd want) {
+    using namespace peg::udl;
+    // The emitting half of chain_resolves_to_class's IDENTIFIER case: a
+    // proven-unboxed local is already sitting in its own home slots, so
+    // "compiling" a bare read of it is just handing those back — no run to
+    // allocate, nothing to splice.
+    if (ast.tag == "IDENTIFIER"_) {
+      if (want != ChainEnd::Run) return std::nullopt;
+      const Binding* b = lookup_at(ast);
+      if (!b || !b->unboxed_class) return std::nullopt;
+      return ExprResult{b->slot, /*owned=*/false, -1, b->unboxed_layout,
+                        b->unboxed_class};
+    }
+    auto chain = construction_chain(ast);
+    if (!chain || chain->end != want) return std::nullopt;
+    const peg::Ast* cls = chain->cls;
+    auto class_name = chain->class_name;
+    const auto* layout = chain->layout;
 
     // Committed. A name read while its declaration is still running owes the
     // guard its boxed read would have run, and here, ahead of the arguments,
@@ -12150,21 +12159,19 @@ class Compiler {
     std::vector<ExprResult> args;
     std::vector<const peg::Ast*> arg_asts;
     compile_args(*ast.nodes[2], args, arg_asts);
-    ExprResult cur = emit_inline_body(*ctor, *cls, base, layout,
-                                      *cps, args, arg_asts, /*is_ctor=*/true,
-                                      /*out_base=*/-1, layout);
+    ExprResult cur = emit_inline_body(*chain->ctor, *cls, base, layout,
+                                      chain->params, args, arg_asts,
+                                      /*is_ctor=*/true, /*out_base=*/-1,
+                                      layout);
     return splice_trailing_chain(cur, ast, 3, *cls, class_name, layout);
-  }
-  std::optional<ExprResult> try_inline_value_chain(const peg::Ast& ast) {
-    return try_inline_value_chain_impl(ast, /*allow_trailing_class=*/false);
   }
 
   // `at.nodes[from..]`: a field read or an eligible same-class method call,
   // spliced onto an already-unboxed `cur` (the run a constructor produced,
   // or a fold's own accumulator) the same way regardless of which one
   // handed it here. Eligibility for all of it was already proven by
-  // chain_stays_unboxed at the SAME `from` index before the caller
-  // committed to anything — this is the emitting half, trusting that.
+  // chain_end at the SAME `from` index before the caller committed to
+  // anything — this is the emitting half, trusting that.
   ExprResult splice_trailing_chain(ExprResult cur, const peg::Ast& at,
                                    size_t from, const peg::Ast& cls,
                                    std::string_view class_name,
@@ -12179,8 +12186,8 @@ class Compiler {
           at.nodes[i + 1]->original_tag != "ARGUMENTS"_) {
         int32_t ix = inline_field_index(cur, post.token);
         assert(ix >= 0 &&
-               "a field read on a non-run result -- chain_stays_unboxed "
-               "promised every step before this one leaves a run");
+               "a field read on a non-run result -- chain_end promised "
+               "every step before this one leaves a run");
         return ExprResult{cur.slot + ix, /*owned=*/false};
       }
       const peg::Ast* m = value_member_ast(cls, post.token);
@@ -12191,7 +12198,8 @@ class Compiler {
         margs.push_back(compile_expr(*a));
         masts.push_back(a.get());
       }
-      bool run = member_own_tail(*m, cls);
+      bool run = inline_body_end(*m, /*is_ctor=*/false, cls, class_name,
+                                 layout) == ChainEnd::Run;
       int32_t out_base = run ? fresh_run() : alloc_slot(at, "(value.ret)");
       cur = emit_inline_body(*m, cls, cur.slot, layout, *ps,
                              margs, masts, /*is_ctor=*/false, out_base,
@@ -12200,14 +12208,6 @@ class Compiler {
     }
     return cur;
   }
-  // The LHS of an eligible operator fold: same machinery, permitted to end
-  // holding the instance itself rather than a scalar, because the fold has
-  // already confirmed — before calling this — that the class it would
-  // resolve to has a matching, splice-able operator waiting for it.
-  std::optional<ExprResult> try_inline_value_operand(const peg::Ast& ast) {
-    return try_inline_value_chain_impl(ast, /*allow_trailing_class=*/true);
-  }
-
   // `dunder_for_op`: the special method an arithmetic opcode reaches on the
   // boxed path (`rt_runtime.inc.h`'s `_dispatch_arith_special`/`CUL_NUM_BINOP`),
   // for the subset this inlines. Reflection (`3 * v` where only `v` has
@@ -12243,12 +12243,13 @@ class Compiler {
     auto class_name =
         culebra::parse_generic_head(cls.nodes[dec_end]->token).outer;
     const peg::Ast* m = value_member_ast(cls, dunder);
-    if (!m ||
-        !inline_body_ok(*m, /*is_ctor=*/false, cls, class_name, lhs.unboxed))
-      return std::nullopt;
+    if (!m) return std::nullopt;
     auto ps = inline_params(culebra::view_method(*m).params);
     if (!ps || ps->size() != args.size()) return std::nullopt;
-    bool run = member_own_tail(*m, cls);
+    ChainEnd end = inline_body_end(*m, /*is_ctor=*/false, cls, class_name,
+                                   lhs.unboxed);
+    if (end == ChainEnd::Declined) return std::nullopt;
+    bool run = end == ChainEnd::Run;
     int32_t out_base = run ? alloc_zeroed_run(at, cls, class_name, *lhs.unboxed)
                            : alloc_slot(at, "(value.ret)");
     return emit_inline_body(*m, cls, lhs.slot, lhs.unboxed, *ps,
@@ -12270,8 +12271,7 @@ class Compiler {
   const peg::Ast* fold_resolves_to_class(const peg::Ast& ast) {
     using namespace peg::udl;
     if (ast.nodes.size() < 3) return nullptr;
-    const peg::Ast* cls =
-        chain_resolves_to_class(*ast.nodes[0], /*allow_trailing_class=*/true);
+    const peg::Ast* cls = chain_resolves_to_class(*ast.nodes[0]);
     if (!cls) return nullptr;
     auto vc = value_class_of(*cls);
     if (!vc) return nullptr;
@@ -12288,8 +12288,7 @@ class Compiler {
   const peg::Ast* unary_minus_resolves_to_class(const peg::Ast& ast) {
     using namespace peg::udl;
     if (ast.nodes.size() < 2) return nullptr;
-    const peg::Ast* cls =
-        chain_resolves_to_class(*ast.nodes[1], /*allow_trailing_class=*/true);
+    const peg::Ast* cls = chain_resolves_to_class(*ast.nodes[1]);
     if (!cls) return nullptr;
     auto vc = value_class_of(*cls);
     if (!vc) return nullptr;
@@ -12328,8 +12327,9 @@ class Compiler {
         allow_trailing_class && ast.nodes.size() >= 3
             ? fold_resolves_to_class(ast)
             : nullptr;
-    auto acc = fold_class ? *try_inline_value_operand(*ast.nodes[0])
-                          : compile_expr(*ast.nodes[0]);
+    auto acc = fold_class
+                   ? *try_inline_value_chain(*ast.nodes[0], ChainEnd::Run)
+                   : compile_expr(*ast.nodes[0]);
     for (size_t i = 1; i + 1 < ast.nodes.size(); i += 2) {
       auto op_tok = ast.nodes[i]->token;
       auto found = binary_op_for_token(op_tok);
@@ -12375,7 +12375,7 @@ class Compiler {
   ExprResult compile_unary_minus(const peg::Ast& ast,
                                  bool allow_trailing_class) {
     if (allow_trailing_class && unary_minus_resolves_to_class(ast)) {
-      auto r = *try_inline_value_operand(*ast.nodes[1]);
+      auto r = *try_inline_value_chain(*ast.nodes[1], ChainEnd::Run);
       auto out = try_inline_operator(ast, r, "__neg__", {}, {});
       assert(out && "unary_minus_resolves_to_class's scan promised this");
       return *out;
@@ -12422,8 +12422,7 @@ class Compiler {
     if (!vc) return std::nullopt;
     auto class_name = vc->name;
     const auto* layout = vc->layout;
-    if (!chain_stays_unboxed(ast, 1, *cls, class_name, layout,
-                             /*allow_trailing_class=*/false))
+    if (chain_end(ast, 1, *cls, class_name, layout) != ChainEnd::Scalar)
       return std::nullopt;
     ExprResult cur = head.tag == "UNARY_MINUS"_
                          ? compile_unary_minus(head,
@@ -12455,7 +12454,7 @@ class Compiler {
   // `C.new(...)` head: there is nothing to construct, only steps to splice
   // onto it. The two walks that let such a chain through
   // (receiver_refs_stay_unboxed for `self`, value_ref_ok for a local) asked
-  // chain_stays_unboxed the same question from the same index.
+  // chain_end the same question from the same index.
   std::optional<ExprResult> try_inline_name_chain(const peg::Ast& ast) {
     using namespace peg::udl;
     if (ast.nodes.size() < 2 || ast.nodes[0]->tag != "IDENTIFIER"_)
@@ -12465,8 +12464,7 @@ class Compiler {
     const peg::Ast& cls = *head->unboxed_class;
     size_t dec_end = culebra::first_non_decorator_index(cls);
     auto class_name = culebra::parse_generic_head(cls.nodes[dec_end]->token).outer;
-    if (!chain_stays_unboxed(ast, 1, cls, class_name, head->unboxed,
-                             /*allow_trailing_class=*/false))
+    if (chain_end(ast, 1, cls, class_name, head->unboxed) != ChainEnd::Scalar)
       return std::nullopt;
     return splice_trailing_chain(*head, ast, 1, cls, class_name,
                                  head->unboxed);
@@ -12504,7 +12502,7 @@ class Compiler {
     // comes before the head is compiled at all. Any part failing to qualify
     // answers nullopt having emitted nothing, and the ordinary walk below
     // then compiles the boxed form it always did.
-    if (auto r = try_inline_value_chain(ast)) return *r;
+    if (auto r = try_inline_value_chain(ast, ChainEnd::Scalar)) return *r;
     // An operator fold or negation whose result feeds a postfix chain this
     // splice machinery can consume — `(a + b).len()`, `(-v).x` — same
     // reasoning as the construction case above, and it is the ONLY place
