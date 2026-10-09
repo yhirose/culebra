@@ -34,6 +34,7 @@ culebra は個人の趣味プロジェクト（プログラミング言語処理
 
 - inner loop（修正→実行→修正）は **`just dev`**（LTO off、`-O1`、AOT archive スキップ、`main.cc` 単体 rebuild）。ヘッダを実質変更した場合の再ビルドは約 1 分半（stdlib preamble の焼き直し ~15s を含む。`-j20` では main.cc の裏に隠れ、`CULEBRA_BUILD_JOBS=8` では表に出る。dev でも焼き込むのは、無いと `just test-dev` の sweep が名前で呼ぶモジュールを毎回ソースから lowering し、gate/CI と別のプログラムを比べることになるため）。
 - ccache は既定の `~/.cache/ccache` をそのまま使う（`CCACHE_DIR` を設定しない）。justfile が `CCACHE_BASEDIR` を worktree root に export するので、同じ commit なら別 worktree の初回ビルドがキャッシュに当たる（実測 90s → 32s）。**絶対パスを焼き込む define を `main.cc` 側に足さないこと** — worktree 間共有が壊れる（`src/source_dir.cc` に隔離してある）。
+- ゲートの JIT は `CULEBRA_GATE_JIT_CACHE=<絶対パス>` でコンパイル結果を実行をまたいで残せる（**試用中・既定は無効**）。鍵は最適化後の IR とバックエンドなので、ビルドし直しても IR が同じファイルはコード生成を飛ばす（コーパスで JIT の CPU 882s → 413s）。全 worktree で同じディレクトリを指すと共有される。
 - **`just build`** はコミット前の最終確認、または AOT runtime archive 自体を触った変更のときのみ。**性能計測は必ず `just build`（`-O3` + LTO）で**。`build-dev/` は `-O1` なので数字が出ない。
 - このマシンは 20 スレッド / 15 GB。`just build-gate` は `-j20` でピーク約 11 GB 使うので、**別 worktree セッションと build を同時に走らせるとスワップする** — これは `misc/one_at_a_time.sh` のロックで直列化済み（下記「並走時のマシン占有」）。ロックを外して並走させるなら片方を `CULEBRA_BUILD_JOBS=8` 程度に絞る。
 - `build`/`dev`/`build-gate`/`build-no-jit` の make、および `_run-tests`（`test`/`test-dev` 共通）の culebra 実行・ctest はデフォルトで `nice -n 10` 経由。複数 worktree セッション並走時の CPU 専有で通常の Mac 操作が詰まる問題への対処（単独実行時は速度低下なし、競合時のみ譲る）。`CULEBRA_NICE=0` で無効化可。
