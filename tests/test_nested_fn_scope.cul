@@ -73,7 +73,7 @@ assert_eq(in_for(), 7)
 # match arm / try body / catch body
 fn in_match(v) {
   match v {
-    Long => {
+    k: Long => {
       fn h(n) {
         n > 0 ? h(n - 1) : 'arm'
       }

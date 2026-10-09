@@ -45,14 +45,14 @@ match buf[1].shape {
 // Nullary variant.
 buf[2].shape = Shape.Point
 match buf[2].shape {
-  Point => assert_true(true),
+  p: Point => assert_true(true),
   _ => assert_eq("p", "should be Point"),
 }
 
 // Overwriting one variant with another switches the tag.
 buf[0].shape = Shape.Point
 match buf[0].shape {
-  Point => assert_true(true),
+  p: Point => assert_true(true),
   _ => assert_eq("switch", "should be Point now"),
 }
 
