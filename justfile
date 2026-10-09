@@ -602,12 +602,36 @@ _run-tests BACKEND:
     # vm_cases' three GC modes — compile it once and link that object after:
     # the collector's settings change how the code runs, not what it is, and
     # tests/jit_cache_test.sh holds a hit to the run a cold start gives. 87%
-    # of gc-stress's CPU was the same two compiles over again. The cache is
-    # this run's own unless CULEBRA_GATE_JIT_CACHE names a directory to keep:
-    # an object is keyed by the module the backend was handed and by that
-    # backend (docs/internals/vm.md §7), so the next run, of this build or a
-    # later one, compiles only what changed.
-    jit_cache="${CULEBRA_GATE_JIT_CACHE:-$job_dir/jit-cache}"
+    # of gc-stress's CPU was the same two compiles over again.
+    #
+    # The cache is kept from run to run, beside ccache's and shared by every
+    # worktree: an object is keyed by the module the backend was handed and by
+    # that backend (docs/internals/vm.md §7), so the next run, of this build
+    # or a later one, compiles only what changed. CULEBRA_GATE_JIT_CACHE names
+    # another directory, or `off` for one that lasts the run. A directory that
+    # cannot be written — a sandbox that was not told of it — is said and
+    # passed over for the run's own, rather than left to fail a write at a
+    # time, silently, and take the sharing inside the run with it.
+    jit_cache="$job_dir/jit-cache"
+    jit_cache_kept="${CULEBRA_GATE_JIT_CACHE:-}"
+    if [[ -z "$jit_cache_kept" ]]; then
+        case "$(uname -s)" in
+          Darwin) jit_cache_kept="${HOME:-}/Library/Caches/culebra/gate-jit" ;;
+          *)      jit_cache_kept="${XDG_CACHE_HOME:-${HOME:-}/.cache}/culebra/gate-jit" ;;
+        esac
+    fi
+    if [[ "$jit_cache_kept" != off ]]; then
+        if mkdir -p "$jit_cache_kept" 2>/dev/null \
+           && ( : > "$jit_cache_kept/.probe.$$" ) 2>/dev/null; then
+            rm -f "$jit_cache_kept/.probe.$$"
+            jit_cache="$jit_cache_kept"
+        else
+            echo "jit cache: cannot write $jit_cache_kept; this run keeps its own" >&2
+        fi
+    fi
+    # Several builds' worth: the corpus is 72 MB of objects, and an entry no
+    # run has read for longest is the first to go.
+    export CULEBRA_JIT_CACHE_MAX_MB="${CULEBRA_JIT_CACHE_MAX_MB:-2048}"
     cul_cached() { CULEBRA_JIT_CACHE="$jit_cache" cul "$@"; }
     export -f cul_cached
     export jit_cache

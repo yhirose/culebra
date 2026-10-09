@@ -170,20 +170,25 @@ budget at the end of a lane and gate nothing.
 A lane compiles a file once. The phases that put the corpus through
 `--jit` again under a collector setting — gc-stress's two legs, the three
 modes of `vm_cases` — share one JIT object cache with the sweep that
-compiled it (`jit_cache` in the justfile, a directory of the run's own),
+compiled it (`jit_cache` in the justfile),
 so what they repeat is the run and not LLVM: the collector's settings
 change how the code runs, not what it is. The compiles were 87% of
 gc-stress's CPU. This is why the full vm/jit sweep and gc-stress share a
 CI shard.
 
-`CULEBRA_GATE_JIT_CACHE` names a directory to keep in place of the run's
-own, and then a later run starts from what an earlier one compiled: an
-object is keyed by the optimized module and the backend
-([vm.md](vm.md) §7), so a rebuild that changes neither finds it, and
-what it skips is the backend — 53% of the corpus's compile, the IR
-pipeline being run every time to arrive at the key. It is off unless
-set. With it on, the per-file compile budget of the vm/jit sweep reads
-the full compile only the first time a module is seen.
+That cache is kept from run to run — under the user's cache directory,
+`culebra/gate-jit`, shared by every worktree — so a later run starts
+from what an earlier one compiled: an object is keyed by the optimized
+module and the backend ([vm.md](vm.md) §7), a rebuild that changes
+neither finds it, and what it skips is the backend — 53% of the corpus's
+compile, the IR pipeline being run every time to arrive at the key.
+`CULEBRA_GATE_JIT_CACHE` names another directory, or `off` for one that
+lasts the run; a directory the gate cannot write is said in one line and
+passed over the same way. Two things follow from keeping it. The
+per-file compile budget of the vm/jit sweep reads a full compile only
+the first time a module is seen. And an object outlives the run that
+made it, so a JIT failure that a rerun does not explain is rerun with
+`off` before it is believed.
 
 ### What is exempt, and why it has to say so
 
