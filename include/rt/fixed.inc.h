@@ -2078,14 +2078,19 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_class_instance(
 // add-refused ordering to get backwards: nothing here ever asks whether the
 // field set is closed, because nothing here is ever an append.
 //
+// `cls` is the class object (borrowed), which the instance is built by like
+// one `new` made: a member reads its class's name off its receiver
+// (culebra_runtime_class_self), reboxed or not.
+//
 // The Shape cache (`*shape_cache`) is the same per-callsite one
 // ObjectNewShaped's runtime half uses — see `_jit_resolve_cached_shape`
 // (rt_runtime.inc.h) for why the laziness is load-bearing for AOT.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_materialize_value(
     void** shape_cache, const char* const* keys, int64_t n_keys,
-    JitObject* class_meta, const JitValue* field_values) {
+    JitObject* cls, const JitValue* field_values) {
   auto* shape = _jit_resolve_cached_shape(shape_cache, keys, n_keys);
-  auto* inst = _jit_class_instance_alloc(class_meta, nullptr);
+  assert(cls->class_meta_of() && "a run is reboxed by its declared class");
+  auto* inst = _jit_class_instance_alloc(cls->class_meta_of(), cls);
   inst->shape = shape;
   inst->slots.reserve(static_cast<size_t>(n_keys));
   for (int64_t i = 0; i < n_keys; i++)

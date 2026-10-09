@@ -6,12 +6,10 @@
 # occurrences, `Op::ValueBox` reboxes the run into an ordinary, frozen
 # instance instead of forcing the WHOLE binding boxed for declining once.
 #
-# Scope note: materializing needs the class's meta object at run time.
-# `Compiler::value_meta_cell_` is chunk-scoped (a fresh `Compiler` per
-# function chunk), but a class declared in an OUTER function is still
-# reachable from a nested one — `resolve_captures` threads its meta cell
-# alongside the ordinary free-variable capture that referencing
-# `ClassName.new(...)` at all already requires, to any depth of nesting
+# Scope note: the instance is built by its class object, read where the run
+# is. A run only exists where a construction named the class, so the name's
+# binding is in scope there — the declaration's own, or the capture a nested
+# function already holds for it, to any depth of nesting
 # (`test_cross_chunk_materializes` below covers one and two levels down).
 #
 # Run: ./build/culebra tests/test_value_materialize.cul
@@ -29,6 +27,10 @@ class V2 {
 
   __add__(o) {
     V2.new(self.x + o.x, self.y + o.y)
+  }
+
+  swap() {
+    V2.new(self.y, self.x)
   }
 }
 
@@ -104,8 +106,8 @@ for i in 0..500 {
 let live_at_500 = GC.stat().live_objects
 assert_le(live_at_500 - live_at_10, 4)
 
-# --- a locally-declared class materializes too: the meta cell only needs
-# to be reachable from THIS chunk, which a local declaration always is ---
+# --- a locally-declared class materializes too: its binding is a local of
+# the chunk that holds the run ---
 
 test_local_class_boundary = fn () {
   @value
@@ -147,5 +149,38 @@ test_cross_chunk_materializes_two_levels = fn () {
   inner()
 }
 test_cross_chunk_materializes_two_levels()
+
+# --- a reboxed run is an instance of its class, built by the class object
+# like one `new` made: a member that names its own class reads it off its
+# receiver, so every such member (every operator) has to find it there ---
+
+test_reboxed_run_knows_its_class = fn () {
+  let v = V2.new(1.0, 2.0)
+  let w = takes_untyped(v)
+  assert_eq(w.swap().x, 2.0)
+  assert_eq((w + w).y, 4.0)
+  assert_eq(class_of(w), V2)
+  assert_eq(class_of(w), class_of([V2.new(0.0, 0.0)][0]))
+  # a chunk below the declaration reads the class through its capture
+  let inner = fn () {
+    let c = V2.new(5.0, 6.0)
+    takes_untyped(c).swap().x
+  }
+  assert_eq(inner(), 6.0)
+}
+test_reboxed_run_knows_its_class()
+
+# --- a stdlib module's class has no binding to read: its run is reboxed by
+# the class the namespace of its name holds ---
+
+test_stdlib_class_materializes = fn () {
+  mut p = Vector2.new(1.0, 2.0)
+  p = p + Vector2.new(0.5, 0.5)
+  let boxed = takes_untyped(p)
+  assert_eq(boxed, Vector2.new(1.5, 2.5))
+  assert_eq(class_of(boxed), Vector2)
+  assert_eq((boxed + boxed).x, 3.0)
+}
+test_stdlib_class_materializes()
 
 inspect('value-materialize OK')

@@ -4596,14 +4596,14 @@ struct Lowering {
               b.CreateStore(v, gep);
             }
           }
-          auto metaV = load_slot(in.d);
+          auto clsV = load_slot(in.d);
           auto inst = j.emit_value_call(
               j.module_->getOrInsertFunction(
                   rt::materialize_value, j.valueType_, ptrTy, ptrTy, i64Ty,
                   ptrTy, ptrTy),
               {cacheGlobal, keysArray,
                b.getInt64(static_cast<int64_t>(spec.keys.size())),
-               b.CreateIntToPtr(j.extract_data(metaV), ptrTy), fieldsPtr},
+               b.CreateIntToPtr(j.extract_data(clsV), ptrTy), fieldsPtr},
               "vm.value.box");
           b.CreateStore(inst, slots[in.a]);
           break;

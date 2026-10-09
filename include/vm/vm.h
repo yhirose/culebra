@@ -529,8 +529,9 @@ enum class Op : uint8_t {
                // body of a synthetic constructor chunk.
   ValueBox,    // regs[a] = a fresh, frozen instance (+1) reboxing the run
                // at regs[b .. b+N) — N from value_box_specs[c]'s key count —
-               // as that site's Chunk::ValueBoxSpec, using meta regs[d]
-               // (borrowed).
+               // as that site's Chunk::ValueBoxSpec, built by the class
+               // object regs[d] (borrowed), which the instance keeps a +1
+               // on like one `new` made.
                // culebra_runtime_materialize_value; no `new`, no field-init,
                // nothing to run — the fields are already-computed scalars.
                // The run's own slots are a snapshot read: neither consumed
@@ -5187,21 +5188,6 @@ class Compiler {
   // analysis's to loop forever diagnosing.
   std::set<const peg::Ast*> checking_inline_body_;
 
-  // A flat `@value` class's constructor-cell capture (compile_class_decl's
-  // own `meta_cell`, alongside `finit`/`new`-body), keyed by the class AST —
-  // what materialize_run reads the meta from to build Op::ValueBox's `d`
-  // operand. Populated only for a class THIS Compiler instance itself
-  // compiled: a fresh `Compiler` per chunk (`Compiler fc(...)` at every
-  // nested `fn`/closure) makes this naturally chunk-scoped with no
-  // save/restore, the same way `member_frames_` and `checking_inline_body_`
-  // are.
-  // A class declared in an outer chunk has no entry here, which is
-  // `materialize_run`'s compile-time VmError — spec §15.8's own honest
-  // limitation (cross-frame materialization), not attempted here: closing
-  // it needs the cell threaded into the inner chunk through the ordinary
-  // capture machinery, the way `meta_cell` already reaches a constructor
-  // closure.
-  std::map<const peg::Ast*, int32_t> value_meta_cell_;
   // Occurrences `value_ref_ok`'s boundary check (`value_boundary_ok`) has
   // already proven safe to rebox rather than decline — an ordinary call's
   // argument, a container-literal element, a container store. Consulted by
@@ -8293,10 +8279,6 @@ class Compiler {
     // capture is a cell in this frame, like every other closure's.
     int32_t meta_cell = alloc_cell_slot(ast, "(class.meta)");
     emit(Op::CellNew, meta_cell, owned_src(ast, {meta, true}));
-    // Only a flat class has anything for materialize_run to reach for: one
-    // register_value_class_layout gave a layout above.
-    if (analysis_.value_layouts.contains(&ast))
-      value_meta_cell_[&ast] = meta_cell;
     int32_t nil_cell = -1;
     auto cell_or_nil = [&](int32_t cell) {
       if (cell >= 0) return cell;
@@ -8574,20 +8556,6 @@ class Compiler {
     // identity — a capture of a capture keeps the original's, so every site
     // stays reachable from the one cell a re-declaration would overwrite.
     std::vector<Binding::Known> knowns;
-
-    // Extra captures riding along after the ordinary, free_vars-indexed
-    // ones above: a flat `@value` class's meta cell, for every class this
-    // compiler can already reach one for (value_meta_cell_) whose name is
-    // ALSO an ordinary free variable of the callee — which a nested body
-    // referencing `ClassName.new(...)` at all already requires, so this
-    // never needs its own free-variable analysis. Deliberately an
-    // over-approximation (threaded whenever the class is visible, whether
-    // or not the body has a materialize-at-a-boundary occurrence): a spare
-    // captured cell costs one retain per closure creation and never causes
-    // an under-capture. What closes spec §15.8's cross-chunk limitation —
-    // see materialize_run's own comment.
-    std::vector<const peg::Ast*> meta_classes;
-    std::vector<int32_t> meta_slots;
     // The resolve.h symbol each capture holds (the scope agreement check).
     std::vector<size_t> symbols;
 
@@ -8682,18 +8650,6 @@ class Compiler {
       ensure_session_slot(*b);
       caps.push(*b);
       note_captured_cell(ast, fv, *b);
-      // The class this free variable names, when it is one whose meta cell
-      // THIS compiler can already reach: thread it too, so materialize_run
-      // inside the callee can reach it the same way (value_meta_cell_ is
-      // populated the identical way one level down, from THIS entry —
-      // recursing to any depth of nesting).
-      if (b->known.value_class) {
-        if (auto it = value_meta_cell_.find(b->known.value_class);
-            it != value_meta_cell_.end()) {
-          caps.meta_classes.push_back(b->known.value_class);
-          caps.meta_slots.push_back(it->second);
-        }
-      }
     }
     return caps;
   }
@@ -8784,10 +8740,6 @@ class Compiler {
     fc.chunk_.arity =
         params ? static_cast<int32_t>(params->nodes.size()) : 0;
     fc.chunk_.capture_src_slots = std::move(caps.slots);
-    // The meta-cell captures ride after the ordinary ones, at indices
-    // [free_vars.size(), free_vars.size() + meta_classes.size()) — the
-    // callee-side loop below binds them at the same offset.
-    for (int32_t s : caps.meta_slots) fc.chunk_.capture_src_slots.push_back(s);
     for (size_t i = 0; i < caps.muts.size() && i < info.free_vars.size(); ++i)
       if (caps.muts[i]) fc.chunk_.mut_capture_names.push_back(info.free_vars[i]);
     // Params occupy the ABI slots [0, arity). A captured param moves into a
@@ -9133,17 +9085,6 @@ class Compiler {
       cap.shadowed_builtin = caps.shadowed_builtins[i];
       cap.known = caps.knowns[i];
       fc.push_unnamed_binding(std::move(cap));
-    }
-    // The meta-cell captures riding after the ordinary ones (same offset
-    // resolve_captures/capture_src_slots used): give this chunk its own
-    // slot for each, and register it exactly where compile_class_decl
-    // would have if THIS compiler had compiled the class declaration
-    // itself — materialize_run cannot tell the difference either way.
-    for (size_t k = 0; k < caps.meta_classes.size(); ++k) {
-      int32_t s = fc.alloc_slot(ast, "(class.meta)");
-      fc.emit(Op::BindCapture, s,
-              static_cast<int32_t>(info.free_vars.size() + k));
-      fc.value_meta_cell_[caps.meta_classes[k]] = s;
     }
     if (self_cap >= 0) {
       int32_t s = fc.alloc_slot(ast, "self");
@@ -11237,9 +11178,7 @@ class Compiler {
   // Whether `expr`, in a position that reboxes rather than natively
   // consumes a run (a call argument, a container-literal element, a
   // container store's RHS), may become a materialization site: a BARE
-  // occurrence of a binding already proven unboxed to a class this chunk
-  // can actually reach a meta cell for (value_meta_cell_ — spec §15.8's
-  // own honest limitation, cross-frame materialization, stays a decline).
+  // occurrence of a binding already proven unboxed.
   // Deliberately narrower than `unboxed_value_expr_class`'s full three
   // shapes: a fold, negation or fresh construction reaching this position
   // already compiles to an ordinary boxed value on its own (compile_expr's
@@ -11257,7 +11196,6 @@ class Compiler {
     using namespace peg::udl;
     if (expr.tag != "IDENTIFIER"_) return false;
     if (name_run_class(expr.token, w) != w.cls) return false;
-    if (!value_meta_cell_.contains(w.cls)) return false;
     materialize_at_.insert(&expr);
     return true;
   }
@@ -11330,41 +11268,42 @@ class Compiler {
   }
 
   // Reboxes a run into an ordinary, owned instance — spec §15.8's
-  // "reboxing at boundaries", emitted at exactly the occurrences
-  // `value_boundary_ok` already proved safe (materialize_at_). The run's
+  // "reboxing at boundaries", emitted at the occurrences
+  // `value_boundary_ok` marked (materialize_at_). The run's
   // own slots are a snapshot READ (Op::ValueBox's own contract): copied
   // out, not consumed, so the binding they belong to keeps running
   // afterward exactly as before this call.
   //
-  // Decided once, dispatched here — the same discipline every other stage
-  // of this feature keeps (compile_unboxed_value_expr's own comment):
-  // `value_boundary_ok` is the one place that decides, INCLUDING whether
-  // this chunk can reach the class's meta cell at all (spec §15.8's own
-  // honest limitation, cross-frame materialization), so a marked
-  // occurrence reaching here has that already settled — the asserts pin
-  // the promise rather than re-deciding it.
+  // Any run can be reboxed, wherever it is: the instance is built by its
+  // class object, and a run's class is always within reach of the code
+  // that holds one (value_class_object).
   ExprResult materialize_run(const peg::Ast& at, const ExprResult& run) {
     assert(run.unboxed && run.unboxed_class &&
            "materialize_run needs a proven run, not an ordinary result");
-    auto it = value_meta_cell_.find(run.unboxed_class);
-    assert(it != value_meta_cell_.end() &&
-           "value_boundary_ok's scan promised this class's meta cell "
-           "is reachable in this chunk");
-    auto vc = value_class_of(*run.unboxed_class);
-    assert(vc && "a marked run's class must still be flat-eligible");
     Chunk::ValueBoxSpec spec;
     for (const auto& f : *run.unboxed)
       spec.keys.push_back(
           reinterpret_cast<const char*>(chunk_.consts[kconst_str(f)].data));
     int32_t spec_idx = static_cast<int32_t>(chunk_.value_box_specs.size());
     chunk_.value_box_specs.push_back(std::move(spec));
-    int32_t meta = alloc_temp(at);
-    emit(Op::CellGet, meta, it->second);
+    auto cls = value_class_object(at, *run.unboxed_class);
     int32_t dst = alloc_temp(at);
-    emit(Op::ValueBox, dst, run.slot, spec_idx, meta);
-    emit(Op::Release, meta);
-    forget_temp(meta);
+    emit(Op::ValueBox, dst, run.slot, spec_idx, cls.slot);
     return {dst, /*owned=*/true};
+  }
+
+  // The class object of a flat `@value` class, read where a run of it is:
+  // from the binding its declaration gave it to, which the construction
+  // that made the run already found bound, or from the namespace of its
+  // name for a stdlib module's class, which no binding carries.
+  ExprResult value_class_object(const peg::Ast& at, const peg::Ast& cls) {
+    if (const Binding* b = value_class_binding(cls))
+      return read_binding(at, *b, /*unbound_guard=*/false);
+    auto vc = value_class_of(cls);
+    assert(vc && "a run's class must still be flat-eligible");
+    int32_t t = alloc_temp(at);
+    emit(Op::NsGet, t, kconst_str(vc->name));
+    return {t, true};
   }
 
   // An expression proven to be a run, compiled as whichever of the three

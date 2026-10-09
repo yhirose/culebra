@@ -95,5 +95,17 @@ class Out {
 Out.new(In.new(1), 2).k' \
 '\(Out\.inner\)' 0
 
+# A stdlib module's class has no binding to read its class object from, and
+# its run is reboxed at a boundary all the same.
+check "a stdlib class's run is reboxed at a boundary" \
+'fn take(o) { o }
+fn f() {
+  mut v = Vector2.new(1.0, 2.0)
+  v = v + Vector2.new(0.5, 0.5)
+  take(v)
+}
+println(f())' \
+' ValueBox ' 1
+
 if [[ $fail -eq 0 ]]; then echo "resolve_shape_test OK"; exit 0; fi
 exit 1

@@ -1060,7 +1060,7 @@ boxedになる。`takes_untyped(v)`・`[v, other]`・`arr[i] = v`——通常の
 通常のfrozenなinstanceだからだ。
 
 `Op::ValueBox`（`regs[a] = regs[b..b+N)をmaterialize`。Nはそのサイトの
-`Chunk::ValueBoxSpec`から、metaは`regs[d]`）はこの隙間を、§5.3.1〜
+`Chunk::ValueBoxSpec`から、組み立てるclass objectは`regs[d]`）はこの隙間を、§5.3.1〜
 §5.3.3のdecide-once機構に一切手を触れず**加算的に**埋める:
 `value_ref_ok`は既存の形に加えて、呼び出し引数・コンテナリテラルの
 要素（array/tuple/set/object）・コンテナへの格納のRHS（`arr[i] = v`、
@@ -1086,33 +1086,18 @@ runそのもののslotはスナップショット**読み**であり消費では
 終わり方だけを求められる）ので、`value_boundary_ok`を裸の
 識別子より広げても、被覆を増やすのではなく仕事を重複させるだけになる。
 
-materializationには実行時のクラスのmeta objectが要り、
-`Compiler::value_meta_cell_`——クラスのASTを、`compile_class_decl`が
-そのコンストラクタクロージャのcaptureのために既に作っているcell
-（`meta_cell`）へ写像するもの——は自然にchunk単位のスコープになる:
-入れ子の`fn`/クロージャは新しい`Compiler`でコンパイルされ、それは
-最初は空の独自mapを持つ。これを同一chunk限定の機構のままにする代わりに、
-`resolve_captures`は、`ClassName.new(...)`を参照すること自体が既に
-要求している**通常の**自由変数captureに便乗させて、参照されたクラスの
-meta cellを内側のchunkへ運ぶ: `Binding::Known`が、このcompilerが既に
-meta cellを解決できる`value_class`を持つ自由変数それぞれについて、
-通常のcaptureの後ろに1つ追加のcaptureが続く
-（`CaptureList::meta_classes`/`meta_slots`、`Chunk::capture_src_slots`
-へ追加）。呼び出され側はそれを自分自身の`value_meta_cell_`へ同じ
-クラスASTの下で束縛する——`materialize_run`から見れば、そのchunkが
-自らそのクラスを宣言した場合と区別が付かない。（本体自身の
-`value_ref_ok`歩みが境界の出現を見つけた場合にのみ登録するのではなく）
-この形で登録するのは意図的な過大近似である: bodyが実際に必要とするか
-どうかに関わらずクロージャ生成のたびに1個のcell retainを払うが、
-under-captureは決して起こさない。呼び出され側自身の`value_meta_cell_`
-が、自分でそのクラスを宣言したかのようにentryを得るので、さらに
-入れ子のクロージャも同じやり方でもう一度captureする——再帰専用の
-コードなしに、任意の深さの入れ子に届く。裸の出現がこの経路でも
-届かないクラス(そもそも自由変数ですらない)は、run自体が
-`ClassName.new(...)`という名指し可能な形で構築されたことが一度も
-無い場合にしか起こり得ず(§5.3.1自身の適格性が既にそれを要求している)、
-単に印が付かないだけで、既存の却下経路がこの機構が存在しなかった場合と
-全く同じに走る: crashもしなければ誤った値になることもない。
+instanceはclass object（`regs[d]`）によって組み立てられる。`new`が作った
+ものと同じである: `JitObject::cls`がそれを持つので、自分のクラスを名前で
+呼ぶメンバは再ボックス化された受け手からも同じ経路で読め
+（`culebra_runtime_class_self`）、instance metaはhelperがそこから取る
+（`class_meta_of`）。`value_class_object`はrunのある場所でクラスを読む。
+runが存在するのはconstructionがそのクラスを名指しした場所だけなので、
+宣言がクラスを渡した束縛（`Binding::Known::value_class`）はそこでスコープに
+ある。宣言自身のcellか、入れ子の`fn`がその名前のために既に持っている
+captureである。stdlibモジュールのクラスは束縛を持たないので、その名前の
+namespaceから読む（`Op::NsGet`）。追加のcaptureは無く、クラスに届かない
+runも無いので、どのrunも再ボックス化できる。
+
 `tests/test_value_materialize.cul`は、このファイル自身のトップレベル・
 それを使う関数の中でローカルに宣言されたクラス・そして**外側**の
 関数で宣言され入れ子の`fn`1段・2段から読まれるクラスの全てを検証する

@@ -1076,7 +1076,8 @@ but none of them need to, either, since the value they want is an
 ordinary, frozen instance.
 
 `Op::ValueBox` (`regs[a] = materialize regs[b..b+N)`, N from that site's
-`Chunk::ValueBoxSpec`, using meta `regs[d]`) closes that gap additively,
+`Chunk::ValueBoxSpec`, built by the class object `regs[d]`) closes that
+gap additively,
 without touching §5.3.1–§5.3.3's decide-once machinery: `value_ref_ok`,
 in addition to the shapes it already accepts, marks a **bare occurrence**
 of `name` reached as a call argument, a container-literal element
@@ -1104,39 +1105,23 @@ a construction chain is asked for the scalar ending only), so widening
 `value_boundary_ok` past a bare identifier would duplicate work rather
 than add coverage.
 
-Materializing needs the class's meta object at run time, and
-`Compiler::value_meta_cell_` — mapping a class AST to the cell
-`compile_class_decl` already creates for its constructor closures'
-capture (`meta_cell`) — is naturally chunk-scoped: a nested `fn`/closure
-compiles with a fresh `Compiler`, which has its own, initially empty map.
-Rather than leaving that a same-chunk-only mechanism, `resolve_captures`
-threads a referenced class's meta cell into the nested chunk alongside
-the *ordinary* free-variable capture that referencing `ClassName.new(...)`
-at all already requires: for every free variable whose `Binding::Known`
-carries a `value_class` this compiler can already resolve a meta cell
-for, an extra capture rides after the ordinary ones
-(`CaptureList::meta_classes`/`meta_slots`, appended to
-`Chunk::capture_src_slots`), and the callee binds it into its OWN
-`value_meta_cell_` under the same class AST — indistinguishable, from
-`materialize_run`'s point of view, from a class this chunk declared
-itself. Registering it this way (rather than only when a body's own
-`value_ref_ok` walk finds a boundary occurrence) is a deliberate
-over-approximation: it costs one retained cell per closure creation
-whether or not the body ends up needing it, and never causes an
-under-capture. Because the callee's own `value_meta_cell_` gains the
-entry exactly as if it had declared the class, a further nested closure
-captures it again the identical way — the mechanism reaches any depth of
-nesting without recursion-specific code. A bare occurrence whose class
-is not reachable even this way (not a free variable at all — the only
-way that happens is a run that was never constructed via a nameable
-`ClassName.new(...)` in the first place, which §5.3.1's own eligibility
-already requires) simply is not marked, and the ordinary decline path
-runs exactly as it did before this mechanism existed: never a crash and
-never a wrong value. `tests/test_value_materialize.cul` covers a class
-declared at this file's own top level, locally inside the function using
-it, and in an *outer* function read from one and two levels of nested
-`fn` — all materialize at every boundary shape above, confirmed on the
-bytecode (`--vm-dump` showing `ValueBox`, not just matching output).
+The instance is built by its class object, `regs[d]`, exactly as one `new`
+made is: `JitObject::cls` holds it, so a member that names its own class
+reads it off a reboxed receiver the same way (`culebra_runtime_class_self`),
+and the helper takes the instance meta from it (`class_meta_of`).
+`value_class_object` reads the class where the run is. A run only exists
+where a construction named its class, so the binding the declaration gave
+the class to (`Binding::Known::value_class`) is in scope there, as the
+declaration's own cell or as the capture a nested `fn` already holds for
+the name; a stdlib module's class has no binding and is read from the
+namespace of its name (`Op::NsGet`). Nothing extra is captured, and no run
+is out of reach of its class, so every run can be reboxed.
+
+`tests/test_value_materialize.cul` covers a class declared at this file's
+own top level, locally inside the function using it, and in an *outer*
+function read from one and two levels of nested `fn` — all materialize at
+every boundary shape above, confirmed on the bytecode (`--vm-dump` showing
+`ValueBox`, not just matching output).
 
 ### 5.3.5 Construction settles its layout before it runs
 
