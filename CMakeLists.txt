@@ -428,6 +428,31 @@ if(CULEBRA_ENABLE_JIT)
   message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
   message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
 
+  # Which LLVM the driver carries, for the JIT object cache's key
+  # (JIT::backend_identity): a cached object is good for the backend that
+  # compiled it, and a package snapshot replaces the libraries under one
+  # version string. The stamp is their names, sizes and times, taken again
+  # whenever one of them changes. On the driver's own source alone — a
+  # definition on the target would rebuild every vendored file with it.
+  file(GLOB _llvm_lib_files "${LLVM_LIBRARY_DIRS}/*LLVM*")
+  list(SORT _llvm_lib_files)
+  set(_llvm_stamp "${LLVM_PACKAGE_VERSION}")
+  foreach(_lib IN LISTS _llvm_lib_files)
+    if(IS_DIRECTORY "${_lib}")
+      continue()
+    endif()
+    get_filename_component(_lib_name "${_lib}" NAME)
+    file(SIZE "${_lib}" _lib_size)
+    file(TIMESTAMP "${_lib}" _lib_time UTC)
+    string(APPEND _llvm_stamp ";${_lib_name}:${_lib_size}:${_lib_time}")
+  endforeach()
+  string(SHA1 CULEBRA_LLVM_BUILD_ID "${_llvm_stamp}")
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    ${_llvm_lib_files})
+  set_property(SOURCE ./src/main.cc APPEND PROPERTY COMPILE_DEFINITIONS
+    "CULEBRA_LLVM_BUILD_ID=\"${CULEBRA_LLVM_BUILD_ID}\"")
+  message(STATUS "LLVM build id: ${CULEBRA_LLVM_BUILD_ID}")
+
   include_directories(${LLVM_INCLUDE_DIRS})
   # LLVM_DEFINITIONS is a single space-joined string on some toolchains (msys2
   # mingw LLVM: "-D_GLIBCXX_USE_CXX11_ABI=1 -D_FILE_OFFSET_BITS=64 ..."). Passed

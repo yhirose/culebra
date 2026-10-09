@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# CULEBRA_JIT_CACHE — a program's compiled object, kept under a key of its
-# source and options. A hit stands for the lowered module after the IR
-# pipeline and the backend both, so neither runs again and the run has to be
-# the one a cold start gives: stdout, stderr and exit status.
+# CULEBRA_JIT_CACHE — a program's compiled object, reached by two keys. The
+# source key (the program's source and options, and this binary) skips the IR
+# pipeline and the backend; the object key (the optimized module's text and
+# the backend's identity) skips the backend alone, and holds for another
+# build. Whichever answers, the run has to be the one a cold start gives:
+# stdout, stderr and exit status.
 #
 # This can't be a tests/*.cul sweep test: it runs the same file twice against
-# one cache directory and reads what the second run skipped.
+# one cache directory, under two binaries, and reads what each run skipped.
 #
 # Usage: jit_cache_test.sh <path-to-culebra>
 set -u
@@ -78,6 +80,29 @@ for o in "$TMP/s"/*.o; do
 done
 run swapped "$TMP/s" --jit "$TMP/b.cul"
 [ "$(cat "$TMP/swapped.out")" = "a: [2, 4, 6]" ] || bad "a hit did not run the cached object: $(cat "$TMP/swapped.out")"
+
+# --- another build: the same module to the same backend ---------------------
+# The driver under a second path is another binary to the source key, and the
+# same LLVM, CPU and settings to the object key: it optimizes, then links what
+# the first one compiled.
+OTHER="$TMP/culebra-other"
+cp "$CULEBRA" "$OTHER"
+CULEBRA_JIT_TIME_PASSES=1 run first_t "$TMP/o" --jit "$TMP/a.cul"
+other() {  # other <name> <cache> <args...>: `run` under the second binary
+  local name="$1" cache="$2"; shift 2
+  CULEBRA_JIT_CACHE="$cache" "$OTHER" "$@" > "$TMP/$name.out" 2> "$TMP/$name.err"
+  echo "$?" > "$TMP/$name.rc"
+}
+CULEBRA_JIT_TIME_PASSES=1 other other_t "$TMP/o" --jit "$TMP/a.cul"
+grep -q '^\[jit-time\] optimize' "$TMP/other_t.err" || bad "another binary skipped the IR pipeline on the first binary's word"
+grep -q '^\[jit-time\] cached' "$TMP/other_t.err" || bad "another binary compiled a module the cache held"
+[ "$(entries "$TMP/o")" = 1 ] || bad "two binaries stored $(entries "$TMP/o") objects for one module, want 1"
+cmp -s "$TMP/first_t.out" "$TMP/other_t.out" || bad "another binary's run printed something else"
+CULEBRA_JIT_TIME_PASSES=1 other other_again "$TMP/o" --jit "$TMP/a.cul"
+grep -q '^\[jit-time\] optimize' "$TMP/other_again.err" && bad "a binary ran the IR pipeline on its own second run"
+other other_throw "$TMP/x2" --jit "$TMP/throws.cul"
+run first_throw "$TMP/x2" --jit "$TMP/throws.cul"
+same other_throw first_throw || bad "an uncaught throw reports differently off another build's object"
 
 # --- an uncaught throw reports the same on a hit ----------------------------
 run throw_cold "$TMP/x" --jit "$TMP/throws.cul"

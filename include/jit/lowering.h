@@ -66,35 +66,38 @@ struct Lowering {
         false);
   }
 
-  // `module_name` keys the backend object cache (JIT::jit_module_name): the
-  // caller passes the name derived from the sources it compiled, or leaves it
-  // empty for a program with nothing stable to key on. `fast_codegen` is
+  // `source_key` is the program's key in the object cache
+  // (JIT::jit_module_name): the caller passes the one derived from the
+  // sources it compiled, or a plain name for a program with nothing stable to
+  // key on. The module itself carries one fixed name whatever the program:
+  // its text is what the object key is made of. `fast_codegen` is
   // `--jit-faststart`, which skips the IR pipeline and takes the backend's
   // fast paths.
   static void run_program(const VmProgram& p, bool emit_llvm, int opt_level,
                           bool fast_codegen = false,
-                          const std::string& module_name = "vm",
+                          const std::string& source_key = "culebra",
                           std::span<const BakedPreamble* const> baked = {}) {
     using namespace llvm;
     JIT::ensure_native_target_init();
     auto ctx = std::make_unique<LLVMContext>();
-    auto mod = std::make_unique<Module>(
-        module_name.empty() ? "vm" : module_name, *ctx);
+    auto mod = std::make_unique<Module>("culebra", *ctx);
     JIT::apply_target(*mod, Triple(sys::getDefaultTargetTriple()));
     IRBuilder<> builder(*ctx);
     JIT jit(ctx.get(), mod.get(), builder);
     auto phase_t = std::chrono::steady_clock::now();
     lower_program(jit, p, "__culebra_main", baked);
     JIT::time_phase("lower", phase_t);
-    // A cache hit is this module already optimized and compiled, so neither
-    // happens again; --emit-llvm prints the pipeline's output and takes none.
-    auto cached = emit_llvm ? nullptr : JIT::cached_object(*mod);
-    if (cached) {
-      JIT::time_phase("cached", phase_t);
-    } else {
+    // The object cache's two keys (JIT::FileObjectCache), in the order they
+    // can answer: the source key before the IR pipeline, which a hit skips
+    // along with the backend, and the object key after it, which skips the
+    // backend alone. --emit-llvm prints the pipeline's output and asks neither.
+    auto cached = emit_llvm ? nullptr : JIT::cached_object(source_key);
+    if (!cached) {
       if (opt_level > 0) JIT::optimize_module(*mod, opt_level);
       JIT::time_phase("optimize", phase_t);
+      if (!emit_llvm) cached = JIT::keyed_object(*mod, source_key, fast_codegen);
     }
+    if (cached) JIT::time_phase("cached", phase_t);
     if (emit_llvm) {
       mod->print(outs(), nullptr);
     } else {
@@ -450,12 +453,18 @@ struct Lowering {
     // wins over the using-directive.)
     std::vector<llvm::Value*> slots(c.num_slots);
     for (int32_t s = 0; s < c.num_slots; ++s) {
+      // A field-init slot's name carries its class declaration's address,
+      // and a value's name is part of the module's text, which the object
+      // cache keys on: that slot goes by its kind.
+      const std::string label =
+          culebra::is_field_init_slot_name(c.slot_names[s]) ? "finit"
+                                                            : c.slot_names[s];
       if (gen) {  // the frame's own, nil from gen_ramp
         slots[s] = b.CreateConstInBoundsGEP1_64(j.valueType_, genRegs, s,
-                                                c.slot_names[s]);
+                                                label);
         continue;
       }
-      slots[s] = b.CreateAlloca(j.valueType_, nullptr, c.slot_names[s]);
+      slots[s] = b.CreateAlloca(j.valueType_, nullptr, label);
       b.CreateStore(j.make_nil(), slots[s]);
     }
     // A generator body is entered at its prologue once and at a resume point

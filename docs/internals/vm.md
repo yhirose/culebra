@@ -1697,18 +1697,32 @@ what makes the same lowering valid for an object file.
 
 `--jit-faststart` skips the IR pipeline and takes the backend's fast
 paths (`JIT::apply_fast_codegen`; the two levels move together), and
-`CULEBRA_JIT_CACHE` enables an object cache keyed by
-`JIT::jit_module_name` (sources, options). The key is the source, not
-the IR, so a hit stands for the module after the IR pipeline and the
-backend both: `run_program` asks `JIT::cached_object` once the module is
-lowered, and on a hit runs neither — `JIT::exec` links the stored object
-and drops the module unread. The object is read up front rather than
-left for the compile layer's own lookup, so that an entry evicted in
-between cannot leave the backend compiling a module the pipeline never
-saw and storing that under the key. A miss goes through the pipeline and
-the compile layer, which stores the object beside its name and renames
-it into place. `tests/jit_cache_test.sh` holds a hit to the run a cold
-start gives. Neither is what makes a cold `--jit` start-up cheap:
+`CULEBRA_JIT_CACHE` enables an object cache (`JIT::FileObjectCache`).
+Two keys lead to an object, and each is made of exactly what the stage
+it lets a run skip would have read:
+
+| key | made of | a hit skips | holds for |
+|---|---|---|---|
+| source key (`jit_module_name`) | the program's source and options, and this binary's path, size and time | the IR pipeline and the backend | the binary that wrote it |
+| object key (`object_key_for`) | the optimized module's text, and `backend_identity`: the LLVM the binary carries, the host CPU, the settings of `kBackendKnobs` | the backend | any build that hands this module to this backend |
+
+`run_program` asks by the source key once the module is lowered
+(`JIT::cached_object`); a hit links the stored object and drops the
+module unread. On a miss it runs the pipeline and asks again by the
+object key (`JIT::keyed_object`), which also records the object key
+under the source key and names the module by it — the name the compile
+layer stores the object under, should the backend have to run. A change
+to the lowering, the runtime or the pipeline needs no part in the object
+key: whatever it changed is in the module's text. What the text cannot
+show is the backend itself, which is why its identity is spelled out —
+the LLVM by CMake's stamp of the libraries it linked
+(`CULEBRA_LLVM_BUILD_ID`; a package snapshot replaces them under one
+version string), and the backend's settings by the same table
+`tune_backend` applies them from. An entry is written beside its name
+and renamed into place, and a hit touches it, so eviction takes the
+entries longest unread. `tests/jit_cache_test.sh` holds a hit by either
+key to the run a cold start gives, across two binaries. Neither
+faststart nor the cache is what makes a cold `--jit` start-up cheap:
 the stdlib modules a program names, and the built-in traits every
 program registers, are not in the module at all (§2, the baked
 preamble), so what gets lowered is the user's code. That is most of the
@@ -1723,8 +1737,9 @@ built binary pulls the archive member.
 
 What the rest of a start-up costs is read with `CULEBRA_JIT_TIME_PASSES`:
 the four phases (lower, optimize, codegen, run) and LLVM's own per-pass
-report for the IR pipeline and the backend. On a cache hit the second
-phase reads `cached` — the object's load — and `codegen` is its link.
+report for the IR pipeline and the backend. A cache hit reports
+`cached` — in place of `optimize` when the source key answered, after it
+when the object key did — and `codegen` is then the object's link.
 Execution is a few
 milliseconds on any file of `tests/`; the backend is the larger half of
 the rest, and a flat script — one function, its top-level slots and the

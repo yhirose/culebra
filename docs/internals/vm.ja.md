@@ -1650,19 +1650,32 @@ loweringされたプログラムに対してホスト側に登録されるもの
 
 `--jit-faststart`はIRパイプラインを飛ばしバックエンドの高速パス
 を使い（`JIT::apply_fast_codegen`。2つのレベルは一緒に動く）、
-`CULEBRA_JIT_CACHE`は`JIT::jit_module_name`（ソースとオプション）
-でキーづけられたobject cacheを有効にする。キーはIRではなくソース
-なので、ヒットはIRパイプラインとバックエンドの両方を通った後の
-モジュールを表す: `run_program`はloweringの後で
-`JIT::cached_object`に尋ね、ヒットすればどちらも走らせない —
-`JIT::exec`は保存されたobjectをリンクし、モジュールは読まずに
-捨てる。objectはcompile layer自身の検索に任せず先に読む。間で
-エントリが追い出されると、パイプラインを通っていないモジュールを
-バックエンドがコンパイルし、それをそのキーで保存してしまうからで
-ある。ミスはパイプラインとcompile layerを通り、compile layerは
-objectを名前の隣に書いてからrenameで置く。
-`tests/jit_cache_test.sh`が、ヒットした実行がcold startの実行と
-同じであることを保っている。そしてどちらもcoldな`--jit`の
+`CULEBRA_JIT_CACHE`はobject cache（`JIT::FileObjectCache`）を有効に
+する。objectには2つのキーから届き、どちらのキーも、それが飛ばさせる
+段が読むはずだったものだけでできている:
+
+| キー | 中身 | ヒットで飛ぶもの | 有効な範囲 |
+|---|---|---|---|
+| ソースキー（`jit_module_name`） | プログラムのソースとオプション、このバイナリのパス・サイズ・時刻 | IRパイプラインとバックエンド | それを書いたバイナリ |
+| objectキー（`object_key_for`） | 最適化後のモジュールのテキストと`backend_identity`: バイナリが持つLLVM、ホストCPU、`kBackendKnobs`の設定 | バックエンド | このモジュールをこのバックエンドに渡すすべてのビルド |
+
+`run_program`はloweringの後でソースキーで尋ね
+（`JIT::cached_object`）、ヒットすれば保存されたobjectをリンクして
+モジュールは読まずに捨てる。ミスならパイプラインを走らせ、object
+キーでもう一度尋ねる（`JIT::keyed_object`）。このときobjectキーを
+ソースキーの下に記録し、モジュールをその名前にする — バックエンドが
+走ることになった場合にcompile layerがobjectを保存する名前である。
+lowering・ランタイム・パイプラインへの変更はobjectキーに入れる必要が
+ない: それが変えたものはモジュールのテキストに現れる。テキストに
+現れないのはバックエンド自身なので、その素性は明示してある — LLVMは
+CMakeがリンクしたライブラリの印（`CULEBRA_LLVM_BUILD_ID`。パッケージの
+snapshotは同じ版数のままライブラリを差し替える）で、バックエンドの
+設定は`tune_backend`がそれを適用するのと同じ表で。エントリは名前の
+隣に書いてからrenameで置き、ヒットは時刻を更新するので、追い出される
+のは最も長く読まれていないエントリである。
+`tests/jit_cache_test.sh`が、どちらのキーでヒットした実行もcold
+startの実行と同じであることを、2つのバイナリにまたがって保っている。
+そしてfaststartもcacheも、coldな`--jit`の
 起動が安い理由ではない: プログラムが名前で呼ぶstdlibモジュールも、
 どのプログラムも登録する組み込みtraitも、そもそもモジュールの中に
 無い（§2、焼き込みpreamble）ので、loweringされるのはユーザーの
@@ -1679,8 +1692,9 @@ loweringするIRは6,167行ではなく758行、起動は82msではなく7msに�
 起動の残りが何に使われているかは`CULEBRA_JIT_TIME_PASSES`で読める:
 4つのフェーズ（lower・optimize・codegen・run）と、IRパイプラインと
 バックエンドそれぞれについてのLLVM自身のパス別レポートである。
-cacheにヒットしたときは2つ目のフェーズが`cached`（objectの読み込み）
-になり、`codegen`はそのリンクである。
+cacheのヒットは`cached`と報告される — ソースキーが答えたときは
+`optimize`の代わりに、objectキーが答えたときはその後に — そして
+`codegen`はobjectのリンクになる。
 `tests/`のどのファイルでも実行は数msで、残りの大きい方の半分は
 バックエンドにある。フラットなスクリプト — 1つの関数で、トップ
 レベルのスロットとthread-stateポインタがその全体にわたって生きて

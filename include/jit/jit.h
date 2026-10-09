@@ -30,7 +30,10 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
+#include "llvm/ADT/StringExtras.h"  // toHex (the object cache's keys)
+#include "llvm/Support/BLAKE3.h"  // the digest of a module's text
 #include "llvm/Support/Process.h"  // the object cache's temporary file names
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/xxhash.h"
 #include "llvm/TargetParser/Host.h"
@@ -628,19 +631,38 @@ struct JIT {
   // to convert and never paid it). x86 does not run the pass by default,
   // and neither does the generic CPU that AOT compiles for — the call
   // from the AOT path keeps the two from diverging if that changes.
+  //
+  // A flat script is one function whose entry-block values (the thread
+  // state, the owned-stack pointer, the top-level slots) live across all of
+  // it, and the register coalescer joins every call site's copy of those
+  // against that whole interval — 42% of a `--jit` start on a large test
+  // file (docs/internals/vm.md §7, with the numbers). The threshold is
+  // LLVM's own bound on how many times such an interval is joined;
+  // process-wide like the ifcvt knob, so `culebra build` allocates under it
+  // too.
+  //
+  // One table for what is set and for what backend_identity says was set: a
+  // cached object is keyed by the settings it was compiled under, so a knob
+  // added here is in the key by being here.
+  struct BackendKnob {
+    const char* name;
+    bool is_bool;
+    unsigned value;
+  };
+  static constexpr BackendKnob kBackendKnobs[] = {
+      {"aarch64-enable-early-ifcvt", true, 0},
+      {"large-interval-freq-threshold", false, 16},
+  };
   static void tune_backend() {
     auto& opts = llvm::cl::getRegisteredOptions();
-    if (auto it = opts.find("aarch64-enable-early-ifcvt"); it != opts.end())
-      static_cast<llvm::cl::opt<bool>*>(it->second)->setValue(false);
-    // A flat script is one function whose entry-block values (the thread
-    // state, the owned-stack pointer, the top-level slots) live across all of
-    // it, and the register coalescer joins every call site's copy of those
-    // against that whole interval — 42% of a `--jit` start on a large test
-    // file (docs/internals/vm.md §7, with the numbers). This is LLVM's own
-    // bound on how many times such an interval is joined; process-wide like
-    // the ifcvt knob above, so `culebra build` allocates under it too.
-    if (auto it = opts.find("large-interval-freq-threshold"); it != opts.end())
-      static_cast<llvm::cl::opt<unsigned>*>(it->second)->setValue(16);
+    for (const auto& k : kBackendKnobs) {
+      auto it = opts.find(k.name);
+      if (it == opts.end()) continue;
+      if (k.is_bool)
+        static_cast<llvm::cl::opt<bool>*>(it->second)->setValue(k.value != 0);
+      else
+        static_cast<llvm::cl::opt<unsigned>*>(it->second)->setValue(k.value);
+    }
   }
 
   // Process-wide LLVM target init. Concurrent callers race on the
@@ -684,14 +706,23 @@ struct JIT {
     });
   }
 
-  // On-disk cache for compiled native objects. It answers the "warmup
-  // without trading steady-state" question: the backend codegen output
-  // (.o) is stored under a content key (build salt + flags + source), so a
-  // later run of the same program skips instruction-selection + register-
-  // allocation — the dominant warmup cost — and loads byte-identical O2
-  // code. Per-step throughput is unaffected (no FastISel involved). Only
-  // modules named with kCacheKeyTag participate; a plainly-named module
-  // bypasses the cache so it can never collide on a shared object slot.
+  // On-disk cache for compiled native objects (CULEBRA_JIT_CACHE). Two keys
+  // lead to an object, each made of exactly what the stage it lets a run skip
+  // would have read:
+  //
+  //   the object key   the optimized module's text, with backend_identity —
+  //                    the LLVM this binary carries, the host CPU, the
+  //                    backend's settings. A hit skips the backend, and holds
+  //                    for any build that hands this module to this backend:
+  //                    whatever the lowering, the runtime or the IR pipeline
+  //                    were changed to do is in the text.
+  //   the source key   the program's source and options, with this very
+  //                    binary (jit_module_name). It names the object key the
+  //                    program came to, so a hit skips the IR pipeline as
+  //                    well — for the binary that wrote it and no other.
+  //
+  // Per-step throughput is unaffected either way: a cached object is the
+  // byte-identical code a cold start compiles.
   static constexpr const char* kCacheKeyTag = "culebra#";
 
   class FileObjectCache : public llvm::ObjectCache {
@@ -702,44 +733,65 @@ struct JIT {
       if (const char* mb = std::getenv("CULEBRA_JIT_CACHE_MAX_MB"))
         max_bytes_ = std::strtoull(mb, nullptr, 10) * 1024 * 1024;
     }
-    // Written beside its name and renamed onto it: a second process running
-    // the same program reads the entry whole or not at all.
+    // Only a keyed name is an entry; a plainly-named module (an embedder's
+    // bare AST, which has no source to key on) passes the cache by.
+    static bool is_key(llvm::StringRef name) {
+      return name.starts_with(kCacheKeyTag);
+    }
+    // The compile layer's half: a module named by its object key (keyed_object)
+    // stores what the backend made of it.
     void notifyObjectCompiled(const llvm::Module* m,
                               llvm::MemoryBufferRef obj) override {
-      auto p = path_for(m);
-      if (p.empty()) return;
-      auto tmp = p + "." + std::to_string(llvm::sys::Process::getProcessId());
-      std::ofstream out(tmp, std::ios::binary);
-      out.write(obj.getBufferStart(),
-                static_cast<std::streamsize>(obj.getBufferSize()));
-      out.close();
-      std::error_code ec;
-      if (out) std::filesystem::rename(tmp, p, ec);
-      if (!out || ec) std::filesystem::remove(tmp, ec);
+      llvm::StringRef key = m->getModuleIdentifier();
+      if (!is_key(key)) return;
+      write(path(key, ".o"), obj.getBuffer());
       evict_if_over_cap();
     }
     std::unique_ptr<llvm::MemoryBuffer> getObject(
         const llvm::Module* m) override {
-      auto p = path_for(m);
-      if (p.empty()) return nullptr;
+      return object(m->getModuleIdentifier());
+    }
+    // The object stored under `object_key`, or null. A hit is touched:
+    // eviction goes by age, and an entry every run reads is not the oldest.
+    std::unique_ptr<llvm::MemoryBuffer> object(llvm::StringRef object_key) {
+      if (!is_key(object_key)) return nullptr;
+      auto p = path(object_key, ".o");
       auto buf = llvm::MemoryBuffer::getFile(p, /*IsText=*/false);
       if (!buf) return nullptr;
+      std::error_code ec;
+      std::filesystem::last_write_time(
+          p, std::filesystem::file_time_type::clock::now(), ec);
       return llvm::MemoryBuffer::getMemBufferCopy(
           (*buf)->getBuffer(), (*buf)->getBufferIdentifier());
     }
+    // The object key `source_key` last came to, or empty.
+    std::string object_key_of(llvm::StringRef source_key) const {
+      auto buf = llvm::MemoryBuffer::getFile(path(source_key, ".ref"));
+      if (!buf) return {};
+      auto key = (*buf)->getBuffer().trim();
+      return is_key(key) ? key.str() : std::string();
+    }
+    void remember(llvm::StringRef source_key, llvm::StringRef object_key) {
+      write(path(source_key, ".ref"), object_key);
+    }
 
    private:
-    // Only a content-keyed module (kCacheKeyTag prefix, stamped by
-    // jit_module_name) is cacheable; anything else gets an empty path and
-    // bypasses the cache. The key already encodes source + build salt, so
-    // resolving it here costs nothing — no IR reprint.
-    std::string path_for(const llvm::Module* m) const {
-      llvm::StringRef id = m->getModuleIdentifier();
-      if (!id.starts_with(kCacheKeyTag)) return {};
-      return dir_ + "/" + id.str() + ".o";
+    std::string path(llvm::StringRef key, const char* ext) const {
+      return dir_ + "/" + key.str() + ext;
     }
-    // Keep the cache under a soft byte cap by evicting least-recently-used
-    // objects. Runs only after a miss writes a new object, so the directory
+    // Written beside its name and renamed onto it: a second process running
+    // the same program reads the entry whole or not at all.
+    void write(const std::string& p, llvm::StringRef bytes) {
+      auto tmp = p + "." + std::to_string(llvm::sys::Process::getProcessId());
+      std::ofstream out(tmp, std::ios::binary);
+      out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+      out.close();
+      std::error_code ec;
+      if (out) std::filesystem::rename(tmp, p, ec);
+      if (!out || ec) std::filesystem::remove(tmp, ec);
+    }
+    // Keep the cache under a soft byte cap by evicting the entries longest
+    // unread. Runs only after a miss writes a new object, so the directory
     // walk is amortized against a full backend compile.
     void evict_if_over_cap() {
       namespace fs = std::filesystem;
@@ -793,23 +845,88 @@ struct JIT {
     return cache.get();
   }
 
-  // The object an earlier run compiled this module to, or null. The key is
-  // the program's source, so a hit stands for the lowered module after the
-  // IR pipeline and the backend both: `exec` links it in place of running
-  // either. Read here, whole, rather than left for the compile layer to find
-  // — an entry evicted in between would have the backend compile a module
-  // the pipeline never saw, and store that under the key.
-  static std::unique_ptr<llvm::MemoryBuffer> cached_object(
-      const llvm::Module& m) {
-    auto* cache = object_cache();
-    return cache ? cache->getObject(&m) : nullptr;
+  // What the backend reads besides the module it is handed: the LLVM this
+  // binary carries, the host CPU the JIT compiles for, and the settings of
+  // kBackendKnobs. CULEBRA_LLVM_BUILD_ID is CMake's stamp of the libraries it
+  // linked — a package snapshot changes under one version string. A build
+  // without the stamp names itself instead, which is the most a key can say:
+  // its objects are then its own, as its source keys are.
+  static const std::string& backend_identity() {
+    static const std::string id = [] {
+      std::string s = LLVM_VERSION_STRING;
+      s += '|';
+#ifdef CULEBRA_LLVM_BUILD_ID
+      s += CULEBRA_LLVM_BUILD_ID;
+#else
+      s += jit_cache_salt();
+#endif
+      s += '|';
+      s += llvm::sys::getHostCPUName();
+      std::vector<std::string> features;
+      for (const auto& f : llvm::sys::getHostCPUFeatures())
+        features.push_back((f.second ? "+" : "-") + f.first().str());
+      std::sort(features.begin(), features.end());
+      for (const auto& f : features) s += ',' + f;
+      for (const auto& k : kBackendKnobs)
+        s += std::string("|") + k.name + '=' + std::to_string(k.value);
+      return s;
+    }();
+    return id;
   }
 
-  // A salt uniquely identifying this binary's codegen ABI, computed once.
-  // The executable's path + size + mtime invalidate the cache on any
-  // rebuild — even an incremental one that left __DATE__/__TIME__ unchanged
-  // — and the LLVM version + host triple guard a toolchain or target swap.
-  // Cheap: a single stat, no binary read.
+  // A stream that keeps the digest of what is written to it and nothing else.
+  struct DigestStream : llvm::raw_ostream {
+    llvm::BLAKE3 digest;
+    uint64_t written = 0;
+    ~DigestStream() override { flush(); }
+    void write_impl(const char* p, size_t n) override {
+      digest.update(llvm::StringRef(p, n));
+      written += n;
+    }
+    uint64_t current_pos() const override { return written; }
+  };
+
+  // The object key of a module as the backend is about to receive it.
+  static std::string object_key_for(const llvm::Module& mod,
+                                    bool fast_codegen) {
+    DigestStream os;
+    os << backend_identity() << (fast_codegen ? "|fast\n" : "|full\n");
+    mod.print(os, nullptr);
+    os.flush();
+    auto d = os.digest.final();
+    return kCacheKeyTag +
+           llvm::toHex(llvm::ArrayRef<uint8_t>(d.data(), 16), /*LowerCase=*/true);
+  }
+
+  // The object the program named by `source_key` compiled to under this
+  // binary, or null: a hit stands for the lowered module after the IR pipeline
+  // and the backend both, and `exec` links it in place of running either.
+  static std::unique_ptr<llvm::MemoryBuffer> cached_object(
+      const std::string& source_key) {
+    auto* cache = object_cache();
+    if (!cache || !FileObjectCache::is_key(source_key)) return nullptr;
+    auto object_key = cache->object_key_of(source_key);
+    return object_key.empty() ? nullptr : cache->object(object_key);
+  }
+
+  // Past the IR pipeline: name the module by its object key — which is where
+  // the compile layer stores the object, should the backend have to run — let
+  // `source_key` find it next time, and return the object when some earlier
+  // run, of this binary or another, already compiled this module.
+  static std::unique_ptr<llvm::MemoryBuffer> keyed_object(
+      llvm::Module& mod, const std::string& source_key, bool fast_codegen) {
+    auto* cache = object_cache();
+    if (!cache || !FileObjectCache::is_key(source_key)) return nullptr;
+    auto object_key = object_key_for(mod, fast_codegen);
+    mod.setModuleIdentifier(object_key);
+    cache->remember(source_key, object_key);
+    return cache->object(object_key);
+  }
+
+  // A salt uniquely identifying this binary, computed once. The executable's
+  // path + size + mtime change on any rebuild — even an incremental one that
+  // left __DATE__/__TIME__ unchanged — and the LLVM version + host triple
+  // guard a toolchain or target swap. Cheap: a single stat, no binary read.
   static const std::string& jit_cache_salt() {
     static const std::string salt = [] {
       std::string s = LLVM_VERSION_STRING;
@@ -827,11 +944,10 @@ struct JIT {
     return salt;
   }
 
-  // Module name for a JIT run. With the cache on, encode a content key
-  // (build salt + codegen flags + every module's source) under kCacheKeyTag
-  // so a later run of the same program finds its prior backend object;
-  // otherwise the plain name (which the cache ignores). Single source for
-  // both the single- and multi-module entry points.
+  // The source key of a JIT run (see FileObjectCache): this binary, the
+  // codegen flags and every module's source, under kCacheKeyTag — or a plain
+  // name, which the cache ignores, when it is off. Single source for both the
+  // single- and multi-module entry points.
   static std::string jit_module_name(const std::vector<LoadedModule>& modules,
                                      bool fast_codegen, int opt_level) {
     if (!jit_cache_dir()) return "culebra";
@@ -5825,8 +5941,8 @@ struct JIT {
 
   // --- Execution ---
 
-  // `cached` is the module's object from an earlier run (cached_object):
-  // given one, it is linked and the module is dropped unread.
+  // `cached` is the module's object from an earlier run (cached_object, or
+  // keyed_object): given one, it is linked and the module is dropped unread.
   static void exec(std::unique_ptr<llvm::LLVMContext> ctx,
                    std::unique_ptr<llvm::Module> mod,
                    bool fast_codegen = false,
