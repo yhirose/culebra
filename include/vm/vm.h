@@ -11031,13 +11031,20 @@ class Compiler {
   // rooted somewhere `v` is not — never reaches that IDENTIFIER case in the
   // first place (a CALL node is not one, and any OTHER identifier already
   // has a real binding by the time this runs), so asking there is safe.
+  //
+  // That answers for the RHS's own shape, not for `v` below the top of it:
+  // an argument of the construction or of a step is an ordinary position,
+  // and a fold's later operand is the spliced dunder's parameter
+  // (fold_operands_ok).
   bool value_write_ok(const peg::Ast& rhs, const ValueWalk& w) {
     using namespace peg::udl;
-    if (((rhs.tag == "ADDITIVE"_ || rhs.tag == "MULTIPLICATIVE"_) &&
-         fold_operand0_is(rhs, w.name)) ||
+    bool fold = rhs.tag == "ADDITIVE"_ || rhs.tag == "MULTIPLICATIVE"_;
+    if ((fold && fold_operand0_is(rhs, w.name)) ||
         (rhs.tag == "UNARY_MINUS"_ && neg_operand_is(rhs, w.name)))
       return value_run_ok(rhs, w);
-    return unboxed_value_expr_class(rhs) == w.cls;
+    if (unboxed_value_expr_class(rhs) != w.cls) return false;
+    if (!fold) return value_ref_ok(rhs, w);
+    return value_ref_ok(*rhs.nodes[0], w) && fold_operands_ok(rhs, w);
   }
 
   // The generalised `receiver_refs_stay_unboxed`, for a `let [mut]` local
@@ -11272,13 +11279,22 @@ class Compiler {
     // The fold's own operand[0] is its accumulator's seed, and the target's
     // copy-back is what consumes the result — so `name` may be that seed
     // (`let d = v + g`) as well as any later operand.
+    // A head that is a chain mentions `name` only in its arguments, which
+    // are ordinary positions.
     const peg::Ast& head = *rhs.nodes[0];
     bool head_ok = head.tag == "IDENTIFIER"_
                        ? name_run_class(head.token, w) == w.cls
-                       : chain_resolves_to_class(head) == w.cls;
-    if (!head_ok || !fold_operators_splice_ok(rhs, 1, w)) return false;
-    for (size_t i = 1; i + 1 < rhs.nodes.size(); i += 2)
-      if (!consumer_operand_ok(rhs.nodes[i]->token, *rhs.nodes[i + 1], w))
+                       : chain_resolves_to_class(head) == w.cls &&
+                             value_ref_ok(head, w);
+    return head_ok && fold_operators_splice_ok(rhs, 1, w) &&
+           fold_operands_ok(rhs, w);
+  }
+
+  // A fold's operands after its head, each as the spliced dunder's
+  // parameter takes it.
+  bool fold_operands_ok(const peg::Ast& fold, const ValueWalk& w) {
+    for (size_t i = 1; i + 1 < fold.nodes.size(); i += 2)
+      if (!consumer_operand_ok(fold.nodes[i]->token, *fold.nodes[i + 1], w))
         return false;
     return true;
   }

@@ -751,4 +751,78 @@ test_spliced_step_after_a_spliced_argument = fn () {
 }
 test_spliced_step_after_a_spliced_argument()
 
+# ---- a write whose right-hand side is a run of the binding's class says
+# ---- nothing about the binding's own name inside it. An argument of the
+# ---- construction or of a step, a later operand: each is an occurrence
+# ---- like any other, and one that leaves the name holding a run nothing
+# ---- there takes keeps the binding boxed.
+@value
+class Writes {
+  new(.x: Float, .y: Float) {}
+  scale(k) {
+    Writes.new(self.x * k, self.y * k)
+  }
+  plus(o) {
+    Writes.new(self.x + o.x, self.y + o.y)
+  }
+  sum() {
+    self.x + self.y
+  }
+  __add__(o) {
+    Writes.new(self.x + o.x, self.y + o.y)
+  }
+  __sub__(o) {
+    Writes.new(self.x - o.x, self.y - o.y)
+  }
+  __neg__() {
+    Writes.new(-self.x, -self.y)
+  }
+}
+
+test_write_reads_its_own_name_below_the_top = fn () {
+  # Each shape on a binding of its own: one that declines takes only its
+  # own binding down.
+  # a later operand that is a chain of the name, still a run
+  let mut a = Writes.new(1.0, 2.0)
+  a = Writes.new(3.0, 0.5) - a.scale(2.0)
+  assert_eq([a.x, a.y], [1.0, -3.5])
+  # the name as a later operand: bare, and under an operator of its own
+  let mut b = Writes.new(1.0, 2.0)
+  b = Writes.new(3.0, 4.0) + b
+  assert_eq([b.x, b.y], [4.0, 6.0])
+  let mut c = Writes.new(1.0, 2.0)
+  c = Writes.new(3.0, 4.0) - (c + c)
+  assert_eq([c.x, c.y], [1.0, 0.0])
+  let mut d = Writes.new(1.0, 2.0)
+  d = Writes.new(4.0, 1.0).scale(d.sum()) - (-d)
+  assert_eq([d.x, d.y], [13.0, 5.0])
+  # an argument of the construction, and of a step after it
+  let mut e = Writes.new(1.0, 2.0)
+  e = Writes.new(4.0, e.sum())
+  assert_eq([e.x, e.y], [4.0, 3.0])
+  let mut f = Writes.new(1.0, 2.0)
+  f = Writes.new(3.0, 4.0).plus(f)
+  assert_eq([f.x, f.y], [4.0, 6.0])
+  let mut g = Writes.new(1.0, 2.0)
+  g = Writes.new(3.0, 4.0).plus(g.scale(3.0))
+  assert_eq([g.x, g.y], [6.0, 10.0])
+  # under a negation
+  let mut h = Writes.new(1.0, 2.0)
+  h = -Writes.new(3.0, 4.0).plus(h.scale(2.0))
+  assert_eq([h.x, h.y], [-5.0, -8.0])
+}
+test_write_reads_its_own_name_below_the_top()
+
+# Another binding's write is the same question: the name inside the chain
+# that heads its fold is an argument, not an operand.
+test_name_inside_another_writes_head = fn () {
+  let mut d = Writes.new(0.0, 0.0)
+  let v = Writes.new(1.0, 2.0)
+  d = Writes.new(1.0, 2.0).plus(v.scale(2.0)) + Writes.new(0.5, 0.5)
+  assert_eq([d.x, d.y], [3.5, 6.5])
+  d = Writes.new(v.sum(), 1.0).plus(v) + v
+  assert_eq([d.x, d.y], [5.0, 5.0])
+}
+test_name_inside_another_writes_head()
+
 inspect('value-inline OK')
