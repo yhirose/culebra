@@ -6964,13 +6964,15 @@ class Compiler {
   // value lands in `dst` (nil for the valueless statements) before the block
   // scope's bindings are released. Every path writes `dst` at most once and
   // arrives with it still nil, so the stores skip the pre-Release.
+  // `read` is whether anything reads `dst` afterwards (compile_unread).
   void compile_block_into(const peg::Ast& ast, int32_t dst,
-                          const peg::Ast* defer_key = nullptr) {
+                          const peg::Ast* defer_key = nullptr,
+                          bool read = true) {
     using namespace peg::udl;
     DeferScope ds(*this, defer_key ? *defer_key : ast);
     push_scope(ast);
     predeclare_forward_refs(ast);
-    compile_body_into(ast, dst);
+    compile_body_into(ast, dst, read);
     ds.close();
     pop_scope();
   }
@@ -6989,22 +6991,23 @@ class Compiler {
 
   // compile_block_into's core, scope management left to the caller —
   // compile_try brackets it with the region's own mark/end placement.
-  void compile_body_into(const peg::Ast& ast, int32_t dst) {
+  void compile_body_into(const peg::Ast& ast, int32_t dst, bool read = true) {
     using namespace peg::udl;
     if (ast.tag == "STATEMENTS"_) {
       for (size_t i = 0; i + 1 < ast.nodes.size(); i++) {
         precheck_value_bindings_at(ast.nodes, i);
         compile_statement(*ast.nodes[i]);
       }
-      if (!ast.nodes.empty()) compile_value_into(*ast.nodes.back(), dst);
+      if (!ast.nodes.empty())
+        compile_value_into(*ast.nodes.back(), dst, read);
     } else {
-      compile_value_into(ast, dst);
+      compile_value_into(ast, dst, read);
     }
   }
 
   // One statement in value position. FOR/WHILE evaluate to nil; BREAK /
   // CONTINUE jump away before `dst` is ever read, so they store nothing.
-  void compile_value_into(const peg::Ast& ast, int32_t dst) {
+  void compile_value_into(const peg::Ast& ast, int32_t dst, bool read = true) {
     using namespace peg::udl;
     stamp(ast);
     emit_dbg_stmt(ast);
@@ -7013,7 +7016,7 @@ class Compiler {
     StatementWrites sw(*this, ast);
     switch (ast.tag) {
       case "STATEMENTS"_:
-        compile_block_into(ast, dst);
+        compile_block_into(ast, dst, /*defer_key=*/nullptr, read);
         break;
       case "FOR"_:
       case "WHILE"_:
@@ -7030,12 +7033,40 @@ class Compiler {
       case "DEBUGGER"_:
         compile_statement_inner(ast);
         break;
-      case "ASSIGNMENT"_:
-        store_into(dst, compile_assignment(ast), /*dst_is_fresh=*/true);
+      case "ASSIGNMENT"_: {
+        // A run has no one slot to hand over: read, it is reboxed, and the
+        // binding goes on as a run; unread, it stays where it is.
+        auto r = compile_assignment(ast);
+        if (r.unboxed_class && read) r = materialize_run(ast, r);
+        if (!r.unboxed_class) store_into(dst, r, /*dst_is_fresh=*/true);
         break;
+      }
       default:
-        store_into(dst, compile_expr(ast), /*dst_is_fresh=*/true);
+        store_into(dst, read ? compile_expr(ast) : compile_unread(ast),
+                   /*dst_is_fresh=*/true);
         break;
+    }
+  }
+
+  // An expression whose value nothing reads: a statement's own, and the
+  // last statement of an arm of a construct that is one. The construct
+  // compiles the same either way; what its arms are told is that a run
+  // ending one need not become an instance (compile_value_into).
+  ExprResult compile_unread(const peg::Ast& ast) {
+    using namespace peg::udl;
+    StampGuard pos(*this, ast);
+    switch (ast.tag) {
+      case "IF"_:
+      case "CONDITIONAL"_:
+        return compile_if(ast, /*read=*/false);
+      case "COND"_:
+        return compile_cond(ast, /*read=*/false);
+      case "TRY"_:
+        return compile_try(ast, /*read=*/false);
+      case "MATCH"_:
+        return compile_match(ast, /*read=*/false);
+      default:
+        return compile_expr(ast);
     }
   }
 
@@ -7189,7 +7220,7 @@ class Compiler {
         break;
       }
       default:
-        compile_expr(ast);  // expression statement; temps swept by the caller
+        compile_unread(ast);  // expression statement; temps swept by the caller
         break;
     }
   }
@@ -11269,7 +11300,8 @@ class Compiler {
 
   // Reboxes a run into an ordinary, owned instance — spec §15.8's
   // "reboxing at boundaries", emitted at the occurrences
-  // `value_boundary_ok` marked (materialize_at_). The run's
+  // `value_boundary_ok` marked (materialize_at_) and for an assignment
+  // that ends a body whose value is read (compile_value_into). The run's
   // own slots are a snapshot READ (Op::ValueBox's own contract): copied
   // out, not consumed, so the binding they belong to keeps running
   // afterward exactly as before this call.
@@ -13346,7 +13378,7 @@ class Compiler {
   // `if` / ternary in any position: a result temp starts nil, the taken
   // arm's block writes it exactly once, every arm jumps to the common end.
   // No else-arm leaves it nil (interp parity).
-  ExprResult compile_if(const peg::Ast& ast) {
+  ExprResult compile_if(const peg::Ast& ast, bool read = true) {
     auto iv = culebra::view_if(ast);
     // The result outlives the init scope — it is the whole construct's value
     // — so its slot is taken before that scope opens.
@@ -13362,7 +13394,9 @@ class Compiler {
     }
     // Each arm is a scope of its own, as a block is: what it declares and
     // the defers it registers end with it.
-    auto compile_arm = [&](const peg::Ast& body) { compile_block_into(body, res); };
+    auto compile_arm = [&](const peg::Ast& body) {
+      compile_block_into(body, res, /*defer_key=*/nullptr, read);
+    };
     std::vector<size_t> end_jumps;
     size_t i = iv.arm_off;
     for (; i + 1 < ast.nodes.size(); i += 2) {
@@ -13384,19 +13418,19 @@ class Compiler {
   // unconditional default, so the arms after it are dead and never compiled;
   // with none reached the result stays nil. Each arm body is a scope of its
   // own, as an `if` arm is.
-  ExprResult compile_cond(const peg::Ast& ast) {
+  ExprResult compile_cond(const peg::Ast& ast, bool read = true) {
     using namespace peg::udl;
     int32_t res = alloc_temp(ast);
     std::vector<size_t> end_jumps;
     for (const auto& arm : ast.nodes) {  // each COND_ARM: [test, body]
       const auto& test = *arm->nodes[0];
       if (test.tag == "WILDCARD"_) {
-        compile_block_into(*arm->nodes[1], res);
+        compile_block_into(*arm->nodes[1], res, /*defer_key=*/nullptr, read);
         break;
       }
       auto c = compile_expr(test);
       size_t skip = emit_test(Op::JumpIfFalse, c.slot, test);
-      compile_block_into(*arm->nodes[1], res);
+      compile_block_into(*arm->nodes[1], res, /*defer_key=*/nullptr, read);
       end_jumps.push_back(emit(Op::Jump));
       patch_to_here(skip);
     }
@@ -13464,7 +13498,7 @@ class Compiler {
   // the interp's catch-binding default) and runs into the same result slot.
   // Normal-path exits (fall-through, break/continue/return crossing the
   // region) release through the regular scope machinery.
-  ExprResult compile_try(const peg::Ast& ast) {
+  ExprResult compile_try(const peg::Ast& ast, bool read = true) {
     using namespace peg::udl;
     const auto& id = *ast.nodes[1];
     int32_t res = alloc_temp(ast);
@@ -13493,7 +13527,7 @@ class Compiler {
     pending_scope_mark_ = rmark;
     push_scope(ast);
     predeclare_forward_refs(*ast.nodes[0]);
-    compile_body_into(*ast.nodes[0], res);
+    compile_body_into(*ast.nodes[0], res, read);
     auto end = static_cast<uint32_t>(chunk_.code.size());
     if (body_scope_defer) emit(Op::DeferRunTo, rmark);
     auto region = pop_scope();
@@ -13529,7 +13563,8 @@ class Compiler {
     // The catch body is its own defer scope (scan_eh_defer keys the node);
     // handler code sits outside the region, so its defers behave like any
     // scope's — a throwing one propagates outward, past this try.
-    compile_block_into(*ast.nodes[2], res, /*defer_key=*/ast.nodes[2].get());
+    compile_block_into(*ast.nodes[2], res, /*defer_key=*/ast.nodes[2].get(),
+                       read);
     pop_scope();
     patch_to_here(end_jump);
     return {res, true};
@@ -13543,7 +13578,7 @@ class Compiler {
   // tests pass, so a failed test jumps to the next arm with nothing live, and
   // only a guard failure has bindings to release. The body block writes the
   // shared result slot exactly once (compile_if's shape); no arm matched → nil.
-  ExprResult compile_match(const peg::Ast& ast) {
+  ExprResult compile_match(const peg::Ast& ast, bool read = true) {
     using namespace peg::udl;
     auto mv = culebra::view_match(ast);
     int32_t res = alloc_temp(ast);  // the construct's value: outside the scope
@@ -13584,7 +13619,7 @@ class Compiler {
       // keys the body node): defers fire when the arm's braces close, the
       // arm value already owned in `res`.
       compile_block_into(*arm->nodes[body_idx], res,
-                         /*defer_key=*/arm->nodes[body_idx].get());
+                         /*defer_key=*/arm->nodes[body_idx].get(), read);
       int32_t arm_top = next_slot_;
       pop_scope();  // the taken path's binding release
       // Arms are alternative paths but ONE statement, so they must not share
@@ -14578,8 +14613,13 @@ class Compiler {
         return compile_if(ast);
       case "COND"_:
         return compile_cond(ast);
-      case "ASSIGNMENT"_:  // expression position: `let r = (w += 2)`
-        return compile_assignment(ast);
+      case "ASSIGNMENT"_: {  // expression position: `let r = (w += 2)`
+        auto r = compile_assignment(ast);
+        assert(!r.unboxed_class &&
+               "a binding an expression writes stays boxed "
+               "(precheck_value_bindings_at)");
+        return r;
+      }
       case "DESTRUCTURE_ASSIGN"_:
         return compile_destructure_assign(ast);
       case "PLACE_ASSIGN"_:

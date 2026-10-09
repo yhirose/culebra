@@ -95,6 +95,45 @@ class Out {
 Out.new(In.new(1), 2).k' \
 '\(Out\.inner\)' 0
 
+# A write that ends an arm of an `if` written as a statement is read by
+# nobody: the run stays a run, and the loop around it builds no instance.
+check "an unread arm's write is not reboxed" \
+'@value
+class V2 {
+  new(.x: Float, .y: Float) {}
+  __add__(o) { V2.new(self.x + o.x, self.y + o.y) }
+}
+fn f(n) {
+  mut a = V2.new(0.0, 0.0)
+  for i in 0..n {
+    if i > 0 {
+      a = a + V2.new(1.0, 2.0)
+    } else {
+      a += V2.new(0.5, 0.5)
+    }
+  }
+  a.x
+}
+println(f(3))' \
+' ValueBox ' 0
+
+# ...and the same write ending the body itself is the body's value, which
+# its caller reads as an instance.
+check "a body's last write is reboxed" \
+'@value
+class V2 {
+  new(.x: Float, .y: Float) {}
+  __add__(o) { V2.new(self.x + o.x, self.y + o.y) }
+}
+fn f(k) {
+  mut a = V2.new(0.0, 0.0)
+  if k {
+    a = a + V2.new(1.0, 2.0)
+  }
+}
+println(f(true))' \
+' ValueBox ' 1
+
 # A stdlib module's class has no binding to read its class object from, and
 # its run is reboxed at a boundary all the same.
 check "a stdlib class's run is reboxed at a boundary" \

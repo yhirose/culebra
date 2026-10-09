@@ -1117,6 +1117,18 @@ the name; a stdlib module's class has no binding and is read from the
 namespace of its name (`Op::NsGet`). Nothing extra is captured, and no run
 is out of reach of its class, so every run can be reboxed.
 
+That is what an assignment read for its value relies on. A declaration or
+a write to an unboxed binding evaluates to the run, which is right for a
+statement, whose value nobody reads. Where it ends a body whose value is
+read, `compile_value_into` reboxes it, and the binding itself stays
+unboxed. (A binding that an expression writes is never unboxed, so no
+other reader of an assignment's value meets a run.) An `if`, `cond`,
+`match` or `try` written as a statement has a value nobody reads either,
+and so do its arms: `compile_unread` tells them, so a write that ends an
+arm of `if p.y < 0.0 { ... }` in `tools/bench/vector_loop.cul`'s step
+allocates nothing. `tests/resolve_shape_test.sh` holds both halves on the
+bytecode.
+
 `tests/test_value_materialize.cul` covers a class declared at this file's
 own top level, locally inside the function using it, and in an *outer*
 function read from one and two levels of nested `fn` — all materialize at
