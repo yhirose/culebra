@@ -65,22 +65,10 @@ fn conv2d_matches_hand_summed_blocks_with_a_ones_kernel() {
 fn max_pooling_routes_all_the_gradient_to_the_argmax_positions() {
   x = dz.Variable(tensor4(
     [
-      1.0,
-      5.0,
-      2.0,
-      0.0,
-      3.0,
-      4.0,
-      9.0,
-      1.0,
-      0.0,
-      2.0,
-      1.0,
-      8.0,
-      6.0,
-      1.0,
-      0.0,
-      3.0,
+      1.0, 5.0, 2.0, 0.0,
+      3.0, 4.0, 9.0, 1.0,
+      0.0, 2.0, 1.0, 8.0,
+      6.0, 1.0, 0.0, 3.0,
     ],
     [1, 1, 4, 4],
   ))
@@ -99,22 +87,10 @@ fn max_pooling_routes_all_the_gradient_to_the_argmax_positions() {
 fn average_pooling_spreads_the_gradient_evenly_across_each_window() {
   x = dz.Variable(tensor4(
     [
-      1.0,
-      5.0,
-      2.0,
-      0.0,
-      3.0,
-      4.0,
-      9.0,
-      1.0,
-      0.0,
-      2.0,
-      1.0,
-      8.0,
-      6.0,
-      1.0,
-      0.0,
-      3.0,
+      1.0, 5.0, 2.0, 0.0,
+      3.0, 4.0, 9.0, 1.0,
+      0.0, 2.0, 1.0, 8.0,
+      6.0, 1.0, 0.0, 3.0,
     ],
     [1, 1, 4, 4],
   ))
