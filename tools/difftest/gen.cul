@@ -843,6 +843,8 @@ let kind_types = [
   'try { throw {kind: "NoSuchKindError"} } catch NoSuchKindError { "by name" } catch {kind: "NoSuchKindError"} { "by shape" }',
   'class Tagged { new(.kind) {} }; try { throw Tagged("TypeError") } catch TypeError { "by name" } catch Tagged { "an instance" }',
   'try { StateMachine.new([]) } catch TypeError { "from the library" }',
+  'fn s(x: Object) { "object" }; fn s(x: Function) { "function" }; fn w(x: Object) { "object" }; fn w(x: Iterable) { "iterable" }; let d = {kind: "ValueError", n: 1}; [s(d), w(d)]',
+  'fn u(e: IndexError | Nil) { "union" }; fn u(e: Object) { "object" }; [u(try { [1][5] } catch e { e }), u(nil)]',
 ]
 for p in kind_types {
   case("kind_type|" + p, p)

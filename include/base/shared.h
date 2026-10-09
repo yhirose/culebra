@@ -3579,7 +3579,8 @@ trait Dir {
 // tools/checks/check_error_kinds.sh holds it to the kinds the sources raise.
 inline bool is_error_kind_name(std::string_view name) {
   static constexpr std::string_view kNames[] = {
-      "ArgParseError", "ArityError", "AssertionError", "AttributeError",
+      "ArgParseError", "ArgParseHelp", "ArityError", "AssertionError",
+      "AttributeError",
       "CapacityError", "ChannelError", "ClosedError", "CycleError",
       "DispatchError", "DropContractError", "EffectError", "ExitError",
       "FSTError", "HttpError", "IOError", "ImmutableError",
@@ -3644,8 +3645,8 @@ inline int multifn_specificity(std::string_view param_type, ArgType arg) {
   //   4  Union exact (downgrade from any alt above this tier)
   //   5  the parent enum of a variant arg
   //   6  concrete exact / Generic outer-only / bare dict via Object param
-  //      / an error Object under its kind's name
-  //   7  `Enum.Variant` — the variant of that one enum
+  //   7  `Enum.Variant` — the variant of that one enum; an error Object
+  //      under its kind's name
   //   8  Generic full match (param has args and outer matches concrete)
   if (param_type.empty() || param_type == "Any") return 0;
   // Union branch must use the depth-aware top-level check — a bare
@@ -3705,19 +3706,19 @@ inline int multifn_specificity(std::string_view param_type, ArgType arg) {
     return base == 6 ? 8 : base;
   }
   if (param_type == "Object") {
-    // A bare dict — exact. One that carries an error kind is to the kind's
-    // name what an instance is to its class's, so `Object` only catches it.
-    if (arg.name == "Object" && arg.error_kind.empty()) return 6;
+    if (arg.name == "Object") return 6;        // bare dict — exact
     if (is_primitive_type_label(arg.name)) return -1;
     return 2;                                  // class instance catch
   }
   if (param_type == arg.name) return 6;
-  // An error under its kind's name scores as an instance under its class's,
-  // so a union or `T?` naming the kind still outranks `Object`. A program's
-  // trait of that name is answered as a trait, below.
+  // An error under its kind's name: a narrower claim than the Object it also
+  // is, so it outranks an `Object` param taking the same value — and only
+  // that. How the Object scores anywhere else is what it was before the
+  // kind had a name, a dict that merely carries a `kind` included. A
+  // program's trait of that name is answered as a trait, below.
   if (!arg.error_kind.empty() && param_type == arg.error_kind &&
       !lookup_trait(param_type))
-    return 6;
+    return 7;
   // The two enum spellings. `Result` takes any of its variants, so it
   // ranks below the variant named outright; `Result.Ok` answers both
   // halves, so it outranks the bare `Ok` any enum's variant satisfies.

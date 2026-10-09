@@ -138,7 +138,11 @@ const auto grammar_ = R"(
   # A clause has a match arm's shape, and its pattern is an arm's: `catch e`
   # binds whatever was thrown, `catch Timeout` takes only that.
   TRY                      <-  try _ BLOCK (_ CATCH_CLAUSE)+
-  CATCH_CLAUSE             <-  catch _ ARM_PATTERN (_ GUARD)? _ BLOCK
+  # An Object pattern and a block both open with `{`, so a clause whose
+  # pattern does keeps its block on the line the head ends on: otherwise
+  # `catch { err }` — a binding left out — would read `{ err }` as the
+  # pattern and take a block statement on the next line for its body.
+  CATCH_CLAUSE             <-  catch _ (&'{' ARM_PATTERN (_ GUARD)? _h_ BLOCK / !'{' ARM_PATTERN (_ GUARD)? _ BLOCK)
 
   ASSIGNMENT               <-  LET _ MUTABLE _ PRIMARY (_h_ (ARGUMENTS / INDEX) / _ DOT)* (_ TYPE_ANNOTATION)? _ ASSIGN_OP _ EXPRESSION
   # `let` is optional: `let (a, b) = …` declares; bare `(a, b) = (b, a)`

@@ -13556,8 +13556,7 @@ class Compiler {
     // A clause that takes everything leaves nothing to pass on; otherwise
     // the position is kept for the Rethrow (CaughtPos, at the handler).
     bool takes_all = std::ranges::any_of(tv.clauses, [](const auto& clause) {
-      auto av = culebra::view_arm(*clause);
-      return !av.guard && culebra::pattern_always_matches(*av.pattern);
+      return culebra::arm_takes_everything(culebra::view_arm(*clause));
     });
     int32_t raised_at = takes_all ? -1 : alloc_temp(ast);
     // Region defer mark: taken before the region opens whenever any defer

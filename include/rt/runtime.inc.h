@@ -1127,12 +1127,14 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_throw(int8_t tag,
 // shape — an error Object is both what the pad makes of an engine error and
 // what `throw e` of a caught one throws:
 //   - a user throw goes on as the same value, at the position it was raised;
-//   - an engine error goes on as that error. The Object was made at this
-//     handler and nothing else holds it, so the error is raised again from
-//     its fields: a boundary that tells a CulebraError from a user throw
-//     (a worker's, a host's) sees what it would have without this `catch`,
-//     and an interrupt is an interrupt again, where a press that passed a
-//     `catch Timeout` would otherwise end the program as a failure.
+//   - an engine error goes on as that error, raised again from the fields
+//     of the Object this handler made of it: a boundary that tells a
+//     CulebraError from a user throw (a worker's, a host's) sees what it
+//     would have without this `catch`, and an interrupt is an interrupt
+//     again, where a press that passed a `catch Timeout` would otherwise end
+//     the program as a failure. The Object itself does not go on — the next
+//     handler makes its own — so what a guard wrote on it, or kept of it,
+//     before declining is not what that handler sees.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_rethrow_caught(
     int8_t tag, int64_t data, int64_t raised_at) {
   if (raised_at != kCaughtEngineError) {

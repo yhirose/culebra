@@ -14,7 +14,9 @@
 #     A call is often wrapped after the parenthesis, so the sources are read
 #     with their newlines folded (check_codegen_enum_coverage.sh's reason);
 #   - in the standard library's culebra-source modules, the `kind:` of an
-#     Object literal whose value ends in `Error`.
+#     Object literal whose value is a capitalized name (`ArgParseHelp` is a
+#     kind too; the lowercase ones — `key`, `mouse`, `resize` — are event
+#     kinds, not errors).
 #
 # A kind that reaches a raise through a variable is not seen here, and a name
 # in the list that nothing raises only costs a program's class of that name
@@ -27,8 +29,8 @@ listed=$(sed -n '/^inline bool is_error_kind_name/,/^}/p' include/base/shared.h 
 native=$(grep -rh --include='*.h' --include='*.cc' '' include src | tr '\n' ' ' \
          | grep -oE '(CulebraError|culebra_note_pending_error|culebra_runtime_throw_error|emit_throw_error|throw_runtime_error_at|emit_raise)[({][[:space:]]*"[A-Za-z]+"' \
          | grep -oE '"[A-Za-z]+"' | tr -d '"' | sort -u) || true
-source=$(grep -rhoE "kind:[[:space:]]*['\"][A-Za-z]+Error['\"]" src/preambles \
-         | grep -oE "[A-Za-z]+Error" | sort -u) || true
+source=$(grep -rhoE "kind:[[:space:]]*['\"][A-Z][A-Za-z]+['\"]" src/preambles \
+         | grep -oE "[A-Z][A-Za-z]+" | sort -u) || true
 
 if [[ -z "$listed" || -z "$native" || -z "$source" ]]; then
   echo "error-kinds: an anchor moved (listed: $(wc -w <<<"$listed"), native: $(wc -w <<<"$native"), source: $(wc -w <<<"$source"))" >&2

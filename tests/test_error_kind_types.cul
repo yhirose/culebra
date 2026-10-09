@@ -79,9 +79,8 @@ assert_eq(try {
   e.kind
 }, 'TypeError')
 
-# Dispatch scores an error under its kind's name as it scores an instance
-# under its class's: the name itself, then a union or `T?` naming it, then
-# `Object`, which the error also is.
+# Dispatch takes the kind's overload over `Object`'s, which the error also
+# is.
 fn label(e: ZeroDivisionError) {
   'div'
 }
@@ -141,16 +140,13 @@ assert_eq(try {
   'an instance'
 }, 'an instance')
 
+# Naming the kind is the one thing that changes how an Object dispatches:
+# inside a union or a `T?` it ranks as a union does, below `Object`, and an
+# Object that only carries a `kind` meets every other parameter as it did.
 fn in_union(e: IndexError | Nil) {
   'union'
 }
 fn in_union(e: Object) {
-  'object'
-}
-fn optional(e: IndexError?) {
-  'optional'
-}
-fn optional(e: Object) {
   'object'
 }
 let index_error = try {
@@ -158,11 +154,31 @@ let index_error = try {
 } catch e {
   e
 }
+assert_eq([in_union(index_error), in_union(nil)], ['object', 'union'])
+fn shown(x: Object) {
+  'object'
+}
+fn shown(x: Function) {
+  'function'
+}
+fn walked(x: Object) {
+  'object'
+}
+fn walked(x: Iterable) {
+  'iterable'
+}
+let data = {kind: 'ValueError', n: 1}
 assert_eq(
-  [in_union(index_error), in_union(caught), in_union(nil)],
-  ['union', 'object', 'union'],
+  [shown(data), walked(data), shown(index_error)],
+  ['object', 'object', 'object'],
 )
-assert_eq([optional(index_error), optional(caught)], ['optional', 'object'])
+
+# `ArgParseHelp` is a kind the library throws, though no error.
+assert_eq(try {
+  throw {kind: 'ArgParseHelp', message: 'usage'}
+} catch h: ArgParseHelp {
+  h.message
+}, 'usage')
 
 # A name an error also answers to settles nothing about a class of that
 # name: a typed field is read the ordinary way, and an error has none.

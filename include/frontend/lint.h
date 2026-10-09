@@ -1387,8 +1387,7 @@ inline bool is_terminator(const peg::Ast& s) {
 inline void check_arms(std::span<const std::shared_ptr<peg::Ast>> arms,
                        std::string_view what, std::vector<Diagnostic>& diags) {
   for (size_t i = 0; i + 1 < arms.size(); i++) {
-    auto av = culebra::view_arm(*arms[i]);
-    if (av.guard || !culebra::pattern_always_matches(*av.pattern)) continue;
+    if (!culebra::arm_takes_everything(culebra::view_arm(*arms[i]))) continue;
     const auto& dead = *arms[i + 1];
     diags.push_back(Diagnostic{
         "UnreachableCode",
@@ -1629,7 +1628,8 @@ struct MatchTally {
       // `T?` takes what `T` does, and nil besides.
       if (type_name.ends_with('?')) type_name.remove_suffix(1);
       auto head = std::string(culebra::parse_generic_head(type_name).outer);
-      if (head == "Any") {
+      // `Object` takes every variant, as `Any` takes everything.
+      if (head == "Any" || head == "Object") {
         catch_all = true;
         return;
       }

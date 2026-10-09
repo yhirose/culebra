@@ -140,6 +140,14 @@ expect_syntax_reject "postfix defer names the fix" "defer { if c" \
 # An `import` belongs to the top level, modifier or not: its own error.
 expect_syntax_reject "postfix import" "must be at the top level" \
   "import m from './m.cul' if true"
+# A clause with its binding left out is not one whose pattern is `{ err }`
+# and whose body is the block on the next line.
+expect_syntax_reject "catch without a binding, block below" "syntax error" \
+  'let err = 1
+try { 1 } catch { err }
+{ inspect(2) }'
+expect_accept "object pattern clause on one line" \
+  'inspect(try { throw {err: 3} } catch {err} { err })'
 expect_accept "postfix bare write"           'mut a = 0
 a = 1 if true
 (a, b) = (2, 3) unless false
@@ -792,6 +800,11 @@ inspect(f(1))'
 expect_lint_warns "clause after a binding" 'inspect(try { 1 } catch e { 2 } catch Long { 3 })' \
                                                   "unreachable catch clause"
 expect_lint_clean "guarded clause"   'inspect(try { 1 } catch e if e == 2 { 2 } catch e { 3 })'
+# `Any`, bound or bare, takes everything too.
+expect_lint_warns "arm after Any" 'fn f(v) { match v { Any => 1, Long => 2 } }
+inspect(f(1))'                                    "unreachable match arm"
+expect_lint_warns "clause after a binding typed Any" \
+  'inspect(try { 1 } catch E: Any { 2 } catch Long { 3 })' "unreachable catch clause"
 # A clause's pattern is a constant position, as an arm's is.
 expect_lint_error "interpolated clause pattern" 'let x = 1
 inspect(try { throw "v1" } catch "v{x}" { 1 } catch _ { 0 })'
@@ -919,6 +932,10 @@ inspect(area(Shape.Circle(2.0)))'
 expect_lint_clean "an optional variant covers it" \
 'enum Shape { Circle(Float), Rect(Float, Float), Origin }
 fn area(s) { match s { Circle(r) => r, Rect(w, h) => w * h, o: Origin? => 0.0 } }
+inspect(area(Shape.Circle(2.0)))'
+expect_lint_clean "Object takes every variant" \
+'enum Shape { Circle(Float), Rect(Float, Float), Origin }
+fn area(s) { match s { Circle(r) => r, Object => 0.0 } }
 inspect(area(Shape.Circle(2.0)))'
 # A type name tests, so the arm after it is reachable.
 expect_lint_clean "arm after a bare type name" \

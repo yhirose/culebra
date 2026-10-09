@@ -4312,6 +4312,8 @@ Semantics:
   `catch e: ApiError`), a constructor (`catch NotFound(path)`), an
   Object shape (`catch {kind: 'IOError'}`), alternatives
   (`catch ApiError | Timeout`) — accepts only what it matches.
+* A clause whose pattern opens with `{` keeps its block on the line the
+  pattern (or its guard) ends on, since a block opens with `{` too.
 * A `try` takes one or more `catch` clauses, tried top to bottom; the
   first that accepts the value runs, and only that one. When none
   accepts it the exception keeps propagating as it was raised, to the
@@ -4546,9 +4548,9 @@ caught by its shape, `catch {kind: 'MyError'}`.
 
 A class declared under a kind's name shares it: `catch e: IOError` then
 takes its instances and errors of that kind alike, and the name settles
-nothing about the class's fields (§14). In multimethod dispatch (§20) an
-error ranks under its kind's name as an instance does under its class's
-— above a union or `T?` that names it, which is above `Object`.
+nothing about the class's fields (§14). In multimethod dispatch (§20) a
+parameter naming the kind outranks an `Object` one for an error of that
+kind; a union or `T?` that names it ranks as a union does, below `Object`.
 
 Code that holds the error can branch on `e.kind` as well:
 

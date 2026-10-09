@@ -1710,15 +1710,24 @@ inline const peg::Ast* find_pattern_binding(const peg::Ast& pat) {
   return nullptr;
 }
 
-// Does an arm's pattern accept every value? A sink, a bare binding, or an
-// or-pattern one of whose alternatives does.
+// Does an arm's pattern accept every value? A sink, a bare binding, the type
+// `Any` with a binding or without, or an or-pattern one of whose
+// alternatives does.
 inline bool pattern_always_matches(const peg::Ast& pat) {
   using namespace peg::udl;
   if (pat.tag == "PATTERN"_ && !pat.nodes.empty()) {
     return std::ranges::any_of(
         pat.nodes, [](const auto& n) { return pattern_always_matches(*n); });
   }
+  if (pat.tag == "TYPE_PATTERN"_) return pat.token == "Any";
+  if (pat.tag == "TYPED_IDENT"_) return pat.nodes[1]->token == "Any";
   return pat.tag == "WILDCARD"_ || pat.tag == "IDENTIFIER"_;
+}
+
+// An arm (or a catch clause) nothing gets past: no guard, and a pattern that
+// accepts every value.
+inline bool arm_takes_everything(const ArmView& av) {
+  return !av.guard && pattern_always_matches(*av.pattern);
 }
 
 // First binding inside an or-pattern (a PATTERN node keeps its children only
