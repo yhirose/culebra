@@ -1679,6 +1679,17 @@ inline const peg::Ast* find_pattern_binding(const peg::Ast& pat) {
   return nullptr;
 }
 
+// Does an arm's pattern accept every value? A sink, a bare binding, or an
+// or-pattern one of whose alternatives does.
+inline bool pattern_always_matches(const peg::Ast& pat) {
+  using namespace peg::udl;
+  if (pat.tag == "PATTERN"_ && !pat.nodes.empty()) {
+    return std::ranges::any_of(
+        pat.nodes, [](const auto& n) { return pattern_always_matches(*n); });
+  }
+  return pat.tag == "WILDCARD"_ || pat.tag == "IDENTIFIER"_;
+}
+
 // First binding inside an or-pattern (a PATTERN node keeps its children only
 // when it has two or more alternatives), or nullptr.
 inline const peg::Ast* find_or_pattern_binding(const peg::Ast& ast) {

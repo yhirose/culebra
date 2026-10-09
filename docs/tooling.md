@@ -325,7 +325,8 @@ What it reports today:
   - **Unused import** — an `import`ed name the module never uses.
   - **Unreachable code** — a statement that can never run because a
     `return` / `throw` / `break` / `continue` precedes it in the same
-    block.
+    block, and a `match` arm that can never run because an unguarded arm
+    before it (`_`, or a bare binding) already accepts every value.
   - **Non-exhaustive enum match** — a `match` whose arms name some but
     not all of an `enum`'s variants, with no catch-all (`_`, a bare
     binding, or a type pattern naming the enum itself). `match` returns

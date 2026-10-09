@@ -1371,8 +1371,31 @@ inline bool is_terminator(const peg::Ast& s) {
          s.tag == "CONTINUE"_;
 }
 
+// A `match` arm no value can reach: an unguarded arm before it already
+// accepts everything. One marker per match, at the first dead arm.
+inline void check_match_arms(const peg::Ast& match,
+                             std::vector<Diagnostic>& diags) {
+  using namespace peg::udl;
+  const auto& arms = culebra::view_match(match).arms->nodes;
+  for (size_t i = 0; i + 1 < arms.size(); i++) {
+    const auto& arm = *arms[i];
+    if (arm.nodes.size() < 2 || arm.nodes[1]->tag == "GUARD"_) continue;
+    if (!culebra::pattern_always_matches(*arm.nodes[0])) continue;
+    const auto& dead = *arms[i + 1];
+    diags.push_back(Diagnostic{
+        "UnreachableCode",
+        std::format("unreachable match arm: the arm on line {} matches "
+                    "every value",
+                    arm.line),
+        static_cast<long>(dead.line), static_cast<long>(dead.column),
+        Severity::Warning});
+    return;
+  }
+}
+
 inline void analyze_walk(const peg::Ast& node, std::vector<Diagnostic>& diags) {
   using namespace peg::udl;
+  if (node.tag == "MATCH"_) check_match_arms(node, diags);
   if (node.tag == "STATEMENTS"_) {
     for (size_t i = 0; i + 1 < node.nodes.size(); i++) {
       if (is_terminator(*node.nodes[i])) {
@@ -1582,7 +1605,7 @@ struct MatchTally {
   // One PRIMARY_PATTERN (already unwrapped from any top-level `|` OR).
   void consider(const peg::Ast& p) {
     using namespace peg::udl;
-    if (p.tag == "WILDCARD"_ || p.tag == "IDENTIFIER"_) {
+    if (culebra::pattern_always_matches(p)) {
       catch_all = true;
       return;
     }

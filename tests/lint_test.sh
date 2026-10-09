@@ -774,6 +774,21 @@ return a }'
 expect_lint_clean "return in if branch" 'fn f(x) { if x { return 1 }
 2 }'
 
+# --- unreachable match arm (an unguarded arm that accepts everything) -------
+expect_lint_warns "arm after a binding" 'fn f(v) { match v { x => x, 0 => 1 } }
+inspect(f(1))'                                    "unreachable match arm"
+expect_lint_warns "arm after a sink"    'fn f(v) { match v { _ => 0, 1 => 1 } }
+inspect(f(1))'                                    "unreachable match arm"
+expect_lint_warns "arm after an or with a sink" 'fn f(v) { match v { 1 | _ => 0, 2 => 1 } }
+inspect(f(1))'                                    "unreachable match arm"
+# A guard may reject, a test may fail, and the last arm has nothing after it.
+expect_lint_clean "guarded binding"  'fn f(v) { match v { x if x > 0 => x, _ => 0 } }
+inspect(f(1))'
+expect_lint_clean "typed binding"    'fn f(v) { match v { x: Long => x, _ => 0 } }
+inspect(f(1))'
+expect_lint_clean "binding is last"  'fn f(v) { match v { 0 => 1, x => x } }
+inspect(f(1))'
+
 # --- idioms: forms that run and say the same thing the long way ------------
 # `x = x <op> y` -> `x <op>= y`
 expect_lint_warns "self add"  'mut i = 0
