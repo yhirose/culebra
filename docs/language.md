@@ -3444,6 +3444,9 @@ accepts any of its variants, a variant name accepts that variant of any
 enum, and the qualified `Enum.Variant` accepts only that enum's — see
 "Sum types".
 
+An error's kind (`TypeError`, `IOError`, ... — §15) is a type name too,
+and accepts an Object carrying that kind.
+
 A type name starts with an uppercase letter: an annotation naming a
 class declared as `class point` does not parse. The same first letter is
 what tells a type from a binding in a `match` pattern (§13).
@@ -3831,8 +3834,8 @@ than one class (one at the top level and another inside a function, or its
 own `Vector2` beside the stdlib's), an instance of any of them passes it,
 so the name settles only the fields all of them declare with the same
 type, and any other field is read the ordinary way. A name that an enum,
-an enum variant, a trait, a built-in type or one of the stdlib's ordinary
-classes also carries settles none. A class's own members read `self` by their own
+an enum variant, a trait, a built-in type, one of the stdlib's ordinary
+classes or an error kind (§15) also carries settles none. A class's own members read `self` by their own
 declaration either way.
 
 ```culebra
@@ -4509,7 +4512,45 @@ of your call into the library: `line` and `col` never point into library
 source. An error raised in a function of yours that the library calls keeps
 its own position.
 
-User code can branch on `e.kind`:
+A kind is also a type name, and as one it takes an error of that kind —
+in a `catch` clause, a `match` arm, an annotation, and multimethod
+dispatch:
+
+```culebra
+nth_ratio = fn (xs, i, d) {
+  try {
+    xs[i] / d
+  } catch ZeroDivisionError {
+    0
+  } catch e: TypeError {
+    "not a number, line {e.line}"
+  }
+}
+inspect(nth_ratio([6], 0, 3))    # => 2
+inspect(nth_ratio([6], 0, 0))    # => 0
+inspect(nth_ratio([6], 0, nil))  # => 'not a number, line 3'
+inspect(try { nth_ratio([6], 5, 3) } catch e { e.kind })  # => 'IndexError'
+```
+
+An error of a kind is an Object that carries it: the one the runtime
+makes of its own errors, and one thrown as `{kind: 'ValueError', message:
+...}`, which is how the standard library's modules — and a program —
+raise theirs. An instance of a class is what its class says, whatever it
+keeps in a field named `kind`.
+
+The kinds that are type names are the ones the language and its standard
+library raise: every kind in the table below, and those of the library's
+namespaces (`HttpError`, `NetError`, `RegexError`, `ArgParseError`, ...).
+A kind of your own is not one — `catch MyError` names a class — and is
+caught by its shape, `catch {kind: 'MyError'}`.
+
+A class declared under a kind's name shares it: `catch e: IOError` then
+takes its instances and errors of that kind alike, and the name settles
+nothing about the class's fields (§14). In multimethod dispatch (§20) an
+error ranks under its kind's name as an instance does under its class's
+— above a union or `T?` that names it, which is above `Object`.
+
+Code that holds the error can branch on `e.kind` as well:
 
     try { let x = arr[100] }
     catch e {

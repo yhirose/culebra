@@ -212,6 +212,14 @@ check-pe-exports-gen:
 check-header-naming:
     tools/checks/check_header_naming.sh
 
+# `catch IOError` takes an engine error by its kind, and the kinds that work
+# as type names are a list (culebra::is_error_kind_name). A kind the sources
+# raise and the list lacks is never caught by name, and nothing else says so.
+[group("test")]
+[doc("Verify every error kind the sources raise by name is a type name")]
+check-error-kinds:
+    tools/checks/check_error_kinds.sh
+
 # interop/search_splitter.h is what a library outside this repo includes to
 # implement a splitter for Search, so its value is that it needs nothing else.
 # Every ordinary build has the rest of the tree on the include path and would
@@ -295,7 +303,7 @@ check-docs-cpp:
 # the workflow-coverage ratchet. Cheap enough to gate both test recipes:
 # well under a second once the grammar-blob tool is ccache-warm.
 [private]
-check-generated: check-grammar-sync check-preambles check-blob check-site-version check-site-playground-sync check-difftest-coverage check-gate-budget check-release-coverage check-spec-examples check-api-coverage check-canon-return-types check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-docs-cpp-includes check-header-naming check-search-splitter check-layering check-codegen-enums check-vm-dispatch-table check-protocol-member-door check-value-equal-door check-value-order-door check-source-anchor-door
+check-generated: check-grammar-sync check-preambles check-blob check-site-version check-site-playground-sync check-difftest-coverage check-gate-budget check-release-coverage check-spec-examples check-api-coverage check-canon-return-types check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-docs-cpp-includes check-header-naming check-error-kinds check-search-splitter check-layering check-codegen-enums check-vm-dispatch-table check-protocol-member-door check-value-equal-door check-value-order-door check-source-anchor-door
 
 # Such a build still runs programs — everything below the LLVM lowering
 # (rt.h, vm.h) is LLVM-free, so the bytecode VM's executor is intact; what it

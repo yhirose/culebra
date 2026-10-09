@@ -1371,7 +1371,7 @@ inline culebra::ArgType _jit_value_arg_type(JitValue v) {
     case TAG_OBJECT: {
       auto* obj = reinterpret_cast<JitObject*>(v.data);
       auto cls = _jit_derived_class_tag(obj);
-      if (cls.empty()) return {"Object", {}};
+      if (cls.empty()) return {"Object", {}, nullptr, _jit_error_kind(obj)};
       // Carry the class's conformance cache along: scoring a trait param
       // reads it, and only the value knows which class this name is.
       return {cls, _jit_enum_name(obj).value_or(std::string_view{}),

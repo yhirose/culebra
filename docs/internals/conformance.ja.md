@@ -33,6 +33,7 @@ smokeを1度に回します。AOT差分のみなら`just test aot`。下表
 | `tests/test_object_keys.cul` | §10 (非Stringキー) |
 | `tests/test_runtime_errors.cul` | §15 (`throw`/`try`/`catch`、すべての`kind`のcatch可能性) |
 | `tests/test_catch_pattern.cul` | §15 (`catch`節: パターン、ガード、順序、どの節も受けない値) |
+| `tests/test_error_kind_types.cul` | §15 (型名としてのkind: 節、アーム、型注釈、ディスパッチ) |
 | `tests/test_set.cul` | §10 (Set) |
 | `tests/test_tuple.cul` | §10 (Tuple、destructuring) |
 | `tests/test_ufcs.cul` | §10 (メソッド、UFCS)、§19 (`__ARGS__`) |

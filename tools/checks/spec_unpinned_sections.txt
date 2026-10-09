@@ -58,7 +58,6 @@
 15. Error handling > Compile-time errors
 15. Error handling > Interruption (Ctrl+C)
 15. Error handling > JIT support
-15. Error handling > Runtime errors
 15. Error handling > Scope guard pattern
 15. Error handling > The value-nesting bound
 16. Algebraic effects > Declaring an effect

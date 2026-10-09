@@ -7888,7 +7888,9 @@ class Compiler {
   // lane parses (parse_baked_value_decls). Its other types are known by name
   // only (culebra::is_stdlib_type_name), since a lane that calls a module's
   // baked entry reads no declaration of them: a program's class of such a
-  // name, or of a primitive type's, promises nothing through the name.
+  // name, of an error kind's (culebra::is_error_kind_name: a classless
+  // Object carrying the kind answers to it too), or of a primitive type's,
+  // promises nothing through the name.
   static void settle_class_names(FnAnalysis& analysis) {
     static const culebra::ClassFields none;
     for (const auto& [cls, fields] : analysis.class_fields) {
@@ -7899,6 +7901,7 @@ class Compiler {
       culebra::register_class_fields(name, fields);
       if (library) continue;
       if (culebra::is_stdlib_type_name(name) ||
+          culebra::is_error_kind_name(name) ||
           _culebra_primitive_type_tag(name))
         culebra::register_class_fields(name, none);
     }

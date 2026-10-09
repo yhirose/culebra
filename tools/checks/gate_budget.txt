@@ -79,7 +79,9 @@
 # binds nothing, and a declaring pattern still binds every name).
 # 316 since test_catch_pattern.cul (a `catch` clause takes a pattern, clauses
 # are tried in order, and a value none takes goes on as it was raised).
-tests.cul 316
+# 317 since test_error_kind_types.cul (an engine error's kind is a type name:
+# clause, arm, annotation and dispatch, and an Object with a `kind` is not one).
+tests.cul 317
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -148,7 +150,8 @@ ctest.entries 35
 # ja.
 # 1046 since §15, the quick guide and the handbook show `catch` clauses that
 # test, with a guard and with a value none of them takes, in en and ja.
-docs.blocks 1046
+# 1048 since §15 shows a clause naming a runtime error's kind, in en and ja.
+docs.blocks 1048
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

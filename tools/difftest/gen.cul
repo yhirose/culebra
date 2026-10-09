@@ -825,6 +825,29 @@ for p in catch_patterns {
   case("catch_pattern|" + p, p)
 }
 
+# An error's kind is a type name that takes it — a clause, an arm, an
+# annotation, dispatch — whether the engine raised it or an Object carrying
+# the kind was thrown; an instance of a class is what its class says.
+let kind_types = [
+  'try { 1 / 0 } catch ZeroDivisionError { "div" }',
+  'try { 1 / 0 } catch e: ZeroDivisionError { e.kind }',
+  'try { try { 1 / 0 } catch TypeError { "type" } } catch e { e.kind }',
+  'try { nil.x() } catch TypeError | ZeroDivisionError { "arith" }',
+  'try { [1][5] } catch KeyError { "key" } catch IndexError { "index" }',
+  'try { nil.x() } catch IndexError { "index" }',
+  'match (try { 1 / 0 } catch e { e }) { TypeError => "type", ZeroDivisionError => "div", _ => "other" }',
+  'fn k(e: ZeroDivisionError) { e.kind }; k(try { 1 / 0 } catch e { e })',
+  'fn k(e: ZeroDivisionError) { e.kind }; k(try { nil.x() } catch e { e })',
+  'fn k(e: IndexError) { "index" }; fn k(e: Object) { "object" }; [k(try { [1][5] } catch e { e }), k(try { 1 / 0 } catch e { e }), k({kind: "IndexError"})]',
+  'try { throw {kind: "ZeroDivisionError"} } catch ZeroDivisionError { "by name" } catch {kind: "ZeroDivisionError"} { "by shape" }',
+  'try { throw {kind: "NoSuchKindError"} } catch NoSuchKindError { "by name" } catch {kind: "NoSuchKindError"} { "by shape" }',
+  'class Tagged { new(.kind) {} }; try { throw Tagged("TypeError") } catch TypeError { "by name" } catch Tagged { "an instance" }',
+  'try { StateMachine.new([]) } catch TypeError { "from the library" }',
+]
+for p in kind_types {
+  case("kind_type|" + p, p)
+}
+
 # --- Dimension: numeric range values --------------------------------------
 # A range's endpoints may be Float. Building, displaying and comparing one
 # work; iteration, slicing and grid still need Long endpoints and raise where

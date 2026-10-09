@@ -414,7 +414,7 @@ wait = fn (v) {
     'slow'
   } catch Timeout {
     'timeout'
-  } catch {kind: 'IOError'} {
+  } catch IOError {
     'io'
   } catch e {
     "other: {e}"
@@ -425,7 +425,8 @@ inspect(wait(Timeout(1)))   # => 'timeout'
 inspect(wait('x'))          # => 'other: x'
 ```
 
-Built-in errors are Objects carrying a `kind`:
+Built-in errors are Objects carrying a `kind`, and the kind is a type name
+that takes an Object carrying it (`catch IOError`, `e: TypeError`):
 
 ```culebra
 inspect(try {

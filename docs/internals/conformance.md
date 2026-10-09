@@ -33,6 +33,7 @@ touch multiple sections, marked "(broad)".
 | `tests/test_object_keys.cul` | §10 (non-String keys) |
 | `tests/test_runtime_errors.cul` | §15 (`throw`/`try`/`catch`, all `kind` values catchable) |
 | `tests/test_catch_pattern.cul` | §15 (`catch` clauses: patterns, guards, order, what no clause takes) |
+| `tests/test_error_kind_types.cul` | §15 (an error's kind as a type name: clause, arm, annotation, dispatch) |
 | `tests/test_set.cul` | §10 (sets) |
 | `tests/test_tuple.cul` | §10 (tuples, destructuring) |
 | `tests/test_ufcs.cul` | §10 (methods, UFCS), §19 (`__ARGS__`) |

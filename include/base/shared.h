@@ -3566,6 +3566,33 @@ trait Dir {
 }
 
 
+// The kinds of error the engine and the standard library raise. As a type
+// name each takes an error of that kind — `catch IOError`, `e: TypeError` —
+// which is an Object carrying the kind and not an instance of a class: the
+// Object a handler makes of an engine error, and the one a culebra-source
+// module (or a program) throws as `{kind: 'IOError', ...}`. The list is
+// closed because a type name answers for the fields every class of that name
+// declares: a name a classless Object also answers to can promise nothing
+// about a program's class of the same name (vm::Compiler::
+// settle_class_names), like a stdlib type's. An error of a kind this list
+// lacks is still caught by its shape, `catch {kind: 'X'}`. Sorted;
+// tools/checks/check_error_kinds.sh holds it to the kinds the sources raise.
+inline bool is_error_kind_name(std::string_view name) {
+  static constexpr std::string_view kNames[] = {
+      "ArgParseError", "ArityError", "AssertionError", "AttributeError",
+      "CapacityError", "ChannelError", "ClosedError", "CycleError",
+      "DispatchError", "DropContractError", "EffectError", "ExitError",
+      "FSTError", "HttpError", "IOError", "ImmutableError",
+      "ImportError", "IndexError", "InternalError", "Interrupted", "IrError",
+      "KauaiError", "KeyError", "NameError", "NetError", "NilError",
+      "PEGError", "ParallelError", "ProcessError", "RecursionError",
+      "RegexError", "RuntimeError", "SQLiteError", "SearchError", "SendError",
+      "ShadowError", "StateMachineError", "SyntaxError", "TypeError",
+      "ValueError", "VmError", "ZeroDivisionError"};
+  static_assert(std::ranges::is_sorted(kNames));
+  return std::ranges::binary_search(kNames, name);
+}
+
 // --- Multimethod dispatch (shared between interp and JIT) ---
 
 // True for the reserved type-tag names value_dyn_type returns for
@@ -3589,6 +3616,9 @@ struct ArgType {
   // for a primitive or a bare Object literal — neither has a class meta, and
   // both are answered by the built-in table instead.
   TraitConformance* conformance = nullptr;
+  // The error kind a classless Object carries (is_error_kind_name), which
+  // its label — `Object` — does not say.
+  std::string_view error_kind = {};
 };
 
 // Specificity score for a (param_type, arg) pair. Higher = more
@@ -3614,6 +3644,7 @@ inline int multifn_specificity(std::string_view param_type, ArgType arg) {
   //   4  Union exact (downgrade from any alt above this tier)
   //   5  the parent enum of a variant arg
   //   6  concrete exact / Generic outer-only / bare dict via Object param
+  //      / an error Object under its kind's name
   //   7  `Enum.Variant` — the variant of that one enum
   //   8  Generic full match (param has args and outer matches concrete)
   if (param_type.empty() || param_type == "Any") return 0;
@@ -3674,11 +3705,19 @@ inline int multifn_specificity(std::string_view param_type, ArgType arg) {
     return base == 6 ? 8 : base;
   }
   if (param_type == "Object") {
-    if (arg.name == "Object") return 6;        // bare dict — exact
+    // A bare dict — exact. One that carries an error kind is to the kind's
+    // name what an instance is to its class's, so `Object` only catches it.
+    if (arg.name == "Object" && arg.error_kind.empty()) return 6;
     if (is_primitive_type_label(arg.name)) return -1;
     return 2;                                  // class instance catch
   }
   if (param_type == arg.name) return 6;
+  // An error under its kind's name scores as an instance under its class's,
+  // so a union or `T?` naming the kind still outranks `Object`. A program's
+  // trait of that name is answered as a trait, below.
+  if (!arg.error_kind.empty() && param_type == arg.error_kind &&
+      !lookup_trait(param_type))
+    return 6;
   // The two enum spellings. `Result` takes any of its variants, so it
   // ranks below the variant named outright; `Result.Ok` answers both
   // halves, so it outranks the bare `Ok` any enum's variant satisfies.

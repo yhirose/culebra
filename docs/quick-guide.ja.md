@@ -407,7 +407,7 @@ wait = fn (v) {
     'slow'
   } catch Timeout {
     'timeout'
-  } catch {kind: 'IOError'} {
+  } catch IOError {
     'io'
   } catch e {
     "other: {e}"
@@ -418,7 +418,8 @@ inspect(wait(Timeout(1)))   # => 'timeout'
 inspect(wait('x'))          # => 'other: x'
 ```
 
-組み込みエラーは`kind`を持つObjectです:
+組み込みエラーは`kind`を持つObjectで、kindはそのkindを持つObjectを受ける
+型名でもあります（`catch IOError`、`e: TypeError`）:
 
 ```culebra
 inspect(try {

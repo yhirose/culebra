@@ -3276,6 +3276,9 @@ variant名はどのenumのものでも同名variantを、修飾形
 `Enum.Variant`はそのenumのvariantだけを受け入れます —
 「Sum type」参照。
 
+エラーのkind（`TypeError`、`IOError`など、§15）も型名で、そのkindを
+持つObjectを受け入れます。
+
 型名は大文字で始まります。`class point`と宣言したクラスを指す注釈は
 構文エラーです。`match`のパターンで型と束縛を見分けるのも、この先頭の
 1文字です（§13）。
@@ -3591,8 +3594,8 @@ fieldを持つことでそれを手に入れることはできません。です
 `Vector2`と並べて自前の`Vector2`）、そのどれのインスタンスも検査を通ります。
 ですからその名前が確定させるのは、それらのクラス全部が同じ型で宣言している
 fieldだけで、ほかのfieldは通常どおりに読まれます。enum、enumのvariant、
-trait、組み込みの型、stdlibの通常のクラスのいずれかも同じ名前を持っている
-場合、その名前は何も確定させません。クラス自身のメンバが`self`を読むときは、どちらの場合も
+trait、組み込みの型、stdlibの通常のクラス、エラーのkind（§15）のいずれかも
+同じ名前を持っている場合、その名前は何も確定させません。クラス自身のメンバが`self`を読むときは、どちらの場合も
 自分の宣言に従います。
 
 ```culebra
@@ -4275,7 +4278,46 @@ shutdownパターン）は、`Signal.notify`でチャネルを登録します（
 指すことはありません。ライブラリから呼ばれたユーザの関数の中で起きた
 エラーは、その関数の中の位置のままです。
 
-ユーザコードは`e.kind`で分岐できます:
+kindは型名でもあり、型名としてそのkindのエラーを受けます。
+`catch`節、`match`のアーム、型注釈、multimethodのディスパッチの
+いずれでも同じです:
+
+```culebra
+nth_ratio = fn (xs, i, d) {
+  try {
+    xs[i] / d
+  } catch ZeroDivisionError {
+    0
+  } catch e: TypeError {
+    "not a number, line {e.line}"
+  }
+}
+inspect(nth_ratio([6], 0, 3))    # => 2
+inspect(nth_ratio([6], 0, 0))    # => 0
+inspect(nth_ratio([6], 0, nil))  # => 'not a number, line 3'
+inspect(try { nth_ratio([6], 5, 3) } catch e { e.kind })  # => 'IndexError'
+```
+
+あるkindのエラーとは、そのkindを持つObjectのことです。ランタイムが
+自分のエラーから作るObjectも、`{kind: 'ValueError', message: ...}`として
+投げられたObjectも同じです。標準ライブラリのモジュールもプログラムも、
+後者の形でエラーを発生させます。クラスのインスタンスは、`kind`という
+フィールドに何を持っていても、そのクラスのものです。
+
+型名として使えるkindは、言語と標準ライブラリが発生させるものです。
+下の表のkindすべてと、ライブラリの各namespaceのkind（`HttpError`、
+`NetError`、`RegexError`、`ArgParseError`など）がこれに当たります。
+自分で決めたkindは型名ではありません（`catch MyError`はクラスを指します）。
+形で受けます: `catch {kind: 'MyError'}`。
+
+kindと同じ名前でクラスを宣言すると、その名前は両方のものになります。
+`catch e: IOError`はそのクラスのインスタンスも、そのkindのエラーも受け、
+名前はクラスのfieldについて何も確定させません（§14）。multimethodの
+ディスパッチ（§20）では、エラーは自分のkindの名前に対して、インスタンスが
+自分のクラスの名前に対するのと同じ順位になります。名前そのものが一番上で、
+その名前を含むunionや`T?`が次、`Object`がその下です。
+
+エラーを手にしているコードは`e.kind`でも分岐できます:
 
     try { let x = arr[100] }
     catch e {

@@ -10,6 +10,7 @@
 #include <optional>
 #include <print>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 

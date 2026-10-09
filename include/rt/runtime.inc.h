@@ -1263,6 +1263,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_defer_run_to(int64_t mark
   if (replaced) std::rethrow_exception(replaced);
 }
 
+// The error kind a classless Object carries, when it is one a type name
+// stands for (culebra::is_error_kind_name); empty otherwise. The caller has
+// established that `obj` is not an instance of a class: an instance is what
+// its class says, whatever it keeps in a field named `kind`.
+inline std::string_view _jit_error_kind(const JitObject* obj) {
+  auto kind = _jit_string_slot(obj, "kind").value_or("");
+  return culebra::is_error_kind_name(kind) ? kind : std::string_view{};
+}
+
 inline const char* _culebra_tag_name(int8_t tag) {
   switch (tag) {
     case TAG_NIL:    return "Nil";
@@ -1364,6 +1373,14 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
     // Enum variant: also matches the parent enum name (`__enum` field),
     // so `r: Result` accepts any `Result.*` variant. Mirrors interp.
     if (auto en = _jit_enum_name(obj); en && *en == expected) return true;
+    // An error carries its kind rather than a class: the kind's name is the
+    // type that takes a classless Object carrying it. The name is tested
+    // first, so a check against any other type reads no slot here; a
+    // program's trait of that name is answered as a trait, below.
+    if (class_tag_view.empty() && culebra::is_error_kind_name(expected) &&
+        !culebra::lookup_trait(expected) &&
+        _jit_string_slot(obj, "kind") == expected)
+      return true;
   }
   // Structural trait conformance: when `expected` is a registered
   // trait, check (and cache) whether this instance's class supplies

@@ -1338,8 +1338,11 @@ baked entry still parses (`parse_baked_value_decls`). Its other types are
 known by name only (`culebra::is_stdlib_type_name`: the classes of its
 culebra-source modules, the built-in traits, the names natively built
 objects carry such as `Range` and `Generator`, and `Any`): a program's
-class of such a name, or of a primitive type's, promises nothing through
-the name. `culebra_preamble_cc` holds the list to the sources in one
+class of such a name, of an error kind's
+(`culebra::is_error_kind_name`: a classless Object carrying the kind
+answers to the name too, `tools/checks/check_error_kinds.sh` holding that
+list to the kinds the sources raise), or of a primitive type's, promises
+nothing through the name. `culebra_preamble_cc` holds the list to the sources in one
 direction: it refuses to bake a module that declares a type the list lacks.
 
 A registration only narrows a name's answer and is never taken back. The

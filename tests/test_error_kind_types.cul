@@ -1,0 +1,215 @@
+# Conformance: §15 (runtime errors by kind). See docs/language.md §25.
+#
+# An error's kind is a type name that takes it — in a `catch` clause, a
+# `match` arm, an annotation and multimethod dispatch — whether the engine
+# raised it or an Object carrying the kind was thrown.
+
+let div = || 1 / 0
+
+# A clause names the kind, with or without a binding.
+assert_eq(try {
+  div()
+} catch ZeroDivisionError {
+  'div'
+}, 'div')
+assert_eq(try {
+  div()
+} catch e: ZeroDivisionError {
+  e.kind
+}, 'ZeroDivisionError')
+
+# Another kind's clause lets it by, kind intact.
+assert_eq(try {
+  try {
+    div()
+  } catch TypeError {
+    'type'
+  }
+} catch e {
+  e.kind
+}, 'ZeroDivisionError')
+
+# Clauses in order, alternatives in one clause.
+let which = fn (f) {
+  try {
+    f()
+  } catch TypeError | ZeroDivisionError {
+    'arithmetic'
+  } catch IndexError {
+    'index'
+  } catch KeyError {
+    'key'
+  } catch IOError {
+    'io'
+  }
+}
+assert_eq(which(|| nil.missing()), 'arithmetic')
+assert_eq(which(div), 'arithmetic')
+assert_eq(which(|| [1][5]), 'index')
+assert_eq(which(|| {a: 1}['b']), 'key')
+assert_eq(which(|| FS.read('/no/such/dir/no-such-file')), 'io')
+assert_eq(try {
+  which(|| [].min())
+} catch e {
+  e.kind
+}, 'ValueError')
+
+# The same name in a `match` arm and in an annotation.
+let caught = try {
+  div()
+} catch e {
+  e
+}
+assert_eq(match caught {
+  TypeError => 'type',
+  ZeroDivisionError => 'div',
+  _ => 'other',
+}, 'div')
+let kind_of = fn (e: ZeroDivisionError) -> String {
+  e.kind
+}
+assert_eq(kind_of(caught), 'ZeroDivisionError')
+assert_eq(try {
+  kind_of(try {
+    nil.missing()
+  } catch e {
+    e
+  })
+} catch e {
+  e.kind
+}, 'TypeError')
+
+# Dispatch scores an error under its kind's name as it scores an instance
+# under its class's: the name itself, then a union or `T?` naming it, then
+# `Object`, which the error also is.
+fn label(e: ZeroDivisionError) {
+  'div'
+}
+fn label(e: IndexError) {
+  'index'
+}
+fn label(e: Object) {
+  'object'
+}
+assert_eq(label(caught), 'div')
+assert_eq(label(try {
+  [1][5]
+} catch e {
+  e
+}), 'index')
+assert_eq(label(try {
+  nil.missing()
+} catch e {
+  e
+}), 'object')
+assert_eq(label({kind: 'IndexError'}), 'index')
+assert_eq(label({kind: 'NoSuchKindError'}), 'object')
+
+# A thrown Object that carries the kind is an error of that kind too: that is
+# how the standard library's own modules raise theirs.
+assert_eq(try {
+  throw {kind: 'ZeroDivisionError', message: 'mine'}
+} catch e: ZeroDivisionError {
+  e.message
+}, 'mine')
+assert_eq(try {
+  StateMachine.new([])
+} catch TypeError {
+  'from the library'
+}, 'from the library')
+
+# Only the kinds the language and its library raise are type names: any other
+# is caught by its shape.
+assert_eq(try {
+  throw {kind: 'NoSuchKindError'}
+} catch NoSuchKindError {
+  'by name'
+} catch {kind: 'NoSuchKindError'} {
+  'by shape'
+}, 'by shape')
+
+# An instance of a class is what its class says, whatever it keeps in a field
+# named `kind`.
+class Tagged {
+  new(.kind) {}
+}
+assert_eq(try {
+  throw Tagged('TypeError')
+} catch TypeError {
+  'by name'
+} catch Tagged {
+  'an instance'
+}, 'an instance')
+
+fn in_union(e: IndexError | Nil) {
+  'union'
+}
+fn in_union(e: Object) {
+  'object'
+}
+fn optional(e: IndexError?) {
+  'optional'
+}
+fn optional(e: Object) {
+  'object'
+}
+let index_error = try {
+  [1][5]
+} catch e {
+  e
+}
+assert_eq(
+  [in_union(index_error), in_union(caught), in_union(nil)],
+  ['union', 'object', 'union'],
+)
+assert_eq([optional(index_error), optional(caught)], ['optional', 'object'])
+
+# A name an error also answers to settles nothing about a class of that
+# name: a typed field is read the ordinary way, and an error has none.
+let typed_same_name = fn () {
+  class ValueError {
+    code: Long
+    ratio: Float
+    new(.code, .ratio) {}
+  }
+  let code_of = fn (e: ValueError) {
+    e.code
+  }
+  let scaled = fn (e: ValueError) {
+    e.ratio * 2.0
+  }
+  let raised = try {
+    [].min()
+  } catch e {
+    e
+  }
+  [code_of(ValueError(
+    7,
+    1.5,
+  )), scaled(ValueError(7, 1.5)), code_of(raised), try {
+    scaled(raised)
+  } catch e {
+    e.kind
+  }]
+}
+assert_eq(typed_same_name(), [7, 3.0, nil, 'TypeError'])
+
+# A class of a kind's name: its instances and errors of the kind both answer
+# to the name, and each is still what it is.
+let same_name = fn () {
+  class IOError {
+    new(.path) {}
+  }
+  let what = fn (thrower) {
+    try {
+      thrower()
+    } catch e: IOError {
+      match e {
+        {path} => "instance {path}",
+        {kind} => "error {kind}",
+      }
+    }
+  }
+  [what(|| throw IOError('/x')), what(|| FS.read('/no/such/dir/no-such-file'))]
+}
+assert_eq(same_name(), ['instance /x', 'error IOError'])
