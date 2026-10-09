@@ -11871,6 +11871,14 @@ class Compiler {
     InMember env(*this, member, cls_ast, self_base, layout);
     push_scope(member, /*owned_mark=*/false);
     bind_inline_params(ps, args, arg_asts);
+    // The body's temps end with the body (compile_scoped_expr_into's order):
+    // the pop below hands their slots back mid-statement, and one still on
+    // the statement's sweep list would be released at its end under whatever
+    // took the slot next — the caller's next run, which a `let` may adopt as
+    // its home. Marked after the parameters are bound, since binding takes
+    // the caller's argument temps off that list.
+    const size_t temp_base = stmt_temps_.size();
+    const int32_t temp_slot_base = next_slot_;
     // A constructor's field parameters store into the run before the body,
     // as the boxed `new` stores them before its own statements — through
     // the same field type check, at the parameter's position.
@@ -11925,6 +11933,7 @@ class Compiler {
         store_into(out_base, tail, /*dst_is_fresh=*/false);
       }
     }
+    sweep_temps(temp_base, temp_slot_base);
     pop_scope();
     if (is_ctor) return {self_base, /*owned=*/false, -1, layout, &cls_ast};
     return {out_base, /*owned=*/false, -1, out_layout,

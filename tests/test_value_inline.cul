@@ -606,6 +606,9 @@ class Ends {
   __add__(o) {
     Ends.new(self.x + o.x, self.y + o.y)
   }
+  plus(o) {
+    Ends.new(self.x + o.x, self.y + o.y)
+  }
   # builds its own class and yields a scalar
   first() {
     Ends.new(self.x, 1.0).x
@@ -628,6 +631,9 @@ class BoxedEnds {
     BoxedEnds.new(self.x * k, self.y * k)
   }
   __add__(o) {
+    BoxedEnds.new(self.x + o.x, self.y + o.y)
+  }
+  plus(o) {
     BoxedEnds.new(self.x + o.x, self.y + o.y)
   }
   first() {
@@ -727,5 +733,22 @@ test_member_tail_ends_in_a_run = fn () {
   assert_eq(v.y, 4.0)
 }
 test_member_tail_ends_in_a_run()
+
+# A spliced body's temporaries end with the body. Its scope hands their
+# slots back in the middle of the statement, where the next step's run takes
+# them, and a `let` adopts that run as its home: a temporary released at the
+# statement's end instead would clear the binding's fields.
+test_spliced_step_after_a_spliced_argument = fn () {
+  let v = Ends.new(1.0, 0.25).scale(Ends.new(3.0, 4.0).len())
+  let b = BoxedEnds.new(1.0, 0.25).scale(BoxedEnds.new(3.0, 4.0).len())
+  assert_eq(v.x, b.x)
+  assert_eq(v.y, b.y)
+  # after a step whose body read a boxed argument's fields
+  let boxed = [Ends.new(1.0, 1.5)][0]
+  let w = Ends.new(1.0, 1.0).plus(boxed).scale(Ends.new(0.5, 1.0).first())
+  assert_eq(w.x, 1.0)
+  assert_eq(w.y, 1.25)
+}
+test_spliced_step_after_a_spliced_argument()
 
 inspect('value-inline OK')
