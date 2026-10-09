@@ -603,8 +603,11 @@ _run-tests BACKEND:
     # the collector's settings change how the code runs, not what it is, and
     # tests/jit_cache_test.sh holds a hit to the run a cold start gives. 87%
     # of gc-stress's CPU was the same two compiles over again. The cache is
-    # this run's own, so one binary never meets another's objects.
-    jit_cache="$job_dir/jit-cache"
+    # this run's own unless CULEBRA_GATE_JIT_CACHE names a directory to keep:
+    # an object is keyed by the module the backend was handed and by that
+    # backend (docs/internals/vm.md §7), so the next run, of this build or a
+    # later one, compiles only what changed.
+    jit_cache="${CULEBRA_GATE_JIT_CACHE:-$job_dir/jit-cache}"
     cul_cached() { CULEBRA_JIT_CACHE="$jit_cache" cul "$@"; }
     export -f cul_cached
     export jit_cache
@@ -830,7 +833,7 @@ _run-tests BACKEND:
             ref=$(cul --vm "$f" 2>&1) || {
                 echo "--vm failed: $f" > "$d/$name.err"; touch "$d/$name.fail"; exit 0
             }
-            got=$(cul $flags "$f" 2>&1) || {
+            got=$(cul_cached $flags "$f" 2>&1) || {
                 echo "FAIL ($flags aborted): $f" > "$d/$name.err"
                 touch "$d/$name.fail"; exit 0
             }
