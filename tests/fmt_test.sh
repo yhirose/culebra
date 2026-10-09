@@ -981,6 +981,133 @@ if ! diff -u "$TMP/sized_want.cul" "$TMP/sized_got.cul" > "$TMP/sized_diff" 2>&1
   fail=1
 fi
 
+# --- 1s. Golden fixture: a list of numbers is a table ----------------------
+# An array holding nothing but numeric literals fills rows when it does not
+# fit its line, cells right-aligned to the widest. The row is the one the
+# source's first line wrote, where that fits; a source with no row to read
+# (one number per line, a first line too long) gets a lone row if that holds
+# everything, else a power-of-two count. A lone row has nothing to align
+# with; a table that fits its line is one line however it was written; a list
+# holding anything else, or a comment, keeps the layout it had before.
+# See include/cli/formatter.h grid_per_row.
+cat > "$TMP/grid_in.cul" <<'EOF'
+fn f() {
+  let LENGTH_TABLE = [10, 254, 20, 2, 40, 4, 80, 6, 160, 8, 60, 10, 14, 12, 26, 14, 12, 16, 24, 18, 48, 20, 96, 22, 192, 24, 72, 26, 16, 28, 32, 30]
+}
+let short = [1,2,3]
+let signed = [
+  -1.5,
+  2.25,
+  300.0,
+  -4.0,
+  5.5,
+  6.125,
+  7.0,
+  8.0,
+  9.0,
+  10.0,
+  11.0,
+  12.0,
+  13.0,
+  14.0,
+  15.0,
+  16.0,
+  17.0,
+]
+let bytes = [0x00, 0xff, 0x1f, 0x80, 0x00, 0xff, 0x1f, 0x80, 0x00, 0xff, 0x1f, 0x80, 0x00, 0xff, 0x1f, 0x80, 0x00, 0xff, 0x1f, 0x80]
+let lone_row_whose_name_alone_pushes_the_list_past_the_width = [1, 200, 30, 4000, 5, 600]
+let no_row_to_read_and_a_name_that_pushes_the_list_past_the_width = [
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7,
+  8,
+  9,
+  100000,
+]
+let rgb = [255, 0, 0,
+  0, 255, 0, 0, 0, 255, 255, 255, 0, 0, 255, 255, 255, 0, 255, 128, 128, 128, 64, 64, 64, 32, 32, 32]
+let fits_its_line = [
+  1, 2, 3,
+  4, 5, 6,
+]
+let mixed = [1000000, 2000000, 3000000, 4000000, 5000000, 6000000, 7000000, limit, 9000000]
+let noted = [
+  1, 2, 3,  # low
+  4, 5, 6,
+]
+EOF
+cat > "$TMP/grid_want.cul" <<'EOF'
+fn f() {
+  let LENGTH_TABLE = [
+     10, 254,  20,   2,  40,   4,  80,   6,
+    160,   8,  60,  10,  14,  12,  26,  14,
+     12,  16,  24,  18,  48,  20,  96,  22,
+    192,  24,  72,  26,  16,  28,  32,  30,
+  ]
+}
+let short = [1, 2, 3]
+let signed = [
+   -1.5,  2.25, 300.0,  -4.0,   5.5, 6.125,   7.0,   8.0,
+    9.0,  10.0,  11.0,  12.0,  13.0,  14.0,  15.0,  16.0,
+   17.0,
+]
+let bytes = [
+  0x00, 0xff, 0x1f, 0x80, 0x00, 0xff, 0x1f, 0x80,
+  0x00, 0xff, 0x1f, 0x80, 0x00, 0xff, 0x1f, 0x80,
+  0x00, 0xff, 0x1f, 0x80,
+]
+let lone_row_whose_name_alone_pushes_the_list_past_the_width = [
+  1, 200, 30, 4000, 5, 600,
+]
+let no_row_to_read_and_a_name_that_pushes_the_list_past_the_width = [
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 100000,
+]
+let rgb = [
+  255,   0,   0,
+    0, 255,   0,
+    0,   0, 255,
+  255, 255,   0,
+    0, 255, 255,
+  255,   0, 255,
+  128, 128, 128,
+   64,  64,  64,
+   32,  32,  32,
+]
+let fits_its_line = [1, 2, 3, 4, 5, 6]
+let mixed = [
+  1000000,
+  2000000,
+  3000000,
+  4000000,
+  5000000,
+  6000000,
+  7000000,
+  limit,
+  9000000,
+]
+let noted = [
+  1, 2, 3,  # low
+  4, 5, 6,
+]
+EOF
+"$CULEBRA" fmt "$TMP/grid_in.cul" > "$TMP/grid_got.cul" 2>"$TMP/grid_err"
+if ! diff -u "$TMP/grid_want.cul" "$TMP/grid_got.cul" > "$TMP/grid_diff" 2>&1; then
+  echo "FAIL golden (a list of numbers is a table): output differs"
+  cat "$TMP/grid_diff" "$TMP/grid_err"
+  fail=1
+fi
+# The padding is not part of any cell, so the table is a fixed point.
+"$CULEBRA" fmt "$TMP/grid_want.cul" > "$TMP/grid_again.cul" 2>"$TMP/grid_err"
+if ! diff -u "$TMP/grid_want.cul" "$TMP/grid_again.cul" > "$TMP/grid_diff" 2>&1; then
+  echo "FAIL golden (a list of numbers is a table): not a fixed point"
+  cat "$TMP/grid_diff" "$TMP/grid_err"
+  fail=1
+fi
+
 # --- 2 + 3. Corpus safety + idempotency (parallel) ------------------------
 # Format every corpus file twice — once to check the re-parse/comment safety
 # net doesn't refuse (exit 2), once more to assert idempotency. The files are

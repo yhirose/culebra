@@ -135,7 +135,9 @@ ctest.entries 35
 # object made iterable by a method that yields, in en and ja.
 # 1034 since *Tuples* shows a Tuple ordering pair by pair, the length it
 # requires and a Tuple as a several-part sort key, in en and ja.
-docs.blocks 1034
+# 1038 since tooling §3 shows a number table following its first row and one
+# with no row to follow, in en and ja.
+docs.blocks 1038
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

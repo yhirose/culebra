@@ -438,6 +438,48 @@ continuation past the body. An object or set literal that holds a comment
 is written one entry per line, with the comment kept where you put it; one
 without comments stays compact.
 
+An array literal holding nothing but numbers is a table. When it does not
+fit on its line it fills rows instead of taking a line per number: every
+row but a short last one holds the same count, and the numbers are
+right-aligned so the columns read down.
+
+The count is the one you wrote on the first line, as long as that many fit
+the line width — break the line where a row should end and `fmt` lays out
+the rest:
+
+```culebra
+let colors = [
+  255,   0,   0,
+    0, 255,   0,
+    0,   0, 255,
+  255, 255,   0,
+    0, 255, 255,
+  255,   0, 255,
+  128, 128, 128,
+   64,  64,  64,
+   32,  32,  32,
+]
+```
+
+A table written one number per line, or with a first line too long to
+keep, has no row to follow. It goes on a single row if that holds all of
+it, and otherwise takes the largest power of two the line width allows, so
+a row starts at a round index:
+
+```culebra
+let lengths = [
+   10, 254,  20,   2,  40,   4,  80,   6,
+  160,   8,  60,  10,  14,  12,  26,  14,
+   12,  16,  24,  18,  48,  20,  96,  22,
+  192,  24,  72,  26,  16,  28,  32,  30,
+]
+```
+
+A table that fits on its line is written on one line, however it was
+broken. An array that holds anything else (a name, a string, a nested
+array) goes one element per line, and one that holds a comment keeps the
+rows it was written with.
+
 How it works: the source is parsed, re-printed from the syntax tree, and
 then **re-parsed and compared** against the original — if formatting would
 change the program's meaning, or would drop or duplicate a comment, `fmt`

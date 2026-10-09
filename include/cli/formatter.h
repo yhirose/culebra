@@ -26,6 +26,7 @@
 // for that.
 
 #include <algorithm>
+#include <bit>
 #include <cstdlib>
 #include <optional>
 #include <print>
@@ -49,12 +50,14 @@ namespace culebra::fmt {
 struct Doc;
 using DocP = std::shared_ptr<Doc>;
 
-enum class DocKind { Text, Line, SoftLine, HardLine, Group, Indent, Concat, IfBreak };
+enum class DocKind { Text, Line, SoftLine, HardLine, Group, Indent, Concat, IfBreak, Grid };
 
 struct Doc {
   DocKind kind;
-  std::string text;            // Text
+  std::string text;            // Text, IfBreak; a Grid's flat form
   std::vector<DocP> children;  // Concat, Group (size 1), Indent (size 1)
+  std::vector<std::string> cells;  // Grid
+  size_t first_row = 0;        // Grid: cells on the source's first line
   int indent = 0;              // Indent
   bool weightless = false;     // Text that the fit check ignores
   bool has_hardline = false;   // this doc or anything under it breaks
@@ -122,6 +125,38 @@ inline DocP doc_indent(int n, DocP x) {
   return d;
 }
 
+// A table of numbers. Flat, it is the list `a, b, c`. Broken, it fills rows
+// rather than giving each cell a line of its own: every row holds the same
+// count, and the cells are right-aligned to the widest one, so a column reads
+// down. Every row starts a line of its own and ends — the last included —
+// with a comma. `first_row` is how many cells the source put on its first
+// line.
+inline DocP doc_grid(std::vector<std::string> cells, size_t first_row) {
+  auto d = std::make_shared<Doc>();
+  d->kind = DocKind::Grid;
+  for (size_t i = 0; i < cells.size(); i++) {
+    if (i) d->text += ", ";
+    d->text += cells[i];
+  }
+  d->cells = std::move(cells);
+  d->first_row = first_row;
+  return d;
+}
+
+// Cells per row of a broken grid given `avail` columns. Only the author knows
+// the table's period (a 4x4, RGB triples, lo/hi pairs), so the row they wrote
+// is kept where it fits. A source with no row to read — one cell per line, or
+// a first line too long — gets one row if that holds everything, and
+// otherwise as many as fit cut down to a power of two, so a row begins on a
+// round index.
+inline size_t grid_per_row(const Doc& grid, size_t cell_width, int avail) {
+  // An aligned cell costs its width and `, `; a row's last ends at its comma.
+  size_t fit = static_cast<size_t>(std::max(avail + 1, 0)) / (cell_width + 2);
+  if (grid.first_row >= 2 && grid.first_row <= fit) return grid.first_row;
+  if (static_cast<int>(grid.text.size()) + 1 <= avail) return grid.cells.size();
+  return std::bit_floor(std::max<size_t>(fit, 1));
+}
+
 // Force a doc to its flat form. A head with no brackets of its own — the
 // condition of an `if` / `while`, the subject of a `match` — has nothing to
 // break *inside*, so a break lands between two operands (`if v ==` / `0 {`) and
@@ -131,6 +166,7 @@ inline DocP doc_flatten(const DocP& d) {
   if (!d) return d;
   if (d->kind == DocKind::Line) return doc_text(" ");
   if (d->kind == DocKind::SoftLine || d->kind == DocKind::IfBreak) return doc_text("");
+  if (d->kind == DocKind::Grid) return doc_text(d->text);
   if (d->children.empty()) return d;
   auto c = std::make_shared<Doc>(*d);
   for (auto& ch : c->children) ch = doc_flatten(ch);
@@ -177,6 +213,11 @@ inline bool doc_fits(int remaining, std::vector<LayoutCmd> stack) {
         break;
       case DocKind::HardLine:
         return true;
+      case DocKind::Grid:
+        // Broken, it opens with a line break.
+        if (!c.flat) return true;
+        remaining -= static_cast<int>(c.doc->text.size());
+        break;
     }
   }
   return false;
@@ -192,6 +233,7 @@ inline std::string doc_render(const DocP& root, int width) {
     if (s.empty()) return;
     if (pending_indent >= 0) { out.append(pending_indent, ' '); pending_indent = -1; }
     out += s;
+    col += static_cast<int>(s.size());
   };
   auto newline = [&](int indent) {
     out += '\n';
@@ -205,7 +247,6 @@ inline std::string doc_render(const DocP& root, int width) {
     switch (c.doc->kind) {
       case DocKind::Text:
         put(c.doc->text);
-        col += static_cast<int>(c.doc->text.size());
         break;
       case DocKind::Concat:
         for (auto it = c.doc->children.rbegin(); it != c.doc->children.rend(); ++it)
@@ -222,11 +263,11 @@ inline std::string doc_render(const DocP& root, int width) {
         break;
       }
       case DocKind::Line:
-        if (c.flat) { put(" "); col += 1; }
+        if (c.flat) { put(" "); }
         else { newline(c.indent); }
         break;
       case DocKind::IfBreak:
-        if (!c.flat) { put(c.doc->text); col += static_cast<int>(c.doc->text.size()); }
+        if (!c.flat) { put(c.doc->text); }
         break;
       case DocKind::SoftLine:
         if (!c.flat) { newline(c.indent); }
@@ -234,6 +275,23 @@ inline std::string doc_render(const DocP& root, int width) {
       case DocKind::HardLine:
         newline(c.indent);
         break;
+      case DocKind::Grid: {
+        if (c.flat) { put(c.doc->text); break; }
+        const auto& cells = c.doc->cells;
+        size_t cell_width = 0;
+        for (const auto& cell : cells) cell_width = std::max(cell_width, cell.size());
+        size_t per_row = grid_per_row(*c.doc, cell_width, width - c.indent);
+        // A lone row has no column to line up with.
+        bool align = cells.size() > per_row;
+        for (size_t i = 0; i < cells.size(); i++) {
+          if (i % per_row) put(" ");
+          else newline(c.indent);
+          if (align) put(std::string(cell_width - cells[i].size(), ' '));
+          put(cells[i]);
+          put(",");
+        }
+        break;
+      }
     }
   }
   return out;
@@ -1260,9 +1318,36 @@ class Printer {
     if (node.nodes.empty()) return doc_text("[]");
     if (node.nodes.size() != 1 || node.nodes[0]->name != "SEQUENCE")
       return own_source(node);
+    const auto& elems = node.nodes[0]->nodes;
+    // A list of nothing but numbers is a table: one that does not fit its
+    // line fills rows rather than taking a line per number.
+    if (elems.size() > 1 &&
+        std::ranges::all_of(elems, [](auto& e) { return is_number(*e); })) {
+      std::vector<std::string> cells;
+      for (auto& e : elems)
+        cells.push_back(doc_render(print_elem(*e), /*width=*/1 << 20));
+      // The elements that share the first one's source line.
+      const size_t eol = src_.find('\n', elems[0]->position);
+      const size_t first_row =
+          std::ranges::count_if(elems, [&](auto& e) { return e->position < eol; });
+      return doc_group(doc_concat({
+          doc_text("["),
+          doc_indent(kIndent, doc_grid(std::move(cells), first_row)),
+          doc_softline(),
+          doc_text("]"),
+      }));
+    }
     std::vector<DocP> items;
-    for (auto& e : node.nodes[0]->nodes) items.push_back(print_elem(*e));
+    for (auto& e : elems) items.push_back(print_elem(*e));
     return print_delimited("[", std::move(items), "]");
+  }
+
+  // A numeric literal, signed or not: `7`, `0x1f`, `-2.5`.
+  static bool is_number(const peg::Ast& e) {
+    const bool is_signed = (e.name == "UNARY_MINUS" || e.name == "UNARY_PLUS") &&
+                           e.nodes.size() == 2;
+    const peg::Ast& n = is_signed ? *e.nodes[1] : e;
+    return n.name == "NUMBER" || n.name == "FLOAT";
   }
 
   DocP print_elem(const peg::Ast& e) {
