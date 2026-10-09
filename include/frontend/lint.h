@@ -1613,18 +1613,25 @@ struct MatchTally {
       resolve(p.nodes[0]->token);
       return;
     }
-    if (p.tag == "TYPED_IDENT"_ && p.nodes.size() > 1) {
-      std::string_view type_name = p.nodes[1]->token;
-      // `x: Shape` names the enum itself, not one variant — matches every
-      // instance of it, same as a bare catch-all.
+    bool typed = p.tag == "TYPED_IDENT"_ && p.nodes.size() > 1;
+    if (typed || p.tag == "TYPE_PATTERN"_) {
+      std::string_view type_name = typed ? p.nodes[1]->token : p.token;
+      // `T?` takes what `T` does, and nil besides.
+      if (type_name.ends_with('?')) type_name.remove_suffix(1);
       auto head = std::string(culebra::parse_generic_head(type_name).outer);
+      if (head == "Any") {
+        catch_all = true;
+        return;
+      }
+      // `x: Shape` (or a bare `Shape`) names the enum itself, not one variant
+      // — matches every instance of it, same as a bare catch-all.
       if (reg.variants.count(head)) {
         if (!target.empty() && target != head) { ambiguous = true; return; }
         target = head;
         catch_all = true;
         return;
       }
-      resolve(type_name);  // `x: Origin` / `x: Ok` — a nullary or named variant
+      resolve(type_name);  // `x: Origin` / `Origin` — a nullary or named variant
       return;
     }
     // NIL/BOOLEAN/NUMBER/STRING/ARRAY_PATTERN/OBJECT_PATTERN/TUPLE_PATTERN —

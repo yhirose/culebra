@@ -28,6 +28,7 @@ smokeを1度に回します。AOT差分のみなら`just test aot`。下表
 | `tests/test_iter_terminal.cul` | §18 (terminal iteratorメソッド、§18.5 protocol contract) |
 | `tests/test_kwargs.cul` | §11 (キーワード引数、`**` splat)、§20 (kwargs in多重dispatch)、§7 (mixed callの評価順) |
 | `tests/test_match_class.cul` | §13 (型パターン) |
+| `tests/test_type_pattern.cul` | §13 (パターンとしての裸の型名、宣言するパターンはすべての名前を束縛) |
 | `tests/test_multidispatch.cul` | §20 |
 | `tests/test_object_keys.cul` | §10 (非Stringキー) |
 | `tests/test_runtime_errors.cul` | §15 (`throw`/`try`/`catch`、すべての`kind`のcatch可能性) |

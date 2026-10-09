@@ -6,7 +6,8 @@ A
 ['A', 'B']
 7
 0
-bare-binds
+no
+B
 [6.0, 2.25, 0.0]
 3.0
 ['ok-1', 'err-bad', 'pair-2-3']

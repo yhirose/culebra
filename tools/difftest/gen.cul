@@ -747,6 +747,7 @@ let matches = [
   'match [1, 2] { [a, b] => a + b, _ => 0 }',
   'match (1, 2) { (a, b) => a + b, _ => 0 }',
   'match 5 { x: Long => "long", _ => "other" }',
+  'match 3 { N: Long => N + 1, _ => 0 }',
 ]
 for m in matches {
   case("match|" + m, m)
@@ -775,6 +776,27 @@ let range_patterns = [
 ]
 for p in range_patterns {
   case("match_range|" + p, p)
+}
+
+# A bare type name in an arm tests and binds nothing, and a name no type
+# carries matches nothing. (That a pattern which declares still binds every
+# name is held by `match|` and `assign|` cases, which no allow entry covers.)
+let tp_pre = 'class Dog { new(.n) {} }; ' + me_pre
+let type_patterns = [
+  tp_pre + 'match Dog(1) { Dog => "dog", _ => "other" }',
+  tp_pre + 'match 1 { Dog => "dog", _ => "other" }',
+  tp_pre + 'match E.A(1) { B => "b", E => "e", _ => "other" }',
+  tp_pre + 'match E.A(1) { E.B => "b", E.A => "a", _ => "other" }',
+  tp_pre + 'match {pet: Dog(1)} { {pet: Dog} => "has a dog", _ => "other" }',
+  'match 1.5 { Long | Float => "num", _ => "other" }',
+  'match nil { Long? => "opt", _ => "other" }',
+  'match [1, "a"] { [Long, String] => "pair", _ => "other" }',
+  'match (1, "a") { (String, Long) => "pair", _ => "other" }',
+  'match 3 { NoSuchType => "t", n => n }',
+  'let LIMIT = 3; match 3 { LIMIT => "bound", n if n == LIMIT => "equal", _ => "other" }',
+]
+for p in type_patterns {
+  case("match_type|" + p, p)
 }
 
 # --- Dimension: numeric range values --------------------------------------
@@ -868,6 +890,8 @@ let assigns = ['let o = {a: 1}; o.a += 5; o.a',
                'mut a = [1, 2, 3]; a[0] += "x"; a[0]',
                'let (a, b) = (1, 2); a + b',
                'mut (a, b) = (1, 2); a - b',
+               'let [N, M] = [3, 4]; N * M',
+               'mut A = 1; mut B = 2; (A, B) = (B, A); [A, B]',
                'mut x = nil; x ??= 5; x',
                'mut x = 3; x ??= 5; x',
                # ImmutableError on a subscript target must carry the same

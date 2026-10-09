@@ -13891,6 +13891,9 @@ class Compiler {
       case "TYPED_IDENT"_:
         compile_type_gate(*pat.nodes[1], subj, fail);
         return;
+      case "TYPE_PATTERN"_:  // a type name alone: the gate, and no binding
+        compile_type_gate(pat, subj, fail);
+        return;
       case "NIL"_:
         tag_gate({TAG_NIL});
         return;

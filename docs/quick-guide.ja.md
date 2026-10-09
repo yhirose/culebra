@@ -361,6 +361,10 @@ inspect(describe({name: 'z'}))  # => 'named z'
 `Float`でも一致します（`(1..=9).contains(x)`が受け付ける値と同じ）。
 網羅性検査はありません。`_`の腕を用意してください。
 
+裸の名前は先頭の1文字で読み分けます。大文字なら型の検査で、何も束縛
+しません（`String => …`、`Shape.Origin => …`）。それ以外の名前は値を束縛
+します。定数と比べるにはガードを使います（`n if n == LIMIT`）。
+
 同じパターンで束縛できます（`let (a, b) = pair`）。`let`を外すと**既存の
 変数**への代入になり、右辺を先に全部評価します — `(a, b) = (b, a)`で
 入れ替え、`(x, y) = match … { … }`で2つ同時に書き込めます。
@@ -539,7 +543,7 @@ area = fn (s) {
   match s {
     Circle(r) => 3 * r * r,
     Rect(w, h) => w * h,
-    o: Origin => 0,
+    Origin => 0,
   }
 }
 inspect(area(Shape.Rect(2.0, 3.0)))          # => 6.0

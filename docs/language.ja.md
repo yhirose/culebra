@@ -3116,6 +3116,7 @@ let width = "v" + match n {
 | `name`           | 任意の値、`name`に束縛                      |
 | `_`              | 任意の値、束縛なし                          |
 | `name: Type`     | 指定の型の値、`name`に束縛                  |
+| `Type`           | 指定の型の値、束縛なし                      |
 | `p1 \| p2 \| p3` | どれかが一致（alternativeは束縛不可）      |
 | `[p1, p2, ...]`  | 同じ長さの`Array`                         |
 | `[p1, ...rest]`  | `n−1`以上の長さの`Array`。`rest`は残りの新しい`Array` |
@@ -3156,9 +3157,39 @@ inspect(kind('a'))   # => 'other'
 
 * パターンは左から右、サブパターンは深さ優先で評価されます。
 * パターンが導入した束縛`name`はそのアームのガードと本体で有効。
+* 裸の名前は先頭の1文字で読み分けます。型名の書き方（§14）と同じで、
+  大文字で始まる名前は型を指し、それ以外の名前は束縛です。`Dog => …`は
+  `d: Dog => …`から束縛を除いたもので、型名は注釈に書ける形のまま
+  書けます（`Long?`、`Array<Long>`、`Shape.Point`）。複数の型は`|`で
+  並べます（`Long | Float => …`）。関数型は束縛つきの形で書きます
+  （`f: fn(Long) -> Long => …`）。どの型のものでもない名前は何にも
+  一致しません。値として読まれることは無いので、定数との比較はガードで
+  書きます（`n if n == LIMIT => …`）。大文字で始まる名前に束縛したい
+  ときは型を付けて`N: Any`と書きます。
+
+```culebra
+class Dog {
+  new(.name) {}
+}
+kind = fn (v) {
+  match v {
+    Dog => 'a dog',
+    Long | Float => 'a number',
+    other => "something else: {other}",
+  }
+}
+inspect(kind(Dog('Rex')))  # => 'a dog'
+inspect(kind(2.5))         # => 'a number'
+inspect(kind('s'))         # => 'something else: s'
+```
+
+* この読み方は、値を検査するパターン（`match`のアーム）の
+  ものです。パターンが宣言や代入をする場所では、大文字か小文字かに
+  かかわらずすべての名前が書き込み先です: `let [N, M] = pair`、
+  `(A, B) = (B, A)`、`for`の変数、パターン引数。
 * `|`（or）サブパターンは束縛できません。alternative内の名前はその枝を
   通った経路にしか存在しないため、束縛を書くと`SyntaxError`です
-  （`a | _`、`5 | a`、`Ok(x) | Err(x)`）。`|`の中にはリテラルと`_`だけを
+  （`a | _`、`5 | a`、`Ok(x) | Err(x)`）。`|`の中にはリテラル・型名・`_`を
   置き、束縛の形ごとにアーム（もしくはパターン）を分けます。
 * `Array`パターンは`...rest`がなければ長さの厳密一致を要求します。
   `Object`パターンはキーの網羅性を要求しません（余分なキーは無視）。
@@ -3244,6 +3275,10 @@ Culebraは動的型付けで、型注釈は任意です。注釈は以下3つの
 variant名はどのenumのものでも同名variantを、修飾形
 `Enum.Variant`はそのenumのvariantだけを受け入れます —
 「Sum type」参照。
+
+型名は大文字で始まります。`class point`と宣言したクラスを指す注釈は
+構文エラーです。`match`のパターンで型と束縛を見分けるのも、この先頭の
+1文字です（§13）。
 
 ### Union 型
 
@@ -3613,6 +3648,8 @@ variant instanceはvariant名と親enum名の両方でタグ付けされ、
       _          => "other",
     }
 
+束縛が要らなければ型名だけを書きます: `Ok => …`、`Result => …`。
+
 variant名だけを書くと、それはvariantの名前であってenumの名前では
 ない。2つのenumがどちらも`Ok`を宣言していれば、`Ok(p)`も`x: Ok`も
 両方を受ける。enumまで絞るには修飾する — パターンなら
@@ -3658,8 +3695,8 @@ variantは別のkey。
 * enum内メソッド (free fn + UFCSで代替) / named payload field /
   明示discriminant値 / 静的exhaustiveness検査は無し (非マッチ
   `match`は`nil`)。
-* nullary variantは型パターン (`o: Origin`) でマッチ (parensなし
-  constructor patternは無い)。
+* nullary variantは型パターンでマッチ — `Origin`、値を束縛するなら
+  `o: Origin` (parensなしconstructor patternは無い)。
 
 ### trait と protocol
 

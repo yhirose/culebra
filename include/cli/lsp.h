@@ -840,6 +840,13 @@ class Server {
     if (is_always_bound_name(name))
       return std::format("`{}` is a name the language binds itself.", name);
     if (name == sym.name) return "";
+    // A `match` arm reads a bare name that starts in uppercase as a type, so
+    // the renamed arm would test where it bound.
+    if (sym.declared_as(resolve::Form::Pattern) &&
+        std::isupper(static_cast<unsigned char>(name[0])))
+      return std::format("`{}` would read as a type name in a `match` arm, "
+                         "not as a binding.",
+                         name);
     const LineIndex& lines = snap.lines();
     for (size_t i : sym.occurrences) {
       const auto& x = res.occurrences[i];

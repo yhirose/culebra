@@ -14,11 +14,12 @@ println(type_of(E.A(5)))
 println(E.A(5)._0)
 println(E.keys())
 
-# Matching: by variant, with the payload destructured; a bare name is an
-# ordinary identifier pattern, so it matches anything and binds.
+# Matching: by variant, with the payload destructured; a bare variant name
+# is a type pattern, so it takes that variant alone and binds nothing.
 println(match E.A(7) { A(x) => x, _ => -1 })
 println(match E.B { A(x) => x, B => 0, _ => -1 })
-println(match E.A(5) { B => 'bare-binds', _ => 'no' })
+println(match E.A(5) { B => 'the nullary one', _ => 'no' })
+println(match E.B { b => type_of(b) })
 
 enum Shape {
   Circle(Float),

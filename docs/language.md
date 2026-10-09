@@ -3276,6 +3276,7 @@ fall-through, or an exception).
 | `name`            | Any value, binds it to `name`            |
 | `_`               | Any value, no binding                    |
 | `name: Type`      | Value whose type is `Type`; binds        |
+| `Type`            | Value whose type is `Type`; no binding   |
 | `p1 \| p2 \| p3`  | Any of the sub-patterns matches; alternatives cannot bind |
 | `[p1, p2, ...]`   | `Array` of exactly the same length       |
 | `[p1, ...rest]`   | `Array` of ≥ `n−1` elements; `rest` is a fresh `Array` of the remainder |
@@ -3319,10 +3320,41 @@ inspect(kind('a'))   # => 'other'
   depth-first.
 * A binding `name` introduced by the pattern is visible in the guard
   and the body.
+* A bare name is read by its first letter, the way a type name is written
+  everywhere else (§14): one that starts with an uppercase letter names a
+  type, any other name binds. `Dog => …` is `d: Dog => …` without the
+  binding, and takes a type name in any form an annotation writes one —
+  `Long?`, `Array<Long>`, `Shape.Point` — with `|` between alternatives
+  (`Long | Float => …`). A function type keeps the binding form
+  (`f: fn(Long) -> Long => …`). A name no type carries matches nothing: it is
+  never read as a value, so a constant is compared in a guard
+  (`n if n == LIMIT => …`). A binding whose name starts with an uppercase
+  letter is written with its type, `N: Any`.
+
+```culebra
+class Dog {
+  new(.name) {}
+}
+kind = fn (v) {
+  match v {
+    Dog => 'a dog',
+    Long | Float => 'a number',
+    other => "something else: {other}",
+  }
+}
+inspect(kind(Dog('Rex')))  # => 'a dog'
+inspect(kind(2.5))         # => 'a number'
+inspect(kind('s'))         # => 'something else: s'
+```
+
+* That reading belongs to a pattern that tests, a `match` arm. Where a
+  pattern declares or assigns, every name is a target whatever its case:
+  `let [N, M] = pair`, `(A, B) = (B, A)`, a `for` variable, a pattern
+  parameter.
 * `|` (or) sub-patterns cannot bind: a name inside an alternative would
   exist only on the paths that took it, so any binding there is a
-  `SyntaxError` (`a | _`, `5 | a`, `Ok(x) | Err(x)`). Write literals and
-  `_` inside `|`, and one arm (or one pattern) per binding shape.
+  `SyntaxError` (`a | _`, `5 | a`, `Ok(x) | Err(x)`). Write literals,
+  type names and `_` inside `|`, and one arm (or one pattern) per binding shape.
 * `Array` patterns require an exact length unless a `...rest` element
   is present; objects do not require exact key sets — extra keys are
   ignored.
@@ -3411,6 +3443,10 @@ valid annotations and accept any instance of that class. An enum name
 accepts any of its variants, a variant name accepts that variant of any
 enum, and the qualified `Enum.Variant` accepts only that enum's — see
 "Sum types".
+
+A type name starts with an uppercase letter: an annotation naming a
+class declared as `class point` does not parse. The same first letter is
+what tells a type from a binding in a `match` pattern (§13).
 
 ### Union types
 
@@ -3856,6 +3892,9 @@ enum name, so type annotations / patterns match at either level:
       _          => "other",
     }
 
+Without the binding, the type name stands alone: `Ok => …`,
+`Result => …`.
+
 A bare variant name names the variant, not the enum: where two enums
 each declare an `Ok`, `Ok(p)` and `x: Ok` take either. Qualify it to
 pin the enum — `Result.Ok(p)` as a pattern, `x: Result.Ok` as a type —
@@ -3900,8 +3939,8 @@ enums are two keys.
 * No methods-in-enum block (use free functions + UFCS), no named
   payload fields, no explicit discriminant values, and no static
   exhaustiveness check (a non-matching `match` yields `nil`).
-* Nullary variants are matched with a type pattern (`o: Origin`), not a
-  parens-free constructor pattern.
+* Nullary variants are matched with a type pattern — `Origin`, or
+  `o: Origin` to bind the value — not a parens-free constructor pattern.
 
 ### Traits and protocols
 

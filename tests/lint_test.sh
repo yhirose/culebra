@@ -890,6 +890,33 @@ expect_lint_clean "qualified ctor disambiguates" \
 enum B { Foo(String) }
 fn f(x) { match x { A.Foo(n) => n, x: Bar => 0 } }
 inspect(f(A.Foo(1)))'
+# A bare type name is the same test without the binding: a variant's name
+# covers that variant, the enum's name covers them all.
+expect_lint_warns "bare variant name covers one" \
+'enum Shape { Circle(Float), Rect(Float, Float), Origin }
+fn area(s) { match s { Circle(r) => r, Origin => 0.0 } }
+inspect(area(Shape.Circle(2.0)))' "doesn't handle: Rect"
+expect_lint_clean "bare variant names cover all" \
+'enum Shape { Circle(Float), Rect(Float, Float), Origin }
+fn area(s) { match s { Circle(r) => r, Rect(w, h) => w * h, Shape.Origin => 0.0 } }
+inspect(area(Shape.Circle(2.0)))'
+expect_lint_clean "bare enum name is a catch-all" \
+'enum Shape { Circle(Float), Rect(Float, Float), Origin }
+fn area(s) { match s { Circle(r) => r, Shape => 0.0 } }
+inspect(area(Shape.Circle(2.0)))'
+# `Any` takes every value, and `T?` what `T` takes.
+expect_lint_clean "Any is a catch-all" \
+'enum Shape { Circle(Float), Rect(Float, Float), Origin }
+fn area(s) { match s { Circle(r) => r, Any => 0.0 } }
+inspect(area(Shape.Circle(2.0)))'
+expect_lint_clean "an optional variant covers it" \
+'enum Shape { Circle(Float), Rect(Float, Float), Origin }
+fn area(s) { match s { Circle(r) => r, Rect(w, h) => w * h, o: Origin? => 0.0 } }
+inspect(area(Shape.Circle(2.0)))'
+# A type name tests, so the arm after it is reachable.
+expect_lint_clean "arm after a bare type name" \
+'fn f(v) { match v { Long => 1, _ => 0 } }
+inspect(f(1))'
 # No enum declared in the file at all: nothing to check against.
 expect_lint_clean "no enum in file" \
 'fn f(x) { match x { 1 => "one", _ => "other" } }

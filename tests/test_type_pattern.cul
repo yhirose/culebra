@@ -1,0 +1,179 @@
+# Conformance: §13 (type patterns). See docs/language.md §25.
+#
+# In a `match` arm a bare type name tests the value and binds nothing:
+# `Dog => ...` reads as `d: Dog => ...` without the `d`.
+
+class Dog {
+  new(.name) {}
+}
+class Cat {
+  new(.name) {}
+}
+enum Shape {
+  Circle(Float),
+  Rect(Float, Float),
+  Point,
+}
+enum Other {
+  Point,
+}
+trait Named {
+  label() -> String
+}
+class Tag {
+  new(.text) {}
+  label() {
+    self.text
+  }
+}
+
+# A class name.
+let kind = fn (v) {
+  match v {
+    Dog => 'dog',
+    Cat => 'cat',
+    _ => 'other',
+  }
+}
+assert_eq(kind(Dog('Rex')), 'dog')
+assert_eq(kind(Cat('Mia')), 'cat')
+assert_eq(kind(42), 'other')
+assert_eq(kind(nil), 'other')
+
+# The name is still the class afterwards: nothing was bound over it.
+assert_eq(match 1 {
+  Dog => 'dog',
+  _ => Dog('Pup').name,
+}, 'Pup')
+
+# A nullary variant, bare and qualified, and the enum's own name.
+let shape = fn (s) {
+  match s {
+    Point => 'point',
+    Circle(r) => "circle {r}",
+    _ => 'other',
+  }
+}
+assert_eq(shape(Shape.Point), 'point')
+assert_eq(shape(Shape.Circle(1.5)), 'circle 1.5')
+assert_eq(shape(Shape.Rect(1.0, 2.0)), 'other')
+assert_eq(shape(7), 'other')
+
+let which = fn (s) {
+  match s {
+    Shape.Point => 'shape point',
+    Other.Point => 'other point',
+    Shape => 'another shape',
+    _ => 'neither',
+  }
+}
+assert_eq(which(Shape.Point), 'shape point')
+assert_eq(which(Other.Point), 'other point')
+assert_eq(which(Shape.Rect(1.0, 2.0)), 'another shape')
+assert_eq(which('s'), 'neither')
+
+# Built-in types, a trait, `T?`, a generic head, and alternatives.
+let prim = fn (v) {
+  match v {
+    Long | Float => 'number',
+    String => 'string',
+    Array<Long> => 'array',
+    Nil => 'nil',
+    Named => 'named',
+    _ => 'other',
+  }
+}
+assert_eq(prim(1), 'number')
+assert_eq(prim(1.5), 'number')
+assert_eq(prim('s'), 'string')
+assert_eq(prim([1]), 'array')
+assert_eq(prim(nil), 'nil')
+assert_eq(prim(Tag('t')), 'named')
+assert_eq(prim(Dog('Rex')), 'other')
+
+assert_eq(match nil {
+  Long? => 'long or nil',
+  _ => 'other',
+}, 'long or nil')
+
+# Nested in an array, an object entry, a tuple and a constructor.
+let nested = fn (v) {
+  match v {
+    [Long, s: String] => "pair {s}",
+    {pet: Dog} => 'has a dog',
+    (Dog, Cat) => 'dog and cat',
+    Circle(Float) => 'circle of a float',
+    _ => 'other',
+  }
+}
+assert_eq(nested([1, 'a']), 'pair a')
+assert_eq(nested(['a', 'a']), 'other')
+assert_eq(nested({pet: Dog('Rex')}), 'has a dog')
+assert_eq(nested({pet: Cat('Mia')}), 'other')
+assert_eq(nested((Dog('Rex'), Cat('Mia'))), 'dog and cat')
+assert_eq(nested((Cat('Mia'), Dog('Rex'))), 'other')
+assert_eq(nested(Shape.Circle(1.0)), 'circle of a float')
+
+# An object entry's key is a key whatever its case, and `...Rest` binds.
+assert_eq(match {Name: 7} {
+  {Name} => Name,
+  _ => 0,
+}, 7)
+assert_eq(match {Pet: 3} {
+  {Pet: p} => p,
+  _ => 0,
+}, 3)
+assert_eq(match [1, 2, 3] {
+  [Long, ...Rest] => Rest,
+  _ => [],
+}, [2, 3])
+
+# A guard runs after the type test.
+assert_eq(match 5 {
+  Long if false => 'a',
+  Long => 'b',
+  _ => 'c',
+}, 'b')
+
+# A name no type carries matches nothing, and so does a constant's: a type
+# name is never read as a value. A guard compares.
+let LIMIT = 10
+let unknown = fn (v) {
+  match v {
+    NoSuchType => 'matched a type nothing has',
+    LIMIT => 'matched the constant',
+    n if n == LIMIT => 'equal to the constant',
+    _ => 'other',
+  }
+}
+assert_eq(unknown(10), 'equal to the constant')
+assert_eq(unknown(3), 'other')
+
+# A lowercase name still binds, and an uppercase one binds when it is typed.
+assert_eq(match 5 {
+  n => n + 1,
+}, 6)
+assert_eq(match 5 {
+  N: Long => N + 1,
+  _ => 0,
+}, 6)
+
+# Where a pattern declares or assigns, every name is a target, whatever its
+# case: the rule above is for a pattern that tests.
+let [N, M] = [3, 4]
+assert_eq(N * M, 12)
+let (H, W) = (2, 5)
+assert_eq(H + W, 7)
+mut A = 1
+mut B = 2
+(A, B) = (B, A)
+assert_eq([A, B], [2, 1])
+mut sum = 0
+for [K, V] in [[1, 2], [3, 4]] {
+  sum += K + V
+}
+assert_eq(sum, 10)
+let area = fn ([X, Y]) {
+  X * Y
+}
+assert_eq(area([6, 7]), 42)

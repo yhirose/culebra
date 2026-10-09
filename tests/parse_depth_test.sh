@@ -83,6 +83,15 @@ run_ok "200-deep parens" 1 --vm "$TMP/paren.cul"
 } > "$TMP/tuple.cul"
 run_ok "100-deep tuple pattern" 1 --vm "$TMP/tuple.cul"
 
+# And through ARM_TUPLE_PATTERN, the copy a `match` arm parses with: peglib
+# picks the rules it memoizes one by one, so the copy is its own case.
+{
+  printf 'IO.println(match 1 { '
+  printf '(%.0s' $(seq 1 100); printf 'Long'; printf ',)%.0s' $(seq 1 100)
+  printf ' => 0, _ => 1 })\n'
+} > "$TMP/arm_tuple.cul"
+run_ok "100-deep tuple arm pattern" 1 --vm "$TMP/arm_tuple.cul"
+
 # --- flat width is not depth: long operator chains stay fine ---------------
 # The subject is stack safety: a 50k-term chain must parse and be answered
 # cleanly, never die on a signal. The bytecode compiler answers it with its

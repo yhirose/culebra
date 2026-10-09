@@ -318,7 +318,7 @@ const auto grammar_ = R"(
   # Arm body: a single EXPRESSION, or a brace BLOCK for multi-statement arms
   # (`=> { stmt; expr }`, Rust-style; the arm yields the block's last value).
   # EXPRESSION is tried first so object/set literals keep their meaning.
-  MATCH_ARM                <-  PATTERN (_ GUARD)? _ '=>' _ (EXPRESSION / BLOCK)
+  MATCH_ARM                <-  ARM_PATTERN (_ GUARD)? _ '=>' _ (EXPRESSION / BLOCK)
   GUARD                    <-  if _ EXPRESSION
 
   # Subjectless multi-way conditional (Elixir `cond` / Kotlin argless `when`):
@@ -366,10 +366,30 @@ const auto grammar_ = R"(
   # rest pattern (Tuple is fixed-arity). Mirrors the TUPLE literal.
   # The alternatives share a consuming prefix, so PATTERN is parsed twice at
   # the same offset — affordable only because peglib memoizes across such a
-  # prefix; without that, nested parens cost 2^depth (TUPLE, SET and
-  # PLACE_ASSIGN have the same shape). tests/parse_depth_test.sh catches it.
+  # prefix; without that, nested parens cost 2^depth (ARM_TUPLE_PATTERN,
+  # TUPLE, SET and PLACE_ASSIGN have the same shape).
+  # tests/parse_depth_test.sh catches it.
   TUPLE_PATTERN            <-  '(' _ PATTERN _ ',' _ PATTERN (_ ',' _ PATTERN)* _ ','? _ ')'
                             /  '(' _ PATTERN _ ',' _ ')'
+
+  # A pattern that tests a value rather than declaring names (a `match` arm):
+  # the PATTERN family over again, with one leaf more. There a bare name that
+  # starts as a type name does is one — `Dog`, `Shape.Point`, `Long?` — and
+  # binds nothing, where PATTERN's own leaves bind every name they hold
+  # (`let [N, M] = pair`). `{ ast_name }` makes each rung emit the tag of the
+  # rule it mirrors, so a consumer sees one shape and the one new leaf.
+  ARM_PATTERN              <-  ARM_PRIMARY_PATTERN (_ '|' _ ARM_PRIMARY_PATTERN)*  { ast_name: PATTERN }
+  ARM_PRIMARY_PATTERN      <-  WILDCARD / ARM_CTOR_PATTERN / TYPED_IDENT / NIL / BOOLEAN / RANGE_PATTERN / NUMBER_PATTERN / STRING / RAW_STRING / INTERPOLATED_STRING /
+                               ARM_ARRAY_PATTERN / ARM_OBJECT_PATTERN / ARM_TUPLE_PATTERN / TYPE_PATTERN / IDENTIFIER  { ast_name: PRIMARY_PATTERN }
+  TYPE_PATTERN             <-  < TYPE_NAME >
+  ARM_CTOR_PATTERN         <-  CTOR_PATH _ '(' _ (ARM_PATTERN (_ ',' _ ARM_PATTERN)*)? _ ')'  { ast_name: CTOR_PATTERN }
+  ARM_ARRAY_PATTERN        <-  '[' _ (ARM_ARRAY_PAT_ELEM (_ ',' _ ARM_ARRAY_PAT_ELEM)* _ ','?)? _ ']'  { ast_name: ARRAY_PATTERN }
+  ARM_ARRAY_PAT_ELEM       <-  REST_PATTERN / ARM_PATTERN  { ast_name: ARRAY_PAT_ELEM }
+  ARM_OBJECT_PATTERN       <-  '{' _ (ARM_OBJECT_PAT_ENTRY (_ ',' _ ARM_OBJECT_PAT_ENTRY)* _ ','?)? _ '}'  { ast_name: OBJECT_PATTERN }
+  ARM_OBJECT_PAT_ENTRY     <-  IDENTIFIER _ ':' _ ARM_PATTERN
+                            /  IDENTIFIER  { ast_name: OBJECT_PAT_ENTRY }
+  ARM_TUPLE_PATTERN        <-  '(' _ ARM_PATTERN _ ',' _ ARM_PATTERN (_ ',' _ ARM_PATTERN)* _ ','? _ ')'
+                            /  '(' _ ARM_PATTERN _ ',' _ ')'  { ast_name: TUPLE_PATTERN }
 
   PRIMARY                  <-  WHILE / FOR / IF / MATCH / COND / HANDLE / PERFORM / RETURN / THROW / BREAK / CONTINUE / FUNCTION / LAMBDA / OBJECT / SET / ARRAY / NIL / BOOLEAN / FLOAT / NUMBER / REGEX_LIT / IDENTIFIER /
                                TRIPLE_STRING / STRING / RAW_STRING / INTERPOLATED_STRING / TUPLE / '(' _ EXPRESSION _ ')'

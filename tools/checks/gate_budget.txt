@@ -75,7 +75,9 @@
 # called reads its names where it was written).
 # 314 since test_isolate_args.cul (each argument of Isolate.spawn outlives the
 # rebuilding of the ones after it in the worker).
-tests.cul 314
+# 315 since test_type_pattern.cul (a bare type name in a match arm tests and
+# binds nothing, and a declaring pattern still binds every name).
+tests.cul 315
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -137,7 +139,9 @@ ctest.entries 35
 # requires and a Tuple as a several-part sort key, in en and ja.
 # 1038 since tooling §3 shows a number table following its first row and one
 # with no row to follow, in en and ja.
-docs.blocks 1038
+# 1040 since §13 shows a bare type name as an arm beside a binding, in en and
+# ja.
+docs.blocks 1040
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

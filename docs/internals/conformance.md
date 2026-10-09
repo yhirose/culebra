@@ -28,6 +28,7 @@ touch multiple sections, marked "(broad)".
 | `tests/test_iter_terminal.cul` | §18 (terminal iterator methods, §18.5 protocol contract) |
 | `tests/test_kwargs.cul` | §11 (keyword arguments, `**` splat), §20 (kwargs in multimethods), §7 (evaluation order for mixed calls) |
 | `tests/test_match_class.cul` | §13 (type patterns) |
+| `tests/test_type_pattern.cul` | §13 (a bare type name as a pattern; declaring patterns bind every name) |
 | `tests/test_multidispatch.cul` | §20 |
 | `tests/test_object_keys.cul` | §10 (non-String keys) |
 | `tests/test_runtime_errors.cul` | §15 (`throw`/`try`/`catch`, all `kind` values catchable) |

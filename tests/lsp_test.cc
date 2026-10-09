@@ -239,6 +239,13 @@ int main(int argc, char** argv) {
   send(request(15, "textDocument/rename", nav, 1, 6, ",\"newName\":\"count\""));
   response_contains(15, "already names something visible");
 
+  // An arm's binding renamed to an uppercase name would become a type test.
+  open_doc("lsp_arm.cul",
+           "fn f(v) {\\n  match v {\\n    n => n + 1,\\n  }\\n}\\nprint(f(1))\\n");
+  send(request(918, "textDocument/rename", uri("lsp_arm.cul"), 2, 4,
+               ",\"newName\":\"N\""));
+  response_contains(918, "would read as a type name");
+
   // A function also called as a method may be reached by UFCS: no rename.
   open_doc("lsp_ufcs.cul", "fn double(v) { v * 2 }\\nprint([3].double())\\n");
   send(request(16, "textDocument/prepareRename", uri("lsp_ufcs.cul"), 0, 3));

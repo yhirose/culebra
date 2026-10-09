@@ -34,6 +34,13 @@ range_contains|*
 # (`-1 =>`) are new syntax: the baseline cannot parse these cases.
 match_range|*
 
+# In a `match` arm a bare name that starts with an uppercase letter is a type
+# test that binds nothing (#27). The baseline bound it, as it bound any bare
+# name, so the arm took every value; it could not parse the forms an
+# annotation takes (`Long?`, `E.B`, `Long | Float`).
+match|*match E.A(5) { B => 0 }
+match_type|*
+
 # `s.words()` and `s.sentences()` (UAX #29 segmentation) are new since
 # v0.4.0: the baseline answers each case as an unknown member where this
 # build answers as a built-in, and a bare read of either name is now the

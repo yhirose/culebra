@@ -368,6 +368,10 @@ A range pattern (`..0`, `1..=9`, `0.5..`) matches any number inside the
 interval, `Long` or `Float` — the values `(1..=9).contains(x)` accepts.
 There is no exhaustiveness check; supply a `_` arm.
 
+A bare name is read by its first letter: uppercase is a type test that
+binds nothing (`String => …`, `Shape.Origin => …`), any other name binds
+the value. To compare with a constant, use a guard (`n if n == LIMIT`).
+
 The same patterns bind (`let (a, b) = pair`); without `let` they assign
 to *existing* variables, right-hand side evaluated first — `(a, b) =
 (b, a)` swaps, `(x, y) = match … { … }` writes both.
@@ -548,7 +552,7 @@ area = fn (s) {
   match s {
     Circle(r) => 3 * r * r,
     Rect(w, h) => w * h,
-    o: Origin => 0,
+    Origin => 0,
   }
 }
 inspect(area(Shape.Rect(2.0, 3.0)))          # => 6.0
