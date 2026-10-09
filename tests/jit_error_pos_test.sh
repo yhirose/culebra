@@ -788,6 +788,35 @@ check_same "value non-scalar field"    "@value class A {
 check_same "value self-referential"    "@value class A {
   inner: A
 }"
+# A field's annotation is a name, and a name the program also gives to a class
+# that is not a value is not a value's: whichever of the two is in scope, and
+# wherever the other stands.
+check_eq "value field, plain class of the name" "class Tag { new(.s) {} }
+fn local() {
+  @value class Tag { new(.n: Long) {} }
+  Tag.new(1).n
+}
+@value class Holder {
+  t: Tag
+}" 'SyntaxError: @value class `Holder`: field `t` has non-value type `Tag` (expected Long, Float, Bool, or another @value class) at 7:3.'
+check_eq "value field, plain class declared later" "@value class Tag { new(.n: Long) {} }
+@value class Holder {
+  t: Tag
+}
+fn local() {
+  class Tag { new(.s) {} }
+  Tag.new('a').s
+}" 'SyntaxError: @value class `Holder`: field `t` has non-value type `Tag` (expected Long, Float, Bool, or another @value class) at 3:3.'
+check_eq "value field, every class of the name a value" "@value class Tag { new(.n: Long) {} }
+fn local() {
+  @value class Tag { new(.f: Float) {} }
+  Tag.new(1.5).f
+}
+@value class Holder {
+  t: Tag
+  new(t) { self.t = t }
+}
+println([local(), Holder.new(Tag.new(2)).t.n])" '[1.5, 2]'
 check_same "value drop method"         "@value class A {
   x: Long
   drop() { 1 }

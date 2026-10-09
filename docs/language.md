@@ -3790,6 +3790,15 @@ wrong kind. For the same reason `remove` refuses a scalar-declared field: a
 field that can vanish is no contract. A field declared anything else is
 removable, since nothing was promised about it.
 
+The entry check goes by the class's name. Where a program gives one name to more
+than one class (one at the top level and another inside a function, or its
+own `Vector2` beside the stdlib's), an instance of any of them passes it,
+so the name settles only the fields all of them declare with the same
+type, and any other field is read the ordinary way. A name that an enum,
+an enum variant, a trait, a built-in type or one of the stdlib's ordinary
+classes also carries settles none. A class's own members read `self` by their own
+declaration either way.
+
 ```culebra
 class Point {
   x: Float
@@ -6751,7 +6760,9 @@ statics, `match` type patterns, `keys()` and display all behave as they do
 for any class (§10). The field types are deliberately narrow — `String`,
 `Array`, `Object` and closures carry a body or an identity of their own —
 and a field type naming another `@value` class must name one declared
-earlier.
+earlier. The annotation is a name, so every class the file declares under
+that name has to be a `@value` class: one ordinary class of it, anywhere in
+the file, and the field is refused.
 
 The unboxed form is decided per binding and is all-or-nothing: one use that
 is not a field read, a same-class operand or a reassignment — passing `v`

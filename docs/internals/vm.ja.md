@@ -1230,8 +1230,7 @@ namespace closureのadapterが届いたであろうhelperへ1つのdispatch
 受け手が「宣言クラスがそのfieldをスカラ型で宣言している名前」のとき、
 コンパイラがこれを埋める — クラスを名指す注釈を持つパラメータかローカル、
 そのクラス自身のメンバ内の`self`、あるいはクラス型fieldを辿った次の段で
-ある（`Compiler::declared_read_tag`、`culebra::class_field_types`、
-`culebra::class_field_classes`）。
+ある（`Compiler::declared_read_tag`、`culebra::class_fields_by_name`）。
 `self.n += 1`の読みである`Op::PropWr`は、同じ答えを`d`で、DOTの位置を
 持つconstの番号と並べて運ぶ（`Chunk::PropWrOperand`）。
 
@@ -1248,6 +1247,42 @@ emit時に畳まれる: 読みが行うはずだったretain、statement末尾�
 偽装された受け手は両レーンで同じ`TypeError`になる。
 `tests/test_typed_fields.cul`がこれを固定し、`remove`がスカラ宣言field
 を拒否すること（消えうるfieldは契約にならない）も併せて固定する。
+
+入口の検査は名前を比べるので、読み手が注釈から受け取れるのは**名前**が
+約束するものであり、1つの名前を持つものは1つとは限らない。2つのクラス、
+あるいはクラスと並んでenum・enumのvariant・traitが同じ名前を持ち、その
+インスタンスや適合する値も同じ検査を通る。そこで名前で引くレジストリ
+（`culebra::class_fields_by_name`、読むのは`class_field_types_of`と
+`class_field_classes_of`）は、名前ごとに、その名前で登録されたクラス全部が
+同じ型で宣言しているfieldだけを保ち、クラスでないものがその名前を持てば
+何も保たない（`culebra::register_class_fields`）。
+`Compiler::settle_class_names`は、chunkを1つもemitする前に、コンパイル
+全体の宣言を登録する（宣言で引く`FnAnalysis::class_fields`と
+`FnAnalysis::enum_trait_decls`）。だから答えは、どの宣言が先にコンパイル
+されるかにも、読み手がクラスより上にあるかどうかにも依らない。クラス自身の
+メンバは名前を経由しない: `self`は宣言で読む。
+
+stdlibの型は、どのレーンにも同じ形で届かなければならない。`@value`クラスは
+宣言から登録する。焼き込み済みの入口を呼ぶレーンもその宣言はパースする
+（`parse_baked_value_decls`）。それ以外の型は名前だけで知る
+（`culebra::is_stdlib_type_name`: culebraソースのモジュールのクラス、組み込みの
+trait、`Range`や`Generator`のようにネイティブに作られるオブジェクトが持つ
+名前、そして`Any`）。プログラムのクラスがその名前、またはプリミティブ型の
+名前を持つなら、その名前は何も約束しない。この一覧をソースに合わせておくのは
+`culebra_preamble_cc`で、検査は片方向である: 一覧に無い型を宣言する
+モジュールは焼き込みを拒否する。
+
+登録は名前の答えを狭めるだけで、取り消されない。レジストリはコンパイルより
+長く生きるので、REPLの後の行は前の行が宣言したクラスを読める。後の行が
+同じ名前の2つ目のクラスを宣言すれば、それ以降にコンパイルされる読み手に
+対して名前は狭まる。それより前にコンパイルされた読み手は、受け取った答えを
+保つ。
+
+`@value`のfieldが書けない名前は、モジュールごとに決まる。そのモジュールが
+`@value`でないクラスに付けている名前で、宣言の場所は問わない。コンパイラ
+（`Compiler::module_root_`を渡して`FnAnalysis::ordinary_classes`に尋ねる）と
+lintは、同じモジュール根から同じ走査（`culebra::collect_ordinary_type_names`）で
+それを読むので、両者の判定はずれない。
 
 #### パラメータの宣言型を、捨てずに保つ
 

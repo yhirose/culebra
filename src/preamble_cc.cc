@@ -111,6 +111,22 @@ int main(int argc, char** argv) {
       return 1;
     }
   }
+  // A type the module declares that is not a `@value` class has to be on the
+  // list every lane takes such names from: a lane that calls this entry
+  // never reads the declaration.
+  culebra::OrdinaryTypeNames types;
+  culebra::collect_ordinary_type_names(*ast, types);
+  bool listed = true;
+  for (const auto* names : {&types.classes, &types.others})
+    for (const auto& n : *names)
+      if (!culebra::is_stdlib_type_name(n)) {
+        std::fprintf(stderr,
+                     "culebra_preamble_cc: stdlib module '%s' declares the "
+                     "type `%s`, which is_stdlib_type_name (parser.h) lacks\n",
+                     name.c_str(), n.c_str());
+        listed = false;
+      }
+  if (!listed) return 1;
   auto prog = culebra::vm::Compiler::compile_stdlib_prologue(*ast);
   return culebra::vm::Lowering::build_preamble_object(
       prog, out, /*opt_level=*/2, culebra::baked_preamble_symbol(name));

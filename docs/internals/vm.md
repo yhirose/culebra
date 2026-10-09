@@ -1264,7 +1264,7 @@ is a name whose declared class declares that field with a scalar type —
 a parameter or a local whose annotation names the class, `self` inside
 that class's own members, or the next step of a chain through a
 class-typed field (`Compiler::declared_read_tag`,
-`culebra::class_field_types`, `culebra::class_field_classes`).
+`culebra::class_fields_by_name`).
 `Op::PropWr`, the read of `self.n += 1`, carries the same answer in its
 `d` beside the const of its DOT position (`Chunk::PropWrOperand`).
 
@@ -1283,6 +1283,43 @@ question of the same instruction, so a forged receiver raises the same
 `TypeError` on both lanes; `tests/test_typed_fields.cul` pins that,
 along with `remove` refusing a scalar-declared field (a field that can
 vanish would be no contract at all).
+
+The entry check compares names, so what a reader takes from an annotation
+is what the NAME promises, and more than one thing may carry a name: two
+classes, or a class beside an enum, an enum variant or a trait, whose
+instances and conformers pass the same check. The registry by name
+(`culebra::class_fields_by_name`, read through `class_field_types_of` and
+`class_field_classes_of`) therefore keeps, for each name, only the fields
+every class registered under it declares alike, and nothing once something
+that is not a class carries it (`culebra::register_class_fields`).
+`Compiler::settle_class_names` registers a whole compile's declarations
+before any chunk is emitted (`FnAnalysis::class_fields` by declaration, and
+`FnAnalysis::enum_trait_decls`), so the answer does not depend on which
+declaration is compiled first, or on whether the reader stands above the
+class. A class's own members do not go through the name at all: `self`
+reads by the declaration.
+
+The stdlib's types have to reach every lane the same way. Its `@value`
+classes are registered from their declarations, which a lane that calls a
+baked entry still parses (`parse_baked_value_decls`). Its other types are
+known by name only (`culebra::is_stdlib_type_name`: the classes of its
+culebra-source modules, the built-in traits, the names natively built
+objects carry such as `Range` and `Generator`, and `Any`): a program's
+class of such a name, or of a primitive type's, promises nothing through
+the name. `culebra_preamble_cc` holds the list to the sources in one
+direction: it refuses to bake a module that declares a type the list lacks.
+
+A registration only narrows a name's answer and is never taken back. The
+registry outlives the compile, which is what lets a later REPL line read a
+class an earlier one declared, and a second class of the name on a later
+line narrows the name for every reader compiled after it. A reader compiled
+before it keeps the answer it was given.
+
+What a `@value` field may not name is a module's own matter: the names the
+module gives to a class that is not `@value`, wherever in it. The compiler
+(`FnAnalysis::ordinary_classes`, asked with `Compiler::module_root_`) and
+lint read them off the same module root with the same walk
+(`culebra::collect_ordinary_type_names`), so the two cannot disagree.
 
 #### A parameter's declared type, kept rather than discarded
 

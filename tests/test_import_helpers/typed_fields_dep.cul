@@ -1,0 +1,17 @@
+# A module with a grid `Vector2` of its own at its top level
+# (tests/test_typed_fields.cul).
+class Vector2 {
+  x: Long
+  y: Long
+  new(x, y) {
+    self.x = x
+    self.y = y
+  }
+}
+
+let cell = || Vector2(3, 4)
+let cell_x = fn (v: Vector2) {
+  v.x
+}
+
+export {cell, cell_x}

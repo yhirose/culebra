@@ -8,6 +8,8 @@
 # Run: ./build/culebra tests/test_typed_fields.cul
 #      ./build/culebra --jit tests/test_typed_fields.cul
 
+import tf_dep from './test_import_helpers/typed_fields_dep.cul'
+
 class Fields {
   f: Float
   n: Long
@@ -529,5 +531,240 @@ for _ in 0..3 {
   })
 }
 assert_eq(frozen.n, 1)
+
+# --- a name two classes carry settles only what they agree on ---
+#
+# An annotation is checked by the class's name, so an instance of any class
+# of that name passes it. A name the program gives to more than one class
+# therefore settles only the fields all of them declare with the same type,
+# and a class's own members read `self` by their own declaration, whatever
+# else carries the name.
+
+class Twice {
+  n: Float
+  new(n) {
+    self.n = n
+  }
+}
+
+fn twice_inner(k) {
+  class Twice {
+    n: Long
+    new(n) {
+      self.n = n
+    }
+    own() {
+      self.n
+    }
+  }
+  Twice(k)
+}
+
+fn read_twice(t: Twice) {
+  t.n
+}
+
+fn twice_local(x) {
+  let t: Twice = x
+  t.n
+}
+
+class TwiceBox {
+  held: Twice
+  new(held) {
+    self.held = held
+  }
+  inner() {
+    let t = self.held
+    t.n
+  }
+}
+
+# an instance of either passes the check, and each reads as what it is:
+# through a parameter, a local's annotation, and a class-typed field
+assert_eq(read_twice(Twice(1.5)), 1.5)
+assert_eq(read_twice(twice_inner(7)), 7)
+assert_eq(twice_local(Twice(2.5)), 2.5)
+assert_eq(twice_local(twice_inner(8)), 8)
+assert_eq(TwiceBox(Twice(3.5)).inner(), 3.5)
+assert_eq(TwiceBox(twice_inner(9)).inner(), 9)
+assert_eq(twice_inner(7).own(), 7)
+
+# each still checks its own writes
+assert_throws('TypeError', fn () {
+  Twice('no')
+})
+assert_throws('TypeError', fn () {
+  twice_inner(1.5)
+})
+
+# a third class of the name that declares no type is not held to another's
+fn twice_untyped() {
+  class Twice {
+    new(n) {
+      self.n = n
+    }
+    own() {
+      self.n
+    }
+  }
+  Twice('text').own()
+}
+
+assert_eq(twice_untyped(), 'text')
+
+# nor is a class named as one of the stdlib's read by the stdlib's
+# declaration (a function's own, so that no other file's `Vector2` is this)
+fn own_vector2() {
+  class Vector2 {
+    new(x) {
+      self.x = x
+    }
+  }
+  fn first(v: Vector2) {
+    v.x
+  }
+  [first(Vector2('text')), first(Vector2(3))]
+}
+
+assert_eq(own_vector2(), ['text', 3])
+
+# and across modules: an imported module's own `Vector2` does not decide how
+# the stdlib's is read here, nor the stdlib's how that module reads its own
+fn stdlib_x(v: Vector2) {
+  v.x
+}
+
+assert_eq(stdlib_x(Vector2(1.5, 2.5)), 1.5)
+assert_eq(stdlib_x(tf_dep.cell()), 3)
+assert_eq(tf_dep.cell_x(tf_dep.cell()), 3)
+assert_eq(tf_dep.cell_x(Vector2(1.5, 2.5)), 1.5)
+
+# a class is not all that carries a name: an annotation also admits a class
+# of the stdlib's that is not a value, an enum, a variant, and whatever
+# conforms to a trait
+trait CarriedShape {
+  area()
+}
+
+enum CarriedKind {
+  CarriedDot(String),
+  CarriedLine(String),
+}
+
+fn carried_own() {
+  class StateMachine {
+    context: Long
+    new(n) {
+      self.context = n
+    }
+  }
+  class CarriedShape {
+    w: Float
+    new(w) {
+      self.w = w
+    }
+  }
+  class CarriedKind {
+    _0: Long
+    new(n) {
+      self._0 = n
+    }
+  }
+  class CarriedDot {
+    _0: Long
+    new(n) {
+      self._0 = n
+    }
+  }
+  [StateMachine(7), CarriedShape(1.5), CarriedKind(4), CarriedDot(5)]
+}
+
+class CarriedLabel {
+  new(w) {
+    self.w = w
+  }
+  area() {
+    0
+  }
+}
+
+fn carried_context(m: StateMachine) {
+  m.context
+}
+
+fn carried_width(s: CarriedShape) {
+  s.w
+}
+
+fn carried_payload(k: CarriedKind) {
+  k._0
+}
+
+fn carried_dot(d: CarriedDot) {
+  d._0
+}
+
+let carried = carried_own()
+let carried_machine = StateMachine.new(
+  {
+    off: {initial: true, on: {flip: {target: 'on'}}},
+    on: {on: {flip: {target: 'off'}}},
+  },
+  context: 'door',
+)
+assert_eq(carried_context(carried[0]), 7)
+assert_eq(carried_context(carried_machine), 'door')
+assert_eq(carried_width(carried[1]), 1.5)
+assert_eq(carried_width(CarriedLabel('wide')), 'wide')
+assert_eq(carried_payload(carried[2]), 4)
+assert_eq(carried_payload(CarriedKind.CarriedLine('l')), 'l')
+assert_eq(carried_dot(carried[3]), 5)
+assert_eq(carried_dot(CarriedKind.CarriedDot('d')), 'd')
+
+# nor is a built-in type's name a class's alone: a range is a `Range`
+fn carried_builtin() {
+  class Range {
+    start: Float
+    new(start) {
+      self.start = start
+    }
+  }
+  fn first(r: Range) {
+    r.start
+  }
+  [first(Range(1.5)), first(2..5)]
+}
+
+assert_eq(carried_builtin(), [1.5, 2])
+
+# a field annotated with the class's own type parameter names no class,
+# whatever else is called that
+class CarriedItem {
+  price: Float
+  new(price) {
+    self.price = price
+  }
+}
+
+class CarriedSlot<CarriedItem> {
+  held: CarriedItem
+  new(held) {
+    self.held = held
+  }
+  price() {
+    let h = self.held
+    h.price
+  }
+}
+
+class CarriedCoupon {
+  new(price) {
+    self.price = price
+  }
+}
+
+assert_eq(CarriedSlot(CarriedItem(1.5)).price(), 1.5)
+assert_eq(CarriedSlot(CarriedCoupon('free')).price(), 'free')
 
 println('typed fields OK')

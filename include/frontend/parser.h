@@ -1157,59 +1157,149 @@ inline bool is_value_class(std::string_view name) {
   return value_class_registry().contains(name);
 }
 
-// The declared type of each field of a class (culebra::FieldType as a byte),
-// by class name then field name. Every class registers its own, `@value` or
-// not: a field's declared *scalar* type is checked on every write
+// What a class's declarations say of its instance fields, `@value` or not.
+// `types`: the declared type of each field declared with a *scalar* one
+// (culebra::FieldType as a byte). That type is checked on every write
 // (docs/language.md §10), so a reader that knows the receiver's class knows
-// the type of such a field. Every other annotation is FieldType::Any and
-// never lands here. Absent means "ask at run time", always a safe answer.
+// the type of such a field. `classes`: the class every other annotated
+// field's annotation names, as written. `self.car.speed` needs it: the first
+// step says the second step's receiver is a Car, and Car says what `speed`
+// is. A field in neither is one to ask about at run time, always a safe
+// answer.
 using ClassFieldTypes = std::map<std::string, uint8_t, std::less<>>;
-inline std::map<std::string, ClassFieldTypes, std::less<>>&
-class_field_types() {
-  static std::map<std::string, ClassFieldTypes, std::less<>> reg;
+using ClassFieldClasses = std::map<std::string, std::string, std::less<>>;
+struct ClassFields {
+  ClassFieldTypes types;
+  ClassFieldClasses classes;
+};
+
+// The same by NAME, which is all an annotation carries and all its run-time
+// check compares (§14). Everything that carries the name passes that check:
+// an instance of any class of it, an enum of it or a variant of it, whatever
+// conforms to a trait of it. So a name answers only for the fields every
+// class registered under it declares alike, and for none once something
+// that is not a class carries it (an empty registration). The compiler
+// registers what a compile declares before a reader in it asks
+// (vm::Compiler::settle_class_names). A registration only ever narrows the
+// answer and is never taken back, so a name is not widened under a reader
+// by a class that is gone; what a reader compiled earlier was told is not
+// narrowed under it either (a REPL line declaring a second class of a name).
+inline std::map<std::string, ClassFields, std::less<>>&
+class_fields_by_name() {
+  static std::map<std::string, ClassFields, std::less<>> reg;
   return reg;
 }
-inline void register_class_field_types(std::string name,
-                                       ClassFieldTypes fields) {
+inline void register_class_fields(std::string_view name,
+                                  const ClassFields& fields) {
   std::lock_guard<std::mutex> lk(value_class_mutex());
-  class_field_types().insert_or_assign(std::move(name), std::move(fields));
+  auto [entry, first] =
+      class_fields_by_name().try_emplace(std::string(name), fields);
+  if (first) return;
+  auto keep_agreed = [](auto& held, const auto& declared) {
+    std::erase_if(held, [&](const auto& field) {
+      auto it = declared.find(field.first);
+      return it == declared.end() || it->second != field.second;
+    });
+  };
+  keep_agreed(entry->second.types, fields.types);
+  keep_agreed(entry->second.classes, fields.classes);
 }
-// The table by class name, or nullptr when the class declared no typed
-// field. The registry only ever grows, so the caller may hold the pointer.
+// Either table by name, or nullptr when the name promises no such field. An
+// entry is never removed, but a later registration erases from it in place:
+// hold the pointer for the compile that asked, no longer.
 inline const ClassFieldTypes* class_field_types_of(std::string_view name) {
   std::lock_guard<std::mutex> lk(value_class_mutex());
-  auto it = class_field_types().find(name);
-  return it == class_field_types().end() ? nullptr : &it->second;
-}
-
-// The class a field's annotation names, by class name then field name —
-// the same registration as above for a field whose declared type is not a
-// scalar. `self.car.speed` needs it: the first step says the second step's
-// receiver is a Car, and Car says what `speed` is.
-using ClassFieldClasses = std::map<std::string, std::string, std::less<>>;
-inline std::map<std::string, ClassFieldClasses, std::less<>>&
-class_field_classes() {
-  static std::map<std::string, ClassFieldClasses, std::less<>> reg;
-  return reg;
-}
-inline void register_class_field_classes(std::string name,
-                                         ClassFieldClasses fields) {
-  std::lock_guard<std::mutex> lk(value_class_mutex());
-  class_field_classes().insert_or_assign(std::move(name), std::move(fields));
+  auto it = class_fields_by_name().find(name);
+  return it == class_fields_by_name().end() || it->second.types.empty()
+             ? nullptr
+             : &it->second.types;
 }
 inline const ClassFieldClasses* class_field_classes_of(std::string_view name) {
   std::lock_guard<std::mutex> lk(value_class_mutex());
-  auto it = class_field_classes().find(name);
-  return it == class_field_classes().end() ? nullptr : &it->second;
+  auto it = class_fields_by_name().find(name);
+  return it == class_fields_by_name().end() || it->second.classes.empty()
+             ? nullptr
+             : &it->second.classes;
+}
+
+// A class, enum or trait declaration's own name, and whether a class
+// declaration carries `@value`.
+inline std::string_view type_decl_name(const peg::Ast& decl) {
+  return parse_generic_head(decl.nodes[first_non_decorator_index(decl)]->token)
+      .outer;
+}
+inline bool is_value_class_decl(const peg::Ast& cls) {
+  size_t head = first_non_decorator_index(cls);
+  return std::any_of(cls.nodes.begin(), cls.nodes.begin() + head,
+                     [](const auto& d) { return is_value_decorator(*d); });
+}
+
+// The names an enum or trait declaration gives to something an annotation
+// admits: its own, and for an enum each variant's (a variant is a class of
+// its own name).
+using TypeNames = std::set<std::string, std::less<>>;
+inline void add_type_decl_names(const peg::Ast& decl, TypeNames& out) {
+  using namespace peg::udl;
+  out.emplace(type_decl_name(decl));
+  for (const auto& m : decl.nodes)
+    if (m->tag == "VARIANT"_ && !m->nodes.empty())
+      out.emplace(m->nodes[0]->token);
+}
+
+// The names `ast` gives to a type that is not a `@value` class, wherever in
+// it the declaration stands: `classes` to an ordinary class, `others` to an
+// enum, a variant or a trait.
+struct OrdinaryTypeNames {
+  TypeNames classes;
+  TypeNames others;
+};
+inline void collect_ordinary_type_names(const peg::Ast& ast,
+                                        OrdinaryTypeNames& out) {
+  using namespace peg::udl;
+  if (ast.tag == "CLASS_DECL"_ && !is_value_class_decl(ast))
+    out.classes.emplace(type_decl_name(ast));
+  else if (ast.tag == "ENUM_DECL"_ || ast.tag == "TRAIT_DECL"_)
+    add_type_decl_names(ast, out.others);
+  for (const auto& n : ast.nodes) collect_ordinary_type_names(*n, out);
+}
+
+// The names the stdlib gives to a type that is not a `@value` class: the
+// classes of its culebra-source modules, the built-in traits, what a natively
+// built object carries (Range, Generator, ChannelResult and WsResult with
+// their variants), and `Any`, which admits everything. A program's class of
+// one of these names shares it with them, and a lane that calls a module's
+// baked entry never reads the module's declarations, so every lane takes the
+// names from here. Sorted. culebra_preamble_cc refuses to bake a module that
+// declares a type this list lacks; nothing checks the other way, and a name
+// left here after its type is gone only costs a program's class of that name
+// the typed reads through it.
+inline bool is_stdlib_type_name(std::string_view name) {
+  static constexpr std::string_view kNames[] = {
+      "Any",       "Capture",  "ChannelResult", "Closed",       "Comparable",
+      "Deque",     "Dir",      "DiskDir",       "Duration",     "EmbedDir",
+      "Empty",     "Eq",       "Font",          "Generator",    "Hashable",
+      "IndexMap",  "Input",    "Instant",       "Iterable",     "Iterator",
+      "Map",       "MemoryDir", "Message",      "Music",        "PCM",
+      "PEG",       "Path",     "PriorityQueue", "Range",        "Regex",
+      "Screen",    "Set",      "Song",          "Sound",        "Sprite",
+      "StateMachine", "StringLike", "Stringer", "Value",        "WsResult",
+      "ZipArchive"};
+  static_assert(std::ranges::is_sorted(kNames));
+  return std::ranges::binary_search(kNames, name);
 }
 
 // A `@value` field holds a machine scalar or another `@value`. Everything
 // else — String, Array, Object, a closure, `T?`, an ordinary class — carries
 // a heap body or an identity of its own, so admitting it would give the
 // contract nothing to stand on. Deliberately narrow: widening this set later
-// is additive, narrowing it is not.
-inline bool is_value_field_type(std::string_view t) {
-  return t == "Long" || t == "Float" || t == "Bool" || is_value_class(t);
+// is additive, narrowing it is not. `ordinary`: the names the module at hand
+// gives to a class that is not one (collect_ordinary_type_names). A field's
+// annotation is a name too, so such a name is not a value's even where some
+// other class of it is.
+inline bool is_value_field_type(std::string_view t,
+                                const TypeNames& ordinary) {
+  return t == "Long" || t == "Float" || t == "Bool" ||
+         (is_value_class(t) && !ordinary.contains(t));
 }
 
 // The machine-scalar half of the above: a field an unboxed layout can give
@@ -1393,7 +1483,8 @@ inline bool value_body_writes_self(const peg::Ast& body) {
 // field set, so it is exempt. Throws the canonical SyntaxError at the
 // member's name, matching what lint reports pre-eval.
 inline void require_value_member(const MethodView& mv,
-                                 std::string_view class_name) {
+                                 std::string_view class_name,
+                                 const TypeNames& ordinary) {
   if (mv.is_static) return;
   auto at = [&](std::string msg) {
     return CulebraError("SyntaxError", std::move(msg),
@@ -1401,7 +1492,7 @@ inline void require_value_member(const MethodView& mv,
                         static_cast<long>(mv.name_col));
   };
   if (mv.name == "drop") throw at(value_drop_message(class_name));
-  if (mv.is_typed_field && !is_value_field_type(mv.type_annotation))
+  if (mv.is_typed_field && !is_value_field_type(mv.type_annotation, ordinary))
     throw at(value_field_type_message(class_name, mv.name,
                                       mv.type_annotation));
   if (mv.is_field) throw at(value_untyped_field_message(mv.name, class_name));
@@ -2013,6 +2104,31 @@ inline DeclaredFields declared_instance_fields(
     out.insert_or_assign(std::string(mv.name),
                          DeclaredField{mv.value != nullptr, mv.type_annotation,
                                        is_field_param(*f)});
+  }
+  return out;
+}
+
+// What a class's declarations promise about its fields (ClassFields), read
+// off the same list. An annotation is one or the other: a scalar the tag
+// decides, or a name (a class, most usefully, which the chain walk follows
+// to the next step). The second is recorded as written and resolved where it
+// is used, so a forward reference works. One of the class's own type
+// parameters names no class, whatever else is called that.
+inline ClassFields declared_class_fields(const peg::Ast& cls) {
+  size_t head = first_non_decorator_index(cls);
+  auto type_params =
+      split_generic_args(parse_generic_head(cls.nodes[head]->token).args);
+  ClassFields out;
+  for (const auto* f : collect_instance_fields(cls, head + 1)) {
+    auto mv = view_method(*f);
+    if (mv.type_annotation.empty()) continue;
+    auto t = field_type_for_annotation(mv.type_annotation);
+    if (t != FieldType::Any)
+      out.types.emplace(std::string(mv.name), static_cast<uint8_t>(t));
+    else if (std::ranges::find(type_params, mv.type_annotation) ==
+             type_params.end())
+      out.classes.emplace(std::string(mv.name),
+                          std::string(mv.type_annotation));
   }
   return out;
 }

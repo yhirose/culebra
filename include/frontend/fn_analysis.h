@@ -184,6 +184,26 @@ struct FnAnalysis {
   // beside the class writes the same cell.
   std::unordered_set<const peg::Ast*> sole_class_decls;
 
+  // What every class declaration analysed says of its fields, by the
+  // declaration: what a class's own members read `self` by. What a class's
+  // NAME may promise is another question, settled over all of these before
+  // anything compiles (vm::Compiler::settle_class_names). The map's nodes
+  // stay put, so a table may be held.
+  std::unordered_map<const peg::Ast*, culebra::ClassFields> class_fields;
+  // The enum and trait declarations analysed: the other things a name may
+  // be carried by.
+  std::vector<const peg::Ast*> enum_trait_decls;
+  // The names a module gives to a class that is not `@value`
+  // (culebra::is_value_field_type), read off the module's root the first time
+  // one of its `@value` classes is compiled: the same names, by the same
+  // walk, as lint holds the module to.
+  const culebra::TypeNames& ordinary_classes(const peg::Ast& module_root) {
+    auto [names, first] = ordinary_types_.try_emplace(&module_root);
+    if (first)
+      culebra::collect_ordinary_type_names(module_root, names->second);
+    return names->second.classes;
+  }
+
   // `session`: the names earlier inputs of a session declared, when
   // `session_top` (resolve::Options::session).
   FuncInfo analyze_program(const peg::Ast& programAst,
@@ -204,6 +224,9 @@ struct FnAnalysis {
 
  private:
   IsBuiltinVar is_builtin_var_;
+  // ordinary_classes' answers, by module root.
+  std::unordered_map<const peg::Ast*, culebra::OrdinaryTypeNames>
+      ordinary_types_;
   int defer_count_ = 0;  // DEFER nodes seen so far, across all scans
   // The program being analyzed is a REPL line: its top-level `let`s are
   // session cells a later line may rebind (analyze_program's flag).
@@ -288,6 +311,7 @@ struct FnAnalysis {
     }
 
     if (node.tag == "ENUM_DECL"_) {
+      enum_trait_decls.push_back(&node);
       // Only decorators (evaluated in the enclosing scope) can read anything;
       // variant names are not variables.
       for (auto& c : node.nodes) {
@@ -298,6 +322,7 @@ struct FnAnalysis {
     }
 
     if (node.tag == "TRAIT_DECL"_) {
+      enum_trait_decls.push_back(&node);
       size_t i = culebra::first_non_decorator_index(node);
       for (size_t d = 0; d < i; d++) visit(*node.nodes[d], info);
       // node.nodes[i] is CLASS_HEAD; methods follow. A default body is a
@@ -313,6 +338,7 @@ struct FnAnalysis {
       size_t i = culebra::first_non_decorator_index(node);
       for (size_t d = 0; d < i; d++) visit(*node.nodes[d], info);
       if (declared_once(*node.nodes[i])) sole_class_decls.insert(&node);
+      class_fields.try_emplace(&node, culebra::declared_class_fields(node));
       // A class whose value the declarator loop never touches names
       // itself through its receiver (FuncInfo::own_name) rather than
       // capturing the declaring scope's cell — the ring

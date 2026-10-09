@@ -4822,12 +4822,14 @@ class Compiler {
     auto session = opts.repl ? repl_session().declared_names()
                              : std::vector<std::string>{};
     FuncInfo top_info = analysis.analyze_program(ast, opts.repl, session);
+    settle_class_names(analysis);
     prog.chunks.emplace_back();  // reserve index 0 for the top level
     // The scope agreement check (scope_check.h).
     std::optional<scope_check::Report> check;
     if (scope_check::checks(ast)) check.emplace(ast, session);
     Compiler main(prog, analysis, /*in_function=*/false, &top_info);
     main.library_ = culebra::is_library_path(ast.path);  // a baked module
+    main.module_root_ = &ast;
     main.repl_ = opts.repl;
     main.check_ = check ? &*check : nullptr;
     // A statement carries a debug instruction only when it comes from the
@@ -4851,6 +4853,7 @@ class Compiler {
         if (!p) return;
         bool entry_library = std::exchange(
             main.library_, culebra::is_library_path(p->path));
+        const peg::Ast* entry_root = std::exchange(main.module_root_, p);
         main.predeclare_forward_refs(*p);
         if (p->tag == "STATEMENTS"_) {
           for (const auto& n : p->nodes) main.compile_statement(*n);
@@ -4858,6 +4861,7 @@ class Compiler {
           main.compile_statement(*p);
         }
         main.library_ = entry_library;
+        main.module_root_ = entry_root;
       };
       main.predeclare_forward_refs(ast);
       run_prologue(preamble);
@@ -5365,6 +5369,10 @@ class Compiler {
   // it, not read off each node — a transform re-parses a body under a path of
   // its own (a generator's `<gen#N>`).
   bool library_ = false;
+  // The module being compiled, inherited the same way and for the same
+  // reason: what a `@value` field may name is read off the whole module, as
+  // lint reads it (FnAnalysis::ordinary_classes).
+  const peg::Ast* module_root_ = nullptr;
 
   int64_t pos_line(size_t line) const {
     return static_cast<int64_t>(line) | (library_ ? culebra::kLibraryLineBit : 0);
@@ -7831,33 +7839,38 @@ class Compiler {
     emit_session_decl_bind(decl, /*is_mut=*/false);
   }
 
-  // What a class's declarations promise about its fields, recorded for every
-  // class: the type is checked on every write (docs/language.md §10), so a
-  // read through a name whose declared class is this one knows the tag
-  // without asking. A class with no typed field records nothing, which reads
-  // as "ask at run time".
-  static void register_declared_field_types(
-      const std::string& class_name,
-      const std::vector<const peg::Ast*>& fields) {
-    // An annotation is one or the other: a scalar the tag decides, or a name
-    // — a class, most usefully, which the chain walk follows to the next
-    // step. The second is recorded as written and resolved where it is used,
-    // so a forward reference works.
-    culebra::ClassFieldTypes declared;
-    culebra::ClassFieldClasses named;
-    for (const auto* f : fields) {
-      auto mv = culebra::view_method(*f);
-      if (mv.type_annotation.empty()) continue;
-      auto t = culebra::field_type_for_annotation(mv.type_annotation);
-      if (t != culebra::FieldType::Any)
-        declared.emplace(std::string(mv.name), static_cast<uint8_t>(t));
-      else
-        named.emplace(std::string(mv.name), std::string(mv.type_annotation));
+  // What each type NAME promises for this compile, registered over every
+  // declaration the analysis met before any reader compiles, so the answer
+  // does not turn on which declaration is compiled first. An annotation is
+  // checked by name at run time (§14), and everything that carries the name
+  // passes: a name answers for the fields every class of it declares alike
+  // (culebra::register_class_fields), and for none where an enum, a variant
+  // or a trait carries it too.
+  //
+  // The stdlib's types reach every lane the same way or not at all. Its
+  // `@value` classes are registered from their declarations, which every
+  // lane parses (parse_baked_value_decls). Its other types are known by name
+  // only (culebra::is_stdlib_type_name), since a lane that calls a module's
+  // baked entry reads no declaration of them: a program's class of such a
+  // name, or of a primitive type's, promises nothing through the name.
+  static void settle_class_names(FnAnalysis& analysis) {
+    static const culebra::ClassFields none;
+    for (const auto& [cls, fields] : analysis.class_fields) {
+      const bool is_value = culebra::is_value_class_decl(*cls);
+      const bool library = culebra::is_library_path(cls->path);
+      if (library && !is_value) continue;
+      auto name = culebra::type_decl_name(*cls);
+      culebra::register_class_fields(name, fields);
+      if (library) continue;
+      if (culebra::is_stdlib_type_name(name) ||
+          _culebra_primitive_type_tag(name))
+        culebra::register_class_fields(name, none);
     }
-    if (!declared.empty())
-      culebra::register_class_field_types(class_name, std::move(declared));
-    if (!named.empty())
-      culebra::register_class_field_classes(class_name, std::move(named));
+    culebra::TypeNames others;
+    for (const peg::Ast* decl : analysis.enum_trait_decls)
+      if (!culebra::is_library_path(decl->path))
+        culebra::add_type_decl_names(*decl, others);
+    for (const auto& name : others) culebra::register_class_fields(name, none);
   }
 
   // A `@value` class's compile-time registration: its layout, by its
@@ -7900,26 +7913,16 @@ class Compiler {
   static void register_stdlib_value_decls(const peg::Ast& ast,
                                           FnAnalysis& analysis) {
     using namespace peg::udl;
-    if (ast.tag == "CLASS_DECL"_) {
-      size_t dec_end = 0;
-      bool is_value = false;
-      while (dec_end < ast.nodes.size() &&
-             ast.nodes[dec_end]->tag == "DECORATOR"_) {
-        if (culebra::is_value_decorator(*ast.nodes[dec_end])) is_value = true;
-        dec_end++;
-      }
-      if (is_value) {
-        auto head = culebra::parse_generic_head(ast.nodes[dec_end]->token);
-        auto class_name = std::string(head.outer);
-        culebra::register_value_class(class_name);
-        // The same field list compile_class_decl lays the class out from.
-        auto fields = culebra::collect_instance_fields(ast, dec_end + 1);
-        // The field types too, under the name: an annotation that names the
-        // baked class reads them, as it would the compiled lane's.
-        register_declared_field_types(class_name, fields);
-        register_value_class_layout(ast, class_name, fields, analysis,
-                                    /*stdlib=*/true);
-      }
+    if (ast.tag == "CLASS_DECL"_ && culebra::is_value_class_decl(ast)) {
+      auto class_name = std::string(culebra::type_decl_name(ast));
+      culebra::register_value_class(class_name);
+      // The same field list compile_class_decl lays the class out from.
+      // (Its field types reach the name through settle_class_names, as the
+      // compiled lane's do.)
+      auto fields = culebra::collect_instance_fields(
+          ast, culebra::first_non_decorator_index(ast) + 1);
+      register_value_class_layout(ast, class_name, fields, analysis,
+                                  /*stdlib=*/true);
     }
     for (const auto& n : ast.nodes)
       register_stdlib_value_decls(*n, analysis);
@@ -7970,13 +7973,21 @@ class Compiler {
     // value (lint reports both first; this is the same safety net the other
     // backends keep).
     auto fields = culebra::collect_instance_fields(ast, dec_end + 1);
+    // The names a `@value` field may not take for a value's: its module's
+    // ordinary classes, as lint holds it to. A stdlib module's class is held
+    // to none: a lane that calls its baked entry never compiles it at all.
+    static const culebra::TypeNames no_names;
+    const culebra::TypeNames& ordinary =
+        is_value && !library_ && module_root_
+            ? analysis_.ordinary_classes(*module_root_)
+            : no_names;
     // Declared (name, type) pairs in field order — the @packable layout spec.
     std::vector<std::pair<std::string, std::string>> packable_fields;
     for (const auto* f : fields) {
       auto mv = culebra::view_method(*f);
       if (is_packable && mv.is_field)
         culebra::require_typed_packable_field(mv, class_name);
-      if (is_value) culebra::require_value_member(mv, class_name);
+      if (is_value) culebra::require_value_member(mv, class_name, ordinary);
       if (is_packable && mv.is_typed_field)
         packable_fields.emplace_back(mv.name, mv.type_annotation);
     }
@@ -7991,7 +8002,7 @@ class Compiler {
         static_fields.push_back(&m);
         continue;
       }
-      if (is_value) culebra::require_value_member(mv, class_name);
+      if (is_value) culebra::require_value_member(mv, class_name, ordinary);
       if (mv.is_static) {
         static_names.emplace_back(mv.name);
         static_asts.push_back(&m);
@@ -8023,13 +8034,12 @@ class Compiler {
             static_cast<long>(writes.front().line),
             static_cast<long>(writes.front().col));
     }
-    register_declared_field_types(class_name, fields);
     // What this class's own members may assume about `self` (verified at
-    // each read, since a method value can be moved onto a foreign object).
-    const culebra::ClassFieldTypes* own_fields =
-        culebra::class_field_types_of(class_name);
-    const culebra::ClassFieldClasses* own_field_classes =
-        culebra::class_field_classes_of(class_name);
+    // each read, since a method value can be moved onto a foreign object):
+    // this declaration's fields, whatever else carries its name.
+    const culebra::ClassFields& own = analysis_.class_fields.at(&ast);
+    const culebra::ClassFieldTypes* own_fields = &own.types;
+    const culebra::ClassFieldClasses* own_field_classes = &own.classes;
     // The class joins the registry only once its own members have passed, and
     // after the scan above rather than before it, so a field naming the class
     // being declared is still refused — a value cannot contain itself.
@@ -8766,6 +8776,7 @@ class Compiler {
     fc.check_ = check_;
     fc.debug_ = debug_;
     fc.library_ = library_;
+    fc.module_root_ = module_root_;
     fc.stamp(ast);
     // The frame scope: params + captures + the `fn` handle. Its owned mark
     // waits until the ABI slots are laid out (establish_frame_owned_mark).
