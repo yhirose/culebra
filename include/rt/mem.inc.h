@@ -1103,6 +1103,8 @@ inline constexpr auto object_iter_dispatch =
     "culebra_runtime_object_iter_dispatch";
 inline constexpr auto read_file           = "culebra_runtime_read_file";
 inline constexpr auto rethrow             = "culebra_runtime_rethrow";
+inline constexpr auto rethrow_caught      = "culebra_runtime_rethrow_caught";
+inline constexpr auto get_thrown_pos      = "culebra_runtime_get_thrown_pos";
 inline constexpr auto str_cmp             = "culebra_runtime_str_cmp";
 inline constexpr auto str_concat          = "culebra_runtime_str_concat";
 inline constexpr auto str_eq              = "culebra_runtime_str_eq";

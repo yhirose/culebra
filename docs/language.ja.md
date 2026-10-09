@@ -3183,7 +3183,7 @@ inspect(kind(2.5))         # => 'a number'
 inspect(kind('s'))         # => 'something else: s'
 ```
 
-* この読み方は、値を検査するパターン（`match`のアーム）の
+* この読み方は、値を検査するパターン（`match`のアームと`catch`節、§15）の
   ものです。パターンが宣言や代入をする場所では、大文字か小文字かに
   かかわらずすべての名前が書き込み先です: `let [N, M] = pair`、
   `(A, B) = (B, A)`、`for`の変数、パターン引数。
@@ -4060,6 +4060,11 @@ Culebraは`throw`で例外を発生させ、`try`/`catch`で受けます。
     try { risky() }
     catch e { inspect("error: {e}") }
 
+    try { fetch(url) }
+    catch ApiError { retry() }                 # ApiErrorだけ
+    catch e: Timeout if e.after > 30 { nil }    # 型つきの束縛とガード
+    catch {kind: 'IOError', message} { log(message) }
+
 セマンティクス:
 
 * `throw expr`は`expr`を評価し、その値を直近の`try`まで伝播
@@ -4068,6 +4073,46 @@ Culebraは`throw`で例外を発生させ、`try`/`catch`で受けます。
   `A`内で`throw`が起きたら別スコープで`name`にthrown値を
   束縛して`B`を評価します。`try`/`catch`全体は**式**として、
   実行されたブロックの最後の値を返します
+* `catch`の後ろはパターンで、`match`のアームと同じ読み方をします
+  (§13)。`if`のガードも付けられます。したがって`catch e`と`catch _`は
+  投げられた値をすべて受け、検査をする節 — 型名（`catch ApiError`、
+  `catch e: ApiError`）、コンストラクタ（`catch NotFound(path)`）、
+  Objectの形（`catch {kind: 'IOError'}`）、複数の候補
+  （`catch ApiError | Timeout`） — は一致した値だけを受けます
+* `try`には`catch`節を1つ以上書けます。上から順に試し、値を受けた
+  最初の節だけが実行されます。どの節も受けなければ、例外は発生した
+  ときのまま外側の`try`へ伝播します。投げられた値はその`throw`の位置で、
+  実行時エラーはkind・message・位置を保って、割り込みは割り込みのまま
+  です。
+  この時点で`try`本体のスコープは終わっています。本体の`defer`は
+  最初の節を試す前に実行済みです
+* 節を試している最中に発生した例外（ガードが投げた場合など）は、
+  処理中の例外を置き換え、ほかの例外と同じようにその`try`を抜けます
+
+```culebra
+class ApiError {
+  new(.status) {}
+}
+fetch = fn (status) {
+  try {
+    if status == 0 {
+      1 / 0
+    }
+    throw ApiError(status)
+  } catch e: ApiError if e.status == 404 {
+    'not found'
+  } catch ApiError {
+    'http error'
+  } catch {kind: 'ZeroDivisionError'} {
+    'no status'
+  }
+}
+inspect(fetch(404))  # => 'not found'
+inspect(fetch(500))  # => 'http error'
+inspect(fetch(0))    # => 'no status'
+inspect(try { try { throw 'other' } catch ApiError { 'http' } } catch e { e })
+# => 'other'
+```
 * トップレベルまで到達した未catchの`throw`は
   `uncaught: ... at LINE:COL.`（`throw`自身の位置）と表示され、
   プログラムは終了コード1で終了します。例外はcatchした実行時エラーを

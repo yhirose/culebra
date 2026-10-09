@@ -1726,13 +1726,30 @@ class Printer {
   }
 
   DocP print_try(const peg::Ast& node) {
-    // [BLOCK, IDENTIFIER, BLOCK]. The try block's `{` follows `try`; the catch
-    // block's `{` follows the bound identifier.
-    return doc_concat({doc_text("try "),
-                       print_block(*node.nodes[0], node.nodes[0]->position,
-                                   false),
-                       doc_text(" catch " + std::string(node.nodes[1]->token) + " "),
-                       print_block(*node.nodes[2], node_end(*node.nodes[1]), false)});
+    // [BLOCK, CATCH_CLAUSE+], a clause being [PATTERN, GUARD?, BLOCK]. The try
+    // block's `{` follows `try`; a clause's `{` follows its pattern or guard.
+    auto tv = culebra::view_try(node);
+    std::vector<DocP> parts;
+    parts.push_back(doc_text("try "));
+    parts.push_back(print_block(*tv.body, tv.body->position, false));
+    for (const auto& clause : tv.clauses) {
+      auto av = culebra::view_arm(*clause);
+      parts.push_back(doc_text(" catch "));
+      parts.push_back(print_pattern(*av.pattern));
+      if (av.guard) {
+        parts.push_back(doc_text(" if "));
+        parts.push_back(print_condition(*av.guard));
+      }
+      parts.push_back(doc_text(" "));
+      parts.push_back(print_block(*av.body, node_end(head_end(*clause)), false));
+    }
+    return doc_concat(std::move(parts));
+  }
+
+  // The last node of an arm's or a clause's head — its GUARD, else its
+  // pattern — which is where the search for what follows the head starts.
+  static const peg::Ast& head_end(const peg::Ast& arm) {
+    return *arm.nodes[arm.nodes.size() - 2];
   }
 
   DocP print_keyword_expr(const std::string& kw, const peg::Ast& node) {
@@ -1769,14 +1786,13 @@ class Printer {
     for (auto& a : arms.nodes) items.push_back(a.get());
     auto render = [&](size_t k) {
       const peg::Ast& arm = *items[k];
-      bool guard = arm.nodes.size() >= 2 && arm.nodes[1]->original_name == "GUARD";
-      const peg::Ast& body = *arm.nodes.back();
+      auto av = culebra::view_arm(arm);
       std::vector<DocP> parts;
-      parts.push_back(print_pattern(*arm.nodes[0]));  // normalize pattern spacing
-      if (guard)
-        parts.push_back(doc_concat({doc_text(" if "), print(*arm.nodes[1]->nodes[0])}));
+      parts.push_back(print_pattern(*av.pattern));  // normalize pattern spacing
+      if (av.guard)
+        parts.push_back(doc_concat({doc_text(" if "), print(*av.guard)}));
       parts.push_back(doc_text(" => "));
-      parts.push_back(print_arm_body(body, node_end(*arm.nodes[arm.nodes.size() - 2])));
+      parts.push_back(print_arm_body(*av.body, node_end(head_end(arm))));
       return doc_concat(std::move(parts));
     };
     std::vector<DocP> head;

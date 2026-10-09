@@ -6,6 +6,7 @@ break_continue	0
 builtin_arity	0
 builtin_keywords	0
 builtin_methods	0
+catch_clauses	0
 class_derive	0
 class_overloads	0
 class_packable	0
@@ -36,6 +37,7 @@ error_builtin_param_type	1
 error_builtin_receiver_miss	1
 error_builtin_receiver_scalar	1
 error_builtin_value	1
+error_catch_passes	1
 error_class_ctor_arity	1
 error_class_ctor_overload_dispatch	1
 error_class_getter_params	1

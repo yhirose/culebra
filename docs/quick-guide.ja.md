@@ -392,6 +392,32 @@ inspect(try {
 })  # => 7
 ```
 
+`catch`の後ろは`match`の腕と同じパターンで、`try`には節をいくつも
+書けます。`catch e`は投げられた値をすべて受け、検査をする節は一致した値
+だけを受け、どの節も受けなかった値はそのまま伝播します。
+
+```culebra
+class Timeout {
+  new(.after) {}
+}
+wait = fn (v) {
+  try {
+    throw v
+  } catch t: Timeout if t.after > 10 {
+    'slow'
+  } catch Timeout {
+    'timeout'
+  } catch {kind: 'IOError'} {
+    'io'
+  } catch e {
+    "other: {e}"
+  }
+}
+inspect(wait(Timeout(30)))  # => 'slow'
+inspect(wait(Timeout(1)))   # => 'timeout'
+inspect(wait('x'))          # => 'other: x'
+```
+
 組み込みエラーは`kind`を持つObjectです:
 
 ```culebra

@@ -772,6 +772,7 @@ describe = fn (x) {
     n: Long if n > 100 => "big ({n})",
     n: Long => "int ({n})",
     s: String => "str ({s})",
+    Float => 'a float',
     true => 'TRUE',
     false => 'FALSE',
     nil => 'NIL',
@@ -782,8 +783,13 @@ inspect(describe(0))     # => 'zero'
 inspect(describe(2))     # => 'small'
 inspect(describe(999))   # => 'big (999)'
 inspect(describe('hi'))  # => 'str (hi)'
+inspect(describe(2.5))   # => 'a float'
 inspect(describe([1]))   # => 'other'
 ```
+
+裸の名前は先頭の1文字で読み分ける。大文字で始まる名前は型の検査で、
+何も束縛しない（`Float => …`）。それ以外の名前は値を束縛するので、
+`x => …`だけのアームはすべての値を受ける。
 
 ### 6.2 式として
 
@@ -870,6 +876,33 @@ try {
 } catch e {
   inspect("caught: {e}")  # => 'caught: negative: -1'
 }
+```
+
+`catch`の後ろは`match`のアーム (Ch.6) と同じパターンです。`catch e`は
+投げられた値をすべて受け、検査をする節は一致した値だけを受けます。`try`
+には節をいくつも書けて、上から順に試されます。どの節も受けなかった値は
+外側の`try`へそのまま伝播します。
+
+```culebra
+class Timeout {
+  new(.after) {}
+}
+attempt = fn (v) {
+  try {
+    throw v
+  } catch t: Timeout {
+    "timed out after {t.after}s"
+  } catch s: String {
+    "message: {s}"
+  }
+}
+inspect(attempt(Timeout(30)))  # => 'timed out after 30s'
+inspect(attempt('boom'))       # => 'message: boom'
+inspect(try {
+  attempt(42)
+} catch e {
+  "passed on: {e}"
+})  # => 'passed on: 42'
 ```
 
 ### 7.2 `try` を式として

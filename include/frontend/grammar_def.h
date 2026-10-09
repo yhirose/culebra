@@ -135,7 +135,10 @@ const auto grammar_ = R"(
   # Bit-or-free EXPRESSION used by parameter defaults (`|x = e|`), where a
   # top-level bit-or `|` would be ambiguous with the lambda close delimiter.
   ND_EXPRESSION            <-  DESTRUCTURE_ASSIGN / PLACE_ASSIGN / ASSIGNMENT / TRY / ND_CONDITIONAL
-  TRY                      <-  try _ BLOCK _ catch _ IDENTIFIER _ BLOCK
+  # A clause has a match arm's shape, and its pattern is an arm's: `catch e`
+  # binds whatever was thrown, `catch Timeout` takes only that.
+  TRY                      <-  try _ BLOCK (_ CATCH_CLAUSE)+
+  CATCH_CLAUSE             <-  catch _ ARM_PATTERN (_ GUARD)? _ BLOCK
 
   ASSIGNMENT               <-  LET _ MUTABLE _ PRIMARY (_h_ (ARGUMENTS / INDEX) / _ DOT)* (_ TYPE_ANNOTATION)? _ ASSIGN_OP _ EXPRESSION
   # `let` is optional: `let (a, b) = …` declares; bare `(a, b) = (b, a)`
@@ -372,7 +375,8 @@ const auto grammar_ = R"(
   TUPLE_PATTERN            <-  '(' _ PATTERN _ ',' _ PATTERN (_ ',' _ PATTERN)* _ ','? _ ')'
                             /  '(' _ PATTERN _ ',' _ ')'
 
-  # A pattern that tests a value rather than declaring names (a `match` arm):
+  # A pattern that tests a value rather than declaring names (a `match` arm,
+  # a `catch` clause):
   # the PATTERN family over again, with one leaf more. There a bare name that
   # starts as a type name does is one — `Dog`, `Shape.Point`, `Long?` — and
   # binds nothing, where PATTERN's own leaves bind every name they hold

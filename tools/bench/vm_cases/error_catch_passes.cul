@@ -1,0 +1,19 @@
+# A thrown value no clause accepts is uncaught where it was raised: the
+# report names the `throw`, not the `catch` that let it by, and the defers of
+# the scopes it left have run.
+class Timeout {
+  new(.after) {}
+}
+fn work() {
+  defer { println('work defer') }
+  throw {code: 7}
+}
+defer { println('top defer') }
+try {
+  work()
+} catch Timeout {
+  println('wrong clause')
+} catch s: String {
+  println('wrong clause')
+}
+println('unreached')

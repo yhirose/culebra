@@ -466,6 +466,36 @@ if ! diff -u "$TMP/own_want.cul" "$TMP/own_got.cul" > "$TMP/own_diff" 2>&1; then
   fail=1
 fi
 
+# --- 1h'. Golden fixture: catch clauses -------------------------------------
+# A clause is a pattern, an optional guard and a block, and a try takes any
+# number of them: each prints on the brace line of the block before it. (A
+# typed name and `|` alternatives print as written, in a `match` arm too.)
+cat > "$TMP/clause_in.cul" <<'EOF'
+let r = try{work()}catch t: Timeout if t.after>3{slow(t)}catch Timeout | Nil{quick()}
+catch {kind:'IOError',message}{report(message)}catch [first,...rest]{first}catch _{nil}
+EOF
+cat > "$TMP/clause_want.cul" <<'EOF'
+let r = try {
+  work()
+} catch t: Timeout if t.after > 3 {
+  slow(t)
+} catch Timeout | Nil {
+  quick()
+} catch {kind: 'IOError', message} {
+  report(message)
+} catch [first, ...rest] {
+  first
+} catch _ {
+  nil
+}
+EOF
+"$CULEBRA" fmt "$TMP/clause_in.cul" > "$TMP/clause_got.cul" 2>"$TMP/clause_err"
+if ! diff -u "$TMP/clause_want.cul" "$TMP/clause_got.cul" > "$TMP/clause_diff" 2>&1; then
+  echo "FAIL golden (catch clauses): output differs"
+  cat "$TMP/clause_diff" "$TMP/clause_err"
+  fail=1
+fi
+
 # --- 1i. Golden fixture: a bracket written inside a comment or a string ----
 # Shedding the parentheses the optimizer folded onto a collapsed node needs to
 # know the pair encloses the whole span, which means matching brackets — and a

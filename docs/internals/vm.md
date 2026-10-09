@@ -587,7 +587,7 @@ of almost every scope.
 
 ### 5.3 The opcode families
 
-155 opcodes, grouped:
+157 opcodes, grouped:
 
 | family | ops | notes |
 |---|---|---|
@@ -602,7 +602,7 @@ of almost every scope.
 | patterns | `TypeMatch` `SeqChk` `SeqGet` `SeqRest` `ObjGet` `DestrErr` `JumpIfTag` | `match` arms and destructuring; a failed test jumps to the next arm with nothing live |
 | control flow | `Jump` `JumpIfFalse` `JumpIfTrue` `JumpIfNil` `JumpIfNotNil` `Halt` | `JumpIfFalse` carries the shared truthiness coercion (a non-Bool condition is a TypeError) |
 | loops | `ForPrep` `ForLoop` `ForOpen` `ForNext` `ForDispose` `Safepoint` | a counted `for` over a Long range is the fused pair, a sink (`for _ in 0..n`) included; anything else walks a 12-slot cursor (`ForSlot`) through the protocol |
-| exceptions and defer | `Throw` `RaiseErr` `DeferMark` `DeferPush` `DeferRunTo` `OwnedMark` `OwnedExit` `DropSuppress` `Drop` `DropChk` | §5.5; `OwnedMark`/`OwnedExit` bracket a scope on the owned-resource stack for deterministic `drop` |
+| exceptions and defer | `Throw` `Rethrow` `CaughtPos` `RaiseErr` `DeferMark` `DeferPush` `DeferRunTo` `OwnedMark` `OwnedExit` `DropSuppress` `Drop` `DropChk` | §5.5; `OwnedMark`/`OwnedExit` bracket a scope on the owned-resource stack for deterministic `drop` |
 | strings and output | `Fmt` `StrCat` `Disp` `Println` `SetOpPos` | interpolation, and the `println(<one arg>)` peephole |
 | namespace functions | `NsCall` `ToFloat` | a direct `Math.f(args)` / `to_float(x)` reaches its helper without the resolver or a closure (§5.4) |
 | sessions and debug | `ReplCell` `ReplBind` `DbgStmt` | §8.1, §8.3 |
@@ -1413,6 +1413,22 @@ A throw at `pc` is torn down scope by scope:
 4. leaving the frame runs the frame's own defers, resolves the owned
    region once (`culebra_runtime_owned_scope_exit`) and uncounts the
    recursion depth.
+
+The handler is the `catch` clauses, compiled as a `match` over
+`caught_slot` — one arm head (`compile_arm_head`) serves both. A clause
+that binds the payload whole (`catch e`, `catch _`) takes the slot's
+reference; one that tests borrows it and releases it once the clause has
+accepted. Where no clause takes everything, the handler opens with
+`CaughtPos`, which notes how the value arrived before a guard can raise
+and catch of its own — a user throw's position, or that the pad made the
+value out of an engine error — and ends with `Rethrow`, which raises that
+again (`culebra_runtime_rethrow_caught`). A user throw goes on as the
+same value at its position. An engine error goes on as that error,
+rebuilt from the Object this handler made: a boundary that tells a
+`CulebraError` from a user throw sees what it would have seen without
+the `catch`, and an interrupt is an interrupt again. The value's shape
+does not decide this, since an error Object is also what `throw e` of a
+caught error throws.
 
 `defer` bodies are 0-arity closures pushed on the runtime's global LIFO
 defer stack (`DeferPush`); marks are taken per frame and per scope

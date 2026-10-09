@@ -997,6 +997,16 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_get_thrown_tag() {
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_get_thrown_data() {
   return culebra::current_runtime().thrown_data;
 }
+// What a handler notes of the value it just received (Op::CaughtPos), for the
+// `catch` none of whose clauses takes it: where a user throw was raised,
+// packed line<<32|col, or kCaughtEngineError when the pad itself made the
+// value out of an engine error. A packed position is never negative.
+inline constexpr int64_t kCaughtEngineError = -1;
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_get_thrown_pos() {
+  auto& rt = culebra::current_runtime();
+  if (rt.caught_engine_error) return kCaughtEngineError;
+  return _jit_pack_pos(rt.thrown_line, rt.thrown_col);
+}
 
 // A host boundary that stops a user throw is its catch: it takes over the
 // reference the carrier holds (culebra_runtime_throw) and empties the carrier,
@@ -1109,6 +1119,33 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_throw(int8_t tag,
   rt.thrown_line = line;
   rt.thrown_col = col;
   throw CulebraException(tag, data, line, col);
+}
+
+// A `catch` none of whose clauses took the value passes it on as it was
+// raised (Op::Rethrow), taking over the payload's `+1`. What that means is
+// decided by how the value arrived (`raised_at`, from CaughtPos), not by its
+// shape — an error Object is both what the pad makes of an engine error and
+// what `throw e` of a caught one throws:
+//   - a user throw goes on as the same value, at the position it was raised;
+//   - an engine error goes on as that error. The Object was made at this
+//     handler and nothing else holds it, so the error is raised again from
+//     its fields: a boundary that tells a CulebraError from a user throw
+//     (a worker's, a host's) sees what it would have without this `catch`,
+//     and an interrupt is an interrupt again, where a press that passed a
+//     `catch Timeout` would otherwise end the program as a failure.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_rethrow_caught(
+    int8_t tag, int64_t data, int64_t raised_at) {
+  if (raised_at != kCaughtEngineError) {
+    auto at = _jit_unpack_pos(raised_at);
+    culebra_runtime_throw(tag, data, at.line, at.col);
+  }
+  auto r = describe_thrown_value({tag, data});
+  _culebra_value_release_impl(tag, data);
+  // The next pad fills a positionless error from the published op position,
+  // which this handler's own ops have moved since the error was raised.
+  culebra_runtime_set_op_pos(r.line, r.col);
+  if (r.kind == "Interrupted") throw culebra::Interrupted(std::move(r.message));
+  throw culebra::CulebraError(r.kind, r.message, r.line, r.col);
 }
 
 // A library frame's exit step (docs/internals/vm.md §6.2): an error still at

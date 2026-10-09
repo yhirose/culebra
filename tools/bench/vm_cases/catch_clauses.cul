@@ -1,0 +1,89 @@
+# `catch` takes a pattern, as a match arm does, and a try takes several
+# clauses: the first that accepts the thrown value runs, and a value none
+# accepts leaves the try as it was raised.
+class Timeout {
+  new(.after) {}
+}
+enum Failure {
+  NotFound(String),
+  Denied
+}
+
+let handle = fn (thrower) {
+  try {
+    thrower()
+    'no throw'
+  } catch t: Timeout if t.after > 10 {
+    "slow {t.after}"
+  } catch Timeout {
+    'timeout'
+  } catch NotFound(path) {
+    "missing {path}"
+  } catch Denied | Nil {
+    'denied or nil'
+  } catch {kind: 'ZeroDivisionError', line} {
+    "div by zero on line {line}"
+  } catch [first, ...rest] {
+    "array {first} +{rest.size()}"
+  } catch s: String {
+    "string {s}"
+  }
+}
+println(handle(fn () { 1 }))
+println(handle(fn () { throw Timeout(30) }))
+println(handle(fn () { throw Timeout(1) }))
+println(handle(fn () { throw Failure.NotFound('/x') }))
+println(handle(fn () { throw Failure.Denied }))
+println(handle(fn () { throw nil }))
+println(handle(fn () { 1 / 0 }))
+println(handle(fn () { throw [1, 2, 3] }))
+println(handle(fn () { throw 'plain' }))
+
+# No clause accepts it: the next try out gets the same value, and a runtime
+# error keeps its kind, message and position.
+println(try { handle(fn () { throw 42 }) } catch n: Long { n + 1 })
+println(try { handle(fn () { nil.missing() }) } catch e { e })
+
+# A rejected guard releases what the pattern bound and moves on; the payload
+# is still whole for the next clause.
+let pick = fn (v) {
+  try {
+    throw v
+  } catch [a, b] if a > b {
+    "descending {a} {b}"
+  } catch [a, b] {
+    "pair {a} {b}"
+  }
+}
+println(pick([2, 1]))
+println(pick([1, 2]))
+
+# The body's defers run before a clause is tried; a scope the value leaves
+# on its way out runs its own.
+mut log = []
+let pass = fn () {
+  defer { log.push('outer') }
+  try {
+    defer { log.push('body') }
+    throw 'unhandled'
+  } catch Timeout {
+    log.push('wrong clause')
+  }
+}
+println(try { pass() } catch e { e })
+println(log)
+
+# A guard that throws replaces the value being handled, and leaves this try.
+println(try { try { throw 'first' } catch e if e.nope() { 0 } } catch e { e.kind })
+
+# A binding a closure captures lives in a cell, in a testing clause too.
+let held = try { throw 7 } catch n: Long { fn () { n += 1; n } }
+println([held(), held()])
+
+# In a loop: the caught slot and the saved position are fresh every time.
+mut seen = []
+for v in [Timeout(1), 'two', 3] {
+  let r = try { try { throw v } catch Timeout { 'timeout' } catch s: String { s } } catch e { 'passed on' }
+  seen.push(r)
+}
+println(seen)

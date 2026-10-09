@@ -650,6 +650,17 @@ enum class Op : uint8_t {
                // carrier (culebra_runtime_throw); regs[a] is nil'd BEFORE the
                // raise so a handler's release ladder cannot double-release
                // the payload. Never falls through.
+  Rethrow,     // a `catch` passing on what none of its clauses took: regs[a]
+               // leaves as it was raised (culebra_runtime_rethrow_caught),
+               // which regs[b] says — a user throw as the same value at its
+               // position, an engine error as that error, an interrupt as
+               // an interrupt. Hands over the `+1` and never falls through,
+               // like Throw.
+  CaughtPos,   // regs[a] = how the value this handler received was raised
+               // (culebra_runtime_get_thrown_pos): a user throw's position,
+               // packed line<<32|col, or the mark of an engine error. Taken
+               // as the handler opens: a clause's guard can throw and catch
+               // of its own before Rethrow reads it.
   DeferMark,   // regs[a] = defer-stack mark (a Long; culebra_runtime_
                // defer_mark). Frame marks are the chunk's first insn, so a
                // throw at any pc finds the slot populated.
@@ -3721,6 +3732,7 @@ inline Succ rc_successors(const Insn& in) {
     case Op::WkErr:
     case Op::DestrErr:
     case Op::Throw:
+    case Op::Rethrow:
     case Op::Halt: return {-1, false};
     case Op::JumpIfFalse:
     case Op::JumpIfTrue:
@@ -3781,6 +3793,7 @@ inline void rc_apply(const Chunk& c, const Insn& in, RcWords& out,
     case Op::BitNot:
     case Op::ToFloat:
     case Op::PosSnap:
+    case Op::CaughtPos:
     case Op::DeferMark:
     case Op::Release: set(in.a, false); break;
     // Reads, checks, control flow, and side effects on state that is not a
@@ -3808,6 +3821,7 @@ inline void rc_apply(const Chunk& c, const Insn& in, RcWords& out,
     case Op::WkErr:
     case Op::DestrErr:
     case Op::Throw:
+    case Op::Rethrow:
     case Op::Ret:
     case Op::Halt: break;
     case Op::LoadConst:
@@ -3919,7 +3933,8 @@ inline void rc_reads(const Insn& in, Read read, ReadAll read_all) {
     case Op::UfcsTakes: read(in.b), read(in.c); break;
     case Op::HasProp: read(in.b); break;
     case Op::JumpIfSame: read(in.a), read(in.c); break;
-    case Op::PosSnap: break;
+    case Op::PosSnap:
+    case Op::CaughtPos: break;
     case Op::ForOpen:
     case Op::ForNext:
     case Op::ForDispose:
@@ -3963,6 +3978,7 @@ inline int32_t rc_single_write(const Insn& in) {
     case Op::BitNot:
     case Op::ToFloat:
     case Op::PosSnap:
+    case Op::CaughtPos:
     case Op::DeferMark:
     case Op::LoadConst:
     case Op::Move:
@@ -4345,6 +4361,7 @@ inline bool owned_registers(Op op) {
     case Op::BitNot:
     case Op::ToFloat:
     case Op::PosSnap:
+    case Op::CaughtPos:
     case Op::DeferMark:
     case Op::LoadConst:
     case Op::Move:
@@ -6698,11 +6715,13 @@ class Compiler {
   }
 
   // Structure of a statement rather than an operand of it: an arm list, an
-  // arm, a nobreak clause — whatever runs from it is one of its steps.
+  // arm, a catch or nobreak clause — whatever runs from it is one of its
+  // steps.
   static bool is_clause(const peg::Ast& t) {
     using namespace peg::udl;
     return t.tag == "MATCH_ARMS"_ || t.tag == "MATCH_ARM"_ ||
-           t.tag == "COND_ARM"_ || t.tag == "NOBREAK_CLAUSE"_;
+           t.tag == "CATCH_CLAUSE"_ || t.tag == "COND_ARM"_ ||
+           t.tag == "NOBREAK_CLAUSE"_;
   }
 
   // Whether `parent.nodes[i]` is a step the statement runs as a statement of
@@ -13507,18 +13526,37 @@ class Compiler {
     return {res, true};
   }
 
-  // `try BODY catch name HANDLER` as an expression. The body's scope is an
-  // ordinary Cleanup entry that also carries a handler: the unwind walk has
-  // already run the nested scopes' steps and this scope's own (its defers,
-  // then its slots) by the time the handler binds the caught value (mutable,
-  // the interp's catch-binding default) and runs into the same result slot.
-  // Normal-path exits (fall-through, break/continue/return crossing the
-  // region) release through the regular scope machinery.
+  // A clause that binds the payload whole — `catch e`, `catch _` — is handed
+  // the caught slot's `+1` outright. Every other clause tests first, so it
+  // borrows the payload until it has accepted it.
+  static bool clause_takes_payload(const culebra::ArmView& av) {
+    using namespace peg::udl;
+    return !av.guard && (av.pattern->tag == "IDENTIFIER"_ ||
+                         av.pattern->tag == "WILDCARD"_);
+  }
+
+  // `try BODY catch PATTERN (if GUARD)? HANDLER …` as an expression. The
+  // body's scope is an ordinary Cleanup entry that also carries a handler:
+  // the unwind walk has already run the nested scopes' steps and this
+  // scope's own (its defers, then its slots) by the time the handler has the
+  // caught value. The clauses are then a `match` over it — the same arm
+  // head, bindings mutable (the interp's catch-binding default), each body
+  // into the same result slot — whose no-match exit re-raises the value
+  // where it was raised instead of yielding nil. Normal-path exits
+  // (fall-through, break/continue/return crossing the region) release
+  // through the regular scope machinery.
   ExprResult compile_try(const peg::Ast& ast, bool read = true) {
     using namespace peg::udl;
-    const auto& id = *ast.nodes[1];
+    auto tv = culebra::view_try(ast);
     int32_t res = alloc_temp(ast);
     int32_t caught = alloc_temp(ast);
+    // A clause that takes everything leaves nothing to pass on; otherwise
+    // the position is kept for the Rethrow (CaughtPos, at the handler).
+    bool takes_all = std::ranges::any_of(tv.clauses, [](const auto& clause) {
+      auto av = culebra::view_arm(*clause);
+      return !av.guard && culebra::pattern_always_matches(*av.pattern);
+    });
+    int32_t raised_at = takes_all ? -1 : alloc_temp(ast);
     // Region defer mark: taken before the region opens whenever any defer
     // can be pending inside it — the body's own scope-level defers share it
     // (the stack height is identical at region entry and body-scope entry),
@@ -13530,8 +13568,7 @@ class Compiler {
       rmark = alloc_slot(ast, "(try.mark)");
       emit(Op::DeferMark, rmark);
     }
-    bool body_scope_defer =
-        analysis_.scope_has_defer.contains(ast.nodes[0].get());
+    bool body_scope_defer = analysis_.scope_has_defer.contains(tv.body);
     // The body inline (compile_block_into minus its own DeferScope): the
     // catching part of the body's scope must END before its fall-through
     // defer run, because a defer throwing at the try body's NORMAL exit
@@ -13542,8 +13579,8 @@ class Compiler {
     // still release as that escaping throw passes them.
     pending_scope_mark_ = rmark;
     push_scope(ast);
-    predeclare_forward_refs(*ast.nodes[0]);
-    compile_body_into(*ast.nodes[0], res, read);
+    predeclare_forward_refs(*tv.body);
+    compile_body_into(*tv.body, res, read);
     auto end = static_cast<uint32_t>(chunk_.code.size());
     if (body_scope_defer) emit(Op::DeferRunTo, rmark);
     auto region = pop_scope();
@@ -13562,38 +13599,81 @@ class Compiler {
                                    cu.defer_mark_slot, cu.slot_lo, cu.slot_hi,
                                    cu.cells_before});
     }
-    push_scope(ast);
-    auto name = std::string(id.token);
-    if (is_sink_name(name)) {
-      emit(Op::Release, caught);  // `catch _`: drop the payload's +1
-    } else {
-      bool cell = info_->captured_locals.contains(name);
-      int32_t e = cell ? alloc_cell_slot(id, name) : alloc_slot(id, name);
-      if (cell) {
-        emit(Op::CellNew, e, caught);
+    if (raised_at >= 0) emit(Op::CaughtPos, raised_at);
+    std::vector<size_t> end_jumps{end_jump};
+    for (size_t i = 0; i < tv.clauses.size(); i++) {
+      auto av = culebra::view_arm(*tv.clauses[i]);
+      bool whole = clause_takes_payload(av);
+      push_scope(ast);
+      std::vector<size_t> fail;  // patched to the next clause's start
+      if (!whole) {
+        compile_arm_head(*av.pattern, av.guard, caught, fail);
+        // The bindings hold what they read; the payload's own `+1` ends
+        // where a plain `catch e` would have taken it over.
+        emit(Op::Release, caught);
+      } else if (av.pattern->tag == "WILDCARD"_) {
+        emit(Op::Release, caught);  // `catch _`: drop the payload's +1
       } else {
-        emit(Op::Take, e, caught);
+        const auto& id = *av.pattern;
+        auto name = std::string(id.token);
+        bool cell = info_->captured_locals.contains(name);
+        int32_t e = cell ? alloc_cell_slot(id, name) : alloc_slot(id, name);
+        emit(cell ? Op::CellNew : Op::Take, e, caught);
+        push_binding(id, {name, e, /*is_mut=*/true, cell});
       }
-      push_binding(id, {name, e, /*is_mut=*/true, cell});
+      // The clause body is its own defer scope (scan_eh_defer keys the
+      // node); handler code sits outside the region, so its defers behave
+      // like any scope's — a throwing one propagates outward, past this try.
+      compile_block_into(*av.body, res, /*defer_key=*/av.body, read);
+      int32_t clause_top = next_slot_;
+      pop_scope();
+      // compile_match's rule for arms of one statement: a clause that walked
+      // a pattern keeps its slot indices from the next one.
+      if (!whole) next_slot_ = clause_top;
+      if (i + 1 < tv.clauses.size() || raised_at >= 0)
+        end_jumps.push_back(emit(Op::Jump));
+      for (size_t ix : fail) patch_to_here(ix);
     }
-    // The catch body is its own defer scope (scan_eh_defer keys the node);
-    // handler code sits outside the region, so its defers behave like any
-    // scope's — a throwing one propagates outward, past this try.
-    compile_block_into(*ast.nodes[2], res, /*defer_key=*/ast.nodes[2].get(),
-                       read);
-    pop_scope();
-    patch_to_here(end_jump);
+    // No clause took it: the exception goes on as it was raised.
+    if (raised_at >= 0) emit(Op::Rethrow, caught, raised_at);
+    for (size_t ix : end_jumps) patch_to_here(ix);
     return {res, true};
+  }
+
+  // One arm's head — a `match` arm's or a `catch` clause's: test → bind →
+  // guard, the two-phase walk compile_destructure_assign shares. No pattern
+  // binds before all of its tests pass, so a failed test jumps (via `fail`)
+  // to the next arm with nothing live, and only a guard failure has bindings
+  // to release.
+  void compile_arm_head(const peg::Ast& pat, const peg::Ast* guard,
+                        int32_t subj, std::vector<size_t>& fail) {
+    compile_pattern_test(pat, subj, fail);
+    // Bind once every test passed. Arm bindings are mutable (interp's
+    // try_pattern default) and declare like a `let`, so a captured one
+    // lives in a cell. The subject is borrowed — it belongs to a statement
+    // temp, and a leaf retains its own reference. An ObjGet in this walk
+    // cannot miss (the tests proved every key present), so its edge joins
+    // the mismatch edge unused.
+    compile_pattern_bind(pat, subj, /*subj_owned=*/false, fail,
+                         /*is_mut=*/true, /*declares=*/true);
+    if (!guard) return;
+    auto g = compile_expr(*guard);
+    // Branch on the guard being TAKEN, so the failing path is the fall
+    // through and its release ladder is emitted here — with the arm's
+    // scope still open, which is what lets the whole pattern's bindings
+    // (not just one) be released by the ordinary scope ladder.
+    size_t take = emit_test(Op::JumpIfTrue, g.slot, *guard);
+    release_down_to(scopes_.back().slot_watermark);
+    fail.push_back(emit(Op::Jump));
+    patch_to_here(take);
   }
 
   // `match` as an expression. The subject is owned by a statement temp across
   // the arms (the JIT holds it in a dedicated subject scope; here the
   // statement sweep / the break-return temp releases are the single
-  // releaser). Every arm runs test → bind → guard → body, the two-phase walk
-  // compile_destructure_assign shares: no pattern binds before all of its
-  // tests pass, so a failed test jumps to the next arm with nothing live, and
-  // only a guard failure has bindings to release. The body block writes the
-  // shared result slot exactly once (compile_if's shape); no arm matched → nil.
+  // releaser). Every arm runs its head (compile_arm_head), then its body. The
+  // body block writes the shared result slot exactly once (compile_if's
+  // shape); no arm matched → nil.
   ExprResult compile_match(const peg::Ast& ast, bool read = true) {
     using namespace peg::udl;
     auto mv = culebra::view_match(ast);
@@ -13604,38 +13684,14 @@ class Compiler {
     store_into(subj, compile_expr(*mv.subject), /*dst_is_fresh=*/true);
     std::vector<size_t> end_jumps;
     for (const auto& arm : mv.arms->nodes) {
-      // arm->nodes: PATTERN (GUARD)? body
-      const auto& pat = *arm->nodes[0];
+      auto av = culebra::view_arm(*arm);
       push_scope(ast);
       std::vector<size_t> fail_jumps;  // patched to the next arm's start
-      compile_pattern_test(pat, subj, fail_jumps);
-      // Bind once every test passed. Arm bindings are mutable (interp's
-      // try_pattern default) and declare like a `let`, so a captured one
-      // lives in a cell (the compile_try catch-binding shape). The subject is
-      // borrowed — it belongs to the statement temp, and a leaf retains its
-      // own reference. An ObjGet in this walk cannot miss (the tests proved
-      // every key present), so its edge joins the mismatch edge unused.
-      compile_pattern_bind(pat, subj, /*subj_owned=*/false, fail_jumps,
-                           /*is_mut=*/true, /*declares=*/true);
-      size_t body_idx = 1;
-      if (arm->nodes[body_idx]->tag == "GUARD"_) {
-        const auto& guard = *arm->nodes[body_idx]->nodes[0];
-        auto g = compile_expr(guard);
-        // Branch on the guard being TAKEN, so the failing path is the fall
-        // through and its release ladder is emitted here — with the arm's
-        // scope still open, which is what lets the whole pattern's bindings
-        // (not just one) be released by the ordinary scope ladder.
-        size_t take = emit_test(Op::JumpIfTrue, g.slot, guard);
-        release_down_to(scopes_.back().slot_watermark);
-        fail_jumps.push_back(emit(Op::Jump));
-        patch_to_here(take);
-        body_idx++;
-      }
+      compile_arm_head(*av.pattern, av.guard, subj, fail_jumps);
       // The arm body is its own defer scope (scan_eh_defer's MATCH case
       // keys the body node): defers fire when the arm's braces close, the
       // arm value already owned in `res`.
-      compile_block_into(*arm->nodes[body_idx], res,
-                         /*defer_key=*/arm->nodes[body_idx].get(), read);
+      compile_block_into(*av.body, res, /*defer_key=*/av.body, read);
       int32_t arm_top = next_slot_;
       pop_scope();  // the taken path's binding release
       // Arms are alternative paths but ONE statement, so they must not share
@@ -14758,7 +14814,8 @@ inline std::string dump(const Chunk& c) {
       "RecLeave",
       "NsGet",
       "SetOpPos",  "BoundPos",  "Disp",       "Fmt",          "StrCat",
-      "Throw",     "DeferMark",  "DeferPush",    "DeferRunTo",
+      "Throw",     "Rethrow",    "CaughtPos",
+      "DeferMark", "DeferPush",  "DeferRunTo",
       "ForOpen",   "ForNext",   "ForDispose",
       "ForPrep",   "ForLoop",   "Println",    "ToFloat",      "NsCall",
       "Safepoint", "DropSuppress",
@@ -15867,7 +15924,8 @@ struct Exec {
         &&L_TraitReset, &&L_TraitDefault, &&L_TraitReg, &&L_PosSnap,
         &&L_ChkTypeAt, &&L_ChkArg, &&L_ArgTag, &&L_JumpIfFilled, &&L_ArgsRest,
         &&L_KwRest, &&L_RecEnter, &&L_RecLeave, &&L_NsGet, &&L_SetOpPos,
-        &&L_BoundPos, &&L_Disp, &&L_Fmt, &&L_StrCat, &&L_Throw, &&L_DeferMark,
+        &&L_BoundPos, &&L_Disp, &&L_Fmt, &&L_StrCat, &&L_Throw, &&L_Rethrow,
+        &&L_CaughtPos, &&L_DeferMark,
         &&L_DeferPush, &&L_DeferRunTo, &&L_ForOpen, &&L_ForNext,
         &&L_ForDispose, &&L_ForPrep, &&L_ForLoop, &&L_Println, &&L_ToFloat,
         &&L_NsCall, &&L_Safepoint, &&L_DropSuppress, &&L_BArity,
@@ -18033,6 +18091,24 @@ struct Exec {
           auto [line, col] = chunk_pos_at(c, VM_PC);
           culebra_runtime_throw(static_cast<int8_t>(v.tag), v.data, line, col);
           break;  // unreachable — throw never returns
+        } while (0);
+        VM_NEXT();
+      L_Rethrow:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
+          JitValue v = regs[in.a];
+          regs[in.a] = JitValue{TAG_NIL, 0};  // the +1 leaves with the raise
+          culebra_runtime_rethrow_caught(static_cast<int8_t>(v.tag), v.data,
+                                         regs[in.b].data);
+          break;  // unreachable
+        } while (0);
+        VM_NEXT();
+      L_CaughtPos:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
+          regs[in.a] = JitValue{TAG_LONG, culebra_runtime_get_thrown_pos()};
+          ++ip;
+          break;
         } while (0);
         VM_NEXT();
       L_DeferMark:

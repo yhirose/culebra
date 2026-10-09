@@ -563,10 +563,14 @@ class Inference {
           if (arm->nodes.size() >= 2) t = join(t, tail_type(*arm->nodes.back()));
         return t;
       }
-      case "TRY"_:
-        return e.nodes.size() >= 3
-                   ? join(tail_type(*e.nodes[0]), tail_type(*e.nodes[2]))
-                   : Type{};
+      case "TRY"_: {
+        if (e.nodes.size() < 2) return Type{};
+        auto tv = culebra::view_try(e);
+        Type t = tail_type(*tv.body);
+        for (const auto& clause : tv.clauses)
+          t = join(t, tail_type(*culebra::view_arm(*clause).body));
+        return t;
+      }
       case "STATEMENTS"_:
       case "LEXICAL_SCOPE"_:
         return tail_type(e);

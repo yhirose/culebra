@@ -788,6 +788,13 @@ expect_lint_clean "typed binding"    'fn f(v) { match v { x: Long => x, _ => 0 }
 inspect(f(1))'
 expect_lint_clean "binding is last"  'fn f(v) { match v { 0 => 1, x => x } }
 inspect(f(1))'
+# The same for a `catch` clause after one that takes whatever was thrown.
+expect_lint_warns "clause after a binding" 'inspect(try { 1 } catch e { 2 } catch Long { 3 })' \
+                                                  "unreachable catch clause"
+expect_lint_clean "guarded clause"   'inspect(try { 1 } catch e if e == 2 { 2 } catch e { 3 })'
+# A clause's pattern is a constant position, as an arm's is.
+expect_lint_error "interpolated clause pattern" 'let x = 1
+inspect(try { throw "v1" } catch "v{x}" { 1 } catch _ { 0 })'
 
 # --- idioms: forms that run and say the same thing the long way ------------
 # `x = x <op> y` -> `x <op>= y`

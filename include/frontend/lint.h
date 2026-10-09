@@ -156,6 +156,16 @@ class RuleWalker {
     for (const auto& c : node.nodes) walk(*c);
   }
 
+  // A match arm or a catch clause. Its pattern is a constant position:
+  // reject interpolating `"..."` there (the guard and the body may
+  // interpolate freely).
+  void walk_arm(const peg::Ast& arm) {
+    auto av = culebra::view_arm(arm);
+    check_pattern_const_strings(*av.pattern, diags_);
+    if (av.guard) walk(*av.guard);
+    walk(*av.body);
+  }
+
   // An INIT_CLAUSE's bindings (while / if / match init clauses). Each must
   // declare with `let` / `mut`; a bare `x = 0` would reassign an outer
   // variable or make an immutable binding, so reject it pre-eval on every
@@ -389,13 +399,13 @@ inline void RuleWalker::walk(const peg::Ast& node) {
       auto mv = culebra::view_match(node);
       if (mv.init) walk_init_clause(*mv.init);
       walk(*mv.subject);
-      for (const auto& arm : mv.arms->nodes) {
-        if (arm->nodes.empty()) continue;
-        // A pattern is a constant position: reject interpolating `"..."`
-        // patterns (the guard/body below may interpolate freely).
-        check_pattern_const_strings(*arm->nodes[0], diags_);
-        for (size_t i = 1; i < arm->nodes.size(); i++) walk(*arm->nodes[i]);
-      }
+      for (const auto& arm : mv.arms->nodes) walk_arm(*arm);
+      return;
+    }
+    case "TRY"_: {
+      auto tv = culebra::view_try(node);
+      walk(*tv.body);
+      for (const auto& clause : tv.clauses) walk_arm(*clause);
       return;
     }
     case "MULTIFN_DECL"_: {
@@ -1371,22 +1381,19 @@ inline bool is_terminator(const peg::Ast& s) {
          s.tag == "CONTINUE"_;
 }
 
-// A `match` arm no value can reach: an unguarded arm before it already
-// accepts everything. One marker per match, at the first dead arm.
-inline void check_match_arms(const peg::Ast& match,
-                             std::vector<Diagnostic>& diags) {
-  using namespace peg::udl;
-  const auto& arms = culebra::view_match(match).arms->nodes;
+// A `match` arm or `catch` clause no value can reach: an unguarded one
+// before it already accepts everything. One marker per construct, at the
+// first dead arm.
+inline void check_arms(std::span<const std::shared_ptr<peg::Ast>> arms,
+                       std::string_view what, std::vector<Diagnostic>& diags) {
   for (size_t i = 0; i + 1 < arms.size(); i++) {
-    const auto& arm = *arms[i];
-    if (arm.nodes.size() < 2 || arm.nodes[1]->tag == "GUARD"_) continue;
-    if (!culebra::pattern_always_matches(*arm.nodes[0])) continue;
+    auto av = culebra::view_arm(*arms[i]);
+    if (av.guard || !culebra::pattern_always_matches(*av.pattern)) continue;
     const auto& dead = *arms[i + 1];
     diags.push_back(Diagnostic{
         "UnreachableCode",
-        std::format("unreachable match arm: the arm on line {} matches "
-                    "every value",
-                    arm.line),
+        std::format("unreachable {}: the one on line {} takes every value",
+                    what, arms[i]->line),
         static_cast<long>(dead.line), static_cast<long>(dead.column),
         Severity::Warning});
     return;
@@ -1395,7 +1402,10 @@ inline void check_match_arms(const peg::Ast& match,
 
 inline void analyze_walk(const peg::Ast& node, std::vector<Diagnostic>& diags) {
   using namespace peg::udl;
-  if (node.tag == "MATCH"_) check_match_arms(node, diags);
+  if (node.tag == "MATCH"_)
+    check_arms(culebra::view_match(node).arms->nodes, "match arm", diags);
+  if (node.tag == "TRY"_)
+    check_arms(culebra::view_try(node).clauses, "catch clause", diags);
   if (node.tag == "STATEMENTS"_) {
     for (size_t i = 0; i + 1 < node.nodes.size(); i++) {
       if (is_terminator(*node.nodes[i])) {
@@ -1650,8 +1660,9 @@ inline void check_match(const peg::Ast& node, const Registry& reg,
     // A guarded arm may reject at runtime (`Circle(r) if r > 0 => …`), so it
     // cannot be trusted to fully dispose of what it names — conservatively,
     // a guarded arm contributes nothing (design note: "保守的には数えない").
-    if (arm->nodes.size() > 1 && arm->nodes[1]->tag == "GUARD"_) continue;
-    const auto& pattern = *arm->nodes[0];
+    auto av = culebra::view_arm(*arm);
+    if (av.guard) continue;
+    const auto& pattern = *av.pattern;
     if (pattern.tag == "PATTERN"_ && !pattern.nodes.empty()) {
       for (const auto& sub : pattern.nodes) tally.consider(*sub);
     } else {

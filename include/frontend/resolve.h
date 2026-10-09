@@ -989,11 +989,11 @@ class Resolver {
         walk(*mv.subject);
         size_t around = cur_;
         for (const auto& arm : mv.arms->nodes) {
-          if (arm->nodes.empty()) continue;
+          auto av = view_arm(*arm);
           cur_ = push_block_scope(*arm, arm->position, end_of(*arm));
-          bind_pattern(*arm->nodes[0], Form::Pattern);
-          for (size_t k = 1; k < arm->nodes.size(); k++)
-            walk_body(*arm->nodes[k]);
+          bind_pattern(*av.pattern, Form::Pattern);
+          if (av.guard) walk(*av.guard);
+          walk_body(*av.body);
           cur_ = around;
         }
         cur_ = saved;
@@ -1001,15 +1001,19 @@ class Resolver {
       }
 
       case "TRY"_: {
-        if (n.nodes.size() < 3) break;
-        scoped_body(*n.nodes[0]);
+        if (n.nodes.size() < 2) break;
+        auto tv = view_try(n);
+        scoped_body(*tv.body);
         size_t saved = cur_;
-        cur_ = push_block_scope(*n.nodes[2], n.nodes[1]->position,
-                                end_of(*n.nodes[2]));
-        if (n.nodes[1]->is_token)
-          declare(*n.nodes[1], n.nodes[1]->token, Form::Catch);
-        walk_body(*n.nodes[2]);
-        cur_ = saved;
+        for (const auto& clause : tv.clauses) {
+          auto av = view_arm(*clause);
+          cur_ = push_block_scope(*av.body, av.pattern->position,
+                                  end_of(*av.body));
+          bind_pattern(*av.pattern, Form::Catch);
+          if (av.guard) walk(*av.guard);
+          walk_body(*av.body);
+          cur_ = saved;
+        }
         return;
       }
 

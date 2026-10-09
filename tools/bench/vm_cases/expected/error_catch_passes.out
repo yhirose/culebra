@@ -1,0 +1,3 @@
+work defer
+top defer
+uncaught: {code: 7} at 9:3.

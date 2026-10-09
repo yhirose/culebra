@@ -799,6 +799,32 @@ for p in type_patterns {
   case("match_type|" + p, p)
 }
 
+# A `catch` clause takes a pattern and an optional guard, clauses are tried in
+# order, and a value none takes goes on as it was raised: a user throw at its
+# `throw`, a runtime error with its kind and position.
+let catch_patterns = [
+  tp_pre + 'try { throw Dog(1) } catch Dog { "dog" }',
+  tp_pre + 'try { throw Dog(1) } catch d: Dog { d.n }',
+  tp_pre + 'try { throw E.A(5) } catch A(x) { x } catch B { 0 }',
+  tp_pre + 'try { throw E.B } catch A(x) { x } catch B { 0 }',
+  tp_pre + 'try { try { throw 7 } catch Dog { "dog" } } catch n: Long { n + 1 }',
+  'try { 1 / 0 } catch {kind: "ZeroDivisionError", line} { line }',
+  'try { throw [2, 1] } catch [a, b] if a < b { "asc" } catch [a, b] { a - b }',
+  'try { throw "s" } catch Long | Float { "num" } catch s: String { s }',
+  'try { throw 1 } catch e if e > 5 { "big" } catch e { "small" }',
+  'try { try { nil.x() } catch s: String { s } } catch e { e }',
+  'try { try { throw "boom" } catch Long { 1 } } catch e { e }',
+  'mut log = []; fn f() { defer { log.push("d") }; try { throw "x" } catch Long { 0 } }; let r = try { f() } catch e { e }; [r, log]',
+  'let k = try { throw 7 } catch n: Long { fn () { n += 1; n } }; [k(), k()]',
+  # Left uncaught, a runtime error is what `_p` records (kind and position).
+  # A user throw has to be caught around the try: `_p` reads `e.kind`.
+  'try { nil.x() } catch s: String { 1 }',
+  'try { try { throw 3 } catch n: Long if n > (try { throw "inner" } catch _ { 9 }) { 1 } } catch e { e }',
+]
+for p in catch_patterns {
+  case("catch_pattern|" + p, p)
+}
+
 # --- Dimension: numeric range values --------------------------------------
 # A range's endpoints may be Float. Building, displaying and comparing one
 # work; iteration, slicing and grid still need Long endpoints and raise where

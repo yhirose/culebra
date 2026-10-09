@@ -399,6 +399,32 @@ inspect(try {
 })  # => 7
 ```
 
+What follows `catch` is a pattern, as in a `match` arm, and a `try` takes
+several clauses: `catch e` takes whatever was thrown, a clause that tests
+takes only what it matches, and a value no clause takes keeps propagating.
+
+```culebra
+class Timeout {
+  new(.after) {}
+}
+wait = fn (v) {
+  try {
+    throw v
+  } catch t: Timeout if t.after > 10 {
+    'slow'
+  } catch Timeout {
+    'timeout'
+  } catch {kind: 'IOError'} {
+    'io'
+  } catch e {
+    "other: {e}"
+  }
+}
+inspect(wait(Timeout(30)))  # => 'slow'
+inspect(wait(Timeout(1)))   # => 'timeout'
+inspect(wait('x'))          # => 'other: x'
+```
+
 Built-in errors are Objects carrying a `kind`:
 
 ```culebra

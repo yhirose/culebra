@@ -1,0 +1,300 @@
+# Conformance: §15 (catch clauses). See docs/language.md §25.
+#
+# `catch` takes a pattern, as a `match` arm does. Clauses are tried in
+# order; an exception none of them accepts keeps propagating as it was.
+
+class ApiError {
+  new(.status) {}
+}
+class Timeout {
+  new(.after) {}
+}
+enum Failure {
+  NotFound(String),
+  Denied,
+}
+
+# A bare name and the sink still catch everything.
+assert_eq(try {
+  throw 'boom'
+} catch e {
+  "got {e}"
+}, 'got boom')
+assert_eq(try {
+  throw 'boom'
+} catch _ {
+  'dropped'
+}, 'dropped')
+
+# A type name filters, with or without a binding.
+let status = fn (thrower) {
+  try {
+    thrower()
+    'no throw'
+  } catch ApiError {
+    'http'
+  } catch t: Timeout {
+    "timeout after {t.after}"
+  } catch NotFound(path) {
+    "missing {path}"
+  } catch Denied {
+    'denied'
+  } catch {kind: 'ZeroDivisionError', line} {
+    line > 0 ? 'div by zero' : 'no line'
+  } catch s: String {
+    "string {s}"
+  }
+}
+assert_eq(status(fn () {
+  1
+}), 'no throw')
+assert_eq(status(fn () {
+  throw ApiError(404)
+}), 'http')
+assert_eq(status(fn () {
+  throw Timeout(30)
+}), 'timeout after 30')
+assert_eq(status(fn () {
+  throw Failure.NotFound('/x')
+}), 'missing /x')
+assert_eq(status(fn () {
+  throw Failure.Denied
+}), 'denied')
+assert_eq(status(fn () {
+  1 / 0
+}), 'div by zero')
+assert_eq(status(fn () {
+  throw 'plain'
+}), 'string plain')
+
+# No clause accepts it: the next `try` out receives the same value, and a
+# runtime error keeps its kind and the line it was raised on.
+assert_eq(try {
+  status(fn () {
+    throw 42
+  })
+} catch n: Long {
+  n + 1
+}, 43)
+let raised = try {
+  try {
+    nil.missing()
+  } catch ApiError {
+    'wrong clause'
+  }
+} catch e {
+  e
+}
+assert_eq(raised.kind, 'TypeError')
+assert_eq(raised.line, 81)
+
+# The first clause that accepts wins; alternatives share a clause.
+let first = fn (v) {
+  try {
+    throw v
+  } catch ApiError | Timeout {
+    'network'
+  } catch e: Object {
+    'object'
+  } catch e {
+    'anything'
+  }
+}
+assert_eq(first(ApiError(500)), 'network')
+assert_eq(first(Timeout(1)), 'network')
+assert_eq(first({a: 1}), 'object')
+assert_eq(first(7), 'anything')
+
+# A guard decides after the pattern binds; a rejected guard moves on.
+let guarded = fn (code) {
+  try {
+    throw ApiError(code)
+  } catch e: ApiError if e.status == 404 {
+    'not found'
+  } catch e: ApiError if e.status >= 500 {
+    'server'
+  }
+}
+assert_eq(guarded(404), 'not found')
+assert_eq(guarded(503), 'server')
+assert_eq(try {
+  guarded(302)
+} catch e: ApiError {
+  e.status
+}, 302)
+
+# The body's defers have run by the time a clause is tried, and a scope the
+# exception leaves on its way out still runs its own.
+mut log = []
+let pass_through = fn () {
+  defer {
+    log.push('outer defer')
+  }
+  try {
+    defer {
+      log.push('body defer')
+    }
+    throw 'unhandled'
+  } catch ApiError {
+    log.push('wrong clause')
+  }
+}
+assert_eq(try {
+  pass_through()
+} catch e {
+  e
+}, 'unhandled')
+assert_eq(log, ['body defer', 'outer defer'])
+
+# A clause's binding belongs to that clause.
+let scoped = try {
+  throw ApiError(1)
+} catch e: Timeout {
+  0
+} catch e: ApiError {
+  e.status
+}
+assert_eq(scoped, 1)
+
+# A guard that throws replaces the exception being handled.
+let guard_throws = try {
+  try {
+    throw 'first'
+  } catch e if e.missing_method() {
+    'unreached'
+  }
+} catch e {
+  e.kind
+}
+assert_eq(guard_throws, 'TypeError')
+
+# What goes on is the value itself: a key a handler added to an error is
+# still on it past a clause that let it by.
+let marked = try {
+  try {
+    try {
+      nil.missing()
+    } catch e {
+      e.note = 'seen'
+      throw e
+    }
+  } catch Timeout {
+    'wrong clause'
+  }
+} catch e {
+  [e.kind, e.note]
+}
+assert_eq(marked, ['TypeError', 'seen'])
+
+# A runtime error a clause lets by is still that error to what is out there
+# — here a worker's boundary, which reports it by its message.
+let from_worker = try {
+  Parallel.map([1], fn (x) {
+    try {
+      x / 0
+    } catch Long {
+      1
+    }
+  })
+} catch e {
+  e.message
+}
+assert_true(from_worker.contains('divide by 0'))
+
+# In a loop: each round starts with nothing caught.
+mut seen = 0
+for code in [404, 500, 404] {
+  try {
+    throw ApiError(code)
+  } catch e: ApiError if e.status == 404 {
+    seen += 1
+  } catch _ {
+    seen += 10
+  }
+}
+assert_eq(seen, 12)
+
+# No path through a clause keeps the thrown value alive: taken whole, taken
+# in part, tested and let by, a guard that rejects or throws, a clause left
+# by `continue`, `break` and `return`. One round first, so what only the
+# first run allocates is not counted.
+let left_alive = fn () {
+  let round = fn (i) {
+    try {
+      throw ApiError(i)
+    } catch e: ApiError {
+      e.status
+    }
+    try {
+      throw [ApiError(i), ApiError(i)]
+    } catch [first, ...rest] {
+      first.status
+    }
+    try {
+      throw {held: ApiError(i)}
+    } catch {held} {
+      held.status
+    }
+    try {
+      throw ApiError(i)
+    } catch e: ApiError if e.status < 0 {
+      1
+    } catch ApiError {
+      2
+    }
+    try {
+      try {
+        throw ApiError(i)
+      } catch Timeout {
+        0
+      }
+    } catch _ {
+      0
+    }
+    try {
+      try {
+        nil.missing()
+      } catch Timeout {
+        0
+      }
+    } catch _ {
+      0
+    }
+    try {
+      try {
+        throw ApiError(i)
+      } catch e: ApiError if e.missing_method() {
+        0
+      }
+    } catch _ {
+      0
+    }
+    for k in [1, 2, 3] {
+      try {
+        throw ApiError(k)
+      } catch e: ApiError if k == 2 {
+        continue
+      } catch e: ApiError {
+        if k == 3 {
+          break
+        }
+      }
+    }
+    let leave = fn () {
+      try {
+        throw ApiError(i)
+      } catch e: ApiError {
+        return e.status
+      }
+    }
+    leave()
+  }
+  round(0)
+  let before = GC.stat().rc_objects
+  for i in 0..20 {
+    round(i)
+  }
+  GC.stat().rc_objects - before
+}
+let alive = left_alive()
+assert_eq(alive, 0)

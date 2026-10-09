@@ -3347,10 +3347,10 @@ inspect(kind(2.5))         # => 'a number'
 inspect(kind('s'))         # => 'something else: s'
 ```
 
-* That reading belongs to a pattern that tests, a `match` arm. Where a
-  pattern declares or assigns, every name is a target whatever its case:
-  `let [N, M] = pair`, `(A, B) = (B, A)`, a `for` variable, a pattern
-  parameter.
+* That reading belongs to a pattern that tests — a `match` arm, a `catch`
+  clause (§15). Where a pattern declares or assigns, every name is a
+  target whatever its case: `let [N, M] = pair`, `(A, B) = (B, A)`, a
+  `for` variable, a pattern parameter.
 * `|` (or) sub-patterns cannot bind: a name inside an alternative would
   exist only on the paths that took it, so any binding there is a
   `SyntaxError` (`a | _`, `5 | a`, `Ok(x) | Err(x)`). Write literals,
@@ -4289,6 +4289,11 @@ Culebra supports user-raised exceptions via `throw` and catching via
     try { risky() }
     catch e { inspect("error: {e}") }
 
+    try { fetch(url) }
+    catch ApiError { retry() }                 # only an ApiError
+    catch e: Timeout if e.after > 30 { nil }    # a typed binding, a guard
+    catch {kind: 'IOError', message} { log(message) }
+
 Semantics:
 
 * `throw expr` evaluates `expr` and propagates it as a Culebra value
@@ -4298,6 +4303,47 @@ Semantics:
   `throw` within `A`, `B` is evaluated in another fresh scope with
   `name` bound to the thrown value. The whole `try`/`catch` is an
   expression yielding the value of whichever block ran last.
+* What follows `catch` is a pattern, read as a `match` arm's is (§13),
+  with an optional `if` guard. So `catch e` and `catch _` accept every
+  thrown value, and a clause that tests — a type name (`catch ApiError`,
+  `catch e: ApiError`), a constructor (`catch NotFound(path)`), an
+  Object shape (`catch {kind: 'IOError'}`), alternatives
+  (`catch ApiError | Timeout`) — accepts only what it matches.
+* A `try` takes one or more `catch` clauses, tried top to bottom; the
+  first that accepts the value runs, and only that one. When none
+  accepts it the exception keeps propagating as it was raised, to the
+  next `try` out: a thrown value at the position of its `throw`, a
+  runtime error with its kind, message and position, an interrupt as an
+  interrupt.
+  The `try` body's scope has ended by then: its `defer`s ran before the
+  first clause was tried.
+* An exception raised while a clause is being tried — by its guard, say —
+  replaces the one being handled, and leaves the `try` like any other.
+
+```culebra
+class ApiError {
+  new(.status) {}
+}
+fetch = fn (status) {
+  try {
+    if status == 0 {
+      1 / 0
+    }
+    throw ApiError(status)
+  } catch e: ApiError if e.status == 404 {
+    'not found'
+  } catch ApiError {
+    'http error'
+  } catch {kind: 'ZeroDivisionError'} {
+    'no status'
+  }
+}
+inspect(fetch(404))  # => 'not found'
+inspect(fetch(500))  # => 'http error'
+inspect(fetch(0))    # => 'no status'
+inspect(try { try { throw 'other' } catch ApiError { 'http' } } catch e { e })
+# => 'other'
+```
 * An uncaught `throw` at the top level is reported with
   `uncaught: ... at LINE:COL.` — the position of the `throw` itself — and
   the program exits with status 1. The exception is a caught

@@ -877,5 +877,39 @@ let n = "x".size()
 let e = d + 5' \
   "uncaught: {kind: 'TypeError', message: 'type error: expected Duration, got Long'} at 3:9."
 
+# An exception no `catch` clause takes goes on as it was raised: the report
+# is the one the program gives with the `try` taken away, on both lanes. The
+# body keeps its line and column in both spellings (a blank first line where
+# the `try {` was), so the two reports are compared byte for byte.
+check_passthrough() {
+  local name="$1" body="$2" clauses="$3"
+  printf '\n%s\n' "$body" > "$TMP/bare.cul"
+  printf 'try {\n%s\n} %s\n' "$body" "$clauses" > "$TMP/t.cul"
+  local want out_i out_j rc_want rc_i rc_j
+  want=$("$CULEBRA" --vm "$TMP/bare.cul" 2>&1); rc_want=$?
+  out_i=$("$CULEBRA" --vm "$TMP/t.cul" 2>&1); rc_i=$?
+  out_j=$("$CULEBRA" --jit "$TMP/t.cul" 2>&1); rc_j=$?
+  want=${want//bare.cul/t.cul}
+  if [[ "$out_i" != "$want" || $rc_i -ne $rc_want ]]; then
+    echo "FAIL passthrough [$name vm]: want (rc $rc_want) $want"
+    echo "  got (rc $rc_i): $out_i"
+    fail=1
+  fi
+  if [[ "$out_j" != "$want" || $rc_j -ne $rc_want ]]; then
+    echo "FAIL passthrough [$name jit]: want (rc $rc_want) $want"
+    echo "  got (rc $rc_j): $out_j"
+    fail=1
+  fi
+}
+check_passthrough "thrown string"   '  throw "boom"'            'catch Long { 1 }'
+check_passthrough "thrown object"   '  throw {code: 1}'         'catch s: String { 1 } catch [a] { 2 }'
+check_passthrough "runtime error"   '  nil.missing()'           'catch {kind: "ValueError"} { 1 }'
+check_passthrough "rejecting guard" '  throw 7'                 'catch n: Long if n > 9 { 1 }'
+check_passthrough "from a callee"   '  (fn () { [1][5] })()'    'catch NoSuchType { 1 }'
+# A guard that throws and catches on its own must not move the position:
+# its throw is the carrier's latest by the time the value is passed on.
+check_passthrough "guard catches"   '  throw "boom"' \
+  'catch e if (try { throw "inner" } catch _ { false }) { 1 }'
+
 if [[ $fail -eq 0 ]]; then echo "jit_error_pos_test OK"; exit 0; fi
 exit 1

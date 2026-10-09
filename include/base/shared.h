@@ -2567,6 +2567,10 @@ struct Runtime {
   // The CulebraException's line/col, for culebra_runtime_reanchor.
   int64_t thrown_line = 0;
   int64_t thrown_col = 0;
+  // How the value the last handler received had arrived: an engine error the
+  // pad made into an Object (try_translate), or a user throw. A `catch` that
+  // passes the value on raises that again (culebra_runtime_rethrow_caught).
+  int8_t caught_engine_error = 0;
 
   // Pending runtime-error carrier (backend-neutral: kind/msg/line/col, no
   // Value). Every CulebraError records itself here at construction; the JIT

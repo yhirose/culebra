@@ -33,6 +33,40 @@ try { work() } catch e { IO.eprint("CAUGHT {e.kind} {e.line}:{e.col}\n") }
 IO.eprint("CONT\n")
 EOF
 
+# A `catch` whose clauses take something else does not take the interrupt: it
+# goes on as the interrupt it is, and the program ends as an uncaught one does.
+cat > "$TMP/passed.cul" <<'EOF'
+fn work() {
+  defer { IO.eprint("DEFER\n") }
+  mut i = 0
+  while true { i = i + 1 }
+}
+try { work() } catch s: String { IO.eprint("WRONG\n") } catch {kind: 'IOError'} { IO.eprint("WRONG\n") }
+IO.eprint("CONT\n")
+EOF
+
+# ...and to the `catch` that does take it, it is the interrupt it was: the
+# clauses it passed leave no position of their own on it.
+cat > "$TMP/passed_on.cul" <<'EOF'
+fn work() {
+  defer { IO.eprint("DEFER\n") }
+  mut i = 0
+  while true { i = i + 1 }
+}
+try {
+  try {
+    work()
+  } catch s: String if s.size() > 3 {
+    IO.eprint("WRONG\n")
+  } catch {kind: 'IOError'} {
+    IO.eprint("WRONG\n")
+  }
+} catch e {
+  IO.eprint("CAUGHT {e.kind} {e.line}:{e.col}\n")
+}
+IO.eprint("CONT\n")
+EOF
+
 fail=0
 
 # check <desc> <want-exit> <want-output> -- <command...>
@@ -377,6 +411,8 @@ run_vm_group() {
   fail=0
   check "vm uncaught" 130 "$UNCAUGHT_OUT" -- "$CULEBRA" --vm "$TMP/uncaught.cul"
   check "vm caught"     0 "$CAUGHT_OUT"   -- "$CULEBRA" --vm "$TMP/caught.cul"
+  check "vm passed"   130 "$UNCAUGHT_OUT" -- "$CULEBRA" --vm "$TMP/passed.cul"
+  check "vm passed on"  0 "$CAUGHT_OUT"   -- "$CULEBRA" --vm "$TMP/passed_on.cul"
   check "vm iterdispose" 130 "$ITERDISPOSE_OUT" -- "$CULEBRA" --vm "$TMP/iterdispose.cul"
   check_stdin "vm stdin" -- "$CULEBRA" --vm "$TMP/stdin.cul"
   check_http  "vm http"  -- "$CULEBRA" --vm "$TMP/http.cul"
@@ -392,6 +428,8 @@ run_jit_group() {
   fail=0
   check "jit uncaught" 130 "$UNCAUGHT_OUT" -- "$CULEBRA" --jit "$TMP/uncaught.cul"
   check "jit caught"     0 "$CAUGHT_OUT"   -- "$CULEBRA" --jit "$TMP/caught.cul"
+  check "jit passed"   130 "$UNCAUGHT_OUT" -- "$CULEBRA" --jit "$TMP/passed.cul"
+  check "jit passed on"  0 "$CAUGHT_OUT"   -- "$CULEBRA" --jit "$TMP/passed_on.cul"
   check "jit iterdispose" 130 "$ITERDISPOSE_OUT" -- "$CULEBRA" --jit "$TMP/iterdispose.cul"
   check_stdin "jit stdin" -- "$CULEBRA" --jit "$TMP/stdin.cul"
   check_http  "jit http"  -- "$CULEBRA" --jit "$TMP/http.cul"
@@ -409,6 +447,7 @@ run_jit_group() {
 aot_ok=0
 if "$CULEBRA" build "$TMP/uncaught.cul" -o "$TMP/uncaught_aot" >/dev/null 2>&1 \
    && "$CULEBRA" build "$TMP/caught.cul" -o "$TMP/caught_aot" >/dev/null 2>&1 \
+   && "$CULEBRA" build "$TMP/passed.cul" -o "$TMP/passed_aot" >/dev/null 2>&1 \
    && "$CULEBRA" build "$TMP/iterdispose.cul" -o "$TMP/iterdispose_aot" >/dev/null 2>&1 \
    && "$CULEBRA" build "$TMP/stdin.cul" -o "$TMP/stdin_aot" >/dev/null 2>&1 \
    && "$CULEBRA" build "$TMP/http.cul" -o "$TMP/http_aot" >/dev/null 2>&1 \
@@ -422,6 +461,7 @@ run_aot_group() {
   if [ "$aot_ok" = 1 ]; then
     check "aot uncaught" 130 "$UNCAUGHT_OUT" -- "$TMP/uncaught_aot"
     check "aot caught"     0 "$CAUGHT_OUT"   -- "$TMP/caught_aot"
+    check "aot passed"   130 "$UNCAUGHT_OUT" -- "$TMP/passed_aot"
     check "aot iterdispose" 130 "$ITERDISPOSE_OUT" -- "$TMP/iterdispose_aot"
     check_stdin "aot stdin" -- "$TMP/stdin_aot"
     check_http  "aot http"  -- "$TMP/http_aot"

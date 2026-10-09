@@ -1432,7 +1432,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_ic(
 // `is_throw=0` so the caller propagates it with __cxa_rethrow.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_try_translate() {
   auto& rt = culebra::current_runtime();
-  if (rt.is_throw) return;        // user throw already carries a Value
+  if (rt.is_throw) {  // user throw already carries a Value
+    rt.caught_engine_error = 0;
+    return;
+  }
   if (!rt.pending_error) return;  // foreign exception — the pad rethrows it
   // A positionless runtime error (line/col 0) adopts the last published op
   // position, matching the old _jit_backfill_op_pos path.
@@ -1454,6 +1457,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_try_translate() {
   rt.thrown_tag = TAG_OBJECT;
   rt.thrown_data = reinterpret_cast<int64_t>(obj);
   rt.is_throw = 1;
+  rt.caught_engine_error = 1;
   rt.pending_error = 0;  // consumed
 }
 

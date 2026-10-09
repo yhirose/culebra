@@ -77,7 +77,9 @@
 # rebuilding of the ones after it in the worker).
 # 315 since test_type_pattern.cul (a bare type name in a match arm tests and
 # binds nothing, and a declaring pattern still binds every name).
-tests.cul 315
+# 316 since test_catch_pattern.cul (a `catch` clause takes a pattern, clauses
+# are tried in order, and a value none takes goes on as it was raised).
+tests.cul 316
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -91,7 +93,10 @@ tests.gen_frames 7
 
 # The curated bytecode cases held to frozen expected outputs, x2 lanes x3 GC
 # axes in the full gate, and built by `culebra build` in the aot lane.
-vm_cases 187
+# 189 since catch_clauses.cul (every clause form on the three lanes) and
+# error_catch_passes.cul (what no clause takes is uncaught where it was
+# raised).
+vm_cases 189
 
 # ctest entries. The shell-driven ones also make up the landing gate's CLI
 # phase (tools/checks/ctest_shell_driven.py names them).
@@ -141,7 +146,9 @@ ctest.entries 35
 # with no row to follow, in en and ja.
 # 1040 since §13 shows a bare type name as an arm beside a binding, in en and
 # ja.
-docs.blocks 1040
+# 1046 since §15, the quick guide and the handbook show `catch` clauses that
+# test, with a guard and with a value none of them takes, in en and ja.
+docs.blocks 1046
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

@@ -752,6 +752,36 @@ inline MatchView view_match(const peg::Ast& a) {
                    a.nodes[off].get(), a.nodes[off + 1].get()};
 }
 
+// View of one arm — a MATCH_ARM or a CATCH_CLAUSE, which share the layout
+// `[PATTERN, (GUARD)?, body]`. GUARD is kept by the AstOptimizer, so it is
+// detectable as the second child; `guard` is its condition, or nullptr.
+struct ArmView {
+  const peg::Ast* pattern;
+  const peg::Ast* guard;
+  const peg::Ast* body;
+};
+
+inline ArmView view_arm(const peg::Ast& a) {
+  using namespace peg::udl;
+  bool guarded = a.nodes.size() > 2 && a.nodes[1]->tag == "GUARD"_;
+  return ArmView{a.nodes[0].get(),
+                 guarded ? a.nodes[1]->nodes[0].get() : nullptr,
+                 a.nodes.back().get()};
+}
+
+// View of a TRY AST node — see grammar:
+//   TRY          <- try _ BLOCK (_ CATCH_CLAUSE)+
+//   CATCH_CLAUSE <- catch _ ARM_PATTERN (_ GUARD)? _ BLOCK
+// The body, then one or more clauses, each read through view_arm.
+struct TryView {
+  const peg::Ast* body;
+  std::span<const std::shared_ptr<peg::Ast>> clauses;
+};
+
+inline TryView view_try(const peg::Ast& a) {
+  return TryView{a.nodes[0].get(), std::span(a.nodes).subspan(1)};
+}
+
 // View of an OBJECT_PROPERTY AST node — see grammar:
 //   OBJECT_PROPERTY <- MUTABLE _ (FLOAT/NUMBER/NIL/BOOLEAN/TUPLE/IDENTIFIER) _ ':' _ EXPRESSION
 //   (shorthand) OBJECT_PROPERTY <- MUTABLE _ IDENTIFIER   (no ':' or value)
@@ -2610,7 +2640,7 @@ inline const std::vector<std::string>& ast_optimizer_keep_rules() {
       // label, losing the statement's own tag. The unlabelled form is a
       // childless leaf either way.
       "BREAK", "CONTINUE",
-      "MATCH_ARMS", "GUARD", "COND", "COND_ARM",
+      "MATCH_ARMS", "GUARD", "COND", "COND_ARM", "CATCH_CLAUSE",
       "ARRAY_PATTERN", "OBJECT_PATTERN",
       "CTOR_PATTERN",
       "REST_PATTERN", "INTERP_EXPR", "INTERPOLATED_STRING",

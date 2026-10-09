@@ -790,6 +790,7 @@ describe = fn (x) {
     n: Long if n > 100 => "big ({n})",
     n: Long => "int ({n})",
     s: String => "str ({s})",
+    Float => 'a float',
     true => 'TRUE',
     false => 'FALSE',
     nil => 'NIL',
@@ -800,8 +801,13 @@ inspect(describe(0))     # => 'zero'
 inspect(describe(2))     # => 'small'
 inspect(describe(999))   # => 'big (999)'
 inspect(describe('hi'))  # => 'str (hi)'
+inspect(describe(2.5))   # => 'a float'
 inspect(describe([1]))   # => 'other'
 ```
+
+A bare name is read by its first letter. One that starts with an
+uppercase letter is a type test that binds nothing (`Float => …`); any
+other name binds the value, so a lone `x => …` takes everything.
 
 ### 6.2 As an expression
 
@@ -889,6 +895,33 @@ try {
 } catch e {
   inspect("caught: {e}")  # => 'caught: negative: -1'
 }
+```
+
+What follows `catch` is a pattern, as in a `match` arm (Ch.6): `catch e`
+takes whatever was thrown, and a clause that tests takes only what it
+matches. A `try` takes several clauses, tried in order, and a value none
+of them takes keeps propagating to the next `try` out.
+
+```culebra
+class Timeout {
+  new(.after) {}
+}
+attempt = fn (v) {
+  try {
+    throw v
+  } catch t: Timeout {
+    "timed out after {t.after}s"
+  } catch s: String {
+    "message: {s}"
+  }
+}
+inspect(attempt(Timeout(30)))  # => 'timed out after 30s'
+inspect(attempt('boom'))       # => 'message: boom'
+inspect(try {
+  attempt(42)
+} catch e {
+  "passed on: {e}"
+})  # => 'passed on: 42'
 ```
 
 ### 7.2 `try` as an expression
@@ -983,8 +1016,8 @@ Full worked example: [language.md §15](language.md).
 ### Why allow any value to be thrown?
 
 A typical `throw "msg"` is enough for scripts; classed errors (Ch.9)
-are enough for libraries; you don't need a hierarchy to start. Catch
-arms can pattern-match on whatever shape the thrower used (Ch.6).
+are enough for libraries; you don't need a hierarchy to start. A `catch`
+clause pattern-matches on whatever shape the thrower used (Ch.6).
 
 ---
 

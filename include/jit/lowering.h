@@ -721,6 +721,7 @@ struct Lowering {
         case Op::WkErr:
         case Op::DestrErr:
         case Op::Throw:
+        case Op::Rethrow:
           mark(static_cast<int32_t>(i) + 1);
           break;
         case Op::JumpIfFalse:
@@ -4904,6 +4905,25 @@ struct Lowering {
                       {j.extract_tag(v), j.extract_data(v),
                        b.getInt64(line), b.getInt64(col)});
           j.close_block_unreachable();
+          break;
+        }
+        case Op::Rethrow: {
+          auto v = load_slot(in.a);
+          auto at = j.extract_data(load_slot(in.b));
+          b.CreateStore(j.make_nil(), slots[in.a]);
+          j.emit_call(j.module_->getOrInsertFunction(
+                          rt::rethrow_caught, b.getVoidTy(), b.getInt8Ty(),
+                          i64Ty, i64Ty),
+                      {j.extract_tag(v), j.extract_data(v), at});
+          j.close_block_unreachable();
+          break;
+        }
+        case Op::CaughtPos: {
+          // A plain read of the carrier: nothrow, like get_thrown_tag.
+          auto packed = b.CreateCall(
+              j.module_->getOrInsertFunction(rt::get_thrown_pos, i64Ty), {},
+              "caught.pos");
+          b.CreateStore(j.make_long(packed), slots[in.a]);
           break;
         }
         case Op::DeferMark: {

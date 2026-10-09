@@ -649,18 +649,23 @@ struct FnAnalysis {
     }
     if (node.tag == "TRY"_) {
       info.has_eh = true;
-      // TRY = [body, catch_ident, catch_body]. Both blocks are their own
-      // scopes (interp's tryEnv / catchEnv each run_deferred at exit):
-      // absorb their defers so they fire when the block closes, not at
-      // function exit. The counter snapshot sees defers the body's nested
+      // TRY = [body, CATCH_CLAUSE+]. The body and each clause's block are
+      // their own scopes (interp's tryEnv / catchEnv each run_deferred at
+      // exit): absorb their defers so they fire when the block closes, not
+      // at function exit. The counter snapshot sees defers the body's nested
       // scopes absorbed (the return value deliberately does not).
+      auto tv = culebra::view_try(node);
       int defers_before_body = defer_count_;
-      if (scan_eh_defer(*node.nodes[0], /*at_fn_top=*/false, info)) {
-        scope_has_defer.insert(node.nodes[0].get());
+      if (scan_eh_defer(*tv.body, /*at_fn_top=*/false, info)) {
+        scope_has_defer.insert(tv.body);
       }
       if (defer_count_ > defers_before_body) try_region_has_defer.insert(&node);
-      if (scan_eh_defer(*node.nodes[2], /*at_fn_top=*/false, info)) {
-        scope_has_defer.insert(node.nodes[2].get());
+      for (const auto& clause : tv.clauses) {
+        auto av = culebra::view_arm(*clause);
+        if (av.guard) scan_eh_defer(*av.guard, /*at_fn_top=*/false, info);
+        if (scan_eh_defer(*av.body, /*at_fn_top=*/false, info)) {
+          scope_has_defer.insert(av.body);
+        }
       }
       return false;  // the try/catch blocks absorb their own defers
     }

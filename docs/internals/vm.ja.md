@@ -579,7 +579,7 @@ testsと言語front endを合わせたコーパス全体では、4つのpassが
 
 ### 5.3 opcodeのファミリー
 
-155個のopcodeを分類すると:
+157個のopcodeを分類すると:
 
 | ファミリー | op | 備考 |
 |---|---|---|
@@ -594,7 +594,7 @@ testsと言語front endを合わせたコーパス全体では、4つのpassが
 | パターン | `TypeMatch` `SeqChk` `SeqGet` `SeqRest` `ObjGet` `DestrErr` `JumpIfTag` | `match`の腕とdestructuring。テストが失敗すると次の腕へジャンプし、その時点で何も生きていない |
 | 制御フロー | `Jump` `JumpIfFalse` `JumpIfTrue` `JumpIfNil` `JumpIfNotNil` `Halt` | `JumpIfFalse`は共有のtruthiness変換を運ぶ（非Bool条件はTypeError） |
 | ループ | `ForPrep` `ForLoop` `ForOpen` `ForNext` `ForDispose` `Safepoint` | Long範囲の数え上げ`for`は融合されたペア（sinkの`for _ in 0..n`も含む）。それ以外は12個のslotからなるカーソル（`ForSlot`）でプロトコルを歩く |
-| 例外とdefer | `Throw` `RaiseErr` `DeferMark` `DeferPush` `DeferRunTo` `OwnedMark` `OwnedExit` `DropSuppress` `Drop` `DropChk` | §5.5。`OwnedMark`/`OwnedExit`は決定的`drop`のためowned-resourceスタック上でスコープを括る |
+| 例外とdefer | `Throw` `Rethrow` `CaughtPos` `RaiseErr` `DeferMark` `DeferPush` `DeferRunTo` `OwnedMark` `OwnedExit` `DropSuppress` `Drop` `DropChk` | §5.5。`OwnedMark`/`OwnedExit`は決定的`drop`のためowned-resourceスタック上でスコープを括る |
 | 文字列と出力 | `Fmt` `StrCat` `Disp` `Println` `SetOpPos` | 補間、および`println(<引数1個>)`のpeephole |
 | namespace関数 | `NsCall` `ToFloat` | 直接の`Math.f(args)` / `to_float(x)`はresolverもclosureも経ずにhelperへ届く（§5.4） |
 | セッションとデバッグ | `ReplCell` `ReplBind` `DbgStmt` | §8.1、§8.3 |
@@ -1371,6 +1371,21 @@ tagを名指さない）。`mut`パラメータも除外する（再代入は再
 4. フレームを去るときはフレーム自身のdeferを実行し、owned領域を
    1回解決し（`culebra_runtime_owned_scope_exit`）、再帰深度を
    減算する。
+
+handlerは`catch`節の並びで、`caught_slot`に対する`match`として
+コンパイルされる — 腕の頭（`compile_arm_head`）は両者で共通である。
+payloadを丸ごと束縛する節（`catch e`、`catch _`）はスロットの参照を
+引き取り、検査をする節は借用して、節が値を受けた時点で解放する。
+すべてを受ける節が無い場合、handlerは`CaughtPos`で始まる。これは
+ガードが自前でthrowしてcatchする前に、値がどう届いたかを書き留める —
+ユーザーのthrowならその位置、padがエンジンのエラーから値を作ったなら
+その印である。handlerの末尾は`Rethrow`で、届いたときのものをもう一度
+上げる（`culebra_runtime_rethrow_caught`）。ユーザーのthrowは同じ値が
+その位置で進む。エンジンのエラーは、このhandlerが作ったObjectから
+組み直したそのエラーとして進む: `CulebraError`とユーザーのthrowを
+見分ける境界には`catch`が無かったときと同じものが届き、割り込みは
+割り込みに戻る。これを値の形で決めないのは、エラーオブジェクトが
+catchしたエラーの`throw e`で投げられる値でもあるからである。
 
 `defer`本体は0-arityのクロージャであり、ランタイムのグローバルな
 LIFO deferスタックに積まれる（`DeferPush`）。マークはフレームごと・
