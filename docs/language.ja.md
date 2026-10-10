@@ -4271,7 +4271,7 @@ shutdownパターン）は、`Signal.notify`でチャネルを登録します（
 | プロパティ | 型 | 内容 |
 |---|---|---|
 | `kind` | `String` | `'TypeError'`などのエラー種別。下記参照。 |
-| `message` | `String` | 人間可読な説明（`at L:C.`を含む）。 |
+| `message` | `String` | 人間可読な説明。位置は含みません（`line`と`col`で読みます）。 |
 | `line` | `Long` | 該当ASTノードの1起点行番号。不明時は`0`。 |
 | `col` | `Long` | 同じく桁番号。不明時は`0`。 |
 

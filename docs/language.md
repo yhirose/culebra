@@ -4505,7 +4505,7 @@ Objects** with four properties:
 | Property | Type | Description |
 |---|---|---|
 | `kind` | `String` | Error category, e.g. `'TypeError'`. See list below. |
-| `message` | `String` | Human-readable description (includes `at L:C.`). |
+| `message` | `String` | Human-readable description. The position is not part of it; read `line` and `col`. |
 | `line` | `Long` | 1-based source line of the offending AST node, `0` if unknown. |
 | `col` | `Long` | 1-based source column, `0` if unknown. |
 
