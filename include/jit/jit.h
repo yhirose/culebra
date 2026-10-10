@@ -1029,9 +1029,11 @@ struct JIT {
     // a memory manager that registers Win64 unwind tables (WinSEHMemoryManager),
     // so JIT'd exceptions can unwind in-process. Transparent for non-throwing
     // code — it only adds RtlAddFunctionTable calls for each object's .pdata.
+    // (The creator's parameters after the session differ by LLVM version —
+    // none through 22, JITLink's memory manager after — and RTDyld takes none.)
     lb.setObjectLinkingLayerCreator(
-        [](orc::ExecutionSession& es)
-            -> Expected<std::unique_ptr<orc::ObjectLayer>> {
+        [](orc::ExecutionSession& es,
+           auto&&...) -> Expected<std::unique_ptr<orc::ObjectLayer>> {
           auto layer = std::make_unique<orc::RTDyldObjectLinkingLayer>(
               es, [](const MemoryBuffer&)
                       -> std::unique_ptr<RuntimeDyld::MemoryManager> {
