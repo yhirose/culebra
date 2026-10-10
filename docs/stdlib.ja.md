@@ -2180,8 +2180,8 @@ splatの両方。第一級の値として使った場合も束縛は同じです
 subcommandを列挙し、`Args.parse`はparse結果を`Object`で返す。
 `--help`指定でhelpをstdoutに出して`Sys.exit(0)`、パースエラー時は
 stderrにerror表示 + `Sys.exit(2)`。プログラム制御したい場合は
-`Args.try_parse`を使うと`{kind: "ArgParseError", message}`または
-`{kind: "ArgParseHelp", help}`をthrowする。
+`Args.try_parse`を使うと`ArgParseError`が発生し、`--help`では
+`{kind: "ArgParseHelp", help}`がthrowされる。
 
 ### `Args.parse(argv: Array<String>, spec: Object) -> Object`
 
@@ -2322,15 +2322,15 @@ let r = try {
 } catch e {
   e
 }
-# r == {kind: "ArgParseError", message: "unknown option '--bogus'"}
+# r.kind == "ArgParseError", r.message == "unknown option '--bogus'"
 ```
 
-throw値の`kind`は次のいずれか:
+発生するものの`kind`は次のいずれか:
 
 | `kind` | 意味 | 付随フィールド |
 |---|---|---|
-| `ArgParseError` | parse失敗（不明オプション、型不一致、必須欠落、etc.） | `message` |
-| `ArgParseHelp` | `--help` / `-h`指定 | `help`（help文字列） |
+| `ArgParseError` | parse失敗（不明オプション、型不一致、必須欠落、etc.）。実行時エラー | `message`、`line`、`col` |
+| `ArgParseHelp` | `--help` / `-h`指定。throwされたObjectで、エラーではない | `help`（help文字列） |
 
 ---
 
@@ -4807,7 +4807,7 @@ Term.app(fn (s) {
 各呼び出しはメッセージと省略可能な構造化フィールド`Object`を取る。しきい値以上の
 レコードだけが出力される（既定`info`なので`debug`は落ちる）。しきい値とフォーマットは
 `LOG_LEVEL` / `LOG_FORMAT`環境変数を既定値とし、`set_level` / `set_format`で上書き可能
-（不明なレベル・フォーマットはraise）。タイムスタンプ（ISO 8601 UTC）は常に付与。
+（不明なレベル・フォーマットは`ValueError`）。タイムスタンプ（ISO 8601 UTC）は常に付与。
 
 `text`は人間可読（stderrが端末ならlevelに色が付く）:
 

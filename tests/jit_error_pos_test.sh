@@ -870,12 +870,12 @@ let s = Audio.Sound("not audio")' \
   'ValueError: not a valid WAV, MP3 or Ogg audio stream at 2:9.'
 check_eq "stdlib throw, uncaught" 'let ok = 1
 let m = StateMachine.new({initial: "a", states: {a: 1}})' \
-  "uncaught: {kind: 'TypeError', message: 'type error: expected Object for state 'initial', got String'} at 2:9."
+  "TypeError: type error: expected Object for state 'initial', got String at 2:9."
 
 check_eq "stdlib dunder, uncaught" 'let d = Time.seconds(1)
 let n = "x".size()
 let e = d + 5' \
-  "uncaught: {kind: 'TypeError', message: 'type error: expected Duration, got Long'} at 3:9."
+  "TypeError: type error: expected Duration, got Long at 3:9."
 
 # An exception no `catch` clause takes goes on as it was raised: the report
 # is the one the program gives with the `try` taken away, on both lanes. The

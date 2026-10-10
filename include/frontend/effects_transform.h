@@ -104,7 +104,7 @@ struct EffSuspension {
   std::string args_array;  // Perform: `[a, b, …]` source (rewritten, anchored)
   std::string call_src;    // Delegate: the effect-fn call source (rewritten, anchored)
   std::string prov;        // ` #@culebra:N` marker for the emitted line ("" = none)
-  int64_t line = 0;           // Perform: original source line (for EffectError)
+  int64_t at = 0;          // Perform: original position, packed (for EffectError)
 };
 
 // Classification of a leaf body statement: a statement-level suspension
@@ -237,7 +237,7 @@ class EffectsLowerer {
           "fn __eff_perform_wrapper__() {{\n"
           "  __Eff.perform_direct(\"{}\", {}, {})\n"
           "}}\n",
-          op, args, line));
+          op, args, err_at(*ast)));
       return reparse_expr(synth, line, names_.visible());
     }
     names_.walk_children(*ast, [&](std::shared_ptr<peg::Ast>& child) {
@@ -272,6 +272,11 @@ class EffectsLowerer {
     return {m ? m : static_cast<long>(n.line), static_cast<long>(n.column)};
   }
   int64_t err_line(const peg::Ast& n) const { return err_pos(n).line; }
+  // The position `__raise_at` reads.
+  int64_t err_at(const peg::Ast& n) const {
+    auto p = err_pos(n);
+    return culebra::pack_pos(p.line, p.col);
+  }
   std::string mk(const peg::Ast& n) const { return markers_.mk(n); }
   // Re-attach `n`'s marker when `x` is a single-line slice (the trailing
   // marker sits outside the node span, so the slice dropped it).
@@ -432,7 +437,7 @@ class EffectsLowerer {
     su.op = std::string(perform.nodes[0]->token);
     su.args_array = anchored(perform_args_array(*perform.nodes[1], rewrite));
     su.prov = mk(perform);
-    su.line = err_line(perform);
+    su.at = err_at(perform);
     return su;
   }
 
@@ -1073,9 +1078,9 @@ class EffectsLowerer {
     if (su.kind == EffSuspension::Perform) {
       st.states[susp] = std::format(
           "      self._eff_op = \"{}\"\n      self._eff_args = {}{}\n"
-          "      self._eff_line = {}\n"
+          "      self._eff_at = {}\n"
           "      self._eff_state = {}\n      return {}\n",
-          su.op, su.args_array, su.prov, su.line, after, EFF_SUSPEND);
+          su.op, su.args_array, su.prov, su.at, after, EFF_SUSPEND);
     } else {
       st.states[susp] = std::format(
           "      self._eff_delegate = ({}){}\n      self._eff_state = {}\n"
@@ -1768,7 +1773,7 @@ class EffectsLowerer {
         "      self._eff_val = nil\n"
         "      self._eff_op = nil\n"
         "      self._eff_args = nil\n"
-        "      self._eff_line = nil\n"
+        "      self._eff_at = nil\n"
         "      self._eff_delegate = nil\n",
         disp.entry);
     if (disp.n_defers > 0) {
@@ -1810,11 +1815,12 @@ class EffectsLowerer {
     std::string name = effect_fn_name(*ast);
 
     if (!effect_fn_has_body(*ast)) {
-      // Operation declaration: a stub that rejects a direct call.
+      // Operation declaration: a stub that rejects a direct call, at the
+      // declaration (the stub's own text has no column in the source).
       auto synth = std::make_shared<std::string>(std::format(
-          "fn {0}{1} {{ throw {{ kind: \"EffectError\", message: \"effect "
-          "operation '{0}' must be invoked via `perform`\" }} }}\n",
-          name, anchored(source_of(*ast->nodes[1]))));
+          "fn {0}{1} {{ __raise_at(\"EffectError\", \"effect "
+          "operation '{0}' must be invoked via `perform`\", {2}) }}\n",
+          name, anchored(source_of(*ast->nodes[1])), err_at(*ast)));
       return reparse_decl(synth, err_line(*ast), names_.visible());
     }
 

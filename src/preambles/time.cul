@@ -1,17 +1,11 @@
 let _time_module = fn () {
   let _type_error = fn (want, got) {
-    throw {
-      kind: "TypeError",
-      message: "type error: expected {want}, got {type_of(got)}",
-    }
+    __raise("TypeError", "type error: expected {want}, got {type_of(got)}")
   }
   # Nanoseconds are a Long, so every step checks the ±292-year range rather
   # than letting the count wrap; a Float rounds to the nearest nanosecond.
   let _out_of_range = fn () {
-    throw {
-      kind: "ValueError",
-      message: "Time: out of range (a Long count of nanoseconds, about ±292 years)",
-    }
+    __raise("ValueError", "Time: out of range (a Long count of nanoseconds, about ±292 years)")
   }
   let _long_min = -9223372036854775807 - 1
   let _add_ns = fn (a, b) {

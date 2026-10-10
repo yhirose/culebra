@@ -286,6 +286,20 @@ inline constexpr int64_t user_line(int64_t line) {
   return line & ~kLibraryLineBit;
 }
 
+// A source position packed into one int64, so a single value can carry it
+// where there is room for one: a runtime call's return, a rodata entry, a
+// cell's payload, a literal the effects transform writes into the code it
+// emits.
+struct LineCol {
+  int64_t line, col;
+};
+inline constexpr int64_t pack_pos(int64_t line, int64_t col) {
+  return (line << 32) | (col & 0xffffffff);
+}
+inline constexpr LineCol unpack_pos(int64_t packed) {
+  return {packed >> 32, packed & 0xffffffff};
+}
+
 // The one spelling of an uncaught error: "Kind: msg", plus " at L:C." when
 // the error carries a position. Every engine and runner prints this same
 // text — doctest `# !!` patterns match against it, so a reworded copy in one
@@ -3548,7 +3562,7 @@ trait Dir {
   }
   size(path) -> Long {
     if !self.is_file(path) {
-      throw {kind: 'IOError', message: self.is_dir(path) ? "Dir.size: '{path}' is a directory" : "Dir.size: no such file '{path}'"}
+      __raise('IOError', self.is_dir(path) ? "Dir.size: '{path}' is a directory" : "Dir.size: no such file '{path}'")
     }
     self.read(path).size()
   }
@@ -3559,7 +3573,7 @@ trait Dir {
     for path in paths {
       let segs = (win ? path.tr("\\", '/') : path).split('/')
       if path.starts_with('/') || path.starts_with("\\") || (win && path.contains(':')) || segs.any(|s| s == '' || s == '.' || s == '..') {
-        throw {kind: 'ValueError', message: "copy_to: '{path}' is not a path inside the directory"}
+        __raise('ValueError', "copy_to: '{path}' is not a path inside the directory")
       }
     }
     FS.mkdir(root)
@@ -3578,8 +3592,9 @@ trait Dir {
 // The kinds of error the engine and the standard library raise. As a type
 // name each takes an error of that kind — `catch IOError`, `e: TypeError` —
 // which is an Object carrying the kind and not an instance of a class: the
-// Object a handler makes of an engine error, and the one a culebra-source
-// module (or a program) throws as `{kind: 'IOError', ...}`. The list is
+// Object a handler makes of an engine error (the library's culebra-source
+// modules raise those too, with `__raise`), and the one a program throws as
+// `{kind: 'IOError', ...}`. The list is
 // closed because a type name answers for the fields every class of that name
 // declares: a name a classless Object also answers to can promise nothing
 // about a program's class of the same name (vm::Compiler::

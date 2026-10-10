@@ -56,27 +56,23 @@ let _eff_module = fn () {
     v
   }
 
-  fn _find(op, line) {
+  fn _find(op, at) {
     let st = _op_stacks.get(_key(op), nil)
     if st != nil {
       let n = st.size()
       return st[n - 1] if n > 0
     }
-    # `line` is the original source line of the `perform` (carried on the
+    # `at` is the original position of the `perform`, packed (carried on the
     # computation object by the transform), so the error points at the caller.
-    throw {
-      kind: "EffectError",
-      message: "no handler for effect '{op}'",
-      line: line,
-    }
+    __raise_at("EffectError", "no handler for effect '{op}'", at)
   }
 
-  fn _full_control_error(op, line) {
-    throw {
-      kind: "EffectError",
-      message: "effect '{op}' reached a full-control handler (non-tail `resume`) from outside an `effect fn`; declare the performing fn as `effect fn` so the continuation can be captured",
-      line: line,
-    }
+  fn _full_control_error(op, at) {
+    __raise_at(
+      "EffectError",
+      "effect '{op}' reached a full-control handler (non-tail `resume`) from outside an `effect fn`; declare the performing fn as `effect fn` so the continuation can be captured",
+      at,
+    )
   }
 
   # One frame of a fork: the native shallow copy, then the frame's own chance
@@ -170,7 +166,7 @@ let _eff_module = fn () {
         # A no-handler EffectError abandons the frames just like a clause
         # throw (`_find` never touches the stack, so the catch is sound).
         let h = try {
-          _find(comp._eff_op, comp._eff_line)
+          _find(comp._eff_op, comp._eff_at)
         } catch e {
           _finalize_stack(stack)
           throw e
@@ -253,10 +249,10 @@ let _eff_module = fn () {
   # suspension — dispatch straight off the per-op handler stack. Tail clauses run
   # with an identity resume (the native stack is the continuation); abort
   # clauses compute their result and unwind to their handle.
-  fn _perform_direct(op, args, line) {
-    let h = _find(op, line)
+  fn _perform_direct(op, args, at) {
+    let h = _find(op, at)
     let hf = h.f
-    _full_control_error(op, line) if h.t == "f"
+    _full_control_error(op, at) if h.t == "f"
     __eff_abort([h.tok, hf(args, _id_resume)]) if h.t == "a"
     hf(args, _id_resume)
   }
@@ -293,7 +289,7 @@ let _eff_module = fn () {
           # it always abandons the frames — finalize. An abort *signal* is not
           # observable by `catch` and unwinds to `_guard_stack` instead.
           resume_val = try {
-            _perform_direct(c._eff_op, c._eff_args, c._eff_line)
+            _perform_direct(c._eff_op, c._eff_args, c._eff_at)
           } catch e {
             _finalize_stack(stack)
             throw e

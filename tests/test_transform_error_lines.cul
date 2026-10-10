@@ -125,13 +125,13 @@ check("gen-stmt", [121, 13], fn () {
   gen_stmt().collect()
 })
 
-// no-handler EffectError carries the line of the offending `perform`
+// no-handler EffectError carries the position of the offending `perform`
 effect fn nh_body() {
   let a = 1
   let x = perform ask()
   x + a
 }
-check("no-handler", [131, nil], fn () {
+check("no-handler", [131, 11], fn () {
   handle { nh_body() } with return(v) { v }
 })
 
@@ -140,7 +140,7 @@ effect fn nh_inner() {
   perform ask()
 }
 effect fn nh_outer() { nh_inner() }
-check("no-handler-delegate", [140, nil], fn () {
+check("no-handler-delegate", [140, 3], fn () {
   handle { nh_outer() } with return(v) { v }
 })
 
@@ -318,5 +318,9 @@ effect fn wide_eff(xs) {
 check("wide-effect", [315, 48], fn () {
   handle { wide_eff([1]) } with un_note(x, k) { k(x) }
 })
+
+// an operation called without `perform` is reported at its declaration
+  effect fn bare_op(a, b)
+check("bare-op", [323, 3], fn () { bare_op(1, 2) })
 
 inspect("test_transform_error_lines: all assertions passed")

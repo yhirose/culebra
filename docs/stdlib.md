@@ -2239,8 +2239,8 @@ Declarative CLI argument parser. The spec is a culebra `Object`
 listing positionals, options, and subcommands; `Args.parse` returns
 an `Object` whose fields match the spec, prints help on `--help`,
 and exits with status 2 on parse errors. For programmatic control,
-`Args.try_parse` raises an `{kind: "ArgParseError", message}` or
-`{kind: "ArgParseHelp", help}` value instead.
+`Args.try_parse` raises an `ArgParseError` instead, or throws an
+`{kind: "ArgParseHelp", help}` value for `--help`.
 
 ### `Args.parse(argv: Array<String>, spec: Object) -> Object`
 
@@ -2378,7 +2378,7 @@ match Args.parse(Sys.argv, spec).subcommand {
 
 ### Error handling
 
-`Args.parse` exits on any error. `Args.try_parse` instead throws:
+`Args.parse` exits on any error. `Args.try_parse` instead raises:
 
 ```culebra
 let r = try {
@@ -2386,15 +2386,15 @@ let r = try {
 } catch e {
   e
 }
-# r == {kind: "ArgParseError", message: "unknown option '--bogus'"}
+# r.kind == "ArgParseError", r.message == "unknown option '--bogus'"
 ```
 
-The `kind` of a thrown value is one of:
+The `kind` of what it raises is one of:
 
 | `kind` | Meaning | Extra fields |
 |---|---|---|
-| `ArgParseError` | parse failure (unknown opt, type mismatch, missing required, etc.) | `message` |
-| `ArgParseHelp` | user passed `--help` / `-h` | `help` (the help-text string) |
+| `ArgParseError` | parse failure (unknown opt, type mismatch, missing required, etc.): a runtime error | `message`, `line`, `col` |
+| `ArgParseHelp` | user passed `--help` / `-h`: a thrown Object, not an error | `help` (the help-text string) |
 
 ---
 
@@ -4956,7 +4956,7 @@ Each call takes a message and an optional `Object` of structured fields. Only
 records at or above the threshold are emitted (default `info`, so `debug` is
 dropped). The threshold and format default from the `LOG_LEVEL` / `LOG_FORMAT`
 environment variables and can be overridden with `set_level` / `set_format`; an
-unknown level or format raises. A timestamp (ISO 8601 UTC) is always included.
+unknown level or format raises `ValueError`. A timestamp (ISO 8601 UTC) is always included.
 
 `text` is human-readable (the level is colored when stderr is a terminal):
 

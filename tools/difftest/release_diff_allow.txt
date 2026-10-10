@@ -45,6 +45,13 @@ match_type|*
 # baseline's `catch` took one name and cannot parse any of these.
 catch_pattern|*
 
+# What the library's culebra-source modules raise is a runtime error: caught,
+# it has the `line` and `col` of the call into the library, and uncaught it
+# is reported as `Kind: message`, where the baseline threw an Object. The
+# unhandled `perform` is one of them and gains its column.
+lib_error|*
+eff|effect fn get(); handle { let x = perform get(); x } with other(r)*
+
 # An error's kind is a type name that takes it (#27). The baseline read
 # `catch ZeroDivisionError` as a binding of that name, had no type pattern,
 # and refused the error at an annotation naming its kind.

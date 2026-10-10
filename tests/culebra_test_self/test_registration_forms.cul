@@ -81,3 +81,12 @@ fn parametrize_rejects_anonymous_target() {
     parametrize("not an array")
   })
 }
+
+# What `test` raises is positioned at the call into it, as any error the
+# library raises is: the ambient is library source, not a file of the suite.
+@test
+fn registration_error_reports_at_the_call() {
+  let here = try { nil.missing() } catch e { e.line }
+  let there = try { test(5) } catch e { e.line }
+  assert_eq(there, here + 1)
+}

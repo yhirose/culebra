@@ -1663,6 +1663,13 @@ inline constexpr CanonParam kCanonParams_Bare[] = {
   {"v", false, false, false, false, false, "", CanonDefault::None, 0, {}},
   // 46: __for_iter
   {"v", false, false, false, false, false, "", CanonDefault::None, 0, {}},
+  // 47: __raise
+  {"kind", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
+  {"message", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
+  // 49: __raise_at
+  {"kind", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
+  {"message", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
+  {"at", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonSigs_Bare[] = {
@@ -1679,6 +1686,8 @@ inline constexpr CanonSig kCanonSigs_Bare[] = {
   {"", "", "__eff_abort", kCanonParams_Bare + 10, 1, "", 1, 1, false, -1, -1, -1},
   {"", "", "__eff_catch_abort", kCanonParams_Bare + 11, 1, "Array", 1, 1, false, -1, -1, -1},
   {"", "", "__for_iter", kCanonParams_Bare + 46, 1, "Object", 1, 1, false, -1, -1, -1},
+  {"", "", "__raise", kCanonParams_Bare + 47, 2, "", 2, 2, false, -1, -1, -1},
+  {"", "", "__raise_at", kCanonParams_Bare + 49, 3, "", 3, 3, false, -1, -1, -1},
   {"", "", "range", kCanonParams_Bare + 12, 2, "", 0, 0, true, -1, 1, 0},
   {"", "", "iota", kCanonParams_Bare + 14, 1, "", 0, 0, true, -1, -1, 0},
   {"", "", "repeat", kCanonParams_Bare + 15, 2, "Array", 2, 2, false, -1, -1, -1},

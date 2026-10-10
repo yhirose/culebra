@@ -4536,10 +4536,16 @@ inspect(try { nth_ratio([6], 5, 3) } catch e { e.kind })  # => 'IndexError'
 ```
 
 An error of a kind is an Object that carries it: the one the runtime
-makes of its own errors, and one thrown as `{kind: 'ValueError', message:
-...}`, which is how the standard library's modules — and a program —
-raise theirs. An instance of a class is what its class says, whatever it
-keeps in a field named `kind`.
+makes of the errors the language and its standard library raise, and one
+a program throws as `{kind: 'ValueError', message: ...}`. An instance of
+a class is what its class says, whatever it keeps in a field named
+`kind`.
+
+The two differ in what else they carry. A runtime error has the `line`
+and `col` it was raised at — for one the standard library raises, the
+call into the library — and is reported as `Kind: message at L:C.`
+when nothing catches it. A thrown Object has the keys it was written
+with, and is reported as `uncaught: {...}` at its `throw`.
 
 The kinds that are type names are the ones the language and its standard
 library raise: every kind in the table below, and those of the library's
@@ -4947,7 +4953,7 @@ inspect(doubled().collect())  # => [20, 7]
   ordinary expression with no positional restrictions.
 * Errors inside an effect body report the line and column where the failing
   code was written, as in a plain fn. An unhandled `perform`'s
-  `EffectError` carries the perform's line as `e.line`.
+  `EffectError` carries the perform's position as `e.line` and `e.col`.
 * Effects and generators **compose**: a named generator fn declared in an
   `effect fn` / `handle` body works (and may read the body's locals), a
   self-contained `handle { … }` expression works inside a generator body

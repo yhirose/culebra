@@ -10,7 +10,7 @@ let _kauai_module = fn () {
   # `line` is where the mistake is: "file.kau:12", or "line 12" in a song given
   # as text.
   fn fail(line, msg) {
-    throw {kind: "KauaiError", message: "{line}: {msg}"}
+    __raise("KauaiError", "{line}: {msg}")
   }
 
   # --- lines and blocks ------------------------------------------------------
@@ -2115,7 +2115,7 @@ let _kauai_module = fn () {
     let fn_for = fn (table, kwarg, host, what) {
       let key = host.lower()
       let f = (table ?? {}).get(key, nil)
-      throw {kind: "ValueError", message: "Audio.Kauai: {what} plays `host {host}`, and {kwarg}: has no `{key}`"} if f == nil
+      __raise("ValueError", "Audio.Kauai: {what} plays `host {host}`, and {kwarg}: has no `{key}`") if f == nil
       f
     }
     mut out = {}
@@ -2158,7 +2158,10 @@ let _kauai_module = fn () {
         let key = self._todo.pop()
         let s = self._build[key]()
         if type_of(s) != "Sound" {
-          throw {kind: "TypeError", message: "Audio.Kauai: a host instrument answers an Audio.Sound, not {type_of(s)}"}
+          __raise(
+            "TypeError",
+            "Audio.Kauai: a host instrument answers an Audio.Sound, not {type_of(s)}",
+          )
         }
         self._sounds[key] = s
       }
@@ -2199,7 +2202,7 @@ let _kauai_module = fn () {
     # Whether it has played as far as `mark NAME`.
     reached(name: String) {
       let t = self._marks.get(name, nil)
-      throw {kind: "ValueError", message: "Audio.Kauai: the song has no mark {name}"} if t == nil
+      __raise("ValueError", "Audio.Kauai: the song has no mark {name}") if t == nil
       self._started != nil && _Time.monotonic() - self._started >= t
     }
 
@@ -2240,7 +2243,7 @@ let _kauai_module = fn () {
     load: fn (path: String, voices = nil, drums = nil, dir = nil) {
       let exists = dir == nil ? |n| FS.exists(n) : |n| dir.exists(n)
       let read = dir == nil ? |n| FS.read(n) : |n| dir.read(n)
-      throw {kind: "IOError", message: "Audio.Kauai: no song file {path}"} if !exists(path)
+      __raise("IOError", "Audio.Kauai: no song file {path}") if !exists(path)
       let load_used = fn (name, from, line) {
         let file = beside(from, name, dir != nil)
         fail(line, "no file {file} to use") if !exists(file)

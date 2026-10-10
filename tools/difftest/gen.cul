@@ -827,6 +827,24 @@ for p in catch_patterns {
   case("catch_pattern|" + p, p)
 }
 
+# What the library's culebra-source modules raise is a runtime error, as what
+# its native ones raise is: positioned at the call, and reported as one when
+# nothing takes it.
+let lib_errors = [
+  'try { StateMachine.new([]) } catch e { [e.kind, e.line, e.col] }',
+  'StateMachine.new([])',
+  'try { Dir.disk("/no/such/dir") } catch IOError { "io" }',
+  'try { Time.seconds(1) + 5 } catch e: TypeError { e.message }',
+  'assert_throws("ValueError", fn () { 1 })',
+  'try { assert_throws("ValueError", fn () { 1 }) } catch e: AssertionError { e.message }',
+  'try { Dir.memory({a: "x"}).size("zz") } catch e { [e.kind, e.message, e.line != nil] }',
+  'effect fn ask(); try { ask() } catch e { [e.kind, e.line, e.col] }',
+  'try { Log.set_level("bogus") } catch e { [e.kind, e.message] }',
+]
+for p in lib_errors {
+  case("lib_error|" + p, p)
+}
+
 # An error's kind is a type name that takes it — a clause, an arm, an
 # annotation, dispatch — whether the engine raised it or an Object carrying
 # the kind was thrown; an instance of a class is what its class says.

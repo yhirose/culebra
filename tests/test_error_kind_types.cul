@@ -104,8 +104,7 @@ assert_eq(label(try {
 assert_eq(label({kind: 'IndexError'}), 'index')
 assert_eq(label({kind: 'NoSuchKindError'}), 'object')
 
-# A thrown Object that carries the kind is an error of that kind too: that is
-# how the standard library's own modules raise theirs.
+# A thrown Object that carries the kind is an error of that kind too.
 assert_eq(try {
   throw {kind: 'ZeroDivisionError', message: 'mine'}
 } catch e: ZeroDivisionError {
@@ -229,3 +228,24 @@ let same_name = fn () {
   [what(|| throw IOError('/x')), what(|| FS.read('/no/such/dir/no-such-file'))]
 }
 assert_eq(same_name(), ['instance /x', 'error IOError'])
+
+# What the library's own modules raise is the error the runtime raises: its
+# position is the call into the library, and a failed `assert_throws` is the
+# AssertionError a failed `assert_eq` is.
+let from_library = try {
+  StateMachine.new([])
+} catch e {
+  e
+}
+assert_eq(
+  [from_library.kind, from_library.line != nil, from_library.col != nil],
+  ['TypeError', true, true],
+)
+let from_matcher = try {
+  assert_throws('ValueError', fn () {
+    1
+  })
+} catch e: AssertionError {
+  [e.line != nil, e.message.contains('expected throw')]
+}
+assert_eq(from_matcher, [true, true])

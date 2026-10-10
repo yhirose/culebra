@@ -4336,6 +4336,25 @@ inline JitValue _ns_global_eff_abort(JitValue* a, int64_t) {
   culebra_runtime_eff_abort(static_cast<int8_t>(a[0].tag), a[0].data);
   return {TAG_NIL, 0};  // unreachable: eff_abort always throws
 }
+// What the library's culebra-source modules raise an error with: the engine
+// error of that kind, as a native raises one, where `throw {kind, message}`
+// is a program's throw of an Object — reported as `uncaught: {...}`, with no
+// position of its own, and a user throw at every boundary. Positioned at the
+// call, which the library frame's exit moves to the user's call into it
+// (vm.md §6.2); `__raise_at` names the user position itself (packed, as
+// culebra::pack_pos packs one), for an error that exit cannot place: no
+// library frame was entered from the code at fault.
+[[noreturn]] inline void _ns_raise(JitValue* a, _JitPos at) {
+  throw culebra::CulebraError(
+      culebra_runtime_value_to_display(a[0].tag, a[0].data),
+      culebra_runtime_value_to_display(a[1].tag, a[1].data), at.line, at.col);
+}
+inline JitValue _ns_global_raise(JitValue* a, int64_t) {
+  _ns_raise(a, {_jit_thread.call_line, _jit_thread.call_col});
+}
+inline JitValue _ns_global_raise_at(JitValue* a, int64_t) {
+  _ns_raise(a, _jit_unpack_pos(_ns_adapt::take_long(a[2])));
+}
 // The iterator a `for` head opens on `a[0]`, with its coercion and its checks
 // (a value that cannot be walked, an `iter()` whose result is no iterator):
 // what the generator and effect lowerings call where their loop holds an
@@ -4484,11 +4503,9 @@ inline JitValue _ns_global_grid(JitValue* a, int64_t) {
 //
 // The comparison matchers are native so a failure carries the position of the
 // `assert_*` call. They read it from the call-site channel every bare builtin
-// has (`_jit_thread.call_line/col`); a Culebra implementation cannot — a throw
-// inside the preamble names the preamble's own line, and reaching one frame
-// out would need a call stack neither backend keeps. Narrowing which
-// `assert_true` in a file failed used to mean instrumenting the file and
-// running it (see tools/checks/windows_known_failures.txt's history).
+// has (`_jit_thread.call_line/col`). Narrowing which `assert_true` in a file
+// failed used to mean instrumenting the file and running it (see
+// tools/checks/windows_known_failures.txt's history).
 //
 // Each one dispatches through the same operator helper the plain expression
 // lowers to, so a user `__eq__` / `__lt__` / `cmp` is honored exactly as
@@ -11329,6 +11346,8 @@ inline const NsMethod kBuiltinFns[] = {
   {"", "__eff_abort", 1, &_ns_global_eff_abort},
   {"", "__eff_catch_abort", 1, &_ns_global_eff_catch_abort},
   {"", "__for_iter", 1, &_ns_global_for_iter},
+  {"", "__raise",    2, &_ns_global_raise},
+  {"", "__raise_at", 3, &_ns_global_raise_at},
   {"", "range",    -1, &_ns_global_range},
   {"", "iota",     -1, &_ns_global_iota},
   {"", "repeat",    2, &_ns_global_repeat},
@@ -12211,6 +12230,7 @@ inline const std::unordered_set<std::string_view>& builtin_var_names() {
       "to_long", "to_float",  "to_string", "type_of", "hash", "__eff_copy",
       "Range",   "class_of",
       "__eff_abort", "__eff_catch_abort", "__for_iter",
+      "__raise", "__raise_at",
       "Math",    "IO",        "FS",        "File",     "_Time",
       "Random",  "Sys",       "JSON",      "Tensor",   "GC",
       "_Regex",  "_PEG",      "_FST",      "Search",    "Proc",     "Net",

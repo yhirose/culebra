@@ -30,13 +30,13 @@ let e1 = try {
 } catch e {
   e
 }
-assert_true(e1.contains("unknown level 'bogus'"))
+assert_eq([e1.kind, e1.message], ['ValueError', "Log.set_level: unknown level 'bogus'"])
 let e2 = try {
   Log.set_format("xml")
   "no-error"
 } catch e {
   e
 }
-assert_true(e2.contains("unknown format 'xml'"))
+assert_eq([e2.kind, e2.message], ['ValueError', "Log.set_format: unknown format 'xml'"])
 
 IO.inspect("test_log OK")

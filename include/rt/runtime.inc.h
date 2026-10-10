@@ -425,19 +425,16 @@ inline void _jit_backfill_op_pos(culebra::CulebraError& e) {
   }
 }
 
-// A source position packed into one int64, so a single value can carry it
-// through an ABI with room for one: a runtime call's return (param_pos), a
-// rodata entry (the codegen's .argpos array), a cell's payload (the lazy
-// combinators' call-site capture). (C++ aggregate return, so outside the
-// extern "C" block below; JIT'd code never calls these.)
-struct _JitPos {
-  int64_t line, col;
-};
+// culebra::pack_pos, under the names the runtime uses: a runtime call's
+// return (param_pos), a rodata entry (the codegen's .argpos array), a cell's
+// payload (the lazy combinators' call-site capture). (C++ aggregate return,
+// so outside the extern "C" block below; JIT'd code never calls these.)
+using _JitPos = culebra::LineCol;
 inline int64_t _jit_pack_pos(int64_t line, int64_t col) {
-  return (line << 32) | (col & 0xffffffff);
+  return culebra::pack_pos(line, col);
 }
 inline _JitPos _jit_unpack_pos(int64_t packed) {
-  return {packed >> 32, packed & 0xffffffff};
+  return culebra::unpack_pos(packed);
 }
 
 // Where a positional parameter's type error points: the argument's own

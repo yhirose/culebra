@@ -4,18 +4,12 @@
 
 inline constexpr const char* TIME_MODULE_SOURCE = R"=culpre=(let _time_module = fn () {
   let _type_error = fn (want, got) {
-    throw {
-      kind: "TypeError",
-      message: "type error: expected {want}, got {type_of(got)}",
-    }
+    __raise("TypeError", "type error: expected {want}, got {type_of(got)}")
   }
   # Nanoseconds are a Long, so every step checks the ±292-year range rather
   # than letting the count wrap; a Float rounds to the nearest nanosecond.
   let _out_of_range = fn () {
-    throw {
-      kind: "ValueError",
-      message: "Time: out of range (a Long count of nanoseconds, about ±292 years)",
-    }
+    __raise("ValueError", "Time: out of range (a Long count of nanoseconds, about ±292 years)")
   }
   let _long_min = -9223372036854775807 - 1
   let _add_ns = fn (a, b) {
@@ -1666,7 +1660,7 @@ let _kauai_module = fn () {
   # `line` is where the mistake is: "file.kau:12", or "line 12" in a song given
   # as text.
   fn fail(line, msg) {
-    throw {kind: "KauaiError", message: "{line}: {msg}"}
+    __raise("KauaiError", "{line}: {msg}")
   }
 
   # --- lines and blocks ------------------------------------------------------
@@ -3771,7 +3765,7 @@ let _kauai_module = fn () {
     let fn_for = fn (table, kwarg, host, what) {
       let key = host.lower()
       let f = (table ?? {}).get(key, nil)
-      throw {kind: "ValueError", message: "Audio.Kauai: {what} plays `host {host}`, and {kwarg}: has no `{key}`"} if f == nil
+      __raise("ValueError", "Audio.Kauai: {what} plays `host {host}`, and {kwarg}: has no `{key}`") if f == nil
       f
     }
     mut out = {}
@@ -3814,7 +3808,10 @@ let _kauai_module = fn () {
         let key = self._todo.pop()
         let s = self._build[key]()
         if type_of(s) != "Sound" {
-          throw {kind: "TypeError", message: "Audio.Kauai: a host instrument answers an Audio.Sound, not {type_of(s)}"}
+          __raise(
+            "TypeError",
+            "Audio.Kauai: a host instrument answers an Audio.Sound, not {type_of(s)}",
+          )
         }
         self._sounds[key] = s
       }
@@ -3855,7 +3852,7 @@ let _kauai_module = fn () {
     # Whether it has played as far as `mark NAME`.
     reached(name: String) {
       let t = self._marks.get(name, nil)
-      throw {kind: "ValueError", message: "Audio.Kauai: the song has no mark {name}"} if t == nil
+      __raise("ValueError", "Audio.Kauai: the song has no mark {name}") if t == nil
       self._started != nil && _Time.monotonic() - self._started >= t
     }
 
@@ -3896,7 +3893,7 @@ let _kauai_module = fn () {
     load: fn (path: String, voices = nil, drums = nil, dir = nil) {
       let exists = dir == nil ? |n| FS.exists(n) : |n| dir.exists(n)
       let read = dir == nil ? |n| FS.read(n) : |n| dir.read(n)
-      throw {kind: "IOError", message: "Audio.Kauai: no song file {path}"} if !exists(path)
+      __raise("IOError", "Audio.Kauai: no song file {path}") if !exists(path)
       let load_used = fn (name, from, line) {
         let file = beside(from, name, dir != nil)
         fail(line, "no file {file} to use") if !exists(file)
@@ -4149,15 +4146,9 @@ inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = 
     if type == "Bool" {
       return true if raw == "true" || raw == "1"
       return false if raw == "false" || raw == "0"
-      throw {
-        kind: "ArgParseError",
-        message: "argument '{name}' expects Bool, got '{raw}'",
-      }
+      __raise("ArgParseError", "argument '{name}' expects Bool, got '{raw}'")
     }
-    throw {
-      kind: "ArgParseError",
-      message: "argument '{name}' has unknown type '{type}'",
-    }
+    __raise("ArgParseError", "argument '{name}' has unknown type '{type}'")
   }
   let _find_by_name = fn (args, name) {
     let mut i = 0
@@ -4294,9 +4285,9 @@ inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = 
         }
         j += 1
       }
-      throw {kind: "ArgParseError", message: "unknown subcommand '{tok}'"}
+      __raise("ArgParseError", "unknown subcommand '{tok}'")
     }
-    throw {kind: "ArgParseError", message: "expected subcommand"}
+    __raise("ArgParseError", "expected subcommand")
   }
   # `--name[=v]` and `-n[=v]` differ only in how many dashes they carry. Puts
   # what it read into `result`, and answers the index of the last token it took
@@ -4307,7 +4298,7 @@ inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = 
     let has_value = parts.size() > 1
     let spec_a = _find_by_name(spec.args, name)
     if spec_a == nil {
-      throw {kind: "ArgParseError", message: "unknown option '{dash}{name}'"}
+      __raise("ArgParseError", "unknown option '{dash}{name}'")
     }
     if _arg_type(spec_a) == "Bool" && !has_value {
       result[spec_a.name] = true
@@ -4319,10 +4310,7 @@ inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = 
     } else {
       last += 1
       if last >= argv.size() {
-        throw {
-          kind: "ArgParseError",
-          message: "option '{dash}{name}' expects a value",
-        }
+        __raise("ArgParseError", "option '{dash}{name}' expects a value")
       }
       argv[last]
     }
@@ -4381,20 +4369,17 @@ inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = 
       }
     }
     if taken < positionals.size() {
-      throw {
-        kind: "ArgParseError",
-        message: "unexpected positional argument '{positionals[taken]}'",
-      }
+      __raise(
+        "ArgParseError",
+        "unexpected positional argument '{positionals[taken]}'",
+      )
     }
     let mut k = 0
     while k < spec.args.size() {
       let a = spec.args[k]
       if !result.has(a.name) {
         if !_is_optional(a) {
-          throw {
-            kind: "ArgParseError",
-            message: "missing required argument '{a.name}'",
-          }
+          __raise("ArgParseError", "missing required argument '{a.name}'")
         }
         result[a.name] = _missing_value(a)
       }
@@ -4446,10 +4431,10 @@ inline constexpr const char* MATCHERS_MODULE_SOURCE = R"=culpre=(// assert_throw
 // kBuiltinFns in stdlib_rt.h).
 let assert_throws = fn (kind, f) {
   if f.params.size() != 0 {
-    throw {
-      kind: "ArityError",
-      message: "assert_throws: fn must take 0 parameters (got {f.params.size()})",
-    }
+    __raise(
+      "ArityError",
+      "assert_throws: fn must take 0 parameters (got {f.params.size()})",
+    )
   }
   let mut threw = false
   let mut actual_kind = ""
@@ -4464,16 +4449,16 @@ let assert_throws = fn (kind, f) {
     }
   }
   if !threw {
-    throw {
-      kind: "AssertionError",
-      message: "assert_throws('{kind}', fn): expected throw but fn returned normally",
-    }
+    __raise(
+      "AssertionError",
+      "assert_throws('{kind}', fn): expected throw but fn returned normally",
+    )
   }
   if actual_kind != kind {
-    throw {
-      kind: "AssertionError",
-      message: "assert_throws: expected kind '{kind}' but got '{actual_kind}'",
-    }
+    __raise(
+      "AssertionError",
+      "assert_throws: expected kind '{kind}' but got '{actual_kind}'",
+    )
   }
 }
 )=culpre=";
@@ -4885,12 +4870,12 @@ inline constexpr const char* LOG_MODULE_SOURCE = R"=culpre=(let _log_module = fn
   }
   let _set_level = fn (level) {
     let n = _levels.get(level, -1)
-    throw "Log.set_level: unknown level '" + level + "'" if n < 0
+    __raise("ValueError", "Log.set_level: unknown level '{level}'") if n < 0
     _threshold = n
   }
   let _set_format = fn (format) {
     if format != "text" && format != "json" {
-      throw "Log.set_format: unknown format '{format}'"
+      __raise("ValueError", "Log.set_format: unknown format '{format}'")
     }
     _format = format
   }
@@ -4980,10 +4965,7 @@ let _path_module = fn () {
     } else if _is_path(o) {
       to_string(o)
     } else {
-      throw {
-        kind: "TypeError",
-        message: "type error: expected String|Path, got {t}",
-      }
+      __raise("TypeError", "type error: expected String|Path, got {t}")
     }
   }
   class Path {
@@ -5517,13 +5499,13 @@ let _state_machine_module = fn () {
   # An ill-formed machine; a caller passing the wrong type gets the standard
   # `TypeError` instead, as in path.cul / time.cul.
   fn _fail(msg) {
-    throw {kind: "StateMachineError", message: msg}
+    __raise("StateMachineError", msg)
   }
   fn _want(what, got, where) {
-    throw {
-      kind: "TypeError",
-      message: "type error: expected {what} for {where}, got {type_of(got)}",
-    }
+    __raise(
+      "TypeError",
+      "type error: expected {what} for {where}, got {type_of(got)}",
+    )
   }
 
   fn _reject_unknown(o, allowed, where) {
@@ -5888,20 +5870,14 @@ let _dir_module = fn () {
   let _disk_path = fn (who, p) {
     let t = type_of(p)
     if t != 'String' && t != 'StringView' && t != 'Path' {
-      throw {
-        kind: 'TypeError',
-        message: "type error: {who} expects String|Path, got {t}",
-      }
+      __raise('TypeError', "type error: {who} expects String|Path, got {t}")
     }
     to_string(p)
   }
   let _string_arg = fn (who, v) {
     let t = type_of(v)
     if t != 'String' && t != 'StringView' {
-      throw {
-        kind: 'TypeError',
-        message: "type error: {who} expects String, got {t}",
-      }
+      __raise('TypeError', "type error: {who} expects String, got {t}")
     }
     to_string(v)
   }
@@ -5909,22 +5885,22 @@ let _dir_module = fn () {
   # The two kinds of IOError every Dir owes, worded once for all of them.
   let _need_file = fn (d, op, path) {
     if !d.is_file(path) {
-      throw {
-        kind: 'IOError',
-        message: d.is_dir(path)
+      __raise(
+        'IOError',
+        d.is_dir(path)
           ? "Dir.{op}: '{path}' is a directory"
           : "Dir.{op}: no such file '{path}'",
-      }
+      )
     }
   }
   let _need_dir = fn (d, op, path) {
     if !d.is_dir(path) {
-      throw {
-        kind: 'IOError',
-        message: d.is_file(path)
+      __raise(
+        'IOError',
+        d.is_file(path)
           ? "Dir.{op}: '{path}' is a file"
           : "Dir.{op}: no such directory '{path}'",
-      }
+      )
     }
   }
 
@@ -5938,7 +5914,7 @@ let _dir_module = fn () {
       let p = _disk_path('Dir.disk', path)
       self.root = FS.abspath(p)
       if !FS.is_dir(self.root) {
-        throw {kind: 'IOError', message: "Dir.disk: no such directory '{p}'"}
+        __raise('IOError', "Dir.disk: no such directory '{p}'")
       }
       self._real = FS.realpath(self.root)
     }
@@ -5975,39 +5951,39 @@ let _dir_module = fn () {
     new(files) {
       _Dir.mark(self, 'memory')
       if type_of(files) != 'Object' {
-        throw {
-          kind: 'TypeError',
-          message: "type error: Dir.memory expects Object, got {type_of(files)}",
-        }
+        __raise(
+          'TypeError',
+          "type error: Dir.memory expects Object, got {type_of(files)}",
+        )
       }
       mut contents = {}
       mut paths = [].to_set()
       for key, value in files {
         if type_of(key) != 'String' {
-          throw {
-            kind: 'TypeError',
-            message: "Dir.memory: a path is a String, got {type_of(key)}",
-          }
+          __raise(
+            'TypeError',
+            "Dir.memory: a path is a String, got {type_of(key)}",
+          )
         }
         let t = type_of(value)
         if t != 'String' && t != 'StringView' {
-          throw {
-            kind: 'TypeError',
-            message: "Dir.memory: '{key}' holds {t}, not String (a file in a subdirectory is a key like 'sub/name.txt')",
-          }
+          __raise(
+            'TypeError',
+            "Dir.memory: '{key}' holds {t}, not String (a file in a subdirectory is a key like 'sub/name.txt')",
+          )
         }
         let rel = _Dir.normalize(key)
         if rel == nil || rel == '' {
-          throw {
-            kind: 'ValueError',
-            message: "Dir.memory: '{key}' is not a file inside the directory",
-          }
+          __raise(
+            'ValueError',
+            "Dir.memory: '{key}' is not a file inside the directory",
+          )
         }
         if !paths.add(rel) {
-          throw {
-            kind: 'ValueError',
-            message: "Dir.memory: '{key}' names a file another key already names",
-          }
+          __raise(
+            'ValueError',
+            "Dir.memory: '{key}' names a file another key already names",
+          )
         }
         contents[rel] = to_string(value)
       }
@@ -6018,10 +5994,10 @@ let _dir_module = fn () {
         for i in range(1, parts.size()) {
           let parent = parts.slice(0, i).join('/')
           if paths.contains(parent) {
-            throw {
-              kind: 'ValueError',
-              message: "Dir.memory: '{parent}' is both a file and a directory",
-            }
+            __raise(
+              'ValueError',
+              "Dir.memory: '{parent}' is both a file and a directory",
+            )
           }
           dirs.add(parent)
         }
@@ -6108,10 +6084,10 @@ let _dir_module = fn () {
     new(path, bytes) {
       _Dir.mark(self, 'zip')
       if (path == nil) == (bytes == nil) {
-        throw {
-          kind: 'TypeError',
-          message: "type error: Dir.zip takes a path or bytes:, one of the two",
-        }
+        __raise(
+          'TypeError',
+          "type error: Dir.zip takes a path or bytes:, one of the two",
+        )
       }
       self.path = nil
       self.bytes = nil
@@ -6121,10 +6097,10 @@ let _dir_module = fn () {
       } else {
         let t = type_of(bytes)
         if t != 'String' && t != 'StringView' {
-          throw {
-            kind: 'TypeError',
-            message: "type error: Dir.zip bytes: expects String, got {t}",
-          }
+          __raise(
+            'TypeError',
+            "type error: Dir.zip bytes: expects String, got {t}",
+          )
         }
         self.bytes = bytes
         self._id = _Dir.zip_open_bytes(bytes)
@@ -6240,27 +6216,23 @@ let _eff_module = fn () {
     v
   }
 
-  fn _find(op, line) {
+  fn _find(op, at) {
     let st = _op_stacks.get(_key(op), nil)
     if st != nil {
       let n = st.size()
       return st[n - 1] if n > 0
     }
-    # `line` is the original source line of the `perform` (carried on the
+    # `at` is the original position of the `perform`, packed (carried on the
     # computation object by the transform), so the error points at the caller.
-    throw {
-      kind: "EffectError",
-      message: "no handler for effect '{op}'",
-      line: line,
-    }
+    __raise_at("EffectError", "no handler for effect '{op}'", at)
   }
 
-  fn _full_control_error(op, line) {
-    throw {
-      kind: "EffectError",
-      message: "effect '{op}' reached a full-control handler (non-tail `resume`) from outside an `effect fn`; declare the performing fn as `effect fn` so the continuation can be captured",
-      line: line,
-    }
+  fn _full_control_error(op, at) {
+    __raise_at(
+      "EffectError",
+      "effect '{op}' reached a full-control handler (non-tail `resume`) from outside an `effect fn`; declare the performing fn as `effect fn` so the continuation can be captured",
+      at,
+    )
   }
 
   # One frame of a fork: the native shallow copy, then the frame's own chance
@@ -6354,7 +6326,7 @@ let _eff_module = fn () {
         # A no-handler EffectError abandons the frames just like a clause
         # throw (`_find` never touches the stack, so the catch is sound).
         let h = try {
-          _find(comp._eff_op, comp._eff_line)
+          _find(comp._eff_op, comp._eff_at)
         } catch e {
           _finalize_stack(stack)
           throw e
@@ -6437,10 +6409,10 @@ let _eff_module = fn () {
   # suspension — dispatch straight off the per-op handler stack. Tail clauses run
   # with an identity resume (the native stack is the continuation); abort
   # clauses compute their result and unwind to their handle.
-  fn _perform_direct(op, args, line) {
-    let h = _find(op, line)
+  fn _perform_direct(op, args, at) {
+    let h = _find(op, at)
     let hf = h.f
-    _full_control_error(op, line) if h.t == "f"
+    _full_control_error(op, at) if h.t == "f"
     __eff_abort([h.tok, hf(args, _id_resume)]) if h.t == "a"
     hf(args, _id_resume)
   }
@@ -6477,7 +6449,7 @@ let _eff_module = fn () {
           # it always abandons the frames — finalize. An abort *signal* is not
           # observable by `catch` and unwinds to `_guard_stack` instead.
           resume_val = try {
-            _perform_direct(c._eff_op, c._eff_args, c._eff_line)
+            _perform_direct(c._eff_op, c._eff_args, c._eff_at)
           } catch e {
             _finalize_stack(stack)
             throw e
@@ -6525,16 +6497,10 @@ let __test_has_cases = fn (fname) {
 let test = fn (*args) {
   if args.size() == 2 {
     if type_of(args[0]) != "String" {
-      throw {
-        kind: "TypeError",
-        message: "test(name, fn): name must be a String",
-      }
+      __raise("TypeError", "test(name, fn): name must be a String")
     }
     if type_of(args[1]) != "Function" {
-      throw {
-        kind: "TypeError",
-        message: "test(name, fn): fn must be a Function",
-      }
+      __raise("TypeError", "test(name, fn): fn must be a Function")
     }
     __test_add(args[0], args[1], nil)
     return nil
@@ -6542,24 +6508,18 @@ let test = fn (*args) {
   if args.size() == 1 {
     let f = args[0]
     if type_of(f) != "Function" {
-      throw {
-        kind: "TypeError",
-        message: "test(fn): argument must be a Function",
-      }
+      __raise("TypeError", "test(fn): argument must be a Function")
     }
     if f.name == "" {
-      throw {
-        kind: "ValueError",
-        message: "@test requires a named function (got anonymous); use test(\"name\", fn) for anonymous bodies",
-      }
+      __raise(
+        "ValueError",
+        "@test requires a named function (got anonymous); use test(\"name\", fn) for anonymous bodies",
+      )
     }
     __test_add(f.name, f, nil) if !__test_has_cases(f.name)
     return f
   }
-  throw {
-    kind: "ArityError",
-    message: "test() expects 1 or 2 arguments (got {args.size()})",
-  }
+  __raise("ArityError", "test() expects 1 or 2 arguments (got {args.size()})")
 }
 
 # `@parametrize(cases)` — one entry per case, named `<fn>[i]`. A case that is
@@ -6567,23 +6527,17 @@ let test = fn (*args) {
 # argument.
 let parametrize = fn (cases) {
   if type_of(cases) != "Array" {
-    throw {
-      kind: "TypeError",
-      message: "parametrize(cases): cases must be an Array",
-    }
+    __raise("TypeError", "parametrize(cases): cases must be an Array")
   }
   fn (f) {
     if type_of(f) != "Function" {
-      throw {
-        kind: "TypeError",
-        message: "parametrize(cases): the decorated value must be a Function",
-      }
+      __raise(
+        "TypeError",
+        "parametrize(cases): the decorated value must be a Function",
+      )
     }
     if f.name == "" {
-      throw {
-        kind: "ValueError",
-        message: "@parametrize requires a named function",
-      }
+      __raise("ValueError", "@parametrize requires a named function")
     }
     for i in range(cases.size()) {
       let c = cases[i]

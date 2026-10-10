@@ -25,10 +25,7 @@ let _path_module = fn () {
     } else if _is_path(o) {
       to_string(o)
     } else {
-      throw {
-        kind: "TypeError",
-        message: "type error: expected String|Path, got {t}",
-      }
+      __raise("TypeError", "type error: expected String|Path, got {t}")
     }
   }
   class Path {

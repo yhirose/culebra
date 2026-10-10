@@ -4,10 +4,10 @@
 // kBuiltinFns in stdlib_rt.h).
 let assert_throws = fn (kind, f) {
   if f.params.size() != 0 {
-    throw {
-      kind: "ArityError",
-      message: "assert_throws: fn must take 0 parameters (got {f.params.size()})",
-    }
+    __raise(
+      "ArityError",
+      "assert_throws: fn must take 0 parameters (got {f.params.size()})",
+    )
   }
   let mut threw = false
   let mut actual_kind = ""
@@ -22,15 +22,15 @@ let assert_throws = fn (kind, f) {
     }
   }
   if !threw {
-    throw {
-      kind: "AssertionError",
-      message: "assert_throws('{kind}', fn): expected throw but fn returned normally",
-    }
+    __raise(
+      "AssertionError",
+      "assert_throws('{kind}', fn): expected throw but fn returned normally",
+    )
   }
   if actual_kind != kind {
-    throw {
-      kind: "AssertionError",
-      message: "assert_throws: expected kind '{kind}' but got '{actual_kind}'",
-    }
+    __raise(
+      "AssertionError",
+      "assert_throws: expected kind '{kind}' but got '{actual_kind}'",
+    )
   }
 }

@@ -6,15 +6,9 @@ let _args_module = fn () {
     if type == "Bool" {
       return true if raw == "true" || raw == "1"
       return false if raw == "false" || raw == "0"
-      throw {
-        kind: "ArgParseError",
-        message: "argument '{name}' expects Bool, got '{raw}'",
-      }
+      __raise("ArgParseError", "argument '{name}' expects Bool, got '{raw}'")
     }
-    throw {
-      kind: "ArgParseError",
-      message: "argument '{name}' has unknown type '{type}'",
-    }
+    __raise("ArgParseError", "argument '{name}' has unknown type '{type}'")
   }
   let _find_by_name = fn (args, name) {
     let mut i = 0
@@ -151,9 +145,9 @@ let _args_module = fn () {
         }
         j += 1
       }
-      throw {kind: "ArgParseError", message: "unknown subcommand '{tok}'"}
+      __raise("ArgParseError", "unknown subcommand '{tok}'")
     }
-    throw {kind: "ArgParseError", message: "expected subcommand"}
+    __raise("ArgParseError", "expected subcommand")
   }
   # `--name[=v]` and `-n[=v]` differ only in how many dashes they carry. Puts
   # what it read into `result`, and answers the index of the last token it took
@@ -164,7 +158,7 @@ let _args_module = fn () {
     let has_value = parts.size() > 1
     let spec_a = _find_by_name(spec.args, name)
     if spec_a == nil {
-      throw {kind: "ArgParseError", message: "unknown option '{dash}{name}'"}
+      __raise("ArgParseError", "unknown option '{dash}{name}'")
     }
     if _arg_type(spec_a) == "Bool" && !has_value {
       result[spec_a.name] = true
@@ -176,10 +170,7 @@ let _args_module = fn () {
     } else {
       last += 1
       if last >= argv.size() {
-        throw {
-          kind: "ArgParseError",
-          message: "option '{dash}{name}' expects a value",
-        }
+        __raise("ArgParseError", "option '{dash}{name}' expects a value")
       }
       argv[last]
     }
@@ -238,20 +229,17 @@ let _args_module = fn () {
       }
     }
     if taken < positionals.size() {
-      throw {
-        kind: "ArgParseError",
-        message: "unexpected positional argument '{positionals[taken]}'",
-      }
+      __raise(
+        "ArgParseError",
+        "unexpected positional argument '{positionals[taken]}'",
+      )
     }
     let mut k = 0
     while k < spec.args.size() {
       let a = spec.args[k]
       if !result.has(a.name) {
         if !_is_optional(a) {
-          throw {
-            kind: "ArgParseError",
-            message: "missing required argument '{a.name}'",
-          }
+          __raise("ArgParseError", "missing required argument '{a.name}'")
         }
         result[a.name] = _missing_value(a)
       }

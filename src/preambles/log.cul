@@ -53,12 +53,12 @@ let _log_module = fn () {
   }
   let _set_level = fn (level) {
     let n = _levels.get(level, -1)
-    throw "Log.set_level: unknown level '" + level + "'" if n < 0
+    __raise("ValueError", "Log.set_level: unknown level '{level}'") if n < 0
     _threshold = n
   }
   let _set_format = fn (format) {
     if format != "text" && format != "json" {
-      throw "Log.set_format: unknown format '{format}'"
+      __raise("ValueError", "Log.set_format: unknown format '{format}'")
     }
     _format = format
   }

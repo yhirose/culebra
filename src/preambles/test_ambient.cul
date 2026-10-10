@@ -28,16 +28,10 @@ let __test_has_cases = fn (fname) {
 let test = fn (*args) {
   if args.size() == 2 {
     if type_of(args[0]) != "String" {
-      throw {
-        kind: "TypeError",
-        message: "test(name, fn): name must be a String",
-      }
+      __raise("TypeError", "test(name, fn): name must be a String")
     }
     if type_of(args[1]) != "Function" {
-      throw {
-        kind: "TypeError",
-        message: "test(name, fn): fn must be a Function",
-      }
+      __raise("TypeError", "test(name, fn): fn must be a Function")
     }
     __test_add(args[0], args[1], nil)
     return nil
@@ -45,24 +39,18 @@ let test = fn (*args) {
   if args.size() == 1 {
     let f = args[0]
     if type_of(f) != "Function" {
-      throw {
-        kind: "TypeError",
-        message: "test(fn): argument must be a Function",
-      }
+      __raise("TypeError", "test(fn): argument must be a Function")
     }
     if f.name == "" {
-      throw {
-        kind: "ValueError",
-        message: "@test requires a named function (got anonymous); use test(\"name\", fn) for anonymous bodies",
-      }
+      __raise(
+        "ValueError",
+        "@test requires a named function (got anonymous); use test(\"name\", fn) for anonymous bodies",
+      )
     }
     __test_add(f.name, f, nil) if !__test_has_cases(f.name)
     return f
   }
-  throw {
-    kind: "ArityError",
-    message: "test() expects 1 or 2 arguments (got {args.size()})",
-  }
+  __raise("ArityError", "test() expects 1 or 2 arguments (got {args.size()})")
 }
 
 # `@parametrize(cases)` — one entry per case, named `<fn>[i]`. A case that is
@@ -70,23 +58,17 @@ let test = fn (*args) {
 # argument.
 let parametrize = fn (cases) {
   if type_of(cases) != "Array" {
-    throw {
-      kind: "TypeError",
-      message: "parametrize(cases): cases must be an Array",
-    }
+    __raise("TypeError", "parametrize(cases): cases must be an Array")
   }
   fn (f) {
     if type_of(f) != "Function" {
-      throw {
-        kind: "TypeError",
-        message: "parametrize(cases): the decorated value must be a Function",
-      }
+      __raise(
+        "TypeError",
+        "parametrize(cases): the decorated value must be a Function",
+      )
     }
     if f.name == "" {
-      throw {
-        kind: "ValueError",
-        message: "@parametrize requires a named function",
-      }
+      __raise("ValueError", "@parametrize requires a named function")
     }
     for i in range(cases.size()) {
       let c = cases[i]

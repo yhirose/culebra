@@ -53,7 +53,8 @@ namespace culebra {
 // Object listing positionals + options + subcommands; `Args.parse`
 // returns an Object with parsed fields, prints help on `--help`,
 // and reports errors with `Sys.exit(2)`. `try_parse` raises
-// `{kind: \"ArgParseError\", message}` for programmatic control.
+// `ArgParseError` (and throws `{kind: "ArgParseHelp", help}` for `--help`)
+// for programmatic control.
 
 // Matcher family — `assert_true` / `assert_false` / `assert_eq` /
 // `assert_ne` / `assert_lt` / `assert_le` / `assert_gt` / `assert_ge` /

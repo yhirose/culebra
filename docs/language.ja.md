@@ -4301,11 +4301,17 @@ inspect(nth_ratio([6], 0, nil))  # => 'not a number, line 3'
 inspect(try { nth_ratio([6], 5, 3) } catch e { e.kind })  # => 'IndexError'
 ```
 
-あるkindのエラーとは、そのkindを持つObjectのことです。ランタイムが
-自分のエラーから作るObjectも、`{kind: 'ValueError', message: ...}`として
-投げられたObjectも同じです。標準ライブラリのモジュールもプログラムも、
-後者の形でエラーを発生させます。クラスのインスタンスは、`kind`という
-フィールドに何を持っていても、そのクラスのものです。
+あるkindのエラーとは、そのkindを持つObjectのことです。言語と標準
+ライブラリが発生させるエラーからランタイムが作るObjectも、プログラムが
+`{kind: 'ValueError', message: ...}`として投げたObjectも同じです。
+クラスのインスタンスは、`kind`というフィールドに何を持っていても、
+そのクラスのものです。
+
+両者の違いは、ほかに何を持つかです。実行時エラーは発生した位置の
+`line`と`col`を持ちます（標準ライブラリが発生させたものは、ライブラリを
+呼んだ位置です）。誰も捕まえなければ`Kind: message at L:C.`の形で報告
+されます。投げられたObjectは書かれたキーだけを持ち、`throw`の位置で
+`uncaught: {...}`として報告されます。
 
 型名として使えるkindは、言語と標準ライブラリが発生させるものです。
 下の表のkindすべてと、ライブラリの各namespaceのkind（`HttpError`、
@@ -4696,7 +4702,7 @@ inspect(doubled().collect())  # => [20, 7]
   **plain関数の中**では`perform`はただの式で、位置の制約はありません。
 * エフェクト本体内のエラーは、plain関数と同じく、失敗したコードを書いた
   行と列で報告されます。ハンドラ不在の`perform`が送出する`EffectError`
-  は、その`perform`の行を`e.line`として持ちます。
+  は、その`perform`の位置を`e.line`と`e.col`として持ちます。
 * エフェクトとジェネレータは**合成できます**: `effect fn` / `handle`本体で
   宣言した名前付きジェネレータ関数は動作し（本体のローカルも読めます）、
   自己完結した`handle { … }`式はジェネレータ本体の中で動作します

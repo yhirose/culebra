@@ -40,14 +40,16 @@ struct LoadedModule {
 // apart from a real dependency needs it — the bytecode compiler among them.
 inline constexpr const char* kStdlibPreamblePath = "<stdlib>";
 
-// The library's own source: the stdlib preamble and the built-in traits.
-inline bool is_library_path(std::string_view path) {
-  return path == kStdlibPreamblePath || path == kBuiltinTraitsPath;
-}
-
 // `culebra test`'s ambient bindings (src/preambles/test_ambient.cul), by the
 // path their diagnostics carry. Same reason as above: both engines run it.
 inline constexpr const char* kTestAmbientPath = "<test>";
+
+// The library's own source: the stdlib preamble, the built-in traits, and the
+// test ambient. An error raised in it reports at the user's call into it.
+inline bool is_library_path(std::string_view path) {
+  return path == kStdlibPreamblePath || path == kBuiltinTraitsPath ||
+         path == kTestAmbientPath;
+}
 
 // Prepend a synthetic module declaring the built-in traits (Stringer /
 // Eq / Comparable), so they are registered before any user code runs.

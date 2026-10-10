@@ -31,13 +31,13 @@ let _state_machine_module = fn () {
   # An ill-formed machine; a caller passing the wrong type gets the standard
   # `TypeError` instead, as in path.cul / time.cul.
   fn _fail(msg) {
-    throw {kind: "StateMachineError", message: msg}
+    __raise("StateMachineError", msg)
   }
   fn _want(what, got, where) {
-    throw {
-      kind: "TypeError",
-      message: "type error: expected {what} for {where}, got {type_of(got)}",
-    }
+    __raise(
+      "TypeError",
+      "type error: expected {what} for {where}, got {type_of(got)}",
+    )
   }
 
   fn _reject_unknown(o, allowed, where) {

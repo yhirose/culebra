@@ -1588,10 +1588,22 @@ refcountレーンのdifftestの許可リストは空である。
 捕まえる型を名指せない。スクリプト側への届き方は変わらない —
 padの分類はC++の型ではなくpending carrier（§5.5）を通す。
 
+ライブラリのうちCulebraで書かれたモジュールは、`__raise(kind, message)`で
+エラーを発生させる。これはnativeのモジュールが投げるのと同じ
+`CulebraError`を投げるnativeで、モジュールがどちらの言語で書かれていても、
+ライブラリが発生させるものは1種類になる。`check_error_kinds.sh`は、
+エラーをObjectとして投げるライブラリのソース（モジュール、組み込みtraitの
+既定メソッド、変換器が書くコード）と、Stringとして投げるもの（モジュール）
+を拒否する。`__raise_at`は位置も受け取る。フレームの出口では位置を
+決められないエラーのためのもので、2つある。ハンドラのない`perform`は、
+原因のコードがライブラリのフレームに入っていない。`perform`なしで
+呼ばれた操作は、スタブがプログラム自身のソースに書き込まれるので、
+宣言の位置を報告する。
+
 ライブラリの中で起きたエラーは、ユーザーがそのライブラリを呼んだ位置を
-報告する。コンパイラはライブラリのソース（`<stdlib>`のpreambleと
-`<builtin>`のtrait）から取る位置すべての行に`kLibraryLineBit`を立てる
-ので、印は既存の経路を変更なしで運ばれる: chunkの位置、loweringの定数、
+報告する。コンパイラはライブラリのソース（`<stdlib>`のpreamble、
+`<builtin>`のtrait、`culebra test`の`<test>`のambient）から取る位置すべての
+行に`kLibraryLineBit`を立てるので、印は既存の経路を変更なしで運ばれる: chunkの位置、loweringの定数、
 公開される呼び出し位置、引数位置、carrier。ライブラリの関数はprologueで
 自分を呼んだ位置を控え（`PosSnap`で`Cleanup::site_slot`へ）、フレームの
 段でその位置を`culebra_runtime_reanchor`に渡す: 印の付いた位置のまま

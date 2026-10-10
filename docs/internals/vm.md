@@ -1637,12 +1637,24 @@ handler written to report errors cannot name a type that catches one. It
 still reaches script code the same way — the pads classify through the
 pending carrier (§5.5), never through the C++ type.
 
+A culebra-source module of the library raises an error with
+`__raise(kind, message)`, a native that throws the `CulebraError` a native
+module would, so that what the library raises is one thing whichever
+language the module is written in. `check_error_kinds.sh` refuses library
+source that throws one as an Object (the modules, the built-in traits'
+defaults, the code the transforms write) or as a String (the modules).
+`__raise_at` takes the position too, for an error the frame's exit cannot
+place: the unhandled `perform`, whose library frame the code at fault did
+not enter, and an operation called without `perform`, whose stub is
+written into the program's own source and reports at the declaration.
+
 An error from inside the library reports at the user's call into it. The
 compiler sets `kLibraryLineBit` on the line of every position it takes
-from library source (the `<stdlib>` preamble, the `<builtin>` traits), so
-the mark rides every existing path unchanged: chunk positions, lowered
-constants, published call sites, argument positions, the carriers. A
-library function's prologue snapshots the call site that entered it
+from library source (the `<stdlib>` preamble, the `<builtin>` traits,
+`culebra test`'s `<test>` ambient), so the mark rides every existing path
+unchanged: chunk positions, lowered constants, published call sites,
+argument positions, the carriers. A library function's prologue
+snapshots the call site that entered it
 (`PosSnap` into `Cleanup::site_slot`), and its frame step hands
 `culebra_runtime_reanchor` that site: an error leaving the frame still at a
 marked position is replaced — as a throwing `defer` replaces one — by the
