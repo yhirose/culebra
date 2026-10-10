@@ -150,9 +150,18 @@ class VmTestHost : public TestHost {
     // The result arrives owned; the store adopts that reference rather than
     // taking a second one, so a fixture's `drop` fires when release_to drops
     // the last of them.
-    return keep_owned(_jit_invoke(cls, JitValue{TAG_NO_SELF, 0},
-                             static_cast<int64_t>(vals.size()),
-                             vals.empty() ? nullptr : vals.data()));
+    try {
+      return keep_owned(_jit_invoke(cls, JitValue{TAG_NO_SELF, 0},
+                                    static_cast<int64_t>(vals.size()),
+                                    vals.empty() ? nullptr : vals.data()));
+    } catch (const CulebraException&) {
+      throw;  // describe_current_throw is its catch
+    } catch (...) {
+      // An engine error or an interrupt leaves the test here: what a guard
+      // hung on it is dropped in this test, not in the next one's handler.
+      culebra_runtime_release_passed_error();
+      throw;
+    }
   }
 
   bool describe_current_throw(std::string& kind, std::string& message,

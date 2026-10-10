@@ -74,9 +74,11 @@ extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE int culebra_aot_bootstrap(
     drain_defers();
     return exit_with(culebra::uncaught_report(std::move(s)));
   } catch (const culebra::Interrupted& e) {
+    culebra_runtime_release_passed_error();
     drain_defers();
     return exit_with(culebra::uncaught_report(e));
   } catch (culebra::CulebraError& e) {
+    culebra_runtime_release_passed_error();
     drain_defers();
     // Backfill a positionless runtime error from the published op position
     // (JIT::exec does the same before main.cc reports it).

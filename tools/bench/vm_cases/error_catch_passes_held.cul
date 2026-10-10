@@ -1,0 +1,32 @@
+# A runtime error no clause accepts leaves the program as that error, and
+# what a guard hung on its Object is dropped where the error leaves — before
+# the report, as it is for a thrown value.
+class Held {
+  new(.name) {}
+  drop() {
+    println("dropped {self.name}")
+  }
+}
+fn hang(e) {
+  e.held = Held('on the error')
+  false
+}
+fn work() {
+  defer {
+    println('work defer')
+  }
+  try {
+    [1][5]
+  } catch e if hang(e) {
+    println('wrong clause')
+  }
+}
+defer {
+  println('top defer')
+}
+try {
+  work()
+} catch ValueError {
+  println('wrong clause')
+}
+println('unreached')

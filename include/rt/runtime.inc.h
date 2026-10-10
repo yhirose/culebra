@@ -1018,6 +1018,56 @@ inline void culebra_runtime_consume_throw(const CulebraException& e) {
   _culebra_value_release_impl(e.tag, e.data);
 }
 
+// The error Object a handler that declined an engine error hands on with it.
+// The error goes on as a CulebraError (culebra_runtime_rethrow_caught), which
+// carries text; the Object waits here, and the handler that takes the error
+// next receives it — the very Object the last one saw, what a guard wrote on
+// it included — where it would otherwise make a second from the text.
+//
+// The Runtime owns it, not the exception: an error that leaves culebra code
+// can outlive the heap its Object is in. `Runtime::pending_passed` says the
+// Object belongs to the pending error, and whatever ends that error ends the
+// hold: the handler that takes it, a cleanup whose throw replaces it (its
+// snapshot goes), the boundary it leaves culebra code through
+// (culebra_runtime_release_passed_error). An Object some other path left
+// here goes at the next handler, the next pass, or with the Runtime.
+//
+// Off every scanned stack, here and in a snapshot, so both are GC roots
+// (_jit_gc_enumerate_roots).
+struct _PassedError {
+  JitObject* obj = nullptr;
+
+  _PassedError() = default;
+  _PassedError(_PassedError&& o) noexcept : obj(o.take()) {}
+  _PassedError& operator=(_PassedError&& o) noexcept {
+    reset(o.take());
+    return *this;
+  }
+  ~_PassedError() { reset(); }
+
+  JitObject* take() { return std::exchange(obj, nullptr); }
+  // The slot holds `next` before the old Object is released: a `drop` that
+  // release reaches may come back through here.
+  void reset(JitObject* next = nullptr) {
+    auto* old = std::exchange(obj, next);
+    if (old) _culebra_value_release_impl(TAG_OBJECT, reinterpret_cast<int64_t>(old));
+  }
+};
+inline _PassedError& _passed_error(culebra::Runtime& rt) {
+  return culebra::runtime_substate<_PassedError>(rt, culebra::kSlotPassedError);
+}
+
+
+// A host boundary an engine error leaves culebra code through is the last
+// that could have taken the Object passed on with it. The hold ends here,
+// before the report — where a resource hung on a thrown value is dropped
+// too (culebra_runtime_consume_throw).
+inline void culebra_runtime_release_passed_error() {
+  auto& rt = culebra::current_runtime();
+  rt.pending_passed = 0;
+  _passed_error(rt).reset();
+}
+
 // Save / restore the thrown-value carrier across a cleanup call whose own
 // exception is swallowed (a for-in iterator's dispose() on the unwind /
 // early-return paths). The carrier is a plain global, so a culebra throw from
@@ -1038,6 +1088,8 @@ struct _PendingSnapshot {
   std::string kind, msg;
   int64_t line, col;
   int64_t thrown_line, thrown_col;
+  int8_t passed;
+  _PassedError passed_object;
 };
 // A Runtime substate (not an independent thread_local): a drop() body can
 // still push here while ~Runtime itself is tearing down the module table,
@@ -1047,6 +1099,14 @@ struct _PendingSnapshot {
 inline std::vector<_PendingSnapshot>& _pending_save_stack() {
   return culebra::runtime_substate<std::vector<_PendingSnapshot>>(
       culebra::kSlotPendingSaveStack);
+}
+// Off the stack before anything it owns is released: the passed Object's
+// release can reach a `drop`, whose own save pushes here.
+inline _PendingSnapshot _pending_save_pop() {
+  auto& stack = _pending_save_stack();
+  auto s = std::move(stack.back());
+  stack.pop_back();
+  return s;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_save_thrown(
@@ -1059,13 +1119,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_save_thrown(
   _pending_save_stack().push_back({rt.pending_error, rt.pending_kind,
                                    rt.pending_msg, rt.pending_line,
                                    rt.pending_col, rt.thrown_line,
-                                   rt.thrown_col});
+                                   rt.thrown_col, rt.pending_passed,
+                                   std::move(_passed_error(rt))});
   // The guarded call runs over an *empty* carrier. A stale is_throw makes
   // try_translate hand a handler inside the callee the in-flight payload
   // instead of the callee's own trap; a stale pending_error leaks the outer
   // trap into it. The snapshot owns both until the restore.
   rt.is_throw = 0;
   rt.pending_error = 0;
+  rt.pending_passed = 0;
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_restore_thrown(
@@ -1087,9 +1149,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_restore_thrown(
   rt.is_throw = flag;
   // Restore the pending carrier the swallowed cleanup may have overwritten
   // (paired push in save above; LIFO across nested disposes).
-  auto& pending_stack = _pending_save_stack();
-  if (!pending_stack.empty()) {
-    auto& s = pending_stack.back();
+  if (!_pending_save_stack().empty()) {
+    auto s = _pending_save_pop();
     rt.pending_error = s.error;
     rt.pending_kind = std::move(s.kind);
     rt.pending_msg = std::move(s.msg);
@@ -1097,7 +1158,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_restore_thrown(
     rt.pending_col = s.col;
     rt.thrown_line = s.thrown_line;
     rt.thrown_col = s.thrown_col;
-    pending_stack.pop_back();
+    rt.pending_passed = s.passed;
+    _passed_error(rt) = std::move(s.passed_object);
   }
 }
 
@@ -1128,13 +1190,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_throw(int8_t tag,
 // what `throw e` of a caught one throws:
 //   - a user throw goes on as the same value, at the position it was raised;
 //   - an engine error goes on as that error, raised again from the fields
-//     of the Object this handler made of it: a boundary that tells a
+//     of the Object this handler received: a boundary that tells a
 //     CulebraError from a user throw (a worker's, a host's) sees what it
 //     would have without this `catch`, and an interrupt is an interrupt
 //     again, where a press that passed a `catch Timeout` would otherwise end
-//     the program as a failure. The Object itself does not go on — the next
-//     handler makes its own — so what a guard wrote on it, or kept of it,
-//     before declining is not what that handler sees.
+//     the program as a failure. The Object goes on beside it (_PassedError),
+//     so the next handler receives the one this handler's guards saw.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_rethrow_caught(
     int8_t tag, int64_t data, int64_t raised_at) {
   if (raised_at != kCaughtEngineError) {
@@ -1142,12 +1203,22 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_rethrow_caught(
     culebra_runtime_throw(tag, data, at.line, at.col);
   }
   auto r = describe_thrown_value({tag, data});
-  _culebra_value_release_impl(tag, data);
   // The next pad fills a positionless error from the published op position,
   // which this handler's own ops have moved since the error was raised.
   culebra_runtime_set_op_pos(r.line, r.col);
-  if (r.kind == "Interrupted") throw culebra::Interrupted(std::move(r.message));
-  throw culebra::CulebraError(r.kind, r.message, r.line, r.col);
+  // The handler's reference to the Object goes to the Runtime.
+  _passed_error(culebra::current_runtime())
+      .reset(reinterpret_cast<JitObject*>(data));
+  try {
+    if (r.kind == "Interrupted")
+      throw culebra::Interrupted(std::move(r.message));
+    throw culebra::CulebraError(r.kind, r.message, r.line, r.col);
+  } catch (...) {
+    // Constructed and published as the pending error by now, which is what
+    // the Object is named after: constructing it cleared the name.
+    culebra::current_runtime().pending_passed = 1;
+    throw;
+  }
 }
 
 // A library frame's exit step (docs/internals/vm.md §6.2): an error still at
@@ -1254,7 +1325,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_defer_run_to(int64_t mark
         _culebra_value_release_impl(stag, sdata);
         _culebra_value_release_impl(stag, sdata);
       }
-      _pending_save_stack().pop_back();
+      _pending_save_pop();
       // The replacement is what is in flight for the defers still to run.
       replaced = std::current_exception();
       culebra_runtime_save_thrown(&sflag, &stag, &sdata);

@@ -14941,7 +14941,11 @@ struct Exec {
       auto s = format_uncaught_throw(e);
       culebra_runtime_consume_throw(e);
       throw std::runtime_error(std::move(s));
+    } catch (const Interrupted&) {
+      culebra_runtime_release_passed_error();
+      throw;
     } catch (CulebraError& e) {
+      culebra_runtime_release_passed_error();
       // Backfill a positionless error from the published op position at
       // the engine boundary — JIT::exec's rule.
       _jit_backfill_op_pos(e);

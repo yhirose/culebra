@@ -6044,7 +6044,11 @@ struct JIT {
         culebra_runtime_defer_run_to(0);
       } catch (...) {}
       throw std::runtime_error(std::move(s));
+    } catch (const culebra::Interrupted&) {
+      culebra_runtime_release_passed_error();
+      throw;
     } catch (culebra::CulebraError& e) {
+      culebra_runtime_release_passed_error();
       // Run (best-effort) any top-level defers the uncaught error skipped, so
       // the global defer stack is drained — mirrors the CulebraException path
       // above and the interpreter's flush_top_defers (e.g. a top-level `defer`

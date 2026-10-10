@@ -298,3 +298,181 @@ let left_alive = fn () {
 }
 let alive = left_alive()
 assert_eq(alive, 0)
+
+# A runtime error a clause declines goes on with the Object its guards saw,
+# as a thrown value does: what a guard wrote on it is there, and it is the
+# same Object.
+fn note(e) {
+  e.seen = true
+  false
+}
+let kept = []
+fn keep(e) {
+  kept.push(e)
+  false
+}
+let passed = try {
+  try {
+    1 / 0
+  } catch e if note(e) {
+    'inner'
+  } catch e if keep(e) {
+    'inner'
+  }
+} catch e {
+  e
+}
+passed.tag = 1
+assert_eq(
+  [passed.kind, passed.seen, kept[0].tag],
+  ['ZeroDivisionError', true, 1],
+)
+
+# Out of the function, and past a second handler that declines by type.
+fn passes() {
+  try {
+    [1][5]
+  } catch e if note(e) {
+    nil
+  }
+}
+fn passes_twice() {
+  try {
+    passes()
+  } catch ValueError {
+    nil
+  }
+}
+assert_eq(try {
+  passes_twice()
+} catch e {
+  [e.kind, e.seen]
+}, ['IndexError', true])
+
+# A cleanup on the way out that takes an error of its own — one it passed on
+# itself — leaves the outer error's Object alone.
+mut cleanup_saw = nil
+fn passes_over_cleanup() {
+  defer {
+    try {
+      try {
+        nil.missing()
+      } catch e if note(e) {
+        nil
+      }
+    } catch e {
+      cleanup_saw = [e.kind, e.seen]
+    }
+  }
+  passes()
+}
+assert_eq(try {
+  passes_over_cleanup()
+} catch e {
+  [e.kind, e.seen, cleanup_saw]
+}, ['IndexError', true, ['TypeError', true]])
+
+# A cleanup that replaces the error ends it: the next error raised is its own.
+fn passes_replaced() {
+  defer {
+    throw {kind: 'Mine'}
+  }
+  passes()
+}
+assert_eq(try {
+  passes_replaced()
+} catch e {
+  [e.kind, e.seen]
+}, ['Mine', nil])
+assert_eq(try {
+  [1][5]
+} catch e {
+  [e.kind, e.seen]
+}, ['IndexError', nil])
+
+# Whichever way the error ended, its Object went with it.
+fn passed_left_alive(f) {
+  let run = fn () {
+    try {
+      f()
+    } catch e {
+      e.kind
+    }
+  }
+  run()
+  let before = GC.stat().rc_objects
+  for i in 0..20 {
+    run()
+  }
+  GC.stat().rc_objects - before
+}
+assert_eq(
+  [
+    passed_left_alive(passes),
+    passed_left_alive(passes_replaced),
+    passed_left_alive(passes_over_cleanup),
+  ],
+  [0, 0, 0],
+)
+
+# The Object waits where no stack reaches it: a collection during a cleanup
+# on the way leaves it alone. The guard takes a throw of its own, so nothing
+# else still points at the Object.
+fn note_and_catch(e) {
+  e.seen = [1, 2, 3]
+  try {
+    throw 'x'
+  } catch _ {
+    nil
+  }
+  false
+}
+fn passes_over_collect() {
+  defer {
+    GC.stat()
+  }
+  try {
+    1 / 0
+  } catch e if note_and_catch(e) {
+    nil
+  }
+}
+assert_eq(try {
+  passes_over_collect()
+} catch e {
+  [e.kind, e.seen]
+}, ['ZeroDivisionError', [1, 2, 3]])
+
+# A cleanup that replaces the error ends the Object with it, and what a guard
+# hung on it is dropped then, once.
+mut dropped = []
+class Held {
+  new(.name) {}
+  drop() {
+    dropped.push(self.name)
+  }
+}
+fn hang(e) {
+  e.held = Held('on the error')
+  false
+}
+fn passes_held_replaced() {
+  defer {
+    throw 'other'
+  }
+  try {
+    1 / 0
+  } catch e if hang(e) {
+    nil
+  }
+}
+assert_eq(try {
+  passes_held_replaced()
+} catch e {
+  [e, dropped]
+}, ['other', ['on the error']])
+assert_eq(try {
+  [1][5]
+} catch e {
+  [e.kind, e.held, dropped]
+}, ['IndexError', nil, ['on the error']])

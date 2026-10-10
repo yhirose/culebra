@@ -1429,36 +1429,49 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_ic(
 // On success, populates the thrown-value carriers as if the user had run
 // `throw error_object`. A user `throw` already set `is_throw` with a real Value,
 // so it early-outs. A foreign C++ exception (no pending carrier) leaves
-// `is_throw=0` so the caller propagates it with __cxa_rethrow.
+// `is_throw=0` so the caller propagates it with __cxa_rethrow. An error the
+// handler before this one passed on arrives with the Object that handler saw
+// (_PassedError), and that is the Object this one receives.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_try_translate() {
   auto& rt = culebra::current_runtime();
   if (rt.is_throw) {  // user throw already carries a Value
     rt.caught_engine_error = 0;
+    rt.pending_passed = 0;  // a throw that replaced the error passed on
     return;
   }
   if (!rt.pending_error) return;  // foreign exception — the pad rethrows it
-  // A positionless runtime error (line/col 0) adopts the last published op
-  // position, matching the old _jit_backfill_op_pos path.
-  int64_t line = rt.pending_line, col = rt.pending_col;
-  if (line == 0 && col == 0) {
-    line = _jit_thread.op_line;
-    col = _jit_thread.op_col;
+  auto& passed = _passed_error(rt);
+  auto* obj = rt.pending_passed ? passed.take() : nullptr;
+  if (!obj) {
+    // A positionless runtime error (line/col 0) adopts the last published op
+    // position, matching the old _jit_backfill_op_pos path.
+    int64_t line = rt.pending_line, col = rt.pending_col;
+    if (line == 0 && col == 0) {
+      line = _jit_thread.op_line;
+      col = _jit_thread.op_col;
+    }
+    obj = culebra_runtime_object_new();
+    culebra_runtime_object_set(
+        obj, "kind", false, TAG_STRING,
+        reinterpret_cast<int64_t>(_culebra_heap_str(rt.pending_kind)), 0, 0);
+    culebra_runtime_object_set(
+        obj, "message", false, TAG_STRING,
+        reinterpret_cast<int64_t>(_culebra_heap_str(rt.pending_msg)), 0, 0);
+    culebra_runtime_object_set(obj, "line", false, TAG_LONG, line, 0, 0);
+    culebra_runtime_object_set(obj, "col", false, TAG_LONG, col, 0, 0);
+    obj->is_error = true;
   }
-  auto* obj = culebra_runtime_object_new();
-  culebra_runtime_object_set(
-      obj, "kind", false, TAG_STRING,
-      reinterpret_cast<int64_t>(_culebra_heap_str(rt.pending_kind)), 0, 0);
-  culebra_runtime_object_set(
-      obj, "message", false, TAG_STRING,
-      reinterpret_cast<int64_t>(_culebra_heap_str(rt.pending_msg)), 0, 0);
-  culebra_runtime_object_set(obj, "line", false, TAG_LONG, line, 0, 0);
-  culebra_runtime_object_set(obj, "col", false, TAG_LONG, col, 0, 0);
-  obj->is_error = true;
   rt.thrown_tag = TAG_OBJECT;
   rt.thrown_data = reinterpret_cast<int64_t>(obj);
   rt.is_throw = 1;
-  rt.caught_engine_error = 1;
   rt.pending_error = 0;  // consumed
+  rt.pending_passed = 0;
+  // An Object left by an error that ended elsewhere goes now, the carriers
+  // settled: its release can reach a `drop`, which saves and restores them.
+  // How this error arrived is written after it — a handler in that `drop`
+  // writes it too, and nothing restores it.
+  passed.reset();
+  rt.caught_engine_error = 1;
 }
 
 // Write `(tag, data)` to the out-params; nil if entry is null.

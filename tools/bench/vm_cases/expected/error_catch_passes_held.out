@@ -1,0 +1,4 @@
+work defer
+top defer
+dropped on the error
+IndexError: index out of range at 19:5.

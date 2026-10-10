@@ -1280,6 +1280,14 @@ inline void _jit_gc_enumerate_roots(std::vector<void*>& out) {
   // inside its unwinding CulebraEffAbort exception object, off the scanned
   // stack, so a collect mid-unwind would sweep it without this root.
   for (auto& v : _eff_abort_inflight()) _gc_push_value(out, v);
+  // An error Object passed on waits in the Runtime, or in a snapshot while a
+  // cleanup runs — off the scanned stack either way, its error pending or not.
+  auto passed_root = [&](const _PassedError& p) {
+    if (p.obj)
+      _gc_push_value(out, JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(p.obj)});
+  };
+  passed_root(_passed_error(rt));
+  for (auto& s : _pending_save_stack()) passed_root(s.passed_object);
 }
 
 // Backstop reclaim of one unmarked object: free its owned C++ buffers and

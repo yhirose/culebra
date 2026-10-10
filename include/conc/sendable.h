@@ -607,12 +607,14 @@ inline void run_isolate_child_jit(std::shared_ptr<IsolateCore> core,
       core->finished = true;
     }
   } catch (const culebra::Interrupted& e) {
+    culebra_runtime_release_passed_error();
     // A cancelled child: join() re-raises this as an Interrupted, not as a
     // program error. Explicit — the type no longer rides in `error`.
     std::lock_guard<std::mutex> lk(core->m);
     core->interrupted = e.what();
     core->finished = true;
   } catch (culebra::CulebraError& e) {
+    culebra_runtime_release_passed_error();
     std::lock_guard<std::mutex> lk(core->m);
     core->error = e;
     core->finished = true;

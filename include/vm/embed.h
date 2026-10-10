@@ -799,6 +799,9 @@ class Embed {
       culebra_runtime_consume_throw(e);
       throw culebra::CulebraError(r.kind.empty() ? "RuntimeError" : r.kind,
                                   r.message, r.line, r.col);
+    } catch (...) {
+      culebra_runtime_release_passed_error();
+      throw;
     }
   }
 

@@ -820,6 +820,8 @@ let catch_patterns = [
   # A user throw has to be caught around the try: `_p` reads `e.kind`.
   'try { nil.x() } catch s: String { 1 }',
   'try { try { throw 3 } catch n: Long if n > (try { throw "inner" } catch _ { 9 }) { 1 } } catch e { e }',
+  'fn note(e) { e.seen = true; false }; try { try { 1 / 0 } catch e if note(e) { 0 } } catch e { [e.kind, e.seen] }',
+  'fn note(e) { e.seen = true; false }; fn f() { defer { throw "other" }; try { 1 / 0 } catch e if note(e) { 0 } }; [try { f() } catch e { e }, try { [1][5] } catch e { e.seen }]',
 ]
 for p in catch_patterns {
   case("catch_pattern|" + p, p)

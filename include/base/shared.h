@@ -2441,9 +2441,9 @@ enum RuntimeSlot : size_t {
                        // Shapes are shared immutable metadata, not isolated heap
   kSlotDeferStack,
   // LIFO stack of pending-error snapshots (runtime.inc.h's save/restore
-  // around a drop() body). Holds plain strings/ints, not JitValues, so its
-  // own teardown never re-enters value release — but it must be a Runtime
-  // substate rather than an independent thread_local: it used to be one,
+  // around a drop() body). A snapshot holds strings and ints, and the error
+  // Object of kSlotPassedError below while its error waits out the body.
+  // It must be a Runtime substate, not an independent thread_local. It was,
   // constructed on first use (lazily, mid-script) rather than at
   // default_runtime()'s construction, so C++'s reverse-construction-order
   // teardown destroyed it *before* ~Runtime ran — and a drop() firing during
@@ -2452,6 +2452,10 @@ enum RuntimeSlot : size_t {
   // ~Runtime's null-after-delete + revival protocol like the owned stacks
   // above: a late touch just revives it empty for the next pass to collect.
   kSlotPendingSaveStack,
+  // The error Object a handler that declined an engine error handed on with
+  // it (runtime.inc.h's _PassedError). Holds a +1 on it, so it is placed with
+  // the JitValue-holding slots, above the GC heap.
+  kSlotPassedError,
   // string.inc.h's _jit_str_visiting() and runtime.inc.h's
   // _eff_abort_inflight(): thread_locals until a feature archive's borrow of
   // them broke on Windows (tools/checks/check_rt_archive_tls.sh). Neither
@@ -2591,6 +2595,10 @@ struct Runtime {
   int64_t pending_line = 0;
   int64_t pending_col = 0;
   int8_t pending_error = 0;
+  // The pending error is one a handler caught and passed on, and the Object
+  // that handler saw waits in kSlotPassedError for the next. Any error
+  // raised after it is another error, and clears this.
+  int8_t pending_passed = 0;
 
   // Cooperative cancellation. When non-null and set, the interpreter's
   // statement dispatch throws `Interrupted` to unwind this thread (an isolate
@@ -2713,6 +2721,7 @@ inline void culebra_note_pending_error(const std::string& kind,
   rt.pending_line = line;
   rt.pending_col = col;
   rt.pending_error = 1;
+  rt.pending_passed = 0;
 }
 
 // True when the current isolate has been asked to cancel (see Runtime::

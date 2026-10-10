@@ -4319,7 +4319,8 @@ Semantics:
   accepts it the exception keeps propagating as it was raised, to the
   next `try` out: a thrown value at the position of its `throw`, a
   runtime error with its kind, message and position, an interrupt as an
-  interrupt.
+  interrupt. The clause that takes it there receives the value the
+  declining guards saw — for a runtime error, the same error Object.
   The `try` body's scope has ended by then: its `defer`s ran before the
   first clause was tried.
 * An exception raised while a clause is being tried — by its guard, say —
