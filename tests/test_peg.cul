@@ -1,12 +1,13 @@
 // Conformance: stdlib PEG (PEG parser). See docs/stdlib.md.
 // Engine: include/stdlib/peg.h over the vendored cpp-peglib — the same parser
-// generator culebra's own front end runs on.
+// generator culebra's own front end runs on. The parser object is
+// cpp-peglib's `peg::parser`, method for method.
 //
 // Write grammars as backtick RAW strings: no escape processing and no
 // `{...}` interpolation, so `\t` and `{2}` pass through to the grammar.
 
 // cpp-peglib's own README calculator. Its alternatives share a prefix, which
-// is exactly why memoization is on by default (see test_peg_errors.cul).
+// is what packrat parsing is for (see test_peg_errors.cul).
 let calc = `
   Additive       <- Multiplicative '+' Additive / Multiplicative
   Multiplicative <- Primary '*' Multiplicative / Primary
@@ -15,12 +16,33 @@ let calc = `
   %whitespace    <- [ \t\r\n]*
 `
 
-// --- compile + parse ---
-let p = PEG.compile(calc)
-let ast = p.parse("1 + 2 * 3")
+// --- a parser with nothing enabled says whether the subject parses:
+// `(ok, val)` is cpp-peglib's `bool parse(s, val)`, and there is no value ---
+let plain = PEG.parser(calc)
+assert_eq(plain.parse("1 + 2 * 3"), (true, nil))
+assert_eq(plain.parse("1 +"), (false, nil))
+
+// --- enable_ast: the value is the tree, every rule's node in it ---
+let raw_parser = PEG.parser(calc)
+assert_eq(raw_parser.enable_ast(), raw_parser)  // cpp-peglib returns the parser
+let (raw_ok, raw) = raw_parser.parse("1")
+assert_true(raw_ok)
+assert_eq(PEG.walk(raw).map(|n| n.name).collect(),
+          ["Additive", "Multiplicative", "Primary", "Number"])
+assert_eq(raw.choice, 1)  // fell through to the second alternative
+
+// --- optimize_ast folds single-child nodes, and enable_ast(true) builds
+// that tree in the first place ---
+assert_eq(PEG.walk(raw_parser.optimize_ast(raw)).map(|n| n.name).collect(), ["Number"])
+let p = PEG.parser(calc)
+p.enable_ast(true)
+let (parsed, ast) = p.parse("1 + 2 * 3")
+assert_true(parsed)
 assert_eq(ast.name, "Additive")
 assert_eq(ast.nodes.size(), 2)
 assert_true(ast.is_token == false)
+assert_eq(ast, raw_parser.optimize_ast(raw_parser.parse("1 + 2 * 3")[1]))
+assert_eq(PEG.walk(p.parse("1")[1]).map(|n| n.name).collect(), ["Number"])
 
 // --- a node is a plain Object, so `match` takes it apart ---
 fn eval(n) {
@@ -33,7 +55,7 @@ fn eval(n) {
   }
 }
 assert_eq(eval(ast), 7)
-assert_eq(eval(p.parse("(1 + 2) * 3")), 9)
+assert_eq(eval(p.parse("(1 + 2) * 3")[1]), 9)
 
 // --- token nodes carry their text; branch nodes do not ---
 let num = PEG.find(ast, "Number")
@@ -44,21 +66,11 @@ assert_eq(ast.token, "")
 
 // --- positions are byte offsets into the subject, like Regex ---
 let src = "12 + 345"
-let sum = PEG.compile(calc).parse(src)
+let sum = p.parse(src)[1]
 let rhs = PEG.find_all(sum, "Number")[1]
 assert_eq(rhs.line, 1)
 assert_eq(rhs.column, 6)
 assert_eq(src.slice(rhs.position, rhs.position + rhs.length), "345")
-
-// --- choice: which alternative of a prioritized choice matched ---
-let raw = PEG.compile(calc, "", false).parse("1")
-assert_eq(raw.name, "Additive")
-assert_eq(raw.choice, 1)  // fell through to the second alternative
-
-// --- optimize (default) folds single-child nodes ---
-assert_eq(PEG.walk(raw).map(|n| n.name).collect(),
-          ["Additive", "Multiplicative", "Primary", "Number"])
-assert_eq(PEG.walk(p.parse("1")).map(|n| n.name).collect(), ["Number"])
 
 // --- walk / find / find_all ---
 assert_eq(PEG.walk(ast).map(|n| n.name).collect(),
@@ -67,19 +79,12 @@ assert_eq(PEG.find_all(ast, "Number").map(|n| n.token), ["1", "2", "3"])
 assert_eq(PEG.find(ast, "Nothing"), nil)
 assert_eq(PEG.find_all(ast, "Nothing"), [])
 
-// --- str: the peglint-style dump ---
-assert_eq(PEG.str(p.parse("1 + 2")),
+// --- ast_to_s: the peglint-style dump ---
+assert_eq(PEG.ast_to_s(p.parse("1 + 2")[1]),
           "+ Additive\n  - Number (1)\n  - Number (2)\n")
 
-// --- test: does it parse at all ---
-assert_true(p.test("1 + 2"))
-assert_false(p.test("1 +"))
-
-// --- one-shot forms take the grammar directly ---
-assert_eq(PEG.parse(calc, "7").name, "Number")
-assert_true(PEG.test(calc, "7"))
-assert_false(PEG.test(calc, "+"))
-assert_eq(PEG.check(calc), nil)
+// --- a subject that does not parse is `(false, nil)`, not an error ---
+assert_eq(p.parse("1 +"), (false, nil))
 
 // --- start rule ---
 let g = `
@@ -87,10 +92,37 @@ let g = `
   Item <- < [a-z]+ > _
   _    <- [ ]*
 `
-assert_eq(PEG.compile(g).parse("ab cd").name, "Doc")
-assert_eq(PEG.compile(g, "Item").parse("ab").name, "Item")
-assert_eq(PEG.parse(g, "ab", "Item").name, "Item")
-assert_true(PEG.test(g, "ab", "Item"))
+fn tree(grammar, text, start = "") {
+  let parser = PEG.parser(grammar, start)
+  parser.enable_ast(true)
+  parser.parse(text)[1]
+}
+assert_eq(tree(g, "ab cd").name, "Doc")
+assert_eq(tree(g, "ab", "Item").name, "Item")
+assert_eq(PEG.parser(g, "Item").parse("ab cd"), (false, nil))
+
+// --- load_grammar: a parser made with no grammar parses nothing until one
+// loads, and answers whether it did ---
+let later = PEG.parser()
+assert_eq(later.parse("ab"), (false, nil))
+assert_true(later.load_grammar(g))
+assert_eq(later.parse("ab"), (true, nil))
+assert_true(later.load_grammar(g, "Item"))
+assert_eq(later.parse("ab cd"), (false, nil))
+
+// --- what is enabled goes with the grammar it was enabled on: a grammar
+// loaded afterwards starts with nothing, and enabling before any grammar
+// does nothing ---
+let reloaded = PEG.parser()
+reloaded.enable_ast()
+reloaded.load_grammar(g)
+assert_eq(reloaded.parse("ab"), (true, nil))
+reloaded.enable_ast()
+assert_eq(reloaded.parse("ab")[1].name, "Doc")
+reloaded["Item"] = |vs| vs.token()
+assert_eq(reloaded.parse("ab")[1], "ab")
+reloaded.load_grammar(g)
+assert_eq(reloaded.parse("ab"), (true, nil))
 
 // --- the grammar's own AST instructions control the tree shape ---
 let named = `
@@ -98,34 +130,57 @@ let named = `
   Number <- < [0-9]+ >        { ast_name: Literal }
   String <- '"' < [^"]* > '"' { ast_name: Literal }
 `
-assert_eq(PEG.parse(named, "123").name, "Literal")
-assert_eq(PEG.parse(named, '"hi"').name, "Literal")
+assert_eq(tree(named, "123").name, "Literal")
+assert_eq(tree(named, '"hi"').name, "Literal")
 
 let folded = `
   Wrap  <- Inner
   Inner <- < [0-9]+ >
 `
-assert_eq(PEG.walk(PEG.parse(folded, "1")).map(|n| n.name).collect(),
-          ["Inner"])
+assert_eq(PEG.walk(tree(folded, "1")).map(|n| n.name).collect(), ["Inner"])
 let kept = `
+  Top   <- ~_ Wrap
   Wrap  <- Inner  { no_ast_opt }
-  Inner <- < [0-9]+ >
+  Inner <- < [0-9]+ > _
+  ~_    <- [ ]*
 `
-assert_eq(PEG.walk(PEG.parse(kept, "1")).map(|n| n.name).collect(),
-          ["Wrap", "Inner"])
+assert_eq(PEG.walk(tree(kept, " 1 ")).map(|n| n.name).collect(), ["Wrap", "Inner"])
 
-// --- a compiled grammar is reusable and independent of the subject ---
-let re = PEG.compile(g)
-assert_eq(re.parse("ab").name, "Item")  // a lone Item folds up to the root
-assert_eq(re.parse("ab cd").nodes.size(), 2)
+// --- optimize_ast's `opt_mode` false turns it round: only the nodes of the
+// `no_ast_opt` rules go. Both modes are what enable_ast builds directly. A
+// node that gives way hands its extent to the child that takes its place,
+// but a kept rule's node keeps its own: Wrap starts after the blank Top
+// starts at ---
+let kept_parser = PEG.parser(kept)
+kept_parser.enable_ast()
+let kept_raw = kept_parser.parse(" 1 ")[1]
+assert_eq([kept_raw.position, kept_parser.optimize_ast(kept_raw).position], [0, 1])
+assert_eq(kept_parser.optimize_ast(kept_raw, false).nodes[0].position, 1)
+assert_eq(PEG.walk(kept_parser.optimize_ast(kept_raw, false)).map(|n| n.name).collect(),
+          ["Top", "Inner"])
+for opt_mode in [true, false] {
+  let direct = PEG.parser(kept)
+  direct.enable_ast(true, opt_mode)
+  assert_eq(direct.parse(" 1 ")[1], kept_parser.optimize_ast(kept_raw, opt_mode))
+}
+let named_parser = PEG.parser(calc)
+named_parser.enable_ast()
+let deep_src = "(1 + 2) * (3 + (4 * 5)) + 6"
+assert_eq(named_parser.optimize_ast(named_parser.parse(deep_src)[1]), p.parse(deep_src)[1])
+
+// --- a parser is reusable and independent of the subject ---
+let re = PEG.parser(g)
+re.enable_ast(true)
+assert_eq(re.parse("ab")[1].name, "Item")  // a lone Item folds up to the root
+assert_eq(re.parse("ab cd")[1].nodes.size(), 2)
 
 // --- PEG.PEG is the class the module hands out ---
 let direct = PEG.PEG.new(calc)
-assert_eq(direct.parse("1").name, "Number")
+assert_eq(direct.parse("1"), (true, nil))
+assert_eq(type_of(direct), type_of(p))
 
 // --- across an isolate boundary: a grammar is per-thread state, so what
-// crosses is the grammar text (a compiled PEG carries it and reloads on the
-// other side), and a parsed tree comes back as plain Objects ---
-assert_eq(Isolate.spawn(|| p.parse("1").name).join(), "Number")
-assert_eq(Isolate.spawn(|| PEG.parse(calc, "1 + 2").name).join(), "Additive")
-assert_eq(Isolate.spawn(|| PEG.parse(calc, "1 + 2")).join().nodes.size(), 2)
+// crosses is the grammar text (a parser carries it and reloads on the other
+// side), and a parsed tree comes back as plain Objects ---
+assert_eq(Isolate.spawn(|| p.parse("1")[1].name).join(), "Number")
+assert_eq(Isolate.spawn(|| p.parse("1 + 2")[1]).join().nodes.size(), 2)

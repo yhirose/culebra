@@ -29,17 +29,20 @@ fn apply(op, l, r) {
 }
 
 # The climbing already resolves precedence and associativity, so a match of
-# EXPRESSION is always at most one binary application: `sv.values` is
+# EXPRESSION is always at most one binary application: `vs.transform()` is
 # `[left]` (no operator at this level) or `[left, operator, right]`.
-let actions = {
-  EXPRESSION: fn (sv) {
-    sv.values.size() > 1
-      ? apply(sv.values[1], sv.values[0], sv.values[2])
-      : sv.values[0]
-  },
-  OPERATOR: |sv| sv.token,
-  NUMBER: |sv| to_long(sv.token),
+let parser = PEG.parser(grammar)
+parser["EXPRESSION"] = fn (vs) {
+  vs.size() > 1
+    ? apply(vs[1], vs[0], vs[2])
+    : vs[0]
 }
+parser["OPERATOR"] = |vs| vs.token()
+parser["NUMBER"] = |vs| to_long(vs.token())
+parser.set_logger(|line, col, msg| println("{line}:{col}: {msg}"))
 
 let formula = Sys.argv.empty() ? "-1 + (1 + 2) * 3 - -1" : Sys.argv[0]
-println("{formula} = {PEG.parse(grammar, formula, actions: actions)}")
+let (ok, value) = parser.parse(formula)
+if ok {
+  println("{formula} = {value}")
+}

@@ -201,8 +201,10 @@ let _state_machine_module = fn () {
 
   # Each optional part of a transition is tagged, because `sv.values[1]` on
   # its own cannot say whether the guard, the action or the target matched.
+  # `sv` is the native side's own Object for a match, the one the `PEG`
+  # module wraps in its SemanticValues.
   let ACTIONS = {
-    Ident: |sv| sv.token,
+    Ident: |sv| sv.tokens[0],
     Bang: |sv| true,
     # `Bang` only ever prepends, so the name is last either way.
     Guard: |sv| {
@@ -286,8 +288,8 @@ let _state_machine_module = fn () {
     # Build from the text DSL. A malformed machine raises `PEGError`, whose
     # message carries `path` when one is given.
     static parse(text, *, guards = {}, actions = {}, context = nil, path = "") {
-      # _PEG.parse(grammar, text, start, optimize, packrat, path, actions)
-      let m = _PEG.parse(GRAMMAR, text, "", true, true, path, ACTIONS)
+      # _PEG.parse(grammar, text, start, optimize, packrat, path, hooks)
+      let m = _PEG.parse(GRAMMAR, text, "", true, true, path, {actions: ACTIONS})
       StateMachine.new(
         m.states,
         name: m.name,

@@ -275,4 +275,25 @@ fn typing_let(at, var, ty_node, e1, e2, env) {
   (t2, unbound(env2, var))
 }
 
-export {grammar, to_type, type_to_s, typing}
+# Parses `src` into its tree, the way a cpp-peglib program does: load the
+# grammar, ask for the optimized AST and for packrat parsing, and hear the
+# errors through the logger. A syntax error is thrown as a ParseError whose
+# message is already "path:line:col: ...".
+fn parse_source(src, path) {
+  let parser = PEG.parser()
+  let mut errors = []
+  parser.set_logger(|line, col, msg| errors.push("{line}:{col}: {msg}"))
+  if !parser.load_grammar(grammar) {
+    throw {kind: 'ParseError', message: "grammar:{errors[0]}"}
+  }
+  parser.enable_ast(true)
+  parser.enable_packrat_parsing()
+  errors = []
+  let (ok, tree) = parser.parse(src, path)
+  if !ok {
+    throw {kind: 'ParseError', message: "{path}:{errors[0]}"}
+  }
+  tree
+}
+
+export {grammar, parse_source, to_type, type_to_s, typing}

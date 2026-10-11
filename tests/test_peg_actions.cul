@@ -1,6 +1,7 @@
-// Conformance: stdlib PEG — semantic actions. `actions` interprets a subject
-// directly, without materializing a tree: a rule's own reduction (its
-// registered action, or the default passthrough) is the whole result.
+// Conformance: stdlib PEG — semantic actions. With an action on a rule the
+// parse interprets the subject directly, without materializing a tree: a
+// rule's own reduction (its action, or the default passthrough) is the whole
+// result.
 
 let calc = `
   Additive       <- Multiplicative '+' Additive / Multiplicative
@@ -10,122 +11,204 @@ let calc = `
   %whitespace    <- [ \t\r\n]*
 `
 
-fn sum2(sv) {
-  sv.values.size() < 2 ? sv.values[0] : sv.values[0] + sv.values[1]
+// A parser of `grammar` whose rules carry `actions`, a rule name -> Function
+// map, and what it reduces `text` to.
+fn parser_with(grammar, actions) {
+  let parser = PEG.parser(grammar)
+  for name, f in actions {
+    parser[name] = f
+  }
+  parser
 }
-fn prod2(sv) {
-  sv.values.size() < 2 ? sv.values[0] : sv.values[0] * sv.values[1]
+fn reduce(grammar, text, actions, path = "") {
+  let (ok, val) = parser_with(grammar, actions).parse(text, path)
+  assert_true(ok)
+  val
+}
+
+fn sum2(vs) {
+  vs.size() < 2 ? vs[0] : vs[0] + vs[1]
+}
+fn prod2(vs) {
+  vs.size() < 2 ? vs[0] : vs[0] * vs[1]
 }
 let eval_actions = {
-  Number: |sv| to_long(sv.token),
+  Number: |vs| to_long(vs.token()),
   Additive: sum2,
   Multiplicative: prod2,
 }
 
 // --- a rule's own action interprets its own reduction ---
-assert_eq(PEG.parse(calc, "1 + 2 * 3", actions: eval_actions), 7)
-assert_eq(PEG.parse(calc, "(1 + 2) * 3", actions: eval_actions), 9)
+assert_eq(reduce(calc, "1 + 2 * 3", eval_actions), 7)
+assert_eq(reduce(calc, "(1 + 2) * 3", eval_actions), 9)
 
-// --- `p.parse` takes `actions` too, and the same compiled grammar still
-// parses to a tree afterward -- installing actions is scoped to one call ---
-let p = PEG.compile(calc)
-assert_eq(p.parse("2 * 3", actions: eval_actions), 6)
-assert_eq(p.parse("2 * 3").name, "Multiplicative")
+// --- the actions are the parser's: another parser of the same grammar
+// carries none ---
+let p = parser_with(calc, eval_actions)
+assert_eq(p.parse("2 * 3"), (true, 6))
+assert_eq(PEG.parser(calc).parse("2 * 3"), (true, nil))
 
-// --- default: a rule with no registered action passes its first child's
-// value through unchanged, the same default cpp-peglib's own reduce uses ---
-let partial = {Number: |sv| to_long(sv.token)}
-assert_eq(PEG.parse(calc, "5", actions: partial), 5)
-assert_eq(PEG.parse(calc, "(5)", actions: partial), 5)
+// --- with an action on any rule the parse reduces, enable_ast() or not ---
+p.enable_ast()
+assert_eq(p.parse("2 * 3"), (true, 6))
 
-// --- the sv Object: name, token, values, and position fields, exactly like
-// a tree Node except `values` (already-reduced results) instead of `nodes` ---
+// --- default: a rule with no action passes its first child's value through
+// unchanged, the same default cpp-peglib's own reduce uses ---
+let partial = {Number: |vs| to_long(vs.token())}
+assert_eq(reduce(calc, "5", partial), 5)
+assert_eq(reduce(calc, "(5)", partial), 5)
+
+// --- what an action is handed is cpp-peglib's SemanticValues ---
 let mut seen = []
-let tracing = {Number: fn (sv) {
+let tracing = {Number: fn (vs) {
   seen.push([
-    sv.name,
-    sv.token,
-    sv.line,
-    sv.column,
-    sv.position,
-    sv.length,
-    sv.choice,
+    type_of(vs),
+    vs.name(),
+    vs.sv(),
+    vs.token(),
+    vs.tokens,
+    vs.line_info(),
+    vs.choice(),
+    vs.choice_count(),
+    vs.path,
+    vs.size(),
+    vs.empty(),
   ])
-  to_long(sv.token)
+  vs.token_to_number()
 }}
-PEG.parse(calc, "  42", actions: tracing)
-assert_eq(seen, [["Number", "42", 1, 3, 2, 2, 0]])
+assert_eq(reduce(calc, "  42 ", tracing, "in.txt"), 42)
+let expected = [
+  "SemanticValues",
+  "Number",
+  "42 ",
+  "42",
+  ["42"],
+  (1, 3),
+  0,
+  0,
+  "in.txt",
+  0,
+  true,
+]
+// Without packrat an action runs in every attempt at its rule, the ones the
+// parser then abandons included: `calc` reaches Number four ways.
+assert_eq(seen, [expected, expected, expected, expected])
+seen = []
+let memoized = parser_with(calc, tracing)
+memoized.enable_packrat_parsing()
+assert_eq(memoized.parse("  42 ", "in.txt"), (true, 42))
+assert_eq(seen, [expected])
+
+// --- the values are read by index, counted, iterated and sliced; a rule
+// with no `< >` of its own has no tokens, and its token is its whole match,
+// the whitespace skipped after it included ---
+let shapes = `
+  Pair  <- Key '=' Num Num
+  Key   <- Word
+  Word  <- < [a-z]+ >
+  Num   <- < [0-9]+ '.' [0-9]+ > / < [0-9]+ >
+  %whitespace <- [ \t]*
+`
+let mut pair = nil
+let shape_actions = {
+  Word: |vs| vs.token_to_string(),
+  Key: |vs| [vs.tokens, vs.token(), vs[0]],
+  Num: |vs| vs.token_to_number(),
+  Pair: fn (vs) {
+    pair = [vs.size(), vs[0], vs[1], vs.transform(1), vs.transform(1, 2), vs.iter().collect()]
+    vs[2]
+  },
+}
+assert_eq(reduce(shapes, "ab = 12 3.5", shape_actions), 3.5)
+assert_eq(pair, [
+  3,
+  [[], "ab ", "ab"],
+  12,
+  [12, 3.5],
+  [12],
+  [[[], "ab ", "ab"], 12, 3.5],
+])
+
+// --- `token_to_number` reads the number a token starts with, as cpp-peglib's
+// does, and 0 where it starts with none; a fraction or an exponent makes it
+// a Float ---
+let any = parser_with(`T <- < .* >`, {T: |vs| vs.token_to_number()})
+fn number_of(text) {
+  any.parse(text)[1]
+}
+assert_eq(
+  ["42", "-7", "50 kg", "3.25", "1e3", "2.5e-1x", "12.", "1e", "x1", "", "-"].map(number_of),
+  [42, -7, 50, 3.25, 1000.0, 0.25, 12, 1, 0, 0, 0],
+)
+assert_eq(["42", "1e3"].map(|t| type_of(number_of(t))), ["Long", "Float"])
+
+// --- a rule's second token boundary is `token(1)` ---
+let two = `KV <- < [a-z]+ > '=' < [0-9]+ >`
+assert_eq(
+  reduce(two, "x=12", {
+    KV: |vs| [vs.token(), vs.token(1), vs.token_to_string(1), vs.tokens],
+  }),
+  ["x", "12", "12", ["x", "12"]],
+)
 
 // --- values built by an action are ordinary culebra values, so an action
 // can build a tree of its own instead of returning a scalar ---
-fn node2(sv) {
-  sv.values.size() < 2
-    ? sv.values[0]
-    : {op: sv.name, kids: [sv.values[0], sv.values[1]]}
+fn node2(vs) {
+  vs.size() < 2
+    ? vs[0]
+    : {op: vs.name(), kids: [vs[0], vs[1]]}
 }
 let ast_actions = {
-  Number: |sv| to_long(sv.token),
+  Number: |vs| to_long(vs.token()),
   Additive: node2,
   Multiplicative: node2,
 }
-let tree = PEG.parse(calc, "1 + 2", actions: ast_actions)
-assert_eq(tree, {op: "Additive", kids: [1, 2]})
+assert_eq(reduce(calc, "1 + 2", ast_actions), {op: "Additive", kids: [1, 2]})
 
-// --- an actions key naming no rule in the grammar is a compile-time-visible
-// mistake, not a silent no-op ---
+// --- an action on a rule the grammar lacks is a mistake, not a silent
+// no-op ---
 assert_eq(try {
-  PEG.parse(calc, "1", actions: {Nope: |sv| sv})
+  parser_with(calc, {Nope: |vs| vs}).parse("1")
 } catch e {
   e.kind
 }, "PEGError")
 
 // --- an exception thrown inside an action propagates unchanged ---
 assert_throws("ZeroDivisionError", fn () {
-  PEG.parse(calc, "9", actions: {Number: |sv| 1 / 0})
+  parser_with(calc, {Number: |vs| 1 / 0}).parse("9")
 })
 assert_eq(try {
-  PEG.parse(
-    calc,
-    "9",
-    actions: {Number: |sv| throw {kind: "Custom", message: "boom"}},
-  )
+  parser_with(calc, {Number: |vs| throw {kind: "Custom", message: "boom"}}).parse("9")
 } catch e {
   e.kind
 }, "Custom")
 
-// --- a syntax error inside an actions parse is a PEGError like any other,
-// `path` honored the same way ---
-let e = try {
-  PEG.parse(calc, "1 +", path: "prog.txt", actions: eval_actions)
-} catch err {
-  err
-}
-assert_eq(e.kind, "PEGError")
-assert_true(e.message.starts_with("prog.txt:1:4:"))
+// --- a syntax error inside a reducing parse is a failed parse like any
+// other ---
+let failing = parser_with(calc, eval_actions)
+let mut failures = []
+failing.set_logger(|line, col, msg| failures.push([line, col]))
+assert_eq(failing.parse("1 +", "prog.txt"), (false, nil))
+assert_eq(failures, [[1, 4]])
 
-// --- reentrancy: an action recursively parsing the same compiled grammar
-// (on a different subject) resolves against its own actions, not a stale
-// or shared installation from the outer call ---
+// --- reentrancy: an action parsing the same grammar on another parser (and
+// another subject) runs that parser's actions, not the outer one's, and the
+// outer parse carries on with its own ---
+let inner_calc = parser_with(calc, eval_actions)
 let reentrant = {
-  Number: |sv| sv.token == "9"
-    ? PEG.parse(calc, "4 + 5", actions: eval_actions)
-    : to_long(sv.token),
+  Number: |vs| vs.token() == "9" ? inner_calc.parse("4 + 5")[1] : to_long(vs.token()),
   Additive: sum2,
   Multiplicative: prod2,
 }
-assert_eq(PEG.parse(calc, "9 + 1", actions: reentrant), 10)
+assert_eq(reduce(calc, "9 + 1", reentrant), 10)
 
-// --- `actions: nil` (the default) is the existing tree-building behavior,
-// unaffected ---
-assert_eq(PEG.parse(calc, "7", actions: nil).name, "Number")
-assert_eq(PEG.parse(calc, "7").name, "Number")
-
-// --- a non-Function entry falls back to the default, the same as an
-// unregistered rule name -- and the default for a childless rule (no named
-// sub-rule references, so nothing to pass through) is nil, exactly the way
-// cpp-peglib's own unset-action reduce (`vs.empty() ? any() : vs.front()`)
+// --- nil takes an action off, and the default for a childless rule (no
+// named sub-rule references, so nothing to pass through) is nil, exactly the
+// way cpp-peglib's own unset-action reduce (`vs.empty() ? any() : vs.front()`)
 // has nothing to give back either ---
-assert_eq(PEG.parse(calc, "5", actions: {Number: nil}), nil)
+let detached = parser_with(calc, eval_actions)
+detached["Number"] = nil
+assert_eq(detached.parse("5"), (true, nil))
 
 // --- `{ precedence }` rules: cpp-peglib's own PrecedenceClimbing operator
 // steals the installed action and re-invokes it once per binary step with a
@@ -155,44 +238,61 @@ fn apply2(op, l, r) {
   }
 }
 let prec_actions = {
-  EXPRESSION: fn (sv) {
-    sv.values.size() > 1
-      ? apply2(sv.values[1], sv.values[0], sv.values[2])
-      : sv.values[0]
+  EXPRESSION: fn (vs) {
+    vs.size() > 1
+      ? apply2(vs[1], vs[0], vs[2])
+      : vs[0]
   },
-  OPERATOR: |sv| sv.token,
-  NUMBER: |sv| to_long(sv.token),
+  OPERATOR: |vs| vs.token(),
+  NUMBER: |vs| to_long(vs.token()),
 }
-assert_eq(PEG.parse(prec, "-1 + (1 + 2) * 3 - -1", actions: prec_actions), 9)
+assert_eq(reduce(prec, "-1 + (1 + 2) * 3 - -1", prec_actions), 9)
 
-// --- a `< ... >` token rule's own `sv.token` is exactly what it matched,
+// --- a `< ... >` token rule's own `vs.token()` is exactly what it matched,
 // even when %whitespace would otherwise skip trailing space right after it
-// as part of continuing the sequence that references it -- `sv.sv()` (the
-// whole rule's own matched span) reaches past that boundary and once leaked
-// the skipped whitespace into `token` (measured: "+" came back as "+ ",
-// silently failing every string comparison against it) ---
+// as part of continuing the sequence that references it -- `vs.sv()` (the
+// whole rule's own matched span) reaches past that boundary ---
 assert_eq(
-  PEG.parse(
-    prec,
-    "1 + 2",
-    actions: {
-  EXPRESSION: prec_actions.EXPRESSION,
-  OPERATOR: fn (sv) { assert_eq(sv.token, "+"); sv.token },
-  NUMBER: prec_actions.NUMBER,
-},
-  ),
+  reduce(prec, "1 + 2", {
+    EXPRESSION: prec_actions.EXPRESSION,
+    OPERATOR: fn (vs) {
+      assert_eq([vs.token(), vs.sv()], ["+", "+ "])
+      vs.token()
+    },
+    NUMBER: prec_actions.NUMBER,
+  }),
   3,
 )
 
-// --- an action may run a tree-mode parse of the same grammar: it gets a
-// Tree, not the outer actions run again (which recursed to the depth limit),
+// --- an action may run a tree-building parse of the same grammar: it gets a
+// tree, not the outer actions run again (which recursed to the depth limit),
 // and the outer parse carries on with its own actions ---
-let word = PEG.compile("S <- [a-z]+")
-assert_eq(word.parse("abc", actions: {S: fn (sv) { word.parse("xy").token }}), "xy")
+let word_grammar = "S <- [a-z]+"
+let word_tree = PEG.parser(word_grammar)
+word_tree.enable_ast()
+let word_plain = PEG.parser(word_grammar)
 assert_eq(
-  PEG.parse("S <- [a-z]+", "abc", actions: {
-    S: fn (sv) { [PEG.parse("S <- [a-z]+", "xy").token, sv.token] },
-  }),
-  ["xy", "abc"],
+  parser_with(word_grammar, {S: |vs| word_tree.parse("xy")[1].token}).parse("abc"),
+  (true, "xy"),
 )
-assert_eq(word.parse("abc", actions: {S: fn (sv) { word.test("12") }}), false)
+assert_eq(
+  parser_with(word_grammar, {S: |vs| [word_tree.parse("xy")[1].token, vs.token()]}).parse("abc"),
+  (true, ["xy", "abc"]),
+)
+assert_eq(
+  parser_with(word_grammar, {S: |vs| word_plain.parse("12")}).parse("abc"),
+  (true, (false, nil)),
+)
+
+// --- and the other way round, each to the depth a callback asks for: a
+// parse a callback starts runs on a parser of its own, so the outer one's
+// callbacks are the ones that go on running when it returns ---
+let mut depth = 0
+let nest = PEG.parser(word_grammar)
+nest["S"] = fn (vs) {
+  depth += 1
+  let inner = depth < 4 ? nest.parse(vs.token() + "x")[1] : "."
+  "{vs.token()}>{inner}"
+}
+assert_eq(nest.parse("a"), (true, "a>ax>axx>axxx>."))
+assert_eq(nest.parse("b"), (true, "b>."))

@@ -300,26 +300,45 @@ if args.empty() {
   Sys.exit(1)
 }
 
+# Parses `src` into its tree, the way a cpp-peglib program does: load the
+# grammar, ask for the optimized AST and for packrat parsing, and hear the
+# errors through the logger. A syntax error is thrown as a ParseError whose
+# message is already "path:line:col: ...".
+fn parse_source(src, path) {
+  let parser = PEG.parser()
+  let mut errors = []
+  parser.set_logger(|line, col, msg| errors.push("{line}:{col}: {msg}"))
+  if !parser.load_grammar(grammar) {
+    throw {kind: 'ParseError', message: "grammar:{errors[0]}"}
+  }
+  parser.enable_ast(true)
+  parser.enable_packrat_parsing()
+  errors = []
+  let (ok, tree) = parser.parse(src, path)
+  if !ok {
+    throw {kind: 'ParseError', message: "{path}:{errors[0]}"}
+  }
+  tree
+}
+
 try {
   # `program <- _ block '.' _` has a single child, so optimization folds it
-  # away and the root that arrives is the block itself. `path:` names the
-  # subject for PEG's own error message, so a syntax error already reads
-  # "square.pas:3:8: ..." with no assembly required on this end.
-  let tree = PEG.parse(grammar, FS.read(args[0]), path: args[0])
+  # away and the root that arrives is the block itself.
+  let tree = parse_source(FS.read(args[0]), args[0])
   if want_ast {
-    print(PEG.str(tree))
+    print(PEG.ast_to_s(tree))
   } else {
     let (scope, body) = enter(tree, nil)
     exec(body, scope)
   }
 } catch e {
   # A PL/0 error carries its own position but not the file, since `fail()`
-  # never saw a path; a PEGError's message is already fully formed. Anything
+  # never saw a path; a ParseError's message is already fully formed. Anything
   # else is a bug in this interpreter, and rethrowing says so rather than
   # dressing it up as an error in the program being run.
   match e {
     {kind: 'Pl0Error'} => println("{args[0]}:{e.line}:{e.col}: {e.message}"),
-    {kind: 'PEGError'} => println(e.message),
+    {kind: 'ParseError'} => println(e.message),
     _ => throw e,
   }
   Sys.exit(1)

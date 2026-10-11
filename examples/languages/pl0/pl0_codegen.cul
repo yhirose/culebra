@@ -1,6 +1,6 @@
 # PL/0, compiled instead of interpreted.
 #
-# `pl0.cul` (next to this file) evaluates the AST `PEG.parse` returns
+# `pl0.cul` (next to this file) evaluates the AST the parser returns
 # directly: a `match` arm reads a node's shape and computes its value on the
 # spot. This file does the same parse, but instead of computing anything it
 # builds a `CodeGen.Module` -- Core-IR, from vendor/cpp-vmlib -- and hands the
@@ -474,10 +474,31 @@ if args.empty() {
   Sys.exit(1)
 }
 
+# Parses `src` into its tree, the way a cpp-peglib program does: load the
+# grammar, ask for the optimized AST and for packrat parsing, and hear the
+# errors through the logger. A syntax error is thrown as a ParseError whose
+# message is already "path:line:col: ...".
+fn parse_source(src, path) {
+  let parser = PEG.parser()
+  let mut errors = []
+  parser.set_logger(|line, col, msg| errors.push("{line}:{col}: {msg}"))
+  if !parser.load_grammar(grammar) {
+    throw {kind: 'ParseError', message: "grammar:{errors[0]}"}
+  }
+  parser.enable_ast(true)
+  parser.enable_packrat_parsing()
+  errors = []
+  let (ok, tree) = parser.parse(src, path)
+  if !ok {
+    throw {kind: 'ParseError', message: "{path}:{errors[0]}"}
+  }
+  tree
+}
+
 try {
   # `program <- _ block '.' _` folds to a single child, so the root that
   # arrives is the block itself -- same fact pl0.cul's own driver leans on.
-  let tree = PEG.parse(grammar, FS.read(args[0]), path: args[0])
+  let tree = parse_source(FS.read(args[0]), args[0])
   let m = Binder().build(CodeGen.Module(), tree)
   m.verify()
   cond {
@@ -488,7 +509,7 @@ try {
 } catch e {
   match e {
     {kind: 'Pl0Error'} => println("{args[0]}:{e.line}:{e.col}: {e.message}"),
-    {kind: 'PEGError'} => println(e.message),
+    {kind: 'ParseError'} => println(e.message),
     {kind: 'IrError'} => println("{args[0]}:{e.line}:{e.col}: {e.message}"),
     _ => throw e,
   }

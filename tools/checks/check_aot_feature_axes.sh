@@ -44,7 +44,7 @@
 #     are accepted rather than chased with a second archive: they're fixed at
 #     a measured ~53 KB total and never executed in a binary that never names
 #     PEG (see peg.h). What this script's `none` probe checks instead is the
-#     thing that DOES matter -- that `culebra::pegparser::compile` itself
+#     thing that DOES matter -- that `culebra::pegparser::load` itself
 #     (the actual entry point, not a nested lambda's enclosing-scope name) is
 #     gone, not merely stubbed, when the program never names PEG.
 #
@@ -184,7 +184,7 @@ segmenter_choke='^culebra::search::segmenter_open([[]abi:cxx11[]])?[(]'
 # substring (see the PEG note above, which is where this was first caught) --
 # any future choke of this exact shape (one function, `name[(]`) should use
 # expect_class too, not expect_absent/expect_present.
-peg_choke='^culebra::pegparser::compile[(]'
+peg_choke='^culebra::pegparser::load[(]'
 proc_choke='^culebra::proc::run_command[(]'
 png_choke='^culebra::image::decode_png[(]'
 ttf_choke='^culebra::_canvas_detail::ttf_load[(]'
@@ -324,7 +324,9 @@ expect_present segmenter 'segmentlib::' "cpp-segmentlib, a model loaded"
 expect_absent segmenter "$fmt_machinery" "libstdc++'s formatter, segmenter"
 expect_output segmenter "1"
 
-build peg 'IO.print(PEG.parse(`N <- < [0-9]+ >`, "42").token)'
+build peg 'let p = PEG.parser(`N <- < [0-9]+ >`)
+p.enable_ast()
+IO.print(p.parse("42")[1].token)'
 expect_class peg "$peg_choke" ".+" "expected defined" "PEG named"
 expect_class peg "$regex_choke" "W?" "expected 'W' or absent" "PEG only"
 expect_class peg "$search_choke" "W?" "expected 'W' or absent" "PEG only"

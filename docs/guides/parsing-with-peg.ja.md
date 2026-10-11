@@ -17,7 +17,7 @@ PEG（parsing expression grammar）は、構文解析器を得るために書く
 です。かつてYACCに渡していた仕事だと思ってください。実務で効いてくる
 違いは3つあります。字句解析器を別に用意しなくてよいこと（PEGは
 トークンと同じように文字も記述できるので、字句解析も規則として書けます）。
-ビルド手順が要らないこと（`PEG.compile`が実行時に文法を読み込むので、
+ビルド手順が要らないこと（`PEG.parser`が実行時に文法を読み込むので、
 文法はプログラムの中のただの文字列です）。そして選択に**順序がある**
 こと — `a / b`は`a`が一致した時点で`a`に決めるので、shift/reduce
 conflictが報告されて解決を迫られる、ということが起きません。つまりPEGは
@@ -88,6 +88,12 @@ INFO ok keys=['path'] depth=1
 時刻・レベル・メッセージまでは正規表現の得意分野です。ですが`ctx=`の
 あとの値は違います。オブジェクトと配列が入れ子になっているからです。
 
+`PEG.parser`が文法からパーサを作り、`enable_ast(true)`が木を頼みます。
+`true`は、子を1つ渡すだけのノードを畳んだ木にする指定です（§3でもう一度
+触れます）。その`parse`は`(ok, tree)`を返します。パースできない行では
+`ok`が`false`、木が`nil`になります。ここの行はどれもパースできるので、以下の例では
+そのまま木を使います。
+
 ```culebra
 let g = `
   Line  <- Time Level Msg 'ctx=' Obj
@@ -102,7 +108,8 @@ let g = `
   Word  <- < [^ ,}\]]+ >
   %whitespace <- [ ]*
 `
-let p = PEG.compile(g)
+let p = PEG.parser(g)
+p.enable_ast(true)
 
 fn depth(n) {
   match n {
@@ -116,7 +123,7 @@ let log = '2026-09-01T10:00:02 WARN retry ctx={user: {id: 7, tags: [a, b]}, path
 2026-09-01T10:00:05 INFO ok ctx={path: /y}'
 
 for line in log.lines() {
-  let n = p.parse(line)
+  let (ok, n) = p.parse(line)
   let ctx = n.nodes[3]
   let keys = ctx.nodes.map(|kv| kv.nodes[0].token)
   println("{n.nodes[1].token} {n.nodes[2].token} keys={keys} depth={depth(ctx)}")
@@ -171,14 +178,15 @@ let g = `
   Args <- Type (',' Type)*      { no_ast_opt }
   %whitespace <- [ ]*
 `
-let p = PEG.compile(g)
+let p = PEG.parser(g)
+p.enable_ast(true)
 
 let lines = 'Map<String, List<Pair<Int, String>>>
 Result<Vec<u8>, Error>
 i32'
 
 for src in lines.lines() {
-  let n = p.parse(src)
+  let (ok, n) = p.parse(src)
   let args = n.nodes.size() > 1 ? n.nodes[1].nodes : []
   let texts = args.map(|a| src.slice(a.position, a.position + a.length))
   println("{n.nodes[0].token} <- {texts}")
@@ -231,13 +239,15 @@ let g = `
   Part  <- '(' Part* ')' / !')' .
   Other <- < . >
 `
-let p = PEG.compile(g)
+let p = PEG.parser(g)
+p.enable_ast(true)
 
 let lines = 'See [the [inner] guide](https://x/a(b).md) now.
 Also [plain](https://y/z) and [a] alone.'
 
 for line in lines.lines() {
-  for n in p.parse(line).nodes {
+  let (ok, links) = p.parse(line)
+  for n in links.nodes {
     if n.name == 'Link' {
       println("text={n.nodes[0].token}  url={n.nodes[1].token}")
     }
@@ -299,9 +309,16 @@ fn eval(n) {
   }
 }
 
-inspect(eval(PEG.parse(calc, '1 + 2 * 3')))    # => 7
-inspect(eval(PEG.parse(calc, '(1 + 2) * 3')))  # => 9
-inspect(eval(PEG.parse(calc, '1 - 2 - 3')))    # => -4
+let parser = PEG.parser(calc)
+parser.enable_ast(true)
+fn calculate(src) {
+  let (ok, tree) = parser.parse(src)
+  eval(tree)
+}
+
+inspect(calculate('1 + 2 * 3'))    # => 7
+inspect(calculate('(1 + 2) * 3'))  # => 9
+inspect(calculate('1 - 2 - 3'))    # => -4
 ```
 
 `Expr <- Expr AddOp Term / Term`は、そのまま読める形をしています。式とは、
@@ -320,9 +337,10 @@ inspect(eval(PEG.parse(calc, '1 - 2 - 3')))    # => -4
 
 ### 同じ文法を、木を作らずに使う
 
-答えだけが欲しいときは、`actions`を使うと入力を直接解釈できます。規則名
-から関数へのマップを渡す形です。各関数は、その規則が集めた値を受け取って、
-その規則が親に渡す値を返します。
+答えだけが欲しいときは、各規則に*action*を付けると入力を直接解釈できます。
+actionは関数で、その規則が集めた値を受け取って、その規則が親に渡す値を
+返します。規則にactionが付いているパーサは木を作らず、`parse`は
+`(ok, value)`を返します。
 
 ```culebra
 let calc = `
@@ -335,33 +353,32 @@ let calc = `
   %whitespace <- [ \t\r\n]*
 `
 
-fn apply(sv) {
-  if sv.values.size() < 3 {
-    return sv.values[0]
+fn apply(vs) {
+  if vs.size() < 3 {
+    return vs[0]
   }
-  match sv.values[1] {
-    '+' => sv.values[0] + sv.values[2],
-    '-' => sv.values[0] - sv.values[2],
-    '*' => sv.values[0] * sv.values[2],
-    _ => sv.values[0] / sv.values[2],
+  match vs[1] {
+    '+' => vs[0] + vs[2],
+    '-' => vs[0] - vs[2],
+    '*' => vs[0] * vs[2],
+    _ => vs[0] / vs[2],
   }
 }
 
-let actions = {
-  Number: |sv| to_long(sv.token),
-  AddOp: |sv| sv.token,
-  MulOp: |sv| sv.token,
-  Expr: apply,
-  Term: apply,
-}
+let parser = PEG.parser(calc)
+parser['Number'] = |vs| vs.token_to_number()
+parser['AddOp'] = |vs| vs.token()
+parser['MulOp'] = |vs| vs.token()
+parser['Expr'] = apply
+parser['Term'] = apply
 
-inspect(PEG.parse(calc, '1 + 2 * 3 - 4', actions: actions))  # => 3
-inspect(PEG.parse(calc, '8 / 4 / 2', actions: actions))      # => 1
+inspect(parser.parse('1 + 2 * 3 - 4'))  # => (true, 3)
+inspect(parser.parse('8 / 4 / 2'))      # => (true, 1)
 ```
 
 使い分けの目安はこうです。入力を調べたい、変換したい、何度も走査したい
 ときは木を使ってください。解析すること自体が計算になっていて、木は
-作って捨てるだけになるときは、actionsのほうが素直です。
+作って捨てるだけになるときは、actionのほうが素直です。
 
 ## 3. 言語まるごと
 
@@ -415,7 +432,8 @@ let grammar = `
   %whitespace       <- [ \t\r\n]*
   %word             <- [a-zA-Z]
 `
-let fiblang = PEG.compile(grammar)
+let fiblang = PEG.parser(grammar)
+fiblang.enable_ast(true)
 
 fn run(src) {
   mut fns = {}
@@ -478,7 +496,8 @@ fn run(src) {
     }
   }
 
-  eval(fiblang.parse(src, 'fib'), {})
+  let (ok, program) = fiblang.parse(src, 'fib')
+  eval(program, {})
   out
 }
 
@@ -506,7 +525,8 @@ for n from 1 to 10
 読まれてしまいます。
 
 **AST最適化が刈り込みをしてくれるので、評価器には意味のある規則しか
-届きません。** `EXPRESSION <- TERNARY`は子が1つなので丸ごと消えます。
+届きません。** `enable_ast(true)`の`true`がその指定です。
+`EXPRESSION <- TERNARY`は子が1つなので丸ごと消えます。
 `TERNARY`が残るのは実際に`?`が一致したときだけ、`CONDITION`が残るのは
 `<`が一致したときだけ、`CALL`が残るのは括弧があったときだけです。評価器の
 分岐が規則ごとではなく**概念ごと**になっているのは、そのためです。
@@ -524,7 +544,7 @@ for n from 1 to 10
 するなら`DEFINITION`の中を`Identifier (',' Identifier)*`にして、`frame`を
 リストで埋めます。演算子を増やすなら`InfixOperator`や`ConditionOperator`に
 足したうえで、§2のやり方で優先順位の段を1つ用意します。分岐を書く前に
-木の形を見たくなったら、`PEG.str`が表示してくれます（§4）。
+木の形を見たくなったら、`PEG.ast_to_s`が表示してくれます（§4）。
 
 ## 4. 落とし穴
 
@@ -547,7 +567,7 @@ Term / Term`は問題なく動きますし、別の規則を経由した間接�
 書いてください。
 
 **ASTを走査するコードを疑う前に、ASTそのものを見てください。**
-`PEG.str(node)`が`peglint --ast`と同じ形でASTを表示します。AST最適化で
+`PEG.ast_to_s(node)`が`peglint --ast`と同じ形でASTを表示します。AST最適化で
 どのノードが畳まれたかを頭の中で考えるより、たいていこちらが速く済みます。
 
 ```culebra
@@ -556,26 +576,30 @@ let g = `
   Inner <- < [0-9]+ >
 `
 
-print(PEG.str(PEG.parse(g, '1')))
+let parser = PEG.parser(g)
+parser.enable_ast(true)
+print(PEG.ast_to_s(parser.parse('1')[1]))
 # => |
 # - Inner (1)
 ```
 
-**測っていないなら、packratは切らないでください。** 選択肢が接頭辞を
-共有する文法（`A <- B '+' A / B`。最初に書く文法は、たいていこの形に
-なります）は、その接頭辞を選択肢の数だけ解析し直します。メモ化がないと
-指数時間です。リファレンスの実測では、10段の入れ子がメモ化ありで0.04ms、
-なしで2.0秒でした。
+**選択肢が接頭辞を共有する文法では、packratを有効にしてください。**
+メモ化は`parser.enable_packrat_parsing()`を呼ぶまで無効です。
+`A <- B '+' A / B`（最初に書く文法は、たいていこの形になります）は、
+その接頭辞を選択肢の数だけ解析し直すので、メモ化がないと指数時間です。
+リファレンスの実測では、10段の入れ子がメモ化ありで0.04ms、なしで2.0秒
+でした。このガイドの文法はこの形をしていないので、どれも有効にしていません。
 
-**1度コンパイルして、何度も解析しましょう。** 高いのは`PEG.compile`の
-ほうです。文法を毎回渡す`PEG.parse(grammar, text)`も、読み込み済みの文法を
-スレッドごとにキャッシュしてくれるので罠ではありませんが、多数の入力を
-回すループなら、文法を外に出したほうが読みやすくなります。
+**パーサは1度作って、何度も解析しましょう。** 高いのは文法の読み込みの
+ほうです。読み込み済みの文法はスレッドごとに保持されるので、同じ文法の
+`PEG.parser`をもう一度呼んでも罠ではありませんが、多数の入力を回すループ
+なら、パーサを外に出したほうが読みやすくなります。
 
 ## この先
 
 * [`stdlib.ja.md` §35](../stdlib.ja.md#35-peg) — 全呼び出し、ノードの
-  フィールド、エラーと深さの上限。
+  フィールド、ロガーと深さの上限。規則の判定に文脈が要る文法のための
+  述語と`enter` / `leave`、cpp-peglibのAPIと違う点もここにあります。
 * [cpp-peglibの構文リファレンス](https://github.com/yhirose/cpp-peglib#syntax)
   — このガイドで使わなかった部分も含めた、記法の全体。
 * [Practical PEG parsing](https://berthub.eu/articles/posts/practical-peg-parsing/)

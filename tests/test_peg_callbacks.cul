@@ -1,0 +1,339 @@
+// Conformance: stdlib PEG — the parser object is cpp-peglib's `peg::parser`:
+// `parser["RULE"]` carries the rule's action, predicate, enter and leave,
+// `parse` answers `(ok, val)`, and errors go to a logger.
+
+// A parser of `grammar` that builds the tree, every rule's node in it.
+fn ast_parser(grammar) {
+  let parser = PEG.parser(grammar)
+  parser.enable_ast()
+  parser
+}
+
+// --- a predicate decides whether its rule matched: `T * x;` is a
+// declaration only when `T` names a type, the C typedef problem ---
+let c_like = `
+  Unit     <- Stmt+
+  Stmt     <- Typedef / Decl / ExprStmt
+  Typedef  <- 'typedef' 'int' NewType ';'
+  Decl     <- TypeName '*' Ident ';'
+  ExprStmt <- Ident '*' Ident ';'
+  NewType  <- < Ident >
+  TypeName <- < Ident >
+  Ident    <- < [a-zA-Z_][a-zA-Z0-9_]* >
+  %whitespace <- [ \t\r\n]*
+`
+let c_src = "typedef int T; T * x; a * b;"
+fn kinds(tree) {
+  tree.nodes.map(|n| n.nodes[0].name)
+}
+
+let cp = ast_parser(c_like)
+assert_eq(kinds(cp.parse(c_src)[1]), ["Typedef", "Decl", "Decl"])
+
+let typedefs = {}
+cp["NewType"].predicate = fn (vs) {
+  typedefs[vs.token_to_string()] = true
+  true
+}
+cp["TypeName"].predicate = |vs| typedefs.has(vs.token_to_string())
+let (c_ok, c_tree) = cp.parse(c_src)
+assert_true(c_ok)
+assert_eq(kinds(c_tree), ["Typedef", "Decl", "ExprStmt"])
+
+// --- the callbacks belong to the parser object, not to the grammar: a second
+// parser of the same grammar runs without them ---
+assert_eq(kinds(ast_parser(c_like).parse(c_src)[1]), ["Typedef", "Decl", "Decl"])
+assert_eq(kinds(cp.parse(c_src)[1]), ["Typedef", "Decl", "ExprStmt"])
+
+// --- nil takes a callback off again ---
+cp["TypeName"].predicate = nil
+assert_eq(kinds(cp.parse(c_src)[1]), ["Typedef", "Decl", "Decl"])
+
+// --- a predicate that rejects with no message leaves the error to whatever
+// the parser tried next; one that gives a message is the error, reported
+// where its rule started and under its name ---
+let weight = `
+  S      <- Small / Any
+  Small  <- NUMBER 'kg'
+  Any    <- NUMBER 'g'
+  NUMBER <- < [0-9]+ >
+  %whitespace <- [ \t]*
+`
+let wp = ast_parser(weight)
+let mut errors = []
+wp.set_logger(|line, col, msg, rule| errors.push([line, col, msg, rule]))
+wp["Small"].predicate = |vs| vs.token_to_number() <= 100
+
+assert_eq(wp.parse("50 kg")[1].nodes[0].name, "Small")
+assert_eq(wp.parse("200 g")[1].nodes[0].name, "Any")
+assert_eq(errors, [])
+assert_eq(wp.parse("200 kg"), (false, nil))
+assert_eq(errors, [[1, 5, "syntax error, unexpected 'kg', expecting 'g'.", ""]])
+
+errors = []
+wp["Small"].predicate = |vs| vs.token_to_number() <= 100 ? true : (false, "too heavy for kg")
+assert_eq(wp.parse("200 g")[1].nodes[0].name, "Any")
+assert_eq(errors, [])
+assert_eq(wp.parse("200 kg"), (false, nil))
+assert_eq(errors, [[1, 1, "too heavy for kg", "Small"]])
+
+// --- a logger of three parameters is not handed the rule ---
+errors = []
+wp.set_logger(|line, col, msg| errors.push("{line}:{col}: {msg}"))
+assert_eq(wp.parse("200 kg"), (false, nil))
+assert_eq(errors, ["1:1: too heavy for kg"])
+
+// --- and `set_logger(nil)` takes it off: a failure is then just false ---
+errors = []
+wp.set_logger(nil)
+assert_eq(wp.parse("200 kg"), (false, nil))
+assert_eq(errors, [])
+
+// --- what a predicate answers third is its rule's action's third argument,
+// `predicate_data`, after the user data; an action of fewer parameters is
+// not handed it ---
+let list = `
+  List   <- NUMBER (',' NUMBER)*
+  NUMBER <- < [0-9]+ >
+`
+let np = PEG.parser(list)
+np["NUMBER"].predicate = fn (vs) {
+  let n = vs.token_to_number()
+  n <= 100 ? (true, "", n * 2) : (false, "out of range")
+}
+np["NUMBER"] = |vs, dt, predicate_data| predicate_data
+np["List"] = |vs| vs.transform()
+assert_eq(np.parse("1,20,3"), (true, [2, 40, 6]))
+assert_eq(np.parse("1,200"), (false, nil))
+
+// `parser["RULE"] = f` is `parser["RULE"].action = f`
+assert_eq(type_of(np["NUMBER"].action), "Function")
+np["NUMBER"].action = |vs| vs.token()
+assert_eq(np.parse("7,8"), (true, ["7", "8"]))
+
+// --- a predicate sees its rule's values in a reducing parse, and leaves
+// them for the action ---
+let vp = PEG.parser(`
+  Pair <- Num ':' Num
+  Num  <- < [0-9]+ >
+`)
+vp["Num"] = |vs| vs.token_to_number()
+vp["Pair"] = |vs| vs[0] + vs[1]
+vp["Pair"].predicate = |vs| vs.size() == 2 && vs[0] < vs[1]
+assert_eq(vp.parse("1:2"), (true, 3))
+assert_eq(vp.parse("2:1"), (false, nil))
+
+// --- `dt` is the user data of one parse: every callback is handed the one
+// its parse was called with, last but for an action's `predicate_data` ---
+let dp = PEG.parser(list)
+dp["NUMBER"].enter = |c, s, n, dt| dt.seen.push("enter")
+dp["NUMBER"].predicate = fn (vs, dt) {
+  dt.seen.push("predicate")
+  (true, "", vs.token_to_number())
+}
+dp["NUMBER"] = fn (vs, dt, predicate_data) {
+  dt.seen.push("action")
+  predicate_data
+}
+dp["NUMBER"].leave = |c, s, n, matchlen, value, dt| dt.seen.push("leave")
+dp["List"] = fn (vs, dt) {
+  dt.total = vs.transform().sum()
+}
+let first = {seen: [], mut total: 0}
+let second = {seen: [], mut total: 0}
+dp.parse("1,2", dt: first)
+dp.parse("30", dt: second)
+let per_number = ["enter", "predicate", "action", "leave"]
+assert_eq(first.seen, per_number + per_number)
+assert_eq([first.total, second.total], [3, 30])
+assert_eq(second.seen.size(), 4)
+
+// a parse called with none hands nil
+let mut handed = []
+let nilp = PEG.parser(`N <- < [0-9]+ >`)
+nilp["N"] = |vs, dt, predicate_data| handed.push([dt, predicate_data])
+nilp.parse("7")
+assert_eq(handed, [[nil, nil]])
+
+// a parse a callback starts has its own: the inner parse of the same parser
+// counts into what it was called with, the outer into its own
+let nest = PEG.parser(`
+  E <- '(' E ')' / N
+  N <- < [0-9]+ >
+`)
+nest["N"] = fn (vs, dt) {
+  dt.n += 1
+  if dt.depth < 2 {
+    let inner = {mut n: 0, depth: dt.depth + 1}
+    nest.parse("(({vs.token()}))", dt: inner)
+    dt.inner = inner.n
+  }
+}
+let outer = {mut n: 0, depth: 0, mut inner: nil}
+nest.parse("(1)", dt: outer)
+assert_eq([outer.n, outer.inner], [1, 1])
+
+// a declared function names only the parameters it reads
+fn first_number(vs) {
+  vs.token_to_number()
+}
+fn small(vs) {
+  vs.token_to_number() < 10
+}
+fn entered(c, s, n) {
+  handed.push(n)
+}
+fn left(c, s, n, matchlen, value) {
+  handed.push(value)
+}
+let decl = PEG.parser(`N <- < [0-9]+ >`)
+decl["N"] = first_number
+decl["N"].predicate = small
+decl["N"].enter = entered
+decl["N"].leave = left
+handed = []
+assert_eq(decl.parse("7", dt: {}), (true, 7))
+assert_eq(handed, [1, 7])
+
+// --- enter and leave run around every attempt at their rule, and are handed
+// what cpp-peglib hands them: the context, the rest of the subject and its
+// length, and on the way out the match length (-1 for no match) and, in a
+// reducing parse, the rule's value ---
+let sum = `
+  Sum    <- Number ('+' Number)*
+  Number <- < [0-9]+ >
+  %whitespace <- [ \t]*
+`
+let sp = PEG.parser(sum)
+let mut trace = []
+sp["Number"].enter = |c, s, n| trace.push(["enter", s, n, c.s, c.l, c.path])
+sp["Number"].leave = |c, s, n, matchlen, value| trace.push(["leave", s, n, matchlen, value])
+sp["Number"] = |vs| vs.token_to_number()
+sp["Sum"] = |vs| vs.transform().sum()
+assert_eq(sp.parse("1 + 22", "sum.txt"), (true, 23))
+assert_eq(trace, [
+  ["enter", "1 + 22", 6, "1 + 22", 6, "sum.txt"],
+  ["leave", "1 + 22", 6, 2, 1],
+  ["enter", "22", 2, "1 + 22", 6, "sum.txt"],
+  ["leave", "22", 2, 2, 22],
+])
+
+trace = []
+assert_eq(sp.parse("1 + x"), (false, nil))
+assert_eq(trace.map(|t| [t[0], t[1]]), [
+  ["enter", "1 + x"],
+  ["leave", "1 + x"],
+  ["enter", "x"],
+  ["leave", "x"],
+])
+assert_eq(trace[3].slice(3, 5), [-1, nil])
+
+// in a tree-mode parse the value is the tree `parse` hands back, so `leave`
+// is handed none
+let tp = PEG.parser(sum)
+tp.enable_ast(true)
+let mut tree_left = []
+tp["Number"].leave = |c, s, n, matchlen, value| tree_left.push([matchlen, value])
+assert_eq(tp.parse("7")[1].name, "Number")
+assert_eq(tree_left, [[1, nil]])
+
+// --- a parser with neither an action nor a tree to build runs its other
+// callbacks all the same ---
+let bare = PEG.parser(sum)
+let mut bare_seen = []
+bare["Number"].predicate = fn (vs) {
+  bare_seen.push(vs.token())
+  true
+}
+bare["Number"].enter = |c, s, n| bare_seen.push("enter")
+bare["Number"].leave = |c, s, n, matchlen, value| bare_seen.push(matchlen)
+assert_eq(bare.parse("3 + 4"), (true, nil))
+assert_eq(bare_seen, ["enter", "3", 2, "enter", "4", 1])
+
+// --- what a callback throws propagates unchanged, and the parser parses
+// again afterwards ---
+let xp = PEG.parser(sum)
+xp["Number"].predicate = |vs| vs.token() == "9" ? throw {kind: "Custom", message: "nine"} : true
+assert_eq(try { xp.parse("1 + 9") } catch e { e.kind }, "Custom")
+assert_eq(xp.parse("1 + 2")[0], true)
+xp["Number"].predicate = nil
+xp["Number"].enter = |c, s, n| 1 / 0
+assert_throws("ZeroDivisionError", fn () { xp.parse("1") })
+xp["Number"].enter = nil
+assert_eq(xp.parse("1")[0], true)
+
+// --- a predicate answers Bool, (Bool, String) or (Bool, String, Any) ---
+let bad = PEG.parser(sum)
+for answer in [nil, 1, "no", (true,), (1, ""), (true, 2), (true, "", 1, 2)] {
+  bad["Number"].predicate = |vs| answer
+  assert_eq(try { bad.parse("1") } catch e { e.kind }, "TypeError")
+}
+
+// --- a rule's member is a Function or nil ---
+let wrong = PEG.parser(sum)
+wrong["Number"].enter = 42
+let not_fn = try { wrong.parse("1") } catch e { e }
+assert_eq(not_fn.kind, "TypeError")
+assert_eq(not_fn.message, "PEG: rule 'Number': enter is Long, not a Function")
+
+// --- a callback on a rule the grammar lacks is a mistake, whichever member ---
+for member in ["action", "predicate", "enter", "leave"] {
+  let typo = PEG.parser(sum)
+  typo["Nope"][member] = |vs| true
+  let e = try { typo.parse("1") } catch err { err }
+  assert_eq([e.kind, e.message], ["PEGError", "PEG: no such rule 'Nope'"])
+}
+// reading `parser["Nope"]` alone installs nothing
+let untouched = PEG.parser(sum)
+assert_eq(untouched["Nope"].predicate, nil)
+assert_eq(untouched.parse("1")[0], true)
+
+// --- too deep a subject is a failed parse like any other: `(false, nil)`,
+// told to the logger ---
+let deep = PEG.parser(`
+  E <- '(' E ')' / N
+  N <- < [0-9]+ >
+`)
+let mut deep_errors = []
+deep.set_logger(|line, col, msg| deep_errors.push(msg))
+assert_eq(deep.parse("(".repeat(5000) + "1" + ")".repeat(5000)), (false, nil))
+assert_eq(deep_errors, ["nesting too deep (limit 4000)"])
+
+// --- nothing a parse hands a callback, or takes back from one, outlives
+// it: values, predicate data and what a failed or thrown-out-of parse had
+// already built are all released ---
+fn leftover() {
+  let lp = PEG.parser(list)
+  let thrower = PEG.parser(list)
+  thrower["NUMBER"] = |vs| throw "stop"
+  let builder = PEG.parser(list)
+  builder.enable_ast()
+  lp["NUMBER"].predicate = fn (vs) {
+    let n = vs.token_to_number()
+    n <= 100 ? (true, "", {n: n, pair: [n, n]}) : (false, "out of range")
+  }
+  lp["NUMBER"] = |vs, dt, data| [dt, data]
+  lp["NUMBER"].enter = |c, s, n, dt| dt
+  lp["NUMBER"].leave = |c, s, n, matchlen, value, dt| value
+  lp["List"] = |vs| vs.transform()
+  lp.set_logger(|line, col, msg, rule| msg)
+  let round = fn () {
+    lp.parse("1,20,3", dt: {tag: [1, 2]})
+    lp.parse("1,200", dt: {tag: [3]})
+    builder.parse("5,6", dt: {tag: []})
+    builder.optimize_ast(builder.parse("7")[1])
+    try { thrower.parse("1,2") } catch e { nil }
+    PEG.parser().load_grammar("A <- B")
+    nil
+  }
+  for i in 0..20 {
+    round()
+  }
+  let before = GC.stat().rc_objects
+  for i in 0..200 {
+    round()
+  }
+  GC.stat().rc_objects - before
+}
+let left_over = leftover()
+assert_eq(left_over, 0)

@@ -1312,9 +1312,9 @@ inline bool is_stdlib_type_name(std::string_view name) {
       "IndexMap",  "Input",    "Instant",       "Iterable",     "Iterator",
       "Map",       "MemoryDir", "Message",      "Music",        "PCM",
       "PEG",       "Path",     "PriorityQueue", "Range",        "Regex",
-      "Screen",    "Set",      "Song",          "Sound",        "Sprite",
-      "StateMachine", "StringLike", "Stringer", "Value",        "WsResult",
-      "ZipArchive"};
+      "Screen",    "SemanticValues", "Set",     "Song",         "Sound",
+      "Sprite",    "StateMachine", "StringLike", "Stringer",    "Value",
+      "WsResult",  "ZipArchive"};
   static_assert(std::ranges::is_sorted(kNames));
   return std::ranges::binary_search(kNames, name);
 }

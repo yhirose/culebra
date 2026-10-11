@@ -15,7 +15,7 @@ A PEG — a *parsing expression grammar* — is a grammar you write to get a
 parser, the job you would once have handed to YACC. Three differences
 matter in practice. There is no separate lexer: a PEG describes characters
 as readily as tokens, so the tokenizer is just more rules. There is no
-build step: `PEG.compile` loads a grammar at run time, and the grammar is
+build step: `PEG.parser` loads a grammar at run time, and the grammar is
 an ordinary string in your program. And choice is **ordered** — `a / b`
 commits to `a` the moment `a` matches, rather than reporting a
 shift/reduce conflict for you to resolve — which means a PEG is
@@ -80,6 +80,12 @@ INFO ok keys=['path'] depth=1
 Timestamp, level and message are standard regex work. The payload after
 `ctx=` is not, because objects and arrays nest inside it.
 
+`PEG.parser` makes a parser from the grammar, and `enable_ast(true)` asks
+it for a tree with the nodes that only pass one child along folded away (§3
+comes back to that). Its `parse` then answers `(ok, tree)`. For a line that
+does not parse, `ok` is `false` and the tree is `nil`; the lines here all
+parse, so the examples go straight to the tree.
+
 ```culebra
 let g = `
   Line  <- Time Level Msg 'ctx=' Obj
@@ -94,7 +100,8 @@ let g = `
   Word  <- < [^ ,}\]]+ >
   %whitespace <- [ ]*
 `
-let p = PEG.compile(g)
+let p = PEG.parser(g)
+p.enable_ast(true)
 
 fn depth(n) {
   match n {
@@ -108,7 +115,7 @@ let log = '2026-09-01T10:00:02 WARN retry ctx={user: {id: 7, tags: [a, b]}, path
 2026-09-01T10:00:05 INFO ok ctx={path: /y}'
 
 for line in log.lines() {
-  let n = p.parse(line)
+  let (ok, n) = p.parse(line)
   let ctx = n.nodes[3]
   let keys = ctx.nodes.map(|kv| kv.nodes[0].token)
   println("{n.nodes[1].token} {n.nodes[2].token} keys={keys} depth={depth(ctx)}")
@@ -161,14 +168,15 @@ let g = `
   Args <- Type (',' Type)*      { no_ast_opt }
   %whitespace <- [ ]*
 `
-let p = PEG.compile(g)
+let p = PEG.parser(g)
+p.enable_ast(true)
 
 let lines = 'Map<String, List<Pair<Int, String>>>
 Result<Vec<u8>, Error>
 i32'
 
 for src in lines.lines() {
-  let n = p.parse(src)
+  let (ok, n) = p.parse(src)
   let args = n.nodes.size() > 1 ? n.nodes[1].nodes : []
   let texts = args.map(|a| src.slice(a.position, a.position + a.length))
   println("{n.nodes[0].token} <- {texts}")
@@ -220,13 +228,15 @@ let g = `
   Part  <- '(' Part* ')' / !')' .
   Other <- < . >
 `
-let p = PEG.compile(g)
+let p = PEG.parser(g)
+p.enable_ast(true)
 
 let lines = 'See [the [inner] guide](https://x/a(b).md) now.
 Also [plain](https://y/z) and [a] alone.'
 
 for line in lines.lines() {
-  for n in p.parse(line).nodes {
+  let (ok, links) = p.parse(line)
+  for n in links.nodes {
     if n.name == 'Link' {
       println("text={n.nodes[0].token}  url={n.nodes[1].token}")
     }
@@ -287,9 +297,16 @@ fn eval(n) {
   }
 }
 
-inspect(eval(PEG.parse(calc, '1 + 2 * 3')))    # => 7
-inspect(eval(PEG.parse(calc, '(1 + 2) * 3')))  # => 9
-inspect(eval(PEG.parse(calc, '1 - 2 - 3')))    # => -4
+let parser = PEG.parser(calc)
+parser.enable_ast(true)
+fn calculate(src) {
+  let (ok, tree) = parser.parse(src)
+  eval(tree)
+}
+
+inspect(calculate('1 + 2 * 3'))    # => 7
+inspect(calculate('(1 + 2) * 3'))  # => 9
+inspect(calculate('1 - 2 - 3'))    # => -4
 ```
 
 `Expr <- Expr AddOp Term / Term` says what it means: an expression is an
@@ -308,9 +325,10 @@ readable. Without it every rule has to spell out where spaces may appear.
 
 ### The same grammar without a tree
 
-When you only want the answer, `actions` interprets the subject directly:
-a map from rule name to a function that receives the rule's reduction and
-returns what that rule contributes to its parent.
+When you only want the answer, an *action* on each rule interprets the
+subject directly: a function that receives the rule's reduction and returns
+what that rule contributes to its parent. With actions on its rules the
+parser builds no tree, and `parse` answers `(ok, value)`.
 
 ```culebra
 let calc = `
@@ -323,28 +341,27 @@ let calc = `
   %whitespace <- [ \t\r\n]*
 `
 
-fn apply(sv) {
-  if sv.values.size() < 3 {
-    return sv.values[0]
+fn apply(vs) {
+  if vs.size() < 3 {
+    return vs[0]
   }
-  match sv.values[1] {
-    '+' => sv.values[0] + sv.values[2],
-    '-' => sv.values[0] - sv.values[2],
-    '*' => sv.values[0] * sv.values[2],
-    _ => sv.values[0] / sv.values[2],
+  match vs[1] {
+    '+' => vs[0] + vs[2],
+    '-' => vs[0] - vs[2],
+    '*' => vs[0] * vs[2],
+    _ => vs[0] / vs[2],
   }
 }
 
-let actions = {
-  Number: |sv| to_long(sv.token),
-  AddOp: |sv| sv.token,
-  MulOp: |sv| sv.token,
-  Expr: apply,
-  Term: apply,
-}
+let parser = PEG.parser(calc)
+parser['Number'] = |vs| vs.token_to_number()
+parser['AddOp'] = |vs| vs.token()
+parser['MulOp'] = |vs| vs.token()
+parser['Expr'] = apply
+parser['Term'] = apply
 
-inspect(PEG.parse(calc, '1 + 2 * 3 - 4', actions: actions))  # => 3
-inspect(PEG.parse(calc, '8 / 4 / 2', actions: actions))      # => 1
+inspect(parser.parse('1 + 2 * 3 - 4'))  # => (true, 3)
+inspect(parser.parse('8 / 4 / 2'))      # => (true, 1)
 ```
 
 Use the tree when you want to inspect, transform, or walk the input more
@@ -403,7 +420,8 @@ let grammar = `
   %whitespace       <- [ \t\r\n]*
   %word             <- [a-zA-Z]
 `
-let fiblang = PEG.compile(grammar)
+let fiblang = PEG.parser(grammar)
+fiblang.enable_ast(true)
 
 fn run(src) {
   mut fns = {}
@@ -466,7 +484,8 @@ fn run(src) {
     }
   }
 
-  eval(fiblang.parse(src, 'fib'), {})
+  let (ok, program) = fiblang.parse(src, 'fib')
+  eval(program, {})
   out
 }
 
@@ -494,7 +513,8 @@ end at a word boundary, so a variable named `format` is not read as `for`
 followed by `mat`.
 
 **AST optimization does the pruning, so the evaluator only sees rules
-that carry information.** `EXPRESSION <- TERNARY` has exactly one child
+that carry information.** That is the `true` in `enable_ast(true)`.
+`EXPRESSION <- TERNARY` has exactly one child
 and disappears entirely; `TERNARY` survives only when a `?` actually
 matched, `CONDITION` only when a `<` did, `CALL` only when there were
 parentheses. That is why the evaluator has an arm per *concept* rather
@@ -513,7 +533,7 @@ To grow it, add rules. A second parameter is `Identifier (',' Identifier)*`
 in `DEFINITION` and a list in `frame`; more operators are entries in
 `InfixOperator` and `ConditionOperator` plus a precedence level each, the
 way §2 lays them out. If you want to see the shape the tree actually
-takes before writing an arm for it, `PEG.str` prints it (§4).
+takes before writing an arm for it, `PEG.ast_to_s` prints it (§4).
 
 ## 4. Pitfalls
 
@@ -533,8 +553,8 @@ Put longer alternatives, and longer literals, first.
 lookahead: `(!'x' [a-z])* 'x'`.
 
 **Check what AST optimization did before debugging your walker.**
-`PEG.str(node)` prints the tree the way `peglint --ast` does, and it is
-usually faster than reasoning about which nodes folded:
+`PEG.ast_to_s(node)` prints the tree the way `peglint --ast` does, and it
+is usually faster than reasoning about which nodes folded:
 
 ```culebra
 let g = `
@@ -542,26 +562,31 @@ let g = `
   Inner <- < [0-9]+ >
 `
 
-print(PEG.str(PEG.parse(g, '1')))
+let parser = PEG.parser(g)
+parser.enable_ast(true)
+print(PEG.ast_to_s(parser.parse('1')[1]))
 # => |
 # - Inner (1)
 ```
 
-**Leave packrat on unless you have measured.** A grammar whose
-alternatives share a prefix — `A <- B '+' A / B`, the shape a first
-grammar usually has — re-parses that prefix once per alternative and goes
-exponential without memoization. The reference measures ten levels of
-nesting at 0.04 ms memoized against 2.0 s not.
+**Turn packrat on for a grammar whose alternatives share a prefix.**
+Memoization is off until `parser.enable_packrat_parsing()`. `A <- B '+' A
+/ B`, the shape a first grammar usually has, re-parses that prefix once
+per alternative and goes exponential without it. The reference measures
+ten levels of nesting at 0.04 ms memoized against 2.0 s not. The grammars
+in this guide do not have that shape, so none of them asks for it.
 
-**Compile once, parse many.** `PEG.compile` is the expensive half. The
-one-shot `PEG.parse(grammar, text)` caches loaded grammars per thread so
-it is not a trap, but a loop over many subjects reads better with the
-grammar hoisted out of it.
+**Make the parser once, parse many.** Loading a grammar is the expensive
+half. Loaded grammars are kept per thread, so a second `PEG.parser` of the
+same grammar is not a trap, but a loop over many subjects reads better
+with the parser hoisted out of it.
 
 ## Where to go next
 
 * [`stdlib.md` §35](../stdlib.md#35-peg) — every call, the node fields,
-  the error and depth bounds.
+  the logger and the depth bounds, the predicates and `enter` / `leave`
+  for grammars that need context to decide a rule, and where the API
+  differs from cpp-peglib's.
 * [cpp-peglib's syntax reference](https://github.com/yhirose/cpp-peglib#syntax)
   — the full notation, including the parts this guide did not need.
 * [Practical PEG parsing](https://berthub.eu/articles/posts/practical-peg-parsing/)

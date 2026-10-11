@@ -840,24 +840,39 @@ pq.peek() -> Any
 pq.size()
 pq.empty()
 to_string(pq) -> String
-PEG.compile(grammar) -> PEG
-PEG.compile(grammar, start)
-PEG.compile(grammar, start, optimize)
-PEG.compile(grammar, start, optimize, packrat)
-PEG.check(grammar) -> Nil
-PEG.check(grammar, start)
+PEG.parser()
+PEG.parser(grammar)
+PEG.parser(grammar, start)
+p.load_grammar(grammar) -> Bool
+p.load_grammar(grammar, start)
 p.parse(text)
 p.parse(text, path)
-p.parse(text, path, actions)
-p.test(text) -> Bool
-PEG.parse(grammar, text)
-PEG.parse(grammar, text, start, optimize, packrat, path, actions)
-PEG.test(grammar, text)
-PEG.test(grammar, text, start, packrat)
+p.parse(text, path, dt)
+p.enable_ast()
+p.enable_ast(collapse_mode, opt_mode)
+p.optimize_ast(ast)
+p.optimize_ast(ast, opt_mode)
+p.enable_packrat_parsing() -> Nil
+p.set_logger(f)
 PEG.walk(node) -> Iterator
 PEG.find(node, name)
 PEG.find_all(node, name) -> [Node]
-PEG.str(node) -> String
+PEG.ast_to_s(node) -> String
+enable_ast() and no action
+p.enable_packrat_parsing()
+PEG.ast_to_s(ast)
+vs.size()
+vs.empty()
+vs.transform(beg = 0, end = -1) -> Array
+vs.iter()
+vs.token(id = 0)
+vs.token_to_string(id = 0)
+vs.token_to_number()
+vs.sv()
+vs.name()
+vs.line_info()
+vs.choice()
+vs.choice_count()
 CodeGen.Module.new()
 m.literal(v:, at:)
 m.bool_literal(v:, at:)

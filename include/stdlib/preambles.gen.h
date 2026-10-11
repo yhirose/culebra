@@ -4601,7 +4601,7 @@ fn _peg_find_all(node, name) {
   }
   out
 }
-fn _peg_str_at(node, level) {
+fn _peg_ast_to_s_at(node, level) {
   let pad = "  ".repeat(level)
   let mut out = if node.is_token {
     pad + "- " + node.name + " (" + node.token + ")\n"
@@ -4609,47 +4609,325 @@ fn _peg_str_at(node, level) {
     pad + "+ " + node.name + "\n"
   }
   for c in node.nodes {
-    out = out + _peg_str_at(c, level + 1)
+    out += _peg_ast_to_s_at(c, level + 1)
   }
   out
 }
-fn _peg_str(node) {
-  _peg_str_at(node, 0)
+fn _peg_ast_to_s(node) {
+  _peg_ast_to_s_at(node, 0)
 }
+
+# cpp-peglib's AstOptimizer over a tree `parse` handed back: a node with one
+# child gives way to that child, which takes the node's extent. `no_ast_opt`
+# is the node names of the grammar's rules marked so. With `opt_mode` those
+# are the nodes that stay; without it they are the only ones that go. A node
+# of such a rule keeps its own extent wherever it ends up.
+fn _peg_optimize(node, no_ast_opt, opt_mode) {
+  let copy = fn (n, nodes, position, length) {
+    {
+      name: n.name,
+      token: n.token,
+      nodes: nodes,
+      line: n.line,
+      column: n.column,
+      position: position,
+      length: length,
+      is_token: n.is_token,
+      choice: n.choice,
+    }
+  }
+  if no_ast_opt.contains(node.name) != opt_mode && node.nodes.size() == 1 {
+    let child = _peg_optimize(node.nodes[0], no_ast_opt, opt_mode)
+    return child if no_ast_opt.contains(child.name)
+    return copy(child, child.nodes, node.position, node.length)
+  }
+  copy(
+    node,
+    node.nodes.map(|c| _peg_optimize(c, no_ast_opt, opt_mode)),
+    node.position,
+    node.length,
+  )
+}
+
+# The number a token starts with, as cpp-peglib's `token_to_number<T>()`
+# reads one: the digits it begins with, and 0 when it begins with none. The
+# type is the caller's there; here the token says it, a Float when a fraction
+# or an exponent follows the digits and a Long otherwise.
+fn _peg_number(token) {
+  let b = token.bytes().collect()
+  let n = b.size()
+  let digits = fn (from) {
+    let mut i = from
+    while i < n && b[i] >= 48 && b[i] <= 57 {
+      i += 1
+    }
+    i
+  }
+  let start = n > 0 && b[0] == 45 ? 1 : 0
+  let mut end = digits(start)
+  return 0 if end == start
+  let mut float = false
+  if end + 1 < n && b[end] == 46 && digits(end + 1) > end + 1 {
+    end = digits(end + 1)
+    float = true
+  }
+  if end < n && (b[end] == 101 || b[end] == 69) {
+    let sign = end + 1 < n && (b[end + 1] == 43 || b[end + 1] == 45) ? 1 : 0
+    if digits(end + 1 + sign) > end + 1 + sign {
+      end = digits(end + 1 + sign)
+      float = true
+    }
+  }
+  float ? to_float(token.slice(0, end)) : to_long(token.slice(0, end))
+}
+
+# The functions the native side calls for a parse (bindings.h), each handing
+# the program's own what cpp-peglib would hand it, in cpp-peglib's order.
+# `dt` is the user data the parse was called with. They sit out here,
+# reaching the module through its name, so that a parser object closes over
+# none of them and crosses an isolate boundary as its grammar text alone.
+
+# A callback leaves its trailing parameters out: an action `dt` and
+# `predicate_data`, the others `dt`, a logger the rule. cpp-peglib picks the
+# call by the function's own parameter count, and so does this. `verdict` is
+# what the rule's predicate answered, nil without one.
+fn _peg_wrap_action(f, path, dt) {
+  let n = f.params.size()
+  cond {
+    n < 2 => |raw, verdict| f(PEG.SemanticValues.new(raw, path)),
+    n < 3 => |raw, verdict| f(PEG.SemanticValues.new(raw, path), dt),
+    _ => |raw, verdict| f(PEG.SemanticValues.new(raw, path), dt, verdict?[2]),
+  }
+}
+fn _peg_wrap_log(f) {
+  f.params.size() < 4 ? |line, col, msg, rule| f(line, col, msg) : f
+}
+# cpp-peglib's two out parameters come back as returned values: a predicate
+# answers `ok`, `(ok, msg)` or `(ok, msg, predicate_data)`.
+fn _peg_wrap_predicate(f, path, dt) {
+  let ask = f.params.size() < 2 ? f : |vs| f(vs, dt)
+  fn (raw) {
+    let r = ask(PEG.SemanticValues.new(raw, path))
+    let (ok, msg, data) = match r {
+      (a, b, c) => (a, b, c),
+      (a, b) => (a, b, nil),
+      _ => (r, "", nil),
+    }
+    let said = type_of(msg)
+    if type_of(ok) != "Bool" || said != "String" && said != "StringView" {
+      __raise(
+        "TypeError",
+        "PEG: a predicate answers Bool, (Bool, String) or (Bool, String, Any), got {r}",
+      )
+    }
+    (ok, msg, data)
+  }
+}
+# cpp-peglib's Context, down to its constant members: the subject and its
+# name. A handler's own `s` and `n` are the rest of the subject from where
+# the rule was entered, and its length.
+fn _peg_context(text, path) {
+  {path: path, s: text, l: text.size()}
+}
+fn _peg_wrap_enter(f, text, path, dt) {
+  let tell = f.params.size() < 4 ? f : |c, s, n| f(c, s, n, dt)
+  fn (pos) {
+    tell(_peg_context(text, path), text.slice(pos, text.size()), text.size() - pos)
+  }
+}
+fn _peg_wrap_leave(f, text, path, dt) {
+  let tell = f.params.size() < 6 ? f : |c, s, n, matchlen, value| f(c, s, n, matchlen, value, dt)
+  fn (pos, matchlen, value) {
+    tell(
+      _peg_context(text, path),
+      text.slice(pos, text.size()),
+      text.size() - pos,
+      matchlen,
+      value,
+    )
+  }
+}
+
+# What one parse runs with, as the Object `_PEG.run` reads. With an action
+# on any rule the parse reduces to the start rule's value. nil when there is
+# nothing to run.
+fn _peg_hooks(rules, log, text, path, dt) {
+  let acts = {}
+  let preds = {}
+  let enters = {}
+  let leaves = {}
+  for name, d in rules {
+    for member, f in d {
+      if f != nil && type_of(f) != "Function" {
+        __raise("TypeError", "PEG: rule '{name}': {member} is {type_of(f)}, not a Function")
+      }
+    }
+    if d.action != nil {
+      acts[name] = _peg_wrap_action(d.action, path, dt)
+    }
+    if d.predicate != nil {
+      preds[name] = _peg_wrap_predicate(d.predicate, path, dt)
+    }
+    if d.enter != nil {
+      enters[name] = _peg_wrap_enter(d.enter, text, path, dt)
+    }
+    if d.leave != nil {
+      leaves[name] = _peg_wrap_leave(d.leave, text, path, dt)
+    }
+  }
+  if acts.empty() && log == nil && preds.empty() && enters.empty() && leaves.empty() {
+    return nil
+  }
+  {
+    actions: acts,
+    predicates: preds,
+    enter: enters,
+    leave: leaves,
+    log: log == nil ? nil : _peg_wrap_log(log),
+  }
+}
+
+# The parser object is cpp-peglib's `peg::parser`, method for method:
+# `load_grammar` answers whether the grammar loaded, `parser["RULE"]` is the
+# rule, whose `action`, `predicate`, `enter` and `leave` a program assigns,
+# and `parse` answers `(ok, val)` -- cpp-peglib's `bool parse(s, val)` with
+# its out parameter as one more returned value.
 let _peg_module = fn () {
+  # What a rule's action or predicate is handed: cpp-peglib's SemanticValues.
+  # `raw` is the Object the native side builds for the match (bindings.h).
+  class SemanticValues {
+    new(raw, path) {
+      self._raw = raw
+      self.tokens = raw.tokens
+      self.path = path
+    }
+    sv() {
+      self._raw.sv
+    }
+    name() {
+      self._raw.name
+    }
+    line_info() {
+      (self._raw.line, self._raw.column)
+    }
+    choice() {
+      self._raw.choice
+    }
+    choice_count() {
+      self._raw.choice_count
+    }
+    token(id = 0) {
+      self.tokens.empty() ? self._raw.sv : self.tokens[id]
+    }
+    token_to_string(id = 0) {
+      self.token(id)
+    }
+    token_to_number() {
+      _peg_number(self.token())
+    }
+    transform(beg = 0, end = -1) {
+      self._raw.values.slice(beg, end < 0 ? self._raw.values.size() : end)
+    }
+    size() {
+      self._raw.values.size()
+    }
+    empty() {
+      self._raw.values.empty()
+    }
+    __index__(i) {
+      self._raw.values[i]
+    }
+    iter() {
+      for v in self._raw.values {
+        yield v
+      }
+    }
+  }
+
   class PEG {
-    new(grammar, start = "", optimize = true, packrat = true) {
-      self._src = grammar
+    new(grammar = nil, start = "") {
+      self._log = nil
+      self._reset(nil, "", [])
+      self.load_grammar(grammar, start) if grammar != nil
+    }
+    # What is set on a grammar's rules goes with the grammar, as in
+    # cpp-peglib: the callbacks, enable_ast() and enable_packrat_parsing().
+    _reset(src, start, no_ast_opt) {
+      self._src = src
       self._start = start
-      self._optimize = optimize
-      self._packrat = packrat
-      _PEG.check(grammar, start, packrat)
+      self._no_ast_opt = no_ast_opt
+      self._ast = 0
+      self._packrat = false
+      self._rules = {}
     }
-    parse(text, path = "", actions = nil) {
-      _PEG.parse(self._src, text, self._start, self._optimize, self._packrat, path, actions)
+    # The logger is the parser's, and is told what peglib says of a grammar:
+    # why it did not load, or what it warns of in one that did.
+    load_grammar(grammar, start = "") {
+      let (ok, diags, no_ast_opt) = _PEG.load(grammar, start)
+      self._reset(ok ? grammar : nil, start, no_ast_opt)
+      if self._log != nil {
+        let log = _peg_wrap_log(self._log)
+        for (line, col, msg, rule) in diags {
+          log(line, col, msg, rule)
+        }
+      }
+      ok
     }
-    test(text) {
-      _PEG.test(self._src, text, self._start, self._packrat)
+    # A rule of the grammar: cpp-peglib's Definition, down to the four
+    # members a program assigns.
+    __index__(rule) {
+      self._rules[rule] ??= {
+        mut action: nil,
+        mut predicate: nil,
+        mut enter: nil,
+        mut leave: nil,
+      }
+      self._rules[rule]
+    }
+    __setindex__(rule, action) {
+      self[rule].action = action
+    }
+    set_logger(log) {
+      self._log = log
+    }
+    # `_ast` is what `_PEG.run` reads: 1 the tree as it is built, 2 and 3
+    # that tree through optimize_ast() with `opt_mode` true and false.
+    enable_ast(collapse_mode = false, opt_mode = true) {
+      self._ast = cond {
+        !collapse_mode => 1,
+        opt_mode => 2,
+        _ => 3,
+      }
+      self
+    }
+    optimize_ast(ast, opt_mode = true) {
+      _peg_optimize(ast, self._no_ast_opt, opt_mode)
+    }
+    enable_packrat_parsing() {
+      self._packrat = true
+    }
+    parse(text, path = "", dt = nil) {
+      return (false, nil) if self._src == nil
+      _PEG.run(
+        self._src,
+        text,
+        self._start,
+        self._ast,
+        self._packrat,
+        _peg_hooks(self._rules, self._log, text, path, dt),
+      )
     }
   }
   {
-    compile: fn (grammar, start = "", optimize = true, packrat = true) {
-      PEG.new(grammar, start, optimize, packrat)
-    },
-    check: fn (grammar, start = "") {
-      _PEG.check(grammar, start, true)
-    },
-    parse: fn (grammar, text, start = "", optimize = true, packrat = true, path = "", actions = nil) {
-      _PEG.parse(grammar, text, start, optimize, packrat, path, actions)
-    },
-    test: fn (grammar, text, start = "", packrat = true) {
-      _PEG.test(grammar, text, start, packrat)
+    parser: fn (grammar = nil, start = "") {
+      PEG.new(grammar, start)
     },
     walk: _peg_walk,
     find: _peg_find,
     find_all: _peg_find_all,
-    str: _peg_str,
+    ast_to_s: _peg_ast_to_s,
     PEG: PEG,
+    SemanticValues: SemanticValues,
   }
 }
 let PEG = _peg_module()
@@ -5669,8 +5947,10 @@ let _state_machine_module = fn () {
 
   # Each optional part of a transition is tagged, because `sv.values[1]` on
   # its own cannot say whether the guard, the action or the target matched.
+  # `sv` is the native side's own Object for a match, the one the `PEG`
+  # module wraps in its SemanticValues.
   let ACTIONS = {
-    Ident: |sv| sv.token,
+    Ident: |sv| sv.tokens[0],
     Bang: |sv| true,
     # `Bang` only ever prepends, so the name is last either way.
     Guard: |sv| {
@@ -5754,8 +6034,8 @@ let _state_machine_module = fn () {
     # Build from the text DSL. A malformed machine raises `PEGError`, whose
     # message carries `path` when one is given.
     static parse(text, *, guards = {}, actions = {}, context = nil, path = "") {
-      # _PEG.parse(grammar, text, start, optimize, packrat, path, actions)
-      let m = _PEG.parse(GRAMMAR, text, "", true, true, path, ACTIONS)
+      # _PEG.parse(grammar, text, start, optimize, packrat, path, hooks)
+      let m = _PEG.parse(GRAMMAR, text, "", true, true, path, {actions: ACTIONS})
       StateMachine.new(
         m.states,
         name: m.name,

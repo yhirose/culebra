@@ -133,7 +133,7 @@ Conventions used below:
 | 2D/3D vector math (dot, length, normalize, distance) | [§31 `Vector2`](#31-vector2) / [§32 `Vector3`](#32-vector3) |
 | FIFO queue, sliding window, front+back stack | [§33 `Deque`](#33-deque) — `Deque.new()` — `push_back`/`pop_front` |
 | Priority scheduling, event simulation, shortest-path search | [§34 `PriorityQueue`](#34-priorityqueue) — `PriorityQueue.new()` — `push`/`pop` |
-| Parse a language / config format of your own | [§35 PEG](#35-peg) — write a PEG grammar, `PEG.parse(grammar, text)` → a tree `match` takes apart |
+| Parse a language / config format of your own | [§35 PEG](#35-peg) — write a PEG grammar, `PEG.parser(grammar)`, `enable_ast()` and `parse(text)` → a tree `match` takes apart |
 | Model a workflow, protocol or UI mode as states and events | [§37 `StateMachine`](#37-statemachine) — `StateMachine.parse(text)`, or a description `Object` |
 | Autocomplete / prefix lookup over a large fixed word list | [§38 FST](#38-fst) — `FST.Set.new(FST.compile_set(words))` → `.predictive_search("hel")` |
 | Spelling correction, fuzzy lookup | [§38 FST](#38-fst) — `.edit_distance_search(word, 1)` / `.suggest(word)` |
@@ -6823,13 +6823,13 @@ queue rather than throwing.
 
 ## 35. `PEG`
 
-A parser generator: you write a **PEG** (parsing expression grammar) and get a
-syntax tree back. The engine is the vendored
+A parser generator: you write a **PEG** (parsing expression grammar) and parse
+with it. The engine is the vendored
 [cpp-peglib](https://github.com/yhirose/cpp-peglib) — the same one culebra's own
 front end runs on, so a grammar that `peglint` accepts behaves identically here.
-
-A grammar is **compiled once and reused** (`PEG.compile` — loading a grammar is
-the expensive part), then applied to as many subjects as you like:
+The API is cpp-peglib's too: `PEG.parser` is its `peg::parser`, with the same
+methods, the same defaults and the same callbacks
+([where it differs](#where-it-differs-from-cpp-peglib) is listed at the end).
 
 ```culebra
 let calc = `
@@ -6839,9 +6839,12 @@ let calc = `
   Number         <- < [0-9]+ >
   %whitespace    <- [ \t\r\n]*
 `
-let p = PEG.compile(calc)
-inspect(p.parse("1 + 2").name)  # => 'Additive'
-inspect(p.test("1 +"))          # => false
+let parser = PEG.parser(calc)
+parser.enable_ast()
+let (ok, ast) = parser.parse("1 + 2")
+inspect(ok)                   # => true
+inspect(ast.name)             # => 'Additive'
+inspect(parser.parse("1 +"))  # => (false, nil)
 ```
 
 **Write grammars as backtick raw strings** (`` `...` ``): they do no escape
@@ -6873,9 +6876,79 @@ A PEG is unambiguous by construction: `/` is ordered, so the first alternative
 that matches wins and there is no ambiguity to resolve. That also means the
 order matters — `'a' / 'ab'` never matches `ab`.
 
+### The parser object
+
+| Making one | Result |
+| --- | --- |
+| `PEG.parser()` | a parser with no grammar yet |
+| `PEG.parser(grammar)` | a parser of `grammar`; when the grammar is malformed, one that parses nothing |
+| `PEG.parser(grammar, start)` | start from rule `start` instead of the grammar's first |
+| `p.load_grammar(grammar)` | `Bool` — whether the grammar loaded; the logger is told why not |
+| `p.load_grammar(grammar, start)` | same, with a start rule |
+
+| Method | Result |
+| --- | --- |
+| `p.parse(text)` | `(ok, val)` — `(false, nil)` for a subject that does not parse |
+| `p.parse(text, path)` | same, naming the subject for the callbacks (`vs.path`, `c.path`) |
+| `p.parse(text, path, dt)` | same, with the [user data](#user-data) the callbacks are handed |
+| `p.enable_ast()` | the parser; `val` is from now on [the tree](#the-tree) |
+| `p.enable_ast(collapse_mode, opt_mode)` | same, with single-child nodes folded away as the tree is built |
+| `p.optimize_ast(ast)` | the tree with single-child nodes folded away |
+| `p.optimize_ast(ast, opt_mode)` | same; `opt_mode` `false` folds only the `no_ast_opt` rules |
+| `p.enable_packrat_parsing()` | `Nil` — turns [memoization](#packrat-parsing) on |
+| `p.set_logger(f)` | `f(line, col, msg)` or `f(line, col, msg, rule)` is told each error |
+| `p[rule]` | the rule, whose `action`, `predicate`, `enter` and `leave` are assignable |
+| `p[rule] = f` | `p[rule].action = f` |
+
+| Tree helper | Result |
+| --- | --- |
+| `PEG.walk(node)` | `Iterator` — the node and its descendants, depth-first, in source order |
+| `PEG.find(node, name)` | the first node named `name`, or `nil` |
+| `PEG.find_all(node, name)` | `[Node]` — every node named `name` |
+| `PEG.ast_to_s(node)` | `String` — an indented dump, the shape `peglint --ast` prints |
+
+`parse` answers `(ok, val)`: cpp-peglib's `bool parse(s, val)`, with its out
+parameter as one more returned value. What `val` is depends on what the parser
+was asked for:
+
+| The parser has | `val` |
+| --- | --- |
+| an [action](#semantic-actions) on any rule | the start rule's value |
+| `enable_ast()` and no action | the tree |
+| neither | `nil` |
+
+The same steps in both:
+
+| culebra | cpp-peglib |
+| --- | --- |
+| `let p = PEG.parser(grammar)` | `peg::parser parser(grammar);` |
+| `let ok = p.load_grammar(grammar)` | `bool ok = parser.load_grammar(grammar);` |
+| `let (ok, val) = p.parse(s)` | `bool ok = parser.parse(s, val);` |
+| `let (ok, val) = p.parse(s, dt: d)` | `bool ok = parser.parse(s, d, val);` |
+| `p.enable_ast()` / `p.optimize_ast(ast)` | `parser.enable_ast()` / `parser.optimize_ast(ast)` |
+| `p.enable_packrat_parsing()` | `parser.enable_packrat_parsing()` |
+| `p.set_logger(f)` | `parser.set_logger(f)` |
+| `p["R"] = f` (the same as `p["R"].action = f`) | `parser["R"] = f` |
+| `p["R"].predicate = f` | `parser["R"].predicate = f` |
+| `p["R"].enter = f` / `.leave = f` | `parser["R"].enter = f` / `.leave = f` |
+| assigning `nil` | assigning an empty function |
+| `PEG.ast_to_s(ast)` | `peg::ast_to_s(ast)` |
+
+What is set on a grammar goes with it. `load_grammar` starts the parser over
+with the new grammar: the callbacks, `enable_ast()` and
+`enable_packrat_parsing()` are gone, and only the logger stays. Called on a
+parser with no grammar, the two `enable_` methods do nothing.
+
+A loaded grammar is kept per thread, so a second parser of the same grammar
+costs a lookup. A parser crossing an isolate boundary carries the grammar text
+and loads it again on the other side; nothing is shared. The callbacks
+assigned to its rules cross as any closure does, so one that captures a `mut`
+binding stops the parser from crossing (`SendError`).
+
 ### The tree
 
-A node is a plain `Object`, so `match` takes it apart with no helper API:
+After `enable_ast()` a parse hands back the tree. A node is a plain `Object`,
+so `match` takes it apart with no helper API:
 
 ```culebra
 let calc = `
@@ -6894,7 +6967,10 @@ fn eval(n) {
     _ => throw "unexpected {n.name}",
   }
 }
-inspect(eval(PEG.parse(calc, "(1 + 2) * 3")))  # => 9
+let parser = PEG.parser(calc)
+parser.enable_ast()
+let (ok, ast) = parser.parse("(1 + 2) * 3")
+inspect(eval(ast))  # => 9
 ```
 
 | Field | Meaning |
@@ -6910,52 +6986,18 @@ inspect(eval(PEG.parse(calc, "(1 + 2) * 3")))  # => 9
 There is no `parent` link: a tree of plain Objects with parent pointers would be
 a reference cycle. Walk downward and carry what you need.
 
-### Building and walking
-
-| Constructor / static | Result |
-| --- | --- |
-| `PEG.compile(grammar)` | `PEG` — load (reused); a malformed grammar raises `PEGError` |
-| `PEG.compile(grammar, start)` | start from rule `start` instead of the grammar's first |
-| `PEG.compile(grammar, start, optimize)` | `optimize` `false` keeps single-child nodes |
-| `PEG.compile(grammar, start, optimize, packrat)` | `packrat` `false` turns memoization off |
-| `PEG.check(grammar)` | `Nil` — load and discard; raises on a malformed grammar |
-| `PEG.check(grammar, start)` | same, with a start rule |
-
-| Method | Result |
-| --- | --- |
-| `p.parse(text)` | the root node; a syntax error raises `PEGError` |
-| `p.parse(text, path)` | same, naming the subject for the error message |
-| `p.parse(text, path, actions)` | interpret `text` directly via `actions` instead — see below |
-| `p.test(text)` | `Bool` — whether `text` parses; no tree is handed back |
-
-| One-shot | Equivalent |
-| --- | --- |
-| `PEG.parse(grammar, text)` | `PEG.compile(grammar).parse(text)` |
-| `PEG.parse(grammar, text, start, optimize, packrat, path, actions)` | the same, with the `compile` options, a subject name, and semantic actions |
-| `PEG.test(grammar, text)` | `Bool` |
-| `PEG.test(grammar, text, start, packrat)` | the same, with the `compile` options |
-
-The one-shot forms hide the `compile` step, and the engine caches loaded
-grammars per thread, so they pay no reload. Reusing one grammar across many
-subjects still reads better as `PEG.compile(...)`.
-
-| Tree helper | Result |
-| --- | --- |
-| `PEG.walk(node)` | `Iterator` — the node and its descendants, depth-first, in source order |
-| `PEG.find(node, name)` | the first node named `name`, or `nil` |
-| `PEG.find_all(node, name)` | `[Node]` — every node named `name` |
-| `PEG.str(node)` | `String` — an indented dump, the shape `peglint --ast` prints |
-
 ```culebra
 let g = `
   Doc  <- Item+
   Item <- < [a-z]+ > _
   _    <- [ ]*
 `
-let doc = PEG.parse(g, "ab cd")
+let parser = PEG.parser(g)
+parser.enable_ast()
+let (ok, doc) = parser.parse("ab cd")
 inspect(PEG.find_all(doc, "Item").map(|n| n.token))  # => ['ab', 'cd']
 inspect(PEG.find(doc, "Nothing"))                    # => nil
-inspect(PEG.str(doc))
+inspect(PEG.ast_to_s(doc))
 # => |
 # '+ Doc
 #   - Item (ab)
@@ -6963,148 +7005,411 @@ inspect(PEG.str(doc))
 # '
 ```
 
-### AST optimization
+#### Optimizing the tree
 
-By default a node with exactly one child is replaced by that child, so the tree
-carries structure rather than the grammar's bookkeeping. This is on because it
-is what almost every walker wants; it is controlled two ways:
-
-* per rule, in the grammar — `{ no_ast_opt }` keeps that rule's node, and
-  `{ ast_name: Tag }` renames it so two productions can converge on one tag;
-* per grammar, from culebra — `PEG.compile(grammar, "", false)` keeps every node.
+The tree `enable_ast()` builds has a node for every rule that matched.
+`optimize_ast` replaces a node that has exactly one child by that child, so
+the tree carries structure rather than the grammar's bookkeeping:
 
 ```culebra
 let g = `
   Wrap  <- Inner
   Inner <- < [0-9]+ >
 `
-inspect(PEG.walk(PEG.parse(g, "1")).map(|n| n.name).collect())
-# => ['Inner']
-inspect(PEG.walk(PEG.parse(g, "1", "", false)).map(|n| n.name).collect())
+let parser = PEG.parser(g)
+parser.enable_ast()
+let (ok, ast) = parser.parse("1")
+inspect(PEG.walk(ast).map(|n| n.name).collect())
 # => ['Wrap', 'Inner']
+inspect(PEG.walk(parser.optimize_ast(ast)).map(|n| n.name).collect())
+# => ['Inner']
+
+parser.enable_ast(true)
+inspect(PEG.walk(parser.parse("1")[1]).map(|n| n.name).collect())
+# => ['Inner']
 ```
 
-### Memoization (`packrat`)
+`enable_ast(true)` builds the same tree `optimize_ast` would, without handing
+the program the nodes that go. It is the form for large inputs: the full tree
+is several times the size, and deep enough to pass the
+[tree-depth bound](#errors-and-bounds) on input the optimized one fits.
 
-On by default, and the default is load-bearing. A PEG backtracks, so
-alternatives that share a prefix — `A <- B '+' A / B`, the shape a first
-grammar usually has — re-parse the same prefix once per alternative and cost
-exponential time without memoization. Measured on the calculator above: ten
+A grammar keeps a rule's node with `{ no_ast_opt }`, and `{ ast_name: Tag }`
+renames a node so two productions can converge on one tag. `opt_mode` `false`,
+the second argument of both `optimize_ast` and `enable_ast`, turns the choice
+round: only the nodes of the `no_ast_opt` rules go.
+
+### Packrat parsing
+
+Memoization is off until `enable_packrat_parsing()`, as in cpp-peglib. A PEG
+backtracks, so alternatives that share a prefix — `A <- B '+' A / B`, the
+shape a first grammar usually has — parse the same prefix once per alternative
+and cost exponential time without it. Measured on the calculator above: ten
 levels of nesting take 0.04 ms memoized and 2.0 s not.
 
+```culebra
+let parser = PEG.parser(`
+  Additive       <- Multiplicative '+' Additive / Multiplicative
+  Multiplicative <- Primary '*' Multiplicative / Primary
+  Primary        <- '(' Additive ')' / Number
+  Number         <- < [0-9]+ >
+`)
+parser.enable_packrat_parsing()
+inspect(parser.parse("((((((((((((((((1))))))))))))))))"))  # => (true, nil)
+```
+
 The cost is a table proportional to subject length × rule count (roughly 1 KB
-per input byte). `PEG.compile(grammar, "", true, false)` turns it off, which is
-worth doing only for a grammar written without shared prefixes (left-factored,
-or using `*`/`+` where a naive one recurses) on inputs large enough for the
-table to matter.
+per input byte), which is why it is asked for. A grammar written without
+shared prefixes (left-factored, or using `*`/`+` where a naive one recurses)
+does not need it. It also changes how often a callback runs: a rule tried
+again at a position it was tried at before reuses its earlier result instead
+of running its callbacks again.
 
 ### Errors and bounds
 
-A malformed grammar and a subject that does not parse both raise `PEGError`.
-Positions inside the grammar or the subject are **in the message**, not in the
-error's `line`/`col` — those hold the culebra call site, as everywhere else:
+A grammar or a subject that is wrong is not an error raised. `load_grammar`
+and `parse` answer `false`, and why is told to the logger, once per error:
 
 ```culebra
-inspect(try {
-  PEG.parse(`N <- < [0-9]+ >`, "x")
-} catch e {
-  e.kind
-})  # => 'PEGError'
+let parser = PEG.parser()
+let mut errors = []
+parser.set_logger(|line, col, msg| errors.push("{line}:{col}: {msg}"))
+
+inspect(parser.load_grammar("A <- B"))  # => false
+inspect(errors)                         # => ['1:6: 'B' is not defined.']
+
+errors = []
+inspect(parser.load_grammar(`N <- < [0-9]+ >`))  # => true
+inspect(parser.parse("x"))                       # => (false, nil)
+inspect(errors)
+# => ['1:1: syntax error, unexpected 'x', expecting <N>.']
 ```
 
-`path` names the subject, so the message reads like any other compiler
-diagnostic instead of a bare position. It is an argument to `parse`, not to
-`compile` — one grammar parses many files, the way cpp-peglib's own
-`parse_n()` takes a path per call:
+Positions are inside the grammar or the subject. A logger of four parameters
+is also handed the name of the rule the error belongs to, when it has one.
+Without a logger a failure says nothing more than `false`; `set_logger(nil)`
+takes one off. A grammar that loads can still be warned about (a rule nothing
+refers to), and the logger is told that too.
+
+`PEG.parser(grammar)` loads the grammar before a logger can be set, as
+cpp-peglib's constructor does. To hear why a grammar did not load, make the
+parser with no grammar, set the logger, and call `load_grammar`.
+
+The logger is not told the subject's name. `path` goes to the callbacks, and a
+program that wants it in its messages puts it there:
 
 ```culebra
-let n = PEG.compile(`N <- < [0-9]+ >`)
-inspect(try {
-  n.parse("x", "input.txt")
-} catch e {
-  e.message
-})  # => 'input.txt:1:1: syntax error, unexpected 'x', expecting <N>.'
-inspect(try {
-  n.parse("x")
-} catch e {
-  e.message
-})  # => 'PEG: 1:1: syntax error, unexpected 'x', expecting <N>.'
+let parser = PEG.parser(`N <- < [0-9]+ >`)
+let path = "input.txt"
+parser.set_logger(|line, col, msg| println("{path}:{line}:{col}: {msg}"))
+parser.parse("x", path)
+# => input.txt:1:1: syntax error, unexpected 'x', expecting <N>.
 ```
 
-A malformed *grammar* keeps the `PEG: grammar:` form regardless — `path` names
-a subject document, and the grammar text is not one.
+What does raise: a callback assigned to a rule the grammar lacks (`PEGError`)
+or a rule member that is not a `Function` (`TypeError`), at `parse`; an
+argument of the wrong type (`TypeError`); a tree past the tree-depth bound
+(`ValueError`); and whatever a callback throws.
 
-Two bounds keep adversarial input catchable rather than fatal:
+Two bounds keep adversarial input from being fatal:
 
 * **Rule nesting** — a parse that nests more than 4000 rule matches, or
-  returns a tree deeper than 4000 levels, raises `PEGError`
-  (`nesting too deep (limit 4000)`). Machine-written nesting would otherwise
-  overflow the C stack inside the parser. This is the same bound, at the same
-  limit, that culebra applies to its own grammar.
+  builds a tree deeper than 4000 levels, fails with
+  `nesting too deep (limit 4000)`: a failed parse like any other, told to the
+  logger. Machine-written nesting would otherwise overflow the C stack inside
+  the parser. This is the same bound, at the same limit, that culebra applies
+  to its own grammar.
 * **Tree depth** — a shallower tree still deeper than 1000 levels raises
   `ValueError` (`nesting too deep (limit 1000)`), the
   [value-nesting bound](language.md#the-value-nesting-bound) `JSON` and `TOML`
   apply to their own trees.
 
-A grammar is per-thread state, so a `PEG` value crossing an isolate boundary
-carries the grammar text and reloads on the other side; nothing is shared.
-
 ### Semantic actions
 
-`PEG.parse`/`p.parse` also accept `actions`: a rule name -> `Function` map
-that interprets the subject directly, without ever building a tree. Each
-registered `Function` receives one argument — the rule's own reduction, an
-`sv` Object — and returns whatever value that rule contributes to its
-parent's own `sv.values`. Naming what the C++ reference calls this: a
+An action is a `Function` assigned to a rule. With an action on any rule the
+parse interprets the subject directly, without building a tree: each action
+receives its rule's own reduction, a `SemanticValues`, and returns whatever
+value that rule contributes to its parent. This is cpp-peglib's
 [semantic action](https://github.com/yhirose/cpp-peglib#semantic-actions)
-(cpp-peglib's `parser["Rule"] = [](const SemanticValues &sv) { ... }`).
-`PEG`'s own version is a value passed to `parse`, not mutable state installed
-on the grammar, since one grammar can be reused with different actions:
+(`parser["Rule"] = [](const SemanticValues &vs) { ... }`):
 
 ```culebra
-let calc = `
+let parser = PEG.parser(`
   Additive       <- Multiplicative '+' Additive / Multiplicative
   Multiplicative <- Primary '*' Multiplicative / Primary
   Primary        <- '(' Additive ')' / Number
   Number         <- < [0-9]+ >
   %whitespace    <- [ \t\r\n]*
-`
-let actions = {
-  Number: |sv| to_long(sv.token),
-  Additive: |sv| sv.values.size() < 2 ? sv.values[0] : sv.values[0] + sv.values[1],
-  Multiplicative: |sv| sv.values.size() < 2 ? sv.values[0] : sv.values[0] * sv.values[1],
-}
-inspect(PEG.parse(calc, "1 + 2 * 3", actions: actions))  # => 7
+`)
+parser["Number"] = |vs| vs.token_to_number()
+parser["Additive"] = |vs| vs.size() < 2 ? vs[0] : vs[0] + vs[1]
+parser["Multiplicative"] = |vs| vs.size() < 2 ? vs[0] : vs[0] * vs[1]
+inspect(parser.parse("1 + 2 * 3"))  # => (true, 7)
+inspect(parser.parse("1 +"))        # => (false, nil)
 ```
 
-`sv` shares its field names with a tree `Node`, with `nodes` renamed to
-`values`: `{name, token, values, line, column, position, length, choice}`.
-`values[i]` is whatever child *i*'s own action produced — or, for a rule with
-no registered action, cpp-peglib's own default: the first child's value, or
-`nil` for a rule with no children (a leaf token rule with no action gets no
-value at all, the same as vanilla cpp-peglib — write an action for any leaf
-whose text you need). A rule can build anything, not just a scalar — an
-action's return value is an ordinary culebra value, so one grammar can drive
-an evaluator, a pretty-printer, or its own custom tree shape, by choosing what
-each action returns.
+An action of two parameters is also handed `dt`, the
+[user data](#user-data) its parse was called with.
 
-A key in `actions` that names no rule in the grammar is caught before parsing
-starts, the same `PEGError` an undefined start rule raises — a typo'd rule
-name is not a silent no-op:
+`vs` reads the way cpp-peglib's `SemanticValues` does:
+
+| Member | Result |
+| --- | --- |
+| `vs[i]` / `vs.size()` / `vs.empty()` | the values of the rule's children; `vs[i]` is what child *i*'s action returned |
+| `vs.transform(beg = 0, end = -1)` | `Array` — the values from `beg` up to `end`; all of them by default |
+| `vs.iter()` | the values, one at a time (`for v in vs`) |
+| `vs.token(id = 0)` | the text of the rule's `id`-th `< ... >`; the whole match for a rule with none |
+| `vs.token_to_string(id = 0)` | the same text |
+| `vs.token_to_number()` | the number the token starts with: a `Long`, or a `Float` when a fraction or an exponent follows; `0` when it starts with none |
+| `vs.tokens` | `Array` — the text of each of the rule's `< ... >` |
+| `vs.sv()` | the whole match, the whitespace skipped after it included |
+| `vs.name()` | the rule |
+| `vs.line_info()` | `(line, column)` of the match's start, 1-based |
+| `vs.choice()` / `vs.choice_count()` | which alternative of a prioritized choice matched (0-based), and how many it has |
+| `vs.path` | the subject's name (`parse`'s `path`) |
+
+A rule's tokens are its own `< ... >`. A rule that only refers to a token rule
+has none, so its `token()` is its whole match, with the whitespace the parser
+skipped after it; wrapping the reference gives the rule a token of its own:
 
 ```culebra
+let parser = PEG.parser(`
+  Pair  <- Plain Boxed
+  Plain <- Word
+  Boxed <- < Word >
+  Word  <- < [a-z]+ >
+  %whitespace <- [ ]*
+`)
+parser["Plain"] = |vs| vs.token()
+parser["Boxed"] = |vs| vs.token()
+parser["Pair"] = |vs| vs.transform()
+inspect(parser.parse("ab cd "))  # => (true, ['ab ', 'cd'])
+```
+
+A rule with no action takes cpp-peglib's own default: the first child's value,
+or `nil` for a rule with no children (a leaf token rule with no action gets no
+value at all, the same as in cpp-peglib — write an action for any leaf whose
+text you need). A rule can build anything, not just a scalar — an action's
+return value is an ordinary culebra value, so one grammar can drive an
+evaluator, a pretty-printer, or its own custom tree shape, by choosing what
+each action returns.
+
+The actions belong to the parser object, not to the grammar: another parser of
+the same grammar carries none. Assigning `nil` takes an action off. With an
+action on any rule the parse reduces, whether or not `enable_ast()` was
+called.
+
+An action on a rule the grammar lacks is caught when `parse` is called — a
+typo'd rule name is not a silent no-op:
+
+```culebra
+let parser = PEG.parser(`N <- < [0-9]+ >`)
+parser["Nope"] = |vs| vs
 inspect(try {
-  PEG.parse(`N <- < [0-9]+ >`, "1", actions: {Nope: |sv| sv})
+  parser.parse("1")
 } catch e {
   e.message
 })  # => 'PEG: no such rule 'Nope''
 ```
 
 Whatever an action itself throws — a culebra `throw`, a `TypeError` from
-misusing `sv`, anything — propagates unchanged; there is no action-specific
-catch to work around. `optimize` has no effect when `actions` is given (there
-is no tree to optimize); the rule-nesting bound above still applies, but
-neither tree-depth error does — there is no tree for them to bound.
+misusing `vs`, anything — propagates unchanged; there is no action-specific
+catch to work around.
+
+### User data
+
+`dt` is cpp-peglib's user data: the value one `parse` call is given, handed to
+every callback that parse runs. It comes where cpp-peglib puts it:
+
+| Callback | Called as |
+| --- | --- |
+| action | `f(vs)`, `f(vs, dt)` or `f(vs, dt, predicate_data)` |
+| predicate | `f(vs)` or `f(vs, dt)` |
+| `enter` | `f(c, s, n)` or `f(c, s, n, dt)` |
+| `leave` | `f(c, s, n, matchlen, value)` or `f(c, s, n, matchlen, value, dt)` |
+
+A callback names only the parameters it reads, and is called with that many.
+
+```culebra
+let p = PEG.parser(`
+  List   <- NUMBER (',' NUMBER)*
+  NUMBER <- < [0-9]+ >
+`)
+p["NUMBER"] = fn (vs, dt) {
+  dt.count += 1
+  vs.token_to_number()
+}
+p["List"] = |vs| vs.transform().sum()
+
+let first = {mut count: 0}
+let second = {mut count: 0}
+inspect(p.parse("1,2,3", dt: first))  # => (true, 6)
+inspect(p.parse("40", dt: second))    # => (true, 40)
+inspect([first.count, second.count])  # => [3, 1]
+```
+
+What a callback keeps in `dt` belongs to one parse. What a closure captures
+belongs to the parser object: it is carried from one parse to the next, and a
+parse that a callback starts on the same parser shares it.
+
+`dt` is the value itself, not cpp-peglib's reference to the caller's variable.
+A callback changes what is inside the Object or Array it was handed and cannot
+put another value in its place, so a count is passed inside an Object, as
+above. A parse called without `dt` hands `nil`.
+
+### Predicates
+
+A predicate runs when its rule has matched and decides whether the match
+stands. When it answers `false` the rule fails there, and the parser goes on
+to the next alternative as for any rule that did not match. That is how a
+grammar takes a decision its notation cannot express. Here it is C's rule that
+`T * x;` declares a pointer only when `T` names a type:
+
+```culebra
+let p = PEG.parser(`
+  Unit     <- Stmt+
+  Stmt     <- Typedef / Decl / ExprStmt
+  Typedef  <- 'typedef' 'int' NewType ';'
+  Decl     <- TypeName '*' Ident ';'
+  ExprStmt <- Ident '*' Ident ';'
+  NewType  <- < Ident >
+  TypeName <- < Ident >
+  Ident    <- < [a-zA-Z_][a-zA-Z0-9_]* >
+  %whitespace <- [ \t\r\n]*
+`)
+p.enable_ast()
+
+p["NewType"].predicate = fn (vs, dt) {
+  dt.typedefs[vs.token_to_string()] = true
+  true
+}
+p["TypeName"].predicate = |vs, dt| dt.typedefs.has(vs.token_to_string())
+
+let (ok, unit) = p.parse("typedef int T; T * x; a * b;", dt: {typedefs: {}})
+inspect(unit.nodes.map(|stmt| stmt.nodes[0].name))
+# => ['Typedef', 'Decl', 'ExprStmt']
+```
+
+The type names are kept in `dt`, so each subject starts with none.
+
+cpp-peglib's predicate returns a `bool` and has two out parameters, `msg` and
+`predicate_data`. Here they are returned with it:
+
+| A predicate returns | Meaning |
+| --- | --- |
+| `true` / `false` | the match stands / the rule fails |
+| `(ok, msg)` | the same, and `msg` is the error if the parse ends up failing here |
+| `(ok, msg, predicate_data)` | the same, and the rule's action receives `predicate_data` as its third argument |
+
+Anything else is a `TypeError`. A message replaces the syntax error the parser
+would otherwise report from the alternatives it tried next, and is reported
+where the rule started:
+
+```culebra
+let p = PEG.parser(`
+  NUMBER <- < [0-9]+ >
+`)
+p["NUMBER"].predicate = fn (vs) {
+  let n = vs.token_to_number()
+  n <= 100 ? (true, "", n) : (false, "number out of range")
+}
+p["NUMBER"] = |vs, dt, predicate_data| predicate_data
+
+let mut errors = []
+p.set_logger(|line, col, msg, rule| errors.push([line, col, msg, rule]))
+inspect(p.parse("100"))  # => (true, 100)
+inspect(p.parse("200"))  # => (false, nil)
+inspect(errors)          # => [[1, 1, 'number out of range', 'NUMBER']]
+```
+
+In a parse that builds the tree a predicate's `vs` has the rule's text and
+tokens but no values (`vs.size()` is `0`): the values there are the tree being
+built.
+
+### `enter` and `leave`
+
+`enter` runs when the parser starts on a rule and `leave` when it is done with
+it, matched or not:
+
+| Callback | Arguments |
+| --- | --- |
+| `enter` | `(c, s, n, dt)` |
+| `leave` | `(c, s, n, matchlen, value, dt)` |
+
+| Argument | Meaning |
+| --- | --- |
+| `c` | `{path, s, l}` — the subject's name, the subject, and its length |
+| `s`, `n` | the rest of the subject from where the rule was entered, and its length (`c.l - n` is the byte offset) |
+| `matchlen` | the bytes the rule matched, whitespace skipped after it included; `-1` when it did not match |
+| `value` | the rule's value in a reducing parse; `nil` otherwise, and when the rule did not match |
+| `dt` | the parse's [user data](#user-data) |
+
+```culebra
+let p = PEG.parser(`
+  Block <- '{' (Block / Word)* '}'
+  Word  <- < [a-z]+ >
+  %whitespace <- [ ]*
+`)
+let mut depth = 0
+let mut deepest = 0
+p["Block"].enter = fn (c, s, n) {
+  depth += 1
+  deepest = Math.max(deepest, depth)
+}
+p["Block"].leave = fn (c, s, n, matchlen, value) {
+  depth -= 1
+}
+inspect(p.parse('{ a { b { c } } d }'))  # => (true, nil)
+inspect(deepest)                         # => 3
+```
+
+`leave`'s `value` is the value itself, not cpp-peglib's reference to it: a
+handler cannot put another value in the rule's place.
+
+Whether, and how many times, a callback runs in an attempt the parser later
+abandons is not fixed, as in
+[cpp-peglib](https://github.com/yhirose/cpp-peglib#semantic-actions): an
+alternative that cannot start at the next byte is skipped without entering
+its rules, and packrat parsing reuses a rule's earlier result at a position
+instead of trying the rule again. So keep what a callback does safe to repeat
+or to skip (undo in `leave` what `enter` did, as above), or build the state
+from the value `parse` returns. When what a callback throws leaves the parser,
+the `leave` handlers of the rules it passes through do not run.
+
+### Where it differs from cpp-peglib
+
+What a C++ signature cannot be here:
+
+* An out parameter is one more returned value: `parse` answers `(ok, val)`,
+  and a predicate `ok`, `(ok, msg)` or `(ok, msg, predicate_data)`.
+* `dt` and `leave`'s `value` are values, not references. What is inside an
+  Object or an Array can be changed; the value itself cannot be replaced.
+* `token_to_number()` and `transform()` take no type: a token's own text
+  decides between `Long` and `Float`, and the values are whatever the actions
+  returned.
+
+What is narrower:
+
+* A tree node is a plain `Object` with the fields [above](#the-tree). It has no
+  `parent`, `tag`, `original_name`, `original_choice`, `choice_count` or
+  `path`.
+* In a parse that builds the tree, a predicate's `vs` has no values and
+  `leave`'s `value` is `nil`.
+* With an action on any rule the parse reduces; `enable_ast()` then has no
+  effect.
+* `enable_ast` takes no list of rules as a third argument.
+* User-defined rules, grammar serialization, `set_error_reporter`,
+  `enable_trace`, `disable_eoi_check` and `enable_left_recursion` are not
+  provided. Left recursion is on.
+
+What is stricter:
+
+* Rule nesting is bounded at 4000 in every parse; there is no
+  `set_max_depth`.
+* A callback assigned to a rule the grammar lacks is a `PEGError` at `parse`.
+
+The text of a subject's syntax error is put together here, in the form
+culebra's own diagnostics use; a grammar's errors are cpp-peglib's.
 
 ## 36. `CodeGen`
 

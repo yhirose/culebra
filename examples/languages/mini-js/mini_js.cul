@@ -6026,7 +6026,28 @@ if cli.empty() {
   Sys.exit(1)
 }
 
-let prelude_tree = PEG.parse(grammar, prelude_src, path: '<prelude>')
+# Parses `src` into its tree, the way a cpp-peglib program does: load the
+# grammar, ask for the optimized AST and for packrat parsing, and hear the
+# errors through the logger. A syntax error is thrown as a ParseError whose
+# message is already "path:line:col: ...".
+fn parse_source(src, path) {
+  let parser = PEG.parser()
+  let mut errors = []
+  parser.set_logger(|line, col, msg| errors.push("{line}:{col}: {msg}"))
+  if !parser.load_grammar(grammar) {
+    throw {kind: 'ParseError', message: "grammar:{errors[0]}"}
+  }
+  parser.enable_ast(true)
+  parser.enable_packrat_parsing()
+  errors = []
+  let (ok, tree) = parser.parse(src, path)
+  if !ok {
+    throw {kind: 'ParseError', message: "{path}:{errors[0]}"}
+  }
+  tree
+}
+
+let prelude_tree = parse_source(prelude_src, '<prelude>')
 # main's shell first: every other function reaches the global table through
 # main's cell, so its slots have to exist before the prelude is bound
 let main_shell = new_func(nil, 'main', [], nil, false)
@@ -6044,7 +6065,7 @@ for path in cli {
   prog_gen = prog_gen + 1
   try {
     cur_src = lib_src + FS.read(path)
-    let tree = PEG.parse(grammar, cur_src, path: path)
+    let tree = parse_source(cur_src, path)
     if want_ast {
       inspect(tree)
       continue
@@ -6064,7 +6085,7 @@ for path in cli {
         IO.eprintln("{path}:{e.line}:{e.col}: SyntaxError: {e.message}")
         had_err = true
       },
-      {kind: 'PEGError'} => {
+      {kind: 'ParseError'} => {
         IO.eprintln(e.message)
         had_err = true
       },

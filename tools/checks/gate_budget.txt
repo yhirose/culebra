@@ -81,7 +81,9 @@
 # are tried in order, and a value none takes goes on as it was raised).
 # 317 since test_error_kind_types.cul (an engine error's kind is a type name:
 # clause, arm, annotation and dispatch, and an Object with a `kind` is not one).
-tests.cul 317
+# 318 since test_peg_callbacks.cul (a PEG parser's predicate, enter and leave,
+# its user data, `(ok, val)` from parse, and its logger).
+tests.cul 318
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -152,7 +154,11 @@ ctest.entries 35
 # 1046 since §15, the quick guide and the handbook show `catch` clauses that
 # test, with a guard and with a value none of them takes, in en and ja.
 # 1048 since §15 shows a clause naming a runtime error's kind, in en and ja.
-docs.blocks 1048
+# 1060 since stdlib §35 shows the PEG parser as cpp-peglib's: enable_ast and
+# optimize_ast, packrat parsing, the logger for a grammar and for a subject,
+# the user data, a predicate, its message and data, and enter / leave, in en
+# and ja.
+docs.blocks 1060
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

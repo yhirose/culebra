@@ -27,8 +27,8 @@ just environment bookkeeping.
   compile-time-unknown key. This is real, recurring friction (see the
   `%word` / computed-keys conversation this example grew out of), but the
   helper is 3 lines; a stdlib function would save less than writing it.
-- **The driver.** `import`, strip `--ast` out of `Sys.argv`, `PEG.parse`
-  with `path:`, catch by `kind`. ~15 lines, identical shape to `pl0.cul`
+- **The driver.** `import`, strip `--ast` out of `Sys.argv`, parse with
+  `parse_source`, catch by `kind`. ~15 lines, identical shape to `pl0.cul`
   and `lin.cul`. Not worth factoring — the two lines that differ (which
   module to import, which error `kind` to match) are the only ones that
   matter to a reader.

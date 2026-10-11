@@ -852,7 +852,7 @@ run.
 | `Scene` | 178 | retained-mode 3D renderer for procedural geometry |
 | `Net` | 22 | raw TCP / UDP sockets and name resolution (the layer under `Http`) |
 | `Desktop` / `Webview` | 10 | native WebView desktop app: local HTTP server + window, one call |
-| `PEG` | 18 | PEG parser generator: write a grammar, get a syntax tree |
+| `PEG` | 33 | PEG parser generator: write a grammar, get a syntax tree |
 | `CodeGen` | 144 | build a small language's IR by hand and run it |
 | `StateMachine` | 8 | hierarchical state machine, with a text DSL |
 | `FST` | 14 | compiled read-only dictionary: prefix, predictive and fuzzy search |

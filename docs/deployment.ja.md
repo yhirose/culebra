@@ -203,7 +203,7 @@ PNG/TTFデコーダ、そして`PEG`（cpp-peglib）も外部ライブラリを�
 名指ししないプログラムはリンクされない（仕組みは
 [§4](#4-共有-runtime-archive-レイアウト) 参照）。ただし`PEG`は
 このdead-strippingが全バイトには届かない唯一のnamespaceで、`culebra::
-pegparser::compile()`自体はPEGを名指ししないバイナリから消えている
+pegparser::load()`自体はPEGを名指ししないバイナリから消えている
 ことを`--keep-symbols`ビルドの`nm -C --defined-only`で確認済みだが、
 peglibの`Ope`クラス階層はvtableとtypeinfoを残し、それを
 `--gc-sections`が使用の有無に関わらず保持する。加えて、`std::function`

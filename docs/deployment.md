@@ -212,7 +212,7 @@ as plain code reached only through their namespace's dispatch table,
 so a program that never names them never links them (mechanism:
 [§4](#4-shared-runtime-archive-layout)). `PEG` is the one namespace
 where that dead-stripping doesn't quite reach every byte: `culebra::
-pegparser::compile()` itself is confirmed absent from a binary that
+pegparser::load()` itself is confirmed absent from a binary that
 never names `PEG` (verified with `nm -C --defined-only` on a
 `--keep-symbols` build), but peglib's `Ope` class hierarchy still
 leaves vtables and typeinfo behind that `--gc-sections` keeps

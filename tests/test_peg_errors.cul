@@ -1,6 +1,8 @@
 // Conformance: stdlib PEG — errors, the two depth bounds, and packrat.
-// Grammar and subject positions live in the message (they are offsets into
-// user data, not into this source), so the assertions read the text.
+// A grammar or a subject that is wrong is not an error raised: `load_grammar`
+// and `parse` answer false and the logger is told why, as in cpp-peglib.
+// Positions are offsets into the grammar or the subject, not into this
+// source.
 
 let calc = `
   Additive       <- Multiplicative '+' Additive / Multiplicative
@@ -10,92 +12,99 @@ let calc = `
   %whitespace    <- [ \t\r\n]*
 `
 
-// --- a syntax error in the subject ---
-let e = try {
-  PEG.parse(calc, "1 +")
-} catch err {
-  err
+// What the logger is told for `text`, each error as "line:col: msg". Packrat
+// is on: without it `calc` takes time exponential in how deep `text` nests.
+fn errors_of(grammar, text) {
+  let parser = PEG.parser(grammar)
+  parser.enable_packrat_parsing()
+  let mut said = []
+  parser.set_logger(|line, col, msg| said.push("{line}:{col}: {msg}"))
+  assert_eq(parser.parse(text), (false, nil))
+  said
 }
-assert_eq(e.kind, "PEGError")
-assert_true(e.message.starts_with("PEG: 1:4:"))
-assert_true(e.message.contains("syntax error"))
+
+// --- a syntax error in the subject ---
+let e = errors_of(calc, "1 +")
+assert_eq(e.size(), 1)
+assert_true(e[0].starts_with("1:4: syntax error"))
+
+// --- with no logger a failure says nothing more than false ---
+assert_eq(PEG.parser(calc).parse("1 +"), (false, nil))
 
 // --- what a failure expected is listed whole, a control character among it
 // spelled as its escape; at the end of the input a rule named with a leading
 // underscore stays out ---
-let spaced = try {
-  PEG.parse(`
-    List  <- '[' _ Item (_ ',' _ Item)* _ ']'
-    Item  <- < [0-9]+ >
-    ~_    <- (Space / EOL)*
-    Space <- ' ' / '\t'
-    EOL   <- '\n'
-  `, "[1, 2")
-} catch err {
-  err
-}
-assert_eq(spaced.message, "PEG: 1:6: syntax error, expecting ' ', '\\t', '\\n', ',' or ']'.")
-let unspaced = try {
-  PEG.parse(`
-    List   <- '[' _ Item (_ ',' _ Item)* _ ']'
-    Item   <- < [0-9]+ >
-    ~_     <- (_Space / _EOL)*
-    _Space <- ' ' / '\t'
-    _EOL   <- '\n'
-  `, "[1, 2")
-} catch err {
-  err
-}
-assert_eq(unspaced.message, "PEG: 1:6: syntax error, expecting ',' or ']'.")
+assert_eq(errors_of(`
+  List  <- '[' _ Item (_ ',' _ Item)* _ ']'
+  Item  <- < [0-9]+ >
+  ~_    <- (Space / EOL)*
+  Space <- ' ' / '\t'
+  EOL   <- '\n'
+`, "[1, 2"), ["1:6: syntax error, expecting ' ', '\\t', '\\n', ',' or ']'."])
+assert_eq(errors_of(`
+  List   <- '[' _ Item (_ ',' _ Item)* _ ']'
+  Item   <- < [0-9]+ >
+  ~_     <- (_Space / _EOL)*
+  _Space <- ' ' / '\t'
+  _EOL   <- '\n'
+`, "[1, 2"), ["1:6: syntax error, expecting ',' or ']'."])
 
-// --- a malformed grammar reports a position inside the grammar ---
-let g = try {
-  PEG.compile("Bad <- ***")
-} catch err {
-  err
-}
-assert_eq(g.kind, "PEGError")
-assert_true(g.message.starts_with("PEG: grammar:"))
+// --- a malformed grammar: load_grammar answers false and the logger is told
+// where in the grammar, at load and not at the first parse ---
+let bad = PEG.parser()
+let mut grammar_errors = []
+bad.set_logger(|line, col, msg| grammar_errors.push([line, col, msg]))
+assert_false(bad.load_grammar("Bad <- ***"))
+assert_eq(grammar_errors.size(), 1)
+assert_eq(grammar_errors[0].slice(0, 2), [1, 8])
+assert_true(grammar_errors[0][2].contains("syntax error"))
+
+// A parser whose grammar did not load parses nothing, and says nothing.
+grammar_errors = []
+assert_eq(bad.parse("x"), (false, nil))
+assert_eq(grammar_errors, [])
+
+// The form that takes the grammar has no logger yet to tell, like
+// cpp-peglib's constructor: the parser is just one that parses nothing.
+assert_eq(PEG.parser("Bad <- ***").parse("x"), (false, nil))
 
 // --- an undefined start rule ---
-let s = try {
-  PEG.compile(calc, "Nope")
-} catch err {
-  err
-}
-assert_eq(s.kind, "PEGError")
-assert_true(s.message.contains("start rule 'Nope' is undefined"))
+assert_false(bad.load_grammar(calc, "Nope"))
+assert_true(grammar_errors[0][2].contains("start rule 'Nope' is undefined"))
 
-// --- compile-time validation happens at compile, not at first parse ---
-assert_eq(try { PEG.check("Bad <- ***") } catch err { err.kind }, "PEGError")
-assert_eq(PEG.check(calc), nil)
+// --- every error of a grammar is told, not only the first ---
+grammar_errors = []
+assert_false(bad.load_grammar(`
+  A <- B C
+`))
+assert_eq(grammar_errors.map(|g| g[2]).sorted(), ["'B' is not defined.", "'C' is not defined."])
+
+// --- a grammar that loads can still be warned about; the logger is told on
+// every load, the same ---
+for round in 0..2 {
+  grammar_errors = []
+  assert_true(bad.load_grammar(`
+    A <- 'a'
+    B <- 'b'
+  `))
+  assert_eq(grammar_errors.map(|g| g[2]), ["'B' is not referenced."])
+}
+assert_eq(bad.parse("a"), (true, nil))
 
 let deep_subject = "(".repeat(20000) + "1" + ")".repeat(20000)
 
-// --- errors are catchable, not a crash: machine-written nesting hits the
+// --- machine-written nesting is a failed parse, not a crash: it hits the
 // rule-nesting bound the front end uses for culebra's own grammar ---
-let deep = try {
-  PEG.parse(calc, deep_subject)
-} catch err {
-  err
-}
-assert_eq(deep.kind, "PEGError")
-assert_true(deep.message.contains("nesting too deep"))
+let deep = errors_of(calc, deep_subject)
+assert_eq(deep.size(), 1)
+assert_true(deep[0].ends_with("nesting too deep (limit 4000)"))
 
 // The bound is per parse, so the same grammar still parses after one input
 // went past it.
-assert_eq(PEG.parse(calc, "1 + 2").name, "Additive")
+assert_eq(PEG.parser(calc).parse("1 + 2"), (true, nil))
 
-// PEG.test reports too deep a subject as an error, not as a mismatch, even
-// after an error that `%recover` got past.
-let deep_test = try {
-  PEG.test(calc, deep_subject)
-} catch err {
-  err
-}
-assert_eq(deep_test.kind, "PEGError")
-assert_true(deep_test.message.contains("nesting too deep (limit 4000)"))
-
+// The bound is told to the logger even after an error that `%recover` got
+// past.
 let recovering = `
   S   <- (L / ERR)*
   L   <- A ';'
@@ -104,78 +113,83 @@ let recovering = `
   bad <- (!';' .)* ';'
 `
 let after_recovery = "1;?;" + "(".repeat(5000) + "1" + ")".repeat(5000) + ";"
-let recovered_test = try { PEG.test(recovering, after_recovery) } catch err { err }
-assert_eq(recovered_test.kind, "PEGError")
-assert_true(recovered_test.message.contains("nesting too deep (limit 4000)"))
-let recovered_parse = try { PEG.parse(recovering, after_recovery) } catch err { err }
-assert_true(recovered_parse.message.contains("nesting too deep (limit 4000)"))
+let recovered = errors_of(recovering, after_recovery)
+assert_true(recovered.size() > 1)
+assert_true(recovered[recovered.size() - 1].ends_with("nesting too deep (limit 4000)"))
 
-// A tree deeper than the rule-nesting bound is a PEGError too, though a
+// A tree deeper than the rule-nesting bound fails the parse too, though a
 // left-recursive chain parses without nesting.
-let chain = `
+let chain = PEG.parser(`
   Sum <- Sum '+' Num / Num
   Num <- < [0-9] >
-`
-let long_chain = try { PEG.parse(chain, "1" + "+1".repeat(5000)) } catch err { err }
-assert_eq(long_chain.kind, "PEGError")
-assert_true(long_chain.message.contains("nesting too deep (limit 4000)"))
+`)
+chain.enable_ast()
+let mut chain_errors = []
+chain.set_logger(|line, col, msg| chain_errors.push(msg))
+assert_eq(chain.parse("1" + "+1".repeat(5000)), (false, nil))
+assert_eq(chain_errors, ["nesting too deep (limit 4000)"])
 
 // --- a tree deeper than the value-nesting bound is a ValueError, the same
 // bound (and message) JSON.parse applies to its own trees ---
+let tall_parser = PEG.parser(calc)
+tall_parser.enable_ast()
+tall_parser.enable_packrat_parsing()
 let tall = try {
-  PEG.parse(calc, "(".repeat(1100) + "1" + ")".repeat(1100), "", false)
+  tall_parser.parse("(".repeat(1100) + "1" + ")".repeat(1100))
 } catch err {
   err
 }
 assert_eq(tall.kind, "ValueError")
 assert_true(tall.message.contains("nesting too deep (limit 1000)"))
 
-// --- naming the subject (PEG.parse's / p.parse's `path`) replaces the
-// generic "PEG: " prefix with the name, the way any other compiler
-// diagnostic reads -- one parser, many files, so it is a per-parse
-// argument rather than something set once at compile time ---
-let named = try {
-  PEG.parse(calc, "1 +", path: "prog.pas")
-} catch err {
-  err
+// --- `path` names the subject for the callbacks; the logger is told the
+// position and the message, and the program puts the name to them ---
+let named = PEG.parser(calc)
+let mut named_errors = []
+let report = fn (path) {
+  |line, col, msg| named_errors.push("{path}:{line}:{col}: {msg}")
 }
-assert_true(named.message.starts_with("prog.pas:1:4:"))
-assert_true(named.message.contains("syntax error"))
+named.set_logger(report("prog.pas"))
+named.parse("1 +", "prog.pas")
+assert_true(named_errors[0].starts_with("prog.pas:1:4: syntax error"))
 
-// A grammar-compile error is about the grammar text, not a subject document,
-// so it keeps the "PEG: grammar:" form regardless of `path` -- there is no
-// `path` parameter on `check`/`compile` to name one.
-assert_true(g.message.starts_with("PEG: grammar:"))
-
-// The nesting bound's message honors `path` too -- it is a subject
-// position like any other.
-let deep_named = try {
-  PEG.parse(calc, deep_subject, path: "deep.pas")
-} catch err {
-  err
+// --- packrat is off until enable_packrat_parsing(), as in cpp-peglib. It is
+// what keeps a grammar whose alternatives share a prefix from backtracking
+// exponentially: with it, enter runs once per position; without it, once per
+// attempt ---
+fn primaries(packrat) {
+  let parser = PEG.parser(calc)
+  if packrat {
+    parser.enable_packrat_parsing()
+  }
+  let mut entered = 0
+  parser["Primary"].enter = |c, s, n| entered += 1
+  assert_eq(parser.parse("((((1))))"), (true, nil))
+  entered
 }
-assert_true(deep_named.message.starts_with("deep.pas:"))
-assert_true(deep_named.message.contains("nesting too deep"))
+assert_eq(primaries(true), 5)
+assert_true(primaries(false) > 100)
 
-// `path` does not leak from one parse() call to the next, or into test():
-// each call reflects only its own argument.
-let p = PEG.compile(calc)
-let first = try { p.parse("1 +", "first.pas") } catch err { err }
-assert_true(first.message.starts_with("first.pas:1:4:"))
-let unnamed = try { p.parse("1 +") } catch err { err }
-assert_true(unnamed.message.starts_with("PEG: 1:4:"))
-
-// --- packrat: on by default, and the default is what keeps a grammar whose
-// alternatives share a prefix from backtracking exponentially. Off is
-// available for inputs where the memo table costs more than the search.
-assert_true(PEG.test(calc, "((((((((((1))))))))))"))
-assert_true(PEG.test(calc, "1 + 1", "", false))
-assert_eq(PEG.parse(calc, "1 + 1", "", true, false).name, "Additive")
-assert_eq(PEG.compile(calc, "", true, false).parse("2").token, "2")
+// It goes with the grammar: loading another one turns it off again.
+let memo = PEG.parser(calc)
+memo.enable_packrat_parsing()
+memo.load_grammar(calc)
+let mut memo_entered = 0
+memo["Primary"].enter = |c, s, n| memo_entered += 1
+memo.parse("((((1))))")
+assert_true(memo_entered > 100)
 
 // --- argument types are checked like any other native row ---
-assert_eq(try { PEG.parse(calc, 42) } catch err { err.kind }, "TypeError")
-assert_eq(try { PEG.compile(42) } catch err { err.kind }, "TypeError")
+assert_eq(try { PEG.parser(calc).parse(42) } catch err { err.kind }, "TypeError")
+assert_eq(try { PEG.parser(42) } catch err { err.kind }, "TypeError")
+assert_eq(try { PEG.parser().load_grammar(42) } catch err { err.kind }, "TypeError")
+
+// --- what the cpp-peglib-shaped API replaced is gone, not kept beside it ---
+assert_eq(try { PEG.compile } catch err { err.kind }, "AttributeError")
+assert_eq(try { PEG.check } catch err { err.kind }, "AttributeError")
+assert_eq(try { PEG.test } catch err { err.kind }, "AttributeError")
+assert_eq(try { PEG.str } catch err { err.kind }, "AttributeError")
+assert_eq(PEG.parser(calc).test, nil)
 
 // --- the namespace is closed: an unknown member raises rather than reading
 // as nil (docs/language.md, "Namespaces are closed") ---

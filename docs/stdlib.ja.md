@@ -130,7 +130,7 @@
 | 2D/3Dベクトル演算（dot、length、normalize、distance） | [§31 `Vector2`](#31-vector2) / [§32 `Vector3`](#32-vector3) |
 | FIFOキュー、スライディングウィンドウ、前後両端のスタック | [§33 `Deque`](#33-deque) — `Deque.new()` — `push_back`/`pop_front` |
 | 優先度スケジューリング、イベントシミュレーション、最短経路探索 | [§34 `PriorityQueue`](#34-priorityqueue) — `PriorityQueue.new()` — `push`/`pop` |
-| 自前の言語・設定フォーマットをパースする | [§35 PEG](#35-peg) — PEG文法を書いて`PEG.parse(grammar, text)`。返る木は`match`で分解できる |
+| 自前の言語・設定フォーマットをパースする | [§35 PEG](#35-peg) — PEG文法を書いて`PEG.parser(grammar)`、`enable_ast()`、`parse(text)`。返る木は`match`で分解できる |
 | 手順・通信手順・画面のモードを状態とイベントで表す | [§37 `StateMachine`](#37-statemachine) — `StateMachine.parse(text)`、または記述用の`Object` |
 | 変わらない大きな語彙から前方一致で補完する | [§38 FST](#38-fst) — `FST.Set.new(FST.compile_set(words))` → `.predictive_search("hel")` |
 | 綴りの直し・あいまい検索 | [§38 FST](#38-fst) — `.edit_distance_search(word, 1)`／`.suggest(word)` |
@@ -6609,12 +6609,11 @@ inspect(jobs.pop())  # => (1, 'ping')
 
 ## 35. `PEG`
 
-パーサジェネレータ。**PEG**（parsing expression grammar）を書くと構文木が返る。
+パーサジェネレータ。**PEG**（parsing expression grammar）を書いて、それでパースする。
 エンジンは同梱の[cpp-peglib](https://github.com/yhirose/cpp-peglib)で、culebra自身の
 フロントエンドが載っているものと同じ。`peglint`が受理する文法はここでも同じ振る舞いをする。
-
-文法は**一度コンパイルして使い回す**（`PEG.compile` — 文法のロードが重い部分）。
-コンパイル済みの文法はいくつの入力にも適用できる:
+APIもcpp-peglibのものである。`PEG.parser`はその`peg::parser`で、メソッドも既定も
+コールバックも同じ（[違う点](#cpp-peglibと違う点)は章の最後にまとめてある）。
 
 ```culebra
 let calc = `
@@ -6624,9 +6623,12 @@ let calc = `
   Number         <- < [0-9]+ >
   %whitespace    <- [ \t\r\n]*
 `
-let p = PEG.compile(calc)
-inspect(p.parse("1 + 2").name)  # => 'Additive'
-inspect(p.test("1 +"))          # => false
+let parser = PEG.parser(calc)
+parser.enable_ast()
+let (ok, ast) = parser.parse("1 + 2")
+inspect(ok)                   # => true
+inspect(ast.name)             # => 'Additive'
+inspect(parser.parse("1 +"))  # => (false, nil)
 ```
 
 **文法はバッククォートのraw string（`` `...` ``）で書く。** エスケープ処理も
@@ -6657,9 +6659,76 @@ inspect(p.test("1 +"))          # => false
 PEGは構成上曖昧にならない。`/`は順序付きなので最初にマッチした選択肢が勝ち、解決すべき
 曖昧性が生じない。裏を返せば順序が意味を持つ — `'a' / 'ab'`は`ab`にマッチしない。
 
+### パーサオブジェクト
+
+| 作り方 | 結果 |
+| --- | --- |
+| `PEG.parser()` | まだ文法を持たないパーサ |
+| `PEG.parser(grammar)` | `grammar`のパーサ。文法が不正なら、何もパースできないパーサ |
+| `PEG.parser(grammar, start)` | 文法の最初の規則ではなく`start`から始める |
+| `p.load_grammar(grammar)` | `Bool` — 文法をロードできたか。できなかった理由はロガーに渡る |
+| `p.load_grammar(grammar, start)` | 同じ。start規則つき |
+
+| メソッド | 結果 |
+| --- | --- |
+| `p.parse(text)` | `(ok, val)` — パースできない入力なら`(false, nil)` |
+| `p.parse(text, path)` | 同じ。コールバックに渡る対象名を指定（`vs.path`、`c.path`） |
+| `p.parse(text, path, dt)` | 同じ。コールバックに渡る[ユーザーデータ](#ユーザーデータ)つき |
+| `p.enable_ast()` | パーサ自身。以後`val`は[木](#木)になる |
+| `p.enable_ast(collapse_mode, opt_mode)` | 同じ。子が1つのノードを、木を作りながら畳む |
+| `p.optimize_ast(ast)` | 子が1つのノードを畳んだ木 |
+| `p.optimize_ast(ast, opt_mode)` | 同じ。`opt_mode`が`false`なら`no_ast_opt`の規則だけを畳む |
+| `p.enable_packrat_parsing()` | `Nil` — [メモ化](#packratパース)を有効にする |
+| `p.set_logger(f)` | エラーごとに`f(line, col, msg)`または`f(line, col, msg, rule)`が呼ばれる |
+| `p[rule]` | 規則。`action`・`predicate`・`enter`・`leave`に代入できる |
+| `p[rule] = f` | `p[rule].action = f` |
+
+| 木のヘルパー | 結果 |
+| --- | --- |
+| `PEG.walk(node)` | `Iterator` — そのノードと子孫を深さ優先・ソース順で |
+| `PEG.find(node, name)` | 名前が`name`の最初のノード、なければ`nil` |
+| `PEG.find_all(node, name)` | `[Node]` — 名前が`name`のノード全部 |
+| `PEG.ast_to_s(node)` | `String` — インデント付きのダンプ。`peglint --ast`と同じ形 |
+
+`parse`は`(ok, val)`を返す。cpp-peglibの`bool parse(s, val)`のout引数を、戻り値を1つ
+増やして返したものである。`val`が何になるかは、パーサに何を頼んだかで決まる:
+
+| パーサの状態 | `val` |
+| --- | --- |
+| どれかの規則に[action](#セマンティックアクション)がある | start規則の値 |
+| `enable_ast()`を呼んであり、actionは無い | 木 |
+| どちらでもない | `nil` |
+
+同じ手順を両方で書くとこうなる:
+
+| culebra | cpp-peglib |
+| --- | --- |
+| `let p = PEG.parser(grammar)` | `peg::parser parser(grammar);` |
+| `let ok = p.load_grammar(grammar)` | `bool ok = parser.load_grammar(grammar);` |
+| `let (ok, val) = p.parse(s)` | `bool ok = parser.parse(s, val);` |
+| `let (ok, val) = p.parse(s, dt: d)` | `bool ok = parser.parse(s, d, val);` |
+| `p.enable_ast()` / `p.optimize_ast(ast)` | `parser.enable_ast()` / `parser.optimize_ast(ast)` |
+| `p.enable_packrat_parsing()` | `parser.enable_packrat_parsing()` |
+| `p.set_logger(f)` | `parser.set_logger(f)` |
+| `p["R"] = f`（`p["R"].action = f`と同じ） | `parser["R"] = f` |
+| `p["R"].predicate = f` | `parser["R"].predicate = f` |
+| `p["R"].enter = f` / `.leave = f` | `parser["R"].enter = f` / `.leave = f` |
+| `nil`を代入する | 空の関数を代入する |
+| `PEG.ast_to_s(ast)` | `peg::ast_to_s(ast)` |
+
+文法に対して設定したものは、その文法と一緒に消える。`load_grammar`はパーサを新しい文法で
+最初からやり直すので、コールバックも`enable_ast()`も`enable_packrat_parsing()`も無くなり、
+残るのはロガーだけである。文法を持たないパーサで呼んだ2つの`enable_`メソッドは何もしない。
+
+ロードした文法はスレッドごとに保持されるので、同じ文法の2つ目のパーサは検索1回で済む。
+パーサがisolate境界を越えるときは文法テキストが渡って向こう側でロードし直される。
+共有されるものは何もない。規則に代入したコールバックは他のクロージャと同じ規則で
+越えるので、`mut`束縛を捕まえたコールバックを持つパーサは越えられない（`SendError`）。
+
 ### 木
 
-ノードはただの`Object`なので、専用APIなしで`match`が分解できる:
+`enable_ast()`を呼んだ後のパースは木を返す。ノードはただの`Object`なので、専用APIなしで
+`match`が分解できる:
 
 ```culebra
 let calc = `
@@ -6678,7 +6747,10 @@ fn eval(n) {
     _ => throw "unexpected {n.name}",
   }
 }
-inspect(eval(PEG.parse(calc, "(1 + 2) * 3")))  # => 9
+let parser = PEG.parser(calc)
+parser.enable_ast()
+let (ok, ast) = parser.parse("(1 + 2) * 3")
+inspect(eval(ast))  # => 9
 ```
 
 | フィールド | 意味 |
@@ -6694,52 +6766,18 @@ inspect(eval(PEG.parse(calc, "(1 + 2) * 3")))  # => 9
 `parent`リンクは持たせていない。ただのObjectの木に親ポインタを張ると参照サイクルになる。
 下向きに辿り、必要なものは引数で持ち回る。
 
-### 構築と走査
-
-| コンストラクタ / static | 結果 |
-| --- | --- |
-| `PEG.compile(grammar)` | `PEG` — ロード（使い回される）。不正な文法は`PEGError` |
-| `PEG.compile(grammar, start)` | 文法の最初の規則ではなく`start`から始める |
-| `PEG.compile(grammar, start, optimize)` | `optimize`が`false`なら子1つのノードも残す |
-| `PEG.compile(grammar, start, optimize, packrat)` | `packrat`が`false`ならメモ化を切る |
-| `PEG.check(grammar)` | `Nil` — ロードして捨てる。不正な文法なら送出 |
-| `PEG.check(grammar, start)` | 同じ。start規則つき |
-
-| メソッド | 結果 |
-| --- | --- |
-| `p.parse(text)` | ルートノード。構文エラーは`PEGError` |
-| `p.parse(text, path)` | 同じ。エラーメッセージに載る対象名を指定 |
-| `p.parse(text, path, actions)` | 代わりに`actions`で`text`を直接解釈する — 下記 |
-| `p.test(text)` | `Bool` — `text`がパースできるか。木は返らない |
-
-| ワンショット | 等価な式 |
-| --- | --- |
-| `PEG.parse(grammar, text)` | `PEG.compile(grammar).parse(text)` |
-| `PEG.parse(grammar, text, start, optimize, packrat, path, actions)` | 同じ。`compile`のオプション・対象名・セマンティックアクションつき |
-| `PEG.test(grammar, text)` | `Bool` |
-| `PEG.test(grammar, text, start, packrat)` | 同じ。`compile`のオプションつき |
-
-ワンショット形は`compile`の手順を隠す。エンジンがロード済み文法をスレッドごとに
-キャッシュするので再ロードのコストは払わない。1つの文法を多くの入力に使うなら
-`PEG.compile(...)`と書いたほうが意図が読める。
-
-| 木のヘルパー | 結果 |
-| --- | --- |
-| `PEG.walk(node)` | `Iterator` — そのノードと子孫を深さ優先・ソース順で |
-| `PEG.find(node, name)` | 名前が`name`の最初のノード、なければ`nil` |
-| `PEG.find_all(node, name)` | `[Node]` — 名前が`name`のノード全部 |
-| `PEG.str(node)` | `String` — インデント付きのダンプ。`peglint --ast`と同じ形 |
-
 ```culebra
 let g = `
   Doc  <- Item+
   Item <- < [a-z]+ > _
   _    <- [ ]*
 `
-let doc = PEG.parse(g, "ab cd")
+let parser = PEG.parser(g)
+parser.enable_ast()
+let (ok, doc) = parser.parse("ab cd")
 inspect(PEG.find_all(doc, "Item").map(|n| n.token))  # => ['ab', 'cd']
 inspect(PEG.find(doc, "Nothing"))                    # => nil
-inspect(PEG.str(doc))
+inspect(PEG.ast_to_s(doc))
 # => |
 # '+ Doc
 #   - Item (ab)
@@ -6747,140 +6785,384 @@ inspect(PEG.str(doc))
 # '
 ```
 
-### AST最適化
+#### 木の最適化
 
-既定では子がちょうど1つのノードをその子で置き換える。木が文法の内部事情ではなく構造を
-運ぶようになるからで、ほぼどの走査コードもこれを望む。制御は2通り:
-
-* 規則ごとに文法側で — `{ no_ast_opt }`でその規則のノードを残し、`{ ast_name: Tag }`で
-  改名して2つの生成規則を1つのタグに合流させる
-* 文法全体をculebra側で — `PEG.compile(grammar, "", false)`で全ノードを残す
+`enable_ast()`が作る木には、マッチした規則すべてのノードがある。`optimize_ast`は子が
+ちょうど1つのノードをその子で置き換えるので、木が文法の内部事情ではなく構造を運ぶようになる:
 
 ```culebra
 let g = `
   Wrap  <- Inner
   Inner <- < [0-9]+ >
 `
-inspect(PEG.walk(PEG.parse(g, "1")).map(|n| n.name).collect())
-# => ['Inner']
-inspect(PEG.walk(PEG.parse(g, "1", "", false)).map(|n| n.name).collect())
+let parser = PEG.parser(g)
+parser.enable_ast()
+let (ok, ast) = parser.parse("1")
+inspect(PEG.walk(ast).map(|n| n.name).collect())
 # => ['Wrap', 'Inner']
+inspect(PEG.walk(parser.optimize_ast(ast)).map(|n| n.name).collect())
+# => ['Inner']
+
+parser.enable_ast(true)
+inspect(PEG.walk(parser.parse("1")[1]).map(|n| n.name).collect())
+# => ['Inner']
 ```
 
-### メモ化（`packrat`）
+`enable_ast(true)`は`optimize_ast`が作るのと同じ木を、消えるノードをプログラムに渡さずに
+作る。大きな入力ではこちらを使う。畳まない木は数倍の大きさになり、畳んだ木なら収まる入力でも
+[木の深さの上限](#エラーと境界)を超える深さになる。
 
-既定でon。そしてこの既定は効いている。PEGは後戻りするので、接頭辞を共有する選択肢
-（`A <- B '+' A / B`という、最初に書く文法がたいてい持つ形）は同じ接頭辞を選択肢の数だけ
-パースし直し、メモ化なしでは指数時間になる。上の電卓文法での実測では、10段のネストが
-メモ化ありで0.04ms、なしで2.0s。
+文法側では、`{ no_ast_opt }`でその規則のノードを残し、`{ ast_name: Tag }`で改名して2つの
+生成規則を1つのタグに合流させる。`optimize_ast`と`enable_ast`の2番目の引数`opt_mode`を
+`false`にすると選び方が逆になり、`no_ast_opt`の規則のノードだけが消える。
 
-代償は入力長×規則数に比例するテーブル（入力1バイトあたり概ね1KB）。
-`PEG.compile(grammar, "", true, false)`で切れるが、切る価値があるのは接頭辞を共有しない
-書き方をした文法（左因子化済み、あるいは素朴な文法が再帰するところを`*`/`+`で書いたもの）を
-テーブルが効いてくるほど大きな入力に適用する場合だけ。
+### packratパース
+
+メモ化は、cpp-peglibと同じく`enable_packrat_parsing()`を呼ぶまで無効である。PEGは
+後戻りするので、接頭辞を共有する選択肢（`A <- B '+' A / B`という、最初に書く文法がたいてい
+持つ形）は同じ接頭辞を選択肢の数だけパースし、メモ化なしでは指数時間になる。上の電卓文法での
+実測では、10段のネストがメモ化ありで0.04ms、なしで2.0s。
+
+```culebra
+let parser = PEG.parser(`
+  Additive       <- Multiplicative '+' Additive / Multiplicative
+  Multiplicative <- Primary '*' Multiplicative / Primary
+  Primary        <- '(' Additive ')' / Number
+  Number         <- < [0-9]+ >
+`)
+parser.enable_packrat_parsing()
+inspect(parser.parse("((((((((((((((((1))))))))))))))))"))  # => (true, nil)
+```
+
+代償は入力長×規則数に比例するテーブル（入力1バイトあたり概ね1KB）で、頼んだときだけ
+有効になるのはそのためである。接頭辞を共有しない書き方をした文法（左因子化済み、あるいは
+素朴な文法が再帰するところを`*`/`+`で書いたもの）には要らない。コールバックが走る回数も
+変わる。以前試した位置でもう一度試される規則は、コールバックを走らせ直さずに以前の結果を使う。
 
 ### エラーと境界
 
-不正な文法も、パースできない入力も`PEGError`を送出する。文法内・入力内の位置は
-**メッセージの中**にあり、エラーの`line`/`col`には入らない。そちらは他と同じく
-culebra側の呼び出し位置を指す:
+文法や入力が誤っていても、エラーは送出されない。`load_grammar`と`parse`が`false`を返し、
+理由はロガーにエラー1件ごとに伝わる:
 
 ```culebra
-inspect(try {
-  PEG.parse(`N <- < [0-9]+ >`, "x")
-} catch e {
-  e.kind
-})  # => 'PEGError'
+let parser = PEG.parser()
+let mut errors = []
+parser.set_logger(|line, col, msg| errors.push("{line}:{col}: {msg}"))
+
+inspect(parser.load_grammar("A <- B"))  # => false
+inspect(errors)                         # => ['1:6: 'B' is not defined.']
+
+errors = []
+inspect(parser.load_grammar(`N <- < [0-9]+ >`))  # => true
+inspect(parser.parse("x"))                       # => (false, nil)
+inspect(errors)
+# => ['1:1: syntax error, unexpected 'x', expecting <N>.']
 ```
 
-`path`は対象を名指す引数で、メッセージの汎用的な「PEG: 」プレフィクスの代わりに
-その名前が入り、他のコンパイラの診断メッセージと同じ読み方になる。`compile`ではなく
-`parse`側の引数なのは、1つの文法を多くのファイルに使うからで、cpp-peglib自身の
-`parse_n()`が呼び出しごとにpathを取るのと同じ理由:
+位置は文法の中、または入力の中のものである。引数が4つのロガーには、エラーが属する規則の
+名前も渡る（あるとき）。ロガーが無ければ、失敗が伝えるのは`false`だけ。`set_logger(nil)`で
+外せる。ロードできた文法にも警告が付くことがあり（どこからも参照されない規則）、それも
+ロガーに伝わる。
+
+`PEG.parser(grammar)`は、cpp-peglibのコンストラクタと同じく、ロガーを設定できるより前に
+文法をロードする。文法がロードできなかった理由を知るには、文法なしでパーサを作り、ロガーを
+設定してから`load_grammar`を呼ぶ。
+
+ロガーには対象名は渡らない。`path`はコールバックに渡るもので、メッセージに入れたい
+プログラムは自分で入れる:
 
 ```culebra
-let n = PEG.compile(`N <- < [0-9]+ >`)
-inspect(try {
-  n.parse("x", "input.txt")
-} catch e {
-  e.message
-})  # => 'input.txt:1:1: syntax error, unexpected 'x', expecting <N>.'
-inspect(try {
-  n.parse("x")
-} catch e {
-  e.message
-})  # => 'PEG: 1:1: syntax error, unexpected 'x', expecting <N>.'
+let parser = PEG.parser(`N <- < [0-9]+ >`)
+let path = "input.txt"
+parser.set_logger(|line, col, msg| println("{path}:{line}:{col}: {msg}"))
+parser.parse("x", path)
+# => input.txt:1:1: syntax error, unexpected 'x', expecting <N>.
 ```
 
-不正な*文法*のエラーはpathに関わらず「PEG: grammar:」の形のまま
-— pathが名指すのは対象のドキュメントで、文法テキストはそれではない。
+送出されるもの: 文法に無い規則へのコールバックの代入（`PEGError`）と、`Function`でない
+規則メンバ（`TypeError`）（どちらも`parse`で）。型の違う引数（`TypeError`）。木の深さの
+上限を超えた木（`ValueError`）。コールバックが投げたもの。
 
-敵対的な入力を致命的な失敗でなく捕捉可能なエラーに留めるため、境界が2つある:
+敵対的な入力を致命的な失敗にしないため、境界が2つある:
 
 * **規則の入れ子** — 規則の一致が4000段を超えて入れ子になるパース、または4000段を超える
-  木を返すパースは`PEGError`（`nesting too deep (limit 4000)`）。そうしないと機械生成の
-  ネストがパーサ内部でCスタックを溢れさせる。culebraが自分の文法にかけているのと同じ
-  限界値の同じ上限。
+  木を作るパースは`nesting too deep (limit 4000)`で失敗する。他と同じ失敗したパースで、
+  ロガーに伝わる。そうしないと機械生成のネストがパーサ内部でCスタックを溢れさせる。
+  culebraが自分の文法にかけているのと同じ限界値の同じ上限。
 * **木の深さ** — それより浅くても1000段を超える木は`ValueError`
   （`nesting too deep (limit 1000)`）。
   `JSON`や`TOML`が自分の木に適用しているのと同じ
   [値ネストの上限](language.ja.md#値ネストの上限)。
 
-文法はスレッドごとの状態なので、`PEG`の値がisolate境界を越えるときは文法テキストが渡って
-向こう側でロードし直される。共有されるものは何もない。
-
 ### セマンティックアクション
 
-`PEG.parse`/`p.parse`は`actions`も受け取る: 規則名から`Function`への写像で、木を
-一切作らずに対象を直接解釈する。登録した各`Function`は引数を1つ受け取る
-— その規則自身の還元結果である`sv` Object — そして親の`sv.values`に渡す値を返す。
-C++版が呼ぶ名前で言えば
+actionは規則に代入する`Function`である。どれかの規則にactionがあると、パースは木を
+作らずに対象を直接解釈する。各actionはその規則自身の還元結果である`SemanticValues`を
+受け取り、親に渡す値を返す。cpp-peglibの
 [semantic action](https://github.com/yhirose/cpp-peglib#semantic-actions)
-（cpp-peglibの`parser["Rule"] = [](const SemanticValues &sv) { ... }`）にあたる。
-`PEG`側は文法に据える可変状態ではなく`parse`に渡す値にした
-— 同じ文法を異なるactionsで使い回せるように:
+（`parser["Rule"] = [](const SemanticValues &vs) { ... }`）と同じ形:
 
 ```culebra
-let calc = `
+let parser = PEG.parser(`
   Additive       <- Multiplicative '+' Additive / Multiplicative
   Multiplicative <- Primary '*' Multiplicative / Primary
   Primary        <- '(' Additive ')' / Number
   Number         <- < [0-9]+ >
   %whitespace    <- [ \t\r\n]*
-`
-let actions = {
-  Number: |sv| to_long(sv.token),
-  Additive: |sv| sv.values.size() < 2 ? sv.values[0] : sv.values[0] + sv.values[1],
-  Multiplicative: |sv| sv.values.size() < 2 ? sv.values[0] : sv.values[0] * sv.values[1],
-}
-inspect(PEG.parse(calc, "1 + 2 * 3", actions: actions))  # => 7
+`)
+parser["Number"] = |vs| vs.token_to_number()
+parser["Additive"] = |vs| vs.size() < 2 ? vs[0] : vs[0] + vs[1]
+parser["Multiplicative"] = |vs| vs.size() < 2 ? vs[0] : vs[0] * vs[1]
+inspect(parser.parse("1 + 2 * 3"))  # => (true, 7)
+inspect(parser.parse("1 +"))        # => (false, nil)
 ```
 
-`sv`は木の`Node`とフィールド名を共有し、`nodes`だけ`values`に変わる:
-`{name, token, values, line, column, position, length, choice}`。
-`values[i]`は子`i`自身のactionが生成した値
-— actionを登録していない規則にはcpp-peglib自身の既定が適用される: 最初の子の値、
-子を持たない規則なら`nil`（actionの無いleafトークン規則は値そのものを持たない。
-素のcpp-peglibと同じで、テキストが要るleafには自分でactionを書く）。
-規則が返せるのはスカラーだけではない — actionの戻り値はただのculebra値なので、
-1つの文法で評価器・整形器・独自の木構造のいずれも、各actionが何を返すか次第で駆動できる。
+引数が2つのactionには`dt`も渡る。そのパースの呼び出しに渡した
+[ユーザーデータ](#ユーザーデータ)である。
 
-`actions`のキーが文法内のどの規則の名前でもない場合、パース開始前に検出される
-— 未定義start規則と同じ`PEGError`で、typoが黙って無視されることはない:
+`vs`の読み方はcpp-peglibの`SemanticValues`と同じ:
+
+| メンバ | 結果 |
+| --- | --- |
+| `vs[i]` / `vs.size()` / `vs.empty()` | 規則の子の値。`vs[i]`は子`i`のactionが返したもの |
+| `vs.transform(beg = 0, end = -1)` | `Array` — `beg`から`end`の手前までの値。既定では全部 |
+| `vs.iter()` | 値を1つずつ（`for v in vs`） |
+| `vs.token(id = 0)` | 規則の`id`番目の`< ... >`のテキスト。`< ... >`を持たない規則ではマッチ全体 |
+| `vs.token_to_string(id = 0)` | 同じテキスト |
+| `vs.token_to_number()` | トークンの先頭にある数。`Long`、小数部か指数部が続けば`Float`。数で始まらなければ`0` |
+| `vs.tokens` | `Array` — 規則の各`< ... >`のテキスト |
+| `vs.sv()` | マッチ全体。後ろで読み飛ばした空白を含む |
+| `vs.name()` | 規則名 |
+| `vs.line_info()` | マッチ開始位置の`(line, column)`（1始まり） |
+| `vs.choice()` / `vs.choice_count()` | 順序付き選択のどの選択肢がマッチしたか（0始まり）と、選択肢の数 |
+| `vs.path` | 対象名（`parse`の`path`） |
+
+規則のトークンは、その規則自身の`< ... >`である。トークン規則を参照するだけの規則は
+トークンを持たないので、`token()`はマッチ全体になり、パーサが後ろで読み飛ばした空白が付く。
+参照を`< ... >`で包めば、その規則自身のトークンになる:
 
 ```culebra
+let parser = PEG.parser(`
+  Pair  <- Plain Boxed
+  Plain <- Word
+  Boxed <- < Word >
+  Word  <- < [a-z]+ >
+  %whitespace <- [ ]*
+`)
+parser["Plain"] = |vs| vs.token()
+parser["Boxed"] = |vs| vs.token()
+parser["Pair"] = |vs| vs.transform()
+inspect(parser.parse("ab cd "))  # => (true, ['ab ', 'cd'])
+```
+
+actionの無い規則にはcpp-peglib自身の既定が適用される: 最初の子の値、
+子を持たない規則なら`nil`（actionの無いleafトークン規則は値そのものを持たない。
+cpp-peglibと同じで、テキストが要るleafには自分でactionを書く）。
+規則が返せるのはスカラーだけではない。actionの戻り値はただのculebra値なので、
+1つの文法で評価器・整形器・独自の木構造のいずれも、各actionが何を返すか次第で駆動できる。
+
+actionは文法ではなくパーサオブジェクトに属する。同じ文法の別のパーサはactionを持たない。
+`nil`を代入するとactionが外れる。どれかの規則にactionがあれば、`enable_ast()`を呼んだか
+どうかに関わらずパースは還元を行う。
+
+文法に無い規則へのactionは、`parse`を呼んだときに検出される。typoが黙って無視される
+ことはない:
+
+```culebra
+let parser = PEG.parser(`N <- < [0-9]+ >`)
+parser["Nope"] = |vs| vs
 inspect(try {
-  PEG.parse(`N <- < [0-9]+ >`, "1", actions: {Nope: |sv| sv})
+  parser.parse("1")
 } catch e {
   e.message
 })  # => 'PEG: no such rule 'Nope''
 ```
 
-actionが投げたものは何であれ — culebraの`throw`、`sv`の誤用による`TypeError`、
-何でも — そのまま伝播する。action専用のcatchで回避する必要はない。
-`actions`を渡すと`optimize`は無効（最適化する木自体が存在しない）。
-機械生成のネストに対する規則の入れ子の上限は引き続き効くが、
-木の深さのエラーはどちらも効かない — それを課す対象の木が無いので。
+actionが投げたものは何であれ（culebraの`throw`、`vs`の誤用による`TypeError`など）
+そのまま伝播する。action専用のcatchで回避する必要はない。
+
+### ユーザーデータ
+
+`dt`はcpp-peglibのユーザーデータである。`parse`の呼び出し1回に渡した値が、そのパースが
+走らせるすべてのコールバックに渡る。位置はcpp-peglibと同じ:
+
+| コールバック | 呼ばれ方 |
+| --- | --- |
+| action | `f(vs)`、`f(vs, dt)`、`f(vs, dt, predicate_data)`のいずれか |
+| 述語 | `f(vs)`または`f(vs, dt)` |
+| `enter` | `f(c, s, n)`または`f(c, s, n, dt)` |
+| `leave` | `f(c, s, n, matchlen, value)`または`f(c, s, n, matchlen, value, dt)` |
+
+コールバックは読む引数だけを書けばよく、書いた数だけの引数で呼ばれる。
+
+```culebra
+let p = PEG.parser(`
+  List   <- NUMBER (',' NUMBER)*
+  NUMBER <- < [0-9]+ >
+`)
+p["NUMBER"] = fn (vs, dt) {
+  dt.count += 1
+  vs.token_to_number()
+}
+p["List"] = |vs| vs.transform().sum()
+
+let first = {mut count: 0}
+let second = {mut count: 0}
+inspect(p.parse("1,2,3", dt: first))  # => (true, 6)
+inspect(p.parse("40", dt: second))    # => (true, 40)
+inspect([first.count, second.count])  # => [3, 1]
+```
+
+コールバックが`dt`に置いたものは、パース1回のものである。クロージャが捕まえたものは
+パーサオブジェクトのもので、次のパースにも残り、コールバックが同じパーサで始めたパースとも
+共有される。
+
+`dt`は値そのもので、cpp-peglibのような呼び出し側の変数への参照ではない。コールバックは
+渡されたObjectやArrayの中身を書き換えられるが、別の値に置き換えることはできない。上の例が
+数をObjectに入れて渡しているのはそのためである。`dt`なしで呼んだパースでは`nil`が渡る。
+
+### 述語（predicate）
+
+述語は規則がマッチしたときに走り、そのマッチを認めるかを決める。`false`を返すと規則は
+そこで失敗し、パーサはマッチしなかった規則と同じように次の選択肢へ進む。文法の記法では
+書けない判断を、文法に取らせる手段である。ここではCの「`T * x;`は`T`が型の名前のときだけ
+ポインタの宣言」という規則を扱う:
+
+```culebra
+let p = PEG.parser(`
+  Unit     <- Stmt+
+  Stmt     <- Typedef / Decl / ExprStmt
+  Typedef  <- 'typedef' 'int' NewType ';'
+  Decl     <- TypeName '*' Ident ';'
+  ExprStmt <- Ident '*' Ident ';'
+  NewType  <- < Ident >
+  TypeName <- < Ident >
+  Ident    <- < [a-zA-Z_][a-zA-Z0-9_]* >
+  %whitespace <- [ \t\r\n]*
+`)
+p.enable_ast()
+
+p["NewType"].predicate = fn (vs, dt) {
+  dt.typedefs[vs.token_to_string()] = true
+  true
+}
+p["TypeName"].predicate = |vs, dt| dt.typedefs.has(vs.token_to_string())
+
+let (ok, unit) = p.parse("typedef int T; T * x; a * b;", dt: {typedefs: {}})
+inspect(unit.nodes.map(|stmt| stmt.nodes[0].name))
+# => ['Typedef', 'Decl', 'ExprStmt']
+```
+
+型の名前は`dt`に置いているので、どの対象も型の名前が1つも無い状態から始まる。
+
+cpp-peglibの述語は`bool`を返し、out引数を2つ（`msg`と`predicate_data`）持つ。ここでは
+それらも一緒に返す:
+
+| 述語の戻り値 | 意味 |
+| --- | --- |
+| `true` / `false` | マッチを認める / 規則を失敗させる |
+| `(ok, msg)` | 同じ。パースが結局ここで失敗に終わったとき、`msg`がそのエラーになる |
+| `(ok, msg, predicate_data)` | 同じ。規則のactionが`predicate_data`を第3引数で受け取る |
+
+これ以外は`TypeError`。メッセージは、パーサが次に試した選択肢から報告するはずだった構文
+エラーに代わるもので、規則の開始位置で報告される:
+
+```culebra
+let p = PEG.parser(`
+  NUMBER <- < [0-9]+ >
+`)
+p["NUMBER"].predicate = fn (vs) {
+  let n = vs.token_to_number()
+  n <= 100 ? (true, "", n) : (false, "number out of range")
+}
+p["NUMBER"] = |vs, dt, predicate_data| predicate_data
+
+let mut errors = []
+p.set_logger(|line, col, msg, rule| errors.push([line, col, msg, rule]))
+inspect(p.parse("100"))  # => (true, 100)
+inspect(p.parse("200"))  # => (false, nil)
+inspect(errors)          # => [[1, 1, 'number out of range', 'NUMBER']]
+```
+
+木を作るパースでは、述語の`vs`は規則のテキストとトークンを持つが値は持たない
+（`vs.size()`は`0`）。そこでの値は構築中の木だからである。
+
+### `enter`と`leave`
+
+`enter`はパーサが規則に取りかかるときに、`leave`はマッチしたかどうかに関わらず規則を
+終えるときに走る:
+
+| コールバック | 引数 |
+| --- | --- |
+| `enter` | `(c, s, n, dt)` |
+| `leave` | `(c, s, n, matchlen, value, dt)` |
+
+| 引数 | 意味 |
+| --- | --- |
+| `c` | `{path, s, l}` — 対象名、対象、その長さ |
+| `s`、`n` | 規則に入った位置から後ろの対象と、その長さ（`c.l - n`がバイトオフセット） |
+| `matchlen` | 規則がマッチしたバイト数。後ろで読み飛ばした空白を含む。マッチしなければ`-1` |
+| `value` | 還元を行うパースでは規則の値。それ以外と、マッチしなかったときは`nil` |
+| `dt` | そのパースの[ユーザーデータ](#ユーザーデータ) |
+
+```culebra
+let p = PEG.parser(`
+  Block <- '{' (Block / Word)* '}'
+  Word  <- < [a-z]+ >
+  %whitespace <- [ ]*
+`)
+let mut depth = 0
+let mut deepest = 0
+p["Block"].enter = fn (c, s, n) {
+  depth += 1
+  deepest = Math.max(deepest, depth)
+}
+p["Block"].leave = fn (c, s, n, matchlen, value) {
+  depth -= 1
+}
+inspect(p.parse('{ a { b { c } } d }'))  # => (true, nil)
+inspect(deepest)                         # => 3
+```
+
+`leave`の`value`は値そのもので、cpp-peglibのような値への参照ではない。ハンドラが規則の値を
+別の値に差し替えることはできない。
+
+パーサが後で捨てる試行の中でコールバックが走るかどうか、何回走るかは決まっていない
+（[cpp-peglib](https://github.com/yhirose/cpp-peglib#semantic-actions)と同じ）。次の1バイトで
+始まり得ない選択肢は規則に入らずに飛ばされるし、packratパースは同じ位置での規則の以前の
+結果を使い回して規則を試し直さない。だからコールバックのすることは、繰り返されても
+飛ばされても困らないようにしておく（上のように`enter`でしたことを`leave`で戻す）か、
+`parse`が返す値から状態を組み立てる。コールバックが投げたものがパーサを抜けるとき、途中の
+規則の`leave`ハンドラは走らない。
+
+### cpp-peglibと違う点
+
+C++のシグネチャをそのまま持ち込めないもの:
+
+* out引数は戻り値を1つ増やして返す。`parse`は`(ok, val)`を、述語は`ok`・`(ok, msg)`・
+  `(ok, msg, predicate_data)`のいずれかを返す。
+* `dt`と`leave`の`value`は参照ではなく値である。ObjectやArrayの中身は書き換えられるが、
+  値そのものは差し替えられない。
+* `token_to_number()`と`transform()`は型を取らない。`Long`か`Float`かはトークンの
+  テキストが決め、値はactionが返したものがそのまま入る。
+
+狭いもの:
+
+* 木のノードは[上](#木)のフィールドを持つただの`Object`である。`parent`・`tag`・
+  `original_name`・`original_choice`・`choice_count`・`path`は無い。
+* 木を作るパースでは、述語の`vs`は値を持たず、`leave`の`value`は`nil`である。
+* どれかの規則にactionがあるとパースは還元を行い、`enable_ast()`は効かない。
+* `enable_ast`は3番目の引数（規則のリスト）を取らない。
+* ユーザー定義の規則、文法のシリアライズ、`set_error_reporter`、`enable_trace`、
+  `disable_eoi_check`、`enable_left_recursion`は無い。左再帰は有効である。
+
+厳しいもの:
+
+* 規則の入れ子は、どのパースでも4000段が上限である。`set_max_depth`は無い。
+* 文法に無い規則へのコールバックの代入は、`parse`で`PEGError`になる。
+
+入力の構文エラーの文面は、culebra自身の診断と同じ形でここで組み立てている。文法のエラーの
+文面はcpp-peglibのものである。
 
 ## 36. `CodeGen`
 

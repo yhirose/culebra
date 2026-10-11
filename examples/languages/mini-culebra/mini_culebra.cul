@@ -11421,9 +11421,30 @@ if cli.empty() {
   Sys.exit(1)
 }
 
+# Parses `src` into its tree, the way a cpp-peglib program does: load the
+# grammar, ask for the optimized AST and for packrat parsing, and hear the
+# errors through the logger. A syntax error is thrown as a ParseError whose
+# message is already "path:line:col: ...".
+fn parse_source(src, path) {
+  let parser = PEG.parser()
+  let mut errors = []
+  parser.set_logger(|line, col, msg| errors.push("{line}:{col}: {msg}"))
+  if !parser.load_grammar(grammar) {
+    throw {kind: 'ParseError', message: "grammar:{errors[0]}"}
+  }
+  parser.enable_ast(true)
+  parser.enable_packrat_parsing()
+  errors = []
+  let (ok, tree) = parser.parse(src, path)
+  if !ok {
+    throw {kind: 'ParseError', message: "{path}:{errors[0]}"}
+  }
+  tree
+}
+
 # The grammar and the prelude parse once; every program after the first
 # reuses both, which is what makes a many-program batch cheap.
-let prelude_tree = PEG.parse(grammar, prelude_src, path: '<prelude>')
+let prelude_tree = parse_source(prelude_src, '<prelude>')
 
 mut had_err = false
 for path in cli {
@@ -11469,7 +11490,7 @@ for path in cli {
   classes = {}
   traits = {}
   try {
-    let tree = PEG.parse(grammar, FS.read(path), path: path)
+    let tree = parse_source(FS.read(path), path)
     let m = CodeGen.Module()
     ir = m
     build(m, prelude_tree, tree)
@@ -11486,7 +11507,7 @@ for path in cli {
   } catch e {
     match e {
       {kind: 'MiniError'} => println("{path}:{e.line}:{e.col}: {e.message}"),
-      {kind: 'PEGError'} => println(e.message),
+      {kind: 'ParseError'} => println(e.message),
       {kind: 'IrError'} => {
         # the program's own uncaught report already printed; only the
         # exit status is left to mirror

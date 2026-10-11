@@ -8625,15 +8625,7 @@ inline JitValue _ns_regex_split(JitValue* a, int64_t) {
 // choice }; `start` is a String whose emptiness means "the grammar's first
 // rule", so every parameter here is plainly typed.
 //===------------------------------------------------------------------------//
-inline culebra::pegparser::Handle _jit_peg_compile(JitValue grammar,
-                                                   JitValue start,
-                                                   JitValue packrat) {
-  culebra::pegparser::Options opt;
-  opt.start = std::string(_ns_adapt::require_sv(start, "start"));
-  opt.packrat = _ns_adapt::require_bool(packrat, "packrat");
-  return culebra::pegparser::compile(
-      _ns_adapt::require_sv(grammar, "grammar", "StringLike"), opt);
-}
+
 
 // The flat node table, back to front. Prefix order puts every child after its
 // parent, so one backward pass has each node's children already built when it
@@ -8682,42 +8674,55 @@ inline JitValue _jit_peg_tree(const culebra::pegparser::Tree& t) {
   return built[0];
 }
 
-inline JitValue _ns_peg_check(JitValue* a, int64_t) {
-  _jit_peg_compile(a[0], a[1], a[2]);  // validate; throws on a bad grammar
-  return _ns_adapt::v_nil();
-}
-inline JitValue _ns_peg_test(JitValue* a, int64_t) {
-  auto h = _jit_peg_compile(a[0], a[2], a[3]);
-  return _ns_adapt::v_bool(culebra::pegparser::test(
-      *h, _ns_adapt::require_sv(a[1], "text", "StringLike")));
+// cpp-peglib's load_grammar(): a = grammar, start. Answers (ok, diags,
+// no_ast_opt): whether it loaded, what peglib's logger is told of it, each as
+// (line, col, msg, rule), and the node names of its `no_ast_opt` rules.
+inline JitValue _ns_peg_load(JitValue* a, int64_t) {
+  namespace pp = culebra::pegparser;
+  std::vector<pp::Diag> diags;
+  auto h = pp::load(_ns_adapt::require_sv(a[0], "grammar", "StringLike"),
+                    _ns_adapt::require_sv(a[1], "start"), diags);
+  // Nothing below is rooted until the Tuple that is returned holds it.
+  culebra::gc::Heap::CollectPause pause(_gc_heap());
+  auto tuple = [](std::initializer_list<JitValue> items) {
+    auto* t = culebra_runtime_tuple_new();
+    for (JitValue v : items) culebra_runtime_tuple_push(t, v.tag, v.data);
+    return JitValue{TAG_TUPLE, reinterpret_cast<int64_t>(t)};
+  };
+  auto* told = culebra_runtime_array_new();
+  for (const auto& d : diags) {
+    JitValue t = tuple({_ns_adapt::v_long(static_cast<int64_t>(d.line)),
+                        _ns_adapt::v_long(static_cast<int64_t>(d.col)),
+                        _ns_adapt::str(d.msg), _ns_adapt::str(d.rule)});
+    culebra_runtime_array_push(told, t.tag, t.data);
+  }
+  static const std::vector<std::string> none;
+  return tuple({_ns_adapt::v_bool(h != nullptr), _ns_adapt::v_array(told),
+                _ns_adapt::string_array(h ? h->no_ast_opt : none)});
 }
 
-//===-- PEG semantic actions: `actions` is a rule-name -> Function Object.
-// peg.h's own `std::any` payload is opaque to it by design (no JitValue
-// there — see peg.h's own comment on why), so this JitAny is where a JitValue
-// actually rides inside one: a copyable handle safe to sit inside a
-// `std::any` for as long as the CollectPause below spans it (every value a
-// registered action produces or reads lives only in refcounted, retained
-// slots — peglib's own SemanticValues vectors, which the conservative
-// collector can't scan — for the parse's duration; nothing needs pinning
-// against the mark-sweep backstop because nothing runs during that window).
-// Composed from JitOwnedVal rather than holding a bare JitValue: every
-// retain/release this needs already exists on that RAII type (rt_runtime.inc.h),
-// so copying, assigning and destroying a JitAny adds no new hand-placed RC
-// call for the ratchet in tools/checks/check_rc_discipline.sh to count.
+//===-- PEG callbacks: `hooks` is the Object the `PEG` module builds from a
+// parser's `parser["RULE"]` members -- { actions, predicates, enter, leave }
+// (each rule name -> Function) and `log`. peg.h's `std::any` payload is
+// opaque to it by design (no JitValue there), so this JitAny is where a
+// JitValue rides inside one: a copyable handle safe to sit inside a
+// `std::any` for as long as the CollectPause the parse takes spans it (every
+// value an action produces or reads lives only in refcounted, retained slots
+// -- peglib's own SemanticValues vectors, which the conservative collector
+// can't scan -- for the parse's duration). Composed from JitOwnedVal rather
+// than holding a bare JitValue: every retain/release this needs already
+// exists on that RAII type (rt_runtime.inc.h), so copying, assigning and
+// destroying a JitAny adds no new hand-placed RC call for the ratchet in
+// tools/checks/check_rc_discipline.sh to count.
 //===------------------------------------------------------------------------//
 struct JitAny {
   JitOwnedVal v;
   JitAny() : v(TAG_NIL, 0) {}
   explicit JitAny(JitValue val) : v(val) {}  // takes ownership of val's +1
-  // Required only for std::any's own copy-constructibility gate (its
-  // constructor template is SFINAE'd on is_copy_constructible<T>, checked
-  // even though every value that actually flows through peg.h's own
-  // action-reduction chain is moved, never copied — see _peg_unbox/RuleAction
-  // there, and _jit_peg_take_value below). Duplicating an owned reference has
-  // no path that skips a retain, hand-placed or through the from_borrowed
-  // seam — both are counted by tools/checks/check_rc_discipline.sh — so this is the
-  // one the ratchet has to see; nothing else in this feature adds another.
+  // std::any needs it, and so do the readers that leave the value where it
+  // is: a predicate and a `leave` handler see values an action reads after
+  // them (peg.h's _peek). Duplicating an owned reference has no path that
+  // skips a retain, so this is the one the ratchet has to see.
   JitAny(const JitAny& o) : v(TAG_NIL, 0) {
     JitValue val = o.v.borrow();
     culebra_runtime_value_retain(val.tag, val.data);
@@ -8732,17 +8737,21 @@ struct JitAny {
 
 // Moves `a`'s own JitAny out (rather than reading it by const reference and
 // retaining a second one) — safe wherever `a` is a value this call owns
-// outright and won't read again, which is every caller below.
+// outright and won't read again.
 inline JitValue _jit_peg_take_value(std::any& a) {
   return a.has_value() ? std::any_cast<JitAny>(std::move(a)).v.consume()
                        : JitValue{TAG_NIL, 0};
 }
 
-// One Sv (see peg.h) as the Object a registered action receives — the same
-// field names Node uses (`_jit_peg_tree` above), `nodes` renamed to `values`
-// since these are already-reduced results, not child nodes. `sv` is a fresh,
-// single-use local (see peg.h's own RuleAction comment), so every value moves
-// out of it into the Array below rather than being retained a second time.
+// A reference of its own to a value that stays where it is.
+inline JitValue _jit_peg_copy_value(const std::any& a) {
+  return a.has_value() ? JitAny(std::any_cast<const JitAny&>(a)).v.consume()
+                       : JitValue{TAG_NIL, 0};
+}
+
+// One Sv (see peg.h) as the Object the `PEG` module's SemanticValues reads.
+// `sv` is a fresh, single-use local, so every value moves out of it into the
+// Array below rather than being retained a second time.
 inline JitValue _jit_peg_sv_object(culebra::pegparser::Sv& sv) {
   auto* values = culebra_runtime_array_new();
   for (auto& v : sv.values) {
@@ -8760,71 +8769,177 @@ inline JitValue _jit_peg_sv_object(culebra::pegparser::Sv& sv) {
                                static_cast<int64_t>(x), 0, 0);
   };
   set_str("name", sv.name);
-  set_str("token", sv.token);
+  set_str("sv", sv.sv);
+  _ns_adapt::set_field(o, "tokens", _ns_adapt::string_array(sv.tokens));
   culebra_runtime_object_set(o, "values", false, TAG_ARRAY,
                              reinterpret_cast<int64_t>(values), 0, 0);
   set_long("line", sv.line);
   set_long("column", sv.column);
-  set_long("position", sv.position);
-  set_long("length", sv.length);
   set_long("choice", sv.choice);
+  set_long("choice_count", sv.choice_count);
   return _ns_adapt::v_object(o);
 }
 
-// `actions`'s own properties keep every registered Function alive for the
-// call: each RuleAction below only borrows one (no retain needed) because
-// `actions_val` — the caller's live argument — outlives the whole parse.
-// Ignores a non-Object `actions` (nil, the default) by returning an empty
-// map, and a non-Function entry (falls through to peg.h's own default: the
-// first child's value, or nil for a childless rule).
-inline culebra::pegparser::ActionMap _jit_peg_build_actions(JitValue actions_val) {
-  culebra::pegparser::ActionMap out;
-  if (actions_val.tag != TAG_OBJECT) return out;
-  auto* obj = reinterpret_cast<JitObject*>(actions_val.data);
+// Calls `f(rule, fn)` for each Function `hooks[key]` names a rule for. The
+// maps' own properties keep every Function alive for the call, so a callback
+// only borrows one: `hooks` -- the caller's live argument -- outlives the
+// parse. A non-Function entry is skipped.
+template <typename F>
+inline void _jit_peg_each_callback(JitObject* hooks, const char* key, F f) {
+  int8_t mtag;
+  int64_t mdata;
+  culebra_runtime_object_get(hooks, key, &mtag, &mdata);
+  if (mtag != TAG_OBJECT) return;
+  auto* map = reinterpret_cast<JitObject*>(mdata);
   // object_keys() hands back a fresh, retained (+1) array of retained (+1)
   // keys; JitOwnedVal on the array itself and on each key it holds releases
   // both without a bare call living in this file.
   JitOwnedVal keys_owned{TAG_ARRAY,
-                        reinterpret_cast<int64_t>(culebra_runtime_object_keys(obj))};
+                        reinterpret_cast<int64_t>(culebra_runtime_object_keys(map))};
   auto* keys = reinterpret_cast<JitArray*>(keys_owned.borrow().data);
   for (int64_t i = 0; i < keys->size; i++) {
     JitOwnedVal k{keys->items[i]};
     if (k.borrow().tag != TAG_STRING) continue;
-    std::string name(_culebra_str_view(k.borrow().tag, k.borrow().data));
+    std::string rule(_culebra_str_view(k.borrow().tag, k.borrow().data));
     int8_t vtag;
     int64_t vdata;
-    culebra_runtime_object_get(obj, name.c_str(), &vtag, &vdata);
+    culebra_runtime_object_get(map, rule.c_str(), &vtag, &vdata);
     if (vtag != TAG_FUNC) continue;
-    auto* cb = reinterpret_cast<JitClosure*>(vdata);
-    out.emplace(std::move(name),
-               [cb](culebra::pegparser::Sv& sv) -> std::any {
-                 JitOwnedVal arg{_jit_peg_sv_object(sv)};
-                 JitOwnedVal ret{_culebra_invoke1(cb, arg.consume())};
-                 return std::any(JitAny(ret.consume()));
-               });
+    f(std::move(rule), reinterpret_cast<JitClosure*>(vdata));
+  }
+}
+
+// A callback's arguments are handed over: the callee's frame owns them.
+template <size_t N>
+inline JitOwnedVal _jit_peg_call(JitClosure* cb, JitValue (&&args)[N]) {
+  return JitOwnedVal{_jit_invoke(cb, {TAG_NO_SELF, 0}, N, args)};
+}
+
+// `hooks` as peg.h's Hooks. nil is a parse with nothing to call.
+inline culebra::pegparser::Hooks _jit_peg_hooks(JitValue hooks_val) {
+  namespace pp = culebra::pegparser;
+  pp::Hooks out;
+  if (hooks_val.tag != TAG_OBJECT) return out;
+  auto* hooks = reinterpret_cast<JitObject*>(hooks_val.data);
+
+  _jit_peg_each_callback(hooks, "actions", [&](std::string rule, JitClosure* cb) {
+    out.actions.emplace(
+        std::move(rule),
+        [cb](pp::Sv& sv, const std::any& predicate_data) -> std::any {
+          JitOwnedVal ret = _jit_peg_call(
+              cb, {_jit_peg_sv_object(sv), _jit_peg_copy_value(predicate_data)});
+          return std::any(JitAny(ret.consume()));
+        });
+  });
+  out.reduces = !out.actions.empty();
+  // A predicate answers the Tuple the `PEG` module makes of what the
+  // program's own returned: (ok, msg, predicate_data). The Tuple itself is
+  // what rides to the rule's action, which the module unwraps there: moving
+  // it on takes no reference that picking its third field out would.
+  _jit_peg_each_callback(hooks, "predicates", [&](std::string rule, JitClosure* cb) {
+    out.predicates.emplace(std::move(rule), [cb](pp::Sv& sv) -> pp::Verdict {
+      JitOwnedVal ret = _jit_peg_call(cb, {_jit_peg_sv_object(sv)});
+      JitValue r = ret.borrow();
+      auto* t = reinterpret_cast<JitArray*>(r.data);
+      if (r.tag != TAG_TUPLE || t->size != 3 || t->items[0].tag != TAG_BOOL) {
+        throw culebra::CulebraError(
+            "TypeError", "PEG: a predicate answers (Bool, String, Any)", 0, 0);
+      }
+      pp::Verdict v;
+      v.ok = t->items[0].data != 0;
+      v.msg = std::string(_culebra_str_view(t->items[1].tag, t->items[1].data));
+      v.data = JitAny(ret.consume());
+      return v;
+    });
+  });
+  _jit_peg_each_callback(hooks, "enter", [&](std::string rule, JitClosure* cb) {
+    out.enter.emplace(std::move(rule), [cb](size_t pos) {
+      _jit_peg_call(cb, {_ns_adapt::v_long(static_cast<int64_t>(pos))});
+    });
+  });
+  _jit_peg_each_callback(hooks, "leave", [&](std::string rule, JitClosure* cb) {
+    out.leave.emplace(
+        std::move(rule),
+        [cb](size_t pos, size_t matchlen, const std::any& value) {
+          // peglib's size_t(-1) for a rule that did not match is -1 here too.
+          _jit_peg_call(cb, {_ns_adapt::v_long(static_cast<int64_t>(pos)),
+                             _ns_adapt::v_long(static_cast<int64_t>(matchlen)),
+                             _jit_peg_copy_value(value)});
+        });
+  });
+  int8_t tag;
+  int64_t data;
+  culebra_runtime_object_get(hooks, "log", &tag, &data);
+  if (tag == TAG_FUNC) {
+    auto* cb = reinterpret_cast<JitClosure*>(data);
+    out.log = [cb](size_t line, size_t col, const std::string& msg,
+                   const std::string& rule) {
+      _jit_peg_call(cb, {_ns_adapt::v_long(static_cast<int64_t>(line)),
+                         _ns_adapt::v_long(static_cast<int64_t>(col)),
+                         _ns_adapt::str(msg), _ns_adapt::str(rule)});
+    };
   }
   return out;
 }
 
-inline JitValue _ns_peg_parse(JitValue* a, int64_t) {
-  auto h = _jit_peg_compile(a[0], a[2], a[4]);
-  auto text = _ns_adapt::require_sv(a[1], "text", "StringLike");
-  auto path = _ns_adapt::require_sv(a[5], "path", "StringLike");
-  if (a[6].tag == TAG_OBJECT) {
-    // The whole parse, not just tree materialization: every reduction along
-    // the way lives only in peglib's own SemanticValues vectors (heap
-    // buffers the conservative collector can't scan), refcounted but
-    // unrooted until its parent consumes it — the same hazard
-    // `_jit_peg_tree` pauses for, just spanning the parse itself instead of
-    // one post-parse pass over an already-built tree.
-    culebra::gc::Heap::CollectPause pause(_gc_heap());
-    auto actions = _jit_peg_build_actions(a[6]);
-    auto result =
-        culebra::pegparser::parse_with_actions(*h, text, path, actions);
-    return _jit_peg_take_value(result);
+// One parse for `_PEG.parse` and `_PEG.run`. `value` is what it yields: the
+// start rule's reduction when a rule has an action, else the tree when
+// `tree` asks for one, optimized with `optimize` as its `opt_mode` when that
+// is set.
+struct _JitPegParsed {
+  culebra::pegparser::Parsed r;
+  JitValue value{TAG_NIL, 0};
+};
+inline _JitPegParsed _jit_peg_run(JitValue grammar, JitValue text_val,
+                                  JitValue start, JitValue packrat,
+                                  JitValue hooks_val, bool tree,
+                                  std::optional<bool> optimize) {
+  auto h = culebra::pegparser::compile(
+      _ns_adapt::require_sv(grammar, "grammar", "StringLike"),
+      _ns_adapt::require_sv(start, "start"));
+  bool memoize = _ns_adapt::require_bool(packrat, "packrat");
+  auto text = _ns_adapt::require_sv(text_val, "text", "StringLike");
+  // The whole parse, not just tree materialization: every reduction along the
+  // way lives only in peglib's own SemanticValues vectors (heap buffers the
+  // conservative collector can't scan), refcounted but unrooted until its
+  // parent consumes it -- the same hazard `_jit_peg_tree` pauses for.
+  culebra::gc::Heap::CollectPause pause(_gc_heap());
+  auto hooks = _jit_peg_hooks(hooks_val);
+  hooks.packrat = memoize;
+  bool want_value = tree || hooks.reduces;
+  _JitPegParsed out;
+  out.r = culebra::pegparser::run(*h, text, hooks, optimize, want_value);
+  if (out.r.ok && want_value) {
+    out.value = hooks.reduces ? _jit_peg_take_value(out.r.value)
+                              : _jit_peg_tree(out.r.tree);
   }
+  return out;
+}
+
+// The value, or a PEGError, for the library's own grammars: a = grammar,
+// text, start, optimize, packrat, path, hooks.
+inline JitValue _ns_peg_parse(JitValue* a, int64_t) {
+  auto path = _ns_adapt::require_sv(a[5], "path", "StringLike");
   auto optimize = _ns_adapt::require_bool(a[3], "optimize");
-  return _jit_peg_tree(culebra::pegparser::parse(*h, text, optimize, path));
+  auto p = _jit_peg_run(a[0], a[1], a[2], a[4], a[6], true,
+                        optimize ? std::optional<bool>(true) : std::nullopt);
+  if (!p.r.ok) culebra::pegparser::fail(p.r, path);
+  return p.value;
+}
+
+// (ok, value), cpp-peglib's `bool parse(s, val)` with its out parameter: a =
+// grammar, text, start, ast, packrat, hooks. A subject that does not parse
+// is `(false, nil)`, told to `hooks.log`. `ast` is what enable_ast() was
+// called with: 0 not called, 1 the tree as it is built, 2 and 3 that tree
+// through optimize_ast() with `opt_mode` true and false.
+inline JitValue _ns_peg_run(JitValue* a, int64_t) {
+  auto ast = _ns_adapt::require_long(a[3], "ast");
+  auto p = _jit_peg_run(a[0], a[1], a[2], a[4], a[5], ast != 0,
+                        ast >= 2 ? std::optional<bool>(ast == 2) : std::nullopt);
+  auto* tup = culebra_runtime_tuple_new();
+  culebra_runtime_tuple_push(tup, TAG_BOOL, p.r.ok ? 1 : 0);
+  culebra_runtime_tuple_push(tup, p.value.tag, p.value.data);
+  return {TAG_TUPLE, reinterpret_cast<int64_t>(tup)};
 }
 
 //===-- FST: the `FST` namespace functions. Like Regex and PEG, slow-path
@@ -10165,9 +10280,9 @@ inline const NsMethod kNsRows_Regex_native[] = {
   {"_Regex", "split",       2, &_ns_regex_split},
 };
 inline const NsMethod kNsRows_PEG_native[] = {
-  {"_PEG",   "check", 3, &_ns_peg_check},
+  {"_PEG",   "load",  2, &_ns_peg_load},
   {"_PEG",   "parse", 7, &_ns_peg_parse},
-  {"_PEG",   "test",  4, &_ns_peg_test},
+  {"_PEG",   "run",   6, &_ns_peg_run},
 };
 // Every query takes the byte code String first; the three class prefixes pick
 // the matcher's output type. Defaults (`sorted`, the edit costs) live in the

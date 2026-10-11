@@ -1,4 +1,4 @@
-# A four-function calculator whose actions read `sv.choice` to tell which
+# A four-function calculator whose actions read `vs.choice()` to tell which
 # alternative of a rule matched — the general tool for that question, for
 # when the arm count alone doesn't decide it (a rule with several
 # alternatives of the *same* arity, or one whose count varies for reasons
@@ -20,26 +20,32 @@ let grammar = `
 `
 
 # Both rules have exactly the same shape: two alternatives, the first binary
-# (2 values) and the second a single passthrough. `sv.choice` names which one
-# matched directly, rather than inferring it from `sv.values.size()`.
-fn additive(sv) {
-  match sv.choice {
-    0 => sv.values[0] + sv.values[1],
-    _ => sv.values[0],
+# (2 values) and the second a single passthrough. `vs.choice()` names which one
+# matched directly, rather than inferring it from `vs.size()`.
+fn additive(vs) {
+  match vs.choice() {
+    0 => vs[0] + vs[1],
+    _ => vs[0],
   }
 }
-fn multiplicative(sv) {
-  match sv.choice {
-    0 => sv.values[0] * sv.values[1],
-    _ => sv.values[0],
+fn multiplicative(vs) {
+  match vs.choice() {
+    0 => vs[0] * vs[1],
+    _ => vs[0],
   }
 }
 
-let actions = {
-  Additive: additive,
-  Multiplicative: multiplicative,
-  Number: |sv| to_long(sv.token),
-}
+let parser = PEG.parser(grammar)
+parser["Additive"] = additive
+parser["Multiplicative"] = multiplicative
+parser["Number"] = |vs| to_long(vs.token())
+# Both rules try their longer alternative first and fall back to the shorter,
+# so without memoization every nesting level parses its operand again.
+parser.enable_packrat_parsing()
+parser.set_logger(|line, col, msg| println("{line}:{col}: {msg}"))
 
 let formula = Sys.argv.empty() ? "(1 + 2) * 3" : Sys.argv[0]
-inspect(PEG.parse(grammar, formula, actions: actions))
+let (ok, value) = parser.parse(formula)
+if ok {
+  inspect(value)
+}

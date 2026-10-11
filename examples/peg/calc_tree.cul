@@ -1,5 +1,5 @@
 # A four-function calculator that builds a tree and walks it, rather than
-# interpreting as it parses — `PEG.str` shows exactly the tree `eval` walks.
+# interpreting as it parses — `PEG.ast_to_s` shows exactly the tree `eval` walks.
 # The grammar states each precedence level as one flat repetition
 # (`TERM (TERM_OPERATOR TERM)*`) instead of Additive/Multiplicative's mutual
 # recursion, so `eval` folds left over sibling operator/operand pairs rather
@@ -47,7 +47,15 @@ fn eval(node) {
   }
 }
 
+# `enable_ast(true)` builds the tree with its single-child nodes already
+# folded away: what `enable_ast()` followed by `optimize_ast` gives.
+let parser = PEG.parser(grammar)
+parser.enable_ast(true)
+parser.set_logger(|line, col, msg| println("{line}:{col}: {msg}"))
+
 let formula = Sys.argv.empty() ? "1 + 2 * 3 - 4 / 2" : Sys.argv[0]
-let tree = PEG.parse(grammar, formula)
-print(PEG.str(tree))
-println("{formula} = {eval(tree)}")
+let (ok, tree) = parser.parse(formula)
+if ok {
+  print(PEG.ast_to_s(tree))
+  println("{formula} = {eval(tree)}")
+}
