@@ -1916,7 +1916,11 @@ inline void jit_parallel_worker(std::shared_ptr<ParallelState> st) {
       try {
         JitDeCtx idc;
         JitOwnedVal item(jit_deserialize(st->items[i], idc));
-        JitValue r = _culebra_invoke1(cls, item.consume());  // invoke consumes
+        // A thrown value fails its element as an error does, by what it says,
+        // and the next element starts with nothing of this one in the Runtime.
+        JitValue r = culebra_runtime_call_from_host([&] {
+          return _culebra_invoke1(cls, item.consume());  // invoke consumes
+        });
         jit_parallel_record_success(*st, i, r);
       } catch (culebra::CulebraError& e) {
         jit_parallel_record_element_error(*st, i, e);

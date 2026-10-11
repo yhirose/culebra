@@ -789,20 +789,11 @@ class Embed {
       throw culebra::CulebraError(
           "TypeError", "'" + std::string(name) + "' is not a session function");
     }
-    try {
+    // A script `throw v` surfaces structured, as an engine error does.
+    return culebra_runtime_call_from_host([&] {
       return Value::adopt(_jit_invoke(reinterpret_cast<JitClosure*>(fn.data),
                                       JitValue{TAG_NO_SELF, 0}, n, args));
-    } catch (const CulebraException& e) {
-      // A script `throw v` crosses the compiled boundary as a tagged pair;
-      // surface it structured.
-      auto r = describe_thrown_value({e.tag, e.data});
-      culebra_runtime_consume_throw(e);
-      throw culebra::CulebraError(r.kind.empty() ? "RuntimeError" : r.kind,
-                                  r.message, r.line, r.col);
-    } catch (...) {
-      culebra_runtime_release_passed_error();
-      throw;
-    }
+    });
   }
 
   // An interrupt keeps the bool+msgs contract: the host that requested it

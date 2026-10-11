@@ -14,27 +14,33 @@
 
 HOST = "127.0.0.1"
 
-let (tx, rx) = Channel.new(1)
-iso = Isolate.spawn(fn () {
-  let l = Net.listen(0, host: HOST)
-  tx.send(l.port)
-  tx.drop()
-  // Each connection: read one line, echo it back uppercased. "boom" raises, to
-  // prove one failing handler doesn't take the server (or its worker) down.
-  l.serve(fn (conn) {
-    let line = conn.read_line()
-    throw "handler exploded" if line == "boom"
-    conn.write(line.upper() + "\n") if line != nil
-  }, workers: 4)
-})
-tx.drop()  // the parent's own sender copy
-PORT = rx.recv()
-if PORT == nil {
-  throw {kind: "AssertionError", message: "listener never bound"}
+// Serves `handler` from an isolate; returns the isolate and the bound port.
+fn serving(handler, workers) {
+  let (tx, rx) = Channel.new(1)
+  let iso = Isolate.spawn(fn () {
+    let l = Net.listen(0, host: HOST)
+    tx.send(l.port)
+    tx.drop()
+    l.serve(handler, workers: workers)
+  })
+  tx.drop()  // the parent's own sender copy
+  let port = rx.recv()
+  if port == nil {
+    throw {kind: "AssertionError", message: "listener never bound"}
+  }
+  (iso, port)
 }
 
-fn ask(msg) {
-  let c = Net.connect(HOST, PORT, timeout: 2000)
+// Each connection: read one line, echo it back uppercased. "boom" raises, to
+// prove one failing handler doesn't take the server (or its worker) down.
+let (iso, PORT) = serving(fn (conn) {
+  let line = conn.read_line()
+  throw "handler exploded" if line == "boom"
+  conn.write(line.upper() + "\n") if line != nil
+}, workers: 4)
+
+fn ask(msg, port = PORT) {
+  let c = Net.connect(HOST, port, timeout: 2000)
   c.set_timeout(2000)
   c.write(msg + "\n")
   let reply = c.read_line()
@@ -62,6 +68,21 @@ c.close()
 
 // ... and the server is still serving afterwards.
 assert_eq(ask("after"), "AFTER")
+
+// The throw ends at the handler: the worker's next connection catches its own
+// error. One worker, so the same one takes both connections.
+let (iso1, port1) = serving(fn (conn) {
+  throw "handler exploded" if conn.read_line() == "boom"
+  let caught = try {
+    1 / 0
+  } catch e {
+    e.kind
+  }
+  conn.write("{caught}\n")
+}, workers: 1)
+assert_eq(ask("boom", port1), nil)
+assert_eq(ask("next", port1), "ZeroDivisionError")
+iso1.drop()
 
 // --- a non-Sendable handler is rejected at serve(), naming the problem ---
 mut captured = 0

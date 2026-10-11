@@ -2927,7 +2927,11 @@ one per element.
 
 **`map` / `each` are fail-fast:** the first element to throw stops the rest and
 is re-raised as `ParallelError` naming the element index — e.g. `Parallel.map:
-element[2] failed: ...`.
+element[2] failed: ...`. What follows `failed:` is the error's message, or
+what a thrown value says: its `message` when it is an Object whose `message`
+is a non-empty String, otherwise the value as an uncaught `throw` prints it
+(a `__str__` is not consulted). The `error` of `map_settled` and the failure
+of `race` carry the same text.
 
 **`map_settled` never fail-fasts:** every element yields a `Result` Object
 `{ok: Bool, value: Any, error: String?}` (the same shape as `Proc.all`), so one
@@ -4177,8 +4181,11 @@ names. A missing key reads as `nil`.
 - an `Object` with a `stream:` Function → a chunked (streaming) response — see below;
 - `nil` → `200` with an empty body.
 
-A handler that raises becomes a `500` whose body is the error message. An unmatched
-route is a `404`.
+A handler that raises becomes a `500` whose body is the error message. One
+that throws a value answers with what the value says: its `message` when it is
+an Object whose `message` is a non-empty String, otherwise the value as an
+uncaught `throw` prints it (a `__str__` is not consulted). An unmatched route
+is a `404`.
 
 **Streaming responses (SSE / chunked).** To send a response incrementally —
 without buffering the whole body — return an Object whose `stream` field is a

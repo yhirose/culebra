@@ -937,7 +937,8 @@ class CulebraException : public std::exception {
 // also brings the position it was raised at (its slots are immutable); any
 // other value leaves line/col 0 for the host to fill. The one reading of a
 // thrown value — the uncaught printer below, the test host (test_engine.h),
-// the embedding API (vm/embed.h) and a guest crossing (codegen.h).
+// a guest crossing (codegen.h), and a host's call that goes on with an error
+// (culebra_runtime_call_from_host).
 struct ThrownReport {
   std::string kind, message;
   int64_t line = 0, col = 0;
@@ -1064,6 +1065,29 @@ inline void culebra_runtime_release_passed_error() {
   rt.pending_passed = 0;
   _passed_error(rt).reset();
 }
+
+// A call a host makes into culebra code and whose failure it ends itself — a
+// worker's element, a server's handler, an embedder's call — in place of the
+// two boundaries above: what leaves it holds nothing in the Runtime. A thrown
+// value leaves as the CulebraError a host reports (describe_thrown_value,
+// read before its reference is given up), so the C++ around the call reads
+// one kind of failure; anything else leaves as it was.
+extern "C++" {  // a template cannot have C linkage
+template <class Call>
+auto culebra_runtime_call_from_host(Call&& call) -> decltype(call()) {
+  try {
+    return call();
+  } catch (const CulebraException& e) {
+    auto r = describe_thrown_value({e.tag, e.data});
+    culebra_runtime_consume_throw(e);
+    throw culebra::CulebraError(r.kind.empty() ? "RuntimeError" : r.kind,
+                                r.message, r.line, r.col);
+  } catch (...) {
+    culebra_runtime_release_passed_error();
+    throw;
+  }
+}
+}  // extern "C++"
 
 // Save / restore the thrown-value carrier across a cleanup call whose own
 // exception is swallowed (a for-in iterator's dispose() on the unwind /

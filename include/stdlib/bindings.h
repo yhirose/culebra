@@ -3804,8 +3804,11 @@ inline void _jit_net_listener_serve(JitValue* __ret, JitClosure*, int8_t self_ta
   hooks.on_conn = [](int64_t sid) {
     auto* cb =
         reinterpret_cast<JitClosure*>(g_jit_net_w_handler->borrow().data);
-    JitOwnedVal ret{_culebra_invoke1(  // invoke consumes the socket handle's +1
-        cb, _culebra_net_build_socket_handle(sid))};
+    // The pool ends a handler's failure (net.h ServePool::worker).
+    JitOwnedVal ret{culebra_runtime_call_from_host([&] {
+      return _culebra_invoke1(  // invoke consumes the socket handle's +1
+          cb, _culebra_net_build_socket_handle(sid));
+    })};
   };
   std::string err;
   if (!culebra::net::serve(id, static_cast<int>(workers), hooks, &err))
@@ -6303,7 +6306,9 @@ inline bool _jit_http_try_stream_response(JitValue ret,
         try {
           JitValue sink{TAG_OBJECT, reinterpret_cast<int64_t>(
                                         _jit_make_http_sink_handle(sink_id))};
-          JitValue r = _culebra_invoke1(cls, sink);  // consumes sink's +1
+          JitValue r = culebra_runtime_call_from_host([&] {
+            return _culebra_invoke1(cls, sink);  // consumes sink's +1
+          });
           _culebra_value_release_impl(r.tag, r.data);
           return true;
         } catch (...) {
@@ -6508,8 +6513,10 @@ struct _JitWorkerDir : culebra::Dir {
           culebra::format("server.static: the Dir's {} is not a method", name),
           0, 0);
     JitOwnedVal p(_ns_adapt::str(path));
-    return _culebra_invoke_method1(reinterpret_cast<JitClosure*>(m.data), d,
-                                   p.borrow());
+    return culebra_runtime_call_from_host([&] {
+      return _culebra_invoke_method1(reinterpret_cast<JitClosure*>(m.data), d,
+                                     p.borrow());
+    });
   }
   bool ask(const char* name, std::string_view path) const {
     JitOwnedVal r(call(name, path));
@@ -6711,8 +6718,9 @@ inline JitValue _jit_http_server_do_serve(int64_t id, int64_t workers,
                     g_jit_srv_w_handlers[ri].data);
                 // The invoke consumes both +1s; owning them until then covers
                 // a throw while the second one is still being built.
-                JitOwnedVal r(_culebra_invoke2(cb, req.consume(),
-                                               wsh.consume()));
+                JitOwnedVal r(culebra_runtime_call_from_host([&] {
+                  return _culebra_invoke2(cb, req.consume(), wsh.consume());
+                }));
               } catch (...) {
               }
               culebra::http::ws_unregister(wsid);
@@ -6731,7 +6739,8 @@ inline JitValue _jit_http_server_do_serve(int64_t id, int64_t workers,
                 // malformed one (bad `status`, `stream` plus `body`, …), and
                 // the catch below turns that into a 500 — a tail release would
                 // never run, stranding the handler's result and its captures.
-                JitOwnedVal ret(_culebra_invoke1(cb, req));
+                JitOwnedVal ret(culebra_runtime_call_from_host(
+                    [&] { return _culebra_invoke1(cb, req); }));
                 if (!_jit_http_try_stream_response(ret.borrow(), res))
                   _jit_http_apply_response(ret.borrow(), res);
               } catch (const std::exception& e) {

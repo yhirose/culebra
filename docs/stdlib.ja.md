@@ -2838,7 +2838,10 @@ Parallel.race(mirrors, |m| download(m))     # 最初の成功が勝つ
 
 **`map` / `each`はfail-fast**: 最初に例外を投げた要素で残りを停止し、要素
 index付きの`ParallelError`として再送出します（例: `Parallel.map: element[2]
-failed: ...`）。
+failed: ...`）。`failed:`の後ろはエラーのmessageです。投げられた値の場合は、
+`message`が空でないStringのObjectならその`message`、それ以外は未catchの
+`throw`が表示するのと同じ形になります（`__str__`は使われません）。
+`map_settled`の`error`と`race`の失敗も同じ文面を運びます。
 
 **`map_settled`はfail-fastしない**: 各要素は`Result` Object
 `{ok: Bool, value: Any, error: String?}`（`Proc.all`と同じ形）を返すので、1つの
@@ -4059,8 +4062,10 @@ srv.listen(8080)  # ブロックする。Ctrl+C で停止
 - `stream:`フィールドにFunctionを持つ`Object` → chunked（ストリーミング）応答（後述）;
 - `nil` → `200`・空body。
 
-ハンドラが例外を投げると、その文面をbodyとする`500`になります。未マッチの
-ルートは`404`です。
+ハンドラが例外を投げると、その文面をbodyとする`500`になります。値を投げた
+場合は、`message`が空でないStringのObjectならその`message`、それ以外は
+未catchの`throw`が表示するのと同じ形（`__str__`は使われません）がbodyに
+なります。未マッチのルートは`404`です。
 
 **ストリーミング応答（SSE / chunked）。** body全体をバッファせず逐次送出するには、
 `stream`フィールドが`fn(sink)`クロージャのObjectを返します。bodyはchunkedで

@@ -56,7 +56,72 @@ try {
   assert_true(false)
 } catch e {
   assert_eq(e.kind, "ParallelError")
+  assert_eq(e.message, 'Parallel.map: element[2] failed: divide by 0 error')
 }
+
+# --- a thrown value fails its element by what it says, as an error does ---
+fn failure(f) {
+  try {
+    f()
+    'no error'
+  } catch e {
+    e.message
+  }
+}
+assert_eq(
+  failure(|| Parallel.map(
+    [1],
+    |x| throw {kind: 'ValueError', message: 'plain'},
+  )),
+  'Parallel.map: element[0] failed: plain',
+)
+assert_eq(
+  failure(|| Parallel.each([1, 2], |x| throw 'boom', limit: 1)),
+  'Parallel.each: element[0] failed: boom',
+)
+assert_eq(
+  failure(|| Parallel.map([1], |x| throw {code: 3})),
+  'Parallel.map: element[0] failed: {code: 3}',
+)
+assert_eq(
+  failure(|| Parallel.race([1, 2], |x| throw 'boom', limit: 1)),
+  'Parallel.race: all 2 elements failed: boom',
+)
+
+# The worker that stopped the throw goes on to the next element, where a
+# `catch` receives that element's own error.
+let settled = Parallel.map_settled([0, 1], fn (x) {
+  throw 'boom' if x == 0
+  try {
+    x / 0
+  } catch e {
+    e.kind
+  }
+}, limit: 1)
+assert_eq(settled[0], {ok: false, value: nil, error: 'boom'})
+assert_eq(settled[1], {ok: true, value: 'ZeroDivisionError', error: nil})
+
+# An error a clause declined leaves the worker with its element: what the
+# guard hung on it is dropped before the next element starts.
+fn hangs_on(e, tx) {
+  e.held = {drop: fn () {
+    tx.send('dropped')
+  }}
+  false
+}
+let (seen_tx, seen_rx) = Channel.new(8)
+Parallel.map_settled([0, 1], fn (x) {
+  seen_tx.send("start {x}")
+  if x == 0 {
+    try {
+      x / 0
+    } catch e if hangs_on(e, seen_tx) {
+      nil
+    }
+  }
+  x
+}, limit: 1)
+assert_eq(seen_rx.drain(), ['start 0', 'dropped', 'start 1'])
 
 # --- Sendable check still applies: a mut capture is rejected up front ---
 mut counter = 0

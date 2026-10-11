@@ -501,6 +501,51 @@ inspect("port 0 serves -> " +
   Http.get("http://127.0.0.1:" + zport.to_string() + "/").body)
 zsrv.stop()
 
+# --- a handler that throws a value answers 500 with what the value says, as
+# an error answers with its message, and the throw ends at the handler: the
+# worker's next handler catches its own error. One worker, so the same one
+# takes every request. A stream that throws aborts its connection, and a
+# WebSocket handler that throws closes its socket.
+fn thrown_values_end_at_the_handler() {
+  let srv = Http.server()
+  srv.get("/object", |req| throw {kind: 'ValueError', message: 'plain'})
+  srv.get("/string", |req| throw 'boom')
+  srv.get("/stream", fn (req) {
+    {stream: fn (sink) {
+      sink.write('partial')
+      throw 'mid-stream'
+    }}
+  })
+  srv.ws("/ws", |req, ws| throw 'in a socket')
+  srv.get("/caught", fn (req) {
+    try {
+      1 / 0
+    } catch e {
+      e.kind
+    }
+  })
+  let port = srv.listen_async(0, workers: 1)
+  let at = "127.0.0.1:{port}"
+  let next_catch = || Http.get("http://{at}/caught").body
+
+  for path, said in {'/object': 'plain', '/string': 'boom'} {
+    let thrown = Http.get("http://{at}{path}")
+    assert_eq(thrown.status, 500, path)
+    assert_eq(thrown.body, said, path)
+    assert_eq(next_catch(), 'ZeroDivisionError', path)
+  }
+
+  assert_throws('HttpError', || Http.get("http://{at}/stream"))
+  assert_eq(next_catch(), 'ZeroDivisionError', 'stream')
+
+  let socket = Http.ws("ws://{at}/ws")
+  assert_eq(socket.receive(), nil)
+  socket.close()
+  assert_eq(next_catch(), 'ZeroDivisionError', 'ws')
+  srv.stop()
+}
+thrown_values_end_at_the_handler()
+
 # --- bind / serve as separate steps. serve() needs a bound socket, bind() is
 # once-only, and listen() includes a bind — each mis-sequencing is a catchable
 # HttpError naming what is wrong, not a crash or a hang.

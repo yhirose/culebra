@@ -24,13 +24,20 @@ fn caught(thunk) {
 # The server is closed, not only stopped, so the archive file it opened is
 # let go before the temporary directory is removed (Windows refuses to
 # remove a file that is open).
-fn serving(dir, check) {
+fn serving(dir, check, workers = 0) {
   let srv = Http.server()
   srv.static("/s", dir)
   srv.get("/api/ok", fn (req) {
     'ok'
   })
-  let port = srv.listen_async(0)
+  srv.get("/api/caught", fn (req) {
+    try {
+      1 / 0
+    } catch e {
+      e.kind
+    }
+  })
+  let port = srv.listen_async(0, workers: workers)
   defer {
     srv.close()
   }
@@ -147,8 +154,15 @@ serving(Greetings('hello'), fn (base) {
   )
   assert_eq(Http.get("{base}/s/b.txt").status, 404)
   assert_eq(Http.get("{base}/api/ok").body, 'ok')
-  assert_eq(Http.get("{base}/s/broken.txt").status, 500)
-})
+
+  # The 500 says what the thrown value says, and the throw ends at the Dir's
+  # method: the worker's next handler catches its own error. One worker, so
+  # the same one takes both requests.
+  let broken = Http.get("{base}/s/broken.txt")
+  assert_eq(broken.status, 500)
+  assert_eq(broken.body, 'broken')
+  assert_eq(Http.get("{base}/api/caught").body, 'ZeroDivisionError')
+}, workers: 1)
 
 # What crosses to the workers has to be Sendable, as a handler does.
 class Holding {
