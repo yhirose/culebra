@@ -90,6 +90,12 @@ assert_eq(copy.keys()[64], "key64")
 assert_eq(JSON.parse(JSON.stringify(o)).size(), n)
 assert_eq(JSON.parse(JSON.stringify(o))["key77"], 77)
 
+// It shows every entry, as it does before the flip.
+assert_eq(to_string(build(2)), '{mut key0: 0, mut key1: 1}')
+let shown = to_string(build(65))
+assert_true(shown.starts_with('{mut key0: 0, mut key1: 1, '))
+assert_true(shown.ends_with(', mut key64: 64}'))
+
 mut mixed = build(n)
 mixed[42] = "long key"
 assert_eq(mixed.size(), n + 1)

@@ -217,8 +217,7 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
         for (const auto& key : *obj->key_order) {
           if (key.value().tag == TAG_STRING) {
             auto name = reinterpret_cast<const char*>(key.value().data);
-            auto idx = obj->shape ? obj->shape->offset(name)
-                                  : static_cast<size_t>(-1);
+            auto idx = obj->find_slot(name);
             if (idx == static_cast<size_t>(-1)) continue;
             const auto& entry = obj->slots[idx];
             if (!first) s += ", ";
