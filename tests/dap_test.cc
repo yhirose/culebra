@@ -394,6 +394,72 @@ static void scenario_generator_frame() {
   disconnect_and_wait();
 }
 
+// Scenario 6: showing a value runs its `__str__`, and letting go of one runs
+// its `drop` — the program's code, run for the debugger. One that fails is
+// shown as its failure, neither stops at its own breakpoint or `debugger`
+// statement, and the program goes on from where it is parked.
+static void scenario_code_run_for_debugger() {
+  std::string path = write_program(
+      "culebra_dap_str.cul",
+      "class Loud {\n"                       // 1
+      "  __str__() {\n"                      // 2
+      "    debugger\n"                       // 3  <- no stop, and no prompt
+      "    throw 'boom'\n"                   // 4  <- breakpoint, never reached
+      "  }\n"                                // 5
+      "}\n"                                  // 6
+      "class Odd { __str__() { 42 } }\n"     // 7
+      "class Res {\n"                        // 8
+      "  drop() { IO.inspect('gone') }\n"    // 9  <- breakpoint, never reached
+      "}\n"                                  // 10
+      "let loud = Loud()\n"                  // 11
+      "let odd = Odd()\n"                    // 12
+      "let n = 4242\n"                       // 13
+      "IO.inspect(n + 1)\n");                // 14 <- breakpoint
+  spawn_adapter();
+
+  send("{\"type\":\"request\",\"command\":\"initialize\"}");
+  read_until("\"event\":\"initialized\"");
+  send("{\"type\":\"request\",\"command\":\"launch\",\"arguments\":{"
+       "\"program\":" + S(path) + ",\"stopOnEntry\":false}}");
+  send("{\"type\":\"request\",\"command\":\"setBreakpoints\","
+       "\"arguments\":{\"source\":{\"path\":" + S(path) +
+       "},\"breakpoints\":[{\"line\":4},{\"line\":9},{\"line\":14}]}}");
+  send("{\"type\":\"request\",\"command\":\"configurationDone\"}");
+  read_until("\"event\":\"stopped\"");
+
+  send("{\"type\":\"request\",\"command\":\"variables\","
+       "\"arguments\":{\"variablesReference\":1}}");
+  read_until("\"command\":\"variables\"");
+  must_contain("\"name\":\"loud\",\"value\":\"<uncaught: boom at 4:");
+  must_contain("\"name\":\"odd\","
+               "\"value\":\"<TypeError: __str__ must return a String>\"");
+  must_contain("\"name\":\"n\",\"value\":\"4242\"");
+
+  // The same at the console: the expression has its value, and that is how
+  // the value shows.
+  send("{\"type\":\"request\",\"command\":\"evaluate\","
+       "\"arguments\":{\"expression\":\"loud\",\"frameId\":1,"
+       "\"context\":\"repl\"}}");
+  read_until("\"result\":\"<uncaught: boom at 4:");
+
+  // The answer is shown and then let go of, which is where its `drop` runs.
+  send("{\"type\":\"request\",\"command\":\"evaluate\","
+       "\"arguments\":{\"expression\":\"Res()\",\"frameId\":1,"
+       "\"context\":\"repl\"}}");
+  read_until("\"result\":\"Res {}\"");
+
+  send("{\"type\":\"request\",\"command\":\"continue\","
+       "\"arguments\":{\"threadId\":1}}");
+  read_until("\"event\":\"terminated\"");
+  must_contain("gone");
+  must_contain("4243");
+  // One stop in all: the breakpoint the program itself reached.
+  size_t first = acc.find("\"event\":\"stopped\"");
+  if (acc.find("\"event\":\"stopped\"", first + 1) != std::string::npos)
+    fail("the debugger's own code stopped at a breakpoint");
+  disconnect_and_wait();
+}
+
 int main(int argc, char** argv) {
   if (argc < 2) {
     std::fprintf(stderr, "usage: dap_test <culebra>\n");
@@ -406,6 +472,7 @@ int main(int argc, char** argv) {
   scenario_conditional_bp();
   scenario_collapsed_bodies();
   scenario_generator_frame();
+  scenario_code_run_for_debugger();
   std::printf("dap_test OK (%s)\n", g_engine);
   return 0;
 }

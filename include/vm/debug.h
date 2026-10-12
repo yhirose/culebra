@@ -7,6 +7,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace culebra {
@@ -57,6 +58,8 @@ class VmDebugSession {
   // prompt, and whatever the expression writes lands back in the frame.
   bool evaluate(size_t frame_ix, const std::string& expr, DebugVar& out,
                 std::string& err) {
+    // Until the last value here is released: a `drop` is program code too.
+    QuietHook quiet;
     auto vis = visible(frame_ix);
     vm::ReplSessionSwap swap;
     for (const auto& [name, v] : vis) {
@@ -89,11 +92,11 @@ class VmDebugSession {
     }
     if (!ok) return false;
     auto* cell = vm::repl_session().cell(vm::kReplResultName);
-    JitValue v = cell->value;
+    JitOwnedVal result(cell->value);
     cell->value = JitValue{TAG_NIL, 0};
+    JitValue v = result.borrow();
     if (v.tag == TAG_NO_SELF) v = JitValue{TAG_NIL, 0};
     out = {"", display(v), _culebra_tag_name(v.tag)};
-    _culebra_value_release_impl(v.tag, v.data);
     return true;
   }
 
@@ -117,21 +120,33 @@ class VmDebugSession {
 
   bool run(const std::shared_ptr<peg::Ast>& ast,
            std::shared_ptr<std::string> source, std::string& err) {
-    try {
+    return for_debugger(err, [&] {
       auto prog =
           std::make_unique<vm::VmProgram>(vm::Compiler::compile_repl_line(*ast));
       auto& kept = retained_.keep(std::move(source), ast, std::move(prog));
-      // The expression is not a statement of the program being debugged: its
-      // own boundaries must not re-enter the hook that is holding this thread.
-      auto& st = vm::dbg_state();
-      auto saved_hook = std::move(st.hook);
-      st.hook = nullptr;
-      struct Restore {
-        vm::DbgState& st;
-        vm::DbgHook& saved;
-        ~Restore() { st.hook = std::move(saved); }
-      } restore{st, saved_hook};
       vm::Exec::run(*kept.prog);
+    });
+  }
+
+  // Code the debugger runs for itself (an evaluated expression, a value's
+  // `__str__`, the `drop` of a value it lets go of) is not a statement of the
+  // program being debugged: its boundaries must not re-enter the hook that is
+  // holding this thread. A hook that does nothing stands in, not none: with
+  // none a `debugger` statement prompts on stdin, which is the adapter's wire.
+  struct QuietHook {
+    vm::DbgState& st = vm::dbg_state();
+    vm::DbgHook saved =
+        std::exchange(st.hook, [](bool, int64_t, int64_t) {});
+    ~QuietHook() { st.hook = std::move(saved); }
+  };
+
+  // ...and what it leaves uncaught is text for the client, not the failure of
+  // the statement the program is parked on.
+  template <class Body>
+  static bool for_debugger(std::string& err, Body&& body) {
+    QuietHook quiet;
+    try {
+      body();
       return true;
     } catch (const CulebraError& e) {
       err = std::string(e.kind) + ": " + e.what();
@@ -223,9 +238,17 @@ class VmDebugSession {
   }
 
   // What a debugger shows a value as — the interpreter's `Value::str()`,
-  // whose twin here is `inspect`'s text without the line `inspect` adds.
+  // whose twin here is `inspect`'s text without the line `inspect` adds. That
+  // text is a class's `__str__` where there is one, so it runs as program
+  // code does, and one that fails is shown as its failure.
   static std::string display(JitValue v) {
-    return _culebra_inspect_repr(v.tag, v.data);
+    std::string out;
+    bool ok = for_debugger(out, [&] {
+      vm::Exec::at_boundary(
+          [&] { out = _culebra_inspect_repr(v.tag, v.data); });
+    });
+    if (!ok) return "<" + out + ">";
+    return out;
   }
 
   // Kept for the session: a closure an evaluated expression built reaches

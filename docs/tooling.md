@@ -552,7 +552,10 @@ Supported:
 - **Call stack**: a named multi-frame stack (`inner` ← `outer` ← `main`),
   each frame with its source location
 - **Variables**: in-scope locals of the selected frame — pick a frame in
-  the call stack to inspect its own locals
+  the call stack to inspect its own locals. A value is shown as `inspect`
+  shows it, so a class's `__str__` runs; one that fails is shown as its
+  failure (`<TypeError: __str__ must return a String>`) and the program is
+  left where it is parked
 - **Watch / evaluate**: evaluate an expression in the selected frame
   (watch panel, hover, debug console) — e.g. `x + y`, `arr[0]`, a
   function call
