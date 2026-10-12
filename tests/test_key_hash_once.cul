@@ -265,8 +265,8 @@ class Res {
   }
 }
 mut kept = []
-let keep_under = fn (name) {
-  let r = Res.new(name)
+let keep = fn () {
+  let r = Res.new('kept')
   mut entries = {}
   let k = M.new(1)
   entries[k] = 'other'
@@ -278,6 +278,6 @@ let keep_under = fn (name) {
   kept.push(r)
   eq_calls = 0
 }
-keep_under('two hashes')
+keep()
 assert_eq(eq_calls, 0)
 assert_eq(dropped, [])

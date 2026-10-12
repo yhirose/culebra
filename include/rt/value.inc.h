@@ -1283,10 +1283,10 @@ inline bool _extract_bool_and_release(JitValue v);
 extern "C" inline const char* _culebra_tag_name(int8_t tag);  // defined below
 
 // Hash/eq for JitValue keys in JitObject's non-String key sidecar and Set.
-// Key identity is Ruby's `eql?`, STRICTER than the `==` operator: keys of
-// different types are never equal, so `1`, `1.0`, and `true` are three
-// distinct keys even though `1 == 1.0` is true. Hash collisions across types
-// are harmless (eq separates them), so the hash keeps its simple form.
+// Key identity (JitValueEq, below) never crosses types: `1`, `1.0`, and
+// `true` are three distinct keys even though `1 == 1.0` is true. Hash
+// collisions across types are harmless (eq separates them), so the hash
+// keeps its simple form.
 // Object keys route through the `hash()` / `eq()` a class states when present
 // (Hashable + Eq structural conformance); what matches by its fields — an
 // enum variant, a class deriving Eq — through the field walk; otherwise

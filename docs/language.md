@@ -1323,8 +1323,9 @@ operator. Keys of different types are never the same key, so
 `1`, `1.0`, and `true` are three distinct keys even though `1 == 1.0`
 holds for the `==` operator. In the other direction, `NaN` is one key
 (a second write under it replaces the first, and it can be read and
-removed) even though `NaN == NaN` is false; `0.0` and `-0.0` are one key
-as well. A Set's members and `distinct()` follow the same rule. A literal
+removed) even though `NaN == NaN` is false. `0.0` and `-0.0` are one key,
+as they are equal under `==`. A Set's members and `distinct()` follow the
+same rule. A literal
 that *repeats* a key keeps the
 last write —
 `{1: 'a', 1: 'b'}` is `{1: 'b'}` — the same last-wins rule a literal
