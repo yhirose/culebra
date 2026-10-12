@@ -250,6 +250,40 @@ int run() {
     embed.call("be_strict");
     ok &= check(failure_of([&] { tagged.items(); }) == "RuntimeError: no eq",
                 "a throw out of a key's eq is the failure a call's is");
+    // Showing the value walks its own entries, and asks no key for its `eq`.
+    ok &= check(tagged.display().find("'one'") != std::string::npos,
+                "display() runs none of the script's code");
+  }
+  {  // a string key the host holds answers as the same key does in the script
+    embed.eval(
+        "class Shelf {\n"
+        "  new() { self.size = 3 }\n"
+        "  __index__(k) { 'no ' + k }\n"
+        "  __setindex__(k, v) { self.last = k + '=' + to_string(v) }\n"
+        "}\n"
+        "let shelf = Shelf()");
+    Value shelf = embed.global("shelf");
+    ok &= check(shelf["size"].as<int64_t>() == 3,
+                "a field is read from its slot, ahead of __index__");
+    ok &= check(shelf["top"].as<std::string>() == "no top",
+                "a key that is no field goes to __index__");
+    shelf.set("size", 4);
+    shelf.set("top", 9);
+    ok &= check(embed.eval("shelf.size").as<int64_t>() == 4 &&
+                    embed.eval("shelf.last").as<std::string>() == "top=9",
+                "a field is written to its slot, another key to __setindex__");
+    // A Regex match reads a subscript as a capture group, not as a field:
+    // `value` is both here, and they differ.
+    Value m = embed.eval("Regex.find('in (?<value>[0-9]+)', 'in 2026')");
+    ok &= check(m["value"].as<std::string>() ==
+                    embed.eval("Regex.find('in (?<value>[0-9]+)', 'in 2026')"
+                               "['value']").as<std::string>() &&
+                    m["value"].as<std::string>() == "2026",
+                "a Regex match answers with the named group");
+    // `size` is a method slot of the view and a key of the tree.
+    ok &= check(embed.eval("Shared.new({size: 8080})")["size"].as<int64_t>() ==
+                    8080,
+                "a Shared view answers from its frozen tree");
   }
   {  // a substring is a String to the host, wherever it reads one
     Value part = embed.eval("let line = 'port=8080'\nline[0..4]");

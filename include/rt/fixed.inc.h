@@ -808,6 +808,20 @@ inline const char* _jit_key_name(int8_t key_tag, int64_t key_data,
   return owned.c_str();
 }
 
+// Whether a subscript on `obj` is a question about its own entries. The
+// receivers it is not for read one their own way, ahead of any entry: an
+// array view, a SharedBuffer, a Shared view, a Regex match.
+inline bool _jit_keyed_by_entries(JitObject* obj) {
+  return !(obj->is_array_view || _jit_is_shared_buffer(obj) ||
+           obj->is_shared_val || obj->is_match);
+}
+
+// A class instance's `__setindex__` is asked first about a String key that is
+// none of the instance's own slots.
+inline bool _jit_setindex_first(JitObject* obj, const char* name) {
+  return obj->proto() && obj->find_slot(name) == static_cast<size_t>(-1);
+}
+
 // The sidecar store for a key already hashed: insert, or overwrite the value
 // of an equal stored key. Consumes the key's +1 and the value's on every exit:
 // on insert the key's +1 becomes the map's, and key_order takes a second.
@@ -866,28 +880,30 @@ inline void _jit_object_set_any(JitObject* obj, const char* name,
                                 const std::optional<JitHashedKey>& hashed,
                                 bool mut, int8_t val_tag, int64_t val_data,
                                 int64_t line, int64_t col, bool is_init) {
-  // `arr[i] = v` on an array view: write element i into the inline bytes
-  // (the index coerces Long/Float like the interp).
-  if (obj->is_array_view) {
-    int64_t i = _jit_view_index(key_tag, key_data, line, col);
-    _jit_fa_set(obj, i, val_tag, val_data, line, col);
-    return;
-  }
-  // `buf[i] = v` on a SharedBuffer: a packed record has no Value form, so
-  // reject (set fields via `buf[i].field = v`). Matches the interp guard.
-  if (_jit_is_shared_buffer(obj)) {
-    _culebra_value_release_impl(val_tag, val_data);
-    if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
-    throw culebra::CulebraError("TypeError",
-        "cannot assign to a SharedBuffer element directly; "
-        "set fields via buf[i].field = value", line, col);
-  }
-  // Shared.new views are immutable — index writes included.
-  if (obj->is_shared_val) {
-    _culebra_value_release_impl(val_tag, val_data);
-    if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
-    throw culebra::CulebraError("ImmutableError",
-                                "Shared values are immutable", line, col);
+  if (!_jit_keyed_by_entries(obj)) {
+    // `arr[i] = v` on an array view: write element i into the inline bytes
+    // (the index coerces Long/Float like the interp).
+    if (obj->is_array_view) {
+      int64_t i = _jit_view_index(key_tag, key_data, line, col);
+      _jit_fa_set(obj, i, val_tag, val_data, line, col);
+      return;
+    }
+    // `buf[i] = v` on a SharedBuffer: a packed record has no Value form, so
+    // reject (set fields via `buf[i].field = v`). Matches the interp guard.
+    if (_jit_is_shared_buffer(obj)) {
+      _culebra_value_release_impl(val_tag, val_data);
+      if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
+      throw culebra::CulebraError("TypeError",
+          "cannot assign to a SharedBuffer element directly; "
+          "set fields via buf[i].field = value", line, col);
+    }
+    // Shared.new views are immutable — index writes included.
+    if (obj->is_shared_val) {
+      _culebra_value_release_impl(val_tag, val_data);
+      if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
+      throw culebra::CulebraError("ImmutableError",
+                                  "Shared values are immutable", line, col);
+    }
   }
   if (name) {
     // Subscript overloading is a class-instance feature (proto != null); a
@@ -895,7 +911,7 @@ inline void _jit_object_set_any(JitObject* obj, const char* name,
     // its own slots. A plain dict short-circuits on `proto` and sets the
     // slot directly, so its hot path keeps a single lookup (string key is
     // non-refcounted, so only the consumed value is released here).
-    if (obj->proto() && obj->find_slot(name) == static_cast<size_t>(-1)) {
+    if (_jit_setindex_first(obj, name)) {
       // A user `__setindex__` body's throw unwinds past the release below, so
       // guard the value's +1 across the dispatch.
       JitUnwindRelease g{JitValue{val_tag, val_data}};
@@ -948,6 +964,16 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
   _jit_object_set_any(obj, _jit_key_name(key_tag, key_data, _kbuf), key_tag,
                       key_data, std::nullopt, mut, val_tag, val_data, line, col,
                       is_init);
+}
+
+// Whether `obj[key] = v`, for a String key a caller holds as its name and no
+// value (a host), is the store culebra_runtime_object_set makes by that name.
+// False where the key goes on as a value, so the caller has to make it one: a
+// class's `__setindex__` receives it, or the receiver reads subscripts its
+// own way.
+inline bool culebra_runtime_object_sets_named(JitObject* obj,
+                                              const char* name) {
+  return _jit_keyed_by_entries(obj) && !_jit_setindex_first(obj, name);
 }
 
 // `{...x}` object spread: merge another Object's own entries into `dst`, in
@@ -1057,6 +1083,17 @@ inline JitValue _jit_match_index(JitObject* m, int8_t key_tag,
   return JitValue{TAG_NIL, 0};
 }
 
+// The slot a String key's name finds, as a +1 value.
+inline bool _jit_named_slot(JitObject* obj, std::string_view name,
+                            int8_t* out_tag, int64_t* out_data) {
+  auto idx = obj->find_slot(name);
+  if (idx == static_cast<size_t>(-1)) return false;
+  *out_tag = obj->slots[idx].value.tag;
+  *out_data = obj->slots[idx].value.data;
+  culebra_runtime_value_retain(*out_tag, *out_data);
+  return true;
+}
+
 // Shared "own slot" lookup for a plain-dict receiver: String keys through
 // the shape table, everything else through the non-string sidecar. Shared
 // by object_get_any (throws KeyError on a miss) and object_get_for_coalesce
@@ -1070,22 +1107,27 @@ inline JitValue _jit_match_index(JitObject* m, int8_t key_tag,
 inline bool _jit_try_own_slot(JitObject* obj, const char* name, int8_t key_tag,
                               int64_t key_data, int8_t* out_tag,
                               int64_t* out_data, JitValue* unhashable) {
-  if (name) {
-    auto idx = obj->find_slot(name);
-    if (idx != static_cast<size_t>(-1)) {
-      *out_tag = obj->slots[idx].value.tag;
-      *out_data = obj->slots[idx].value.data;
-      culebra_runtime_value_retain(*out_tag, *out_data);
-      return true;
-    }
-  } else if (auto it = _jit_sidecar_probe(obj, {key_tag, key_data}, unhashable)) {
-    *out_tag = (*it)->second.value.tag;
-    *out_data = (*it)->second.value.data;
-    culebra_runtime_value_retain(*out_tag, *out_data);
-    _culebra_value_release_impl(key_tag, key_data);
-    return true;
-  }
-  return false;
+  if (name) return _jit_named_slot(obj, name, out_tag, out_data);
+  auto it = _jit_sidecar_probe(obj, {key_tag, key_data}, unhashable);
+  if (!it) return false;
+  *out_tag = (*it)->second.value.tag;
+  *out_data = (*it)->second.value.data;
+  culebra_runtime_value_retain(*out_tag, *out_data);
+  _culebra_value_release_impl(key_tag, key_data);
+  return true;
+}
+
+// `obj[key]` for a String key a caller holds as its name and no value (a
+// host): the entry, +1, when a slot of the receiver's own answers. False
+// where the key goes on as a value, so the caller has to make it one: past a
+// miss (a class's `__index__` receives it), or for a receiver that reads
+// subscripts its own way.
+inline bool culebra_runtime_object_get_named(JitObject* obj,
+                                             std::string_view name,
+                                             int8_t* out_tag,
+                                             int64_t* out_data) {
+  return _jit_keyed_by_entries(obj) &&
+         _jit_named_slot(obj, name, out_tag, out_data);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
@@ -1107,50 +1149,53 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
       ? JitValue{key_tag, key_data}
       : JitValue{TAG_NIL, 0};
   JitUnwindRelease g{key_guard, recv_guard};
-  // `arr[i]` on an array view: read element i from the inline bytes.
-  if (obj->is_array_view) {
-    int64_t i = _jit_view_index(key_tag, key_data, line, col);
-    JitValue r = _jit_fa_get(obj, i, line, col);
-    *out_tag = r.tag;
-    *out_data = r.data;
-    return;
-  }
-  // `buf[i]` on a SharedBuffer: hand back a packed view over element `i`
-  // (the index coerces Long/Float like the interp's `key.to_long()`).
-  if (_jit_is_shared_buffer(obj)) {
-    int64_t idx = _jit_view_index(key_tag, key_data, line, col);
-    auto* view = _jit_shared_buffer_index(obj, idx, line, col);
-    *out_tag = TAG_OBJECT;
-    *out_data = reinterpret_cast<int64_t>(view);
-    return;
-  }
-  // Shared.new view: `view[key]` reads the frozen tree (Object key
-  // lookup / Array-Tuple positional). Consumes a refcounted key per
-  // this helper's contract; the result is +1.
-  if (_jit_is_shared_val(obj)) {
-    JitValue r = culebra::_jit_shared_val_index(obj, key_tag, key_data,
-                                                line, col);
-    if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
-    // _jit_shared_val_child hands back a container sub-view BORROWED (+0; the
-    // parent view's memo owns the +1) or a fresh primitive leaf. Retain so
-    // this helper is uniformly +1-owned like every other branch — index
-    // callers release the receiver without a promotion retain, and a borrowed
-    // sub-view would otherwise be freed by that release while the parent
-    // still points at it (a use-after-free the memo's next reader would hit).
-    culebra_runtime_value_retain(r.tag, r.data);
-    *out_tag = r.tag;
-    *out_data = r.data;
-    return;
-  }
-  // `m[i]` / `m["name"]` on a Regex match: index its capture groups (Long ->
-  // positional, String/StringView -> named). A miss is nil. Record fields
-  // (`m.value`, spans) stay on dot access.
-  if (obj->is_match) {
-    JitValue r = _jit_match_index(obj, key_tag, key_data);
-    *out_tag = r.tag;
-    *out_data = r.data;
-    if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
-    return;
+  if (!_jit_keyed_by_entries(obj)) {
+    // `arr[i]` on an array view: read element i from the inline bytes.
+    if (obj->is_array_view) {
+      int64_t i = _jit_view_index(key_tag, key_data, line, col);
+      JitValue r = _jit_fa_get(obj, i, line, col);
+      *out_tag = r.tag;
+      *out_data = r.data;
+      return;
+    }
+    // `buf[i]` on a SharedBuffer: hand back a packed view over element `i`
+    // (the index coerces Long/Float like the interp's `key.to_long()`).
+    if (_jit_is_shared_buffer(obj)) {
+      int64_t idx = _jit_view_index(key_tag, key_data, line, col);
+      auto* view = _jit_shared_buffer_index(obj, idx, line, col);
+      *out_tag = TAG_OBJECT;
+      *out_data = reinterpret_cast<int64_t>(view);
+      return;
+    }
+    // Shared.new view: `view[key]` reads the frozen tree (Object key
+    // lookup / Array-Tuple positional). Consumes a refcounted key per
+    // this helper's contract; the result is +1.
+    if (_jit_is_shared_val(obj)) {
+      JitValue r = culebra::_jit_shared_val_index(obj, key_tag, key_data,
+                                                  line, col);
+      if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
+      // _jit_shared_val_child hands back a container sub-view BORROWED (+0;
+      // the parent view's memo owns the +1) or a fresh primitive leaf. Retain
+      // so this helper is uniformly +1-owned like every other branch — index
+      // callers release the receiver without a promotion retain, and a
+      // borrowed sub-view would otherwise be freed by that release while the
+      // parent still points at it (a use-after-free the memo's next reader
+      // would hit).
+      culebra_runtime_value_retain(r.tag, r.data);
+      *out_tag = r.tag;
+      *out_data = r.data;
+      return;
+    }
+    // `m[i]` / `m["name"]` on a Regex match: index its capture groups (Long
+    // -> positional, String/StringView -> named). A miss is nil. Record
+    // fields (`m.value`, spans) stay on dot access.
+    if (obj->is_match) {
+      JitValue r = _jit_match_index(obj, key_tag, key_data);
+      *out_tag = r.tag;
+      *out_data = r.data;
+      if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
+      return;
+    }
   }
   // Slot hit: String keys are unified with shape access (see object_set_any);
   // other keys live in the non-String sidecar, whose probe hashes the key.

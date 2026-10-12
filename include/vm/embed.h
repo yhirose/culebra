@@ -148,7 +148,14 @@ class Value {
   Value operator[](std::string_view key) const {
     if (v_.tag != TAG_OBJECT)
       culebra_runtime_type_error_typed(0, 0, "Object", v_.tag);
-    // The key is a String of the runtime's: a class's `__index__` receives it.
+    // An entry in a slot is found by the key's name. Past that the key goes
+    // on as a value (a class's `__index__` receives it), and only there is it
+    // made a String of the runtime's.
+    int8_t t;
+    int64_t d;
+    if (culebra_runtime_object_get_named(reinterpret_cast<JitObject*>(v_.data),
+                                         key, &t, &d))
+      return Value(JitValue{t, d}, Adopt{});
     return at(Value(key));
   }
   Value operator[](int64_t idx) const { return at(Value(idx)); }
@@ -552,7 +559,15 @@ inline void Value::set(std::string_view key,
                        const _embed_detail::Arg& v) {
   if (v_.tag != TAG_OBJECT)
     culebra_runtime_type_error_typed(0, 0, "Object", v_.tag);
-  set(Value(key), v);  // a String of the runtime's: `__setindex__` receives it
+  // As operator[]: a store into a slot goes by the key's name, and the key is
+  // made a String of the runtime's where a class's `__setindex__` receives it.
+  auto* obj = reinterpret_cast<JitObject*>(v_.data);
+  const std::string name(key);
+  if (!culebra_runtime_object_sets_named(obj, name.c_str()))
+    return set(Value(key), v);
+  const JitValue val = v.owned();  // the store absorbs this +1
+  culebra_runtime_object_set(obj, name.c_str(), /*mut=*/true, val.tag,
+                             val.data, 0, 0, /*is_init=*/false);
 }
 
 inline void Value::set(int64_t idx, const _embed_detail::Arg& v) {
