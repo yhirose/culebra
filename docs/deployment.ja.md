@@ -808,8 +808,8 @@ try {
 `CulebraError`のフィールドになる（それ以外は未catchの`throw`が表示する
 のと同じ形で届く）ので、「catch CulebraError」の契約はuser throwにも
 通用します。classの`__index__`や`__setindex__`を走らせる`Value`の
-読み書きでも、ハッシュが同じ2つのキーを見分けるためにキーのclassの`eq`を
-走らせる`items()`でも同じです。
+読み書きでも同じです。`items()`と`display()`はスクリプトのコードを
+走らせません。
 （`Embed::run*`は例外でなく`msgs`で報告します — CLIが印字する
 のと同じテキストです。）
 

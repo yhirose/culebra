@@ -202,27 +202,26 @@ class Value {
   std::vector<std::pair<Value, Value>> items() const {
     if (v_.tag != TAG_OBJECT)
       culebra_runtime_type_error_typed(0, 0, "Object", v_.tag);
-    // The iterators' snapshot: a stored key is found by the hash it carries,
-    // not hashed again. Two keys of one hash are still told apart by the
-    // class's `eq`, which is a call into the script, as `at`'s lookup is.
-    return culebra_runtime_call_from_host([&] {
-      auto* obj = reinterpret_cast<JitObject*>(v_.data);
-      auto snap = JitKeySnapshot::take(obj);
-      Value keys = Value(
-          JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(snap.keys)}, Adopt{});
-      Value hashes = Value(snap.hashes, Adopt{});
-      std::vector<std::pair<Value, Value>> out;
-      out.reserve(snap.keys->size);
-      for (size_t i = 0; i < snap.keys->size; i++) {
-        int8_t t;
-        int64_t d;
-        if (!JitKeySnapshot::value(obj, snap.keys, snap.hashes, i, &t, &d))
-          continue;
-        out.emplace_back(keys[static_cast<int64_t>(i)],
-                         Value(JitValue{t, d}, Adopt{}));
-      }
-      return out;
-    });
+    // The walk over the Object's own entries: no key is looked up, so none of
+    // the script's code runs (a key's `hash` or `eq`, a class's `__index__`).
+    auto* obj = reinterpret_cast<JitObject*>(v_.data);
+    _jit_require_own_entries(obj);
+    std::vector<std::pair<Value, Value>> out;
+    out.reserve(static_cast<size_t>(culebra_runtime_object_size(obj)));
+    // The keys are Strings made here, held by `out` alone, which no scan
+    // reads; and a collection one of them started could run a `drop`. None
+    // runs while the walk holds an entry.
+    culebra::gc::Heap::CollectPause pause(_gc_heap());
+    _jit_each_own_entry(
+        obj,
+        [&](std::string_view name, const JitObjectEntry& entry) {
+          out.emplace_back(Value(name), Value::borrow(entry.value));
+        },
+        [&](const JitHashedKey& key, const JitObjectEntry& entry) {
+          out.emplace_back(Value::borrow(key.value()),
+                           Value::borrow(entry.value));
+        });
+    return out;
   }
 
   // Array/Tuple elements, for range-for (defined below — it stashes the

@@ -229,7 +229,8 @@ int run() {
                         .as<std::string>() == "IndexError",
                 "a throw out of a Value read leaves the carrier empty");
   }
-  {  // ... and so does the `eq` that tells two keys of one hash apart
+  {  // listing or showing an Object walks its own entries: a key it holds is
+     // found as that very value, and asked for neither its hash nor its eq
     Value tagged = embed.eval(R"(
       mut strict = false
       fn be_strict() { strict = true }
@@ -246,13 +247,25 @@ int run() {
       tagged[Tag.new(2)] = 'two'
       tagged
     )");
-    ok &= check(tagged.items().size() == 2, "items() over colliding keys");
     embed.call("be_strict");
-    ok &= check(failure_of([&] { tagged.items(); }) == "RuntimeError: no eq",
-                "a throw out of a key's eq is the failure a call's is");
-    // Showing the value walks its own entries, and asks no key for its `eq`.
+    auto entries = tagged.items();
+    ok &= check(entries.size() == 2 &&
+                    entries[0].second.as<std::string>() == "one" &&
+                    entries[1].second.as<std::string>() == "two",
+                "items() runs none of the script's code");
     ok &= check(tagged.display().find("'one'") != std::string::npos,
-                "display() runs none of the script's code");
+                "nor does display()");
+    // The entries are the Object's own: a Regex match's are its fields, where
+    // a subscript on one is a capture group.
+    Value m = embed.eval("Regex.find('in (?<value>[0-9]+)', 'in 2026')");
+    std::string fields;
+    for (const auto& [k, v] : m.items())
+      if (v.is_string() || v.is_long())
+        fields += k.as<std::string>() + "=" +
+                  (v.is_string() ? v.as<std::string>()
+                                 : std::to_string(v.as<int64_t>())) + ";";
+    ok &= check(fields == "value=in 2026;start=0;end=7;",
+                "items() lists a Regex match's fields");
   }
   {  // a string key the host holds answers as the same key does in the script
     embed.eval(
@@ -284,6 +297,11 @@ int run() {
     ok &= check(embed.eval("Shared.new({size: 8080})")["size"].as<int64_t>() ==
                     8080,
                 "a Shared view answers from its frozen tree");
+    // ... and its slots are the handle's own, so it has no entries to list.
+    ok &= check(kind_of([&] {
+                  embed.eval("Shared.new({size: 8080})").items();
+                }) == "TypeError",
+                "items() refuses a handle rather than list its bookkeeping");
   }
   {  // a substring is a String to the host, wherever it reads one
     Value part = embed.eval("let line = 'port=8080'\nline[0..4]");

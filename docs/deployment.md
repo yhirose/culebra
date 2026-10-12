@@ -814,9 +814,8 @@ A script `throw expr` reaching `Embed::call` is converted for the host:
 the thrown object's `kind`/`message` become the `CulebraError`'s fields
 (anything else arrives as an uncaught `throw` prints it), so the
 "catch CulebraError" contract covers user throws too. The same holds for a
-`Value` read or write that runs a class's `__index__` or `__setindex__`,
-and for `items()`, which runs a key class's `eq` to tell two keys of one
-hash apart.
+`Value` read or write that runs a class's `__index__` or `__setindex__`.
+`items()` and `display()` run none of the script's code.
 
 ### Interrupts are not errors
 
