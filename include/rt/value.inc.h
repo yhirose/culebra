@@ -1430,6 +1430,24 @@ inline std::optional<JitObject::AnyKeyMap::iterator> _jit_sidecar_at(
   return it;
 }
 
+// The entry of a key the object itself holds (one out of its `key_order`),
+// found as that very value under that very hash: a key whose hash changed
+// while stored can be there twice. No `eq` is asked, so a walk over an
+// object's own entries runs none of the program's code.
+inline const JitObjectEntry* _jit_sidecar_own(const JitObject* obj,
+                                              const JitHashedKey& key) {
+  auto* m = obj->non_string_props;
+  if (!m || m->empty()) return nullptr;
+  auto b = m->bucket(key);
+  for (auto it = m->begin(b); it != m->end(b); ++it) {
+    const JitHashedKey& k = it->first;
+    if (k.hash() == key.hash() && k.value().tag == key.value().tag &&
+        k.value().data == key.value().data)
+      return &it->second;
+  }
+  return nullptr;
+}
+
 // A non-String key's entry in `obj`'s sidecar, or nullopt; an unhashable key
 // is the dict builtins' TypeError.
 inline std::optional<JitObject::AnyKeyMap::iterator> _jit_sidecar_find(

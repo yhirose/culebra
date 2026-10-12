@@ -210,3 +210,79 @@ first.id = 7
 assert_eq(ms.contains(first), false)
 assert_eq(ms.size(), 2)
 assert_eq(ms.to_array().map(|x| x.id), [7, 5])
+
+// --- Showing an Object asks no key for its `eq` ---
+
+// The walk is over the Object's own entries: a key it holds is found as that
+// very value, two keys of one hash included.
+mut eq_calls = 0
+class Twin {
+  new(n) {
+    self.n = n
+  }
+  hash() {
+    0
+  }
+  eq(o) {
+    eq_calls += 1
+    self.n == o.n
+  }
+}
+mut twins = {}
+twins[Twin.new(1)] = 10
+twins[Twin.new(2)] = 20
+eq_calls = 0
+assert_eq(
+  to_string(twins),
+  '{mut Twin {mut n: 1}: 10, mut Twin {mut n: 2}: 20}',
+)
+assert_eq(eq_calls, 0)
+
+// One object stored under two hashes is two entries, each shown with its own
+// value (a range of second hashes, so some pair shares a bucket).
+for id in 2..34 {
+  let twice = M.new(1)
+  mut both = {}
+  both[twice] = 1
+  twice.id = id
+  both[twice] = 2
+  let key = 'mut M {mut id: ' + to_string(id) + '}'
+  assert_eq(to_string(both), '{' + key + ': 1, ' + key + ': 2}')
+}
+
+// --- Nor does a scope's exit, and it keeps what is held from outside ---
+
+// The walk that decides whether a `drop` holder is still reachable counts each
+// entry once: keys of one hash, a key under two hashes, and a NaN key (which
+// equals no key, so every store of it is another entry).
+mut dropped = []
+class Res {
+  new(name) {
+    self.name = name
+    self.entries = nil
+  }
+  drop() {
+    dropped.push(self.name)
+  }
+}
+mut kept = []
+let keep_under = fn (key_of, name) {
+  let r = Res.new(name)
+  mut entries = {}
+  let k = key_of()
+  entries[k] = 'other'
+  if type_of(k) == 'M' {
+    k.id = 3
+  }
+  entries[k] = r
+  entries[Twin.new(1)] = 1
+  entries[Twin.new(2)] = 2
+  r.entries = entries
+  kept.push(r)
+  eq_calls = 0
+}
+keep_under(|| M.new(1), 'two hashes')
+assert_eq(eq_calls, 0)
+keep_under(|| Math.sqrt(-1.0), 'nan')
+assert_eq(eq_calls, 0)
+assert_eq(dropped, [])

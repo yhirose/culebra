@@ -229,16 +229,15 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
             s += _culebra_value_to_str_impl(entry.value.tag,
                                             entry.value.data);
           } else {
-            if (!obj->non_string_props) continue;
-            auto it = obj->non_string_props->find(key);
-            if (it == obj->non_string_props->end()) continue;
+            auto* entry = _jit_sidecar_own(obj, key);
+            if (!entry) continue;
             if (!first) s += ", ";
             first = false;
-            if (it->second.mut) s += "mut ";
+            if (entry->mut) s += "mut ";
             s += _culebra_value_to_str_impl(key.value().tag, key.value().data);
             s += ": ";
-            s += _culebra_value_to_str_impl(it->second.value.tag,
-                                            it->second.value.data);
+            s += _culebra_value_to_str_impl(entry->value.tag,
+                                            entry->value.data);
           }
         }
       } else if (obj->shape) {

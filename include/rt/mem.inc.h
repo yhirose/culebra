@@ -277,17 +277,15 @@ culebra_runtime_owned_scope_exit(int64_t mark_arg) {
           for (auto& v : vals) self(v, id, self);
           for (auto* cell : cells) walk_cell(cell);
         }
-        if (o->key_order && o->non_string_props) {
-          for (const auto& k : *o->key_order) {
+        // Each sidecar's own refs, walked apart as the release cascade drops
+        // them: key_order's one per key, the map's one per stored key and
+        // one per value. No key is looked up, so none is asked for its `eq`.
+        if (o->key_order)
+          for (const auto& k : *o->key_order) self(k.value(), id, self);
+        if (o->non_string_props) {
+          for (const auto& [k, entry] : *o->non_string_props) {
             self(k.value(), id, self);
-            if (k.value().tag == TAG_STRING) continue;
-            auto it = o->non_string_props->find(k);
-            if (it != o->non_string_props->end()) {
-              // A refcounted key holds two refs: key_order's (walked
-              // above) and the map's stored alias — explain both.
-              self(it->first.value(), id, self);
-              self(it->second.value, id, self);
-            }
+            self(entry.value, id, self);
           }
         }
         // The proto edge keeps the class meta pinned (its class binding

@@ -987,9 +987,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_merge(
       if (idx != static_cast<size_t>(-1)) merge_name(name, src->slots[idx].value);
       continue;
     }
-    auto it = _jit_sidecar_at(src, k);
-    if (!it) continue;
-    JitValue v = (*it)->second.value;
+    auto* entry = _jit_sidecar_own(src, k);
+    if (!entry) continue;
+    JitValue v = entry->value;
     culebra_runtime_value_retain(k.value().tag, k.value().data);
     culebra_runtime_value_retain(v.tag, v.data);
     _jit_object_set_hashed(dst, k, /*mut=*/true, v, line, col,
