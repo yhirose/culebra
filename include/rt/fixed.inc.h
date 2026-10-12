@@ -991,36 +991,24 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_merge(
         line, col);
   }
   auto* src = reinterpret_cast<JitObject*>(data);
-  if (_jit_meta_opaque(src)) return;  // nothing of its own to spread
-  auto merge_name = [&](std::string_view name, JitValue v) {
-    culebra_runtime_value_retain(v.tag, v.data);
-    culebra_runtime_object_set(dst, std::string(name).c_str(), /*mut=*/true,
-                               v.tag, v.data, line, col, /*is_init=*/true);
-  };
-  if (!src->non_string_props) {
-    src->for_each([&](std::string_view name, const JitObjectEntry& e) {
-      merge_name(name, e.value);
-    });
-    return;
-  }
-  // Mixed keys: walk the insertion order, by index, since a user `eq` run by
-  // an insert may change it (the caller holds `src` itself).
-  for (size_t i = 0; i < src->key_order->size(); i++) {
-    JitHashedKey k = (*src->key_order)[i];
-    if (k.value().tag == TAG_STRING) {
-      auto name = reinterpret_cast<const char*>(k.value().data);
-      auto idx = src->find_slot(name);
-      if (idx != static_cast<size_t>(-1)) merge_name(name, src->slots[idx].value);
-      continue;
-    }
-    auto* entry = _jit_sidecar_own(src, k);
-    if (!entry) continue;
-    JitValue v = entry->value;
-    culebra_runtime_value_retain(k.value().tag, k.value().data);
-    culebra_runtime_value_retain(v.tag, v.data);
-    _jit_object_set_hashed(dst, k, /*mut=*/true, v, line, col,
-                           /*is_init=*/true);
-  }
+  // Each insert takes its own +1 to the value, and to a non-String key. One
+  // into the sidecar can run a key's `eq`, which may change `src`: the walk
+  // allows for that, and the caller holds `src` itself.
+  _jit_each_own_entry(
+      src,
+      [&](std::string_view name, const JitObjectEntry& entry) {
+        JitValue v = entry.value;
+        culebra_runtime_value_retain(v.tag, v.data);
+        culebra_runtime_object_set(dst, std::string(name).c_str(), /*mut=*/true,
+                                   v.tag, v.data, line, col, /*is_init=*/true);
+      },
+      [&](const JitHashedKey& k, const JitObjectEntry& entry) {
+        JitValue v = entry.value;
+        culebra_runtime_value_retain(k.value().tag, k.value().data);
+        culebra_runtime_value_retain(v.tag, v.data);
+        _jit_object_set_hashed(dst, k, /*mut=*/true, v, line, col,
+                               /*is_init=*/true);
+      });
 }
 
 // Consumes the caller's +1 to the key on the refcounted (sidecar)

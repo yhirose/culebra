@@ -1448,6 +1448,35 @@ inline const JitObjectEntry* _jit_sidecar_own(const JitObject* obj,
   return nullptr;
 }
 
+// An Object's own entries in insertion order, each to `named(name, entry)` or
+// to `keyed(key, entry)` by whether its key is a String; none for a class
+// that declares its instances to have no fields to enumerate. The one walk
+// behind showing an Object, spreading it and listing it for a host. It reads
+// `obj` afresh at every step, so what a callback changes there is seen and
+// not tripped over (a spread's insert can run a key's `eq`), and it finds a
+// non-String key's entry as that key itself, so the walk runs none of the
+// program's code. An entry is the callback's until it lets the program's code
+// run, which may change `obj`.
+template <class Named, class Keyed>
+inline void _jit_each_own_entry(JitObject* obj, Named&& named, Keyed&& keyed) {
+  if (_jit_meta_opaque(obj)) return;
+  // With String keys alone the slots are the insertion order.
+  if (!obj->non_string_props || obj->non_string_props->empty()) {
+    obj->for_each(named);
+    return;
+  }
+  for (size_t i = 0; obj->key_order && i < obj->key_order->size(); i++) {
+    JitHashedKey k = (*obj->key_order)[i];
+    if (k.value().tag == TAG_STRING) {
+      std::string_view name(reinterpret_cast<const char*>(k.value().data));
+      auto idx = obj->find_slot(name);
+      if (idx != static_cast<size_t>(-1)) named(name, obj->slots[idx]);
+    } else if (auto* entry = _jit_sidecar_own(obj, k)) {
+      keyed(k, *entry);
+    }
+  }
+}
+
 // A non-String key's entry in `obj`'s sidecar, or nullopt; an unhashable key
 // is the dict builtins' TypeError.
 inline std::optional<JitObject::AnyKeyMap::iterator> _jit_sidecar_find(

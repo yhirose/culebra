@@ -208,52 +208,26 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
       }
       s += "{";
       // A class whose instances have no fields to show prints the name and an
-      // empty body; `__str__` on the class is how one says more than that.
-      if (_jit_meta_opaque(obj)) return s += "}";
+      // empty body (the walk has no entries for one); `__str__` on the class
+      // is how one says more than that.
       bool first = true;
-      if (obj->key_order) {
-        // Mixed-key path: walk the unified vector so String and
-        // non-String keys interleave in true insertion order.
-        for (const auto& key : *obj->key_order) {
-          if (key.value().tag == TAG_STRING) {
-            auto name = reinterpret_cast<const char*>(key.value().data);
-            auto idx = obj->find_slot(name);
-            if (idx == static_cast<size_t>(-1)) continue;
-            const auto& entry = obj->slots[idx];
-            if (!first) s += ", ";
-            first = false;
-            if (entry.mut) s += "mut ";
-            s += name;
-            s += ": ";
-            s += _culebra_value_to_str_impl(entry.value.tag,
-                                            entry.value.data);
-          } else {
-            auto* entry = _jit_sidecar_own(obj, key);
-            if (!entry) continue;
-            if (!first) s += ", ";
-            first = false;
-            if (entry->mut) s += "mut ";
-            s += _culebra_value_to_str_impl(key.value().tag, key.value().data);
-            s += ": ";
-            s += _culebra_value_to_str_impl(entry->value.tag,
-                                            entry->value.data);
-          }
-        }
-      } else if (obj->shape) {
-        // String-only fast path: walk shape->names directly, skipping
-        // the per-property key_order push that mixed-key objects need.
-        for (size_t i = 0; i < obj->prop_size(); i++) {
-          const auto& name = obj->prop_name(i);
-          const auto& entry = obj->slots[i];
-          if (!first) s += ", ";
-          first = false;
-          if (entry.mut) s += "mut ";
-          s += name;
-          s += ": ";
-          s += _culebra_value_to_str_impl(entry.value.tag,
-                                          entry.value.data);
-        }
-      }
+      auto field = [&](const JitObjectEntry& entry, auto&& key) {
+        if (!first) s += ", ";
+        first = false;
+        if (entry.mut) s += "mut ";
+        s += key;
+        s += ": ";
+        s += _culebra_value_to_str_impl(entry.value.tag, entry.value.data);
+      };
+      _jit_each_own_entry(
+          obj,
+          [&](std::string_view name, const JitObjectEntry& entry) {
+            field(entry, name);
+          },
+          [&](const JitHashedKey& key, const JitObjectEntry& entry) {
+            field(entry, _culebra_value_to_str_impl(key.value().tag,
+                                                    key.value().data));
+          });
       s += "}";
       return s;
     }
