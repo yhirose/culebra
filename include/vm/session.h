@@ -139,6 +139,13 @@ class Session {
     _culebra_value_release_impl(v.tag, v.data);
   }
 
+  // Program code the host runs after a unit, inside the boundary a unit runs
+  // in and reported the same way.
+  template <class Body>
+  bool run_guarded(std::vector<std::string>& msgs, Body&& body) {
+    return run_reported(msgs, [&] { Exec::at_boundary(body); });
+  }
+
   // The last failure, structured (run_reported keeps it beside the text).
   // Taking it clears it, so a later read cannot pick up an older failure.
   std::optional<CulebraError> take_last_error() {

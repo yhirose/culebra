@@ -147,6 +147,18 @@ assert_throws("TypeError", fn () {
   Search.Index.new(analyzer: 1)
 })
 
+// A value a hook throws leaves Search as the value, not as a SearchError. A
+// `catch` here would bind it either way, so the isolate's boundary reads it.
+let hook_thrown = try {
+  Isolate.spawn(fn () {
+    let idx = Search.Index.new(analyzer: { normalizer: |t| throw "no such term" })
+    idx.add("doc-1", "text")
+  }).join()
+} catch e {
+  e
+}
+assert_eq(hook_thrown, "no such term")
+
 // --- no analyzer is the built-in behaviour ----------------------------------
 
 let plain = Search.Index.new()

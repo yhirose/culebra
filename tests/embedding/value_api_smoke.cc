@@ -196,6 +196,35 @@ int run() {
                         .as<std::string>() == "IndexError",
                 "a throw out of call leaves the carrier empty");
   }
+  {  // a class's __index__ / __setindex__ run under a Value read or write
+    embed.eval(
+        "class Sealed {\n"
+        "  __index__(k) { throw 'no ' + k }\n"
+        "  __setindex__(k, v) {\n"
+        "    throw {kind: 'ValueError', message: 'sealed ' + k}\n"
+        "  }\n"
+        "}\n"
+        "let sealed = Sealed()");
+    Value sealed = embed.global("sealed");
+    // What reached the host, as `kind: message`; the key is in the message,
+    // so it arrived as a String the method could read.
+    auto failure = [](auto&& body) -> std::string {
+      try {
+        body();
+      } catch (const culebra::CulebraError& e) {
+        return e.kind + ": " + e.what();
+      }
+      return "";
+    };
+    ok &= check(failure([&] { (void)sealed["port"]; }) == "RuntimeError: no port",
+                "a throw out of __index__ is the failure a call's is");
+    ok &= check(failure([&] { sealed.set("port", 1); }) ==
+                    "ValueError: sealed port",
+                "a throw out of __setindex__ keeps the kind it names");
+    ok &= check(embed.eval("try { [1][9] } catch e { e.kind }")
+                        .as<std::string>() == "IndexError",
+                "a throw out of a Value read leaves the carrier empty");
+  }
 
   // (6) define()'s container types, both directions.
   embed.define("host_total", [](std::vector<int64_t> xs) -> int64_t {

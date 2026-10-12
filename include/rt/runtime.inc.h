@@ -914,10 +914,14 @@ culebra_runtime_arity_missing(const char* const* names, int64_t got,
 // in JITed code — that would require exposing the typeinfo symbol
 // (`_ZTI16CulebraException`) to the JIT linker, which is fragile
 // across platforms. Instead, landingpads use catch-all and read the
-// `culebra_thrown_*` globals below. The member fields are only read
-// by the host-side catch in JIT::run to format the uncaught-throw
-// message.
-class CulebraException : public std::exception {
+// `culebra_thrown_*` globals below. The member fields are read only by
+// the host-side handlers that name this type.
+//
+// Not a std::exception, as Interrupted is not (shared.h): the handler native
+// code reads a library's failure with, `catch (const std::exception&)`, cannot
+// take a thrown value and report it under this type's name. It passes through
+// to the program's `catch`, or to a host that names it.
+class CulebraException {
  public:
   int8_t tag;
   int64_t data;
@@ -928,7 +932,6 @@ class CulebraException : public std::exception {
   int64_t line = 0, col = 0;
   CulebraException(int8_t t, int64_t d, int64_t ln = 0, int64_t cl = 0)
       : tag(t), data(d), line(ln), col(cl) {}
-  const char* what() const noexcept override { return "CulebraException"; }
 };
 
 // A script-thrown value as a host reports it: an Object's `kind`/`message`

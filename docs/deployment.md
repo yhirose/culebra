@@ -812,8 +812,9 @@ shape and the standard kinds (`TypeError`, `ArityError`, `IOError`,
 
 A script `throw expr` reaching `Embed::call` is converted for the host:
 the thrown object's `kind`/`message` become the `CulebraError`'s fields
-(anything else renders through its display form), so the
-"catch CulebraError" contract covers user throws too.
+(anything else arrives as an uncaught `throw` prints it), so the
+"catch CulebraError" contract covers user throws too. The same holds for a
+`Value` read or write that runs a class's `__index__` or `__setindex__`.
 
 ### Interrupts are not errors
 

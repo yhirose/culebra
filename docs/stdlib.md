@@ -8279,6 +8279,9 @@ runs on every token of every document, which is why the default is native; a
 convenient path, not the fast one — a thousand-word document means a thousand
 crossings back into the program.
 
+What a hook raises leaves `add` or `search` as it was raised: an error keeps
+its kind, and a thrown value reaches the program's `catch` as that value.
+
 A splitter written in C++ runs natively instead: a class deriving from
 `ISplitter` and declared with `wrap<T>` gives a handle the `splitter` slot
 accepts as it is. The contract and the handle's lifetime are in [Plugging a

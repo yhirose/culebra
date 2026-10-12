@@ -149,14 +149,8 @@ class Value {
   Value operator[](std::string_view key) const {
     if (v_.tag != TAG_OBJECT)
       culebra_runtime_type_error_typed(0, 0, "Object", v_.tag);
-    std::string k(key);  // a String key is borrowed bytes, never consumed
-    int8_t t;
-    int64_t d;
-    culebra_runtime_object_get_any(reinterpret_cast<JitObject*>(v_.data),
-                                   TAG_STRING,
-                                   reinterpret_cast<int64_t>(k.c_str()), &t, &d,
-                                   0, 0, /*own_receiver=*/false);
-    return Value(JitValue{t, d}, Adopt{});
+    // The key is a String of the runtime's: a class's `__index__` receives it.
+    return at(Value(key));
   }
   Value operator[](int64_t idx) const { return at(Value(idx)); }
   // Any hashable key (a Long index, a Tuple, ...) — Op::Index's dispatch.
@@ -182,12 +176,16 @@ class Value {
     if (v_.tag == TAG_OBJECT) {
       // object_get_any consumes a non-String key on every path.
       culebra_runtime_value_retain(k.tag, k.data);
-      int8_t t;
-      int64_t d;
-      culebra_runtime_object_get_any(reinterpret_cast<JitObject*>(v_.data),
-                                     k.tag, k.data, &t, &d, 0, 0,
-                                     /*own_receiver=*/false);
-      return Value(JitValue{t, d}, Adopt{});
+      // The lookup can run the class's `__index__`: a call into the script,
+      // so what that throws reaches the host as Embed::call's failure does.
+      return culebra_runtime_call_from_host([&] {
+        int8_t t;
+        int64_t d;
+        culebra_runtime_object_get_any(reinterpret_cast<JitObject*>(v_.data),
+                                       k.tag, k.data, &t, &d, 0, 0,
+                                       /*own_receiver=*/false);
+        return Value(JitValue{t, d}, Adopt{});
+      });
     }
     culebra_runtime_type_error_typed(0, 0, "Array", v_.tag);
   }
@@ -315,8 +313,6 @@ inline void trampoline(JitValue* __ret, JitClosure* self, int8_t self_tag,
     *__ret = host_fns()[idx](n, args);
   } catch (const culebra::CulebraError&) {
     throw;
-  } catch (const CulebraException&) {
-    throw;  // a script throw from a re-entrant call — pass it through raw
   } catch (const std::exception& e) {
     throw culebra::CulebraError("RuntimeError", e.what(), 0, 0);
   }
@@ -556,13 +552,7 @@ inline void Value::set(std::string_view key,
                        const _embed_detail::Arg& v) {
   if (v_.tag != TAG_OBJECT)
     culebra_runtime_type_error_typed(0, 0, "Object", v_.tag);
-  std::string k(key);  // a String key is borrowed bytes, never consumed
-  const JitValue val = v.owned();  // the store absorbs this +1
-  culebra_runtime_object_set_any(reinterpret_cast<JitObject*>(v_.data),
-                                 TAG_STRING,
-                                 reinterpret_cast<int64_t>(k.c_str()),
-                                 /*mut=*/true, val.tag, val.data, 0, 0,
-                                 /*is_init=*/false);
+  set(Value(key), v);  // a String of the runtime's: `__setindex__` receives it
 }
 
 inline void Value::set(int64_t idx, const _embed_detail::Arg& v) {
@@ -584,9 +574,12 @@ inline void Value::set(const Value& key, const _embed_detail::Arg& v) {
   if (v_.tag == TAG_OBJECT) {
     // object_set_any consumes the key and the value on every path.
     culebra_runtime_value_retain(k.tag, k.data);
-    culebra_runtime_object_set_any(reinterpret_cast<JitObject*>(v_.data), k.tag,
-                                   k.data, /*mut=*/true, val.tag, val.data, 0,
-                                   0, /*is_init=*/false);
+    // The store can run the class's `__setindex__`, as a read its `__index__`.
+    culebra_runtime_call_from_host([&] {
+      culebra_runtime_object_set_any(reinterpret_cast<JitObject*>(v_.data),
+                                     k.tag, k.data, /*mut=*/true, val.tag,
+                                     val.data, 0, 0, /*is_init=*/false);
+    });
     return;
   }
   _culebra_value_release_impl(val.tag, val.data);

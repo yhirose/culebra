@@ -36,22 +36,27 @@ class VmRepl {
     };
     if (!session_.run_unit(ast, nullptr, /*session=*/true, msgs, dump))
       return false;
-    echo_result();
-    return true;
+    return echo_result(msgs);
   }
 
   // What the prompt shows: the value of the line's last statement, which the
   // program left in the session's result cell. Released right after, because
   // that is where the interp's own `val` dies — a resource echoed and bound
   // to nothing drops before the next prompt, not one line later (probed).
-  void echo_result() {
-    JitValue v = session_.take_result();
+  bool echo_result(std::vector<std::string>& msgs) {
+    JitOwnedVal v(session_.take_result());
+    const JitValue r = v.borrow();
     // A nil result isn't echoed (repl_loop's convention). The sentinel is
     // what the cell holds when the line stored nothing at all — a statement
     // that jumped away, or a program that never reached the store.
-    if (v.tag != TAG_NIL && v.tag != TAG_NO_SELF)
-      _culebra_inspect_to(std::cout, v.tag, v.data);
-    _culebra_value_release_impl(v.tag, v.data);
+    if (r.tag == TAG_NIL || r.tag == TAG_NO_SELF) return true;
+    // The echo runs the value's `__str__`: what that raises is the line's
+    // failure, and the prompt goes on. The echo is no op of the line's, so
+    // an error without a position takes none from the last op that ran.
+    return session_.run_guarded(msgs, [&] {
+      culebra_runtime_set_op_pos(0, 0);
+      _culebra_inspect_to(std::cout, r.tag, r.data);
+    });
   }
 
   bool dump_;

@@ -14932,8 +14932,17 @@ struct Exec {
   }
 
   static void run_prepared(VmProgram& p) {
+    at_boundary([&] { run_frame(p, 0, nullptr, 0, nullptr); });
+  }
+
+  // The engine's boundary around program code: what it leaves uncaught goes
+  // on as the report every lane prints, holding nothing in the Runtime. A
+  // program's run, and the code a host runs for one outside it (the prompt's
+  // echo calls a `__str__`).
+  template <class Body>
+  static void at_boundary(Body&& body) {
     try {
-      run_frame(p, 0, nullptr, 0, nullptr);
+      body();
     } catch (const CulebraException& e) {
       // Uncaught user throw: format first, then consume the carrier's
       // reference — JIT::exec's boundary, so main.cc prints the same

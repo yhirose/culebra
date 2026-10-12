@@ -805,8 +805,10 @@ try {
 
 `Embed::call`に届いたスクリプト側`throw expr`はホスト向けに
 変換されます: 投げられたオブジェクトの`kind`/`message`がそのまま
-`CulebraError`のフィールドになる（それ以外は表示形で届く）ので、
-「catch CulebraError」の契約はuser throwにも通用します。
+`CulebraError`のフィールドになる（それ以外は未catchの`throw`が表示する
+のと同じ形で届く）ので、「catch CulebraError」の契約はuser throwにも
+通用します。classの`__index__`や`__setindex__`を走らせる`Value`の
+読み書きでも同じです。
 （`Embed::run*`は例外でなく`msgs`で報告します — CLIが印字する
 のと同じテキストです。）
 

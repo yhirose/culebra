@@ -107,6 +107,18 @@ out=$(session "class R {" "  new(n) { self.n = n }" "  drop() { println('DROP') 
               "R.new(9)" "println('after')")
 [[ "$out" == *"DROP"$'\n'"after" ]] || { echo "FAIL drop: $out"; fail=1; }
 
+# The echo runs the value's `__str__`, which is the program's code: what it
+# throws or raises is the line's failure, the value still drops before the
+# next prompt, and the prompt goes on. An error the echo itself raises names
+# no position, where the last op an earlier line ran would otherwise show.
+out=$(session "class T {" "  drop() { println('DROP') }" \
+              "  __str__() { throw 'boom' }" "}" "T()" \
+              "class Z { __str__() { 1 / 0 } }" "Z()" \
+              "class W { __str__() { 42 } }" "let w = W()" \
+              "let z = [5, 6].map(|x| x)" "w" "1 + 1"); rc=$?
+[[ $rc -eq 0 && "$out" == "DROP"$'\n'"uncaught: boom at "*$'\n'"ZeroDivisionError: "*$'\n'"TypeError: __str__ must return a String"$'\n'"2" ]] ||
+  { echo "FAIL echo __str__: rc=$rc out=$out"; fail=1; }
+
 # A session name reached from two arms of the same function. The slot holding
 # the session's cell is filled by an instruction the compiler emits where the
 # name is first mentioned, and that is inside whichever arm mentioned it — so

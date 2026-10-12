@@ -7962,6 +7962,9 @@ inspect(idx.search("the"))           # => []
 1語につき1回。手軽な経路であって速い経路ではない——千語の文書は千回プログラムへ
 戻ってくる。
 
+これらの関数が上げたものは、上げられたままの形で`add`や`search`から出てくる。エラーは
+そのkindのまま、`throw`した値はその値のままプログラムの`catch`に届く。
+
 C++で書いたsplitterはネイティブに走る。`ISplitter`を継承して`wrap<T>`で宣言した
 クラスのハンドルは、そのまま`splitter`に渡せる。契約とハンドルの寿命は
 [Searchにsplitterを挿す](deployment.ja.md#searchにsplitterを挿す)にある。
