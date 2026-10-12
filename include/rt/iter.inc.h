@@ -3944,10 +3944,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_remove(
 inline void _key_order_erase(JitObject* obj, const JitValue& key) {
   if (!obj->key_order) return;
   auto& ko = *obj->key_order;
+  bool strlike = key.tag == TAG_STRING || key.tag == TAG_STRINGVIEW;
   for (auto it = ko.begin(); it != ko.end(); ++it) {
     const JitValue& k = it->value();
-    bool same = key.tag == TAG_STRING ? JitValueEq{}(k, key)
-                                      : k.tag == key.tag && k.data == key.data;
+    bool same = strlike ? JitValueEq{}(k, key)
+                        : k.tag == key.tag && k.data == key.data;
     if (same) {
       // Refcounted (Tuple) keys hold a +1 here — release before erasing.
       if (_is_refcounted_value_tag(k.tag))
@@ -3972,11 +3973,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_default(
   (void)line;
   (void)col;
   std::string kbuf;
-  _jit_normalize_str_key(kt, kd, kbuf);
   bool found = false;
   JitValue stored{TAG_NIL, 0};
-  if (kt == TAG_STRING) {
-    auto idx = obj->find_slot(reinterpret_cast<const char*>(kd));
+  if (const char* name = _jit_key_name(kt, kd, kbuf)) {
+    auto idx = obj->find_slot(name);
     if (idx != static_cast<size_t>(-1)) {
       stored = obj->slots[idx].value;
       found = true;
@@ -3990,8 +3990,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_default(
       found = true;
     }
   }
-  // Release the key once: no-op for a borrowed String/Long, frees a refcounted
-  // (e.g. Tuple) key; a StringView was already released by the normalize above.
+  // Release the key once: no-op for a String, a view or a Long, frees a
+  // refcounted (e.g. Tuple) key.
   _culebra_value_release_impl(kt, kd);
   if (found) {
     culebra_runtime_value_retain(stored.tag, stored.data);
@@ -4014,12 +4014,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_or_put(
     _jit_shared_val_builtin_reject(obj, "get_or_put", line, col);
   }
   std::string kbuf;
-  _jit_normalize_str_key(kt, kd, kbuf);
   bool found = false;
   JitValue stored{TAG_NIL, 0};
   std::optional<JitHashedKey> hashed;  // a non-String key, for the store too
-  if (kt == TAG_STRING) {
-    auto idx = obj->find_slot(reinterpret_cast<const char*>(kd));
+  const char* name = _jit_key_name(kt, kd, kbuf);
+  if (name) {
+    auto idx = obj->find_slot(name);
     if (idx != static_cast<size_t>(-1)) {
       stored = obj->slots[idx].value;
       found = true;
@@ -4067,9 +4067,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_or_put(
   JitOwnedVal ret_guard(v);
   culebra_runtime_value_retain(v.tag, v.data);
   key_guard.consume();
-  // The store reuses the hash the lookup computed.
-  _jit_object_set_any(obj, kt, kd, hashed, /*mut*/ true, v.tag, v.data, line,
-                      col, /*is_init*/ false);
+  // The store reuses the name and the hash the lookup computed.
+  _jit_object_set_any(obj, name, kt, kd, hashed, /*mut*/ true, v.tag, v.data,
+                      line, col, /*is_init*/ false);
   return ret_guard.consume();
 }
 
@@ -4090,12 +4090,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_remove_any(
   // shared-value reject, which does its own release before throwing.
   JitUnwindRelease key_guard{JitValue{tag, data}};
   std::string _kbuf;
-  _jit_normalize_str_key(tag, data, _kbuf);
-  if (tag == TAG_STRING) {
-    auto* cstr = reinterpret_cast<const char*>(data);
-    if (obj->find_slot(cstr) != static_cast<size_t>(-1)) {
-      culebra_runtime_object_remove(obj, cstr);
-      _key_order_erase(obj, {TAG_STRING, data});
+  if (const char* name = _jit_key_name(tag, data, _kbuf)) {
+    if (obj->find_slot(name) != static_cast<size_t>(-1)) {
+      culebra_runtime_object_remove(obj, name);
+      _key_order_erase(obj, {tag, data});
     }
     return;
   }

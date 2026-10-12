@@ -1934,8 +1934,9 @@ inspect([a].index_of(b))      # => 0
 a user collection wrapper then subscripts like a built-in. These fire
 for keys the object doesn't hold as a direct property (so named-field
 access `obj["field"]` still reads the field); slicing a user type
-(`obj[a..b]`) is not routed through `__index__`. Both backends dispatch
-identically.
+(`obj[a..b]`) is not routed through `__index__`. The key arrives as the
+value the program wrote: a substring (`obj[s[0..2]]`) is the `StringView`
+it is. Both backends dispatch identically.
 
 ```culebra
 class Grid {

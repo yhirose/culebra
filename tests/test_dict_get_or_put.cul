@@ -43,6 +43,38 @@ assert_eq(e.get("he", 0), 1)
 e.remove("hello"[0..2])  // remove via a StringView key
 assert_eq(e.has("he"), false)
 
+// The key stays the value the program wrote wherever it goes on as one: a
+// class's `__index__` / `__setindex__` reads it and may keep it...
+class Keyed {
+  new() {
+    self.seen = []
+  }
+  __index__(k) {
+    self.seen.push(k)
+    k + "!"
+  }
+  __setindex__(k, v) {
+    self.seen.push(k + "=" + to_string(v))
+  }
+}
+keyed = Keyed()
+assert_eq(keyed["hello"[0..2]], "he!")
+keyed["hello"[2..5]] = 7
+keyed["hello"[0..1]] ??= 8
+assert_eq(keyed.seen, ["he", "llo=7", "h"])
+assert_eq(type_of(keyed.seen[0]), "StringView")
+// ...the insertion order drops it by its name...
+mixed = {}
+mixed["he"] = 1
+mixed[1] = 2
+mixed.remove("hello"[0..2])
+assert_eq(mixed.keys(), [1])
+mixed["he"] = 3
+assert_eq(mixed.keys(), [1, "he"])
+// ...and a Shared view and a Regex match look it up as they do a String.
+assert_eq(Shared.new({he: 1})["hello"[0..2]], 1)
+assert_eq(Regex.find("(?<he>l+)", "hello")["hello"[0..2]], "ll")
+
 // `init` is invoked as a zero-argument thunk, so a callee that requires an
 // argument is an ArityError — not a frame with an unbound name in it.
 assert_throws("ArityError", || {a: 1}.get_or_put("z", |k| k))
