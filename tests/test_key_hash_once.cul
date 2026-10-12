@@ -253,8 +253,7 @@ for id in 2..34 {
 // --- Nor does a scope's exit, and it keeps what is held from outside ---
 
 // The walk that decides whether a `drop` holder is still reachable counts each
-// entry once: keys of one hash, a key under two hashes, and a NaN key (which
-// equals no key, so every store of it is another entry).
+// entry once: keys of one hash, and a key under two hashes.
 mut dropped = []
 class Res {
   new(name) {
@@ -266,14 +265,12 @@ class Res {
   }
 }
 mut kept = []
-let keep_under = fn (key_of, name) {
+let keep_under = fn (name) {
   let r = Res.new(name)
   mut entries = {}
-  let k = key_of()
+  let k = M.new(1)
   entries[k] = 'other'
-  if type_of(k) == 'M' {
-    k.id = 3
-  }
+  k.id = 3
   entries[k] = r
   entries[Twin.new(1)] = 1
   entries[Twin.new(2)] = 2
@@ -281,8 +278,6 @@ let keep_under = fn (key_of, name) {
   kept.push(r)
   eq_calls = 0
 }
-keep_under(|| M.new(1), 'two hashes')
-assert_eq(eq_calls, 0)
-keep_under(|| Math.sqrt(-1.0), 'nan')
+keep_under('two hashes')
 assert_eq(eq_calls, 0)
 assert_eq(dropped, [])

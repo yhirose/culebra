@@ -108,6 +108,50 @@ let e_key = try {
 }
 assert_eq(e_key.kind, "TypeError")
 
+// NaN is one key, where `==` says it equals nothing: a key has to be itself
+// to be found again. Whatever its sign bit, and inside a Tuple too.
+let nan = Math.nan
+let nan2 = -nan
+assert_eq(nan == nan, false)
+assert_eq(h(nan), h(nan2))
+mut by_nan = {}
+by_nan[nan] = 1
+by_nan[nan2] = 2
+by_nan[(nan, 1)] = "a"
+by_nan[(nan2, 1)] = "b"
+assert_eq(by_nan.size(), 2)
+assert_eq(by_nan[nan], 2)
+assert_eq(by_nan[(nan, 1)], "b")
+assert_true(by_nan.has(nan))
+assert_eq(by_nan.get(nan, 0), 2)
+by_nan.remove(nan)
+assert_eq(by_nan.size(), 1)
+assert_eq([nan, nan2, 1.0].to_set().size(), 2)
+assert_true([nan].to_set().contains(nan2))
+assert_true([nan].to_set() == [nan2].to_set())
+assert_eq([nan, 1.0, nan2].iter().distinct().count(), 2)
+mut frozen_src = {}
+frozen_src[nan] = "s"
+assert_eq(Shared.new(frozen_src)[nan2], "s")
+// An Array asks `==`, so it does not find one.
+assert_eq([nan].contains(nan), false)
+// A derived `eq` matches fields as keys, so two instances holding NaN are one
+// key, while `==` compares the fields by `==`.
+@derive(Eq, Hash)
+class Reading {
+  new(.value) {}
+}
+mut readings = {}
+readings[Reading(nan)] = 1
+readings[Reading(nan2)] = 2
+assert_eq(readings.size(), 1)
+assert_eq(Reading(nan) == Reading(nan2), false)
+// 0.0 and -0.0 are one key as well, and they are `==`.
+mut zeros = {}
+zeros[0.0] = "a"
+zeros[-0.0] = "b"
+assert_eq(zeros.size(), 1)
+
 // (Cross-flavor Object key unification: String and StringView still
 // land in different slots due to the dual Shape/sidecar Object storage.
 // See `docs/language.md` / project memory `string-stringview` for the

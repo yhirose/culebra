@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <format>
 #include <functional>
+#include <limits>
 #include <random>
 #include <optional>
 #include <shared_mutex>
@@ -1476,7 +1477,16 @@ inline size_t hash_double(double d) {
     int64_t as_long = static_cast<int64_t>(d);
     if (static_cast<double>(as_long) == d) return hash_long(as_long);
   }
+  // Every NaN is the one key (same_float_key), whatever its sign and payload.
+  if (d != d) d = std::numeric_limits<double>::quiet_NaN();
   return std::hash<double>{}(d);
+}
+
+// Whether two Floats are the same key: equal, or both NaN. To `==` a NaN
+// equals nothing, itself included, and a key that is not itself can be
+// stored but never found or removed. `0.0` and `-0.0` are one key by `==`.
+inline bool same_float_key(double a, double b) {
+  return a == b || (a != a && b != b);
 }
 
 // Floored remainder — the one `%` does not give, since `%` truncates.

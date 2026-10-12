@@ -1318,10 +1318,14 @@ without `hash()` — raises `TypeError` wherever a key is looked up
 (`obj[k]`, `has`, `get`, `get_or_put`, `remove`), whatever the Object
 holds. A class's `__index__` still receives such a key on a read.
 
-Key identity is type-strict, deliberately *finer* than the `==`
+Key identity is type-strict, a relation of its own beside the `==`
 operator. Keys of different types are never the same key, so
 `1`, `1.0`, and `true` are three distinct keys even though `1 == 1.0`
-holds for the `==` operator. A literal that *repeats* a key keeps the
+holds for the `==` operator. In the other direction, `NaN` is one key
+(a second write under it replaces the first, and it can be read and
+removed) even though `NaN == NaN` is false; `0.0` and `-0.0` are one key
+as well. A Set's members and `distinct()` follow the same rule. A literal
+that *repeats* a key keeps the
 last write —
 `{1: 'a', 1: 'b'}` is `{1: 'b'}` — the same last-wins rule a literal
 always uses for a duplicated key, including String keys.
@@ -4223,9 +4227,12 @@ tag), so they stay correct as fields change. Details:
   `==` they compare by structure — fields by `==`, which mixes `Long`
   and `Float` by value — exactly as a class with no `eq` does, so
   deriving `Eq` to become a key does not narrow `==`. The two differ
-  only for such a mixed pair: `P(1) == P(1.0)` is true while `P(1)` and
-  `P(1.0)` stay two keys. An `eq` or `__eq__` the class writes is
-  stated, and `==` follows it as usual.
+  only where a field's key identity differs from `==`: for a mixed pair
+  (`P(1) == P(1.0)` is true while `P(1)` and `P(1.0)` stay two keys),
+  and for `NaN` (`P(Math.nan) == P(Math.nan)` is false while the two are
+  one key).
+  An `eq` or `__eq__` the class writes is stated, and `==` follows it as
+  usual.
 * **`cmp` ordering** compares each field pair exactly as `<` does: equal
   fields (by `==`) move on to the next, and the first unequal pair decides.
   So a field that is a Tuple, or an instance of a class with its own
@@ -4234,7 +4241,7 @@ tag), so they stay correct as fields change. Details:
   types — is the same `cannot compare` TypeError there.
 * **A derived `cmp` agrees with `==`.** Both walk the fields by `==`,
   so `cmp(other)` is `0` exactly when `==` holds. It is the key
-  relation `eq` that is stricter, for the reason above.
+  relation `eq` that differs, for the reason above.
 * **`eq` and `cmp` take `other`**, `hash` and `to_s` take nothing; calling
   one without its argument is the ordinary missing-required ArityError.
 
@@ -6885,8 +6892,9 @@ A `@value` class gets `eq` and `hash` derived from its fields — the same
 pair `@derive(Eq, Hash)` generates — so it is a key matched by its fields
 and `==` compares it by structure. Its fields are declared scalars, each
 of one type, so the two never part the way they can for a derived class
-holding `1` beside `1.0`: `Set` membership and Object keys agree with
-`==`. `hash` is the half an ordinary class does not have: without it an
+holding `1` beside `1.0`. They part only for a `Float` field holding
+`NaN`: two such instances are one `Set` member and one Object key, while
+`==` is false. `hash` is the half an ordinary class does not have: without it an
 instance is unhashable, so it cannot be a `Set` member or an Object key at
 all. A class that writes its own `__eq__` or `eq` keeps it and opts out of
 both, which is what keeps the pair consistent.

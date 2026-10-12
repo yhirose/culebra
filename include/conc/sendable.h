@@ -1282,7 +1282,8 @@ inline bool _jit_shared_val_key_eq(const sendable::SendNode& k, int8_t tag,
     case K::Long: return tag == TAG_LONG && data == k.i;
     case K::Bool: return tag == TAG_BOOL && (data != 0) == k.b;
     case K::Float:
-      return tag == TAG_FLOAT && _culebra_float_to_double(data) == k.d;
+      return tag == TAG_FLOAT &&
+             culebra::same_float_key(_culebra_float_to_double(data), k.d);
     default: return false;
   }
 }
