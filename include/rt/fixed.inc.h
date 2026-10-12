@@ -808,12 +808,25 @@ inline const char* _jit_key_name(int8_t key_tag, int64_t key_data,
   return owned.c_str();
 }
 
-// Whether a subscript on `obj` is a question about its own entries. The
-// receivers it is not for read one their own way, ahead of any entry: an
-// array view, a SharedBuffer, a Shared view, a Regex match.
+// A handle onto storage of another kind: an array view, a SharedBuffer, a
+// Shared view. Its slots are the handle's bookkeeping, not entries.
+inline bool _jit_is_handle(JitObject* obj) {
+  return obj->is_array_view || _jit_is_shared_buffer(obj) || obj->is_shared_val;
+}
+// ...so what walks an Object's own entries refuses one.
+inline void _jit_require_own_entries(JitObject* obj) {
+  if (_jit_is_handle(obj))
+    throw culebra::CulebraError(
+        "TypeError",
+        "a Shared view, a SharedBuffer or an array view has no entries of its "
+        "own to walk");
+}
+
+// Whether a subscript on `obj` is a question about its own entries. A handle
+// reads one its own way, ahead of any entry, and so does a Regex match (whose
+// entries are its fields, and whose subscript is a capture group).
 inline bool _jit_keyed_by_entries(JitObject* obj) {
-  return !(obj->is_array_view || _jit_is_shared_buffer(obj) ||
-           obj->is_shared_val || obj->is_match);
+  return !(_jit_is_handle(obj) || obj->is_match);
 }
 
 // A class instance's `__setindex__` is asked first about a String key that is
@@ -880,7 +893,7 @@ inline void _jit_object_set_any(JitObject* obj, const char* name,
                                 const std::optional<JitHashedKey>& hashed,
                                 bool mut, int8_t val_tag, int64_t val_data,
                                 int64_t line, int64_t col, bool is_init) {
-  if (!_jit_keyed_by_entries(obj)) {
+  if (_jit_is_handle(obj)) {
     // `arr[i] = v` on an array view: write element i into the inline bytes
     // (the index coerces Long/Float like the interp).
     if (obj->is_array_view) {
@@ -969,11 +982,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
 // Whether `obj[key] = v`, for a String key a caller holds as its name and no
 // value (a host), is the store culebra_runtime_object_set makes by that name.
 // False where the key goes on as a value, so the caller has to make it one: a
-// class's `__setindex__` receives it, or the receiver reads subscripts its
-// own way.
+// class's `__setindex__` receives it, or the receiver is a handle.
 inline bool culebra_runtime_object_sets_named(JitObject* obj,
                                               const char* name) {
-  return _jit_keyed_by_entries(obj) && !_jit_setindex_first(obj, name);
+  return !_jit_is_handle(obj) && !_jit_setindex_first(obj, name);
 }
 
 // `{...x}` object spread: merge another Object's own entries into `dst`, in

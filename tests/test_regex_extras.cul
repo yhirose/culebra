@@ -107,4 +107,16 @@ assert_eq(dv.match("12x".slice(0, 3)).value, "12")
 // a StringView pattern compiles too ("Xa\dX".slice(1,4) -> the view "a\d")
 assert_eq(Regex.compile("Xa\\dX".slice(1, 4)).test("a7"), true)
 
+// for-in over a match walks its fields, the ones `keys()` names. A subscript
+// on a match is a capture group, which is another question.
+let walked = Regex.find("in (?<year>[0-9]+)", "in 2026")
+mut fields = {}
+for k, v in walked {
+  fields[k] = v
+}
+assert_eq(fields.keys(), walked.keys())
+assert_eq(fields["value"], "in 2026")
+assert_eq(fields["start"], 0)
+assert_eq(fields["end"], 7)
+
 inspect("test_regex_extras: ok")

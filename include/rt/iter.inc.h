@@ -2160,6 +2160,7 @@ culebra_runtime_object_iter_dispatch(JitObject* obj);
 // them all in key_order, so its keys and their hashes are read off the same
 // entries in one pass; any other Object's keys are culebra_runtime_object_keys'.
 inline JitKeySnapshot JitKeySnapshot::take(JitObject* obj) {
+  _jit_require_own_entries(obj);
   if (!obj->non_string_props || obj->non_string_props->empty() ||
       _jit_meta_opaque(obj))
     return {culebra_runtime_object_keys(obj), {TAG_NIL, 0}};
@@ -2180,13 +2181,11 @@ inline bool JitKeySnapshot::value(JitObject* obj, JitArray* keys,
                                   JitValue hashes, size_t i, int8_t* out_tag,
                                   int64_t* out_data) {
   auto key = keys->items[i];
-  if (key.tag == TAG_STRING) {
-    if (!_find_property(obj, reinterpret_cast<const char*>(key.data)))
-      return false;
-    culebra_runtime_object_get_any(obj, key.tag, key.data, out_tag, out_data,
-                                   0, 0, /*own_receiver=*/false);
-    return true;
-  }
+  // The slot the key was listed from, not `obj[key]`: a subscript is another
+  // question for some receivers (a Regex match answers it with a capture).
+  if (key.tag == TAG_STRING)
+    return _jit_named_slot(obj, reinterpret_cast<const char*>(key.data),
+                           out_tag, out_data);
   auto* hs = reinterpret_cast<JitArray*>(hashes.data);
   auto it = _jit_sidecar_at(
       obj, JitHashedKey::restore(key, static_cast<size_t>(hs->items[i].data)));

@@ -64,3 +64,33 @@ for k, v in src.iter() {
 }
 assert_eq(dst.a, 1)
 assert_eq(dst.b, 2)
+
+# 7. A removed key is skipped on a class instance too, where the class has a
+#    method of the key's name.
+class Named {
+  new(.x) {}
+  label() {
+    'method'
+  }
+}
+mut inst = Named(1)
+inst['label'] = 'own'
+mut inst_seen = []
+for k, v in inst {
+  inst_seen.push(k)
+  inst.remove('label') if k == 'x'
+}
+assert_eq(inst_seen, ['x'])
+
+# 8. A handle onto other storage has no entries of its own to walk: its slots
+#    are its bookkeeping, and it is read through its own methods.
+@packable
+class Cell {
+  mass: Float32 = 1.5
+}
+let cells = SharedBuffer.new(2, Cell)
+assert_throws('TypeError', fn () {
+  for k, v in cells {
+    k
+  }
+})
