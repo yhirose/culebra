@@ -39,6 +39,17 @@ std::string kind_of(Body&& body) {
   return "";
 }
 
+// ... or the whole failure the host was handed, as `kind: message`.
+template <class Body>
+std::string failure_of(Body&& body) {
+  try {
+    body();
+  } catch (const culebra::CulebraError& e) {
+    return e.kind + ": " + e.what();
+  }
+  return "";
+}
+
 }  // namespace
 
 int run() {
@@ -206,24 +217,46 @@ int run() {
         "}\n"
         "let sealed = Sealed()");
     Value sealed = embed.global("sealed");
-    // What reached the host, as `kind: message`; the key is in the message,
-    // so it arrived as a String the method could read.
-    auto failure = [](auto&& body) -> std::string {
-      try {
-        body();
-      } catch (const culebra::CulebraError& e) {
-        return e.kind + ": " + e.what();
-      }
-      return "";
-    };
-    ok &= check(failure([&] { (void)sealed["port"]; }) == "RuntimeError: no port",
+    // The key is in the message, so it arrived as a String the method could
+    // read.
+    ok &= check(failure_of([&] { (void)sealed["port"]; }) ==
+                    "RuntimeError: no port",
                 "a throw out of __index__ is the failure a call's is");
-    ok &= check(failure([&] { sealed.set("port", 1); }) ==
+    ok &= check(failure_of([&] { sealed.set("port", 1); }) ==
                     "ValueError: sealed port",
                 "a throw out of __setindex__ keeps the kind it names");
     ok &= check(embed.eval("try { [1][9] } catch e { e.kind }")
                         .as<std::string>() == "IndexError",
                 "a throw out of a Value read leaves the carrier empty");
+  }
+  {  // ... and so does the `eq` that tells two keys of one hash apart
+    Value tagged = embed.eval(R"(
+      mut strict = false
+      fn be_strict() { strict = true }
+      class Tag {
+        new(n) { self.n = n }
+        hash() { 0 }
+        eq(o) {
+          if strict { throw 'no eq' }
+          self.n == o.n
+        }
+      }
+      mut tagged = {}
+      tagged[Tag.new(1)] = 'one'
+      tagged[Tag.new(2)] = 'two'
+      tagged
+    )");
+    ok &= check(tagged.items().size() == 2, "items() over colliding keys");
+    embed.call("be_strict");
+    ok &= check(failure_of([&] { tagged.items(); }) == "RuntimeError: no eq",
+                "a throw out of a key's eq is the failure a call's is");
+  }
+  {  // a substring is a String to the host, wherever it reads one
+    Value part = embed.eval("let line = 'port=8080'\nline[0..4]");
+    ok &= check(part.is_string() && part.to_string() == "port" &&
+                    part.as<std::string>() == "port" &&
+                    part.as<std::string_view>() == "port",
+                "a substring reads as its own bytes");
   }
 
   // (6) define()'s container types, both directions.
@@ -253,6 +286,8 @@ int run() {
               "an engaged optional is the value");
   ok &= check(embed.eval("host_find('z')").is_nil(),
               "an empty optional is nil");
+  ok &= check(embed.eval("host_find('za'[1..2])").as<std::string>() == "found",
+              "a substring argument is the String it spells");
   ok &= check(embed.eval("host_names().join(',')").as<std::string>() == "a,b",
               "a returned vector is an Array");
   ok &= check(embed.eval("try { host_total([1, 'x']) } catch e { e.kind }")

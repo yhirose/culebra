@@ -92,8 +92,7 @@ class Value {
     return std::bit_cast<double>(v_.data);
   }
   std::string to_string() const {
-    if (v_.tag != TAG_STRING && v_.tag != TAG_STRINGVIEW) return {};
-    return std::string(_str_sv(reinterpret_cast<const char*>(v_.data)));
+    return std::string(_culebra_str_view(v_.tag, v_.data));
   }
   // The value rendered the way `inspect` renders it — for diagnostics.
   std::string display() const {
@@ -197,23 +196,26 @@ class Value {
     if (v_.tag != TAG_OBJECT)
       culebra_runtime_type_error_typed(0, 0, "Object", v_.tag);
     // The iterators' snapshot: a stored key is found by the hash it carries,
-    // not hashed again.
-    auto* obj = reinterpret_cast<JitObject*>(v_.data);
-    auto snap = JitKeySnapshot::take(obj);
-    Value keys = Value(
-        JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(snap.keys)}, Adopt{});
-    Value hashes = Value(snap.hashes, Adopt{});
-    std::vector<std::pair<Value, Value>> out;
-    out.reserve(snap.keys->size);
-    for (size_t i = 0; i < snap.keys->size; i++) {
-      int8_t t;
-      int64_t d;
-      if (!JitKeySnapshot::value(obj, snap.keys, snap.hashes, i, &t, &d))
-        continue;
-      out.emplace_back(keys[static_cast<int64_t>(i)],
-                       Value(JitValue{t, d}, Adopt{}));
-    }
-    return out;
+    // not hashed again. Two keys of one hash are still told apart by the
+    // class's `eq`, which is a call into the script, as `at`'s lookup is.
+    return culebra_runtime_call_from_host([&] {
+      auto* obj = reinterpret_cast<JitObject*>(v_.data);
+      auto snap = JitKeySnapshot::take(obj);
+      Value keys = Value(
+          JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(snap.keys)}, Adopt{});
+      Value hashes = Value(snap.hashes, Adopt{});
+      std::vector<std::pair<Value, Value>> out;
+      out.reserve(snap.keys->size);
+      for (size_t i = 0; i < snap.keys->size; i++) {
+        int8_t t;
+        int64_t d;
+        if (!JitKeySnapshot::value(obj, snap.keys, snap.hashes, i, &t, &d))
+          continue;
+        out.emplace_back(keys[static_cast<int64_t>(i)],
+                         Value(JitValue{t, d}, Adopt{}));
+      }
+      return out;
+    });
   }
 
   // Array/Tuple elements, for range-for (defined below — it stashes the
@@ -378,19 +380,17 @@ struct FromJit<bool> {
   }
 };
 template <>
-struct FromJit<std::string> {
-  static std::string get(const JitValue& v, ArgCtx c) {
-    if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW)
-      _arg_type_error(c, "String", v.tag);
-    return std::string(_str_sv(reinterpret_cast<const char*>(v.data)));
-  }
-};
-template <>
 struct FromJit<std::string_view> {
   static std::string_view get(const JitValue& v, ArgCtx c) {
     if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW)
       _arg_type_error(c, "String", v.tag);
-    return _str_sv(reinterpret_cast<const char*>(v.data));
+    return _culebra_str_view(v.tag, v.data);
+  }
+};
+template <>
+struct FromJit<std::string> {
+  static std::string get(const JitValue& v, ArgCtx c) {
+    return std::string(FromJit<std::string_view>::get(v, c));
   }
 };
 template <>
