@@ -144,16 +144,28 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
       n.kind = K::Object;
       n.is_error = o->is_error;
       n.is_packed_view = o->is_packed_view;
-      if (o->shape) {
-        for (size_t i = 0; i < o->prop_size(); i++) {
-          sendable::SendNode key;
-          key.kind = K::Str;
-          key.s = o->prop_name(i);
-          n.entries.emplace_back(std::move(key),
-                                 jit_serialize(o->slots[i].value, ctx));
-          n.entry_mut.push_back(o->slots[i].mut);
-        }
-      }
+      // Every entry, in the order the Object holds them: the receiver stores
+      // them as they arrive, and that is the order it then iterates in. A key
+      // that is no String serializes as a value node.
+      _jit_each_entry(
+          o,
+          [&](std::string_view name, const JitObjectEntry& entry) {
+            sendable::SendNode key;
+            key.kind = K::Str;
+            key.s = std::string(name);
+            n.entries.emplace_back(std::move(key),
+                                   jit_serialize(entry.value, ctx));
+            n.entry_mut.push_back(entry.mut);
+          },
+          [&](const JitHashedKey& k, const JitObjectEntry& entry) {
+            // The value before its key, as the receiver rebuilds them: the
+            // first of two instances of a class carries the class, and the
+            // other refers back to it.
+            auto val = jit_serialize(entry.value, ctx);
+            auto key = jit_serialize(k.value(), ctx);
+            n.entries.emplace_back(std::move(key), std::move(val));
+            n.entry_mut.push_back(entry.mut);
+          });
       // Class instance: ship the proto (the per-class meta holding the
       // method closures) as elems[0], so a method call works on the other
       // side — the interp gets the same effect from methods being own
@@ -205,18 +217,6 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
         if (auto* cls = o->built_by(); cls && o->proto()->names_class)
           n.elems.push_back(jit_serialize(
               {TAG_OBJECT, reinterpret_cast<int64_t>(cls)}, ctx));
-      }
-      // Non-string keys: ship them after the string keys, matching the
-      // interp serializer's order (string props, then non_string_props),
-      // so the two backends produce identical SendNode entry lists (the
-      // freeze indexer and the cross-isolate Object transfer both rely on
-      // this). The key itself serializes as a value node.
-      if (o->non_string_props) {
-        for (const auto& [k, ent] : *o->non_string_props) {
-          n.entries.emplace_back(jit_serialize(k.value(), ctx),
-                                 jit_serialize(ent.value, ctx));
-          n.entry_mut.push_back(ent.mut);
-        }
       }
       ctx.visiting.erase(o);
       return n;

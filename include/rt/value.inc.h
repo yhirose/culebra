@@ -1449,18 +1449,15 @@ inline const JitObjectEntry* _jit_sidecar_own(const JitObject* obj,
   return nullptr;
 }
 
-// An Object's own entries in insertion order, each to `named(name, entry)` or
-// to `keyed(key, entry)` by whether its key is a String; none for a class
-// that declares its instances to have no fields to enumerate. The one walk
-// behind showing an Object, spreading it and listing it for a host. It reads
-// `obj` afresh at every step, so what a callback changes there is seen and
-// not tripped over (a spread's insert can run a key's `eq`), and it finds a
-// non-String key's entry as that key itself, so the walk runs none of the
-// program's code. An entry is the callback's until it lets the program's code
-// run, which may change `obj`.
+// Every entry an Object stores, in insertion order, each to
+// `named(name, entry)` or to `keyed(key, entry)` by whether its key is a
+// String. It reads `obj` afresh at every step, so what a callback changes
+// there is seen and not tripped over (a spread's insert can run a key's
+// `eq`), and it finds a non-String key's entry as that key itself, so the
+// walk runs none of the program's code. An entry is the callback's until it
+// lets the program's code run, which may change `obj`.
 template <class Named, class Keyed>
-inline void _jit_each_own_entry(JitObject* obj, Named&& named, Keyed&& keyed) {
-  if (_jit_meta_opaque(obj)) return;
+inline void _jit_each_entry(JitObject* obj, Named&& named, Keyed&& keyed) {
   // With String keys alone the slots are the insertion order.
   if (!obj->non_string_props || obj->non_string_props->empty()) {
     obj->for_each(named);
@@ -1476,6 +1473,15 @@ inline void _jit_each_own_entry(JitObject* obj, Named&& named, Keyed&& keyed) {
       keyed(k, *entry);
     }
   }
+}
+
+// An Object's own entries: the ones it stores, and none for a class that
+// declares its instances to have no fields to enumerate. The one walk behind
+// showing an Object, spreading it and listing it for a host.
+template <class Named, class Keyed>
+inline void _jit_each_own_entry(JitObject* obj, Named&& named, Keyed&& keyed) {
+  if (_jit_meta_opaque(obj)) return;
+  _jit_each_entry(obj, named, keyed);
 }
 
 // A non-String key's entry in `obj`'s sidecar, or nullopt; an unhashable key

@@ -339,4 +339,28 @@ assert_eq(TOML.stringify(Shared.new({name: 'x', db: {port: 1}})),
   TOML.stringify({name: 'x', db: {port: 1}}))
 assert_eq(TOML.stringify({cfg: whole.c}), TOML.stringify({cfg: {d: 'x'}}))
 
+# --- an Object keeps its entry order when it is sent or frozen ---
+mut ordered = {}
+ordered[(1, 2)] = 'a'
+ordered['s'] = 'b'
+ordered[7] = 'c'
+ordered['t'] = 'd'
+ordered[3] = 'e'
+let in_order = [(1, 2), 's', 7, 't', 3]
+let sent = ordered
+assert_eq(sent.keys(), in_order)
+assert_eq(Shared.new(sent).keys(), in_order)
+assert_eq(Shared.new(sent).copy().keys(), in_order)
+let (otx, orx) = Channel.new(1)
+otx.send(sent)
+assert_eq(orx.recv().keys(), in_order)
+assert_eq(Isolate.spawn(fn () {
+  sent.keys()
+}).join(), in_order)
+# A key and its value of one class arrive together.
+mut same_class = {}
+same_class[SharedSuit.Hearts] = SharedSuit.Hearts
+otx.send(same_class)
+assert_eq(orx.recv()[SharedSuit.Hearts], SharedSuit.Hearts)
+
 IO.inspect('test_shared OK')

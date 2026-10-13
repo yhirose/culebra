@@ -2653,6 +2653,9 @@ A violation throws `SendError` at the `spawn` site (never a silent copy):
 | a closure capturing only Sendable values | a value that refers to itself (a cycle) |
 | a free function (`fn name(...)`), captured by reference | a generator (send what it yields, or call the generator function on the other side) |
 
+What arrives is a copy that reads as the original does: an Object keeps
+its entries in the order it held them, whatever their keys.
+
 Because captures are copied, a closure that mutates a captured collection
 mutates **its own copy** — the parent's value is untouched:
 
