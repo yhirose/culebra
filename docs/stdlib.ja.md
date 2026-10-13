@@ -3417,6 +3417,14 @@ viewは要素を返す）。スカラフィールドは読み手のheapに材料
 見つける。そのObjectが持っていたキーならTupleも`nil`も引け、型をまたいで
 一致することはない。
 
+viewの表示、`JSON.stringify(view)`、`TOML.stringify(view)`、展開
+（`{...view}`と`[...view]`）は、凍結した値そのもの（`view.copy()`が返す
+もの）を読む。したがって展開の結果は奥まで普通の値になる。キーワードの
+splatにはその展開を渡す（`f(**{...view})`）。`**view`そのものは
+`TypeError`。パターンはviewのキーを`view.name`と同じように読む
+（`let {port} = view`）。`==`はviewの中身を見ないので、`view.copy()`を
+比べる。dropしたviewは`[dropped Shared value]`と表示される。
+
 凍結はisolateへ値を送るのと同じwalkなので、Sendableなものは凍結
 できる — 追加の拒否が2つ: **関数**（`Shared`の値はデータのみ）と
 **nativeハンドル**（channel・buffer・別の`Shared` view）は`SendError`。

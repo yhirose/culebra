@@ -73,6 +73,11 @@ inline bool _jit_is_range_shaped(const JitObject* obj) {
          meta->specials->name == _jit_range_name();
 }
 
+namespace culebra {
+inline JitValue _jit_shared_val_plain(JitObject* view, int64_t line,
+                                      int64_t col);  // rt_runtime.inc.h
+}
+
 // Internal helper (C++ - not extern C, but inline to satisfy ODR)
 inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
   switch (type) {
@@ -154,6 +159,17 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
     }
     case TAG_OBJECT: {
       auto* obj = reinterpret_cast<JitObject*>(data);
+      // A Shared view shows the value it froze, and one that was dropped says
+      // so: showing a value is not where a read's ClosedError belongs.
+      if (obj->is_shared_val) {
+        if (_jit_slot_or_nil(obj, "_dropped").data)
+          return "[dropped Shared value]";
+        struct Held {  // released on a throw too (a value nested too deep)
+          JitValue v;
+          ~Held() { _culebra_value_release_impl(v.tag, v.data); }
+        } plain{culebra::_jit_shared_val_plain(obj, 0, 0)};
+        return _culebra_value_to_str_impl(plain.v.tag, plain.v.data);
+      }
       _JitStrGuard guard(obj);
       if (guard.already) return "{...}";
       culebra::ValueWalkFrame walk;

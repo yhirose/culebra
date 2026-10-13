@@ -1530,6 +1530,18 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_sys_argv() {
 
 struct _JitJsonReader {
   using Value = JitValue;
+  // What a value is read as: itself, or for a Shared view the value it froze.
+  struct Plain {
+    JitOwnedVal held{TAG_NIL, 0};  // the frozen value, when `v` is one
+    JitValue v;
+    explicit Plain(const JitValue& in) : v(in) {
+      if (in.tag != TAG_OBJECT) return;
+      auto* obj = reinterpret_cast<JitObject*>(in.data);
+      if (!obj->is_shared_val) return;
+      held = JitOwnedVal(culebra::_jit_shared_val_plain(obj, 0, 0));
+      v = held.v;
+    }
+  };
   static culebra::json::Kind kind(const JitValue& v) {
     using culebra::json::Kind;
     switch (v.tag) {
@@ -7672,6 +7684,11 @@ inline culebra::toml::Node _jit_to_toml_node(int8_t tag, int64_t data,
     case TAG_OBJECT: {
       _toml_check_stringify_depth(depth, line, col);
       auto* obj = reinterpret_cast<JitObject*>(data);
+      // A Shared view is written as the value it froze.
+      if (obj->is_shared_val) {
+        JitOwnedVal plain(culebra::_jit_shared_val_plain(obj, line, col));
+        return _jit_to_toml_node(plain.v.tag, plain.v.data, line, col, depth);
+      }
       if (obj->non_string_props && !obj->non_string_props->empty()) {
         throw culebra::CulebraError("TypeError",
             "TOML.stringify: Object has non-String keys", line, col);

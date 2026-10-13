@@ -741,8 +741,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_register_packable_enum(
 }
 
 // `[...x]` array spread: append an iterable's elements to `arr` (each
-// retained). MVP sources: Array / Tuple / Set. The spread value's own
-// reference is dropped by the caller.
+// retained). Sources: Array / Tuple / Set, and a Shared view of one. The
+// spread value's own reference is dropped by the caller.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_extend(
     JitArray* arr, int8_t tag, int64_t data, int64_t line, int64_t col) {
   if (tag == TAG_ARRAY || tag == TAG_TUPLE) {
@@ -761,6 +761,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_extend(
       culebra_runtime_value_retain(m.value().tag, m.value().data);
       culebra_runtime_array_push(arr, m.value().tag, m.value().data);
     }
+  } else if (tag == TAG_OBJECT &&
+             reinterpret_cast<JitObject*>(data)->is_shared_val) {
+    // A Shared view is spread as the value it froze.
+    JitOwnedVal plain(culebra::_jit_shared_val_plain(
+        reinterpret_cast<JitObject*>(data), line, col));
+    culebra_runtime_array_extend(arr, plain.v.tag, plain.v.data, line, col);
   } else {
     throw culebra::CulebraError(
         "TypeError",
@@ -814,12 +820,14 @@ inline bool _jit_is_handle(JitObject* obj) {
   return obj->is_array_view || _jit_is_shared_buffer(obj) || obj->is_shared_val;
 }
 // ...so what walks an Object's own entries refuses one.
-inline void _jit_require_own_entries(JitObject* obj) {
+inline void _jit_require_own_entries(JitObject* obj, int64_t line = 0,
+                                     int64_t col = 0) {
   if (_jit_is_handle(obj))
     throw culebra::CulebraError(
         "TypeError",
         "a Shared view, a SharedBuffer or an array view has no entries of its "
-        "own to walk");
+        "own to walk",
+        line, col);
 }
 
 // Whether a subscript on `obj` is a question about its own entries. A handle
@@ -1003,6 +1011,14 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_merge(
         line, col);
   }
   auto* src = reinterpret_cast<JitObject*>(data);
+  // A Shared view is spread as the value it froze; a handle of another kind
+  // has no entries, and its slots are not for copying.
+  if (src->is_shared_val) {
+    JitOwnedVal plain(culebra::_jit_shared_val_plain(src, line, col));
+    culebra_runtime_object_merge(dst, plain.v.tag, plain.v.data, line, col);
+    return;
+  }
+  _jit_require_own_entries(src, line, col);
   // Each insert takes its own +1 to the value, and to a non-String key. One
   // into the sidecar can run a key's `eq`, which may change `src`: the walk
   // allows for that, and the caller holds `src` itself.
@@ -1533,8 +1549,31 @@ inline void _write_value_out(const JitObjectEntry* entry, int8_t* out_tag,
   }
 }
 
+// What a name finds on a Shared view, asked whether it is there (a pattern, a
+// host's `has`): a method of the view's, or the tree's entry under that key,
+// borrowed. The view's other slots are its bookkeeping, and a dropped view
+// has no entries left to find.
+inline bool _jit_shared_view_find(JitObject* view, const char* key,
+                                  JitValue* out) {
+  auto idx = view->find_slot(key);
+  if (idx != static_cast<size_t>(-1) &&
+      view->slots[idx].value.tag == TAG_FUNC) {
+    *out = view->slots[idx].value;
+    return true;
+  }
+  if (_jit_slot_or_nil(view, "_dropped").data) return false;
+  return culebra::_jit_shared_val_find(view, key, out, 0, 0);
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get(
     JitObject* obj, const char* key, int8_t* out_tag, int64_t* out_data) {
+  if (obj->is_shared_val) {
+    JitValue v{TAG_NIL, 0};
+    _jit_shared_view_find(obj, key, &v);
+    *out_tag = static_cast<int8_t>(v.tag);
+    *out_data = v.data;
+    return;
+  }
   _write_value_out(_find_property(obj, key), out_tag, out_data);
 }
 
@@ -1619,6 +1658,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
   }
   if (obj->shape) {
     auto idx = obj->find_slot(key);
+    // A Shared view's slots answer for its methods alone. The rest are the
+    // handle's bookkeeping, and a name that is no method is the tree's.
+    if (idx != static_cast<size_t>(-1) && obj->is_shared_val &&
+        obj->slots[idx].value.tag != TAG_FUNC)
+      idx = static_cast<size_t>(-1);
     if (idx != static_cast<size_t>(-1)) {
       // Same reason as the write cache: every dictionary carries the same
       // sentinel shape, so it must never prime a per-site cache.
@@ -1643,8 +1687,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
     if (auto* proto_entry = _find_property(obj->proto(), key))
       return proto_entry->value;
   }
-  // Shared.new view: own slots (markers + reader methods) resolved
-  // above; anything else reads the frozen tree (nil on miss, like a
+  // Shared.new view: its reader methods resolved above; anything else
+  // reads the frozen tree (nil on miss, like a
   // plain Object). The returned value is +0-borrowed: a string leaf is a
   // fresh heap string (leak-bounded by design like every JIT string), a
   // container child is a sub-view memoized on the parent view (see
@@ -1742,6 +1786,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has(JitObject* obj
     auto [core, base] = _jit_packed_view_record(obj);
     (void)base;
     return _jit_packed_view_layout(obj, *core).find(key) != nullptr;
+  }
+  if (obj->is_shared_val) {
+    JitValue found;
+    return _jit_shared_view_find(obj, key, &found);
   }
   return _find_property(obj, key) != nullptr;
 }

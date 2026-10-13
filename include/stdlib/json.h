@@ -30,6 +30,8 @@
 //
 // Reader requirements (see _JsonValueReader / _JitJsonReader):
 //   using Value;
+//   struct Plain { explicit Plain(const Value&); const Value& v; };
+//         // what a value is read as; a reader may stand another in for it
 //   Kind kind(v);  bool as_bool(v);  int64_t as_long(v);
 //   double as_double(v);  std::string_view as_string(v);
 //   size_t seq_size(v);  const Value& seq_at(v, i);
@@ -376,9 +378,13 @@ typename B::Value parse_lines(std::string_view s,
 // `sort_keys` walks Object keys alphabetically (deterministic output for
 // diffs / hashing). `depth` tracks recursion for indentation and for the
 // kJsonDepthLimit guard (a loop can build a value deeper than any parse).
+// A value is read through `R::Plain`, which is where a reader stands another
+// value in for the one it was handed.
 template <class R>
-std::string stringify(const typename R::Value& v, int64_t indent = 0,
+std::string stringify(const typename R::Value& value, int64_t indent = 0,
                       bool sort_keys = false, int depth = 0) {
+  const typename R::Plain plain(value);
+  const typename R::Value& v = plain.v;
   // The one allocation the program's `indent` sizes. A product past what
   // size_t holds asks for more than a String can, which std::string refuses
   // as it would the product itself.
@@ -458,8 +464,10 @@ std::string stringify(const typename R::Value& v, int64_t indent = 0,
 // `v` must be an Array/Tuple/Set; the `indent > 0` incompatibility is
 // rejected by the caller before it gets here.
 template <class R>
-std::string stringify_lines(const typename R::Value& v,
+std::string stringify_lines(const typename R::Value& value,
                             bool sort_keys = false) {
+  const typename R::Plain plain(value);
+  const typename R::Value& v = plain.v;
   if (R::kind(v) != Kind::Seq) {
     throw CulebraError("TypeError", culebra::format(
         "JSON.stringify(lines: true): expects Array/Tuple/Set, got {}",

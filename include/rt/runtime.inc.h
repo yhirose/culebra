@@ -3985,16 +3985,21 @@ inline bool _jit_is_shared_val(JitObject* obj) { return obj->is_shared_val; }
 // missing feature, and is reported as such.
 extern "C++" {
 namespace culebra {
-using SharedValPropFn = JitValue (*)(JitObject*, const char*, int64_t,
-                                     int64_t);
+using SharedValFindFn = bool (*)(JitObject*, const char*, JitValue*, int64_t,
+                                 int64_t);
 using SharedValIndexFn = JitValue (*)(JitObject*, int8_t, int64_t, int64_t,
                                       int64_t);
-inline std::atomic<SharedValPropFn>& _jit_shared_val_prop_hook() {
-  static std::atomic<SharedValPropFn> fn{nullptr};
+using SharedValPlainFn = JitValue (*)(JitObject*, int64_t, int64_t);
+inline std::atomic<SharedValFindFn>& _jit_shared_val_find_hook() {
+  static std::atomic<SharedValFindFn> fn{nullptr};
   return fn;
 }
 inline std::atomic<SharedValIndexFn>& _jit_shared_val_index_hook() {
   static std::atomic<SharedValIndexFn> fn{nullptr};
+  return fn;
+}
+inline std::atomic<SharedValPlainFn>& _jit_shared_val_plain_hook() {
+  static std::atomic<SharedValPlainFn> fn{nullptr};
   return fn;
 }
 [[noreturn]] inline void _jit_shared_val_unhooked(int64_t line, int64_t col) {
@@ -4002,11 +4007,21 @@ inline std::atomic<SharedValIndexFn>& _jit_shared_val_index_hook() {
                      "Shared value read before any Shared value was created",
                      line, col);
 }
+// Whether the tree has an entry under the String key `name`, with its value
+// in `*out` (borrowed) when it does. False for a view of anything but an
+// Object.
+inline bool _jit_shared_val_find(JitObject* view, const char* name,
+                                 JitValue* out, int64_t line, int64_t col) {
+  auto fn = _jit_shared_val_find_hook().load(std::memory_order_acquire);
+  if (!fn) _jit_shared_val_unhooked(line, col);
+  return fn(view, name, out, line, col);
+}
+// `view.name`: that entry's value, or nil for a name the tree does not have.
 inline JitValue _jit_shared_val_prop(JitObject* view, const char* name,
                                      int64_t line, int64_t col) {
-  auto fn = _jit_shared_val_prop_hook().load(std::memory_order_acquire);
-  if (!fn) _jit_shared_val_unhooked(line, col);
-  return fn(view, name, line, col);
+  JitValue v{TAG_NIL, 0};
+  _jit_shared_val_find(view, name, &v, line, col);
+  return v;
 }
 inline JitValue _jit_shared_val_index(JitObject* view, int8_t key_tag,
                                       int64_t key_data, int64_t line,
@@ -4014,6 +4029,15 @@ inline JitValue _jit_shared_val_index(JitObject* view, int8_t key_tag,
   auto fn = _jit_shared_val_index_hook().load(std::memory_order_acquire);
   if (!fn) _jit_shared_val_unhooked(line, col);
   return fn(view, key_tag, key_data, line, col);
+}
+// The value a view froze, as an ordinary one (+1): what `copy()` hands back.
+// It is what anything that reads a view as a whole value reads (showing it,
+// spreading it, serializing it): the view's own slots are its bookkeeping.
+inline JitValue _jit_shared_val_plain(JitObject* view, int64_t line,
+                                      int64_t col) {
+  auto fn = _jit_shared_val_plain_hook().load(std::memory_order_acquire);
+  if (!fn) _jit_shared_val_unhooked(line, col);
+  return fn(view, line, col);
 }
 }  // namespace culebra
 }

@@ -2075,14 +2075,18 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_getter_or_value(
   return {view_tag, view_data};
 }
 
-// A `**` operand must be an Object keyed only by Strings: the TypeError message
-// for one that is not, or "". Every keyword binder checks this before reading
-// an operand's entries.
+// A `**` operand must be an Object keyed only by Strings, with entries of its
+// own: the TypeError message for one that is not, or "". Every keyword binder
+// checks this before reading an operand's entries (a handle's slots are its
+// bookkeeping; a Shared view is splatted as `**{...view}`).
 inline std::string _jit_splat_operand_error(JitValue sv) {
   if (sv.tag != TAG_OBJECT)
     return culebra::format("**: splat operand must be Object, got {}",
                            _culebra_tag_name(sv.tag));
   auto* obj = reinterpret_cast<JitObject*>(sv.data);
+  if (_jit_is_handle(obj))
+    return "**: a Shared view, a SharedBuffer or an array view has no entries "
+           "of its own to splat";
   if (obj->non_string_props && !obj->non_string_props->empty())
     return "**: splat key must be String";
   return {};

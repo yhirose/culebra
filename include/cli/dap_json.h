@@ -84,6 +84,10 @@ struct _Builder {
 
 struct _Reader {
   using Value = dapjson::Value;  // json.h reads R::Value
+  struct Plain {  // json.h reads a value through R::Plain; here it is itself
+    const Value& v;
+    explicit Plain(const Value& in) : v(in) {}
+  };
   static json::Kind kind(const Value& v) {
     switch (v.type) {
       case Value::Nil: return json::Kind::Nil;

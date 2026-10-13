@@ -3515,6 +3515,15 @@ mutable values when you need a local scratch copy. `view[key]` and
 `view.has(key)` find a key the way the Object that was frozen does: any
 key it held, a Tuple or `nil` included, and never across types.
 
+Printing a view, `JSON.stringify(view)`, `TOML.stringify(view)` and a
+spread (`{...view}`, `[...view]`) read the value that was frozen, the one
+`view.copy()` hands back, so a spread's result is an ordinary value of
+the program's own all the way down. A keyword splat takes that spread
+(`f(**{...view})`); `**view` itself is a `TypeError`. A pattern reads a
+view's keys as `view.name` does (`let {port} = view`). `==` does not
+look inside a view: compare `view.copy()`. A view that has been dropped
+prints as `[dropped Shared value]`.
+
 The freeze is the same walk that ships values to isolates, so anything
 Sendable freezes — with two extra rejections: **functions** (`Shared`
 values are data only) and **native handles** (channels, buffers, other

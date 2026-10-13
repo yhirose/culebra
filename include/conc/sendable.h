@@ -1323,16 +1323,19 @@ inline const JitFrozenEntry* _jit_sv_find(const JitResolvedNode& rn,
   return nullptr;
 }
 
-// `view.name` data read on an own-slot miss — Object-node field, nil on
-// miss (mirroring a plain Object). Reached through rt_runtime.inc.h's
-// _jit_shared_val_prop_hook, which _jit_make_shared_val_view installs.
-inline JitValue _jit_shared_val_prop_impl(JitObject* view, const char* name,
-                                          int64_t line, int64_t col) {
+// The tree's entry under a String key, for a read by name (`view.name`, an
+// Object pattern): false on a miss, and for a view of anything but an Object.
+// Reached through rt_runtime.inc.h's _jit_shared_val_find_hook, which
+// _jit_make_shared_val_view installs.
+inline bool _jit_shared_val_find_impl(JitObject* view, const char* name,
+                                      JitValue* out, int64_t line,
+                                      int64_t col) {
   auto rn = _jit_shared_val_node_of(view, line, col);
-  if (rn.node->kind != sendable::SendNode::K::Object) return {TAG_NIL, 0};
+  if (rn.node->kind != sendable::SendNode::K::Object) return false;
   auto* entry = _jit_sv_indexed(rn, std::string_view(name));
-  if (!entry) return {TAG_NIL, 0};
-  return _jit_shared_val_child(view, rn.id, *rn.core, entry->second);
+  if (!entry) return false;
+  *out = _jit_shared_val_child(view, rn.id, *rn.core, entry->second);
+  return true;
 }
 
 // `view[key]` — Object key lookup (KeyError on miss) or Array/Tuple
@@ -1451,12 +1454,19 @@ inline void _jit_sv_values(JitValue* __ret, JitClosure*, int8_t self_tag, int64_
   { *__ret = {TAG_ARRAY, reinterpret_cast<int64_t>(arr)}; return; }
 }
 
+// The value a view froze, as an ordinary one: `copy()`, and what
+// _jit_shared_val_plain (rt_runtime.inc.h) reaches through its hook.
+inline JitValue _jit_shared_val_plain_impl(JitObject* view, int64_t line = 0,
+                                           int64_t col = 0) {
+  auto rn = _jit_shared_val_node_of(view, line, col);
+  return _jit_sv_materialize(*rn.node);
+}
+
 inline void _jit_sv_copy(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
-  auto [core, n, id, idx] = _jit_shared_val_node_of(
-      reinterpret_cast<JitObject*>(self.data));
-  { *__ret = _jit_sv_materialize(*n); return; }
+  { *__ret = _jit_shared_val_plain_impl(
+        reinterpret_cast<JitObject*>(self.data)); return; }
 }
 
 inline void _jit_sv_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
@@ -1585,9 +1595,11 @@ inline JitValue _jit_make_shared_val_view(int64_t id, int64_t node) {
   h->has_drop = true;
   // The one place a view comes into being, so the one place the generic
   // get/index paths learn how to read it (rt_runtime.inc.h).
-  _jit_shared_val_prop_hook().store(_jit_shared_val_prop_impl,
+  _jit_shared_val_find_hook().store(_jit_shared_val_find_impl,
                                     std::memory_order_release);
   _jit_shared_val_index_hook().store(_jit_shared_val_index_impl,
+                                     std::memory_order_release);
+  _jit_shared_val_plain_hook().store(_jit_shared_val_plain_impl,
                                      std::memory_order_release);
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }

@@ -278,4 +278,65 @@ assert_throws('ImmutableError', fn () {
 })
 assert_eq(sv_target.a, 1)
 
+# --- a view read as a whole value is the value it froze ---
+# Printing one, JSON.stringify and a spread read what copy() hands back. The
+# view's own slots are its bookkeeping, and none of them shows.
+let whole = Shared.new({a: 1, b: [1, (2, 3)], c: {d: 'x'}})
+assert_eq(to_string(whole), "\{a: 1, b: [1, (2, 3)], c: \{d: 'x'}}")
+assert_eq(to_string(whole.b), '[1, (2, 3)]')
+assert_eq("{whole.c}", "\{d: 'x'}")
+assert_eq(JSON.stringify(whole), '{"a":1,"b":[1,[2,3]],"c":{"d":"x"}}')
+assert_eq(JSON.stringify({ok: true, data: whole.c}),
+  '{"ok":true,"data":{"d":"x"}}')
+let spread = {...whole, e: 5}
+assert_eq(spread.keys(), ['a', 'b', 'c', 'e'])
+spread.b.push(9)  # what was spread is the program's own, all the way down
+assert_eq(whole.b.size(), 2)
+assert_eq([...whole.b, 0], [1, (2, 3), 0])
+# The view is still open once every copy of it is gone, and a child it has
+# handed out changes nothing about how it reads.
+assert_eq(whole.a, 1)
+assert_eq({...whole}.keys(), ['a', 'b', 'c'])
+# A name that is no method of the view is a key of the tree.
+let named = Shared.new({_dropped: 7, size: 3})
+assert_eq(named._dropped, 7)
+assert_eq(named.__sharedval_id__, nil)
+assert_eq(named['size'], 3)
+# ...and a pattern, which asks whether a key is there, asks the tree as well.
+let {_dropped: was_dropped, size: named_size} = named
+assert_eq(was_dropped, 7)
+assert_eq(type_of(named_size), 'Function')  # `size` is the view's own method
+assert_eq(match named {
+  {__sharedval_id__} => 'a marker',
+  {_dropped} => _dropped,
+  _ => 'none',
+}, 7)
+# A dropped view shows that it is one; reading it as a value is a read.
+let shown = Shared.new({a: 1})
+shown.drop()
+assert_eq(to_string(shown), '[dropped Shared value]')
+assert_throws('ClosedError', fn () { {...shown} })
+assert_throws('ClosedError', fn () { JSON.stringify(shown) })
+# A handle onto storage of another kind has no entries to spread.
+@packable
+class SharedSlotRec {
+  n: Int32 = 0
+}
+let slots = SharedBuffer.new(1, SharedSlotRec)
+assert_throws('TypeError', fn () { {...slots} })
+assert_eq(slots[0].n, 0)
+# A keyword splat reads entries the same way, so it refuses a handle too: a
+# view is splatted as the value it froze by spreading it first.
+fn shared_kw(**opts) {
+  opts.keys()
+}
+assert_throws('TypeError', fn () { shared_kw(**whole) })
+assert_throws('TypeError', fn () { shared_kw(**slots) })
+assert_eq(shared_kw(**{...whole}), ['a', 'b', 'c'])
+assert_eq([whole.a, slots[0].n], [1, 0])
+# TOML writes a view as JSON does.
+assert_eq(TOML.stringify(Shared.new({name: 'x', db: {port: 1}})),
+  TOML.stringify({name: 'x', db: {port: 1}}))
+assert_eq(TOML.stringify({cfg: whole.c}), TOML.stringify({cfg: {d: 'x'}}))
+
 IO.inspect('test_shared OK')
