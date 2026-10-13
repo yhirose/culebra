@@ -2,7 +2,7 @@
 
 // The neutral transfer representation (SendNode) plus the two helpers every
 // backend's serializer shares: send_error (one SendError spelling) and the
-// Shared.new freeze flag. Owns no GC-heap pointer and no engine type, so
+// dry-run flag. Owns no GC-heap pointer and no engine type, so
 // the compiled lanes' serializer (sendable_rt.h) and the isolate/channel
 // core (isolate_core.h) can include it without the interp. Moved verbatim
 // from sendable.h (Phase 4 B7-b).
@@ -84,9 +84,6 @@ struct SendNode {
   // Object, a class meta: which Dir module class it is (JitSpecialTable::
   // dir_kind), a fact of the meta's C++ side that the entries cannot carry.
   int8_t dir_kind = 0;
-  // A node of a Shared.new tree: its index in that tree's node table
-  // (SharedValCore::nodes), which is what a view of it is made from.
-  int32_t shared_index = -1;
 
   // Declared here, defaulted below the class, for the reason toml::Node's are
   // (toml.h): the self-referential vector<pair<SendNode, SendNode>> makes
@@ -122,21 +119,20 @@ using TraitDefaults = std::vector<TraitDefaultNode>;
   throw culebra::CulebraError("SendError", what);
 }
 
-// True while Shared.new is freezing a value (serialize-as-freeze). The
-// extract hooks consult it to SKIP the in-flight refcount bump: a freeze
-// is synchronous (no cross-thread in-flight window to protect) and Shared
-// rejects every handle anyway, so the bump would only ever need undoing
-// — and undoing it on the serialize-throws path (a cycle past an already
-// extracted handle) is exactly the leak this avoids. Set by a RAII guard
-// in make_shared_namespace / _ns_shared_new.
-inline bool& sharedval_freezing() {
+// True while a value is serialized only to be looked at, with no message to
+// carry it: Shared.new writing out a value it is about to refuse (it wants
+// the serializer's reason), a snapshot of the trait defaults. The extract
+// hooks consult it to SKIP the in-flight refcount bump, which nothing would
+// give back — on the serialize-throws path (a cycle past an already
+// extracted handle) least of all. Set by a RAII guard.
+inline bool& dry_run() {
   static thread_local bool f = false;
   return f;
 }
-struct FreezeGuard {
+struct DryRun {
   bool prev;
-  FreezeGuard() : prev(sharedval_freezing()) { sharedval_freezing() = true; }
-  ~FreezeGuard() { sharedval_freezing() = prev; }
+  DryRun() : prev(dry_run()) { dry_run() = true; }
+  ~DryRun() { dry_run() = prev; }
 };
 
 }  // namespace culebra::sendable

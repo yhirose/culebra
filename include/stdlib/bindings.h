@@ -7025,36 +7025,27 @@ inline JitValue _ns_signal_reset(JitValue*, int64_t) {
   return {TAG_NIL, 0};
 }
 
-// SharedBuffer.new(count, Cls): allocate a zero-initialized byte store of
-// `count` @packable records and return a buffer handle. Slow-path only (no
-// compile_ns_call fast path); the adapter builds everything directly.
-// Shared.new(value): freeze through the Sendable serializer (jit side)
-// and hand back the root view. Slow-path only, like the other isolate-
-// family namespaces. Rejections release the in-flight refs the
-// serializer took before throwing.
+// Shared.new(value): freeze the value (JitSvFreezer) and hand back the
+// root view. Slow-path only, like the other isolate-family namespaces.
 inline JitValue _ns_shared_new(JitValue* a, int64_t n) {
   if (n != 1) {
     throw culebra::CulebraError("ArityError",
         "Shared.new: expected 1 argument (value)");
   }
-  JitSerCtx ctx;
-  sendable::SendNode root;
+  culebra::FrozenTree frozen;
   try {
-    // Freeze mode: skip the in-flight bumps (see make_shared_namespace).
-    sendable::FreezeGuard _fz;
-    root = jit_serialize(a[0], ctx);
+    frozen = JitSvFreezer::freeze(a[0]);
   } catch (const culebra::CulebraError& e) {
     throw culebra::CulebraError(e.kind,
         culebra::format("Shared.new: {}", e.what()), e.line, e.col);
   }
-  if (auto* why = culebra::_shared_val_reject_reason(root)) {
-    throw culebra::CulebraError("SendError",
-        culebra::format("Shared.new: {}", why));
-  }
-  auto [id, tree] = culebra::freeze_shared_val(std::move(root));
-  return _jit_shared_val_root(tree, id, 0);
+  auto [id, core] = culebra::shared_val_register(std::move(frozen));
+  return _jit_shared_val_root(core, id, 0);
 }
 
+// SharedBuffer.new(count, Cls): allocate a zero-initialized byte store of
+// `count` @packable records and return a buffer handle. Slow-path only (no
+// compile_ns_call fast path); the adapter builds everything directly.
 inline JitValue _ns_sharedbuffer_new(JitValue* a, int64_t n) {
   if (n != 2) {
     throw culebra::CulebraError("ArityError",

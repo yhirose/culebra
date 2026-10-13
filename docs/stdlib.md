@@ -3547,10 +3547,10 @@ view's keys as `view.name` does (`let {port} = view`). `==` does not
 look inside a view: compare `view.copy()`. A view that has been dropped
 prints as `[dropped Shared value]`.
 
-The freeze is the same walk that ships values to isolates, so anything
-Sendable freezes — with two extra rejections: **functions** (`Shared`
-values are data only) and **native handles** (channels, buffers, other
-`Shared` views) raise `SendError`. Every write surface raises
+A freeze takes what a send to an isolate takes, so anything Sendable
+freezes, with two extra rejections: **functions** (`Shared` values are
+data only) and **native handles** (channels, buffers, other `Shared`
+views) raise `SendError`. Every write surface raises
 `ImmutableError`; updates are copy-on-write by construction (build a new
 value, `Shared.new` it again, hand out the new view). `view.drop()`
 releases the reference (idempotent); the tree itself is freed when the

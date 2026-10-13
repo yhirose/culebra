@@ -1,8 +1,8 @@
 # Shared.new — variable-length IMMUTABLE data shared by reference across
 # isolates (C4; the read-only lane next to SharedBuffer's fixed-layout
 # read+write lane and the channel's copy lane). The value is frozen once
-# (the Sendable serializer is the freeze), lives outside the GC, and
-# every isolate reads the same tree through a view handle: leaves
+# (what a channel can send, less functions and handles), lives outside the
+# GC, and every isolate reads the same tree through a view handle: leaves
 # materialize on access, containers come back as sub-views, nothing is
 # copied per worker.
 
@@ -108,6 +108,41 @@ try {
   kind = e.kind
 }
 assert_eq(kind, 'SendError')
+
+# --- a refused freeze says what stopped it: in the words a send would use
+# when the value cannot be sent at all, wherever in it that part is, and in
+# Shared's own when it can. ---
+fn shared_refusal(make) {
+  try {
+    Shared.new(make())
+    'frozen'
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+let refused_fn = 'SendError: Shared.new: functions cannot be shared (Shared values are data only)'
+let refused_cycle = 'SendError: Shared.new: a cyclic value cannot be sent'
+let refused_inner = Shared.new([1])
+assert_eq(shared_refusal(fn () { [1, |x| x] }), refused_fn)
+assert_eq(shared_refusal(fn () { |x| x }), refused_fn)
+assert_eq(shared_refusal(fn () { [println] }),
+  'SendError: Shared.new: a native/builtin function is not Sendable')
+assert_eq(shared_refusal(fn () { [[cyc]] }), refused_cycle)
+assert_eq(shared_refusal(fn () { [refused_inner] }),
+  'SendError: Shared.new: handles cannot be nested in a Shared value')
+assert_eq(shared_refusal(fn () { [|x| x, cyc] }), refused_cycle)
+assert_eq(shared_refusal(fn () { [cyc, |x| x] }), refused_cycle)
+assert_eq(shared_refusal(fn () { [|x| x, println] }),
+  'SendError: Shared.new: a native/builtin function is not Sendable')
+refused_inner.drop()
+assert_eq(shared_refusal(fn () { [refused_inner] }),
+  'ClosedError: Shared.new: Shared value has been dropped')
+mut refused_deep = [1]
+for _ in 0..1500 {
+  refused_deep = [refused_deep]
+}
+assert_eq(shared_refusal(fn () { refused_deep }),
+  'ValueError: Shared.new: nesting too deep (limit 1000)')
 cyc.pop()
 
 # --- drop: explicit, idempotent; reads after drop fail cleanly ---
@@ -625,5 +660,112 @@ mut same_class = {}
 same_class[SharedSuit.Hearts] = SharedSuit.Hearts
 otx.send(same_class)
 assert_eq(orx.recv()[SharedSuit.Hearts], SharedSuit.Hearts)
+
+# --- Objects with the same keys share what says so, and each stays itself ---
+# Many records of one key sequence, one of another order, one with a key
+# more: each reads, lists and copies as the Object it froze.
+mut shaped_src = iota(50).map(|i| {id: i, name: "n{i}", tags: [i, i + 1]})
+shaped_src.push({name: 'swapped', id: -1, tags: []})
+shaped_src.push({id: -2, name: 'wider', tags: [], extra: {id: 7}})
+shaped_src.push({})
+let shaped = Shared.new(shaped_src)
+for i in 0..shaped_src.size() {
+  assert_eq(shaped[i].keys(), shaped_src[i].keys())
+  assert_eq(shaped[i].copy(), shaped_src[i])
+  assert_eq(shaped[i].get('id', 'none'), shaped_src[i].get('id', 'none'))
+  assert_eq(shaped[i].has('extra'), shaped_src[i].has('extra'))
+}
+assert_eq(shaped[51].extra.id, 7)
+assert_eq(shaped[52].size(), 0)
+mut shaped_names = []
+for rec in shaped {
+  for (k, v) in rec {
+    shaped_names.push(v) if k == 'name'
+  }
+}
+assert_eq(shaped_names, shaped_src.filter(|r| r.has('name')).map(|r| r.name))
+
+# A key's mutability is the Object's own, whatever another of the same keys
+# has: a copy takes a write where the Object it froze did.
+mut frozen_loose = {}
+frozen_loose.a = 1
+frozen_loose.b = 2
+let frozen_fixed = {a: 1, b: 2}
+let frozen_mixed = Shared.new([frozen_loose, frozen_fixed, frozen_loose])
+mut frozen_loose_back = frozen_mixed[0].copy()
+frozen_loose_back.a = 10
+assert_eq(frozen_loose_back, {a: 10, b: 2})
+mut frozen_fixed_back = frozen_mixed[1].copy()
+assert_throws('ImmutableError', fn () {
+  frozen_fixed_back.a = 10
+})
+mut frozen_fixed_plain = frozen_fixed
+assert_throws('ImmutableError', fn () {
+  frozen_fixed_plain.a = 10
+})
+
+# A dictionary's worth of keys, of every plain kind, each found and none other.
+mut frozen_wide = {}
+for i in 0..300 {
+  frozen_wide["k{i}"] = i
+  frozen_wide[i] = -i
+  frozen_wide[(i, "t{i}")] = [i]
+  frozen_wide[i + 0.5] = 'f'
+}
+frozen_wide[nil] = 'nil'
+frozen_wide[true] = 'yes'
+let frozen_wide_view = Shared.new(frozen_wide)
+assert_eq(frozen_wide_view.size(), frozen_wide.size())
+for i in 0..300 {
+  assert_eq(frozen_wide_view["k{i}"], i)
+  assert_eq(frozen_wide_view[i], -i)
+  assert_eq(frozen_wide_view[(i, "t{i}")][0], i)
+  assert_eq(frozen_wide_view[i + 0.5], 'f')
+  assert_eq(frozen_wide_view.has("k{i + 300}"), false)
+  assert_eq(frozen_wide_view.has(i + 300), false)
+  assert_eq(frozen_wide_view.has((i, "t{i + 1}")), false)
+  assert_eq(frozen_wide_view.has(i + 0.25), false)
+}
+assert_eq([frozen_wide_view[nil], frozen_wide_view[true], frozen_wide_view.has(false), frozen_wide_view.has(1.0)],
+  ['nil', 'yes', false, false])
+assert_eq(frozen_wide_view.keys(), frozen_wide.keys())
+assert_eq(frozen_wide_view.copy(), frozen_wide)
+
+# A Set of as many, and one of Tuples.
+let frozen_wide_set = Shared.new(frozen_wide.keys().to_set())
+for k in frozen_wide.keys() {
+  assert_eq(frozen_wide_set.contains(k), true)
+}
+assert_eq([frozen_wide_set.contains('k300'), frozen_wide_set.contains((0, 't1')), frozen_wide_set.contains(300)],
+  [false, false, false])
+assert_eq(frozen_wide_set.size(), frozen_wide.size())
+
+# Strings: empty, long, repeated as key and as value, with bytes of every width.
+let frozen_texts = ['', 'a', 'id', 'id', 'é', '日本語', 'k' + 'k', "a\0b"]
+let frozen_text_view = Shared.new({id: frozen_texts, texts: 'id', '': ''})
+for i in 0..frozen_texts.size() {
+  assert_eq(frozen_text_view.id[i], frozen_texts[i])
+  assert_eq(frozen_text_view.id[i].size(), frozen_texts[i].size())
+}
+assert_eq([frozen_text_view.texts, frozen_text_view[''], frozen_text_view.id.index_of('日本語')], ['id', '', 5])
+
+# Empty containers at every level, and a root that is no container.
+let frozen_hollow = Shared.new([[], {}, (1,), [].to_set(), [[], [[]]]])
+assert_eq([frozen_hollow[0].size(), frozen_hollow[1].size(), frozen_hollow[2].size(), frozen_hollow[3].size()],
+  [0, 0, 1, 0])
+assert_eq(frozen_hollow.copy(), [[], {}, (1,), [].to_set(), [[], [[]]]])
+assert_eq(frozen_hollow[4][1][0].size(), 0)
+for leaf in [5, 2.5, 'text', nil, true] {
+  let frozen_leaf_view = Shared.new(leaf)
+  assert_eq(frozen_leaf_view.copy(), leaf)
+  assert_eq(frozen_leaf_view.size(), 0)
+  mut frozen_walked = 0
+  for _ in frozen_leaf_view {
+    frozen_walked += 1
+  }
+  assert_eq(frozen_walked, 0)
+  assert_throws('TypeError', fn () { frozen_leaf_view[0] })
+  assert_throws('TypeError', fn () { frozen_leaf_view.keys() })
+}
 
 IO.inspect('test_shared OK')

@@ -3447,8 +3447,8 @@ splatにはその展開を渡す（`f(**{...view})`）。`**view`そのものは
 （`let {port} = view`）。`==`はviewの中身を見ないので、`view.copy()`を
 比べる。dropしたviewは`[dropped Shared value]`と表示される。
 
-凍結はisolateへ値を送るのと同じwalkなので、Sendableなものは凍結
-できる — 追加の拒否が2つ: **関数**（`Shared`の値はデータのみ）と
+凍結できるのはisolateへ送れる値と同じで、Sendableなものは凍結
+できる。追加の拒否が2つ: **関数**（`Shared`の値はデータのみ）と
 **nativeハンドル**（channel・buffer・別の`Shared` view）は`SendError`。
 すべての書き込みは`ImmutableError`。更新は構造上copy-on-write
 （新しい値を作って再度`Shared.new`し、新viewを配る）。`view.drop()`
