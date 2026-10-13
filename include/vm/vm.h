@@ -805,13 +805,14 @@ enum ForSlot : int32_t {
   kForDisposed = 0,  // 1 once dispose ran: no exit path repeats it
   kForIterable = 1,  // the iterable expression's result
   kForSetArr = 2,    // a Set's materialised member Array (nil otherwise)
-  kForSrc = 3,       // what the protocol derives from (nil for array/string)
+  kForSrc = 3,       // what the protocol derives from, or a Shared view's
+                     // cursor reads through (nil for array/string)
   kForIter = 4,      // the iterator `iter()` returned (nil for array/string)
   kForElem = 5,      // this iteration's element, nil outside the hand-over
   kForKind = 6,      // ForKind: which cursor walks this iterable
   kForPos = 7,       // element index / byte offset
   kForCount = 8,     // element count / byte length
-  kForPtr = 9,       // array storage / string bytes
+  kForPtr = 9,       // array storage / string bytes / a Shared view's walk
   kForHasNext = 10,  // the hoisted has_next closure
   kForNext = 11,     // the hoisted next closure
   kForSlots = 12,
@@ -15582,14 +15583,21 @@ struct Exec {
       }
       case TAG_OBJECT: {
         // A Range walks its own iterator, a value carrying `iter` drives
-        // itself, and anything else takes the built-in key iterator — the
-        // JIT's three object arms, converging on one protocol open.
+        // itself, and anything else takes the built-in key iterator — three
+        // of the JIT's object arms, converging on one protocol open.
         if (culebra_runtime_is_range(static_cast<int8_t>(it.tag), it.data)) {
           auto* ri = culebra_runtime_range_iter(it.data, line, col);
           proto_open({TAG_OBJECT, reinterpret_cast<int64_t>(ri)});
           return;
         }
         auto* obj = reinterpret_cast<JitObject*>(it.data);
+        // A Shared view is walked by position; the slot owns what the cursor
+        // reads through.
+        if (auto* walk = culebra_runtime_shared_for_open(obj, line, col)) {
+          cur[kForSrc] = {TAG_OBJECT, reinterpret_cast<int64_t>(walk)};
+          open_counted(reinterpret_cast<int64_t>(walk), 0, FOR_SHARED);
+          return;
+        }
         if (culebra_runtime_has_iter_method(obj)) {
           _culebra_value_retain_impl(static_cast<int8_t>(it.tag), it.data);
           proto_open(it);
@@ -15607,7 +15615,7 @@ struct Exec {
   }
 
   // One step. True with the element's `+1` parked in kForElem, false when
-  // the walk is over (emit_for_advance_{array,protocol,string}).
+  // the walk is over (emit_for_advance_{array,protocol,string,shared}).
   static bool for_next(JitValue* cur) {
     int8_t tag = TAG_NIL;
     int64_t data = 0;
@@ -15636,6 +15644,16 @@ struct Exec {
             culebra_runtime_str_scalar_view(bytes, off, n));
         tag = TAG_STRINGVIEW;
         _culebra_value_retain_impl(tag, data);
+        break;
+      }
+      case FOR_SHARED: {
+        // The step hands the element over at +1.
+        int64_t i = cur[kForPos].data;
+        if (!culebra_runtime_shared_for_next(
+                reinterpret_cast<JitObject*>(cur[kForPtr].data), i, &tag,
+                &data))
+          return false;
+        cur[kForPos].data = i + 1;
         break;
       }
       default: {

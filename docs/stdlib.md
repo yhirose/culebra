@@ -3522,16 +3522,21 @@ A view also answers three questions the way the collection it froze
 does: `view.get(key, fallback)` on an Object and `view.get(i, fallback)`
 on an Array, `view.contains(x)` on a Set (a member, found as a key is),
 an Array or a Tuple (an element, by `==`), and `view.index_of(x)` on an
-Array. For the rest of what a
-sequence answers, take the view's iterator: `view.iter()` yields the
-elements one at a time with no copy of the whole, so
-`view.iter().map(f).collect()`, `.filter(f)`, `.sum()` and the other
-iterator methods read the frozen tree directly.
+Array. An Array view has the Array's `view.map(f)` and `view.filter(f)`
+too: each hands back an ordinary Array, and an element that is a
+container reaches `f`, and stays in what `filter` keeps, as a view. For
+the rest of what a sequence answers, take the view's iterator:
+`view.iter()` yields the elements one at a time with no copy of the
+whole, so `view.iter().map(f)`, `.sum()` and the other iterator methods
+read the frozen tree directly.
+
+A `for` over a view, and an iterator of one, hold the frozen tree
+themselves: dropping the view part-way does not end the walk.
 
 The view's own methods (`size`, `has`, `get`, `contains`, `index_of`,
-`keys`, `values`, `copy`, `iter`, `drop`) are what those names read as
-`view.name` and in a pattern. A key of the frozen Object by one of those
-names is still there under `view['name']`.
+`keys`, `values`, `copy`, `iter`, `map`, `filter`, `drop`) are what those
+names read as `view.name` and in a pattern. A key of the frozen Object by
+one of those names is still there under `view['name']`.
 
 Printing a view, `JSON.stringify(view)`, `TOML.stringify(view)` and a
 spread (`{...view}`, `[...view]`) read the value that was frozen, the one

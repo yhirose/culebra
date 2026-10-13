@@ -53,13 +53,13 @@ inline JitValue _jit_slot_or_nil(const JitObject* obj, std::string_view k) {
 }
 
 // A Shared view's own slots, in the order conc/sendable.h's
-// _jit_make_shared_val_view writes them: the registry id of the tree, the
-// index of the view's node in the tree's table, and the tree itself (a
-// SharedValCore). The view holds a count on the tree for as long as that last
-// slot is set, which is until it is dropped.
-enum : size_t { kSvIdSlot = 0, kSvNodeSlot = 1, kSvCoreSlot = 2 };
+// _jit_make_shared_val_view writes them: the index of the view's node in the
+// tree's table, and the Runtime's hold on the tree (a JitSvHold). The view is
+// counted on the hold for as long as that slot is set, which is until it is
+// dropped.
+enum : size_t { kSvNodeSlot = 0, kSvHoldSlot = 1 };
 inline bool _jit_shared_val_dropped(const JitObject* view) {
-  return view->slots[kSvCoreSlot].value.data == 0;
+  return view->slots[kSvHoldSlot].value.data == 0;
 }
 
 // The interned name every Range value's meta carries — the identity the

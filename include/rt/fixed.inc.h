@@ -1553,7 +1553,7 @@ inline void _write_value_out(const JitObjectEntry* entry, int8_t* out_tag,
 // host's `has`): a method off the meta every view shares, or the tree's entry
 // under that key, borrowed. The view's own slots are its bookkeeping, and a
 // dropped view has no entries left to find.
-inline bool _jit_shared_view_find(JitObject* view, const char* key,
+inline bool _jit_shared_view_find(JitObject* view, std::string_view key,
                                   JitValue* out) {
   if (auto* meta = view->proto()) {
     auto idx = meta->find_slot(key);
@@ -1564,6 +1564,27 @@ inline bool _jit_shared_view_find(JitObject* view, const char* key,
   }
   if (_jit_shared_val_dropped(view)) return false;
   return culebra::_jit_shared_val_find(view, key, out, 0, 0);
+}
+
+// `view.name`: a method off the meta, or the tree's entry (nil when it has
+// none). A method fills the cache's proto half as a class instance's does, so
+// the site's own code answers the next read of it.
+inline JitValue _jit_shared_view_get(JitObject* view, std::string_view key,
+                                     JitPropIC* ic, int64_t line,
+                                     int64_t col) {
+  auto* meta = view->proto();
+  auto idx = meta->find_slot(key);
+  if (idx != static_cast<size_t>(-1)) {
+    ic->owner_shape = view->shape;
+    ic->proto_shape = meta->shape;
+    ic->proto_offset = idx;
+    return meta->slots[idx].value;
+  }
+  // +0-borrowed: a string leaf is a fresh heap string (leak-bounded by design
+  // like every JIT string), a container child is a sub-view memoized on the
+  // parent view (see _jit_shared_val_child) and released on the parent's
+  // teardown.
+  return culebra::_jit_shared_val_prop(view, key, line, col);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get(
@@ -1648,6 +1669,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
               obj->slots[obj->find_slot("__sharedbuffer_count__")].value.data};
     }
   }
+  // A Shared view's own slots are the handle's bookkeeping and answer for no
+  // name.
+  if (obj->is_shared_val) return _jit_shared_view_get(obj, key, ic, line, col);
   // Cached proto hit: this receiver shape's own scan missed last time and the
   // proto resolved `key` at proto_offset, and neither shape has changed since
   // — so both linear scans are already answered. This is the shape a class
@@ -1657,9 +1681,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
       obj->proto()->shape == ic->proto_shape) {
     return obj->proto()->slots[ic->proto_offset].value;
   }
-  // A Shared view's own slots are the handle's bookkeeping and answer for no
-  // name: its methods are on its meta, and any other name is the tree's.
-  if (obj->shape && !obj->is_shared_val) {
+  if (obj->shape) {
     auto idx = obj->find_slot(key);
     if (idx != static_cast<size_t>(-1)) {
       // Same reason as the write cache: every dictionary carries the same
@@ -1684,16 +1706,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
     }
     if (auto* proto_entry = _find_property(obj->proto(), key))
       return proto_entry->value;
-  }
-  // Shared.new view: its reader methods resolved above, off its meta;
-  // anything else reads the frozen tree (nil on miss, like a
-  // plain Object). The returned value is +0-borrowed: a string leaf is a
-  // fresh heap string (leak-bounded by design like every JIT string), a
-  // container child is a sub-view memoized on the parent view (see
-  // _jit_shared_val_child) and released on the parent's teardown — no
-  // backstop-reclaimed orphan.
-  if (_jit_is_shared_val(obj)) {
-    return culebra::_jit_shared_val_prop(obj, key, line, col);
   }
   // A builtin namespace has a closed member set — an unknown member is a typo
   // or a removed API. Raise here (naming the member) instead of returning nil,

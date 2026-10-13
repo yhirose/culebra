@@ -7052,7 +7052,7 @@ inline JitValue _ns_shared_new(JitValue* a, int64_t n) {
         culebra::format("Shared.new: {}", why));
   }
   auto [id, tree] = culebra::freeze_shared_val(std::move(root));
-  return _jit_make_shared_val_view(tree, id, 0);
+  return _jit_shared_val_root(tree, id, 0);
 }
 
 inline JitValue _ns_sharedbuffer_new(JitValue* a, int64_t n) {

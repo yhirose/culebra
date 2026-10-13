@@ -4965,11 +4965,14 @@ struct Lowering {
           auto advArrayBB = BasicBlock::Create(j.ctx_, "vm.for.adv.arr", fn);
           auto advProtoBB = BasicBlock::Create(j.ctx_, "vm.for.adv.proto", fn);
           auto advStringBB = BasicBlock::Create(j.ctx_, "vm.for.adv.str", fn);
+          auto advSharedBB =
+              BasicBlock::Create(j.ctx_, "vm.for.adv.shared", fn);
           auto kindV = b.CreateLoad(b.getInt8Ty(), cur.kind, "vm.for.kind");
-          auto sw = b.CreateSwitch(kindV, advArrayBB, 3);
+          auto sw = b.CreateSwitch(kindV, advArrayBB, 4);
           sw->addCase(b.getInt8(FOR_ARRAY), advArrayBB);
           sw->addCase(b.getInt8(FOR_PROTO), advProtoBB);
           sw->addCase(b.getInt8(FOR_STRING), advStringBB);
+          sw->addCase(b.getInt8(FOR_SHARED), advSharedBB);
           auto* bodyBB = blocks.at(static_cast<int32_t>(i) + 1);
           auto* exitBB = blocks.at(in.b);
           j.emit_for_advance_array(cur, advArrayBB, bodyBB, exitBB);
@@ -4977,6 +4980,7 @@ struct Lowering {
                                       static_cast<size_t>(line),
                                       static_cast<size_t>(col));
           j.emit_for_advance_string(cur, advStringBB, bodyBB, exitBB);
+          j.emit_for_advance_shared(cur, advSharedBB, bodyBB, exitBB);
           break;
         }
         case Op::ForDispose:

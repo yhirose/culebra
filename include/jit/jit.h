@@ -4271,7 +4271,8 @@ struct JIT {
   // on `kind`. Uniform state is what lets the body be emitted once.
   struct ForCursor {
     llvm::Value* kind;      // i8    — ForKind
-    llvm::Value* src;       // ptr   — array storage / string bytes
+    llvm::Value* src;       // ptr   — array storage / string bytes / a
+                            //         Shared view's walk
     llvm::Value* pos;       // i64   — element index / byte offset
     llvm::Value* count;     // i64   — element count / byte length
     llvm::Value* iter;      // Value — scope slot owning the protocol iterator
@@ -4360,6 +4361,35 @@ struct JIT {
     auto elem = emit_load_elem(
         emit_array_slot(builder_.CreateLoad(ptrTy, c.src), idx));
     builder_.CreateStore(emit_borrow_to_owned(elem), c.elem);
+    builder_.CreateBr(bodyBB);
+  }
+
+  // A Shared view: the runtime reads position `pos` off the tree, and the
+  // element arrives at +1 (culebra_runtime_shared_for_next).
+  void emit_for_advance_shared(const ForCursor& c, llvm::BasicBlock* advBB,
+                               llvm::BasicBlock* bodyBB,
+                               llvm::BasicBlock* exitBB) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto i64Ty = builder_.getInt64Ty();
+    auto fn = advBB->getParent();
+    auto stepBB = llvm::BasicBlock::Create(ctx_, "for.next.shared.step", fn);
+
+    builder_.SetInsertPoint(advBB);
+    auto idx = builder_.CreateLoad(i64Ty, c.pos, "for.s.i");
+    auto ok = emit_call(
+        module_->getOrInsertFunction(rt::shared_for_next, i64Ty, ptrTy, i64Ty,
+                                     ptrTy, ptrTy),
+        {builder_.CreateLoad(ptrTy, c.src), idx, c.out_tag, c.out_data},
+        "for.s.ok");
+    builder_.CreateCondBr(
+        builder_.CreateICmpNE(ok, builder_.getInt64(0), "for.s.alive"), stepBB,
+        exitBB);
+
+    builder_.SetInsertPoint(stepBB);
+    builder_.CreateStore(builder_.CreateAdd(idx, builder_.getInt64(1)), c.pos);
+    auto t = builder_.CreateLoad(builder_.getInt8Ty(), c.out_tag, "for.s.tag");
+    auto d = builder_.CreateLoad(i64Ty, c.out_data, "for.s.data");
+    builder_.CreateStore(make_value(t, d), c.elem);
     builder_.CreateBr(bodyBB);
   }
 
@@ -4624,7 +4654,8 @@ struct JIT {
     //                  generators, `.code_points()`/`.graphemes()` et al.)
     //   otherwise    → the builtin key iterator (a fresh +1)
     // All three converge on one protocol setup, so the loop below is
-    // emitted once no matter which arm ran.
+    // emitted once no matter which arm ran. A Shared view takes none of
+    // them: it is walked by position, as an Array is.
     builder_.SetInsertPoint(objectBB);
     auto objPtr = builder_.CreateIntToPtr(data, ptrTy);
     // A range value iterates start..end (errors if unbounded). It carries
@@ -4643,6 +4674,26 @@ struct JIT {
     builder_.CreateBr(protoOpenBB);
 
     builder_.SetInsertPoint(notRangeBB);
+    // The open answers null for an Object that is no view; for one that is,
+    // the slot owns what the cursor reads through.
+    auto sharedBB = llvm::BasicBlock::Create(ctx_, "for.obj.shared", fn);
+    auto notSharedBB =
+        llvm::BasicBlock::Create(ctx_, "for.obj.notshared", fn);
+    auto walk = emit_call(
+        module_->getOrInsertFunction(rt::shared_for_open, ptrTy, ptrTy,
+                                     builder_.getInt64Ty(),
+                                     builder_.getInt64Ty()),
+        {objPtr, builder_.getInt64(static_cast<int64_t>(iter_line)),
+         builder_.getInt64(static_cast<int64_t>(iter_col))},
+        "for.shared.walk");
+    builder_.CreateCondBr(builder_.CreateIsNull(walk), notSharedBB, sharedBB);
+
+    builder_.SetInsertPoint(sharedBB);
+    store_slot(own_slot, make_object(walk));
+    open_counted_cursor(c, walk, builder_.getInt64(0), FOR_SHARED);
+    builder_.CreateBr(headBB);
+
+    builder_.SetInsertPoint(notSharedBB);
     auto hasIter = emit_has_iter_method(objPtr);
     auto keysBB = llvm::BasicBlock::Create(ctx_, "for.obj.keys", fn);
     auto protoBB = llvm::BasicBlock::Create(ctx_, "for.obj.proto", fn);
@@ -5026,8 +5077,9 @@ struct JIT {
   }
 
   // A read site's own inline cache; the layout mirrors JitPropIC field for
-  // field — the IR reads only {shape, offset}, the runtime helper owns the
-  // proto trio. All three shape fields are seeded to the non-null sentinel
+  // field. The IR reads all five (emit_property_get: the own slot, then the
+  // proto hit) and the runtime helper fills them, so a value it writes there
+  // is one the IR indexes with. All three shape fields are seeded to the non-null sentinel
   // `(void*)1` so the first read always misses to the slow path: real Shape*
   // are heap-allocated (8-byte aligned, never == 1) and a freshly-allocated
   // Object has shape == null, so the sentinel can never spuriously fast-path

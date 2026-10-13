@@ -143,6 +143,11 @@ inline bool fn_introspection_name(std::string_view name) {
 
 // Cursor kinds the unified for-in head switches on: the compiler picks one
 // per container, both engines dispatch on it.
-enum ForKind : int8_t { FOR_ARRAY = 0, FOR_PROTO = 1, FOR_STRING = 2 };
+enum ForKind : int8_t {
+  FOR_ARRAY = 0,
+  FOR_PROTO = 1,
+  FOR_STRING = 2,
+  FOR_SHARED = 3,  // a Shared view, by position
+};
 
 }  // namespace culebra

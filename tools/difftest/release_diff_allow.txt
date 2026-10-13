@@ -305,3 +305,10 @@ typos|[1, 2].max_by(|x| "k")
 # baseline's view had no such reader: the name read the frozen tree (nil) and
 # the call raised.
 sharedval|*s.get("a"*
+
+# `map` is a Shared view's own method now (an Array view's, as the Array's
+# own), so `view.map()` is that method refusing a call without its callback.
+# The baseline's view had none: the call went on to a free function of the
+# name where one took the view, and raised where none did.
+ufcsshadow|map|*|Shared.new({a: 1})
+ufcsshadownest|map|*|Shared.new({a: 1})

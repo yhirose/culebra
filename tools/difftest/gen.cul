@@ -1588,13 +1588,13 @@ let shv = [
   '{ let s = Shared.new({ a: 1 }); s.get("a") }',
   '{ let s = Shared.new({ a: 1 }); s.get("a", 0) }',
   '{ let s = Shared.new({ a: 1 }); s.remove("a") }',
-  '{ let s = Shared.new({ a: 1 }); s.remove("__sharedval_id__"); to_string(s.a) }',
+  '{ let s = Shared.new({ a: 1 }); s.remove("__sharedval_hold__"); to_string(s.a) }',
   '{ let s = Shared.new({ a: 1 }); s.get_or_put("z", 9) }',
   '{ let s = Shared.new({ 1: "one", true: "yes", k: "z" }); to_string(s[1]) + to_string(s[true]) + s["k"] + to_string(s.size()) }',
   '{ let s = Shared.new({ 1: 10, 2: 20 }); mut t = 0; for k, v in s { t = t + v }; t }',
   '{ let s = Shared.new({ a: 1 }); let it = s.iter(); to_string(it.has_next()) }',
   '{ let s = Shared.new({ m: { z: 5 } }); let v = s.m; s.drop(); v.z }',
-  '{ let fake = { __sharedval_id__: 9, __sharedval_node__: 0 }; to_string(fake.x) + to_string(fake["__sharedval_id__"]) }',
+  '{ let fake = { __sharedval_node__: 0, __sharedval_hold__: 9 }; to_string(fake.x) + to_string(fake["__sharedval_hold__"]) }',
   '{ let v = Shared.new({ a: 1 }); to_string(try { Shared.new({ inner: v }) } catch e { e.kind }) + to_string(v.a) }',
 ]
 for c in shv {

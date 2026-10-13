@@ -3423,13 +3423,19 @@ viewは要素を返す）。スカラフィールドは読み手のheapに材料
 viewは、凍結したコレクションと同じ答え方をする問い合わせを3つ持つ。
 Objectの`view.get(key, fallback)`とArrayの`view.get(i, fallback)`、Set
 （要素をキーと同じやり方で探す）とArray・Tuple（要素を`==`で探す）の
-`view.contains(x)`、Arrayの`view.index_of(x)`。列が答えるそれ以外の操作には、viewのイテレータを使う。
+`view.contains(x)`、Arrayの`view.index_of(x)`。Arrayのviewは、Arrayの
+`view.map(f)`と`view.filter(f)`も持つ。どちらも普通のArrayを返し、
+コンテナの要素はviewとして`f`に渡り、`filter`が残した要素もviewのままになる。
+列が答えるそれ以外の操作には、viewのイテレータを使う。
 `view.iter()`は全体をコピーせずに要素を1つずつ返すので、
-`view.iter().map(f).collect()`、`.filter(f)`、`.sum()`などのイテレータの
-メソッドが、凍結した木を直接読む。
+`view.iter().map(f)`、`.sum()`などのイテレータのメソッドが、凍結した木を
+直接読む。
+
+viewの`for`とviewのイテレータは、凍結した木を自分で保持する。途中でviewを
+dropしても走査は終わらない。
 
 view自身のメソッド名（`size`、`has`、`get`、`contains`、`index_of`、
-`keys`、`values`、`copy`、`iter`、`drop`）は、`view.name`でもパターンでも
+`keys`、`values`、`copy`、`iter`、`map`、`filter`、`drop`）は、`view.name`でもパターンでも
 そのメソッドとして読まれる。凍結したObjectが同じ名前のキーを持っていても、
 そのキーは`view['name']`で読める。
 

@@ -134,9 +134,13 @@ PYEOF
 # graphemes leaf beside them.
 # 18 -> 19 (2026-09-28, reviewed): XML.events, a leaf source over the pull
 # parser that XML.parse builds its tree from.
+# 19 -> 20 (2026-10-13): a Shared view's `iter()`, a leaf source over the
+# frozen tree. It was a hand-built {has_next, next} pair until then, which
+# this count never saw; it has nothing to dispose (the walk's own view goes
+# with the captures).
 wf=$(count_no_upstream '_iter_wrap_fast<[^>]*>\s*\(')
-ratchet "no-upstream _iter_wrap_fast calls (leaves)" "$wf" 19
+ratchet "no-upstream _iter_wrap_fast calls (leaves)" "$wf" 20
 
 if (( fail )); then exit 1; fi
 echo "iter-wiring OK (pull=$pull/0 advance_raw=$adv/25 has_next_closure=$hnc/4" \
-     "wrap_fast-leaves=$wf/19)"
+     "wrap_fast-leaves=$wf/20)"

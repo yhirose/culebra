@@ -197,15 +197,23 @@ assert_throws('ArityError', fn () {
   gone.has()
 })
 
-# --- iter() hands back the bare iterator protocol, nothing else ---
-# The cursor and the node it walks are the iterator's own business; the object
-# carries the two protocol methods and no implementation detail.
+# --- iter() hands back the iterator an Array's own iter() is ---
+# The position and the node it walks are the iterator's own business; the
+# object carries the protocol's methods and no implementation detail.
 let it = arr_view.iter()
-assert_eq(it.keys(), ['has_next', 'next'])
+assert_eq(it.keys(), [1].iter().keys())
 assert_eq(it.has_next(), true)
 assert_eq(it.next(), 1)
 assert_eq(it.next(), 2)
 assert_eq(it.has_next(), false)
+assert_eq(it.next(), nil)
+# An iterator is its own `iter()`, so a `for` takes one as it takes the view.
+mut via_iter = []
+for x in Shared.new([4, 5, 6]).iter() {
+  via_iter.push(x)
+}
+assert_eq(via_iter, [4, 5, 6])
+assert_eq(Shared.new([7]).iter().iter().next(), 7)
 
 # An Object view yields (key, value) pairs, and a container value comes back
 # as a sub-view the pair owns — the pair must outlive this step.
@@ -218,6 +226,100 @@ for (k, v) in Shared.new({a: [1, 2], b: [3]}) {
   seen.push("{k}={v.size()}")
 }
 assert_eq(seen, ['a=2', 'b=1'])
+
+# --- `for` walks a view by position, as it walks the value it froze ---
+let walked_src = [[1, 2], [3], [], [4, 5, 6]]
+let walked = Shared.new(walked_src)
+mut flat_view = []
+for row in walked {
+  for x in row {
+    flat_view.push(x)
+  }
+}
+assert_eq(flat_view, [1, 2, 3, 4, 5, 6])
+mut picked = []
+for row in walked {
+  if row.size() == 1 {
+    continue
+  }
+  if row.size() == 3 {
+    break
+  }
+  picked.push(row.size())
+}
+assert_eq(picked, [2, 0])
+mut members = []
+for x in Shared.new([3, 1, 2].to_set()) {
+  members.push(x)
+}
+assert_eq(members, [3, 1, 2])
+mut of_tuple = []
+for x in Shared.new((7, [8])) {
+  of_tuple.push(to_string(x))
+}
+assert_eq(of_tuple, ['7', '[8]'])
+mut whole_pairs = []
+for p in Shared.new({a: 1}) {
+  whole_pairs.push(p)
+}
+assert_eq(whole_pairs, [('a', 1)])
+for _ in Shared.new([]) {
+  assert_eq('walked', 'nothing')
+}
+# A row the loop handed over is a view of its own: it outlives the step.
+mut kept_rows = []
+for row in walked {
+  kept_rows.push(row)
+}
+assert_eq(kept_rows.map(|r| r.size()), [2, 1, 0, 3])
+# The walk holds the tree on its own: dropping the view part-way does not end
+# it. A view dropped before the loop is refused where the loop opens.
+let dropped_midway = Shared.new([1, 2, 3])
+mut after_drop = []
+for x in dropped_midway {
+  after_drop.push(x)
+  dropped_midway.drop()
+}
+assert_eq(after_drop, [1, 2, 3])
+assert_throws('ClosedError', fn () {
+  for x in dropped_midway {
+    assert_eq('walked', 'nothing')
+  }
+})
+# A walk suspended in a generator keeps its place, and one abandoned there
+# gives the tree back with the generator.
+fn shared_rows_gen(view) {
+  for row in view {
+    for x in row {
+      yield x
+    }
+  }
+}
+let suspended = shared_rows_gen(walked)
+assert_eq(suspended.next(), 1)
+assert_eq(suspended.next(), 2)
+assert_eq(suspended.next(), 3)
+assert_eq(shared_rows_gen(walked).collect(), [1, 2, 3, 4, 5, 6])
+# Several isolates walk one tree at once, each through views of its own, and
+# a view one of them hands back still reads once that isolate is gone.
+let walkers = [0, 1, 2, 3].map(|i| Isolate.spawn(fn () {
+  mut n = 0
+  mut last = nil
+  for round in 0..50 {
+    for row in walked {
+      for x in row {
+        n += x
+      }
+      last = row
+    }
+  }
+  (n, last)
+}))
+for h in walkers {
+  let (n, last) = h.join()
+  assert_eq(n, 1050)
+  assert_eq(last.copy(), [4, 5, 6])
+}
 
 # A key that isn't there is a KeyError, not a nil.
 assert_throws('KeyError', fn () { cfg['zz'] })
@@ -365,6 +467,53 @@ assert_eq(said(|| view_obj.keys(1)), said(|| asked_obj.keys(1)))
 assert_throws('TypeError', fn () { view_obj.contains('a') })
 assert_throws('TypeError', fn () { view_tup.index_of(3) })
 assert_throws('TypeError', fn () { view_tup.get(0, nil) })
+# `map` and `filter` are the Array's own, over what a walk of the view yields:
+# a container element reaches the callback as a view, and a kept one stays one.
+let table_src = [[1, 2], [3], [4, 5, 6]]
+let table = Shared.new(table_src)
+assert_eq(table.map(|row| row.size()), table_src.map(|row| row.size()))
+assert_eq(view_arr.map(|x| type_of(x)), ['Long', 'Long', 'Float', 'String', 'Object', 'Nil'])
+assert_eq(Shared.new([3, 1, 2]).map(|x| x * 2), [6, 2, 4])
+assert_eq(Shared.new([3, 1, 2]).filter(|x| x > 1), [3, 2])
+assert_eq(Shared.new([]).map(|x| x), [])
+let wide_rows = table.filter(|row| row.size() > 1)
+assert_eq(wide_rows.map(|row| row.copy()), [[1, 2], [4, 5, 6]])
+assert_eq(wide_rows[1].contains(5), true)
+assert_eq(table.map(|row| row.filter(|x| x % 2 == 0)), [[2], [], [4, 6]])
+assert_eq(said(|| view_arr.map(3)), said(|| asked_arr.map(3)))
+assert_eq(said(|| view_arr.map(|| 1)), said(|| asked_arr.map(|| 1)))
+assert_eq(said(|| view_arr.map()), said(|| asked_arr.map()))
+assert_eq(said(|| view_arr.filter(|a, b| true)), said(|| asked_arr.filter(|a, b| true)))
+assert_eq(said(|| view_arr.filter(1, 2)), said(|| asked_arr.filter(1, 2)))
+# ...and at its own argument, not where the Array's call before it was.
+let refused_line = fn (f) {
+  try {
+    f()
+    nil
+  } catch e {
+    e.line
+  }
+}
+let on_array = refused_line(|| asked_arr.map(3))
+let on_view = refused_line(|| view_arr.map(3))
+assert_eq(on_view, on_array + 1)
+assert_throws('TypeError', fn () { view_set.map(|x| x) })
+assert_throws('TypeError', fn () { view_obj.filter(|x| true) })
+# What the callback throws leaves the view as it was.
+assert_throws('ValueError', fn () {
+  table.map(fn (row) {
+    throw {kind: 'ValueError', message: 'stop'}
+  })
+})
+assert_eq(table.map(|row| row[0]), [1, 3, 4])
+# A callback may drop the view it is being called for: the answer is whole,
+# and the view is closed after it.
+let self_dropping = Shared.new([[1], [2], [3]])
+assert_eq(self_dropping.map(fn (row) {
+  self_dropping.drop()
+  row[0]
+}), [1, 2, 3])
+assert_throws('ClosedError', fn () { self_dropping.size() })
 # Everything else a sequence answers, the view's iterator answers, one element
 # at a time and with no copy of the whole.
 assert_eq(view_arr.iter().filter(|x| type_of(x) == 'Long').map(|x| x * 2).collect(),
@@ -381,10 +530,9 @@ assert_throws('IndexError', fn () { arr_view[99] })
 # view's own slot names warmed still refuses the view.
 let sv_target = Shared.new({a: 1})
 fn poke(o) {
-  o.__sharedval_core__ = 0
+  o.__sharedval_hold__ = 0
 }
-let sv_impostor = {__sharedval_id__: 0, __sharedval_node__: 0,
-  mut __sharedval_core__: 1}
+let sv_impostor = {__sharedval_node__: 0, mut __sharedval_hold__: 1}
 for _ in 0..3 {
   poke(sv_impostor)
 }
@@ -415,14 +563,14 @@ assert_eq({...whole}.keys(), ['a', 'b', 'c'])
 # A name that is no method of the view is a key of the tree.
 let named = Shared.new({_dropped: 7, size: 3})
 assert_eq(named._dropped, 7)
-assert_eq(named.__sharedval_id__, nil)
+assert_eq(named.__sharedval_node__, nil)
 assert_eq(named['size'], 3)
 # ...and a pattern, which asks whether a key is there, asks the tree as well.
 let {_dropped: was_dropped, size: named_size} = named
 assert_eq(was_dropped, 7)
 assert_eq(type_of(named_size), 'Function')  # `size` is the view's own method
 assert_eq(match named {
-  {__sharedval_id__} => 'a marker',
+  {__sharedval_node__} => 'a marker',
   {_dropped} => _dropped,
   _ => 'none',
 }, 7)

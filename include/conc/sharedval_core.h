@@ -99,7 +99,7 @@ struct SharedValCore {
         plain;
     std::vector<size_t> other;
   };
-  // Pre-order node table; a view's `__sharedval_node__` is an index here, and
+  // Pre-order node table; a view's node slot is an index here, and
   // each node carries its own index back (SendNode::shared_index). A keyed
   // node's entry has its key index beside it.
   struct Entry {
@@ -112,9 +112,11 @@ struct SharedValCore {
   // the first name it by: what rebuilding one node of the tree resolves a
   // backref through.
   std::unordered_map<int, const SendNode*> metas;
-  // Live count: every view holds one, and a message in flight one per view it
-  // carries. Whoever adds to it holds a count already, so it is never added
-  // to at zero and needs no lock; the registry's mutex covers the map alone.
+  // Live count: one per Runtime's hold on the tree (conc/sendable.h's
+  // JitSvHold, which the views of that Runtime count on in turn), and one per
+  // view a message in flight carries. Whoever adds to it holds a count
+  // already, so it is never added to at zero and needs no lock; the
+  // registry's mutex covers the map alone.
   mutable std::atomic<int64_t> refcount{0};
 };
 
@@ -140,15 +142,13 @@ inline SharedValCore* shared_val_acquire(int64_t id) {
   it->second->refcount.fetch_add(1, std::memory_order_relaxed);
   return it->second.get();
 }
-// One more count on a tree the caller holds a count on already. N isolates
-// reading one tree mint views of it side by side, and this is all the tree
-// itself hears of that (a registry mutex here once held 8 reader threads to
-// one thread's throughput).
+// One more count on a tree the caller holds a count on already: a view going
+// into a message.
 inline void shared_val_retain(const SharedValCore& core) {
   core.refcount.fetch_add(1, std::memory_order_relaxed);
 }
-// Give a count back, by the tree (a view's). The last one takes the tree out
-// of the registry, releasing it outside the lock (mirrors
+// Give a count back, by the tree (a Runtime's hold). The last one takes the
+// tree out of the registry, releasing it outside the lock (mirrors
 // shared_buffer_drop); a count taken by id in between leaves it there.
 inline void shared_val_release(const SharedValCore& core, int64_t id) {
   if (core.refcount.fetch_sub(1, std::memory_order_acq_rel) != 1) return;

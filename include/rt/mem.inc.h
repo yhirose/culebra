@@ -41,6 +41,13 @@ inline bool _culebra_call_drop_if_present(JitObject* o) {
   if (!o || !o->has_drop) return false;
   if (o->dropped) return false;  // already ran (explicit or backstop)
   if (_jit_drop_suppressed()) return false;  // program exit — no finalizer
+  // A Shared view's drop is the runtime's own: there is no body to look up,
+  // and nothing it can throw or keep.
+  if (o->is_shared_val) {
+    o->dropped = true;
+    culebra::_jit_shared_val_drop(o);
+    return true;
+  }
   // Walks proto so class-sugar instances find their inherited `drop`.
   auto* cls = _protocol_member(o, "drop");
   if (!cls || cls->arity != 0) return false;
@@ -1087,6 +1094,8 @@ inline constexpr auto enumerate_any        = "culebra_runtime_enumerate_any";
 inline constexpr auto iter_flat_map        = "culebra_runtime_iter_flat_map";
 inline constexpr auto iter_advance         = "culebra_runtime_iter_advance";
 inline constexpr auto iter_protocol_open   = "culebra_runtime_iter_protocol_open";
+inline constexpr auto shared_for_open      = "culebra_runtime_shared_for_open";
+inline constexpr auto shared_for_next      = "culebra_runtime_shared_for_next";
 inline constexpr auto str_code_points      = "culebra_runtime_str_code_points";
 inline constexpr auto str_scalars          = "culebra_runtime_str_scalars";
 inline constexpr auto str_scalar_view      = "culebra_runtime_str_scalar_view";

@@ -162,6 +162,25 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_protocol_open(
   *out_next = next;
 }
 
+// `for ... in view` over a Shared view walks it by position, as it walks an
+// Array: no iterator is made. The open hands back what the cursor reads
+// through (+1, see _jit_shared_val_walk), or null for an Object that is no
+// view; a step hands the element at `at` over at +1 and answers whether there
+// was one.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_shared_for_open(
+    JitObject* obj, int64_t line, int64_t col) {
+  if (!obj->is_shared_val) return nullptr;
+  return culebra::_jit_shared_val_walk(obj, line, col);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_shared_for_next(
+    JitObject* walk, int64_t at, int8_t* out_tag, int64_t* out_data) {
+  JitValue v;
+  if (!culebra::_jit_shared_val_step(walk, at, &v)) return 0;
+  *out_tag = static_cast<int8_t>(v.tag);
+  *out_data = v.data;
+  return 1;
+}
+
 // Pre-resolve an upstream's has_next / next closures into a pair of
 // TAG_LONG cells the lazy factories below thread into their captures.
 // Folds the 4-line "cell_new for has_next, cell_new for next" pattern
