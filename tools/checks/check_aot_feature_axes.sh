@@ -188,6 +188,9 @@ peg_choke='^culebra::pegparser::load[(]'
 proc_choke='^culebra::proc::run_command[(]'
 png_choke='^culebra::image::decode_png[(]'
 ttf_choke='^culebra::_canvas_detail::ttf_load[(]'
+# One name for both sides: `shared` has to find it for `none` lacking it to
+# mean anything.
+shared_reader='culebra::_jit_shared_val_find_impl[(]'
 # The __Foreign fixture is its own archive: a `wrap<T>` registrar its TU pins
 # through static init, so it can't ride namespace-group dead-stripping either.
 # The class metadata wrap<T> instantiates is the tell — the registrar variable
@@ -265,7 +268,7 @@ expect_absent none 'culebra::foreign_fixture::' "the fixture's own C++ class"
 # endpoints) is reached only through the hooks _jit_make_shared_val_view
 # installs (rt_runtime.inc.h), never by symbol from the generic property paths.
 expect_absent none 'culebra::jit_serialize[(]' "the isolate transfer graph"
-expect_absent none 'culebra::_jit_shared_val_prop_impl[(]' "the SharedVal reader"
+expect_absent none "$shared_reader" "the SharedVal reader"
 expect_absent none '_jit_isolate_teardown_join_all' "the isolate teardown join"
 expect_absent none "$fmt_machinery" "libstdc++'s formatter, a program that formats nothing"
 expect_absent none "$tensor_kernels" "cpp-tensorlib's elementwise kernels"
@@ -466,7 +469,7 @@ expect_output method_names "6"
 # `copy` reaches the deserializer, which reaches everything else.
 build shared 'let s = Shared.new({a: 1, xs: [10, 20]})
 IO.print(s.a + s.xs[1])'
-expect_present shared 'culebra::_jit_shared_val_prop_impl[(]' "Shared named"
+expect_present shared "$shared_reader" "Shared named"
 expect_present shared 'culebra::jit_serialize[(]' "Shared named"
 expect_class shared "$regex_choke" "W?" "expected 'W' or absent" "Shared only"
 expect_class shared "$search_choke" "W?" "expected 'W' or absent" "Shared only"
