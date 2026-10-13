@@ -32,6 +32,13 @@ struct JitSerCtx {
   int next_id = 0;
   std::set<const void*> visiting;          // container cycle guard
 };
+// The tree a Shared view reads (kSvCoreSlot, rt/string.inc.h), or null once
+// the view is dropped.
+inline const culebra::SharedValCore* _jit_sv_core(const JitObject* view) {
+  return reinterpret_cast<const culebra::SharedValCore*>(
+      view->slots[kSvCoreSlot].value.data);
+}
+
 struct JitDeCtx {
   std::map<int, JitValue> closures;        // ref id -> rebuilt closure
   std::map<int, JitObject*> protos;        // ref id -> rebuilt class meta
@@ -135,17 +142,15 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
       // release_inflight_channels; the receiver handle takes its own ref
       // at rebuild). Mirrors the interp's sharedval extract hook.
       if (o->is_shared_val) {
-        size_t di = o->find_slot("_dropped");
-        if (di != static_cast<size_t>(-1) && o->slots[di].value.data) {
+        auto* tree = _jit_sv_core(o);
+        if (!tree) {
           throw culebra::CulebraError("ClosedError",
                                       "Shared value has been dropped");
         }
-        int64_t svid = o->slots[o->find_slot("__sharedval_id__")].value.data;
-        if (!sendable::sharedval_freezing()) culebra::shared_val_bump(svid);
+        if (!sendable::sharedval_freezing()) culebra::shared_val_retain(*tree);
         n.kind = K::SharedVal;
-        n.i = svid;
-        n.ref_id = static_cast<int>(
-            o->slots[o->find_slot("__sharedval_node__")].value.data);
+        n.i = o->slots[kSvIdSlot].value.data;
+        n.ref_id = static_cast<int>(o->slots[kSvNodeSlot].value.data);
         return n;
       }
       // A generator is a frame of this thread's, part-way through its body.
@@ -311,7 +316,8 @@ inline JitValue jit_float(double d) {
 
 inline JitValue _jit_make_channel_endpoint(int64_t id, int role);  // fwd
 inline JitValue _jit_make_shared_buffer_handle(int64_t id, int64_t count);  // fwd
-inline JitValue _jit_make_shared_val_view(int64_t id, int64_t node);       // fwd
+inline JitValue _jit_make_shared_val_view(const culebra::SharedValCore* tree,
+                                          int64_t id, int64_t node);  // fwd
 
 inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
   using K = sendable::SendNode::K;
@@ -474,10 +480,11 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
           n.i, core ? static_cast<int64_t>(core->count) : 0);
     }
     case K::SharedVal: {
-      // The receiver handle takes its own ref; the in-flight +1 from the
-      // sender's extract is released by release_inflight_channels.
-      culebra::shared_val_bump(n.i);
-      return _jit_make_shared_val_view(n.i, n.ref_id);
+      // The receiver handle takes its own count; the in-flight one from the
+      // sender's extract is released by release_inflight_channels. A tree
+      // that is gone makes a view that reads as a dropped one.
+      return _jit_make_shared_val_view(culebra::shared_val_acquire(n.i), n.i,
+                                       n.ref_id);
     }
   }
   return {TAG_NIL, 0};
@@ -1174,52 +1181,94 @@ inline void _jit_shared_buffer_with_lock(JitValue* __ret, JitClosure*, int8_t se
 
 // ===========================================================================
 // Shared.new views (concurrency C4). The frozen SendNode tree lives in
-// culebra::shared_val_registry(); a view is a plain JitObject carrying
-// (id, node-index) markers + the O(1) `is_shared_val` flag + the reader
-// methods. Data reads are intercepted in the object get/index runtime
-// helpers (jit.h), mirroring the interp's eval_property /
-// eval_array_reference hooks.
+// culebra::shared_val_registry(); a view is a JitObject flagged
+// `is_shared_val` whose three slots say which node of which tree it reads
+// (kSvIdSlot and its neighbours) and whose `proto` is the one meta every view
+// of a Runtime shares, where the reader methods are. Data reads are
+// intercepted in the object get/index runtime helpers (rt/fixed.inc.h).
 // ===========================================================================
 
+// The reads of views under way on this thread, and the counts a `drop()` gave
+// back while one was. A read holds no count of its own on the tree it is
+// reading: the view it reads through does, and this is what keeps the tree
+// there when the program's own code, run from inside the read (a key's `hash`,
+// an `==`, a `drop` body a collection fires), drops that view. Per thread, so
+// N isolates reading one tree touch nothing they share.
+// Every read passes through here, so it is constant-initialized (see
+// JitThreadState, rt/runtime.inc.h) and the parked counts are kept apart.
+struct JitSharedValReads {
+  int depth = 0;
+  int parked = 0;
+};
+inline constinit thread_local JitSharedValReads _jit_sv_reads;
+inline auto& _jit_sv_parked() {
+  thread_local std::vector<std::pair<const culebra::SharedValCore*, int64_t>>
+      parked;
+  return parked;
+}
+
+// Give a view's count on its tree back: now, or once the reads under way on
+// this thread are over.
+inline void _jit_sv_release(const culebra::SharedValCore& tree, int64_t id) {
+  auto& reads = _jit_sv_reads;
+  if (reads.depth == 0) {
+    culebra::shared_val_release(tree, id);
+    return;
+  }
+  _jit_sv_parked().emplace_back(&tree, id);
+  ++reads.parked;
+}
+
+// A view's node, for the length of one read (see JitSharedValReads).
 struct JitResolvedNode {
-  std::shared_ptr<culebra::SharedValCore> core;
+  const culebra::SharedValCore* core;
   const sendable::SendNode* node;
+  const culebra::SharedValCore::KeyIndex* keys;  // a keyed node's, else null
   int64_t id;
-  size_t idx;  // node table index (== key_index key for a keyed node)
+  size_t idx;  // node table index
+  JitSharedValReads& reads = _jit_sv_reads;  // one thread-local fetch a read
+
+  JitResolvedNode(const culebra::SharedValCore* c, int64_t i, size_t at)
+      : core(c), node(c->nodes[at].node), keys(c->nodes[at].keys), id(i),
+        idx(at) {
+    ++reads.depth;
+  }
+  JitResolvedNode(const JitResolvedNode&) = delete;
+  JitResolvedNode& operator=(const JitResolvedNode&) = delete;
+  ~JitResolvedNode() {
+    if (--reads.depth > 0 || reads.parked == 0) return;
+    reads.parked = 0;
+    // Releasing a tree runs none of the program's code, so nothing parks
+    // another while these go back.
+    auto& parked = _jit_sv_parked();
+    for (const auto& [tree, tree_id] : parked)
+      culebra::shared_val_release(*tree, tree_id);
+    parked.clear();
+  }
 };
 
 inline JitResolvedNode
 _jit_shared_val_node_of(JitObject* view, int64_t line = 0, int64_t col = 0) {
-  // Position: the get/index interceptions pass the access position; the
-  // handle methods leave 0 and fall back to the published call site
-  // (the handle-method ClosedError convention).
-  if (line == 0) {
-    line = _jit_thread.call_line;
-    col = _jit_thread.call_col;
-  }
-  size_t di = view->find_slot("_dropped");
-  if (di != static_cast<size_t>(-1) && view->slots[di].value.data) {
+  auto* tree = _jit_sv_core(view);
+  if (!tree) {
+    // Position: the get/index interceptions pass the access position; the
+    // handle methods leave 0 and fall back to the published call site
+    // (the handle-method ClosedError convention).
+    if (line == 0) {
+      line = _jit_thread.call_line;
+      col = _jit_thread.call_col;
+    }
     throw culebra::CulebraError("ClosedError",
                                 "Shared value has been dropped", line, col);
   }
-  int64_t id = view->slots[view->find_slot("__sharedval_id__")].value.data;
-  auto core = culebra::lookup_shared_val(id);
-  if (!core) {
-    throw culebra::CulebraError("ClosedError",
-                                "Shared value has been dropped", line, col);
-  }
-  int64_t node = view->slots[view->find_slot("__sharedval_node__")].value.data;
-  if (node < 0 || node >= static_cast<int64_t>(core->nodes.size())) {
-    throw culebra::CulebraError("ValueError", "corrupt Shared view",
-                                line, col);
-  }
-  const auto* n = core->nodes[static_cast<size_t>(node)];
-  return {std::move(core), n, id, static_cast<size_t>(node)};
+  return JitResolvedNode(
+      tree, view->slots[kSvIdSlot].value.data,
+      static_cast<size_t>(view->slots[kSvNodeSlot].value.data));
 }
 
 // One node, one JitValue (+1): a leaf materializes (strings are heap
-// strings, leak-bounded by design), a container mints a sub-view (+1 on
-// the registry, released by that view's drop).
+// strings, leak-bounded by design), a container mints a sub-view (one more
+// count on the tree, given back by that view's drop).
 inline JitValue _jit_shared_val_read(int64_t id,
                                      const culebra::SharedValCore& core,
                                      const sendable::SendNode& n) {
@@ -1236,9 +1285,8 @@ inline JitValue _jit_shared_val_read(int64_t id,
     case K::Object:
     case K::Set:
     case K::Tuple: {
-      culebra::shared_val_bump(id);
-      return _jit_make_shared_val_view(
-          id, static_cast<int64_t>(core.ids.at(&n)));
+      culebra::shared_val_retain(core);
+      return _jit_make_shared_val_view(&core, id, n.shared_index);
     }
     default:
       throw culebra::CulebraError("ValueError", "corrupt Shared view");
@@ -1254,10 +1302,10 @@ inline JitValue _jit_shared_val_read(int64_t id,
 // the PARENT owns the +1 and every read of the same child returns the same
 // borrowed handle. The parent's release cascades: its non_string_props sidecar
 // (unused by a view otherwise — views are immutable, no user non-String keys)
-// releases the cached sub-views on the object release path, each dropping its
-// registry ref. Primitives/strings have no sub-view, so they pass straight
-// through. Views are per-isolate JitObjects (only the core id is shared), so
-// this mutation needs no lock. "Leak-free" here means bounded retention for the
+// releases the cached sub-views on the object release path, each giving back
+// its count on the tree. Primitives/strings have no sub-view, so they pass
+// straight through. Views are per-isolate JitObjects (only the tree is
+// shared), so this mutation needs no lock. "Leak-free" here means bounded retention for the
 // parent view's lifetime (a distinct child read pins its sub-view until the
 // view drops), not eager reclaim of a transiently-unreferenced sub-view — the
 // necessary cost of honoring the +0-borrowed return contract. Retention is
@@ -1275,8 +1323,7 @@ inline JitValue _jit_shared_val_child(JitObject* view, int64_t id,
     default:
       return _jit_shared_val_read(id, core, child);  // primitive/string leaf
   }
-  auto key = JitHashedKey::of(
-      {TAG_LONG, static_cast<int64_t>(core.ids.at(&child))});
+  auto key = JitHashedKey::of({TAG_LONG, child.shared_index});
   if (view->non_string_props) {
     auto it = view->non_string_props->find(key);
     if (it != view->non_string_props->end())
@@ -1331,9 +1378,8 @@ inline constexpr size_t kNoKey = static_cast<size_t>(-1);
 
 template <class PlainKey>
 inline size_t _jit_sv_indexed(const JitResolvedNode& rn, const PlainKey& key) {
-  const auto& plain = rn.core->key_index.at(rn.idx).plain;
-  auto it = plain.find(key);
-  return it == plain.end() ? kNoKey : it->second;
+  auto it = rn.keys->plain.find(key);
+  return it == rn.keys->plain.end() ? kNoKey : it->second;
 }
 
 inline size_t _jit_sv_find(const JitResolvedNode& rn, const JitValue& key) {
@@ -1347,7 +1393,7 @@ inline size_t _jit_sv_find(const JitResolvedNode& rn, const JitValue& key) {
   // Any other key is hashable or it is the TypeError an Object's lookup is.
   JitValue unhashable{TAG_NIL, 0};
   if (!JitHashedKey::try_of(key, &unhashable)) _jit_throw_unhashable(unhashable);
-  for (size_t at : rn.core->key_index.at(rn.idx).other) {
+  for (size_t at : rn.keys->other) {
     JitOwnedVal stored(
         _jit_sv_materialize(*rn.core, culebra::shared_key_at(*rn.node, at)));
     if (JitValueEq{}(stored.borrow(), key)) return at;
@@ -1379,7 +1425,7 @@ inline int64_t _jit_sv_position(const JitResolvedNode& rn, const JitValue& x) {
 // The tree's entry under a String key, for a read by name (`view.name`, an
 // Object pattern): false on a miss, and for a view of anything but an Object.
 // Reached through rt_runtime.inc.h's _jit_shared_val_find_hook, which
-// _jit_make_shared_val_view installs.
+// _jit_shared_val_meta installs.
 inline bool _jit_shared_val_find_impl(JitObject* view, const char* name,
                                       JitValue* out, int64_t line,
                                       int64_t col) {
@@ -1399,7 +1445,9 @@ inline JitValue _jit_shared_val_index_impl(JitObject* view, int8_t key_tag,
                                            int64_t key_data, int64_t line,
                                            int64_t col) {
   auto rn = _jit_shared_val_node_of(view, line, col);
-  const auto& [core, n, id, node_id] = rn;
+  const auto* core = rn.core;
+  const auto* n = rn.node;
+  int64_t id = rn.id;
   using K = sendable::SendNode::K;
   switch (n->kind) {
     case K::Object: {
@@ -1609,14 +1657,18 @@ inline void _jit_sv_copy(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
 inline void _jit_sv_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
-  if (!_jit_handle_drop_consumed(reinterpret_cast<JitObject*>(self.data)))
-    culebra::shared_val_drop(_jit_self_long(self, "__sharedval_id__"));
+  // Once: clearing the slot is what says the count has gone back.
+  auto* view = reinterpret_cast<JitObject*>(self.data);
+  if (auto* tree = _jit_sv_core(view)) {
+    view->slots[kSvCoreSlot].value.data = 0;
+    _jit_sv_release(*tree, view->slots[kSvIdSlot].value.data);
+  }
   { *__ret = {TAG_NIL, 0}; return; }
 }
 
-// for-in protocol: the JIT's object iter dispatch prefers a user `iter`
-// own slot, so binding one here covers `for ... in view` with no core
-// changes. Object nodes yield (key, value) pairs, Array/Tuple/Set nodes
+// for-in protocol: the JIT's object iter dispatch prefers an `iter` the
+// object answers for, so the one on the view's meta covers `for ... in view`
+// with no core changes. Object nodes yield (key, value) pairs, Array/Tuple/Set nodes
 // yield elements — mirroring the local collection protocols. The tree is
 // immutable, so a plain cursor is a correct snapshot.
 //
@@ -1650,7 +1702,7 @@ inline void _jit_sv_iter_next(JitValue* __ret, JitClosure* cls, int8_t self_tag,
   JitMethodSelf _s{self};
   auto rn = _jit_sv_iter_resolve(cls);
   const auto* n = rn.node;
-  const auto& core = rn.core;
+  const auto* core = rn.core;
   int64_t id = rn.id;
   auto* cursor = cls->captures[_SV_ITER_CURSOR];
   int64_t idx = cursor->value.data;
@@ -1679,15 +1731,14 @@ inline void _jit_sv_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
   // Validate first (a dropped handle must not mint a live iterator) and
   // reuse the resolved id/node index.
   auto rn = _jit_shared_val_node_of(view);
-  // The iterator holds the tree open on its own: the interpreter's readers
-  // capture the core shared_ptr, so an explicit `view.drop()` part-way
-  // through an iteration doesn't pull the tree out from under them. Here the
-  // registry ref rides a private view — never handed to user code — whose
-  // own `drop` returns it once the captures are collected. It also carries
-  // the id/node markers the readers resolve through.
-  culebra::shared_val_bump(rn.id);
-  JitValue keeper =
-      _jit_make_shared_val_view(rn.id, static_cast<int64_t>(rn.idx));
+  // The iterator holds the tree open on its own, so an explicit
+  // `view.drop()` part-way through an iteration doesn't pull the tree out
+  // from under it: the count rides a private view, never handed to user
+  // code, whose own `drop` returns it once the captures are collected. It
+  // also carries the id/node slots the readers resolve through.
+  culebra::shared_val_retain(*rn.core);
+  JitValue keeper = _jit_make_shared_val_view(
+      rn.core, rn.id, static_cast<int64_t>(rn.idx));
   JitCell* caps[] = {
       culebra_runtime_cell_new(keeper.tag, keeper.data),
       culebra_runtime_cell_new(TAG_LONG, 0),
@@ -1711,36 +1762,68 @@ inline void _jit_sv_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
   { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
 }
 
-inline JitValue _jit_make_shared_val_view(int64_t id, int64_t node) {
+// The meta every view of this Runtime points `proto` at: a plain Object (not
+// a class meta, so `type_of` and equality see a view as before) that holds
+// the reader methods, pinned like the native metas. Borrowed: the table holds
+// the +1, and each view takes one of its own.
+inline JitObject* _jit_shared_val_meta() {
+  auto& t = culebra::runtime_substate<_JitPinnedMetas<int>>(
+      culebra::kSlotSharedValMeta);
+  auto it = t.tbl.find(0);
+  if (it == t.tbl.end()) {
+    // The method closures are unrooted until slotted into the meta.
+    culebra::gc::Heap::CollectPause pause(_gc_heap());
+    auto* meta = culebra_runtime_object_new();
+    _jit_view_method(meta, "size", _jit_sv_size);
+    _jit_view_method(meta, "has", _jit_sv_has);
+    _jit_view_method(meta, "get", _jit_sv_get);
+    _jit_view_method(meta, "contains", _jit_sv_contains);
+    _jit_view_method(meta, "index_of", _jit_sv_index_of);
+    _jit_view_method(meta, "keys", _jit_sv_keys);
+    _jit_view_method(meta, "values", _jit_sv_values);
+    _jit_view_method(meta, "copy", _jit_sv_copy);
+    _jit_view_method(meta, "iter", _jit_sv_iter);
+    _jit_view_method(meta, "drop", _jit_sv_drop);
+    _gc_heap().pin(meta);
+    it = t.tbl.emplace(0, meta).first;
+    // No view exists before the first meta does, so this is where the
+    // generic get/index paths learn how to read one (rt_runtime.inc.h).
+    _jit_shared_val_find_hook().store(_jit_shared_val_find_impl,
+                                      std::memory_order_release);
+    _jit_shared_val_index_hook().store(_jit_shared_val_index_impl,
+                                       std::memory_order_release);
+    _jit_shared_val_plain_hook().store(_jit_shared_val_plain_impl,
+                                       std::memory_order_release);
+  }
+  return it->second;
+}
+
+// A view of node `node` of `tree`, taking over one count on the tree (none
+// for a null tree, whose view reads as a dropped one). Every view has the one
+// shape, so it is stamped on rather than grown a slot at a time: a shape
+// transition takes a process-wide lock, and an iteration over rows mints a
+// view per row.
+inline JitValue _jit_make_shared_val_view(const culebra::SharedValCore* tree,
+                                          int64_t id, int64_t node) {
+  static culebra::Shape* const shape = [] {
+    auto& shapes = culebra::shape_registry();
+    auto* s = shapes.view_root();
+    for (const char* name :
+         {"__sharedval_id__", "__sharedval_node__", "__sharedval_core__"})
+      s = shapes.transition_add(s, name);
+    return s;
+  }();
+  auto* meta = _jit_shared_val_meta();
   auto* h = _jit_view_new(&JitObject::is_shared_val);
-  h->set_or_append("__sharedval_id__", JitValue{TAG_LONG, id}, false);
-  h->set_or_append("__sharedval_node__", JitValue{TAG_LONG, node}, false);
-  h->set_or_append("_dropped", JitValue{TAG_BOOL, 0}, true);
-  auto meth = [&](const char* nm,
-                  void (*f)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
-    h->set_or_append(nm,
-        JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(f))},
-        false);
-  };
-  meth("size", _jit_sv_size);
-  meth("has", _jit_sv_has);
-  meth("get", _jit_sv_get);
-  meth("contains", _jit_sv_contains);
-  meth("index_of", _jit_sv_index_of);
-  meth("keys", _jit_sv_keys);
-  meth("values", _jit_sv_values);
-  meth("copy", _jit_sv_copy);
-  meth("iter", _jit_sv_iter);
-  meth("drop", _jit_sv_drop);
+  h->shape = shape;
+  h->slots.reserve(3);
+  h->slots.push_back({JitValue{TAG_LONG, id}, false});
+  h->slots.push_back({JitValue{TAG_LONG, node}, false});
+  h->slots.push_back(
+      {JitValue{TAG_LONG, reinterpret_cast<int64_t>(tree)}, false});
+  meta->refcount++;
+  h->set_proto(meta);
   h->has_drop = true;
-  // The one place a view comes into being, so the one place the generic
-  // get/index paths learn how to read it (rt_runtime.inc.h).
-  _jit_shared_val_find_hook().store(_jit_shared_val_find_impl,
-                                    std::memory_order_release);
-  _jit_shared_val_index_hook().store(_jit_shared_val_index_impl,
-                                     std::memory_order_release);
-  _jit_shared_val_plain_hook().store(_jit_shared_val_plain_impl,
-                                     std::memory_order_release);
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
 

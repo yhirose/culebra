@@ -2462,6 +2462,9 @@ enum RuntimeSlot : size_t {
   // `proto` at (the element methods). Holds a +1 and a pin, placed like the
   // two above.
   kSlotXmlElementMeta,
+  // The same, for the one meta every Shared view points its `proto` at (the
+  // reader methods). Holds a +1 and a pin, placed like the three above.
+  kSlotSharedValMeta,
   kSlotShapeRegistry,  // reserved/unused: the Shape intern table is now a
                        // process-global singleton (see jit.h ShapeRegistry) —
                        // Shapes are shared immutable metadata, not isolated heap

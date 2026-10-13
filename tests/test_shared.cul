@@ -123,6 +123,33 @@ try {
 }
 assert_eq(kind, 'ClosedError')
 
+# A sub-view holds the tree on its own, so it outlives the view it came from.
+let parent = Shared.new({xs: [7, 8, 9]})
+let outlives = parent.xs
+parent.drop()
+assert_eq(outlives[2], 9)
+
+# A read that runs the program's own code may have its view dropped under it:
+# the tree stays until the read is over, and the view is closed after it.
+class SharedDropper {
+  new(v) {
+    self.v = v
+  }
+  __eq__(other) {
+    self.v.drop()
+    false
+  }
+}
+let doomed = Shared.new([1, 'x', [4]])
+assert_eq(doomed.contains(SharedDropper(doomed)), false)
+assert_throws('ClosedError', fn () { doomed.size() })
+
+# Two views of one node are the same view to `==`; of two nodes, they are not,
+# whatever the nodes hold.
+let twice = Shared.new([[1, 2], [1, 2]])
+assert_eq(twice.iter().next() == twice.iter().next(), true)
+assert_eq(twice[0] == twice[1], false)
+
 # --- cross-isolate: the same tree is READ by workers, not copied ---
 let dict = Shared.new({hello: 1, world: 2, big: [10, 20, 30]})
 let w = Isolate.spawn(fn () {
@@ -354,12 +381,10 @@ assert_throws('IndexError', fn () { arr_view[99] })
 # view's own slot names warmed still refuses the view.
 let sv_target = Shared.new({a: 1})
 fn poke(o) {
-  o._dropped = true
+  o.__sharedval_core__ = 0
 }
-let noop = || nil
 let sv_impostor = {__sharedval_id__: 0, __sharedval_node__: 0,
-  mut _dropped: false, size: noop, has: noop, get: noop, contains: noop,
-  index_of: noop, keys: noop, values: noop, copy: noop, iter: noop, drop: noop}
+  mut __sharedval_core__: 1}
 for _ in 0..3 {
   poke(sv_impostor)
 }

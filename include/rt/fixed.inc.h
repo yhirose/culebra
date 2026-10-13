@@ -1550,18 +1550,19 @@ inline void _write_value_out(const JitObjectEntry* entry, int8_t* out_tag,
 }
 
 // What a name finds on a Shared view, asked whether it is there (a pattern, a
-// host's `has`): a method of the view's, or the tree's entry under that key,
-// borrowed. The view's other slots are its bookkeeping, and a dropped view
-// has no entries left to find.
+// host's `has`): a method off the meta every view shares, or the tree's entry
+// under that key, borrowed. The view's own slots are its bookkeeping, and a
+// dropped view has no entries left to find.
 inline bool _jit_shared_view_find(JitObject* view, const char* key,
                                   JitValue* out) {
-  auto idx = view->find_slot(key);
-  if (idx != static_cast<size_t>(-1) &&
-      view->slots[idx].value.tag == TAG_FUNC) {
-    *out = view->slots[idx].value;
-    return true;
+  if (auto* meta = view->proto()) {
+    auto idx = meta->find_slot(key);
+    if (idx != static_cast<size_t>(-1)) {
+      *out = meta->slots[idx].value;
+      return true;
+    }
   }
-  if (_jit_slot_or_nil(view, "_dropped").data) return false;
+  if (_jit_shared_val_dropped(view)) return false;
   return culebra::_jit_shared_val_find(view, key, out, 0, 0);
 }
 
@@ -1656,13 +1657,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
       obj->proto()->shape == ic->proto_shape) {
     return obj->proto()->slots[ic->proto_offset].value;
   }
-  if (obj->shape) {
+  // A Shared view's own slots are the handle's bookkeeping and answer for no
+  // name: its methods are on its meta, and any other name is the tree's.
+  if (obj->shape && !obj->is_shared_val) {
     auto idx = obj->find_slot(key);
-    // A Shared view's slots answer for its methods alone. The rest are the
-    // handle's bookkeeping, and a name that is no method is the tree's.
-    if (idx != static_cast<size_t>(-1) && obj->is_shared_val &&
-        obj->slots[idx].value.tag != TAG_FUNC)
-      idx = static_cast<size_t>(-1);
     if (idx != static_cast<size_t>(-1)) {
       // Same reason as the write cache: every dictionary carries the same
       // sentinel shape, so it must never prime a per-site cache.
@@ -1687,8 +1685,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
     if (auto* proto_entry = _find_property(obj->proto(), key))
       return proto_entry->value;
   }
-  // Shared.new view: its reader methods resolved above; anything else
-  // reads the frozen tree (nil on miss, like a
+  // Shared.new view: its reader methods resolved above, off its meta;
+  // anything else reads the frozen tree (nil on miss, like a
   // plain Object). The returned value is +0-borrowed: a string leaf is a
   // fresh heap string (leak-bounded by design like every JIT string), a
   // container child is a sub-view memoized on the parent view (see

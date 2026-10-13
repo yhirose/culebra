@@ -52,6 +52,16 @@ inline JitValue _jit_slot_or_nil(const JitObject* obj, std::string_view k) {
                                       : obj->slots[i].value;
 }
 
+// A Shared view's own slots, in the order conc/sendable.h's
+// _jit_make_shared_val_view writes them: the registry id of the tree, the
+// index of the view's node in the tree's table, and the tree itself (a
+// SharedValCore). The view holds a count on the tree for as long as that last
+// slot is set, which is until it is dropped.
+enum : size_t { kSvIdSlot = 0, kSvNodeSlot = 1, kSvCoreSlot = 2 };
+inline bool _jit_shared_val_dropped(const JitObject* view) {
+  return view->slots[kSvCoreSlot].value.data == 0;
+}
+
 // The interned name every Range value's meta carries — the identity the
 // check below and _jit_range_meta (rt_runtime.inc.h) agree on.
 inline const char* _jit_range_name() {
@@ -162,8 +172,7 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
       // A Shared view shows the value it froze, and one that was dropped says
       // so: showing a value is not where a read's ClosedError belongs.
       if (obj->is_shared_val) {
-        if (_jit_slot_or_nil(obj, "_dropped").data)
-          return "[dropped Shared value]";
+        if (_jit_shared_val_dropped(obj)) return "[dropped Shared value]";
         struct Held {  // released on a throw too (a value nested too deep)
           JitValue v;
           ~Held() { _culebra_value_release_impl(v.tag, v.data); }

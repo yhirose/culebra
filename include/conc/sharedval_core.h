@@ -1,7 +1,7 @@
 #pragma once
 
 // The Shared.new frozen-tree core: the process-wide registry of frozen
-// SendNode trees, its refcounting (bump/drop), the flattened index, and
+// SendNode trees, its refcounting, the flattened index, and
 // freeze_shared_val. Engine-neutral (SendNode only); the interp's view
 // handles stay in sharedval.h, the compiled lanes' live in jit_runtime /
 // sendable_jit. Moved verbatim from sharedval.h (Phase 4 B7-b).
@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -90,9 +91,6 @@ struct SharedKeyHash {
 
 struct SharedValCore {
   SendNode root;
-  // Pre-order node table; a view's `__sharedval_node__` is an index here.
-  std::vector<const SendNode*> nodes;
-  std::unordered_map<const SendNode*, size_t> ids;  // reverse (sub-view mint)
   // What a keyed node's keys are found through (an Object's keys, a Set's
   // members; see shared_key_at): the position each plain key is at, and the
   // positions of the keys of any other kind.
@@ -101,14 +99,23 @@ struct SharedValCore {
         plain;
     std::vector<size_t> other;
   };
-  std::unordered_map<size_t, KeyIndex> key_index;
+  // Pre-order node table; a view's `__sharedval_node__` is an index here, and
+  // each node carries its own index back (SendNode::shared_index). A keyed
+  // node's entry has its key index beside it.
+  struct Entry {
+    const SendNode* node;
+    const KeyIndex* keys = nullptr;
+  };
+  std::vector<Entry> nodes;
+  std::deque<KeyIndex> key_indexes;  // what Entry::keys points into
   // Every class meta the tree writes out, by the ref id the instances after
   // the first name it by: what rebuilding one node of the tree resolves a
   // backref through.
   std::unordered_map<int, const SendNode*> metas;
-  // Live handle count (every handle and sub-view holds one). Guarded by
-  // shared_val_mutex() on the cold bump/drop paths.
-  int64_t refcount = 0;
+  // Live count: every view holds one, and a message in flight one per view it
+  // carries. Whoever adds to it holds a count already, so it is never added
+  // to at zero and needs no lock; the registry's mutex covers the map alone.
+  mutable std::atomic<int64_t> refcount{0};
 };
 
 inline std::mutex& shared_val_mutex() {
@@ -123,45 +130,48 @@ inline std::atomic<long>& shared_val_next_id() {
   static std::atomic<long> n{1};
   return n;
 }
-// Per-thread id->core cache. The feature's whole point is N isolates
-// reading one frozen tree concurrently; a per-read registry mutex
-// serialized them (measured: 8 worker threads ran at ~1-thread
-// throughput, vs ~4x with this cache). Each isolate reads a small set of
-// ids, so it resolves each once under the lock then hits its thread-local
-// cache lock-free. weak_ptr (not shared_ptr) so a cache entry never keeps
-// a dropped tree alive — the referent expires when the last live view
-// drops. The map grows by distinct-id (not read count); a stale hit
-// erases its own entry, so the cache tracks the thread's live id set.
-inline std::shared_ptr<SharedValCore> lookup_shared_val(int64_t id) {
-  static thread_local std::unordered_map<long, std::weak_ptr<SharedValCore>>
-      cache;
-  if (auto it = cache.find(id); it != cache.end()) {
-    if (auto sp = it->second.lock()) return sp;  // lock-free fast path
-    cache.erase(it);  // referent dropped — don't keep the dead entry
-  }
+// A count on the tree `id` names, taken by id: what a message being rebuilt
+// takes for the view it makes (the sender's in-flight count keeps the tree
+// there meanwhile). Null when the tree is gone.
+inline SharedValCore* shared_val_acquire(int64_t id) {
   std::lock_guard<std::mutex> lock(shared_val_mutex());
   auto it = shared_val_registry().find(id);
   if (it == shared_val_registry().end()) return nullptr;
-  cache[id] = it->second;
-  return it->second;
+  it->second->refcount.fetch_add(1, std::memory_order_relaxed);
+  return it->second.get();
 }
-inline void shared_val_bump(int64_t id) {
-  std::lock_guard<std::mutex> lock(shared_val_mutex());
-  auto it = shared_val_registry().find(id);
-  if (it != shared_val_registry().end()) it->second->refcount++;
+// One more count on a tree the caller holds a count on already. N isolates
+// reading one tree mint views of it side by side, and this is all the tree
+// itself hears of that (a registry mutex here once held 8 reader threads to
+// one thread's throughput).
+inline void shared_val_retain(const SharedValCore& core) {
+  core.refcount.fetch_add(1, std::memory_order_relaxed);
 }
-inline void shared_val_drop(int64_t id) {
-  // Erase under the lock, release the shared_ptr outside it (a concurrent
-  // lookup may hold a copy) — mirrors shared_buffer_drop.
+// Give a count back, by the tree (a view's). The last one takes the tree out
+// of the registry, releasing it outside the lock (mirrors
+// shared_buffer_drop); a count taken by id in between leaves it there.
+inline void shared_val_release(const SharedValCore& core, int64_t id) {
+  if (core.refcount.fetch_sub(1, std::memory_order_acq_rel) != 1) return;
   std::shared_ptr<SharedValCore> doomed;
   {
     std::lock_guard<std::mutex> lock(shared_val_mutex());
     auto it = shared_val_registry().find(id);
     if (it == shared_val_registry().end()) return;
-    if (--it->second->refcount > 0) return;
+    if (it->second->refcount.load(std::memory_order_acquire) > 0) return;
     doomed = std::move(it->second);
     shared_val_registry().erase(it);
   }
+}
+// The same, by id: a message's in-flight count, once it has been rebuilt.
+inline void shared_val_drop(int64_t id) {
+  std::shared_ptr<SharedValCore> core;
+  {
+    std::lock_guard<std::mutex> lock(shared_val_mutex());
+    auto it = shared_val_registry().find(id);
+    if (it == shared_val_registry().end()) return;
+    core = it->second;
+  }
+  shared_val_release(*core, id);
 }
 
 // A keyed node's keys, by position: an Object's entry keys, a Set's members.
@@ -178,14 +188,15 @@ inline const SendNode& shared_key_at(const SendNode& n, size_t at) {
 }
 
 // Pre-order DFS: number every node, build the key indexes.
-inline void _shared_val_index(SharedValCore& core, const SendNode& n) {
+inline void _shared_val_index(SharedValCore& core, SendNode& n) {
   size_t id = core.nodes.size();
-  core.nodes.push_back(&n);
-  core.ids.emplace(&n, id);
+  core.nodes.push_back({&n});
+  n.shared_index = static_cast<int32_t>(id);
   if (n.kind == SendNode::K::Object && !n.is_backref && n.ref_id >= 0)
     core.metas.emplace(n.ref_id, &n);
   if (shared_keyed(n)) {
-    auto& idx = core.key_index[id];
+    auto& idx = core.key_indexes.emplace_back();
+    core.nodes[id].keys = &idx;
     idx.plain.reserve(shared_node_count(n));
     for (size_t at = 0; at < shared_node_count(n); at++) {
       const SendNode& key = shared_key_at(n, at);
@@ -194,12 +205,12 @@ inline void _shared_val_index(SharedValCore& core, const SendNode& n) {
     }
   }
   if (n.kind == SendNode::K::Object) {
-    for (const auto& [k, v] : n.entries) {
+    for (auto& [k, v] : n.entries) {
       _shared_val_index(core, k);
       _shared_val_index(core, v);
     }
   }
-  for (const auto& e : n.elems) _shared_val_index(core, e);
+  for (auto& e : n.elems) _shared_val_index(core, e);
 }
 
 // Data-only check, run before freeze. The serializer accepted the value
@@ -227,17 +238,18 @@ inline const char* _shared_val_reject_reason(const SendNode& n) {
   return nullptr;
 }
 
-// Freeze a serialized tree into the registry. Returns the new id; the
-// creator's handle owns the initial refcount.
-inline int64_t freeze_shared_val(SendNode&& root) {
+// Freeze a serialized tree into the registry. Returns the new id and the
+// tree; the creator's handle owns the initial count.
+inline std::pair<int64_t, SharedValCore*> freeze_shared_val(SendNode&& root) {
   auto core = std::make_shared<SharedValCore>();
   core->root = std::move(root);
   _shared_val_index(*core, core->root);
   core->refcount = 1;
   int64_t id = shared_val_next_id()++;
+  auto* tree = core.get();
   std::lock_guard<std::mutex> lock(shared_val_mutex());
   shared_val_registry().emplace(id, std::move(core));
-  return id;
+  return {id, tree};
 }
 
 }  // namespace culebra

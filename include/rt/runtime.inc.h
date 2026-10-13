@@ -3914,7 +3914,7 @@ inline void _jit_object_set_declared(
     JitObject* obj, const char* key, bool mut, int8_t tag, int64_t data,
     int64_t line, int64_t col, bool is_init, culebra::FieldType declared) {
   // Shared.new views are immutable (handle construction writes its own
-  // marker/method slots via set_or_append, not through here).
+  // slots directly, not through here).
   if (obj->is_shared_val) {
     _culebra_value_release_impl(tag, data);
     throw culebra::CulebraError("ImmutableError",
@@ -3978,9 +3978,9 @@ inline bool _jit_is_shared_val(JitObject* obj) { return obj->is_shared_val; }
 // through these hooks rather than by symbol: the generic get/index paths
 // would otherwise name the SharedVal reader, and through it the whole
 // SendNode / channel / serialize graph, in every binary — a hello-world AOT
-// output carried ~115 KB of it. A view cannot exist before
-// _jit_make_shared_val_view ran, and that constructor installs both hooks,
-// so the reader is reachable only from the adapters that create views
+// output carried ~115 KB of it. A view cannot exist before the meta every
+// view points at does, and _jit_shared_val_meta installs the hooks as it
+// makes that, so the reader is reachable only from the adapters that create views
 // (Shared / Isolate / Parallel / Net) and a program naming none of them
 // links none of it (namespace-group dead-stripping, stdlib_rt.h
 // ns_groups()). A null hook on a shared view is a broken invariant, not a
