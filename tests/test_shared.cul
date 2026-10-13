@@ -43,6 +43,19 @@ for d in model.dims {
 }
 assert_eq(dsum, 14)
 
+# keys() and values() hand each element to the Array once: a Tuple key and a
+# container value are still themselves however often they are listed.
+mut by_pair = {}
+by_pair['s'] = {n: 1}
+by_pair[(1, 2)] = [10, 20]
+let pairs = Shared.new(by_pair)
+for _ in 0..3 {
+  assert_eq(pairs.keys(), ['s', (1, 2)])
+  let vals = pairs.values()
+  assert_eq(vals[0].n, 1)
+  assert_eq(vals[1].size(), 2)
+}
+
 # --- copy() = deep materialization into the local heap (escape hatch) ---
 let local = model.vocab.copy()
 local['new'] = 9  # the copy is an ordinary mutable Object

@@ -1411,8 +1411,7 @@ inline void _jit_sv_keys(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
   auto* arr = culebra_runtime_array_new();
   for (const auto& [k, v] : n->entries) {
     JitValue kv = _jit_sv_materialize(k);
-    culebra_runtime_array_push(arr, kv.tag, kv.data);
-    _culebra_value_release_impl(kv.tag, kv.data);
+    culebra_runtime_array_push(arr, kv.tag, kv.data);  // absorbs the +1
   }
   { *__ret = {TAG_ARRAY, reinterpret_cast<int64_t>(arr)}; return; }
 }
@@ -1428,8 +1427,7 @@ inline void _jit_sv_values(JitValue* __ret, JitClosure*, int8_t self_tag, int64_
   auto* arr = culebra_runtime_array_new();
   for (const auto& [k, v] : n->entries) {
     JitValue vv = _jit_shared_val_read(id, *core, v);
-    culebra_runtime_array_push(arr, vv.tag, vv.data);
-    _culebra_value_release_impl(vv.tag, vv.data);
+    culebra_runtime_array_push(arr, vv.tag, vv.data);  // absorbs the +1
   }
   { *__ret = {TAG_ARRAY, reinterpret_cast<int64_t>(arr)}; return; }
 }
