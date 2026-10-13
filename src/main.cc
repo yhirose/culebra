@@ -745,6 +745,8 @@ void print_usage(ostream& os) {
         "  embed-flags --cflags      Print the flags a C++ host needs to embed\n"
         "                            this engine (--libs, --sources, --http,\n"
         "                            --tls, --sqlite, --codegen, --jit)\n"
+        "  play <song.kau>           Play a song written in Kauai (--sounds,\n"
+        "                            --check; `culebra play --help`)\n"
 #ifdef CULEBRA_HTTP_ENABLED
         "  serve [-p PORT] [-d DIR]  Serve a directory of static files\n"
         "                            (default: port 8000, current directory)\n"
@@ -1600,26 +1602,13 @@ Options parse_command_line(int argc, const char** argv) {
   return options;
 }
 
-bool run_scripts(const Options& options) {
-  startup_profile::mark("run_scripts begin");
-
-  // Cooperative Ctrl+C: install the SIGINT handler and point this thread's
-  // Runtime at the global flag. The engines' loop safepoints observe it and
-  // throw a catchable `Interrupted`.
-  if (options.script_path) culebra::install_sigint_handler();
-
-  if (!options.script_path) return true;
-  const string& path = *options.script_path;
-
-  // `-` reads the script from stdin instead of opening a file named `-`; a
-  // file actually named `-` is still reachable via a path like `./-`.
-  auto user_src = path == "-" ? read_stdin() : read_file(path.c_str());
-  if (!user_src) {
-    std::println(stderr, "can't open '{}'.", path);
-    return false;
-  }
-  startup_profile::mark("read_file");
-
+// Run one program whose entry source is in hand, on the engine `options`
+// names: a script's, or the one a subcommand carries (`culebra play`). The
+// caller installs the SIGINT handler; `site` is what the explicit-engine
+// ratchet calls it.
+bool run_source(const Options& options, const string& path,
+                std::string_view user_src,
+                const char* site = "running a script") {
   // Walk the dependency graph via ModuleLoader, splicing in the stdlib
   // preamble: it is where the lazy stdlib's builders are declared and
   // registered, and a lane that never compiles it cannot resolve `Time`,
@@ -1635,7 +1624,7 @@ bool run_scripts(const Options& options) {
   // `parametrize` are bound there (as `culebra lint` takes them, per file).
   if (options.vm == Options::Vm::Dump)
     culebra::set_test_ambients(culebra::default_test_cul_matcher(path));
-  if (!load_entry_program(path, *user_src, splice, modules,
+  if (!load_entry_program(path, user_src, splice, modules,
                           options.jit ? &baked : nullptr))
     return false;
   startup_profile::mark("ModuleLoader::load_program (parse)");
@@ -1649,7 +1638,7 @@ bool run_scripts(const Options& options) {
     return true;
   }
 
-  require_explicit_engine(options.engine_named, "running a script");
+  require_explicit_engine(options.engine_named, site);
 
 #ifdef CULEBRA_JIT_ENABLED
   // `--jit` is the bytecode compiler's LLVM lane: one program, lowered.
@@ -1679,6 +1668,29 @@ bool run_scripts(const Options& options) {
   }
   startup_profile::mark("vm::Exec::run");
   return true;
+}
+
+bool run_scripts(const Options& options) {
+  startup_profile::mark("run_scripts begin");
+
+  // Cooperative Ctrl+C: install the SIGINT handler and point this thread's
+  // Runtime at the global flag. The engines' loop safepoints observe it and
+  // throw a catchable `Interrupted`.
+  if (options.script_path) culebra::install_sigint_handler();
+
+  if (!options.script_path) return true;
+  const string& path = *options.script_path;
+
+  // `-` reads the script from stdin instead of opening a file named `-`; a
+  // file actually named `-` is still reachable via a path like `./-`.
+  auto user_src = path == "-" ? read_stdin() : read_file(path.c_str());
+  if (!user_src) {
+    std::println(stderr, "can't open '{}'.", path);
+    return false;
+  }
+  startup_profile::mark("read_file");
+
+  return run_source(options, path, *user_src);
 }
 
 // Which engine `culebra test` runs on, with or without --doc. Both runners
@@ -2471,6 +2483,153 @@ int run_serve(int argc, const char** argv) {
 }
 #endif  // CULEBRA_HTTP_ENABLED
 
+// `culebra play`'s program, after the one line that binds `sounds`: the
+// module `--sounds` names, or nil. The clauses name the errors of a song that
+// cannot be played; an interrupt and a host sound's own error take the way
+// out a script's do.
+constexpr std::string_view kPlayProgram = R"cul(
+let path = Sys.argv[0]
+let host = sounds ?? {}
+
+fn clock(secs) {
+  let s = Math.round(secs)
+  "{s / 60}:{s % 60 < 10 ? "0" : ""}{s % 60}"
+}
+
+fn refuse(e) {
+  IO.eprintln("{e.kind}: {e.message}")
+  Sys.exit(1)
+}
+
+let song = try {
+  Audio.Kauai.load(path, voices: host.voices, drums: host.drums)
+} catch e: KauaiError {
+  refuse(e)
+} catch e: IOError {
+  refuse(e)
+} catch e: ValueError {
+  IO.eprintln("{e.kind}: {e.message}")
+  if sounds == nil {
+    IO.eprintln("culebra play: --sounds <file.cul> names the module that makes a song's host sounds")
+  }
+  Sys.exit(1)
+}
+
+if Sys.argv.contains("--check") {
+  println("{path}: {clock(song.length())} once through")
+} else if !Audio.available() {
+  IO.eprintln("{path}: no audio device, so nothing plays")
+  Sys.exit(1)
+} else {
+  # The host sounds are built first, saying how far along that is where
+  # someone watches: play() would build them all the same, only in silence.
+  let watched = IO.stdout_is_terminal()
+  mut left = song.prepare()
+  while left > 0 {
+    print("\rpreparing sounds: {left} left ") if watched
+    left = song.prepare()
+  }
+  print("\r") if watched
+  println("playing {path} ({clock(song.length())} once through)")
+  song.play()
+  while song.playing() {
+    Time.sleep(0.1)
+  }
+}
+)cul";
+
+// `culebra play [--sounds FILE] [--check] <song.kau>` — play a song written
+// in Kauai (docs/kauai/language.md) without a script of one's own. A song's
+// `host` instruments are the program's to supply, and this program has none:
+// they come from the module `--sounds` names.
+int run_play(int argc, const char** argv) {
+  auto usage = [](FILE* to) {
+    std::println(to,
+                 "Usage: culebra play [options] <song.kau>\n"
+                 "  --sounds <file.cul>  the module whose exports `voices` and `drums`\n"
+                 "                       make the song's `host` sounds\n"
+                 "                       (Audio.Kauai.load's arguments of those names)\n"
+                 "  --check              read and check the song, and play nothing\n"
+                 "Ctrl+C stops a song that loops.");
+  };
+  Options options;
+  optional<string> song;
+  optional<string> sounds;
+  bool check = false;
+  for (int i = 2; i < argc; i++) {
+    string arg = argv[i];
+    if (arg == "-h" || arg == "--help") {
+      usage(stdout);
+      return 0;
+    }
+    if (arg.starts_with("--sounds=")) {
+      sounds = arg.substr(9);
+    } else if (arg == "--sounds") {
+      if (i + 1 >= argc) {
+        std::println(stderr, "culebra play: --sounds needs a file");
+        return 2;
+      }
+      sounds = argv[++i];
+    } else if (arg == "--check") {
+      check = true;
+    } else if (arg == "--vm") {
+      // The engines, for the lanes that must name one; a song gains nothing
+      // from the choice, so --help does not offer it.
+      options.vm = Options::Vm::Exec;
+#ifdef CULEBRA_JIT_ENABLED
+    } else if (arg == "--jit") {
+      options.jit = true;
+#endif
+    } else if (arg.starts_with("-")) {
+      std::println(stderr, "culebra play: unknown option '{}'", arg);
+      return 2;
+    } else if (song) {
+      std::println(stderr, "culebra play: one song at a time, got '{}' and '{}'",
+                   *song, arg);
+      return 2;
+    } else {
+      song = std::move(arg);
+    }
+  }
+  if (!song) {
+    usage(stderr);
+    return 2;
+  }
+  options.engine_named = options.jit || options.vm != Options::Vm::Off;
+  if (!options.jit) options.vm = Options::Vm::Exec;
+
+  string program = "let sounds = nil";
+  if (sounds) {
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(*sounds, ec)) {
+      std::println(stderr, "culebra play: no sounds file '{}'", *sounds);
+      return 2;
+    }
+    // An `import` names its file between single quotes and has no escape, so
+    // the one path no program can import is the one this cannot take.
+    auto abs = std::filesystem::absolute(*sounds, ec).string();
+    if (ec || abs.contains('\'')) {
+      std::println(stderr,
+                   "culebra play: an import cannot name a path with a ' in it: {}",
+                   *sounds);
+      return 2;
+    }
+    program = "import sounds from '" + abs + "'";
+  }
+  program += kPlayProgram;
+
+  culebra::install_sigint_handler();
+  culebra::install_jit_stdlib();
+  culebra::set_main_script("");
+  culebra::sys_argv() = {*song};
+  if (check) culebra::sys_argv().push_back("--check");
+  // The entry module is nowhere on disk; its path only keys it and gives
+  // nothing a base, since the one import it makes is absolute.
+  return run_source(options, "culebra-play.cul", program, "culebra play")
+             ? 0
+             : culebra::kUncaughtExitStatus;
+}
+
 // main()'s body; main() below is the catch.
 int run_main(int argc, const char** argv) {
   startup_profile::start();
@@ -2506,6 +2665,9 @@ int run_main(int argc, const char** argv) {
   }
   if (argc >= 2 && string(argv[1]) == "embed-flags") {
     return culebra::run_embed_flags(argc, argv);
+  }
+  if (argc >= 2 && string(argv[1]) == "play") {
+    return run_play(argc, argv);
   }
 #ifdef CULEBRA_JIT_ENABLED
   // Beside `build`, the only thing a toolchain is for: a build without the JIT

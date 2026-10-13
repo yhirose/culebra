@@ -120,7 +120,8 @@ vm_cases 190
 # ctest entries. The shell-driven ones also make up the landing gate's CLI
 # phase (tools/checks/ctest_shell_driven.py names them).
 # 35 since jit_cache_test (a JIT cache hit is the run a cold start gives).
-ctest.entries 35
+# 36 since play_test (`culebra play`'s streams and statuses, on each engine).
+ctest.entries 36
 
 # ```culebra blocks under docs/ — `just doctest` runs the runnable ones on both
 # engines, and the JIT lane costs one LLVM module per block.
@@ -176,7 +177,9 @@ ctest.entries 35
 # and ja.
 # 1064 since Generic types shows a type parameter read in a nested function
 # and a `let` of its declaration's body, in en and ja.
-docs.blocks 1064
+# 1066 since tooling §9 shows a module for `culebra play --sounds`, in en and
+# ja.
+docs.blocks 1066
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

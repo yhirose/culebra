@@ -16,6 +16,7 @@ is the reference for those development subcommands.
 | `culebra lsp` | serve diagnostics, hover and formatting to an editor over stdio | [§8](#8-editor-support-culebra-lsp) |
 | `culebra docs [topic]` | read and search the embedded reference docs | [§5](#5-reading-the-docs-culebra-docs) |
 | `culebra serve [-p PORT] [-d DIR]` | serve a directory of static files | [§6](#6-serving-static-files-culebra-serve) |
+| `culebra play <song.kau>` | play a song written in Kauai | [§9](#9-playing-a-song-culebra-play) |
 | `culebra build <in.cul> -o <out>` | compile ahead-of-time into a standalone executable | [`deployment.md` §1](deployment.md#1-standalone-binary-build-culebra-build) |
 | `culebra wrap` | build an extended binary exposing your own C++ classes | [`deployment.md` §3](deployment.md#3-wrapping-c-libraries-culebra-wrap) |
 
@@ -52,6 +53,7 @@ Contents
    * [The Share button](#the-share-button)
 8. [Editor support (`culebra lsp`)](#8-editor-support-culebra-lsp)
    * [Setting it up](#setting-it-up)
+9. [Playing a song (`culebra play`)](#9-playing-a-song-culebra-play)
 
 ---
 
@@ -1145,3 +1147,42 @@ VSCode, Neovim and Zed along with the rest of the editor integration.
   ```
 - **Any other LSP client** — run `culebra lsp` for the `culebra` language,
   files ending in `.cul`.
+
+---
+
+## 9. Playing a song (`culebra play`)
+
+`culebra play <song.kau>` plays a song written in
+[Kauai](kauai/language.md) and exits when the song ends; Ctrl+C stops one
+that loops. It reads the file and the files it names with `use`, checks
+the song, and prints its length before the first note.
+
+```
+culebra play first.kau                      # play it
+culebra play --check first.kau              # read and check it, and play nothing
+culebra play --sounds sounds.cul ballad.kau # a song with `host` instruments
+```
+
+| Option | Effect |
+|---|---|
+| `--check` | reads and checks the song, prints its length, and plays nothing; it needs no audio device |
+| `--sounds <file.cul>` | the module that makes the song's `host` sounds |
+
+A song's mistake goes to stderr as `KauaiError: FILE:LINE: ...` and the
+exit status is `1`, as it is on a machine with no audio device. A mistake
+in the command line is status `2`.
+
+A `host` instrument is one the program supplies, and `culebra play` has
+none of its own. `--sounds` names a module that exports `voices`, `drums`
+or both: the objects `Audio.Kauai.load` takes under those names
+([Kauai §10](kauai/language.md#10-playing-from-culebra)).
+
+```culebra
+# doctest: skip (a module for --sounds; electric_piano and kick are its own)
+let voices = {ep: |pitch, params| Audio.Sound(electric_piano(pitch, params.bright))}
+let drums = {kick: |params| Audio.Sound(kick())}
+export {voices, drums}
+```
+
+A song that names a host sound the module does not make, or any host sound
+when no module is given, is refused before anything plays.

@@ -960,6 +960,11 @@ is built once: the function given for its sound under `drums:`
 many remain, so a game can spread the work over frames; `play()` builds
 whatever is left first.
 
+A song file plays without a program of one's own: `culebra play song.kau`
+plays it, and `culebra play --check song.kau` reads and checks it and plays
+nothing. The host sounds come from the module `--sounds` names
+([Tooling §9](../tooling.md#9-playing-a-song-culebra-play)).
+
 ## Appendix A: Chord qualities
 
 The table below is what `plays chords` voices and what degrees are read from.

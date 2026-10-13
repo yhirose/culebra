@@ -15,6 +15,7 @@
 | `culebra lsp` | エディタに診断・ホバー・整形をstdioで提供する | [§8](#8-エディタ支援-culebra-lsp) |
 | `culebra docs [topic]` | 埋め込まれたリファレンスを読む・検索する | [§5](#5-ドキュメントを読む-culebra-docs) |
 | `culebra serve [-p PORT] [-d DIR]` | ディレクトリを静的ファイルとして配信する | [§6](#6-静的ファイルの配信-culebra-serve) |
+| `culebra play <song.kau>` | Kauaiで書いた曲を再生する | [§9](#9-曲の再生-culebra-play) |
 | `culebra build <in.cul> -o <out>` | AOTコンパイルして単体実行ファイルを作る | [`deployment.ja.md` §1](deployment.ja.md#1-standalone-バイナリビルドculebra-build) |
 | `culebra wrap` | 自前のC++ クラスを組み込んだ拡張バイナリを作る | [`deployment.ja.md` §3](deployment.ja.md#3-c-ライブラリのラッピングculebra-wrap) |
 
@@ -51,6 +52,7 @@
    * [Shareボタン](#shareボタン)
 8. [エディタ支援 (`culebra lsp`)](#8-エディタ支援-culebra-lsp)
    * [設定](#設定)
+9. [曲の再生 (`culebra play`)](#9-曲の再生-culebra-play)
 
 ---
 
@@ -1061,3 +1063,41 @@ culebra lsp        # 標準入出力でLSPを話す
   ```
 - **ほかのLSPクライアント** — `culebra`言語（拡張子`.cul`のファイル）に対して
   `culebra lsp`を起動します。
+
+---
+
+## 9. 曲の再生 (`culebra play`)
+
+`culebra play <song.kau>`は[Kauai](kauai/language.ja.md)で書いた曲を再生し、
+曲が終わると終了します。ループする曲はCtrl+Cで止めます。ファイルと、
+そのファイルが`use`で名指すファイルを読み、曲を検査し、最初の音の前に
+曲の長さを表示します。
+
+```
+culebra play first.kau                      # 再生する
+culebra play --check first.kau              # 読んで検査するだけで、鳴らさない
+culebra play --sounds sounds.cul ballad.kau # `host`楽器を使う曲
+```
+
+| オプション | 効果 |
+|---|---|
+| `--check` | 曲を読んで検査し、長さを表示して、何も鳴らさない。音声デバイスは不要 |
+| `--sounds <file.cul>` | 曲の`host`楽器の音声を作るモジュール |
+
+曲の誤りは`KauaiError: FILE:LINE: ...`としてstderrに出て、終了ステータスは
+`1`です。音声デバイスが無いマシンでも`1`です。コマンドラインの誤りは`2`です。
+
+`host`楽器はプログラムが用意するもので、`culebra play`自身は1つも持って
+いません。`--sounds`には、`voices`か`drums`、または両方をexportするモジュールを
+指定します。`Audio.Kauai.load`が同じ名前で受け取るオブジェクトです
+([Kauai §10](kauai/language.ja.md#10-culebra-から再生する))。
+
+```culebra
+# doctest: skip (--sounds用のモジュール。electric_pianoとkickはこのモジュールのもの)
+let voices = {ep: |pitch, params| Audio.Sound(electric_piano(pitch, params.bright))}
+let drums = {kick: |params| Audio.Sound(kick())}
+export {voices, drums}
+```
+
+モジュールが作らないhostの音声を使う曲と、モジュールを指定せずにhostの音声を
+使う曲は、何も鳴らす前に断ります。
