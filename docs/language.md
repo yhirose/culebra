@@ -7257,7 +7257,8 @@ embedding Culebra should be aware:
   the defer stack, the interrupt flag — lives in
   a `thread_local` `Runtime`, so concurrent isolates on separate
   threads do not share it. The two process-global intern tables, the
-  `ShapeRegistry` and the trait registry, are mutex-guarded.
+  `ShapeRegistry` and the trait registry, are mutex-guarded; a Shape
+  that already exists is found without taking the lock.
   Execution within a single `Runtime` is
   single-threaded: an embedder that drives one `Runtime` from
   multiple threads must serialize the calls itself.

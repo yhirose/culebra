@@ -1158,7 +1158,7 @@ its first occurrence and still overwrites last-wins.
 
 **A class's declared fields are one layout.** `class C { x: Float; y:
 Float }` used to open with one `ObjectSet` per field, each a shape
-transition under the registry's lock, on every `new`. A maximal run of
+transition, on every `new`. A maximal run of
 initializer-less fields is now one `FieldsInit` over a
 `Chunk::FieldLayoutSpec` — the names, each type's zero value, and a pair
 of Shapes the site caches on its first execution (the class-only shape

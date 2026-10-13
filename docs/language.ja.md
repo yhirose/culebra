@@ -6934,7 +6934,8 @@ VM・JIT・AOTすべてのビルドで同一が保証されます:
   interrupt flag）は`thread_local`な`Runtime`に
   置かれ、別スレッドで動く並行isolate間で共有されません。
   プロセス共有の2つのinternテーブル（`ShapeRegistry`とtrait
-  registry）はmutexでガードされています。単一`Runtime`内の実行は
+  registry）はmutexでガードされています（既にあるShapeはロックを
+  取らずに引けます）。単一`Runtime`内の実行は
   シングルスレッドなので、1つの`Runtime`を複数スレッドから駆動する
   組み込み側は自前で呼び出しをシリアライズする必要があります。
 

@@ -1360,7 +1360,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_slot_init(
 // The declared fields of a class whose declarations carry no initializer,
 // put on a fresh instance in one step — each holding its type's zero,
 // mutable, in declaration order, exactly what the run of per-field
-// `self.x = zero` stores in `new`'s prologue produced, one locked shape
+// `self.x = zero` stores in `new`'s prologue produced, one shape
 // transition at a time. The site caches the two shapes it moves between (a
 // fresh instance's, with its `class` slot alone, and the one the field list
 // transitions it to); an instance arriving with any other shape, or with

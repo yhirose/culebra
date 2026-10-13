@@ -3576,7 +3576,7 @@ inline JitObject* _jit_range_meta() {
 // null and is resolved on the callsite's first execution, then reused
 // forever — the Shape a given (static) key list resolves to never changes,
 // so a benign race refills it with the identical canonical pointer on every
-// path (same argument as JitPropIC's cache; `transition_add`'s own lock is
+// path (same argument as JitPropIC's cache; `transition_add` interning is
 // what makes concurrent resolution idempotent). A Shape* is a per-process
 // pointer, so this laziness is load-bearing for AOT: the value baked at
 // `culebra build` time would be garbage in the binary's own run.

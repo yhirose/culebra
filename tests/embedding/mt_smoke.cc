@@ -1,7 +1,8 @@
 // Smoke test: multiple host threads each parse + run a script
 // independently. Verifies thread_local isolation of GC, defer stack,
 // exception carriers, PRNG, the PEG parser, and the embedding session
-// (vm::Embed swaps a thread_local session pointer — Phase 4 B7-d).
+// (vm::Embed swaps a thread_local session pointer — Phase 4 B7-d), and
+// that the Shapes, which the threads do share, are interned as one set.
 
 #include <atomic>
 #include <iostream>
@@ -77,6 +78,49 @@ void run_vm(int tid) {
   }
 }
 
+// Every thread that adds the same property to the same Shape gets the same
+// Shape, while the others are adding more to it: a transition is read with
+// no lock, so this is what a lost or doubled child would break.
+constexpr int kShapeThreads = 8;
+constexpr int kShapeKeys = 300;
+
+void intern_shapes(const std::atomic<bool>* go,
+                   std::vector<culebra::Shape*>* got) {
+  while (!go->load()) std::this_thread::yield();
+  auto& shapes = culebra::shape_registry();
+  auto* parent = shapes.transition_add(shapes.root(), "mt_smoke_parent");
+  for (int i = 0; i < kShapeKeys; ++i) {
+    auto name = "mt_smoke_key" + std::to_string(i);
+    got->push_back(shapes.transition_add(parent, name));
+    got->push_back(
+        shapes.transition_add(parent, name, culebra::FieldType::Long));
+  }
+}
+
+void check_shapes() {
+  std::vector<std::vector<culebra::Shape*>> got(kShapeThreads);
+  std::atomic<bool> go{false};  // the threads start together
+  std::vector<std::thread> ts;
+  for (auto& mine : got) ts.emplace_back(intern_shapes, &go, &mine);
+  go = true;
+  for (auto& t : ts) t.join();
+  for (auto& mine : got) {
+    if (mine != got[0]) {
+      std::cerr << "shapes: two threads interned different Shapes\n";
+      ++failures;
+    }
+  }
+  for (int i = 0; i < 2 * kShapeKeys; ++i) {
+    auto* s = got[0][i];
+    auto want = i % 2 ? culebra::FieldType::Long : culebra::FieldType::Any;
+    if (s->names.back() != "mt_smoke_key" + std::to_string(i / 2) ||
+        s->type_at(s->names.size() - 1) != want) {
+      std::cerr << "shapes: transition " << i << " is another's\n";
+      ++failures;
+    }
+  }
+}
+
 }  // namespace
 
 #ifdef CULEBRA_JIT_ENABLED
@@ -114,6 +158,7 @@ int run() {
   for (int i = 0; i < 4; ++i) ts.emplace_back(run_jit, i);
 #endif
   for (auto& t : ts) t.join();
+  check_shapes();
   std::cout << (failures == 0 ? "OK\n" : "FAIL\n");
   return failures == 0 ? 0 : 1;
 }

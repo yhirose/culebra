@@ -2347,8 +2347,8 @@ inline JitObject* _jit_shared_val_meta() {
 
 // A view of node `node` through `hold`, counted on it (a null hold makes a
 // view that reads as a dropped one). Every view has the one shape, so it is
-// stamped on rather than grown a slot at a time: a shape transition takes a
-// process-wide lock, and an iteration over rows mints a view per row.
+// stamped on rather than grown a slot at a time: a shape transition is a
+// hashed lookup a slot, and an iteration over rows mints a view per row.
 inline JitValue _jit_make_shared_val_view(JitSvHold* hold, int64_t node) {
   static culebra::Shape* const shape = [] {
     auto& shapes = culebra::shape_registry();

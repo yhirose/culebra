@@ -2613,7 +2613,7 @@ struct Chunk {
   // is resolved on the site's first execution, then reused forever — every
   // execution of the same literal walks the identical name sequence, so the
   // Shape it resolves to is always the same canonical pointer
-  // (ShapeRegistry::transition_add's own lock+cache already makes that
+  // (ShapeRegistry::transition_add interns, which already makes that
   // resolution idempotent), the same "benign race, no atomics needed"
   // argument the property IC (JitPropIC) already relies on. A Shape* is a
   // per-PROCESS pointer, not a per-program one — the JIT lowering must

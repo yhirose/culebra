@@ -18,10 +18,10 @@ namespace culebra {
 // semantics to plain Culebra Objects (and class instances, since
 // `class` desugars to Object).
 //
-// Shapes are immutable. Adding a property to an Object transitions
-// it to a new Shape via `transition_add`; the source Shape caches
-// the transition so identical (source, name) pairs always resolve
-// to the same target Shape. Property reads use a linear scan over
+// What a Shape describes is immutable. Adding a property to an Object
+// transitions it to a new Shape via `transition_add`; the source Shape keeps
+// the transition (`children`) so identical (source, name) pairs always
+// resolve to the same target Shape. Property reads use a linear scan over
 // `names` to translate name -> slot index — for the typical 5–15
 // property count seen in this codebase a flat scan beats both
 // std::map (tree pointer chasing) and unordered_map (hash + bucket)
@@ -39,11 +39,62 @@ struct Shape {
   // settled by the Shape a site guards on — which is what lets a write check
   // it with one compare and a read of a known class trust it outright.
   std::vector<uint8_t> types;
-  // One entry per (name, declared type) pair: adding the same name with a
-  // different declared type is a different Shape.
-  std::map<std::string_view,
-           std::array<Shape*, static_cast<size_t>(FieldType::Count)>>
-      add_transitions;
+  // The Shapes one property past this one, found by that property's name
+  // and declared type (the last of each a child has): adding the same name
+  // with a different declared type is a different Shape. Every isolate reads
+  // these, so a lookup takes no lock: it probes the slots as they stand, and
+  // the one writer (ShapeRegistry, under its lock) stores a child once it is
+  // whole. A table that fills gives way to one twice the size and is kept,
+  // since a reader may still be in it.
+  struct Children {
+    explicit Children(size_t n)
+        : mask(n - 1), slots(new std::atomic<Shape*>[n]()) {}
+    void place(Shape* child) {
+      size_t at = slot_of(child->names.back(), child->types.back()) & mask;
+      while (slots[at].load(std::memory_order_relaxed)) at = (at + 1) & mask;
+      slots[at].store(child, std::memory_order_release);
+      count++;
+    }
+    size_t mask;
+    size_t count = 0;  // the writer's
+    std::unique_ptr<std::atomic<Shape*>[]> slots;
+  };
+  std::atomic<Children*> children{nullptr};
+  std::vector<std::unique_ptr<Children>> child_tables;  // the last is current
+
+  static size_t slot_of(std::string_view name, uint8_t type) {
+    return std::hash<std::string_view>{}(name) + type;
+  }
+  // The child that adds `name` declared `type`, or null when there is none
+  // yet (or none this reader can see yet: the writer looks again).
+  Shape* child(std::string_view name, FieldType type) const {
+    auto* table = children.load(std::memory_order_acquire);
+    if (!table) return nullptr;
+    auto t = static_cast<uint8_t>(type);
+    for (size_t at = slot_of(name, t) & table->mask;;
+         at = (at + 1) & table->mask) {
+      Shape* s = table->slots[at].load(std::memory_order_acquire);
+      if (!s) return nullptr;
+      if (s->types.back() == t && s->names.back() == name) return s;
+    }
+  }
+  // Writer only: `child` joins the children, at most half the slots taken.
+  void adopt(Shape* child) {
+    auto* table = children.load(std::memory_order_relaxed);
+    if (table && (table->count + 1) * 2 <= table->mask + 1) {
+      table->place(child);
+      return;
+    }
+    auto wider = std::make_unique<Children>(table ? 2 * (table->mask + 1) : 2);
+    if (table) {
+      for (size_t at = 0; at <= table->mask; at++)
+        if (auto* s = table->slots[at].load(std::memory_order_relaxed))
+          wider->place(s);
+    }
+    wider->place(child);
+    children.store(wider.get(), std::memory_order_release);
+    child_tables.push_back(std::move(wider));
+  }
   // Whether any name is one the runtime dispatches specially (a `__x__`
   // dunder, or the `hash`/`cmp` protocol names): the one question a
   // special-method lookup has to ask of an instance's own slots before it
@@ -92,7 +143,8 @@ struct Shape {
 // isolate cache a Shape that dies with another isolate's heap (a real
 // heap-use-after-free across worker threads). The mutable Object heap is
 // what's isolated; the shape tree is shared. `transition_add` is the only
-// mutator and is locked so concurrent isolates can intern safely.
+// mutator: a transition that exists is found without a lock, and making one
+// is locked so concurrent isolates intern the same Shape.
 struct ShapeRegistry {
   static ShapeRegistry& instance() {
     static ShapeRegistry inst;
@@ -104,17 +156,16 @@ struct ShapeRegistry {
   Shape* view_root() { return view_root_.get(); }
 
   // Return the Shape obtained by adding `name` to `current`'s
-  // property set. Cached on `current->add_transitions` so identical
-  // transitions collide on the same Shape pointer. Locked: only ever
-  // hit on inline-cache miss (rare after warm-up), so the global mutex
-  // costs nothing on the steady-state fast path.
+  // property set. Kept among `current`'s children so identical
+  // transitions collide on the same Shape pointer. Every Object built a
+  // key at a time comes through here (a message's, a parsed document's),
+  // so the one that exists is returned without the lock; only the first
+  // to ask for a transition takes it.
   Shape* transition_add(Shape* current, std::string_view name,
                         FieldType type = FieldType::Any) {
+    if (auto* known = current->child(name, type)) return known;
     std::lock_guard<std::mutex> lk(mu_);
-    auto slot = static_cast<size_t>(type);
-    auto it = current->add_transitions.find(name);
-    if (it != current->add_transitions.end() && it->second[slot])
-      return it->second[slot];
+    if (auto* known = current->child(name, type)) return known;
     auto next = std::make_unique<Shape>();
     next->names = current->names;
     next->names.push_back(std::string(name));
@@ -124,12 +175,9 @@ struct ShapeRegistry {
     next->types.push_back(static_cast<uint8_t>(type));
     next->any_special = current->any_special || Shape::is_special_name(name);
     next->root = current->tree_root();
-    auto& stored_name = next->names.back();
     auto* raw = next.get();
     owned_.push_back(std::move(next));
-    // Key the cache by the new shape's stored name view so the
-    // string_view stays live for the lifetime of the Shape.
-    current->add_transitions[std::string_view(stored_name)][slot] = raw;
+    current->adopt(raw);
     return raw;
   }
 
