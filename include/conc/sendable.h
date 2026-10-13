@@ -35,6 +35,23 @@ struct JitSerCtx {
 struct JitDeCtx {
   std::map<int, JitValue> closures;        // ref id -> rebuilt closure
   std::map<int, JitObject*> protos;        // ref id -> rebuilt class meta
+  // Where a class meta is written out when what is rebuilt is one part of a
+  // larger message (a node of a frozen tree): every meta of that message, by
+  // ref id. A whole message needs none, since a meta comes ahead of every
+  // backref to it; a part may hold the backref alone.
+  const std::unordered_map<int, const sendable::SendNode*>* metas = nullptr;
+  // The metas rebuilt for such a backref. Each value pointing at one holds a
+  // count of its own, so the builder's goes with the context.
+  std::vector<JitObject*> held;
+
+  JitDeCtx() = default;
+  JitDeCtx(const JitDeCtx&) = delete;
+  JitDeCtx& operator=(const JitDeCtx&) = delete;
+  ~JitDeCtx() {
+    for (auto* meta : held)
+      _culebra_value_release_impl(TAG_OBJECT,
+                                  reinterpret_cast<int64_t>(meta));
+  }
 };
 
 // The node of a value that holds no other value; false for one that does. A
@@ -331,11 +348,23 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
       return {TAG_SET, reinterpret_cast<int64_t>(s)};
     }
     case K::Object: {
-      // A backref to a class meta already rebuilt in this message. The
-      // caller (the instance's proto link below) takes its own retain.
-      if (n.is_backref)
-        return {TAG_OBJECT,
-                reinterpret_cast<int64_t>(ctx.protos.at(n.ref_id))};
+      // A backref to a class meta already rebuilt in this message, or to
+      // one written out in a part of the message this rebuild does not cover
+      // (ctx.metas), which is rebuilt here and now. The caller (the
+      // instance's proto link below) takes its own retain.
+      if (n.is_backref) {
+        auto it = ctx.protos.find(n.ref_id);
+        if (it == ctx.protos.end() && ctx.metas) {
+          // Rebuilding the meta registers it under its ref id.
+          JitValue meta = jit_deserialize(*ctx.metas->at(n.ref_id), ctx);
+          ctx.held.push_back(reinterpret_cast<JitObject*>(meta.data));
+          it = ctx.protos.find(n.ref_id);
+        }
+        return {TAG_OBJECT, reinterpret_cast<int64_t>(
+                                it != ctx.protos.end()
+                                    ? it->second
+                                    : ctx.protos.at(n.ref_id))};
+      }
       // A bare packed view (rare — usually the buffer crosses, not a view)
       // arrives as a generic Object, a view before its markers land.
       auto* o = n.is_packed_view ? _jit_view_new(&JitObject::is_packed_view)
@@ -1283,9 +1312,13 @@ inline bool _jit_sv_plain_key(const JitValue& v, sendable::SendNode& n) {
 
 // Deep materialization of one node into the local heap — shared by
 // keys()/copy()/iteration keys. Data-only by construction (freeze
-// rejected closures/handles), so a plain DeCtx round-trip is exact.
-inline JitValue _jit_sv_materialize(const sendable::SendNode& n) {
+// rejected closures/handles), so a plain DeCtx round-trip is exact. The node
+// is a part of `core`'s tree: an instance in it may name its class by a
+// backref to the meta another instance carries, which `core.metas` finds.
+inline JitValue _jit_sv_materialize(const culebra::SharedValCore& core,
+                                    const sendable::SendNode& n) {
   JitDeCtx dc;
+  dc.metas = &core.metas;
   return jit_deserialize(n, dc);
 }
 
@@ -1317,7 +1350,7 @@ inline const JitFrozenEntry* _jit_sv_find(const JitResolvedNode& rn,
   if (!JitHashedKey::try_of(key, &unhashable)) _jit_throw_unhashable(unhashable);
   for (size_t e : rn.core->obj_index.at(rn.idx).other) {
     const JitFrozenEntry& entry = rn.node->entries[e];
-    JitOwnedVal stored(_jit_sv_materialize(entry.first));
+    JitOwnedVal stored(_jit_sv_materialize(*rn.core, entry.first));
     if (JitValueEq{}(stored.borrow(), key)) return &entry;
   }
   return nullptr;
@@ -1432,7 +1465,7 @@ inline void _jit_sv_keys(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
   _jit_sv_require_object(n, "keys");
   auto* arr = culebra_runtime_array_new();
   for (const auto& [k, v] : n->entries) {
-    JitValue kv = _jit_sv_materialize(k);
+    JitValue kv = _jit_sv_materialize(*core, k);
     culebra_runtime_array_push(arr, kv.tag, kv.data);  // absorbs the +1
   }
   { *__ret = {TAG_ARRAY, reinterpret_cast<int64_t>(arr)}; return; }
@@ -1459,7 +1492,7 @@ inline void _jit_sv_values(JitValue* __ret, JitClosure*, int8_t self_tag, int64_
 inline JitValue _jit_shared_val_plain_impl(JitObject* view, int64_t line = 0,
                                            int64_t col = 0) {
   auto rn = _jit_shared_val_node_of(view, line, col);
-  return _jit_sv_materialize(*rn.node);
+  return _jit_sv_materialize(*rn.core, *rn.node);
 }
 
 inline void _jit_sv_copy(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
@@ -1522,7 +1555,7 @@ inline void _jit_sv_iter_next(JitValue* __ret, JitClosure* cls, int8_t self_tag,
   using K = sendable::SendNode::K;
   if (n->kind == K::Object) {
     const auto& [k, v] = n->entries[static_cast<size_t>(idx)];
-    JitValue kv = _jit_sv_materialize(k);
+    JitValue kv = _jit_sv_materialize(*core, k);
     JitValue vv = _jit_shared_val_read(id, *core, v);
     auto* pair = culebra_runtime_tuple_new();
     // Each push absorbs its +1, so the pair is the sole owner — releasing

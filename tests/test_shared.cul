@@ -260,6 +260,33 @@ let bad_key = try { arr_view['x']; nil } catch e { e }
 assert_eq(bad_key.message, 'type error: expected Long, got String')
 assert_throws('IndexError', fn () { arr_view[99] })
 
+# --- a value taken out of the tree alone is whole ---
+# The tree writes a class out once, with the first value of it, and the later
+# ones refer back. Whatever reads one of those alone still finds its class.
+enum SharedCard {
+  Card(Long),
+  Joker,
+}
+class SharedPoint {
+  new(.x) {}
+}
+let cards = [SharedCard.Card(1), SharedCard.Card(2), SharedPoint(1), SharedPoint(2)]
+let card_view = Shared.new(cards)
+assert_eq(card_view[1].copy(), SharedCard.Card(2))
+assert_eq(to_string(card_view[3]), to_string(SharedPoint(2)))
+mut by_card = {}
+by_card[SharedCard.Card(1)] = 'one'
+by_card[SharedCard.Card(2)] = 'two'
+let card_keys = Shared.new(by_card)
+assert_eq(card_keys[SharedCard.Card(2)], 'two')
+assert_eq(card_keys.has(SharedCard.Card(3)), false)
+assert_eq(card_keys.keys(), [SharedCard.Card(1), SharedCard.Card(2)])
+mut seen_cards = []
+for card in card_view {
+  seen_cards.push(to_string(card))
+}
+assert_eq(seen_cards, cards.map(|c| to_string(c)))
+
 # A view's shape is never an Object's: a write site an Object with the
 # view's own slot names warmed still refuses the view.
 let sv_target = Shared.new({a: 1})

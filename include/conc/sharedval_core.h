@@ -101,6 +101,10 @@ struct SharedValCore {
     std::vector<size_t> other;
   };
   std::unordered_map<size_t, KeyIndex> obj_index;
+  // Every class meta the tree writes out, by the ref id the instances after
+  // the first name it by: what rebuilding one node of the tree resolves a
+  // backref through.
+  std::unordered_map<int, const SendNode*> metas;
   // Live handle count (every handle and sub-view holds one). Guarded by
   // shared_val_mutex() on the cold bump/drop paths.
   int64_t refcount = 0;
@@ -164,6 +168,8 @@ inline void _shared_val_index(SharedValCore& core, const SendNode& n) {
   size_t id = core.nodes.size();
   core.nodes.push_back(&n);
   core.ids.emplace(&n, id);
+  if (n.kind == SendNode::K::Object && !n.is_backref && n.ref_id >= 0)
+    core.metas.emplace(n.ref_id, &n);
   if (n.kind == SendNode::K::Object) {
     auto& idx = core.obj_index[id];
     for (size_t e = 0; e < n.entries.size(); e++) {
