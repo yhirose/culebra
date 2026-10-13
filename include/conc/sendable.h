@@ -1185,7 +1185,7 @@ struct JitResolvedNode {
   std::shared_ptr<culebra::SharedValCore> core;
   const sendable::SendNode* node;
   int64_t id;
-  size_t idx;  // node table index (== obj_index key for an Object node)
+  size_t idx;  // node table index (== key_index key for a keyed node)
 };
 
 inline JitResolvedNode
@@ -1322,22 +1322,21 @@ inline JitValue _jit_sv_materialize(const culebra::SharedValCore& core,
   return jit_deserialize(n, dc);
 }
 
-// The entry of Object node `rn` under a key, or null: the lookup the Object it
-// froze would have made. A plain key goes through the tree's own index (a
-// String by its bytes, with nothing built); a key of any other kind is
-// compared, as the value it is, with the few such keys the node holds.
-using JitFrozenEntry = std::pair<sendable::SendNode, sendable::SendNode>;
+// Where a key is in keyed node `rn` (an Object's entry, a Set's member), or
+// kNoKey: the lookup the collection it froze would have made. A plain key goes
+// through the tree's own index (a String by its bytes, with nothing built); a
+// key of any other kind is compared, as the value it is, with the few such
+// keys the node holds.
+inline constexpr size_t kNoKey = static_cast<size_t>(-1);
 
 template <class PlainKey>
-inline const JitFrozenEntry* _jit_sv_indexed(const JitResolvedNode& rn,
-                                             const PlainKey& key) {
-  const auto& plain = rn.core->obj_index.at(rn.idx).plain;
+inline size_t _jit_sv_indexed(const JitResolvedNode& rn, const PlainKey& key) {
+  const auto& plain = rn.core->key_index.at(rn.idx).plain;
   auto it = plain.find(key);
-  return it == plain.end() ? nullptr : &rn.node->entries[it->second];
+  return it == plain.end() ? kNoKey : it->second;
 }
 
-inline const JitFrozenEntry* _jit_sv_find(const JitResolvedNode& rn,
-                                          const JitValue& key) {
+inline size_t _jit_sv_find(const JitResolvedNode& rn, const JitValue& key) {
   if (key.tag == TAG_STRING || key.tag == TAG_STRINGVIEW)
     return _jit_sv_indexed(rn, _culebra_str_view(key.tag, key.data));
   sendable::SendNode probe;
@@ -1348,12 +1347,33 @@ inline const JitFrozenEntry* _jit_sv_find(const JitResolvedNode& rn,
   // Any other key is hashable or it is the TypeError an Object's lookup is.
   JitValue unhashable{TAG_NIL, 0};
   if (!JitHashedKey::try_of(key, &unhashable)) _jit_throw_unhashable(unhashable);
-  for (size_t e : rn.core->obj_index.at(rn.idx).other) {
-    const JitFrozenEntry& entry = rn.node->entries[e];
-    JitOwnedVal stored(_jit_sv_materialize(*rn.core, entry.first));
-    if (JitValueEq{}(stored.borrow(), key)) return &entry;
+  for (size_t at : rn.core->key_index.at(rn.idx).other) {
+    JitOwnedVal stored(
+        _jit_sv_materialize(*rn.core, culebra::shared_key_at(*rn.node, at)));
+    if (JitValueEq{}(stored.borrow(), key)) return at;
   }
-  return nullptr;
+  return kNoKey;
+}
+
+// The index of the first element of Array or Tuple node `rn` that `==` finds
+// equal to `x`, or -1: what the sequence it froze answers `contains` and
+// `index_of` by. An element is compared as the value it is; a String against
+// a String needs none made.
+inline int64_t _jit_sv_position(const JitResolvedNode& rn, const JitValue& x) {
+  bool strlike = x.tag == TAG_STRING || x.tag == TAG_STRINGVIEW;
+  const auto& elems = rn.node->elems;
+  for (size_t i = 0; i < elems.size(); i++) {
+    if (strlike && elems[i].kind == sendable::SendNode::K::Str) {
+      if (_culebra_str_view(x.tag, x.data) == elems[i].s)
+        return static_cast<int64_t>(i);
+      continue;
+    }
+    JitOwnedVal elem(_jit_sv_materialize(*rn.core, elems[i]));
+    if (_culebra_value_equal(static_cast<int8_t>(elem.v.tag), elem.v.data,
+                             static_cast<int8_t>(x.tag), x.data))
+      return static_cast<int64_t>(i);
+  }
+  return -1;
 }
 
 // The tree's entry under a String key, for a read by name (`view.name`, an
@@ -1365,9 +1385,10 @@ inline bool _jit_shared_val_find_impl(JitObject* view, const char* name,
                                       int64_t col) {
   auto rn = _jit_shared_val_node_of(view, line, col);
   if (rn.node->kind != sendable::SendNode::K::Object) return false;
-  auto* entry = _jit_sv_indexed(rn, std::string_view(name));
-  if (!entry) return false;
-  *out = _jit_shared_val_child(view, rn.id, *rn.core, entry->second);
+  size_t at = _jit_sv_indexed(rn, std::string_view(name));
+  if (at == kNoKey) return false;
+  *out = _jit_shared_val_child(view, rn.id, *rn.core,
+                               rn.node->entries[at].second);
   return true;
 }
 
@@ -1382,8 +1403,8 @@ inline JitValue _jit_shared_val_index_impl(JitObject* view, int8_t key_tag,
   using K = sendable::SendNode::K;
   switch (n->kind) {
     case K::Object: {
-      if (auto* entry = _jit_sv_find(rn, {key_tag, key_data}))
-        return _jit_shared_val_child(view, id, *core, entry->second);
+      if (size_t at = _jit_sv_find(rn, {key_tag, key_data}); at != kNoKey)
+        return _jit_shared_val_child(view, id, *core, n->entries[at].second);
       throw culebra::CulebraError("KeyError", "key not present", line, col);
     }
     case K::Array:
@@ -1420,71 +1441,153 @@ inline void _jit_sv_require_object(const sendable::SendNode* n,
   }
 }
 
-
-
 // How many values a node yields: its entries when it is an Object, its
 // elements otherwise. Shared by size() and the iterator.
 inline int64_t _jit_sv_node_count(const sendable::SendNode* n) {
-  using K = sendable::SendNode::K;
-  return n->kind == K::Object ? static_cast<int64_t>(n->entries.size())
-                              : static_cast<int64_t>(n->elems.size());
+  return static_cast<int64_t>(culebra::shared_node_count(*n));
 }
 
-inline void _jit_sv_size(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
+// A reader's frame. `self` and the arguments are consumed on every exit; a
+// reader takes the `takes` arguments the collection's own method of the name
+// takes, and says so in its words when it is handed another count; and what
+// it raises is reported at the call, since the thunk ABI carries no position.
+// `at_most` is `takes` but for `index_of`: a call site that names a built-in
+// passes that built-in's optional arguments filled in, and `index_of` has one
+// (a String's starting offset), so its one argument arrives as two.
+// `body(view, node)` returns the result at +1.
+template <class Body>
+inline void _jit_sv_reader(JitValue* ret, int8_t self_tag, int64_t self_data,
+                           int64_t n_args, JitValue* args, const char* method,
+                           int64_t takes, int64_t at_most, Body&& body) {
   JitValue self{self_tag, self_data};
-  // Callee-consumes on any exit: _jit_shared_val_node_of raises ClosedError
-  // on a dropped view, which a tail release would strand `self` on.
   JitMethodSelf _s{self};
-  auto rn = _jit_shared_val_node_of(reinterpret_cast<JitObject*>(self.data));
-  { *__ret = {TAG_LONG, _jit_sv_node_count(rn.node)}; return; }
+  JitMethodArgs _a{n_args, args};
+  *ret = _jit_at_call_site([&]() -> JitValue {
+    // Ahead of the node: a call with the wrong arguments is that, whatever
+    // the view it is made on.
+    if (n_args < takes || n_args > at_most)
+      throw culebra::CulebraError(
+          "ArityError",
+          culebra::builtin_arity_error_message(method, takes, takes, n_args));
+    auto* view = reinterpret_cast<JitObject*>(self.data);
+    return body(view, _jit_shared_val_node_of(view));
+  });
+}
+
+inline void _jit_sv_size(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n_args,
+                             JitValue* args) {
+  _jit_sv_reader(__ret, self_tag, self_data, n_args, args, "size", 0, 0,
+                 [](JitObject*, const JitResolvedNode& rn) {
+                   return JitValue{TAG_LONG, _jit_sv_node_count(rn.node)};
+                 });
 }
 
 inline void _jit_sv_has(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n_args,
                             JitValue* args) {
-  JitValue self{self_tag, self_data};
-  JitMethodSelf _s{self};
-  JitMethodArgs _a{n_args, args};  // consumed on any exit, throws included
-  // Before the node lookup: interp declares `key` as a required parameter, so
-  // its binder raises ArityError before the body observes a dropped view or a
-  // non-Object node. Checking here keeps both orderings symmetric.
-  if (n_args < 1) {
-    throw culebra::CulebraError("ArityError",
-                                culebra::missing_required_arg_message("key"));
-  }
-  auto rn = _jit_shared_val_node_of(reinterpret_cast<JitObject*>(self.data));
-  _jit_sv_require_object(rn.node, "has");
-  { *__ret = {TAG_BOOL, _jit_sv_find(rn, args[0]) ? 1 : 0}; return; }
+  _jit_sv_reader(__ret, self_tag, self_data, n_args, args, "has", 1, 1,
+                 [&](JitObject*, const JitResolvedNode& rn) {
+                   _jit_sv_require_object(rn.node, "has");
+                   bool found = _jit_sv_find(rn, args[0]) != kNoKey;
+                   return JitValue{TAG_BOOL, found ? 1 : 0};
+                 });
 }
 
-inline void _jit_sv_keys(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
-  JitValue self{self_tag, self_data};
-  JitMethodSelf _s{self};
-  auto [core, n, id, idx] = _jit_shared_val_node_of(
-      reinterpret_cast<JitObject*>(self.data));
-  using K = sendable::SendNode::K;
-  _jit_sv_require_object(n, "keys");
-  auto* arr = culebra_runtime_array_new();
-  for (const auto& [k, v] : n->entries) {
-    JitValue kv = _jit_sv_materialize(*core, k);
-    culebra_runtime_array_push(arr, kv.tag, kv.data);  // absorbs the +1
-  }
-  { *__ret = {TAG_ARRAY, reinterpret_cast<int64_t>(arr)}; return; }
+// `view.get(key, fallback)`: the Object's own `get`, or an Array's, which
+// reads by position (from the end when negative) and never raises for one
+// that is out of range.
+inline void _jit_sv_get(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n_args,
+                            JitValue* args) {
+  _jit_sv_reader(
+      __ret, self_tag, self_data, n_args, args, "get", 2, 2,
+      [&](JitObject* view, const JitResolvedNode& rn) {
+        using K = sendable::SendNode::K;
+        const sendable::SendNode* found = nullptr;
+        if (rn.node->kind == K::Array) {
+          if (args[0].tag != TAG_LONG)
+            throw culebra::CulebraError(
+                "TypeError", "type error: parameter 'i' expects Long");
+          auto len = static_cast<int64_t>(rn.node->elems.size());
+          int64_t i = args[0].data < 0 ? args[0].data + len : args[0].data;
+          if (i >= 0 && i < len) found = &rn.node->elems[static_cast<size_t>(i)];
+        } else if (rn.node->kind == K::Object) {
+          size_t at = _jit_sv_find(rn, args[0]);
+          if (at != kNoKey) found = &rn.node->entries[at].second;
+        } else {
+          throw culebra::CulebraError(
+              "TypeError", "get() requires an Object or Array Shared view");
+        }
+        // Either is borrowed: the fallback from the arguments, a child from
+        // the view that holds it.
+        JitValue v = found ? _jit_shared_val_child(view, rn.id, *rn.core, *found)
+                           : args[1];
+        culebra_runtime_value_retain(v.tag, v.data);
+        return v;
+      });
 }
 
-inline void _jit_sv_values(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
-                               JitValue*) {
-  JitValue self{self_tag, self_data};
-  JitMethodSelf _s{self};
-  auto* view = reinterpret_cast<JitObject*>(self.data);
-  auto [core, n, id, idx] = _jit_shared_val_node_of(view);
-  using K = sendable::SendNode::K;
-  _jit_sv_require_object(n, "values");
-  auto* arr = culebra_runtime_array_new();
-  for (const auto& [k, v] : n->entries) {
-    JitValue vv = _jit_shared_val_read(id, *core, v);
-    culebra_runtime_array_push(arr, vv.tag, vv.data);  // absorbs the +1
-  }
-  { *__ret = {TAG_ARRAY, reinterpret_cast<int64_t>(arr)}; return; }
+// `view.contains(x)`: a Set's member, found as a key is; an Array's or a
+// Tuple's element, found by `==`.
+inline void _jit_sv_contains(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n_args,
+                                 JitValue* args) {
+  _jit_sv_reader(
+      __ret, self_tag, self_data, n_args, args, "contains", 1, 1,
+      [&](JitObject*, const JitResolvedNode& rn) {
+        using K = sendable::SendNode::K;
+        bool found = false;
+        switch (rn.node->kind) {
+          case K::Set: found = _jit_sv_find(rn, args[0]) != kNoKey; break;
+          case K::Array:
+          case K::Tuple: found = _jit_sv_position(rn, args[0]) >= 0; break;
+          default:
+            throw culebra::CulebraError(
+                "TypeError",
+                "contains() requires an Array, Tuple or Set Shared view");
+        }
+        return JitValue{TAG_BOOL, found ? 1 : 0};
+      });
+}
+
+// `view.index_of(x)`: the Array's own `index_of` (a Tuple has none).
+inline void _jit_sv_index_of(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n_args,
+                                 JitValue* args) {
+  _jit_sv_reader(
+      __ret, self_tag, self_data, n_args, args, "index_of", 1, 2,
+      [&](JitObject*, const JitResolvedNode& rn) {
+        if (rn.node->kind != sendable::SendNode::K::Array)
+          throw culebra::CulebraError(
+              "TypeError", "index_of() requires an Array Shared view");
+        return JitValue{TAG_LONG, _jit_sv_position(rn, args[0])};
+      });
+}
+
+inline void _jit_sv_keys(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n_args,
+                             JitValue* args) {
+  _jit_sv_reader(
+      __ret, self_tag, self_data, n_args, args, "keys", 0, 0,
+      [](JitObject*, const JitResolvedNode& rn) {
+        _jit_sv_require_object(rn.node, "keys");
+        auto* arr = culebra_runtime_array_new();
+        for (const auto& [k, v] : rn.node->entries) {
+          JitValue kv = _jit_sv_materialize(*rn.core, k);
+          culebra_runtime_array_push(arr, kv.tag, kv.data);  // absorbs the +1
+        }
+        return JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(arr)};
+      });
+}
+
+inline void _jit_sv_values(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n_args,
+                               JitValue* args) {
+  _jit_sv_reader(
+      __ret, self_tag, self_data, n_args, args, "values", 0, 0,
+      [](JitObject*, const JitResolvedNode& rn) {
+        _jit_sv_require_object(rn.node, "values");
+        auto* arr = culebra_runtime_array_new();
+        for (const auto& [k, v] : rn.node->entries) {
+          JitValue vv = _jit_shared_val_read(rn.id, *rn.core, v);
+          culebra_runtime_array_push(arr, vv.tag, vv.data);  // absorbs the +1
+        }
+        return JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(arr)};
+      });
 }
 
 // The value a view froze, as an ordinary one: `copy()`, and what
@@ -1495,11 +1598,12 @@ inline JitValue _jit_shared_val_plain_impl(JitObject* view, int64_t line = 0,
   return _jit_sv_materialize(*rn.core, *rn.node);
 }
 
-inline void _jit_sv_copy(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
-  JitValue self{self_tag, self_data};
-  JitMethodSelf _s{self};
-  { *__ret = _jit_shared_val_plain_impl(
-        reinterpret_cast<JitObject*>(self.data)); return; }
+inline void _jit_sv_copy(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n_args,
+                             JitValue* args) {
+  _jit_sv_reader(__ret, self_tag, self_data, n_args, args, "copy", 0, 0,
+                 [](JitObject*, const JitResolvedNode& rn) {
+                   return _jit_sv_materialize(*rn.core, *rn.node);
+                 });
 }
 
 inline void _jit_sv_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
@@ -1620,6 +1724,9 @@ inline JitValue _jit_make_shared_val_view(int64_t id, int64_t node) {
   };
   meth("size", _jit_sv_size);
   meth("has", _jit_sv_has);
+  meth("get", _jit_sv_get);
+  meth("contains", _jit_sv_contains);
+  meth("index_of", _jit_sv_index_of);
   meth("keys", _jit_sv_keys);
   meth("values", _jit_sv_values);
   meth("copy", _jit_sv_copy);

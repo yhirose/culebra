@@ -3896,8 +3896,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_is_namespace(
   return reinterpret_cast<JitObject*>(data)->is_namespace ? 1 : 0;
 }
 
-// A Shared.new view exposes only its own reader methods. A dict builtin
-// (`get`/`remove`/`get_or_put`) compiled against the view must behave
+// A Shared.new view exposes only its own reader methods (`get` is one, so the
+// gate never brings a view to the dict's). A dict builtin it lacks
+// (`remove`/`get_or_put`) compiled against the view must behave
 // like the interp: the name reads from the frozen tree (functions can't
 // be in a tree, so the result is data or nil) and calling that fails —
 // reproduce that exact TypeError instead of running the builtin (which
@@ -3968,6 +3969,8 @@ inline void _key_order_erase(JitObject* obj, const JitValue& key) {
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_default(
     JitObject* obj, int8_t kt, int64_t kd, int8_t ft, int64_t fd,
     int64_t line, int64_t col) {
+  // A view answers `get` itself, ahead of this. Should one arrive all the
+  // same, its slots are not entries to read.
   if (obj->is_shared_val) {
     _culebra_value_release_impl(ft, fd);
     if (kt != TAG_STRING) _culebra_value_release_impl(kt, kd);

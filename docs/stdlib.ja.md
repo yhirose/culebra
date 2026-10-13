@@ -3420,6 +3420,19 @@ viewは要素を返す）。スカラフィールドは読み手のheapに材料
 見つける。そのObjectが持っていたキーならTupleも`nil`も引け、型をまたいで
 一致することはない。
 
+viewは、凍結したコレクションと同じ答え方をする問い合わせを3つ持つ。
+Objectの`view.get(key, fallback)`とArrayの`view.get(i, fallback)`、Set
+（要素をキーと同じやり方で探す）とArray・Tuple（要素を`==`で探す）の
+`view.contains(x)`、Arrayの`view.index_of(x)`。列が答えるそれ以外の操作には、viewのイテレータを使う。
+`view.iter()`は全体をコピーせずに要素を1つずつ返すので、
+`view.iter().map(f).collect()`、`.filter(f)`、`.sum()`などのイテレータの
+メソッドが、凍結した木を直接読む。
+
+view自身のメソッド名（`size`、`has`、`get`、`contains`、`index_of`、
+`keys`、`values`、`copy`、`iter`、`drop`）は、`view.name`でもパターンでも
+そのメソッドとして読まれる。凍結したObjectが同じ名前のキーを持っていても、
+そのキーは`view['name']`で読める。
+
 viewの表示、`JSON.stringify(view)`、`TOML.stringify(view)`、展開
 （`{...view}`と`[...view]`）は、凍結した値そのもの（`view.copy()`が返す
 もの）を読む。したがって展開の結果は奥まで普通の値になる。キーワードの

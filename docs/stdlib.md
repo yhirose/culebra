@@ -3518,6 +3518,21 @@ mutable values when you need a local scratch copy. `view[key]` and
 `view.has(key)` find a key the way the Object that was frozen does: any
 key it held, a Tuple or `nil` included, and never across types.
 
+A view also answers three questions the way the collection it froze
+does: `view.get(key, fallback)` on an Object and `view.get(i, fallback)`
+on an Array, `view.contains(x)` on a Set (a member, found as a key is),
+an Array or a Tuple (an element, by `==`), and `view.index_of(x)` on an
+Array. For the rest of what a
+sequence answers, take the view's iterator: `view.iter()` yields the
+elements one at a time with no copy of the whole, so
+`view.iter().map(f).collect()`, `.filter(f)`, `.sum()` and the other
+iterator methods read the frozen tree directly.
+
+The view's own methods (`size`, `has`, `get`, `contains`, `index_of`,
+`keys`, `values`, `copy`, `iter`, `drop`) are what those names read as
+`view.name` and in a pattern. A key of the frozen Object by one of those
+names is still there under `view['name']`.
+
 Printing a view, `JSON.stringify(view)`, `TOML.stringify(view)` and a
 spread (`{...view}`, `[...view]`) read the value that was frozen, the one
 `view.copy()` hands back, so a spread's result is an ordinary value of

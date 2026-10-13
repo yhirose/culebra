@@ -93,14 +93,15 @@ struct SharedValCore {
   // Pre-order node table; a view's `__sharedval_node__` is an index here.
   std::vector<const SendNode*> nodes;
   std::unordered_map<const SendNode*, size_t> ids;  // reverse (sub-view mint)
-  // What one Object node's keys are found through: the entry each plain key
-  // is at, and the entries under a key of any other kind.
+  // What a keyed node's keys are found through (an Object's keys, a Set's
+  // members; see shared_key_at): the position each plain key is at, and the
+  // positions of the keys of any other kind.
   struct KeyIndex {
     std::unordered_map<const SendNode*, size_t, SharedKeyHash, SharedKeyEq>
         plain;
     std::vector<size_t> other;
   };
-  std::unordered_map<size_t, KeyIndex> obj_index;
+  std::unordered_map<size_t, KeyIndex> key_index;
   // Every class meta the tree writes out, by the ref id the instances after
   // the first name it by: what rebuilding one node of the tree resolves a
   // backref through.
@@ -163,20 +164,36 @@ inline void shared_val_drop(int64_t id) {
   }
 }
 
-// Pre-order DFS: number every node, build the Object key indexes.
+// A keyed node's keys, by position: an Object's entry keys, a Set's members.
+inline bool shared_keyed(const SendNode& n) {
+  return n.kind == SendNode::K::Object || n.kind == SendNode::K::Set;
+}
+// How many values a node yields: an Object's entries, or the elements of any
+// other container. For a keyed node that is its key count.
+inline size_t shared_node_count(const SendNode& n) {
+  return n.kind == SendNode::K::Object ? n.entries.size() : n.elems.size();
+}
+inline const SendNode& shared_key_at(const SendNode& n, size_t at) {
+  return n.kind == SendNode::K::Object ? n.entries[at].first : n.elems[at];
+}
+
+// Pre-order DFS: number every node, build the key indexes.
 inline void _shared_val_index(SharedValCore& core, const SendNode& n) {
   size_t id = core.nodes.size();
   core.nodes.push_back(&n);
   core.ids.emplace(&n, id);
   if (n.kind == SendNode::K::Object && !n.is_backref && n.ref_id >= 0)
     core.metas.emplace(n.ref_id, &n);
-  if (n.kind == SendNode::K::Object) {
-    auto& idx = core.obj_index[id];
-    for (size_t e = 0; e < n.entries.size(); e++) {
-      const SendNode& key = n.entries[e].first;
-      if (shared_key_plain(key)) idx.plain.emplace(&key, e);
-      else idx.other.push_back(e);
+  if (shared_keyed(n)) {
+    auto& idx = core.key_index[id];
+    idx.plain.reserve(shared_node_count(n));
+    for (size_t at = 0; at < shared_node_count(n); at++) {
+      const SendNode& key = shared_key_at(n, at);
+      if (shared_key_plain(key)) idx.plain.emplace(&key, at);
+      else idx.other.push_back(at);
     }
+  }
+  if (n.kind == SendNode::K::Object) {
     for (const auto& [k, v] : n.entries) {
       _shared_val_index(core, k);
       _shared_val_index(core, v);

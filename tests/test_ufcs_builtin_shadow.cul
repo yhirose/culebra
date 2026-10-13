@@ -514,8 +514,10 @@ assert_throws('TypeError', fn () {
 
 # A view has no dict builtins of its own: a name its handle doesn't carry
 # reads the frozen tree (nil) and raises on the call, which is what
-# eval_property does — not the dict builtin's ArityError.
-assert_throws('TypeError', fn () { view.get("a") })
+# eval_property does — not the dict builtin's ArityError. `get` is a reader
+# the handle does carry, so that one answers as an Object's does.
+assert_throws('ArityError', fn () { view.get("a") })
+assert_eq(view.get("z", 9), 9)
 assert_throws('TypeError', fn () { view.get_or_put("z", 9) })
 assert_throws('TypeError', fn () { view.remove("a") })
 assert_throws('TypeError', fn () { view.empty() })

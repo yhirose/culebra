@@ -254,12 +254,6 @@ assert_eq(suits[(SharedSuit.Spades, 1)], 's1')
 assert_eq([suits.has(SharedSuit.Spades), suits.has((SharedSuit.Spades, 2))],
   [false, false])
 
-# An Array view takes a Long and says so; the interpreter's key.to_long()
-# does not truncate a Float or accept a String either.
-let bad_key = try { arr_view['x']; nil } catch e { e }
-assert_eq(bad_key.message, 'type error: expected Long, got String')
-assert_throws('IndexError', fn () { arr_view[99] })
-
 # --- a value taken out of the tree alone is whole ---
 # The tree writes a class out once, with the first value of it, and the later
 # ones refer back. Whatever reads one of those alone still finds its class.
@@ -274,6 +268,9 @@ let cards = [SharedCard.Card(1), SharedCard.Card(2), SharedPoint(1), SharedPoint
 let card_view = Shared.new(cards)
 assert_eq(card_view[1].copy(), SharedCard.Card(2))
 assert_eq(to_string(card_view[3]), to_string(SharedPoint(2)))
+assert_eq(card_view.index_of(SharedCard.Card(2)), cards.index_of(SharedCard.Card(2)))
+assert_eq(card_view.index_of(SharedPoint(2)), cards.index_of(SharedPoint(2)))
+assert_eq(card_view.contains(SharedCard.Joker), false)
 mut by_card = {}
 by_card[SharedCard.Card(1)] = 'one'
 by_card[SharedCard.Card(2)] = 'two'
@@ -281,11 +278,77 @@ let card_keys = Shared.new(by_card)
 assert_eq(card_keys[SharedCard.Card(2)], 'two')
 assert_eq(card_keys.has(SharedCard.Card(3)), false)
 assert_eq(card_keys.keys(), [SharedCard.Card(1), SharedCard.Card(2)])
+let card_set = Shared.new([SharedCard.Card(1), SharedCard.Card(2)].to_set())
+assert_eq([card_set.contains(SharedCard.Card(2)), card_set.contains(SharedCard.Card(3))],
+  [true, false])
 mut seen_cards = []
 for card in card_view {
   seen_cards.push(to_string(card))
 }
 assert_eq(seen_cards, cards.map(|c| to_string(c)))
+
+# --- get / contains / index_of answer as the collection's own do ---
+# Each is asked of the view and of the value it froze, and the two agree: a
+# Set's member is found as a key is, an Array's element by `==`.
+let asked_obj = {a: 1, b: nil}
+asked_obj[(1, 2)] = 't'
+let asked_arr = [3, 1, 2.0, 'x', [1, 2], nil]
+let asked_set = [1, 'x', (2, 3), SharedSuit.Hearts].to_set()
+let asked_tup = (3, 'x', [1])
+let (view_obj, view_arr, view_set, view_tup) = (Shared.new(asked_obj),
+  Shared.new(asked_arr), Shared.new(asked_set), Shared.new(asked_tup))
+for key in ['a', 'b', 'zz', (1, 2), (1, 3), nil] {
+  assert_eq(view_obj.get(key, 'no'), asked_obj.get(key, 'no'))
+}
+assert_eq(view_obj.get('zz', view_obj).a, 1)  # the fallback is handed back as it is
+for i in [0, 4, -1, -6, 6, -7] {
+  # A container comes back as a view of it, as `view[i]` does: compare shown.
+  assert_eq(to_string(view_arr.get(i, 'no')), to_string(asked_arr.get(i, 'no')))
+}
+for x in [1, 2, 2.0, 'x', 'y', [1, 2], [1], nil, 9] {
+  assert_eq(view_arr.contains(x), asked_arr.contains(x))
+  assert_eq(view_arr.index_of(x), asked_arr.index_of(x))
+  assert_eq(view_tup.contains(x), asked_tup.contains(x))
+}
+assert_eq(view_arr.index_of('zx'[1..2]), 3)  # a substring is the String it spells
+for x in [1, 1.0, 'x', 'y', (2, 3), (2, 4), SharedSuit.Hearts, SharedSuit.Spades] {
+  assert_eq(view_set.contains(x), asked_set.contains(x))
+}
+# What the collection refuses, the view refuses in the same words.
+let said = fn (f) {
+  try {
+    f()
+    'no error'
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+assert_eq(said(|| view_set.contains([1])), said(|| asked_set.contains([1])))
+assert_eq(said(|| view_set.contains()), said(|| asked_set.contains()))
+assert_eq(said(|| view_arr.index_of()), said(|| asked_arr.index_of()))
+assert_eq(said(|| view_obj.get('a')), said(|| asked_obj.get('a')))
+assert_eq(said(|| view_obj.get([1], 0)), said(|| asked_obj.get([1], 0)))
+assert_eq(said(|| view_arr.get('x', 0)), said(|| asked_arr.get('x', 0)))
+assert_eq(said(|| view_set.contains(1, 2)), said(|| asked_set.contains(1, 2)))
+assert_eq(said(|| view_obj.get('a', 1, 2)), said(|| asked_obj.get('a', 1, 2)))
+assert_eq(said(|| view_arr.index_of(1, 2, 3)), said(|| asked_arr.index_of(1, 2, 3)))
+assert_eq(said(|| view_obj.has('a', 2)), said(|| asked_obj.has('a', 2)))
+assert_eq(said(|| view_obj.keys(1)), said(|| asked_obj.keys(1)))
+# A question for another kind of collection says which kinds it is for.
+assert_throws('TypeError', fn () { view_obj.contains('a') })
+assert_throws('TypeError', fn () { view_tup.index_of(3) })
+assert_throws('TypeError', fn () { view_tup.get(0, nil) })
+# Everything else a sequence answers, the view's iterator answers, one element
+# at a time and with no copy of the whole.
+assert_eq(view_arr.iter().filter(|x| type_of(x) == 'Long').map(|x| x * 2).collect(),
+  [6, 2])
+assert_eq(Shared.new([3, 1, 2]).iter().sum(), 6)
+
+# An Array view takes a Long and says so; the interpreter's key.to_long()
+# does not truncate a Float or accept a String either.
+let bad_key = try { arr_view['x']; nil } catch e { e }
+assert_eq(bad_key.message, 'type error: expected Long, got String')
+assert_throws('IndexError', fn () { arr_view[99] })
 
 # A view's shape is never an Object's: a write site an Object with the
 # view's own slot names warmed still refuses the view.
@@ -295,8 +358,8 @@ fn poke(o) {
 }
 let noop = || nil
 let sv_impostor = {__sharedval_id__: 0, __sharedval_node__: 0,
-  mut _dropped: false, size: noop, has: noop, keys: noop, values: noop,
-  copy: noop, iter: noop, drop: noop}
+  mut _dropped: false, size: noop, has: noop, get: noop, contains: noop,
+  index_of: noop, keys: noop, values: noop, copy: noop, iter: noop, drop: noop}
 for _ in 0..3 {
   poke(sv_impostor)
 }

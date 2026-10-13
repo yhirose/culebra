@@ -300,3 +300,8 @@ m|[1, 2, 3]|max_by||x| x > 0
 m|[1, 2, 3]|min_by||x| x > 0
 typos|[1, "x"].min()
 typos|[1, 2].max_by(|x| "k")
+
+# A Shared view answers `get(key, fallback)` as the Object it froze does. The
+# baseline's view had no such reader: the name read the frozen tree (nil) and
+# the call raised.
+sharedval|*s.get("a"*
