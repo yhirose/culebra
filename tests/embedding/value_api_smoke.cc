@@ -393,6 +393,65 @@ int run() {
                 "100 rounds strand no reference");
   }
 
+  // (8) A Value keeps what it holds wherever the host puts it. A collection
+  // finds one on the stack by scanning the stack; one in a std::vector's
+  // buffer it does not see, so that one pins its value, and unpins it on the
+  // way out. Both kinds of collection run here: the threshold's, which takes
+  // its roots from the stack, and GC.stat()'s, which takes them from counts
+  // (and so never had a root for a String, which has no count).
+  {
+    embed.eval(
+        "fn churn() {\n"
+        "  for i in 0..20000 {\n"
+        "    mut a = {name: 'x' + to_string(i)}\n"
+        "    mut b = {peer: a}\n"
+        "    a.peer = b\n"
+        "  }\n"
+        "}\n"
+        "fn make(i) { [i, 'elem-' + to_string(i)] }\n"
+        "fn make_fn(i) {\n  let s = 'cap-' + to_string(i)\n  fn () { s }\n}\n"
+        "fn invoke(f) { f() }\n"
+        "fn show(a, b, c, d) { [a, b, c, d].join('|') }");
+    auto pinned = [](const Value& v) {
+      auto* h = _gc_heap().header(reinterpret_cast<void*>(v.get().data));
+      return h && (h->flags & culebra::gc::Heap::kFlagPinned);
+    };
+    auto held = std::make_unique<std::vector<Value>>();
+    for (int i = 0; i < 4; i++) {  // unreserved: the buffer moves as it grows
+      held->emplace_back("held-" + std::to_string(i));
+      held->push_back(embed.call("make", i));
+      held->push_back(embed.call("make_fn", i));
+    }
+    for (int i = 0; i < 3; i++) embed.call("churn");
+    embed.eval("GC.stat()");
+    std::string seen;
+    for (size_t i = 0; i < held->size(); i += 3) {
+      seen += (*held)[i].as<std::string>() + ",";
+      seen += (*held)[i + 1][1].as<std::string>() + ",";
+      seen += embed.call("invoke", std::vector<Value>{(*held)[i + 2]})
+                  .as<std::string>() + ";";
+    }
+    ok &= check(seen == "held-0,elem-0,cap-0;held-1,elem-1,cap-1;"
+                        "held-2,elem-2,cap-2;held-3,elem-3,cap-3;",
+                "Values off the stack keep their values through a collection");
+
+    Value on_stack = (*held)[1];
+    ok &= check(pinned(on_stack), "a Value off the stack pins what it holds");
+    held->erase(held->begin() + 1);  // the others shift down one
+    ok &= check(!pinned(on_stack) && pinned((*held)[1]),
+                "one that lets go unpins, and a moved one still holds");
+    held.reset();
+    ok &= check(!pinned(on_stack), "the stack's own Value pins nothing");
+
+    // The documented call shape: each emplace_back allocates while the earlier
+    // arguments sit in the vector's buffer and nowhere else.
+    std::vector<Value> args;
+    for (int i = 0; i < 4; i++) args.emplace_back("arg-" + std::to_string(i));
+    ok &= check(embed.call("show", std::move(args)).as<std::string>() ==
+                    "arg-0|arg-1|arg-2|arg-3",
+                "arguments built up in a vector arrive as they were made");
+  }
+
   std::cout << (ok ? "OK\n" : "FAIL\n");
   return ok ? 0 : 1;
 }

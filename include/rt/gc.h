@@ -309,6 +309,16 @@ class Heap {
     }
   }
 
+  // Whether `p` lies in the part of this thread's stack scan_roots walks. What
+  // sits there is a root as it is; a holder anywhere else (the C++ heap, a
+  // static, a stack the thread is not running on) pins what it holds.
+  static bool on_scanned_stack(const void* p) {
+    static thread_local uintptr_t base = 0;  // a thread's base never moves
+    if (!base) base = reinterpret_cast<uintptr_t>(stack_base());
+    auto a = reinterpret_cast<uintptr_t>(p);
+    return a >= reinterpret_cast<uintptr_t>(current_sp()) && a < base;
+  }
+
   // Mark an object whose refcount just reached zero as mid-teardown. Its
   // release path frees children and fires `drop` — user code that can
   // collect — before forget() de-registers the struct. Until then the corpse

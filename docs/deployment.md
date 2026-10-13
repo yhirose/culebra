@@ -744,6 +744,11 @@ embed.call("connect", opts);
 The entries a builder makes are mutable — `{mut k: v}`, not `{k: v}` —
 since what the host builds is the host's own data.
 
+A `Value` keeps what it holds alive for as long as the host holds it,
+wherever that is: a local, a member of one of the host's own objects, an
+element of a `std::vector`. Hold it, and let it go, under the Runtime it
+came from.
+
 ### Calling script functions from C++
 
 After a run, any top-level `fn` or `let f = fn ...` lands in the

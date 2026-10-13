@@ -47,6 +47,12 @@ class Arg;
 // Value — an owning RAII handle over the runtime's tagged value. The tag and
 // payload are visible (advanced hosts can `get()` a borrowed JitValue), but
 // every retain/release lives here.
+//
+// It is also what keeps the value from the collector, wherever the host puts
+// it. A collection finds a Value on the C++ stack by scanning the stack; one
+// anywhere else (an element of a std::vector, a member of a heap object, a
+// static) it does not see, so such a Value pins what it holds for as long as
+// it holds it. One on the stack pays for the test and nothing else.
 // ---------------------------------------------------------------------------
 class Value {
  public:
@@ -55,7 +61,9 @@ class Value {
   explicit Value(int64_t n) : v_{TAG_LONG, n} {}
   explicit Value(double d) : v_(jit_float(d)) {}
   explicit Value(std::string_view s)
-      : v_{TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(s))} {}
+      : Value(JitValue{TAG_STRING,
+                       reinterpret_cast<int64_t>(_culebra_heap_str(s))},
+              Adopt{}) {}
   // Without this, a string literal would take the BOOL ctor (pointer->bool
   // is a standard conversion, ->string_view is user-defined).
   explicit Value(const char* s) : Value(std::string_view(s)) {}
@@ -70,13 +78,24 @@ class Value {
 
   Value(const Value& o) : v_(o.v_) {
     culebra_runtime_value_retain(v_.tag, v_.data);
+    root();
   }
-  Value(Value&& o) noexcept : v_(o.v_) { o.v_ = {TAG_NIL, 0}; }
+  // A pin is for the value, so it goes where the value goes.
+  Value(Value&& o) noexcept : v_(o.v_), pinned_(o.pinned_) {
+    o.v_ = {TAG_NIL, 0};
+    o.pinned_ = false;
+    root();
+  }
   Value& operator=(Value o) noexcept {
     std::swap(v_, o.v_);
+    std::swap(pinned_, o.pinned_);
+    root();
     return *this;
   }
-  ~Value() { _culebra_value_release_impl(v_.tag, v_.data); }
+  ~Value() {
+    unroot();
+    _culebra_value_release_impl(v_.tag, v_.data);
+  }
 
   // Reads are lenient: a mismatched tag yields false/0/empty rather than
   // throwing (check is_nil() / get().tag to distinguish); the strict typed
@@ -208,9 +227,8 @@ class Value {
     _jit_require_own_entries(obj);
     std::vector<std::pair<Value, Value>> out;
     out.reserve(static_cast<size_t>(culebra_runtime_object_size(obj)));
-    // The keys are Strings made here, held by `out` alone, which no scan
-    // reads; and a collection one of them started could run a `drop`. None
-    // runs while the walk holds an entry.
+    // Each key is a String made here, and a collection that allocation
+    // started could run a `drop`. None runs while the walk holds an entry.
     culebra::gc::Heap::CollectPause pause(_gc_heap());
     _jit_each_own_entry(
         obj,
@@ -249,6 +267,7 @@ class Value {
   JitValue get() const { return v_; }  // borrowed view
   // Hand the owned reference out (the caller now holds the +1).
   JitValue release() {
+    unroot();
     JitValue v = v_;
     v_ = {TAG_NIL, 0};
     return v;
@@ -256,8 +275,31 @@ class Value {
 
  private:
   struct Adopt {};
-  Value(JitValue v, Adopt) : v_(v) {}
+  Value(JitValue v, Adopt) : v_(v) { root(); }
+
+  // Pin what this Value holds when the collector's scan of the stack does not
+  // pass over the Value itself. `pinned_` is the one pin this Value holds: a
+  // moved value brings its own, and the way out gives it back.
+  void root() {
+    if (pinned_) return;
+    void* p = _gc_object_of(v_);
+    if (p && !culebra::gc::Heap::on_scanned_stack(this)) pin(p);
+  }
+  void unroot() {
+    if (pinned_) unpin();
+  }
+  // Out of line: a Value on the stack runs the tests above and nothing else.
+  [[gnu::noinline]] void pin(void* p) {
+    _gc_heap().pin(p);
+    pinned_ = true;
+  }
+  [[gnu::noinline]] void unpin() {
+    _gc_heap().unpin(reinterpret_cast<void*>(v_.data));
+    pinned_ = false;
+  }
+
   JitValue v_;
+  bool pinned_ = false;
 };
 
 // One Array element at a time. Input-iterator shape: one pass, the element
@@ -728,9 +770,11 @@ class Embed {
   // a script `throw` arrives with its object's kind/message, so the
   // "catch CulebraError" contract carries over unchanged.
   Value call(std::string_view name, std::vector<Value> args = {}) {
+    // The callee consumes a +1 of its own. `args` goes on holding the values
+    // until the call returns: `vals` is a buffer no collection reads.
     std::vector<JitValue> vals;
     vals.reserve(args.size());
-    for (auto& a : args) vals.push_back(a.release());  // callee consumes
+    for (const auto& a : args) vals.push_back(Value(a).release());
     return call_owned(name, vals.empty() ? nullptr : vals.data(),
                       static_cast<int64_t>(vals.size()));
   }

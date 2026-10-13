@@ -1044,15 +1044,20 @@ culebra_runtime_fn_introspect_get(JitClosure* cls, const char* prop) {
 
 extern "C++" {  // C++ linkage (these take std::vector&); we sit in extern "C"
 // --- Backstop collector callbacks (forward-declared near _gc_heap) ---------
-// Push a JitValue's heap pointer as a GC child/root if it is refcounted.
-inline void _gc_push_value(std::vector<void*>& out, const JitValue& v) {
+// The heap object a JitValue is, or null for one that is none.
+inline void* _gc_object_of(const JitValue& v) {
   // TAG_STRING / TAG_STRINGVIEW are traced but not refcounted, so admit them
   // explicitly: a string or view held only inside a container must be marked
-  // from its parent. A literal's data is not in the registry, so push() drops
-  // it harmlessly; the view descriptor and its owner_base backing are, and get
-  // marked (the descriptor here, the backing via enumerate_children).
-  if (v.data && (_is_refcounted_value_tag(v.tag) || _jit_gc_is_traced_only(v.tag)))
-    out.push_back(reinterpret_cast<void*>(v.data));
+  // from its parent. A literal's data is not in the registry, so the heap
+  // drops it harmlessly; the view descriptor and its owner_base backing are,
+  // and get marked (the descriptor here, the backing via enumerate_children).
+  bool traced =
+      _is_refcounted_value_tag(v.tag) || _jit_gc_is_traced_only(v.tag);
+  return traced ? reinterpret_cast<void*>(v.data) : nullptr;
+}
+// Push a JitValue's heap pointer as a GC child/root if it has one.
+inline void _gc_push_value(std::vector<void*>& out, const JitValue& v) {
+  if (void* p = _gc_object_of(v)) out.push_back(p);
 }
 
 // extern "C" to match the definition's linkage (we sit in an extern "C++"
