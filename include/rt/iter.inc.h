@@ -134,6 +134,8 @@ inline void _iter_dispose_upstreams_fn(JitValue* __ret, JitClosure* cls,
     } catch (const culebra::Interrupted&) {
       throw;  // a press outranks a dispose's error: it is no error at all
     } catch (...) {
+      // thrown value: kept like any other failure; the first is thrown again
+      // below, as it is.
       if (!first) first = std::current_exception();
     }
   }
@@ -537,6 +539,8 @@ class JitIterDrive {
         // next safepoint raises it instead.
         culebra::rearm_interrupt();
       } catch (...) {
+        // thrown value: dropped. An error is already unwinding, and the
+        // restore below puts its payload back over the one this left.
       }
       culebra_runtime_restore_thrown(flag, tag, data);
     } else {

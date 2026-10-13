@@ -1340,6 +1340,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_defer_run_to(int64_t mark
       _culebra_value_release_impl(v.tag, v.data);
       throw;
     } catch (...) {
+      // thrown value: kept in `replaced` and thrown again, as it is, once the
+      // remaining defers have run.
       // The defer's own throw replaces the in-flight payload: abandon the
       // snapshot (drop its retain, pop its pending frame) rather than
       // restoring it over the replacement. No catch will ever consume the

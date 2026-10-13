@@ -76,9 +76,15 @@ for f in "${kFiles[@]}"; do
 done
 [[ $missing -eq 0 ]] || exit 1
 
-chains="$(for f in "${kFiles[@]}"; do awk -f tools/checks/interrupt_chains.awk "$f"; done)"
+gate=interrupt-discipline
+carrier=Interrupted
+note=interrupt
+behind=CulebraException
+source tools/checks/catch_discipline.sh
 
-bad="$(printf '%s\n' "$chains" | awk -F'\t' '$3 == "SWALLOWS"')"
+chains="$(catch_chains "${kFiles[@]}")"
+
+bad="$(swallowing_chains "$chains")"
 if [[ -n "$bad" ]]; then
   echo "interrupt-discipline: handler(s) can report an interrupt as a program error:" >&2
   printf '%s\n' "$bad" | sed 's/^/  /' >&2
@@ -88,49 +94,5 @@ if [[ -n "$bad" ]]; then
   exit 1
 fi
 
-# Positive control: the checker must be able to fail. Without this a change that
-# breaks the awk (an unparsed brace, a renamed verdict) reports zero SWALLOWS on
-# a tree full of them and the gate goes quietly green — the shape that let a
-# one-probe shell gate miss a whole peeling pass before.
-#
-# Two probes, because the two ways to go blind are different. The first is a
-# bare swallowing catch-all. The second puts one behind a handler of a type the
-# checker does not report on: brace counting alone runs a chain together, since
-# `} catch (...) {` is balanced, and then the whole chain is judged by its first
-# handler and this catch-all is never seen. That was a live hole — it hid two
-# chains on this very surface.
-probe="$(mktemp -d "${TMPDIR:-/tmp}/culebra-interrupt.XXXXXX")"
-trap 'rm -rf "$probe"' EXIT
-cat > "$probe/swallow.cc" <<'EOF'
-void f() {
-  try {
-    run();
-  } catch (...) {
-    report();
-  }
-}
-EOF
-cat > "$probe/behind.cc" <<'EOF'
-void g() {
-  try {
-    run();
-  } catch (const CulebraException& e) {
-    report(e);
-  } catch (...) {
-    report();
-  }
-}
-EOF
-for p in swallow behind; do
-  if [[ -z "$(awk -f tools/checks/interrupt_chains.awk "$probe/$p.cc" |
-              awk -F'\t' '$3 == "SWALLOWS"')" ]]; then
-    echo "interrupt-discipline: the checker no longer detects a swallowing" >&2
-    echo "handler ($p probe)" >&2
-    exit 1
-  fi
-done
-
-counts="$(printf '%s\n' "$chains" | awk -F'\t' '{c[$3]++} END {
-  printf "explicit=%d rethrows=%d terminates=%d documented=%d",
-         c["EXPLICIT"], c["RETHROWS"], c["TERMINATES"], c["DOCUMENTED"] }')"
-echo "interrupt-discipline OK ($(printf '%s\n' "$chains" | wc -l | tr -d ' ') chains: $counts)"
+require_swallow_probes
+report_ok "$chains"

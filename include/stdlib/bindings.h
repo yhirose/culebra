@@ -2313,6 +2313,8 @@ inline void _http_setup_into(JitValue into, culebra::http::HttpRequest& req,
         _culebra_value_release_impl(r.tag, r.data);
         return true;
       } catch (...) {
+        // thrown value: kept with any other failure, and thrown again as it
+        // is once the request is over.
         st.eptr = std::current_exception();  // abort; rethrown after send
         return false;
       }
@@ -2457,6 +2459,7 @@ inline void _http_setup_multipart(JitValue filesv,
           _culebra_value_release_impl(r.tag, r.data);
           return true;
         } catch (...) {
+          // thrown value: kept, and thrown again as it is after the send.
           st.eptr = std::current_exception();  // abort; rethrown after send.
           return false;
         }
@@ -2556,6 +2559,7 @@ inline void _http_setup_body(JitValue bodyv, JitValue jsonv, JitValue formv,
         _culebra_value_release_impl(r.tag, r.data);
         return true;
       } catch (...) {
+        // thrown value: kept, and thrown again as it is after the send.
         st.eptr = std::current_exception();  // abort; rethrown after send
         return false;
       }
@@ -5897,6 +5901,7 @@ inline JitValue _ns_http_sse(JitValue* a, int64_t n) {
       _culebra_value_release_impl(r.tag, r.data);
       return true;
     } catch (...) {
+      // thrown value: kept, and thrown again as it is after the send.
       eptr = std::current_exception();  // abort; rethrown after send
       return false;
     }
@@ -6324,6 +6329,8 @@ inline bool _jit_http_try_stream_response(JitValue ret,
           _culebra_value_release_impl(r.tag, r.data);
           return true;
         } catch (...) {
+          // thrown value: none arrives; call_from_host above makes one an
+          // error. A stream whose producer fails ends there.
           return false;
         }
       });
@@ -6734,6 +6741,8 @@ inline JitValue _jit_http_server_do_serve(int64_t id, int64_t workers,
                   return _culebra_invoke2(cb, req.consume(), wsh.consume());
                 }));
               } catch (...) {
+                // thrown value: none arrives; call_from_host above makes one
+                // an error. A handler that fails closes its own connection.
               }
               culebra::http::ws_unregister(wsid);
             };

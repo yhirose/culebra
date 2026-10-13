@@ -1637,6 +1637,17 @@ handler written to report errors cannot name a type that catches one. It
 still reaches script code the same way — the pads classify through the
 pending carrier (§5.5), never through the C++ type.
 
+The user `throw` itself crosses C++ frames as a `culebra::CulebraException`,
+which derives from nothing for the same reason: a handler written for a
+library's failure (`catch (const std::exception&)`) cannot take a script's
+value by accident. Native code that runs script code and ends its failure
+itself goes through `culebra_runtime_call_from_host`, where a thrown value
+becomes the structured error. What neither type can close is `catch (...)`,
+so two ratchets read those: `check_interrupt_discipline.sh` on the files that
+host a run, and `check_thrown_value_discipline.sh` on the whole tree. Each
+holds a catch-all that does not re-throw to a note at the handler saying what
+becomes of an interrupt, or of a thrown value, there.
+
 A culebra-source module of the library raises an error with
 `__raise(kind, message)`, a native that throws the `CulebraError` a native
 module would, so that what the library raises is one thing whichever

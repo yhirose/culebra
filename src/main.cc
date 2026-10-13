@@ -1889,6 +1889,7 @@ int run_test(int argc, const char** argv) {
       try {
         n = std::stoi(std::string(v));   // digits checked; this catches overflow
       } catch (...) {                    // interrupt: one std::stoi, no culebra code
+        // thrown value: none, for the same reason.
         n = 0;
       }
     }
@@ -1916,6 +1917,7 @@ int run_test(int argc, const char** argv) {
       try {
         return std::stoi(std::string(s));  // digits checked; this catches overflow
       } catch (...) {                      // interrupt: one std::stoi, no culebra code
+        // thrown value: none, for the same reason.
         return -1;                         // rejected by the range check below
       }
     };
@@ -2437,6 +2439,7 @@ int run_serve(int argc, const char** argv) {
       try {
         port = std::stoi(std::string(v));   // digits checked; this catches overflow
       } catch (...) {                       // interrupt: one std::stoi, no culebra code
+        // thrown value: none, for the same reason.
         std::println(stderr, "culebra serve: --port value '{}' out of range", v);
         return 2;
       }

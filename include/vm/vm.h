@@ -15443,6 +15443,8 @@ struct Exec {
         try {
           culebra_runtime_defer_run_to(regs[cu.defer_mark_slot].data);
         } catch (...) {
+          // thrown value: it replaces the one in flight, as any throw out of
+          // a defer does, and goes on from here as it is.
           replaced = std::current_exception();
           own_defer_threw = true;
         }
@@ -15469,6 +15471,7 @@ struct Exec {
         try {
           culebra_runtime_reanchor(site);
         } catch (...) {
+          // thrown value: kept and carried on, as the defer's is above.
           replaced = std::current_exception();
         }
       }
@@ -15687,6 +15690,8 @@ struct Exec {
     try {
       call();
     } catch (...) {
+      // thrown value: dropped, for the reason above; the restore below puts
+      // the unwinding one's payload back over it.
     }
     culebra_runtime_restore_thrown(flag, tag, data);
   }

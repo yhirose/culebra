@@ -57,6 +57,8 @@ extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE int culebra_aot_bootstrap(
     } catch (...) {
       // interrupt: a press inside a defer is dropped; the process is already
       // exiting on the error that started the drain, as JIT::exec's does.
+      // thrown value: dropped for the same reason. The report that follows is
+      // of the error the drain started on.
     }
   };
   auto exit_with = [](const culebra::UncaughtReport& r) {

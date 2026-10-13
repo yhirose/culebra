@@ -1588,6 +1588,17 @@ refcountレーンのdifftestの許可リストは空である。
 捕まえる型を名指せない。スクリプト側への届き方は変わらない —
 padの分類はC++の型ではなくpending carrier（§5.5）を通す。
 
+ユーザーの`throw`そのものは、C++のフレームを`culebra::CulebraException`
+として越える。これも同じ理由で基底を持たない: ライブラリの失敗のために
+書かれたハンドラ（`catch (const std::exception&)`）が、スクリプトの値を
+うっかり受け取ることはない。スクリプトのコードを走らせて、その失敗を
+自分で止めるネイティブコードは`culebra_runtime_call_from_host`を通す。
+そこで値のthrowは構造化されたエラーになる。どちらの型でも閉じられない
+のが`catch (...)`で、これは2つのratchetが読む: runをホストするファイルを
+見る`check_interrupt_discipline.sh`と、ツリー全体を見る
+`check_thrown_value_discipline.sh`。投げ直さないcatch-allには、そこで
+interruptが（または値のthrowが）どうなるかの注記をハンドラに置かせる。
+
 ライブラリのうちCulebraで書かれたモジュールは、`__raise(kind, message)`で
 エラーを発生させる。これはnativeのモジュールが投げるのと同じ
 `CulebraError`を投げるnativeで、モジュールがどちらの言語で書かれていても、

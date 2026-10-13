@@ -962,6 +962,9 @@ class ServePool {
         // that is only safe because serve()'s accept loop polls the same flag:
         // its own throw leaves serve(), and ~ServePool then shuts these workers
         // down. If accept ever stops raising, the press would die here.
+        // thrown value: none arrives. The hook runs the handler under
+        // culebra_runtime_call_from_host, which makes one the error dropped
+        // here with the rest.
       }
       close_handle(id);
     }

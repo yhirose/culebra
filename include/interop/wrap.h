@@ -127,6 +127,8 @@ auto surface_native_error(F&& f) -> decltype(f()) {
   try {
     return f();
   } catch (...) {
+    // thrown value: thrown again as it is. rethrow_as_culebra names what it
+    // converts, and a CulebraException is none of those.
     rethrow_as_culebra();
   }
 }
@@ -679,6 +681,7 @@ auto surface_native_error_at_call_site(F&& f) -> decltype(f()) {
   try {
     return f();
   } catch (...) {
+    // thrown value: thrown again as it is, as in surface_native_error.
     rethrow_as_culebra_at_call_site();
   }
 }

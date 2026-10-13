@@ -2286,6 +2286,7 @@ inline int64_t parse_long_strict(std::string_view s, int64_t line, int64_t col,
   } catch (const std::runtime_error&) {
     throw;
   } catch (...) {
+    // thrown value: none arrives; the block is one std::stoll.
     throw_type_error_at(line, col);
   }
   return 0;  // unreachable
@@ -2397,6 +2398,7 @@ inline double parse_double_strict(std::string_view s, int64_t line,
   } catch (const std::runtime_error&) {
     throw;
   } catch (...) {
+    // thrown value: none arrives; the block is one std::stod.
     throw_type_error_at(line, col);
   }
   return 0.0;  // unreachable

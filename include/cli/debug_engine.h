@@ -130,6 +130,8 @@ class VmDebugEngine : public DebugEngine {
       // the engine here — and this runs on the debuggee thread, where letting
       // anything escape is std::terminate. If the lane ever polls, report the
       // interrupt to the client; do not re-throw it off this thread.
+      // thrown value: none arrives. Exec::run ends one at its boundary, and
+      // the handler above reports the `uncaught: ...` it made of it.
       code = 1;
     }
     st.hook = nullptr;

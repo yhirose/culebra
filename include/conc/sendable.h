@@ -1994,6 +1994,7 @@ inline void jit_parallel_progress_coordinator(
       // interrupt: kept, not swallowed — jit_parallel_run re-raises this with
       // rethrow_exception once the workers are joined, an Interrupted from the
       // progress callback included.
+      // thrown value: kept the same way, and thrown again as it is.
       cb_err = std::current_exception();
       st->interrupt.store(true, std::memory_order_relaxed);
       return;

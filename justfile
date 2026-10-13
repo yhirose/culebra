@@ -177,6 +177,15 @@ check-canon-return-types:
 check-interrupt-discipline:
     tools/checks/check_interrupt_discipline.sh
 
+# A script's `throw <value>` is the engine's to end: reported as `uncaught`,
+# handed to a `catch`, or made the error a host reads. A `catch (...)` in
+# native code takes one too, and has stopped one in the wrong place three
+# times.
+[group("test")]
+[doc("Verify no catch-all stops a script's thrown value unaccounted for (ratchet)")]
+check-thrown-value-discipline:
+    tools/checks/check_thrown_value_discipline.sh
+
 # No header carries a variable that exists only for its initializer's side
 # effect: lld drops the COMDAT and the registration goes missing at run time on
 # Windows alone, with no link error to notice.
@@ -303,7 +312,7 @@ check-docs-cpp:
 # the workflow-coverage ratchet. Cheap enough to gate both test recipes:
 # well under a second once the grammar-blob tool is ccache-warm.
 [private]
-check-generated: check-grammar-sync check-preambles check-blob check-site-version check-site-playground-sync check-difftest-coverage check-gate-budget check-release-coverage check-spec-examples check-api-coverage check-canon-return-types check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-docs-cpp-includes check-header-naming check-error-kinds check-search-splitter check-layering check-codegen-enums check-vm-dispatch-table check-protocol-member-door check-value-equal-door check-value-order-door check-source-anchor-door
+check-generated: check-grammar-sync check-preambles check-blob check-site-version check-site-playground-sync check-difftest-coverage check-gate-budget check-release-coverage check-spec-examples check-api-coverage check-canon-return-types check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-thrown-value-discipline check-docs-cpp-includes check-header-naming check-error-kinds check-search-splitter check-layering check-codegen-enums check-vm-dispatch-table check-protocol-member-door check-value-equal-door check-value-order-door check-source-anchor-door
 
 # Such a build still runs programs — everything below the LLVM lowering
 # (rt.h, vm.h) is LLVM-free, so the bytecode VM's executor is intact; what it

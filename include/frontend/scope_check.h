@@ -124,6 +124,8 @@ class Report {
                                checked_, dynamic_),
                    lines_);
     } catch (...) {
+      // thrown value: none arrives; the block writes a report and runs no
+      // culebra code. A destructor lets nothing out.
     }
   }
 
