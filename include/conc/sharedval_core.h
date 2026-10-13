@@ -9,6 +9,7 @@
 #include <conc/send_node.h>
 #include <base/shared.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <map>
@@ -23,14 +24,83 @@ namespace culebra {
 using sendable::SendNode;
 
 
+// Whether a frozen key is made of nothing but scalars, Strings and Tuples of
+// those: the keys the tree can hash and compare as nodes. One that is not (an
+// enum variant) is matched as the value it is, by the reader that holds one.
+inline bool shared_key_plain(const SendNode& k) {
+  using K = SendNode::K;
+  switch (k.kind) {
+    case K::Nil: case K::Bool: case K::Long: case K::Float: case K::Str:
+      return true;
+    case K::Tuple:
+      return std::ranges::all_of(k.elems, shared_key_plain);
+    default:
+      return false;
+  }
+}
+
+// The key relation an Object has (JitValueEq), over plain keys: never across
+// types, a Tuple by its elements, NaN one key. A String may be asked about by
+// its bytes alone, which is what a lookup by name has in hand.
+struct SharedKeyEq {
+  using is_transparent = void;
+  bool operator()(const SendNode* a, const SendNode* b) const {
+    using K = SendNode::K;
+    if (a->kind != b->kind) return false;
+    switch (a->kind) {
+      case K::Nil: return true;
+      case K::Bool: return a->b == b->b;
+      case K::Long: return a->i == b->i;
+      case K::Float: return same_float_key(a->d, b->d);
+      case K::Str: return a->s == b->s;
+      default:
+        return std::ranges::equal(
+            a->elems, b->elems,
+            [&](const SendNode& x, const SendNode& y) { return (*this)(&x, &y); });
+    }
+  }
+  bool operator()(std::string_view a, const SendNode* b) const {
+    return b->kind == SendNode::K::Str && a == b->s;
+  }
+  bool operator()(const SendNode* a, std::string_view b) const {
+    return (*this)(b, a);
+  }
+};
+struct SharedKeyHash {
+  using is_transparent = void;
+  size_t operator()(std::string_view s) const {
+    return std::hash<std::string_view>{}(s);
+  }
+  size_t operator()(const SendNode* k) const {
+    using K = SendNode::K;
+    switch (k->kind) {
+      case K::Nil: return 0;
+      case K::Bool: return hash_long(k->b ? 1 : 0);
+      case K::Long: return hash_long(k->i);
+      case K::Float: return hash_double(k->d);
+      case K::Str: return (*this)(std::string_view(k->s));
+      default: {
+        size_t h = k->elems.size();
+        for (const auto& e : k->elems) h = h * 31 + (*this)(&e);
+        return h;
+      }
+    }
+  }
+};
+
 struct SharedValCore {
   SendNode root;
   // Pre-order node table; a view's `__sharedval_node__` is an index here.
   std::vector<const SendNode*> nodes;
   std::unordered_map<const SendNode*, size_t> ids;  // reverse (sub-view mint)
-  // Per-Object-node key index (String keys) for O(1) dictionary lookup.
-  std::unordered_map<size_t, std::unordered_map<std::string_view, size_t>>
-      obj_index;
+  // What one Object node's keys are found through: the entry each plain key
+  // is at, and the entries under a key of any other kind.
+  struct KeyIndex {
+    std::unordered_map<const SendNode*, size_t, SharedKeyHash, SharedKeyEq>
+        plain;
+    std::vector<size_t> other;
+  };
+  std::unordered_map<size_t, KeyIndex> obj_index;
   // Live handle count (every handle and sub-view holds one). Guarded by
   // shared_val_mutex() on the cold bump/drop paths.
   int64_t refcount = 0;
@@ -97,9 +167,9 @@ inline void _shared_val_index(SharedValCore& core, const SendNode& n) {
   if (n.kind == SendNode::K::Object) {
     auto& idx = core.obj_index[id];
     for (size_t e = 0; e < n.entries.size(); e++) {
-      if (n.entries[e].first.kind == SendNode::K::Str) {
-        idx.emplace(n.entries[e].first.s, e);
-      }
+      const SendNode& key = n.entries[e].first;
+      if (shared_key_plain(key)) idx.plain.emplace(&key, e);
+      else idx.other.push_back(e);
     }
     for (const auto& [k, v] : n.entries) {
       _shared_val_index(core, k);

@@ -3413,6 +3413,9 @@ let workers = [0, 1, 2, 3].map(|i| Isolate.spawn(fn () {
 viewは要素を返す）。スカラフィールドは読み手のheapに材料化され、
 コンテナフィールドは別の共有viewとして返る（コピーなし）。ローカルの
 作業コピーが要る時は`view.copy()`で普通の可変値へ深い材料化をする。
+`view[key]`と`view.has(key)`は、凍結したObjectと同じやり方でキーを
+見つける。そのObjectが持っていたキーならTupleも`nil`も引け、型をまたいで
+一致することはない。
 
 凍結はisolateへ値を送るのと同じwalkなので、Sendableなものは凍結
 できる — 追加の拒否が2つ: **関数**（`Shared`の値はデータのみ）と

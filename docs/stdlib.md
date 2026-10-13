@@ -3511,7 +3511,9 @@ and `for ... in view` (an Object view yields `(key, value)` pairs, an
 Array/Tuple/Set view yields elements). A scalar field materializes into
 the reader's heap; a container field comes back as another shared view
 (still no copy). `view.copy()` deep-materializes back into ordinary
-mutable values when you need a local scratch copy.
+mutable values when you need a local scratch copy. `view[key]` and
+`view.has(key)` find a key the way the Object that was frozen does: any
+key it held, a Tuple or `nil` included, and never across types.
 
 The freeze is the same walk that ships values to isolates, so anything
 Sendable freezes — with two extra rejections: **functions** (`Shared`

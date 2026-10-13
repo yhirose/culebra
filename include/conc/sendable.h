@@ -37,9 +37,32 @@ struct JitDeCtx {
   std::map<int, JitObject*> protos;        // ref id -> rebuilt class meta
 };
 
+// The node of a value that holds no other value; false for one that does. A
+// frozen tree's lookup makes its probe with this too (_jit_sv_plain_key), so
+// the probe is the node a freeze of the key would be.
+inline bool _jit_scalar_node(const JitValue& v, sendable::SendNode& n) {
+  using K = sendable::SendNode::K;
+  switch (v.tag) {
+    case TAG_NIL:   n.kind = K::Nil; return true;
+    case TAG_BOOL:  n.kind = K::Bool; n.b = v.data != 0; return true;
+    case TAG_LONG:  n.kind = K::Long; n.i = v.data; return true;
+    case TAG_FLOAT:
+      n.kind = K::Float;
+      n.d = _culebra_float_to_double(v.data);
+      return true;
+    case TAG_STRING:
+    case TAG_STRINGVIEW:
+      n.kind = K::Str;
+      n.s = std::string(_culebra_str_view(v.tag, v.data));
+      return true;
+    default: return false;
+  }
+}
+
 inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
   using K = sendable::SendNode::K;
   sendable::SendNode n;
+  if (_jit_scalar_node(v, n)) return n;
   auto seq = [&](JitArray* a, K kind) -> sendable::SendNode {
     if (!ctx.visiting.insert(a).second)
       sendable::send_error("a cyclic value cannot be sent");
@@ -52,16 +75,7 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
     return n;
   };
   switch (v.tag) {
-    case TAG_NIL:   n.kind = K::Nil; return n;
     case TAG_NO_SELF: n.kind = K::Unbound; n.i = v.data; return n;
-    case TAG_BOOL:  n.kind = K::Bool; n.b = v.data != 0; return n;
-    case TAG_LONG:  n.kind = K::Long; n.i = v.data; return n;
-    case TAG_FLOAT: n.kind = K::Float; n.d = _culebra_float_to_double(v.data); return n;
-    case TAG_STRING:
-    case TAG_STRINGVIEW:
-      n.kind = K::Str;
-      n.s = std::string(_culebra_str_view(v.tag, v.data));
-      return n;
     case TAG_ARRAY:  return seq(reinterpret_cast<JitArray*>(v.data), K::Array);
     case TAG_TUPLE:  return seq(reinterpret_cast<JitArray*>(v.data), K::Tuple);
     case TAG_SET: {
@@ -1253,39 +1267,72 @@ inline JitValue _jit_shared_val_child(JitObject* view, int64_t id,
   return sub;  // borrowed (+0)
 }
 
+// Fills `n` in as the node a freeze makes of a plain key (sharedval_core.h);
+// false for a value that is none.
+inline bool _jit_sv_plain_key(const JitValue& v, sendable::SendNode& n) {
+  if (_jit_scalar_node(v, n)) return true;
+  if (v.tag != TAG_TUPLE) return false;
+  culebra::ValueWalkFrame walk;  // the depth a key's hash and eq stop at
+  n.kind = sendable::SendNode::K::Tuple;
+  auto* t = reinterpret_cast<JitArray*>(v.data);
+  n.elems.resize(t->size);
+  for (size_t i = 0; i < t->size; i++)
+    if (!_jit_sv_plain_key(t->items[i], n.elems[i])) return false;
+  return true;
+}
+
+// Deep materialization of one node into the local heap — shared by
+// keys()/copy()/iteration keys. Data-only by construction (freeze
+// rejected closures/handles), so a plain DeCtx round-trip is exact.
+inline JitValue _jit_sv_materialize(const sendable::SendNode& n) {
+  JitDeCtx dc;
+  return jit_deserialize(n, dc);
+}
+
+// The entry of Object node `rn` under a key, or null: the lookup the Object it
+// froze would have made. A plain key goes through the tree's own index (a
+// String by its bytes, with nothing built); a key of any other kind is
+// compared, as the value it is, with the few such keys the node holds.
+using JitFrozenEntry = std::pair<sendable::SendNode, sendable::SendNode>;
+
+template <class PlainKey>
+inline const JitFrozenEntry* _jit_sv_indexed(const JitResolvedNode& rn,
+                                             const PlainKey& key) {
+  const auto& plain = rn.core->obj_index.at(rn.idx).plain;
+  auto it = plain.find(key);
+  return it == plain.end() ? nullptr : &rn.node->entries[it->second];
+}
+
+inline const JitFrozenEntry* _jit_sv_find(const JitResolvedNode& rn,
+                                          const JitValue& key) {
+  if (key.tag == TAG_STRING || key.tag == TAG_STRINGVIEW)
+    return _jit_sv_indexed(rn, _culebra_str_view(key.tag, key.data));
+  sendable::SendNode probe;
+  if (_jit_sv_plain_key(key, probe)) {
+    const sendable::SendNode* asked = &probe;
+    return _jit_sv_indexed(rn, asked);
+  }
+  // Any other key is hashable or it is the TypeError an Object's lookup is.
+  JitValue unhashable{TAG_NIL, 0};
+  if (!JitHashedKey::try_of(key, &unhashable)) _jit_throw_unhashable(unhashable);
+  for (size_t e : rn.core->obj_index.at(rn.idx).other) {
+    const JitFrozenEntry& entry = rn.node->entries[e];
+    JitOwnedVal stored(_jit_sv_materialize(entry.first));
+    if (JitValueEq{}(stored.borrow(), key)) return &entry;
+  }
+  return nullptr;
+}
+
 // `view.name` data read on an own-slot miss — Object-node field, nil on
 // miss (mirroring a plain Object). Reached through rt_runtime.inc.h's
 // _jit_shared_val_prop_hook, which _jit_make_shared_val_view installs.
 inline JitValue _jit_shared_val_prop_impl(JitObject* view, const char* name,
                                           int64_t line, int64_t col) {
-  auto [core, n, id, node_id] = _jit_shared_val_node_of(view, line, col);
-  using K = sendable::SendNode::K;
-  if (n->kind != K::Object) return {TAG_NIL, 0};
-  auto idx_it = core->obj_index.find(node_id);
-  if (idx_it != core->obj_index.end()) {
-    auto e = idx_it->second.find(std::string_view(name));
-    if (e != idx_it->second.end()) {
-      return _jit_shared_val_child(view, id, *core,
-                                   n->entries[e->second].second);
-    }
-  }
-  return {TAG_NIL, 0};
-}
-
-inline bool _jit_shared_val_key_eq(const sendable::SendNode& k, int8_t tag,
-                                   int64_t data) {
-  using K = sendable::SendNode::K;
-  switch (k.kind) {
-    case K::Str:
-      return (tag == TAG_STRING || tag == TAG_STRINGVIEW) &&
-             _culebra_str_view(tag, data) == k.s;
-    case K::Long: return tag == TAG_LONG && data == k.i;
-    case K::Bool: return tag == TAG_BOOL && (data != 0) == k.b;
-    case K::Float:
-      return tag == TAG_FLOAT &&
-             culebra::same_float_key(_culebra_float_to_double(data), k.d);
-    default: return false;
-  }
+  auto rn = _jit_shared_val_node_of(view, line, col);
+  if (rn.node->kind != sendable::SendNode::K::Object) return {TAG_NIL, 0};
+  auto* entry = _jit_sv_indexed(rn, std::string_view(name));
+  if (!entry) return {TAG_NIL, 0};
+  return _jit_shared_val_child(view, rn.id, *rn.core, entry->second);
 }
 
 // `view[key]` — Object key lookup (KeyError on miss) or Array/Tuple
@@ -1294,26 +1341,13 @@ inline bool _jit_shared_val_key_eq(const sendable::SendNode& k, int8_t tag,
 inline JitValue _jit_shared_val_index_impl(JitObject* view, int8_t key_tag,
                                            int64_t key_data, int64_t line,
                                            int64_t col) {
-  auto [core, n, id, node_id] = _jit_shared_val_node_of(view, line, col);
+  auto rn = _jit_shared_val_node_of(view, line, col);
+  const auto& [core, n, id, node_id] = rn;
   using K = sendable::SendNode::K;
   switch (n->kind) {
     case K::Object: {
-      if (key_tag == TAG_STRING || key_tag == TAG_STRINGVIEW) {
-        auto idx_it = core->obj_index.find(node_id);
-        if (idx_it != core->obj_index.end()) {
-          auto e = idx_it->second.find(_culebra_str_view(key_tag, key_data));
-          if (e != idx_it->second.end()) {
-            return _jit_shared_val_child(view, id, *core,
-                                         n->entries[e->second].second);
-          }
-        }
-        throw culebra::CulebraError("KeyError", "key not present", line, col);
-      }
-      for (const auto& [k, v] : n->entries) {
-        if (_jit_shared_val_key_eq(k, key_tag, key_data)) {
-          return _jit_shared_val_child(view, id, *core, v);
-        }
-      }
+      if (auto* entry = _jit_sv_find(rn, {key_tag, key_data}))
+        return _jit_shared_val_child(view, id, *core, entry->second);
       throw culebra::CulebraError("KeyError", "key not present", line, col);
     }
     case K::Array:
@@ -1381,24 +1415,9 @@ inline void _jit_sv_has(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t s
     throw culebra::CulebraError("ArityError",
                                 culebra::missing_required_arg_message("key"));
   }
-  auto [core, n, id, idx] = _jit_shared_val_node_of(
-      reinterpret_cast<JitObject*>(self.data));
-  using K = sendable::SendNode::K;
-  _jit_sv_require_object(n, "has");
-  for (const auto& [k, v] : n->entries) {
-    if (_jit_shared_val_key_eq(k, args[0].tag, args[0].data)) {
-      { *__ret = {TAG_BOOL, 1}; return; }
-    }
-  }
-  { *__ret = {TAG_BOOL, 0}; return; }
-}
-
-// Deep materialization of one node into the local heap — shared by
-// keys()/copy()/iteration keys. Data-only by construction (freeze
-// rejected closures/handles), so a plain DeCtx round-trip is exact.
-inline JitValue _jit_sv_materialize(const sendable::SendNode& n) {
-  JitDeCtx dc;
-  return jit_deserialize(n, dc);
+  auto rn = _jit_shared_val_node_of(reinterpret_cast<JitObject*>(self.data));
+  _jit_sv_require_object(rn.node, "has");
+  { *__ret = {TAG_BOOL, _jit_sv_find(rn, args[0]) ? 1 : 0}; return; }
 }
 
 inline void _jit_sv_keys(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {

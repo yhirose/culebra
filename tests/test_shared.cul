@@ -205,6 +205,55 @@ assert_eq(sv[1], 'one')
 assert_eq(sv[true], 'yes')
 assert_throws('KeyError', fn () { sv[9] })
 
+# A view finds a key the way the Object it froze does: any key a freeze admits
+# (nil and a Tuple included, a Tuple by its elements), and never across types.
+mut keyed = {}
+keyed[nil] = 'none'
+keyed[(1, 'a')] = 'pair'
+keyed[((1, 2), 3.5)] = 'nested'
+keyed[1] = 'long'
+keyed[2.0] = 'float'
+keyed['s'] = 'str'
+let kv = Shared.new(keyed)
+assert_eq(kv[nil], 'none')
+assert_eq(kv[(1, 'a')], 'pair')
+assert_eq(kv[((1, 2), 3.5)], 'nested')
+assert_eq(kv[1], 'long')
+assert_eq(kv[2.0], 'float')
+assert_eq(kv['s'], 'str')
+assert_eq([kv.has(nil), kv.has((1, 'a')), kv.has(1), kv.has('s')],
+  [true, true, true, true])
+assert_eq([kv.has((1, 'b')), kv.has(1.0), kv.has(2), kv.has(false),
+  kv.has('t'), kv.has((1,))], [false, false, false, false, false, false])
+assert_throws('KeyError', fn () { kv[(1, 'b')] })
+assert_throws('KeyError', fn () { kv[1.0] })
+# A substring is the String it spells, inside a Tuple too.
+assert_eq(kv[(1, 'xa'[1..2])], 'pair')
+assert_eq(kv.has('xs'[1..2]), true)
+# A key nested past the depth a key's own hash stops at is refused the same way.
+mut deep_key = (1,)
+for _ in 0..5000 {
+  deep_key = (deep_key,)
+}
+assert_throws('ValueError', fn () { kv.has(deep_key) })
+assert_throws('ValueError', fn () { ({a: 1}).has(deep_key) })
+# ...and one that cannot be a key at all is the TypeError it is for an Object.
+assert_throws('TypeError', fn () { kv[[1]] })
+assert_throws('TypeError', fn () { kv.has((1, [2])) })
+# A key of any other kind a freeze admits is found as the value it is.
+enum SharedSuit {
+  Hearts,
+  Spades,
+}
+mut by_suit = {}
+by_suit[SharedSuit.Hearts] = 'h'
+by_suit[(SharedSuit.Spades, 1)] = 's1'
+let suits = Shared.new(by_suit)
+assert_eq(suits[SharedSuit.Hearts], 'h')
+assert_eq(suits[(SharedSuit.Spades, 1)], 's1')
+assert_eq([suits.has(SharedSuit.Spades), suits.has((SharedSuit.Spades, 2))],
+  [false, false])
+
 # An Array view takes a Long and says so; the interpreter's key.to_long()
 # does not truncate a Float or accept a String either.
 let bad_key = try { arr_view['x']; nil } catch e { e }
