@@ -738,7 +738,8 @@ class SizedThread {
 // count drives nothing; `min`/`max` drive the singular/plural of the
 // expected noun (no period — the printer appends ` at L:C.`).
 inline std::string builtin_arity_error_message(std::string_view method,
-                                               long min, long max, int64_t got) {
+                                               int64_t min, int64_t max,
+                                               int64_t got) {
   if (min == max) {
     return culebra::format("'{}' takes {} argument{} but {} given", method, min,
                            min == 1 ? "" : "s", got);
