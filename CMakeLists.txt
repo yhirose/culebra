@@ -2211,9 +2211,10 @@ if(CULEBRA_ENABLE_JIT)
 endif()
 
 # GC unit tests — the standalone collector (include/rt/gc.h) validated in
-# isolation (pointer-validation, conservative root scanning, mark-sweep), no
-# JIT/LLVM link, independent of the in-tree jit.h wiring.
-foreach(gc_test rt_gc_phase0 rt_gc_collect)
+# isolation (pointer-validation, conservative root scanning, mark-sweep, the
+# registry's load and churn), no JIT/LLVM link, independent of the in-tree
+# jit.h wiring.
+foreach(gc_test rt_gc_phase0 rt_gc_collect rt_gc_registry)
   add_executable(${gc_test} tests/${gc_test}.cc)
   target_compile_features(${gc_test} PRIVATE cxx_std_20)
   target_include_directories(${gc_test} PRIVATE include)

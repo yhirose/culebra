@@ -48,6 +48,7 @@ static inline char** backtrace_symbols(void* const*, int) { return nullptr; }
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -76,6 +77,13 @@ static_assert(sizeof(GcHeader) == 8, "GcHeader must stay 8 bytes");
 // measured alloc-churn cost. Linear probing with
 // tombstones; inserts reuse tombstone slots, so steady-state churn (insert on
 // birth, erase on death) keeps tombstones bounded and rarely rehashes.
+//
+// It is never more than 5/8 full. A probe walks to the end of the run of
+// used slots its key lands in, and those runs lengthen fast as the table
+// fills; an allocator hands the same address out again and again, so one
+// that lands in a long run pays for it at every birth. Grown at 7/8, a
+// short-lived object cost several times its usual at some live counts. The
+// price is a sparser table for a collection's walks over it.
 class GcRegistry {
  public:
   GcRegistry() { rehash(kInitCap); }
@@ -107,7 +115,7 @@ class GcRegistry {
   // Insert (or overwrite) key→val. `key` must be a real object pointer
   // (never null or the tombstone sentinel).
   void insert(void* key, const GcHeader& val) {
-    if ((used_ + 1) * 8 >= cap_ * 7) grow();
+    if ((used_ + 1) * kLoadDen > cap_ * kLoadNum) grow();
     size_t i = index(key), tomb = kNpos;
     for (;;) {
       void* k = slots_[i].key;
@@ -123,14 +131,11 @@ class GcRegistry {
     size_++;
   }
 
-  void erase(void* key) {
-    size_t i = index(key);
-    for (;;) {
-      void* k = slots_[i].key;
-      if (k == key) { slots_[i].key = kTomb(); size_--; return; }
-      if (k == kEmpty) return;
-      i = (i + 1) & mask_;
-    }
+  // Erase the live entry find_slot gave: the caller has read its header, so
+  // a death is one probe.
+  void erase_slot(size_t slot) {
+    slots_[slot].key = kTomb();
+    size_--;
   }
 
   size_t size() const { return size_; }
@@ -157,6 +162,7 @@ class GcRegistry {
     GcHeader val{};
   };
   static constexpr size_t kInitCap = 16;
+  static constexpr size_t kLoadNum = 5, kLoadDen = 8;  // the fullest it gets
   static constexpr void* kEmpty = nullptr;
   static void* kTomb() { return reinterpret_cast<void*>(uintptr_t(1)); }
 
@@ -169,7 +175,9 @@ class GcRegistry {
   }
   void grow() {
     // Mostly tombstones → rehash same size to reclaim them; otherwise double.
-    rehash(size_ * 2 >= cap_ ? cap_ * 2 : cap_);
+    // "Mostly" is under half of what the table may hold, so a rehash of
+    // either kind leaves that much room before the next.
+    rehash(size_ * kLoadDen * 2 >= cap_ * kLoadNum ? cap_ * 2 : cap_);
   }
   void rehash(size_t newcap) {
     std::vector<Slot> old = std::move(slots_);
@@ -387,25 +395,15 @@ class Heap {
   // memory is not the heap's to reclaim.
   void forget(void* p) {
     if (!dying_.empty() && dying_.back() == p) dying_.pop_back();
-    if (GcHeader* h = objects_.find(p)) {
-      live_bytes_ -= h->size;
-      if (h->flags & kFlagPinned) pins_.erase(p);
-      objects_.erase(p);
-      if (!birth_sites_.empty()) birth_sites_.erase(p);
-    }
+    unregister(p);
   }
 
   // Free one heap-owned object (standalone alloc / Phase 1 sweep of
   // heap-owned storage). Poisons the slot so a stale pointer use is caught.
   void free_object(void* p) {
-    GcHeader* h = objects_.find(p);
+    std::optional<GcHeader> h = unregister(p);
     if (!h) return;
-    uint32_t size = h->size;
-    live_bytes_ -= size;
-    if (h->flags & kFlagPinned) pins_.erase(p);
-    objects_.erase(p);
-    if (!birth_sites_.empty()) birth_sites_.erase(p);
-    std::memset(p, 0xDE, size);
+    std::memset(p, 0xDE, h->size);
     std::free(p);
   }
 
@@ -604,6 +602,20 @@ class Heap {
   ~Heap() { assert_quiescent(); }
 
  private:
+  // Take `p` out of the registry and everything kept beside it, in one
+  // probe: its header, or nullopt if it is not registered. Its memory is the
+  // caller's to free.
+  std::optional<GcHeader> unregister(void* p) {
+    size_t slot = objects_.find_slot(p);
+    if (slot == GcRegistry::kNpos) return std::nullopt;
+    GcHeader h = objects_.header_at(slot);
+    live_bytes_ -= h.size;
+    if (h.flags & kFlagPinned) pins_.erase(p);
+    objects_.erase_slot(slot);
+    if (!birth_sites_.empty()) birth_sites_.erase(p);
+    return h;
+  }
+
   // GC_STRESS=1 collects on every allocation (SpiderMonkey gcZeal style) so a
   // missing root or a teardown bug surfaces immediately under the test suite.
   static bool stress() {
@@ -994,33 +1006,38 @@ class Heap {
   template <class Seed>
   size_t collect_impl(Seed&& seed) {
     if (collect_paused_) return 0;  // defer re-entrant/paused collects
-    std::vector<void*> work, kids;
+    // A marked object still to trace, with its tag: nothing runs between
+    // its push and its pop that could change it.
+    struct Grey {
+      void* obj;
+      uint8_t type_tag;
+    };
+    std::vector<Grey> work;
+    std::vector<void*> kids;
     // `again` is the look after the finalizers ran: everything outside the
     // condemned set is then a root too, whether or not a root reaches it.
     auto mark_from_roots = [&](bool again) {
       flag_dying();
-      objects_.for_each([](void*, GcHeader& h) { h.mark = 0; });
       auto push = [&](void* o) {
         GcHeader* h = objects_.find(o);
         if (h && !h->mark) {
           h->mark = 1;
-          work.push_back(o);
+          work.push_back({o, h->type_tag});
         }
       };
-      // Pinned and mid-teardown objects are always roots.
+      // One walk clears the last marking's marks and marks the roots: pinned
+      // and mid-teardown objects always. Nothing reads a mark in between.
       objects_.for_each([&](void* k, GcHeader& h) {
-        if (h.flags & kRootFlags || (again && !(h.flags & kFlagCondemned))) {
-          h.mark = 1;
-          work.push_back(k);
-        }
+        h.mark = h.flags & kRootFlags || (again && !(h.flags & kFlagCondemned));
+        if (h.mark) work.push_back({k, h.type_tag});
       });
       seed(push);
       while (!work.empty()) {
-        void* o = work.back();
+        Grey g = work.back();
         work.pop_back();
         if (children_fn_) {
           kids.clear();
-          children_fn_(o, objects_.find(o)->type_tag, kids);
+          children_fn_(g.obj, g.type_tag, kids);
           for (void* c : kids) push(c);
         }
       }
@@ -1087,11 +1104,7 @@ class Heap {
     // heap) fall back to free_object's malloc/free + poison.
     for (void* p : dead) {
       if (sweep_fn_) {
-        GcHeader* h = objects_.find(p);
-        uint8_t tag = h->type_tag;
-        live_bytes_ -= h->size;
-        objects_.erase(p);
-        sweep_fn_(p, tag);
+        sweep_fn_(p, unregister(p)->type_tag);
       } else {
         free_object(p);
       }

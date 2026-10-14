@@ -598,7 +598,12 @@ size) lives in a separate registry, `gc::GcRegistry`, an
 open-addressing address→header map with no per-entry heap allocation;
 the `std::unordered_map` it replaced accounted for the entire
 allocation-churn overhead the collector added on object-heavy
-workloads. Variable-length payloads (an array's backing storage, an
+workloads. It is linear-probed and kept at most 5/8 full. A probe walks
+to the end of the run of used slots its key falls in, and those runs
+lengthen fast as the table fills; the allocator hands the same
+addresses out again and again, so at 7/8 an address that fell in a long
+run made a short-lived object cost several times its usual at some
+live counts. Variable-length payloads (an array's backing storage, an
 object's property slots, a closure's captures) remain owned by
 ordinary C++ containers inside the struct and are released by the
 struct's own destructor at sweep time, so sweep cleanup is C++
