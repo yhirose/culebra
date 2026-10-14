@@ -83,7 +83,9 @@
 # clause, arm, annotation and dispatch, and an Object with a `kind` is not one).
 # 318 since test_peg_callbacks.cul (a PEG parser's predicate, enter and leave,
 # its user data, `(ok, val)` from parse, and its logger).
-tests.cul 318
+# 319 since test_shared_values.cul (split from test_shared.cul, whose --jit
+# compile had passed the per-file budget on the Ubuntu runner).
+tests.cul 319
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
