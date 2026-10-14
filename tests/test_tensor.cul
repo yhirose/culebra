@@ -71,67 +71,79 @@ assert_eq(to_string(t3), "Tensor 2x3x4 f32")
 
 # --- M2.0: lazy graph + eval ---
 #
-# Elementwise + - * / build graph nodes; Tensor.eval(...) materializes.
-# `to_string` on a lazy node still shows shape/dtype (the buf isn't
-# touched), so we use that as a cheap sanity check.
+# Elementwise + - * / build graph nodes; Tensor.eval(...) materializes them.
+# A lazy node shows its shape and dtype before it is evaluated.
 
-let a = Tensor.ones(2, 3)
-let b = Tensor.ones(2, 3)
+let a = Tensor.from([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+let b = Tensor.from([[2.0, 2.0, 2.0], [4.0, 4.0, 4.0]])
 let c = a + b
 assert_eq(to_string(c.shape()), "[2, 3]")
 assert_eq(to_string(c), "Tensor 2x3 f32")
 Tensor.eval(c)
+assert_eq(c.to_array(), [[3.0, 4.0, 5.0], [8.0, 9.0, 10.0]])
 
-# Same for - * /
+# Same for - * /, evaluated together.
 let d = a - b
 let e = a * b
 let f = a / b
 Tensor.eval(d, e, f)
-assert_eq(to_string(d.shape()), "[2, 3]")
+assert_eq(d.to_array(), [[-1.0, 0.0, 1.0], [0.0, 1.0, 2.0]])
+assert_eq(e.to_array(), [[2.0, 4.0, 6.0], [16.0, 20.0, 24.0]])
+assert_eq(f.to_array(), [[0.5, 1.0, 1.5], [1.0, 1.25, 1.5]])
 
-# Diamond DAG: c1 and c2 share `a` — eval is idempotent.
+# Diamond DAG: c1 and c2 share `a` and `b`.
 let c1 = a + b
-let c2 = a + b
+let c2 = a * b
 Tensor.eval(c1, c2)
-assert_eq(to_string(c1), "Tensor 2x3 f32")
-assert_eq(to_string(c2), "Tensor 2x3 f32")
+assert_eq(c1.to_array(), c.to_array())
+assert_eq(c2.to_array(), e.to_array())
 
 # Eval is idempotent: calling twice on the same graph is OK.
 let g = a + b
 Tensor.eval(g)
 Tensor.eval(g)
-assert_eq(to_string(g), "Tensor 2x3 f32")
+assert_eq(g.to_array(), c.to_array())
 
 # --- M2.1: broadcast (numpy / silarray rules) ---
 
-# Trailing-dim alignment: lower-rank input expands.
-let M = Tensor.ones(3, 4)
-let v = Tensor.ones(4)
-let bc1 = M + v
-assert_eq(to_string(bc1.shape()), "[3, 4]")
-Tensor.eval(bc1)
+let M = Tensor.from([[0.0, 1.0, 2.0, 3.0], [10.0, 11.0, 12.0, 13.0],
+                     [20.0, 21.0, 22.0, 23.0]])
 
-# Column-vector broadcast: [3, 1] across columns.
-let col = Tensor.ones(3, 1)
-let bc2 = M + col
-assert_eq(to_string(bc2.shape()), "[3, 4]")
-Tensor.eval(bc2)
+# Trailing-dim alignment: a lower-rank input repeats along the rows.
+let bc1 = M + Tensor.from([100.0, 200.0, 300.0, 400.0])
+assert_eq(to_string(bc1.shape()), "[3, 4]")
+assert_eq(bc1.to_array(), [[100.0, 201.0, 302.0, 403.0],
+                           [110.0, 211.0, 312.0, 413.0],
+                           [120.0, 221.0, 322.0, 423.0]])
+
+# Column-vector broadcast: [3, 1] repeats along the columns.
+let bc2 = M + Tensor.from([[100.0], [200.0], [300.0]])
+assert_eq(bc2.to_array(), [[100.0, 101.0, 102.0, 103.0],
+                           [210.0, 211.0, 212.0, 213.0],
+                           [320.0, 321.0, 322.0, 323.0]])
 
 # Both sides need broadcasting: [3, 1] + [1, 4] -> [3, 4].
-let r = Tensor.ones(3, 1)
-let s = Tensor.ones(1, 4)
-let bc3 = r + s
+let bc3 = Tensor.from([[1.0], [2.0], [3.0]]) +
+  Tensor.from([[10.0, 20.0, 30.0, 40.0]])
 assert_eq(to_string(bc3.shape()), "[3, 4]")
-Tensor.eval(bc3)
+assert_eq(bc3.to_array(), [[11.0, 21.0, 31.0, 41.0],
+                           [12.0, 22.0, 32.0, 42.0],
+                           [13.0, 23.0, 33.0, 43.0]])
 
-# --- M2.1: scalar broadcast (Tensor + numeric) ---
+# --- M2.1: scalar broadcast (Tensor + numeric), on either side ---
 
-let sc1 = M + 1.0
-let sc2 = 1.0 + M
-let sc3 = M * 2.0
-let sc4 = M / 2.0
-Tensor.eval(sc1, sc2, sc3, sc4)
-assert_eq(to_string(sc1.shape()), "[3, 4]")
+let m2 = Tensor.from([[1.0, 2.0], [3.0, 4.0]])
+let sc1 = m2 + 1.0
+let sc2 = 1.0 + m2
+let sc3 = m2 * 2.0
+let sc4 = m2 / 2.0
+let sc5 = 10.0 - m2
+Tensor.eval(sc1, sc2, sc3, sc4, sc5)
+assert_eq(sc1.to_array(), [[2.0, 3.0], [4.0, 5.0]])
+assert_eq(sc2.to_array(), [[2.0, 3.0], [4.0, 5.0]])
+assert_eq(sc3.to_array(), [[2.0, 4.0], [6.0, 8.0]])
+assert_eq(sc4.to_array(), [[0.5, 1.0], [1.5, 2.0]])
+assert_eq(sc5.to_array(), [[9.0, 8.0], [7.0, 6.0]])
 
 # --- M2.1: Tensor.randn ---
 
@@ -142,11 +154,11 @@ assert_eq(to_string(rn32), "Tensor 4x4 f32")
 
 # --- M2.2: .pow() ---
 
-let p1 = M.pow(2.0)
-let p2 = M.pow(M)  # Tensor exponent
+let p1 = m2.pow(2.0)
+let p2 = m2.pow(m2)  # Tensor exponent
 Tensor.eval(p1, p2)
-assert_eq(to_string(p1.shape()), "[3, 4]")
-assert_eq(to_string(p2.shape()), "[3, 4]")
+assert_eq(p1.to_array(), [[1.0, 4.0], [9.0, 16.0]])
+assert_eq(p2.to_array(), [[1.0, 4.0], [27.0, 256.0]])
 
 # --- M3.1: shape ops (zero-copy views) ---
 

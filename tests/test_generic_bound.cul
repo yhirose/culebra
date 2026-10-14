@@ -11,7 +11,7 @@ fn id<T>(x: T) {
 }
 assert_eq(id(5), 5)
 assert_eq(id("hi"), "hi")
-assert_eq(id([1, 2, 3]).size(), 3)  // Array == is identity, so check size
+assert_eq(id([1, 2, 3]), [1, 2, 3])
 
 // --- Bound accepts conforming args, rejects non-conforming ---
 fn needs_cmp<T: Comparable>(x: T) {
@@ -21,13 +21,9 @@ assert_eq(needs_cmp(5), 5)        // Long is Comparable
 assert_eq(needs_cmp(1.5), 1.5)    // Float is Comparable
 assert_eq(needs_cmp("ab"), "ab")  // String is Comparable
 
-let e_arr = try {
+assert_throws('DispatchError', fn () {
   needs_cmp([1, 2, 3])
-  nil
-} catch e {
-  e
-}
-assert_eq(e_arr != nil, true)  // Array is not Comparable -> rejected
+})  // Array is not Comparable -> rejected
 
 // --- Overload ordering: concrete > bounded > unbounded ---
 fn rank(x: Long) {
@@ -69,13 +65,9 @@ class Plain {
     self.v = v
   }
 }
-let e_plain = try {
+assert_throws('DispatchError', fn () {
   needs_cmp(Plain.new(1))
-  nil
-} catch e {
-  e
-}
-assert_eq(e_plain != nil, true)
+})
 
 // --- Lenient T-unification: repeated T is not forced to one type ---
 fn pair_ok<T: Comparable>(a: T, b: T) {
@@ -84,13 +76,9 @@ fn pair_ok<T: Comparable>(a: T, b: T) {
 assert_eq(pair_ok(3, 9), (3, 9))
 assert_eq(pair_ok(1, 2.0), (1, 2.0))  // mixed Long/Float, both Comparable
 assert_eq(pair_ok(1, "x"), (1, "x"))  // mixed Long/String, both Comparable
-let e_one = try {
+assert_throws('DispatchError', fn () {
   pair_ok([1], 2)
-  nil
-} catch e {
-  e
-}
-assert_eq(e_one != nil, true)  // first arg not Comparable -> rejected
+})  // first arg not Comparable -> rejected
 
 // Independent type-params bind independently.
 fn zip2<A, B>(a: A, b: B) {
@@ -117,13 +105,9 @@ class Box<T: Comparable> {
 let b = Box.new(1)
 b.set(42)
 assert_eq(b.get(), 42)
-let e_box = try {
+assert_throws('TypeError', fn () {
   b.set([1, 2])
-  nil
-} catch e {
-  e
-}
-assert_eq(e_box != nil, true)  // Array violates T: Comparable
+})  // Array violates T: Comparable
 
 // --- Composite bound `<T: A + B>` (all-of) ---
 fn both<T: Hashable + Stringer>(x: T) {
@@ -131,13 +115,9 @@ fn both<T: Hashable + Stringer>(x: T) {
 }
 assert_eq(both(5), 5)        // Long conforms to Hashable AND Stringer
 assert_eq(both("hi"), "hi")  // String conforms to both
-let e_both = try {
+assert_throws('DispatchError', fn () {
   both([1, 2, 3])
-  nil
-} catch e {
-  e
-}
-assert_eq(e_both != nil, true)  // Array is Stringer but not Hashable -> rejected
+})  // Array is Stringer but not Hashable -> rejected
 
 // Overload: concrete > composite-bounded > unbounded.
 fn kc(x: Long) {
@@ -179,13 +159,9 @@ class HashOnly {
     self.n
   }
 }
-let e_ho = try {
+assert_throws('DispatchError', fn () {
   need_both(HashOnly.new(1))
-  nil
-} catch e {
-  e
-}
-assert_eq(e_ho != nil, true)
+})
 
 // Spacing tolerance: no-space `<T:A+B>` parses and behaves the same.
 fn tight<T:Hashable+Stringer>(x: T) {

@@ -109,55 +109,51 @@ tx.drop()  # the parent's copy; the isolate holds one
 BASE = "http://127.0.0.1:" + bound_port(rx).to_string()
 
 r = Http.get(BASE + "/")
-inspect("GET / -> " + r.status.to_string() + " | " + r.body)
+assert_eq(r.status.to_string() + " | " + r.body, '200 | Hello, world!')
 
 r2 = Http.get(BASE + "/users/42")
-inspect("route param -> " + r2.status.to_string() + " | " + r2.body)
+assert_eq(r2.status.to_string() + " | " + r2.body, '200 | user 42')
 
 r3 = Http.post(BASE + "/echo", body: "payload-123")
-inspect("POST echo -> " + r3.status.to_string() + " | " + r3.body)
+assert_eq(r3.status.to_string() + " | " + r3.body, '200 | payload-123')
 
 r4 = Http.get(BASE + "/q", params: { name: "alice" })
-inspect("query -> " + r4.status.to_string() + " | " + r4.body)
+assert_eq(r4.status.to_string() + " | " + r4.body, '200 | name=alice')
 
 r5 = Http.get(BASE + "/method")
-inspect("method -> " + r5.body)
+assert_eq(r5.body, 'GET')
 
 r6 = Http.get(BASE + "/json")
-inspect("object return -> " +
-  r6.status.to_string() +
+assert_eq(r6.status.to_string() +
   " | " +
   r6.body +
   " | ct=" +
   r6.headers["Content-Type"] +
   " | x=" +
-  r6.headers["X-Test"])
+  r6.headers["X-Test"], '201 | {"ok":true} | ct=application/json | x=yes')
 
 r7 = Http.get(BASE + "/empty")
-inspect("nil return -> " +
-  r7.status.to_string() +
+assert_eq(r7.status.to_string() +
   " | len=" +
-  r7.body.size().to_string())
+  r7.body.size().to_string(), '200 | len=0')
 
 r8 = Http.get(BASE + "/missing")
-inspect("unmatched -> " + r8.status.to_string())
+assert_eq(r8.status.to_string(), '404')
 
 # The client verbs past get/post. `put` carries a body like `post`; `delete`
 # takes none and its 204 arrives with an empty one; `head` reaches the GET
 # handler and keeps its status and headers while the body is dropped — the
 # property that makes it worth a request at all.
 rput = Http.put(BASE + "/item", body: "v2")
-inspect("PUT -> " + rput.status.to_string() + " | " + rput.body)
+assert_eq(rput.status.to_string() + " | " + rput.body, '200 | put:v2')
 
 rdel = Http.delete(BASE + "/item")
-inspect("DELETE -> " +
-  rdel.status.to_string() +
+assert_eq(rdel.status.to_string() +
   " | len=" +
-  rdel.body.size().to_string())
+  rdel.body.size().to_string(), '204 | len=0')
 
 rhead = Http.head(BASE + "/json")
-inspect("HEAD -> " +
-  rhead.status.to_string() +
+assert_eq(rhead.status.to_string() +
   " | ok=" +
   rhead.ok.to_string() +
   " | reason=" +
@@ -167,34 +163,40 @@ inspect("HEAD -> " +
   " | ct=" +
   rhead.headers["Content-Type"] +
   " | x=" +
-  rhead.headers["X-Test"])
+  rhead.headers["X-Test"], '201 | ok=true | reason=Created | len=0 | ct=application/json | x=yes')
 
-for bad in ["/bad_status", "/bad_ct", "/bad_body", "/bad_hdr"] {
-  let rb = Http.get(BASE + bad)
-  inspect(bad + " -> " + rb.status.to_string() + " | " + rb.body)
-}
+let bad_answers = ["/bad_status", "/bad_ct", "/bad_body", "/bad_hdr"].map(
+  fn (bad) {
+    let rb = Http.get(BASE + bad)
+    "{rb.status} | {rb.body}"
+  })
+assert_eq(bad_answers, ['500 | type error: expected Long, got String',
+                        '500 | type error: expected String, got Long',
+                        '500 | type error: expected String, got Long',
+                        '500 | type error: expected String, got Long'])
 
 # Streaming: the client buffers the reassembled chunked body.
 rc = Http.get(BASE + "/count")
-inspect("stream count -> " + rc.status.to_string() + " | " + rc.body)
+assert_eq(rc.status.to_string() + " | " + rc.body, '200 | 0,1,2,3,4,')
 
 rs = Http.get(BASE + "/sse")
-inspect("stream sse -> " +
-  rs.status.to_string() +
+assert_eq(rs.status.to_string() +
   " | ct=" +
   rs.headers["Content-Type"] +
   " | cc=" +
   rs.headers["Cache-Control"] +
   " | bytes=" +
-  rs.body.size().to_string())
+  rs.body.size().to_string(), '202 | ct=text/event-stream | cc=no-cache | bytes=27')
 
-for sb in ["/stream_both", "/stream_bad"] {
+let stream_answers = ["/stream_both", "/stream_bad"].map(fn (sb) {
   let rsb = Http.get(BASE + sb)
-  inspect(sb + " -> " + rsb.status.to_string() + " | " + rsb.body)
-}
+  "{rsb.status} | {rsb.body}"
+})
+assert_eq(stream_answers,
+          ['500 | Http.server: response cannot set both body and stream',
+           '500 | Http.server: response stream must be a Function'])
 
 iso.drop()
-inspect("server stopped")
 
 # --- Concurrent worker pool (workers > 1): each worker thread gets its own
 # runtime with the handlers rebuilt onto it (so they must be Sendable), giving
@@ -216,9 +218,8 @@ BASE2 = "http://127.0.0.1:" + bound_port(rx2).to_string()
 squares = Parallel.map([1, 2, 3, 4, 5, 6, 7, 8], fn (i) {
   Http.get(BASE2 + "/sq/" + i.to_string()).body
 })
-inspect("concurrent squares: " + squares.to_string())
+assert_eq(squares, ['1', '4', '9', '16', '25', '36', '49', '64'])
 iso2.drop()
-inspect("pool stopped")
 
 # --- A non-Sendable handler is rejected with SendError when serving starts (the
 # check is at serve, so listen() has bound by then) — identical across backends.
@@ -231,7 +232,7 @@ bad.get("/", fn (req) {
 try {
   bad.listen(0, workers: 2)
 } catch e {
-  inspect("non-sendable handler -> " + e.kind)
+  assert_eq(e.kind, 'SendError')
 }
 # The routes survive the rejection, so the retry reaches the same verdict rather
 # than quietly serving an empty server.
@@ -241,7 +242,7 @@ try {
 } catch e {
   bad2 = e.kind
 }
-inspect("non-sendable retry -> " + bad2)
+assert_eq(bad2, 'SendError')
 bad.close()
 
 # Port-free checks: handle methods chain (return the handle), and close is
@@ -252,10 +253,9 @@ chained = srv2.get("/a", fn (req) {
 }).post("/b", fn (req) {
   "b"
 })
-inspect("chaining returns handle -> " + (chained == srv2).to_string())
+assert_eq(chained == srv2, true)
 srv2.close()
 srv2.close()
-inspect("double close ok")
 
 # --- WebSocket: a ws handler runs a long-lived loop over the connection. The
 # server echoes (for-in form) and greets (explicit receive + req access); the
@@ -313,14 +313,14 @@ WBASE = "ws://127.0.0.1:" + bound_port(wrx).to_string()
 
 we = Http.ws(WBASE + "/echo")
 we.send("one")
-inspect("ws echo -> " + we.receive())
+assert_eq(we.receive(), 'echo:one')
 we.send("two")
-inspect("ws echo -> " + we.receive() + " | open=" + we.is_open().to_string())
+assert_eq(we.receive() + " | open=" + we.is_open().to_string(), 'echo:two | open=true')
 we.close()
 
 wg = Http.ws(WBASE + "/greet")
 wg.send("hi")
-inspect("ws greet -> " + wg.receive())
+assert_eq(wg.receive(), '/greet:hi')
 wg.close()
 
 # Concurrent ws echoes, one client (isolate) each — Parallel.map keeps order.
@@ -331,7 +331,7 @@ wmany = Parallel.map([1, 2, 3, 4], fn (i) {
   c.close()
   r
 })
-inspect("ws pool -> " + wmany.to_string())
+assert_eq(wmany, ['echo:1', 'echo:2', 'echo:3', 'echo:4'])
 
 # Client drains server-pushed messages with for-in (ends when the server closes).
 wp = Http.ws(WBASE + "/push")
@@ -339,7 +339,7 @@ mut pushed = []
 for m in wp {
   pushed.push(m)
 }
-inspect("ws pushed -> " + pushed.to_string())
+assert_eq(pushed, ['p0', 'p1', 'p2'])
 
 # try_receive answers Empty / Message / Closed rather than overloading nil.
 # Empty is pinned against a peer that was sent nothing, so no amount of load
@@ -347,24 +347,24 @@ inspect("ws pushed -> " + pushed.to_string())
 # slow machine cannot turn it back into Empty.
 wt = Http.ws(WBASE + "/echo")
 wt.set_timeout(50)
-inspect(wt.try_receive())
-inspect("open after timeout = " + wt.is_open().to_string())
+assert_eq("{wt.try_receive()}", "WsResult.Empty")
+assert_eq(wt.is_open(), true)
 wt.set_timeout(5000)
 wt.send("three")
-inspect(wt.try_receive())
+assert_eq("{wt.try_receive()}", "WsResult.Message('echo:three')")
 # receive() keeps meaning "the next message" with a timeout set.
 wt.send("four")
-inspect("blocking receive -> " + wt.receive())
+assert_eq(wt.receive(), 'echo:four')
 wt.close()
-inspect(wt.try_receive())
+assert_eq("{wt.try_receive()}", "WsResult.Closed")
 
 # The server side of the same thing: nothing is sent to /tick until after its
 # unprompted message arrives, so that message can only have come from the
 # handler's own timeout path.
 wk = Http.ws(WBASE + "/tick")
-inspect("server timeout path -> " + wk.receive())
+assert_eq(wk.receive(), 'tick')
 wk.send("five")
-inspect("server still answers -> " + wk.receive())
+assert_eq(wk.receive(), 'got:five')
 wk.close()
 
 # A bad URL is an HttpError.
@@ -374,10 +374,9 @@ try {
 } catch e {
   werr = e.kind
 }
-inspect("ws bad connect -> " + werr)
+assert_eq(werr, 'HttpError')
 
 wiso.drop()
-inspect("ws stopped")
 
 # --- listen_async + stop: a background server with no isolate wrapper. The
 # server serves on its own thread while the main thread drives requests, then
@@ -396,8 +395,8 @@ APORT = asrv.listen_async(0, workers: 2)  # returns the port immediately
 ABASE = "http://127.0.0.1:" + APORT.to_string()
 
 ar = Http.get(ABASE + "/")
-inspect("listen_async GET / -> " + ar.status.to_string() + " | " + ar.body)
-inspect("listen_async route -> " + Http.get(ABASE + "/sq/9").body)
+assert_eq(ar.status.to_string() + " | " + ar.body, '200 | async-hi')
+assert_eq(Http.get(ABASE + "/sq/9").body, '81')
 # A server is single-use: starting it again (even on a free port) is a catchable
 # error, not a crash/hang — serve again with a fresh Http.server().
 mut reerr = "none"
@@ -406,7 +405,7 @@ try {
 } catch e {
   reerr = e.kind
 }
-inspect("listen_async twice -> " + reerr)
+assert_eq(reerr, 'HttpError')
 # Mounting a directory after the start would hand the workers a table they are
 # reading; it is the same catchable error as a second start.
 mut sterr = "none"
@@ -415,16 +414,15 @@ try {
 } catch e {
   sterr = e.kind
 }
-inspect("static after start -> " + sterr)
+assert_eq(sterr, 'HttpError')
 asrv.stop()  # cross-thread stop + join
-inspect("async stopped")
 mut reerr2 = "none"
 try {
   asrv.listen_async(0)
 } catch e {
   reerr2 = e.kind
 }
-inspect("relisten after stop -> " + reerr2)
+assert_eq(reerr2, 'HttpError')
 
 # After stop the port is free: a fresh server binds that same port and serves it.
 asrv2 = Http.server()
@@ -432,7 +430,7 @@ asrv2.get("/", fn (req) {
   "rebound"
 })
 asrv2.listen_async(APORT)
-inspect("rebind -> " + Http.get(ABASE + "/").body)
+assert_eq(Http.get(ABASE + "/").body, 'rebound')
 asrv2.stop()
 
 # A non-Sendable handler is rejected at listen_async (it runs off this thread).
@@ -445,7 +443,7 @@ abad.get("/", fn (req) {
 try {
   abad.listen_async(0)
 } catch e {
-  inspect("async non-sendable -> " + e.kind)
+  assert_eq(e.kind, 'SendError')
 }
 abad.close()
 
@@ -460,7 +458,7 @@ try {
 } catch e {
   abinderr = e.kind
 }
-inspect("async bind fail -> " + abinderr)
+assert_eq(abinderr, 'HttpError')
 abind.close()
 
 # --- exclusive bind: a port with a live listener must refuse a second server
@@ -484,8 +482,8 @@ try {
 } catch e {
   xerr = e.kind
 }
-inspect("exclusive bind -> " + xerr)
-inspect("holder still serves -> " + Http.get(XBASE).body)
+assert_eq(xerr, 'HttpError')
+assert_eq(Http.get(XBASE).body, 'holder')
 xsrv2.close()
 xsrv.stop()
 
@@ -496,9 +494,8 @@ zsrv.get("/", fn (req) {
   "zeroed"
 })
 zport = zsrv.listen_async(0, workers: 1)
-inspect("port 0 assigns -> " + (zport > 0 && zport <= 65535).to_string())
-inspect("port 0 serves -> " +
-  Http.get("http://127.0.0.1:" + zport.to_string() + "/").body)
+assert_eq(zport > 0 && zport <= 65535, true)
+assert_eq(Http.get("http://127.0.0.1:" + zport.to_string() + "/").body, 'zeroed')
 zsrv.stop()
 
 # --- a handler that throws a value answers 500 with what the value says, as
@@ -559,7 +556,7 @@ try {
 } catch e {
   unbound = e.message
 }
-inspect("serve before bind -> " + unbound)
+assert_eq(unbound, 'server.serve_async: Http: server is not bound (call bind(port) first)')
 
 # A rejected serve leaves the recorded routes alone — the same handle can serve
 # them afterwards (below). Both backends must agree on that, so a failed attempt
@@ -571,14 +568,14 @@ try {
 } catch e {
   rebound = e.message
 }
-inspect("bind twice -> " + rebound)
+assert_eq(rebound, 'server.bind: Http: server already bound')
 mut relisten = "none"
 try {
   ssrv.listen_async(0)
 } catch e {
   relisten = e.message
 }
-inspect("listen after bind -> " + relisten)
+assert_eq(relisten, 'server.listen_async: Http: server already bound')
 
 # Routes registered after bind still take effect — bind only opens the socket.
 ssrv.get("/late", fn (req) {
@@ -586,8 +583,8 @@ ssrv.get("/late", fn (req) {
 })
 ssrv.serve_async(workers: 2)
 SBASE = "http://127.0.0.1:" + SPORT.to_string()
-inspect("split serve -> " + Http.get(SBASE + "/").body)
-inspect("route after bind -> " + Http.get(SBASE + "/late").body)
+assert_eq(Http.get(SBASE + "/").body, 'split')
+assert_eq(Http.get(SBASE + "/late").body, 'registered after bind')
 ssrv.stop()
 
 # A failed bind leaves the handle usable, so "try the next port" works. (cpp-httplib
@@ -605,10 +602,9 @@ try {
 }
 FPORT = fsrv.bind(0)
 fsrv.serve_async(workers: 2)
-inspect("bind after failed bind -> " +
-  firstbind +
+assert_eq(firstbind +
   " | " +
-  Http.get("http://127.0.0.1:" + FPORT.to_string() + "/").body)
+  Http.get("http://127.0.0.1:" + FPORT.to_string() + "/").body, 'HttpError | recovered')
 fsrv.stop()
 
 # A missing or wrong-typed port is rejected the same way on bind and listen
@@ -622,18 +618,18 @@ fn error_kind(f) {
   }
 }
 esrv = Http.server()
-inspect("bind-missing -> " + error_kind(fn () {
+assert_eq(error_kind(fn () {
   esrv.bind()
-}))
-inspect("bind-type -> " + error_kind(fn () {
+}), 'ArityError')
+assert_eq(error_kind(fn () {
   esrv.bind("80")
-}))
-inspect("listen-missing -> " + error_kind(fn () {
+}), 'TypeError')
+assert_eq(error_kind(fn () {
   esrv.listen()
-}))
-inspect("workers-type -> " + error_kind(fn () {
+}), 'ArityError')
+assert_eq(error_kind(fn () {
   esrv.serve_async(workers: "4")
-}))
+}), 'TypeError')
 
 # A port outside 0..65535 is a ValueError on bind / listen / listen_async, not
 # a port the socket layer wrapped it to (bind(70000) used to bind 4464 and
@@ -647,17 +643,18 @@ fn error_message(f) {
   }
 }
 for p in [-1, 65536, 70000, 1 << 32] {
-  inspect(error_message(fn () {
+  let refusal = "port must be between 0 and 65535, got {p}"
+  assert_eq(error_message(fn () {
     esrv.bind(p)
-  }))
-  inspect(error_message(fn () {
+  }), "ValueError: server.bind: {refusal}")
+  assert_eq(error_message(fn () {
     esrv.listen(p)
-  }))
-  inspect(error_message(fn () {
+  }), "ValueError: server.listen: {refusal}")
+  assert_eq(error_message(fn () {
     esrv.listen_async(p)
-  }))
+  }), "ValueError: server.listen_async: {refusal}")
 }
-inspect("bind after out-of-range -> " + (esrv.bind(0) > 0).to_string())
+assert_eq(esrv.bind(0) > 0, true)
 esrv.close()
 
 # A method is a token. CR/LF in one ended the request line early and smuggled
@@ -744,7 +741,6 @@ assert_true(!ctres.headers.has("X-Injected"))
 
 mapi.close()
 msrv.stop()
-inspect("CR/LF in a method or a header -> refused at once, nothing smuggled")
 
 # A handler that streams itself: the response's closure is the very handler
 # the worker holds, so both pin it. The stream letting go must not unpin it
@@ -774,4 +770,3 @@ for _ in range(0, 5) {
   assert_eq(Http.get("http://127.0.0.1:{sport}/gc").body, 'gc')
 }
 ssrv.stop()
-inspect("a handler that streams itself stays held")

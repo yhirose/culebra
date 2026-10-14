@@ -3,10 +3,10 @@
 # A SharedBuffer handle crosses an isolate boundary by its hidden id (the
 # backing bytes live in a process-global registry), so the child isolate
 # reads/writes the SAME bytes — zero copy, no serialization of the data.
-# Runs on interp and (via the _jit suffix) the JIT; both must agree.
+# Runs on every engine; all must agree.
 #
-# Run: ./build/culebra tests/isolate/test_packable_share_jit.cul
-#      ./build/culebra --jit tests/isolate/test_packable_share_jit.cul
+# Run: ./build/culebra tests/isolate/test_packable_share.cul
+#      ./build/culebra --jit tests/isolate/test_packable_share.cul
 
 @packable
 class Vec2 {

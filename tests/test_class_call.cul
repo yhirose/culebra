@@ -63,36 +63,24 @@ assert_eq(apply0(Empty).greet(), "hi")
 // satisfy the `Function` type used by higher-order builtins — `map(Cls)` is
 // a clean TypeError on both backends. Use `map(|x| Cls(x))` instead. Frozen
 // here so a future relaxation is a deliberate, symmetric change.
-let mut map_threw = false
-try {
+assert_throws('TypeError', fn () {
   let _ = [1, 2, 3].map(Point)
-} catch e {
-  map_threw = true
-}
-assert_eq(map_threw, true)
+})
 
 // --- a plain dict holding a "new" key stays NON-callable ---
 let fake = {new: fn (x) {
   x + 1
 }}
-let mut threw = false
-try {
+assert_throws('TypeError', fn () {
   fake(5)
-} catch e {
-  threw = true
-}
-assert_eq(threw, true)
+})
 // its `new` member is still an ordinary callable field
 assert_eq(fake.new(5), 6)
 
 // --- arity error from `new` surfaces normally ---
-let mut bad = false
-try {
+assert_throws('ArityError', fn () {
   Point(1)
-} catch e {
-  bad = true
-}
-assert_eq(bad, true)
+})
 
 // --- native classes construct the same way as `class` ones ---
 // A wrapped class (wrap.h) with a registered ctor is callable, so the rule
@@ -115,29 +103,23 @@ assert_eq(type_of(Shared(42)), "Object")
 // the parameter names it declares, like every other native, and rejects any
 // other name. Frozen so the sugar can never drift from `.new` on this.
 assert_eq(type_of(__Foreign.Box(start: 4)), type_of(__Foreign.Box.new(start: 4)))
-let mut kw_sugar = false
-try {
-  let _ = __Foreign.Box(zz: 4)
+let kw_sugar = try {
+  __Foreign.Box(start: 4, zz: 1)
 } catch e {
-  kw_sugar = true
+  e.message
 }
-let mut kw_new = false
-try {
-  let _ = __Foreign.Box.new(zz: 4)
+let kw_new = try {
+  __Foreign.Box.new(start: 4, zz: 1)
 } catch e {
-  kw_new = true
+  e.message
 }
-assert_eq(kw_sugar, kw_new)
-assert_eq(kw_sugar, true)
+assert_eq(kw_sugar, "unknown keyword argument 'zz'")
+assert_eq(kw_new, kw_sugar)
 
 // The `Function` boundary above holds for native classes too.
-let mut map_native = false
-try {
+assert_throws('TypeError', fn () {
   let _ = [1].map(CodeGen.Module)
-} catch e {
-  map_native = true
-}
-assert_eq(map_native, true)
+})
 
 // --- what is a class, and what merely constructs ---
 // A type reports 'Class'; a namespace stays 'Object' even though calling it
@@ -150,20 +132,12 @@ assert_eq(type_of(Math), "Object")
 assert_eq(type_of(CodeGen.Program), "Object")
 
 // A namespace with no `new` is unchanged: same TypeError as before.
-let mut ns_threw = false
-try {
+assert_throws('TypeError', fn () {
   Math()
-} catch e {
-  ns_threw = true
-}
-assert_eq(ns_threw, true)
-let mut noctor = false
-try {
+})
+assert_throws('TypeError', fn () {
   CodeGen.Program()
-} catch e {
-  noctor = true
-}
-assert_eq(noctor, true)
+})
 
 // The namespace-shaped lazy preamble modules are ordinary object literals
 // tagged as namespaces after the fact, so a `new:` key added to one would

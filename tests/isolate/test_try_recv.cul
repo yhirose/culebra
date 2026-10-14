@@ -1,10 +1,7 @@
-# Channel try_recv() / drain(): non-blocking receive. Runs under BOTH interp
-# and --jit. `try_recv` answers with a ChannelResult variant, so a caller that
-# cannot block (a frame callback, any timed loop) tells "nothing yet" from
-# "nothing ever" apart without a nil sentinel.
-#
-# Nullary variants are matched as `Empty()` / `Closed()` — a bare `Empty` in a
-# match arm is an identifier binding, i.e. a catch-all, not a variant pattern.
+# Channel try_recv() / drain(): non-blocking receive. `try_recv` answers with
+# a ChannelResult variant, so a caller that cannot block (a frame callback,
+# any timed loop) tells "nothing yet" from "nothing ever" apart without a nil
+# sentinel.
 
 fn describe(r) {
   return match r {

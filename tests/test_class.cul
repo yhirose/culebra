@@ -380,14 +380,9 @@ test_static_methods = fn () {
   assert_eq(circle.kind, 'circle')
   assert_eq(circle.area(), 48)
   # Static methods are *not* on the instance.
-  let inst_call_kind = try {
+  assert_throws('TypeError', fn () {
     circle.make_circle(1)
-    'no error'
-  } catch e {
-    "kind={e.kind}"
-  }
-  assert_true(inst_call_kind == 'kind=AttributeError' ||
-    inst_call_kind == 'kind=TypeError')
+  })
 }
 
 # Multiple statics + interop with the regular constructor.

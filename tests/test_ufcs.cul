@@ -128,3 +128,15 @@ assert_eq(1.range(4).collect(), [1, 2, 3])
 assert_eq(3.iota(), [0, 1, 2])
 # `range`'s `step:` kwarg threads through UFCS too.
 assert_eq(0.range(10, step: 2).collect(), [0, 2, 4, 6, 8])
+
+# The unary conversion globals as methods, on every receiver type they take
+# (the JIT once lacked hash / to_float here and refused a non-String to_long).
+assert_eq([42.to_string(), 3.5.to_string(), true.to_string(), "hi".to_string(),
+           [1, 2].to_string()], ['42', '3.5', 'true', 'hi', '[1, 2]'])
+assert_eq([42.type_of(), "hi".type_of(), [1].type_of()],
+          ['Long', 'String', 'Array'])
+assert_eq([42.to_long(), 3.9.to_long(), "123".to_long()], [42, 3, 123])
+assert_eq([7.to_float(), "2.5".to_float()], [7.0, 2.5])
+assert_eq(42.hash(), hash(42))
+assert_eq("hi".hash(), hash("hi"))
+assert_eq(1.hash() == 2.hash(), false)

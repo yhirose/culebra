@@ -21,4 +21,7 @@ class Pair {
   }
 }
 
-export {add, sub, Pair}
+# One Object per load of this module, so an importer can tell a second load.
+let state = {}
+
+export {add, sub, Pair, state}

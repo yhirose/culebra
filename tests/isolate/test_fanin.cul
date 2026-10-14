@@ -139,4 +139,4 @@ let ch = try {
 }
 assert_eq(ch, [1, 2, 3])
 
-inspect("test_fanin_jit: all assertions passed")
+inspect("test_fanin: all assertions passed")

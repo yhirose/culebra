@@ -152,10 +152,7 @@ fn classify(arr) {
   }
 }
 let cls = classify([5, 0, 20]).collect()
-assert_eq(cls.size(), 3)
-assert_eq(cls[0], '20')
-assert_eq(cls[1], 'err')
-assert_eq(cls[2], '5')
+assert_eq(cls, ['20', 'err', '5'])
 
 // --- (9) defer runs when the *producer* throws ---
 // docs §18.5: dispose fires on any exception leaving the loop, not only one

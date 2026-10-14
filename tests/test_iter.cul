@@ -121,10 +121,7 @@ assert_eq('hello'.code_points().count(), 5)
 
 # --- String.graphemes() — Iterator<String> over Extended Grapheme Clusters ---
 gs = 'a👨‍👩‍👧b'.graphemes().collect()
-assert_eq(gs.size(), 3)
-assert_eq(gs[0], 'a')
-assert_eq(gs[1], '👨‍👩‍👧')
-assert_eq(gs[2], 'b')
+assert_eq(gs, ['a', '👨‍👩‍👧', 'b'])
 
 # No combining marks → each scalar is its own grapheme
 assert_eq('café'.graphemes().count(), 4)
@@ -138,12 +135,13 @@ assert_eq(''.graphemes().count(), 0)
 # Every run between two boundaries is its own segment (whitespace and
 # punctuation included), tagged `(text, is_word)`.
 ws = 'Hello, world!'.words().collect()
-assert_eq(ws.size(), 5)
-assert_eq(ws[0], ('Hello', true))
-assert_eq(ws[1], (',', false))
-assert_eq(ws[2], (' ', false))
-assert_eq(ws[3], ('world', true))
-assert_eq(ws[4], ('!', false))
+assert_eq(ws, [
+  ('Hello', true),
+  (',', false),
+  (' ', false),
+  ('world', true),
+  ('!', false),
+])
 
 # Filtering on is_word keeps only the real words
 real_words = 'Hello, world!'.words().filter(|(_, w)| w).map(|(t, _)| t).collect()

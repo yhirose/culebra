@@ -9,7 +9,7 @@
 # the generated difftest corpus are for.
 #
 # Generated from 316 files.
-tests/callable_iterator_hof.cul
+tests/test_callable_iterator_hof.cul
 tests/test_args.cul
 tests/test_array_sized_default.cul
 tests/test_catch_pattern.cul

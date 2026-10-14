@@ -36,13 +36,9 @@ class Partial {
     self.a - other.a
   }
 }
-let e_partial = try {
+assert_throws('DispatchError', fn () {
   needs_ord(Partial.new(1))
-  nil
-} catch ex {
-  ex
-}
-assert_eq(e_partial != nil, true)
+})
 
 // Transitive: Done: Ord (and Ord: Eq) requires eq + cmp + done.
 trait Done: Ord {
@@ -79,13 +75,9 @@ class Task2 {
     true
   }
 }
-let e_task2 = try {
+assert_throws('DispatchError', fn () {
   needs_done(Task2.new())
-  nil
-} catch ex {
-  ex
-}
-assert_eq(e_task2 != nil, true)
+})
 
 // An inherited DEFAULT method is usable on the subtrait.
 trait Greet {
@@ -150,13 +142,9 @@ class MissShow {
     0
   }
 }
-let e_ms = try {
+assert_throws('DispatchError', fn () {
   use_both(MissShow.new())
-  nil
-} catch ex {
-  ex
-}
-assert_eq(e_ms != nil, true)
+})
 
 // Composite bound interacts with inheritance: <T: Ord + Show>.
 fn ord_and_show<T: Ord + Show>(x: T) {

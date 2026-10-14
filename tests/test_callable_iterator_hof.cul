@@ -1,0 +1,30 @@
+# A callable class instance (`__call__`) can be the callback of any iterator
+# higher-order method, lazy combinators and terminal ops alike, exactly like a
+# plain function. The lazy `.iter()` combinators once refused it. The eager
+# Array HOFs are in test_call_overload.cul.
+
+class Dbl {
+  new() {}
+  __call__(x) {
+    x * 2
+  }
+}
+class Pos {
+  new() {}
+  __call__(x) {
+    x > 0
+  }
+}
+
+# Lazy combinators
+assert_eq([1, 2, 3].iter().map(Dbl.new()).collect(), [2, 4, 6])
+assert_eq([1, -2, 3].iter().filter(Pos.new()).collect(), [1, 3])
+assert_eq([1, -2, 3].iter().take_while(Pos.new()).collect(), [1])
+# Chained: callable feeds a downstream lambda combinator
+assert_eq([1, 2, 3].iter().map(Dbl.new()).filter(|x| x > 2).collect(), [4, 6])
+
+# Terminal iterator ops
+assert_eq([1, -2, 3].iter().any(Pos.new()), true)
+assert_eq([1, -2, 3].iter().all(Pos.new()), false)
+assert_eq([-1, 2, 3].iter().find(Pos.new()), 2)
+[1, 2, 3].iter().for_each(Dbl.new())

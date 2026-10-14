@@ -85,17 +85,12 @@ test_plain_dict_not_callable = fn () {
   let plain = {__call__: fn (x) {
     x
   }}
-  mut threw = false
-  try {
+  assert_throws('TypeError', fn () {
     let _ = plain(5)
-  } catch e {
-    threw = true
-  }
-  assert_true(threw)
+  })
 }
 
-# A class instance without __call__ is not callable; both backends raise
-# a TypeError (captured as a boolean so the message text need not match).
+# A class instance without __call__ is not callable.
 test_non_callable_instance = fn () {
   class Plain {
     new() {
@@ -103,13 +98,9 @@ test_non_callable_instance = fn () {
     }
   }
   let p = Plain.new()
-  mut threw = false
-  try {
+  assert_throws('TypeError', fn () {
     let _ = p(1)
-  } catch e {
-    threw = true
-  }
-  assert_true(threw)
+  })
 }
 
 # Phase 2b: keyword arguments to `obj(...)` bind against __call__'s

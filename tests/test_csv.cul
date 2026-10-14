@@ -4,9 +4,7 @@
 
 // --- basic parse: rows of String fields ---
 let rows = CSV.parse("a,b,c\n1,2,3")
-assert_eq(rows.size(), 2)
-assert_eq(rows[0], ["a", "b", "c"])
-assert_eq(rows[1], ["1", "2", "3"])
+assert_eq(rows, [["a", "b", "c"], ["1", "2", "3"]])
 
 // --- round trip ---
 assert_eq(CSV.stringify(CSV.parse("a,b,c\n1,2,3")), "a,b,c\n1,2,3")

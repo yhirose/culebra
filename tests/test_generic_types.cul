@@ -15,7 +15,7 @@ fn rows(m: Array<Array<Long>>) -> Long {
 }
 assert_eq(rows([[1, 2], [3, 4], [5, 6]]), 3)
 
-// --- Generic + Union in return type (Array equality is by-ref §9) ---
+// --- Generic + Union in return type ---
 fn lookup(k: String) -> Array<Long> | Nil {
   if k == "yes" {
     [1, 2]
@@ -23,8 +23,7 @@ fn lookup(k: String) -> Array<Long> | Nil {
     nil
   }
 }
-let hit = lookup("yes")
-assert_true(hit != nil && hit[0] == 1 && hit[1] == 2)
+assert_eq(lookup("yes"), [1, 2])
 assert_eq(lookup("no"), nil)
 
 // return_type canonicalizes symmetric to params[i].type.

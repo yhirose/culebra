@@ -1,4 +1,4 @@
-// Spike 2: abort-path unwind for effects.
+// The abort path of effects unwinds the stack.
 // `__eff_abort(v)` throws a native signal that user try/catch must NOT
 // observe, while defers still run on the way out; `__eff_catch_abort(fn)`
 // (the handle driver's catcher) is the only stop, returning [aborted, value].

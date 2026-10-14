@@ -7,7 +7,7 @@ assert_eq(type_of(s), "Set")
 
 // Duplicate elements collapse.
 let dup = {1, 2, 2, 3, 1}
-assert_eq(type_of(dup), "Set")
+assert_eq(dup, {1, 2, 3})
 
 // Set equality ignores order.
 let a = {1, 2, 3}
@@ -21,7 +21,8 @@ assert_eq(eq_cd, false)
 
 // Mixed element types.
 let mix = {1, "two", 3.14, true}
-assert_eq(type_of(mix), "Set")
+assert_eq(mix.size(), 4)
+assert_eq(mix.contains("two"), true)
 
 // --- Set methods (Phase 8-F) ---
 let p = {1, 2, 3}

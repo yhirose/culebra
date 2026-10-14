@@ -531,16 +531,15 @@ fn native_catch_module(m, name, args, key) {
   assert_eq(out, "nope\n")
 }
 {
-  # A culebra-level error inside the native is the same shape.
+  # A culebra-level error inside the native is the same shape, its kind
+  # included.
   let m = CodeGen.Module.new()
-  let mm = native_call_module(m, 'bad', [m.literal(v: 1, line: 1, col: 1)])
-  let p = mm.compile()
-  let err = try {
-    p.run(natives: {bad: |n| n.no_such_method()})
-  } catch e {
-    e
-  }
-  assert_true(err != nil)
+  let mm = native_catch_module(m, 'bad', [m.literal(v: 1, line: 1, col: 1)],
+                               'kind')
+  let out = IO.capture(fn () {
+    mm.compile().run(natives: {bad: |n| n.no_such_method()})
+  })
+  assert_eq(out, "TypeError\n")
 }
 {
   # A native's throw is answered HERE, so it must not stay in flight on the

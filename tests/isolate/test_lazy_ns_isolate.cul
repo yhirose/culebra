@@ -8,8 +8,8 @@
 # and the child rebuilds the module from a process-global builder thunk fn_ptr,
 # mirroring how a deserialized closure shares its fn_ptr.
 #
-# Run: ./build/culebra tests/isolate/test_lazy_ns_isolate_jit.cul
-#      ./build/culebra --jit tests/isolate/test_lazy_ns_isolate_jit.cul
+# Run: ./build/culebra tests/isolate/test_lazy_ns_isolate.cul
+#      ./build/culebra --jit tests/isolate/test_lazy_ns_isolate.cul
 
 # Minimal repro from the bug report.
 let t = Isolate.spawn(fn () {

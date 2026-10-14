@@ -6,8 +6,8 @@
 # value (a handler / continuation is one) does not cross an isolate boundary.
 # Symmetric on interp + JIT (+ AOT).
 #
-# Run: ./build/culebra tests/isolate/test_effects_isolate_jit.cul
-#      ./build/culebra --jit tests/isolate/test_effects_isolate_jit.cul
+# Run: ./build/culebra tests/isolate/test_effects_isolate.cul
+#      ./build/culebra --jit tests/isolate/test_effects_isolate.cul
 
 # --- an effect handled entirely inside the isolate ---
 effect fn get()

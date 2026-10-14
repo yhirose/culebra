@@ -100,13 +100,9 @@ class Box {
   }
 }
 let bx = Box.new(7)
-// `get` was wrapped with `self` bound for method call; the bound
-// wrapper is itself a Function, so `.name` should still reflect "get".
-// (Note: this checks the post-wrapping function; if culebra wraps
-// methods on each access, the name should propagate. We accept either
-// "get" or "" — both are coherent.)
+// A method read off an instance is bound to it, and keeps the method's name.
 let g = bx.get
-assert_true(g.name == "get" || g.name == "")
+assert_eq(g.name, "get")
 
 // --- a decorator receives the declaration's name ---
 // What a decorator is handed is still `fn <name>`, and the compiled lanes

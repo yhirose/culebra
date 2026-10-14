@@ -1,4 +1,4 @@
-# Channel (C2-a): bounded message passing between isolates. Interpreter only.
+# Channel (C2-a): bounded message passing between isolates.
 
 # --- producer isolate streams into a channel; consumer drains via for-in ---
 let (tx, rx) = Channel.new(4)

@@ -1,5 +1,6 @@
-# Isolate (C2-a, first slice): spawn/join + closure-across-thread transfer.
-# Interpreter backend only. JIT/AOT symmetry is a later milestone (C2-c).
+# Isolate: spawn/join and moving a closure to another thread. A closure crosses
+# as a shared code reference plus copies of its captures, and runs on the
+# child's own heap.
 
 # --- Slice 0: spawn a closure, run on another thread, get a scalar back ---
 let h0 = Isolate.spawn(|| 1 + 2)
@@ -20,6 +21,10 @@ assert_eq(hcap.join(), 15)
 let prefix = "hi-"
 let hstr = Isolate.spawn(|| prefix + "there")
 assert_eq(hstr.join(), "hi-there")
+
+# a capture and an argument together
+let base = 100
+assert_eq(Isolate.spawn(|x| x + base, 23).join(), 123)
 
 # --- Slice 1: collections round-trip by value across the boundary ---
 let arr = [1, 2, 3]
@@ -53,6 +58,17 @@ assert_eq(hfib.join(), 6765)
 # fib with an argument forwarded across the boundary
 let hfib2 = Isolate.spawn(|n| fib(n), 15)
 assert_eq(hfib2.join(), 610)
+
+# mutual recursion across two dispatchers
+fn ev(n) {
+  return true if n == 0
+  return od(n - 1)
+}
+fn od(n) {
+  return false if n == 0
+  return ev(n - 1)
+}
+assert_eq(Isolate.spawn(|| ev(10)).join(), true)
 
 # --- enum / data-class instance round-trips structurally ---
 enum Color {
@@ -126,6 +142,9 @@ try {
 } catch e {
   assert_eq(e.kind, "SendError")
 }
+# an immutable capture next to it is fine (no false positive)
+let fixed = 7
+assert_eq(Isolate.spawn(|| fixed + 1).join(), 8)
 
 try {
   let t = Tensor.zeros([2, 2])
@@ -144,11 +163,16 @@ try {
   assert_eq(e.kind, "ZeroDivisionError")
 }
 
-# --- poll: nil before done is acceptable; eventually returns the value ---
-let hp = Isolate.spawn(|| fib(10))
-mut r = hp.poll()
-# r is either nil (still running) or 55 (done) — both fine; join settles it
+# --- poll: nil while the child runs, the value once it is done ---
+let (poll_go_tx, poll_go_rx) = Channel.new(1)
+let hp = Isolate.spawn(fn () {
+  poll_go_rx.recv()
+  fib(10)
+})
+assert_eq(hp.poll(), nil)  # held on the channel until the send below
+poll_go_tx.send(true)
 assert_eq(hp.join(), 55)
+assert_eq(hp.poll(), 55)
 
 # --- an isolate may return a closure; it is rebuilt on the parent and callable
 #     (exercises the parent-side deserialize rebuilding a closure) ---

@@ -49,4 +49,4 @@ try {
   assert_eq(e.kind, "ValueError")
 }
 
-inspect("test_rendezvous_jit: all assertions passed")
+inspect("test_rendezvous: all assertions passed")

@@ -1,7 +1,6 @@
 // Spread literals: `[...iterable]` splices into an array, `{...obj}`
 // merges into an object (later keys win). MVP array sources are
-// Array / Tuple / Set. (Arrays compare by identity, so results are
-// checked via their display form.)
+// Array / Tuple / Set.
 
 // --- Array spread ---
 let a = [1, 2, 3]

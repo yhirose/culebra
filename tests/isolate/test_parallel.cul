@@ -1,14 +1,15 @@
-# Parallel.map / Parallel.each (C2-b): worker-pool over isolates. Interp only.
+# Parallel.map / Parallel.each (C2-b): worker-pool over isolates.
 
 # --- map: N→N, results in input order ---
 let xs = [1, 2, 3, 4, 5, 6, 7, 8]
 assert_eq(Parallel.map(xs, |x| x * x), [1, 4, 9, 16, 25, 36, 49, 64])
 
-# --- map preserves order even with a single worker (limit: 1) ---
+# --- map preserves order whatever the limit, given by keyword or position ---
 assert_eq(
   Parallel.map(xs, |x| x + 100, limit: 1),
   [101, 102, 103, 104, 105, 106, 107, 108],
 )
+assert_eq(Parallel.map(xs, |x| x + 100, 2), Parallel.map(xs, |x| x + 100))
 
 # --- map over an empty array ---
 assert_eq(Parallel.map([], |x| x), [])
@@ -39,10 +40,11 @@ for n in ns {
 assert_eq(Parallel.map(ns, |n| fib(n)), serial)
 
 # --- each: side effects only, returns nil; sum collected via a channel ---
+# Each worker's tx is dropped when the worker ends, so the `for` below ends.
 let (tx, rx) = Channel.new(16)
-Parallel.each([1, 2, 3, 4, 5], fn (x) {
+assert_eq(Parallel.each([1, 2, 3, 4, 5], fn (x) {
   tx.send(x * x)
-})
+}), nil)
 tx.drop()
 mut total = 0
 for v in rx {

@@ -35,8 +35,7 @@ assert_eq(type_of(parts[0]), 'StringView')
 
 // Empty separator returns the whole string.
 let whole = 'abc'.split('')
-assert_eq(whole.size(), 1)
-assert_eq(whole[0], 'abc')
+assert_eq(whole, ['abc'])
 
 // StringLike sep — accepts both String and StringView.
 assert_eq('a,b'.split(','.view())[0], 'a')

@@ -85,12 +85,18 @@
 # its user data, `(ok, val)` from parse, and its logger).
 # 319 since test_shared_values.cul (split from test_shared.cul, whose --jit
 # compile had passed the per-file budget on the Ubuntu runner).
-tests.cul 319
+# 312 since the four test_gc_leak_* files and test_interp_cycle_gc.cul went
+# into test_gc_no_leak.cul (one harness, every bound exact), defer_in_loop.cul
+# into test_defer.cul and method_ufcs_globals.cul into test_ufcs.cul (they
+# printed their results instead of asserting them).
+tests.cul 312
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
 # Isolate and a Channel).
-tests.isolate 21
+# 19 since test_isolate_jit.cul and test_parallel_jit.cul went into
+# test_isolate.cul and test_parallel.cul, which every engine runs too.
+tests.isolate 19
 
 # tests/gen_frames/*.cul: the generator probes held to frozen outputs, on both
 # engines in the landing gate and under the collector's axes and `culebra

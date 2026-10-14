@@ -1,38 +1,31 @@
-// Regex match の添字アクセス `m[i]` / `m["name"]`（captures 専用アクセサ）。
-// dot は record（メタ情報）、`[]` は captures、という Ruby/JS 準拠モデル。
+// Indexing a Regex match: `m[i]` / `m["name"]` read the captures, while the
+// dot reads the match's own record (value, start, groups).
 
 let m = Regex.compile('(\d+)-(\d+)').find("12-34")
 
-// 位置グループ: m[0] = マッチ全体, m[1..] = 各群（文字列を直接返す）
-inspect(m[0])  // 12-34
-inspect(m[1])  // 12
-inspect(m[2])  // 34
+// Positional groups: m[0] is the whole match, m[1..] each group, as Strings.
+assert_eq([m[0], m[1], m[2]], ["12-34", "12", "34"])
 
-// 負数は配列同様にラップ
-inspect(m[-1])  // 34
-inspect(m[-2])  // 12
+// A negative index wraps, as an Array's does.
+assert_eq([m[-1], m[-2]], ["34", "12"])
 
-// 範囲外 → nil（throw しない、?? と合成）
-inspect(m[9] == nil)     // true
-inspect(m[9] ?? "none")  // none
+// Out of range is nil, not an error, so it composes with ??.
+assert_eq(m[9], nil)
+assert_eq(m[9] ?? "none", "none")
 
-// dot のメタ情報は不変
-inspect(m.value)            // 12-34
-inspect(m.start)            // 0
-inspect(m.groups[1].start)  // 0  (span は従来通り)
+// The dot still reads the record.
+assert_eq(m.value, "12-34")
+assert_eq(m.start, 0)
+assert_eq(m.groups[1].start, 0)
 
-// 名前付きグループ: m["name"]
+// Named groups: m["name"]
 let d = Regex.compile('(?<y>\d{4})-(?<mo>\d{2})').find("2026-06")
-inspect(d["y"])             // 2026
-inspect(d["mo"])            // 06
-inspect(d["nope"] == nil)   // true  (無い名前 → nil)
-inspect(d["value"] == nil)  // true  ([] は captures 専用、プロパティは引かない)
+assert_eq([d["y"], d["mo"]], ["2026", "06"])
+assert_eq(d["nope"], nil)
+// `[]` reads only captures, never a property.
+assert_eq(d["value"], nil)
 
-// 未マッチの optional group → nil
+// An optional group that did not take part is nil.
 let o = Regex.compile('(a)(b)?').find("a")
-inspect(o[1])         // a
-inspect(o[2] == nil)  // true
-
-// 実用形: m[i] で wol_say 風の置換が簡潔に
-let cite = Regex.compile('(\d+):(\d+)').find("86:5")
-inspect("{cite[1]}章{cite[2]}節")  // 86章5節
+assert_eq(o[1], "a")
+assert_eq(o[2], nil)

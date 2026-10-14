@@ -99,4 +99,4 @@ assert_throws("ImmutableError", fn () { hv.counts[42] = 1 })
 assert_throws("ImmutableError", fn () { hv.tags.note = 1 })
 assert_eq(hv.counts.get(42), nil)
 
-IO.inspect("test_fixedmapset OK")
+IO.inspect("test_boundedmapset OK")

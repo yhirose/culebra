@@ -2,8 +2,8 @@
 # buffer with SharedBuffer.shared(...), hands it to a child culebra via
 # Proc.run/spawn `share: {name: buf}`, and the child re-attaches it with
 # SharedBuffer.receive(name, T) — both ends address the same physical pages
-# (zero copy across the process boundary). Runs under interp and (via the
-# `_jit` suffix) JIT; the children are launched under both backends explicitly.
+# (zero copy across the process boundary). Runs on every engine; the children
+# are launched under both explicitly.
 @packable
 class Cell {
   v: Int64 = 0

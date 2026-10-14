@@ -1,11 +1,8 @@
 # Conformance: §11 (keyword arguments, ** splat), §19 (kwargs in
 # multimethods), §7 (mixed-call evaluation order). See docs/language.md §25.
 #
-# Keyword arguments and `**` splat — dual-backend covered subset.
-# The interp-only `tests/interp/test_kwargs.cul` pins runtime-catchable
-# kwarg error shapes that the JIT detects at IR-emit time instead.
-# Happy-path coverage (including dynamic **var splat and UFCS kwargs
-# against a free function) runs on both backends from this file.
+# Keyword arguments and `**` splat, including a dynamic **var splat and UFCS
+# kwargs against a free function.
 
 let f = fn (x, y = 10, z = 100) {
   x + y + z

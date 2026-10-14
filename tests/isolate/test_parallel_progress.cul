@@ -42,4 +42,4 @@ let caught = try {
 }
 assert_eq(caught, "boom")
 
-inspect("test_parallel_progress_jit: all assertions passed")
+inspect("test_parallel_progress: all assertions passed")

@@ -41,15 +41,12 @@ assert_eq(multi.one, 1)
 assert_eq(multi.two, 2)
 assert_eq(multi.three, 3)
 
-# --- Cache: importing the same module twice yields the same export ---
-# Function values aren't `==`-comparable per §5, so check via a
-# value the user can observe instead: the same class Pair carries
-# the same type name on instances built from either import.
+# --- Cache: importing the same module twice loads it once ---
+# A write through one import is read through the other, which a second
+# load's own `state` would not see.
 import math2 from './test_import_helpers/math_utils.cul'
-let p_a = math.Pair.new(1, 2)
-let p_b = math2.Pair.new(1, 2)
-assert_true(type_of(p_a) == 'Pair' && type_of(p_b) == 'Pair')
-assert_eq(math2.add(1, 2), math.add(1, 2))
+math.state.seen = true
+assert_eq(math2.state.seen, true)
 
 # --- Exports carrying `drop` are released at teardown without running it ---
 # (the process segfaulted at exit otherwise; see drop_export.cul)

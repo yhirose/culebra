@@ -161,10 +161,9 @@ fn closed_msg(thunk) {
 
 # --- Forging a borrow's internal slots is memory-safe (no raw pointer is
 # read from a script-writable slot — the borrow id resolves through the
-# borrow table, so a bogus id is a clean miss, never a deref). The JIT
-# rebinds `self` to the forged object and gets ClosedError; the interp's
-# stolen method stays bound to its origin and returns the real value.
-# Either way: no crash, no UB.
+# borrow table, so a bogus id is a clean miss, never a deref). A method read
+# off a borrow stays bound to it, so calling it through another Object
+# returns the real value on every lane.
 {
   let b = __Foreign.Box.new(5)
   let m = b.inner().value
@@ -174,7 +173,7 @@ fn closed_msg(thunk) {
   } catch e {
     e.kind
   }
-  assert_true(r == 'ClosedError' || r == 'ok=5')
+  assert_eq(r, 'ok=5')
 }
 
 inspect('test_borrow OK')

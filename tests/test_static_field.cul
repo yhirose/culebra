@@ -65,13 +65,9 @@ test_static_field_immutable = fn () {
     new() {}
     static VAL = 1
   }
-  let kind = try {
+  assert_throws('ImmutableError', fn () {
     Const.VAL = 2
-    'no error'
-  } catch e {
-    "kind={e.kind}"
-  }
-  assert_true(kind == 'kind=ImmutableError' || kind == 'kind=TypeError')
+  })
 }
 
 # A static field may annotate its value's type: still a constant on the

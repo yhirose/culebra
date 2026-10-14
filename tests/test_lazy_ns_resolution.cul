@@ -4,7 +4,7 @@
 # The interp binds these culebra-source modules lazily and re-resolves them per
 # environment. The JIT used to splice them as top-level `let X = _x_module()`
 # slots; a closure that referenced one captured the built module Object, whose
-# native members are not Sendable (see tests/isolate/test_lazy_ns_isolate_jit).
+# native members are not Sendable (see tests/isolate/test_lazy_ns_isolate).
 # The JIT now drops the slot and resolves every reference — top level and inside
 # closures — through namespace_get + a captureless builder thunk, one instance
 # per Runtime. This file pins the in-Runtime resolution (the isolate file pins

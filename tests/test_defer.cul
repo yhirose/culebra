@@ -304,4 +304,76 @@ log = ''
 assert_eq(defer_frame(), 'outer')
 assert_eq(log, 'inner;')
 
+# A defer in a loop body runs at the end of every iteration, not at the
+# function's exit (the JIT once ran them all at the end).
+log = ''
+for i in [1, 2] {
+  defer {
+    log = "{log}c;"
+  }
+  log = "{log}{i};"
+}
+assert_eq(log, '1;c;2;c;')
+
+# continue and break run the current iteration's defers first.
+log = ''
+for i in [1, 2, 3] {
+  defer {
+    log = "{log}d{i};"
+  }
+  continue if i == 2
+  log = "{log}{i};"
+}
+assert_eq(log, '1;d1;d2;3;d3;')
+log = ''
+for i in [1, 2, 3] {
+  defer {
+    log = "{log}d{i};"
+  }
+  break if i == 2
+  log = "{log}{i};"
+}
+assert_eq(log, '1;d1;d2;')
+
+# Several defers in one iteration run last first; a nested block's runs at
+# the block's end.
+log = ''
+for i in [1, 2] {
+  {
+    defer {
+      log = "{log}inner;"
+    }
+  }
+  defer {
+    log = "{log}a;"
+  }
+  defer {
+    log = "{log}b;"
+  }
+  log = "{log}{i};"
+}
+assert_eq(log, 'inner;1;b;a;inner;2;b;a;')
+
+# Every kind of `for` takes the same path: a range, a String, an Object.
+log = ''
+for i in 0..2 {
+  defer {
+    log = "{log}r;"
+  }
+  log = "{log}{i};"
+}
+for ch in "ab" {
+  defer {
+    log = "{log}s;"
+  }
+  log = "{log}{ch};"
+}
+for (k, v) in {x: 1, y: 2} {
+  defer {
+    log = "{log}o;"
+  }
+  log = "{log}{k}{v};"
+}
+assert_eq(log, '0;r;1;r;a;s;b;s;x1;o;y2;o;')
+
 IO.inspect('test_defer OK')

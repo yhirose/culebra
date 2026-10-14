@@ -80,13 +80,9 @@ assert_eq(gm.start, 0)
 assert_eq(gm.end, 8)  // one grapheme, not one code point
 
 // --- bad pattern raises (at compile time) ---
-let caught = try {
+assert_throws('RegexError', fn () {
   Regex.compile('(')
-  "no-error"
-} catch e {
-  "caught"
-}
-assert_eq(caught, "caught")
+})
 
 // --- nil composes with ?. and ?? ---
 assert_eq(d.find("xyz")?.value ?? "none", "none")

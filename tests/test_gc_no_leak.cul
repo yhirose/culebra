@@ -1,24 +1,13 @@
 // Memory-leak regression tests, built on the GC.stat() introspection API.
 //
-// GC.stat() returns an Object with:
-//   live_objects — net live refcounted heap objects (births − frees);
-//                  deterministic, so a steady-state workload that allocates
-//                  and frees in balance leaves it flat.
-//   heap_bytes   — those objects' struct sizes summed (a structural
-//                  approximation; element buffers / allocator overhead are
-//                  not counted).
+// GC.stat() collects, seeding the collection from the reference counts, and
+// reports live_objects (net live heap objects, births − frees). What it
+// reclaims is a function of the counts alone, so the same program gives the
+// same number on every lane and every run.
 //
 // Pattern: warm up once (so one-time lazy allocations settle), snapshot
-// live_objects, run the same work N times, then assert the delta stays below
-// a small tolerance. A leak shows up as delta ≈ N × per-iteration objects;
-// clean code leaves delta near zero (the tolerance absorbs the transient
-// Object GC.stat() itself allocates per call, and small one-time setup).
-//
-// NOTE: known leaks still tracked separately and intentionally NOT asserted
-// here yet: `for k in 0..N` range-loop setup (~9 objects per loop) and
-// overloaded-operator dispatch (`a + b` → user `__add__`). See the leak tasks.
-
-let TOL = 100
+// live_objects, run the same work N times, then assert nothing is left over.
+// A leak shows up as delta ≈ N × per-iteration objects.
 
 // --- API sanity ---
 let s = GC.stat()
@@ -43,14 +32,14 @@ fn measure_delta(work) {
 }
 
 // Clean scope-exit must not leak (baseline: proves no false positives).
-assert_lt(measure_delta(fn () {
+assert_eq(measure_delta(fn () {
   let x = Box.new(42)
   x.data
-}), TOL)
+}), 0)
 
 // Array built by accumulating into a loop-local, then dropped on return.
 // Exercises the builtin-method receiver release (`push` / `size`).
-assert_lt(measure_delta(fn () {
+assert_eq(measure_delta(fn () {
   mut acc = []
   mut k = 0
   while k < 200 {
@@ -58,10 +47,19 @@ assert_lt(measure_delta(fn () {
     k = k + 1
   }
   acc.size()
-}), TOL)
+}), 0)
+
+// The same through `for k in 0..N`: the range and its iterator each loop.
+assert_eq(measure_delta(fn () {
+  mut acc = []
+  for k in 0..200 {
+    acc.push(Box.new(k))
+  }
+  acc.size()
+}), 0)
 
 // Reassigned loop-local must release the previous heap value each pass.
-assert_lt(measure_delta(fn () {
+assert_eq(measure_delta(fn () {
   mut last = Box.new(0)
   mut k = 0
   while k < 200 {
@@ -69,14 +67,14 @@ assert_lt(measure_delta(fn () {
     k = k + 1
   }
   last.data
-}), TOL)
+}), 0)
 
 // Higher-order iterator chain: eager array map/reduce, terminal sum/contains.
-assert_lt(measure_delta(fn () {
+assert_eq(measure_delta(fn () {
   let a = [1, 2, 3, 4, 5]
   a.contains(3)
   a.map(|x| x * 2).reduce(0, |acc, x| acc + x)
-}), TOL)
+}), 0)
 
 // Discarded heap value at the end of a loop body must be released each pass
 // (the loop-body-value fix). Array iteration, so no range-iterator setup.
@@ -84,20 +82,83 @@ let items = []
 for k in 0..200 {
   items.push(k)
 }
-assert_lt(measure_delta(fn () {
+assert_eq(measure_delta(fn () {
   for e in items {
     Box.new(e)
   }
   0
-}), TOL)
+}), 0)
 
-// A nested `fn name` that captures an enclosing local forms a dispatcher↔env
-// cycle (the body lives in the dispatcher's multimethod table, not the env
-// binding). Plain refcounting can't break it; the interp cycle collector must
-// subtract the dispatcher→body→def_env edge or every call leaks the body plus
-// its captured locals (~2 objects/call). Re-run the decl many times per work()
-// so the delta dwarfs TOL if the edge is ever missed again.
-assert_lt(measure_delta(fn () {
+// Overloaded-operator dispatch (`a + b` -> a user `__add__`) gives back both
+// operands.
+class LeakNum {
+  new(d) {
+    self.data = d
+  }
+  __add__(o) {
+    LeakNum.new(self.data + o.data)
+  }
+}
+assert_eq(measure_delta(fn () {
+  mut acc = LeakNum.new(0)
+  mut k = 0
+  while k < 200 {
+    acc = acc + LeakNum.new(k)
+    k = k + 1
+  }
+  acc.data
+}), 0)
+
+// --- cycles reference counting cannot break ---
+
+// Each cycle escapes to a top-level `cycle_sink` and is then orphaned by the
+// next, so only the collector can reclaim it, not the scope exit.
+mut cycle_sink = nil
+// Object -> Object through their property maps.
+assert_eq(measure_delta(fn () {
+  let a = {}
+  let b = {}
+  a.peer = b
+  b.peer = a
+  cycle_sink = a
+}), 0)
+// An Object that holds itself.
+assert_eq(measure_delta(fn () {
+  let a = {}
+  a.me = a
+  cycle_sink = a
+}), 0)
+// Through a Tuple element.
+assert_eq(measure_delta(fn () {
+  let a = {}
+  a.t = (a, 1)
+  cycle_sink = a
+}), 0)
+// Through a non-String key's value.
+assert_eq(measure_delta(fn () {
+  let a = {}
+  a[(1, 2)] = a
+  cycle_sink = a
+}), 0)
+// Class instances that hold each other.
+class CycleNode {
+  new() {
+    self.link = nil
+  }
+}
+assert_eq(measure_delta(fn () {
+  let a = CycleNode.new()
+  let b = CycleNode.new()
+  a.link = b
+  b.link = a
+  cycle_sink = a
+}), 0)
+cycle_sink = nil
+
+// A nested `fn name` that captures an enclosing local: dispatcher -> body ->
+// defining env -> dispatcher. Re-run the decl many times per work() so a
+// missed edge leaks ~2 objects a call.
+assert_eq(measure_delta(fn () {
   fn outer() {
     let b = Box.new(1)
     fn inner() {
@@ -111,6 +172,84 @@ assert_lt(measure_delta(fn () {
     k = k + 1
   }
   0
-}), TOL)
+}), 0)
 
-inspect("gc no-leak tests passed")
+// A self-referential `|...|` closure: closure -> captured env -> binding ->
+// closure.
+assert_eq(measure_delta(fn () {
+  mut topo = []
+  build = |n| if n > 0 {
+    topo.push(Box.new(n))
+    fn(n - 1)
+  } else {
+    0
+  }
+  build(200)
+  topo.size()
+}), 0)
+
+// A `class` declared inside a function: the constructor keeps the call's env
+// alive and the env's binding keeps the class.
+fn make_a_class() {
+  class Local {
+    new(v) {
+      self.v = v
+    }
+    a() {
+      self.v
+    }
+    b() {
+      self.v + 1
+    }
+  }
+  Local.new(1)
+}
+assert_eq(measure_delta(fn () {
+  mut j = 0
+  while j < 100 {
+    make_a_class().b()
+    j = j + 1
+  }
+  j
+}), 0)
+
+// The same with a class that has a constructor and no methods.
+fn make_a_ctor_only_class() {
+  class Lone {
+    new() {
+      self.x = 1
+    }
+  }
+  Lone.new()
+}
+assert_eq(measure_delta(fn () {
+  mut j = 0
+  while j < 20 {
+    make_a_ctor_only_class()
+    j = j + 1
+  }
+  j
+}), 0)
+
+// The same with the constructor bound to a name, whose wrapper holds the
+// function that holds the class's env.
+fn make_and_bind() {
+  class Local {
+    new(v) {
+      self.v = v
+    }
+    m() {
+      self.v
+    }
+  }
+  let mk = Local.new
+  mk(1).m()
+}
+assert_eq(measure_delta(fn () {
+  mut j = 0
+  while j < 100 {
+    make_and_bind()
+    j = j + 1
+  }
+  j
+}), 0)

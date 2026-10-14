@@ -26,7 +26,7 @@ tests/test_generator_complex.cul
 tests/test_drop_on_throw.cul
 tests/test_cond.cul
 tests/test_while_scope.cul
-tests/callable_iterator_hof.cul
+tests/test_callable_iterator_hof.cul
 tests/test_path.cul
 tests/test_regex.cul
 tests/test_args.cul

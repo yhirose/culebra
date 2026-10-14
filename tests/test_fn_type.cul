@@ -6,30 +6,27 @@
 fn apply(f: fn(Long) -> Long, x: Long) -> Long {
   f(x)
 }
-inspect(apply(|n| n * 2, 21))  # => 42
+assert_eq(apply(|n| n * 2, 21), 42)
 
 # --- multi-param function type ---
 fn combine(f: fn(Long, Long) -> Long, a: Long, b: Long) -> Long {
   f(a, b)
 }
-inspect(combine(|a, b| a + b, 10, 32))  # => 42
+assert_eq(combine(|a, b| a + b, 10, 32), 42)
 
 # --- zero-arg function type ---
 fn call_it(f: fn() -> String) -> String {
   f()
 }
-inspect(call_it(|| "hi"))  # => 'hi'
+assert_eq(call_it(|| "hi"), "hi")
 
 # --- a non-callable is rejected at the type check ---
 fn needs_fn(f: fn(Long) -> Long) -> Long {
   f(1)
 }
-try {
+assert_throws('DispatchError', fn () {
   needs_fn(99)
-  inspect("no error")
-} catch e {
-  inspect("rejected")  # => 'rejected'
-}
+})
 
 # --- callable class instance (`__call__`) satisfies a function type ---
 class Doubler {
@@ -38,28 +35,25 @@ class Doubler {
     n * 2
   }
 }
-inspect(apply(Doubler.new(), 21))  # => 42
+assert_eq(apply(Doubler.new(), 21), 42)
 
 # --- return-typed function value passes through ---
 fn make_adder(n: Long) -> fn(Long) -> Long {
   |x| x + n
 }
 let add5 = make_adder(5)
-inspect(add5(37))  # => 42
+assert_eq(add5(37), 42)
 
 # --- optional return `fn(A) -> B?` still requires a function (not nil) ---
 fn run_opt(f: fn(Long) -> Long?) -> Long {
   let r = f(0)
   r ?? -1
 }
-inspect(run_opt(|n| nil))     # => -1
-inspect(run_opt(|n| n + 42))  # => 42
-try {
+assert_eq(run_opt(|n| nil), -1)
+assert_eq(run_opt(|n| n + 42), 42)
+assert_throws('DispatchError', fn () {
   run_opt(nil)
-  inspect("nil accepted")
-} catch e {
-  inspect("nil rejected")  # => 'nil rejected'
-}
+})
 
 # --- union with a function type: `fn(...) -> X | Long` ---
 fn flex(v: fn(Long) -> Long | Long) -> Long {
@@ -68,5 +62,5 @@ fn flex(v: fn(Long) -> Long | Long) -> Long {
     _ => v(0),
   }
 }
-inspect(flex(7))            # => 7
-inspect(flex(|n| n + 100))  # => 100
+assert_eq(flex(7), 7)
+assert_eq(flex(|n| n + 100), 100)

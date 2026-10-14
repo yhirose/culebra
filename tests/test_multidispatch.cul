@@ -468,12 +468,12 @@ assert_eq(summed, 2450)
 assert_eq(released, 50)
 
 # Shipped to an isolate, the rebuilt dispatcher answers the same way.
-fn twice(x) {
+fn twice_shipped(x) {
   x * 2
 }
 let iso = Isolate.spawn(fn (f) {
   f(21)
-}, twice)
+}, twice_shipped)
 assert_eq(iso.join(), 42)
 
 inspect("test_multidispatch: OK")
