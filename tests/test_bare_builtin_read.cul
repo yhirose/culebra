@@ -7,9 +7,10 @@
 // diverged (interp nil / JIT TypeError). Runs under interp, --jit, and AOT.
 
 // --- rejected: the receiver's builtin table has the name ---
-assert_throws("TypeError", fn () {
-  [1, 2].map
-})
+assert_eq(
+  try { [1, 2].map } catch e { "{e.kind}: {e.message}" },
+  "TypeError: built-in method 'map' cannot be used as a value (call it, or wrap it in a lambda)",
+)
 assert_throws("TypeError", fn () {
   "x".upper
 })
@@ -54,6 +55,7 @@ assert_eq({a: 1}.map, nil)   // plain dict: map is not a dict builtin
 assert_eq(C.new().map, nil)  // instance without the method
 assert_eq((0..3).map, nil)   // range object: no builtin table
 assert_eq("x".map, nil)      // string table has no map
+assert_eq([1, 2].nonexistent_xyz, nil)
 assert_eq(nil?.map, nil)     // safe-nav short-circuit
 
 // --- first-class: a real user property wins even when nil-valued ---

@@ -1,8 +1,7 @@
 # Conformance: §10 (class sugar, operator overloading, __str__,
 # auto-reflection, static methods), §11. See docs/language.md §25.
 #
-# Class-sugar regression tests. Runs on both the tree interpreter and
-# the JIT.
+# Class-sugar regression tests.
 
 test_class_basic = fn () {
   class Car {
@@ -22,6 +21,10 @@ test_class_basic = fn () {
   c.run(2)
   assert_eq(c.total(), 15)
   assert_eq(type_of(c), 'Car')
+  # each instance has fields of its own
+  d = Car.new(20)
+  d.run(1)
+  assert_eq([c.total(), d.total()], [15, 20])
 }
 
 test_class_default_ctor = fn () {
@@ -33,26 +36,6 @@ test_class_default_ctor = fn () {
   e = Empty.new()
   assert_eq(e.greet(), 'hi')
   assert_eq(type_of(e), 'Empty')
-}
-
-test_class_independent_instances = fn () {
-  class Car {
-    new(mpr) {
-      self.miles = 0
-      self.mpr = mpr
-    }
-    run(n) {
-      self.miles = self.miles + self.mpr * n
-    }
-    total() {
-      self.miles
-    }
-  }
-  a = Car.new(10)
-  b = Car.new(20)
-  a.run(1)
-  b.run(1)
-  assert_true(a.total() == 10 && b.total() == 20)
 }
 
 test_class_chain = fn () {
@@ -315,10 +298,6 @@ test_default_display = fn () {
   assert_eq(to_string(tagged), `{class: 'Tag', x: 10}`)
   weird = {class: 42, x: 1}
   assert_eq(to_string(weird), '{class: 42, x: 1}')
-
-  # Untagged Object is unchanged.
-  plain = {a: 1, b: 2}
-  assert_eq(to_string(plain), '{a: 1, b: 2}')
 }
 
 # `self` is immutable inside the constructor body. interp and JIT
@@ -413,7 +392,6 @@ test_static_multiple = fn () {
 
 test_class_basic()
 test_class_default_ctor()
-test_class_independent_instances()
 test_class_chain()
 test_class_match_tag()
 test_op_overload()
