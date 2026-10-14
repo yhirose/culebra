@@ -1326,6 +1326,7 @@ inline void _jit_gc_sweep_object(void* obj, uint8_t tag) {
       if (o->is_class_meta) delete o->specials;
       if (o->is_packed_view) delete o->view_cache;
       if (auto* frame = o->generator_frame()) _jit_gen_frame_sweep(frame);
+      delete o->handle_of();
       _jit_enum_forget(o);
       delete o;
       break;

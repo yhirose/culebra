@@ -2151,6 +2151,9 @@ inline bool _culebra_structure_equal(int8_t t1, int64_t d1, int8_t t2,
       if (a == b) return true;
       // A generator is where its body stands, which no slot shows.
       if (a->is_gen_frame || b->is_gen_frame) return false;
+      // So is a handle where its C++ half points.
+      if (a->has_handle || b->has_handle)
+        return a->has_handle && b->has_handle && a->handle->same(*b->handle);
       if (_jit_meta_class_name(a) != _jit_meta_class_name(b)) return false;
       if (_jit_meta_enum_name(a) != _jit_meta_enum_name(b)) return false;
       if (a->prop_size() != b->prop_size()) return false;
@@ -3906,6 +3909,16 @@ inline bool _jit_tag_fits_field_type(int8_t tag, culebra::FieldType t) {
   _jit_throw_field_type(key, t, line, col);
 }
 
+// A JitHandle keeps its state in C++, so it has no field to write; consumes
+// the value.
+[[noreturn]] inline void _jit_handle_reject_write(JitObject* obj, int8_t tag,
+                                                  int64_t data, int64_t line,
+                                                  int64_t col) {
+  _culebra_value_release_impl(tag, data);
+  throw culebra::CulebraError(
+      "TypeError", obj->handle->show() + " has no fields to set", line, col);
+}
+
 // The write with the field's declared type in hand. Only a class's own
 // declaration has one, and it reaches here from C++ (object_fields_init);
 // culebra_runtime_object_set below is the ABI codegen names, and its
@@ -3913,6 +3926,7 @@ inline bool _jit_tag_fits_field_type(int8_t tag, culebra::FieldType t) {
 inline void _jit_object_set_declared(
     JitObject* obj, const char* key, bool mut, int8_t tag, int64_t data,
     int64_t line, int64_t col, bool is_init, culebra::FieldType declared) {
+  if (obj->has_handle) _jit_handle_reject_write(obj, tag, data, line, col);
   // Shared.new views are immutable (handle construction writes its own
   // slots directly, not through here).
   if (obj->is_shared_val) {

@@ -2687,6 +2687,15 @@ consumerを複数並べれば、producerがバッファ満杯で止まらずに�
 consumerなら直列化されるバーストも吸収できます。consumerごとにコピーが
 欲しい場合は、consumerごとのchannelへ送ってください。
 
+**endpointはchannelへのハンドルです。** 表示は`[Channel tx]`または
+`[Channel rx]`で、フィールドを持ちません（`keys()`は`[]`、代入は`TypeError`）。
+2つのendpointは同じchannelの同じ側なら`==`なので、cloneは元と等しくなります。
+endpointを作るのは`Channel.new`と`clone`、それに`Channel.fan_in(items, fn)`が
+各producerに渡す`tx`だけで、endpointに似せたObjectは、channelを通した後も
+Objectのままです。dropしたendpointは、
+cloneがchannelを開いたままにしていても閉じたものとして振る舞います
+（`send`は`ChannelError`、`recv`は`nil`、表示は`[dropped Channel tx]`）。
+
 **`Channel.new(0)`はrendezvous channel**（容量0）: `send`は受信者が値を
 受け取るまで返りません — バッファ無しの同期ハンドオフ。backpressure
 （producerがconsumerを追い越せない）に有用。単一isolate内ではdeadlock

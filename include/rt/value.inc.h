@@ -501,6 +501,24 @@ inline culebra::Shape* dict_shape() {
 
 struct JitGenFrame;  // rt/gen.inc.h
 
+// The C++ half of a handle Object (JitObject::has_handle): what the value
+// stands for outside this Runtime's heap: a channel end, or an rx's cursor.
+// The Object owns it and deletes it with itself, so what it holds is given
+// back however the Object goes; the Object's methods are on the meta its kind
+// shares.
+struct JitHandle {
+  enum class Kind : uint8_t { ChannelEnd, ChannelIter };
+  const Kind kind;
+  explicit JitHandle(Kind k) : kind(k) {}
+  JitHandle(const JitHandle&) = delete;
+  JitHandle& operator=(const JitHandle&) = delete;
+  virtual ~JitHandle() = default;
+  // How the value shows (`println`, interpolation): its slots are none.
+  virtual std::string show() const = 0;
+  // What `==` asks of two handles, neither the same object.
+  virtual bool same(const JitHandle& other) const = 0;
+};
+
 struct JitObject {
   int64_t refcount;
   bool has_drop = false;
@@ -518,6 +536,9 @@ struct JitObject {
   // is this object's to report to the collector, release and free; its
   // methods are on the one meta every generator shares. Never GEP'd.
   bool is_gen_frame = false;
+  // A handle, its C++ half in `handle` below (see JitHandle). In the same
+  // padding as the flags above. Never GEP'd.
+  bool has_handle = false;
   JitIterFastFn fast_next_fn = nullptr;
   // Optional prototype pointer. When set, property lookup falls through
   // to `proto->slots` after this object's own slots are exhausted (one
@@ -638,11 +659,12 @@ struct JitObject {
   // A declared enum's object: `enum_ref` is its weak handle, which it clears
   // as it is freed (_jit_enum_forget). Never GEP'd.
   bool is_enum = false;
-  // One trailing pointer, seven exclusive roles: a packed view's cache of the
+  // One trailing pointer, eight exclusive roles: a packed view's cache of the
   // heap values its field reads minted (`is_packed_view`, see JitViewCache), a
   // declared enum's weak handle (`is_enum`, see JitEnumRef), a builtin
   // namespace's name (`is_namespace`), a generator's frame (`is_gen_frame`,
-  // see generator_frame), the class object any other value with a `proto`
+  // see generator_frame), a handle's C++ half (`has_handle`, see handle_of),
+  // the class object any other value with a `proto`
   // was built by (see built_by), a class object's instance meta (`is_class`,
   // see class_meta_of), or a class meta's special-method table
   // (`is_class_meta`, see Special) — owned by the meta and freed with it. The
@@ -659,6 +681,7 @@ struct JitObject {
     JitEnumRef* enum_ref;
     JitViewCache* view_cache;
     JitGenFrame* gen_frame;  // `is_gen_frame`
+    JitHandle* handle;       // `has_handle`
   };
 
   // The meta a class object's instances share, or null: set by
@@ -671,11 +694,15 @@ struct JitObject {
   }
 
   // The class object an instance was built by, or null: a value the runtime
-  // makes itself (a Range, a generator) has a meta and no class, and a
-  // generator keeps its frame where an instance keeps this.
+  // makes itself (a Range, a generator, a handle) has a meta and no class,
+  // and a generator or a handle keeps its own pointer where an instance
+  // keeps this.
   JitObject* built_by() const {
-    return proto() && !is_gen_frame ? cls : nullptr;
+    return proto() && !is_gen_frame && !has_handle ? cls : nullptr;
   }
+
+  // A handle's C++ half, or null: not a handle.
+  JitHandle* handle_of() const { return has_handle ? handle : nullptr; }
 
   // A generator's frame, or null: not a generator, or one being torn down
   // whose frame has gone ahead of it.

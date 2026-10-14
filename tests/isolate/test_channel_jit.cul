@@ -111,4 +111,54 @@ for v in arx {
 auto_prod.join()
 assert_eq(auto_got, [7, 8])
 
+# --- an endpoint is a handle onto its channel: it shows as one, has no
+#     fields, compares by channel and role, and cannot be made from a dict ---
+let (htx, hrx) = Channel.new(2)
+let (otx, orx) = Channel.new(2)
+let htx2 = htx.clone()
+assert_eq("{htx} {hrx}", '[Channel tx] [Channel rx]')
+assert_eq(htx.keys(), [])
+assert_eq(JSON.stringify(htx), '{}')
+assert_throws('TypeError', fn () { htx.id = 1 })
+assert_throws('TypeError', fn () { for k in htx { k } })
+assert_eq([htx == htx2, htx == otx, htx == hrx], [true, false, false])
+otx.send({__channel_endpoint__: true, __channel_id__: 1, __channel_role__: 0})
+assert_eq(orx.recv().send, nil)
+
+# --- a dropped endpoint is a closed one, whatever its clones do ---
+htx2.send(1)
+htx.drop()
+assert_eq("{htx}", '[dropped Channel tx]')
+assert_eq(htx == htx2, false)
+assert_throws('ChannelError', fn () { htx.send(2) })
+assert_throws('ChannelError', fn () { htx.clone().send(2) })
+assert_eq(hrx.recv(), 1)
+htx2.drop()
+assert_eq(hrx.recv(), nil)
+hrx.drop()
+
+# --- an endpoint left unread in a channel that goes away goes with it ---
+let (ltx, lrx) = Channel.new(1)
+otx.send(ltx.clone())
+ltx.drop()
+assert_eq("{lrx.try_recv()}", 'ChannelResult.Empty')
+otx.drop()
+orx.drop()
+assert_eq("{lrx.try_recv()}", 'ChannelResult.Closed')
+lrx.drop()
+
+# --- so is an rx's for-in cursor, which gives back the value it took ---
+let (ptx, prx) = Channel.new(2)
+let (qtx, qrx) = Channel.new(2)
+ptx.send(qtx.clone())
+qtx.drop()
+mut cursor = prx.iter()
+assert_throws('TypeError', fn () { cursor._rx = {} })
+assert_eq(cursor.has_next(), true)
+cursor = nil
+assert_eq("{qrx.try_recv()}", 'ChannelResult.Closed')
+ptx.drop()
+prx.drop()
+qrx.drop()
+
 inspect("test_channel: all assertions passed")

@@ -53,6 +53,55 @@ inline JitSvHold* _jit_sv_hold(const JitObject* view) {
   return reinterpret_cast<JitSvHold*>(view->slots[kSvHoldSlot].value.data);
 }
 
+// A channel end's C++ half (a handle, see JitHandle): its channel and which
+// end it is. It holds one count on that end (ChannelCore's tx_count or
+// rx_count) from when it is made until drop() or the Object's death gives it
+// back. A dropped end reads as a closed channel.
+struct JitChanEnd final : JitHandle {
+  ChannelCore* core;  // null once dropped
+  const int role;     // 0 = tx, 1 = rx
+  JitChanEnd(ChannelCore* c, int r)
+      : JitHandle(Kind::ChannelEnd), core(c), role(r) {}
+  ~JitChanEnd() override { release(); }
+  void release() {
+    if (auto* c = std::exchange(core, nullptr)) chan_drop(c, role);
+  }
+  std::string show() const override {
+    std::string s = core ? "[Channel " : "[dropped Channel ";
+    return s + (role == 0 ? "tx]" : "rx]");
+  }
+  // A clone is its original's equal; a dropped end, only its own.
+  bool same(const JitHandle& other) const override {
+    auto* o = other.kind == kind ? static_cast<const JitChanEnd*>(&other)
+                                 : nullptr;
+    return o && core && o->core == core && o->role == role;
+  }
+};
+inline JitChanEnd* _jit_chan_end(const JitObject* o) {
+  auto* h = o->handle_of();
+  return h && h->kind == JitHandle::Kind::ChannelEnd
+             ? static_cast<JitChanEnd*>(h)
+             : nullptr;
+}
+inline JitChanEnd* _jit_chan_end(JitValue v) {
+  return v.tag == TAG_OBJECT ? _jit_chan_end(reinterpret_cast<JitObject*>(v.data))
+                             : nullptr;
+}
+
+// An rx's for-in cursor's C++ half (see _jit_chan_iter): an rx count of its
+// own while it has one, and the value has_next() took.
+struct JitChanIter final : JitHandle {
+  ChannelCore* core;  // null once the close is met, or made from a dropped rx
+  std::optional<sendable::SendNode> taken;
+  explicit JitChanIter(ChannelCore* c) : JitHandle(Kind::ChannelIter), core(c) {}
+  ~JitChanIter() override {
+    if (taken) release_inflight_channels(*taken);
+    if (core) chan_drop(core, /*role=*/1);
+  }
+  std::string show() const override { return "[Channel rx iterator]"; }
+  bool same(const JitHandle&) const override { return false; }
+};
+
 struct JitDeCtx {
   std::map<int, JitValue> closures;        // ref id -> rebuilt closure
   std::map<int, JitObject*> protos;        // ref id -> rebuilt class meta
@@ -106,8 +155,8 @@ enum class JitHandleKind {
 };
 inline JitHandleKind _jit_handle_kind(JitObject* o) {
   constexpr auto none = static_cast<size_t>(-1);
-  if (o->find_slot("__channel_endpoint__") != none)
-    return JitHandleKind::Channel;
+  if (_jit_chan_end(o)) return JitHandleKind::Channel;
+  if (o->has_handle) return JitHandleKind::Native;
   if (o->is_shared_buffer) return JitHandleKind::SharedBuffer;
   if (o->is_shared_val) return JitHandleKind::SharedVal;
   if (o->is_gen_frame) return JitHandleKind::Generator;
@@ -152,16 +201,15 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
     case TAG_OBJECT: {
       auto* o = reinterpret_cast<JitObject*>(v.data);
       switch (_jit_handle_kind(o)) {
-        // Channel endpoint — the Sendable exception: ship its id + role and
-        // bump the in-flight ref (released after the node is consumed).
+        // Channel endpoint — the Sendable exception: ship its channel + role
+        // and count the in-flight ref (given back after the node is
+        // consumed). A dropped end ships as one.
         case JitHandleKind::Channel: {
-          int64_t id = o->slots[o->find_slot("__channel_id__")].value.data;
-          int role = static_cast<int>(
-              o->slots[o->find_slot("__channel_role__")].value.data);
-          if (!sendable::dry_run()) chan_bump(id, role, +1);
+          auto* end = _jit_chan_end(o);
+          if (end->core && !sendable::dry_run()) chan_bump(end->core, end->role);
           n.kind = K::Channel;
-          n.i = id;
-          n.b = (role == 1);
+          n.i = chan_word(end->core);
+          n.b = (end->role == 1);
           return n;
         }
         // SharedBuffer handle — the other shared-reference exception: ship
@@ -340,7 +388,7 @@ inline JitValue jit_float(double d) {
   return {TAG_FLOAT, bits};
 }
 
-inline JitValue _jit_make_channel_endpoint(int64_t id, int role);  // fwd
+inline JitValue _jit_make_channel_endpoint(ChannelCore* core, int role);  // fwd
 inline JitValue _jit_make_shared_buffer_handle(int64_t id, int64_t count);  // fwd
 inline JitValue _jit_make_shared_val_view(JitSvHold* hold,
                                           int64_t node);  // fwd
@@ -490,9 +538,12 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
       }
       return cv;
     }
-    case K::Channel:
-      chan_bump(n.i, n.b ? 1 : 0, +1);  // this rebuilt endpoint's own ref
-      return _jit_make_channel_endpoint(n.i, n.b ? 1 : 0);
+    case K::Channel: {
+      auto* core = chan_core(n.i);
+      int role = n.b ? 1 : 0;
+      if (core) chan_bump(core, role);  // this rebuilt endpoint's own count
+      return _jit_make_channel_endpoint(core, role);
+    }
     case K::SharedBuffer: {
       culebra::shared_buffer_bump(n.i, +1);  // the rebuilt handle's own ref
       auto core = culebra::lookup_shared_buffer(n.i);
@@ -600,7 +651,7 @@ inline void jit_install_trait_defaults(
 }
 
 // --- Isolate handle registry (JIT handle methods are captureless → store the
-//     IsolateCore behind an integer id, mirroring the channel registry) -------
+//     IsolateCore behind an integer id) -------
 
 inline std::mutex& jit_isolate_reg_mutex() { static std::mutex m; return m; }
 inline std::unordered_map<long, std::shared_ptr<IsolateCore>>&
@@ -915,16 +966,26 @@ inline JitValue culebra_jit_isolate_spawn(int8_t fn_tag, int64_t fn_data,
 }
 
 // ===========================================================================
-// JIT channel endpoints. The ChannelCore + registry + auto-close are the
-// backend-neutral machinery in isolate.h; here is the JitObject endpoint and
-// the JitValue serialize/deserialize boundary. Endpoint methods are captureless
-// and reach the core by the id stored on the endpoint.
+// JIT channel endpoints. The ChannelCore + its counts + auto-close are the
+// backend-neutral machinery in isolate_core.h; here is the endpoint (a handle
+// Object holding a JitChanEnd) and the JitValue serialize/deserialize
+// boundary. Endpoint methods are captureless and reach the core through the
+// end they are called on.
 // ===========================================================================
 
 inline int64_t _jit_self_long(JitValue self, const char* key) {
   auto* h = reinterpret_cast<JitObject*>(self.data);
   size_t i = h->find_slot(key);
   return i == static_cast<size_t>(-1) ? 0 : h->slots[i].value.data;
+}
+
+// The end a method was called on. Its methods are only ever reached through
+// an end, so anything else is a call no program can spell.
+inline JitChanEnd* _jit_self_chan_end(JitValue self) {
+  auto* end = _jit_chan_end(self);
+  if (!end)
+    throw culebra::CulebraError("TypeError", "not a channel endpoint");
+  return end;
 }
 
 inline void _jit_chan_send(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
@@ -935,14 +996,15 @@ inline void _jit_chan_send(JitValue* __ret, JitClosure*, int8_t self_tag, int64_
   // method's operands on unwind, so the guards must (else self + arg strand).
   JitMethodSelf _s{self};
   JitMethodArgs _a{n, args};
-  int64_t id = _jit_self_long(self, "__channel_id__");
+  auto* end = _jit_self_chan_end(self);
   if (n >= 1) {
     JitSerCtx sc;
     // The thunk ABI carries no line/col; backfill the serializer's
     // positionless errors (SendError, nesting ValueError) from the call
     // site the codegen published, like _jit_ns_method_dispatch does.
     _jit_at_call_site([&] {
-      channel_send_node(id, jit_serialize(args[0], sc));  // Sendable check here
+      auto node = jit_serialize(args[0], sc);  // Sendable check here
+      channel_send_node(end->core, std::move(node));
     });
   }
   { *__ret = {TAG_NIL, 0}; return; }
@@ -953,9 +1015,10 @@ inline void _jit_chan_recv(JitValue* __ret, JitClosure*, int8_t self_tag, int64_
   // Callee-consumes on any exit: chan_pop_blocking raises Interrupted on a
   // cancelled isolate, which a tail release would strand `self` on.
   JitMethodSelf _s{self};
-  int64_t id = _jit_self_long(self, "__channel_id__");
-  auto node = chan_pop_blocking(id);
+  auto* end = _jit_self_chan_end(self);
   JitValue ret{TAG_NIL, 0};
+  if (!end->core) { *__ret = ret; return; }
+  auto node = chan_pop_blocking(*end->core);
   if (node) {
     JitDeCtx dc;
     ret = jit_deserialize(*node, dc);
@@ -989,8 +1052,9 @@ inline void _jit_chan_try_recv(JitValue* __ret, JitClosure*, int8_t self_tag, in
                                    JitValue*) {
   JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
-  int64_t id = _jit_self_long(self, "__channel_id__");
-  auto r = chan_pop_nonblocking(id);
+  auto* end = _jit_self_chan_end(self);
+  auto r = end->core ? chan_pop_nonblocking(*end->core)
+                     : ChanTryPopResult{ChanTryPopStatus::Closed, std::nullopt};
   JitValue ret;
   if (r.status == ChanTryPopStatus::Value) {
     JitDeCtx dc;
@@ -1008,7 +1072,7 @@ inline void _jit_chan_drain(JitValue* __ret, JitClosure*, int8_t self_tag, int64
   JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   JitMethodArgs _a{n, args};
-  int64_t id = _jit_self_long(self, "__channel_id__");
+  auto* end = _jit_self_chan_end(self);
   JitValue m = n >= 1 ? args[0] : JitValue{TAG_NIL, 0};
   size_t max = _jit_at_call_site([&] {  // the thunk ABI carries no line/col
     return chan_drain_max(m.tag == TAG_NIL    ? DrainMaxKind::Nil
@@ -1016,9 +1080,8 @@ inline void _jit_chan_drain(JitValue* __ret, JitClosure*, int8_t self_tag, int64
                                               : DrainMaxKind::Other,
                           m.data, 0, 0);
   });
-  auto core = chan_lookup(id);
-  auto taken = core ? chan_take_queued(*core, max)
-                    : std::deque<sendable::SendNode>{};
+  auto taken = end->core ? chan_take_queued(*end->core, max)
+                         : std::deque<sendable::SendNode>{};
   auto* out =
       culebra_runtime_array_new_reserved(static_cast<int64_t>(taken.size()));
   for (const auto& node : taken) {
@@ -1030,9 +1093,8 @@ inline void _jit_chan_drain(JitValue* __ret, JitClosure*, int8_t self_tag, int64
   { *__ret = {TAG_ARRAY, reinterpret_cast<int64_t>(out)}; return; }
 }
 
-// True if the handle was already dropped; otherwise marks it dropped. Shared
-// by the channel and SharedBuffer drop handlers so their refcount moves once
-// across explicit `drop()` + GC teardown.
+// True if the handle was already dropped; otherwise marks it dropped, so a
+// SharedBuffer's refcount moves once across explicit `drop()` + GC teardown.
 inline bool _jit_handle_drop_consumed(JitObject* h) {
   size_t di = h->find_slot("_dropped");
   if (di != static_cast<size_t>(-1) && h->slots[di].value.tag == TAG_BOOL &&
@@ -1043,26 +1105,37 @@ inline bool _jit_handle_drop_consumed(JitObject* h) {
   return false;
 }
 
+// Idempotent: the end gives its count back once (explicit `drop()`, the
+// release path's, the collector's).
 inline void _jit_chan_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
-  if (!_jit_handle_drop_consumed(reinterpret_cast<JitObject*>(self.data)))
-    chan_drop(_jit_self_long(self, "__channel_id__"),
-              static_cast<int>(_jit_self_long(self, "__channel_role__")));
+  _jit_self_chan_end(self)->release();
   { *__ret = {TAG_NIL, 0}; return; }
 }
 
+// Another end of the same channel, with a count of its own. A dropped end's
+// clone is dropped too.
 inline void _jit_chan_clone(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
-  int64_t id = _jit_self_long(self, "__channel_id__");
-  int role = static_cast<int>(_jit_self_long(self, "__channel_role__"));
-  chan_bump(id, role, +1);
-  { *__ret = _jit_make_channel_endpoint(id, role); return; }
+  auto* end = _jit_self_chan_end(self);
+  if (end->core) chan_bump(end->core, end->role);
+  { *__ret = _jit_make_channel_endpoint(end->core, end->role); return; }
 }
 
-// rx for-in iterator: has_next pulls one value (blocking, ends on close), next
-// hands over the cached lookahead. State lives in the iterator's own slots.
+// `rx.iter()`: a cursor with a count of its own on the rx end, so the loop
+// runs whatever becomes of the rx it came from, and the value has_next() took
+// and next() has not yet handed out. A cursor that met the close has let its
+// count go.
+inline JitChanIter* _jit_self_chan_iter(JitValue self) {
+  auto* h = self.tag == TAG_OBJECT
+                ? reinterpret_cast<JitObject*>(self.data)->handle_of()
+                : nullptr;
+  if (!h || h->kind != JitHandle::Kind::ChannelIter)
+    throw culebra::CulebraError("TypeError", "not a channel iterator");
+  return static_cast<JitChanIter*>(h);
+}
 inline void _jit_chan_iter_self(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                     JitValue*) {
   JitValue self{self_tag, self_data};
@@ -1073,86 +1146,86 @@ inline void _jit_chan_iter_has_next(JitValue* __ret, JitClosure*, int8_t self_ta
                                         JitValue*) {
   JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};  // consumed on any exit (blocking pull can raise)
-  auto* it = reinterpret_cast<JitObject*>(self.data);
-  int64_t st = _jit_self_long(self, "_st");
-  JitValue ret;
-  if (st == 1) {
-    ret = {TAG_BOOL, 1};
-  } else if (st == 2) {
-    ret = {TAG_BOOL, 0};
-  } else {
-    auto node = chan_pop_blocking(_jit_self_long(self, "_cid"));
-    if (node) {
-      JitDeCtx dc;
-      JitValue v = jit_deserialize(*node, dc);
-      release_inflight_channels(*node);
-      it->set_or_append("_lv", v, true);  // slot owns the +1
-      it->set_or_append("_st", JitValue{TAG_LONG, 1}, true);
-      ret = {TAG_BOOL, 1};
-    } else {
-      it->set_or_append("_st", JitValue{TAG_LONG, 2}, true);
-      ret = {TAG_BOOL, 0};
-    }
+  auto* it = _jit_self_chan_iter(self);
+  if (!it->taken && it->core) {
+    it->taken = chan_pop_blocking(*it->core);
+    if (!it->taken) chan_drop(std::exchange(it->core, nullptr), /*role=*/1);
   }
-  { *__ret = ret; return; }
+  { *__ret = {TAG_BOOL, it->taken ? 1 : 0}; return; }
 }
 inline void _jit_chan_iter_next(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                     JitValue*) {
   JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
-  auto* it = reinterpret_cast<JitObject*>(self.data);
+  auto* it = _jit_self_chan_iter(self);
   JitValue ret{TAG_NIL, 0};
-  if (_jit_self_long(self, "_st") == 1) {
-    ret = it->slots[it->find_slot("_lv")].value;  // transfer slot's +1 to caller
-    it->set_or_append("_lv", JitValue{TAG_NIL, 0}, true);  // overwrite, no release
-    it->set_or_append("_st", JitValue{TAG_LONG, 0}, true);
+  if (it->taken) {
+    JitDeCtx dc;
+    ret = jit_deserialize(*it->taken, dc);
+    release_inflight_channels(*it->taken);
+    it->taken.reset();
   }
   { *__ret = ret; return; }
 }
+inline JitValue _jit_make_handle(JitHandle* handle, JitObject* meta);
+inline JitObject* _jit_channel_meta(int role);
 inline void _jit_chan_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
-  int64_t id = _jit_self_long(self, "__channel_id__");
-  auto* it = culebra_runtime_object_new();
-  it->set_or_append("_cid", JitValue{TAG_LONG, id}, true);
-  it->set_or_append("_st", JitValue{TAG_LONG, 0}, true);
-  it->set_or_append("_lv", JitValue{TAG_NIL, 0}, true);
-  auto meth = [&](const char* nm,
-                  void (*f)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
-    it->set_or_append(nm,
-        JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(f))},
-        false);
-  };
-  meth("iter", _jit_chan_iter_self);
-  meth("has_next", _jit_chan_iter_has_next);
-  meth("next", _jit_chan_iter_next);
-  { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
+  auto* core = _jit_self_chan_end(self)->core;
+  if (core) chan_bump(core, /*role=*/1);
+  { *__ret = _jit_make_handle(new JitChanIter(core), _jit_channel_meta(2)); return; }
+}
+// The meta every tx (role 0) or every rx (role 1) of this Runtime points its
+// `proto` at: a plain Object holding that end's methods, pinned like the
+// native metas. Borrowed: the table holds the +1, and each end takes one of
+// its own.
+inline JitObject* _jit_channel_meta(int role) {
+  auto& t = culebra::runtime_substate<_JitPinnedMetas<int>>(
+      culebra::kSlotChannelMetas);
+  auto it = t.tbl.find(role);
+  if (it == t.tbl.end()) {
+    // The method closures are unrooted until slotted into the meta.
+    culebra::gc::Heap::CollectPause pause(_gc_heap());
+    auto* meta = culebra_runtime_object_new();
+    if (role == 2) {
+      _jit_view_method(meta, "iter", _jit_chan_iter_self);
+      _jit_view_method(meta, "has_next", _jit_chan_iter_has_next);
+      _jit_view_method(meta, "next", _jit_chan_iter_next);
+    } else {
+      _jit_view_method(meta, "drop", _jit_chan_drop);
+      _jit_view_method(meta, "clone", _jit_chan_clone);
+    }
+    if (role == 0) {
+      _jit_view_method(meta, "send", _jit_chan_send);
+    } else if (role == 1) {
+      _jit_view_method(meta, "recv", _jit_chan_recv);
+      _jit_view_method(meta, "iter", _jit_chan_iter);
+      _jit_view_method(meta, "try_recv", _jit_chan_try_recv);
+      _jit_view_method(meta, "drain", _jit_chan_drain);
+    }
+    _gc_heap().pin(meta);
+    it = t.tbl.emplace(role, meta).first;
+  }
+  return it->second;
 }
 
-inline JitValue _jit_make_channel_endpoint(int64_t id, int role) {
-  auto* h = culebra_runtime_object_new();
-  h->set_or_append("__channel_endpoint__", JitValue{TAG_BOOL, 1}, false);
-  h->set_or_append("__channel_id__", JitValue{TAG_LONG, id}, false);
-  h->set_or_append("__channel_role__", JitValue{TAG_LONG, role}, false);
-  h->set_or_append("_dropped", JitValue{TAG_BOOL, 0}, true);
-  auto meth = [&](const char* nm,
-                  void (*f)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
-    h->set_or_append(nm,
-        JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(f))},
-        false);
-  };
-  meth("drop", _jit_chan_drop);
-  meth("clone", _jit_chan_clone);
-  if (role == 0) {
-    meth("send", _jit_chan_send);
-  } else {
-    meth("recv", _jit_chan_recv);
-    meth("iter", _jit_chan_iter);
-    meth("try_recv", _jit_chan_try_recv);
-    meth("drain", _jit_chan_drain);
-  }
-  h->has_drop = true;
+// The Object of `handle`, its methods on `meta`. It has no slots of its own:
+// what it is lives in the JitHandle, out of reach of anything that reads an
+// Object's entries.
+inline JitValue _jit_make_handle(JitHandle* handle, JitObject* meta) {
+  auto* h = _jit_view_new(&JitObject::has_handle);
+  h->handle = handle;
+  meta->refcount++;
+  h->set_proto(meta);
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
+}
+// An end of `core` (null: one already dropped), taking over a count the
+// caller holds for it.
+inline JitValue _jit_make_channel_endpoint(ChannelCore* core, int role) {
+  JitValue v = _jit_make_handle(new JitChanEnd(core, role), _jit_channel_meta(role));
+  reinterpret_cast<JitObject*>(v.data)->has_drop = true;
+  return v;
 }
 
 // Idempotent SharedBuffer handle drop (explicit `buf.drop()` + GC teardown).
@@ -2510,6 +2583,19 @@ inline void _jit_merged_iter_has_next(JitValue* __ret, JitClosure*, int8_t self_
   }
   { *__ret = ret; return; }
 }
+inline void _jit_merged_iter_next(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
+                                      JitValue*) {
+  JitValue self{self_tag, self_data};
+  JitMethodSelf _s{self};
+  auto* it = reinterpret_cast<JitObject*>(self.data);
+  JitValue ret{TAG_NIL, 0};
+  if (_jit_self_long(self, "_st") == 1) {
+    ret = it->slots[it->find_slot("_lv")].value;  // transfer slot's +1 to caller
+    it->set_or_append("_lv", JitValue{TAG_NIL, 0}, true);  // overwrite, no release
+    it->set_or_append("_st", JitValue{TAG_LONG, 0}, true);
+  }
+  { *__ret = ret; return; }
+}
 inline void _jit_merged_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
@@ -2526,7 +2612,7 @@ inline void _jit_merged_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int6
   };
   meth("iter", _jit_chan_iter_self);          // reuse: returns self
   meth("has_next", _jit_merged_iter_has_next);
-  meth("next", _jit_chan_iter_next);          // reuse: hands over _lv
+  meth("next", _jit_merged_iter_next);
   { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
 }
 inline JitValue _jit_make_merged_rx_endpoint(int64_t mid) {
@@ -2560,24 +2646,25 @@ inline JitValue culebra_jit_channel_fan_in(int64_t n, JitValue* args,
   auto* arr = reinterpret_cast<JitArray*>(args[0].data);
 
   if (n < 2 || args[1].tag != TAG_FUNC) {
-    // fan_in([rx, ...]): merge existing receivers.
-    std::vector<int64_t> ids;
-    ids.reserve(arr->size);
+    // fan_in([rx, ...]): merge existing receivers. Every one is checked
+    // before any is counted, so a refusal leaves no count behind; a dropped
+    // rx is a source already closed and drained.
     for (size_t i = 0; i < arr->size; i++) {
-      JitValue s = arr->items[i];
-      bool ok = s.tag == TAG_OBJECT;
-      JitObject* o = ok ? reinterpret_cast<JitObject*>(s.data) : nullptr;
-      if (!ok ||
-          o->find_slot("__channel_endpoint__") == static_cast<size_t>(-1) ||
-          o->slots[o->find_slot("__channel_role__")].value.data != 1) {
+      auto* end = _jit_chan_end(arr->items[i]);
+      if (!end || end->role != 1) {
         throw culebra::CulebraError("TypeError",
             "Channel.fan_in: every source must be a receiver (rx)", line, col);
       }
-      int64_t id = o->slots[o->find_slot("__channel_id__")].value.data;
-      chan_bump(id, /*role=*/1, +1);
-      ids.push_back(id);
     }
-    return _jit_make_merged_rx_endpoint(chan_merge_register(std::move(ids)));
+    std::vector<ChannelCore*> sources;
+    sources.reserve(arr->size);
+    for (size_t i = 0; i < arr->size; i++) {
+      auto* end = _jit_chan_end(arr->items[i]);
+      if (!end->core) continue;
+      chan_bump(end->core, /*role=*/1);
+      sources.push_back(end->core);
+    }
+    return _jit_make_merged_rx_endpoint(chan_merge_register(std::move(sources)));
   }
 
   // fan_in(items, fn): spawn one producer per item, merge. Producers run
@@ -2595,17 +2682,19 @@ inline JitValue culebra_jit_channel_fan_in(int64_t n, JitValue* args,
     throw;
   }
   auto defaults = jit_snapshot_trait_defaults();  // shared by the producers
-  std::vector<int64_t> ids;
+  std::vector<ChannelCore*> sources;
   std::vector<std::shared_ptr<IsolateCore>> producers;
-  for (size_t i = 0; i < arr->size; i++) {
-    auto chcore = std::make_shared<ChannelCore>(1);
-    long cid = channel_next_id().fetch_add(1, std::memory_order_relaxed);
-    {
-      std::lock_guard<std::mutex> lk(channel_registry_mutex());
-      channel_registry()[cid] = chcore;
+  // A refused item leaves the channels made so far with their merge's rx
+  // count and nothing else, so it gives those back.
+  struct Unmerged {
+    std::vector<ChannelCore*>& sources;
+    bool merged = false;
+    ~Unmerged() {
+      if (!merged)
+        for (auto* c : sources) chan_drop(c, /*role=*/1);
     }
-    chcore->tx_count = 0;
-    chcore->rx_count = 1;
+  } unmerged{sources};
+  for (size_t i = 0; i < arr->size; i++) {
     JitSerCtx asc;
     std::vector<sendable::SendNode> sargs;
     try {
@@ -2616,11 +2705,14 @@ inline JitValue culebra_jit_channel_fan_in(int64_t n, JitValue* args,
             "SendError", std::string("Channel.fan_in: ") + e.what(), line, col);
       throw;
     }
+    // Its rx count is the merge's; its tx count is in flight to the producer
+    // (released by the child).
+    auto* chcore = new ChannelCore(1);
+    sources.push_back(chcore);
     sendable::SendNode txnode;
     txnode.kind = sendable::SendNode::K::Channel;
-    txnode.i = cid;
+    txnode.i = chan_word(chcore);
     txnode.b = false;  // tx
-    chan_bump(cid, /*role=*/0, +1);  // in-flight (released by the child)
     sargs.push_back(std::move(txnode));
     auto pcore = std::make_shared<IsolateCore>();
     g_live_isolates().fetch_add(1, std::memory_order_relaxed);
@@ -2630,10 +2722,10 @@ inline JitValue culebra_jit_channel_fan_in(int64_t n, JitValue* args,
                                 /*decrement_live=*/true);
         });
     producers.push_back(std::move(pcore));
-    ids.push_back(cid);
   }
+  unmerged.merged = true;
   return _jit_make_merged_rx_endpoint(
-      chan_merge_register(std::move(ids), std::move(producers)));
+      chan_merge_register(std::move(sources), std::move(producers)));
 }
 
 // ===========================================================================
@@ -2890,17 +2982,10 @@ inline JitValue culebra_jit_channel_new(int64_t n, JitValue* args,
     throw culebra::CulebraError("ValueError",
         "Channel.new: capacity must be >= 0", line, col);
   }
-  auto core = std::make_shared<ChannelCore>(static_cast<size_t>(cap));
-  int64_t id = channel_next_id().fetch_add(1, std::memory_order_relaxed);
-  {
-    std::lock_guard<std::mutex> lk(channel_registry_mutex());
-    channel_registry()[id] = core;
-  }
-  core->tx_count = 1;
-  core->rx_count = 1;
+  auto* core = new ChannelCore(static_cast<size_t>(cap));  // the two ends'
   auto* tup = culebra_runtime_tuple_new();
-  JitValue tx = _jit_make_channel_endpoint(id, 0);
-  JitValue rx = _jit_make_channel_endpoint(id, 1);
+  JitValue tx = _jit_make_channel_endpoint(core, 0);
+  JitValue rx = _jit_make_channel_endpoint(core, 1);
   culebra_runtime_array_push(tup, tx.tag, tx.data);  // adopts the +1
   culebra_runtime_array_push(tup, rx.tag, rx.data);
   return {TAG_TUPLE, reinterpret_cast<int64_t>(tup)};

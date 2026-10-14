@@ -169,6 +169,7 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
     }
     case TAG_OBJECT: {
       auto* obj = reinterpret_cast<JitObject*>(data);
+      if (auto* handle = obj->handle_of()) return handle->show();
       // A Shared view shows the value it froze, and one that was dropped says
       // so: showing a value is not where a read's ClosedError belongs.
       if (obj->is_shared_val) {

@@ -528,6 +528,10 @@ inline void _culebra_value_release_node(int8_t tag, int64_t data) {
           _jit_gen_frame_release(frame);
           o->gen_frame = nullptr;
         }
+        if (auto* handle = o->handle_of()) {
+          delete handle;
+          o->handle = nullptr;
+        }
         // Sidecar teardown. Both `key_order` and the AnyKeyMap hold
         // a +1 ref on each refcounted (Tuple) key, plus the map holds
         // a +1 on each entry value. Each loop drops its own ref so the

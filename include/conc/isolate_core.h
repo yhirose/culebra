@@ -1,7 +1,7 @@
 #pragma once
 
 // The isolate/channel core both engines share: IsolateCore (the GC-external
-// result slot), the channel registry and its send/recv/drop protocol, the
+// result slot), the channel core and its send/recv/drop protocol, the
 // fan_in merge machinery, Signal.notify delivery, the Parallel worker-pool
 // state, and the teardown join helpers. Everything here speaks SendNode and
 // plain C++ — no Value / Environment / JitValue — so the compiled lanes
@@ -13,7 +13,9 @@
 #include <base/shared.h>         // SizedThread, the cancel/wake flags
 #include <conc/sharedval_core.h> // shared_val_drop
 
+#include <algorithm>
 #include <atomic>
+#include <cassert>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -123,12 +125,19 @@ inline bool _isolate_finished(IsolateCore& core) {
 // Channel (tx / rx) — bounded message passing between isolates.
 // ===========================================================================
 //
-// A channel is a GC-external core (mutex + bounded queue of serialized values)
-// living in a process-wide registry keyed by id. Endpoints are script Objects
-// carrying that id + a role (tx/rx); they are the one Sendable native handle
-// (serialize ships the id, not a copy), so a closure can capture an endpoint
-// and send it into a spawned isolate. When the last tx endpoint is dropped the
-// channel auto-closes, ending any `for x in rx` — the deadlock-prevention core.
+// A channel is a GC-external core (mutex + bounded queue of serialized values).
+// Endpoints are handle Objects holding the core itself and a role (tx/rx);
+// they are the one Sendable native handle (serialize ships the core, not a
+// copy), so a closure can capture an endpoint and send it into a spawned
+// isolate. When the last tx endpoint is dropped the channel auto-closes,
+// ending any `for x in rx` — the deadlock-prevention core.
+//
+// The core lives exactly as long as its counts. Whatever holds a pointer to
+// one holds one count of its own, tx or rx: an endpoint, a message carrying an
+// endpoint (counted when it is serialized, given back once it is consumed), a
+// fan_in merge's sources, the Signal.notify table, a select under way. The
+// last count given back frees it, so nothing looks a channel up: a send or a
+// recv touches no lock but the channel's own.
 
 // A consumer waiting on SEVERAL channels at once (Channel.fan_in, the basis for
 // a future select) registers one MergeWaiter on each source's `selectors` list.
@@ -152,8 +161,8 @@ struct ChannelCore {
   std::condition_variable cv;
   std::deque<sendable::SendNode> q;  // serialized (neutral) values
   size_t cap;
-  int tx_count = 0;  // active senders (guarded by m)
-  int rx_count = 0;  // active receivers
+  int tx_count = 1;  // the counts held on each end (guarded by m), one
+  int rx_count = 1;  // each at birth, for its creator to hand on
   bool closed = false;
   std::vector<MergeWaiter*> selectors;  // fan_in waiters (guarded by m)
   explicit ChannelCore(size_t c) : cap(c) {}
@@ -164,32 +173,23 @@ struct ChannelCore {
   }
 };
 
-inline std::mutex& channel_registry_mutex() {
-  static std::mutex m;
-  return m;
+// A core as a message carries it, in SendNode::i, and back.
+inline int64_t chan_word(ChannelCore* core) {
+  return static_cast<int64_t>(reinterpret_cast<intptr_t>(core));
 }
-inline std::unordered_map<long, std::shared_ptr<ChannelCore>>&
-channel_registry() {
-  static std::unordered_map<long, std::shared_ptr<ChannelCore>> r;
-  return r;
-}
-inline std::atomic<long>& channel_next_id() {
-  static std::atomic<long> n{1};
-  return n;
-}
-inline std::shared_ptr<ChannelCore> chan_lookup(int64_t id) {
-  std::lock_guard<std::mutex> lk(channel_registry_mutex());
-  auto it = channel_registry().find(id);
-  return it == channel_registry().end() ? nullptr : it->second;
+inline ChannelCore* chan_core(int64_t word) {
+  return reinterpret_cast<ChannelCore*>(static_cast<intptr_t>(word));
 }
 
-// Merged-rx (fan_in) registry: a merged id → its source channel ids, plus (for
-// the `fan_in(items, fn)` form) the producer isolates it spawned. Keyed by id so
-// endpoint methods stay captureless (same pattern as the channel registry); the
-// registry holds the producer cores alive (a GC'd handle would cancel them) and
-// the erase makes drop idempotent (explicit + GC).
+inline void chan_drop(ChannelCore* core, int role);  // fwd
+
+// Merged-rx (fan_in) registry: a merged id → its source channels, each held by
+// one rx count, plus (for the `fan_in(items, fn)` form) the producer isolates
+// it spawned. Keyed by id so the merged endpoint's methods stay captureless;
+// the registry holds the producer cores alive (a GC'd handle would cancel
+// them) and the erase makes drop idempotent (explicit + GC).
 struct MergeEntry {
-  std::vector<int64_t> source_ids;
+  std::vector<ChannelCore*> sources;
   std::vector<std::shared_ptr<IsolateCore>> producers;  // empty for fan_in([rx])
 };
 inline std::mutex& merge_registry_mutex() { static std::mutex m; return m; }
@@ -197,16 +197,19 @@ inline std::unordered_map<long, MergeEntry>& merge_registry() {
   static std::unordered_map<long, MergeEntry> r;
   return r;
 }
+inline std::atomic<long>& merge_next_id() {
+  static std::atomic<long> n{1};
+  return n;
+}
 inline int64_t chan_merge_register(
-    std::vector<int64_t> ids,
+    std::vector<ChannelCore*> sources,
     std::vector<std::shared_ptr<IsolateCore>> producers = {}) {
-  int64_t id = channel_next_id().fetch_add(1, std::memory_order_relaxed);
+  int64_t id = merge_next_id().fetch_add(1, std::memory_order_relaxed);
   std::lock_guard<std::mutex> lk(merge_registry_mutex());
-  merge_registry()[id] = MergeEntry{std::move(ids), std::move(producers)};
+  merge_registry()[id] = MergeEntry{std::move(sources), std::move(producers)};
   return id;
 }
-inline void chan_drop(int64_t id, int role);  // fwd
-// Drop a merged endpoint: release the rx clone fan_in took on each source, and
+// Drop a merged endpoint: release the rx count fan_in took on each source, and
 // erase the entry (releasing any producer cores — their threads are finished
 // once every source has closed, so destruction joins them). Idempotent.
 inline void chan_merge_drop(int64_t mid) {
@@ -218,7 +221,7 @@ inline void chan_merge_drop(int64_t mid) {
     e = std::move(it->second);
     merge_registry().erase(it);
   }
-  for (int64_t id : e.source_ids) chan_drop(id, /*role=*/1);
+  for (auto* core : e.sources) chan_drop(core, /*role=*/1);
   // e.producers' shared_ptrs drop here; the last ref joins the finished thread.
 }
 // Join the producer isolates of a `fan_in(items, fn)` merge and surface the
@@ -268,16 +271,13 @@ inline void cancel_and_join_isolates(
   }
 }
 
-// Adjust an endpoint's active count (+1 on clone / in-flight send, -1 on drop).
-inline void chan_bump(int64_t id, int role, int delta) {
-  auto core = chan_lookup(id);
-  if (!core) return;
+// Take one more count on an end: the caller holds one already (an endpoint, a
+// message), so the core cannot go while this runs.
+inline void chan_bump(ChannelCore* core, int role) {
   std::lock_guard<std::mutex> lk(core->m);
-  if (role == 0) core->tx_count += delta;
-  else           core->rx_count += delta;
+  if (role == 0) core->tx_count++;
+  else           core->rx_count++;
 }
-
-inline void chan_drop(int64_t id, int role);  // fwd (release uses it)
 
 // Recursively release the in-flight refs (the extract-time bumps) a serialized
 // node holds for any channel endpoints it carries. Called exactly once per
@@ -286,7 +286,10 @@ inline void chan_drop(int64_t id, int role);  // fwd (release uses it)
 // 1:N (Parallel) transfers. Plain values are a no-op.
 inline void release_inflight_channels(const sendable::SendNode& n) {
   using K = sendable::SendNode::K;
-  if (n.kind == K::Channel) { chan_drop(n.i, n.b ? 1 : 0); return; }
+  if (n.kind == K::Channel) {
+    if (auto* core = chan_core(n.i)) chan_drop(core, n.b ? 1 : 0);
+    return;
+  }
   // A SharedBuffer node holds the same kind of in-flight ref (bumped at
   // extract); release it once the node has been consumed.
   if (n.kind == K::SharedBuffer) { culebra::shared_buffer_drop(n.i); return; }
@@ -334,37 +337,31 @@ inline bool node_carries_inflight(const sendable::SendNode& n) {
   });
 }
 
-// Drop one endpoint: when the last tx is gone the channel auto-closes (waking
-// receivers); when no endpoint of either kind remains the core is reclaimed.
-inline void chan_drop(int64_t id, int role) {
-  auto core = chan_lookup(id);
-  if (!core) return;
+// Give one count back: when the last tx is gone the channel auto-closes
+// (waking receivers); when no count of either kind remains the core is freed.
+inline void chan_drop(ChannelCore* core, int role) {
   bool reclaim = false;
   {
     std::lock_guard<std::mutex> lk(core->m);
-    if (role == 0) {
-      if (core->tx_count > 0) core->tx_count--;
-      if (core->tx_count == 0) core->closed = true;
-    } else {
-      if (core->rx_count > 0) core->rx_count--;
-    }
+    (role == 0 ? core->tx_count : core->rx_count)--;
+    assert(core->tx_count >= 0 && core->rx_count >= 0);
     reclaim = core->tx_count == 0 && core->rx_count == 0;
-    core->signal_selectors();  // a close lets a fan_in waiter re-check (under lk)
-  }
-  core->cv.notify_all();
-  if (reclaim) {
-    {
-      std::lock_guard<std::mutex> lk(channel_registry_mutex());
-      channel_registry().erase(id);
+    // A waiter waits on `closed` or the queue, never on a count, so only the
+    // last tx going wakes anyone. Notified under the lock: once it is let go,
+    // the core may be freed.
+    if (role == 0 && core->tx_count == 0) {
+      core->closed = true;
+      core->signal_selectors();
+      core->cv.notify_all();
     }
-    // Drain undelivered nodes: a value that crossed by reference (a
-    // channel endpoint, SharedBuffer, or Shared view) was bumped at
-    // extract for the in-flight window, and a never-received node would
-    // otherwise leak that ref (and its registry entry) forever. tx/rx are
-    // both zero here, so no concurrent send/recv touches the queue; the
-    // local `core` keeps it alive while we release.
+  }
+  if (reclaim) {
+    // Undelivered nodes: a value that crossed by reference (a channel
+    // endpoint, SharedBuffer, or Shared view) was counted at extract for the
+    // in-flight window, and a never-received node gives that count back here.
+    // No count is left, so nothing else can reach the core.
     for (auto& node : core->q) release_inflight_channels(node);
-    core->q.clear();
+    delete core;
   }
 }
 
@@ -372,16 +369,14 @@ inline void chan_drop(int64_t id, int role) {
 // Used by Signal.notify delivery, which (like Go's signal relay) must never
 // block — a full buffer means the program hasn't drained, so the extra signal
 // is dropped rather than wedging the delivery thread.
-inline bool channel_try_send_node(int64_t id, sendable::SendNode node) {
-  auto core = chan_lookup(id);
-  if (!core) return false;
-  std::lock_guard<std::mutex> lk(core->m);
-  if (core->closed) return false;
-  size_t room = core->cap == 0 ? 1 : core->cap;
-  if (core->q.size() >= room) return false;  // full → drop
-  core->q.push_back(std::move(node));
-  core->cv.notify_all();
-  core->signal_selectors();
+inline bool channel_try_send_node(ChannelCore& core, sendable::SendNode node) {
+  std::lock_guard<std::mutex> lk(core.m);
+  if (core.closed) return false;
+  size_t room = core.cap == 0 ? 1 : core.cap;
+  if (core.q.size() >= room) return false;  // full → drop
+  core.q.push_back(std::move(node));
+  core.cv.notify_all();
+  core.signal_selectors();
   return true;
 }
 
@@ -397,24 +392,23 @@ inline bool channel_try_send_node(int64_t id, sendable::SendNode node) {
 // restores default (throw) behavior. notify retains a tx on each channel so it
 // stays open while registered even if the user drops their own endpoint.
 inline std::mutex& signal_registry_mutex() { static std::mutex m; return m; }
-inline std::vector<int64_t>& signal_channel_ids() {
-  static std::vector<int64_t> v;
+// Each holds a tx count of the table's own.
+inline std::vector<ChannelCore*>& signal_channels() {
+  static std::vector<ChannelCore*> v;
   return v;
 }
 
 inline void _signal_delivery_loop() {
   for (;;) {
     if (culebra_g_signal_pending.exchange(false, std::memory_order_relaxed)) {
-      std::vector<int64_t> ids;
-      {
-        std::lock_guard<std::mutex> lk(signal_registry_mutex());
-        ids = signal_channel_ids();
-      }
-      for (int64_t id : ids) {
+      // Under the table's lock, which is what keeps its counts — and so the
+      // channels — from going mid-delivery; the sends never block.
+      std::lock_guard<std::mutex> lk(signal_registry_mutex());
+      for (auto* core : signal_channels()) {
         sendable::SendNode n;
         n.kind = sendable::SendNode::K::Str;
         n.s = "SIGINT";
-        channel_try_send_node(id, std::move(n));
+        channel_try_send_node(*core, std::move(n));
       }
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -426,11 +420,13 @@ inline void _ensure_signal_delivery_thread() {
   std::call_once(once, [] { std::thread(_signal_delivery_loop).detach(); });
 }
 
-inline void signal_notify_register(int64_t id) {
-  chan_bump(id, /*role=*/0, +1);  // retain a runtime sender → channel stays open
-  {
+// `core` is null for a tx already dropped: nothing is delivered to it, and
+// Ctrl+C is routed away from the throw all the same.
+inline void signal_notify_register(ChannelCore* core) {
+  if (core) {
+    chan_bump(core, /*role=*/0);  // a sender of its own → channel stays open
     std::lock_guard<std::mutex> lk(signal_registry_mutex());
-    signal_channel_ids().push_back(id);
+    signal_channels().push_back(core);
   }
   culebra_g_signal_notify.store(true, std::memory_order_relaxed);
   _ensure_signal_delivery_thread();
@@ -438,20 +434,26 @@ inline void signal_notify_register(int64_t id) {
 
 inline void signal_notify_reset() {
   culebra_g_signal_notify.store(false, std::memory_order_relaxed);
-  std::vector<int64_t> ids;
+  std::vector<ChannelCore*> cores;
   {
     std::lock_guard<std::mutex> lk(signal_registry_mutex());
-    ids.swap(signal_channel_ids());
+    cores.swap(signal_channels());
   }
-  for (int64_t id : ids) chan_drop(id, /*role=*/0);  // release the retained senders
+  for (auto* core : cores) chan_drop(core, /*role=*/0);  // release the senders
   culebra_g_signal_pending.store(false, std::memory_order_relaxed);
 }
 
-// Backend-neutral enqueue: the caller has already serialized the value (interp
-// or JIT) into a neutral node. Blocks while the buffer is full; interrupt- and
-// close-aware.
-inline void channel_send_node(int64_t id, sendable::SendNode node) {
-  auto core = chan_lookup(id);
+// Backend-neutral enqueue: the caller has already serialized the value into a
+// neutral node. Blocks while the buffer is full; interrupt- and close-aware. A
+// null core is an endpoint already dropped, which is a closed channel. A node
+// that never makes it into the queue gives back what it counted at serialize.
+inline void channel_send_node(ChannelCore* core, sendable::SendNode node) {
+  struct Unsent {
+    sendable::SendNode* node;
+    ~Unsent() {
+      if (node) release_inflight_channels(*node);
+    }
+  } unsent{&node};
   if (!core) throw culebra::CulebraError("ChannelError", "send on a closed channel");
   std::unique_lock<std::mutex> lk(core->m);
   // A rendezvous channel (cap 0) holds at most one in-transit value: wait for an
@@ -466,6 +468,7 @@ inline void channel_send_node(int64_t id, sendable::SendNode node) {
   if (core->closed)
     throw culebra::CulebraError("ChannelError", "send on a closed channel");
   core->q.push_back(std::move(node));
+  unsent.node = nullptr;
   core->cv.notify_all();
   core->signal_selectors();  // wake any fan_in waiter (under lk = no dangling)
   if (core->cap == 0) {
@@ -479,20 +482,18 @@ inline void channel_send_node(int64_t id, sendable::SendNode node) {
 
 // Block until a value is available or the channel is closed+drained. Returns
 // the dequeued (neutral) node, or nullopt when closed and empty.
-inline std::optional<sendable::SendNode> chan_pop_blocking(int64_t id) {
-  auto core = chan_lookup(id);
-  if (!core) return std::nullopt;
-  std::unique_lock<std::mutex> lk(core->m);
-  while (core->q.empty() && !core->closed) {
+inline std::optional<sendable::SendNode> chan_pop_blocking(ChannelCore& core) {
+  std::unique_lock<std::mutex> lk(core.m);
+  while (core.q.empty() && !core.closed) {
     if (culebra::interrupt_requested())
       throw culebra::Interrupted("isolate cancelled");
-    core->cv.wait_for(lk, std::chrono::milliseconds(50));
+    core.cv.wait_for(lk, std::chrono::milliseconds(50));
   }
-  if (core->q.empty()) return std::nullopt;  // closed + empty
-  sendable::SendNode node = std::move(core->q.front());
-  core->q.pop_front();
+  if (core.q.empty()) return std::nullopt;  // closed + empty
+  sendable::SendNode node = std::move(core.q.front());
+  core.q.pop_front();
   lk.unlock();
-  core->cv.notify_all();
+  core.cv.notify_all();
   return node;
 }
 
@@ -519,18 +520,16 @@ inline std::string_view chan_status_variant(ChanTryPopStatus s) {
 // chan_pop_blocking's non-blocking twin: same lock / pop / notify, no wait.
 // Both backends call this one function, so neither can observe a different
 // queue-vs-close race than the other.
-inline ChanTryPopResult chan_pop_nonblocking(int64_t id) {
-  auto core = chan_lookup(id);
-  if (!core) return {ChanTryPopStatus::Closed, std::nullopt};
-  std::unique_lock<std::mutex> lk(core->m);
-  if (!core->q.empty()) {
-    sendable::SendNode node = std::move(core->q.front());
-    core->q.pop_front();
+inline ChanTryPopResult chan_pop_nonblocking(ChannelCore& core) {
+  std::unique_lock<std::mutex> lk(core.m);
+  if (!core.q.empty()) {
+    sendable::SendNode node = std::move(core.q.front());
+    core.q.pop_front();
     lk.unlock();
-    core->cv.notify_all();  // a sender waiting for room (bounded / rendezvous)
+    core.cv.notify_all();  // a sender waiting for room (bounded / rendezvous)
     return {ChanTryPopStatus::Value, std::move(node)};
   }
-  return {core->closed ? ChanTryPopStatus::Closed : ChanTryPopStatus::Empty,
+  return {core.closed ? ChanTryPopStatus::Closed : ChanTryPopStatus::Empty,
           std::nullopt};
 }
 
@@ -589,38 +588,41 @@ inline bool _isolate_finished(IsolateCore& c);  // fwd (defined after IsolateCor
 // for a producer that ends while something still holds a `tx` for its channel,
 // so the channel never closed itself.
 inline std::optional<sendable::SendNode> chan_select_recv(int64_t mid) {
-  std::vector<int64_t> ids;
+  // The select takes an rx count on each source for itself, under the
+  // registry's lock: a drop of the merge from elsewhere cannot free a source
+  // under it.
+  std::vector<ChannelCore*> cores;
   std::vector<std::shared_ptr<IsolateCore>> producers;
   {
     std::lock_guard<std::mutex> lk(merge_registry_mutex());
     auto it = merge_registry().find(mid);
     if (it == merge_registry().end()) return std::nullopt;
-    ids = it->second.source_ids;
+    cores = it->second.sources;
     producers = it->second.producers;
+    for (auto* c : cores) chan_bump(c, /*role=*/1);
   }
-  std::vector<std::shared_ptr<ChannelCore>> cores;
-  cores.reserve(ids.size());
   std::vector<IsolateCore*> prod;  // parallel to cores; null for fan_in([rx])
-  for (size_t i = 0; i < ids.size(); i++) {
-    if (auto c = chan_lookup(ids[i])) {
-      cores.push_back(std::move(c));
-      prod.push_back(i < producers.size() ? producers[i].get() : nullptr);
-    }
-  }
+  for (size_t i = 0; i < cores.size(); i++)
+    prod.push_back(i < producers.size() ? producers[i].get() : nullptr);
 
   MergeWaiter w;
-  for (auto& c : cores) {
+  for (auto* c : cores) {
     std::lock_guard<std::mutex> lk(c->m);
     c->selectors.push_back(&w);  // register before the first scan: no lost wakeup
   }
-  struct Unreg {  // unregister on every exit (value / all done / interrupt throw)
-    std::vector<std::shared_ptr<ChannelCore>>& cores;
+  // Unregister and give the counts back on every exit (value / all done /
+  // interrupt throw).
+  struct Unreg {
+    std::vector<ChannelCore*>& cores;
     MergeWaiter* w;
     ~Unreg() {
-      for (auto& c : cores) {
-        std::lock_guard<std::mutex> lk(c->m);
-        auto& s = c->selectors;
-        s.erase(std::remove(s.begin(), s.end(), w), s.end());
+      for (auto* c : cores) {
+        {
+          std::lock_guard<std::mutex> lk(c->m);
+          auto& s = c->selectors;
+          s.erase(std::remove(s.begin(), s.end(), w), s.end());
+        }
+        chan_drop(c, /*role=*/1);
       }
     }
   } unreg{cores, &w};

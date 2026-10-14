@@ -7008,16 +7008,13 @@ inline JitValue _ns_channel_fan_in(JitValue* a, int64_t n) {
 
 // Signal.notify(tx) / Signal.reset() — JIT mirror of make_signal_namespace.
 inline JitValue _ns_signal_notify(JitValue* a, int64_t n) {
-  bool ok = n >= 1 && a[0].tag == TAG_OBJECT;
-  JitObject* o = ok ? reinterpret_cast<JitObject*>(a[0].data) : nullptr;
-  if (!ok ||
-      o->find_slot("__channel_endpoint__") == static_cast<size_t>(-1) ||
-      o->slots[o->find_slot("__channel_role__")].value.data != 0) {
+  auto* end = n >= 1 ? _jit_chan_end(a[0]) : nullptr;
+  if (!end || end->role != 0) {
     throw culebra::CulebraError(
         "TypeError", "Signal.notify: argument must be a channel tx endpoint", 0,
         0);
   }
-  signal_notify_register(o->slots[o->find_slot("__channel_id__")].value.data);
+  signal_notify_register(end->core);
   return {TAG_NIL, 0};
 }
 inline JitValue _ns_signal_reset(JitValue*, int64_t) {

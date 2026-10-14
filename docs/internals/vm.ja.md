@@ -323,7 +323,7 @@ keyword-onlyおよびrestマーカー・arity境界 — は1つの生成テー�
 ### 3.4 isolate
 
 `Isolate.spawn`、`Channel`、`Parallel`は`isolate_core.h`（channel
-レジストリ、fan-in、worker pool、teardownのjoin — すべてエンジン
+の本体、fan-in、worker pool、teardownのjoin — すべてエンジン
 非依存で`SendNode`を語る）と`sendable_rt.h`（値シリアライザ）の
 上に構築されている。クロージャはスレッド境界を、自分のコード参照
 に位置ベースでコピーされたcaptureを添えて越える: 子は同じ順序で

@@ -323,7 +323,7 @@ archive. A signature change edits that table.
 ### 3.4 Isolates
 
 `Isolate.spawn`, `Channel` and `Parallel` are built on `isolate_core.h`
-(the channel registry, fan-in, the worker pool, teardown joins — all
+(the channel core, fan-in, the worker pool, teardown joins — all
 engine-neutral, speaking `SendNode`) and `sendable_rt.h` (the value
 serializer). A closure crosses a thread boundary as its code reference
 plus positionally copied captures: the child rebuilds the cells in the

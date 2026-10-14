@@ -2770,6 +2770,16 @@ a producer from stalling on a full buffer, and absorb bursts that a single
 consumer would serialize. For a copy per consumer, send to a channel per
 consumer instead.
 
+**An endpoint is a handle onto its channel.** It prints as `[Channel tx]` or
+`[Channel rx]` and has no fields: `keys()` is `[]`, and setting one is a
+`TypeError`. Two endpoints are `==` when they are the same end of the same
+channel, so a clone equals its original. Only `Channel.new` and `clone` make
+one, along with the `tx` that `Channel.fan_in(items, fn)` hands each producer;
+an Object that looks like an endpoint stays an Object, here and after a trip
+through a channel. A dropped endpoint is a closed
+one, even while its clones keep the channel open: `send` on it throws
+`ChannelError`, `recv` returns `nil`, and it prints as `[dropped Channel tx]`.
+
 **`Channel.new(0)` is a rendezvous channel** (capacity 0): `send` does not return
 until a receiver takes the value — a synchronous hand-off with no buffering.
 Useful for backpressure (a producer can't run ahead of its consumer). Within a

@@ -815,9 +815,11 @@ inline const char* _jit_key_name(int8_t key_tag, int64_t key_data,
 }
 
 // A handle onto storage of another kind: an array view, a SharedBuffer, a
-// Shared view. Its slots are the handle's bookkeeping, not entries.
+// Shared view, a JitHandle. Its slots are the handle's bookkeeping, not
+// entries.
 inline bool _jit_is_handle(JitObject* obj) {
-  return obj->is_array_view || _jit_is_shared_buffer(obj) || obj->is_shared_val;
+  return obj->is_array_view || _jit_is_shared_buffer(obj) ||
+         obj->is_shared_val || obj->has_handle;
 }
 // ...so what walks an Object's own entries refuses one.
 inline void _jit_require_own_entries(JitObject* obj, int64_t line = 0,
@@ -825,8 +827,8 @@ inline void _jit_require_own_entries(JitObject* obj, int64_t line = 0,
   if (_jit_is_handle(obj))
     throw culebra::CulebraError(
         "TypeError",
-        "a Shared view, a SharedBuffer or an array view has no entries of its "
-        "own to walk",
+        "a Shared view, a SharedBuffer, an array view or a channel end has no "
+        "entries of its own to walk",
         line, col);
 }
 
@@ -909,11 +911,12 @@ inline void _jit_object_set_any(JitObject* obj, const char* name,
       _jit_fa_set(obj, i, val_tag, val_data, line, col);
       return;
     }
+    // Every other handle refuses the write.
+    if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
     // `buf[i] = v` on a SharedBuffer: a packed record has no Value form, so
     // reject (set fields via `buf[i].field = v`). Matches the interp guard.
     if (_jit_is_shared_buffer(obj)) {
       _culebra_value_release_impl(val_tag, val_data);
-      if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
       throw culebra::CulebraError("TypeError",
           "cannot assign to a SharedBuffer element directly; "
           "set fields via buf[i].field = value", line, col);
@@ -921,10 +924,10 @@ inline void _jit_object_set_any(JitObject* obj, const char* name,
     // Shared.new views are immutable — index writes included.
     if (obj->is_shared_val) {
       _culebra_value_release_impl(val_tag, val_data);
-      if (key_tag != TAG_STRING) _culebra_value_release_impl(key_tag, key_data);
       throw culebra::CulebraError("ImmutableError",
                                   "Shared values are immutable", line, col);
     }
+    _jit_handle_reject_write(obj, val_tag, val_data, line, col);
   }
   if (name) {
     // Subscript overloading is a class-instance feature (proto != null); a
@@ -1395,12 +1398,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_fields_init(
   }
 }
 
-// The two receivers a property write never stores a slot on. `view.field = v`
+// The receivers a property write never stores a slot on. `view.field = v`
 // on a @packable packed view writes straight into the shared backing bytes
-// (zero copy); a Shared.new view is immutable on every write surface. Neither
-// name ever becomes an own slot, so the write always reaches an uncached path
-// — the IC below stays cold for both, and the bytecode VM, which keeps no
-// per-site cache at all, comes through the entry after it. Returns true when
+// (zero copy); a Shared.new view is immutable on every write surface; a
+// JitHandle has no fields. No name ever becomes an own slot, so the write
+// always reaches an uncached path — the IC below stays cold for all three,
+// and the bytecode VM, which keeps no per-site cache at all, comes through
+// the entry after it. Returns true when
 // the write was handled here. Matches the interp's packed_view_set arm.
 inline bool _jit_prop_write_intercepted(JitObject* obj, const char* key,
                                         int8_t tag, int64_t data,
@@ -1419,6 +1423,7 @@ inline bool _jit_prop_write_intercepted(JitObject* obj, const char* key,
     throw culebra::CulebraError("ImmutableError",
                                 "Shared values are immutable", line, col);
   }
+  if (obj->has_handle) _jit_handle_reject_write(obj, tag, data, line, col);
   return false;
 }
 
