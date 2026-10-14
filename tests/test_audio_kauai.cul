@@ -253,4 +253,96 @@ assert_throws("TypeError", fn () {
   not_a_sound.prepare()
 })
 
+# An instrument hears what it names of each note, and makes a sound for each
+# note it hears differently: where a slur hands over, a staccato's length, and
+# the dynamic, which it then sounds itself, so the note's vol leaves it out.
+let PLAYED = lines([
+  'band Strings {',
+  '  voice Fiddle  host Fiddle  plays melody  vol 50%',
+  '  drum Snare    host Snare   vol 40%',
+  '}',
+  'groove Time {',
+  '  Snare  x..x',
+  '}',
+  'song Bow {', '  tempo 60', '  band Strings', '  groove Time', '  melody in C4..B4', '  Bow', '}',
+  'section Bow {', '  C  (c4 d) .e \f e', '}',
+])
+let said = |n| n.keys().map(|k| "{k} {n[k]}").join(", ")
+mut heard = []
+mut struck = []
+let played = Audio.Kauai.new(PLAYED, voices: {
+  fiddle: {
+    note: fn (n, params) {
+      heard.push(n)
+      Audio.Sound.new(WAV)
+    },
+    hears: ["len", "level", "slur"],
+  },
+}, drums: {
+  snare: {
+    hit: fn (n, params) {
+      struck.push(n)
+      Audio.Sound.new(WAV)
+    },
+    hears: ["level"],
+  },
+})
+assert_eq(notes(played, "Fiddle").map(|n| n[3]), [0.5, 0.5, 0.5, 0.5])
+assert_eq(notes(played, "Snare").map(|n| n[3]), [0.4, 0.4])
+assert_eq(played.prepare(), 5)
+played.play()
+assert_eq(heard.map(said).sorted(), [
+  'pitch 60, len 1.0, level 1.0, from false, to true',
+  'pitch 62, len 1.0, level 1.0, from true, to false',
+  'pitch 64, len 0.5, level 1.0, from false, to false',
+  'pitch 64, len 1.0, level 1.18, from false, to false',
+])
+assert_eq(struck.map(said).sorted(), ['level 1.0', 'level 1.18'])
+played.stop()
+
+# Hearing nothing, an instrument is made a pitch at a time, as a function is,
+# and the note's vol keeps the dynamic.
+mut plain = []
+let unheard = Audio.Kauai.new(PLAYED, voices: {
+  fiddle: {
+    note: fn (n, params) {
+      plain.push(n)
+      Audio.Sound.new(WAV)
+    },
+    hears: [],
+  },
+}, drums: {snare: |params| Audio.Sound.new(WAV)})
+assert_eq(notes(unheard, "Fiddle").map(|n| n[3]), [0.5, 0.5, 0.5, 0.588])
+assert_eq(unheard.prepare(), 3)
+unheard.play()
+assert_eq(plain.map(said).sorted(), ['pitch 60', 'pitch 62', 'pitch 64'])
+unheard.stop()
+
+let refused = fn (voices, drums) {
+  try {
+    Audio.Kauai.new(PLAYED, voices: voices, drums: drums)
+    nil
+  } catch e: ValueError {
+    e.message
+  }
+}
+let snare = {snare: |params| Audio.Sound.new(WAV)}
+let fiddle = {fiddle: |pitch, params| Audio.Sound.new(WAV)}
+assert_eq(
+  refused({fiddle: {note: |n, params| nil, hears: ["pitch"]}}, snare),
+  "Audio.Kauai: voices: `fiddle` hears pitch; it can hear len, level, slur",
+)
+assert_eq(
+  refused(fiddle, {snare: {hit: |n, params| nil, hears: ["len"]}}),
+  "Audio.Kauai: drums: `snare` hears len; it can hear level",
+)
+assert_eq(
+  refused({fiddle: {hears: ["len"]}}, snare),
+  "Audio.Kauai: voices: `fiddle` is a function or an object whose `note` is one",
+)
+assert_eq(
+  refused(fiddle, {snare: {note: |n, params| nil}}),
+  "Audio.Kauai: drums: `snare` is a function or an object whose `hit` is one",
+)
+
 print("audio kauai ok\n")

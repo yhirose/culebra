@@ -2051,11 +2051,12 @@ let _kauai_module = fn () {
         _ => len,
       }
       if v.host != nil {
-        # `sounded` and `slur` are for an instrument that plays a note at a
-        # time; host_sounds keys the sound by what that instrument hears.
+        # `level`, `sounded` and `slur` are for an instrument that plays a
+        # note at a time; host_sounds keys the sound by what it hears.
         out.push({
-          at: t0, len: len, by: v.name, pitch: pitch, vol: v.vol * loud / MF,
-          sounded: sounded, slur: touch != nil && touch.legato, mut sound: "{v.name} {pitch}",
+          at: t0, len: len, by: v.name, pitch: pitch, mut vol: v.vol * loud / MF,
+          level: loud / MF, sounded: sounded, slur: touch != nil && touch.legato,
+          mut sound: "{v.name} {pitch}",
         })
         return nil
       }
@@ -2103,7 +2104,10 @@ let _kauai_module = fn () {
       let d = x.drums[hit.name]
       let hit_vol = d.vol * band_level(hit.at) / MF
       if d.has("host") {
-        out.push({at: at(hit.at), len: 0.0, by: hit.name, pitch: nil, vol: hit_vol, sound: hit.name})
+        out.push({
+          at: at(hit.at), len: 0.0, by: hit.name, pitch: nil, mut vol: hit_vol,
+          level: band_level(hit.at) / MF, mut sound: hit.name,
+        })
       } else {
         out.push({
           at: at(hit.at), len: d.dur / 60.0, by: hit.name, pitch: nil, vol: hit_vol,
@@ -2114,43 +2118,74 @@ let _kauai_module = fn () {
     out.sorted_by(|e| e.at)
   }
 
-  # The host sounds the song needs, key -> how to build one: a host voice's
-  # for each pitch it plays, a host drum's once.
+  # What an instrument may hear of a note: a voice its length, its dynamic and
+  # the slurs that join it to the notes beside it; a drum its dynamic.
+  let VOICE_HEARS = ["len", "level", "slur"]
+  let DRUM_HEARS = ["level"]
+
+  # How host sound `host` is made, from `table` (the `voices:` or `drums:`
+  # given): a function, or an instrument `{note: ..., hears: [...]}` (`hit:`
+  # for a drum). `hears` is nil for a function.
+  fn instrument(table, kwarg, host, what, call, may) {
+    let key = host.lower()
+    let f = (table ?? {}).get(key, nil)
+    __raise("ValueError", "Audio.Kauai: {what} plays `host {host}`, and {kwarg}: has no `{key}`") if f == nil
+    return {make: f, hears: nil} if type_of(f) == "Function"
+    if type_of(f) != "Object" || type_of(f.get(call, nil)) != "Function" {
+      __raise("ValueError", "Audio.Kauai: {kwarg}: `{key}` is a function or an object whose `{call}` is one")
+    }
+    let hears = f.get("hears", [])
+    let heard = type_of(hears) == "Array" ? hears.filter(|h| !may.contains(h)) : [hears]
+    if !heard.empty() {
+      __raise("ValueError", "Audio.Kauai: {kwarg}: `{key}` hears {heard[0]}; it can hear {may.join(", ")}")
+    }
+    {make: f[call], hears: hears}
+  }
+
+  # The host sounds the song needs, key -> how to build one. A function makes
+  # a voice's sound for each pitch it plays, and a drum's once. An instrument
+  # makes one for each note it hears differently, and a dynamic it hears is
+  # its own to sound, so the note's `vol` leaves it out.
   fn host_sounds(x, events, voices, drums) {
-    let fn_for = fn (table, kwarg, host, what) {
-      let key = host.lower()
-      let f = (table ?? {}).get(key, nil)
-      __raise("ValueError", "Audio.Kauai: {what} plays `host {host}`, and {kwarg}: has no `{key}`") if f == nil
-      f
+    # The moments at which a voice's slurred note hands over to its next.
+    mut handovers = {}
+    for e in events {
+      handovers["{e.by} {Math.round((e.at + e.len) * 1000)}"] = true if e.has("slur") && e.slur
     }
     mut out = {}
-    # Each voice's last note, for whether a slur carries it into the next.
-    mut last = {}
+    mut kinds = {}
     for e in events {
       continue if !e.has("sound")
-      if e.pitch == nil {
+      let drum = e.pitch == nil
+      let player = drum ? x.drums[e.by] : x.voices[e.by]
+      let ins = kinds.get(e.by, nil) ??
+        instrument(
+          drum ? drums : voices,
+          drum ? "drums" : "voices",
+          player.host,
+          "{drum ? "drum" : "voice"} {e.by}",
+          drum ? "hit" : "note",
+          drum ? DRUM_HEARS : VOICE_HEARS,
+        )
+      kinds[e.by] = ins
+      let make = ins.make
+      let params = player.params
+      if ins.hears == nil {
         continue if out.has(e.sound)
-        let d = x.drums[e.by]
-        let make = fn_for(drums, "drums", d.host, "drum {e.by}")
-        out[e.sound] = || make(d.params)
+        let p = e.pitch
+        out[e.sound] = drum ? || make(params) : || make(p, params)
         continue
       }
-      let v = x.voices[e.by]
-      let make = fn_for(voices, "voices", v.host, "voice {e.by}")
-      if type_of(make) == "Object" {
-        # An instrument that plays a note at a time, `{note: |n, params|}`:
-        # one sound for each note it hears differently.
-        __raise("ValueError", "Audio.Kauai: voices.{v.host.lower()} is an Object with no `note`") if !make.has("note")
-        let prev = last.get(e.by, nil)
-        let from = prev != nil && prev.slur && Math.abs(prev.at + prev.len - e.at) < 0.001
-        last[e.by] = e
-        let n = {pitch: e.pitch, len: e.sounded, from: from, to: e.slur}
-        e.sound = "{e.by} {e.pitch} {Math.round(e.sounded * 1000)} {from} {e.slur}"
-        out[e.sound] = || make.note(n, v.params) if !out.has(e.sound)
-      } else if !out.has(e.sound) {
-        let p = e.pitch
-        out[e.sound] = || make(p, v.params)
+      let hears = ins.hears
+      let n = {
+        ...(drum ? {} : {pitch: e.pitch}),
+        ...(hears.contains("len") ? {len: Math.round(e.sounded * 1000) / 1000.0} : {}),
+        ...(hears.contains("level") ? {level: Math.round(e.level * 100) / 100.0} : {}),
+        ...(hears.contains("slur") ? {from: handovers.has("{e.by} {Math.round(e.at * 1000)}"), to: e.slur} : {}),
       }
+      e.vol = player.vol if hears.contains("level")
+      e.sound = "{e.by} {n}"
+      out[e.sound] = || make(n, params) if !out.has(e.sound)
     }
     out
   }

@@ -236,10 +236,11 @@ E5; with `plays chords rootless from E3`, `Abmaj9` is C4 Eb4 G4 Bb4.
 | `gap N` | ticks cut from the end of every note, so that notes are heard apart | `0` |
 | `poly` | a host voice that sounds several notes at once | one note at a time |
 
-A host voice plays each note's sound through to its end; `env`, `gap` and
-the note's length do not apply to it. It may carry parameters of its own as
-`name=value` words after its name (`host Ep bright=0.8`); Kauai hands them to
-the host with every note.
+A host voice plays each note's sound through to its end; `env` and `gap` do
+not apply to it, and the note's length does only to an instrument that
+hears it ([section 10](#10-playing-from-culebra)). It may carry parameters
+of its own as `name=value` words after its name (`host Ep bright=0.8`);
+Kauai hands them to the host with every note.
 
 ### Derived parts
 
@@ -959,6 +960,37 @@ is built once: the function given for its sound under `drums:`
 `ValueError` when it is read. `prepare()` builds one sound and answers how
 many remain, so a game can spread the work over frames; `play()` builds
 whatever is left first.
+
+A sound built once for each pitch suits an instrument that is struck and
+dies away, as a piano or a drum does. An instrument whose sound follows how
+a note is played, as a bowed string or a horn does, is given instead as an
+object: `note` is its function, called with the note `n` and the voice's
+parameters, and `hears` names what of the note it is told
+(`hit` in place of `note` for a drum).
+
+```culebra
+# doctest: skip (bowed is the program's own)
+let song = Audio.Kauai.load("trio.kau", voices: {
+  violin: {note: |n, params| Audio.Sound(bowed(n)), hears: ["len", "level", "slur"]},
+})
+```
+
+| `hears` | What `n` carries | Who can hear it |
+|---|---|---|
+| (always) | `pitch`, a MIDI note | a voice |
+| `"len"` | `len`, seconds the note is held: a staccato's half, a marcato's three quarters, to the millisecond | a voice |
+| `"level"` | `level`, the note's dynamic over `mf`'s (`1.0` at `mf`, `0.47` at `pp`, `1.35` at `ff`; an accent a step louder), to the hundredth | a voice or a drum |
+| `"slur"` | `from` and `to`, whether a slur joins the note to the one before it and to the one after | a voice |
+
+Kauai builds one sound for each note the instrument hears differently: an
+instrument that hears nothing is built once for each pitch, as a function
+is, and one that hears `len` once for each pitch and length it plays. The
+sound plays through to its end, so an instrument that hears `len` makes it
+as long as the note is held, and lets it ring on as the note is let go. A
+dynamic the instrument hears is its own to sound: the note's `vol` is then
+the voice's `vol` alone, where otherwise Kauai scales the sound by the
+dynamic. Naming anything else in `hears` is a `ValueError` when the song is
+read.
 
 A song file plays without a program of one's own: `culebra play song.kau`
 plays it, and `culebra play --check song.kau` reads and checks it and plays
