@@ -37,13 +37,9 @@ assert_eq(to_string(d), "Tensor 4x4 f32")
 
 # "f64" was removed (GPU backends have no fast float64); unknown dtype
 # tags reject like any other bad first argument.
-let bad_dtype = try {
+assert_throws("TypeError", fn () {
   Tensor.zeros("f64", 2, 3)
-  nil
-} catch e {
-  e
-}
-assert_eq(bad_dtype.kind, "TypeError")
+})
 
 # --- ones: same shape rules ---
 let o1 = Tensor.ones(2, 2)

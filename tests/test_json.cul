@@ -2,6 +2,16 @@
 //
 // JSON.stringify / JSON.parse round-trip (Phase 8-C — JIT binding added).
 
+// What a call raised, as "Kind: message".
+fn failure(thunk) {
+  try {
+    thunk()
+    'no error'
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+
 let v = {name: "alice", age: 30, active: true, score: 3.14, parent: nil}
 let s = JSON.stringify(v)
 let v2 = JSON.parse(s)
@@ -135,14 +145,10 @@ assert_eq(JSON.stringify([2, 1], 0, true), '[2,1]')  # sort_keys positional
 assert_eq(JSON.parse("[1, 2]"), [1, 2])
 // `lines` is the 2nd positional of parse (Bool); a non-Bool is a type error
 // at that argument, naming the param — same kind/message/wording on both.
-let pe = try {
-  JSON.parse("[1]", 2)
-  nil
-} catch e {
-  e
-}
-assert_eq(pe.kind, 'TypeError')
-assert_eq(pe.message, "type error: parameter 'lines' expects Bool")
+assert_eq(
+  failure(|| JSON.parse("[1]", 2)),
+  "TypeError: type error: parameter 'lines' expects Bool",
+)
 // `lines: true` as a positional Bool works (JSON Lines mode).
 assert_eq(JSON.parse("1\n2\n", true), [1, 2])
 
@@ -152,14 +158,10 @@ assert_eq(strfy({a: 1}, 2), strfy({a: 1}, indent: 2))  # 2nd positional == inden
 let parse = JSON.parse
 assert_eq(parse("[1, 2]", number_mode: "float"), [1.0, 2.0])
 // A wrong-typed kwarg through the value path is the interp's typed-param error.
-let ae = try {
-  strfy({a: 1}, indent: "no")
-  nil
-} catch e {
-  e
-}
-assert_eq(ae.kind, 'TypeError')
-assert_eq(ae.message, "type error: parameter 'indent' expects Long")
+assert_eq(
+  failure(|| strfy({a: 1}, indent: "no")),
+  "TypeError: type error: parameter 'indent' expects Long",
+)
 // An invalid `number_mode` is a ValueError on both backends (the JIT used to
 // silently treat any non-"float" value as "auto").
 let nme = try {
@@ -198,20 +200,12 @@ assert_eq(js.n, 42)
 assert_eq(JSON.parse(`{"a":1}`, jsonc: true).a, 1)
 
 // Strict mode (default) rejects comments and trailing commas as ValueError.
-let sc = try {
+assert_throws('ValueError', fn () {
   JSON.parse(jc)
-  nil
-} catch e {
-  e
-}
-assert_eq(sc.kind, 'ValueError')
-let tc = try {
+})
+assert_throws('ValueError', fn () {
   JSON.parse("[1, 2,]")
-  nil
-} catch e {
-  e
-}
-assert_eq(tc.kind, 'ValueError')
+})
 
 // `jsonc` binds positionally too (s, lines, number_mode, jsonc).
 assert_eq(JSON.parse("[1, /* c */ 2,]", false, "auto", true), [1, 2])

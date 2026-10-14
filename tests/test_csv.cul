@@ -2,6 +2,16 @@
 // between the interp and the JIT slow-path adapters via csv.h, so this also
 // exercises bare-resolve + as-value dispatch on the JIT/AOT slow path.
 
+// What a call raised, as "Kind: message".
+fn failure(thunk) {
+  try {
+    thunk()
+    'no error'
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+
 // --- basic parse: rows of String fields ---
 let rows = CSV.parse("a,b,c\n1,2,3")
 assert_eq(rows, [["a", "b", "c"], ["1", "2", "3"]])
@@ -116,85 +126,47 @@ assert_eq(z[0]["zip"], "01234")
 assert_eq(z[0]["id"], 7)
 
 // --- error paths (identical kind + message across interp/JIT/AOT) ---
-let e1 = try {
-  CSV.parse(tdata, types: {age: "Long"})
-  nil
-} catch e {
-  e
-}
-assert_eq(e1.kind, "TypeError")
-assert_eq(e1.message, "CSV.parse: types requires header: true")
-
-let e2 = try {
-  CSV.parse(tdata, header: true, types: {age: "Lnog"})
-  nil
-} catch e {
-  e
-}
-assert_eq(e2.kind, "ValueError")
 assert_eq(
-  e2.message,
-  "CSV.parse: unknown type 'Lnog' for column 'age' (valid: String, Long, Float, Bool)",
+  failure(|| CSV.parse(tdata, types: {age: "Long"})),
+  'TypeError: CSV.parse: types requires header: true',
 )
 
-let e3 = try {
-  CSV.parse(tdata, header: true, types: {nope: "Long"})
-  nil
-} catch e {
-  e
-}
-assert_eq(e3.kind, "ValueError")
-assert_eq(e3.message, "CSV.parse: types references unknown column 'nope'")
-
-let e4 = try {
-  CSV.parse("x\nhello", header: true, types: {x: "Long"})
-  nil
-} catch e {
-  e
-}
-assert_eq(e4.kind, "ValueError")
 assert_eq(
-  e4.message,
-  "CSV.parse: row 2, column 'x': expected Long, got 'hello'",
+  failure(|| CSV.parse(tdata, header: true, types: {age: "Lnog"})),
+  "ValueError: CSV.parse: unknown type 'Lnog' for column 'age' (valid: String, Long, Float, Bool)",
 )
 
-let e5 = try {
-  CSV.parse("a,a\n1,2", header: true)
-  nil
-} catch e {
-  e
-}
-assert_eq(e5.kind, "ValueError")
-assert_eq(e5.message, "CSV.parse: duplicate header column 'a'")
+assert_eq(
+  failure(|| CSV.parse(tdata, header: true, types: {nope: "Long"})),
+  "ValueError: CSV.parse: types references unknown column 'nope'",
+)
 
-let e6 = try {
-  CSV.parse("a,b\n1", header: true)
-  nil
-} catch e {
-  e
-}
-assert_eq(e6.kind, "ValueError")
-assert_eq(e6.message, "CSV.parse: row 2 has 1 fields, but the header has 2")
+assert_eq(
+  failure(|| CSV.parse("x\nhello", header: true, types: {x: "Long"})),
+  "ValueError: CSV.parse: row 2, column 'x': expected Long, got 'hello'",
+)
+
+assert_eq(
+  failure(|| CSV.parse("a,a\n1,2", header: true)),
+  "ValueError: CSV.parse: duplicate header column 'a'",
+)
+
+assert_eq(
+  failure(|| CSV.parse("a,b\n1", header: true)),
+  'ValueError: CSV.parse: row 2 has 1 fields, but the header has 2',
+)
 
 // types: must be an Object of String
-let e7 = try {
-  CSV.parse(tdata, header: true, types: "nope")
-  nil
-} catch e {
-  e
-}
-assert_eq(e7.kind, "TypeError")
-assert_eq(e7.message, "CSV.parse: types must be an Object of String")
+assert_eq(
+  failure(|| CSV.parse(tdata, header: true, types: "nope")),
+  'TypeError: CSV.parse: types must be an Object of String',
+)
 
 // header: is a typed Bool param — a non-Bool is the binder's typed-param error
 // (interp/JIT must agree on the exact wording, kwarg form included)
-let e8 = try {
-  CSV.parse(tdata, header: 5)
-  nil
-} catch e {
-  e
-}
-assert_eq(e8.kind, "TypeError")
-assert_eq(e8.message, "type error: parameter 'header' expects Bool")
+assert_eq(
+  failure(|| CSV.parse(tdata, header: 5)),
+  "TypeError: type error: parameter 'header' expects Bool",
+)
 
 inspect("csv tests passed")
