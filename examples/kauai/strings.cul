@@ -1,9 +1,8 @@
 # Bowed strings for Audio.Kauai.load's `voices:`: `host Violin`, `host Viola`
-# and `host Cello`. Each is an instrument that hears a note's length, dynamic
-# and slurs, so a note sounds as long as it is held: the bow takes hold, the
-# note swells into its vibrato, and it fades when the bow leaves. A slur
-# carries one note into the next without a new stroke, and a louder note is a
-# brighter one.
+# and `host Cello`. Each is an instrument that plays a phrase at a time, the
+# notes a slur joins under one bow: the bow takes hold, a note swells into its
+# vibrato, a finger stops the next note with the bow still moving, and the
+# phrase fades when the bow leaves. A louder note is a brighter one.
 
 let RATE = 22050
 
@@ -35,44 +34,72 @@ fn body(f, peaks) {
   )
 }
 
-# One note `n` ({pitch, len, level, from, to}) on an instrument shaped by
-# `peaks`. The harmonics are a sawtooth's (the bow's stick and slip), tilted
-# darker as the note grows softer and coloured by the body; sin(k·x) comes
-# from the two before it, so a sample costs one sin.
-fn bowed(n, peaks) {
-  let f = hz(n.pitch)
-  let count = Math.max(1, Math.min(16, Math.floor(RATE * 0.45 / f)))
-  let tilt = 1.5 - 0.5 * n.level
+let PARTIALS = 16
+
+# The partials of `pitch` at `level`: a sawtooth's (the bow's stick and
+# slip), tilted darker as the note grows softer and coloured by the body.
+fn spectrum(pitch, level, peaks) {
+  let f = hz(pitch)
+  let count = Math.max(1, Math.min(PARTIALS, Math.floor(RATE * 0.45 / f)))
+  let tilt = 1.5 - 0.5 * level
   let amps = iota(count).map(|k| body(f * (k + 1), peaks) / (k + 1) ** tilt)
-  let norm = 0.45 * n.level / amps.reduce(0.0, |a, b| a + b)
-  # A new stroke takes a moment to speak; a slurred note is already sounding.
-  let attack = n.from ? 0.02 : 0.08
-  # A slur hands over to the next note; a lifted bow lets the string ring.
-  let release = n.to ? 0.02 : 0.15
-  let held = Math.max(n.len, attack)
+  let norm = 0.45 * level / amps.reduce(0.0, |a, b| a + b)
+  iota(PARTIALS).map(|k| k < count ? amps[k] * norm : 0.0)
+}
+
+# A slurred note's pitch is stopped, not slid to, and the tone dips as the
+# finger lands.
+let CHANGE = 0.003
+let DIP = 0.35
+let DIP_LEN = 0.02
+
+# One phrase `notes` ([{pitch, at, len, level}]) on an instrument shaped by
+# `peaks`, as one sound whose phase never restarts; sin(k·x) comes from the
+# two before it, so a sample costs one sin.
+fn bowed(notes, peaks) {
+  let specs = notes.map(|n| spectrum(n.pitch, n.level, peaks))
+  let freqs = notes.map(|n| hz(n.pitch))
+  let last = notes[notes.size() - 1]
+  let attack = 0.08
+  let release = 0.15
+  let held = last.at + Math.max(last.len, attack)
   let total = Math.round((held + release) * RATE)
-  let w = 2.0 * Math.pi * f / RATE
+  let limit = RATE * 0.45
   mut phase = 0.0
+  mut at = 0
   iota(total).map(fn (i) {
     let t = i.to_float() / RATE
-    # Vibrato that grows in after the note has settled.
-    let depth = 0.004 * Math.max(0.0, Math.min(1.0, (t - 0.2) / 0.3))
+    while at + 1 < notes.size() && t >= notes[at + 1].at {
+      at += 1
+    }
+    let since = t - notes[at].at
+    let was = Math.max(0, at - 1)
+    let x = at == 0 ? 1.0 : Math.min(1.0, since / CHANGE)
+    let f = freqs[was] * Math.exp(x * Math.log(freqs[at] / freqs[was]))
+    let dip = at == 0
+      ? 1.0
+      : 1.0 - DIP * Math.sin(Math.pi * Math.min(1.0, since / DIP_LEN))
+    # Vibrato that grows in after each note has settled.
+    let depth = 0.004 * Math.max(0.0, Math.min(1.0, (since - 0.2) / 0.3))
     let wobble = Math.sin(2.0 * Math.pi * 5.6 * t)
-    phase += w * (1.0 + depth * wobble)
+    phase += 2.0 * Math.pi * f / RATE * (1.0 + depth * wobble)
     let s1 = Math.sin(phase)
     let c2 = 2.0 * Math.cos(phase)
+    let a0 = specs[was]
+    let a1 = specs[at]
     mut prev = 0.0
     mut cur = s1
-    mut sum = amps[0] * s1
-    for k in 1..count {
+    mut sum = (a0[0] + (a1[0] - a0[0]) * x) * s1
+    for k in 1..PARTIALS {
+      break if (k + 1) * f > limit
       let next = c2 * cur - prev
       prev = cur
       cur = next
-      sum += amps[k] * cur
+      sum += (a0[k] + (a1[k] - a0[k]) * x) * cur
     }
     let rise = Math.min(1.0, t / attack)
     let fall = t <= held ? 1.0 : Math.max(0.0, 1.0 - (t - held) / release)
-    sum * norm * rise * rise * fall * (1.0 + 2.0 * depth * wobble)
+    sum * dip * rise * rise * fall * (1.0 + 2.0 * depth * wobble)
   })
 }
 
@@ -92,11 +119,20 @@ let CELLO = [
   {at: 1200.0, width: 500.0, gain: 0.6},
 ]
 
-let HEARS = ["len", "level", "slur"]
+let HEARS = ["len", "level"]
 let voices = {
-  violin: {note: |n, params| Audio.Sound(wav(bowed(n, VIOLIN))), hears: HEARS},
-  viola: {note: |n, params| Audio.Sound(wav(bowed(n, VIOLA))), hears: HEARS},
-  cello: {note: |n, params| Audio.Sound(wav(bowed(n, CELLO))), hears: HEARS},
+  violin: {
+    phrase: |notes, params| Audio.Sound(wav(bowed(notes, VIOLIN))),
+    hears: HEARS,
+  },
+  viola: {
+    phrase: |notes, params| Audio.Sound(wav(bowed(notes, VIOLA))),
+    hears: HEARS,
+  },
+  cello: {
+    phrase: |notes, params| Audio.Sound(wav(bowed(notes, CELLO))),
+    hears: HEARS,
+  },
 }
 
 export {voices}

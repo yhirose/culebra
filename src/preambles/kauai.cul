@@ -2052,7 +2052,7 @@ let _kauai_module = fn () {
       }
       if v.host != nil {
         # `level`, `sounded` and `slur` are for an instrument that plays a
-        # note at a time; host_sounds keys the sound by what it hears.
+        # phrase at a time; host_sounds keys the sound by what it hears.
         out.push({
           at: t0, len: len, by: v.name, pitch: pitch, mut vol: v.vol * loud / MF,
           level: loud / MF, sounded: sounded, slur: touch != nil && touch.legato,
@@ -2118,13 +2118,13 @@ let _kauai_module = fn () {
     out.sorted_by(|e| e.at)
   }
 
-  # What an instrument may hear of a note: a voice its length, its dynamic and
-  # the slurs that join it to the notes beside it; a drum its dynamic.
-  let VOICE_HEARS = ["len", "level", "slur"]
+  # What an instrument may hear of a note: a voice its length and its dynamic,
+  # a drum its dynamic.
+  let VOICE_HEARS = ["len", "level"]
   let DRUM_HEARS = ["level"]
 
   # How host sound `host` is made, from `table` (the `voices:` or `drums:`
-  # given): a function, or an instrument `{note: ..., hears: [...]}` (`hit:`
+  # given): a function, or an instrument `{phrase: ..., hears: [...]}` (`hit:`
   # for a drum). `hears` is nil for a function.
   fn instrument(table, kwarg, host, what, call, may) {
     let key = host.lower()
@@ -2144,14 +2144,11 @@ let _kauai_module = fn () {
 
   # The host sounds the song needs, key -> how to build one. A function makes
   # a voice's sound for each pitch it plays, and a drum's once. An instrument
-  # makes one for each note it hears differently, and a dynamic it hears is
-  # its own to sound, so the note's `vol` leaves it out.
+  # makes a voice's sound for each phrase it hears differently, the notes a
+  # slur joins or a note alone, and a drum's for each hit; a dynamic it hears
+  # is its own to sound, so the notes' `vol` leaves it out. A phrase's sound
+  # goes on its first note, and the notes after it carry none.
   fn host_sounds(x, events, voices, drums) {
-    # The moments at which a voice's slurred note hands over to its next.
-    mut handovers = {}
-    for e in events {
-      handovers["{e.by} {Math.round((e.at + e.len) * 1000)}"] = true if e.has("slur") && e.slur
-    }
     mut out = {}
     mut kinds = {}
     for e in events {
@@ -2164,7 +2161,7 @@ let _kauai_module = fn () {
           drum ? "drums" : "voices",
           player.host,
           "{drum ? "drum" : "voice"} {e.by}",
-          drum ? "hit" : "note",
+          drum ? "hit" : "phrase",
           drum ? DRUM_HEARS : VOICE_HEARS,
         )
       kinds[e.by] = ins
@@ -2176,16 +2173,63 @@ let _kauai_module = fn () {
         out[e.sound] = drum ? || make(params) : || make(p, params)
         continue
       }
-      let hears = ins.hears
-      let n = {
-        ...(drum ? {} : {pitch: e.pitch}),
-        ...(hears.contains("len") ? {len: Math.round(e.sounded * 1000) / 1000.0} : {}),
-        ...(hears.contains("level") ? {level: Math.round(e.level * 100) / 100.0} : {}),
-        ...(hears.contains("slur") ? {from: handovers.has("{e.by} {Math.round(e.at * 1000)}"), to: e.slur} : {}),
+      e.vol = player.vol if ins.hears.contains("level")
+      if drum {
+        let n = ins.hears.contains("level") ? {level: Math.round(e.level * 100) / 100.0} : {}
+        e.sound = "{e.by} {n}"
+        out[e.sound] = || make(n, params) if !out.has(e.sound)
       }
-      e.vol = player.vol if hears.contains("level")
-      e.sound = "{e.by} {n}"
-      out[e.sound] = || make(n, params) if !out.has(e.sound)
+    }
+    # The phrases: a slurred note hands over to each note of its voice that
+    # starts as it ends, so a chord's tones join the one phrase.
+    let joined = iota(events.size()).filter(fn (i) {
+      let e = events[i]
+      e.pitch != nil && e.has("sound") && kinds[e.by].hears != nil
+    })
+    let ms = |t| Math.round(t * 1000)
+    mut up = iota(events.size())
+    let top = fn (i) {
+      mut r = i
+      while up[r] != r {
+        r = up[r]
+      }
+      r
+    }
+    mut ending = {}
+    for i in joined {
+      let e = events[i]
+      for j in ending.get("{e.by} {ms(e.at)}", []) {
+        up[top(j)] = top(i)
+      }
+      if e.slur {
+        let k = "{e.by} {ms(e.at + e.len)}"
+        ending[k] = [...ending.get(k, []), i]
+      }
+    }
+    mut phrases = {}
+    mut firsts = []
+    for i in joined {
+      let r = "{top(i)}"
+      firsts.push(r) if !phrases.has(r)
+      phrases[r] = [...phrases.get(r, []), i]
+    }
+    for r in firsts {
+      let members = phrases[r].map(|i| events[i])
+      let head = members[0]
+      let hears = kinds[head.by].hears
+      let notes = members.map(|e| ({
+        pitch: e.pitch,
+        at: ms(e.at - head.at) / 1000.0,
+        ...(hears.contains("len") ? {len: ms(e.sounded) / 1000.0} : {}),
+        ...(hears.contains("level") ? {level: Math.round(e.level * 100) / 100.0} : {}),
+      }))
+      let make = kinds[head.by].make
+      let params = x.voices[head.by].params
+      for e in members {
+        e.sound = nil
+      }
+      head.sound = "{head.by} {notes}"
+      out[head.sound] = || make(notes, params) if !out.has(head.sound)
     }
     out
   }
@@ -2229,6 +2273,7 @@ let _kauai_module = fn () {
       if self._score == nil {
         let flat = self._events.flat_map(fn (e) {
           return [e.at, ...e.tone] if !e.has("sound")
+          return [] if e.sound == nil
           [e.at, -1, self._sounds[e.sound]._id, e.vol, 0, 0, 0, 0, 0, 0, 0]
         })
         self._score = _Audio.score_new(flat, self._length, self._loop_at)

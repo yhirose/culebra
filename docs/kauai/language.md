@@ -963,32 +963,35 @@ whatever is left first.
 
 A sound built once for each pitch suits an instrument that is struck and
 dies away, as a piano or a drum does. An instrument whose sound follows how
-a note is played, as a bowed string or a horn does, is given instead as an
-object: `note` is its function, called with the note `n` and the voice's
-parameters, and `hears` names what of the note it is told
-(`hit` in place of `note` for a drum).
+it is played, as a bowed string or a horn does, is given instead as an
+object: `phrase` is its function, called with a phrase and the voice's
+parameters, and `hears` names what of each note it is told. A phrase is the
+notes a slur joins, in the order they start, or a note under no slur alone,
+so the instrument shapes how one note moves to the next: a finger stopping
+the next pitch under the same bow, a breath carried through. A drum is given
+as `{hit: |n, params| ..., hears: [...]}`, `n` one hit.
 
 ```culebra
 # doctest: skip (bowed is the program's own)
 let song = Audio.Kauai.load("trio.kau", voices: {
-  violin: {note: |n, params| Audio.Sound(bowed(n)), hears: ["len", "level", "slur"]},
+  violin: {phrase: |notes, params| Audio.Sound(bowed(notes)), hears: ["len", "level"]},
 })
 ```
 
-| `hears` | What `n` carries | Who can hear it |
+| `hears` | What a note carries | Who can hear it |
 |---|---|---|
-| (always) | `pitch`, a MIDI note | a voice |
+| (always) | `pitch`, a MIDI note, and `at`, seconds from the phrase's first note, to the millisecond | a voice |
 | `"len"` | `len`, seconds the note is held: a staccato's half, a marcato's three quarters, to the millisecond | a voice |
 | `"level"` | `level`, the note's dynamic over `mf`'s (`1.0` at `mf`, `0.47` at `pp`, `1.35` at `ff`; an accent a step louder), to the hundredth | a voice or a drum |
-| `"slur"` | `from` and `to`, whether a slur joins the note to the one before it and to the one after | a voice |
 
-Kauai builds one sound for each note the instrument hears differently: an
-instrument that hears nothing is built once for each pitch, as a function
-is, and one that hears `len` once for each pitch and length it plays. The
-sound plays through to its end, so an instrument that hears `len` makes it
-as long as the note is held, and lets it ring on as the note is let go. A
-dynamic the instrument hears is its own to sound: the note's `vol` is then
-the voice's `vol` alone, where otherwise Kauai scales the sound by the
+A chord's tones are each a note of the phrase, at the same `at`. Kauai builds
+one sound for each phrase the instrument hears differently: a note alone
+that hears nothing is built once for each pitch, as a function is, and one
+that hears `len` once for each pitch and length. The sound plays through to
+its end from the phrase's first note, so an instrument that hears `len`
+holds the last note as long as it is held, and lets it ring on as it is let
+go. A dynamic the instrument hears is its own to sound: the notes' `vol` is
+then the voice's `vol` alone, where otherwise Kauai scales the sound by the
 dynamic. Naming anything else in `hears` is a `ValueError` when the song is
 read.
 
