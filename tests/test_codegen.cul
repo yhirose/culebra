@@ -24,6 +24,12 @@ fn print_stmt(m, value) {
   m.intrinsic(name: 'print', args: args, line: 1, col: 1)
 }
 
+# `main`: no parameters, captures or cells, and `locals` local slots.
+fn add_main(m, body, locals = 0) {
+  m.add_func(name: 'main', num_locals: locals, num_captures: 0, num_cells: 0,
+             num_params: 0, body: body)
+}
+
 # --- Arithmetic, via print's captured stdout. ---
 {
   let m = CodeGen.Module.new()
@@ -31,14 +37,7 @@ fn print_stmt(m, value) {
   let two = m.literal(v: 2, line: 1, col: 1)
   let sum = m.binary(op: 'add', lhs: forty, rhs: two, line: 1, col: 1)
   let body = stmt_block(m, [print_stmt(m, sum)])
-  m.add_func(
-    name: 'main',
-    num_locals: 0,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: body,
-  )
+  add_main(m, body)
   m.verify()
   assert_eq(IO.capture(fn () {
     m.run()
@@ -59,14 +58,7 @@ fn print_stmt(m, value) {
     col: 1,
   )
   let body = stmt_block(m, [assign, print_stmt(m, doubled)])
-  m.add_func(
-    name: 'main',
-    num_locals: 1,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: body,
-  )
+  add_main(m, body, 1)
   m.set_local_name(func: 0, index: 0, name: 'x')
   m.verify()
   assert_eq(IO.capture(fn () {
@@ -98,14 +90,7 @@ fn print_stmt(m, value) {
   let body_stmts = stmt_block(m, [print_stmt(m, x), dec])
   let loop = m.make_while(cond: cond, body: body_stmts, line: 1, col: 1)
   let body = stmt_block(m, [init, loop])
-  m.add_func(
-    name: 'main',
-    num_locals: 1,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: body,
-  )
+  add_main(m, body, 1)
   m.set_local_name(func: 0, index: 0, name: 'x')
   m.verify()
   assert_eq(IO.capture(fn () {
@@ -149,14 +134,7 @@ fn print_stmt(m, value) {
     m,
     [print_stmt(m, with_default), print_stmt(m, no_default)],
   )
-  m.add_func(
-    name: 'main',
-    num_locals: 0,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: body,
-  )
+  add_main(m, body)
   m.verify()
   assert_eq(m.switch_arm_count(with_default), 3)
   assert_true(m.switch_has_default(with_default))
@@ -262,14 +240,7 @@ fn print_stmt(m, value) {
 # simplest way to construct a module that fails structurally.
 {
   let m = CodeGen.Module.new()
-  m.add_func(
-    name: 'main',
-    num_locals: 0,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: 9999,
-  )
+  add_main(m, 9999)
   assert_throws('IrError', || m.verify())
 }
 
@@ -306,14 +277,7 @@ fn print_stmt(m, value) {
   let zero = m.literal(v: 0, line: 5, col: 7)
   let div = m.binary(op: 'div', lhs: one, rhs: zero, line: 5, col: 3)
   let body = stmt_block(m, [print_stmt(m, div)])
-  m.add_func(
-    name: 'main',
-    num_locals: 0,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: body,
-  )
+  add_main(m, body)
   m.verify()
   mut caught = nil
   try {
@@ -331,14 +295,7 @@ fn print_stmt(m, value) {
   let m = CodeGen.Module.new()
   let x = m.var_ref(kind: 'local', index: 0, line: 8, col: 4)
   let body = stmt_block(m, [print_stmt(m, x)])
-  m.add_func(
-    name: 'main',
-    num_locals: 1,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: body,
-  )
+  add_main(m, body, 1)
   m.set_local_name(func: 0, index: 0, name: 'x')
   m.verify()
   mut caught = nil
@@ -439,14 +396,7 @@ fn tostr_node(m, v) {
       print_stmt(m, byte_node),
     ],
   )
-  m.add_func(
-    name: 'main',
-    num_locals: 0,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: body,
-  )
+  add_main(m, body)
   m.verify()
   assert_eq(IO.capture(fn () {
     m.run()
@@ -473,14 +423,7 @@ fn tostr_node(m, v) {
       print_stmt(m, bop(m, 'shr', lit(m, -5), lit(m, 1))),
     ],
   )
-  m.add_func(
-    name: 'main',
-    num_locals: 0,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: body,
-  )
+  add_main(m, body)
   m.verify()
   assert_eq(IO.capture(fn () {
     m.run()
@@ -535,14 +478,7 @@ fn tostr_node(m, v) {
       print_stmt(m, m.index(recv: obj, key: strl(m, 'k'), line: 1, col: 1)),
     ],
   )
-  m.add_func(
-    name: 'main',
-    num_locals: 1,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: body,
-  )
+  add_main(m, body, 1)
   m.verify()
   assert_eq(IO.capture(fn () {
     m.run()
@@ -586,14 +522,7 @@ fn tostr_node(m, v) {
       print_stmt(m, gety),
     ],
   )
-  m.add_func(
-    name: 'main',
-    num_locals: 1,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: body,
-  )
+  add_main(m, body, 1)
   m.verify()
   assert_eq(m.field_slot(getx), 0)
   assert_eq(m.field_name(getx), 'x')
@@ -633,14 +562,7 @@ fn tostr_node(m, v) {
     m,
     [loop, print_stmt(m, m.str_literal(s: 'after', line: 4, col: 1))],
   )
-  m.add_func(
-    name: 'main',
-    num_locals: 0,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: body,
-  )
+  add_main(m, body)
   m.add_func(
     name: 'dfn',
     num_locals: 0,
@@ -699,14 +621,7 @@ fn tostr_node(m, v) {
       print_stmt(m, strl(m, 'alive')),
     ],
   )
-  m.add_func(
-    name: 'main',
-    num_locals: 1,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: body,
-  )
+  add_main(m, body, 1)
   m.set_local_name(func: 0, index: 0, name: 'e')
   m.verify()
   assert_eq(IO.capture(fn () {
@@ -798,14 +713,7 @@ fn tostr_node(m, v) {
     [ret, print_stmt(m, m.literal(v: 7, line: 3, col: 3))],
   )
   let call = m.call(func: 1, cmap: cmap, line: 1, col: 1)
-  m.add_func(
-    name: 'main',
-    num_locals: 0,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: print_stmt(m, call),
-  )
+  add_main(m, print_stmt(m, call))
   m.add_func(
     name: 'f',
     num_locals: 0,
@@ -829,14 +737,7 @@ fn tostr_node(m, v) {
   let two = m.literal(v: 2, line: 1, col: 1)
   let sum = m.binary(op: 'add', lhs: forty, rhs: two, line: 1, col: 1)
   let body = stmt_block(m, [print_stmt(m, sum)])
-  m.add_func(
-    name: 'main',
-    num_locals: 0,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: body,
-  )
+  add_main(m, body)
   m.verify()
 
   let p = m.compile()
@@ -871,14 +772,7 @@ fn tostr_node(m, v) {
   let assign = m.assign(kind: 'local', index: 0, value: obj, line: 1, col: 1)
   let cycle = m.set_index(recv: loc, key: key, value: loc, line: 1, col: 1)
   let body = stmt_block(m, [assign, cycle])
-  m.add_func(
-    name: 'main',
-    num_locals: 1,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: body,
-  )
+  add_main(m, body, 1)
   m.verify()
 
   let p = m.compile()
@@ -909,14 +803,7 @@ fn tostr_node(m, v) {
     let assign = m.assign(kind: 'local', index: 0, value: obj, line: 1, col: 1)
     let cycle = m.set_index(recv: loc, key: key, value: loc, line: 1, col: 1)
     let body = stmt_block(m, [assign, cycle])
-    m.add_func(
-      name: 'main',
-      num_locals: 1,
-      num_captures: 0,
-      num_cells: 0,
-      num_params: 0,
-      body: body,
-    )
+    add_main(m, body, 1)
     m.verify()
     m
   }
@@ -950,14 +837,7 @@ fn tostr_node(m, v) {
     let m = CodeGen.Module.new()
     let cmap = m.add_capture_map(m.capture_map_new())
     let call = m.call(func: 0, cmap: cmap, line: 1, col: 1)
-    m.add_func(
-      name: 'main',
-      num_locals: 0,
-      num_captures: 0,
-      num_cells: 0,
-      num_params: 0,
-      body: call,
-    )
+    add_main(m, call)
     m.verify()
     m
   }
@@ -993,14 +873,7 @@ fn tostr_node(m, v) {
       col: 1,
     )
     let body = stmt_block(m, [assign, setdrop])
-    m.add_func(
-      name: 'main',
-      num_locals: 1,
-      num_captures: 0,
-      num_cells: 0,
-      num_params: 0,
-      body: body,
-    )
+    add_main(m, body, 1)
     m.add_func(
       name: 'ondrop',
       num_locals: 1,
@@ -1030,14 +903,7 @@ fn tostr_node(m, v) {
 # idempotent, and use-after-drop is ClosedError, not a crash. ---
 {
   let m = CodeGen.Module.new()
-  m.add_func(
-    name: 'main',
-    num_locals: 0,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: m.nil_literal(line: 1, col: 1),
-  )
+  add_main(m, m.nil_literal(line: 1, col: 1))
   m.verify()
   let p = m.compile()
   let rt = CodeGen.Runtime.new()
@@ -1097,14 +963,7 @@ fn call_intr(m, name, args) {
       ),
     ],
   )
-  m.add_func(
-    name: 'main',
-    num_locals: 1,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: body,
-  )
+  add_main(m, body, 1)
   m.verify()
   assert_eq(IO.capture(fn () {
     m.run()
@@ -1140,14 +999,7 @@ fn call_intr(m, name, args) {
       ),
     ],
   )
-  m.add_func(
-    name: 'main',
-    num_locals: 0,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: body,
-  )
+  add_main(m, body)
   m.verify()
   assert_eq(IO.capture(fn () {
     m.run()
@@ -1206,14 +1058,7 @@ fn call_intr(m, name, args) {
       ),
     ],
   )
-  m.add_func(
-    name: 'main',
-    num_locals: 2,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: body,
-  )
+  add_main(m, body, 2)
   m.verify()
   assert_eq(IO.capture(fn () {
     m.run()
@@ -1270,14 +1115,7 @@ fn call_intr(m, name, args) {
   ])
   # funcs[0] is the entry point, so main goes in first: inner lands at 1 and
   # outer at 2, which is what the nodes above already name.
-  m.add_func(
-    name: 'main',
-    num_locals: 1,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: main_body,
-  )
+  add_main(m, main_body, 1)
   m.add_func(
     name: 'inner',
     num_locals: 0,
@@ -1308,22 +1146,15 @@ fn call_intr(m, name, args) {
   let empty = m.add_capture_map(m.capture_map_new())
   let job_body = print_stmt(m, m.str_literal(s: 'ran', line: 1, col: 1))
   let co = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
-  m.add_func(
-    name: 'main',
-    num_locals: 1,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: stmt_block(m, [
-               m.assign(kind: 'local', index: 0,
-                        value: call_intr(m, 'corocreate',
-                                         [m.make_closure(func: 1, cmap: empty,
-                                                         line: 1, col: 1)]),
-                        line: 1, col: 1),
-               call_intr(m, 'enqueue', [co]),
-               print_stmt(m, m.str_literal(s: 'queued', line: 1, col: 1)),
-             ]),
-  )
+  add_main(m, stmt_block(m, [
+             m.assign(kind: 'local', index: 0,
+                      value: call_intr(m, 'corocreate',
+                                       [m.make_closure(func: 1, cmap: empty,
+                                                       line: 1, col: 1)]),
+                      line: 1, col: 1),
+             call_intr(m, 'enqueue', [co]),
+             print_stmt(m, m.str_literal(s: 'queued', line: 1, col: 1)),
+           ]), 1)
   m.add_func(
     name: 'job',
     num_locals: 1,
@@ -1344,22 +1175,15 @@ fn call_intr(m, name, args) {
   let m = CodeGen.Module.new()
   let empty = m.add_capture_map(m.capture_map_new())
   let job_body = call_intr(m, 'coroyield', [m.nil_literal(line: 1, col: 1)])
-  m.add_func(
-    name: 'main',
-    num_locals: 1,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: stmt_block(m, [
-               m.assign(kind: 'local', index: 0,
-                        value: call_intr(m, 'corocreate',
-                                         [m.make_closure(func: 1, cmap: empty,
-                                                         line: 1, col: 1)]),
-                        line: 1, col: 1),
-               call_intr(m, 'enqueue',
-                         [m.var_ref(kind: 'local', index: 0, line: 1, col: 1)]),
-             ]),
-  )
+  add_main(m, stmt_block(m, [
+             m.assign(kind: 'local', index: 0,
+                      value: call_intr(m, 'corocreate',
+                                       [m.make_closure(func: 1, cmap: empty,
+                                                       line: 1, col: 1)]),
+                      line: 1, col: 1),
+             call_intr(m, 'enqueue',
+                       [m.var_ref(kind: 'local', index: 0, line: 1, col: 1)]),
+           ]), 1)
   m.add_func(
     name: 'job',
     num_locals: 1,
@@ -1391,23 +1215,16 @@ fn call_intr(m, name, args) {
     ],
   )
   let co = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
-  m.add_func(
-    name: 'main',
-    num_locals: 1,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: stmt_block(m, [
-               m.assign(kind: 'local', index: 0,
-                        value: call_intr(m, 'corocreate',
-                                         [m.make_closure(func: 1, cmap: empty,
-                                                         line: 1, col: 1)]),
-                        line: 1, col: 1),
-               call_intr(m, 'cororesume', [co, m.nil_literal(line: 1, col: 1)]),
-               call_intr(m, 'coroclose', [co]),
-               print_stmt(m, call_intr(m, 'corostatus', [co])),
-             ]),
-  )
+  add_main(m, stmt_block(m, [
+             m.assign(kind: 'local', index: 0,
+                      value: call_intr(m, 'corocreate',
+                                       [m.make_closure(func: 1, cmap: empty,
+                                                       line: 1, col: 1)]),
+                      line: 1, col: 1),
+             call_intr(m, 'cororesume', [co, m.nil_literal(line: 1, col: 1)]),
+             call_intr(m, 'coroclose', [co]),
+             print_stmt(m, call_intr(m, 'corostatus', [co])),
+           ]), 1)
   m.add_func(
     name: 'job',
     num_locals: 1,
@@ -1465,19 +1282,12 @@ fn counting_loops(m, depth) {
     line: 1,
     col: 1,
   )
-  m.add_func(
-    name: 'main',
-    num_locals: 2,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: stmt_block(m, [
-               m.assign(kind: 'local', index: 0, value: m.literal(v: 0, line: 1, col: 1),
-                        line: 1, col: 1),
-               outer,
-               print_stmt(m, m.str_literal(s: 'after', line: 1, col: 1)),
-             ]),
-  )
+  add_main(m, stmt_block(m, [
+             m.assign(kind: 'local', index: 0, value: m.literal(v: 0, line: 1, col: 1),
+                      line: 1, col: 1),
+             outer,
+             print_stmt(m, m.str_literal(s: 'after', line: 1, col: 1)),
+           ]), 2)
   m.verify()
   m
 }
@@ -1503,15 +1313,8 @@ fn counting_loops(m, depth) {
   assert_eq(m.continue_depth(node: cont), 0)  # the default
   assert_throws('IrError', || m.break_depth(node: cont))
 
-  m.add_func(
-    name: 'main',
-    num_locals: 0,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: m.make_while(cond: m.bool_literal(v: true, line: 1, col: 1),
-                                body: brk, line: 1, col: 1),
-  )
+  add_main(m, m.make_while(cond: m.bool_literal(v: true, line: 1, col: 1),
+                              body: brk, line: 1, col: 1))
   let err = try {
     m.verify()
   } catch e {

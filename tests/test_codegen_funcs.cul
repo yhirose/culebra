@@ -24,6 +24,12 @@ fn print_stmt(m, value) {
   m.intrinsic(name: 'print', args: args, line: 1, col: 1)
 }
 
+# `main`: no parameters, captures or cells, and `locals` local slots.
+fn add_main(m, body, locals = 0) {
+  m.add_func(name: 'main', num_locals: locals, num_captures: 0, num_cells: 0,
+             num_params: 0, body: body)
+}
+
 fn call_intr(m, name, args) {
   let list = m.list_new()
   for a in args {
@@ -66,16 +72,9 @@ fn counting_chain(m) {
 
   let call_args = m.list_new()
   m.list_push(call_args, m.literal(v: 50000, line: 1, col: 1))  # 5x the limit
-  m.add_func(
-    name: 'main',
-    num_locals: 0,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: print_stmt(m, m.call_value(
-               callee: m.make_closure(func: 1, cmap: empty, line: 1, col: 1),
-               args: call_args, line: 1, col: 1)),
-  )
+  add_main(m, print_stmt(m, m.call_value(
+             callee: m.make_closure(func: 1, cmap: empty, line: 1, col: 1),
+             args: call_args, line: 1, col: 1)))
   m.add_func(
     name: 'down',
     num_locals: 1,
@@ -129,18 +128,11 @@ fn tail_chain(m, body_of, nlocals = 1) {
   let done = m.str_literal('bottom', ORIGIN_F)
   let at_zero = m.binary('eq', n, m.literal(0, ORIGIN_F), ORIGIN_F)
 
-  m.add_func(
-    name: 'main',
-    num_locals: 0,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: print_stmt(m, m.call_value(
-               m.make_closure(1, empty, ORIGIN_F),
-               [m.literal(50000, ORIGIN_F)],
-               ORIGIN_F,
-             )),
-  )
+  add_main(m, print_stmt(m, m.call_value(
+             m.make_closure(1, empty, ORIGIN_F),
+             [m.literal(50000, ORIGIN_F)],
+             ORIGIN_F,
+           )))
   m.add_func(
     name: 'down',
     num_locals: nlocals,
@@ -213,18 +205,11 @@ runs_to_bottom(tail_chain(CodeGen.Module.new(), fn (m, at_zero, again, done) {
   let empty = m.add_capture_map(m.capture_map_new())
   let n = m.var_ref('local', 0, ORIGIN_F)
   let dec = m.binary('sub', n, m.literal(1, ORIGIN_F), ORIGIN_F)
-  m.add_func(
-    name: 'main',
-    num_locals: 0,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: print_stmt(m, m.call_value(
-               m.make_closure(1, empty, ORIGIN_F),
-               [m.literal(50000, ORIGIN_F)],
-               ORIGIN_F,
-             )),
-  )
+  add_main(m, print_stmt(m, m.call_value(
+             m.make_closure(1, empty, ORIGIN_F),
+             [m.literal(50000, ORIGIN_F)],
+             ORIGIN_F,
+           )))
   # ping(n) = n == 0 ? 'bottom' : pong(n - 1);  pong(n) = ping(n)
   for f in [1, 2] {
     let callee = cond {
@@ -312,17 +297,10 @@ exhausts(tail_chain(CodeGen.Module.new(), fn (m, at_zero, again, done) {
 # main prints whether two closures of func 1 are the same object.
 fn twin_closures(m) {
   let empty = m.add_capture_map(m.capture_map_new())
-  m.add_func(
-    name: 'main',
-    num_locals: 0,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: print_stmt(m, call_intr(m, 'same', [
-               m.make_closure(func: 1, cmap: empty, line: 1, col: 1),
-               m.make_closure(func: 1, cmap: empty, line: 1, col: 1),
-             ])),
-  )
+  add_main(m, print_stmt(m, call_intr(m, 'same', [
+             m.make_closure(func: 1, cmap: empty, line: 1, col: 1),
+             m.make_closure(func: 1, cmap: empty, line: 1, col: 1),
+           ])))
   m.add_func(
     name: 'helper',
     num_locals: 0,
@@ -406,14 +384,7 @@ fn native_call(m, name, args) {
 
 # main = print(name(args...))
 fn native_call_module(m, name, args) {
-  m.add_func(
-    name: 'main',
-    num_locals: 0,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: print_stmt(m, native_call(m, name, args)),
-  )
+  add_main(m, print_stmt(m, native_call(m, name, args)))
   m.verify()
   m
 }
@@ -422,19 +393,12 @@ fn native_call_module(m, name, args) {
 # "the program catches what the bridge reports" case below wants.
 fn native_catch_module(m, name, args, key) {
   let caught = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
-  m.add_func(
-    name: 'main',
-    num_locals: 1,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: m.make_try(
-               caught_local: 0, body: native_call(m, name, args),
-               handler: print_stmt(m, m.index(recv: caught,
-                                              key: m.str_literal(s: key, line: 1, col: 1),
-                                              line: 1, col: 1)),
-               line: 1, col: 1),
-  )
+  add_main(m, m.make_try(
+             caught_local: 0, body: native_call(m, name, args),
+             handler: print_stmt(m, m.index(recv: caught,
+                                            key: m.str_literal(s: key, line: 1, col: 1),
+                                            line: 1, col: 1)),
+             line: 1, col: 1), 1)
   m.verify()
   m
 }
@@ -452,16 +416,9 @@ fn native_catch_module(m, name, args, key) {
     line: 1,
     col: 1,
   )
-  m.add_func(
-    name: 'main',
-    num_locals: 0,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: print_stmt(m, m.binary(op: 'mul', lhs: called,
-                                          rhs: m.literal(v: 10, line: 1, col: 1),
-                                          line: 1, col: 1)),
-  )
+  add_main(m, print_stmt(m, m.binary(op: 'mul', lhs: called,
+                                        rhs: m.literal(v: 10, line: 1, col: 1),
+                                        line: 1, col: 1)))
   m.verify()
   let out = IO.capture(fn () {
     m.compile().run(natives: {add: |a, b| a + b})
@@ -502,17 +459,10 @@ fn native_catch_module(m, name, args, key) {
     line: 1,
     col: 1,
   )
-  m.add_func(
-    name: 'main',
-    num_locals: 1,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: m.make_try(caught_local: 0, body: call,
-                              handler: print_stmt(
-                                m, m.var_ref(kind: 'local', index: 0, line: 1, col: 1)),
-                              line: 1, col: 1),
-  )
+  add_main(m, m.make_try(caught_local: 0, body: call,
+                            handler: print_stmt(
+                              m, m.var_ref(kind: 'local', index: 0, line: 1, col: 1)),
+                            line: 1, col: 1), 1)
   m.verify()
   let out = IO.capture(fn () {
     m.compile().run(natives: {boom: fn () { throw 'kaboom' }})
@@ -554,29 +504,15 @@ fn native_catch_module(m, name, args, key) {
     line: 1,
     col: 1,
   )
-  thrower.add_func(
-    name: 'main',
-    num_locals: 1,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: thrower.make_try(caught_local: 0, body: tcall,
-                                          handler: thrower.nil_literal(line: 1, col: 1),
-                                          line: 1, col: 1),
-  )
+  add_main(thrower, thrower.make_try(caught_local: 0, body: tcall,
+                                        handler: thrower.nil_literal(line: 1, col: 1),
+                                        line: 1, col: 1), 1)
   thrower.verify()
   thrower.compile().run(natives: {boom: fn () { throw 'kaboom' }})
 
   let m = CodeGen.Module.new()
   let idx = m.declare_native(name: 'unsupplied')
-  m.add_func(
-    name: 'main',
-    num_locals: 0,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: m.native_ref(index: idx, line: 1, col: 1),
-  )
+  add_main(m, m.native_ref(index: idx, line: 1, col: 1))
   m.verify()
   let err = try {
     m.compile().run()
@@ -626,14 +562,7 @@ fn native_catch_module(m, name, args, key) {
   # get from wrap.h is its own to do. Without it jit_handle_self would
   # reinterpret_cast a Long into a handle -- a wild pointer, not an error.
   let m = CodeGen.Module.new()
-  m.add_func(
-    name: 'main',
-    num_locals: 0,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: m.nil_literal(line: 1, col: 1),
-  )
+  add_main(m, m.nil_literal(line: 1, col: 1))
   m.verify()
   let p = m.compile()
   assert_throws('TypeError', || p.run(rt: 5))
@@ -646,14 +575,7 @@ fn native_catch_module(m, name, args, key) {
   # A name the module never declared is fine: one table can serve several
   # programs, and this one declares nothing at all.
   let m = CodeGen.Module.new()
-  m.add_func(
-    name: 'main',
-    num_locals: 0,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: print_stmt(m, m.literal(v: 1, line: 1, col: 1)),
-  )
+  add_main(m, print_stmt(m, m.literal(v: 1, line: 1, col: 1)))
   m.verify()
   assert_eq(IO.capture(fn () {
     m.compile().run(natives: {unused: || 0})
@@ -710,15 +632,8 @@ fn native_catch_module(m, name, args, key) {
       col: 1,
     )
   }
-  m.add_func(
-    name: 'main',
-    num_locals: 0,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: stmt_block(m, [print_stmt(m, call0(m, a)),
-                                  print_stmt(m, call0(m, b))]),
-  )
+  add_main(m, stmt_block(m, [print_stmt(m, call0(m, a)),
+                                print_stmt(m, call0(m, b))]))
   m.verify()
   let p = m.compile()
   let same = || 7
@@ -738,69 +653,62 @@ fn native_catch_module(m, name, args, key) {
   let m = CodeGen.Module.new()
   let xs = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
   let mp = m.var_ref(kind: 'local', index: 1, line: 1, col: 1)
-  m.add_func(
-    name: 'main',
-    num_locals: 2,
-    num_captures: 0,
-    num_cells: 0,
-    num_params: 0,
-    body: stmt_block(m, [
-      # not answers for every value, over the truthiness a condition tests
-      print_stmt(m, m.unary(
-        op: 'not',
-        operand: m.bool_literal(v: true, line: 1, col: 1),
-        line: 1,
-        col: 1,
-      )),
-      print_stmt(m, m.unary(
-        op: 'not',
-        operand: m.nil_literal(line: 1, col: 1),
-        line: 1,
-        col: 1,
-      )),
-      print_stmt(m, m.unary(
-        op: 'not',
-        operand: m.literal(v: 0, line: 1, col: 1),
-        line: 1,
-        col: 1,
-      )),
-      # arrayfill starts an array at a length, arrayconcat joins one on
-      m.assign(kind: 'local', index: 0, value: call_intr(m, 'arrayfill', [
-        m.literal(v: 2, line: 1, col: 1),
-        m.literal(v: 7, line: 1, col: 1),
-      ]), line: 1, col: 1),
-      call_intr(m, 'arrayconcat', [xs, m.array_lit(
-        items: [m.literal(v: 9, line: 1, col: 1)],
-        line: 1,
-        col: 1,
-      )]),
-      print_stmt(m, call_intr(m, 'len', [xs])),
-      print_stmt(m, m.index(
-        recv: xs,
-        key: m.literal(v: 2, line: 1, col: 1),
-        line: 1,
-        col: 1,
-      )),
-      # len answers a map's entry count as well as an array's length
-      m.assign(kind: 'local', index: 1, value: call_intr(m, 'mapnew', []),
-               line: 1, col: 1),
-      m.set_index(
-        recv: mp,
-        key: m.str_literal(s: 'a', line: 1, col: 1),
-        value: m.literal(v: 1, line: 1, col: 1),
-        line: 1,
-        col: 1,
-      ),
-      print_stmt(m, call_intr(m, 'len', [mp])),
-      # ASCII case, and only ASCII: the two-byte character is untouched
-      print_stmt(m, call_intr(m, 'strupper', [
-        m.str_literal(s: 'aB1é', line: 1, col: 1),
-      ])),
-      print_stmt(m, call_intr(m, 'strlower', [
-        m.str_literal(s: 'Ab1É', line: 1, col: 1),
-      ])),
-    ]),
-  )
+  add_main(m, stmt_block(m, [
+    # not answers for every value, over the truthiness a condition tests
+    print_stmt(m, m.unary(
+      op: 'not',
+      operand: m.bool_literal(v: true, line: 1, col: 1),
+      line: 1,
+      col: 1,
+    )),
+    print_stmt(m, m.unary(
+      op: 'not',
+      operand: m.nil_literal(line: 1, col: 1),
+      line: 1,
+      col: 1,
+    )),
+    print_stmt(m, m.unary(
+      op: 'not',
+      operand: m.literal(v: 0, line: 1, col: 1),
+      line: 1,
+      col: 1,
+    )),
+    # arrayfill starts an array at a length, arrayconcat joins one on
+    m.assign(kind: 'local', index: 0, value: call_intr(m, 'arrayfill', [
+      m.literal(v: 2, line: 1, col: 1),
+      m.literal(v: 7, line: 1, col: 1),
+    ]), line: 1, col: 1),
+    call_intr(m, 'arrayconcat', [xs, m.array_lit(
+      items: [m.literal(v: 9, line: 1, col: 1)],
+      line: 1,
+      col: 1,
+    )]),
+    print_stmt(m, call_intr(m, 'len', [xs])),
+    print_stmt(m, m.index(
+      recv: xs,
+      key: m.literal(v: 2, line: 1, col: 1),
+      line: 1,
+      col: 1,
+    )),
+    # len answers a map's entry count as well as an array's length
+    m.assign(kind: 'local', index: 1, value: call_intr(m, 'mapnew', []),
+             line: 1, col: 1),
+    m.set_index(
+      recv: mp,
+      key: m.str_literal(s: 'a', line: 1, col: 1),
+      value: m.literal(v: 1, line: 1, col: 1),
+      line: 1,
+      col: 1,
+    ),
+    print_stmt(m, call_intr(m, 'len', [mp])),
+    # ASCII case, and only ASCII: the two-byte character is untouched
+    print_stmt(m, call_intr(m, 'strupper', [
+      m.str_literal(s: 'aB1é', line: 1, col: 1),
+    ])),
+    print_stmt(m, call_intr(m, 'strlower', [
+      m.str_literal(s: 'Ab1É', line: 1, col: 1),
+    ])),
+  ]), 2)
   m.verify()
   assert_eq(IO.capture(fn () {
     m.run()
