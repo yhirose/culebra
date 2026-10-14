@@ -189,23 +189,15 @@ class Boom {
 let bs = [3, 9, 1].map(fn (v) {
   Boom.new(v)
 })
-let eb = try {
+assert_throws("E", fn () {
   bs.sort()
-  nil
-} catch e {
-  e.kind
-}
-assert_eq(eb, "E")
+})
 assert_eq(bs.map(fn (b) {
   b.v
 }), [3, 9, 1])  // untouched, nothing freed
-let eb2 = try {
+assert_throws("E", fn () {
   bs.sorted()
-  nil
-} catch e {
-  e.kind
-}
-assert_eq(eb2, "E")
+})
 assert_eq(bs.map(fn (b) {
   b.v
 }), [3, 9, 1])
@@ -225,13 +217,9 @@ class Boom2 {
 let rs = [3, 9, 1].map(fn (v) {
   Boom2.new(v)
 })
-let eb3 = try {
+assert_throws("E", fn () {
   rs.sort(reverse: true)
-  nil
-} catch e {
-  e.kind
-}
-assert_eq(eb3, "E")
+})
 assert_eq(rs.map(fn (b) {
   b.v
 }), [3, 9, 1])
@@ -250,25 +238,17 @@ class Blt {
 let ls = [3, 9, 1].map(fn (v) {
   Blt.new(v)
 })
-let el = try {
+assert_throws("E", fn () {
   ls.sort()
-  nil
-} catch e {
-  e.kind
-}
-assert_eq(el, "E")
+})
 assert_eq(ls.map(fn (b) {
   b.v
 }), [3, 9, 1])
 
 // --- extra positional arg is rejected (0 positional params) ---
-let e2 = try {
+assert_throws("TypeError", fn () {
   [1, 2].sorted(1)
-  nil
-} catch e {
-  e.kind
-}
-assert_eq(e2, "TypeError")
+})
 
 // Longs past 2^53 order exactly: as doubles the pair below is one value.
 let big = [9007199254740993, 9007199254740992]
@@ -298,25 +278,17 @@ class K {
 for n in [3, 1, 2, 0] {
   ks.push(K(n))
 }
-let sort_err = try {
+assert_throws("ValueError", fn () {
   ks.sort()
-  "sorted"
-} catch e {
-  e.kind
-}
-assert_eq(sort_err, "ValueError")
+})
 mut ys = [3, 1, 2]
-let by_err = try {
+assert_throws("ValueError", fn () {
   ys.sort_by(fn (x) {
     if ys.size() > 1 {
       ys.pop()
     }
     x
   })
-  "sorted"
-} catch e {
-  e.kind
-}
-assert_eq(by_err, "ValueError")
+})
 
 IO.inspect("test_sort OK")

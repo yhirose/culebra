@@ -99,40 +99,24 @@ assert_eq(sig.signal, "SIGTERM")
 assert_eq(sig.code, -1)
 
 // --- check: true throws ProcessError on a non-zero exit ---
-let chk = try {
+assert_throws("ProcessError", fn () {
   Proc.run(["false"], check: true)
-  "no-error"
-} catch e {
-  e.kind
-}
-assert_eq(chk, "ProcessError")
+})
 // ...and returns normally (no throw) when the command succeeds.
 assert_true(Proc.run(["true"], check: true).ok)
 
 // --- Spawn failure (nonexistent executable) throws ProcessError ---
-let nx = try {
+assert_throws("ProcessError", fn () {
   Proc.run(["culebra_no_such_cmd_xyzzy"])
-  "no-error"
-} catch e {
-  e.kind
-}
-assert_eq(nx, "ProcessError")
+})
 
 // --- Argument validation ---
-let te = try {
+assert_throws("TypeError", fn () {
   Proc.run([1, 2])
-  "no-error"
-} catch e {
-  e.kind
-}
-assert_eq(te, "TypeError")
-let ve = try {
+})
+assert_throws("ValueError", fn () {
   Proc.run([])
-  "no-error"
-} catch e {
-  e.kind
-}
-assert_eq(ve, "ValueError")
+})
 
 // --- Proc.all: parallel, results in input order, error nil on success ---
 let rs = Proc.all([["echo", "a"], ["echo", "b"], ["echo", "c"]])
@@ -171,13 +155,9 @@ assert_eq(big[2].stdout.split("\n").size(), 5001)
 
 // --- Empty list: all -> [], race -> ValueError ---
 assert_eq(Proc.all([]).size(), 0)
-let re = try {
+assert_throws("ValueError", fn () {
   Proc.race([])
-  "no-error"
-} catch e {
-  e.kind
-}
-assert_eq(re, "ValueError")
+})
 
 // --- Proc.race: fastest wins, the rest are killed (does not block on sleep) ---
 let win = Proc.race([["sleep", "5"], ["echo", "fast"]])
@@ -185,13 +165,9 @@ assert_eq(win.stdout.trim(), "fast")
 assert_true(win.ok)
 
 // --- Type errors on malformed command lists ---
-let ne = try {
+assert_throws("TypeError", fn () {
   Proc.all([["echo"], "notarray"])
-  "no-error"
-} catch e {
-  e.kind
-}
-assert_eq(ne, "TypeError")
+})
 
 // --- timeout: a slow command is killed and flagged timed_out ---
 let slow = Proc.run(["sleep", "5"], timeout: 200)
@@ -206,13 +182,9 @@ assert_eq(quick.timed_out, false)
 assert_eq(quick.stdout.trim(), "hi")
 
 // timeout + check: true throws ProcessError.
-let ce = try {
+assert_throws("ProcessError", fn () {
   Proc.run(["sleep", "5"], timeout: 100, check: true)
-  "no-error"
-} catch e {
-  e.kind
-}
-assert_eq(ce, "ProcessError")
+})
 
 // timeout applies per command in Proc.all.
 let tos = Proc.all([["sleep", "5"], ["echo", "ok"]], timeout: 200)
@@ -241,13 +213,9 @@ assert_false(FS.exists(gc_marker))
 FS.remove(gc_scratch, recursive: true)
 
 // --- fail_fast: first failure throws ProcessError, the rest are killed ---
-let ff = try {
+assert_throws("ProcessError", fn () {
   Proc.all([["sleep", "5"], ["false"], ["sleep", "5"]], fail_fast: true)
-  "no-error"
-} catch e {
-  e.kind
-}
-assert_eq(ff, "ProcessError")
+})
 
 // fail_fast with all successes returns the result array (no throw).
 let allok = Proc.all([["echo", "a"], ["echo", "b"]], fail_fast: true)
@@ -260,13 +228,9 @@ assert_eq(settled.size(), 2)
 assert_eq(settled[1].ok, false)
 
 // A spawn failure also triggers fail_fast.
-let ffspawn = try {
+assert_throws("ProcessError", fn () {
   Proc.all([["culebra_no_such_cmd_xyzzy"], ["sleep", "5"]], fail_fast: true)
-  "no-error"
-} catch e {
-  e.kind
-}
-assert_eq(ffspawn, "ProcessError")
+})
 
 // --- retries: a persistently failing command keeps the last failure ---
 let rex = Proc.all([["false"]], retries: 2)
@@ -279,13 +243,9 @@ assert_true(rok[0].ok)
 assert_eq(rok[0].stdout.trim(), "hi")
 
 // retries + fail_fast: fail_fast only fires after retries are exhausted.
-let rff = try {
+assert_throws("ProcessError", fn () {
   Proc.all([["false"]], retries: 1, fail_fast: true)
-  "no-error"
-} catch e {
-  e.kind
-}
-assert_eq(rff, "ProcessError")
+})
 
 // --- Proc.spawn: a live handle with wait/poll/kill ---
 let sp = Proc.spawn(["echo", "spawned"])
@@ -326,13 +286,9 @@ let pipe = Proc.spawn(["cat"], stdin: "fed\n")
 assert_eq(pipe.wait().stdout, "fed\n")
 
 // A spawn failure throws (like Proc.run).
-let se = try {
+assert_throws("ProcessError", fn () {
   Proc.spawn(["culebra_no_such_cmd_xyzzy"])
-  "no-error"
-} catch e {
-  e.kind
-}
-assert_eq(se, "ProcessError")
+})
 
 // Handles dropped without wait() are reaped by GC (no leak / no hang).
 fn spawn_and_drop() {

@@ -50,6 +50,11 @@ let m3 = CodeGen.Module.new()
 let w = m3.literal(v: 1, line: 1, col: 1, at: node)
 assert_eq(m3.node_line(w), 7)
 
+# positionally, `at` follows the operands, ahead of line/col, so a front end
+# holding a parse node passes it as is
+let p = m3.binary('add', m3.literal(1, node), m3.literal(2, node), node)
+assert_eq([m3.node_line(p), m3.node_col(p)], [7, 3])
+
 # the errors
 assert_throws('TypeError', fn () {
   m3.literal(v: 1, at: {line: 1})

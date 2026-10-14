@@ -89,7 +89,9 @@
 # into test_gc_no_leak.cul (one harness, every bound exact), defer_in_loop.cul
 # into test_defer.cul and method_ufcs_globals.cul into test_ufcs.cul (they
 # printed their results instead of asserting them).
-tests.cul 312
+# 310 since test_embed_read.cul went into test_dir.cul and
+# test_codegen_at_positional.cul into test_codegen_at.cul (subsets of them).
+tests.cul 310
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

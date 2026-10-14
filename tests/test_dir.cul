@@ -228,6 +228,12 @@ assert_eq(
   caught(|| Dir.embedded(5)),
   'TypeError: type error: Dir.embedded expects String, got Long',
 )
+# A native Dir's method binds its arguments as any function does.
+assert_eq(
+  caught(|| emb.read(42)),
+  "TypeError: type error: parameter 'path' expects StringLike",
+)
+assert_eq(caught(|| emb.exists()), "ArityError: missing required argument 'path'")
 
 # --- Dir.zip ---
 # The same files, packed by Compress.zip: read from bytes, and from a file.

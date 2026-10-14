@@ -69,13 +69,9 @@ assert_eq(Sys.getcwd(), orig)
 FS.remove(dir, recursive: true)
 
 // --- Error path: chdir to a non-existent dir throws IOError ---
-let err = try {
+assert_throws("IOError", fn () {
   Sys.chdir("/definitely/not/a/real/path/xyzzy")
-  "no-error"
-} catch e {
-  e.kind
-}
-assert_eq(err, "IOError")
+})
 
 // --- data_dir ---
 // An absolute path under the platform's per-user data directory, ending in

@@ -86,16 +86,12 @@ iso1.drop()
 
 // --- a non-Sendable handler is rejected at serve(), naming the problem ---
 mut captured = 0
-let kind = try {
+assert_throws("SendError", fn () {
   let l2 = Net.listen(0, host: HOST)
   l2.serve(fn (conn) {
     captured = captured + 1
   })
-  ""
-} catch e {
-  e.kind
-}
-assert_eq(kind, "SendError")
+})
 
 iso.drop()  // stops the accept loop, joins the thread
 inspect("net server ok")

@@ -49,23 +49,15 @@ FS.remove(envfile)
 FS.remove(tmp_root, recursive: true)
 
 // --- Error path: missing file throws IOError ---
-let err = try {
+assert_throws("IOError", fn () {
   Env.load("/definitely/not/a/real/file.env")
-  "no-error"
-} catch e {
-  e.kind
-}
-assert_eq(err, "IOError")
+})
 
 // `override:` must be Bool — a non-Bool raises TypeError (checked before the
 // file is opened), identically on every backend.
-let terr = try {
+assert_throws("TypeError", fn () {
   Env.load("/any.env", override: 1)
-  "no-error"
-} catch e {
-  e.kind
-}
-assert_eq(terr, "TypeError")
+})
 
 // --- Bare-resolve (slow path): namespace as a first-class value ---
 let m = Env

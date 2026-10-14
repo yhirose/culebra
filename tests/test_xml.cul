@@ -72,105 +72,45 @@ assert_eq(XML.parse('<a>&lt;&gt;&amp;&quot;&apos;</a>').children, ["<>&\"'"])
 assert_eq(XML.parse('<a>&#65;&#x42;&#x1F600;&#10;</a>').children, ["AB😀\n"])
 assert_eq(XML.parse('<a t="&lt;&#x41;"/>').attrs.t, '<A')
 // A DOCTYPE's entities are never expanded (no XXE, no billion laughs).
-assert_eq(
-  perr(|| XML.parse('<!DOCTYPE r [<!ENTITY e "x">]><r>&e;</r>')),
-  "ValueError: XML.parse: undefined entity '&e;' @1:34",
-)
-assert_eq(
-  perr(|| XML.parse("<a>\n  &nbsp;</a>")),
-  "ValueError: XML.parse: undefined entity '&nbsp;' @2:3",
-)
-assert_eq(
-  perr(|| XML.parse('<a>&#0;</a>')),
-  "ValueError: XML.parse: character reference '&#0;' is not a valid XML character @1:4",
-)
-assert_eq(
-  perr(|| XML.parse('<a>&#xD800;</a>')),
-  "ValueError: XML.parse: character reference '&#xD800;' is not a valid XML character @1:4",
-)
-assert_eq(
-  perr(|| XML.parse('<a>&#x12G;</a>')),
-  "ValueError: XML.parse: malformed character reference @1:4",
-)
-assert_eq(
-  perr(|| XML.parse('<a>a & b</a>')),
-  "ValueError: XML.parse: '&' does not start an entity reference @1:6",
-)
-assert_eq(
-  perr(|| XML.parse('<a>&amp</a>')),
-  "ValueError: XML.parse: unterminated entity reference @1:4",
-)
+for (src, msg) in [
+  ('<!DOCTYPE r [<!ENTITY e "x">]><r>&e;</r>', "undefined entity '&e;' @1:34"),
+  ("<a>\n  &nbsp;</a>", "undefined entity '&nbsp;' @2:3"),
+  ('<a>&#0;</a>', "character reference '&#0;' is not a valid XML character @1:4"),
+  ('<a>&#xD800;</a>', "character reference '&#xD800;' is not a valid XML character @1:4"),
+  ('<a>&#x12G;</a>', "malformed character reference @1:4"),
+  ('<a>a & b</a>', "'&' does not start an entity reference @1:6"),
+  ('<a>&amp</a>', "unterminated entity reference @1:4"),
+] {
+  assert_eq(perr(|| XML.parse(src)), "ValueError: XML.parse: {msg}", src)
+}
 
 // --- well-formedness ---
-assert_eq(
-  perr(|| XML.parse('<a><b></a>')),
-  "ValueError: XML.parse: mismatched end tag: expected '</b>', got '</a>' @1:7",
-)
-assert_eq(
-  perr(|| XML.parse('<a x="1" x="2"/>')),
-  "ValueError: XML.parse: duplicate attribute 'x' @1:10",
-)
-assert_eq(
-  perr(|| XML.parse('<a x=1/>')),
-  "ValueError: XML.parse: attribute value must be quoted @1:6",
-)
-assert_eq(
-  perr(|| XML.parse('<a x="<"/>')),
-  "ValueError: XML.parse: '<' is not allowed in an attribute value @1:7",
-)
-assert_eq(
-  perr(|| XML.parse('<a x="1/>')),
-  "ValueError: XML.parse: unterminated attribute value @1:6",
-)
-assert_eq(
-  perr(|| XML.parse('<a x="1"y="2"/>')),
-  "ValueError: XML.parse: expected whitespace, '>' or '/>' in a start tag @1:9",
-)
-assert_eq(
-  perr(|| XML.parse('hello <a/>')),
-  "ValueError: XML.parse: content before the root element @1:1",
-)
-assert_eq(
-  perr(|| XML.parse('<a/>tail')),
-  "ValueError: XML.parse: content after the root element @1:5",
-)
-assert_eq(
-  perr(|| XML.parse('<a/><b/>')),
-  "ValueError: XML.parse: more than one root element @1:5",
-)
-assert_eq(
-  perr(|| XML.parse('  <!-- only -->  ')),
-  "ValueError: XML.parse: no root element @1:18",
-)
+for (src, msg) in [
+  ('<a><b></a>', "mismatched end tag: expected '</b>', got '</a>' @1:7"),
+  ('<a x="1" x="2"/>', "duplicate attribute 'x' @1:10"),
+  ('<a x=1/>', "attribute value must be quoted @1:6"),
+  ('<a x="<"/>', "'<' is not allowed in an attribute value @1:7"),
+  ('<a x="1/>', "unterminated attribute value @1:6"),
+  ('<a x="1"y="2"/>', "expected whitespace, '>' or '/>' in a start tag @1:9"),
+  ('hello <a/>', "content before the root element @1:1"),
+  ('<a/>tail', "content after the root element @1:5"),
+  ('<a/><b/>', "more than one root element @1:5"),
+  ('  <!-- only -->  ', "no root element @1:18"),
+] {
+  assert_eq(perr(|| XML.parse(src)), "ValueError: XML.parse: {msg}", src)
+}
 assert_eq(perr(|| XML.parse('')), "ValueError: XML.parse: no root element @1:1")
-assert_eq(
-  perr(|| XML.parse('<a><b>')),
-  "ValueError: XML.parse: unexpected end of input: '<b>' is not closed @1:7",
-)
-assert_eq(
-  perr(|| XML.parse('<a>x]]>y</a>')),
-  "ValueError: XML.parse: ']]>' is not allowed in text @1:5",
-)
-assert_eq(
-  perr(|| XML.parse('<a><!-- a -- b --></a>')),
-  "ValueError: XML.parse: '--' is not allowed in a comment @1:11",
-)
-assert_eq(
-  perr(|| XML.parse('<a><![CDATA[x</a>')),
-  "ValueError: XML.parse: unterminated CDATA section @1:4",
-)
-assert_eq(
-  perr(|| XML.parse('<r/><?xml version="1.0"?>')),
-  "ValueError: XML.parse: the XML declaration is only allowed at the start @1:5",
-)
-assert_eq(
-  perr(|| XML.parse('<a:b:c/>')),
-  "ValueError: XML.parse: invalid qualified name 'a:b:c' @1:2",
-)
-assert_eq(
-  perr(|| XML.parse('<1a/>')),
-  "ValueError: XML.parse: content before the root element @1:1",
-)
+for (src, msg) in [
+  ('<a><b>', "unexpected end of input: '<b>' is not closed @1:7"),
+  ('<a>x]]>y</a>', "']]>' is not allowed in text @1:5"),
+  ('<a><!-- a -- b --></a>', "'--' is not allowed in a comment @1:11"),
+  ('<a><![CDATA[x</a>', "unterminated CDATA section @1:4"),
+  ('<r/><?xml version="1.0"?>', "the XML declaration is only allowed at the start @1:5"),
+  ('<a:b:c/>', "invalid qualified name 'a:b:c' @1:2"),
+  ('<1a/>', "content before the root element @1:1"),
+] {
+  assert_eq(perr(|| XML.parse(src)), "ValueError: XML.parse: {msg}", src)
+}
 
 // UTF-8 only: another declared encoding is an error, and so are bytes that
 // are not UTF-8 or characters XML does not allow.
@@ -248,34 +188,24 @@ assert_eq(
   perr(|| XML.parse('<?xml version="1.0"encoding="UTF-8"?><r/>')),
   'ValueError: XML.parse: expected whitespace in the XML declaration @1:20',
 )
-assert_eq(
-  perr(|| XML.parse('<?xml version="2.0"?><r/>')),
-  "ValueError: XML.parse: version '2.0' is not an XML 1.x version @1:16",
-)
-assert_eq(
-  perr(|| XML.parse('<?xml version="1."?><r/>')),
-  "ValueError: XML.parse: version '1.' is not an XML 1.x version @1:16",
-)
-assert_eq(
-  perr(|| XML.parse('<?xml version="1.0" standalone="maybe"?><r/>')),
-  "ValueError: XML.parse: standalone must be 'yes' or 'no', got 'maybe' @1:33",
-)
+for (src, msg) in [
+  ('<?xml version="2.0"?><r/>', "version '2.0' is not an XML 1.x version @1:16"),
+  ('<?xml version="1."?><r/>', "version '1.' is not an XML 1.x version @1:16"),
+  ('<?xml version="1.0" standalone="maybe"?><r/>', "standalone must be 'yes' or 'no', got 'maybe' @1:33"),
+] {
+  assert_eq(perr(|| XML.parse(src)), "ValueError: XML.parse: {msg}", src)
+}
 
 // A processing instruction's target is a name without ':' followed by
 // whitespace or `?>`; `<!DOCTYPE` is followed by whitespace.
 assert_eq(XML.parse('<r><?pi?></r>').children, [])
-assert_eq(
-  perr(|| XML.parse('<r><?pi"x"?></r>')),
-  "ValueError: XML.parse: expected whitespace or '?>' after a processing instruction target @1:8",
-)
-assert_eq(
-  perr(|| XML.parse('<r><?a:b x?></r>')),
-  "ValueError: XML.parse: a processing instruction target cannot contain ':' @1:6",
-)
-assert_eq(
-  perr(|| XML.parse('<!DOCTYPEr><r/>')),
-  "ValueError: XML.parse: expected whitespace after '<!DOCTYPE' @1:10",
-)
+for (src, msg) in [
+  ('<r><?pi"x"?></r>', "expected whitespace or '?>' after a processing instruction target @1:8"),
+  ('<r><?a:b x?></r>', "a processing instruction target cannot contain ':' @1:6"),
+  ('<!DOCTYPEr><r/>', "expected whitespace after '<!DOCTYPE' @1:10"),
+] {
+  assert_eq(perr(|| XML.parse(src)), "ValueError: XML.parse: {msg}", src)
+}
 
 // --- namespaces ---
 let nsdoc = XML.parse('<root xmlns="urn:d" xmlns:x="urn:x" xmlns:xlink="urn:l"><x:item xlink:href="#a">1</x:item><item>2</item><plain xmlns=""><deep/></plain><x:y xmlns:x="urn:x2"/></root>')
@@ -329,22 +259,14 @@ assert_eq(
   XML.parse('<r xmlns:xml="http://www.w3.org/XML/1998/namespace"/>').tag,
   'r',
 )
-assert_eq(
-  perr(|| XML.parse('<r xmlns:p="http://www.w3.org/XML/1998/namespace"/>')),
-  "ValueError: XML.parse: the namespace 'http://www.w3.org/XML/1998/namespace' is bound only to the 'xml' prefix @1:4",
-)
-assert_eq(
-  perr(|| XML.parse('<r xmlns="http://www.w3.org/XML/1998/namespace"/>')),
-  "ValueError: XML.parse: the namespace 'http://www.w3.org/XML/1998/namespace' is bound only to the 'xml' prefix @1:4",
-)
-assert_eq(
-  perr(|| XML.parse('<r xmlns:p="http://www.w3.org/2000/xmlns/"/>')),
-  "ValueError: XML.parse: the namespace 'http://www.w3.org/2000/xmlns/' cannot be declared @1:4",
-)
-assert_eq(
-  perr(|| XML.parse('<r xmlns="http://www.w3.org/2000/xmlns/"/>')),
-  "ValueError: XML.parse: the namespace 'http://www.w3.org/2000/xmlns/' cannot be declared @1:4",
-)
+for (src, msg) in [
+  ('<r xmlns:p="http://www.w3.org/XML/1998/namespace"/>', "the namespace 'http://www.w3.org/XML/1998/namespace' is bound only to the 'xml' prefix @1:4"),
+  ('<r xmlns="http://www.w3.org/XML/1998/namespace"/>', "the namespace 'http://www.w3.org/XML/1998/namespace' is bound only to the 'xml' prefix @1:4"),
+  ('<r xmlns:p="http://www.w3.org/2000/xmlns/"/>', "the namespace 'http://www.w3.org/2000/xmlns/' cannot be declared @1:4"),
+  ('<r xmlns="http://www.w3.org/2000/xmlns/"/>', "the namespace 'http://www.w3.org/2000/xmlns/' cannot be declared @1:4"),
+] {
+  assert_eq(perr(|| XML.parse(src)), "ValueError: XML.parse: {msg}", src)
+}
 
 // --- events: a lazy Iterator over the same parser ---
 let evs = XML.events("<r a=\"1\"><s>x</s><t/>\n</r>").collect()

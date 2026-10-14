@@ -72,45 +72,29 @@ let fb = File.open(big, "r")
 for line in fb.lines() {
   break
 }
-let e_broken = try {
+assert_throws("IOError", fn () {
   fb.read()
-  "no-err"
-} catch e {
-  e.kind
-}
-assert_eq(e_broken, "IOError")
+})
 
 // Terminal methods dispose the lines()/chunks() iterator too (§18.5, same
 // rule as break): draining and early-exiting terminals both close the fd.
 let ft1 = File.open(big, "r")
 assert_eq(ft1.lines().count(), 100)
-let e_t1 = try {
+assert_throws("IOError", fn () {
   ft1.read()
-  "no-err"
-} catch e {
-  e.kind
-}
-assert_eq(e_t1, "IOError")
+})
 
 let ft2 = File.open(big, "r")
 assert_eq(ft2.lines().find(|l| l == "line1"), "line1")
-let e_t2 = try {
+assert_throws("IOError", fn () {
   ft2.read()
-  "no-err"
-} catch e {
-  e.kind
-}
-assert_eq(e_t2, "IOError")
+})
 
 let ft3 = File.open(big, "r")
 assert_eq(ft3.chunks(4096).count(), 1)
-let e_t3 = try {
+assert_throws("IOError", fn () {
   ft3.read()
-  "no-err"
-} catch e {
-  e.kind
-}
-assert_eq(e_t3, "IOError")
+})
 FS.remove(big)
 
 // --- chunks(n): fixed-size byte chunks ---
@@ -147,32 +131,20 @@ c.close()
 c.close()  // no-op, no throw
 
 // --- error paths ---
-let e_mode = try {
+assert_throws("ValueError", fn () {
   File.open(p, "q")
-  "no-err"
-} catch e {
-  e.kind
-}
-assert_eq(e_mode, "ValueError")
+})
 
-let e_write = try {
+assert_throws("IOError", fn () {
   let rh = File.open(p, "r")
   rh.write("x")
-  "no-err"
-} catch e {
-  e.kind
-}
-assert_eq(e_write, "IOError")
+})
 
-let e_closed = try {
+assert_throws("IOError", fn () {
   let ch = File.open(p, "r")
   ch.close()
   ch.read()
-  "no-err"
-} catch e {
-  e.kind
-}
-assert_eq(e_closed, "IOError")
+})
 
 // A handle method's error is positioned at the call, like every other error.
 let ph = File.open(p, "r")

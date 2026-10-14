@@ -111,13 +111,9 @@ FS.remove(dir)
 assert_eq(FS.exists(dir), false)
 
 // --- Error path: size on non-existent throws IOError ---
-let err = try {
+assert_throws("IOError", fn () {
   FS.size(bogus)
-  "no-error"
-} catch e {
-  e.kind
-}
-assert_eq(err, "IOError")
+})
 
 // read/write of an unopenable path: kind + message identical across backends.
 let rerr = try {

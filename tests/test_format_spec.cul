@@ -39,13 +39,9 @@ let b = 3
 assert_eq("{a + b:03}", "005")
 
 // Invalid spec for the type raises ValueError.
-let e = try {
+assert_throws("ValueError", fn () {
   let _ = "{pi:z}"
-  nil
-} catch er {
-  er.kind
-}
-assert_eq(e, "ValueError")
+})
 
 // --- computed fields inside the spec: `{expr:...{expr}...}` -----------
 let w = 8

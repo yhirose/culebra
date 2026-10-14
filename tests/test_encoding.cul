@@ -61,13 +61,9 @@ assert_eq(Encoding.base64.decode(Encoding.base64.encode(bin)), bin)
 // whitespace in encoded input is tolerated (wrapped base64)
 assert_eq(Encoding.base64.decode("dXNlcjpw\nYXNz"), "user:pass")
 // invalid characters → ValueError
-let b64bad = try {
+assert_throws("ValueError", fn () {
   Encoding.base64.decode("!!!!")
-  nil
-} catch e {
-  e.kind
-}
-assert_eq(b64bad, "ValueError")
+})
 // bound sub-namespace as a value
 let b = Encoding.base64
 assert_eq(b.decode(b.encode("xyz")), "xyz")
@@ -82,21 +78,13 @@ assert_eq(Encoding.hex.decode(""), "")
 // round trip, binary-safe (multi-byte UTF-8 survives)
 assert_eq(Encoding.hex.decode(Encoding.hex.encode(bin)), bin)
 // odd length → ValueError
-let hexodd = try {
+assert_throws("ValueError", fn () {
   Encoding.hex.decode("abc")
-  nil
-} catch e {
-  e.kind
-}
-assert_eq(hexodd, "ValueError")
+})
 // non-hex character → ValueError
-let hexbad = try {
+assert_throws("ValueError", fn () {
   Encoding.hex.decode("zz")
-  nil
-} catch e {
-  e.kind
-}
-assert_eq(hexbad, "ValueError")
+})
 
 // --- url (RFC 3986 percent-encoding; unreserved A-Za-z0-9-_.~ kept) ---
 assert_eq(Encoding.url.encode("a b"), "a%20b")  // space → %20, not +
