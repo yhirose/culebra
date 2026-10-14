@@ -3694,17 +3694,22 @@ let _kauai_module = fn () {
     let note = fn (v, pitch, t0, t1, level, touch) {
       let loud = touch != nil && (touch.accent || touch.marcato) ? louder(level) : level
       let len = t1 - t0
-      if v.host != nil {
-        out.push({at: t0, len: len, by: v.name, pitch: pitch, vol: v.vol * loud / MF, sound: "{v.name} {pitch}"})
-        return nil
-      }
-      let vol = v.vol * loud / MF
       let sounded = cond {
         touch == nil => len,
         touch.staccato => len / 2,
         touch.marcato => len * 3 / 4,
         _ => len,
       }
+      if v.host != nil {
+        # `sounded` and `slur` are for an instrument that plays a note at a
+        # time; host_sounds keys the sound by what that instrument hears.
+        out.push({
+          at: t0, len: len, by: v.name, pitch: pitch, vol: v.vol * loud / MF,
+          sounded: sounded, slur: touch != nil && touch.legato, mut sound: "{v.name} {pitch}",
+        })
+        return nil
+      }
+      let vol = v.vol * loud / MF
       let joined = touch != nil && (touch.legato || touch.tenuto)
       let sustain = Math.max(0.0, sounded - (joined ? 0 : v.gap) / 60.0)
       let f = hz(pitch)
@@ -3769,17 +3774,32 @@ let _kauai_module = fn () {
       f
     }
     mut out = {}
+    # Each voice's last note, for whether a slur carries it into the next.
+    mut last = {}
     for e in events {
-      continue if !e.has("sound") || out.has(e.sound)
+      continue if !e.has("sound")
       if e.pitch == nil {
+        continue if out.has(e.sound)
         let d = x.drums[e.by]
         let make = fn_for(drums, "drums", d.host, "drum {e.by}")
         out[e.sound] = || make(d.params)
-      } else {
-        let v = x.voices[e.by]
-        let make_note = fn_for(voices, "voices", v.host, "voice {e.by}")
+        continue
+      }
+      let v = x.voices[e.by]
+      let make = fn_for(voices, "voices", v.host, "voice {e.by}")
+      if type_of(make) == "Object" {
+        # An instrument that plays a note at a time, `{note: |n, params|}`:
+        # one sound for each note it hears differently.
+        __raise("ValueError", "Audio.Kauai: voices.{v.host.lower()} is an Object with no `note`") if !make.has("note")
+        let prev = last.get(e.by, nil)
+        let from = prev != nil && prev.slur && Math.abs(prev.at + prev.len - e.at) < 0.001
+        last[e.by] = e
+        let n = {pitch: e.pitch, len: e.sounded, from: from, to: e.slur}
+        e.sound = "{e.by} {e.pitch} {Math.round(e.sounded * 1000)} {from} {e.slur}"
+        out[e.sound] = || make.note(n, v.params) if !out.has(e.sound)
+      } else if !out.has(e.sound) {
         let p = e.pitch
-        out[e.sound] = || make_note(p, v.params)
+        out[e.sound] = || make(p, v.params)
       }
     }
     out

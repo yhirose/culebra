@@ -281,7 +281,7 @@ assert_eq(spellings, 70)
 let examples = FS.glob("examples/kauai/songs/*.kau")
 assert_eq(
   examples.map(FS.basename),
-  ["features.kau", "first.kau", "jetveux.kau", "jetveux_piano.kau", "trio.kau"],
+  ["features.kau", "first.kau", "jetveux.kau", "jetveux_piano.kau", "strings.kau", "trio.kau"],
 )
 for path in examples {
   assert_true(song_of(FS.read(path)).events().size() > 0)

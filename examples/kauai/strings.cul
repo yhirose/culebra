@@ -1,0 +1,80 @@
+# Bowed strings for Audio.Kauai.load's `voices:`: `host Violin`, `host Viola`
+# and `host Cello`. Each plays a note at a time ({note: |n, params|}), so a
+# note sounds as long as it is held: the bow takes hold, the note swells into
+# its vibrato, and it fades when the bow leaves. A slur carries one note into
+# the next without a new stroke.
+
+let RATE = 22050
+
+# 16-bit mono samples (-1.0..1.0) as a WAV file's bytes.
+fn wav(samples) {
+  let data = String.pack("i16", samples.map(|s| Math.round(Math.max(-1.0, Math.min(1.0, s)) * 32000)))
+  let n = samples.size() * 2
+  String.pack("u32", [0x46464952, 36 + n, 0x45564157, 0x20746d66, 16]) +
+    String.pack("u16", [1, 1]) +
+    String.pack("u32", [RATE, RATE * 2]) +
+    String.pack("u16", [2, 16]) +
+    String.pack("u32", [0x61746164, n]) +
+    data
+}
+
+fn hz(pitch) {
+  440.0 * Math.exp((pitch - 69) / 12.0 * Math.log(2.0))
+}
+
+# How strongly the instrument's body gives back a partial at `f` Hz: a floor,
+# and its resonances {at, width, gain}.
+fn body(f, peaks) {
+  peaks.reduce(0.15, |sum, p| sum + p.gain * Math.exp(-((f - p.at) / p.width) ** 2))
+}
+
+# One note `n` ({pitch, len, from, to}) on an instrument shaped by `peaks`.
+# The harmonics are a sawtooth's (the bow's stick and slip) coloured by the
+# body; sin(k·x) comes from the two before it, so a sample costs one sin.
+fn bowed(n, peaks) {
+  let f = hz(n.pitch)
+  let count = Math.max(1, Math.min(16, Math.floor(RATE * 0.45 / f)))
+  let amps = iota(count).map(|k| body(f * (k + 1), peaks) / (k + 1))
+  let norm = 0.45 / amps.reduce(0.0, |a, b| a + b)
+  # A new stroke takes a moment to speak; a slurred note is already sounding.
+  let attack = n.from ? 0.02 : 0.08
+  # A slur hands over to the next note; a lifted bow lets the string ring.
+  let release = n.to ? 0.02 : 0.15
+  let held = Math.max(n.len, attack)
+  let total = Math.round((held + release) * RATE)
+  let w = 2.0 * Math.pi * f / RATE
+  mut phase = 0.0
+  iota(total).map(fn (i) {
+    let t = i.to_float() / RATE
+    # Vibrato that grows in after the note has settled.
+    let depth = 0.004 * Math.max(0.0, Math.min(1.0, (t - 0.2) / 0.3))
+    let wobble = Math.sin(2.0 * Math.pi * 5.6 * t)
+    phase += w * (1.0 + depth * wobble)
+    let s1 = Math.sin(phase)
+    let c2 = 2.0 * Math.cos(phase)
+    mut prev = 0.0
+    mut cur = s1
+    mut sum = amps[0] * s1
+    for k in 1..count {
+      let next = c2 * cur - prev
+      prev = cur
+      cur = next
+      sum += amps[k] * cur
+    }
+    let rise = Math.min(1.0, t / attack)
+    let fall = t <= held ? 1.0 : Math.max(0.0, 1.0 - (t - held) / release)
+    sum * norm * rise * rise * fall * (1.0 + 2.0 * depth * wobble)
+  })
+}
+
+let VIOLIN = [{at: 280.0, width: 80.0, gain: 0.8}, {at: 460.0, width: 150.0, gain: 1.0}, {at: 2800.0, width: 900.0, gain: 0.9}]
+let VIOLA = [{at: 230.0, width: 70.0, gain: 0.8}, {at: 380.0, width: 130.0, gain: 1.0}, {at: 2200.0, width: 800.0, gain: 0.7}]
+let CELLO = [{at: 110.0, width: 40.0, gain: 0.9}, {at: 200.0, width: 80.0, gain: 1.0}, {at: 1200.0, width: 500.0, gain: 0.6}]
+
+let voices = {
+  violin: {note: |n, params| Audio.Sound(wav(bowed(n, VIOLIN)))},
+  viola: {note: |n, params| Audio.Sound(wav(bowed(n, VIOLA)))},
+  cello: {note: |n, params| Audio.Sound(wav(bowed(n, CELLO)))},
+}
+
+export {voices}

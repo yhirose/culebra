@@ -1,0 +1,38 @@
+about {
+  title  Bowed trio
+  note   the trio on host instruments that hold a note as long as it is written: slurs, long notes and a few short strokes
+}
+
+band Trio {
+  voice Violin  host Violin  plays melody     vol 60%
+  voice Viola   host Viola   plays part Alto  vol 45%
+  voice Cello   host Cello   plays part Cello vol 60%
+}
+
+song Held {
+  tempo 66
+  band Trio
+  melody in C5..B5
+  part Alto in G4..F#5
+  part Cello in C3..B3
+
+  Theme
+}
+
+section Theme {
+  C             (e4 f g a)
+    Alto:       c1
+  F             (a2 g4 f)
+    Alto:       c1
+  G7            .d4 .e .f .g
+    Alto:       b2 d
+  C             c1
+    Alto:       e1
+
+  part Cello {
+    c1
+    f,1
+    g,1
+    c1
+  }
+}
