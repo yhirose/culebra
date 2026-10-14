@@ -1774,9 +1774,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has(JitObject* obj
   // slots), so the compound-assign existence pre-check (`view.x += v`)
   // resolves against the layout.
   if (_jit_is_packed_view(obj)) {
-    auto [core, base] = _jit_packed_view_record(obj);
-    (void)base;
-    return _jit_packed_view_layout(obj, *core).find(key) != nullptr;
+    return _jit_packed_view_layout(obj, *_jit_view_core(obj)).find(key) !=
+           nullptr;
   }
   if (obj->is_shared_val) {
     JitValue found;

@@ -4010,6 +4010,11 @@ struct JitSharedBuf final : JitHandle {
 inline JitSharedBuf* _jit_shared_buf(JitObject* buf) {
   return static_cast<JitSharedBuf*>(buf->handle);  // is_shared_buffer
 }
+// The SharedBuffer `v` is, or null.
+inline JitObject* _jit_as_shared_buffer(JitValue v) {
+  auto* o = v.tag == TAG_OBJECT ? reinterpret_cast<JitObject*>(v.data) : nullptr;
+  return o && o->is_shared_buffer ? o : nullptr;
+}
 // The bytes of `buf`, a SharedBuffer; a dropped one has none.
 inline culebra::SharedBufferCore* _jit_buffer_core(JitObject* buf,
                                                    int64_t line = 0,
@@ -4030,11 +4035,10 @@ inline constexpr const char* kViewBuffer = "__buffer__";
 inline JitObject* _jit_view_buffer(JitObject* view, int64_t line = 0,
                                    int64_t col = 0) {
   size_t i = view->find_slot(kViewBuffer);
-  const JitValue* v =
-      i == static_cast<size_t>(-1) ? nullptr : &view->slots[i].value;
-  auto* buf = v && v->tag == TAG_OBJECT ? reinterpret_cast<JitObject*>(v->data)
-                                        : nullptr;
-  if (!buf || !buf->is_shared_buffer)
+  auto* buf = i == static_cast<size_t>(-1)
+                  ? nullptr
+                  : _jit_as_shared_buffer(view->slots[i].value);
+  if (!buf)
     throw culebra::CulebraError("ValueError", "SharedBuffer has been dropped",
                                 line, col);
   return buf;
@@ -4342,13 +4346,6 @@ inline const culebra::PackableLayout& _jit_packed_view_layout(
   return core.layout;
 }
 
-// Resolve a packed view to (core, record base pointer).
-inline std::pair<culebra::SharedBufferCore*, uint8_t*> _jit_packed_view_record(
-    JitObject* view) {
-  auto* core = _jit_view_core(view);
-  return {core, core->data + _jit_packed_view_off(view, *core)};
-}
-
 // A nested @packable record view over `buf` at absolute byte offset `off`.
 inline JitObject* _jit_make_nested_view(JitObject* buf, int64_t off,
                                         const char* cls) {
@@ -4461,23 +4458,13 @@ inline void _jit_packed_view_set(JitObject* view, const char* key, int8_t tag,
   if (f->layout.is_struct) {
     // Copy another @packable record of the same class (memcpy its bytes).
     auto* src = (tag == TAG_OBJECT) ? reinterpret_cast<JitObject*>(data) : nullptr;
-    bool ok = src && src->is_packed_view;
-    std::string src_cls;
-    culebra::SharedBufferCore* src_core = nullptr;
-    int64_t src_off = 0;
-    if (ok) {
-      src_core = _jit_buffer_core(_jit_view_buffer(src, line, col), line, col);
-      if (src_core) {
-        src_off = _jit_packed_view_off(src, *src_core);
-        src_cls = _jit_packed_view_class(src, *src_core);
-      } else {
-        ok = false;
-      }
-    }
-    if (!ok) {
+    if (!src || !src->is_packed_view) {
       throw culebra::CulebraError("TypeError", culebra::format(
           "field `{}` expects a `{}` record value", key, f->layout.elem_type), line, col);
     }
+    auto* src_core = _jit_view_core(src, line, col);
+    int64_t src_off = _jit_packed_view_off(src, *src_core);
+    std::string src_cls = _jit_packed_view_class(src, *src_core);
     if (src_cls != f->layout.elem_type) {
       throw culebra::CulebraError("TypeError", culebra::format(
           "field `{}` expects a `{}` record, got `{}`", key, f->layout.elem_type,

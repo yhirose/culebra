@@ -59,6 +59,25 @@ try {
   assert_eq(e.kind, "TypeError")
 }
 
+// So is a value that is no record, and a record whose buffer was dropped is
+// a ValueError, as reading it is.
+try {
+  buf[0].start = 1
+  assert_eq("no throw", "should throw")
+} catch e {
+  assert_eq(e.message, "field `start` expects a `Point` record value")
+}
+gone = SharedBuffer.new(1, Line)
+gone_start = gone[0].start
+gone.drop()
+try {
+  buf[0].start = gone_start
+  assert_eq("no throw", "should throw")
+} catch e {
+  assert_eq(e.kind, "ValueError")
+  assert_eq(e.message, "SharedBuffer has been dropped")
+}
+
 // Cross-isolate share: a child writes the nested sub-record's fields.
 shared = SharedBuffer.new(1, Line)
 w = Isolate.spawn(fn () {

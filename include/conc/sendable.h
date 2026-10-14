@@ -1214,10 +1214,8 @@ inline JitValue _jit_make_channel_endpoint(ChannelCore* core, int role) {
 // The buffer a method was called on. Its methods are only ever reached
 // through a buffer, so anything else is a call no program can spell.
 inline JitSharedBuf* _jit_self_shared_buf(JitValue self) {
-  auto* o = self.tag == TAG_OBJECT ? reinterpret_cast<JitObject*>(self.data)
-                                   : nullptr;
-  if (!o || !o->is_shared_buffer)
-    throw culebra::CulebraError("TypeError", "not a SharedBuffer");
+  auto* o = _jit_as_shared_buffer(self);
+  if (!o) throw culebra::CulebraError("TypeError", "not a SharedBuffer");
   return _jit_shared_buf(o);
 }
 
@@ -2667,9 +2665,9 @@ inline JitValue culebra_jit_channel_fan_in(int64_t n, JitValue* args,
   // The function is checked once up front, counting nothing; each producer
   // is then sent a message of its own, the function and its item together,
   // since a child gives back what its message holds in flight.
-  auto serialize = [&](auto&& fill) {
+  auto with_fan_in_context = [&](auto&& send) {
     try {
-      fill();
+      send();
     } catch (culebra::CulebraError& e) {
       if (e.kind == "SendError" && e.line == 0)
         throw culebra::CulebraError(
@@ -2677,7 +2675,7 @@ inline JitValue culebra_jit_channel_fan_in(int64_t n, JitValue* args,
       throw;
     }
   };
-  serialize([&] {
+  with_fan_in_context([&] {
     sendable::DryRun dry;
     JitSerCtx fsc;
     jit_serialize(args[1], fsc);
@@ -2699,7 +2697,7 @@ inline JitValue culebra_jit_channel_fan_in(int64_t n, JitValue* args,
     JitSerCtx asc;
     sendable::SendNode sfn;
     std::vector<sendable::SendNode> sargs;
-    serialize([&] {
+    with_fan_in_context([&] {
       sfn = jit_serialize(args[1], asc);
       sargs.push_back(jit_serialize(arr->items[i], asc));
     });

@@ -1702,9 +1702,8 @@ inline std::string _ns_proc_share_bufs(JitValue raw, std::string_view ctx,
   for (size_t k = 0; k < obj->prop_size(); k++) {
     std::string name(obj->prop_name(k));
     const JitValue& bv = obj->slots[k].value;
-    auto* buf = bv.tag == TAG_OBJECT ? reinterpret_cast<JitObject*>(bv.data)
-                                     : nullptr;
-    if (!buf || !buf->is_shared_buffer)
+    auto* buf = _jit_as_shared_buffer(bv);
+    if (!buf)
       return culebra::format("{}: share `{}` must be a SharedBuffer", ctx, name);
     out.emplace_back(name, _jit_shared_buf(buf)->core);
   }
