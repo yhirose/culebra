@@ -156,8 +156,8 @@ enum class JitHandleKind {
 inline JitHandleKind _jit_handle_kind(JitObject* o) {
   constexpr auto none = static_cast<size_t>(-1);
   if (_jit_chan_end(o)) return JitHandleKind::Channel;
-  if (o->has_handle) return JitHandleKind::Native;
   if (o->is_shared_buffer) return JitHandleKind::SharedBuffer;
+  if (o->has_handle) return JitHandleKind::Native;
   if (o->is_shared_val) return JitHandleKind::SharedVal;
   if (o->is_gen_frame) return JitHandleKind::Generator;
   // A native handle says so with a slot of its own; a wrapped class says it
@@ -212,14 +212,14 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
           n.b = (end->role == 1);
           return n;
         }
-        // SharedBuffer handle — the other shared-reference exception: ship
-        // its id and bump the in-flight ref (released after the node is
-        // consumed).
+        // SharedBuffer — the other shared-reference exception: the message
+        // carries a ref of its own on the bytes (let go of once the node is
+        // consumed). A dropped buffer ships as one.
         case JitHandleKind::SharedBuffer: {
-          int64_t id = o->slots[o->find_slot("__sharedbuffer_id__")].value.data;
-          if (!sendable::dry_run()) culebra::shared_buffer_bump(id, +1);
           n.kind = K::SharedBuffer;
-          n.i = id;
+          n.i = sendable::dry_run()
+                    ? 0
+                    : culebra::shared_buffer_word(_jit_shared_buf(o)->core);
           return n;
         }
         // Shared.new view: ship the frozen tree by (id, node) reference.
@@ -389,7 +389,7 @@ inline JitValue jit_float(double d) {
 }
 
 inline JitValue _jit_make_channel_endpoint(ChannelCore* core, int role);  // fwd
-inline JitValue _jit_make_shared_buffer_handle(int64_t id, int64_t count);  // fwd
+inline JitValue _jit_make_shared_buffer_handle(culebra::SharedBufferRef core);  // fwd
 inline JitValue _jit_make_shared_val_view(JitSvHold* hold,
                                           int64_t node);  // fwd
 inline JitValue _jit_shared_val_root(const culebra::SharedValCore* core,
@@ -544,12 +544,8 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
       if (core) chan_bump(core, role);  // this rebuilt endpoint's own count
       return _jit_make_channel_endpoint(core, role);
     }
-    case K::SharedBuffer: {
-      culebra::shared_buffer_bump(n.i, +1);  // the rebuilt handle's own ref
-      auto core = culebra::lookup_shared_buffer(n.i);
-      return _jit_make_shared_buffer_handle(
-          n.i, core ? static_cast<int64_t>(core->count) : 0);
-    }
+    case K::SharedBuffer:  // the rebuilt handle's own ref
+      return _jit_make_shared_buffer_handle(culebra::shared_buffer_of(n.i));
     case K::SharedVal: {
       // The receiver takes its own count; the in-flight one from the
       // sender's extract is released by release_inflight_channels. A tree
@@ -778,7 +774,6 @@ inline JitValue _jit_isolate_extract(const std::shared_ptr<IsolateCore>& core) {
     // value (symmetric with the interp `throw chan_take(*core.thrown)`).
     JitDeCtx tdc;
     JitValue tv = jit_deserialize(*core->thrown, tdc);
-    release_inflight_channels(*core->thrown);
     // 0:0 — the throw that produced this value ran on the isolate's thread,
     // so no position in this program's source applies to the re-raise.
     culebra_runtime_throw(tv.tag, tv.data, 0, 0);  // [[noreturn]]
@@ -1093,18 +1088,6 @@ inline void _jit_chan_drain(JitValue* __ret, JitClosure*, int8_t self_tag, int64
   { *__ret = {TAG_ARRAY, reinterpret_cast<int64_t>(out)}; return; }
 }
 
-// True if the handle was already dropped; otherwise marks it dropped, so a
-// SharedBuffer's refcount moves once across explicit `drop()` + GC teardown.
-inline bool _jit_handle_drop_consumed(JitObject* h) {
-  size_t di = h->find_slot("_dropped");
-  if (di != static_cast<size_t>(-1) && h->slots[di].value.tag == TAG_BOOL &&
-      h->slots[di].value.data) {
-    return true;
-  }
-  h->set_or_append("_dropped", JitValue{TAG_BOOL, 1}, true);
-  return false;
-}
-
 // Idempotent: the end gives its count back once (explicit `drop()`, the
 // release path's, the collector's).
 inline void _jit_chan_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
@@ -1228,28 +1211,39 @@ inline JitValue _jit_make_channel_endpoint(ChannelCore* core, int role) {
   return v;
 }
 
-// Idempotent SharedBuffer handle drop (explicit `buf.drop()` + GC teardown).
+// The buffer a method was called on. Its methods are only ever reached
+// through a buffer, so anything else is a call no program can spell.
+inline JitSharedBuf* _jit_self_shared_buf(JitValue self) {
+  auto* o = self.tag == TAG_OBJECT ? reinterpret_cast<JitObject*>(self.data)
+                                   : nullptr;
+  if (!o || !o->is_shared_buffer)
+    throw culebra::CulebraError("TypeError", "not a SharedBuffer");
+  return _jit_shared_buf(o);
+}
+
+// Idempotent: the buffer lets go of its ref once (explicit `buf.drop()`, the
+// release path's, the collector's).
 inline void _jit_shared_buffer_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                         JitValue*) {
   JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
-  if (!_jit_handle_drop_consumed(reinterpret_cast<JitObject*>(self.data)))
-    culebra::shared_buffer_drop(_jit_self_long(self, "__sharedbuffer_id__"));
+  _jit_self_shared_buf(self)->core.reset();
   { *__ret = {TAG_NIL, 0}; return; }
 }
 
-// `flush()` on a file-backed buffer (msync). Only attached to file handles.
+// `flush()` on a file-backed buffer (msync). Only on a file buffer's meta.
 inline void _jit_shared_buffer_flush(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                          JitValue*) {
   JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
-  culebra::shared_buffer_flush(_jit_self_long(self, "__sharedbuffer_id__"));
+  culebra::shared_buffer_flush(_jit_self_shared_buf(self)->core);
   { *__ret = {TAG_NIL, 0}; return; }
 }
 
 // `with_lock(fn)`: run `fn()` holding the buffer's lock, return its value. The
 // lock guard + JitMethodSelf + JitMethodArgs release the lock, `self`, and the
-// callback on any exit (mirrors the interp make_shared_buffer_handle with_lock).
+// callback on any exit. The guard holds a ref of its own, so a callback that
+// drops the buffer leaves the lock where it was.
 inline void _jit_shared_buffer_with_lock(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                              int64_t n_args, JitValue* args) {
   JitValue self{self_tag, self_data};
@@ -1262,8 +1256,7 @@ inline void _jit_shared_buffer_with_lock(JitValue* __ret, JitClosure*, int8_t se
     throw culebra::CulebraError("TypeError",
         "SharedBuffer.with_lock expects a function");
   }
-  auto core = culebra::lookup_shared_buffer(
-      _jit_self_long(self, "__sharedbuffer_id__"));
+  auto core = _jit_self_shared_buf(self)->core;
   if (!core) {
     throw culebra::CulebraError("ValueError", "SharedBuffer has been dropped");
   }
@@ -2454,36 +2447,36 @@ inline JitValue _jit_shared_val_root(const culebra::SharedValCore* core,
       core ? new JitSvHold{core, id, meta} : nullptr, node);
 }
 
-// Build a JIT SharedBuffer handle: markers + O(1) discriminator flag + a
-// GC-driven `drop` that releases the buffer's ref. Mirrors the channel
-// endpoint and the interp make_shared_buffer_handle.
-inline JitValue _jit_make_shared_buffer_handle(int64_t id, int64_t count) {
-  auto* h = _jit_view_new(&JitObject::is_shared_buffer);
-  h->set_or_append("__sharedbuffer_id__", JitValue{TAG_LONG, id}, false);
-  h->set_or_append("__sharedbuffer_count__", JitValue{TAG_LONG, count}, false);
-  h->set_or_append("_dropped", JitValue{TAG_BOOL, 0}, true);
-  h->set_or_append(
-      "drop",
-      JitValue{TAG_FUNC,
-               reinterpret_cast<int64_t>(_jit_native_method(_jit_shared_buffer_drop))},
-      false);
-  h->set_or_append(
-      "with_lock",
-      JitValue{TAG_FUNC, reinterpret_cast<int64_t>(
-                             _jit_native_method(_jit_shared_buffer_with_lock))},
-      false);
-  // File-backed buffers additionally expose `flush()` (msync) — mirrors the
-  // interp make_shared_buffer_handle.
-  auto core = culebra::lookup_shared_buffer(id);
-  if (core && core->storage == culebra::SharedBufferCore::Storage::File) {
-    h->set_or_append(
-        "flush",
-        JitValue{TAG_FUNC, reinterpret_cast<int64_t>(
-                               _jit_native_method(_jit_shared_buffer_flush))},
-        false);
+// The meta every SharedBuffer of this Runtime points its `proto` at: one for
+// a file-backed buffer, whose `flush` writes its pages out, one for the rest.
+inline JitObject* _jit_shared_buffer_meta(bool file) {
+  auto& t = culebra::runtime_substate<_JitPinnedMetas<int>>(
+      culebra::kSlotSharedBufferMetas);
+  auto it = t.tbl.find(file);
+  if (it == t.tbl.end()) {
+    // The method closures are unrooted until slotted into the meta.
+    culebra::gc::Heap::CollectPause pause(_gc_heap());
+    auto* meta = culebra_runtime_object_new();
+    _jit_view_method(meta, "drop", _jit_shared_buffer_drop);
+    _jit_view_method(meta, "with_lock", _jit_shared_buffer_with_lock);
+    if (file) _jit_view_method(meta, "flush", _jit_shared_buffer_flush);
+    _gc_heap().pin(meta);
+    it = t.tbl.emplace(file, meta).first;
   }
+  return it->second;
+}
+
+// A SharedBuffer over `core` (null: one already dropped), with a ref of its
+// own on the bytes.
+inline JitValue _jit_make_shared_buffer_handle(culebra::SharedBufferRef core) {
+  bool file =
+      core && core->storage == culebra::SharedBufferCore::Storage::File;
+  JitValue v = _jit_make_handle(new JitSharedBuf(std::move(core)),
+                                _jit_shared_buffer_meta(file));
+  auto* h = reinterpret_cast<JitObject*>(v.data);
+  h->is_shared_buffer = true;
   h->has_drop = true;
-  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
+  return v;
 }
 
 // JIT merged rx (Channel.fan_in). Same JitObject endpoint shape as a channel rx,
@@ -2671,16 +2664,24 @@ inline JitValue culebra_jit_channel_fan_in(int64_t n, JitValue* args,
   // threaded (a streaming producer blocks on send, so the inline-over-cap
   // fallback would deadlock). fn(item, tx) sends to its own channel; the
   // parent's tx is never created, the producer's auto-drops on exit.
-  JitSerCtx fsc;
-  sendable::SendNode sfn;
-  try {
-    sfn = jit_serialize(args[1], fsc);  // Sendable check (once)
-  } catch (culebra::CulebraError& e) {
-    if (e.kind == "SendError" && e.line == 0)
-      throw culebra::CulebraError(
-          "SendError", std::string("Channel.fan_in: ") + e.what(), line, col);
-    throw;
-  }
+  // The function is checked once up front, counting nothing; each producer
+  // is then sent a message of its own, the function and its item together,
+  // since a child gives back what its message holds in flight.
+  auto serialize = [&](auto&& fill) {
+    try {
+      fill();
+    } catch (culebra::CulebraError& e) {
+      if (e.kind == "SendError" && e.line == 0)
+        throw culebra::CulebraError(
+            "SendError", std::string("Channel.fan_in: ") + e.what(), line, col);
+      throw;
+    }
+  };
+  serialize([&] {
+    sendable::DryRun dry;
+    JitSerCtx fsc;
+    jit_serialize(args[1], fsc);
+  });
   auto defaults = jit_snapshot_trait_defaults();  // shared by the producers
   std::vector<ChannelCore*> sources;
   std::vector<std::shared_ptr<IsolateCore>> producers;
@@ -2696,15 +2697,12 @@ inline JitValue culebra_jit_channel_fan_in(int64_t n, JitValue* args,
   } unmerged{sources};
   for (size_t i = 0; i < arr->size; i++) {
     JitSerCtx asc;
+    sendable::SendNode sfn;
     std::vector<sendable::SendNode> sargs;
-    try {
+    serialize([&] {
+      sfn = jit_serialize(args[1], asc);
       sargs.push_back(jit_serialize(arr->items[i], asc));
-    } catch (culebra::CulebraError& e) {
-      if (e.kind == "SendError" && e.line == 0)
-        throw culebra::CulebraError(
-            "SendError", std::string("Channel.fan_in: ") + e.what(), line, col);
-      throw;
-    }
+    });
     // Its rx count is the merge's; its tx count is in flight to the producer
     // (released by the child).
     auto* chcore = new ChannelCore(1);
@@ -2717,7 +2715,8 @@ inline JitValue culebra_jit_channel_fan_in(int64_t n, JitValue* args,
     auto pcore = std::make_shared<IsolateCore>();
     g_live_isolates().fetch_add(1, std::memory_order_relaxed);
     pcore->thread = culebra::SizedThread(
-        [pcore, sfn, sargs = std::move(sargs), defaults]() mutable {
+        [pcore, sfn = std::move(sfn), sargs = std::move(sargs),
+         defaults]() mutable {
           run_isolate_child_jit(pcore, sfn, sargs, defaults,
                                 /*decrement_live=*/true);
         });

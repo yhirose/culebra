@@ -8,7 +8,7 @@
 // (sendable_rt.h) include this alone. Moved verbatim from isolate.h
 // (Phase 4 B7-b), whose tree-walker half retired with the engine (B7-f).
 
-#include <base/packable.h>       // shared_buffer_drop
+#include <base/packable.h>       // shared_buffer_word_release
 #include <conc/send_node.h>      // SendNode
 #include <base/shared.h>         // SizedThread, the cancel/wake flags
 #include <conc/sharedval_core.h> // shared_val_drop
@@ -86,12 +86,19 @@ struct IsolateCore {
 
   // Safety net: a joinable std::thread destroyed without join() calls
   // std::terminate. `join`/`drop` normally join first; this covers the rest.
+  //
+  // What the child handed back stays here for as long as the handle may be
+  // asked for it (`join` after `poll` reads it again), so the refs its nodes
+  // hold in flight (a channel end, a SharedBuffer, a Shared view) go back
+  // with it and not at a read.
   ~IsolateCore() {
     if (thread.joinable()) {
       mark_isolate_cancelled(*this);  // unwedge a still-running (maybe JIT) loop
       thread.join();
     }
     _reap_isolate_cancel(*this);
+    release_inflight_channels(result);
+    if (thrown) release_inflight_channels(*thrown);
   }
 };
 
@@ -290,9 +297,11 @@ inline void release_inflight_channels(const sendable::SendNode& n) {
     if (auto* core = chan_core(n.i)) chan_drop(core, n.b ? 1 : 0);
     return;
   }
-  // A SharedBuffer node holds the same kind of in-flight ref (bumped at
-  // extract); release it once the node has been consumed.
-  if (n.kind == K::SharedBuffer) { culebra::shared_buffer_drop(n.i); return; }
+  // A SharedBuffer node holds a ref of its own on the bytes.
+  if (n.kind == K::SharedBuffer) {
+    culebra::shared_buffer_word_release(n.i);
+    return;
+  }
   // A Shared.new view node likewise (extract bumped the frozen tree).
   if (n.kind == K::SharedVal) { culebra::shared_val_drop(n.i); return; }
   for (const auto& e : n.elems) release_inflight_channels(e);

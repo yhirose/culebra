@@ -190,7 +190,7 @@ assert_throws('ValueError', fn () {
 # marker names warmed still answers a view as a cold site does.
 let vbuf = SharedBuffer.new(2, FloatPair)
 fn read_marker(o) {
-  o.__packedview_id__
+  o.__buffer__
 }
 fn marker_on_view() {
   try {
@@ -200,7 +200,7 @@ fn marker_on_view() {
   }
 }
 let marker_cold = marker_on_view()
-let impostor = {__packedview_id__: 'plain', __packedview_index__: 0}
+let impostor = {__buffer__: 'plain', __packedview_index__: 0}
 for _ in 0..3 {
   assert_eq(read_marker(impostor), 'plain')
 }
@@ -210,6 +210,30 @@ assert_eq(marker_on_view(), marker_cold)
 # only carries the marker names is still an Object
 vbuf[1].x = 2.5
 assert_eq(Isolate.spawn(|v| v.x, vbuf[1]).join(), 2.5)
-assert_eq(Isolate.spawn(|o| o.__packedview_id__, impostor).join(), 'plain')
+assert_eq(Isolate.spawn(|o| o.__buffer__, impostor).join(), 'plain')
+
+# A buffer is a handle onto its bytes: it shows as one, has no fields, and is
+# `==` to a handle onto the same bytes. Its views read through it, so they go
+# with its drop, while a view that crossed a channel took a handle of its own.
+let sbh = SharedBuffer.new(2, FloatPair)
+assert_eq("{sbh}", '[SharedBuffer of 2]')
+assert_eq(sbh.keys(), [])
+assert_throws('TypeError', fn () { sbh.id = 1 })
+let sbv = sbh[1]
+sbv.x = 2.5
+let (sbtx, sbrx) = Channel.new(2)
+sbtx.send(sbh)
+sbtx.send(sbv)
+let sbh2 = sbrx.recv()
+let sbv2 = sbrx.recv()
+assert_eq([sbh == sbh2, sbh == SharedBuffer.new(2, FloatPair)], [true, false])
+sbh.drop()
+assert_eq("{sbh}", '[dropped SharedBuffer of 2]')
+assert_throws('ValueError', fn () { sbv.x })
+assert_eq([sbv2.x, sbh2[1].x], [2.5, 2.5])
+sbh2.drop()
+assert_eq(sbv2.x, 2.5)
+sbtx.drop()
+sbrx.drop()
 
 inspect("packable ok")

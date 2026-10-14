@@ -3814,8 +3814,8 @@ inline void _jit_overwrite_slot(JitObjectEntry& entry,
                          ? (obj->slots[obj->find_slot("__fa_fixed__")].value.data
                                 ? "a FixedArray view"
                                 : "a BoundedArray view")
-                     : obj->has_own("__fs_id__") ? "a BoundedSet view"
-                     : obj->has_own("__fm_id__") ? "a BoundedMap view"
+                     : obj->has_own("__fs_cap__") ? "a BoundedSet view"
+                     : obj->has_own("__fm_cap__") ? "a BoundedMap view"
                                                  : "a @value instance";
   throw culebra::CulebraError(
       "ImmutableError",
@@ -3976,15 +3976,79 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set(
 }
 
 // --- @packable SharedBuffer: handle objects + raw bytes <-> JitValue -----
-// SharedBuffer handles and packed views are plain JitObjects carrying
-// hidden marker slots (the same scheme the interp uses); the native byte
-// store lives in culebra::shared_buffer_registry(), referenced by id.
+// A SharedBuffer is a handle (JitSharedBuf, below) holding its bytes; a packed
+// view is a JitObject whose slots say where in them it reads.
 // These helpers are called from the object get/set/index runtime helpers
 // below, mirroring the interp's eval_property / eval_array_reference hooks
 // — same logical interception points in both backends.
 inline bool _jit_is_packed_view(JitObject* obj) { return obj->is_packed_view; }
 inline bool _jit_is_shared_buffer(JitObject* obj) {
   return obj->is_shared_buffer;
+}
+
+// A SharedBuffer's C++ half (a handle, see JitHandle): a ref on its bytes from
+// when it is made until drop() or the Object's death lets it go. Every view of
+// it reads the bytes through this, so a dropped buffer's views read as dropped
+// too.
+struct JitSharedBuf final : JitHandle {
+  culebra::SharedBufferRef core;  // null once dropped
+  const int64_t count;
+  explicit JitSharedBuf(culebra::SharedBufferRef c)
+      : JitHandle(Kind::SharedBuffer),
+        core(std::move(c)),
+        count(core ? static_cast<int64_t>(core->count) : 0) {}
+  std::string show() const override {
+    return culebra::format("[{}SharedBuffer of {}]", core ? "" : "dropped ",
+                           count);
+  }
+  bool same(const JitHandle& other) const override {
+    auto* o = other.kind == kind ? static_cast<const JitSharedBuf*>(&other)
+                                 : nullptr;
+    return o && core && o->core == core;
+  }
+};
+inline JitSharedBuf* _jit_shared_buf(JitObject* buf) {
+  return static_cast<JitSharedBuf*>(buf->handle);  // is_shared_buffer
+}
+// The bytes of `buf`, a SharedBuffer; a dropped one has none.
+inline culebra::SharedBufferCore* _jit_buffer_core(JitObject* buf,
+                                                   int64_t line = 0,
+                                                   int64_t col = 0) {
+  auto* core = _jit_shared_buf(buf)->core.get();
+  if (!core)
+    throw culebra::CulebraError("ValueError", "SharedBuffer has been dropped",
+                                line, col);
+  return core;
+}
+
+// Every view of a SharedBuffer (a record, a FixedArray / BoundedArray, a
+// BoundedSet, a BoundedMap, and their iterators) holds the buffer under this
+// name, and reads the bytes through it.
+inline constexpr const char* kViewBuffer = "__buffer__";
+// A slot a program removed or wrote over holds no buffer, and reads as one
+// dropped.
+inline JitObject* _jit_view_buffer(JitObject* view, int64_t line = 0,
+                                   int64_t col = 0) {
+  size_t i = view->find_slot(kViewBuffer);
+  const JitValue* v =
+      i == static_cast<size_t>(-1) ? nullptr : &view->slots[i].value;
+  auto* buf = v && v->tag == TAG_OBJECT ? reinterpret_cast<JitObject*>(v->data)
+                                        : nullptr;
+  if (!buf || !buf->is_shared_buffer)
+    throw culebra::CulebraError("ValueError", "SharedBuffer has been dropped",
+                                line, col);
+  return buf;
+}
+inline culebra::SharedBufferCore* _jit_view_core(JitObject* view,
+                                                 int64_t line = 0,
+                                                 int64_t col = 0) {
+  return _jit_buffer_core(_jit_view_buffer(view, line, col), line, col);
+}
+inline void _jit_view_hold_buffer(JitObject* view, JitObject* buf) {
+  culebra_runtime_value_retain(TAG_OBJECT, reinterpret_cast<int64_t>(buf));
+  view->set_or_append(kViewBuffer,
+                      JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(buf)},
+                      false);
 }
 
 inline bool _jit_is_shared_val(JitObject* obj) { return obj->is_shared_val; }
@@ -4279,21 +4343,17 @@ inline const culebra::PackableLayout& _jit_packed_view_layout(
 }
 
 // Resolve a packed view to (core, record base pointer).
-inline std::pair<std::shared_ptr<culebra::SharedBufferCore>, uint8_t*>
-_jit_packed_view_record(JitObject* view) {
-  int64_t id = view->slots[view->find_slot("__packedview_id__")].value.data;
-  auto core = culebra::lookup_shared_buffer(id);
-  if (!core) {
-    throw culebra::CulebraError("ValueError",
-        "packed view references a freed SharedBuffer");
-  }
+inline std::pair<culebra::SharedBufferCore*, uint8_t*> _jit_packed_view_record(
+    JitObject* view) {
+  auto* core = _jit_view_core(view);
   return {core, core->data + _jit_packed_view_off(view, *core)};
 }
 
-// A nested @packable record view over `core` at absolute byte offset `off`.
-inline JitObject* _jit_make_nested_view(int64_t id, int64_t off, const char* cls) {
+// A nested @packable record view over `buf` at absolute byte offset `off`.
+inline JitObject* _jit_make_nested_view(JitObject* buf, int64_t off,
+                                        const char* cls) {
   auto* view = _jit_view_new(&JitObject::is_packed_view);
-  culebra_runtime_object_set(view, "__packedview_id__", false, TAG_LONG, id, 0, 0);
+  _jit_view_hold_buffer(view, buf);
   culebra_runtime_object_set(view, "__packedview_byteoff__", false, TAG_LONG, off, 0, 0);
   culebra_runtime_object_set(view, "__packedview_class__", false, TAG_STRING,
                              reinterpret_cast<int64_t>(_intern_str(cls)), 0, 0);
@@ -4302,12 +4362,12 @@ inline JitObject* _jit_make_nested_view(int64_t id, int64_t off, const char* cls
 
 // fwd: defined below (after the byte helpers they need); _jit_packed_view_get
 // builds a collection view for a BoundedArray/BoundedSet/BoundedMap field.
-inline JitValue _jit_make_array_view(int64_t id, int64_t abs_off,
+inline JitValue _jit_make_array_view(JitObject* buf, int64_t abs_off,
+                                     const culebra::PackableField& f);
+inline JitValue _jit_make_bounded_set_view(JitObject* buf, int64_t abs_off,
                                            const culebra::PackableField& f);
-inline JitValue _jit_make_bounded_set_view(int64_t id, int64_t abs_off,
-                                         const culebra::PackableField& f);
-inline JitValue _jit_make_bounded_map_view(int64_t id, int64_t abs_off,
-                                         const culebra::PackableField& f);
+inline JitValue _jit_make_bounded_map_view(JitObject* buf, int64_t abs_off,
+                                           const culebra::PackableField& f);
 
 // The value a packed view's read of the field at `field_off` last minted, or
 // null (see JitViewCache).
@@ -4333,11 +4393,8 @@ inline JitValue _jit_packed_view_cache(JitObject* view, int64_t field_off,
 
 inline JitValue _jit_packed_view_get(JitObject* view, const char* key,
                                     int64_t line = 0, int64_t col = 0) {
-  int64_t id = view->slots[view->find_slot("__packedview_id__")].value.data;
-  auto core = culebra::lookup_shared_buffer(id);
-  if (!core)
-    throw culebra::CulebraError("ValueError",
-        "packed view references a freed SharedBuffer", line, col);
+  auto* buf = _jit_view_buffer(view, line, col);
+  auto* core = _jit_buffer_core(buf, line, col);
   int64_t off = _jit_packed_view_off(view, *core);
   const auto& layout = _jit_packed_view_layout(view, *core);
   const auto* f = layout.find(key);
@@ -4356,12 +4413,12 @@ inline JitValue _jit_packed_view_get(JitObject* view, const char* key,
     if (auto* held = _jit_packed_view_cached(view, field_off)) return *held;
     JitValue sub;
     if (f->layout.is_fixed_array || f->layout.is_bounded_array)
-      sub = _jit_make_array_view(id, abs_off, *f);
-    else if (f->layout.is_bounded_set) sub = _jit_make_bounded_set_view(id, abs_off, *f);
-    else if (f->layout.is_bounded_map) sub = _jit_make_bounded_map_view(id, abs_off, *f);
+      sub = _jit_make_array_view(buf, abs_off, *f);
+    else if (f->layout.is_bounded_set) sub = _jit_make_bounded_set_view(buf, abs_off, *f);
+    else if (f->layout.is_bounded_map) sub = _jit_make_bounded_map_view(buf, abs_off, *f);
     else
       sub = {TAG_OBJECT, reinterpret_cast<int64_t>(_jit_make_nested_view(
-                             id, abs_off, f->layout.elem_type.c_str()))};
+                             buf, abs_off, f->layout.elem_type.c_str()))};
     return _jit_packed_view_cache(view, field_off, sub);
   }
   // An enum variant is a snapshot of the bytes, so each read mints one; the
@@ -4378,12 +4435,7 @@ inline void _jit_packed_view_set(JitObject* view, const char* key, int8_t tag,
   // path (validation throw, struct memcpy, or the terminal field write).
   // One guard replaces the per-path releases and makes the contract uniform.
   JitOwnedVal _consume{tag, data};
-  int64_t id = view->slots[view->find_slot("__packedview_id__")].value.data;
-  auto core = culebra::lookup_shared_buffer(id);
-  if (!core) {
-    throw culebra::CulebraError("ValueError",
-        "packed view references a freed SharedBuffer", line, col);
-  }
+  auto* core = _jit_view_core(view, line, col);
   int64_t off = _jit_packed_view_off(view, *core);
   const auto& layout = _jit_packed_view_layout(view, *core);
   const auto* f = layout.find(key);
@@ -4411,11 +4463,10 @@ inline void _jit_packed_view_set(JitObject* view, const char* key, int8_t tag,
     auto* src = (tag == TAG_OBJECT) ? reinterpret_cast<JitObject*>(data) : nullptr;
     bool ok = src && src->is_packed_view;
     std::string src_cls;
-    std::shared_ptr<culebra::SharedBufferCore> src_core;
+    culebra::SharedBufferCore* src_core = nullptr;
     int64_t src_off = 0;
     if (ok) {
-      int64_t sid = src->slots[src->find_slot("__packedview_id__")].value.data;
-      src_core = culebra::lookup_shared_buffer(sid);
+      src_core = _jit_buffer_core(_jit_view_buffer(src, line, col), line, col);
       if (src_core) {
         src_off = _jit_packed_view_off(src, *src_core);
         src_cls = _jit_packed_view_class(src, *src_core);
@@ -4433,7 +4484,7 @@ inline void _jit_packed_view_set(JitObject* view, const char* key, int8_t tag,
           src_cls), line, col);
     }
     std::memcpy(core->data + off + f->offset, src_core->data + src_off,
-                culebra::lookup_packable_layout(f->layout.elem_type)->stride);
+                f->layout.size);
     return;  // _consume releases the source record value
   }
   _jit_packable_write_field(core->data + off, *f, tag, data);

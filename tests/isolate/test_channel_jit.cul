@@ -161,4 +161,35 @@ ptx.drop()
 prx.drop()
 qrx.drop()
 
+# --- what an isolate hands back keeps its ends for as long as the isolate:
+#     every join rebuilds them, and the isolate's going lets them go ---
+let (rtx, rrx) = Channel.new(4)
+mut thrower = Isolate.spawn(fn (t) { throw [t, t] }, rtx)
+for _ in 0..2 {
+  try {
+    thrower.join()
+  } catch e {
+    e[0].send(1)
+  }
+}
+thrower = nil
+rtx.drop()
+assert_eq(rrx.drain(), [1, 1])
+assert_eq("{rrx.try_recv()}", 'ChannelResult.Closed')
+rrx.drop()
+
+# --- each fan_in producer is sent the function on its own, ends and all ---
+let (ftx, frx) = Channel.new(8)
+let fmerged = Channel.fan_in([1, 2, 3], fn (item, tx) { ftx.send(item) })
+for _ in fmerged {
+}
+fmerged.drop()
+ftx.drop()
+mut fsum = 0
+for v in frx {
+  fsum += v
+}
+assert_eq(fsum, 6)
+frx.drop()
+
 inspect("test_channel: all assertions passed")

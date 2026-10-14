@@ -1683,16 +1683,17 @@ inline bool _ns_env_object_pairs(
 
 // A `share` Object (name -> SharedBuffer) resolved for a child process, in
 // two halves so each caller keeps its own cleanup discipline: collect the
-// (name, buffer id) pairs while nothing has been allocated yet, then turn
+// (name, buffer) pairs while nothing has been allocated yet, then turn
 // them into the CULEBRA_SHARE_* env entries and the fds the child inherits.
 // Borrows the Object. Shared by the kwarg resolver and the positional
 // adapters below — `share:` reached only the resolver before, so a call the
 // compile-time keyword peephole did not handle (the VM's direct call, or
 // `let f = Proc.run; f(cmd, share: ...)` on any backend) dropped it silently
 // and the child could not attach the buffer.
-inline std::string _ns_proc_share_ids(
-    JitValue raw, std::string_view ctx,
-    std::vector<std::pair<std::string, long>>& out) {
+using JitShareList =
+    std::vector<std::pair<std::string, culebra::SharedBufferRef>>;
+inline std::string _ns_proc_share_bufs(JitValue raw, std::string_view ctx,
+                                      JitShareList& out) {
   if (raw.tag != TAG_OBJECT)
     return std::string(ctx) +
            ": share must be an Object of name -> SharedBuffer";
@@ -1701,24 +1702,21 @@ inline std::string _ns_proc_share_ids(
   for (size_t k = 0; k < obj->prop_size(); k++) {
     std::string name(obj->prop_name(k));
     const JitValue& bv = obj->slots[k].value;
-    size_t si = (bv.tag == TAG_OBJECT)
-                    ? reinterpret_cast<JitObject*>(bv.data)
-                          ->find_slot("__sharedbuffer_id__")
-                    : static_cast<size_t>(-1);
-    if (si == static_cast<size_t>(-1))
+    auto* buf = bv.tag == TAG_OBJECT ? reinterpret_cast<JitObject*>(bv.data)
+                                     : nullptr;
+    if (!buf || !buf->is_shared_buffer)
       return culebra::format("{}: share `{}` must be a SharedBuffer", ctx, name);
-    out.emplace_back(
-        name, reinterpret_cast<JitObject*>(bv.data)->slots[si].value.data);
+    out.emplace_back(name, _jit_shared_buf(buf)->core);
   }
   return {};
 }
 
 inline void _ns_proc_share_apply(
-    const std::vector<std::pair<std::string, long>>& ids,
+    const JitShareList& bufs,
     std::vector<std::pair<std::string, std::string>>& env_out,
     std::vector<int>& fds_out) {
-  for (const auto& [name, id] : ids) {
-    auto [fd, env_val] = culebra::prepare_share_buffer(id, name);
+  for (const auto& [name, buf] : bufs) {
+    auto [fd, env_val] = culebra::prepare_share_buffer(buf, name);
     env_out.emplace_back(culebra::share_env_key(name), std::move(env_val));
     fds_out.push_back(fd);
   }
@@ -1847,9 +1845,9 @@ class _JitKwargResolver {
     auto raw = it->second;
     merged_.erase(it);
     if (raw.tag == TAG_NIL) return false;
-    // Collect (name, buffer id) first so a validation throw can't leak `raw`.
-    std::vector<std::pair<std::string, long>> entries;
-    std::string err = _ns_proc_share_ids(raw, ctx_, entries);
+    // Collect (name, buffer) first so a validation throw can't leak `raw`.
+    JitShareList entries;
+    std::string err = _ns_proc_share_bufs(raw, ctx_, entries);
     _culebra_value_release_impl(raw.tag, raw.data);
     if (!err.empty()) fail(err);
     _ns_proc_share_apply(entries, env_out, fds_out);
@@ -5602,10 +5600,10 @@ inline bool share_slot(JitValue sv, std::string_view ctx,
                        std::vector<std::pair<std::string, std::string>>& env,
                        std::vector<int>& fds) {
   if (sv.tag == TAG_NIL) return false;
-  std::vector<std::pair<std::string, long>> ids;
-  std::string err = _ns_proc_share_ids(sv, ctx, ids);
+  JitShareList bufs;
+  std::string err = _ns_proc_share_bufs(sv, ctx, bufs);
   if (!err.empty()) culebra::throw_runtime_error_at("TypeError", err, 0, 0);
-  _ns_proc_share_apply(ids, env, fds);
+  _ns_proc_share_apply(bufs, env, fds);
   return true;
 }
 
@@ -7068,9 +7066,9 @@ inline JitValue _ns_sharedbuffer_new(JitValue* a, int64_t n) {
     throw culebra::CulebraError("TypeError",
         culebra::format("SharedBuffer.new: no @packable layout for `{}`", cname));
   }
-  int64_t id = culebra::make_shared_buffer(*layout, std::string(cname),
+  auto core = culebra::make_shared_buffer(*layout, std::string(cname),
                                         static_cast<size_t>(count));
-  return _jit_make_shared_buffer_handle(id, count);
+  return _jit_make_shared_buffer_handle(std::move(core));
 }
 
 // SharedBuffer.file(path, count, Cls): file-backed mmap (persistent). Mirrors
@@ -7103,9 +7101,9 @@ inline JitValue _ns_sharedbuffer_file(JitValue* a, int64_t n) {
     throw culebra::CulebraError("TypeError",
         culebra::format("SharedBuffer.file: no @packable layout for `{}`", cname));
   }
-  int64_t id = culebra::make_shared_buffer_file(*layout, std::string(cname),
+  auto core = culebra::make_shared_buffer_file(*layout, std::string(cname),
                                              static_cast<size_t>(count), path);
-  return _jit_make_shared_buffer_handle(id, count);
+  return _jit_make_shared_buffer_handle(std::move(core));
 }
 
 // SharedBuffer.shared(count, Cls): anonymous fd-backed RAM, shareable with a
@@ -7133,9 +7131,9 @@ inline JitValue _ns_sharedbuffer_shared(JitValue* a, int64_t n) {
     throw culebra::CulebraError("TypeError",
         culebra::format("SharedBuffer.shared: no @packable layout for `{}`", cname));
   }
-  int64_t id = culebra::make_shared_buffer_shared(*layout, std::string(cname),
+  auto core = culebra::make_shared_buffer_shared(*layout, std::string(cname),
                                                static_cast<size_t>(count));
-  return _jit_make_shared_buffer_handle(id, count);
+  return _jit_make_shared_buffer_handle(std::move(core));
 }
 
 // SharedBuffer.receive(name, Cls): child side — mmap the buffer the parent
@@ -7161,11 +7159,8 @@ inline JitValue _ns_sharedbuffer_receive(JitValue* a, int64_t n) {
         culebra::format("SharedBuffer.receive: no @packable layout for `{}`",
                         cname));
   }
-  int64_t id = culebra::make_shared_buffer_from_share_env(*layout,
-                                                       std::string(cname), name);
-  auto core = culebra::lookup_shared_buffer(id);
-  return _jit_make_shared_buffer_handle(
-      id, core ? static_cast<int64_t>(core->count) : 0);
+  return _jit_make_shared_buffer_handle(culebra::make_shared_buffer_from_share_env(
+      *layout, std::string(cname), name));
 }
 
 // Parallel.{map,each,map_settled,race}(items, fn, limit = 0). `limit` arrives in

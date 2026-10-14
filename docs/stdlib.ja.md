@@ -2997,6 +2997,14 @@ inspect([buf[0].x, buf[0].y])  # => [1.5, 2.5]
 形を持たないので、フィールドを個別に設定する。未知のフィールドは
 `AttributeError`、範囲外の添字は`IndexError`。
 
+buffer自体はバイト列へのハンドルである。表示は`[SharedBuffer of 3]`で、
+自分のフィールドを持たない（`keys()`は`[]`、代入は`TypeError`）。2つの
+ハンドルは同じバイト列を指していれば`==`。viewは読み出し元のbufferを保持し、
+それを通して読むので、`buf.drop()`の後は`buf`のviewはすべて`ValueError`
+（`SharedBuffer has been dropped`）になる。他のisolateが持つハンドルは、
+そのisolateのためにバイト列を保つ。別のisolateに送ったviewは、ハンドルを
+一緒に持っていく。
+
 #### isolate 間での共有（zero copy）
 
 bufferはisolate境界を **参照で**越える — 子は同じバイトを読み書きす

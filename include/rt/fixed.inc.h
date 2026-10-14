@@ -15,13 +15,6 @@ extern "C" {
 
 // --- Array view byte helpers: a FixedArray's or a BoundedArray's (used by
 // both the [i] index hooks here and the view's native methods below) --------
-inline std::shared_ptr<culebra::SharedBufferCore> _jit_fa_core(JitObject* v) {
-  int64_t id = v->slots[v->find_slot("__fa_id__")].value.data;
-  auto core = culebra::lookup_shared_buffer(id);
-  if (!core)
-    throw culebra::CulebraError("ValueError", "SharedBuffer has been dropped");
-  return core;
-}
 inline int64_t _jit_fa_field_long(JitObject* v, const char* key) {
   return v->slots[v->find_slot(key)].value.data;
 }
@@ -32,14 +25,14 @@ inline culebra::PackableField _jit_fa_elem_field(JitObject* v) {
 // A FixedArray holds exactly its capacity; a BoundedArray's count is the i32
 // in front of its elements.
 inline int64_t _jit_fa_len(JitObject* v) {
-  auto core = _jit_fa_core(v);
+  auto core = _jit_view_core(v);
   if (_jit_fa_field_long(v, "__fa_fixed__")) return _jit_fa_field_long(v, "__fa_cap__");
   int32_t n;
   std::memcpy(&n, core->data + _jit_fa_field_long(v, "__fa_off__"), 4);
   return n;
 }
 inline uint8_t* _jit_fa_elem_ptr(JitObject* v, int64_t i) {
-  return _jit_fa_core(v)->data + _jit_fa_field_long(v, "__fa_off__") +
+  return _jit_view_core(v)->data + _jit_fa_field_long(v, "__fa_off__") +
          _jit_fa_field_long(v, "__fa_dataoff__") +
          i * _jit_fa_field_long(v, "__fa_esize__");
 }
@@ -192,7 +185,7 @@ inline void _jit_fa_size(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
 inline void _jit_fa_capacity(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
-  _jit_fa_core(reinterpret_cast<JitObject*>(self.data));  // dropped-buffer check
+  _jit_view_core(reinterpret_cast<JitObject*>(self.data));  // dropped-buffer check
   { *__ret = {TAG_LONG, _jit_fa_self_long(self, "__fa_cap__")}; return; }
 }
 inline void _jit_fa_push(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
@@ -200,7 +193,7 @@ inline void _jit_fa_push(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
   JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   auto* v = reinterpret_cast<JitObject*>(self.data);
-  auto core = _jit_fa_core(v);
+  auto core = _jit_view_core(v);
   int64_t len = _jit_fa_len(v);
   int64_t cap = _jit_fa_self_long(self, "__fa_cap__");
   if (len >= cap)
@@ -257,7 +250,8 @@ inline void _jit_fa_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
   JitMethodSelf _s{self};
   auto* v = reinterpret_cast<JitObject*>(self.data);
   auto* it = culebra_runtime_object_new();
-  for (const char* k : {"__fa_id__", "__fa_off__", "__fa_cap__", "__fa_fixed__",
+  _jit_view_hold_buffer(it, _jit_view_buffer(v));
+  for (const char* k : {"__fa_off__", "__fa_cap__", "__fa_fixed__",
                         "__fa_dataoff__", "__fa_esize__", "__fa_ecode__"})
     it->set_or_append(k, JitValue{TAG_LONG, _jit_fa_field_long(v, k)}, false);
   it->set_or_append("_pos", JitValue{TAG_LONG, 0}, true);
@@ -270,10 +264,10 @@ inline void _jit_fa_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
   meth("next", _jit_fa_iter_next);
   { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
 }
-inline JitValue _jit_make_array_view(int64_t id, int64_t abs_off,
-                                           const culebra::PackableField& f) {
+inline JitValue _jit_make_array_view(JitObject* buf, int64_t abs_off,
+                                     const culebra::PackableField& f) {
   auto* h = _jit_view_new(&JitObject::is_array_view);
-  h->set_or_append("__fa_id__", JitValue{TAG_LONG, id}, false);
+  _jit_view_hold_buffer(h, buf);
   h->set_or_append("__fa_off__", JitValue{TAG_LONG, abs_off}, false);
   h->set_or_append("__fa_cap__", JitValue{TAG_LONG, static_cast<long>(f.layout.capacity)}, false);
   h->set_or_append("__fa_fixed__", JitValue{TAG_LONG, f.layout.is_fixed_array ? 1 : 0}, false);
@@ -299,18 +293,11 @@ inline JitValue _jit_make_array_view(int64_t id, int64_t abs_off,
 
 // --- BoundedSet<T,N> view: open-addressed hash set, byte ops shared with the
 // interp via culebra::fixed_probe. State is read from `self` slots. ---------
-inline std::shared_ptr<culebra::SharedBufferCore> _jit_fs_core(JitObject* v) {
-  int64_t id = v->slots[v->find_slot("__fs_id__")].value.data;
-  auto core = culebra::lookup_shared_buffer(id);
-  if (!core)
-    throw culebra::CulebraError("ValueError", "SharedBuffer has been dropped");
-  return core;
-}
 inline int64_t _jit_fs_long(JitObject* v, const char* k) {
   return v->slots[v->find_slot(k)].value.data;
 }
 inline uint8_t* _jit_fs_base(JitObject* v) {
-  return _jit_fs_core(v)->data + _jit_fs_long(v, "__fs_off__");
+  return _jit_view_core(v)->data + _jit_fs_long(v, "__fs_off__");
 }
 inline int64_t _jit_fs_count(JitObject* v) {
   int32_t n; std::memcpy(&n, _jit_fs_base(v), 4); return n;
@@ -342,7 +329,7 @@ inline void _jit_fs_capacity(JitValue* __ret, JitClosure*, int8_t self_tag, int6
   JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   auto* v = reinterpret_cast<JitObject*>(self.data);
-  _jit_fs_core(v);  // dropped-buffer check
+  _jit_view_core(v);  // dropped-buffer check
   { *__ret = {TAG_LONG, _jit_fs_long(v, "__fs_cap__")}; return; }
 }
 inline void _jit_fs_contains(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
@@ -424,7 +411,8 @@ inline void _jit_fs_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
   JitMethodSelf _s{self};
   auto* v = reinterpret_cast<JitObject*>(self.data);
   auto* it = culebra_runtime_object_new();
-  for (const char* k : {"__fs_id__", "__fs_off__", "__fs_cap__",
+  _jit_view_hold_buffer(it, _jit_view_buffer(v));
+  for (const char* k : {"__fs_off__", "__fs_cap__",
                         "__fs_dataoff__", "__fs_esize__", "__fs_ecode__"})
     it->set_or_append(k, JitValue{TAG_LONG, _jit_fs_long(v, k)}, false);
   it->set_or_append("_pos", JitValue{TAG_LONG, 0}, true);
@@ -437,10 +425,10 @@ inline void _jit_fs_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
   meth("next", _jit_fs_iter_next);
   { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
 }
-inline JitValue _jit_make_bounded_set_view(int64_t id, int64_t abs_off,
-                                         const culebra::PackableField& f) {
+inline JitValue _jit_make_bounded_set_view(JitObject* buf, int64_t abs_off,
+                                           const culebra::PackableField& f) {
   auto* h = culebra_runtime_object_new();
-  h->set_or_append("__fs_id__", JitValue{TAG_LONG, id}, false);
+  _jit_view_hold_buffer(h, buf);
   h->set_or_append("__fs_off__", JitValue{TAG_LONG, abs_off}, false);
   h->set_or_append("__fs_cap__", JitValue{TAG_LONG, static_cast<long>(f.layout.capacity)}, false);
   h->set_or_append("__fs_dataoff__", JitValue{TAG_LONG, static_cast<long>(f.layout.data_offset)}, false);
@@ -465,14 +453,8 @@ inline JitValue _jit_make_bounded_set_view(int64_t id, int64_t abs_off,
 inline int64_t _jit_fm_long(JitObject* v, const char* k) {
   return v->slots[v->find_slot(k)].value.data;
 }
-inline std::shared_ptr<culebra::SharedBufferCore> _jit_fm_core(JitObject* v) {
-  auto core = culebra::lookup_shared_buffer(_jit_fm_long(v, "__fm_id__"));
-  if (!core)
-    throw culebra::CulebraError("ValueError", "SharedBuffer has been dropped");
-  return core;
-}
 inline uint8_t* _jit_fm_base(JitObject* v) {
-  return _jit_fm_core(v)->data + _jit_fm_long(v, "__fm_off__");
+  return _jit_view_core(v)->data + _jit_fm_long(v, "__fm_off__");
 }
 inline int64_t _jit_fm_count(JitObject* v) {
   int32_t n; std::memcpy(&n, _jit_fm_base(v), 4); return n;
@@ -506,7 +488,7 @@ inline void _jit_fm_capacity(JitValue* __ret, JitClosure*, int8_t self_tag, int6
   JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
   auto* v = reinterpret_cast<JitObject*>(self.data);
-  _jit_fm_core(v);
+  _jit_view_core(v);
   { *__ret = {TAG_LONG, _jit_fm_long(v, "__fm_cap__")}; return; }
 }
 inline int64_t _jit_fm_find(JitObject* v, int8_t tag, int64_t data,
@@ -625,7 +607,8 @@ inline void _jit_fm_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
   JitMethodSelf _s{self};
   auto* v = reinterpret_cast<JitObject*>(self.data);
   auto* it = culebra_runtime_object_new();
-  for (const char* k : {"__fm_id__", "__fm_off__", "__fm_cap__", "__fm_koff__",
+  _jit_view_hold_buffer(it, _jit_view_buffer(v));
+  for (const char* k : {"__fm_off__", "__fm_cap__", "__fm_koff__",
                         "__fm_voff__", "__fm_ksize__", "__fm_vsize__",
                         "__fm_kcode__", "__fm_vcode__"})
     it->set_or_append(k, JitValue{TAG_LONG, _jit_fm_long(v, k)}, false);
@@ -639,10 +622,10 @@ inline void _jit_fm_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
   meth("next", _jit_fm_iter_next);
   { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
 }
-inline JitValue _jit_make_bounded_map_view(int64_t id, int64_t abs_off,
-                                         const culebra::PackableField& f) {
+inline JitValue _jit_make_bounded_map_view(JitObject* buf, int64_t abs_off,
+                                           const culebra::PackableField& f) {
   auto* h = culebra_runtime_object_new();
-  h->set_or_append("__fm_id__", JitValue{TAG_LONG, id}, false);
+  _jit_view_hold_buffer(h, buf);
   h->set_or_append("__fm_off__", JitValue{TAG_LONG, abs_off}, false);
   h->set_or_append("__fm_cap__", JitValue{TAG_LONG, static_cast<long>(f.layout.capacity)}, false);
   h->set_or_append("__fm_koff__", JitValue{TAG_LONG, static_cast<long>(f.layout.data_offset)}, false);
@@ -667,23 +650,18 @@ inline JitValue _jit_make_bounded_map_view(int64_t id, int64_t abs_off,
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
 
-// `buf[i]` -> a fresh packed-view handle over element `i` (refcount 1,
-// caller owns it; the backing bytes outlive the view via the registry).
+// `buf[i]` -> a fresh packed view over element `i` (refcount 1, caller owns
+// it), holding the buffer.
 inline JitObject* _jit_shared_buffer_index(JitObject* buf, int64_t idx,
                                            int64_t line, int64_t col) {
-  int64_t id = buf->slots[buf->find_slot("__sharedbuffer_id__")].value.data;
-  auto core = culebra::lookup_shared_buffer(id);
-  if (!core) {
-    throw culebra::CulebraError("ValueError",
-        "SharedBuffer has been dropped", line, col);
-  }
+  auto* core = _jit_buffer_core(buf, line, col);
   int64_t n = static_cast<long>(core->count);
   if (idx < 0) idx += n;
   if (idx < 0 || idx >= n) {
     throw culebra::CulebraError("IndexError", "index out of range", line, col);
   }
   auto* view = _jit_view_new(&JitObject::is_packed_view);
-  culebra_runtime_object_set(view, "__packedview_id__", false, TAG_LONG, id, 0, 0);
+  _jit_view_hold_buffer(view, buf);
   culebra_runtime_object_set(view, "__packedview_index__", false, TAG_LONG, idx, 0, 0);
   return view;
 }
@@ -1669,10 +1647,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
   }
   if (_jit_is_shared_buffer(obj)) {
     std::string_view k(key);
-    if (k == "size" || k == "count" || k == "len") {
-      return {TAG_LONG,
-              obj->slots[obj->find_slot("__sharedbuffer_count__")].value.data};
-    }
+    if (k == "size" || k == "count" || k == "len")
+      return {TAG_LONG, _jit_shared_buf(obj)->count};
   }
   // A Shared view's own slots are the handle's bookkeeping and answer for no
   // name.

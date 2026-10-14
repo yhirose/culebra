@@ -56,8 +56,8 @@ inline void shared_val_retain(const SharedValCore& core) {
   core.refcount.fetch_add(1, std::memory_order_relaxed);
 }
 // Give a count back, by the tree (a Runtime's hold). The last one takes the
-// tree out of the registry, releasing it outside the lock (mirrors
-// shared_buffer_drop); a count taken by id in between leaves it there.
+// tree out of the registry, releasing it outside the lock; a count taken by
+// id in between leaves it there.
 inline void shared_val_release(const SharedValCore& core, int64_t id) {
   if (core.refcount.fetch_sub(1, std::memory_order_acq_rel) != 1) return;
   std::shared_ptr<SharedValCore> doomed;

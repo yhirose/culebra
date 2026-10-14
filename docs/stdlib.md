@@ -3088,6 +3088,14 @@ Whole-element assignment (`buf[i] = ...`) is a `TypeError` — a record has no
 standalone value form, so set its fields individually. An unknown field is an
 `AttributeError`; an out-of-range index is an `IndexError`.
 
+The buffer itself is a handle onto its bytes. It prints as `[SharedBuffer of
+3]` and has no fields of its own: `keys()` is `[]`, and setting one is a
+`TypeError`. Two handles are `==` when they are onto the same bytes. A view
+holds the buffer it was read from and reads through it, so `buf.drop()` makes
+every view of `buf` a `ValueError` (`SharedBuffer has been dropped`), while a
+handle another isolate holds keeps the bytes for that isolate. A view sent to
+another isolate takes a handle along with it.
+
 #### Sharing across isolates (zero copy)
 
 A buffer crosses an isolate boundary **by reference** — the child reads and
