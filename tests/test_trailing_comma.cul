@@ -9,14 +9,17 @@
 assert_eq([1, 2, 3,], [1, 2, 3])
 assert_eq([1,], [1])
 assert_eq({a: 1, b: 2,}, {a: 1, b: 2})
-assert_eq({1, 2, 3,}, {1, 2, 3})
 assert_eq((1, 2,), (1, 2))
 assert_eq([[1, 2,], [3,],], [[1, 2], [3]]) // nested
+// A bare name with a trailing comma is still the Object shorthand.
+let shorthand = 7
+assert_eq({shorthand,}, {shorthand: 7})
 // The comma is what makes a one-element tuple.
 assert_eq(type_of((1,)), 'Tuple')
 assert_eq(type_of((1)), 'Long')
 
 // --- call arguments (positional, keyword, `**` splat) ---
+assert_eq(Set(1, 2,), Set(1, 2))
 fn add3(x, y, z) { x + y + z }
 assert_eq(add3(1, 2, 3,), 6)
 fn variadic(*xs) { xs.size() }

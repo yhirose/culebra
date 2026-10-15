@@ -403,9 +403,13 @@ for c in it { c }"
 # A spread inside a sized array literal is a parse-time SyntaxError anchored
 # at the spread element on both backends.
 check_same "sized array spread" 'let a = [9, ...[8]](3)'
-# The set literal's unhashable throw is positionless in the runtime; the JIT
-# must publish the literal's position (the interp's eval boundary anchor).
-check_same "set literal unhashable" 'let s = {[1], 2}'
+# Braces are an Object's: a list of values in them, the Set literal they once
+# were, is a SyntaxError at its `{` that names `Set(...)`.
+check_eq "brace set" 'let s = [{1, 2}]' \
+  'SyntaxError: braces build an Object; a Set is written `Set(a, b)` at 1:10.'
+# Set(...)'s unhashable throw is positionless in the runtime; every lane
+# reports it at the call.
+check_same "Set(...) unhashable" 'let s = Set([1], 2)'
 # Same gap on the non-IDENTIFIER-key path of an object literal: the sidecar
 # hash on insert throws positionless, and the JIT must publish the object
 # literal's position to match.

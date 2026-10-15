@@ -107,7 +107,7 @@ assert_eq(hashes(|| s.remove(K.new(99))), 1)
 assert_eq(s.size(), 1)
 
 // Building from elements: once per element.
-assert_eq(hashes(|| {K.new(1), K.new(2), K.new(3)}), 3)
+assert_eq(hashes(|| Set(K.new(1), K.new(2), K.new(3))), 3)
 assert_eq(hashes(|| [K.new(1), K.new(2), K.new(1)].to_set()), 3)
 assert_eq(hashes(|| [1, 2, 1].iter().map(|x| K.new(x)).distinct().collect()), 3)
 assert_eq(hashes(|| [1, 2, 1].group_by(|x| K.new(x))), 3)
@@ -147,8 +147,8 @@ assert_eq(hashes(fn () {
 }), 0)
 assert_eq(hashes(|| to_string(big)), 0)
 
-let t = {K.new(9), K.new(10), K.new(1)}
-let u = {K.new(1), K.new(9), K.new(10)}
+let t = Set(K.new(9), K.new(10), K.new(1))
+let u = Set(K.new(1), K.new(9), K.new(10))
 assert_eq(hashes(fn () {
   for x in t {
   }
@@ -204,7 +204,7 @@ for (a, v) in table {
 assert_eq(seen, 65)
 assert_eq(found, 'one')
 
-let ms = {M.new(1), M.new(5)}
+let ms = Set(M.new(1), M.new(5))
 let first = ms.to_array()[0]
 first.id = 7
 assert_eq(ms.contains(first), false)

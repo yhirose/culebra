@@ -957,6 +957,15 @@ inline constexpr CanonSig kCanonSigs_Env[] = {
   {"Env", "", "load", kCanonParams_Env + 1, 2, "Object", 0, 2, false, -1, -1, -1},
 };
 
+inline constexpr CanonParam kCanonParams_Set[] = {
+  // 0: Set.new
+  {"items", false, false, false, true, false, "", CanonDefault::None, 0, {}},
+};
+
+inline constexpr CanonSig kCanonSigs_Set[] = {
+  {"Set", "", "new", kCanonParams_Set + 0, 1, "Set", 0, 0, true, -1, -1, 0},
+};
+
 inline constexpr CanonSig kCanonSigs_UUID[] = {
   {"UUID", "", "v4", nullptr, 0, "String", 0, 0, false, -1, -1, -1},
   {"UUID", "", "v7", nullptr, 0, "String", 0, 0, false, -1, -1, -1},

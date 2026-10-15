@@ -2144,6 +2144,7 @@ inline std::shared_ptr<peg::Ast> apply_transforms(
   auto out = transform_effects_in(ast, expr);
   reject_orphan_yield(*out);
   reject_sized_spread_mix(*out);
+  reject_brace_set(*out);
   reject_or_pattern_binding(*out);
   reject_invalid_new(*out);
   // CULEBRA_TRANSFORM_STATS=1 reports how much culebra source the effects

@@ -50,7 +50,7 @@ let tup = (1, 2, 3)
 assert_eq(JSON.stringify(tup), JSON.stringify([1, 2, 3]))
 
 // --- Set → JSON array (insertion order) ---
-let st = {7, 8, 9}
+let st = Set(7, 8, 9)
 assert_eq(JSON.stringify(st), JSON.stringify([7, 8, 9]))
 
 // Empty collections. Single quotes dodge culebra's `"{}"` string

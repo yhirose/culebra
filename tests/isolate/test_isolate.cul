@@ -39,9 +39,9 @@ let tup = (1, "two", 3.0)
 let htup = Isolate.spawn(|| tup)
 assert_eq(htup.join(), (1, "two", 3.0))
 
-let st = {1, 2, 3}
+let st = Set(1, 2, 3)
 let hset = Isolate.spawn(|| st)
-assert_eq(hset.join(), {1, 2, 3})
+assert_eq(hset.join(), Set(1, 2, 3))
 
 let nested = {xs: [1, 2], inner: {a: [true, false]}}
 let hn = Isolate.spawn(|| nested)

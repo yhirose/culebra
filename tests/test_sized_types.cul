@@ -13,7 +13,7 @@ assert_eq("abc".slice(0, 2).size(), 2)  // StringView
 assert_eq([1, 2].size(), 2)             // Array
 assert_eq((1, 2).size(), 2)             // Tuple
 assert_eq({a: 1}.size(), 1)             // Object
-assert_eq({1, 2}.size(), 2)             // Set
+assert_eq(Set(1, 2).size(), 2)             // Set
 
 // `empty()` is `size() == 0`; `presence()` is self-or-nil on the same probe.
 assert_eq("".empty(), true)
@@ -21,7 +21,7 @@ assert_eq("ab".slice(0, 0).empty(), true)
 assert_eq([].empty(), true)
 assert_eq({}.empty(), true)
 assert_eq((1, 2).empty(), false)   // a Tuple has no zero-arity literal
-let drained = {1, 2}.diff({1, 2})  // no empty-Set literal; `{}` is an Object
+let drained = Set(1, 2).diff(Set(1, 2))  // as Set(); `{}` is an Object
 assert_eq(drained.empty(), true)
 
 // `presence()` on each of the six is `tests/test_presence.cul`'s subject —

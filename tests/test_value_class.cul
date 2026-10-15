@@ -142,7 +142,7 @@ test_value_equality_is_structural_and_nominal = fn () {
   assert_eq(Vec2.new(1, 2) == 5, false)
   assert_eq(Vec2.new(1, 2) == nil, false)
   # eq and hash come as a pair, so equal values collapse in a Set / as keys.
-  assert_eq({Vec2.new(1, 2), Vec2.new(1, 2)}.size(), 1)
+  assert_eq(Set(Vec2.new(1, 2), Vec2.new(1, 2)).size(), 1)
   let m = {}
   m[Vec2.new(1, 2)] = 'a'
   m[Vec2.new(1, 2)] = 'b'
@@ -166,7 +166,7 @@ test_value_own_equality_wins = fn () {
   }
   assert_eq(Loose.new(1) == Loose.new(2), true)
   assert_throws('TypeError', fn () {
-    {Loose.new(1),}
+    Set(Loose.new(1))
   })
 }
 test_value_own_equality_wins()

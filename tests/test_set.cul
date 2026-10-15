@@ -1,32 +1,57 @@
 // Conformance: §10 (Sets). See docs/language.md §25.
 //
-// Set literal — runs on both interp and JIT (Phase 8-B).
+// A Set is built by `Set(a, b, ...)`; braces are always an Object's.
 
-let s = {1, 2, 3}
+let s = Set(1, 2, 3)
 assert_eq(type_of(s), "Set")
 
+// Any number of members, values or names alike; `Set.new` is the same call,
+// and `Set` is a value that can be called where it is bound.
+let one_name = 'x'
+assert_eq(Set(one_name).size(), 1)
+assert_eq(Set().size(), 0)
+assert_eq(Set.new(1, 2), Set(1, 2))
+let make_set = Set
+assert_eq([1, 2].map(|v| make_set(v)), [Set(1), Set(2)])
+assert_eq(type_of(Set), 'Object')
+// The type name still reads as a type in an annotation and an arm.
+fn set_size(v: Set) {
+  v.size()
+}
+assert_eq(set_size(Set(1, 2)), 2)
+assert_eq(match s { Set => 'set', _ => 'other' }, 'set')
+
+// Shown as the call that builds it, so an empty Set is not an empty Object.
+assert_eq([Set(1, 'a'), Set(), {}].map(to_string), ["Set(1, 'a')", 'Set()', '{}'])
+
+// A member must hash, which an Array does not.
+assert_eq(
+  try { Set([1, 2]) } catch e { "{e.kind}: {e.message}" },
+  "TypeError: unhashable type: 'Array'",
+)
+
 // Duplicate elements collapse.
-let dup = {1, 2, 2, 3, 1}
-assert_eq(dup, {1, 2, 3})
+let dup = Set(1, 2, 2, 3, 1)
+assert_eq(dup, Set(1, 2, 3))
 
 // Set equality ignores order.
-let a = {1, 2, 3}
-let b = {3, 2, 1}
+let a = Set(1, 2, 3)
+let b = Set(3, 2, 1)
 assert_eq(a, b)
 
-let c = {1, 2}
-let d = {1, 2, 3}
+let c = Set(1, 2)
+let d = Set(1, 2, 3)
 let eq_cd = a == c
 assert_eq(eq_cd, false)
 
 // Mixed element types.
-let mix = {1, "two", 3.14, true}
+let mix = Set(1, "two", 3.14, true)
 assert_eq(mix.size(), 4)
 assert_eq(mix.contains("two"), true)
 
 // --- Set methods (Phase 8-F) ---
-let p = {1, 2, 3}
-let q = {3, 4, 5}
+let p = Set(1, 2, 3)
+let q = Set(3, 4, 5)
 
 assert_eq(p.size(), 3)
 assert_true(!p.empty())
@@ -53,9 +78,9 @@ assert_eq(d_has_3, false)
 
 // --- Additional methods (a-2) ---
 assert_eq(p.sym_diff(q).size(), 4)  // {1, 2, 4, 5}
-assert_true(p.subset({1, 2, 3, 4}))
-assert_true(p.superset({1, 2}))
-let nosup = p.superset({1, 9})
+assert_true(p.subset(Set(1, 2, 3, 4)))
+assert_true(p.superset(Set(1, 2)))
+let nosup = p.superset(Set(1, 9))
 assert_eq(nosup, false)
 
 // to_array / iter / for-in
@@ -73,16 +98,16 @@ assert_eq(sum, 6)
 // other three were grouped with `|` for API consistency. `.union`
 // `.intersect` `.diff` `.sym_diff` already existed (lines 33-53)
 // and now serve as the only entry points to these operations.
-let A = {1, 2, 3}
-let B = {2, 3, 4}
+let A = Set(1, 2, 3)
+let B = Set(2, 3, 4)
 assert_eq(A.union(B).size(), 4)
 assert_eq(A.intersect(B).size(), 2)
 assert_eq(A.diff(B).size(), 1)
 assert_eq(A.sym_diff(B).size(), 2)
-assert_eq(A.union(B), {1, 2, 3, 4})
+assert_eq(A.union(B), Set(1, 2, 3, 4))
 
 // --- Mutating add / remove (G-3 — JIT now supports these) ---
-mut m = {1, 2}
+mut m = Set(1, 2)
 let added = m.add(3)
 assert_eq(added, true)
 assert_eq(m.size(), 3)

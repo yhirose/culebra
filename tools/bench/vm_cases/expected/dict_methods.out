@@ -41,7 +41,7 @@ nil
 {b: 2}
 nil
 true
-{2}
+Set(2)
 'mine x'
 TypeError: unhashable type: 'Array'
 0

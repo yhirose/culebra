@@ -127,12 +127,6 @@ enum class Op : uint8_t {
                // alias ref. Positioned at the count expression's node.
   TupleNew,    // regs[a] = fresh empty Tuple (+1)
   TuplePush,   // append regs[b] into tuple regs[a]; regs[b] = nil (absorbed)
-  SetNew,      // regs[a] = fresh empty Set (+1)
-  SetAdd,      // add regs[b] into set regs[a]; regs[b] = nil — set_add
-               // absorbs the +1 on every exit (releases it on a duplicate
-               // and on the positionless throw an unhashable element
-               // raises, which the SetOpPos published just before — the
-               // literal's position, compile_set's emit order — anchors).
   ObjectNew,   // regs[a] = fresh empty Object (+1)
   ObjectNewShaped, // regs[a] = fresh Object (+1) whose Shape and (nil,
                // immutable) slots are pre-built from
@@ -11166,7 +11160,7 @@ class Compiler {
       }
       return true;
     }
-    if (node.tag == "TUPLE"_ || node.tag == "SET"_) {
+    if (node.tag == "TUPLE"_) {
       for (const auto& n : node.nodes)
         if (!value_boundary_ok(*n, w) && !value_ref_ok(*n, w)) return false;
       return true;
@@ -14430,19 +14424,6 @@ class Compiler {
         }
         return {t, true};
       }
-      case "SET"_: {
-        int32_t t = alloc_temp(ast);
-        emit(Op::SetNew, t);
-        for (const auto& n : ast.nodes) {
-          auto v = compile_expr(*n);
-          // set_add's unhashable throw is positionless — publish the
-          // literal's position first, compile_set's emit order.
-          StampGuard pos(*this, ast);
-          emit(Op::SetOpPos);
-          emit(Op::SetAdd, t, owned_src(*n, v));
-        }
-        return {t, true};
-      }
       case "OBJECT"_: {
         int32_t t = alloc_temp(ast);
         // A literal whose properties are all plain IDENTIFIER keys — the
@@ -14502,7 +14483,7 @@ class Compiler {
             // Hashing an unhashable key throws positionless, and a String
             // key can also hit the well-known-name contract check (both
             // positionless) — publish the literal's own position first,
-            // compile_set's / emit_object_set's emit order.
+            // emit_object_set's emit order.
             StampGuard pos(*this, ast);
             emit(Op::SetOpPos);
             emit(Op::ObjectSetAny, t, owned_src(*pv.key, key),
@@ -14791,7 +14772,7 @@ inline std::string dump(const Chunk& c) {
       "Eq",        "Ne",        "Lt",
       "Le",        "Gt",        "Ge",         "ArrayNew",     "ArrayAppend",
       "ArrayPush", "ArrayExtend", "ArrayResize",
-      "TupleNew",  "TuplePush", "SetNew",     "SetAdd",
+      "TupleNew",  "TuplePush",
       "ObjectNew", "ObjectNewShaped", "ObjectSet", "SlotInit", "ObjectSetAny", "ObjectMerge",
       "ModReg",    "ModGet",
       "RangeNew",  "ChkLong",   "ChkNum",     "NilChk",
@@ -15940,7 +15921,7 @@ struct Exec {
         &&L_JumpIfSame, &&L_MatMul, &&L_BitAnd, &&L_BitOr, &&L_BitXor,
         &&L_Shl, &&L_Shr, &&L_BitNot, &&L_Eq, &&L_Ne, &&L_Lt, &&L_Le, &&L_Gt,
         &&L_Ge, &&L_ArrayNew, &&L_ArrayAppend, &&L_ArrayPush, &&L_ArrayExtend,
-        &&L_ArrayResize, &&L_TupleNew, &&L_TuplePush, &&L_SetNew, &&L_SetAdd,
+        &&L_ArrayResize, &&L_TupleNew, &&L_TuplePush,
         &&L_ObjectNew, &&L_ObjectNewShaped, &&L_ObjectSet, &&L_SlotInit,
         &&L_ObjectSetAny, &&L_ObjectMerge, &&L_ModReg, &&L_ModGet,
         &&L_RangeNew, &&L_ChkLong, &&L_ChkNum, &&L_NilChk, &&L_Index,
@@ -16457,29 +16438,6 @@ struct Exec {
               reinterpret_cast<JitArray*>(regs[in.a].data),
               static_cast<int8_t>(regs[in.b].tag), regs[in.b].data);
           regs[in.b] = JitValue{TAG_NIL, 0};
-          ++ip;
-          break;
-        } while (0);
-        VM_NEXT();
-      L_SetNew:
-        do {
-          [[maybe_unused]] const Insn& in = *ip;
-          regs[in.a] = JitValue{
-              TAG_SET, reinterpret_cast<int64_t>(culebra_runtime_set_new())};
-          ++ip;
-          break;
-        } while (0);
-        VM_NEXT();
-      L_SetAdd:
-        do {
-          [[maybe_unused]] const Insn& in = *ip;
-          // set_add consumes the element on every exit, the unhashable throw
-          // included — nil the register first. The SetOpPos published just
-          // before anchors that positionless error at the literal.
-          JitValue v = regs[in.b];
-          regs[in.b] = JitValue{TAG_NIL, 0};
-          culebra_runtime_set_add(reinterpret_cast<JitSet*>(regs[in.a].data),
-                                  static_cast<int8_t>(v.tag), v.data);
           ++ip;
           break;
         } while (0);

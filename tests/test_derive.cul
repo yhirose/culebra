@@ -47,7 +47,7 @@ mut bag = {}
 mut bag[Point.new(1, 2)] = "a"
 assert_eq(bag[Point.new(1, 2)], "a")
 
-mut s = {Point.new(1, 1), Point.new(2, 2)}
+mut s = Set(Point.new(1, 1), Point.new(2, 2))
 s.add(Point.new(1, 1))  // duplicate -> no growth
 assert_eq(s.size(), 2)
 
@@ -248,6 +248,6 @@ let grown = Grown.new(1)
 grown.y = 2
 assert_eq(grown.eq(Grown.new(1)), false)
 assert_eq(Grown.new(1).eq(grown), false)
-assert_eq({Grown.new(1), grown}.size(), 2)
+assert_eq(Set(Grown.new(1), grown).size(), 2)
 
 IO.inspect("test_derive OK")

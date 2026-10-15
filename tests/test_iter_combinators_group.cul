@@ -52,19 +52,19 @@ try {
 }
 
 # --- to_set / group_by / partition ---------------------------------------
-# to_set is the only way to build a Set from a collection (set literals are
-# the only other spelling), so it serves Array receivers as well.
-assert_eq([1, 2, 2, 3, 1].to_set(), {1, 2, 3})
-assert_eq([1, 2, 2, 3, 1].iter().to_set(), {1, 2, 3})
+# to_set builds a Set from a collection (`Set(a, b)` builds one from values),
+# so it serves Array receivers as well.
+assert_eq([1, 2, 2, 3, 1].to_set(), Set(1, 2, 3))
+assert_eq([1, 2, 2, 3, 1].iter().to_set(), Set(1, 2, 3))
 assert_eq([].to_set().size(), 0)
 assert_eq([].iter().to_set().size(), 0)
-assert_eq(range(5).map(|x| x % 2).to_set(), {0, 1})
-assert_eq([(1, 2), (1, 2), (3, 4)].to_set(), {(1, 2), (3, 4)})
+assert_eq(range(5).map(|x| x % 2).to_set(), Set(0, 1))
+assert_eq([(1, 2), (1, 2), (3, 4)].to_set(), Set((1, 2), (3, 4)))
 # First-seen order is kept. Member identity follows Object-key identity,
 # which distinguishes types rather than numeric value, so these stay three.
 assert_eq(['b', 'a', 'b'].to_set().to_array(), ['b', 'a'])
 assert_eq([1, 1.0, true].to_set().size(), 3)
-assert_eq([1, 1.0, true].to_set(), {1, 1.0, true})
+assert_eq([1, 1.0, true].to_set(), Set(1, 1.0, true))
 # An unhashable element reports like any other unhashable key.
 try {
   [[1]].to_set()

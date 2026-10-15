@@ -216,7 +216,7 @@ if ! diff -u "$TMP/mpar_want.cul" "$TMP/mpar_got.cul" > "$TMP/mpar_diff" 2>&1; t
 fi
 
 # --- 1d. Golden fixture: comments inside brace literals --------------------
-# An object / set literal opens a brace pair of its own, so a comment written
+# An object literal opens a brace pair of its own, so a comment written
 # inside one belongs to that pair — not to the statement around it, which has
 # no slot for it and once made the safety net refuse the WHOLE file. Such a
 # literal lays out broken, one element per line, with its comments attached the
@@ -228,9 +228,6 @@ cat > "$TMP/brc_in.cul" <<'EOF'
 let  o = {a: 1,
   # inside an object literal
   b: 2}
-let  s = {1,
-  // inside a set literal
-  2}
 let  plain={a:1,b:2}
 let  lead={ # before the first key
   k: 1}
@@ -241,7 +238,6 @@ let  nest={x: {y: 1,
   # only the inner one has it
   z: 2}, w: 3}
 inspect(o)
-inspect(s)
 inspect(plain)
 inspect(lead)
 inspect(tail)
@@ -252,11 +248,6 @@ let o = {
   a: 1,
   # inside an object literal
   b: 2,
-}
-let s = {
-  1,
-  // inside a set literal
-  2,
 }
 let plain = {a: 1, b: 2}
 let lead = {
@@ -276,7 +267,6 @@ let nest = {
   w: 3,
 }
 inspect(o)
-inspect(s)
 inspect(plain)
 inspect(lead)
 inspect(tail)
@@ -398,25 +388,19 @@ if ! diff -u "$TMP/rpat_want.cul" "$TMP/rpat_got.cul" > "$TMP/rpat_diff" 2>&1; t
   fail=1
 fi
 
-# --- 1g. Golden fixture: 1-element Set keeps its trailing comma -----------
-# `{a,}` is the only spelling of a 1-element Set (`{a}` doesn't parse; `{}`
-# is the empty Object), so print_set must keep the comma the same way a
-# 1-tuple keeps `(a,)`. Dropping it turned the literal into a SyntaxError,
-# which made the safety net refuse the whole file.
+# --- 1g. A brace Set is the syntax error it is everywhere else ------------
+# `{1, 2}` was the Set literal; a Set is `Set(1, 2)` now and braces are an
+# Object's. fmt names the line and column and leaves the file alone.
 cat > "$TMP/set1_in.cul" <<'EOF'
-let one={42,}
-let two={1,2}
-let s={ 'x' ,}
+let one = 1
+let two = {1,2}
 EOF
-cat > "$TMP/set1_want.cul" <<'EOF'
-let one = {42,}
-let two = {1, 2}
-let s = {'x',}
-EOF
-"$CULEBRA" fmt "$TMP/set1_in.cul" > "$TMP/set1_got.cul" 2>"$TMP/set1_err"
-if ! diff -u "$TMP/set1_want.cul" "$TMP/set1_got.cul" > "$TMP/set1_diff" 2>&1; then
-  echo "FAIL golden (1-element set): formatted output differs from expected"
-  cat "$TMP/set1_diff"
+if "$CULEBRA" fmt "$TMP/set1_in.cul" > "$TMP/set1_got.cul" 2>"$TMP/set1_err"; then
+  echo "FAIL brace set: fmt accepted it"
+  fail=1
+elif ! grep -q "set1_in.cul:2:11: braces build an Object; a Set is written \`Set(a, b)\`" "$TMP/set1_err"; then
+  echo "FAIL brace set: unexpected error"
+  cat "$TMP/set1_err"
   fail=1
 fi
 
@@ -801,7 +785,7 @@ if ! diff -u "$TMP/cnd_want.cul" "$TMP/cnd_got.cul" > "$TMP/cnd_diff" 2>&1; then
 fi
 
 # --- 1o. Golden fixture: a comment in a literal that is a block's only value
-# The fourth shape of the same fold: an object / set literal alone in a block
+# The fourth shape of the same fold: an object literal alone in a block
 # wears that block's braces, so scanning from its position found the BLOCK's
 # interior and the literal's elements printed the comments the block was
 # already printing. A literal bound to a name never folds, so it stayed fine
@@ -895,7 +879,6 @@ let x=1
 ({x}).keys()
 ({a: Int=3}).keys()
 ({a:1}).keys()
-({1,2}).contains(1)?1:2
 ({})==x
 fn f() {
   ({}).keys()
@@ -917,7 +900,6 @@ let x = 1
 ({x}).keys()
 ({a: Int = 3}).keys()
 {a: 1}.keys()
-{1, 2}.contains(1) ? 1 : 2
 ({}) == x
 fn f() {
   ({}).keys()

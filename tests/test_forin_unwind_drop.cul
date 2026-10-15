@@ -99,7 +99,7 @@ try {
 # Set branch: members survive the unwind (the temp array's slot releases,
 # the set itself is dropped at its let scope's exit).
 fn run_set() {
-  let s = {10, 20}
+  let s = Set(10, 20)
   for x in s {
     throw "boom"
   }

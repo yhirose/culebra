@@ -12,7 +12,7 @@
 assert_true("abc".nope == nil)
 assert_true("abc".slice(1, 2).nope == nil)  # StringView
 assert_true([1, 2].nope == nil)
-assert_true({1, 2}.nope == nil)  # Set
+assert_true(Set(1, 2).nope == nil)  # Set
 assert_true((1, 2).nope == nil)  # Tuple
 assert_true({a: 1}.nope == nil)  # Object
 assert_true(fn (x) {

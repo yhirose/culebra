@@ -207,7 +207,6 @@ m|nil|repeat|*
 m|[1, 2, 3]|repeat|*
 m|{a: 1, b: 2}|repeat|*
 m|(1, 2, 3)|repeat|*
-m|{1, 2, 3}|repeat|*
 m|fn (x) { x }|repeat|*
 
 # The Audio namespace is new: the baseline has no `_Audio` and raises a
@@ -312,3 +311,13 @@ sharedval|*s.get("a"*
 # name where one took the view, and raised where none did.
 ufcsshadow|map|*|Shared.new({a: 1})
 ufcsshadownest|map|*|Shared.new({a: 1})
+
+# A Set is written `Set(a, b)`; braces are always an Object's. The baseline
+# has no `Set`, so every case that builds one is unsupported there, and a Set
+# shows as the call that builds it (`Set(1, 2)`, `Set()`) where the baseline
+# showed braces. `disp-str|(1, 2)` is the record before `disp-inspect|Set(1,
+# 2)`, which carries the line that case prints.
+*Set(*
+m|[1, 2, 3]|to_set|
+typos|*to_set()
+disp-str|(1, 2)

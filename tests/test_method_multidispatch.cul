@@ -250,7 +250,7 @@ assert_eq(Approx.new(1) == Approx.new(1), true)
 assert_eq(Approx.new(1) != Approx.new(2), true)
 assert_eq(Approx.new(1) < Approx.new(2), true)
 assert_eq([Approx.new(2), Approx.new(1)].sorted().map(|a| a.x), [1, 2])
-assert_eq({Approx.new(1), Approx.new(1), Approx.new(2)}.size(), 2)
+assert_eq(Set(Approx.new(1), Approx.new(1), Approx.new(2)).size(), 2)
 mut seen = {}
 seen[Approx.new(1)] = 'a'
 seen[Approx.new(1)] = 'b'

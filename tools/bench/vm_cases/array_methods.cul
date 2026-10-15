@@ -32,7 +32,7 @@ inspect(e.index_of(1))
 mut h = []
 h.push([1, 2])
 h.push('s')
-h.push({3, 4})
+h.push(Set(3, 4))
 h.insert(0, (5, 6))
 inspect(h)
 inspect(h.pop())

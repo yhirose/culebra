@@ -2,7 +2,7 @@
 #
 # An arm body may be a brace BLOCK holding multiple statements; the arm
 # evaluates to the block's final statement value (same path as if/while
-# bodies). EXPRESSION is tried first, so object/set literals keep their
+# bodies). EXPRESSION is tried first, so object literals and calls keep their
 # meaning — only a multi-statement `{ ... }` that no expression can match
 # is read as a block. interp and JIT must agree on value, control flow,
 # and defer ordering.
@@ -58,14 +58,14 @@ assert_eq(match 3 {
   },
 }, 2)
 
-# --- object / set literal arms keep their meaning (not blocks) ---
+# --- object literal and Set(...) arms keep their meaning (not blocks) ---
 assert_eq(match 5 {
   5 => {k: 42},
   _ => {k: 0},
 }["k"], 42)
 assert_eq(match 6 {
-  6 => {1, 2, 3},
-  _ => {0, 9},
+  6 => Set(1, 2, 3),
+  _ => Set(0, 9),
 }.size(), 3)
 
 # bare-identifier brace stays object shorthand (documented quirk):

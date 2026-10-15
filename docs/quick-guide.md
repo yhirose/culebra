@@ -112,7 +112,7 @@ inspect(type_of(fn () {
   1
 }))                                    # => 'Function'
 inspect(type_of((1, 'a')))             # => 'Tuple'
-inspect(type_of({1, 2}))               # => 'Set'
+inspect(type_of(Set(1, 2)))            # => 'Set'
 inspect(type_of('hello'.slice(1, 3)))  # => 'StringView'
 ```
 
@@ -586,7 +586,7 @@ inspect(area(Shape.Rect(2.0, 3.0)))          # => 6.0
 mut seen = {}
 seen[Shape.Origin] = 'origin'
 inspect(seen[Shape.Origin])                  # => 'origin'
-inspect({Shape.Origin, Shape.Origin}.size())  # => 1
+inspect(Set(Shape.Origin, Shape.Origin).size())  # => 1
 ```
 
 ### 2.10 Effects
@@ -657,7 +657,7 @@ produces something else, in Culebra.
 | `puts` / `console.log` / `print(x)` adding a newline | `inspect(x)` quoted debug form, `println(x)` raw + newline, `print(x)` raw |
 | `this` | `self` |
 | `x \|> f()` | UFCS: `x.f()`. There is no pipeline operator |
-| `{3}` as a one-element Set | `SyntaxError`. One element is `{3,}`; `{}` is the empty Object |
+| `{1, 2}` / `{3}` as a Set | Braces are an Object's. A Set is `Set(1, 2)`, `Set(x)`, `Set()` |
 | `a \| b`, `a & b` on sets | methods: `a.union(b)`, `a.intersect(b)`, `a.diff(b)` |
 | `{a: 1} + {b: 2}` | `TypeError`. There is no Object merge operator |
 | `s[0]` on a String | `TypeError`. Use `s.slice(0, 1)`, which takes byte offsets |

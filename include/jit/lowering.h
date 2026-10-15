@@ -1376,25 +1376,6 @@ struct Lowering {
           b.CreateStore(j.make_nil(), slots[in.b]);
           break;
         }
-        case Op::SetNew: {
-          auto s = j.emit_call(
-              j.module_->getOrInsertFunction(rt::set_new, ptrTy), {}, "set");
-          b.CreateStore(j.make_set(s), slots[in.a]);
-          break;
-        }
-        case Op::SetAdd: {
-          // The SetOpPos lowered just before published the literal's
-          // position for the positionless unhashable throw. set_add consumes
-          // the element on every exit, that throw included — nil it first.
-          auto s = b.CreateIntToPtr(j.extract_data(load_slot(in.a)), ptrTy);
-          auto v = load_slot(in.b);
-          b.CreateStore(j.make_nil(), slots[in.b]);
-          j.emit_call(
-              j.module_->getOrInsertFunction(rt::set_add, b.getVoidTy(),
-                                             ptrTy, b.getInt8Ty(), i64Ty),
-              {s, j.extract_tag(v), j.extract_data(v)});
-          break;
-        }
         case Op::ObjectNew: {
           auto obj = j.emit_call(
               j.module_->getOrInsertFunction(rt::object_new, ptrTy), {},

@@ -110,7 +110,7 @@ assert_eq(held(fn (v) {
 #     raised is the helper's to release on that exit, as on the normal one.
 let dict = {1: 'one'}
 for work in [
-  fn (v) { {1, 2, [v]} },
+  fn (v) { Set(1, 2, [v]) },
   fn (v) { dict.has([v]) },
   fn (v) { dict.get([v], [v]) },
   fn (v) { dict.get_or_put([v], [v]) },

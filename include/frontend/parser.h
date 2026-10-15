@@ -1108,6 +1108,28 @@ inline void reject_sized_spread_mix(const peg::Ast& ast) {
   }
 }
 
+// Braces are an Object's: `{a, b}` of bare names is its shorthand, and
+// anything else between them that the grammar still reads as a list (`{1, 2}`,
+// `{42,}`, the Set literal this once was) names `Set(...)`, which builds one.
+inline constexpr const char* kBraceSetMessage =
+    "braces build an Object; a Set is written `Set(a, b)`";
+
+inline const peg::Ast* find_brace_set(const peg::Ast& ast) {
+  using namespace peg::udl;
+  if (ast.tag == "SET"_) return &ast;
+  for (const auto& n : ast.nodes) {
+    if (auto* hit = find_brace_set(*n)) return hit;
+  }
+  return nullptr;
+}
+
+inline void reject_brace_set(const peg::Ast& ast) {
+  if (auto* s = find_brace_set(ast)) {
+    throw CulebraError("SyntaxError", kBraceSetMessage,
+                       static_cast<long>(s->line), static_cast<long>(s->column));
+  }
+}
+
 // View of a `@derive(...)` decorator. The grammar is
 //   DECORATOR <- '@' _ CALL
 // and `@derive(Eq, Hash, Show, Comparable)` parses (post-AstOptimizer,
@@ -2809,6 +2831,13 @@ inline std::shared_ptr<peg::Ast> parse_for_format(
   std::vector<ParseFailure> failures;
   auto ast = parse_undesugared(path, expr, failures);
   for (const auto& f : failures) msgs.push_back(format_parse_failure(path, f));
+  // The brace Set is refused after the parse on every path; fmt reports it as
+  // the syntax error it is rather than print it back.
+  if (auto* s = ast ? find_brace_set(*ast) : nullptr) {
+    msgs.push_back(
+        format_parse_failure(path, {s->line, s->column, kBraceSetMessage}));
+    return nullptr;
+  }
   return ast;
 }
 

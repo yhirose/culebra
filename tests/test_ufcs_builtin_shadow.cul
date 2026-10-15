@@ -137,8 +137,8 @@ assert_eq(probe.push(1), "ufcs push:Function")
 mut arr = [1, 2]
 arr.push(3)  # Array resolves it: builtin
 assert_eq(arr, [1, 2, 3])
-assert_eq({1, 2}.push(3), "ufcs push:Set")  # Set mutates via `add`
-assert_eq({1, 2}.size(), 2)
+assert_eq(Set(1, 2).push(3), "ufcs push:Set")  # Set mutates via `add`
+assert_eq(Set(1, 2).size(), 2)
 
 # A class instance resolves dict builtins but not Array/String ones.
 class Box {
@@ -224,7 +224,7 @@ assert_eq(5.remove(1), "ufcs remove:Long")
 assert_eq([1, 2].remove(9), "ufcs remove:Array")
 
 # The receivers that DO resolve them keep their builtin.
-mut set = {1, 2}
+mut set = Set(1, 2)
 assert_eq(set.add(3), true)
 assert_eq(set.contains(3), true)
 assert_eq(set.remove(3), true)
@@ -248,7 +248,7 @@ assert_eq({add: fn (v) {
     "own add"
   }}.add(7), "own add")
 assert_throws('TypeError', fn () {
-  {1, 2}.add(x: 1)
+  Set(1, 2).add(x: 1)
 })
 # ...while a non-resolving receiver binds the keyword through the free function.
 assert_eq(5.add(v: 1), "ufcs add:Long")
@@ -262,7 +262,7 @@ fn tick() {
 }
 assert_eq(5.add(tick()), "ufcs add:Long")
 assert_eq(adds, 1)
-mut sink = {8, 9}
+mut sink = Set(8, 9)
 sink.add(tick())
 assert_eq(adds, 2)
 assert_eq(sink.size(), 3)
@@ -375,13 +375,13 @@ fn add_shadowed() {
 }
 assert_eq(add_shadowed(), ["shadow", "shadow"])
 assert_throws('ArityError', fn () {
-  {1, 2}.add()
+  Set(1, 2).add()
 })
 assert_throws('ArityError', fn () {
-  {1, 2}.add(1, 2)
+  Set(1, 2).add(1, 2)
 })
 assert_throws('TypeError', fn () {
-  {1, 2}.add(x: 1)
+  Set(1, 2).add(x: 1)
 })
 
 # Wrong arity picks its message by receiver: the String value method for a
@@ -405,7 +405,7 @@ assert_throws('TypeError', fn () {
   "ab".to_string
 })
 assert_throws('TypeError', fn () {
-  {1, 2}.add
+  Set(1, 2).add
 })
 assert_eq({a: 1}.add, nil)
 

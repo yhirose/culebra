@@ -13,7 +13,7 @@ for x in (1, 2.5) { inspect(x) }
 for c in 'aβ漢' { inspect(c) }
 for c in 'ab'.view() { inspect(type_of(c)) }
 mut set_seen = []
-for x in {3, 1, 2} { set_seen.push(x) }
+for x in Set(3, 1, 2) { set_seen.push(x) }
 inspect(set_seen.sorted())
 for x in [] { inspect('never') }
 for c in '' { inspect('never') }

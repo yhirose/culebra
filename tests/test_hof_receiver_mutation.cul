@@ -201,7 +201,7 @@ for x in (1, 2, 3) {
 assert_eq(tseen, [1, 2, 3])
 
 mut sseen = []
-for x in {1, 2, 3} {
+for x in Set(1, 2, 3) {
   sseen.push(x)
 }
 assert_eq(sseen.size(), 3)

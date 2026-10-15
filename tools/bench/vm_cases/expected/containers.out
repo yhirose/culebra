@@ -16,12 +16,12 @@ two
 true
 false
 ([1, 2], (3, 4))
-{2, 1}
+Set(2, 1)
 true
 false
 [2, 1]
 (99, [99])
-{99, 100}
+Set(99, 100)
 caught-spread
 caught-unhashable
 caught-negative

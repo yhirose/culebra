@@ -126,7 +126,7 @@ fn compose(s1, s2) {
 
 fn free_vars(t) {
   match t.kind {
-    'var' => {t.id,},
+    'var' => Set(t.id),
     'con' => [].to_set(),
     'fun' => free_vars(t.arg).union(free_vars(t.ret)),
   }

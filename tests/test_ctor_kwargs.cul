@@ -149,7 +149,7 @@ assert_true(e_add.message.contains("missing required argument 'a'"))
 # the same TypeError the interp raises (the JIT used to treat `s.add(x: 3)`
 # as `s.add(3)` and silently succeed).
 let e_setadd = try {
-  mut s = {1, 2}
+  mut s = Set(1, 2)
   s.add(x: 3)
   nil
 } catch e {
@@ -158,7 +158,7 @@ let e_setadd = try {
 assert_eq(e_setadd.kind, 'TypeError')
 assert_true(e_setadd.message.contains('does not accept keyword arguments'))
 let e_setrem = try {
-  mut s = {1, 2}
+  mut s = Set(1, 2)
   s.remove(x: 1)
   nil
 } catch e {

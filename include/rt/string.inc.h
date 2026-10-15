@@ -152,15 +152,16 @@ inline std::string _culebra_value_to_str_impl(int8_t type, int64_t data) {
     case TAG_SET: {
       auto* set = reinterpret_cast<JitSet*>(data);
       _JitStrGuard guard(set);
-      if (guard.already) return "{...}";
+      // Shown as the call that builds it: braces are an Object's.
+      if (guard.already) return "Set(...)";
       culebra::ValueWalkFrame walk;
-      std::string s = "{";
+      std::string s = "Set(";
       for (size_t i = 0; i < set->members.size(); i++) {
         if (i > 0) s += ", ";
         s += _culebra_value_to_str_impl(set->members[i].value().tag,
                                         set->members[i].value().data);
       }
-      s += "}";
+      s += ")";
       return s;
     }
     case TAG_TENSOR: {

@@ -146,7 +146,7 @@ class Key {
     self.x = x
   }
 }
-let s = {Key.new(1), Key.new(2), Key.new(1)}
+let s = Set(Key.new(1), Key.new(2), Key.new(1))
 println(s.size())
 println(s.contains(Key.new(2)))
 println(s.contains(Key.new(7)))

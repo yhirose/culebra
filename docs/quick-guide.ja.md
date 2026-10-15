@@ -109,7 +109,7 @@ inspect(type_of(fn () {
   1
 }))                                    # => 'Function'
 inspect(type_of((1, 'a')))             # => 'Tuple'
-inspect(type_of({1, 2}))               # => 'Set'
+inspect(type_of(Set(1, 2)))            # => 'Set'
 inspect(type_of('hello'.slice(1, 3)))  # => 'StringView'
 ```
 
@@ -577,7 +577,7 @@ inspect(area(Shape.Rect(2.0, 3.0)))          # => 6.0
 mut seen = {}
 seen[Shape.Origin] = 'origin'
 inspect(seen[Shape.Origin])                  # => 'origin'
-inspect({Shape.Origin, Shape.Origin}.size())  # => 1
+inspect(Set(Shape.Origin, Shape.Origin).size())  # => 1
 ```
 
 ### 2.10 エフェクト
@@ -646,7 +646,7 @@ inspect(show('hi'))  # => 'hi'
 | `puts` / `console.log` / 改行付きの`print(x)` | `inspect(x)`はクォート付きデバッグ形式、`println(x)`は生+改行、`print(x)`は生 |
 | `this` | `self` |
 | `x \|> f()` | UFCSの`x.f()`。パイプライン演算子は無い |
-| 1要素のSetとして`{3}` | `SyntaxError`。1要素は`{3,}`、`{}`は空Object |
+| Setとして`{1, 2}`・`{3}` | 波括弧はObjectのもの。Setは`Set(1, 2)`・`Set(x)`・`Set()` |
 | 集合の`a \| b` / `a & b` | メソッド: `a.union(b)` / `a.intersect(b)` / `a.diff(b)` |
 | `{a: 1} + {b: 2}` | `TypeError`。Objectのマージ演算子は無い |
 | Stringへの`s[0]` | `TypeError`。バイトオフセットを取る`s.slice(0, 1)`を使う |

@@ -26,7 +26,7 @@ inspect(it().chain([9, 8]).collect())
 inspect(it().chain('ab').collect())
 inspect(it().chain([1].iter()).collect())
 inspect(it().zip([9, 8]).collect())
-inspect(it().zip({4, 5}).collect())
+inspect(it().zip(Set(4, 5)).collect())
 
 # --- Terminals ------------------------------------------------------------
 inspect(it().collect())

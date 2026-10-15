@@ -161,13 +161,13 @@ show_at('plain lt', || Plain(1) < Plain(2))
 class OnlyHash {
   new(x) { self.x = x }
 }
-show('only hash set', || {OnlyHash(1), OnlyHash(1)}.size())
+show('only hash set', || Set(OnlyHash(1), OnlyHash(1)).size())
 class WithHash {
   new(x) { self.x = x }
   hash() { self.x }
   eq(o) { self.x == o.x }
 }
-show('hash+eq methods set', || {WithHash(1), WithHash(1)}.size())
+show('hash+eq methods set', || Set(WithHash(1), WithHash(1)).size())
 show('fresh bound wrapper', fn () { let obj = {m: fn () { self }}; obj.m == obj.m })
 
 # --- typed-parameter errors point at the argument ---

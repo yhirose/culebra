@@ -24,7 +24,7 @@ println(i)
 println([...[1, 2], 3])
 println([0, ...[1, 2], ...[3]])
 println([...(1, 2)])
-println([...{9, 9, 8}])
+println([...Set(9, 9, 8)])
 let src = [5, 6]
 println([...src, ...src])
 println(src)
@@ -39,19 +39,19 @@ println((1, 2) == (1, 3))
 println(([1, ...[2]], (3, 4)))
 
 # Sets: dedupe at construction, equality, spread back out.
-let s = {2, 1, 2}
+let s = Set(2, 1, 2)
 println(s)
-println({1, 2} == {2, 1})
-println({1, 2} == {1, 3})
+println(Set(1, 2) == Set(2, 1))
+println(Set(1, 2) == Set(1, 3))
 println([...s])
 
 # Rebinding and loop-scoped containers release every pass.
 mut cur = (0, 0)
-mut ss = {0, 1}
+mut ss = Set(0, 1)
 i = 0
 while i < 100 {
     cur = (i, [i])
-    ss = {i, i + 1, i}
+    ss = Set(i, i + 1, i)
     i = i + 1
 }
 println(cur)
@@ -62,7 +62,7 @@ println(ss)
 mut r = nil
 r = try { let q = [...nil]; nil } catch e { 'caught-spread' }
 println(r)
-r = try { let q = {2, [3]}; nil } catch e { 'caught-unhashable' }
+r = try { let q = Set(2, [3]); nil } catch e { 'caught-unhashable' }
 println(r)
 r = try { let q = [7](0 - 3); nil } catch e { 'caught-negative' }
 println(r)

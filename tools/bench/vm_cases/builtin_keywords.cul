@@ -93,7 +93,7 @@ p("push(1, x: 2)", fn () {
   [1, 2].push(1, x: 2)
 })
 p("set.add(x: 1)", fn () {
-  {1, 2}.add(x: 1)
+  Set(1, 2).add(x: 1)
 })
 p("dict.get(0, fallback: 9)", fn () {
   [1, 2].get(0, fallback: 9)

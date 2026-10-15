@@ -308,7 +308,7 @@ fn pat_set_add_remove(N) {
   # Set `.add`/`.remove` fast dispatch: both runtime helpers borrow the
   # Set receiver — the setBB arm must consume the +1 itself.
   for i in 0..N {
-    let s = {i, i + 1}
+    let s = Set(i, i + 1)
     s.add(i + 2)
     s.remove(i)
   }
@@ -570,7 +570,7 @@ fn forin_thrower(v) {
 
 # Same, Set branch (exercises the set_to_array temp slot).
 fn forin_set_thrower(v) {
-  let s = {v, v + 1}
+  let s = Set(v, v + 1)
   for x in s {
     throw "boom"
   }

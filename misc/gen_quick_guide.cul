@@ -50,7 +50,7 @@ INDEX_ROW = re'^\d+\. \[([^\]]+)\]\([^)]+\)\s+—\s+(.+)$'
 # They are also half of every signature here, spent on whichever subsystem the
 # task at hand is not about. `culebra docs stdlib <name>` prints one whole.
 # Membership only: the table keeps stdlib.md's chapter order.
-BY_NAME = {
+BY_NAME = Set(
   'SQLite',
   'Canvas',
   'Scene',
@@ -61,7 +61,7 @@ BY_NAME = {
   'StateMachine',
   'FST',
   'Search',
-}
+)
 
 # The six built-in-type groups live in language.md; every other group is one
 # stdlib.md namespace. Only the Set anchor differs between en and ja — the

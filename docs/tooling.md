@@ -436,7 +436,7 @@ and parameter lists are all normalized; long binary expressions and method
 chains wrap at the line width. An `if` / `while` / `match` head carries no
 brackets of its own, so it wraps only at the `||` / `&&` / `??` joints of its
 own chain — never between the two sides of a comparison — and indents its
-continuation past the body. An object or set literal that holds a comment
+continuation past the body. An object literal that holds a comment
 is written one entry per line, with the comment kept where you put it; one
 without comments stays compact.
 

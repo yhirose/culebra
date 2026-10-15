@@ -6,7 +6,7 @@
 
 inspect([1, 2, 3].iter().collect())
 inspect((4, 5).iter().collect())
-inspect({7, 8}.iter().collect())
+inspect(Set(7, 8).iter().collect())
 inspect('ab'.iter().collect())
 inspect({'a': 1, 'b': 2}.iter().collect())
 inspect([1, 2].iter().iter().collect())

@@ -44,7 +44,7 @@ assert_true([c, a].iter().contains(b))
 assert_true(![c].iter().contains(b))
 
 # ...which is what keys always did: one member, one key, one equal element
-let members = {a, 0}
+let members = Set(a, 0)
 assert_eq(type_of(members), 'Set')
 assert_true(members.contains(b))
 mut by_key = {}

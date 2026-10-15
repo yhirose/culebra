@@ -138,7 +138,7 @@ mut d = {'a': 1, 'b': 2}
 inspect(d.remove('a'))
 inspect(d)
 inspect(d.remove('zz'))
-mut s = {1, 2}
+mut s = Set(1, 2)
 inspect(s.remove(1))
 inspect(s)
 class OwnRemove {

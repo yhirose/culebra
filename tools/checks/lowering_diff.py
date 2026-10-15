@@ -354,7 +354,7 @@ class RetBare {
 fn gen2() { yield 1; yield 2 }
 """
 ITER_VALUES = [
-    '[1, 2]', '(1, 2)', '"ab"', '{1, 2}', '{a: 1}', '{}', '0..2', 'range(2)',
+    '[1, 2]', '(1, 2)', '"ab"', 'Set(1, 2)', '{a: 1}', '{}', '0..2', 'range(2)',
     'gen2()', 'Counted(2)', 'Bare()', 'OnlyStep()', '[1, 2].map(|x| x * 10)',
     'RetFive()', 'RetBare()', 'Tensor.zeros(2)', 'nil', '1', 'true', '1.5',
     'fn () { 1 }',

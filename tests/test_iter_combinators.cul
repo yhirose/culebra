@@ -35,7 +35,7 @@ assert_true(['a', 'b'].iter().contains('b'))
 # the eager receivers still route to their own arms
 assert_true([1, 2, 3].contains(2))
 assert_true('hello'.contains('ell'))
-assert_true({1, 2}.contains(2))
+assert_true(Set(1, 2).contains(2))
 
 # --- first / last / nth: nil when the iterator runs out --------------------
 assert_eq([5, 6, 7].iter().first(), 5)

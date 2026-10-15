@@ -1717,26 +1717,27 @@ inspect(type_of(pair))       # => 'Tuple'
 inspect(pair == (1, 'one'))  # => true
 ```
 
-A `Set` is an insertion-ordered collection of unique hashable values.
-Its literal needs two elements — or a trailing comma — so it can't be
-confused with the empty Object `{}` or the `{key: value}` shorthand.
-Duplicates collapse on construction and equality ignores order.
+A `Set` is an insertion-ordered collection of unique hashable values,
+built by `Set(...)` from any number of members. Braces are an Object's, so
+a Set shows as the call that builds it. Duplicates collapse on
+construction and equality ignores order.
 
 ```culebra
-s = {1, 2, 3, 3}
-inspect(s.size())                # => 3
-inspect(s.contains(2))           # => true
-inspect({1, 2, 3} == {3, 2, 1})  # => true
-inspect({42,})                   # => {42}
+s = Set(1, 2, 3, 3)
+inspect(s.size())                      # => 3
+inspect(s.contains(2))                 # => true
+inspect(Set(1, 2, 3) == Set(3, 2, 1))  # => true
+inspect(Set(42))                       # => Set(42)
+inspect(Set())                         # => Set()
 ```
 
 Set operations are methods, not operators (`|` is taken by lambda
 parameters):
 
 ```culebra
-inspect({1, 2}.union({2, 3}))            # => {1, 2, 3}
-inspect({1, 2, 3}.intersect({2, 3, 4}))  # => {2, 3}
-inspect({1, 2, 3}.diff({3,}))            # => {1, 2}
+inspect(Set(1, 2).union(Set(2, 3)))             # => Set(1, 2, 3)
+inspect(Set(1, 2, 3).intersect(Set(2, 3, 4)))   # => Set(2, 3)
+inspect(Set(1, 2, 3).diff(Set(3)))              # => Set(1, 2)
 ```
 
 ### 13.3 Trait / Protocol

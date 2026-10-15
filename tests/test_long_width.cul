@@ -63,7 +63,7 @@ assert_eq("{big:d}", "3000000000")  // the format path, not to_string
 assert_eq("{big:x}", "b2d05e00")
 
 // --- values used as keys / members, where hashing truncates silently ---
-let s = {4294967296, 0}
+let s = Set(4294967296, 0)
 assert_eq(s.size(), 2)  // a 32-bit hash would collide
 assert_eq(s.contains(4294967296), true)
 let m = {"4294967296": "hi"}

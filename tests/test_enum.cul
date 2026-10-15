@@ -141,7 +141,7 @@ assert_eq(areas[Shape.Rect(2.0, 3.0)], 6)
 assert_eq(areas.size(), 3)
 
 // Set membership dedups the same way.
-let seen = {Color.Red, Color.Green, Color.Red}
+let seen = Set(Color.Red, Color.Green, Color.Red)
 assert_eq(seen.size(), 2)
 assert_eq(seen.contains(Color.Red), true)
 assert_eq(seen.contains(Color.Blue), false)

@@ -227,7 +227,7 @@ Language features
   patterns, with optional `if` guards.
 - **Sum types.** `enum Shape { Circle(Float), Rect(Float, Float) }`,
   generic where you need it, matched by variant or by enum.
-- **Tuples and sets.** `(3, 4)` is immutable and hashable; `{1, 2, 3}`
+- **Tuples and sets.** `(3, 4)` is immutable and hashable; `Set(1, 2, 3)`
   is an insertion-ordered set of unique values.
 - **String interpolation.** `"head={head}, rest={tail.size()}"`, with
   format specs, triple-quoted blocks that dedent, and `re"…"` regex

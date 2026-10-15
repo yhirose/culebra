@@ -302,7 +302,7 @@ let grammar = `
   subscript  <- '[' nl expr nl ']' _                        { no_ast_opt }
   primary    <- float / number / str_dq / str_sq / true_l / false_l /
                 nil_l / closure / lambda / call / if / try / match / cond_e /
-                ident / array_lit / object_lit / shorthand / set_lit /
+                ident / array_lit / object_lit / shorthand /
                 tuple / fnself / paren
   fnself     <- 'fn' kw_end
   array_lit  <- '[' nl (aitem (nl ',' nl aitem)* (nl ',')?)? nl ']' _ { no_ast_opt }
@@ -317,8 +317,6 @@ let grammar = `
   okey       <- pname / str_sq / dq_key / nskey
   dq_key     <- '"' < [^"{\\]* > '"' _
   nskey      <- float / number / true_l / false_l / nil_l / tuple
-  set_lit    <- '{' nl expr (nl ',' nl expr)+ (nl ',')? nl '}' _ /
-                '{' nl expr nl ',' nl '}' _                 { no_ast_opt }
   tuple      <- '(' nl expr (nl ',' nl expr)+ (nl ',')? nl ')' _ /
                 '(' nl expr nl ',' nl ')' _                 { no_ast_opt }
   lambda     <- '|' _ params '|' nl expr
@@ -3286,14 +3284,14 @@ fn __set_size(s) { __len(__objectkeys(s["\zs"])) }
 
 fn __set_repr(s) {
   let items = __set_items(s)
-  mut out = '{'
+  mut out = 'Set('
   mut i = 0
   while i < __len(items) {
     if i > 0 { out = out + ', ' }
     out = out + __repr(items[i])
     i = i + 1
   }
-  out + '}'
+  out + ')'
 }
 
 fn __set_eq(a, b) {
@@ -5876,6 +5874,7 @@ let builtins = {
   to_float: ('__to_float', 1),
   iota: nil,
   range: nil,
+  Set: nil,
   assert_eq: ('__assert_eq', 2),
   assert_true: ('__assert_true', 1),
   assert_throws: ('__assert_throws', 2),
@@ -8002,11 +8001,6 @@ fn scan_expr(node, f) {
         }
       }
     },
-    {name: 'set_lit'} => {
-      for e in node.nodes {
-        scan_expr(e, f)
-      }
-    },
     {name: 'lambda', nodes: [prms, bodye]} => {
       let g = new_func(f, "fn@{node.line}:{node.column}", [bodye], pkey(node))
       closure_of[pkey(node)] = g
@@ -8769,6 +8763,11 @@ fn emit_call(m, node, f) {
       arg_ids.push(emit_expr(m, arg_val(a), f))
     }
     let (pl, pc) = pos_args(m, id)
+    # Set(a, b, ...) takes any number of members
+    if id.token == 'Set' {
+      return call_pre(m, f, '__mk_set', [ir.array_lit(arg_ids, node), pl, pc],
+                      node)
+    }
     # the wrong count is culebra's runtime ArityError, in its two wordings
     let n = args.nodes.size()
     let bad = cond {
@@ -10055,14 +10054,6 @@ fn emit_expr(m, node, f) {
         obj = call_pre(m, f, '__with_contract', [obj, pl, pc], node)
       }
       obj
-    },
-    {name: 'set_lit'} => {
-      let (pl, pc) = pos_args(m, node)
-      mut ids = []
-      for e in node.nodes {
-        ids.push(emit_expr(m, e, f))
-      }
-      call_pre(m, f, '__mk_set', [ir.array_lit(ids, node), pl, pc], node)
     },
     {name: 'lambda'} => emit_closure_value(m, node, f),
     {name: 'closure'} => emit_closure_value(m, node, f),

@@ -15,7 +15,7 @@ assert_eq(e_arr.kind, "TypeError")
 assert_eq(e_arr.message, "unhashable type: 'Array'")
 
 let e_set = try {
-  bag[{1, 2}] = 1
+  bag[Set(1, 2)] = 1
   nil
 } catch e {
   e
@@ -34,7 +34,7 @@ assert_eq(e_fn.kind, "TypeError")
 assert_eq(e_fn.message, "unhashable type: 'Function'")
 
 // --- As a Set member ---
-mut s = {0, 9}
+mut s = Set(0, 9)
 let e_sadd = try {
   s.add([1, 2])
   nil
@@ -131,9 +131,9 @@ for o in [{a: 1}, {a: 1, 2: 'two'}] {
 }
 
 // A Set refuses one the same way, empty or not.
-let empty = {1, 2}.diff({1, 2})
-let pair = {1, 2}
-mut left = {1, 2}.diff({1, 2})
+let empty = Set(1, 2).diff(Set(1, 2))
+let pair = Set(1, 2)
+mut left = Set(1, 2).diff(Set(1, 2))
 assert_eq(kind_of(|| empty.contains([1])), "TypeError")
 assert_eq(kind_of(|| pair.contains([1])), "TypeError")
 assert_eq(kind_of(|| left.remove([1])), "TypeError")

@@ -149,7 +149,7 @@ class Pt {
 show('value fields', || Pt(1, 2).keys())
 show('value display', || "{Pt(1, 2)}")
 show('value eq', || [Pt(1, 2) == Pt(1, 2), Pt(1, 2) == Pt(1, 3), Pt(1, 2) == 5])
-show('value set', || {Pt(1, 2), Pt(1, 2), Pt(2, 1)}.size())
+show('value set', || Set(Pt(1, 2), Pt(1, 2), Pt(2, 1)).size())
 show('value key', fn () {
   let m = {}
   m[Pt(1, 2)] = 'a'

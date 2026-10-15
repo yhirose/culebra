@@ -168,13 +168,12 @@ The parser also recognizes `let` as an optional prefix in assignments.
 * Nil: `nil`.
 
 **Trailing comma.** A single trailing comma is allowed after the last
-element of an array `[1, 2,]`, object `{a: 1,}`, set `{1, 2,}`, tuple
-`(1, 2,)`, argument list `f(1, 2,)`, parameter list `fn g(a, b,)`,
-lambda params `|a, b,|`, and destructuring pattern `let [a, b,] = …`
-(cleaner diffs, and reordering without touching the neighbours).
-A leading or doubled comma is still a syntax error. Note `(x,)` and
-`{x,}` are *not* merely cosmetic: the comma marks a one-element tuple
-and a one-element set respectively.
+element of an array `[1, 2,]`, object `{a: 1,}` (shorthand too: `{x,}` is
+`{x}`), tuple `(1, 2,)`, argument list `f(1, 2,)`, parameter list
+`fn g(a, b,)`, lambda params `|a, b,|`, and destructuring pattern
+`let [a, b,] = …` (cleaner diffs, and reordering without touching the
+neighbours). A leading or doubled comma is still a syntax error. The comma
+means something only in `(x,)`, where it makes a one-element tuple.
 
 ### Operators and punctuation
 
@@ -321,7 +320,7 @@ Culebra has exactly twelve types — the names `type_of` can return:
 | `Function`   | Closure (function pointer + captures)                                                |
 | `Tensor`     | N-dimensional numeric tensor with a lazy graph evaluated on CPU or GPU (see [stdlib §8](stdlib.md#8-tensor)) |
 | `Tuple`      | Immutable, hashable sequence (`(1, 2)`) — usable as an Object/Set key                |
-| `Set`        | Insertion-ordered collection of unique hashable values (`{1, 2, 3}`)                 |
+| `Set`        | Insertion-ordered collection of unique hashable values (`Set(1, 2, 3)`)              |
 
 Classes, enum variants, modules, iterators, and stdlib namespaces are
 all `Object`s. `type_of` reports `'Object'` for a module, an iterator and
@@ -365,7 +364,7 @@ promotion slow path with bit-for-bit identical semantics.
   `a == b`. What is matched as a **key** — a `Set`'s members, an
   `Object`'s non-`String` keys — is matched as a lookup matches it
   instead, by `hash` and `eq`: that step reads no `__eq__` and crosses
-  no types, so `{1, 7} == {1.0, 7}` is false where `[1, 7] ==
+  no types, so `Set(1, 7) == Set(1.0, 7)` is false where `[1, 7] ==
   [1.0, 7]` is true. Only `Function` and `Tensor` compare by reference
   identity. (Value equality does not make arrays hashable — they still
   can't be Object/Set keys.)
@@ -819,7 +818,7 @@ intermediate IR but must preserve the observable effect order.
   `p1`, then `p2`, then `splat`, then `kv` — exactly the order they
   appear at the call site, even when positional, `**` splat, and
   keyword arguments are interleaved.
-* **Array, object, tuple, and set literals.** Element/property
+* **Array, object, and tuple literals.** Element/property
   expressions evaluate in source order. For `{a: v1, b: v2}` it is
   `v1` then `v2`. For `[n; default]` (the size-prefixed form) the
   count expression evaluates before the default expression.
@@ -2155,7 +2154,7 @@ Tuples are hashable when their elements are, so they double as Object
 and Set keys:
 
     let grid = {(0, 0): 'origin', (1, 0): 'east'}
-    let visited = {(0, 0), (1, 1)}   # Set of Tuples
+    let visited = Set((0, 0), (1, 1))   # Set of Tuples
 
 Iteration with `for x in t { ... }` walks the elements in order. Both
 backends implement these semantics identically.
@@ -2235,24 +2234,30 @@ target (`f() = v` is a `SyntaxError`).
 ## Sets
 
 A `Set` is an insertion-ordered collection of unique hashable values.
-Literal syntax uses braces with at least two elements (or a trailing
-comma) so it doesn't collide with the empty-Object literal `{}` or the
-`{key: value}` Object shorthand:
+`Set(...)` builds one from its arguments, any number of them; `Set.new(...)`
+is the same call. Braces are always an Object's — `{a, b}` of bare names is
+the Object shorthand — so a Set has no literal of its own, and one shows as
+the call that builds it:
 
-    let s   = {1, 2, 3}
-    let one = {42,}                  # trailing comma forces a 1-element Set
-    let mixed = {1, 'two', 3.14, true}
+    let s     = Set(1, 2, 3)
+    let one   = Set(x)                 # one member, a name like any value
+    let none  = Set()                  # empty; `{}` is the empty Object
+    let mixed = Set(1, 'two', 3.14, true)
+    inspect(s)                         # => Set(1, 2, 3)
+
+`{1, 2}` is a `SyntaxError` that says so. From a collection already built,
+`to_set()` makes one (`[x, y].to_set()`, `it.to_set()`).
 
 Duplicate elements collapse on construction. Membership uses the same
 key identity as Object keys, which distinguishes types rather than
-numeric value — so `{1, 1.0, true}` keeps all three elements, exactly
+numeric value — so `Set(1, 1.0, true)` keeps all three elements, exactly
 as those three are three distinct Object keys. An element that cannot be
 hashed raises `TypeError` wherever one is looked up (`contains`,
 `remove`), however many members the Set has.
 
 Equality ignores order:
 
-    {1, 2, 3} == {3, 2, 1}           # true
+    Set(1, 2, 3) == Set(3, 2, 1)     # true
 
 Built-in methods:
 
@@ -3402,7 +3407,7 @@ literal keeps its literal meaning, not a block:
     match x {
       0 => {},          # empty Object
       1 => {a: v},      # Object literal
-      2 => {p, q, r},   # Set literal (two or more elements)
+      2 => {p, q},      # Object shorthand: {p: p, q: q}
       _ => { f(); g() } # block: runs f() then g(), yields g()'s value
     }
 
@@ -3934,7 +3939,7 @@ enums are two keys.
     mut hits = {}
     hits[Color.Red] = 1
     hits[Shape.Rect(2.0, 3.0)] = 6
-    {Color.Red, Color.Green, Color.Red}.size()   # → 2
+    Set(Color.Red, Color.Green, Color.Red).size()   # → 2
 
 #### Notes and limitations
 
@@ -5563,7 +5568,7 @@ inspect(seen)  # => [1, 2]
 | `a.max() -> Any`                            | Largest element. Same rule as `min`. |
 | `a.min_by(f: Function) -> Any`              | Element whose key `f(x)` is smallest; `f` must take one parameter, and the keys compare by the same rule as `<` — a Tuple key orders by several things at once. Each key is computed once, and ties keep the earlier element. Throws on empty. |
 | `a.max_by(f: Function) -> Any`              | Element whose key `f(x)` is largest. Same rules as `min_by`. |
-| `a.to_set() -> Set`                         | Fresh `Set` of the elements in first-seen order, duplicates dropped. Set literals aside, this is how a `Set` is built from a collection. Unhashable elements throw. |
+| `a.to_set() -> Set`                         | Fresh `Set` of the elements in first-seen order, duplicates dropped. This is how a `Set` is built from a collection; `Set(a, b)` builds one from values. Unhashable elements throw. |
 | `a.to_object() -> Object`                   | Fresh `Object` from `(key, value)` tuples — the inverse of `Object.iter()`, so a table can be built as an expression instead of a `mut` + loop. Keys keep first-seen order and a repeat overwrites in place (last value, first position). Entries are **mutable**, like `group_by`'s and any other key inserted at runtime. An element that is not a 2-tuple raises `TypeError`; an unhashable key throws like any other. |
 | `a.group_by(f: Function) -> Object`         | Buckets elements into Arrays keyed by `f(x)`, in first-seen key order; `f` must take one parameter and return a hashable key. |
 | `a.partition(p: Function) -> Tuple`         | One-pass split into `(matching, non_matching)`, order preserved in both halves. `p` must take one parameter. Destructures: `let (yes, no) = xs.partition(p)`. |
@@ -6177,7 +6182,7 @@ inspect(type_of(1.5))     # => 'Float'
 inspect(type_of('hi'))    # => 'String'
 inspect(type_of([1, 2]))  # => 'Array'
 inspect(type_of((1, 2)))  # => 'Tuple'
-inspect(type_of({1, 2}))  # => 'Set'
+inspect(type_of(Set(1, 2)))  # => 'Set'
 inspect(type_of({a: 1}))  # => 'Object'
 inspect(type_of(1..3))    # => 'Range'
 ```

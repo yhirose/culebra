@@ -453,9 +453,8 @@ class Inference {
         return Type::of(Kind::Bool);
       case "NIL"_:
         return Type::of(Kind::Nil);
-      case "ARRAY"_:
-      case "SET"_: {
-        Alt a{e.tag == "ARRAY"_ ? Kind::Array : Kind::Set};
+      case "ARRAY"_: {
+        Alt a{Kind::Array};
         Type element;
         for (const auto* item : sequence(e)) {
           if (item->tag == "SPREAD_ELEM"_ && !item->nodes.empty())

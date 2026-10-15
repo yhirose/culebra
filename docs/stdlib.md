@@ -6747,7 +6747,7 @@ inspect(a.normalized())         # => (0.6, 0.8)
 inspect(a + Vector2.new(1, 1))  # => (4.0, 5.0)
 
 # Equal vectors are one Set member and one Object key.
-inspect({Vector2.new(1, 2), Vector2.new(1, 2)}.size())  # => 1
+inspect(Set(Vector2.new(1, 2), Vector2.new(1, 2)).size())  # => 1
 ```
 
 | Member | Returns |

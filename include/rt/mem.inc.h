@@ -766,8 +766,6 @@ inline constexpr auto array_sorted        = "culebra_runtime_array_sorted";
 // downstream.
 inline constexpr auto tuple_new           = "culebra_runtime_tuple_new";
 inline constexpr auto tuple_push          = "culebra_runtime_tuple_push";
-inline constexpr auto set_new             = "culebra_runtime_set_new";
-inline constexpr auto set_add             = "culebra_runtime_set_add";
 inline constexpr auto set_contains        = "culebra_runtime_set_contains";
 inline constexpr auto set_size            = "culebra_runtime_set_size";
 inline constexpr auto set_union           = "culebra_runtime_set_union";

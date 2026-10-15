@@ -876,7 +876,7 @@ let by_fn = try {
 }
 assert_eq(by_fn.message, 'type error: expected Long, got Function')
 let by_set = try {
-  [1, 2][{1, 2}]
+  [1, 2][Set(1, 2)]
   nil
 } catch e {
   e

@@ -37,7 +37,7 @@ let recvs = [
   '[1, 2, 3]',
   '{a: 1, b: 2}',
   '(1, 2, 3)',
-  '{1, 2, 3}',
+  'Set(1, 2, 3)',
   'fn (x) { x }',
 ]
 
@@ -292,7 +292,7 @@ let bare_recvs = [
   '[1, 2]',
   '{a: 1}',
   '(1, 2)',
-  '{1, 2}',
+  'Set(1, 2)',
   '0..3',
   '[1, 2].iter()',
   '{has_next: fn () { false }, next: fn () { nil }}',
@@ -326,7 +326,7 @@ for i in [...indices, '3', '-3', '-4'] {
     '{ mut a = [1, 2, 3]; let r = a.remove_at(' + i + '); (r, a) }',
   )
 }
-for src in ['[4, 5]', '[]', '(4, 5)', '{4, 5}', '"ab"', '4', 'nil'] {
+for src in ['[4, 5]', '[]', '(4, 5)', 'Set(4, 5)', '"ab"', '4', 'nil'] {
   case('extend|' + src, '{ mut a = [1, 2]; a.extend(' + src + '); a }')
   case('concat|' + src, '[1, 2] + ' + src)
 }
@@ -356,7 +356,7 @@ let disp_vals = [
   '[1, 2]',
   '{a: 1}',
   '(1, 2)',
-  '{1, 2}',
+  'Set(1, 2)',
   'range',
   'iota',
   'grid',
@@ -1133,7 +1133,7 @@ for c in kw_add_calls {
   case("kwbind-add|" + c, kwa_pre + c)
 }
 # A real Set receiver rejects keywords to its mutating add/remove.
-for c in ['{1, 2}.add(x: 3)', '{1, 2}.remove(x: 1)'] {
+for c in ['Set(1, 2).add(x: 3)', 'Set(1, 2).remove(x: 1)'] {
   case("kwbind-setmut|" + c, c)
 }
 
@@ -2620,7 +2620,7 @@ for c in mutrecv {
 let elemwin = [
   'mut n = 0; try { for (a, b) in [[1, 2], [3, 4, 5]] { n = n + a } } catch e { n = n + 1 }; n',
   'mut n = 0; try { for (a, b) in ([1, 2], [3, 4, 5]) { n = n + a } } catch e { n = n + 1 }; n',
-  'mut n = 0; try { for (a, b) in {[1, 2], [3, 4, 5]} { n = n + a } } catch e { n = n + 1 }; n',
+  'mut n = 0; try { for (a, b) in Set([1, 2], [3, 4, 5]) { n = n + a } } catch e { n = n + 1 }; n',
   'mut n = 0; try { for (a, b, c) in {x: 1, y: 2} { n = n + 1 } } catch e { n = n + 1 }; n',
   'mut n = 0; try { for (a, b) in "abc" { n = n + 1 } } catch e { n = n + 1 }; n',
   'fn g() { yield [1, 2]; yield [3, 4, 5] }; mut n = 0; try { for (a, b) in g() { n = n + a } } catch e { n = n + 1 }; n',
@@ -2859,7 +2859,7 @@ let shadow_recvs = [
   '[1, 2]',
   '{a: 1}',
   '(1, 2)',
-  '{1, 2}',
+  'Set(1, 2)',
   'Math',
   '[1, 2].iter()',
   'Shared.new({a: 1})',
@@ -2925,7 +2925,7 @@ for n in ['size', 'add', 'to_string', 'drop', 'parameters', 'zzz'] {
   let decl = shadow_cands[0].replace("NAME", n)
   for f in shadow_forms {
     let call = f.replace("NAME", n)
-    for r in ['5', '"ab"', '[1, 2]', '{a: 1}', '{1, 2}', 'nil', 'Math'] {
+    for r in ['5', '"ab"', '[1, 2]', '{a: 1}', 'Set(1, 2)', 'nil', 'Math'] {
       case(
         "ufcsshadowform|" + n + "|" + call + "|" + r,
         decl + '; (' + r + ')' + call,

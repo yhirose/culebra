@@ -36,8 +36,8 @@ inspect(s.contains('lo w'))
 inspect(s.contains(''))
 inspect(s.view().contains('zz'))
 inspect(s.contains('world'.view()))
-inspect({1, 2, 3}.contains(2))
-inspect({1, 2, 3}.contains(9))
+inspect(Set(1, 2, 3).contains(2))
+inspect(Set(1, 2, 3).contains(9))
 inspect((7, 8).contains(8))
 inspect((7, 8).contains([8]))
 
@@ -61,7 +61,7 @@ inspect(true.to_string())
 inspect((1.5).to_string())
 inspect(a.to_string())
 inspect((7, 8).to_string())
-inspect({1, 2}.to_string())
+inspect(Set(1, 2).to_string())
 inspect([[1, 'a'], nil].to_string())
 inspect(s.view().to_string())
 inspect(type_of(s.view().to_string()))
@@ -103,7 +103,7 @@ try {
     println("{err.kind}: {err.message}")
 }
 try {
-    {1, 2}.slice(0, seen(2))
+    Set(1, 2).slice(0, seen(2))
 } catch err {
     println("{err.kind}: {err.message}")
 }
@@ -136,7 +136,7 @@ try {
     println("{err.kind}: {err.message}")
 }
 try {
-    {1, 2}.contains([1])
+    Set(1, 2).contains([1])
 } catch err {
     println("{err.kind}: {err.message}")
 }

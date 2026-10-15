@@ -1687,25 +1687,26 @@ inspect(type_of(pair))       # => 'Tuple'
 inspect(pair == (1, 'one'))  # => true
 ```
 
-`Set`は挿入順を保つ、ハッシュ可能な値の重複なしコレクション。
-リテラルは2要素以上 — または末尾カンマ — が必要で、空Objectの
-`{}`や`{key: value}`の短縮形と衝突しないようになっている。
-重複は構築時に潰れ、等価比較は順序を無視する。
+`Set`は挿入順を保つ、ハッシュ可能な値の重複なしコレクションで、
+`Set(...)`が要素をいくつでも受け取って作る。波括弧はObjectのものなので、
+Setは作る呼び出しの形で表示される。重複は構築時に潰れ、等価比較は順序を
+無視する。
 
 ```culebra
-s = {1, 2, 3, 3}
-inspect(s.size())                # => 3
-inspect(s.contains(2))           # => true
-inspect({1, 2, 3} == {3, 2, 1})  # => true
-inspect({42,})                   # => {42}
+s = Set(1, 2, 3, 3)
+inspect(s.size())                      # => 3
+inspect(s.contains(2))                 # => true
+inspect(Set(1, 2, 3) == Set(3, 2, 1))  # => true
+inspect(Set(42))                       # => Set(42)
+inspect(Set())                         # => Set()
 ```
 
 集合演算は演算子でなくメソッド (`|`はラムダ引数に取られている):
 
 ```culebra
-inspect({1, 2}.union({2, 3}))            # => {1, 2, 3}
-inspect({1, 2, 3}.intersect({2, 3, 4}))  # => {2, 3}
-inspect({1, 2, 3}.diff({3,}))            # => {1, 2}
+inspect(Set(1, 2).union(Set(2, 3)))             # => Set(1, 2, 3)
+inspect(Set(1, 2, 3).intersect(Set(2, 3, 4)))   # => Set(2, 3)
+inspect(Set(1, 2, 3).diff(Set(3)))              # => Set(1, 2)
 ```
 
 ### 13.3 Trait / Protocol

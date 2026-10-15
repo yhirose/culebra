@@ -8334,6 +8334,15 @@ inline JitValue _ns_string_pack_size(JitValue* a, int64_t) {
       static_cast<int64_t>(_ns_pack_type(a[0], "String.pack_size").width()));
 }
 
+// Set(x, y, ...) / Set.new(...): a Set of the arguments in order, a repeat
+// dropped. The arguments are borrowed; a member is retained as it enters.
+inline JitValue _ns_set_new(JitValue* a, int64_t n) {
+  auto* s = _set_new_reserved(static_cast<size_t>(n));
+  JitOwnedVal owned(JitValue{TAG_SET, reinterpret_cast<int64_t>(s)});
+  for (int64_t i = 0; i < n; i++) _set_take(s, JitHashedKey::of(a[i]));
+  return owned.consume();
+}
+
 // UUID.{v4,v7}: canonical UUID strings via uuid.h (shared entropy/format).
 inline JitValue _ns_uuid_v4(JitValue*, int64_t) {
   return _ns_adapt::v_string(_culebra_heap_str(culebra::uuid::v4()));
@@ -10451,6 +10460,9 @@ inline const NsMethod kNsRows_Env[] = {
   {"Env", "parse", 1, &_ns_env_parse, nullptr, "String", "text"},
   {"Env", "load",  0, &_ns_env_load,  nullptr, "String", "path"},
 };
+inline const NsMethod kNsRows_Set[] = {
+  {"Set", "new", -1, &_ns_set_new},
+};
 inline const NsMethod kNsRows_UUID[] = {
   {"UUID", "v4", 0, &_ns_uuid_v4},
   {"UUID", "v7", 0, &_ns_uuid_v7},
@@ -10743,6 +10755,8 @@ CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_XML{
     kNsRows_XML, kCanonSigs_XML};
 CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Env{
     kNsRows_Env, kCanonSigs_Env};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Set{
+    kNsRows_Set, kCanonSigs_Set};
 CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_UUID{
     kNsRows_UUID, kCanonSigs_UUID};
 CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_String{
@@ -10800,6 +10814,7 @@ inline const NsGroupRef kNsGroups[] = {
   {"TOML", &culebra_ns_group_TOML},
   {"XML", &culebra_ns_group_XML},
   {"Env", &culebra_ns_group_Env},
+  {"Set", &culebra_ns_group_Set},
   {"UUID", &culebra_ns_group_UUID},
   {"String", &culebra_ns_group_String},
   {"Tensor", &culebra_ns_group_Tensor},
@@ -12371,7 +12386,7 @@ inline const std::unordered_set<std::string_view>& builtin_var_names() {
       "Parallel",
       "Signal",  "Encoding", "Compress",  "SharedBuffer", "Shared",
       "Hash",    "CSV",       "TOML",      "XML",       "Env",        "UUID",
-      "String",
+      "String",  "Set",
       "_Term",   "_Canvas",   "_Audio",    "_Dir",
 #if defined(CULEBRA_SQLITE_ENABLED)
       "SQLite",

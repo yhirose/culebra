@@ -56,7 +56,7 @@ fn obj_key() {
 show('obj_key', obj_key)
 fn set_key() {
   mut o = {}
-  o[{1, 2}] = 'n'
+  o[Set(1, 2)] = 'n'
   o
 }
 show('set_key', set_key)

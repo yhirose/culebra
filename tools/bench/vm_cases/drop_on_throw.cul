@@ -225,7 +225,7 @@ class H {
   eq(other) { self.n == other.n }
 }
 fn setdrop() {
-  let s = {H.new(85), H.new(86), H.new(87)}
+  let s = Set(H.new(85), H.new(86), H.new(87))
   throw 'x'
 }
 println(try { setdrop() ; 0 } catch e { 'caught' })

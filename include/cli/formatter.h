@@ -476,7 +476,7 @@ class Printer {
   // innermost code-level brace pair holding the comment, 0 when none does.
   // Printers get the same key from block_interior() (same mask, same matching),
   // so a list owns a comment exactly when owner_[ci] equals its interior start.
-  // Object and set literals open a pair of their own, so their interior
+  // Object literals open a pair of their own, so their interior
   // comments are never mistaken for a statement's.
   std::vector<size_t> owner_;
   // The brace literal that opens the statement being printed (see
@@ -1376,8 +1376,7 @@ class Printer {
 
   // A brace literal holding comments lays out like a block: one element per
   // line, its comments placed by the same owner test a block's statements get.
-  // The trailing `,` is what the broken form already prints and what a
-  // 1-element Set requires.
+  // The trailing `,` is what the broken form already prints.
   //
   // `node.position` is the literal's `{` unless the optimizer folded a lone-
   // statement block onto it — a literal alone in a block wears that block's
@@ -1387,28 +1386,16 @@ class Printer {
   // literal's own — the same fold print_defer / print_try / print_cond dodge.
   // The collapse check is needed here and not in print_cond: uncollapsed, a
   // brace literal's position is already its own `{`, while a cond's is `cond`.
-  template <typename Render>
-  DocP print_brace_literal(const peg::Ast& node, Render render) {
+  DocP print_brace_literal(const peg::Ast& node) {
     std::vector<const peg::Ast*> elems;
     for (auto& e : node.nodes) elems.push_back(e.get());
     size_t from = node.position;
     if (is_wrapper_collapsed(node) && from < src_.size() && is_code_[from] &&
         src_[from] == '{')
       from++;
-    return print_braced(elems, from, ",", /*empty_ok=*/true, render);
-  }
-
-  DocP print_set(const peg::Ast& node) {
-    if (brace_holds_comment(node))
-      return print_brace_literal(node, [&](size_t k) { return print(*node.nodes[k]); });
-    std::vector<DocP> items;
-    for (auto& e : node.nodes) items.push_back(print(*e));
-    // A 1-element Set must keep its trailing comma (`{a,}`) for the same
-    // reason a 1-tuple must: without it the braces read as an Object literal,
-    // and `{a}` does not parse at all. print_delimited would drop it.
-    if (items.size() == 1)
-      return doc_concat({doc_text("{"), items[0], doc_text(",}")});
-    return print_delimited("{", std::move(items), "}");
+    return print_braced(elems, from, ",", /*empty_ok=*/true, [&](size_t k) {
+      return print_object_property(*node.nodes[k]);
+    });
   }
 
   // A 1-tuple must keep its trailing comma (`(a,)`); print_delimited would
@@ -1440,8 +1427,7 @@ class Printer {
 
   DocP print_object(const peg::Ast& node) {
     if (brace_holds_comment(node))
-      return print_brace_literal(
-          node, [&](size_t k) { return print_object_property(*node.nodes[k]); });
+      return print_brace_literal(node);
     if (node.nodes.empty()) return doc_text("{}");
     std::vector<DocP> items;
     for (auto& p : node.nodes) items.push_back(print_object_property(*p));
@@ -1979,7 +1965,6 @@ class Printer {
       return doc_concat({doc_text("("), d, doc_text(")")});
     }
     if (n == "TUPLE") return print_tuple(node);
-    if (n == "SET") return print_set(node);
 
     return own_source(node);
   }
