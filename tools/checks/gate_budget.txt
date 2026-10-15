@@ -179,7 +179,9 @@ ctest.entries 36
 # and a `let` of its declaration's body, in en and ja.
 # 1066 since tooling §9 shows a module for `culebra play --sounds`, in en and
 # ja.
-docs.blocks 1066
+# 1068 since Kauai §10 shows a host instrument that plays a phrase at a time
+# and names what it hears of each note, in en and ja.
+docs.blocks 1068
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130
