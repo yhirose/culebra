@@ -22,7 +22,7 @@ let SIZE = 4096
 
 # Seconds for a string at `f` Hz to ring down by 60 dB: longer low.
 fn ring_time(f, sustain) {
-  Math.max(0.4, Math.min(10.0, sustain * Math.sqrt(110.0 / f)))
+  Math.clamp(sustain * Math.sqrt(110.0 / f), 0.4, 10.0)
 }
 
 # The loop at `f` Hz: a whole-sample delay, an allpass for the fraction
@@ -195,7 +195,7 @@ let sounds = {
 }
 let voices = sounds
   .keys()
-  .map(|k| (k, wave.voice(sounds[k], ["len", "level", "marks", "next"])))
+  .map(|k| (k, wave.voice(sounds[k], wave.HEARS)))
   .to_object()
 
 export {voices, sounds}

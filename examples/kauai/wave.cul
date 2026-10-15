@@ -80,14 +80,7 @@ fn wav(samples) {
 # A phrase as the lines that move through it: the notes struck together
 # from the lowest, the k-th of each onset in line k. One line is the phrase.
 fn lines(notes) {
-  mut onsets = []
-  for n in notes {
-    if onsets.empty() || onsets[onsets.size() - 1][0].at != n.at {
-      onsets.push([n])
-    } else {
-      onsets[onsets.size() - 1].push(n)
-    }
-  }
+  let onsets = notes.group_by(|n| n.at).values().collect()
   let width = onsets.map(|o| o.size()).max()
   iota(width).map(|k| onsets.filter(|o| o.size() > k).map(|o| o[k]))
 }
@@ -99,13 +92,13 @@ fn lines(notes) {
 fn by_line(notes, spread, play) {
   let parts = lines(notes).map(fn (line) {
     let t0 = line[0].at
-    let since = |t| t == nil ? nil : t - t0
+    let next = line[0].get("next", nil)
     {
       t0: t0,
       s: play(line.map(|n| {
         ...n,
         at: n.at - t0,
-        next: since(n.get("next", nil)),
+        next: next == nil ? nil : next - t0,
       })),
     }
   })
@@ -125,6 +118,17 @@ fn by_line(notes, spread, play) {
   out
 }
 
+# How much louder than its start a note `n` ({len, level, level_end}) is
+# `since` seconds into it, through a crescendo or a diminuendo.
+fn swell(n, since) {
+  1.0 +
+    (n.level_end / n.level - 1.0) *
+      Math.min(1.0, since / Math.max(n.len, 0.001))
+}
+
+# All a phrase instrument can hear of a note.
+let HEARS = ["len", "level", "marks", "next"]
+
 # `voices:`'s instrument for `play(notes, params)`, which answers a phrase's
 # samples: it hears what `hears` names of each note, and sounds in the room.
 fn voice(play, hears) {
@@ -134,4 +138,4 @@ fn voice(play, hears) {
   }
 }
 
-export {RATE, hz, noise, room, wav, lines, by_line, voice}
+export {RATE, HEARS, hz, noise, room, wav, by_line, swell, voice}

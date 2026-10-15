@@ -38,13 +38,11 @@ let OPEN = metal(1.0, 0.35, 6000.0, 0.5, 29).map(|s| s * 0.6)
 # The open hat, closed `n.next` seconds on if its choke group hits again.
 fn open_hat(n) {
   let fade = Math.round(0.01 * RATE)
-  let stop = n.next == nil
-    ? OPEN.size()
-    : Math.min(OPEN.size(), Math.round(n.next * RATE))
+  let stop = n.next == nil ? OPEN.size() : Math.round(n.next * RATE)
   iota(Math.min(
     OPEN.size(),
     stop + fade,
-  )).map(|i| OPEN[i] * (i < stop ? 1.0 : 1.0 - (i - stop) / fade))
+  )).map(|i| OPEN[i] * (i < stop ? 1.0 : 1.0 - (i - stop).to_float() / fade))
 }
 
 let sounds = {
