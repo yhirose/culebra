@@ -260,7 +260,7 @@ notes echo its last.
 ### Drums
 
 `drum NAME noise FREQ[->END] len N vol V [env A D R] [plays hits]`
-`drum NAME host SOUND [name=value...] vol P% [plays hits]`
+`drum NAME host SOUND [name=value...] vol P% [choke GROUP] [plays hits]`
 
 A noise drum is a hit on the noise channel: `FREQ` in Hz, sliding to `END`
 if given, held for `len` ticks. The channel sounds one drum at a time, so two
@@ -276,11 +276,18 @@ band Combo {
   voice Keys  host Ep bright=0.8  plays chords rootless from E3  poly  vol 40%
   voice Bass  triangle            plays roots in E2..D#3            vol 30
 
-  drum Kick   host Kick   vol 80%
-  drum Ride   host Ride   vol 50%
-  drum Hat    host Hat    vol 40%
+  drum Kick     host Kick     vol 80%
+  drum Ride     host Ride     vol 50%
+  drum Hat      host Hat      vol 40%  choke Hats
+  drum OpenHat  host OpenHat  vol 30%  choke Hats
 }
 ```
+
+Host drums that name the same `choke` group stop each other, as the pedal
+closes an open hi-hat: the instrument that sounds one is told when the next
+hit of its group comes, and ends its sound there
+([section 10](#10-playing-from-culebra)). A drum with no group is its own,
+so each hit is told when the drum hits again.
 
 A drum that `plays hits` strikes on a section's hits; the others rest
 through them ([Hits and breaks](#hits-and-breaks)).
@@ -552,6 +559,13 @@ after it.
 | `\tempo 114` | this tempo from here; `\tempo 4.=76` counts another value, here dotted quarters |
 | `\rit 104` / `\accel 140` | slower / faster, evenly, reaching the tempo at the next tempo direction |
 | `\tempo` | back to the song's tempo |
+| `\scoop` `\plop` `\doit` `\fall` | the next note's jazz articulation: into it from below, into it from above, out of it upward, out of it falling away |
+
+The jazz articulations mark one note, as a chart draws them on it, and are
+written once each before it; they go with its marks, `\fall !c2`. A host
+instrument that hears marks plays them
+([section 10](#10-playing-from-culebra)); a tone channel plays the note as
+written.
 
 A dynamic in a bar line is the whole band's, as a chart's `mf` or `cresc.`
 is read by everyone playing from it: the melody, the parts, the grooves, the
@@ -861,12 +875,13 @@ under.
 - the first bar of a section or an ending without chords
 - a `%` or `%%` without the bars before it in its section or ending, or a line under a `%`
 - a pickup over notes of the bar before it, or longer than that bar; at the start of a song that loops, a pickup over notes of the song's last bar
+- a `\scoop`, `\plop`, `\doit` or `\fall` before a rest or a note a tie holds on, written twice before one note, or with no note after it when the song ends
 - a `\!` with no `cresc` or `dim` going, a `cresc` or `dim` still going when the song ends, or a `\rit` or `\accel` without its tempo (`\rit 104`)
 - a tempo counted in what is no note value (`tempo 3=60`)
 - a groove, voice, drum, section, band, ending or derived part that is not defined, or a name defined twice
 - a groove row with a bar of no tokens, or of tokens that come to no note value (15 in 4/4)
 - two noise drums hitting at the same moment, or two voices of a band on one channel
-- a host drum without a sound, with a `len` or an `env`, or with a `vol` that is not a percentage
+- a host drum without a sound, with a `len` or an `env`, with a `vol` that is not a percentage, or with a `choke` of other than one name; a `choke` on a noise drum
 - no voice that plays melody, or more than one
 - a range that is not one octave, or that starts on a sharp or a flat
 - a `meter` whose beat is not a note value (`3/5`)
@@ -966,16 +981,17 @@ dies away, as a piano or a drum does. An instrument whose sound follows how
 it is played, as a bowed string or a horn does, is given instead as an
 object: `phrase` is its function, called with a phrase and the voice's
 parameters, and `hears` names what of each note it is told. A phrase is the
-notes a slur joins, in the order they start, grace notes among them, or a
-note under no slur alone; a rest under a slur ends the phrase so far. So the
-instrument shapes how one note moves to the next: a finger stopping
-the next pitch under the same bow, a breath carried through. A drum is given
-as `{hit: |n, params| ..., hears: [...]}`, `n` one hit.
+notes a slur joins, in the order they start, grace notes among them; the
+notes struck together, a chord written or one a groove plays; or a note
+alone. A rest under a slur ends the phrase so far. So the instrument shapes
+how one note moves to the next, a finger stopping the next pitch under the
+same bow, a breath carried through, and how a chord is struck. A drum is
+given as `{hit: |n, params| ..., hears: [...]}`, `n` one hit.
 
 ```culebra
 # doctest: skip (bowed is the program's own)
 let song = Audio.Kauai.load("trio.kau", voices: {
-  violin: {phrase: |notes, params| Audio.Sound(bowed(notes)), hears: ["len", "level"]},
+  violin: {phrase: |notes, params| Audio.Sound(bowed(notes)), hears: ["len", "level", "next"]},
 })
 ```
 
@@ -983,9 +999,21 @@ let song = Audio.Kauai.load("trio.kau", voices: {
 |---|---|---|
 | (always) | `pitch`, a MIDI note, and `at`, seconds from the phrase's first note, to the millisecond | a voice |
 | `"len"` | `len`, seconds the note is held: a staccato's half, a marcato's three quarters, to the millisecond | a voice |
-| `"level"` | `level`, the note's dynamic over `mf`'s (`1.0` at `mf`, `0.47` at `pp`, `1.35` at `ff`; an accent a step louder), to the hundredth | a voice or a drum |
+| `"level"` | `level`, the note's dynamic over `mf`'s (`1.0` at `mf`, `0.47` at `pp`, `1.35` at `ff`; an accent a step louder), to the hundredth; a voice's note also `level_end`, the dynamic it ends at, which differs from `level` through a `cresc` or a `dim` (and after an accent) | a voice or a drum |
+| `"marks"` | `marks`, the names of what is written on the note: `staccato` `accent` `tenuto` `marcato` `fermata` `arpeggio` `scoop` `plop` `doit` `fall` | a voice |
+| `"next"` | `next`, seconds from the phrase's first note until the voice's next phrase starts; for a drum, from the hit until the drum, or its choke group, hits next; `nil` when nothing comes, to the millisecond | a voice or a drum |
 
-A chord's tones are each a note of the phrase, at the same `at`. Kauai builds
+Notes struck together are each a note of the phrase, at the same `at`, from
+the lowest; a rolled chord's start a sixty-fourth apart. `next` is a
+deadline, not a cut: every sound still plays through, and an instrument that
+hears it ends its own by then, in its own way (a string damped, a breath
+stopped, an open hi-hat closed), while the room it carries rings on. It
+counts only what starts later, so a chord's tones, and drums struck
+together, do not stop each other. The jazz articulations take their time
+inside the note: a scoop or a plop from its start, a doit or a fall from its
+end.
+
+Kauai builds
 one sound for each phrase the instrument hears differently: a note alone
 that hears nothing is built once for each pitch, as a function is, and one
 that hears `len` once for each pitch and length. The sound plays through to
@@ -1100,7 +1128,7 @@ Plays      <- 'melody' / 'roots' 'in' Range / 'chords' 'rootless'? 'from' Pitch
 Derived    <- Name 'echoes' Name 'late' Ratio 'level' Percent EOL
             / Name 'harmonizes' Name 'under' Interval EOL
 Drum       <- 'drum' Name ('noise' Int ('->' Int)? 'len' Int 'vol' Int
-              ('env' Int Int Int)? / 'host' Name Param* 'vol' Percent)
+              ('env' Int Int Int)? / 'host' Name Param* 'vol' Percent ('choke' Name)?)
               ('plays' 'hits')? EOL
 
 Groove     <- 'groove' Name '{' EOL (Row / Edge / EOL)* '}' EOL
@@ -1140,7 +1168,8 @@ Pitchname  <- [a-g] ('##' / '#' / 'bb' / 'b')?
 Octave     <- "'" / ','
 Value      <- ('1' / '2' / '4' / '8' / '16' / '32') '.'*
 Direction  <- '\\' ('pp' / 'p' / 'mp' / 'mf' / 'f' / 'ff' / 'cresc' / 'dim'
-              / 'rit' Tempo / 'accel' Tempo / 'tempo' (Tempo !'[')? / '!')
+              / 'rit' Tempo / 'accel' Tempo / 'tempo' (Tempo !'[')? / '!'
+              / 'scoop' / 'plop' / 'doit' / 'fall')
 Tempo      <- (Value '=')? Number                 # quarter notes a minute, or Value's
 
 Song       <- 'song' Name '{' EOL SongLine* '}' EOL

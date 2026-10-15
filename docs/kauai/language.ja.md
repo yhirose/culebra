@@ -258,7 +258,7 @@ sectionごとに選びます（[8章](#8-曲)）。
 ### ドラム
 
 `drum NAME noise FREQ[->END] len N vol V [env A D R] [plays hits]`
-`drum NAME host SOUND [name=value...] vol P% [plays hits]`
+`drum NAME host SOUND [name=value...] vol P% [choke GROUP] [plays hits]`
 
 noiseのドラムは、ノイズチャンネルで鳴らす打音です。`FREQ`は高さ（Hz）で、
 `END`を書くとそこまで音程を滑らせ、`len`のtick数だけ鳴らします。チャンネルは
@@ -275,11 +275,18 @@ band Combo {
   voice Keys  host Ep bright=0.8  plays chords rootless from E3  poly  vol 40%
   voice Bass  triangle            plays roots in E2..D#3            vol 30
 
-  drum Kick   host Kick   vol 80%
-  drum Ride   host Ride   vol 50%
-  drum Hat    host Hat    vol 40%
+  drum Kick     host Kick     vol 80%
+  drum Ride     host Ride     vol 50%
+  drum Hat      host Hat      vol 40%  choke Hats
+  drum OpenHat  host OpenHat  vol 30%  choke Hats
 }
 ```
+
+同じ`choke`グループを書いたhostのドラムは、ペダルがオープンのハイハットを
+閉じるように、互いの音を止めます。そのドラムを鳴らす楽器には、同じグループの
+次の打音がいつ来るかが渡され、楽器はそこで自分の音を終えます
+（[10章](#10-culebra-から再生する)）。グループを書かないドラムは、それだけで
+1つのグループです。打音ごとに、同じドラムが次に鳴る時刻が渡されます。
 
 `plays hits`を付けたドラムは、sectionのキメに加わって鳴ります。付けていない
 ドラムは、キメの間は休みます（[キメとブレイク](#キメとブレイク)）。
@@ -549,6 +556,12 @@ section Tag {
 | `\tempo 114` | ここからこのテンポにする。`\tempo 4.=76`のように、4分音符以外の音価（この例では付点4分音符）で数えることもできる |
 | `\rit 104` / `\accel 140` | 次のテンポの指示の位置でこのテンポになるよう、一定の割合で遅く / 速くする |
 | `\tempo` | 曲のテンポに戻す |
+| `\scoop` `\plop` `\doit` `\fall` | 次の音に付けるジャズの奏法。下からしゃくり上げて入る、上から落ちて入る、終わりに上へ抜ける、終わりに下へ落ちる |
+
+ジャズの奏法は、楽譜で音符に書き込むのと同じく1つの音に付く印で、その音の
+前に1つにつき1回書きます。音符の記号と一緒に使えます（`\fall !c2`）。
+奏法を音にするのは、記号を聞くhost楽器です（[10章](#10-culebra-から再生する)）。
+チャンネルの音源は、書いたとおりの音を鳴らします。
 
 小節の行に書いた強弱は、バンド全体に効きます。コード譜の`mf`や`cresc.`を
 演奏者全員が見るのと同じです。メロディ、パート、groove、ドラム、派生パートは
@@ -859,12 +872,13 @@ section Bridge {
 - コードのない、sectionやendingの最初の小節
 - 同じsectionやendingの中に、繰り返す元の小節がない`%`や`%%`。`%`の下に書いた行
 - 直前の小節の音と重なる弱起。直前の小節より長い弱起。ループする曲の冒頭で、曲の最後の小節の音と重なる弱起
+- 休符や、タイで伸ばしている音の前の`\scoop`、`\plop`、`\doit`、`\fall`。1つの音の前に同じものを2回書いたもの。曲が終わっても後ろに音がないもの
 - `cresc`や`dim`の途中でない場所の`\!`。曲が終わっても続いている`cresc`や`dim`。テンポを書いていない`\rit`や`\accel`（`\rit 104`のように書く）
 - 音価でないもので数えたテンポ（`tempo 3=60`）
 - 定義されていないgroove、楽器、ドラム、section、band、ending、派生パート。2回定義された名前
 - トークンのない小節や、トークンの長さが音価にならない小節（4/4で15個）を含むgrooveの行
 - 同時に鳴るnoiseのドラム2つ。同じチャンネルを使う1つのbandの楽器2つ
-- 音声の名前がない、`len`や`env`が付いている、または`vol`が百分率でないhostのドラム
+- 音声の名前がない、`len`や`env`が付いている、`vol`が百分率でない、または`choke`に名前が1つでないhostのドラム。noiseのドラムの`choke`
 - メロディを弾く楽器がない、または2つ以上ある
 - 1オクターブでない範囲。シャープやフラットの付いた音から始まる範囲
 - 1拍が音価にならない`meter`（`3/5`）
@@ -966,16 +980,16 @@ host楽器の音声は、音の高さごとに1つずつ作ります。曲で使
 代わりにオブジェクトで渡します。`phrase`がその楽器の関数で、フレーズとボイスの
 パラメータを受け取ります。`hears`には、各音符の何を受け取るかを並べます。
 フレーズは、スラーでつながった音符（装飾音を含む）を始まる順に並べたものです。
-スラーのない音符は、それだけで1つのフレーズになります。スラーの中に休符があると、
-フレーズはそこで切れます。そのため、ある音から次の音へどう移るかを楽器が
-決められます。同じ弓のまま指で次の高さを押さえる、息を切らずに吹き続ける、と
-いったことです。ドラムは`{hit: |n, params| ..., hears: [...]}`の形で渡し、
+同時に弾く音（書いた和音や、grooveが弾く和音）も1つのフレーズになり、それ以外の
+音符は、それだけで1つのフレーズになります。スラーの中に休符があると、フレーズは
+そこで切れます。そのため、ある音から次の音へどう移るか（同じ弓のまま指で次の
+高さを押さえる、息を切らずに吹き続ける）や、和音をどう弾くかを楽器が決められます。ドラムは`{hit: |n, params| ..., hears: [...]}`の形で渡し、
 `n`は1回の打音です。
 
 ```culebra
 # doctest: skip (bowedはプログラム側で用意するもの)
 let song = Audio.Kauai.load("trio.kau", voices: {
-  violin: {phrase: |notes, params| Audio.Sound(bowed(notes)), hears: ["len", "level"]},
+  violin: {phrase: |notes, params| Audio.Sound(bowed(notes)), hears: ["len", "level", "next"]},
 })
 ```
 
@@ -983,9 +997,21 @@ let song = Audio.Kauai.load("trio.kau", voices: {
 |---|---|---|
 | （常に） | `pitch`（MIDIのノート番号）と`at`（フレーズの最初の音符から何秒後か。ミリ秒単位） | ボイス |
 | `"len"` | `len`。音を保つ秒数。スタッカートなら半分、マルカートなら4分の3。ミリ秒単位 | ボイス |
-| `"level"` | `level`。その音の強弱を`mf`に対する比で表したもの（`mf`で`1.0`、`pp`で`0.47`、`ff`で`1.35`。アクセントは1段階強い）。0.01単位 | ボイスとドラム |
+| `"level"` | `level`。その音の強弱を`mf`に対する比で表したもの（`mf`で`1.0`、`pp`で`0.47`、`ff`で`1.35`。アクセントは1段階強い）。0.01単位。ボイスの音符には`level_end`（その音が終わるときの強弱）も入る。`cresc`や`dim`の途中の音（とアクセントの付いた音）では`level`と違う値になる | ボイスとドラム |
+| `"marks"` | `marks`。その音符に書いた記号の名前（`staccato` `accent` `tenuto` `marcato` `fermata` `arpeggio` `scoop` `plop` `doit` `fall`） | ボイス |
+| `"next"` | `next`。フレーズの最初の音符から、同じボイスの次のフレーズが始まるまでの秒数。ドラムでは、その打音から、同じドラムか同じchokeグループが次に鳴るまでの秒数。次がなければ`nil`。ミリ秒単位 | ボイスとドラム |
 
-和音の構成音は、それぞれが同じ`at`を持つフレーズの音符になります。Kauaiは、
+同時に弾く音は、それぞれが同じ`at`を持つフレーズの音符になり、低い音から順に
+並びます。アルペジオの和音では、始まりが64分音符ずつずれます。`next`は期限で
+あって、音を切る指示ではありません。音声はどれも最後まで鳴り、`next`を聞く
+楽器が、その時刻までに自分のやり方で音を終えます（弦を押さえて止める、息を
+止める、オープンのハイハットを閉じる）。楽器が音声に入れた部屋の響きは、その
+あとも残ります。`next`は後から始まるものだけを数えるので、和音の構成音や、
+同時に鳴らしたドラムが互いを止めることはありません。ジャズの奏法は、音の中の
+時間を使います。しゃくりとプロップは音の頭から、ドゥイットとフォールは音の
+終わりから時間を取ります。
+
+Kauaiは、
 楽器にとって違って聞こえるフレーズごとに音声を1つ作ります。何も聞かない楽器の
 1音だけのフレーズは、関数と同じく高さごとに1回作ります。`len`を聞く楽器なら、
 高さと長さの組み合わせごとに1回です。音声はフレーズの最初の音符から最後まで
@@ -1099,7 +1125,7 @@ Plays      <- 'melody' / 'roots' 'in' Range / 'chords' 'rootless'? 'from' Pitch
 Derived    <- Name 'echoes' Name 'late' Ratio 'level' Percent EOL
             / Name 'harmonizes' Name 'under' Interval EOL
 Drum       <- 'drum' Name ('noise' Int ('->' Int)? 'len' Int 'vol' Int
-              ('env' Int Int Int)? / 'host' Name Param* 'vol' Percent)
+              ('env' Int Int Int)? / 'host' Name Param* 'vol' Percent ('choke' Name)?)
               ('plays' 'hits')? EOL
 
 Groove     <- 'groove' Name '{' EOL (Row / Edge / EOL)* '}' EOL
@@ -1139,7 +1165,8 @@ Pitchname  <- [a-g] ('##' / '#' / 'bb' / 'b')?
 Octave     <- "'" / ','
 Value      <- ('1' / '2' / '4' / '8' / '16' / '32') '.'*
 Direction  <- '\\' ('pp' / 'p' / 'mp' / 'mf' / 'f' / 'ff' / 'cresc' / 'dim'
-              / 'rit' Tempo / 'accel' Tempo / 'tempo' (Tempo !'[')? / '!')
+              / 'rit' Tempo / 'accel' Tempo / 'tempo' (Tempo !'[')? / '!'
+              / 'scoop' / 'plop' / 'doit' / 'fall')
 Tempo      <- (Value '=')? Number                 # quarter notes a minute, or Value's
 
 Song       <- 'song' Name '{' EOL SongLine* '}' EOL

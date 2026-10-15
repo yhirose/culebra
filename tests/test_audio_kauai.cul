@@ -294,9 +294,9 @@ assert_eq(notes(played, "Snare").map(|n| n[3]), [0.4, 0.4])
 assert_eq(played.prepare(), 4)
 played.play()
 assert_eq(heard.map(phrase_said).sorted(), [
-  'pitch 60, at 0.0, len 1.0, level 1.0 / pitch 62, at 1.0, len 1.0, level 1.0',
-  'pitch 64, at 0.0, len 0.5, level 1.0',
-  'pitch 64, at 0.0, len 1.0, level 1.18',
+  'pitch 60, at 0.0, len 1.0, level 1.0, level_end 1.0 / pitch 62, at 1.0, len 1.0, level 1.0, level_end 1.0',
+  'pitch 64, at 0.0, len 0.5, level 1.0, level_end 1.0',
+  'pitch 64, at 0.0, len 1.0, level 1.18, level_end 1.18',
 ])
 assert_eq(struck.map(said).sorted(), ['level 1.0', 'level 1.18'])
 played.stop()
@@ -369,6 +369,83 @@ let phrased = fn (bar) {
 assert_eq(phrased('(c4 {e}d e f)'), ['60 64 62 64 65'])
 assert_eq(phrased('(c4 d r e)'), ['60 62', '64'])
 
+# Notes struck together are a phrase too, a chord in a part or in a groove,
+# its tones in order from the lowest.
+mut struck_together = []
+let keyed = Audio.Kauai.new(lines([
+  'band Keys {',
+  '  voice Organ  host Organ  plays melody  vol 50%  poly',
+  '  voice Comp   host Organ  plays chords from C3  vol 50%  poly',
+  '}',
+  'groove Stab {', '  Comp  x . . .', '}',
+  'song Hold {', '  tempo 60', '  band Keys', '  groove Stab', '  melody in C4..B4', '  Hold', '}',
+  'section Hold {', '  C  <e c>4 <d f> g2', '}',
+]), voices: {
+  organ: {
+    phrase: fn (notes, params) {
+      struck_together.push(notes.map(|n| "{n.pitch}@{n.at}").join(" "))
+      Audio.Sound.new(WAV)
+    },
+    hears: [],
+  },
+})
+keyed.play()
+keyed.stop()
+assert_eq(struck_together.sorted(), ['48@0.0 52@0.0 55@0.0 60@0.0', '60@0.0 64@0.0', '62@0.0 65@0.0', '67@0.0'])
+
+# What an instrument hears of a phrase: the marks written on each note, the
+# jazz bends among them, the dynamic where the note ends, and when its voice
+# plays next; a drum hears when it, or its choke group, hits next.
+mut told = []
+mut hit_told = []
+let marked = Audio.Kauai.new(lines([
+  'band Combo {',
+  '  voice Horn   host Horn   plays melody  vol 50%',
+  '  drum Open    host Hat    vol 40%  choke Hats',
+  '  drum Closed  host Hat    vol 40%  choke Hats',
+  '  drum Ride    host Ride   vol 40%',
+  '}',
+  'groove Time {',
+  '  Open    x . . .',
+  '  Closed  . . x .',
+  '  Ride    x x . .',
+  '}',
+  'song Blow {', '  tempo 60', '  band Combo', '  groove Time', '  melody in C4..B4', '  Blow', '}',
+  'section Blow {', '  C  \p \cresc \scoop c2 \f .!d4 \fall e', '}',
+]), voices: {
+  horn: {
+    phrase: fn (notes, params) {
+      told.push(notes.map(said).join(" / "))
+      Audio.Sound.new(WAV)
+    },
+    hears: ["level", "marks", "next"],
+  },
+}, drums: {
+  hat: {
+    hit: fn (n, params) {
+      hit_told.push(said(n))
+      Audio.Sound.new(WAV)
+    },
+    hears: ["next"],
+  },
+  ride: {
+    hit: fn (n, params) {
+      hit_told.push("ride " + said(n))
+      Audio.Sound.new(WAV)
+    },
+    hears: ["next"],
+  },
+})
+marked.play()
+marked.stop()
+assert_eq(told.sorted(), [
+  "pitch 60, at 0.0, level 0.65, level_end 1.18, marks ['scoop'], next 2.0",
+  "pitch 62, at 0.0, level 1.35, level_end 1.18, marks ['staccato', 'accent'], next 1.0",
+  "pitch 64, at 0.0, level 1.18, level_end 1.18, marks ['fall'], next nil",
+])
+assert_eq(hit_told.sorted(), ['next 2.0', 'next nil', 'ride next 1.0', 'ride next nil'])
+
+
 let refused = fn (voices, drums) {
   try {
     Audio.Kauai.new(PLAYED, voices: voices, drums: drums)
@@ -381,11 +458,11 @@ let snare = {snare: |params| Audio.Sound.new(WAV)}
 let fiddle = {fiddle: |pitch, params| Audio.Sound.new(WAV)}
 assert_eq(
   refused({fiddle: {phrase: |notes, params| nil, hears: ["slur"]}}, snare),
-  "Audio.Kauai: voices: `fiddle` hears slur; it can hear len, level",
+  "Audio.Kauai: voices: `fiddle` hears slur; it can hear len, level, marks, next",
 )
 assert_eq(
   refused(fiddle, {snare: {hit: |n, params| nil, hears: ["len"]}}),
-  "Audio.Kauai: drums: `snare` hears len; it can hear level",
+  "Audio.Kauai: drums: `snare` hears len; it can hear level, next",
 )
 assert_eq(
   refused({fiddle: {note: |n, params| nil, hears: ["len"]}}, snare),

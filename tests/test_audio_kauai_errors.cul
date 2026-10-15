@@ -230,3 +230,18 @@ fails(
   "line 4: only a drum plays hits",
 )
 fails(play("  T in D in E", "C c1"), "line 11: `in` is said once a line")
+
+# The jazz bends mark the note after them, once each.
+fails(play("  T", "C  c2 \\doit r2"), "line 18: \\doit marks a note, not a rest")
+fails(play("  T", "C  c2~ \\fall c2"), "line 18: a note held by a tie is not struck, and takes no marks")
+fails(play("  T", "C  c2 \\fall \\fall d2"), "line 18: \\fall is written once for its note")
+fails(play("  T", "C  c1 \\fall"), "line 18: the melody: \\fall with no note after it")
+# A choke group is a host drum's, and one name.
+fails(
+  with_hits("C c1").replace("drum Kick host Kick plays hits vol 80%", "drum Kick host Kick vol 80% choke A B"),
+  "line 5: a choke group is one name: choke Hats",
+)
+fails(
+  with_hits("C c1").replace("drum Kick host Kick plays hits vol 80%", "drum Kick noise 120 len 1 vol 20 choke Hats"),
+  "line 5: a noise drum sounds one at a time already; choke groups host drums",
+)
