@@ -1,0 +1,45 @@
+about {
+  title  Nylon afternoon
+  note   a bossa nova on nylon-string guitars: the thumb on the bass, the fingers on the chords between the beats, and a lead whose slurs are hammer-ons and pull-offs, on host instruments that play a phrase at a time
+}
+
+band Trio {
+  voice Lead    host Guitar  plays melody                    vol 75%
+  voice Chords  host Guitar  plays chords rootless from E3  poly  vol 40%
+  voice Thumb   host Guitar  plays roots in E2..D#3          vol 60%
+}
+
+groove Bossa {
+  Thumb   1 . . 5 1 . . 5 | 1 . . 5 1 . . 5
+  Chords  x . x . . x . x | . x . . x . x .
+}
+
+groove End {
+  Thumb   1 - - - - - - -
+  Chords  x - - - - - - -
+}
+
+song Afternoon {
+  tempo 132
+  band Trio
+  groove Bossa
+  melody in E4..D#5
+
+  Bossa x2
+  End
+}
+
+section Bossa {
+  Cmaj7    e4. (d8 e4) g
+  Cmaj7    b2 r4 (a8 b)
+  D9       c4. (b8 a4) f#
+  D9       e2. r4
+  Dm7      (f8 e) f a c4 b
+  G7       (a8 g) f d b,2
+  Em7 A7   (e8 f#) g b (d c#) a4
+  Dm7 G7   (f8 e) d c# d4 (f8 g)
+}
+
+section End {
+  Cmaj7    e1
+}

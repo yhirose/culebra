@@ -1,0 +1,124 @@
+# An alto saxophone for Audio.Kauai.load's `voices:`, `host Sax`, playing a
+# phrase at a time: the tongue starts it, a breath carries it through every
+# note a slur joins, and the tongue or the breath ends it. Under the slur a
+# fingering change lands fast, and the wider the interval the deeper the
+# tone dips and the more air is heard in it. The bass is guitar.cul's and the
+# drums kit.cul's.
+
+import wave from './wave.cul'
+import guitar from './guitar.cul'
+import kit from './kit.cul'
+
+let RATE = wave.RATE
+
+# The bore and the bell give back these bands of partials most.
+let PEAKS = [
+  {at: 650.0, width: 450.0, gain: 1.0},
+  {at: 1700.0, width: 700.0, gain: 0.55},
+  {at: 3000.0, width: 1000.0, gain: 0.3},
+]
+let PARTIALS = 24
+
+fn body(f) {
+  PEAKS.reduce(
+    0.2,
+    |sum, p| sum + p.gain * Math.exp(-((f - p.at) / p.width) ** 2),
+  )
+}
+
+# The partials of `pitch` at `level`. A conical bore sounds them all, and a
+# harder breath brightens a reed far more than a bow brightens a string.
+fn spectrum(pitch, level) {
+  let f = wave.hz(pitch)
+  let count = Math.max(1, Math.min(PARTIALS, Math.floor(RATE * 0.45 / f)))
+  let tilt = 2.2 - 1.2 * level
+  let amps = iota(count).map(|k| body(f * (k + 1)) / (k + 1) ** tilt)
+  let norm = 0.5 * level / amps.sum()
+  iota(PARTIALS).map(|k| k < count ? amps[k] * norm : 0.0)
+}
+
+# One phrase `notes` ([{pitch, at, len, level}]) as samples.
+fn blow(notes) {
+  let specs = notes.map(|n| spectrum(n.pitch, n.level))
+  let freqs = notes.map(|n| wave.hz(n.pitch))
+  # Each change of fingering: the log ratio of its pitches, how long the pitch
+  # takes to settle, and how deep and how long the tone dips.
+  let changes = iota(notes.size()).map(fn (k) {
+    let step = k == 0 ? 0 : Math.abs(notes[k].pitch - notes[k - 1].pitch)
+    {
+      ratio: k == 0 ? 0.0 : Math.log(freqs[k] / freqs[k - 1]),
+      settle: Math.min(0.012, 0.004 + 0.001 * step),
+      dip: k == 0 ? 0.0 : Math.min(0.5, 0.22 + 0.02 * step),
+      dip_len: 0.03 + 0.002 * step,
+    }
+  })
+  let last = notes[notes.size() - 1]
+  let attack = 0.035
+  let release = 0.05
+  let held = last.at + Math.max(last.len, attack)
+  let total = Math.round((held + release) * RATE)
+  let limit = RATE * 0.45
+  let white = wave.noise(notes[0].pitch * 7919 + 17)
+  mut phase = 0.0
+  mut at = 0
+  mut air_fast = 0.0
+  mut air_slow = 0.0
+  iota(total).map(fn (i) {
+    let t = i.to_float() / RATE
+    while at + 1 < notes.size() && t >= notes[at + 1].at {
+      at += 1
+    }
+    let since = t - notes[at].at
+    let was = Math.max(0, at - 1)
+    let ch = changes[at]
+    # A slurred change settles within a few milliseconds.
+    let x = at == 0 ? 1.0 : Math.min(1.0, since / ch.settle)
+    # A tongued start speaks a little flat and comes up to pitch.
+    let scoop = at == 0 && since < 0.15
+      ? 1.0 - 0.015 * Math.exp(-since / 0.025)
+      : 1.0
+    let depth = 0.005 * Math.max(0.0, Math.min(1.0, (since - 0.3) / 0.4))
+    let wobble = Math.sin(2.0 * Math.pi * 5.2 * t)
+    let f = (x < 1.0 ? freqs[was] * Math.exp(x * ch.ratio) : freqs[at]) * scoop
+    phase += 2.0 * Math.pi * f / RATE * (1.0 + depth * wobble)
+    let dip = since < ch.dip_len
+      ? 1.0 - ch.dip * Math.sin(Math.pi * since / ch.dip_len)
+      : 1.0
+    let s1 = Math.sin(phase)
+    let c2 = 2.0 * Math.cos(phase)
+    let a0 = specs[was]
+    let a1 = specs[at]
+    mut prev = 0.0
+    mut cur = s1
+    # At the tongue's release the upper partials come in a moment late.
+    let opening = t < 0.01 + 0.003 * PARTIALS
+    mut sum = (a0[0] + (a1[0] - a0[0]) * x) * s1
+    for k in 1..PARTIALS {
+      break if (k + 1) * f > limit
+      let next = c2 * cur - prev
+      prev = cur
+      cur = next
+      let open = opening ? Math.min(1.0, t / (0.01 + 0.003 * k)) : 1.0
+      sum += (a0[k] + (a1[k] - a0[k]) * x) * open * cur
+    }
+    # Air through the reed: a band of noise, strongest as the tongue lets go
+    # and through a change of fingering.
+    let n = white()
+    air_fast += 0.55 * (n - air_fast)
+    air_slow += 0.08 * (n - air_slow)
+    let tongue = t < 0.2 ? Math.exp(-t / 0.03) : 0.0
+    let burst = tongue +
+      (since < 0.15 ? ch.dip * 2.0 * Math.exp(-since / 0.02) : 0.0)
+    let air = (air_fast - air_slow) * notes[at].level * (0.03 + 0.25 * burst)
+    let rise = Math.min(1.0, t / attack)
+    let fall = t <= held ? 1.0 : Math.max(0.0, 1.0 - (t - held) / release)
+    (sum * dip * (1.0 + 1.5 * depth * wobble) + air) * rise * fall
+  })
+}
+
+let sounds = {sax: |notes, params| blow(notes), bass: guitar.sounds.bass}
+let voices = sounds.keys().map(|k| (k, wave.voice(sounds[k]))).to_object()
+
+let drums = kit.drums
+
+export {voices, drums, sounds}

@@ -1,0 +1,42 @@
+# A jazz kit for Audio.Kauai.load's `drums:`: `host Ride` and `host Hat`.
+# A cymbal is six square waves at frequencies no harmonic series holds, with
+# some noise, through two high-pass stages: the ride rings on, and the hat
+# closed by the pedal is the same metal cut short.
+
+import wave from './wave.cul'
+
+let RATE = wave.RATE
+let METAL = [205.3, 304.4, 369.6, 522.7, 540.0, 800.0].map(|f| f * 2.4)
+
+fn metal(seconds, decay, cutoff, noisy, seed) {
+  let white = wave.noise(seed)
+  let a = 1.0 / (1.0 + 2.0 * Math.pi * cutoff / RATE)
+  mut x1 = 0.0
+  mut y1 = 0.0
+  mut x2 = 0.0
+  mut y2 = 0.0
+  iota(Math.round(seconds * RATE)).map(fn (i) {
+    let t = i.to_float() / RATE
+    let squares = METAL.reduce(
+      0.0,
+      |sum, f| sum + (Math.sin(2.0 * Math.pi * f * t) >= 0.0 ? 1.0 : -1.0),
+    )
+    let x = squares / METAL.size() * (1.0 - noisy) + white() * noisy
+    y1 = a * (y1 + x - x1)
+    x1 = x
+    y2 = a * (y2 + y1 - x2)
+    x2 = y1
+    y2 * Math.exp(-t / decay)
+  })
+}
+
+let RIDE = metal(2.0, 0.7, 3500.0, 0.3, 11).map(|s| s * 0.6)
+let HAT = metal(0.15, 0.03, 6000.0, 0.5, 23).map(|s| s * 0.7)
+
+let sounds = {ride: |params| RIDE, hat: |params| HAT}
+let drums = sounds
+  .keys()
+  .map(|k| (k, |params| Audio.Sound(wave.wav(wave.room(sounds[k](params))))))
+  .to_object()
+
+export {drums, sounds}

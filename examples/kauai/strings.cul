@@ -4,26 +4,9 @@
 # vibrato, a finger stops the next note with the bow still moving, and the
 # phrase fades when the bow leaves. A louder note is a brighter one.
 
-let RATE = 22050
+import wave from './wave.cul'
 
-# 16-bit mono samples (-1.0..1.0) as a WAV file's bytes.
-fn wav(samples) {
-  let data = String.pack(
-    "i16",
-    samples.map(|s| Math.round(Math.max(-1.0, Math.min(1.0, s)) * 32000)),
-  )
-  let n = samples.size() * 2
-  String.pack("u32", [0x46464952, 36 + n, 0x45564157, 0x20746d66, 16]) +
-    String.pack("u16", [1, 1]) +
-    String.pack("u32", [RATE, RATE * 2]) +
-    String.pack("u16", [2, 16]) +
-    String.pack("u32", [0x61746164, n]) +
-    data
-}
-
-fn hz(pitch) {
-  440.0 * Math.exp((pitch - 69) / 12.0 * Math.log(2.0))
-}
+let RATE = wave.RATE
 
 # How strongly the instrument's body gives back a partial at `f` Hz: a floor,
 # and its resonances {at, width, gain}.
@@ -39,11 +22,11 @@ let PARTIALS = 16
 # The partials of `pitch` at `level`: a sawtooth's (the bow's stick and
 # slip), tilted darker as the note grows softer and coloured by the body.
 fn spectrum(pitch, level, peaks) {
-  let f = hz(pitch)
+  let f = wave.hz(pitch)
   let count = Math.max(1, Math.min(PARTIALS, Math.floor(RATE * 0.45 / f)))
   let tilt = 1.5 - 0.5 * level
   let amps = iota(count).map(|k| body(f * (k + 1), peaks) / (k + 1) ** tilt)
-  let norm = 0.45 * level / amps.reduce(0.0, |a, b| a + b)
+  let norm = 0.45 * level / amps.sum()
   iota(PARTIALS).map(|k| k < count ? amps[k] * norm : 0.0)
 }
 
@@ -55,10 +38,14 @@ let DIP_LEN = 0.02
 
 # One phrase `notes` ([{pitch, at, len, level}]) on an instrument shaped by
 # `peaks`, as one sound whose phase never restarts; sin(k·x) comes from the
-# two before it, so a sample costs one sin.
+# two before it, so the partials cost one sin and one cos a sample.
 fn bowed(notes, peaks) {
   let specs = notes.map(|n| spectrum(n.pitch, n.level, peaks))
-  let freqs = notes.map(|n| hz(n.pitch))
+  let freqs = notes.map(|n| wave.hz(n.pitch))
+  # How far each note's pitch is from the one before, as a log ratio.
+  let steps = iota(notes.size()).map(|k| k == 0
+    ? 0.0
+    : Math.log(freqs[k] / freqs[k - 1]))
   let last = notes[notes.size() - 1]
   let attack = 0.08
   let release = 0.15
@@ -75,10 +62,10 @@ fn bowed(notes, peaks) {
     let since = t - notes[at].at
     let was = Math.max(0, at - 1)
     let x = at == 0 ? 1.0 : Math.min(1.0, since / CHANGE)
-    let f = freqs[was] * Math.exp(x * Math.log(freqs[at] / freqs[was]))
-    let dip = at == 0
+    let f = x < 1.0 ? freqs[was] * Math.exp(x * steps[at]) : freqs[at]
+    let dip = at == 0 || since >= DIP_LEN
       ? 1.0
-      : 1.0 - DIP * Math.sin(Math.pi * Math.min(1.0, since / DIP_LEN))
+      : 1.0 - DIP * Math.sin(Math.pi * since / DIP_LEN)
     # Vibrato that grows in after each note has settled.
     let depth = 0.004 * Math.max(0.0, Math.min(1.0, (since - 0.2) / 0.3))
     let wobble = Math.sin(2.0 * Math.pi * 5.6 * t)
@@ -119,20 +106,11 @@ let CELLO = [
   {at: 1200.0, width: 500.0, gain: 0.6},
 ]
 
-let HEARS = ["len", "level"]
-let voices = {
-  violin: {
-    phrase: |notes, params| Audio.Sound(wav(bowed(notes, VIOLIN))),
-    hears: HEARS,
-  },
-  viola: {
-    phrase: |notes, params| Audio.Sound(wav(bowed(notes, VIOLA))),
-    hears: HEARS,
-  },
-  cello: {
-    phrase: |notes, params| Audio.Sound(wav(bowed(notes, CELLO))),
-    hears: HEARS,
-  },
+let sounds = {
+  violin: |notes, params| bowed(notes, VIOLIN),
+  viola: |notes, params| bowed(notes, VIOLA),
+  cello: |notes, params| bowed(notes, CELLO),
 }
+let voices = sounds.keys().map(|k| (k, wave.voice(sounds[k]))).to_object()
 
-export {voices}
+export {voices, sounds}

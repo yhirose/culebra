@@ -1,0 +1,167 @@
+# Plucked strings for Audio.Kauai.load's `voices:`: `host Guitar` (nylon
+# strings on a wooden body), `host Steel` (bright strings and no body) and
+# `host Bass`, playing a phrase at a time. A string is a loop of delay that
+# loses a little of its brightness on every pass (Karplus-Strong): a pluck
+# fills it with noise, and it rings down by itself. Under a slur the string
+# is not plucked again: a finger hammers on or pulls off, the loop changes
+# length with the string still moving, and only a little energy is added.
+# When the note is let go the fretting hand damps it. A guitar's body
+# rings with the string at its own resonances, which is most of why it does
+# not sound like a koto or a harp.
+
+import wave from './wave.cul'
+
+let RATE = wave.RATE
+let SIZE = 4096
+
+# Seconds for a string at `f` Hz to ring down by 60 dB: longer low.
+fn ring_time(f, sustain) {
+  Math.max(0.4, Math.min(6.0, sustain * Math.sqrt(110.0 / f)))
+}
+
+# The loop at `f` Hz: a whole-sample delay, an allpass for the fraction
+# (Jaffe and Smith), and the loss per pass that rings it down in `t60`.
+fn loop_of(f, t60) {
+  let period = RATE / f
+  let whole = Math.floor(period - 0.6)
+  let frac = period - 0.5 - whole
+  {len: whole, c: (1.0 - frac) / (1.0 + frac), loss: 10.0 ** (-3.0 / (t60 * f))}
+}
+
+# A burst of noise one period long, softened for a soft note and combed by
+# where along the string it is plucked.
+fn burst(n, period, strength, kind, seed) {
+  let white = wave.noise(seed)
+  let soft = 0.15 + 0.6 * Math.min(1.0, n.level * kind.bright)
+  mut lp = 0.0
+  let raw = iota(period).map(fn (i) {
+    lp += soft * (white() - lp)
+    lp
+  })
+  let gap = Math.max(1, Math.round(kind.position * period))
+  iota(period).map(|i| (raw[i] - (i >= gap ? raw[i - gap] : 0.0)) *
+    strength *
+    n.level)
+}
+
+# One string's phrase `notes` ([{pitch, at, len, level}]), each starting
+# after the one before it.
+fn string(notes, kind) {
+  let last = notes[notes.size() - 1]
+  let held = last.at + last.len
+  let total = Math.round((held + 0.25) * RATE)
+  let loops = notes.map(|n| loop_of(
+    wave.hz(n.pitch),
+    ring_time(wave.hz(n.pitch), kind.sustain),
+  ))
+  let damped = notes.map(|n| loop_of(wave.hz(n.pitch), 0.12))
+  let starts = notes.map(|n| Math.round(n.at * RATE))
+  # The pluck, then a hammer-on (up) or a pull-off (down) for each note after.
+  let bursts = iota(notes.size()).map(fn (k) {
+    let strength = cond {
+      k == 0 => 1.0,
+      notes[k].pitch > notes[k - 1].pitch => 0.25,
+      _ => 0.45,
+    }
+    burst(notes[k], loops[k].len, strength, kind, notes[k].pitch * 7919 + k)
+  })
+  mut buf = repeat(SIZE, 0.0)
+  mut w = 0
+  mut at = 0
+  mut prev = 0.0
+  mut ap_in = 0.0
+  mut ap_out = 0.0
+  mut dc_in = 0.0
+  mut dc_out = 0.0
+  iota(total).map(fn (i) {
+    while at + 1 < notes.size() && i >= starts[at + 1] {
+      at += 1
+    }
+    let lp = i.to_float() / RATE > held ? damped[at] : loops[at]
+    let read = buf[(w - lp.len + SIZE) % SIZE]
+    let v = 0.5 * (read + prev) * lp.loss
+    prev = read
+    let ap = lp.c * v + ap_in - lp.c * ap_out
+    ap_in = v
+    ap_out = ap
+    let into = i - starts[at]
+    let b = bursts[at]
+    buf[w] = ap + (into < b.size() ? b[into] : 0.0)
+    w = (w + 1) % SIZE
+    # The body passes no DC.
+    dc_out = read - dc_in + 0.995 * dc_out
+    dc_in = read
+    dc_out * 0.5
+  })
+}
+
+# A phrase: one string, unless notes start together (a chord under a slur),
+# when each note is a string of its own.
+fn pluck(notes, kind) {
+  let ats = notes.map(|n| n.at)
+  let apart = iota(ats.size()).all(|k| k == 0 || ats[k] > ats[k - 1])
+  return string(notes, kind) if apart
+  let parts = notes.map(|n| {
+    start: Math.round(n.at * RATE),
+    s: string([{...n, at: 0.0}], kind),
+  })
+  let size = parts.map(|p| p.start + p.s.size()).max()
+  mut out = repeat(size, 0.0)
+  for p in parts {
+    for i in 0..p.s.size() {
+      out[p.start + i] += p.s[i]
+    }
+  }
+  out
+}
+
+# The body's resonances {at, width, gain}: the air inside, the top plate and
+# the modes above them, each a two-pole resonator whose peak is `gain`.
+let WOOD = [
+  {at: 98.0, width: 10.0, gain: 0.9},
+  {at: 204.0, width: 16.0, gain: 1.0},
+  {at: 390.0, width: 35.0, gain: 0.5},
+  {at: 560.0, width: 50.0, gain: 0.35},
+  {at: 1100.0, width: 200.0, gain: 0.25},
+  {at: 2600.0, width: 800.0, gain: 0.15},
+]
+
+# `samples` as the body gives them back: some of the string straight, and
+# each resonance ringing with it.
+fn body(samples, modes) {
+  let rings = modes.map(fn (m) {
+    let r = Math.exp(-Math.pi * m.width / RATE)
+    let w = 2.0 * Math.pi * m.at / RATE
+    {
+      a1: 2.0 * r * Math.cos(w),
+      a2: -r * r,
+      b0: (1.0 - r) * 2.0 * Math.sin(w) * m.gain,
+    }
+  })
+  mut y1 = repeat(modes.size(), 0.0)
+  mut y2 = repeat(modes.size(), 0.0)
+  samples.map(fn (x) {
+    mut out = 0.4 * x
+    for k in 0..rings.size() {
+      let g = rings[k]
+      let y = g.b0 * x + g.a1 * y1[k] + g.a2 * y2[k]
+      y2[k] = y1[k]
+      y1[k] = y
+      out += y
+    }
+    out
+  })
+}
+
+let NYLON = {sustain: 2.0, bright: 0.4, position: 0.18}
+let STEEL = {sustain: 2.5, bright: 0.8, position: 0.13}
+let BASS = {sustain: 3.0, bright: 0.35, position: 0.2}
+
+let sounds = {
+  guitar: |notes, params| body(pluck(notes, NYLON), WOOD),
+  steel: |notes, params| pluck(notes, STEEL),
+  bass: |notes, params| pluck(notes, BASS),
+}
+let voices = sounds.keys().map(|k| (k, wave.voice(sounds[k]))).to_object()
+
+export {voices, sounds}
