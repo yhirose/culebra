@@ -2,7 +2,11 @@
 # strings on a wooden body), `host Steel` (bright strings and no body) and
 # `host Bass`, playing a phrase at a time. A string is a loop of delay that
 # loses a little of its brightness on every pass (Karplus-Strong): a pluck
-# fills it with noise, and it rings down by itself. Under a slur the string
+# fills it with the shape the string is let go from, and it rings down by
+# itself. A finger draws a nylon string aside to a point, a triangle whose
+# upper harmonics are weak; a pick's scrape is noise, bright in all of them.
+# A voice's `pluck=` says how far along the string from the bridge it is
+# plucked (`host Guitar pluck=0.3`, over the soundhole and mellow). Under a slur the string
 # is not plucked again: a finger hammers on or pulls off, the loop changes
 # length with the string still moving, and only a little energy is added.
 # The string rings on until the hand moves to what the voice plays next, and
@@ -30,20 +34,26 @@ fn loop_of(f, t60) {
   {len: whole, c: (1.0 - frac) / (1.0 + frac), loss: 10.0 ** (-3.0 / (t60 * f))}
 }
 
-# A burst of noise one period long, softened for a soft note and combed by
-# where along the string it is plucked.
+# What the pluck leaves on the string, one period long: the string drawn
+# aside to a point `kind.position` along it (a triangle, its harmonics falling
+# as 1/k²), roughened by noise as much as `kind.shape` falls short of 1, and
+# softened for a soft note.
 fn burst(n, period, strength, kind, seed) {
   let white = wave.noise(seed)
   let soft = 0.15 + 0.6 * Math.min(1.0, n.level * kind.bright)
-  mut lp = 0.0
-  let raw = iota(period).map(fn (i) {
-    lp += soft * (white() - lp)
-    lp
-  })
   let gap = Math.max(1, Math.round(kind.position * period))
-  iota(period).map(|i| (raw[i] - (i >= gap ? raw[i - gap] : 0.0)) *
-    strength *
-    n.level)
+  let tri = iota(period).map(|i| i < gap
+    ? i.to_float() / gap
+    : (period - i).to_float() / (period - gap))
+  let mean = tri.sum() / period
+  let raw = iota(period).map(|i| white())
+  let combed = iota(period).map(|i| raw[i] - (i >= gap ? raw[i - gap] : 0.0))
+  mut lp = 0.0
+  iota(period).map(fn (i) {
+    let v = kind.shape * (tri[i] - mean) + (1.0 - kind.shape) * combed[i]
+    lp += soft * (v - lp)
+    lp * strength * n.level
+  })
 }
 
 # One string's phrase `notes` ([{pitch, at, len, level}]), each starting
@@ -62,7 +72,7 @@ fn string(notes, kind) {
     ? Math.min(end, next ?? end)
     : Math.min(next ?? rung, rung)
   let total = Math.round((held + 0.3) * RATE)
-  let damped = notes.map(|n| loop_of(wave.hz(n.pitch), 0.2))
+  let damped = notes.map(|n| loop_of(wave.hz(n.pitch), kind.let_go))
   let starts = notes.map(|n| Math.round(n.at * RATE))
   # The pluck, then a hammer-on (up) or a pull-off (down) for each note after.
   let bursts = iota(notes.size()).map(fn (k) {
@@ -146,14 +156,42 @@ fn body(samples, modes) {
   })
 }
 
-let NYLON = {sustain: 6.0, bright: 0.4, position: 0.18, strum: 0.008}
-let STEEL = {sustain: 7.0, bright: 0.8, position: 0.13, strum: 0.015}
-let BASS = {sustain: 6.0, bright: 0.35, position: 0.2, strum: 0.0}
+let NYLON = {
+  sustain: 6.0,
+  bright: 0.4,
+  position: 0.18,
+  strum: 0.008,
+  shape: 0.85,
+  let_go: 0.6,
+}
+let STEEL = {
+  sustain: 7.0,
+  bright: 0.8,
+  position: 0.13,
+  strum: 0.015,
+  shape: 0.0,
+  let_go: 0.2,
+}
+let BASS = {
+  sustain: 6.0,
+  bright: 0.35,
+  position: 0.2,
+  strum: 0.0,
+  shape: 0.0,
+  let_go: 0.2,
+}
+
+# `kind` as a voice's `pluck=` asks: plucked that far along the string from
+# the bridge, 0.3 over the soundhole and mellow, 0.1 by the bridge and bright.
+fn played(kind, params) {
+  let at = params.get("pluck", nil)
+  at == nil ? kind : {...kind, position: Math.clamp(at, 0.05, 0.5)}
+}
 
 let sounds = {
-  guitar: |notes, params| body(pluck(notes, NYLON), WOOD),
-  steel: |notes, params| pluck(notes, STEEL),
-  bass: |notes, params| pluck(notes, BASS),
+  guitar: |notes, params| body(pluck(notes, played(NYLON, params)), WOOD),
+  steel: |notes, params| pluck(notes, played(STEEL, params)),
+  bass: |notes, params| pluck(notes, played(BASS, params)),
 }
 let voices = sounds
   .keys()
