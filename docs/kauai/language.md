@@ -966,8 +966,9 @@ dies away, as a piano or a drum does. An instrument whose sound follows how
 it is played, as a bowed string or a horn does, is given instead as an
 object: `phrase` is its function, called with a phrase and the voice's
 parameters, and `hears` names what of each note it is told. A phrase is the
-notes a slur joins, in the order they start, or a note under no slur alone,
-so the instrument shapes how one note moves to the next: a finger stopping
+notes a slur joins, in the order they start, grace notes among them, or a
+note under no slur alone; a rest under a slur ends the phrase so far. So the
+instrument shapes how one note moves to the next: a finger stopping
 the next pitch under the same bow, a breath carried through. A drum is given
 as `{hit: |n, params| ..., hears: [...]}`, `n` one hit.
 

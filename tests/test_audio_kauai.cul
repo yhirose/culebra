@@ -343,6 +343,32 @@ assert_eq(chords.map(phrase_said).sorted(), [
 ])
 chorded.stop()
 
+# A phrase is what the slur is written around: a grace note under it is in
+# it, and a rest under it ends the phrase so far.
+let phrased = fn (bar) {
+  mut got = []
+  let song = Audio.Kauai.new(lines([
+    'band Solo {',
+    '  voice Reed  host Reed  plays melody  vol 50%',
+    '}',
+    'song Breath {', '  tempo 60', '  band Solo', '  melody in C4..B4', '  Breath', '}',
+    'section Breath {', "  C  {bar}", '}',
+  ]), voices: {
+    reed: {
+      phrase: fn (notes, params) {
+        got.push(notes)
+        Audio.Sound.new(WAV)
+      },
+      hears: [],
+    },
+  })
+  song.play()
+  song.stop()
+  got.map(|notes| notes.map(|n| "{n.pitch}").join(" ")).sorted()
+}
+assert_eq(phrased('(c4 {e}d e f)'), ['60 64 62 64 65'])
+assert_eq(phrased('(c4 d r e)'), ['60 62', '64'])
+
 let refused = fn (voices, drums) {
   try {
     Audio.Kauai.new(PLAYED, voices: voices, drums: drums)
